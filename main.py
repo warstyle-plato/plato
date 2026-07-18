@@ -749,7 +749,7 @@ tfoot th{border-top:2px solid #111;color:#111;background:#fff}
     <div id="tep" class="panel">
       <div class="card">
         <div class="toolbar"><button class="btn" onclick="syncTep()">Обновить производные ТЭП из вводных</button><span style="color:#777;font-size:12px">В интерфейсе показывается 1 знак после запятой; внутри до редактирования сохраняется исходная точность.</span></div>
-        <div class="scroll"><table class="teptable"><thead><tr><th>Продукт</th><th>ГНС, м²</th><th>Общая площадь, м²</th><th>Полезная, м²</th><th>Продаваемая, м²</th><th>Передаваемая, м²</th><th>Шт.</th></tr></thead><tbody id="tepBody"></tbody><tfoot><tr><th>Итого</th><th id="tg"></th><th id="ta"></th><th id="tu"></th><th id="ts"></th><th id="tt"></th><th id="tn"></th></tr></tfoot></table></div>
+        <div class="scroll"><table class="teptable"><thead><tr><th>Продукт</th><th>ГНС, м²</th><th>Общая площадь, м²</th><th>Полезная площадь, м²</th><th>Продаваемая площадь, м²</th><th>Передаваемая площадь, м²</th><th>Количество, шт.</th></tr></thead><tbody id="tepBody"></tbody><tfoot><tr><th>Итого</th><th id="tg"></th><th id="ta"></th><th id="tu"></th><th id="ts"></th><th id="tt"></th><th id="tn"></th></tr></tfoot></table></div>
       </div>
     </div>
 
@@ -762,8 +762,8 @@ tfoot th{border-top:2px solid #111;color:#111;background:#fff}
 
     <div id="finance" class="panel">
       <div class="card">
-        <div class="llcr-hero"><div><div class="section-title">LLCR</div><div id="llcrValue" class="llcr-value">—</div></div><div class="llcr-label">Расчёт по той же структуре показателя, что и на листе LLCR текущей модели. Ниже — раскрытие числителя, знаменателя, процентов и долга.</div></div>
-        <div class="compare"><div><small>Веб-модель</small><b id="llcrWeb">—</b></div><div><small>Контроль исходного Excel</small><b id="llcrExcel">1,104x</b></div></div>
+        <div class="llcr-hero"><div><div class="section-title">LLCR</div><div id="llcrValue" class="llcr-value">—</div></div><div class="llcr-label">Расчётный LLCR веб-модели. Контрольное значение текущего Excel — 1,08x. До полной помесячной сверки показатель веб-модели не считается финальным.</div></div>
+        <div class="compare"><div><small>Расчётный LLCR веб-модели</small><b id="llcrWeb">—</b></div><div><small>Контроль исходного Excel</small><b id="llcrExcel">1,08x</b></div></div>
       </div>
       <div class="kpis" id="financeKpi"></div>
 
@@ -788,7 +788,7 @@ tfoot th{border-top:2px solid #111;color:#111;background:#fff}
         <div class="section-title">Помесячное финансирование</div>
         <div class="scroll"><table class="monthly"><thead><tr><th>Месяц</th><th>Ключевая</th><th>БРИДЖ</th><th>Ставка БРИДЖ</th><th>% БРИДЖ</th><th>ПФ</th><th>Эскроу</th><th>Покрытие</th><th>Ставка ПФ</th><th>% ПФ</th><th>Комиссия лимита</th><th>Погашение ПФ</th></tr></thead><tbody id="monthlyFinance"></tbody></table></div>
       </div>
-      <div class="note warning">Контрольная цифра LLCR из исходного Excel — 1,104x. Веб-расчёт динамический и уже реагирует на вводные, но до полного отказа от Excel надо сверить помесячно 3–5 контрольных сценариев.</div>
+      <div class="note warning">Контрольная цифра LLCR из исходного Excel — 1,08x. Веб-расчёт динамический и уже реагирует на вводные, но до полного отказа от Excel надо сверить помесячно 3–5 контрольных сценариев.</div>
     </div>
 
     <div id="report" class="panel">
@@ -952,7 +952,11 @@ function renderResult(){
  revenueTable.innerHTML=Object.entries(r.revenue).filter(([key])=>key!=='total').map(([key,v])=>row(revNames[key]||key,money(v))).join('')+`<tr><th>Итого</th><th>${money(r.revenue.total)}</th></tr>`;
  const capNames={land_rights:'Земля / смена ВРИ',ird:'ИРД',design_p:'Проект П',design_rd:'Проект РД',author_supervision:'Авторский надзор',preparation:'Подготовительные работы',main_above:'Основное строительство — наземная часть',main_under:'Основное строительство — подземная часть',utilities:'Наружные сети',landscaping:'Благоустройство',commissioning:'Сдача и ввод',site_maintenance:'Содержание стройплощадки',social:'Социальная нагрузка',offices:'Офисы',standalone_retail:'Коммерция ОСЗ',above_parking:'Наземный паркинг',gc_fee:'Генподрядчик',reserve:'Резерв',project_management:'Управление проектом'};
  capexTable.innerHTML=Object.entries(r.capex).filter(([key])=>key!=='total').map(([key,v])=>row(capNames[key]||key,money(v))).join('')+`<tr><th>Итого</th><th>${money(r.capex.total)}</th></tr>`;
- reportTep.innerHTML=r.tep.rows.map(x=>`<tr><td>${x.label}</td><td>ГНС ${num(x.gns)} м²</td><td>прод. ${num(x.saleable)} м²</td><td>${num(x.units)} шт.</td></tr>`).join('')+`<tr><th>Итого</th><th>${num(r.tep.total.gns)} м²</th><th>${num(r.tep.total.saleable)} м²</th><th>${num(r.tep.total.units)} шт.</th></tr>`;
+ reportTep.innerHTML=
+  `<thead><tr><th>Продукт</th><th>ГНС, м²</th><th>Продаваемая площадь, м²</th><th>Количество, шт.</th></tr></thead>`+
+  `<tbody>`+
+  r.tep.rows.map(x=>`<tr><td>${x.label}</td><td>${num(x.gns)}</td><td>${num(x.saleable)}</td><td>${num(x.units)}</td></tr>`).join('')+
+  `</tbody><tfoot><tr><th>Итого</th><th>${num(r.tep.total.gns)}</th><th>${num(r.tep.total.saleable)}</th><th>${num(r.tep.total.units)}</th></tr></tfoot>`;
 }
 
 function renderFinanceChart(rows){
