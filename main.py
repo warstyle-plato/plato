@@ -23,7 +23,7 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse, FileResponse
 from pydantic import BaseModel
 
-app = FastAPI(title="PLATO Development Investment Model", version="0.10.2")
+app = FastAPI(title="PLATO Development Investment Model", version="0.11.0")
 
 PRESET_DIR = Path(__file__).resolve().parent / "presets"
 SERVER_TEP_PRESETS = {
@@ -1898,6 +1898,55 @@ def _scale_tep_row(row: dict[str, Any], share_pct: float) -> dict[str, Any]:
     return result
 
 
+def _integer_phase_allocations(total_units: float, weights: list[float]) -> list[int]:
+    """Split indivisible units across phases while preserving the exact rounded total."""
+    total = max(0, int(round(float(total_units or 0.0))))
+    if not weights:
+        return [total]
+    norm = _normalized_phase_weights(weights, len(weights))
+    raw = [total * w / 100.0 for w in norm]
+    floors = [int(math.floor(v)) for v in raw]
+    remainder = total - sum(floors)
+    order = sorted(range(len(raw)), key=lambda i: (raw[i] - floors[i], norm[i]), reverse=True)
+    for i in order[:remainder]:
+        floors[i] += 1
+    return floors
+
+
+def _scale_tep_row_by_units(
+    row: dict[str, Any],
+    allocations: list[int],
+    phase_index: int,
+) -> dict[str, Any]:
+    result = copy.deepcopy(row)
+    total_units = float(n(row, "units"))
+    allocated = int(allocations[phase_index]) if phase_index < len(allocations) else 0
+    factor = (allocated / total_units) if total_units > 0 else 0.0
+    for key in ("gns", "total_area", "useful", "saleable", "transfer"):
+        result[key] = n(result, key) * factor
+    result["units"] = float(allocated)
+    return result
+
+
+_PHASE_INFLATABLE_INPUTS = (
+    "ird_th_per_sqm",
+    "design_p_th_per_sqm",
+    "design_rd_th_per_sqm",
+    "preparation_th_per_sqm",
+    "main_above_th_per_sqm",
+    "main_under_th_per_sqm",
+    "utilities_th_per_sqm",
+    "landscaping_th_per_sqm",
+    "commissioning_th_per_sqm",
+    "site_maintenance_th_per_sqm",
+)
+
+
+def _phase_cost_inflation_factor(phasing: dict[str, Any], offset_months: int) -> float:
+    annual = float(phasing.get("cost_inflation_pct", 8.0) or 0.0) / 100.0
+    return (1.0 + annual) ** (max(0, int(offset_months)) / 12.0)
+
+
 def _zero_tep_row(row: dict[str, Any]) -> dict[str, Any]:
     result = copy.deepcopy(row)
     for key in ("gns", "total_area", "useful", "saleable", "transfer", "units"):
@@ -2149,19 +2198,51 @@ def _consolidate_phase_results(
             p = product_map.setdefault(item["key"], {
                 "key": item["key"], "label": item["label"], "unit": item["unit"],
                 "quantity": 0.0, "revenue": 0.0, "start_price_th": item["start_price_th"],
-                "avg_price_th": 0.0, "pace_pre": 0.0,
+                "avg_price_th": 0.0, "pace_pre": None,
                 "share_before_rve": item["share_before_rve"],
                 "sales_start": None, "sales_end": None,
             })
             p["quantity"] += float(item["quantity"] or 0.0)
             p["revenue"] += float(item["revenue"] or 0.0)
-            p["pace_pre"] += float(item["pace_pre"] or 0.0)
             if item.get("sales_start"):
                 p["sales_start"] = item["sales_start"] if p["sales_start"] is None else min(p["sales_start"], item["sales_start"])
             if item.get("sales_end"):
                 p["sales_end"] = item["sales_end"] if p["sales_end"] is None else max(p["sales_end"], item["sales_end"])
     for p in product_map.values():
         p["avg_price_th"] = p["revenue"] / p["quantity"] / 1000 if p["quantity"] else 0.0
+
+    # Consolidated project has no single RVE. Keep phase-specific sales pace and dates.
+    phase_sales = []
+    for key, total_item in product_map.items():
+        phases = []
+        for phase_item in phase_items:
+            item = next((p for p in phase_item["result"]["report"]["products"] if p["key"] == key), None)
+            if not item:
+                continue
+            phases.append({
+                "phase": phase_item["name"],
+                "phase_index": phase_item["index"],
+                "quantity": float(item.get("quantity", 0.0) or 0.0),
+                "unit": item.get("unit"),
+                "pace_pre": float(item.get("pace_pre", 0.0) or 0.0),
+                "share_before_rve": float(item.get("share_before_rve", 0.0) or 0.0),
+                "start_price_th": float(item.get("start_price_th", 0.0) or 0.0),
+                "avg_price_th": float(item.get("avg_price_th", 0.0) or 0.0),
+                "revenue": float(item.get("revenue", 0.0) or 0.0),
+                "sales_start": item.get("sales_start"),
+                "sales_end": item.get("sales_end"),
+                "rve": phase_item["result"]["dates"]["rve"],
+                "cost_inflation_factor": phase_item.get("cost_inflation_factor", 1.0),
+            })
+        phase_sales.append({
+            "key": key,
+            "label": total_item["label"],
+            "unit": total_item["unit"],
+            "quantity": total_item["quantity"],
+            "revenue": total_item["revenue"],
+            "avg_price_th": total_item["avg_price_th"],
+            "phases": phases,
+        })
 
     events = []
     for phase_item in phase_items:
@@ -2240,6 +2321,7 @@ def _consolidate_phase_results(
         },
         "report": {
             "products": list(product_map.values()),
+            "phase_products": phase_sales,
             "unit_economics": unit_economics,
             "expense_structure": expense_structure,
             "calendar": {"start": cal_start.isoformat(), "end": cal_end.isoformat(), "events": events},
@@ -2266,8 +2348,9 @@ def _consolidate_phase_results(
         "comparison": comparison,
         "excel_control": EXCEL_CONTROL,
         "notes": {
-            "phasing": "Свод = сумма отдельных очередей без двойного счёта. Cash-распределение общих затрат и аналитическая аллокация разделены.",
-            "finance": "О1 по умолчанию несёт покупку, ВРИ и повышенную долю ранней нагрузки. ПФ считается отдельно по очередям; свод отражает одновременный долг.",
+            "phasing": "Атомарный одноочередный движок не изменён. Очередность — внешняя надстройка: отдельные ТЭП, сроки, цены, 8% годовая инфляция затрат и дискретные объекты.",
+            "sales": "У многоочередного проекта нет единого РВЭ: темп продаж показывается отдельно по каждой очереди.",
+            "finance": "О1 по умолчанию несёт покупку, ВРИ и повышенную раннюю нагрузку. ПФ пока считается отдельным атомарным расчётом каждой очереди; банковский общий Bridge/PF waterfall требует отдельной финальной сверки.",
         },
     }
 
@@ -2296,6 +2379,11 @@ def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
     product_weights = {
         key: _normalized_phase_weights(products_cfg.get(key), count, default_weights)
         for key in ("apartments", "ground_commercial", "underground_parking", "storage")
+    }
+    indivisible_allocations = {
+        key: _integer_phase_allocations(n(t_master.get(key, {}), "units"), product_weights[key])
+        for key in ("underground_parking", "storage")
+        if key in t_master
     }
 
     shared_cash = phasing.get("shared_cash") or {}
@@ -2373,9 +2461,19 @@ def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
         p_inputs["construction_months"] = int(cfg.get("construction_months", n(x_master,"construction_months",24)))
         p_inputs.pop("_glavapu_import", None)
 
+        # Mass products are split only in the phasing wrapper; the atomic single-phase engine is unchanged.
         for key in ("apartments","ground_commercial","underground_parking","storage"):
-            if key in p_tep:
+            if key not in p_tep:
+                continue
+            if key in indivisible_allocations:
+                p_tep[key] = _scale_tep_row_by_units(p_tep[key], indivisible_allocations[key], idx)
+            else:
                 p_tep[key] = _scale_tep_row(p_tep[key], product_weights[key][idx])
+
+        # Cost inflation belongs to the queue wrapper, not to the atomic engine.
+        cost_inflation_factor = _phase_cost_inflation_factor(phasing, offset)
+        for cost_key in _PHASE_INFLATABLE_INPUTS:
+            p_inputs[cost_key] = n(x_master, cost_key) * cost_inflation_factor
 
         p_inputs["apartment_price_th"] = n(x_master,"apartment_price_th")*(1+n(x_master,"monthly_growth_pre_pct",1.5)/100)**offset
         p_inputs["commercial_price_th"] = n(x_master,"commercial_price_th")*(1+n(x_master,"monthly_growth_pre_pct",1.5)/100)**offset
@@ -2389,11 +2487,11 @@ def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
         design_p_total = base_amounts.get("design_p",0.0)/1_000_000
         p_ratio = design_p_total/design_total if design_total else .5
         p_inputs["_cost_override_mln"] = {
-            "ird": shared_base_mln["ird"]*cash_weights["ird"][idx]/100,
-            "design_p": design_total*p_ratio*cash_weights["design"][idx]/100,
-            "design_rd": design_total*(1-p_ratio)*cash_weights["design"][idx]/100,
-            "preparation": shared_base_mln["preparation"]*cash_weights["preparation"][idx]/100,
-            "utilities": shared_base_mln["utilities"]*cash_weights["utilities"][idx]/100,
+            "ird": shared_base_mln["ird"]*cash_weights["ird"][idx]/100*cost_inflation_factor,
+            "design_p": design_total*p_ratio*cash_weights["design"][idx]/100*cost_inflation_factor,
+            "design_rd": design_total*(1-p_ratio)*cash_weights["design"][idx]/100*cost_inflation_factor,
+            "preparation": shared_base_mln["preparation"]*cash_weights["preparation"][idx]/100*cost_inflation_factor,
+            "utilities": shared_base_mln["utilities"]*cash_weights["utilities"][idx]/100*cost_inflation_factor,
         }
 
         if str(x_master.get("social_mode")) == "Денежная компенсация":
@@ -2412,6 +2510,9 @@ def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
                 }}
         else:
             p_inputs["social_mode"] = "Строительство"
+            p_inputs["kindergarten_cost_mln_per_place"] = n(x_master,"kindergarten_cost_mln_per_place")*cost_inflation_factor
+            p_inputs["school_cost_mln_per_place"] = n(x_master,"school_cost_mln_per_place")*cost_inflation_factor
+            p_inputs["clinic_cost_mln_per_unit"] = n(x_master,"clinic_cost_mln_per_unit")*cost_inflation_factor
             sums = {"kindergarten":0.0,"school":0.0,"clinic":0.0}
             starts = {"kindergarten":[],"school":[],"clinic":[]}
             for obj in social_objects:
@@ -2456,10 +2557,13 @@ def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
                     if dk in p_inputs:
                         p_inputs[dk]=_shift_iso(x_master.get(dk),offset)
                 if prefix=="offices":
+                    p_inputs["offices_cost_th_per_sqm"]=n(x_master,"offices_cost_th_per_sqm")*cost_inflation_factor
                     p_inputs["offices_price_th_per_sqm"]=n(x_master,"offices_price_th_per_sqm")*(1+n(x_master,"offices_growth_pre_pct",1.5)/100)**offset
                 elif prefix=="retail":
+                    p_inputs["retail_cost_th_per_sqm"]=n(x_master,"retail_cost_th_per_sqm")*cost_inflation_factor
                     p_inputs["retail_price_th_per_sqm"]=n(x_master,"retail_price_th_per_sqm")*(1+n(x_master,"retail_growth_pre_pct",1.5)/100)**offset
                 else:
+                    p_inputs["above_parking_cost_mln_per_space"]=n(x_master,"above_parking_cost_mln_per_space")*cost_inflation_factor
                     p_inputs["above_parking_price_mln_per_space"]=n(x_master,"above_parking_price_mln_per_space")*(1+n(x_master,"above_parking_growth_pre_pct",.75)/100)**offset
 
         result = calculate(CalcRequest(inputs=p_inputs, tep=p_tep, rates=rates))
@@ -2477,6 +2581,9 @@ def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
             "cash_shared_cost":cash_shared,"allocated_shared_cost":allocated_shared,
             "allocated_net_profit":allocated_profit,
             "product_weights":{k:product_weights[k][idx] for k in product_weights},
+            "cost_inflation_factor":cost_inflation_factor,
+            "cost_inflation_pct":float(phasing.get("cost_inflation_pct",8.0) or 0.0),
+            "start_offset_months":offset,
         })
         comparison.append({
             "name":name,"saleable_sqm":result["summary"]["monetizable_saleable_sqm"],
@@ -2485,6 +2592,7 @@ def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
             "peak_bridge":result["finance"]["peak_bridge"],"peak_pf":result["finance"]["peak_pf"],
             "llcr":result["summary"]["llcr"],"net_profit":result["summary"]["net_profit"],
             "allocated_net_profit":allocated_profit,"margin":result["summary"]["margin"],
+            "cost_inflation_factor":cost_inflation_factor,
         })
 
     consolidated = _consolidate_phase_results(x_master, phase_items, comparison)
@@ -2560,6 +2668,16 @@ _PLATO_METHODOLOGY = [
         "topic": "tep",
         "rule": "Если серверный проектный preset содержит явно помеченную экспертную корректировку, в рабочем сценарии она имеет приоритет над исходным ТЭП, но исходное значение должно сохраняться и показываться как контрольный источник.",
     },
+    {
+        "id": "WEAK_PHASE_LOGIC",
+        "topic": "phasing",
+        "rule": "Если LLCR отдельной очереди ниже цели, сначала определить дисбаланс между долей выручки/ТЭП и долей ранней нагрузки. Реальные меры проверять в порядке: корректность cash-аллокации и сроков → перенос реально переносимых затрат/соцобъектов → увеличение выручечного ТЭП слабой очереди → изменение сроков → цена входа/себестоимость. Не переносить покупку/ВРИ косметически ради улучшения коэффициента.",
+    },
+    {
+        "id": "PHASE_COST_INFLATION",
+        "topic": "phasing",
+        "rule": "В очередности базовая инфляция себестоимости — 8% годовых. Она применяется во внешней фазовой надстройке к затратам соответствующей очереди по её сдвигу старта; атомарный одноочередный движок не меняется.",
+    },
 ]
 
 _AGENT_INSTRUCTIONS = """
@@ -2579,6 +2697,8 @@ _AGENT_INSTRUCTIONS = """
 Особые правила:
 1. LLCR 1,20x — целевой ориентир пользователя для PLATO, не называй его универсальным нормативом всех банков.
 2. Для многоочередного проекта при банковской рекомендации предпочитай scope=weakest_phase, если пользователь явно не просит только сводный проект.
+2a. Если хотя бы одна очередь ниже 1,20x, не ограничивайся констатацией. Сначала вызови diagnose_project_logic, затем phase_recovery_options. Построй причинный вывод: хватает ли слабой очереди ТЭП/выручки относительно CAPEX, ранних общепроектных затрат, Bridge и социалки; затем ранжируй реальные варианты оздоровления.
+2b. Различай реальное улучшение проекта и косметическую перекладку. Покупку/ВРИ нельзя просто перенести в другую очередь ради красивого LLCR. Социалку и сети можно предлагать переносить только как сценарий при фактической реализуемости по графику/обязательствам.
 3. На вопрос о максимальной цене покупки при LLCR 1,20 вызывай goal_seek:
    variable=purchase_price_mln, target_metric=llcr, target_value=1.20,
    constraint=at_least, objective=maximum_variable, scope=weakest_phase для многоочередного проекта
@@ -3432,6 +3552,325 @@ def _tool_get_methodology(topic: str) -> dict[str, Any]:
     return {"topic": topic, "rules": rules}
 
 
+
+def _tool_diagnose_project_logic(
+    req: AgentChatRequest,
+    bundle: dict[str, Any],
+) -> dict[str, Any]:
+    if bundle.get("mode") != "phased":
+        return {
+            "mode": "single",
+            "message": "Проект одноочередный; анализ дисбаланса между очередями неприменим.",
+            "snapshot": _result_snapshot(bundle["consolidated"]),
+        }
+
+    phases = bundle.get("phases") or []
+    rows = []
+    total_revenue = sum(float(p["result"]["summary"].get("revenue", 0) or 0) for p in phases) or 1.0
+    total_capex = sum(float(p["result"]["summary"].get("capex", 0) or 0) for p in phases) or 1.0
+    total_saleable = sum(float(p["result"]["summary"].get("monetizable_saleable_sqm", 0) or 0) for p in phases) or 1.0
+    total_shared = sum(float(p.get("cash_shared_cost", 0) or 0) for p in phases) or 1.0
+
+    for p in phases:
+        r = p["result"]
+        s = r["summary"]
+        f = r["finance"]
+        rows.append({
+            "phase": p["name"],
+            "index": p["index"],
+            "llcr_x": round(float(s.get("llcr", 0) or 0), 4),
+            "revenue_mln": round(float(s.get("revenue", 0) or 0)/1e6, 2),
+            "revenue_share_pct": round(float(s.get("revenue", 0) or 0)/total_revenue*100, 2),
+            "saleable_sqm": round(float(s.get("monetizable_saleable_sqm", 0) or 0), 2),
+            "saleable_share_pct": round(float(s.get("monetizable_saleable_sqm", 0) or 0)/total_saleable*100, 2),
+            "capex_mln": round(float(s.get("capex", 0) or 0)/1e6, 2),
+            "capex_share_pct": round(float(s.get("capex", 0) or 0)/total_capex*100, 2),
+            "cash_shared_cost_mln": round(float(p.get("cash_shared_cost", 0) or 0)/1e6, 2),
+            "cash_shared_share_pct": round(float(p.get("cash_shared_cost", 0) or 0)/total_shared*100, 2),
+            "social_mln": round(float(s.get("social_payment", 0) or 0)/1e6, 2),
+            "peak_bridge_mln": round(float(f.get("peak_bridge", 0) or 0)/1e6, 2),
+            "peak_pf_mln": round(float(f.get("peak_pf", 0) or 0)/1e6, 2),
+            "financing_cost_mln": round(float(s.get("financing_cost", 0) or 0)/1e6, 2),
+            "cost_inflation_factor": round(float(p.get("cost_inflation_factor", 1.0) or 1.0), 4),
+            "product_weights": p.get("product_weights") or {},
+        })
+
+    weak = min(rows, key=lambda x: x["llcr_x"])
+    causes = []
+    if weak["cash_shared_share_pct"] > weak["revenue_share_pct"] + 7:
+        causes.append({
+            "code": "EARLY_SHARED_BURDEN",
+            "message": "Слабая очередь несёт непропорционально высокую долю ранних общепроектных Cash-расходов относительно своей выручки.",
+            "evidence": {
+                "shared_cash_share_pct": weak["cash_shared_share_pct"],
+                "revenue_share_pct": weak["revenue_share_pct"],
+            },
+        })
+    if weak["capex_share_pct"] > weak["revenue_share_pct"] + 5:
+        causes.append({
+            "code": "CAPEX_REVENUE_IMBALANCE",
+            "message": "Доля CAPEX слабой очереди выше её доли выручки.",
+            "evidence": {
+                "capex_share_pct": weak["capex_share_pct"],
+                "revenue_share_pct": weak["revenue_share_pct"],
+            },
+        })
+    if weak["saleable_share_pct"] + 4 < weak["capex_share_pct"]:
+        causes.append({
+            "code": "INSUFFICIENT_TEP",
+            "message": "Выручечного ТЭП слабой очереди недостаточно относительно её затратной нагрузки.",
+            "evidence": {
+                "saleable_share_pct": weak["saleable_share_pct"],
+                "capex_share_pct": weak["capex_share_pct"],
+            },
+        })
+    if weak["social_mln"] > 0:
+        causes.append({
+            "code": "SOCIAL_BURDEN",
+            "message": "В слабой очереди есть ранняя социальная нагрузка; перенос допустим только если это реально по обязательствам и графику.",
+            "evidence": {"social_mln": weak["social_mln"]},
+        })
+    if weak["peak_bridge_mln"] > max(weak["revenue_mln"]*0.20, 500):
+        causes.append({
+            "code": "HIGH_BRIDGE",
+            "message": "Высокая потребность в БРИДЖе усиливает долговую нагрузку и стоимость финансирования слабой очереди.",
+            "evidence": {
+                "peak_bridge_mln": weak["peak_bridge_mln"],
+                "revenue_mln": weak["revenue_mln"],
+            },
+        })
+    if not causes:
+        causes.append({
+            "code": "MULTIFACTOR",
+            "message": "Очевидного единственного дисбаланса нет; требуется сценарный подбор по ТЭП, срокам, социалке и цене входа.",
+            "evidence": {},
+        })
+
+    return {
+        "mode": "phased",
+        "target_llcr_x": _AGENT_BANK_LLCR_TARGET,
+        "weakest_phase": weak,
+        "phases": rows,
+        "causes": causes,
+        "decision_order": [
+            "Проверить корректность фактической cash-аллокации и сроков расходов.",
+            "Перенести только реально переносимые затраты/социальные объекты.",
+            "Увеличить выручечный ТЭП слабой очереди, если нагрузку перенести недостаточно.",
+            "Проверить изменение лагов/сроков запуска.",
+            "После операционных мер — подбирать цену входа или себестоимость.",
+        ],
+        "warning": "Не улучшать LLCR косметическим переносом покупки/ВРИ между очередями; это не меняет реальную экономику проекта.",
+    }
+
+
+def _rebalance_phase_weights(
+    phasing: dict[str, Any],
+    target_idx: int,
+    delta_pp: float,
+) -> dict[str, Any]:
+    p = copy.deepcopy(phasing)
+    count = int(p.get("phase_count") or 1)
+    for key in ("apartments", "ground_commercial", "underground_parking", "storage"):
+        arr = list((p.get("products") or {}).get(key) or _default_phase_weights(count))
+        arr = _normalized_phase_weights(arr, count, _default_phase_weights(count))
+        room = max(0.0, 100.0 - arr[target_idx])
+        add = min(float(delta_pp), room)
+        donors = [i for i in range(count) if i != target_idx and arr[i] > 0]
+        donor_total = sum(arr[i] for i in donors)
+        if add <= 0 or donor_total <= 0:
+            continue
+        arr[target_idx] += add
+        for i in donors:
+            arr[i] -= add * arr[i] / donor_total
+        p.setdefault("products", {})[key] = arr
+    return p
+
+
+def _move_reallocatable_cash(
+    phasing: dict[str, Any],
+    target_idx: int,
+    move_fraction: float,
+) -> dict[str, Any]:
+    p = copy.deepcopy(phasing)
+    count = int(p.get("phase_count") or 1)
+    bucket = p.setdefault("shared_cash", {})
+    movable = ("ird", "design", "preparation", "utilities")
+    recipients = [i for i in range(count) if i > target_idx]
+    if not recipients:
+        recipients = [i for i in range(count) if i != target_idx]
+    if not recipients:
+        return p
+    for key in movable:
+        arr = list(bucket.get(key) or _default_phase_weights(count))
+        arr = _normalized_phase_weights(arr, count, _default_phase_weights(count))
+        move = arr[target_idx] * max(0.0, min(0.8, move_fraction))
+        arr[target_idx] -= move
+        base = sum(arr[i] for i in recipients)
+        if base <= 0:
+            for i in recipients:
+                arr[i] += move / len(recipients)
+        else:
+            for i in recipients:
+                arr[i] += move * arr[i] / base
+        bucket[key] = arr
+    return p
+
+
+def _move_social_from_phase(
+    phasing: dict[str, Any],
+    target_phase_no: int,
+) -> tuple[dict[str, Any], list[str]]:
+    p = copy.deepcopy(phasing)
+    count = int(p.get("phase_count") or 1)
+    dest = target_phase_no + 1 if target_phase_no < count else None
+    moved = []
+    if dest is None:
+        return p, moved
+    for obj in p.get("social_objects") or []:
+        if int(obj.get("phase", 1) or 1) == target_phase_no:
+            moved.append(str(obj.get("name") or obj.get("type") or "Соцобъект"))
+            obj["phase"] = dest
+            obj["start_mode"] = "auto"
+            obj.pop("start_date", None)
+    return p, moved
+
+
+def _min_phase_llcr(bundle: dict[str, Any]) -> float:
+    if bundle.get("mode") != "phased":
+        return float(bundle["consolidated"]["summary"].get("llcr", 0) or 0)
+    vals = [float(p["result"]["summary"].get("llcr", 0) or 0) for p in bundle.get("phases") or []]
+    return min(vals) if vals else 0.0
+
+
+def _tool_phase_recovery_options(
+    req: AgentChatRequest,
+    bundle: dict[str, Any],
+    target_llcr: float = 1.20,
+) -> dict[str, Any]:
+    if bundle.get("mode") != "phased":
+        return {"available": False, "reason": "Проект одноочередный."}
+
+    phases = bundle.get("phases") or []
+    weak_item = min(phases, key=lambda p: float(p["result"]["summary"].get("llcr", 0) or 0))
+    weak_idx = int(weak_item["index"]) - 1
+    weak_no = weak_idx + 1
+    base_min = _min_phase_llcr(bundle)
+    base_np = float(bundle["consolidated"]["summary"].get("net_profit", 0) or 0)
+
+    candidates = []
+
+    def test(name: str, description: str, phasing_variant: dict[str, Any], feasibility: str, intervention_count: int):
+        b = _run_authoritative_model(req.inputs, req.tep, req.rates, phasing_variant)
+        m = _min_phase_llcr(b)
+        npv = float(b["consolidated"]["summary"].get("net_profit", 0) or 0)
+        candidates.append({
+            "name": name,
+            "description": description,
+            "feasibility": feasibility,
+            "intervention_count": intervention_count,
+            "min_llcr_x": round(m, 4),
+            "improvement_x": round(m - base_min, 4),
+            "achieves_target": m >= target_llcr - 1e-5,
+            "phase_llcr": _phase_llcr(b),
+            "net_profit_change_mln": round((npv - base_np)/1e6, 2),
+            "phasing_preview": {
+                "products": phasing_variant.get("products"),
+                "shared_cash": phasing_variant.get("shared_cash"),
+                "social_objects": phasing_variant.get("social_objects"),
+            },
+        })
+
+    # 1. Correct/shift only reallocatable timed shared costs; never purchase/VRI.
+    for fraction in (0.25, 0.50):
+        pv = _move_reallocatable_cash(req.phasing, weak_idx, fraction)
+        test(
+            f"Перенести {int(fraction*100)}% переносимой ранней нагрузки {weak_item['name']}",
+            "Перераспределяются только ИРД, П/РД, подготовка и наружные сети; покупка и ВРИ остаются там, где реально возникают.",
+            pv,
+            "Требует проверки фактического графика договоров/работ.",
+            1,
+        )
+
+    # 2. Move social objects out of weak phase if possible.
+    social_variant, moved = _move_social_from_phase(req.phasing, weak_no)
+    if moved:
+        test(
+            f"Перенести социалку из {weak_item['name']} в следующую очередь",
+            "Перенос: " + ", ".join(moved) + ".",
+            social_variant,
+            "Только если допустимо инвестобязательствами, РНС и фактическим графиком.",
+            1,
+        )
+
+    # 3. Add revenue-generating TEP to weak phase.
+    for delta in (5.0, 10.0, 15.0):
+        pv = _rebalance_phase_weights(req.phasing, weak_idx, delta)
+        test(
+            f"Увеличить долю массового ТЭП {weak_item['name']} на {delta:.0f} п.п.",
+            "Квартиры, коммерция 1 этажа, подземный паркинг и кладовые перераспределяются пропорционально из других очередей.",
+            pv,
+            "Требует градостроительной и продуктовой реализуемости.",
+            1,
+        )
+
+    # 4. Combined realistic measures: moderate cost timing + TEP.
+    pv = _move_reallocatable_cash(req.phasing, weak_idx, 0.25)
+    pv = _rebalance_phase_weights(pv, weak_idx, 5.0)
+    test(
+        f"Комбинация: нагрузка −25% + ТЭП {weak_item['name']} +5 п.п.",
+        "Сначала перенос реально переносимых ранних затрат, затем умеренное увеличение выручечного ТЭП.",
+        pv,
+        "Комбинированный сценарий; требует проверки обеих предпосылок.",
+        2,
+    )
+    if moved:
+        pv2, _ = _move_social_from_phase(req.phasing, weak_no)
+        pv2 = _rebalance_phase_weights(pv2, weak_idx, 5.0)
+        test(
+            f"Комбинация: перенос социалки + ТЭП {weak_item['name']} +5 п.п.",
+            "Соцобъекты переносятся по графику, слабая очередь получает больше выручечного ТЭП.",
+            pv2,
+            "Требует допустимости переноса социалки и градостроительной реализуемости ТЭП.",
+            2,
+        )
+
+    candidates.sort(
+        key=lambda c: (
+            0 if c["achieves_target"] else 1,
+            c["intervention_count"],
+            -c["min_llcr_x"],
+            -c["net_profit_change_mln"],
+        )
+    )
+
+    # Only after operational measures calculate hard economic thresholds.
+    fallback = {}
+    if not any(c["achieves_target"] for c in candidates):
+        fallback["max_purchase_price"] = _tool_goal_seek(
+            req, bundle, "purchase_price_mln", "llcr", target_llcr,
+            "at_least", "maximum_variable", "weakest_phase", None, None,
+        )
+        fallback["max_construction_cost"] = _tool_goal_seek(
+            req, bundle, "main_construction_cost_th_per_sqm", "llcr", target_llcr,
+            "at_least", "maximum_variable", "weakest_phase", None, None,
+        )
+
+    return {
+        "available": True,
+        "target_llcr_x": target_llcr,
+        "baseline_min_llcr_x": round(base_min, 4),
+        "weakest_phase": weak_item["name"],
+        "ranked_options": candidates[:8],
+        "fallback_thresholds": fallback,
+        "logic": [
+            "Сначала исправляется реальный дисбаланс нагрузки/ТЭП.",
+            "Покупка и ВРИ не переносятся косметически.",
+            "Социалка переносится только как условный сценарий при юридической/графиковой реализуемости.",
+            "Если операционные меры не дают 1,20x — рассчитывается предельная цена входа/себестоимость.",
+        ],
+    }
+
+
 _AGENT_TOOLS = [
     {
         "type": "function",
@@ -3573,6 +4012,32 @@ _AGENT_TOOLS = [
     },
     {
         "type": "function",
+        "name": "diagnose_project_logic",
+        "description": "Причинно диагностировать многоочередный проект: найти слабейшую очередь и сравнить её долю выручки/ТЭП с CAPEX, ранними общими расходами, Bridge и социалкой. Обязательно использовать, если LLCR любой очереди ниже 1,20.",
+        "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": False
+        },
+        "strict": True,
+    },
+    {
+        "type": "function",
+        "name": "phase_recovery_options",
+        "description": "Построить и реально пересчитать варианты оздоровления слабейшей очереди: перенос только реально переносимых ранних затрат, перенос социалки как условный сценарий, увеличение ТЭП слабой очереди и комбинированные меры. Ранжирует варианты по достижению LLCR>=1,20.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target_llcr": {"type": "number"}
+            },
+            "required": ["target_llcr"],
+            "additionalProperties": False
+        },
+        "strict": True,
+    },
+    {
+        "type": "function",
         "name": "get_methodology",
         "description": "Получить утверждённые методологические правила PLATO. Используй для определений и правил учёта.",
         "parameters": {
@@ -3612,6 +4077,10 @@ def _execute_agent_tool(
         return _tool_simulate_change(req, bundle, args["changes"], args["scope"])
     if name == "find_anomalies":
         return _tool_find_anomalies(req, bundle, args["scope"])
+    if name == "diagnose_project_logic":
+        return _tool_diagnose_project_logic(req, bundle)
+    if name == "phase_recovery_options":
+        return _tool_phase_recovery_options(req, bundle, float(args.get("target_llcr", 1.20) or 1.20))
     if name == "get_methodology":
         return _tool_get_methodology(args["topic"])
     return {"error": f"Unknown tool: {name}"}
@@ -3640,7 +4109,7 @@ def _openai_responses_request(payload: dict[str, Any]) -> dict[str, Any]:
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
-            "User-Agent": "PLATO-Development-Model/0.10.2",
+            "User-Agent": "PLATO-Development-Model/0.11.0",
         },
         method="POST",
     )
@@ -3996,7 +4465,7 @@ tfoot th{border-top:2px solid #111;color:#111;background:#fff}
 <div class="shell">
   <div class="brandbar"><img src="data:image/webp;base64,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"><div class="brandline"></div></div>
   <div class="header">
-    <div class="title"><h1>Девелоперская инвестиционная модель</h1><p>v0.10.2 · ТЭП · экономика · БРИДЖ · проектное финансирование · эскроу · LLCR</p></div>
+    <div class="title"><h1>Девелоперская инвестиционная модель</h1><p>v0.11.0 · ТЭП · экономика · БРИДЖ · проектное финансирование · эскроу · LLCR</p></div>
     <div class="actions">
       <div class="scenario">Класс&nbsp;
         <select id="projectClassSelect" onchange="renderProjectClassPreview()" style="min-width:135px">
@@ -4099,6 +4568,7 @@ tfoot th{border-top:2px solid #111;color:#111;background:#fff}
           <div class="field"><label>Количество очередей</label><select id="phaseCount" onchange="setPhaseCount(Number(this.value))"><option>1</option><option>2</option><option selected>3</option><option>4</option><option>5</option></select></div>
           <div class="field"><label>Целевой размер очереди, продаваемых м²</label><input id="phaseTargetSize" type="number" step="5000" value="70000" onchange="phasing.target_size_sqm=Number(this.value);renderPhasing()"></div>
           <div class="field"><label>Сдвиг старта, мес.</label><input id="phaseGap" type="number" value="12" min="3" max="36" onchange="phasing.phase_gap_months=Number(this.value);autoPhaseDates()"></div>
+          <div class="field"><label>Инфляция себестоимости, % год</label><input id="phaseCostInflation" type="number" value="8" min="0" max="30" step="0.5" onchange="phasing.cost_inflation_pct=Number(this.value);renderPhasing();calculate()"></div>
           <div class="field"><label>Рекомендация</label><div id="phaseRecommendation" style="padding:10px 0;font-weight:700">—</div></div>
         </div>
         <div id="phaseCards" class="phase-grid"></div>
@@ -4348,7 +4818,7 @@ tfoot th{border-top:2px solid #111;color:#111;background:#fff}
         <div class="section-title">Темпы и цены продаж</div>
         <div class="scroll" style="max-height:none">
           <table>
-            <thead><tr><th>Продукт</th><th>Объём</th><th>Темп до РВЭ</th><th>Продажи до РВЭ</th><th>Стартовая цена</th><th>Средняя цена</th><th>Выручка</th><th>Старт продаж</th><th>Финиш продаж</th></tr></thead>
+            <thead id="salesReportHead"><tr><th>Продукт</th><th>Объём</th><th>Темп до РВЭ</th><th>Продажи до РВЭ</th><th>Стартовая цена</th><th>Средняя цена</th><th>Выручка</th><th>Старт продаж</th><th>Финиш продаж</th></tr></thead>
             <tbody id="salesReportTable"></tbody>
           </table>
         </div>
@@ -4382,6 +4852,7 @@ tfoot th{border-top:2px solid #111;color:#111;background:#fff}
     <button class="ai-chip" onclick="askAgentQuick('За сколько максимум можно купить проект, чтобы LLCR оставался не ниже 1,20x? Сделай подбор параметра. Если проект многоочередный — контролируй слабейшую очередь.')">Макс. цена покупки при LLCR 1,20</button>
     <button class="ai-chip" onclick="askAgentQuick('Какая максимальная ставка основного строительства допустима, чтобы LLCR был не ниже 1,20x? Сделай подбор параметра; для многоочередного проекта проверь слабейшую очередь.')">Себестоимость для LLCR 1,20</button>
     <button class="ai-chip" onclick="askAgentQuick('Проверь текущую модель на очевидные аномалии: ТЭП, выручка, CAPEX, маржа, очереди и финансирование. Назови только существенные отклонения.')">Проверить аномалии</button>
+    <button class="ai-chip" onclick="askAgentQuick('Найди слабейшую очередь. Объясни причинно, почему её LLCR ниже целевого, и сам пересчитай реальные варианты оздоровления: перенос допустимых затрат, социалки, увеличение ТЭП. Дай ранжированную рекомендацию до LLCR не ниже 1,20.')">Оздоровить слабую очередь</button>
   </div>
   <div id="aiMessages" class="ai-messages"><div class="ai-msg system">Платон Сергеевич анализирует проект через расчётные инструменты PLATO. Цифры и подбор параметров считает движок модели, а не языковая модель.</div></div>
   <div class="ai-compose">
@@ -4419,7 +4890,7 @@ function frontLoadedPreset(count,kind){
 }
 function makeDefaultPhasing(count=3){
  const w=phaseWeightPreset(count);
- return {enabled:false,phase_count:count,target_size_sqm:70000,phase_gap_months:12,
+ return {enabled:false,phase_count:count,target_size_sqm:70000,phase_gap_months:12,cost_inflation_pct:8,
   phases:Array.from({length:count},(_,i)=>({name:`О${i+1}`,start_offset_months:i*12,construction_months:Number(INPUT_DEFAULT.construction_months||24)})),
   products:{apartments:[...w],ground_commercial:[...w],underground_parking:[...w],storage:[...w]},
   shared_cash:{purchase:frontLoadedPreset(count,'purchase'),land_rights:frontLoadedPreset(count,'land_rights'),ird:frontLoadedPreset(count,'ird'),design:frontLoadedPreset(count,'design'),preparation:frontLoadedPreset(count,'preparation'),utilities:frontLoadedPreset(count,'utilities'),social_compensation:frontLoadedPreset(count,'social_compensation')},
@@ -4506,9 +4977,9 @@ function normalizeSocialObjectDates(){
  });
 }
 function togglePhasing(v){phasing.enabled=!!v;if(v&&!phasing.social_objects.length&&inputs.social_mode==='Строительство')autoSocialObjects(false);normalizeSocialObjectDates();renderInputs();renderPhasing();calculate()}
-function setPhaseCount(count){const e=phasing.enabled,t=phasing.target_size_sqm||70000,g=phasing.phase_gap_months||12;phasing=makeDefaultPhasing(Math.max(1,Math.min(5,count)));phasing.enabled=e;phasing.target_size_sqm=t;phasing.phase_gap_months=g;phasing.phases.forEach((p,i)=>p.start_offset_months=i*g);autoSocialObjects(false);normalizeSocialObjectDates();renderInputs();renderPhasing();calculate()}
+function setPhaseCount(count){const e=phasing.enabled,t=phasing.target_size_sqm||70000,g=phasing.phase_gap_months||12,inf=Number(phasing.cost_inflation_pct??8);phasing=makeDefaultPhasing(Math.max(1,Math.min(5,count)));phasing.enabled=e;phasing.target_size_sqm=t;phasing.phase_gap_months=g;phasing.cost_inflation_pct=inf;phasing.phases.forEach((p,i)=>p.start_offset_months=i*g);autoSocialObjects(false);normalizeSocialObjectDates();renderInputs();renderPhasing();calculate()}
 function autoPhaseDates(){phasing.phases.forEach((p,i)=>p.start_offset_months=i*Number(phasing.phase_gap_months||12));normalizeSocialObjectDates();renderPhasing();calculate()}
-function autoSuggestPhasing(){const c=recommendationCount();phasing=makeDefaultPhasing(c);phasing.enabled=true;phasing.target_size_sqm=Number(document.getElementById('phaseTargetSize')?.value||70000);phasing.phase_gap_months=Number(document.getElementById('phaseGap')?.value||12);phasing.phases.forEach((p,i)=>p.start_offset_months=i*phasing.phase_gap_months);autoSocialObjects(false);renderPhasing()}
+function autoSuggestPhasing(){const c=recommendationCount(),inf=Number(phasing.cost_inflation_pct??8);phasing=makeDefaultPhasing(c);phasing.enabled=true;phasing.cost_inflation_pct=inf;phasing.target_size_sqm=Number(document.getElementById('phaseTargetSize')?.value||70000);phasing.phase_gap_months=Number(document.getElementById('phaseGap')?.value||12);phasing.phases.forEach((p,i)=>p.start_offset_months=i*phasing.phase_gap_months);autoSocialObjects(false);renderPhasing()}
 function setPhaseProductShare(k,i,v){phasing.products[k][i]=Number(v||0);renderPhasingStatus()}
 function setSharedShare(bucket,k,i,v){phasing[bucket][k][i]=Number(v||0)}
 function splitCapacity(total,typical){let t=Math.max(0,Number(total||0)),out=[];typical=Math.max(1,Number(typical||1));while(t>0){const v=Math.min(typical,t);out.push(v);t-=v}return out}
@@ -4545,9 +5016,9 @@ function renderShareTable(h,b,data,labels,bucket){
 function renderPhasing(){
  if(!document.getElementById('phasingEnabled'))return;
  normalizeSocialObjectDates();
- phasingEnabled.checked=!!phasing.enabled;phaseCount.value=String(phasing.phase_count);phaseTargetSize.value=Number(phasing.target_size_sqm||70000);phaseGap.value=Number(phasing.phase_gap_months||12);
+ phasingEnabled.checked=!!phasing.enabled;phaseCount.value=String(phasing.phase_count);phaseTargetSize.value=Number(phasing.target_size_sqm||70000);phaseGap.value=Number(phasing.phase_gap_months||12);if(document.getElementById('phaseCostInflation'))phaseCostInflation.value=Number(phasing.cost_inflation_pct??8);
  phaseRecommendation.textContent=`${recommendationCount()} очеред. при ${num(currentMonetizableSaleable())} м²`;
- phaseCards.innerHTML=phasing.phases.map((p,i)=>`<div class="phase-card"><h3>${p.name}</h3><div class="field"><label>Название</label><input value="${p.name}" onchange="phasing.phases[${i}].name=this.value;renderPhasing()"></div><div class="field"><label>Сдвиг старта, мес.</label><input type="number" value="${p.start_offset_months}" onchange="phasing.phases[${i}].start_offset_months=Number(this.value);normalizeSocialObjectDates();renderPhasing();calculate()"></div><div class="field"><label>Строительство, мес.</label><input type="number" value="${p.construction_months}" onchange="phasing.phases[${i}].construction_months=Number(this.value);calculate()"></div><div style="font-size:11px;color:#777;margin-top:8px">Старт: ${dateRu(addMonthsJS(inputs.project_start,p.start_offset_months))}</div></div>`).join('');
+ phaseCards.innerHTML=phasing.phases.map((p,i)=>{const f=Math.pow(1+Number(phasing.cost_inflation_pct??8)/100,Number(p.start_offset_months||0)/12);return `<div class="phase-card"><h3>${p.name}</h3><div class="field"><label>Название</label><input value="${p.name}" onchange="phasing.phases[${i}].name=this.value;renderPhasing()"></div><div class="field"><label>Сдвиг старта, мес.</label><input type="number" value="${p.start_offset_months}" onchange="phasing.phases[${i}].start_offset_months=Number(this.value);normalizeSocialObjectDates();renderPhasing();calculate()"></div><div class="field"><label>Строительство, мес.</label><input type="number" value="${p.construction_months}" onchange="phasing.phases[${i}].construction_months=Number(this.value);calculate()"></div><div style="font-size:11px;color:#777;margin-top:8px">Старт: ${dateRu(addMonthsJS(inputs.project_start,p.start_offset_months))}<br>Индекс затрат: ×${f.toFixed(3)}</div></div>`}).join('');
  const pl={apartments:'Квартиры',ground_commercial:'Коммерция 1 этажа',underground_parking:'Подземный паркинг',storage:'Кладовые'};
  phaseProductHead.innerHTML=`<tr><th>Продукт</th>${phasing.phases.map(p=>`<th>${p.name}</th>`).join('')}<th>Итого</th></tr>`;
  phaseProductBody.innerHTML=Object.entries(phasing.products).map(([k,a])=>{const s=a.reduce((x,y)=>x+Number(y||0),0);return `<tr><td>${pl[k]}</td>${a.map((v,i)=>`<td><input type="number" step="1" value="${Number(v).toFixed(1)}" onchange="setPhaseProductShare('${k}',${i},this.value)"></td>`).join('')}<td class="${Math.abs(s-100)<.1?'phase-total-ok':'phase-total-bad'}">${s.toFixed(1)}%</td></tr>`}).join('');renderPhasingStatus();
@@ -4656,6 +5127,7 @@ function applyServerPresetProjectConfig(presetId){
    phasing.enabled=true;
    phasing.phase_count=3;
    phasing.phase_gap_months=12;
+   phasing.cost_inflation_pct=8;
    phasing.products.apartments=[40,32,28];
    phasing.products.ground_commercial=[40,32,28];
    phasing.products.underground_parking=[40,32,28];
@@ -5314,17 +5786,29 @@ function renderResult(){
   row('Проценты и комиссии',money(r.report.financing.interest_and_fees))+
   row('LLCR',mult(r.summary.llcr));
 
- salesReportTable.innerHTML=(r.report.products||[]).map(p=>`<tr>
-  <td>${p.label}</td>
-  <td>${num(p.quantity)} ${p.unit}</td>
-  <td>${num(p.pace_pre)} ${p.unit}/мес</td>
-  <td>${pct(p.share_before_rve)}</td>
-  <td>${th(p.start_price_th)}</td>
-  <td>${th(p.avg_price_th)}</td>
-  <td>${money(p.revenue)}</td>
-  <td>${dateRu(p.sales_start)}</td>
-  <td>${dateRu(p.sales_end)}</td>
- </tr>`).join('');
+ if(phaseBundle&&phaseBundle.mode==='phased'&&reportView==='all'&&Array.isArray(r.report.phase_products)){
+   const phaseNames=(phaseBundle.phases||[]).map(x=>x.name);
+   salesReportHead.innerHTML=`<tr><th>Продукт</th><th>Всего</th>${phaseNames.map(n=>`<th>${n}: объём</th><th>${n}: темп до своего РВЭ</th>`).join('')}<th>Средняя цена</th><th>Выручка</th></tr>`;
+   salesReportTable.innerHTML=(r.report.phase_products||[]).map(p=>{
+     const by=Object.fromEntries((p.phases||[]).map(x=>[x.phase,x]));
+     return `<tr><td>${p.label}</td><td>${num(p.quantity)} ${p.unit}</td>`+
+       phaseNames.map(n=>{const x=by[n]||{};return `<td>${num(x.quantity||0)} ${p.unit}</td><td>${num(x.pace_pre||0)} ${p.unit}/мес<br><span style="font-size:10px;color:#888">до ${dateRu(x.rve)}</span></td>`}).join('')+
+       `<td>${th(p.avg_price_th)}</td><td>${money(p.revenue)}</td></tr>`;
+   }).join('');
+ }else{
+   salesReportHead.innerHTML='<tr><th>Продукт</th><th>Объём</th><th>Темп до РВЭ</th><th>Продажи до РВЭ</th><th>Стартовая цена</th><th>Средняя цена</th><th>Выручка</th><th>Старт продаж</th><th>Финиш продаж</th></tr>';
+   salesReportTable.innerHTML=(r.report.products||[]).map(p=>`<tr>
+    <td>${p.label}</td>
+    <td>${num(p.quantity)} ${p.unit}</td>
+    <td>${num(p.pace_pre)} ${p.unit}/мес</td>
+    <td>${pct(p.share_before_rve)}</td>
+    <td>${th(p.start_price_th)}</td>
+    <td>${th(p.avg_price_th)}</td>
+    <td>${money(p.revenue)}</td>
+    <td>${dateRu(p.sales_start)}</td>
+    <td>${dateRu(p.sales_end)}</td>
+   </tr>`).join('');
+ }
 
  calendarDateBoxes.innerHTML=[
   ['Начало',r.dates.project_start],
