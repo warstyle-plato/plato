@@ -3,6 +3,9 @@ from __future__ import annotations
 
 import calendar
 import copy
+import json
+import os
+import time
 import io
 import re
 import zipfile
@@ -18,7 +21,7 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-app = FastAPI(title="PLATO Development Investment Model", version="0.8.5")
+app = FastAPI(title="PLATO Development Investment Model", version="0.9.1")
 
 SCENARIOS = {
     'conservative': {'scenario_revenue_multiplier': 0.90, 'scenario_cost_multiplier': 1.10},
@@ -71,6 +74,16 @@ class PhasedCalcRequest(BaseModel):
     tep: dict[str, dict[str, Any]]
     rates: list[dict[str, Any]] = []
     phasing: dict[str, Any] = {}
+
+
+class AgentChatRequest(BaseModel):
+    message: str
+    inputs: dict[str, Any]
+    tep: dict[str, dict[str, Any]]
+    rates: list[dict[str, Any]] = []
+    phasing: dict[str, Any] = {}
+    history: list[dict[str, Any]] = []
+    selected_view: str = "all"
 
 
 
@@ -2413,6 +2426,491 @@ def calculate_phased_api(req: PhasedCalcRequest) -> dict[str, Any]:
     return calculate_phased(req)
 
 
+
+# ---------------------------------------------------------------------------
+# PLATO AI ANALYST — read-only
+# ---------------------------------------------------------------------------
+_AGENT_RATE_BUCKET: dict[str, list[float]] = defaultdict(list)
+_AGENT_GLOBAL_BUCKET: list[float] = []
+_AGENT_IP_LIMIT_PER_HOUR = 30
+_AGENT_GLOBAL_LIMIT_PER_HOUR = 300
+_AGENT_BANK_LLCR_TARGET = 1.20
+
+_AGENT_INSTRUCTIONS = """
+Ты — Платон Сергеевич Федоскин, AI-консультант PLATO по финансовой модели девелоперского проекта.
+Отвечай по-русски как опытный директор по инвестициям / проектному финансированию девелопера.
+
+ПРАВИЛА:
+1. Все конкретные цифры бери только из CURRENT_MODEL_STATE и DETERMINISTIC_DIAGNOSTICS. Не выдумывай.
+2. Проверяй здравый смысл цифр. Если видишь аномалию — прямо укажи её.
+3. На вопрос «откуда цифра» раскладывай показатель на составляющие и базу расчёта.
+4. В расходах различай CAPEX, маркетинг/продажи, проценты/комиссии, налог, полные расходы,
+   себестоимость на м² продаваемой площади и строительную себестоимость на м² ГНС.
+5. По LLCR сначала назови текущий показатель, затем числитель и знаменатель по текущей методике PLATO,
+   после чего объясни основные драйверы. Для нескольких очередей отдельно анализируй слабейшую.
+6. Ориентир LLCR 1,20x — заданный пользователем банковский целевой уровень, а не универсальный норматив всех банков.
+7. На вопрос о себестоимости для LLCR 1,20 используй ТОЛЬКО DETERMINISTIC_DIAGNOSTICS.llcr_cost_threshold.
+   Это численный пересчёт модели. Поясняй, что пропорционально менялись базовые ставки основного строительства
+   надземной и подземной части, остальные параметры фиксировались.
+8. В многоочередном проекте различай сводный LLCR и bank-safe критерий: минимум 1,20x у слабейшей очереди.
+9. Не обещай одобрение банка: конкретная банковская методика CFADS/LLCR может отличаться.
+10. Ты аналитик read-only. Не говори, что изменил модель.
+11. Структура ответа: сначала вывод, потом 3–7 ключевых расчётов/причин. Пиши предметно, без лишней воды.
+12. Твоё имя — Платон Сергеевич Федоскин. Не злоупотребляй представлением по имени в каждом ответе; используй его естественно только когда это уместно.
+""".strip()
+
+
+def _agent_client_id(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()[:80]
+    if request.client:
+        return str(request.client.host)[:80]
+    return "unknown"
+
+
+def _agent_rate_limit(request: Request) -> None:
+    now = time.time()
+    cutoff = now - 3600
+    client_id = _agent_client_id(request)
+    global _AGENT_GLOBAL_BUCKET
+    _AGENT_GLOBAL_BUCKET = [t for t in _AGENT_GLOBAL_BUCKET if t >= cutoff]
+    bucket = [t for t in _AGENT_RATE_BUCKET.get(client_id, []) if t >= cutoff]
+    if len(bucket) >= _AGENT_IP_LIMIT_PER_HOUR:
+        raise HTTPException(status_code=429, detail="Лимит AI-запросов исчерпан. Попробуйте позже.")
+    if len(_AGENT_GLOBAL_BUCKET) >= _AGENT_GLOBAL_LIMIT_PER_HOUR:
+        raise HTTPException(status_code=429, detail="Общий лимит AI-запросов временно исчерпан.")
+    bucket.append(now)
+    _AGENT_RATE_BUCKET[client_id] = bucket
+    _AGENT_GLOBAL_BUCKET.append(now)
+
+
+def _run_authoritative_model(
+    inputs: dict[str, Any],
+    tep: dict[str, dict[str, Any]],
+    rates: list[dict[str, Any]],
+    phasing: dict[str, Any],
+) -> dict[str, Any]:
+    x = copy.deepcopy(inputs)
+    t = copy.deepcopy(tep)
+    rr = copy.deepcopy(rates)
+    p = copy.deepcopy(phasing or {})
+    if p.get("enabled") and int(p.get("phase_count") or 1) > 1:
+        return calculate_phased(PhasedCalcRequest(inputs=x, tep=t, rates=rr, phasing=p))
+    single = calculate(CalcRequest(inputs=x, tep=t, rates=rr))
+    return {"mode": "single", "consolidated": single, "phases": [], "comparison": []}
+
+
+def _selected_result(bundle: dict[str, Any], selected_view: str) -> tuple[str, dict[str, Any]]:
+    view = str(selected_view or "all")
+    if bundle.get("mode") == "phased" and view.startswith("phase"):
+        try:
+            idx = int(view.replace("phase", "")) - 1
+            item = bundle.get("phases", [])[idx]
+            return item.get("name", f"О{idx+1}"), item["result"]
+        except Exception:
+            pass
+    return "Весь проект", bundle["consolidated"]
+
+
+def _compact_finance_rows(result: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = (result.get("finance") or {}).get("rows") or []
+    if not rows:
+        return []
+    scored = sorted(
+        rows,
+        key=lambda r: float(r.get("bridge_balance", 0) or 0) + float(r.get("pf_balance", 0) or 0),
+        reverse=True,
+    )[:6]
+    return [
+        {
+            "month": r.get("month"),
+            "bridge_balance_mln": round(float(r.get("bridge_balance", 0) or 0) / 1e6, 2),
+            "pf_balance_mln": round(float(r.get("pf_balance", 0) or 0) / 1e6, 2),
+            "escrow_mln": round(float(r.get("escrow", 0) or 0) / 1e6, 2),
+            "coverage_x": round(float(r.get("coverage", 0) or 0), 3),
+            "pf_rate_pct": round(float(r.get("pf_rate", 0) or 0) * 100, 3),
+            "key_rate_pct": round(float(r.get("key_rate", 0) or 0) * 100, 3),
+        }
+        for r in sorted(scored, key=lambda x: x.get("month", ""))
+    ]
+
+
+def _compact_result_for_agent(result: dict[str, Any]) -> dict[str, Any]:
+    s = result.get("summary") or {}
+    f = result.get("finance") or {}
+    report = result.get("report") or {}
+    return {
+        "dates": result.get("dates"),
+        "summary": {
+            "revenue_mln": round(float(s.get("revenue", 0) or 0) / 1e6, 2),
+            "capex_mln": round(float(s.get("capex", 0) or 0) / 1e6, 2),
+            "commercial_costs_mln": round(float(s.get("commercial_costs", 0) or 0) / 1e6, 2),
+            "ebitda_mln": round(float(s.get("ebitda", 0) or 0) / 1e6, 2),
+            "financing_cost_mln": round(float(s.get("financing_cost", 0) or 0) / 1e6, 2),
+            "profit_tax_mln": round(float(s.get("profit_tax", 0) or 0) / 1e6, 2),
+            "net_profit_mln": round(float(s.get("net_profit", 0) or 0) / 1e6, 2),
+            "margin_pct": round(float(s.get("margin", 0) or 0) * 100, 3),
+            "llcr_x": round(float(s.get("llcr", 0) or 0), 4),
+            "npv_mln": round(float(s.get("npv", 0) or 0) / 1e6, 2),
+            "irr_equity_pct": round(float(s["irr_equity"]) * 100, 3) if s.get("irr_equity") is not None else None,
+            "monetizable_saleable_sqm": round(float(s.get("monetizable_saleable_sqm", 0) or 0), 2),
+            "apartment_saleable_sqm": round(float(s.get("apartment_saleable_sqm", 0) or 0), 2),
+            "project_gns_sqm": round(float(s.get("project_gns_sqm", 0) or 0), 2),
+            "average_apartment_price_th_per_sqm": round(float(s.get("average_apartment_price_th", 0) or 0), 2),
+            "full_cost_per_saleable_th_per_sqm": round(float(s.get("full_cost_per_saleable_th", 0) or 0), 2),
+            "construction_cost_per_gns_th_per_sqm": round(float(s.get("construction_cost_per_gns_th", 0) or 0), 2),
+            "social_payment_mln": round(float(s.get("social_payment", 0) or 0) / 1e6, 2),
+            "phase_count": s.get("phase_count"),
+            "min_phase_llcr_x": round(float(s.get("min_phase_llcr", 0) or 0), 4) if s.get("min_phase_llcr") is not None else None,
+        },
+        "llcr": {
+            "numerator_mln": round(float(f.get("llcr_numerator", 0) or 0) / 1e6, 2),
+            "denominator_mln": round(float(f.get("llcr_denominator", 0) or 0) / 1e6, 2),
+            "total_revenue_mln": round(float(f.get("total_revenue", 0) or 0) / 1e6, 2),
+            "total_capex_mln": round(float(f.get("total_capex", 0) or 0) / 1e6, 2),
+            "commercial_costs_mln": round(float(f.get("commercial_costs", 0) or 0) / 1e6, 2),
+            "profit_tax_mln": round(float(f.get("profit_tax", 0) or 0) / 1e6, 2),
+            "pf_draw_total_mln": round(float(f.get("pf_draw_total", 0) or 0) / 1e6, 2),
+            "interest_and_fees_mln": round(float(f.get("reported_interest_and_fees", 0) or 0) / 1e6, 2),
+            "transferred_bridge_interest_mln": round(float(f.get("transferred_bridge_interest", 0) or 0) / 1e6, 2),
+        },
+        "financing": {
+            "peak_bridge_mln": round(float(f.get("peak_bridge", 0) or 0) / 1e6, 2),
+            "peak_pf_mln": round(float(f.get("peak_pf", 0) or 0) / 1e6, 2),
+            "peak_total_debt_mln": round(float(f.get("peak_total_debt", 0) or 0) / 1e6, 2) if f.get("peak_total_debt") is not None else None,
+            "pf_limit_mln": round(float(f.get("pf_limit", 0) or 0) / 1e6, 2),
+            "avg_bridge_rate_pct": round(float(f.get("avg_bridge_rate", 0) or 0) * 100, 3),
+            "avg_pf_base_rate_pct": round(float(f.get("avg_pf_base_rate", 0) or 0) * 100, 3),
+            "avg_pf_effective_rate_pct": round(float(f.get("avg_pf_effective_rate", 0) or 0) * 100, 3),
+            "avg_pf_key_rate_pct": round(float(f.get("avg_pf_key_rate", 0) or 0) * 100, 3),
+            "pf_special_rate_pct": round(float(f.get("pf_special_rate", 0) or 0) * 100, 3),
+            "financing_cost_mln": round(float(f.get("financing_cost", 0) or 0) / 1e6, 2),
+        },
+        "expense_structure": [
+            {
+                "label": item.get("label"),
+                "value_mln": round(float(item.get("value", 0) or 0) / 1e6, 2),
+                "share_pct": round(float(item.get("share", 0) or 0) * 100, 2),
+            }
+            for item in (report.get("expense_structure") or [])
+        ],
+        "products": [
+            {
+                "key": p.get("key"), "label": p.get("label"),
+                "quantity": round(float(p.get("quantity", 0) or 0), 2),
+                "unit": p.get("unit"),
+                "start_price_th": round(float(p.get("start_price_th", 0) or 0), 2),
+                "avg_price_th": round(float(p.get("avg_price_th", 0) or 0), 2),
+                "revenue_mln": round(float(p.get("revenue", 0) or 0) / 1e6, 2),
+                "sales_start": p.get("sales_start"), "sales_end": p.get("sales_end"),
+            }
+            for p in (report.get("products") or [])
+        ],
+        "tep": [
+            {
+                "key": row.get("key"), "label": row.get("label"),
+                "gns": round(float(row.get("gns", 0) or 0), 2),
+                "saleable": round(float(row.get("saleable", 0) or 0), 2),
+                "units": round(float(row.get("units", 0) or 0), 2),
+            }
+            for row in ((result.get("tep") or {}).get("rows") or [])
+        ],
+        "peak_debt_months": _compact_finance_rows(result),
+    }
+
+
+def _phase_comparison_for_agent(bundle: dict[str, Any]) -> list[dict[str, Any]]:
+    if bundle.get("mode") != "phased":
+        return []
+    return [
+        {
+            "name": item.get("name"),
+            "saleable_sqm": round(float(item.get("saleable_sqm", 0) or 0), 2),
+            "revenue_mln": round(float(item.get("revenue", 0) or 0) / 1e6, 2),
+            "capex_mln": round(float(item.get("capex", 0) or 0) / 1e6, 2),
+            "cash_shared_cost_mln": round(float(item.get("cash_shared_cost", 0) or 0) / 1e6, 2),
+            "allocated_shared_cost_mln": round(float(item.get("allocated_shared_cost", 0) or 0) / 1e6, 2),
+            "peak_bridge_mln": round(float(item.get("peak_bridge", 0) or 0) / 1e6, 2),
+            "peak_pf_mln": round(float(item.get("peak_pf", 0) or 0) / 1e6, 2),
+            "llcr_x": round(float(item.get("llcr", 0) or 0), 4),
+            "net_profit_mln": round(float(item.get("net_profit", 0) or 0) / 1e6, 2),
+            "margin_pct": round(float(item.get("margin", 0) or 0) * 100, 3),
+        }
+        for item in (bundle.get("comparison") or [])
+    ]
+
+
+def _llcr_metric(bundle: dict[str, Any], selected_view: str, weakest_phase: bool = False) -> float:
+    if weakest_phase and bundle.get("mode") == "phased":
+        vals = [float(x["result"]["summary"].get("llcr", 0) or 0) for x in bundle.get("phases") or []]
+        return min(vals) if vals else 0.0
+    _, result = _selected_result(bundle, selected_view)
+    return float(result["summary"].get("llcr", 0) or 0)
+
+
+def _construction_cost_threshold(
+    inputs: dict[str, Any], tep: dict[str, dict[str, Any]], rates: list[dict[str, Any]],
+    phasing: dict[str, Any], selected_view: str, target: float, weakest_phase: bool = False,
+) -> dict[str, Any]:
+    current_above = n(inputs, "main_above_th_per_sqm")
+    current_under = n(inputs, "main_under_th_per_sqm")
+    if current_above <= 0 and current_under <= 0:
+        return {"available": False, "reason": "Не заданы ставки основного строительства."}
+
+    cache: dict[float, tuple[float, dict[str, Any]]] = {}
+
+    def evaluate(multiplier: float) -> tuple[float, dict[str, Any]]:
+        key = round(multiplier, 8)
+        if key in cache:
+            return cache[key]
+        x = copy.deepcopy(inputs)
+        x["main_above_th_per_sqm"] = current_above * multiplier
+        x["main_under_th_per_sqm"] = current_under * multiplier
+        bundle = _run_authoritative_model(x, tep, rates, phasing)
+        metric = _llcr_metric(bundle, selected_view, weakest_phase)
+        cache[key] = (metric, bundle)
+        return metric, bundle
+
+    current_bundle = _run_authoritative_model(inputs, tep, rates, phasing)
+    current_metric = _llcr_metric(current_bundle, selected_view, weakest_phase)
+
+    lo, hi = 0.05, 3.00
+    lo_metric, _ = evaluate(lo)
+    hi_metric, _ = evaluate(hi)
+
+    if lo_metric < target:
+        return {
+            "available": False,
+            "reason": "Даже при снижении ставок основного строительства на 95% цель не достигается: ограничение не только в строительной себестоимости.",
+            "current_llcr_x": round(current_metric, 4), "target_llcr_x": target,
+        }
+    if hi_metric >= target:
+        return {
+            "available": True, "threshold_beyond_search": True,
+            "reason": "Даже при трёхкратном росте ставок основного строительства LLCR остаётся не ниже цели.",
+            "current_llcr_x": round(current_metric, 4), "target_llcr_x": target,
+        }
+
+    for _ in range(14):
+        mid = (lo + hi) / 2
+        metric, _ = evaluate(mid)
+        if metric >= target:
+            lo = mid
+        else:
+            hi = mid
+
+    threshold = lo
+    threshold_metric, threshold_bundle = evaluate(threshold)
+
+    if weakest_phase and threshold_bundle.get("mode") == "phased":
+        threshold_result = min(
+            (item["result"] for item in threshold_bundle.get("phases") or []),
+            key=lambda r: float(r["summary"].get("llcr", 0) or 0),
+        )
+    else:
+        _, threshold_result = _selected_result(threshold_bundle, selected_view)
+
+    return {
+        "available": True,
+        "target_llcr_x": target,
+        "current_llcr_x": round(current_metric, 4),
+        "threshold_llcr_x": round(threshold_metric, 4),
+        "cost_multiplier": round(threshold, 4),
+        "change_vs_current_pct": round((threshold - 1) * 100, 2),
+        "current_main_above_th_per_sqm": round(current_above, 2),
+        "current_main_under_th_per_sqm": round(current_under, 2),
+        "threshold_main_above_th_per_sqm": round(current_above * threshold, 2),
+        "threshold_main_under_th_per_sqm": round(current_under * threshold, 2),
+        "threshold_construction_cost_per_gns_th_per_sqm": round(
+            float(threshold_result["summary"].get("construction_cost_per_gns_th", 0) or 0), 2
+        ),
+        "threshold_full_cost_per_saleable_th_per_sqm": round(
+            float(threshold_result["summary"].get("full_cost_per_saleable_th", 0) or 0), 2
+        ),
+        "scope": "minimum_phase_llcr" if weakest_phase else str(selected_view or "all"),
+        "method": "Пропорционально изменены ставки main_above и main_under; остальные вводные сохранены.",
+    }
+
+
+def _agent_diagnostics(req: AgentChatRequest, bundle: dict[str, Any]) -> dict[str, Any]:
+    selected_label, selected = _selected_result(bundle, req.selected_view)
+    diagnostics: dict[str, Any] = {
+        "bank_target_llcr_x": _AGENT_BANK_LLCR_TARGET,
+        "selected_view": selected_label,
+        "current_selected_llcr_x": round(float(selected["summary"].get("llcr", 0) or 0), 4),
+        "current_consolidated_llcr_x": round(float(bundle["consolidated"]["summary"].get("llcr", 0) or 0), 4),
+    }
+    if bundle.get("mode") == "phased":
+        phase_llcr = [
+            {"name": p.get("name"), "llcr_x": round(float(p["result"]["summary"].get("llcr", 0) or 0), 4)}
+            for p in bundle.get("phases") or []
+        ]
+        diagnostics["phase_llcr"] = phase_llcr
+        diagnostics["minimum_phase_llcr_x"] = min((p["llcr_x"] for p in phase_llcr), default=0.0)
+
+    combined = " ".join(
+        [str(req.message or "")] + [str(h.get("content", "")) for h in (req.history or [])[-4:]]
+    ).lower()
+    need_solver = any(token in combined for token in (
+        "llcr", "ллкр", "1,20", "1.20", "себестоим", "банк", "банков", "норматив"
+    ))
+    if need_solver:
+        diagnostics["llcr_cost_threshold"] = {
+            "selected_view": _construction_cost_threshold(
+                req.inputs, req.tep, req.rates, req.phasing, req.selected_view,
+                _AGENT_BANK_LLCR_TARGET, False,
+            )
+        }
+        if bundle.get("mode") == "phased":
+            diagnostics["llcr_cost_threshold"]["bank_safe_weakest_phase"] = _construction_cost_threshold(
+                req.inputs, req.tep, req.rates, req.phasing, "all",
+                _AGENT_BANK_LLCR_TARGET, True,
+            )
+    return diagnostics
+
+
+def _build_agent_state(req: AgentChatRequest, bundle: dict[str, Any]) -> dict[str, Any]:
+    selected_label, selected = _selected_result(bundle, req.selected_view)
+    imported = ((req.inputs.get("_glavapu_import") or {}).get("normalized") or {})
+    imported_compact = {
+        k: imported.get(k) for k in (
+            "site_area_ha", "spp_total_sqm", "spp_residential_sqm", "spp_nonresidential_sqm",
+            "np_total_sqm", "np_residential_sqm", "np_nonresidential_sqm",
+            "apartment_saleable_sqm", "parking_permanent", "parking_guest",
+            "change_vri_mln", "social_compensation_mln",
+            "required_kindergarten_places", "required_school_places", "required_clinic_capacity",
+        ) if k in imported
+    }
+    return {
+        "project_mode": bundle.get("mode"),
+        "selected_view": selected_label,
+        "selected_result": _compact_result_for_agent(selected),
+        "consolidated_result": _compact_result_for_agent(bundle["consolidated"]) if selected is not bundle["consolidated"] else None,
+        "phase_comparison": _phase_comparison_for_agent(bundle),
+        "master_inputs": {
+            k: req.inputs.get(k) for k in (
+                "project_class", "project_start", "construction_months", "ird_months",
+                "apartment_price_th", "commercial_price_th", "parking_price_th",
+                "monthly_growth_pre_pct", "share_before_rve_pct",
+                "main_above_th_per_sqm", "main_under_th_per_sqm",
+                "ird_th_per_sqm", "design_p_th_per_sqm", "design_rd_th_per_sqm",
+                "preparation_th_per_sqm", "utilities_th_per_sqm", "landscaping_th_per_sqm",
+                "commissioning_th_per_sqm", "site_maintenance_th_per_sqm",
+                "gc_fee_pct", "project_management_pct", "technical_supervision_pct", "reserve_pct",
+                "marketing_pct", "selling_pct", "profit_tax_pct",
+                "bridge_spread_pp", "pf_spread_pp", "pf_special_pct",
+                "social_mode", "social_compensation_mln",
+            )
+        },
+        "master_tep": [
+            {
+                "key": key, "label": row.get("label", key),
+                "gns": round(n(row, "gns"), 2), "total_area": round(n(row, "total_area"), 2),
+                "saleable": round(n(row, "saleable"), 2), "units": round(n(row, "units"), 2),
+            }
+            for key, row in req.tep.items()
+        ],
+        "phasing": req.phasing if req.phasing.get("enabled") else {"enabled": False},
+        "glavapu_source": imported_compact or None,
+    }
+
+
+def _extract_openai_text(data: dict[str, Any]) -> str:
+    if isinstance(data.get("output_text"), str) and data["output_text"].strip():
+        return data["output_text"].strip()
+    pieces: list[str] = []
+    for item in data.get("output") or []:
+        if item.get("type") != "message":
+            continue
+        for content in item.get("content") or []:
+            if content.get("type") in ("output_text", "text") and content.get("text"):
+                pieces.append(str(content["text"]))
+    return "\n".join(pieces).strip()
+
+
+def _call_openai_agent(prompt: str) -> dict[str, Any]:
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        raise HTTPException(status_code=503, detail="OPENAI_API_KEY не настроен на сервере.")
+    model = os.getenv("OPENAI_AGENT_MODEL", "gpt-5.6").strip() or "gpt-5.6"
+    payload = {
+        "model": model,
+        "instructions": _AGENT_INSTRUCTIONS,
+        "input": prompt,
+        "max_output_tokens": 2200,
+        "store": False,
+    }
+    request = urllib.request.Request(
+        "https://api.openai.com/v1/responses",
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "User-Agent": "PLATO-Development-Model/0.9.1",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=90) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        try:
+            detail = json.loads(exc.read().decode("utf-8"))
+            message = ((detail.get("error") or {}).get("message") or str(detail))
+        except Exception:
+            message = str(exc)
+        raise HTTPException(status_code=502, detail=f"OpenAI API: {message[:500]}")
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Не удалось обратиться к OpenAI API: {str(exc)[:300]}")
+    answer = _extract_openai_text(data)
+    if not answer:
+        raise HTTPException(status_code=502, detail="OpenAI API не вернул текстовый ответ.")
+    return {"answer": answer, "model": model, "response_id": data.get("id")}
+
+
+@app.get("/agent/status")
+def agent_status() -> dict[str, Any]:
+    return {
+        "enabled": bool(os.getenv("OPENAI_API_KEY", "").strip()),
+        "model": os.getenv("OPENAI_AGENT_MODEL", "gpt-5.6"),
+        "agent_name": "Платон Сергеевич Федоскин",
+        "mode": "read_only_analyst",
+        "bank_llcr_target": _AGENT_BANK_LLCR_TARGET,
+    }
+
+
+@app.post("/agent/chat")
+def agent_chat(req: AgentChatRequest, request: Request) -> dict[str, Any]:
+    _agent_rate_limit(request)
+    message = str(req.message or "").strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="Введите вопрос.")
+    if len(message) > 4000:
+        raise HTTPException(status_code=400, detail="Вопрос слишком длинный.")
+
+    bundle = _run_authoritative_model(req.inputs, req.tep, req.rates, req.phasing)
+    state = _build_agent_state(req, bundle)
+    diagnostics = _agent_diagnostics(req, bundle)
+    history = [
+        {"role": str(item.get("role")), "content": str(item.get("content", ""))[:4000]}
+        for item in (req.history or [])[-8:]
+        if str(item.get("role")) in ("user", "assistant") and str(item.get("content", "")).strip()
+    ]
+    prompt = (
+        "CURRENT_MODEL_STATE:\n" + json.dumps(state, ensure_ascii=False, separators=(",", ":"))
+        + "\n\nDETERMINISTIC_DIAGNOSTICS:\n" + json.dumps(diagnostics, ensure_ascii=False, separators=(",", ":"))
+        + "\n\nRECENT_DIALOGUE:\n" + json.dumps(history, ensure_ascii=False, separators=(",", ":"))
+        + "\n\nUSER_QUESTION:\n" + message
+    )
+    result = _call_openai_agent(prompt)
+    result["diagnostics"] = {
+        "bank_llcr_target": _AGENT_BANK_LLCR_TARGET,
+        "selected_view": diagnostics.get("selected_view"),
+    }
+    return result
+
+
 @app.get("/current-key-rate")
 def current_key_rate() -> dict[str, Any]:
     return fetch_current_cbr_key_rate()
@@ -2622,13 +3120,22 @@ tfoot th{border-top:2px solid #111;color:#111;background:#fff}
 .object-actions{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
 @media(max-width:900px){.phase-grid{grid-template-columns:1fr 1fr}}
 @media(max-width:600px){.phase-grid{grid-template-columns:1fr}}
+
+.ai-open-btn{display:inline-flex;align-items:center;gap:7px}.ai-dot{width:7px;height:7px;border-radius:50%;background:#999;display:inline-block}.ai-dot.ready{background:#1f7a3d}
+.ai-drawer{position:fixed;top:0;right:0;width:min(520px,96vw);height:100vh;background:#fff;border-left:1px solid #ccc;box-shadow:-12px 0 38px rgba(0,0,0,.12);z-index:1000;display:flex;flex-direction:column;transform:translateX(102%);transition:transform .18s ease}.ai-drawer.open{transform:translateX(0)}
+.ai-head{padding:18px 20px 14px;border-bottom:1px solid #ddd;display:flex;align-items:flex-start;justify-content:space-between;gap:14px}.ai-head h2{margin:0;font-size:19px}.ai-head p{margin:5px 0 0;color:#777;font-size:11px;line-height:1.45}.ai-close{border:0;background:none;font-size:25px;cursor:pointer;line-height:1}
+.ai-quick{padding:12px 16px;border-bottom:1px solid #eee;display:flex;gap:7px;flex-wrap:wrap}.ai-chip{border:1px solid #bbb;background:#fff;padding:7px 9px;font-size:11px;cursor:pointer}.ai-chip:hover{background:#f5f5f3}
+.ai-messages{flex:1;overflow:auto;padding:18px;background:#fafaf8}.ai-msg{max-width:92%;margin:0 0 14px;padding:12px 14px;font-size:13px;line-height:1.55;white-space:pre-wrap;border:1px solid #ddd;background:#fff}.ai-msg.user{margin-left:auto;background:#111;color:#fff;border-color:#111}.ai-msg.system{color:#777;font-size:11px;background:transparent;border:0;padding:0;max-width:100%}.ai-msg.error{border-color:#b33;color:#8c1d1d;background:#fff7f7}
+.ai-compose{border-top:1px solid #ddd;padding:12px;background:#fff}.ai-compose textarea{width:100%;min-height:84px;max-height:180px;resize:vertical;border:1px solid #bbb;padding:11px;font:inherit;box-sizing:border-box}.ai-compose-row{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:8px}.ai-compose small{color:#888;font-size:10px;line-height:1.35}.ai-thinking{display:inline-block;color:#777;font-size:12px;padding:8px 0}
+.ai-overlay{position:fixed;inset:0;background:rgba(0,0,0,.18);z-index:999;display:none}.ai-overlay.open{display:block}
+@media(max-width:700px){.ai-drawer{width:100vw}.ai-open-btn .ai-label{display:none}}
 </style>
 </head>
 <body>
 <div class="shell">
   <div class="brandbar"><img src="data:image/webp;base64,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"><div class="brandline"></div></div>
   <div class="header">
-    <div class="title"><h1>Девелоперская инвестиционная модель</h1><p>v0.8.5 · ТЭП · экономика · БРИДЖ · проектное финансирование · эскроу · LLCR</p></div>
+    <div class="title"><h1>Девелоперская инвестиционная модель</h1><p>v0.9.1 · ТЭП · экономика · БРИДЖ · проектное финансирование · эскроу · LLCR</p></div>
     <div class="actions">
       <div class="scenario">Класс&nbsp;
         <select id="projectClassSelect" onchange="renderProjectClassPreview()" style="min-width:135px">
@@ -2648,6 +3155,7 @@ tfoot th{border-top:2px solid #111;color:#111;background:#fff}
           Доходы без корректировки · расходы без корректировки
         </div>
       </div>
+      <button class="btn ai-open-btn" onclick="toggleAgent(true)"><span id="aiStatusDot" class="ai-dot"></span><span class="ai-label">Платон Сергеевич</span></button>
       <button class="btn" onclick="saveLocal()">Сохранить</button>
       <button class="btn" onclick="resetAll()">Сбросить</button>
       <button class="btn dark" onclick="calculateAndOpen('report')">Пересчитать</button>
@@ -2993,6 +3501,25 @@ tfoot th{border-top:2px solid #111;color:#111;background:#fff}
   </div>
 </div>
 
+<div id="aiOverlay" class="ai-overlay" onclick="toggleAgent(false)"></div>
+<aside id="aiDrawer" class="ai-drawer" aria-label="Платон Сергеевич Федоскин — AI-консультант PLATO">
+  <div class="ai-head">
+    <div><h2>Платон Сергеевич Федоскин</h2><p>AI-консультант PLATO по инвестиционной модели и проектному финансированию. Анализирует актуальные ТЭП, расходы, очереди, БРИДЖ, ПФ, эскроу и LLCR. Режим только чтение.</p></div>
+    <button class="ai-close" onclick="toggleAgent(false)" aria-label="Закрыть">×</button>
+  </div>
+  <div class="ai-quick">
+    <button class="ai-chip" onclick="askAgentQuick('Разложи структуру расходов проекта: CAPEX, коммерческие расходы, проценты, налог и полную себестоимость. Что формирует основные затраты?')">Структура расходов</button>
+    <button class="ai-chip" onclick="askAgentQuick('Почему текущий LLCR именно такой? Разложи числитель и знаменатель и назови основные причины.')">Почему такой LLCR?</button>
+    <button class="ai-chip" onclick="askAgentQuick('Какая строительная себестоимость допустима, чтобы LLCR был не ниже банковского ориентира 1,20x? Для многоочередного проекта отдельно проверь слабейшую очередь.')">Себестоимость для LLCR 1,20</button>
+    <button class="ai-chip" onclick="askAgentQuick('Проверь текущую модель на очевидные аномалии: ТЭП, выручка, CAPEX, маржа, очереди и финансирование. Назови только существенные отклонения.')">Проверить аномалии</button>
+  </div>
+  <div id="aiMessages" class="ai-messages"><div class="ai-msg system">Платон Сергеевич анализирует текущий проект по фактическим данным модели. Перед ответом сервер заново пересчитывает модель.</div></div>
+  <div class="ai-compose">
+    <textarea id="aiInput" placeholder="Например: почему LLCR О1 ниже 1,20 и какая себестоимость нужна, чтобы выйти на норматив?"></textarea>
+    <div class="ai-compose-row"><small>Ориентир диагностики: LLCR 1,20x. Методика конкретного банка может отличаться.</small><button id="aiSendBtn" class="btn dark" onclick="sendAgentMessage()">Отправить</button></div>
+  </div>
+</aside>
+
 <script>
 const SCENARIOS={"conservative":{"scenario_revenue_multiplier":0.9,"scenario_cost_multiplier":1.1},"base":{"scenario_revenue_multiplier":1.0,"scenario_cost_multiplier":1.0},"optimistic":{"scenario_revenue_multiplier":1.1,"scenario_cost_multiplier":0.9}};
 const PROJECT_CLASS_PRESETS={
@@ -3053,6 +3580,29 @@ function openTab(id,btn){
  (btn||document.querySelector(`[data-tab="${id}"]`)).classList.add('active');
 }
 function calculateAndOpen(id){calculate().then(()=>openTab(id))}
+
+
+let aiHistory=[],aiBusy=false;
+function escapeHtml(s){return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
+function toggleAgent(open){aiDrawer.classList.toggle('open',!!open);aiOverlay.classList.toggle('open',!!open);if(open)setTimeout(()=>aiInput.focus(),80)}
+function appendAiMessage(role,content,extra=''){const d=document.createElement('div');d.className=`ai-msg ${role} ${extra}`.trim();d.innerHTML=escapeHtml(content).replace(/\n/g,'<br>');aiMessages.appendChild(d);aiMessages.scrollTop=aiMessages.scrollHeight;return d}
+function askAgentQuick(text){aiInput.value=text;sendAgentMessage()}
+async function refreshAgentStatus(){try{const r=await fetch('/agent/status'),s=await r.json();aiStatusDot.classList.toggle('ready',!!s.enabled);aiStatusDot.title=s.enabled?`AI готов · ${s.model}`:'OPENAI_API_KEY не настроен'}catch(e){aiStatusDot.classList.remove('ready')}}
+async function syncInputsForAgent(){document.querySelectorAll('[id^=f_]').forEach(el=>{const id=el.id.slice(2);inputs[id]=el.type==='checkbox'?el.checked:(el.type==='number'?Number(el.value):el.value)});if(document.getElementById('rateScenario'))inputs.rate_scenario=rateScenario.value||'base';generateRateCurve();repairParkingFromGlavapu();normalizeSocialObjectDates()}
+async function sendAgentMessage(){
+ if(aiBusy)return;const message=String(aiInput.value||'').trim();if(!message)return;
+ aiBusy=true;aiSendBtn.disabled=true;aiInput.value='';appendAiMessage('user',message);aiHistory.push({role:'user',content:message});
+ const thinking=document.createElement('div');thinking.className='ai-thinking';thinking.textContent='Анализирую текущую модель…';aiMessages.appendChild(thinking);aiMessages.scrollTop=aiMessages.scrollHeight;
+ try{
+  await syncInputsForAgent();
+  const response=await fetch('/agent/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message,inputs,tep,rates,phasing,history:aiHistory.slice(-8),selected_view:reportView||'all'})});
+  let data={};try{data=await response.json()}catch(e){}
+  thinking.remove();if(!response.ok)throw new Error(data.detail||`Ошибка AI (${response.status})`);
+  const answer=String(data.answer||'Ответ не получен.');appendAiMessage('assistant',answer);aiHistory.push({role:'assistant',content:answer});aiHistory=aiHistory.slice(-10);
+ }catch(e){thinking.remove();appendAiMessage('assistant',String(e.message||e),'error')}
+ finally{aiBusy=false;aiSendBtn.disabled=false;aiInput.focus()}
+}
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&document.getElementById('aiDrawer')?.classList.contains('open'))toggleAgent(false);if((e.ctrlKey||e.metaKey)&&e.key==='Enter'&&document.getElementById('aiDrawer')?.classList.contains('open'))sendAgentMessage()});
 
 
 
@@ -3980,6 +4530,7 @@ async function initializeApp(){
  renderRates();
  await refreshCurrentKeyRate(false);
  await calculate();
+ await refreshAgentStatus();
 }
 initializeApp();
 </script>
