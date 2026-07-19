@@ -23,7 +23,7 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse, FileResponse
 from pydantic import BaseModel
 
-app = FastAPI(title="PLATO Development Investment Model", version="0.11.2")
+app = FastAPI(title="PLATO Development Investment Model", version="0.12.0")
 
 PRESET_DIR = Path(__file__).resolve().parent / "presets"
 SERVER_TEP_PRESETS = {
@@ -35,7 +35,7 @@ SERVER_TEP_PRESETS = {
     "mytishchi": {
         "name": "Мытищи",
         "filename": "Мытищи_ТЭП.xlsx",
-        "description": "Проектный preset: benchmark ТЭП Мытищи, ВРИ 4 100 млн ₽, 3 очереди 40/32/28 и экспертная социалка 465 мест ДОУ + 675 мест СОШ.",
+        "description": "Пересобранный preset Мытищи: 200 тыс. м² квартир, МФК/офисы 26,7/21,36 тыс. м², 2 723 подземных м/м, 3 очереди 40/32/28, рабочая социалка ДОУ 465 + СОШ 675.",
     },
 }
 
@@ -364,6 +364,16 @@ def parse_glavapu_xlsx(data: bytes, filename: str = "") -> dict[str, Any]:
         "apartment_area_sqm": _row_num(by, "10", 1000),
         "nonresidential_aboveground_sqm": _row_num(by, "11", 1000),
 
+        # Optional PLATO extension rows used by server project presets.
+        "office_gba_sqm": _row_num(by, "57", 1000),
+        "office_saleable_sqm": _row_num(by, "58", 1000),
+        "office_land_ha": _row_num(by, "59"),
+        "mfc_parking_area_sqm": _row_num(by, "60", 1000),
+        "mfc_parking_spaces": _row_num(by, "61"),
+        "office_need_sqm": _row_num(by, "62", 1000),
+        "storage_units": _row_num(by, "63"),
+        "storage_area_sqm": _row_num(by, "64", 1000),
+
         "actual_kindergarten_places": _row_num(by, "18"),
         "actual_kindergarten_spp_sqm": _row_num(by, "19", 1000),
         "actual_kindergarten_np_sqm": _row_num(by, "20", 1000),
@@ -402,11 +412,18 @@ def parse_glavapu_xlsx(data: bytes, filename: str = "") -> dict[str, Any]:
         "mpt_coefficient": _find_parameter(params_rows, "Коэффициент МПТ"),
     }
 
-    # Derived underground parking for the financial TEP:
-    # permanent + guest spaces. Attached/on-site and short-stop spaces are not underground sellable/storage parking.
-    underground_spaces = (data_norm.get("parking_permanent") or 0) + (data_norm.get("parking_guest") or 0)
+    # Derived underground parking for the financial TEP.
+    # Standard ГлавАПУ: permanent + guest. PLATO project preset may also carry a discrete
+    # MFC underground parking block (rows 60/61). Attached/on-site and short-stop remain excluded.
+    residential_underground_spaces = (data_norm.get("parking_permanent") or 0) + (data_norm.get("parking_guest") or 0)
+    mfc_underground_spaces = data_norm.get("mfc_parking_spaces") or 0
+    underground_spaces = residential_underground_spaces + mfc_underground_spaces
+    residential_underground_area = residential_underground_spaces * 35.0
+    mfc_underground_area = data_norm.get("mfc_parking_area_sqm") or (mfc_underground_spaces * 35.0)
+    data_norm["residential_underground_parking_spaces"] = residential_underground_spaces
+    data_norm["residential_underground_parking_gns_sqm"] = residential_underground_area
     data_norm["underground_parking_spaces"] = underground_spaces
-    data_norm["underground_parking_gns_sqm"] = underground_spaces * 35.0
+    data_norm["underground_parking_gns_sqm"] = residential_underground_area + mfc_underground_area
 
     # Fallback compensation total = components.
     if data_norm["social_compensation_total_mln"] is None:
@@ -442,6 +459,12 @@ def parse_glavapu_xlsx(data: bytes, filename: str = "") -> dict[str, Any]:
         "social_school_gba_sqm": data_norm["actual_school_np_sqm"] or 0,
         "social_clinic_gba_sqm": data_norm["actual_clinic_np_sqm"] or 0,
     }
+    if (data_norm.get("office_gba_sqm") or 0) > 0:
+        input_mapping.update({
+            "offices_enabled": True,
+            "offices_gba_sqm": data_norm.get("office_gba_sqm") or 0,
+            "offices_saleable_sqm": data_norm.get("office_saleable_sqm") or 0,
+        })
     input_mapping = {k: v for k, v in input_mapping.items() if v is not None}
 
     tep_mapping: dict[str, dict[str, float]] = {
@@ -455,8 +478,8 @@ def parse_glavapu_xlsx(data: bytes, filename: str = "") -> dict[str, Any]:
         "ground_commercial": {
             "gns": data_norm["ground_commercial_spp_sqm"] or 0,
             "total_area": data_norm["ground_commercial_np_sqm"] or 0,
-            "useful": data_norm["ground_commercial_np_sqm"] or 0,
-            "saleable": data_norm["ground_commercial_np_sqm"] or 0,
+            "useful": data_norm["nonresidential_aboveground_sqm"] or data_norm["ground_commercial_np_sqm"] or 0,
+            "saleable": data_norm["nonresidential_aboveground_sqm"] or data_norm["ground_commercial_np_sqm"] or 0,
             "units": 0,
         },
         "underground_parking": {
@@ -468,11 +491,25 @@ def parse_glavapu_xlsx(data: bytes, filename: str = "") -> dict[str, Any]:
             "units": data_norm["underground_parking_spaces"] or 0,
         },
         "standalone_retail": {
-            "gns": data_norm["standalone_nonres_spp_sqm"] or 0,
-            "total_area": data_norm["standalone_nonres_np_sqm"] or 0,
-            "useful": data_norm["standalone_nonres_np_sqm"] or 0,
-            "saleable": data_norm["standalone_nonres_np_sqm"] or 0,
+            "gns": 0 if (data_norm.get("office_gba_sqm") or 0) > 0 else (data_norm["standalone_nonres_spp_sqm"] or 0),
+            "total_area": 0 if (data_norm.get("office_gba_sqm") or 0) > 0 else (data_norm["standalone_nonres_np_sqm"] or 0),
+            "useful": 0 if (data_norm.get("office_gba_sqm") or 0) > 0 else (data_norm["standalone_nonres_np_sqm"] or 0),
+            "saleable": 0 if (data_norm.get("office_gba_sqm") or 0) > 0 else (data_norm["standalone_nonres_np_sqm"] or 0),
             "units": 0,
+        },
+        "offices": {
+            "gns": data_norm.get("office_gba_sqm") or 0,
+            "total_area": data_norm.get("office_gba_sqm") or 0,
+            "useful": data_norm.get("office_saleable_sqm") or 0,
+            "saleable": data_norm.get("office_saleable_sqm") or 0,
+            "units": 0,
+        },
+        "storage": {
+            "gns": 0,
+            "total_area": data_norm.get("storage_area_sqm") or 0,
+            "useful": 0,
+            "saleable": 0,
+            "units": data_norm.get("storage_units") or 0,
         },
         "kindergarten": {
             "gns": data_norm["actual_kindergarten_spp_sqm"] or 0,
@@ -493,6 +530,11 @@ def parse_glavapu_xlsx(data: bytes, filename: str = "") -> dict[str, Any]:
             "units": data_norm["actual_clinic_capacity"] or 0,
         },
     }
+
+    if not (data_norm.get("office_gba_sqm") or 0):
+        tep_mapping.pop("offices", None)
+    if data_norm.get("storage_units") is None and data_norm.get("storage_area_sqm") is None:
+        tep_mapping.pop("storage", None)
 
     def item(label: str, key: str, unit: str, target: str, decimals: int = 1) -> dict[str, Any]:
         value = data_norm.get(key)
@@ -527,7 +569,12 @@ def parse_glavapu_xlsx(data: bytes, filename: str = "") -> dict[str, Any]:
         item("Приобъектные парковки", "parking_attached", "м/м", "Не включаются в подземный паркинг", 0),
         item("Кратковременная остановка", "parking_short_stop", "м/м", "Не включаются в подземный паркинг", 0),
         item("Подземный паркинг — расчётное количество", "underground_parking_spaces", "м/м", "ТЭП → Подземный паркинг → Количество", 0),
-        item("Подземный паркинг — ГНС (35 м²/м/м)", "underground_parking_gns_sqm", "м²", "ТЭП → Подземный паркинг → ГНС", 1),
+        item("Подземный паркинг — общая площадь", "underground_parking_gns_sqm", "м²", "ТЭП → Подземный паркинг → ГНС", 1),
+        item("МФК / офисы — GBA", "office_gba_sqm", "м²", "Вводные → МФОЦ / офисы", 1),
+        item("МФК / офисы — продаваемая", "office_saleable_sqm", "м²", "Вводные → МФОЦ / офисы", 1),
+        item("МФК — подземный паркинг", "mfc_parking_spaces", "м/м", "ТЭП → Подземный паркинг (отдельный блок МФК)", 0),
+        item("Расчётная потребность офисов", "office_need_sqm", "м²", "Справочно / рабочие места", 1),
+        item("Кладовые — количество", "storage_units", "шт.", "ТЭП → Кладовки", 1),
         item("Район", "district", "", "Справочно / ГлавАПУ"),
         item("Кадастровый квартал", "cadastral_quarter", "", "Справочно / ГлавАПУ"),
     ]
@@ -535,8 +582,10 @@ def parse_glavapu_xlsx(data: bytes, filename: str = "") -> dict[str, Any]:
     warnings = [
         "Числа нормализованы по русскому формату: пробел/неразрывный пробел — разделитель тысяч, запятая — десятичный разделитель.",
         "Показатели в тыс. кв. м автоматически приведены к м²; денежные суммы автоматически нормализуются в млн ₽ с учётом исходной единицы (тыс./млн/млрд).",
-        "Подземный паркинг рассчитывается автоматически как постоянные + гостевые машино-места. Приобъектные и кратковременные места исключаются. Норматив площади — 35 м² на 1 м/м.",
+        "Подземный паркинг: стандартно постоянные + гостевые; в PLATO preset может отдельно добавляться парковка МФК из строк 60/61. Приобъектные и кратковременные места исключаются.",
         "Для квартир ГНС принимается из «СПП жилая», общая площадь — из «НП жилая», продаваемая — из «Площадь квартир».",
+        "Для коммерции 1 этажа строка 11 используется как продаваемая площадь, а 9.1.2 — как общая площадь: это устраняет прежнее завышение saleable.",
+        "Если строки 57/58 заполнены, объект 8.1 трактуется как МФК/офисы, а не как отдельный retail — двойной учёт исключается.",
     ]
 
     return {
@@ -2708,6 +2757,21 @@ _PLATO_METHODOLOGY = [
         "topic": "expenses",
         "rule": "Технический заказчик/стройконтроль — отдельная статья, базово 5% СМР. Управление проектом — тоже 5%, но это зарплаты и административные накладные девелопера; статьи не смешивать.",
     },
+    {
+        "id": "MARKET_BENCHMARK_NORMALIZATION",
+        "topic": "expenses",
+        "rule": "Рыночные ставки СМР сравнивать только на одинаковом знаменателе и одинаковом составе. Ставку на продаваемую площадь пересчитывать в ставку на ГНС через площади конкретного проекта. Внешние сети, генподряд, резерв, техзаказчик и управление учитывать отдельно, если они не входят в benchmark.",
+    },
+    {
+        "id": "AGENT_INPUT_CHANGES",
+        "topic": "all",
+        "rule": "Платон может подготовить изменение Inputs после сценарного расчёта, но реальная модель меняется только после явного подтверждения пользователя кнопкой «Применить в модель».",
+    },
+    {
+        "id": "MYTISHCHI_MFC",
+        "topic": "tep",
+        "rule": "В preset Мытищи МФК/офисы — отдельный дискретный продукт: 26 700 м² GBA/ГНС и 21 360 м² полезной/продаваемой площади. Его нельзя одновременно учитывать как standalone retail. Парковка МФК 434 м/м добавляется к жилому подземному паркингу 2 289 м/м.",
+    },
 ]
 
 _AGENT_INSTRUCTIONS = """
@@ -2721,6 +2785,8 @@ _AGENT_INSTRUCTIONS = """
 - «Почему такой LLCR / откуда цифра / что входит?» → explain_metric и при необходимости trace_metric.
 - «За сколько максимум купить / какая себестоимость / какая цена продаж нужна / подобрать параметр» → goal_seek.
 - «Что будет, если...» → simulate_change.
+- Рыночная ставка дана на другом знаменателе («90 тыс. на продаваемую», «на общую») → normalize_market_benchmark до любых выводов.
+- Пользователь просит реально поменять вводные или ты сформировал конкретную рекомендуемую конфигурацию → сначала рассчитай, затем prepare_model_patch.
 - «Есть ли ошибки / аномалии / что не сходится?» → find_anomalies.
 - Методологический вопрос → get_methodology; если вопрос связан с текущим проектом, дополнительно используй расчётный инструмент.
 
@@ -2741,7 +2807,9 @@ _AGENT_INSTRUCTIONS = """
 5. Не говори «примерно» там, где инструмент вернул точный расчётный результат.
 6. Если инструмент сообщает ограничение/предупреждение методики — обязательно упомяни его.
 7. Не утверждай, что банк гарантированно одобрит проект.
-8. Не говори, что изменил модель: все инструменты read-only и считают сценарий на копии.
+8. Ты не можешь менять модель без подтверждения пользователя. prepare_model_patch только готовит изменение; реальный Input меняется после кнопки «Применить в модель».
+8a. Если пользователь пишет «поставь», «измени», «повысить», «снизить» и значение известно — проверь эффект и подготовь patch. Не ограничивайся инструкцией пользователю, где вручную менять поле.
+8b. Тендерную ставку на продаваемую/общую площадь никогда не сравнивай напрямую со ставкой PLATO на ГНС. Сначала нормализуй знаменатель. Отдельно проверяй состав: внешние сети, генподряд, резерв, техзаказчик и управление могут сидеть отдельными строками.
 9. Ответ: сначала прямой вывод, затем 3–7 ключевых расчётов/причин.
 10. Если данные противоречат друг другу, не сглаживай противоречие — покажи его.
 11. Имя используй естественно, не представляйся в каждом ответе.
@@ -3188,6 +3256,34 @@ _GOAL_VARIABLES = {
 }
 
 
+_PATCH_VARIABLES = {
+    **_GOAL_VARIABLES,
+    "main_above_th_per_sqm": "Основное строительство — наземная часть, тыс. ₽/м² ГНС",
+    "main_under_th_per_sqm": "Основное строительство — подземная часть, тыс. ₽/м² ГНС",
+    "storage_price_th": "Цена кладовой, тыс. ₽/шт.",
+    "offices_price_th_per_sqm": "Стартовая цена МФК/офисов, тыс. ₽/м²",
+    "offices_cost_th_per_sqm": "Себестоимость МФК/офисов, тыс. ₽/м² GBA",
+    "utilities_th_per_sqm": "Внешние сети, тыс. ₽/м² ГНС",
+    "technical_supervision_pct": "Технический заказчик / стройконтроль, %",
+    "project_management_pct": "Управление проектом, %",
+    "gc_fee_pct": "Генподрядчик, %",
+    "reserve_pct": "Резерв, %",
+}
+
+
+def _get_patch_value(inputs: dict[str, Any], variable: str) -> float:
+    if variable in _GOAL_VARIABLES:
+        return _get_variable_value(inputs, variable)
+    return n(inputs, variable)
+
+
+def _apply_patch_value(inputs: dict[str, Any], variable: str, value: float) -> None:
+    if variable in _GOAL_VARIABLES:
+        _apply_variable(inputs, variable, value)
+    elif variable in _PATCH_VARIABLES:
+        inputs[variable] = value
+
+
 def _get_variable_value(inputs: dict[str, Any], variable: str) -> float:
     if variable == "main_construction_cost_th_per_sqm":
         above = n(inputs, "main_above_th_per_sqm")
@@ -3461,6 +3557,142 @@ def _tool_simulate_change(
         "phase_llcr_current": _phase_llcr(bundle),
         "phase_llcr_scenario": _phase_llcr(scenario_bundle),
         "method": "Сценарный пересчёт на копии модели; текущие вводные не изменены.",
+    }
+
+
+def _tool_normalize_market_benchmark(
+    req: AgentChatRequest,
+    product: str,
+    value_th_per_sqm: float,
+    source_basis: str,
+    target_basis: str,
+    includes_external_networks: bool,
+) -> dict[str, Any]:
+    product = str(product)
+    row = req.tep.get(product, {}) if product in ("apartments", "ground_commercial") else {}
+    if product == "offices":
+        areas = {
+            "gns": float(n(req.inputs, "offices_gba_sqm")),
+            "total_area": float(n(req.inputs, "offices_gba_sqm")),
+            "saleable": float(n(req.inputs, "offices_saleable_sqm")),
+        }
+        model_variable = "offices_cost_th_per_sqm" if target_basis in ("gns", "total_area") else None
+        current_model_rate = n(req.inputs, "offices_cost_th_per_sqm") if model_variable else None
+    else:
+        areas = {
+            "gns": float(n(row, "gns")),
+            "total_area": float(n(row, "total_area")),
+            "saleable": float(n(row, "saleable")),
+        }
+        model_variable = "main_above_th_per_sqm" if product == "apartments" and target_basis == "gns" else None
+        current_model_rate = n(req.inputs, "main_above_th_per_sqm") if model_variable else None
+
+    src_area = areas.get(source_basis, 0.0)
+    tgt_area = areas.get(target_basis, 0.0)
+    if src_area <= 0 or tgt_area <= 0:
+        return {
+            "available": False,
+            "reason": f"Нет положительной площади для пересчёта {source_basis} → {target_basis}.",
+            "areas": areas,
+        }
+
+    converted = float(value_th_per_sqm) * src_area / tgt_area
+    comparison = None
+    if current_model_rate and current_model_rate > 0:
+        comparison = {
+            "current_model_rate_th_per_sqm": round(current_model_rate, 4),
+            "benchmark_converted_th_per_sqm": round(converted, 4),
+            "benchmark_vs_model_pct": round((converted / current_model_rate - 1.0) * 100.0, 2),
+        }
+
+    notes = [
+        "Пересчёт сохраняет общий бюджет: ставка × площадь исходного знаменателя = ставка × площадь целевого знаменателя.",
+    ]
+    if not includes_external_networks:
+        notes.append(
+            f"Benchmark указан без внешних сетей; в PLATO внешние сети учитываются отдельной строкой "
+            f"{n(req.inputs, 'utilities_th_per_sqm'):.2f} тыс. ₽/м² ГНС и не должны автоматически добавляться в сравниваемую ставку СМР."
+        )
+    if product == "apartments" and source_basis == "saleable" and target_basis == "gns":
+        notes.append("Для жилой части это корректный способ сопоставить тендерную ставку на продаваемую площадь с базой PLATO на ГНС.")
+
+    return {
+        "available": True,
+        "product": product,
+        "input_benchmark_th_per_sqm": round(float(value_th_per_sqm), 4),
+        "source_basis": source_basis,
+        "target_basis": target_basis,
+        "source_area_sqm": round(src_area, 2),
+        "target_area_sqm": round(tgt_area, 2),
+        "converted_benchmark_th_per_sqm": round(converted, 4),
+        "suggested_model_variable": model_variable,
+        "comparison": comparison,
+        "notes": notes,
+    }
+
+
+def _tool_prepare_model_patch(
+    req: AgentChatRequest,
+    bundle: dict[str, Any],
+    changes: list[dict[str, Any]],
+    scope: str,
+    reason: str,
+) -> dict[str, Any]:
+    x = copy.deepcopy(req.inputs)
+    applied = []
+    patch = {}
+    for item in changes[:12]:
+        variable = str(item.get("variable", ""))
+        if variable not in _PATCH_VARIABLES:
+            continue
+        value = float(item.get("value", 0) or 0)
+        old = _get_patch_value(x, variable)
+        _apply_patch_value(x, variable, value)
+        patch[variable] = value
+        applied.append({
+            "variable": variable,
+            "label": _PATCH_VARIABLES[variable],
+            "old": round(old, 4),
+            "new": round(value, 4),
+        })
+    if not applied:
+        return {"available": False, "reason": "Нет допустимых изменений для подготовки."}
+
+    scenario_bundle = _run_authoritative_model(x, req.tep, req.rates, req.phasing)
+    resolved_scope = scope if not (scope == "weakest_phase" and bundle.get("mode") != "phased") else "consolidated"
+    _, base_result = _scope_result(bundle, resolved_scope, req.selected_view)
+    new_label, new_result = _scope_result(scenario_bundle, resolved_scope, req.selected_view)
+    base_snap = _result_snapshot(base_result)
+    new_snap = _result_snapshot(new_result)
+
+    delta = {}
+    for key in (
+        "revenue_mln", "capex_mln", "financing_cost_mln", "net_profit_mln",
+        "margin_pct", "llcr_x", "npv_mln", "peak_bridge_mln", "peak_pf_mln",
+        "full_cost_per_saleable_th_per_sqm", "construction_cost_per_gns_th_per_sqm",
+    ):
+        bv, nv = base_snap.get(key), new_snap.get(key)
+        if isinstance(bv, (int, float)) and isinstance(nv, (int, float)):
+            delta[key] = round(nv - bv, 4)
+
+    title_parts = [f"{x['label']}: {x['old']} → {x['new']}" for x in applied[:3]]
+    title = " · ".join(title_parts)
+    return {
+        "available": True,
+        "proposal": {
+            "title": title,
+            "reason": str(reason or "")[:1000],
+            "patch": patch,
+            "changes": applied,
+            "scope": resolved_scope,
+            "scope_label": new_label,
+            "current": base_snap,
+            "scenario": new_snap,
+            "delta": delta,
+            "phase_llcr_current": _phase_llcr(bundle),
+            "phase_llcr_scenario": _phase_llcr(scenario_bundle),
+        },
+        "method": "Подготовлено изменение Inputs. Реальная модель изменится только после подтверждения пользователя кнопкой «Применить в модель».",
     }
 
 
@@ -4028,6 +4260,61 @@ _AGENT_TOOLS = [
     },
     {
         "type": "function",
+        "name": "normalize_market_benchmark",
+        "description": "Нормализовать рыночную/тендерную ставку между знаменателями продаваемая площадь, общая площадь и ГНС по ТЭП текущего проекта. Обязательно использовать перед сравнением ставки вида «90 тыс. на продаваемую» с модельной ставкой на ГНС.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "product": {"type": "string", "enum": ["apartments", "ground_commercial", "offices"]},
+                "value_th_per_sqm": {"type": "number"},
+                "source_basis": {"type": "string", "enum": ["saleable", "total_area", "gns"]},
+                "target_basis": {"type": "string", "enum": ["saleable", "total_area", "gns"]},
+                "includes_external_networks": {"type": "boolean"}
+            },
+            "required": ["product", "value_th_per_sqm", "source_basis", "target_basis", "includes_external_networks"],
+            "additionalProperties": False
+        },
+        "strict": True,
+    },
+    {
+        "type": "function",
+        "name": "prepare_model_patch",
+        "description": "Подготовить подтверждаемое изменение реальных Inputs после анализа/сценарного расчёта. Само модель не меняет: возвращает кнопку применения. Используй, когда пользователь просит изменить/поставить вводные или когда ты сформировал конкретную рекомендацию и хочешь дать её применить.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "changes": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "variable": {
+                                "type": "string",
+                                "enum": [
+                                    "purchase_price_mln", "main_construction_cost_th_per_sqm",
+                                    "main_above_th_per_sqm", "main_under_th_per_sqm",
+                                    "apartment_price_th", "commercial_price_th", "parking_price_th",
+                                    "storage_price_th", "offices_price_th_per_sqm", "offices_cost_th_per_sqm",
+                                    "social_compensation_mln", "bridge_spread_pp", "utilities_th_per_sqm",
+                                    "technical_supervision_pct", "project_management_pct", "gc_fee_pct", "reserve_pct"
+                                ]
+                            },
+                            "value": {"type": "number"}
+                        },
+                        "required": ["variable", "value"],
+                        "additionalProperties": False
+                    }
+                },
+                "scope": {"type": "string", "enum": ["selected", "consolidated", "weakest_phase"]},
+                "reason": {"type": "string"}
+            },
+            "required": ["changes", "scope", "reason"],
+            "additionalProperties": False
+        },
+        "strict": True,
+    },
+    {
+        "type": "function",
         "name": "find_anomalies",
         "description": "Проверить структурные аномалии текущей модели: LLCR, слабую очередь, несоответствия ГлавАПУ/ТЭП, коммерцию, паркинг, социалку и подозрительно высокую долю цены входа.",
         "parameters": {
@@ -4108,6 +4395,17 @@ def _execute_agent_tool(
         )
     if name == "simulate_change":
         return _tool_simulate_change(req, bundle, args["changes"], args["scope"])
+    if name == "normalize_market_benchmark":
+        return _tool_normalize_market_benchmark(
+            req,
+            args["product"], float(args["value_th_per_sqm"]),
+            args["source_basis"], args["target_basis"],
+            bool(args["includes_external_networks"]),
+        )
+    if name == "prepare_model_patch":
+        return _tool_prepare_model_patch(
+            req, bundle, args["changes"], args["scope"], args["reason"]
+        )
     if name == "find_anomalies":
         return _tool_find_anomalies(req, bundle, args["scope"])
     if name == "diagnose_project_logic":
@@ -4142,7 +4440,7 @@ def _openai_responses_request(payload: dict[str, Any]) -> dict[str, Any]:
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
-            "User-Agent": "PLATO-Development-Model/0.11.2",
+            "User-Agent": "PLATO-Development-Model/0.12.0",
         },
         method="POST",
     )
@@ -4201,6 +4499,7 @@ def _call_openai_tool_agent(
     })
 
     tools_used: list[dict[str, Any]] = []
+    proposals: list[dict[str, Any]] = []
     for _round in range(_AGENT_MAX_TOOL_ROUNDS):
         payload = {
             "model": model,
@@ -4225,6 +4524,7 @@ def _call_openai_tool_agent(
                 "model": model,
                 "response_id": response.get("id"),
                 "tools_used": tools_used,
+                "proposals": proposals,
             }
 
         for call in calls:
@@ -4239,6 +4539,10 @@ def _call_openai_tool_agent(
             except Exception as exc:
                 tool_result = {"error": f"{type(exc).__name__}: {str(exc)[:500]}"}
             tools_used.append({"name": name, "arguments": args})
+            if name == "prepare_model_patch" and isinstance(tool_result, dict):
+                proposal = tool_result.get("proposal")
+                if proposal:
+                    proposals.append(proposal)
             input_items.append({
                 "type": "function_call_output",
                 "call_id": call_id,
@@ -4254,7 +4558,7 @@ def agent_status() -> dict[str, Any]:
         "enabled": bool(os.getenv("OPENAI_API_KEY", "").strip()),
         "model": os.getenv("OPENAI_AGENT_MODEL", "gpt-5.6"),
         "agent_name": "Платон Сергеевич Федоскин",
-        "mode": "read_only_tool_agent",
+        "mode": "reasoning_agent_with_confirmed_input_patches",
         "bank_llcr_target": _AGENT_BANK_LLCR_TARGET,
         "tools": [t["name"] for t in _AGENT_TOOLS],
         "methodology_rules": len(_PLATO_METHODOLOGY),
@@ -4498,7 +4802,7 @@ tfoot th{border-top:2px solid #111;color:#111;background:#fff}
 <div class="shell">
   <div class="brandbar"><img src="data:image/webp;base64,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"><div class="brandline"></div></div>
   <div class="header">
-    <div class="title"><h1>Девелоперская инвестиционная модель</h1><p>v0.11.2 · ТЭП · экономика · БРИДЖ · проектное финансирование · эскроу · LLCR</p></div>
+    <div class="title"><h1>Девелоперская инвестиционная модель</h1><p>v0.12.0 · ТЭП · экономика · БРИДЖ · проектное финансирование · эскроу · LLCR</p></div>
     <div class="actions">
       <div class="scenario">Класс&nbsp;
         <select id="projectClassSelect" onchange="renderProjectClassPreview()" style="min-width:135px">
@@ -4966,10 +5270,34 @@ function openTab(id,btn){
 function calculateAndOpen(id){calculate().then(()=>openTab(id))}
 
 
-let aiHistory=[],aiBusy=false;
+let aiHistory=[],aiBusy=false,aiProposals=[];
 function escapeHtml(s){return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
 function toggleAgent(open){aiDrawer.classList.toggle('open',!!open);aiOverlay.classList.toggle('open',!!open);if(open)setTimeout(()=>aiInput.focus(),80)}
 function appendAiMessage(role,content,extra=''){const d=document.createElement('div');d.className=`ai-msg ${role} ${extra}`.trim();d.innerHTML=escapeHtml(content).replace(/\n/g,'<br>');aiMessages.appendChild(d);aiMessages.scrollTop=aiMessages.scrollHeight;return d}
+function appendAiProposals(proposals){
+ (proposals||[]).forEach(p=>{
+   const idx=aiProposals.push(p)-1;
+   const changes=(p.changes||[]).map(x=>`${escapeHtml(x.label)}: <b>${escapeHtml(x.old)}</b> → <b>${escapeHtml(x.new)}</b>`).join('<br>');
+   const llcr=p.scenario&&p.scenario.llcr_x!=null?`<div style="margin-top:7px">LLCR после: <b>${Number(p.scenario.llcr_x).toFixed(3)}x</b></div>`:'';
+   const d=document.createElement('div');d.className='ai-msg assistant';
+   d.style.border='1px solid #c9d7c7';d.style.background='#f7fbf6';
+   d.innerHTML=`<b>Готовое изменение вводных</b><div style="margin-top:6px">${changes}</div>${llcr}<button style="margin-top:10px;padding:8px 12px;border:0;border-radius:8px;background:#173b2d;color:#fff;font-weight:700;cursor:pointer" onclick="applyAgentProposal(${idx})">Применить в модель</button>`;
+   aiMessages.appendChild(d);
+ });
+ aiMessages.scrollTop=aiMessages.scrollHeight;
+}
+async function applyAgentProposal(idx){
+ const p=aiProposals[idx];if(!p||!p.patch)return;
+ Object.entries(p.patch).forEach(([k,v])=>{
+   const value=Number(v);
+   if(k==='main_construction_cost_th_per_sqm'){inputs.main_above_th_per_sqm=value;inputs.main_under_th_per_sqm=value}
+   else inputs[k]=value;
+ });
+ const customKeys=['apartment_price_th','commercial_price_th','parking_price_th','main_above_th_per_sqm','main_under_th_per_sqm','main_construction_cost_th_per_sqm'];
+ if(Object.keys(p.patch).some(k=>customKeys.includes(k)))inputs.project_class='custom';
+ renderInputs();syncTep(false);syncProjectClassSelector();renderPhasing();await calculate();
+ appendAiMessage('assistant','Изменение применено к текущим Inputs и модель пересчитана.');
+}
 function askAgentQuick(text){aiInput.value=text;sendAgentMessage()}
 async function refreshAgentStatus(){try{const r=await fetch('/agent/status'),s=await r.json();aiStatusDot.classList.toggle('ready',!!s.enabled);aiStatusDot.title=s.enabled?`AI готов · ${s.model}`:'OPENAI_API_KEY не настроен'}catch(e){aiStatusDot.classList.remove('ready')}}
 async function syncInputsForAgent(){document.querySelectorAll('[id^=f_]').forEach(el=>{const id=el.id.slice(2);inputs[id]=el.type==='checkbox'?el.checked:(el.type==='number'?Number(el.value):el.value)});if(document.getElementById('rateScenario'))inputs.rate_scenario=rateScenario.value||'base';generateRateCurve();repairParkingFromGlavapu();normalizeSocialObjectDates()}
@@ -4982,7 +5310,7 @@ async function sendAgentMessage(){
   const response=await fetch('/agent/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message,inputs,tep,rates,phasing,history:aiHistory.slice(-8),selected_view:reportView||'all'})});
   let data={};try{data=await response.json()}catch(e){}
   thinking.remove();if(!response.ok)throw new Error(data.detail||`Ошибка AI (${response.status})`);
-  const answer=String(data.answer||'Ответ не получен.');appendAiMessage('assistant',answer);aiHistory.push({role:'assistant',content:answer});aiHistory=aiHistory.slice(-10);
+  const answer=String(data.answer||'Ответ не получен.');appendAiMessage('assistant',answer);if(Array.isArray(data.proposals)&&data.proposals.length)appendAiProposals(data.proposals);aiHistory.push({role:'assistant',content:answer});aiHistory=aiHistory.slice(-10);
  }catch(e){thinking.remove();appendAiMessage('assistant',String(e.message||e),'error')}
  finally{aiBusy=false;aiSendBtn.disabled=false;aiInput.focus()}
 }
@@ -5167,6 +5495,9 @@ function applyServerPresetProjectConfig(presetId){
  if(presetId==='mytishchi'){
    // Full project preset: reset phasing so no stale settings survive from another project.
    inputs.technical_supervision_pct=5;
+   inputs.offices_enabled=true;
+   inputs.offices_gba_sqm=Number((inputs._glavapu_import&&inputs._glavapu_import.normalized&&inputs._glavapu_import.normalized.office_gba_sqm)||26700);
+   inputs.offices_saleable_sqm=Number((inputs._glavapu_import&&inputs._glavapu_import.normalized&&inputs._glavapu_import.normalized.office_saleable_sqm)||21360);
    phasing=makeDefaultPhasing(3);
    phasing.enabled=true;
    phasing.phase_count=3;
@@ -5178,8 +5509,8 @@ function applyServerPresetProjectConfig(presetId){
    phasing.products.underground_parking=[40,32,28];
    phasing.products.storage=[40,32,28];
 
-   // Expert social adjustment approved for the working Mytishchi scenario.
-   // Source GlavAPU requirement (425 DOU places) remains stored in _glavapu_import.normalized.
+   // Working social program approved for the Mytishchi scenario.
+   // Normative need remains separately stored in _glavapu_import.normalized.
    inputs.social_mode='Строительство';
    inputs._social_mode_user_set=true;
    inputs.kindergarten_places=465;
@@ -5189,9 +5520,13 @@ function applyServerPresetProjectConfig(presetId){
    inputs._preset_expert_overrides={
      preset_id:'mytishchi',
      note:'Экспертная корректировка относительно исходного ТЭП ГлавАПУ',
-     source_kindergarten_places:Number((inputs._glavapu_import&&inputs._glavapu_import.normalized&&inputs._glavapu_import.normalized.required_kindergarten_places)||425),
+     normative_kindergarten_need:Number((inputs._glavapu_import&&inputs._glavapu_import.normalized&&inputs._glavapu_import.normalized.required_kindergarten_places)||465),
      expert_kindergarten_places:465,
      expert_school_places:675,
+     normative_school_need:Number((inputs._glavapu_import&&inputs._glavapu_import.normalized&&inputs._glavapu_import.normalized.required_school_places)||975),
+     office_gba_sqm:inputs.offices_gba_sqm,
+     office_saleable_sqm:inputs.offices_saleable_sqm,
+     mfc_parking_spaces:Number((inputs._glavapu_import&&inputs._glavapu_import.normalized&&inputs._glavapu_import.normalized.mfc_parking_spaces)||434),
      phasing:'3 очереди 40/32/28',
      social_objects:[
        {name:'ДОУ №1',type:'kindergarten',capacity:250,phase:1},
@@ -5211,7 +5546,7 @@ function applyServerPresetProjectConfig(presetId){
    // Expert capacity overrides the source quantity, while source area is preserved unless user edits it.
    syncTep(false);
 
-   return 'Проектный preset Мытищи: 3 очереди 40/32/28; экспертная социалка — О1 ДОУ 250, О2 СОШ 675, О3 ДОУ 215 (итого ДОУ 465 вместо исходных 425).';
+   return 'Preset Мытищи: 3 очереди 40/32/28; МФК/офисы 26,7/21,36 тыс. м²; подземный паркинг 2 723 м/м; рабочая социалка О1 ДОУ 250, О2 СОШ 675, О3 ДОУ 215. Нормативная потребность СОШ 975 хранится отдельно.';
  }
 
  if(presetId==='mishina'){
@@ -5271,7 +5606,7 @@ function applyGlavapu(){
  const socialNote=inputs.social_mode==='Строительство'
   ? 'Соцрежим: строительство; расчётные мощности ГлавАПУ используются при нулевых фактических объектах.'
   : 'Соцрежим: денежная компенсация.';
- glavapuStatus.innerHTML='<span class="import-ok">Данные ГлавАПУ применены. Денежные единицы приведены к млн ₽. '+socialNote+' Подземный паркинг: постоянные + гостевые × 35 м².'+(presetNote?' <b>'+presetNote+'</b>':'')+'</span>';
+ glavapuStatus.innerHTML='<span class="import-ok">Данные ТЭП применены. Денежные единицы приведены к млн ₽. '+socialNote+' Подземный паркинг собран из жилого блока и, при наличии, отдельного блока МФК.'+(presetNote?' <b>'+presetNote+'</b>':'')+'</span>';
  calculate();
 }
 
@@ -5290,9 +5625,12 @@ function getGlavapuUnderground(){
  if(!n)return null;
  const permanent=Number(n.parking_permanent||0);
  const guest=Number(n.parking_guest||0);
- const spaces=permanent+guest;
+ const mfc=Number(n.mfc_parking_spaces||0);
+ const spaces=permanent+guest+mfc;
  if(spaces<=0)return null;
- return {permanent,guest,spaces,gns:spaces*35};
+ const residentialArea=(permanent+guest)*35;
+ const mfcArea=Number(n.mfc_parking_area_sqm||0)||(mfc*35);
+ return {permanent,guest,mfc,spaces,gns:residentialArea+mfcArea};
 }
 
 function repairParkingFromGlavapu(){
@@ -5397,7 +5735,7 @@ function renderTep(){
    const tr=document.createElement('tr');
    let label=row.label;
    if(key==='underground_parking'&&importedParking){
-     label+=` <span style="display:block;font-size:10px;color:#777;margin-top:3px">ГлавАПУ: ${num(importedParking.permanent)} постоянных + ${num(importedParking.guest)} гостевых = ${num(importedParking.spaces)} м/м × 35 м²</span>`;
+     label+=` <span style="display:block;font-size:10px;color:#777;margin-top:3px">Источник: ${num(importedParking.permanent)} жилых постоянных + ${num(importedParking.guest)} гостевых${importedParking.mfc?` + ${num(importedParking.mfc)} МФК`:''} = ${num(importedParking.spaces)} м/м</span>`;
    }
    let html=`<td>${label}</td>`;
    ['gns','total_area','useful','saleable','transfer','units'].forEach(col=>{
