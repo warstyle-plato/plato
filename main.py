@@ -18,7 +18,7 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-app = FastAPI(title="PLATO Development Investment Model", version="0.8.0")
+app = FastAPI(title="PLATO Development Investment Model", version="0.8.5")
 
 SCENARIOS = {
     'conservative': {'scenario_revenue_multiplier': 0.90, 'scenario_cost_multiplier': 1.10},
@@ -426,8 +426,8 @@ def parse_glavapu_xlsx(data: bytes, filename: str = "") -> dict[str, Any]:
         "ground_commercial": {
             "gns": data_norm["ground_commercial_spp_sqm"] or 0,
             "total_area": data_norm["ground_commercial_np_sqm"] or 0,
-            "useful": data_norm["ground_commercial_np_sqm"] or 0,
-            "saleable": data_norm["ground_commercial_np_sqm"] or 0,
+            "useful": data_norm["nonresidential_aboveground_sqm"] or data_norm["ground_commercial_np_sqm"] or 0,
+            "saleable": data_norm["nonresidential_aboveground_sqm"] or data_norm["ground_commercial_np_sqm"] or 0,
             "units": 0,
         },
         "underground_parking": {
@@ -485,7 +485,8 @@ def parse_glavapu_xlsx(data: bytes, filename: str = "") -> dict[str, Any]:
         item("НП жилая", "residential_np_sqm", "м²", "ТЭП → Квартиры → Общая площадь", 1),
         item("Площадь квартир", "apartment_area_sqm", "м²", "ТЭП → Квартиры → Продаваемая", 1),
         item("СПП нежилой части МКД", "ground_commercial_spp_sqm", "м²", "ТЭП → Коммерция 1 эт. → ГНС", 1),
-        item("НП нежилой части МКД", "ground_commercial_np_sqm", "м²", "ТЭП → Коммерция 1 эт. → Продаваемая", 1),
+        item("НП нежилой части МКД", "ground_commercial_np_sqm", "м²", "ТЭП → Коммерция 1 эт. → Общая площадь", 1),
+        item("Надземная нежилая площадь", "nonresidential_aboveground_sqm", "м²", "ТЭП → Коммерция 1 эт. → Продаваемая", 1),
         item("Стоимость смены ВРИ", "change_vri_mln", "млн ₽", "Вводные → оформление земельных правоотношений", 3),
         item("Компенсация за соцобъекты", "social_compensation_total_mln", "млн ₽", "Вводные → социальная нагрузка", 3),
         item("Рекомендуемый режим соцнагрузки", "suggested_social_mode", "", "Справочно; выбор пользователя не перезаписывается"),
@@ -1354,6 +1355,20 @@ def calculate(req: CalcRequest) -> dict:
             t["underground_parking"]["saleable"] = 0.0
             t["underground_parking"]["transfer"] = 0.0
 
+        # v0.8.5 migration: older builds mapped total non-residential NP
+        # directly into saleable commercial area. Repair only the exact stale
+        # imported value; preserve deliberate manual edits.
+        old_wrong_commercial = n(imported, "ground_commercial_np_sqm")
+        correct_commercial = n(imported, "nonresidential_aboveground_sqm")
+        if (
+            correct_commercial > 0
+            and old_wrong_commercial > 0
+            and "ground_commercial" in t
+            and abs(n(t["ground_commercial"], "saleable") - old_wrong_commercial) <= max(1.0, old_wrong_commercial * 1e-6)
+        ):
+            t["ground_commercial"]["saleable"] = correct_commercial
+            t["ground_commercial"]["useful"] = correct_commercial
+
     op = build_operating_model(x, t)
     fin = simulate_financing(x, t, rates, op)
 
@@ -1763,7 +1778,7 @@ def calculate(req: CalcRequest) -> dict:
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "version": "0.8.0"}
+    return {"status": "ok", "version": "0.8.5"}
 
 
 @app.get("/defaults")
@@ -2127,8 +2142,9 @@ def _consolidate_phase_results(
             "profit_before_tax": finance["profit_before_tax"],
             "profit_tax": finance["profit_tax"], "net_profit": net_profit,
             "margin": net_profit / total_revenue if total_revenue else 0.0,
-            "llcr": finance["llcr"],
+            "llcr": min((r["summary"]["llcr"] for r in results), default=0.0),
             "min_phase_llcr": min((r["summary"]["llcr"] for r in results), default=0.0),
+            "portfolio_llcr": finance["llcr"],
             "scenario_revenue_multiplier": n(master_inputs, "scenario_revenue_multiplier", 1.0),
             "scenario_cost_multiplier": n(master_inputs, "scenario_cost_multiplier", 1.0),
             "npv": npv, "irr_equity": irr_equity,
@@ -2291,10 +2307,28 @@ def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
             if key in p_tep:
                 p_tep[key] = _scale_tep_row(p_tep[key], product_weights[key][idx])
 
-        p_inputs["apartment_price_th"] = n(x_master,"apartment_price_th")*(1+n(x_master,"monthly_growth_pre_pct",1.5)/100)**offset
-        p_inputs["commercial_price_th"] = n(x_master,"commercial_price_th")*(1+n(x_master,"monthly_growth_pre_pct",1.5)/100)**offset
-        p_inputs["parking_price_th"] = n(x_master,"parking_price_th")*(1.0075**offset)
-        p_inputs["storage_price_th"] = n(x_master,"storage_price_th")*(1.0075**offset)
+        # Splitting into queues must not create value by itself.
+        # monthly_growth_pre_pct applies only AFTER sales in a queue start.
+        # Any difference in starting prices between queues is a separate explicit annual assumption.
+        phase_price_index = max(-99.0, float(phasing.get("phase_price_indexation_annual_pct", 0.0) or 0.0))
+        phase_cost_index = max(-99.0, float(phasing.get("phase_cost_indexation_annual_pct", 0.0) or 0.0))
+        phase_price_factor = (1.0 + phase_price_index / 100.0) ** (offset / 12.0)
+        phase_cost_factor = (1.0 + phase_cost_index / 100.0) ** (offset / 12.0)
+
+        p_inputs["apartment_price_th"] = n(x_master,"apartment_price_th") * phase_price_factor
+        p_inputs["commercial_price_th"] = n(x_master,"commercial_price_th") * phase_price_factor
+        p_inputs["parking_price_th"] = n(x_master,"parking_price_th") * phase_price_factor
+        p_inputs["storage_price_th"] = n(x_master,"storage_price_th") * phase_price_factor
+
+        # Optional transparent cost indexation for later queues.
+        for cost_key in ("main_above_th_per_sqm","main_under_th_per_sqm","landscaping_th_per_sqm","commissioning_th_per_sqm","site_maintenance_th_per_sqm"):
+            p_inputs[cost_key] = n(x_master, cost_key) * phase_cost_factor
+        p_inputs["kindergarten_cost_mln_per_place"] = n(x_master,"kindergarten_cost_mln_per_place") * phase_cost_factor
+        p_inputs["school_cost_mln_per_place"] = n(x_master,"school_cost_mln_per_place") * phase_cost_factor
+        p_inputs["clinic_cost_mln_per_unit"] = n(x_master,"clinic_cost_mln_per_unit") * phase_cost_factor
+        p_inputs["offices_cost_th_per_sqm"] = n(x_master,"offices_cost_th_per_sqm") * phase_cost_factor
+        p_inputs["retail_cost_th_per_sqm"] = n(x_master,"retail_cost_th_per_sqm") * phase_cost_factor
+        p_inputs["above_parking_cost_mln_per_space"] = n(x_master,"above_parking_cost_mln_per_space") * phase_cost_factor
 
         p_inputs["purchase_price_mln"] = shared_base_mln["purchase"]*cash_weights["purchase"][idx]/100
         p_inputs["land_rights_cost_mln"] = shared_base_mln["land_rights"]*cash_weights["land_rights"][idx]/100
@@ -2314,7 +2348,9 @@ def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
             p_inputs["social_mode"] = "Денежная компенсация"
             sw = cash_weights["social_compensation"][idx]/100
             p_inputs["social_compensation_mln"] = shared_base_mln["social_compensation"]*sw
-            p_inputs["social_comp_date"] = _shift_iso(x_master.get("social_comp_date"), offset)
+            shifted_comp_date = d(_shift_iso(x_master.get("social_comp_date"), offset))
+            phase_start_date = d(p_inputs["project_start"])
+            p_inputs["social_comp_date"] = max(shifted_comp_date, phase_start_date).isoformat()
             p_inputs["kindergarten_places"] = p_inputs["school_places"] = p_inputs["clinic_capacity"] = 0
             if master_import:
                 p_inputs["_glavapu_import"] = {"normalized": {
@@ -2338,10 +2374,14 @@ def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
             p_inputs["kindergarten_places"] = sums["kindergarten"]
             p_inputs["school_places"] = sums["school"]
             p_inputs["clinic_capacity"] = sums["clinic"]
-            permit = add_months(d(p_inputs["project_start"]), int(n(p_inputs,"ird_months",18)))
-            p_inputs["kindergarten_start"] = min(starts["kindergarten"]) if starts["kindergarten"] else permit.isoformat()
-            p_inputs["school_start"] = min(starts["school"]) if starts["school"] else permit.isoformat()
-            p_inputs["clinic_start"] = min(starts["clinic"]) if starts["clinic"] else permit.isoformat()
+            phase_start_date = d(p_inputs["project_start"])
+            def phase_social_start(values: list[str]) -> str:
+                candidate = d(min(values)) if values else phase_start_date
+                # A social object assigned to a queue cannot start before that queue itself.
+                return max(candidate, phase_start_date).isoformat()
+            p_inputs["kindergarten_start"] = phase_social_start(starts["kindergarten"])
+            p_inputs["school_start"] = phase_social_start(starts["school"])
+            p_inputs["clinic_start"] = phase_social_start(starts["clinic"])
             p_tep["kindergarten"] = {**p_tep.get("kindergarten",{"label":"ДОУ"}),
                 "gns":0.0,"total_area":sums["kindergarten"]*n(x_master,"social_dou_norm_sqm",12),
                 "useful":0.0,"saleable":0.0,"transfer":sums["kindergarten"]*n(x_master,"social_dou_norm_sqm",12),"units":sums["kindergarten"]}
@@ -2364,11 +2404,11 @@ def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
                     if dk in p_inputs:
                         p_inputs[dk]=_shift_iso(x_master.get(dk),offset)
                 if prefix=="offices":
-                    p_inputs["offices_price_th_per_sqm"]=n(x_master,"offices_price_th_per_sqm")*(1+n(x_master,"offices_growth_pre_pct",1.5)/100)**offset
+                    p_inputs["offices_price_th_per_sqm"]=n(x_master,"offices_price_th_per_sqm")*phase_price_factor
                 elif prefix=="retail":
-                    p_inputs["retail_price_th_per_sqm"]=n(x_master,"retail_price_th_per_sqm")*(1+n(x_master,"retail_growth_pre_pct",1.5)/100)**offset
+                    p_inputs["retail_price_th_per_sqm"]=n(x_master,"retail_price_th_per_sqm")*phase_price_factor
                 else:
-                    p_inputs["above_parking_price_mln_per_space"]=n(x_master,"above_parking_price_mln_per_space")*(1+n(x_master,"above_parking_growth_pre_pct",.75)/100)**offset
+                    p_inputs["above_parking_price_mln_per_space"]=n(x_master,"above_parking_price_mln_per_space")*phase_price_factor
 
         result = calculate(CalcRequest(inputs=p_inputs, tep=p_tep, rates=rates))
 
@@ -2392,7 +2432,9 @@ def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
             "cash_shared_cost":cash_shared,"allocated_shared_cost":allocated_shared,
             "peak_bridge":result["finance"]["peak_bridge"],"peak_pf":result["finance"]["peak_pf"],
             "llcr":result["summary"]["llcr"],"net_profit":result["summary"]["net_profit"],
-            "allocated_net_profit":allocated_profit,"margin":result["summary"]["margin"],
+            "allocated_net_profit":allocated_profit,
+            "margin":result["summary"]["margin"],
+            "allocated_margin": allocated_profit / result["summary"]["revenue"] if result["summary"]["revenue"] else 0.0,
         })
 
     consolidated = _consolidate_phase_results(x_master, phase_items, comparison)
@@ -2614,7 +2656,7 @@ tfoot th{border-top:2px solid #111;color:#111;background:#fff}
 <div class="shell">
   <div class="brandbar"><img src="data:image/webp;base64,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"><div class="brandline"></div></div>
   <div class="header">
-    <div class="title"><h1>Девелоперская инвестиционная модель</h1><p>v0.8.0 · ТЭП · экономика · БРИДЖ · проектное финансирование · эскроу · LLCR</p></div>
+    <div class="title"><h1>Девелоперская инвестиционная модель</h1><p>v0.8.5 · ТЭП · экономика · БРИДЖ · проектное финансирование · эскроу · LLCR</p></div>
     <div class="actions">
       <div class="scenario">Класс&nbsp;
         <select id="projectClassSelect" onchange="renderProjectClassPreview()" style="min-width:135px">
@@ -2708,6 +2750,8 @@ tfoot th{border-top:2px solid #111;color:#111;background:#fff}
           <div class="field"><label>Количество очередей</label><select id="phaseCount" onchange="setPhaseCount(Number(this.value))"><option>1</option><option>2</option><option selected>3</option><option>4</option><option>5</option></select></div>
           <div class="field"><label>Целевой размер очереди, продаваемых м²</label><input id="phaseTargetSize" type="number" step="5000" value="70000" onchange="phasing.target_size_sqm=Number(this.value);renderPhasing()"></div>
           <div class="field"><label>Сдвиг старта, мес.</label><input id="phaseGap" type="number" value="12" min="3" max="36" onchange="phasing.phase_gap_months=Number(this.value);autoPhaseDates()"></div>
+          <div class="field"><label>Индексация стартовой цены между очередями, %/год</label><input id="phasePriceIndex" type="number" step="0.5" value="0" onchange="phasing.phase_price_indexation_annual_pct=Number(this.value);calculate()"></div>
+          <div class="field"><label>Индексация себестоимости поздних очередей, %/год</label><input id="phaseCostIndex" type="number" step="0.5" value="0" onchange="phasing.phase_cost_indexation_annual_pct=Number(this.value);calculate()"></div>
           <div class="field"><label>Рекомендация</label><div id="phaseRecommendation" style="padding:10px 0;font-weight:700">—</div></div>
         </div>
         <div id="phaseCards" class="phase-grid"></div>
@@ -3008,6 +3052,7 @@ function frontLoadedPreset(count,kind){
 function makeDefaultPhasing(count=3){
  const w=phaseWeightPreset(count);
  return {enabled:false,phase_count:count,target_size_sqm:70000,phase_gap_months:12,
+  phase_price_indexation_annual_pct:0,phase_cost_indexation_annual_pct:0,
   phases:Array.from({length:count},(_,i)=>({name:`О${i+1}`,start_offset_months:i*12,construction_months:Number(INPUT_DEFAULT.construction_months||24)})),
   products:{apartments:[...w],ground_commercial:[...w],underground_parking:[...w],storage:[...w]},
   shared_cash:{purchase:frontLoadedPreset(count,'purchase'),land_rights:frontLoadedPreset(count,'land_rights'),ird:frontLoadedPreset(count,'ird'),design:frontLoadedPreset(count,'design'),preparation:frontLoadedPreset(count,'preparation'),utilities:frontLoadedPreset(count,'utilities'),social_compensation:frontLoadedPreset(count,'social_compensation')},
@@ -3048,22 +3093,53 @@ function currentMonetizableSaleable(){
 }
 function recommendationCount(){return Math.max(1,Math.min(5,Math.ceil(currentMonetizableSaleable()/Math.max(20000,Number(phasing.target_size_sqm||70000)))))}
 function phaseOptions(selected){return phasing.phases.map((p,i)=>`<option value="${i+1}" ${Number(selected)===i+1?'selected':''}>${p.name}</option>`).join('')}
-function togglePhasing(v){phasing.enabled=!!v;if(v&&!phasing.social_objects.length&&inputs.social_mode==='Строительство')autoSocialObjects(false);renderPhasing();calculate()}
-function setPhaseCount(count){const e=phasing.enabled,t=phasing.target_size_sqm||70000,g=phasing.phase_gap_months||12;phasing=makeDefaultPhasing(Math.max(1,Math.min(5,count)));phasing.enabled=e;phasing.target_size_sqm=t;phasing.phase_gap_months=g;phasing.phases.forEach((p,i)=>p.start_offset_months=i*g);autoSocialObjects(false);renderPhasing()}
-function autoPhaseDates(){phasing.phases.forEach((p,i)=>p.start_offset_months=i*Number(phasing.phase_gap_months||12));renderPhasing()}
-function autoSuggestPhasing(){const c=recommendationCount();phasing=makeDefaultPhasing(c);phasing.enabled=true;phasing.target_size_sqm=Number(document.getElementById('phaseTargetSize')?.value||70000);phasing.phase_gap_months=Number(document.getElementById('phaseGap')?.value||12);phasing.phases.forEach((p,i)=>p.start_offset_months=i*phasing.phase_gap_months);autoSocialObjects(false);renderPhasing()}
+function phaseStartDate(phaseNo){
+ const i=Math.max(0,Math.min(phasing.phases.length-1,Number(phaseNo||1)-1));
+ const p=phasing.phases[i]||{start_offset_months:0};
+ return addMonthsJS(inputs.project_start,Number(p.start_offset_months||0));
+}
+function normalizeSocialObjectDates(){
+ if(!phasing||!Array.isArray(phasing.social_objects))return;
+ phasing.social_objects.forEach(o=>{
+   const phase=Math.max(1,Math.min(phasing.phases.length,Number(o.phase||1)));
+   o.phase=phase;
+   const phaseStart=phaseStartDate(phase);
+   // Old saved objects had no start_mode and could retain dates from 2026 / another project.
+   // Treat an empty or pre-phase date as automatic and bind it to the selected queue start.
+   if(!o.start_mode){
+     o.start_mode=(!o.start_date||String(o.start_date)<phaseStart)?'auto':'manual';
+   }
+   if(o.start_mode!=='manual'||!o.start_date||String(o.start_date)<phaseStart){
+     o.start_date=phaseStart;
+     if(String(o.start_date)<phaseStart)o.start_mode='auto';
+   }
+ });
+}
+function togglePhasing(v){phasing.enabled=!!v;if(v&&!phasing.social_objects.length&&inputs.social_mode==='Строительство')autoSocialObjects(false);normalizeSocialObjectDates();renderInputs();renderPhasing();calculate()}
+function setPhaseCount(count){const e=phasing.enabled,t=phasing.target_size_sqm||70000,g=phasing.phase_gap_months||12,pi=Number(phasing.phase_price_indexation_annual_pct||0),ci=Number(phasing.phase_cost_indexation_annual_pct||0);phasing=makeDefaultPhasing(Math.max(1,Math.min(5,count)));phasing.enabled=e;phasing.target_size_sqm=t;phasing.phase_gap_months=g;phasing.phase_price_indexation_annual_pct=pi;phasing.phase_cost_indexation_annual_pct=ci;phasing.phases.forEach((p,i)=>p.start_offset_months=i*g);autoSocialObjects(false);normalizeSocialObjectDates();renderInputs();renderPhasing();calculate()}
+function autoPhaseDates(){phasing.phases.forEach((p,i)=>p.start_offset_months=i*Number(phasing.phase_gap_months||12));normalizeSocialObjectDates();renderPhasing();calculate()}
+function autoSuggestPhasing(){const c=recommendationCount(),pi=Number(document.getElementById('phasePriceIndex')?.value||phasing.phase_price_indexation_annual_pct||0),ci=Number(document.getElementById('phaseCostIndex')?.value||phasing.phase_cost_indexation_annual_pct||0);phasing=makeDefaultPhasing(c);phasing.enabled=true;phasing.target_size_sqm=Number(document.getElementById('phaseTargetSize')?.value||70000);phasing.phase_gap_months=Number(document.getElementById('phaseGap')?.value||12);phasing.phase_price_indexation_annual_pct=pi;phasing.phase_cost_indexation_annual_pct=ci;phasing.phases.forEach((p,i)=>p.start_offset_months=i*phasing.phase_gap_months);autoSocialObjects(false);normalizeSocialObjectDates();renderPhasing();calculate()}
 function setPhaseProductShare(k,i,v){phasing.products[k][i]=Number(v||0);renderPhasingStatus()}
 function setSharedShare(bucket,k,i,v){phasing[bucket][k][i]=Number(v||0)}
 function splitCapacity(total,typical){let t=Math.max(0,Number(total||0)),out=[];typical=Math.max(1,Number(typical||1));while(t>0){const v=Math.min(typical,t);out.push(v);t-=v}return out}
 function autoSocialObjects(doRender=true){
  phasing.social_objects=[];if(inputs.social_mode!=='Строительство'){if(doRender)renderPhasing();return}
  [['kindergarten','ДОУ',Number(inputs.kindergarten_places||0),250],['school','СОШ',Number(inputs.school_places||0),1100],['clinic','Поликлиника',Number(inputs.clinic_capacity||0),300]].forEach(([type,label,total,typical])=>{
-  const chunks=splitCapacity(total,typical);chunks.forEach((capacity,i)=>{let phase;if(chunks.length===1)phase=type==='kindergarten'?1:Math.min(2,phasing.phase_count);else phase=1+Math.round(i*(phasing.phase_count-1)/Math.max(1,chunks.length-1));phasing.social_objects.push({id:`${type}_${Date.now()}_${i}`,name:`${label} №${i+1}`,type,capacity,phase,start_date:''})})
- });if(doRender)renderPhasing()
+  const chunks=splitCapacity(total,typical);chunks.forEach((capacity,i)=>{let phase;if(chunks.length===1)phase=type==='kindergarten'?1:Math.min(2,phasing.phase_count);else phase=1+Math.round(i*(phasing.phase_count-1)/Math.max(1,chunks.length-1));phasing.social_objects.push({id:`${type}_${Date.now()}_${i}`,name:`${label} №${i+1}`,type,capacity,phase,start_date:phaseStartDate(phase),start_mode:'auto'})})
+ });normalizeSocialObjectDates();if(doRender){renderPhasing();calculate()}
 }
-function addSocialObject(type){const l={kindergarten:'ДОУ',school:'СОШ',clinic:'Поликлиника'},n=phasing.social_objects.filter(x=>x.type===type).length;phasing.social_objects.push({id:`${type}_${Date.now()}`,name:`${l[type]} №${n+1}`,type,capacity:0,phase:1,start_date:''});renderPhasing()}
-function updateSocialObject(i,k,v){if(!phasing.social_objects[i])return;phasing.social_objects[i][k]=['capacity','phase'].includes(k)?Number(v||0):v;renderSocialStatus()}
-function deleteSocialObject(i){phasing.social_objects.splice(i,1);renderPhasing()}
+function addSocialObject(type){const l={kindergarten:'ДОУ',school:'СОШ',clinic:'Поликлиника'},n=phasing.social_objects.filter(x=>x.type===type).length,phase=1;phasing.social_objects.push({id:`${type}_${Date.now()}`,name:`${l[type]} №${n+1}`,type,capacity:0,phase,start_date:phaseStartDate(phase),start_mode:'auto'});renderPhasing();calculate()}
+function updateSocialObject(i,k,v){
+ const o=phasing.social_objects[i];if(!o)return;
+ if(k==='phase'){
+   o.phase=Number(v||1);
+   if(o.start_mode!=='manual')o.start_date=phaseStartDate(o.phase);
+ }else if(k==='start_date'){
+   if(v){o.start_date=v;o.start_mode='manual'}else{o.start_mode='auto';o.start_date=phaseStartDate(o.phase)}
+ }else{o[k]=k==='capacity'?Number(v||0):v}
+ normalizeSocialObjectDates();renderPhasing();calculate()
+}
+function deleteSocialObject(i){phasing.social_objects.splice(i,1);renderPhasing();calculate()}
 function renderSocialStatus(){
  if(!document.getElementById('socialObjectsStatus'))return;const t={kindergarten:0,school:0,clinic:0};
  phasing.social_objects.forEach(o=>t[o.type]=(t[o.type]||0)+Number(o.capacity||0));
@@ -3078,9 +3154,12 @@ function renderShareTable(h,b,data,labels,bucket){
 }
 function renderPhasing(){
  if(!document.getElementById('phasingEnabled'))return;
+ normalizeSocialObjectDates();
  phasingEnabled.checked=!!phasing.enabled;phaseCount.value=String(phasing.phase_count);phaseTargetSize.value=Number(phasing.target_size_sqm||70000);phaseGap.value=Number(phasing.phase_gap_months||12);
+ if(document.getElementById('phasePriceIndex'))phasePriceIndex.value=Number(phasing.phase_price_indexation_annual_pct||0);
+ if(document.getElementById('phaseCostIndex'))phaseCostIndex.value=Number(phasing.phase_cost_indexation_annual_pct||0);
  phaseRecommendation.textContent=`${recommendationCount()} очеред. при ${num(currentMonetizableSaleable())} м²`;
- phaseCards.innerHTML=phasing.phases.map((p,i)=>`<div class="phase-card"><h3>${p.name}</h3><div class="field"><label>Название</label><input value="${p.name}" onchange="phasing.phases[${i}].name=this.value;renderPhasing()"></div><div class="field"><label>Сдвиг старта, мес.</label><input type="number" value="${p.start_offset_months}" onchange="phasing.phases[${i}].start_offset_months=Number(this.value)"></div><div class="field"><label>Строительство, мес.</label><input type="number" value="${p.construction_months}" onchange="phasing.phases[${i}].construction_months=Number(this.value)"></div><div style="font-size:11px;color:#777;margin-top:8px">Старт: ${dateRu(addMonthsJS(inputs.project_start,p.start_offset_months))}</div></div>`).join('');
+ phaseCards.innerHTML=phasing.phases.map((p,i)=>`<div class="phase-card"><h3>${p.name}</h3><div class="field"><label>Название</label><input value="${p.name}" onchange="phasing.phases[${i}].name=this.value;renderPhasing()"></div><div class="field"><label>Сдвиг старта, мес.</label><input type="number" value="${p.start_offset_months}" onchange="phasing.phases[${i}].start_offset_months=Number(this.value);normalizeSocialObjectDates();renderPhasing();calculate()"></div><div class="field"><label>Строительство, мес.</label><input type="number" value="${p.construction_months}" onchange="phasing.phases[${i}].construction_months=Number(this.value);calculate()"></div><div style="font-size:11px;color:#777;margin-top:8px">Старт: ${dateRu(addMonthsJS(inputs.project_start,p.start_offset_months))}</div></div>`).join('');
  const pl={apartments:'Квартиры',ground_commercial:'Коммерция 1 этажа',underground_parking:'Подземный паркинг',storage:'Кладовые'};
  phaseProductHead.innerHTML=`<tr><th>Продукт</th>${phasing.phases.map(p=>`<th>${p.name}</th>`).join('')}<th>Итого</th></tr>`;
  phaseProductBody.innerHTML=Object.entries(phasing.products).map(([k,a])=>{const s=a.reduce((x,y)=>x+Number(y||0),0);return `<tr><td>${pl[k]}</td>${a.map((v,i)=>`<td><input type="number" step="1" value="${Number(v).toFixed(1)}" onchange="setPhaseProductShare('${k}',${i},this.value)"></td>`).join('')}<td class="${Math.abs(s-100)<.1?'phase-total-ok':'phase-total-bad'}">${s.toFixed(1)}%</td></tr>`}).join('');renderPhasingStatus();
@@ -3249,6 +3328,10 @@ function renderInputs(){
    grp[1].forEach(f=>{
      const [id,label,unit,type]=f;const wrap=document.createElement('div');wrap.className='field';
      wrap.innerHTML=`<label>${label} <span class="unit">${unit}</span></label>`;
+     if(phasing&&phasing.enabled&&['kindergarten_start','school_start','clinic_start'].includes(id)){
+       wrap.innerHTML+=`<div class="note" style="margin:0;padding:11px 12px">Определяется по выбранной очереди на вкладке «Очередность». По умолчанию — дата начала этой очереди.</div>`;
+       grid.appendChild(wrap);return;
+     }
      let el;
      if(type==='select'){el=document.createElement('select');['Строительство','Денежная компенсация'].forEach(v=>{let o=document.createElement('option');o.value=v;o.textContent=v;el.appendChild(o)})}
      else if(type==='finance_select'){el=document.createElement('select');['Капитализация в ПФ','Выплата при рефинансировании'].forEach(v=>{let o=document.createElement('option');o.value=v;o.textContent=v;el.appendChild(o)})}
@@ -3306,6 +3389,26 @@ function updateTepTotals(){
  Object.values(tep).forEach(r=>Object.keys(sums).forEach(k=>sums[k]+=Number(r[k]||0)));
  tg.textContent=num(sums.gns);ta.textContent=num(sums.total_area);tu.textContent=num(sums.useful);ts.textContent=num(sums.saleable);tt.textContent=num(sums.transfer);tn.textContent=num(sums.units);
 }
+function applyRequiredSocialProgramFromGlavapu(){
+ if(inputs.social_mode!=='Строительство')return false;
+ const normalized=inputs._glavapu_import&&inputs._glavapu_import.normalized;
+ if(!normalized)return false;
+ let changed=false;
+ const mappings=[
+   ['kindergarten_places','required_kindergarten_places','social_dou_gba_sqm','social_dou_norm_sqm'],
+   ['school_places','required_school_places','social_school_gba_sqm','social_school_norm_sqm'],
+   ['clinic_capacity','required_clinic_capacity','social_clinic_gba_sqm','social_clinic_norm_sqm']
+ ];
+ mappings.forEach(([inputKey,requiredKey,areaKey,normKey])=>{
+   const required=Number(normalized[requiredKey]||0);
+   if(Number(inputs[inputKey]||0)<=0 && required>0){inputs[inputKey]=required;changed=true}
+   if(Number(inputs[areaKey]||0)<=0 && Number(inputs[inputKey]||0)>0){
+     inputs[areaKey]=Number(inputs[inputKey]||0)*Number(inputs[normKey]||0);changed=true
+   }
+ });
+ return changed;
+}
+
 function syncTep(rerender=true){
  const socialBuild=inputs.social_mode==='Строительство';
  tep.underground_parking.gns=Number(tep.underground_parking.units||0)*35;tep.underground_parking.total_area=tep.underground_parking.gns;
@@ -3476,6 +3579,7 @@ async function calculate(){
  }
  generateRateCurve();
  repairParkingFromGlavapu();
+ normalizeSocialObjectDates();
  reportView='all';
  if(phasing&&phasing.enabled&&Number(phasing.phase_count||1)>1){
    const response=await fetch('/calculate-phased',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({inputs,tep,rates,phasing})});
@@ -3509,7 +3613,8 @@ function renderPhaseComparison(){
   ['LLCR',c.map(x=>mult(x.llcr)),mult(cons.summary.llcr)],
   ['Чистая прибыль — cash',c.map(x=>money(x.net_profit)),money(cons.summary.net_profit)],
   ['Аналитическая прибыль после аллокации',c.map(x=>money(x.allocated_net_profit)),'—'],
-  ['Маржинальность',c.map(x=>pct(x.margin)),pct(cons.summary.margin)]
+  ['Маржа после аллокации',c.map(x=>pct(x.allocated_margin)),'—'],
+  ['Cash-маржа',c.map(x=>pct(x.margin)),pct(cons.summary.margin)]
  ];
  phaseComparisonBody.innerHTML=rows.map(r=>`<tr><td>${r[0]}</td>${r[1].map(v=>`<td>${v}</td>`).join('')}<td>${r[2]}</td></tr>`).join('')
 }
@@ -3537,7 +3642,7 @@ function renderResult(){
   ['Маржинальность',pct(r.summary.margin)],
   ['NPV @'+Number(inputs.discount_rate_pct||20).toLocaleString('ru-RU')+'%',money(r.summary.npv)],
   ['IRR equity',irrFmt(r.summary.irr_equity)],
-  ['LLCR (расчётный)',mult(r.summary.llcr)],
+  [r.summary.phase_count?'LLCR контрольный (min очередей)':'LLCR (расчётный)',mult(r.summary.llcr)],
   ['Расчётный БРИДЖ',money(r.report.financing.calculated_bridge)],
   ['Фактический БРИДЖ',money(r.report.financing.actual_bridge)],
   ['Пиковый ПФ',money(r.report.financing.pf_peak)]
@@ -3597,7 +3702,7 @@ function renderResult(){
   row('Проценты и комиссии',money(f.reported_interest_and_fees))+
   row('Корректировка переноса процентов БРИДЖ',`(${money(f.transferred_bridge_interest)})`)+
   `<tr><th>Знаменатель LLCR</th><th>${money(f.llcr_denominator)}</th></tr>`+
-  `<tr><th>LLCR</th><th>${mult(f.llcr)}</th></tr>`;
+  (r.summary.phase_count?`<tr><th>LLCR портфельный (справочно)</th><th>${mult(f.llcr)}</th></tr><tr><th>LLCR контрольный (min очередей)</th><th>${mult(r.summary.llcr)}</th></tr>`:`<tr><th>LLCR</th><th>${mult(f.llcr)}</th></tr>`);
 
  renderFinanceChart(f.rows);
  monthlyFinance.innerHTML=f.rows.filter((_,i)=>i%1===0).map(x=>`<tr>
@@ -3620,6 +3725,8 @@ function renderResult(){
 
  projectParamsTable.innerHTML=
   (r.summary.phase_count?row('Очередность',r.summary.phase_count+' очереди'):'')+
+  (r.summary.phase_count?row('Индексация стартовой цены между очередями',pct(Number(phasing.phase_price_indexation_annual_pct||0)/100)):'')+
+  (r.summary.phase_count?row('Индексация себестоимости поздних очередей',pct(Number(phasing.phase_cost_indexation_annual_pct||0)/100)):'')+
   row('Класс проекта',inputs.project_class&&PROJECT_CLASS_PRESETS[inputs.project_class]?PROJECT_CLASS_PRESETS[inputs.project_class].label:'Пользовательский')+
   row('Сценарий',scenarioSelect.options[scenarioSelect.selectedIndex].text)+
   row('Доходы к базовому сценарию',Number(r.summary.scenario_revenue_multiplier||1).toLocaleString('ru-RU',{minimumFractionDigits:2,maximumFractionDigits:2})+'x')+
@@ -3647,7 +3754,8 @@ function renderResult(){
   row('Спецставка ПФ',pct(r.report.financing.pf_special_rate))+
   row('Эффективная ставка ПФ после эскроу',pct(r.report.financing.avg_pf_effective_rate))+
   row('Проценты и комиссии',money(r.report.financing.interest_and_fees))+
-  `<tr><th>LLCR</th><th>${mult(r.summary.llcr)}</th></tr>`;
+  (r.summary.phase_count&&r.summary.portfolio_llcr!=null?row('LLCR портфельный (справочно)',mult(r.summary.portfolio_llcr)):'')+
+  `<tr><th>${r.summary.phase_count?'LLCR контрольный (min очередей)':'LLCR'}</th><th>${mult(r.summary.llcr)}</th></tr>`;
 
  const sb=r.summary.social_payment_breakdown||{};
  const socialMode=r.summary.social_payment_mode||'—';
