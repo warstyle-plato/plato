@@ -18,7 +18,7 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-app = FastAPI(title="PLATO Development Investment Model", version="0.8.3")
+app = FastAPI(title="PLATO Development Investment Model", version="0.8.0")
 
 SCENARIOS = {
     'conservative': {'scenario_revenue_multiplier': 0.90, 'scenario_cost_multiplier': 1.10},
@@ -66,7 +66,7 @@ class CalcRequest(BaseModel):
     rates: list[dict[str, Any]] = []
 
 
-class MultiPhaseRequest(BaseModel):
+class PhasedCalcRequest(BaseModel):
     inputs: dict[str, Any]
     tep: dict[str, dict[str, Any]]
     rates: list[dict[str, Any]] = []
@@ -245,6 +245,50 @@ def _find_named(rows: list[list[Any]], needle: str, value_col: int = 3) -> Any:
     return None
 
 
+
+def _money_to_mln(value: Any, unit: Any) -> float | None:
+    """Normalize a ГлавАПУ monetary value to million rubles using its source unit."""
+    number = _ru_number(value)
+    if number is None:
+        return None
+    u = str(unit or "").lower().replace("\u00a0", "").replace(" ", "")
+    if "млрд" in u:
+        return number * 1000.0
+    if "тыс" in u:
+        return number / 1000.0
+    # Default for ГлавАПУ monetary rows: million rubles.
+    return number
+
+
+def _row_money_mln(
+    by_code: dict[str, list[Any]],
+    code: str,
+    value_col: int = 3,
+    unit_col: int = 2,
+) -> float | None:
+    row = by_code.get(code)
+    if not row:
+        return None
+    value = row[value_col] if len(row) > value_col else None
+    unit = row[unit_col] if len(row) > unit_col else None
+    return _money_to_mln(value, unit)
+
+
+def _find_named_money_mln(
+    rows: list[list[Any]],
+    needle: str,
+    value_col: int = 3,
+    unit_col: int = 2,
+) -> float | None:
+    needle = needle.lower()
+    for row in rows:
+        if len(row) > 1 and needle in str(row[1] or "").lower():
+            value = row[value_col] if len(row) > value_col else None
+            unit = row[unit_col] if len(row) > unit_col else None
+            return _money_to_mln(value, unit)
+    return None
+
+
 def _find_parameter(rows: list[list[Any]], name: str) -> Any:
     target = name.strip().lower()
     for row in rows:
@@ -316,11 +360,11 @@ def parse_glavapu_xlsx(data: bytes, filename: str = "") -> dict[str, Any]:
         "parking_attached": _row_num(by, "42.3"),
         "parking_short_stop": _row_num(by, "43"),
 
-        "change_vri_mln": _row_num(by, "44"),
-        "social_compensation_total_mln": _ru_number(_find_named(all_rows, "расчёт компенсации за социальные объекты")),
-        "social_compensation_kindergarten_mln": _row_num(by, "54"),
-        "social_compensation_school_mln": _row_num(by, "55"),
-        "social_compensation_clinic_mln": _row_num(by, "56"),
+        "change_vri_mln": _row_money_mln(by, "44"),
+        "social_compensation_total_mln": _find_named_money_mln(all_rows, "расчёт компенсации за социальные объекты"),
+        "social_compensation_kindergarten_mln": _row_money_mln(by, "54"),
+        "social_compensation_school_mln": _row_money_mln(by, "55"),
+        "social_compensation_clinic_mln": _row_money_mln(by, "56"),
 
         "district": _find_parameter(params_rows, "Район"),
         "calculation_zone": _find_parameter(params_rows, "Расчётная зона"),
@@ -361,8 +405,6 @@ def parse_glavapu_xlsx(data: bytes, filename: str = "") -> dict[str, Any]:
     # Safe mappings: urban-planning source values -> model.
     input_mapping: dict[str, Any] = {
         "land_rights_cost_mln": data_norm["change_vri_mln"],
-        # Compensation is always imported as a reference/input value,
-        # regardless of whether the user later chooses cash payment or construction.
         "social_compensation_mln": data_norm["social_compensation_total_mln"],
         "kindergarten_places": data_norm["actual_kindergarten_places"] or 0,
         "school_places": data_norm["actual_school_places"] or 0,
@@ -463,7 +505,7 @@ def parse_glavapu_xlsx(data: bytes, filename: str = "") -> dict[str, Any]:
 
     warnings = [
         "Числа нормализованы по русскому формату: пробел/неразрывный пробел — разделитель тысяч, запятая — десятичный разделитель.",
-        "Показатели в тыс. кв. м автоматически приведены к м²; суммы в млн руб. сохранены в млн ₽.",
+        "Показатели в тыс. кв. м автоматически приведены к м²; денежные суммы автоматически нормализуются в млн ₽ с учётом исходной единицы (тыс./млн/млрд).",
         "Подземный паркинг рассчитывается автоматически как постоянные + гостевые машино-места. Приобъектные и кратковременные места исключаются. Норматив площади — 35 м² на 1 м/м.",
         "Для квартир ГНС принимается из «СПП жилая», общая площадь — из «НП жилая», продаваемая — из «Площадь квартир».",
     ]
@@ -909,6 +951,13 @@ def build_operating_model(x: dict, t: dict) -> dict:
     else:
         social_total = social_construction_total
     amounts["social"] = social_total
+
+    # Optional absolute base-cost overrides used only by the phasing wrapper.
+    # Ordinary single-phase calculations do not set this field and are unchanged.
+    cost_overrides = x.get("_cost_override_mln") or {}
+    for override_key, override_value_mln in cost_overrides.items():
+        if override_key in amounts and override_value_mln is not None:
+            amounts[override_key] = float(override_value_mln) * 1_000_000
 
     works_base = (
         amounts["main_above"] + amounts["main_under"] + amounts["social"]
@@ -1654,13 +1703,15 @@ def calculate(req: CalcRequest) -> dict:
             "total_expenses": total_expenses,
             "social_payment": op["capex_amounts"].get("social", 0.0),
             "social_payment_mode": str(x.get("social_mode", "")),
+            "social_in_capex_check": abs(
+                op["capex_amounts"].get("social", 0.0)
+                - (
+                    sum(op.get("social_construction_breakdown", {}).values())
+                    if str(x.get("social_mode", "")) == "Строительство"
+                    else op.get("imported_social_compensation", 0.0)
+                )
+            ) < 1.0,
             "social_program": op.get("social_program", {}),
-            "social_compensation_reference": op.get("imported_social_compensation", 0.0),
-            "social_construction_reference": sum(op.get("social_construction_breakdown", {}).values()),
-            "social_saving_from_construction": (
-                op.get("imported_social_compensation", 0.0)
-                - sum(op.get("social_construction_breakdown", {}).values())
-            ),
             "social_payment_breakdown": {
                 "construction": {
                     "kindergarten_mln": op.get("social_construction_breakdown", {}).get("kindergarten", 0.0) / 1_000_000,
@@ -1697,6 +1748,11 @@ def calculate(req: CalcRequest) -> dict:
                 "interest_and_fees": fin["financing_cost"],
             }
         },
+        "cashflow": {
+            "months": [month.isoformat() for month in timeline],
+            "project": project_cf,
+            "equity": equity_cf,
+        },
         "excel_control": EXCEL_CONTROL,
         "notes": {
             "llcr": "LLCR рассчитан по структуре действующего листа LLCR: поступления минус операционные/инвестиционные расходы плюс ПФ, делённые на ПФ и стоимость долга.",
@@ -1721,229 +1777,636 @@ def defaults() -> dict:
     }
 
 
+
+def _normalized_phase_weights(values: Any, count: int, fallback: list[float] | None = None) -> list[float]:
+    vals: list[float] = []
+    if isinstance(values, list):
+        for i in range(count):
+            try:
+                vals.append(max(0.0, float(values[i])))
+            except Exception:
+                vals.append(0.0)
+    else:
+        vals = [0.0] * count
+    total = sum(vals)
+    if total <= 0:
+        base = fallback or [100.0 / count] * count
+        vals = [float(base[i]) if i < len(base) else 0.0 for i in range(count)]
+        total = sum(vals)
+    return [v * 100.0 / total for v in vals]
+
+
+def _default_phase_weights(count: int) -> list[float]:
+    presets = {
+        1: [100.0],
+        2: [55.0, 45.0],
+        3: [40.0, 32.0, 28.0],
+        4: [32.0, 26.0, 22.0, 20.0],
+        5: [28.0, 22.0, 19.0, 16.0, 15.0],
+    }
+    return presets.get(count, [100.0 / count] * count)
+
+
+def _scale_tep_row(row: dict[str, Any], share_pct: float) -> dict[str, Any]:
+    result = copy.deepcopy(row)
+    factor = share_pct / 100.0
+    for key in ("gns", "total_area", "useful", "saleable", "transfer", "units"):
+        result[key] = n(result, key) * factor
+    return result
+
+
+def _zero_tep_row(row: dict[str, Any]) -> dict[str, Any]:
+    result = copy.deepcopy(row)
+    for key in ("gns", "total_area", "useful", "saleable", "transfer", "units"):
+        result[key] = 0.0
+    return result
+
+
+def _shift_iso(value: Any, months: int) -> Any:
+    if not value:
+        return value
+    try:
+        return add_months(d(value), months).isoformat()
+    except Exception:
+        return value
+
+
+def _sum_dicts(items: list[dict[str, Any]]) -> dict[str, float]:
+    keys: set[str] = set()
+    for item in items:
+        keys.update(item.keys())
+    out: dict[str, float] = {}
+    for key in keys:
+        if key == "total":
+            continue
+        total = 0.0
+        for item in items:
+            try:
+                total += float(item.get(key, 0.0) or 0.0)
+            except Exception:
+                pass
+        out[key] = total
+    out["total"] = sum(float(item.get("total", 0.0) or 0.0) for item in items)
+    return out
+
+
+def _combine_cashflows(results: list[dict[str, Any]], master_start: date) -> tuple[list[date], list[float], list[float]]:
+    project_by_month: dict[date, float] = defaultdict(float)
+    equity_by_month: dict[date, float] = defaultdict(float)
+    for result in results:
+        cf = result.get("cashflow") or {}
+        months = cf.get("months") or []
+        project = cf.get("project") or []
+        equity = cf.get("equity") or []
+        for i, month_text in enumerate(months):
+            month = d(month_text)
+            if i < len(project):
+                project_by_month[month] += float(project[i] or 0.0)
+            if i < len(equity):
+                equity_by_month[month] += float(equity[i] or 0.0)
+    if not project_by_month and not equity_by_month:
+        return [], [], []
+    end = max(list(project_by_month.keys()) + list(equity_by_month.keys()))
+    months = month_range(master_start, end)
+    return (
+        months,
+        [project_by_month.get(m, 0.0) for m in months],
+        [equity_by_month.get(m, 0.0) for m in months],
+    )
+
+
+def _aggregate_finance(results: list[dict[str, Any]]) -> dict[str, Any]:
+    month_map: dict[str, dict[str, float]] = {}
+    additive = (
+        "bridge_draw", "bridge_repayment", "bridge_interest", "bridge_capitalization",
+        "bridge_balance", "pf_draw", "pf_repayment", "pf_interest",
+        "pf_interest_capitalization", "pf_balance", "escrow", "limit_fee",
+        "interest_payment", "revenue", "capex", "operating",
+    )
+    source_rows: dict[tuple[int, str], dict[str, Any]] = {}
+    for ri, result in enumerate(results):
+        for row in result["finance"]["rows"]:
+            source_rows[(ri, row["month"])] = row
+            agg = month_map.setdefault(row["month"], {key: 0.0 for key in additive})
+            for key in additive:
+                agg[key] += float(row.get(key, 0.0) or 0.0)
+
+    rows: list[dict[str, Any]] = []
+    for month in sorted(month_map):
+        agg = month_map[month]
+        key_rate = 0.0
+        bridge_num = bridge_den = pf_num = pf_den = 0.0
+        for ri, result in enumerate(results):
+            row = source_rows.get((ri, month))
+            if not row:
+                continue
+            key_rate = float(row.get("key_rate", key_rate) or key_rate)
+            bb = float(row.get("bridge_balance", 0.0) or 0.0)
+            pb = float(row.get("pf_balance", 0.0) or 0.0)
+            bridge_num += bb * float(row.get("bridge_rate", 0.0) or 0.0)
+            bridge_den += bb
+            pf_num += pb * float(row.get("pf_rate", 0.0) or 0.0)
+            pf_den += pb
+        out = dict(agg)
+        out["month"] = month
+        out["key_rate"] = key_rate
+        out["bridge_rate"] = bridge_num / bridge_den if bridge_den else 0.0
+        out["pf_rate"] = pf_num / pf_den if pf_den else 0.0
+        out["coverage"] = out["escrow"] / out["pf_balance"] if out["pf_balance"] else 0.0
+        rows.append(out)
+
+    fs = [r["finance"] for r in results]
+    bridge_weight = sum(max(f["peak_bridge"], 0.0) for f in fs)
+    pf_weight = sum(max(f["peak_pf"], 0.0) for f in fs)
+    peak_bridge = max((r["bridge_balance"] for r in rows), default=0.0)
+    peak_pf = max((r["pf_balance"] for r in rows), default=0.0)
+    peak_total_debt = max((r["bridge_balance"] + r["pf_balance"] for r in rows), default=0.0)
+    peak_escrow = max((r["escrow"] for r in rows), default=0.0)
+    llcr_num = sum(f["llcr_numerator"] for f in fs)
+    llcr_den = sum(f["llcr_denominator"] for f in fs)
+
+    financing_cost = sum(f["financing_cost"] for f in fs)
+    return {
+        "rows": rows,
+        "calculated_bridge_limit": sum(f["calculated_bridge_limit"] for f in fs),
+        "bridge_draw_total": sum(f["bridge_draw_total"] for f in fs),
+        "peak_bridge": peak_bridge,
+        "avg_bridge_rate": (
+            sum(f["avg_bridge_rate"] * max(f["peak_bridge"], 0.0) for f in fs) / bridge_weight
+            if bridge_weight else 0.0
+        ),
+        "bridge_interest": sum(f["bridge_interest"] for f in fs),
+        "bridge_capitalization": sum(f["bridge_capitalization"] for f in fs),
+        "bridge_fee": sum(f["bridge_fee"] for f in fs),
+        "transferred_bridge_interest": sum(f["transferred_bridge_interest"] for f in fs),
+        "pf_limit": sum(f["pf_limit"] for f in fs),
+        "pf_draw_total": sum(f["pf_draw_total"] for f in fs),
+        "peak_pf": peak_pf,
+        "pf_repayment_total": sum(f["pf_repayment_total"] for f in fs),
+        "ending_pf": sum(f["ending_pf"] for f in fs),
+        "avg_pf_rate": (
+            sum(f["avg_pf_rate"] * max(f["peak_pf"], 0.0) for f in fs) / pf_weight
+            if pf_weight else 0.0
+        ),
+        "avg_pf_effective_rate": (
+            sum(f["avg_pf_effective_rate"] * max(f["peak_pf"], 0.0) for f in fs) / pf_weight
+            if pf_weight else 0.0
+        ),
+        "avg_pf_base_rate": (
+            sum(f["avg_pf_base_rate"] * max(f["peak_pf"], 0.0) for f in fs) / pf_weight
+            if pf_weight else 0.0
+        ),
+        "avg_pf_key_rate": (
+            sum(f["avg_pf_key_rate"] * max(f["peak_pf"], 0.0) for f in fs) / pf_weight
+            if pf_weight else 0.0
+        ),
+        "pf_special_rate": fs[0]["pf_special_rate"] if fs else 0.0,
+        "pf_interest": sum(f["pf_interest"] for f in fs),
+        "pf_interest_capitalization": sum(f["pf_interest_capitalization"] for f in fs),
+        "pf_limit_fee": sum(f["pf_limit_fee"] for f in fs),
+        "pf_reservation_fee": sum(f["pf_reservation_fee"] for f in fs),
+        "financing_cost": financing_cost,
+        "reported_interest_and_fees": financing_cost,
+        "total_revenue": sum(f["total_revenue"] for f in fs),
+        "total_capex": sum(f["total_capex"] for f in fs),
+        "commercial_costs": sum(f["commercial_costs"] for f in fs),
+        "profit_tax": sum(f["profit_tax"] for f in fs),
+        "profit_before_tax": sum(f["profit_before_tax"] for f in fs),
+        "llcr_numerator": llcr_num,
+        "llcr_denominator": llcr_den,
+        "llcr": llcr_num / llcr_den if llcr_den else 0.0,
+        "peak_total_debt": peak_total_debt,
+        "peak_escrow": peak_escrow,
+    }
+
+
+def _consolidate_phase_results(
+    master_inputs: dict[str, Any],
+    phase_items: list[dict[str, Any]],
+    comparison: list[dict[str, Any]],
+) -> dict[str, Any]:
+    results = [item["result"] for item in phase_items]
+    finance = _aggregate_finance(results)
+
+    tep_map: dict[str, dict[str, Any]] = {}
+    for result in results:
+        for row in result["tep"]["rows"]:
+            target = tep_map.setdefault(row["key"], {
+                "key": row["key"], "label": row["label"],
+                "gns": 0.0, "total_area": 0.0, "useful": 0.0,
+                "saleable": 0.0, "transfer": 0.0, "units": 0.0,
+            })
+            for field in ("gns", "total_area", "useful", "saleable", "transfer", "units"):
+                target[field] += float(row.get(field, 0.0) or 0.0)
+    tep_rows = list(tep_map.values())
+    tep_total = {
+        field: sum(row[field] for row in tep_rows)
+        for field in ("gns", "total_area", "useful", "saleable", "transfer", "units")
+    }
+
+    revenue = _sum_dicts([r["revenue"] for r in results])
+    capex = _sum_dicts([r["capex"] for r in results])
+    total_revenue = finance["total_revenue"]
+    total_capex = finance["total_capex"]
+    commercial_costs = finance["commercial_costs"]
+    ebitda = total_revenue - total_capex - commercial_costs
+    net_profit = sum(r["summary"]["net_profit"] for r in results)
+
+    saleable = sum(r["summary"]["monetizable_saleable_sqm"] for r in results)
+    apartment_saleable = sum(r["summary"]["apartment_saleable_sqm"] for r in results)
+    project_gns = sum(r["summary"]["project_gns_sqm"] for r in results)
+    full_cost = total_capex + commercial_costs + finance["financing_cost"] + finance["profit_tax"]
+    avg_apt_price = revenue.get("apartments", 0.0) / apartment_saleable / 1000 if apartment_saleable else 0.0
+
+    construction_keys = (
+        "ird", "design_p", "design_rd", "author_supervision", "preparation",
+        "main_above", "main_under", "utilities", "landscaping",
+        "commissioning", "site_maintenance", "gc_fee", "reserve",
+    )
+    construction_capex = sum(capex.get(k, 0.0) for k in construction_keys)
+    core_gns = sum(r["tep"]["core_above_gns"] + r["tep"]["core_under_gns"] for r in results)
+
+    master_start = d(master_inputs.get("project_start", results[0]["dates"]["project_start"]))
+    cf_months, project_cf, equity_cf = _combine_cashflows(results, master_start)
+    discount_rate = n(master_inputs, "discount_rate_pct", 20) / 100
+    npv = _monthly_npv(project_cf, discount_rate) if project_cf else 0.0
+    irr_equity = _monthly_irr(equity_cf) if equity_cf else None
+
+    def per_th(value: float, area: float) -> float:
+        return value / area / 1000 if area else 0.0
+
+    unit_economics = []
+    for label, value in (
+        ("Выручка", total_revenue), ("CAPEX", total_capex),
+        ("Маркетинг и продажи", commercial_costs), ("EBITDA", ebitda),
+        ("Проценты и комиссии", finance["financing_cost"]),
+        ("Налог на прибыль", finance["profit_tax"]),
+        ("Полные расходы", full_cost), ("Чистая прибыль", net_profit),
+    ):
+        unit_economics.append({
+            "label": label, "total": value,
+            "per_gns_th": per_th(value, project_gns),
+            "per_saleable_th": per_th(value, saleable),
+        })
+
+    expense_map: dict[str, float] = defaultdict(float)
+    for result in results:
+        for item in result["report"]["expense_structure"]:
+            expense_map[item["label"]] += float(item["value"] or 0.0)
+    expense_base = sum(expense_map.values())
+    expense_structure = [
+        {"label": label, "value": value, "share": value / expense_base if expense_base else 0.0}
+        for label, value in expense_map.items() if value > 0
+    ]
+    expense_structure.sort(key=lambda x: x["value"], reverse=True)
+
+    product_map: dict[str, dict[str, Any]] = {}
+    for result in results:
+        for item in result["report"]["products"]:
+            p = product_map.setdefault(item["key"], {
+                "key": item["key"], "label": item["label"], "unit": item["unit"],
+                "quantity": 0.0, "revenue": 0.0, "start_price_th": item["start_price_th"],
+                "avg_price_th": 0.0, "pace_pre": 0.0,
+                "share_before_rve": item["share_before_rve"],
+                "sales_start": None, "sales_end": None,
+            })
+            p["quantity"] += float(item["quantity"] or 0.0)
+            p["revenue"] += float(item["revenue"] or 0.0)
+            p["pace_pre"] += float(item["pace_pre"] or 0.0)
+            if item.get("sales_start"):
+                p["sales_start"] = item["sales_start"] if p["sales_start"] is None else min(p["sales_start"], item["sales_start"])
+            if item.get("sales_end"):
+                p["sales_end"] = item["sales_end"] if p["sales_end"] is None else max(p["sales_end"], item["sales_end"])
+    for p in product_map.values():
+        p["avg_price_th"] = p["revenue"] / p["quantity"] / 1000 if p["quantity"] else 0.0
+
+    events = []
+    for phase_item in phase_items:
+        for event in phase_item["result"]["report"]["calendar"]["events"]:
+            e = copy.deepcopy(event)
+            e["label"] = f"{phase_item['name']} · {e['label']}"
+            e["group"] = f"{phase_item['name']} · {e['group']}"
+            events.append(e)
+    cal_start = min(d(e["start"]) for e in events)
+    cal_end = max(d(e["end"]) for e in events)
+
+    social_program = {
+        "kindergarten_places": sum(r["summary"]["social_program"].get("kindergarten_places", 0.0) for r in results),
+        "school_places": sum(r["summary"]["social_program"].get("school_places", 0.0) for r in results),
+        "clinic_capacity": sum(r["summary"]["social_program"].get("clinic_capacity", 0.0) for r in results),
+    }
+    social_construction = {
+        key: sum(r["summary"]["social_payment_breakdown"]["construction"].get(key, 0.0) for r in results)
+        for key in ("kindergarten_mln", "school_mln", "clinic_mln")
+    }
+    social_compensation = {
+        key: sum(r["summary"]["social_payment_breakdown"]["compensation"].get(key, 0.0) for r in results)
+        for key in ("kindergarten_mln", "school_mln", "clinic_mln")
+    }
+
+    return {
+        "dates": {
+            "project_start": min(r["dates"]["project_start"] for r in results),
+            "permit": min(r["dates"]["permit"] for r in results),
+            "sales_start": min(r["dates"]["sales_start"] for r in results),
+            "rve": max(r["dates"]["rve"] for r in results),
+        },
+        "tep": {
+            "rows": tep_rows, "total": tep_total,
+            "core_above_gns": sum(r["tep"]["core_above_gns"] for r in results),
+            "core_under_gns": sum(r["tep"]["core_under_gns"] for r in results),
+        },
+        "revenue": revenue,
+        "capex": capex,
+        "commercial_costs": commercial_costs,
+        "finance": finance,
+        "summary": {
+            "revenue": total_revenue, "capex": total_capex,
+            "commercial_costs": commercial_costs, "ebitda": ebitda,
+            "financing_cost": finance["financing_cost"],
+            "profit_before_tax": finance["profit_before_tax"],
+            "profit_tax": finance["profit_tax"], "net_profit": net_profit,
+            "margin": net_profit / total_revenue if total_revenue else 0.0,
+            "llcr": finance["llcr"],
+            "min_phase_llcr": min((r["summary"]["llcr"] for r in results), default=0.0),
+            "scenario_revenue_multiplier": n(master_inputs, "scenario_revenue_multiplier", 1.0),
+            "scenario_cost_multiplier": n(master_inputs, "scenario_cost_multiplier", 1.0),
+            "npv": npv, "irr_equity": irr_equity,
+            "full_project_cost": full_cost,
+            "monetizable_saleable_sqm": saleable,
+            "apartment_saleable_sqm": apartment_saleable,
+            "average_apartment_price_th": avg_apt_price,
+            "full_cost_per_saleable_th": per_th(full_cost, saleable),
+            "construction_cost_per_gns_th": per_th(construction_capex, core_gns),
+            "ebitda_per_saleable_th": per_th(ebitda, saleable),
+            "net_profit_per_saleable_th": per_th(net_profit, saleable),
+            "project_gns_sqm": project_gns, "total_expenses": full_cost,
+            "social_payment": sum(r["summary"]["social_payment"] for r in results),
+            "social_payment_mode": str(master_inputs.get("social_mode", "")),
+            "social_in_capex_check": all(r["summary"].get("social_in_capex_check", True) for r in results),
+            "social_program": social_program,
+            "social_payment_breakdown": {
+                "construction": social_construction,
+                "compensation": social_compensation,
+            },
+            "phase_count": len(results),
+            "peak_total_debt": finance["peak_total_debt"],
+        },
+        "report": {
+            "products": list(product_map.values()),
+            "unit_economics": unit_economics,
+            "expense_structure": expense_structure,
+            "calendar": {"start": cal_start.isoformat(), "end": cal_end.isoformat(), "events": events},
+            "financing": {
+                "calculated_bridge": finance["calculated_bridge_limit"],
+                "actual_bridge": finance["peak_bridge"],
+                "pf_peak": finance["peak_pf"],
+                "pf_limit": finance["pf_limit"],
+                "avg_bridge_rate": finance["avg_bridge_rate"],
+                "avg_pf_rate": finance["avg_pf_rate"],
+                "avg_pf_effective_rate": finance["avg_pf_effective_rate"],
+                "avg_pf_base_rate": finance["avg_pf_base_rate"],
+                "avg_pf_key_rate": finance["avg_pf_key_rate"],
+                "pf_special_rate": finance["pf_special_rate"],
+                "interest_and_fees": finance["financing_cost"],
+                "peak_total_debt": finance["peak_total_debt"],
+                "peak_escrow": finance["peak_escrow"],
+            },
+        },
+        "cashflow": {
+            "months": [m.isoformat() for m in cf_months],
+            "project": project_cf, "equity": equity_cf,
+        },
+        "comparison": comparison,
+        "excel_control": EXCEL_CONTROL,
+        "notes": {
+            "phasing": "Свод = сумма отдельных очередей без двойного счёта. Cash-распределение общих затрат и аналитическая аллокация разделены.",
+            "finance": "О1 по умолчанию несёт покупку, ВРИ и повышенную долю ранней нагрузки. ПФ считается отдельно по очередям; свод отражает одновременный долг.",
+        },
+    }
+
+
+def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
+    x_master = copy.deepcopy(req.inputs)
+    t_master = copy.deepcopy(req.tep)
+    rates = copy.deepcopy(req.rates)
+    phasing = copy.deepcopy(req.phasing or {})
+    phases_cfg = phasing.get("phases") or []
+    count = max(1, min(5, int(phasing.get("phase_count") or len(phases_cfg) or 1)))
+
+    if not phasing.get("enabled") or count <= 1:
+        single = calculate(CalcRequest(inputs=x_master, tep=t_master, rates=rates))
+        return {"mode": "single", "consolidated": single, "phases": [], "comparison": []}
+
+    while len(phases_cfg) < count:
+        phases_cfg.append({
+            "name": f"О{len(phases_cfg)+1}",
+            "start_offset_months": len(phases_cfg) * int(phasing.get("phase_gap_months", 12)),
+            "construction_months": int(n(x_master, "construction_months", 24)),
+        })
+
+    default_weights = _default_phase_weights(count)
+    products_cfg = phasing.get("products") or {}
+    product_weights = {
+        key: _normalized_phase_weights(products_cfg.get(key), count, default_weights)
+        for key in ("apartments", "ground_commercial", "underground_parking", "storage")
+    }
+
+    shared_cash = phasing.get("shared_cash") or {}
+    shared_alloc = phasing.get("shared_allocation") or {}
+    cash_defaults = {
+        "purchase": [100.0] + [0.0]*(count-1),
+        "land_rights": [100.0] + [0.0]*(count-1),
+        "ird": default_weights,
+        "design": default_weights,
+        "preparation": default_weights,
+        "utilities": default_weights,
+        "social_compensation": [100.0] + [0.0]*(count-1),
+    }
+    cash_weights = {
+        key: _normalized_phase_weights(shared_cash.get(key), count, cash_defaults[key])
+        for key in cash_defaults
+    }
+    allocation_weights = {
+        key: _normalized_phase_weights(shared_alloc.get(key), count, default_weights)
+        for key in (*cash_defaults.keys(), "social_construction")
+    }
+
+    x_base = copy.deepcopy(x_master)
+    x_base["scenario_cost_multiplier"] = 1.0
+    x_base["scenario_revenue_multiplier"] = 1.0
+    base_op = build_operating_model(x_base, copy.deepcopy(t_master))
+    base_amounts = base_op["capex_amounts"]
+    shared_base_mln = {
+        "purchase": n(x_master, "purchase_price_mln"),
+        "land_rights": base_amounts.get("land_rights", 0.0) / 1_000_000,
+        "ird": base_amounts.get("ird", 0.0) / 1_000_000,
+        "design": (base_amounts.get("design_p", 0.0)+base_amounts.get("design_rd", 0.0))/1_000_000,
+        "preparation": base_amounts.get("preparation", 0.0) / 1_000_000,
+        "utilities": base_amounts.get("utilities", 0.0) / 1_000_000,
+        "social_compensation": n(x_master, "social_compensation_mln") if str(x_master.get("social_mode"))=="Денежная компенсация" else 0.0,
+    }
+
+    social_objects = phasing.get("social_objects") or []
+    if str(x_master.get("social_mode")) == "Строительство" and not social_objects:
+        # Safe fallback: never lose social burden just because the UI registry is empty.
+        if n(x_master, "kindergarten_places") > 0:
+            social_objects.append({"name":"ДОУ","type":"kindergarten","capacity":n(x_master,"kindergarten_places"),"phase":1})
+        if n(x_master, "school_places") > 0:
+            social_objects.append({"name":"СОШ","type":"school","capacity":n(x_master,"school_places"),"phase":min(2,count)})
+        if n(x_master, "clinic_capacity") > 0:
+            social_objects.append({"name":"Поликлиника","type":"clinic","capacity":n(x_master,"clinic_capacity"),"phase":min(2,count)})
+
+    discrete = phasing.get("discrete") or {}
+    master_import = (x_master.get("_glavapu_import") or {}).get("normalized", {})
+    phase_items: list[dict[str, Any]] = []
+    comparison: list[dict[str, Any]] = []
+    tax_rate = n(x_master, "profit_tax_pct", 25) / 100
+    scenario_cost = n(x_master, "scenario_cost_multiplier", 1.0)
+
+    # Total social construction cost for analytical allocation.
+    total_social_construction = 0.0
+    if str(x_master.get("social_mode")) == "Строительство":
+        for obj in social_objects:
+            capacity = float(obj.get("capacity", 0.0) or 0.0)
+            typ = str(obj.get("type"))
+            unit_cost = (
+                n(x_master, "kindergarten_cost_mln_per_place") if typ == "kindergarten"
+                else n(x_master, "school_cost_mln_per_place") if typ == "school"
+                else n(x_master, "clinic_cost_mln_per_unit")
+            )
+            total_social_construction += capacity * unit_cost * 1_000_000 * scenario_cost
+
+    for idx in range(count):
+        cfg = phases_cfg[idx]
+        name = str(cfg.get("name") or f"О{idx+1}")
+        offset = int(cfg.get("start_offset_months", idx*int(phasing.get("phase_gap_months",12))))
+        p_inputs = copy.deepcopy(x_master)
+        p_tep = copy.deepcopy(t_master)
+        p_inputs["project_start"] = add_months(d(x_master["project_start"]), offset).isoformat()
+        p_inputs["construction_months"] = int(cfg.get("construction_months", n(x_master,"construction_months",24)))
+        p_inputs.pop("_glavapu_import", None)
+
+        for key in ("apartments","ground_commercial","underground_parking","storage"):
+            if key in p_tep:
+                p_tep[key] = _scale_tep_row(p_tep[key], product_weights[key][idx])
+
+        p_inputs["apartment_price_th"] = n(x_master,"apartment_price_th")*(1+n(x_master,"monthly_growth_pre_pct",1.5)/100)**offset
+        p_inputs["commercial_price_th"] = n(x_master,"commercial_price_th")*(1+n(x_master,"monthly_growth_pre_pct",1.5)/100)**offset
+        p_inputs["parking_price_th"] = n(x_master,"parking_price_th")*(1.0075**offset)
+        p_inputs["storage_price_th"] = n(x_master,"storage_price_th")*(1.0075**offset)
+
+        p_inputs["purchase_price_mln"] = shared_base_mln["purchase"]*cash_weights["purchase"][idx]/100
+        p_inputs["land_rights_cost_mln"] = shared_base_mln["land_rights"]*cash_weights["land_rights"][idx]/100
+
+        design_total = shared_base_mln["design"]
+        design_p_total = base_amounts.get("design_p",0.0)/1_000_000
+        p_ratio = design_p_total/design_total if design_total else .5
+        p_inputs["_cost_override_mln"] = {
+            "ird": shared_base_mln["ird"]*cash_weights["ird"][idx]/100,
+            "design_p": design_total*p_ratio*cash_weights["design"][idx]/100,
+            "design_rd": design_total*(1-p_ratio)*cash_weights["design"][idx]/100,
+            "preparation": shared_base_mln["preparation"]*cash_weights["preparation"][idx]/100,
+            "utilities": shared_base_mln["utilities"]*cash_weights["utilities"][idx]/100,
+        }
+
+        if str(x_master.get("social_mode")) == "Денежная компенсация":
+            p_inputs["social_mode"] = "Денежная компенсация"
+            sw = cash_weights["social_compensation"][idx]/100
+            p_inputs["social_compensation_mln"] = shared_base_mln["social_compensation"]*sw
+            p_inputs["social_comp_date"] = _shift_iso(x_master.get("social_comp_date"), offset)
+            p_inputs["kindergarten_places"] = p_inputs["school_places"] = p_inputs["clinic_capacity"] = 0
+            if master_import:
+                p_inputs["_glavapu_import"] = {"normalized": {
+                    "social_compensation_kindergarten_mln": n(master_import,"social_compensation_kindergarten_mln")*sw,
+                    "social_compensation_school_mln": n(master_import,"social_compensation_school_mln")*sw,
+                    "social_compensation_clinic_mln": n(master_import,"social_compensation_clinic_mln")*sw,
+                }}
+        else:
+            p_inputs["social_mode"] = "Строительство"
+            sums = {"kindergarten":0.0,"school":0.0,"clinic":0.0}
+            starts = {"kindergarten":[],"school":[],"clinic":[]}
+            for obj in social_objects:
+                if int(obj.get("phase",1) or 1) != idx+1:
+                    continue
+                typ = str(obj.get("type","kindergarten"))
+                if typ not in sums:
+                    continue
+                sums[typ] += float(obj.get("capacity",0.0) or 0.0)
+                if obj.get("start_date"):
+                    starts[typ].append(str(obj["start_date"]))
+            p_inputs["kindergarten_places"] = sums["kindergarten"]
+            p_inputs["school_places"] = sums["school"]
+            p_inputs["clinic_capacity"] = sums["clinic"]
+            permit = add_months(d(p_inputs["project_start"]), int(n(p_inputs,"ird_months",18)))
+            p_inputs["kindergarten_start"] = min(starts["kindergarten"]) if starts["kindergarten"] else permit.isoformat()
+            p_inputs["school_start"] = min(starts["school"]) if starts["school"] else permit.isoformat()
+            p_inputs["clinic_start"] = min(starts["clinic"]) if starts["clinic"] else permit.isoformat()
+            p_tep["kindergarten"] = {**p_tep.get("kindergarten",{"label":"ДОУ"}),
+                "gns":0.0,"total_area":sums["kindergarten"]*n(x_master,"social_dou_norm_sqm",12),
+                "useful":0.0,"saleable":0.0,"transfer":sums["kindergarten"]*n(x_master,"social_dou_norm_sqm",12),"units":sums["kindergarten"]}
+            p_tep["school"] = {**p_tep.get("school",{"label":"СОШ"}),
+                "gns":0.0,"total_area":sums["school"]*n(x_master,"social_school_norm_sqm",13),
+                "useful":0.0,"saleable":0.0,"transfer":sums["school"]*n(x_master,"social_school_norm_sqm",13),"units":sums["school"]}
+            p_tep["clinic"] = {**p_tep.get("clinic",{"label":"Поликлиника"}),
+                "gns":0.0,"total_area":sums["clinic"]*n(x_master,"social_clinic_norm_sqm",15),
+                "useful":0.0,"saleable":0.0,"transfer":sums["clinic"]*n(x_master,"social_clinic_norm_sqm",15),"units":sums["clinic"]}
+
+        for prefix, tep_key in (("offices","offices"),("retail","standalone_retail"),("above_parking","above_parking")):
+            assigned = int(discrete.get(tep_key,1) or 1)
+            enabled_key = "offices_enabled" if prefix=="offices" else "retail_enabled" if prefix=="retail" else "above_parking_enabled"
+            p_inputs[enabled_key] = bool(x_master.get(enabled_key)) and assigned==idx+1
+            if tep_key in p_tep and assigned != idx+1:
+                p_tep[tep_key] = _zero_tep_row(p_tep[tep_key])
+            if p_inputs[enabled_key]:
+                for suffix in ("start","sales_start"):
+                    dk=f"{prefix}_{suffix}"
+                    if dk in p_inputs:
+                        p_inputs[dk]=_shift_iso(x_master.get(dk),offset)
+                if prefix=="offices":
+                    p_inputs["offices_price_th_per_sqm"]=n(x_master,"offices_price_th_per_sqm")*(1+n(x_master,"offices_growth_pre_pct",1.5)/100)**offset
+                elif prefix=="retail":
+                    p_inputs["retail_price_th_per_sqm"]=n(x_master,"retail_price_th_per_sqm")*(1+n(x_master,"retail_growth_pre_pct",1.5)/100)**offset
+                else:
+                    p_inputs["above_parking_price_mln_per_space"]=n(x_master,"above_parking_price_mln_per_space")*(1+n(x_master,"above_parking_growth_pre_pct",.75)/100)**offset
+
+        result = calculate(CalcRequest(inputs=p_inputs, tep=p_tep, rates=rates))
+
+        cash_shared = sum(shared_base_mln[k]*cash_weights[k][idx]/100*scenario_cost for k in shared_base_mln)*1_000_000
+        allocated_shared = sum(shared_base_mln[k]*allocation_weights[k][idx]/100*scenario_cost for k in shared_base_mln)*1_000_000
+        if str(x_master.get("social_mode"))=="Строительство":
+            cash_shared += result["summary"]["social_payment"]
+            allocated_shared += total_social_construction*allocation_weights["social_construction"][idx]/100
+
+        allocated_profit = result["summary"]["net_profit"] + (cash_shared-allocated_shared)*(1-tax_rate)
+
+        phase_items.append({
+            "name":name,"index":idx+1,"result":result,
+            "cash_shared_cost":cash_shared,"allocated_shared_cost":allocated_shared,
+            "allocated_net_profit":allocated_profit,
+            "product_weights":{k:product_weights[k][idx] for k in product_weights},
+        })
+        comparison.append({
+            "name":name,"saleable_sqm":result["summary"]["monetizable_saleable_sqm"],
+            "revenue":result["summary"]["revenue"],"capex":result["summary"]["capex"],
+            "cash_shared_cost":cash_shared,"allocated_shared_cost":allocated_shared,
+            "peak_bridge":result["finance"]["peak_bridge"],"peak_pf":result["finance"]["peak_pf"],
+            "llcr":result["summary"]["llcr"],"net_profit":result["summary"]["net_profit"],
+            "allocated_net_profit":allocated_profit,"margin":result["summary"]["margin"],
+        })
+
+    consolidated = _consolidate_phase_results(x_master, phase_items, comparison)
+    return {"mode":"phased","consolidated":consolidated,"phases":phase_items,"comparison":comparison,"phasing":phasing}
+
+
+@app.post("/calculate-phased")
+def calculate_phased_api(req: PhasedCalcRequest) -> dict[str, Any]:
+    return calculate_phased(req)
+
+
 @app.get("/current-key-rate")
 def current_key_rate() -> dict[str, Any]:
     return fetch_current_cbr_key_rate()
-
-
-@app.get("/version")
-def app_version() -> dict[str, str]:
-    return {"version": "0.8.2", "build": "multiphase+tep-sync"}
-
-
-
-def _norm_weights(values: list[Any] | None, count: int, fallback: list[float] | None = None) -> list[float]:
-    raw = [max(0.0, float(v or 0.0)) for v in (values or [])[:count]]
-    raw += [0.0] * max(0, count-len(raw))
-    total = sum(raw)
-    if total <= 0 and fallback:
-        raw = list(fallback[:count]); total = sum(raw)
-    if total <= 0:
-        raw = [1.0/count]*count; total = 1.0
-    return [v/total for v in raw]
-
-
-def _default_phase_shares(count: int) -> list[float]:
-    presets={1:[1.0],2:[.45,.55],3:[.30,.35,.35],4:[.22,.26,.26,.26],5:[.18,.205,.205,.205,.205]}
-    return presets.get(count,[1.0/max(count,1)]*max(count,1))
-
-
-def _default_frontload(count: int, kind: str) -> list[float]:
-    tables={
-      'preparation':{1:[1],2:[.70,.30],3:[.60,.25,.15],4:[.50,.20,.15,.15],5:[.45,.20,.15,.10,.10]},
-      'utilities':{1:[1],2:[.60,.40],3:[.50,.30,.20],4:[.45,.25,.15,.15],5:[.40,.25,.15,.10,.10]},
-    }
-    return tables[kind].get(count,[1.0/max(count,1)]*max(count,1))
-
-
-def _scale_row(row: dict[str, Any], share: float) -> dict[str, Any]:
-    out=copy.deepcopy(row)
-    for key in ('gns','total_area','useful','saleable','transfer','units'):
-        out[key]=n(row,key)*share
-    return out
-
-
-def _phase_tep(master_tep: dict[str, dict[str, Any]], share: float, phase_inputs: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    out={}
-    for key,row in master_tep.items():
-        if key in ('kindergarten','school','clinic'):
-            out[key]=copy.deepcopy(row)
-            for f in ('gns','total_area','useful','saleable','transfer','units'): out[key][f]=0.0
-        else:
-            out[key]=_scale_row(row,share)
-    if n(phase_inputs,'kindergarten_places')>0 and 'kindergarten' in out:
-        area=n(phase_inputs,'social_dou_gba_sqm'); out['kindergarten'].update(units=n(phase_inputs,'kindergarten_places'),total_area=area,transfer=area)
-    if n(phase_inputs,'school_places')>0 and 'school' in out:
-        area=n(phase_inputs,'social_school_gba_sqm'); out['school'].update(units=n(phase_inputs,'school_places'),total_area=area,transfer=area)
-    if n(phase_inputs,'clinic_capacity')>0 and 'clinic' in out:
-        area=n(phase_inputs,'social_clinic_gba_sqm'); out['clinic'].update(units=n(phase_inputs,'clinic_capacity'),total_area=area,transfer=area)
-    return out
-
-
-def _phase_inputs(master: dict[str, Any], phasing: dict[str, Any], i: int, share: float, prep_w: float, util_w: float, purchase_w: float, land_w: float) -> dict[str, Any]:
-    x=copy.deepcopy(master); x.pop('_glavapu_import',None)
-    phases=phasing.get('phases') or []
-    phase=phases[i] if i<len(phases) else {}
-    offset=int(float(phase.get('start_offset_months',i*int(phasing.get('gap_months',9))) or 0))
-    x['project_start']=add_months(d(master.get('project_start','2027-01-01')),offset).isoformat()
-    x['construction_months']=int(float(phase.get('construction_months',master.get('construction_months',24)) or 24))
-    x['purchase_price_mln']=n(master,'purchase_price_mln')*purchase_w
-    x['land_rights_cost_mln']=n(master,'land_rights_cost_mln')*land_w
-    if share>1e-12:
-        x['preparation_th_per_sqm']=n(master,'preparation_th_per_sqm')*prep_w/share
-        x['utilities_th_per_sqm']=n(master,'utilities_th_per_sqm')*util_w/share
-    growth=n(master,'monthly_growth_pre_pct',1.5)/100
-    x['apartment_price_th']=n(master,'apartment_price_th')*pow(1+growth,max(offset,0))
-    x['commercial_price_th']=n(master,'commercial_price_th')*pow(1+growth,max(offset,0))
-    x['parking_price_th']=n(master,'parking_price_th')*pow(1.0075,max(offset,0))
-    x['storage_price_th']=n(master,'storage_price_th')*pow(1.0075,max(offset,0))
-    for key in ('offices_gba_sqm','offices_saleable_sqm','retail_gba_sqm','retail_saleable_sqm','above_parking_spaces','above_parking_gba_sqm'):
-        if key in x: x[key]=n(master,key)*share
-    for key in ('offices_start','offices_sales_start','retail_start','retail_sales_start','above_parking_start','above_parking_sales_start'):
-        if master.get(key): x[key]=add_months(d(master[key]),offset).isoformat()
-    social=phasing.get('social') or {}; phase_no=i+1; count=int(phasing.get('count',1))
-    if str(master.get('social_mode',''))=='Строительство':
-        x['social_compensation_mln']=0.0
-        if int(social.get('kindergarten_phase',1) or 1)!=phase_no:
-            x['kindergarten_places']=0.0; x['social_dou_gba_sqm']=0.0
-        else: x['kindergarten_start']=add_months(d(master.get('kindergarten_start',x['project_start'])),offset).isoformat()
-        if int(social.get('school_phase',min(2,count)) or 1)!=phase_no:
-            x['school_places']=0.0; x['social_school_gba_sqm']=0.0
-        else: x['school_start']=add_months(d(master.get('school_start',x['project_start'])),offset).isoformat()
-        if int(social.get('clinic_phase',count) or 1)!=phase_no:
-            x['clinic_capacity']=0.0; x['social_clinic_gba_sqm']=0.0
-        else: x['clinic_start']=add_months(d(master.get('clinic_start',x['project_start'])),offset).isoformat()
-    else:
-        if int(social.get('compensation_phase',1) or 1)!=phase_no: x['social_compensation_mln']=0.0
-        else:
-            x['social_compensation_mln']=n(master,'social_compensation_mln')
-            if master.get('social_comp_date'): x['social_comp_date']=add_months(d(master['social_comp_date']),offset).isoformat()
-        for key in ('kindergarten_places','school_places','clinic_capacity','social_dou_gba_sqm','social_school_gba_sqm','social_clinic_gba_sqm'): x[key]=0.0
-    return x
-
-
-def _aggregate_products(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    agg={}
-    for result in results:
-        for row in result.get('report',{}).get('products',[]):
-            key=row['key']; a=agg.setdefault(key,{'key':key,'label':row['label'],'unit':row['unit'],'quantity':0.0,'revenue':0.0,'start_price_th':None,'avg_price_th':0.0,'pace_pre':0.0,'share_before_rve':row.get('share_before_rve',0),'sales_start':None,'sales_end':None})
-            a['quantity']+=float(row.get('quantity',0) or 0); a['revenue']+=float(row.get('revenue',0) or 0); a['pace_pre']+=float(row.get('pace_pre',0) or 0)
-            sp=row.get('start_price_th'); ss=row.get('sales_start'); se=row.get('sales_end')
-            if sp is not None: a['start_price_th']=sp if a['start_price_th'] is None else min(a['start_price_th'],sp)
-            if ss: a['sales_start']=ss if not a['sales_start'] else min(a['sales_start'],ss)
-            if se: a['sales_end']=se if not a['sales_end'] else max(a['sales_end'],se)
-    for a in agg.values():
-        a['avg_price_th']=a['revenue']/a['quantity']/1000 if a['quantity'] else 0.0
-        if a['start_price_th'] is None: a['start_price_th']=0.0
-    return list(agg.values())
-
-
-def calculate_multiphase(req: MultiPhaseRequest) -> dict:
-    master_inputs=copy.deepcopy(req.inputs); master_tep=copy.deepcopy(req.tep); phasing=copy.deepcopy(req.phasing or {})
-    # Preserve the same ГлавАПУ fallback used by single-phase mode before stripping import metadata from phase engines.
-    if str(master_inputs.get('social_mode',''))=='Строительство':
-        effective=effective_social_program(master_inputs)
-        if n(master_inputs,'kindergarten_places')<=0 and effective['kindergarten_places']>0:
-            master_inputs['kindergarten_places']=effective['kindergarten_places']
-            if n(master_inputs,'social_dou_gba_sqm')<=0: master_inputs['social_dou_gba_sqm']=effective['kindergarten_places']*n(master_inputs,'social_dou_norm_sqm')
-        if n(master_inputs,'school_places')<=0 and effective['school_places']>0:
-            master_inputs['school_places']=effective['school_places']
-            if n(master_inputs,'social_school_gba_sqm')<=0: master_inputs['social_school_gba_sqm']=effective['school_places']*n(master_inputs,'social_school_norm_sqm')
-        if n(master_inputs,'clinic_capacity')<=0 and effective['clinic_capacity']>0:
-            master_inputs['clinic_capacity']=effective['clinic_capacity']
-            if n(master_inputs,'social_clinic_gba_sqm')<=0: master_inputs['social_clinic_gba_sqm']=effective['clinic_capacity']*n(master_inputs,'social_clinic_norm_sqm')
-    count=max(1,min(5,int(phasing.get('count',1) or 1)))
-    if count==1 or not phasing.get('enabled',False):
-        single=calculate(CalcRequest(inputs=master_inputs,tep=master_tep,rates=req.rates))
-        return {'mode':'single','consolidated':single,'phases':[{'phase':1,'name':'Очередь 1','share':1.0,'result':single}],'controls':{'tep_conservation':True,'saleable_share_sum':1.0,'single_phase_parity':True,'peak_total_debt':single['finance']['peak_bridge']+single['finance']['peak_pf']}}
-    shares=_norm_weights(phasing.get('shares'),count,_default_phase_shares(count))
-    alloc=phasing.get('allocations') or {}
-    prep=_norm_weights(alloc.get('preparation'),count,_default_frontload(count,'preparation'))
-    util=_norm_weights(alloc.get('utilities'),count,_default_frontload(count,'utilities'))
-    purchase=_norm_weights(alloc.get('purchase'),count,[1]+[0]*(count-1))
-    land=_norm_weights(alloc.get('land_rights'),count,[1]+[0]*(count-1))
-    results=[]; payloads=[]
-    for i in range(count):
-        px=_phase_inputs(master_inputs,phasing,i,shares[i],prep[i],util[i],purchase[i],land[i])
-        pt=_phase_tep(master_tep,shares[i],px)
-        result=calculate(CalcRequest(inputs=px,tep=pt,rates=req.rates)); results.append(result)
-        phases=phasing.get('phases') or []
-        name=(phases[i].get('name') if i<len(phases) else None) or f'Очередь {i+1}'
-        payloads.append({'phase':i+1,'name':name,'share':shares[i],'result':result})
-    month_rows={}; wkey=weff=wbase=wden=wbr=wbrden=0.0
-    for result in results:
-        for row in result['finance']['rows']:
-            m=row['month']; a=month_rows.setdefault(m,{k:0.0 for k in ('sales','project_costs','bridge_draw','bridge_repayment','bridge_balance','bridge_interest','bridge_capitalization','pf_draw','pf_repayment','pf_balance','escrow','pf_interest','pf_interest_capitalization','limit_fee','interest_payment')}); a['month']=m
-            for k in list(a):
-                if k!='month': a[k]+=float(row.get(k,0) or 0)
-            pb=float(row.get('pf_balance',0) or 0); bb=float(row.get('bridge_balance',0) or 0)
-            if pb>0:
-                kr=float(row.get('key_rate',0) or 0); pr=float(row.get('pf_rate',0) or 0)
-                wkey+=pb*kr; weff+=pb*pr; wbase+=pb*(kr+n(master_inputs,'pf_spread_pp')/100); wden+=pb
-            if bb>0: wbr+=bb*float(row.get('bridge_rate',0) or 0); wbrden+=bb
-    rows=[month_rows[k] for k in sorted(month_rows)]
-    for a in rows:
-        a['coverage']=a['escrow']/a['pf_balance'] if a['pf_balance'] else 0.0; a['key_rate']=wkey/wden if wden else 0.0; a['pf_rate']=weff/wden if wden else 0.0; a['bridge_rate']=wbr/wbrden if wbrden else 0.0
-    sf=lambda key: sum(float(r['finance'].get(key,0) or 0) for r in results)
-    revenue=sum(r['summary']['revenue'] for r in results); capex=sum(r['summary']['capex'] for r in results); commercial=sum(r['summary']['commercial_costs'] for r in results); fincost=sum(r['summary']['financing_cost'] for r in results); tax=sum(r['summary']['profit_tax'] for r in results); net=sum(r['summary']['net_profit'] for r in results); ebitda=revenue-capex-commercial; total_exp=capex+commercial+fincost+tax
-    equity={}
-    from collections import defaultdict as _dd
-    eq=_dd(float)
-    for result in results:
-        rr=result['finance']['rows']
-        if not rr: continue
-        for row in rr:
-            mm=d(row['month']); eq[mm]+=float(row.get('sales',0) or 0)-float(row.get('project_costs',0) or 0)-float(row.get('interest_payment',0) or 0)-float(row.get('limit_fee',0) or 0)+float(row.get('bridge_draw',0) or 0)+float(row.get('pf_draw',0) or 0)-float(row.get('bridge_repayment',0) or 0)-float(row.get('pf_repayment',0) or 0)
-        fm=d(rr[0]['month']); lm=d(rr[-1]['month']); pm=d(result['dates']['permit']); eq[fm]-=float(result['finance'].get('bridge_fee',0) or 0)+float(result['capex'].get('land_rights',0) or 0); eq[pm]-=float(result['finance'].get('pf_reservation_fee',0) or 0); eq[lm]-=float(result['summary'].get('profit_tax',0) or 0)
-    if eq:
-        tl=month_range(min(eq),max(eq)); ecf=[eq.get(m,0.0) for m in tl]; irr=_monthly_irr(ecf); npv=_monthly_npv(ecf,n(master_inputs,'discount_rate_pct',20)/100)
-    else: irr=None; npv=0.0
-    llcr_num=sum(float(r['finance'].get('llcr_numerator',0) or 0) for r in results); llcr_den=sum(float(r['finance'].get('llcr_denominator',0) or 0) for r in results); llcr=llcr_num/llcr_den if llcr_den else 0.0
-    capagg=_dd(float); revagg=_dd(float)
-    for r in results:
-        for k,v in r['capex'].items():
-            if k!='total': capagg[k]+=float(v or 0)
-        for k,v in r['revenue'].items():
-            if k!='total': revagg[k]+=float(v or 0)
-    products=_aggregate_products(results)
-    mon=sum(r['summary'].get('monetizable_saleable_sqm',0) for r in results); apt=sum(r['summary'].get('apartment_saleable_sqm',0) for r in results); pgns=sum(r['summary'].get('project_gns_sqm',0) for r in results)
-    avp=revagg.get('apartments',0)/apt/1000 if apt else 0.0; fullps=total_exp/mon/1000 if mon else 0.0
-    const=sum(capagg.get(k,0) for k in ('ird','design_p','design_rd','author_supervision','preparation','main_above','main_under','utilities','landscaping','commissioning','site_maintenance','gc_fee','reserve')); core=sum(r['tep']['core_above_gns']+r['tep']['core_under_gns'] for r in results); constps=const/core/1000 if core else 0.0
-    per=lambda v,a:v/a/1000 if a else 0.0
-    units=[{'label':lab,'total':val,'per_gns_th':per(val,pgns),'per_saleable_th':per(val,mon)} for lab,val in [('Выручка',revenue),('CAPEX',capex),('Маркетинг и продажи',commercial),('EBITDA',ebitda),('Проценты и комиссии',fincost),('Налог на прибыль',tax),('Полные расходы',total_exp),('Чистая прибыль',net)]]
-    exp=_dd(float)
-    for r in results:
-        for row in r['report']['expense_structure']: exp[row['label']]+=float(row.get('value',0) or 0)
-    expstruct=[{'label':k,'value':v,'share':v/total_exp if total_exp else 0.0} for k,v in sorted(exp.items(),key=lambda kv:kv[1],reverse=True)]
-    events=[]
-    for pld in payloads:
-        for e in pld['result']['report']['calendar']['events']:
-            e2=dict(e); e2['label']=f"{pld['name']}: {e2['label']}"; events.append(e2)
-    cal_start=min((e['start'] for e in events),default=master_inputs.get('project_start','2027-01-01')); cal_end=max((e['end'] for e in events),default=cal_start)
-    # aggregate TEP by key to avoid relying on row order
-    trows=[]
-    for key,mrow in master_tep.items():
-        row={'key':key,'label':mrow.get('label',key)}
-        for f in ('gns','total_area','useful','saleable','transfer','units'):
-            row[f]=sum(next((float(x.get(f,0) or 0) for x in pld['result']['tep']['rows'] if x['key']==key),0.0) for pld in payloads)
-        trows.append(row)
-    ttotal={f:sum(r[f] for r in trows) for f in ('gns','total_area','useful','saleable','transfer','units')}
-    finance={'rows':rows,'calculated_bridge_limit':sf('calculated_bridge_limit'),'bridge_fee':sf('bridge_fee'),'bridge_draw_total':sf('bridge_draw_total'),'bridge_repayment_total':sf('bridge_repayment_total'),'bridge_interest':sf('bridge_interest'),'bridge_capitalization':sf('bridge_capitalization'),'transferred_bridge_interest':sf('transferred_bridge_interest'),'peak_bridge':max((r['bridge_balance'] for r in rows),default=0.0),'avg_bridge_rate':wbr/wbrden if wbrden else 0.0,'pf_draw_total':sf('pf_draw_total'),'pf_repayment_total':sf('pf_repayment_total'),'pf_reservation_fee':sf('pf_reservation_fee'),'pf_interest':sf('pf_interest'),'pf_interest_capitalization':sf('pf_interest_capitalization'),'pf_limit_fee':sf('pf_limit_fee'),'peak_pf':max((r['pf_balance'] for r in rows),default=0.0),'avg_pf_rate':weff/wden if wden else 0.0,'avg_pf_effective_rate':weff/wden if wden else 0.0,'avg_pf_base_rate':wbase/wden if wden else 0.0,'avg_pf_key_rate':wkey/wden if wden else 0.0,'pf_special_rate':n(master_inputs,'pf_special_pct')/100,'ending_pf':rows[-1]['pf_balance'] if rows else 0.0,'ending_interest_payable':sf('ending_interest_payable'),'pf_limit':sf('pf_limit'),'financing_cost':fincost,'profit_tax':tax,'profit_before_tax':revenue-capex-commercial-fincost,'llcr':llcr,'llcr_numerator':llcr_num,'llcr_denominator':llcr_den,'reported_interest_and_fees':sf('reported_interest_and_fees'),'total_revenue':revenue,'total_capex':capex,'commercial_costs':commercial}
-    social_build=(n(master_inputs,'kindergarten_places')*n(master_inputs,'kindergarten_cost_mln_per_place')+n(master_inputs,'school_places')*n(master_inputs,'school_cost_mln_per_place')+n(master_inputs,'clinic_capacity')*n(master_inputs,'clinic_cost_mln_per_unit'))*1e6
-    consolidated={'dates':{'project_start':min(p['result']['dates']['project_start'] for p in payloads),'permit':min(p['result']['dates']['permit'] for p in payloads),'sales_start':min(p['result']['dates']['sales_start'] for p in payloads),'rve':max(p['result']['dates']['rve'] for p in payloads)},'tep':{'rows':trows,'total':ttotal,'core_above_gns':sum(r['tep']['core_above_gns'] for r in results),'core_under_gns':sum(r['tep']['core_under_gns'] for r in results)},'revenue':{'total':revenue,**dict(revagg)},'capex':{'total':capex,**dict(capagg)},'commercial_costs':commercial,'finance':finance,'summary':{'revenue':revenue,'capex':capex,'commercial_costs':commercial,'ebitda':ebitda,'financing_cost':fincost,'profit_before_tax':revenue-capex-commercial-fincost,'profit_tax':tax,'net_profit':net,'margin':net/revenue if revenue else 0.0,'llcr':llcr,'scenario_revenue_multiplier':n(master_inputs,'scenario_revenue_multiplier',1),'scenario_cost_multiplier':n(master_inputs,'scenario_cost_multiplier',1),'npv':npv,'irr_equity':irr,'full_project_cost':total_exp,'monetizable_saleable_sqm':mon,'apartment_saleable_sqm':apt,'average_apartment_price_th':avp,'full_cost_per_saleable_th':fullps,'construction_cost_per_gns_th':constps,'ebitda_per_saleable_th':per(ebitda,mon),'net_profit_per_saleable_th':per(net,mon),'project_gns_sqm':pgns,'total_expenses':total_exp,'social_payment':sum(r['summary'].get('social_payment',0) for r in results),'social_payment_mode':str(master_inputs.get('social_mode','')),'social_program':{'kindergarten_places':n(master_inputs,'kindergarten_places'),'school_places':n(master_inputs,'school_places'),'clinic_capacity':n(master_inputs,'clinic_capacity')},'social_compensation_reference':n(master_inputs,'social_compensation_mln')*1e6,'social_construction_reference':social_build,'social_saving_from_construction':n(master_inputs,'social_compensation_mln')*1e6-social_build,'social_payment_breakdown':{'construction':{'kindergarten_mln':n(master_inputs,'kindergarten_places')*n(master_inputs,'kindergarten_cost_mln_per_place'),'school_mln':n(master_inputs,'school_places')*n(master_inputs,'school_cost_mln_per_place'),'clinic_mln':n(master_inputs,'clinic_capacity')*n(master_inputs,'clinic_cost_mln_per_unit')},'compensation':{'kindergarten_mln':n((master_inputs.get('_glavapu_import') or {}).get('normalized',{}),'social_compensation_kindergarten_mln'),'school_mln':n((master_inputs.get('_glavapu_import') or {}).get('normalized',{}),'social_compensation_school_mln'),'clinic_mln':n((master_inputs.get('_glavapu_import') or {}).get('normalized',{}),'social_compensation_clinic_mln')}}},'report':{'products':products,'unit_economics':units,'expense_structure':expstruct,'calendar':{'start':cal_start,'end':cal_end,'events':events},'financing':{'calculated_bridge':finance['calculated_bridge_limit'],'actual_bridge':finance['peak_bridge'],'pf_peak':finance['peak_pf'],'pf_limit':finance['pf_limit'],'avg_bridge_rate':finance['avg_bridge_rate'],'avg_pf_rate':finance['avg_pf_rate'],'avg_pf_effective_rate':finance['avg_pf_effective_rate'],'avg_pf_base_rate':finance['avg_pf_base_rate'],'avg_pf_key_rate':finance['avg_pf_key_rate'],'pf_special_rate':finance['pf_special_rate'],'interest_and_fees':fincost}},'excel_control':EXCEL_CONTROL,'notes':{'llcr':'Консолидированный LLCR = сумма числителей / сумма знаменателей очередей.','finance':'Очереди считаются существующим single-phase engine и агрегируются помесячно.'}}
-    conserved=True
-    for key,mrow in master_tep.items():
-        if key in ('kindergarten','school','clinic'): continue
-        crow=next(r for r in trows if r['key']==key)
-        for f in ('gns','total_area','useful','saleable','transfer','units'):
-            mv=n(mrow,f); sv=crow[f]
-            if abs(mv-sv)>max(.01,abs(mv)*1e-9): conserved=False
-    return {'mode':'multiphase','consolidated':consolidated,'phases':payloads,'monthly':rows,'controls':{'tep_conservation':conserved,'saleable_share_sum':sum(shares),'single_phase_parity':False,'peak_total_debt':max((r['bridge_balance']+r['pf_balance'] for r in rows),default=0.0),'preparation_weights':prep,'utilities_weights':util,'purchase_weights':purchase,'land_rights_weights':land}}
-
-
-@app.post('/calculate-phases')
-def calculate_phases_api(req: MultiPhaseRequest) -> dict:
-    return calculate_multiphase(req)
 
 
 @app.post("/calculate")
@@ -1973,9 +2436,6 @@ PAGE = r"""<!doctype html>
 .tabs{padding:0 34px;border-bottom:1px solid var(--line);display:flex;gap:28px;overflow:auto;background:#fff}
 .tab{border:0;background:none;padding:15px 0 12px;font-size:14px;font-weight:620;color:#777;white-space:nowrap;border-bottom:3px solid transparent;cursor:pointer}
 .tab.active{color:#000;border-color:#000}
-.tab.phasing-tab{font-weight:760;color:#111}
-.tab.phasing-tab::after{content:"NEW";font-size:8px;letter-spacing:.06em;margin-left:5px;padding:2px 4px;border:1px solid #111;vertical-align:2px}
-.version-badge{display:inline-block;margin-left:8px;padding:3px 7px;border:1px solid #111;font-size:10px;font-weight:800;letter-spacing:.05em;vertical-align:2px;background:#fff}
 .content{padding:24px 34px 40px}.panel{display:none}.panel.active{display:block}
 .grid{display:grid;grid-template-columns:minmax(390px,540px) 1fr;gap:20px}
 .card{border:1px solid var(--line);background:#fff;padding:20px;margin-bottom:18px}
@@ -2021,7 +2481,6 @@ tfoot th{border-top:2px solid #111;color:#111;background:#fff}
 .expense-fill{height:100%;background:#111;min-width:2px}
 .expense-pct{text-align:right;font-weight:700}
 .expense-value{text-align:right;color:#666}
-.phase-ok{color:var(--positive);font-weight:700}.phase-bad{color:var(--negative);font-weight:700}.phase-share{min-width:86px}.phase-small{min-width:90px}
 .unit-table td:not(:first-child),.unit-table th:not(:first-child){text-align:right}
 @media(max-width:900px){
  .preset-grid{grid-template-columns:1fr 1fr}.expense-row{grid-template-columns:1fr}.expense-pct,.expense-value{text-align:left}
@@ -2132,13 +2591,30 @@ tfoot th{border-top:2px solid #111;color:#111;background:#fff}
   body.print-report .warning{display:none!important}
 }
 
+
+.phase-grid{display:grid;grid-template-columns:repeat(4,minmax(150px,1fr));gap:12px;margin:12px 0}
+.phase-card{border:1px solid #ddd;padding:14px;background:#fafaf8}
+.phase-card h3{margin:0 0 10px;font-size:15px}
+.phase-table input,.phase-table select{min-width:78px;padding:7px}
+.phase-table th,.phase-table td{white-space:nowrap}
+.phase-total-ok{font-weight:750;color:#176b34}
+.phase-total-bad{font-weight:750;color:#9b2c2c}
+.phase-switch{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.phase-switch select{width:auto;min-width:130px}
+.phase-report-nav{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:0 0 16px}
+.phase-report-nav .btn.active{background:#111;color:#fff;border-color:#111}
+.phase-comparison-card{display:none}
+.phase-status{font-size:11px;color:#666;margin-top:8px}
+.object-actions{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+@media(max-width:900px){.phase-grid{grid-template-columns:1fr 1fr}}
+@media(max-width:600px){.phase-grid{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
 <div class="shell">
   <div class="brandbar"><img src="data:image/webp;base64,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"><div class="brandline"></div></div>
   <div class="header">
-    <div class="title"><h1>Девелоперская инвестиционная модель <span class="version-badge">v0.8.3</span></h1><p>ТЭП · многоочередность · экономика · БРИДЖ · проектное финансирование · эскроу · LLCR</p></div>
+    <div class="title"><h1>Девелоперская инвестиционная модель</h1><p>v0.8.0 · ТЭП · экономика · БРИДЖ · проектное финансирование · эскроу · LLCR</p></div>
     <div class="actions">
       <div class="scenario">Класс&nbsp;
         <select id="projectClassSelect" onchange="renderProjectClassPreview()" style="min-width:135px">
@@ -2166,7 +2642,7 @@ tfoot th{border-top:2px solid #111;color:#111;background:#fff}
   <div class="tabs">
     <button class="tab active" data-tab="inputs" onclick="openTab('inputs',this)">Вводные</button>
     <button class="tab" data-tab="tep" onclick="openTab('tep',this)">ТЭП</button>
-    <button class="tab phasing-tab" data-tab="phasing" onclick="openTab('phasing',this)">Очередность</button>
+    <button class="tab" data-tab="phasing" onclick="openTab('phasing',this);renderPhasing()">Очередность</button>
     <button class="tab" data-tab="rates" onclick="openTab('rates',this)">Ключевая ставка</button>
     <button class="tab" data-tab="finance" onclick="openTab('finance',this)">Финансирование</button>
     <button class="tab" data-tab="calendar" onclick="openTab('calendar',this)">Календарь</button>
@@ -2175,14 +2651,13 @@ tfoot th{border-top:2px solid #111;color:#111;background:#fff}
 
   <div class="content">
     <div id="inputs" class="panel active">
-      <div class="note" style="margin-top:0;margin-bottom:12px"><b>Версия приложения: v0.8.3.</b> Вкладка <b>«Очередность»</b> находится в верхнем меню между «ТЭП» и «Ключевая ставка».</div>
       <div class="note" style="margin-top:0;margin-bottom:18px">Класс проекта выбирается в верхней шапке: <b>Комфорт / Бизнес / Элитный</b>. Пресет меняет стартовые цены квартир и коммерции, цену м/м и себестоимость надземной/подземной части. В строительных расходах авторский надзор считается как % от П+РД; управление проектом — отдельный overhead на зарплаты и накладные; техзаказчик/стройконтроль — отдельный % от СМР.</div>
       <div class="card import-card">
         <div class="import-head">
           <div>
             <div class="section-title">Автозагрузка исходных данных</div>
             <h2>Калькулятор ТЭП ГлавАПУ</h2>
-            <p>Загрузите Excel из калькулятора ГлавАПУ. Система распознает СПП, НП, площади квартир и коммерции, стоимость смены ВРИ, социальную нагрузку и парковки. Подземная часть рассчитывается из постоянных и гостевых м/м по 35 м² на место. Перед применением данные показываются для проверки.</p>
+            <p>Загрузите Excel из калькулятора ГлавАПУ. Система распознает СПП, НП, площади квартир и коммерции, стоимость смены ВРИ, социальную нагрузку и парковки. Денежные значения в тыс./млн/млрд автоматически приводятся к млн ₽. Подземная часть рассчитывается из постоянных и гостевых м/м по 35 м² на место. Перед применением данные показываются для проверки.</p>
           </div>
           <div style="font-size:11px;color:#777;text-align:right">Поддерживается<br><b style="color:#111">.xlsx</b></div>
         </div>
@@ -2220,19 +2695,66 @@ tfoot th{border-top:2px solid #111;color:#111;background:#fff}
 
     <div id="phasing" class="panel">
       <div class="card">
-        <div class="report-title"><div><div class="section-title">Многоочередность</div><h2>Разбиение проекта на очереди</h2></div><div class="toolbar" style="margin:0"><button class="btn" onclick="recommendPhasing()">Предложить автоматически</button><button class="btn dark" onclick="calculate()">Рассчитать очереди</button></div></div>
-        <div class="fields" style="grid-template-columns:repeat(4,minmax(150px,1fr))">
-          <div class="field"><label>Количество очередей</label><select id="phaseCount" onchange="setPhaseCount(Number(this.value))"><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option></select></div>
-          <div class="field"><label>Целевой размер очереди <span class="unit">м² продаваемой</span></label><input id="phaseTargetSize" type="number" step="5000" value="70000" onchange="phasing.target_saleable_sqm=Number(this.value||70000)"></div>
-          <div class="field"><label>Сдвиг следующей очереди <span class="unit">мес.</span></label><input id="phaseGap" type="number" step="1" value="9" onchange="updatePhaseGap(Number(this.value||9))"></div>
-          <div class="field"><label>Продаваемая площадь проекта</label><input id="phaseMasterSaleable" readonly></div>
+        <div class="report-title">
+          <div><div class="section-title">Очередность реализации</div><h2>Разбиение мастер-проекта на очереди</h2></div>
+          <div class="phase-switch">
+            <label><input id="phasingEnabled" type="checkbox" onchange="togglePhasing(this.checked)"> Включить очередность</label>
+            <button class="btn" onclick="autoSuggestPhasing()">Автопредложение</button>
+            <button class="btn dark" onclick="calculateAndOpen('report')">Пересчитать свод</button>
+          </div>
         </div>
-        <div class="note">Текущий движок одной очереди не переписан: каждая очередь считается тем же расчётом отдельно, затем денежные потоки, БРИДЖ, ПФ, эскроу и отчёт консолидируются. При 1 очереди логика остаётся прежней.</div>
+        <div class="note">Текущий одноочередный расчёт не меняется. В многоочередном режиме каждая очередь считается отдельно тем же движком, после чего строится единый свод без двойного счёта.</div>
+        <div class="phase-grid">
+          <div class="field"><label>Количество очередей</label><select id="phaseCount" onchange="setPhaseCount(Number(this.value))"><option>1</option><option>2</option><option selected>3</option><option>4</option><option>5</option></select></div>
+          <div class="field"><label>Целевой размер очереди, продаваемых м²</label><input id="phaseTargetSize" type="number" step="5000" value="70000" onchange="phasing.target_size_sqm=Number(this.value);renderPhasing()"></div>
+          <div class="field"><label>Сдвиг старта, мес.</label><input id="phaseGap" type="number" value="12" min="3" max="36" onchange="phasing.phase_gap_months=Number(this.value);autoPhaseDates()"></div>
+          <div class="field"><label>Рекомендация</label><div id="phaseRecommendation" style="padding:10px 0;font-weight:700">—</div></div>
+        </div>
+        <div id="phaseCards" class="phase-grid"></div>
       </div>
-      <div class="card"><div class="section-title">Очереди и календарь</div><div class="scroll" style="max-height:none"><table><thead><tr><th>Очередь</th><th>Доля ТЭП</th><th>Продаваемая площадь</th><th>Сдвиг старта</th><th>РнС</th><th>РВЭ</th><th>Срок стройки</th></tr></thead><tbody id="phaseRows"></tbody><tfoot><tr><th>Итого</th><th id="phaseShareTotal">100%</th><th id="phaseSaleableTotal">—</th><th colspan="4" id="phaseTepControl">—</th></tr></tfoot></table></div></div>
-      <div class="card"><div class="report-title"><div><div class="section-title">Общепроектные расходы</div><h2>Распределение денежной нагрузки</h2></div><small>Доли нормализуются до 100%</small></div><div class="scroll" style="max-height:none"><table><thead id="phaseAllocationHead"></thead><tbody id="phaseAllocationBody"></tbody></table></div><div class="note">Для 3 очередей по умолчанию: подготовительные работы 60/25/15, наружные сети 50/30/20. Покупка и оформление прав по денежному графику относятся в первую очередь. Значения можно менять вручную.</div></div>
-      <div class="card"><div class="section-title">Социальные объекты</div><div class="fields" style="grid-template-columns:repeat(4,minmax(170px,1fr))"><div class="field"><label>ДОУ строится в</label><select id="socialKgPhase" onchange="phasing.social.kindergarten_phase=Number(this.value);calculate()"></select></div><div class="field"><label>СОШ строится в</label><select id="socialSchoolPhase" onchange="phasing.social.school_phase=Number(this.value);calculate()"></select></div><div class="field"><label>Поликлиника строится в</label><select id="socialClinicPhase" onchange="phasing.social.clinic_phase=Number(this.value);calculate()"></select></div><div class="field"><label>Компенсация платится в</label><select id="socialCompPhase" onchange="phasing.social.compensation_phase=Number(this.value);calculate()"></select></div></div></div>
-      <div class="card"><div class="report-title"><div><div class="section-title">Результат по очередям</div><h2>Экономика и финансирование</h2></div><small id="phaseCalcStatus">—</small></div><div class="scroll" style="max-height:none"><table><thead><tr><th>Очередь</th><th>Доля</th><th>РнС</th><th>РВЭ</th><th>Выручка</th><th>CAPEX</th><th>Чистая прибыль</th><th>Маржа</th><th>Пик БРИДЖ</th><th>Пик ПФ</th><th>LLCR</th></tr></thead><tbody id="phaseResultRows"></tbody></table></div><div class="kpis" id="phaseConsolidatedKpi" style="margin-top:16px"></div></div>
+
+      <div class="card">
+        <div class="section-title">Распределение массовых продуктов</div>
+        <div class="scroll"><table class="phase-table"><thead id="phaseProductHead"></thead><tbody id="phaseProductBody"></tbody></table></div>
+        <div id="phaseProductStatus" class="phase-status"></div>
+      </div>
+
+      <div class="card">
+        <div class="section-title">Общепроектные расходы — фактический Cash Flow</div>
+        <div style="font-size:11px;color:#777;margin-bottom:10px">О1 по умолчанию несёт покупку/ВРИ и повышенную долю ИРД, подготовки и наружных сетей.</div>
+        <div class="scroll"><table class="phase-table"><thead id="phaseCashHead"></thead><tbody id="phaseCashBody"></tbody></table></div>
+      </div>
+
+      <div class="card">
+        <div class="section-title">Экономическая аллокация общих расходов</div>
+        <div style="font-size:11px;color:#777;margin-bottom:10px">Только аналитика очередей. Сводный денежный поток не меняется.</div>
+        <div class="scroll"><table class="phase-table"><thead id="phaseAllocHead"></thead><tbody id="phaseAllocBody"></tbody></table></div>
+      </div>
+
+      <div class="card">
+        <div class="report-title"><div><div class="section-title">Социальные объекты</div><h2>Реестр и очередь строительства</h2></div></div>
+        <div class="object-actions">
+          <button class="btn" onclick="autoSocialObjects()">Авторазбивка соцобъектов</button>
+          <button class="btn" onclick="addSocialObject('kindergarten')">+ ДОУ</button>
+          <button class="btn" onclick="addSocialObject('school')">+ СОШ</button>
+          <button class="btn" onclick="addSocialObject('clinic')">+ Поликлиника</button>
+        </div>
+        <div class="scroll"><table class="phase-table">
+          <thead><tr><th>Объект</th><th>Тип</th><th>Мощность</th><th>Очередь</th><th>Начало (опц.)</th><th></th></tr></thead>
+          <tbody id="socialObjectsBody"></tbody>
+        </table></div>
+        <div id="socialObjectsStatus" class="phase-status"></div>
+      </div>
+
+      <div class="card">
+        <div class="section-title">Отдельные коммерческие объекты</div>
+        <div class="phase-grid">
+          <div class="field"><label>Офисы / МФОЦ</label><select id="assignOffices" onchange="phasing.discrete.offices=Number(this.value)"></select></div>
+          <div class="field"><label>Коммерция ОСЗ</label><select id="assignRetail" onchange="phasing.discrete.standalone_retail=Number(this.value)"></select></div>
+          <div class="field"><label>Наземный паркинг</label><select id="assignAboveParking" onchange="phasing.discrete.above_parking=Number(this.value)"></select></div>
+        </div>
+        <div class="note">Коммерция первых этажей, подземный паркинг и кладовые делятся по очередям процентами. ОСЗ, офисы и отдельный наземный паркинг относятся целиком к выбранной очереди.</div>
+      </div>
     </div>
 
     <div id="rates" class="panel">
@@ -2355,6 +2877,17 @@ tfoot th{border-top:2px solid #111;color:#111;background:#fff}
         <div class="kpis report-kpis" id="reportKpi"></div>
       </div>
 
+      <div id="phaseReportControls" class="phase-report-nav no-print" style="display:none"></div>
+
+      <div id="phaseComparisonCard" class="card phase-comparison-card">
+        <div class="section-title">Сравнение очередей</div>
+        <div class="scroll" style="max-height:none"><table class="metric-table">
+          <thead id="phaseComparisonHead"></thead>
+          <tbody id="phaseComparisonBody"></tbody>
+        </table></div>
+        <div class="note">Аналитическая прибыль после аллокации перераспределяет общепроектные расходы только для сравнения очередей. Сводный CF не меняется.</div>
+      </div>
+
       <div class="report-3col">
         <div class="card">
           <div class="section-title">Экономика проекта</div>
@@ -2457,10 +2990,39 @@ const TEP_DEFAULT={"apartments": {"label": "Квартиры", "gns": 130716.660
 const FIELD_GROUPS=[["Сделка и сроки", [["purchase_price_mln", "Стоимость покупки / цена входа", "млн ₽", "number"], ["land_rights_cost_mln", "Оформление земельных правоотношений / смена ВРИ", "млн ₽", "number"], ["project_start", "Начало проекта", "дата", "date"], ["ird_months", "Срок ИРД до РнС", "мес.", "number"], ["construction_months", "Срок строительства", "мес.", "number"], ["sales_lag_months", "Лаг старта продаж после РнС", "мес.", "number"], ["bridge_repay_lag_months", "Лаг погашения БРИДЖ после РнС", "мес.", "number"], ["residual_sales_months", "Остаточные продажи после РВЭ", "мес.", "number"]]], ["Продажи", [["apartment_price_th", "Стартовая цена квартир", "тыс. ₽/м²", "number"], ["commercial_price_th", "Стартовая цена коммерции 1 этажа", "тыс. ₽/м²", "number"], ["parking_price_th", "Цена подземного машино-места", "тыс. ₽/шт.", "number"], ["storage_price_th", "Цена кладовой", "тыс. ₽/шт.", "number"], ["share_before_rve_pct", "Доля продаж до РВЭ", "%", "number"], ["pace_adjustment_pct", "Корректировка темпа", "%", "number"], ["inflation_after_rve_pct", "Инфляция после РВЭ", "% год", "number"], ["seasonal_reduction_pct", "Сезонное снижение темпа", "%", "number"], ["growth_stage1_pct", "Рост цены — этап 1", "%", "number"], ["growth_stage2_pct", "Рост цены — этап 2", "%", "number"], ["growth_stage3_pct", "Рост цены — этап 3", "%", "number"], ["growth_stage4_pct", "Рост цены — этап 4", "%", "number"], ["monthly_growth_pre_pct", "Ежемесячный рост цены до РВЭ", "%/мес.", "number"], ["monthly_growth_post_pct", "Ежемесячный рост цены после РВЭ", "%/мес.", "number"]]], ["Строительство", [["ird_th_per_sqm", "ИРД и согласования", "тыс. ₽/м² ГНС", "number"], ["design_p_th_per_sqm", "Проектирование стадии П", "тыс. ₽/м² ГНС", "number"], ["design_rd_th_per_sqm", "Проектирование стадии РД", "тыс. ₽/м² ГНС", "number"], ["preparation_th_per_sqm", "Подготовительные работы", "тыс. ₽/м² ГНС", "number"], ["main_above_th_per_sqm", "Основное строительство — наземная часть", "тыс. ₽/м² ГНС", "number"], ["main_under_th_per_sqm", "Основное строительство — подземная часть", "тыс. ₽/м² ГНС", "number"], ["utilities_th_per_sqm", "Наружные инженерные сети", "тыс. ₽/м² ГНС", "number"], ["landscaping_th_per_sqm", "Благоустройство", "тыс. ₽/м² ГНС", "number"], ["commissioning_th_per_sqm", "Сдача и ввод", "тыс. ₽/м² ГНС", "number"], ["site_maintenance_th_per_sqm", "Содержание стройплощадки", "тыс. ₽/м² ГНС", "number"], ["gc_fee_pct", "Вознаграждение генподрядчика", "% СМР", "number"], ["author_supervision_pct", "Авторский надзор", "% от П + РД", "number"], ["project_management_pct", "Управление проектом — зарплаты и накладные", "% прямых затрат", "number"], ["technical_supervision_pct", "Технический заказчик / стройконтроль (технадзор)", "% СМР", "number"], ["reserve_pct", "Резерв", "%", "number"]]], ["Коммерческие расходы и налоги", [["marketing_pct", "Маркетинг", "% выручки", "number"], ["selling_pct", "Расходы на продажи", "% выручки", "number"], ["profit_tax_pct", "Налог на прибыль", "%", "number"], ["vat_pct", "НДС", "%", "number"]]], ["Финансирование", [["bridge_spread_pp", "Спред БРИДЖ", "п.п.", "number"], ["bridge_cap_spread_pp", "Спред капитализации БРИДЖ", "п.п.", "number"], ["pf_spread_pp", "Спред ПФ", "п.п.", "number"], ["pf_special_pct", "Специальная ставка ПФ", "%", "number"], ["limit_fee_pct", "Плата за лимит", "%", "number"], ["reservation_fee_pct", "Плата за резервирование", "%", "number"], ["discount_rate_pct", "Ставка дисконтирования", "%", "number"], ["bridge_interest_mode", "Проценты БРИДЖ при рефинансировании", "режим", "finance_select"], ["pf_transfer_income_pct", "Снижение спецставки при покрытии эскроу > 1x", "п.п. на 1x", "number"]]], ["Социальная нагрузка", [["social_mode", "Форма исполнения", "режим", "select"], ["social_comp_date", "Дата денежной компенсации", "дата", "date"], ["social_compensation_mln", "Социальный платеж / компенсация по ГлавАПУ", "млн ₽", "number"], ["kindergarten_places", "ДОУ — количество мест", "мест", "number"], ["kindergarten_cost_mln_per_place", "ДОУ — себестоимость места", "млн ₽/место", "number"], ["kindergarten_start", "ДОУ — начало строительства", "дата", "date"], ["kindergarten_months", "ДОУ — срок строительства", "мес.", "number"], ["school_places", "СОШ — количество мест", "мест", "number"], ["school_cost_mln_per_place", "СОШ — себестоимость места", "млн ₽/место", "number"], ["school_start", "СОШ — начало строительства", "дата", "date"], ["school_months", "СОШ — срок строительства", "мес.", "number"], ["clinic_capacity", "Поликлиника — мощность", "пос./смену", "number"], ["clinic_cost_mln_per_unit", "Поликлиника — себестоимость мощности", "млн ₽/(пос./смену)", "number"], ["clinic_start", "Поликлиника — начало строительства", "дата", "date"], ["clinic_months", "Поликлиника — срок строительства", "мес.", "number"], ["social_dou_gba_sqm", "ДОУ — общая площадь", "м²", "number"], ["social_dou_norm_sqm", "ДОУ — норматив площади на место", "м²/место", "number"], ["social_school_gba_sqm", "СОШ — общая площадь", "м²", "number"], ["social_school_norm_sqm", "СОШ — норматив площади на место", "м²/место", "number"], ["social_clinic_gba_sqm", "Поликлиника — общая площадь", "м²", "number"], ["social_clinic_norm_sqm", "Поликлиника — норматив площади", "м²/ед.", "number"]]], ["МФОЦ / офисы", [["offices_enabled", "Объект включен", "Да / Нет", "checkbox"], ["offices_gba_sqm", "Общая площадь (GBA)", "м²", "number"], ["offices_saleable_sqm", "Продаваемая площадь", "м²", "number"], ["offices_start", "Начало строительства", "дата", "date"], ["offices_months", "Срок строительства", "мес.", "number"], ["offices_cost_th_per_sqm", "Себестоимость строительства", "тыс. ₽/м² GBA", "number"], ["offices_sales_start", "Старт продаж", "дата", "date"], ["offices_price_th_per_sqm", "Стартовая цена", "тыс. ₽/м²", "number"], ["offices_share_before_rve_pct", "Доля продаж до РВЭ", "%", "number"], ["offices_residual_months", "Остаточные продажи после РВЭ", "мес.", "number"], ["offices_growth_pre_pct", "Рост цены до РВЭ", "%/мес.", "number"], ["offices_growth_post_pct", "Рост цены после РВЭ", "%/мес.", "number"]]], ["ТЦ / коммерция ОСЗ", [["retail_enabled", "Объект включен", "Да / Нет", "checkbox"], ["retail_gba_sqm", "Общая площадь (GBA)", "м²", "number"], ["retail_saleable_sqm", "Продаваемая площадь", "м²", "number"], ["retail_start", "Начало строительства", "дата", "date"], ["retail_months", "Срок строительства", "мес.", "number"], ["retail_cost_th_per_sqm", "Себестоимость строительства", "тыс. ₽/м² GBA", "number"], ["retail_sales_start", "Старт продаж", "дата", "date"], ["retail_price_th_per_sqm", "Стартовая цена", "тыс. ₽/м²", "number"], ["retail_share_before_rve_pct", "Доля продаж до РВЭ", "%", "number"], ["retail_residual_months", "Остаточные продажи после РВЭ", "мес.", "number"], ["retail_growth_pre_pct", "Рост цены до РВЭ", "%/мес.", "number"], ["retail_growth_post_pct", "Рост цены после РВЭ", "%/мес.", "number"]]], ["Наземный паркинг", [["above_parking_enabled", "Объект включен", "Да / Нет", "checkbox"], ["above_parking_spaces", "Количество машино-мест", "шт.", "number"], ["above_parking_cost_mln_per_space", "Себестоимость одного места", "млн ₽/место", "number"], ["above_parking_start", "Начало строительства", "дата", "date"], ["above_parking_months", "Срок строительства", "мес.", "number"], ["above_parking_sales_start", "Старт продаж", "дата", "date"], ["above_parking_price_mln_per_space", "Стартовая цена места", "млн ₽/место", "number"], ["above_parking_share_before_rve_pct", "Доля продаж до РВЭ", "%", "number"], ["above_parking_residual_months", "Остаточные продажи после РВЭ", "мес.", "number"], ["above_parking_growth_pre_pct", "Рост цены до РВЭ", "%/мес.", "number"], ["above_parking_growth_post_pct", "Рост цены после РВЭ", "%/мес.", "number"], ["above_parking_area_per_space_sqm", "Площадь на 1 место для ТЭП", "м²/место", "number"]]]];
 const INPUT_DEFAULT={"project_class":"comfort","purchase_price_mln": 0, "construction_months": 24, "apartment_price_th": 350, "commercial_price_th": 350, "parking_price_th": 1500, "storage_price_th": 1000, "share_before_rve_pct": 85, "pace_adjustment_pct": 25, "inflation_after_rve_pct": 3, "seasonal_reduction_pct": -15, "growth_stage1_pct": 0, "growth_stage2_pct": 0, "growth_stage3_pct": 0, "growth_stage4_pct": 0, "ird_th_per_sqm": 1, "design_p_th_per_sqm": 2.5, "design_rd_th_per_sqm": 2.5, "preparation_th_per_sqm": 1, "main_above_th_per_sqm": 110, "utilities_th_per_sqm": 7.5, "landscaping_th_per_sqm": 5, "commissioning_th_per_sqm": 1, "site_maintenance_th_per_sqm": 1, "gc_fee_pct": 7, "reserve_pct": 5, "project_management_pct":5,"technical_supervision_pct":0,"author_supervision_pct":0,"marketing_pct": 3, "selling_pct": 4, "profit_tax_pct": 25, "vat_pct": 22, "bridge_spread_pp": 6, "bridge_cap_spread_pp": 6, "pf_spread_pp": 4.5, "pf_special_pct": 4.5, "limit_fee_pct": 0.5, "reservation_fee_pct": 0.5, "discount_rate_pct": 20, "monthly_growth_pre_pct": 1.5, "monthly_growth_post_pct": 0.25, "ird_months": 18, "sales_lag_months": 0, "bridge_repay_lag_months": 0, "residual_sales_months": 6, "social_comp_date": "2028-06-01", "social_compensation_mln": 0, "kindergarten_places": 250, "kindergarten_cost_mln_per_place": 2.75, "kindergarten_start": "2028-06-01", "kindergarten_months": 24, "school_places": 0, "school_cost_mln_per_place": 3, "school_start": "2028-06-01", "school_months": 30, "clinic_capacity": 0, "clinic_cost_mln_per_unit": 3, "clinic_start": "2028-06-01", "clinic_months": 24, "offices_gba_sqm": 10000, "offices_saleable_sqm": 6000, "offices_start": "2028-07-01", "offices_months": 24, "offices_cost_th_per_sqm": 200, "offices_sales_start": "2028-07-01", "offices_price_th_per_sqm": 500, "offices_share_before_rve_pct": 85, "offices_residual_months": 6, "offices_growth_pre_pct": 1.5, "offices_growth_post_pct": 0.25, "retail_gba_sqm": 10000, "retail_saleable_sqm": 6000, "retail_start": "2028-07-01", "retail_months": 24, "retail_cost_th_per_sqm": 200, "retail_sales_start": "2028-07-01", "retail_price_th_per_sqm": 500, "retail_share_before_rve_pct": 85, "retail_residual_months": 6, "retail_growth_pre_pct": 1.5, "retail_growth_post_pct": 0.25, "above_parking_spaces": 550, "above_parking_cost_mln_per_space": 1, "above_parking_start": "2028-07-01", "above_parking_months": 18, "above_parking_sales_start": "2028-07-01", "above_parking_price_mln_per_space": 2, "above_parking_share_before_rve_pct": 85, "above_parking_residual_months": 6, "above_parking_growth_pre_pct": 0.75, "above_parking_growth_post_pct": 0.2, "social_dou_gba_sqm": 3000, "social_school_gba_sqm": 0, "social_clinic_gba_sqm": 0, "project_start": "2027-01-01", "main_under_th_per_sqm": 110, "social_mode": "Строительство", "social_dou_norm_sqm": 12, "social_school_norm_sqm": 13, "social_clinic_norm_sqm": 15, "offices_enabled": false, "retail_enabled": false, "above_parking_enabled": false, "above_parking_area_per_space_sqm": 25, "rate_scenario":"base", "land_rights_cost_mln": 2864.291514155844, "bridge_interest_mode": "Капитализация в ПФ", "pf_transfer_income_pct": 5.0,"rate_start_pct":14.25,"rate_start_date":"2026-07-17","rate_target_high_pct":11,"rate_target_base_pct":9,"rate_target_low_pct":7,"rate_normalization_months":24,"rate_curve_shape":2};
 
-const PHASING_DEFAULT={enabled:false,count:1,target_saleable_sqm:70000,gap_months:9,shares:[1],phases:[{name:'Очередь 1',start_offset_months:0,construction_months:24}],allocations:{preparation:[1],utilities:[1],purchase:[1],land_rights:[1]},social:{kindergarten_phase:1,school_phase:1,clinic_phase:1,compensation_phase:1}};
-let inputs=structuredClone(INPUT_DEFAULT), tep=structuredClone(TEP_DEFAULT), rates=structuredClone(RATE_DEFAULT), lastResult=null, glavapuImport=null;
-let phasing=structuredClone(PHASING_DEFAULT), lastPhasingResult=null;
+function phaseWeightPreset(count){
+ const p={1:[100],2:[55,45],3:[40,32,28],4:[32,26,22,20],5:[28,22,19,16,15]};
+ return structuredClone(p[count]||Array(count).fill(100/count));
+}
+function frontLoadedPreset(count,kind){
+ if(count===3){
+  if(['purchase','land_rights','social_compensation'].includes(kind))return [100,0,0];
+  if(['ird','preparation'].includes(kind))return [60,25,15];
+  if(kind==='design')return [50,30,20];
+  if(kind==='utilities')return [55,27,18];
+ }
+ if(['purchase','land_rights','social_compensation'].includes(kind))return [100,...Array(count-1).fill(0)];
+ const a=phaseWeightPreset(count);if(count>1){a[0]+=10;for(let i=1;i<count;i++)a[i]-=10/(count-1)}
+ const s=a.reduce((x,y)=>x+y,0);return a.map(x=>x*100/s);
+}
+function makeDefaultPhasing(count=3){
+ const w=phaseWeightPreset(count);
+ return {enabled:false,phase_count:count,target_size_sqm:70000,phase_gap_months:12,
+  phases:Array.from({length:count},(_,i)=>({name:`О${i+1}`,start_offset_months:i*12,construction_months:Number(INPUT_DEFAULT.construction_months||24)})),
+  products:{apartments:[...w],ground_commercial:[...w],underground_parking:[...w],storage:[...w]},
+  shared_cash:{purchase:frontLoadedPreset(count,'purchase'),land_rights:frontLoadedPreset(count,'land_rights'),ird:frontLoadedPreset(count,'ird'),design:frontLoadedPreset(count,'design'),preparation:frontLoadedPreset(count,'preparation'),utilities:frontLoadedPreset(count,'utilities'),social_compensation:frontLoadedPreset(count,'social_compensation')},
+  shared_allocation:{purchase:[...w],land_rights:[...w],ird:[...w],design:[...w],preparation:[...w],utilities:[...w],social_compensation:[...w],social_construction:[...w]},
+  social_objects:[],discrete:{offices:Math.min(3,count),standalone_retail:Math.min(2,count),above_parking:Math.min(2,count)}
+ };
+}
+let inputs=structuredClone(INPUT_DEFAULT), tep=structuredClone(TEP_DEFAULT), rates=structuredClone(RATE_DEFAULT),
+ lastResult=null, glavapuImport=null, phasing=makeDefaultPhasing(3), phaseBundle=null, reportView='all';
 const money=v=>(Number(v||0)/1e9).toLocaleString('ru-RU',{minimumFractionDigits:0,maximumFractionDigits:2})+' млрд ₽';
+const socialMoney=v=>{
+ const x=Number(v||0);
+ if(Math.abs(x)>0&&Math.abs(x)<100000000)return (x/1e6).toLocaleString('ru-RU',{minimumFractionDigits:1,maximumFractionDigits:2})+' млн ₽';
+ return money(x);
+};
 const mln=v=>(Number(v||0)/1e6).toLocaleString('ru-RU',{minimumFractionDigits:0,maximumFractionDigits:1})+' млн ₽';
 const pct=v=>(Number(v||0)*100).toLocaleString('ru-RU',{minimumFractionDigits:0,maximumFractionDigits:2})+'%';
 const mult=v=>Number(v||0).toLocaleString('ru-RU',{minimumFractionDigits:2,maximumFractionDigits:2})+'x';
@@ -2471,8 +3033,6 @@ const irrFmt=v=>v==null?'N/A':pct(v);
 const inputDisplay=v=>Math.round(Number(v||0)*10)/10;
 
 function openTab(id,btn){
- if(id==='tep'){syncDerivedModelState(false);renderTep()}
- if(id==='phasing'){syncDerivedModelState(false);renderPhasing()}
  document.querySelectorAll('.panel').forEach(x=>x.classList.remove('active'));document.getElementById(id).classList.add('active');
  document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
  (btn||document.querySelector(`[data-tab="${id}"]`)).classList.add('active');
@@ -2481,23 +3041,55 @@ function calculateAndOpen(id){calculate().then(()=>openTab(id))}
 
 
 
-function masterSaleable(){return ['apartments','ground_commercial','standalone_retail','offices'].reduce((s,k)=>s+Number((tep[k]&&tep[k].saleable)||0),0)}
-function phaseSharePreset(c){return ({1:[1],2:[.45,.55],3:[.30,.35,.35],4:[.22,.26,.26,.26],5:[.18,.205,.205,.205,.205]})[c]||Array(c).fill(1/c)}
-function frontloadPreset(c,k){const p={preparation:{1:[1],2:[.70,.30],3:[.60,.25,.15],4:[.50,.20,.15,.15],5:[.45,.20,.15,.10,.10]},utilities:{1:[1],2:[.60,.40],3:[.50,.30,.20],4:[.45,.25,.15,.15],5:[.40,.25,.15,.10,.10]}};return (p[k]&&p[k][c])||Array(c).fill(1/c)}
-function addMonthsUI(iso,m){const d=new Date(iso+'T12:00:00'),day=d.getDate();d.setDate(1);d.setMonth(d.getMonth()+Number(m||0));const last=new Date(d.getFullYear(),d.getMonth()+1,0).getDate();d.setDate(Math.min(day,last));return d.toISOString().slice(0,10)}
-function phaseDates(p){const start=addMonthsUI(inputs.project_start,Number(p.start_offset_months||0)),permit=addMonthsUI(start,Number(inputs.ird_months||18)),rve=addMonthsUI(permit,Number(p.construction_months||inputs.construction_months||24));return {start,permit,rve}}
-function configurePhasing(c,auto=false){c=Math.max(1,Math.min(5,Number(c||1)));phasing.count=c;phasing.enabled=c>1;phasing.shares=phaseSharePreset(c);phasing.phases=Array.from({length:c},(_,i)=>({name:'Очередь '+(i+1),start_offset_months:i*Number(phasing.gap_months||9),construction_months:Number(inputs.construction_months||24)}));phasing.allocations={preparation:frontloadPreset(c,'preparation'),utilities:frontloadPreset(c,'utilities'),purchase:[1,...Array(Math.max(0,c-1)).fill(0)],land_rights:[1,...Array(Math.max(0,c-1)).fill(0)]};phasing.social={kindergarten_phase:1,school_phase:Math.min(2,c),clinic_phase:c,compensation_phase:1};renderPhasing();if(auto)calculate()}
-function setPhaseCount(c){configurePhasing(c,true)}
-function updatePhaseGap(v){phasing.gap_months=Number(v||9);phasing.phases.forEach((p,i)=>p.start_offset_months=i*phasing.gap_months);renderPhasing();calculate()}
-function recommendPhasing(){syncDerivedModelState(false);const total=masterSaleable(),target=Math.max(10000,Number(phaseTargetSize.value||phasing.target_saleable_sqm||70000));phasing.target_saleable_sqm=target;configurePhasing(Math.max(1,Math.min(5,Math.ceil(total/target))),true)}
-function updatePhaseShare(i,v){phasing.shares[i]=Math.max(0,Number(v||0))/100;renderPhasing(false);calculate()}
-function updatePhaseOffset(i,v){phasing.phases[i].start_offset_months=Number(v||0);renderPhasing(false);calculate()}
-function updatePhaseMonths(i,v){phasing.phases[i].construction_months=Number(v||24);renderPhasing(false);calculate()}
-function updateAllocation(k,i,v){phasing.allocations[k][i]=Math.max(0,Number(v||0))/100;renderPhasing(false);calculate()}
-function phaseOptions(s){return Array.from({length:phasing.count},(_,i)=>`<option value="${i+1}" ${Number(s)===i+1?'selected':''}>Очередь ${i+1}</option>`).join('')}
-function renderPhasing(refresh=true){if(!document.getElementById('phaseRows'))return;if(refresh){phaseCount.value=String(phasing.count||1);phaseGap.value=Number(phasing.gap_months||9);phaseTargetSize.value=Number(phasing.target_saleable_sqm||70000)}const total=masterSaleable();phaseMasterSaleable.value=num(total)+' м²';phaseRows.innerHTML=phasing.phases.slice(0,phasing.count).map((p,i)=>{const d=phaseDates(p),s=Number(phasing.shares[i]||0);return `<tr><td><b>${p.name}</b></td><td><input class="phase-share" type="number" step="1" value="${(s*100).toFixed(1)}" onchange="updatePhaseShare(${i},this.value)">%</td><td>${num(total*s)} м²</td><td><input class="phase-small" type="number" step="1" value="${Number(p.start_offset_months||0)}" onchange="updatePhaseOffset(${i},this.value)"> мес.</td><td>${dateRu(d.permit)}</td><td>${dateRu(d.rve)}</td><td><input class="phase-small" type="number" step="1" value="${Number(p.construction_months||24)}" onchange="updatePhaseMonths(${i},this.value)"> мес.</td></tr>`}).join('');const sum=phasing.shares.slice(0,phasing.count).reduce((a,b)=>a+Number(b||0),0);phaseShareTotal.textContent=(sum*100).toLocaleString('ru-RU',{maximumFractionDigits:1})+'%';phaseSaleableTotal.textContent=num(total*sum)+' м²';phaseTepControl.innerHTML=Math.abs(sum-1)<1e-6?'<span class="phase-ok">Доли = 100%</span>':'<span class="phase-bad">Доли должны дать 100%</span>';phaseAllocationHead.innerHTML='<tr><th>Статья</th>'+Array.from({length:phasing.count},(_,i)=>`<th>О${i+1}</th>`).join('')+'<th>Итого</th></tr>';const rr=[['purchase','Покупка / вход'],['land_rights','Смена ВРИ / земельные права'],['preparation','Подготовительные работы'],['utilities','Наружные сети']];phaseAllocationBody.innerHTML=rr.map(([k,l])=>{const a=phasing.allocations[k]||[],s=a.slice(0,phasing.count).reduce((x,y)=>x+Number(y||0),0);return `<tr><td>${l}</td>`+Array.from({length:phasing.count},(_,i)=>`<td><input class="phase-small" type="number" step="1" value="${(Number(a[i]||0)*100).toFixed(1)}" onchange="updateAllocation('${k}',${i},this.value)">%</td>`).join('')+`<td>${(s*100).toLocaleString('ru-RU',{maximumFractionDigits:1})}%</td></tr>`}).join('');socialKgPhase.innerHTML=phaseOptions(phasing.social.kindergarten_phase);socialSchoolPhase.innerHTML=phaseOptions(phasing.social.school_phase);socialClinicPhase.innerHTML=phaseOptions(phasing.social.clinic_phase);socialCompPhase.innerHTML=phaseOptions(phasing.social.compensation_phase);if(lastPhasingResult)renderPhasingResult()}
-function renderPhasingResult(){if(!lastPhasingResult||!document.getElementById('phaseResultRows'))return;const p=lastPhasingResult;phaseResultRows.innerHTML=(p.phases||[]).map(x=>{const r=x.result;return `<tr><td><b>${x.name}</b></td><td>${(x.share*100).toLocaleString('ru-RU',{maximumFractionDigits:1})}%</td><td>${dateRu(r.dates.permit)}</td><td>${dateRu(r.dates.rve)}</td><td>${money(r.summary.revenue)}</td><td>${money(r.summary.capex)}</td><td>${money(r.summary.net_profit)}</td><td>${pct(r.summary.margin)}</td><td>${money(r.finance.peak_bridge)}</td><td>${money(r.finance.peak_pf)}</td><td>${mult(r.summary.llcr)}</td></tr>`}).join('');const c=p.consolidated,ctrl=p.controls||{};phaseCalcStatus.innerHTML=ctrl.tep_conservation?'<span class="phase-ok">ТЭП сходятся</span>':'<span class="phase-bad">Ошибка ТЭП</span>';phaseConsolidatedKpi.innerHTML=[['Выручка',money(c.summary.revenue)],['CAPEX',money(c.summary.capex)],['Чистая прибыль',money(c.summary.net_profit)],['Маржа',pct(c.summary.margin)],['Пиковый совокупный долг',money(ctrl.peak_total_debt||0)],['LLCR',mult(c.summary.llcr)],['NPV',money(c.summary.npv)],['IRR equity',irrFmt(c.summary.irr_equity)]].map(x=>`<div class="kpi"><span>${x[0]}</span><b>${x[1]}</b></div>`).join('')}
-
+function currentMonetizableSaleable(){
+ return Number((tep.apartments||{}).saleable||0)+Number((tep.ground_commercial||{}).saleable||0)
+  +(inputs.offices_enabled?Number(inputs.offices_saleable_sqm||0):0)
+  +(inputs.retail_enabled?Number(inputs.retail_saleable_sqm||0):0);
+}
+function recommendationCount(){return Math.max(1,Math.min(5,Math.ceil(currentMonetizableSaleable()/Math.max(20000,Number(phasing.target_size_sqm||70000)))))}
+function phaseOptions(selected){return phasing.phases.map((p,i)=>`<option value="${i+1}" ${Number(selected)===i+1?'selected':''}>${p.name}</option>`).join('')}
+function togglePhasing(v){phasing.enabled=!!v;if(v&&!phasing.social_objects.length&&inputs.social_mode==='Строительство')autoSocialObjects(false);renderPhasing();calculate()}
+function setPhaseCount(count){const e=phasing.enabled,t=phasing.target_size_sqm||70000,g=phasing.phase_gap_months||12;phasing=makeDefaultPhasing(Math.max(1,Math.min(5,count)));phasing.enabled=e;phasing.target_size_sqm=t;phasing.phase_gap_months=g;phasing.phases.forEach((p,i)=>p.start_offset_months=i*g);autoSocialObjects(false);renderPhasing()}
+function autoPhaseDates(){phasing.phases.forEach((p,i)=>p.start_offset_months=i*Number(phasing.phase_gap_months||12));renderPhasing()}
+function autoSuggestPhasing(){const c=recommendationCount();phasing=makeDefaultPhasing(c);phasing.enabled=true;phasing.target_size_sqm=Number(document.getElementById('phaseTargetSize')?.value||70000);phasing.phase_gap_months=Number(document.getElementById('phaseGap')?.value||12);phasing.phases.forEach((p,i)=>p.start_offset_months=i*phasing.phase_gap_months);autoSocialObjects(false);renderPhasing()}
+function setPhaseProductShare(k,i,v){phasing.products[k][i]=Number(v||0);renderPhasingStatus()}
+function setSharedShare(bucket,k,i,v){phasing[bucket][k][i]=Number(v||0)}
+function splitCapacity(total,typical){let t=Math.max(0,Number(total||0)),out=[];typical=Math.max(1,Number(typical||1));while(t>0){const v=Math.min(typical,t);out.push(v);t-=v}return out}
+function autoSocialObjects(doRender=true){
+ phasing.social_objects=[];if(inputs.social_mode!=='Строительство'){if(doRender)renderPhasing();return}
+ [['kindergarten','ДОУ',Number(inputs.kindergarten_places||0),250],['school','СОШ',Number(inputs.school_places||0),1100],['clinic','Поликлиника',Number(inputs.clinic_capacity||0),300]].forEach(([type,label,total,typical])=>{
+  const chunks=splitCapacity(total,typical);chunks.forEach((capacity,i)=>{let phase;if(chunks.length===1)phase=type==='kindergarten'?1:Math.min(2,phasing.phase_count);else phase=1+Math.round(i*(phasing.phase_count-1)/Math.max(1,chunks.length-1));phasing.social_objects.push({id:`${type}_${Date.now()}_${i}`,name:`${label} №${i+1}`,type,capacity,phase,start_date:''})})
+ });if(doRender)renderPhasing()
+}
+function addSocialObject(type){const l={kindergarten:'ДОУ',school:'СОШ',clinic:'Поликлиника'},n=phasing.social_objects.filter(x=>x.type===type).length;phasing.social_objects.push({id:`${type}_${Date.now()}`,name:`${l[type]} №${n+1}`,type,capacity:0,phase:1,start_date:''});renderPhasing()}
+function updateSocialObject(i,k,v){if(!phasing.social_objects[i])return;phasing.social_objects[i][k]=['capacity','phase'].includes(k)?Number(v||0):v;renderSocialStatus()}
+function deleteSocialObject(i){phasing.social_objects.splice(i,1);renderPhasing()}
+function renderSocialStatus(){
+ if(!document.getElementById('socialObjectsStatus'))return;const t={kindergarten:0,school:0,clinic:0};
+ phasing.social_objects.forEach(o=>t[o.type]=(t[o.type]||0)+Number(o.capacity||0));
+ const r={kindergarten:Number(inputs.kindergarten_places||0),school:Number(inputs.school_places||0),clinic:Number(inputs.clinic_capacity||0)},l={kindergarten:'ДОУ',school:'СОШ',clinic:'Поликлиника'};
+ socialObjectsStatus.innerHTML=Object.keys(t).map(k=>{const ok=Math.abs(t[k]-r[k])<.01;return `<span class="${ok?'phase-total-ok':'phase-total-bad'}">${l[k]}: ${num(t[k])} / ${num(r[k])}${ok?' ✓':' — не сходится'}</span>`}).join(' &nbsp; ')
+}
+function renderPhasingStatus(){if(!document.getElementById('phaseProductStatus'))return;phaseProductStatus.textContent='Контроль 100% — '+Object.entries(phasing.products).map(([k,a])=>{const s=a.reduce((x,y)=>x+Number(y||0),0);return `${k}: ${s.toFixed(1)}% ${Math.abs(s-100)<.1?'✓':'!'}`}).join(' · ')}
+function renderShareTable(h,b,data,labels,bucket){
+ const head=document.getElementById(h),body=document.getElementById(b);if(!head||!body)return;
+ head.innerHTML=`<tr><th>Статья</th>${phasing.phases.map(p=>`<th>${p.name}</th>`).join('')}<th>Итого</th></tr>`;
+ body.innerHTML=Object.entries(data).map(([k,a])=>{const s=a.reduce((x,y)=>x+Number(y||0),0);return `<tr><td>${labels[k]||k}</td>${a.map((v,i)=>`<td><input type="number" step="1" value="${Number(v).toFixed(1)}" onchange="setSharedShare('${bucket}','${k}',${i},this.value)"></td>`).join('')}<td class="${Math.abs(s-100)<.1?'phase-total-ok':'phase-total-bad'}">${s.toFixed(1)}%</td></tr>`}).join('')
+}
+function renderPhasing(){
+ if(!document.getElementById('phasingEnabled'))return;
+ phasingEnabled.checked=!!phasing.enabled;phaseCount.value=String(phasing.phase_count);phaseTargetSize.value=Number(phasing.target_size_sqm||70000);phaseGap.value=Number(phasing.phase_gap_months||12);
+ phaseRecommendation.textContent=`${recommendationCount()} очеред. при ${num(currentMonetizableSaleable())} м²`;
+ phaseCards.innerHTML=phasing.phases.map((p,i)=>`<div class="phase-card"><h3>${p.name}</h3><div class="field"><label>Название</label><input value="${p.name}" onchange="phasing.phases[${i}].name=this.value;renderPhasing()"></div><div class="field"><label>Сдвиг старта, мес.</label><input type="number" value="${p.start_offset_months}" onchange="phasing.phases[${i}].start_offset_months=Number(this.value)"></div><div class="field"><label>Строительство, мес.</label><input type="number" value="${p.construction_months}" onchange="phasing.phases[${i}].construction_months=Number(this.value)"></div><div style="font-size:11px;color:#777;margin-top:8px">Старт: ${dateRu(addMonthsJS(inputs.project_start,p.start_offset_months))}</div></div>`).join('');
+ const pl={apartments:'Квартиры',ground_commercial:'Коммерция 1 этажа',underground_parking:'Подземный паркинг',storage:'Кладовые'};
+ phaseProductHead.innerHTML=`<tr><th>Продукт</th>${phasing.phases.map(p=>`<th>${p.name}</th>`).join('')}<th>Итого</th></tr>`;
+ phaseProductBody.innerHTML=Object.entries(phasing.products).map(([k,a])=>{const s=a.reduce((x,y)=>x+Number(y||0),0);return `<tr><td>${pl[k]}</td>${a.map((v,i)=>`<td><input type="number" step="1" value="${Number(v).toFixed(1)}" onchange="setPhaseProductShare('${k}',${i},this.value)"></td>`).join('')}<td class="${Math.abs(s-100)<.1?'phase-total-ok':'phase-total-bad'}">${s.toFixed(1)}%</td></tr>`}).join('');renderPhasingStatus();
+ const sl={purchase:'Покупка / вход',land_rights:'Земельные права / ВРИ',ird:'ИРД',design:'П + РД',preparation:'Подготовительные',utilities:'Наружные сети',social_compensation:'Соцкомпенсация',social_construction:'Соцобъекты — аналитическая аллокация'};
+ renderShareTable('phaseCashHead','phaseCashBody',phasing.shared_cash,sl,'shared_cash');renderShareTable('phaseAllocHead','phaseAllocBody',phasing.shared_allocation,sl,'shared_allocation');
+ socialObjectsBody.innerHTML=phasing.social_objects.map((o,i)=>`<tr><td><input value="${o.name||''}" onchange="updateSocialObject(${i},'name',this.value)"></td><td><select onchange="updateSocialObject(${i},'type',this.value)"><option value="kindergarten" ${o.type==='kindergarten'?'selected':''}>ДОУ</option><option value="school" ${o.type==='school'?'selected':''}>СОШ</option><option value="clinic" ${o.type==='clinic'?'selected':''}>Поликлиника</option></select></td><td><input type="number" value="${Number(o.capacity||0)}" onchange="updateSocialObject(${i},'capacity',this.value)"></td><td><select onchange="updateSocialObject(${i},'phase',this.value)">${phaseOptions(o.phase)}</select></td><td><input type="date" value="${o.start_date||''}" onchange="updateSocialObject(${i},'start_date',this.value)"></td><td><button class="btn" onclick="deleteSocialObject(${i})">×</button></td></tr>`).join('');renderSocialStatus();
+ assignOffices.innerHTML=phaseOptions(phasing.discrete.offices);assignRetail.innerHTML=phaseOptions(phasing.discrete.standalone_retail);assignAboveParking.innerHTML=phaseOptions(phasing.discrete.above_parking);
+ assignOffices.value=String(phasing.discrete.offices||1);assignRetail.value=String(phasing.discrete.standalone_retail||1);assignAboveParking.value=String(phasing.discrete.above_parking||1)
+}
 async function uploadGlavapu(){
  const file=document.getElementById('glavapuFile').files[0];
  if(!file){glavapuStatus.innerHTML='<span class="import-error">Выберите Excel-файл.</span>';return}
@@ -2529,7 +3121,7 @@ function renderGlavapuPreview(data){
    ['Площадь территории',(n.site_area_ha??'—')+(n.site_area_ha!=null?' га':'')],
    ['Площадь квартир',(n.apartment_area_sqm!=null?num(n.apartment_area_sqm)+' м²':'—')],
    ['Смена ВРИ',(n.change_vri_mln!=null?Number(n.change_vri_mln).toLocaleString('ru-RU',{maximumFractionDigits:3})+' млн ₽':'—')],
-   ['Соцплатеж',(n.social_compensation_total_mln!=null?Number(n.social_compensation_total_mln).toLocaleString('ru-RU',{maximumFractionDigits:3})+' млн ₽':'—')]
+   ['Соцплатеж',(n.social_compensation_total_mln!=null?(Number(n.social_compensation_total_mln)>=1000?(Number(n.social_compensation_total_mln)/1000).toLocaleString('ru-RU',{minimumFractionDigits:3,maximumFractionDigits:3})+' млрд ₽ ('+Number(n.social_compensation_total_mln).toLocaleString('ru-RU',{maximumFractionDigits:1})+' млн ₽)':Number(n.social_compensation_total_mln).toLocaleString('ru-RU',{maximumFractionDigits:3})+' млн ₽'):'—')]
  ].map(x=>`<div><small>${x[0]}</small><b>${x[1]}</b></div>`).join('');
  glavapuRows.innerHTML=(data.recognized||[]).map(x=>`<tr>
    <td>${x.label}</td><td>${x.display}</td><td>${x.unit||''}</td><td>${x.target}</td>
@@ -2553,28 +3145,31 @@ function applyGlavapu(){
    warnings:glavapuImport.warnings
  };
 
- // Compensation value is imported independently from the execution method.
- // Re-import must not silently change a user's scenario choice.
+ // Social mode is a scenario choice. Re-import must not silently reset it.
  inputs.social_mode=preserveMode
    ? previousMode
    : ((glavapuImport.normalized&&glavapuImport.normalized.suggested_social_mode)||previousMode);
 
+ // Construction mode: use calculated ГлавАПУ needs when actual planned facilities are zero.
  applyRequiredSocialProgramFromGlavapu();
 
  Object.entries(glavapuImport.mappings.tep||{}).forEach(([key,vals])=>{
    if(tep[key])Object.assign(tep[key],vals);
  });
 
+ // Rebuild social TEP after generic mappings, then enforce parking rule.
  syncTep(false);
  repairParkingFromGlavapu();
+
  renderInputs();
  renderTep();
  renderPhasing();
  renderGlavapuPreview(glavapuImport);
 
- const comp=Number(inputs.social_compensation_mln||0);
- const compText=comp>0?' Компенсация ГлавАПУ сохранена во Вводных: '+comp.toLocaleString('ru-RU',{maximumFractionDigits:3})+' млн ₽.':'';
- glavapuStatus.innerHTML='<span class="import-ok">Данные ГлавАПУ применены к Вводным и ТЭП.'+compText+' Выбранный режим соцнагрузки не перезаписан.</span>';
+ const socialNote=inputs.social_mode==='Строительство'
+  ? 'Соцрежим: строительство; расчётные мощности ГлавАПУ используются при нулевых фактических объектах.'
+  : 'Соцрежим: денежная компенсация.';
+ glavapuStatus.innerHTML='<span class="import-ok">Данные ГлавАПУ применены. Денежные единицы приведены к млн ₽. '+socialNote+' Подземный паркинг: постоянные + гостевые × 35 м².</span>';
  calculate();
 }
 
@@ -2660,7 +3255,7 @@ function renderInputs(){
      else {el=document.createElement('input');el.type=type==='checkbox'?'checkbox':type;if(type==='number')el.step='any'}
      el.id='f_'+id;
      if(type==='checkbox')el.checked=!!inputs[id];else el.value=inputs[id]??'';
-     el.onchange=()=>{inputs[id]=type==='checkbox'?el.checked:(type==='number'?Number(el.value):el.value);if(id==='social_mode')inputs._social_mode_user_set=true;if(['apartment_price_th','commercial_price_th','parking_price_th','main_above_th_per_sqm','main_under_th_per_sqm'].includes(id)){inputs.project_class='custom';syncProjectClassSelector()}if(['offices_enabled','offices_gba_sqm','offices_saleable_sqm','retail_enabled','retail_gba_sqm','retail_saleable_sqm','above_parking_enabled','above_parking_spaces','above_parking_area_per_space_sqm','social_mode','kindergarten_places','school_places','clinic_capacity','social_dou_gba_sqm','social_school_gba_sqm','social_clinic_gba_sqm'].includes(id)){const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();if(filled)renderInputs();syncTep(false);renderPhasing(false)}};
+     el.onchange=()=>{inputs[id]=type==='checkbox'?el.checked:(type==='number'?Number(el.value):el.value);if(id==='social_mode')inputs._social_mode_user_set=true;if(['apartment_price_th','commercial_price_th','parking_price_th','main_above_th_per_sqm','main_under_th_per_sqm'].includes(id)){inputs.project_class='custom';syncProjectClassSelector()}if(['offices_enabled','retail_enabled','above_parking_enabled','social_mode','kindergarten_places','school_places','clinic_capacity','social_dou_gba_sqm','social_school_gba_sqm','social_clinic_gba_sqm','above_parking_spaces','above_parking_area_per_space_sqm'].includes(id)){const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();if(filled)renderInputs();syncTep(false)}};
      wrap.appendChild(el);grid.appendChild(wrap);
    });det.appendChild(grid);box.appendChild(det);
  });
@@ -2711,32 +3306,6 @@ function updateTepTotals(){
  Object.values(tep).forEach(r=>Object.keys(sums).forEach(k=>sums[k]+=Number(r[k]||0)));
  tg.textContent=num(sums.gns);ta.textContent=num(sums.total_area);tu.textContent=num(sums.useful);ts.textContent=num(sums.saleable);tt.textContent=num(sums.transfer);tn.textContent=num(sums.units);
 }
-function applyRequiredSocialProgramFromGlavapu(){
- if(inputs.social_mode!=='Строительство')return false;
- const normalized=inputs._glavapu_import&&inputs._glavapu_import.normalized;
- if(!normalized)return false;
-
- let changed=false;
- const mappings=[
-   ['kindergarten_places','required_kindergarten_places','social_dou_gba_sqm','social_dou_norm_sqm'],
-   ['school_places','required_school_places','social_school_gba_sqm','social_school_norm_sqm'],
-   ['clinic_capacity','required_clinic_capacity','social_clinic_gba_sqm','social_clinic_norm_sqm']
- ];
-
- mappings.forEach(([inputKey,requiredKey,areaKey,normKey])=>{
-   const required=Number(normalized[requiredKey]||0);
-   if(Number(inputs[inputKey]||0)<=0 && required>0){
-     inputs[inputKey]=required;
-     changed=true;
-   }
-   if(Number(inputs[areaKey]||0)<=0 && Number(inputs[inputKey]||0)>0){
-     inputs[areaKey]=Number(inputs[inputKey]||0)*Number(inputs[normKey]||0);
-     changed=true;
-   }
- });
- return changed;
-}
-
 function syncTep(rerender=true){
  const socialBuild=inputs.social_mode==='Строительство';
  tep.underground_parking.gns=Number(tep.underground_parking.units||0)*35;tep.underground_parking.total_area=tep.underground_parking.gns;
@@ -2750,15 +3319,6 @@ function syncTep(rerender=true){
  repairParkingFromGlavapu();
  if(rerender)renderTep();else updateTepTotals();
 }
-function syncDerivedModelState(rerender=false){
- // All calculations must start from the same derived TEP state as the visible TEP tab.
- applyRequiredSocialProgramFromGlavapu();
- syncTep(false);
- repairParkingFromGlavapu();
- if(rerender)renderTep();
- if(document.getElementById('phaseRows'))renderPhasing(false);
-}
-
 function addMonthsJS(iso,months){
  const d=new Date(iso+'T12:00:00');
  const day=d.getDate();
@@ -2914,35 +3474,59 @@ async function calculate(){
    inputs.rate_target_base_pct=Number(rateTargetBase.value||inputs.rate_target_base_pct||9);
    inputs.rate_target_low_pct=Number(rateTargetLow.value||inputs.rate_target_low_pct||7);
  }
- // Critical: general Recalculate uses the exact same TEP derivation as the TEP tab.
- syncDerivedModelState(false);
  generateRateCurve();
- const multi=!!(phasing&&phasing.enabled&&Number(phasing.count||1)>1);
- const endpoint=multi?'/calculate-phases':'/calculate';
- const payload=multi?{inputs,tep,rates,phasing}:{inputs,tep,rates};
- const response=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
- const calculated=await response.json();
- if(!response.ok)throw new Error(calculated.detail||'Ошибка расчёта');
- if(multi){lastPhasingResult=calculated;lastResult=calculated.consolidated;renderPhasingResult()}else{lastPhasingResult=null;lastResult=calculated}
- // The server is authoritative for derived TEP. Synchronize corrected values
- // back into the editable browser state (especially ГлавАПУ underground parking).
- if(lastResult&&lastResult.tep&&Array.isArray(lastResult.tep.rows)){
-   lastResult.tep.rows.forEach(r=>{
-     if(!tep[r.key])return;
-     ['gns','total_area','useful','saleable','transfer','units'].forEach(k=>{
-       if(r[k]!=null)tep[r.key][k]=Number(r[k]);
-     });
-   });
- }
  repairParkingFromGlavapu();
- // Keep hidden tabs synchronized as well: opening TEP later must never show stale values.
- renderTep();
- renderPhasing(false);
- renderResult();
+ reportView='all';
+ if(phasing&&phasing.enabled&&Number(phasing.phase_count||1)>1){
+   const response=await fetch('/calculate-phased',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({inputs,tep,rates,phasing})});
+   phaseBundle=await response.json();lastResult=phaseBundle.consolidated;
+ }else{
+   const response=await fetch('/calculate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({inputs,tep,rates})});
+   lastResult=await response.json();phaseBundle=null;
+   if(lastResult&&lastResult.tep&&Array.isArray(lastResult.tep.rows)){
+    lastResult.tep.rows.forEach(r=>{if(!tep[r.key])return;['gns','total_area','useful','saleable','transfer','units'].forEach(k=>{if(r[k]!=null)tep[r.key][k]=Number(r[k])})})
+   }
+ }
+ repairParkingFromGlavapu();renderResult();renderPhaseReportControls();
+ if(document.getElementById('tep')&&document.getElementById('tep').classList.contains('active'))renderTep();
  return lastResult;
 }
 
 function row(label,value){return `<tr><td>${label}</td><td>${value}</td></tr>`}
+
+function renderPhaseComparison(){
+ if(!phaseBundle||phaseBundle.mode!=='phased'){phaseComparisonCard.style.display='none';return}
+ const c=phaseBundle.comparison||[],cons=phaseBundle.consolidated;
+ phaseComparisonHead.innerHTML=`<tr><th>Показатель</th>${c.map(x=>`<th>${x.name}</th>`).join('')}<th>Свод</th></tr>`;
+ const rows=[
+  ['Продаваемая площадь',c.map(x=>num(x.saleable_sqm)+' м²'),num(cons.summary.monetizable_saleable_sqm)+' м²'],
+  ['Выручка',c.map(x=>money(x.revenue)),money(cons.summary.revenue)],
+  ['CAPEX',c.map(x=>money(x.capex)),money(cons.summary.capex)],
+  ['Общепроектная нагрузка — cash',c.map(x=>money(x.cash_shared_cost)),'—'],
+  ['Аллоцированные общие расходы',c.map(x=>money(x.allocated_shared_cost)),'—'],
+  ['Пиковый БРИДЖ',c.map(x=>money(x.peak_bridge)),money(cons.finance.peak_bridge)],
+  ['Пиковый ПФ',c.map(x=>money(x.peak_pf)),money(cons.finance.peak_pf)],
+  ['LLCR',c.map(x=>mult(x.llcr)),mult(cons.summary.llcr)],
+  ['Чистая прибыль — cash',c.map(x=>money(x.net_profit)),money(cons.summary.net_profit)],
+  ['Аналитическая прибыль после аллокации',c.map(x=>money(x.allocated_net_profit)),'—'],
+  ['Маржинальность',c.map(x=>pct(x.margin)),pct(cons.summary.margin)]
+ ];
+ phaseComparisonBody.innerHTML=rows.map(r=>`<tr><td>${r[0]}</td>${r[1].map(v=>`<td>${v}</td>`).join('')}<td>${r[2]}</td></tr>`).join('')
+}
+function selectReportView(view){
+ if(!phaseBundle||phaseBundle.mode!=='phased')return;reportView=view;phaseComparisonCard.style.display='none';
+ if(view==='all')lastResult=phaseBundle.consolidated;
+ else if(view==='compare'){lastResult=phaseBundle.consolidated}
+ else{const i=Number(String(view).replace('phase',''))-1;if(phaseBundle.phases[i])lastResult=phaseBundle.phases[i].result}
+ renderResult();renderPhaseReportControls();if(view==='compare'){phaseComparisonCard.style.display='block';renderPhaseComparison()}
+}
+function renderPhaseReportControls(){
+ if(!document.getElementById('phaseReportControls'))return;
+ if(!phaseBundle||phaseBundle.mode!=='phased'){phaseReportControls.style.display='none';phaseComparisonCard.style.display='none';return}
+ phaseReportControls.style.display='flex';
+ const b=[['all','Весь проект'],...phaseBundle.phases.map((p,i)=>[`phase${i+1}`,p.name]),['compare','Сравнение очередей']];
+ phaseReportControls.innerHTML=b.map(([k,l])=>`<button class="btn ${reportView===k?'active':''}" onclick="selectReportView('${k}')">${l}</button>`).join('')
+}
 function renderResult(){
  if(!lastResult)return;const r=lastResult,f=r.finance;
 
@@ -3035,14 +3619,14 @@ function renderResult(){
   row('IRR equity',irrFmt(r.summary.irr_equity));
 
  projectParamsTable.innerHTML=
+  (r.summary.phase_count?row('Очередность',r.summary.phase_count+' очереди'):'')+
   row('Класс проекта',inputs.project_class&&PROJECT_CLASS_PRESETS[inputs.project_class]?PROJECT_CLASS_PRESETS[inputs.project_class].label:'Пользовательский')+
   row('Сценарий',scenarioSelect.options[scenarioSelect.selectedIndex].text)+
-  row('Очередность',phasing&&phasing.enabled&&phasing.count>1?phasing.count+' очереди':'1 очередь')+
   row('Доходы к базовому сценарию',Number(r.summary.scenario_revenue_multiplier||1).toLocaleString('ru-RU',{minimumFractionDigits:2,maximumFractionDigits:2})+'x')+
   row('Расходы к базовому сценарию',Number(r.summary.scenario_cost_multiplier||1).toLocaleString('ru-RU',{minimumFractionDigits:2,maximumFractionDigits:2})+'x')+
   row('Стоимость покупки',money(Number(inputs.purchase_price_mln||0)*1e6))+
   row('Стоимость смены ВРИ / права',money(Number(inputs.land_rights_cost_mln||0)*1e6))+
-  row(r.summary.social_payment_mode==='Строительство'?'Строительство соцобъектов':'Социальная компенсация',money(r.summary.social_payment))+
+  row(r.summary.social_payment_mode==='Строительство'?'Строительство соцобъектов':'Социальная компенсация',socialMoney(r.summary.social_payment))+
   row('Проектирование П и РД',money((r.capex.design_p||0)+(r.capex.design_rd||0)))+
   row('Продаваемая площадь',num(r.summary.monetizable_saleable_sqm)+' м²')+
   row('Средняя цена квартир',th(r.summary.average_apartment_price_th))+
@@ -3056,6 +3640,7 @@ function renderResult(){
   row('Фактический / пиковый БРИДЖ',money(r.report.financing.actual_bridge))+
   row('Лимит ПФ',money(r.report.financing.pf_limit))+
   row('Пиковый ПФ',money(r.report.financing.pf_peak))+
+  (r.report.financing.peak_total_debt!=null?row('Максимальный совокупный долг',money(r.report.financing.peak_total_debt)):'')+
   row('Средняя ставка БРИДЖ',pct(r.report.financing.avg_bridge_rate))+
   row('Средняя ключевая ставка в период ПФ',pct(r.report.financing.avg_pf_key_rate))+
   row('Базовая ставка ПФ до эскроу',pct(r.report.financing.avg_pf_base_rate))+
@@ -3069,21 +3654,22 @@ function renderResult(){
  const construction=sb.construction||{};
  const compensation=sb.compensation||{};
  const program=r.summary.social_program||{};
- const compRef=Number(r.summary.social_compensation_reference||0);
- const buildRef=Number(r.summary.social_construction_reference||0);
- const delta=Number(r.summary.social_saving_from_construction||0);
- const activeLabel=socialMode==='Строительство'?'В CAPEX: строительство':'В CAPEX: денежная компенсация';
- const deltaLabel=delta>=0?'Экономия строительства к компенсации':'Удорожание строительства к компенсации';
-
- socialTable.innerHTML=
-   row('Выбранный режим',socialMode)+
-   row('Компенсация по ГлавАПУ',money(compRef))+
-   row(`Строительство: ДОУ — ${num(program.kindergarten_places||0)} мест`,money(Number(construction.kindergarten_mln||0)*1e6))+
-   row(`Строительство: СОШ — ${num(program.school_places||0)} мест`,money(Number(construction.school_mln||0)*1e6))+
-   row(`Строительство: поликлиника — ${num(program.clinic_capacity||0)} пос./смену`,money(Number(construction.clinic_mln||0)*1e6))+
-   row('Строительство соцобъектов / всего',money(buildRef))+
-   `<tr><td>${deltaLabel}</td><td style="font-weight:700">${money(Math.abs(delta))}</td></tr>`+
-   `<tr><th>${activeLabel}</th><th>${money(r.summary.social_payment)}</th></tr>`;
+ if(socialMode==='Строительство'){
+   socialTable.innerHTML=
+    row('Режим','Строительство')+
+    row(`ДОО — ${num(program.kindergarten_places||0)} мест`,money(Number(construction.kindergarten_mln||0)*1e6))+
+    row(`СОШ — ${num(program.school_places||0)} мест`,money(Number(construction.school_mln||0)*1e6))+
+    row(`Поликлиника — ${num(program.clinic_capacity||0)} пос./смену`,money(Number(construction.clinic_mln||0)*1e6))+
+    `<tr><th>Стоимость строительства / всего</th><th>${socialMoney(r.summary.social_payment)}</th></tr>`+
+    `<tr><td colspan="2" style="color:#777;font-size:11px">Справочно: компенсация по ГлавАПУ — ${money((Number(compensation.kindergarten_mln||0)+Number(compensation.school_mln||0)+Number(compensation.clinic_mln||0))*1e6)}</td></tr>`;
+ }else{
+   socialTable.innerHTML=
+    row('Режим','Денежная компенсация')+
+    row('ДОО — компенсация',money(Number(compensation.kindergarten_mln||0)*1e6))+
+    row('СОШ — компенсация',money(Number(compensation.school_mln||0)*1e6))+
+    row('Поликлиника — компенсация',money(Number(compensation.clinic_mln||0)*1e6))+
+    `<tr><th>Компенсация / всего</th><th>${socialMoney(r.summary.social_payment)}</th></tr>`;
+ }
 
  unitEconomicsTable.innerHTML=(r.report.unit_economics||[]).map(x=>`<tr>
   <td>${x.label}</td>
@@ -3244,47 +3830,9 @@ async function exportReportPdf(){
  },120);
 }
 
-function saveLocal(){localStorage.setItem('plato_v04',JSON.stringify({inputs,tep,scenario:scenarioSelect.value,phasing}));alert('Сохранено в этом браузере')}
-
-function normalizePhasingState(raw){
- const base=structuredClone(PHASING_DEFAULT);
- if(!raw||typeof raw!=='object')return base;
-
- const count=Math.max(1,Math.min(5,Number(raw.count||1)));
- base.enabled=!!raw.enabled&&count>1;
- base.count=count;
- base.target_saleable_sqm=Number(raw.target_saleable_sqm||70000);
- base.gap_months=Number(raw.gap_months||9);
-
- base.shares=Array.from({length:count},(_,i)=>Number((raw.shares||[])[i] ?? phaseSharePreset(count)[i] ?? 0));
- base.phases=Array.from({length:count},(_,i)=>{
-   const p=(raw.phases||[])[i]||{};
-   return {
-     name:p.name||('Очередь '+(i+1)),
-     start_offset_months:Number(p.start_offset_months ?? i*base.gap_months),
-     construction_months:Number(p.construction_months||inputs.construction_months||24)
-   };
- });
-
- base.allocations={
-   preparation:Array.from({length:count},(_,i)=>Number((raw.allocations?.preparation||[])[i] ?? frontloadPreset(count,'preparation')[i] ?? 0)),
-   utilities:Array.from({length:count},(_,i)=>Number((raw.allocations?.utilities||[])[i] ?? frontloadPreset(count,'utilities')[i] ?? 0)),
-   purchase:Array.from({length:count},(_,i)=>Number((raw.allocations?.purchase||[])[i] ?? (i===0?1:0))),
-   land_rights:Array.from({length:count},(_,i)=>Number((raw.allocations?.land_rights||[])[i] ?? (i===0?1:0)))
- };
-
- const s=raw.social||{};
- base.social={
-   kindergarten_phase:Math.max(1,Math.min(count,Number(s.kindergarten_phase||1))),
-   school_phase:Math.max(1,Math.min(count,Number(s.school_phase||Math.min(2,count)))),
-   clinic_phase:Math.max(1,Math.min(count,Number(s.clinic_phase||count))),
-   compensation_phase:Math.max(1,Math.min(count,Number(s.compensation_phase||1)))
- };
- return base;
-}
-
+function saveLocal(){localStorage.setItem('plato_v04',JSON.stringify({inputs,tep,phasing,scenario:scenarioSelect.value}));alert('Сохранено в этом браузере')}
 function loadLocal(){try{const x=JSON.parse(localStorage.getItem('plato_v04'));if(x){
- inputs=x.inputs||inputs;tep=x.tep||tep;rates=[];scenarioSelect.value=x.scenario||'base';phasing=normalizePhasingState(x.phasing||phasing);
+ inputs=x.inputs||inputs;tep=x.tep||tep;phasing=x.phasing||phasing;rates=[];scenarioSelect.value=x.scenario||'base';
  // v0.7.1 migration: v0.7.0 temporarily misclassified the old 5% management rate as technical supervision.
  if(inputs._cost_structure_version!=='0.7.1'){
    if(inputs.project_management_pct==null)inputs.project_management_pct=Number(inputs.technical_supervision_pct??5);
@@ -3299,14 +3847,14 @@ function resetAll(){
  localStorage.removeItem('plato_v04');
  inputs=structuredClone(INPUT_DEFAULT);
  tep=structuredClone(TEP_DEFAULT);
+ phasing=makeDefaultPhasing(3);phaseBundle=null;reportView='all';
  rates=[];
  scenarioSelect.value='base';
  inputs.project_class='comfort';
  inputs.rate_scenario='base';
  inputs.scenario_revenue_multiplier=1;
  inputs.scenario_cost_multiplier=1;
- phasing=structuredClone(PHASING_DEFAULT);lastPhasingResult=null;
- renderInputs();renderTep();renderStoredGlavapu();renderScenarioNote();syncProjectClassSelector();renderPhasing();
+ renderInputs();renderTep();renderStoredGlavapu();renderScenarioNote();syncProjectClassSelector();
  syncRateControlsFromInputs();generateRateCurve();renderRates();
  refreshCurrentKeyRate(true);
 }
@@ -3326,7 +3874,7 @@ async function initializeApp(){
  renderStoredGlavapu();
  renderScenarioNote();
  syncProjectClassSelector();
- phasing=normalizePhasingState(phasing);renderPhasing();
+ renderPhasing();
  inputs.rate_scenario=inputs.rate_scenario||'base';
  syncRateControlsFromInputs();
  generateRateCurve();
@@ -3334,13 +3882,7 @@ async function initializeApp(){
  await refreshCurrentKeyRate(false);
  await calculate();
 }
-initializeApp().catch(err=>{
- console.error('PLATO initialization error',err);
- const box=document.getElementById('inputGroups');
- if(box && !box.children.length){
-   box.innerHTML='<div class="note warning"><b>Ошибка запуска интерфейса.</b><br>'+String(err&&err.message?err.message:err)+'</div>';
- }
-});
+initializeApp();
 </script>
 </body></html>"""
 
