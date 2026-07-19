@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import calendar
+import copy
 import io
 import re
 import zipfile
@@ -17,7 +18,7 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-app = FastAPI(title="PLATO Development Investment Model", version="0.7.2")
+app = FastAPI(title="PLATO Development Investment Model", version="0.8.2")
 
 SCENARIOS = {
     'conservative': {'scenario_revenue_multiplier': 0.90, 'scenario_cost_multiplier': 1.10},
@@ -63,6 +64,13 @@ class CalcRequest(BaseModel):
     inputs: dict[str, Any]
     tep: dict[str, dict[str, Any]]
     rates: list[dict[str, Any]] = []
+
+
+class MultiPhaseRequest(BaseModel):
+    inputs: dict[str, Any]
+    tep: dict[str, dict[str, Any]]
+    rates: list[dict[str, Any]] = []
+    phasing: dict[str, Any] = {}
 
 
 
@@ -348,11 +356,14 @@ def parse_glavapu_xlsx(data: bytes, filename: str = "") -> dict[str, Any]:
         else "Строительство"
     )
 
+    data_norm["suggested_social_mode"] = suggested_social_mode
+
     # Safe mappings: urban-planning source values -> model.
     input_mapping: dict[str, Any] = {
         "land_rights_cost_mln": data_norm["change_vri_mln"],
+        # Compensation is always imported as a reference/input value,
+        # regardless of whether the user later chooses cash payment or construction.
         "social_compensation_mln": data_norm["social_compensation_total_mln"],
-        "social_mode": suggested_social_mode,
         "kindergarten_places": data_norm["actual_kindergarten_places"] or 0,
         "school_places": data_norm["actual_school_places"] or 0,
         "clinic_capacity": data_norm["actual_clinic_capacity"] or 0,
@@ -435,6 +446,7 @@ def parse_glavapu_xlsx(data: bytes, filename: str = "") -> dict[str, Any]:
         item("НП нежилой части МКД", "ground_commercial_np_sqm", "м²", "ТЭП → Коммерция 1 эт. → Продаваемая", 1),
         item("Стоимость смены ВРИ", "change_vri_mln", "млн ₽", "Вводные → оформление земельных правоотношений", 3),
         item("Компенсация за соцобъекты", "social_compensation_total_mln", "млн ₽", "Вводные → социальная нагрузка", 3),
+        item("Рекомендуемый режим соцнагрузки", "suggested_social_mode", "", "Справочно; выбор пользователя не перезаписывается"),
         item("Расчётная потребность ДОО", "required_kindergarten_places", "мест", "Справочно / ГлавАПУ", 0),
         item("Расчётная потребность СОШ", "required_school_places", "мест", "Справочно / ГлавАПУ", 0),
         item("Расчётная потребность поликлиника", "required_clinic_capacity", "пос./см.", "Справочно / ГлавАПУ", 0),
@@ -1643,6 +1655,12 @@ def calculate(req: CalcRequest) -> dict:
             "social_payment": op["capex_amounts"].get("social", 0.0),
             "social_payment_mode": str(x.get("social_mode", "")),
             "social_program": op.get("social_program", {}),
+            "social_compensation_reference": op.get("imported_social_compensation", 0.0),
+            "social_construction_reference": sum(op.get("social_construction_breakdown", {}).values()),
+            "social_saving_from_construction": (
+                op.get("imported_social_compensation", 0.0)
+                - sum(op.get("social_construction_breakdown", {}).values())
+            ),
             "social_payment_breakdown": {
                 "construction": {
                     "kindergarten_mln": op.get("social_construction_breakdown", {}).get("kindergarten", 0.0) / 1_000_000,
@@ -1689,7 +1707,7 @@ def calculate(req: CalcRequest) -> dict:
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "version": "0.4"}
+    return {"status": "ok", "version": "0.8.0"}
 
 
 @app.get("/defaults")
@@ -1706,6 +1724,226 @@ def defaults() -> dict:
 @app.get("/current-key-rate")
 def current_key_rate() -> dict[str, Any]:
     return fetch_current_cbr_key_rate()
+
+
+@app.get("/version")
+def app_version() -> dict[str, str]:
+    return {"version": "0.8.2", "build": "multiphase+tep-sync"}
+
+
+
+def _norm_weights(values: list[Any] | None, count: int, fallback: list[float] | None = None) -> list[float]:
+    raw = [max(0.0, float(v or 0.0)) for v in (values or [])[:count]]
+    raw += [0.0] * max(0, count-len(raw))
+    total = sum(raw)
+    if total <= 0 and fallback:
+        raw = list(fallback[:count]); total = sum(raw)
+    if total <= 0:
+        raw = [1.0/count]*count; total = 1.0
+    return [v/total for v in raw]
+
+
+def _default_phase_shares(count: int) -> list[float]:
+    presets={1:[1.0],2:[.45,.55],3:[.30,.35,.35],4:[.22,.26,.26,.26],5:[.18,.205,.205,.205,.205]}
+    return presets.get(count,[1.0/max(count,1)]*max(count,1))
+
+
+def _default_frontload(count: int, kind: str) -> list[float]:
+    tables={
+      'preparation':{1:[1],2:[.70,.30],3:[.60,.25,.15],4:[.50,.20,.15,.15],5:[.45,.20,.15,.10,.10]},
+      'utilities':{1:[1],2:[.60,.40],3:[.50,.30,.20],4:[.45,.25,.15,.15],5:[.40,.25,.15,.10,.10]},
+    }
+    return tables[kind].get(count,[1.0/max(count,1)]*max(count,1))
+
+
+def _scale_row(row: dict[str, Any], share: float) -> dict[str, Any]:
+    out=copy.deepcopy(row)
+    for key in ('gns','total_area','useful','saleable','transfer','units'):
+        out[key]=n(row,key)*share
+    return out
+
+
+def _phase_tep(master_tep: dict[str, dict[str, Any]], share: float, phase_inputs: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    out={}
+    for key,row in master_tep.items():
+        if key in ('kindergarten','school','clinic'):
+            out[key]=copy.deepcopy(row)
+            for f in ('gns','total_area','useful','saleable','transfer','units'): out[key][f]=0.0
+        else:
+            out[key]=_scale_row(row,share)
+    if n(phase_inputs,'kindergarten_places')>0 and 'kindergarten' in out:
+        area=n(phase_inputs,'social_dou_gba_sqm'); out['kindergarten'].update(units=n(phase_inputs,'kindergarten_places'),total_area=area,transfer=area)
+    if n(phase_inputs,'school_places')>0 and 'school' in out:
+        area=n(phase_inputs,'social_school_gba_sqm'); out['school'].update(units=n(phase_inputs,'school_places'),total_area=area,transfer=area)
+    if n(phase_inputs,'clinic_capacity')>0 and 'clinic' in out:
+        area=n(phase_inputs,'social_clinic_gba_sqm'); out['clinic'].update(units=n(phase_inputs,'clinic_capacity'),total_area=area,transfer=area)
+    return out
+
+
+def _phase_inputs(master: dict[str, Any], phasing: dict[str, Any], i: int, share: float, prep_w: float, util_w: float, purchase_w: float, land_w: float) -> dict[str, Any]:
+    x=copy.deepcopy(master); x.pop('_glavapu_import',None)
+    phases=phasing.get('phases') or []
+    phase=phases[i] if i<len(phases) else {}
+    offset=int(float(phase.get('start_offset_months',i*int(phasing.get('gap_months',9))) or 0))
+    x['project_start']=add_months(d(master.get('project_start','2027-01-01')),offset).isoformat()
+    x['construction_months']=int(float(phase.get('construction_months',master.get('construction_months',24)) or 24))
+    x['purchase_price_mln']=n(master,'purchase_price_mln')*purchase_w
+    x['land_rights_cost_mln']=n(master,'land_rights_cost_mln')*land_w
+    if share>1e-12:
+        x['preparation_th_per_sqm']=n(master,'preparation_th_per_sqm')*prep_w/share
+        x['utilities_th_per_sqm']=n(master,'utilities_th_per_sqm')*util_w/share
+    growth=n(master,'monthly_growth_pre_pct',1.5)/100
+    x['apartment_price_th']=n(master,'apartment_price_th')*pow(1+growth,max(offset,0))
+    x['commercial_price_th']=n(master,'commercial_price_th')*pow(1+growth,max(offset,0))
+    x['parking_price_th']=n(master,'parking_price_th')*pow(1.0075,max(offset,0))
+    x['storage_price_th']=n(master,'storage_price_th')*pow(1.0075,max(offset,0))
+    for key in ('offices_gba_sqm','offices_saleable_sqm','retail_gba_sqm','retail_saleable_sqm','above_parking_spaces','above_parking_gba_sqm'):
+        if key in x: x[key]=n(master,key)*share
+    for key in ('offices_start','offices_sales_start','retail_start','retail_sales_start','above_parking_start','above_parking_sales_start'):
+        if master.get(key): x[key]=add_months(d(master[key]),offset).isoformat()
+    social=phasing.get('social') or {}; phase_no=i+1; count=int(phasing.get('count',1))
+    if str(master.get('social_mode',''))=='Строительство':
+        x['social_compensation_mln']=0.0
+        if int(social.get('kindergarten_phase',1) or 1)!=phase_no:
+            x['kindergarten_places']=0.0; x['social_dou_gba_sqm']=0.0
+        else: x['kindergarten_start']=add_months(d(master.get('kindergarten_start',x['project_start'])),offset).isoformat()
+        if int(social.get('school_phase',min(2,count)) or 1)!=phase_no:
+            x['school_places']=0.0; x['social_school_gba_sqm']=0.0
+        else: x['school_start']=add_months(d(master.get('school_start',x['project_start'])),offset).isoformat()
+        if int(social.get('clinic_phase',count) or 1)!=phase_no:
+            x['clinic_capacity']=0.0; x['social_clinic_gba_sqm']=0.0
+        else: x['clinic_start']=add_months(d(master.get('clinic_start',x['project_start'])),offset).isoformat()
+    else:
+        if int(social.get('compensation_phase',1) or 1)!=phase_no: x['social_compensation_mln']=0.0
+        else:
+            x['social_compensation_mln']=n(master,'social_compensation_mln')
+            if master.get('social_comp_date'): x['social_comp_date']=add_months(d(master['social_comp_date']),offset).isoformat()
+        for key in ('kindergarten_places','school_places','clinic_capacity','social_dou_gba_sqm','social_school_gba_sqm','social_clinic_gba_sqm'): x[key]=0.0
+    return x
+
+
+def _aggregate_products(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    agg={}
+    for result in results:
+        for row in result.get('report',{}).get('products',[]):
+            key=row['key']; a=agg.setdefault(key,{'key':key,'label':row['label'],'unit':row['unit'],'quantity':0.0,'revenue':0.0,'start_price_th':None,'avg_price_th':0.0,'pace_pre':0.0,'share_before_rve':row.get('share_before_rve',0),'sales_start':None,'sales_end':None})
+            a['quantity']+=float(row.get('quantity',0) or 0); a['revenue']+=float(row.get('revenue',0) or 0); a['pace_pre']+=float(row.get('pace_pre',0) or 0)
+            sp=row.get('start_price_th'); ss=row.get('sales_start'); se=row.get('sales_end')
+            if sp is not None: a['start_price_th']=sp if a['start_price_th'] is None else min(a['start_price_th'],sp)
+            if ss: a['sales_start']=ss if not a['sales_start'] else min(a['sales_start'],ss)
+            if se: a['sales_end']=se if not a['sales_end'] else max(a['sales_end'],se)
+    for a in agg.values():
+        a['avg_price_th']=a['revenue']/a['quantity']/1000 if a['quantity'] else 0.0
+        if a['start_price_th'] is None: a['start_price_th']=0.0
+    return list(agg.values())
+
+
+def calculate_multiphase(req: MultiPhaseRequest) -> dict:
+    master_inputs=copy.deepcopy(req.inputs); master_tep=copy.deepcopy(req.tep); phasing=copy.deepcopy(req.phasing or {})
+    # Preserve the same ГлавАПУ fallback used by single-phase mode before stripping import metadata from phase engines.
+    if str(master_inputs.get('social_mode',''))=='Строительство':
+        effective=effective_social_program(master_inputs)
+        if n(master_inputs,'kindergarten_places')<=0 and effective['kindergarten_places']>0:
+            master_inputs['kindergarten_places']=effective['kindergarten_places']
+            if n(master_inputs,'social_dou_gba_sqm')<=0: master_inputs['social_dou_gba_sqm']=effective['kindergarten_places']*n(master_inputs,'social_dou_norm_sqm')
+        if n(master_inputs,'school_places')<=0 and effective['school_places']>0:
+            master_inputs['school_places']=effective['school_places']
+            if n(master_inputs,'social_school_gba_sqm')<=0: master_inputs['social_school_gba_sqm']=effective['school_places']*n(master_inputs,'social_school_norm_sqm')
+        if n(master_inputs,'clinic_capacity')<=0 and effective['clinic_capacity']>0:
+            master_inputs['clinic_capacity']=effective['clinic_capacity']
+            if n(master_inputs,'social_clinic_gba_sqm')<=0: master_inputs['social_clinic_gba_sqm']=effective['clinic_capacity']*n(master_inputs,'social_clinic_norm_sqm')
+    count=max(1,min(5,int(phasing.get('count',1) or 1)))
+    if count==1 or not phasing.get('enabled',False):
+        single=calculate(CalcRequest(inputs=master_inputs,tep=master_tep,rates=req.rates))
+        return {'mode':'single','consolidated':single,'phases':[{'phase':1,'name':'Очередь 1','share':1.0,'result':single}],'controls':{'tep_conservation':True,'saleable_share_sum':1.0,'single_phase_parity':True,'peak_total_debt':single['finance']['peak_bridge']+single['finance']['peak_pf']}}
+    shares=_norm_weights(phasing.get('shares'),count,_default_phase_shares(count))
+    alloc=phasing.get('allocations') or {}
+    prep=_norm_weights(alloc.get('preparation'),count,_default_frontload(count,'preparation'))
+    util=_norm_weights(alloc.get('utilities'),count,_default_frontload(count,'utilities'))
+    purchase=_norm_weights(alloc.get('purchase'),count,[1]+[0]*(count-1))
+    land=_norm_weights(alloc.get('land_rights'),count,[1]+[0]*(count-1))
+    results=[]; payloads=[]
+    for i in range(count):
+        px=_phase_inputs(master_inputs,phasing,i,shares[i],prep[i],util[i],purchase[i],land[i])
+        pt=_phase_tep(master_tep,shares[i],px)
+        result=calculate(CalcRequest(inputs=px,tep=pt,rates=req.rates)); results.append(result)
+        phases=phasing.get('phases') or []
+        name=(phases[i].get('name') if i<len(phases) else None) or f'Очередь {i+1}'
+        payloads.append({'phase':i+1,'name':name,'share':shares[i],'result':result})
+    month_rows={}; wkey=weff=wbase=wden=wbr=wbrden=0.0
+    for result in results:
+        for row in result['finance']['rows']:
+            m=row['month']; a=month_rows.setdefault(m,{k:0.0 for k in ('sales','project_costs','bridge_draw','bridge_repayment','bridge_balance','bridge_interest','bridge_capitalization','pf_draw','pf_repayment','pf_balance','escrow','pf_interest','pf_interest_capitalization','limit_fee','interest_payment')}); a['month']=m
+            for k in list(a):
+                if k!='month': a[k]+=float(row.get(k,0) or 0)
+            pb=float(row.get('pf_balance',0) or 0); bb=float(row.get('bridge_balance',0) or 0)
+            if pb>0:
+                kr=float(row.get('key_rate',0) or 0); pr=float(row.get('pf_rate',0) or 0)
+                wkey+=pb*kr; weff+=pb*pr; wbase+=pb*(kr+n(master_inputs,'pf_spread_pp')/100); wden+=pb
+            if bb>0: wbr+=bb*float(row.get('bridge_rate',0) or 0); wbrden+=bb
+    rows=[month_rows[k] for k in sorted(month_rows)]
+    for a in rows:
+        a['coverage']=a['escrow']/a['pf_balance'] if a['pf_balance'] else 0.0; a['key_rate']=wkey/wden if wden else 0.0; a['pf_rate']=weff/wden if wden else 0.0; a['bridge_rate']=wbr/wbrden if wbrden else 0.0
+    sf=lambda key: sum(float(r['finance'].get(key,0) or 0) for r in results)
+    revenue=sum(r['summary']['revenue'] for r in results); capex=sum(r['summary']['capex'] for r in results); commercial=sum(r['summary']['commercial_costs'] for r in results); fincost=sum(r['summary']['financing_cost'] for r in results); tax=sum(r['summary']['profit_tax'] for r in results); net=sum(r['summary']['net_profit'] for r in results); ebitda=revenue-capex-commercial; total_exp=capex+commercial+fincost+tax
+    equity={}
+    from collections import defaultdict as _dd
+    eq=_dd(float)
+    for result in results:
+        rr=result['finance']['rows']
+        if not rr: continue
+        for row in rr:
+            mm=d(row['month']); eq[mm]+=float(row.get('sales',0) or 0)-float(row.get('project_costs',0) or 0)-float(row.get('interest_payment',0) or 0)-float(row.get('limit_fee',0) or 0)+float(row.get('bridge_draw',0) or 0)+float(row.get('pf_draw',0) or 0)-float(row.get('bridge_repayment',0) or 0)-float(row.get('pf_repayment',0) or 0)
+        fm=d(rr[0]['month']); lm=d(rr[-1]['month']); pm=d(result['dates']['permit']); eq[fm]-=float(result['finance'].get('bridge_fee',0) or 0)+float(result['capex'].get('land_rights',0) or 0); eq[pm]-=float(result['finance'].get('pf_reservation_fee',0) or 0); eq[lm]-=float(result['summary'].get('profit_tax',0) or 0)
+    if eq:
+        tl=month_range(min(eq),max(eq)); ecf=[eq.get(m,0.0) for m in tl]; irr=_monthly_irr(ecf); npv=_monthly_npv(ecf,n(master_inputs,'discount_rate_pct',20)/100)
+    else: irr=None; npv=0.0
+    llcr_num=sum(float(r['finance'].get('llcr_numerator',0) or 0) for r in results); llcr_den=sum(float(r['finance'].get('llcr_denominator',0) or 0) for r in results); llcr=llcr_num/llcr_den if llcr_den else 0.0
+    capagg=_dd(float); revagg=_dd(float)
+    for r in results:
+        for k,v in r['capex'].items():
+            if k!='total': capagg[k]+=float(v or 0)
+        for k,v in r['revenue'].items():
+            if k!='total': revagg[k]+=float(v or 0)
+    products=_aggregate_products(results)
+    mon=sum(r['summary'].get('monetizable_saleable_sqm',0) for r in results); apt=sum(r['summary'].get('apartment_saleable_sqm',0) for r in results); pgns=sum(r['summary'].get('project_gns_sqm',0) for r in results)
+    avp=revagg.get('apartments',0)/apt/1000 if apt else 0.0; fullps=total_exp/mon/1000 if mon else 0.0
+    const=sum(capagg.get(k,0) for k in ('ird','design_p','design_rd','author_supervision','preparation','main_above','main_under','utilities','landscaping','commissioning','site_maintenance','gc_fee','reserve')); core=sum(r['tep']['core_above_gns']+r['tep']['core_under_gns'] for r in results); constps=const/core/1000 if core else 0.0
+    per=lambda v,a:v/a/1000 if a else 0.0
+    units=[{'label':lab,'total':val,'per_gns_th':per(val,pgns),'per_saleable_th':per(val,mon)} for lab,val in [('Выручка',revenue),('CAPEX',capex),('Маркетинг и продажи',commercial),('EBITDA',ebitda),('Проценты и комиссии',fincost),('Налог на прибыль',tax),('Полные расходы',total_exp),('Чистая прибыль',net)]]
+    exp=_dd(float)
+    for r in results:
+        for row in r['report']['expense_structure']: exp[row['label']]+=float(row.get('value',0) or 0)
+    expstruct=[{'label':k,'value':v,'share':v/total_exp if total_exp else 0.0} for k,v in sorted(exp.items(),key=lambda kv:kv[1],reverse=True)]
+    events=[]
+    for pld in payloads:
+        for e in pld['result']['report']['calendar']['events']:
+            e2=dict(e); e2['label']=f"{pld['name']}: {e2['label']}"; events.append(e2)
+    cal_start=min((e['start'] for e in events),default=master_inputs.get('project_start','2027-01-01')); cal_end=max((e['end'] for e in events),default=cal_start)
+    # aggregate TEP by key to avoid relying on row order
+    trows=[]
+    for key,mrow in master_tep.items():
+        row={'key':key,'label':mrow.get('label',key)}
+        for f in ('gns','total_area','useful','saleable','transfer','units'):
+            row[f]=sum(next((float(x.get(f,0) or 0) for x in pld['result']['tep']['rows'] if x['key']==key),0.0) for pld in payloads)
+        trows.append(row)
+    ttotal={f:sum(r[f] for r in trows) for f in ('gns','total_area','useful','saleable','transfer','units')}
+    finance={'rows':rows,'calculated_bridge_limit':sf('calculated_bridge_limit'),'bridge_fee':sf('bridge_fee'),'bridge_draw_total':sf('bridge_draw_total'),'bridge_repayment_total':sf('bridge_repayment_total'),'bridge_interest':sf('bridge_interest'),'bridge_capitalization':sf('bridge_capitalization'),'transferred_bridge_interest':sf('transferred_bridge_interest'),'peak_bridge':max((r['bridge_balance'] for r in rows),default=0.0),'avg_bridge_rate':wbr/wbrden if wbrden else 0.0,'pf_draw_total':sf('pf_draw_total'),'pf_repayment_total':sf('pf_repayment_total'),'pf_reservation_fee':sf('pf_reservation_fee'),'pf_interest':sf('pf_interest'),'pf_interest_capitalization':sf('pf_interest_capitalization'),'pf_limit_fee':sf('pf_limit_fee'),'peak_pf':max((r['pf_balance'] for r in rows),default=0.0),'avg_pf_rate':weff/wden if wden else 0.0,'avg_pf_effective_rate':weff/wden if wden else 0.0,'avg_pf_base_rate':wbase/wden if wden else 0.0,'avg_pf_key_rate':wkey/wden if wden else 0.0,'pf_special_rate':n(master_inputs,'pf_special_pct')/100,'ending_pf':rows[-1]['pf_balance'] if rows else 0.0,'ending_interest_payable':sf('ending_interest_payable'),'pf_limit':sf('pf_limit'),'financing_cost':fincost,'profit_tax':tax,'profit_before_tax':revenue-capex-commercial-fincost,'llcr':llcr,'llcr_numerator':llcr_num,'llcr_denominator':llcr_den,'reported_interest_and_fees':sf('reported_interest_and_fees'),'total_revenue':revenue,'total_capex':capex,'commercial_costs':commercial}
+    social_build=(n(master_inputs,'kindergarten_places')*n(master_inputs,'kindergarten_cost_mln_per_place')+n(master_inputs,'school_places')*n(master_inputs,'school_cost_mln_per_place')+n(master_inputs,'clinic_capacity')*n(master_inputs,'clinic_cost_mln_per_unit'))*1e6
+    consolidated={'dates':{'project_start':min(p['result']['dates']['project_start'] for p in payloads),'permit':min(p['result']['dates']['permit'] for p in payloads),'sales_start':min(p['result']['dates']['sales_start'] for p in payloads),'rve':max(p['result']['dates']['rve'] for p in payloads)},'tep':{'rows':trows,'total':ttotal,'core_above_gns':sum(r['tep']['core_above_gns'] for r in results),'core_under_gns':sum(r['tep']['core_under_gns'] for r in results)},'revenue':{'total':revenue,**dict(revagg)},'capex':{'total':capex,**dict(capagg)},'commercial_costs':commercial,'finance':finance,'summary':{'revenue':revenue,'capex':capex,'commercial_costs':commercial,'ebitda':ebitda,'financing_cost':fincost,'profit_before_tax':revenue-capex-commercial-fincost,'profit_tax':tax,'net_profit':net,'margin':net/revenue if revenue else 0.0,'llcr':llcr,'scenario_revenue_multiplier':n(master_inputs,'scenario_revenue_multiplier',1),'scenario_cost_multiplier':n(master_inputs,'scenario_cost_multiplier',1),'npv':npv,'irr_equity':irr,'full_project_cost':total_exp,'monetizable_saleable_sqm':mon,'apartment_saleable_sqm':apt,'average_apartment_price_th':avp,'full_cost_per_saleable_th':fullps,'construction_cost_per_gns_th':constps,'ebitda_per_saleable_th':per(ebitda,mon),'net_profit_per_saleable_th':per(net,mon),'project_gns_sqm':pgns,'total_expenses':total_exp,'social_payment':sum(r['summary'].get('social_payment',0) for r in results),'social_payment_mode':str(master_inputs.get('social_mode','')),'social_program':{'kindergarten_places':n(master_inputs,'kindergarten_places'),'school_places':n(master_inputs,'school_places'),'clinic_capacity':n(master_inputs,'clinic_capacity')},'social_compensation_reference':n(master_inputs,'social_compensation_mln')*1e6,'social_construction_reference':social_build,'social_saving_from_construction':n(master_inputs,'social_compensation_mln')*1e6-social_build,'social_payment_breakdown':{'construction':{'kindergarten_mln':n(master_inputs,'kindergarten_places')*n(master_inputs,'kindergarten_cost_mln_per_place'),'school_mln':n(master_inputs,'school_places')*n(master_inputs,'school_cost_mln_per_place'),'clinic_mln':n(master_inputs,'clinic_capacity')*n(master_inputs,'clinic_cost_mln_per_unit')},'compensation':{'kindergarten_mln':n((master_inputs.get('_glavapu_import') or {}).get('normalized',{}),'social_compensation_kindergarten_mln'),'school_mln':n((master_inputs.get('_glavapu_import') or {}).get('normalized',{}),'social_compensation_school_mln'),'clinic_mln':n((master_inputs.get('_glavapu_import') or {}).get('normalized',{}),'social_compensation_clinic_mln')}}},'report':{'products':products,'unit_economics':units,'expense_structure':expstruct,'calendar':{'start':cal_start,'end':cal_end,'events':events},'financing':{'calculated_bridge':finance['calculated_bridge_limit'],'actual_bridge':finance['peak_bridge'],'pf_peak':finance['peak_pf'],'pf_limit':finance['pf_limit'],'avg_bridge_rate':finance['avg_bridge_rate'],'avg_pf_rate':finance['avg_pf_rate'],'avg_pf_effective_rate':finance['avg_pf_effective_rate'],'avg_pf_base_rate':finance['avg_pf_base_rate'],'avg_pf_key_rate':finance['avg_pf_key_rate'],'pf_special_rate':finance['pf_special_rate'],'interest_and_fees':fincost}},'excel_control':EXCEL_CONTROL,'notes':{'llcr':'Консолидированный LLCR = сумма числителей / сумма знаменателей очередей.','finance':'Очереди считаются существующим single-phase engine и агрегируются помесячно.'}}
+    conserved=True
+    for key,mrow in master_tep.items():
+        if key in ('kindergarten','school','clinic'): continue
+        crow=next(r for r in trows if r['key']==key)
+        for f in ('gns','total_area','useful','saleable','transfer','units'):
+            mv=n(mrow,f); sv=crow[f]
+            if abs(mv-sv)>max(.01,abs(mv)*1e-9): conserved=False
+    return {'mode':'multiphase','consolidated':consolidated,'phases':payloads,'monthly':rows,'controls':{'tep_conservation':conserved,'saleable_share_sum':sum(shares),'single_phase_parity':False,'peak_total_debt':max((r['bridge_balance']+r['pf_balance'] for r in rows),default=0.0),'preparation_weights':prep,'utilities_weights':util,'purchase_weights':purchase,'land_rights_weights':land}}
+
+
+@app.post('/calculate-phases')
+def calculate_phases_api(req: MultiPhaseRequest) -> dict:
+    return calculate_multiphase(req)
 
 
 @app.post("/calculate")
@@ -1735,6 +1973,9 @@ PAGE = r"""<!doctype html>
 .tabs{padding:0 34px;border-bottom:1px solid var(--line);display:flex;gap:28px;overflow:auto;background:#fff}
 .tab{border:0;background:none;padding:15px 0 12px;font-size:14px;font-weight:620;color:#777;white-space:nowrap;border-bottom:3px solid transparent;cursor:pointer}
 .tab.active{color:#000;border-color:#000}
+.tab.phasing-tab{font-weight:760;color:#111}
+.tab.phasing-tab::after{content:"NEW";font-size:8px;letter-spacing:.06em;margin-left:5px;padding:2px 4px;border:1px solid #111;vertical-align:2px}
+.version-badge{display:inline-block;margin-left:8px;padding:3px 7px;border:1px solid #111;font-size:10px;font-weight:800;letter-spacing:.05em;vertical-align:2px;background:#fff}
 .content{padding:24px 34px 40px}.panel{display:none}.panel.active{display:block}
 .grid{display:grid;grid-template-columns:minmax(390px,540px) 1fr;gap:20px}
 .card{border:1px solid var(--line);background:#fff;padding:20px;margin-bottom:18px}
@@ -1780,6 +2021,7 @@ tfoot th{border-top:2px solid #111;color:#111;background:#fff}
 .expense-fill{height:100%;background:#111;min-width:2px}
 .expense-pct{text-align:right;font-weight:700}
 .expense-value{text-align:right;color:#666}
+.phase-ok{color:var(--positive);font-weight:700}.phase-bad{color:var(--negative);font-weight:700}.phase-share{min-width:86px}.phase-small{min-width:90px}
 .unit-table td:not(:first-child),.unit-table th:not(:first-child){text-align:right}
 @media(max-width:900px){
  .preset-grid{grid-template-columns:1fr 1fr}.expense-row{grid-template-columns:1fr}.expense-pct,.expense-value{text-align:left}
@@ -1896,7 +2138,7 @@ tfoot th{border-top:2px solid #111;color:#111;background:#fff}
 <div class="shell">
   <div class="brandbar"><img src="data:image/webp;base64,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"><div class="brandline"></div></div>
   <div class="header">
-    <div class="title"><h1>Девелоперская инвестиционная модель</h1><p>v0.7.2 · ТЭП · экономика · БРИДЖ · проектное финансирование · эскроу · LLCR</p></div>
+    <div class="title"><h1>Девелоперская инвестиционная модель <span class="version-badge">v0.8.2</span></h1><p>ТЭП · многоочередность · экономика · БРИДЖ · проектное финансирование · эскроу · LLCR</p></div>
     <div class="actions">
       <div class="scenario">Класс&nbsp;
         <select id="projectClassSelect" onchange="renderProjectClassPreview()" style="min-width:135px">
@@ -1924,6 +2166,7 @@ tfoot th{border-top:2px solid #111;color:#111;background:#fff}
   <div class="tabs">
     <button class="tab active" data-tab="inputs" onclick="openTab('inputs',this)">Вводные</button>
     <button class="tab" data-tab="tep" onclick="openTab('tep',this)">ТЭП</button>
+    <button class="tab phasing-tab" data-tab="phasing" onclick="openTab('phasing',this)">Очередность</button>
     <button class="tab" data-tab="rates" onclick="openTab('rates',this)">Ключевая ставка</button>
     <button class="tab" data-tab="finance" onclick="openTab('finance',this)">Финансирование</button>
     <button class="tab" data-tab="calendar" onclick="openTab('calendar',this)">Календарь</button>
@@ -1932,6 +2175,7 @@ tfoot th{border-top:2px solid #111;color:#111;background:#fff}
 
   <div class="content">
     <div id="inputs" class="panel active">
+      <div class="note" style="margin-top:0;margin-bottom:12px"><b>Версия приложения: v0.8.2.</b> Вкладка <b>«Очередность»</b> находится в верхнем меню между «ТЭП» и «Ключевая ставка».</div>
       <div class="note" style="margin-top:0;margin-bottom:18px">Класс проекта выбирается в верхней шапке: <b>Комфорт / Бизнес / Элитный</b>. Пресет меняет стартовые цены квартир и коммерции, цену м/м и себестоимость надземной/подземной части. В строительных расходах авторский надзор считается как % от П+РД; управление проектом — отдельный overhead на зарплаты и накладные; техзаказчик/стройконтроль — отдельный % от СМР.</div>
       <div class="card import-card">
         <div class="import-head">
@@ -1972,6 +2216,23 @@ tfoot th{border-top:2px solid #111;color:#111;background:#fff}
         <div class="toolbar"><button class="btn" onclick="syncTep()">Обновить производные ТЭП из вводных</button><span style="color:#777;font-size:12px">В интерфейсе показывается 1 знак после запятой. При загруженном ГлавАПУ подземный паркинг является производным: постоянные + гостевые × 35 м².</span></div>
         <div class="scroll"><table class="teptable"><thead><tr><th>Продукт</th><th>ГНС, м²</th><th>Общая площадь, м²</th><th>Полезная площадь, м²</th><th>Продаваемая площадь, м²</th><th>Передаваемая площадь, м²</th><th>Количество, шт.</th></tr></thead><tbody id="tepBody"></tbody><tfoot><tr><th>Итого</th><th id="tg"></th><th id="ta"></th><th id="tu"></th><th id="ts"></th><th id="tt"></th><th id="tn"></th></tr></tfoot></table></div>
       </div>
+    </div>
+
+    <div id="phasing" class="panel">
+      <div class="card">
+        <div class="report-title"><div><div class="section-title">Многоочередность</div><h2>Разбиение проекта на очереди</h2></div><div class="toolbar" style="margin:0"><button class="btn" onclick="recommendPhasing()">Предложить автоматически</button><button class="btn dark" onclick="calculate()">Рассчитать очереди</button></div></div>
+        <div class="fields" style="grid-template-columns:repeat(4,minmax(150px,1fr))">
+          <div class="field"><label>Количество очередей</label><select id="phaseCount" onchange="setPhaseCount(Number(this.value))"><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option></select></div>
+          <div class="field"><label>Целевой размер очереди <span class="unit">м² продаваемой</span></label><input id="phaseTargetSize" type="number" step="5000" value="70000" onchange="phasing.target_saleable_sqm=Number(this.value||70000)"></div>
+          <div class="field"><label>Сдвиг следующей очереди <span class="unit">мес.</span></label><input id="phaseGap" type="number" step="1" value="9" onchange="updatePhaseGap(Number(this.value||9))"></div>
+          <div class="field"><label>Продаваемая площадь проекта</label><input id="phaseMasterSaleable" readonly></div>
+        </div>
+        <div class="note">Текущий движок одной очереди не переписан: каждая очередь считается тем же расчётом отдельно, затем денежные потоки, БРИДЖ, ПФ, эскроу и отчёт консолидируются. При 1 очереди логика остаётся прежней.</div>
+      </div>
+      <div class="card"><div class="section-title">Очереди и календарь</div><div class="scroll" style="max-height:none"><table><thead><tr><th>Очередь</th><th>Доля ТЭП</th><th>Продаваемая площадь</th><th>Сдвиг старта</th><th>РнС</th><th>РВЭ</th><th>Срок стройки</th></tr></thead><tbody id="phaseRows"></tbody><tfoot><tr><th>Итого</th><th id="phaseShareTotal">100%</th><th id="phaseSaleableTotal">—</th><th colspan="4" id="phaseTepControl">—</th></tr></tfoot></table></div></div>
+      <div class="card"><div class="report-title"><div><div class="section-title">Общепроектные расходы</div><h2>Распределение денежной нагрузки</h2></div><small>Доли нормализуются до 100%</small></div><div class="scroll" style="max-height:none"><table><thead id="phaseAllocationHead"></thead><tbody id="phaseAllocationBody"></tbody></table></div><div class="note">Для 3 очередей по умолчанию: подготовительные работы 60/25/15, наружные сети 50/30/20. Покупка и оформление прав по денежному графику относятся в первую очередь. Значения можно менять вручную.</div></div>
+      <div class="card"><div class="section-title">Социальные объекты</div><div class="fields" style="grid-template-columns:repeat(4,minmax(170px,1fr))"><div class="field"><label>ДОУ строится в</label><select id="socialKgPhase" onchange="phasing.social.kindergarten_phase=Number(this.value);calculate()"></select></div><div class="field"><label>СОШ строится в</label><select id="socialSchoolPhase" onchange="phasing.social.school_phase=Number(this.value);calculate()"></select></div><div class="field"><label>Поликлиника строится в</label><select id="socialClinicPhase" onchange="phasing.social.clinic_phase=Number(this.value);calculate()"></select></div><div class="field"><label>Компенсация платится в</label><select id="socialCompPhase" onchange="phasing.social.compensation_phase=Number(this.value);calculate()"></select></div></div></div>
+      <div class="card"><div class="report-title"><div><div class="section-title">Результат по очередям</div><h2>Экономика и финансирование</h2></div><small id="phaseCalcStatus">—</small></div><div class="scroll" style="max-height:none"><table><thead><tr><th>Очередь</th><th>Доля</th><th>РнС</th><th>РВЭ</th><th>Выручка</th><th>CAPEX</th><th>Чистая прибыль</th><th>Маржа</th><th>Пик БРИДЖ</th><th>Пик ПФ</th><th>LLCR</th></tr></thead><tbody id="phaseResultRows"></tbody></table></div><div class="kpis" id="phaseConsolidatedKpi" style="margin-top:16px"></div></div>
     </div>
 
     <div id="rates" class="panel">
@@ -2196,7 +2457,9 @@ const TEP_DEFAULT={"apartments": {"label": "Квартиры", "gns": 130716.660
 const FIELD_GROUPS=[["Сделка и сроки", [["purchase_price_mln", "Стоимость покупки / цена входа", "млн ₽", "number"], ["land_rights_cost_mln", "Оформление земельных правоотношений / смена ВРИ", "млн ₽", "number"], ["project_start", "Начало проекта", "дата", "date"], ["ird_months", "Срок ИРД до РнС", "мес.", "number"], ["construction_months", "Срок строительства", "мес.", "number"], ["sales_lag_months", "Лаг старта продаж после РнС", "мес.", "number"], ["bridge_repay_lag_months", "Лаг погашения БРИДЖ после РнС", "мес.", "number"], ["residual_sales_months", "Остаточные продажи после РВЭ", "мес.", "number"]]], ["Продажи", [["apartment_price_th", "Стартовая цена квартир", "тыс. ₽/м²", "number"], ["commercial_price_th", "Стартовая цена коммерции 1 этажа", "тыс. ₽/м²", "number"], ["parking_price_th", "Цена подземного машино-места", "тыс. ₽/шт.", "number"], ["storage_price_th", "Цена кладовой", "тыс. ₽/шт.", "number"], ["share_before_rve_pct", "Доля продаж до РВЭ", "%", "number"], ["pace_adjustment_pct", "Корректировка темпа", "%", "number"], ["inflation_after_rve_pct", "Инфляция после РВЭ", "% год", "number"], ["seasonal_reduction_pct", "Сезонное снижение темпа", "%", "number"], ["growth_stage1_pct", "Рост цены — этап 1", "%", "number"], ["growth_stage2_pct", "Рост цены — этап 2", "%", "number"], ["growth_stage3_pct", "Рост цены — этап 3", "%", "number"], ["growth_stage4_pct", "Рост цены — этап 4", "%", "number"], ["monthly_growth_pre_pct", "Ежемесячный рост цены до РВЭ", "%/мес.", "number"], ["monthly_growth_post_pct", "Ежемесячный рост цены после РВЭ", "%/мес.", "number"]]], ["Строительство", [["ird_th_per_sqm", "ИРД и согласования", "тыс. ₽/м² ГНС", "number"], ["design_p_th_per_sqm", "Проектирование стадии П", "тыс. ₽/м² ГНС", "number"], ["design_rd_th_per_sqm", "Проектирование стадии РД", "тыс. ₽/м² ГНС", "number"], ["preparation_th_per_sqm", "Подготовительные работы", "тыс. ₽/м² ГНС", "number"], ["main_above_th_per_sqm", "Основное строительство — наземная часть", "тыс. ₽/м² ГНС", "number"], ["main_under_th_per_sqm", "Основное строительство — подземная часть", "тыс. ₽/м² ГНС", "number"], ["utilities_th_per_sqm", "Наружные инженерные сети", "тыс. ₽/м² ГНС", "number"], ["landscaping_th_per_sqm", "Благоустройство", "тыс. ₽/м² ГНС", "number"], ["commissioning_th_per_sqm", "Сдача и ввод", "тыс. ₽/м² ГНС", "number"], ["site_maintenance_th_per_sqm", "Содержание стройплощадки", "тыс. ₽/м² ГНС", "number"], ["gc_fee_pct", "Вознаграждение генподрядчика", "% СМР", "number"], ["author_supervision_pct", "Авторский надзор", "% от П + РД", "number"], ["project_management_pct", "Управление проектом — зарплаты и накладные", "% прямых затрат", "number"], ["technical_supervision_pct", "Технический заказчик / стройконтроль (технадзор)", "% СМР", "number"], ["reserve_pct", "Резерв", "%", "number"]]], ["Коммерческие расходы и налоги", [["marketing_pct", "Маркетинг", "% выручки", "number"], ["selling_pct", "Расходы на продажи", "% выручки", "number"], ["profit_tax_pct", "Налог на прибыль", "%", "number"], ["vat_pct", "НДС", "%", "number"]]], ["Финансирование", [["bridge_spread_pp", "Спред БРИДЖ", "п.п.", "number"], ["bridge_cap_spread_pp", "Спред капитализации БРИДЖ", "п.п.", "number"], ["pf_spread_pp", "Спред ПФ", "п.п.", "number"], ["pf_special_pct", "Специальная ставка ПФ", "%", "number"], ["limit_fee_pct", "Плата за лимит", "%", "number"], ["reservation_fee_pct", "Плата за резервирование", "%", "number"], ["discount_rate_pct", "Ставка дисконтирования", "%", "number"], ["bridge_interest_mode", "Проценты БРИДЖ при рефинансировании", "режим", "finance_select"], ["pf_transfer_income_pct", "Снижение спецставки при покрытии эскроу > 1x", "п.п. на 1x", "number"]]], ["Социальная нагрузка", [["social_mode", "Форма исполнения", "режим", "select"], ["social_comp_date", "Дата денежной компенсации", "дата", "date"], ["social_compensation_mln", "Социальный платеж / компенсация по ГлавАПУ", "млн ₽", "number"], ["kindergarten_places", "ДОУ — количество мест", "мест", "number"], ["kindergarten_cost_mln_per_place", "ДОУ — себестоимость места", "млн ₽/место", "number"], ["kindergarten_start", "ДОУ — начало строительства", "дата", "date"], ["kindergarten_months", "ДОУ — срок строительства", "мес.", "number"], ["school_places", "СОШ — количество мест", "мест", "number"], ["school_cost_mln_per_place", "СОШ — себестоимость места", "млн ₽/место", "number"], ["school_start", "СОШ — начало строительства", "дата", "date"], ["school_months", "СОШ — срок строительства", "мес.", "number"], ["clinic_capacity", "Поликлиника — мощность", "пос./смену", "number"], ["clinic_cost_mln_per_unit", "Поликлиника — себестоимость мощности", "млн ₽/(пос./смену)", "number"], ["clinic_start", "Поликлиника — начало строительства", "дата", "date"], ["clinic_months", "Поликлиника — срок строительства", "мес.", "number"], ["social_dou_gba_sqm", "ДОУ — общая площадь", "м²", "number"], ["social_dou_norm_sqm", "ДОУ — норматив площади на место", "м²/место", "number"], ["social_school_gba_sqm", "СОШ — общая площадь", "м²", "number"], ["social_school_norm_sqm", "СОШ — норматив площади на место", "м²/место", "number"], ["social_clinic_gba_sqm", "Поликлиника — общая площадь", "м²", "number"], ["social_clinic_norm_sqm", "Поликлиника — норматив площади", "м²/ед.", "number"]]], ["МФОЦ / офисы", [["offices_enabled", "Объект включен", "Да / Нет", "checkbox"], ["offices_gba_sqm", "Общая площадь (GBA)", "м²", "number"], ["offices_saleable_sqm", "Продаваемая площадь", "м²", "number"], ["offices_start", "Начало строительства", "дата", "date"], ["offices_months", "Срок строительства", "мес.", "number"], ["offices_cost_th_per_sqm", "Себестоимость строительства", "тыс. ₽/м² GBA", "number"], ["offices_sales_start", "Старт продаж", "дата", "date"], ["offices_price_th_per_sqm", "Стартовая цена", "тыс. ₽/м²", "number"], ["offices_share_before_rve_pct", "Доля продаж до РВЭ", "%", "number"], ["offices_residual_months", "Остаточные продажи после РВЭ", "мес.", "number"], ["offices_growth_pre_pct", "Рост цены до РВЭ", "%/мес.", "number"], ["offices_growth_post_pct", "Рост цены после РВЭ", "%/мес.", "number"]]], ["ТЦ / коммерция ОСЗ", [["retail_enabled", "Объект включен", "Да / Нет", "checkbox"], ["retail_gba_sqm", "Общая площадь (GBA)", "м²", "number"], ["retail_saleable_sqm", "Продаваемая площадь", "м²", "number"], ["retail_start", "Начало строительства", "дата", "date"], ["retail_months", "Срок строительства", "мес.", "number"], ["retail_cost_th_per_sqm", "Себестоимость строительства", "тыс. ₽/м² GBA", "number"], ["retail_sales_start", "Старт продаж", "дата", "date"], ["retail_price_th_per_sqm", "Стартовая цена", "тыс. ₽/м²", "number"], ["retail_share_before_rve_pct", "Доля продаж до РВЭ", "%", "number"], ["retail_residual_months", "Остаточные продажи после РВЭ", "мес.", "number"], ["retail_growth_pre_pct", "Рост цены до РВЭ", "%/мес.", "number"], ["retail_growth_post_pct", "Рост цены после РВЭ", "%/мес.", "number"]]], ["Наземный паркинг", [["above_parking_enabled", "Объект включен", "Да / Нет", "checkbox"], ["above_parking_spaces", "Количество машино-мест", "шт.", "number"], ["above_parking_cost_mln_per_space", "Себестоимость одного места", "млн ₽/место", "number"], ["above_parking_start", "Начало строительства", "дата", "date"], ["above_parking_months", "Срок строительства", "мес.", "number"], ["above_parking_sales_start", "Старт продаж", "дата", "date"], ["above_parking_price_mln_per_space", "Стартовая цена места", "млн ₽/место", "number"], ["above_parking_share_before_rve_pct", "Доля продаж до РВЭ", "%", "number"], ["above_parking_residual_months", "Остаточные продажи после РВЭ", "мес.", "number"], ["above_parking_growth_pre_pct", "Рост цены до РВЭ", "%/мес.", "number"], ["above_parking_growth_post_pct", "Рост цены после РВЭ", "%/мес.", "number"], ["above_parking_area_per_space_sqm", "Площадь на 1 место для ТЭП", "м²/место", "number"]]]];
 const INPUT_DEFAULT={"project_class":"comfort","purchase_price_mln": 0, "construction_months": 24, "apartment_price_th": 350, "commercial_price_th": 350, "parking_price_th": 1500, "storage_price_th": 1000, "share_before_rve_pct": 85, "pace_adjustment_pct": 25, "inflation_after_rve_pct": 3, "seasonal_reduction_pct": -15, "growth_stage1_pct": 0, "growth_stage2_pct": 0, "growth_stage3_pct": 0, "growth_stage4_pct": 0, "ird_th_per_sqm": 1, "design_p_th_per_sqm": 2.5, "design_rd_th_per_sqm": 2.5, "preparation_th_per_sqm": 1, "main_above_th_per_sqm": 110, "utilities_th_per_sqm": 7.5, "landscaping_th_per_sqm": 5, "commissioning_th_per_sqm": 1, "site_maintenance_th_per_sqm": 1, "gc_fee_pct": 7, "reserve_pct": 5, "project_management_pct":5,"technical_supervision_pct":0,"author_supervision_pct":0,"marketing_pct": 3, "selling_pct": 4, "profit_tax_pct": 25, "vat_pct": 22, "bridge_spread_pp": 6, "bridge_cap_spread_pp": 6, "pf_spread_pp": 4.5, "pf_special_pct": 4.5, "limit_fee_pct": 0.5, "reservation_fee_pct": 0.5, "discount_rate_pct": 20, "monthly_growth_pre_pct": 1.5, "monthly_growth_post_pct": 0.25, "ird_months": 18, "sales_lag_months": 0, "bridge_repay_lag_months": 0, "residual_sales_months": 6, "social_comp_date": "2028-06-01", "social_compensation_mln": 0, "kindergarten_places": 250, "kindergarten_cost_mln_per_place": 2.75, "kindergarten_start": "2028-06-01", "kindergarten_months": 24, "school_places": 0, "school_cost_mln_per_place": 3, "school_start": "2028-06-01", "school_months": 30, "clinic_capacity": 0, "clinic_cost_mln_per_unit": 3, "clinic_start": "2028-06-01", "clinic_months": 24, "offices_gba_sqm": 10000, "offices_saleable_sqm": 6000, "offices_start": "2028-07-01", "offices_months": 24, "offices_cost_th_per_sqm": 200, "offices_sales_start": "2028-07-01", "offices_price_th_per_sqm": 500, "offices_share_before_rve_pct": 85, "offices_residual_months": 6, "offices_growth_pre_pct": 1.5, "offices_growth_post_pct": 0.25, "retail_gba_sqm": 10000, "retail_saleable_sqm": 6000, "retail_start": "2028-07-01", "retail_months": 24, "retail_cost_th_per_sqm": 200, "retail_sales_start": "2028-07-01", "retail_price_th_per_sqm": 500, "retail_share_before_rve_pct": 85, "retail_residual_months": 6, "retail_growth_pre_pct": 1.5, "retail_growth_post_pct": 0.25, "above_parking_spaces": 550, "above_parking_cost_mln_per_space": 1, "above_parking_start": "2028-07-01", "above_parking_months": 18, "above_parking_sales_start": "2028-07-01", "above_parking_price_mln_per_space": 2, "above_parking_share_before_rve_pct": 85, "above_parking_residual_months": 6, "above_parking_growth_pre_pct": 0.75, "above_parking_growth_post_pct": 0.2, "social_dou_gba_sqm": 3000, "social_school_gba_sqm": 0, "social_clinic_gba_sqm": 0, "project_start": "2027-01-01", "main_under_th_per_sqm": 110, "social_mode": "Строительство", "social_dou_norm_sqm": 12, "social_school_norm_sqm": 13, "social_clinic_norm_sqm": 15, "offices_enabled": false, "retail_enabled": false, "above_parking_enabled": false, "above_parking_area_per_space_sqm": 25, "rate_scenario":"base", "land_rights_cost_mln": 2864.291514155844, "bridge_interest_mode": "Капитализация в ПФ", "pf_transfer_income_pct": 5.0,"rate_start_pct":14.25,"rate_start_date":"2026-07-17","rate_target_high_pct":11,"rate_target_base_pct":9,"rate_target_low_pct":7,"rate_normalization_months":24,"rate_curve_shape":2};
 
+const PHASING_DEFAULT={enabled:false,count:1,target_saleable_sqm:70000,gap_months:9,shares:[1],phases:[{name:'Очередь 1',start_offset_months:0,construction_months:24}],allocations:{preparation:[1],utilities:[1],purchase:[1],land_rights:[1]},social:{kindergarten_phase:1,school_phase:1,clinic_phase:1,compensation_phase:1}};
 let inputs=structuredClone(INPUT_DEFAULT), tep=structuredClone(TEP_DEFAULT), rates=structuredClone(RATE_DEFAULT), lastResult=null, glavapuImport=null;
+let phasing=structuredClone(PHASING_DEFAULT), lastPhasingResult=null;
 const money=v=>(Number(v||0)/1e9).toLocaleString('ru-RU',{minimumFractionDigits:0,maximumFractionDigits:2})+' млрд ₽';
 const mln=v=>(Number(v||0)/1e6).toLocaleString('ru-RU',{minimumFractionDigits:0,maximumFractionDigits:1})+' млн ₽';
 const pct=v=>(Number(v||0)*100).toLocaleString('ru-RU',{minimumFractionDigits:0,maximumFractionDigits:2})+'%';
@@ -2208,12 +2471,32 @@ const irrFmt=v=>v==null?'N/A':pct(v);
 const inputDisplay=v=>Math.round(Number(v||0)*10)/10;
 
 function openTab(id,btn){
+ if(id==='tep'){syncDerivedModelState(false);renderTep()}
+ if(id==='phasing'){syncDerivedModelState(false);renderPhasing()}
  document.querySelectorAll('.panel').forEach(x=>x.classList.remove('active'));document.getElementById(id).classList.add('active');
  document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
  (btn||document.querySelector(`[data-tab="${id}"]`)).classList.add('active');
 }
 function calculateAndOpen(id){calculate().then(()=>openTab(id))}
 
+
+
+function masterSaleable(){return ['apartments','ground_commercial','standalone_retail','offices'].reduce((s,k)=>s+Number((tep[k]&&tep[k].saleable)||0),0)}
+function phaseSharePreset(c){return ({1:[1],2:[.45,.55],3:[.30,.35,.35],4:[.22,.26,.26,.26],5:[.18,.205,.205,.205,.205]})[c]||Array(c).fill(1/c)}
+function frontloadPreset(c,k){const p={preparation:{1:[1],2:[.70,.30],3:[.60,.25,.15],4:[.50,.20,.15,.15],5:[.45,.20,.15,.10,.10]},utilities:{1:[1],2:[.60,.40],3:[.50,.30,.20],4:[.45,.25,.15,.15],5:[.40,.25,.15,.10,.10]}};return (p[k]&&p[k][c])||Array(c).fill(1/c)}
+function addMonthsUI(iso,m){const d=new Date(iso+'T12:00:00'),day=d.getDate();d.setDate(1);d.setMonth(d.getMonth()+Number(m||0));const last=new Date(d.getFullYear(),d.getMonth()+1,0).getDate();d.setDate(Math.min(day,last));return d.toISOString().slice(0,10)}
+function phaseDates(p){const start=addMonthsUI(inputs.project_start,Number(p.start_offset_months||0)),permit=addMonthsUI(start,Number(inputs.ird_months||18)),rve=addMonthsUI(permit,Number(p.construction_months||inputs.construction_months||24));return {start,permit,rve}}
+function configurePhasing(c,auto=false){c=Math.max(1,Math.min(5,Number(c||1)));phasing.count=c;phasing.enabled=c>1;phasing.shares=phaseSharePreset(c);phasing.phases=Array.from({length:c},(_,i)=>({name:'Очередь '+(i+1),start_offset_months:i*Number(phasing.gap_months||9),construction_months:Number(inputs.construction_months||24)}));phasing.allocations={preparation:frontloadPreset(c,'preparation'),utilities:frontloadPreset(c,'utilities'),purchase:[1,...Array(Math.max(0,c-1)).fill(0)],land_rights:[1,...Array(Math.max(0,c-1)).fill(0)]};phasing.social={kindergarten_phase:1,school_phase:Math.min(2,c),clinic_phase:c,compensation_phase:1};renderPhasing();if(auto)calculate()}
+function setPhaseCount(c){configurePhasing(c,true)}
+function updatePhaseGap(v){phasing.gap_months=Number(v||9);phasing.phases.forEach((p,i)=>p.start_offset_months=i*phasing.gap_months);renderPhasing();calculate()}
+function recommendPhasing(){syncDerivedModelState(false);const total=masterSaleable(),target=Math.max(10000,Number(phaseTargetSize.value||phasing.target_saleable_sqm||70000));phasing.target_saleable_sqm=target;configurePhasing(Math.max(1,Math.min(5,Math.ceil(total/target))),true)}
+function updatePhaseShare(i,v){phasing.shares[i]=Math.max(0,Number(v||0))/100;renderPhasing(false);calculate()}
+function updatePhaseOffset(i,v){phasing.phases[i].start_offset_months=Number(v||0);renderPhasing(false);calculate()}
+function updatePhaseMonths(i,v){phasing.phases[i].construction_months=Number(v||24);renderPhasing(false);calculate()}
+function updateAllocation(k,i,v){phasing.allocations[k][i]=Math.max(0,Number(v||0))/100;renderPhasing(false);calculate()}
+function phaseOptions(s){return Array.from({length:phasing.count},(_,i)=>`<option value="${i+1}" ${Number(s)===i+1?'selected':''}>Очередь ${i+1}</option>`).join('')}
+function renderPhasing(refresh=true){if(!document.getElementById('phaseRows'))return;if(refresh){phaseCount.value=String(phasing.count||1);phaseGap.value=Number(phasing.gap_months||9);phaseTargetSize.value=Number(phasing.target_saleable_sqm||70000)}const total=masterSaleable();phaseMasterSaleable.value=num(total)+' м²';phaseRows.innerHTML=phasing.phases.slice(0,phasing.count).map((p,i)=>{const d=phaseDates(p),s=Number(phasing.shares[i]||0);return `<tr><td><b>${p.name}</b></td><td><input class="phase-share" type="number" step="1" value="${(s*100).toFixed(1)}" onchange="updatePhaseShare(${i},this.value)">%</td><td>${num(total*s)} м²</td><td><input class="phase-small" type="number" step="1" value="${Number(p.start_offset_months||0)}" onchange="updatePhaseOffset(${i},this.value)"> мес.</td><td>${dateRu(d.permit)}</td><td>${dateRu(d.rve)}</td><td><input class="phase-small" type="number" step="1" value="${Number(p.construction_months||24)}" onchange="updatePhaseMonths(${i},this.value)"> мес.</td></tr>`}).join('');const sum=phasing.shares.slice(0,phasing.count).reduce((a,b)=>a+Number(b||0),0);phaseShareTotal.textContent=(sum*100).toLocaleString('ru-RU',{maximumFractionDigits:1})+'%';phaseSaleableTotal.textContent=num(total*sum)+' м²';phaseTepControl.innerHTML=Math.abs(sum-1)<1e-6?'<span class="phase-ok">Доли = 100%</span>':'<span class="phase-bad">Доли должны дать 100%</span>';phaseAllocationHead.innerHTML='<tr><th>Статья</th>'+Array.from({length:phasing.count},(_,i)=>`<th>О${i+1}</th>`).join('')+'<th>Итого</th></tr>';const rr=[['purchase','Покупка / вход'],['land_rights','Смена ВРИ / земельные права'],['preparation','Подготовительные работы'],['utilities','Наружные сети']];phaseAllocationBody.innerHTML=rr.map(([k,l])=>{const a=phasing.allocations[k]||[],s=a.slice(0,phasing.count).reduce((x,y)=>x+Number(y||0),0);return `<tr><td>${l}</td>`+Array.from({length:phasing.count},(_,i)=>`<td><input class="phase-small" type="number" step="1" value="${(Number(a[i]||0)*100).toFixed(1)}" onchange="updateAllocation('${k}',${i},this.value)">%</td>`).join('')+`<td>${(s*100).toLocaleString('ru-RU',{maximumFractionDigits:1})}%</td></tr>`}).join('');socialKgPhase.innerHTML=phaseOptions(phasing.social.kindergarten_phase);socialSchoolPhase.innerHTML=phaseOptions(phasing.social.school_phase);socialClinicPhase.innerHTML=phaseOptions(phasing.social.clinic_phase);socialCompPhase.innerHTML=phaseOptions(phasing.social.compensation_phase);if(lastPhasingResult)renderPhasingResult()}
+function renderPhasingResult(){if(!lastPhasingResult||!document.getElementById('phaseResultRows'))return;const p=lastPhasingResult;phaseResultRows.innerHTML=(p.phases||[]).map(x=>{const r=x.result;return `<tr><td><b>${x.name}</b></td><td>${(x.share*100).toLocaleString('ru-RU',{maximumFractionDigits:1})}%</td><td>${dateRu(r.dates.permit)}</td><td>${dateRu(r.dates.rve)}</td><td>${money(r.summary.revenue)}</td><td>${money(r.summary.capex)}</td><td>${money(r.summary.net_profit)}</td><td>${pct(r.summary.margin)}</td><td>${money(r.finance.peak_bridge)}</td><td>${money(r.finance.peak_pf)}</td><td>${mult(r.summary.llcr)}</td></tr>`}).join('');const c=p.consolidated,ctrl=p.controls||{};phaseCalcStatus.innerHTML=ctrl.tep_conservation?'<span class="phase-ok">ТЭП сходятся</span>':'<span class="phase-bad">Ошибка ТЭП</span>';phaseConsolidatedKpi.innerHTML=[['Выручка',money(c.summary.revenue)],['CAPEX',money(c.summary.capex)],['Чистая прибыль',money(c.summary.net_profit)],['Маржа',pct(c.summary.margin)],['Пиковый совокупный долг',money(ctrl.peak_total_debt||0)],['LLCR',mult(c.summary.llcr)],['NPV',money(c.summary.npv)],['IRR equity',irrFmt(c.summary.irr_equity)]].map(x=>`<div class="kpi"><span>${x[0]}</span><b>${x[1]}</b></div>`).join('')}
 
 async function uploadGlavapu(){
  const file=document.getElementById('glavapuFile').files[0];
@@ -2257,22 +2540,41 @@ function renderGlavapuPreview(data){
 
 function applyGlavapu(){
  if(!glavapuImport){glavapuStatus.innerHTML='<span class="import-error">Сначала разберите файл.</span>';return}
+
+ const previousMode=inputs.social_mode||'Строительство';
+ const preserveMode=!!inputs._social_mode_user_set||!!inputs._glavapu_import;
+
  Object.assign(inputs,glavapuImport.mappings.inputs||{});
- Object.entries(glavapuImport.mappings.tep||{}).forEach(([key,vals])=>{
-   if(tep[key])Object.assign(tep[key],vals);
- });
+
  inputs._glavapu_import={
    source:glavapuImport.source,
    normalized:glavapuImport.normalized,
    recognized:glavapuImport.recognized,
    warnings:glavapuImport.warnings
  };
- // Force underground parking from ГлавАПУ source, even if an old project was saved in localStorage.
+
+ // Compensation value is imported independently from the execution method.
+ // Re-import must not silently change a user's scenario choice.
+ inputs.social_mode=preserveMode
+   ? previousMode
+   : ((glavapuImport.normalized&&glavapuImport.normalized.suggested_social_mode)||previousMode);
+
+ applyRequiredSocialProgramFromGlavapu();
+
+ Object.entries(glavapuImport.mappings.tep||{}).forEach(([key,vals])=>{
+   if(tep[key])Object.assign(tep[key],vals);
+ });
+
+ syncTep(false);
  repairParkingFromGlavapu();
  renderInputs();
  renderTep();
+ renderPhasing();
  renderGlavapuPreview(glavapuImport);
- glavapuStatus.innerHTML='<span class="import-ok">Данные ГлавАПУ применены к Вводным и ТЭП. Подземный паркинг пересчитан как постоянные + гостевые места × 35 м²; приобъектные и кратковременные исключены.</span>';
+
+ const comp=Number(inputs.social_compensation_mln||0);
+ const compText=comp>0?' Компенсация ГлавАПУ сохранена во Вводных: '+comp.toLocaleString('ru-RU',{maximumFractionDigits:3})+' млн ₽.':'';
+ glavapuStatus.innerHTML='<span class="import-ok">Данные ГлавАПУ применены к Вводным и ТЭП.'+compText+' Выбранный режим соцнагрузки не перезаписан.</span>';
  calculate();
 }
 
@@ -2358,7 +2660,7 @@ function renderInputs(){
      else {el=document.createElement('input');el.type=type==='checkbox'?'checkbox':type;if(type==='number')el.step='any'}
      el.id='f_'+id;
      if(type==='checkbox')el.checked=!!inputs[id];else el.value=inputs[id]??'';
-     el.onchange=()=>{inputs[id]=type==='checkbox'?el.checked:(type==='number'?Number(el.value):el.value);if(['apartment_price_th','commercial_price_th','parking_price_th','main_above_th_per_sqm','main_under_th_per_sqm'].includes(id)){inputs.project_class='custom';syncProjectClassSelector()}if(['offices_enabled','retail_enabled','above_parking_enabled','social_mode','kindergarten_places','school_places','clinic_capacity','social_dou_gba_sqm','social_school_gba_sqm','social_clinic_gba_sqm','above_parking_spaces','above_parking_area_per_space_sqm'].includes(id)){const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();if(filled)renderInputs();syncTep(false)}};
+     el.onchange=()=>{inputs[id]=type==='checkbox'?el.checked:(type==='number'?Number(el.value):el.value);if(id==='social_mode')inputs._social_mode_user_set=true;if(['apartment_price_th','commercial_price_th','parking_price_th','main_above_th_per_sqm','main_under_th_per_sqm'].includes(id)){inputs.project_class='custom';syncProjectClassSelector()}if(['offices_enabled','offices_gba_sqm','offices_saleable_sqm','retail_enabled','retail_gba_sqm','retail_saleable_sqm','above_parking_enabled','above_parking_spaces','above_parking_area_per_space_sqm','social_mode','kindergarten_places','school_places','clinic_capacity','social_dou_gba_sqm','social_school_gba_sqm','social_clinic_gba_sqm'].includes(id)){const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();if(filled)renderInputs();syncTep(false);renderPhasing(false)}};
      wrap.appendChild(el);grid.appendChild(wrap);
    });det.appendChild(grid);box.appendChild(det);
  });
@@ -2422,6 +2724,15 @@ function syncTep(rerender=true){
  repairParkingFromGlavapu();
  if(rerender)renderTep();else updateTepTotals();
 }
+function syncDerivedModelState(rerender=false){
+ // All calculations must start from the same derived TEP state as the visible TEP tab.
+ applyRequiredSocialProgramFromGlavapu();
+ syncTep(false);
+ repairParkingFromGlavapu();
+ if(rerender)renderTep();
+ if(document.getElementById('phaseRows'))renderPhasing(false);
+}
+
 function addMonthsJS(iso,months){
  const d=new Date(iso+'T12:00:00');
  const day=d.getDate();
@@ -2577,10 +2888,16 @@ async function calculate(){
    inputs.rate_target_base_pct=Number(rateTargetBase.value||inputs.rate_target_base_pct||9);
    inputs.rate_target_low_pct=Number(rateTargetLow.value||inputs.rate_target_low_pct||7);
  }
+ // Critical: general Recalculate uses the exact same TEP derivation as the TEP tab.
+ syncDerivedModelState(false);
  generateRateCurve();
- repairParkingFromGlavapu();
- const response=await fetch('/calculate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({inputs,tep,rates})});
- lastResult=await response.json();
+ const multi=!!(phasing&&phasing.enabled&&Number(phasing.count||1)>1);
+ const endpoint=multi?'/calculate-phases':'/calculate';
+ const payload=multi?{inputs,tep,rates,phasing}:{inputs,tep,rates};
+ const response=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+ const calculated=await response.json();
+ if(!response.ok)throw new Error(calculated.detail||'Ошибка расчёта');
+ if(multi){lastPhasingResult=calculated;lastResult=calculated.consolidated;renderPhasingResult()}else{lastPhasingResult=null;lastResult=calculated}
  // The server is authoritative for derived TEP. Synchronize corrected values
  // back into the editable browser state (especially ГлавАПУ underground parking).
  if(lastResult&&lastResult.tep&&Array.isArray(lastResult.tep.rows)){
@@ -2592,8 +2909,10 @@ async function calculate(){
    });
  }
  repairParkingFromGlavapu();
+ // Keep hidden tabs synchronized as well: opening TEP later must never show stale values.
+ renderTep();
+ renderPhasing(false);
  renderResult();
- if(document.getElementById('tep')&&document.getElementById('tep').classList.contains('active'))renderTep();
  return lastResult;
 }
 
@@ -2692,6 +3011,7 @@ function renderResult(){
  projectParamsTable.innerHTML=
   row('Класс проекта',inputs.project_class&&PROJECT_CLASS_PRESETS[inputs.project_class]?PROJECT_CLASS_PRESETS[inputs.project_class].label:'Пользовательский')+
   row('Сценарий',scenarioSelect.options[scenarioSelect.selectedIndex].text)+
+  row('Очередность',phasing&&phasing.enabled&&phasing.count>1?phasing.count+' очереди':'1 очередь')+
   row('Доходы к базовому сценарию',Number(r.summary.scenario_revenue_multiplier||1).toLocaleString('ru-RU',{minimumFractionDigits:2,maximumFractionDigits:2})+'x')+
   row('Расходы к базовому сценарию',Number(r.summary.scenario_cost_multiplier||1).toLocaleString('ru-RU',{minimumFractionDigits:2,maximumFractionDigits:2})+'x')+
   row('Стоимость покупки',money(Number(inputs.purchase_price_mln||0)*1e6))+
@@ -2723,22 +3043,21 @@ function renderResult(){
  const construction=sb.construction||{};
  const compensation=sb.compensation||{};
  const program=r.summary.social_program||{};
- if(socialMode==='Строительство'){
-   socialTable.innerHTML=
-    row('Режим','Строительство')+
-    row(`ДОО — ${num(program.kindergarten_places||0)} мест`,money(Number(construction.kindergarten_mln||0)*1e6))+
-    row(`СОШ — ${num(program.school_places||0)} мест`,money(Number(construction.school_mln||0)*1e6))+
-    row(`Поликлиника — ${num(program.clinic_capacity||0)} пос./смену`,money(Number(construction.clinic_mln||0)*1e6))+
-    `<tr><th>Стоимость строительства / всего</th><th>${money(r.summary.social_payment)}</th></tr>`+
-    `<tr><td colspan="2" style="color:#777;font-size:11px">Справочно: компенсация по ГлавАПУ — ${money((Number(compensation.kindergarten_mln||0)+Number(compensation.school_mln||0)+Number(compensation.clinic_mln||0))*1e6)}</td></tr>`;
- }else{
-   socialTable.innerHTML=
-    row('Режим','Денежная компенсация')+
-    row('ДОО — компенсация',money(Number(compensation.kindergarten_mln||0)*1e6))+
-    row('СОШ — компенсация',money(Number(compensation.school_mln||0)*1e6))+
-    row('Поликлиника — компенсация',money(Number(compensation.clinic_mln||0)*1e6))+
-    `<tr><th>Компенсация / всего</th><th>${money(r.summary.social_payment)}</th></tr>`;
- }
+ const compRef=Number(r.summary.social_compensation_reference||0);
+ const buildRef=Number(r.summary.social_construction_reference||0);
+ const delta=Number(r.summary.social_saving_from_construction||0);
+ const activeLabel=socialMode==='Строительство'?'В CAPEX: строительство':'В CAPEX: денежная компенсация';
+ const deltaLabel=delta>=0?'Экономия строительства к компенсации':'Удорожание строительства к компенсации';
+
+ socialTable.innerHTML=
+   row('Выбранный режим',socialMode)+
+   row('Компенсация по ГлавАПУ',money(compRef))+
+   row(`Строительство: ДОУ — ${num(program.kindergarten_places||0)} мест`,money(Number(construction.kindergarten_mln||0)*1e6))+
+   row(`Строительство: СОШ — ${num(program.school_places||0)} мест`,money(Number(construction.school_mln||0)*1e6))+
+   row(`Строительство: поликлиника — ${num(program.clinic_capacity||0)} пос./смену`,money(Number(construction.clinic_mln||0)*1e6))+
+   row('Строительство соцобъектов / всего',money(buildRef))+
+   `<tr><td>${deltaLabel}</td><td style="font-weight:700">${money(Math.abs(delta))}</td></tr>`+
+   `<tr><th>${activeLabel}</th><th>${money(r.summary.social_payment)}</th></tr>`;
 
  unitEconomicsTable.innerHTML=(r.report.unit_economics||[]).map(x=>`<tr>
   <td>${x.label}</td>
@@ -2899,9 +3218,9 @@ async function exportReportPdf(){
  },120);
 }
 
-function saveLocal(){localStorage.setItem('plato_v04',JSON.stringify({inputs,tep,scenario:scenarioSelect.value}));alert('Сохранено в этом браузере')}
+function saveLocal(){localStorage.setItem('plato_v04',JSON.stringify({inputs,tep,scenario:scenarioSelect.value,phasing}));alert('Сохранено в этом браузере')}
 function loadLocal(){try{const x=JSON.parse(localStorage.getItem('plato_v04'));if(x){
- inputs=x.inputs||inputs;tep=x.tep||tep;rates=[];scenarioSelect.value=x.scenario||'base';
+ inputs=x.inputs||inputs;tep=x.tep||tep;rates=[];scenarioSelect.value=x.scenario||'base';phasing=x.phasing||phasing;
  // v0.7.1 migration: v0.7.0 temporarily misclassified the old 5% management rate as technical supervision.
  if(inputs._cost_structure_version!=='0.7.1'){
    if(inputs.project_management_pct==null)inputs.project_management_pct=Number(inputs.technical_supervision_pct??5);
@@ -2922,7 +3241,8 @@ function resetAll(){
  inputs.rate_scenario='base';
  inputs.scenario_revenue_multiplier=1;
  inputs.scenario_cost_multiplier=1;
- renderInputs();renderTep();renderStoredGlavapu();renderScenarioNote();syncProjectClassSelector();
+ phasing=structuredClone(PHASING_DEFAULT);lastPhasingResult=null;
+ renderInputs();renderTep();renderStoredGlavapu();renderScenarioNote();syncProjectClassSelector();renderPhasing();
  syncRateControlsFromInputs();generateRateCurve();renderRates();
  refreshCurrentKeyRate(true);
 }
@@ -2942,6 +3262,7 @@ async function initializeApp(){
  renderStoredGlavapu();
  renderScenarioNote();
  syncProjectClassSelector();
+ if(!phasing||!phasing.count)phasing=structuredClone(PHASING_DEFAULT);renderPhasing();
  inputs.rate_scenario=inputs.rate_scenario||'base';
  syncRateControlsFromInputs();
  generateRateCurve();
