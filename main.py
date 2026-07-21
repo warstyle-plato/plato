@@ -23,7 +23,7 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse, FileResponse
 from pydantic import BaseModel
 
-app = FastAPI(title="PLATO Development Investment Model", version="0.12.2")
+app = FastAPI(title="PLATO Development Investment Model", version="0.12.3")
 
 PRESET_DIR = Path(__file__).resolve().parent / "presets"
 SERVER_TEP_PRESETS = {
@@ -870,6 +870,33 @@ def sales_schedule(
     return dict(out)
 
 
+def quantity_schedule(
+    quantity: float,
+    start: date,
+    rve: date,
+    share_before: float,
+    residual_months: int,
+) -> dict[date, float]:
+    """Physical sales volume by month, using the same phasing as sales_schedule()."""
+    out: dict[date, float] = defaultdict(float)
+    if quantity <= 0:
+        return dict(out)
+
+    pre_months = max(1, months_between(start, rve))
+    share_before = max(0.0, min(1.0, share_before))
+    pre_each = quantity * share_before / pre_months
+    for i in range(pre_months):
+        out[add_months(start, i)] += pre_each
+
+    residual_months = max(0, int(residual_months))
+    if residual_months:
+        after_each = quantity * (1 - share_before) / residual_months
+        for i in range(residual_months):
+            out[add_months(rve, i)] += after_each
+
+    return dict(out)
+
+
 def spread_evenly(target: dict[date, float], amount: float, start: date, months: int) -> None:
     months = max(1, int(months))
     if not amount:
@@ -968,9 +995,15 @@ def build_operating_model(x: dict, t: dict) -> dict:
     revenue: dict[date, float] = defaultdict(float)
     revenue_by_product: dict[str, float] = {}
     revenue_product_schedules: dict[str, dict[date, float]] = {}
+    quantity_product_schedules: dict[str, dict[date, float]] = {}
 
-    def add_product(name: str, schedule: dict[date, float]) -> None:
+    def add_product(
+        name: str,
+        schedule: dict[date, float],
+        physical_schedule: dict[date, float],
+    ) -> None:
         revenue_product_schedules[name] = dict(schedule)
+        quantity_product_schedules[name] = dict(physical_schedule)
         revenue_by_product[name] = sum(schedule.values())
         for month, value in schedule.items():
             revenue[month] += value
@@ -982,29 +1015,35 @@ def build_operating_model(x: dict, t: dict) -> dict:
     add_product("apartments", sales_schedule(
         n(apartment, "saleable"), n(x, "apartment_price_th") * 1000,
         sales_start, rve, share, residual, growth_pre, growth_post
-    ))
+    ), quantity_schedule(n(apartment, "saleable"), sales_start, rve, share, residual))
     add_product("ground_commercial", sales_schedule(
         n(commercial, "saleable"), n(x, "commercial_price_th") * 1000,
         sales_start, rve, share, residual, growth_pre, growth_post
-    ))
+    ), quantity_schedule(n(commercial, "saleable"), sales_start, rve, share, residual))
     add_product("underground_parking", sales_schedule(
         n(underground, "units"), n(x, "parking_price_th") * 1000,
         sales_start, rve, share, residual, 0.0075, 0.002
-    ))
+    ), quantity_schedule(n(underground, "units"), sales_start, rve, share, residual))
     add_product("storage", sales_schedule(
         n(storage, "units"), n(x, "storage_price_th") * 1000,
         sales_start, rve, share, residual, 0.0075, 0.002
-    ))
+    ), quantity_schedule(n(storage, "units"), sales_start, rve, share, residual))
 
     standalone_capex = {}
     if b(x, "offices_enabled"):
+        offices_sales_start = d(x["offices_sales_start"])
+        offices_rve = add_months(d(x["offices_start"]), int(n(x, "offices_months", 24)))
+        offices_share = n(x, "offices_share_before_rve_pct", 85) / 100
+        offices_residual = int(n(x, "offices_residual_months", 6))
         add_product("offices", sales_schedule(
             n(x, "offices_saleable_sqm"), n(x, "offices_price_th_per_sqm") * 1000,
-            d(x["offices_sales_start"]), add_months(d(x["offices_start"]), int(n(x, "offices_months", 24))),
-            n(x, "offices_share_before_rve_pct", 85) / 100,
-            int(n(x, "offices_residual_months", 6)),
+            offices_sales_start, offices_rve,
+            offices_share, offices_residual,
             n(x, "offices_growth_pre_pct", 1.5) / 100,
             n(x, "offices_growth_post_pct", 0.25) / 100,
+        ), quantity_schedule(
+            n(x, "offices_saleable_sqm"), offices_sales_start, offices_rve,
+            offices_share, offices_residual,
         ))
         standalone_capex["offices"] = n(x, "offices_gba_sqm") * n(x, "offices_cost_th_per_sqm") * 1000
     else:
@@ -1012,13 +1051,19 @@ def build_operating_model(x: dict, t: dict) -> dict:
         standalone_capex["offices"] = 0.0
 
     if b(x, "retail_enabled"):
+        retail_sales_start = d(x["retail_sales_start"])
+        retail_rve = add_months(d(x["retail_start"]), int(n(x, "retail_months", 24)))
+        retail_share = n(x, "retail_share_before_rve_pct", 85) / 100
+        retail_residual = int(n(x, "retail_residual_months", 6))
         add_product("standalone_retail", sales_schedule(
             n(x, "retail_saleable_sqm"), n(x, "retail_price_th_per_sqm") * 1000,
-            d(x["retail_sales_start"]), add_months(d(x["retail_start"]), int(n(x, "retail_months", 24))),
-            n(x, "retail_share_before_rve_pct", 85) / 100,
-            int(n(x, "retail_residual_months", 6)),
+            retail_sales_start, retail_rve,
+            retail_share, retail_residual,
             n(x, "retail_growth_pre_pct", 1.5) / 100,
             n(x, "retail_growth_post_pct", 0.25) / 100,
+        ), quantity_schedule(
+            n(x, "retail_saleable_sqm"), retail_sales_start, retail_rve,
+            retail_share, retail_residual,
         ))
         standalone_capex["standalone_retail"] = n(x, "retail_gba_sqm") * n(x, "retail_cost_th_per_sqm") * 1000
     else:
@@ -1027,13 +1072,18 @@ def build_operating_model(x: dict, t: dict) -> dict:
 
     if b(x, "above_parking_enabled"):
         above_parking_end = add_months(d(x["above_parking_start"]), int(n(x, "above_parking_months", 18)))
+        above_parking_sales_start = d(x["above_parking_sales_start"])
+        above_parking_share = n(x, "above_parking_share_before_rve_pct", 85) / 100
+        above_parking_residual = int(n(x, "above_parking_residual_months", 6))
         add_product("above_parking", sales_schedule(
             n(x, "above_parking_spaces"), n(x, "above_parking_price_mln_per_space") * 1_000_000,
-            d(x["above_parking_sales_start"]), above_parking_end,
-            n(x, "above_parking_share_before_rve_pct", 85) / 100,
-            int(n(x, "above_parking_residual_months", 6)),
+            above_parking_sales_start, above_parking_end,
+            above_parking_share, above_parking_residual,
             n(x, "above_parking_growth_pre_pct", 0.75) / 100,
             n(x, "above_parking_growth_post_pct", 0.2) / 100,
+        ), quantity_schedule(
+            n(x, "above_parking_spaces"), above_parking_sales_start, above_parking_end,
+            above_parking_share, above_parking_residual,
         ))
         standalone_capex["above_parking"] = n(x, "above_parking_spaces") * n(x, "above_parking_cost_mln_per_space") * 1_000_000
     else:
@@ -1204,6 +1254,13 @@ def build_operating_model(x: dict, t: dict) -> dict:
             * cost_multiplier
         )
 
+    # A standalone KRT object may finish after the residential phase. Keep it in
+    # the financing, tax and cash-flow horizon instead of only adding its revenue
+    # to the project total.
+    dated_flows = list(revenue) + list(capex) + list(operating)
+    if dated_flows:
+        end = max(end, max(dated_flows))
+
     # Land/VRI is included in project investment CAPEX but is not automatically debt-funded.
     # This follows the current credit model more closely: the bridge/PF funding base is project construction cash needs.
     debt_capex = dict(capex)
@@ -1220,6 +1277,7 @@ def build_operating_model(x: dict, t: dict) -> dict:
         "revenue": dict(revenue),
         "revenue_by_product": revenue_by_product,
         "revenue_product_schedules": revenue_product_schedules,
+        "quantity_product_schedules": quantity_product_schedules,
         "capex": dict(capex),
         "debt_capex": debt_capex,
         "operating": dict(operating),
@@ -1437,7 +1495,114 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
         + result["pf_limit_fee"] + result["pf_reservation_fee"]
     )
     profit_before_tax = total_revenue - total_capex - commercial_costs - financing_cost
-    profit_tax = max(profit_before_tax, 0.0) * n(x, "profit_tax_pct", 25) / 100
+
+    # Profit tax follows the workbook's cumulative realization method.
+    # Core products share one residual cost pool; every standalone KRT object
+    # recognizes its own construction cost by physical m2 / parking spaces sold.
+    core_products = (
+        "apartments", "ground_commercial", "underground_parking", "storage"
+    )
+    krt_products = ("offices", "standalone_retail", "above_parking")
+    product_costs = {
+        "offices": op["capex_amounts"].get("offices", 0.0),
+        "standalone_retail": op["capex_amounts"].get("standalone_retail", 0.0),
+        "above_parking": op["capex_amounts"].get("above_parking", 0.0),
+    }
+    core_cost = max(
+        total_capex + commercial_costs - sum(product_costs.values()), 0.0
+    )
+    tax_cost_by_product = {"core": core_cost, **product_costs}
+
+    revenue_schedules = op.get("revenue_product_schedules", {})
+    quantity_schedules = op.get("quantity_product_schedules", {})
+    tax_margin_schedules: dict[str, dict[date, float]] = {}
+
+    core_quantity_total = sum(
+        sum(quantity_schedules.get(key, {}).values()) for key in core_products
+    )
+    core_months = set()
+    for key in core_products:
+        core_months.update(revenue_schedules.get(key, {}))
+        core_months.update(quantity_schedules.get(key, {}))
+    core_margin: dict[date, float] = {}
+    for month in core_months:
+        revenue_month = sum(
+            revenue_schedules.get(key, {}).get(month, 0.0) for key in core_products
+        )
+        quantity_month = sum(
+            quantity_schedules.get(key, {}).get(month, 0.0) for key in core_products
+        )
+        recognized_cost = (
+            core_cost * quantity_month / core_quantity_total
+            if core_quantity_total else 0.0
+        )
+        core_margin[month] = revenue_month - recognized_cost
+    if core_cost and not core_quantity_total:
+        core_margin[rve] = core_margin.get(rve, 0.0) - core_cost
+    tax_margin_schedules["core"] = core_margin
+
+    for key in krt_products:
+        quantity_total = sum(quantity_schedules.get(key, {}).values())
+        unit_cost = product_costs[key] / quantity_total if quantity_total else 0.0
+        product_months = set(revenue_schedules.get(key, {})) | set(quantity_schedules.get(key, {}))
+        tax_margin_schedules[key] = {
+            month: (
+                revenue_schedules.get(key, {}).get(month, 0.0)
+                - quantity_schedules.get(key, {}).get(month, 0.0) * unit_cost
+            )
+            for month in product_months
+        }
+
+    tax_margin_by_month: dict[date, float] = defaultdict(float)
+    tax_margin_by_product = {}
+    for key, schedule in tax_margin_schedules.items():
+        tax_margin_by_product[key] = sum(schedule.values())
+        for month, value in schedule.items():
+            tax_margin_by_month[month] += value
+
+    # Financing deductions are recognized when paid. The bridge and PF setup
+    # fees are dated separately because they are not included in monthly rows.
+    financing_deductions: dict[date, float] = defaultdict(float)
+    for row in result["rows"]:
+        financing_deductions[d(row["month"])] += float(row.get("interest_payment", 0.0) or 0.0)
+    financing_deductions[project_start] += result["bridge_fee"]
+    financing_deductions[permit] += result["pf_reservation_fee"]
+
+    # Reconcile rounding and any residual accrued amount to the final period so
+    # the schedule equals the project's reported interest and fee total exactly.
+    financing_reconciliation = financing_cost - sum(financing_deductions.values())
+    if abs(financing_reconciliation) > 0.01:
+        financing_deductions[end] += financing_reconciliation
+
+    tax_rate = n(x, "profit_tax_pct", 25) / 100
+    cumulative_margin = cumulative_financing = tax_paid = 0.0
+    profit_tax_schedule: dict[date, float] = {}
+    tax_rows = []
+    row_by_month = {d(row["month"]): row for row in result["rows"]}
+    for month in months:
+        margin_month = tax_margin_by_month.get(month, 0.0)
+        financing_month = financing_deductions.get(month, 0.0)
+        cumulative_margin += margin_month
+        cumulative_financing += financing_month
+        taxable_profit_cumulative = max(cumulative_margin - cumulative_financing, 0.0)
+        tax_month = 0.0
+        if month >= rve:
+            tax_month = max(taxable_profit_cumulative * tax_rate - tax_paid, 0.0)
+        tax_paid += tax_month
+        profit_tax_schedule[month] = tax_month
+        if month in row_by_month:
+            row_by_month[month]["taxable_margin"] = margin_month
+            row_by_month[month]["financing_tax_deduction"] = financing_month
+            row_by_month[month]["taxable_profit_cumulative"] = taxable_profit_cumulative
+            row_by_month[month]["profit_tax"] = tax_month
+        tax_rows.append({
+            "month": month.isoformat(),
+            "margin": margin_month,
+            "financing_deduction": financing_month,
+            "taxable_profit_cumulative": taxable_profit_cumulative,
+            "profit_tax": tax_month,
+        })
+    profit_tax = sum(profit_tax_schedule.values())
 
     # LLCR methodology mirrors the current workbook presentation:
     # numerator = project receipts - operating/tax - investment + PF inflow.
@@ -1455,6 +1620,14 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
     result.update({
         "financing_cost": financing_cost,
         "profit_tax": profit_tax,
+        "profit_tax_schedule": {
+            month.isoformat(): value for month, value in profit_tax_schedule.items()
+        },
+        "tax_rows": tax_rows,
+        "tax_margin_by_product": tax_margin_by_product,
+        "tax_cost_by_product": tax_cost_by_product,
+        "financing_tax_deductions": sum(financing_deductions.values()),
+        "financing_tax_reconciliation": financing_reconciliation,
         "profit_before_tax": profit_before_tax,
         "llcr": llcr,
         "llcr_numerator": llcr_numerator,
@@ -1666,8 +1839,10 @@ def calculate(req: CalcRequest) -> dict:
         pf_draw = float(fr.get("pf_draw", 0.0) or 0.0)
         pf_repay = float(fr.get("pf_repayment", 0.0) or 0.0)
         int_pay = float(fr.get("interest_payment", 0.0) or 0.0)
-        fees = float(fr.get("limit_fee", 0.0) or 0.0)
-        tax = fin["profit_tax"] if month == op["end"] else 0.0
+        # Limit fees are capitalized into interest payable inside the financing
+        # engine and therefore already included in interest_payment when paid.
+        fees = 0.0
+        tax = float(fr.get("profit_tax", 0.0) or 0.0)
         project_cf.append(revenue_m - capex_m - opex_m - int_pay - fees - tax)
         equity_cf.append(
             revenue_m - capex_m - opex_m - int_pay - fees - tax
@@ -1896,18 +2071,23 @@ def calculate(req: CalcRequest) -> dict:
             "months": [month.isoformat() for month in timeline],
             "project": project_cf,
             "equity": equity_cf,
+            "profit_tax": [
+                float(row_by_month.get(month, {}).get("profit_tax", 0.0) or 0.0)
+                for month in timeline
+            ],
         },
         "excel_control": EXCEL_CONTROL,
         "notes": {
             "llcr": "LLCR рассчитан по структуре действующего листа LLCR: поступления минус операционные/инвестиционные расходы плюс ПФ, делённые на ПФ и стоимость долга.",
             "finance": "Помесячная логика БРИДЖ/ПФ/эскроу перенесена в код. До окончательной замены Excel требуется контрольная сверка нескольких сценариев по месяцам.",
+            "tax": "Налог на прибыль начисляется накопительно не ранее РВЭ: маржа реализованных основных продуктов и отдельных объектов КРТ минус выплаченные проценты и комиссии.",
         },
     }
 
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "version": "0.8.4"}
+    return {"status": "ok", "version": "0.12.3"}
 
 
 @app.get("/defaults")
@@ -2082,7 +2262,9 @@ def _aggregate_finance(results: list[dict[str, Any]]) -> dict[str, Any]:
         "bridge_draw", "bridge_repayment", "bridge_interest", "bridge_capitalization",
         "bridge_balance", "pf_draw", "pf_repayment", "pf_interest",
         "pf_interest_capitalization", "pf_balance", "escrow", "limit_fee",
-        "interest_payment", "revenue", "capex", "operating",
+        "interest_payment", "profit_tax", "taxable_margin",
+        "financing_tax_deduction", "taxable_profit_cumulative",
+        "revenue", "capex", "operating",
     )
     source_rows: dict[tuple[int, str], dict[str, Any]] = {}
     for ri, result in enumerate(results):
@@ -2172,6 +2354,15 @@ def _aggregate_finance(results: list[dict[str, Any]]) -> dict[str, Any]:
         "total_capex": sum(f["total_capex"] for f in fs),
         "commercial_costs": sum(f["commercial_costs"] for f in fs),
         "profit_tax": sum(f["profit_tax"] for f in fs),
+        "tax_margin_by_product": {
+            key: sum(float((f.get("tax_margin_by_product") or {}).get(key, 0.0) or 0.0) for f in fs)
+            for key in ("core", "offices", "standalone_retail", "above_parking")
+        },
+        "tax_cost_by_product": {
+            key: sum(float((f.get("tax_cost_by_product") or {}).get(key, 0.0) or 0.0) for f in fs)
+            for key in ("core", "offices", "standalone_retail", "above_parking")
+        },
+        "financing_tax_deductions": sum(float(f.get("financing_tax_deductions", 0.0) or 0.0) for f in fs),
         "profit_before_tax": sum(f["profit_before_tax"] for f in fs),
         "llcr_numerator": llcr_num,
         "llcr_denominator": llcr_den,
@@ -2229,6 +2420,10 @@ def _consolidate_phase_results(
 
     master_start = d(master_inputs.get("project_start", results[0]["dates"]["project_start"]))
     cf_months, project_cf, equity_cf = _combine_cashflows(results, master_start)
+    tax_by_month = {
+        d(row["month"]): float(row.get("profit_tax", 0.0) or 0.0)
+        for row in finance["rows"]
+    }
     discount_rate = n(master_inputs, "discount_rate_pct", 20) / 100
     npv = _monthly_npv(project_cf, discount_rate) if project_cf else 0.0
     irr_equity = _monthly_irr(equity_cf) if equity_cf else None
@@ -2414,11 +2609,12 @@ def _consolidate_phase_results(
         "cashflow": {
             "months": [m.isoformat() for m in cf_months],
             "project": project_cf, "equity": equity_cf,
+            "profit_tax": [tax_by_month.get(m, 0.0) for m in cf_months],
         },
         "comparison": comparison,
         "excel_control": EXCEL_CONTROL,
         "notes": {
-            "phasing": "Атомарный одноочередный движок не изменён. Очередность — внешняя надстройка: отдельные ТЭП, сроки, 8% годовая инфляция затрат, отдельная 8% годовая инфляция стартовой цены продажи и дискретные объекты.",
+            "phasing": "Очередность — внешняя надстройка над единым одноочередным движком: отдельные ТЭП, сроки, инфляция затрат, инфляция стартовой цены продажи и дискретные объекты.",
             "sales": "У многоочередного проекта нет единого РВЭ: темп продаж показывается отдельно по каждой очереди.",
             "finance": "О1 по умолчанию несёт покупку, ВРИ и повышенную раннюю нагрузку. ПФ пока считается отдельным атомарным расчётом каждой очереди; банковский общий Bridge/PF waterfall требует отдельной финальной сверки.",
         },
@@ -2718,6 +2914,11 @@ _PLATO_METHODOLOGY = [
         "id": "COST_DEFINITION",
         "topic": "expenses",
         "rule": "Различать строительную себестоимость на м² ГНС и полную себестоимость на продаваемый м², включающую землю/ВРИ, социалку, управление, коммерческие расходы, финансирование и налог.",
+    },
+    {
+        "id": "PROFIT_TAX_BY_PRODUCT",
+        "topic": "expenses",
+        "rule": "Налог на прибыль считать накопительно не ранее РВЭ: маржа реализованных основных продуктов плюс отдельная маржа МФОЦ, ОСЗ и наземного паркинга по физически реализованным м²/местам, минус выплаченные проценты и банковские комиссии. Маржу каждого объекта КРТ включать в базу один раз.",
     },
     {
         "id": "GLAVAPU",
@@ -3076,6 +3277,35 @@ def _tool_explain_metric(
         base["total_capex_mln"] = round(float(s.get("capex", 0) or 0) / 1e6, 2)
         return base
 
+    if metric == "profit_tax":
+        margin_by_product = f.get("tax_margin_by_product") or {}
+        cost_by_product = f.get("tax_cost_by_product") or {}
+        financing_raw = f.get("financing_tax_deductions") or 0.0
+        financing_total = (
+            sum(float(v or 0) for v in financing_raw.values())
+            if isinstance(financing_raw, dict)
+            else float(financing_raw or 0)
+        )
+        base.update({
+            "formula": "Налог = MAX(накопленная маржа продуктов - накопленные расходы финансирования, 0) × ставка - ранее уплаченный налог; не ранее РВЭ",
+            "rate_pct": round(n(req.inputs, "profit_tax_pct", 25), 3),
+            "margin_by_product_mln": _mln_map(margin_by_product),
+            "recognized_cost_by_product_mln": _mln_map(cost_by_product),
+            "financing_deductions_mln": round(financing_total / 1e6, 2),
+            "tax_base_before_losses_mln": round(
+                (sum(float(v or 0) for v in margin_by_product.values())
+                 - financing_total) / 1e6,
+                2,
+            ),
+            "profit_tax_mln": round(float(f.get("profit_tax", 0) or 0) / 1e6, 2),
+            "payments": [
+                {"month": row.get("month"), "profit_tax_mln": round(float(row.get("profit_tax", 0) or 0) / 1e6, 2)}
+                for row in (f.get("rows") or [])
+                if float(row.get("profit_tax", 0) or 0) > 0
+            ],
+        })
+        return base
+
     if metric == "net_profit":
         base.update({
             "formula": "Чистая прибыль = Выручка - CAPEX - Маркетинг/продажи - Проценты/комиссии - Налог",
@@ -3157,6 +3387,17 @@ def _tool_trace_metric(
             "numerator / denominator → LLCR",
         ]
         trace["calculation"] = explanation
+        return trace
+
+    if metric == "profit_tax":
+        trace["source_chain"] = [
+            "Реализованный физический объём каждого продукта",
+            "Выручка продукта минус признанная себестоимость его реализованного объёма",
+            "Сумма маржи жилья, коммерции, кладовых, подземного паркинга и объектов КРТ",
+            "Минус фактически признанные проценты и банковские комиссии",
+            "Накопленная налоговая база после РВЭ минус ранее уплаченный налог",
+        ]
+        trace["details"] = _tool_explain_metric(req, bundle, "profit_tax", scope)
         return trace
 
     if metric == "revenue":
@@ -4293,7 +4534,7 @@ _AGENT_TOOLS = [
             "properties": {
                 "metric": {
                     "type": "string",
-                    "enum": ["llcr", "expense_structure", "revenue", "capex", "net_profit", "unit_cost", "financing", "tep"],
+                    "enum": ["llcr", "expense_structure", "revenue", "capex", "profit_tax", "net_profit", "unit_cost", "financing", "tep"],
                 },
                 "scope": {
                     "type": "string",
@@ -4314,7 +4555,7 @@ _AGENT_TOOLS = [
             "properties": {
                 "metric": {
                     "type": "string",
-                    "enum": ["llcr", "revenue", "capex", "net_profit", "full_cost", "construction_cost", "commercial_area", "parking", "social", "purchase_price"],
+                    "enum": ["llcr", "revenue", "capex", "profit_tax", "net_profit", "full_cost", "construction_cost", "commercial_area", "parking", "social", "purchase_price"],
                 },
                 "scope": {
                     "type": "string",
@@ -4608,7 +4849,7 @@ def _openai_responses_request(payload: dict[str, Any]) -> dict[str, Any]:
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
-            "User-Agent": "PLATO-Development-Model/0.12.2",
+            "User-Agent": "PLATO-Development-Model/0.12.3",
         },
         method="POST",
     )
@@ -5038,7 +5279,7 @@ tfoot th{border-top:2px solid #111;color:#111;background:#fff}
 <div class="shell">
   <div class="brandbar"><img src="data:image/webp;base64,UklGRkQfAABXRUJQVlA4IDgfAADw2wCdASqQBuUAPlEokUWjoqIRSg08OAUEtLd8Bm4LvaDeIgcn+HIR46WTKOC9Gf3bth/t39s/cD+2f9vudfMn65+z/7efaphb7M9Sn499p/2X9k/bT8mfyH/Ld5/AC/Hf53/ifyd/sXDHbh5gXtt9X/0n91/Jr6QZmv2VqA/mrxmFADyk/5j/vf3j/R/uv7cfo7/x/5n4C/5d/av+p+d/xbf/T23fsX//fdI/Wv/7j2GpthKGKJYCQF5ahiiWAkBPyYnEwOOJtbMD3CrKVFRd5NbWIYaD3m8cTa2kPbwEA2ZIe2KHKWIIE2to5AZYje8C8tQxRLASAvLUHstWEuOJtbMD261fzzZbHpWhDo3zy3qM7adn8ZOAqL8P9jJ2ug8cTazQDJWcBohiiIlFKCriw2C+iJWGGK9zJX+FpEjPgFtvxhf13uougBg79kMh7zeOJtbSI/e0EJjCwrW1T7Bt+utZEjPn7YxBgd6IlgCh8vUCUJCqAKuLDX+PGlk61LALEP/ElHQQJwFjK+ar+/4DUg+frZhm11TNbzbuHqu2DSg+4mO21TcKKY/oWX9M2TOpzHy6PEokY8ixc62NB7zcQ2NTW0iRhwGrg28Hu3AuOuDS67jwdnUqJq/w5sdZn1pEjQOOJs2PmiwTj8BrMfZhDU8dTt9yG2intwWlmgb3ebxxM+HxvLrPINjWRqy/4pjv+yqr2BL+vqsg94HHExxnjiQUXuDCNqJuN9gWGr+CgBiGwHTDn8iRoHG2+IZ0HvN4Ik4fiPPgBRTHZ3xzB1ZpjhI+Nt5uISr0zXpyuwk+RI0DjXeQnrNjaAUcjBPK9MB8qDurYmjBvA8qdKWxoPebw1+cl8W0iRntiEsqxXSjIDRCLBh9iShbSJGJGmz7JKT0raro0S9cRK01zag2+2kSNA4a5vLrSJGFq+zMcUwa3S2GduE26clmMurtnPP1WiqA4i2UJaxEaBxxMmlO4G3tnbTfyXKXCTMhRmBKIDR0w/tXtEQhI7ktA44m1nkGN5dZ44mR9AmKeuq+9f/5EjQOOHkPkes5VV8hUmsCtCqB67sCbW0iRjyLFzrYzH7v+aok0P2TudrIifI5tAzvuwEtEeodmw2H01njibOeBa4rXTuR5hwMhE+UYk7cUDDzQCy2eWBGJP3xSz62NB7qrpXoQTa2jbvS4LeTCRgkaBxxNo2GbzCozrgJGsqPVM8KN7SJGgcbb4hnQe5Zpa2D84v3kJvv4niMTpgHw35kCB2gIyIJaRy6tpEgE/kWwikGzQDOtzNW6+4e4y8vu4CP3ETTJfbpeix5JXW+A3YSfIkY8vftCCbW0brBd8JM6NMrzd73BqfIkaBwVmOdV2VFfFSp8qZjESc93m8cTazxiUsZ1dLJcRN8qybxK4IRoHGxJysLm58MW96AM8Aa929U0ig2sg0EKMtKY4sbyqXfTZCJIC2hqCZ5iF/PNvQQ6tDwud3azxxM4qxDOg95vGu+sSEKoFtUVsWWHF+25vHE2ssT4kzccRYeLJZHOCjfikYiTnu83jibWeMSljJMGLto1CgAQmV0u7XyJGgcFY4KaYD3XcqMhd4ii8crXDlA25WN7YwlA77zDdB7zeNewBXP7Vm70vUGIz8o1tIfmbZfx4CbW0da9umgofaaWuM0Qu37DpFSqVd0oV082VZ6RfG4n/9CYF3R/vxH3v/XIAo3LQcZ6d5oaOPQD6/5vHE2tlpVrxqvNYGb8SHg9atk+1uTw/3ontpEjQOCg6skDBKd3eKPr9gG6Urgcferb2AXxnwCM0eJGbxxNnAJIx2HjkcfOcEwZ2DbCKfIdZFU0RlAPXZJJp8zwE2tpEtgH+wwvDkvmeYo3c1dcGrBUZbr/N2mPJKuaDa5JHMBtTL2TLDOyOYc2FIQkzW0iRoHHE2tpEjQOOJtbt4jQOOJtbSJGgccTa2kSNA5Bsa2kSNA44m1tIkaBxxNraeUaBxxNraRICm+tAolgJAXlqGKJYCQF5ahiiWAkBeWoYolgJAXlqGKJYCQF5ahiiWAkBeWoYolgJAXlqGKJYCQF5ahiiWAkBeWoYolgJAXlqGKJYCQF5ahihlETI1suTEShbSJGgccTa2kSNA44m1tIkaBxxNraRI0DjibW0iRoHHE2tpEjQOOJtbSJGgccTa2kSMkum9NLdU4VcWGwX0RLASAvLUMUSwEgLy1DFEsBIC8tQxRLASAvLUMUSwEgLy1DFEsBIC8tQxRLASAvLUMUSwEgLy1DFEsBIC8tQxRLASAvLUMUSwB/zXeRlaCbW0iRoHHE2tpEjQOOJtbSJGgccTa2kSNA44m1tIkaBxxNraRI0DjibW0iRoHHE2tpEjQONcAAP78nPZ1QxDwjw8Ry/mKg/5QcLH1Y1qOWumDn7BujG+vuKMLdeg9UPp8dtXEOVKJ6xYGecPAsjHypoSNzSDJCmntzcd3dkjmsK1JJ8N4dfrcIUOyU+Gluoh7O6iTQvDYQJ5WX/mftkPc7pWw0jE9jo5JYLwf8xZeH20EkujDFdLY5PVoXprKqj/g1vr3VCrnbfxeWxXH/rBmmxh8LZ6I40bsXBjmyh+mkKmkh9lvjsZDVBGr0EXA9Xe8zlAr5L4p6xDyt5CC/GJiukyUs6fKXiPKI7nwTActLsx9SH3exHVY22RZw4MWtn4Q1k/Vh98yOWgJMmp0r+EBb/Y3zhW4phZaifyQv2xFuIsXHou7s0BZm1VHvler2UYI2efL/wdxgYLBg7yEDYdepdMaIj50n32I69S/zdWVSXtd9t7COM7pOIMKQLwjgH2NUYXUSDX3J94/lyc/uo2P8TH8GtyBaoWU3BHPIQKWyQxB3uuOQowDAZTF8Ooai7Mllj/fNUET4MzWxiwMcR551J4G2h6P5frfSzrX5mRcjFF9W+2LoBfuf3FL0c9WpSaFmDKrWYIM4JByJJk9MsJotWoSyLi8Fu8tnGs7qjEZKwMNAQirfjS6b1Xtm+xhVGBP9N0qbqB2/3HhvpMpt9fmhIbdtTFoQQDl4Se+weBtSmtUCF+01wshJVthNJr/BLCKOEvDLzkG9hGXdvD00QRVuL2V+x+DMNlnAAHljqhlucxOKN8DPQbJsy4MyKOhLBcEuM/2ZOCenwaOZ2kC1TKKzGNP+RXpIxaZWK6XSQL5vccKuKp/iX4Efeyydm0gWDYDOyblA67hDe8LsUsVIpakj3aXpu0lnscnyCxBTvslmPMdQHpvrxfspj3HEu3xzPUgW9yMLt7EL5IeTUu9STiIyvucoKq/y9B3MvRbPDedabHVYbCJmdeJ2i9UTLPRKvlPzcF8yzZ7zpGOPr0yvTz/y6tUYbmiZdrT7YNY13mgYmCP/LbsiiI957uaE9LzkO7xC+C5Zt0UaTVouo+/+d+Mf5Rrjb6BWmEi5lAfunZK5gbxjQaPMqRgMXWMo0VKVvtnXERxhk8dlXn0Zs+EY4wpp5i8S8G1SgFKVwoWO3NBE4lYZ9MEVMf7+6hnP2aTB7U1QQrDErAgdLp1Qi5QN4H6+hESLBOcAMdphWsH0JP5Y/pCrAzarcPQqhSE7gdUvr9nd/dM4TxQZZ9OCAiMuVSRsyDU5b4LawH719opJTVRVoDV3+mFWeKHtENhmgBCeSuZwtAuNOAg5sgnypCdLC1yZ5ZnwfRk376qbzLi4/m5NhAOuiFxPN4R/nLoL0obdKDGvVQBwcnw9ltLd3f6OLMFHvMrYDE+w+lX1acm+0zZdGNmFVYEadQl+SYdzEe7IyPlt91SmmXgD3kgFlQAs9TdeT/wh5XJX1eLD/ADlYdobNbil7dVRIV0R9DwPv7wymKGW2NlRF/GJlmUYs+fACm65WB1bL6d6KsBYFhL1zacVQ+vZ1vvWqpmug3oYCMC+TIsBkhaUntBLLOqyMayZUc/Gbw54OmXZs5sqQ4jDIGDc7rJXRrajL044M/7mp94y5R3c2QxgaZLXOonGfJnPQs2xEmUrfIkf3NRf/5SM4TDqeswCSvnoU7cLXJ1kbI88jZmle+4Wh8GdJ3Ij92joRodfl7e+nP/ZKM1QMhcCYkEuE/bMPx3sJdyBB4zTF9bvZsfbDQ0fR4v5G63yR733Q/t0EjWA9xwG6IWMo/bGYi81hTrdA/ienItm7mV+gaVRwVNEFhxvYANqtxL0IvS+RiXNGk/akp9uMNkCfFij0Apc6qST8xEW3GoecJUXh4+4EQct2RI9LRLk7psZJ8uYzd4Q3+4d+eBrCLDgxbMNK1Q9nZkd9Acje2t5WFO5yuwsYQ6TDgfd7+eH2jYXzrEi48tjcMNwtLOvP672EDSTjMKzyqdmkW9fkKIEFY++mQf8zxz81EFdMwiZIDpbKeVMgetnF7+wAzsxYBnZafrBLAfTnI2XRV9VkUNDFGcZt7/1+eTZNgKgm5qC+c/gQDIxbrs+lnuCfCYQBWrR/VUi0r2OUG8lAfyMjXA3F/bGEr0sMiHfniPwxQrpTiR7a5r9jHNH0ydj5HiyphEgp9UISgCl2khWEkKrLyX5uD6XCDzFcuADknKLtEkr+Bvs5DoZnk8kid6vNXK4zQyvomJnoRlXYXY9jYsxHlnA9LUjHeGjgoHkRtAvozajP/uHYSRvA8K69KWU9lQEvLESTPDD4TJ1IDZ1KdoU3EZ5NauZzxi2KUb40QNkJvkDKFjw/S8zbVew8xXJO+kxtU2Y4aTmiRTMUg7xooeW6VBurvYxr04mCxVVzxKyHFhn4ZRYARog9vC2hON7ELzBdiIRwoq7ohrD4k+0sUi7CxdYO0AF2nYgfzEP4guT2KinYp5If1DKmfbnnwkpsRxK/n2CknjUwm791zb6qMCHH5Okh8kORCcZHJT22oqobH7ZQj3ywiLxh7NWfFESQEuGUs9uftenSE2MFiwJAccgdkaEVhGW+f1qgmFBohziaIjfZccpF2PzapYVcRlGjdD89nyyAkKa0kbaEPEaG63va1NqohfB0Ijz1vUadEZKoF0Z7XlKMWARifMA5BwGZ2Gi+EXppeAcxYvCHAbXVzdlQxw9j2C1JOZptepkRP0n2wxPcrHuus/C9Ek7NR8NxTeGV4eecIIhmk+Q0+9OGfKdMRQpCSKURZ91cFiEOi26jhhRo1sn4JbK/CNKeMuSxOHSUDFSCVjD+rl4dB2BsnjX4+0D9wqtW6hyHC5e/KK8JurCqU1HY//lM7yovFPss3Czeq6RDLU5N5G8sWtTR1SmlBtb4ZswxmfXgPh1XvQKR8IXlF0pyQGBeky7qCqAYOH7rGzyuVEWwbIGqhkSb9Rhfl28akoW0xUlqOtriOa5N+ejADL5ORrVv0FJNxURnBzb6OUEy9o65LpaF+cFWV1AWyhooaE6H/F6WrgWZVK4FaH5VG016fBWjNRMlia+IyO471X9TS2BIctVwj60pNdHQ+plibpX3aGJwo8J2oOq8c0/fbPUdL5tQyfAB13yk3iTI995udExSmrq2lhHVz/4oaXhHDIKVCBE68KHTQH+T3MhcjXrSyLlTN5ahrM3fT9XQZezYlSm8bB8KvTeSpjf9cQR1kb3g6kYFSkbCQUkOuzIELANUbXDcTHYCvpJQKrDMtD3mH6tqtEFgHUpYq06O18AO6uhfpLV+mRPxJMDSwv9L2AxYfzDH6nOEw7BuIT303QwXPItS2KQ6MsdqTWNixH6QoKueWyzjlmuyFiezfJDDduSgQpKaAmOcAWmZbdY43x2llqRxmUcXVcAdakTUFfvoXnPzEO+vAm5iwIPY99neW2776tCDNpoAaS/JW1j/DvtvcIwECFBpB6MeWzB/nDoUfP5u8tDMZtAB5TCoAMSZH522i+DtakTgXgqE5pShi0+BFAhopjtPan+PIlOAWrqGeWLRGnVPzY/DCxlVZBFbN9m2yX63uD4XPILqDU9Nr7oz2dEIlAbj8ljQ3IHhAqfgqfN7++G99S8t56U4uOarjQyw/brl0yo2y6A5363xCoFNgWt84bHBQeLgAU8fBH1TovVYyyyqj/mIkhQb+jOtgXxQ5rfZG2kYoQIjKqbIw3qeCGpWZf3o77lw9dd9CGy6dmyofMhbPh7mOQdlRZZ03g2TF+09rfkT2qAz9C9tvvMa15I0/2uAj/tU3pm8XA/NJif/eEigp/03+5onvT4S0y9P8EVY0InmVVew+8/3iZJdg+VHpDcd3wNCmGdtlokb2UhZG4O2NHOoQvraLeruujhKbuZxXgRZXEcN72JZaLRwFK50ZEDD2iIowZ0FSYR/mC7ZCOdA9pr81057hwL/yH6KZZTKzUO+hQIAZIxRJEz25PnRCR94grNzO3K6oKMbI6lV45NYoTI63/wtc7G6HkmqhxyYxRQgikm77cN7cELvH+D5cH+MIlb218tHu96W0e/WwaZBIffTdECIQHIiqf2I0HXAGLs9H13/26YzFHA+pVIIPxAw48WrgoB8wfVIFkE8ZHVkxaXOtNEGpjS26pKCogl6mDWTj0gc12Uuk4wxLhkifbVLZK290VIOtRQundIJyT0UzBxQKztOWl9QCPogRg0xA47aaraODmAXhqFqIrjg0n16h9AuvP+QB1pEQTOHBCXeL+Y7uZTyMXjLz5xkkSlySKXrKRMMA03GKAppLr97zPGCbzIC6vmeNvKGn+ik7oNmgdVM/UHBTsIUJr5UFVz7ZoXZ+nEgQOKeEWuFDy3RNgONmja9WGLUiHTJk91r+2OH+xjHS/jkKBxqps6ncJv6FCnhfZNnZDVA/RdSw0TQaH11TBXUDwJtvm1QREIRhtgzled2NvZl736QfL2JdhXOKUjxlig0GQ174mCzamBEXidUgZAZtHx/8exVfVwoWt+IFctD0LTNpQhio/3Cm5Grg1tvBMKPyBatZPjM/pIYiNula9KnQDXseNfC53Pghug999kdrR0XzLuEIj3nS3BzpLU6cCqhULp55jJ7AUP4Cn6MkPuOo1jfNPWWEIuJgNqVC1YE47VNI4lk/PVc04IAHtx0Srxn9NtyxOI3MYaGzI9FGh+nheqTYtua/9//PJYgbjmUTM0VyNCXwkK9VEY7d5XQImcfQG2jAxiXyqzXX4KAikGcaNKJTLfDZw3xWGproTtkQS5uwuZYAOZygDEBayMjhdUN9VQCKi2QAWo5leOi0JzucAdHEK9jga1tFDemGH6Vnz9dVYcurgySKjXcpJp6XveuAbJ65YeVd/SqyZpOs6kWh//NAq14BMmDnnRcFXFG4ITR9C1kO9HLyx7theLUAmARj8jN8TrU2yJwgVoFA/cFqh3ugCqZArEIaNWCJEdX+RP2cC1ySCemrXfs+1FF6hHUaLMKRLrYDpLWygjIH7klkryieeb7gS28Nl3o1ockbUYr/CN5c5wySF/Qg4Ad2fDvuNTXjTF9thqoEu5kSawdiM98pTEcR4+uB+dzJ9cU9Ut09Yd+ccsI59jsBvWMV6xczlOm16lok2hhhJo5AGZZB/mbNgZoqsBS9pv9dDqg3UZkj+knY+9w02N+txnnX7JxvzA3xwZ4IeUU0l0xtlgOfId6jsMyjnaP8Ihkb/mWgwHbgZYQQZK/oDiMZLlNuU3OLjLmocdIX5pvpHoDH1x/oP3opBrzsvQ61MurPQwK84/eqCXsPXthFwrYjH/NnaGNpjlv6UHH8BPXF2wlw5mNo8HKsnoxWa/8Jdei75Nl7/EGVF5ljRzIh72jt/DvXb85PLvsEAOFmTsNE0OwY9ZBq0wpUWV9Nx5T5sUb7B6nZbOVJi9H1ZziVfjQCJRmkJFdJeZeMWq5xR4sSOUly9tIteAPHvV7kBiCQCXEY9HDOErIuFMS3D8XEWcAqY5wCsW7bT9AHGfZmAMeAg3kBC5t1crk5JLTKof2eYAHtZtebpHiy+cZmiDN3CiyRv+P1przggbcEqcayGa5m9cxqZbIBdOJ1L+yQbVCG3hGoMeB6HxKbEqVIWGFCQXxWdO7vZQ+8dccOLH+sUfPNmi/YSFhRv3LwFu/k89rOgQyVyJbdXDwsue9eW2fkv7ghjBJczQoBNM2K8fR9pVfPQSW9/enMwRzPJe0WKwO1LcbfveRDBuPcn9yBcZCZuTnmyVNOse6YyxNaqrm31joTh0+uJhIXv7I6uAj3dMfYkyrsDdDMPk+0yEW9z37MbHFU+wdk5AMnOHl06dj3eXbAG/AoED9/OlJzMKDjjhyDslHueiaZod634H9/PhD/+6vyuFTvgp3OSxLeKGgJgXPdrPUWmpLsHpEV0djL/JK1LrAf7DmtHxwZgmXMgnGis2SjW+RuE9iXmW/h2KNC1NmBoHo+y/g1hQGDQ6fxTJEDkdfQlQGsfFIQ4aM66F0qx+WYu56EXXjVSnLRLqaryZTHfViLiHMR4s83HRZDVyA/13h6y1J0CjIIeTyD0PISJhjS0pFn9wK3HgvUkNrHjBrqkPT+R7uTvUcYLAtOhQpdhdgUjII+XZ1XkNh2IMPvJjfjGnMBZjXWE/Lys7/WddP4uB9+Q/c3BhxQ1tZmLsOlekKC+SZ7rb4RGnNuwAYvRrXxufEL4hW+aRzb2isj5Yh23lnTod12ZP+dhgdO5G/eINXWNiKovtRdZZx5O3t/r6AevjBJDSl7P6vvvuqPajF9P2u6RpPsOU4XzXetvvaqm3/PfKtFiGEBhpA4TmT6PcLLHwHPQ3047497R3AAQHTggFSmtRWjLbTg6dREOtucQHLw+rWpAu0emVjy2ZV796UuILRjnPzA4JMl6xKNhQ6+B3AlfL6E576ZwZ3UdT5JtmupNFwwXkFnf8VUuz76t+AUuCQEF2XzMPdAgELFckKRWuMAf+DwmJekyOyk0ugQwlTk44VVUIWC+VRNSYvHOv4XvkBDdu2wTkVNMBY1BUAwCdCmlLxS190XGB5yvtlnZt+Sek+ozM0AHZNixYPU6ajENDgzcE3DTV22gsi1ErzinieIFC3f5qXHxMg+G1ip9FSkJgGtEtrOVORS9OEJYcl6nyyPcawWQwd2RHc4qNsR0RREIi7pwAT7mKBuvwHIOevYpSUYCrL/cUgdynUbWquIwoqjd/DoetQhJhQ10v4HMdbFvu0/jJlf6aMtVAtT9rqhfHahJlZyMUu+8pCP6RBppRmvunfqyPmUEUhrXHapPUZ34galUxSiWCEdLJQ50y5yBY5m2aHNcEbp8zLcxvW118eMNSLHM6jJCvagwAE50VHLXhcSh9wh/TAluBBAcKH0L//RpUrcGJG4xmg1IKQG6cVuvPH5E9OUBTDYquH39a3VDB08960i5A1QC9pHkJAb9CjdbHW5FzduFgDEeaWcCplUhEeYFE2k7TMKryj7Up1BSKsD+nHroIKISBJdlT1ULmgiNfDAY/LQ7rMSs5H5K3BKC1nTS5+iEyVaFYjmuNgcWG9dCYbwe9nAgz7xk8xtpdzt8SJdeTt82QNgUZhzYChkKwoE/COq8eYNt/+fLYoDCWpdF8U3zqW+Wia5ZCnDTG2ZaFK6XA9aNmQVAEXGpzIjkPmCswC8KTpztzl8/2zsztepjoVNg+6Z+yd4H2Mn7WlfjlP9A3LecnFRIHBNVP0NvOhz+m5gFZKf5lHt0Uck4SQcFY8pC8S6+RjqlgWtMIoUORm0U3vsT+A/5noFaY+l9ZMtNFkyD882iBgvPUKsWXAxfBEksBvxjfyd73B2I03PdsuoZUD+3pd9YtnN3trlzOGotuXgWw2U31axl5Iu+wiJFnYzFQgmwPmQEmAdbhQJ2cusoksnAG/mbN3UNq1UqSUZehHtGjIkHKBdPtSCZCmdXCMhhYX/mgozOt7vEOj2IIum76lDKXrO0YNfGT9B1flW7/EVW9B+vwri7FasmJlPYzqQ/I4VVtq7gsN+p5GCvMXlstg2uOkY+7f06IQRCHfAg8/qdxtl1oLux/HuV8swzyw4j1HTFT5W+NY934gnHVqIWFpGegHMbdSQgZj6iuRV9/MbKe3fQMfYIemG3iQ4I4bbqUicCeoi5zQr8EWgdK47xJIePK0NmXHqHJgk/rukdABlkHzYcTA8Cu2lqSFIy4WB1/mZs4ZgoTZcRJXtyg5YMaeByPKictFIzjfmRnK16BKPh3w+bRfj1AvfrF4l0fqv9wVS2a2XFrNbN0sbQ7y6ldDWdtVERQXYh3wkdalAukWtaQJFffdkUN1xSBwPFxYl4mquk5TO/ACvwTH4evOljf11t7GIV+VvFgNxmUu16SgVgZHs0SIPYlt/X3HyHcHr/VSgBjnBI32teiCQH4FyKgiAQIVpKxGE9+SCIxg++ZvYyyU5WWUgFy8zdjZOr73ThjTdOrqcK6TDdWMy1yKxffSP0lB+kV4/54QaqFS5g2qtisVDP+lPdA6emQN9D6rHAJve4wTHzBrblihhnphljnpRjbsOjxVlPZ2GIZ4AcRwGFfIeE895LErej1TZKcqCghZf9QYB7Og4J++EWqPoRBx/EDHRS8AeXKlVaWaTwPwyEcDLpOUJn7ivHvYnjIZaFdI4hgSkMbcNJwRgwv42nRkoists3+ZWtEcHYWuNUMStDYpDWC+u71ksb/8X2V6MpSge+XFpHmd9v6frcAAAAAFETvYvcKLo1PvKQ5m/HAkWaf+mGTX1fsAAAhOy4XkDy5/n4As6AAAAB2C6vaalqblgH0Z5sJPLhvL2MkuqwAAIDch6aogZ/3+AAAAAAAAA="><div class="brandline"></div></div>
   <div class="header">
-    <div class="title"><h1>Девелоперская инвестиционная модель</h1><p>v0.12.2 · ТЭП · экономика · БРИДЖ · проектное финансирование · эскроу · LLCR</p></div>
+    <div class="title"><h1>Девелоперская инвестиционная модель</h1><p>v0.12.3 · ТЭП · экономика · БРИДЖ · проектное финансирование · эскроу · LLCR</p></div>
     <div class="actions">
       <div class="scenario">Класс&nbsp;
         <select id="projectClassSelect" onchange="renderProjectClassPreview()" style="min-width:135px">
@@ -5289,8 +5530,14 @@ tfoot th{border-top:2px solid #111;color:#111;background:#fff}
       </div>
 
       <div class="card">
+        <div class="section-title">Налог на прибыль</div>
+        <table class="metric-table" id="taxTable"></table>
+        <div class="note">Маржа объектов КРТ признаётся по реализованным м² или машино-местам. Налог начисляется накопительно не ранее РВЭ после вычета выплаченных процентов и комиссий.</div>
+      </div>
+
+      <div class="card">
         <div class="section-title">Помесячное финансирование</div>
-        <div class="scroll"><table class="monthly"><thead><tr><th>Месяц</th><th>Ключевая</th><th>БРИДЖ</th><th>Ставка БРИДЖ</th><th>% БРИДЖ</th><th>ПФ</th><th>Эскроу</th><th>Покрытие</th><th>Ставка ПФ</th><th>% ПФ</th><th>Комиссия лимита</th><th>Погашение ПФ</th></tr></thead><tbody id="monthlyFinance"></tbody></table></div>
+        <div class="scroll"><table class="monthly"><thead><tr><th>Месяц</th><th>Ключевая</th><th>БРИДЖ</th><th>Ставка БРИДЖ</th><th>% БРИДЖ</th><th>ПФ</th><th>Эскроу</th><th>Покрытие</th><th>Ставка ПФ</th><th>% ПФ</th><th>Комиссия лимита</th><th>Погашение ПФ</th><th>Налог на прибыль</th></tr></thead><tbody id="monthlyFinance"></tbody></table></div>
       </div>
       <div class="note warning">LLCR остаётся расчётным показателем веб-движка до завершения помесячной сверки кредитного CF с актуальной Excel-моделью.</div>
     </div>
@@ -5346,6 +5593,11 @@ tfoot th{border-top:2px solid #111;color:#111;background:#fff}
           <div class="section-title">Финансирование</div>
           <table class="metric-table metric-compact" id="reportFinanceTable"></table>
         </div>
+      </div>
+
+      <div class="card">
+        <div class="section-title">Налоговая база по реализованным продуктам</div>
+        <table class="metric-table metric-compact" id="reportTaxTable"></table>
       </div>
 
       <div class="card">
@@ -6306,14 +6558,26 @@ function renderResult(){
   `<tr><th>Числитель LLCR</th><th>${money(f.llcr_numerator)}</th></tr>`+
   row('Основной долг ПФ',money(f.pf_draw_total))+
   row('Проценты и комиссии',money(f.reported_interest_and_fees))+
-  row('Корректировка переноса процентов БРИДЖ',`(${money(f.transferred_bridge_interest)})`)+
+ row('Корректировка переноса процентов БРИДЖ',`(${money(f.transferred_bridge_interest)})`)+
   `<tr><th>Знаменатель LLCR</th><th>${money(f.llcr_denominator)}</th></tr>`+
   `<tr><th>LLCR</th><th>${mult(f.llcr)}</th></tr>`;
+
+ const taxMargins=f.tax_margin_by_product||{};
+ const taxMarkup=
+  row('Маржа основных продуктов',money(taxMargins.core||0))+
+  row('Маржа МФОЦ / офисов',money(taxMargins.offices||0))+
+  row('Маржа ТЦ / ОСЗ',money(taxMargins.standalone_retail||0))+
+  row('Маржа наземного паркинга',money(taxMargins.above_parking||0))+
+  row('Вычет: проценты и банковские комиссии',`(${money(f.financing_tax_deductions||f.financing_cost||0)})`)+
+  `<tr><th>Итоговая прибыль до налога</th><th>${money(f.profit_before_tax)}</th></tr>`+
+  `<tr><th>Налог на прибыль</th><th>${money(f.profit_tax)}</th></tr>`;
+ taxTable.innerHTML=taxMarkup;
+ reportTaxTable.innerHTML=taxMarkup;
 
  renderFinanceChart(f.rows);
  monthlyFinance.innerHTML=f.rows.filter((_,i)=>i%1===0).map(x=>`<tr>
   <td>${x.month.slice(0,7)}</td><td>${pct(x.key_rate)}</td><td class="money">${mln(x.bridge_balance)}</td><td>${pct(x.bridge_rate)}</td><td>${mln(x.bridge_interest+x.bridge_capitalization)}</td>
-  <td class="money">${mln(x.pf_balance)}</td><td class="money">${mln(x.escrow)}</td><td>${mult(x.coverage)}</td><td>${pct(x.pf_rate)}</td><td>${mln(x.pf_interest+x.pf_interest_capitalization)}</td><td>${mln(x.limit_fee)}</td><td>${mln(x.pf_repayment)}</td>
+  <td class="money">${mln(x.pf_balance)}</td><td class="money">${mln(x.escrow)}</td><td>${mult(x.coverage)}</td><td>${pct(x.pf_rate)}</td><td>${mln(x.pf_interest+x.pf_interest_capitalization)}</td><td>${mln(x.limit_fee)}</td><td>${mln(x.pf_repayment)}</td><td>${mln(x.profit_tax||0)}</td>
  </tr>`).join('');
 
  economicsTable.innerHTML=
