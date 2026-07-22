@@ -1,0 +1,1 @@
+Trigger release validation with safe regex replacement handling.
