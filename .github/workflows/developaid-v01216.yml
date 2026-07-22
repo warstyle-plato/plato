@@ -1,0 +1,637 @@
+name: Apply DevelopAid v0.12.16 bot update
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/developaid-v01216.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Patch DevelopAid bot flow
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path('main.py')
+          text = path.read_text(encoding='utf-8')
+
+          def replace_function(name: str, body: str) -> None:
+              global text
+              pattern = rf'(?ms)^def {re.escape(name)}\b.*?(?=^def |^@|\Z)'
+              text, count = re.subn(pattern, body.strip() + '\n\n', text, count=1)
+              if count != 1:
+                  raise RuntimeError(f'Expected exactly one function {name}, got {count}')
+
+          # Release version.
+          if '0.12.15' not in text:
+              raise RuntimeError('Expected v0.12.15 base')
+          text = text.replace('0.12.15', '0.12.16')
+
+          # User-visible filename and parser wording for the Telegram template.
+          text = text.replace(
+              'MANUAL_TEP_TEMPLATE_FILENAME = "PLATO_Шаблон_ТЭП.xlsx"',
+              'MANUAL_TEP_TEMPLATE_FILENAME = "DevelopAid_Шаблон_ТЭП.xlsx"',
+          )
+          text = text.replace('Нужен заполненный файл .xlsx из шаблона PLATO', 'Нужен заполненный файл .xlsx из шаблона DevelopAid')
+
+          helper_marker = 'def _telegram_dialog_data_lines(data: dict[str, Any]) -> list[str]:'
+          if '_TELEGRAM_PROJECT_CLASS_PRESETS' not in text:
+              helpers = r'''
+_TELEGRAM_PROJECT_CLASS_PRESETS: dict[str, dict[str, Any]] = {
+    "comfort": {
+        "label": "Комфорт",
+        "apartment_price_th": 350.0,
+        "commercial_price_th": 350.0,
+        "parking_price_th": 1500.0,
+        "main_above_th_per_sqm": 110.0,
+        "main_under_th_per_sqm": 110.0,
+    },
+    "business": {
+        "label": "Бизнес",
+        "apartment_price_th": 650.0,
+        "commercial_price_th": 650.0,
+        "parking_price_th": 5000.0,
+        "main_above_th_per_sqm": 190.0,
+        "main_under_th_per_sqm": 190.0,
+    },
+    "elite": {
+        "label": "Элитный",
+        "apartment_price_th": 1500.0,
+        "commercial_price_th": 1500.0,
+        "parking_price_th": 20000.0,
+        "main_above_th_per_sqm": 300.0,
+        "main_under_th_per_sqm": 300.0,
+    },
+}
+_TELEGRAM_ECONOMIC_INPUT_KEYS = (
+    "apartment_price_th",
+    "commercial_price_th",
+    "parking_price_th",
+    "main_above_th_per_sqm",
+    "main_under_th_per_sqm",
+)
+
+
+def _telegram_dialog_economics_value(text: str) -> float:
+    """Return a value in thousand roubles (per sqm or per unit)."""
+    normalized = str(text or "").lower().replace("ё", "е")
+    normalized = re.sub(r"(?<=\d)[\s\u00a0\u202f](?=\d)", "", normalized)
+    match = re.search(r"[-+]?\d+(?:[.,]\d+)?", normalized)
+    if not match:
+        raise ValueError("Не вижу числа")
+    value = float(match.group(0).replace(",", "."))
+    # Inputs in the model are stored in thousand roubles. A user may type
+    # either 350 / 1 500 or explicitly 1.5 млн.
+    if re.search(r"\bмлн\b", normalized):
+        value *= 1000.0
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError("Значение должно быть больше нуля")
+    return value
+
+
+def _telegram_apply_project_class(data: dict[str, Any], project_class: str) -> None:
+    preset = _TELEGRAM_PROJECT_CLASS_PRESETS.get(project_class)
+    if not preset:
+        raise ValueError("Неизвестный класс жилья")
+    data["project_class"] = project_class
+    for key in _TELEGRAM_ECONOMIC_INPUT_KEYS:
+        data[key] = float(preset[key])
+
+
+def _telegram_project_class_label(data: dict[str, Any]) -> str:
+    project_class = str(data.get("project_class") or "")
+    if project_class == "custom":
+        return "Пользовательские настройки"
+    return str((_TELEGRAM_PROJECT_CLASS_PRESETS.get(project_class) or {}).get("label") or "Не выбран")
+
+
+def _telegram_project_class_menu(chat_id: int, dialog: dict[str, Any]) -> None:
+    dialog["step"] = "choose_project_class"
+    _telegram_dialog_save(chat_id, dialog)
+    _telegram_send_message(
+        chat_id,
+        "<b>Класс жилья и базовые настройки</b>\n\n"
+        "В DevelopAid есть три базовых профиля:\n"
+        "• <b>Комфорт</b> — жильё 350 тыс. ₽/м²; коммерция 350 тыс. ₽/м²; "
+        "машино-место 1,5 млн ₽; себестоимость строительства 110 тыс. ₽/м² ГНС.\n"
+        "• <b>Бизнес</b> — жильё 650 тыс. ₽/м²; коммерция 650 тыс. ₽/м²; "
+        "машино-место 5 млн ₽; себестоимость строительства 190 тыс. ₽/м² ГНС.\n"
+        "• <b>Элитный</b> — жильё 1,5 млн ₽/м²; коммерция 1,5 млн ₽/м²; "
+        "машино-место 20 млн ₽; себестоимость строительства 300 тыс. ₽/м² ГНС.\n\n"
+        "Выберите класс. Затем можно использовать профиль как есть или вручную заменить "
+        "только четыре значения: цену жилья, коммерции, машино-места и себестоимость строительства.",
+        reply_markup={"inline_keyboard": [
+            [{"text": "Комфорт", "callback_data": "flow_class_comfort"}],
+            [{"text": "Бизнес", "callback_data": "flow_class_business"}],
+            [{"text": "Элитный", "callback_data": "flow_class_elite"}],
+            [{"text": "Назад к данным", "callback_data": "flow_extras"}],
+        ]},
+    )
+
+
+def _telegram_project_class_profile(chat_id: int, dialog: dict[str, Any]) -> None:
+    data = dialog.get("data") or {}
+    label = _telegram_project_class_label(data)
+    apartment = float(data.get("apartment_price_th") or 0)
+    commercial = float(data.get("commercial_price_th") or 0)
+    parking = float(data.get("parking_price_th") or 0)
+    construction = float(data.get("main_above_th_per_sqm") or 0)
+    dialog["step"] = "confirm_project_class"
+    _telegram_dialog_save(chat_id, dialog)
+
+    def money_th(value: float) -> str:
+        if value >= 1000:
+            return _telegram_number(value / 1000.0, 2) + " млн ₽"
+        return _telegram_number(value, 0) + " тыс. ₽"
+
+    custom = str(data.get("project_class") or "") == "custom"
+    _telegram_send_message(
+        chat_id,
+        f"<b>{html.escape(label)}</b>\n\n"
+        f"• цена продажи жилья — <b>{money_th(apartment)}/м²</b>\n"
+        f"• цена продажи коммерции — <b>{money_th(commercial)}/м²</b>\n"
+        f"• цена машино-места — <b>{money_th(parking)}</b>\n"
+        f"• себестоимость основного строительства — <b>{money_th(construction)}/м² ГНС</b>\n\n"
+        + ("Использовать эти значения для предварительной экономики?" if custom else
+           "Это базовый профиль DevelopAid. Использовать его или ввести свои значения?"),
+        reply_markup={"inline_keyboard": [
+            [{"text": "Использовать настройки" if not custom else "Использовать эти настройки", "callback_data": "flow_class_accept"}],
+            [{"text": "Ввести свои" if not custom else "Ввести заново", "callback_data": "flow_class_custom"}],
+            [{"text": "Назад к данным", "callback_data": "flow_extras"}],
+        ]},
+    )
+
+
+def _telegram_finalize_dialog_review(chat_id: int, dialog: dict[str, Any]) -> None:
+    data = copy.deepcopy(dialog.get("data") or {})
+    econ_keys = set(_TELEGRAM_ECONOMIC_INPUT_KEYS) | {"project_class"}
+    tep_values = {key: value for key, value in data.items() if key not in econ_keys}
+    parsed = build_freeform_tep("", raw_values=tep_values)
+    parsed_inputs = parsed.setdefault("inputs", {})
+    for key in _TELEGRAM_ECONOMIC_INPUT_KEYS:
+        if data.get(key) is not None:
+            parsed_inputs[key] = float(data[key])
+    project_class = str(data.get("project_class") or "")
+    if project_class:
+        parsed_inputs["project_class"] = project_class
+
+    if project_class:
+        provided = list(parsed.get("provided") or [])
+        provided.extend([
+            f"класс жилья — {_telegram_project_class_label(data)}",
+            f"цена жилья — {_telegram_number(data.get('apartment_price_th'), 0)} тыс. ₽/м²",
+            f"цена коммерции — {_telegram_number(data.get('commercial_price_th'), 0)} тыс. ₽/м²",
+            f"цена машино-места — {_telegram_number(data.get('parking_price_th'), 0)} тыс. ₽/шт.",
+            f"себестоимость основного строительства — {_telegram_number(data.get('main_above_th_per_sqm'), 0)} тыс. ₽/м² ГНС",
+        ])
+        parsed["provided"] = provided
+    _telegram_send_tep_review(chat_id, parsed, dialog_mode=True)
+'''
+              if helper_marker not in text:
+                  raise RuntimeError('Dialog helper marker not found')
+              text = text.replace(helper_marker, helpers.strip() + '\n\n\n' + helper_marker, 1)
+
+          replace_function('_telegram_send_template', r'''
+def _telegram_send_template(chat_id: int) -> Any:
+    return _telegram_api(
+        "sendDocument",
+        {
+            "chat_id": int(chat_id),
+            "document": _TELEGRAM_PUBLIC_BASE_URL + "/templates/tep",
+            "caption": (
+                "<b>Шаблон ручного ввода ТЭП DevelopAid</b>\n\n"
+                "1. Заполните жёлтые ячейки.\n"
+                "2. Не меняйте коды и названия строк.\n"
+                "3. Отправьте заполненный .xlsx обратно в этот чат.\n\n"
+                "DevelopAid проверит файл и покажет сводку перед открытием модели."
+            ),
+            "parse_mode": "HTML",
+        },
+    )
+''')
+
+          replace_function('_telegram_dialog_data_lines', r'''
+def _telegram_dialog_data_lines(data: dict[str, Any]) -> list[str]:
+    fields = (
+        ("site_area_ha", "территория", "га", 4),
+        ("project_total_gns_sqm", "ГНС надземной части проекта", "м²", 0),
+        ("apartments_gns_sqm", "жилая ГНС", "м²", 0),
+        ("apartments_saleable_sqm", "продаваемая площадь квартир", "м²", 0),
+        ("residential_density_spp_th_ha", "плотность", "тыс. м²/га", 2),
+        ("commercial_saleable_sqm", "продаваемая коммерция", "м²", 0),
+        ("commercial_gns_sqm", "ГНС коммерции", "м²", 0),
+        ("parking_spaces", "паркинг", "м/м", 0),
+        ("kindergarten_places", "ДОО", "мест", 0),
+        ("school_places", "школа", "мест", 0),
+        ("clinic_capacity", "поликлиника", "пос./смену", 0),
+    )
+    lines = [
+        f"• {label} — {_telegram_number(data.get(key), digits)} {unit}"
+        for key, label, unit, digits in fields
+        if data.get(key) is not None
+    ]
+    if str(data.get("district") or "").strip():
+        lines.append("• район — " + html.escape(str(data["district"])))
+    if str(data.get("project_class") or "").strip():
+        lines.append("• класс жилья — " + html.escape(_telegram_project_class_label(data)))
+    if data.get("apartment_price_th") is not None:
+        lines.append(f"• цена жилья — {_telegram_number(data.get('apartment_price_th'), 0)} тыс. ₽/м²")
+    if data.get("commercial_price_th") is not None:
+        lines.append(f"• цена коммерции — {_telegram_number(data.get('commercial_price_th'), 0)} тыс. ₽/м²")
+    if data.get("parking_price_th") is not None:
+        lines.append(f"• цена машино-места — {_telegram_number(data.get('parking_price_th'), 0)} тыс. ₽/шт.")
+    if data.get("main_above_th_per_sqm") is not None:
+        lines.append(f"• себестоимость строительства — {_telegram_number(data.get('main_above_th_per_sqm'), 0)} тыс. ₽/м² ГНС")
+    return lines
+''')
+
+          replace_function('_telegram_dialog_extras_menu', r'''
+def _telegram_dialog_extras_menu(chat_id: int, dialog: dict[str, Any]) -> None:
+    dialog["step"] = "extras"
+    _telegram_dialog_save(chat_id, dialog)
+    lines = _telegram_dialog_data_lines(dialog.get("data") or {})
+    known = "\n".join(lines) if lines else "• пока ничего"
+    _telegram_send_message(
+        chat_id,
+        "<b>Основы собраны</b>\n\n"
+        "Сейчас известно:\n" + known + "\n\n"
+        "Добавьте любые известные параметры. Когда закончите, нажмите "
+        "<b>«Рассчитать недостающее»</b>. DevelopAid заполнит ТЭП ориентировочно по нормативам, "
+        "затем предложит выбрать класс жилья и финансовый профиль.",
+        reply_markup={"inline_keyboard": [
+            [
+                {"text": "Коммерция", "callback_data": "flow_extra_commercial"},
+                {"text": "Паркинг", "callback_data": "flow_extra_parking"},
+            ],
+            [
+                {"text": "Соцобъекты", "callback_data": "flow_extra_social"},
+                {"text": "Район", "callback_data": "flow_extra_district"},
+            ],
+            [{"text": "Другие параметры сообщением", "callback_data": "flow_extra_other"}],
+            [{"text": "Класс жилья / цены / себестоимость", "callback_data": "flow_project_class"}],
+            [{"text": "Рассчитать недостающее", "callback_data": "flow_calculate"}],
+            [{"text": "Начать заново", "callback_data": "flow_restart"}],
+        ]},
+    )
+''')
+
+          replace_function('_telegram_dialog_callback', r'''
+def _telegram_dialog_callback(chat_id: int, user_id: int, action: str) -> None:
+    if action == "flow_restart":
+        _telegram_dialog_clear(chat_id)
+        _telegram_start_message(chat_id, user_id)
+        return
+    if action == "flow_cad_yes":
+        _telegram_dialog_save(chat_id, {"step": "await_cadastre", "data": {}})
+        _telegram_send_message(
+            chat_id,
+            "<b>Введите все кадастровые номера</b>\n\n"
+            "Можно через запятую или каждый с новой строки. Например:\n"
+            "<code>77:02:0016009:1934, 77:02:0016009:1935</code>",
+        )
+        return
+    if action == "flow_cad_no":
+        _telegram_dialog_save(chat_id, {"step": "await_site_area", "data": {}})
+        _telegram_send_message(
+            chat_id,
+            "<b>Какая площадь территории?</b>\n\n"
+            "Напишите в гектарах или квадратных метрах, например: <code>2,4 га</code> или <code>24 000 м²</code>.",
+        )
+        return
+
+    dialog = _telegram_dialog_get(chat_id)
+    if not dialog:
+        _telegram_send_message(chat_id, "Расчёт не найден или устарел. Начнём заново.")
+        _telegram_start_message(chat_id, user_id)
+        return
+
+    if action == "flow_project_class":
+        _telegram_project_class_menu(chat_id, dialog)
+        return
+    if action in {"flow_class_comfort", "flow_class_business", "flow_class_elite"}:
+        project_class = action.removeprefix("flow_class_")
+        _telegram_apply_project_class(dialog.setdefault("data", {}), project_class)
+        _telegram_project_class_profile(chat_id, dialog)
+        return
+    if action == "flow_class_custom":
+        data = dialog.setdefault("data", {})
+        data["project_class"] = "custom"
+        for key in _TELEGRAM_ECONOMIC_INPUT_KEYS:
+            data.pop(key, None)
+        dialog["step"] = "await_custom_apartment_price"
+        _telegram_dialog_save(chat_id, dialog)
+        _telegram_send_message(
+            chat_id,
+            "<b>1 из 4 · Цена продажи жилья</b>\n\n"
+            "Введите в тыс. ₽/м², например <code>420</code>. Можно также написать <code>1,2 млн</code>.",
+        )
+        return
+    if action == "flow_class_accept":
+        try:
+            _telegram_finalize_dialog_review(chat_id, dialog)
+        except (ValueError, RuntimeError) as exc:
+            _telegram_send_message(chat_id, "<b>Пока не могу завершить расчёт.</b>\n" + html.escape(str(exc)))
+            _telegram_dialog_extras_menu(chat_id, dialog)
+        return
+
+    prompts = {
+        "flow_primary_gns": (
+            "project_total_gns_sqm", "await_value",
+            "<b>Введите ГНС надземной части проекта</b> без паркинга и соцобъектов, в м².",
+        ),
+        "flow_primary_saleable": (
+            "apartments_saleable_sqm", "await_value",
+            "<b>Введите продаваемую площадь квартир</b> в м².",
+        ),
+        "flow_primary_density": (
+            "residential_density_spp_th_ha", "await_value",
+            "<b>Введите плотность застройки</b> в тыс. м² СПП на гектар, например <code>28,5</code>.",
+        ),
+        "flow_extra_parking": (
+            "parking_spaces", "await_value",
+            "<b>Сколько машино-мест предусмотрено?</b> Введите общее количество.",
+        ),
+        "flow_extra_district": (
+            "district", "await_text",
+            "<b>Введите район Москвы</b>, например <code>Коммунарка</code>. Если это другой регион — напишите город или район.",
+        ),
+    }
+    if action in prompts:
+        key, step, prompt = prompts[action]
+        dialog["step"] = step
+        dialog["pending_key"] = key
+        _telegram_dialog_save(chat_id, dialog)
+        _telegram_send_message(chat_id, prompt)
+        return
+    if action == "flow_primary_multiple":
+        dialog["step"] = "await_primary_multiple"
+        _telegram_dialog_save(chat_id, dialog)
+        _telegram_send_message(
+            chat_id,
+            "<b>Напишите известные показатели одним сообщением</b>\n\n"
+            "Например: <code>ГНС проекта 70 000 м², квартиры 42 000 м² продаваемой площади, коммерция 2 500 м²</code>.",
+        )
+        return
+    if action == "flow_extra_commercial":
+        _telegram_send_message(
+            chat_id,
+            "<b>Что известно по встроенной коммерции?</b>",
+            reply_markup={"inline_keyboard": [
+                [{"text": "Продаваемая площадь", "callback_data": "flow_commercial_saleable"}],
+                [{"text": "ГНС коммерции", "callback_data": "flow_commercial_gns"}],
+                [{"text": "Назад", "callback_data": "flow_extras"}],
+            ]},
+        )
+        return
+    if action in {"flow_commercial_saleable", "flow_commercial_gns"}:
+        dialog["step"] = "await_value"
+        dialog["pending_key"] = (
+            "commercial_saleable_sqm" if action.endswith("saleable") else "commercial_gns_sqm"
+        )
+        _telegram_dialog_save(chat_id, dialog)
+        label = "продаваемую площадь" if action.endswith("saleable") else "ГНС"
+        _telegram_send_message(chat_id, f"<b>Введите {label} встроенной коммерции</b> в м².")
+        return
+    if action == "flow_extra_social":
+        dialog["step"] = "await_social"
+        _telegram_dialog_save(chat_id, dialog)
+        _telegram_send_message(
+            chat_id,
+            "<b>Введите известные мощности соцобъектов</b>\n\n"
+            "Например: <code>ДОО 150 мест, школа 300 мест, поликлиника 100 посещений в смену</code>. "
+            "Можно указать только один объект.",
+        )
+        return
+    if action == "flow_extra_other":
+        dialog["step"] = "await_other"
+        _telegram_dialog_save(chat_id, dialog)
+        _telegram_send_message(
+            chat_id,
+            "<b>Напишите остальные известные параметры одним сообщением</b>\n\n"
+            "DevelopAid распознает их и вернёт вас в меню проверки.",
+        )
+        return
+    if action in {"flow_extras", "flow_edit"}:
+        _telegram_dialog_extras_menu(chat_id, dialog)
+        return
+    if action == "flow_calculate":
+        try:
+            econ_keys = set(_TELEGRAM_ECONOMIC_INPUT_KEYS) | {"project_class"}
+            raw = {key: value for key, value in (dialog.get("data") or {}).items() if key not in econ_keys}
+            build_freeform_tep("", raw_values=raw)
+        except (ValueError, RuntimeError) as exc:
+            _telegram_send_message(chat_id, "<b>Пока не могу рассчитать ТЭП.</b>\n" + html.escape(str(exc)))
+            return
+        data = dialog.get("data") or {}
+        if str(data.get("project_class") or "") and all(data.get(key) is not None for key in _TELEGRAM_ECONOMIC_INPUT_KEYS):
+            _telegram_project_class_profile(chat_id, dialog)
+        else:
+            _telegram_project_class_menu(chat_id, dialog)
+        return
+''')
+
+          replace_function('_telegram_handle_dialog_text', r'''
+def _telegram_handle_dialog_text(chat_id: int, text: str) -> bool:
+    dialog = _telegram_dialog_get(chat_id)
+    if not dialog:
+        return False
+    step = str(dialog.get("step") or "")
+    data = dialog.setdefault("data", {})
+    try:
+        if step == "await_cadastre":
+            numbers = _parse_cadastral_numbers(text)
+            _telegram_dialog_clear(chat_id)
+            _telegram_handle_cadastral_numbers(chat_id, numbers)
+            return True
+        if step == "await_site_area":
+            data["site_area_ha"] = _telegram_dialog_number(text, site_area=True)
+            dialog["step"] = "choose_primary"
+            _telegram_dialog_save(chat_id, dialog)
+            _telegram_dialog_primary_menu(chat_id)
+            return True
+        if step == "await_custom_apartment_price":
+            data["apartment_price_th"] = _telegram_dialog_economics_value(text)
+            dialog["step"] = "await_custom_commercial_price"
+            _telegram_dialog_save(chat_id, dialog)
+            _telegram_send_message(chat_id, "<b>2 из 4 · Цена продажи коммерции</b>\n\nВведите в тыс. ₽/м², например <code>450</code>.")
+            return True
+        if step == "await_custom_commercial_price":
+            data["commercial_price_th"] = _telegram_dialog_economics_value(text)
+            dialog["step"] = "await_custom_parking_price"
+            _telegram_dialog_save(chat_id, dialog)
+            _telegram_send_message(chat_id, "<b>3 из 4 · Цена машино-места</b>\n\nВведите в тыс. ₽ за место, например <code>2500</code>, или <code>2,5 млн</code>.")
+            return True
+        if step == "await_custom_parking_price":
+            data["parking_price_th"] = _telegram_dialog_economics_value(text)
+            dialog["step"] = "await_custom_construction_cost"
+            _telegram_dialog_save(chat_id, dialog)
+            _telegram_send_message(chat_id, "<b>4 из 4 · Себестоимость основного строительства</b>\n\nВведите в тыс. ₽/м² ГНС, например <code>135</code>.")
+            return True
+        if step == "await_custom_construction_cost":
+            value = _telegram_dialog_economics_value(text)
+            data["main_above_th_per_sqm"] = value
+            data["main_under_th_per_sqm"] = value
+            data["project_class"] = "custom"
+            _telegram_project_class_profile(chat_id, dialog)
+            return True
+        if step == "await_value":
+            key = str(dialog.get("pending_key") or "")
+            if not key:
+                raise ValueError("Не найден ожидаемый показатель")
+            value = _telegram_dialog_number(text)
+            if key in {"parking_spaces", "storage_units"}:
+                value = int(round(value))
+            data[key] = value
+            dialog.pop("pending_key", None)
+            _telegram_dialog_extras_menu(chat_id, dialog)
+            return True
+        if step == "await_text":
+            key = str(dialog.get("pending_key") or "")
+            value = str(text or "").strip()[:120]
+            if not value:
+                raise ValueError("Ответ пустой")
+            data[key] = value
+            dialog.pop("pending_key", None)
+            _telegram_dialog_extras_menu(chat_id, dialog)
+            return True
+        if step in {"await_primary_multiple", "await_social", "await_other", "extras"}:
+            recognized = _recognize_freeform_tep_text(text)
+            if step == "await_social":
+                recognized = {
+                    key: recognized.get(key)
+                    for key in ("kindergarten_places", "school_places", "clinic_capacity")
+                }
+            added = _telegram_dialog_merge(data, recognized)
+            if not added:
+                raise ValueError("Не удалось распознать ни одного показателя")
+            if step == "await_primary_multiple" and not _telegram_dialog_has_primary(data):
+                raise ValueError("Укажите ГНС, продаваемую площадь квартир либо плотность")
+            _telegram_dialog_extras_menu(chat_id, dialog)
+            return True
+        if step == "choose_primary":
+            _telegram_dialog_primary_menu(chat_id)
+            return True
+        if step in {"choose_project_class", "confirm_project_class"}:
+            _telegram_project_class_menu(chat_id, dialog) if step == "choose_project_class" else _telegram_project_class_profile(chat_id, dialog)
+            return True
+    except (ValueError, RuntimeError, HTTPException) as exc:
+        detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+        _telegram_send_message(
+            chat_id,
+            "<b>Не удалось принять ответ.</b>\n" + html.escape(str(detail)) + "\n\nПопробуйте ещё раз или нажмите /start.",
+        )
+        return True
+    return False
+''')
+
+          replace_function('_telegram_start_message', r'''
+def _telegram_start_message(chat_id: int, user_id: int) -> None:
+    if not _telegram_user_allowed(user_id):
+        _telegram_send_message(
+            chat_id,
+            "<b>Доступ к DevelopAid пока не открыт.</b>\n"
+            f"Ваш Telegram ID: <code>{user_id}</code>\n"
+            "Добавьте его в TELEGRAM_ALLOWED_USER_IDS в Render.",
+        )
+        return
+    _telegram_dialog_clear(chat_id)
+    button = {"inline_keyboard": [
+        [{"text": "ТЭП по кадастровым номерам", "callback_data": "flow_cad_yes"}],
+        [{"text": "Собрать ТЭП без кадастра", "callback_data": "flow_cad_no"}],
+        [{"text": "Скачать Excel-шаблон ТЭП", "callback_data": "tep_template"}],
+        [{"text": "Открыть модель DevelopAid", "web_app": {"url": _telegram_web_app_url(chat_id, [])}}],
+    ]}
+    _telegram_send_message(
+        chat_id,
+        "<b>DevelopAid · быстрый расчёт девелоперского проекта</b>\n\n"
+        "Я могу:\n"
+        "• получить ТЭП ГлавАПУ по кадастровым номерам;\n"
+        "• собрать ТЭП без кадастра — задам вопросы и рассчитаю недостающее по нормативам;\n"
+        "• принять заполненный Excel-шаблон;\n"
+        "• открыть модель DevelopAid для подробной экономики и сценарного анализа.\n\n"
+        "Выберите способ работы. Вернуться сюда можно в любой момент через кнопку "
+        "<b>Menu</b> у строки ввода или командой /start.",
+        reply_markup=button,
+    )
+''')
+
+          # Branding in the remaining Telegram functions. Keep internal/model branding untouched.
+          replacements = {
+              '"text": "Открыть ТЭП в PLATO"': '"text": "Открыть ТЭП в DevelopAid"',
+              '"Проверьте сводку и откройте модель. Финансовые параметры можно настроить уже в PLATO."': '"Проверьте сводку и откройте модель. Финансовые параметры можно настроить уже в DevelopAid."',
+              '"text": "Подтвердить и открыть PLATO"': '"text": "Подтвердить и открыть DevelopAid"',
+              '"text": "Получить ТЭП и открыть PLATO"': '"text": "Получить ТЭП и открыть DevelopAid"',
+              '"Нажмите кнопку: PLATO сам получит 60 показателей ГлавАПУ. "': '"Нажмите кнопку: DevelopAid сам получит 60 показателей ГлавАПУ. "',
+              '"PLATO работает в личном чате с ботом."': '"DevelopAid работает в личном чате с ботом."',
+              'f"<b>PLATO bot:</b> {status}\\nTelegram ID: <code>{user_id}</code>\\nВерсия: 0.12.16"': 'f"<b>DevelopAid:</b> {status}\\nTelegram ID: <code>{user_id}</code>\\nВерсия: 0.12.16"',
+              'if command == "/plato":': 'if command in {"/model", "/plato"}:',
+              '"<b>Модель PLATO</b>\\n\\n"': '"<b>Модель DevelopAid</b>\\n\\n"',
+              '"text": "Открыть модель PLATO"': '"text": "Открыть модель DevelopAid"',
+              '{"command": "plato", "description": "Открыть модель PLATO"}': '{"command": "model", "description": "Открыть модель DevelopAid"}',
+              'source_label = str(summary.get("source_label") or "ТЭП PLATO").strip()': 'source_label = str(summary.get("source_label") or "ТЭП DevelopAid").strip().replace("PLATO", "DevelopAid")',
+              '"<b>Расчёт PLATO готов</b>\\n"': '"<b>Расчёт DevelopAid готов</b>\\n"',
+              '"<i>Экономика рассчитана на действующих вводных PLATO; цены, сроки и себестоимость можно изменить в модели.</i>"': '"<i>Экономика рассчитана на действующих вводных DevelopAid; цены, сроки и себестоимость можно изменить в модели.</i>"',
+              "source_label:manual?'Ручной шаблон PLATO':'ГлавАПУ'": "source_label:manual?'Ручной шаблон DevelopAid':'ГлавАПУ'",
+          }
+          for old, new in replacements.items():
+              if old not in text:
+                  raise RuntimeError('Expected branding fragment not found: ' + old[:100])
+              text = text.replace(old, new)
+
+          # Ensure the command menu is fully reconfigured without the old visible brand.
+          if '"command": "model", "description": "Открыть модель DevelopAid"' not in text:
+              raise RuntimeError('New /model command not installed')
+
+          # Sanity checks for the guided flow and branding.
+          required = [
+              '_TELEGRAM_PROJECT_CLASS_PRESETS',
+              'flow_class_comfort',
+              'flow_class_business',
+              'flow_class_elite',
+              'flow_class_custom',
+              'Класс жилья / цены / себестоимость',
+              'Версия: 0.12.16',
+          ]
+          for marker in required:
+              if marker not in text:
+                  raise RuntimeError('Missing marker after patch: ' + marker)
+
+          forbidden_bot_fragments = [
+              'Открыть модель PLATO',
+              'Открыть ТЭП в PLATO',
+              'Подтвердить и открыть PLATO',
+              'Получить ТЭП и открыть PLATO',
+              '<b>PLATO bot:</b>',
+              '<b>Расчёт PLATO готов</b>',
+              'Ручной шаблон PLATO',
+          ]
+          for fragment in forbidden_bot_fragments:
+              if fragment in text:
+                  raise RuntimeError('Old Telegram branding remains: ' + fragment)
+
+          path.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Syntax check
+        run: python -m py_compile main.py
+
+      - name: Commit v0.12.16
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add main.py
+          git commit -m "Add housing class economics flow to DevelopAid bot"
+          git push origin main
