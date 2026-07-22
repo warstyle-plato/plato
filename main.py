@@ -2,9 +2,14 @@
 from __future__ import annotations
 
 import calendar
+import base64
 import copy
+import hashlib
+import hmac
+import html
 import json
 import os
+import threading
 import time
 import math
 import io
@@ -15,7 +20,7 @@ import urllib.parse
 import urllib.error
 import urllib.request
 from collections import defaultdict
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from math import ceil, pow, exp
 from typing import Any
 from pathlib import Path
@@ -24,7 +29,7 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse, FileResponse, Response
 from pydantic import BaseModel
 
-app = FastAPI(title="PLATO Development Investment Model", version="0.12.10")
+app = FastAPI(title="PLATO Development Investment Model", version="0.12.11")
 
 PRESET_DIR = Path(__file__).resolve().parent / "presets"
 SERVER_TEP_PRESETS = {
@@ -110,6 +115,11 @@ class CadastralAnalysisRequest(BaseModel):
 class CadastralTepRequest(BaseModel):
     rows: list[dict[str, Any]]
     cadastral_analysis: dict[str, Any] | None = None
+
+
+class TelegramResultRequest(BaseModel):
+    session: str
+    summary: dict[str, Any]
 
 
 
@@ -687,7 +697,7 @@ def analyze_cadastral_territory(req: CadastralAnalysisRequest) -> dict[str, Any]
         headers={
             "Accept": "application/json",
             "Content-Type": "application/json; charset=utf-8",
-            "User-Agent": "PLATO-Development-Model/0.12.10",
+            "User-Agent": "PLATO-Development-Model/0.12.11",
         },
     )
     try:
@@ -826,7 +836,7 @@ def _proxy_genplan(asset_path: str, request: Request) -> Response:
         target,
         headers={
             "Accept": request.headers.get("accept", "*/*"),
-            "User-Agent": "PLATO-Development-Model/0.12.10",
+            "User-Agent": "PLATO-Development-Model/0.12.11",
         },
     )
     try:
@@ -982,6 +992,391 @@ def import_cadastral_tep(req: CadastralTepRequest) -> dict[str, Any]:
         "Показатели автоматически считаны из готовой таблицы genplan.tech; формулы ГлавАПУ в PLATO не воспроизводятся.",
     )
     return result
+
+
+_TELEGRAM_PUBLIC_BASE_URL = (
+    os.environ.get("TELEGRAM_PUBLIC_BASE_URL")
+    or os.environ.get("RENDER_EXTERNAL_URL")
+    or "https://plato-development-investment-model.onrender.com"
+).rstrip("/")
+_TELEGRAM_RUNTIME: dict[str, Any] = {
+    "configured": False,
+    "username": "",
+    "last_error": "",
+    "configured_at": "",
+}
+
+
+def _telegram_token() -> str:
+    return os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+
+
+def _telegram_webhook_secret() -> str:
+    token = _telegram_token()
+    return hashlib.sha256(("plato-webhook:" + token).encode("utf-8")).hexdigest()
+
+
+def _telegram_api(method: str, payload: dict[str, Any] | None = None) -> Any:
+    token = _telegram_token()
+    if not token:
+        raise RuntimeError("TELEGRAM_BOT_TOKEN не задан")
+    request = urllib.request.Request(
+        f"https://api.telegram.org/bot{token}/{method}",
+        data=json.dumps(payload or {}, ensure_ascii=False).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            body = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")[:500]
+        raise RuntimeError(f"Telegram API: HTTP {exc.code}: {detail}") from exc
+    except Exception as exc:
+        raise RuntimeError(f"Telegram API недоступен: {exc}") from exc
+    if not body.get("ok"):
+        raise RuntimeError("Telegram API: " + str(body.get("description") or "неизвестная ошибка"))
+    return body.get("result")
+
+
+def _telegram_allowed_user_ids() -> set[int]:
+    raw = os.environ.get("TELEGRAM_ALLOWED_USER_IDS", "").strip()
+    result: set[int] = set()
+    for value in re.split(r"[\s,;]+", raw):
+        if value and value.lstrip("-").isdigit():
+            result.add(int(value))
+    return result
+
+
+def _telegram_user_allowed(user_id: int) -> bool:
+    allowed = _telegram_allowed_user_ids()
+    return not allowed or int(user_id) in allowed
+
+
+def _telegram_session(chat_id: int, cadastral_numbers: list[str], lifetime_seconds: int = 86400) -> str:
+    token = _telegram_token()
+    if not token:
+        raise RuntimeError("Telegram-бот не настроен")
+    payload = {
+        "chat_id": int(chat_id),
+        "cad": list(cadastral_numbers),
+        "exp": int(time.time()) + int(lifetime_seconds),
+    }
+    raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    encoded = base64.urlsafe_b64encode(raw).rstrip(b"=")
+    signature = hmac.new(token.encode("utf-8"), encoded, hashlib.sha256).digest()[:20]
+    return encoded.decode("ascii") + "." + base64.urlsafe_b64encode(signature).rstrip(b"=").decode("ascii")
+
+
+def _telegram_verify_session(value: str) -> dict[str, Any]:
+    token = _telegram_token()
+    try:
+        encoded_text, signature_text = str(value or "").split(".", 1)
+        encoded = encoded_text.encode("ascii")
+        supplied = base64.urlsafe_b64decode(signature_text + "=" * (-len(signature_text) % 4))
+        expected = hmac.new(token.encode("utf-8"), encoded, hashlib.sha256).digest()[:20]
+        if not token or not hmac.compare_digest(supplied, expected):
+            raise ValueError("signature")
+        raw = base64.urlsafe_b64decode(encoded_text + "=" * (-len(encoded_text) % 4))
+        payload = json.loads(raw.decode("utf-8"))
+        if int(payload.get("exp") or 0) < int(time.time()):
+            raise ValueError("expired")
+        payload["chat_id"] = int(payload["chat_id"])
+        raw_cad = payload.get("cad") or []
+        payload["cad"] = _parse_cadastral_numbers(raw_cad) if raw_cad else []
+        return payload
+    except Exception as exc:
+        raise HTTPException(status_code=403, detail="Telegram-сессия недействительна или истекла") from exc
+
+
+def _telegram_web_app_url(chat_id: int, cadastral_numbers: list[str]) -> str:
+    fragment: dict[str, str] = {
+        "telegram_session": _telegram_session(chat_id, cadastral_numbers),
+    }
+    if cadastral_numbers:
+        fragment["cad"] = ", ".join(cadastral_numbers)
+    return _TELEGRAM_PUBLIC_BASE_URL + "/?telegram=1#" + urllib.parse.urlencode(fragment)
+
+
+def _telegram_send_message(
+    chat_id: int,
+    text: str,
+    *,
+    reply_markup: dict[str, Any] | None = None,
+) -> Any:
+    payload: dict[str, Any] = {
+        "chat_id": int(chat_id),
+        "text": text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True,
+    }
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+    return _telegram_api("sendMessage", payload)
+
+
+def _telegram_money_mln(value: Any) -> str:
+    try:
+        amount = float(value or 0)
+    except Exception:
+        amount = 0.0
+    if abs(amount) >= 1000:
+        return f"{amount / 1000:,.2f}".replace(",", " ").replace(".", ",") + " млрд ₽"
+    return f"{amount:,.1f}".replace(",", " ").replace(".", ",") + " млн ₽"
+
+
+def _telegram_number(value: Any, digits: int = 1) -> str:
+    try:
+        number = float(value or 0)
+    except Exception:
+        number = 0.0
+    return f"{number:,.{digits}f}".replace(",", " ").replace(".", ",")
+
+
+def _telegram_start_message(chat_id: int, user_id: int) -> None:
+    if not _telegram_user_allowed(user_id):
+        _telegram_send_message(
+            chat_id,
+            "<b>Доступ к PLATO пока не открыт.</b>\n"
+            f"Ваш Telegram ID: <code>{user_id}</code>\n"
+            "Добавьте его в TELEGRAM_ALLOWED_USER_IDS в Render.",
+        )
+        return
+    button = {
+        "inline_keyboard": [[{
+            "text": "Открыть PLATO",
+            "web_app": {"url": _telegram_web_app_url(chat_id, [])},
+        }]]
+    }
+    _telegram_send_message(
+        chat_id,
+        "<b>PLATO · девелоперская инвестиционная модель</b>\n\n"
+        "Отправьте один или несколько кадастровых номеров — через запятую или с новой строки. "
+        "Я сформирую территорию и открою готовый расчёт ТЭП ГлавАПУ внутри PLATO.\n\n"
+        "Пример: <code>77:02:0016009:1934, 77:02:0016009:1935</code>",
+        reply_markup=button,
+    )
+
+
+def _telegram_handle_message(message: dict[str, Any]) -> None:
+    chat = message.get("chat") or {}
+    sender = message.get("from") or {}
+    chat_id = int(chat.get("id") or 0)
+    user_id = int(sender.get("id") or chat_id)
+    if not chat_id:
+        return
+    if str(chat.get("type") or "") != "private":
+        _telegram_send_message(chat_id, "PLATO работает в личном чате с ботом.")
+        return
+    text = str(message.get("text") or "").strip()
+    command = text.split(maxsplit=1)[0].split("@", 1)[0].lower() if text.startswith("/") else ""
+    if command in {"/start", "/help"}:
+        _telegram_start_message(chat_id, user_id)
+        return
+    if command == "/status":
+        status = "подключён" if _TELEGRAM_RUNTIME.get("configured") else "запускается"
+        _telegram_send_message(
+            chat_id,
+            f"<b>PLATO bot:</b> {status}\nTelegram ID: <code>{user_id}</code>\nВерсия: 0.12.11",
+        )
+        return
+    if not _telegram_user_allowed(user_id):
+        _telegram_start_message(chat_id, user_id)
+        return
+
+    numbers = _parse_cadastral_numbers(text)
+    if not numbers:
+        _telegram_send_message(
+            chat_id,
+            "Не вижу кадастрового номера. Формат: <code>77:02:0016009:1934</code>. "
+            "Можно прислать несколько — через запятую или с новой строки.",
+        )
+        return
+    try:
+        analysis = analyze_cadastral_territory(CadastralAnalysisRequest(cadastral_numbers=numbers))
+    except HTTPException as exc:
+        _telegram_send_message(chat_id, "<b>Не удалось сформировать территорию.</b>\n" + html.escape(str(exc.detail)))
+        return
+    recognized = analysis.get("recognized") or numbers
+    territory = analysis.get("territory") or {}
+    district = " · ".join(
+        str(value) for value in (
+            territory.get("administrative_district"),
+            territory.get("district"),
+        ) if value
+    ) or "—"
+    web_url = _telegram_web_app_url(chat_id, recognized)
+    button = {
+        "inline_keyboard": [[{
+            "text": "Получить ТЭП и открыть PLATO",
+            "web_app": {"url": web_url},
+        }]]
+    }
+    _telegram_send_message(
+        chat_id,
+        "<b>Территория сформирована</b>\n"
+        f"Участков: <b>{int(territory.get('parcel_count') or len(recognized))}</b>\n"
+        f"Площадь: <b>{_telegram_number(territory.get('area_ha'), 4)} га</b>\n"
+        f"Район: <b>{html.escape(district)}</b>\n"
+        f"Кадастровый квартал: <b>{html.escape(str(territory.get('cadastral_quarter') or '—'))}</b>\n\n"
+        "Нажмите кнопку: PLATO сам получит 60 показателей ГлавАПУ. "
+        "После проверки и применения ТЭП итоговая карточка вернётся сюда.",
+        reply_markup=button,
+    )
+
+
+def _telegram_handle_update(update: dict[str, Any]) -> None:
+    message = update.get("message")
+    if isinstance(message, dict):
+        _telegram_handle_message(message)
+
+
+def _telegram_configure() -> None:
+    if not _telegram_token():
+        _TELEGRAM_RUNTIME.update(configured=False, last_error="TELEGRAM_BOT_TOKEN не задан")
+        return
+    errors: list[str] = []
+    try:
+        info = _telegram_api("getMe")
+        _TELEGRAM_RUNTIME["username"] = str((info or {}).get("username") or "")
+        _telegram_api("setWebhook", {
+            "url": _TELEGRAM_PUBLIC_BASE_URL + "/telegram/webhook",
+            "secret_token": _telegram_webhook_secret(),
+            "allowed_updates": ["message"],
+            "drop_pending_updates": False,
+        })
+        _telegram_api("setMyCommands", {
+            "commands": [
+                {"command": "start", "description": "Начать расчёт"},
+                {"command": "help", "description": "Как пользоваться"},
+                {"command": "status", "description": "Статус подключения"},
+            ]
+        })
+        try:
+            _telegram_api("setChatMenuButton", {
+                "menu_button": {
+                    "type": "web_app",
+                    "text": "Открыть PLATO",
+                    "web_app": {"url": _TELEGRAM_PUBLIC_BASE_URL + "/?telegram=1"},
+                }
+            })
+        except Exception as exc:
+            errors.append(str(exc))
+        _TELEGRAM_RUNTIME.update(
+            configured=True,
+            last_error="; ".join(errors),
+            configured_at=datetime.now(timezone.utc).isoformat(),
+        )
+    except Exception as exc:
+        _TELEGRAM_RUNTIME.update(configured=False, last_error=str(exc))
+
+
+@app.on_event("startup")
+def _start_telegram_configuration() -> None:
+    if _telegram_token():
+        threading.Thread(target=_telegram_configure, daemon=True).start()
+
+
+@app.get("/telegram/status")
+def telegram_status() -> dict[str, Any]:
+    allowed = _telegram_allowed_user_ids()
+    return {
+        "enabled": bool(_telegram_token()),
+        "configured": bool(_TELEGRAM_RUNTIME.get("configured")),
+        "username": _TELEGRAM_RUNTIME.get("username") or "",
+        "bot_url": (
+            "https://t.me/" + str(_TELEGRAM_RUNTIME.get("username"))
+            if _TELEGRAM_RUNTIME.get("username") else ""
+        ),
+        "webhook_url": _TELEGRAM_PUBLIC_BASE_URL + "/telegram/webhook",
+        "access_mode": "allowlist" if allowed else "open",
+        "allowed_users_count": len(allowed),
+        "configured_at": _TELEGRAM_RUNTIME.get("configured_at") or "",
+        "last_error": _TELEGRAM_RUNTIME.get("last_error") or "",
+        "version": "0.12.11",
+    }
+
+
+def _telegram_process_update(update: dict[str, Any]) -> None:
+    try:
+        _telegram_handle_update(update)
+    except Exception as exc:
+        _TELEGRAM_RUNTIME["last_error"] = str(exc)
+        message = update.get("message") if isinstance(update, dict) else None
+        chat_id = ((message or {}).get("chat") or {}).get("id") if isinstance(message, dict) else None
+        if chat_id:
+            try:
+                _telegram_send_message(
+                    int(chat_id),
+                    "<b>Не удалось завершить запрос.</b> Попробуйте ещё раз через минуту.",
+                )
+            except Exception:
+                pass
+
+
+@app.post("/telegram/webhook")
+async def telegram_webhook(request: Request) -> dict[str, bool]:
+    token = _telegram_token()
+    supplied = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+    if not token or not hmac.compare_digest(supplied, _telegram_webhook_secret()):
+        raise HTTPException(status_code=403, detail="Invalid Telegram webhook secret")
+    update = await request.json()
+    threading.Thread(target=_telegram_process_update, args=(update,), daemon=True).start()
+    return {"ok": True}
+
+
+@app.post("/telegram/result")
+def telegram_result(req: TelegramResultRequest) -> dict[str, bool]:
+    session = _telegram_verify_session(req.session)
+    chat_id = int(session["chat_id"])
+    if not _telegram_user_allowed(chat_id):
+        raise HTTPException(status_code=403, detail="Доступ к боту закрыт")
+    summary = req.summary or {}
+    session_numbers = session.get("cad") or []
+    raw_result_numbers = summary.get("cadastral_numbers") or []
+    result_numbers = _parse_cadastral_numbers(raw_result_numbers) if raw_result_numbers else []
+    numbers = session_numbers or result_numbers
+    if session_numbers and result_numbers and session_numbers != result_numbers:
+        raise HTTPException(status_code=403, detail="Кадастровые номера не совпадают с Telegram-сессией")
+
+    irr = summary.get("irr_equity")
+    irr_text = "N/A"
+    if irr is not None:
+        try:
+            irr_text = _telegram_number(float(irr) * 100, 1) + "%"
+        except Exception:
+            pass
+    margin_text = _telegram_number(float(summary.get("margin") or 0) * 100, 1) + "%"
+    parking = float(summary.get("parking_spaces") or 0)
+    cads = ", ".join(numbers) if numbers else "не указаны"
+    text = (
+        "<b>Расчёт PLATO готов</b>\n"
+        f"Участки: <code>{html.escape(cads)}</code>\n\n"
+        "<b>ТЭП ГлавАПУ</b>\n"
+        f"• территория — {_telegram_number(summary.get('site_area_ha'), 4)} га\n"
+        f"• квартиры — {_telegram_number(summary.get('apartment_area_sqm'), 0)} м²\n"
+        f"• смена ВРИ — {_telegram_money_mln(summary.get('change_vri_mln'))}\n"
+        f"• социальная нагрузка — {_telegram_money_mln(summary.get('social_compensation_mln'))}\n"
+        f"• подземный паркинг — {_telegram_number(parking, 0)} м/м\n\n"
+        "<b>Предварительная экономика</b>\n"
+        f"• выручка — {_telegram_money_mln(summary.get('revenue_mln'))}\n"
+        f"• EBITDA — {_telegram_money_mln(summary.get('ebitda_mln'))}\n"
+        f"• чистая прибыль — {_telegram_money_mln(summary.get('net_profit_mln'))}\n"
+        f"• маржинальность — {margin_text}\n"
+        f"• IRR equity — {irr_text}\n"
+        f"• LLCR — {_telegram_number(summary.get('llcr'), 2)}x\n"
+        f"• расчётный БРИДЖ — {_telegram_money_mln(summary.get('calculated_bridge_mln'))}\n"
+        f"• пиковый ПФ — {_telegram_money_mln(summary.get('pf_peak_mln'))}\n\n"
+        "<i>Экономика рассчитана на действующих вводных PLATO; цены, сроки и себестоимость можно изменить в модели.</i>"
+    )
+    button = {
+        "inline_keyboard": [[{
+            "text": "Открыть и изменить расчёт",
+            "web_app": {"url": _telegram_web_app_url(chat_id, numbers)},
+        }]]
+    }
+    _telegram_send_message(chat_id, text, reply_markup=button)
+    return {"ok": True}
 
 
 
@@ -2440,7 +2835,7 @@ def calculate(req: CalcRequest) -> dict:
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "version": "0.12.10"}
+    return {"status": "ok", "version": "0.12.11"}
 
 
 @app.get("/defaults")
@@ -5202,7 +5597,7 @@ def _openai_responses_request(payload: dict[str, Any]) -> dict[str, Any]:
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
-            "User-Agent": "PLATO-Development-Model/0.12.10",
+            "User-Agent": "PLATO-Development-Model/0.12.11",
         },
         method="POST",
     )
@@ -5648,7 +6043,7 @@ tfoot th{border-top:2px solid #111;color:#111;background:#fff}
 <div class="shell">
   <div class="brandbar"><img src="data:image/webp;base64,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"><div class="brandline"></div></div>
   <div class="header">
-    <div class="title"><h1>Девелоперская инвестиционная модель</h1><p>v0.12.10 · ТЭП · экономика · БРИДЖ · проектное финансирование · эскроу · LLCR</p></div>
+    <div class="title"><h1>Девелоперская инвестиционная модель</h1><p>v0.12.11 · ТЭП · экономика · БРИДЖ · проектное финансирование · эскроу · LLCR</p></div>
     <div class="actions">
       <div class="scenario">Класс&nbsp;
         <select id="projectClassSelect" onchange="applyProjectClassPreset(this.value)" style="min-width:135px">
@@ -6129,6 +6524,10 @@ function makeDefaultPhasing(count=3){
 }
 let inputs=structuredClone(INPUT_DEFAULT), tep=structuredClone(TEP_DEFAULT), rates=structuredClone(RATE_DEFAULT),
  lastResult=null, glavapuImport=null, cadastralAnalysis=null, phasing=makeDefaultPhasing(3), phaseBundle=null, reportView='all';
+const TELEGRAM_HASH_PARAMS=new URLSearchParams(window.location.hash.startsWith('#')?window.location.hash.slice(1):'');
+const telegramSession=TELEGRAM_HASH_PARAMS.get('telegram_session')||'';
+const telegramCad=TELEGRAM_HASH_PARAMS.get('cad')||'';
+let telegramResultSent=false;
 const money=v=>(Number(v||0)/1e9).toLocaleString('ru-RU',{minimumFractionDigits:0,maximumFractionDigits:2})+' млрд ₽';
 const socialMoney=v=>{
  const x=Number(v||0);
@@ -6595,7 +6994,49 @@ function applyServerPresetProjectConfig(presetId){
  return '';
 }
 
-function applyGlavapu(){
+async function sendTelegramResult(){
+ if(!telegramSession||telegramResultSent||!lastResult||!inputs._glavapu_import)return;
+ const n=(inputs._glavapu_import&&inputs._glavapu_import.normalized)||{};
+ const s=lastResult.summary||{};
+ const f=(lastResult.report&&lastResult.report.financing)||{};
+ const source=(inputs._glavapu_import&&inputs._glavapu_import.source)||{};
+ const cads=(cadastralAnalysis&&cadastralAnalysis.recognized)||source.cadastral_numbers||[];
+ const payload={
+   cadastral_numbers:cads,
+   site_area_ha:Number(n.site_area_ha||0),
+   apartment_area_sqm:Number(n.apartment_area_sqm||0),
+   change_vri_mln:Number(n.change_vri_mln||0),
+   social_compensation_mln:Number(n.social_compensation_total_mln||0),
+   parking_spaces:Number(n.parking_permanent||0)+Number(n.parking_guest||0)+Number(n.mfc_parking_spaces||0),
+   revenue_mln:Number(s.revenue||0)/1e6,
+   ebitda_mln:Number(s.ebitda||0)/1e6,
+   net_profit_mln:Number(s.net_profit||0)/1e6,
+   margin:Number(s.margin||0),
+   irr_equity:s.irr_equity==null?null:Number(s.irr_equity),
+   llcr:Number(s.llcr||0),
+   calculated_bridge_mln:Number(f.calculated_bridge||0)/1e6,
+   pf_peak_mln:Number(f.pf_peak||0)/1e6
+ };
+ try{
+   const response=await fetch('/telegram/result',{
+     method:'POST',
+     headers:{'Content-Type':'application/json'},
+     body:JSON.stringify({session:telegramSession,summary:payload})
+   });
+   const result=await response.json();
+   if(!response.ok)throw new Error(result.detail||'Telegram не принял результат');
+   telegramResultSent=true;
+   glavapuStatus.innerHTML+=' <b>Итоговая карточка отправлена в Telegram.</b>';
+   if(window.Telegram&&window.Telegram.WebApp){
+     window.Telegram.WebApp.ready();
+     if(window.Telegram.WebApp.HapticFeedback)window.Telegram.WebApp.HapticFeedback.notificationOccurred('success');
+   }
+ }catch(e){
+   glavapuStatus.innerHTML+=' <span class="import-error">Не удалось отправить итог в Telegram: '+escapeHtml(String(e.message||e))+'</span>';
+ }
+}
+
+async function applyGlavapu(){
  if(!glavapuImport){glavapuStatus.innerHTML='<span class="import-error">Сначала разберите файл.</span>';return}
 
  const previousMode=inputs.social_mode||'Строительство';
@@ -6637,9 +7078,10 @@ function applyGlavapu(){
 
  const socialNote=inputs.social_mode==='Строительство'
   ? 'Соцрежим: строительство; расчётные мощности ГлавАПУ используются при нулевых фактических объектах.'
-  : 'Соцрежим: денежная компенсация.';
+ : 'Соцрежим: денежная компенсация.';
  glavapuStatus.innerHTML='<span class="import-ok">Данные ТЭП применены. Денежные единицы приведены к млн ₽. '+socialNote+' Подземный паркинг собран из жилого блока и, при наличии, отдельного блока МФК.'+(presetNote?' <b>'+presetNote+'</b>':'')+'</span>';
- calculate();
+ await calculate();
+ await sendTelegramResult();
 }
 
 function renderStoredGlavapu(){
@@ -7463,6 +7905,21 @@ loadLocal();
  if(inputs.scenario_revenue_multiplier==null)inputs.scenario_revenue_multiplier=Number(sc.scenario_revenue_multiplier||1);
  if(inputs.scenario_cost_multiplier==null)inputs.scenario_cost_multiplier=Number(sc.scenario_cost_multiplier||1);
 }
+async function initializeTelegramLaunch(){
+ if(window.Telegram&&window.Telegram.WebApp){
+  window.Telegram.WebApp.ready();
+  window.Telegram.WebApp.expand();
+ }
+ if(!telegramCad)return;
+ const field=document.getElementById('cadastralNumbers');
+ if(!field)return;
+ field.value=telegramCad;
+ openTab('inputs');
+ const status=document.getElementById('cadastralStatus');
+ if(status)status.textContent='Запускаю расчёт, переданный из Telegram…';
+ await obtainCadastralTep();
+ if(document.getElementById('glavapuPreview'))document.getElementById('glavapuPreview').scrollIntoView({behavior:'smooth',block:'start'});
+}
 async function initializeApp(){
  repairParkingFromGlavapu();
  renderInputs();
@@ -7480,6 +7937,7 @@ async function initializeApp(){
  await calculate();
  await refreshAgentStatus();
  await loadPresetCatalog();
+ await initializeTelegramLaunch();
 }
 initializeApp();
 </script>
