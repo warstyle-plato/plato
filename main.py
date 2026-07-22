@@ -814,6 +814,14 @@ def _proxy_genplan(asset_path: str, request: Request) -> Response:
         raise HTTPException(status_code=502, detail="Калькулятор ГлавАПУ временно недоступен") from exc
     if len(body) > 20 * 1024 * 1024:
         raise HTTPException(status_code=502, detail="Ресурс калькулятора ГлавАПУ слишком большой")
+    if not clean_path and "text/html" in content_type.lower():
+        html = body.decode("utf-8", errors="replace")
+        # The calculator document stays on PLATO's origin, while its public static
+        # modules load directly from genplan.tech. Their server allows CORS, and
+        # this avoids relaying multi-megabyte bundles through Render.
+        html = html.replace('"/calc/', '"https://genplan.tech/calc/')
+        html = html.replace("'/calc/", "'https://genplan.tech/calc/")
+        body = html.encode("utf-8")
     cache_control = "public, max-age=86400" if clean_path else "no-store"
     return Response(body, media_type=content_type.split(";", 1)[0], headers={"Cache-Control": cache_control})
 
