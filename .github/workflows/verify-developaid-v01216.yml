@@ -1,10 +1,9 @@
 name: Verify DevelopAid v0.12.16 deployment
 
 on:
-  push:
+  pull_request:
+    types: [opened, synchronize]
     branches: [main]
-    paths:
-      - .github/workflows/verify-developaid-v01216.yml
 
 jobs:
   verify:
