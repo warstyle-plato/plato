@@ -1,0 +1,1 @@
+Retry release validation after fixing diagnostic capture.
