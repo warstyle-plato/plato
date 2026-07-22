@@ -1,9 +1,28 @@
-v0.5 smoke test OK
-Площадь территории: 0.651 га
-Площадь квартир: 13920 м²
-СПП жилая -> ГНС квартир: 21415 м²
-СПП нежилой части -> ГНС коммерции: 1367 м²
-Смена ВРИ: 1267.539 млн ₽
-Соцкомпенсация: 575.379 млн ₽
-Норматив машино-мест: 97
-Режим соцнагрузки после импорта: Денежная компенсация
+PLATO v0.12.5 EXPLANATION LAYOUT OK
+Python syntax: OK
+Static version and health version 0.12.5: OK
+Class/scenario and construction-cost explanations consolidated above tabs: OK
+Duplicate explanation below tabs removed: OK
+Header-note responsive alignment: OK
+No calculation formulas changed from v0.12.4: OK
+Hard-coded 11% / 9% / 7% scenario labels removed: OK
+Dynamic scenario label — base target 10.5% -> `Базовый → 10,5%`: OK
+Selected rate scenario preserved after label refresh: OK
+PF rate labels renamed in KPI and detailed reports: OK
+No calculation formulas changed from v0.12.3: OK
+Single-phase wrapper: EXACT OK
+3-phase calculation: OK
+Core-only tax schedule: OK
+Office-only tax schedule: OK
+Standalone retail-only tax schedule: OK
+Above-ground parking-only tax schedule: OK
+All KRT products together: OK
+KRT margin = revenue - physical units sold x unit cost: OK
+No profit tax before RVE: OK
+Monthly tax sum = reported project tax: OK
+Financing tax deductions reconcile to interest and fees: OK
+Late KRT sales extend project horizon: OK
+Late KRT sales included in financing rows (`sales`): OK
+Platon profit-tax explanation and trace: OK
+PF limit fee double count in NPV removed: OK
+Agent decision hotfix from v0.12.2 preserved: OK
