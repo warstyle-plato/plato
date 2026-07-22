@@ -8,6 +8,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: developaid-v01216-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   patch:
     runs-on: ubuntu-latest
