@@ -787,6 +787,17 @@ def analyze_cadastral_territory(req: CadastralAnalysisRequest) -> dict[str, Any]
 
 
 _GENPLAN_BASE_URL = "https://genplan.tech/calc/"
+_GENPLAN_ASSET_DIR = Path(__file__).resolve().parent / "genplan_assets"
+_GENPLAN_REQUIRED_ASSETS = {
+    "index-B0jIwkVO.js",
+    "rolldown-runtime-QTnfLwEv.js",
+    "@map-C8A16ZpL.js",
+    "@mui-Dy0laxMi.js",
+    "@react-D7li0Nm9.js",
+    "@mui-icons-BAApue2C.js",
+    "@map-B2k4QVOw.css",
+    "index-B8zlAO9I.css",
+}
 
 
 def _proxy_genplan(asset_path: str, request: Request) -> Response:
@@ -794,6 +805,13 @@ def _proxy_genplan(asset_path: str, request: Request) -> Response:
     clean_path = str(asset_path or "").lstrip("/")
     if any(part == ".." for part in clean_path.split("/")):
         raise HTTPException(status_code=400, detail="Некорректный путь калькулятора")
+    if clean_path.startswith("assets/"):
+        filename = clean_path.removeprefix("assets/")
+        if "/" not in filename and filename in _GENPLAN_REQUIRED_ASSETS:
+            local_path = _GENPLAN_ASSET_DIR / filename
+            if local_path.is_file():
+                media_type = "text/css" if filename.endswith(".css") else "application/javascript"
+                return FileResponse(local_path, media_type=media_type, headers={"Cache-Control": "public, max-age=604800"})
     target = _GENPLAN_BASE_URL + urllib.parse.quote(clean_path, safe="/@._-")
     if request.url.query:
         target += "?" + request.url.query
@@ -814,7 +832,8 @@ def _proxy_genplan(asset_path: str, request: Request) -> Response:
         raise HTTPException(status_code=502, detail="Калькулятор ГлавАПУ временно недоступен") from exc
     if len(body) > 20 * 1024 * 1024:
         raise HTTPException(status_code=502, detail="Ресурс калькулятора ГлавАПУ слишком большой")
-    if not clean_path and "text/html" in content_type.lower():
+    local_assets_ready = all((_GENPLAN_ASSET_DIR / name).is_file() for name in _GENPLAN_REQUIRED_ASSETS)
+    if not clean_path and "text/html" in content_type.lower() and not local_assets_ready:
         html = body.decode("utf-8", errors="replace")
         # The calculator document stays on PLATO's origin, while its public static
         # modules load directly from genplan.tech. Their server allows CORS, and
