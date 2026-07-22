@@ -17,27 +17,14 @@ jobs:
           ref: ${{ github.head_ref }}
           fetch-depth: 0
 
-      - name: Extract, patch, validate and commit
+      - name: Apply release patch
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          python - <<'PY'
-          from pathlib import Path
-
-          source = Path('.github/workflows/developaid-v01216.yml').read_text(encoding='utf-8').splitlines()
-          start = next(i for i, line in enumerate(source) if "python - <<'PY'" in line) + 1
-          end = next(i for i in range(start, len(source)) if source[i].strip() == 'PY')
-          lines = source[start:end]
-          first = next(line for line in lines if line.strip())
-          indent = len(first) - len(first.lstrip())
-          prefix = ' ' * indent
-          script = '\n'.join(line[indent:] if line.startswith(prefix) else line for line in lines) + '\n'
-          Path('/tmp/developaid_patch.py').write_text(script, encoding='utf-8')
-          PY
 
           set +e
-          python /tmp/developaid_patch.py > /tmp/developaid-patch.log 2>&1
+          python .github/patch_developaid_v01216.py > /tmp/developaid-patch.log 2>&1
           rc=$?
           set -e
           if [ "$rc" -ne 0 ]; then
