@@ -24,7 +24,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           set +e
-          {
+          (
             echo "STANDALONE_PATCH_VALIDATION"
             python .github/patch_developaid_v01216.py
             patch_rc=$?
@@ -37,7 +37,7 @@ jobs:
             exit_code=$(( patch_rc != 0 ? patch_rc : compile_rc ))
             echo "EXIT_CODE=$exit_code"
             exit "$exit_code"
-          } > /tmp/developaid-patch.log 2>&1
+          ) > /tmp/developaid-patch.log 2>&1
           rc=$?
           set -e
 
