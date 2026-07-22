@@ -27,6 +27,17 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('.github/patch_developaid_v01216.py')
+          s = p.read_text(encoding='utf-8')
+          old = 'text, count = re.subn(pattern, body.strip() + "\\n\\n", text, count=1)'
+          new = 'text, count = re.subn(pattern, lambda _m: body.strip() + "\\n\\n", text, count=1)'
+          if old not in s:
+              raise SystemExit('replace_function patch point not found')
+          p.write_text(s.replace(old, new, 1), encoding='utf-8')
+          PY
+
           set +e
           (
             echo "STANDALONE_PATCH_VALIDATION"
