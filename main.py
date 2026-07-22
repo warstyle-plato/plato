@@ -799,6 +799,9 @@ _GENPLAN_REQUIRED_ASSETS = {
     "area-panel-D5vuUEJ8.js",
     "calc-BTtvF0Z6.js",
     "domain-CwUeX6RP.js",
+    "@mui-charts-MKNt4QlC.js",
+    "analysis-panel-Bp17MNRz.js",
+    "map-page-CqxMR2K5.js",
     "@map-B2k4QVOw.css",
     "index-B8zlAO9I.css",
 }
