@@ -29,9 +29,12 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse, FileResponse, Response
 from pydantic import BaseModel
 
-app = FastAPI(title="PLATO Development Investment Model", version="0.12.11")
+app = FastAPI(title="PLATO Development Investment Model", version="0.12.12")
 
 PRESET_DIR = Path(__file__).resolve().parent / "presets"
+MANUAL_TEP_TEMPLATE_FILENAME = "PLATO_Шаблон_ТЭП.xlsx"
+MANUAL_TEP_TEMPLATE_VERSION = "PLATO_TEP_1"
+MANUAL_TEP_TEMPLATE_B64 = "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"
 SERVER_TEP_PRESETS = {
     "mishina": {
         "name": "Мишина",
@@ -120,6 +123,10 @@ class CadastralTepRequest(BaseModel):
 class TelegramResultRequest(BaseModel):
     session: str
     summary: dict[str, Any]
+
+
+class TelegramSessionRequest(BaseModel):
+    session: str
 
 
 
@@ -636,6 +643,199 @@ def parse_glavapu_xlsx(data: bytes, filename: str = "") -> dict[str, Any]:
     }
 
 
+def _manual_tep_number(value: Any, field: str) -> float:
+    if value is None or str(value).strip() == "":
+        return 0.0
+    number = _ru_number(value)
+    if number is None:
+        raise ValueError(f"Поле «{field}» должно содержать число")
+    if number < 0:
+        raise ValueError(f"Поле «{field}» не может быть отрицательным")
+    if number > 1_000_000_000:
+        raise ValueError(f"Поле «{field}» содержит нереалистично большое значение")
+    return float(number)
+
+
+def parse_manual_tep_xlsx(data: bytes, filename: str = "") -> dict[str, Any]:
+    tables = _xlsx_read_tables(data)
+    sheet_name = next((name for name in tables if name.strip().lower() == "тэп plato"), None)
+    if not sheet_name:
+        sheet_name = next((name for name in tables if "тэп" in name.lower() and "plato" in name.lower()), None)
+    if not sheet_name:
+        raise ValueError("Не найден лист «ТЭП PLATO». Скачайте актуальный шаблон у бота.")
+    rows = tables[sheet_name]
+    version = str(_find_parameter(rows, "Версия шаблона") or "").strip()
+    if version != MANUAL_TEP_TEMPLATE_VERSION:
+        raise ValueError("Версия шаблона не распознана. Скачайте актуальный файл командой /template.")
+
+    header_index = next(
+        (
+            index
+            for index, row in enumerate(rows)
+            if row
+            and "код" in str(row[0] or "").strip().lower()
+            and len(row) > 1
+            and "продукт" in str(row[1] or "").strip().lower()
+        ),
+        None,
+    )
+    if header_index is None:
+        raise ValueError("В шаблоне не найдена таблица продуктов ТЭП")
+
+    known_keys = set(TEP_DEFAULT)
+    tep_mapping: dict[str, dict[str, float]] = {}
+    for row in rows[header_index + 1:]:
+        code = str(row[0] if row else "").strip()
+        if not code:
+            continue
+        if code.upper() == "ИТОГО":
+            break
+        if code not in known_keys:
+            raise ValueError(f"Код продукта «{code}» изменён или не поддерживается")
+        if code in tep_mapping:
+            raise ValueError(f"Код продукта «{code}» встречается в шаблоне дважды")
+        label = str((row[1] if len(row) > 1 else None) or TEP_DEFAULT[code]["label"])
+        raw_values = [(row[index] if len(row) > index else None) for index in range(2, 8)]
+        values = [
+            _manual_tep_number(value, f"{label}: {field}")
+            for value, field in zip(
+                raw_values,
+                ("ГНС", "общая площадь", "полезная площадь", "продаваемая площадь", "передаваемая площадь", "количество"),
+            )
+        ]
+        gns, total_area, useful, saleable, transfer, units = values
+        if code == "underground_parking" and units > 0:
+            gns = units * 35.0
+        elif code == "above_parking" and units > 0 and gns <= 0:
+            gns = units * 25.0
+        if gns > 0 and total_area <= 0:
+            total_area = gns
+        if saleable > 0 and useful <= 0:
+            useful = saleable
+        tep_mapping[code] = {
+            "gns": gns,
+            "total_area": total_area,
+            "useful": useful,
+            "saleable": saleable,
+            "transfer": transfer,
+            "units": units,
+        }
+
+    missing = sorted(known_keys - set(tep_mapping))
+    if missing:
+        raise ValueError("В шаблоне отсутствуют обязательные строки: " + ", ".join(missing))
+
+    total_gns = sum(item["gns"] for item in tep_mapping.values())
+    total_saleable = sum(item["saleable"] for item in tep_mapping.values())
+    monetizable_units = sum(
+        tep_mapping[key]["units"] for key in ("above_parking", "underground_parking", "storage")
+    )
+    if total_gns <= 0:
+        raise ValueError("Не заполнена ГНС ни одного продукта")
+    if total_saleable <= 0 and monetizable_units <= 0:
+        raise ValueError("Не заполнены продаваемые площади либо количество паркинга/кладовых")
+
+    project_name = str(_find_parameter(rows, "Название проекта") or "").strip()[:120]
+    site_area_ha = _manual_tep_number(_find_parameter(rows, "Площадь территории"), "Площадь территории")
+    land_rights_cost_mln = _manual_tep_number(
+        _find_parameter(rows, "Смена ВРИ / земельные права"),
+        "Смена ВРИ / земельные права",
+    )
+    social_compensation_mln = _manual_tep_number(
+        _find_parameter(rows, "Социальная компенсация"),
+        "Социальная компенсация",
+    )
+    social_units = sum(tep_mapping[key]["units"] for key in ("kindergarten", "school", "clinic"))
+    inputs_mapping: dict[str, Any] = {
+        "land_rights_cost_mln": land_rights_cost_mln,
+        "social_compensation_mln": social_compensation_mln,
+        "social_mode": "Денежная компенсация" if social_compensation_mln > 0 and social_units <= 0 else "Строительство",
+        "kindergarten_places": tep_mapping["kindergarten"]["units"],
+        "school_places": tep_mapping["school"]["units"],
+        "clinic_capacity": tep_mapping["clinic"]["units"],
+        "social_dou_gba_sqm": tep_mapping["kindergarten"]["total_area"],
+        "social_school_gba_sqm": tep_mapping["school"]["total_area"],
+        "social_clinic_gba_sqm": tep_mapping["clinic"]["total_area"],
+        "offices_enabled": any(tep_mapping["offices"][key] > 0 for key in ("gns", "saleable")),
+        "offices_gba_sqm": tep_mapping["offices"]["gns"],
+        "offices_saleable_sqm": tep_mapping["offices"]["saleable"],
+        "retail_enabled": any(tep_mapping["standalone_retail"][key] > 0 for key in ("gns", "saleable")),
+        "retail_gba_sqm": tep_mapping["standalone_retail"]["gns"],
+        "retail_saleable_sqm": tep_mapping["standalone_retail"]["saleable"],
+        "above_parking_enabled": tep_mapping["above_parking"]["units"] > 0,
+        "above_parking_spaces": tep_mapping["above_parking"]["units"],
+        "above_parking_area_per_space_sqm": (
+            tep_mapping["above_parking"]["gns"] / tep_mapping["above_parking"]["units"]
+            if tep_mapping["above_parking"]["units"] > 0
+            else 25.0
+        ),
+    }
+    recognized = [
+        {
+            "key": key,
+            "label": TEP_DEFAULT[key]["label"],
+            "gns": values["gns"],
+            "saleable": values["saleable"],
+            "units": values["units"],
+        }
+        for key, values in tep_mapping.items()
+        if any(value > 0 for value in values.values())
+    ]
+    return {
+        "source": {
+            "filename": filename or MANUAL_TEP_TEMPLATE_FILENAME,
+            "format": "Ручной шаблон ТЭП PLATO",
+            "template_version": version,
+            "sheet": sheet_name,
+        },
+        "project_name": project_name,
+        "site_area_ha": site_area_ha,
+        "inputs": inputs_mapping,
+        "tep": tep_mapping,
+        "recognized": recognized,
+        "summary": {
+            "total_gns_sqm": total_gns,
+            "total_saleable_sqm": total_saleable,
+            "apartment_saleable_sqm": tep_mapping["apartments"]["saleable"],
+            "parking_spaces": tep_mapping["above_parking"]["units"] + tep_mapping["underground_parking"]["units"],
+            "land_rights_cost_mln": land_rights_cost_mln,
+            "social_compensation_mln": social_compensation_mln,
+        },
+    }
+
+
+@app.get("/templates/tep")
+def download_manual_tep_template():
+    try:
+        content = base64.b64decode(MANUAL_TEP_TEMPLATE_B64, validate=True)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail="Шаблон ТЭП повреждён") from exc
+    encoded_name = urllib.parse.quote(MANUAL_TEP_TEMPLATE_FILENAME)
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Cache-Control": "public, max-age=3600",
+            "Content-Disposition": f"attachment; filename=PLATO_TEP_template.xlsx; filename*=UTF-8''{encoded_name}",
+        },
+    )
+
+
+@app.post("/import/manual-tep")
+async def import_manual_tep(request: Request, filename: str = "") -> dict[str, Any]:
+    data = await request.body()
+    if not data:
+        raise HTTPException(status_code=400, detail="Файл не передан")
+    if len(data) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Файл слишком большой. Лимит 5 МБ.")
+    try:
+        return parse_manual_tep_xlsx(data, filename)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Не удалось разобрать ручной ТЭП: {exc}") from exc
+
+
 @app.post("/import/glavapu")
 async def import_glavapu(request: Request, filename: str = "") -> dict[str, Any]:
     data = await request.body()
@@ -697,7 +897,7 @@ def analyze_cadastral_territory(req: CadastralAnalysisRequest) -> dict[str, Any]
         headers={
             "Accept": "application/json",
             "Content-Type": "application/json; charset=utf-8",
-            "User-Agent": "PLATO-Development-Model/0.12.11",
+            "User-Agent": "PLATO-Development-Model/0.12.12",
         },
     )
     try:
@@ -836,7 +1036,7 @@ def _proxy_genplan(asset_path: str, request: Request) -> Response:
         target,
         headers={
             "Accept": request.headers.get("accept", "*/*"),
-            "User-Agent": "PLATO-Development-Model/0.12.11",
+            "User-Agent": "PLATO-Development-Model/0.12.12",
         },
     )
     try:
@@ -1053,7 +1253,12 @@ def _telegram_user_allowed(user_id: int) -> bool:
     return not allowed or int(user_id) in allowed
 
 
-def _telegram_session(chat_id: int, cadastral_numbers: list[str], lifetime_seconds: int = 86400) -> str:
+def _telegram_session(
+    chat_id: int,
+    cadastral_numbers: list[str],
+    lifetime_seconds: int = 86400,
+    manual_tep: dict[str, Any] | None = None,
+) -> str:
     token = _telegram_token()
     if not token:
         raise RuntimeError("Telegram-бот не настроен")
@@ -1062,7 +1267,11 @@ def _telegram_session(chat_id: int, cadastral_numbers: list[str], lifetime_secon
         "cad": list(cadastral_numbers),
         "exp": int(time.time()) + int(lifetime_seconds),
     }
+    if manual_tep:
+        payload["manual_tep"] = manual_tep
     raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    if len(raw) > 24_000:
+        raise RuntimeError("Ручной ТЭП слишком велик для Telegram-сессии")
     encoded = base64.urlsafe_b64encode(raw).rstrip(b"=")
     signature = hmac.new(token.encode("utf-8"), encoded, hashlib.sha256).digest()[:20]
     return encoded.decode("ascii") + "." + base64.urlsafe_b64encode(signature).rstrip(b"=").decode("ascii")
@@ -1084,14 +1293,21 @@ def _telegram_verify_session(value: str) -> dict[str, Any]:
         payload["chat_id"] = int(payload["chat_id"])
         raw_cad = payload.get("cad") or []
         payload["cad"] = _parse_cadastral_numbers(raw_cad) if raw_cad else []
+        manual_tep = payload.get("manual_tep")
+        if manual_tep is not None and not isinstance(manual_tep, dict):
+            raise ValueError("manual_tep")
         return payload
     except Exception as exc:
         raise HTTPException(status_code=403, detail="Telegram-сессия недействительна или истекла") from exc
 
 
-def _telegram_web_app_url(chat_id: int, cadastral_numbers: list[str]) -> str:
+def _telegram_web_app_url(
+    chat_id: int,
+    cadastral_numbers: list[str],
+    manual_tep: dict[str, Any] | None = None,
+) -> str:
     fragment: dict[str, str] = {
-        "telegram_session": _telegram_session(chat_id, cadastral_numbers),
+        "telegram_session": _telegram_session(chat_id, cadastral_numbers, manual_tep=manual_tep),
     }
     if cadastral_numbers:
         fragment["cad"] = ", ".join(cadastral_numbers)
@@ -1113,6 +1329,49 @@ def _telegram_send_message(
     if reply_markup:
         payload["reply_markup"] = reply_markup
     return _telegram_api("sendMessage", payload)
+
+
+def _telegram_send_template(chat_id: int) -> Any:
+    return _telegram_api(
+        "sendDocument",
+        {
+            "chat_id": int(chat_id),
+            "document": _TELEGRAM_PUBLIC_BASE_URL + "/templates/tep",
+            "caption": (
+                "<b>Шаблон ручного ввода ТЭП PLATO</b>\n\n"
+                "1. Заполните жёлтые ячейки.\n"
+                "2. Не меняйте коды и названия строк.\n"
+                "3. Отправьте заполненный .xlsx обратно в этот чат.\n\n"
+                "Бот проверит файл и покажет сводку перед открытием модели."
+            ),
+            "parse_mode": "HTML",
+        },
+    )
+
+
+def _telegram_download_document(document: dict[str, Any]) -> tuple[bytes, str]:
+    filename = str(document.get("file_name") or "ТЭП.xlsx").strip()[:180]
+    if not filename.lower().endswith(".xlsx"):
+        raise ValueError("Нужен заполненный файл .xlsx из шаблона PLATO")
+    declared_size = int(document.get("file_size") or 0)
+    if declared_size > 5 * 1024 * 1024:
+        raise ValueError("Файл слишком большой. Лимит — 5 МБ")
+    file_id = str(document.get("file_id") or "")
+    if not file_id:
+        raise ValueError("Telegram не передал идентификатор файла")
+    info = _telegram_api("getFile", {"file_id": file_id}) or {}
+    file_path = str(info.get("file_path") or "")
+    if not file_path:
+        raise ValueError("Telegram не подготовил файл к загрузке")
+    url = f"https://api.telegram.org/file/bot{_telegram_token()}/{urllib.parse.quote(file_path, safe='/')}"
+    try:
+        with urllib.request.urlopen(url, timeout=20) as response:
+            data = response.read(5 * 1024 * 1024 + 1)
+    except Exception as exc:
+        raise RuntimeError(f"Не удалось скачать файл из Telegram: {exc}") from exc
+    if len(data) > 5 * 1024 * 1024:
+        raise ValueError("Файл слишком большой. Лимит — 5 МБ")
+    return data, filename
 
 
 def _telegram_money_mln(value: Any) -> str:
@@ -1143,17 +1402,67 @@ def _telegram_start_message(chat_id: int, user_id: int) -> None:
         )
         return
     button = {
-        "inline_keyboard": [[{
-            "text": "Открыть PLATO",
-            "web_app": {"url": _telegram_web_app_url(chat_id, [])},
-        }]]
+        "inline_keyboard": [
+            [{
+                "text": "Открыть PLATO",
+                "web_app": {"url": _telegram_web_app_url(chat_id, [])},
+            }],
+            [{
+                "text": "Скачать шаблон ТЭП",
+                "callback_data": "tep_template",
+            }],
+        ]
     }
     _telegram_send_message(
         chat_id,
         "<b>PLATO · девелоперская инвестиционная модель</b>\n\n"
-        "Отправьте один или несколько кадастровых номеров — через запятую или с новой строки. "
-        "Я сформирую территорию и открою готовый расчёт ТЭП ГлавАПУ внутри PLATO.\n\n"
-        "Пример: <code>77:02:0016009:1934, 77:02:0016009:1935</code>",
+        "Можно начать двумя способами:\n"
+        "• отправить кадастровые номера — я получу расчёт ТЭП ГлавАПУ;\n"
+        "• скачать Excel-шаблон, заполнить ТЭП вручную и прислать файл обратно.\n\n"
+        "Пример номера: <code>77:02:0016009:1934</code>",
+        reply_markup=button,
+    )
+
+
+def _telegram_handle_manual_document(chat_id: int, document: dict[str, Any]) -> None:
+    try:
+        data, filename = _telegram_download_document(document)
+        parsed = parse_manual_tep_xlsx(data, filename)
+    except (ValueError, RuntimeError) as exc:
+        _telegram_send_message(
+            chat_id,
+            "<b>Не удалось принять ручной ТЭП.</b>\n" + html.escape(str(exc)) +
+            "\n\nСкачайте актуальный шаблон командой /template и не меняйте его структуру.",
+        )
+        return
+
+    summary = parsed.get("summary") or {}
+    project_name = str(parsed.get("project_name") or "Без названия")
+    manual_session = {
+        "project_name": parsed.get("project_name") or "",
+        "site_area_ha": parsed.get("site_area_ha") or 0,
+        "source": parsed.get("source") or {},
+        "inputs": parsed.get("inputs") or {},
+        "tep": parsed.get("tep") or {},
+    }
+    button = {
+        "inline_keyboard": [[{
+            "text": "Открыть ТЭП в PLATO",
+            "web_app": {"url": _telegram_web_app_url(chat_id, [], manual_session)},
+        }]]
+    }
+    _telegram_send_message(
+        chat_id,
+        "<b>Ручной ТЭП распознан</b>\n"
+        f"Проект: <b>{html.escape(project_name)}</b>\n"
+        f"Территория: <b>{_telegram_number(parsed.get('site_area_ha'), 4)} га</b>\n"
+        f"ГНС: <b>{_telegram_number(summary.get('total_gns_sqm'), 0)} м²</b>\n"
+        f"Продаваемая площадь: <b>{_telegram_number(summary.get('total_saleable_sqm'), 0)} м²</b>\n"
+        f"Квартиры: <b>{_telegram_number(summary.get('apartment_saleable_sqm'), 0)} м²</b>\n"
+        f"Паркинг: <b>{_telegram_number(summary.get('parking_spaces'), 0)} м/м</b>\n"
+        f"Смена ВРИ: <b>{_telegram_money_mln(summary.get('land_rights_cost_mln'))}</b>\n"
+        f"Социальная компенсация: <b>{_telegram_money_mln(summary.get('social_compensation_mln'))}</b>\n\n"
+        "Проверьте сводку и откройте модель. Финансовые параметры можно настроить уже в PLATO.",
         reply_markup=button,
     )
 
@@ -1177,11 +1486,18 @@ def _telegram_handle_message(message: dict[str, Any]) -> None:
         status = "подключён" if _TELEGRAM_RUNTIME.get("configured") else "запускается"
         _telegram_send_message(
             chat_id,
-            f"<b>PLATO bot:</b> {status}\nTelegram ID: <code>{user_id}</code>\nВерсия: 0.12.11",
+            f"<b>PLATO bot:</b> {status}\nTelegram ID: <code>{user_id}</code>\nВерсия: 0.12.12",
         )
         return
     if not _telegram_user_allowed(user_id):
         _telegram_start_message(chat_id, user_id)
+        return
+    if command == "/template":
+        _telegram_send_template(chat_id)
+        return
+    document = message.get("document")
+    if isinstance(document, dict):
+        _telegram_handle_manual_document(chat_id, document)
         return
 
     try:
@@ -1230,6 +1546,27 @@ def _telegram_handle_update(update: dict[str, Any]) -> None:
     message = update.get("message")
     if isinstance(message, dict):
         _telegram_handle_message(message)
+        return
+    query = update.get("callback_query")
+    if isinstance(query, dict):
+        sender = query.get("from") or {}
+        user_id = int(sender.get("id") or 0)
+        message = query.get("message") or {}
+        chat_id = int(((message.get("chat") or {}).get("id")) or user_id)
+        query_id = str(query.get("id") or "")
+        data = str(query.get("data") or "")
+        if query_id:
+            try:
+                _telegram_api("answerCallbackQuery", {"callback_query_id": query_id})
+            except Exception:
+                pass
+        if not chat_id:
+            return
+        if not _telegram_user_allowed(user_id):
+            _telegram_start_message(chat_id, user_id)
+            return
+        if data == "tep_template":
+            _telegram_send_template(chat_id)
 
 
 def _telegram_configure() -> None:
@@ -1243,13 +1580,14 @@ def _telegram_configure() -> None:
         _telegram_api("setWebhook", {
             "url": _TELEGRAM_PUBLIC_BASE_URL + "/telegram/webhook",
             "secret_token": _telegram_webhook_secret(),
-            "allowed_updates": ["message"],
+            "allowed_updates": ["message", "callback_query"],
             "drop_pending_updates": False,
         })
         _telegram_api("setMyCommands", {
             "commands": [
                 {"command": "start", "description": "Начать расчёт"},
                 {"command": "help", "description": "Как пользоваться"},
+                {"command": "template", "description": "Скачать шаблон ТЭП"},
                 {"command": "status", "description": "Статус подключения"},
             ]
         })
@@ -1294,7 +1632,7 @@ def telegram_status() -> dict[str, Any]:
         "allowed_users_count": len(allowed),
         "configured_at": _TELEGRAM_RUNTIME.get("configured_at") or "",
         "last_error": _TELEGRAM_RUNTIME.get("last_error") or "",
-        "version": "0.12.11",
+        "version": "0.12.12",
     }
 
 
@@ -1326,6 +1664,18 @@ async def telegram_webhook(request: Request) -> dict[str, bool]:
     return {"ok": True}
 
 
+@app.post("/telegram/session-data")
+def telegram_session_data(req: TelegramSessionRequest) -> dict[str, Any]:
+    session = _telegram_verify_session(req.session)
+    chat_id = int(session["chat_id"])
+    if not _telegram_user_allowed(chat_id):
+        raise HTTPException(status_code=403, detail="Доступ к боту закрыт")
+    return {
+        "cadastral_numbers": session.get("cad") or [],
+        "manual_tep": session.get("manual_tep"),
+    }
+
+
 @app.post("/telegram/result")
 def telegram_result(req: TelegramResultRequest) -> dict[str, bool]:
     session = _telegram_verify_session(req.session)
@@ -1349,11 +1699,19 @@ def telegram_result(req: TelegramResultRequest) -> dict[str, bool]:
             pass
     margin_text = _telegram_number(float(summary.get("margin") or 0) * 100, 1) + "%"
     parking = float(summary.get("parking_spaces") or 0)
-    cads = ", ".join(numbers) if numbers else "не указаны"
+    project_name = str(summary.get("project_name") or "").strip()
+    source_label = str(summary.get("source_label") or "ТЭП PLATO").strip()
+    if numbers:
+        scope_line = f"Участки: <code>{html.escape(', '.join(numbers))}</code>\n"
+    elif project_name:
+        scope_line = f"Проект: <b>{html.escape(project_name)}</b>\n"
+    else:
+        scope_line = ""
     text = (
         "<b>Расчёт PLATO готов</b>\n"
-        f"Участки: <code>{html.escape(cads)}</code>\n\n"
-        "<b>ТЭП ГлавАПУ</b>\n"
+        + scope_line +
+        f"Источник ТЭП: <b>{html.escape(source_label)}</b>\n\n"
+        "<b>ТЭП</b>\n"
         f"• территория — {_telegram_number(summary.get('site_area_ha'), 4)} га\n"
         f"• квартиры — {_telegram_number(summary.get('apartment_area_sqm'), 0)} м²\n"
         f"• смена ВРИ — {_telegram_money_mln(summary.get('change_vri_mln'))}\n"
@@ -1373,7 +1731,7 @@ def telegram_result(req: TelegramResultRequest) -> dict[str, bool]:
     button = {
         "inline_keyboard": [[{
             "text": "Открыть и изменить расчёт",
-            "web_app": {"url": _telegram_web_app_url(chat_id, numbers)},
+            "web_app": {"url": _telegram_web_app_url(chat_id, numbers, session.get("manual_tep"))},
         }]]
     }
     _telegram_send_message(chat_id, text, reply_markup=button)
@@ -2836,7 +3194,7 @@ def calculate(req: CalcRequest) -> dict:
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "version": "0.12.11"}
+    return {"status": "ok", "version": "0.12.12"}
 
 
 @app.get("/defaults")
@@ -5598,7 +5956,7 @@ def _openai_responses_request(payload: dict[str, Any]) -> dict[str, Any]:
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
-            "User-Agent": "PLATO-Development-Model/0.12.11",
+            "User-Agent": "PLATO-Development-Model/0.12.12",
         },
         method="POST",
     )
@@ -6044,7 +6402,7 @@ tfoot th{border-top:2px solid #111;color:#111;background:#fff}
 <div class="shell">
   <div class="brandbar"><img src="data:image/webp;base64,UklGRkQfAABXRUJQVlA4IDgfAADw2wCdASqQBuUAPlEokUWjoqIRSg08OAUEtLd8Bm4LvaDeIgcn+HIR46WTKOC9Gf3bth/t39s/cD+2f9vudfMn65+z/7efaphb7M9Sn499p/2X9k/bT8mfyH/Ld5/AC/Hf53/ifyd/sXDHbh5gXtt9X/0n91/Jr6QZmv2VqA/mrxmFADyk/5j/vf3j/R/uv7cfo7/x/5n4C/5d/av+p+d/xbf/T23fsX//fdI/Wv/7j2GpthKGKJYCQF5ahiiWAkBPyYnEwOOJtbMD3CrKVFRd5NbWIYaD3m8cTa2kPbwEA2ZIe2KHKWIIE2to5AZYje8C8tQxRLASAvLUHstWEuOJtbMD261fzzZbHpWhDo3zy3qM7adn8ZOAqL8P9jJ2ug8cTazQDJWcBohiiIlFKCriw2C+iJWGGK9zJX+FpEjPgFtvxhf13uougBg79kMh7zeOJtbSI/e0EJjCwrW1T7Bt+utZEjPn7YxBgd6IlgCh8vUCUJCqAKuLDX+PGlk61LALEP/ElHQQJwFjK+ar+/4DUg+frZhm11TNbzbuHqu2DSg+4mO21TcKKY/oWX9M2TOpzHy6PEokY8ixc62NB7zcQ2NTW0iRhwGrg28Hu3AuOuDS67jwdnUqJq/w5sdZn1pEjQOOJs2PmiwTj8BrMfZhDU8dTt9yG2intwWlmgb3ebxxM+HxvLrPINjWRqy/4pjv+yqr2BL+vqsg94HHExxnjiQUXuDCNqJuN9gWGr+CgBiGwHTDn8iRoHG2+IZ0HvN4Ik4fiPPgBRTHZ3xzB1ZpjhI+Nt5uISr0zXpyuwk+RI0DjXeQnrNjaAUcjBPK9MB8qDurYmjBvA8qdKWxoPebw1+cl8W0iRntiEsqxXSjIDRCLBh9iShbSJGJGmz7JKT0raro0S9cRK01zag2+2kSNA4a5vLrSJGFq+zMcUwa3S2GduE26clmMurtnPP1WiqA4i2UJaxEaBxxMmlO4G3tnbTfyXKXCTMhRmBKIDR0w/tXtEQhI7ktA44m1nkGN5dZ44mR9AmKeuq+9f/5EjQOOHkPkes5VV8hUmsCtCqB67sCbW0iRjyLFzrYzH7v+aok0P2TudrIifI5tAzvuwEtEeodmw2H01njibOeBa4rXTuR5hwMhE+UYk7cUDDzQCy2eWBGJP3xSz62NB7qrpXoQTa2jbvS4LeTCRgkaBxxNo2GbzCozrgJGsqPVM8KN7SJGgcbb4hnQe5Zpa2D84v3kJvv4niMTpgHw35kCB2gIyIJaRy6tpEgE/kWwikGzQDOtzNW6+4e4y8vu4CP3ETTJfbpeix5JXW+A3YSfIkY8vftCCbW0brBd8JM6NMrzd73BqfIkaBwVmOdV2VFfFSp8qZjESc93m8cTazxiUsZ1dLJcRN8qybxK4IRoHGxJysLm58MW96AM8Aa929U0ig2sg0EKMtKY4sbyqXfTZCJIC2hqCZ5iF/PNvQQ6tDwud3azxxM4qxDOg95vGu+sSEKoFtUVsWWHF+25vHE2ssT4kzccRYeLJZHOCjfikYiTnu83jibWeMSljJMGLto1CgAQmV0u7XyJGgcFY4KaYD3XcqMhd4ii8crXDlA25WN7YwlA77zDdB7zeNewBXP7Vm70vUGIz8o1tIfmbZfx4CbW0da9umgofaaWuM0Qu37DpFSqVd0oV082VZ6RfG4n/9CYF3R/vxH3v/XIAo3LQcZ6d5oaOPQD6/5vHE2tlpVrxqvNYGb8SHg9atk+1uTw/3ontpEjQOCg6skDBKd3eKPr9gG6Urgcferb2AXxnwCM0eJGbxxNnAJIx2HjkcfOcEwZ2DbCKfIdZFU0RlAPXZJJp8zwE2tpEtgH+wwvDkvmeYo3c1dcGrBUZbr/N2mPJKuaDa5JHMBtTL2TLDOyOYc2FIQkzW0iRoHHE2tpEjQOOJtbt4jQOOJtbSJGgccTa2kSNA5Bsa2kSNA44m1tIkaBxxNraeUaBxxNraRICm+tAolgJAXlqGKJYCQF5ahiiWAkBeWoYolgJAXlqGKJYCQF5ahiiWAkBeWoYolgJAXlqGKJYCQF5ahiiWAkBeWoYolgJAXlqGKJYCQF5ahihlETI1suTEShbSJGgccTa2kSNA44m1tIkaBxxNraRI0DjibW0iRoHHE2tpEjQOOJtbSJGgccTa2kSMkum9NLdU4VcWGwX0RLASAvLUMUSwEgLy1DFEsBIC8tQxRLASAvLUMUSwEgLy1DFEsBIC8tQxRLASAvLUMUSwEgLy1DFEsBIC8tQxRLASAvLUMUSwB/zXeRlaCbW0iRoHHE2tpEjQOOJtbSJGgccTa2kSNA44m1tIkaBxxNraRI0DjibW0iRoHHE2tpEjQONcAAP78nPZ1QxDwjw8Ry/mKg/5QcLH1Y1qOWumDn7BujG+vuKMLdeg9UPp8dtXEOVKJ6xYGecPAsjHypoSNzSDJCmntzcd3dkjmsK1JJ8N4dfrcIUOyU+Gluoh7O6iTQvDYQJ5WX/mftkPc7pWw0jE9jo5JYLwf8xZeH20EkujDFdLY5PVoXprKqj/g1vr3VCrnbfxeWxXH/rBmmxh8LZ6I40bsXBjmyh+mkKmkh9lvjsZDVBGr0EXA9Xe8zlAr5L4p6xDyt5CC/GJiukyUs6fKXiPKI7nwTActLsx9SH3exHVY22RZw4MWtn4Q1k/Vh98yOWgJMmp0r+EBb/Y3zhW4phZaifyQv2xFuIsXHou7s0BZm1VHvler2UYI2efL/wdxgYLBg7yEDYdepdMaIj50n32I69S/zdWVSXtd9t7COM7pOIMKQLwjgH2NUYXUSDX3J94/lyc/uo2P8TH8GtyBaoWU3BHPIQKWyQxB3uuOQowDAZTF8Ooai7Mllj/fNUET4MzWxiwMcR551J4G2h6P5frfSzrX5mRcjFF9W+2LoBfuf3FL0c9WpSaFmDKrWYIM4JByJJk9MsJotWoSyLi8Fu8tnGs7qjEZKwMNAQirfjS6b1Xtm+xhVGBP9N0qbqB2/3HhvpMpt9fmhIbdtTFoQQDl4Se+weBtSmtUCF+01wshJVthNJr/BLCKOEvDLzkG9hGXdvD00QRVuL2V+x+DMNlnAAHljqhlucxOKN8DPQbJsy4MyKOhLBcEuM/2ZOCenwaOZ2kC1TKKzGNP+RXpIxaZWK6XSQL5vccKuKp/iX4Efeyydm0gWDYDOyblA67hDe8LsUsVIpakj3aXpu0lnscnyCxBTvslmPMdQHpvrxfspj3HEu3xzPUgW9yMLt7EL5IeTUu9STiIyvucoKq/y9B3MvRbPDedabHVYbCJmdeJ2i9UTLPRKvlPzcF8yzZ7zpGOPr0yvTz/y6tUYbmiZdrT7YNY13mgYmCP/LbsiiI957uaE9LzkO7xC+C5Zt0UaTVouo+/+d+Mf5Rrjb6BWmEi5lAfunZK5gbxjQaPMqRgMXWMo0VKVvtnXERxhk8dlXn0Zs+EY4wpp5i8S8G1SgFKVwoWO3NBE4lYZ9MEVMf7+6hnP2aTB7U1QQrDErAgdLp1Qi5QN4H6+hESLBOcAMdphWsH0JP5Y/pCrAzarcPQqhSE7gdUvr9nd/dM4TxQZZ9OCAiMuVSRsyDU5b4LawH719opJTVRVoDV3+mFWeKHtENhmgBCeSuZwtAuNOAg5sgnypCdLC1yZ5ZnwfRk376qbzLi4/m5NhAOuiFxPN4R/nLoL0obdKDGvVQBwcnw9ltLd3f6OLMFHvMrYDE+w+lX1acm+0zZdGNmFVYEadQl+SYdzEe7IyPlt91SmmXgD3kgFlQAs9TdeT/wh5XJX1eLD/ADlYdobNbil7dVRIV0R9DwPv7wymKGW2NlRF/GJlmUYs+fACm65WB1bL6d6KsBYFhL1zacVQ+vZ1vvWqpmug3oYCMC+TIsBkhaUntBLLOqyMayZUc/Gbw54OmXZs5sqQ4jDIGDc7rJXRrajL044M/7mp94y5R3c2QxgaZLXOonGfJnPQs2xEmUrfIkf3NRf/5SM4TDqeswCSvnoU7cLXJ1kbI88jZmle+4Wh8GdJ3Ij92joRodfl7e+nP/ZKM1QMhcCYkEuE/bMPx3sJdyBB4zTF9bvZsfbDQ0fR4v5G63yR733Q/t0EjWA9xwG6IWMo/bGYi81hTrdA/ienItm7mV+gaVRwVNEFhxvYANqtxL0IvS+RiXNGk/akp9uMNkCfFij0Apc6qST8xEW3GoecJUXh4+4EQct2RI9LRLk7psZJ8uYzd4Q3+4d+eBrCLDgxbMNK1Q9nZkd9Acje2t5WFO5yuwsYQ6TDgfd7+eH2jYXzrEi48tjcMNwtLOvP672EDSTjMKzyqdmkW9fkKIEFY++mQf8zxz81EFdMwiZIDpbKeVMgetnF7+wAzsxYBnZafrBLAfTnI2XRV9VkUNDFGcZt7/1+eTZNgKgm5qC+c/gQDIxbrs+lnuCfCYQBWrR/VUi0r2OUG8lAfyMjXA3F/bGEr0sMiHfniPwxQrpTiR7a5r9jHNH0ydj5HiyphEgp9UISgCl2khWEkKrLyX5uD6XCDzFcuADknKLtEkr+Bvs5DoZnk8kid6vNXK4zQyvomJnoRlXYXY9jYsxHlnA9LUjHeGjgoHkRtAvozajP/uHYSRvA8K69KWU9lQEvLESTPDD4TJ1IDZ1KdoU3EZ5NauZzxi2KUb40QNkJvkDKFjw/S8zbVew8xXJO+kxtU2Y4aTmiRTMUg7xooeW6VBurvYxr04mCxVVzxKyHFhn4ZRYARog9vC2hON7ELzBdiIRwoq7ohrD4k+0sUi7CxdYO0AF2nYgfzEP4guT2KinYp5If1DKmfbnnwkpsRxK/n2CknjUwm791zb6qMCHH5Okh8kORCcZHJT22oqobH7ZQj3ywiLxh7NWfFESQEuGUs9uftenSE2MFiwJAccgdkaEVhGW+f1qgmFBohziaIjfZccpF2PzapYVcRlGjdD89nyyAkKa0kbaEPEaG63va1NqohfB0Ijz1vUadEZKoF0Z7XlKMWARifMA5BwGZ2Gi+EXppeAcxYvCHAbXVzdlQxw9j2C1JOZptepkRP0n2wxPcrHuus/C9Ek7NR8NxTeGV4eecIIhmk+Q0+9OGfKdMRQpCSKURZ91cFiEOi26jhhRo1sn4JbK/CNKeMuSxOHSUDFSCVjD+rl4dB2BsnjX4+0D9wqtW6hyHC5e/KK8JurCqU1HY//lM7yovFPss3Czeq6RDLU5N5G8sWtTR1SmlBtb4ZswxmfXgPh1XvQKR8IXlF0pyQGBeky7qCqAYOH7rGzyuVEWwbIGqhkSb9Rhfl28akoW0xUlqOtriOa5N+ejADL5ORrVv0FJNxURnBzb6OUEy9o65LpaF+cFWV1AWyhooaE6H/F6WrgWZVK4FaH5VG016fBWjNRMlia+IyO471X9TS2BIctVwj60pNdHQ+plibpX3aGJwo8J2oOq8c0/fbPUdL5tQyfAB13yk3iTI995udExSmrq2lhHVz/4oaXhHDIKVCBE68KHTQH+T3MhcjXrSyLlTN5ahrM3fT9XQZezYlSm8bB8KvTeSpjf9cQR1kb3g6kYFSkbCQUkOuzIELANUbXDcTHYCvpJQKrDMtD3mH6tqtEFgHUpYq06O18AO6uhfpLV+mRPxJMDSwv9L2AxYfzDH6nOEw7BuIT303QwXPItS2KQ6MsdqTWNixH6QoKueWyzjlmuyFiezfJDDduSgQpKaAmOcAWmZbdY43x2llqRxmUcXVcAdakTUFfvoXnPzEO+vAm5iwIPY99neW2776tCDNpoAaS/JW1j/DvtvcIwECFBpB6MeWzB/nDoUfP5u8tDMZtAB5TCoAMSZH522i+DtakTgXgqE5pShi0+BFAhopjtPan+PIlOAWrqGeWLRGnVPzY/DCxlVZBFbN9m2yX63uD4XPILqDU9Nr7oz2dEIlAbj8ljQ3IHhAqfgqfN7++G99S8t56U4uOarjQyw/brl0yo2y6A5363xCoFNgWt84bHBQeLgAU8fBH1TovVYyyyqj/mIkhQb+jOtgXxQ5rfZG2kYoQIjKqbIw3qeCGpWZf3o77lw9dd9CGy6dmyofMhbPh7mOQdlRZZ03g2TF+09rfkT2qAz9C9tvvMa15I0/2uAj/tU3pm8XA/NJif/eEigp/03+5onvT4S0y9P8EVY0InmVVew+8/3iZJdg+VHpDcd3wNCmGdtlokb2UhZG4O2NHOoQvraLeruujhKbuZxXgRZXEcN72JZaLRwFK50ZEDD2iIowZ0FSYR/mC7ZCOdA9pr81057hwL/yH6KZZTKzUO+hQIAZIxRJEz25PnRCR94grNzO3K6oKMbI6lV45NYoTI63/wtc7G6HkmqhxyYxRQgikm77cN7cELvH+D5cH+MIlb218tHu96W0e/WwaZBIffTdECIQHIiqf2I0HXAGLs9H13/26YzFHA+pVIIPxAw48WrgoB8wfVIFkE8ZHVkxaXOtNEGpjS26pKCogl6mDWTj0gc12Uuk4wxLhkifbVLZK290VIOtRQundIJyT0UzBxQKztOWl9QCPogRg0xA47aaraODmAXhqFqIrjg0n16h9AuvP+QB1pEQTOHBCXeL+Y7uZTyMXjLz5xkkSlySKXrKRMMA03GKAppLr97zPGCbzIC6vmeNvKGn+ik7oNmgdVM/UHBTsIUJr5UFVz7ZoXZ+nEgQOKeEWuFDy3RNgONmja9WGLUiHTJk91r+2OH+xjHS/jkKBxqps6ncJv6FCnhfZNnZDVA/RdSw0TQaH11TBXUDwJtvm1QREIRhtgzled2NvZl736QfL2JdhXOKUjxlig0GQ174mCzamBEXidUgZAZtHx/8exVfVwoWt+IFctD0LTNpQhio/3Cm5Grg1tvBMKPyBatZPjM/pIYiNula9KnQDXseNfC53Pghug999kdrR0XzLuEIj3nS3BzpLU6cCqhULp55jJ7AUP4Cn6MkPuOo1jfNPWWEIuJgNqVC1YE47VNI4lk/PVc04IAHtx0Srxn9NtyxOI3MYaGzI9FGh+nheqTYtua/9//PJYgbjmUTM0VyNCXwkK9VEY7d5XQImcfQG2jAxiXyqzXX4KAikGcaNKJTLfDZw3xWGproTtkQS5uwuZYAOZygDEBayMjhdUN9VQCKi2QAWo5leOi0JzucAdHEK9jga1tFDemGH6Vnz9dVYcurgySKjXcpJp6XveuAbJ65YeVd/SqyZpOs6kWh//NAq14BMmDnnRcFXFG4ITR9C1kO9HLyx7theLUAmARj8jN8TrU2yJwgVoFA/cFqh3ugCqZArEIaNWCJEdX+RP2cC1ySCemrXfs+1FF6hHUaLMKRLrYDpLWygjIH7klkryieeb7gS28Nl3o1ockbUYr/CN5c5wySF/Qg4Ad2fDvuNTXjTF9thqoEu5kSawdiM98pTEcR4+uB+dzJ9cU9Ut09Yd+ccsI59jsBvWMV6xczlOm16lok2hhhJo5AGZZB/mbNgZoqsBS9pv9dDqg3UZkj+knY+9w02N+txnnX7JxvzA3xwZ4IeUU0l0xtlgOfId6jsMyjnaP8Ihkb/mWgwHbgZYQQZK/oDiMZLlNuU3OLjLmocdIX5pvpHoDH1x/oP3opBrzsvQ61MurPQwK84/eqCXsPXthFwrYjH/NnaGNpjlv6UHH8BPXF2wlw5mNo8HKsnoxWa/8Jdei75Nl7/EGVF5ljRzIh72jt/DvXb85PLvsEAOFmTsNE0OwY9ZBq0wpUWV9Nx5T5sUb7B6nZbOVJi9H1ZziVfjQCJRmkJFdJeZeMWq5xR4sSOUly9tIteAPHvV7kBiCQCXEY9HDOErIuFMS3D8XEWcAqY5wCsW7bT9AHGfZmAMeAg3kBC5t1crk5JLTKof2eYAHtZtebpHiy+cZmiDN3CiyRv+P1przggbcEqcayGa5m9cxqZbIBdOJ1L+yQbVCG3hGoMeB6HxKbEqVIWGFCQXxWdO7vZQ+8dccOLH+sUfPNmi/YSFhRv3LwFu/k89rOgQyVyJbdXDwsue9eW2fkv7ghjBJczQoBNM2K8fR9pVfPQSW9/enMwRzPJe0WKwO1LcbfveRDBuPcn9yBcZCZuTnmyVNOse6YyxNaqrm31joTh0+uJhIXv7I6uAj3dMfYkyrsDdDMPk+0yEW9z37MbHFU+wdk5AMnOHl06dj3eXbAG/AoED9/OlJzMKDjjhyDslHueiaZod634H9/PhD/+6vyuFTvgp3OSxLeKGgJgXPdrPUWmpLsHpEV0djL/JK1LrAf7DmtHxwZgmXMgnGis2SjW+RuE9iXmW/h2KNC1NmBoHo+y/g1hQGDQ6fxTJEDkdfQlQGsfFIQ4aM66F0qx+WYu56EXXjVSnLRLqaryZTHfViLiHMR4s83HRZDVyA/13h6y1J0CjIIeTyD0PISJhjS0pFn9wK3HgvUkNrHjBrqkPT+R7uTvUcYLAtOhQpdhdgUjII+XZ1XkNh2IMPvJjfjGnMBZjXWE/Lys7/WddP4uB9+Q/c3BhxQ1tZmLsOlekKC+SZ7rb4RGnNuwAYvRrXxufEL4hW+aRzb2isj5Yh23lnTod12ZP+dhgdO5G/eINXWNiKovtRdZZx5O3t/r6AevjBJDSl7P6vvvuqPajF9P2u6RpPsOU4XzXetvvaqm3/PfKtFiGEBhpA4TmT6PcLLHwHPQ3047497R3AAQHTggFSmtRWjLbTg6dREOtucQHLw+rWpAu0emVjy2ZV796UuILRjnPzA4JMl6xKNhQ6+B3AlfL6E576ZwZ3UdT5JtmupNFwwXkFnf8VUuz76t+AUuCQEF2XzMPdAgELFckKRWuMAf+DwmJekyOyk0ugQwlTk44VVUIWC+VRNSYvHOv4XvkBDdu2wTkVNMBY1BUAwCdCmlLxS190XGB5yvtlnZt+Sek+ozM0AHZNixYPU6ajENDgzcE3DTV22gsi1ErzinieIFC3f5qXHxMg+G1ip9FSkJgGtEtrOVORS9OEJYcl6nyyPcawWQwd2RHc4qNsR0RREIi7pwAT7mKBuvwHIOevYpSUYCrL/cUgdynUbWquIwoqjd/DoetQhJhQ10v4HMdbFvu0/jJlf6aMtVAtT9rqhfHahJlZyMUu+8pCP6RBppRmvunfqyPmUEUhrXHapPUZ34galUxSiWCEdLJQ50y5yBY5m2aHNcEbp8zLcxvW118eMNSLHM6jJCvagwAE50VHLXhcSh9wh/TAluBBAcKH0L//RpUrcGJG4xmg1IKQG6cVuvPH5E9OUBTDYquH39a3VDB08960i5A1QC9pHkJAb9CjdbHW5FzduFgDEeaWcCplUhEeYFE2k7TMKryj7Up1BSKsD+nHroIKISBJdlT1ULmgiNfDAY/LQ7rMSs5H5K3BKC1nTS5+iEyVaFYjmuNgcWG9dCYbwe9nAgz7xk8xtpdzt8SJdeTt82QNgUZhzYChkKwoE/COq8eYNt/+fLYoDCWpdF8U3zqW+Wia5ZCnDTG2ZaFK6XA9aNmQVAEXGpzIjkPmCswC8KTpztzl8/2zsztepjoVNg+6Z+yd4H2Mn7WlfjlP9A3LecnFRIHBNVP0NvOhz+m5gFZKf5lHt0Uck4SQcFY8pC8S6+RjqlgWtMIoUORm0U3vsT+A/5noFaY+l9ZMtNFkyD882iBgvPUKsWXAxfBEksBvxjfyd73B2I03PdsuoZUD+3pd9YtnN3trlzOGotuXgWw2U31axl5Iu+wiJFnYzFQgmwPmQEmAdbhQJ2cusoksnAG/mbN3UNq1UqSUZehHtGjIkHKBdPtSCZCmdXCMhhYX/mgozOt7vEOj2IIum76lDKXrO0YNfGT9B1flW7/EVW9B+vwri7FasmJlPYzqQ/I4VVtq7gsN+p5GCvMXlstg2uOkY+7f06IQRCHfAg8/qdxtl1oLux/HuV8swzyw4j1HTFT5W+NY934gnHVqIWFpGegHMbdSQgZj6iuRV9/MbKe3fQMfYIemG3iQ4I4bbqUicCeoi5zQr8EWgdK47xJIePK0NmXHqHJgk/rukdABlkHzYcTA8Cu2lqSFIy4WB1/mZs4ZgoTZcRJXtyg5YMaeByPKictFIzjfmRnK16BKPh3w+bRfj1AvfrF4l0fqv9wVS2a2XFrNbN0sbQ7y6ldDWdtVERQXYh3wkdalAukWtaQJFffdkUN1xSBwPFxYl4mquk5TO/ACvwTH4evOljf11t7GIV+VvFgNxmUu16SgVgZHs0SIPYlt/X3HyHcHr/VSgBjnBI32teiCQH4FyKgiAQIVpKxGE9+SCIxg++ZvYyyU5WWUgFy8zdjZOr73ThjTdOrqcK6TDdWMy1yKxffSP0lB+kV4/54QaqFS5g2qtisVDP+lPdA6emQN9D6rHAJve4wTHzBrblihhnphljnpRjbsOjxVlPZ2GIZ4AcRwGFfIeE895LErej1TZKcqCghZf9QYB7Og4J++EWqPoRBx/EDHRS8AeXKlVaWaTwPwyEcDLpOUJn7ivHvYnjIZaFdI4hgSkMbcNJwRgwv42nRkoists3+ZWtEcHYWuNUMStDYpDWC+u71ksb/8X2V6MpSge+XFpHmd9v6frcAAAAAFETvYvcKLo1PvKQ5m/HAkWaf+mGTX1fsAAAhOy4XkDy5/n4As6AAAAB2C6vaalqblgH0Z5sJPLhvL2MkuqwAAIDch6aogZ/3+AAAAAAAAA="><div class="brandline"></div></div>
   <div class="header">
-    <div class="title"><h1>Девелоперская инвестиционная модель</h1><p>v0.12.11 · ТЭП · экономика · БРИДЖ · проектное финансирование · эскроу · LLCR</p></div>
+    <div class="title"><h1>Девелоперская инвестиционная модель</h1><p>v0.12.12 · ТЭП · экономика · БРИДЖ · проектное финансирование · эскроу · LLCR</p></div>
     <div class="actions">
       <div class="scenario">Класс&nbsp;
         <select id="projectClassSelect" onchange="applyProjectClassPreset(this.value)" style="min-width:135px">
@@ -6996,19 +7354,26 @@ function applyServerPresetProjectConfig(presetId){
 }
 
 async function sendTelegramResult(){
- if(!telegramSession||telegramResultSent||!lastResult||!inputs._glavapu_import)return;
- const n=(inputs._glavapu_import&&inputs._glavapu_import.normalized)||{};
+ const glavapuMeta=inputs._glavapu_import||null;
+ const manualMeta=inputs._manual_tep_import||null;
+ if(!telegramSession||telegramResultSent||!lastResult||(!glavapuMeta&&!manualMeta))return;
+ const n=(glavapuMeta&&glavapuMeta.normalized)||{};
  const s=lastResult.summary||{};
  const f=(lastResult.report&&lastResult.report.financing)||{};
- const source=(inputs._glavapu_import&&inputs._glavapu_import.source)||{};
+ const source=(glavapuMeta&&glavapuMeta.source)||(manualMeta&&manualMeta.source)||{};
  const cads=(cadastralAnalysis&&cadastralAnalysis.recognized)||source.cadastral_numbers||[];
+ const manual=!!manualMeta;
  const payload={
    cadastral_numbers:cads,
-   site_area_ha:Number(n.site_area_ha||0),
-   apartment_area_sqm:Number(n.apartment_area_sqm||0),
-   change_vri_mln:Number(n.change_vri_mln||0),
-   social_compensation_mln:Number(n.social_compensation_total_mln||0),
-   parking_spaces:Number(n.parking_permanent||0)+Number(n.parking_guest||0)+Number(n.mfc_parking_spaces||0),
+   project_name:manual?String(manualMeta.project_name||''):'',
+   source_label:manual?'Ручной шаблон PLATO':'ГлавАПУ',
+   site_area_ha:manual?Number(manualMeta.site_area_ha||0):Number(n.site_area_ha||0),
+   apartment_area_sqm:manual?Number((tep.apartments&&tep.apartments.saleable)||0):Number(n.apartment_area_sqm||0),
+   change_vri_mln:manual?Number(inputs.land_rights_cost_mln||0):Number(n.change_vri_mln||0),
+   social_compensation_mln:manual?Number(inputs.social_compensation_mln||0):Number(n.social_compensation_total_mln||0),
+   parking_spaces:manual
+     ? Number((tep.underground_parking&&tep.underground_parking.units)||0)+Number((tep.above_parking&&tep.above_parking.units)||0)
+     : Number(n.parking_permanent||0)+Number(n.parking_guest||0)+Number(n.mfc_parking_spaces||0),
    revenue_mln:Number(s.revenue||0)/1e6,
    ebitda_mln:Number(s.ebitda||0)/1e6,
    net_profit_mln:Number(s.net_profit||0)/1e6,
@@ -7027,13 +7392,15 @@ async function sendTelegramResult(){
    const result=await response.json();
    if(!response.ok)throw new Error(result.detail||'Telegram не принял результат');
    telegramResultSent=true;
-   glavapuStatus.innerHTML+=' <b>Итоговая карточка отправлена в Telegram.</b>';
+   const status=document.getElementById('glavapuStatus');
+   if(status)status.innerHTML+=' <b>Итоговая карточка отправлена в Telegram.</b>';
    if(window.Telegram&&window.Telegram.WebApp){
      window.Telegram.WebApp.ready();
      if(window.Telegram.WebApp.HapticFeedback)window.Telegram.WebApp.HapticFeedback.notificationOccurred('success');
    }
  }catch(e){
-   glavapuStatus.innerHTML+=' <span class="import-error">Не удалось отправить итог в Telegram: '+escapeHtml(String(e.message||e))+'</span>';
+   const status=document.getElementById('glavapuStatus');
+   if(status)status.innerHTML+=' <span class="import-error">Не удалось отправить итог в Telegram: '+escapeHtml(String(e.message||e))+'</span>';
  }
 }
 
@@ -7906,20 +8273,69 @@ loadLocal();
  if(inputs.scenario_revenue_multiplier==null)inputs.scenario_revenue_multiplier=Number(sc.scenario_revenue_multiplier||1);
  if(inputs.scenario_cost_multiplier==null)inputs.scenario_cost_multiplier=Number(sc.scenario_cost_multiplier||1);
 }
+async function loadTelegramSessionData(){
+ if(!telegramSession)return {};
+ const response=await fetch('/telegram/session-data',{
+  method:'POST',
+  headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({session:telegramSession})
+ });
+ const payload=await response.json();
+ if(!response.ok)throw new Error(payload.detail||'Telegram-сессия недействительна');
+ return payload||{};
+}
+
+async function applyTelegramManualTep(manual){
+ if(!manual||!manual.tep)return false;
+ delete inputs._glavapu_import;
+ glavapuImport=null;
+ cadastralAnalysis=null;
+ tep=structuredClone(TEP_DEFAULT);
+ Object.assign(inputs,manual.inputs||{});
+ Object.entries(manual.tep||{}).forEach(([key,values])=>{
+  if(tep[key])Object.assign(tep[key],values||{});
+ });
+ inputs._manual_tep_import={
+  project_name:String(manual.project_name||''),
+  site_area_ha:Number(manual.site_area_ha||0),
+  source:manual.source||{}
+ };
+ syncTep(false);
+ renderInputs();
+ renderTep();
+ renderPhasing();
+ openTab('tep');
+ const status=document.getElementById('glavapuStatus');
+ if(status)status.innerHTML='<span class="import-ok">Ручной ТЭП из Telegram загружен в модель. Проверьте таблицу; финансовые вводные сохранены отдельно.</span>';
+ await calculate();
+ await sendTelegramResult();
+ return true;
+}
+
 async function initializeTelegramLaunch(){
  if(window.Telegram&&window.Telegram.WebApp){
   window.Telegram.WebApp.ready();
   window.Telegram.WebApp.expand();
  }
- if(!telegramCad)return;
- const field=document.getElementById('cadastralNumbers');
- if(!field)return;
- field.value=telegramCad;
- openTab('inputs');
- const status=document.getElementById('cadastralStatus');
- if(status)status.textContent='Запускаю расчёт, переданный из Telegram…';
- await obtainCadastralTep();
- if(document.getElementById('glavapuPreview'))document.getElementById('glavapuPreview').scrollIntoView({behavior:'smooth',block:'start'});
+ if(telegramCad){
+  const field=document.getElementById('cadastralNumbers');
+  if(!field)return;
+  field.value=telegramCad;
+  openTab('inputs');
+  const status=document.getElementById('cadastralStatus');
+  if(status)status.textContent='Запускаю расчёт, переданный из Telegram…';
+  await obtainCadastralTep();
+  if(document.getElementById('glavapuPreview'))document.getElementById('glavapuPreview').scrollIntoView({behavior:'smooth',block:'start'});
+  return;
+ }
+ if(!telegramSession)return;
+ try{
+  const sessionData=await loadTelegramSessionData();
+  if(sessionData.manual_tep)await applyTelegramManualTep(sessionData.manual_tep);
+ }catch(e){
+  const status=document.getElementById('glavapuStatus');
+  if(status)status.innerHTML='<span class="import-error">'+escapeHtml(String(e.message||e))+'</span>';
+ }
 }
 async function initializeApp(){
  repairParkingFromGlavapu();
