@@ -2,7 +2,7 @@ name: Run DevelopAid v0.12.16 patch on PR
 
 on:
   pull_request:
-    types: [opened]
+    types: [opened, synchronize]
     branches: [main]
 
 permissions:
@@ -17,9 +17,11 @@ jobs:
           ref: ${{ github.head_ref }}
           fetch-depth: 0
 
-      - name: Extract and run release patch
+      - name: Extract, patch, validate and commit
         shell: bash
         run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           python - <<'PY'
           from pathlib import Path
           import textwrap
@@ -30,14 +32,22 @@ jobs:
           script = textwrap.dedent('\n'.join(source[start:end])) + '\n'
           Path('/tmp/developaid_patch.py').write_text(script, encoding='utf-8')
           PY
-          python /tmp/developaid_patch.py
-          python -m py_compile main.py
 
-      - name: Commit patched bot
-        shell: bash
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add main.py
+          set +e
+          python /tmp/developaid_patch.py > /tmp/developaid-patch.log 2>&1
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            cp /tmp/developaid-patch.log .github/developaid-v01216-error.txt
+            git add .github/developaid-v01216-error.txt
+            git commit -m "Capture DevelopAid v0.12.16 patch error" || true
+            git push origin HEAD:${{ github.head_ref }} || true
+            cat /tmp/developaid-patch.log
+            exit "$rc"
+          fi
+
+          python -m py_compile main.py
+          rm -f .github/developaid-v01216-error.txt
+          git add main.py .github/developaid-v01216-error.txt 2>/dev/null || git add main.py
           git commit -m "Add housing class economics flow to DevelopAid bot"
           git push origin HEAD:${{ github.head_ref }}
