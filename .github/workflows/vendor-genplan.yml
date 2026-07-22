@@ -5,10 +5,6 @@ on:
   push:
     paths:
       - ".github/workflows/vendor-genplan.yml"
-  pull_request:
-    types: [opened, synchronize]
-    paths:
-      - "genplan-vendor-trigger.txt"
 
 permissions:
   contents: write
@@ -19,8 +15,6 @@ jobs:
     steps:
       - name: Check out source branch
         uses: actions/checkout@v4
-        with:
-          ref: ${{ github.head_ref || github.ref_name }}
       - name: Download pinned public calculator assets
         shell: bash
         run: |
@@ -38,15 +32,33 @@ jobs:
             "area-panel-D5vuUEJ8.js"
             "calc-BTtvF0Z6.js"
             "domain-CwUeX6RP.js"
+            "@mui-charts-MKNt4QlC.js"
+            "analysis-panel-Bp17MNRz.js"
+            "map-page-CqxMR2K5.js"
             "@map-B2k4QVOw.css"
             "index-B8zlAO9I.css"
           )
-          for asset in "${assets[@]}"; do
+          download_asset() {
+            local asset="$1"
             curl --fail --location --retry 3 --connect-timeout 20 --max-time 180 \
               --user-agent "Mozilla/5.0" \
               --referer "https://genplan.tech/calc/" \
               --output "genplan_assets/${asset}" "${base}/${asset}"
             test -s "genplan_assets/${asset}"
+          }
+          for asset in "${assets[@]}"; do
+            download_asset "${asset}"
+          done
+          for pass in 1 2 3 4; do
+            changed=0
+            while IFS= read -r asset; do
+              test -n "${asset}" || continue
+              if test ! -s "genplan_assets/${asset}"; then
+                download_asset "${asset}"
+                changed=1
+              fi
+            done < <(grep -hEo '[A-Za-z0-9@_.-]+-[A-Za-z0-9_-]+\.(js|css|woff2)' genplan_assets/*.js genplan_assets/*.css | sort -u)
+            test "${changed}" -eq 1 || break
           done
       - name: Commit refreshed assets
         shell: bash
