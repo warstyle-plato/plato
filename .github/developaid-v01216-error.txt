@@ -1,7 +1,0 @@
-STANDALONE_PATCH_VALIDATION
-DevelopAid v0.12.16 patch applied
-  File "main.py", line 1699
-    "<b>Шаблон ручного ввода ТЭП DevelopAid</b>
-    ^
-SyntaxError: unterminated string literal (detected at line 1699)
-EXIT_CODE=1
