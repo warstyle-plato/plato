@@ -24,12 +24,15 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           python - <<'PY'
           from pathlib import Path
-          import textwrap
 
           source = Path('.github/workflows/developaid-v01216.yml').read_text(encoding='utf-8').splitlines()
           start = next(i for i, line in enumerate(source) if "python - <<'PY'" in line) + 1
           end = next(i for i in range(start, len(source)) if source[i].strip() == 'PY')
-          script = textwrap.dedent('\n'.join(source[start:end])) + '\n'
+          lines = source[start:end]
+          first = next(line for line in lines if line.strip())
+          indent = len(first) - len(first.lstrip())
+          prefix = ' ' * indent
+          script = '\n'.join(line[indent:] if line.startswith(prefix) else line for line in lines) + '\n'
           Path('/tmp/developaid_patch.py').write_text(script, encoding='utf-8')
           PY
 
@@ -48,6 +51,6 @@ jobs:
 
           python -m py_compile main.py
           rm -f .github/developaid-v01216-error.txt
-          git add main.py .github/developaid-v01216-error.txt 2>/dev/null || git add main.py
+          git add -A main.py .github/developaid-v01216-error.txt
           git commit -m "Add housing class economics flow to DevelopAid bot"
           git push origin HEAD:${{ github.head_ref }}
