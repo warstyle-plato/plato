@@ -864,20 +864,6 @@ def _recognize_freeform_tep_text(text: str) -> dict[str, Any]:
         raise ValueError("Не удалось разобрать распознанные показатели") from exc
 
 
-def _social_round_25(value: float) -> int:
-    value = max(0.0, float(value))
-    lower = 25 * math.floor(value / 25)
-    upper = 25 * math.ceil(value / 25)
-    return int(lower if value % 25 < 15 else upper)
-
-
-def _social_round_10(value: float) -> int:
-    value = max(0.0, float(value))
-    lower = 10 * math.floor(value / 10)
-    upper = 10 * math.ceil(value / 10)
-    return int(lower if value % 10 < 6 else upper)
-
-
 def build_freeform_tep(text: str, raw_values: dict[str, Any] | None = None) -> dict[str, Any]:
     raw = copy.deepcopy(raw_values) if raw_values is not None else _recognize_freeform_tep_text(text)
 
@@ -988,9 +974,9 @@ def build_freeform_tep(text: str, raw_values: dict[str, Any] | None = None) -> d
     doo_norm = (63 if zone_two else 44) * population / 1000
     school_norm = (124 if zone_two else 90) * population / 1000
     clinic_norm = 19 * population / 1000
-    calc_doo = _social_round_25(doo_norm)
-    calc_school = _social_round_25(school_norm)
-    calc_clinic = _social_round_10(clinic_norm)
+    calc_doo = int(math.ceil(doo_norm))
+    calc_school = int(math.ceil(school_norm))
+    calc_clinic = int(math.ceil(clinic_norm))
 
     user_doo = optional_number("kindergarten_places")
     user_school = optional_number("school_places")
@@ -1010,6 +996,10 @@ def build_freeform_tep(text: str, raw_values: dict[str, Any] | None = None) -> d
         clinic = int(user_clinic) if user_clinic is not None else calc_clinic
     if any(value is None for value in (user_doo, user_school, user_clinic)) and not social_compensation_value:
         calculated.append("социальные мощности рассчитаны по нормативам зоны района")
+        assumptions.append(
+            "социальная потребность округлена вверх до целой мощности; "
+            "типовой размер объекта и способ исполнения уточняются при проработке проекта"
+        )
         if not district:
             assumptions.append(
                 "район не указан — для расчёта социальной потребности применены нормативы основной зоны Москвы: "
