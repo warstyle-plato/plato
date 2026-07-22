@@ -1,1 +1,0 @@
-Trigger patch and syntax validation with full diagnostics.
