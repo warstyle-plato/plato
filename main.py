@@ -795,6 +795,10 @@ _GENPLAN_REQUIRED_ASSETS = {
     "@mui-Dy0laxMi.js",
     "@react-D7li0Nm9.js",
     "@mui-icons-BAApue2C.js",
+    "@export-Dq7e_Rpm.js",
+    "area-panel-D5vuUEJ8.js",
+    "calc-BTtvF0Z6.js",
+    "domain-CwUeX6RP.js",
     "@map-B2k4QVOw.css",
     "index-B8zlAO9I.css",
 }
@@ -807,7 +811,7 @@ def _proxy_genplan(asset_path: str, request: Request) -> Response:
         raise HTTPException(status_code=400, detail="Некорректный путь калькулятора")
     if clean_path.startswith("assets/"):
         filename = clean_path.removeprefix("assets/")
-        if "/" not in filename and filename in _GENPLAN_REQUIRED_ASSETS:
+        if "/" not in filename:
             local_path = _GENPLAN_ASSET_DIR / filename
             if local_path.is_file():
                 media_type = "text/css" if filename.endswith(".css") else "application/javascript"
