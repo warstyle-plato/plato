@@ -821,6 +821,15 @@ def _proxy_genplan(asset_path: str, request: Request) -> Response:
         # this avoids relaying multi-megabyte bundles through Render.
         html = html.replace('"/calc/', '"https://genplan.tech/calc/')
         html = html.replace("'/calc/", "'https://genplan.tech/calc/")
+        import_map = {
+            "/calc/assets/rolldown-runtime-QTnfLwEv.js": "https://genplan.tech/calc/assets/rolldown-runtime-QTnfLwEv.js",
+            "/calc/assets/@map-C8A16ZpL.js": "https://genplan.tech/calc/assets/@map-C8A16ZpL.js",
+            "/calc/assets/@mui-Dy0laxMi.js": "https://genplan.tech/calc/assets/@mui-Dy0laxMi.js",
+            "/calc/assets/@react-D7li0Nm9.js": "https://genplan.tech/calc/assets/@react-D7li0Nm9.js",
+            "/calc/assets/@mui-icons-BAApue2C.js": "https://genplan.tech/calc/assets/@mui-icons-BAApue2C.js",
+        }
+        import_map_tag = '<script type="importmap">' + json.dumps({"imports": import_map}) + "</script>"
+        html = html.replace('<script type="module"', import_map_tag + '<script type="module"', 1)
         body = html.encode("utf-8")
     cache_control = "public, max-age=86400" if clean_path else "no-store"
     return Response(body, media_type=content_type.split(";", 1)[0], headers={"Cache-Control": cache_control})
