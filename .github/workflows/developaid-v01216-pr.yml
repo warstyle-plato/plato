@@ -24,9 +24,23 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           set +e
-          python .github/patch_developaid_v01216.py > /tmp/developaid-patch.log 2>&1
+          {
+            echo "STANDALONE_PATCH_VALIDATION"
+            python .github/patch_developaid_v01216.py
+            patch_rc=$?
+            if [ "$patch_rc" -eq 0 ]; then
+              python -m py_compile main.py
+              compile_rc=$?
+            else
+              compile_rc=0
+            fi
+            exit_code=$(( patch_rc != 0 ? patch_rc : compile_rc ))
+            echo "EXIT_CODE=$exit_code"
+            exit "$exit_code"
+          } > /tmp/developaid-patch.log 2>&1
           rc=$?
           set -e
+
           if [ "$rc" -ne 0 ]; then
             cp /tmp/developaid-patch.log .github/developaid-v01216-error.txt
             git add .github/developaid-v01216-error.txt
@@ -36,7 +50,6 @@ jobs:
             exit "$rc"
           fi
 
-          python -m py_compile main.py
           rm -f .github/developaid-v01216-error.txt
           git add -A main.py .github/developaid-v01216-error.txt
           git commit -m "Add housing class economics flow to DevelopAid bot"
