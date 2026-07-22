@@ -1,1 +1,0 @@
-Release trigger for DevelopAid v0.12.16.
