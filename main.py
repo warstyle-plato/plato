@@ -5530,8 +5530,8 @@ tfoot th{border-top:2px solid #111;color:#111;background:#fff}
 .gantt-year-line{position:absolute;top:0;bottom:0;border-left:1px solid rgba(0,0,0,.22);pointer-events:none}
 .rate-axis-label{font-size:10px;fill:#777}
 .rate-year-label{font-size:10px;font-weight:700;fill:#555}
-.report-3col{display:grid;grid-template-columns:1.15fr 1fr 1fr;gap:18px}
-.report-2col{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+.report-3col{display:grid;grid-template-columns:1.15fr 1fr 1fr;gap:18px;align-items:start}
+.report-2col{display:grid;grid-template-columns:1fr 1fr;gap:18px;align-items:start}
 .value-muted{color:#777}
 .gantt-wrap{overflow:auto;border:1px solid var(--line);background:#fff}
 .gantt{min-width:1050px}
