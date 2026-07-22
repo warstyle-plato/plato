@@ -5,6 +5,10 @@ on:
   push:
     paths:
       - ".github/workflows/vendor-genplan.yml"
+  pull_request:
+    types: [opened, synchronize]
+    paths:
+      - "genplan-vendor-trigger.txt"
 
 permissions:
   contents: write
@@ -15,6 +19,8 @@ jobs:
     steps:
       - name: Check out source branch
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref || github.ref_name }}
       - name: Download pinned public calculator assets
         shell: bash
         run: |
