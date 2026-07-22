@@ -1184,8 +1184,9 @@ def _telegram_handle_message(message: dict[str, Any]) -> None:
         _telegram_start_message(chat_id, user_id)
         return
 
-    numbers = _parse_cadastral_numbers(text)
-    if not numbers:
+    try:
+        numbers = _parse_cadastral_numbers(text)
+    except HTTPException:
         _telegram_send_message(
             chat_id,
             "Не вижу кадастрового номера. Формат: <code>77:02:0016009:1934</code>. "
@@ -7078,7 +7079,7 @@ async function applyGlavapu(){
 
  const socialNote=inputs.social_mode==='Строительство'
   ? 'Соцрежим: строительство; расчётные мощности ГлавАПУ используются при нулевых фактических объектах.'
- : 'Соцрежим: денежная компенсация.';
+  : 'Соцрежим: денежная компенсация.';
  glavapuStatus.innerHTML='<span class="import-ok">Данные ТЭП применены. Денежные единицы приведены к млн ₽. '+socialNote+' Подземный паркинг собран из жилого блока и, при наличии, отдельного блока МФК.'+(presetNote?' <b>'+presetNote+'</b>':'')+'</span>';
  await calculate();
  await sendTelegramResult();
