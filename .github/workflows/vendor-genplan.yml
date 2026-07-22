@@ -1,0 +1,53 @@
+name: Vendor Genplan calculator assets
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/vendor-genplan.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  vendor:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Download pinned public calculator assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p genplan_assets
+          base="https://genplan.tech/calc/assets"
+          assets=(
+            "index-B0jIwkVO.js"
+            "rolldown-runtime-QTnfLwEv.js"
+            "@map-C8A16ZpL.js"
+            "@mui-Dy0laxMi.js"
+            "@react-D7li0Nm9.js"
+            "@mui-icons-BAApue2C.js"
+            "@map-B2k4QVOw.css"
+            "index-B8zlAO9I.css"
+          )
+          for asset in "${assets[@]}"; do
+            curl --fail --location --retry 3 --connect-timeout 20 --max-time 180 \
+              --user-agent "Mozilla/5.0" \
+              --referer "https://genplan.tech/calc/" \
+              --output "genplan_assets/${asset}" "${base}/${asset}"
+            test -s "genplan_assets/${asset}"
+          done
+      - name: Commit refreshed assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add genplan_assets
+          if git diff --cached --quiet; then
+            echo "Assets are already current"
+            exit 0
+          fi
+          git commit -m "Vendor pinned Genplan calculator assets"
+          git push
