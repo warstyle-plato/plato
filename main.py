@@ -1828,8 +1828,9 @@ def _telegram_project_class_menu(chat_id: int, dialog: dict[str, Any]) -> None:
         "машино-место 5 млн ₽; себестоимость строительства 190 тыс. ₽/м² ГНС.\n"
         "• <b>Элитный</b> — жильё 1,5 млн ₽/м²; коммерция 1,5 млн ₽/м²; "
         "машино-место 20 млн ₽; себестоимость строительства 300 тыс. ₽/м² ГНС.\n\n"
-        "Выберите класс. После этого можно принять профиль целиком или вручную заменить "
-        "четыре значения: цену жилья, коммерции, машино-места и себестоимость строительства.",
+        "Выберите базовый профиль цен и себестоимости. После этого значения можно заменить вручную. "
+        "Если в составе проекта есть офисный центр, ТЦ или наземный гараж, их цены и себестоимость "
+        "DevelopAid запросит отдельным следующим шагом.",
         reply_markup={"inline_keyboard": [
             [{"text": "Комфорт", "callback_data": "flow_class_comfort"}],
             [{"text": "Бизнес", "callback_data": "flow_class_business"}],
@@ -2689,12 +2690,14 @@ def _telegram_prompt_extra_econ(chat_id: int, dialog: dict[str, Any]) -> None:
     data = dialog.setdefault("data", {})
     specs = _telegram_extra_econ_specs(data)
     idx = int(dialog.get("extra_econ_index") or 0)
+    while idx < len(specs) and data.get(specs[idx][0]) not in (None, ""):
+        idx += 1
+    dialog["extra_econ_index"] = idx
     if idx >= len(specs):
         _telegram_finalize_dialog_review(chat_id, dialog)
         return
     key, label, unit = specs[idx]
     dialog["step"] = "await_extra_econ"
-    dialog["extra_econ_index"] = idx
     _telegram_dialog_save(chat_id, dialog)
     example = "2,2" if "_mln_" in key else "350"
     _telegram_send_message(
