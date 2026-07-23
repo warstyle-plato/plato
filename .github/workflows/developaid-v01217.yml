@@ -1,0 +1,53 @@
+name: Apply DevelopAid v0.12.17 product flow
+
+on:
+  push:
+    branches:
+      - agent/developaid-v01217-product-flow
+    paths:
+      - .github/workflows/developaid-v01217.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/developaid-v01217-product-flow
+          fetch-depth: 0
+
+      - name: Apply patch
+        run: python scripts/patch_v01217.py
+
+      - name: Validate Python
+        run: |
+          python -m py_compile main.py
+          python - <<'PY'
+          from pathlib import Path
+          text = Path('main.py').read_text(encoding='utf-8')
+          required = [
+              'version="0.12.17"',
+              '_DEVELOPAID_V01217_PRODUCT_FLOW',
+              'flow_extra_above_parking',
+              'flow_extra_offices',
+              'flow_extra_retail',
+              'offices_price_th_per_sqm',
+              'retail_price_th_per_sqm',
+              'above_parking_price_mln_per_space',
+          ]
+          missing = [item for item in required if item not in text]
+          if missing:
+              raise SystemExit('Missing markers: ' + ', '.join(missing))
+          PY
+
+      - name: Commit patched release
+        run: |
+          rm -f scripts/patch_v01217.py .github/workflows/developaid-v01217.yml
+          git config user.name "DevelopAid Release Bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git commit -m "Release DevelopAid v0.12.17 product flow"
+          git push origin HEAD:agent/developaid-v01217-product-flow
