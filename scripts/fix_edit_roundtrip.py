@@ -28,14 +28,11 @@ def replace_line(text: str, token: str, new_line: str) -> str:
             return ''.join(lines)
     raise SystemExit('replace token not found: '+token)
 
-# Telegram card: show the user the edited purchase price explicitly.
 s=insert_after_line(
     s,
     '<b>Предварительная экономика</b>',
     '        f"• цена покупки — {_telegram_money_mln(summary.get(\'purchase_price_mln\'))}\\n"\n',
 )
-
-# Result payload: use current edited model values, not only the original imported snapshot.
 s=insert_after_line(s,'const manual=!!manualMeta;',"  const edited=telegramMode==='edit';\n")
 s=insert_after_line(
     s,
@@ -43,41 +40,34 @@ s=insert_after_line(
     '    purchase_price_mln:Number(inputs.purchase_price_mln||0),\n',
 )
 s=replace_line(
-    s,
-    'site_area_ha:manual?',
+    s,'site_area_ha:manual?',
     "    site_area_ha:(manual||edited)?Number(inputs.site_area_ha||((manualMeta&&manualMeta.site_area_ha)||0)||n.site_area_ha||0):Number(n.site_area_ha||0),\n",
 )
 s=replace_line(
-    s,
-    'apartment_area_sqm:manual?',
+    s,'apartment_area_sqm:manual?',
     "    apartment_area_sqm:(manual||edited)?Number((tep.apartments&&tep.apartments.saleable)||0):Number(n.apartment_area_sqm||0),\n",
 )
 s=replace_line(
-    s,
-    'change_vri_mln:manual?',
+    s,'change_vri_mln:manual?',
     "    change_vri_mln:(manual||edited)?Number(inputs.land_rights_cost_mln||0):Number(n.change_vri_mln||0),\n",
 )
 s=replace_line(
-    s,
-    'social_compensation_mln:manual?',
+    s,'social_compensation_mln:manual?',
     "    social_compensation_mln:(manual||edited)?Number(inputs.social_compensation_mln||0):Number(n.social_compensation_total_mln||0),\n",
 )
 s=replace_line(s,'parking_spaces:manual',"    parking_spaces:(manual||edited)\n")
 
-# Persist every edit-mode recalculation so reopening keeps the latest values.
 s=insert_after_line(
     s,
     "if(document.getElementById('tep')&&document.getElementById('tep').classList.contains('active'))renderTep();",
     "  if(telegramMode==='edit')persistLocalSilently();\n",
 )
 
-# TEP table edits also recalculate immediately.
 old='onchange="tep[\'${key}\'][\'${col}\']=Number(this.value);updateTepTotals()"'
 new='onchange="tep[\'${key}\'][\'${col}\']=Number(this.value);updateTepTotals();calculate()"'
 if old in s:
     s=s.replace(old,new,1)
 
-# Explicit one-click round trip to Telegram avoids spamming a card on every individual field change.
 marker='async function initializeTelegramLaunch(){\n'
 if marker not in s:
     raise SystemExit('initializeTelegramLaunch marker not found')
@@ -130,17 +120,18 @@ function setupTelegramEditSubmit(){
 '''
 s=s.replace(marker,helpers+marker,1)
 
-# Activate the submit control only in edit mode.
+# Activate submit control immediately after the edit-mode recalculation.
 pos=s.find("if(telegramMode==='edit')")
 if pos<0:
     raise SystemExit('edit mode branch not found')
-sub=s[pos:]
-old="   openTab('inputs');\n   await calculate();\n   return;\n  }\n"
-new="   openTab('inputs');\n   await calculate();\n   setupTelegramEditSubmit();\n   return;\n  }\n"
-if old not in sub:
-    raise SystemExit('edit mode branch tail not found')
-sub=sub.replace(old,new,1)
-s=s[:pos]+sub
+calc_token='await calculate();'
+calc_pos=s.find(calc_token,pos)
+if calc_pos<0:
+    raise SystemExit('edit mode calculate call not found')
+line_end=s.find('\n',calc_pos)
+if line_end<0:
+    raise SystemExit('edit mode calculate line end not found')
+s=s[:line_end+1]+"   setupTelegramEditSubmit();\n"+s[line_end+1:]
 
 s += '\n# _DEVELOPAID_EDIT_ROUNDTRIP_V01218\n'
 p.write_text(s,encoding='utf-8')
