@@ -17,33 +17,36 @@ jobs:
         with:
           ref: ${{ github.head_ref }}
           fetch-depth: 0
-      - name: Extract concise endpoint and calculator contexts
+      - name: Extract calculator module structure
         shell: bash
         run: |
           python - <<'PY'
           from pathlib import Path
           import re
           out=[]
-          tokens=['glavapu','stroimprosto','fetch(','cad_numbers','cadZU','id-cad-numbers-text-field','Перейти к расчётам','calcParams','terrArea','district','coeff_mpt','coeff_rent']
-          for p in Path('genplan_assets').glob('*.js'):
+          for p in sorted(Path('genplan_assets').glob('*.js')):
               s=p.read_text(encoding='utf-8',errors='ignore')
               out.append('### '+p.name)
-              urls=[]
-              for u in re.findall(r'https?://[^"\'`\\\s)]+',s):
-                  if u not in urls: urls.append(u)
-              for u in urls[:100]: out.append('URL '+u[:500])
-              for token in tokens:
+              out.append('LEN '+str(len(s)))
+              out.append('HEAD '+s[:3000].replace('\n',' '))
+              out.append('TAIL '+s[-5000:].replace('\n',' '))
+              for m in re.finditer(r'export\s*\{([^}]*)\}',s):
+                  out.append('EXPORT '+m.group(1)[:5000])
+              for m in re.finditer(r'import\s*\{([^}]*)\}\s*from\s*["\']([^"\']+)',s):
+                  out.append('IMPORT '+m.group(2)+' :: '+m.group(1)[:3000])
+              # Contexts around calculation class/function signatures and API-ish constants.
+              for token in ['calcParams=e=>','calcParams=', 'final_cost_of_change_vri','costOfChangeVRI','class ', 'new class', 'cadZU:', 'analysis:', 'calcMode:', 'socialParameters']:
                   start=0; count=0
-                  while count<40:
+                  while count<15:
                       i=s.find(token,start)
                       if i<0: break
-                      ctx=re.sub(r'\s+',' ',s[max(0,i-220):min(len(s),i+520)])
-                      out.append('CTX '+token+' :: '+ctx[:900])
+                      ctx=s[max(0,i-1500):min(len(s),i+5000)].replace('\n',' ')
+                      out.append('CTX '+token+' :: '+ctx)
                       start=i+len(token); count+=1
-          Path('genplan_endpoint_contexts.txt').write_text('\n'.join(out)[:800000],encoding='utf-8')
+          Path('genplan_module_structure.txt').write_text('\n\n'.join(out)[:3000000],encoding='utf-8')
           PY
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add genplan_endpoint_contexts.txt
-          git commit -m 'Refine Genplan endpoint contexts' || true
+          git add genplan_module_structure.txt
+          git commit -m 'Inspect Genplan module structure' || true
           git push origin HEAD:${{ github.head_ref }}
