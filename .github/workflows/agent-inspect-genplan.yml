@@ -29,16 +29,26 @@ jobs:
             python scripts/agent_patch.py
             python -m py_compile main.py
             python - <<'PY'
-          import main, inspect
-          assert main.app.version == '0.12.19', main.app.version
-          src=inspect.getsource(main._telegram_handle_cadastral_numbers)
-          assert '_telegram_web_app_url' not in src and 'Получить ТЭП и открыть' not in src
-          menu=inspect.getsource(main._telegram_project_class_menu)
-          assert 'Себестоимость СМР класс жилья больше не задаёт' in menu
-          assert 'flow_prices_custom' in menu
-          review=inspect.getsource(main._telegram_send_tep_review)
+          from pathlib import Path
+          import ast,re
+          s=Path('main.py').read_text(encoding='utf-8')
+          ast.parse(s)
+          assert 'version="0.12.19"' in s
+          # Inspect the last definitions, which are the live runtime overrides.
+          def last_block(name):
+              starts=[m.start() for m in re.finditer(r'^def '+re.escape(name)+r'\b',s,re.M)]
+              assert starts, name
+              a=starts[-1]
+              n=re.search(r'^def \w+\b',s[a+4:],re.M)
+              return s[a:(a+4+n.start() if n else len(s))]
+          cad=last_block('_telegram_handle_cadastral_numbers')
+          assert '_telegram_web_app_url' not in cad and 'Получить ТЭП и открыть' not in cad
+          menu=last_block('_telegram_project_class_menu')
+          assert 'Себестоимость СМР класс жилья больше не задаёт' in menu and 'flow_prices_custom' in menu
+          review=last_block('_telegram_send_tep_review')
           assert 'flow_run_calculation' in review and 'web_app' not in review
-          print('v0.12.19 smoke checks passed')
+          assert 'await_smr_cost' in s and 'Наружные инженерные сети сюда не входят' in s
+          print('v0.12.19 static smoke checks passed')
           PY
           ) > /tmp/v01219.log 2>&1
           rc=$?
