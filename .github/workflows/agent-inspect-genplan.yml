@@ -1,4 +1,4 @@
-name: Inspect Genplan assets
+name: Apply DevelopAid v0.12.19
 
 on:
   pull_request:
@@ -6,34 +6,43 @@ on:
     branches: [main]
 permissions:
   contents: write
+concurrency:
+  group: apply-v01219-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 jobs:
-  inspect:
+  patch:
     if: github.head_ref == 'agent/developaid-v01219-cadastral-bot-flow'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with: {ref: '${{ github.head_ref }}', fetch-depth: 0}
-      - name: Inspect calculation requirements
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+      - name: Apply and validate
         shell: bash
         run: |
+          python scripts/agent_patch.py
+          python -m py_compile main.py
           python - <<'PY'
-          from pathlib import Path
-          import re
-          s=Path('main.py').read_text(encoding='utf-8')
-          out=[]
-          for name in ('build_operating_model','simulate_financing','calculate'):
-              m=re.search(r'^def '+name+r'\b',s,re.M)
-              if m:
-                  n=re.search(r'^def \w+\b',s[m.end():],re.M)
-                  end=m.end()+(n.start() if n else 20000)
-                  block=s[m.start():end]
-                  keys=sorted(set(re.findall(r'x\[\s*["\']([^"\']+)["\']\s*\]',block)))
-                  gets=sorted(set(re.findall(r'(?:n|b)\(x,\s*["\']([^"\']+)',block)))
-                  out.append('### '+name+'\nDIRECT='+repr(keys)+'\nHELPER='+repr(gets)+'\n\n'+block[:30000])
-          Path('calc_requirements.txt').write_text('\n\n'.join(out),encoding='utf-8')
+          import main
+          assert main.app.version == '0.12.19'
+          # Ensure the live (last-defined) cadastral handler no longer creates a WebApp button.
+          import inspect
+          src=inspect.getsource(main._telegram_handle_cadastral_numbers)
+          assert '_telegram_web_app_url' not in src and 'Получить ТЭП и открыть' not in src
+          menu=inspect.getsource(main._telegram_project_class_menu)
+          assert 'Себестоимость СМР класс жилья больше не задаёт' in menu
+          assert 'flow_prices_custom' in menu
+          review=inspect.getsource(main._telegram_send_tep_review)
+          assert 'flow_run_calculation' in review and 'web_app' not in review
+          print('v0.12.19 smoke checks passed')
           PY
+          rm -f scripts/agent_patch.py
+          rm -f genplan_endpoints.txt genplan_endpoints_concise.txt genplan_node_probe.txt genplan_calc_core.txt genplan_calc_contexts.txt genplan_calc_target.txt calc_entrypoints.txt calc_requirements.txt
+          rm -f .github/trigger-v01219*.txt
+          rm -rf __pycache__
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add calc_requirements.txt
-          git commit -m 'Inspect operating model requirements' || true
+          git add -A
+          git commit -m 'DevelopAid v0.12.19 Telegram-only preliminary flow'
           git push origin HEAD:${{ github.head_ref }}
