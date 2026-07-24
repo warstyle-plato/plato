@@ -1,0 +1,45 @@
+name: Apply cadastral auto TEP fix
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.head_ref == 'agent/fix-cadastral-auto-tep'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+      - name: Apply patch and validate
+        shell: bash
+        run: |
+          python scripts/fix_cadastral_auto_tep.py
+          python -m py_compile main.py
+          python -m pip install -q -r requirements.txt
+          python - <<'PY'
+          import main
+          assert main.app.version == '0.12.20', main.app.version
+          rows = main._telegram_collect_genplan_rows(['77:09:0004014:13'], 0.6509)
+          assert len(rows) >= 60
+          parsed = main.import_cadastral_tep(main.CadastralTepRequest(rows=rows, cadastral_analysis={
+              'recognized':['77:09:0004014:13'],
+              'territory':{'area_ha':0.6509,'district':'Савеловский','cadastral_quarter':'77:09:0004014'},
+              'coefficients':{},
+          }))
+          assert parsed.get('tep')
+          print('AUTO_TEP_OK', len(rows), parsed.get('summary'))
+          PY
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          rm -f scripts/fix_cadastral_auto_tep.py
+          rm -f .github/trigger-*.txt genplan_*report.txt genplan_endpoint_contexts.txt genplan_module_structure.txt calc_module_inspection.txt calc_core_report.txt domain_calc_report.txt headless_tep_test.json
+          git add -A
+          git commit -m 'Restore automatic cadastral TEP calculation in Telegram'
+          git push origin HEAD:${{ github.head_ref }}
