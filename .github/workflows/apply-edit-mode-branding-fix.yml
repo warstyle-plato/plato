@@ -28,7 +28,7 @@ jobs:
           p=Path('scripts/fix_edit_mode_branding.py')
           t=p.read_text(encoding='utf-8')
           old='''# Persist the exact model state before returning the summary to Telegram.\nold = "  const payload={\\n    cadastral_numbers:cads,"\nnew = "  persistLocalSilently();\\n  const payload={\\n    cadastral_numbers:cads,"\nif old not in s:\n    raise SystemExit('sendTelegramResult payload anchor not found')\ns = s.replace(old, new, 1)\n'''
-          new='''# Persist the exact model state before returning the summary to Telegram.\nmanual_anchor = "  const manual=!!manualMeta;\\n"\nif manual_anchor not in s:\n    raise SystemExit('sendTelegramResult manual anchor not found')\ns = s.replace(manual_anchor, manual_anchor + "  persistLocalSilently();\\n", 1)\n'''
+          new='''# Persist the exact model state before returning the summary to Telegram.\nmatch = re.search(r"(\\n[ \\t]*const manual=!!manualMeta;\\n)", s)\nif not match:\n    raise SystemExit('sendTelegramResult manual regex anchor not found')\ninsert_at = match.end()\ns = s[:insert_at] + "  persistLocalSilently();\\n" + s[insert_at:]\n'''
           if old not in t:
               raise SystemExit('Patch-script persistence block not found')
           p.write_text(t.replace(old,new,1),encoding='utf-8')
