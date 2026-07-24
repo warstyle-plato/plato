@@ -1,1 +1,1 @@
-sendTelegramResult manual anchor not found
+initializeTelegramLaunch calc block not found
