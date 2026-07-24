@@ -1,0 +1,41 @@
+name: Apply VRI PF acquisition fix
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.head_ref == 'agent/fix-vri-pf-and-acquisition-display'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+      - name: Apply and validate
+        shell: bash
+        run: |
+          python scripts/fix_vri_pf_and_acquisition.py
+          python -m py_compile main.py
+          python - <<'PY'
+          from pathlib import Path
+          c=Path('main.py').read_text(encoding='utf-8')
+          assert 'version="0.12.22"' in c
+          assert '("Цена приобретения", purchase_value)' in c
+          assert '("Смена ВРИ / земельные права", op["capex_amounts"].get("land_rights", 0.0))' in c
+          assert 'capex[permit] += amounts["land_rights"]' in c
+          seg=c[c.find('calculated_bridge_limit'):c.find('def run',c.find('calculated_bridge_limit'))]
+          assert '+ op["capex_amounts"]["land_rights"]' not in seg
+          print('VRI_PF_ACQUISITION_VALIDATED')
+          PY
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          rm -f scripts/fix_vri_pf_and_acquisition.py
+          git add -A
+          git commit -m 'DevelopAid v0.12.22: move VRI from bridge to PF and separate acquisition price'
+          git push origin HEAD:${{ github.head_ref }}
