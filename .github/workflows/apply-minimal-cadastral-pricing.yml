@@ -29,16 +29,19 @@ jobs:
             python -m py_compile main.py
             rc=$?; [ "$rc" -eq 0 ] || exit "$rc"
             python - <<'PY'
-          import main
+          import re
           code=open('main.py',encoding='utf-8').read()
-          assert main.app.version == '0.12.16', main.app.version
+          m=re.search(r'FastAPI\(title="PLATO Development Investment Model", version="([^"]+)"\)',code)
+          assert m and m.group(1)=='0.12.16', m.group(1) if m else 'missing-version'
           assert 'flow_cad_class_comfort' in code
           assert 'calc_overrides' in code
           assert 'smr_th_per_sqm' in code
           assert 'async function obtainCadastralTep()' in code
           assert "fetch('/cadastral/tep-from-calculator'" in code
+          assert 'await obtainCadastralTep();' in code
+          assert 'await applyGlavapu();' in code
           assert 'pyppeteer' not in code
-          print('PATCH_OK', main.app.version)
+          print('PATCH_OK',m.group(1))
           PY
           ) > /tmp/minimal-patch.log 2>&1
           rc=$?
