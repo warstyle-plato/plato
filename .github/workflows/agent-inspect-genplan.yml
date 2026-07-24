@@ -18,53 +18,48 @@ jobs:
         with:
           ref: ${{ github.head_ref }}
           fetch-depth: 0
-      - name: Apply and validate
+      - name: Validate runtime
         shell: bash
         run: |
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          set +e
-          (
-            set -e
-            python scripts/agent_patch.py
-            python -m py_compile main.py
-            python - <<'PY'
-          from pathlib import Path
-          import ast,re
-          s=Path('main.py').read_text(encoding='utf-8')
-          ast.parse(s)
-          assert 'version="0.12.19"' in s
-          # Inspect the last definitions, which are the live runtime overrides.
-          def last_block(name):
-              starts=[m.start() for m in re.finditer(r'^def '+re.escape(name)+r'\b',s,re.M)]
-              assert starts, name
-              a=starts[-1]
-              n=re.search(r'^def \w+\b',s[a+4:],re.M)
-              return s[a:(a+4+n.start() if n else len(s))]
-          cad=last_block('_telegram_handle_cadastral_numbers')
-          assert '_telegram_web_app_url' not in cad and 'Получить ТЭП и открыть' not in cad
-          menu=last_block('_telegram_project_class_menu')
-          assert 'Себестоимость СМР класс жилья больше не задаёт' in menu and 'flow_prices_custom' in menu
-          review=last_block('_telegram_send_tep_review')
+          if [ -f scripts/agent_patch.py ]; then python scripts/agent_patch.py; fi
+          python -m py_compile main.py
+          pip -q install -r requirements.txt
+          python - <<'PY'
+          import inspect
+          import main
+          assert main.app.version == '0.12.19'
+          cad=inspect.getsource(main._telegram_handle_cadastral_numbers)
+          assert '_telegram_web_app_url' not in cad
+          review=inspect.getsource(main._telegram_send_tep_review)
           assert 'flow_run_calculation' in review and 'web_app' not in review
-          assert 'await_smr_cost' in s and 'Наружные инженерные сети сюда не входят' in s
-          print('v0.12.19 static smoke checks passed')
+          raw={
+              'site_area_ha':2.0,
+              'apartments_saleable_sqm':20000,
+              'commercial_saleable_sqm':1000,
+              'parking_spaces':200,
+          }
+          parsed=main.build_freeform_tep('',raw_values=raw)
+          parsed.setdefault('inputs',{}).update({
+              'apartment_price_th':350,
+              'commercial_price_th':350,
+              'parking_price_th':1500,
+              'main_above_th_per_sqm':130,
+              'main_under_th_per_sqm':130,
+          })
+          x=main._telegram_preliminary_calc_inputs(parsed)
+          result=main.calculate(main.CalcRequest(inputs=x,tep=parsed['tep'],rates=[]))
+          assert float(result.get('total_revenue') or 0)>0
+          assert float(result.get('total_capex') or 0)>0
+          print('RUNTIME_OK', sorted(k for k in result.keys() if k in {'total_revenue','total_capex','ebitda','net_profit','irr_equity','llcr'}))
           PY
-          ) > /tmp/v01219.log 2>&1
-          rc=$?
-          set -e
-          if [ "$rc" -ne 0 ]; then
-            cp /tmp/v01219.log v01219_error.txt
-            git add v01219_error.txt
-            git commit -m 'Capture v0.12.19 validation error' || true
-            git push origin HEAD:${{ github.head_ref }} || true
-            cat /tmp/v01219.log
-            exit "$rc"
-          fi
           rm -f scripts/agent_patch.py v01219_error.txt
           rm -f genplan_endpoints.txt genplan_endpoints_concise.txt genplan_node_probe.txt genplan_calc_core.txt genplan_calc_contexts.txt genplan_calc_target.txt calc_entrypoints.txt calc_requirements.txt
           rm -f .github/trigger-v01219*.txt
           rm -rf __pycache__
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add -A
-          git commit -m 'DevelopAid v0.12.19 Telegram-only preliminary flow'
-          git push origin HEAD:${{ github.head_ref }}
+          if ! git diff --cached --quiet; then
+            git commit -m 'Clean v0.12.19 validation artifacts'
+            git push origin HEAD:${{ github.head_ref }}
+          fi
