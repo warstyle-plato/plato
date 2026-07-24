@@ -34,7 +34,6 @@ jobs:
               vals=[]
               vals += re.findall(r'https?://[^"\'`\\\s)]+', s)
               vals += re.findall(r'/(?:api|calc|analysis)[A-Za-z0-9_./?=&{}:\-]*', s, re.I)
-              # Add compact contexts around likely endpoint/domain tokens.
               for token in ('glavapu-api','stroimprosto','genplan.tech','cad_numbers','terrArea','Перейти к расчётам'):
                   start=0
                   while True:
@@ -51,8 +50,12 @@ jobs:
                   out.append('')
           Path('genplan_endpoints_concise.txt').write_text('\n'.join(out)[:250000], encoding='utf-8')
           PY
+          set +e
+          node --experimental-default-type=module -e "import('./genplan_assets/index-B0jIwkVO.js').then(m=>console.log('EXPORTS',Object.keys(m).join(','))).catch(e=>{console.error(e.stack||e);process.exit(1)})" > genplan_node_probe.txt 2>&1
+          echo "NODE_RC=$?" >> genplan_node_probe.txt
+          set -e
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add genplan_endpoints_concise.txt
-          git commit -m 'Inspect Genplan endpoint strings' || true
+          git add genplan_endpoints_concise.txt genplan_node_probe.txt
+          git commit -m 'Inspect Genplan module exports' || true
           git push origin HEAD:${{ github.head_ref }}
