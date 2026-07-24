@@ -1,1 +1,1 @@
-sendTelegramResult payload anchor not found
+sendTelegramResult manual anchor not found
