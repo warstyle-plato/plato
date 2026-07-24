@@ -1,0 +1,6 @@
+ReferenceError: document is not defined
+    at file:///home/runner/work/plato/plato/genplan_assets/index-B0jIwkVO.js:2:753
+    at file:///home/runner/work/plato/plato/genplan_assets/index-B0jIwkVO.js:2:1430
+    at ModuleJob.run (node:internal/modules/esm/module_job:343:25)
+    at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:681:26)
+NODE_RC=1
