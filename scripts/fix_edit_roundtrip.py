@@ -65,13 +65,10 @@ s=replace_line(
 s=replace_line(s,'parking_spaces:manual',"    parking_spaces:(manual||edited)\n")
 
 # Persist every edit-mode recalculation so reopening keeps the latest values.
-anchor="  if(document.getElementById('tep')&&document.getElementById('tep').classList.contains('active'))renderTep();\n  return lastResult;\n"
-if anchor not in s:
-    raise SystemExit('calculate tail anchor not found')
-s=s.replace(
-    anchor,
-    "  if(document.getElementById('tep')&&document.getElementById('tep').classList.contains('active'))renderTep();\n  if(telegramMode==='edit')persistLocalSilently();\n  return lastResult;\n",
-    1,
+s=insert_after_line(
+    s,
+    "if(document.getElementById('tep')&&document.getElementById('tep').classList.contains('active'))renderTep();",
+    "  if(telegramMode==='edit')persistLocalSilently();\n",
 )
 
 # TEP table edits also recalculate immediately.
