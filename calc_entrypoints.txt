@@ -1,0 +1,1384 @@
+
+### class CalcRequest\b @ 34541
+6jJCvagwAE50VHLXhcSh9wh/TAluBBAcKH0L//RpUrcGJG4xmg1IKQG6cVuvPH5E9OUBTDYquH39a3VDB08960i5A1QC9pHkJAb9CjdbHW5FzduFgDEeaWcCplUhEeYFE2k7TMKryj7Up1BSKsD+nHroIKISBJdlT1ULmgiNfDAY/LQ7rMSs5H5K3BKC1nTS5+iEyVaFYjmuNgcWG9dCYbwe9nAgz7xk8xtpdzt8SJdeTt82QNgUZhzYChkKwoE/COq8eYNt/+fLYoDCWpdF8U3zqW+Wia5ZCnDTG2ZaFK6XA9aNmQVAEXGpzIjkPmCswC8KTpztzl8/2zsztepjoVNg+6Z+yd4H2Mn7WlfjlP9A3LecnFRIHBNVP0NvOhz+m5gFZKf5lHt0Uck4SQcFY8pC8S6+RjqlgWtMIoUORm0U3vsT+A/5noFaY+l9ZMtNFkyD882iBgvPUKsWXAxfBEksBvxjfyd73B2I03PdsuoZUD+3pd9YtnN3trlzOGotuXgWw2U31axl5Iu+wiJFnYzFQgmwPmQEmAdbhQJ2cusoksnAG/mbN3UNq1UqSUZehHtGjIkHKBdPtSCZCmdXCMhhYX/mgozOt7vEOj2IIum76lDKXrO0YNfGT9B1flW7/EVW9B+vwri7FasmJlPYzqQ/I4VVtq7gsN+p5GCvMXlstg2uOkY+7f06IQRCHfAg8/qdxtl1oLux/HuV8swzyw4j1HTFT5W+NY934gnHVqIWFpGegHMbdSQgZj6iuRV9/MbKe3fQMfYIemG3iQ4I4bbqUicCeoi5zQr8EWgdK47xJIePK0NmXHqHJgk/rukdABlkHzYcTA8Cu2lqSFIy4WB1/mZs4ZgoTZcRJXtyg5YMaeByPKictFIzjfmRnK16BKPh3w+bRfj1AvfrF4l0fqv9wVS2a2XFrNbN0sbQ7y6ldDWdtVERQXYh3wkdalAukWtaQJFffdkUN1xSBwPFxYl4mquk5TO/ACvwTH4evOljf11t7GIV+VvFgNxmUu16SgVgZHs0SIPYlt/X3HyHcHr/VSgBjnBI32teiCQH4FyKgiAQIVpKxGE9+SCIxg++ZvYyyU5WWUgFy8zdjZOr73ThjTdOrqcK6TDdWMy1yKxffSP0lB+kV4/54QaqFS5g2qtisVDP+lPdA6emQN9D6rHAJve4wTHzBrblihhnphljnpRjbsOjxVlPZ2GIZ4AcRwGFfIeE895LErej1TZKcqCghZf9QYB7Og4J++EWqPoRBx/EDHRS8AeXKlVaWaTwPwyEcDLpOUJn7ivHvYnjIZaFdI4hgSkMbcNJwRgwv42nRkoists3+ZWtEcHYWuNUMStDYpDWC+u71ksb/8X2V6MpSge+XFpHmd9v6frcAAAAAFETvYvcKLo1PvKQ5m/HAkWaf+mGTX1fsAAAhOy4XkDy5/n4As6AAAAB2C6vaalqblgH0Z5sJPLhvL2MkuqwAAIDch6aogZ/3+AAAAAAAAA="
+
+
+class CalcRequest(BaseModel):
+    inputs: dict[str, Any]
+    tep: dict[str, dict[str, Any]]
+    rates: list[dict[str, Any]] = []
+
+
+class PhasedCalcRequest(BaseModel):
+    inputs: dict[str, Any]
+    tep: dict[str, dict[str, Any]]
+    rates: list[dict[str, Any]] = []
+    phasing: dict[str, Any] = {}
+
+
+class AgentChatRequest(BaseModel):
+    message: str
+    inputs: dict[str, Any]
+    tep: dict[str, dict[str, Any]]
+    rates: list[dict[str, Any]] = []
+    phasing: dict[str, Any] = {}
+    history: list[dict[str, Any]] = []
+    selected_view: str = "all"
+
+
+class CadastralAnalysisRequest(BaseModel):
+    cadastral_numbers: str | list[str]
+
+
+class CadastralTepRequest(BaseModel):
+    rows: list[dict[str, Any]]
+    cadastral_analysis: dict[str, Any] | None = None
+
+
+class TelegramResultRequest(BaseModel):
+    session: str
+    summary: dict[str, Any]
+
+
+class TelegramSessionRequest(BaseModel):
+    session: str
+
+
+
+_XLSX_MAIN_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+_XLSX_REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+_XLSX_PKG_REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
+
+
+def _xlsx_col_index(ref: str) -> int:
+    letters = re.match(r"[A-Z]+", ref or "")
+    if not letters:
+        return 0
+    result = 0
+    for ch in letters.group(0):
+        result = result * 26 + ord(ch) - 64
+    return result - 1
+
+
+def _xlsx_read_tables(data: bytes) -> dict[str, list[list[Any]]]:
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(data))
+    except Exception as exc:
+        raise ValueError("Файл не является корректным XLSX") from exc
+
+    ns = {"m": _XLSX_MAIN_NS, "r": _XLSX_REL_NS}
+    try:
+        workbook = ET.fromstring(zf.read("xl/workbook.xml"))
+        rels_root = ET.fromstring(zf.read("xl/_rels/workbook.xml.rels"))
+    except KeyError as exc:
+        raise ValueError("В XLSX отсутствует структура книги Excel") from exc
+
+    rels = {}
+    for rel in rels_root:
+        rels[rel.attrib.get("Id")] = rel.attrib.get("Target", "")
+
+    shared: list[str] = []
+    try:
+        sst = ET.fromstring(zf.read("xl/sharedStrings.xml"))
+        for si in sst.findall(f"{{{_XLSX_MAIN_NS}}}si"):
+            shared.append("".join(t.text or "" for t in si.iter(f"{{{_XLSX_MAIN_NS}}}t")))
+    except KeyError:
+        pass
+
+    tables: dict[str, list[list[Any]]] = {}
+    sheets = workbook.find("m:sheets", ns)
+    if sheets is None:
+        return tables
+
+    for sheet in sheets:
+        name = sheet.attrib.get("name", "")
+        rid = sheet.attrib.get(f"{{{_XLSX_REL_NS}}}id")
+        target = rels.get(rid, "")
+        if target.startswith("/"):
+            path = target.lstrip("/")
+        elif target.startswith("xl/"):
+            path = target
+        else:
+            path = "xl/" + target.lstrip("/")
+        try:
+            root = ET.fromstring(zf.read(path))
+        except KeyError:
+            continue
+
+        rows_out: list[list[Any]] = []
+        sheet_data = root.find(f"{{{_XLSX_MAIN_NS}}}sheetData")
+        if sheet_data is None:
+            tables[name] = rows_out
+            continue
+
+        for row in sheet_data.findall(f"{{{_XLSX_MAIN_NS}}}row"):
+            values: dict[int, Any] = {}
+            max_col = -1
+            for cell in row.findall(f"{{{_XLSX_MAIN_NS}}}c"):
+                ref = cell.attrib.get("r", "")
+                col = _xlsx_col_index(ref)
+                max_col = max(max_col, col)
+                ctype = cell.attrib.get("t")
+                value = None
+
+                if ctype == "inlineStr":
+                    node = cell.find(f"{{{_XLSX_MAIN_NS}}}is")
+                    if node is not None:
+                        value = "".join(t.text or "" for t in node.iter(f"{{{_XLSX_MAIN_NS}}}t"))
+                else:
+                    vnode = cell.find(f"{{{_XLSX_MAIN_NS}}}v")
+                    raw = vnode.text if vnode is not None else None
+                    if raw is not None:
+                        if ctype == "s":
+                            try:
+                                value = shared[int(raw)]
+                            except Exception:
+                                value = raw
+                        elif ctype == "b":
+                            value = raw == "1"
+                        elif ctype in ("str", "e"):
+                            value = raw
+                        else:
+                            try:
+                                num = float(raw)
+                                value = int(num) if num.is_integer() else num
+                            except ValueError:
+                                value = raw
+                values[col] = value
+
+            if max_col >= 0:
+                rows_out.append([values.get(i) for i in range(max_col + 1)])
+
+        tables[name] = rows_out
+    return tables
+
+
+def _ru_number(value: Any) -> float | None:
+    """Russian number parser: NBSP/space = thousands, comma = decimal.
+    Only the leading numeric token is used, so '0,651 (100,0%)' -> 0.651.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    s = str(value).strip()
+    if not s or s in {"—", "-", "–"}:
+        return None
+    m = re.match(r"^[+-]?[0-9][0-9 \u00A0\u202F]*(?:[,.][0-9]+)?", s)
+    if not m:
+        return None
+    token = m.group(0).replace("\u00A0", "").replace("\u202F", "").replace(" ", "")
+    # In ГлавАПУ exports comma is the decimal separator. A dot is already decimal when present.
+    if "," in token:
+        token = token.replace(".", "").replace(",", ".")
+    try:
+        return float(token)
+    except ValueError:
+        return None
+
+
+def _code(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        return str(int(value)) if value.is_integer() else ("%g" % value)
+    return str(value).strip().replace(",", ".")
+
+
+def _row_map(rows: list[list[Any]]) -> tuple[dict[str, list[Any]], list[list[Any]]]:
+    by_code: dict[str, list[Any]] = {}
+    for row in rows:
+        if not row:
+            continue
+        code = _code(row[0] if len(row) > 0 else None)
+        if code:
+            by_code[code] = row
+    return by_code, rows
+
+
+def _row_val(by_code: dict[str, list[Any]], code: str, col: int = 3) -> Any:
+    row = by_code.get(code)
+    return row[col] if row and len(row) > col else None
+
+
+def _row_num(by_code: dict[str, list[Any]], code: str, scale: float = 1.0, col: int = 3) -> float | None:
+    value = _ru_number(_row_val(by_code, code, col))
+    return None if value is None else value * scale
+
+
+def _find_named(rows: list[list[Any]], needle: str, value_col: int = 3) -> Any:
+    needle = needle.lower()
+    for row in rows:
+        if len(row) > 1 and needle in str(row[1] or "").lower():
+            return row[value_col] if len(row) > value_col else None
+    return None
+
+
+
+def _find_named_num(
+    rows: list[list[Any]],
+    needle: str,
+    scale: float = 1.0,
+    value_col: int = 3,
+) -> float | None:
+    value = _ru_number(_find_named(rows, needle, value_col))
+    return None if value is None else value * scale
+
+
+def _money_to_mln(value: Any, unit: Any) -> float | None:
+    """Normalize a ГлавАПУ monetary value to million rubles using its source unit."""
+    number = _ru_number(value)
+    if number is None:
+        return None
+    u = str(unit or "").lower().replace("\u00a0", "").replace(" ", "")
+    if "млрд" in u:
+        return number * 1000.0
+    if "тыс" in u:
+        return number / 1000.0
+    # Default for ГлавАПУ monetary rows: million rubles.
+    return number
+
+
+def _row_money_mln(
+    by_code: dict[str, list[Any]],
+    code: str,
+    value_col: int = 3,
+    unit_col: int = 2,
+) -> float | None:
+    row = by_code.get(code)
+    if not row:
+        return None
+    value = row[value_col] if len(row) > value_col else None
+    unit = row[unit_col] if len(row) > unit_col else None
+    return _money_to_mln(value, unit)
+
+
+def _find_named_money_mln(
+    rows: list[list[Any]],
+    needle: str,
+    value_col: int = 3,
+    unit_col: int = 2,
+) -> float | None:
+    needle = needle.lower()
+    for row in rows:
+        if len(row) > 1 and needle in str(row[1] or "").lower():
+            value = row[value_col] if len(row) > value_col else None
+            unit = row[unit_col] if len(row) > unit_col else None
+            return _money_to_mln(value, unit)
+    return None
+
+
+def _find_parameter(rows: list[list[Any]], name: str) -> Any:
+    target = name.strip().lower()
+    for row in rows:
+        if row and str(row[0] or "").strip().lower() == target:
+            return row[1] if len(row) > 1 else None
+    return None
+
+
+def parse_glavapu_xlsx(data: bytes, filename: str = "") -> dict[str, Any]:
+    tables = _xlsx_read_tables(data)
+    tep_sheet = next((name for name in tables if name.strip().lower() == "тэп"), None)
+    if not tep_sheet:
+        tep_sheet = next((name for name in tables if "тэп" in name.lower()), None)
+    if not tep_sheet:
+        raise ValueError("Не найден лист «ТЭП». Ожидается формат калькулятора ГлавАПУ.")
+
+    rows = tables[tep_sheet]
+    by, all_rows = _row_map(rows)
+
+    parking_sheet = next((name for name in tables if "машино" in name.lower()), None)
+    params_sheet = next((name for name in tables if "параметры территории" in name.lower()), None)
+    params_rows = tables.get(params_sheet, []) if params_sheet else []
+
+    # Source data. СПП/НП are stored in тыс. кв. м and converted to m².
+    data_norm: dict[str, Any] = {
+        "site_area_ha": _row_num(by, "1"),
+        "density_spp_th_sqm_ha": _row_num(by, "2"),
+        "density_np_th_sqm_ha": _row_num(by, "3"),
+        "population": _row_num(by, "4"),
+        "apartment_units": _row_num(by, "5"),
+
+        "spp_total_sqm": _row_num(by, "6", 1000),
+        "residential_spp_sqm": _row_num(by, "7.1", 1000),
+        "ground_commercial_spp_sqm": _row_num(by, "7.2", 1000),
+        "standalone_nonres_spp_sqm": _row_num(by, "8.1", 1000),
+        "social_spp_sqm": _row_num(by, "8.2", 1000),
+
+        "np_total_sqm": _row_num(by, "9", 1000),
+        "residential_np_sqm": _row_num(by, "9.1.1", 1000),
+        "ground_commercial_np_sqm": _row_num(by, "9.1.2", 1000),
+        "standalone_nonres_np_sqm": _row_num(by, "9.2.1", 1000),
+        "social_np_sqm": _row_num(by, "9.2.2", 1000),
+
+        "apartment_area_sqm": _row_num(by, "10", 1000),
+        "nonresidential_aboveground_sqm": _row_num(by, "11", 1000),
+
+        # Optional PLATO extension rows used by server project presets.
+        # Read ONLY by semantic label. Codes 57–64 exist in standard ГлавАПУ files
+        # for unrelated indicators and must never identify PLATO extension fields.
+        "office_gba_sqm": _find_named_num(all_rows, "МФК / офисы — ГНС / GBA", 1000),
+        "office_saleable_sqm": _find_named_num(all_rows, "МФК / офисы — продаваемая / полезная площадь", 1000),
+        "office_land_ha": _find_named_num(all_rows, "МФК / офисы — земельный участок"),
+        "mfc_parking_area_sqm": _find_named_num(all_rows, "МФК — подземный паркинг, площадь", 1000),
+        "mfc_parking_spaces": _find_named_num(all_rows, "МФК — подземный паркинг, машино-места"),
+        "office_need_sqm": _find_named_num(all_rows, "Расчётная потребность в офисных помещениях для рабочих мест", 1000),
+        "storage_units": _find_named_num(all_rows, "Кладовые — количество"),
+        "storage_area_sqm": _find_named_num(all_rows, "Кладовые — общая подземная площадь", 1000),
+
+        "actual_kindergarten_places": _row_num(by, "18"),
+        "actual_kindergarten_spp_sqm": _row_num(by, "19", 1000),
+        "actual_kindergarten_np_sqm": _row_num(by, "20", 1000),
+        "actual_kindergarten_land_ha": _row_num(by, "21"),
+
+        "actual_school_places": _row_num(by, "22"),
+        "actual_school_spp_sqm": _row_num(by, "23", 1000),
+        "actual_school_np_sqm": _row_num(by, "24", 1000),
+        "actual_school_land_ha": _row_num(by, "25"),
+
+        "actual_cl
+
+### def calculate\b @ 223793
+cluding duplicated transferred bridge interest.
+    llcr_numerator = total_revenue - commercial_costs - profit_tax - total_capex + result["pf_draw_total"]
+
+    # To reproduce Excel's correction concept, create a "reported" total where transferred bridge interest
+    # appears in both bridge and PF buckets, then subtract it once.
+    reported_interest_and_fees = financing_cost + result["transferred_bridge_interest"]
+    llcr_denominator = (
+        result["pf_draw_total"] + reported_interest_and_fees - result["transferred_bridge_interest"]
+    )
+    llcr = llcr_numerator / llcr_denominator if llcr_denominator else 0.0
+
+    result.update({
+        "financing_cost": financing_cost,
+        "profit_tax": profit_tax,
+        "profit_tax_schedule": {
+            month.isoformat(): value for month, value in profit_tax_schedule.items()
+        },
+        "tax_rows": tax_rows,
+        "tax_margin_by_product": tax_margin_by_product,
+        "tax_cost_by_product": tax_cost_by_product,
+        "financing_tax_deductions": sum(financing_deductions.values()),
+        "financing_tax_reconciliation": financing_reconciliation,
+        "profit_before_tax": profit_before_tax,
+        "llcr": llcr,
+        "llcr_numerator": llcr_numerator,
+        "llcr_denominator": llcr_denominator,
+        "reported_interest_and_fees": reported_interest_and_fees,
+        "total_revenue": total_revenue,
+        "total_capex": total_capex,
+        "commercial_costs": commercial_costs,
+    })
+    return result
+
+
+def calculate(req: CalcRequest) -> dict:
+    x = req.inputs
+    t = req.tep
+    rates = req.rates
+    if not rates:
+        rates = generate_rate_curve(
+            d(x.get("rate_start_date", date.today().isoformat())),
+            n(x, "rate_start_pct", 14.25),
+            n(x, "rate_target_high_pct", 11.0),
+            n(x, "rate_target_base_pct", 9.0),
+            n(x, "rate_target_low_pct", 7.0),
+            int(n(x, "rate_normalization_months", 24)),
+            180,
+            n(x, "rate_curve_shape", 2.0),
+        )
+
+    # ГлавАПУ is the authoritative source for required underground parking.
+    # Repair stale browser/localStorage TEP values before every calculation.
+    imported = (x.get("_glavapu_import") or {}).get("normalized", {})
+    if imported:
+        permanent = n(imported, "parking_permanent")
+        guest = n(imported, "parking_guest")
+        underground_spaces = permanent + guest
+        if underground_spaces > 0 and "underground_parking" in t:
+            t["underground_parking"]["units"] = underground_spaces
+            t["underground_parking"]["gns"] = underground_spaces * 35.0
+            t["underground_parking"]["total_area"] = underground_spaces * 35.0
+            t["underground_parking"]["useful"] = 0.0
+            t["underground_parking"]["saleable"] = 0.0
+            t["underground_parking"]["transfer"] = 0.0
+
+    op = build_operating_model(x, t)
+    fin = simulate_financing(x, t, rates, op)
+
+    tep_rows = []
+    for key, row in t.items():
+        tep_rows.append({
+            "key": key,
+            "label": row.get("label", key),
+            "gns": n(row, "gns"),
+            "total_area": n(row, "total_area"),
+            "useful": n(row, "useful"),
+            "saleable": n(row, "saleable"),
+            "transfer": n(row, "transfer"),
+            "units": n(row, "units"),
+        })
+
+    tep_total = {
+        key: sum(row[key] for row in tep_rows)
+        for key in ("gns", "total_area", "useful", "saleable", "transfer", "units")
+    }
+
+    total_revenue = fin["total_revenue"]
+    total_capex = fin["total_capex"]
+    after_finance_pre_tax = fin["profit_before_tax"]
+    net_profit = after_finance_pre_tax - fin["profit_tax"]
+
+    # Report-level project metrics.
+    monetizable_saleable_sqm = sum(
+        n(row, "saleable") for key, row in t.items()
+        if key in ("apartments", "ground_commercial", "standalone_retail", "offices")
+    )
+    apartment_saleable_sqm = n(t.get("apartments", {}), "saleable")
+    core_gns = op["core_above_gns"] + op["core_under_gns"]
+
+    construction_capex = sum(op["capex_amounts"].get(k, 0.0) for k in (
+        "ird", "design_p", "design_rd", "author_supervision", "preparation",
+        "main_above", "main_under", "utilities", "landscaping",
+        "commissioning", "site_maintenance", "gc_fee", "reserve"
+    ))
+    full_project_cost = total_capex + fin["commercial_costs"] + fin["financing_cost"] + fin["profit_tax"]
+    avg_apartment_price = (
+        op["revenue_by_product"].get("apartments", 0.0) / apartment_saleable_sqm / 1000
+        if apartment_saleable_sqm else 0.0
+    )
+    full_cost_per_saleable = full_project_cost / monetizable_saleable_sqm / 1000 if monetizable_saleable_sqm else 0.0
+    construction_cost_per_gns = construction_capex / core_gns / 1000 if core_gns else 0.0
+    ebitda = total_revenue - total_capex - fin["commercial_costs"]
+    ebitda_per_saleable = ebitda / monetizable_saleable_sqm / 1000 if monetizable_saleable_sqm else 0.0
+    net_profit_per_saleable = net_profit / monetizable_saleable_sqm / 1000 if monetizable_saleable_sqm else 0.0
+
+    # Unit economics by total GNS and monetizable saleable area.
+    project_gns_sqm = sum(n(row, "gns") for row in t.values())
+    total_expenses = total_capex + fin["commercial_costs"] + fin["financing_cost"] + fin["profit_tax"]
+
+    def per_sqm_th(value: float, area: float) -> float:
+        return value / area / 1000 if area else 0.0
+
+    unit_economics = [
+        {
+            "label": "Выручка",
+            "total": total_revenue,
+            "per_gns_th": per_sqm_th(total_revenue, project_gns_sqm),
+            "per_saleable_th": per_sqm_th(total_revenue, monetizable_saleable_sqm),
+        },
+        {
+            "label": "CAPEX",
+            "total": total_capex,
+            "per_gns_th": per_sqm_th(total_capex, project_gns_sqm),
+            "per_saleable_th": per_sqm_th(total_capex, monetizable_saleable_sqm),
+        },
+        {
+            "label": "Маркетинг и продажи",
+            "total": fin["commercial_costs"],
+            "per_gns_th": per_sqm_th(fin["commercial_costs"], project_gns_sqm),
+            "per_saleable_th": per_sqm_th(fin["commercial_costs"], monetizable_saleable_sqm),
+        },
+        {
+            "label": "EBITDA",
+            "total": ebitda,
+            "per_gns_th": per_sqm_th(ebitda, project_gns_sqm),
+            "per_saleable_th": per_sqm_th(ebitda, monetizable_saleable_sqm),
+        },
+        {
+            "label": "Проценты и комиссии",
+            "total": fin["financing_cost"],
+            "per_gns_th": per_sqm_th(fin["financing_cost"], project_gns_sqm),
+            "per_saleable_th": per_sqm_th(fin["financing_cost"], monetizable_saleable_sqm),
+        },
+        {
+            "label": "Налог на прибыль",
+            "total": fin["profit_tax"],
+            "per_gns_th": per_sqm_th(fin["profit_tax"], project_gns_sqm),
+            "per_saleable_th": per_sqm_th(fin["profit_tax"], monetizable_saleable_sqm),
+        },
+        {
+            "label": "Полные расходы",
+            "total": total_expenses,
+            "per_gns_th": per_sqm_th(total_expenses, project_gns_sqm),
+            "per_saleable_th": per_sqm_th(total_expenses, monetizable_saleable_sqm),
+        },
+        {
+            "label": "Чистая прибыль",
+            "total": net_profit,
+            "per_gns_th": per_sqm_th(net_profit, project_gns_sqm),
+            "per_saleable_th": per_sqm_th(net_profit, monetizable_saleable_sqm),
+        },
+    ]
+
+    # Expense structure: categories are mutually exclusive and sum to total expenses.
+    purchase_value = n(x, "purchase_price_mln") * 1_000_000
+    expense_groups = [
+        ("Покупка и земельные права", purchase_value + op["capex_amounts"].get("land_rights", 0.0)),
+        ("ИРД и проектирование",
+         op["capex_amounts"].get("ird", 0.0)
+         + op["capex_amounts"].get("design_p", 0.0)
+         + op["capex_amounts"].get("design_rd", 0.0)
+         + op["capex_amounts"].get("author_supervision", 0.0)),
+        ("Основное строительство",
+         op["capex_amounts"].get("preparation", 0.0)
+         + op["capex_amounts"].get("main_above", 0.0)
+         + op["capex_amounts"].get("main_under", 0.0)
+         + op["capex_amounts"].get("utilities", 0.0)
+         + op["capex_amounts"].get("landscaping", 0.0)
+         + op["capex_amounts"].get("commissioning", 0.0)
+         + op["capex_amounts"].get("site_maintenance", 0.0)
+         + op["capex_amounts"].get("gc_fee", 0.0)),
+        ("Отдельные объекты",
+         op["capex_amounts"].get("offices", 0.0)
+         + op["capex_amounts"].get("standalone_retail", 0.0)
+         + op["capex_amounts"].get("above_parking", 0.0)),
+        ("Социальная нагрузка", op["capex_amounts"].get("social", 0.0)),
+        ("Управление проектом",
+         op["capex_amounts"].get("project_management", 0.0)),
+        ("Технический заказчик / стройконтроль",
+         op["capex_amounts"].get("technical_supervision", 0.0)),
+        ("Резерв",
+         op["capex_amounts"].get("reserve", 0.0)),
+        ("Маркетинг и продажи", fin["commercial_costs"]),
+        ("Проценты и комиссии", fin["financing_cost"]),
+        ("Налог на прибыль", fin["profit_tax"]),
+    ]
+    expense_structure = []
+    expense_base = sum(value for _, value in expense_groups)
+    for label, value in expense_groups:
+        if value <= 0:
+            continue
+        expense_structure.append({
+            "label": label,
+            "value": value,
+            "share": value / expense_base if expense_base else 0.0,
+        })
+    expense_structure.sort(key=lambda item: item["value"], reverse=True)
+
+    # Project/equity cash flow proxy for NPV / IRR.
+    row_by_month = {d(r["month"]): r for r in fin["rows"]}
+    timeline = month_range(op["project_start"], op["end"])
+    project_cf = []
+    equity_cf = []
+    for month in timeline:
+        revenue_m = op["revenue"].get(month, 0.0)
+        capex_m = op["capex"].get(month, 0.0)
+        opex_m = op["operating"].get(month, 0.0)
+        fr = row_by_month.get(month, {})
+        bridge_draw = float(fr.get("bridge_draw", 0.0) or 0.0)
+        bridge_repay = float(fr.get("bridge_repayment", 0.0) or 0.0)
+        pf_draw = float(fr.get("pf_draw", 0.0) or 0.0)
+        pf_repay = float(fr.get("pf_repayment", 0.0) or 0.0)
+        int_pay = float(fr.get("interest_payment", 0.0) or 0.0)
+        # Limit fees are capitalized into interest payable inside the financing
+        # engine and therefore already included in interest_payment when paid.
+        fees = 0.0
+        tax = float(fr.get("profit_tax", 0.0) or 0.0)
+        project_cf.append(revenue_m - capex_m - opex_m - int_pay - fees - tax)
+        equity_cf.append(
+            revenue_m - capex_m - opex_m - int_pay - fees - tax
+            + bridge_draw + pf_draw - bridge_repay - pf_repay
+        )
+
+    if project_cf:
+        project_cf[0] -= fin["bridge_fee"]
+    if equity_cf:
+        equity_cf[0] -= fin["bridge_fee"]
+    permit_idx = months_between(op["project_start"], op["permit"])
+    if 0 <= permit_idx < len(project_cf):
+        project_cf[permit_idx] -= fin["pf_reservation_fee"]
+        equity_cf[permit_idx] -= fin["pf_reservation_fee"]
+
+    discount_rate = n(x, "discount_rate_pct", 20) / 100
+    project_npv = _monthly_npv(project_cf, discount_rate)
+    irr_equity = _monthly_irr(equity_cf)
+
+    # Product economics / sales KPIs.
+    product_specs = {
+        "apartments": {
+            "label": "Квартиры", "quantity": n(t.get("apartments", {}), "saleable"),
+            "unit": "м²", "start_price": n(x, "apartment_price_th"), "share": n(x, "share_before_rve_pct", 85)/100,
+            "start": op["sales_start"], "end_ref": op["rve"], "residual": int(n(x, "residual_sales_months", 6))
+        },
+        "ground_commercial": {
+            "label": "Коммерция 1 этажа", "quantity": n(t.get("ground_commercial", {}), "saleable"),
+            "unit": "м²", "start_price": n(x, "commercial_price_th"), "share": n(x, "share_before_rve_pct", 85)/100,
+            "start": op["sales_start"], "end_ref": op["rve"], "residual": int(n(x, "residual_sales_months", 6))
+        },
+        "underground_parking": {
+            "label": "Подземный паркинг", "quantity": n(t.get("underground_parking", {}), "units"),
+            "unit": "шт.", "start_price": n(x, "parking_price_th"), "share": n(x, "share_before_rve_pct", 85)/100,
+            "start": op["sales_start"], "end_ref": op["rve"], "residual": int(n(x, "residual_sales_months", 6))
+        },
+        "storage": {
+            "label": "Кладовые", "quantity": n(t.get("storage", {}), "units"),
+            "unit": "шт.", "start_price": n(x, "storage_price_th"), "share": n(x, "share_before_rve_pct", 85)/100,
+            "start": op["sales_start"], "end_ref": op["rve"], "residual": int(n(x, "residual_sales_months", 6))
+        },
+        "offices": {
+            "label": "Офисы / МФОЦ", "quantity": n(x, "offices_saleable_sqm") if b(x, "offices_enabled") else 0,
+            "unit": "м²", "start_price": n(x, "offices_price_th_per_sqm"), "share": n(x, "offices_share_before_rve_pct", 85)/100,
+            "start": d(x["offices_sales_start"]), "end_ref": add_months(d(x["offices_start"]), int(n(x, "offices_months", 24))),
+            "residual": int(n(x, "offices_residual_months", 6))
+        },
+        "standalone_retail": {
+            "label": "Коммерция ОСЗ", "quantity": n(x, "retail_saleable_sqm") if b(x, "retail_enabled") else 0,
+            "unit": "м²", "start_price": n(x, "retail_price_th_per_sqm"), "sh
+
+### @app\.post\("/calculate" @ 385874
+          )
+            return {
+                "answer": answer,
+                "model": model,
+                "response_id": None,
+                "tools_used": tools_used,
+                "proposals": proposals,
+                "forced_synthesis": True,
+            }
+
+    raise HTTPException(status_code=502, detail="Не удалось сформировать итоговый ответ по выполненным расчётам.")
+
+
+@app.get("/agent/status")
+def agent_status() -> dict[str, Any]:
+    return {
+        "enabled": bool(os.getenv("OPENAI_API_KEY", "").strip()),
+        "model": os.getenv("OPENAI_AGENT_MODEL", "gpt-5.6"),
+        "agent_name": "Платон Сергеевич Федоскин",
+        "mode": "reasoning_agent_with_confirmed_input_patches",
+        "bank_llcr_target": _AGENT_BANK_LLCR_TARGET,
+        "tools": [t["name"] for t in _AGENT_TOOLS],
+        "methodology_rules": len(_PLATO_METHODOLOGY),
+    }
+
+
+@app.post("/agent/chat")
+def agent_chat(req: AgentChatRequest, request: Request) -> dict[str, Any]:
+    _agent_rate_limit(request)
+    message = str(req.message or "").strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="Введите вопрос.")
+    if len(message) > 4000:
+        raise HTTPException(status_code=400, detail="Вопрос слишком длинный.")
+
+    bundle = _run_authoritative_model(req.inputs, req.tep, req.rates, req.phasing)
+    return _call_openai_tool_agent(req, bundle)
+
+
+@app.get("/current-key-rate")
+def current_key_rate() -> dict[str, Any]:
+    return fetch_current_cbr_key_rate()
+
+
+@app.post("/calculate")
+def calculate_api(req: CalcRequest) -> dict:
+    return calculate(req)
+
+
+PAGE = r"""<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ПЛАТО — Девелоперская инвестиционная модель</title>
+<style>
+:root{
+  --black:#080808;--ink:#171717;--muted:#727272;--line:#dedede;--soft:#f5f5f3;
+  --paper:#ffffff;--positive:#166534;--negative:#b42318;--warn:#8a4b08;
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;
+}
+*{box-sizing:border-box}body{margin:0;background:#f2f2ef;color:var(--ink)}
+.shell{max-width:1540px;margin:0 auto;background:var(--paper);min-height:100vh}
+.brandbar{padding:22px 34px 0;background:#fff}.brandbar img{display:block;width:min(360px,58vw);height:auto}
+.brandline{height:8px;background:#050505;margin-top:12px}
+.header{padding:18px 34px 12px;display:flex;gap:18px;align-items:end;flex-wrap:wrap;border-bottom:1px solid var(--line)}
+.title h1{font-size:22px;margin:0;font-weight:620;letter-spacing:.01em}.title p{margin:5px 0 0;color:var(--muted);font-size:13px}
+.actions{margin-left:auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.header-note{margin:0 34px 12px;padding:11px 14px;border:1px solid #ddd;background:#fafaf8;font-size:11px;line-height:1.5;color:#555}
+.header-note-detail{display:block;margin-top:4px}
+.tabs{padding:0 34px;border-bottom:1px solid var(--line);display:flex;gap:28px;overflow:auto;background:#fff}
+.tab{border:0;background:none;padding:15px 0 12px;font-size:14px;font-weight:620;color:#777;white-space:nowrap;border-bottom:3px solid transparent;cursor:pointer}
+.tab.active{color:#000;border-color:#000}
+.content{padding:24px 34px 40px}.panel{display:none}.panel.active{display:block}
+.grid{display:grid;grid-template-columns:minmax(390px,540px) 1fr;gap:20px}
+.card{border:1px solid var(--line);background:#fff;padding:20px;margin-bottom:18px}
+.card h2,.card h3{margin:0 0 14px}.section-title{font-size:11px;text-transform:uppercase;letter-spacing:.12em;color:#777;margin-bottom:10px;font-weight:750}
+details{border-top:1px solid #e5e5e5;padding:4px 0}details:first-child{border-top:0}
+summary{padding:11px 0;font-size:14px;font-weight:700;cursor:pointer}
+.fields{display:grid;grid-template-columns:1fr 1fr;gap:10px 14px;padding:0 0 15px}
+.field label{font-size:12px;color:#555;display:block;margin-bottom:4px}.unit{color:#aaa;font-size:10px}
+input,select{width:100%;border:1px solid #cfcfcf;background:#fff;border-radius:0;padding:9px 10px;font-size:14px;color:#111}
+input:focus,select:focus{outline:2px solid #111;outline-offset:-1px}
+input[type=checkbox]{width:auto;transform:scale(1.15);margin:8px}
+.btn{border:1px solid #111;background:#fff;padding:9px 13px;color:#111;font-weight:700;cursor:pointer}
+.btn.dark{background:#070707;color:#fff}.btn:hover{opacity:.8}.scenario select{width:auto;min-width:145px}
+.kpis{display:grid;grid-template-columns:repeat(4,minmax(150px,1fr));border-top:1px solid #111;border-left:1px solid var(--line)}
+.kpi{padding:17px;border-right:1px solid var(--line);border-bottom:1px solid var(--line);min-height:92px}
+.kpi span{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#777}.kpi b{display:block;font-size:22px;margin-top:9px;font-weight:620}
+.kpi small{display:block;color:#888;margin-top:5px}
+.dates{display:grid;grid-template-columns:repeat(4,1fr);gap:0;border-top:1px solid #111;border-left:1px solid var(--line)}
+.datebox{padding:12px;border-right:1px solid var(--line);border-bottom:1px solid var(--line);font-size:11px;color:#777;text-transform:uppercase;letter-spacing:.05em}
+.datebox b{display:block;color:#111;font-size:14px;margin-top:5px;text-transform:none;letter-spacing:0}
+table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:9px 8px;border-bottom:1px solid #e2e2e2;text-align:right;vertical-align:middle}
+th:first-child,td:first-child{text-align:left}th{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:#777;background:#fafafa}
+tfoot th{border-top:2px solid #111;color:#111;background:#fff}
+.scroll{overflow:auto;max-height:68vh}.teptable input{min-width:94px;text-align:right;padding:7px}
+.note{padding:13px 15px;background:#f6f6f4;border-left:3px solid #111;font-size:12px;line-height:1.55;color:#555;margin-top:14px}
+.warning{border-left-color:#9a6700;background:#fff8e6;color:#704800}
+.finance-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
+.metric-table td:first-child{color:#555}.metric-table td:last-child{font-weight:650}
+.llcr-hero{display:flex;align-items:end;gap:24px;border-top:8px solid #000;padding-top:18px}
+.llcr-value{font-size:58px;line-height:.95;font-weight:570;letter-spacing:-.04em}.llcr-label{font-size:12px;color:#777;max-width:330px;line-height:1.5}
+.compare{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:15px}.compare div{padding:12px;background:#f7f7f5}
+.compare small{color:#777;display:block}.compare b{display:block;margin-top:5px}
+.rate-good{color:var(--positive)}.rate-warn{color:var(--warn)}.negative{color:var(--negative)}
+.chart{height:230px;border:1px solid var(--line);margin-top:14px;position:relative;background:linear-gradient(to bottom,#fff,#fafafa)}
+.chart svg{width:100%;height:100%}.legend{display:flex;gap:18px;font-size:11px;color:#666;margin-top:8px}.legend i{display:inline-block;width:18px;height:3px;background:#111;vertical-align:middle;margin-right:5px}.legend i.gray{background:#999}
+.monthly th{position:sticky;top:0;z-index:2}.monthly td{white-space:nowrap}.monthly .money{font-variant-numeric:tabular-nums}
+.toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:13px}
+.import-card{border-top:8px solid #000}
+.expense-bars{display:grid;gap:11px;margin-top:8px}
+.expense-row{display:grid;grid-template-columns:minmax(180px,1.25fr) minmax(220px,3fr) 70px 120px;gap:10px;align-items:center;font-size:12px}
+.expense-label{line-height:1.25}
+.expense-track{height:15px;background:#eee;position:relative;overflow:hidden}
+.expense-fill{height:100%;background:#111;min-width:2px}
+.expense-pct{text-align:right;font-weight:700}
+.expense-value{text-align:right;color:#666}
+.unit-table td:not(:first-child),.unit-table th:not(:first-child){text-align:right}
+@media(max-width:900px){
+ .preset-grid{grid-template-columns:1fr 1fr}.expense-row{grid-template-columns:1fr}.expense-pct,.expense-value{text-align:left}
+}
+.import-head{display:flex;align-items:flex-start;gap:22px;justify-content:space-between;flex-wrap:wrap}
+.import-head h2{font-size:18px;margin:0 0 6px}.import-head p{font-size:12px;color:#666;margin:0;max-width:760px;line-height:1.5}
+.upload-line{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:16px}
+.upload-line input[type=file]{max-width:520px;background:#fafafa}
+.import-status{font-size:12px;color:#666;margin-top:10px}
+.import-preview{margin-top:16px;border-top:1px solid #ddd;padding-top:16px}
+.import-summary{display:grid;grid-template-columns:repeat(4,1fr);gap:0;border-left:1px solid #ddd;border-top:1px solid #111;margin-bottom:14px}
+.import-summary div{padding:11px;border-right:1px solid #ddd;border-bottom:1px solid #ddd}
+.import-summary small{display:block;color:#777;font-size:10px;text-transform:uppercase;letter-spacing:.06em}
+.import-summary b{display:block;margin-top:4px;font-size:13px}
+.import-actions{display:flex;gap:8px;margin-top:14px;align-items:center;flex-wrap:wrap}
+.import-ok{color:var(--positive);font-weight:650}.import-error{color:var(--negative);font-weight:650}
+.cadastral-box{margin-top:16px;padding:16px;background:#f7f7f5;border:1px solid #ddd}
+.cadastral-box h3{margin:0 0 5px;font-size:15px}.cadastral-box p{margin:0;color:#666;font-size:11px;line-height:1.5}
+.cadastral-entry{display:grid;grid-template-columns:minmax(280px,1fr) auto;gap:8px;align-items:start;margin-top:12px}
+.cadastral-entry textarea{width:100%;min-height:62px;resize:vertical;border:1px solid #bbb;background:#fff;padding:10px;font:inherit;font-size:12px}
+.cadastral-preview{margin-top:14px;padding-top:14px;border-top:1px solid #ccc}
+.cadastral-parcels{margin-top:10px;max-height:190px;overflow:auto;background:#fff;border:1px solid #ddd}
+.cadastral-parcels table{margin:0}.cadastral-parcels th,.cadastral-parcels td{padding:7px 9px}
+.genplan-automation-frame{position:fixed;left:-12000px;top:0;width:1440px;height:1000px;border:0;pointer-events:none}
+.import-divider{margin:18px 0 8px;padding-top:16px;border-top:1px solid #ddd;font-size:11px;font-weight:750;text-transform:uppercase;letter-spacing:.06em;color:#666}
+.mobile-hint{display:none}
+
+.report-hero{border-top:8px solid #000}
+.report-kpis{grid-template-columns:repeat(5,minmax(140px,1fr))}
+.report-section{margin-top:20px}
+.report-title{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:12px}
+.report-title h2{margin:0;font-size:18px}.report-title small{color:#777}
+.report-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap;justify-content:flex-end}
+.pdf-report-meta{display:none}
+.gantt-axis{min-height:62px}
+.gantt-axis .gantt-label{display:flex;align-items:center}
+.gantt-axis .gantt-track{min-height:62px}
+.gantt-year-band{position:absolute;top:0;height:28px;border-left:1px solid #aaa;border-bottom:1px solid #ccc;padding:6px 0 0 7px;font-size:11px;font-weight:750;background:rgba(255,255,255,.82);box-sizing:border-box}
+.gantt-quarter{position:absolute;top:28px;height:34px;border-left:1px solid #ddd;padding-top:9px;text-align:center;font-size:10px;color:#666;box-sizing:border-box;background:rgba(250,250,248,.72)}
+.gantt-quarter-line{position:absolute;top:0;bottom:0;border-left:1px solid rgba(0,0,0,.10);pointer-events:none}
+.gantt-year-line{position:absolute;top:0;bottom:0;border-left:1px solid rgba(0,0,0,.22);pointer-events:none}
+.rate-axis-label{font-size:10px;fill:#777}
+.rate-year-label{font-size:10px;font-weight:700;fill:#555}
+.report-3col{display:grid;grid-template-columns:1.15fr 1fr 1fr;gap:18px;align-items:start}
+.report-2col{display:grid;grid-template-columns:1fr 1fr;gap:18px;align-items:start}
+.value-muted{color:#777}
+.gantt-wrap{overflow:auto;border:1px solid var(--line);background:#fff}
+.gantt{min-width:1050px}
+.gantt-axis,.gantt-row{display:grid;grid-template-columns:250px 1fr;min-height:38px;border-bottom:1px solid #e7e7e7}
+.gantt-axis{position:sticky;top:0;background:#fff;z-index:4;border-bottom:2px solid #111}
+.gantt-label{padding:9px 12px;font-size:12px;border-right:1px solid #ddd;white-space:nowrap}
+.gantt-label.group{font-weight:750;background:#f7f7f5;text-transform:uppercase;letter-spacing:.05em;color:#666}
+.gantt-track{position:relative;min-height:38px;background-image:linear-gradient(to right,rgba(0,0,0,.055) 1px,transparent 1px)}
+.gantt-bar{position:absolute;top:9px;height:20px;background:#111;min-width:4px}
+.gantt-bar.finance{background:#555}.gantt-bar.sales{background:#888}.gantt-bar.social{background:#b1b1b1}
+.gantt-bar.phase-colored{background:var(--phase-color,#111)}
+.gantt-diamond.phase-colored{background:var(--phase-color,#111)}
+.gantt-row.phase-row .gantt-label{border-left:4px solid var(--phase-color,#111);padding-left:8px}
+.gantt-phase-legend{display:flex;gap:14px;flex-wrap:wrap;margin-top:8px;font-size:11px;color:#666}
+.gantt-phase-legend span:before{content:"";display:inline-block;width:18px;height:7px;background:var(--phase-color,#111);margin-right:5px;vertical-align:middle}
+.gantt-diamond{position:absolute;top:13px;width:12px;height:12px;background:#111;transform:rotate(45deg);margin-left:-6px}
+.gantt-date{font-size:10px;color:#777;margin-left:6px}
+.gantt-legend{display:flex;gap:18px;flex-wrap:wrap;margin-top:10px;font-size:11px;color:#666}
+.gantt-legend span:before{content:"";display:inline-block;width:18px;height:7px;background:#111;margin-right:5px;vertical-align:middle}
+.gantt-legend span:nth-child(2):before{background:#555}.gantt-legend span:nth-child(3):before{background:#888}
+.metric-compact td,.metric-compact th{padding:7px 8px}
+.bridge-purpose-blo
+
+### INPUT_DEFAULT @ 453187
+l_months", "Срок строительства", "мес.", "number"], ["retail_cost_th_per_sqm", "Себестоимость строительства", "тыс. ₽/м² GBA", "number"], ["retail_sales_start", "Старт продаж", "дата", "date"], ["retail_price_th_per_sqm", "Стартовая цена", "тыс. ₽/м²", "number"], ["retail_share_before_rve_pct", "Доля продаж до РВЭ", "%", "number"], ["retail_residual_months", "Остаточные продажи после РВЭ", "мес.", "number"], ["retail_growth_pre_pct", "Рост цены до РВЭ", "%/мес.", "number"], ["retail_growth_post_pct", "Рост цены после РВЭ", "%/мес.", "number"]]], ["Наземный паркинг", [["above_parking_enabled", "Объект включен", "Да / Нет", "checkbox"], ["above_parking_spaces", "Количество машино-мест", "шт.", "number"], ["above_parking_cost_mln_per_space", "Себестоимость одного места", "млн ₽/место", "number"], ["above_parking_start", "Начало строительства", "дата", "date"], ["above_parking_months", "Срок строительства", "мес.", "number"], ["above_parking_sales_start", "Старт продаж", "дата", "date"], ["above_parking_price_mln_per_space", "Стартовая цена места", "млн ₽/место", "number"], ["above_parking_share_before_rve_pct", "Доля продаж до РВЭ", "%", "number"], ["above_parking_residual_months", "Остаточные продажи после РВЭ", "мес.", "number"], ["above_parking_growth_pre_pct", "Рост цены до РВЭ", "%/мес.", "number"], ["above_parking_growth_post_pct", "Рост цены после РВЭ", "%/мес.", "number"], ["above_parking_area_per_space_sqm", "Площадь на 1 место для ТЭП", "м²/место", "number"]]]];
+const INPUT_DEFAULT={"project_class":"comfort","purchase_price_mln": 0, "construction_months": 24, "apartment_price_th": 350, "commercial_price_th": 350, "parking_price_th": 1500, "storage_price_th": 1000, "share_before_rve_pct": 85, "pace_adjustment_pct": 25, "inflation_after_rve_pct": 3, "seasonal_reduction_pct": -15, "growth_stage1_pct": 0, "growth_stage2_pct": 0, "growth_stage3_pct": 0, "growth_stage4_pct": 0, "ird_th_per_sqm": 1, "design_p_th_per_sqm": 2.5, "design_rd_th_per_sqm": 2.5, "preparation_th_per_sqm": 1, "main_above_th_per_sqm": 110, "utilities_th_per_sqm": 7.5, "landscaping_th_per_sqm": 5, "commissioning_th_per_sqm": 1, "site_maintenance_th_per_sqm": 1, "gc_fee_pct": 7, "reserve_pct": 5, "project_management_pct":5,"technical_supervision_pct":5,"author_supervision_pct":0,"marketing_pct": 3, "selling_pct": 4, "profit_tax_pct": 25, "vat_pct": 22, "bridge_spread_pp": 6, "bridge_cap_spread_pp": 6, "pf_spread_pp": 4.5, "pf_special_pct": 4.5, "limit_fee_pct": 0.5, "reservation_fee_pct": 0.5, "discount_rate_pct": 20, "monthly_growth_pre_pct": 1.5, "monthly_growth_post_pct": 0.25, "ird_months": 18, "sales_lag_months": 0, "bridge_repay_lag_months": 0, "residual_sales_months": 6, "social_comp_date": "2028-06-01", "social_compensation_mln": 0, "kindergarten_places": 250, "kindergarten_cost_mln_per_place": 2.75, "kindergarten_start": "2028-06-01", "kindergarten_months": 24, "school_places": 0, "school_cost_mln_per_place": 3, "school_start": "2028-06-01", "school_months": 30, "clinic_capacity": 0, "clinic_cost_mln_per_unit": 3, "clinic_start": "2028-06-01", "clinic_months": 24, "offices_gba_sqm": 10000, "offices_saleable_sqm": 6000, "offices_start": "2028-07-01", "offices_months": 24, "offices_cost_th_per_sqm": 200, "offices_sales_start": "2028-07-01", "offices_price_th_per_sqm": 500, "offices_share_before_rve_pct": 85, "offices_residual_months": 6, "offices_growth_pre_pct": 1.5, "offices_growth_post_pct": 0.25, "retail_gba_sqm": 10000, "retail_saleable_sqm": 6000, "retail_start": "2028-07-01", "retail_months": 24, "retail_cost_th_per_sqm": 200, "retail_sales_start": "2028-07-01", "retail_price_th_per_sqm": 500, "retail_share_before_rve_pct": 85, "retail_residual_months": 6, "retail_growth_pre_pct": 1.5, "retail_growth_post_pct": 0.25, "above_parking_spaces": 550, "above_parking_cost_mln_per_space": 1, "above_parking_start": "2028-07-01", "above_parking_months": 18, "above_parking_sales_start": "2028-07-01", "above_parking_price_mln_per_space": 2, "above_parking_share_before_rve_pct": 85, "above_parking_residual_months": 6, "above_parking_growth_pre_pct": 0.75, "above_parking_growth_post_pct": 0.2, "social_dou_gba_sqm": 3000, "social_school_gba_sqm": 0, "social_clinic_gba_sqm": 0, "project_start": "2027-01-01", "main_under_th_per_sqm": 110, "social_mode": "Строительство", "social_dou_norm_sqm": 12, "social_school_norm_sqm": 13, "social_clinic_norm_sqm": 15, "offices_enabled": false, "retail_enabled": false, "above_parking_enabled": false, "above_parking_area_per_space_sqm": 25, "rate_scenario":"base", "land_rights_cost_mln": 2864.291514155844, "bridge_interest_mode": "Капитализация в ПФ", "pf_transfer_income_pct": 5.0,"rate_start_pct":14.25,"rate_start_date":"2026-07-17","rate_target_high_pct":11,"rate_target_base_pct":9,"rate_target_low_pct":7,"rate_normalization_months":24,"rate_curve_shape":2};
+
+function phaseWeightPreset(count){
+ const p={1:[100],2:[55,45],3:[40,32,28],4:[32,26,22,20],5:[28,22,19,16,15]};
+ return structuredClone(p[count]||Array(count).fill(100/count));
+}
+function frontLoadedPreset(count,kind){
+ if(count===3){
+  if(['purchase','land_rights','social_compensation'].includes(kind))return [100,0,0];
+  if(['ird','preparation'].includes(kind))return [60,25,15];
+  if(kind==='design')return [50,30,20];
+  if(kind==='utilities')return [55,27,18];
+ }
+ if(['purchase','land_rights','social_compensation'].includes(kind))return [100,...Array(count-1).fill(0)];
+ const a=phaseWeightPreset(count);if(count>1){a[0]+=10;for(let i=1;i<count;i++)a[i]-=10/(count-1)}
+ const s=a.reduce((x,y)=>x+y,0);return a.map(x=>x*100/s);
+}
+function makeDefaultPhasing(count=3){
+ const w=phaseWeightPreset(count);
+ return {enabled:false,phase_count:count,target_size_sqm:70000,phase_gap_months:12,cost_inflation_pct:8,sales_price_inflation_pct:8,
+  phases:Array.from({length:count},(_,i)=>({name:`О${i+1}`,start_offset_months:i*12,construction_months:Number(INPUT_DEFAULT.construction_months||24)})),
+  products:{apartments:[...w],ground_commercial:[...w],underground_parking:[...w],storage:[...w]},
+  shared_cash:{purchase:frontLoadedPreset(count,'purchase'),land_rights:frontLoadedPreset(count,'land_rights'),ird:frontLoadedPreset(count,'ird'),design:frontLoadedPreset(count,'design'),preparation:frontLoadedPreset(count,'preparation'),utilities:frontLoadedPreset(count,'utilities'),social_compensation:frontLoadedPreset(count,'social_compensation')},
+  shared_allocation:{purchase:[...w],land_rights:[...w],ird:[...w],design:[...w],preparation:[...w],utilities:[...w],social_compensation:[...w],social_construction:[...w]},
+  social_objects:[],discrete:{offices:Math.min(3,count),standalone_retail:Math.min(2,count),above_parking:Math.min(2,count)}
+ };
+}
+let inputs=structuredClone(INPUT_DEFAULT), tep=structuredClone(TEP_DEFAULT), rates=structuredClone(RATE_DEFAULT),
+ lastResult=null, glavapuImport=null, cadastralAnalysis=null, phasing=makeDefaultPhasing(3), phaseBundle=null, reportView='all';
+const TELEGRAM_HASH_PARAMS=new URLSearchParams(window.location.hash.startsWith('#')?window.location.hash.slice(1):'');
+const telegramSession=TELEGRAM_HASH_PARAMS.get('telegram_session')||'';
+const telegramCad=TELEGRAM_HASH_PARAMS.get('cad')||'';
+let telegramResultSent=false;
+const money=v=>(Number(v||0)/1e9).toLocaleString('ru-RU',{minimumFractionDigits:0,maximumFractionDigits:2})+' млрд ₽';
+const socialMoney=v=>{
+ const x=Number(v||0);
+ if(Math.abs(x)>0&&Math.abs(x)<100000000)return (x/1e6).toLocaleString('ru-RU',{minimumFractionDigits:1,maximumFractionDigits:2})+' млн ₽';
+ return money(x);
+};
+const mln=v=>(Number(v||0)/1e6).toLocaleString('ru-RU',{minimumFractionDigits:0,maximumFractionDigits:1})+' млн ₽';
+const pct=v=>(Number(v||0)*100).toLocaleString('ru-RU',{minimumFractionDigits:0,maximumFractionDigits:2})+'%';
+const mult=v=>Number(v||0).toLocaleString('ru-RU',{minimumFractionDigits:2,maximumFractionDigits:2})+'x';
+const num=v=>Number(v||0).toLocaleString('ru-RU',{maximumFractionDigits:1});
+const th=v=>Number(v||0).toLocaleString('ru-RU',{minimumFractionDigits:0,maximumFractionDigits:1})+' тыс. ₽';
+const dateRu=v=>{if(!v)return '—';const [y,m,d]=String(v).slice(0,10).split('-');return `${d}.${m}.${y}`};
+const irrFmt=v=>v==null?'N/A':pct(v);
+const inputDisplay=v=>Math.round(Number(v||0)*10)/10;
+
+function openTab(id,btn){
+ document.querySelectorAll('.panel').forEach(x=>x.classList.remove('active'));document.getElementById(id).classList.add('active');
+ document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
+ (btn||document.querySelector(`[data-tab="${id}"]`)).classList.add('active');
+}
+function calculateAndOpen(id){calculate().then(()=>openTab(id))}
+
+
+let aiHistory=[],aiBusy=false,aiProposals=[];
+function escapeHtml(s){return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
+function toggleAgent(open){aiDrawer.classList.toggle('open',!!open);aiOverlay.classList.toggle('open',!!open);if(open)setTimeout(()=>aiInput.focus(),80)}
+function appendAiMessage(role,content,extra=''){const d=document.createElement('div');d.className=`ai-msg ${role} ${extra}`.trim();d.innerHTML=escapeHtml(content).replace(/\n/g,'<br>');aiMessages.appendChild(d);aiMessages.scrollTop=aiMessages.scrollHeight;return d}
+function appendAiProposals(proposals){
+ (proposals||[]).forEach(p=>{
+   const idx=aiProposals.push(p)-1;
+   const changes=(p.changes||[]).map(x=>`${escapeHtml(x.label)}: <b>${escapeHtml(x.old)}</b> → <b>${escapeHtml(x.new)}</b>`).join('<br>');
+   const llcr=p.scenario&&p.scenario.llcr_x!=null?`<div style="margin-top:7px">LLCR после: <b>${Number(p.scenario.llcr_x).toFixed(3)}x</b></div>`:'';
+   const d=document.createElement('div');d.className='ai-msg assistant';
+   d.style.border='1px solid #c9d7c7';d.style.background='#f7fbf6';
+   d.innerHTML=`<b>Готовое изменение вводных</b><div style="margin-top:6px">${changes}</div>${llcr}<button style="margin-top:10px;padding:8px 12px;border:0;border-radius:8px;background:#173b2d;color:#fff;font-weight:700;cursor:pointer" onclick="applyAgentProposal(${idx})">Применить в модель</button>`;
+   aiMessages.appendChild(d);
+ });
+ aiMessages.scrollTop=aiMessages.scrollHeight;
+}
+async function applyAgentProposal(idx){
+ const p=aiProposals[idx];if(!p||!p.patch)return;
+ Object.entries(p.patch).forEach(([k,v])=>{
+   const value=Number(v);
+   if(k==='main_construction_cost_th_per_sqm'){inputs.main_above_th_per_sqm=value;inputs.main_under_th_per_sqm=value}
+   else inputs[k]=value;
+ });
+ const customKeys=['apartment_price_th','commercial_price_th','parking_price_th','main_above_th_per_sqm','main_under_th_per_sqm','main_construction_cost_th_per_sqm'];
+ if(Object.keys(p.patch).some(k=>customKeys.includes(k)))inputs.project_class='custom';
+ renderInputs();syncTep(false);syncProjectClassSelector();renderPhasing();await calculate();
+ appendAiMessage('assistant','Изменение применено к текущим Inputs и модель пересчитана.');
+}
+function askAgentQuick(text){aiInput.value=text;sendAgentMessage()}
+async function refreshAgentStatus(){try{const r=await fetch('/agent/status'),s=await r.json();aiStatusDot.classList.toggle('ready',!!s.enabled);aiStatusDot.title=s.enabled?`AI готов · ${s.model}`:'OPENAI_API_KEY не настроен'}catch(e){aiStatusDot.classList.remove('ready')}}
+async function syncInputsForAgent(){document.querySelectorAll('[id^=f_]').forEach(el=>{const id=el.id.slice(2);inputs[id]=el.type==='checkbox'?el.checked:(el.type==='number'?Number(el.value):el.value)});if(document.getElementById('rateScenario'))inputs.rate_scenario=rateScenario.value||'base';generateRateCurve();repairParkingFromGlavapu();normalizeSocialObjectDates()}
+async function sendAgentMessage(){
+ if(aiBusy)return;const message=String(aiInput.value||'').trim();if(!message)return;
+ aiBusy=true;aiSendBtn.disabled=true;aiInput.value='';appendAiMessage('user',message);aiHistory.push({role:'user',content:message});
+ const thinking=document.createElement('div');thinking.className='ai-thinking';thinking.textContent='Анализирую текущую модель…';aiMessages.appendChild(thinking);aiMessages.scrollTop=aiMessages.scrollHeight;
+ try{
+  await syncInputsForAgent();
+  const response=await fetch('/agent/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message,inputs,tep,rates,phasing,history:aiHistory.slice(-8),selected_view:reportView||'all'})});
+  let data={};try{data=await response.json()}catch(e){}
+  thinking.remove();if(!response.ok)throw new Error(data.detail||`Ошибка AI (${response.status})`);
+  const answer=String(data.answer||'Ответ не получен.');appendAiMessage('assistant',answer);if(Array.isArray(data.proposals)&&data.proposals.length)appendAiProposals(data.proposals);aiHistory.push({role:'assistant',content:answer});aiHistory=aiHistory.slice(-10);
+ }catch(e){thinking.remove();appendAiMessage('assistant',String(e.message||e),'error')}
+ finally{aiBusy=false;aiSendBtn.disabled=false;aiInput.focus()}
+}
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&document.getElementById('aiDrawer')?.classList.contains('open'))toggleAgent(false);if((e.ctrlKey||e.metaKey)&&e.key==='Enter'&&document.getElementById('aiDrawer')?.classList.contains('open'))sendAgentMessage()});
+
+
+
+function currentMonetizableSaleable(){
+ return Number((tep.apartments||{}).saleable||0)+Number((tep.ground_commercial||{}).saleable||0)
+  +(inputs.offices_enabled?Number(inputs.offices_saleable_sqm||0):0)
+  +(inputs.retail_enabled?Number(inputs.retail_saleable_sqm||0):0);
+}
+function recomm
+
+### INPUT_DEFAULT @ 457597
+ices_enabled": false, "retail_enabled": false, "above_parking_enabled": false, "above_parking_area_per_space_sqm": 25, "rate_scenario":"base", "land_rights_cost_mln": 2864.291514155844, "bridge_interest_mode": "Капитализация в ПФ", "pf_transfer_income_pct": 5.0,"rate_start_pct":14.25,"rate_start_date":"2026-07-17","rate_target_high_pct":11,"rate_target_base_pct":9,"rate_target_low_pct":7,"rate_normalization_months":24,"rate_curve_shape":2};
+
+function phaseWeightPreset(count){
+ const p={1:[100],2:[55,45],3:[40,32,28],4:[32,26,22,20],5:[28,22,19,16,15]};
+ return structuredClone(p[count]||Array(count).fill(100/count));
+}
+function frontLoadedPreset(count,kind){
+ if(count===3){
+  if(['purchase','land_rights','social_compensation'].includes(kind))return [100,0,0];
+  if(['ird','preparation'].includes(kind))return [60,25,15];
+  if(kind==='design')return [50,30,20];
+  if(kind==='utilities')return [55,27,18];
+ }
+ if(['purchase','land_rights','social_compensation'].includes(kind))return [100,...Array(count-1).fill(0)];
+ const a=phaseWeightPreset(count);if(count>1){a[0]+=10;for(let i=1;i<count;i++)a[i]-=10/(count-1)}
+ const s=a.reduce((x,y)=>x+y,0);return a.map(x=>x*100/s);
+}
+function makeDefaultPhasing(count=3){
+ const w=phaseWeightPreset(count);
+ return {enabled:false,phase_count:count,target_size_sqm:70000,phase_gap_months:12,cost_inflation_pct:8,sales_price_inflation_pct:8,
+  phases:Array.from({length:count},(_,i)=>({name:`О${i+1}`,start_offset_months:i*12,construction_months:Number(INPUT_DEFAULT.construction_months||24)})),
+  products:{apartments:[...w],ground_commercial:[...w],underground_parking:[...w],storage:[...w]},
+  shared_cash:{purchase:frontLoadedPreset(count,'purchase'),land_rights:frontLoadedPreset(count,'land_rights'),ird:frontLoadedPreset(count,'ird'),design:frontLoadedPreset(count,'design'),preparation:frontLoadedPreset(count,'preparation'),utilities:frontLoadedPreset(count,'utilities'),social_compensation:frontLoadedPreset(count,'social_compensation')},
+  shared_allocation:{purchase:[...w],land_rights:[...w],ird:[...w],design:[...w],preparation:[...w],utilities:[...w],social_compensation:[...w],social_construction:[...w]},
+  social_objects:[],discrete:{offices:Math.min(3,count),standalone_retail:Math.min(2,count),above_parking:Math.min(2,count)}
+ };
+}
+let inputs=structuredClone(INPUT_DEFAULT), tep=structuredClone(TEP_DEFAULT), rates=structuredClone(RATE_DEFAULT),
+ lastResult=null, glavapuImport=null, cadastralAnalysis=null, phasing=makeDefaultPhasing(3), phaseBundle=null, reportView='all';
+const TELEGRAM_HASH_PARAMS=new URLSearchParams(window.location.hash.startsWith('#')?window.location.hash.slice(1):'');
+const telegramSession=TELEGRAM_HASH_PARAMS.get('telegram_session')||'';
+const telegramCad=TELEGRAM_HASH_PARAMS.get('cad')||'';
+let telegramResultSent=false;
+const money=v=>(Number(v||0)/1e9).toLocaleString('ru-RU',{minimumFractionDigits:0,maximumFractionDigits:2})+' млрд ₽';
+const socialMoney=v=>{
+ const x=Number(v||0);
+ if(Math.abs(x)>0&&Math.abs(x)<100000000)return (x/1e6).toLocaleString('ru-RU',{minimumFractionDigits:1,maximumFractionDigits:2})+' млн ₽';
+ return money(x);
+};
+const mln=v=>(Number(v||0)/1e6).toLocaleString('ru-RU',{minimumFractionDigits:0,maximumFractionDigits:1})+' млн ₽';
+const pct=v=>(Number(v||0)*100).toLocaleString('ru-RU',{minimumFractionDigits:0,maximumFractionDigits:2})+'%';
+const mult=v=>Number(v||0).toLocaleString('ru-RU',{minimumFractionDigits:2,maximumFractionDigits:2})+'x';
+const num=v=>Number(v||0).toLocaleString('ru-RU',{maximumFractionDigits:1});
+const th=v=>Number(v||0).toLocaleString('ru-RU',{minimumFractionDigits:0,maximumFractionDigits:1})+' тыс. ₽';
+const dateRu=v=>{if(!v)return '—';const [y,m,d]=String(v).slice(0,10).split('-');return `${d}.${m}.${y}`};
+const irrFmt=v=>v==null?'N/A':pct(v);
+const inputDisplay=v=>Math.round(Number(v||0)*10)/10;
+
+function openTab(id,btn){
+ document.querySelectorAll('.panel').forEach(x=>x.classList.remove('active'));document.getElementById(id).classList.add('active');
+ document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
+ (btn||document.querySelector(`[data-tab="${id}"]`)).classList.add('active');
+}
+function calculateAndOpen(id){calculate().then(()=>openTab(id))}
+
+
+let aiHistory=[],aiBusy=false,aiProposals=[];
+function escapeHtml(s){return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
+function toggleAgent(open){aiDrawer.classList.toggle('open',!!open);aiOverlay.classList.toggle('open',!!open);if(open)setTimeout(()=>aiInput.focus(),80)}
+function appendAiMessage(role,content,extra=''){const d=document.createElement('div');d.className=`ai-msg ${role} ${extra}`.trim();d.innerHTML=escapeHtml(content).replace(/\n/g,'<br>');aiMessages.appendChild(d);aiMessages.scrollTop=aiMessages.scrollHeight;return d}
+function appendAiProposals(proposals){
+ (proposals||[]).forEach(p=>{
+   const idx=aiProposals.push(p)-1;
+   const changes=(p.changes||[]).map(x=>`${escapeHtml(x.label)}: <b>${escapeHtml(x.old)}</b> → <b>${escapeHtml(x.new)}</b>`).join('<br>');
+   const llcr=p.scenario&&p.scenario.llcr_x!=null?`<div style="margin-top:7px">LLCR после: <b>${Number(p.scenario.llcr_x).toFixed(3)}x</b></div>`:'';
+   const d=document.createElement('div');d.className='ai-msg assistant';
+   d.style.border='1px solid #c9d7c7';d.style.background='#f7fbf6';
+   d.innerHTML=`<b>Готовое изменение вводных</b><div style="margin-top:6px">${changes}</div>${llcr}<button style="margin-top:10px;padding:8px 12px;border:0;border-radius:8px;background:#173b2d;color:#fff;font-weight:700;cursor:pointer" onclick="applyAgentProposal(${idx})">Применить в модель</button>`;
+   aiMessages.appendChild(d);
+ });
+ aiMessages.scrollTop=aiMessages.scrollHeight;
+}
+async function applyAgentProposal(idx){
+ const p=aiProposals[idx];if(!p||!p.patch)return;
+ Object.entries(p.patch).forEach(([k,v])=>{
+   const value=Number(v);
+   if(k==='main_construction_cost_th_per_sqm'){inputs.main_above_th_per_sqm=value;inputs.main_under_th_per_sqm=value}
+   else inputs[k]=value;
+ });
+ const customKeys=['apartment_price_th','commercial_price_th','parking_price_th','main_above_th_per_sqm','main_under_th_per_sqm','main_construction_cost_th_per_sqm'];
+ if(Object.keys(p.patch).some(k=>customKeys.includes(k)))inputs.project_class='custom';
+ renderInputs();syncTep(false);syncProjectClassSelector();renderPhasing();await calculate();
+ appendAiMessage('assistant','Изменение применено к текущим Inputs и модель пересчитана.');
+}
+function askAgentQuick(text){aiInput.value=text;sendAgentMessage()}
+async function refreshAgentStatus(){try{const r=await fetch('/agent/status'),s=await r.json();aiStatusDot.classList.toggle('ready',!!s.enabled);aiStatusDot.title=s.enabled?`AI готов · ${s.model}`:'OPENAI_API_KEY не настроен'}catch(e){aiStatusDot.classList.remove('ready')}}
+async function syncInputsForAgent(){document.querySelectorAll('[id^=f_]').forEach(el=>{const id=el.id.slice(2);inputs[id]=el.type==='checkbox'?el.checked:(el.type==='number'?Number(el.value):el.value)});if(document.getElementById('rateScenario'))inputs.rate_scenario=rateScenario.value||'base';generateRateCurve();repairParkingFromGlavapu();normalizeSocialObjectDates()}
+async function sendAgentMessage(){
+ if(aiBusy)return;const message=String(aiInput.value||'').trim();if(!message)return;
+ aiBusy=true;aiSendBtn.disabled=true;aiInput.value='';appendAiMessage('user',message);aiHistory.push({role:'user',content:message});
+ const thinking=document.createElement('div');thinking.className='ai-thinking';thinking.textContent='Анализирую текущую модель…';aiMessages.appendChild(thinking);aiMessages.scrollTop=aiMessages.scrollHeight;
+ try{
+  await syncInputsForAgent();
+  const response=await fetch('/agent/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message,inputs,tep,rates,phasing,history:aiHistory.slice(-8),selected_view:reportView||'all'})});
+  let data={};try{data=await response.json()}catch(e){}
+  thinking.remove();if(!response.ok)throw new Error(data.detail||`Ошибка AI (${response.status})`);
+  const answer=String(data.answer||'Ответ не получен.');appendAiMessage('assistant',answer);if(Array.isArray(data.proposals)&&data.proposals.length)appendAiProposals(data.proposals);aiHistory.push({role:'assistant',content:answer});aiHistory=aiHistory.slice(-10);
+ }catch(e){thinking.remove();appendAiMessage('assistant',String(e.message||e),'error')}
+ finally{aiBusy=false;aiSendBtn.disabled=false;aiInput.focus()}
+}
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&document.getElementById('aiDrawer')?.classList.contains('open'))toggleAgent(false);if((e.ctrlKey||e.metaKey)&&e.key==='Enter'&&document.getElementById('aiDrawer')?.classList.contains('open'))sendAgentMessage()});
+
+
+
+function currentMonetizableSaleable(){
+ return Number((tep.apartments||{}).saleable||0)+Number((tep.ground_commercial||{}).saleable||0)
+  +(inputs.offices_enabled?Number(inputs.offices_saleable_sqm||0):0)
+  +(inputs.retail_enabled?Number(inputs.retail_saleable_sqm||0):0);
+}
+function recommendationCount(){return Math.max(1,Math.min(5,Math.ceil(currentMonetizableSaleable()/Math.max(20000,Number(phasing.target_size_sqm||70000)))))}
+function phaseOptions(selected){return phasing.phases.map((p,i)=>`<option value="${i+1}" ${Number(selected)===i+1?'selected':''}>${p.name}</option>`).join('')}
+function phaseStartDate(phaseNo){
+ const i=Math.max(0,Math.min(phasing.phases.length-1,Number(phaseNo||1)-1));
+ const p=phasing.phases[i]||{start_offset_months:0};
+ return addMonthsJS(inputs.project_start,Number(p.start_offset_months||0));
+}
+function normalizeSocialObjectDates(){
+ if(!phasing||!Array.isArray(phasing.social_objects))return;
+ phasing.social_objects.forEach(o=>{
+   const phase=Math.max(1,Math.min(phasing.phases.length,Number(o.phase||1)));
+   o.phase=phase;
+   const phaseStart=phaseStartDate(phase);
+   // Old saved objects had no start_mode and could retain dates from 2026 / another project.
+   // Treat an empty or pre-phase date as automatic and bind it to the selected queue start.
+   if(!o.start_mode){
+     o.start_mode=(!o.start_date||String(o.start_date)<phaseStart)?'auto':'manual';
+   }
+   if(o.start_mode!=='manual'||!o.start_date||String(o.start_date)<phaseStart){
+     o.start_date=phaseStart;
+     if(String(o.start_date)<phaseStart)o.start_mode='auto';
+   }
+ });
+}
+function togglePhasing(v){phasing.enabled=!!v;if(v&&!phasing.social_objects.length&&inputs.social_mode==='Строительство')autoSocialObjects(false);normalizeSocialObjectDates();renderInputs();renderPhasing();calculate()}
+function setPhaseCount(count){const e=phasing.enabled,t=phasing.target_size_sqm||70000,g=phasing.phase_gap_months||12,cinf=Number(phasing.cost_inflation_pct??8),pinf=Number(phasing.sales_price_inflation_pct??8);phasing=makeDefaultPhasing(Math.max(1,Math.min(5,count)));phasing.enabled=e;phasing.target_size_sqm=t;phasing.phase_gap_months=g;phasing.cost_inflation_pct=cinf;phasing.sales_price_inflation_pct=pinf;phasing.phases.forEach((p,i)=>p.start_offset_months=i*g);autoSocialObjects(false);normalizeSocialObjectDates();renderInputs();renderPhasing();calculate()}
+function autoPhaseDates(){phasing.phases.forEach((p,i)=>p.start_offset_months=i*Number(phasing.phase_gap_months||12));normalizeSocialObjectDates();renderPhasing();calculate()}
+function autoSuggestPhasing(){const c=recommendationCount(),cinf=Number(phasing.cost_inflation_pct??8),pinf=Number(phasing.sales_price_inflation_pct??8);phasing=makeDefaultPhasing(c);phasing.enabled=true;phasing.cost_inflation_pct=cinf;phasing.sales_price_inflation_pct=pinf;phasing.target_size_sqm=Number(document.getElementById('phaseTargetSize')?.value||70000);phasing.phase_gap_months=Number(document.getElementById('phaseGap')?.value||12);phasing.phases.forEach((p,i)=>p.start_offset_months=i*phasing.phase_gap_months);autoSocialObjects(false);renderPhasing()}
+function setPhaseProductShare(k,i,v){phasing.products[k][i]=Number(v||0);renderPhasingStatus()}
+function setSharedShare(bucket,k,i,v){phasing[bucket][k][i]=Number(v||0)}
+function splitCapacity(total,typical){let t=Math.max(0,Number(total||0)),out=[];typical=Math.max(1,Number(typical||1));while(t>0){const v=Math.min(typical,t);out.push(v);t-=v}return out}
+function autoSocialObjects(doRender=true){
+ phasing.social_objects=[];if(inputs.social_mode!=='Строительство'){if(doRender)renderPhasing();return}
+ [['kindergarten','ДОУ',Number(inputs.kindergarten_places||0),250],['school','СОШ',Number(inputs.school_places||0),1100],['clinic','Поликлиника',Number(inputs.clinic_capacity||0),300]].forEach(([type,label,total,typical])=>{
+  const chunks=splitCapacity(total,typical);chunks.forEach((capacity,i)=>{let phase;if(chunks.length===1)phase=type==='kindergarten'?1:Math.min(2,phasing.phase_count);else phase=1+Math.round(i*(phasing.phase_count-1)/Math.max(1,chunks.length-1));phasing.social_objects.push({id:`${type}_${Date.now()}_${i}`,name:`${label} №${i+1}`,type,capacity,phase,start_date:phaseStartDate(phase),start_mode:'auto'})})
+ });normalizeSocialObjectDates();if(doRender){renderPhasing();calculate()}
+}
+function addSocialObject(type){const l={kindergarten:'ДОУ',school:'СОШ',clinic:'Поликлиника'},n=phasing.social_objects.filter(x=>x.type===type).length,phase=1;phasing.social_objects.push({id:`${type}_${Date.now()}`,name:`${l[type]} №${n+1}`,type,capacity:0,phase,start_date:phaseStartDate(phase),start_mode:'auto'});renderPhasing();calculate()}
+function updateSocialOb
+
+### INPUT_DEFAULT @ 458424
+];
+  if(kind==='design')return [50,30,20];
+  if(kind==='utilities')return [55,27,18];
+ }
+ if(['purchase','land_rights','social_compensation'].includes(kind))return [100,...Array(count-1).fill(0)];
+ const a=phaseWeightPreset(count);if(count>1){a[0]+=10;for(let i=1;i<count;i++)a[i]-=10/(count-1)}
+ const s=a.reduce((x,y)=>x+y,0);return a.map(x=>x*100/s);
+}
+function makeDefaultPhasing(count=3){
+ const w=phaseWeightPreset(count);
+ return {enabled:false,phase_count:count,target_size_sqm:70000,phase_gap_months:12,cost_inflation_pct:8,sales_price_inflation_pct:8,
+  phases:Array.from({length:count},(_,i)=>({name:`О${i+1}`,start_offset_months:i*12,construction_months:Number(INPUT_DEFAULT.construction_months||24)})),
+  products:{apartments:[...w],ground_commercial:[...w],underground_parking:[...w],storage:[...w]},
+  shared_cash:{purchase:frontLoadedPreset(count,'purchase'),land_rights:frontLoadedPreset(count,'land_rights'),ird:frontLoadedPreset(count,'ird'),design:frontLoadedPreset(count,'design'),preparation:frontLoadedPreset(count,'preparation'),utilities:frontLoadedPreset(count,'utilities'),social_compensation:frontLoadedPreset(count,'social_compensation')},
+  shared_allocation:{purchase:[...w],land_rights:[...w],ird:[...w],design:[...w],preparation:[...w],utilities:[...w],social_compensation:[...w],social_construction:[...w]},
+  social_objects:[],discrete:{offices:Math.min(3,count),standalone_retail:Math.min(2,count),above_parking:Math.min(2,count)}
+ };
+}
+let inputs=structuredClone(INPUT_DEFAULT), tep=structuredClone(TEP_DEFAULT), rates=structuredClone(RATE_DEFAULT),
+ lastResult=null, glavapuImport=null, cadastralAnalysis=null, phasing=makeDefaultPhasing(3), phaseBundle=null, reportView='all';
+const TELEGRAM_HASH_PARAMS=new URLSearchParams(window.location.hash.startsWith('#')?window.location.hash.slice(1):'');
+const telegramSession=TELEGRAM_HASH_PARAMS.get('telegram_session')||'';
+const telegramCad=TELEGRAM_HASH_PARAMS.get('cad')||'';
+let telegramResultSent=false;
+const money=v=>(Number(v||0)/1e9).toLocaleString('ru-RU',{minimumFractionDigits:0,maximumFractionDigits:2})+' млрд ₽';
+const socialMoney=v=>{
+ const x=Number(v||0);
+ if(Math.abs(x)>0&&Math.abs(x)<100000000)return (x/1e6).toLocaleString('ru-RU',{minimumFractionDigits:1,maximumFractionDigits:2})+' млн ₽';
+ return money(x);
+};
+const mln=v=>(Number(v||0)/1e6).toLocaleString('ru-RU',{minimumFractionDigits:0,maximumFractionDigits:1})+' млн ₽';
+const pct=v=>(Number(v||0)*100).toLocaleString('ru-RU',{minimumFractionDigits:0,maximumFractionDigits:2})+'%';
+const mult=v=>Number(v||0).toLocaleString('ru-RU',{minimumFractionDigits:2,maximumFractionDigits:2})+'x';
+const num=v=>Number(v||0).toLocaleString('ru-RU',{maximumFractionDigits:1});
+const th=v=>Number(v||0).toLocaleString('ru-RU',{minimumFractionDigits:0,maximumFractionDigits:1})+' тыс. ₽';
+const dateRu=v=>{if(!v)return '—';const [y,m,d]=String(v).slice(0,10).split('-');return `${d}.${m}.${y}`};
+const irrFmt=v=>v==null?'N/A':pct(v);
+const inputDisplay=v=>Math.round(Number(v||0)*10)/10;
+
+function openTab(id,btn){
+ document.querySelectorAll('.panel').forEach(x=>x.classList.remove('active'));document.getElementById(id).classList.add('active');
+ document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
+ (btn||document.querySelector(`[data-tab="${id}"]`)).classList.add('active');
+}
+function calculateAndOpen(id){calculate().then(()=>openTab(id))}
+
+
+let aiHistory=[],aiBusy=false,aiProposals=[];
+function escapeHtml(s){return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
+function toggleAgent(open){aiDrawer.classList.toggle('open',!!open);aiOverlay.classList.toggle('open',!!open);if(open)setTimeout(()=>aiInput.focus(),80)}
+function appendAiMessage(role,content,extra=''){const d=document.createElement('div');d.className=`ai-msg ${role} ${extra}`.trim();d.innerHTML=escapeHtml(content).replace(/\n/g,'<br>');aiMessages.appendChild(d);aiMessages.scrollTop=aiMessages.scrollHeight;return d}
+function appendAiProposals(proposals){
+ (proposals||[]).forEach(p=>{
+   const idx=aiProposals.push(p)-1;
+   const changes=(p.changes||[]).map(x=>`${escapeHtml(x.label)}: <b>${escapeHtml(x.old)}</b> → <b>${escapeHtml(x.new)}</b>`).join('<br>');
+   const llcr=p.scenario&&p.scenario.llcr_x!=null?`<div style="margin-top:7px">LLCR после: <b>${Number(p.scenario.llcr_x).toFixed(3)}x</b></div>`:'';
+   const d=document.createElement('div');d.className='ai-msg assistant';
+   d.style.border='1px solid #c9d7c7';d.style.background='#f7fbf6';
+   d.innerHTML=`<b>Готовое изменение вводных</b><div style="margin-top:6px">${changes}</div>${llcr}<button style="margin-top:10px;padding:8px 12px;border:0;border-radius:8px;background:#173b2d;color:#fff;font-weight:700;cursor:pointer" onclick="applyAgentProposal(${idx})">Применить в модель</button>`;
+   aiMessages.appendChild(d);
+ });
+ aiMessages.scrollTop=aiMessages.scrollHeight;
+}
+async function applyAgentProposal(idx){
+ const p=aiProposals[idx];if(!p||!p.patch)return;
+ Object.entries(p.patch).forEach(([k,v])=>{
+   const value=Number(v);
+   if(k==='main_construction_cost_th_per_sqm'){inputs.main_above_th_per_sqm=value;inputs.main_under_th_per_sqm=value}
+   else inputs[k]=value;
+ });
+ const customKeys=['apartment_price_th','commercial_price_th','parking_price_th','main_above_th_per_sqm','main_under_th_per_sqm','main_construction_cost_th_per_sqm'];
+ if(Object.keys(p.patch).some(k=>customKeys.includes(k)))inputs.project_class='custom';
+ renderInputs();syncTep(false);syncProjectClassSelector();renderPhasing();await calculate();
+ appendAiMessage('assistant','Изменение применено к текущим Inputs и модель пересчитана.');
+}
+function askAgentQuick(text){aiInput.value=text;sendAgentMessage()}
+async function refreshAgentStatus(){try{const r=await fetch('/agent/status'),s=await r.json();aiStatusDot.classList.toggle('ready',!!s.enabled);aiStatusDot.title=s.enabled?`AI готов · ${s.model}`:'OPENAI_API_KEY не настроен'}catch(e){aiStatusDot.classList.remove('ready')}}
+async function syncInputsForAgent(){document.querySelectorAll('[id^=f_]').forEach(el=>{const id=el.id.slice(2);inputs[id]=el.type==='checkbox'?el.checked:(el.type==='number'?Number(el.value):el.value)});if(document.getElementById('rateScenario'))inputs.rate_scenario=rateScenario.value||'base';generateRateCurve();repairParkingFromGlavapu();normalizeSocialObjectDates()}
+async function sendAgentMessage(){
+ if(aiBusy)return;const message=String(aiInput.value||'').trim();if(!message)return;
+ aiBusy=true;aiSendBtn.disabled=true;aiInput.value='';appendAiMessage('user',message);aiHistory.push({role:'user',content:message});
+ const thinking=document.createElement('div');thinking.className='ai-thinking';thinking.textContent='Анализирую текущую модель…';aiMessages.appendChild(thinking);aiMessages.scrollTop=aiMessages.scrollHeight;
+ try{
+  await syncInputsForAgent();
+  const response=await fetch('/agent/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message,inputs,tep,rates,phasing,history:aiHistory.slice(-8),selected_view:reportView||'all'})});
+  let data={};try{data=await response.json()}catch(e){}
+  thinking.remove();if(!response.ok)throw new Error(data.detail||`Ошибка AI (${response.status})`);
+  const answer=String(data.answer||'Ответ не получен.');appendAiMessage('assistant',answer);if(Array.isArray(data.proposals)&&data.proposals.length)appendAiProposals(data.proposals);aiHistory.push({role:'assistant',content:answer});aiHistory=aiHistory.slice(-10);
+ }catch(e){thinking.remove();appendAiMessage('assistant',String(e.message||e),'error')}
+ finally{aiBusy=false;aiSendBtn.disabled=false;aiInput.focus()}
+}
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&document.getElementById('aiDrawer')?.classList.contains('open'))toggleAgent(false);if((e.ctrlKey||e.metaKey)&&e.key==='Enter'&&document.getElementById('aiDrawer')?.classList.contains('open'))sendAgentMessage()});
+
+
+
+function currentMonetizableSaleable(){
+ return Number((tep.apartments||{}).saleable||0)+Number((tep.ground_commercial||{}).saleable||0)
+  +(inputs.offices_enabled?Number(inputs.offices_saleable_sqm||0):0)
+  +(inputs.retail_enabled?Number(inputs.retail_saleable_sqm||0):0);
+}
+function recommendationCount(){return Math.max(1,Math.min(5,Math.ceil(currentMonetizableSaleable()/Math.max(20000,Number(phasing.target_size_sqm||70000)))))}
+function phaseOptions(selected){return phasing.phases.map((p,i)=>`<option value="${i+1}" ${Number(selected)===i+1?'selected':''}>${p.name}</option>`).join('')}
+function phaseStartDate(phaseNo){
+ const i=Math.max(0,Math.min(phasing.phases.length-1,Number(phaseNo||1)-1));
+ const p=phasing.phases[i]||{start_offset_months:0};
+ return addMonthsJS(inputs.project_start,Number(p.start_offset_months||0));
+}
+function normalizeSocialObjectDates(){
+ if(!phasing||!Array.isArray(phasing.social_objects))return;
+ phasing.social_objects.forEach(o=>{
+   const phase=Math.max(1,Math.min(phasing.phases.length,Number(o.phase||1)));
+   o.phase=phase;
+   const phaseStart=phaseStartDate(phase);
+   // Old saved objects had no start_mode and could retain dates from 2026 / another project.
+   // Treat an empty or pre-phase date as automatic and bind it to the selected queue start.
+   if(!o.start_mode){
+     o.start_mode=(!o.start_date||String(o.start_date)<phaseStart)?'auto':'manual';
+   }
+   if(o.start_mode!=='manual'||!o.start_date||String(o.start_date)<phaseStart){
+     o.start_date=phaseStart;
+     if(String(o.start_date)<phaseStart)o.start_mode='auto';
+   }
+ });
+}
+function togglePhasing(v){phasing.enabled=!!v;if(v&&!phasing.social_objects.length&&inputs.social_mode==='Строительство')autoSocialObjects(false);normalizeSocialObjectDates();renderInputs();renderPhasing();calculate()}
+function setPhaseCount(count){const e=phasing.enabled,t=phasing.target_size_sqm||70000,g=phasing.phase_gap_months||12,cinf=Number(phasing.cost_inflation_pct??8),pinf=Number(phasing.sales_price_inflation_pct??8);phasing=makeDefaultPhasing(Math.max(1,Math.min(5,count)));phasing.enabled=e;phasing.target_size_sqm=t;phasing.phase_gap_months=g;phasing.cost_inflation_pct=cinf;phasing.sales_price_inflation_pct=pinf;phasing.phases.forEach((p,i)=>p.start_offset_months=i*g);autoSocialObjects(false);normalizeSocialObjectDates();renderInputs();renderPhasing();calculate()}
+function autoPhaseDates(){phasing.phases.forEach((p,i)=>p.start_offset_months=i*Number(phasing.phase_gap_months||12));normalizeSocialObjectDates();renderPhasing();calculate()}
+function autoSuggestPhasing(){const c=recommendationCount(),cinf=Number(phasing.cost_inflation_pct??8),pinf=Number(phasing.sales_price_inflation_pct??8);phasing=makeDefaultPhasing(c);phasing.enabled=true;phasing.cost_inflation_pct=cinf;phasing.sales_price_inflation_pct=pinf;phasing.target_size_sqm=Number(document.getElementById('phaseTargetSize')?.value||70000);phasing.phase_gap_months=Number(document.getElementById('phaseGap')?.value||12);phasing.phases.forEach((p,i)=>p.start_offset_months=i*phasing.phase_gap_months);autoSocialObjects(false);renderPhasing()}
+function setPhaseProductShare(k,i,v){phasing.products[k][i]=Number(v||0);renderPhasingStatus()}
+function setSharedShare(bucket,k,i,v){phasing[bucket][k][i]=Number(v||0)}
+function splitCapacity(total,typical){let t=Math.max(0,Number(total||0)),out=[];typical=Math.max(1,Number(typical||1));while(t>0){const v=Math.min(typical,t);out.push(v);t-=v}return out}
+function autoSocialObjects(doRender=true){
+ phasing.social_objects=[];if(inputs.social_mode!=='Строительство'){if(doRender)renderPhasing();return}
+ [['kindergarten','ДОУ',Number(inputs.kindergarten_places||0),250],['school','СОШ',Number(inputs.school_places||0),1100],['clinic','Поликлиника',Number(inputs.clinic_capacity||0),300]].forEach(([type,label,total,typical])=>{
+  const chunks=splitCapacity(total,typical);chunks.forEach((capacity,i)=>{let phase;if(chunks.length===1)phase=type==='kindergarten'?1:Math.min(2,phasing.phase_count);else phase=1+Math.round(i*(phasing.phase_count-1)/Math.max(1,chunks.length-1));phasing.social_objects.push({id:`${type}_${Date.now()}_${i}`,name:`${label} №${i+1}`,type,capacity,phase,start_date:phaseStartDate(phase),start_mode:'auto'})})
+ });normalizeSocialObjectDates();if(doRender){renderPhasing();calculate()}
+}
+function addSocialObject(type){const l={kindergarten:'ДОУ',school:'СОШ',clinic:'Поликлиника'},n=phasing.social_objects.filter(x=>x.type===type).length,phase=1;phasing.social_objects.push({id:`${type}_${Date.now()}`,name:`${l[type]} №${n+1}`,type,capacity:0,phase,start_date:phaseStartDate(phase),start_mode:'auto'});renderPhasing();calculate()}
+function updateSocialObject(i,k,v){
+ const o=phasing.social_objects[i];if(!o)return;
+ if(k==='phase'){
+   o.phase=Number(v||1);
+   if(o.start_mode!=='manual')o.start_date=phaseStartDate(o.phase);
+ }else if(k==='start_date'){
+   if(v){o.start_date=v;o.start_mode='manual'}else{o.start_mode='auto';o.start_date=phaseStartDate(o.phase)}
+ }else{o[k]=k==='capacity'?Number(v||0):v}
+ normalizeSocialObjectDates();renderPhasing();calculate()
+}
+function deleteSocialObject(i){phasing.social_objects.splice(i,1);renderPhasing();calculate()}
+function renderSocialStatus(){
+ if(!document.getElementById('socialObjectsStatus'))return;const t={kindergarten:0,school:0,clinic:0};
+ phasing.social_objects.forEach(o=>t[o.type]=(t[o.type]||0)+Number(o.capacity||0));
+ const r={kindergarten:Number(inputs.kindergarten_places||0),school:Number(inputs.school_places||0),
+
+### INPUT_DEFAULT @ 541691
+: ${scenario} · Дата расчёта: ${new Date().toLocaleDateString('ru-RU')}`;
+ }
+ document.body.classList.add('print-report');
+ const report=document.getElementById('report');
+ const wasActive=report.classList.contains('active');
+ report.classList.add('active');
+ setTimeout(()=>{
+   window.print();
+   setTimeout(()=>{
+     document.body.classList.remove('print-report');
+     if(!wasActive)report.classList.remove('active');
+     document.title=previousTitle;
+   },300);
+ },120);
+}
+
+function saveLocal(){localStorage.setItem('plato_v04',JSON.stringify({inputs,tep,phasing,scenario:scenarioSelect.value}));alert('Сохранено в этом браузере')}
+function loadLocal(){try{const x=JSON.parse(localStorage.getItem('plato_v04'));if(x){
+ inputs=x.inputs||inputs;tep=x.tep||tep;phasing=x.phasing||phasing;rates=[];scenarioSelect.value=x.scenario||'base';
+ // v0.7.1 migration: v0.7.0 temporarily misclassified the old 5% management rate as technical supervision.
+ if(inputs._cost_structure_version!=='0.7.1'){
+   if(inputs.project_management_pct==null)inputs.project_management_pct=Number(inputs.technical_supervision_pct??5);
+   // Source model had no separate technical-supervision input: reset migrated value to 0.
+   inputs.technical_supervision_pct=0;
+   inputs._cost_structure_version='0.7.1';
+ }
+ if(inputs.author_supervision_pct==null)inputs.author_supervision_pct=0;
+ delete inputs.author_supervision_mln;
+}}catch(e){}}
+function resetAll(){
+ localStorage.removeItem('plato_v04');
+ inputs=structuredClone(INPUT_DEFAULT);
+ tep=structuredClone(TEP_DEFAULT);
+ phasing=makeDefaultPhasing(3);phaseBundle=null;reportView='all';cadastralAnalysis=null;
+ rates=[];
+ scenarioSelect.value='base';
+ inputs.project_class='comfort';
+ inputs.rate_scenario='base';
+ inputs.scenario_revenue_multiplier=1;
+ inputs.scenario_cost_multiplier=1;
+ renderInputs();renderTep();renderStoredGlavapu();renderScenarioNote();syncProjectClassSelector();
+ const cadField=document.getElementById('cadastralNumbers');if(cadField)cadField.value='';
+ const cadPreview=document.getElementById('cadastralPreview');if(cadPreview)cadPreview.style.display='none';
+ const cadStatus=document.getElementById('cadastralStatus');if(cadStatus)cadStatus.textContent='На внешний сервер передаются только кадастровые номера; финансовая модель не передаётся.';
+ syncRateControlsFromInputs();generateRateCurve();renderRates();
+ refreshCurrentKeyRate(true);
+}
+
+loadLocal();
+{
+ const sc=SCENARIOS[scenarioSelect.value]||SCENARIOS.base;
+ // Old saved projects did not have the new transparent scenario multipliers.
+ // Treat their current inputs as the BASE model and only apply the selected +/-10% overlay.
+ if(inputs.scenario_revenue_multiplier==null)inputs.scenario_revenue_multiplier=Number(sc.scenario_revenue_multiplier||1);
+ if(inputs.scenario_cost_multiplier==null)inputs.scenario_cost_multiplier=Number(sc.scenario_cost_multiplier||1);
+}
+async function loadTelegramSessionData(){
+ if(!telegramSession)return {};
+ const response=await fetch('/telegram/session-data',{
+  method:'POST',
+  headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({session:telegramSession})
+ });
+ const payload=await response.json();
+ if(!response.ok)throw new Error(payload.detail||'Telegram-сессия недействительна');
+ return payload||{};
+}
+
+async function applyTelegramManualTep(manual){
+ if(!manual||!manual.tep)return false;
+ delete inputs._glavapu_import;
+ glavapuImport=null;
+ cadastralAnalysis=null;
+ tep=structuredClone(TEP_DEFAULT);
+ Object.assign(inputs,manual.inputs||{});
+ Object.entries(manual.tep||{}).forEach(([key,values])=>{
+  if(tep[key])Object.assign(tep[key],values||{});
+ });
+ inputs._manual_tep_import={
+  project_name:String(manual.project_name||''),
+  site_area_ha:Number(manual.site_area_ha||0),
+  source:manual.source||{}
+ };
+ syncTep(false);
+ renderInputs();
+ renderTep();
+ renderPhasing();
+ openTab('tep');
+ const status=document.getElementById('glavapuStatus');
+ if(status)status.innerHTML='<span class="import-ok">Ручной ТЭП из Telegram загружен в модель. Проверьте таблицу; финансовые вводные сохранены отдельно.</span>';
+ await calculate();
+ await sendTelegramResult();
+ return true;
+}
+
+async function initializeTelegramLaunch(){
+ if(window.Telegram&&window.Telegram.WebApp){
+  window.Telegram.WebApp.ready();
+  window.Telegram.WebApp.expand();
+ }
+ if(telegramCad){
+  const field=document.getElementById('cadastralNumbers');
+  if(!field)return;
+  field.value=telegramCad;
+  openTab('inputs');
+  const status=document.getElementById('cadastralStatus');
+  if(status)status.textContent='Запускаю расчёт, переданный из Telegram…';
+  await obtainCadastralTep();
+  if(document.getElementById('glavapuPreview'))document.getElementById('glavapuPreview').scrollIntoView({behavior:'smooth',block:'start'});
+  return;
+ }
+ if(!telegramSession)return;
+ try{
+  const sessionData=await loadTelegramSessionData();
+  if(sessionData.manual_tep)await applyTelegramManualTep(sessionData.manual_tep);
+ }catch(e){
+  const status=document.getElementById('glavapuStatus');
+  if(status)status.innerHTML='<span class="import-error">'+escapeHtml(String(e.message||e))+'</span>';
+ }
+}
+async function initializeApp(){
+ repairParkingFromGlavapu();
+ renderInputs();
+ renderTep();
+ renderStoredGlavapu();
+ renderStoredCadastral();
+ renderScenarioNote();
+ syncProjectClassSelector();
+ renderPhasing();
+ inputs.rate_scenario=inputs.rate_scenario||'base';
+ syncRateControlsFromInputs();
+ generateRateCurve();
+ renderRates();
+ await refreshCurrentKeyRate(false);
+ await calculate();
+ await refreshAgentStatus();
+ await loadPresetCatalog();
+ await initializeTelegramLaunch();
+}
+initializeApp();
+</script>
+</body></html>"""
+
+
+@app.get("/", response_class=HTMLResponse)
+def index() -> str:
+    return PAGE
