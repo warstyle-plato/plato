@@ -1,0 +1,45 @@
+name: Diagnose live DevelopAid bot
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  diagnose:
+    if: github.head_ref == 'diagnose/live-bot'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+      - name: Query live service
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, urllib.request, urllib.error
+          from pathlib import Path
+
+          base='https://plato-development-investment-model.onrender.com'
+          result={}
+          for path in ['/health','/telegram/status','/']:
+              url=base+path
+              try:
+                  req=urllib.request.Request(url,headers={'User-Agent':'DevelopAid-live-diagnose/1.0'})
+                  with urllib.request.urlopen(req,timeout=30) as r:
+                      body=r.read().decode('utf-8','replace')
+                      result[path]={'status':r.status,'body':body[:10000]}
+              except Exception as exc:
+                  result[path]={'error':repr(exc)}
+          Path('live_bot_diagnosis.json').write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding='utf-8')
+          print(json.dumps(result,ensure_ascii=False,indent=2))
+          PY
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add live_bot_diagnosis.json
+          git commit -m 'Capture live bot diagnosis' || true
+          git push origin HEAD:${{ github.head_ref }}
