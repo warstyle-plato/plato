@@ -17,32 +17,26 @@ jobs:
         with:
           ref: ${{ github.head_ref }}
           fetch-depth: 0
-      - name: Extract API literals
+      - name: Inspect domain calculation engine
         shell: bash
         run: |
           python - <<'PY'
           from pathlib import Path
           import re
-          out=[]
-          for p in sorted(Path('genplan_assets').glob('*.js')):
-              s=p.read_text(encoding='utf-8',errors='ignore')
-              strings=[]
-              # collect quoted/template literals up to 500 chars
-              for m in re.finditer(r'(["\'`])((?:\\.|(?!\1).){1,500})\1',s):
-                  val=m.group(2)
-                  low=val.lower()
-                  if any(k in low for k in ['api','cad','quarter','district','analy','calc','geojson','polygon','territory','upks','mpt']):
-                      strings.append(val)
-              if strings:
-                  out.append('### '+p.name)
-                  seen=[]
-                  for x in strings:
-                      if x not in seen: seen.append(x)
-                  out.extend(seen[:1500])
-          Path('genplan_api_literals.txt').write_text('\n'.join(out)[:1500000],encoding='utf-8')
+          s=Path('genplan_assets/domain-CwUeX6RP.js').read_text(encoding='utf-8',errors='ignore')
+          out=['LEN='+str(len(s))]
+          for m in re.finditer(r'export\s*\{([^}]*)\}',s): out.append('EXPORT='+m.group(1))
+          for m in re.finditer(r'import\s*\{([^}]*)\}\s*from\s*["\']([^"\']+)',s): out.append('IMPORT='+m.group(2)+' :: '+m.group(1))
+          tokens=['calcParams=e=>','calcParams=', 'calcBasic=','calcSocial=','calcTerritory=','calcMm=','calcMpt=','calcCostOfChangeVRI=','final_cost_of_change_vri','costOfChangeVRI','calcNormativeParams=','calcSocialCompensation=','constructor(e,t)','class ']
+          for token in tokens:
+              positions=[m.start() for m in re.finditer(re.escape(token),s)][:20]
+              out.append('\nTOKEN '+token+' POS '+','.join(map(str,positions)))
+              for i in positions[:6]:
+                  out.append('CTX '+str(i)+' '+s[max(0,i-6000):min(len(s),i+18000)])
+          Path('domain_calc_report.txt').write_text('\n\n'.join(out)[:5000000],encoding='utf-8')
           PY
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add genplan_api_literals.txt
-          git commit -m 'Extract Genplan API literals' || true
+          git add domain_calc_report.txt
+          git commit -m 'Inspect Genplan domain calculator' || true
           git push origin HEAD:${{ github.head_ref }}
