@@ -1,1 +1,0 @@
-python: can't open file '/home/runner/work/plato/plato/scripts/fix_edit_roundtrip.py': [Errno 2] No such file or directory
