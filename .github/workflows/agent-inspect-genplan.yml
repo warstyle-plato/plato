@@ -49,13 +49,17 @@ jobs:
                   out.extend(seen[:500])
                   out.append('')
           Path('genplan_endpoints_concise.txt').write_text('\n'.join(out)[:250000], encoding='utf-8')
+
+          s=Path('genplan_assets/index-B0jIwkVO.js').read_text(encoding='utf-8',errors='ignore')
+          a=s.find('Cf=class')
+          b=s.find('_p=e=>', a)
+          if a>=0 and b>=0:
+              Path('genplan_calc_core.txt').write_text(s[max(0,a-30000):min(len(s),b+30000)],encoding='utf-8')
+          else:
+              Path('genplan_calc_core.txt').write_text(f'not found a={a} b={b}',encoding='utf-8')
           PY
-          set +e
-          node --experimental-default-type=module -e "import('./genplan_assets/index-B0jIwkVO.js').then(m=>console.log('EXPORTS',Object.keys(m).join(','))).catch(e=>{console.error(e.stack||e);process.exit(1)})" > genplan_node_probe.txt 2>&1
-          echo "NODE_RC=$?" >> genplan_node_probe.txt
-          set -e
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add genplan_endpoints_concise.txt genplan_node_probe.txt
-          git commit -m 'Inspect Genplan module exports' || true
+          git add genplan_endpoints_concise.txt genplan_calc_core.txt
+          git commit -m 'Extract Genplan calculator core' || true
           git push origin HEAD:${{ github.head_ref }}
