@@ -8,6 +8,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: inspect-genplan-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   inspect:
     if: github.head_ref == 'agent/developaid-v01219-cadastral-bot-flow'
@@ -24,29 +28,28 @@ jobs:
           from pathlib import Path
           import re
 
-          needles=('api','calc','cad','analysis','tep','тэп','territ','stroimprosto','glavapu','genplan','district','quarter','send','request')
           out=[]
           for p in Path('genplan_assets').glob('*.js'):
               s=p.read_text(encoding='utf-8', errors='ignore')
-              strings=[]
-              for m in re.finditer(r'(["\'`])((?:\\.|(?!\1).){1,500})\1', s):
-                  val=m.group(2)
-                  low=val.lower()
-                  if any(n in low for n in needles):
-                      strings.append(val)
-              urls=re.findall(r'https?://[^"\'`\\\s)]+',s)
-              api_paths=re.findall(r'/(?:api|calc|analysis)[A-Za-z0-9_./?=&{}:\-]*',s,re.I)
               vals=[]
-              seen=set()
-              for v in strings+urls+api_paths:
-                  v=re.sub(r'\\[nrt]',' ',v)
-                  if v not in seen:
-                      seen.add(v); vals.append(v)
+              vals += re.findall(r'https?://[^"\'`\\\s)]+', s)
+              vals += re.findall(r'/(?:api|calc|analysis)[A-Za-z0-9_./?=&{}:\-]*', s, re.I)
+              # Add compact contexts around likely endpoint/domain tokens.
+              for token in ('glavapu-api','stroimprosto','genplan.tech','cad_numbers','terrArea','Перейти к расчётам'):
+                  start=0
+                  while True:
+                      i=s.find(token,start)
+                      if i<0: break
+                      vals.append(re.sub(r'\s+',' ',s[max(0,i-180):min(len(s),i+420)]))
+                      start=i+len(token)
               if vals:
+                  seen=[]
+                  for v in vals:
+                      if v not in seen: seen.append(v)
                   out.append('### '+p.name)
-                  out.extend(vals[:1000])
+                  out.extend(seen[:500])
                   out.append('')
-          Path('genplan_endpoints_concise.txt').write_text('\n'.join(out)[:300000], encoding='utf-8')
+          Path('genplan_endpoints_concise.txt').write_text('\n'.join(out)[:250000], encoding='utf-8')
           PY
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
