@@ -4,24 +4,16 @@ on:
   pull_request:
     types: [opened, synchronize]
     branches: [main]
-
 permissions:
   contents: write
-
-concurrency:
-  group: inspect-genplan-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
-
 jobs:
   inspect:
     if: github.head_ref == 'agent/developaid-v01219-cadastral-bot-flow'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.head_ref }}
-          fetch-depth: 0
-      - name: Inspect calculation entrypoints
+        with: {ref: '${{ github.head_ref }}', fetch-depth: 0}
+      - name: Inspect calculation requirements
         shell: bash
         run: |
           python - <<'PY'
@@ -29,13 +21,19 @@ jobs:
           import re
           s=Path('main.py').read_text(encoding='utf-8')
           out=[]
-          for pat in [r'class CalcRequest\b', r'def calculate\b', r'@app\.post\("/calculate"', r'def default_inputs\b', r'INPUT_DEFAULT', r'def _telegram_.*summary']:
-              for m in re.finditer(pat,s):
-                  out.append('\n### '+pat+' @ '+str(m.start())+'\n'+s[max(0,m.start()-1500):min(len(s),m.start()+12000)])
-          Path('calc_entrypoints.txt').write_text('\n'.join(out)[:300000],encoding='utf-8')
+          for name in ('build_operating_model','simulate_financing','calculate'):
+              m=re.search(r'^def '+name+r'\b',s,re.M)
+              if m:
+                  n=re.search(r'^def \w+\b',s[m.end():],re.M)
+                  end=m.end()+(n.start() if n else 20000)
+                  block=s[m.start():end]
+                  keys=sorted(set(re.findall(r'x\[\s*["\']([^"\']+)["\']\s*\]',block)))
+                  gets=sorted(set(re.findall(r'(?:n|b)\(x,\s*["\']([^"\']+)',block)))
+                  out.append('### '+name+'\nDIRECT='+repr(keys)+'\nHELPER='+repr(gets)+'\n\n'+block[:30000])
+          Path('calc_requirements.txt').write_text('\n\n'.join(out),encoding='utf-8')
           PY
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add calc_entrypoints.txt
-          git commit -m 'Inspect calculation entrypoints' || true
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add calc_requirements.txt
+          git commit -m 'Inspect operating model requirements' || true
           git push origin HEAD:${{ github.head_ref }}
