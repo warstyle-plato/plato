@@ -21,10 +21,11 @@ jobs:
       - name: Validate runtime
         shell: bash
         run: |
-          if [ -f scripts/agent_patch.py ]; then python scripts/agent_patch.py; fi
-          python -m py_compile main.py
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           pip -q install -r requirements.txt
-          python - <<'PY'
+          set +e
+          python - <<'PY' > /tmp/runtime.log 2>&1
           import inspect
           import main
           assert main.app.version == '0.12.19'
@@ -32,32 +33,29 @@ jobs:
           assert '_telegram_web_app_url' not in cad
           review=inspect.getsource(main._telegram_send_tep_review)
           assert 'flow_run_calculation' in review and 'web_app' not in review
-          raw={
-              'site_area_ha':2.0,
-              'apartments_saleable_sqm':20000,
-              'commercial_saleable_sqm':1000,
-              'parking_spaces':200,
-          }
+          raw={'site_area_ha':2.0,'apartments_saleable_sqm':20000,'commercial_saleable_sqm':1000,'parking_spaces':200}
           parsed=main.build_freeform_tep('',raw_values=raw)
-          parsed.setdefault('inputs',{}).update({
-              'apartment_price_th':350,
-              'commercial_price_th':350,
-              'parking_price_th':1500,
-              'main_above_th_per_sqm':130,
-              'main_under_th_per_sqm':130,
-          })
+          parsed.setdefault('inputs',{}).update({'apartment_price_th':350,'commercial_price_th':350,'parking_price_th':1500,'main_above_th_per_sqm':130,'main_under_th_per_sqm':130})
           x=main._telegram_preliminary_calc_inputs(parsed)
           result=main.calculate(main.CalcRequest(inputs=x,tep=parsed['tep'],rates=[]))
           assert float(result.get('total_revenue') or 0)>0
           assert float(result.get('total_capex') or 0)>0
-          print('RUNTIME_OK', sorted(k for k in result.keys() if k in {'total_revenue','total_capex','ebitda','net_profit','irr_equity','llcr'}))
+          print('RUNTIME_OK', {k:result.get(k) for k in ('total_revenue','total_capex','ebitda','net_profit','irr_equity','llcr')})
           PY
-          rm -f scripts/agent_patch.py v01219_error.txt
-          rm -f genplan_endpoints.txt genplan_endpoints_concise.txt genplan_node_probe.txt genplan_calc_core.txt genplan_calc_contexts.txt genplan_calc_target.txt calc_entrypoints.txt calc_requirements.txt
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            cp /tmp/runtime.log v01219_runtime_error.txt
+            git add v01219_runtime_error.txt
+            git commit -m 'Capture v0.12.19 runtime error' || true
+            git push origin HEAD:${{ github.head_ref }} || true
+            cat /tmp/runtime.log
+            exit "$rc"
+          fi
+          cat /tmp/runtime.log
+          rm -f v01219_runtime_error.txt
           rm -f .github/trigger-v01219*.txt
           rm -rf __pycache__
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add -A
           if ! git diff --cached --quiet; then
             git commit -m 'Clean v0.12.19 validation artifacts'
