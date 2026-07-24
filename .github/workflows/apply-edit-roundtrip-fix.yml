@@ -1,0 +1,47 @@
+name: Apply edit roundtrip fix
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.head_ref == 'agent/edit-result-roundtrip'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+      - name: Apply and validate
+        shell: bash
+        run: |
+          python scripts/fix_edit_roundtrip.py
+          python -m py_compile main.py
+          python -m pip install -q -r requirements.txt
+          python - <<'PY'
+          import re
+          from pathlib import Path
+          import main
+          code=Path('main.py').read_text(encoding='utf-8')
+          assert main.app.version=='0.12.18'
+          assert 'purchase_price_mln:Number(inputs.purchase_price_mln||0)' in code
+          assert 'Обновить расчёт в Telegram' in code
+          assert 'submitTelegramEditedResult' in code
+          assert "if(telegramMode==='edit')persistLocalSilently();" in code
+          assert 'edited?Number(inputs.land_rights_cost_mln||0)' in code
+          scripts=re.findall(r'<script(?:\s[^>]*)?>(.*?)</script>',main.PAGE,flags=re.S|re.I)
+          Path('/tmp/app.js').write_text(scripts[-1],encoding='utf-8')
+          print('PATCH_OK',main.app.version)
+          PY
+          node --check /tmp/app.js
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          rm -f scripts/fix_edit_roundtrip.py
+          git add -A
+          git commit -m 'Return edited calculation results to Telegram'
+          git push origin HEAD:${{ github.head_ref }}
