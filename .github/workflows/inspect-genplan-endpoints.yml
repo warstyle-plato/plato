@@ -17,26 +17,32 @@ jobs:
         with:
           ref: ${{ github.head_ref }}
           fetch-depth: 0
-      - name: Inspect calc exports and core
+      - name: Extract API literals
         shell: bash
         run: |
           python - <<'PY'
           from pathlib import Path
           import re
-          s=Path('genplan_assets/calc-BTtvF0Z6.js').read_text(encoding='utf-8',errors='ignore')
           out=[]
-          out.append('LEN='+str(len(s)))
-          for m in re.finditer(r'export\s*\{([^}]*)\}',s): out.append('EXPORT='+m.group(1))
-          for m in re.finditer(r'import\s*\{([^}]*)\}\s*from\s*["\']([^"\']+)',s): out.append('IMPORT='+m.group(2)+' :: '+m.group(1))
-          for token in ['calcParams=e=>','calcParams=', 'calcBasic=','calcSocial=','calcTerritory=','calcMm=','calcMpt=','calcCostOfChangeVRI=','final_cost_of_change_vri','class yf','class hf','class']:
-              idx=[m.start() for m in re.finditer(re.escape(token),s)][:5]
-              out.append('TOKEN '+token+' POS '+','.join(map(str,idx)))
-              for i in idx:
-                  out.append('CTX '+str(i)+' '+s[max(0,i-1800):min(len(s),i+4200)])
-          Path('calc_core_report.txt').write_text('\n\n'.join(out),encoding='utf-8')
+          for p in sorted(Path('genplan_assets').glob('*.js')):
+              s=p.read_text(encoding='utf-8',errors='ignore')
+              strings=[]
+              # collect quoted/template literals up to 500 chars
+              for m in re.finditer(r'(["\'`])((?:\\.|(?!\1).){1,500})\1',s):
+                  val=m.group(2)
+                  low=val.lower()
+                  if any(k in low for k in ['api','cad','quarter','district','analy','calc','geojson','polygon','territory','upks','mpt']):
+                      strings.append(val)
+              if strings:
+                  out.append('### '+p.name)
+                  seen=[]
+                  for x in strings:
+                      if x not in seen: seen.append(x)
+                  out.extend(seen[:1500])
+          Path('genplan_api_literals.txt').write_text('\n'.join(out)[:1500000],encoding='utf-8')
           PY
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add calc_core_report.txt
-          git commit -m 'Inspect Genplan calc core' || true
+          git add genplan_api_literals.txt
+          git commit -m 'Extract Genplan API literals' || true
           git push origin HEAD:${{ github.head_ref }}
