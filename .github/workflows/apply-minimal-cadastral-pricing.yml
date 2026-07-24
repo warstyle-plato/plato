@@ -22,6 +22,11 @@ jobs:
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          if [ ! -f scripts/minimal_cadastral_pricing_v2.py ]; then
+            echo 'Patch already applied; no patch script remains.'
+            python -m py_compile main.py
+            exit 0
+          fi
           set +e
           (
             python scripts/minimal_cadastral_pricing_v2.py
