@@ -22,125 +22,22 @@ jobs:
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-
-          # Make the three front-end insertion points whitespace-independent.
-          python - <<'PY'
-          from pathlib import Path
-          p=Path('scripts/minimal_cadastral_pricing_patch.py')
-          t=p.read_text(encoding='utf-8')
-          if 'import re\n' not in t[:100]:
-              t=t.replace('from pathlib import Path\n','from pathlib import Path\nimport re\n',1)
-
-          a=t.index('# Add a tiny override helper.')
-          b=t.index('# Apply user prices/SMR',a)
-          section=r'''# Add a tiny override helper. It deliberately separates class prices from SMR.
-          js_marker = "function syncProjectClassSelector(){"
-          js_pos = s.find(js_marker)
-          if js_pos < 0:
-              raise SystemExit('JS selector marker not found')
-          js_end = s.find("\n}\n", js_pos)
-          if js_end < 0:
-              raise SystemExit('JS selector end not found')
-          js_end += 3
-          js_anchor = s[js_pos:js_end]
-          js_insert = js_anchor + r'''
-          function applyTelegramCalcOverrides(){
-           const o=telegramCalcOverrides||{};
-           if(!Object.keys(o).length)return;
-           if(o.project_class)inputs.project_class=String(o.project_class);
-           ['apartment_price_th','commercial_price_th','parking_price_th'].forEach(k=>{
-            const v=Number(o[k]||0);if(v>0)inputs[k]=v;
-           });
-           const smr=Number(o.smr_th_per_sqm||0);
-           if(smr>0){
-            // Entered SMR includes core construction + landscaping + reserve.
-            // External utilities stay separate; landscaping/reserve are zeroed to avoid double counting.
-            inputs.main_above_th_per_sqm=smr;
-            inputs.main_under_th_per_sqm=smr;
-            inputs.landscaping_th_per_sqm=0;
-            inputs.reserve_pct=0;
-           }
-          }
-          '''
-          s = s[:js_pos] + js_insert + s[js_end:]
-
-          '''
-          t=t[:a]+section+t[b:]
-
-          a=t.index('# Apply user prices/SMR')
-          b=t.index('# Load session overrides',a)
-          section=r'''# Apply user prices/SMR after TEP/preset mappings so they cannot be overwritten by ГлавАПУ.
-          apply_marker = " const presetNote=applyServerPresetProjectConfig(presetId);\n"
-          if apply_marker not in s:
-              raise SystemExit('applyGlavapu marker not found')
-          s = s.replace(apply_marker, apply_marker + "\n applyTelegramCalcOverrides();\n", 1)
-
-          '''
-          t=t[:a]+section+t[b:]
-
-          a=t.index('# Load session overrides')
-          b=t.index("p.write_text(s, encoding='utf-8')",a)
-          section=r'''# Load session overrides before the unchanged cadastral calculation, then auto-apply TEP and return result.
-          init_pattern = r"async function initializeTelegramLaunch\(\)\{.*?\n\}\n(?=async function initializeApp\(\))"
-          new_init = r'''async function initializeTelegramLaunch(){
-           if(window.Telegram&&window.Telegram.WebApp){
-            window.Telegram.WebApp.ready();
-            window.Telegram.WebApp.expand();
-           }
-           let sessionData={};
-           if(telegramSession){
-            try{
-             sessionData=await loadTelegramSessionData();
-             telegramCalcOverrides=sessionData.calc_overrides||{};
-            }catch(e){
-             const status=document.getElementById('glavapuStatus');
-             if(status)status.innerHTML='<span class="import-error">'+escapeHtml(String(e.message||e))+'</span>';
-             return;
-            }
-           }
-           if(telegramCad){
-            const field=document.getElementById('cadastralNumbers');
-            if(!field)return;
-            field.value=telegramCad;
-            openTab('inputs');
-            const status=document.getElementById('cadastralStatus');
-            if(status)status.textContent='Получаю ТЭП ГлавАПУ и рассчитываю проект…';
-            await obtainCadastralTep();
-            if(glavapuImport){
-             await applyGlavapu();
-             if(window.Telegram&&window.Telegram.WebApp){
-              setTimeout(()=>window.Telegram.WebApp.close(),700);
-             }
-            }
-            return;
-           }
-           if(sessionData.manual_tep)await applyTelegramManualTep(sessionData.manual_tep);
-          }
-          '''
-          s, init_count = re.subn(init_pattern, lambda _m: new_init, s, count=1, flags=re.S)
-          if init_count != 1:
-              raise SystemExit(f'initializeTelegramLaunch replacement count={init_count}')
-
-          '''
-          t=t[:a]+section+t[b:]
-          p.write_text(t,encoding='utf-8')
-          PY
-
           set +e
           (
-            python scripts/minimal_cadastral_pricing_patch.py
+            python scripts/minimal_cadastral_pricing_v2.py
             rc=$?; [ "$rc" -eq 0 ] || exit "$rc"
             python -m py_compile main.py
             rc=$?; [ "$rc" -eq 0 ] || exit "$rc"
             python - <<'PY'
           import main
-          assert main.app.version == '0.12.16'
           code=open('main.py',encoding='utf-8').read()
+          assert main.app.version == '0.12.16', main.app.version
           assert 'flow_cad_class_comfort' in code
           assert 'calc_overrides' in code
-          assert 'Получить ТЭП и открыть PLATO' not in code[code.find('def _telegram_handle_cadastral_numbers'):code.find('def _telegram_handle_message')]
-          assert 'await obtainCadastralTep();' in code
-          assert 'await applyGlavapu();' in code
+          assert 'smr_th_per_sqm' in code
+          assert 'async function obtainCadastralTep()' in code
+          assert "fetch('/cadastral/tep-from-calculator'" in code
+          assert 'pyppeteer' not in code
           print('PATCH_OK', main.app.version)
           PY
           ) > /tmp/minimal-patch.log 2>&1
@@ -156,7 +53,7 @@ jobs:
           fi
           rm -f .github/minimal-patch-error.txt
           rm -f .github/minimal-patch-trigger-*.txt
-          rm -f scripts/minimal_cadastral_pricing_patch.py
+          rm -f scripts/minimal_cadastral_pricing_patch.py scripts/minimal_cadastral_pricing_v2.py
           git add -A
           git commit -m 'Add class prices and SMR to cadastral Telegram flow'
           git push origin HEAD:${{ github.head_ref }}
