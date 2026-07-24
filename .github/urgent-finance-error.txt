@@ -1,5 +1,1 @@
-URGENT_FINANCE_PATCH_OK
-  File "main.py", line 2622
-    f"• расчётный БРИДЖ — {_telegram_money_mln(summary.get('calculated_bridge_mln'))}\n"        f"• Пиковая (непокрытая эскроу) задолженность ПФ — {_telegram_money_mln(summary.get('pf_uncovered_peak_mln'))}
-                                                                                                ^
-SyntaxError: unterminated f-string literal (detected at line 2622)
+Missing anchor: preliminary economics card
