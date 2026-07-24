@@ -1,1 +1,1 @@
-Missing anchor: telegram total expenses payload
+Missing anchor: report IRR display
