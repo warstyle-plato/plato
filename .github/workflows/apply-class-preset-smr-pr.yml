@@ -1,0 +1,53 @@
+name: Apply class preset SMR v0.12.21
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.head_ref == 'agent/class-presets-include-smr-v01221'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+      - name: Apply and validate
+        shell: bash
+        run: |
+          if [ ! -f scripts/class_presets_include_smr.py ]; then
+            echo 'Patch already applied.'
+            python -m py_compile main.py
+            exit 0
+          fi
+          python scripts/class_presets_include_smr.py
+          python -m py_compile main.py
+          python - <<'PY'
+          from pathlib import Path
+          c=Path('main.py').read_text(encoding='utf-8')
+          assert 'version="0.12.21"' in c
+          assert '_TELEGRAM_CLASS_SMR_PRESETS' in c
+          assert '"comfort": 110.0' in c
+          assert '"business": 190.0' in c
+          assert '"elite": 300.0' in c
+          assert '_telegram_cad_smr_prompt' not in c
+          assert 'await_cad_smr' not in c
+          assert 'Параметры перед расчётом' in c
+          assert 'Изменить цены' in c
+          assert 'Выбрать другой класс' in c
+          assert 'await obtainCadastralTep();' in c
+          print('CLASS_PRESET_SMR_VALIDATED')
+          PY
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          rm -f scripts/class_presets_include_smr.py
+          rm -f .github/workflows/apply-class-preset-smr-v01221.yml
+          rm -f .github/class-preset-smr-trigger.txt
+          git add -A
+          git commit -m 'DevelopAid v0.12.21: include SMR in housing class presets'
+          git push origin HEAD:${{ github.head_ref }}
