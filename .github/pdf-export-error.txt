@@ -1,0 +1,3 @@
+/home/runner/work/plato/plato/scripts/add_pdf_report_export.py:414: SyntaxWarning: invalid escape sequence '\*'
+  new_func='''function currentPdfReportPayload(cads=[]){
+old exportReportPdf block not found
