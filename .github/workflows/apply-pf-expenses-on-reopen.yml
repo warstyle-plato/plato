@@ -1,0 +1,45 @@
+name: One-time PF and expenses patch
+
+on:
+  pull_request:
+    types: [reopened]
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Apply patch to main
+        shell: bash
+        run: |
+          test -f scripts/rename_pf_add_expenses.py
+          python scripts/rename_pf_add_expenses.py
+          python -m py_compile main.py
+          python - <<'PY'
+          from pathlib import Path
+          code=Path('main.py').read_text(encoding='utf-8')
+          assert 'version="0.12.19"' in code
+          assert 'peak_uncovered_pf' in code
+          assert 'pf_uncovered_peak' in code
+          assert 'расходы всего' in code
+          assert 'макс. не покрытая эскроу задолженность по ПФ' in code
+          assert "total_expenses_mln:Number(s.total_expenses||0)/1e6" in code
+          assert "pf_uncovered_peak_mln:Number(f.pf_uncovered_peak||0)/1e6" in code
+          print('VALIDATION_OK')
+          PY
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          rm -f scripts/rename_pf_add_expenses.py
+          rm -f .github/workflows/apply-pf-expenses-on-reopen.yml
+          rm -f .github/workflows/apply-pf-expenses-main.yml
+          rm -f .github/workflows/apply-pf-expenses-fix.yml
+          git add -A
+          git commit -m 'DevelopAid v0.12.19: uncovered PF and total expenses'
+          git push origin HEAD:main
