@@ -20,10 +20,17 @@ jobs:
       - name: Apply and validate
         shell: bash
         run: |
-          python scripts/fix_edit_roundtrip.py
-          python -m py_compile main.py
-          python -m pip install -q -r requirements.txt
-          python - <<'PY'
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          set +e
+          (
+            python scripts/fix_edit_roundtrip.py
+            rc=$?; [ "$rc" -eq 0 ] || exit "$rc"
+            python -m py_compile main.py
+            rc=$?; [ "$rc" -eq 0 ] || exit "$rc"
+            python -m pip install -q -r requirements.txt
+            rc=$?; [ "$rc" -eq 0 ] || exit "$rc"
+            python - <<'PY'
           import re
           from pathlib import Path
           import main
@@ -38,9 +45,20 @@ jobs:
           Path('/tmp/app.js').write_text(scripts[-1],encoding='utf-8')
           print('PATCH_OK',main.app.version)
           PY
-          node --check /tmp/app.js
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+            rc=$?; [ "$rc" -eq 0 ] || exit "$rc"
+            node --check /tmp/app.js
+          ) > /tmp/edit-roundtrip.log 2>&1
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            cp /tmp/edit-roundtrip.log .github/edit-roundtrip-error.txt
+            git add .github/edit-roundtrip-error.txt
+            git commit -m 'Capture edit roundtrip patch error' || true
+            git push origin HEAD:${{ github.head_ref }} || true
+            cat /tmp/edit-roundtrip.log
+            exit "$rc"
+          fi
+          rm -f .github/edit-roundtrip-error.txt .github/edit-roundtrip-trigger*.txt
           rm -f scripts/fix_edit_roundtrip.py
           git add -A
           git commit -m 'Return edited calculation results to Telegram'
