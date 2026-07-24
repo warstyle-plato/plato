@@ -2622,7 +2622,12 @@ def telegram_result(req: TelegramResultRequest) -> dict[str, bool]:
     button = {
         "inline_keyboard": [[{
             "text": "Открыть и изменить расчёт",
-            "web_app": {"url": _telegram_web_app_url(chat_id, numbers, session.get("manual_tep"))},
+            "web_app": {"url": _telegram_web_app_url(
+                chat_id,
+                numbers,
+                session.get("manual_tep"),
+                session.get("calc_overrides"),
+            )},
         }]]
     }
     _telegram_send_message(chat_id, text, reply_markup=button)
@@ -9251,7 +9256,7 @@ async function initializeTelegramLaunch(){
   await obtainCadastralTep();
   if(glavapuImport){
    await applyGlavapu();
-   if(window.Telegram&&window.Telegram.WebApp){
+   if(window.Telegram&&window.Telegram.WebApp&&telegramResultSent){
     setTimeout(()=>window.Telegram.WebApp.close(),700);
    }
   }
