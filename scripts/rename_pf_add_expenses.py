@@ -16,7 +16,6 @@ def replace_once(old: str, new: str, label: str) -> None:
 
 s = s.replace('0.12.18', '0.12.19')
 
-# VRI is a project investment need and belongs in the bridge/PF funding chain.
 replace_once(
 '''    calculated_bridge_limit = (
         n(x, "purchase_price_mln") * 1_000_000
@@ -44,7 +43,6 @@ replace_once(
 'VRI debt exclusion',
 )
 
-# Track escrow release at RVE.
 replace_once(
 '''            pf_draw = pf_repayment = pf_interest = pf_cap = limit_fee = 0.0
             interest_payment = 0.0
@@ -80,7 +78,6 @@ replace_once(
 'financing row escrow release',
 )
 
-# Peak PF exposure not covered by escrow.
 replace_once(
 '''            "peak_pf": max((r["pf_balance"] for r in rows), default=0.0),
             "avg_pf_rate": weighted_pf_num / weighted_pf_den if weighted_pf_den else 0.0,
@@ -118,7 +115,6 @@ replace_once(
 'report financing uncovered PF',
 )
 
-# Correct the largest IRR distortion: pre-RVE sales are trapped in escrow, not sponsor cash.
 replace_once(
 '''        project_cf.append(revenue_m - capex_m - opex_m - int_pay - fees - tax)
         equity_cf.append(
@@ -137,7 +133,6 @@ replace_once(
 'equity cash flow escrow timing',
 )
 
-# Preliminary Telegram economics: small line-level edits to avoid touching surrounding logic.
 replace_once(
 '''        f"• выручка — {_telegram_money_mln(summary.get('revenue_mln'))}\\n"
 ''',
@@ -160,28 +155,17 @@ replace_once(
 'telegram PF line',
 )
 
-# Telegram payload.
 replace_once(
-'''    revenue_mln:Number(s.revenue||0)/1e6,
-    ebitda_mln:Number(s.ebitda||0)/1e6,
-''',
-'''    revenue_mln:Number(s.revenue||0)/1e6,
-    total_expenses_mln:Number(s.total_expenses||0)/1e6,
-    ebitda_mln:Number(s.ebitda||0)/1e6,
-''',
+'revenue_mln:Number(s.revenue||0)/1e6,',
+'revenue_mln:Number(s.revenue||0)/1e6,\n    total_expenses_mln:Number(s.total_expenses||0)/1e6,',
 'telegram total expenses payload',
 )
 replace_once(
-'''    calculated_bridge_mln:Number(f.calculated_bridge||0)/1e6,
-    pf_peak_mln:Number(f.pf_peak||0)/1e6
-''',
-'''    calculated_bridge_mln:Number(f.calculated_bridge||0)/1e6,
-    pf_uncovered_peak_mln:Number(f.pf_uncovered_peak||0)/1e6
-''',
+'pf_peak_mln:Number(f.pf_peak||0)/1e6',
+'pf_uncovered_peak_mln:Number(f.pf_uncovered_peak||0)/1e6',
 'telegram uncovered PF payload',
 )
 
-# Full model: hide the misleading equity-IRR proxy until an explicit sponsor equity structure exists.
 replace_once(
 '''   ['IRR equity',irrFmt(r.summary.irr_equity)],
 ''',
@@ -202,7 +186,6 @@ replace_once(
 ''',
 'finance uncovered PF KPI',
 )
-# Phase comparison still shows gross technical peak; label it as such instead of implying net exposure.
 s = s.replace(
 "   ['Пиковый ПФ',c.map(x=>money(x.peak_pf)),money(cons.finance.peak_pf)],",
 "   ['Пиковый остаток ПФ',c.map(x=>money(x.peak_pf)),money(cons.finance.peak_pf)],",
