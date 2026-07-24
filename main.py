@@ -3288,15 +3288,13 @@ def _telegram_preliminary_calc_inputs(parsed: dict[str, Any]) -> dict[str, Any]:
     for key,months in (("kindergarten_start",24),("school_start",24),("clinic_start",24)):
         x.setdefault(key,add_months(project_start,months).isoformat())
     x.setdefault("social_comp_date",add_months(project_start,18).isoformat())
-    if b(x,"offices_enabled"):
-        x.setdefault("offices_start",add_months(project_start,18).isoformat())
-        x.setdefault("offices_sales_start",add_months(project_start,18).isoformat())
-    if b(x,"retail_enabled"):
-        x.setdefault("retail_start",add_months(project_start,18).isoformat())
-        x.setdefault("retail_sales_start",add_months(project_start,18).isoformat())
-    if b(x,"above_parking_enabled"):
-        x.setdefault("above_parking_start",add_months(project_start,18).isoformat())
-        x.setdefault("above_parking_sales_start",add_months(project_start,18).isoformat())
+    # Reporting/product KPI code reads these dates even when an optional product is disabled.
+    x.setdefault("offices_start",add_months(project_start,18).isoformat())
+    x.setdefault("offices_sales_start",add_months(project_start,18).isoformat())
+    x.setdefault("retail_start",add_months(project_start,18).isoformat())
+    x.setdefault("retail_sales_start",add_months(project_start,18).isoformat())
+    x.setdefault("above_parking_start",add_months(project_start,18).isoformat())
+    x.setdefault("above_parking_sales_start",add_months(project_start,18).isoformat())
     return x
 
 
@@ -3321,12 +3319,13 @@ def _telegram_run_preliminary_calculation(chat_id: int, dialog: dict[str,Any]) -
     except Exception as exc:
         _telegram_send_message(chat_id,"<b>Не удалось выполнить расчёт.</b>\n"+html.escape(str(exc)))
         return
-    revenue=_telegram_result_value(result,"total_revenue")/1_000_000
-    capex=_telegram_result_value(result,"total_capex")/1_000_000
-    ebitda=_telegram_result_value(result,"ebitda")/1_000_000
-    net_profit=_telegram_result_value(result,"net_profit")/1_000_000
-    llcr=_telegram_result_value(result,"llcr")
-    irr=result.get("irr_equity")
+    calc_summary=result.get("summary") or {}
+    revenue=_telegram_result_value(calc_summary,"revenue")/1_000_000
+    capex=_telegram_result_value(calc_summary,"capex")/1_000_000
+    ebitda=_telegram_result_value(calc_summary,"ebitda")/1_000_000
+    net_profit=_telegram_result_value(calc_summary,"net_profit")/1_000_000
+    llcr=_telegram_result_value(calc_summary,"llcr")
+    irr=calc_summary.get("irr_equity")
     irr_text="N/A"
     try:
         if irr is not None: irr_text=_telegram_number(float(irr)*100,1)+"%"
