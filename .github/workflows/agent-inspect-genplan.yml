@@ -23,6 +23,8 @@ jobs:
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          if [ -f scripts/agent_patch.py ]; then python scripts/agent_patch.py; fi
+          python -m py_compile main.py
           pip -q install -r requirements.txt
           set +e
           python - <<'PY' > /tmp/runtime.log 2>&1
@@ -53,11 +55,11 @@ jobs:
             exit "$rc"
           fi
           cat /tmp/runtime.log
-          rm -f v01219_runtime_error.txt
+          rm -f scripts/agent_patch.py v01219_runtime_error.txt
           rm -f .github/trigger-v01219*.txt
           rm -rf __pycache__
           git add -A
           if ! git diff --cached --quiet; then
-            git commit -m 'Clean v0.12.19 validation artifacts'
+            git commit -m 'Finalize v0.12.19 runtime fix'
             git push origin HEAD:${{ github.head_ref }}
           fi
