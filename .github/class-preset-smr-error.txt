@@ -1,5 +1,0 @@
-CLASS_PRESET_SMR_PATCH_OK
-  File "main.py", line 2270
-    "<b>Класс жилья / параметры экспресс-расчёта</b>
-    ^
-SyntaxError: unterminated string literal (detected at line 2270)
