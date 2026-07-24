@@ -17,16 +17,28 @@ jobs:
         with:
           ref: ${{ github.head_ref }}
           fetch-depth: 0
-      - name: Apply minimal patch and validate
+      - name: Apply patch and validate
         shell: bash
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+
+          if [ -f scripts/minimal_cadastral_followup.py ]; then
+            python scripts/minimal_cadastral_followup.py
+            python -m py_compile main.py
+            rm -f scripts/minimal_cadastral_followup.py
+            git add -A
+            git commit -m 'Preserve cadastral pricing settings through result flow'
+            git push origin HEAD:${{ github.head_ref }}
+            exit 0
+          fi
+
           if [ ! -f scripts/minimal_cadastral_pricing_v2.py ]; then
-            echo 'Patch already applied; no patch script remains.'
+            echo 'Minimal patch already applied.'
             python -m py_compile main.py
             exit 0
           fi
+
           set +e
           (
             python scripts/minimal_cadastral_pricing_v2.py
@@ -37,7 +49,7 @@ jobs:
           import re
           code=open('main.py',encoding='utf-8').read()
           m=re.search(r'FastAPI\(title="PLATO Development Investment Model", version="([^"]+)"\)',code)
-          assert m and m.group(1)=='0.12.16', m.group(1) if m else 'missing-version'
+          assert m and m.group(1)=='0.12.16'
           assert 'flow_cad_class_comfort' in code
           assert 'calc_overrides' in code
           assert 'smr_th_per_sqm' in code
@@ -59,8 +71,7 @@ jobs:
             cat /tmp/minimal-patch.log
             exit "$rc"
           fi
-          rm -f .github/minimal-patch-error.txt
-          rm -f .github/minimal-patch-trigger-*.txt
+          rm -f .github/minimal-patch-error.txt .github/minimal-patch-trigger-*.txt
           rm -f scripts/minimal_cadastral_pricing_patch.py scripts/minimal_cadastral_pricing_v2.py
           git add -A
           git commit -m 'Add class prices and SMR to cadastral Telegram flow'
