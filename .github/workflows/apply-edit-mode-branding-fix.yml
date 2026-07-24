@@ -27,11 +27,18 @@ jobs:
           from pathlib import Path
           p=Path('scripts/fix_edit_mode_branding.py')
           t=p.read_text(encoding='utf-8')
+
           old='''# Persist the exact model state before returning the summary to Telegram.\nold = "  const payload={\\n    cadastral_numbers:cads,"\nnew = "  persistLocalSilently();\\n  const payload={\\n    cadastral_numbers:cads,"\nif old not in s:\n    raise SystemExit('sendTelegramResult payload anchor not found')\ns = s.replace(old, new, 1)\n'''
           new='''# Persist the exact model state before returning the summary to Telegram.\nmatch = re.search(r"(\\n[ \\t]*const manual=!!manualMeta;\\n)", s)\nif not match:\n    raise SystemExit('sendTelegramResult manual regex anchor not found')\ninsert_at = match.end()\ns = s[:insert_at] + "  persistLocalSilently();\\n" + s[insert_at:]\n'''
           if old not in t:
               raise SystemExit('Patch-script persistence block not found')
-          p.write_text(t.replace(old,new,1),encoding='utf-8')
+          t=t.replace(old,new,1)
+
+          start=t.index('# In edit mode, loadLocal()')
+          end=t.index('# Marker and sanity checks.',start)
+          init_patch='''# In edit mode, loadLocal() has already restored the last calculated state.\n# Insert the edit branch immediately before the existing telegramCad branch; do not rewrite that proven branch.\ncalc_match = re.search(r"(  if\\(telegramCad\\)\\{.*?\\n  \\}\\n)(  if\\(sessionData\\.manual_tep\\))", s, flags=re.S)\nif not calc_match:\n    raise SystemExit('initializeTelegramLaunch telegramCad regex block not found')\nedit_block = """  if(telegramMode==='edit'){\n   // Reopen the exact locally persisted model state; never restart cadastral/ГлавАПУ calculation.\n   applyTelegramCalcOverrides();\n   renderInputs();\n   renderTep();\n   renderPhasing();\n   syncProjectClassSelector();\n   openTab('inputs');\n   await calculate();\n   return;\n  }\n"""\ns = s[:calc_match.start()] + edit_block + calc_match.group(1) + calc_match.group(2) + s[calc_match.end():]\n\n'''
+          t=t[:start]+init_patch+t[end:]
+          p.write_text(t,encoding='utf-8')
           PY
 
           set +e
