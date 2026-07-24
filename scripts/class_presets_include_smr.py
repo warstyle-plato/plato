@@ -42,7 +42,7 @@ def _telegram_cad_class_menu(chat_id: int, dialog: dict[str, Any]) -> None:
 
 '''
 pattern = r'def _telegram_cad_class_menu\(chat_id: int, dialog: dict\[str, Any\]\) -> None:.*?(?=def _telegram_send_cad_calculate_button\()'
-s, count = re.subn(pattern, menu_block, s, count=1, flags=re.S)
+s, count = re.subn(pattern, lambda _m: menu_block, s, count=1, flags=re.S)
 if count != 1:
     raise SystemExit(f'class menu replacement count={count}')
 
@@ -90,7 +90,7 @@ calc_button = '''def _telegram_send_cad_calculate_button(chat_id: int, dialog: d
 
 '''
 pattern = r'def _telegram_send_cad_calculate_button\(chat_id: int, dialog: dict\[str, Any\]\) -> None:.*?(?=def _telegram_handle_cadastral_numbers\()'
-s, count = re.subn(pattern, calc_button, s, count=1, flags=re.S)
+s, count = re.subn(pattern, lambda _m: calc_button, s, count=1, flags=re.S)
 if count != 1:
     raise SystemExit(f'calculate-button replacement count={count}')
 
@@ -138,7 +138,7 @@ text_replacement = '''        if step == "await_cad_parking_price":
             return True
 '''
 pattern = r'        if step == "await_cad_parking_price":.*?(?=        if step == "await_value":)'
-s, count = re.subn(pattern, text_replacement, s, count=1, flags=re.S)
+s, count = re.subn(pattern, lambda _m: text_replacement, s, count=1, flags=re.S)
 if count != 1:
     raise SystemExit(f'manual price flow replacement count={count}')
 
