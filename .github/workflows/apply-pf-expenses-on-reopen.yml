@@ -2,7 +2,7 @@ name: One-time PF and expenses patch
 
 on:
   pull_request:
-    types: [reopened]
+    types: [reopened, synchronize]
     branches: [main]
 
 permissions:
