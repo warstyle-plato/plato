@@ -1,0 +1,6 @@
+Traceback (most recent call last):
+  File "<stdin>", line 12, in <module>
+  File "/home/runner/work/plato/plato/main.py", line 4891, in calculate
+    "start": d(x["offices_sales_start"]), "end_ref": add_months(d(x["offices_start"]), int(n(x, "offices_months", 24))),
+               ~^^^^^^^^^^^^^^^^^^^^^^^
+KeyError: 'offices_sales_start'
