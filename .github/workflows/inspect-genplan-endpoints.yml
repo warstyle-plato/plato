@@ -1,0 +1,51 @@
+name: Inspect Genplan calculator endpoints
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  inspect:
+    if: github.head_ref == 'agent/fix-cadastral-auto-tep'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+      - name: Extract endpoint and calculator contexts
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          out=[]
+          for p in Path('genplan_assets').glob('*.js'):
+              s=p.read_text(encoding='utf-8',errors='ignore')
+              hits=[]
+              for pat in [r'https?://[^"\'`\\\s)]+', r'/(?:api|calc|analysis|cadastre|cadastr)[A-Za-z0-9_./?=&{}:\-]*']:
+                  hits += re.findall(pat,s,re.I)
+              for token in ['fetch(', 'axios', 'cad_numbers', 'cadZU', 'id-cad-numbers-text-field', 'Перейти к расчётам', 'calcParams', 'terrArea', 'district', 'coeff_mpt', 'coeff_rent']:
+                  start=0
+                  while True:
+                      i=s.find(token,start)
+                      if i<0: break
+                      hits.append(re.sub(r'\s+',' ',s[max(0,i-500):min(len(s),i+1500)]))
+                      start=i+len(token)
+              if hits:
+                  seen=[]
+                  for h in hits:
+                      if h not in seen: seen.append(h)
+                  out.append('### '+p.name)
+                  out.extend(seen[:800])
+          Path('genplan_endpoint_contexts.txt').write_text('\n\n'.join(out)[:900000],encoding='utf-8')
+          PY
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add genplan_endpoint_contexts.txt
+          git commit -m 'Extract Genplan endpoint contexts' || true
+          git push origin HEAD:${{ github.head_ref }}
