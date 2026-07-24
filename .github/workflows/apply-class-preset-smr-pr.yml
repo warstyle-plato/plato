@@ -25,9 +25,15 @@ jobs:
             python -m py_compile main.py
             exit 0
           fi
-          python scripts/class_presets_include_smr.py
-          python -m py_compile main.py
-          python - <<'PY'
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          set +e
+          (
+            python scripts/class_presets_include_smr.py
+            rc=$?; [ "$rc" -eq 0 ] || exit "$rc"
+            python -m py_compile main.py
+            rc=$?; [ "$rc" -eq 0 ] || exit "$rc"
+            python - <<'PY'
           from pathlib import Path
           c=Path('main.py').read_text(encoding='utf-8')
           assert 'version="0.12.21"' in c
@@ -43,8 +49,18 @@ jobs:
           assert 'await obtainCadastralTep();' in c
           print('CLASS_PRESET_SMR_VALIDATED')
           PY
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          ) > /tmp/class-preset-smr.log 2>&1
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            cp /tmp/class-preset-smr.log .github/class-preset-smr-error.txt
+            git add .github/class-preset-smr-error.txt
+            git commit -m 'Capture class preset SMR patch error' || true
+            git push origin HEAD:${{ github.head_ref }} || true
+            cat /tmp/class-preset-smr.log
+            exit "$rc"
+          fi
+          rm -f .github/class-preset-smr-error.txt
           rm -f scripts/class_presets_include_smr.py
           rm -f .github/workflows/apply-class-preset-smr-v01221.yml
           rm -f .github/class-preset-smr-trigger.txt
