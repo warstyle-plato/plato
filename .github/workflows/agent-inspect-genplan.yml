@@ -24,27 +24,32 @@ jobs:
           from pathlib import Path
           import re
 
+          needles=('api','calc','cad','analysis','tep','тэп','territ','stroimprosto','glavapu','genplan','district','quarter','send','request')
           out=[]
-          pats=[r'https?://[^"\'`\\\s]+', r'/api/[A-Za-z0-9_./?=&{}:-]+', r'fetch\([^)]{0,300}\)', r'axios[^;]{0,400}', r'cad[_-]?numbers[^;]{0,500}', r'terrArea[^;]{0,500}']
           for p in Path('genplan_assets').glob('*.js'):
               s=p.read_text(encoding='utf-8', errors='ignore')
-              hits=[]
-              for pat in pats:
-                  for m in re.finditer(pat,s,re.I):
-                      a=max(0,m.start()-240); b=min(len(s),m.end()+500)
-                      hits.append(s[a:b])
-              if hits:
-                  out.append('\n### '+p.name+'\n')
-                  seen=set()
-                  for h in hits:
-                      h=re.sub(r'\s+',' ',h)
-                      if h not in seen:
-                          out.append(h+'\n')
-                          seen.add(h)
-          Path('genplan_endpoints.txt').write_text('\n'.join(out)[:500000], encoding='utf-8')
+              strings=[]
+              for m in re.finditer(r'(["\'`])((?:\\.|(?!\1).){1,500})\1', s):
+                  val=m.group(2)
+                  low=val.lower()
+                  if any(n in low for n in needles):
+                      strings.append(val)
+              urls=re.findall(r'https?://[^"\'`\\\s)]+',s)
+              api_paths=re.findall(r'/(?:api|calc|analysis)[A-Za-z0-9_./?=&{}:\-]*',s,re.I)
+              vals=[]
+              seen=set()
+              for v in strings+urls+api_paths:
+                  v=re.sub(r'\\[nrt]',' ',v)
+                  if v not in seen:
+                      seen.add(v); vals.append(v)
+              if vals:
+                  out.append('### '+p.name)
+                  out.extend(vals[:1000])
+                  out.append('')
+          Path('genplan_endpoints_concise.txt').write_text('\n'.join(out)[:300000], encoding='utf-8')
           PY
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add genplan_endpoints.txt
-          git commit -m 'Inspect Genplan calculator endpoints' || true
+          git add genplan_endpoints_concise.txt
+          git commit -m 'Inspect Genplan endpoint strings' || true
           git push origin HEAD:${{ github.head_ref }}
