@@ -1,1 +1,4 @@
-edit mode branch tail not found
+EDIT_ROUNDTRIP_PATCH_OK
+Traceback (most recent call last):
+  File "<stdin>", line 10, in <module>
+AssertionError
