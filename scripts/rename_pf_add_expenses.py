@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 
 p = Path('main.py')
 s = p.read_text(encoding='utf-8')
@@ -8,7 +9,7 @@ if 'version="0.12.18"' not in s:
 
 s = s.replace('0.12.18', '0.12.19')
 
-# VRI must be included in debt-funded project cash needs. Remove the explicit exclusion.
+# 1. VRI must be part of financed project investment needs.
 old = '''    # Land/VRI is included in project investment CAPEX but is not automatically debt-funded.
     # This follows the current credit model more closely: the bridge/PF funding base is project construction cash needs.
     debt_capex = dict(capex)
@@ -24,24 +25,7 @@ if old not in s:
     raise SystemExit('VRI debt exclusion anchor not found')
 s = s.replace(old, new, 1)
 
-# Track escrow release explicitly and calculate the exact requested exposure metric.
-old = '''                available_for_repayment = 0.0
-                if month == rve:
-                    available_for_repayment = escrow
-                    escrow = 0.0
-'''
-new = '''                available_for_repayment = 0.0
-                escrow_release = 0.0
-                if month == rve:
-                    escrow_release = escrow
-                    available_for_repayment = escrow_release
-                    escrow = 0.0
-'''
-if old not in s:
-    raise SystemExit('escrow release anchor not found')
-s = s.replace(old, new, 1)
-
-# Ensure variable exists before the branch where it is used in the row.
+# 2. Track escrow release explicitly.
 old = '''            pf_draw = pf_repayment = pf_interest = pf_cap = limit_fee = 0.0
             interest_payment = 0.0
 '''
@@ -51,6 +35,21 @@ new = '''            pf_draw = pf_repayment = pf_interest = pf_cap = limit_fee =
 '''
 if old not in s:
     raise SystemExit('monthly variable anchor not found')
+s = s.replace(old, new, 1)
+
+old = '''                available_for_repayment = 0.0
+                if month == rve:
+                    available_for_repayment = escrow
+                    escrow = 0.0
+'''
+new = '''                available_for_repayment = 0.0
+                if month == rve:
+                    escrow_release = escrow
+                    available_for_repayment = escrow_release
+                    escrow = 0.0
+'''
+if old not in s:
+    raise SystemExit('escrow release anchor not found')
 s = s.replace(old, new, 1)
 
 old = '''                "escrow": escrow,
@@ -64,6 +63,7 @@ if old not in s:
     raise SystemExit('financing row escrow anchor not found')
 s = s.replace(old, new, 1)
 
+# 3. Correct user-facing PF exposure: maximum principal not covered by accumulated escrow.
 old = '''            "peak_pf": max((r["pf_balance"] for r in rows), default=0.0),
             "avg_pf_rate": weighted_pf_num / weighted_pf_den if weighted_pf_den else 0.0,
 '''
@@ -75,25 +75,23 @@ if old not in s:
     raise SystemExit('simulate_financing peak_pf anchor not found')
 s = s.replace(old, new, 1)
 
-# Consolidated/phased calculations need the same metric.
-old = '''    peak_pf = max((r["pf_balance"] for r in rows), default=0.0)
+# Consolidated/phased finance if present.
+s = s.replace(
+'''    peak_pf = max((r["pf_balance"] for r in rows), default=0.0)
     peak_total_debt = max((r["bridge_balance"] + r["pf_balance"] for r in rows), default=0.0)
-'''
-new = '''    peak_pf = max((r["pf_balance"] for r in rows), default=0.0)
+''',
+'''    peak_pf = max((r["pf_balance"] for r in rows), default=0.0)
     peak_uncovered_pf = max((max(r["pf_balance"] - r["escrow"], 0.0) for r in rows), default=0.0)
     peak_total_debt = max((r["bridge_balance"] + r["pf_balance"] for r in rows), default=0.0)
-'''
-if old in s:
-    s = s.replace(old, new, 1)
-old = '''        "peak_pf": peak_pf,
+''', 1)
+s = s.replace(
+'''        "peak_pf": peak_pf,
         "pf_repayment_total": sum(f["pf_repayment_total"] for f in fs),
-'''
-new = '''        "peak_pf": peak_pf,
+''',
+'''        "peak_pf": peak_pf,
         "peak_uncovered_pf": peak_uncovered_pf,
         "pf_repayment_total": sum(f["pf_repayment_total"] for f in fs),
-'''
-if old in s:
-    s = s.replace(old, new, 1)
+''', 1)
 
 old = '''                "pf_peak": fin["peak_pf"],
                 "pf_limit": fin["pf_limit"],
@@ -106,8 +104,7 @@ if old not in s:
     raise SystemExit('report financing pf_peak anchor not found')
 s = s.replace(old, new, 1)
 
-# Fix equity IRR cash flow: pre-RVE apartment sales are trapped on escrow and cannot be
-# treated as sponsor cash. At RVE only released escrow after PF repayment can reach equity.
+# 4. Fix the largest IRR distortion: pre-RVE sales are locked on escrow and are not sponsor cash.
 old = '''        project_cf.append(revenue_m - capex_m - opex_m - int_pay - fees - tax)
         equity_cf.append(
             revenue_m - capex_m - opex_m - int_pay - fees - tax
@@ -126,48 +123,46 @@ if old not in s:
     raise SystemExit('equity CF anchor not found')
 s = s.replace(old, new, 1)
 
-# Telegram preliminary economics: show total expenses and requested PF wording.
-old = '''        f"• выручка — {_telegram_money_mln(summary.get('revenue_mln'))}\n"
-        f"• EBITDA — {_telegram_money_mln(summary.get('ebitda_mln'))}\n"
-'''
-new = '''        f"• выручка — {_telegram_money_mln(summary.get('revenue_mln'))}\n"
-        f"• расходы всего — {_telegram_money_mln(summary.get('total_expenses_mln'))}\n"
-        f"• EBITDA — {_telegram_money_mln(summary.get('ebitda_mln'))}\n"
-'''
-if old not in s:
-    raise SystemExit('telegram revenue/EBITDA anchor not found')
-s = s.replace(old, new, 1)
+# 5. Telegram preliminary economics: add total expenses immediately after revenue.
+pattern = r'(f"• выручка — \{_telegram_money_mln\(summary\.get\(\'revenue_mln\'\)\)\}\\n"\n)'
+replacement = r'''\1        f"• расходы всего — {_telegram_money_mln(summary.get('total_expenses_mln'))}\\n"\n'''
+s, count = re.subn(pattern, replacement, s, count=1)
+if count != 1:
+    raise SystemExit('telegram revenue insertion failed')
 
-old = '''        f"• пиковый ПФ — {_telegram_money_mln(summary.get('pf_peak_mln'))}\n\n"
-'''
-new = '''        f"• Пиковая (непокрытая эскроу) задолженность ПФ — {_telegram_money_mln(summary.get('pf_uncovered_peak_mln'))}\n\n"
-'''
-if old not in s:
-    raise SystemExit('telegram peak PF label anchor not found')
-s = s.replace(old, new, 1)
+# Exact requested wording and metric key.
+pattern = r'''\s*f"• (?:пиковый|Пиковый) ПФ — \{_telegram_money_mln\(summary\.get\('pf_peak_mln'\)\)\}\\n\\n"'''
+replacement = '''        f"• Пиковая (непокрытая эскроу) задолженность ПФ — {_telegram_money_mln(summary.get('pf_uncovered_peak_mln'))}\\n\\n"'''
+s, count = re.subn(pattern, replacement, s, count=1)
+if count != 1:
+    raise SystemExit('telegram PF label replacement failed')
 
-old = '''    revenue_mln:Number(s.revenue||0)/1e6,
-    ebitda_mln:Number(s.ebitda||0)/1e6,
-'''
-new = '''    revenue_mln:Number(s.revenue||0)/1e6,
-    total_expenses_mln:Number(s.total_expenses||0)/1e6,
-    ebitda_mln:Number(s.ebitda||0)/1e6,
-'''
-if old not in s:
-    raise SystemExit('telegram payload revenue anchor not found')
-s = s.replace(old, new, 1)
+# The current financing engine has no explicit sponsor-equity requirement; displaying IRR equity as a hard
+# preliminary KPI is misleading and can become extremely high when debt finances nearly all costs.
+# Keep the internal proxy for diagnostics/full model, but remove it from the preliminary Telegram card.
+s, irr_removed = re.subn(
+    r'''\s*f"• IRR equity — \{irr_text\}\\n"''',
+    '',
+    s,
+    count=1,
+)
+if irr_removed != 1:
+    raise SystemExit('preliminary IRR line removal failed')
 
-old = '''    calculated_bridge_mln:Number(f.calculated_bridge||0)/1e6,
-    pf_peak_mln:Number(f.pf_peak||0)/1e6
-'''
-new = '''    calculated_bridge_mln:Number(f.calculated_bridge||0)/1e6,
-    pf_uncovered_peak_mln:Number(f.pf_uncovered_peak||0)/1e6
-'''
-if old not in s:
-    raise SystemExit('telegram payload PF anchor not found')
-s = s.replace(old, new, 1)
+# 6. Send total expenses and uncovered PF exposure in the Telegram payload.
+pattern = r'(\s*revenue_mln:Number\(s\.revenue\|\|0\)/1e6,\n)'
+replacement = r'''\1    total_expenses_mln:Number(s.total_expenses||0)/1e6,\n'''
+s, count = re.subn(pattern, replacement, s, count=1)
+if count != 1:
+    raise SystemExit('telegram payload total expenses insertion failed')
 
-# Replace visible old KPI labels where present, but retain internal pf_peak field for compatibility.
+pattern = r'\s*pf_peak_mln:Number\(f\.pf_peak\|\|0\)/1e6'
+replacement = '    pf_uncovered_peak_mln:Number(f.pf_uncovered_peak||0)/1e6'
+s, count = re.subn(pattern, replacement, s, count=1)
+if count != 1:
+    raise SystemExit('telegram payload PF replacement failed')
+
+# Replace any remaining visible old label, not internal field names.
 s = s.replace('Пиковый ПФ', 'Пиковая (непокрытая эскроу) задолженность ПФ')
 s = s.replace('пиковый ПФ', 'Пиковая (непокрытая эскроу) задолженность ПФ')
 
@@ -184,6 +179,8 @@ for marker in (
 ):
     if marker not in s:
         raise SystemExit('Missing post-patch marker: ' + marker)
+if 'debt_capex[project_start] = max' in s:
+    raise SystemExit('VRI is still excluded from debt funding')
 
 p.write_text(s, encoding='utf-8')
 print('URGENT_FINANCE_PATCH_OK')
