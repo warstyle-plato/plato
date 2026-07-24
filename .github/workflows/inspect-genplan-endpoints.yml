@@ -17,50 +17,54 @@ jobs:
         with:
           ref: ${{ github.head_ref }}
           fetch-depth: 0
-      - name: Test headless cadastral to TEP
+      - name: Validate patched automatic cadastral TEP
         shell: bash
         run: |
-          python -m pip install -q pyppeteer
+          python -m pip install -q -r requirements.txt
           python - <<'PY'
-          import asyncio, json
+          import json
           from pathlib import Path
-          from pyppeteer import launch
+          import main
 
-          CAD='77:09:0004014:13'
-          AREA='0.6509'
-
-          async def click_text(page, text, timeout=60000):
-              await page.waitForFunction(
-                  """(txt)=>Array.from(document.querySelectorAll('button')).some(b=>b.textContent.trim()===txt && !b.disabled)""",
-                  {'timeout': timeout}, text)
-              return await page.evaluate("""(txt)=>{const b=Array.from(document.querySelectorAll('button')).find(b=>b.textContent.trim()===txt && !b.disabled); if(!b)return false; b.click(); return true;}""", text)
-
-          async def main():
-              browser = await launch(headless=True,args=['--no-sandbox','--disable-setuid-sandbox','--disable-dev-shm-usage'])
-              page = await browser.newPage()
-              page.setDefaultNavigationTimeout(90000)
-              await page.setViewport({'width': 1440, 'height': 1200})
-              logs=[]
-              page.on('console', lambda msg: logs.append('console '+msg.text))
-              page.on('pageerror', lambda err: logs.append('pageerror '+str(err)))
-              await page.goto('https://genplan.tech/calc/?terrArea='+AREA+'&restrictArea=0', {'waitUntil':'networkidle2'})
-              await click_text(page,'Участок')
-              await page.waitForSelector('#id-cad-numbers-text-field', {'timeout':60000})
-              await page.evaluate("""(value)=>{const input=document.querySelector('#id-cad-numbers-text-field'); const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set; setter.call(input,value); if(input._valueTracker)input._valueTracker.setValue(''); input.dispatchEvent(new Event('input',{bubbles:true})); input.dispatchEvent(new Event('change',{bubbles:true}));}""", CAD)
-              await click_text(page,'Отправить')
-              await click_text(page,'Перейти к расчётам',90000)
-              await page.waitForFunction("""()=>{const t=document.querySelector('table[aria-label="calc table"]'); if(!t)return false; const rows=Array.from(t.querySelectorAll('tbody tr')); const codes=rows.map(r=>(r.children[0]?.textContent||'').trim().replace(/,/g,'.')); return rows.length>=60 && codes.includes('54') && codes.includes('60');}""", {'timeout':120000})
-              rows=await page.evaluate("""()=>Array.from(document.querySelectorAll('table[aria-label="calc table"] tbody tr')).map(row=>{const c=Array.from(row.children).map(x=>(x.textContent||'').replace(/\s+/g,' ').trim()); return {code:c[0]||'',name:c[1]||'',unit:c[2]||'',value:c[3]||''};})""")
-              Path('headless_tep_test.json').write_text(json.dumps({'ok':True,'count':len(rows),'rows':rows,'logs':logs[-50:]},ensure_ascii=False,indent=2),encoding='utf-8')
-              await browser.close()
-          try:
-              asyncio.get_event_loop().run_until_complete(main())
-          except Exception as exc:
-              Path('headless_tep_test.json').write_text(json.dumps({'ok':False,'error':repr(exc)},ensure_ascii=False,indent=2),encoding='utf-8')
-              raise
+          rows = main._telegram_collect_genplan_rows(['77:09:0004014:13'], 0.6509)
+          parsed = main.import_cadastral_tep(main.CadastralTepRequest(
+              rows=rows,
+              cadastral_analysis={
+                  'recognized':['77:09:0004014:13'],
+                  'territory':{
+                      'area_ha':0.6509,
+                      'district':'Савеловский',
+                      'cadastral_quarter':'77:09:0004014',
+                      'parcel_count':1,
+                  },
+                  'coefficients':{},
+              },
+          ))
+          data = main._telegram_cadastral_data_from_parsed(
+              parsed,
+              {'territory':{'area_ha':0.6509,'district':'Савеловский','cadastral_quarter':'77:09:0004014'}},
+              ['77:09:0004014:13'],
+          )
+          result = {
+              'ok': True,
+              'version': main.app.version,
+              'rows_count': len(rows),
+              'has_tep': bool(parsed.get('tep')),
+              'summary': parsed.get('summary'),
+              'data': {k:data.get(k) for k in [
+                  'site_area_ha','district','apartments_saleable_sqm','commercial_saleable_sqm',
+                  'parking_spaces','land_rights_cost_mln','social_compensation_mln'
+              ]},
+          }
+          assert main.app.version == '0.12.20'
+          assert len(rows) >= 60
+          assert result['has_tep']
+          assert data.get('apartments_saleable_sqm',0) > 0
+          Path('auto_tep_validation.json').write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding='utf-8')
+          print(json.dumps(result,ensure_ascii=False))
           PY
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add headless_tep_test.json
-          git commit -m 'Test headless Genplan TEP' || true
+          git add auto_tep_validation.json
+          git commit -m 'Validate automatic cadastral TEP flow' || true
           git push origin HEAD:${{ github.head_ref }}
