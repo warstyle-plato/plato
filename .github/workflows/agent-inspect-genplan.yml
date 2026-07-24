@@ -21,35 +21,21 @@ jobs:
         with:
           ref: ${{ github.head_ref }}
           fetch-depth: 0
-      - name: Inspect local Genplan bundles
+      - name: Inspect calculation entrypoints
         shell: bash
         run: |
           python - <<'PY'
           from pathlib import Path
           import re
-
-          s=Path('genplan_assets/index-B0jIwkVO.js').read_text(encoding='utf-8',errors='ignore')
-          a=s.find('wf={unitSqM')
-          if a<0:
-              a=s.find('_populationDetails=structuredClone(lf)')
-          b=s.find('_p=e=>', a)
-          Path('genplan_calc_target.txt').write_text(
-              s[max(0,a-25000):min(len(s),(b+45000 if b>=0 else a+150000))] if a>=0 else 'target not found',
-              encoding='utf-8'
-          )
-          # Extract compact contexts for state mutations that involve cadastral analysis.
+          s=Path('main.py').read_text(encoding='utf-8')
           out=[]
-          for token in ('cad_numbers','cadZU','district','coeff_rent','coeff_mpt','paramsMode','calcParams'):
-              start=0
-              while True:
-                  i=s.find(token,start)
-                  if i<0: break
-                  out.append(f'[{token}] '+re.sub(r'\s+',' ',s[max(0,i-350):min(len(s),i+850)]))
-                  start=i+len(token)
-          Path('genplan_calc_contexts.txt').write_text('\n\n'.join(out[:600]),encoding='utf-8')
+          for pat in [r'class CalcRequest\b', r'def calculate\b', r'@app\.post\("/calculate"', r'def default_inputs\b', r'INPUT_DEFAULT', r'def _telegram_.*summary']:
+              for m in re.finditer(pat,s):
+                  out.append('\n### '+pat+' @ '+str(m.start())+'\n'+s[max(0,m.start()-1500):min(len(s),m.start()+12000)])
+          Path('calc_entrypoints.txt').write_text('\n'.join(out)[:300000],encoding='utf-8')
           PY
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add genplan_calc_target.txt genplan_calc_contexts.txt
-          git commit -m 'Extract targeted Genplan calculation block' || true
+          git add calc_entrypoints.txt
+          git commit -m 'Inspect calculation entrypoints' || true
           git push origin HEAD:${{ github.head_ref }}
