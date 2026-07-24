@@ -1,0 +1,29 @@
+name: Rollback DevelopAid v0.12.20
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  rollback:
+    if: github.head_ref == 'rollback/developaid-v01220'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+      - name: Revert v0.12.20 safely
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git revert --no-edit 20f7f6c683d76741295609c6120cfa26abfd9952
+          rm -f .github/workflows/inspect-genplan-endpoints.yml TEMP_TRIGGER.txt
+          git add -A
+          git commit --amend --no-edit
+          git push origin HEAD:${{ github.head_ref }}
