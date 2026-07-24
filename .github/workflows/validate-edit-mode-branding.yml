@@ -13,10 +13,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.head_ref }}
-      - name: Validate Python and embedded JavaScript
+      - name: Validate Python and rendered JavaScript
         shell: bash
         run: |
           python -m py_compile main.py
+          python -m pip install -q -r requirements.txt
           python - <<'PY'
           import re
           from pathlib import Path
@@ -29,9 +30,11 @@ jobs:
           assert 'persistLocalSilently();' in code
           assert 'await obtainCadastralTep();' in code
           assert 'calculate()};' in code
-          scripts=re.findall(r'<script(?:\s[^>]*)?>(.*?)</script>',code,flags=re.S|re.I)
+          import main
+          page=main.PAGE
+          scripts=re.findall(r'<script(?:\s[^>]*)?>(.*?)</script>',page,flags=re.S|re.I)
           assert scripts
           Path('/tmp/app.js').write_text(scripts[-1],encoding='utf-8')
-          print('TEXT_VALIDATION_OK')
+          print('RENDERED_VALIDATION_OK',main.app.version)
           PY
           node --check /tmp/app.js
