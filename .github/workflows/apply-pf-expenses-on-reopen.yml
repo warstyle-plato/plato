@@ -1,4 +1,4 @@
-name: One-time PF and expenses patch
+name: One-time urgent finance patch
 
 on:
   pull_request:
@@ -16,7 +16,7 @@ jobs:
         with:
           ref: main
           fetch-depth: 0
-      - name: Apply patch to main
+      - name: Apply urgent finance fixes to main
         shell: bash
         run: |
           test -f scripts/rename_pf_add_expenses.py
@@ -26,10 +26,13 @@ jobs:
           from pathlib import Path
           code=Path('main.py').read_text(encoding='utf-8')
           assert 'version="0.12.19"' in code
+          assert 'debt_capex[project_start] = max' not in code
+          assert 'escrow_release' in code
           assert 'peak_uncovered_pf' in code
           assert 'pf_uncovered_peak' in code
+          assert 'cash_revenue_to_equity' in code
           assert 'расходы всего' in code
-          assert 'макс. не покрытая эскроу задолженность по ПФ' in code
+          assert 'Пиковая (непокрытая эскроу) задолженность ПФ' in code
           assert "total_expenses_mln:Number(s.total_expenses||0)/1e6" in code
           assert "pf_uncovered_peak_mln:Number(f.pf_uncovered_peak||0)/1e6" in code
           print('VALIDATION_OK')
@@ -40,6 +43,7 @@ jobs:
           rm -f .github/workflows/apply-pf-expenses-on-reopen.yml
           rm -f .github/workflows/apply-pf-expenses-main.yml
           rm -f .github/workflows/apply-pf-expenses-fix.yml
+          rm -f .github/workflows/apply-pf-expenses-on-comment.yml
           git add -A
-          git commit -m 'DevelopAid v0.12.19: uncovered PF and total expenses'
+          git commit -m 'DevelopAid v0.12.19: urgent finance corrections'
           git push origin HEAD:main
