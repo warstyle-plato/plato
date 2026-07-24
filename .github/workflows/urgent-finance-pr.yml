@@ -20,10 +20,16 @@ jobs:
       - name: Apply urgent finance patch
         shell: bash
         run: |
-          test -f scripts/rename_pf_add_expenses.py
-          python scripts/rename_pf_add_expenses.py
-          python -m py_compile main.py
-          python - <<'PY'
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          set +e
+          (
+            test -f scripts/rename_pf_add_expenses.py
+            python scripts/rename_pf_add_expenses.py
+            rc=$?; [ "$rc" -eq 0 ] || exit "$rc"
+            python -m py_compile main.py
+            rc=$?; [ "$rc" -eq 0 ] || exit "$rc"
+            python - <<'PY'
           from pathlib import Path
           c=Path('main.py').read_text(encoding='utf-8')
           assert 'version="0.12.19"' in c
@@ -34,8 +40,19 @@ jobs:
           assert 'расходы всего' in c
           print('URGENT_FINANCE_VALIDATED')
           PY
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          ) > /tmp/urgent-finance.log 2>&1
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            git fetch origin urgent/finance-corrections-v01219
+            git checkout -B urgent/finance-corrections-v01219 origin/urgent/finance-corrections-v01219
+            cp /tmp/urgent-finance.log .github/urgent-finance-error.txt
+            git add .github/urgent-finance-error.txt
+            git commit -m 'Capture urgent finance patch error' || true
+            git push origin HEAD:urgent/finance-corrections-v01219 || true
+            cat /tmp/urgent-finance.log
+            exit "$rc"
+          fi
           rm -f scripts/rename_pf_add_expenses.py
           rm -f .github/workflows/urgent-finance-pr.yml
           rm -f .github/workflows/apply-pf-expenses-on-reopen.yml
