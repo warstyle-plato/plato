@@ -28,38 +28,28 @@ jobs:
           from pathlib import Path
           import re
 
-          out=[]
-          for p in Path('genplan_assets').glob('*.js'):
-              s=p.read_text(encoding='utf-8', errors='ignore')
-              vals=[]
-              vals += re.findall(r'https?://[^"\'`\\\s)]+', s)
-              vals += re.findall(r'/(?:api|calc|analysis)[A-Za-z0-9_./?=&{}:\-]*', s, re.I)
-              for token in ('glavapu-api','stroimprosto','genplan.tech','cad_numbers','terrArea','Перейти к расчётам'):
-                  start=0
-                  while True:
-                      i=s.find(token,start)
-                      if i<0: break
-                      vals.append(re.sub(r'\s+',' ',s[max(0,i-180):min(len(s),i+420)]))
-                      start=i+len(token)
-              if vals:
-                  seen=[]
-                  for v in vals:
-                      if v not in seen: seen.append(v)
-                  out.append('### '+p.name)
-                  out.extend(seen[:500])
-                  out.append('')
-          Path('genplan_endpoints_concise.txt').write_text('\n'.join(out)[:250000], encoding='utf-8')
-
           s=Path('genplan_assets/index-B0jIwkVO.js').read_text(encoding='utf-8',errors='ignore')
-          a=s.find('Cf=class')
+          a=s.find('wf={unitSqM')
+          if a<0:
+              a=s.find('_populationDetails=structuredClone(lf)')
           b=s.find('_p=e=>', a)
-          if a>=0 and b>=0:
-              Path('genplan_calc_core.txt').write_text(s[max(0,a-30000):min(len(s),b+30000)],encoding='utf-8')
-          else:
-              Path('genplan_calc_core.txt').write_text(f'not found a={a} b={b}',encoding='utf-8')
+          Path('genplan_calc_target.txt').write_text(
+              s[max(0,a-25000):min(len(s),(b+45000 if b>=0 else a+150000))] if a>=0 else 'target not found',
+              encoding='utf-8'
+          )
+          # Extract compact contexts for state mutations that involve cadastral analysis.
+          out=[]
+          for token in ('cad_numbers','cadZU','district','coeff_rent','coeff_mpt','paramsMode','calcParams'):
+              start=0
+              while True:
+                  i=s.find(token,start)
+                  if i<0: break
+                  out.append(f'[{token}] '+re.sub(r'\s+',' ',s[max(0,i-350):min(len(s),i+850)]))
+                  start=i+len(token)
+          Path('genplan_calc_contexts.txt').write_text('\n\n'.join(out[:600]),encoding='utf-8')
           PY
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add genplan_endpoints_concise.txt genplan_calc_core.txt
-          git commit -m 'Extract Genplan calculator core' || true
+          git add genplan_calc_target.txt genplan_calc_contexts.txt
+          git commit -m 'Extract targeted Genplan calculation block' || true
           git push origin HEAD:${{ github.head_ref }}
