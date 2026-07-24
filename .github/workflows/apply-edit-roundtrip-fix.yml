@@ -40,7 +40,7 @@ jobs:
           assert 'Обновить расчёт в Telegram' in code
           assert 'submitTelegramEditedResult' in code
           assert "if(telegramMode==='edit')persistLocalSilently();" in code
-          assert 'edited?Number(inputs.land_rights_cost_mln||0)' in code
+          assert '(manual||edited)?Number(inputs.land_rights_cost_mln||0)' in code
           scripts=re.findall(r'<script(?:\s[^>]*)?>(.*?)</script>',main.PAGE,flags=re.S|re.I)
           Path('/tmp/app.js').write_text(scripts[-1],encoding='utf-8')
           print('PATCH_OK',main.app.version)
