@@ -17,26 +17,50 @@ jobs:
         with:
           ref: ${{ github.head_ref }}
           fetch-depth: 0
-      - name: Inspect domain calculation engine
+      - name: Test headless cadastral to TEP
         shell: bash
         run: |
+          python -m pip install -q pyppeteer
           python - <<'PY'
+          import asyncio, json
           from pathlib import Path
-          import re
-          s=Path('genplan_assets/domain-CwUeX6RP.js').read_text(encoding='utf-8',errors='ignore')
-          out=['LEN='+str(len(s))]
-          for m in re.finditer(r'export\s*\{([^}]*)\}',s): out.append('EXPORT='+m.group(1))
-          for m in re.finditer(r'import\s*\{([^}]*)\}\s*from\s*["\']([^"\']+)',s): out.append('IMPORT='+m.group(2)+' :: '+m.group(1))
-          tokens=['calcParams=e=>','calcParams=', 'calcBasic=','calcSocial=','calcTerritory=','calcMm=','calcMpt=','calcCostOfChangeVRI=','final_cost_of_change_vri','costOfChangeVRI','calcNormativeParams=','calcSocialCompensation=','constructor(e,t)','class ']
-          for token in tokens:
-              positions=[m.start() for m in re.finditer(re.escape(token),s)][:20]
-              out.append('\nTOKEN '+token+' POS '+','.join(map(str,positions)))
-              for i in positions[:6]:
-                  out.append('CTX '+str(i)+' '+s[max(0,i-6000):min(len(s),i+18000)])
-          Path('domain_calc_report.txt').write_text('\n\n'.join(out)[:5000000],encoding='utf-8')
+          from pyppeteer import launch
+
+          CAD='77:09:0004014:13'
+          AREA='0.6509'
+
+          async def click_text(page, text, timeout=60000):
+              await page.waitForFunction(
+                  """(txt)=>Array.from(document.querySelectorAll('button')).some(b=>b.textContent.trim()===txt && !b.disabled)""",
+                  {'timeout': timeout}, text)
+              return await page.evaluate("""(txt)=>{const b=Array.from(document.querySelectorAll('button')).find(b=>b.textContent.trim()===txt && !b.disabled); if(!b)return false; b.click(); return true;}""", text)
+
+          async def main():
+              browser = await launch(headless=True,args=['--no-sandbox','--disable-setuid-sandbox','--disable-dev-shm-usage'])
+              page = await browser.newPage()
+              page.setDefaultNavigationTimeout(90000)
+              await page.setViewport({'width': 1440, 'height': 1200})
+              logs=[]
+              page.on('console', lambda msg: logs.append('console '+msg.text))
+              page.on('pageerror', lambda err: logs.append('pageerror '+str(err)))
+              await page.goto('https://genplan.tech/calc/?terrArea='+AREA+'&restrictArea=0', {'waitUntil':'networkidle2'})
+              await click_text(page,'Участок')
+              await page.waitForSelector('#id-cad-numbers-text-field', {'timeout':60000})
+              await page.evaluate("""(value)=>{const input=document.querySelector('#id-cad-numbers-text-field'); const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set; setter.call(input,value); if(input._valueTracker)input._valueTracker.setValue(''); input.dispatchEvent(new Event('input',{bubbles:true})); input.dispatchEvent(new Event('change',{bubbles:true}));}""", CAD)
+              await click_text(page,'Отправить')
+              await click_text(page,'Перейти к расчётам',90000)
+              await page.waitForFunction("""()=>{const t=document.querySelector('table[aria-label="calc table"]'); if(!t)return false; const rows=Array.from(t.querySelectorAll('tbody tr')); const codes=rows.map(r=>(r.children[0]?.textContent||'').trim().replace(/,/g,'.')); return rows.length>=60 && codes.includes('54') && codes.includes('60');}""", {'timeout':120000})
+              rows=await page.evaluate("""()=>Array.from(document.querySelectorAll('table[aria-label="calc table"] tbody tr')).map(row=>{const c=Array.from(row.children).map(x=>(x.textContent||'').replace(/\s+/g,' ').trim()); return {code:c[0]||'',name:c[1]||'',unit:c[2]||'',value:c[3]||''};})""")
+              Path('headless_tep_test.json').write_text(json.dumps({'ok':True,'count':len(rows),'rows':rows,'logs':logs[-50:]},ensure_ascii=False,indent=2),encoding='utf-8')
+              await browser.close()
+          try:
+              asyncio.get_event_loop().run_until_complete(main())
+          except Exception as exc:
+              Path('headless_tep_test.json').write_text(json.dumps({'ok':False,'error':repr(exc)},ensure_ascii=False,indent=2),encoding='utf-8')
+              raise
           PY
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add domain_calc_report.txt
-          git commit -m 'Inspect Genplan domain calculator' || true
+          git add headless_tep_test.json
+          git commit -m 'Test headless Genplan TEP' || true
           git push origin HEAD:${{ github.head_ref }}
