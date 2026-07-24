@@ -9313,6 +9313,7 @@ async function initializeTelegramLaunch(){
   syncProjectClassSelector();
   openTab('inputs');
   await calculate();
+   setupTelegramEditSubmit();
   return;
  }
  if(telegramCad){
