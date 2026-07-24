@@ -1,6 +1,0 @@
-patched v0.12.19
-Traceback (most recent call last):
-  File "<stdin>", line 1, in <module>
-  File "/home/runner/work/plato/plato/main.py", line 28, in <module>
-    from fastapi import FastAPI, Request, HTTPException
-ModuleNotFoundError: No module named 'fastapi'
