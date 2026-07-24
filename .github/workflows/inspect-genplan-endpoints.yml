@@ -17,30 +17,26 @@ jobs:
         with:
           ref: ${{ github.head_ref }}
           fetch-depth: 0
-      - name: Inspect calc module only
+      - name: Inspect calc exports and core
         shell: bash
         run: |
           python - <<'PY'
           from pathlib import Path
           import re
-          p=Path('genplan_assets/calc-BTtvF0Z6.js')
-          s=p.read_text(encoding='utf-8',errors='ignore')
-          out=['LEN '+str(len(s))]
-          out.append('HEAD '+s[:8000])
-          out.append('TAIL '+s[-12000:])
-          for m in re.finditer(r'export\s*\{([^}]*)\}',s): out.append('EXPORT '+m.group(1))
-          for m in re.finditer(r'import\s*\{([^}]*)\}\s*from\s*["\']([^"\']+)',s): out.append('IMPORT '+m.group(2)+' :: '+m.group(1))
-          for token in ['calcParams=e=>','calcParams=', 'final_cost_of_change_vri','costOfChangeVRI','calcBasic=','calcMpt=','calcCostOfChangeVRI=','constructor(e','class ']:
-              start=0; count=0
-              while count<10:
-                  i=s.find(token,start)
-                  if i<0: break
-                  out.append('\nTOKEN '+token+' @'+str(i)+'\n'+s[max(0,i-5000):min(len(s),i+12000)])
-                  start=i+len(token);count+=1
-          Path('calc_module_inspection.txt').write_text('\n\n'.join(out)[:2500000],encoding='utf-8')
+          s=Path('genplan_assets/calc-BTtvF0Z6.js').read_text(encoding='utf-8',errors='ignore')
+          out=[]
+          out.append('LEN='+str(len(s)))
+          for m in re.finditer(r'export\s*\{([^}]*)\}',s): out.append('EXPORT='+m.group(1))
+          for m in re.finditer(r'import\s*\{([^}]*)\}\s*from\s*["\']([^"\']+)',s): out.append('IMPORT='+m.group(2)+' :: '+m.group(1))
+          for token in ['calcParams=e=>','calcParams=', 'calcBasic=','calcSocial=','calcTerritory=','calcMm=','calcMpt=','calcCostOfChangeVRI=','final_cost_of_change_vri','class yf','class hf','class']:
+              idx=[m.start() for m in re.finditer(re.escape(token),s)][:5]
+              out.append('TOKEN '+token+' POS '+','.join(map(str,idx)))
+              for i in idx:
+                  out.append('CTX '+str(i)+' '+s[max(0,i-1800):min(len(s),i+4200)])
+          Path('calc_core_report.txt').write_text('\n\n'.join(out),encoding='utf-8')
           PY
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add calc_module_inspection.txt
-          git commit -m 'Inspect Genplan calc module' || true
+          git add calc_core_report.txt
+          git commit -m 'Inspect Genplan calc core' || true
           git push origin HEAD:${{ github.head_ref }}
