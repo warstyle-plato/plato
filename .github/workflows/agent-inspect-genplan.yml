@@ -40,9 +40,10 @@ jobs:
           parsed.setdefault('inputs',{}).update({'apartment_price_th':350,'commercial_price_th':350,'parking_price_th':1500,'main_above_th_per_sqm':130,'main_under_th_per_sqm':130})
           x=main._telegram_preliminary_calc_inputs(parsed)
           result=main.calculate(main.CalcRequest(inputs=x,tep=parsed['tep'],rates=[]))
-          assert float(result.get('total_revenue') or 0)>0
-          assert float(result.get('total_capex') or 0)>0
-          print('RUNTIME_OK', {k:result.get(k) for k in ('total_revenue','total_capex','ebitda','net_profit','irr_equity','llcr')})
+          summary=result.get('summary') or {}
+          assert float(summary.get('revenue') or 0)>0
+          assert float(summary.get('capex') or 0)>0
+          print('RUNTIME_OK', {k:summary.get(k) for k in ('revenue','capex','ebitda','net_profit','irr_equity','llcr')})
           PY
           rc=$?
           set -e
