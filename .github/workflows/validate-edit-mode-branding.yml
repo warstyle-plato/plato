@@ -1,0 +1,37 @@
+name: Validate edit mode branding
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+    branches: [main]
+
+jobs:
+  validate:
+    if: github.head_ref == 'agent/fix-edit-mode-branding'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+      - name: Validate Python and embedded JavaScript
+        shell: bash
+        run: |
+          python -m py_compile main.py
+          python - <<'PY'
+          import re
+          from pathlib import Path
+          code=Path('main.py').read_text(encoding='utf-8')
+          assert 'PLATO' not in code
+          assert 'Расчёт DevelopAid готов' in code
+          assert 'mode="edit"' in code
+          assert "const telegramMode=TELEGRAM_HASH_PARAMS.get('mode')||'calc';" in code
+          assert "if(telegramMode==='edit')" in code
+          assert 'persistLocalSilently();' in code
+          assert 'await obtainCadastralTep();' in code
+          assert 'calculate()};' in code
+          scripts=re.findall(r'<script(?:\s[^>]*)?>(.*?)</script>',code,flags=re.S|re.I)
+          assert scripts
+          Path('/tmp/app.js').write_text(scripts[-1],encoding='utf-8')
+          print('TEXT_VALIDATION_OK')
+          PY
+          node --check /tmp/app.js
