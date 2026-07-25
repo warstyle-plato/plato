@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - v0.12.28-investment-assessment
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: write
@@ -16,6 +19,8 @@ jobs:
       PYTHONDONTWRITEBYTECODE: '1'
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref || github.ref_name }}
 
       - uses: actions/setup-python@v5
         with:
@@ -92,4 +97,4 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
           git commit -m 'DevelopAid v0.12.28: automatic purchase feasibility and price ceiling'
-          git push
+          git push origin HEAD:${{ github.head_ref || github.ref_name }}
