@@ -26,6 +26,24 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Remove obsolete health-version anchor
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('.github/patches/apply_investment_assessment_v01228.py')
+          text = path.read_text(encoding='utf-8')
+          old = '''text = replace_once(
+              text,
+              'def health(): return {"status":"ok","version":"0.12.25"}',
+              'def health(): return {"status":"ok","version":"0.12.28"}',
+              'health version',
+          )
+          '''
+          if old not in text:
+              raise SystemExit('obsolete health block not found')
+          path.write_text(text.replace(old, '', 1), encoding='utf-8')
+          PY
+
       - name: Apply deterministic integration patch
         run: |
           if ! python .github/patches/apply_investment_assessment_v01228.py > patch-output.txt 2>&1; then
