@@ -13,7 +13,7 @@ hotfix._patch_main(main_path)
 
 setup(
     name="developaid-runtime-hotfix",
-    version="0.12.30",
+    version="0.12.30.post1",
     py_modules=["developaid_runtime_patch"],
     description="Build-time patch for DevelopAid Telegram help and Mini App close flow",
 )
