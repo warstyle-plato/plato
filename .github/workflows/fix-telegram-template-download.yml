@@ -1,0 +1,81 @@
+name: Fix Telegram template download
+
+on:
+  push:
+    branches:
+      - fix-telegram-template-download
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Apply patch
+        run: python .github/patches/fix_telegram_template_download.py
+
+      - name: Check syntax
+        run: python -m py_compile main.py
+
+      - name: Verify direct XLSX upload
+        env:
+          TELEGRAM_BOT_TOKEN: test-token
+        run: |
+          python - <<'PY'
+          import json
+          import urllib.request
+          import main
+
+          captured = {}
+
+          class FakeResponse:
+              def __enter__(self):
+                  return self
+              def __exit__(self, *args):
+                  return False
+              def read(self):
+                  return json.dumps({'ok': True, 'result': {'document': {'file_name': 'DevelopAid_Шаблон_ТЭП.xlsx'}}}).encode()
+
+          def fake_urlopen(request, timeout=0):
+              captured['url'] = request.full_url
+              captured['body'] = request.data
+              captured['content_type'] = request.headers.get('Content-type') or request.headers.get('Content-Type')
+              return FakeResponse()
+
+          original = urllib.request.urlopen
+          urllib.request.urlopen = fake_urlopen
+          try:
+              result = main._telegram_send_template(123456)
+          finally:
+              urllib.request.urlopen = original
+
+          body = captured['body']
+          assert captured['url'].endswith('/sendDocument')
+          assert b'DevelopAid_' in body
+          assert b'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' in body
+          assert b'PK' in body
+          assert result['document']['file_name'].endswith('.xlsx')
+          print('Direct Telegram XLSX upload test passed')
+          PY
+
+      - name: Remove one-shot files
+        run: |
+          rm .github/patches/fix_telegram_template_download.py
+          rm .github/workflows/fix-telegram-template-download.yml
+          rm -rf __pycache__
+
+      - name: Commit integrated fix
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'DevelopAid v0.12.28: send Telegram TEP template directly'
+          git push
