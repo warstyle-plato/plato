@@ -27,6 +27,8 @@ jobs:
       - name: Apply integration patch
         id: patch
         continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python .github/patches/apply_telegram_tep_template_v2.py > patch-output.txt 2>&1
 
       - name: Save patch error in branch
@@ -49,11 +51,13 @@ jobs:
       - name: Parse the new workbook through DevelopAid
         run: |
           python - <<'PY'
+          import base64
           from pathlib import Path
           import main
 
-          path = Path('templates/DevelopAid_Шаблон_ТЭП.xlsx')
-          parsed = main.parse_manual_tep_xlsx(path.read_bytes(), path.name)
+          path = Path('templates/DevelopAid_Шаблон_ТЭП.xlsx.b64')
+          payload = base64.b64decode(path.read_text(encoding='ascii'), validate=True)
+          parsed = main.parse_manual_tep_xlsx(payload, 'DevelopAid_Шаблон_ТЭП.xlsx')
           assert parsed['source']['template_version'] == 'DevelopAid_TEP_2'
           assert parsed['source']['sheet'] == 'ТЭП DevelopAid'
           assert 'region' in parsed
@@ -66,6 +70,8 @@ jobs:
           rm .github/patches/apply_telegram_tep_template_v2.py
           rm .github/workflows/apply-telegram-tep-template-v2.yml
           rm -f patch-output.txt .github/patches/telegram-template-patch-error.txt
+          rm -f .github/patches/tep_template_v2.part*
+          rm -f templates/DevelopAid_Шаблон_ТЭП.xlsx
 
       - name: Commit integrated change
         run: |
