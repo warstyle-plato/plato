@@ -1,0 +1,38 @@
+name: Apply Telegram welcome v0.12.26
+
+on:
+  push:
+    branches:
+      - v0.12.26-telegram-welcome
+    paths:
+      - .github/workflows/apply-telegram-welcome-v01226.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: v0.12.26-telegram-welcome
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply and validate welcome
+        run: |
+          python .github/scripts/apply_telegram_welcome_v01226.py
+          python -m py_compile main.py
+      - name: Remove temporary integration files
+        run: |
+          rm -f .github/scripts/apply_telegram_welcome_v01226.py
+          rm -f .github/workflows/apply-telegram-welcome-v01226.yml
+      - name: Commit integrated main.py
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "DevelopAid v0.12.26: Telegram welcome and help" || exit 0
+          git push origin HEAD:v0.12.26-telegram-welcome
