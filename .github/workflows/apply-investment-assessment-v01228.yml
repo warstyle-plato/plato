@@ -56,6 +56,29 @@ jobs:
           if start < 0 or end < 0:
               raise SystemExit('optional manual region block not found')
           text = text[:start] + text[end:]
+
+          auto_start = text.find('# Automatic assessment after imported TEP')
+          auto_end = text.find('MAIN.write_text', auto_start)
+          if auto_start < 0 or auto_end < 0:
+              raise SystemExit('automatic assessment tail not found')
+          new_tail = """# Automatic assessment after imported TEP is applied (ГлавАПУ and Telegram/manual).
+auto_anchor = "  await calculate();\\n  await sendTelegramResult();"
+auto_count = text.count(auto_anchor)
+if auto_count < 2:
+    raise RuntimeError(f'auto assessment calls: expected at least 2 occurrences, found {auto_count}')
+text = text.replace(
+    auto_anchor,
+    "  await calculate();\\n  await runInvestmentAssessment(true);\\n  await sendTelegramResult();",
+    2,
+)
+
+# Reopen assessment for locally stored imported projects without duplicating Telegram launch calculation.
+init_anchor = "  await loadPresetCatalog();\\n  await initializeTelegramLaunch();\\n}"
+init_replacement = "  await loadPresetCatalog();\\n  await initializeTelegramLaunch();\\n  if((inputs._glavapu_import||inputs._manual_tep_import)&&!lastInvestmentAssessment)await runInvestmentAssessment(true);\\n}"
+text = replace_once(text, init_anchor, init_replacement, 'initial assessment restore')
+
+"""
+          text = text[:auto_start] + new_tail + text[auto_end:]
           path.write_text(text, encoding='utf-8')
           PY
 
