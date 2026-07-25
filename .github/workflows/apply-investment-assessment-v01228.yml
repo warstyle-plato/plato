@@ -61,7 +61,7 @@ jobs:
           auto_end = text.find('MAIN.write_text', auto_start)
           if auto_start < 0 or auto_end < 0:
               raise SystemExit('automatic assessment tail not found')
-          new_tail = """# Automatic assessment after imported TEP is applied (ГлавАПУ and Telegram/manual).
+          new_tail = r"""# Automatic assessment after imported TEP is applied (ГлавАПУ and Telegram/manual).
           def insert_assessment_before_telegram_send(source: str, function_marker: str) -> str:
               start = source.find(function_marker)
               if start < 0:
