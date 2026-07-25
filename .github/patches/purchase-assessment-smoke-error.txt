@@ -1,4 +1,16 @@
 Traceback (most recent call last):
-  File "/home/runner/work/plato/plato/.github/patches/smoke_purchase_assessment_v01229.py", line 8, in <module>
-    import main
-ModuleNotFoundError: No module named 'main'
+  File "/home/runner/work/plato/plato/.github/patches/smoke_purchase_assessment_v01229.py", line 16, in <module>
+    tables = main._xlsx_read_tables(payload)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/runner/work/plato/plato/main.py", line 165, in _xlsx_read_tables
+    workbook = ET.fromstring(zf.read("xl/workbook.xml"))
+                             ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/hostedtoolcache/Python/3.12.13/x64/lib/python3.12/zipfile/__init__.py", line 1584, in read
+    with self.open(name, "r", pwd) as fp:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/hostedtoolcache/Python/3.12.13/x64/lib/python3.12/zipfile/__init__.py", line 1637, in open
+    fheader = zef_file.read(sizeFileHeader)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/hostedtoolcache/Python/3.12.13/x64/lib/python3.12/zipfile/__init__.py", line 826, in read
+    self._file.seek(self._pos)
+ValueError: negative seek value -351
