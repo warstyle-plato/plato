@@ -5,7 +5,7 @@ import re
 import sys
 from pathlib import Path
 
-_HOTFIX_MARKER = "# _DEVELOPAID_TELEGRAM_HELP_CLOSE_V01234"
+_HOTFIX_MARKER = "# _DEVELOPAID_TELEGRAM_HELP_CLOSE_V01235"
 
 
 def _find_main_file() -> Path:
@@ -46,10 +46,10 @@ def _patch_main(path: Path) -> None:
     if _HOTFIX_MARKER in text:
         return
 
-    for old in ("0.12.29", "0.12.30", "0.12.31", "0.12.32", "0.12.33"):
-        text = text.replace(f'version="{old}"', 'version="0.12.34"')
-        text = text.replace(f'"version": "{old}"', '"version": "0.12.34"')
-        text = text.replace(f"Версия: {old}", "Версия: 0.12.34")
+    for old in ("0.12.29", "0.12.30", "0.12.31", "0.12.32", "0.12.33", "0.12.34"):
+        text = text.replace(f'version="{old}"', 'version="0.12.35"')
+        text = text.replace(f'"version": "{old}"', '"version": "0.12.35"')
+        text = text.replace(f"Версия: {old}", "Версия: 0.12.35")
 
     handler_marker = "def _telegram_handle_message(message: dict[str, Any]) -> None:\n"
     help_function = r'''def _telegram_send_help(chat_id: int) -> None:
@@ -147,7 +147,12 @@ def _patch_main(path: Path) -> None:
  try{if(tg.MainButton)tg.MainButton.hide()}catch(e){}
  try{if(tg.SecondaryButton)tg.SecondaryButton.hide()}catch(e){}
  try{if(tg.BackButton)tg.BackButton.hide()}catch(e){}
- const closeNow=()=>{try{tg.close()}catch(e){}};
+ const closeNow=()=>{
+  try{tg.close({return_back:true})}catch(e){try{tg.close()}catch(_e){}}
+  try{if(window.Telegram&&window.Telegram.WebView&&typeof window.Telegram.WebView.postEvent==='function')window.Telegram.WebView.postEvent('web_app_close',false,{return_back:true})}catch(e){}
+  try{if(window.TelegramWebviewProxy&&typeof window.TelegramWebviewProxy.postEvent==='function')window.TelegramWebviewProxy.postEvent('web_app_close',JSON.stringify({return_back:true}))}catch(e){}
+  try{if(window.external&&typeof window.external.notify==='function')window.external.notify(JSON.stringify({eventType:'web_app_close',eventData:{return_back:true}}))}catch(e){}
+ };
  closeNow();
  setTimeout(closeNow,120);
  setTimeout(closeNow,500);
@@ -184,12 +189,12 @@ def _patch_main(path: Path) -> None:
     )
 
     required = [
-        'version="0.12.34"',
+        'version="0.12.35"',
         "def _telegram_send_help",
         'if command == "/help"',
         'if data == "show_help":\n            _telegram_send_help(chat_id)',
         "function closeTelegramWebAppAfterResult()",
-        "closeNow();",
+        "TelegramWebviewProxy.postEvent('web_app_close'",
         "closeTelegramWebAppAfterResult();",
     ]
     missing = [marker for marker in required if marker not in text]
