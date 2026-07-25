@@ -24,6 +24,9 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Refine patch anchor
+        run: python .github/patches/fix_manual_session_anchor.py
+
       - name: Apply integration patch
         run: |
           if ! python .github/patches/apply_telegram_tep_template_v2.py > patch-output.txt 2>&1; then
@@ -62,6 +65,7 @@ jobs:
       - name: Remove one-shot integration files
         run: |
           rm .github/patches/apply_telegram_tep_template_v2.py
+          rm .github/patches/fix_manual_session_anchor.py
           rm .github/workflows/apply-telegram-tep-template-v2.yml
           rm -f patch-output.txt .github/patches/telegram-template-patch-error.txt
           rm -f .github/patches/tep_template_v2.part*
