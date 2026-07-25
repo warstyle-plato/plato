@@ -29,7 +29,7 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse, FileResponse, Response
 from pydantic import BaseModel
 
-app = FastAPI(title="DevelopAid Development Investment Model", version="0.12.37")
+app = FastAPI(title="DevelopAid Development Investment Model", version="0.12.38")
 
 PRESET_DIR = Path(__file__).resolve().parent / "presets"
 MANUAL_TEP_TEMPLATE_FILENAME = "DevelopAid_Шаблон_ТЭП.xlsx"
@@ -1226,7 +1226,7 @@ def analyze_cadastral_territory(req: CadastralAnalysisRequest) -> dict[str, Any]
         headers={
             "Accept": "application/json",
             "Content-Type": "application/json; charset=utf-8",
-            "User-Agent": "DevelopAid-Development-Model/0.12.37",
+            "User-Agent": "DevelopAid-Development-Model/0.12.38",
         },
     )
     try:
@@ -1349,7 +1349,7 @@ _NSPD_BASE_URL = (_env_str("NSPD_BASE_URL", "https://nspd.gov.ru")).rstrip("/")
 _NSPD_TIMEOUT_SECONDS = _env_float("NSPD_TIMEOUT_SECONDS", 25.0)
 _NSPD_LAND_THEMATIC_ID = 1
 _NOMINATIM_BASE_URL = (_env_str("NOMINATIM_BASE_URL", "https://nominatim.openstreetmap.org")).rstrip("/")
-_LAND_LOOKUP_USER_AGENT = "DevelopAid-Development-Model/0.12.37"
+_LAND_LOOKUP_USER_AGENT = "DevelopAid-Development-Model/0.12.38"
 _LAND_LOOKUP_MAX_RESULTS = 10
 _LAND_LOOKUP_CACHE_TTL_SECONDS = _env_float("LAND_LOOKUP_CACHE_TTL", 900.0)
 _LAND_LOOKUP_CACHE_LIMIT = 256
@@ -2065,7 +2065,7 @@ def _proxy_genplan(asset_path: str, request: Request) -> Response:
         target,
         headers={
             "Accept": request.headers.get("accept", "*/*"),
-            "User-Agent": "DevelopAid-Development-Model/0.12.37",
+            "User-Agent": "DevelopAid-Development-Model/0.12.38",
         },
     )
     try:
@@ -2173,6 +2173,254 @@ def _build_glavapu_xlsx_from_rows(rows: list[list[Any]], parameters: list[list[A
         archive.writestr("xl/_rels/workbook.xml.rels", workbook_rels)
         archive.writestr("xl/worksheets/sheet1.xml", _xlsx_inline_sheet(rows))
         archive.writestr("xl/worksheets/sheet2.xml", _xlsx_inline_sheet(parameters))
+    return out.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# Выгрузка полной модели: XLSX по каждому расчёту + ZIP с консолидатором очередей
+# ---------------------------------------------------------------------------
+
+_XLSX_STYLE_TEXT = 0
+_XLSX_STYLE_TITLE = 1
+_XLSX_STYLE_HEADER = 2
+_XLSX_STYLE_INT = 3
+_XLSX_STYLE_NUM = 4
+_XLSX_STYLE_PCT = 5
+_XLSX_STYLE_TOTAL = 6
+_XLSX_STYLE_BOLD = 7
+_XLSX_STYLE_TOTAL_INT = 8
+
+_XLSX_STYLES = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="{_XLSX_MAIN_NS}">
+  <numFmts count="3">
+    <numFmt numFmtId="164" formatCode="#,##0"/>
+    <numFmt numFmtId="165" formatCode="#,##0.00"/>
+    <numFmt numFmtId="166" formatCode="0.0%"/>
+  </numFmts>
+  <fonts count="3">
+    <font><sz val="11"/><name val="Calibri"/></font>
+    <font><b/><sz val="11"/><name val="Calibri"/></font>
+    <font><b/><sz val="13"/><name val="Calibri"/></font>
+  </fonts>
+  <fills count="3">
+    <fill><patternFill patternType="none"/></fill>
+    <fill><patternFill patternType="gray125"/></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FFEFEFEC"/><bgColor indexed="64"/></patternFill></fill>
+  </fills>
+  <borders count="2">
+    <border><left/><right/><top/><bottom/><diagonal/></border>
+    <border><left/><right/><top/><bottom style="thin"><color rgb="FF808080"/></bottom><diagonal/></border>
+  </borders>
+  <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+  <cellXfs count="9">
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
+    <xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0" applyFont="1"/>
+    <xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>
+    <xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>
+    <xf numFmtId="165" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>
+    <xf numFmtId="166" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>
+    <xf numFmtId="165" fontId="1" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyFont="1" applyBorder="1"/>
+    <xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/>
+    <xf numFmtId="164" fontId="1" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyFont="1" applyBorder="1"/>
+  </cellXfs>
+  <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
+  <dxfs count="0"/>
+  <tableStyles count="0" defaultTableStyle="TableStyleMedium2" defaultPivotStyle="PivotStyleLight16"/>
+</styleSheet>'''.encode("utf-8")
+
+
+class _XlsxCell:
+    """Ячейка выгрузки: текст, число или формула с посчитанным значением."""
+
+    __slots__ = ("value", "style", "formula")
+
+    def __init__(self, value: Any = None, style: int = _XLSX_STYLE_TEXT, formula: str = "") -> None:
+        self.value = value
+        self.style = style
+        self.formula = formula
+
+
+def _cell_text(value: Any, style: int = _XLSX_STYLE_TEXT) -> _XlsxCell:
+    return _XlsxCell("" if value is None else str(value), style)
+
+
+def _cell_num(value: Any, style: int = _XLSX_STYLE_NUM) -> _XlsxCell:
+    number = _land_float(value)
+    if number is None or not math.isfinite(number):
+        return _XlsxCell("", _XLSX_STYLE_TEXT)
+    return _XlsxCell(number, style)
+
+
+def _cell_mln(value: Any, style: int = _XLSX_STYLE_NUM) -> _XlsxCell:
+    number = _land_float(value)
+    if number is None or not math.isfinite(number):
+        return _XlsxCell("", _XLSX_STYLE_TEXT)
+    return _XlsxCell(round(number / 1_000_000.0, 4), style)
+
+
+def _cell_formula(formula: str, value: Any, style: int = _XLSX_STYLE_TOTAL) -> _XlsxCell:
+    number = _land_float(value)
+    return _XlsxCell(number if number is not None and math.isfinite(number) else 0.0, style, formula)
+
+
+def _header_row(labels: list[str]) -> list[_XlsxCell]:
+    return [_cell_text(label, _XLSX_STYLE_HEADER) for label in labels]
+
+
+def _sum_formula(column: str, first_row: int, last_row: int) -> str:
+    return f"SUM({column}{first_row}:{column}{last_row})"
+
+
+def _xlsx_sheet_name(name: str, used: set[str]) -> str:
+    clean = re.sub(r"[\[\]:*?/\\]", " ", str(name or "Лист")).strip()[:31] or "Лист"
+    candidate, suffix = clean, 2
+    while candidate.lower() in used:
+        tail = f" {suffix}"
+        candidate = clean[: 31 - len(tail)] + tail
+        suffix += 1
+    used.add(candidate.lower())
+    return candidate
+
+
+def _model_sheet_xml(sheet: dict[str, Any]) -> bytes:
+    rows: list[list[_XlsxCell]] = sheet.get("rows") or []
+    widths: list[float] = sheet.get("widths") or []
+    freeze: str = str(sheet.get("freeze") or "")
+    cols = ""
+    if widths:
+        cols = "<cols>" + "".join(
+            f'<col min="{index + 1}" max="{index + 1}" width="{width}" customWidth="1"/>'
+            for index, width in enumerate(widths)
+        ) + "</cols>"
+    views = ""
+    if freeze:
+        split_x = int(sheet.get("split_x", 0) or 0)
+        split_y = int(sheet.get("split_y", 1) or 0)
+        active_pane = "bottomRight" if split_x and split_y else ("topRight" if split_x else "bottomLeft")
+        views = (
+            '<sheetViews><sheetView workbookViewId="0">'
+            f'<pane xSplit="{split_x}" ySplit="{split_y}" '
+            f'topLeftCell="{freeze}" activePane="{active_pane}" state="frozen"/>'
+            f'<selection pane="{active_pane}" activeCell="{freeze}" sqref="{freeze}"/>'
+            "</sheetView></sheetViews>"
+        )
+    xml_rows: list[str] = []
+    for row_index, row in enumerate(rows, 1):
+        cells: list[str] = []
+        for col_index, cell in enumerate(row):
+            if cell is None:
+                continue
+            item = cell if isinstance(cell, _XlsxCell) else _cell_text(cell)
+            if item.value in (None, "") and not item.formula:
+                continue
+            ref = f"{_xlsx_column_name(col_index)}{row_index}"
+            style = f' s="{item.style}"' if item.style else ""
+            if item.formula:
+                cells.append(
+                    f'<c r="{ref}"{style}><f>{_xlsx_xml_text(item.formula)}</f>'
+                    f"<v>{item.value if item.value is not None else 0}</v></c>"
+                )
+            elif isinstance(item.value, (int, float)) and not isinstance(item.value, bool):
+                cells.append(f'<c r="{ref}"{style}><v>{item.value}</v></c>')
+            else:
+                cells.append(
+                    f'<c r="{ref}"{style} t="inlineStr"><is><t xml:space="preserve">'
+                    f"{_xlsx_xml_text(item.value)}</t></is></c>"
+                )
+        xml_rows.append(f'<row r="{row_index}">{"".join(cells)}</row>')
+    max_columns = max((len(row) for row in rows), default=1) or 1
+    dimension = f'<dimension ref="A1:{_xlsx_column_name(max_columns - 1)}{max(len(rows), 1)}"/>'
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<worksheet xmlns="{_XLSX_MAIN_NS}">{dimension}{views}'
+        f'<sheetFormatPr defaultRowHeight="15"/>{cols}'
+        f'<sheetData>{"".join(xml_rows)}</sheetData></worksheet>'
+    ).encode("utf-8")
+
+
+def _build_model_xlsx(sheets: list[dict[str, Any]]) -> bytes:
+    if not sheets:
+        raise ValueError("Нет листов для выгрузки")
+    used: set[str] = set()
+    names = [_xlsx_sheet_name(sheet.get("name") or f"Лист {index}", used) for index, sheet in enumerate(sheets, 1)]
+    overrides = "".join(
+        f'<Override PartName="/xl/worksheets/sheet{index}.xml" '
+        'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+        for index in range(1, len(sheets) + 1)
+    )
+    content_types = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+        '<Default Extension="xml" ContentType="application/xml"/>'
+        '<Override PartName="/xl/workbook.xml" '
+        'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+        '<Override PartName="/xl/styles.xml" '
+        'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>'
+        '<Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>'
+        '<Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>'
+        f"{overrides}</Types>"
+    ).encode("utf-8")
+    package_rels = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<Relationships xmlns="{_XLSX_PKG_REL_NS}">'
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
+        '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>'
+        '<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/>'
+        "</Relationships>"
+    ).encode("utf-8")
+    created = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    core_props = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<cp:coreProperties '
+        'xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" '
+        'xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" '
+        'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">'
+        "<dc:creator>DevelopAid</dc:creator><cp:lastModifiedBy>DevelopAid</cp:lastModifiedBy>"
+        f'<dcterms:created xsi:type="dcterms:W3CDTF">{created}</dcterms:created>'
+        f'<dcterms:modified xsi:type="dcterms:W3CDTF">{created}</dcterms:modified>'
+        "</cp:coreProperties>"
+    ).encode("utf-8")
+    app_props = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" '
+        'xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes">'
+        "<Application>DevelopAid</Application></Properties>"
+    ).encode("utf-8")
+    sheet_tags = "".join(
+        f'<sheet name="{_xlsx_xml_text(name)}" sheetId="{index}" r:id="rId{index}"/>'
+        for index, name in enumerate(names, 1)
+    )
+    workbook = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<workbook xmlns="{_XLSX_MAIN_NS}" xmlns:r="{_XLSX_REL_NS}">'
+        f"<sheets>{sheet_tags}</sheets>"
+        '<calcPr calcId="124519" fullCalcOnLoad="1"/></workbook>'
+    ).encode("utf-8")
+    sheet_rels = "".join(
+        f'<Relationship Id="rId{index}" '
+        'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" '
+        f'Target="worksheets/sheet{index}.xml"/>'
+        for index in range(1, len(sheets) + 1)
+    )
+    workbook_rels = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<Relationships xmlns="{_XLSX_PKG_REL_NS}">{sheet_rels}'
+        f'<Relationship Id="rId{len(sheets) + 1}" '
+        'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>'
+        "</Relationships>"
+    ).encode("utf-8")
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("[Content_Types].xml", content_types)
+        archive.writestr("_rels/.rels", package_rels)
+        archive.writestr("xl/workbook.xml", workbook)
+        archive.writestr("docProps/core.xml", core_props)
+        archive.writestr("docProps/app.xml", app_props)
+        archive.writestr("xl/_rels/workbook.xml.rels", workbook_rels)
+        archive.writestr("xl/styles.xml", _XLSX_STYLES)
+        for index, sheet in enumerate(sheets, 1):
+            archive.writestr(f"xl/worksheets/sheet{index}.xml", _model_sheet_xml(sheet))
     return out.getvalue()
 
 
@@ -3172,7 +3420,7 @@ def _telegram_handle_message(message: dict[str, Any]) -> None:
         status = "подключён" if _TELEGRAM_RUNTIME.get("configured") else "запускается"
         _telegram_send_message(
             chat_id,
-            f"<b>DevelopAid bot:</b> {status}\nTelegram ID: <code>{user_id}</code>\nВерсия: 0.12.37",
+            f"<b>DevelopAid bot:</b> {status}\nTelegram ID: <code>{user_id}</code>\nВерсия: 0.12.38",
         )
         return
     if command == "/cancel":
@@ -3335,7 +3583,7 @@ def telegram_status() -> dict[str, Any]:
         "allowed_users_count": len(allowed),
         "configured_at": _TELEGRAM_RUNTIME.get("configured_at") or "",
         "last_error": _TELEGRAM_RUNTIME.get("last_error") or "",
-        "version": "0.12.37",
+        "version": "0.12.38",
     }
 
 
@@ -3989,6 +4237,707 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     return buf.getvalue()
 
 
+# ---------------------------------------------------------------------------
+# Состав выгружаемой модели
+# ---------------------------------------------------------------------------
+
+_MODEL_FINANCE_COLUMNS: list[tuple[str, str, str]] = [
+    ("sales", "Продажи (поступления)", "mln"),
+    ("project_costs", "Расходы проекта", "mln"),
+    ("key_rate", "Ключевая ставка", "pct"),
+    ("bridge_rate", "Ставка БРИДЖ", "pct"),
+    ("bridge_draw", "Выборка БРИДЖ", "mln"),
+    ("bridge_balance", "Остаток БРИДЖ", "mln"),
+    ("bridge_interest", "Проценты БРИДЖ", "mln"),
+    ("bridge_capitalization", "Капитализация БРИДЖ", "mln"),
+    ("pf_draw", "Выборка ПФ", "mln"),
+    ("pf_repayment", "Погашение ПФ", "mln"),
+    ("pf_balance", "Остаток ПФ", "mln"),
+    ("escrow", "Эскроу", "mln"),
+    ("escrow_release", "Раскрытие эскроу", "mln"),
+    ("coverage", "Покрытие эскроу, ×", "num"),
+    ("pf_rate", "Ставка ПФ", "pct"),
+    ("pf_interest", "Проценты ПФ", "mln"),
+    ("pf_interest_capitalization", "Капитализация процентов ПФ", "mln"),
+    ("limit_fee", "Плата за лимит", "mln"),
+    ("interest_payment", "Выплата процентов", "mln"),
+    ("taxable_margin", "Налоговая маржа", "mln"),
+    ("financing_tax_deduction", "Вычет по финансированию", "mln"),
+    ("taxable_profit_cumulative", "Накопленная база налога", "mln"),
+    ("profit_tax", "Налог на прибыль", "mln"),
+]
+
+# Суммировать по месяцам можно только потоки; остатки и ставки — нет.
+_MODEL_FINANCE_SUMMABLE = {
+    "sales", "project_costs", "bridge_draw", "bridge_interest", "bridge_capitalization",
+    "pf_draw", "pf_repayment", "escrow_release", "pf_interest", "pf_interest_capitalization",
+    "limit_fee", "interest_payment", "taxable_margin", "financing_tax_deduction", "profit_tax",
+}
+
+_MODEL_CAPEX_LABELS: list[tuple[str, str]] = [
+    ("land_rights", "Земельные правоотношения / смена ВРИ"),
+    ("ird", "ИРД и согласования"),
+    ("design_p", "Проектирование, стадия П"),
+    ("design_rd", "Проектирование, стадия РД"),
+    ("author_supervision", "Авторский надзор"),
+    ("technical_supervision", "Технический заказчик / стройконтроль"),
+    ("preparation", "Подготовительные работы"),
+    ("main_above", "Основное строительство, наземная часть"),
+    ("main_under", "Основное строительство, подземная часть"),
+    ("utilities", "Наружные инженерные сети"),
+    ("landscaping", "Благоустройство"),
+    ("commissioning", "Сдача и ввод"),
+    ("site_maintenance", "Содержание стройплощадки"),
+    ("offices", "МФОЦ / офисы"),
+    ("standalone_retail", "ТЦ / коммерция ОСЗ"),
+    ("above_parking", "Наземный паркинг"),
+    ("social", "Социальная нагрузка"),
+    ("project_management", "Управление проектом"),
+    ("gc_fee", "Вознаграждение генподрядчика"),
+    ("reserve", "Резерв"),
+]
+
+_MODEL_SUMMARY_ROWS: list[tuple[str, str, str]] = [
+    ("revenue", "Выручка", "mln"),
+    ("capex", "CAPEX", "mln"),
+    ("commercial_costs", "Коммерческие расходы", "mln"),
+    ("total_expenses", "Расходы всего", "mln"),
+    ("ebitda", "EBITDA", "mln"),
+    ("financing_cost", "Стоимость финансирования", "mln"),
+    ("profit_before_tax", "Прибыль до налога", "mln"),
+    ("profit_tax", "Налог на прибыль", "mln"),
+    ("net_profit", "Чистая прибыль", "mln"),
+    ("margin", "Маржинальность", "pct"),
+    ("llcr", "LLCR", "num"),
+    ("npv", "NPV", "mln"),
+    ("irr_equity", "IRR собственного капитала", "pct"),
+    ("full_project_cost", "Полная стоимость проекта", "mln"),
+    ("project_gns_sqm", "ГНС проекта, м²", "int"),
+    ("monetizable_saleable_sqm", "Продаваемая площадь, м²", "int"),
+    ("full_cost_per_saleable_th", "Полная себестоимость, тыс. ₽/м² продаж", "num"),
+    ("construction_cost_per_gns_th", "Строительство, тыс. ₽/м² ГНС", "num"),
+]
+
+_MODEL_FINANCE_SUMMARY_ROWS: list[tuple[str, str, str]] = [
+    ("calculated_bridge_limit", "Расчётный лимит БРИДЖ", "mln"),
+    ("peak_bridge", "Пиковая задолженность БРИДЖ", "mln"),
+    ("bridge_interest", "Проценты БРИДЖ", "mln"),
+    ("avg_bridge_rate", "Средняя ставка БРИДЖ", "pct"),
+    ("pf_limit", "Лимит ПФ", "mln"),
+    ("peak_pf", "Пиковая задолженность ПФ", "mln"),
+    ("peak_uncovered_pf", "Пиковая непокрытая эскроу задолженность ПФ", "mln"),
+    ("pf_interest", "Проценты ПФ", "mln"),
+    ("pf_limit_fee", "Плата за лимит ПФ", "mln"),
+    ("avg_pf_base_rate", "Средняя ставка ПФ без эффекта эскроу", "pct"),
+    ("avg_pf_effective_rate", "Средняя фактическая ставка ПФ с учётом эскроу", "pct"),
+    ("financing_cost", "Стоимость финансирования всего", "mln"),
+    ("llcr", "LLCR", "num"),
+]
+
+
+def _model_value_cell(value: Any, kind: str) -> _XlsxCell:
+    if kind == "mln":
+        return _cell_mln(value)
+    if kind == "pct":
+        number = _land_float(value)
+        return _XlsxCell(number, _XLSX_STYLE_PCT) if number is not None else _cell_text("")
+    if kind == "int":
+        return _cell_num(value, _XLSX_STYLE_INT)
+    return _cell_num(value)
+
+
+def _model_sheet_summary(result: dict[str, Any], meta: dict[str, Any]) -> dict[str, Any]:
+    summary = result.get("summary") or {}
+    finance = result.get("finance") or {}
+    dates = result.get("dates") or {}
+    rows: list[list[_XlsxCell]] = [
+        [_cell_text("DevelopAid · инвестиционная модель проекта", _XLSX_STYLE_TITLE)],
+        [_cell_text(str(meta.get("title") or "Расчёт"), _XLSX_STYLE_BOLD)],
+        [_cell_text("Выгружено"), _cell_text(date.today().isoformat())],
+        [_cell_text("Сценарий"), _cell_text(str(meta.get("scenario") or "base"))],
+        [_cell_text("Все денежные показатели — млн ₽, если не указано иное")],
+        [],
+        [_cell_text("Ключевые даты", _XLSX_STYLE_BOLD)],
+        *[
+            [_cell_text(label), _cell_text(dates.get(key) or "—")]
+            for key, label in (
+                ("project_start", "Начало проекта"),
+                ("permit", "РнС"),
+                ("sales_start", "Старт продаж"),
+                ("rve", "РВЭ"),
+            )
+        ],
+        [],
+        [_cell_text("Экономика проекта", _XLSX_STYLE_BOLD)],
+        _header_row(["Показатель", "Значение"]),
+    ]
+    for key, label, kind in _MODEL_SUMMARY_ROWS:
+        source = summary if key in summary else finance
+        rows.append([_cell_text(label), _model_value_cell(source.get(key), kind)])
+    rows.extend([
+        [],
+        [_cell_text("Финансирование", _XLSX_STYLE_BOLD)],
+        _header_row(["Показатель", "Значение"]),
+    ])
+    for key, label, kind in _MODEL_FINANCE_SUMMARY_ROWS:
+        rows.append([_cell_text(label), _model_value_cell(finance.get(key), kind)])
+    return {"name": "Сводка", "rows": rows, "widths": [52, 20], "freeze": ""}
+
+
+def _model_sheet_inputs(inputs: dict[str, Any]) -> dict[str, Any]:
+    rows: list[list[_XlsxCell]] = [
+        [_cell_text("Вводные модели", _XLSX_STYLE_TITLE)],
+        [_cell_text("Значения соответствуют вкладке «Вводные». Ключ нужен для переноса обратно в модель.")],
+        [],
+        _header_row(["Раздел", "Показатель", "Значение", "Ед. изм.", "Ключ"]),
+    ]
+    for group_name, fields in FIELD_GROUPS:
+        for key, label, unit, kind in fields:
+            value = inputs.get(key)
+            if kind == "number":
+                value_cell = _cell_num(value)
+            elif kind == "checkbox":
+                value_cell = _cell_text("Да" if value else "Нет")
+            else:
+                value_cell = _cell_text(value)
+            rows.append([
+                _cell_text(group_name), _cell_text(label), value_cell,
+                _cell_text(unit), _cell_text(key),
+            ])
+    extra = [key for key in sorted(inputs) if key.startswith("_")]
+    if extra:
+        rows.extend([[], [_cell_text("Служебные поля проекта", _XLSX_STYLE_BOLD)]])
+        for key in extra:
+            rows.append([_cell_text(""), _cell_text(key), _cell_text(json.dumps(
+                inputs.get(key), ensure_ascii=False, default=str)[:400])])
+    return {"name": "Вводные", "rows": rows, "widths": [26, 46, 16, 16, 28], "freeze": "A5", "split_y": 4}
+
+
+def _model_sheet_tep(result: dict[str, Any]) -> dict[str, Any]:
+    tep = result.get("tep") or {}
+    header = ["Продукт", "ГНС, м²", "Общая площадь, м²", "Полезная, м²", "Продаваемая, м²", "Передаётся, м²", "Единицы"]
+    rows: list[list[_XlsxCell]] = [
+        [_cell_text("ТЭП проекта", _XLSX_STYLE_TITLE)],
+        [],
+        _header_row(header),
+    ]
+    first_data_row = len(rows) + 1
+    for item in tep.get("rows") or []:
+        rows.append([
+            _cell_text(item.get("label")),
+            _cell_num(item.get("gns"), _XLSX_STYLE_INT),
+            _cell_num(item.get("total_area"), _XLSX_STYLE_INT),
+            _cell_num(item.get("useful"), _XLSX_STYLE_INT),
+            _cell_num(item.get("saleable"), _XLSX_STYLE_INT),
+            _cell_num(item.get("transfer"), _XLSX_STYLE_INT),
+            _cell_num(item.get("units"), _XLSX_STYLE_INT),
+        ])
+    last_data_row = len(rows)
+    total = tep.get("total") or {}
+    total_row: list[_XlsxCell] = [_cell_text("Итого", _XLSX_STYLE_BOLD)]
+    for offset, key in enumerate(("gns", "total_area", "useful", "saleable", "transfer", "units"), start=1):
+        column = _xlsx_column_name(offset)
+        total_row.append(_cell_formula(
+            _sum_formula(column, first_data_row, last_data_row),
+            total.get(key),
+            _XLSX_STYLE_TOTAL_INT,
+        ))
+    rows.append(total_row)
+    return {"name": "ТЭП", "rows": rows, "widths": [30] + [18] * 6, "freeze": "A4", "split_y": 3}
+
+
+def _model_sheet_revenue(result: dict[str, Any]) -> dict[str, Any]:
+    report = result.get("report") or {}
+    rows: list[list[_XlsxCell]] = [
+        [_cell_text("Выручка по продуктам", _XLSX_STYLE_TITLE)],
+        [],
+        _header_row([
+            "Продукт", "Ед. изм.", "Количество", "Стартовая цена, тыс. ₽",
+            "Средняя цена, тыс. ₽", "Выручка, млн ₽",
+        ]),
+    ]
+    first_data_row = len(rows) + 1
+    for item in report.get("products") or []:
+        rows.append([
+            _cell_text(item.get("label")),
+            _cell_text(item.get("unit")),
+            _cell_num(item.get("quantity"), _XLSX_STYLE_INT),
+            _cell_num(item.get("start_price_th")),
+            _cell_num(item.get("avg_price_th")),
+            _cell_mln(item.get("revenue")),
+        ])
+    last_data_row = len(rows)
+    revenue_total = (result.get("revenue") or {}).get("total")
+    rows.append([
+        _cell_text("Итого", _XLSX_STYLE_BOLD), _cell_text(""), _cell_text(""), _cell_text(""), _cell_text(""),
+        _cell_formula(
+            _sum_formula("F", first_data_row, last_data_row),
+            (_land_float(revenue_total) or 0.0) / 1_000_000.0,
+        ),
+    ])
+    unit_economics = report.get("unit_economics") or []
+    if unit_economics:
+        rows.extend([
+            [], [_cell_text("Юнит-экономика", _XLSX_STYLE_BOLD)],
+            _header_row(["Показатель", "Всего, млн ₽", "На м² ГНС, тыс. ₽", "На м² продаж, тыс. ₽"]),
+        ])
+        for item in unit_economics:
+            rows.append([
+                _cell_text(item.get("label")),
+                _cell_mln(item.get("total")),
+                _cell_num(item.get("per_gns_th")),
+                _cell_num(item.get("per_saleable_th")),
+            ])
+    return {"name": "Выручка", "rows": rows, "widths": [34, 14, 16, 20, 20, 18], "freeze": "A4", "split_y": 3}
+
+
+def _model_sheet_costs(result: dict[str, Any]) -> dict[str, Any]:
+    capex = result.get("capex") or {}
+    rows: list[list[_XlsxCell]] = [
+        [_cell_text("Расходы проекта", _XLSX_STYLE_TITLE)],
+        [],
+        _header_row(["Статья", "Сумма, млн ₽", "Доля в CAPEX"]),
+    ]
+    first_data_row = len(rows) + 1
+    capex_total = _land_float(capex.get("total")) or 0.0
+    for key, label in _MODEL_CAPEX_LABELS:
+        value = _land_float(capex.get(key)) or 0.0
+        share_row = len(rows) + 1
+        rows.append([
+            _cell_text(label),
+            _cell_mln(value),
+            _cell_formula(
+                f"IF($B${first_data_row + len(_MODEL_CAPEX_LABELS)}=0,0,B{share_row}/$B${first_data_row + len(_MODEL_CAPEX_LABELS)})",
+                (value / capex_total) if capex_total else 0.0,
+                _XLSX_STYLE_PCT,
+            ),
+        ])
+    last_data_row = len(rows)
+    rows.append([
+        _cell_text("CAPEX всего", _XLSX_STYLE_BOLD),
+        _cell_formula(_sum_formula("B", first_data_row, last_data_row), capex_total / 1_000_000.0),
+        _cell_text(""),
+    ])
+    rows.extend([
+        [],
+        [_cell_text("Коммерческие расходы"), _cell_mln(result.get("commercial_costs"))],
+        [_cell_text("Стоимость финансирования"), _cell_mln((result.get("summary") or {}).get("financing_cost"))],
+        [_cell_text("Налог на прибыль"), _cell_mln((result.get("summary") or {}).get("profit_tax"))],
+    ])
+    structure = (result.get("report") or {}).get("expense_structure") or []
+    if structure:
+        rows.extend([
+            [], [_cell_text("Структура расходов проекта", _XLSX_STYLE_BOLD)],
+            _header_row(["Статья", "Сумма, млн ₽", "Доля"]),
+        ])
+        for item in structure:
+            rows.append([
+                _cell_text(item.get("label")),
+                _cell_mln(item.get("value")),
+                _XlsxCell(_land_float(item.get("share")), _XLSX_STYLE_PCT),
+            ])
+    return {"name": "Расходы", "rows": rows, "widths": [46, 18, 14], "freeze": "A4", "split_y": 3}
+
+
+def _model_sheet_monthly(result: dict[str, Any], name: str = "Помесячно") -> dict[str, Any]:
+    finance = result.get("finance") or {}
+    finance_rows = finance.get("rows") or []
+    header = ["Месяц"] + [label for _, label, _ in _MODEL_FINANCE_COLUMNS]
+    rows: list[list[_XlsxCell]] = [
+        [_cell_text("Помесячная модель · млн ₽, ставки — % годовых", _XLSX_STYLE_TITLE)],
+        [],
+        _header_row(header),
+    ]
+    first_data_row = len(rows) + 1
+    for item in finance_rows:
+        row: list[_XlsxCell] = [_cell_text(item.get("month"))]
+        for key, _, kind in _MODEL_FINANCE_COLUMNS:
+            row.append(_model_value_cell(item.get(key), kind))
+        rows.append(row)
+    last_data_row = len(rows)
+    if finance_rows:
+        total_row: list[_XlsxCell] = [_cell_text("Итого", _XLSX_STYLE_BOLD)]
+        for index, (key, _, kind) in enumerate(_MODEL_FINANCE_COLUMNS, start=1):
+            if key not in _MODEL_FINANCE_SUMMABLE:
+                total_row.append(_cell_text(""))
+                continue
+            column = _xlsx_column_name(index)
+            total = sum(_land_float(item.get(key)) or 0.0 for item in finance_rows)
+            total_row.append(_cell_formula(
+                _sum_formula(column, first_data_row, last_data_row),
+                total / 1_000_000.0 if kind == "mln" else total,
+            ))
+        rows.append(total_row)
+    return {
+        "name": name,
+        "rows": rows,
+        "widths": [12] + [17] * len(_MODEL_FINANCE_COLUMNS),
+        "freeze": "B4",
+        "split_x": 1,
+        "split_y": 3,
+    }
+
+
+def _model_sheet_cashflow(result: dict[str, Any]) -> dict[str, Any]:
+    cashflow = result.get("cashflow") or {}
+    months = cashflow.get("months") or []
+    rows: list[list[_XlsxCell]] = [
+        [_cell_text("Денежный поток · млн ₽", _XLSX_STYLE_TITLE)],
+        [],
+        _header_row([
+            "Месяц", "Проектный поток", "Собственный капитал", "Налог на прибыль",
+            "Проектный поток нарастающим итогом",
+        ]),
+    ]
+    first_data_row = len(rows) + 1
+    project = cashflow.get("project") or []
+    equity = cashflow.get("equity") or []
+    tax = cashflow.get("profit_tax") or []
+    running = 0.0
+    for index, month in enumerate(months):
+        value = _land_float(project[index] if index < len(project) else 0) or 0.0
+        running += value
+        current_row = first_data_row + index
+        rows.append([
+            _cell_text(month),
+            _cell_mln(value),
+            _cell_mln(equity[index] if index < len(equity) else 0),
+            _cell_mln(tax[index] if index < len(tax) else 0),
+            _cell_formula(
+                f"SUM($B${first_data_row}:B{current_row})",
+                running / 1_000_000.0,
+                _XLSX_STYLE_NUM,
+            ),
+        ])
+    return {"name": "Денежный поток", "rows": rows, "widths": [12, 20, 22, 20, 34], "freeze": "A4", "split_y": 3}
+
+
+def _model_sheet_calendar(result: dict[str, Any]) -> dict[str, Any]:
+    calendar_data = (result.get("report") or {}).get("calendar") or {}
+    rows: list[list[_XlsxCell]] = [
+        [_cell_text("Календарный план", _XLSX_STYLE_TITLE)],
+        [_cell_text("Горизонт"), _cell_text(calendar_data.get("start") or "—"), _cell_text(calendar_data.get("end") or "—")],
+        [],
+        _header_row(["Событие", "Начало", "Окончание", "Группа"]),
+    ]
+    for event in calendar_data.get("events") or []:
+        rows.append([
+            _cell_text(event.get("label")),
+            _cell_text(event.get("start")),
+            _cell_text(event.get("end")),
+            _cell_text(event.get("group")),
+        ])
+    return {"name": "Календарь", "rows": rows, "widths": [46, 16, 16, 20], "freeze": "A5", "split_y": 4}
+
+
+def _model_sheets_for_result(
+    result: dict[str, Any], inputs: dict[str, Any], meta: dict[str, Any]
+) -> list[dict[str, Any]]:
+    return [
+        _model_sheet_summary(result, meta),
+        _model_sheet_inputs(inputs),
+        _model_sheet_tep(result),
+        _model_sheet_revenue(result),
+        _model_sheet_costs(result),
+        _model_sheet_monthly(result),
+        _model_sheet_cashflow(result),
+        _model_sheet_calendar(result),
+    ]
+
+
+def _model_phase_sheet_name(index: int, name: str) -> str:
+    clean = re.sub(r"[\[\]:*?/\\']", " ", str(name or f"О{index}")).strip() or f"О{index}"
+    return f"{index}. {clean}"[:31]
+
+
+def _model_sheet_phase_comparison(bundle: dict[str, Any]) -> dict[str, Any]:
+    comparison = bundle.get("comparison") or []
+    phasing = bundle.get("phasing") or {}
+    header = [
+        "Очередь", "Продаваемая площадь, м²", "Выручка, млн ₽", "CAPEX, млн ₽",
+        "Общие расходы (касса), млн ₽", "Общие расходы (аллокация), млн ₽",
+        "Пик БРИДЖ, млн ₽", "Пик ПФ, млн ₽", "LLCR",
+        "Чистая прибыль, млн ₽", "Прибыль с аллокацией, млн ₽", "Маржинальность",
+        "Индексация себестоимости", "Индексация цен",
+    ]
+    rows: list[list[_XlsxCell]] = [
+        [_cell_text("Сравнение очередей", _XLSX_STYLE_TITLE)],
+        [
+            _cell_text("Очередей"), _cell_num(len(comparison), _XLSX_STYLE_INT),
+            _cell_text("Разрыв между очередями, мес."), _cell_num(phasing.get("phase_gap_months"), _XLSX_STYLE_INT),
+        ],
+        [],
+        _header_row(header),
+    ]
+    first_data_row = len(rows) + 1
+    for item in comparison:
+        rows.append([
+            _cell_text(item.get("name")),
+            _cell_num(item.get("saleable_sqm"), _XLSX_STYLE_INT),
+            _cell_mln(item.get("revenue")),
+            _cell_mln(item.get("capex")),
+            _cell_mln(item.get("cash_shared_cost")),
+            _cell_mln(item.get("allocated_shared_cost")),
+            _cell_mln(item.get("peak_bridge")),
+            _cell_mln(item.get("peak_pf")),
+            _cell_num(item.get("llcr")),
+            _cell_mln(item.get("net_profit")),
+            _cell_mln(item.get("allocated_net_profit")),
+            _XlsxCell(_land_float(item.get("margin")), _XLSX_STYLE_PCT),
+            _cell_num(item.get("cost_inflation_factor")),
+            _cell_num(item.get("sales_price_inflation_factor")),
+        ])
+    last_data_row = len(rows)
+    if comparison:
+        total_row: list[_XlsxCell] = [_cell_text("Итого", _XLSX_STYLE_BOLD)]
+        summable = {
+            1: "saleable_sqm", 2: "revenue", 3: "capex", 4: "cash_shared_cost",
+            5: "allocated_shared_cost", 9: "net_profit", 10: "allocated_net_profit",
+        }
+        for index in range(1, len(header)):
+            key = summable.get(index)
+            if not key:
+                total_row.append(_cell_text(""))
+                continue
+            column = _xlsx_column_name(index)
+            total = sum(_land_float(item.get(key)) or 0.0 for item in comparison)
+            total_row.append(_cell_formula(
+                _sum_formula(column, first_data_row, last_data_row),
+                total if key == "saleable_sqm" else total / 1_000_000.0,
+                _XLSX_STYLE_TOTAL_INT if key == "saleable_sqm" else _XLSX_STYLE_TOTAL,
+            ))
+        rows.append(total_row)
+    return {"name": "Сравнение очередей", "rows": rows, "widths": [14] + [20] * (len(header) - 1),
+            "freeze": "A5", "split_y": 4}
+
+
+def _model_sheet_consolidation(bundle: dict[str, Any], phase_sheet_names: list[str]) -> dict[str, Any]:
+    """Живая консолидация: суммы по месяцам собираются формулами с листов очередей."""
+    phases = bundle.get("phases") or []
+    months: list[str] = []
+    seen: set[str] = set()
+    for phase in phases:
+        for row in ((phase.get("result") or {}).get("finance") or {}).get("rows") or []:
+            month = str(row.get("month") or "")
+            if month and month not in seen:
+                seen.add(month)
+                months.append(month)
+    months.sort()
+    summable = [(key, label, kind) for key, label, kind in _MODEL_FINANCE_COLUMNS if key in _MODEL_FINANCE_SUMMABLE]
+    header = ["Месяц"] + [label for _, label, _ in summable]
+    rows: list[list[_XlsxCell]] = [
+        [_cell_text("Консолидация очередей · млн ₽", _XLSX_STYLE_TITLE)],
+        [_cell_text("Значения собираются формулами SUMIF с листов очередей этой же книги — "
+                    "правка любой очереди сразу меняет свод.")],
+        [],
+        _header_row(header),
+    ]
+    first_data_row = len(rows) + 1
+    # Колонки на листах очередей совпадают с _MODEL_FINANCE_COLUMNS.
+    source_column = {key: _xlsx_column_name(index) for index, (key, _, _) in enumerate(_MODEL_FINANCE_COLUMNS, start=1)}
+    phase_rows_by_month: list[dict[str, dict[str, Any]]] = []
+    for phase in phases:
+        by_month: dict[str, dict[str, Any]] = {}
+        for row in ((phase.get("result") or {}).get("finance") or {}).get("rows") or []:
+            by_month[str(row.get("month") or "")] = row
+        phase_rows_by_month.append(by_month)
+    for month_index, month in enumerate(months):
+        row_number = first_data_row + month_index
+        row: list[_XlsxCell] = [_cell_text(month)]
+        for key, _, kind in summable:
+            column = source_column[key]
+            parts = [
+                f"SUMIF('{sheet}'!$A:$A,$A{row_number},'{sheet}'!{column}:{column})"
+                for sheet in phase_sheet_names
+            ]
+            total = sum(
+                _land_float((by_month.get(month) or {}).get(key)) or 0.0
+                for by_month in phase_rows_by_month
+            )
+            row.append(_cell_formula(
+                "+".join(parts) if parts else "0",
+                total / 1_000_000.0 if kind == "mln" else total,
+                _XLSX_STYLE_NUM,
+            ))
+        rows.append(row)
+    last_data_row = len(rows)
+    if months:
+        total_row: list[_XlsxCell] = [_cell_text("Итого", _XLSX_STYLE_BOLD)]
+        for index, (key, _, kind) in enumerate(summable, start=1):
+            column = _xlsx_column_name(index)
+            total = sum(
+                _land_float(row.get(key)) or 0.0
+                for by_month in phase_rows_by_month
+                for row in by_month.values()
+            )
+            total_row.append(_cell_formula(
+                _sum_formula(column, first_data_row, last_data_row),
+                total / 1_000_000.0 if kind == "mln" else total,
+            ))
+        rows.append(total_row)
+    return {
+        "name": "Консолидация помесячно",
+        "rows": rows,
+        "widths": [12] + [19] * len(summable),
+        "freeze": "B5",
+        "split_x": 1,
+        "split_y": 4,
+    }
+
+
+def _model_readme(bundle: dict[str, Any], meta: dict[str, Any], files: list[str]) -> bytes:
+    phased = str(bundle.get("mode") or "single") == "phased"
+    lines = [
+        "DevelopAid · выгрузка инвестиционной модели",
+        f"Проект: {meta.get('title') or 'Расчёт'}",
+        f"Дата выгрузки: {date.today().isoformat()}",
+        f"Сценарий: {meta.get('scenario') or 'base'}",
+        f"Режим: {'по очередям' if phased else 'единый расчёт'}",
+        "",
+        "Состав архива:",
+        *[f"  - {name}" for name in files],
+        "",
+        "Как читать выгрузку:",
+        "  Сводка — ключевые показатели и финансирование расчёта.",
+        "  Вводные — все параметры модели с ключами для переноса обратно.",
+        "  ТЭП — состав площадей и единиц по продуктам.",
+        "  Выручка / Расходы — продуктовая выручка, статьи CAPEX и структура затрат.",
+        "  Помесячно — сердце модели: продажи, расходы, БРИДЖ, ПФ, эскроу, ставки, налог по месяцам.",
+        "  Денежный поток — проектный и собственный поток, накопленный итог формулой.",
+        "  Календарь — сроки этапов проекта.",
+        "",
+        "Единицы: денежные показатели — млн ₽, площади — м², ставки и доли — проценты.",
+    ]
+    if phased:
+        lines.extend([
+            "",
+            "Консолидатор:",
+            "  Файл 00_Консолидация.xlsx содержит очереди отдельными листами и лист",
+            "  «Консолидация помесячно», где суммы собираются формулами SUMIF с этих листов.",
+            "  Правка месяца в очереди сразу меняет свод. Отдельные файлы очередей —",
+            "  та же модель по одной очереди на случай, если нужен изолированный расчёт.",
+            "  Складывать по месяцам можно только потоки; остатки долга, ставки и покрытие",
+            "  эскроу в консолидации не суммируются — они смотрятся по каждой очереди.",
+        ])
+    lines.extend([
+        "",
+        "Выгрузка отражает расчёт веб-модели DevelopAid на дату формирования.",
+        "Это предварительная инвестиционная модель, а не отчёт оценщика и не решение банка.",
+    ])
+    return ("\n".join(lines) + "\n").encode("utf-8")
+
+
+def _safe_file_stem(value: str, fallback: str = "DevelopAid") -> str:
+    stem = re.sub(r"[^0-9A-Za-zА-Яа-яЁё _-]+", "_", str(value or "")).strip(" _")
+    return (stem[:60] or fallback)
+
+
+def build_model_archive(
+    inputs: dict[str, Any],
+    tep: dict[str, dict[str, Any]],
+    rates: list[dict[str, Any]] | None = None,
+    phasing: dict[str, Any] | None = None,
+    *,
+    project_name: str = "",
+    scenario: str = "base",
+) -> tuple[bytes, str]:
+    """Полная модель в ZIP: единый расчёт или очереди с книгой-консолидатором."""
+    # Частичная выгрузка (например, из Telegram) дополняется базовыми значениями
+    # ровно так же, как это делает мини-приложение при загрузке проекта.
+    inputs = {**copy.deepcopy(DEFAULT_INPUTS), **(inputs or {})}
+    merged_tep = copy.deepcopy(TEP_DEFAULT)
+    for key, values in (tep or {}).items():
+        if isinstance(values, dict) and key in merged_tep:
+            merged_tep[key].update(values)
+        else:
+            merged_tep[key] = values
+    tep = merged_tep
+    bundle = _run_authoritative_model(inputs, tep, rates or [], phasing or {})
+    consolidated = bundle.get("consolidated") or {}
+    phases = bundle.get("phases") or []
+    phased = str(bundle.get("mode") or "single") == "phased" and len(phases) > 1
+    title = str(project_name or "").strip() or "Проект DevelopAid"
+    meta = {"title": title, "scenario": scenario}
+    stem = _safe_file_stem(title)
+
+    archive_files: list[tuple[str, bytes]] = []
+    if not phased:
+        sheets = _model_sheets_for_result(consolidated, inputs, meta)
+        archive_files.append((f"{stem}_модель.xlsx", _build_model_xlsx(sheets)))
+    else:
+        phase_sheet_names: list[str] = []
+        phase_monthly_sheets: list[dict[str, Any]] = []
+        for index, phase in enumerate(phases, start=1):
+            sheet_name = _model_phase_sheet_name(index, phase.get("name"))
+            phase_sheet_names.append(sheet_name)
+            monthly = _model_sheet_monthly(phase.get("result") or {}, name=sheet_name)
+            phase_monthly_sheets.append(monthly)
+        consolidator_sheets = [
+            _model_sheet_summary(consolidated, {**meta, "title": f"{title} · все очереди"}),
+            _model_sheet_phase_comparison(bundle),
+            _model_sheet_consolidation(bundle, phase_sheet_names),
+            *phase_monthly_sheets,
+            _model_sheet_inputs(inputs),
+            _model_sheet_tep(consolidated),
+            _model_sheet_revenue(consolidated),
+            _model_sheet_costs(consolidated),
+            _model_sheet_cashflow(consolidated),
+            _model_sheet_calendar(consolidated),
+        ]
+        archive_files.append(("00_Консолидация.xlsx", _build_model_xlsx(consolidator_sheets)))
+        for index, phase in enumerate(phases, start=1):
+            phase_title = f"{title} · очередь {phase.get('name') or index}"
+            phase_sheets = _model_sheets_for_result(
+                phase.get("result") or {}, inputs, {**meta, "title": phase_title}
+            )
+            phase_name = _safe_file_stem(str(phase.get("name") or f"О{index}"), f"О{index}")
+            archive_files.append((f"{index:02d}_Очередь_{phase_name}.xlsx", _build_model_xlsx(phase_sheets)))
+
+    readme = _model_readme(bundle, meta, [name for name, _ in archive_files] + ["README.txt"])
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as archive:
+        for name, payload in archive_files:
+            archive.writestr(name, payload)
+        archive.writestr("README.txt", readme)
+    suffix = "очереди" if phased else "модель"
+    return out.getvalue(), f"DevelopAid_{stem}_{suffix}_{date.today().isoformat()}.zip"
+
+
+class ModelExportRequest(BaseModel):
+    inputs: dict[str, Any]
+    tep: dict[str, dict[str, Any]]
+    rates: list[dict[str, Any]] = []
+    phasing: dict[str, Any] = {}
+    project_name: str = ""
+    scenario: str = "base"
+
+
+@app.post("/report/model")
+def report_model(req: ModelExportRequest) -> Response:
+    try:
+        content, filename = build_model_archive(
+            req.inputs,
+            req.tep,
+            req.rates,
+            req.phasing,
+            project_name=req.project_name,
+            scenario=req.scenario,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Не удалось собрать модель: {exc}") from exc
+    encoded_name = urllib.parse.quote(filename)
+    return Response(
+        content=content,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition":
+                f"attachment; filename=DevelopAid_model.zip; filename*=UTF-8''{encoded_name}",
+        },
+    )
+
+
 @app.post("/report/pdf")
 async def report_pdf(request: Request) -> Response:
     payload=await request.json()
@@ -4087,6 +5036,28 @@ def telegram_result(req: TelegramResultRequest) -> dict[str, bool]:
             _TELEGRAM_RUNTIME["last_error"]="PDF: "+str(exc)
             try: _telegram_send_message(chat_id,"<i>Карточка рассчитана, но PDF временно не сформирован.</i>")
             except Exception: pass
+        try:
+            model_bytes, model_filename = build_model_archive(
+                report_payload.get("inputs") or {},
+                report_payload.get("tep") or {},
+                report_payload.get("rates") or [],
+                report_payload.get("phasing") or {},
+                project_name=str(report_payload.get("project_name") or project_name or ""),
+                scenario=str(report_payload.get("scenario") or "base"),
+            )
+            phased = bool((report_payload.get("phasing") or {}).get("enabled"))
+            _telegram_send_document_bytes(
+                chat_id,
+                model_bytes,
+                model_filename,
+                caption=(
+                    "<b>Полная модель DevelopAid</b> · Excel в ZIP"
+                    + (" · очереди и книга-консолидатор" if phased else " · единый расчёт")
+                ),
+                content_type="application/zip",
+            )
+        except Exception as exc:
+            _TELEGRAM_RUNTIME["last_error"]="Модель: "+str(exc)
     return {"ok": True}
 
 
@@ -4245,7 +5216,7 @@ def fetch_current_cbr_key_rate() -> dict[str, Any]:
         req = urllib.request.Request(
             feed_url,
             headers={
-                "User-Agent": "Mozilla/5.0 DevelopAid-Development-Model/0.12.37",
+                "User-Agent": "Mozilla/5.0 DevelopAid-Development-Model/0.12.38",
                 "Accept-Language": "ru-RU,ru;q=0.9",
             },
         )
@@ -4291,7 +5262,7 @@ def fetch_current_cbr_key_rate() -> dict[str, Any]:
         req = urllib.request.Request(
             url,
             headers={
-                "User-Agent": "Mozilla/5.0 DevelopAid-Development-Model/0.12.37",
+                "User-Agent": "Mozilla/5.0 DevelopAid-Development-Model/0.12.38",
                 "Accept-Language": "ru-RU,ru;q=0.9",
             },
         )
@@ -5611,7 +6582,7 @@ def calculate(req: CalcRequest) -> dict:
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "version": "0.12.37"}
+    return {"status": "ok", "version": "0.12.38"}
 
 
 @app.get("/defaults")
@@ -8392,7 +9363,7 @@ def _openai_responses_request(payload: dict[str, Any]) -> dict[str, Any]:
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
-            "User-Agent": "DevelopAid-Development-Model/0.12.37",
+            "User-Agent": "DevelopAid-Development-Model/0.12.38",
         },
         method="POST",
     )
@@ -8849,7 +9820,7 @@ tfoot th{border-top:2px solid #111;color:#111;background:#fff}
 <div class="shell">
   <div class="brandbar"><img src="data:image/webp;base64,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"><div class="brandline"></div></div>
   <div class="header">
-    <div class="title"><h1>Девелоперская инвестиционная модель</h1><p>v0.12.37 · ТЭП · экономика · БРИДЖ · проектное финансирование · эскроу · LLCR</p></div>
+    <div class="title"><h1>Девелоперская инвестиционная модель</h1><p>v0.12.38 · ТЭП · экономика · БРИДЖ · проектное финансирование · эскроу · LLCR</p></div>
     <div class="actions">
       <div class="scenario">Класс&nbsp;
         <select id="projectClassSelect" onchange="applyProjectClassPreset(this.value)" style="min-width:135px">
@@ -9179,6 +10150,7 @@ tfoot th{border-top:2px solid #111;color:#111;background:#fff}
           <div class="report-actions">
             <small>Агрегированный отчёт · значения пересчитываются из текущих вводных</small>
             <button class="btn dark no-print" onclick="exportReportPdf()">Экспорт PDF</button>
+            <button id="exportModelButton" class="btn no-print" onclick="exportModelArchive()">Скачать модель (ZIP)</button>
           </div>
         </div>
         <div class="pdf-report-meta">
@@ -10879,7 +11851,7 @@ function currentPdfReportPayload(cads=[]){
  const glavapuMeta=inputs._glavapu_import||null;
  const manualMeta=inputs._manual_tep_import||null;
  const source=(glavapuMeta&&glavapuMeta.source)||(manualMeta&&manualMeta.source)||{};
- return {result:lastResult,inputs:inputs,tep:tep,phasing:phasing,scenario:scenarioSelect.value||'base',cadastral_numbers:cads.length?cads:((cadastralAnalysis&&cadastralAnalysis.recognized)||source.cadastral_numbers||[]),project_name:(manualMeta&&manualMeta.project_name)||'',source_label:manualMeta?'Ручной шаблон DevelopAid':'ГлавАПУ'};
+ return {result:lastResult,inputs:inputs,tep:tep,rates:rates,phasing:phasing,scenario:scenarioSelect.value||'base',cadastral_numbers:cads.length?cads:((cadastralAnalysis&&cadastralAnalysis.recognized)||source.cadastral_numbers||[]),project_name:(manualMeta&&manualMeta.project_name)||'',source_label:manualMeta?'Ручной шаблон DevelopAid':'ГлавАПУ'};
 }
 
 async function exportReportPdf(){
@@ -10887,6 +11859,45 @@ async function exportReportPdf(){
  const response=await fetch('/report/pdf',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(currentPdfReportPayload())});
  if(!response.ok){let detail='Не удалось сформировать PDF';try{const x=await response.json();detail=x.detail||detail}catch(e){}alert(detail);return;}
  const blob=await response.blob();const disposition=response.headers.get('Content-Disposition')||'';const utf=disposition.match(/filename\*=UTF-8''([^;]+)/i);const filename=utf?decodeURIComponent(utf[1]):`DevelopAid_Отчет_${new Date().toISOString().slice(0,10)}.pdf`;const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=filename;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1500);
+}
+
+function downloadBlobResponse(blob,disposition,fallback){
+ const utf=String(disposition||'').match(/filename\*=UTF-8''([^;]+)/i);
+ const filename=utf?decodeURIComponent(utf[1]):fallback;
+ const url=URL.createObjectURL(blob);
+ const a=document.createElement('a');a.href=url;a.download=filename;document.body.appendChild(a);a.click();a.remove();
+ setTimeout(()=>URL.revokeObjectURL(url),1500);
+}
+
+async function exportModelArchive(){
+ const button=document.getElementById('exportModelButton');
+ const label=button?button.textContent:'';
+ if(button){button.disabled=true;button.textContent='Собираю модель…'}
+ try{
+  await calculate();
+  const manualMeta=inputs._manual_tep_import||null;
+  const response=await fetch('/report/model',{
+   method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({
+    inputs,tep,rates,
+    phasing:(typeof phasing!=='undefined'?phasing:{}),
+    project_name:(manualMeta&&manualMeta.project_name)||'',
+    scenario:scenarioSelect.value||'base'
+   })
+  });
+  if(!response.ok){
+   let detail='Не удалось собрать модель';
+   try{const x=await response.json();detail=x.detail||detail}catch(e){}
+   alert(detail);return;
+  }
+  downloadBlobResponse(
+   await response.blob(),
+   response.headers.get('Content-Disposition'),
+   `DevelopAid_модель_${new Date().toISOString().slice(0,10)}.zip`
+  );
+ }finally{
+  if(button){button.disabled=false;button.textContent=label||'Скачать модель (ZIP)'}
+ }
 }
 
 function persistLocalSilently(){localStorage.setItem('plato_v04',JSON.stringify({inputs,tep,phasing,scenario:scenarioSelect.value}))}

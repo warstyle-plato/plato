@@ -1,3 +1,24 @@
+DEVELOPAID v0.12.38 FULL MODEL EXPORT OK
+Python syntax (main.py + main_legacy.py): OK
+tests/ — 65 passed (25 model export + 17 Platon/TEP + 23 land lookup)
+Workbooks open as real XLSX (openpyxl, strict warnings): OK
+Every workbook part is well-formed XML: OK
+Single mode ZIP: model workbook + README: OK
+Phased mode ZIP: 00_Консолидация.xlsx + one file per phase + README: OK
+Consolidator keeps phases as sheets and sums them with live SUMIF: OK
+Consolidation values equal the sum of phases, every phase month covered: OK
+Phase comparison sheet totals match the engine: OK
+Monthly sheet matches engine row by row, totals are SUM formulas: OK
+Balances, rates and escrow coverage are not summed in totals: OK
+Summary revenue / LLCR / margin match the engine: OK
+Inputs sheet exports every FIELD_GROUPS key: OK
+TEP and cashflow totals are formulas with correct cached values: OK
+One-phase project exports as a single model, no consolidator: OK
+/report/model returns a ZIP attachment; partial payload filled with defaults: OK
+Build failure reported as a plain Russian 500: OK
+Browser check: both downloads via the report tab, no page errors: OK
+Telegram sends the model archive after the PDF: OK
+
 DEVELOPAID v0.12.37 PLATON TEP COMMENTARY OK
 Python syntax (main.py + main_legacy.py): OK
 tests/ — 40 passed (17 Platon/TEP + 23 land lookup)
