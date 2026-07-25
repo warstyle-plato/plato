@@ -1,34 +1,25 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 from pathlib import Path
 
-_HOTFIX_MARKER = "# _DEVELOPAID_TELEGRAM_HELP_CLOSE_V01230"
+_HOTFIX_MARKER = "# _DEVELOPAID_TELEGRAM_HELP_CLOSE_V01233"
 
 
 def _find_main_file() -> Path:
-    candidates = [
-        Path.cwd() / "main.py",
-        Path("/opt/render/project/src/main.py"),
-    ]
+    candidates = [Path.cwd() / "main.py", Path("/opt/render/project/src/main.py")]
     render_root = os.environ.get("RENDER_PROJECT_ROOT")
     if render_root:
-        candidates.extend([
-            Path(render_root) / "main.py",
-            Path(render_root) / "src" / "main.py",
-        ])
-    for entry in sys.path:
-        if entry:
-            candidates.append(Path(entry) / "main.py")
-
+        candidates.extend([Path(render_root) / "main.py", Path(render_root) / "src" / "main.py"])
+    candidates.extend(Path(item) / "main.py" for item in sys.path if item)
     seen: set[str] = set()
     for candidate in candidates:
         try:
-            resolved = candidate.resolve()
+            key = str(candidate.resolve())
         except Exception:
-            resolved = candidate
-        key = str(resolved)
+            key = str(candidate)
         if key in seen:
             continue
         seen.add(key)
@@ -43,12 +34,11 @@ def _find_main_file() -> Path:
     raise RuntimeError("DevelopAid startup patch: main.py not found")
 
 
-def _replace_once(text: str, old: str, new: str, label: str) -> str:
-    if new in text:
-        return text
-    if old not in text:
+def _replace_regex(text: str, pattern: str, replacement: str, label: str, *, flags: int = 0) -> str:
+    updated, count = re.subn(pattern, replacement, text, count=1, flags=flags)
+    if count != 1:
         raise RuntimeError(f"DevelopAid startup patch: marker not found: {label}")
-    return text.replace(old, new, 1)
+    return updated
 
 
 def _patch_main(path: Path) -> None:
@@ -56,9 +46,10 @@ def _patch_main(path: Path) -> None:
     if _HOTFIX_MARKER in text:
         return
 
-    text = text.replace('version="0.12.29"', 'version="0.12.30"')
-    text = text.replace('"version": "0.12.29"', '"version": "0.12.30"')
-    text = text.replace('Версия: 0.12.29', 'Версия: 0.12.30')
+    for old in ("0.12.29", "0.12.30", "0.12.31", "0.12.32"):
+        text = text.replace(f'version="{old}"', 'version="0.12.33"')
+        text = text.replace(f'"version": "{old}"', '"version": "0.12.33"')
+        text = text.replace(f"Версия: {old}", "Версия: 0.12.33")
 
     handler_marker = "def _telegram_handle_message(message: dict[str, Any]) -> None:\n"
     help_function = r'''def _telegram_send_help(chat_id: int) -> None:
@@ -83,13 +74,10 @@ def _patch_main(path: Path) -> None:
         "DevelopAid считает выручку, CAPEX, EBITDA, чистую прибыль, NPV, LLCR, потребность "
         "в БРИДЖе и ПФ, динамику долга и эскроу. Блок «Инвестиционная оценка» показывает "
         "предварительную целесообразность покупки и допустимую цену входа по текущим предпосылкам.\n\n"
-        "<b>4. Задайте вопрос Платону Сергеевичу Федоскину</b>\n"
-        "Встроенный AI-консультант работает с текущей моделью. Ему можно написать обычным языком: "
-        "«почему такой LLCR», «за сколько максимум можно купить», «какая цена продаж нужна», "
-        "«что будет при росте СМР» или «подбери параметры проекта».\n\n"
-        "Платон Сергеевич может выполнить сценарный пересчёт и подготовить изменения вводных. "
-        "Самостоятельно модель он не меняет: новые параметры применяются только после подтверждения "
-        "кнопкой «Применить в модель».\n\n"
+        "<b>4. Спросите Платона Сергеевича Федоскина</b>\n"
+        "AI-консультант работает с текущей моделью: объясняет показатели, отвечает на вопросы, "
+        "сравнивает сценарии и помогает подобрать цену покупки, цены продаж, СМР, сроки и параметры "
+        "финансирования. Изменения применяются только после подтверждения пользователя.\n\n"
         "<b>5. Сформируйте результат</b>\n"
         "В приложении доступны сводный отчёт, сравнение очередей, календарный план и PDF "
         "с ключевыми графиками.\n\n"
@@ -98,10 +86,7 @@ def _patch_main(path: Path) -> None:
         reply_markup={"inline_keyboard": [
             [{"text": "Расчёт по кадастровым номерам", "callback_data": "flow_cad_yes"}],
             [{"text": "Собрать ТЭП без кадастра", "callback_data": "flow_cad_no"}],
-            [{
-                "text": "Открыть мини-приложение DevelopAid",
-                "web_app": {"url": _telegram_web_app_url(chat_id, [])},
-            }],
+            [{"text": "Открыть мини-приложение DevelopAid", "web_app": {"url": _telegram_web_app_url(chat_id, [])}}],
         ]},
     )
 
@@ -109,105 +94,106 @@ def _patch_main(path: Path) -> None:
 '''
     if "def _telegram_send_help(" not in text:
         if handler_marker not in text:
-            raise RuntimeError("DevelopAid startup patch: Telegram handler marker not found")
+            raise RuntimeError("DevelopAid startup patch: Telegram handler not found")
         text = text.replace(handler_marker, help_function + handler_marker, 1)
 
-    old_commands = '''    if command in {"/start", "/help", "/menu"}:
-        _telegram_start_message(chat_id, user_id)
-        return
-'''
-    new_commands = '''    if command in {"/start", "/menu"}:
-        _telegram_start_message(chat_id, user_id)
-        return
-    if command == "/help":
-        if not _telegram_user_allowed(user_id):
-            _telegram_start_message(chat_id, user_id)
-        else:
-            _telegram_send_help(chat_id)
-        return
-'''
-    text = _replace_once(text, old_commands, new_commands, "command /help")
+    if 'if command == "/help":' not in text:
+        text = _replace_regex(
+            text,
+            r'(?m)^    if command in \{"/start", "/help", "/menu"\}:\n'
+            r'        _telegram_start_message\(chat_id, user_id\)\n'
+            r'        return\n',
+            '    if command in {"/start", "/menu"}:\n'
+            '        _telegram_start_message(chat_id, user_id)\n'
+            '        return\n'
+            '    if command == "/help":\n'
+            '        if not _telegram_user_allowed(user_id):\n'
+            '            _telegram_start_message(chat_id, user_id)\n'
+            '        else:\n'
+            '            _telegram_send_help(chat_id)\n'
+            '        return\n',
+            "command /help",
+        )
 
-    old_callback = '''        if data == "show_help":
-            _telegram_send_message(
-                chat_id,
-                "<b>Что умеет DevelopAid</b>\\n\\n"
-                "• рассчитывает ТЭП по кадастровым номерам и принимает ручной ТЭП;\\n"
-                "• моделирует продажи, затраты, налоги, БРИДЖ, ПФ и эскроу;\\n"
-                "• позволяет настраивать прогноз ключевой ставки и сценарии;\\n"
-                "• считает одноочередные и многоочередные проекты;\\n"
-                "• распределяет общепроектные расходы и социальную нагрузку по очередям;\\n"
-                "• формирует PDF-отчёт с графиками и календарным Gantt.\\n\\n"
-                "Для детальной настройки откройте мини-приложение DevelopAid.",
-                reply_markup={"inline_keyboard": [[{
-                    "text": "Открыть мини-приложение DevelopAid",
-                    "web_app": {"url": _telegram_web_app_url(chat_id, [])},
-                }]]},
-            )
-            return
-'''
-    new_callback = '''        if data == "show_help":
-            _telegram_send_help(chat_id)
-            return
-'''
-    text = _replace_once(text, old_callback, new_callback, "show_help callback")
+    if 'if data == "show_help":\n            _telegram_send_help(chat_id)' not in text:
+        text = _replace_regex(
+            text,
+            r'(?ms)^        if data == "show_help":\n.*?^            return\n(?=        if data\.startswith\("flow_"\):)',
+            '        if data == "show_help":\n'
+            '            _telegram_send_help(chat_id)\n'
+            '            return\n',
+            "show_help callback",
+        )
 
-    welcome_old = '''        "DevelopAid рассчитает экономику, потребность в финансировании, динамику долга и эскроу, прибыль, "
-        "маржинальность и LLCR, а также сформирует PDF-отчёт с графиками и календарным планом.\\n\\n"
-'''
-    welcome_new = '''        "DevelopAid рассчитает экономику, потребность в финансировании, динамику долга и эскроу, прибыль, "
-        "маржинальность и LLCR, а также сформирует PDF-отчёт с графиками и календарным планом.\\n\\n"
-        "В мини-приложении Платон Сергеевич Федоскин может ответить на вопросы по текущей модели, "
-        "подобрать цену покупки и другие параметры, а затем предложить изменения для вашего подтверждения.\\n\\n"
-'''
-    text = _replace_once(text, welcome_old, welcome_new, "welcome Platon text")
+    welcome_marker = (
+        '        "маржинальность и LLCR, а также сформирует PDF-отчёт с графиками и календарным планом.\\n\\n"\n'
+    )
+    welcome_addition = (
+        welcome_marker
+        + '        "В мини-приложении Платон Сергеевич Федоскин отвечает на вопросы по текущему расчёту, "\n'
+        + '        "помогает подобрать цену покупки и другие параметры и предлагает изменения для подтверждения.\\n\\n"\n'
+    )
+    if "Платон Сергеевич Федоскин отвечает на вопросы по текущему расчёту" not in text:
+        if welcome_marker not in text:
+            raise RuntimeError("DevelopAid startup patch: welcome text marker not found")
+        text = text.replace(welcome_marker, welcome_addition, 1)
 
     send_marker = "async function sendTelegramResult(){\n"
     close_helper = r'''function closeTelegramWebAppAfterResult(){
  const tg=window.Telegram&&window.Telegram.WebApp;
- if(!tg||telegramMode==='edit')return false;
+ if(!tg)return false;
  try{if(typeof tg.disableClosingConfirmation==='function')tg.disableClosingConfirmation()}catch(e){}
  try{if(tg.MainButton)tg.MainButton.hide()}catch(e){}
  try{if(tg.BackButton)tg.BackButton.hide()}catch(e){}
  const closeNow=()=>{try{tg.close()}catch(e){}};
- setTimeout(closeNow,300);
- setTimeout(closeNow,1100);
+ setTimeout(closeNow,150);
+ setTimeout(closeNow,700);
+ setTimeout(closeNow,1500);
  return true;
 }
 
 '''
     if "function closeTelegramWebAppAfterResult()" not in text:
         if send_marker not in text:
-            raise RuntimeError("DevelopAid startup patch: sendTelegramResult marker not found")
+            raise RuntimeError("DevelopAid startup patch: sendTelegramResult not found")
         text = text.replace(send_marker, close_helper + send_marker, 1)
 
     send_start = text.index(send_marker)
     send_end = text.index("\n}\n\nasync function applyGlavapu()", send_start)
     send_block = text[send_start:send_end]
-
-    success_old = """    if(window.Telegram&&window.Telegram.WebApp){
-      window.Telegram.WebApp.ready();
-      if(window.Telegram.WebApp.HapticFeedback)window.Telegram.WebApp.HapticFeedback.notificationOccurred('success');
-    }
-"""
-    success_new = """    if(window.Telegram&&window.Telegram.WebApp){
-      window.Telegram.WebApp.ready();
-      if(window.Telegram.WebApp.HapticFeedback)window.Telegram.WebApp.HapticFeedback.notificationOccurred('success');
-      closeTelegramWebAppAfterResult();
-    }
-"""
-    send_block = _replace_once(send_block, success_old, success_new, "Telegram result success close")
+    if "closeTelegramWebAppAfterResult();" not in send_block:
+        send_block, count = re.subn(
+            r"(?m)^(\s*)if\(window\.Telegram\.WebApp\.HapticFeedback\)window\.Telegram\.WebApp\.HapticFeedback\.notificationOccurred\('success'\);\s*$",
+            lambda match: match.group(0) + "\n" + match.group(1) + "closeTelegramWebAppAfterResult();",
+            send_block,
+            count=1,
+        )
+        if count != 1:
+            raise RuntimeError("DevelopAid startup patch: result success marker not found")
     text = text[:send_start] + send_block + text[send_end:]
 
-    old_cad_close = """    if(window.Telegram&&window.Telegram.WebApp&&telegramResultSent){
-     setTimeout(()=>window.Telegram.WebApp.close(),700);
-    }
-"""
-    new_cad_close = """    if(telegramResultSent)closeTelegramWebAppAfterResult();
-"""
-    text = _replace_once(text, old_cad_close, new_cad_close, "cadastral close")
+    text = re.sub(
+        r'(?ms)^\s*if\(window\.Telegram&&window\.Telegram\.WebApp&&telegramResultSent\)\{\n'
+        r'\s*setTimeout\(\(\)=>window\.Telegram\.WebApp\.close\(\),700\);\n\s*\}\n',
+        '    if(telegramResultSent)closeTelegramWebAppAfterResult();\n',
+        text,
+        count=1,
+    )
+
+    required = [
+        'version="0.12.33"',
+        "def _telegram_send_help",
+        'if command == "/help"',
+        'if data == "show_help":\n            _telegram_send_help(chat_id)',
+        "function closeTelegramWebAppAfterResult()",
+        "closeTelegramWebAppAfterResult();",
+    ]
+    missing = [marker for marker in required if marker not in text]
+    if missing:
+        raise RuntimeError("DevelopAid startup patch: missing markers: " + ", ".join(missing))
 
     text += f"\n{_HOTFIX_MARKER}\n"
+    compile(text, str(path), "exec")
     path.write_text(text, encoding="utf-8")
 
 
