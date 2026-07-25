@@ -1,0 +1,9 @@
+Traceback (most recent call last):
+  File "/home/runner/work/plato/plato/.github/patches/apply_telegram_tep_template_v2.py", line 21, in <module>
+    with zipfile.ZipFile(TEMPLATE) as archive:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/hostedtoolcache/Python/3.12.13/x64/lib/python3.12/zipfile/__init__.py", line 1370, in __init__
+    self._RealGetContents()
+  File "/opt/hostedtoolcache/Python/3.12.13/x64/lib/python3.12/zipfile/__init__.py", line 1437, in _RealGetContents
+    raise BadZipFile("File is not a zip file")
+zipfile.BadZipFile: File is not a zip file
