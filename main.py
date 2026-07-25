@@ -6,6 +6,7 @@ import types
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parent
+_RUNTIME_VERSION = "0.12.36"
 
 
 def _load_module(name: str, path: Path, *, package_dir: Path | None = None):
@@ -53,3 +54,20 @@ else:
         package_dir=_ROOT / "main",
     )
     app = _entry.app
+    app.version = _RUNTIME_VERSION
+
+    _original_runtime_handler = _entry.legacy._telegram_handle_message
+
+    def _runtime_handler(update):
+        chat_id, user_id, text, callback = _entry._message_parts(update)
+        if callback is None and text.lower() == "/status":
+            _entry._send_message(
+                chat_id,
+                "<b>DevelopAid bot:</b> подключён\n"
+                f"Telegram ID: {user_id}\n"
+                f"Версия: {_RUNTIME_VERSION}",
+            )
+            return
+        return _original_runtime_handler(update)
+
+    _entry.legacy._telegram_handle_message = _runtime_handler
