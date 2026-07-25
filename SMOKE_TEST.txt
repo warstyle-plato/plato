@@ -1,3 +1,25 @@
+DEVELOPAID v0.12.35 FEDERAL LAND LOOKUP OK
+Python syntax: OK
+Page JavaScript syntax (node --check): OK
+tests/test_land_lookup.py — 23 passed
+Cadastral number -> region and quarter parsed offline: OK
+EPSG:3857 geometry converted to WGS84 center: OK
+WGS84 geometry left unprojected: OK
+EGRN fields normalized (area, category, permitted use, cadastral value, unit price): OK
+Buildings classified separately from land parcels: OK
+Several cadastral numbers in one query, duplicates removed: OK
+Missing number keeps offline region/quarter hints: OK
+NSPD outage reported per number, request still returns 200: OK
+Address resolved directly in NSPD, land parcels ranked first: OK
+Address fallback: geocoder -> point -> parcel: OK
+DaData cadastral number used directly when returned: OK
+Coordinate query "lat, lng" recognized: OK
+Out-of-range coordinates and empty/oversized query rejected with 400: OK
+NSPD search response cached (one network call for two lookups): OK
+Browser check: card renders, numbers transfer to GlavAPU block, project save/restore, no page errors: OK
+inputs._land_lookup does not change calculation output: OK
+No calculation formulas changed from v0.12.34: OK
+
 PLATO v0.12.5 EXPLANATION LAYOUT OK
 Python syntax: OK
 Static version and health version 0.12.5: OK

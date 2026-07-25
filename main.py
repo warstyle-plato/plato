@@ -29,7 +29,7 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse, FileResponse, Response
 from pydantic import BaseModel
 
-app = FastAPI(title="DevelopAid Development Investment Model", version="0.12.29")
+app = FastAPI(title="DevelopAid Development Investment Model", version="0.12.35")
 
 PRESET_DIR = Path(__file__).resolve().parent / "presets"
 MANUAL_TEP_TEMPLATE_FILENAME = "DevelopAid_Шаблон_ТЭП.xlsx"
@@ -1226,7 +1226,7 @@ def analyze_cadastral_territory(req: CadastralAnalysisRequest) -> dict[str, Any]
         headers={
             "Accept": "application/json",
             "Content-Type": "application/json; charset=utf-8",
-            "User-Agent": "DevelopAid-Development-Model/0.12.25",
+            "User-Agent": "DevelopAid-Development-Model/0.12.35",
         },
     )
     try:
@@ -1325,6 +1325,706 @@ def analyze_cadastral_territory(req: CadastralAnalysisRequest) -> dict[str, Any]
     }
 
 
+# ---------------------------------------------------------------------------
+# Федеральный поиск участка: НСПД (ППК «Роскадастр») + геокодеры
+#
+# /cadastral/analyze работает только по Москве (калькулятор ГлавАПУ).
+# Блок ниже даёт сведения ЕГРН по любому кадастровому номеру России,
+# по адресу и по координатам, не затрагивая расчётное ядро модели.
+# ---------------------------------------------------------------------------
+
+
+def _env_str(name: str, default: str = "") -> str:
+    return str(os.environ.get(name) or default).strip()
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(_env_str(name) or default)
+    except ValueError:
+        return default
+
+
+_NSPD_BASE_URL = (_env_str("NSPD_BASE_URL", "https://nspd.gov.ru")).rstrip("/")
+_NSPD_TIMEOUT_SECONDS = _env_float("NSPD_TIMEOUT_SECONDS", 25.0)
+_NSPD_LAND_THEMATIC_ID = 1
+_NOMINATIM_BASE_URL = (_env_str("NOMINATIM_BASE_URL", "https://nominatim.openstreetmap.org")).rstrip("/")
+_LAND_LOOKUP_USER_AGENT = "DevelopAid-Development-Model/0.12.35"
+_LAND_LOOKUP_MAX_RESULTS = 10
+_LAND_LOOKUP_CACHE_TTL_SECONDS = _env_float("LAND_LOOKUP_CACHE_TTL", 900.0)
+_LAND_LOOKUP_CACHE_LIMIT = 256
+_LAND_LOOKUP_RESPONSE_LIMIT = 4 * 1024 * 1024
+
+_land_lookup_cache: dict[str, tuple[float, Any]] = {}
+_land_lookup_cache_lock = threading.Lock()
+_nominatim_lock = threading.Lock()
+_nominatim_last_call = 0.0
+
+_COORDINATE_QUERY_RE = re.compile(
+    r"^\s*(-?\d{1,3}(?:[.,]\d+)?)\s*[,;\s]\s*(-?\d{1,3}(?:[.,]\d+)?)\s*$"
+)
+
+# Кадастровые округа. Совпадают с кодами субъектов РФ; используются как
+# офлайн-подсказка, если НСПД недоступен. Неизвестный код — пустая строка,
+# регион в этом случае берётся из ответа ЕГРН.
+_CADASTRAL_DISTRICTS = {
+    "01": "Республика Адыгея", "02": "Республика Башкортостан", "03": "Республика Бурятия",
+    "04": "Республика Алтай", "05": "Республика Дагестан", "06": "Республика Ингушетия",
+    "07": "Кабардино-Балкарская Республика", "08": "Республика Калмыкия",
+    "09": "Карачаево-Черкесская Республика", "10": "Республика Карелия", "11": "Республика Коми",
+    "12": "Республика Марий Эл", "13": "Республика Мордовия", "14": "Республика Саха (Якутия)",
+    "15": "Республика Северная Осетия — Алания", "16": "Республика Татарстан",
+    "17": "Республика Тыва", "18": "Удмуртская Республика", "19": "Республика Хакасия",
+    "20": "Чеченская Республика", "21": "Чувашская Республика", "22": "Алтайский край",
+    "23": "Краснодарский край", "24": "Красноярский край", "25": "Приморский край",
+    "26": "Ставропольский край", "27": "Хабаровский край", "28": "Амурская область",
+    "29": "Архангельская область", "30": "Астраханская область", "31": "Белгородская область",
+    "32": "Брянская область", "33": "Владимирская область", "34": "Волгоградская область",
+    "35": "Вологодская область", "36": "Воронежская область", "37": "Ивановская область",
+    "38": "Иркутская область", "39": "Калининградская область", "40": "Калужская область",
+    "41": "Камчатский край", "42": "Кемеровская область", "43": "Кировская область",
+    "44": "Костромская область", "45": "Курганская область", "46": "Курская область",
+    "47": "Ленинградская область", "48": "Липецкая область", "49": "Магаданская область",
+    "50": "Московская область", "51": "Мурманская область", "52": "Нижегородская область",
+    "53": "Новгородская область", "54": "Новосибирская область", "55": "Омская область",
+    "56": "Оренбургская область", "57": "Орловская область", "58": "Пензенская область",
+    "59": "Пермский край", "60": "Псковская область", "61": "Ростовская область",
+    "62": "Рязанская область", "63": "Самарская область", "64": "Саратовская область",
+    "65": "Сахалинская область", "66": "Свердловская область", "67": "Смоленская область",
+    "68": "Тамбовская область", "69": "Тверская область", "70": "Томская область",
+    "71": "Тульская область", "72": "Тюменская область", "73": "Ульяновская область",
+    "74": "Челябинская область", "75": "Забайкальский край", "76": "Ярославская область",
+    "77": "Москва", "78": "Санкт-Петербург", "79": "Еврейская автономная область",
+    "83": "Ненецкий автономный округ", "86": "Ханты-Мансийский автономный округ — Югра",
+    "87": "Чукотский автономный округ", "89": "Ямало-Ненецкий автономный округ",
+    "91": "Республика Крым", "92": "Севастополь",
+}
+
+# Названия полей ЕГРН в ответе НСПД менялись между версиями геопортала,
+# поэтому каждое значение ищется по списку синонимов.
+_NSPD_FIELD_ALIASES: dict[str, tuple[str, ...]] = {
+    "cadastral_number": ("cad_num", "cadNum", "cadastral_number", "cadastralNumber"),
+    "address": ("readable_address", "address", "adress", "readableAddress", "location"),
+    "area_sqm": (
+        "land_record_area", "specified_area", "declared_area", "area",
+        "build_record_area", "area_value",
+    ),
+    "category": ("land_record_category_type", "category_type", "land_category", "category"),
+    "permitted_use": (
+        "permitted_use_established_by_document", "permitted_use_by_doc",
+        "permitted_use", "utilization_by_doc", "utilization", "permittedUse",
+    ),
+    "cadastral_value": ("cost_value", "cadastral_cost", "cadastral_value", "cost"),
+    "cadastral_value_date": (
+        "cost_determination_date", "cost_application_date",
+        "cost_registration_date", "cost_approvement_date",
+    ),
+    "status": ("status", "land_record_status", "record_status", "object_status"),
+    "registration_date": (
+        "land_record_reg_date", "build_record_registration_date",
+        "registration_date", "reg_date",
+    ),
+    "quarter": ("quarter_cad_number", "cadastral_quarter", "quarter"),
+    "ownership": ("ownership_type", "right_type", "form_of_ownership"),
+    "region": ("subject_rf", "subject", "region"),
+    "purpose": ("purpose", "assignation_name", "build_record_type_value", "object_type"),
+    "floors": ("floors", "floor_count"),
+    "year_built": ("year_built", "year_of_construction", "year_used"),
+}
+
+_LAND_KIND_LABELS = {
+    "land": "Земельный участок",
+    "building": "Объект капитального строительства",
+    "other": "Объект ЕГРН",
+}
+
+
+def _land_cache_get(key: str) -> Any:
+    now = time.time()
+    with _land_lookup_cache_lock:
+        item = _land_lookup_cache.get(key)
+        if not item:
+            return None
+        stored_at, value = item
+        if now - stored_at > _LAND_LOOKUP_CACHE_TTL_SECONDS:
+            _land_lookup_cache.pop(key, None)
+            return None
+        return value
+
+
+def _land_cache_put(key: str, value: Any) -> None:
+    with _land_lookup_cache_lock:
+        if len(_land_lookup_cache) >= _LAND_LOOKUP_CACHE_LIMIT:
+            oldest = sorted(_land_lookup_cache.items(), key=lambda item: item[1][0])
+            for stale_key, _ in oldest[: len(oldest) // 2 or 1]:
+                _land_lookup_cache.pop(stale_key, None)
+        _land_lookup_cache[key] = (time.time(), value)
+
+
+def _land_fetch_json(
+    url: str,
+    *,
+    service: str,
+    data: bytes | None = None,
+    headers: dict[str, str] | None = None,
+    timeout: float | None = None,
+) -> Any:
+    """GET/POST внешнего JSON с единообразными русскими ошибками."""
+    request_headers = {
+        "Accept": "application/json",
+        "Accept-Language": "ru-RU,ru;q=0.9",
+        "User-Agent": _LAND_LOOKUP_USER_AGENT,
+    }
+    if data is not None:
+        request_headers["Content-Type"] = "application/json; charset=utf-8"
+    request_headers.update(headers or {})
+    external_request = urllib.request.Request(
+        url,
+        data=data,
+        method="POST" if data is not None else "GET",
+        headers=request_headers,
+    )
+    try:
+        with urllib.request.urlopen(external_request, timeout=timeout or _NSPD_TIMEOUT_SECONDS) as response:
+            raw = response.read(_LAND_LOOKUP_RESPONSE_LIMIT + 1)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return None
+        raise HTTPException(
+            status_code=400 if 400 <= exc.code < 500 else 502,
+            detail=f"{service}: {_external_error_message(exc)}",
+        ) from exc
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"{service} временно недоступен. Повторите попытку позже.",
+        ) from exc
+    if len(raw) > _LAND_LOOKUP_RESPONSE_LIMIT:
+        raise HTTPException(status_code=502, detail=f"{service} вернул слишком большой ответ.")
+    if not raw.strip():
+        return None
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=502, detail=f"{service} вернул некорректный ответ.") from exc
+
+
+def _land_float(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip().replace("\xa0", "").replace(" ", "")
+    if not text:
+        return None
+    text = text.replace(",", ".")
+    match = re.search(r"-?\d+(?:\.\d+)?", text)
+    if not match:
+        return None
+    try:
+        return float(match.group(0))
+    except ValueError:
+        return None
+
+
+def _land_text(value: Any) -> str:
+    if value is None or isinstance(value, bool):
+        return ""
+    text = str(value).strip()
+    return "" if text.lower() in {"none", "null", "nan"} else text
+
+
+def _cadastral_number_parts(number: str) -> dict[str, Any]:
+    """Разбор кадастрового номера без обращения к внешним сервисам."""
+    chunks = str(number or "").split(":")
+    district = chunks[0] if chunks else ""
+    quarter = ":".join(chunks[:3]) if len(chunks) >= 3 else ""
+    return {
+        "district_code": district,
+        "region_hint": _CADASTRAL_DISTRICTS.get(district, ""),
+        "quarter": quarter,
+    }
+
+
+def _mercator_to_wgs84(x: float, y: float) -> tuple[float, float]:
+    """EPSG:3857 → широта/долгота. НСПД отдаёт геометрию в веб-меркаторе."""
+    lng = x * 180.0 / 20037508.34
+    lat = y * 180.0 / 20037508.34
+    lat = 180.0 / math.pi * (2.0 * math.atan(math.exp(lat * math.pi / 180.0)) - math.pi / 2.0)
+    return lat, lng
+
+
+def _geometry_points(node: Any, out: list[tuple[float, float]]) -> None:
+    if isinstance(node, (list, tuple)):
+        if (
+            len(node) >= 2
+            and isinstance(node[0], (int, float))
+            and isinstance(node[1], (int, float))
+        ):
+            out.append((float(node[0]), float(node[1])))
+            return
+        for child in node:
+            _geometry_points(child, out)
+
+
+def _geometry_center(geometry: Any) -> dict[str, Any] | None:
+    if not isinstance(geometry, dict):
+        return None
+    points: list[tuple[float, float]] = []
+    _geometry_points(geometry.get("coordinates"), points)
+    if not points:
+        return None
+    x = (min(p[0] for p in points) + max(p[0] for p in points)) / 2.0
+    y = (min(p[1] for p in points) + max(p[1] for p in points)) / 2.0
+    if abs(x) <= 180.0 and abs(y) <= 90.0:
+        # Уже WGS84 (GeoJSON порядок — долгота, широта).
+        lat, lng = y, x
+        merc_x = lng * 20037508.34 / 180.0
+        merc_y = math.log(math.tan((90.0 + lat) * math.pi / 360.0)) / (math.pi / 180.0)
+        merc_y = merc_y * 20037508.34 / 180.0
+    else:
+        lat, lng = _mercator_to_wgs84(x, y)
+        merc_x, merc_y = x, y
+    return {
+        "lat": round(lat, 6),
+        "lng": round(lng, 6),
+        "merc_x": round(merc_x, 2),
+        "merc_y": round(merc_y, 2),
+    }
+
+
+def _nspd_features(payload: Any) -> list[dict[str, Any]]:
+    for container in (payload.get("data") if isinstance(payload, dict) else None, payload):
+        if isinstance(container, dict):
+            features = container.get("features")
+            if isinstance(features, list):
+                return [item for item in features if isinstance(item, dict)]
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    return []
+
+
+def _nspd_options(feature: dict[str, Any]) -> dict[str, Any]:
+    properties = feature.get("properties")
+    properties = properties if isinstance(properties, dict) else {}
+    merged: dict[str, Any] = {k: v for k, v in properties.items() if not isinstance(v, (dict, list))}
+    options = properties.get("options")
+    if isinstance(options, dict):
+        merged.update(options)
+    return merged
+
+
+def _nspd_value(options: dict[str, Any], field: str) -> Any:
+    for alias in _NSPD_FIELD_ALIASES.get(field, ()):
+        if alias in options:
+            value = options[alias]
+            if value not in (None, "", []):
+                return value
+    return None
+
+
+def _nspd_object_kind(feature: dict[str, Any], options: dict[str, Any]) -> str:
+    properties = feature.get("properties")
+    properties = properties if isinstance(properties, dict) else {}
+    label = " ".join(
+        _land_text(properties.get(key)) for key in ("categoryName", "category_name", "descr")
+    ).lower()
+    if "участ" in label:
+        return "land"
+    if any(word in label for word in ("здан", "сооруж", "помещ", "объект недвиж", "окс", "строен")):
+        return "building"
+    if _nspd_value(options, "category") or "land_record_area" in options:
+        return "land"
+    if "build_record_area" in options or _nspd_value(options, "year_built"):
+        return "building"
+    return "other"
+
+
+def _nspd_map_url(center: dict[str, Any] | None, cadastral_number: str) -> str:
+    if center and center.get("merc_x") is not None:
+        return (
+            f"{_NSPD_BASE_URL}/map?thematic=PKK&zoom=17"
+            f"&coordinate_x={center['merc_x']}&coordinate_y={center['merc_y']}"
+        )
+    if cadastral_number:
+        return f"{_NSPD_BASE_URL}/map?thematic=PKK&query={urllib.parse.quote(cadastral_number)}"
+    return f"{_NSPD_BASE_URL}/map"
+
+
+def _normalize_nspd_feature(feature: dict[str, Any]) -> dict[str, Any]:
+    options = _nspd_options(feature)
+    properties = feature.get("properties")
+    properties = properties if isinstance(properties, dict) else {}
+    cadastral_number = _land_text(_nspd_value(options, "cadastral_number"))
+    parts = _cadastral_number_parts(cadastral_number)
+    area_sqm = _land_float(_nspd_value(options, "area_sqm"))
+    cadastral_value = _land_float(_nspd_value(options, "cadastral_value"))
+    kind = _nspd_object_kind(feature, options)
+    center = _geometry_center(feature.get("geometry"))
+    region = _land_text(_nspd_value(options, "region")) or parts["region_hint"]
+    return {
+        "found": True,
+        "cadastral_number": cadastral_number,
+        "kind": kind,
+        "kind_label": _LAND_KIND_LABELS.get(kind, _LAND_KIND_LABELS["other"]),
+        "address": _land_text(_nspd_value(options, "address")),
+        "area_sqm": round(area_sqm, 2) if area_sqm is not None else None,
+        "area_ha": round(area_sqm / 10000.0, 4) if area_sqm is not None else None,
+        "category": _land_text(_nspd_value(options, "category")),
+        "permitted_use": _land_text(_nspd_value(options, "permitted_use")),
+        "cadastral_value_rub": round(cadastral_value, 2) if cadastral_value is not None else None,
+        "cadastral_value_mln": round(cadastral_value / 1_000_000.0, 3) if cadastral_value else None,
+        "cadastral_value_date": _land_text(_nspd_value(options, "cadastral_value_date")),
+        "unit_value_rub_per_sqm": (
+            round(cadastral_value / area_sqm, 2)
+            if cadastral_value and area_sqm and area_sqm > 0
+            else None
+        ),
+        "status": _land_text(_nspd_value(options, "status")),
+        "registration_date": _land_text(_nspd_value(options, "registration_date")),
+        "quarter": _land_text(_nspd_value(options, "quarter")) or parts["quarter"],
+        "ownership": _land_text(_nspd_value(options, "ownership")),
+        "region": region,
+        "purpose": _land_text(_nspd_value(options, "purpose")),
+        "floors": _land_text(_nspd_value(options, "floors")),
+        "year_built": _land_text(_nspd_value(options, "year_built")),
+        "center": {"lat": center["lat"], "lng": center["lng"]} if center else None,
+        "map_url": _nspd_map_url(center, cadastral_number),
+        "category_name": _land_text(properties.get("categoryName")),
+        "source": "НСПД / ЕГРН",
+    }
+
+
+def _nspd_search_features(query: str) -> list[dict[str, Any]]:
+    cache_key = f"nspd:search:{query}"
+    cached = _land_cache_get(cache_key)
+    if cached is not None:
+        return cached
+    params = urllib.parse.urlencode({
+        "query": query,
+        "thematicSearchId": _NSPD_LAND_THEMATIC_ID,
+    })
+    payload = _land_fetch_json(
+        f"{_NSPD_BASE_URL}/api/geoportal/v2/search/geoportal?{params}",
+        service="Сервис НСПД",
+    )
+    features = _nspd_features(payload)
+    _land_cache_put(cache_key, features)
+    return features
+
+
+def _nspd_point_features(lat: float, lng: float) -> list[dict[str, Any]]:
+    """Участки в точке: сначала поиск по координатам, затем пространственный запрос."""
+    try:
+        features = _nspd_search_features(f"{lat} {lng}")
+    except HTTPException:
+        features = []
+    if features:
+        return features
+    merc_x = lng * 20037508.34 / 180.0
+    merc_y = math.log(math.tan((90.0 + lat) * math.pi / 360.0)) / (math.pi / 180.0)
+    merc_y = merc_y * 20037508.34 / 180.0
+    geom = json.dumps({"type": "Point", "coordinates": [merc_x, merc_y]}, ensure_ascii=False)
+    params = urllib.parse.urlencode({"typeIntersect": "lands", "geom": geom})
+    try:
+        payload = _land_fetch_json(
+            f"{_NSPD_BASE_URL}/api/geoportal/v1/intersects?{params}",
+            service="Сервис НСПД",
+        )
+    except HTTPException:
+        return []
+    return _nspd_features(payload)
+
+
+def _geocode_yandex(address: str, limit: int) -> list[dict[str, Any]]:
+    api_key = _env_str("YANDEX_GEOCODER_API_KEY")
+    if not api_key:
+        return []
+    params = urllib.parse.urlencode({
+        "apikey": api_key,
+        "format": "json",
+        "lang": "ru_RU",
+        "results": limit,
+        "geocode": address,
+    })
+    payload = _land_fetch_json(
+        f"https://geocode-maps.yandex.ru/1.x/?{params}",
+        service="Геокодер Яндекса",
+    )
+    members = (
+        ((payload or {}).get("response") or {}).get("GeoObjectCollection") or {}
+    ).get("featureMember") or []
+    results: list[dict[str, Any]] = []
+    for member in members[:limit]:
+        geo_object = (member or {}).get("GeoObject") or {}
+        point = _land_text((geo_object.get("Point") or {}).get("pos"))
+        chunks = point.split()
+        if len(chunks) != 2:
+            continue
+        lng, lat = _land_float(chunks[0]), _land_float(chunks[1])
+        if lat is None or lng is None:
+            continue
+        meta = (
+            (geo_object.get("metaDataProperty") or {}).get("GeocoderMetaData") or {}
+        )
+        results.append({
+            "lat": lat,
+            "lng": lng,
+            "label": _land_text(meta.get("text")) or _land_text(geo_object.get("name")),
+            "provider": "Яндекс",
+        })
+    return results
+
+
+def _geocode_dadata(address: str, limit: int) -> list[dict[str, Any]]:
+    api_key = _env_str("DADATA_API_KEY")
+    if not api_key:
+        return []
+    payload = _land_fetch_json(
+        "https://suggestions.dadata.ru/suggestions/api/4_1/rs/suggest/address",
+        service="DaData",
+        data=json.dumps({"query": address, "count": limit}, ensure_ascii=False).encode("utf-8"),
+        headers={"Authorization": f"Token {api_key}"},
+    )
+    results: list[dict[str, Any]] = []
+    for suggestion in ((payload or {}).get("suggestions") or [])[:limit]:
+        data = (suggestion or {}).get("data") or {}
+        lat, lng = _land_float(data.get("geo_lat")), _land_float(data.get("geo_lon"))
+        if lat is None or lng is None:
+            continue
+        results.append({
+            "lat": lat,
+            "lng": lng,
+            "label": _land_text(suggestion.get("value")),
+            "cadastral_number": _land_text(data.get("cadastral_number") or data.get("house_cadnum")),
+            "provider": "DaData",
+        })
+    return results
+
+
+def _geocode_nominatim(address: str, limit: int) -> list[dict[str, Any]]:
+    global _nominatim_last_call
+    with _nominatim_lock:
+        # Условия OSM: не чаще одного запроса в секунду.
+        wait = 1.0 - (time.time() - _nominatim_last_call)
+        if wait > 0:
+            time.sleep(min(wait, 1.0))
+        _nominatim_last_call = time.time()
+    params = urllib.parse.urlencode({
+        "q": address,
+        "format": "jsonv2",
+        "limit": limit,
+        "accept-language": "ru",
+        "countrycodes": "ru",
+    })
+    payload = _land_fetch_json(
+        f"{_NOMINATIM_BASE_URL}/search?{params}",
+        service="Геокодер OpenStreetMap",
+    )
+    results: list[dict[str, Any]] = []
+    for item in (payload or [])[:limit]:
+        lat, lng = _land_float((item or {}).get("lat")), _land_float((item or {}).get("lon"))
+        if lat is None or lng is None:
+            continue
+        results.append({
+            "lat": lat,
+            "lng": lng,
+            "label": _land_text(item.get("display_name")),
+            "provider": "OpenStreetMap",
+        })
+    return results
+
+
+_GEOCODERS = (
+    ("yandex", _geocode_yandex),
+    ("dadata", _geocode_dadata),
+    ("nominatim", _geocode_nominatim),
+)
+
+
+def _geocode_address(address: str, limit: int) -> tuple[list[dict[str, Any]], list[str]]:
+    forced = _env_str("LAND_LOOKUP_GEOCODER").lower()
+    warnings: list[str] = []
+    for name, provider in _GEOCODERS:
+        if forced and forced != name:
+            continue
+        try:
+            candidates = provider(address, limit)
+        except HTTPException as exc:
+            warnings.append(str(exc.detail))
+            continue
+        if candidates:
+            return candidates, warnings
+    return [], warnings
+
+
+def _land_lookup_by_numbers(numbers: list[str]) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    for number in numbers:
+        parts = _cadastral_number_parts(number)
+        try:
+            features = _nspd_search_features(number)
+        except HTTPException as exc:
+            results.append({
+                "found": False,
+                "cadastral_number": number,
+                "region": parts["region_hint"],
+                "quarter": parts["quarter"],
+                "map_url": _nspd_map_url(None, number),
+                "note": str(exc.detail),
+            })
+            continue
+        matched = [
+            item for item in features
+            if _land_text(_nspd_value(_nspd_options(item), "cadastral_number")) == number
+        ] or features[:1]
+        if not matched:
+            results.append({
+                "found": False,
+                "cadastral_number": number,
+                "region": parts["region_hint"],
+                "quarter": parts["quarter"],
+                "map_url": _nspd_map_url(None, number),
+                "note": "В ЕГРН по этому номеру сведений не найдено.",
+            })
+            continue
+        results.append(_normalize_nspd_feature(matched[0]))
+    return results
+
+
+def _land_lookup_features_to_results(
+    features: list[dict[str, Any]], limit: int
+) -> list[dict[str, Any]]:
+    normalized = [_normalize_nspd_feature(item) for item in features]
+    lands = [item for item in normalized if item["kind"] == "land"]
+    ordered = lands + [item for item in normalized if item["kind"] != "land"]
+    unique: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in ordered:
+        key = item["cadastral_number"] or json.dumps(item.get("center") or {}, sort_keys=True)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(item)
+        if len(unique) >= limit:
+            break
+    return unique
+
+
+class LandLookupRequest(BaseModel):
+    query: str = ""
+    limit: int = 5
+
+
+@app.post("/land/lookup")
+def land_lookup(req: LandLookupRequest) -> dict[str, Any]:
+    """Сведения ЕГРН по кадастровому номеру, адресу или координатам — по всей России."""
+    query = _land_text(req.query)
+    if not query:
+        raise HTTPException(status_code=400, detail="Введите кадастровый номер или адрес участка.")
+    if len(query) > 500:
+        raise HTTPException(status_code=400, detail="Слишком длинный запрос: не более 500 символов.")
+    try:
+        limit = int(req.limit or 5)
+    except (TypeError, ValueError):
+        limit = 5
+    limit = max(1, min(limit, _LAND_LOOKUP_MAX_RESULTS))
+
+    warnings: list[str] = []
+    numbers: list[str] = []
+    seen: set[str] = set()
+    for number in _CADASTRAL_NUMBER_RE.findall(query.replace("：", ":")):
+        if number not in seen:
+            seen.add(number)
+            numbers.append(number)
+
+    if numbers:
+        mode = "cadastral"
+        if len(numbers) > limit:
+            warnings.append(
+                f"В запросе {len(numbers)} номеров, показаны первые {limit}. "
+                "Увеличьте лимит или ищите частями."
+            )
+        results = _land_lookup_by_numbers(numbers[:limit])
+    else:
+        coordinates = _COORDINATE_QUERY_RE.match(query)
+        if coordinates:
+            mode = "point"
+            lat = _land_float(coordinates.group(1))
+            lng = _land_float(coordinates.group(2))
+            if lat is None or lng is None or abs(lat) > 90 or abs(lng) > 180:
+                raise HTTPException(status_code=400, detail="Некорректные координаты: ожидается «широта, долгота».")
+            results = _land_lookup_features_to_results(_nspd_point_features(lat, lng), limit)
+            if not results:
+                warnings.append("В указанной точке участок ЕГРН не найден.")
+        else:
+            mode = "address"
+            try:
+                features = _nspd_search_features(query)
+            except HTTPException as exc:
+                features = []
+                warnings.append(str(exc.detail))
+            results = _land_lookup_features_to_results(features, limit)
+            if not results:
+                candidates, geocoder_warnings = _geocode_address(query, 3)
+                warnings.extend(geocoder_warnings)
+                if not candidates:
+                    warnings.append(
+                        "Адрес не распознан. Уточните формулировку или введите кадастровый номер."
+                    )
+                for candidate in candidates:
+                    if candidate.get("cadastral_number"):
+                        found = _land_lookup_by_numbers([candidate["cadastral_number"]])
+                    else:
+                        found = _land_lookup_features_to_results(
+                            _nspd_point_features(candidate["lat"], candidate["lng"]), limit
+                        )
+                    for item in found:
+                        item["matched_address"] = candidate.get("label", "")
+                        item["geocoder"] = candidate.get("provider", "")
+                    results.extend(found)
+                    if len(results) >= limit:
+                        break
+                results = results[:limit]
+                if candidates and not results:
+                    warnings.append(
+                        "Адрес найден, но участок ЕГРН в этой точке не определён — "
+                        "проверьте объект на публичной карте."
+                    )
+
+    warnings.append(
+        "Сведения справочные, из открытых данных ЕГРН. "
+        "Для сделки нужна актуальная выписка Росреестра."
+    )
+    warnings.append("На внешние сервисы передаётся только строка поиска; финансовая модель не передаётся.")
+    return {
+        "mode": mode,
+        "query": query,
+        "results": results,
+        "found_count": len([item for item in results if item.get("found")]),
+        "warnings": warnings,
+        "source": {
+            "service": "nspd.gov.ru (НСПД, ППК «Роскадастр»)",
+            "requested_at": date.today().isoformat(),
+        },
+    }
+
+
+@app.get("/land/providers")
+def land_lookup_providers() -> dict[str, Any]:
+    """Диагностика: какие внешние источники подключены на этом стенде."""
+    return {
+        "nspd_base_url": _NSPD_BASE_URL,
+        "geocoders": {
+            "yandex": bool(_env_str("YANDEX_GEOCODER_API_KEY")),
+            "dadata": bool(_env_str("DADATA_API_KEY")),
+            "nominatim": True,
+        },
+        "forced_geocoder": _env_str("LAND_LOOKUP_GEOCODER") or None,
+        "cache_ttl_seconds": _LAND_LOOKUP_CACHE_TTL_SECONDS,
+    }
+
+
 _GENPLAN_BASE_URL = "https://genplan.tech/calc/"
 _GENPLAN_ASSET_DIR = Path(__file__).resolve().parent / "genplan_assets"
 _GENPLAN_REQUIRED_ASSETS = {
@@ -1365,7 +2065,7 @@ def _proxy_genplan(asset_path: str, request: Request) -> Response:
         target,
         headers={
             "Accept": request.headers.get("accept", "*/*"),
-            "User-Agent": "DevelopAid-Development-Model/0.12.25",
+            "User-Agent": "DevelopAid-Development-Model/0.12.35",
         },
     )
     try:
@@ -2472,7 +3172,7 @@ def _telegram_handle_message(message: dict[str, Any]) -> None:
         status = "подключён" if _TELEGRAM_RUNTIME.get("configured") else "запускается"
         _telegram_send_message(
             chat_id,
-            f"<b>DevelopAid bot:</b> {status}\nTelegram ID: <code>{user_id}</code>\nВерсия: 0.12.29",
+            f"<b>DevelopAid bot:</b> {status}\nTelegram ID: <code>{user_id}</code>\nВерсия: 0.12.35",
         )
         return
     if command == "/cancel":
@@ -2635,7 +3335,7 @@ def telegram_status() -> dict[str, Any]:
         "allowed_users_count": len(allowed),
         "configured_at": _TELEGRAM_RUNTIME.get("configured_at") or "",
         "last_error": _TELEGRAM_RUNTIME.get("last_error") or "",
-        "version": "0.12.29",
+        "version": "0.12.35",
     }
 
 
@@ -3545,7 +4245,7 @@ def fetch_current_cbr_key_rate() -> dict[str, Any]:
         req = urllib.request.Request(
             feed_url,
             headers={
-                "User-Agent": "Mozilla/5.0 DevelopAid-Development-Model/0.12.25",
+                "User-Agent": "Mozilla/5.0 DevelopAid-Development-Model/0.12.35",
                 "Accept-Language": "ru-RU,ru;q=0.9",
             },
         )
@@ -3591,7 +4291,7 @@ def fetch_current_cbr_key_rate() -> dict[str, Any]:
         req = urllib.request.Request(
             url,
             headers={
-                "User-Agent": "Mozilla/5.0 DevelopAid-Development-Model/0.12.25",
+                "User-Agent": "Mozilla/5.0 DevelopAid-Development-Model/0.12.35",
                 "Accept-Language": "ru-RU,ru;q=0.9",
             },
         )
@@ -4911,7 +5611,7 @@ def calculate(req: CalcRequest) -> dict:
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "version": "0.12.25"}
+    return {"status": "ok", "version": "0.12.35"}
 
 
 @app.get("/defaults")
@@ -7692,7 +8392,7 @@ def _openai_responses_request(payload: dict[str, Any]) -> dict[str, Any]:
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
-            "User-Agent": "DevelopAid-Development-Model/0.12.25",
+            "User-Agent": "DevelopAid-Development-Model/0.12.35",
         },
         method="POST",
     )
@@ -7998,6 +8698,16 @@ tfoot th{border-top:2px solid #111;color:#111;background:#fff}
 .cadastral-entry{display:grid;grid-template-columns:minmax(280px,1fr) auto;gap:8px;align-items:start;margin-top:12px}
 .cadastral-entry textarea{width:100%;min-height:62px;resize:vertical;border:1px solid #bbb;background:#fff;padding:10px;font:inherit;font-size:12px}
 .cadastral-preview{margin-top:14px;padding-top:14px;border-top:1px solid #ccc}
+.land-results{display:grid;gap:10px;margin-bottom:12px}
+.land-item{background:#fff;border:1px solid #ddd;padding:12px}
+.land-item.miss{background:#fff8e6;border-color:#e0cfa0}
+.land-item header{display:flex;justify-content:space-between;gap:10px;align-items:baseline;flex-wrap:wrap;margin-bottom:9px}
+.land-item h4{margin:0;font-size:14px;font-variant-numeric:tabular-nums}
+.land-kind{font-size:11px;color:#777}
+.land-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:9px 16px;font-size:12px}
+.land-grid small{display:block;color:#777;font-size:10px;text-transform:uppercase;letter-spacing:.06em}
+.land-grid b{display:block;margin-top:3px;font-weight:600;line-height:1.35}
+.land-links{margin-top:9px;font-size:11px}
 .cadastral-parcels{margin-top:10px;max-height:190px;overflow:auto;background:#fff;border:1px solid #ddd}
 .cadastral-parcels table{margin:0}.cadastral-parcels th,.cadastral-parcels td{padding:7px 9px}
 .genplan-automation-frame{position:fixed;left:-12000px;top:0;width:1440px;height:1000px;border:0;pointer-events:none}
@@ -8139,7 +8849,7 @@ tfoot th{border-top:2px solid #111;color:#111;background:#fff}
 <div class="shell">
   <div class="brandbar"><img src="data:image/webp;base64,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"><div class="brandline"></div></div>
   <div class="header">
-    <div class="title"><h1>Девелоперская инвестиционная модель</h1><p>v0.12.25 · ТЭП · экономика · БРИДЖ · проектное финансирование · эскроу · LLCR</p></div>
+    <div class="title"><h1>Девелоперская инвестиционная модель</h1><p>v0.12.35 · ТЭП · экономика · БРИДЖ · проектное финансирование · эскроу · LLCR</p></div>
     <div class="actions">
       <div class="scenario">Класс&nbsp;
         <select id="projectClassSelect" onchange="applyProjectClassPreset(this.value)" style="min-width:135px">
@@ -8188,6 +8898,36 @@ tfoot th{border-top:2px solid #111;color:#111;background:#fff}
 
   <div class="content">
     <div id="inputs" class="panel active">
+      <div class="card import-card">
+        <div class="import-head">
+          <div>
+            <div class="section-title">Сведения ЕГРН</div>
+            <h2>Поиск участка по кадастровому номеру или адресу — вся Россия</h2>
+            <p>Введите кадастровый номер, адрес или координаты «широта, долгота». DevelopAid запросит открытые сведения ЕГРН в НСПД (ППК «Роскадастр»): адрес, площадь, категорию земель, ВРИ, кадастровую стоимость, форму собственности и статус. Работает по всей стране — в отличие от калькулятора нормативных ТЭП ГлавАПУ, который считает только Москву.</p>
+          </div>
+          <div style="font-size:11px;color:#777;text-align:right">Источник<br><b style="color:#111">НСПД / ЕГРН</b></div>
+        </div>
+        <div class="cadastral-box">
+          <h3>Найти участок</h3>
+          <p>Можно ввести несколько кадастровых номеров сразу — через запятую или с новой строки. Если адрес не находится напрямую, он геокодируется и участок определяется по точке.</p>
+          <div class="cadastral-entry">
+            <textarea id="landQuery" placeholder="50:12:0080205:123&#10;или: Московская область, г. Мытищи, ул. Мира, 1&#10;или: 55.910500, 37.736500"></textarea>
+            <button id="landLookupButton" class="btn dark" onclick="lookupLand()">Найти участок</button>
+          </div>
+          <div id="landStatus" class="import-status">На внешний сервис передаётся только строка поиска; финансовая модель не передаётся.</div>
+          <div id="landPreview" class="cadastral-preview" style="display:none">
+            <div id="landSummary" class="import-summary"></div>
+            <div id="landCards" class="land-results"></div>
+            <div id="landWarnings" class="note warning"></div>
+            <div class="import-actions">
+              <button class="btn" onclick="useLandForTep()">Подставить номера в расчёт ТЭП</button>
+              <button class="btn" onclick="saveLandLookup()">Сохранить участок в проект</button>
+              <span style="font-size:11px;color:#777">Расчётные вводные автоматически не меняются.</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div class="card import-card">
         <div class="import-head">
           <div>
@@ -8921,6 +9661,134 @@ function saveCadastralTerritory(){
  if(!cadastralAnalysis){cadastralStatus.innerHTML='<span class="import-error">Сначала определите территорию.</span>';return}
  inputs._cadastral_analysis=structuredClone(cadastralAnalysis);
  cadastralStatus.innerHTML='<span class="import-ok">Состав территории сохранён в текущем проекте.</span>';
+}
+
+let landLookup=null;
+
+function landNum(value,digits){
+ if(value==null||value==='')return '—';
+ const number=Number(value);
+ if(!isFinite(number))return '—';
+ return number.toLocaleString('ru-RU',{minimumFractionDigits:digits,maximumFractionDigits:digits});
+}
+
+// Координаты показываем с точкой, иначе «55,9105, 37,7365» читается как четыре числа.
+function landCoords(center){
+ if(!center||center.lat==null||center.lng==null)return '—';
+ return Number(center.lat).toFixed(6)+', '+Number(center.lng).toFixed(6);
+}
+
+function landDate(value){
+ const text=String(value||'').trim();
+ const iso=text.match(/^(\d{4})-(\d{2})-(\d{2})/);
+ return iso?`${iso[3]}.${iso[2]}.${iso[1]}`:(text||'—');
+}
+
+async function lookupLand(){
+ const field=document.getElementById('landQuery');
+ const button=document.getElementById('landLookupButton');
+ const status=document.getElementById('landStatus');
+ const raw=(field&&field.value||'').trim();
+ if(!raw){status.innerHTML='<span class="import-error">Введите кадастровый номер, адрес или координаты.</span>';return}
+ button.disabled=true;button.textContent='Ищу…';
+ status.textContent='Запрашиваю сведения ЕГРН в НСПД…';
+ try{
+  const response=await fetch('/land/lookup',{
+   method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:raw,limit:5})
+  });
+  const data=await response.json();
+  if(!response.ok)throw new Error(data.detail||'Не удалось получить сведения ЕГРН');
+  landLookup=data;
+  renderLandLookup(data);
+  const found=Number(data.found_count||0);
+  status.innerHTML=found
+   ?'<span class="import-ok">Найдено объектов ЕГРН: '+found+'.</span> Проверьте сведения ниже.'
+   :'<span class="import-error">Сведения ЕГРН не найдены.</span> Уточните номер или адрес.';
+ }catch(e){
+  status.innerHTML='<span class="import-error">'+escapeHtml(String(e.message||e))+'</span>';
+ }finally{
+  button.disabled=false;button.textContent='Найти участок';
+ }
+}
+
+function landCardHtml(item){
+ const mapLink=item.map_url
+  ?`<div class="land-links"><a href="${escapeHtml(item.map_url)}" target="_blank" rel="noopener">Открыть на публичной карте НСПД</a></div>`
+  :'';
+ if(!item.found){
+  const rows=[['Регион по коду округа',item.region||'—'],['Кадастровый квартал',item.quarter||'—']];
+  return `<div class="land-item miss"><header><h4>${escapeHtml(item.cadastral_number||'—')}</h4>`+
+   `<span class="land-kind">нет сведений</span></header>`+
+   `<div class="land-grid">${rows.map(r=>`<div><small>${escapeHtml(r[0])}</small><b>${escapeHtml(r[1])}</b></div>`).join('')}</div>`+
+   `<div style="margin-top:9px;font-size:11px;color:#8a6d00">${escapeHtml(item.note||'')}</div>${mapLink}</div>`;
+ }
+ const rows=[
+  ['Адрес',item.address||'—'],
+  ['Площадь',item.area_sqm!=null?landNum(item.area_sqm,0)+' м² · '+landNum(item.area_ha,4)+' га':'—'],
+  ['Категория земель',item.category||'—'],
+  ['Разрешённое использование',item.permitted_use||'—'],
+  ['Кадастровая стоимость',item.cadastral_value_mln!=null?landNum(item.cadastral_value_mln,3)+' млн ₽':'—'],
+  ['Удельная стоимость',item.unit_value_rub_per_sqm!=null?landNum(item.unit_value_rub_per_sqm,0)+' ₽/м²':'—'],
+  ['Форма собственности',item.ownership||'—'],
+  ['Статус объекта',item.status||'—'],
+  ['Дата постановки на учёт',landDate(item.registration_date)],
+  ['Кадастровый квартал',item.quarter||'—'],
+  ['Субъект РФ',item.region||'—'],
+  ['Координаты центра',landCoords(item.center)]
+ ];
+ if(item.matched_address)rows.push(['Адрес по геокодеру',item.matched_address+(item.geocoder?' · '+item.geocoder:'')]);
+ return `<div class="land-item"><header><h4>${escapeHtml(item.cadastral_number||'—')}</h4>`+
+  `<span class="land-kind">${escapeHtml(item.kind_label||'')}${item.cadastral_value_date?' · оценка от '+escapeHtml(landDate(item.cadastral_value_date)):''}</span></header>`+
+  `<div class="land-grid">${rows.map(r=>`<div><small>${escapeHtml(r[0])}</small><b>${escapeHtml(r[1])}</b></div>`).join('')}</div>${mapLink}</div>`;
+}
+
+function renderLandLookup(data){
+ if(!data)return;
+ const results=data.results||[];
+ const found=results.filter(x=>x.found);
+ const totalHa=found.reduce((sum,x)=>sum+Number(x.area_ha||0),0);
+ const totalValue=found.reduce((sum,x)=>sum+Number(x.cadastral_value_mln||0),0);
+ const regions=[...new Set(found.map(x=>x.region).filter(Boolean))];
+ document.getElementById('landSummary').innerHTML=[
+  ['Найдено',found.length+' из '+results.length],
+  ['Суммарная площадь',totalHa?landNum(totalHa,4)+' га':'—'],
+  ['Кадастровая стоимость',totalValue?landNum(totalValue,1)+' млн ₽':'—'],
+  ['Субъект РФ',regions.join(' · ')||'—']
+ ].map(x=>`<div><small>${escapeHtml(x[0])}</small><b>${escapeHtml(x[1])}</b></div>`).join('');
+ document.getElementById('landCards').innerHTML=results.length
+  ?results.map(landCardHtml).join('')
+  :'<div style="padding:10px;color:#777">Ничего не найдено.</div>';
+ document.getElementById('landWarnings').innerHTML=(data.warnings||[]).map(x=>'• '+escapeHtml(x)).join('<br>');
+ document.getElementById('landPreview').style.display='block';
+}
+
+function useLandForTep(){
+ const status=document.getElementById('landStatus');
+ const numbers=((landLookup&&landLookup.results)||[])
+  .filter(x=>x.found&&x.kind==='land'&&x.cadastral_number)
+  .map(x=>x.cadastral_number);
+ if(!numbers.length){status.innerHTML='<span class="import-error">Нет найденных земельных участков для переноса.</span>';return}
+ const field=document.getElementById('cadastralNumbers');
+ if(field){field.value=numbers.join(', ');field.scrollIntoView({behavior:'smooth',block:'center'})}
+ status.innerHTML='<span class="import-ok">Номера перенесены в блок ТЭП ГлавАПУ ('+numbers.length+').</span> Нормативный ТЭП считается только по Москве.';
+}
+
+function saveLandLookup(){
+ const status=document.getElementById('landStatus');
+ if(!landLookup){status.innerHTML='<span class="import-error">Сначала выполните поиск.</span>';return}
+ inputs._land_lookup=structuredClone(landLookup);
+ status.innerHTML='<span class="import-ok">Сведения об участке сохранены в проекте.</span>';
+}
+
+function renderStoredLand(){
+ const stored=inputs._land_lookup;
+ if(!stored)return;
+ landLookup=structuredClone(stored);
+ const field=document.getElementById('landQuery');
+ if(field)field.value=stored.query||'';
+ renderLandLookup(landLookup);
+ const status=document.getElementById('landStatus');
+ if(status)status.innerHTML='<span class="import-ok">Показаны сведения об участке, сохранённые в проекте.</span>';
 }
 
 function renderStoredCadastral(){
@@ -10044,7 +10912,7 @@ function resetAll(){
  localStorage.removeItem('plato_v04');
  inputs=structuredClone(INPUT_DEFAULT);
  tep=structuredClone(TEP_DEFAULT);
- phasing=makeDefaultPhasing(1);phaseBundle=null;reportView='all';cadastralAnalysis=null;
+ phasing=makeDefaultPhasing(1);phaseBundle=null;reportView='all';cadastralAnalysis=null;landLookup=null;
  rates=[];
  scenarioSelect.value='base';
  inputs.project_class='comfort';
@@ -10055,6 +10923,9 @@ function resetAll(){
  const cadField=document.getElementById('cadastralNumbers');if(cadField)cadField.value='';
  const cadPreview=document.getElementById('cadastralPreview');if(cadPreview)cadPreview.style.display='none';
  const cadStatus=document.getElementById('cadastralStatus');if(cadStatus)cadStatus.textContent='На внешний сервер передаются только кадастровые номера; финансовая модель не передаётся.';
+ const landField=document.getElementById('landQuery');if(landField)landField.value='';
+ const landPreview=document.getElementById('landPreview');if(landPreview)landPreview.style.display='none';
+ const landStatus=document.getElementById('landStatus');if(landStatus)landStatus.textContent='На внешний сервис передаётся только строка поиска; финансовая модель не передаётся.';
  syncRateControlsFromInputs();generateRateCurve();renderRates();
  refreshCurrentKeyRate(true);
 }
@@ -10205,6 +11076,7 @@ async function initializeApp(){
  renderTep();
  renderStoredGlavapu();
  renderStoredCadastral();
+ renderStoredLand();
  renderScenarioNote();
  syncProjectClassSelector();
  renderPhasing();
