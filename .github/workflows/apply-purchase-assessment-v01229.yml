@@ -26,6 +26,20 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Restore verified Excel template payload
+        run: |
+          cat .github/patches/tep_v3.part1 .github/patches/tep_v3.part2 .github/patches/tep_v3.part3 .github/patches/tep_v3.part4 > templates/DevelopAid_Шаблон_ТЭП.xlsx.b64
+          python - <<'PY'
+          import base64, hashlib
+          from pathlib import Path
+          encoded = Path('templates/DevelopAid_Шаблон_ТЭП.xlsx.b64').read_text(encoding='ascii')
+          payload = base64.b64decode(encoded, validate=True)
+          assert payload.startswith(b'PK')
+          assert len(payload) == 10142
+          assert hashlib.sha256(payload).hexdigest() == '68ea1da2bd0ef66e7409ad896e28426c462c57b4482dfbe530a437807f3d7ab0'
+          print('Verified TEP v3 payload restored')
+          PY
+
       - name: Apply integration patch
         run: python .github/patches/apply_purchase_assessment_v01229.py
 
@@ -54,6 +68,7 @@ jobs:
         run: |
           rm .github/patches/apply_purchase_assessment_v01229.py
           rm .github/patches/smoke_purchase_assessment_v01229.py
+          rm .github/patches/tep_v3.part1 .github/patches/tep_v3.part2 .github/patches/tep_v3.part3 .github/patches/tep_v3.part4
           rm .github/workflows/apply-purchase-assessment-v01229.yml
           rm -f smoke-output.txt .github/patches/purchase-assessment-smoke-error.txt
           rm -rf __pycache__
