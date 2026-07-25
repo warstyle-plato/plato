@@ -1,0 +1,57 @@
+name: Apply Telegram TEP template v2
+
+on:
+  push:
+    branches:
+      - v0.12.27-telegram-tep-template-v3
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Apply integration patch
+        run: python .github/patches/apply_telegram_tep_template_v2.py
+
+      - name: Check Python syntax
+        run: python -m py_compile main.py
+
+      - name: Install application dependencies
+        run: pip install -r requirements.txt
+
+      - name: Parse the new workbook through DevelopAid
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import main
+
+          path = Path('templates/DevelopAid_Шаблон_ТЭП.xlsx')
+          parsed = main.parse_manual_tep_xlsx(path.read_bytes(), path.name)
+          assert parsed['source']['template_version'] == 'DevelopAid_TEP_2'
+          assert parsed['source']['sheet'] == 'ТЭП DevelopAid'
+          assert 'region' in parsed
+          assert set(parsed['tep']) == set(main.TEP_DEFAULT)
+          print('Template parser smoke test passed')
+          PY
+
+      - name: Remove one-shot integration files
+        run: |
+          rm .github/patches/apply_telegram_tep_template_v2.py
+          rm .github/workflows/apply-telegram-tep-template-v2.yml
+
+      - name: Commit integrated change
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'DevelopAid v0.12.27: Telegram TEP Excel template v2'
+          git push
