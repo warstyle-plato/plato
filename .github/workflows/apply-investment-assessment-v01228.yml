@@ -49,6 +49,23 @@ jobs:
           if old_caption not in text:
               raise SystemExit('old template caption anchor not found')
           text = text.replace(old_caption, new_caption, 1)
+          region_block = '''text = replace_once(
+              text,
+              '''  inputs._manual_tep_import={
+           project_name:String(manual.project_name||''),
+           site_area_ha:Number(manual.site_area_ha||0),
+          ''',
+              '''  inputs._manual_tep_import={
+           project_name:String(manual.project_name||''),
+           region:String(manual.region||''),
+           site_area_ha:Number(manual.site_area_ha||0),
+          ''',
+              'manual import region',
+          )
+          '''
+          if region_block not in text:
+              raise SystemExit('optional manual region block not found')
+          text = text.replace(region_block, '', 1)
           path.write_text(text, encoding='utf-8')
           PY
 
