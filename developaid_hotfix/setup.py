@@ -2,7 +2,7 @@ from setuptools import setup
 
 setup(
     name="developaid-runtime-hotfix",
-    version="0.12.32",
+    version="0.12.33",
     py_modules=[
         "sitecustomize",
         "developaid_runtime_patch",
