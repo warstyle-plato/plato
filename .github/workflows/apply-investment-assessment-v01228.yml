@@ -62,20 +62,37 @@ jobs:
           if auto_start < 0 or auto_end < 0:
               raise SystemExit('automatic assessment tail not found')
           new_tail = """# Automatic assessment after imported TEP is applied (ГлавАПУ and Telegram/manual).
-          auto_anchor = "  await calculate();\\n  await sendTelegramResult();"
-          auto_count = text.count(auto_anchor)
-          if auto_count < 2:
-              raise RuntimeError(f'auto assessment calls: expected at least 2 occurrences, found {auto_count}')
-          text = text.replace(
-              auto_anchor,
-              "  await calculate();\\n  await runInvestmentAssessment(true);\\n  await sendTelegramResult();",
-              2,
-          )
+          def insert_assessment_before_telegram_send(source: str, function_marker: str) -> str:
+              start = source.find(function_marker)
+              if start < 0:
+                  raise RuntimeError(f'function not found: {function_marker}')
+              end = source.find("\n}\n", start)
+              if end < 0:
+                  raise RuntimeError(f'function end not found: {function_marker}')
+              send = source.find('await sendTelegramResult();', start, end)
+              if send < 0:
+                  raise RuntimeError(f'Telegram send not found: {function_marker}')
+              line_start = source.rfind("\n", start, send) + 1
+              indent = source[line_start:send]
+              if 'await runInvestmentAssessment(true);' in source[start:end]:
+                  return source
+              return source[:line_start] + indent + 'await runInvestmentAssessment(true);\n' + source[line_start:]
 
-          # Reopen assessment for locally stored imported projects without duplicating Telegram launch calculation.
-          init_anchor = "  await loadPresetCatalog();\\n  await initializeTelegramLaunch();\\n}"
-          init_replacement = "  await loadPresetCatalog();\\n  await initializeTelegramLaunch();\\n  if((inputs._glavapu_import||inputs._manual_tep_import)&&!lastInvestmentAssessment)await runInvestmentAssessment(true);\\n}"
-          text = replace_once(text, init_anchor, init_replacement, 'initial assessment restore')
+          text = insert_assessment_before_telegram_send(text, 'async function applyTelegramManualTep(manual){')
+          text = insert_assessment_before_telegram_send(text, 'async function applyGlavapu(){')
+
+          # Reopen assessment for locally stored imported projects after initial model calculation.
+          init_start = text.find('async function initializeApp(){')
+          init_end = text.find("\n}\n", init_start)
+          launch = text.find('await initializeTelegramLaunch();', init_start, init_end)
+          if init_start < 0 or init_end < 0 or launch < 0:
+              raise RuntimeError('initializeApp launch anchor not found')
+          launch_line_start = text.rfind("\n", init_start, launch) + 1
+          launch_line_end = text.find("\n", launch)
+          launch_indent = text[launch_line_start:launch]
+          restore_line = launch_indent + 'if((inputs._glavapu_import||inputs._manual_tep_import)&&!lastInvestmentAssessment)await runInvestmentAssessment(true);\n'
+          if 'lastInvestmentAssessment)await runInvestmentAssessment(true);' not in text[init_start:init_end]:
+              text = text[:launch_line_end + 1] + restore_line + text[launch_line_end + 1:]
 
           """
           text = text[:auto_start] + new_tail + text[auto_end:]
