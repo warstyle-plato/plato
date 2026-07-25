@@ -14,7 +14,11 @@ from fastapi import HTTPException
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import main  # noqa: E402
+# main.py — тонкая обёртка Telegram-слоя; расчётное ядро и эндпоинты живут
+# в main_legacy.py, который обёртка загружает как модуль core.
+import main as _wrapper  # noqa: E402
+
+main = _wrapper.core
 
 
 # --- фикстуры ответов НСПД --------------------------------------------------

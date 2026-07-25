@@ -1,3 +1,20 @@
+DEVELOPAID v0.12.37 PLATON TEP COMMENTARY OK
+Python syntax (main.py + main_legacy.py): OK
+tests/ — 40 passed (17 Platon/TEP + 23 land lookup)
+Wrapper boots, /health reports 0.12.37: OK
+Bot TEP expanded into full model context (DEFAULT_INPUTS + TEP_DEFAULT): OK
+TEP review card offers "Прокомментировать ТЭП" and "Спросить Платона": OK
+Commentary runs the real calculation engine, LLM only comments: OK
+Mini App context takes priority over bot TEP context: OK
+"Спросить Платона" works on bot-built TEP (no "model not sent" dead end): OK
+Proposal apply works without a Mini App session, model link rebuilt: OK
+Long answer split into <=3900-char Telegram chunks: OK
+Missing OPENAI_API_KEY reported in plain language and in /status: OK
+Commentary does not hijack plain-text bot flow: OK
+/comment command and platon_tep callback routed: OK
+/land/lookup and /land/providers reachable through the wrapper: OK
+Browser check on wrapper app, no page errors: OK
+
 DEVELOPAID v0.12.35 FEDERAL LAND LOOKUP OK
 Python syntax: OK
 Page JavaScript syntax (node --check): OK
