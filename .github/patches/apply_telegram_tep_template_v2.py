@@ -1,18 +1,16 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
-import json
-import os
 import re
-import urllib.request
 import zipfile
 from pathlib import Path
 
 MAIN = Path("main.py")
-CHECKED_OUT_TEMPLATE = Path("templates/DevelopAid_Шаблон_ТЭП.xlsx")
 TEMPLATE_B64_PATH = Path("templates/DevelopAid_Шаблон_ТЭП.xlsx.b64")
-TEMPLATE_BLOB_SHA = "211c3eb01078f82789b6b17bd71a3190e5ea2b8d"
+PARTS = [Path(f".github/patches/tep_template_v2.part{i}") for i in range(1, 5)]
+EXPECTED_SHA256 = "5e7f41504df1973274a9d18e28ea22b875d5a0043289ff46bf2a5806ca362a3c"
 
 
 def replace_once(text: str, old: str, new: str, label: str) -> str:
@@ -22,46 +20,27 @@ def replace_once(text: str, old: str, new: str, label: str) -> str:
     return text.replace(old, new, 1)
 
 
-def valid_xlsx(payload: bytes) -> bool:
-    try:
-        with zipfile.ZipFile(io.BytesIO(payload)) as archive:
-            return {
-                "xl/workbook.xml",
-                "xl/worksheets/sheet1.xml",
-                "xl/worksheets/sheet2.xml",
-            }.issubset(archive.namelist())
-    except zipfile.BadZipFile:
-        return False
+missing_parts = [str(path) for path in PARTS if not path.is_file()]
+if missing_parts:
+    raise RuntimeError("Template payload parts are missing: " + ", ".join(missing_parts))
 
-
-def load_template_payload() -> bytes:
-    if CHECKED_OUT_TEMPLATE.is_file():
-        checked_out = CHECKED_OUT_TEMPLATE.read_bytes()
-        if valid_xlsx(checked_out):
-            return checked_out
-
-    request = urllib.request.Request(
-        f"https://api.github.com/repos/warstyle-plato/plato/git/blobs/{TEMPLATE_BLOB_SHA}",
-        headers={
-            "Accept": "application/vnd.github+json",
-            "User-Agent": "DevelopAid-template-integration",
-            **(
-                {"Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}"}
-                if os.environ.get("GITHUB_TOKEN")
-                else {}
-            ),
-        },
+encoded = "".join("".join(path.read_text(encoding="ascii").split()) for path in PARTS)
+payload = base64.b64decode(encoded, validate=True)
+actual_sha256 = hashlib.sha256(payload).hexdigest()
+if actual_sha256 != EXPECTED_SHA256:
+    raise RuntimeError(
+        f"Template checksum mismatch: expected {EXPECTED_SHA256}, got {actual_sha256}"
     )
-    with urllib.request.urlopen(request, timeout=30) as response:
-        blob = json.loads(response.read().decode("utf-8"))
-    payload = base64.b64decode(str(blob.get("content") or ""), validate=False)
-    if not valid_xlsx(payload):
-        raise RuntimeError("GitHub blob does not contain a valid XLSX package")
-    return payload
 
-
-payload = load_template_payload()
 with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+    required = {
+        "xl/workbook.xml",
+        "xl/worksheets/sheet1.xml",
+        "xl/worksheets/sheet2.xml",
+    }
+    missing = required - set(archive.namelist())
+    if missing:
+        raise RuntimeError("Template package missing: " + ", ".join(sorted(missing)))
     xml_payload = b"\n".join(
         archive.read(name) for name in archive.namelist() if name.endswith(".xml")
     )
@@ -70,7 +49,7 @@ with zipfile.ZipFile(io.BytesIO(payload)) as archive:
     if b"DevelopAid_TEP_2" not in xml_payload:
         raise RuntimeError("Template version marker DevelopAid_TEP_2 is missing")
 
-TEMPLATE_B64_PATH.write_text(base64.b64encode(payload).decode("ascii"), encoding="ascii")
+TEMPLATE_B64_PATH.write_text(encoded, encoding="ascii")
 
 text = MAIN.read_text(encoding="utf-8")
 
