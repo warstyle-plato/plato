@@ -1,7 +1,4 @@
 Traceback (most recent call last):
-  File "/home/runner/work/plato/plato/.github/patches/apply_investment_assessment_v01228.py", line 246, in <module>
-    text = replace_once(
-           ^^^^^^^^^^^^^
-  File "/home/runner/work/plato/plato/.github/patches/apply_investment_assessment_v01228.py", line 11, in replace_once
-    raise RuntimeError(f'{label}: expected 1 occurrence, found {count}')
-RuntimeError: manual import region: expected 1 occurrence, found 0
+  File "/home/runner/work/plato/plato/.github/patches/apply_investment_assessment_v01228.py", line 348, in <module>
+    raise RuntimeError(f'auto assessment calls: expected 2 occurrences, found {auto_count}')
+RuntimeError: auto assessment calls: expected 2 occurrences, found 0
