@@ -120,3 +120,5 @@ jobs:
           git add main.py
           git commit -m "DevelopAid v0.12.26: fix Excel template delivery"
           git push
+
+# Retriggered after workflow installation so the patch runs on main.
