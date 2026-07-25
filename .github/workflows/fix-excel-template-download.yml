@@ -1,0 +1,122 @@
+name: Fix Excel template download
+
+on:
+  push:
+    paths:
+      - '.github/workflows/fix-excel-template-download.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Patch Telegram document MIME and template delivery
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('main.py')
+          s = p.read_text(encoding='utf-8')
+
+          old = '''def _telegram_send_document_bytes(chat_id: int,content: bytes,filename: str,caption: str = "") -> Any:
+    token=_telegram_token()
+    if not token: raise RuntimeError("TELEGRAM_BOT_TOKEN не задан")
+    boundary="----DevelopAidBoundary"+hashlib.sha256(os.urandom(16)).hexdigest()[:20];body=io.BytesIO()
+    def field(name: str,value: str) -> None:
+        body.write(f"--{boundary}\\r\\n".encode());body.write(f'Content-Disposition: form-data; name="{name}"\\r\\n\\r\\n'.encode());body.write(str(value).encode("utf-8"));body.write(b"\\r\\n")
+    field("chat_id",str(int(chat_id)))
+    if caption: field("caption",caption);field("parse_mode","HTML")
+    body.write(f"--{boundary}\\r\\n".encode());body.write(f'Content-Disposition: form-data; name="document"; filename="{filename}"\\r\\n'.encode("utf-8"));body.write(b"Content-Type: application/pdf\\r\\n\\r\\n");body.write(content);body.write(b"\\r\\n");body.write(f"--{boundary}--\\r\\n".encode())
+    request=urllib.request.Request(f"https://api.telegram.org/bot{token}/sendDocument",data=body.getvalue(),headers={"Content-Type":f"multipart/form-data; boundary={boundary}"},method="POST")
+'''
+          new = '''def _telegram_send_document_bytes(
+    chat_id: int,
+    content: bytes,
+    filename: str,
+    caption: str = "",
+    content_type: str | None = None,
+) -> Any:
+    token = _telegram_token()
+    if not token:
+        raise RuntimeError("TELEGRAM_BOT_TOKEN не задан")
+    if content_type is None:
+        content_type = (
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            if filename.lower().endswith(".xlsx")
+            else "application/pdf"
+        )
+    boundary = "----DevelopAidBoundary" + hashlib.sha256(os.urandom(16)).hexdigest()[:20]
+    body = io.BytesIO()
+    def field(name: str, value: str) -> None:
+        body.write(f"--{boundary}\\r\\n".encode())
+        body.write(f'Content-Disposition: form-data; name="{name}"\\r\\n\\r\\n'.encode())
+        body.write(str(value).encode("utf-8"))
+        body.write(b"\\r\\n")
+    field("chat_id", str(int(chat_id)))
+    if caption:
+        field("caption", caption)
+        field("parse_mode", "HTML")
+    body.write(f"--{boundary}\\r\\n".encode())
+    body.write(f'Content-Disposition: form-data; name="document"; filename="{filename}"\\r\\n'.encode("utf-8"))
+    body.write(f"Content-Type: {content_type}\\r\\n\\r\\n".encode("ascii"))
+    body.write(content)
+    body.write(b"\\r\\n")
+    body.write(f"--{boundary}--\\r\\n".encode())
+    request=urllib.request.Request(f"https://api.telegram.org/bot{token}/sendDocument",data=body.getvalue(),headers={"Content-Type":f"multipart/form-data; boundary={boundary}"},method="POST")
+'''
+          if old not in s:
+              raise SystemExit('document helper anchor not found')
+          s = s.replace(old, new, 1)
+
+          old_template = '''def _telegram_send_template(chat_id: int) -> Any:
+    return _telegram_api(
+        "sendDocument",
+        {
+            "chat_id": int(chat_id),
+            "document": _TELEGRAM_PUBLIC_BASE_URL + "/templates/tep",
+            "caption": (
+                "<b>Шаблон ручного ввода ТЭП DevelopAid</b>\\n\\n"
+                "1. Заполните жёлтые ячейки.\\n"
+                "2. Не меняйте коды и названия строк.\\n"
+                "3. Отправьте заполненный .xlsx обратно в этот чат.\\n\\n"
+                "Бот проверит файл и покажет сводку перед открытием модели."
+            ),
+            "parse_mode": "HTML",
+        },
+    )
+'''
+          new_template = '''def _telegram_send_template(chat_id: int) -> Any:
+    content = base64.b64decode(MANUAL_TEP_TEMPLATE_B64)
+    return _telegram_send_document_bytes(
+        chat_id,
+        content,
+        MANUAL_TEP_TEMPLATE_FILENAME,
+        (
+            "<b>Шаблон ручного ввода ТЭП DevelopAid</b>\\n\\n"
+            "1. Заполните жёлтые ячейки.\\n"
+            "2. Не меняйте коды и названия строк.\\n"
+            "3. Отправьте заполненный .xlsx обратно в этот чат.\\n\\n"
+            "Бот проверит файл и покажет сводку перед открытием модели."
+        ),
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+'''
+          if old_template not in s:
+              raise SystemExit('template sender anchor not found')
+          s = s.replace(old_template, new_template, 1)
+
+          s = s.replace('version="0.12.25"', 'version="0.12.26"', 1)
+          s = s.replace('Версия: 0.12.25', 'Версия: 0.12.26')
+          s = s.replace('"version": "0.12.25"', '"version": "0.12.26"')
+          s = s.replace('Development-Model/0.12.25', 'Development-Model/0.12.26')
+          p.write_text(s, encoding='utf-8')
+          PY
+      - name: Commit fix
+        run: |
+          git config user.name "DevelopAid Bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add main.py
+          git commit -m "DevelopAid v0.12.26: fix Excel template delivery"
+          git push
