@@ -5,7 +5,7 @@ import re
 import sys
 from pathlib import Path
 
-_MARKER = "# _DEVELOPAID_TELEGRAM_ANSWER_WEBAPP_QUERY_V01234"
+_MARKER = "# _DEVELOPAID_TELEGRAM_ANSWER_WEBAPP_QUERY_V01235"
 
 
 def _find_main_file() -> Path:
@@ -48,10 +48,10 @@ def apply_patch() -> None:
     if _MARKER in text:
         return
 
-    for old in ("0.12.29", "0.12.30", "0.12.31", "0.12.32", "0.12.33"):
-        text = text.replace(f'version="{old}"', 'version="0.12.34"')
-        text = text.replace(f'"version": "{old}"', '"version": "0.12.34"')
-        text = text.replace(f"Версия: {old}", "Версия: 0.12.34")
+    for old in ("0.12.29", "0.12.30", "0.12.31", "0.12.32", "0.12.33", "0.12.34"):
+        text = text.replace(f'version="{old}"', 'version="0.12.35"')
+        text = text.replace(f'"version": "{old}"', '"version": "0.12.35"')
+        text = text.replace(f"Версия: {old}", "Версия: 0.12.35")
 
     if "web_app_query_id: str" not in text:
         pattern = (
@@ -83,17 +83,28 @@ def apply_patch() -> None:
                     "message_text": "Расчёт DevelopAid завершён. Итоговая карточка и PDF отправлены ботом."
                 },
             }
-            _telegram_api("answerWebAppQuery", {
+            telegram_answer = _telegram_api("answerWebAppQuery", {
                 "web_app_query_id": web_app_query_id,
                 "result": inline_result,
             })
+            if isinstance(telegram_answer, dict) and telegram_answer.get("ok") is False:
+                raise RuntimeError(str(telegram_answer.get("description") or telegram_answer))
             answered_web_app = True
         except Exception as exc:
             web_app_close_error = str(exc)
             _TELEGRAM_RUNTIME["last_error"] = "answerWebAppQuery: " + web_app_close_error
+    else:
+        web_app_close_error = "query_id отсутствует: приложение открыто не через Web App-кнопку Telegram"
+        _TELEGRAM_RUNTIME["last_error"] = "answerWebAppQuery: " + web_app_close_error
+    _TELEGRAM_RUNTIME["last_web_app_close"] = {
+        "query_id_present": bool(web_app_query_id),
+        "closed_by_telegram": answered_web_app,
+        "error": web_app_close_error,
+        "at": int(time.time()),
+    }
     _telegram_send_message(chat_id, text, reply_markup=button)'''
 
-    if "web_app_close_error =" not in result_block:
+    if "last_web_app_close" not in result_block:
         result_block = _replace_once(
             result_block,
             delivery_line,
@@ -137,32 +148,45 @@ def apply_patch() -> None:
             "query_id submit",
         )
 
-    send_block = send_block.replace(
-        "if(!result.closed_by_telegram)closeTelegramWebAppAfterResult();",
-        "closeTelegramWebAppAfterResult();",
-        1,
-    )
-    if "closeTelegramWebAppAfterResult();" not in send_block:
-        send_block, count = re.subn(
-            r"(?m)^(\s*)if\(window\.Telegram\.WebApp\.HapticFeedback\)window\.Telegram\.WebApp\.HapticFeedback\.notificationOccurred\('success'\);\s*$",
-            lambda match: match.group(0) + "\n" + match.group(1) + "closeTelegramWebAppAfterResult();",
-            send_block,
-            count=1,
-        )
-        if count != 1:
-            raise RuntimeError("DevelopAid answerWebAppQuery patch: client close fallback not found")
+    if "data-close-diagnostic" not in send_block:
+        diagnostic = '''    if(!result.closed_by_telegram){
+      const diagnostic=document.createElement('div');
+      diagnostic.setAttribute('data-close-diagnostic','1');
+      diagnostic.className='import-error';
+      diagnostic.textContent='Telegram не подтвердил закрытие: '+(result.close_error||'query_id не принят')+'. Закройте окно стрелкой; диагностика сохранена в /status.';
+      if(status)status.appendChild(diagnostic);
+    }
+'''
+        marker = "    telegramResultSent=true;\n"
+        if marker not in send_block:
+            raise RuntimeError("DevelopAid answerWebAppQuery patch: telegramResultSent marker not found")
+        send_block = send_block.replace(marker, marker + diagnostic, 1)
 
     text = text[:send_start] + send_block + text[send_end:]
 
+    status_marker = '''            f"Версия: {app.version}",
+'''
+    if "last_web_app_close" not in text[text.index("if command == \"/status\""):text.index("if command == \"/status\"") + 2000]:
+        status_addition = '''            f"Версия: {app.version}",
+            (lambda close: (
+                "Закрытие Mini App: "
+                + ("Telegram подтвердил" if close.get("closed_by_telegram") else "не подтверждено")
+                + ("; query_id есть" if close.get("query_id_present") else "; query_id отсутствует")
+                + (("; ошибка: " + str(close.get("error"))) if close.get("error") else "")
+            ))(_TELEGRAM_RUNTIME.get("last_web_app_close", {})),
+'''
+        if status_marker in text:
+            text = text.replace(status_marker, status_addition, 1)
+
     required = [
-        'version="0.12.34"',
+        'version="0.12.35"',
         "web_app_query_id: str",
         'answerWebAppQuery',
-        'web_app_close_error =',
-        '"closed_by_telegram": answered_web_app',
+        'telegram_answer = _telegram_api',
+        'last_web_app_close',
         "const webAppQueryId=",
         "web_app_query_id:webAppQueryId",
-        "closeTelegramWebAppAfterResult();",
+        "data-close-diagnostic",
     ]
     missing = [marker for marker in required if marker not in text]
     if missing:
