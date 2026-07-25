@@ -1,0 +1,47 @@
+name: Apply DevelopAid v0.12.26 PDF Gantt
+
+on:
+  push:
+    branches:
+      - v0.12.26-onboarding
+    paths:
+      - .github/workflows/apply-v01226-pdf-gantt.yml
+      - .github/scripts/apply_v01226_pdf_gantt.py
+
+permissions:
+  contents: write
+
+jobs:
+  integrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: v0.12.26-onboarding
+          fetch-depth: 0
+      - name: Wait for patch script
+        id: script
+        shell: bash
+        run: |
+          if [ -f .github/scripts/apply_v01226_pdf_gantt.py ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Apply Gantt to main.py
+        if: steps.script.outputs.ready == 'true'
+        run: python .github/scripts/apply_v01226_pdf_gantt.py
+      - name: Validate Python
+        if: steps.script.outputs.ready == 'true'
+        run: python -m py_compile main.py
+      - name: Commit integrated application code
+        if: steps.script.outputs.ready == 'true'
+        shell: bash
+        run: |
+          rm -f .github/scripts/apply_v01226_pdf_gantt.py
+          rm -f .github/workflows/apply-v01226-pdf-gantt.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "DevelopAid v0.12.26: add calendar Gantt to PDF [skip ci]"
+          git push origin HEAD:v0.12.26-onboarding
