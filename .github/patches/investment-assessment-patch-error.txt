@@ -1,7 +1,7 @@
 Traceback (most recent call last):
-  File "/home/runner/work/plato/plato/.github/patches/apply_investment_assessment_v01228.py", line 34, in <module>
+  File "/home/runner/work/plato/plato/.github/patches/apply_investment_assessment_v01228.py", line 239, in <module>
     text = replace_once(
            ^^^^^^^^^^^^^
   File "/home/runner/work/plato/plato/.github/patches/apply_investment_assessment_v01228.py", line 11, in replace_once
     raise RuntimeError(f'{label}: expected 1 occurrence, found {count}')
-RuntimeError: health version: expected 1 occurrence, found 0
+RuntimeError: template caption: expected 1 occurrence, found 0
