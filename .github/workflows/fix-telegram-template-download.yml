@@ -34,7 +34,7 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: test-token
         run: |
-          python - <<'PY'
+          if ! python - <<'PY' > direct-xlsx-test.txt 2>&1
           import json
           import urllib.request
           import main
@@ -62,17 +62,32 @@ jobs:
               urllib.request.urlopen = original
 
           body = captured['body']
-          assert captured['url'].endswith('/sendDocument')
-          assert b'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' in body
-          assert b'PK' in body
-          assert result['document']['file_name'].endswith('.xlsx')
+          checks = {
+              'send_document_url': captured['url'].endswith('/sendDocument'),
+              'xlsx_mime': b'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' in body,
+              'zip_signature': b'PK' in body,
+              'xlsx_filename': result['document']['file_name'].endswith('.xlsx'),
+              'body_size_gt_1kb': len(body) > 1024,
+          }
+          print(checks)
+          assert all(checks.values()), checks
           print('Direct Telegram XLSX upload test passed')
           PY
+          then
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            mv direct-xlsx-test.txt .github/patches/direct-xlsx-test-error.txt
+            git add .github/patches/direct-xlsx-test-error.txt
+            git commit -m 'Record direct XLSX test error'
+            git push origin HEAD:${{ github.head_ref || github.ref_name }}
+            exit 1
+          fi
 
       - name: Remove one-shot files
         run: |
           rm .github/patches/fix_telegram_template_download.py
           rm .github/workflows/fix-telegram-template-download.yml
+          rm -f direct-xlsx-test.txt .github/patches/direct-xlsx-test-error.txt
           rm -rf __pycache__
 
       - name: Commit integrated fix
