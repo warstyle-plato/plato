@@ -27,7 +27,16 @@ jobs:
           python-version: '3.12'
 
       - name: Apply deterministic integration patch
-        run: python .github/patches/apply_investment_assessment_v01228.py
+        run: |
+          if ! python .github/patches/apply_investment_assessment_v01228.py > patch-output.txt 2>&1; then
+            mv patch-output.txt .github/patches/investment-assessment-patch-error.txt
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git add .github/patches/investment-assessment-patch-error.txt
+            git commit -m 'Record investment assessment patch error'
+            git push origin HEAD:${{ github.head_ref || github.ref_name }}
+            exit 1
+          fi
 
       - name: Check Python syntax
         run: python -m py_compile main.py
@@ -89,6 +98,7 @@ jobs:
         run: |
           rm .github/patches/apply_investment_assessment_v01228.py
           rm .github/workflows/apply-investment-assessment-v01228.yml
+          rm -f patch-output.txt .github/patches/investment-assessment-patch-error.txt
           rm -rf __pycache__
 
       - name: Commit integrated change
