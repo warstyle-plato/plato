@@ -1,19 +1,6 @@
-from __future__ import annotations
+"""DevelopAid compatibility shim.
 
-import sys
-import traceback
-
-
-def _run_patch(label: str, callback) -> None:
-    try:
-        callback()
-    except Exception:
-        print(f"DevelopAid startup patch failed: {label}", file=sys.stderr)
-        traceback.print_exc()
-
-
-from developaid_runtime_patch import apply_patch as apply_base_patch
-from developaid_answer_webapp_patch import apply_patch as apply_answer_webapp_patch
-
-_run_patch("base Telegram help/close patch", apply_base_patch)
-_run_patch("Telegram answerWebAppQuery patch", apply_answer_webapp_patch)
+Runtime source rewriting is intentionally disabled. The deployed application is
+loaded from the ``main`` package, which exposes version 0.12.36 and the Telegram
+Platon advisor.
+"""
