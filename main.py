@@ -34,7 +34,7 @@ app = FastAPI(title="DevelopAid Development Investment Model", version="0.12.29"
 PRESET_DIR = Path(__file__).resolve().parent / "presets"
 MANUAL_TEP_TEMPLATE_FILENAME = "DevelopAid_Шаблон_ТЭП.xlsx"
 MANUAL_TEP_TEMPLATE_B64_PATH = Path(__file__).resolve().parent / "templates" / "DevelopAid_Шаблон_ТЭП.xlsx.b64"
-MANUAL_TEP_TEMPLATE_VERSION = "DevelopAid_TEP_3"
+MANUAL_TEP_TEMPLATE_VERSION = "DevelopAid_TEP_2"
 SERVER_TEP_PRESETS = {
     "mishina": {
         "name": "Мишина",
@@ -109,15 +109,6 @@ class AgentChatRequest(BaseModel):
     phasing: dict[str, Any] = {}
     history: list[dict[str, Any]] = []
     selected_view: str = "all"
-
-
-class PurchaseAssessmentRequest(BaseModel):
-    inputs: dict[str, Any]
-    tep: dict[str, dict[str, Any]]
-    rates: list[dict[str, Any]] = []
-    phasing: dict[str, Any] = {}
-    target_llcr: float = 1.20
-    target_npv_mln: float = 0.0
 
 
 class CadastralAnalysisRequest(BaseModel):
@@ -687,7 +678,7 @@ def parse_manual_tep_xlsx(data: bytes, filename: str = "") -> dict[str, Any]:
         raise ValueError("Не найден лист «ТЭП DevelopAid». Скачайте актуальный шаблон у бота.")
     rows = tables[sheet_name]
     version = str(_find_parameter(rows, "Версия шаблона") or "").strip()
-    if version not in {MANUAL_TEP_TEMPLATE_VERSION, "DevelopAid_TEP_2"}:
+    if version != MANUAL_TEP_TEMPLATE_VERSION:
         raise ValueError("Версия шаблона не распознана. Скачайте актуальный файл командой /template.")
 
     header_index = next(
@@ -1795,8 +1786,7 @@ def _telegram_send_template(chat_id: int) -> Any:
             "1. Заполните общие сведения и жёлтые ячейки ТЭП.\n"
             "2. Не переименовывайте лист, не меняйте коды и не удаляйте строки.\n"
             "3. Сохраните файл в формате .xlsx и отправьте его обратно в этот чат.\n\n"
-            "Бот проверит структуру, покажет сводку и предложит открыть проект в DevelopAid. "
-            "В приложении появится оценка допустимой цены покупки, а Платон Сергеевич поможет подобрать параметры и ответит на вопросы."
+            "Бот проверит структуру, покажет сводку и предложит открыть проект в DevelopAid."
         ),
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
@@ -2738,6 +2728,71 @@ def _pdf_pct(value: Any) -> str:
         return "—"
 
 
+def _purchase_feasibility(
+    purchase_price_mln: Any,
+    net_profit_mln: Any,
+    llcr: Any,
+    debt_amount: Any = 0.0,
+) -> dict[str, str]:
+    """Return a short preliminary purchase-feasibility conclusion.
+
+    The conclusion uses only the current model parameters. It does not estimate
+    market value or calculate an alternative purchase price.
+    """
+    try:
+        purchase_price = float(purchase_price_mln or 0.0)
+    except (TypeError, ValueError):
+        purchase_price = 0.0
+    try:
+        net_profit = float(net_profit_mln or 0.0)
+    except (TypeError, ValueError):
+        net_profit = 0.0
+    try:
+        llcr_value = float(llcr or 0.0)
+    except (TypeError, ValueError):
+        llcr_value = 0.0
+    try:
+        debt = float(debt_amount or 0.0)
+    except (TypeError, ValueError):
+        debt = 0.0
+
+    if purchase_price <= 0:
+        return {
+            "status": "not_available",
+            "title": "Вывод не сформирован",
+            "text": "Цена покупки не указана, поэтому оценить целесообразность приобретения при текущих параметрах нельзя.",
+        }
+    if net_profit <= 0:
+        return {
+            "status": "negative",
+            "title": "Предварительно нецелесообразна",
+            "text": "При текущей цене покупки и принятых параметрах проект не формирует положительную чистую прибыль.",
+        }
+    if debt > 0 and llcr_value < 1.0:
+        return {
+            "status": "negative",
+            "title": "Предварительно нецелесообразна",
+            "text": "Проект прибылен, но денежного потока недостаточно для обслуживания расчётной долговой нагрузки: LLCR ниже 1,00x.",
+        }
+    if debt > 0 and llcr_value < 1.20:
+        return {
+            "status": "review",
+            "title": "Требует пересмотра условий покупки",
+            "text": "Проект формирует прибыль, однако LLCR ниже целевого уровня 1,20x. Следует проверить цену покупки, себестоимость, сроки и условия финансирования.",
+        }
+    if debt > 0:
+        return {
+            "status": "positive",
+            "title": "Предварительно целесообразна",
+            "text": "При текущей цене покупки проект формирует положительную чистую прибыль, а LLCR находится не ниже целевого уровня 1,20x.",
+        }
+    return {
+        "status": "positive",
+        "title": "Предварительно целесообразна",
+        "text": "При текущей цене покупки проект формирует положительную чистую прибыль; долговое финансирование не создаёт ограничений по LLCR.",
+    }
+
+
 def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4
@@ -3100,6 +3155,22 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         ["Выручка",_pdf_money(summary.get('revenue'))],["Расходы всего",_pdf_money(summary.get('total_expenses'))],["EBITDA",_pdf_money(summary.get('ebitda'))],["Чистая прибыль",_pdf_money(summary.get('net_profit'))],["Маржинальность",_pdf_pct(summary.get('margin'))],["LLCR",_pdf_num(summary.get('llcr'),2)+"x"],["Расчётный БРИДЖ",_pdf_money(financing.get('calculated_bridge'))],["Фактический пик БРИДЖ",_pdf_money(financing.get('actual_bridge'))],["Пиковая (непокрытая эскроу) задолженность ПФ",_pdf_money(financing.get('pf_uncovered_peak'))],["Проценты и комиссии",_pdf_money(financing.get('interest_and_fees'))],
     ]
     story.append(table([["Показатель","Значение"]]+kpis,[112*mm,58*mm]))
+    purchase_assessment = _purchase_feasibility(
+        inputs.get("purchase_price_mln"),
+        float(summary.get("net_profit") or 0) / 1_000_000,
+        summary.get("llcr"),
+        max(
+            float(financing.get("calculated_bridge") or 0),
+            float(financing.get("pf_uncovered_peak") or 0),
+        ),
+    )
+    story.append(KeepTogether([
+        P("Оценка целесообразности покупки", h2),
+        table([
+            ["Вывод", purchase_assessment["title"]],
+            ["Основание", purchase_assessment["text"]],
+        ], [45*mm, 125*mm], header=False, font_size=8.0),
+    ]))
     story.append(P("ТЭП",h2))
     tep_rows=[["Продукт","ГНС, м²","Продаваемая, м²","Кол-во"]]
     for row in tep_report.get('rows') or []:
@@ -3254,6 +3325,15 @@ def telegram_result(req: TelegramResultRequest) -> dict[str, bool]:
     parking = float(summary.get("parking_spaces") or 0)
     project_name = str(summary.get("project_name") or "").strip()
     source_label = str(summary.get("source_label") or "ТЭП DevelopAid").strip()
+    purchase_assessment = _purchase_feasibility(
+        summary.get("purchase_price_mln"),
+        summary.get("net_profit_mln"),
+        summary.get("llcr"),
+        max(
+            float(summary.get("calculated_bridge_mln") or 0),
+            float(summary.get("pf_uncovered_peak_mln") or 0),
+        ),
+    )
     if numbers:
         scope_line = f"Участки: <code>{html.escape(', '.join(numbers))}</code>\n"
     elif project_name:
@@ -3280,7 +3360,10 @@ def telegram_result(req: TelegramResultRequest) -> dict[str, bool]:
         f"• LLCR — {_telegram_number(summary.get('llcr'), 2)}x\n"
         f"• расчётный БРИДЖ — {_telegram_money_mln(summary.get('calculated_bridge_mln'))}\n"
         f"• Пиковая (непокрытая эскроу) задолженность ПФ — {_telegram_money_mln(summary.get('pf_uncovered_peak_mln'))}\n\n"
-        "<i>Экономика рассчитана на действующих вводных DevelopAid; цены, сроки и себестоимость можно изменить в модели.</i>"
+        "<b>Оценка целесообразности покупки</b>\n"
+        f"• <b>{html.escape(purchase_assessment['title'])}</b>\n"
+        f"• {html.escape(purchase_assessment['text'])}\n\n"
+        "<i>Вывод предварительный и основан только на текущих вводных DevelopAid; цены, сроки и себестоимость можно изменить в модели.</i>"
     )
     button = {
         "inline_keyboard": [[{
@@ -7815,124 +7898,6 @@ def agent_chat(req: AgentChatRequest, request: Request) -> dict[str, Any]:
     return _call_openai_tool_agent(req, bundle)
 
 
-def _purchase_assessment_solution(result: dict[str, Any]) -> float | None:
-    if not isinstance(result, dict) or not result.get("available"):
-        return None
-    try:
-        value = float((result.get("solution") or {}).get("variable"))
-    except (TypeError, ValueError):
-        return None
-    return value if math.isfinite(value) and value >= 0 else None
-
-
-@app.post("/investment/purchase-assessment")
-def purchase_assessment_api(req: PurchaseAssessmentRequest) -> dict[str, Any]:
-    target_llcr = max(1.0, min(3.0, float(req.target_llcr or 1.20)))
-    target_npv_mln = float(req.target_npv_mln or 0.0)
-    agent_req = AgentChatRequest(
-        message="Автоматическая оценка цены покупки",
-        inputs=copy.deepcopy(req.inputs),
-        tep=copy.deepcopy(req.tep),
-        rates=copy.deepcopy(req.rates),
-        phasing=copy.deepcopy(req.phasing),
-        history=[],
-        selected_view="all",
-    )
-    current_bundle = _run_authoritative_model(
-        agent_req.inputs, agent_req.tep, agent_req.rates, agent_req.phasing
-    )
-    llcr_scope = "weakest_phase" if current_bundle.get("mode") == "phased" else "consolidated"
-    llcr_result = _tool_goal_seek(
-        agent_req, current_bundle,
-        "purchase_price_mln", "llcr", target_llcr,
-        "at_least", "maximum_variable", llcr_scope,
-        None, None,
-    )
-    npv_result = _tool_goal_seek(
-        agent_req, current_bundle,
-        "purchase_price_mln", "npv_mln", target_npv_mln,
-        "at_least", "maximum_variable", "consolidated",
-        None, None,
-    )
-    llcr_ceiling = _purchase_assessment_solution(llcr_result)
-    npv_ceiling = _purchase_assessment_solution(npv_result)
-    current_price = max(0.0, n(agent_req.inputs, "purchase_price_mln"))
-    current_min_llcr = _min_phase_llcr(current_bundle)
-    _, current_npv, _ = _metric_value(current_bundle, "npv_mln", "consolidated", "all")
-
-    if llcr_ceiling is None or npv_ceiling is None:
-        return {
-            "available": False,
-            "status": "not_feasible",
-            "verdict": (
-                "По текущим ценам продаж, себестоимости, срокам и финансированию проект не проходит "
-                "оба обязательных критерия даже при нулевой цене покупки."
-            ),
-            "current_purchase_price_mln": round(current_price, 4),
-            "current_min_llcr_x": round(float(current_min_llcr or 0), 4),
-            "current_npv_mln": round(float(current_npv or 0), 2),
-            "target_llcr_x": target_llcr,
-            "target_npv_mln": target_npv_mln,
-            "llcr_result": llcr_result,
-            "npv_result": npv_result,
-            "warning": (
-                "Это предварительная инвестиционная оценка, а не рыночный отчёт или решение банка. "
-                "Сначала проверьте рыночные цены, бюджет, сроки, социальную нагрузку и условия финансирования."
-            ),
-        }
-
-    max_price = min(llcr_ceiling, npv_ceiling)
-    binding = "LLCR" if llcr_ceiling <= npv_ceiling + 0.01 else "NPV"
-    binding_result = llcr_result if binding == "LLCR" else npv_result
-    ceiling_inputs = copy.deepcopy(agent_req.inputs)
-    ceiling_inputs["purchase_price_mln"] = max_price
-    ceiling_bundle = _run_authoritative_model(
-        ceiling_inputs, agent_req.tep, agent_req.rates, agent_req.phasing
-    )
-    ceiling_min_llcr = _min_phase_llcr(ceiling_bundle)
-    _, ceiling_npv, _ = _metric_value(ceiling_bundle, "npv_mln", "consolidated", "all")
-
-    if current_price <= 0.0001:
-        status = "ceiling_calculated"
-        verdict = "Проект предварительно реализуем; цена продавца не введена, поэтому рассчитан ценовой потолок."
-    elif current_price <= max_price + 0.01:
-        status = "passes"
-        verdict = "Текущая цена покупки проходит критерии LLCR и NPV при заданных предпосылках."
-    else:
-        status = "above_ceiling"
-        verdict = "Текущая цена выше расчётного потолка: нужен торг либо подтверждённое улучшение экономики проекта."
-
-    gap = max(0.0, current_price - max_price) if current_price > 0 else None
-    gap_pct = (current_price / max_price - 1) * 100 if gap is not None and max_price > 0 else None
-    return {
-        "available": True,
-        "status": status,
-        "verdict": verdict,
-        "current_purchase_price_mln": round(current_price, 4),
-        "max_purchase_price_mln": round(max_price, 4),
-        "llcr_ceiling_mln": round(llcr_ceiling, 4),
-        "npv_ceiling_mln": round(npv_ceiling, 4),
-        "binding_constraint": binding,
-        "ceiling_is_lower_bound": bool(binding_result.get("threshold_beyond_bound")),
-        "price_above_ceiling_mln": round(gap, 4) if gap is not None else None,
-        "price_above_ceiling_pct": round(gap_pct, 2) if gap_pct is not None else None,
-        "current_min_llcr_x": round(float(current_min_llcr or 0), 4),
-        "current_npv_mln": round(float(current_npv or 0), 2),
-        "ceiling_min_llcr_x": round(float(ceiling_min_llcr or 0), 4),
-        "ceiling_npv_mln": round(float(ceiling_npv or 0), 2),
-        "target_llcr_x": target_llcr,
-        "target_npv_mln": target_npv_mln,
-        "method": (
-            "Полный детерминированный Goal Seek DevelopAid. Допустимая цена — меньшее из потолков "
-            "по LLCR не ниже 1,20× и NPV не ниже нуля. Исходные параметры автоматически не изменяются."
-        ),
-        "warning": (
-            "Это предварительная инвестиционная оценка, а не рыночный отчёт или решение банка. "
-            "Результат зависит от введённых цен продаж, бюджета, сроков, социальной нагрузки и финансирования."
-        ),
-    }
-
-
 @app.get("/current-key-rate")
 def current_key_rate() -> dict[str, Any]:
     return fetch_current_cbr_key_rate()
@@ -8160,7 +8125,6 @@ tfoot th{border-top:2px solid #111;color:#111;background:#fff}
 @media(max-width:600px){.phase-grid{grid-template-columns:1fr}}
 
 .ai-open-btn{display:inline-flex;align-items:center;gap:7px}.ai-dot{width:7px;height:7px;border-radius:50%;background:#999;display:inline-block}.ai-dot.ready{background:#1f7a3d}
-.purchase-assessment-card{border-top:7px solid #111}.purchase-assessment-head{display:flex;justify-content:space-between;gap:14px;align-items:flex-start;flex-wrap:wrap}.purchase-assessment-head h2{margin:0 0 6px}.purchase-assessment-head p{margin:0;max-width:860px;color:#666;font-size:12px;line-height:1.5}.purchase-verdict{margin:14px 0;padding:13px 15px;border-left:5px solid #8a4b08;background:#fff8e6;font-size:13px;line-height:1.55}.purchase-verdict.pass{border-left-color:#166534;background:#f0f8f2;color:#134e2a}.purchase-verdict.fail{border-left-color:#b42318;background:#fff3f2;color:#8f1d16}.purchase-kpis{display:grid;grid-template-columns:repeat(4,minmax(145px,1fr));border-top:1px solid #111;border-left:1px solid #ddd}.purchase-kpi{padding:13px;border-right:1px solid #ddd;border-bottom:1px solid #ddd}.purchase-kpi small{display:block;color:#777;font-size:10px;text-transform:uppercase;letter-spacing:.05em}.purchase-kpi b{display:block;margin-top:7px;font-size:19px}.purchase-details{margin-top:11px;color:#555;font-size:12px;line-height:1.55}.purchase-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:13px}@media(max-width:760px){.purchase-kpis{grid-template-columns:1fr 1fr}}
 .ai-drawer{position:fixed;top:0;right:0;width:min(520px,96vw);height:100vh;background:#fff;border-left:1px solid #ccc;box-shadow:-12px 0 38px rgba(0,0,0,.12);z-index:1000;display:flex;flex-direction:column;transform:translateX(102%);transition:transform .18s ease}.ai-drawer.open{transform:translateX(0)}
 .ai-head{padding:18px 20px 14px;border-bottom:1px solid #ddd;display:flex;align-items:flex-start;justify-content:space-between;gap:14px}.ai-head h2{margin:0;font-size:19px}.ai-head p{margin:5px 0 0;color:#777;font-size:11px;line-height:1.45}.ai-close{border:0;background:none;font-size:25px;cursor:pointer;line-height:1}
 .ai-quick{padding:12px 16px;border-bottom:1px solid #eee;display:flex;gap:7px;flex-wrap:wrap}.ai-chip{border:1px solid #bbb;background:#fff;padding:7px 9px;font-size:11px;cursor:pointer}.ai-chip:hover{background:#f5f5f3}
@@ -8278,13 +8242,6 @@ tfoot th{border-top:2px solid #111;color:#111;background:#fff}
             <span style="font-size:11px;color:#777">Текущие значения ТЭП квартир/коммерции будут заменены распознанными.</span>
           </div>
         </div>
-      </div>
-      <div id="purchaseAssessmentCard" class="card purchase-assessment-card" style="display:none">
-        <div class="purchase-assessment-head">
-          <div><div class="section-title">Инвестиционная оценка</div><h2>Целесообразность покупки</h2><p>После применения ТЭП DevelopAid автоматически определяет допустимую цену входа по двум ограничениям: LLCR не ниже 1,20× и NPV не ниже нуля.</p></div>
-          <button class="btn dark" onclick="runPurchaseAssessment(true)">Пересчитать</button>
-        </div>
-        <div id="purchaseAssessmentBody" class="purchase-details">Примените ТЭП — оценка появится автоматически.</div>
       </div>
       <div class="card">
         <div class="section-title">Вводные данные</div>
@@ -8693,7 +8650,6 @@ function calculateAndOpen(id){calculate().then(()=>openTab(id))}
 
 
 let aiHistory=[],aiBusy=false,aiProposals=[];
-let purchaseAssessmentBusy=false,lastPurchaseAssessment=null;
 function escapeHtml(s){return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
 function toggleAgent(open){aiDrawer.classList.toggle('open',!!open);aiOverlay.classList.toggle('open',!!open);if(open)setTimeout(()=>aiInput.focus(),80)}
 function appendAiMessage(role,content,extra=''){const d=document.createElement('div');d.className=`ai-msg ${role} ${extra}`.trim();d.innerHTML=escapeHtml(content).replace(/\n/g,'<br>');aiMessages.appendChild(d);aiMessages.scrollTop=aiMessages.scrollHeight;return d}
@@ -8740,46 +8696,6 @@ async function sendAgentMessage(){
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&document.getElementById('aiDrawer')?.classList.contains('open'))toggleAgent(false);if((e.ctrlKey||e.metaKey)&&e.key==='Enter'&&document.getElementById('aiDrawer')?.classList.contains('open'))sendAgentMessage()});
 
 
-
-const assessmentMoney=v=>Number(v||0).toLocaleString('ru-RU',{maximumFractionDigits:1})+' млн ₽';
-function renderPurchaseAssessment(data){
- const card=document.getElementById('purchaseAssessmentCard'),body=document.getElementById('purchaseAssessmentBody');
- if(!card||!body)return;card.style.display='block';
- if(!data||!data.available){
-  const verdict=(data&&data.verdict)||'Не удалось определить допустимую цену покупки.';
-  body.innerHTML=`<div class="purchase-verdict fail"><b>Проект пока не проходит.</b><br>${escapeHtml(verdict)}</div>`+
-   `<div class="purchase-kpis"><div class="purchase-kpi"><small>Текущий LLCR</small><b>${Number(data?.current_min_llcr_x||0).toFixed(3)}×</b></div><div class="purchase-kpi"><small>Текущий NPV</small><b>${assessmentMoney(data?.current_npv_mln||0)}</b></div><div class="purchase-kpi"><small>Цель LLCR</small><b>1,20×</b></div><div class="purchase-kpi"><small>Цель NPV</small><b>≥ 0</b></div></div>`+
-   `<div class="purchase-actions"><button class="btn" onclick="askPurchaseAgent()">Подобрать параметры с Платоном Сергеевичем</button></div>`;
-  return;
- }
- const cls=data.status==='passes'?'pass':(data.status==='above_ceiling'?'fail':'');
- const title=data.status==='passes'?'Цена проходит':(data.status==='above_ceiling'?'Нужен торг':'Ценовой потолок рассчитан');
- const lower=data.ceiling_is_lower_bound?'не менее ':'';
- const current=Number(data.current_purchase_price_mln||0);
- const comparison=current>0?(data.status==='above_ceiling'?`Цена в Inputs выше потолка на <b>${assessmentMoney(data.price_above_ceiling_mln||0)}</b> (${Number(data.price_above_ceiling_pct||0).toFixed(1)}%).`:'Цена в Inputs находится в допустимом диапазоне.'):'Цена продавца в Inputs пока не указана.';
- body.innerHTML=`<div class="purchase-verdict ${cls}"><b>${title}.</b><br>${escapeHtml(data.verdict||'')}</div>`+
-  `<div class="purchase-kpis"><div class="purchase-kpi"><small>Допустимая цена покупки</small><b>${lower}${assessmentMoney(data.max_purchase_price_mln)}</b></div><div class="purchase-kpi"><small>Потолок по LLCR</small><b>${assessmentMoney(data.llcr_ceiling_mln)}</b></div><div class="purchase-kpi"><small>Потолок по NPV</small><b>${assessmentMoney(data.npv_ceiling_mln)}</b></div><div class="purchase-kpi"><small>Ограничивает</small><b>${escapeHtml(data.binding_constraint||'—')}</b></div></div>`+
-  `<div class="purchase-details">${comparison}<br>На потолке: LLCR ${Number(data.ceiling_min_llcr_x||0).toFixed(3)}×, NPV ${assessmentMoney(data.ceiling_npv_mln||0)}.<br>${escapeHtml(data.warning||'')}</div>`+
-  `<div class="purchase-actions"><button class="btn dark" onclick="askPurchaseAgent()">Обсудить и подобрать параметры</button><button class="btn" onclick="openTab('inputs')">Изменить вводные</button></div>`;
-}
-async function runPurchaseAssessment(showCard=true){
- const card=document.getElementById('purchaseAssessmentCard'),body=document.getElementById('purchaseAssessmentBody');
- if(showCard&&card)card.style.display='block';
- if(purchaseAssessmentBusy)return lastPurchaseAssessment;
- if(!inputs._glavapu_import&&!inputs._manual_tep_import){if(body)body.textContent='Сначала загрузите и примените ТЭП.';return null}
- purchaseAssessmentBusy=true;if(body)body.textContent='Рассчитываю допустимую цену покупки полным пересчётом модели…';
- try{
-  await syncInputsForAgent();
-  const response=await fetch('/investment/purchase-assessment',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({inputs,tep,rates,phasing,target_llcr:1.20,target_npv_mln:0})});
-  const data=await response.json();if(!response.ok)throw new Error(data.detail||'Ошибка инвестиционной оценки');
-  lastPurchaseAssessment=data;renderPurchaseAssessment(data);return data;
- }catch(e){if(body)body.innerHTML='<div class="purchase-verdict fail"><b>Оценка не выполнена.</b><br>'+escapeHtml(String(e.message||e))+'</div>';return null}
- finally{purchaseAssessmentBusy=false}
-}
-function askPurchaseAgent(){
- toggleAgent(true);
- setTimeout(()=>askAgentQuick('Оцени целесообразность покупки по текущим параметрам. Сопоставь цену в Inputs с потолком по LLCR 1,20 и NPV не ниже нуля. Если цена не проходит, подбери реалистичные изменения цены продаж, себестоимости, сроков или финансирования. Ничего не применяй без моего подтверждения.'),100);
-}
 
 function currentMonetizableSaleable(){
  return Number((tep.apartments||{}).saleable||0)+Number((tep.ground_commercial||{}).saleable||0)
@@ -9295,7 +9211,6 @@ async function applyGlavapu(){
   : 'Соцрежим: денежная компенсация.';
  glavapuStatus.innerHTML='<span class="import-ok">Данные ТЭП применены. Денежные единицы приведены к млн ₽. '+socialNote+' Подземный паркинг собран из жилого блока и, при наличии, отдельного блока МФК.'+(presetNote?' <b>'+presetNote+'</b>':'')+'</span>';
  await calculate();
- await runPurchaseAssessment(true);
  await sendTelegramResult();
 }
 
@@ -10188,7 +10103,6 @@ async function applyTelegramManualTep(manual){
  const status=document.getElementById('glavapuStatus');
  if(status)status.innerHTML='<span class="import-ok">Ручной ТЭП из Telegram загружен в модель. Проверьте таблицу; финансовые вводные сохранены отдельно.</span>';
  await calculate();
- await runPurchaseAssessment(true);
  await sendTelegramResult();
  return true;
 }
@@ -10303,7 +10217,6 @@ async function initializeApp(){
  await refreshAgentStatus();
  await loadPresetCatalog();
  await initializeTelegramLaunch();
- if((inputs._glavapu_import||inputs._manual_tep_import)&&!lastPurchaseAssessment)await runPurchaseAssessment(true);
 }
 initializeApp();
 </script>
