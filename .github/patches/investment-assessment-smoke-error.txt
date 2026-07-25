@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+  File "/home/runner/work/plato/plato/.github/patches/smoke_investment_assessment_v01228.py", line 7, in <module>
+    import main
+ModuleNotFoundError: No module named 'main'
