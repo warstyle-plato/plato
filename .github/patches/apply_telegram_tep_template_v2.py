@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+import base64
+import io
+import json
+import os
 import re
+import urllib.request
 import zipfile
 from pathlib import Path
 
 MAIN = Path("main.py")
-TEMPLATE = Path("templates/DevelopAid_Шаблон_ТЭП.xlsx")
+CHECKED_OUT_TEMPLATE = Path("templates/DevelopAid_Шаблон_ТЭП.xlsx")
+TEMPLATE_B64_PATH = Path("templates/DevelopAid_Шаблон_ТЭП.xlsx.b64")
+TEMPLATE_BLOB_SHA = "211c3eb01078f82789b6b17bd71a3190e5ea2b8d"
 
 
 def replace_once(text: str, old: str, new: str, label: str) -> str:
@@ -15,22 +22,55 @@ def replace_once(text: str, old: str, new: str, label: str) -> str:
     return text.replace(old, new, 1)
 
 
-if not TEMPLATE.is_file():
-    raise RuntimeError(f"Template file is missing: {TEMPLATE}")
+def valid_xlsx(payload: bytes) -> bool:
+    try:
+        with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+            return {
+                "xl/workbook.xml",
+                "xl/worksheets/sheet1.xml",
+                "xl/worksheets/sheet2.xml",
+            }.issubset(archive.namelist())
+    except zipfile.BadZipFile:
+        return False
 
-with zipfile.ZipFile(TEMPLATE) as archive:
-    names = set(archive.namelist())
-    required = {"xl/workbook.xml", "xl/worksheets/sheet1.xml"}
-    missing = required - names
-    if missing:
-        raise RuntimeError("Template package missing: " + ", ".join(sorted(missing)))
+
+def load_template_payload() -> bytes:
+    if CHECKED_OUT_TEMPLATE.is_file():
+        checked_out = CHECKED_OUT_TEMPLATE.read_bytes()
+        if valid_xlsx(checked_out):
+            return checked_out
+
+    request = urllib.request.Request(
+        f"https://api.github.com/repos/warstyle-plato/plato/git/blobs/{TEMPLATE_BLOB_SHA}",
+        headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "DevelopAid-template-integration",
+            **(
+                {"Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}"}
+                if os.environ.get("GITHUB_TOKEN")
+                else {}
+            ),
+        },
+    )
+    with urllib.request.urlopen(request, timeout=30) as response:
+        blob = json.loads(response.read().decode("utf-8"))
+    payload = base64.b64decode(str(blob.get("content") or ""), validate=False)
+    if not valid_xlsx(payload):
+        raise RuntimeError("GitHub blob does not contain a valid XLSX package")
+    return payload
+
+
+payload = load_template_payload()
+with zipfile.ZipFile(io.BytesIO(payload)) as archive:
     xml_payload = b"\n".join(
-        archive.read(name) for name in names if name.endswith(".xml")
+        archive.read(name) for name in archive.namelist() if name.endswith(".xml")
     )
     if "ТЭП DevelopAid".encode("utf-8") not in xml_payload:
         raise RuntimeError("Worksheet 'ТЭП DevelopAid' is missing")
     if b"DevelopAid_TEP_2" not in xml_payload:
         raise RuntimeError("Template version marker DevelopAid_TEP_2 is missing")
+
+TEMPLATE_B64_PATH.write_text(base64.b64encode(payload).decode("ascii"), encoding="ascii")
 
 text = MAIN.read_text(encoding="utf-8")
 
@@ -39,7 +79,7 @@ text = replace_once(
     'MANUAL_TEP_TEMPLATE_FILENAME = "DevelopAid_Шаблон_ТЭП.xlsx"\n'
     'MANUAL_TEP_TEMPLATE_VERSION = "DevelopAid_TEP_1"\n',
     'MANUAL_TEP_TEMPLATE_FILENAME = "DevelopAid_Шаблон_ТЭП.xlsx"\n'
-    'MANUAL_TEP_TEMPLATE_PATH = Path(__file__).resolve().parent / "templates" / MANUAL_TEP_TEMPLATE_FILENAME\n'
+    'MANUAL_TEP_TEMPLATE_B64_PATH = Path(__file__).resolve().parent / "templates" / "DevelopAid_Шаблон_ТЭП.xlsx.b64"\n'
     'MANUAL_TEP_TEMPLATE_VERSION = "DevelopAid_TEP_2"\n',
     "template constants",
 )
@@ -119,13 +159,19 @@ def download_manual_tep_template():
 '''
 new_route = '''@app.get("/templates/tep")
 def download_manual_tep_template():
-    if not MANUAL_TEP_TEMPLATE_PATH.is_file():
-        raise HTTPException(status_code=500, detail="Excel-шаблон ТЭП не найден на сервере")
-    return FileResponse(
-        MANUAL_TEP_TEMPLATE_PATH,
+    try:
+        encoded = MANUAL_TEP_TEMPLATE_B64_PATH.read_text(encoding="ascii").strip()
+        content = base64.b64decode(encoded, validate=True)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail="Excel-шаблон ТЭП повреждён или не найден") from exc
+    encoded_name = urllib.parse.quote(MANUAL_TEP_TEMPLATE_FILENAME)
+    return Response(
+        content=content,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        filename=MANUAL_TEP_TEMPLATE_FILENAME,
-        headers={"Cache-Control": "public, max-age=3600"},
+        headers={
+            "Cache-Control": "public, max-age=3600",
+            "Content-Disposition": f"attachment; filename=DevelopAid_TEP_template.xlsx; filename*=UTF-8''{encoded_name}",
+        },
     )
 '''
 text = replace_once(text, old_route, new_route, "template endpoint")
@@ -189,6 +235,5 @@ text = replace_once(
 )
 
 text = text.replace("0.12.26", "0.12.27")
-
 MAIN.write_text(text, encoding="utf-8")
 print("Telegram TEP template v2 integration applied")
