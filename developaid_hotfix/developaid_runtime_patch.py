@@ -5,7 +5,7 @@ import re
 import sys
 from pathlib import Path
 
-_HOTFIX_MARKER = "# _DEVELOPAID_TELEGRAM_HELP_CLOSE_V01233"
+_HOTFIX_MARKER = "# _DEVELOPAID_TELEGRAM_HELP_CLOSE_V01234"
 
 
 def _find_main_file() -> Path:
@@ -46,10 +46,10 @@ def _patch_main(path: Path) -> None:
     if _HOTFIX_MARKER in text:
         return
 
-    for old in ("0.12.29", "0.12.30", "0.12.31", "0.12.32"):
-        text = text.replace(f'version="{old}"', 'version="0.12.33"')
-        text = text.replace(f'"version": "{old}"', '"version": "0.12.33"')
-        text = text.replace(f"Версия: {old}", "Версия: 0.12.33")
+    for old in ("0.12.29", "0.12.30", "0.12.31", "0.12.32", "0.12.33"):
+        text = text.replace(f'version="{old}"', 'version="0.12.34"')
+        text = text.replace(f'"version": "{old}"', '"version": "0.12.34"')
+        text = text.replace(f"Версия: {old}", "Версия: 0.12.34")
 
     handler_marker = "def _telegram_handle_message(message: dict[str, Any]) -> None:\n"
     help_function = r'''def _telegram_send_help(chat_id: int) -> None:
@@ -143,12 +143,15 @@ def _patch_main(path: Path) -> None:
  const tg=window.Telegram&&window.Telegram.WebApp;
  if(!tg)return false;
  try{if(typeof tg.disableClosingConfirmation==='function')tg.disableClosingConfirmation()}catch(e){}
+ try{if(typeof tg.enableVerticalSwipes==='function')tg.enableVerticalSwipes()}catch(e){}
  try{if(tg.MainButton)tg.MainButton.hide()}catch(e){}
+ try{if(tg.SecondaryButton)tg.SecondaryButton.hide()}catch(e){}
  try{if(tg.BackButton)tg.BackButton.hide()}catch(e){}
  const closeNow=()=>{try{tg.close()}catch(e){}};
- setTimeout(closeNow,150);
- setTimeout(closeNow,700);
- setTimeout(closeNow,1500);
+ closeNow();
+ setTimeout(closeNow,120);
+ setTimeout(closeNow,500);
+ setTimeout(closeNow,1200);
  return true;
 }
 
@@ -181,11 +184,12 @@ def _patch_main(path: Path) -> None:
     )
 
     required = [
-        'version="0.12.33"',
+        'version="0.12.34"',
         "def _telegram_send_help",
         'if command == "/help"',
         'if data == "show_help":\n            _telegram_send_help(chat_id)',
         "function closeTelegramWebAppAfterResult()",
+        "closeNow();",
         "closeTelegramWebAppAfterResult();",
     ]
     missing = [marker for marker in required if marker not in text]
