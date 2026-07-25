@@ -1,3 +1,5 @@
-from developaid_runtime_patch import apply_patch
+from developaid_runtime_patch import apply_patch as apply_base_patch
+from developaid_answer_webapp_patch import apply_patch as apply_answer_webapp_patch
 
-apply_patch()
+apply_base_patch()
+apply_answer_webapp_patch()
