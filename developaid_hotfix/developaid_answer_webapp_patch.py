@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 from pathlib import Path
 
-_MARKER = "# _DEVELOPAID_TELEGRAM_ANSWER_WEBAPP_QUERY_V01231"
+_MARKER = "# _DEVELOPAID_TELEGRAM_ANSWER_WEBAPP_QUERY_V01232"
 
 
 def _find_main_file() -> Path:
@@ -47,31 +48,28 @@ def apply_patch() -> None:
     if _MARKER in text:
         return
 
-    text = text.replace('version="0.12.30"', 'version="0.12.31"')
-    text = text.replace('"version": "0.12.30"', '"version": "0.12.31"')
-    text = text.replace('Версия: 0.12.30', 'Версия: 0.12.31')
+    for old in ("0.12.29", "0.12.30", "0.12.31"):
+        text = text.replace(f'version="{old}"', 'version="0.12.32"')
+        text = text.replace(f'"version": "{old}"', '"version": "0.12.32"')
+        text = text.replace(f"Версия: {old}", "Версия: 0.12.32")
 
-    text = _replace_once(
-        text,
-        '''class TelegramResultRequest(BaseModel):
-    session: str
-    summary: dict[str, Any]
-''',
-        '''class TelegramResultRequest(BaseModel):
-    session: str
-    summary: dict[str, Any]
-    web_app_query_id: str = ""
-''',
-        "TelegramResultRequest",
-    )
+    if "web_app_query_id: str" not in text:
+        pattern = (
+            r"(class TelegramResultRequest\(BaseModel\):\n"
+            r"\s+session: str\n"
+            r"\s+summary: dict\[str, Any\]\n)"
+        )
+        text, count = re.subn(pattern, r'\1    web_app_query_id: str = ""\n', text, count=1)
+        if count != 1:
+            raise RuntimeError("DevelopAid answerWebAppQuery patch: TelegramResultRequest not found")
 
     result_start = text.index('@app.post("/telegram/result")')
     result_end = text.index("\n\n\ndef _server_preset_meta", result_start)
     result_block = text[result_start:result_end]
-    result_block = _replace_once(
-        result_block,
-        '    _telegram_send_message(chat_id, text, reply_markup=button)\n',
-        '''    answered_web_app = False
+
+    if 'answerWebAppQuery' not in result_block:
+        delivery_line = "    _telegram_send_message(chat_id, text, reply_markup=button)"
+        delivery_block = '''    answered_web_app = False
     web_app_query_id = str(req.web_app_query_id or "").strip()
     if web_app_query_id:
         try:
@@ -95,59 +93,83 @@ def apply_patch() -> None:
         except Exception as exc:
             _TELEGRAM_RUNTIME["last_error"] = "answerWebAppQuery: " + str(exc)
     if not answered_web_app:
-        _telegram_send_message(chat_id, text, reply_markup=button)
-''',
-        "answerWebAppQuery delivery",
-    )
-    result_block = _replace_once(
-        result_block,
-        '    return {"ok": True}\n',
-        '    return {"ok": True, "closed_by_telegram": answered_web_app}\n',
-        "closed_by_telegram response",
-    )
+        _telegram_send_message(chat_id, text, reply_markup=button)'''
+        result_block = _replace_once(
+            result_block,
+            delivery_line,
+            delivery_block,
+            "answerWebAppQuery delivery",
+        )
+
+    if '"closed_by_telegram": answered_web_app' not in result_block:
+        result_block = _replace_once(
+            result_block,
+            '    return {"ok": True}',
+            '    return {"ok": True, "closed_by_telegram": answered_web_app}',
+            "closed_by_telegram response",
+        )
     text = text[:result_start] + result_block + text[result_end:]
 
     send_start = text.index("async function sendTelegramResult(){\n")
     send_end = text.index("\n}\n\nasync function applyGlavapu()", send_start)
     send_block = text[send_start:send_end]
-    send_block = _replace_once(
-        send_block,
-        '''  persistLocalSilently();
-  const payload={
-''',
-        '''  persistLocalSilently();
-  const tg=window.Telegram&&window.Telegram.WebApp;
-  const webAppQueryId=tg&&tg.initDataUnsafe?String(tg.initDataUnsafe.query_id||''):'';
-  const payload={
-''',
-        "query_id capture",
-    )
-    send_block = _replace_once(
-        send_block,
-        '      body:JSON.stringify({session:telegramSession,summary:payload})\n',
-        '      body:JSON.stringify({session:telegramSession,summary:payload,web_app_query_id:webAppQueryId})\n',
-        "query_id submit",
-    )
-    send_block = _replace_once(
-        send_block,
-        '''      closeTelegramWebAppAfterResult();
-''',
-        '''      if(!result.closed_by_telegram)closeTelegramWebAppAfterResult();
-''',
-        "client close fallback",
-    )
-    text = text[:send_start] + send_block + text[send_end:]
 
+    if "const webAppQueryId=" not in send_block:
+        send_block, count = re.subn(
+            r"(?m)^(\s*)persistLocalSilently\(\);\s*$",
+            lambda match: (
+                f"{match.group(1)}persistLocalSilently();\n"
+                f"{match.group(1)}const tg=window.Telegram&&window.Telegram.WebApp;\n"
+                f"{match.group(1)}const webAppQueryId=tg&&tg.initDataUnsafe?String(tg.initDataUnsafe.query_id||''):'';"
+            ),
+            send_block,
+            count=1,
+        )
+        if count != 1:
+            raise RuntimeError("DevelopAid answerWebAppQuery patch: persistLocalSilently marker not found")
+
+    if "web_app_query_id:webAppQueryId" not in send_block:
+        send_block = _replace_once(
+            send_block,
+            "body:JSON.stringify({session:telegramSession,summary:payload})",
+            "body:JSON.stringify({session:telegramSession,summary:payload,web_app_query_id:webAppQueryId})",
+            "query_id submit",
+        )
+
+    if "if(!result.closed_by_telegram)closeTelegramWebAppAfterResult();" not in send_block:
+        send_block, count = re.subn(
+            r"(?m)^(\s*)closeTelegramWebAppAfterResult\(\);\s*$",
+            r"\1if(!result.closed_by_telegram)closeTelegramWebAppAfterResult();",
+            send_block,
+            count=1,
+        )
+        if count != 1:
+            raise RuntimeError("DevelopAid answerWebAppQuery patch: client close fallback not found")
+
+    text = text[:send_start] + send_block + text[send_end:]
     text = text.replace(
         "if(!tg||telegramMode==='edit')return false;",
         "if(!tg)return false;",
         1,
     )
     text = text.replace(
-        "   if(tg){setTimeout(()=>tg.close(),700)}",
-        "   if(tg)closeTelegramWebAppAfterResult();",
+        "if(tg){setTimeout(()=>tg.close(),700)}",
+        "if(tg)closeTelegramWebAppAfterResult();",
         1,
     )
 
+    required = [
+        "web_app_query_id: str",
+        'answerWebAppQuery',
+        '"closed_by_telegram": answered_web_app',
+        "const webAppQueryId=",
+        "web_app_query_id:webAppQueryId",
+        "if(!result.closed_by_telegram)closeTelegramWebAppAfterResult();",
+    ]
+    missing = [marker for marker in required if marker not in text]
+    if missing:
+        raise RuntimeError("DevelopAid answerWebAppQuery patch: missing markers: " + ", ".join(missing))
+
     text += f"\n{_MARKER}\n"
+    compile(text, str(path), "exec")
     path.write_text(text, encoding="utf-8")
