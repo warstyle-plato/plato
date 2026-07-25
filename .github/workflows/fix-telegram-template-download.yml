@@ -30,6 +30,9 @@ jobs:
       - name: Check syntax
         run: python -m py_compile main.py
 
+      - name: Install application dependencies
+        run: pip install -r requirements.txt
+
       - name: Verify direct XLSX upload
         env:
           TELEGRAM_BOT_TOKEN: test-token
