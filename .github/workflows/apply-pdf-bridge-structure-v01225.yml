@@ -22,8 +22,13 @@ jobs:
       - name: Apply patch and validate PDF
         shell: bash
         run: |
-          python scripts/restore_pdf_bridge_structure.py
-          python -m py_compile main.py
+          if [ -f scripts/restore_pdf_bridge_structure.py ]; then
+            python scripts/restore_pdf_bridge_structure.py
+          fi
+          python - <<'PY'
+          source=open('main.py',encoding='utf-8').read()
+          compile(source,'main.py','exec')
+          PY
           python -m pip install -q -r requirements.txt
           python - <<'PY'
           from pathlib import Path
@@ -85,9 +90,11 @@ jobs:
           assert len(pdf) > 5000
           print('PDF_BRIDGE_STRUCTURE_VALIDATED', len(pdf))
           PY
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          rm -f scripts/restore_pdf_bridge_structure.py
-          git add -A
-          git commit -m 'DevelopAid v0.12.25: restore bridge-purpose structure in PDF'
-          git push origin HEAD:${{ github.head_ref }}
+          if [ -f scripts/restore_pdf_bridge_structure.py ]; then
+            git config user.name github-actions[bot]
+            git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+            rm -f scripts/restore_pdf_bridge_structure.py
+            git add -A
+            git commit -m 'DevelopAid v0.12.25: restore bridge-purpose structure in PDF'
+            git push origin HEAD:${{ github.head_ref }}
+          fi
