@@ -5,7 +5,7 @@ import re
 import sys
 from pathlib import Path
 
-_MARKER = "# _DEVELOPAID_TELEGRAM_ANSWER_WEBAPP_QUERY_V01232"
+_MARKER = "# _DEVELOPAID_TELEGRAM_ANSWER_WEBAPP_QUERY_V01234"
 
 
 def _find_main_file() -> Path:
@@ -48,10 +48,10 @@ def apply_patch() -> None:
     if _MARKER in text:
         return
 
-    for old in ("0.12.29", "0.12.30", "0.12.31"):
-        text = text.replace(f'version="{old}"', 'version="0.12.32"')
-        text = text.replace(f'"version": "{old}"', '"version": "0.12.32"')
-        text = text.replace(f"Версия: {old}", "Версия: 0.12.32")
+    for old in ("0.12.29", "0.12.30", "0.12.31", "0.12.32", "0.12.33"):
+        text = text.replace(f'version="{old}"', 'version="0.12.34"')
+        text = text.replace(f'"version": "{old}"', '"version": "0.12.34"')
+        text = text.replace(f"Версия: {old}", "Версия: 0.12.34")
 
     if "web_app_query_id: str" not in text:
         pattern = (
@@ -67,9 +67,9 @@ def apply_patch() -> None:
     result_end = text.index("\n\n\ndef _server_preset_meta", result_start)
     result_block = text[result_start:result_end]
 
-    if 'answerWebAppQuery' not in result_block:
-        delivery_line = "    _telegram_send_message(chat_id, text, reply_markup=button)"
-        delivery_block = '''    answered_web_app = False
+    delivery_line = "    _telegram_send_message(chat_id, text, reply_markup=button)"
+    delivery_block = '''    answered_web_app = False
+    web_app_close_error = ""
     web_app_query_id = str(req.web_app_query_id or "").strip()
     if web_app_query_id:
         try:
@@ -80,10 +80,8 @@ def apply_patch() -> None:
                 ).hexdigest()[:32],
                 "title": "Расчёт DevelopAid готов",
                 "input_message_content": {
-                    "message_text": text,
-                    "parse_mode": "HTML",
+                    "message_text": "Расчёт DevelopAid завершён. Итоговая карточка и PDF отправлены ботом."
                 },
-                "reply_markup": button,
             }
             _telegram_api("answerWebAppQuery", {
                 "web_app_query_id": web_app_query_id,
@@ -91,9 +89,11 @@ def apply_patch() -> None:
             })
             answered_web_app = True
         except Exception as exc:
-            _TELEGRAM_RUNTIME["last_error"] = "answerWebAppQuery: " + str(exc)
-    if not answered_web_app:
-        _telegram_send_message(chat_id, text, reply_markup=button)'''
+            web_app_close_error = str(exc)
+            _TELEGRAM_RUNTIME["last_error"] = "answerWebAppQuery: " + web_app_close_error
+    _telegram_send_message(chat_id, text, reply_markup=button)'''
+
+    if "web_app_close_error =" not in result_block:
         result_block = _replace_once(
             result_block,
             delivery_line,
@@ -105,7 +105,7 @@ def apply_patch() -> None:
         result_block = _replace_once(
             result_block,
             '    return {"ok": True}',
-            '    return {"ok": True, "closed_by_telegram": answered_web_app}',
+            '    return {"ok": True, "closed_by_telegram": answered_web_app, "query_id_present": bool(web_app_query_id), "close_error": web_app_close_error}',
             "closed_by_telegram response",
         )
     text = text[:result_start] + result_block + text[result_end:]
@@ -120,7 +120,8 @@ def apply_patch() -> None:
             lambda match: (
                 f"{match.group(1)}persistLocalSilently();\n"
                 f"{match.group(1)}const tg=window.Telegram&&window.Telegram.WebApp;\n"
-                f"{match.group(1)}const webAppQueryId=tg&&tg.initDataUnsafe?String(tg.initDataUnsafe.query_id||''):'';"
+                f"{match.group(1)}const rawInitData=tg?String(tg.initData||''):'';\n"
+                f"{match.group(1)}const webAppQueryId=tg?String((tg.initDataUnsafe&&tg.initDataUnsafe.query_id)||new URLSearchParams(rawInitData).get('query_id')||''):'';"
             ),
             send_block,
             count=1,
@@ -136,10 +137,15 @@ def apply_patch() -> None:
             "query_id submit",
         )
 
-    if "if(!result.closed_by_telegram)closeTelegramWebAppAfterResult();" not in send_block:
+    send_block = send_block.replace(
+        "if(!result.closed_by_telegram)closeTelegramWebAppAfterResult();",
+        "closeTelegramWebAppAfterResult();",
+        1,
+    )
+    if "closeTelegramWebAppAfterResult();" not in send_block:
         send_block, count = re.subn(
-            r"(?m)^(\s*)closeTelegramWebAppAfterResult\(\);\s*$",
-            r"\1if(!result.closed_by_telegram)closeTelegramWebAppAfterResult();",
+            r"(?m)^(\s*)if\(window\.Telegram\.WebApp\.HapticFeedback\)window\.Telegram\.WebApp\.HapticFeedback\.notificationOccurred\('success'\);\s*$",
+            lambda match: match.group(0) + "\n" + match.group(1) + "closeTelegramWebAppAfterResult();",
             send_block,
             count=1,
         )
@@ -147,24 +153,16 @@ def apply_patch() -> None:
             raise RuntimeError("DevelopAid answerWebAppQuery patch: client close fallback not found")
 
     text = text[:send_start] + send_block + text[send_end:]
-    text = text.replace(
-        "if(!tg||telegramMode==='edit')return false;",
-        "if(!tg)return false;",
-        1,
-    )
-    text = text.replace(
-        "if(tg){setTimeout(()=>tg.close(),700)}",
-        "if(tg)closeTelegramWebAppAfterResult();",
-        1,
-    )
 
     required = [
+        'version="0.12.34"',
         "web_app_query_id: str",
         'answerWebAppQuery',
+        'web_app_close_error =',
         '"closed_by_telegram": answered_web_app',
         "const webAppQueryId=",
         "web_app_query_id:webAppQueryId",
-        "if(!result.closed_by_telegram)closeTelegramWebAppAfterResult();",
+        "closeTelegramWebAppAfterResult();",
     ]
     missing = [marker for marker in required if marker not in text]
     if missing:
