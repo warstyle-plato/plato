@@ -3,8 +3,10 @@ from __future__ import annotations
 import base64
 import copy
 import re
+import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path.cwd()))
 import main
 
 payload = base64.b64decode(
