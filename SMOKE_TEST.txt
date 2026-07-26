@@ -1,3 +1,13 @@
+DEVELOPAID v0.12.45 QUARTERLY VIEW OK
+Python syntax (main.py + main_legacy.py): OK
+tests/ — 165 passed (6 new on the quarterly view)
+Quarter grouping: 2027-01..03 -> 2027-Q1, partial quarters kept: OK
+Quarterly cost totals equal the monthly ones article by article: OK
+Column headers are quarters, fewer columns than months: OK
+Flows summed, balances taken at quarter end, rates averaged: OK
+Totals row sums flows only, balances and rates left blank: OK
+Phase files carry the quarterly sheets too: OK
+
 DEVELOPAID v0.12.44 PLATO TEMPLATE EXPORT OK
 Python syntax (main.py + main_legacy.py): OK
 Page JavaScript syntax (node --check): OK

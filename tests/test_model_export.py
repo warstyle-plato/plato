@@ -92,6 +92,7 @@ def test_single_workbook_sheets():
     assert wb.sheetnames == [
         "Сводка", "Вводные", "ТЭП", "Выручка", "Расходы",
         "Помесячно", "Расходы помесячно", "Продажи помесячно",
+        "Финансирование поквартально", "Расходы поквартально", "Продажи поквартально",
         "Денежный поток", "Календарь",
     ]
 
@@ -332,6 +333,70 @@ def test_sales_detail_sheet_holds_revenue_and_volumes():
 def test_phase_files_carry_their_own_detail():
     wb = workbook(archive(PHASING), "01_Очередь_О1.xlsx")
     assert "Расходы помесячно" in wb.sheetnames
+
+
+# --- поквартальная сводка ---------------------------------------------------
+
+def test_quarter_grouping():
+    assert main._quarter_label("2027-01-01") == "2027-Q1"
+    assert main._quarter_label("2027-12-01") == "2027-Q4"
+    groups = main._quarter_groups(["2027-01-01", "2027-02-01", "2027-03-01", "2027-04-01"])
+    assert [label for label, _ in groups] == ["2027-Q1", "2027-Q2"]
+    assert [len(indexes) for _, indexes in groups] == [3, 1]
+
+
+def test_quarterly_costs_equal_monthly_costs():
+    result = main.calculate(main.CalcRequest(inputs=main.DEFAULT_INPUTS, tep=main.TEP_DEFAULT, rates=[]))
+    monthly = result["monthly"]
+    values = workbook(archive(), "Мытищи_модель.xlsx", values=True)["Расходы поквартально"]
+    totals = {
+        row[0]: row[1]
+        for row in values.iter_rows(min_row=5, max_col=2, values_only=True)
+        if row[0] and row[1] is not None
+    }
+    for item in monthly["costs"]:
+        assert totals[item["label"]] == pytest.approx(item["total"] / 1e6, abs=0.01)
+
+
+def test_quarterly_columns_are_quarters():
+    result = main.calculate(main.CalcRequest(inputs=main.DEFAULT_INPUTS, tep=main.TEP_DEFAULT, rates=[]))
+    quarters = {main._quarter_label(month) for month in result["monthly"]["months"]}
+    sheet = workbook(archive(), "Мытищи_модель.xlsx")["Расходы поквартально"]
+    header = [cell.value for cell in sheet[4]][2:]
+    assert set(header) == quarters
+    assert len(header) < len(result["monthly"]["months"])
+
+
+def test_quarterly_finance_sums_flows_and_keeps_balances():
+    result = main.calculate(main.CalcRequest(inputs=main.DEFAULT_INPUTS, tep=main.TEP_DEFAULT, rates=[]))
+    rows = result["finance"]["rows"]
+    groups = main._quarter_groups([row["month"] for row in rows])
+    values = workbook(archive(), "Мытищи_модель.xlsx", values=True)["Финансирование поквартально"]
+    header = [cell.value for cell in values[4]]
+    sales_column = header.index("Продажи (поступления)") + 1
+    balance_column = header.index("Остаток ПФ") + 1
+    for offset, (label, indexes) in enumerate(groups):
+        row_number = 5 + offset
+        assert values.cell(row=row_number, column=1).value == label
+        expected_sales = sum(rows[index]["sales"] for index in indexes) / 1e6
+        assert values.cell(row=row_number, column=sales_column).value == pytest.approx(expected_sales, abs=0.01)
+        expected_balance = rows[indexes[-1]]["pf_balance"] / 1e6
+        assert values.cell(row=row_number, column=balance_column).value == pytest.approx(expected_balance, abs=0.01)
+
+
+def test_quarterly_finance_totals_only_flows():
+    sheet = workbook(archive(), "Мытищи_модель.xlsx")["Финансирование поквартально"]
+    header = [cell.value for cell in sheet[4]]
+    last = sheet.max_row
+    assert sheet.cell(row=last, column=1).value == "Итого"
+    for label in ("Остаток ПФ", "Ключевая ставка", "Эскроу"):
+        assert sheet.cell(row=last, column=header.index(label) + 1).value in (None, "")
+
+
+def test_phase_files_carry_quarterly_sheets():
+    wb = workbook(archive(PHASING), "01_Очередь_О1.xlsx")
+    assert "Расходы поквартально" in wb.sheetnames
+    assert "Финансирование поквартально" in wb.sheetnames
 
 
 def test_endpoint_returns_zip_attachment():
