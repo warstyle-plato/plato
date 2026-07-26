@@ -7,6 +7,7 @@ from mo_cadastral_routing import apply as apply_mo_cadastral_routing
 from mo_egrn_hotfix import apply as apply_mo_egrn_hotfix
 from mo_flow_restore import apply as apply_mo_flow_restore
 from model_download_ui_fix import apply as apply_model_download_ui_fix
+from vri_obligation_date_fix import apply as apply_vri_obligation_date_fix
 
 apply_telegram_context(runtime)
 apply_excel_export(runtime)
@@ -14,4 +15,5 @@ apply_mo_cadastral_routing(runtime)
 apply_mo_egrn_hotfix(runtime)
 apply_mo_flow_restore(runtime)
 apply_model_download_ui_fix(runtime)
+apply_vri_obligation_date_fix(runtime)
 app = runtime.app
