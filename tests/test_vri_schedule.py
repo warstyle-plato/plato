@@ -442,3 +442,36 @@ def test_initial_payment_is_ignored_for_a_lump_sum():
     result = schedule(vri_initial_pct=25)
     assert len(result["rows"]) == 1
     assert result["rows"][0]["principal"] == pytest.approx(AMOUNT)
+
+
+# --- вкладка ВРИ в интерфейсе -----------------------------------------------
+
+def test_page_has_a_dedicated_vri_tab():
+    page = main.PAGE
+    assert 'data-tab="vri"' in page
+    assert '<div id="vri" class="panel">' in page
+    # Вводные ВРИ живут во вкладке, а не в общем списке.
+    assert 'id="vriInputGroups"' in page
+    assert "VRI_GROUP_NAME='Смена ВРИ и земельные права'" in page
+
+
+def test_vri_group_is_still_a_field_group():
+    names = [name for name, _ in main.FIELD_GROUPS]
+    assert "Смена ВРИ и земельные права" in names
+    keys = {
+        field[0]
+        for name, fields in main.FIELD_GROUPS if name == "Смена ВРИ и земельные права"
+        for field in fields
+    }
+    for key in ("vri_required", "vri_payment_mode", "vri_relief_mode",
+                "vri_obligation_date_mode", "vri_initial_pct", "vri_in_bank_budget"):
+        assert key in keys
+
+
+def test_tab_and_report_render_from_one_place():
+    page = main.PAGE
+    # Обе таблицы наполняются общими помощниками, поэтому расходиться не могут.
+    assert "function vriTotalsRows(t)" in page
+    assert "function vriScheduleRows(rows)" in page
+    for element in ("vriTabTotals", "vriTabSchedule", "vriTotalsTable", "vriScheduleTable"):
+        assert f'id="{element}"' in page

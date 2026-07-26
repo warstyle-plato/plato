@@ -1,3 +1,15 @@
+DEVELOPAID v0.12.50 VRI TAB RESTORED OK
+Python syntax (main.py + main_legacy.py): OK
+Page JavaScript syntax (node --check): OK
+tests/ — 257 passed (3 new on the tab)
+Tab bar: Вводные · ТЭП · ВРИ · Очередность · Ставка · Финансирование · Календарь · Отчёт: OK
+All 24 VRI inputs render inside the tab, not in the general list: OK
+VRI group removed from «Вводные», no duplicated field ids: OK
+Totals and schedule fill from shared helpers, tab and report cannot diverge: OK
+Report card kept for the printed version, both render together: OK
+Empty state explains itself when the change of use is not required: OK
+Browser check: tab switches, installment and relief recalculate, no page errors: OK
+
 DEVELOPAID v0.12.49 NEW MOSCOW ROUTING AND NSPD TRANSPORT OK
 Python syntax (main.py + main_legacy.py): OK
 tests/ — 254 passed (20 new: routing, NSPD transport, VRI parity)
