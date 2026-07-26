@@ -1,3 +1,19 @@
+DEVELOPAID v0.12.51 ONE CADASTRAL INPUT OK
+Python syntax (main.py + main_legacy.py): OK
+Page JavaScript syntax (node --check): OK
+tests/ — 263 passed (6 new on the unified entry)
+One input field and one primary button on the page: OK
+Moscow 77:* routed to GlavAPU, no region call made: OK
+New Moscow 50:* confirmed by GlavAPU stays on GlavAPU: OK
+Region 50:* outside Moscow, and with GlavAPU down, routed to RNGP MO: OK
+Address resolved through EGRN into a cadastral number, then routed: OK
+Ksr upload removed from the UI, reference bundled: 56 municipalities: OK
+Ksr and UPKS filled by district without being passed in: OK
+Explicit price still wins over the reference: OK
+Region parameters collapsed, labelled as reference, editable: OK
+Server-filled density, district and Ksr returned into the fields: OK
+Browser check: routing on mocked network, real MO payload renders, no errors: OK
+
 DEVELOPAID v0.12.50 VRI TAB RESTORED OK
 Python syntax (main.py + main_legacy.py): OK
 Page JavaScript syntax (node --check): OK
