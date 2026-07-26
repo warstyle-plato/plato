@@ -319,3 +319,158 @@ def test_model_calculation_is_untouched_by_lookup_keys():
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+# --- маршрутизация Москва / Московская область ------------------------------
+
+def test_new_moscow_number_stays_on_glavapu():
+    """У Новой Москвы кадастры тоже 50:*, один префикс не выбирает область."""
+    moscow = {"territory": {"inside_moscow": True}}
+    assert main.cadastral_route(["50:20:0010101:1"], moscow) == "moscow"
+
+
+def test_region_number_falls_back_to_the_region_calculator():
+    outside = {"territory": {"inside_moscow": False}}
+    assert main.cadastral_route(["50:20:0010101:1"], outside) == "mo"
+
+
+def test_region_number_uses_the_region_calculator_when_glavapu_fails():
+    assert main.cadastral_route(["50:20:0010101:1"], None) == "mo"
+
+
+def test_moscow_number_without_glavapu_is_an_error():
+    assert main.cadastral_route(["77:01:0001001:1"], None) == "error"
+
+
+def test_mixed_numbers_are_not_treated_as_region_only():
+    outside = {"territory": {"inside_moscow": False}}
+    assert main.cadastral_route(["50:20:1:1", "77:01:1:1"], outside) == "moscow"
+
+
+def test_empty_list_without_analysis_is_an_error():
+    assert main.cadastral_route([], None) == "error"
+
+
+# --- транспорт НСПД ---------------------------------------------------------
+
+def test_nspd_requests_carry_browser_headers():
+    captured = {}
+
+    class Response:
+        def read(self, _limit): return b'{"data":{"features":[]}}'
+        def __enter__(self): return self
+        def __exit__(self, *_): return False
+
+    def fake_urlopen(request, timeout=None, context=None):
+        captured["headers"] = dict(request.headers)
+        captured["url"] = request.full_url
+        return Response()
+
+    original = main.urllib.request.urlopen
+    main.urllib.request.urlopen = fake_urlopen
+    try:
+        main._land_fetch_json(main._NSPD_BASE_URL + "/api/x", service="Сервис НСПД")
+    finally:
+        main.urllib.request.urlopen = original
+    headers = {key.lower(): value for key, value in captured["headers"].items()}
+    assert "Chrome" in headers["User-agent".lower()]
+    assert headers["Referer".lower()].startswith("https://nspd.gov.ru")
+    assert headers["Origin".lower()] == "https://nspd.gov.ru"
+
+
+def test_other_hosts_keep_the_plain_user_agent():
+    captured = {}
+
+    class Response:
+        def read(self, _limit): return b"{}"
+        def __enter__(self): return self
+        def __exit__(self, *_): return False
+
+    def fake_urlopen(request, timeout=None, context=None):
+        captured["headers"] = dict(request.headers)
+        return Response()
+
+    original = main.urllib.request.urlopen
+    main.urllib.request.urlopen = fake_urlopen
+    try:
+        main._land_fetch_json("https://example.org/api", service="Тест")
+    finally:
+        main.urllib.request.urlopen = original
+    headers = {key.lower(): value for key, value in captured["headers"].items()}
+    assert headers["User-agent".lower()] == main._LAND_LOOKUP_USER_AGENT
+    assert "referer" not in headers
+
+
+def test_search_query_asks_for_wgs84():
+    captured = {}
+
+    def fake_fetch(url, *, service, **kwargs):
+        captured["url"] = url
+        return {"data": {"features": []}}
+
+    original = main._land_fetch_json
+    main._land_fetch_json = fake_fetch
+    try:
+        main._nspd_search_features("50:20:0010101:1")
+    finally:
+        main._land_fetch_json = original
+    assert "CRS=EPSG%3A4326" in captured["url"]
+
+
+def test_providers_report_the_tls_state():
+    state = main.land_lookup_providers()["nspd_tls"]
+    assert set(state) == {"fallback_allowed", "verification_disabled"}
+    assert state["fallback_allowed"] is True
+
+
+def test_tls_failure_retries_once_without_verification_and_is_reported():
+    """Сертификат НСПД выпущен национальным УЦ: повторяем без проверки, но явно."""
+    import ssl as ssl_module
+
+    calls = []
+
+    class Response:
+        def read(self, _limit): return b'{"data":{"features":[]}}'
+        def __enter__(self): return self
+        def __exit__(self, *_): return False
+
+    def fake_urlopen(request, timeout=None, context=None):
+        calls.append(context)
+        if len(calls) == 1:
+            raise main.urllib.error.URLError(ssl_module.SSLError("CERTIFICATE_VERIFY_FAILED"))
+        return Response()
+
+    original = main.urllib.request.urlopen
+    was_insecure = main._nspd_tls_insecure
+    main._nspd_tls_insecure = False
+    main.urllib.request.urlopen = fake_urlopen
+    try:
+        main._land_fetch_json(main._NSPD_BASE_URL + "/api/x", service="Сервис НСПД")
+        assert len(calls) == 2
+        assert calls[0] is None
+        assert calls[1].verify_mode == ssl_module.CERT_NONE
+        assert main.land_lookup_providers()["nspd_tls"]["verification_disabled"] is True
+    finally:
+        main.urllib.request.urlopen = original
+        main._nspd_tls_insecure = was_insecure
+
+
+def test_plain_network_failure_is_not_retried_insecurely():
+    calls = []
+
+    def fake_urlopen(request, timeout=None, context=None):
+        calls.append(context)
+        raise main.urllib.error.URLError("connection refused")
+
+    original = main.urllib.request.urlopen
+    was_insecure = main._nspd_tls_insecure
+    main._nspd_tls_insecure = False
+    main.urllib.request.urlopen = fake_urlopen
+    try:
+        with pytest.raises(HTTPException):
+            main._land_fetch_json(main._NSPD_BASE_URL + "/api/x", service="Сервис НСПД")
+        assert len(calls) == 1
+        assert main._nspd_tls_insecure is False
+    finally:
+        main.urllib.request.urlopen = original
+        main._nspd_tls_insecure = was_insecure

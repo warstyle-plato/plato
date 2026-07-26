@@ -1,3 +1,19 @@
+DEVELOPAID v0.12.49 NEW MOSCOW ROUTING AND NSPD TRANSPORT OK
+Python syntax (main.py + main_legacy.py): OK
+tests/ — 246 passed (12 new on routing and NSPD transport)
+New Moscow 50:* confirmed by GlavAPU stays on the Moscow calculator: OK
+50:* outside Moscow, or with GlavAPU down, goes to the region calculator: OK
+77:* without GlavAPU is a plain error, not a region calculation: OK
+Mixed 50:* and 77:* never treated as region-only: OK
+Routing decision is a pure function, tested without the network: OK
+NSPD requests carry Referer, Origin and a browser User-Agent: OK
+Other hosts keep the plain DevelopAid User-Agent, no Referer: OK
+Search query asks for CRS=EPSG:4326: OK
+TLS: normal verification first, one insecure retry only on SSLError: OK
+Insecure retry is reported in /land/providers, switchable off by env: OK
+Ordinary network failures are not retried insecurely: OK
+EGRN area aliases widened with the portal's newer key spellings: OK
+
 DEVELOPAID v0.12.48 VRI RELIEF AND CHARTS OK
 Python syntax (main.py + main_legacy.py): OK
 Page JavaScript syntax (node --check): OK
