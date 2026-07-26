@@ -41,8 +41,16 @@ def normalize_cadastral(value: str) -> str:
     return cadastral
 
 
+def _model_payload(req: BaseModel) -> dict[str, Any]:
+    if hasattr(req, "model_dump"):
+        return req.model_dump()  # type: ignore[attr-defined]
+    return req.dict()
+
+
 def apply(runtime: Any) -> None:
+    runtime._RUNTIME_VERSION = VERSION
     app = runtime.app
+    app.version = VERSION
     core = runtime.core
 
     @app.post("/cadastral/route")
@@ -87,7 +95,7 @@ def apply(runtime: Any) -> None:
         builder = getattr(core, "_telegram_manual_tep_from_payload", None)
         if not callable(builder):
             raise HTTPException(status_code=503, detail="Расчётный модуль ТЭП временно недоступен")
-        payload = req.model_dump()
+        payload = _model_payload(req)
         payload.pop("cadastral_number", None)
         payload["project_name"] = f"Участок {cadastral}"
         try:
