@@ -1,3 +1,17 @@
+DEVELOPAID v0.12.46 LATE SOCIAL ALLOCATION OK
+Python syntax (main.py + main_legacy.py): OK
+tests/ — 188 passed (23 new on social phasing)
+Default allocation late: school last, kindergarten second, clinic near the end: OK
+First phase carries no social objects for 2..5 phases: OK
+Obligation "not later than N" pulls the object earlier and is explained: OK
+Obligation looser than the default does not move the object: OK
+Clinic may land in the first phase by obligation, school and DOO may not: OK
+Manual registry phase wins over automation, out-of-range phase clamped: OK
+Social cost and object list reported per phase: OK
+Late allocation lowers peak PF versus everything in the first phase: OK
+Money-compensation mode untouched, single-phase project untouched: OK
+Comparison sheet shows social load and objects, first phase zero: OK
+
 DEVELOPAID v0.12.45 QUARTERLY VIEW OK
 Python syntax (main.py + main_legacy.py): OK
 tests/ — 165 passed (6 new on the quarterly view)
