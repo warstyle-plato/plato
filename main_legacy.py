@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import calendar
 import base64
+import csv
+import gzip
 import copy
 import hashlib
 import hmac
@@ -29,7 +31,7 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse, FileResponse, Response
 from pydantic import BaseModel
 
-app = FastAPI(title="DevelopAid Development Investment Model", version="0.12.38")
+app = FastAPI(title="DevelopAid Development Investment Model", version="0.12.39")
 
 PRESET_DIR = Path(__file__).resolve().parent / "presets"
 MANUAL_TEP_TEMPLATE_FILENAME = "DevelopAid_Шаблон_ТЭП.xlsx"
@@ -1226,7 +1228,7 @@ def analyze_cadastral_territory(req: CadastralAnalysisRequest) -> dict[str, Any]
         headers={
             "Accept": "application/json",
             "Content-Type": "application/json; charset=utf-8",
-            "User-Agent": "DevelopAid-Development-Model/0.12.38",
+            "User-Agent": "DevelopAid-Development-Model/0.12.39",
         },
     )
     try:
@@ -1349,7 +1351,7 @@ _NSPD_BASE_URL = (_env_str("NSPD_BASE_URL", "https://nspd.gov.ru")).rstrip("/")
 _NSPD_TIMEOUT_SECONDS = _env_float("NSPD_TIMEOUT_SECONDS", 25.0)
 _NSPD_LAND_THEMATIC_ID = 1
 _NOMINATIM_BASE_URL = (_env_str("NOMINATIM_BASE_URL", "https://nominatim.openstreetmap.org")).rstrip("/")
-_LAND_LOOKUP_USER_AGENT = "DevelopAid-Development-Model/0.12.38"
+_LAND_LOOKUP_USER_AGENT = "DevelopAid-Development-Model/0.12.39"
 _LAND_LOOKUP_MAX_RESULTS = 10
 _LAND_LOOKUP_CACHE_TTL_SECONDS = _env_float("LAND_LOOKUP_CACHE_TTL", 900.0)
 _LAND_LOOKUP_CACHE_LIMIT = 256
@@ -2025,6 +2027,741 @@ def land_lookup_providers() -> dict[str, Any]:
     }
 
 
+# ---------------------------------------------------------------------------
+# Калькулятор Подмосковья: ТЭП, социальная нагрузка по РНГП МО и плата за ВРИ
+#
+# Аналог блока ГлавАПУ, но для Московской области. Источники нормативов и
+# справочников — расчёты ППТ и таблицы УПКС, приложенные заказчиком:
+#   * «расчет_200 тыс кв» — потребность в социальной инфраструктуре;
+#   * «ВРИ» — плата за изменение вида разрешённого использования;
+#   * УПКС ЗУ и УПКС ОКС по городским округам и кадастровым кварталам.
+# ---------------------------------------------------------------------------
+
+# Округ -> (УПКС ЗУ «жилая застройка», УПКС ОКС МКД, УПКС ОКС машино-места,
+#           УПКС ОКС коммерция), руб./м².
+_MO_UPKS_BY_DISTRICT: dict[str, tuple[float | None, float | None, float | None, float | None]] = {
+    "Богородский городской округ": (4909.72, 64999.31, 29249.42, 40067.39),
+    "Волоколамский городской округ": (2473.45, 52389.88, None, 38477.01),
+    "Городской округ Балашиха": (8149.18, 95771.59, 45030.5, 38890.0),
+    "Городской округ Бронницы": (4151.46, 71477.98, None, 39221.13),
+    "Городской округ ВЛАСИХА (ЗАТО)": (8610.22, 107087.94, None, 45406.9),
+    "Городской округ Воскресенск": (3601.73, 52817.81, 21537.4, 40245.69),
+    "Городской округ Восход (ЗАТО)": (None, 66746.87, None, 33853.05),
+    "Городской округ Дзержинский": (10331.06, 106648.14, 56292.93, 39096.07),
+    "Городской округ Долгопрудный": (12340.12, 128909.52, 58314.24, 34346.92),
+    "Городской округ Домодедово": (7437.85, 92221.78, 46532.1, 43636.89),
+    "Городской округ Дубна": (5655.27, 88699.99, None, 36666.21),
+    "Городской округ Егорьевск": (3058.48, 51483.81, 20910.68, 37340.46),
+    "Городской округ Жуковский": (7824.35, 96276.56, 45501.99, 37452.36),
+    "Городской округ Зарайск": (2314.35, 48608.34, None, 39163.79),
+    "Городской округ Звёздный городок (ЗАТО)": (4595.42, 86535.53, None, 44897.41),
+    "Городской округ Истра": (5968.53, 83505.99, 35612.8, 41072.04),
+    "Городской округ КРАСНОЗНАМЕНСК (ЗАТО)": (8236.65, 104472.13, None, 38917.62),
+    "Городской округ Кашира": (2921.36, 49062.81, None, 38957.87),
+    "Городской округ Клин": (3534.57, 62224.31, 20398.02, 40394.33),
+    "Городской округ Коломна": (3933.68, 65231.81, 33059.94, 39216.47),
+    "Городской округ Королёв": (6812.86, 107218.97, 54793.4, 38562.96),
+    "Городской округ Котельники": (12184.11, 123716.18, 64052.44, 39890.87),
+    "Городской округ Красногорск": (10430.48, 121711.11, 60954.81, 39080.49),
+    "Городской округ Лобня": (8140.38, 101895.24, 46845.94, 38965.49),
+    "Городской округ Лосино-Петровский": (5049.8, 70197.31, 28484.45, 39604.95),
+    "Городской округ Лотошино": (2061.12, 52736.64, None, 39531.37),
+    "Городской округ Луховицы": (2543.34, 54592.42, 20237.03, 39770.46),
+    "Городской округ Лыткарино": (7519.22, 92895.11, 45165.61, 31710.06),
+    "Городской округ Люберцы": (10497.92, 115348.4, 64916.15, 35063.66),
+    "Городской округ Молодёжный (ЗАТО)": (3194.17, 70719.71, None, 31913.31),
+    "Городской округ Мытищи": (8517.94, 114047.68, 59367.73, 37284.12),
+    "Городской округ Павловский Посад": (3733.55, 58802.55, 21885.76, 38064.73),
+    "Городской округ Подольск": (7588.91, 97660.18, 50581.14, 38085.8),
+    "Городской округ Протвино": (4898.3, 63799.53, None, 35061.04),
+    "Городской округ Пушкинский": (6867.34, 87321.37, 43729.9, 39146.67),
+    "Городской округ Пущино": (4607.71, 64221.31, None, 37841.95),
+    "Городской округ Реутов": (11038.32, 139819.22, 72906.81, 38222.57),
+    "Городской округ Серебряные Пруды": (1944.87, 45849.7, None, 41657.4),
+    "Городской округ Серпухов": (3305.65, 62966.52, 20667.74, 39160.19),
+    "Городской округ Солнечногорск": (6076.32, 79018.84, 33861.37, 39771.92),
+    "Городской округ Ступино": (3398.93, 62547.44, 24320.76, 42074.54),
+    "Городской округ Фрязино": (6270.61, 81595.74, 38411.19, 43314.85),
+    "Городской округ Химки": (12188.54, 119516.93, 57268.52, 40771.41),
+    "Городской округ Черноголовка": (5588.55, 79285.58, None, 40009.56),
+    "Городской округ Чехов": (4498.63, 73592.22, None, 37825.67),
+    "Городской округ Шатура": (2411.06, 43992.2, 19573.71, 37792.65),
+    "Городской округ Шаховская": (2155.57, 63426.65, None, 36091.07),
+    "Городской округ Щёлково": (5520.45, 78288.34, 34175.96, 39487.83),
+    "Городской округ Электрогорск": (2907.52, 49605.77, None, 40966.76),
+    "Городской округ Электросталь": (5869.11, 65664.05, 28879.04, 37302.28),
+    "Дмитровский городской округ": (4462.9, 69135.16, 26198.58, 40942.51),
+    "Итого по Московской области": (6755.28, 94205.97, 56282.5, 39228.68),
+    "Ленинский городской округ": (9069.43, 104163.91, 54076.76, 42154.41),
+    "Можайский городской округ": (2424.13, 63956.49, 22058.45, 37055.57),
+    "Наро-Фоминский городской округ": (4372.75, 84845.66, 38194.53, 40884.36),
+    "Одинцовский городской округ": (8747.63, 116541.94, 62733.36, 40335.83),
+    "Орехово-Зуевский городской округ": (3433.61, 52165.11, 17790.56, 39233.95),
+    "Раменский городской округ": (6344.77, 87313.83, 33821.38, 41758.35),
+    "Рузский городской округ": (3358.11, 60957.13, None, 41545.51),
+    "Сергиево-Посадский городской округ": (3666.12, 65732.78, 32825.64, 37892.26),
+    "Талдомский городской округ": (2749.47, 49520.02, 22307.21, 34777.06),
+}
+
+
+_MO_QUARTER_UPKS_PATH = Path(__file__).resolve().parent / "data" / "upks_oks_quarters.csv.gz"
+_mo_quarter_upks: dict[str, tuple[float | None, float | None, float | None]] | None = None
+_mo_quarter_lock = threading.Lock()
+
+# Нормативы РНГП Московской области. Любой из них можно переопределить в запросе.
+MO_NORMS_DEFAULT: dict[str, float] = {
+    "living_space_per_person_sqm": 28.0,
+    "kindergarten_places_per_1000": 65.0,
+    "kindergarten_site_sqm_per_place": 38.0,
+    "kindergarten_gba_sqm_per_place": 27.0,
+    "school_places_per_1000": 135.0,
+    "school_places_step": 25.0,
+    "school_site_sqm_per_place": 31.0,
+    "school_gba_sqm_per_place": 27.0,
+    "clinic_visits_per_1000": 17.75,
+    "clinic_site_ha": 0.3,
+    "clinic_gba_sqm_per_visit": 15.0,
+    "parking_permanent_per_1000": 356.0,
+    "parking_permanent_share": 0.9,
+    "parking_temporary_share": 0.18,
+    "parking_underground_sqm_per_space": 35.0,
+    "parking_surface_sqm_per_space": 22.5,
+    "jobs_share_of_population": 0.5,
+    "office_sqm_per_job": 10.0,
+    "green_quarter_sqm_per_person": 6.5,
+    "green_public_sqm_per_person": 4.4,
+    "retail_sqm_per_1000": 1530.0,
+    "retail_gba_factor": 1.3,
+    "service_jobs_per_1000": 10.9,
+    "service_sqm_per_job": 30.0,
+    "catering_seats_per_1000": 40.0,
+    "catering_sqm_per_seat": 6.0,
+    "sport_hall_sqm_per_1000": 106.0,
+    "pool_mirror_sqm_per_1000": 9.96,
+    "pool_gba_factor": 1.5,
+    "club_sqm_per_1000": 150.0,
+    "pharmacy_sqm": 60.0,
+    "mfc_sqm_per_2000": 14.0,
+    "police_sqm": 45.0,
+    "hospital_beds_per_1000": 6.0,
+    "ambulance_cars_per_1000": 0.1,
+    "fire_cars_per_1000": 0.2,
+    "gns_apartment_factor": 0.6351,
+    "total_area_apartment_factor": 0.68,
+    "gns_commercial_factor": 0.8,
+    "vri_kd": 0.1,
+}
+
+_MO_DENSITY_DEFAULT_SQM_PER_HA = 30000.0
+
+
+def _mo_quarter_upks_table() -> dict[str, tuple[float | None, float | None, float | None]]:
+    """Реестр УПКС ОКС по кадастровым кварталам. Файл необязателен."""
+    global _mo_quarter_upks
+    if _mo_quarter_upks is not None:
+        return _mo_quarter_upks
+    with _mo_quarter_lock:
+        if _mo_quarter_upks is not None:
+            return _mo_quarter_upks
+        table: dict[str, tuple[float | None, float | None, float | None]] = {}
+        try:
+            with gzip.open(_MO_QUARTER_UPKS_PATH, "rt", encoding="utf-8", newline="") as handle:
+                for row in csv.DictReader(handle):
+                    quarter = str(row.get("quarter") or "").strip()
+                    if not quarter:
+                        continue
+                    table[quarter] = (
+                        _land_float(row.get("mkd")),
+                        _land_float(row.get("parking")),
+                        _land_float(row.get("commercial")),
+                    )
+        except FileNotFoundError:
+            table = {}
+        except Exception:
+            table = {}
+        _mo_quarter_upks = table
+        return table
+
+
+def _mo_normalize_name(value: str) -> str:
+    text = str(value or "").lower().replace("ё", "е")
+    text = re.sub(r"\(зато\)|зато", " ", text)
+    text = re.sub(r"городской округ|муниципальный округ|городском округе|г\.?\s?о\.?|г\.о", " ", text)
+    text = re.sub(r"[^а-яa-z0-9\-]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+_MO_DISTRICT_INDEX = {_mo_normalize_name(name): name for name in _MO_UPKS_BY_DISTRICT}
+
+
+def _mo_district_upks(district: str) -> dict[str, Any]:
+    """Справочные УПКС по округу: земля под жильё и ОКС МКД."""
+    canonical = _MO_DISTRICT_INDEX.get(_mo_normalize_name(district)) or (
+        district if district in _MO_UPKS_BY_DISTRICT else ""
+    )
+    if not canonical:
+        return {"district": "", "upks_land_residential": None, "upks_oks_mkd": None,
+                "upks_oks_parking": None, "upks_oks_commercial": None}
+    land, mkd, parking, commercial = _MO_UPKS_BY_DISTRICT[canonical]
+    return {
+        "district": canonical,
+        "upks_land_residential": land,
+        "upks_oks_mkd": mkd,
+        "upks_oks_parking": parking,
+        "upks_oks_commercial": commercial,
+    }
+
+
+def _mo_district_from_address(address: str) -> str:
+    """Округ по адресу ЕГРН: сначала точное вхождение, затем по названию."""
+    text = _mo_normalize_name(address)
+    if not text:
+        return ""
+    best = ""
+    for key, canonical in _MO_DISTRICT_INDEX.items():
+        if not key:
+            continue
+        if re.search(rf"(?<![а-я]){re.escape(key)}(?![а-я])", text) and len(key) > len(_mo_normalize_name(best)):
+            best = canonical
+    return best
+
+
+def _mo_norms(overrides: dict[str, Any] | None = None) -> dict[str, float]:
+    norms = dict(MO_NORMS_DEFAULT)
+    for key, value in (overrides or {}).items():
+        number = _land_float(value)
+        if key in norms and number is not None:
+            norms[key] = number
+    return norms
+
+
+def _mo_ceil(value: float) -> int:
+    return int(math.ceil(round(float(value), 6)))
+
+
+def mo_social_program(apartments_sqm: float, norms: dict[str, float] | None = None) -> dict[str, Any]:
+    """Потребность в социальной инфраструктуре по РНГП МО от площади квартир."""
+    n = _mo_norms(norms if isinstance(norms, dict) else None)
+    apartments = max(0.0, _land_float(apartments_sqm) or 0.0)
+    population = _mo_ceil(apartments / n["living_space_per_person_sqm"]) if apartments else 0
+    per_1000 = population / 1000.0
+
+    kindergarten_need = per_1000 * n["kindergarten_places_per_1000"]
+    kindergarten_places = _mo_ceil(kindergarten_need)
+    school_need = per_1000 * n["school_places_per_1000"]
+    step = max(1.0, n["school_places_step"])
+    school_places = int(_mo_ceil(school_need / step) * step)
+    clinic_need = per_1000 * n["clinic_visits_per_1000"]
+    clinic_capacity = _mo_ceil(clinic_need)
+
+    parking_permanent = _mo_ceil(
+        population * n["parking_permanent_per_1000"] / 1000.0 * n["parking_permanent_share"]
+    )
+    parking_temporary = _mo_ceil(
+        population * n["parking_permanent_per_1000"] / 1000.0 * n["parking_temporary_share"]
+    )
+    underground_sqm = parking_permanent * n["parking_underground_sqm_per_space"]
+
+    retail_trade_sqm = per_1000 * n["retail_sqm_per_1000"]
+    retail_gba = retail_trade_sqm * n["retail_gba_factor"]
+    service_jobs = per_1000 * n["service_jobs_per_1000"]
+    service_gba = service_jobs * n["service_sqm_per_job"]
+    catering_seats = per_1000 * n["catering_seats_per_1000"]
+    catering_gba = catering_seats * n["catering_sqm_per_seat"]
+    sport_gba = per_1000 * n["sport_hall_sqm_per_1000"]
+    pool_mirror = per_1000 * n["pool_mirror_sqm_per_1000"]
+    pool_gba = pool_mirror * n["pool_gba_factor"]
+    club_gba = per_1000 * n["club_sqm_per_1000"]
+    pharmacy_gba = n["pharmacy_sqm"] if population else 0.0
+    mfc_gba = population * n["mfc_sqm_per_2000"] / 2000.0
+    police_gba = n["police_sqm"] if population else 0.0
+
+    public_premises = [
+        ("Торговые объекты", retail_gba),
+        ("Бытовое обслуживание", service_gba),
+        ("Общественное питание", catering_gba),
+        ("Спортивные залы", sport_gba),
+        ("Бассейн", pool_gba),
+        ("Учреждения клубного типа", club_gba),
+        ("Аптека", pharmacy_gba),
+        ("МФЦ", mfc_gba),
+        ("Отделение полиции", police_gba),
+    ]
+    public_premises_sqm = sum(value for _, value in public_premises)
+
+    # Рабочие места, создаваемые социальными и коммерческими объектами.
+    jobs_rows = [
+        ("Дошкольная образовательная организация", round(kindergarten_places * 0.2)),
+        ("Общеобразовательная организация", _mo_ceil(school_places * 0.15)),
+        ("Поликлиника", _mo_ceil(clinic_capacity * 0.3)),
+        ("Торговые объекты", round(retail_gba / 15.0)),
+        ("Бытовое обслуживание", _mo_ceil(service_jobs)),
+        ("Общественное питание", round(catering_seats / 6.0)),
+        ("Досуговый центр", _mo_ceil(club_gba / 60.0) if club_gba else 0),
+        ("Аптека", round(pharmacy_gba / 15.0)),
+        ("Отделение полиции", _mo_ceil(population / 2800.0) if population else 0),
+        ("Спортивные объекты", _mo_ceil((sport_gba + pool_gba) / 60.0) if sport_gba + pool_gba else 0),
+        ("МФЦ", round(mfc_gba / 10.0)),
+    ]
+    jobs_from_objects = sum(int(value) for _, value in jobs_rows)
+    jobs_required = population * n["jobs_share_of_population"]
+    jobs_deficit = max(0.0, jobs_required - jobs_from_objects)
+    office_sqm = jobs_deficit * n["office_sqm_per_job"]
+    jobs_rows.append(("Офисные помещения", int(round(jobs_deficit))))
+
+    return {
+        "apartments_sqm": round(apartments, 2),
+        "population": population,
+        "kindergarten": {
+            "required_places": round(kindergarten_need, 3),
+            "places": kindergarten_places,
+            "site_ha": round(kindergarten_places * n["kindergarten_site_sqm_per_place"] / 10000.0, 4),
+            "gba_sqm": round(kindergarten_places * n["kindergarten_gba_sqm_per_place"], 2),
+        },
+        "school": {
+            "required_places": round(school_need, 3),
+            "places": school_places,
+            "site_ha": round(school_places * n["school_site_sqm_per_place"] / 10000.0, 4),
+            "gba_sqm": round(school_places * n["school_gba_sqm_per_place"], 2),
+        },
+        "clinic": {
+            "required_capacity": round(clinic_need, 3),
+            "capacity": clinic_capacity,
+            "site_ha": round(n["clinic_site_ha"], 4),
+            "gba_sqm": round(clinic_capacity * n["clinic_gba_sqm_per_visit"], 2),
+        },
+        "parking": {
+            "permanent_spaces": parking_permanent,
+            "temporary_spaces": parking_temporary,
+            "underground_sqm": round(underground_sqm, 2),
+            "surface_temporary_ha": round(parking_temporary * n["parking_surface_sqm_per_space"] / 10000.0, 4),
+        },
+        "green": {
+            "quarter_sqm": round(population * n["green_quarter_sqm_per_person"], 2),
+            "public_sqm": round(population * n["green_public_sqm_per_person"], 2),
+            "public_ha": round(population * n["green_public_sqm_per_person"] / 10000.0, 4),
+        },
+        "public_premises_sqm": round(public_premises_sqm, 2),
+        "public_premises": [{"label": label, "gba_sqm": round(value, 2)} for label, value in public_premises],
+        "office_sqm": round(office_sqm, 2),
+        "jobs": {
+            "required": round(jobs_required, 2),
+            "from_objects": jobs_from_objects,
+            "deficit": round(jobs_deficit, 2),
+            "rows": [{"label": label, "jobs": int(value)} for label, value in jobs_rows],
+        },
+        "budget_compensation": {
+            "hospital_beds": round(per_1000 * n["hospital_beds_per_1000"], 3),
+            "ambulance_cars": round(per_1000 * n["ambulance_cars_per_1000"], 3),
+            "fire_cars": round(per_1000 * n["fire_cars_per_1000"], 3),
+        },
+        "gns_sqm": round(apartments / n["gns_apartment_factor"], 2) if apartments else 0.0,
+        "apartments_total_area_sqm": round(apartments / n["total_area_apartment_factor"], 2) if apartments else 0.0,
+        "norms": n,
+    }
+
+
+def mo_vri_payment(
+    parcels: list[dict[str, Any]],
+    *,
+    upks_target: float | None,
+    upks_average_oks: float | None,
+    apartments_sqm: float,
+    market_price_rub_per_sqm: float | None,
+    kd: float = 0.1,
+) -> dict[str, Any]:
+    """Плата за изменение ВРИ по методике приложенного расчёта."""
+    rows: list[dict[str, Any]] = []
+    total_area = 0.0
+    total_kc1 = 0.0
+    total_kc2 = 0.0
+    target = _land_float(upks_target)
+    for parcel in parcels or []:
+        area = _land_float(parcel.get("area_sqm")) or 0.0
+        kc1 = _land_float(parcel.get("cadastral_value_rub")) or 0.0
+        kc2 = area * target if target else 0.0
+        total_area += area
+        total_kc1 += kc1
+        total_kc2 += kc2
+        rows.append({
+            "cadastral_number": str(parcel.get("cadastral_number") or ""),
+            "area_sqm": round(area, 2),
+            "permitted_use": str(parcel.get("permitted_use") or ""),
+            "cadastral_value_rub": round(kc1, 2),
+            "upks_current": round(kc1 / area, 2) if area else None,
+            "upks_target": round(target, 2) if target else None,
+            "cadastral_value_new_rub": round(kc2, 2),
+            "delta_rub": round(kc2 - kc1, 2),
+        })
+    delta = total_kc2 - total_kc1
+    apartments = max(0.0, _land_float(apartments_sqm) or 0.0)
+    upks_avg = _land_float(upks_average_oks)
+    market_price = _land_float(market_price_rub_per_sqm)
+    warnings: list[str] = []
+
+    k1 = (market_price / upks_avg) if (market_price and upks_avg) else None
+    g = delta * 1.00001
+    k = (apartments * upks_avg * kd / g) if (upks_avg and g) else None
+    payment = delta * k1 * k if (k1 is not None and k is not None) else None
+    # Алгебраически цепочка сворачивается: П = Кср × площадь квартир × Кд.
+    payment_direct = market_price * apartments * kd if market_price else None
+
+    if not rows:
+        warnings.append(
+            "Участки ЕГРН не заданы: разница кадастровых стоимостей не рассчитана, "
+            "плата показана по прямой формуле Кср × площадь квартир × Кд."
+        )
+    elif delta <= 0:
+        warnings.append(
+            "Кадастровая стоимость участков не ниже целевой для жилой застройки: "
+            "разница неположительная, плата по методике не определяется."
+        )
+    if not target:
+        warnings.append("Для округа нет УПКС земель жилой застройки — целевая кадастровая стоимость не рассчитана.")
+    if not upks_avg:
+        warnings.append("Для округа нет УПКС ОКС многоквартирных домов — коэффициенты К и К1 не рассчитаны.")
+    if not market_price:
+        warnings.append("Не задана средняя цена м² (Кср) — плата за смену ВРИ не рассчитана.")
+
+    return {
+        "parcels": rows,
+        "total_area_sqm": round(total_area, 2),
+        "cadastral_value_current_rub": round(total_kc1, 2),
+        "cadastral_value_target_rub": round(total_kc2, 2),
+        "delta_rub": round(delta, 2),
+        "upks_target": round(target, 2) if target else None,
+        "upks_average_oks": round(upks_avg, 2) if upks_avg else None,
+        "market_price_rub_per_sqm": round(market_price, 2) if market_price else None,
+        "kd": kd,
+        "k1": round(k1, 4) if k1 is not None else None,
+        "k": round(k, 4) if k is not None else None,
+        "payment_rub": round(payment, 2) if payment is not None else None,
+        "payment_mln": round(payment / 1_000_000.0, 3) if payment is not None else None,
+        "payment_direct_rub": round(payment_direct, 2) if payment_direct is not None else None,
+        # Что берётся в модель: методика по участкам, иначе прямая формула.
+        "payment_used_rub": round(used, 2) if (used := (payment if payment is not None else payment_direct)) is not None else None,
+        "payment_used_mln": round(used / 1_000_000.0, 3) if used is not None else None,
+        "payment_basis": (
+            "методика по участкам ЕГРН" if payment is not None
+            else ("прямая формула Кср × площадь квартир × Кд" if payment_direct is not None else "не определена")
+        ),
+        "warnings": warnings,
+    }
+
+
+_MO_REGION_CODE = "50"
+
+
+def _mo_check_region(numbers: list[str]) -> None:
+    outside = [number for number in numbers if not str(number).startswith(_MO_REGION_CODE + ":")]
+    if outside:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Калькулятор «Подмосковье» работает только по Московской области "
+                "(кадастровый округ 50). Вне области: " + ", ".join(outside) + "."
+            ),
+        )
+
+
+def _mo_parcels_from_query(query: str, limit: int) -> tuple[list[dict[str, Any]], list[str]]:
+    """Участки ЕГРН по кадастровым номерам или адресу, только Московская область."""
+    warnings: list[str] = []
+    numbers: list[str] = []
+    seen: set[str] = set()
+    for number in _CADASTRAL_NUMBER_RE.findall(str(query or "").replace("：", ":")):
+        if number not in seen:
+            seen.add(number)
+            numbers.append(number)
+    if numbers:
+        _mo_check_region(numbers)
+        results = _land_lookup_by_numbers(numbers[:limit])
+    else:
+        lookup = land_lookup(LandLookupRequest(query=query, limit=limit))
+        warnings.extend(str(item) for item in lookup.get("warnings") or [])
+        results = [item for item in lookup.get("results") or [] if item.get("kind") == "land"]
+        found_numbers = [str(item.get("cadastral_number") or "") for item in results if item.get("found")]
+        if found_numbers:
+            _mo_check_region(found_numbers)
+    parcels = [item for item in results if item.get("found")]
+    missing = [str(item.get("cadastral_number") or "") for item in results if not item.get("found")]
+    if missing:
+        warnings.append("Нет сведений ЕГРН: " + ", ".join(number for number in missing if number) + ".")
+    return parcels, warnings
+
+
+def _mo_tep_and_inputs(
+    social: dict[str, Any],
+    vri: dict[str, Any],
+    *,
+    site_area_ha: float,
+    norms: dict[str, float],
+    average_flat_sqm: float,
+) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
+    apartments = social["apartments_sqm"]
+    public_sqm = social["public_premises_sqm"]
+    office_sqm = social["office_sqm"]
+    commercial_factor = norms["gns_commercial_factor"] or 0.8
+    kindergarten = social["kindergarten"]
+    school = social["school"]
+    clinic = social["clinic"]
+    parking = social["parking"]
+
+    tep = copy.deepcopy(TEP_DEFAULT)
+    tep["apartments"].update({
+        "gns": social["gns_sqm"],
+        "total_area": social["apartments_total_area_sqm"],
+        "useful": apartments,
+        "saleable": apartments,
+        "transfer": 0,
+        "units": round(apartments / average_flat_sqm, 2) if average_flat_sqm else 0,
+    })
+    tep["ground_commercial"].update({
+        "gns": round(public_sqm / commercial_factor, 2),
+        "total_area": public_sqm,
+        "useful": public_sqm,
+        "saleable": public_sqm,
+        "transfer": 0,
+        "units": 0,
+    })
+    tep["underground_parking"].update({
+        "gns": parking["underground_sqm"],
+        "total_area": parking["underground_sqm"],
+        "useful": 0,
+        "saleable": 0,
+        "transfer": 0,
+        "units": parking["permanent_spaces"],
+    })
+    for key, block, places_key in (
+        ("kindergarten", kindergarten, "places"),
+        ("school", school, "places"),
+        ("clinic", clinic, "capacity"),
+    ):
+        tep[key].update({
+            "gns": 0,
+            "total_area": block["gba_sqm"],
+            "useful": 0,
+            "saleable": 0,
+            "transfer": block["gba_sqm"],
+            "units": block[places_key],
+        })
+    for key in ("standalone_retail", "offices", "above_parking", "storage"):
+        tep[key].update({"gns": 0, "total_area": 0, "useful": 0, "saleable": 0, "transfer": 0, "units": 0})
+
+    inputs: dict[str, Any] = {
+        "land_rights_cost_mln": vri.get("payment_used_mln") or 0.0,
+        "kindergarten_places": kindergarten["places"],
+        "school_places": school["places"],
+        "clinic_capacity": clinic["capacity"],
+        "social_dou_gba_sqm": kindergarten["gba_sqm"],
+        "social_school_gba_sqm": school["gba_sqm"],
+        "social_clinic_gba_sqm": clinic["gba_sqm"],
+        "social_dou_norm_sqm": norms["kindergarten_gba_sqm_per_place"],
+        "social_school_norm_sqm": norms["school_gba_sqm_per_place"],
+        "social_clinic_norm_sqm": norms["clinic_gba_sqm_per_visit"],
+        "social_mode": "Строительство",
+    }
+    if office_sqm > 0:
+        inputs.update({
+            "offices_enabled": True,
+            "offices_gba_sqm": round(office_sqm / commercial_factor, 2),
+            "offices_saleable_sqm": office_sqm,
+        })
+    return tep, inputs
+
+
+def _mo_territory_balance(social: dict[str, Any], site_area_ha: float, norms: dict[str, float]) -> dict[str, Any]:
+    """Упрощённый баланс: сколько территории остаётся под жилые дома и УДС."""
+    items = [
+        ("Участок ДОО", social["kindergarten"]["site_ha"]),
+        ("Участок СОШ", social["school"]["site_ha"]),
+        ("Участок поликлиники", social["clinic"]["site_ha"] if social["clinic"]["capacity"] else 0.0),
+        ("Озеленение общего пользования", social["green"]["public_ha"]),
+        ("Наземные парковки временного хранения", social["parking"]["surface_temporary_ha"]),
+    ]
+    used = sum(value for _, value in items)
+    return {
+        "site_area_ha": round(site_area_ha, 4),
+        "items": [{"label": label, "area_ha": round(value, 4)} for label, value in items],
+        "used_ha": round(used, 4),
+        "remaining_ha": round(site_area_ha - used, 4),
+        "note": (
+            "Остаток — территория под жилые дома, УДС, приобъектные парковки и резервы. "
+            "Отрицательное значение означает, что при заданной плотности участок не вмещает нормативную социалку."
+        ),
+    }
+
+
+class MoCalculateRequest(BaseModel):
+    query: str = ""
+    site_area_ha: float = 0.0
+    density_sqm_per_ha: float = _MO_DENSITY_DEFAULT_SQM_PER_HA
+    district: str = ""
+    market_price_rub_per_sqm: float = 0.0
+    vri_kd: float = 0.1
+    average_flat_sqm: float = 58.75
+    norms: dict[str, Any] = {}
+    limit: int = 10
+
+
+@app.get("/mo/reference")
+def mo_reference() -> dict[str, Any]:
+    """Справочные данные калькулятора Подмосковья для интерфейса."""
+    districts = []
+    for name in sorted(_MO_UPKS_BY_DISTRICT):
+        land, mkd, parking, commercial = _MO_UPKS_BY_DISTRICT[name]
+        districts.append({
+            "name": name,
+            "upks_land_residential": land,
+            "upks_oks_mkd": mkd,
+            "upks_oks_parking": parking,
+            "upks_oks_commercial": commercial,
+        })
+    return {
+        "region": "Московская область",
+        "density_default_sqm_per_ha": _MO_DENSITY_DEFAULT_SQM_PER_HA,
+        "districts": districts,
+        "norms": MO_NORMS_DEFAULT,
+        "quarter_upks_loaded": len(_mo_quarter_upks_table()),
+    }
+
+
+@app.post("/mo/calculate")
+def mo_calculate(req: MoCalculateRequest) -> dict[str, Any]:
+    """ТЭП, социальная нагрузка и плата за смену ВРИ для участка в Подмосковье."""
+    warnings: list[str] = []
+    parcels: list[dict[str, Any]] = []
+    query = _land_text(req.query)
+    limit = max(1, min(int(req.limit or 10), _LAND_LOOKUP_MAX_RESULTS))
+    if query:
+        parcels, lookup_warnings = _mo_parcels_from_query(query, limit)
+        warnings.extend(lookup_warnings)
+
+    area_from_parcels = sum(_land_float(item.get("area_sqm")) or 0.0 for item in parcels) / 10000.0
+    site_area_ha = _land_float(req.site_area_ha) or 0.0
+    if area_from_parcels > 0:
+        if site_area_ha > 0 and abs(site_area_ha - area_from_parcels) > 0.0001:
+            warnings.append(
+                f"Площадь по ЕГРН {area_from_parcels:.4f} га отличается от введённой вручную "
+                f"{site_area_ha:.4f} га — в расчёт взята площадь ЕГРН."
+            )
+        site_area_ha = area_from_parcels
+    if site_area_ha <= 0:
+        if query:
+            reason = " ".join(str(item) for item in warnings if "недоступен" in str(item) or "не найден" in str(item))
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Не удалось получить площадь участка из ЕГРН. "
+                    + (reason + " " if reason else "")
+                    + "Проверьте кадастровый номер или задайте площадь участка в гектарах вручную."
+                ),
+            )
+        raise HTTPException(
+            status_code=400,
+            detail="Не определена площадь участка: введите кадастровый номер, адрес или площадь в гектарах.",
+        )
+
+    density = _land_float(req.density_sqm_per_ha)
+    if density is None or density <= 0:
+        density = _MO_DENSITY_DEFAULT_SQM_PER_HA
+    apartments_sqm = site_area_ha * density
+
+    norms = _mo_norms(req.norms if isinstance(req.norms, dict) else None)
+    social = mo_social_program(apartments_sqm, norms)
+
+    district = _land_text(req.district)
+    district_source = "запрос" if district else ""
+    if not district:
+        for parcel in parcels:
+            district = _mo_district_from_address(str(parcel.get("address") or ""))
+            if district:
+                district_source = "адрес ЕГРН"
+                break
+    upks = _mo_district_upks(district)
+    if district and not upks["district"]:
+        warnings.append(f"Округ «{district}» не найден в справочнике УПКС.")
+    elif not district:
+        warnings.append("Округ не определён по адресу — выберите его вручную, иначе плата за ВРИ не считается.")
+
+    quarter = ""
+    quarter_upks = None
+    for parcel in parcels:
+        quarter = str(parcel.get("quarter") or "")
+        if quarter:
+            row = _mo_quarter_upks_table().get(quarter)
+            quarter_upks = row[0] if row else None
+            break
+
+    market_price = _land_float(req.market_price_rub_per_sqm) or 0.0
+    market_price_source = "запрос"
+    if market_price <= 0:
+        market_price = upks["upks_oks_mkd"] or 0.0
+        market_price_source = "УПКС ОКС округа"
+        if market_price:
+            warnings.append(
+                "Средняя цена м² (Кср) не задана — взят УПКС ОКС многоквартирных домов округа, "
+                "то есть К1 = 1,00. Для реальной сделки укажите рыночную цену."
+            )
+    kd = _land_float(req.vri_kd)
+    kd = norms["vri_kd"] if kd is None else kd
+    vri = mo_vri_payment(
+        parcels,
+        upks_target=upks["upks_land_residential"],
+        upks_average_oks=upks["upks_oks_mkd"],
+        apartments_sqm=apartments_sqm,
+        market_price_rub_per_sqm=market_price,
+        kd=kd,
+    )
+    vri["market_price_source"] = market_price_source
+    warnings.extend(vri.get("warnings") or [])
+
+    average_flat = _land_float(req.average_flat_sqm) or 58.75
+    tep, inputs_patch = _mo_tep_and_inputs(
+        social, vri, site_area_ha=site_area_ha, norms=norms, average_flat_sqm=average_flat
+    )
+    balance = _mo_territory_balance(social, site_area_ha, norms)
+    if balance["remaining_ha"] < 0:
+        warnings.append(
+            "Нормативная социальная инфраструктура не помещается на участок при заданной плотности — "
+            "уменьшите плотность или предусмотрите смежные участки."
+        )
+    warnings.append(
+        "Расчёт нормативный и предварительный: он не заменяет ППТ, заключение ГлавАрхитектуры "
+        "и соглашение о социальной нагрузке."
+    )
+
+    return {
+        "region": "Московская область",
+        "query": query,
+        "territory": {
+            "site_area_ha": round(site_area_ha, 4),
+            "site_area_sqm": round(site_area_ha * 10000.0, 2),
+            "parcel_count": len(parcels),
+            "cadastral_numbers": [str(item.get("cadastral_number") or "") for item in parcels],
+            "district": upks["district"] or district,
+            "district_source": district_source,
+            "quarter": quarter,
+            "address": str((parcels[0].get("address") if parcels else "") or ""),
+        },
+        "density_sqm_per_ha": round(density, 2),
+        "upks": {
+            **upks,
+            "upks_oks_mkd_quarter": quarter_upks,
+        },
+        "social": social,
+        "vri": vri,
+        "balance": balance,
+        "tep": tep,
+        "inputs": inputs_patch,
+        "warnings": warnings,
+        "source": {
+            "service": "ЕГРН/НСПД + нормативы РНГП Московской области",
+            "calculated_at": date.today().isoformat(),
+        },
+    }
+
+
 _GENPLAN_BASE_URL = "https://genplan.tech/calc/"
 _GENPLAN_ASSET_DIR = Path(__file__).resolve().parent / "genplan_assets"
 _GENPLAN_REQUIRED_ASSETS = {
@@ -2065,7 +2802,7 @@ def _proxy_genplan(asset_path: str, request: Request) -> Response:
         target,
         headers={
             "Accept": request.headers.get("accept", "*/*"),
-            "User-Agent": "DevelopAid-Development-Model/0.12.38",
+            "User-Agent": "DevelopAid-Development-Model/0.12.39",
         },
     )
     try:
@@ -3367,7 +4104,88 @@ def _telegram_send_cad_calculate_button(chat_id: int, dialog: dict[str, Any]) ->
     )
 
 
+def _telegram_mo_parsed(mo: dict[str, Any]) -> dict[str, Any]:
+    """Расчёт по Подмосковью в формате карточки ТЭП бота."""
+    social = mo.get("social") or {}
+    territory = mo.get("territory") or {}
+    vri = mo.get("vri") or {}
+    tep = mo.get("tep") or {}
+    site_area_ha = float(territory.get("site_area_ha") or 0)
+    apartments = float(social.get("apartments_sqm") or 0)
+    gns = float(social.get("gns_sqm") or 0)
+    provided = [
+        f"участок — {_telegram_number(site_area_ha, 4)} га по ЕГРН",
+        f"плотность — {_telegram_number(mo.get('density_sqm_per_ha'), 0)} м² квартир на 1 га",
+        f"квартиры — {_telegram_number(apartments, 0)} м²",
+    ]
+    if territory.get("district"):
+        provided.append(f"округ — {territory['district']}")
+    assumptions = [
+        "социальная нагрузка рассчитана по нормативам РНГП Московской области",
+        f"плата за смену ВРИ — {_telegram_money_mln((vri.get('payment_used_rub') or 0) / 1_000_000)} "
+        f"({vri.get('payment_basis') or 'не определена'})",
+    ]
+    assumptions.extend(str(item) for item in (mo.get("warnings") or [])[:4])
+    return {
+        "project_name": territory.get("district") or "Проект в Подмосковье",
+        "site_area_ha": site_area_ha,
+        "source": {
+            "type": "mo_calculator",
+            "cadastral_numbers": territory.get("cadastral_numbers") or [],
+            "district": territory.get("district") or "",
+        },
+        "inputs": mo.get("inputs") or {},
+        "tep": tep,
+        "provided": provided,
+        "assumptions": assumptions,
+        "entered_fields": [],
+        "summary": {
+            "total_gns_sqm": gns,
+            "density_spp_th_ha": (gns / 1000.0 / site_area_ha) if site_area_ha else 0,
+            "population": social.get("population") or 0,
+            "apartment_units": (tep.get("apartments") or {}).get("units") or 0,
+            "parking_spaces": (social.get("parking") or {}).get("permanent_spaces") or 0,
+            "required_kindergarten_places": (social.get("kindergarten") or {}).get("required_places") or 0,
+            "required_school_places": (social.get("school") or {}).get("required_places") or 0,
+            "required_clinic_capacity": (social.get("clinic") or {}).get("required_capacity") or 0,
+            "kindergarten_places": (social.get("kindergarten") or {}).get("places") or 0,
+            "school_places": (social.get("school") or {}).get("places") or 0,
+            "clinic_capacity": (social.get("clinic") or {}).get("capacity") or 0,
+        },
+    }
+
+
+def _telegram_handle_mo_numbers(chat_id: int, numbers: list[str]) -> None:
+    try:
+        mo = mo_calculate(MoCalculateRequest(query=", ".join(numbers)))
+    except HTTPException as exc:
+        _telegram_send_message(
+            chat_id,
+            "<b>Не удалось рассчитать участок в Подмосковье.</b>\n" + html.escape(str(exc.detail)),
+        )
+        return
+    territory = mo.get("territory") or {}
+    social = mo.get("social") or {}
+    vri = mo.get("vri") or {}
+    _telegram_send_message(
+        chat_id,
+        "<b>Участок в Московской области</b>\n"
+        f"Участков: <b>{int(territory.get('parcel_count') or 0)}</b>\n"
+        f"Площадь: <b>{_telegram_number(territory.get('site_area_ha'), 4)} га</b>\n"
+        f"Округ: <b>{html.escape(str(territory.get('district') or '—'))}</b>\n"
+        f"Кадастровый квартал: <b>{html.escape(str(territory.get('quarter') or '—'))}</b>\n\n"
+        f"Плотность: {_telegram_number(mo.get('density_sqm_per_ha'), 0)} м² квартир на 1 га\n"
+        f"Квартиры: {_telegram_number(social.get('apartments_sqm'), 0)} м²\n"
+        f"Население: {_telegram_number(social.get('population'), 0)} чел.\n"
+        f"Смена ВРИ: {_telegram_money_mln((vri.get('payment_used_rub') or 0) / 1_000_000)}",
+    )
+    _telegram_send_tep_review(chat_id, _telegram_mo_parsed(mo), dialog_mode=False)
+
+
 def _telegram_handle_cadastral_numbers(chat_id: int, numbers: list[str]) -> None:
+    if numbers and all(str(number).startswith(_MO_REGION_CODE + ":") for number in numbers):
+        _telegram_handle_mo_numbers(chat_id, numbers)
+        return
     try:
         analysis = analyze_cadastral_territory(CadastralAnalysisRequest(cadastral_numbers=numbers))
     except HTTPException as exc:
@@ -3420,7 +4238,7 @@ def _telegram_handle_message(message: dict[str, Any]) -> None:
         status = "подключён" if _TELEGRAM_RUNTIME.get("configured") else "запускается"
         _telegram_send_message(
             chat_id,
-            f"<b>DevelopAid bot:</b> {status}\nTelegram ID: <code>{user_id}</code>\nВерсия: 0.12.38",
+            f"<b>DevelopAid bot:</b> {status}\nTelegram ID: <code>{user_id}</code>\nВерсия: 0.12.39",
         )
         return
     if command == "/cancel":
@@ -3583,7 +4401,7 @@ def telegram_status() -> dict[str, Any]:
         "allowed_users_count": len(allowed),
         "configured_at": _TELEGRAM_RUNTIME.get("configured_at") or "",
         "last_error": _TELEGRAM_RUNTIME.get("last_error") or "",
-        "version": "0.12.38",
+        "version": "0.12.39",
     }
 
 
@@ -5216,7 +6034,7 @@ def fetch_current_cbr_key_rate() -> dict[str, Any]:
         req = urllib.request.Request(
             feed_url,
             headers={
-                "User-Agent": "Mozilla/5.0 DevelopAid-Development-Model/0.12.38",
+                "User-Agent": "Mozilla/5.0 DevelopAid-Development-Model/0.12.39",
                 "Accept-Language": "ru-RU,ru;q=0.9",
             },
         )
@@ -5262,7 +6080,7 @@ def fetch_current_cbr_key_rate() -> dict[str, Any]:
         req = urllib.request.Request(
             url,
             headers={
-                "User-Agent": "Mozilla/5.0 DevelopAid-Development-Model/0.12.38",
+                "User-Agent": "Mozilla/5.0 DevelopAid-Development-Model/0.12.39",
                 "Accept-Language": "ru-RU,ru;q=0.9",
             },
         )
@@ -6582,7 +7400,7 @@ def calculate(req: CalcRequest) -> dict:
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "version": "0.12.38"}
+    return {"status": "ok", "version": "0.12.39"}
 
 
 @app.get("/defaults")
@@ -9363,7 +10181,7 @@ def _openai_responses_request(payload: dict[str, Any]) -> dict[str, Any]:
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
-            "User-Agent": "DevelopAid-Development-Model/0.12.38",
+            "User-Agent": "DevelopAid-Development-Model/0.12.39",
         },
         method="POST",
     )
@@ -9679,6 +10497,14 @@ tfoot th{border-top:2px solid #111;color:#111;background:#fff}
 .land-grid small{display:block;color:#777;font-size:10px;text-transform:uppercase;letter-spacing:.06em}
 .land-grid b{display:block;margin-top:3px;font-weight:600;line-height:1.35}
 .land-links{margin-top:9px;font-size:11px}
+.mo-box{border-left:4px solid #111}
+.mo-params{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px 14px;margin-top:12px}
+.mo-params .field label{font-size:11px}
+.mo-tables{display:grid;gap:12px}
+.mo-table{background:#fff;border:1px solid #ddd}
+.mo-table h4{margin:0;padding:9px 11px;font-size:12px;border-bottom:1px solid #eee;background:#fafaf8}
+.mo-table table{margin:0}.mo-table th,.mo-table td{padding:6px 10px;font-size:12px}
+.mo-table td:last-child,.mo-table th:last-child{text-align:right;font-variant-numeric:tabular-nums}
 .cadastral-parcels{margin-top:10px;max-height:190px;overflow:auto;background:#fff;border:1px solid #ddd}
 .cadastral-parcels table{margin:0}.cadastral-parcels th,.cadastral-parcels td{padding:7px 9px}
 .genplan-automation-frame{position:fixed;left:-12000px;top:0;width:1440px;height:1000px;border:0;pointer-events:none}
@@ -9820,7 +10646,7 @@ tfoot th{border-top:2px solid #111;color:#111;background:#fff}
 <div class="shell">
   <div class="brandbar"><img src="data:image/webp;base64,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"><div class="brandline"></div></div>
   <div class="header">
-    <div class="title"><h1>Девелоперская инвестиционная модель</h1><p>v0.12.38 · ТЭП · экономика · БРИДЖ · проектное финансирование · эскроу · LLCR</p></div>
+    <div class="title"><h1>Девелоперская инвестиционная модель</h1><p>v0.12.39 · ТЭП · экономика · БРИДЖ · проектное финансирование · эскроу · LLCR</p></div>
     <div class="actions">
       <div class="scenario">Класс&nbsp;
         <select id="projectClassSelect" onchange="applyProjectClassPreset(this.value)" style="min-width:135px">
@@ -9926,6 +10752,33 @@ tfoot th{border-top:2px solid #111;color:#111;background:#fff}
             </div>
           </div>
           <iframe id="genplanAutomationFrame" class="genplan-automation-frame" title="Автоматический расчёт ТЭП ГлавАПУ" aria-hidden="true"></iframe>
+        </div>
+        <div class="import-divider">Либо рассчитать проект в Подмосковье</div>
+        <div class="cadastral-box mo-box">
+          <h3>Калькулятор Подмосковья</h3>
+          <p>Аналог блока ГлавАПУ для Московской области. По кадастровому номеру или адресу берётся площадь участка из ЕГРН, по заданной плотности — площадь квартир, далее нормативы РНГП МО дают население, ДОО, СОШ, поликлинику, паркинг, озеленение и нежилые помещения, а справочники УПКС — плату за смену ВРИ. Работает только по кадастровому округу 50.</p>
+          <div class="cadastral-entry">
+            <textarea id="moQuery" placeholder="50:12:0100131:497&#10;или: Московская область, г. Мытищи, ул. Мира, 1"></textarea>
+            <button id="moCalcButton" class="btn dark" onclick="calculateMo()">Рассчитать</button>
+          </div>
+          <div class="mo-params">
+            <div class="field"><label>Плотность <span class="unit">м² квартир на 1 га</span></label><input type="number" id="moDensity" value="30000" step="500"></div>
+            <div class="field"><label>Площадь участка вручную <span class="unit">га, если без ЕГРН</span></label><input type="number" id="moArea" value="" step="0.0001" placeholder="—"></div>
+            <div class="field"><label>Городской округ <span class="unit">для УПКС</span></label><select id="moDistrict"><option value="">определить по адресу</option></select></div>
+            <div class="field"><label>Средняя цена м², Кср <span class="unit">₽/м²</span></label><input type="number" id="moPrice" value="" step="1000" placeholder="УПКС округа"></div>
+            <div class="field"><label>Коэффициент Кд <span class="unit">доля</span></label><input type="number" id="moKd" value="0.1" step="0.01"></div>
+            <div class="field"><label>Средняя площадь квартиры <span class="unit">м²</span></label><input type="number" id="moFlat" value="58.75" step="0.25"></div>
+          </div>
+          <div id="moStatus" class="import-status">На внешний сервис уходит только строка поиска. Нормативы и УПКС считаются на сервере.</div>
+          <div id="moPreview" class="cadastral-preview" style="display:none">
+            <div id="moSummary" class="import-summary"></div>
+            <div id="moTables"></div>
+            <div id="moWarnings" class="note warning"></div>
+            <div class="import-actions">
+              <button class="btn dark" onclick="applyMo()">Применить к Вводным и ТЭП</button>
+              <span style="font-size:11px;color:#777">Заменит ТЭП, социальные мощности и стоимость смены ВРИ в текущем проекте.</span>
+            </div>
+          </div>
         </div>
         <div class="import-divider">Либо загрузить готовый ТЭП</div>
         <div class="upload-line" style="align-items:center">
@@ -10761,6 +11614,149 @@ function renderStoredLand(){
  renderLandLookup(landLookup);
  const status=document.getElementById('landStatus');
  if(status)status.innerHTML='<span class="import-ok">Показаны сведения об участке, сохранённые в проекте.</span>';
+}
+
+let moResult=null;
+
+async function loadMoReference(){
+ try{
+  const response=await fetch('/mo/reference');
+  const data=await response.json();
+  if(!response.ok)return;
+  const select=document.getElementById('moDistrict');
+  if(!select)return;
+  const current=select.value;
+  select.innerHTML='<option value="">определить по адресу</option>'+
+   (data.districts||[]).map(d=>`<option value="${escapeHtml(d.name)}">${escapeHtml(d.name)}</option>`).join('');
+  select.value=current||(inputs._mo_calc&&inputs._mo_calc.territory&&inputs._mo_calc.territory.district)||'';
+ }catch(e){}
+}
+
+async function calculateMo(){
+ const button=document.getElementById('moCalcButton');
+ const status=document.getElementById('moStatus');
+ const query=(document.getElementById('moQuery').value||'').trim();
+ const area=Number(document.getElementById('moArea').value||0);
+ if(!query&&!(area>0)){
+  status.innerHTML='<span class="import-error">Введите кадастровый номер, адрес или площадь участка в гектарах.</span>';return;
+ }
+ button.disabled=true;button.textContent='Считаю…';
+ status.textContent='Запрашиваю участок и считаю нормативы РНГП Московской области…';
+ try{
+  const response=await fetch('/mo/calculate',{
+   method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({
+    query,
+    site_area_ha:area||0,
+    density_sqm_per_ha:Number(document.getElementById('moDensity').value||0)||30000,
+    district:document.getElementById('moDistrict').value||'',
+    market_price_rub_per_sqm:Number(document.getElementById('moPrice').value||0)||0,
+    vri_kd:Number(document.getElementById('moKd').value||0)||0.1,
+    average_flat_sqm:Number(document.getElementById('moFlat').value||0)||58.75
+   })
+  });
+  const data=await response.json();
+  if(!response.ok)throw new Error(data.detail||'Не удалось рассчитать проект');
+  moResult=data;
+  renderMo(data);
+  status.innerHTML='<span class="import-ok">Расчёт готов: '+landNum(data.territory.site_area_ha,4)+' га, '+
+   landNum(data.social.apartments_sqm,0)+' м² квартир.</span> Проверьте значения и примените к модели.';
+ }catch(e){
+  status.innerHTML='<span class="import-error">'+escapeHtml(String(e.message||e))+'</span>';
+ }finally{
+  button.disabled=false;button.textContent='Рассчитать';
+ }
+}
+
+function moTable(title,rows){
+ return `<div class="mo-table"><h4>${escapeHtml(title)}</h4><table><tbody>${
+  rows.map(r=>`<tr><td>${escapeHtml(r[0])}</td><td>${escapeHtml(r[1])}</td></tr>`).join('')
+ }</tbody></table></div>`;
+}
+
+function renderMo(data){
+ const s=data.social||{},v=data.vri||{},t=data.territory||{},b=data.balance||{};
+ document.getElementById('moSummary').innerHTML=[
+  ['Площадь участка',landNum(t.site_area_ha,4)+' га'],
+  ['Площадь квартир',landNum(s.apartments_sqm,0)+' м²'],
+  ['Население',landNum(s.population,0)+' чел.'],
+  ['Смена ВРИ',v.payment_used_mln!=null?landNum(v.payment_used_mln,1)+' млн ₽':'—']
+ ].map(x=>`<div><small>${escapeHtml(x[0])}</small><b>${escapeHtml(x[1])}</b></div>`).join('');
+ const tables=[];
+ tables.push(moTable('Территория',[
+  ['Кадастровые номера',(t.cadastral_numbers||[]).join(', ')||'—'],
+  ['Городской округ',(t.district||'—')+(t.district_source?' · '+t.district_source:'')],
+  ['Кадастровый квартал',t.quarter||'—'],
+  ['Адрес по ЕГРН',t.address||'—'],
+  ['Плотность',landNum(data.density_sqm_per_ha,0)+' м² квартир на 1 га']
+ ]));
+ tables.push(moTable('Социальная нагрузка по РНГП МО',[
+  ['ДОО',landNum(s.kindergarten.places,0)+' мест · участок '+landNum(s.kindergarten.site_ha,4)+' га · '+landNum(s.kindergarten.gba_sqm,0)+' м²'],
+  ['СОШ',landNum(s.school.places,0)+' мест · участок '+landNum(s.school.site_ha,4)+' га · '+landNum(s.school.gba_sqm,0)+' м²'],
+  ['Поликлиника',landNum(s.clinic.capacity,0)+' пос./смену · '+landNum(s.clinic.gba_sqm,0)+' м²'],
+  ['Паркинг постоянного хранения',landNum(s.parking.permanent_spaces,0)+' м/м · подземный '+landNum(s.parking.underground_sqm,0)+' м²'],
+  ['Паркинг временного хранения',landNum(s.parking.temporary_spaces,0)+' м/м'],
+  ['Озеленение',landNum(s.green.quarter_sqm,0)+' м² · общего пользования '+landNum(s.green.public_sqm,0)+' м²'],
+  ['Нежилые помещения общественные',landNum(s.public_premises_sqm,0)+' м²'],
+  ['Офисы под рабочие места',landNum(s.office_sqm,0)+' м²'],
+  ['Рабочие места',landNum(s.jobs.required,0)+' требуется · '+landNum(s.jobs.from_objects,0)+' дают объекты'],
+  ['Компенсация в бюджет','стационар '+landNum(s.budget_compensation.hospital_beds,1)+' коек · скорая '+landNum(s.budget_compensation.ambulance_cars,2)+' маш. · депо '+landNum(s.budget_compensation.fire_cars,2)+' маш.'],
+  ['СПП ГНС',landNum(s.gns_sqm,0)+' м²']
+ ]));
+ tables.push(moTable('Смена ВРИ',[
+  ['УПКС земли под жильё',v.upks_target!=null?landNum(v.upks_target,2)+' ₽/м²':'—'],
+  ['УПКС ОКС МКД округа',v.upks_average_oks!=null?landNum(v.upks_average_oks,2)+' ₽/м²':'—'],
+  ['Кадастровая стоимость сейчас',landNum(v.cadastral_value_current_rub/1e6,1)+' млн ₽'],
+  ['Кадастровая стоимость целевая',landNum(v.cadastral_value_target_rub/1e6,1)+' млн ₽'],
+  ['Разница ∆КС',landNum(v.delta_rub/1e6,1)+' млн ₽'],
+  ['Кср / Кд',(v.market_price_rub_per_sqm!=null?landNum(v.market_price_rub_per_sqm,0)+' ₽/м²':'—')+' · '+landNum(v.kd,2)],
+  ['К1 / К',(v.k1!=null?landNum(v.k1,4):'—')+' · '+(v.k!=null?landNum(v.k,4):'—')],
+  ['Плата за смену ВРИ',(v.payment_used_mln!=null?landNum(v.payment_used_mln,1)+' млн ₽':'—')+' · '+(v.payment_basis||'')]
+ ]));
+ tables.push(moTable('Баланс территории (упрощённый)',
+  (b.items||[]).map(i=>[i.label,landNum(i.area_ha,4)+' га'])
+   .concat([['Занято нормативами',landNum(b.used_ha,4)+' га'],['Остаток под жильё, УДС и прочее',landNum(b.remaining_ha,4)+' га']])
+ ));
+ document.getElementById('moTables').innerHTML='<div class="mo-tables">'+tables.join('')+'</div>';
+ document.getElementById('moWarnings').innerHTML=(data.warnings||[]).map(x=>'• '+escapeHtml(x)).join('<br>');
+ document.getElementById('moPreview').style.display='block';
+}
+
+async function applyMo(){
+ const status=document.getElementById('moStatus');
+ if(!moResult){status.innerHTML='<span class="import-error">Сначала выполните расчёт.</span>';return}
+ delete inputs._glavapu_import;
+ glavapuImport=null;
+ Object.assign(inputs,moResult.inputs||{});
+ inputs._mo_calc={
+  query:moResult.query||'',
+  territory:moResult.territory||{},
+  density_sqm_per_ha:moResult.density_sqm_per_ha,
+  vri:moResult.vri||{},
+  social:moResult.social||{},
+  balance:moResult.balance||{},
+  warnings:moResult.warnings||[]
+ };
+ Object.entries(moResult.tep||{}).forEach(([key,values])=>{
+  if(tep[key])Object.assign(tep[key],values);
+ });
+ syncTep(false);
+ phasing=makeDefaultPhasing(1);
+ renderInputs();renderTep();renderPhasing();
+ status.innerHTML='<span class="import-ok">ТЭП, социальные мощности и стоимость смены ВРИ применены к модели.</span> Проверьте цены и себестоимость на вкладке «Вводные».';
+ await calculate();
+}
+
+function renderStoredMo(){
+ const stored=inputs._mo_calc;
+ if(!stored)return;
+ const query=document.getElementById('moQuery');
+ if(query)query.value=stored.query||'';
+ const density=document.getElementById('moDensity');
+ if(density&&stored.density_sqm_per_ha)density.value=stored.density_sqm_per_ha;
+ const status=document.getElementById('moStatus');
+ if(status)status.innerHTML='<span class="import-ok">В проекте сохранён расчёт по Подмосковью: '+
+  escapeHtml((stored.territory&&stored.territory.district)||'округ не определён')+'.</span> Нажмите «Рассчитать», чтобы обновить.';
 }
 
 function renderStoredCadastral(){
@@ -11923,7 +12919,7 @@ function resetAll(){
  localStorage.removeItem('plato_v04');
  inputs=structuredClone(INPUT_DEFAULT);
  tep=structuredClone(TEP_DEFAULT);
- phasing=makeDefaultPhasing(1);phaseBundle=null;reportView='all';cadastralAnalysis=null;landLookup=null;
+ phasing=makeDefaultPhasing(1);phaseBundle=null;reportView='all';cadastralAnalysis=null;landLookup=null;moResult=null;
  rates=[];
  scenarioSelect.value='base';
  inputs.project_class='comfort';
@@ -11936,6 +12932,8 @@ function resetAll(){
  const cadStatus=document.getElementById('cadastralStatus');if(cadStatus)cadStatus.textContent='На внешний сервер передаются только кадастровые номера; финансовая модель не передаётся.';
  const landField=document.getElementById('landQuery');if(landField)landField.value='';
  const landPreview=document.getElementById('landPreview');if(landPreview)landPreview.style.display='none';
+ const moQuery=document.getElementById('moQuery');if(moQuery)moQuery.value='';
+ const moPreview=document.getElementById('moPreview');if(moPreview)moPreview.style.display='none';
  const landStatus=document.getElementById('landStatus');if(landStatus)landStatus.textContent='На внешний сервис передаётся только строка поиска; финансовая модель не передаётся.';
  syncRateControlsFromInputs();generateRateCurve();renderRates();
  refreshCurrentKeyRate(true);
@@ -12088,6 +13086,7 @@ async function initializeApp(){
  renderStoredGlavapu();
  renderStoredCadastral();
  renderStoredLand();
+ renderStoredMo();
  renderScenarioNote();
  syncProjectClassSelector();
  renderPhasing();
@@ -12099,6 +13098,7 @@ async function initializeApp(){
  await calculate();
  await refreshAgentStatus();
  await loadPresetCatalog();
+ await loadMoReference();
  await initializeTelegramLaunch();
 }
 initializeApp();

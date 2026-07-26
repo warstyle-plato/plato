@@ -1,3 +1,27 @@
+DEVELOPAID v0.12.39 MOSCOW REGION CALCULATOR OK
+Python syntax (main.py + main_legacy.py): OK
+Page JavaScript syntax (node --check): OK
+tests/ — 119 passed (34 Moscow region + 25 model export + 17 Platon/TEP + 23 land lookup + 20 shared)
+Social program reproduces the 200 000 sqm PPT sample line by line: OK
+  population 7143, DOO 465, school 975, clinic 127: OK
+  parking 2289 / 458, underground 80 115 sqm: OK
+  greenery 46 429.5 / 31 429.2 sqm, SPP GNS 314 911 sqm: OK
+  budget compensation: hospital 42.858, ambulance 0.714, fire 1.429: OK
+VRI payment reproduces the Mytishchi sample to the kopeck: OK
+  delta 630 964 445.36, K1 1.8302, K 3.615, payment 4 174 618 253.82: OK
+  per-parcel delta matches the source table: OK
+VRI chain proven equal to Ksr x apartments x Kd (documented): OK
+Norms are overridable, zero area yields an empty program: OK
+UPKS reference: 61 districts, 30 839 quarters loaded: OK
+District resolved from EGRN address and from free wording: OK
+Region 50 enforced, Moscow numbers rejected with a clear message: OK
+Density is a parameter, default 30 000 sqm/ha: OK
+Dense project warns that normative social objects do not fit: OK
+TEP and inputs feed the model, calculation and Excel export both run: OK
+Bot routes 50:* to the region calculator, 77:* stays on GlavAPU: OK
+Bot region card reaches Platon as TEP context: OK
+Browser check: block calculates, renders and applies to the model, no page errors: OK
+
 DEVELOPAID v0.12.38 FULL MODEL EXPORT OK
 Python syntax (main.py + main_legacy.py): OK
 tests/ — 65 passed (25 model export + 17 Platon/TEP + 23 land lookup)
