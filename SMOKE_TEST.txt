@@ -1,3 +1,24 @@
+DEVELOPAID v0.12.48 VRI RELIEF AND CHARTS OK
+Python syntax (main.py + main_legacy.py): OK
+Page JavaScript syntax (node --check): OK
+tests/ — 234 passed (10 new: 6 on relief, 4 on charts)
+Percent relief cuts the obligation, fixed-amount relief too: OK
+Relief capped at the obligation, block switches off at zero: OK
+Relief applied before overheads: reserve and installment interest both fall: OK
+Six-year interest 1125.2 -> 787.6 mln at 30% relief, exactly proportional: OK
+No relief by default, gross equals the amount payable: OK
+Phased: relief applied once in the base, not again per phase share: OK
+Report card and «ВРИ» sheet show gross and relief only when there is relief: OK
+Expense structure left untouched — relief is not an expense: OK
+Charts written as native package parts, no external library: OK
+«Расходы»: bar chart over the expense-structure rows: OK
+«Помесячно»: line chart of PF balance, escrow and bridge balance: OK
+«Сравнение очередей»: LLCR bars plus revenue against CAPEX: OK
+Chart parts well-formed, declared in [Content_Types], sheet rels present: OK
+Series point at sheet ranges, so edits redraw the chart: OK
+Workbooks still open under openpyxl with warnings as errors: OK
+Browser check: relief fields, card shows gross and relief, no page errors: OK
+
 DEVELOPAID v0.12.47 VRI PAYMENT SCHEDULE OK
 Python syntax (main.py + main_legacy.py): OK
 Page JavaScript syntax (node --check): OK

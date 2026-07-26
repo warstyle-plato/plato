@@ -330,3 +330,49 @@ def test_payment_before_a_phase_start_is_moved_to_its_first_month():
     monthly = {row["key"]: row for row in second["monthly"]["costs"]}
     assert monthly["land_rights"]["total"] == pytest.approx(AMOUNT / 2, rel=1e-6)
     assert any("до старта расчёта" in text for text in second["vri"]["warnings"])
+
+# --- льгота ----------------------------------------------------------------
+
+def test_percent_relief_cuts_the_obligation():
+    result = model(vri_relief_mode="percent", vri_relief_pct=30)
+    totals = result["vri"]["totals"]
+    assert totals["gross"] == pytest.approx(AMOUNT)
+    assert totals["relief"] == pytest.approx(AMOUNT * 0.3)
+    assert totals["amount"] == pytest.approx(AMOUNT * 0.7)
+    assert result["capex"]["land_rights"] == pytest.approx(AMOUNT * 0.7)
+
+
+def test_fixed_amount_relief():
+    result = model(vri_relief_mode="amount", vri_relief_mln=500)
+    assert result["vri"]["totals"]["amount"] == pytest.approx(AMOUNT - 500_000_000)
+
+
+def test_relief_cannot_exceed_the_obligation():
+    result = model(vri_relief_mode="amount", vri_relief_mln=99_999)
+    assert result["vri"]["totals"]["relief"] == pytest.approx(AMOUNT)
+    assert result["capex"]["land_rights"] == pytest.approx(0.0)
+    assert result["vri"]["enabled"] is False
+
+
+def test_relief_is_applied_before_overheads_and_interest():
+    full = model(vri_payment_mode="installment", vri_installment_years=6)
+    cut = model(vri_payment_mode="installment", vri_installment_years=6,
+                vri_relief_mode="percent", vri_relief_pct=30)
+    # Резерв считается от суммы к оплате, а не от валового обязательства.
+    assert cut["capex"]["reserve"] < full["capex"]["reserve"]
+    # Проценты по рассрочке — тоже.
+    assert cut["capex"]["vri_interest"] == pytest.approx(full["capex"]["vri_interest"] * 0.7, rel=1e-6)
+
+
+def test_no_relief_by_default():
+    totals = model()["vri"]["totals"]
+    assert totals["relief"] == 0.0
+    assert totals["gross"] == pytest.approx(totals["amount"])
+
+
+def test_relief_is_not_applied_twice_across_phases():
+    bundle = phased(vri_relief_mode="percent", vri_relief_pct=30)
+    assert bundle["vri"]["totals"]["gross"] == pytest.approx(AMOUNT)
+    assert bundle["vri"]["totals"]["relief"] == pytest.approx(AMOUNT * 0.3)
+    paid = sum(item["result"]["capex"]["land_rights"] for item in bundle["phases"])
+    assert paid == pytest.approx(AMOUNT * 0.7, rel=1e-6)

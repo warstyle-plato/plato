@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import io
 import sys
+import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
 
@@ -468,3 +469,54 @@ def test_export_is_available_through_wrapper():
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+# --- диаграммы --------------------------------------------------------------
+
+def test_expense_structure_has_a_bar_chart():
+    sheet = workbook(archive(), "Мытищи_модель.xlsx")["Расходы"]
+    charts = sheet._charts
+    assert len(charts) == 1
+    chart = charts[0]
+    assert type(chart).__name__ == "BarChart"
+    assert len(chart.series) == 1
+    # Диаграмма смотрит на строки структуры расходов, а не на итоги CAPEX.
+    values = chart.series[0].val.numRef.f
+    assert values.startswith("'Расходы'!$B$")
+
+
+def test_monthly_sheet_has_a_debt_and_escrow_line_chart():
+    book = workbook(archive(), "Мытищи_модель.xlsx")
+    chart = book["Помесячно"]._charts[0]
+    assert type(chart).__name__ == "LineChart"
+    assert len(chart.series) == 3
+    columns = {main._xlsx_column_name(index + 1): key
+               for index, (key, _, _) in enumerate(main._MODEL_FINANCE_COLUMNS)}
+    for series in chart.series:
+        column = series.val.numRef.f.split("$")[1]
+        assert columns[column] in {"pf_balance", "escrow", "bridge_balance"}
+        assert series.cat.strRef.f.startswith("'Помесячно'!$A$")
+
+
+def test_phase_comparison_has_llcr_and_revenue_charts():
+    book = workbook(archive(PHASING), "00_Консолидация.xlsx")
+    charts = book["Сравнение очередей"]._charts
+    assert len(charts) == 2
+    assert charts[0].series[0].val.numRef.f.startswith("'Сравнение очередей'!$I$")
+    assert len(charts[1].series) == 2
+
+
+def test_chart_parts_are_well_formed_and_declared():
+    content, _ = build()
+    inner = zipfile.ZipFile(io.BytesIO(zipfile.ZipFile(
+        io.BytesIO(content)).read("Мытищи_модель.xlsx")))
+    names = inner.namelist()
+    types = inner.read("[Content_Types].xml").decode("utf-8")
+    for name in names:
+        if name.startswith(("xl/charts/", "xl/drawings/")):
+            ET.fromstring(inner.read(name))
+    assert "xl/charts/chart1.xml" in names
+    assert "xl/drawings/drawing1.xml" in names
+    assert "/xl/charts/chart1.xml" in types
+    assert "/xl/drawings/drawing1.xml" in types
+    # Лист должен ссылаться на рисунок через собственные отношения.
+    assert any(name.startswith("xl/worksheets/_rels/") for name in names)
