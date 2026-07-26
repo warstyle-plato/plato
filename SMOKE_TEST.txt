@@ -21,6 +21,9 @@ Phased: consolidated schedule sums phase shares, balance closes: OK
 Phased: later phase carries early payments on its own bridge: OK
 Phased: payment before a phase start moved to its first month with a warning: OK
 Export gains sheet «ВРИ» in every workbook and in the consolidator: OK
+PLATO archive carries «ВРИ_график_….xlsx» beside the untouched template: OK
+No VRI book in the archive when the change of use is switched off: OK
+Moscow region block marks the model as region 50 for VRI rules: OK
 Browser check: VRI group in inputs, report card renders schedule, no page errors: OK
 
 DEVELOPAID v0.12.46 LATE SOCIAL ALLOCATION OK

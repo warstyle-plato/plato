@@ -159,7 +159,8 @@ def test_single_archive_has_one_workbook():
         main.DEFAULT_INPUTS, main.TEP_DEFAULT, project_name="Мытищи"
     )
     names = zipfile.ZipFile(io.BytesIO(content)).namelist()
-    assert names == ["Мытищи_ПЛАТО.xlsx", "README.txt"]
+    # Один шаблон плюс книга с графиком ВРИ, которую шаблон вместить не может.
+    assert names == ["Мытищи_ПЛАТО.xlsx", "ВРИ_график_Мытищи.xlsx", "README.txt"]
     assert meta["phased"] is False
     assert "ПЛАТО" in filename
 
@@ -205,6 +206,37 @@ def test_endpoint_returns_zip():
 def test_routes_are_registered():
     routes = {getattr(route, "path", "") for route in _wrapper.app.routes}
     assert {"/report/plato", "/report/plato/status"}.issubset(routes)
+
+
+def test_plato_archive_carries_the_vri_schedule_alongside_the_template():
+    """Шаблон не трогаем: график ВРИ едет отдельной книгой в том же архиве."""
+    inputs = {
+        **main.DEFAULT_INPUTS,
+        "land_rights_cost_mln": 3000.0,
+        "vri_payment_mode": "installment",
+        "vri_installment_years": 6,
+    }
+    content, _, _ = main.build_plato_archive(
+        inputs, main.TEP_DEFAULT, [], None, project_name="Мытищи"
+    )
+    archive = zipfile.ZipFile(io.BytesIO(content))
+    assert "ВРИ_график_Мытищи.xlsx" in archive.namelist()
+    book = load_workbook(io.BytesIO(archive.read("ВРИ_график_Мытищи.xlsx")))
+    assert book.sheetnames == ["ВРИ"]
+    sheet = book["ВРИ"]
+    assert sheet.cell(row=3, column=2).value == pytest.approx(3000.0)
+    assert sheet.cell(row=5, column=2).value > 0  # проценты по рассрочке
+    readme = archive.read("README.txt").decode("utf-8")
+    assert "ВРИ_график_" in readme
+
+
+def test_plato_archive_has_no_vri_book_when_vri_is_switched_off():
+    inputs = {**main.DEFAULT_INPUTS, "vri_required": False}
+    content, _, _ = main.build_plato_archive(
+        inputs, main.TEP_DEFAULT, [], None, project_name="Мытищи"
+    )
+    names = zipfile.ZipFile(io.BytesIO(content)).namelist()
+    assert not any(name.startswith("ВРИ_график") for name in names)
 
 
 if __name__ == "__main__":
