@@ -1,3 +1,18 @@
+DEVELOPAID v0.12.41 KSR REFERENCE FILLED FROM DECREE 114-R OK
+Python syntax (main.py + main_legacy.py): OK
+Page JavaScript syntax (node --check): OK
+tests/ — 131 passed
+data/mo_market_price.csv holds all 56 municipalities of decree 114-R: OK
+  read twice from the scanned PDF at two zoom levels, values identical: OK
+  region average 198 907 rub, period III-IV quarters 2026: OK
+  Mytishchi 238 052, Krasnogorsk 251 426, Serebryanye Prudy 77 041: OK
+Every decree row maps onto a district of the UPKS reference: OK
+Pavlovo-Posadsky / Pavlovsky Posad synonym resolved: OK
+Districts merged away fall back to the region average with a warning: OK
+Totals row removed from the district dictionary, 60 districts left: OK
+Ksr auto-filled in the UI, source and period shown in the VRI card: OK
+Browser check: reference state line, calculation, no page errors: OK
+
 DEVELOPAID v0.12.40 MARKET PRICE REFERENCE (Ksr) OK
 Python syntax (main.py + main_legacy.py): OK
 Page JavaScript syntax (node --check): OK

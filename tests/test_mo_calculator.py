@@ -193,7 +193,7 @@ def test_vri_without_market_price_is_not_calculated():
 # --- справочники ------------------------------------------------------------
 
 def test_district_reference_holds_all_districts():
-    assert len(main._MO_UPKS_BY_DISTRICT) == 61
+    assert len(main._MO_UPKS_BY_DISTRICT) == 60
     mytishchi = main._mo_district_upks("Городской округ Мытищи")
     assert mytishchi["upks_land_residential"] == pytest.approx(8517.94)
     assert mytishchi["upks_oks_mkd"] == pytest.approx(114047.68)
@@ -322,7 +322,7 @@ def test_model_export_works_on_mo_project():
 def test_reference_endpoint():
     reference = main.mo_reference()
     assert reference["density_default_sqm_per_ha"] == 30000
-    assert len(reference["districts"]) == 61
+    assert len(reference["districts"]) == 60
     assert reference["quarter_upks_loaded"] > 30000
     assert "living_space_per_person_sqm" in reference["norms"]
 
@@ -436,7 +436,7 @@ def test_market_price_is_used_as_ksr_by_default():
     result = main.mo_calculate(main.MoCalculateRequest(site_area_ha=10, density_sqm_per_ha=9000, district="Мытищи"))
     vri = result["vri"]
     assert vri["market_price_rub_per_sqm"] == pytest.approx(208733.0)
-    assert vri["market_price_source"] == "справочник Комитета по ценам и тарифам МО"
+    assert vri["market_price_source"] == "распоряжение Комитета по ценам и тарифам МО"
     assert vri["market_price_period"] == "III–IV кварталы 2025"
     assert vri["payment_used_rub"] == pytest.approx(208733.0 * 90000 * 0.1, rel=1e-9)
 
@@ -465,6 +465,50 @@ def test_reference_endpoint_reports_market_price_state():
     ))
     state = main.mo_reference()["market_price"]
     assert state["count"] == 1 and state["period"] == "III–IV кв. 2025"
+
+
+def test_totals_row_is_not_a_district():
+    assert "Итого по Московской области" not in main._MO_UPKS_BY_DISTRICT
+    assert main._MO_UPKS_REGION_AVERAGE[1] == pytest.approx(94205.97)
+
+
+def test_pavlovsky_posad_synonym():
+    assert main._mo_district_upks("Павлово-Посадский городской округ")["district"] == "Городской округ Павловский Посад"
+
+
+def test_region_average_is_used_when_district_has_no_row():
+    main.mo_market_price_set(main.MoMarketPriceRequest(
+        rows=[
+            {"municipality": "Городской округ Мытищи", "price_rub_per_sqm": 238052},
+            {"municipality": "Московская область (среднее)", "price_rub_per_sqm": 198907},
+        ],
+        period="III–IV кварталы 2026",
+    ))
+    price, _, _, level = main._mo_market_price_for("Городской округ Протвино")
+    assert price == pytest.approx(198907.0)
+    assert level == "среднее по области"
+    result = main.mo_calculate(main.MoCalculateRequest(site_area_ha=10, district="Городской округ Протвино"))
+    assert "среднее по области" in result["vri"]["market_price_source"]
+    assert any("нет отдельной строки" in item for item in result["warnings"])
+
+
+def test_shipped_reference_holds_the_2026_decree(tmp_path, monkeypatch):
+    """Файл data/mo_market_price.csv, поставляемый с приложением."""
+    monkeypatch.setattr(main, "_MO_MARKET_PRICE_PATH", Path(__file__).resolve().parent.parent / "data" / "mo_market_price.csv")
+    monkeypatch.setattr(main, "_mo_market_price", None)
+    table = main.mo_market_price()
+    assert table["count"] == 56
+    assert table["region_average"] == pytest.approx(198907.0)
+    assert "2026" in table["period"]
+    assert "114-Р" in table["document"]
+    prices = {row["municipality"]: row["price_rub_per_sqm"] for row in table["rows"]}
+    assert prices["Городской округ Мытищи"] == pytest.approx(238052.0)
+    assert prices["Городской округ Красногорск"] == pytest.approx(251426.0)
+    assert prices["Городской округ Серебряные Пруды"] == pytest.approx(77041.0)
+    assert prices["Городской округ Электросталь"] == pytest.approx(128832.0)
+    # каждая строка распоряжения легла на округ справочника УПКС
+    unknown = [name for name in prices if name not in main._MO_UPKS_BY_DISTRICT]
+    assert unknown == []
 
 
 def test_market_price_routes_are_registered():
