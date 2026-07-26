@@ -1,0 +1,211 @@
+"""Тесты выгрузки в шаблон ПЛАТО.
+
+Заполняются только листы-вводные, формулы шаблона не трогаются.
+Запуск: python3 -m pytest tests -q
+"""
+
+from __future__ import annotations
+
+import io
+import sys
+import zipfile
+from pathlib import Path
+
+import pytest
+from fastapi import HTTPException
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import main as _wrapper  # noqa: E402
+
+main = _wrapper.core
+
+pytest.importorskip("openpyxl")
+from openpyxl import load_workbook  # noqa: E402
+
+TEMPLATE = Path(__file__).resolve().parent.parent / "templates" / "PLATO_template.xlsx"
+
+pytestmark = pytest.mark.skipif(not TEMPLATE.is_file(), reason="шаблон ПЛАТО не поставляется")
+
+
+def count_formulas(source) -> int:
+    workbook = load_workbook(source, data_only=False)
+    return sum(
+        1
+        for sheet in workbook.worksheets
+        for row in sheet.iter_rows()
+        for cell in row
+        if isinstance(cell.value, str) and cell.value.startswith("=")
+    )
+
+
+@pytest.fixture(scope="module")
+def filled():
+    content, report = main.fill_plato_template(main.DEFAULT_INPUTS, main.TEP_DEFAULT)
+    return content, report, load_workbook(io.BytesIO(content), data_only=False)
+
+
+def test_status_reports_the_template():
+    status = main.report_plato_status()
+    assert status["template_available"] is True
+    assert status["input_fields"] > 60
+    assert status["tep_rows"] >= 8
+
+
+def test_every_mapped_field_is_found(filled):
+    _, report, _ = filled
+    assert report["missing"] == []
+    assert report["filled_count"] >= 80
+
+
+def test_formulas_are_not_touched(filled):
+    content, _, _ = filled
+    assert count_formulas(io.BytesIO(content)) == count_formulas(str(TEMPLATE))
+
+
+def test_all_sheets_survive(filled):
+    _, _, workbook = filled
+    source = load_workbook(str(TEMPLATE), data_only=False)
+    assert workbook.sheetnames == source.sheetnames
+
+
+def test_inputs_land_in_all_three_scenarios(filled):
+    _, _, workbook = filled
+    sheet = workbook["Вводные"]
+    rows = {
+        str(sheet.cell(row=row, column=2).value or "").strip(): row
+        for row in range(1, sheet.max_row + 1)
+    }
+    row = rows["Стартовая цена квартир"]
+    for column in (4, 5, 6):
+        assert sheet.cell(row=row, column=column).value == pytest.approx(
+            main.DEFAULT_INPUTS["apartment_price_th"]
+        )
+
+
+def test_percentages_are_written_as_shares(filled):
+    _, _, workbook = filled
+    sheet = workbook["Вводные"]
+    for label, key in (("Налог на прибыль", "profit_tax_pct"), ("Маркетинг", "marketing_pct")):
+        row = next(
+            row for row in range(1, sheet.max_row + 1)
+            if str(sheet.cell(row=row, column=2).value or "").strip() == label
+        )
+        assert sheet.cell(row=row, column=5).value == pytest.approx(main.DEFAULT_INPUTS[key] / 100)
+
+
+def test_dates_are_written_as_dates(filled):
+    _, _, workbook = filled
+    sheet = workbook["Вводные"]
+    row = next(
+        row for row in range(1, sheet.max_row + 1)
+        if str(sheet.cell(row=row, column=2).value or "").strip() == "Начало проекта"
+    )
+    value = sheet.cell(row=row, column=5).value
+    assert value.strftime("%Y-%m-%d") == main.DEFAULT_INPUTS["project_start"]
+
+
+def test_tep_sheet_receives_model_areas(filled):
+    _, _, workbook = filled
+    sheet = workbook["Расчет ВРИ (ТЭП)"]
+    rows = {
+        str(sheet.cell(row=row, column=2).value or "").strip(): row
+        for row in range(1, sheet.max_row + 1)
+    }
+    assert sheet.cell(row=rows["Площадь квартир"], column=4).value == pytest.approx(
+        main.TEP_DEFAULT["apartments"]["saleable"], abs=0.01
+    )
+    assert sheet.cell(row=rows["СПП жилая"], column=4).value == pytest.approx(
+        main.TEP_DEFAULT["apartments"]["gns"], abs=0.01
+    )
+    assert sheet.cell(row=rows["Постоянные парковки"], column=4).value == pytest.approx(
+        main.TEP_DEFAULT["underground_parking"]["units"], abs=0.01
+    )
+
+
+def test_vri_cost_comes_from_the_model(filled):
+    _, _, workbook = filled
+    sheet = workbook["Расчет ВРИ (ТЭП)"]
+    row = next(
+        row for row in range(1, sheet.max_row + 1)
+        if str(sheet.cell(row=row, column=2).value or "").strip() == "Многоквартирная жилые здания"
+    )
+    assert sheet.cell(row=row, column=4).value == pytest.approx(
+        main.DEFAULT_INPUTS["land_rights_cost_mln"], abs=0.01
+    )
+
+
+def test_workbook_recalculates_on_open(filled):
+    _, _, workbook = filled
+    assert workbook.calculation.fullCalcOnLoad is True
+
+
+def test_changed_input_reaches_the_template():
+    content, _ = main.fill_plato_template(
+        {**main.DEFAULT_INPUTS, "apartment_price_th": 999}, main.TEP_DEFAULT
+    )
+    sheet = load_workbook(io.BytesIO(content), data_only=False)["Вводные"]
+    row = next(
+        row for row in range(1, sheet.max_row + 1)
+        if str(sheet.cell(row=row, column=2).value or "").strip() == "Стартовая цена квартир"
+    )
+    assert sheet.cell(row=row, column=5).value == 999
+
+
+# --- архив ------------------------------------------------------------------
+
+def test_single_archive_has_one_workbook():
+    content, filename, meta = main.build_plato_archive(
+        main.DEFAULT_INPUTS, main.TEP_DEFAULT, project_name="Мытищи"
+    )
+    names = zipfile.ZipFile(io.BytesIO(content)).namelist()
+    assert names == ["Мытищи_ПЛАТО.xlsx", "README.txt"]
+    assert meta["phased"] is False
+    assert "ПЛАТО" in filename
+
+
+def test_phased_archive_has_consolidator_and_phases():
+    phasing = {"enabled": True, "user_enabled": True, "phase_count": 3,
+               "target_size_sqm": 70000, "phase_gap_months": 12,
+               "cost_inflation_pct": 8, "sales_price_inflation_pct": 8}
+    content, filename, meta = main.build_plato_archive(
+        main.DEFAULT_INPUTS, main.TEP_DEFAULT, [], phasing, project_name="Мытищи"
+    )
+    names = zipfile.ZipFile(io.BytesIO(content)).namelist()
+    assert names[0].startswith("00_Консолидация")
+    assert len([name for name in names if "Очередь" in name]) == 3
+    assert meta["phased"] is True
+    assert "очереди" in filename
+
+
+def test_readme_explains_what_was_filled():
+    content, _, _ = main.build_plato_archive(main.DEFAULT_INPUTS, main.TEP_DEFAULT)
+    readme = zipfile.ZipFile(io.BytesIO(content)).read("README.txt").decode("utf-8")
+    assert "Вводные" in readme and "Расчет ВРИ (ТЭП)" in readme
+    assert "Ctrl+Alt+F9" in readme
+
+
+def test_missing_template_is_reported(tmp_path):
+    with pytest.raises(HTTPException) as exc:
+        main.fill_plato_template(
+            main.DEFAULT_INPUTS, main.TEP_DEFAULT, template_path=tmp_path / "нет.xlsx"
+        )
+    assert exc.value.status_code == 503
+    assert "шаблон" in str(exc.value.detail).lower()
+
+
+def test_endpoint_returns_zip():
+    response = main.report_plato(main.PlatoTemplateRequest(
+        inputs=main.DEFAULT_INPUTS, tep=main.TEP_DEFAULT, project_name="Мишина",
+    ))
+    assert response.media_type == "application/zip"
+    assert response.body[:2] == b"PK"
+
+
+def test_routes_are_registered():
+    routes = {getattr(route, "path", "") for route in _wrapper.app.routes}
+    assert {"/report/plato", "/report/plato/status"}.issubset(routes)
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__, "-q"]))

@@ -1,3 +1,17 @@
+DEVELOPAID v0.12.44 PLATO TEMPLATE EXPORT OK
+Python syntax (main.py + main_legacy.py): OK
+Page JavaScript syntax (node --check): OK
+tests/ — 159 passed (17 new on the PLATO template)
+Only the two input sheets are written, 113 708 formulas survive untouched: OK
+All 27 sheets survive, workbook set to full recalculation on open: OK
+87 mapped fields found in the template, nothing missing: OK
+Percentages written as shares, dates as dates, object flags as Да/Нет: OK
+Values written into all three scenario columns: OK
+TEP sheet receives model areas and the VRI cost: OK
+Changed input reaches the template: OK
+Single archive holds one workbook; phased holds consolidator plus one per phase: OK
+Missing template answered with a clear 503: OK
+
 DEVELOPAID v0.12.43 MONTHLY DETAIL OF THE FINANCIAL MODEL OK
 Python syntax (main.py + main_legacy.py): OK
 tests/ — 142 passed

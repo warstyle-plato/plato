@@ -3,3 +3,4 @@ uvicorn[standard]>=0.29
 pydantic>=2.6
 reportlab>=4.2
 ./developaid_hotfix
+openpyxl>=3.1
