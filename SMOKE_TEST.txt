@@ -1,3 +1,16 @@
+DEVELOPAID v0.12.53 LAND SHEET FILLED OK
+Python syntax (main.py + main_legacy.py): OK
+tests/ — 269 passed (3 new on the land sheet)
+Found sheet «ЗУ» drives cf_1 through 357 references: OK
+Template already computes the VRI installment, final payment and interest: OK
+Row «Последний» equalled «Первый», so the window was empty: fixed: OK
+Foreign parcel data cleared: cadastral 77:07:0013002:8740, Lyotnaya, 1.51 bn: OK
+Payment share carries the relief: 30% relief writes 0.7: OK
+Spread and the payment window come from our VRI schedule: OK
+Monthly divisor replaced from hard-coded 12x6 with the real month count: OK
+Exactly two template formulas replaced, 113 706 left untouched: OK
+Dockerfile, compose and .env.example added for Yandex Cloud: OK
+
 DEVELOPAID v0.12.52 LIVE MODEL IN THE EXPORT OK
 Python syntax (main.py + main_legacy.py): OK
 tests/ — 267 passed (4 new on the archive layout)

@@ -1,0 +1,10 @@
+services:
+  developaid:
+    build: .
+    restart: always
+    env_file: .env
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      # Справочники УПКС и Кср переживают пересборку образа.
+      - ./data:/app/data

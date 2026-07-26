@@ -60,7 +60,37 @@ def test_every_mapped_field_is_found(filled):
 
 def test_formulas_are_not_touched(filled):
     content, _, _ = filled
-    assert count_formulas(io.BytesIO(content)) == count_formulas(str(TEMPLATE))
+    # Заменяются ровно две формулы листа «ЗУ»: окно платежей по ВРИ, где в
+    # шаблоне «Последний» равен «Первому» и рассрочка не раскрывается.
+    assert count_formulas(io.BytesIO(content)) == count_formulas(str(TEMPLATE)) - 2
+
+
+def test_land_sheet_gets_the_vri_installment_window(filled):
+    _, _, workbook = filled
+    sheet = workbook["ЗУ"]
+    labels = {
+        str(sheet.cell(row=row, column=2).value or "").strip(): row
+        for row in range(56, 70)
+    }
+    first = sheet.cell(row=labels["Первый"], column=3).value
+    last = sheet.cell(row=labels["Последний"], column=3).value
+    assert first is not None and last is not None
+    assert last >= first
+    assert sheet.cell(row=labels["Доля оплаты"], column=3).value == pytest.approx(1.0)
+    assert str(sheet.cell(row=labels["В месяц"], column=3).value).startswith("=C")
+
+
+def test_foreign_parcel_data_is_cleared(filled):
+    """В шаблоне остались участок и суммы чужого проекта — их быть не должно."""
+    _, _, workbook = filled
+    sheet = workbook["ЗУ"]
+    for row in range(22, 50):
+        value = sheet.cell(row=row, column=3).value
+        if isinstance(value, str):
+            assert "Лётная" not in value
+            assert "77:07:0013002:8740" not in value
+        if isinstance(value, (int, float)):
+            assert value != pytest.approx(1_512_108_174.46)
 
 
 def test_all_sheets_survive(filled):

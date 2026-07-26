@@ -551,7 +551,8 @@ def test_archive_leads_with_the_live_template_model():
         for cell in row
         if isinstance(cell.value, str) and cell.value.startswith("=")
     )
-    assert formulas == 113_708
+    # Две формулы шаблона заменены датами окна рассрочки на листе «ЗУ».
+    assert formulas == 113_706
     assert len(book.sheetnames) == 27
     assert book.calculation.fullCalcOnLoad is True
 
