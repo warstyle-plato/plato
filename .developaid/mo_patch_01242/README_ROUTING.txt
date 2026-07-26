@@ -3,3 +3,5 @@ Routing requirement confirmed 2026-07-26:
 2. If GlavAPU returns valid TEP, use GlavAPU (this covers New Moscow parcels with 50: cadastral prefixes).
 3. Only when GlavAPU returns no usable result and the cadastral number starts with 50:, use the internal Moscow Region VRI/TEP calculator.
 4. Non-50: failures must not be routed to the Moscow Region calculator.
+
+Build trigger: assemble and validate release 0.12.42.
