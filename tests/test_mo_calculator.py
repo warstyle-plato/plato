@@ -360,5 +360,117 @@ def test_bot_keeps_moscow_numbers_on_the_old_path(monkeypatch):
     assert called == ["glavapu"]
 
 
+# --- справочник Кср (распоряжение Комитета по ценам и тарифам МО) ------------
+
+def market_price_xlsx(rows: list[tuple[str, str]]) -> bytes:
+    """Синтетическое приложение к распоряжению в формате .xlsx."""
+    table = [["Приложение к распоряжению Комитета по ценам и тарифам Московской области"],
+             ["№ п/п", "Наименование муниципального образования", "Стоимость, руб."]]
+    for index, (name, price) in enumerate(rows, start=1):
+        table.append([str(index), name, price])
+    table.append(["", "в целом по Московской области", "185 000,00"])
+    return main._build_glavapu_xlsx_from_rows(table, [[""]])
+
+
+@pytest.fixture(autouse=True)
+def clean_market_price(monkeypatch, tmp_path):
+    monkeypatch.setattr(main, "_MO_MARKET_PRICE_PATH", tmp_path / "mo_market_price.csv")
+    monkeypatch.setattr(main, "_mo_market_price", None)
+    yield
+    monkeypatch.setattr(main, "_mo_market_price", None)
+
+
+def test_market_price_import_parses_official_table():
+    payload = market_price_xlsx([
+        ("Городской округ Мытищи", "208 733,00"),
+        ("Городской округ Люберцы", "195 400,50"),
+        ("Ленинский городской округ", "210 100,00"),
+        ("Городской округ Тверь", "150 000,00"),
+    ])
+
+    class _Request:
+        async def body(self):
+            return payload
+
+    import asyncio
+    result = asyncio.run(main.mo_market_price_import(_Request(), period="III–IV кварталы 2025"))
+    prices = {row["municipality"]: row["price_rub_per_sqm"] for row in result["rows"]}
+    assert prices["Городской округ Мытищи"] == pytest.approx(208733.0)
+    assert prices["Городской округ Люберцы"] == pytest.approx(195400.5)
+    assert prices["Ленинский городской округ"] == pytest.approx(210100.0)
+    assert prices["Московская область (среднее)"] == pytest.approx(185000.0)
+    assert result["matched_districts"] == 3
+    assert "Городской округ Тверь" in result["unmatched"]
+    assert result["stored_on_disk"] is True
+    assert result["csv"].startswith("municipality,")
+
+
+def test_market_price_import_rejects_table_without_prices():
+    class _Request:
+        async def body(self):
+            return main._build_glavapu_xlsx_from_rows([["Наименование"], ["Городской округ Мытищи"]], [[""]])
+
+    import asyncio
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(main.mo_market_price_import(_Request()))
+    assert exc.value.status_code == 400
+
+
+def test_market_price_manual_upload_and_readback():
+    main.mo_market_price_set(main.MoMarketPriceRequest(
+        rows=[{"municipality": "Мытищи", "price_rub_per_sqm": 208733}],
+        period="III–IV кварталы 2025",
+        document="Распоряжение № 89-Р от 22.04.2025",
+    ))
+    table = main.mo_market_price()
+    assert table["count"] == 1
+    assert table["rows"][0]["municipality"] == "Городской округ Мытищи"
+    assert table["period"] == "III–IV кварталы 2025"
+
+
+def test_market_price_is_used_as_ksr_by_default():
+    main.mo_market_price_set(main.MoMarketPriceRequest(
+        rows=[{"municipality": "Городской округ Мытищи", "price_rub_per_sqm": 208733}],
+        period="III–IV кварталы 2025",
+    ))
+    result = main.mo_calculate(main.MoCalculateRequest(site_area_ha=10, density_sqm_per_ha=9000, district="Мытищи"))
+    vri = result["vri"]
+    assert vri["market_price_rub_per_sqm"] == pytest.approx(208733.0)
+    assert vri["market_price_source"] == "справочник Комитета по ценам и тарифам МО"
+    assert vri["market_price_period"] == "III–IV кварталы 2025"
+    assert vri["payment_used_rub"] == pytest.approx(208733.0 * 90000 * 0.1, rel=1e-9)
+
+
+def test_explicit_ksr_wins_over_reference():
+    main.mo_market_price_set(main.MoMarketPriceRequest(
+        rows=[{"municipality": "Городской округ Мытищи", "price_rub_per_sqm": 208733}],
+    ))
+    result = main.mo_calculate(main.MoCalculateRequest(
+        site_area_ha=10, district="Мытищи", market_price_rub_per_sqm=250000,
+    ))
+    assert result["vri"]["market_price_rub_per_sqm"] == pytest.approx(250000.0)
+    assert result["vri"]["market_price_source"] == "запрос"
+
+
+def test_without_reference_falls_back_to_upks():
+    result = main.mo_calculate(main.MoCalculateRequest(site_area_ha=10, district="Мытищи"))
+    assert result["vri"]["market_price_source"] == "УПКС ОКС округа"
+    assert any("не найдена в справочнике" in item for item in result["warnings"])
+
+
+def test_reference_endpoint_reports_market_price_state():
+    assert main.mo_reference()["market_price"]["count"] == 0
+    main.mo_market_price_set(main.MoMarketPriceRequest(
+        rows=[{"municipality": "Городской округ Мытищи", "price_rub_per_sqm": 208733}], period="III–IV кв. 2025",
+    ))
+    state = main.mo_reference()["market_price"]
+    assert state["count"] == 1 and state["period"] == "III–IV кв. 2025"
+
+
+def test_market_price_routes_are_registered():
+    routes = {getattr(route, "path", "") for route in _wrapper.app.routes}
+    assert {"/mo/market-price", "/mo/market-price/import"}.issubset(routes)
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))

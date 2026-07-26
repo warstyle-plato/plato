@@ -1,3 +1,18 @@
+DEVELOPAID v0.12.40 MARKET PRICE REFERENCE (Ksr) OK
+Python syntax (main.py + main_legacy.py): OK
+Page JavaScript syntax (node --check): OK
+tests/ — 127 passed (8 new on the Ksr reference)
+Decree annex .xlsx parsed into municipality/price pairs: OK
+Names matched to the 61-district reference, region average kept apart: OK
+Unmatched rows and districts without a price reported back: OK
+Table without prices rejected with a clear message: OK
+Manual upload via POST /mo/market-price and read back: OK
+Ksr auto-filled from the reference, source and period shown: OK
+Explicit Ksr in the request wins over the reference: OK
+Without the reference falls back to district UPKS with a warning: OK
+Reference saved to data/mo_market_price.csv, CSV returned for the repo: OK
+Browser check: upload, state line, Ksr row in the VRI card, no page errors: OK
+
 DEVELOPAID v0.12.39 MOSCOW REGION CALCULATOR OK
 Python syntax (main.py + main_legacy.py): OK
 Page JavaScript syntax (node --check): OK
