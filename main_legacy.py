@@ -2807,6 +2807,9 @@ def _mo_tep_and_inputs(
 
     inputs: dict[str, Any] = {
         "land_rights_cost_mln": vri.get("payment_used_mln") or 0.0,
+        # Блок по определению областной: правила рассрочки и процентов по ВРИ
+        # берутся для Московской области, а не для Москвы.
+        "vri_region": "mo",
         "kindergarten_places": kindergarten["places"],
         "school_places": school["places"],
         "clinic_capacity": clinic["capacity"],
