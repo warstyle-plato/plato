@@ -8,6 +8,7 @@ from mo_egrn_hotfix import apply as apply_mo_egrn_hotfix
 from mo_flow_restore import apply as apply_mo_flow_restore
 from model_download_ui_fix import apply as apply_model_download_ui_fix
 from vri_obligation_date_fix import apply as apply_vri_obligation_date_fix
+from vri_full_ui_and_schedule import apply as apply_vri_full_ui_and_schedule
 
 apply_telegram_context(runtime)
 apply_excel_export(runtime)
@@ -16,4 +17,5 @@ apply_mo_egrn_hotfix(runtime)
 apply_mo_flow_restore(runtime)
 apply_model_download_ui_fix(runtime)
 apply_vri_obligation_date_fix(runtime)
+apply_vri_full_ui_and_schedule(runtime)
 app = runtime.app
