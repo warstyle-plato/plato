@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import concurrent.futures
 import html
 import json
 import re
@@ -10,8 +11,10 @@ from typing import Any
 
 from fastapi import HTTPException
 
-VERSION = "0.12.46"
+VERSION = "0.12.47"
 _NSPD_SEARCH_URL = "https://nspd.gov.ru/api/geoportal/v2/search/geoportal"
+_NSPD_REQUEST_TIMEOUT = 8
+_NSPD_TOTAL_TIMEOUT = 20
 
 
 def _walk_dicts(value: Any):
@@ -51,16 +54,14 @@ def _number(value: Any) -> float | None:
 
 def _matching_cadastral(record: dict[str, Any], requested: str) -> bool:
     requested_compact = requested.replace(" ", "")
-    keys = (
+    for key in (
         "cad_num", "cadastral_number", "cadastralNumber", "cadNumber",
         "cn", "object_cad_number", "quarter_cad_number",
-    )
-    for key in keys:
+    ):
         if key in record:
             value = str(_scalar(record.get(key)) or "").replace(" ", "")
             if value == requested_compact:
                 return True
-    # Some NSPD responses keep the cadastral number in a title/name field.
     for key in ("title", "name", "label", "descr"):
         value = str(_scalar(record.get(key)) or "")
         if requested_compact in value.replace(" ", ""):
@@ -69,12 +70,10 @@ def _matching_cadastral(record: dict[str, Any], requested: str) -> bool:
 
 
 def _extract_area_sqm(record: dict[str, Any]) -> float | None:
-    # NSPD land-parcel attributes normally expose square metres in one of these fields.
-    priority = (
+    for key in (
         "specified_area", "land_record_area", "area_value", "area_value_m2",
         "area_sqm", "square", "area", "params_area",
-    )
-    for key in priority:
+    ):
         if key not in record:
             continue
         value = _number(record.get(key))
@@ -86,7 +85,6 @@ def _extract_area_sqm(record: dict[str, Any]) -> float | None:
         ).lower()
         if "га" in unit_text or "hect" in unit_text or key.endswith("_ha"):
             value *= 10_000.0
-        # A cadastral land parcel area is stored in square metres. Reject absurd values.
         if 1.0 <= value <= 10_000_000_000.0:
             return value
     return None
@@ -108,11 +106,11 @@ def _nspd_parcel(number: str) -> dict[str, Any]:
             "Accept": "application/json, text/plain, */*",
             "Referer": "https://nspd.gov.ru/map?thematic=PKK",
             "Origin": "https://nspd.gov.ru",
-            "User-Agent": "Mozilla/5.0 DevelopAid/0.12.46",
+            "User-Agent": "Mozilla/5.0 DevelopAid/0.12.47",
         },
     )
     try:
-        with urllib.request.urlopen(request, timeout=25) as response:
+        with urllib.request.urlopen(request, timeout=_NSPD_REQUEST_TIMEOUT) as response:
             raw = response.read(4 * 1024 * 1024 + 1)
     except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as exc:
         raise RuntimeError(f"НСПД недоступна для {number}: {exc}") from exc
@@ -123,9 +121,7 @@ def _nspd_parcel(number: str) -> dict[str, Any]:
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise RuntimeError(f"НСПД вернула некорректный ответ для {number}") from exc
 
-    records = list(_walk_dicts(payload))
-    matching = [record for record in records if _matching_cadastral(record, number)]
-    # Prefer a matching record with an explicit area; then inspect its nested dictionaries.
+    matching = [record for record in _walk_dicts(payload) if _matching_cadastral(record, number)]
     for record in matching:
         for candidate in _walk_dicts(record):
             area_sqm = _extract_area_sqm(candidate)
@@ -143,13 +139,44 @@ def _nspd_parcel(number: str) -> dict[str, Any]:
     raise RuntimeError(f"НСПД не вернула площадь участка {number}")
 
 
+def _nspd_parcels_concurrent(numbers: list[str]) -> tuple[list[dict[str, Any]], list[str], list[str]]:
+    parcels: list[dict[str, Any]] = []
+    missing: list[str] = []
+    errors: list[str] = []
+    workers = min(8, max(1, len(numbers)))
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=workers)
+    futures = {executor.submit(_nspd_parcel, number): number for number in numbers}
+    try:
+        done, not_done = concurrent.futures.wait(
+            futures,
+            timeout=_NSPD_TOTAL_TIMEOUT,
+            return_when=concurrent.futures.ALL_COMPLETED,
+        )
+        for future in done:
+            number = futures[future]
+            try:
+                parcels.append(future.result())
+            except Exception as exc:
+                missing.append(number)
+                errors.append(str(exc))
+        for future in not_done:
+            number = futures[future]
+            future.cancel()
+            missing.append(number)
+            errors.append(f"Истекло время ожидания НСПД для {number}")
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+    order = {number: i for i, number in enumerate(numbers)}
+    parcels.sort(key=lambda item: order.get(str(item.get("cadastral_number")), 10**9))
+    missing = sorted(set(missing), key=lambda number: order.get(number, 10**9))
+    return parcels, missing, errors
+
+
 def apply(runtime: Any) -> None:
     runtime._RUNTIME_VERSION = VERSION
     runtime.app.version = VERSION
     core = runtime.core
 
-    # A cadastral number such as 50:12:... must never be interpreted by the
-    # free-form TEP recognizer as a site area of 50 hectares.
     original_recognize = core._recognize_freeform_tep_text
     cadastral_token_re = re.compile(r"(?<!\d)\d{2}:\d{2}:\d{6,8}:\d+(?!\d)")
     explicit_area_re = re.compile(
@@ -161,8 +188,7 @@ def apply(runtime: Any) -> None:
 
     def recognize_without_cadastral_area(text: str) -> dict[str, Any]:
         source_text = str(text or "")
-        cleaned_text = cadastral_token_re.sub(" ", source_text)
-        recognized = original_recognize(cleaned_text)
+        recognized = original_recognize(cadastral_token_re.sub(" ", source_text))
         if not explicit_area_re.search(source_text):
             recognized["site_area_ha"] = None
         return recognized
@@ -178,19 +204,10 @@ def apply(runtime: Any) -> None:
             if not numbers or not all(str(number).startswith("50:") for number in numbers):
                 raise
 
-            parcels: list[dict[str, Any]] = []
-            missing: list[str] = []
-            errors: list[str] = []
-            for number in numbers:
-                try:
-                    parcels.append(_nspd_parcel(number))
-                except RuntimeError as exc:
-                    missing.append(number)
-                    errors.append(str(exc))
-
+            parcels, missing, errors = _nspd_parcels_concurrent(numbers)
             if not parcels:
                 detail = (
-                    "ГлавАПУ не сформировал территорию, а НСПД не вернула площади участков. "
+                    "ГлавАПУ не сформировал территорию, а НСПД не вернула площади участков за 20 секунд. "
                     + ("; ".join(errors[:3]) if errors else str(glavapu_error.detail))
                 )
                 raise HTTPException(status_code=502, detail=detail) from glavapu_error
@@ -243,6 +260,10 @@ def apply(runtime: Any) -> None:
                 route.dependant.call = analyze_with_nspd_fallback
 
     def handle_cadastral_numbers(chat_id: int, numbers: list[str]) -> None:
+        core._telegram_send_message(
+            chat_id,
+            f"<b>Проверяю {len(numbers)} участков.</b> Сначала запрашиваю ГлавАПУ; для Московской области при необходимости получу площади из НСПД. Обычно это занимает до 20 секунд.",
+        )
         try:
             analysis = analyze_with_nspd_fallback(
                 core.CadastralAnalysisRequest(cadastral_numbers=numbers)
@@ -251,6 +272,12 @@ def apply(runtime: Any) -> None:
             core._telegram_send_message(
                 chat_id,
                 "<b>Не удалось сформировать территорию.</b>\n" + html.escape(str(exc.detail)),
+            )
+            return
+        except Exception as exc:
+            core._telegram_send_message(
+                chat_id,
+                "<b>Не удалось сформировать территорию.</b>\nВнутренняя ошибка: " + html.escape(str(exc)),
             )
             return
 
@@ -284,7 +311,7 @@ def apply(runtime: Any) -> None:
             f"Площадь: <b>{core._telegram_number(territory.get('area_ha'), 4)} га</b>\n"
             f"Район: <b>{html.escape(district)}</b>\n"
             f"Кадастровый квартал: <b>{html.escape(str(territory.get('cadastral_quarter') or '—'))}</b>\n\n"
-            "Площадь рассчитана автоматически по сведениям НСПД. Перед расчётом выберите класс — он задаст базовые цены и СМР.",
+            "Площадь рассчитана автоматически по кадастровым сведениям. Перед расчётом выберите класс — он задаст базовые цены и СМР.",
         )
         core._telegram_cad_class_menu(chat_id, dialog)
 
