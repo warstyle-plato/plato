@@ -1,6 +1,6 @@
 DEVELOPAID v0.12.49 NEW MOSCOW ROUTING AND NSPD TRANSPORT OK
 Python syntax (main.py + main_legacy.py): OK
-tests/ — 246 passed (12 new on routing and NSPD transport)
+tests/ — 254 passed (20 new: routing, NSPD transport, VRI parity)
 New Moscow 50:* confirmed by GlavAPU stays on the Moscow calculator: OK
 50:* outside Moscow, or with GlavAPU down, goes to the region calculator: OK
 77:* without GlavAPU is a plain error, not a region calculation: OK
@@ -16,6 +16,11 @@ EGRN area aliases widened with the portal's newer key spellings: OK
 Dead startup hotfix removed: it rewrote sources and raised on every boot: OK
 Its help/close patches already live in the code natively: OK
 Application boots clean, no startup traceback: OK
+VRI obligation date modes: at RnS, 1m/3m before, after purchase, manual: OK
+Only a hand-entered date counts as exact, the rest carry a reason: OK
+Obligation before RnS moves the payment to the bridge and raises its peak: OK
+Initial installment payment lands on the obligation date, lowers interest: OK
+Initial payment ignored for a lump sum, principal still reconciles: OK
 
 DEVELOPAID v0.12.48 VRI RELIEF AND CHARTS OK
 Python syntax (main.py + main_legacy.py): OK

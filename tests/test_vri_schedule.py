@@ -376,3 +376,69 @@ def test_relief_is_not_applied_twice_across_phases():
     assert bundle["vri"]["totals"]["relief"] == pytest.approx(AMOUNT * 0.3)
     paid = sum(item["result"]["capex"]["land_rights"] for item in bundle["phases"])
     assert paid == pytest.approx(AMOUNT * 0.7, rel=1e-6)
+
+
+# --- дата обязательства и первый взнос --------------------------------------
+
+def test_obligation_date_modes():
+    base = {"project_start": "2027-01-01"}
+    assert main.vri_obligation_date(base, PERMIT)[0] == PERMIT
+    assert main.vri_obligation_date({**base, "vri_obligation_date_mode": "before_rns_1m"}, PERMIT)[0] == date(2028, 6, 1)
+    assert main.vri_obligation_date({**base, "vri_obligation_date_mode": "before_rns_3m"}, PERMIT)[0] == date(2028, 4, 1)
+    assert main.vri_obligation_date(
+        {**base, "vri_obligation_date_mode": "after_purchase", "vri_months_after_purchase": 12}, PERMIT
+    )[0] == date(2028, 1, 1)
+
+
+def test_explicit_date_wins_and_is_not_estimated():
+    when, basis, estimated = main.vri_obligation_date({"vri_obligation_date": "2027-05-01"}, PERMIT)
+    assert when == date(2027, 5, 1)
+    assert estimated is False
+    assert "вручную" in basis
+
+
+def test_estimated_dates_are_flagged_with_a_reason():
+    for mode in ("at_rns", "before_rns_1m", "before_rns_3m"):
+        _, basis, estimated = main.vri_obligation_date({"vri_obligation_date_mode": mode}, PERMIT)
+        assert estimated is True
+        assert basis.startswith("Оценочная дата")
+
+
+def test_manual_mode_without_a_date_falls_back_to_the_permit():
+    when, basis, estimated = main.vri_obligation_date({"vri_obligation_date_mode": "manual"}, PERMIT)
+    assert when == PERMIT
+    assert estimated is True
+    assert "не задана" in basis
+
+
+def test_obligation_before_the_permit_moves_the_payment_to_the_bridge():
+    late = model()
+    early = model(vri_obligation_date_mode="before_rns_3m")
+    assert early["vri"]["rows"][0]["before_pf"] is True
+    assert early["vri"]["totals"]["bridge"] == pytest.approx(AMOUNT)
+    assert early["finance"]["peak_bridge"] > late["finance"]["peak_bridge"]
+
+
+def test_initial_payment_is_paid_on_the_obligation_date():
+    result = schedule(vri_payment_mode="installment", vri_installment_years=3, vri_initial_pct=25)
+    rows = result["rows"]
+    assert rows[0]["date"] == PERMIT.isoformat()
+    assert rows[0]["principal"] == pytest.approx(AMOUNT * 0.25)
+    # Остаток дробится на регулярные платежи графика.
+    assert len(rows) == 13
+    assert rows[1]["principal"] == pytest.approx(AMOUNT * 0.75 / 12)
+    assert result["totals"]["principal"] == pytest.approx(AMOUNT)
+    assert rows[-1]["balance_after"] == pytest.approx(0.0)
+
+
+def test_initial_payment_lowers_the_installment_interest():
+    plain = schedule(vri_payment_mode="installment", vri_installment_years=3)["totals"]["interest"]
+    with_initial = schedule(vri_payment_mode="installment", vri_installment_years=3,
+                            vri_initial_pct=25)["totals"]["interest"]
+    assert with_initial < plain
+
+
+def test_initial_payment_is_ignored_for_a_lump_sum():
+    result = schedule(vri_initial_pct=25)
+    assert len(result["rows"]) == 1
+    assert result["rows"][0]["principal"] == pytest.approx(AMOUNT)
