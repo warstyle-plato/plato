@@ -180,7 +180,7 @@ def test_comparison_sheet_shows_social_load():
         project_name="Соц",
     )
     archive = zipfile.ZipFile(io.BytesIO(content))
-    sheet = load_workbook(io.BytesIO(archive.read("00_Консолидация.xlsx")), data_only=True)["Сравнение очередей"]
+    sheet = load_workbook(io.BytesIO(archive.read("90_Детализация_консолидация.xlsx")), data_only=True)["Сравнение очередей"]
     header = [cell.value for cell in sheet[4]]
     column = header.index("Социальная нагрузка, млн ₽") + 1
     objects_column = header.index("Социальные объекты") + 1

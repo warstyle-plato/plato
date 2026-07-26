@@ -8,9 +8,11 @@
 from __future__ import annotations
 
 import io
+import json
 import sys
 import xml.etree.ElementTree as ET
 import zipfile
+from functools import lru_cache
 from pathlib import Path
 
 import pytest
@@ -36,10 +38,18 @@ PHASING = {
 }
 
 
-def build(phasing=None, project_name="Мытищи"):
+@lru_cache(maxsize=8)
+def _build_cached(phasing_key: str, project_name: str):
     return main.build_model_archive(
-        main.DEFAULT_INPUTS, main.TEP_DEFAULT, [], phasing or {}, project_name=project_name
+        main.DEFAULT_INPUTS, main.TEP_DEFAULT, [], json.loads(phasing_key),
+        project_name=project_name,
     )
+
+
+def build(phasing=None, project_name="Мытищи"):
+    # Сборка тянет шаблон ПЛАТО на 113 708 формул: без кеша набор тестов
+    # пересобирал бы его десятки раз.
+    return _build_cached(json.dumps(phasing or {}, sort_keys=True), project_name)
 
 
 def archive(phasing=None, project_name="Мытищи") -> zipfile.ZipFile:
@@ -58,16 +68,21 @@ def test_single_archive_layout():
     assert filename.endswith(".zip")
     assert "модель" in filename
     names = zipfile.ZipFile(io.BytesIO(content)).namelist()
-    assert names == ["Мытищи_модель.xlsx", "README.txt"]
+    # Сначала живая модель на шаблоне, следом детализация расчёта.
+    assert names == ["00_Модель_Мытищи.xlsx", "90_Детализация_Мытищи.xlsx", "README.txt"]
 
 
 def test_phased_archive_has_consolidator_and_phase_files():
     content, filename = build(PHASING)
     assert "очереди" in filename
     names = zipfile.ZipFile(io.BytesIO(content)).namelist()
-    assert names[0] == "00_Консолидация.xlsx"
-    assert [name for name in names if name.startswith("0") and "Очередь" in name] == [
-        "01_Очередь_О1.xlsx", "02_Очередь_О2.xlsx", "03_Очередь_О3.xlsx",
+    assert names[0] == "00_Модель_консолидация_Мытищи.xlsx"
+    assert [name for name in names if name.startswith("0") and name != names[0]] == [
+        "01_Модель_О1.xlsx", "02_Модель_О2.xlsx", "03_Модель_О3.xlsx",
+    ]
+    assert [name for name in names if name.startswith("9")] == [
+        "90_Детализация_консолидация.xlsx",
+        "91_Детализация_О1.xlsx", "92_Детализация_О2.xlsx", "93_Детализация_О3.xlsx",
     ]
     assert "README.txt" in names
 
@@ -89,7 +104,7 @@ def test_project_name_is_sanitised():
 # --- одиночная модель -------------------------------------------------------
 
 def test_single_workbook_sheets():
-    wb = workbook(archive(), "Мытищи_модель.xlsx")
+    wb = workbook(archive(), "90_Детализация_Мытищи.xlsx")
     assert wb.sheetnames == [
         "Сводка", "Вводные", "ТЭП", "Выручка", "Расходы", "ВРИ",
         "Помесячно", "Расходы помесячно", "Продажи помесячно",
@@ -101,7 +116,7 @@ def test_single_workbook_sheets():
 def test_monthly_sheet_matches_engine():
     result = main.calculate(main.CalcRequest(inputs=main.DEFAULT_INPUTS, tep=main.TEP_DEFAULT, rates=[]))
     finance_rows = result["finance"]["rows"]
-    sheet = workbook(archive(), "Мытищи_модель.xlsx")["Помесячно"]
+    sheet = workbook(archive(), "90_Детализация_Мытищи.xlsx")["Помесячно"]
     # шапка + строка «Итого»
     assert sheet.max_row == len(finance_rows) + 4
     assert sheet.max_column == len(main._MODEL_FINANCE_COLUMNS) + 1
@@ -113,15 +128,15 @@ def test_monthly_totals_are_formulas_with_cached_values():
     result = main.calculate(main.CalcRequest(inputs=main.DEFAULT_INPUTS, tep=main.TEP_DEFAULT, rates=[]))
     expected = sum(row["sales"] for row in result["finance"]["rows"]) / 1e6
     zip_file = archive()
-    formulas = workbook(zip_file, "Мытищи_модель.xlsx")["Помесячно"]
-    values = workbook(zip_file, "Мытищи_модель.xlsx", values=True)["Помесячно"]
+    formulas = workbook(zip_file, "90_Детализация_Мытищи.xlsx")["Помесячно"]
+    values = workbook(zip_file, "90_Детализация_Мытищи.xlsx", values=True)["Помесячно"]
     last = formulas.max_row
     assert str(formulas.cell(row=last, column=2).value).startswith("=SUM(")
     assert values.cell(row=last, column=2).value == pytest.approx(expected, rel=1e-9)
 
 
 def test_balances_and_rates_are_not_summed():
-    sheet = workbook(archive(), "Мытищи_модель.xlsx")["Помесячно"]
+    sheet = workbook(archive(), "90_Детализация_Мытищи.xlsx")["Помесячно"]
     header = [cell.value for cell in sheet[3]]
     last = sheet.max_row
     for label in ("Остаток ПФ", "Ключевая ставка", "Эскроу", "Накопленная база налога"):
@@ -131,7 +146,7 @@ def test_balances_and_rates_are_not_summed():
 
 def test_summary_sheet_carries_key_metrics():
     result = main.calculate(main.CalcRequest(inputs=main.DEFAULT_INPUTS, tep=main.TEP_DEFAULT, rates=[]))
-    sheet = workbook(archive(), "Мытищи_модель.xlsx")["Сводка"]
+    sheet = workbook(archive(), "90_Детализация_Мытищи.xlsx")["Сводка"]
     found = {}
     for row in sheet.iter_rows(min_col=1, max_col=2, values_only=True):
         if row[0] and row[1] is not None:
@@ -142,7 +157,7 @@ def test_summary_sheet_carries_key_metrics():
 
 
 def test_inputs_sheet_exports_every_field_with_key():
-    sheet = workbook(archive(), "Мытищи_модель.xlsx")["Вводные"]
+    sheet = workbook(archive(), "90_Детализация_Мытищи.xlsx")["Вводные"]
     keys = {row[4] for row in sheet.iter_rows(min_row=5, max_col=5, values_only=True) if row[4]}
     model_keys = {field[0] for _, fields in main.FIELD_GROUPS for field in fields}
     assert model_keys.issubset(keys)
@@ -150,8 +165,8 @@ def test_inputs_sheet_exports_every_field_with_key():
 
 def test_tep_total_row_is_a_formula():
     zip_file = archive()
-    formulas = workbook(zip_file, "Мытищи_модель.xlsx")["ТЭП"]
-    values = workbook(zip_file, "Мытищи_модель.xlsx", values=True)["ТЭП"]
+    formulas = workbook(zip_file, "90_Детализация_Мытищи.xlsx")["ТЭП"]
+    values = workbook(zip_file, "90_Детализация_Мытищи.xlsx", values=True)["ТЭП"]
     result = main.calculate(main.CalcRequest(inputs=main.DEFAULT_INPUTS, tep=main.TEP_DEFAULT, rates=[]))
     last = formulas.max_row
     assert formulas.cell(row=last, column=1).value == "Итого"
@@ -162,8 +177,8 @@ def test_tep_total_row_is_a_formula():
 def test_cashflow_running_total():
     result = main.calculate(main.CalcRequest(inputs=main.DEFAULT_INPUTS, tep=main.TEP_DEFAULT, rates=[]))
     zip_file = archive()
-    formulas = workbook(zip_file, "Мытищи_модель.xlsx")["Денежный поток"]
-    values = workbook(zip_file, "Мытищи_модель.xlsx", values=True)["Денежный поток"]
+    formulas = workbook(zip_file, "90_Детализация_Мытищи.xlsx")["Денежный поток"]
+    values = workbook(zip_file, "90_Детализация_Мытищи.xlsx", values=True)["Денежный поток"]
     assert str(formulas.cell(row=4, column=5).value).startswith("=SUM($B$4:")
     total = sum(result["cashflow"]["project"]) / 1e6
     assert values.cell(row=formulas.max_row, column=5).value == pytest.approx(total, rel=1e-9)
@@ -172,13 +187,13 @@ def test_cashflow_running_total():
 # --- очереди и консолидатор -------------------------------------------------
 
 def test_consolidator_contains_phase_sheets():
-    wb = workbook(archive(PHASING), "00_Консолидация.xlsx")
+    wb = workbook(archive(PHASING), "90_Детализация_консолидация.xlsx")
     assert wb.sheetnames[:3] == ["Сводка", "Сравнение очередей", "Консолидация помесячно"]
     assert wb.sheetnames[3:6] == ["1. О1", "2. О2", "3. О3"]
 
 
 def test_consolidation_uses_live_sumif_over_phase_sheets():
-    sheet = workbook(archive(PHASING), "00_Консолидация.xlsx")["Консолидация помесячно"]
+    sheet = workbook(archive(PHASING), "90_Детализация_консолидация.xlsx")["Консолидация помесячно"]
     formula = str(sheet.cell(row=5, column=2).value)
     assert formula.startswith("=SUMIF('1. О1'!$A:$A,$A5,")
     assert "'2. О2'" in formula and "'3. О3'" in formula
@@ -190,7 +205,7 @@ def test_consolidation_values_equal_sum_of_phases():
     for phase in bundle["phases"]:
         for row in phase["result"]["finance"]["rows"]:
             expected[row["month"]] = expected.get(row["month"], 0.0) + (row.get("sales") or 0.0)
-    values = workbook(archive(PHASING), "00_Консолидация.xlsx", values=True)["Консолидация помесячно"]
+    values = workbook(archive(PHASING), "90_Детализация_консолидация.xlsx", values=True)["Консолидация помесячно"]
     checked = 0
     for row in values.iter_rows(min_row=5, max_col=2, values_only=True):
         month = row[0]
@@ -207,7 +222,7 @@ def test_consolidation_covers_every_phase_month():
         for phase in bundle["phases"]
         for row in phase["result"]["finance"]["rows"]
     }
-    values = workbook(archive(PHASING), "00_Консолидация.xlsx", values=True)["Консолидация помесячно"]
+    values = workbook(archive(PHASING), "90_Детализация_консолидация.xlsx", values=True)["Консолидация помесячно"]
     exported = {
         row[0] for row in values.iter_rows(min_row=5, max_col=1, values_only=True)
         if row[0] and row[0] != "Итого"
@@ -219,8 +234,8 @@ def test_phase_comparison_totals():
     bundle = main._run_authoritative_model(main.DEFAULT_INPUTS, main.TEP_DEFAULT, [], PHASING)
     expected = sum(item["revenue"] for item in bundle["comparison"]) / 1e6
     zip_file = archive(PHASING)
-    formulas = workbook(zip_file, "00_Консолидация.xlsx")["Сравнение очередей"]
-    values = workbook(zip_file, "00_Консолидация.xlsx", values=True)["Сравнение очередей"]
+    formulas = workbook(zip_file, "90_Детализация_консолидация.xlsx")["Сравнение очередей"]
+    values = workbook(zip_file, "90_Детализация_консолидация.xlsx", values=True)["Сравнение очередей"]
     last = formulas.max_row
     assert formulas.cell(row=last, column=1).value == "Итого"
     assert values.cell(row=last, column=3).value == pytest.approx(expected, rel=1e-9)
@@ -229,13 +244,13 @@ def test_phase_comparison_totals():
 def test_phase_files_hold_their_own_model():
     bundle = main._run_authoritative_model(main.DEFAULT_INPUTS, main.TEP_DEFAULT, [], PHASING)
     phase_rows = bundle["phases"][0]["result"]["finance"]["rows"]
-    wb = workbook(archive(PHASING), "01_Очередь_О1.xlsx")
+    wb = workbook(archive(PHASING), "91_Детализация_О1.xlsx")
     assert "Помесячно" in wb.sheetnames
     assert wb["Помесячно"].max_row == len(phase_rows) + 4
 
 
 def test_single_mode_has_no_consolidation_sheet():
-    wb = workbook(archive(), "Мытищи_модель.xlsx")
+    wb = workbook(archive(), "90_Детализация_Мытищи.xlsx")
     assert "Консолидация помесячно" not in wb.sheetnames
     assert "Сравнение очередей" not in wb.sheetnames
 
@@ -243,7 +258,9 @@ def test_single_mode_has_no_consolidation_sheet():
 def test_one_phase_project_exports_as_single_model():
     content, filename = build({"enabled": True, "user_enabled": True, "phase_count": 1})
     assert "модель" in filename
-    assert zipfile.ZipFile(io.BytesIO(content)).namelist() == ["Мытищи_модель.xlsx", "README.txt"]
+    assert zipfile.ZipFile(io.BytesIO(content)).namelist() == [
+        "00_Модель_Мытищи.xlsx", "90_Детализация_Мытищи.xlsx", "README.txt",
+    ]
 
 
 # --- эндпоинт ---------------------------------------------------------------
@@ -288,7 +305,7 @@ def test_cost_multiplier_scales_the_detail():
 
 
 def test_export_has_detail_sheets():
-    wb = workbook(archive(), "Мытищи_модель.xlsx")
+    wb = workbook(archive(), "90_Детализация_Мытищи.xlsx")
     assert "Расходы помесячно" in wb.sheetnames
     assert "Продажи помесячно" in wb.sheetnames
 
@@ -297,8 +314,8 @@ def test_detail_sheet_matches_the_engine():
     result = main.calculate(main.CalcRequest(inputs=main.DEFAULT_INPUTS, tep=main.TEP_DEFAULT, rates=[]))
     monthly = result["monthly"]
     zip_file = archive()
-    formulas = workbook(zip_file, "Мытищи_модель.xlsx")["Расходы помесячно"]
-    values = workbook(zip_file, "Мытищи_модель.xlsx", values=True)["Расходы помесячно"]
+    formulas = workbook(zip_file, "90_Детализация_Мытищи.xlsx")["Расходы помесячно"]
+    values = workbook(zip_file, "90_Детализация_Мытищи.xlsx", values=True)["Расходы помесячно"]
     assert formulas.max_column == len(monthly["months"]) + 2
     header = [cell.value for cell in formulas[4]]
     assert header[2] == monthly["months"][0]
@@ -315,7 +332,7 @@ def test_detail_sheet_matches_the_engine():
 
 def test_sales_detail_sheet_holds_revenue_and_volumes():
     result = main.calculate(main.CalcRequest(inputs=main.DEFAULT_INPUTS, tep=main.TEP_DEFAULT, rates=[]))
-    values = workbook(archive(), "Мытищи_модель.xlsx", values=True)["Продажи помесячно"]
+    values = workbook(archive(), "90_Детализация_Мытищи.xlsx", values=True)["Продажи помесячно"]
     # «Квартиры» встречаются дважды: в блоке выручки и в блоке объёмов
     pairs = [
         (row[0], row[1])
@@ -332,7 +349,7 @@ def test_sales_detail_sheet_holds_revenue_and_volumes():
 
 
 def test_phase_files_carry_their_own_detail():
-    wb = workbook(archive(PHASING), "01_Очередь_О1.xlsx")
+    wb = workbook(archive(PHASING), "91_Детализация_О1.xlsx")
     assert "Расходы помесячно" in wb.sheetnames
 
 
@@ -349,7 +366,7 @@ def test_quarter_grouping():
 def test_quarterly_costs_equal_monthly_costs():
     result = main.calculate(main.CalcRequest(inputs=main.DEFAULT_INPUTS, tep=main.TEP_DEFAULT, rates=[]))
     monthly = result["monthly"]
-    values = workbook(archive(), "Мытищи_модель.xlsx", values=True)["Расходы поквартально"]
+    values = workbook(archive(), "90_Детализация_Мытищи.xlsx", values=True)["Расходы поквартально"]
     totals = {
         row[0]: row[1]
         for row in values.iter_rows(min_row=5, max_col=2, values_only=True)
@@ -362,7 +379,7 @@ def test_quarterly_costs_equal_monthly_costs():
 def test_quarterly_columns_are_quarters():
     result = main.calculate(main.CalcRequest(inputs=main.DEFAULT_INPUTS, tep=main.TEP_DEFAULT, rates=[]))
     quarters = {main._quarter_label(month) for month in result["monthly"]["months"]}
-    sheet = workbook(archive(), "Мытищи_модель.xlsx")["Расходы поквартально"]
+    sheet = workbook(archive(), "90_Детализация_Мытищи.xlsx")["Расходы поквартально"]
     header = [cell.value for cell in sheet[4]][2:]
     assert set(header) == quarters
     assert len(header) < len(result["monthly"]["months"])
@@ -372,7 +389,7 @@ def test_quarterly_finance_sums_flows_and_keeps_balances():
     result = main.calculate(main.CalcRequest(inputs=main.DEFAULT_INPUTS, tep=main.TEP_DEFAULT, rates=[]))
     rows = result["finance"]["rows"]
     groups = main._quarter_groups([row["month"] for row in rows])
-    values = workbook(archive(), "Мытищи_модель.xlsx", values=True)["Финансирование поквартально"]
+    values = workbook(archive(), "90_Детализация_Мытищи.xlsx", values=True)["Финансирование поквартально"]
     header = [cell.value for cell in values[4]]
     sales_column = header.index("Продажи (поступления)") + 1
     balance_column = header.index("Остаток ПФ") + 1
@@ -386,7 +403,7 @@ def test_quarterly_finance_sums_flows_and_keeps_balances():
 
 
 def test_quarterly_finance_totals_only_flows():
-    sheet = workbook(archive(), "Мытищи_модель.xlsx")["Финансирование поквартально"]
+    sheet = workbook(archive(), "90_Детализация_Мытищи.xlsx")["Финансирование поквартально"]
     header = [cell.value for cell in sheet[4]]
     last = sheet.max_row
     assert sheet.cell(row=last, column=1).value == "Итого"
@@ -395,7 +412,7 @@ def test_quarterly_finance_totals_only_flows():
 
 
 def test_phase_files_carry_quarterly_sheets():
-    wb = workbook(archive(PHASING), "01_Очередь_О1.xlsx")
+    wb = workbook(archive(PHASING), "91_Детализация_О1.xlsx")
     assert "Расходы поквартально" in wb.sheetnames
     assert "Финансирование поквартально" in wb.sheetnames
 
@@ -413,7 +430,7 @@ def test_partial_payload_is_filled_with_model_defaults():
     # неполные вводные (например, из Telegram) дополняются базовыми значениями
     response = main.report_model(main.ModelExportRequest(inputs={}, tep={}, project_name="Проверка"))
     zip_file = zipfile.ZipFile(io.BytesIO(response.body))
-    sheet = workbook(zip_file, "Проверка_модель.xlsx", values=True)["Сводка"]
+    sheet = workbook(zip_file, "90_Детализация_Проверка.xlsx", values=True)["Сводка"]
     found = {str(row[0]): row[1] for row in sheet.iter_rows(min_col=1, max_col=2, values_only=True) if row[0]}
     assert found["Выручка"] > 0
 
@@ -473,7 +490,7 @@ if __name__ == "__main__":
 # --- диаграммы --------------------------------------------------------------
 
 def test_expense_structure_has_a_bar_chart():
-    sheet = workbook(archive(), "Мытищи_модель.xlsx")["Расходы"]
+    sheet = workbook(archive(), "90_Детализация_Мытищи.xlsx")["Расходы"]
     charts = sheet._charts
     assert len(charts) == 1
     chart = charts[0]
@@ -485,7 +502,7 @@ def test_expense_structure_has_a_bar_chart():
 
 
 def test_monthly_sheet_has_a_debt_and_escrow_line_chart():
-    book = workbook(archive(), "Мытищи_модель.xlsx")
+    book = workbook(archive(), "90_Детализация_Мытищи.xlsx")
     chart = book["Помесячно"]._charts[0]
     assert type(chart).__name__ == "LineChart"
     assert len(chart.series) == 3
@@ -498,7 +515,7 @@ def test_monthly_sheet_has_a_debt_and_escrow_line_chart():
 
 
 def test_phase_comparison_has_llcr_and_revenue_charts():
-    book = workbook(archive(PHASING), "00_Консолидация.xlsx")
+    book = workbook(archive(PHASING), "90_Детализация_консолидация.xlsx")
     charts = book["Сравнение очередей"]._charts
     assert len(charts) == 2
     assert charts[0].series[0].val.numRef.f.startswith("'Сравнение очередей'!$I$")
@@ -508,7 +525,7 @@ def test_phase_comparison_has_llcr_and_revenue_charts():
 def test_chart_parts_are_well_formed_and_declared():
     content, _ = build()
     inner = zipfile.ZipFile(io.BytesIO(zipfile.ZipFile(
-        io.BytesIO(content)).read("Мытищи_модель.xlsx")))
+        io.BytesIO(content)).read("90_Детализация_Мытищи.xlsx")))
     names = inner.namelist()
     types = inner.read("[Content_Types].xml").decode("utf-8")
     for name in names:
@@ -520,3 +537,48 @@ def test_chart_parts_are_well_formed_and_declared():
     assert "/xl/drawings/drawing1.xml" in types
     # Лист должен ссылаться на рисунок через собственные отношения.
     assert any(name.startswith("xl/worksheets/_rels/") for name in names)
+
+
+# --- живая модель против детализации ----------------------------------------
+
+def test_archive_leads_with_the_live_template_model():
+    """Первым в архиве идёт шаблон ПЛАТО: он и есть модель на формулах."""
+    book = workbook(archive(), "00_Модель_Мытищи.xlsx")
+    formulas = sum(
+        1
+        for sheet in book.worksheets
+        for row in sheet.iter_rows()
+        for cell in row
+        if isinstance(cell.value, str) and cell.value.startswith("=")
+    )
+    assert formulas == 113_708
+    assert len(book.sheetnames) == 27
+    assert book.calculation.fullCalcOnLoad is True
+
+
+def test_detail_workbook_is_not_a_model_and_says_so():
+    readme = archive().read("README.txt").decode("utf-8")
+    assert "живая модель на шаблоне ПЛАТО" in readme
+    assert "Это НЕ модель" in readme
+    assert "Правка любой вводной пересчитывает книгу целиком" in readme
+
+
+def test_every_phase_gets_its_own_live_model():
+    names = archive(PHASING).namelist()
+    models = [name for name in names if "_Модель_" in name]
+    assert len(models) == 4  # консолидация плюс три очереди
+    for name in models:
+        book = workbook(archive(PHASING), name)
+        assert len(book.sheetnames) == 27
+
+
+def test_missing_template_leaves_the_detail_and_explains(monkeypatch, tmp_path):
+    monkeypatch.setattr(main, "_PLATO_TEMPLATE_PATH", tmp_path / "нет.xlsx")
+    content, _ = main.build_model_archive(
+        main.DEFAULT_INPUTS, main.TEP_DEFAULT, [], {}, project_name="Без шаблона"
+    )
+    zip_file = zipfile.ZipFile(io.BytesIO(content))
+    names = zip_file.namelist()
+    assert names == ["90_Детализация_Без шаблона.xlsx", "README.txt"]
+    readme = zip_file.read("README.txt").decode("utf-8")
+    assert "Живая модель на шаблоне ПЛАТО не собрана" in readme

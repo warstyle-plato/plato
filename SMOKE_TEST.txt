@@ -1,3 +1,16 @@
+DEVELOPAID v0.12.52 LIVE MODEL IN THE EXPORT OK
+Python syntax (main.py + main_legacy.py): OK
+tests/ — 267 passed (4 new on the archive layout)
+Measured the old export: 473 formulas in 5 811 cells, 8.1%: OK
+  all of them SUM/IF, zero cross-sheet references, none onto «Вводные»: OK
+Archive now leads with the filled PLATO template: 113 708 formulas, 27 sheets: OK
+Workbook set to full recalculation on open: OK
+Phased archive carries a live model per phase plus the consolidator: OK
+Detail workbooks renumbered 90…99 and no longer called the model: OK
+README states which file recalculates and which does not: OK
+Missing template leaves the detail alone and explains why in README: OK
+Build time measured: 6 s single, 22 s for three phases: OK
+
 DEVELOPAID v0.12.51 ONE CADASTRAL INPUT OK
 Python syntax (main.py + main_legacy.py): OK
 Page JavaScript syntax (node --check): OK
