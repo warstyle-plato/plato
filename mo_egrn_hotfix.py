@@ -2,17 +2,39 @@ from __future__ import annotations
 
 import copy
 import html
+import re
 from typing import Any
 
 from fastapi import HTTPException
 
-VERSION = "0.12.44"
+VERSION = "0.12.45"
 
 
 def apply(runtime: Any) -> None:
     runtime._RUNTIME_VERSION = VERSION
     runtime.app.version = VERSION
     core = runtime.core
+
+    # A cadastral number such as 50:12:... must never be interpreted by the
+    # free-form TEP recognizer as a site area of 50 hectares.
+    original_recognize = core._recognize_freeform_tep_text
+    cadastral_token_re = re.compile(r"(?<!\d)\d{2}:\d{2}:\d{6,8}:\d+(?!\d)")
+    explicit_area_re = re.compile(
+        r"(?:площад(?:ь|и)\s+(?:территории|участка)|территори(?:я|и)|участок)"
+        r"[^\n,;]{0,60}?\d[\d\s\u00a0\u202f]*(?:[.,]\d+)?\s*(?:га|гектар(?:а|ов)?|м(?:²|2)|кв\.?\s*м)"
+        r"|\d[\d\s\u00a0\u202f]*(?:[.,]\d+)?\s*(?:га|гектар(?:а|ов)?)",
+        re.IGNORECASE,
+    )
+
+    def recognize_without_cadastral_area(text: str) -> dict[str, Any]:
+        source_text = str(text or "")
+        cleaned_text = cadastral_token_re.sub(" ", source_text)
+        recognized = original_recognize(cleaned_text)
+        if not explicit_area_re.search(source_text):
+            recognized["site_area_ha"] = None
+        return recognized
+
+    core._recognize_freeform_tep_text = recognize_without_cadastral_area
 
     original_analyze = core.analyze_cadastral_territory
 
@@ -21,7 +43,7 @@ def apply(runtime: Any) -> None:
 
         For Moscow Region batches the external service can reject the combined
         territory even though it can still resolve the cadastral parcels one by
-        one. In that case resolve every parcel separately, sum EGRN areas and
+        one. In that case resolve every parcel separately, sum cadastral areas and
         return one combined territory object. No manual area input is requested.
         """
         numbers = core._parse_cadastral_numbers(req.cadastral_numbers)
