@@ -511,6 +511,30 @@ def test_shipped_reference_holds_the_2026_decree(tmp_path, monkeypatch):
     assert unknown == []
 
 
+def test_upks_source_is_reported():
+    source = main.mo_reference()["upks_source"]
+    assert source["land"]["valuation_date"] == "01.01.2022"
+    assert source["land"]["applied_from"] == "01.01.2023"
+    assert source["oks"]["valuation_date"] == "01.01.2023"
+    assert "01/2022" in source["land"]["report"]
+    assert "01/2023" in source["oks"]["report"]
+
+
+def test_calculation_carries_upks_source(egrn):
+    result = main.mo_calculate(main.MoCalculateRequest(query="50:12:0100131:497"))
+    assert result["upks"]["source"]["land"]["valuation_date"] == "01.01.2022"
+
+
+def test_parcel_rows_carry_cadastral_value_date():
+    rows = main.mo_vri_payment(
+        [{"cadastral_number": "50:12:0100131:497", "area_sqm": 73156,
+          "cadastral_value_rub": 358977955.12, "cadastral_value_date": "2023-01-01"}],
+        upks_target=8517.94, upks_average_oks=114047.68, apartments_sqm=200000,
+        market_price_rub_per_sqm=MYTISHCHI_MARKET_PRICE, kd=0.1,
+    )["parcels"]
+    assert rows[0]["cadastral_value_date"] == "2023-01-01"
+
+
 def test_market_price_routes_are_registered():
     routes = {getattr(route, "path", "") for route in _wrapper.app.routes}
     assert {"/mo/market-price", "/mo/market-price/import"}.issubset(routes)

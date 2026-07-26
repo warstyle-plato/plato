@@ -1,3 +1,14 @@
+DEVELOPAID v0.12.42 UPKS VALUATION VINTAGE EXPOSED OK
+Python syntax (main.py + main_legacy.py): OK
+Page JavaScript syntax (node --check): OK
+tests/ — 134 passed
+UPKS source reported: land 01.01.2022 (report 01/2022), OKS 01.01.2023 (report 01/2023): OK
+Next valuation dates carried: land 01.01.2026 -> applied 01.01.2027: OK
+VRI card shows the valuation date next to each UPKS row: OK
+Per-parcel table shows EGRN cadastral value with its determination date: OK
+/mo/reference exposes upks_source, /mo/calculate exposes upks.source: OK
+Parcel cadastral values still come live from EGRN, not from the tables: OK
+
 DEVELOPAID v0.12.41 KSR REFERENCE FILLED FROM DECREE 114-R OK
 Python syntax (main.py + main_legacy.py): OK
 Page JavaScript syntax (node --check): OK
