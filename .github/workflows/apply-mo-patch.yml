@@ -50,3 +50,4 @@ jobs:
           fi
           git commit -m 'Apply MO calculator 0.12.42'
           git push
+# trigger: routing fallback confirmed
