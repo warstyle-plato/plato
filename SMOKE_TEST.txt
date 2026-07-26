@@ -1,3 +1,15 @@
+DEVELOPAID v0.12.43 MONTHLY DETAIL OF THE FINANCIAL MODEL OK
+Python syntax (main.py + main_legacy.py): OK
+tests/ — 142 passed
+Engine now emits capex_by_article: every CAPEX item spread month by month: OK
+Sum of per-article months equals capex.total to the rouble: OK
+Per-month sum of articles equals the aggregate monthly capex: OK
+Monthly revenue and sold volumes exposed per product: OK
+Cost scenario multiplier applied to the detail as well: OK
+Export gains sheets «Расходы помесячно» and «Продажи помесячно»: OK
+Row totals are SUM formulas, cached values match the engine: OK
+Phase files carry their own detail sheets: OK
+
 DEVELOPAID v0.12.42 UPKS VALUATION VINTAGE EXPOSED OK
 Python syntax (main.py + main_legacy.py): OK
 Page JavaScript syntax (node --check): OK

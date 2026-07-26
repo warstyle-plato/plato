@@ -91,7 +91,8 @@ def test_single_workbook_sheets():
     wb = workbook(archive(), "Мытищи_модель.xlsx")
     assert wb.sheetnames == [
         "Сводка", "Вводные", "ТЭП", "Выручка", "Расходы",
-        "Помесячно", "Денежный поток", "Календарь",
+        "Помесячно", "Расходы помесячно", "Продажи помесячно",
+        "Денежный поток", "Календарь",
     ]
 
 
@@ -244,6 +245,94 @@ def test_one_phase_project_exports_as_single_model():
 
 
 # --- эндпоинт ---------------------------------------------------------------
+
+# --- помесячная детализация финмодели ---------------------------------------
+
+def test_monthly_detail_reconciles_with_totals():
+    result = main.calculate(main.CalcRequest(inputs=main.DEFAULT_INPUTS, tep=main.TEP_DEFAULT, rates=[]))
+    monthly = result["monthly"]
+    assert len(monthly["months"]) == len(result["cashflow"]["months"])
+    assert sum(item["total"] for item in monthly["costs"]) == pytest.approx(result["capex"]["total"], rel=1e-9)
+    assert sum(item["total"] for item in monthly["revenue"]) == pytest.approx(result["revenue"]["total"], rel=1e-9)
+    assert sum(monthly["commercial_costs"]) == pytest.approx(result["commercial_costs"], rel=1e-9)
+
+
+def test_monthly_costs_add_up_month_by_month():
+    monthly = main.calculate(
+        main.CalcRequest(inputs=main.DEFAULT_INPUTS, tep=main.TEP_DEFAULT, rates=[])
+    )["monthly"]
+    for index in range(len(monthly["months"])):
+        assert sum(item["values"][index] for item in monthly["costs"]) == pytest.approx(
+            monthly["capex_total"][index], abs=0.5
+        )
+
+
+def test_monthly_articles_are_labelled_and_ordered():
+    monthly = main.calculate(
+        main.CalcRequest(inputs=main.DEFAULT_INPUTS, tep=main.TEP_DEFAULT, rates=[])
+    )["monthly"]
+    labels = [item["label"] for item in monthly["costs"]]
+    assert "Основное строительство, наземная часть" in labels
+    assert "Земельные правоотношения / смена ВРИ" in labels
+    assert labels.index("ИРД и согласования") < labels.index("Резерв")
+
+
+def test_cost_multiplier_scales_the_detail():
+    inputs = {**main.DEFAULT_INPUTS, "scenario_cost_multiplier": 1.1}
+    result = main.calculate(main.CalcRequest(inputs=inputs, tep=main.TEP_DEFAULT, rates=[]))
+    assert sum(item["total"] for item in result["monthly"]["costs"]) == pytest.approx(
+        result["capex"]["total"], rel=1e-9
+    )
+
+
+def test_export_has_detail_sheets():
+    wb = workbook(archive(), "Мытищи_модель.xlsx")
+    assert "Расходы помесячно" in wb.sheetnames
+    assert "Продажи помесячно" in wb.sheetnames
+
+
+def test_detail_sheet_matches_the_engine():
+    result = main.calculate(main.CalcRequest(inputs=main.DEFAULT_INPUTS, tep=main.TEP_DEFAULT, rates=[]))
+    monthly = result["monthly"]
+    zip_file = archive()
+    formulas = workbook(zip_file, "Мытищи_модель.xlsx")["Расходы помесячно"]
+    values = workbook(zip_file, "Мытищи_модель.xlsx", values=True)["Расходы помесячно"]
+    assert formulas.max_column == len(monthly["months"]) + 2
+    header = [cell.value for cell in formulas[4]]
+    assert header[2] == monthly["months"][0]
+    totals = {
+        row[0]: row[1]
+        for row in values.iter_rows(min_row=5, max_col=2, values_only=True)
+        if row[0] and row[1] is not None
+    }
+    for item in monthly["costs"]:
+        assert totals[item["label"]] == pytest.approx(item["total"] / 1e6, abs=0.01)
+    # итог по строке — формула, а не константа
+    assert str(formulas.cell(row=5, column=2).value).startswith("=SUM(C5:")
+
+
+def test_sales_detail_sheet_holds_revenue_and_volumes():
+    result = main.calculate(main.CalcRequest(inputs=main.DEFAULT_INPUTS, tep=main.TEP_DEFAULT, rates=[]))
+    values = workbook(archive(), "Мытищи_модель.xlsx", values=True)["Продажи помесячно"]
+    # «Квартиры» встречаются дважды: в блоке выручки и в блоке объёмов
+    pairs = [
+        (row[0], row[1])
+        for row in values.iter_rows(min_row=1, max_col=2, values_only=True)
+        if row[0] and row[1] is not None
+    ]
+    labels = [row[0] for row in values.iter_rows(min_row=1, max_col=1, values_only=True) if row[0]]
+    assert "Выручка" in labels and "Реализованные объёмы" in labels
+    apartments_revenue = next(item for item in result["monthly"]["revenue"] if item["key"] == "apartments")
+    apartments_volume = next(item for item in result["monthly"]["quantity"] if item["key"] == "apartments")
+    flats = [value for label, value in pairs if label == "Квартиры"]
+    assert flats[0] == pytest.approx(apartments_revenue["total"] / 1e6, abs=0.01)
+    assert flats[1] == pytest.approx(apartments_volume["total"], abs=0.01)
+
+
+def test_phase_files_carry_their_own_detail():
+    wb = workbook(archive(PHASING), "01_Очередь_О1.xlsx")
+    assert "Расходы помесячно" in wb.sheetnames
+
 
 def test_endpoint_returns_zip_attachment():
     response = main.report_model(main.ModelExportRequest(
