@@ -1,0 +1,33 @@
+name: Validate DevelopAid 0.12.42
+
+on:
+  push:
+    branches: ["agent/mo-calculator-01242"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Compile sources
+        run: python -m compileall -q .
+      - name: Validate application routes
+        run: |
+          python - <<'PY'
+          import main
+          paths = {route.path for route in main.app.routes}
+          required = {'/cadastral/route', '/cadastral/mo-tep'}
+          missing = required - paths
+          if missing:
+              raise SystemExit(f'Missing routes: {sorted(missing)}')
+          if main.app.version != '0.12.42':
+              raise SystemExit(f'Unexpected version: {main.app.version}')
+          print('DevelopAid 0.12.42 routes and version validated')
+          PY
