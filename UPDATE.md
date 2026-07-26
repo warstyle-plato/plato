@@ -44,6 +44,16 @@ if numbers and all(str(number).startswith("50:") for number in numbers):
 
 Список синонимов площади расширен ключами, которые портал начал отдавать без предупреждения: `area_value_m2`, `area_sqm`, `square`, `params_area`, `areaValue`.
 
+### Удалён стартовый хотфикс
+
+`developaid_hotfix` переписывал исходники приложения на старте регулярными выражениями: искал `main.py` по строке-маркеру и подставлял в него справку Telegram и обработку закрытия Mini App. После разделения на `main.py` и `main_legacy.py` маркер уехал, и пакет падал при каждом запуске:
+
+```
+RuntimeError: DevelopAid startup patch: main.py not found
+```
+
+Содержимое обоих патчей давно живёт в коде нативно — `_send_help`, команда `/help`, кнопка «Что умеет DevelopAid», обработка `web_app_query_id`. Пакет удалён, из `requirements.txt` убрана строка `./developaid_hotfix`.
+
 Версия приложения, `/health`, заголовок страницы, User-Agent и версия бота обновлены до `0.12.49`.
 
 # DevelopAid v0.12.48 — льгота по ВРИ и диаграммы в выгрузке модели

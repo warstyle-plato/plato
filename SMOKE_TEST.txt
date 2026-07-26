@@ -13,6 +13,9 @@ TLS: normal verification first, one insecure retry only on SSLError: OK
 Insecure retry is reported in /land/providers, switchable off by env: OK
 Ordinary network failures are not retried insecurely: OK
 EGRN area aliases widened with the portal's newer key spellings: OK
+Dead startup hotfix removed: it rewrote sources and raised on every boot: OK
+Its help/close patches already live in the code natively: OK
+Application boots clean, no startup traceback: OK
 
 DEVELOPAID v0.12.48 VRI RELIEF AND CHARTS OK
 Python syntax (main.py + main_legacy.py): OK
