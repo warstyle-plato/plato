@@ -4,21 +4,24 @@ import copy
 import ssl
 from typing import Any
 
+from fastapi import HTTPException
+
 import mo_egrn_hotfix as egrn
 
-VERSION = "0.12.50"
+VERSION = "0.12.51"
 
 
 def apply(runtime: Any) -> None:
-    """Restore the existing MO calculator as the primary flow for cadastral numbers 50:*.
+    """Use GlavAPU first for every cadastral number, including 50:*.
 
-    The NSPD client is used only to obtain cadastral data and its relaxed SSL context is
-    scoped to that client. Moscow Region numbers do not go through GlavAPU.
+    A cadastral number beginning with 50 may belong to New Moscow. Therefore the
+    prefix alone must never select Moscow Region rules. Only when GlavAPU does not
+    form a Moscow territory do we use NSPD and the existing Moscow Region TEP/VRI
+    calculator.
     """
     core = runtime.core
 
-    # Yandex Cloud test showed that NSPD is reachable, but certificate validation can
-    # fail in the VM image. Keep this exception strictly inside the NSPD opener.
+    # Keep relaxed certificate validation strictly inside the NSPD client.
     def nspd_opener():
         import http.cookiejar
         import urllib.request
@@ -32,88 +35,56 @@ def apply(runtime: Any) -> None:
 
     egrn._new_opener = nspd_opener
 
-    current_analyze = core.analyze_cadastral_territory
-
-    def analyze_without_glavapu_for_mo(req: Any) -> dict[str, Any]:
-        numbers = core._parse_cadastral_numbers(req.cadastral_numbers)
-        if not numbers or not all(str(number).startswith("50:") for number in numbers):
-            return current_analyze(req)
-
-        parcels, missing, errors = egrn._lookup_batch(numbers)
-        if not parcels:
-            detail = "Кадастровый источник не вернул площади участков Московской области."
-            if errors:
-                detail += " " + "; ".join(errors[:3])
-            from fastapi import HTTPException
-            raise HTTPException(status_code=502, detail=detail)
-
-        total_area_ha = round(sum(float(parcel["area_ha"]) for parcel in parcels), 4)
-        categories = sorted({str(parcel.get("category") or "") for parcel in parcels if parcel.get("category")})
-        uses = sorted({str(parcel.get("permitted_use") or "") for parcel in parcels if parcel.get("permitted_use")})
-        warnings = [
-            "Площади участков получены из публичных кадастровых сведений и автоматически суммированы.",
-            "ТЭП и ВРИ Московской области являются предварительными и требуют проверки по ПЗЗ и официальным документам.",
-        ]
-        if missing:
-            warnings.append("Не получены сведения по участкам: " + ", ".join(missing) + ".")
-        return {
-            "requested": numbers,
-            "recognized": [parcel["cadastral_number"] for parcel in parcels],
-            "missing": missing,
-            "parcels": parcels,
-            "territory": {
-                "parcel_count": len(parcels),
-                "area_ha": total_area_ha,
-                "site_area_ha": total_area_ha,
-                "district": "",
-                "administrative_district": "",
-                "cadastral_quarter": numbers[0].rsplit(":", 1)[0],
-                "quarter": numbers[0].rsplit(":", 1)[0],
-                "inside_moscow": False,
-                "inside_ttc": False,
-                "categories": categories,
-                "permitted_uses": uses,
-                "center": {"lat": None, "lng": None},
-            },
-            "coefficients": {},
-            "calculator_url": "",
-            "warnings": warnings,
-            "source": {
-                "service": "НСПД / публичные кадастровые сведения",
-                "engine": egrn.ENGINE,
-                "engine_version": VERSION,
-                "calculated_at": core.date.today().isoformat(),
-            },
-            "route": "moscow_region",
-        }
-
-    core.analyze_cadastral_territory = analyze_without_glavapu_for_mo
-    for route in runtime.app.routes:
-        if getattr(route, "path", None) == "/cadastral/analyze":
-            route.endpoint = analyze_without_glavapu_for_mo
-            if hasattr(route, "dependant"):
-                route.dependant.call = analyze_without_glavapu_for_mo
-
-    # The legacy core already contains the complete MO calculation and TEP review.
-    # The previous hotfix replaced this handler with a territory-only card; restore it.
+    # mo_egrn_hotfix already implements the required routing:
+    # GlavAPU first; NSPD fallback only when all numbers begin with 50:.
+    routed_analyze = core.analyze_cadastral_territory
+    standard_handler = core._telegram_handle_cadastral_numbers
     mo_handler = getattr(core, "_telegram_handle_mo_numbers", None)
-    fallback_handler = core._telegram_handle_cadastral_numbers
 
     def handle_cadastral_numbers(chat_id: int, numbers: list[str]) -> None:
-        if numbers and all(str(number).startswith("50:") for number in numbers) and callable(mo_handler):
+        all_50 = bool(numbers) and all(str(number).startswith("50:") for number in numbers)
+        if not all_50:
+            standard_handler(chat_id, numbers)
+            return
+
+        core._telegram_send_message(
+            chat_id,
+            f"<b>Проверяю {len(numbers)} участков.</b> Сначала запрашиваю ГлавАПУ, "
+            "поскольку кадастр 50: может относиться к Новой Москве. Если ГлавАПУ не сформирует "
+            "территорию Москвы, автоматически запущу расчёт ТЭП и ВРИ Московской области.",
+        )
+        try:
+            analysis = routed_analyze(core.CadastralAnalysisRequest(cadastral_numbers=numbers))
+        except HTTPException as exc:
             core._telegram_send_message(
                 chat_id,
-                f"<b>Рассчитываю ТЭП и ВРИ Московской области по {len(numbers)} участкам.</b> "
-                "Площади будут получены автоматически; ГлавАПУ не используется.",
+                "<b>Не удалось сформировать территорию.</b>\n" + core.html.escape(str(exc.detail)),
+            )
+            return
+        except Exception as exc:
+            core._telegram_send_message(
+                chat_id,
+                "<b>Не удалось сформировать территорию.</b>\nВнутренняя ошибка: "
+                + core.html.escape(f"{type(exc).__name__}: {exc}"),
+            )
+            return
+
+        if analysis.get("route") == "moscow_region" and callable(mo_handler):
+            core._telegram_send_message(
+                chat_id,
+                "<b>ГлавАПУ не подтвердил территорию Москвы.</b> "
+                "Запускаю расчёт ТЭП и ВРИ Московской области.",
             )
             mo_handler(chat_id, numbers)
             return
-        fallback_handler(chat_id, numbers)
+
+        # ГлавАПУ found the territory, including any New Moscow parcel. Use the
+        # normal Moscow flow and its official TEP without applying MO rules.
+        standard_handler(chat_id, numbers)
 
     core._telegram_handle_cadastral_numbers = handle_cadastral_numbers
 
-    # For the MO TEP card, make the action explicit: it applies the calculated values
-    # to Inputs and TEP when the mini-app opens with the generated manual session.
+    # Make the MO action explicit in the review card.
     original_review = getattr(core, "_telegram_send_tep_review", None)
     if callable(original_review):
         def send_tep_review(chat_id: int, parsed: dict[str, Any], *, dialog_mode: bool) -> None:
