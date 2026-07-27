@@ -1,3 +1,14 @@
+DEVELOPAID v0.12.56 SOURCES BACK, 0.12.55 MERGED IN OK
+Python syntax (main.py + main_legacy.py): OK
+tests/ — 272 passed (3 new)
+Base64 payload on main unpacked and compared: identical to our main.py: OK
+exec() wrapper and the runtime patch module removed: OK
+Bank-budget fix ported: nothing lands on the bridge when the bank is out: OK
+  same enforced for explicitly set shares: OK
+Default obligation date moved to a month before the permit, flagged estimated: OK
+Wording about the expert estimate carried into the fields and the VRI tab: OK
+Unified cadastral input, live model export and the ZU fill come with it: OK
+
 DEVELOPAID v0.12.53 LAND SHEET FILLED OK
 Python syntax (main.py + main_legacy.py): OK
 tests/ — 269 passed (3 new on the land sheet)

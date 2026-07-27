@@ -25,7 +25,9 @@ AMOUNT = 3_000_000_000.0
 
 
 def settings(**overrides) -> dict:
-    return {"rate_start_pct": 12.0, **overrides}
+    # Механика графика проверяется от даты РнС: режим по умолчанию сдвигает
+    # обязательство на месяц раньше и проверяется отдельно.
+    return {"rate_start_pct": 12.0, "vri_obligation_date_mode": "at_rns", **overrides}
 
 
 def schedule(**overrides) -> dict:
@@ -35,6 +37,7 @@ def schedule(**overrides) -> dict:
 def model(**overrides) -> dict:
     x = copy.deepcopy(main.DEFAULT_INPUTS)
     x["land_rights_cost_mln"] = AMOUNT / 1_000_000
+    x["vri_obligation_date_mode"] = "at_rns"
     x.update(overrides)
     return main.calculate(main.CalcRequest(inputs=x, tep=main.TEP_DEFAULT, rates=[]))
 
@@ -278,6 +281,7 @@ def test_report_carries_the_vri_block():
 def phased(**overrides) -> dict:
     x = copy.deepcopy(main.DEFAULT_INPUTS)
     x["land_rights_cost_mln"] = AMOUNT / 1_000_000
+    x["vri_obligation_date_mode"] = "at_rns"
     x.update(overrides)
     phasing = {
         "enabled": True,
@@ -382,7 +386,7 @@ def test_relief_is_not_applied_twice_across_phases():
 
 def test_obligation_date_modes():
     base = {"project_start": "2027-01-01"}
-    assert main.vri_obligation_date(base, PERMIT)[0] == PERMIT
+    assert main.vri_obligation_date({**base, "vri_obligation_date_mode": "at_rns"}, PERMIT)[0] == PERMIT
     assert main.vri_obligation_date({**base, "vri_obligation_date_mode": "before_rns_1m"}, PERMIT)[0] == date(2028, 6, 1)
     assert main.vri_obligation_date({**base, "vri_obligation_date_mode": "before_rns_3m"}, PERMIT)[0] == date(2028, 4, 1)
     assert main.vri_obligation_date(
@@ -475,3 +479,31 @@ def test_tab_and_report_render_from_one_place():
     assert "function vriScheduleRows(rows)" in page
     for element in ("vriTabTotals", "vriTabSchedule", "vriTotalsTable", "vriScheduleTable"):
         assert f'id="{element}"' in page
+
+
+def test_default_obligation_date_is_a_month_before_the_permit():
+    """Соглашение о смене ВРИ подписывается до РнС, а точная дата на этапе
+    инвестиционного анализа обычно неизвестна — отсюда экспертная оценка."""
+    when, basis, estimated = main.vri_obligation_date({}, PERMIT)
+    assert when == date(2028, 6, 1)
+    assert estimated is True
+    assert "за месяц до РнС" in basis
+    assert main.DEFAULT_INPUTS["vri_obligation_date_mode"] == "before_rns_1m"
+
+
+def test_outside_the_bank_budget_nothing_lands_on_the_bridge():
+    """БРИДЖ — тоже банковские деньги: если банк ВРИ не финансирует, платёж
+    до открытия ПФ не может лечь на бридж."""
+    result = schedule(vri_obligation_date="2027-01-01", vri_in_bank_budget=False)
+    assert result["rows"][0]["before_pf"] is True
+    assert result["totals"]["bridge"] == 0.0
+    assert result["totals"]["equity"] == pytest.approx(AMOUNT)
+
+
+def test_shares_are_overridden_when_the_bank_does_not_fund_vri():
+    result = schedule(vri_in_bank_budget=False, vri_financing_mode="shares",
+                      vri_share_bridge_pct=50, vri_share_pf_pct=30, vri_share_equity_pct=20)
+    totals = result["totals"]
+    assert totals["bridge"] == 0.0
+    assert totals["pf"] == 0.0
+    assert totals["equity"] == pytest.approx(AMOUNT)
