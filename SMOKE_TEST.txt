@@ -1,3 +1,13 @@
+DEVELOPAID v0.12.61 REGION PARAMETERS RECALCULATE OK
+Python syntax (main.py + main_legacy.py): OK
+Page JavaScript syntax (node --check): OK
+tests/ — 288 passed (3 new)
+Density edit recalculates: 16.1729 ha at 10 000 gives 161 729 sqm: OK
+Flat size, Ksr, Kd and district change all recalculate too: OK
+Manual override checkboxes recalculate on both switch directions: OK
+Recalculation reuses the stored query, no repeat EGRN lookup: OK
+Browser check on mocked network: four calls for four edits, no errors: OK
+
 DEVELOPAID v0.12.60 PROFITABILITY COEFFICIENT FROM DECREE 1745 OK
 Python syntax (main.py + main_legacy.py): OK
 Page JavaScript syntax (node --check): OK

@@ -154,3 +154,28 @@ def test_kd_field_is_read_only_with_an_explicit_override():
     assert 'id="moKdManual"' in page
     assert "function syncMoKd()" in page
     assert "(document.getElementById('moKdManual')||{}).checked" in page
+
+
+# --- параметры пересчитывают результат --------------------------------------
+
+def test_parameters_trigger_a_recalculation():
+    """Правка плотности или коэффициента должна пересчитывать готовый расчёт,
+    а не ждать повторного нажатия «Получить ТЭП»."""
+    page = main.PAGE
+    assert "function recalcMo()" in page
+    assert "function bindMoParams()" in page
+    # Все параметры блока подписаны на пересчёт.
+    assert "['moDensity','moArea','moFlat','moPrice','moKd'].forEach" in page
+    # Смена округа тоже.
+    assert "select.onchange=()=>{syncMoPrice();syncMoKd();recalcMo()};" in page
+
+
+def test_recalculation_reuses_the_stored_query():
+    """Повторно спрашивать ЕГРН и маршрутизировать территорию не нужно."""
+    page = main.PAGE
+    assert "moLastQuery=query;" in page
+    assert "calculateMo(moLastQuery)" in page
+
+
+def test_parameter_block_says_that_edits_recalculate():
+    assert "Правка любого параметра сразу пересчитывает результат" in main.PAGE
