@@ -73,3 +73,33 @@ def test_explicit_price_still_wins_over_the_reference():
         site_area_ha=6.6667, district="Мытищи", market_price_rub_per_sqm=300000
     ))
     assert result["vri"]["market_price_rub_per_sqm"] == pytest.approx(300000.0)
+
+
+# --- Кср определяется округом, а не вводится руками -------------------------
+
+def test_reference_carries_ksr_for_every_district():
+    """Интерфейс должен показать Кср сразу при выборе округа, без расчёта."""
+    districts = main.mo_reference()["districts"]
+    assert len(districts) == 60
+    assert all(item["market_price_rub_per_sqm"] for item in districts)
+    by_name = {item["name"]: item for item in districts}
+    assert by_name["Городской округ Мытищи"]["market_price_rub_per_sqm"] == pytest.approx(238052.0)
+    assert by_name["Богородский городской округ"]["market_price_rub_per_sqm"] == pytest.approx(131783.0)
+    assert by_name["Городской округ Серебряные Пруды"]["market_price_rub_per_sqm"] == pytest.approx(77041.0)
+
+
+def test_district_without_a_decree_row_falls_back_to_the_region_average():
+    prices = {item["name"]: item for item in main.mo_reference()["districts"]}
+    region = [item for item in prices.values() if item["market_price_basis"] != "округ"]
+    for item in region:
+        assert item["market_price_rub_per_sqm"] == pytest.approx(198907.0)
+
+
+def test_ksr_field_is_read_only_with_an_explicit_override():
+    page = main.PAGE
+    assert 'id="moPrice" value="" step="1000" readonly' in page
+    assert 'id="moPriceManual"' in page
+    assert "function syncMoPrice()" in page
+    assert "function toggleMoPrice()" in page
+    # В расчёт цена уходит только когда её задали руками.
+    assert "(document.getElementById('moPriceManual')||{}).checked" in page

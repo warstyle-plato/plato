@@ -1,3 +1,16 @@
+DEVELOPAID v0.12.57 KSR COMES FROM THE DISTRICT OK
+Python syntax (main.py + main_legacy.py): OK
+Page JavaScript syntax (node --check): OK
+tests/ — 275 passed (3 new on the Ksr field)
+/mo/reference now carries Ksr and its basis for all 60 districts: OK
+Mytishchi 238 052, Bogorodsky 131 783, Serebryanye Prudy 77 041: OK
+Districts missing from the decree fall back to the region average 198 907: OK
+Ksr field is read-only and fills the moment a district is picked: OK
+Caption states the basis: by district, region average, or entered by hand: OK
+Manual override behind a checkbox, survives a district change: OK
+Unchecking it restores the reference value: OK
+Price is sent to the server only when entered by hand: OK
+
 DEVELOPAID v0.12.56 SOURCES BACK, 0.12.55 MERGED IN OK
 Python syntax (main.py + main_legacy.py): OK
 tests/ — 272 passed (3 new)
