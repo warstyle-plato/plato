@@ -179,3 +179,54 @@ def test_recalculation_reuses_the_stored_query():
 
 def test_parameter_block_says_that_edits_recalculate():
     assert "Правка любого параметра сразу пересчитывает результат" in main.PAGE
+
+
+# --- сколько участков берётся в расчёт --------------------------------------
+
+NUMBERS_22 = [
+    "50:12:0100131:%d" % n for n in (
+        497, 492, 227, 146, 254, 255, 29, 49, 56, 60, 67,
+        68, 54, 65, 59, 14, 58, 55, 258, 259, 46, 495,
+    )
+]
+
+
+@pytest.fixture
+def fake_nspd(monkeypatch):
+    """Каждый номер отвечает участком в 10 181,8 м² — вместе ровно 22,4 га."""
+    monkeypatch.setattr(
+        main, "_nspd_search_features",
+        lambda number: [{"properties": {"cad_num": number, "land_record_area": 10181.8}}],
+    )
+
+
+def test_all_twenty_two_parcels_are_taken(fake_nspd):
+    parcels, warnings = main._mo_parcels_from_query("\n".join(NUMBERS_22), 30)
+    assert len(parcels) == 22
+    assert sum(item["area_sqm"] for item in parcels) / 10000 == pytest.approx(22.4, abs=0.001)
+    assert not any("первые" in text for text in warnings)
+
+
+def test_truncation_is_never_silent(fake_nspd):
+    """Обрезка занижает площадь и всё, что от неё считается."""
+    parcels, warnings = main._mo_parcels_from_query("\n".join(NUMBERS_22), 10)
+    assert len(parcels) == 10
+    message = next(text for text in warnings if "первые" in text)
+    assert "22" in message and "10" in message
+    assert "занижены" in message
+
+
+def test_default_limit_matches_what_the_page_promises():
+    # Страница обещает до 30 участков за запрос.
+    assert main._LAND_LOOKUP_MAX_RESULTS == 30
+    assert main.MoCalculateRequest().limit == 30
+    assert "limit:30" in main.PAGE
+
+
+def test_numbers_are_looked_up_in_parallel_without_losing_order(fake_nspd, monkeypatch):
+    parallel = main._land_lookup_by_numbers(NUMBERS_22)
+    monkeypatch.setattr(main, "_LAND_LOOKUP_WORKERS", 1)
+    sequential = main._land_lookup_by_numbers(NUMBERS_22)
+    assert [item["cadastral_number"] for item in parallel] == NUMBERS_22
+    assert [item["cadastral_number"] for item in parallel] == \
+           [item["cadastral_number"] for item in sequential]

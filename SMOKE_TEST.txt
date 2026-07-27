@@ -1,3 +1,13 @@
+DEVELOPAID v0.12.62 ALL PARCELS, NOT THE FIRST TEN OK
+Python syntax (main.py + main_legacy.py): OK
+tests/ — 292 passed (4 new)
+22 cadastral numbers give 22.4 ha, previously 10 numbers and 16 ha: OK
+Limit raised from 10 to 30, matching what the page promises: OK
+Region block asks for 30 explicitly: OK
+Truncation now warns and says the area is understated: OK
+Lookups run three at a time, order preserved, same result as sequential: OK
+Limit and worker count configurable by environment: OK
+
 DEVELOPAID v0.12.61 REGION PARAMETERS RECALCULATE OK
 Python syntax (main.py + main_legacy.py): OK
 Page JavaScript syntax (node --check): OK
