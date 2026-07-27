@@ -1,3 +1,13 @@
+DEVELOPAID v0.12.59 STEP-BY-STEP BOT HELP OK
+Python syntax (main.py + main_legacy.py): OK
+tests/ — 279 passed (3 new on the help text)
+Help names all three cases: Moscow, Moscow Region, other region: OK
+Each case states the method: GlavAPU, RNGP MO plus decree 114-R, expert entry: OK
+New Moscow explained: a 50:* number does not mean the region: OK
+Five numbered steps from sending a parcel to asking Platon: OK
+Archive explained: 00 recalculates on input change, 90 does not: OK
+Short «Что умеет DevelopAid» card names the three cases and points to /help: OK
+
 DEVELOPAID v0.12.58 FIRST MONTHS OF THE VRI INSTALLMENT OK
 Python syntax (main.py + main_legacy.py): OK
 tests/ — 276 passed (1 new)

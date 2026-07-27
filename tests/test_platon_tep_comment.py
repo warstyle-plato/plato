@@ -266,3 +266,40 @@ def test_land_lookup_endpoint_is_available_through_wrapper():
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+# --- инструкция бота --------------------------------------------------------
+
+def test_help_explains_all_three_territory_cases(monkeypatch):
+    sent = []
+    monkeypatch.setattr(wrapper, "_send_message", lambda chat_id, text, **kw: sent.append(text))
+    wrapper._send_help(1)
+    text = sent[0]
+    # Три случая названы и разведены по методикам.
+    assert "<b>Москва</b> — считает калькулятор нормативных ТЭП ГлавАПУ" in text
+    assert "<b>Московская область</b> — считает формула из нормативных документов" in text
+    assert "<b>Другой регион</b> — экспертная оценка" in text
+    # Новая Москва объяснена отдельно: кадастр 50:* не означает область.
+    assert "Троицкий и Новомосковский" in text
+    assert "114-Р" in text
+    # Шаги пронумерованы.
+    for step in ("Шаг 1", "Шаг 2", "Шаг 3", "Шаг 4", "Шаг 5"):
+        assert step in text
+
+
+def test_help_tells_what_arrives_in_the_archive(monkeypatch):
+    sent = []
+    monkeypatch.setattr(wrapper, "_send_message", lambda chat_id, text, **kw: sent.append(text))
+    wrapper._send_help(1)
+    text = sent[0]
+    assert "00_Модель" in text and "90_Детализация" in text
+    assert "правка вводной пересчитывает весь расчёт" in text
+
+
+def test_short_help_names_the_three_cases():
+    """Кнопка «Что умеет DevelopAid» тоже разводит три случая."""
+    source = (Path(__file__).resolve().parent.parent / "main_legacy.py").read_text(encoding="utf-8")
+    assert "нормативные ТЭП" in source and "калькулятору ГлавАПУ" in source
+    assert "Московская область" in source and "114-Р" in source
+    assert "другой регион" in source and "экспертно" in source
+    assert "команда /help" in source
