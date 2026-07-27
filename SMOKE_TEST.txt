@@ -1,3 +1,12 @@
+DEVELOPAID v0.12.58 FIRST MONTHS OF THE VRI INSTALLMENT OK
+Python syntax (main.py + main_legacy.py): OK
+tests/ — 276 passed (1 new)
+D65 was a static link dropping the whole payment into month one: replaced: OK
+E65, D66 and E66 were empty: filled from the pattern used from column F: OK
+Lump sum now lands on the obligation month, not on the first model month: OK
+Interest accrues from the first month of the window: OK
+Formula count 113 709: two replaced by dates, three added: OK
+
 DEVELOPAID v0.12.57 KSR COMES FROM THE DISTRICT OK
 Python syntax (main.py + main_legacy.py): OK
 Page JavaScript syntax (node --check): OK

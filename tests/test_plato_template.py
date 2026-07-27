@@ -60,9 +60,9 @@ def test_every_mapped_field_is_found(filled):
 
 def test_formulas_are_not_touched(filled):
     content, _, _ = filled
-    # Заменяются ровно две формулы листа «ЗУ»: окно платежей по ВРИ, где в
-    # шаблоне «Последний» равен «Первому» и рассрочка не раскрывается.
-    assert count_formulas(io.BytesIO(content)) == count_formulas(str(TEMPLATE)) - 2
+    # Баланс по листу «ЗУ»: две формулы окна платежей заменены датами,
+    # три недостающие формулы первых месяцев рассрочки достроены.
+    assert count_formulas(io.BytesIO(content)) == count_formulas(str(TEMPLATE)) - 2 + 3
 
 
 def test_land_sheet_gets_the_vri_installment_window(filled):
@@ -271,3 +271,16 @@ def test_plato_archive_has_no_vri_book_when_vri_is_switched_off():
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+def test_first_two_columns_of_the_vri_installment_are_repaired(filled):
+    """В шаблоне D65 задан статикой и роняет всю плату в первый месяц модели,
+    а D66/E66 пустые — проценты первых двух месяцев не начисляются."""
+    _, _, workbook = filled
+    sheet = workbook["ЗУ"]
+    assert sheet["D65"].value == "=IF(D19=$C$63,$C$60,0)"
+    assert sheet["E65"].value == "=IF(E19=$C$63,$C$60-SUM($D64:D64),0)"
+    assert sheet["D66"].value == "=IF(D19>=$C$62,$C$60*D61/12,0)"
+    assert sheet["E66"].value.startswith("=IF(E19>=$C$62,($C$60-SUM($D64:D65))*E61/12")
+    # Статическая ссылка на лист ТЭП убрана.
+    assert "Расчет ВРИ (ТЭП)'!D73" not in str(sheet["D65"].value)
