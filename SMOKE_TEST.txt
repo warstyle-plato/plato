@@ -1,3 +1,12 @@
+DEVELOPAID v0.12.63 ADDRESS SEARCH RETURNS THE PARCEL OK
+Python syntax (main.py + main_legacy.py): OK
+tests/ — 296 passed (4 new)
+Premises split from buildings: flats and parking are their own kind: OK
+Address and point search hide premises, land first then buildings: OK
+Hidden count reported in the response and explained in a warning: OK
+A premise asked for by its cadastral number is never hidden: OK
+include_premises brings them back when they are actually wanted: OK
+
 DEVELOPAID v0.12.62 ALL PARCELS, NOT THE FIRST TEN OK
 Python syntax (main.py + main_legacy.py): OK
 tests/ — 292 passed (4 new)

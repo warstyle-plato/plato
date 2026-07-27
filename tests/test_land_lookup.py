@@ -474,3 +474,57 @@ def test_plain_network_failure_is_not_retried_insecurely():
     finally:
         main.urllib.request.urlopen = original
         main._nspd_tls_insecure = was_insecure
+
+
+# --- помещения в поиске по адресу -------------------------------------------
+
+def feature(number: str, label: str, area: float) -> dict:
+    return {"properties": {"cad_num": number, "categoryName": label, "land_record_area": area}}
+
+
+ADDRESS_FEATURES = [
+    feature("50:12:0100131:497", "Земельные участки", 10181.8),
+    feature("50:12:0100131:1001", "Помещения", 62.5),
+    feature("50:12:0100131:1002", "Помещения", 13.2),
+    feature("50:12:0100131:900", "Здания", 4200.0),
+]
+
+
+def test_premises_are_classified_apart_from_buildings():
+    kinds = {
+        item["cadastral_number"]: item["kind"]
+        for item in (main._normalize_nspd_feature(f) for f in ADDRESS_FEATURES)
+    }
+    assert kinds["50:12:0100131:497"] == "land"
+    assert kinds["50:12:0100131:1001"] == "premise"
+    assert kinds["50:12:0100131:900"] == "building"
+
+
+def test_address_search_hides_flats_and_parking(monkeypatch):
+    """По адресу в ЕГРН стоят сотни помещений, а нужен участок."""
+    monkeypatch.setattr(main, "_nspd_search_features", lambda query: ADDRESS_FEATURES)
+    result = main.land_lookup(main.LandLookupRequest(query="Мытищи, улица Мира, 1"))
+    kinds = [item["kind"] for item in result["results"]]
+    assert kinds == ["land", "building"]
+    assert result["hidden_premises"] == 2
+    assert any("помещений" in text and "скрыты" in text for text in result["warnings"])
+
+
+def test_hidden_premises_can_be_asked_for(monkeypatch):
+    monkeypatch.setattr(main, "_nspd_search_features", lambda query: ADDRESS_FEATURES)
+    result = main.land_lookup(main.LandLookupRequest(
+        query="Мытищи, улица Мира, 1", include_premises=True
+    ))
+    assert len(result["results"]) == 4
+    assert result["hidden_premises"] == 2
+
+
+def test_a_premise_asked_by_its_number_is_never_hidden(monkeypatch):
+    """Спросили квартиру по кадастровому номеру — обязаны её показать."""
+    monkeypatch.setattr(main, "_nspd_search_features", lambda query: [
+        {"properties": {"cad_num": "50:12:0100131:1001", "categoryName": "Помещения",
+                        "build_record_area": 62.5}}
+    ])
+    result = main.land_lookup(main.LandLookupRequest(query="50:12:0100131:1001"))
+    assert [item["kind"] for item in result["results"]] == ["premise"]
+    assert result["hidden_premises"] == 0
