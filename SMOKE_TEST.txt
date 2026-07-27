@@ -1,3 +1,17 @@
+DEVELOPAID v0.12.60 PROFITABILITY COEFFICIENT FROM DECREE 1745 OK
+Python syntax (main.py + main_legacy.py): OK
+Page JavaScript syntax (node --check): OK
+tests/ — 285 passed (6 new on Kd)
+Table 3 of decree 1745 read into data/mo_vri_kd.csv: 56 municipalities: OK
+Three groups: 10 percent, 5 percent, 1 percent: OK
+Mytishchi 10 percent matches the customer sample that used 0.1: OK
+Same 6.67 ha parcel: 4 761.1 / 1 272.6 / 263.6 mln by group: OK
+Four districts absent from the table are not guessed, warning raised: OK
+/mo/reference exposes Kd and its basis per district: OK
+Field is read-only, fills on district choice, states the percent and source: OK
+Manual override behind a checkbox, sent to the server only when set: OK
+Explicit Kd wins over the table: OK
+
 DEVELOPAID v0.12.59 STEP-BY-STEP BOT HELP OK
 Python syntax (main.py + main_legacy.py): OK
 tests/ — 279 passed (3 new on the help text)

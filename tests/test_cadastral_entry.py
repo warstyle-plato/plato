@@ -103,3 +103,54 @@ def test_ksr_field_is_read_only_with_an_explicit_override():
     assert "function toggleMoPrice()" in page
     # В расчёт цена уходит только когда её задали руками.
     assert "(document.getElementById('moPriceManual')||{}).checked" in page
+
+
+# --- коэффициент доходности Кд ---------------------------------------------
+
+def test_kd_comes_from_table_3_of_decree_1745():
+    """Три группы округов: 10, 5 и 1 процент."""
+    assert main._mo_vri_kd_for("Городской округ Мытищи")[0] == pytest.approx(0.10)
+    assert main._mo_vri_kd_for("Городской округ Восход (ЗАТО)")[0] == pytest.approx(0.05)
+    assert main._mo_vri_kd_for("Богородский городской округ")[0] == pytest.approx(0.01)
+    assert main._mo_vri_kd_table()["values"].__len__() == 56
+
+
+def test_kd_reference_is_exposed_per_district():
+    districts = {item["name"]: item for item in main.mo_reference()["districts"]}
+    assert districts["Городской округ Химки"]["vri_kd"] == pytest.approx(0.10)
+    assert districts["Городской округ Истра"]["vri_kd"] == pytest.approx(0.05)
+    assert districts["Городской округ Шатура"]["vri_kd"] == pytest.approx(0.01)
+    assert "1745" in main.mo_reference()["vri_kd"]["document"]
+
+
+def test_district_missing_from_table_3_is_not_guessed():
+    """Подставлять чужую группу нельзя: Кд умножает плату на миллиарды."""
+    kd, _document, basis = main._mo_vri_kd_for("Городской округ Пущино")
+    assert kd is None
+    assert basis == "округа нет в таблице 3"
+    result = main.mo_calculate(main.MoCalculateRequest(site_area_ha=6.6667, district="Пущино"))
+    assert any("1745" in text for text in result["warnings"])
+    assert result["vri"]["kd_basis"] == "округа нет в таблице 3"
+
+
+def test_kd_changes_the_payment():
+    mytishchi = main.mo_calculate(main.MoCalculateRequest(site_area_ha=6.6667, district="Мытищи"))
+    voskhod = main.mo_calculate(main.MoCalculateRequest(site_area_ha=6.6667, district="Восход"))
+    assert mytishchi["vri"]["kd"] == pytest.approx(0.10)
+    assert voskhod["vri"]["kd"] == pytest.approx(0.05)
+
+
+def test_explicit_kd_wins_over_the_table():
+    result = main.mo_calculate(main.MoCalculateRequest(
+        site_area_ha=6.6667, district="Мытищи", vri_kd=0.03
+    ))
+    assert result["vri"]["kd"] == pytest.approx(0.03)
+    assert result["vri"]["kd_basis"] == "задан вручную"
+
+
+def test_kd_field_is_read_only_with_an_explicit_override():
+    page = main.PAGE
+    assert 'id="moKd" value="" step="0.01" readonly' in page
+    assert 'id="moKdManual"' in page
+    assert "function syncMoKd()" in page
+    assert "(document.getElementById('moKdManual')||{}).checked" in page
