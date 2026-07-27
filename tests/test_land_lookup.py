@@ -205,9 +205,14 @@ def test_address_found_directly_in_nspd(monkeypatch):
     monkeypatch.setattr(main, "_nspd_search_features", lambda query: [BUILDING_FEATURE, MYTISHCHI_FEATURE])
     result = main.land_lookup(main.LandLookupRequest(query="Мытищи, улица Мира, 1"))
     assert result["mode"] == "address"
-    # земельные участки показываются раньше ОКС
-    assert result["results"][0]["kind"] == "land"
-    assert result["results"][1]["kind"] == "building"
+    # По адресу остаются только земельные участки, ОКС уходит в скрытые.
+    assert [item["kind"] for item in result["results"]] == ["land"]
+    assert result["hidden"] == {"building": 1}
+    # Со снятым фильтром возвращаются оба, участок по-прежнему первым.
+    both = main.land_lookup(main.LandLookupRequest(
+        query="Мытищи, улица Мира, 1", include_premises=True
+    ))
+    assert [item["kind"] for item in both["results"]] == ["land", "building"]
 
 
 def test_address_falls_back_to_geocoder_and_point_search(monkeypatch):
@@ -504,10 +509,10 @@ def test_address_search_hides_flats_and_parking(monkeypatch):
     """По адресу в ЕГРН стоят сотни помещений, а нужен участок."""
     monkeypatch.setattr(main, "_nspd_search_features", lambda query: ADDRESS_FEATURES)
     result = main.land_lookup(main.LandLookupRequest(query="Мытищи, улица Мира, 1"))
-    kinds = [item["kind"] for item in result["results"]]
-    assert kinds == ["land", "building"]
-    assert result["hidden_premises"] == 2
-    assert any("помещений" in text and "скрыты" in text for text in result["warnings"])
+    assert [item["kind"] for item in result["results"]] == ["land"]
+    assert result["hidden"] == {"premise": 2, "building": 1}
+    assert result["hidden_count"] == 3
+    assert any("Показаны только земельные участки" in text for text in result["warnings"])
 
 
 def test_hidden_premises_can_be_asked_for(monkeypatch):
@@ -516,7 +521,7 @@ def test_hidden_premises_can_be_asked_for(monkeypatch):
         query="Мытищи, улица Мира, 1", include_premises=True
     ))
     assert len(result["results"]) == 4
-    assert result["hidden_premises"] == 2
+    assert result["hidden"] == {}
 
 
 def test_a_premise_asked_by_its_number_is_never_hidden(monkeypatch):
@@ -527,4 +532,33 @@ def test_a_premise_asked_by_its_number_is_never_hidden(monkeypatch):
     ])
     result = main.land_lookup(main.LandLookupRequest(query="50:12:0100131:1001"))
     assert [item["kind"] for item in result["results"]] == ["premise"]
-    assert result["hidden_premises"] == 0
+    assert result["hidden"] == {}
+
+
+def test_unknown_category_is_not_taken_for_a_parcel():
+    """Незнакомая категория не должна попадать в площадь территории."""
+    kind = main._nspd_object_kind(
+        {"properties": {"categoryName": "Что-то новое от НСПД"}},
+        {"land_record_area": 100.0},
+    )
+    assert kind == "other"
+
+
+@pytest.mark.parametrize("label, expected", [
+    ("Земельные участки", "land"),
+    ("Земельный участок", "land"),
+    ("Помещения", "premise"),
+    ("Машино-места", "premise"),
+    ("Квартиры", "premise"),
+    ("Здания", "building"),
+    ("Сооружения", "building"),
+    ("Объекты незавершённого строительства", "building"),
+    ("Единый недвижимый комплекс", "building"),
+])
+def test_category_label_decides_the_kind(label, expected):
+    assert main._nspd_object_kind({"properties": {"categoryName": label}}, {}) == expected
+
+
+def test_fields_decide_only_when_there_is_no_label():
+    assert main._nspd_object_kind({"properties": {}}, {"land_record_area": 100.0}) == "land"
+    assert main._nspd_object_kind({"properties": {}}, {"build_record_area": 100.0}) == "building"

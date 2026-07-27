@@ -1,3 +1,13 @@
+DEVELOPAID v0.12.64 PARCEL IDENTIFIED POSITIVELY OK
+Python syntax (main.py + main_legacy.py): OK
+tests/ — 307 passed (11 new on classification)
+Land recognised by its own category words, not by excluding others: OK
+Unknown category no longer falls through into land: OK
+  incomplete construction and property complexes no longer inflate the area: OK
+Category label decides the kind; fields decide only when there is no label: OK
+Address and point search keep parcels only, hidden counted by kind: OK
+Cadastral-number search applies no filter at all: OK
+
 DEVELOPAID v0.12.63 ADDRESS SEARCH RETURNS THE PARCEL OK
 Python syntax (main.py + main_legacy.py): OK
 tests/ — 296 passed (4 new)
