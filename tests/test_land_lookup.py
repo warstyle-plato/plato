@@ -562,3 +562,13 @@ def test_category_label_decides_the_kind(label, expected):
 def test_fields_decide_only_when_there_is_no_label():
     assert main._nspd_object_kind({"properties": {}}, {"land_record_area": 100.0}) == "land"
     assert main._nspd_object_kind({"properties": {}}, {"build_record_area": 100.0}) == "building"
+
+
+def test_no_hidden_limit_of_five_or_ten_anywhere():
+    """Лимиты расходились: карточка ЕГРН слала 5, эндпоинт МО по умолчанию 10.
+    Страница обещает до 30 участков — столько и должно браться везде."""
+    assert main._LAND_LOOKUP_MAX_RESULTS == 30
+    assert main.LandLookupRequest().limit == 30
+    assert main.MoCalculateRequest().limit == 30
+    assert "limit:5" not in main.PAGE
+    assert main.PAGE.count("limit:30") >= 2

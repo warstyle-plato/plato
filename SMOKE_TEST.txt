@@ -1,3 +1,12 @@
+DEVELOPAID v0.12.65 ONE PARCEL LIMIT EVERYWHERE OK
+Python syntax (main.py + main_legacy.py): OK
+Page JavaScript syntax (node --check): OK
+tests/ — 309 passed (2 new)
+EGRN card no longer sends limit:5; address resolution not capped at five: OK
+LandLookupRequest and MoCalculateRequest both default to 30: OK
+Guard test fails if limit:5 reappears or the defaults diverge: OK
+Status line reports parcels taken against parcels asked for: OK
+
 DEVELOPAID v0.12.64 PARCEL IDENTIFIED POSITIVELY OK
 Python syntax (main.py + main_legacy.py): OK
 tests/ — 307 passed (11 new on classification)

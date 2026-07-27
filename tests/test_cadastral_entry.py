@@ -230,3 +230,11 @@ def test_numbers_are_looked_up_in_parallel_without_losing_order(fake_nspd, monke
     assert [item["cadastral_number"] for item in parallel] == NUMBERS_22
     assert [item["cadastral_number"] for item in parallel] == \
            [item["cadastral_number"] for item in sequential]
+
+
+def test_status_line_shows_how_many_parcels_were_taken():
+    """Сколько участков реально ушло в расчёт — видно в строке статуса,
+    а не только в предупреждениях."""
+    page = main.PAGE
+    assert "участков в расчёте: " in page
+    assert "const parcels=((data.vri||{}).parcels||[]).length;" in page
