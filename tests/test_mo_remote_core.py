@@ -1,0 +1,221 @@
+"""Бот считает Подмосковье через ядро, а не сам.
+
+На Render нет доступа к nspd.gov.ru, поэтому локальный расчёт там дал бы ТЭП
+без данных ЕГРН — молча неверные. Бот отправляет исходный текст пользователя
+в ядро на MO_CALC_API_URL и только раскладывает ответ по сообщениям; методики
+расчёта в коде бота нет.
+Запуск: python3 -m pytest tests -q
+"""
+
+from __future__ import annotations
+
+import io
+import json
+import socket
+import sys
+import urllib.error
+from pathlib import Path
+
+import pytest
+from fastapi import HTTPException
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import main as _wrapper  # noqa: E402
+
+main = _wrapper.core
+
+ADDRESS = "Московская область, Мытищи, Олимпийский проспект, 29"
+ONE_NUMBER = "50:12:0100131:259"
+TWENTY_TWO = ", ".join(f"50:12:0100131:{n}" for n in range(200, 222))
+
+
+class Recorder:
+    """Подменяет и запрос к ядру, и отправку в Telegram."""
+
+    def __init__(self, response=None, error=None):
+        self.response = response or {}
+        self.error = error
+        self.requests: list[dict] = []
+        self.messages: list[str] = []
+
+    def core(self, query, limit=30):
+        self.requests.append({"query": query, "limit": limit})
+        if self.error:
+            raise self.error
+        return self.response
+
+    def send(self, chat_id, text, **kwargs):
+        self.messages.append(text)
+        return {"ok": True}
+
+
+def sample_response(parcel_count: int) -> dict:
+    return {
+        "territory": {
+            "site_area_ha": 22.423, "parcel_count": parcel_count,
+            "district": "Городской округ Мытищи", "quarter": "50:12:0100131",
+        },
+        "density_sqm_per_ha": 30000.0,
+        "social": {
+            "apartments_sqm": 672690.0, "population": 24025,
+            "kindergarten": {"places": 1562, "gba_sqm": 42174.0},
+            "school": {"places": 3250, "gba_sqm": 87750.0},
+            "clinic": {"capacity": 427, "gba_sqm": 6405.0},
+            "parking": {"permanent_spaces": 7698},
+        },
+        "upks": {"source": {"land": {"report": "Отчёт № 01/2022"},
+                            "oks": {"report": "Отчёт № 01/2023"}}},
+        "vri": {
+            "payment_used_rub": 16_013_519_988.0,
+            "payment_basis": "прямая формула Кср × площадь квартир × Кд",
+            "market_price_document": "Распоряжение Комитета по ценам и тарифам МО",
+            "market_price_period": "III, IV кварталы 2026 года",
+            "kd_document": "Постановление Правительства МО от 19.12.2025 № 1745",
+            "warnings": ["Участки ЕГРН не заданы"],
+        },
+        "warnings": ["Кср взят из распоряжения о средней рыночной стоимости"],
+        "inputs": {"land_rights_cost_mln": 16013.52},
+    }
+
+
+@pytest.fixture
+def bot(monkeypatch):
+    def make(response=None, error=None):
+        rec = Recorder(response, error)
+        monkeypatch.setattr(main, "mo_calculate_via_core", rec.core)
+        monkeypatch.setattr(main, "_telegram_send_message", rec.send)
+        monkeypatch.setattr(main, "_telegram_send_tep_review", lambda *a, **k: None)
+        return rec
+    return make
+
+
+# --- маршрут запроса ---------------------------------------------------------
+
+def test_one_cadastral_number_goes_to_the_core(bot):
+    rec = bot(sample_response(1))
+    main._telegram_handle_mo_numbers(1, [ONE_NUMBER], ONE_NUMBER)
+    assert rec.requests == [{"query": ONE_NUMBER, "limit": main._LAND_LOOKUP_MAX_RESULTS}]
+
+
+def test_twenty_two_parcels_go_as_one_request(bot):
+    rec = bot(sample_response(22))
+    numbers = main._parse_cadastral_numbers(TWENTY_TWO)
+    assert len(numbers) == 22
+    main._telegram_handle_mo_numbers(1, numbers, TWENTY_TWO)
+    assert len(rec.requests) == 1
+    assert rec.requests[0]["query"] == TWENTY_TWO
+    assert rec.requests[0]["limit"] >= 22
+
+
+def test_address_is_forwarded_untouched(bot):
+    """Адрес разбирает ядро: бот не пытается извлечь из него номера."""
+    rec = bot(sample_response(3))
+    main._telegram_handle_mo_numbers(1, [], ADDRESS)
+    assert rec.requests[0]["query"] == ADDRESS
+
+
+def test_coordinates_are_forwarded_untouched(bot):
+    rec = bot(sample_response(1))
+    main._telegram_handle_mo_numbers(1, [], "55.9105, 37.7365")
+    assert rec.requests[0]["query"] == "55.9105, 37.7365"
+
+
+# --- сообщения пользователю --------------------------------------------------
+
+def test_progress_message_comes_before_the_long_request(bot):
+    rec = bot(sample_response(22))
+    numbers = main._parse_cadastral_numbers(TWENTY_TWO)
+    main._telegram_handle_mo_numbers(1, numbers, TWENTY_TWO)
+    assert rec.messages[0] == "Получил 22 участка. Запрашиваю сведения ЕГРН и выполняю расчёт…"
+
+
+@pytest.mark.parametrize("count,expected", [(1, "1 участок"), (2, "2 участка"), (5, "5 участков"),
+                                            (11, "11 участков"), (22, "22 участка")])
+def test_progress_message_declines_the_noun(bot, count, expected):
+    rec = bot(sample_response(count))
+    main._telegram_handle_mo_numbers(1, [ONE_NUMBER] * count, ONE_NUMBER)
+    assert expected in rec.messages[0]
+
+
+def test_report_carries_every_required_block(bot):
+    rec = bot(sample_response(22))
+    main._telegram_handle_mo_numbers(1, main._parse_cadastral_numbers(TWENTY_TWO), TWENTY_TWO)
+    report = "\n".join(rec.messages)
+    for fragment in ("22", "22,4230 га", "Городской округ Мытищи", "672 690",
+                     "24 025", "1 562", "3 250", "427", "7 698",
+                     "Исходные нормативы", "Отчёт № 01/2022", "№ 1745", "Предупреждения"):
+        assert fragment in report, fragment
+
+
+def test_found_fewer_parcels_than_asked_is_visible(bot):
+    """Если ЕГРН отдал не все участки, это должно быть видно, а не потеряться."""
+    rec = bot(sample_response(10))
+    main._telegram_handle_mo_numbers(1, main._parse_cadastral_numbers(TWENTY_TWO), TWENTY_TWO)
+    assert "10</b> из 22" in "\n".join(rec.messages)
+
+
+# --- ошибки ------------------------------------------------------------------
+
+def test_core_failure_is_reported_and_never_falls_back(bot, monkeypatch):
+    calls = []
+    monkeypatch.setattr(main, "mo_calculate", lambda *a, **k: calls.append(1))
+    rec = bot(error=HTTPException(status_code=502, detail="Ядро расчёта недоступно"))
+    main._telegram_handle_mo_numbers(1, [ONE_NUMBER], ONE_NUMBER)
+    assert "Ядро расчёта недоступно" in "\n".join(rec.messages)
+    assert calls == [], "локальный расчёт не должен подменять недоступное ядро"
+
+
+def test_timeout_says_how_long_it_waited(monkeypatch):
+    monkeypatch.setattr(main, "_MO_CALC_API_URL", "https://example.invalid/mo/calculate")
+    monkeypatch.setattr(main, "_MO_CALC_TIMEOUT_SECONDS", 180.0)
+
+    def boom(*args, **kwargs):
+        raise socket.timeout()
+
+    monkeypatch.setattr(main.urllib.request, "urlopen", boom)
+    with pytest.raises(HTTPException) as exc:
+        main._mo_calculate_remote(ONE_NUMBER, 30)
+    assert exc.value.status_code == 504
+    assert "180" in str(exc.value.detail)
+
+
+def test_http_error_detail_reaches_the_user(monkeypatch):
+    monkeypatch.setattr(main, "_MO_CALC_API_URL", "https://example.invalid/mo/calculate")
+
+    def boom(*args, **kwargs):
+        raise urllib.error.HTTPError(
+            "https://example.invalid", 400, "Bad Request", {},
+            io.BytesIO(json.dumps({"detail": "Кадастровый номер не найден"}).encode()),
+        )
+
+    monkeypatch.setattr(main.urllib.request, "urlopen", boom)
+    with pytest.raises(HTTPException) as exc:
+        main._mo_calculate_remote(ONE_NUMBER, 30)
+    assert "Кадастровый номер не найден" in str(exc.value.detail)
+
+
+# --- разделение обязанностей -------------------------------------------------
+
+def test_core_url_decides_local_or_remote(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(main, "mo_calculate", lambda req: seen.setdefault("local", req.query))
+    monkeypatch.setattr(main, "_mo_calculate_remote", lambda q, l: seen.setdefault("remote", q))
+
+    monkeypatch.setattr(main, "_MO_CALC_API_URL", "")
+    main.mo_calculate_via_core(ONE_NUMBER)
+    assert seen == {"local": ONE_NUMBER}
+
+    seen.clear()
+    monkeypatch.setattr(main, "_MO_CALC_API_URL", "https://developaid.ru/mo/calculate")
+    main.mo_calculate_via_core(ONE_NUMBER)
+    assert seen == {"remote": ONE_NUMBER}
+
+
+def test_bot_does_not_reimplement_the_methodology():
+    """В обработчике бота не должно быть ни нормативов, ни формул расчёта."""
+    source = Path(main.__file__).read_text(encoding="utf-8")
+    start = source.index("def _telegram_handle_mo_numbers")
+    body = source[start:source.index("\ndef ", start + 10)]
+    for forbidden in ("_mo_upks", "_mo_vri_kd", "МoNorm", "* 0.0", "/ 1000 *"):
+        assert forbidden not in body, forbidden
