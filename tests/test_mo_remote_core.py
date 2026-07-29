@@ -13,6 +13,7 @@ import io
 import json
 import socket
 import sys
+import re
 import urllib.error
 from pathlib import Path
 
@@ -197,19 +198,13 @@ def test_http_error_detail_reaches_the_user(monkeypatch):
 
 # --- разделение обязанностей -------------------------------------------------
 
-def test_core_url_decides_local_or_remote(monkeypatch):
+def test_bot_and_browser_share_one_entry_point(monkeypatch):
+    """Бот и страница зовут один и тот же метод: развилка «локально или наружу»
+    живёт в самом эндпоинте, иначе они разъедутся."""
     seen = {}
-    monkeypatch.setattr(main, "mo_calculate", lambda req: seen.setdefault("local", req.query))
-    monkeypatch.setattr(main, "_mo_calculate_remote", lambda q, l: seen.setdefault("remote", q))
-
-    monkeypatch.setattr(main, "_MO_CALC_API_URL", "")
+    monkeypatch.setattr(main, "mo_calculate", lambda req: seen.setdefault("query", req.query))
     main.mo_calculate_via_core(ONE_NUMBER)
-    assert seen == {"local": ONE_NUMBER}
-
-    seen.clear()
-    monkeypatch.setattr(main, "_MO_CALC_API_URL", "https://developaid.ru/mo/calculate")
-    main.mo_calculate_via_core(ONE_NUMBER)
-    assert seen == {"remote": ONE_NUMBER}
+    assert seen == {"query": ONE_NUMBER}
 
 
 def test_bot_does_not_reimplement_the_methodology():
@@ -336,3 +331,55 @@ def test_webhook_is_not_registered_when_disabled(monkeypatch):
     main._telegram_configure()
     assert "setWebhook" not in calls
     assert "getMe" in calls
+
+
+# --- интерфейс на одном сервере, данные ЕГРН на другом ------------------------
+
+def test_endpoints_forward_when_the_core_is_configured(monkeypatch):
+    """Браузер зовёт эти методы относительной ссылкой — они и должны пересылать."""
+    calls = []
+    monkeypatch.setattr(main, "_MO_CALC_API_URL", "https://developaid.ru/mo/calculate")
+    monkeypatch.setattr(main, "_core_post",
+                        lambda url, payload, timeout: calls.append((url, payload)) or {"ok": True})
+
+    main.mo_calculate(main.MoCalculateRequest(query=ONE_NUMBER, site_area_ha=2.4, district="Мытищи"))
+    main.land_lookup(main.LandLookupRequest(query=ADDRESS))
+    main.analyze_cadastral_territory(main.CadastralAnalysisRequest(cadastral_numbers=[ONE_NUMBER]))
+
+    urls = [url for url, _ in calls]
+    assert urls == [
+        "https://developaid.ru/mo/calculate",
+        "https://developaid.ru/land/lookup",
+        "https://developaid.ru/cadastral/analyze",
+    ]
+    # Ручные вводные пользователя обязаны доехать: иначе посчитается не то.
+    assert calls[0][1]["site_area_ha"] == 2.4
+    assert calls[0][1]["district"] == "Мытищи"
+
+
+def test_endpoints_compute_locally_without_a_core(monkeypatch):
+    """На сервере, где данные доступны, пересылки быть не должно — иначе он позовёт сам себя."""
+    monkeypatch.setattr(main, "_MO_CALC_API_URL", "")
+    monkeypatch.delenv("CORE_API_URL", raising=False)
+    monkeypatch.setattr(main, "_core_post", lambda *a, **k: pytest.fail("ушёл наружу"))
+    with pytest.raises(HTTPException):
+        # Локальный расчёт без данных ЕГРН честно ругается, а не пересылает запрос.
+        main.mo_calculate(main.MoCalculateRequest(query=ONE_NUMBER))
+
+
+def test_mini_app_url_prefers_the_new_variable():
+    """TELEGRAM_WEBAPP_URL — основное имя; прежнее оставлено, чтобы не ломать стенды."""
+    source = Path(main.__file__).read_text(encoding="utf-8")
+    block = source[source.index("_TELEGRAM_WEB_APP_BASE_URL = ("):]
+    block = block[:block.index(").rstrip")]
+    # Имя самой константы тоже содержит старое имя переменной — сверяем чтения окружения.
+    assert (block.index('os.environ.get("TELEGRAM_WEBAPP_URL")')
+            < block.index('os.environ.get("TELEGRAM_WEB_APP_BASE_URL")'))
+    assert "TELEGRAM_PUBLIC_BASE_URL" in block
+
+
+def test_every_web_app_button_uses_one_builder():
+    """Кнопок много, адрес один: иначе часть из них останется на старом хосте."""
+    source = Path(main.__file__).read_text(encoding="utf-8")
+    for match in re.finditer(r'"web_app":\s*\{"url":\s*([^}]+)\}', source):
+        assert "_telegram_web_app_url" in match.group(1) or match.group(1).strip() == "url", match.group(1)
