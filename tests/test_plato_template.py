@@ -153,6 +153,51 @@ def test_tep_sheet_receives_model_areas(filled):
     )
 
 
+def test_price_growth_target_reproduces_the_model_monthly_growth(filled):
+    """Шаблон выводит месячный рост из целевого совокупного — пишем цель обратным счётом.
+
+    Пока эта строка не заполнялась, в шаблоне оставались 30% сценария, а модель
+    считала по своим 1,5% в месяц: на 24 месяцах продаж выручка расходилась
+    примерно на четверть.
+    """
+    _, _, workbook = filled
+    sheet = workbook["Вводные"]
+    rows = {main._plato_normalize(sheet.cell(row=r, column=2).value): r
+            for r in range(1, sheet.max_row + 1)}
+    row = rows["целевой совокупный рост цены от старта продаж до рвэ"]
+    monthly = main.DEFAULT_INPUTS["monthly_growth_pre_pct"] / 100
+    months = main.DEFAULT_INPUTS["construction_months"] - main.DEFAULT_INPUTS["sales_lag_months"]
+    for column in (4, 5, 6):
+        target = sheet.cell(row=row, column=column).value
+        assert target == pytest.approx((1 + monthly) ** months - 1, rel=1e-6)
+        # Обратный ход формулы шаблона должен вернуть ровно наш месячный рост.
+        assert (1 + target) ** (1 / months) - 1 == pytest.approx(monthly, rel=1e-9)
+
+
+def test_standalone_objects_get_their_growth_and_dates(filled):
+    _, _, workbook = filled
+    sheet = workbook["Вводные"]
+    found = {}
+    for row in range(1, sheet.max_row + 1):
+        block = main._plato_normalize(sheet.cell(row=row, column=1).value)
+        label = main._plato_normalize(sheet.cell(row=row, column=2).value)
+        if block.startswith("мфоц") and label == "ежемесячный рост цены до рвэ":
+            found["pre"] = sheet.cell(row=row, column=4).value
+        if block.startswith("мфоц") and label == "ежемесячный рост цены после рвэ":
+            found["post"] = sheet.cell(row=row, column=4).value
+    assert found["pre"] == pytest.approx(main.DEFAULT_INPUTS["offices_growth_pre_pct"] / 100)
+    assert found["post"] == pytest.approx(main.DEFAULT_INPUTS["offices_growth_post_pct"] / 100)
+
+
+def test_project_name_replaces_the_template_leftover():
+    """В шаблоне в шапке ОТЧЕТа зашит чужой проект — он не должен уезжать заказчику."""
+    stale = load_workbook(TEMPLATE, data_only=False)["ОТЧЕТ"]["C1"].value
+    content, _ = main.fill_plato_template(
+        main.DEFAULT_INPUTS, main.TEP_DEFAULT, project_name="Мытищи"
+    )
+    assert load_workbook(io.BytesIO(content))["ОТЧЕТ"]["C1"].value == "Мытищи" != stale
+
+
 def test_vri_cost_comes_from_the_model(filled):
     _, _, workbook = filled
     sheet = workbook["Расчет ВРИ (ТЭП)"]
@@ -203,10 +248,14 @@ def test_phased_archive_has_consolidator_and_phases():
         main.DEFAULT_INPUTS, main.TEP_DEFAULT, [], phasing, project_name="Мытищи"
     )
     names = zipfile.ZipFile(io.BytesIO(content)).namelist()
-    assert names[0].startswith("00_Консолидация")
+    assert names[0].startswith("00_Консолидатор")
     assert len([name for name in names if "Очередь" in name]) == 3
     assert meta["phased"] is True
     assert "очереди" in filename
+    readme = zipfile.ZipFile(io.BytesIO(content)).read("README.txt").decode("utf-8")
+    # Ссылки ДВССЫЛ не читают закрытые книги — без этого свод покажет нули,
+    # и пользователь решит, что сломана модель.
+    assert "одновременно с консолидатором" in readme
 
 
 def test_readme_explains_what_was_filled():

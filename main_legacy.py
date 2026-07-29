@@ -33,7 +33,7 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse, FileResponse, Response
 from pydantic import BaseModel
 
-app = FastAPI(title="DevelopAid Development Investment Model", version="0.12.66")
+app = FastAPI(title="DevelopAid Development Investment Model", version="0.12.67")
 
 PRESET_DIR = Path(__file__).resolve().parent / "presets"
 MANUAL_TEP_TEMPLATE_FILENAME = "DevelopAid_Шаблон_ТЭП.xlsx"
@@ -1230,7 +1230,7 @@ def analyze_cadastral_territory(req: CadastralAnalysisRequest) -> dict[str, Any]
         headers={
             "Accept": "application/json",
             "Content-Type": "application/json; charset=utf-8",
-            "User-Agent": "DevelopAid-Development-Model/0.12.66",
+            "User-Agent": "DevelopAid-Development-Model/0.12.67",
         },
     )
     try:
@@ -1353,7 +1353,7 @@ _NSPD_BASE_URL = (_env_str("NSPD_BASE_URL", "https://nspd.gov.ru")).rstrip("/")
 _NSPD_TIMEOUT_SECONDS = _env_float("NSPD_TIMEOUT_SECONDS", 25.0)
 _NSPD_LAND_THEMATIC_ID = 1
 _NOMINATIM_BASE_URL = (_env_str("NOMINATIM_BASE_URL", "https://nominatim.openstreetmap.org")).rstrip("/")
-_LAND_LOOKUP_USER_AGENT = "DevelopAid-Development-Model/0.12.66"
+_LAND_LOOKUP_USER_AGENT = "DevelopAid-Development-Model/0.12.67"
 _LAND_LOOKUP_MAX_RESULTS = int(_env_float("LAND_LOOKUP_MAX_RESULTS", 30))
 # Номера опрашиваются параллельно: 30 последовательных запросов к НСПД — это
 # минуты ожидания. Больше трёх потоков портал начинает придерживать.
@@ -3303,7 +3303,7 @@ def _proxy_genplan(asset_path: str, request: Request) -> Response:
         target,
         headers={
             "Accept": request.headers.get("accept", "*/*"),
-            "User-Agent": "DevelopAid-Development-Model/0.12.66",
+            "User-Agent": "DevelopAid-Development-Model/0.12.67",
         },
     )
     try:
@@ -4949,7 +4949,7 @@ def _telegram_handle_message(message: dict[str, Any]) -> None:
         status = "подключён" if _TELEGRAM_RUNTIME.get("configured") else "запускается"
         _telegram_send_message(
             chat_id,
-            f"<b>DevelopAid bot:</b> {status}\nTelegram ID: <code>{user_id}</code>\nВерсия: 0.12.66",
+            f"<b>DevelopAid bot:</b> {status}\nTelegram ID: <code>{user_id}</code>\nВерсия: 0.12.67",
         )
         return
     if command == "/cancel":
@@ -5116,7 +5116,7 @@ def telegram_status() -> dict[str, Any]:
         "allowed_users_count": len(allowed),
         "configured_at": _TELEGRAM_RUNTIME.get("configured_at") or "",
         "last_error": _TELEGRAM_RUNTIME.get("last_error") or "",
-        "version": "0.12.66",
+        "version": "0.12.67",
     }
 
 
@@ -6894,17 +6894,28 @@ def build_model_archive(
     template_notes: list[str] = []
     try:
         if not phased:
-            content, _ = fill_plato_template(inputs, tep, scenario=scenario)
+            content, _ = fill_plato_template(inputs, tep, scenario=scenario, project_name=title)
             archive_files.append((f"00_Модель_{stem}.xlsx", content))
         else:
-            content, _ = fill_plato_template(inputs, tep, scenario=scenario)
-            archive_files.append((f"00_Модель_консолидация_{stem}.xlsx", content))
+            phase_files: list[tuple[str, str]] = []
             for index, phase in enumerate(phases, start=1):
                 phase_inputs = {**inputs, **(phase.get("inputs") or {})}
                 phase_tep = phase.get("tep") or tep
-                phase_name = _safe_file_stem(str(phase.get("name") or f"О{index}"), f"О{index}")
-                content, _ = fill_plato_template(phase_inputs, phase_tep, scenario=scenario)
-                archive_files.append((f"{index:02d}_Модель_{phase_name}.xlsx", content))
+                label = str(phase.get("name") or f"О{index}")
+                phase_name = _safe_file_stem(label, f"О{index}")
+                content, _ = fill_plato_template(
+                    phase_inputs, phase_tep, scenario=scenario,
+                    project_name=f"{title} · {label}" if title else label,
+                )
+                file_name = f"{index:02d}_Модель_{phase_name}.xlsx"
+                archive_files.append((file_name, content))
+                phase_files.append((label, file_name))
+            # Свод очередей — отдельная книга со ссылками на файлы очередей, а не
+            # ещё одна модель всего проекта: та считала бы проект без разрывов
+            # между очередями и без индексации, то есть другой проект.
+            content, consolidator_report = fill_plato_consolidator(bundle, phase_files)
+            archive_files.insert(0, (f"00_Консолидатор_{stem}.xlsx", content))
+            template_notes.extend(consolidator_report.get("notes") or [])
     except HTTPException as exc:
         template_notes.append(
             f"Живая модель на шаблоне ПЛАТО не собрана: {exc.detail} "
@@ -7083,6 +7094,21 @@ _PLATO_BLOCK_MAP: list[tuple[str, str, str, str]] = [
     ("Наземный парки", "Доля продаж до РВЭ", "above_parking_share_before_rve_pct", "pct"),
     ("Наземный парки", "Остаточные продажи после РВЭ", "above_parking_residual_months", "number"),
     ("Наземный парки", "Объект включен", "above_parking_enabled", "bool"),
+    # У отдельно стоящих объектов рост цены и календарь задаются напрямую —
+    # в отличие от жилья, где шаблон выводит месячный рост из целевого. Без
+    # этих строк объекты считались по умолчанию шаблона, а не по модели.
+    ("МФОЦ / офисы", "Ежемесячный рост цены до РВЭ", "offices_growth_pre_pct", "pct"),
+    ("МФОЦ / офисы", "Ежемесячный рост цены после РВЭ", "offices_growth_post_pct", "pct"),
+    ("МФОЦ / офисы", "Начало строительства", "offices_start", "date"),
+    ("МФОЦ / офисы", "Старт продаж", "offices_sales_start", "date"),
+    ("ТЦ / коммерция", "Ежемесячный рост цены до РВЭ", "retail_growth_pre_pct", "pct"),
+    ("ТЦ / коммерция", "Ежемесячный рост цены после РВЭ", "retail_growth_post_pct", "pct"),
+    ("ТЦ / коммерция", "Начало строительства", "retail_start", "date"),
+    ("ТЦ / коммерция", "Старт продаж", "retail_sales_start", "date"),
+    ("Наземный парки", "Ежемесячный рост цены до РВЭ", "above_parking_growth_pre_pct", "pct"),
+    ("Наземный парки", "Ежемесячный рост цены после РВЭ", "above_parking_growth_post_pct", "pct"),
+    ("Наземный парки", "Начало строительства", "above_parking_start", "date"),
+    ("Наземный парки", "Старт продаж", "above_parking_sales_start", "date"),
 ]
 
 # Лист «Расчет ВРИ (ТЭП)»: подпись в колонке B -> что кладём в колонку D.
@@ -7259,6 +7285,7 @@ def fill_plato_template(
     *,
     scenario: str = "base",
     template_path: Path | None = None,
+    project_name: str = "",
 ) -> tuple[bytes, dict[str, Any]]:
     """Заполняет листы-вводные шаблона ПЛАТО, не трогая формулы."""
     try:
@@ -7337,6 +7364,24 @@ def fill_plato_template(
             continue
         write_scenario_row(rows[0], value, f"{block} · {label}")
 
+    # Шаблон не принимает месячный рост цены напрямую: он выводит его из
+    # целевого совокупного роста за период продаж по формуле
+    # (1+цель)^(1/N)-1, где N — месяцы от старта продаж до РВЭ. Пока эта строка
+    # не заполнена, там остаётся 30% сценария, а модель считает по своим
+    # 1,5% в месяц — на длинных продажах расхождение по выручке доходит до
+    # четверти. Пересчитываем цель обратно, чтобы месячный рост совпал.
+    growth_rows = rows_by_label.get(_plato_normalize(
+        "Целевой совокупный рост цены от старта продаж до РВЭ")) or []
+    if growth_rows:
+        monthly = (_land_float(merged.get("monthly_growth_pre_pct")) or 0.0) / 100.0
+        months = int(_land_float(merged.get("construction_months")) or 0) - int(
+            _land_float(merged.get("sales_lag_months")) or 0)
+        target = (1.0 + monthly) ** max(1, months) - 1.0
+        # Округлять грубее нельзя: шаблон берёт из этого числа корень степени
+        # months, и потерянные знаки возвращаются заметной ошибкой в месячном росте.
+        write_scenario_row(growth_rows[0], round(target, 12),
+                           "Целевой совокупный рост цены от старта продаж до РВЭ")
+
     mode_rows = rows_by_block.get((_plato_normalize("Соцнагрузка"), _plato_normalize("Форма исполнения"))) or []
     if not mode_rows:
         mode_rows = rows_by_label.get(_plato_normalize("Форма исполнения")) or []
@@ -7385,6 +7430,13 @@ def fill_plato_template(
 
     _plato_fill_land_sheet(workbook, merged, filled)
 
+    # Имя проекта в шапке ОТЧЕТа — не украшение: без него каждая выгрузка
+    # уезжает заказчику подписанной чужим проектом из шаблона.
+    title = str(project_name or "").strip()
+    if title:
+        workbook["ОТЧЕТ"]["C1"] = title
+        filled.append({"sheet": "ОТЧЕТ", "row": 1, "label": "Проект", "value": title})
+
     workbook.calculation.fullCalcOnLoad = True
     buffer = io.BytesIO()
     workbook.save(buffer)
@@ -7394,6 +7446,118 @@ def fill_plato_template(
         "missing": missing,
         "scenario": scenario,
         "template": path.name,
+    }
+
+
+_PLATO_CONSOLIDATOR_PATH = Path(__file__).resolve().parent / "templates" / "PLATO_consolidator.xlsx"
+_PLATO_CONSOLIDATOR_SLOTS = 4
+
+
+def fill_plato_consolidator(
+    bundle: dict[str, Any],
+    phase_files: list[tuple[str, str]],
+    *,
+    template_path: Path | None = None,
+) -> tuple[bytes, dict[str, Any]]:
+    """Заполняет НАСТРОЙКИ консолидатора именами выгруженных файлов очередей.
+
+    Консолидатор — отдельная книга: она не пересчитывает проект, а собирает
+    показатели с листов «ОТЧЕТ», «CF» и «КРЕДИТЫ» файлов очередей через
+    ДВССЫЛ / INDIRECT. Поэтому от нас нужны ровно имена файлов, признак
+    активности очереди и общепроектные суммы; всё остальное — формулы шаблона.
+    """
+    from openpyxl import load_workbook
+
+    path = template_path or _PLATO_CONSOLIDATOR_PATH
+    if not path.is_file():
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Шаблон консолидатора не найден на сервере: положите файл в "
+                "templates/PLATO_consolidator.xlsx и передеплойте сервис."
+            ),
+        )
+
+    workbook = load_workbook(path)
+    sheet = workbook["НАСТРОЙКИ"]
+    consolidated = bundle.get("consolidated") or {}
+    phases = bundle.get("phases") or []
+    finance = consolidated.get("finance") or {}
+    rows = finance.get("rows") or []
+    notes: list[str] = []
+
+    # Доли БРИДЖ между очередями берём по их собственным пикам: это и есть та
+    # пропорция, в которой очереди пользуются общим бриджем.
+    peaks = [float((p.get("result") or {}).get("finance", {}).get("peak_bridge") or 0.0) for p in phases]
+    total_peak = sum(peaks)
+
+    used = min(len(phase_files), _PLATO_CONSOLIDATOR_SLOTS)
+    if len(phase_files) > _PLATO_CONSOLIDATOR_SLOTS:
+        notes.append(
+            f"Консолидатор рассчитан на {_PLATO_CONSOLIDATOR_SLOTS} очереди, "
+            f"в проекте их {len(phase_files)}: в свод попали первые "
+            f"{_PLATO_CONSOLIDATOR_SLOTS}, остальные надо добавлять вручную."
+        )
+
+    assigned = 0.0
+    for slot in range(_PLATO_CONSOLIDATOR_SLOTS):
+        row = 5 + slot
+        if slot < used:
+            name, file_name = phase_files[slot]
+            sheet.cell(row=row, column=2).value = "Да"
+            sheet.cell(row=row, column=3).value = name
+            sheet.cell(row=row, column=4).value = file_name
+            if slot == used - 1:
+                # Остаток округления кладём на последнюю очередь: шаблон
+                # проверяет сумму долей и ругается на расхождение.
+                share = round(1.0 - assigned, 6)
+            else:
+                share = round(peaks[slot] / total_peak if total_peak else 1.0 / used, 6)
+                assigned += share
+            sheet.cell(row=row, column=5).value = share
+        else:
+            sheet.cell(row=row, column=2).value = "Нет"
+            sheet.cell(row=row, column=4).value = None
+            sheet.cell(row=row, column=5).value = 0
+
+    def put(reference: str, value: Any) -> None:
+        sheet[reference] = value
+
+    # Режим «Весь БРИДЖ в О1» обнулил бы доли остальных очередей, а у нас бридж
+    # считается по каждой очереди отдельно — оставляем ручные доли.
+    put("B14", "По ручным долям")
+    put("B15", "Да")
+    put("B16", round(float(finance.get("peak_bridge") or 0.0) / 1e6, 3))
+    put("B17", round(float(finance.get("bridge_interest") or 0.0) / 1e6, 3))
+    put("B18", round(float(((consolidated.get("vri") or {}).get("totals") or {}).get("cash") or 0.0) / 1e6, 3))
+
+    start = str((consolidated.get("dates") or {}).get("project_start") or "")
+    if start:
+        put("B19", datetime.strptime(start[:10], "%Y-%m-%d"))
+        put("B25", datetime.strptime(start[:10], "%Y-%m-%d"))
+    put("B20", (_land_float((consolidated.get("inputs") or {}).get("discount_rate_pct")) or 20.0) / 100.0)
+    if rows:
+        put("B26", len(rows))
+
+    # Пока внешние книги не открыты, ДВССЫЛ возвращает ноль, и консолидатор
+    # показывает пустой свод. Лист КЭШ_СВОД — его запасной источник: кладём
+    # туда наши цифры, чтобы файл был осмысленным сразу после выгрузки.
+    summary = consolidated.get("summary") or {}
+    cache = workbook["КЭШ_СВОД"]
+    cache["B2"] = round(float(summary.get("revenue") or 0.0) / 1e6, 3)
+    cache["B3"] = round(float(summary.get("total_expenses") or 0.0) / 1e6, 3)
+    cache["B4"] = round(
+        (float(summary.get("revenue") or 0.0) - float(summary.get("total_expenses") or 0.0)) / 1e6, 3)
+    cache["B5"] = round(float(finance.get("bridge_draw_total") or 0.0) / 1e6, 3)
+    cache["B6"] = round(float(finance.get("pf_draw_total") or 0.0) / 1e6, 3)
+
+    workbook.calculation.fullCalcOnLoad = True
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+    return buffer.getvalue(), {
+        "template": path.name,
+        "phases": [file_name for _, file_name in phase_files[:used]],
+        "notes": notes,
     }
 
 
@@ -7424,18 +7588,33 @@ def build_plato_archive(
 
     files: list[tuple[str, bytes]] = []
     reports: list[dict[str, Any]] = []
-    consolidated, report = fill_plato_template(inputs, tep, scenario=scenario)
-    files.append((f"00_Консолидация_{stem}.xlsx" if phased else f"{stem}_ПЛАТО.xlsx", consolidated))
-    reports.append({"file": files[-1][0], **report})
+    consolidator_note: list[str] = []
 
     if phased:
+        # Сначала очереди: консолидатору нужны их имена файлов, чтобы прописать
+        # внешние ссылки.
+        phase_files: list[tuple[str, str]] = []
         for index, phase in enumerate(phases, start=1):
             phase_inputs = {**inputs, **(phase.get("inputs") or {})}
             phase_tep = phase.get("tep") or tep
-            content, phase_report = fill_plato_template(phase_inputs, phase_tep, scenario=scenario)
-            name = f"{index:02d}_Очередь_{_safe_file_stem(str(phase.get('name') or index), f'О{index}')}.xlsx"
+            phase_name = str(phase.get("name") or f"О{index}")
+            content, phase_report = fill_plato_template(
+                phase_inputs, phase_tep, scenario=scenario,
+                project_name=f"{title} · {phase_name}",
+            )
+            name = f"{index:02d}_Очередь_{_safe_file_stem(phase_name, f'О{index}')}.xlsx"
             files.append((name, content))
             reports.append({"file": name, **phase_report})
+            phase_files.append((phase_name, name))
+
+        consolidator, consolidator_report = fill_plato_consolidator(bundle, phase_files)
+        files.insert(0, (f"00_Консолидатор_{stem}.xlsx", consolidator))
+        reports.insert(0, {"file": files[0][0], **consolidator_report})
+        consolidator_note = list(consolidator_report.get("notes") or [])
+    else:
+        content, report = fill_plato_template(inputs, tep, scenario=scenario, project_name=title)
+        files.append((f"{stem}_ПЛАТО.xlsx", content))
+        reports.append({"file": files[-1][0], **report})
 
     # Шаблон ПЛАТО принимает плату за ВРИ одной суммой и не умеет рассрочку,
     # поэтому график платежей едет рядом отдельной книгой, а сам шаблон не
@@ -7463,6 +7642,24 @@ def build_plato_archive(
         "",
         "Excel пересчитывает книгу при открытии. Если значения выглядят старыми,",
         "нажмите Ctrl+Alt+F9.",
+        *([
+            "",
+            "КОНСОЛИДАТОР",
+            "Файл 00_Консолидатор_… — отдельная книга: она не считает проект заново,",
+            "а собирает показатели с листов «ОТЧЕТ», «CF» и «КРЕДИТЫ» файлов очередей",
+            "через ДВССЫЛ / INDIRECT. Имена файлов уже прописаны на листе «НАСТРОЙКИ».",
+            "",
+            "Чтобы свод посчитался:",
+            "  1. распакуйте все файлы архива в одну папку;",
+            "  2. откройте файлы очередей одновременно с консолидатором —",
+            "     ДВССЫЛ не читает закрытые внешние книги, при закрытых источниках",
+            "     свод покажет нули;",
+            "  3. если файлы переименуете, поправьте имена в НАСТРОЙКИ!D5:D8.",
+            "",
+            "Пока источники закрыты, консолидатор показывает цифры с листа «КЭШ_СВОД» —",
+            "это снимок расчёта DevelopAid на момент выгрузки, а не живой свод.",
+        ] if phased else []),
+        *([""] + consolidator_note if consolidator_note else []),
         "",
         "Состав архива:",
         *[f"  - {name}" for name, _ in files],
@@ -7787,7 +7984,7 @@ def fetch_current_cbr_key_rate() -> dict[str, Any]:
         req = urllib.request.Request(
             feed_url,
             headers={
-                "User-Agent": "Mozilla/5.0 DevelopAid-Development-Model/0.12.66",
+                "User-Agent": "Mozilla/5.0 DevelopAid-Development-Model/0.12.67",
                 "Accept-Language": "ru-RU,ru;q=0.9",
             },
         )
@@ -7833,7 +8030,7 @@ def fetch_current_cbr_key_rate() -> dict[str, Any]:
         req = urllib.request.Request(
             url,
             headers={
-                "User-Agent": "Mozilla/5.0 DevelopAid-Development-Model/0.12.66",
+                "User-Agent": "Mozilla/5.0 DevelopAid-Development-Model/0.12.67",
                 "Accept-Language": "ru-RU,ru;q=0.9",
             },
         )
@@ -9729,7 +9926,7 @@ def _monthly_detail(
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "version": "0.12.66"}
+    return {"status": "ok", "version": "0.12.67"}
 
 
 @app.get("/defaults")
@@ -10640,6 +10837,10 @@ def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
 
         phase_items.append({
             "name":name,"index":idx+1,"result":result,
+            # Вводные и ТЭП очереди нужны выгрузке в шаблон ПЛАТО: без них она
+            # заполняет каждый файл очереди данными всего проекта, и три файла
+            # выходят одинаковыми.
+            "inputs":p_inputs,"tep":p_tep,
             "cash_shared_cost":cash_shared,"allocated_shared_cost":allocated_shared,
             "allocated_net_profit":allocated_profit,
             "product_weights":{k:product_weights[k][idx] for k in product_weights},
@@ -12683,7 +12884,7 @@ def _openai_responses_request(payload: dict[str, Any]) -> dict[str, Any]:
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
-            "User-Agent": "DevelopAid-Development-Model/0.12.66",
+            "User-Agent": "DevelopAid-Development-Model/0.12.67",
         },
         method="POST",
     )
@@ -13155,7 +13356,7 @@ details.cadastral-box>summary::marker{color:#888}
 <div class="shell">
   <div class="brandbar"><img src="data:image/webp;base64,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"><div class="brandline"></div></div>
   <div class="header">
-    <div class="title"><h1>Девелоперская инвестиционная модель</h1><p>v0.12.66 · ТЭП · экономика · БРИДЖ · проектное финансирование · эскроу · LLCR</p></div>
+    <div class="title"><h1>Девелоперская инвестиционная модель</h1><p>v0.12.67 · ТЭП · экономика · БРИДЖ · проектное финансирование · эскроу · LLCR</p></div>
     <div class="actions">
       <div class="scenario">Класс&nbsp;
         <select id="projectClassSelect" onchange="applyProjectClassPreset(this.value)" style="min-width:135px">

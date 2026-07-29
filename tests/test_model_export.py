@@ -89,7 +89,7 @@ def test_phased_archive_has_consolidator_and_phase_files():
     content, filename = build(PHASING)
     assert "очереди" in filename
     names = zipfile.ZipFile(io.BytesIO(content)).namelist()
-    assert names[0] == "00_Модель_консолидация_Мытищи.xlsx"
+    assert names[0] == "00_Консолидатор_Мытищи.xlsx"
     assert [name for name in names if name.startswith("0") and name != names[0]] == [
         "01_Модель_О1.xlsx", "02_Модель_О2.xlsx", "03_Модель_О3.xlsx",
     ]
@@ -621,10 +621,48 @@ def test_detail_workbook_is_not_a_model_and_says_so():
 def test_every_phase_gets_its_own_live_model():
     names = archive(PHASING).namelist()
     models = [name for name in names if "_Модель_" in name]
-    assert len(models) == 4  # консолидация плюс три очереди
+    assert len(models) == 3  # по файлу на очередь; свод — отдельный консолидатор
     for name in models:
         book = workbook(archive(PHASING), name)
         assert len(book.sheetnames) == 27
+
+
+def test_phase_models_are_not_copies_of_each_other():
+    """Файлы очередей должны нести вводные своей очереди, а не всего проекта."""
+    zip_file = archive(PHASING)
+    prices, areas, starts = set(), set(), set()
+    for name in sorted(n for n in zip_file.namelist() if "_Модель_" in n):
+        sheet = workbook(zip_file, name)["Вводные"]
+        rows = {main._plato_normalize(sheet.cell(row=r, column=2).value): r
+                for r in range(1, sheet.max_row + 1)}
+        prices.add(sheet.cell(row=rows["стартовая цена квартир"], column=4).value)
+        starts.add(str(sheet.cell(row=rows["начало проекта"], column=4).value))
+        tep = workbook(zip_file, name)["Расчет ВРИ (ТЭП)"]
+        tep_rows = {main._plato_normalize(tep.cell(row=r, column=2).value): r
+                    for r in range(1, tep.max_row + 1)}
+        areas.add(tep.cell(row=tep_rows["площадь квартир"], column=4).value)
+    assert len(prices) == 3, f"цены очередей совпали: {prices}"
+    assert len(starts) == 3, f"даты старта совпали: {starts}"
+    assert len(areas) == 3, f"площади очередей совпали: {areas}"
+
+
+def test_consolidator_links_to_the_exported_phase_files():
+    """Свод — книга со ссылками на файлы очередей, а не ещё одна модель."""
+    zip_file = archive(PHASING)
+    names = zip_file.namelist()
+    book = workbook(zip_file, "00_Консолидатор_Мытищи.xlsx")
+    assert "НАСТРОЙКИ" in book.sheetnames and "СВОД" in book.sheetnames
+    settings = book["НАСТРОЙКИ"]
+    linked = [settings.cell(row=row, column=4).value for row in range(5, 9)]
+    assert linked[:3] == ["01_Модель_О1.xlsx", "02_Модель_О2.xlsx", "03_Модель_О3.xlsx"]
+    assert linked[3] is None
+    assert [settings.cell(row=row, column=2).value for row in range(5, 9)] == ["Да"] * 3 + ["Нет"]
+    # Доли БРИДЖ обязаны давать ровно единицу — шаблон это проверяет сам.
+    assert sum(settings.cell(row=row, column=5).value for row in range(5, 9)) == 1
+    for name in linked[:3]:
+        assert name in names
+    # СВОД тянет показатели через внешние ссылки, а не считает заново.
+    assert "INDIRECT" in str(book["СВОД"]["G10"].value)
 
 
 def test_missing_template_leaves_the_detail_and_explains(monkeypatch, tmp_path):
