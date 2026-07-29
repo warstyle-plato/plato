@@ -285,3 +285,54 @@ def test_web_app_link_can_leave_the_webhook_host(monkeypatch):
     url = main._telegram_web_app_url(1, [])
     assert url.startswith("https://developaid.ru/?telegram=1#")
     assert main._TELEGRAM_PUBLIC_BASE_URL not in url
+
+
+# --- два хоста, один бот ------------------------------------------------------
+
+def test_missing_token_names_the_real_cause(monkeypatch):
+    """«Сессия истекла» уводит в ложном направлении: истекать там нечему."""
+    monkeypatch.setattr(main, "_telegram_token", lambda: "")
+    with pytest.raises(HTTPException) as exc:
+        main._telegram_verify_session("что-угодно.подпись")
+    assert exc.value.status_code == 503
+    assert "TELEGRAM_BOT_TOKEN" in str(exc.value.detail)
+    assert "TELEGRAM_WEBHOOK_ENABLED=0" in str(exc.value.detail)
+
+
+def test_session_signed_by_the_bot_verifies_on_the_model_host(monkeypatch):
+    """Хост с моделью проверяет подпись тем же токеном — сессия должна пройти."""
+    monkeypatch.setattr(main, "_telegram_token", lambda: "111:AAA")
+    session = main._telegram_session(42, ["50:12:0100131:259"])
+    payload = main._telegram_verify_session(session)
+    assert payload["chat_id"] == 42
+    assert payload["cad"] == ["50:12:0100131:259"]
+
+
+def test_another_token_does_not_verify(monkeypatch):
+    monkeypatch.setattr(main, "_telegram_token", lambda: "111:AAA")
+    session = main._telegram_session(42, [])
+    monkeypatch.setattr(main, "_telegram_token", lambda: "222:BBB")
+    with pytest.raises(HTTPException) as exc:
+        main._telegram_verify_session(session)
+    assert exc.value.status_code == 403
+
+
+@pytest.mark.parametrize("value,expected", [
+    ("0", False), ("false", False), ("no", False), ("off", False), ("OFF", False),
+    ("1", True), ("true", True), ("", True),
+])
+def test_webhook_registration_can_be_switched_off(monkeypatch, value, expected):
+    monkeypatch.setenv("TELEGRAM_WEBHOOK_ENABLED", value)
+    assert main._telegram_webhook_enabled() is expected
+
+
+def test_webhook_is_not_registered_when_disabled(monkeypatch):
+    """Второй хост с тем же токеном не должен уводить вебхук себе."""
+    calls = []
+    monkeypatch.setattr(main, "_telegram_token", lambda: "111:AAA")
+    monkeypatch.setenv("TELEGRAM_WEBHOOK_ENABLED", "0")
+    monkeypatch.setattr(main, "_telegram_api",
+                        lambda method, payload=None: calls.append(method) or {})
+    main._telegram_configure()
+    assert "setWebhook" not in calls
+    assert "getMe" in calls
