@@ -4,8 +4,12 @@ FROM python:3.11-slim
 # Сертификаты: НСПД выпускает сертификат национальным УЦ, поэтому в образ
 # кладётся системный набор, а корневой сертификат Минцифры при необходимости
 # монтируется в /usr/local/share/ca-certificates и подхватывается update-ca-certificates.
+# fontconfig и DejaVu — для PDF: в python:3.11-slim нет ни одного шрифта, а
+# встроенная в PDF гарнитура Helvetica не содержит кириллицы, поэтому отчёт
+# либо не собирается вовсе, либо выходит с пустыми прямоугольниками вместо букв.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates tzdata curl \
+ && apt-get install -y --no-install-recommends \
+      ca-certificates tzdata curl fontconfig fonts-dejavu-core \
  && rm -rf /var/lib/apt/lists/*
 
 ENV TZ=Europe/Moscow \
