@@ -8,6 +8,7 @@
 #   sh run.sh            — собрать и запустить
 #   sh run.sh stop       — остановить
 #   sh run.sh logs       — смотреть журнал
+#   sh run.sh doctor     — общая картина: контейнер, порт, версии, службы
 #   sh run.sh who-port   — показать, кто занял порт и кто его перезапускает
 #   sh run.sh free-port  — снять с порта посторонний процесс или службу
 #
@@ -78,9 +79,14 @@ kill_host_listeners() {
     unit=$(pid_unit "$pid")
     if [ -n "$unit" ]; then
       # Просто убить нельзя: systemd поднимет процесс заново с новым pid.
-      echo "  это служба $unit — останавливаю и снимаю с автозапуска"
+      # disable тоже не гарантия — юнит могут поднимать по зависимости, через
+      # rc.local или @reboot, и после перезагрузки он снова займёт порт раньше
+      # контейнера. mask делает запуск невозможным; отменяется unmask.
+      echo "  это служба $unit — останавливаю, снимаю с автозапуска и маскирую"
+      echo "  (вернуть: sudo systemctl unmask $unit && sudo systemctl enable --now $unit)"
       sudo systemctl stop "$unit" 2>/dev/null || systemctl stop "$unit" 2>/dev/null || true
       sudo systemctl disable "$unit" 2>/dev/null || true
+      sudo systemctl mask "$unit" 2>/dev/null || true
     else
       kill "$pid" 2>/dev/null || sudo kill "$pid" 2>/dev/null || true
     fi
@@ -97,7 +103,68 @@ kill_host_listeners() {
   echo "Порт ${APP_PORT} освобождён."
 }
 
+# Одна команда вместо переписки скриншотами: что за контейнер, кто на порту,
+# какую версию отдаёт порт, какую — сам контейнер, и нет ли рядом службы,
+# которая перехватит порт после перезагрузки.
+doctor() {
+  echo "== git =="
+  git -C "$ROOT" log --oneline -1 2>/dev/null || echo "  не репозиторий"
+  git -C "$ROOT" status -sb 2>/dev/null | head -1 || true
+
+  echo
+  echo "== контейнер $NAME =="
+  docker ps -a --filter "name=^${NAME}$" --format '  {{.Names}}  {{.Status}}  {{.Ports}}' 2>/dev/null \
+    | grep . || echo "  контейнера нет"
+
+  echo
+  echo "== порт ${APP_PORT} =="
+  who_port 2>&1 | sed 's/^/  /' || true
+
+  echo
+  echo "== что отвечает =="
+  printf '  порт %s: ' "${APP_PORT}"
+  curl -fsS --max-time 5 "http://127.0.0.1:${APP_PORT}/health" 2>/dev/null || echo "нет ответа"
+  echo
+  # Спрашиваем контейнер напрямую: если порт занят чужим процессом, только так
+  # и видно, что за версия лежит в самом контейнере.
+  ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$NAME" 2>/dev/null || true)
+  if [ -n "${ip:-}" ]; then
+    printf '  контейнер %s: ' "$ip"
+    curl -fsS --max-time 5 "http://${ip}:8000/health" 2>/dev/null || echo "нет ответа"
+    echo
+  fi
+
+  # Через конвейер статус берётся от последней команды, поэтому «не найдено»
+  # никогда бы не напечаталось: собираем результат в переменную.
+  echo
+  echo "== службы, похожие на приложение =="
+  found=$(systemctl list-units --type=service --all --no-legend 2>/dev/null \
+    | grep -iE 'develop|plato|uvicorn|gunicorn' || true)
+  [ -n "$found" ] && printf '%s\n' "$found" | sed 's/^/  /' || echo "  не найдено"
+
+  echo
+  echo "== автозапуск, который может перехватить порт =="
+  found=$(systemctl list-unit-files --no-legend 2>/dev/null \
+    | grep -iE 'develop|plato|uvicorn|gunicorn' || true)
+  [ -n "$found" ] && printf '%s\n' "$found" | sed 's/^/  /' || echo "  не найдено"
+  grep -rIlE 'uvicorn|gunicorn' /etc/rc.local /etc/cron.d /var/spool/cron 2>/dev/null \
+    | sed 's/^/  запуск найден в: /' || true
+
+  echo
+  echo "== обратный прокси =="
+  if command -v nginx >/dev/null 2>&1; then
+    sudo nginx -T 2>/dev/null | grep -E 'proxy_pass|server_name' | sed 's/^/  /' | head -20 \
+      || echo "  nginx есть, конфиг не прочитан (нужен sudo)"
+  else
+    echo "  nginx не установлен"
+  fi
+}
+
 case "${1:-up}" in
+  doctor)
+    doctor
+    exit 0
+    ;;
   free-port)
     free_port
     kill_host_listeners
