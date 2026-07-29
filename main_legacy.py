@@ -16161,8 +16161,16 @@ initializeApp();
 
 
 @app.get("/", response_class=HTMLResponse)
-def index() -> str:
-    return PAGE
+def index() -> HTMLResponse:
+    # Всё приложение — одна HTML-страница, и её разметка меняется с каждым
+    # выпуском. Без явного запрета браузер держит её в кеше и после обновления
+    # сервиса показывает старую версию: выглядит как «деплой не приехал».
+    return HTMLResponse(PAGE, headers={
+        "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+        "Pragma": "no-cache",
+        "Expires": "0",
+        "X-DevelopAid-Version": "0.12.67",
+    })
 
 # _DEVELOPAID_EDIT_MODE_FIX_V01217
 
