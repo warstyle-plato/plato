@@ -34,9 +34,32 @@
 
 ```bash
 git clone https://github.com/warstyle-plato/plato.git && cd plato
-cp .env.example .env
+sh run.sh
+```
+
+`run.sh` сам создаёт `.env` из примера, собирает образ, гасит прежний контейнер,
+поднимает новый и ждёт, пока `/health` ответит. Плагин Docker Compose для этого
+не нужен — на чистой виртуальной машине его обычно нет, и `docker compose up`
+завершается сообщением `docker: unknown command: docker compose`, а старый
+контейнер продолжает работать со старым кодом.
+
+Обновление после `git pull` — та же команда:
+
+```bash
+git pull && sh run.sh
+```
+
+Остановить и посмотреть журнал:
+
+```bash
+sh run.sh stop
+sh run.sh logs
+```
+
+Через Compose, если плагин установлен:
+
+```bash
 docker compose up -d --build
-curl -sS localhost:8080/health
 ```
 
 Открывается по `http://<внешний-IP>:8080/`.
@@ -46,11 +69,16 @@ curl -sS localhost:8080/health
 Проверяйте по порядку — первая же команда, которая ответит не тем, укажет причину.
 
 ```bash
-docker compose ps                 # контейнер должен быть Up, не Exited
-docker compose logs --tail=50     # причина падения, если Exited
+docker ps                         # контейнер developaid должен быть Up
+docker logs --tail=50 developaid  # причина падения
 ss -ltnp | grep 8080              # порт должен слушаться на 0.0.0.0
 curl -sS localhost:8080/health    # {"status":"ok","version":"..."}
 ```
+
+**Версия в `/health` не совпадает с `git log`.** Значит работает старый
+контейнер: сборка не выполнялась. Чаще всего `docker compose` отсутствует и
+команда завершалась ошибкой, которую легко не заметить. Запустите `sh run.sh` —
+он пересоберёт образ обычными командами docker.
 
 Частые причины:
 
