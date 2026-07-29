@@ -260,3 +260,18 @@ def test_telegram_resend_button_is_not_limited_to_edit_mode():
     # Кнопка появляется сразу после первой удачной отправки, в любом режиме.
     sent = page.index("telegramResultSent=true;")
     assert "showTelegramResendButton();" in page[sent:sent + 600]
+
+
+def test_edit_mode_opens_the_project_from_the_card():
+    """«Изменить» должно открывать тот расчёт, по которому нажали кнопку.
+
+    Расчёт по Подмосковью и по адресу делает бот на сервере — браузер его
+    никогда не видел. Режим правки брал только сохранённое локально состояние
+    и показывал чужой прошлый проект вместо посчитанных участков.
+    """
+    page = main.PAGE
+    assert "function telegramStateMatches(manual)" in page
+    assert "if(sessionData.manual_tep&&!telegramStateMatches(sessionData.manual_tep))" in page
+    # Загрузка ТЭП из сессии не должна сама отправлять карточку в чат.
+    assert "applyTelegramManualTep(sessionData.manual_tep,{silent:true})" in page
+    assert "if(!silent)await sendTelegramResult();" in page
