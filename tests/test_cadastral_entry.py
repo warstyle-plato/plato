@@ -238,3 +238,25 @@ def test_status_line_shows_how_many_parcels_were_taken():
     page = main.PAGE
     assert "участков в расчёте: " in page
     assert "const parcels=((data.vri||{}).parcels||[]).length;" in page
+
+
+def test_mo_parameter_edit_reaches_the_model():
+    """Правка плотности или Кд должна доезжать до модели, а не только до блока.
+
+    Блок «Параметры расчёта по Московской области» пересчитывался сам по себе,
+    а модель оставалась на прежних числах: пользователь менял параметр, видел
+    новый результат в блоке и отправлял в Telegram старый расчёт.
+    """
+    page = main.PAGE
+    assert "if(inputs._mo_calc)await applyMo({silent:true})" in page
+    # Автоматическое применение не должно сбрасывать настроенную очерёдность.
+    assert "if(!silent)phasing=makeDefaultPhasing(1)" in page
+
+
+def test_telegram_resend_button_is_not_limited_to_edit_mode():
+    """Результат уходит в Telegram один раз — без кнопки правка туда не попадёт."""
+    page = main.PAGE
+    assert "function showTelegramResendButton()" in page
+    # Кнопка появляется сразу после первой удачной отправки, в любом режиме.
+    sent = page.index("telegramResultSent=true;")
+    assert "showTelegramResendButton();" in page[sent:sent + 600]

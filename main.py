@@ -16,7 +16,7 @@ from fastapi import HTTPException, Request
 from pydantic import BaseModel, Field
 
 _ROOT = Path(__file__).resolve().parent
-_RUNTIME_VERSION = "0.12.70"
+_RUNTIME_VERSION = "0.12.71"
 
 
 def _load_core():
