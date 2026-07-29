@@ -23,9 +23,21 @@ APP_BIND=$(grep -E '^APP_BIND=' .env 2>/dev/null | tail -1 | cut -d= -f2- || tru
 [ -n "${APP_PORT:-}" ] || APP_PORT=8080
 [ -n "${APP_BIND:-}" ] || APP_BIND=0.0.0.0
 
+# Порт мог занять контейнер, поднятый раньше и под другим именем — например
+# через docker compose, где имя собирается из папки проекта. Ищем по порту, а
+# не по имени, иначе старая сборка продолжит работать, а новая не поднимется.
+free_port() {
+  busy=$(docker ps -q --filter "publish=${APP_PORT}" 2>/dev/null || true)
+  for id in $busy; do
+    echo "Останавливаю контейнер, занявший порт ${APP_PORT}: $(docker ps --format '{{.Names}}' --filter "id=$id")"
+    docker rm -f "$id" >/dev/null 2>&1 || true
+  done
+}
+
 case "${1:-up}" in
   stop)
     docker rm -f "$NAME" >/dev/null 2>&1 || true
+    free_port
     echo "Остановлено."
     exit 0
     ;;
@@ -39,13 +51,25 @@ docker build -t "$NAME" .
 
 echo "Остановка прежнего контейнера…"
 docker rm -f "$NAME" >/dev/null 2>&1 || true
+free_port
 
 echo "Запуск на ${APP_BIND}:${APP_PORT}…"
-docker run -d --name "$NAME" --restart always \
+if ! docker run -d --name "$NAME" --restart always \
   -p "${APP_BIND}:${APP_PORT}:8000" \
   --env-file .env \
   -v "$ROOT/data:/app/data" \
-  "$NAME" >/dev/null
+  "$NAME" >/dev/null 2>run.err; then
+  cat run.err >&2
+  rm -f run.err
+  if command -v ss >/dev/null 2>&1; then
+    echo
+    echo "Порт ${APP_PORT} держит не контейнер, а процесс на хосте:"
+    sudo ss -ltnp 2>/dev/null | grep ":${APP_PORT}" || ss -ltnp 2>/dev/null | grep ":${APP_PORT}" || true
+    echo "Остановите его либо задайте другой APP_PORT в .env."
+  fi
+  exit 1
+fi
+rm -f run.err
 
 printf 'Ожидание готовности'
 i=0
