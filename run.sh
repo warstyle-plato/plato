@@ -8,7 +8,8 @@
 #   sh run.sh            — собрать и запустить
 #   sh run.sh stop       — остановить
 #   sh run.sh logs       — смотреть журнал
-#   sh run.sh free-port  — снять с порта посторонний процесс (uvicorn руками)
+#   sh run.sh who-port   — показать, кто занял порт и кто его перезапускает
+#   sh run.sh free-port  — снять с порта посторонний процесс или службу
 #
 # Порт и привязка берутся из .env (APP_PORT, APP_BIND) или из окружения.
 set -eu
@@ -36,24 +37,63 @@ free_port() {
 }
 
 # Кроме контейнера порт может занять запущенный вручную uvicorn — так на стенде
-# и оказалось: старая сборка жила процессом на хосте, а не в docker. Убиваем
-# только слушателей нужного порта и только по явной команде.
-kill_host_listeners() {
-  command -v ss >/dev/null 2>&1 || {
-    echo "Нет утилиты ss — определить владельца порта нечем." >&2
-    return 1
-  }
-  pids=$(sudo ss -ltnpH "sport = :${APP_PORT}" 2>/dev/null || ss -ltnpH "sport = :${APP_PORT}" 2>/dev/null || true)
-  pids=$(printf '%s\n' "$pids" | sed -n 's/.*pid=\([0-9]*\).*/\1/p' | sort -u)
+# и оказалось: старая сборка жила процессом на хосте, а не в docker.
+port_pids() {
+  { sudo ss -ltnpH "sport = :${APP_PORT}" 2>/dev/null || ss -ltnpH "sport = :${APP_PORT}" 2>/dev/null; } \
+    | sed -n 's/.*pid=\([0-9]*\).*/\1/p' | sort -u
+}
+
+pid_cmd() { tr '\0' ' ' < "/proc/$1/cmdline" 2>/dev/null || ps -o args= -p "$1" 2>/dev/null | head -1; }
+
+# systemd-служба, которой принадлежит процесс. В cgroup v2 строка выглядит как
+# 0::/system.slice/developaid.service; пользовательские сессии (session-*.scope,
+# user@*.service) службой не считаем — их гасить нельзя.
+pid_unit() {
+  unit=$(sed -n 's|.*/\([A-Za-z0-9@:._-]*\.service\)$|\1|p' "/proc/$1/cgroup" 2>/dev/null | head -1)
+  case "$unit" in user@*|"") unit= ;; esac
+  printf '%s' "$unit"
+}
+
+# Кто держит порт и, главное, кто его перезапускает. Если pid меняется от
+# запуска к запуску — процессом управляет служба, и убивать его бесполезно.
+who_port() {
+  command -v ss >/dev/null 2>&1 || { echo "Нет утилиты ss — определить владельца порта нечем." >&2; return 1; }
+  pids=$(port_pids)
   [ -n "$pids" ] || { echo "Порт ${APP_PORT} свободен."; return 0; }
   for pid in $pids; do
-    echo "Снимаю с порта ${APP_PORT}: pid $pid — $(ps -o args= -p "$pid" 2>/dev/null | head -1)"
-    kill "$pid" 2>/dev/null || sudo kill "$pid" 2>/dev/null || true
+    echo "pid $pid: $(pid_cmd "$pid")"
+    ppid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+    [ -n "${ppid:-}" ] && [ "$ppid" != "1" ] && echo "  родитель $ppid: $(pid_cmd "$ppid")"
+    unit=$(pid_unit "$pid")
+    [ -n "$unit" ] && echo "  служба systemd: $unit"
+  done
+}
+
+kill_host_listeners() {
+  command -v ss >/dev/null 2>&1 || { echo "Нет утилиты ss — определить владельца порта нечем." >&2; return 1; }
+  pids=$(port_pids)
+  [ -n "$pids" ] || { echo "Порт ${APP_PORT} свободен."; return 0; }
+  for pid in $pids; do
+    echo "Порт ${APP_PORT} держит pid $pid: $(pid_cmd "$pid")"
+    unit=$(pid_unit "$pid")
+    if [ -n "$unit" ]; then
+      # Просто убить нельзя: systemd поднимет процесс заново с новым pid.
+      echo "  это служба $unit — останавливаю и снимаю с автозапуска"
+      sudo systemctl stop "$unit" 2>/dev/null || systemctl stop "$unit" 2>/dev/null || true
+      sudo systemctl disable "$unit" 2>/dev/null || true
+    else
+      kill "$pid" 2>/dev/null || sudo kill "$pid" 2>/dev/null || true
+    fi
   done
   sleep 2
   for pid in $pids; do
     kill -0 "$pid" 2>/dev/null && { kill -9 "$pid" 2>/dev/null || sudo kill -9 "$pid" 2>/dev/null || true; }
   done
+  if [ -n "$(port_pids)" ]; then
+    echo "Порт ${APP_PORT} всё ещё занят — кто-то перезапускает процесс:" >&2
+    who_port >&2
+    return 1
+  fi
   echo "Порт ${APP_PORT} освобождён."
 }
 
@@ -61,6 +101,10 @@ case "${1:-up}" in
   free-port)
     free_port
     kill_host_listeners
+    exit 0
+    ;;
+  who-port)
+    who_port
     exit 0
     ;;
   stop)
@@ -92,7 +136,7 @@ if ! docker run -d --name "$NAME" --restart always \
   if command -v ss >/dev/null 2>&1; then
     echo
     echo "Порт ${APP_PORT} держит не контейнер, а процесс на хосте:"
-    sudo ss -ltnp 2>/dev/null | grep ":${APP_PORT}" || ss -ltnp 2>/dev/null | grep ":${APP_PORT}" || true
+    who_port || true
     echo
     echo "Снять его:  sh run.sh free-port   (затем снова sh run.sh)"
     echo "Или задайте другой APP_PORT в .env."
