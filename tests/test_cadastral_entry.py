@@ -275,3 +275,21 @@ def test_edit_mode_opens_the_project_from_the_card():
     # Загрузка ТЭП из сессии не должна сама отправлять карточку в чат.
     assert "applyTelegramManualTep(sessionData.manual_tep,{silent:true})" in page
     assert "if(!silent)await sendTelegramResult();" in page
+
+
+def test_incoming_project_clears_the_previous_territory():
+    """Территория прошлого проекта не должна пережить загрузку нового.
+
+    Она хранится в браузере отдельно от ТЭП: приходил расчёт по 22 участкам
+    Подмосковья, а блок «Участок» продолжал показывать один московский номер
+    из прошлого раза вместе с его площадью и округом.
+    """
+    page = main.PAGE
+    body = page[page.index("async function applyTelegramManualTep"):]
+    body = body[:body.index("\nlet telegramEditSubmitting")]
+    assert "delete inputs._cadastral_analysis;" in body
+    assert "delete inputs._mo_calc;" in body
+    assert "moResult=null;" in body
+    # И показываем участки пришедшего проекта, а не пустое поле.
+    assert "((manual.source||{}).cadastral_numbers)" in body
+    assert "Участков в расчёте: " in body
