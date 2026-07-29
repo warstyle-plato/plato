@@ -157,6 +157,39 @@ def test_guest_parking_of_a_foreign_project_is_cleared():
     assert filled.cell(row=row, column=4).value == 0
 
 
+def test_standalone_objects_can_be_switched_on():
+    """«Объект включен» живёт в колонке G литералом, а не в сценарных D:F.
+
+    Пока выгрузка писала только в D:F, МФОЦ, ТЦ и наземный паркинг оставались
+    выключенными в каждой модели, и их выручка пропадала: свод по очередям
+    показывал 104 млрд против 118 млрд в отчёте.
+    """
+    stale = load_workbook(TEMPLATE)["Вводные"]
+    switches = [row for row in range(1, stale.max_row + 1)
+                if main._plato_normalize(stale.cell(row=row, column=2).value) == "объект включен"]
+    assert switches, "в шаблоне не нашлись выключатели объектов"
+    for row in switches:
+        assert stale.cell(row=row, column=7).value == "Нет"
+
+    content, _ = main.fill_plato_template(
+        {**main.DEFAULT_INPUTS, "offices_enabled": True}, main.TEP_DEFAULT)
+    filled = load_workbook(io.BytesIO(content))["Вводные"]
+    offices = next(row for row in switches
+                   if str(filled.cell(row=row, column=1).value or "").startswith("МФОЦ"))
+    assert filled.cell(row=offices, column=7).value == "Да"
+
+
+def test_scenario_formulas_survive_the_fill():
+    """Колонка G в остальных строках выбирает сценарий формулой — её не трогаем."""
+    stale = load_workbook(TEMPLATE)["Вводные"]
+    content, _ = main.fill_plato_template(main.DEFAULT_INPUTS, main.TEP_DEFAULT)
+    filled = load_workbook(io.BytesIO(content))["Вводные"]
+    for row in range(1, stale.max_row + 1):
+        before = stale.cell(row=row, column=7).value
+        if isinstance(before, str) and before.startswith("="):
+            assert filled.cell(row=row, column=7).value == before, f"строка {row}"
+
+
 def test_sales_distribution_matches_the_template(single_project):
     """Веса продаж по месяцам обязаны совпадать: иначе разойдётся средняя цена."""
     template, _ = single_project
