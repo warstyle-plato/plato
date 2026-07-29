@@ -26,6 +26,7 @@ main = _wrapper.core
 
 openpyxl = pytest.importorskip("openpyxl", reason="openpyxl нужен только для проверки выгрузки")
 from openpyxl import load_workbook  # noqa: E402
+from openpyxl.utils import get_column_letter  # noqa: E402
 
 PHASING = {
     "enabled": True,
@@ -59,6 +60,18 @@ def archive(phasing=None, project_name="Мытищи") -> zipfile.ZipFile:
 
 def workbook(zip_file: zipfile.ZipFile, name: str, *, values: bool = False):
     return load_workbook(io.BytesIO(zip_file.read(name)), data_only=values)
+
+
+def column_of(sheet, header: str, header_row: int = 4) -> int:
+    """Номер колонки по её заголовку.
+
+    Привязываться к буквам нельзя: любой новый показатель сдвигает таблицу, и
+    тест начинает проверять соседний столбец, ничего об этом не сообщая.
+    """
+    for cell in sheet[header_row]:
+        if cell.value == header:
+            return cell.column
+    raise AssertionError(f"колонка «{header}» не найдена в строке {header_row}")
 
 
 # --- состав архива ----------------------------------------------------------
@@ -238,7 +251,44 @@ def test_phase_comparison_totals():
     values = workbook(zip_file, "90_Детализация_консолидация.xlsx", values=True)["Сравнение очередей"]
     last = formulas.max_row
     assert formulas.cell(row=last, column=1).value == "Итого"
-    assert values.cell(row=last, column=3).value == pytest.approx(expected, rel=1e-9)
+    revenue_column = column_of(formulas, "Выручка, млн ₽")
+    assert values.cell(row=last, column=revenue_column).value == pytest.approx(expected, rel=1e-9)
+
+
+def test_phase_comparison_has_unit_metrics():
+    """Удельные показатели: цена и расходы на метр продаваемой и на метр ГНС."""
+    bundle = main._run_authoritative_model(main.DEFAULT_INPUTS, main.TEP_DEFAULT, [], PHASING)
+    zip_file = archive(PHASING)
+    formulas = workbook(zip_file, "90_Детализация_консолидация.xlsx")["Сравнение очередей"]
+    values = workbook(zip_file, "90_Детализация_консолидация.xlsx", values=True)["Сравнение очередей"]
+    first = formulas.max_row - len(bundle["comparison"])
+    for label, key in [
+        ("Цена реализации, тыс ₽/м² продаваемой", "revenue_per_saleable_th"),
+        ("Цена реализации, тыс ₽/м² ГНС", "revenue_per_gns_th"),
+        ("Полные расходы, тыс ₽/м² продаваемой", "expenses_per_saleable_th"),
+        ("Полные расходы, тыс ₽/м² ГНС", "expenses_per_gns_th"),
+    ]:
+        column = column_of(formulas, label)
+        for offset, item in enumerate(bundle["comparison"]):
+            cell = values.cell(row=first + offset, column=column).value
+            assert cell == pytest.approx(item[key], rel=1e-9)
+            assert item[key] > 0
+
+
+def test_phase_comparison_unit_totals_are_ratios_not_sums():
+    """В строке «Итого» удельный показатель — отношение сводных, а не сумма."""
+    bundle = main._run_authoritative_model(main.DEFAULT_INPUTS, main.TEP_DEFAULT, [], PHASING)
+    zip_file = archive(PHASING)
+    formulas = workbook(zip_file, "90_Детализация_консолидация.xlsx")["Сравнение очередей"]
+    values = workbook(zip_file, "90_Детализация_консолидация.xlsx", values=True)["Сравнение очередей"]
+    last = formulas.max_row
+    column = column_of(formulas, "Цена реализации, тыс ₽/м² продаваемой")
+    revenue = sum(item["revenue"] for item in bundle["comparison"])
+    saleable = sum(item["saleable_sqm"] for item in bundle["comparison"])
+    expected = revenue / saleable / 1000
+    assert values.cell(row=last, column=column).value == pytest.approx(expected, rel=1e-9)
+    assert expected < sum(item["revenue_per_saleable_th"] for item in bundle["comparison"])
+    assert str(formulas.cell(row=last, column=column).value).startswith("=IF(")
 
 
 def test_phase_files_hold_their_own_model():
@@ -515,11 +565,15 @@ def test_monthly_sheet_has_a_debt_and_escrow_line_chart():
 
 
 def test_phase_comparison_has_llcr_and_revenue_charts():
-    book = workbook(archive(PHASING), "90_Детализация_консолидация.xlsx")
-    charts = book["Сравнение очередей"]._charts
-    assert len(charts) == 2
-    assert charts[0].series[0].val.numRef.f.startswith("'Сравнение очередей'!$I$")
+    sheet = workbook(archive(PHASING), "90_Детализация_консолидация.xlsx")["Сравнение очередей"]
+    charts = sheet._charts
+    assert len(charts) == 3
+    llcr = get_column_letter(column_of(sheet, "LLCR"))
+    assert charts[0].series[0].val.numRef.f.startswith(f"'Сравнение очередей'!${llcr}$")
     assert len(charts[1].series) == 2
+    # График удельных должен смотреть на колонку удельных, а не на рубли.
+    unit = get_column_letter(column_of(sheet, "Цена реализации, тыс ₽/м² продаваемой"))
+    assert charts[2].series[0].val.numRef.f.startswith(f"'Сравнение очередей'!${unit}$")
 
 
 def test_chart_parts_are_well_formed_and_declared():
