@@ -324,3 +324,23 @@ def test_only_one_tep_source_survives_at_a_time():
     # Каждый источник ставит свою метку — иначе проверять было бы нечего.
     for marker in markers:
         assert f"inputs.{marker}=" in page
+
+
+def test_project_source_outranks_the_saved_area():
+    """Площадь берётся у источника проекта, а не из сохранённого значения.
+
+    В inputs могла остаться площадь прошлого расчёта, и карточка показывала
+    её вместо площади текущего участка: 1,15 га вместо 0,65 га.
+    """
+    page = main.PAGE
+    line = next(part for part in page.split("\n") if "site_area_ha:Number(" in part)
+    order = [line.index(name) for name in ("n.site_area_ha", "manualMeta.site_area_ha", "inputs.site_area_ha")]
+    assert order == sorted(order), f"порядок источников нарушен: {line.strip()}"
+
+
+def test_glavapu_import_writes_the_area_into_the_model():
+    """ГлавАПУ знает площадь точно — она не должна оставаться только справочной."""
+    page = main.PAGE
+    body = page[page.index("async function applyGlavapu()"):]
+    body = body[:body.index("applyRequiredSocialProgramFromGlavapu")]
+    assert "inputs.site_area_ha=glavapuArea" in body
