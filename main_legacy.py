@@ -34,7 +34,7 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse, FileResponse, Response
 from pydantic import BaseModel
 
-app = FastAPI(title="DevelopAid Development Investment Model", version="0.12.71")
+app = FastAPI(title="DevelopAid Development Investment Model", version="0.12.72")
 
 PRESET_DIR = Path(__file__).resolve().parent / "presets"
 MANUAL_TEP_TEMPLATE_FILENAME = "DevelopAid_Шаблон_ТЭП.xlsx"
@@ -1231,7 +1231,7 @@ def analyze_cadastral_territory(req: CadastralAnalysisRequest) -> dict[str, Any]
         headers={
             "Accept": "application/json",
             "Content-Type": "application/json; charset=utf-8",
-            "User-Agent": "DevelopAid-Development-Model/0.12.71",
+            "User-Agent": "DevelopAid-Development-Model/0.12.72",
         },
     )
     try:
@@ -1354,7 +1354,7 @@ _NSPD_BASE_URL = (_env_str("NSPD_BASE_URL", "https://nspd.gov.ru")).rstrip("/")
 _NSPD_TIMEOUT_SECONDS = _env_float("NSPD_TIMEOUT_SECONDS", 25.0)
 _NSPD_LAND_THEMATIC_ID = 1
 _NOMINATIM_BASE_URL = (_env_str("NOMINATIM_BASE_URL", "https://nominatim.openstreetmap.org")).rstrip("/")
-_LAND_LOOKUP_USER_AGENT = "DevelopAid-Development-Model/0.12.71"
+_LAND_LOOKUP_USER_AGENT = "DevelopAid-Development-Model/0.12.72"
 _LAND_LOOKUP_MAX_RESULTS = int(_env_float("LAND_LOOKUP_MAX_RESULTS", 30))
 # Номера опрашиваются параллельно: 30 последовательных запросов к НСПД — это
 # минуты ожидания. Больше трёх потоков портал начинает придерживать.
@@ -3096,21 +3096,30 @@ _MO_CALC_API_URL = _env_str("MO_CALC_API_URL", "").strip()
 _MO_CALC_TIMEOUT_SECONDS = max(30.0, _env_float("MO_CALC_TIMEOUT_SECONDS", 180.0))
 
 
-def _mo_calculate_remote(query: str, limit: int) -> dict[str, Any]:
-    """Считает участок на удалённом ядре. Тихого отката на локальный расчёт нет.
+def _core_api_url(path: str) -> str:
+    """Адрес метода ядра. Базу берём из MO_CALC_API_URL, чтобы не плодить переменные."""
+    base = _env_str("CORE_API_URL", "").strip().rstrip("/")
+    if not base and _MO_CALC_API_URL:
+        base = _MO_CALC_API_URL.rstrip("/")
+        if base.endswith("/mo/calculate"):
+            base = base[: -len("/mo/calculate")]
+    return f"{base}{path}" if base else ""
+
+
+def _core_post(url: str, payload: dict[str, Any], timeout: float) -> dict[str, Any]:
+    """Запрос к ядру. Тихого отката на локальный расчёт нет.
 
     Локальный расчёт на Render дал бы пустой ЕГРН и молча неверные ТЭП, что
     хуже честной ошибки: пользователь бы не узнал, что цифры не с НСПД.
     """
-    payload = json.dumps({"query": query, "limit": int(limit)}).encode("utf-8")
     request = urllib.request.Request(
-        _MO_CALC_API_URL,
-        data=payload,
+        url,
+        data=json.dumps(payload).encode("utf-8"),
         headers={"Content-Type": "application/json", "Accept": "application/json"},
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=_MO_CALC_TIMEOUT_SECONDS) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         detail = ""
@@ -3126,7 +3135,7 @@ def _mo_calculate_remote(query: str, limit: int) -> dict[str, Any]:
         raise HTTPException(
             status_code=504,
             detail=(
-                f"Ядро расчёта не ответило за {int(_MO_CALC_TIMEOUT_SECONDS)} с. "
+                f"Ядро расчёта не ответило за {int(timeout)} с. "
                 "Сведения ЕГРН по большому списку участков собираются долго — попробуйте ещё раз."
             ),
         ) from exc
@@ -3137,11 +3146,25 @@ def _mo_calculate_remote(query: str, limit: int) -> dict[str, Any]:
         ) from exc
 
 
+def _mo_calculate_remote(query: str, limit: int) -> dict[str, Any]:
+    return _core_post(
+        _MO_CALC_API_URL, {"query": query, "limit": int(limit)}, _MO_CALC_TIMEOUT_SECONDS
+    )
+
+
 def mo_calculate_via_core(query: str, limit: int = 30) -> dict[str, Any]:
     """Единая точка входа бота: удалённое ядро, если оно задано, иначе локальный расчёт."""
     if _MO_CALC_API_URL:
         return _mo_calculate_remote(query, limit)
     return mo_calculate(MoCalculateRequest(query=query, limit=limit))
+
+
+def land_lookup_via_core(query: str, limit: int = 30) -> dict[str, Any]:
+    """Поиск участка по адресу, номеру или координатам — там же, где доступен НСПД."""
+    url = _core_api_url("/land/lookup")
+    if url:
+        return _core_post(url, {"query": query, "limit": int(limit)}, _MO_CALC_TIMEOUT_SECONDS)
+    return land_lookup(LandLookupRequest(query=query, limit=limit))
 
 
 @app.post("/mo/calculate")
@@ -3362,7 +3385,7 @@ def _proxy_genplan(asset_path: str, request: Request) -> Response:
         target,
         headers={
             "Accept": request.headers.get("accept", "*/*"),
-            "User-Agent": "DevelopAid-Development-Model/0.12.71",
+            "User-Agent": "DevelopAid-Development-Model/0.12.72",
         },
     )
     try:
@@ -3958,6 +3981,14 @@ _TELEGRAM_PUBLIC_BASE_URL = (
     or os.environ.get("RENDER_EXTERNAL_URL")
     or "https://plato-development-investment-model.onrender.com"
 ).rstrip("/")
+
+# Вебхук и мини-приложение живут по разным адресам, когда бот на Render, а
+# модель — там, где доступен НСПД: адрес вебхука должен остаться на Render,
+# иначе Telegram перестанет доставлять обновления, а кнопка «Открыть модель»
+# должна вести на ядро, иначе в модели не заработают ни адреса, ни область.
+_TELEGRAM_WEB_APP_BASE_URL = (
+    os.environ.get("TELEGRAM_WEB_APP_BASE_URL") or _TELEGRAM_PUBLIC_BASE_URL
+).rstrip("/")
 _TELEGRAM_RUNTIME: dict[str, Any] = {
     "configured": False,
     "username": "",
@@ -4130,7 +4161,7 @@ def _telegram_web_app_url(
         fragment["cad"] = ", ".join(cadastral_numbers)
     if mode:
         fragment["mode"] = str(mode)
-    return _TELEGRAM_PUBLIC_BASE_URL + "/?telegram=1#" + urllib.parse.urlencode(fragment)
+    return _TELEGRAM_WEB_APP_BASE_URL + "/?telegram=1#" + urllib.parse.urlencode(fragment)
 
 
 def _telegram_send_message(
@@ -4373,6 +4404,17 @@ def _telegram_dialog_callback(chat_id: int, user_id: int, action: str) -> None:
             "<code>77:02:0016009:1934, 77:02:0016009:1935</code>",
         )
         return
+    if action == "flow_address":
+        _telegram_dialog_save(chat_id, {"step": "await_address", "data": {}})
+        _telegram_send_message(
+            chat_id,
+            "<b>Введите адрес участка</b>\n\n"
+            "Например: <code>Московская область, Мытищи, Олимпийский проспект, 29</code>.\n"
+            "Можно и координатами через запятую: <code>55.9105, 37.7365</code>.\n\n"
+            "DevelopAid найдёт участок в ЕГРН и посчитает территорию. "
+            "Выдача фильтруется до земельных участков — квартир и машино-мест в ней не будет.",
+        )
+        return
     if action == "flow_cad_no":
         _telegram_dialog_save(chat_id, {"step": "await_site_area", "data": {}})
         _telegram_send_message(
@@ -4516,8 +4558,20 @@ def _telegram_handle_dialog_text(chat_id: int, text: str) -> bool:
     step = str(dialog.get("step") or "")
     data = dialog.setdefault("data", {})
     try:
+        if step == "await_address":
+            _telegram_dialog_clear(chat_id)
+            _telegram_handle_address(chat_id, text)
+            return True
         if step == "await_cadastre":
-            numbers = _parse_cadastral_numbers(text)
+            # В поле для номеров могут прислать адрес — не заставляем начинать заново.
+            try:
+                numbers = _parse_cadastral_numbers(text)
+            except HTTPException:
+                if not _looks_like_address(text):
+                    raise
+                _telegram_dialog_clear(chat_id)
+                _telegram_handle_address(chat_id, text)
+                return True
             _telegram_dialog_clear(chat_id)
             _telegram_handle_cadastral_numbers(chat_id, numbers, text)
             return True
@@ -4602,6 +4656,7 @@ def _telegram_start_message(chat_id: int, user_id: int) -> None:
     _telegram_dialog_clear(chat_id)
     button = {"inline_keyboard": [
         [{"text": "Расчёт по кадастровым номерам", "callback_data": "flow_cad_yes"}],
+        [{"text": "Поиск участка по адресу", "callback_data": "flow_address"}],
         [{"text": "Собрать ТЭП без кадастра", "callback_data": "flow_cad_no"}],
         [{"text": "Скачать Excel-шаблон ТЭП", "callback_data": "tep_template"}],
         [{"text": "Открыть мини-приложение DevelopAid", "web_app": {"url": _telegram_web_app_url(chat_id, [])}}],
@@ -5009,6 +5064,65 @@ def cadastral_route(numbers: list[str], analysis: dict[str, Any] | None) -> str:
     return "moscow" if analysis else "error"
 
 
+# Ручной ввод ТЭП описывает объём: «Участок 2,4 га. Квартиры 42 000 м²». Адрес
+# таких единиц не содержит, и по ним свободный текст отличается от адреса —
+# иначе описание проекта уходило бы искать в ЕГРН и ждало бы там три минуты.
+_TEP_TEXT_MARKERS = re.compile(
+    r"\d\s*(га|гa|m2|м2|м²|кв\.?\s*м|тыс|мест|шт|млн|млрд)", re.IGNORECASE
+)
+
+
+def _looks_like_address(text: str) -> bool:
+    value = str(text or "").strip()
+    if not value or len(value) > 300:
+        return False
+    if _TEP_TEXT_MARKERS.search(value):
+        return False
+    return bool(re.search(r"[А-Яа-яЁёA-Za-z]{3}", value))
+
+
+def _telegram_handle_address(chat_id: int, query: str) -> bool:
+    """Ищет участок по адресу через ядро. Возвращает False, если ничего не нашлось."""
+    _telegram_send_message(chat_id, "Ищу участок по адресу в ЕГРН…")
+    try:
+        found = land_lookup_via_core(query, limit=_LAND_LOOKUP_MAX_RESULTS)
+    except HTTPException as exc:
+        _telegram_send_message(
+            chat_id,
+            "<b>Не удалось найти участок по адресу.</b>\n" + html.escape(str(exc.detail)),
+        )
+        return True
+    results = [item for item in (found.get("results") or []) if item.get("cadastral_number")]
+    if not results:
+        hidden = int(found.get("hidden_count") or 0)
+        note = (
+            f"\nПо этому адресу нашлись только объекты недвижимости ({hidden}), а не земельные участки."
+            if hidden else ""
+        )
+        _telegram_send_message(
+            chat_id,
+            "<b>Участок по этому адресу не найден.</b>" + note
+            + "\n\nПопробуйте уточнить адрес или пришлите кадастровый номер.",
+        )
+        return True
+
+    numbers = [str(item["cadastral_number"]) for item in results]
+    lines = [
+        f"• <code>{html.escape(str(item['cadastral_number']))}</code>"
+        + (f" · {_telegram_number(item.get('area_sqm'), 0)} м²" if item.get("area_sqm") else "")
+        + (f" · {html.escape(str(item.get('address')))}" if item.get("address") else "")
+        for item in results[:10]
+    ]
+    more = f"\n…и ещё {len(numbers) - 10}" if len(numbers) > 10 else ""
+    _telegram_send_message(
+        chat_id,
+        f"<b>Нашёл по адресу: {len(numbers)} участ{_telegram_plural(len(numbers), 'ок', 'ка', 'ков')}</b>\n"
+        + "\n".join(lines) + more + "\n\nСчитаю по ним территорию…",
+    )
+    _telegram_handle_cadastral_numbers(chat_id, numbers, ", ".join(numbers))
+    return True
+
+
 def _telegram_handle_cadastral_numbers(chat_id: int, numbers: list[str], query: str = "") -> None:
     analysis: dict[str, Any] | None = None
     failure = ""
@@ -5072,7 +5186,7 @@ def _telegram_handle_message(message: dict[str, Any]) -> None:
         status = "подключён" if _TELEGRAM_RUNTIME.get("configured") else "запускается"
         _telegram_send_message(
             chat_id,
-            f"<b>DevelopAid bot:</b> {status}\nTelegram ID: <code>{user_id}</code>\nВерсия: 0.12.71",
+            f"<b>DevelopAid bot:</b> {status}\nTelegram ID: <code>{user_id}</code>\nВерсия: 0.12.72",
         )
         return
     if command == "/cancel":
@@ -5087,6 +5201,9 @@ def _telegram_handle_message(message: dict[str, Any]) -> None:
         return
     if command == "/cadastre":
         _telegram_dialog_callback(chat_id, user_id, "flow_cad_yes")
+        return
+    if command == "/address":
+        _telegram_dialog_callback(chat_id, user_id, "flow_address")
         return
     if command == "/tep":
         _telegram_dialog_callback(chat_id, user_id, "flow_cad_no")
@@ -5120,6 +5237,10 @@ def _telegram_handle_message(message: dict[str, Any]) -> None:
     try:
         numbers = _parse_cadastral_numbers(text)
     except HTTPException:
+        # Адрес раньше уходил в сбор ТЭП вручную, и бот спрашивал площадь в
+        # гектарах вместо того, чтобы найти участок — хотя веб-версия ищет.
+        if _looks_like_address(text) and _telegram_handle_address(chat_id, text):
+            return
         _telegram_handle_freeform_tep(chat_id, text)
         return
     _telegram_handle_cadastral_numbers(chat_id, numbers, text)
@@ -5194,6 +5315,7 @@ def _telegram_configure() -> None:
             "commands": [
                 {"command": "start", "description": "Главное меню"},
                 {"command": "cadastre", "description": "ТЭП по кадастровым номерам"},
+                {"command": "address", "description": "Найти участок по адресу"},
                 {"command": "tep", "description": "Собрать ТЭП без кадастра"},
                 {"command": "model", "description": "Открыть модель DevelopAid"},
                 {"command": "template", "description": "Скачать Excel-шаблон ТЭП"},
@@ -5239,7 +5361,7 @@ def telegram_status() -> dict[str, Any]:
         "allowed_users_count": len(allowed),
         "configured_at": _TELEGRAM_RUNTIME.get("configured_at") or "",
         "last_error": _TELEGRAM_RUNTIME.get("last_error") or "",
-        "version": "0.12.71",
+        "version": "0.12.72",
     }
 
 
@@ -8121,7 +8243,7 @@ def fetch_current_cbr_key_rate() -> dict[str, Any]:
         req = urllib.request.Request(
             feed_url,
             headers={
-                "User-Agent": "Mozilla/5.0 DevelopAid-Development-Model/0.12.71",
+                "User-Agent": "Mozilla/5.0 DevelopAid-Development-Model/0.12.72",
                 "Accept-Language": "ru-RU,ru;q=0.9",
             },
         )
@@ -8167,7 +8289,7 @@ def fetch_current_cbr_key_rate() -> dict[str, Any]:
         req = urllib.request.Request(
             url,
             headers={
-                "User-Agent": "Mozilla/5.0 DevelopAid-Development-Model/0.12.71",
+                "User-Agent": "Mozilla/5.0 DevelopAid-Development-Model/0.12.72",
                 "Accept-Language": "ru-RU,ru;q=0.9",
             },
         )
@@ -10092,7 +10214,7 @@ def _monthly_detail(
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "version": "0.12.71"}
+    return {"status": "ok", "version": "0.12.72"}
 
 
 @app.get("/defaults")
@@ -13050,7 +13172,7 @@ def _openai_responses_request(payload: dict[str, Any]) -> dict[str, Any]:
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
-            "User-Agent": "DevelopAid-Development-Model/0.12.71",
+            "User-Agent": "DevelopAid-Development-Model/0.12.72",
         },
         method="POST",
     )
@@ -13522,7 +13644,7 @@ details.cadastral-box>summary::marker{color:#888}
 <div class="shell">
   <div class="brandbar"><img src="data:image/webp;base64,UklGRkQfAABXRUJQVlA4IDgfAADw2wCdASqQBuUAPlEokUWjoqIRSg08OAUEtLd8Bm4LvaDeIgcn+HIR46WTKOC9Gf3bth/t39s/cD+2f9vudfMn65+z/7efaphb7M9Sn499p/2X9k/bT8mfyH/Ld5/AC/Hf53/ifyd/sXDHbh5gXtt9X/0n91/Jr6QZmv2VqA/mrxmFADyk/5j/vf3j/R/uv7cfo7/x/5n4C/5d/av+p+d/xbf/T23fsX//fdI/Wv/7j2GpthKGKJYCQF5ahiiWAkBPyYnEwOOJtbMD3CrKVFRd5NbWIYaD3m8cTa2kPbwEA2ZIe2KHKWIIE2to5AZYje8C8tQxRLASAvLUHstWEuOJtbMD261fzzZbHpWhDo3zy3qM7adn8ZOAqL8P9jJ2ug8cTazQDJWcBohiiIlFKCriw2C+iJWGGK9zJX+FpEjPgFtvxhf13uougBg79kMh7zeOJtbSI/e0EJjCwrW1T7Bt+utZEjPn7YxBgd6IlgCh8vUCUJCqAKuLDX+PGlk61LALEP/ElHQQJwFjK+ar+/4DUg+frZhm11TNbzbuHqu2DSg+4mO21TcKKY/oWX9M2TOpzHy6PEokY8ixc62NB7zcQ2NTW0iRhwGrg28Hu3AuOuDS67jwdnUqJq/w5sdZn1pEjQOOJs2PmiwTj8BrMfZhDU8dTt9yG2intwWlmgb3ebxxM+HxvLrPINjWRqy/4pjv+yqr2BL+vqsg94HHExxnjiQUXuDCNqJuN9gWGr+CgBiGwHTDn8iRoHG2+IZ0HvN4Ik4fiPPgBRTHZ3xzB1ZpjhI+Nt5uISr0zXpyuwk+RI0DjXeQnrNjaAUcjBPK9MB8qDurYmjBvA8qdKWxoPebw1+cl8W0iRntiEsqxXSjIDRCLBh9iShbSJGJGmz7JKT0raro0S9cRK01zag2+2kSNA4a5vLrSJGFq+zMcUwa3S2GduE26clmMurtnPP1WiqA4i2UJaxEaBxxMmlO4G3tnbTfyXKXCTMhRmBKIDR0w/tXtEQhI7ktA44m1nkGN5dZ44mR9AmKeuq+9f/5EjQOOHkPkes5VV8hUmsCtCqB67sCbW0iRjyLFzrYzH7v+aok0P2TudrIifI5tAzvuwEtEeodmw2H01njibOeBa4rXTuR5hwMhE+UYk7cUDDzQCy2eWBGJP3xSz62NB7qrpXoQTa2jbvS4LeTCRgkaBxxNo2GbzCozrgJGsqPVM8KN7SJGgcbb4hnQe5Zpa2D84v3kJvv4niMTpgHw35kCB2gIyIJaRy6tpEgE/kWwikGzQDOtzNW6+4e4y8vu4CP3ETTJfbpeix5JXW+A3YSfIkY8vftCCbW0brBd8JM6NMrzd73BqfIkaBwVmOdV2VFfFSp8qZjESc93m8cTazxiUsZ1dLJcRN8qybxK4IRoHGxJysLm58MW96AM8Aa929U0ig2sg0EKMtKY4sbyqXfTZCJIC2hqCZ5iF/PNvQQ6tDwud3azxxM4qxDOg95vGu+sSEKoFtUVsWWHF+25vHE2ssT4kzccRYeLJZHOCjfikYiTnu83jibWeMSljJMGLto1CgAQmV0u7XyJGgcFY4KaYD3XcqMhd4ii8crXDlA25WN7YwlA77zDdB7zeNewBXP7Vm70vUGIz8o1tIfmbZfx4CbW0da9umgofaaWuM0Qu37DpFSqVd0oV082VZ6RfG4n/9CYF3R/vxH3v/XIAo3LQcZ6d5oaOPQD6/5vHE2tlpVrxqvNYGb8SHg9atk+1uTw/3ontpEjQOCg6skDBKd3eKPr9gG6Urgcferb2AXxnwCM0eJGbxxNnAJIx2HjkcfOcEwZ2DbCKfIdZFU0RlAPXZJJp8zwE2tpEtgH+wwvDkvmeYo3c1dcGrBUZbr/N2mPJKuaDa5JHMBtTL2TLDOyOYc2FIQkzW0iRoHHE2tpEjQOOJtbt4jQOOJtbSJGgccTa2kSNA5Bsa2kSNA44m1tIkaBxxNraeUaBxxNraRICm+tAolgJAXlqGKJYCQF5ahiiWAkBeWoYolgJAXlqGKJYCQF5ahiiWAkBeWoYolgJAXlqGKJYCQF5ahiiWAkBeWoYolgJAXlqGKJYCQF5ahihlETI1suTEShbSJGgccTa2kSNA44m1tIkaBxxNraRI0DjibW0iRoHHE2tpEjQOOJtbSJGgccTa2kSMkum9NLdU4VcWGwX0RLASAvLUMUSwEgLy1DFEsBIC8tQxRLASAvLUMUSwEgLy1DFEsBIC8tQxRLASAvLUMUSwEgLy1DFEsBIC8tQxRLASAvLUMUSwB/zXeRlaCbW0iRoHHE2tpEjQOOJtbSJGgccTa2kSNA44m1tIkaBxxNraRI0DjibW0iRoHHE2tpEjQONcAAP78nPZ1QxDwjw8Ry/mKg/5QcLH1Y1qOWumDn7BujG+vuKMLdeg9UPp8dtXEOVKJ6xYGecPAsjHypoSNzSDJCmntzcd3dkjmsK1JJ8N4dfrcIUOyU+Gluoh7O6iTQvDYQJ5WX/mftkPc7pWw0jE9jo5JYLwf8xZeH20EkujDFdLY5PVoXprKqj/g1vr3VCrnbfxeWxXH/rBmmxh8LZ6I40bsXBjmyh+mkKmkh9lvjsZDVBGr0EXA9Xe8zlAr5L4p6xDyt5CC/GJiukyUs6fKXiPKI7nwTActLsx9SH3exHVY22RZw4MWtn4Q1k/Vh98yOWgJMmp0r+EBb/Y3zhW4phZaifyQv2xFuIsXHou7s0BZm1VHvler2UYI2efL/wdxgYLBg7yEDYdepdMaIj50n32I69S/zdWVSXtd9t7COM7pOIMKQLwjgH2NUYXUSDX3J94/lyc/uo2P8TH8GtyBaoWU3BHPIQKWyQxB3uuOQowDAZTF8Ooai7Mllj/fNUET4MzWxiwMcR551J4G2h6P5frfSzrX5mRcjFF9W+2LoBfuf3FL0c9WpSaFmDKrWYIM4JByJJk9MsJotWoSyLi8Fu8tnGs7qjEZKwMNAQirfjS6b1Xtm+xhVGBP9N0qbqB2/3HhvpMpt9fmhIbdtTFoQQDl4Se+weBtSmtUCF+01wshJVthNJr/BLCKOEvDLzkG9hGXdvD00QRVuL2V+x+DMNlnAAHljqhlucxOKN8DPQbJsy4MyKOhLBcEuM/2ZOCenwaOZ2kC1TKKzGNP+RXpIxaZWK6XSQL5vccKuKp/iX4Efeyydm0gWDYDOyblA67hDe8LsUsVIpakj3aXpu0lnscnyCxBTvslmPMdQHpvrxfspj3HEu3xzPUgW9yMLt7EL5IeTUu9STiIyvucoKq/y9B3MvRbPDedabHVYbCJmdeJ2i9UTLPRKvlPzcF8yzZ7zpGOPr0yvTz/y6tUYbmiZdrT7YNY13mgYmCP/LbsiiI957uaE9LzkO7xC+C5Zt0UaTVouo+/+d+Mf5Rrjb6BWmEi5lAfunZK5gbxjQaPMqRgMXWMo0VKVvtnXERxhk8dlXn0Zs+EY4wpp5i8S8G1SgFKVwoWO3NBE4lYZ9MEVMf7+6hnP2aTB7U1QQrDErAgdLp1Qi5QN4H6+hESLBOcAMdphWsH0JP5Y/pCrAzarcPQqhSE7gdUvr9nd/dM4TxQZZ9OCAiMuVSRsyDU5b4LawH719opJTVRVoDV3+mFWeKHtENhmgBCeSuZwtAuNOAg5sgnypCdLC1yZ5ZnwfRk376qbzLi4/m5NhAOuiFxPN4R/nLoL0obdKDGvVQBwcnw9ltLd3f6OLMFHvMrYDE+w+lX1acm+0zZdGNmFVYEadQl+SYdzEe7IyPlt91SmmXgD3kgFlQAs9TdeT/wh5XJX1eLD/ADlYdobNbil7dVRIV0R9DwPv7wymKGW2NlRF/GJlmUYs+fACm65WB1bL6d6KsBYFhL1zacVQ+vZ1vvWqpmug3oYCMC+TIsBkhaUntBLLOqyMayZUc/Gbw54OmXZs5sqQ4jDIGDc7rJXRrajL044M/7mp94y5R3c2QxgaZLXOonGfJnPQs2xEmUrfIkf3NRf/5SM4TDqeswCSvnoU7cLXJ1kbI88jZmle+4Wh8GdJ3Ij92joRodfl7e+nP/ZKM1QMhcCYkEuE/bMPx3sJdyBB4zTF9bvZsfbDQ0fR4v5G63yR733Q/t0EjWA9xwG6IWMo/bGYi81hTrdA/ienItm7mV+gaVRwVNEFhxvYANqtxL0IvS+RiXNGk/akp9uMNkCfFij0Apc6qST8xEW3GoecJUXh4+4EQct2RI9LRLk7psZJ8uYzd4Q3+4d+eBrCLDgxbMNK1Q9nZkd9Acje2t5WFO5yuwsYQ6TDgfd7+eH2jYXzrEi48tjcMNwtLOvP672EDSTjMKzyqdmkW9fkKIEFY++mQf8zxz81EFdMwiZIDpbKeVMgetnF7+wAzsxYBnZafrBLAfTnI2XRV9VkUNDFGcZt7/1+eTZNgKgm5qC+c/gQDIxbrs+lnuCfCYQBWrR/VUi0r2OUG8lAfyMjXA3F/bGEr0sMiHfniPwxQrpTiR7a5r9jHNH0ydj5HiyphEgp9UISgCl2khWEkKrLyX5uD6XCDzFcuADknKLtEkr+Bvs5DoZnk8kid6vNXK4zQyvomJnoRlXYXY9jYsxHlnA9LUjHeGjgoHkRtAvozajP/uHYSRvA8K69KWU9lQEvLESTPDD4TJ1IDZ1KdoU3EZ5NauZzxi2KUb40QNkJvkDKFjw/S8zbVew8xXJO+kxtU2Y4aTmiRTMUg7xooeW6VBurvYxr04mCxVVzxKyHFhn4ZRYARog9vC2hON7ELzBdiIRwoq7ohrD4k+0sUi7CxdYO0AF2nYgfzEP4guT2KinYp5If1DKmfbnnwkpsRxK/n2CknjUwm791zb6qMCHH5Okh8kORCcZHJT22oqobH7ZQj3ywiLxh7NWfFESQEuGUs9uftenSE2MFiwJAccgdkaEVhGW+f1qgmFBohziaIjfZccpF2PzapYVcRlGjdD89nyyAkKa0kbaEPEaG63va1NqohfB0Ijz1vUadEZKoF0Z7XlKMWARifMA5BwGZ2Gi+EXppeAcxYvCHAbXVzdlQxw9j2C1JOZptepkRP0n2wxPcrHuus/C9Ek7NR8NxTeGV4eecIIhmk+Q0+9OGfKdMRQpCSKURZ91cFiEOi26jhhRo1sn4JbK/CNKeMuSxOHSUDFSCVjD+rl4dB2BsnjX4+0D9wqtW6hyHC5e/KK8JurCqU1HY//lM7yovFPss3Czeq6RDLU5N5G8sWtTR1SmlBtb4ZswxmfXgPh1XvQKR8IXlF0pyQGBeky7qCqAYOH7rGzyuVEWwbIGqhkSb9Rhfl28akoW0xUlqOtriOa5N+ejADL5ORrVv0FJNxURnBzb6OUEy9o65LpaF+cFWV1AWyhooaE6H/F6WrgWZVK4FaH5VG016fBWjNRMlia+IyO471X9TS2BIctVwj60pNdHQ+plibpX3aGJwo8J2oOq8c0/fbPUdL5tQyfAB13yk3iTI995udExSmrq2lhHVz/4oaXhHDIKVCBE68KHTQH+T3MhcjXrSyLlTN5ahrM3fT9XQZezYlSm8bB8KvTeSpjf9cQR1kb3g6kYFSkbCQUkOuzIELANUbXDcTHYCvpJQKrDMtD3mH6tqtEFgHUpYq06O18AO6uhfpLV+mRPxJMDSwv9L2AxYfzDH6nOEw7BuIT303QwXPItS2KQ6MsdqTWNixH6QoKueWyzjlmuyFiezfJDDduSgQpKaAmOcAWmZbdY43x2llqRxmUcXVcAdakTUFfvoXnPzEO+vAm5iwIPY99neW2776tCDNpoAaS/JW1j/DvtvcIwECFBpB6MeWzB/nDoUfP5u8tDMZtAB5TCoAMSZH522i+DtakTgXgqE5pShi0+BFAhopjtPan+PIlOAWrqGeWLRGnVPzY/DCxlVZBFbN9m2yX63uD4XPILqDU9Nr7oz2dEIlAbj8ljQ3IHhAqfgqfN7++G99S8t56U4uOarjQyw/brl0yo2y6A5363xCoFNgWt84bHBQeLgAU8fBH1TovVYyyyqj/mIkhQb+jOtgXxQ5rfZG2kYoQIjKqbIw3qeCGpWZf3o77lw9dd9CGy6dmyofMhbPh7mOQdlRZZ03g2TF+09rfkT2qAz9C9tvvMa15I0/2uAj/tU3pm8XA/NJif/eEigp/03+5onvT4S0y9P8EVY0InmVVew+8/3iZJdg+VHpDcd3wNCmGdtlokb2UhZG4O2NHOoQvraLeruujhKbuZxXgRZXEcN72JZaLRwFK50ZEDD2iIowZ0FSYR/mC7ZCOdA9pr81057hwL/yH6KZZTKzUO+hQIAZIxRJEz25PnRCR94grNzO3K6oKMbI6lV45NYoTI63/wtc7G6HkmqhxyYxRQgikm77cN7cELvH+D5cH+MIlb218tHu96W0e/WwaZBIffTdECIQHIiqf2I0HXAGLs9H13/26YzFHA+pVIIPxAw48WrgoB8wfVIFkE8ZHVkxaXOtNEGpjS26pKCogl6mDWTj0gc12Uuk4wxLhkifbVLZK290VIOtRQundIJyT0UzBxQKztOWl9QCPogRg0xA47aaraODmAXhqFqIrjg0n16h9AuvP+QB1pEQTOHBCXeL+Y7uZTyMXjLz5xkkSlySKXrKRMMA03GKAppLr97zPGCbzIC6vmeNvKGn+ik7oNmgdVM/UHBTsIUJr5UFVz7ZoXZ+nEgQOKeEWuFDy3RNgONmja9WGLUiHTJk91r+2OH+xjHS/jkKBxqps6ncJv6FCnhfZNnZDVA/RdSw0TQaH11TBXUDwJtvm1QREIRhtgzled2NvZl736QfL2JdhXOKUjxlig0GQ174mCzamBEXidUgZAZtHx/8exVfVwoWt+IFctD0LTNpQhio/3Cm5Grg1tvBMKPyBatZPjM/pIYiNula9KnQDXseNfC53Pghug999kdrR0XzLuEIj3nS3BzpLU6cCqhULp55jJ7AUP4Cn6MkPuOo1jfNPWWEIuJgNqVC1YE47VNI4lk/PVc04IAHtx0Srxn9NtyxOI3MYaGzI9FGh+nheqTYtua/9//PJYgbjmUTM0VyNCXwkK9VEY7d5XQImcfQG2jAxiXyqzXX4KAikGcaNKJTLfDZw3xWGproTtkQS5uwuZYAOZygDEBayMjhdUN9VQCKi2QAWo5leOi0JzucAdHEK9jga1tFDemGH6Vnz9dVYcurgySKjXcpJp6XveuAbJ65YeVd/SqyZpOs6kWh//NAq14BMmDnnRcFXFG4ITR9C1kO9HLyx7theLUAmARj8jN8TrU2yJwgVoFA/cFqh3ugCqZArEIaNWCJEdX+RP2cC1ySCemrXfs+1FF6hHUaLMKRLrYDpLWygjIH7klkryieeb7gS28Nl3o1ockbUYr/CN5c5wySF/Qg4Ad2fDvuNTXjTF9thqoEu5kSawdiM98pTEcR4+uB+dzJ9cU9Ut09Yd+ccsI59jsBvWMV6xczlOm16lok2hhhJo5AGZZB/mbNgZoqsBS9pv9dDqg3UZkj+knY+9w02N+txnnX7JxvzA3xwZ4IeUU0l0xtlgOfId6jsMyjnaP8Ihkb/mWgwHbgZYQQZK/oDiMZLlNuU3OLjLmocdIX5pvpHoDH1x/oP3opBrzsvQ61MurPQwK84/eqCXsPXthFwrYjH/NnaGNpjlv6UHH8BPXF2wlw5mNo8HKsnoxWa/8Jdei75Nl7/EGVF5ljRzIh72jt/DvXb85PLvsEAOFmTsNE0OwY9ZBq0wpUWV9Nx5T5sUb7B6nZbOVJi9H1ZziVfjQCJRmkJFdJeZeMWq5xR4sSOUly9tIteAPHvV7kBiCQCXEY9HDOErIuFMS3D8XEWcAqY5wCsW7bT9AHGfZmAMeAg3kBC5t1crk5JLTKof2eYAHtZtebpHiy+cZmiDN3CiyRv+P1przggbcEqcayGa5m9cxqZbIBdOJ1L+yQbVCG3hGoMeB6HxKbEqVIWGFCQXxWdO7vZQ+8dccOLH+sUfPNmi/YSFhRv3LwFu/k89rOgQyVyJbdXDwsue9eW2fkv7ghjBJczQoBNM2K8fR9pVfPQSW9/enMwRzPJe0WKwO1LcbfveRDBuPcn9yBcZCZuTnmyVNOse6YyxNaqrm31joTh0+uJhIXv7I6uAj3dMfYkyrsDdDMPk+0yEW9z37MbHFU+wdk5AMnOHl06dj3eXbAG/AoED9/OlJzMKDjjhyDslHueiaZod634H9/PhD/+6vyuFTvgp3OSxLeKGgJgXPdrPUWmpLsHpEV0djL/JK1LrAf7DmtHxwZgmXMgnGis2SjW+RuE9iXmW/h2KNC1NmBoHo+y/g1hQGDQ6fxTJEDkdfQlQGsfFIQ4aM66F0qx+WYu56EXXjVSnLRLqaryZTHfViLiHMR4s83HRZDVyA/13h6y1J0CjIIeTyD0PISJhjS0pFn9wK3HgvUkNrHjBrqkPT+R7uTvUcYLAtOhQpdhdgUjII+XZ1XkNh2IMPvJjfjGnMBZjXWE/Lys7/WddP4uB9+Q/c3BhxQ1tZmLsOlekKC+SZ7rb4RGnNuwAYvRrXxufEL4hW+aRzb2isj5Yh23lnTod12ZP+dhgdO5G/eINXWNiKovtRdZZx5O3t/r6AevjBJDSl7P6vvvuqPajF9P2u6RpPsOU4XzXetvvaqm3/PfKtFiGEBhpA4TmT6PcLLHwHPQ3047497R3AAQHTggFSmtRWjLbTg6dREOtucQHLw+rWpAu0emVjy2ZV796UuILRjnPzA4JMl6xKNhQ6+B3AlfL6E576ZwZ3UdT5JtmupNFwwXkFnf8VUuz76t+AUuCQEF2XzMPdAgELFckKRWuMAf+DwmJekyOyk0ugQwlTk44VVUIWC+VRNSYvHOv4XvkBDdu2wTkVNMBY1BUAwCdCmlLxS190XGB5yvtlnZt+Sek+ozM0AHZNixYPU6ajENDgzcE3DTV22gsi1ErzinieIFC3f5qXHxMg+G1ip9FSkJgGtEtrOVORS9OEJYcl6nyyPcawWQwd2RHc4qNsR0RREIi7pwAT7mKBuvwHIOevYpSUYCrL/cUgdynUbWquIwoqjd/DoetQhJhQ10v4HMdbFvu0/jJlf6aMtVAtT9rqhfHahJlZyMUu+8pCP6RBppRmvunfqyPmUEUhrXHapPUZ34galUxSiWCEdLJQ50y5yBY5m2aHNcEbp8zLcxvW118eMNSLHM6jJCvagwAE50VHLXhcSh9wh/TAluBBAcKH0L//RpUrcGJG4xmg1IKQG6cVuvPH5E9OUBTDYquH39a3VDB08960i5A1QC9pHkJAb9CjdbHW5FzduFgDEeaWcCplUhEeYFE2k7TMKryj7Up1BSKsD+nHroIKISBJdlT1ULmgiNfDAY/LQ7rMSs5H5K3BKC1nTS5+iEyVaFYjmuNgcWG9dCYbwe9nAgz7xk8xtpdzt8SJdeTt82QNgUZhzYChkKwoE/COq8eYNt/+fLYoDCWpdF8U3zqW+Wia5ZCnDTG2ZaFK6XA9aNmQVAEXGpzIjkPmCswC8KTpztzl8/2zsztepjoVNg+6Z+yd4H2Mn7WlfjlP9A3LecnFRIHBNVP0NvOhz+m5gFZKf5lHt0Uck4SQcFY8pC8S6+RjqlgWtMIoUORm0U3vsT+A/5noFaY+l9ZMtNFkyD882iBgvPUKsWXAxfBEksBvxjfyd73B2I03PdsuoZUD+3pd9YtnN3trlzOGotuXgWw2U31axl5Iu+wiJFnYzFQgmwPmQEmAdbhQJ2cusoksnAG/mbN3UNq1UqSUZehHtGjIkHKBdPtSCZCmdXCMhhYX/mgozOt7vEOj2IIum76lDKXrO0YNfGT9B1flW7/EVW9B+vwri7FasmJlPYzqQ/I4VVtq7gsN+p5GCvMXlstg2uOkY+7f06IQRCHfAg8/qdxtl1oLux/HuV8swzyw4j1HTFT5W+NY934gnHVqIWFpGegHMbdSQgZj6iuRV9/MbKe3fQMfYIemG3iQ4I4bbqUicCeoi5zQr8EWgdK47xJIePK0NmXHqHJgk/rukdABlkHzYcTA8Cu2lqSFIy4WB1/mZs4ZgoTZcRJXtyg5YMaeByPKictFIzjfmRnK16BKPh3w+bRfj1AvfrF4l0fqv9wVS2a2XFrNbN0sbQ7y6ldDWdtVERQXYh3wkdalAukWtaQJFffdkUN1xSBwPFxYl4mquk5TO/ACvwTH4evOljf11t7GIV+VvFgNxmUu16SgVgZHs0SIPYlt/X3HyHcHr/VSgBjnBI32teiCQH4FyKgiAQIVpKxGE9+SCIxg++ZvYyyU5WWUgFy8zdjZOr73ThjTdOrqcK6TDdWMy1yKxffSP0lB+kV4/54QaqFS5g2qtisVDP+lPdA6emQN9D6rHAJve4wTHzBrblihhnphljnpRjbsOjxVlPZ2GIZ4AcRwGFfIeE895LErej1TZKcqCghZf9QYB7Og4J++EWqPoRBx/EDHRS8AeXKlVaWaTwPwyEcDLpOUJn7ivHvYnjIZaFdI4hgSkMbcNJwRgwv42nRkoists3+ZWtEcHYWuNUMStDYpDWC+u71ksb/8X2V6MpSge+XFpHmd9v6frcAAAAAFETvYvcKLo1PvKQ5m/HAkWaf+mGTX1fsAAAhOy4XkDy5/n4As6AAAAB2C6vaalqblgH0Z5sJPLhvL2MkuqwAAIDch6aogZ/3+AAAAAAAAA="><div class="brandline"></div></div>
   <div class="header">
-    <div class="title"><h1>Девелоперская инвестиционная модель</h1><p>v0.12.71 · ТЭП · экономика · БРИДЖ · проектное финансирование · эскроу · LLCR</p></div>
+    <div class="title"><h1>Девелоперская инвестиционная модель</h1><p>v0.12.72 · ТЭП · экономика · БРИДЖ · проектное финансирование · эскроу · LLCR</p></div>
     <div class="actions">
       <div class="scenario">Класс&nbsp;
         <select id="projectClassSelect" onchange="applyProjectClassPreset(this.value)" style="min-width:135px">
@@ -16360,7 +16482,7 @@ def index() -> HTMLResponse:
         "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
         "Pragma": "no-cache",
         "Expires": "0",
-        "X-DevelopAid-Version": "0.12.71",
+        "X-DevelopAid-Version": "0.12.72",
     })
 
 # _DEVELOPAID_EDIT_MODE_FIX_V01217

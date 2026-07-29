@@ -219,3 +219,69 @@ def test_bot_does_not_reimplement_the_methodology():
     body = source[start:source.index("\ndef ", start + 10)]
     for forbidden in ("_mo_upks", "_mo_vri_kd", "МoNorm", "* 0.0", "/ 1000 *"):
         assert forbidden not in body, forbidden
+
+
+# --- поиск по адресу ---------------------------------------------------------
+
+@pytest.mark.parametrize("text", [
+    "Мишина 46 Москва",
+    "Московская область, Мытищи, Олимпийский проспект, 29",
+    "город Химки улица Победы",
+])
+def test_address_text_is_recognized_as_an_address(text):
+    assert main._looks_like_address(text)
+
+
+@pytest.mark.parametrize("text", [
+    "Проект Северный. Участок 2,4 га. Квартиры 42 000 м², коммерция 2 500 м².",
+    "Участок 2,4 га",
+    "Подземный паркинг 620 мест",
+])
+def test_tep_description_is_not_mistaken_for_an_address(text):
+    """Описание объёма не должно уходить в ЕГРН и ждать там три минуты."""
+    assert not main._looks_like_address(text)
+
+
+def test_address_lookup_feeds_the_cadastral_flow(monkeypatch):
+    sent, routed = [], []
+    monkeypatch.setattr(main, "_telegram_send_message",
+                        lambda chat_id, text, **k: sent.append(text) or {"ok": True})
+    monkeypatch.setattr(main, "land_lookup_via_core", lambda q, limit=30: {
+        "results": [
+            {"cadastral_number": "50:12:0100131:259", "area_sqm": 6509.0, "address": "Мытищи"},
+            {"cadastral_number": "50:12:0100131:46", "area_sqm": 4210.0, "address": "Мытищи"},
+        ],
+    })
+    monkeypatch.setattr(main, "_telegram_handle_cadastral_numbers",
+                        lambda chat_id, numbers, query="": routed.append(numbers))
+    assert main._telegram_handle_address(1, "Мытищи, Олимпийский 29") is True
+    assert routed == [["50:12:0100131:259", "50:12:0100131:46"]]
+    assert "Нашёл по адресу: 2 участка" in "\n".join(sent)
+
+
+def test_address_with_only_premises_says_so(monkeypatch):
+    sent = []
+    monkeypatch.setattr(main, "_telegram_send_message",
+                        lambda chat_id, text, **k: sent.append(text) or {"ok": True})
+    monkeypatch.setattr(main, "land_lookup_via_core",
+                        lambda q, limit=30: {"results": [], "hidden_count": 14})
+    main._telegram_handle_address(1, "Мишина 46 Москва")
+    report = "\n".join(sent)
+    assert "не найден" in report and "14" in report
+
+
+def test_lookup_goes_to_the_core_when_configured(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(main, "_MO_CALC_API_URL", "https://developaid.ru/mo/calculate")
+    monkeypatch.setattr(main, "_core_post", lambda url, payload, timeout: seen.setdefault("url", url))
+    main.land_lookup_via_core("Мытищи", 30)
+    assert seen["url"] == "https://developaid.ru/land/lookup"
+
+
+def test_web_app_link_can_leave_the_webhook_host(monkeypatch):
+    """Вебхук остаётся на боте, мини-приложение уезжает на ядро."""
+    monkeypatch.setattr(main, "_TELEGRAM_WEB_APP_BASE_URL", "https://developaid.ru")
+    monkeypatch.setattr(main, "_telegram_session", lambda *a, **k: "session")
+    url = main._telegram_web_app_url(1, [])
+    assert url.startswith("https://developaid.ru/?telegram=1#")
+    assert main._TELEGRAM_PUBLIC_BASE_URL not in url
