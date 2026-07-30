@@ -40,7 +40,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.13.7"
+VERSION = "0.13.8"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -7864,6 +7864,58 @@ def _plato_repair_vri_columns(
                    "label": "Первые месяцы рассрочки ВРИ", "value": "формулы достроены"})
 
 
+def _plato_apply_pf_rate_methodology(
+    workbook: Any, filled: list[dict[str, Any]], missing: list[str],
+) -> None:
+    """Привести ставку ПФ на листе «КРЕДИТЫ» к действующей методике.
+
+    Шаблон считает ставку двумя ветками: строка 56 «СЗ > Эскроу» — взвешенная
+    сумма базовой и специальной ставок, строка 57 «СЗ < Эскроу» — снижение
+    специальной ставки на трансферный доход (D17) и полка 0,01% годовых выше
+    двух покрытий. Вторая ветка описывает то, чего в кредитном договоре нет:
+    покрывать больше 100% долга нечего, и ниже специальной ставка не идёт.
+    Ровно эти две ветки убраны из движка, и пока они оставались в книге, она
+    считала долг почти бесплатным — 360,3 млн ₽ процентов против 746,5 млн ₽
+    в расчёте на одних и тех же вводных.
+
+    Поэтому строка 55 больше не выбирает ветку, а строка 56 берёт вес покрытия
+    с ограничением сверху. Трогаются только помесячные колонки: в P–R той же
+    строки лежат сводные AVERAGEIF, и их формулы другие.
+    """
+    if "КРЕДИТЫ" not in workbook.sheetnames:
+        missing.append("КРЕДИТЫ · методика ставки ПФ")
+        return
+    sheet = workbook["КРЕДИТЫ"]
+    # =IF(X$3<$D61,IF(X53>1,X57,X56),X$13) -> =IF(X$3<$D61,X56,X$13)
+    branch = re.compile(
+        r"^=IF\((?P<col>[A-Z]{1,2})\$3<\$D(?P<anchor>\d+),"
+        r"IF\((?P=col)53>1,(?P=col)57,(?P=col)56\),(?P=col)\$13\)$"
+    )
+    weight = re.compile(r"\b([A-Z]{1,2})53\b")
+    changed = 0
+    for column in range(1, sheet.max_column + 1):
+        rate = sheet.cell(row=55, column=column)
+        share = sheet.cell(row=56, column=column)
+        if not isinstance(rate.value, str) or not isinstance(share.value, str):
+            continue
+        match = branch.match(rate.value.strip())
+        if not match or "MIN(" in share.value:
+            continue
+        col = match.group("col")
+        rate.value = f"=IF({col}$3<$D{match.group('anchor')},{col}56,{col}$13)"
+        share.value = weight.sub(r"MIN(\g<1>53,1)", share.value)
+        changed += 1
+    if not changed:
+        # Шаблон переставили или формулы переписали — молча считать по старому
+        # нельзя, это возвращает расхождение по процентам.
+        missing.append("КРЕДИТЫ · методика ставки ПФ")
+        return
+    filled.append({
+        "sheet": "КРЕДИТЫ", "row": 55,
+        "label": "Ставка ПФ · вес покрытия ограничен 1×", "value": changed,
+    })
+
+
 def fill_plato_template(
     inputs: dict[str, Any],
     tep: dict[str, dict[str, Any]],
@@ -8058,6 +8110,7 @@ def fill_plato_template(
                        "label": "Стоимость смены ВРИ", "value": round(land_rights, 3)})
 
     _plato_fill_land_sheet(workbook, merged, filled)
+    _plato_apply_pf_rate_methodology(workbook, filled, missing)
 
     # Имя проекта в шапке ОТЧЕТа — не украшение: без него каждая выгрузка
     # уезжает заказчику подписанной чужим проектом из шаблона.
