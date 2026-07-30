@@ -85,21 +85,48 @@ def test_products_with_area_are_never_flagged():
                 if item["code"] == CODE and item["evidence"].get("product") == "underground_parking"]
 
 
-def test_glavapu_import_zeroes_products_it_does_not_report():
-    """ГлавАПУ не считает кладовые — значит они не должны остаться от прошлого проекта.
+def test_every_import_path_resets_the_territory():
+    """Любые новые данные участка обнуляют прежние — одним правилом, а не по месту.
 
-    Сервер выбрасывает storage из карты соответствия, если строк по кладовым в
-    таблице нет. Страница же дописывала ТЭП поверх прежней, и 833 кладовые
-    чужого проекта пережили импорт московского участка.
+    ГлавАПУ не считает кладовые, поэтому сервер выбрасывает storage из карты
+    соответствия. Страница дописывала ТЭП поверх прежней, и 833 кладовые чужого
+    проекта пережили импорт московского участка.
     """
     page = main.PAGE
-    body = page[page.index("async function applyGlavapu()"):]
-    body = body[:body.index("repairParkingFromGlavapu();")]
-    for product in ("storage", "standalone_retail", "offices", "above_parking"):
-        assert f"'{product}'" in body, product
-    assert "if(glavapuTep[key]||!tep[key])return;" in body
+    assert "function resetTerritoryData(options)" in page
+    for entry in ("async function applyGlavapu()",
+                  "async function applyMo(options)",
+                  "async function applyTelegramManualTep(manual,options)"):
+        body = page[page.index(entry):]
+        body = body[:body.index("\n\n")] if "\n\n" in body[:3000] else body[:3000]
+        assert "resetTerritoryData(" in body, entry
+
+
+def test_reset_clears_products_and_markers():
+    page = main.PAGE
+    body = page[page.index("function resetTerritoryData(options)"):]
+    body = body[:body.index("async function applyGlavapu()")]
+    assert "Object.keys(tep).forEach" in body
+    for marker in ("_glavapu_import", "_manual_tep_import", "_mo_calc", "_cadastral_analysis"):
+        assert marker in page[page.index("const TERRITORY_MARKERS"):page.index("const TERRITORY_MARKERS") + 200]
     assert "inputs.retail_enabled=false;" in body
     assert "inputs.above_parking_enabled=false;" in body
+
+
+def test_reset_keeps_the_analyst_assumptions():
+    """Цены, себестоимость и ставки — не данные участка, их стирать нельзя."""
+    page = main.PAGE
+    keys = page[page.index("const TERRITORY_INPUT_KEYS"):page.index("const TERRITORY_MARKERS")]
+    for assumption in ("apartment_price_th", "main_above_th_per_sqm", "pf_spread_pp",
+                       "discount_rate_pct", "project_class", "construction_months"):
+        assert assumption not in keys, assumption
+
+
+def test_silent_mo_recalc_keeps_the_phasing():
+    """Правка плотности — тот же участок: настроенную очерёдность терять нельзя."""
+    page = main.PAGE
+    assert "resetTerritoryData({keepPhasing:silent})" in page
+    assert "if(!keepPhasing)phasing=makeDefaultPhasing(1);" in page
 
 
 def test_server_drops_storage_when_glavapu_is_silent():

@@ -282,14 +282,13 @@ def test_incoming_project_clears_the_previous_territory():
 
     Она хранится в браузере отдельно от ТЭП: приходил расчёт по 22 участкам
     Подмосковья, а блок «Участок» продолжал показывать один московский номер
-    из прошлого раза вместе с его площадью и округом.
+    из прошлого раза вместе с его площадью и округом. Теперь это делает одно
+    правило на все точки входа, а не чистка в каждой по отдельности.
     """
     page = main.PAGE
-    body = page[page.index("async function applyTelegramManualTep"):]
+    body = page[page.index("async function applyTelegramManualTep(manual,options)"):]
     body = body[:body.index("\nlet telegramEditSubmitting")]
-    assert "delete inputs._cadastral_analysis;" in body
-    assert "delete inputs._mo_calc;" in body
-    assert "moResult=null;" in body
+    assert "resetTerritoryData();" in body
     # И показываем участки пришедшего проекта, а не пустое поле.
     assert "((manual.source||{}).cadastral_numbers)" in body
     assert "Участков в расчёте: " in body
@@ -303,27 +302,16 @@ def test_only_one_tep_source_survives_at_a_time():
     «Ручной шаблон DevelopAid», а PDF-отчёт — именем округа из прошлого расчёта.
     """
     page = main.PAGE
-    markers = ("_glavapu_import", "_manual_tep_import", "_mo_calc")
-
-    def body_of(name: str) -> str:
-        start = page.index(name)
-        return page[start:start + 2200]
-
-    glavapu = body_of("async function applyGlavapu()")
-    assert "delete inputs._manual_tep_import;" in glavapu
-    assert "delete inputs._mo_calc;" in glavapu
-
-    mo = body_of("async function applyMo(options)")
-    assert "delete inputs._glavapu_import;" in mo
-    assert "delete inputs._manual_tep_import;" in mo
-
-    manual = body_of("async function applyTelegramManualTep(manual,options)")
-    assert "delete inputs._glavapu_import;" in manual
-    assert "delete inputs._mo_calc;" in manual
-
+    markers = page[page.index("const TERRITORY_MARKERS"):]
+    markers = markers[:markers.index("\n")]
+    for name in ("_glavapu_import", "_manual_tep_import", "_mo_calc", "_cadastral_analysis"):
+        assert name in markers, name
+    reset = page[page.index("function resetTerritoryData(options)"):]
+    reset = reset[:reset.index("async function applyGlavapu()")]
+    assert "TERRITORY_MARKERS.forEach(key=>{delete inputs[key]});" in reset
     # Каждый источник ставит свою метку — иначе проверять было бы нечего.
-    for marker in markers:
-        assert f"inputs.{marker}=" in page
+    for name in ("_glavapu_import", "_manual_tep_import", "_mo_calc"):
+        assert f"inputs.{name}=" in page
 
 
 def test_project_source_outranks_the_saved_area():
