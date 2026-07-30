@@ -112,3 +112,40 @@ def test_a_direct_call_still_sends_everything(telegram):
 
     assert "PDF собран" in telegram
     assert telegram.count("вложение") == 2
+
+
+def test_the_bot_report_carries_the_sensitivity_section(monkeypatch):
+    """В боте окно закрывается сразу после расчёта — до вкладки не добраться."""
+    seen = {}
+    inputs = dict(core.DEFAULT_INPUTS)
+    inputs["purchase_price_mln"] = 700
+    tep = {key: dict(value) for key, value in core.TEP_DEFAULT.items()}
+    bundle = core._run_authoritative_model(inputs, tep, [], {})
+    monkeypatch.setattr(core, "_telegram_send_document_bytes", lambda *a, **k: None)
+    monkeypatch.setattr(core, "_telegram_send_message", lambda *a, **k: None)
+    monkeypatch.setattr(core, "build_model_archive", lambda *a, **k: (b"PK", "м.zip"))
+    monkeypatch.setattr(core, "_build_developaid_pdf",
+                        lambda payload: seen.update(payload) or b"%PDF-")
+
+    core._telegram_send_attachments(42, {"result": bundle["consolidated"], "inputs": inputs,
+                                         "tep": tep, "rates": [], "phasing": {}}, "", [])
+
+    assert seen.get("sensitivity"), "анализ не посчитан — раздела в отчёте не будет"
+    assert seen["sensitivity"]["items"]
+
+
+def test_an_explicit_analysis_is_not_recomputed(monkeypatch):
+    """Посчитанное на вкладке уходит как есть — второй раз считать незачем."""
+    seen = {}
+    monkeypatch.setattr(core, "_telegram_send_document_bytes", lambda *a, **k: None)
+    monkeypatch.setattr(core, "_telegram_send_message", lambda *a, **k: None)
+    monkeypatch.setattr(core, "build_model_archive", lambda *a, **k: (b"PK", "м.zip"))
+    monkeypatch.setattr(core, "_build_developaid_pdf",
+                        lambda payload: seen.update(payload) or b"%PDF-")
+    monkeypatch.setattr(core, "run_sensitivity",
+                        lambda *a, **k: pytest.fail("анализ пересчитан заново"))
+
+    core._telegram_send_attachments(42, {**SUMMARY["report_payload"],
+                                         "sensitivity": {"items": [], "base": {}}}, "", [])
+
+    assert seen["sensitivity"] == {"items": [], "base": {}}
