@@ -131,3 +131,56 @@ def test_the_page_offers_the_same_choices():
 def test_the_chosen_periodicity_reaches_the_engine():
     """Список отдаёт строку — движок обязан её понять."""
     assert core.n({"vri_periodicity_months": "6"}, "vri_periodicity_months", 3) == 6.0
+
+
+def render_periodicity(region: str, saved: float | str) -> dict:
+    """Отрисовывает поле периодичности настоящим кодом страницы."""
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node недоступен")
+    source = core.PAGE
+    start = source.index("     const mskQuarter=id==='vri_periodicity_months'")
+    end = source.index("     wrap.appendChild(el)", start)
+    script = (
+        f"let inputs={{vri_region:{json.dumps(region)},"
+        f"vri_periodicity_months:{json.dumps(saved)}}};\n"
+        "const id='vri_periodicity_months', type='select';\n"
+        "const el={value:'',disabled:false,title:''};\n"
+        + source[start:end] + "\n"
+        "console.log(JSON.stringify({value:el.value,disabled:el.disabled,"
+        "stored:inputs.vri_periodicity_months}));\n"
+    )
+    done = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
+    assert done.returncode == 0, done.stderr
+    return json.loads(done.stdout)
+
+
+def test_moscow_always_shows_the_quarter():
+    """Движок для Москвы считает по кварталу — поле обязано показывать его же."""
+    field = render_periodicity("msk", 12)
+
+    assert field["stored"] == 3, "в вводных осталось значение, которого расчёт не применит"
+    assert field["disabled"] is True, "поле можно поменять, а расчёт это проигнорирует"
+
+
+def test_the_default_for_moscow_is_the_quarter():
+    assert core.DEFAULT_INPUTS["vri_periodicity_months"] == 3
+    assert render_periodicity("msk", 3)["stored"] == 3
+
+
+def test_the_region_outside_moscow_keeps_its_choice():
+    field = render_periodicity("mo", 6)
+
+    assert field["stored"] == 6
+    assert field["disabled"] is False
+
+
+def test_the_engine_agrees_with_what_the_field_shows():
+    from datetime import date
+
+    for region, chosen, expected in (("msk", 12, 3), ("msk", 3, 3), ("mo", 6, 6), ("mo", 12, 12)):
+        settings = core._vri_settings(
+            {"vri_region": region, "vri_periodicity_months": chosen,
+             "vri_payment_mode": "installment", "vri_installment_years": 3},
+            date(2028, 1, 1))
+        assert settings["periodicity"] == expected, (region, chosen)
