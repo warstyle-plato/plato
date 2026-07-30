@@ -332,3 +332,34 @@ def test_glavapu_import_writes_the_area_into_the_model():
     body = page[page.index("async function applyGlavapu()"):]
     body = body[:body.index("applyRequiredSocialProgramFromGlavapu")]
     assert "inputs.site_area_ha=glavapuArea" in body
+
+
+def test_calculation_says_it_finished_and_closes():
+    """Мини-приложение висело поверх готовой карточки, и люди ждали ввода.
+
+    Автозакрытие было только на пути ГлавАПУ; расчёт по кадастру и Подмосковью
+    идёт через ручной ТЭП и оставался открытым.
+    """
+    page = main.PAGE
+    assert "function finishTelegramSession(note)" in page
+    assert "Расчёт завершён" in page
+    # Закрытие одно на все источники и вызывается после удачной отправки.
+    sent = page.index("telegramResultSent=true;")
+    tail = page[sent:sent + 900]
+    assert "finishTelegramSession(" in tail
+    # В режиме правки окно не закрывается: человек пришёл менять вводные.
+    assert "if(telegramMode==='edit'){" in tail
+    assert "showTelegramResendButton();" in tail
+
+
+def test_only_one_close_path_remains():
+    """Прежнее закрытие в ветке ГлавАПУ убрано, иначе пути снова разъедутся."""
+    page = main.PAGE
+    assert "setTimeout(()=>window.Telegram.WebApp.close(),700)" not in page
+    assert page.count("function finishTelegramSession") == 1
+
+
+def test_unrecognized_territory_also_closes_with_an_explanation():
+    """Если ТЭП не собрался, окно тоже не должно висеть молча."""
+    page = main.PAGE
+    assert "Территория не распознана" in page
