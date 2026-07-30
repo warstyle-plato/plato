@@ -15,7 +15,7 @@ from fastapi import HTTPException, Request
 from pydantic import BaseModel, Field
 
 _ROOT = Path(__file__).resolve().parent
-_RUNTIME_VERSION = "0.12.88"
+_RUNTIME_VERSION = "0.12.89"
 
 
 def _load_core():
@@ -153,7 +153,13 @@ def _remember_markup(chat_id: int, reply_markup: Any) -> None:
             # Пока эта строка перезаписывала указатель чата, карточка результата
             # тут же уводила Платона на сессию, у которой контекста нет вовсе.
             with _STATE_LOCK:
+                changed = _PLATON_LAST_URL.get(chat_id) != url
                 _PLATON_LAST_URL[chat_id] = url
+            if changed:
+                # Адрес нужен и соседнему воркеру: нажатие придёт в любой из них.
+                pointer = _state_read(f"chat:{chat_id}")
+                pointer["url"] = url
+                _state_write(f"chat:{chat_id}", pointer)
 
 
 def _resolve_context(chat_id: int) -> tuple[str, dict[str, Any]]:
@@ -518,6 +524,13 @@ def _platon_markup(chat_id: int, *, proposal: bool = False) -> dict[str, Any]:
         rows.append([{"text": "Не применять", "callback_data": "platon_discard"}])
     with _STATE_LOCK:
         url = _PLATON_LAST_URL.get(chat_id, "")
+    if not url:
+        # Адрес модели живёт в памяти одного воркера, а нажатие приходит
+        # в любой. Без диска кнопка просто пропадала — «никакой ссылки».
+        url = str(_state_read(f"chat:{chat_id}").get("url") or "")
+        if url:
+            with _STATE_LOCK:
+                _PLATON_LAST_URL[chat_id] = url
     if url:
         rows.append([{"text": "Открыть текущую модель", "web_app": {"url": url}}])
     rows.append([{"text": "Завершить диалог", "callback_data": "platon_stop"}])
@@ -633,23 +646,72 @@ def _run_agent(chat_id: int, text: str, *, intro: str = "") -> None:
         )
 
 
-def _apply_proposal(chat_id: int) -> bool:
+def _applied_message(applied: dict[str, Any]) -> str:
+    """Отчёт о применении. «Применены к новой ссылке» человеку ничего не говорит.
+
+    Кнопка называется одинаково до и после, поэтому по одному её виду не понять,
+    сменились вводные или нет. Перечисляем, что поменялось и на что.
+    """
+    if not applied:
+        return (
+            "<b>Не удалось применить изменения.</b>\n"
+            "Предложение устарело — переспросите Платона, и он подготовит его заново."
+        )
+    lines = []
+    for change in applied.get("changes") or []:
+        label = str(change.get("label") or change.get("variable") or "").strip()
+        if not label:
+            continue
+        lines.append(f"• {html.escape(label)}: {core._telegram_number(change.get('old'), 2)}"
+                     f" → <b>{core._telegram_number(change.get('new'), 2)}</b>")
+    if applied.get("error"):
+        return (
+            "<b>Вводные изменены, но ссылку пересобрать не вышло.</b>\n"
+            + ("\n".join(lines) + "\n\n" if lines else "")
+            + f"<i>{html.escape(str(applied['error'])[:200])}</i>\n"
+            "Кнопка «Открыть текущую модель» ведёт на прежний расчёт. "
+            "Откройте модель заново из карточки результата."
+        )
+    return (
+        "<b>Изменения применены.</b>\n"
+        + ("\n".join(lines) + "\n\n" if lines else "\n")
+        + "Кнопка <b>«Открыть текущую модель»</b> ниже уже ведёт на расчёт с новыми вводными — "
+        "модель пересчитается при открытии. Прежняя ссылка осталась со старыми значениями."
+    )
+
+
+def _apply_proposal(chat_id: int) -> dict[str, Any]:
+    """Применяет правку Платона и возвращает то, о чём надо отчитаться человеку.
+
+    Пустой словарь — не применилось. Ключ "error" — вводные поменялись, а ссылку
+    пересобрать не вышло: об этом надо сказать прямо, а не рапортовать успех.
+    """
     with _STATE_LOCK:
         pending = copy.deepcopy(_PLATON_PENDING.get(chat_id) or {})
     proposal = pending.get("proposal") or {}
     patch = proposal.get("patch") if isinstance(proposal, dict) else None
     session = str(pending.get("session") or "")
     if not isinstance(patch, dict) or not patch:
-        return False
+        return {}
+    changes = [c for c in (proposal.get("changes") or []) if isinstance(c, dict)]
+    error = ""
     with _STATE_LOCK:
         # Правка ложится либо в контекст мини-приложения, либо в ТЭП бота.
         context = _PLATON_CONTEXT_BY_SESSION.get(session) if session else _PLATON_TEP_CONTEXT.get(chat_id)
         if not context:
-            return False
-        context["inputs"].update(patch)
+            return {}
+        # Имена в patch — это переменные Платона, а не всегда поля модели.
+        # «Основное строительство» одно, а полей два (наземное и подземное), и
+        # простой update() записывал в inputs ключ, которого движок не читает:
+        # бот рапортовал о применении, а СМР оставалась прежней.
+        before = copy.deepcopy(context["inputs"])
+        for variable, value in patch.items():
+            core._apply_patch_value(context["inputs"], variable, value)
+        real_patch = {key: value for key, value in context["inputs"].items()
+                      if before.get(key) != value}
         session_data = copy.deepcopy(context.get("session_data") or {})
         overrides = copy.deepcopy(session_data.get("calc_overrides") or {})
-        overrides.update(patch)
+        overrides.update(real_patch)
         try:
             new_url = core._telegram_web_app_url(
                 chat_id,
@@ -661,12 +723,14 @@ def _apply_proposal(chat_id: int) -> bool:
         except Exception as exc:
             core._TELEGRAM_RUNTIME["last_error"] = "Платон/применение: " + str(exc)
             new_url = ""
+            error = str(exc)
         if new_url:
             _PLATON_LAST_URL[chat_id] = new_url
         _PLATON_PENDING.pop(chat_id, None)
         persisted = copy.deepcopy(context)
     # Правку надо донести до диска: иначе соседний воркер ответит по вводным,
-    # которые Платон уже пересчитал.
+    # которые Платон уже пересчитал, а кнопку «Открыть текущую модель» покажет
+    # со старым адресом или не покажет вовсе — ссылка жила только в его памяти.
     if session:
         _state_write(f"session:{session}", persisted)
     pointer = _state_read(f"chat:{chat_id}")
@@ -674,8 +738,10 @@ def _apply_proposal(chat_id: int) -> bool:
         pointer["context"] = persisted
     else:
         pointer["tep_context"] = persisted
+    if new_url:
+        pointer["url"] = new_url
     _state_write(f"chat:{chat_id}", pointer)
-    return True
+    return {"changes": changes, "url": new_url, "error": error}
 
 
 def _comment_tep(chat_id: int) -> None:
@@ -762,14 +828,8 @@ def _handle_update(update: dict[str, Any]) -> None:
                     _PLATON_PENDING.pop(chat_id, None)
                 _send_message(chat_id, "Предложенные изменения не применены.", reply_markup=_platon_markup(chat_id))
             elif data == "platon_apply":
-                if _apply_proposal(chat_id):
-                    _send_message(
-                        chat_id,
-                        "Изменения применены к новой ссылке текущей модели.",
-                        reply_markup=_platon_markup(chat_id),
-                    )
-                else:
-                    _send_message(chat_id, "Не удалось применить предложенные изменения.", reply_markup=_platon_markup(chat_id))
+                _send_message(chat_id, _applied_message(_apply_proposal(chat_id)),
+                              reply_markup=_platon_markup(chat_id))
             return
     message = update.get("message") if isinstance(update, dict) else None
     if isinstance(message, dict):

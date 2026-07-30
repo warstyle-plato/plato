@@ -214,15 +214,16 @@ def test_proposal_applies_to_bot_tep_context(sent, monkeypatch):
     wrapper._comment_tep(CHAT_ID)
 
     assert wrapper._PLATON_PENDING[CHAT_ID]["proposal"]["patch"]["purchase_price_mln"] == 1234.0
-    assert wrapper._apply_proposal(CHAT_ID) is True
+    applied = wrapper._apply_proposal(CHAT_ID)
+    assert applied and not applied["error"]
     assert wrapper._PLATON_TEP_CONTEXT[CHAT_ID]["inputs"]["purchase_price_mln"] == 1234.0
     assert CHAT_ID not in wrapper._PLATON_PENDING
     # ссылка на модель пересобрана с учётом правки
     assert wrapper._PLATON_LAST_URL[CHAT_ID].startswith("http")
 
 
-def test_apply_without_pending_proposal_is_false():
-    assert wrapper._apply_proposal(CHAT_ID) is False
+def test_apply_without_pending_proposal_reports_nothing_applied():
+    assert wrapper._apply_proposal(CHAT_ID) == {}
 
 
 # --- маршрутизация колбэков и команд ----------------------------------------

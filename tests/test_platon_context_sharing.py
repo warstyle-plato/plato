@@ -217,3 +217,61 @@ def test_an_open_dialog_switches_to_the_recalculated_model(state, monkeypatch):
     session, context = wrapper._resolve_context(42)
     assert session == "s-2"
     assert context["inputs"]["purchase_price_mln"] == 950
+
+
+PROPOSAL = {
+    "title": "СМР, тыс ₽/м² ГНС: 135.0 → 150.0",
+    "patch": {"construction_cost_th_per_sqm": 150.0},
+    "changes": [{"variable": "construction_cost_th_per_sqm",
+                 "label": "СМР, тыс ₽/м² ГНС", "old": 135.0, "new": 150.0}],
+}
+
+
+def arm_proposal(monkeypatch, session: str = "s-1") -> None:
+    monkeypatch.setattr(wrapper, "_PLATON_PENDING",
+                        {42: {"session": session, "proposal": PROPOSAL}})
+
+
+def test_applied_message_names_what_changed(state, monkeypatch):
+    """«Применены к новой ссылке» не говорит ни что применено, ни на что."""
+    deliver_context(monkeypatch)
+    arm_proposal(monkeypatch)
+    monkeypatch.setattr(wrapper.core, "_telegram_web_app_url",
+                        lambda *a, **k: "https://example.org/#telegram_session=s-new&mode=edit")
+
+    text = wrapper._applied_message(wrapper._apply_proposal(42))
+    assert "СМР" in text and "135,00" in text and "150,00" in text
+    assert "Открыть текущую модель" in text, "человеку не сказано, где новая ссылка"
+
+
+def test_a_broken_link_is_not_reported_as_success(state, monkeypatch):
+    """Ссылка не пересобралась — раньше бот всё равно рапортовал успех."""
+    deliver_context(monkeypatch)
+    arm_proposal(monkeypatch)
+
+    def refuse(*a, **k):
+        raise RuntimeError("Ручной ТЭП слишком велик для Telegram-сессии")
+    monkeypatch.setattr(wrapper.core, "_telegram_web_app_url", refuse)
+
+    applied = wrapper._apply_proposal(42)
+    assert applied["error"], "отказ пересобрать ссылку потерялся"
+    text = wrapper._applied_message(applied)
+    assert "прежний расчёт" in text
+    assert "Изменения применены." not in text
+
+
+def test_the_model_link_survives_a_worker_switch(state, monkeypatch):
+    """Адрес модели жил в памяти одного воркера — у соседа кнопка пропадала."""
+    url = "https://example.org/#telegram_session=s-new&mode=edit"
+    wrapper._remember_markup(42, {"inline_keyboard": [[
+        {"text": "Открыть и изменить расчёт", "web_app": {"url": url}}]]})
+    forget_memory(monkeypatch)
+    monkeypatch.setattr(wrapper, "_PLATON_LAST_URL", {})
+
+    markup = wrapper._platon_markup(42)
+    buttons = [b for row in markup["inline_keyboard"] for b in row if b.get("web_app")]
+    assert buttons and buttons[0]["web_app"]["url"] == url
+
+
+def test_a_stale_proposal_says_so(state, monkeypatch):
+    assert "устарело" in wrapper._applied_message(wrapper._apply_proposal(42))
