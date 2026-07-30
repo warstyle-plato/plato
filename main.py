@@ -15,7 +15,6 @@ from fastapi import HTTPException, Request
 from pydantic import BaseModel, Field
 
 _ROOT = Path(__file__).resolve().parent
-_RUNTIME_VERSION = "0.13.6"
 
 
 def _load_core():
@@ -29,6 +28,10 @@ def _load_core():
 
 
 core = _load_core()
+# Версия объявлена в движке и берётся оттуда: своя копия здесь уже разъезжалась
+# с движковой, и тогда `/status` бота показывал одно, а страница и `/health` —
+# другое, из-за чего выкаченная версия выглядела невыкаченной.
+_RUNTIME_VERSION = core.VERSION
 app = core.app
 app.version = _RUNTIME_VERSION
 
