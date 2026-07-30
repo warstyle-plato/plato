@@ -83,3 +83,27 @@ def test_products_with_area_are_never_flagged():
     found, _ = anomalies(0)
     assert not [item for item in found
                 if item["code"] == CODE and item["evidence"].get("product") == "underground_parking"]
+
+
+def test_glavapu_import_zeroes_products_it_does_not_report():
+    """ГлавАПУ не считает кладовые — значит они не должны остаться от прошлого проекта.
+
+    Сервер выбрасывает storage из карты соответствия, если строк по кладовым в
+    таблице нет. Страница же дописывала ТЭП поверх прежней, и 833 кладовые
+    чужого проекта пережили импорт московского участка.
+    """
+    page = main.PAGE
+    body = page[page.index("async function applyGlavapu()"):]
+    body = body[:body.index("repairParkingFromGlavapu();")]
+    for product in ("storage", "standalone_retail", "offices", "above_parking"):
+        assert f"'{product}'" in body, product
+    assert "if(glavapuTep[key]||!tep[key])return;" in body
+    assert "inputs.retail_enabled=false;" in body
+    assert "inputs.above_parking_enabled=false;" in body
+
+
+def test_server_drops_storage_when_glavapu_is_silent():
+    """Обратная сторона: сервер не выдумывает кладовые, если их нет в таблице."""
+    source = Path(main.__file__).read_text(encoding="utf-8")
+    assert 'tep_mapping.pop("storage", None)' in source
+    assert 'tep_mapping.pop("offices", None)' in source
