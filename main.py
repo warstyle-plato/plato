@@ -16,7 +16,7 @@ from fastapi import HTTPException, Request
 from pydantic import BaseModel, Field
 
 _ROOT = Path(__file__).resolve().parent
-_RUNTIME_VERSION = "0.12.84"
+_RUNTIME_VERSION = "0.12.85"
 
 
 def _load_core():
@@ -49,6 +49,53 @@ _PLATON_PENDING: dict[int, dict[str, Any]] = {}
 # мини-приложения. Позволяет Платону комментировать расчёт сразу.
 _PLATON_TEP_CONTEXT: dict[int, dict[str, Any]] = {}
 _TEP_REVIEW_CHATS: set[int] = set()
+
+# Сервис работает в несколько воркеров, и память у них раздельная: страница
+# отправляет контекст в один процесс, а нажатие «Спросить Платона» приходит
+# вебхуком в другой — и тот отвечает «проект не передан» по свежему расчёту.
+# Поэтому контекст дублируется на диск: словари остаются быстрым кешем, диск —
+# общей памятью воркеров.
+_STATE_DIR = Path(os.getenv("PLATON_STATE_DIR", "").strip() or (_ROOT / "data" / "platon_state"))
+_STATE_TTL_SECONDS = 3 * 24 * 3600
+
+
+def _state_file(name: str) -> Path:
+    import hashlib
+    return _STATE_DIR / (hashlib.sha256(name.encode("utf-8")).hexdigest()[:32] + ".json")
+
+
+def _state_write(name: str, payload: dict[str, Any]) -> None:
+    import json
+    import time
+    try:
+        _STATE_DIR.mkdir(parents=True, exist_ok=True)
+        path = _state_file(name)
+        # Пишем через временный файл: соседний воркер не должен прочитать
+        # половину записи.
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(path)
+        cutoff = time.time() - _STATE_TTL_SECONDS
+        for stale in _STATE_DIR.glob("*.json"):
+            try:
+                if stale.stat().st_mtime < cutoff:
+                    stale.unlink()
+            except OSError:
+                pass
+    except Exception:
+        # Диск — подстраховка, а не единственный источник: молча продолжаем.
+        pass
+
+
+def _state_read(name: str) -> dict[str, Any]:
+    import json
+    try:
+        path = _state_file(name)
+        if not path.is_file():
+            return {}
+        return json.loads(path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return {}
 
 _TEP_COMMENT_REQUEST = (
     "Прокомментируй ТЭП текущего проекта как инвестиционный консультант девелопера. "
@@ -119,6 +166,10 @@ def _remember_markup(chat_id: int, reply_markup: Any) -> None:
                 _PLATON_LAST_URL[chat_id] = url
                 if session:
                     _PLATON_LAST_SESSION[chat_id] = session
+            if session:
+                pointer = _state_read(f"chat:{chat_id}")
+                pointer["session"] = session
+                _state_write(f"chat:{chat_id}", pointer)
 
 
 def _resolve_context(chat_id: int) -> tuple[str, dict[str, Any]]:
@@ -131,6 +182,22 @@ def _resolve_context(chat_id: int) -> tuple[str, dict[str, Any]]:
         tep_context = _PLATON_TEP_CONTEXT.get(chat_id)
         if tep_context:
             return "", copy.deepcopy(tep_context)
+
+    # В памяти этого воркера пусто — смотрим общее хранилище.
+    pointer = _state_read(f"chat:{chat_id}")
+    session = session or str(pointer.get("session") or "")
+    if session:
+        stored = _state_read(f"session:{session}")
+        if stored:
+            with _STATE_LOCK:
+                _PLATON_CONTEXT_BY_SESSION[session] = stored
+                _PLATON_LAST_SESSION[chat_id] = session
+            return session, copy.deepcopy(stored)
+    tep_context = pointer.get("tep_context")
+    if tep_context:
+        with _STATE_LOCK:
+            _PLATON_TEP_CONTEXT[chat_id] = tep_context
+        return "", copy.deepcopy(tep_context)
     return "", {}
 
 
@@ -238,6 +305,10 @@ def _send_tep_review(chat_id: int, parsed: dict[str, Any], *, dialog_mode: bool)
             _PLATON_HISTORY.pop(chat_id, None)
             _PLATON_PENDING.pop(chat_id, None)
         _TEP_REVIEW_CHATS.add(chat_id)
+    if context:
+        pointer = _state_read(f"chat:{chat_id}")
+        pointer["tep_context"] = context
+        _state_write(f"chat:{chat_id}", pointer)
     try:
         _ORIGINAL_SEND_TEP_REVIEW(chat_id, parsed, dialog_mode=dialog_mode)
     finally:
@@ -360,6 +431,10 @@ def save_telegram_context(req: TelegramContextRequest) -> dict[str, Any]:
     with _STATE_LOCK:
         _PLATON_CONTEXT_BY_SESSION[req.session] = context
         _PLATON_LAST_SESSION[chat_id] = req.session
+    _state_write(f"session:{req.session}", context)
+    pointer = _state_read(f"chat:{chat_id}")
+    pointer["session"] = req.session
+    _state_write(f"chat:{chat_id}", pointer)
     return {"ok": True, "version": _RUNTIME_VERSION}
 
 
