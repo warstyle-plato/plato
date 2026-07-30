@@ -15,7 +15,7 @@ from fastapi import HTTPException, Request
 from pydantic import BaseModel, Field
 
 _ROOT = Path(__file__).resolve().parent
-_RUNTIME_VERSION = "0.12.95"
+_RUNTIME_VERSION = "0.12.96"
 
 
 def _load_core():
@@ -209,6 +209,44 @@ def _resolve_context(chat_id: int) -> tuple[str, dict[str, Any]]:
             _PLATON_TEP_CONTEXT[chat_id] = tep_context
         return "", copy.deepcopy(tep_context)
     return "", {}
+
+
+def _dialog_start(chat_id: int, session: str) -> None:
+    """Открывает диалог с Платоном и запоминает это на диске.
+
+    Флаг жил только в памяти воркера, а следующее сообщение приходит вебхуком
+    в любой из них. Сосед про диалог не знал и отправлял реплику искать участок
+    в ЕГРН — «Участок по этому адресу не найден» в ответ на замечание по очереди.
+    """
+    with _STATE_LOCK:
+        _PLATON_MODE[chat_id] = session
+        _PLATON_HISTORY.setdefault(chat_id, [])
+    pointer = _state_read(f"chat:{chat_id}")
+    pointer["dialog"] = True
+    _state_write(f"chat:{chat_id}", pointer)
+
+
+def _dialog_stop(chat_id: int) -> None:
+    with _STATE_LOCK:
+        _PLATON_MODE.pop(chat_id, None)
+        _PLATON_PENDING.pop(chat_id, None)
+    pointer = _state_read(f"chat:{chat_id}")
+    if pointer.pop("dialog", None) is not None:
+        _state_write(f"chat:{chat_id}", pointer)
+
+
+def _dialog_active(chat_id: int) -> bool:
+    with _STATE_LOCK:
+        if chat_id in _PLATON_MODE:
+            return True
+    if not _state_read(f"chat:{chat_id}").get("dialog"):
+        return False
+    # Диалог открыл сосед: подхватываем его и здесь, чтобы не читать диск
+    # на каждое сообщение.
+    with _STATE_LOCK:
+        _PLATON_MODE.setdefault(chat_id, _PLATON_LAST_SESSION.get(chat_id, ""))
+        _PLATON_HISTORY.setdefault(chat_id, [])
+    return True
 
 
 def _has_model_context(chat_id: int) -> bool:
@@ -839,13 +877,9 @@ def _handle_message(message: dict[str, Any]) -> None:
     if command in {"/model", "/модель"}:
         _send_model_archive(chat_id)
         return
-    with _STATE_LOCK:
-        active = chat_id in _PLATON_MODE
-    if active and text:
+    if _dialog_active(chat_id) and text:
         if command == "/cancel" or text.lower() in {"стоп", "отмена", "завершить"}:
-            with _STATE_LOCK:
-                _PLATON_MODE.pop(chat_id, None)
-                _PLATON_PENDING.pop(chat_id, None)
+            _dialog_stop(chat_id)
             _send_message(chat_id, "Диалог с Платоном завершён.")
             return
         _run_agent(chat_id, text)
@@ -878,9 +912,7 @@ def _handle_update(update: dict[str, Any]) -> None:
             elif data == "platon_tep":
                 _comment_tep(chat_id)
             elif data == "platon_stop":
-                with _STATE_LOCK:
-                    _PLATON_MODE.pop(chat_id, None)
-                    _PLATON_PENDING.pop(chat_id, None)
+                _dialog_stop(chat_id)
                 _send_message(chat_id, "Диалог с Платоном завершён.")
             elif data == "platon_discard":
                 with _STATE_LOCK:

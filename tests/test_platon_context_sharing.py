@@ -275,3 +275,51 @@ def test_the_model_link_survives_a_worker_switch(state, monkeypatch):
 
 def test_a_stale_proposal_says_so(state, monkeypatch):
     assert "устарело" in wrapper._applied_message(wrapper._apply_proposal(42))
+
+
+def test_an_open_dialog_survives_a_worker_switch(state, monkeypatch):
+    """Реплика уходила искать участок в ЕГРН: сосед про диалог не знал.
+
+    Флаг диалога жил в памяти одного воркера, а следующее сообщение приходит
+    вебхуком в любой из них.
+    """
+    deliver_context(monkeypatch)
+    wrapper._dialog_start(42, "s-1")
+    forget_memory(monkeypatch)
+    monkeypatch.setattr(wrapper, "_PLATON_MODE", {})
+
+    assert wrapper._dialog_active(42), "сосед не увидел открытый диалог"
+
+
+def test_a_finished_dialog_does_not_come_back(state, monkeypatch):
+    deliver_context(monkeypatch)
+    wrapper._dialog_start(42, "s-1")
+    wrapper._dialog_stop(42)
+    monkeypatch.setattr(wrapper, "_PLATON_MODE", {})
+
+    assert not wrapper._dialog_active(42)
+
+
+def test_another_chat_is_not_in_a_dialog(state, monkeypatch):
+    deliver_context(monkeypatch)
+    wrapper._dialog_start(42, "s-1")
+    monkeypatch.setattr(wrapper, "_PLATON_MODE", {})
+
+    assert not wrapper._dialog_active(99)
+
+
+def test_a_remark_in_an_open_dialog_reaches_platon(state, monkeypatch):
+    """Именно это и сломалось: «Участок по этому адресу не найден» в ответ."""
+    asked: list[str] = []
+    deliver_context(monkeypatch)
+    wrapper._dialog_start(42, "s-1")
+    monkeypatch.setattr(wrapper, "_PLATON_MODE", {})
+    monkeypatch.setattr(wrapper, "_run_agent",
+                        lambda chat_id, text, **kw: asked.append(text))
+    monkeypatch.setattr(wrapper, "_ORIGINAL_HANDLE_MESSAGE",
+                        lambda message: asked.append("МИМО ПЛАТОНА"))
+
+    wrapper._handle_message({"chat": {"id": 42}, "from": {"id": 42},
+                             "text": "Но кроме пункта 2 все остальные сопоставимы"})
+
+    assert asked == ["Но кроме пункта 2 все остальные сопоставимы"]

@@ -419,3 +419,24 @@ def test_menu_offers_asking_platon():
     menu = source[start:source.index("\ndef ", start + 10)]
     assert '"callback_data": "ask_platon"' in menu
     assert '{"command": "platon"' in source
+
+
+@pytest.mark.parametrize("text", [
+    "Но кроме пункта 2 все остальные сопоставимы по другим очередям",
+    "Согласен, давай так",
+    "Это слишком дорого для такого проекта",
+    "Участок надо брать дешевле",
+    "Снизь СМР до 150",
+])
+def test_a_remark_is_not_mistaken_for_an_address(text):
+    """Реплика в диалоге уходила искать участок в ЕГРН и возвращалась ни с чем."""
+    assert not main._looks_like_address(text)
+
+
+@pytest.mark.parametrize("text", [
+    "г. Химки, ул. Победы, 12",
+    "Тверская, 1, Москва",
+    "Красногорск, Ильинский бульвар, 4",
+])
+def test_more_address_shapes_are_recognized(text):
+    assert main._looks_like_address(text)
