@@ -15,7 +15,7 @@ from fastapi import HTTPException, Request
 from pydantic import BaseModel, Field
 
 _ROOT = Path(__file__).resolve().parent
-_RUNTIME_VERSION = "0.12.92"
+_RUNTIME_VERSION = "0.12.93"
 
 
 def _load_core():
@@ -256,6 +256,11 @@ def _add_platon_button(chat_id: int, reply_markup: Any) -> Any:
         tep_review = chat_id in _TEP_REVIEW_CHATS
     if (tep_review or _has_model_context(chat_id)) and not _has_callback(rows, "platon_tep"):
         keyboard.append([{"text": "Прокомментировать ТЭП", "callback_data": "platon_tep"}])
+    # Мини-приложение закрывается сразу после расчёта, поэтому до кнопки
+    # «Скачать модель (ZIP)» внутри уже не добраться: путь к модели должен
+    # быть в чате.
+    if _has_model_context(chat_id) and not _has_callback(rows, "send_model"):
+        keyboard.append([{"text": "Скачать модель (Excel)", "callback_data": "send_model"}])
     if not _has_callback(rows, "ask_platon"):
         keyboard.append([{"text": "Спросить Платона", "callback_data": "ask_platon"}])
     return updated
@@ -390,7 +395,8 @@ def _send_help(chat_id: int) -> None:
         "<b>Шаг 4. Заберите результат</b>\n"
         "Бот присылает карточку с показателями, PDF-отчёт и ZIP с моделью. В архиве два файла: "
         "<b>00_Модель</b> — живая книга на формулах, где правка вводной пересчитывает весь расчёт, "
-        "и <b>90_Детализация</b> — помесячная и поквартальная разбивка, график платежей ВРИ и диаграммы.\n\n"
+        "и <b>90_Детализация</b> — помесячная и поквартальная разбивка, график платежей ВРИ и диаграммы.\n"
+        "Если модель нужна ещё раз или не пришла — кнопка «Скачать модель (Excel)» или команда /model.\n\n"
 
         "<b>Шаг 5. Спросите Платона Сергеевича Федоскина</b>\n"
         "«Прокомментировать ТЭП» (или /comment) — разбор состава и плотности, экономики при текущих "
@@ -749,6 +755,48 @@ def _apply_proposal(chat_id: int) -> dict[str, Any]:
     return {"changes": changes, "url": new_url, "error": error}
 
 
+def _send_model_archive(chat_id: int) -> None:
+    """Собирает Excel-модель по последнему расчёту чата и присылает её.
+
+    Сборка идёт следом за карточкой, и её отказ раньше оставлял человека вовсе
+    без модели: мини-приложение закрывается сразу после расчёта, и до кнопки
+    «Скачать модель (ZIP)» внутри уже не добраться.
+    """
+    _, context = _resolve_context(chat_id)
+    if not context:
+        _send_message(
+            chat_id,
+            "<b>Собирать пока нечего.</b>\n"
+            "Сначала посчитайте проект: отправьте кадастровые номера, адрес "
+            "или заполненный Excel-шаблон.",
+        )
+        return
+    _send_message(chat_id, "<i>Собираю Excel-модель…</i>")
+    try:
+        model_bytes, model_filename = core.build_model_archive(
+            context.get("inputs") or {},
+            context.get("tep") or {},
+            context.get("rates") or [],
+            context.get("phasing") or {},
+            project_name=str(context.get("project_name") or ""),
+        )
+    except Exception as exc:
+        core._TELEGRAM_RUNTIME["last_error"] = "Модель: " + core._error_location(exc)
+        _send_message(
+            chat_id,
+            "<b>Excel-модель не собралась.</b>\n"
+            f"<i>{html.escape(core._error_location(exc)[:300])}</i>",
+        )
+        return
+    phased = bool((context.get("phasing") or {}).get("enabled"))
+    core._telegram_send_document_bytes(
+        chat_id, model_bytes, model_filename,
+        caption=("<b>Полная модель DevelopAid</b> · Excel в ZIP"
+                 + (" · очереди и книга-консолидатор" if phased else " · единый расчёт")),
+        content_type="application/zip",
+    )
+
+
 def _comment_tep(chat_id: int) -> None:
     """Готовый разбор ТЭП без формулировки вопроса пользователем."""
     _, context = _resolve_context(chat_id)
@@ -788,6 +836,9 @@ def _handle_message(message: dict[str, Any]) -> None:
     if command in {"/comment", "/тэп_комментарий"}:
         _comment_tep(chat_id)
         return
+    if command in {"/model", "/модель"}:
+        _send_model_archive(chat_id)
+        return
     with _STATE_LOCK:
         active = chat_id in _PLATON_MODE
     if active and text:
@@ -815,10 +866,13 @@ def _handle_update(update: dict[str, Any]) -> None:
         message = query.get("message") or {}
         sender = query.get("from") or {}
         chat_id = int(((message.get("chat") or {}).get("id")) or sender.get("id") or 0)
-        if data in {"ask_platon", "platon_tep", "platon_stop", "platon_discard", "platon_apply", "show_help"}:
+        if data in {"ask_platon", "platon_tep", "platon_stop", "platon_discard",
+                    "platon_apply", "show_help", "send_model"}:
             _answer_callback(query)
             if data == "show_help":
                 _send_help(chat_id)
+            elif data == "send_model":
+                _send_model_archive(chat_id)
             elif data == "ask_platon":
                 _start_platon(chat_id)
             elif data == "platon_tep":
