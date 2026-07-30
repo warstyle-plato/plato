@@ -383,3 +383,39 @@ def test_every_web_app_button_uses_one_builder():
     source = Path(main.__file__).read_text(encoding="utf-8")
     for match in re.finditer(r'"web_app":\s*\{"url":\s*([^}]+)\}', source):
         assert "_telegram_web_app_url" in match.group(1) or match.group(1).strip() == "url", match.group(1)
+
+
+# --- вопрос не адрес ---------------------------------------------------------
+
+@pytest.mark.parametrize("text", [
+    "Как цена покупки объекта оптимальна",
+    "Какая цена объекта оптимальна?",
+    "Почему LLCR такой высокий",
+    "Сколько стоит смена ВРИ?",
+    "Объясни структуру расходов",
+    "Стоит ли покупать по этой цене",
+    "Сравни очереди",
+])
+def test_questions_do_not_go_to_the_land_registry(text):
+    """«Какая цена объекта оптимальна?» уходило искать участок и не находило его."""
+    assert main._looks_like_question(text)
+    assert not main._looks_like_address(text)
+
+
+@pytest.mark.parametrize("text", [
+    "Мишина 46 Москва",
+    "Московская область, Мытищи, Олимпийский проспект, 29",
+    "город Химки улица Победы",
+])
+def test_addresses_are_still_recognized(text):
+    assert not main._looks_like_question(text)
+    assert main._looks_like_address(text)
+
+
+def test_menu_offers_asking_platon():
+    """Спросить было неоткуда: кнопка появлялась только на карточках результата."""
+    source = Path(main.__file__).read_text(encoding="utf-8")
+    start = source.index("def _telegram_start_message")
+    menu = source[start:source.index("\ndef ", start + 10)]
+    assert '"callback_data": "ask_platon"' in menu
+    assert '{"command": "platon"' in source

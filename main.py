@@ -16,7 +16,7 @@ from fastapi import HTTPException, Request
 from pydantic import BaseModel, Field
 
 _ROOT = Path(__file__).resolve().parent
-_RUNTIME_VERSION = "0.12.83"
+_RUNTIME_VERSION = "0.12.84"
 
 
 def _load_core():
@@ -597,6 +597,12 @@ def _handle_message(message: dict[str, Any]) -> None:
                 _PLATON_PENDING.pop(chat_id, None)
             _send_message(chat_id, "Диалог с Платоном завершён.")
             return
+        _run_agent(chat_id, text)
+        return
+    # Вопрос по посчитанному проекту — это вопрос Платону Сергеевичу, а не адрес
+    # участка. Раньше «Какая цена объекта оптимальна?» уходило искать в ЕГРН и
+    # возвращалось с «участок не найден».
+    if text and not command and core._looks_like_question(text) and _has_model_context(chat_id):
         _run_agent(chat_id, text)
         return
     _ORIGINAL_HANDLE_MESSAGE(message)
