@@ -16,7 +16,7 @@ from fastapi import HTTPException, Request
 from pydantic import BaseModel, Field
 
 _ROOT = Path(__file__).resolve().parent
-_RUNTIME_VERSION = "0.12.86"
+_RUNTIME_VERSION = "0.12.87"
 
 
 def _load_core():
@@ -173,17 +173,22 @@ def _remember_markup(chat_id: int, reply_markup: Any) -> None:
 
 
 def _resolve_context(chat_id: int) -> tuple[str, dict[str, Any]]:
-    """Контекст для Платона: полный расчёт мини-приложения, иначе ТЭП от бота."""
+    """Контекст для Платона: полный расчёт мини-приложения, иначе ТЭП от бота.
+
+    Порядок важнее, чем кажется. ТЭП от бота — грубая прикидка на умолчаниях:
+    класс жилья, цены и себестоимость там не те, что в модели. Полный расчёт
+    приходит из мини-приложения и может лежать в памяти соседнего воркера, а не
+    здесь. Пока грубый ТЭП из своей памяти проверялся раньше диска, он перекрывал
+    полный расчёт, и Платон отвечал по чужим цифрам: LLCR 1,11x вместо 1,62x.
+    Поэтому сначала ищем полный расчёт — и в памяти, и на диске, — и только
+    потом опускаемся до ТЭП.
+    """
     with _STATE_LOCK:
         session = _PLATON_MODE.get(chat_id) or _PLATON_LAST_SESSION.get(chat_id, "")
-        context = _PLATON_CONTEXT_BY_SESSION.get(session)
+        context = _PLATON_CONTEXT_BY_SESSION.get(session) if session else None
         if context:
             return session, copy.deepcopy(context)
-        tep_context = _PLATON_TEP_CONTEXT.get(chat_id)
-        if tep_context:
-            return "", copy.deepcopy(tep_context)
 
-    # В памяти этого воркера пусто — смотрим общее хранилище.
     pointer = _state_read(f"chat:{chat_id}")
     session = session or str(pointer.get("session") or "")
     if session:
@@ -193,6 +198,11 @@ def _resolve_context(chat_id: int) -> tuple[str, dict[str, Any]]:
                 _PLATON_CONTEXT_BY_SESSION[session] = stored
                 _PLATON_LAST_SESSION[chat_id] = session
             return session, copy.deepcopy(stored)
+
+    with _STATE_LOCK:
+        tep_context = _PLATON_TEP_CONTEXT.get(chat_id)
+    if tep_context:
+        return "", copy.deepcopy(tep_context)
     tep_context = pointer.get("tep_context")
     if tep_context:
         with _STATE_LOCK:
@@ -431,9 +441,13 @@ def save_telegram_context(req: TelegramContextRequest) -> dict[str, Any]:
     with _STATE_LOCK:
         _PLATON_CONTEXT_BY_SESSION[req.session] = context
         _PLATON_LAST_SESSION[chat_id] = req.session
+        # Пришёл полный расчёт — грубый ТЭП на умолчаниях больше не нужен и не
+        # должен всплыть, если ссылка на сессию потеряется.
+        _PLATON_TEP_CONTEXT.pop(chat_id, None)
     _state_write(f"session:{req.session}", context)
     pointer = _state_read(f"chat:{chat_id}")
     pointer["session"] = req.session
+    pointer.pop("tep_context", None)
     _state_write(f"chat:{chat_id}", pointer)
     return {"ok": True, "version": _RUNTIME_VERSION}
 

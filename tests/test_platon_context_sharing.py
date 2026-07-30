@@ -101,3 +101,47 @@ def test_stale_state_is_pruned(state):
     os.utime(old, (ancient, ancient))
     wrapper._state_write("session:new", CONTEXT)
     assert not old.exists(), "просроченный контекст должен убираться сам"
+
+
+def test_full_model_wins_over_the_rough_bot_tep(state, monkeypatch):
+    """ТЭП от бота считается на умолчаниях и не должен перекрывать модель.
+
+    Класс жилья, цены и себестоимость в нём не те, что в расчёте: Платон
+    отвечал LLCR 1,11x там, где в отчёте 1,62x. Полный расчёт мог лежать в
+    памяти соседнего воркера, а грубый ТЭП — в своей, и проверялся раньше.
+    """
+    wrapper._state_write("session:s-1", CONTEXT)
+    wrapper._state_write("chat:42", {"session": "s-1"})
+    forget_memory(monkeypatch)
+    # Этот воркер сам собирал ТЭП, поэтому он у него в памяти.
+    monkeypatch.setattr(wrapper, "_PLATON_TEP_CONTEXT",
+                        {42: {**CONTEXT, "origin": "tep", "inputs": {"purchase_price_mln": 0}}})
+
+    session, context = wrapper._resolve_context(42)
+    assert session == "s-1", "выбран грубый ТЭП вместо полного расчёта"
+    assert context.get("origin") != "tep"
+    assert context["inputs"]["purchase_price_mln"] == 700
+
+
+def test_rough_tep_is_used_only_without_a_full_model(state, monkeypatch):
+    forget_memory(monkeypatch)
+    monkeypatch.setattr(wrapper, "_PLATON_TEP_CONTEXT", {42: {**CONTEXT, "origin": "tep"}})
+    session, context = wrapper._resolve_context(42)
+    assert session == ""
+    assert context["origin"] == "tep"
+
+
+def test_arriving_model_retires_the_rough_tep(state, monkeypatch):
+    """Иначе устаревший ТЭП всплывёт, когда ссылка на сессию потеряется."""
+    wrapper._state_write("chat:42", {"tep_context": {**CONTEXT, "origin": "tep"}})
+    monkeypatch.setattr(wrapper, "_PLATON_TEP_CONTEXT", {42: {**CONTEXT, "origin": "tep"}})
+    monkeypatch.setattr(wrapper.core, "_telegram_verify_session", lambda s: {"chat_id": 42})
+    monkeypatch.setattr(wrapper.core, "_telegram_user_allowed", lambda c: True)
+
+    request = wrapper.TelegramContextRequest(
+        session="s-1", inputs={"purchase_price_mln": 700}, tep={},
+        rates=[], phasing={}, selected_view="all")
+    wrapper.save_telegram_context(request)
+
+    assert 42 not in wrapper._PLATON_TEP_CONTEXT
+    assert "tep_context" not in wrapper._state_read("chat:42")
