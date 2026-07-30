@@ -34,7 +34,7 @@ from fastapi import BackgroundTasks, FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse, FileResponse, Response
 from pydantic import BaseModel
 
-app = FastAPI(title="DevelopAid Development Investment Model", version="0.12.99")
+app = FastAPI(title="DevelopAid Development Investment Model", version="0.13.0")
 
 PRESET_DIR = Path(__file__).resolve().parent / "presets"
 MANUAL_TEP_TEMPLATE_FILENAME = "DevelopAid_Шаблон_ТЭП.xlsx"
@@ -1275,7 +1275,7 @@ def analyze_cadastral_territory(req: CadastralAnalysisRequest) -> dict[str, Any]
         headers={
             "Accept": "application/json",
             "Content-Type": "application/json; charset=utf-8",
-            "User-Agent": "DevelopAid-Development-Model/0.12.99",
+            "User-Agent": "DevelopAid-Development-Model/0.13.0",
         },
     )
     try:
@@ -1398,7 +1398,7 @@ _NSPD_BASE_URL = (_env_str("NSPD_BASE_URL", "https://nspd.gov.ru")).rstrip("/")
 _NSPD_TIMEOUT_SECONDS = _env_float("NSPD_TIMEOUT_SECONDS", 25.0)
 _NSPD_LAND_THEMATIC_ID = 1
 _NOMINATIM_BASE_URL = (_env_str("NOMINATIM_BASE_URL", "https://nominatim.openstreetmap.org")).rstrip("/")
-_LAND_LOOKUP_USER_AGENT = "DevelopAid-Development-Model/0.12.99"
+_LAND_LOOKUP_USER_AGENT = "DevelopAid-Development-Model/0.13.0"
 _LAND_LOOKUP_MAX_RESULTS = int(_env_float("LAND_LOOKUP_MAX_RESULTS", 30))
 # Номера опрашиваются параллельно: 30 последовательных запросов к НСПД — это
 # минуты ожидания. Больше трёх потоков портал начинает придерживать.
@@ -3443,7 +3443,7 @@ def _proxy_genplan(asset_path: str, request: Request) -> Response:
         target,
         headers={
             "Accept": request.headers.get("accept", "*/*"),
-            "User-Agent": "DevelopAid-Development-Model/0.12.99",
+            "User-Agent": "DevelopAid-Development-Model/0.13.0",
         },
     )
     try:
@@ -5316,7 +5316,7 @@ def _telegram_handle_message(message: dict[str, Any]) -> None:
         status = "подключён" if _TELEGRAM_RUNTIME.get("configured") else "запускается"
         _telegram_send_message(
             chat_id,
-            f"<b>DevelopAid bot:</b> {status}\nTelegram ID: <code>{user_id}</code>\nВерсия: 0.12.99",
+            f"<b>DevelopAid bot:</b> {status}\nTelegram ID: <code>{user_id}</code>\nВерсия: 0.13.0",
         )
         return
     if command == "/cancel":
@@ -5499,7 +5499,7 @@ def telegram_status() -> dict[str, Any]:
         "allowed_users_count": len(allowed),
         "configured_at": _TELEGRAM_RUNTIME.get("configured_at") or "",
         "last_error": _TELEGRAM_RUNTIME.get("last_error") or "",
-        "version": "0.12.99",
+        "version": "0.13.0",
     }
 
 
@@ -5731,6 +5731,55 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
             return f"{parsed.month:02d}.{parsed.year}"
         except Exception:
             return str(value or "—")[:7]
+
+    def tornado_chart(rows: list[dict[str, Any]], base: float, digits: int) -> Drawing | None:
+        """Горизонтальные плечи от базовой линии, как на вкладке.
+
+        Плечо рисуется от базы к своему значению, поэтому случай, когда рост
+        параметра ухудшает показатель, отображается сам собой.
+        """
+        values = [base]
+        for row in rows:
+            for key in ("low_result", "high_result"):
+                if row.get(key) is not None:
+                    values.append(float(row[key]))
+        low, high = min(values), max(values)
+        if high - low < 1e-9:
+            high = low + 1.0
+        span = (high - low) * 1.08
+        low -= (high - low) * 0.04
+        width, row_h = 500, 17
+        label_width, plot = 170, 250
+        height = 14 + row_h * len(rows)
+        drawing = Drawing(width, height)
+
+        def position(value: float) -> float:
+            return label_width + (value - low) / span * plot
+
+        for index, row in enumerate(rows):
+            y = height - 14 - index * row_h
+            label = str(row.get("label") or "—")
+            if len(label) > 30:
+                label = label[:28] + "…"
+            drawing.add(String(0, y, label, fontName=regular, fontSize=7,
+                               fillColor=colors.HexColor("#333333")))
+            for key, colour in (("low_result", "#A35D00"), ("high_result", "#2D6A4F")):
+                value = row.get(key)
+                if value is None:
+                    continue
+                start = min(position(base), position(float(value)))
+                end = max(position(base), position(float(value)))
+                drawing.add(Rect(start, y - 2, max(1.0, end - start), 9,
+                                 fillColor=colors.HexColor(colour), strokeColor=None))
+            pair = [row.get("low_result"), row.get("high_result")]
+            pair = [float(v) for v in pair if v is not None]
+            if pair:
+                drawing.add(String(position(max(pair)) + 4, y, _pdf_num(max(pair), digits),
+                                   fontName=regular, fontSize=6.5,
+                                   fillColor=colors.HexColor("#777777")))
+        drawing.add(Line(position(base), 2, position(base), height - 4,
+                         strokeColor=colors.HexColor("#111111"), strokeWidth=1))
+        return drawing
 
     def expense_bar_chart(items: list[dict[str, Any]]) -> Drawing | None:
         ranked = [
@@ -6120,6 +6169,38 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         ])
         story.append(table(units,[22*mm,30*mm,29*mm,30*mm,29*mm,30*mm],font_size=7.0))
         story.append(P("Значения удельных показателей — в тыс. ₽ за м². Итоговая строка считается как отношение сумм, а не как среднее по очередям.",small))
+
+    # Раздел появляется только если чувствительность считали на вкладке.
+    # Гнать полсотни расчётов внутри сборки PDF ради раздела, который никто не
+    # просил, незачем — а сборка отчёта и так идёт следом за карточкой.
+    sensitivity = payload.get("sensitivity") if isinstance(payload.get("sensitivity"), dict) else None
+    if sensitivity and (sensitivity.get("items") or []):
+        base = sensitivity.get("base") or {}
+        digits = int(base.get("digits") or 2)
+        rows = list(sensitivity["items"])[:14]
+        story.append(PageBreak())
+        story.append(P("Чувствительность проекта",h2))
+        story.append(P(
+            f"Показатель: {base.get('label') or ''} · база "
+            f"{_pdf_num(base.get('value'), digits)} {base.get('unit') or ''} · "
+            f"охват: {base.get('scope_label') or ''} · отклонение "
+            f"{_pdf_num(sensitivity.get('change_pct'), 0)}% и "
+            f"{_pdf_num(sensitivity.get('duration_change_months'), 0)} мес. для сроков. "
+            "Меняется один параметр за расчёт.", small))
+        chart = tornado_chart(rows, float(base.get("value") or 0), digits)
+        if chart:
+            story.extend([chart, Spacer(1, 3*mm)])
+        table_rows=[["Параметр","Ниже","Выше","Размах"]]
+        for row in rows:
+            table_rows.append([
+                str(row.get("label") or "—"),
+                _pdf_num(row.get("low_result"), digits),
+                _pdf_num(row.get("high_result"), digits),
+                _pdf_num(row.get("impact"), digits),
+            ])
+        story.append(table(table_rows,[92*mm,26*mm,26*mm,26*mm],font_size=7.4))
+        for line in (sensitivity.get("verdict") or []):
+            story.append(P(str(line), small))
 
     story.append(PageBreak());story.append(P("Цены и основные предпосылки",h2))
     premise_rows=[["Параметр","Значение"],["Стартовая цена квартир",_pdf_num(inputs.get('apartment_price_th'),0)+" тыс. ₽/м²"],["Стартовая цена коммерции",_pdf_num(inputs.get('commercial_price_th'),0)+" тыс. ₽/м²"],["Цена подземного машино-места",_pdf_num(inputs.get('parking_price_th'),0)+" тыс. ₽/шт."],["СМР наземной части",_pdf_num(inputs.get('main_above_th_per_sqm'),0)+" тыс. ₽/м² ГНС"],["СМР подземной части",_pdf_num(inputs.get('main_under_th_per_sqm'),0)+" тыс. ₽/м² ГНС"],["Наружные инженерные сети",_pdf_num(inputs.get('utilities_th_per_sqm'),1)+" тыс. ₽/м² ГНС"],["Доля продаж до РВЭ",_pdf_num(inputs.get('share_before_rve_pct'),1)+"%"],["Налог на прибыль",_pdf_num(inputs.get('profit_tax_pct'),1)+"%"]]
@@ -8511,7 +8592,7 @@ def fetch_current_cbr_key_rate() -> dict[str, Any]:
         req = urllib.request.Request(
             feed_url,
             headers={
-                "User-Agent": "Mozilla/5.0 DevelopAid-Development-Model/0.12.99",
+                "User-Agent": "Mozilla/5.0 DevelopAid-Development-Model/0.13.0",
                 "Accept-Language": "ru-RU,ru;q=0.9",
             },
         )
@@ -8557,7 +8638,7 @@ def fetch_current_cbr_key_rate() -> dict[str, Any]:
         req = urllib.request.Request(
             url,
             headers={
-                "User-Agent": "Mozilla/5.0 DevelopAid-Development-Model/0.12.99",
+                "User-Agent": "Mozilla/5.0 DevelopAid-Development-Model/0.13.0",
                 "Accept-Language": "ru-RU,ru;q=0.9",
             },
         )
@@ -10482,7 +10563,7 @@ def _monthly_detail(
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "version": "0.12.99"}
+    return {"status": "ok", "version": "0.13.0"}
 
 
 @app.get("/defaults")
@@ -13974,7 +14055,7 @@ def _openai_direct_request(payload: dict[str, Any]) -> dict[str, Any]:
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
-            "User-Agent": "DevelopAid-Development-Model/0.12.99",
+            "User-Agent": "DevelopAid-Development-Model/0.13.0",
         },
         method="POST",
     )
@@ -13997,7 +14078,7 @@ def _openai_proxy_request(payload: dict[str, Any]) -> dict[str, Any]:
     headers = {
         "Content-Type": "application/json",
         "Accept": "application/json",
-        "User-Agent": "DevelopAid-Development-Model/0.12.99",
+        "User-Agent": "DevelopAid-Development-Model/0.13.0",
     }
     if _PLATO_AI_PROXY_SECRET:
         try:
@@ -14421,6 +14502,10 @@ details.cadastral-box>summary::marker{color:#888}
 .report-3col{display:grid;grid-template-columns:1.15fr 1fr 1fr;gap:18px;align-items:start}
 .report-2col{display:grid;grid-template-columns:1fr 1fr;gap:18px;align-items:start}
 .value-muted{color:#777}
+.tornado-wrap{overflow-x:auto;border:1px solid var(--line);background:#fff;padding:10px 0}
+.tornado{min-width:620px;width:100%;display:block}
+.tornado text{font-family:inherit}
+@media print{.tornado-wrap{border-color:#bbb}}
 .gantt-wrap{overflow:auto;border:1px solid var(--line);background:#fff}
 .gantt{min-width:1050px}
 .gantt-axis,.gantt-row{display:grid;grid-template-columns:250px 1fr;min-height:38px;border-bottom:1px solid #e7e7e7}
@@ -14537,7 +14622,7 @@ details.cadastral-box>summary::marker{color:#888}
 <div class="shell">
   <div class="brandbar"><img src="data:image/webp;base64,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"><div class="brandline"></div></div>
   <div class="header">
-    <div class="title"><h1>Девелоперская инвестиционная модель</h1><p>v0.12.99 · ТЭП · экономика · БРИДЖ · проектное финансирование · эскроу · LLCR</p></div>
+    <div class="title"><h1>Девелоперская инвестиционная модель</h1><p>v0.13.0 · ТЭП · экономика · БРИДЖ · проектное финансирование · эскроу · LLCR</p></div>
     <div class="actions">
       <div class="scenario">Класс&nbsp;
         <select id="projectClassSelect" onchange="applyProjectClassPreset(this.value)" style="min-width:135px">
@@ -14582,6 +14667,7 @@ details.cadastral-box>summary::marker{color:#888}
     <button class="tab" data-tab="rates" onclick="openTab('rates',this)">Ключевая ставка</button>
     <button class="tab" data-tab="finance" onclick="openTab('finance',this)">Финансирование</button>
     <button class="tab" data-tab="calendar" onclick="openTab('calendar',this)">Календарь</button>
+    <button class="tab" data-tab="sensitivity" onclick="openTab('sensitivity',this);renderSensitivityForm()">Чувствительность</button>
     <button class="tab" data-tab="report" onclick="openTab('report',this)">Отчёт</button>
   </div>
 
@@ -14894,6 +14980,25 @@ details.cadastral-box>summary::marker{color:#888}
         <div id="calendarGantt" class="gantt-wrap"></div>
         <div id="calendarTypeLegend" class="gantt-legend"><span>Проект / строительство</span><span>Финансирование</span><span>Продажи</span></div>
         <div id="calendarPhaseLegend" class="gantt-phase-legend"></div>
+      </div>
+    </div>
+
+    <div id="sensitivity" class="panel">
+      <div class="card">
+        <div class="report-title"><div><div class="section-title">Анализ чувствительности</div><h2>Что решает судьбу проекта</h2></div></div>
+        <p style="font-size:12px;color:#555;margin:0 0 14px">Меняется <b>один параметр за расчёт</b>, остальные держатся на месте. Сценарии «консервативный / базовый / оптимистичный» этого не заменяют: там цены и затраты двигаются одновременно, и по ним не видно, какой именно параметр решает судьбу проекта. Считает движок модели — те же формулы, что и основной расчёт.</p>
+        <div class="grid" id="sensitivityControls"></div>
+        <div style="margin:14px 0 4px"><button class="btn dark no-print" id="sensitivityRun" onclick="runSensitivity()">Рассчитать чувствительность</button>
+          <span id="sensitivityStatus" style="font-size:12px;color:#777;margin-left:10px"></span></div>
+        <details id="sensitivityPicker" style="margin-top:12px"><summary style="cursor:pointer;font-size:12px;color:#555">Какие параметры анализировать</summary>
+          <div id="sensitivityParams" style="margin-top:10px"></div></details>
+      </div>
+      <div class="card" id="sensitivityResult" style="display:none">
+        <div class="report-title"><div><div class="section-title" id="sensitivityScope"></div><h2 id="sensitivityTitle"></h2></div></div>
+        <div id="sensitivityChart" class="tornado-wrap"></div>
+        <div id="sensitivityTable"></div>
+        <div id="sensitivityVerdict" class="note" style="margin-top:14px"></div>
+        <div id="sensitivityWarnings" style="font-size:11px;color:#a35d00;margin-top:10px"></div>
       </div>
     </div>
 
@@ -17198,11 +17303,182 @@ function renderFinanceChart(rows){
  </svg>`;
 }
 
+// --- Анализ чувствительности (Tornado) ---------------------------------------
+// Десятки расчётов — только по явной команде: обычная правка вводных их не
+// запускает, иначе каждое нажатие в форме стоило бы секунду.
+let sensitivityOptions=null, sensitivityReport=null, sensitivityPicked=null, sensitivityBusy=false;
+
+async function loadSensitivityOptions(){
+ if(sensitivityOptions)return sensitivityOptions;
+ const response=await fetch('/analysis/sensitivity/options');
+ sensitivityOptions=await response.json();
+ return sensitivityOptions;
+}
+
+function sensitivityScopes(){
+ const scopes=[['consolidated','Весь проект']];
+ if(phasing&&phasing.enabled&&Number(phasing.phase_count||1)>1){
+  scopes.unshift(['weakest_phase','Слабейшая очередь']);
+  (phasing.phases||[]).forEach((p,i)=>{if(p)scopes.push(['phase'+(i+1),'Очередь '+(p.name||('О'+(i+1)))])});
+ }
+ return scopes;
+}
+
+async function renderSensitivityForm(){
+ const box=document.getElementById('sensitivityControls');
+ if(!box)return;
+ const options=await loadSensitivityOptions();
+ const scopes=sensitivityScopes();
+ const field=(label,html)=>`<div class="field"><label>${label}</label>${html}</div>`;
+ const select=(id,pairs,current)=>`<select id="${id}">`+pairs.map(
+   ([value,text])=>`<option value="${value}" ${String(value)===String(current)?'selected':''}>${escapeHtml(text)}</option>`
+ ).join('')+'</select>';
+ box.innerHTML=
+   field('Показатель',select('sensMetric',options.metrics.map(m=>[m.key,m.label]),'llcr'))
+  +field('Что анализируем',select('sensScope',scopes,scopes[0][0]))
+  +field('Отклонение процентных параметров',select('sensPct',[['5','±5%'],['10','±10%'],['20','±20%'],['custom','Своё значение']],'10'))
+  +field('Отклонение сроков',select('sensMonths',[['3','±3 месяца'],['6','±6 месяцев'],['12','±12 месяцев'],['custom','Своё значение']],'6'))
+  +field('Свой процент <span class="unit">%</span>','<input id="sensPctCustom" type="number" step="any" value="10" disabled>')
+  +field('Свои месяцы <span class="unit">мес.</span>','<input id="sensMonthsCustom" type="number" step="1" value="6" disabled>');
+ document.getElementById('sensPct').onchange=e=>{
+  document.getElementById('sensPctCustom').disabled=e.target.value!=='custom';
+ };
+ document.getElementById('sensMonths').onchange=e=>{
+  document.getElementById('sensMonthsCustom').disabled=e.target.value!=='custom';
+ };
+ renderSensitivityPicker(options);
+}
+
+function renderSensitivityPicker(options){
+ const box=document.getElementById('sensitivityParams');
+ if(!box)return;
+ const groups={};
+ options.parameters.forEach(p=>{(groups[p.group]=groups[p.group]||[]).push(p)});
+ box.innerHTML='<p style="font-size:11px;color:#777;margin:0 0 8px">Ничего не отмечено — берутся все параметры, применимые к текущей модели. Продукты, которых нет в ТЭП, и нулевые значения не анализируются: их изменение ничего не поменяет.</p>'
+  +Object.entries(groups).map(([group,list])=>
+    `<div style="margin-bottom:10px"><div style="font-size:11px;font-weight:700;color:#555;margin-bottom:4px">${escapeHtml(group)}</div>`
+    +list.map(p=>`<label style="display:inline-block;margin:0 14px 6px 0;font-size:12px">`
+      +`<input type="checkbox" class="sens-param" value="${p.key}"> ${escapeHtml(p.label)}</label>`).join('')
+    +'</div>').join('');
+}
+
+function sensitivityRequestBody(){
+ const pct=document.getElementById('sensPct').value;
+ const months=document.getElementById('sensMonths').value;
+ const scope=document.getElementById('sensScope').value;
+ const picked=Array.from(document.querySelectorAll('.sens-param:checked')).map(el=>el.value);
+ const body={inputs,tep,rates,phasing,
+   metric:document.getElementById('sensMetric').value,
+   parameters:picked,
+   change_pct:pct==='custom'?Number(document.getElementById('sensPctCustom').value||10):Number(pct),
+   duration_change_months:months==='custom'?Number(document.getElementById('sensMonthsCustom').value||6):Number(months)};
+ if(scope.startsWith('phase')){body.scope='selected';body.selected_view=scope}
+ else body.scope=scope;
+ return body;
+}
+
+async function runSensitivity(){
+ if(sensitivityBusy)return;
+ sensitivityBusy=true;
+ const button=document.getElementById('sensitivityRun');
+ const status=document.getElementById('sensitivityStatus');
+ button.disabled=true;button.textContent='Считаю…';status.textContent='';
+ try{
+  const response=await fetch('/analysis/sensitivity',{method:'POST',
+    headers:{'Content-Type':'application/json'},body:JSON.stringify(sensitivityRequestBody())});
+  const report=await response.json();
+  if(!response.ok)throw new Error(report.detail||'Не удалось посчитать чувствительность');
+  sensitivityReport=report;
+  sensitivityPicked=sensitivityRequestBody();
+  renderSensitivityReport(report);
+  status.textContent=`Параметров в анализе: ${report.items.length}`;
+ }catch(e){
+  status.innerHTML='<span class="import-error">'+escapeHtml(String(e.message||e))+'</span>';
+  document.getElementById('sensitivityResult').style.display='none';
+  sensitivityReport=null;
+ }finally{
+  button.disabled=false;button.textContent='Рассчитать чувствительность';sensitivityBusy=false;
+ }
+}
+
+function sensFormat(value,digits){
+ if(value==null)return '—';
+ return Number(value).toLocaleString('ru-RU',{minimumFractionDigits:digits,maximumFractionDigits:digits});
+}
+
+function renderSensitivityReport(report){
+ const base=report.base;
+ document.getElementById('sensitivityResult').style.display='';
+ document.getElementById('sensitivityScope').textContent=base.scope_label;
+ document.getElementById('sensitivityTitle').textContent=
+   `${base.label}: ${sensFormat(base.value,base.digits)} ${base.unit}`.trim();
+ renderTornado(report);
+ const rows=report.items.map(row=>`<tr>
+   <td>${escapeHtml(row.label)}</td>
+   <td class="num">${sensFormat(row.base_input,row.kind==='months'?0:1)}</td>
+   <td class="num">${sensFormat(row.low_input,row.kind==='months'?0:1)}</td>
+   <td class="num">${sensFormat(row.high_input,row.kind==='months'?0:1)}</td>
+   <td class="num">${sensFormat(row.low_result,base.digits)}</td>
+   <td class="num">${sensFormat(row.high_result,base.digits)}</td>
+   <td class="num"><b>${sensFormat(row.impact,base.digits)}</b></td></tr>`).join('');
+ document.getElementById('sensitivityTable').innerHTML=report.items.length
+  ? `<table style="margin-top:14px"><thead><tr><th>Параметр</th><th class="num">База</th>
+     <th class="num">Ниже</th><th class="num">Выше</th>
+     <th class="num">${escapeHtml(base.label)} ниже</th><th class="num">${escapeHtml(base.label)} выше</th>
+     <th class="num">Размах</th></tr></thead><tbody>${rows}</tbody></table>`
+  : '<p style="font-size:12px;color:#777">Ни один параметр не изменил показатель.</p>';
+ document.getElementById('sensitivityVerdict').innerHTML=
+   (report.verdict||[]).map(line=>`<p style="margin:0 0 6px">${escapeHtml(line)}</p>`).join('');
+ document.getElementById('sensitivityWarnings').innerHTML=
+   (report.warnings||[]).map(line=>escapeHtml(line)).join('<br>');
+}
+
+// Диаграмма своя, на SVG: тащить графическую библиотеку ради одного графика
+// незачем, а печать и PDF со сторонним холстом работают хуже.
+function renderTornado(report){
+ const box=document.getElementById('sensitivityChart');
+ const items=report.items.slice(0,14);
+ if(!items.length){box.innerHTML='';return}
+ const base=report.base.value, digits=report.base.digits;
+ const values=[base];
+ items.forEach(row=>{[row.low_result,row.high_result].forEach(v=>{if(v!=null)values.push(v)})});
+ let lo=Math.min(...values), hi=Math.max(...values);
+ if(hi-lo<1e-9){hi=lo+1}
+ const pad=(hi-lo)*0.08; lo-=pad; hi+=pad;
+ const labelWidth=250, right=70, rowHeight=30, top=34;
+ const width=1000, plot=width-labelWidth-right;
+ const height=top+items.length*rowHeight+18;
+ const x=v=>labelWidth+(v-lo)/(hi-lo)*plot;
+ const parts=[`<svg class="tornado" viewBox="0 0 ${width} ${height}" role="img" aria-label="Диаграмма чувствительности">`];
+ parts.push(`<text x="${labelWidth}" y="18" font-size="12" fill="#777">${escapeHtml(report.base.label)}, ${escapeHtml(report.base.unit)}</text>`);
+ items.forEach((row,index)=>{
+  const y=top+index*rowHeight;
+  const low=row.low_result==null?base:row.low_result;
+  const high=row.high_result==null?base:row.high_result;
+  // Плечо рисуется от базовой линии к своему значению, поэтому случай, когда
+  // рост параметра ухудшает показатель, отображается сам собой.
+  [[low,'#A35D00'],[high,'#2D6A4F']].forEach(([value,color])=>{
+   const from=Math.min(x(base),x(value)), to=Math.max(x(base),x(value));
+   parts.push(`<rect x="${from.toFixed(1)}" y="${y}" width="${Math.max(1,to-from).toFixed(1)}" height="18" fill="${color}" opacity="0.85"><title>${escapeHtml(row.label)}: ${sensFormat(value,digits)}</title></rect>`);
+  });
+  parts.push(`<text x="${labelWidth-8}" y="${y+13}" font-size="11" text-anchor="end" fill="#111">${escapeHtml(row.label.length>38?row.label.slice(0,37)+'…':row.label)}</text>`);
+  parts.push(`<text x="${(Math.min(x(low),x(high))-6).toFixed(1)}" y="${y+13}" font-size="10" text-anchor="end" fill="#777">${sensFormat(Math.min(low,high),digits)}</text>`);
+  parts.push(`<text x="${(Math.max(x(low),x(high))+6).toFixed(1)}" y="${y+13}" font-size="10" fill="#777">${sensFormat(Math.max(low,high),digits)}</text>`);
+ });
+ parts.push(`<line x1="${x(base).toFixed(1)}" y1="${top-10}" x2="${x(base).toFixed(1)}" y2="${height-14}" stroke="#111" stroke-width="1.5"/>`);
+ parts.push(`<text x="${x(base).toFixed(1)}" y="${height-2}" font-size="10" text-anchor="middle" fill="#111">база ${sensFormat(base,digits)}</text>`);
+ parts.push('</svg>');
+ box.innerHTML=parts.join('');
+}
+
 function currentPdfReportPayload(cads=[]){
  const glavapuMeta=inputs._glavapu_import||null;
  const manualMeta=inputs._manual_tep_import||null;
  const source=(glavapuMeta&&glavapuMeta.source)||(manualMeta&&manualMeta.source)||{};
- return {result:lastResult,inputs:inputs,tep:tep,rates:rates,phasing:phasing,scenario:scenarioSelect.value||'base',cadastral_numbers:cads.length?cads:((cadastralAnalysis&&cadastralAnalysis.recognized)||source.cadastral_numbers||[]),project_name:(manualMeta&&manualMeta.project_name)||'',source_label:manualMeta?'Ручной шаблон DevelopAid':'ГлавАПУ'};
+ return {result:lastResult,inputs:inputs,tep:tep,rates:rates,phasing:phasing,scenario:scenarioSelect.value||'base',cadastral_numbers:cads.length?cads:((cadastralAnalysis&&cadastralAnalysis.recognized)||source.cadastral_numbers||[]),project_name:(manualMeta&&manualMeta.project_name)||'',source_label:manualMeta?'Ручной шаблон DevelopAid':'ГлавАПУ',
+   // Чувствительность попадает в отчёт только если её считали: гнать полсотни
+   // расчётов внутри сборки PDF ради раздела, который никто не просил, незачем.
+   sensitivity:sensitivityReport};
 }
 
 async function exportReportPdf(){
@@ -17585,7 +17861,7 @@ def index() -> HTMLResponse:
         "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
         "Pragma": "no-cache",
         "Expires": "0",
-        "X-DevelopAid-Version": "0.12.99",
+        "X-DevelopAid-Version": "0.13.0",
     })
 
 # _DEVELOPAID_EDIT_MODE_FIX_V01217
