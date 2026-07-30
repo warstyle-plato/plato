@@ -10,13 +10,12 @@ import sys
 import threading
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlparse
 
 from fastapi import HTTPException, Request
 from pydantic import BaseModel, Field
 
 _ROOT = Path(__file__).resolve().parent
-_RUNTIME_VERSION = "0.12.87"
+_RUNTIME_VERSION = "0.12.88"
 
 
 def _load_core():
@@ -130,19 +129,6 @@ def _extract_message(update_or_message: dict[str, Any]) -> tuple[int, int, str]:
     return chat_id, user_id, str(message.get("text") or "").strip()
 
 
-def _extract_session_from_url(url: str) -> str:
-    parsed = urlparse(str(url or ""))
-    merged: dict[str, list[str]] = {}
-    for source in (parsed.query, parsed.fragment):
-        for key, values in parse_qs(source).items():
-            merged.setdefault(key, []).extend(values)
-    for key in ("telegram_session", "session", "manual_session", "token"):
-        value = (merged.get(key) or [""])[0].strip()
-        if value:
-            return value
-    return ""
-
-
 def _remember_markup(chat_id: int, reply_markup: Any) -> None:
     if not isinstance(reply_markup, dict):
         return
@@ -161,36 +147,32 @@ def _remember_markup(chat_id: int, reply_markup: Any) -> None:
             url = str(web_app.get("url") or "").strip()
             if not url:
                 continue
-            session = _extract_session_from_url(url)
+            # Только адрес кнопки. Сессию отсюда брать нельзя: каждая кнопка
+            # «Открыть и изменить расчёт» подписывается заново, и её токен
+            # отличается от того, под которым мини-приложение сдало контекст.
+            # Пока эта строка перезаписывала указатель чата, карточка результата
+            # тут же уводила Платона на сессию, у которой контекста нет вовсе.
             with _STATE_LOCK:
                 _PLATON_LAST_URL[chat_id] = url
-                if session:
-                    _PLATON_LAST_SESSION[chat_id] = session
-            if session:
-                pointer = _state_read(f"chat:{chat_id}")
-                pointer["session"] = session
-                _state_write(f"chat:{chat_id}", pointer)
 
 
 def _resolve_context(chat_id: int) -> tuple[str, dict[str, Any]]:
     """Контекст для Платона: полный расчёт мини-приложения, иначе ТЭП от бота.
 
-    Порядок важнее, чем кажется. ТЭП от бота — грубая прикидка на умолчаниях:
-    класс жилья, цены и себестоимость там не те, что в модели. Полный расчёт
-    приходит из мини-приложения и может лежать в памяти соседнего воркера, а не
-    здесь. Пока грубый ТЭП из своей памяти проверялся раньше диска, он перекрывал
-    полный расчёт, и Платон отвечал по чужим цифрам: LLCR 1,11x вместо 1,62x.
-    Поэтому сначала ищем полный расчёт — и в памяти, и на диске, — и только
-    потом опускаемся до ТЭП.
+    Ищем по чату, а не по токену сессии. Токен подписывается заново под каждую
+    кнопку «Открыть и изменить расчёт», поэтому он не опознаёт проект: расчёт
+    сдан под одним токеном, а вопрос Платону приходит позже и уже под другим.
+    Полный расчёт может лежать и в памяти соседнего воркера, поэтому диск
+    проверяется наравне с памятью. Грубый ТЭП от бота — последняя очередь: это
+    прикидка на умолчаниях, где ни класс жилья, ни цены не те, что в модели.
     """
+    pointer = _state_read(f"chat:{chat_id}")
     with _STATE_LOCK:
         session = _PLATON_MODE.get(chat_id) or _PLATON_LAST_SESSION.get(chat_id, "")
         context = _PLATON_CONTEXT_BY_SESSION.get(session) if session else None
         if context:
             return session, copy.deepcopy(context)
 
-    pointer = _state_read(f"chat:{chat_id}")
-    session = session or str(pointer.get("session") or "")
     if session:
         stored = _state_read(f"session:{session}")
         if stored:
@@ -198,6 +180,18 @@ def _resolve_context(chat_id: int) -> tuple[str, dict[str, Any]]:
                 _PLATON_CONTEXT_BY_SESSION[session] = stored
                 _PLATON_LAST_SESSION[chat_id] = session
             return session, copy.deepcopy(stored)
+
+    stored = pointer.get("context")
+    if not stored:
+        pointer_session = str(pointer.get("session") or "")
+        stored = _state_read(f"session:{pointer_session}") if pointer_session else {}
+    if stored:
+        session = str(stored.get("session") or pointer.get("session") or "")
+        with _STATE_LOCK:
+            if session:
+                _PLATON_CONTEXT_BY_SESSION[session] = stored
+                _PLATON_LAST_SESSION[chat_id] = session
+        return session, copy.deepcopy(stored)
 
     with _STATE_LOCK:
         tep_context = _PLATON_TEP_CONTEXT.get(chat_id)
@@ -404,6 +398,32 @@ def _send_help(chat_id: int) -> None:
     )
 
 
+def _state_health(chat_id: int) -> str:
+    """Что именно лежит в общей памяти воркеров — видно из чата, без доступа к серверу.
+
+    Воркеров несколько, память у них раздельная, и «проект не передан» выглядит
+    одинаково при недоступном диске, непришедшем расчёте и потерянном указателе.
+    Разбирать это по логам хостинга долго, поэтому /status отвечает сам.
+    """
+    import time
+    probe = _STATE_DIR / ".probe"
+    try:
+        _STATE_DIR.mkdir(parents=True, exist_ok=True)
+        probe.write_text(str(time.time()), encoding="utf-8")
+        probe.unlink()
+    except Exception as exc:
+        return f"диск недоступен ({type(exc).__name__}) — расчёт живёт только в одном воркере"
+    pointer = _state_read(f"chat:{chat_id}")
+    if not pointer:
+        return "диск доступен, расчёт из мини-приложения ещё не приходил"
+    parts = []
+    if pointer.get("context"):
+        parts.append("полный расчёт")
+    if pointer.get("tep_context"):
+        parts.append("ТЭП бота")
+    return "диск доступен, сохранено: " + (", ".join(parts) if parts else "только ссылка на сессию")
+
+
 def _status_message(chat_id: int, user_id: int) -> None:
     configured = bool(core._TELEGRAM_RUNTIME.get("configured"))
     _, context = _resolve_context(chat_id)
@@ -418,7 +438,8 @@ def _status_message(chat_id: int, user_id: int) -> None:
         f"<b>DevelopAid bot:</b> {'подключён' if configured else 'запускается'}\n"
         f"Telegram ID: <code>{user_id}</code>\n"
         f"Версия: {_RUNTIME_VERSION}\n"
-        f"Платон: {platon_state}",
+        f"Платон: {platon_state}\n"
+        f"Память расчётов: {_state_health(chat_id)}",
     )
 
 
@@ -441,12 +462,20 @@ def save_telegram_context(req: TelegramContextRequest) -> dict[str, Any]:
     with _STATE_LOCK:
         _PLATON_CONTEXT_BY_SESSION[req.session] = context
         _PLATON_LAST_SESSION[chat_id] = req.session
+        # Диалог уже открыт — переводим его на свежий расчёт, иначе Платон
+        # продолжит отвечать по цифрам, которые человек только что переделал.
+        if chat_id in _PLATON_MODE:
+            _PLATON_MODE[chat_id] = req.session
         # Пришёл полный расчёт — грубый ТЭП на умолчаниях больше не нужен и не
         # должен всплыть, если ссылка на сессию потеряется.
         _PLATON_TEP_CONTEXT.pop(chat_id, None)
     _state_write(f"session:{req.session}", context)
     pointer = _state_read(f"chat:{chat_id}")
     pointer["session"] = req.session
+    # Расчёт кладём в указатель чата целиком. Чат — единственная устойчивая
+    # величина: токен сессии живёт одно сообщение, а вопрос Платону приходит
+    # позже и уже с другим токеном.
+    pointer["context"] = context
     pointer.pop("tep_context", None)
     _state_write(f"chat:{chat_id}", pointer)
     return {"ok": True, "version": _RUNTIME_VERSION}
@@ -635,6 +664,17 @@ def _apply_proposal(chat_id: int) -> bool:
         if new_url:
             _PLATON_LAST_URL[chat_id] = new_url
         _PLATON_PENDING.pop(chat_id, None)
+        persisted = copy.deepcopy(context)
+    # Правку надо донести до диска: иначе соседний воркер ответит по вводным,
+    # которые Платон уже пересчитал.
+    if session:
+        _state_write(f"session:{session}", persisted)
+    pointer = _state_read(f"chat:{chat_id}")
+    if session:
+        pointer["context"] = persisted
+    else:
+        pointer["tep_context"] = persisted
+    _state_write(f"chat:{chat_id}", pointer)
     return True
 
 

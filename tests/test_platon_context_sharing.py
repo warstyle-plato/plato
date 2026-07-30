@@ -145,3 +145,75 @@ def test_arriving_model_retires_the_rough_tep(state, monkeypatch):
 
     assert 42 not in wrapper._PLATON_TEP_CONTEXT
     assert "tep_context" not in wrapper._state_read("chat:42")
+
+
+def deliver_context(monkeypatch, session: str = "s-1", price: float = 700) -> None:
+    monkeypatch.setattr(wrapper.core, "_telegram_verify_session", lambda s: {"chat_id": 42})
+    monkeypatch.setattr(wrapper.core, "_telegram_user_allowed", lambda c: True)
+    wrapper.save_telegram_context(wrapper.TelegramContextRequest(
+        session=session, inputs={"purchase_price_mln": price}, tep={},
+        rates=[], phasing={}, selected_view="all"))
+
+
+def test_result_card_button_does_not_hide_the_delivered_model(state, monkeypatch):
+    """Карточка результата уводила Платона на сессию, у которой контекста нет.
+
+    Мини-приложение сдаёт расчёт под своим токеном, а бот тут же присылает
+    карточку с кнопкой «Открыть и изменить расчёт» — её сессия подписывается
+    заново и всегда другая. Пока адрес кнопки перезаписывал указатель чата,
+    следующий же вопрос получал ответ «Платону пока не передан проект».
+    """
+    deliver_context(monkeypatch)
+    wrapper._remember_markup(42, {"inline_keyboard": [[{
+        "text": "Открыть и изменить расчёт",
+        "web_app": {"url": "https://example.org/?telegram=1#telegram_session=s-2-fresh&mode=edit"},
+    }]]})
+
+    session, context = wrapper._resolve_context(42)
+    assert session == "s-1", "указатель чата уехал на сессию кнопки"
+    assert context["inputs"]["purchase_price_mln"] == 700
+    assert wrapper._PLATON_LAST_URL[42].endswith("mode=edit"), "адрес кнопки запомнить всё же надо"
+
+
+def test_delivered_model_is_found_by_chat_when_the_session_is_lost(state, monkeypatch):
+    """Токен живёт одно сообщение, чат — величина постоянная."""
+    deliver_context(monkeypatch)
+    forget_memory(monkeypatch)
+    pointer = wrapper._state_read("chat:42")
+    pointer.pop("session")
+    wrapper._state_write("chat:42", pointer)
+
+    _, context = wrapper._resolve_context(42)
+    assert context["inputs"]["purchase_price_mln"] == 700
+
+
+def test_a_new_calculation_replaces_the_previous_one(state, monkeypatch):
+    deliver_context(monkeypatch, "s-1", 700)
+    deliver_context(monkeypatch, "s-2", 950)
+    forget_memory(monkeypatch)
+
+    session, context = wrapper._resolve_context(42)
+    assert session == "s-2"
+    assert context["inputs"]["purchase_price_mln"] == 950
+
+
+def test_status_tells_a_broken_disk_from_a_missing_calculation(state, monkeypatch):
+    """«Проект не передан» выглядит одинаково при разных причинах — /status их различает."""
+    assert "ещё не приходил" in wrapper._state_health(42)
+
+    deliver_context(monkeypatch)
+    assert "полный расчёт" in wrapper._state_health(42)
+
+    monkeypatch.setattr(wrapper, "_STATE_DIR", state / "нет" / "\0такого")
+    assert "диск недоступен" in wrapper._state_health(42)
+
+
+def test_an_open_dialog_switches_to_the_recalculated_model(state, monkeypatch):
+    """Человек переделал вводные, не закрывая диалог, — отвечать надо по новым."""
+    deliver_context(monkeypatch, "s-1", 700)
+    monkeypatch.setattr(wrapper, "_PLATON_MODE", {42: "s-1"})
+    deliver_context(monkeypatch, "s-2", 950)
+
+    session, context = wrapper._resolve_context(42)
+    assert session == "s-2"
+    assert context["inputs"]["purchase_price_mln"] == 950
