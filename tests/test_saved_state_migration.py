@@ -184,3 +184,12 @@ def test_the_engine_agrees_with_what_the_field_shows():
              "vri_payment_mode": "installment", "vri_installment_years": 3},
             date(2028, 1, 1))
         assert settings["periodicity"] == expected, (region, chosen)
+
+
+def test_the_deal_price_belongs_to_the_territory():
+    """Два расчёта подряд шли по цене предыдущего проекта — это не бросалось в глаза."""
+    page = core.PAGE
+    start = page.index("const TERRITORY_INPUT_KEYS=[")
+    block = page[start:page.index("];", start)]
+
+    assert "'purchase_price_mln'" in block

@@ -62,7 +62,10 @@ def test_formulas_are_not_touched(filled):
     content, _, _ = filled
     # Баланс по листу «ЗУ»: две формулы окна платежей заменены датами,
     # три недостающие формулы первых месяцев рассрочки достроены.
-    assert count_formulas(io.BytesIO(content)) == count_formulas(str(TEMPLATE)) - 2 + 3
+    # Плюс четыре поля соцнагрузки: шаблон считал их сам с листа «Расчет ВРИ
+    # (ТЭП)» и расходился с движком — по три сценарных колонки на поле.
+    social = len(main._PLATO_OVERRIDE_TEMPLATE_FORMULA) * 3
+    assert count_formulas(io.BytesIO(content)) == count_formulas(str(TEMPLATE)) - 2 + 3 - social
 
 
 def test_land_sheet_gets_the_vri_installment_window(filled):

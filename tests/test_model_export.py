@@ -606,7 +606,10 @@ def test_archive_leads_with_the_live_template_model():
         if isinstance(cell.value, str) and cell.value.startswith("=")
     )
     # Две формулы заменены датами окна рассрочки, три недостающие достроены.
-    assert formulas == 113_709
+    # Ещё двенадцать — четыре поля соцнагрузки по трём сценарным колонкам:
+    # шаблон считал их сам с листа «Расчет ВРИ (ТЭП)» и давал 0,6 млн ₽ вместо
+    # 193,2 млн ₽. Считает движок, шаблон показывает его цифры.
+    assert formulas == 113_709 - 12
     assert len(book.sheetnames) == 27
     assert book.calculation.fullCalcOnLoad is True
 
