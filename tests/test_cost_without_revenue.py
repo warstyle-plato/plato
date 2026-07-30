@@ -127,3 +127,26 @@ def test_a_healthy_tep_still_gets_a_verdict(monkeypatch):
 
     assert "Предварительно нецелесообразна" in text
     assert "ТЭП неполный" not in text
+
+
+def test_a_failed_model_export_is_reported(monkeypatch):
+    """Раньше отказ уходил в лог: карточка и PDF приходили, модель — нет."""
+    sent: list[str] = []
+    monkeypatch.setattr(core, "_telegram_verify_session", lambda s: {"chat_id": 42, "cad": []})
+    monkeypatch.setattr(core, "_telegram_user_allowed", lambda c: True)
+    monkeypatch.setattr(core, "_telegram_send_message", lambda chat_id, text, **kw: sent.append(text))
+    monkeypatch.setattr(core, "_telegram_web_app_url", lambda *a, **k: "https://example.org/")
+    monkeypatch.setattr(core, "_telegram_send_document_bytes", lambda *a, **k: None)
+    monkeypatch.setattr(core, "_build_developaid_pdf", lambda payload: b"%PDF-")
+
+    def refuse(*a, **k):
+        raise RuntimeError("шаблон ПЛАТО не читается")
+    monkeypatch.setattr(core, "build_model_archive", refuse)
+
+    core.telegram_result(core.TelegramResultRequest(session="s", summary={
+        "purchase_price_mln": 6500, "net_profit_mln": 900, "llcr": 1.3,
+        "report_payload": {"result": {}, "inputs": {}, "tep": tep()},
+    }))
+
+    assert any("Excel-модель не собралась" in text for text in sent), sent
+    assert any("шаблон ПЛАТО не читается" in text for text in sent)

@@ -15,7 +15,7 @@ from fastapi import HTTPException, Request
 from pydantic import BaseModel, Field
 
 _ROOT = Path(__file__).resolve().parent
-_RUNTIME_VERSION = "0.12.90"
+_RUNTIME_VERSION = "0.12.91"
 
 
 def _load_core():
@@ -445,7 +445,12 @@ def _status_message(chat_id: int, user_id: int) -> None:
         f"Telegram ID: <code>{user_id}</code>\n"
         f"Версия: {_RUNTIME_VERSION}\n"
         f"Платон: {platon_state}\n"
-        f"Память расчётов: {_state_health(chat_id)}",
+        f"Память расчётов: {_state_health(chat_id)}"
+        # Сборка PDF и Excel-модели идёт в фоне отправки карточки, и её отказ
+        # виден только здесь. Без этой строки «модель не пришла» неотличимо
+        # от «модель не собралась».
+        + (f"\nПоследняя ошибка: <i>{html.escape(str(last_error)[:200])}</i>"
+           if (last_error := core._TELEGRAM_RUNTIME.get("last_error")) else ""),
     )
 
 
