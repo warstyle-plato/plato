@@ -11,6 +11,7 @@ import hashlib
 import hmac
 import html
 import json
+import logging
 import os
 import threading
 import time
@@ -14234,13 +14235,24 @@ def _extract_openai_text(data: dict[str, Any]) -> str:
 _PLATO_AI_URL = _env_str("PLATO_AI_URL", "").strip()
 _PLATO_AI_PROXY_SECRET = _env_str("PLATO_AI_PROXY_SECRET", "").strip()
 _PLATO_AI_TIMEOUT_SECONDS = max(30.0, _env_float("PLATO_AI_TIMEOUT_SECONDS", 120.0))
+_PLATON_LOG = logging.getLogger("developaid.platon")
 
 
 def _openai_direct_request(payload: dict[str, Any]) -> dict[str, Any]:
     """Прямой вызов OpenAI. Ключ нужен только здесь."""
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
     if not api_key:
-        raise HTTPException(status_code=503, detail="OPENAI_API_KEY не настроен на сервере.")
+        # Сюда попадают двумя путями, и лечатся они по-разному: на Render не
+        # задан ключ, на Яндексе — не задан адрес прокси, и тогда «добавьте
+        # OPENAI_API_KEY» — вредный совет: ключа на этой машине быть не должно.
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Вызов модели выполняется на этом сервере, но OPENAI_API_KEY не задан. "
+                "Если это ядро на Яндексе, ключ сюда добавлять не нужно — задайте "
+                "PLATO_AI_URL и PLATO_AI_PROXY_SECRET, чтобы вызов уходил на Render."
+            ),
+        )
     request = urllib.request.Request(
         "https://api.openai.com/v1/responses",
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
@@ -14321,8 +14333,32 @@ def _openai_proxy_request(payload: dict[str, Any]) -> dict[str, Any]:
         ) from exc
 
 
+def _plato_route() -> str:
+    """Куда уйдёт вызов модели: «render_proxy» или «local_openai».
+
+    Решает адрес прокси, а не наличие ключа. На Яндексе ключа нет и быть не
+    должно: если адрес задан, вызов обязан уйти на Render — молчаливый откат к
+    api.openai.com увёл бы запрос туда, куда с этой машины ходить нельзя.
+    """
+    return "render_proxy" if _PLATO_AI_URL else "local_openai"
+
+
 def _openai_responses_request(payload: dict[str, Any]) -> dict[str, Any]:
-    if _PLATO_AI_URL:
+    route = _plato_route()
+    # Маршрут — первое, что спрашивают при разборе «Платон молчит». В сообщении
+    # только имя маршрута: ни адреса, ни секрета, ни ключа.
+    _PLATON_LOG.info("Platon route: %s", route)
+    if route == "render_proxy":
+        if not _PLATO_AI_PROXY_SECRET:
+            # Отступать некуда: с заданным адресом прокси прямой вызов OpenAI
+            # запрещён, поэтому это отказ, а не переключение маршрута.
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "AI-прокси Render не настроен: задан PLATO_AI_URL, но не задан "
+                    "PLATO_AI_PROXY_SECRET. Без секрета Render отклонит служебный вызов."
+                ),
+            )
         return _openai_proxy_request(payload)
     return _openai_direct_request(payload)
 
@@ -14338,6 +14374,18 @@ def internal_plato_chat(req: PlatoAiProxyRequest, request: Request) -> dict[str,
     Браузер сюда не ходит: он обращается только к своему серверу, поэтому нет
     ни CORS, ни зависимости от VPN, ни раскрытия внутреннего адреса.
     """
+    # Секрет задан на обеих машинах — он общий, — поэтому одного секрета мало,
+    # чтобы отличить Render от ядра. Отличает адрес прокси: он задан только у
+    # клиента. Без этой проверки вызов этого пути на ядре ушёл бы прямо на
+    # api.openai.com, то есть ровно туда, откуда его и уводили.
+    if _PLATO_AI_URL:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Этот сервер сам обращается к AI-прокси и служебные вызовы не обслуживает. "
+                "Зовите /internal/plato/chat на Render — там задан OPENAI_API_KEY."
+            ),
+        )
     expected = _env_str("PLATO_AI_PROXY_SECRET", "").strip()
     if not expected:
         raise HTTPException(
@@ -14520,8 +14568,15 @@ def agent_status() -> dict[str, Any]:
     return {
         # Ключа на этом сервере может не быть вовсе: думает Платон Сергеевич
         # через сервис, адрес которого задан в PLATO_AI_URL.
-        "enabled": bool(os.getenv("OPENAI_API_KEY", "").strip() or _PLATO_AI_URL),
+        "enabled": bool(
+            (_PLATO_AI_URL and _PLATO_AI_PROXY_SECRET)
+            or os.getenv("OPENAI_API_KEY", "").strip()
+        ),
         "thinks_via": "внешний сервис" if _PLATO_AI_URL else "этот сервер",
+        # Маршрут виден снаружи: хостинг закрыт, и лезть в журнал за строкой
+        # «Platon route» с чужой машины нечем.
+        "route": _plato_route(),
+        "proxy_configured": bool(_PLATO_AI_URL and _PLATO_AI_PROXY_SECRET),
         "model": os.getenv("OPENAI_AGENT_MODEL", "gpt-5.6"),
         "agent_name": "Платон Сергеевич Федоскин",
         "mode": "reasoning_agent_with_confirmed_input_patches",

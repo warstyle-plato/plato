@@ -15,7 +15,7 @@ from fastapi import HTTPException, Request
 from pydantic import BaseModel, Field
 
 _ROOT = Path(__file__).resolve().parent
-_RUNTIME_VERSION = "0.13.5"
+_RUNTIME_VERSION = "0.13.6"
 
 
 def _load_core():
@@ -261,8 +261,27 @@ def _context_label(context: dict[str, Any]) -> str:
     )
 
 
+def _proxy_configured() -> bool:
+    return bool(
+        os.getenv("PLATO_AI_URL", "").strip()
+        and os.getenv("PLATO_AI_PROXY_SECRET", "").strip()
+    )
+
+
 def _agent_ready() -> bool:
-    return bool(os.getenv("OPENAI_API_KEY", "").strip())
+    """Готовность считается по маршруту, а не по одному ключу.
+
+    На ядре Яндекса OPENAI_API_KEY отсутствует намеренно, и прежняя проверка
+    объявляла Платона отключённым при исправно настроенном прокси на Render.
+    """
+    return _proxy_configured() or bool(os.getenv("OPENAI_API_KEY", "").strip())
+
+
+def _agent_unready_reason() -> str:
+    """Чего именно не хватает — ответ разный для ядра и для Render."""
+    if os.getenv("PLATO_AI_URL", "").strip():
+        return "не задан <code>PLATO_AI_PROXY_SECRET</code>"
+    return "не заданы <code>PLATO_AI_URL</code> и <code>PLATO_AI_PROXY_SECRET</code>"
 
 
 def _has_callback(rows: Any, callback: str) -> bool:
@@ -482,7 +501,8 @@ def _status_message(chat_id: int, user_id: int) -> None:
     else:
         platon_state = "ожидает ТЭП или расчёт"
     if not _agent_ready():
-        platon_state += " · OPENAI_API_KEY не настроен"
+        platon_state += " · AI-прокси Render не настроен"
+    platon_state += " · маршрут: " + ("Render" if _proxy_configured() else "этот сервер")
     _send_message(
         chat_id,
         f"<b>DevelopAid bot:</b> {'подключён' if configured else 'запускается'}\n"
@@ -646,8 +666,9 @@ def _run_agent(chat_id: int, text: str, *, intro: str = "") -> None:
         _send_message(
             chat_id,
             "<b>Платон отключён на сервере.</b>\n"
-            "Не задан ключ <code>OPENAI_API_KEY</code> — без него бот не может комментировать расчёт. "
-            "Добавьте переменную окружения в настройках сервиса и перезапустите его.",
+            f"AI-прокси Render не настроен: {_agent_unready_reason()} — без него бот не может "
+            "комментировать расчёт. Ключ <code>OPENAI_API_KEY</code> задаётся только на Render, "
+            "на ядре он не нужен. Добавьте переменные в настройках сервиса и перезапустите его.",
         )
         return
     if intro:

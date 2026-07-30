@@ -53,9 +53,76 @@ def test_call_goes_direct_when_no_proxy_configured(monkeypatch):
 def test_call_goes_through_the_proxy_when_configured(monkeypatch):
     seen = {}
     monkeypatch.setattr(main, "_PLATO_AI_URL", "https://bot.example/internal/plato/chat")
+    monkeypatch.setattr(main, "_PLATO_AI_PROXY_SECRET", "s3cret-ascii")
     monkeypatch.setattr(main, "_openai_proxy_request", lambda p: seen.setdefault("proxy", p))
     main._openai_responses_request(PAYLOAD)
     assert seen == {"proxy": PAYLOAD}
+
+
+# --- прямой OpenAI недоступен с ядра ----------------------------------------
+
+def test_a_configured_proxy_never_falls_back_to_openai(monkeypatch):
+    """Отказ Render не повод идти на api.openai.com: с ядра туда ходить нельзя."""
+    monkeypatch.setattr(main, "_PLATO_AI_URL", "https://bot.example/internal/plato/chat")
+    monkeypatch.setattr(main, "_PLATO_AI_PROXY_SECRET", "s3cret-ascii")
+
+    def unreachable(payload):
+        raise AssertionError("вызван прямой OpenAI при настроенном прокси")
+
+    monkeypatch.setattr(main, "_openai_direct_request", unreachable)
+    monkeypatch.setattr(main, "_openai_proxy_request", http_error(502, "Render лёг"))
+
+    with pytest.raises((HTTPException, urllib.error.HTTPError)):
+        main._openai_responses_request(PAYLOAD)
+
+
+def test_an_address_without_a_secret_is_refused_not_rerouted(monkeypatch):
+    """Полунастроенный прокси — ошибка конфигурации, а не переход на OpenAI."""
+    monkeypatch.setattr(main, "_PLATO_AI_URL", "https://bot.example/internal/plato/chat")
+    monkeypatch.setattr(main, "_PLATO_AI_PROXY_SECRET", "")
+
+    def unreachable(payload):
+        raise AssertionError("вызван прямой OpenAI без секрета прокси")
+
+    monkeypatch.setattr(main, "_openai_direct_request", unreachable)
+
+    with pytest.raises(HTTPException) as exc:
+        main._openai_responses_request(PAYLOAD)
+    assert exc.value.status_code == 503
+    assert "PLATO_AI_PROXY_SECRET" in str(exc.value.detail)
+
+
+def test_the_route_is_logged_without_secrets(monkeypatch, caplog):
+    monkeypatch.setattr(main, "_PLATO_AI_URL", "https://bot.example/internal/plato/chat")
+    monkeypatch.setattr(main, "_PLATO_AI_PROXY_SECRET", "s3cret-ascii")
+    monkeypatch.setattr(main, "_openai_proxy_request", lambda p: {})
+
+    with caplog.at_level("INFO", logger="developaid.platon"):
+        main._openai_responses_request(PAYLOAD)
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert "Platon route: render_proxy" in messages
+    joined = " ".join(messages)
+    assert "s3cret-ascii" not in joined and "bot.example" not in joined
+
+
+def test_the_local_route_is_logged_too(monkeypatch, caplog):
+    monkeypatch.setattr(main, "_PLATO_AI_URL", "")
+    monkeypatch.setattr(main, "_openai_direct_request", lambda p: {})
+
+    with caplog.at_level("INFO", logger="developaid.platon"):
+        main._openai_responses_request(PAYLOAD)
+
+    assert "Platon route: local_openai" in [r.getMessage() for r in caplog.records]
+
+
+def test_the_core_advises_the_proxy_not_a_local_key(monkeypatch):
+    """На ядре совет «добавьте OPENAI_API_KEY» вреден: ключа тут быть не должно."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    with pytest.raises(HTTPException) as exc:
+        main._openai_direct_request(PAYLOAD)
+    detail = str(exc.value.detail)
+    assert "PLATO_AI_URL" in detail and "PLATO_AI_PROXY_SECRET" in detail
 
 
 def test_proxy_sends_the_secret_in_a_header(monkeypatch):
@@ -114,6 +181,25 @@ def test_internal_endpoint_forwards_to_openai(monkeypatch):
     assert response.json() == {"echo": PAYLOAD}
 
 
+def test_the_core_does_not_serve_internal_calls(monkeypatch):
+    """На ядре этот путь ушёл бы прямо на api.openai.com — ровно то, что запрещено.
+
+    Секрет общий для обеих машин, поэтому клиента от сервера отличает только
+    заданный адрес прокси.
+    """
+    monkeypatch.setenv("PLATO_AI_PROXY_SECRET", "s3cret-ascii")
+    monkeypatch.setattr(main, "_PLATO_AI_URL", "https://render.example/internal/plato/chat")
+
+    def unreachable(payload):
+        raise AssertionError("ядро ушло на api.openai.com через служебный путь")
+
+    monkeypatch.setattr(main, "_openai_direct_request", unreachable)
+    response = client.post("/internal/plato/chat", json={"payload": PAYLOAD},
+                           headers={"X-Plato-Secret": "s3cret-ascii"})
+    assert response.status_code == 503
+    assert "Render" in response.json()["detail"]
+
+
 def test_internal_endpoint_rejects_an_empty_payload(monkeypatch):
     monkeypatch.setenv("PLATO_AI_PROXY_SECRET", "s3cret-ascii")
     response = client.post("/internal/plato/chat", json={"payload": {}},
@@ -158,15 +244,85 @@ def test_service_outage_is_readable(monkeypatch):
 def test_status_is_enabled_without_a_local_key(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setattr(main, "_PLATO_AI_URL", "https://bot.example/internal/plato/chat")
+    monkeypatch.setattr(main, "_PLATO_AI_PROXY_SECRET", "s3cret-ascii")
     status = main.agent_status()
     assert status["enabled"] is True
     assert status["thinks_via"] == "внешний сервис"
+    assert status["route"] == "render_proxy"
 
 
 def test_status_is_disabled_without_key_and_proxy(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setattr(main, "_PLATO_AI_URL", "")
-    assert main.agent_status()["enabled"] is False
+    status = main.agent_status()
+    assert status["enabled"] is False
+    assert status["route"] == "local_openai"
+
+
+def test_a_half_configured_proxy_is_not_reported_as_ready(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(main, "_PLATO_AI_URL", "https://bot.example/internal/plato/chat")
+    monkeypatch.setattr(main, "_PLATO_AI_PROXY_SECRET", "")
+    status = main.agent_status()
+    assert status["enabled"] is False
+    assert status["proxy_configured"] is False
+
+
+# --- сквозной путь: ядро → Render → OpenAI -----------------------------------
+
+def test_the_core_reaches_openai_through_render_end_to_end(monkeypatch):
+    """Сценарий со стенда целиком, без заглушки в середине.
+
+    Ядро на Яндексе зовёт Render настоящим `_openai_proxy_request`, Render
+    принимает вызов настоящим `/internal/plato/chat`, и только там появляется
+    ключ. Заглушено ровно одно — сокет между машинами и сам api.openai.com.
+    """
+    monkeypatch.setenv("PLATO_AI_PROXY_SECRET", "s3cret-ascii")
+    monkeypatch.setattr(main, "_PLATO_AI_URL", "https://render.example/internal/plato/chat")
+    monkeypatch.setattr(main, "_PLATO_AI_PROXY_SECRET", "s3cret-ascii")
+    monkeypatch.setattr(main, "_PLATO_AI_TIMEOUT_SECONDS", 120.0)
+
+    reached_openai = {}
+
+    def openai_on_render(payload):
+        # На Render ключ есть — здесь и только здесь путь уходит наружу.
+        reached_openai["payload"] = payload
+        return {"output": [{"content": [{"text": "LLCR 1,03"}]}]}
+
+    monkeypatch.setattr(main, "_openai_direct_request", openai_on_render)
+
+    class Response:
+        def __init__(self, body): self._body = body
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return self._body
+
+    def render_hop(request, timeout=None):
+        """Сокет между Яндексом и Render — единственное, что подменено."""
+        assert request.full_url == "https://render.example/internal/plato/chat"
+        # Обе машины здесь — один процесс, а на Render адрес прокси не задан:
+        # он там и не нужен, ключ лежит на месте. Без этого приложение приняло
+        # бы служебный вызов как ядро и отказало.
+        as_core = main._PLATO_AI_URL
+        main._PLATO_AI_URL = ""
+        try:
+            relayed = client.post(
+                "/internal/plato/chat",
+                content=request.data,
+                headers={"X-Plato-Secret": dict(request.headers)["X-plato-secret"],
+                         "Content-Type": "application/json"},
+            )
+        finally:
+            main._PLATO_AI_URL = as_core
+        assert relayed.status_code == 200, relayed.text
+        return Response(relayed.content)
+
+    monkeypatch.setattr(main.urllib.request, "urlopen", render_hop)
+
+    answer = main._openai_responses_request(PAYLOAD)
+
+    assert reached_openai["payload"] == PAYLOAD, "до OpenAI дошёл не тот запрос"
+    assert answer == {"output": [{"content": [{"text": "LLCR 1,03"}]}]}
 
 
 def test_context_stays_with_the_model():
@@ -188,3 +344,43 @@ def test_non_ascii_secret_is_refused_with_a_clear_message(monkeypatch):
     with pytest.raises(HTTPException) as exc:
         main._openai_proxy_request(PAYLOAD)
     assert "не-ASCII" in str(exc.value.detail)
+
+
+# --- готовность Платона в боте ------------------------------------------------
+
+def _ready(monkeypatch, url, secret, key):
+    for name, value in (("PLATO_AI_URL", url), ("PLATO_AI_PROXY_SECRET", secret),
+                        ("OPENAI_API_KEY", key)):
+        if value is None:
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, value)
+    return _wrapper._agent_ready()
+
+
+def test_the_bot_counts_a_configured_proxy_as_ready(monkeypatch):
+    """Ядро без ключа объявлялось отключённым при исправном прокси."""
+    assert _ready(monkeypatch, "https://render.example/internal/plato/chat",
+                  "s3cret-ascii", None) is True
+
+
+def test_the_bot_still_accepts_a_local_key(monkeypatch):
+    assert _ready(monkeypatch, None, None, "sk-local") is True
+
+
+def test_a_half_configured_proxy_without_a_key_is_not_ready(monkeypatch):
+    assert _ready(monkeypatch, "https://render.example/internal/plato/chat", None, None) is False
+
+
+def test_nothing_configured_is_not_ready(monkeypatch):
+    assert _ready(monkeypatch, None, None, None) is False
+
+
+def test_the_missing_piece_is_named(monkeypatch):
+    """«Добавьте OPENAI_API_KEY» на ядре — вредный совет, ключа тут быть не должно."""
+    monkeypatch.setenv("PLATO_AI_URL", "https://render.example/internal/plato/chat")
+    monkeypatch.delenv("PLATO_AI_PROXY_SECRET", raising=False)
+    assert "PLATO_AI_PROXY_SECRET" in _wrapper._agent_unready_reason()
+
+    monkeypatch.delenv("PLATO_AI_URL", raising=False)
+    assert "PLATO_AI_URL" in _wrapper._agent_unready_reason()
