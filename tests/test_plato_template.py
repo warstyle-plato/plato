@@ -65,7 +65,9 @@ def test_formulas_are_not_touched(filled):
     # Плюс четыре поля соцнагрузки: шаблон считал их сам с листа «Расчет ВРИ
     # (ТЭП)» и расходился с движком — по три сценарных колонки на поле.
     social = len(main._PLATO_OVERRIDE_TEMPLATE_FORMULA) * 3
-    assert count_formulas(io.BytesIO(content)) == count_formulas(str(TEMPLATE)) - 2 + 3 - social
+    # Минус одна: в первой помесячной колонке погашения ПФ формула заменена
+    # нулём — накопительный диапазон там вырождается в ссылку на себя.
+    assert count_formulas(io.BytesIO(content)) == count_formulas(str(TEMPLATE)) - 2 + 3 - social - 1
 
 
 def test_land_sheet_gets_the_vri_installment_window(filled):

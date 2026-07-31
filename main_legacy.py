@@ -41,7 +41,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.13.19"
+VERSION = "0.13.20"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -7881,6 +7881,74 @@ def _plato_repair_vri_columns(
                    "label": "Первые месяцы рассрочки ВРИ", "value": "формулы достроены"})
 
 
+from openpyxl.utils import get_column_letter  # noqa: E402
+from openpyxl.formula.translate import Translator  # noqa: E402
+
+
+def _plato_apply_pf_repayment(
+    workbook: Any, filled: list[dict[str, Any]], missing: list[str],
+) -> None:
+    """Живая формула погашения ПФ вместо выборки из листа «факт».
+
+    Строка 61 листа «КРЕДИТЫ» брала погашение из «факта» — фактических данных
+    действующего проекта. На инвестиционном анализе их нет, лист пуст, и долг
+    только накапливался: 1,83 → 7,94 млрд ₽ за двадцать четыре месяца, ни разу
+    не уменьшившись, при том что доступных средств к концу набиралось 9,56.
+    Отсюда и расхождение с расчётом по выборке ПФ и процентам.
+
+    Формула остаётся формулой: аналитик меняет цены или сроки — книга
+    пересчитывает погашение сама. Гасим тем, что накоплено к прошлому месяцу
+    плюс поступления текущего, но не больше остатка долга. Ссылка на
+    предыдущую колонку, а не на строку 51 того же месяца, — иначе выйдет
+    круговая ссылка: строка 51 сама зависит от погашения.
+    """
+    if "КРЕДИТЫ" not in workbook.sheetnames:
+        missing.append("КРЕДИТЫ · погашение ПФ")
+        return
+    sheet = workbook["КРЕДИТЫ"]
+    changed = 0
+    # Первая помесячная колонка не переносится: накопительные диапазоны в ней
+    # вырождаются (SUM($S61:R61)), Excel нормализует их и получает круговую
+    # ссылку на саму себя. В первом месяце гасить всё равно нечего.
+    first_month = next(
+        (c for c in range(2, sheet.max_column + 1)
+         if isinstance(sheet.cell(row=61, column=c).value, str)
+         and "факт!" in sheet.cell(row=61, column=c).value),
+        None,
+    )
+    for column in range(2, sheet.max_column + 1):
+        cell = sheet.cell(row=61, column=column)
+        if not isinstance(cell.value, str) or "факт!" not in cell.value:
+            continue
+        if column == first_month:
+            cell.value = 0
+            changed += 1
+            continue
+        # Формула не выдумывается: в остальных колонках она уже живая, и первые
+        # две приводятся к тому же виду. Своя редакция здесь означала бы два
+        # разных правила погашения в одной строке.
+        donor = next(
+            (sheet.cell(row=61, column=c).value for c in range(column + 1, sheet.max_column + 1)
+             if isinstance(sheet.cell(row=61, column=c).value, str)
+             and sheet.cell(row=61, column=c).value.startswith("=-IF(")),
+            None,
+        )
+        if not donor:
+            continue
+        donor_column = next(
+            c for c in range(column + 1, sheet.max_column + 1)
+            if sheet.cell(row=61, column=c).value == donor
+        )
+        cell.value = Translator(donor, origin=f"{get_column_letter(donor_column)}61").translate_formula(
+            f"{get_column_letter(column)}61")
+        changed += 1
+    if not changed:
+        missing.append("КРЕДИТЫ · погашение ПФ")
+        return
+    filled.append({"sheet": "КРЕДИТЫ", "row": 61,
+                   "label": "Погашение ПФ · формула вместо листа «факт»", "value": changed})
+
+
 def _plato_apply_pf_rate_methodology(
     workbook: Any, filled: list[dict[str, Any]], missing: list[str],
 ) -> None:
@@ -8177,6 +8245,7 @@ def fill_plato_template(
 
     _plato_fill_land_sheet(workbook, merged, filled)
     _plato_apply_pf_rate_methodology(workbook, filled, missing)
+    _plato_apply_pf_repayment(workbook, filled, missing)
 
     # Имя проекта в шапке ОТЧЕТа — не украшение: без него каждая выгрузка
     # уезжает заказчику подписанной чужим проектом из шаблона.
