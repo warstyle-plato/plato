@@ -40,7 +40,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.13.16"
+VERSION = "0.13.17"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -8129,6 +8129,40 @@ def fill_plato_template(
         tep_sheet.cell(row=vri_row, column=4).value = round(land_rights, 3)
         filled.append({"sheet": "Расчет ВРИ (ТЭП)", "row": vri_row,
                        "label": "Стоимость смены ВРИ", "value": round(land_rights, 3)})
+
+    # Компенсация за социальные объекты разнесена по типам — так её и считает
+    # калькулятор ГлавАПУ, и так её читает импорт. В книгу же уходила только
+    # плата за ВРИ, а строки ДОО, школы и поликлиники оставались с прежними
+    # числами шаблона: 319,1 + 509,6 + 159,8 = 988,4 млн ₽ вместо 580,7. При
+    # денежной форме исполнения книга берёт обременение именно отсюда, поэтому
+    # расходы завышались на 407,7 млн ₽, а следом расходились прибыль и LLCR.
+    imported = (merged.get("_glavapu_import") or {}).get("normalized") or {}
+    # Подписи «ДОО», «Школа» и «Поликлиника» на листе встречаются дважды: сперва
+    # количество мест в «Расчёте объектов обслуживания», ниже — деньги. Ищем от
+    # заголовка компенсации, иначе сумма ляжет в строку мощности.
+    compensation_start = next(
+        (row for row in range(1, tep_sheet.max_row + 1)
+         if "компенсац" in _plato_normalize(tep_sheet.cell(row=row, column=2).value)),
+        None,
+    )
+    for label, key in (
+        ("ДОО", "social_compensation_kindergarten_mln"),
+        ("Школа", "social_compensation_school_mln"),
+        ("Поликлиника", "social_compensation_clinic_mln"),
+    ):
+        row = None
+        if compensation_start:
+            row = next(
+                (r for r in range(compensation_start + 1, min(compensation_start + 8, tep_sheet.max_row + 1))
+                 if _plato_normalize(tep_sheet.cell(row=r, column=2).value) == _plato_normalize(label)),
+                None,
+            )
+        value = imported.get(key)
+        if not row or not isinstance(value, (int, float)):
+            continue
+        tep_sheet.cell(row=row, column=4).value = round(float(value), 3)
+        filled.append({"sheet": "Расчет ВРИ (ТЭП)", "row": row,
+                       "label": f"Компенсация · {label}", "value": round(float(value), 3)})
 
     _plato_fill_land_sheet(workbook, merged, filled)
     _plato_apply_pf_rate_methodology(workbook, filled, missing)
