@@ -40,7 +40,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.13.12"
+VERSION = "0.13.13"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -8653,6 +8653,57 @@ def telegram_result(req: TelegramResultRequest,
     return {"ok": True}
 
 
+# Что обязано совпасть у всех поверхностей. Слева путь в результате расчёта,
+# справа — подпись для человека и допуск: доли сверяются абсолютной разницей,
+# деньги — относительной.
+_PARITY_FIELDS: list[tuple[str, str, str]] = [
+    ("summary.llcr", "LLCR", "ratio"),
+    ("summary.revenue", "выручка", "money"),
+    ("summary.total_expenses", "расходы", "money"),
+    ("summary.ebitda", "EBITDA", "money"),
+    ("summary.net_profit", "чистая прибыль", "money"),
+    ("summary.financing_cost", "проценты и комиссии", "money"),
+    ("summary.social_payment", "социальная нагрузка", "money"),
+    ("report.financing.actual_bridge", "пик БРИДЖа", "money"),
+    ("report.financing.pf_peak", "выборка ПФ", "money"),
+    ("inputs.land_rights_cost_mln", "ВРИ", "money"),
+]
+
+
+def _parity_value(result: dict[str, Any], path: str) -> float | None:
+    node: Any = result
+    for part in path.split("."):
+        if not isinstance(node, dict):
+            return None
+        node = node.get(part)
+    return float(node) if isinstance(node, (int, float)) else None
+
+
+def _parity_mismatch(server: dict[str, Any], client: dict[str, Any]) -> list[str]:
+    """Расхождения присланного расчёта с пересчитанным на сервере.
+
+    Карточка и PDF строились по результату из мини-приложения, а Excel-модель
+    пересчитывалась на сервере из тех же вводных. Пока обе стороны совпадают,
+    разницы не видно; стоит браузеру остаться на прежней версии страницы — и
+    PDF показывает одну экономику, детализация другую, причём обе выглядят
+    достоверно. Поэтому расхождение ищется явно, а не предполагается.
+    """
+    problems: list[str] = []
+    for path, label, kind in _PARITY_FIELDS:
+        theirs = _parity_value(client, path)
+        ours = _parity_value(server, path)
+        if theirs is None or ours is None:
+            continue
+        if kind == "ratio":
+            differs = abs(theirs - ours) > 0.005
+        else:
+            scale = max(abs(ours), abs(theirs), 1.0)
+            differs = abs(theirs - ours) / scale > 0.001
+        if differs:
+            problems.append(f"{label}: {theirs:,.4g} против {ours:,.4g}")
+    return problems
+
+
 def _telegram_send_attachments(
     chat_id: int,
     report_payload: dict[str, Any],
@@ -8664,6 +8715,39 @@ def _telegram_send_attachments(
     # мини-приложение закрывается сразу после расчёта — до вкладки не добраться,
     # и раздел не появлялся никогда. Считаем сами: 0,25 с на одноочередной
     # проект и около секунды на трёхочередной, а вложения и так идут в фоне.
+    # Один расчёт на обе поверхности. Прежде PDF строился по результату из
+    # мини-приложения, а Excel-модель считалась здесь заново — два источника на
+    # одни вводные, и разошедшийся браузер давал разную экономику в отчёте и в
+    # детализации. Теперь считаем один раз и отдаём обеим.
+    try:
+        bundle = _run_authoritative_model(
+            report_payload.get("inputs") or {},
+            report_payload.get("tep") or {},
+            report_payload.get("rates") or [],
+            report_payload.get("phasing") or {},
+        )
+        server_result = bundle["consolidated"]
+        problems = _parity_mismatch(
+            {**server_result, "inputs": report_payload.get("inputs") or {}},
+            {**(report_payload.get("result") or {}), "inputs": report_payload.get("inputs") or {}},
+        )
+        report_payload = {**report_payload, "result": server_result}
+        if problems:
+            # Хостинг закрыт, и молча подменить числа нельзя: человек увидит
+            # в PDF не то, что было на экране, и не поймёт почему.
+            _TELEGRAM_RUNTIME["last_error"] = "Паритет: " + "; ".join(problems[:4])
+            try:
+                _telegram_send_message(chat_id, (
+                    "<b>Расчёт в окне разошёлся с расчётом на сервере.</b>\n"
+                    "В отчёт и модель взяты числа сервера: " + "; ".join(problems[:4])
+                    + ".\nЧаще всего это старая страница в браузере — обновите её."
+                ))
+            except Exception:
+                pass
+    except Exception as exc:
+        # Пересчёт не удался — отдаём то, что прислали: отчёт нужнее сверки.
+        _TELEGRAM_RUNTIME["last_error"] = "Пересчёт для отчёта: " + _error_location(exc)
+
     if not report_payload.get("sensitivity"):
         try:
             report_payload = {**report_payload, "sensitivity": run_sensitivity(
