@@ -150,7 +150,11 @@ def test_payments_after_pf_go_to_project_finance():
 
 
 def test_outside_the_bank_budget_the_payment_stays_on_equity():
-    result = schedule(vri_in_bank_budget=False)
+    # Оплата своими деньгами задаётся долями: один снятый признак больше не
+    # уводит плату из долга — слишком часто он оказывался потерянным, а не
+    # выбранным.
+    result = schedule(vri_in_bank_budget=False, vri_financing_mode="shares",
+                      vri_share_equity_pct=100)
     assert result["totals"]["equity"] == pytest.approx(AMOUNT)
     assert result["totals"]["pf"] == 0.0
 
@@ -280,7 +284,8 @@ def test_early_obligation_raises_the_bridge():
 
 def test_equity_funded_vri_is_excluded_from_debt_financing():
     bank = model()
-    own = model(vri_in_bank_budget=False)
+    own = model(vri_in_bank_budget=False, vri_financing_mode="shares",
+                vri_share_equity_pct=100)
     assert own["vri"]["totals"]["equity"] == pytest.approx(AMOUNT)
     assert own["finance"]["peak_pf"] < bank["finance"]["peak_pf"]
     # CAPEX проекта не меняется — меняется только источник денег.
@@ -512,7 +517,8 @@ def test_default_obligation_date_is_a_month_before_the_permit():
 def test_outside_the_bank_budget_nothing_lands_on_the_bridge():
     """БРИДЖ — тоже банковские деньги: если банк ВРИ не финансирует, платёж
     до открытия ПФ не может лечь на бридж."""
-    result = schedule(vri_obligation_date="2027-01-01", vri_in_bank_budget=False)
+    result = schedule(vri_obligation_date="2027-01-01", vri_in_bank_budget=False,
+                      vri_financing_mode="shares", vri_share_equity_pct=100)
     assert result["rows"][0]["before_pf"] is True
     assert result["totals"]["bridge"] == 0.0
     assert result["totals"]["equity"] == pytest.approx(AMOUNT)
@@ -570,3 +576,33 @@ def test_the_schedule_still_adds_up_to_the_obligation(mode, years):
     paid = sum(row["principal"] for row in result["rows"])
 
     assert paid == pytest.approx(result["totals"]["principal"], rel=1e-9)
+
+
+# --- потерянный признак банковского бюджета ---------------------------------
+
+def test_a_lost_bank_budget_flag_is_restored():
+    """Снятый признак без заданных долей — потеря, а не решение.
+
+    На проекте 77:09:0004014:13 он давал LLCR 1,16x вместо 1,07x: плата за ВРИ
+    уходила из долга целиком, и отчёт этого никак не показывал.
+    """
+    result = schedule(vri_in_bank_budget=False)
+
+    assert result["totals"]["equity"] == 0.0
+    assert result["totals"]["pf"] + result["totals"]["bridge"] == pytest.approx(AMOUNT)
+    assert any("банковский бюджет" in text for text in result["warnings"])
+
+
+def test_explicit_equity_share_is_left_alone():
+    """Осознанный отказ от банка выражается долями — их не трогаем."""
+    result = schedule(vri_financing_mode="shares", vri_share_equity_pct=100)
+
+    assert result["totals"]["equity"] == pytest.approx(AMOUNT)
+    assert not any("банковский бюджет" in text for text in result["warnings"])
+
+
+def test_a_zero_charge_needs_no_restoring():
+    result = main.build_vri_schedule(settings(vri_in_bank_budget=False), 0.0, PERMIT)
+
+    assert result["warnings"] == [] or not any(
+        "банковский бюджет" in text for text in result["warnings"])

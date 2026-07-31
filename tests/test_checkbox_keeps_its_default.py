@@ -73,8 +73,13 @@ def test_an_explicit_choice_still_wins(field):
     assert checked_for({field: True}, field) is True
 
 
-def test_losing_the_bank_budget_flag_moves_the_llcr():
-    """Цена вопроса: та самая разница 1,16x против 1,07x."""
+def test_paying_vri_from_equity_moves_the_llcr():
+    """Цена вопроса: та самая разница 1,16x против 1,07x.
+
+    Снятый признак сам по себе плату из долга больше не уводит — движок считает
+    его потерянным и восстанавливает. Оплата своими деньгами задаётся долями,
+    и вот она экономику меняет.
+    """
     inputs = dict(core.DEFAULT_INPUTS)
     inputs.update(purchase_price_mln=700, land_rights_cost_mln=1276.304,
                   project_start="2027-01-01", ird_months=18,
@@ -82,9 +87,11 @@ def test_losing_the_bank_budget_flag_moves_the_llcr():
 
     inside = core.calculate(core.CalcRequest(inputs=inputs, tep=core.TEP_DEFAULT, rates=[]))
     outside = core.calculate(core.CalcRequest(
-        inputs={**inputs, "vri_in_bank_budget": False}, tep=core.TEP_DEFAULT, rates=[]))
+        inputs={**inputs, "vri_in_bank_budget": False,
+                "vri_financing_mode": "shares", "vri_share_equity_pct": 100},
+        tep=core.TEP_DEFAULT, rates=[]))
 
     assert outside["summary"]["llcr"] > inside["summary"]["llcr"], (
-        "потерянный признак обязан быть виден в LLCR")
+        "оплата ВРИ своими деньгами обязана быть видна в LLCR")
     assert (outside["report"]["financing"]["pf_limit"]
             < inside["report"]["financing"]["pf_limit"])
