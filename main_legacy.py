@@ -10,6 +10,7 @@ import copy
 import hashlib
 import hmac
 import html
+import http.client
 import json
 import logging
 import os
@@ -40,7 +41,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.13.18"
+VERSION = "0.13.19"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -14494,6 +14495,30 @@ _PLATO_AI_PROXY_SECRET = _env_str("PLATO_AI_PROXY_SECRET", "").strip()
 _PLATO_AI_TIMEOUT_SECONDS = max(30.0, _env_float("PLATO_AI_TIMEOUT_SECONDS", 120.0))
 _PLATON_LOG = logging.getLogger("developaid.platon")
 
+# Между Яндексом и Render TLS-соединение изредка обрывается на чтении ответа:
+# на той стороне запрос отработал с кодом 200, а клиент получает
+# UNEXPECTED_EOF_WHILE_READING. Это транспорт, а не отказ сервиса, поэтому
+# такой вызов повторяется, а детерминированные ответы приложения — нет.
+_PLATO_PROXY_ATTEMPTS = 3
+_PLATO_PROXY_BACKOFF = (1, 2)
+_PLATO_PROXY_TRANSPORT_ERRORS = (
+    ssl.SSLEOFError, ssl.SSLError, ConnectionResetError, ConnectionAbortedError,
+    BrokenPipeError, http.client.IncompleteRead, urllib.error.URLError,
+)
+_PLATO_TRANSPORT_MARKERS = (
+    "unexpected_eof", "eof occurred", "connection reset", "broken pipe",
+    "incompleteread", "connection aborted", "premature", "ssl",
+)
+
+
+def _plato_transport_failure(exc: Exception) -> bool:
+    """Транспортный ли это сбой — по причине внутри URLError."""
+    reason = getattr(exc, "reason", None)
+    if isinstance(reason, (ssl.SSLError, ConnectionResetError, ConnectionAbortedError,
+                           BrokenPipeError, TimeoutError)):
+        return True
+    return any(marker in str(reason or exc).lower() for marker in _PLATO_TRANSPORT_MARKERS)
+
 
 def _openai_direct_request(payload: dict[str, Any]) -> dict[str, Any]:
     """Прямой вызов OpenAI. Ключ нужен только здесь."""
@@ -14555,39 +14580,73 @@ def _openai_proxy_request(payload: dict[str, Any]) -> dict[str, Any]:
                 ),
             ) from exc
         headers["X-Plato-Secret"] = _PLATO_AI_PROXY_SECRET
-    request = urllib.request.Request(
-        _PLATO_AI_URL,
-        data=json.dumps({"payload": payload}, ensure_ascii=False).encode("utf-8"),
-        headers=headers,
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=_PLATO_AI_TIMEOUT_SECONDS) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
+    # Соединение до Render не переиспользуется: между Яндексом и Cloudflare
+    # keep-alive рвётся на чтении ответа, и клиент получает TLS EOF там, где на
+    # той стороне запрос уже отработал с кодом 200.
+    headers["Connection"] = "close"
+    body = json.dumps({"payload": payload}, ensure_ascii=False).encode("utf-8")
+
+    last_transport: Exception | None = None
+    for attempt in range(1, _PLATO_PROXY_ATTEMPTS + 1):
+        # Новый Request на каждую попытку: прежний тянет за собой то же
+        # соединение, на котором и оборвалось.
+        request = urllib.request.Request(_PLATO_AI_URL, data=body, headers=headers, method="POST")
         try:
-            message = str((json.loads(exc.read().decode("utf-8")) or {}).get("detail") or "")
-        except Exception:
-            message = ""
-        if exc.code in (401, 403):
-            message = message or "Секрет PLATO_AI_PROXY_SECRET не совпадает."
-        raise HTTPException(
-            status_code=502,
-            detail=f"Платон Сергеевич временно недоступен: {message or f'сервис ответил ошибкой {exc.code}'}.",
-        ) from exc
-    except socket.timeout as exc:
-        raise HTTPException(
-            status_code=504,
-            detail=(
-                f"Платон Сергеевич не ответил за {int(_PLATO_AI_TIMEOUT_SECONDS)} с. "
-                "Повторите вопрос — обычно это перезапуск сервиса после простоя."
-            ),
-        ) from exc
-    except Exception as exc:
-        raise HTTPException(
-            status_code=502,
-            detail=f"Платон Сергеевич временно недоступен: {str(exc)[:300]}",
-        ) from exc
+            with urllib.request.urlopen(request, timeout=_PLATO_AI_TIMEOUT_SECONDS) as response:
+                raw = response.read()
+            if not raw:
+                raise http.client.IncompleteRead(b"")
+            answer = json.loads(raw.decode("utf-8"))
+            if attempt > 1:
+                _PLATON_LOG.info("Platon proxy attempt %d/%d succeeded", attempt, _PLATO_PROXY_ATTEMPTS)
+            return answer
+        except urllib.error.HTTPError as exc:
+            # Ответ приложения — не транспортный сбой: повторять нечего.
+            try:
+                message = str((json.loads(exc.read().decode("utf-8")) or {}).get("detail") or "")
+            except Exception:
+                message = ""
+            if exc.code in (401, 403):
+                message = message or "Секрет PLATO_AI_PROXY_SECRET не совпадает."
+            raise HTTPException(
+                status_code=502,
+                detail=f"Платон Сергеевич временно недоступен: {message or f'сервис ответил ошибкой {exc.code}'}.",
+            ) from exc
+        except _PLATO_PROXY_TRANSPORT_ERRORS as exc:
+            if isinstance(exc, urllib.error.URLError) and not _plato_transport_failure(exc):
+                raise
+            last_transport = exc
+            _PLATON_LOG.info("Platon proxy attempt %d/%d failed: %s",
+                             attempt, _PLATO_PROXY_ATTEMPTS, type(exc).__name__)
+            if attempt >= _PLATO_PROXY_ATTEMPTS:
+                break
+            delay = _PLATO_PROXY_BACKOFF[attempt - 1]
+            _PLATON_LOG.info("Platon proxy retry in %ds", delay)
+            time.sleep(delay)
+        except socket.timeout as exc:
+            raise HTTPException(
+                status_code=504,
+                detail=(
+                    f"Платон Сергеевич не ответил за {int(_PLATO_AI_TIMEOUT_SECONDS)} с. "
+                    "Повторите вопрос — обычно это перезапуск сервиса после простоя."
+                ),
+            ) from exc
+        except json.JSONDecodeError as exc:
+            # Тело пришло рваным: 200 без разобранного JSON успехом не считаем.
+            last_transport = exc
+            _PLATON_LOG.info("Platon proxy attempt %d/%d failed: broken body",
+                             attempt, _PLATO_PROXY_ATTEMPTS)
+            if attempt >= _PLATO_PROXY_ATTEMPTS:
+                break
+            time.sleep(_PLATO_PROXY_BACKOFF[attempt - 1])
+
+    raise HTTPException(
+        status_code=502,
+        detail=(
+            "Платон Сергеевич временно недоступен: соединение с сервисом модели обрывается. "
+            f"Попыток: {_PLATO_PROXY_ATTEMPTS}. Повторите вопрос через минуту."
+        ),
+    ) from last_transport
 
 
 def _plato_route() -> str:
