@@ -93,3 +93,26 @@ def test_the_substitution_is_reported():
     labels = [item["label"] for item in report["filled"] if "Компенсация" in str(item.get("label"))]
 
     assert labels == ["Компенсация · ДОО", "Компенсация · Школа", "Компенсация · Поликлиника"]
+
+
+def test_the_total_row_is_written_too():
+    """Обременение книга берёт из итога, а не из суммы трёх строк.
+
+    Цепочка: ОТЧЕТ!C15 -> Вводные!G100 -> «Расчёт компенсации за социальные
+    объекты». Пока писалась только раскладка, итог оставался прежним, и в
+    модели держались 988,4 млн ₽ при уже правильных 188,4 / 294,5 / 97,7.
+    """
+    ws, report = sheet({**GLAVAPU, "social_compensation_total_mln": 580.668})
+    start = next(r for r in range(1, ws.max_row + 1)
+                 if "компенсац" in str(ws.cell(r, 2).value or "").lower())
+
+    assert ws.cell(start, 4).value == pytest.approx(580.668)
+    assert any("итого" in str(i.get("label")) for i in report["filled"])
+
+
+def test_the_total_matches_its_own_breakdown():
+    ws, _ = sheet({**GLAVAPU, "social_compensation_total_mln": 580.668})
+    start = next(r for r in range(1, ws.max_row + 1)
+                 if "компенсац" in str(ws.cell(r, 2).value or "").lower())
+
+    assert ws.cell(start, 4).value == pytest.approx(sum(money_rows(ws).values()), abs=0.001)

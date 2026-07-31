@@ -40,7 +40,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.13.17"
+VERSION = "0.13.18"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -8145,6 +8145,16 @@ def fill_plato_template(
          if "компенсац" in _plato_normalize(tep_sheet.cell(row=row, column=2).value)),
         None,
     )
+    # Итог компенсации — отдельная строка, а не сумма трёх ниже. Книга берёт
+    # обременение именно из неё: ОТЧЕТ!C15 -> Вводные!G100 -> D83. Пока писалась
+    # только раскладка, итог оставался прежним, и в модели держались 988,4 млн ₽
+    # вместо 580,7 — раскладка при этом уже была правильной.
+    if compensation_start and isinstance(imported.get("social_compensation_total_mln"), (int, float)):
+        total = round(float(imported["social_compensation_total_mln"]), 3)
+        tep_sheet.cell(row=compensation_start, column=4).value = total
+        filled.append({"sheet": "Расчет ВРИ (ТЭП)", "row": compensation_start,
+                       "label": "Компенсация · итого", "value": total})
+
     for label, key in (
         ("ДОО", "social_compensation_kindergarten_mln"),
         ("Школа", "social_compensation_school_mln"),
