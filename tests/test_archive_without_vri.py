@@ -33,6 +33,10 @@ PHASING = {
 def archive(vri_required: bool) -> zipfile.ZipFile:
     inputs = dict(core.DEFAULT_INPUTS)
     inputs["vri_required"] = vri_required
+    # Выключатель ВРИ — отсутствие платы. Снятый признак при заданной плате
+    # больше не отменяет платежи: расход остался бы в модели без источника.
+    if not vri_required:
+        inputs["land_rights_cost_mln"] = 0
     tep = {key: dict(value) for key, value in core.TEP_DEFAULT.items()}
     data, _ = core.build_model_archive(inputs, tep, [], dict(PHASING), project_name="Тест")
     return zipfile.ZipFile(io.BytesIO(data))

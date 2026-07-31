@@ -313,7 +313,9 @@ def test_plato_archive_carries_the_vri_schedule_alongside_the_template():
 
 
 def test_plato_archive_has_no_vri_book_when_vri_is_switched_off():
-    inputs = {**main.DEFAULT_INPUTS, "vri_required": False}
+    # Без платы — без книги ВРИ. Один снятый признак её больше не отменяет:
+    # плата осталась бы в расходах, а графика платежей не было бы.
+    inputs = {**main.DEFAULT_INPUTS, "vri_required": False, "land_rights_cost_mln": 0}
     content, _, _ = main.build_plato_archive(
         inputs, main.TEP_DEFAULT, [], None, project_name="Мытищи"
     )

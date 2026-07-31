@@ -209,11 +209,25 @@ def test_empty_manual_schedule_falls_back_to_automatic():
 
 # --- отключение ------------------------------------------------------------
 
-def test_vri_can_be_switched_off():
-    result = schedule(vri_required=False)
+def test_vri_is_switched_off_by_a_zero_charge():
+    """Выключатель — нулевая плата: нет платы, нет и платежей."""
+    result = main.build_vri_schedule(settings(vri_required=False), 0.0, PERMIT)
     assert result["enabled"] is False
     assert result["rows"] == []
     assert result["totals"]["cash"] == 0.0
+
+
+def test_a_charge_is_paid_even_with_the_flag_off():
+    """Снятый признак при заданной плате — противоречие, а не отказ платить.
+
+    Сумма всё равно остаётся в расходах, и если графика нет, расход есть, а
+    занимать на него никто не занимает: книга ПЛАТО разносила такую плату
+    своей рассрочкой на 72 месяца, и объём долга расходился с расчётом.
+    """
+    result = schedule(vri_required=False)
+    assert result["enabled"] is True
+    assert result["rows"], "плата задана, а платежей нет"
+    assert any("не требу" in w.lower() or "снят" in w.lower() for w in result["warnings"])
 
 
 def test_zero_amount_yields_an_empty_block():
