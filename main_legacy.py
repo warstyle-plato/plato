@@ -40,7 +40,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.13.11"
+VERSION = "0.13.12"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -9326,13 +9326,23 @@ def _vri_settings(x: dict[str, Any], permit: date, amount: float = 0.0) -> dict[
     }
 
 
-def _vri_payment_dates(settings: dict[str, Any]) -> list[date]:
+def _vri_payment_dates(settings: dict[str, Any], *, after_initial: bool = False) -> list[date]:
+    """Даты платежей по обязательству ВРИ.
+
+    Рассрочка начинается в дату обязательства, а не через период после неё.
+    Прежде первый платёж отодвигался на целый период, и при дате обязательства
+    за месяц до РнС — умолчание — вся рассрочка оказывалась уже за РнС: до
+    получения разрешения не платилось ничего, хотя соглашение подписано раньше.
+    Исключение одно: если задан первый взнос, он и есть платёж в дату
+    обязательства, а регулярные платежи идут следом.
+    """
     start = settings["obligation_date"]
     if settings["payment_mode"] != "installment":
         return [start]
     periodicity = settings["periodicity"]
     count = max(1, int(round(settings["years"] * 12 / periodicity)))
-    return [add_months(start, periodicity * (index + 1)) for index in range(count)]
+    offset = 1 if after_initial else 0
+    return [add_months(start, periodicity * (index + offset)) for index in range(count)]
 
 
 def _vri_manual_rows(x: dict[str, Any]) -> list[tuple[date, float]]:
@@ -9446,9 +9456,10 @@ def build_vri_schedule(
                 f"с суммой обязательства {amount / 1_000_000:.1f} млн ₽."
             )
     else:
-        dates = _vri_payment_dates(settings)
         initial = amount * settings["initial_pct"] / 100.0
-        if initial > 0 and settings["payment_mode"] == "installment":
+        has_initial = initial > 0 and settings["payment_mode"] == "installment"
+        dates = _vri_payment_dates(settings, after_initial=has_initial)
+        if has_initial:
             # Первый взнос платится в дату обязательства, остаток дробится
             # на регулярные платежи графика.
             share = (amount - initial) / len(dates)

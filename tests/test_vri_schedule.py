@@ -60,8 +60,9 @@ def test_obligation_date_can_differ_from_the_permit():
 def test_moscow_six_year_installment_is_quarterly():
     result = schedule(vri_payment_mode="installment", vri_installment_years=6)
     assert len(result["rows"]) == 24
-    assert result["rows"][0]["date"] == "2028-10-01"
-    assert result["rows"][-1]["date"] == "2034-07-01"
+    # Рассрочка начинается в дату обязательства, а не периодом позже.
+    assert result["rows"][0]["date"] == "2028-07-01"
+    assert result["rows"][-1]["date"] == "2034-04-01"
     assert result["totals"]["principal"] == pytest.approx(AMOUNT)
     assert result["rows"][-1]["balance_after"] == pytest.approx(0.0)
 
@@ -75,10 +76,13 @@ def test_moscow_term_is_snapped_to_one_three_or_six_years():
 def test_moscow_interest_accrues_on_the_outstanding_balance():
     result = schedule(vri_payment_mode="installment", vri_installment_years=3)
     rows = result["rows"]
-    # Ключевая 12% плюс спред 3 п.п., квартал на полном остатке.
-    assert rows[0]["interest"] == pytest.approx(AMOUNT * 0.15 / 12 * 3)
+    # Первый платёж — в дату обязательства: копить проценты ещё не на чем.
+    assert rows[0]["interest"] == 0.0
+    # Дальше квартал на остатке: ключевая 12% плюс спред 3 п.п.
+    assert rows[1]["interest"] == pytest.approx(
+        (AMOUNT - rows[0]["principal"]) * 0.15 / 12 * 3)
     # Остаток падает — проценты следующего периода меньше.
-    assert rows[1]["interest"] < rows[0]["interest"]
+    assert rows[2]["interest"] < rows[1]["interest"]
     assert result["totals"]["interest"] == pytest.approx(sum(row["interest"] for row in rows))
 
 
@@ -521,3 +525,48 @@ def test_shares_are_overridden_when_the_bank_does_not_fund_vri():
     assert totals["bridge"] == 0.0
     assert totals["pf"] == 0.0
     assert totals["equity"] == pytest.approx(AMOUNT)
+
+
+# --- рассрочка начинается до РнС -------------------------------------------
+
+def default_dated(**overrides) -> dict:
+    """График с умолчанием даты обязательства — за месяц до РнС."""
+    base = {"rate_start_pct": 12.0, **overrides}
+    return main.build_vri_schedule(base, AMOUNT, PERMIT)
+
+
+def test_the_installment_starts_at_the_obligation_date():
+    """Первый платёж отодвигался на целый период и уезжал за РнС.
+
+    Соглашение о смене ВРИ подписывается до получения разрешения, и дата
+    обязательства по умолчанию — за месяц до РнС. Но платежи строились от неё
+    со сдвигом на период, поэтому при квартальной рассрочке первый платёж
+    приходился уже на третий месяц после РнС: до разрешения не платилось
+    ничего, хотя обязательство возникло раньше.
+    """
+    result = default_dated(vri_payment_mode="installment", vri_installment_years=6,
+                           vri_periodicity_months=3)
+    first = result["rows"][0]["date"]
+
+    assert first == result["settings"]["obligation_date"]
+    assert main.d(first) < PERMIT, "первый платёж рассрочки оказался после РнС"
+
+
+def test_an_initial_payment_still_lands_on_the_obligation_date():
+    """Первый взнос и есть платёж в дату обязательства — дублировать не надо."""
+    result = default_dated(vri_payment_mode="installment", vri_installment_years=6,
+                           vri_periodicity_months=3, vri_initial_pct=20)
+    dates = [row["date"] for row in result["rows"]]
+
+    assert len(dates) == len(set(dates)), "два платежа в одну дату"
+    assert main.d(dates[0]) < PERMIT
+    assert result["rows"][0]["principal"] == pytest.approx(
+        result["totals"]["principal"] * 0.20, rel=1e-6)
+
+
+@pytest.mark.parametrize("mode,years", [("lump", 3), ("installment", 3), ("installment", 6)])
+def test_the_schedule_still_adds_up_to_the_obligation(mode, years):
+    result = default_dated(vri_payment_mode=mode, vri_installment_years=years)
+    paid = sum(row["principal"] for row in result["rows"])
+
+    assert paid == pytest.approx(result["totals"]["principal"], rel=1e-9)
