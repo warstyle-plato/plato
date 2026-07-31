@@ -40,7 +40,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.13.13"
+VERSION = "0.13.14"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -16979,7 +16979,13 @@ function renderInputs(){
      // свободным, выбранное значение расходилось с посчитанным.
      const mskQuarter=id==='vri_periodicity_months'&&String(inputs.vri_region||'msk')==='msk';
      if(mskQuarter)inputs[id]=3;
-     if(type==='checkbox')el.checked=!!inputs[id];else el.value=inputs[id]??'';
+     // Отсутствующий ключ — не «снято». Чекбокс рисовался по !!inputs[id], и
+     // поле, которого нет в наборе, приходило снятым, а обратно уходило
+     // явным false, затирая умолчание. Так «ВРИ включена в банковский
+     // бюджет» превращалась в «Нет», ВРИ уходила из долга, и LLCR
+     // оказывался выше настоящего: 1,16 вместо 1,07.
+     if(type==='checkbox')el.checked=(id in inputs)?!!inputs[id]:!!INPUT_DEFAULT[id];
+     else el.value=inputs[id]??INPUT_DEFAULT[id]??'';
      if(mskQuarter){
       el.disabled=true;
       el.title='Москва: платежи ежеквартально — установлено нормативно';
