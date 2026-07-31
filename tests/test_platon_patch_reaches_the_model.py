@@ -131,12 +131,19 @@ def test_the_page_ignores_names_that_are_not_model_fields():
     assert "выдумка" not in inputs
 
 
-def test_the_bot_dialog_smr_still_zeroes_double_counted_items():
-    """Старая ставка из диалога включает благоустройство и резерв."""
+def test_the_bot_dialog_smr_sets_only_the_construction_rate():
+    """Ставка из диалога задаёт СМР и больше ничего.
+
+    Прежде вместе с ней обнулялись благоустройство и резерв: считалось, что
+    ставка их уже включает. По одному проекту это давало CAPEX меньше на
+    550 млн ₽, чем на сайте, и LLCR 1,12x против 1,07x — бот и сайт
+    расходились, хотя вводные совпадали.
+    """
     inputs = run_overrides({"smr_th_per_sqm": 150})
     assert inputs["main_above_th_per_sqm"] == 150
-    assert inputs["landscaping_th_per_sqm"] == 0
-    assert inputs["reserve_pct"] == 0
+    assert inputs["main_under_th_per_sqm"] == 150
+    assert inputs["landscaping_th_per_sqm"] == wrapper.core.DEFAULT_INPUTS["landscaping_th_per_sqm"]
+    assert inputs["reserve_pct"] == wrapper.core.DEFAULT_INPUTS["reserve_pct"]
     assert "smr_th_per_sqm" not in inputs
 
 
