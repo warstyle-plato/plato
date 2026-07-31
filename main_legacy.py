@@ -40,7 +40,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.13.8"
+VERSION = "0.13.9"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -7811,6 +7811,16 @@ def _plato_fill_land_sheet(
         put(row, round(n(inputs, "vri_interest_spread_pp", 3.0) / 100.0, 6), "Спред по рассрочке ВРИ")
 
     rows = schedule.get("rows") or []
+    if not rows and gross > 0:
+        # Сумма ВРИ есть, а графика нет — так бывает, когда стоимость введена
+        # руками, а расчёт ВРИ выключен. Уйти отсюда молча нельзя: в книге
+        # останутся её собственные формулы — первый платёж в дату РнС и
+        # рассрочка на 72 месяца равными долями. Движок же платит по дате
+        # обязательства, по умолчанию за месяц до РнС, то есть до открытия ПФ,
+        # и платёж несёт БРИДЖ. Расхождение выходит не в графике, а в объёме
+        # долга: книга выбирала ПФ на 1,2 млрд ₽ меньше расчёта.
+        obligation, _basis, _estimated = vri_obligation_date(inputs, permit)
+        rows = [{"date": obligation.isoformat(), "amount": net}]
     if not rows:
         return
     first = d(rows[0]["date"])
@@ -7886,25 +7896,30 @@ def _plato_apply_pf_rate_methodology(
         missing.append("КРЕДИТЫ · методика ставки ПФ")
         return
     sheet = workbook["КРЕДИТЫ"]
-    # =IF(X$3<$D61,IF(X53>1,X57,X56),X$13) -> =IF(X$3<$D61,X56,X$13)
-    branch = re.compile(
-        r"^=IF\((?P<col>[A-Z]{1,2})\$3<\$D(?P<anchor>\d+),"
-        r"IF\((?P=col)53>1,(?P=col)57,(?P=col)56\),(?P=col)\$13\)$"
-    )
-    weight = re.compile(r"\b([A-Z]{1,2})53\b")
     changed = 0
-    for column in range(1, sheet.max_column + 1):
-        rate = sheet.cell(row=55, column=column)
-        share = sheet.cell(row=56, column=column)
-        if not isinstance(rate.value, str) or not isinstance(share.value, str):
-            continue
-        match = branch.match(rate.value.strip())
-        if not match or "MIN(" in share.value:
-            continue
-        col = match.group("col")
-        rate.value = f"=IF({col}$3<$D{match.group('anchor')},{col}56,{col}$13)"
-        share.value = weight.sub(r"MIN(\g<1>53,1)", share.value)
-        changed += 1
+    # Очередей в книге две, и у каждой свой блок: 55–57 у первой, 78–80 у
+    # второй. Правились только строки первой, и на многоочередном проекте
+    # расхождение возвращалось через вторую.
+    for rate_row, coverage_row, special_row, weighted_row in ((55, 53, 57, 56), (78, 76, 80, 79)):
+        # =IF(X$3<$D61,IF(X53>1,X57,X56),X$13) -> =IF(X$3<$D61,X56,X$13)
+        branch = re.compile(
+            rf"^=IF\((?P<col>[A-Z]{{1,2}})\$3<\$D(?P<anchor>\d+),"
+            rf"IF\((?P=col){coverage_row}>1,(?P=col){special_row},(?P=col){weighted_row}\),"
+            rf"(?P=col)\$13\)$"
+        )
+        weight = re.compile(rf"\b([A-Z]{{1,2}}){coverage_row}\b")
+        for column in range(1, sheet.max_column + 1):
+            rate = sheet.cell(row=rate_row, column=column)
+            share = sheet.cell(row=weighted_row, column=column)
+            if not isinstance(rate.value, str) or not isinstance(share.value, str):
+                continue
+            match = branch.match(rate.value.strip())
+            if not match or "MIN(" in share.value:
+                continue
+            col = match.group("col")
+            rate.value = f"=IF({col}$3<$D{match.group('anchor')},{col}{weighted_row},{col}$13)"
+            share.value = weight.sub(rf"MIN(\g<1>{coverage_row},1)", share.value)
+            changed += 1
     if not changed:
         # Шаблон переставили или формулы переписали — молча считать по старому
         # нельзя, это возвращает расхождение по процентам.

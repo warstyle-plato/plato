@@ -89,9 +89,12 @@ def test_a_template_without_the_known_formula_is_reported_missing():
     """Молча оставить книгу на прежней методике нельзя — это возврат расхождения."""
     workbook = openpyxl.load_workbook(TEMPLATE)
     sheet = workbook["КРЕДИТЫ"]
-    for column in range(1, sheet.max_column + 1):
-        if isinstance(sheet.cell(55, column).value, str):
-            sheet.cell(55, column).value = "=42"
+    # Ломаем обе очереди: одной мало — вторая даёт свои исправления,
+    # и выгрузка справедливо не считает шаблон неопознанным.
+    for row in (55, 78):
+        for column in range(1, sheet.max_column + 1):
+            if isinstance(sheet.cell(row, column).value, str):
+                sheet.cell(row, column).value = "=42"
     filled, missing = [], []
     core._plato_apply_pf_rate_methodology(workbook, filled, missing)
 
@@ -114,3 +117,18 @@ def test_the_repaired_formula_matches_the_engine():
         assert workbook_rate(coverage) == pytest.approx(engine)
 
     assert workbook_rate(2.38) == pytest.approx(special), "долг за 1× снова дешевле специальной"
+
+
+# --- вторая очередь --------------------------------------------------------
+
+def test_the_second_phase_block_is_repaired_too():
+    """У второй очереди свой блок 78–80: правились только строки первой."""
+    sheet, report = exported()
+    marks = [item for item in report["filled"] if item.get("sheet") == "КРЕДИТЫ"]
+
+    assert marks[0]["value"] > 190, "исправлена только одна очередь"
+    for column in range(1, sheet.max_column + 1):
+        rate = sheet.cell(78, column).value
+        if isinstance(rate, str) and rate.startswith("=IF(") and "$3<$D" in rate:
+            assert "80" not in rate, "вторая очередь всё ещё уходит в ветку «СЗ < Эскроу»"
+            assert "MIN(" in sheet.cell(79, column).value
