@@ -40,7 +40,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.13.9"
+VERSION = "0.13.10"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -530,6 +530,12 @@ def parse_glavapu_xlsx(data: bytes, filename: str = "") -> dict[str, Any]:
         "social_school_gba_sqm": data_norm["actual_school_np_sqm"] or 0,
         "social_clinic_gba_sqm": data_norm["actual_clinic_np_sqm"] or 0,
     }
+    if (data_norm.get("change_vri_mln") or 0) > 0:
+        # Пришла плата за смену ВРИ — значит ВРИ требуется, как и для офисов
+        # ниже: пришли площади — объект включён. Без этого сумма попадала в
+        # расходы, а график платежей не строился: движок не знал, когда платить,
+        # и в книгу уезжала её собственная рассрочка на 72 месяца от РнС.
+        input_mapping["vri_required"] = True
     if (data_norm.get("office_gba_sqm") or 0) > 0:
         input_mapping.update({
             "offices_enabled": True,
