@@ -239,3 +239,17 @@ def test_without_an_area_nothing_is_overwritten():
 
     assert got["tep"]["apartments"]["gns"] == 5000, "ТЭП затёрт без площади"
     assert any("площадь участка" in str(item) for item in got["shown"])
+
+
+# --- одна величина, два окна -------------------------------------------------
+
+def test_the_mo_fields_and_the_tep_panel_are_the_same_value():
+    """Ввод в калькуляторе Подмосковья и на вкладке ТЭП обновляет оба окна."""
+    bind = re.search(r"function bindMoParams\(\).*?\n\}", core.PAGE, re.S).group(0)
+    assert "setSiteDensity(density.value)" in bind
+    assert "setSiteArea(area.value)" in bind
+
+    set_area = re.search(r"function setSiteArea\(value\).*?\n\}", core.PAGE, re.S).group(0)
+    set_density = re.search(r"function setSiteDensity\(value\).*?\n\}", core.PAGE, re.S).group(0)
+    assert "moArea" in set_area, "правка площади на ТЭП не доезжает в МО-блок"
+    assert "moDensity" in set_density, "правка плотности на ТЭП не доезжает в МО-блок"

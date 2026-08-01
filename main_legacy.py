@@ -41,7 +41,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.13.35"
+VERSION = "0.13.36"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -17219,8 +17219,8 @@ details.cadastral-box>summary::marker{color:#888}
           <summary>Параметры расчёта по Московской области</summary>
           <p>Заполняются из справочников автоматически. Меняйте, только если знаете фактические значения по проекту — введённое всегда важнее справочного. <b>Правка любого параметра сразу пересчитывает результат</b> по тому же участку.</p>
           <div class="mo-params">
-            <div class="field"><label>Плотность <span class="unit">м² квартир на 1 га · справочно</span></label><input type="number" id="moDensity" value="30000" step="500"></div>
-            <div class="field"><label>Площадь участка вручную <span class="unit">га, если участка нет в ЕГРН</span></label><input type="number" id="moArea" value="" step="0.0001" placeholder="из ЕГРН"></div>
+            <div class="field"><label>Плотность <span class="unit">м² на 1 га · то же поле, что на вкладке ТЭП</span></label><input type="number" id="moDensity" value="30000" step="500"></div>
+            <div class="field"><label>Площадь участка вручную <span class="unit">га, если участка нет в ЕГРН · то же поле, что на вкладке ТЭП</span></label><input type="number" id="moArea" value="" step="0.0001" placeholder="из ЕГРН"></div>
             <div class="field"><label>Городской округ <span class="unit">для УПКС и Кср</span></label><select id="moDistrict"><option value="">определить по участку</option></select></div>
             <div class="field"><label>Средняя цена м², Кср <span class="unit" id="moPriceUnit">₽/м² · из справочника</span></label><input type="number" id="moPrice" value="" step="1000" readonly><label class="mo-manual"><input type="checkbox" id="moPriceManual" onchange="toggleMoPrice()"> задать вручную</label></div>
             <div class="field"><label>Коэффициент доходности Кд <span class="unit" id="moKdUnit">доля · из справочника</span></label><input type="number" id="moKd" value="" step="0.01" readonly><label class="mo-manual"><input type="checkbox" id="moKdManual" onchange="toggleMoKd()"> задать вручную</label></div>
@@ -18360,6 +18360,15 @@ function bindMoParams(){
   const el=document.getElementById(id);
   if(el&&!el._moBound){el._moBound=true;el.addEventListener('change',recalcMo)}
  });
+ // Площадь и плотность — те же поля модели, что в блоке «Участок и плотность»
+ // на вкладке ТЭП: ввод в любом из двух окон обновляет оба. Иначе одна
+ // величина жила бы в двух местах порознь и конфликтовала сама с собой.
+ const density=document.getElementById('moDensity');
+ if(density&&!density._siteBound){density._siteBound=true;
+  density.addEventListener('change',()=>setSiteDensity(density.value))}
+ const area=document.getElementById('moArea');
+ if(area&&!area._siteBound){area._siteBound=true;
+  area.addEventListener('change',()=>{if(Number(area.value)>0)setSiteArea(area.value)})}
 }
 
 // Кд задан таблицей 3 постановления № 1745: три группы округов, 10 / 5 / 1 %.
@@ -19287,12 +19296,16 @@ function applyDensityToTep(){
 function setSiteArea(value){
  inputs.site_area_ha=Number(value)||0;
  inputs._site_area_user_set=inputs.site_area_ha>0;
+ const mo=document.getElementById('moArea');
+ if(mo&&document.activeElement!==mo&&inputs.site_area_ha>0)mo.value=inputs.site_area_ha;
  renderSitePanel();
 }
 function setSiteDensity(value){
  inputs.site_density_sqm_per_ha=Number(value)||0;
  // Пустое поле — возврат к автоматике, а не плотность ноль.
  inputs._site_density_user_set=inputs.site_density_sqm_per_ha>0;
+ const mo=document.getElementById('moDensity');
+ if(mo&&document.activeElement!==mo&&inputs.site_density_sqm_per_ha>0)mo.value=inputs.site_density_sqm_per_ha;
  renderSitePanel();
 }
 function renderSitePanel(){
