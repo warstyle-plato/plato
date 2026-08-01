@@ -41,7 +41,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.13.20"
+VERSION = "0.13.21"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -15928,7 +15928,20 @@ async function telegramRecalculateAndFinish(tab){
 let aiHistory=[],aiBusy=false,aiProposals=[];
 function escapeHtml(s){return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
 function toggleAgent(open){aiDrawer.classList.toggle('open',!!open);aiOverlay.classList.toggle('open',!!open);if(open)setTimeout(()=>aiInput.focus(),80)}
-function appendAiMessage(role,content,extra=''){const d=document.createElement('div');d.className=`ai-msg ${role} ${extra}`.trim();d.innerHTML=escapeHtml(content).replace(/\n/g,'<br>');aiMessages.appendChild(d);aiMessages.scrollTop=aiMessages.scrollHeight;return d}
+// Модель отвечает Markdown-ом, а сообщение выводилось как есть, и человек
+// читал «**LLCR 1,070x**» вместе со звёздочками. Разметка снимается уже после
+// экранирования: на вход сюда приходит текст без единого живого тега, поэтому
+// вставить через ответ модели чужой HTML нельзя.
+function renderAiMarkdown(text){
+ return escapeHtml(text)
+  .replace(/^#{1,6}\s*(.+)$/gm,'<b>$1</b>')
+  .replace(/\*\*([^*]+)\*\*/g,'<b>$1</b>')
+  .replace(/(^|[\s(])\*([^*\n]+)\*(?=[\s).,;:!?]|$)/g,'$1<i>$2</i>')
+  .replace(/`([^`\n]+)`/g,'<code>$1</code>')
+  .replace(/^\s*[-*]\s+/gm,'• ')
+  .replace(/\n/g,'<br>');
+}
+function appendAiMessage(role,content,extra=''){const d=document.createElement('div');d.className=`ai-msg ${role} ${extra}`.trim();d.innerHTML=renderAiMarkdown(content);aiMessages.appendChild(d);aiMessages.scrollTop=aiMessages.scrollHeight;return d}
 function appendAiProposals(proposals){
  (proposals||[]).forEach(p=>{
    const idx=aiProposals.push(p)-1;
