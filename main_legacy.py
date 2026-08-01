@@ -41,7 +41,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.13.29"
+VERSION = "0.13.30"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -8646,6 +8646,30 @@ _M2_PRODUCTS: dict[str, dict[str, Any]] = {
 # Месяцы пониженного спроса — те же, что в шаблоне ПЛАТО (лист ПОДБОР_КВ.М).
 _M2_SEASONAL_LOW_MONTHS = (1, 5, 6, 7, 8)
 
+# Списки для полей, у которых на странице свой набор вариантов: FIELD_GROUPS их
+# не несёт, а без них в книге вместо выбора остаётся свободный ввод.
+_M2_EXTRA_OPTIONS: dict[str, list[list[str]]] = {
+    "bridge_interest_mode": [["Капитализация в ПФ", "Капитализация в ПФ"],
+                             ["Выплата при рефинансировании", "Выплата при рефинансировании"]],
+    "social_mode": [["Строительство", "Строительство"],
+                    ["Денежная компенсация", "Денежная компенсация"]],
+}
+
+# Прогноз ключевой ставки: на странице он в своём блоке, а не в FIELD_GROUPS.
+# Без него ставка приезжала бы в книгу готовым рядом чисел.
+_M2_RATE_INPUTS: list[tuple[str, str, str, str]] = [
+    ("rate_start_date", "Дата стартовой ставки", "дата", "date"),
+    ("rate_start_pct", "Ключевая ставка на старте", "%", "number"),
+    ("rate_target_high_pct", "Цель — консервативный сценарий", "%", "number"),
+    ("rate_target_base_pct", "Цель — базовый сценарий", "%", "number"),
+    ("rate_target_low_pct", "Цель — оптимистичный сценарий", "%", "number"),
+    ("rate_normalization_months", "Срок выхода на цель", "мес.", "number"),
+    ("rate_curve_shape", "Форма кривой", "коэффициент", "number"),
+    ("rate_scenario", "Сценарий ставки", "сценарий", "select"),
+]
+
+_M2_RATE_SCENARIOS = [["high", "Консервативный"], ["base", "Базовый"], ["low", "Оптимистичный"]]
+
 # Поля страницы, до расчёта не доходящие: движок их не читает, они уезжают
 # только в шаблон ПЛАТО. В книге они помечены — иначе аналитик правит этап
 # роста цены, ничего не происходит, и виноватой оказывается книга.
@@ -8825,6 +8849,7 @@ def build_plato_model_v2(
     """
     import openpyxl
     import openpyxl.styles
+    import openpyxl.worksheet.datavalidation
 
     result = calculate(CalcRequest(inputs=dict(inputs), tep=dict(tep), rates=list(rates or [])))
     finance = result.get("finance") or {}
@@ -8865,7 +8890,9 @@ def build_plato_model_v2(
     # --- Вводные -----------------------------------------------------------
     # Вводные — это все поля модели, теми же группами, что и на странице: их
     # больше сотни, и урезанный список делал книгу нередактируемой. Проценты
-    # хранятся долями, чтобы формулы умножали на них напрямую.
+    # хранятся долями, чтобы формулы умножали на них напрямую. Поля выбора
+    # получают тот же список вариантов, что и на странице: свободный ввод в
+    # ячейке, от которой зависит ветка расчёта, — это опечатка ценой в отчёт.
     ws_in["A1"] = "ВВОДНЫЕ"
     ws_in["A1"].font = styles["title"]
     ws_in["A2"] = "Меняйте колонку B. Серым на помесячных листах помечены графики — они приходят значениями."
@@ -8873,7 +8900,58 @@ def build_plato_model_v2(
         ws_in.cell(row=4, column=column, value=label).font = styles["bold"]
 
     key_row: dict[str, int] = {}
-    percent_keys: set[str] = set()
+    choices: dict[str, list[str]] = {}
+
+    def options_of(key: str, field: tuple) -> list[list[str]] | None:
+        if len(field) > 4 and field[4]:
+            return [list(pair) for pair in field[4]]
+        return _M2_EXTRA_OPTIONS.get(key)
+
+    def put_input(row: int, key: str, label: str, unit: str, kind: str,
+                  options: list[list[str]] | None) -> None:
+        ws_in.cell(row=row, column=1, value=label)
+        cell = ws_in.cell(row=row, column=2)
+        raw = inputs.get(key, DEFAULT_INPUTS.get(key))
+        if kind == "number":
+            value = n(inputs, key, float(DEFAULT_INPUTS.get(key) or 0.0))
+            if unit in ("%", "п.п.") or str(unit).startswith("%"):
+                cell.value, cell.number_format = round(value / 100.0, 12), percent
+            else:
+                cell.value, cell.number_format = round(value, 6), money
+        elif kind == "date":
+            cell.value = d(raw) if raw else None
+            cell.number_format = month_fmt
+        elif kind == "checkbox":
+            # Да/Нет вместо 1/0: аналитик читает лист, а не расшифровывает его.
+            cell.value = "Да" if raw else "Нет"
+            options = [["Да", "Да"], ["Нет", "Нет"]]
+        elif options:
+            # В ячейке — подпись варианта, как на странице; ветки расчёта
+            # сравниваются с ней же, поэтому кода в книге нет вовсе.
+            labels = {str(value): title for value, title in options}
+            cell.value = labels.get(str(raw if raw is not None else ""), str(raw or ""))
+        else:
+            cell.value = "" if raw is None else str(raw)
+        if options:
+            titles = [str(title) for _, title in options]
+            choices[key] = titles
+            rule = openpyxl.worksheet.datavalidation.DataValidation(
+                type="list", formula1='"' + ",".join(titles) + '"', allow_blank=False,
+                showDropDown=False, showErrorMessage=True,
+                errorTitle="Выберите из списка",
+                error="Значение должно быть одним из вариантов, как на странице DevelopAid.",
+            )
+            ws_in.add_data_validation(rule)
+            rule.add(cell)
+        if key in _M2_TEMPLATE_ONLY_INPUTS:
+            ws_in.cell(row=row, column=1).font = styles["driver"]
+            cell.font = styles["driver"]
+            ws_in.cell(row=row, column=3,
+                       value=f"{unit} · в расчёте не участвует, уходит в шаблон ПЛАТО")
+        else:
+            ws_in.cell(row=row, column=3, value=unit)
+        key_row[key] = row
+
     row = 5
     for group, fields in FIELD_GROUPS:
         ws_in.cell(row=row, column=1, value=group.upper()).font = styles["section"]
@@ -8882,82 +8960,59 @@ def build_plato_model_v2(
             key, label, unit, kind = field[0], field[1], field[2], field[3]
             if key in key_row:
                 continue
-            ws_in.cell(row=row, column=1, value=label)
-            cell = ws_in.cell(row=row, column=2)
-            raw = inputs.get(key, DEFAULT_INPUTS.get(key))
-            if kind == "number":
-                value = n(inputs, key, float(DEFAULT_INPUTS.get(key) or 0.0))
-                if unit in ("%", "п.п.") or str(unit).startswith("%"):
-                    cell.value, cell.number_format = round(value / 100.0, 12), percent
-                    percent_keys.add(key)
-                else:
-                    cell.value, cell.number_format = round(value, 6), money
-            elif kind == "date":
-                cell.value = d(raw) if raw else None
-                cell.number_format = month_fmt
-            elif kind == "checkbox":
-                cell.value = 1 if raw else 0
-                cell.number_format = "0"
-            else:
-                cell.value = "" if raw is None else str(raw)
-            if key in _M2_TEMPLATE_ONLY_INPUTS:
-                ws_in.cell(row=row, column=1).font = styles["driver"]
-                cell.font = styles["driver"]
-                ws_in.cell(row=row, column=3,
-                           value=f"{unit} · в расчёте не участвует, уходит в шаблон ПЛАТО")
-            else:
-                ws_in.cell(row=row, column=3, value=unit)
-            key_row[key] = row
+            put_input(row, key, label, unit, kind, options_of(key, field))
             row += 1
         row += 1
 
+    ws_in.cell(row=row, column=1, value="ПРОГНОЗ КЛЮЧЕВОЙ СТАВКИ").font = styles["section"]
+    row += 1
+    for key, label, unit, kind in _M2_RATE_INPUTS:
+        options = _M2_RATE_SCENARIOS if key == "rate_scenario" else None
+        put_input(row, key, label, unit, kind, options)
+        row += 1
+    row += 1
+
     ws_in.cell(row=row, column=1, value="РАСЧЁТНЫЕ СРОКИ И ЛИМИТЫ").font = styles["section"]
     row += 1
-    pf_limit = float(finance.get("pf_limit") or 0.0)
-    bridge_limit = float(finance.get("calculated_bridge_limit") or 0.0)
-    # РнС и РВЭ не вводятся руками: это начало проекта плюс сроки ИРД и
-    # строительства. Сдвинули срок ИРД — поехали и график, и стоимость долга.
-    derived: list[tuple[str, str, Any, str, str]] = [
-        ("permit", "РнС (начало + срок ИРД)",
-         f"=EDATE($B${key_row['project_start']},$B${key_row['ird_months']})", month_fmt, ""),
-        ("rve", "РВЭ (РнС + срок строительства)",
-         f"=EDATE($B${key_row['permit'] if 'permit' in key_row else row},"
-         f"$B${key_row['construction_months']})", month_fmt, ""),
-        ("pf_limit", "Лимит ПФ", round(pf_limit / 1e6, 3), money, "млн ₽"),
-        ("bridge_limit", "Расчётный лимит БРИДЖ", round(bridge_limit / 1e6, 3), money, "млн ₽"),
-        ("capitalize", "Проценты БРИДЖ капитализируются в ПФ (1 — да, 0 — в тело ПФ)",
-         1 if capitalize else 0, "0", ""),
-    ]
-    for key, label, value, fmt, unit in derived:
+    # Всё в этом блоке — следствие вводных, а не отдельная вводная: сдвинули
+    # срок ИРД, и поехали РнС, график освоения, выборка долга и его стоимость.
+    for key, label, unit in (
+        ("permit", "РнС (начало проекта + срок ИРД)", ""),
+        ("rve", "РВЭ (РнС + срок строительства)", ""),
+        ("bridge_limit", "Расчётный лимит БРИДЖ", "млн ₽"),
+        ("pf_limit", "Лимит ПФ", "млн ₽"),
+        ("bridge_fee", "Комиссия за резервирование БРИДЖ", "млн ₽"),
+        ("pf_reservation_fee", "Комиссия за резервирование ПФ", "млн ₽"),
+    ):
         ws_in.cell(row=row, column=1, value=label)
-        ws_in.cell(row=row, column=2, value=value).number_format = fmt
         if unit:
             ws_in.cell(row=row, column=3, value=unit)
         key_row[key] = row
         row += 1
-    # РВЭ считается от строки РнС, а её номер известен только сейчас.
-    ws_in.cell(row=key_row["rve"], column=2,
-               value=f"=EDATE($B${key_row['permit']},$B${key_row['construction_months']})")
 
-    for key, label, limit_key in (
-        ("bridge_fee", "Комиссия за резервирование БРИДЖ", "bridge_limit"),
-        ("pf_reservation_fee", "Комиссия за резервирование ПФ", "pf_limit"),
-    ):
-        ws_in.cell(row=row, column=1, value=label)
-        ws_in.cell(
-            row=row, column=2,
-            value=f"=$B${key_row[limit_key]}*$B${key_row['reservation_fee_pct']}",
-        ).number_format = money
-        ws_in.cell(row=row, column=3, value="млн ₽")
-        key_row[key] = row
-        row += 1
+    ws_in.cell(row=key_row["permit"], column=2,
+               value=f"=EDATE($B${key_row['project_start']},$B${key_row['ird_months']})"
+               ).number_format = month_fmt
+    ws_in.cell(row=key_row["rve"], column=2,
+               value=f"=EDATE($B${key_row['permit']},$B${key_row['construction_months']})"
+               ).number_format = month_fmt
+    for key, limit_key in (("bridge_fee", "bridge_limit"), ("pf_reservation_fee", "pf_limit")):
+        ws_in.cell(row=key_row[key], column=2,
+                   value=f"=$B${key_row[limit_key]}*$B${key_row['reservation_fee_pct']}"
+                   ).number_format = money
+    for key in ("bridge_limit", "pf_limit"):
+        ws_in.cell(row=key_row[key], column=2).number_format = money
 
     ws_in.column_dimensions["A"].width = 56
-    ws_in.column_dimensions["B"].width = 18
-    ws_in.column_dimensions["C"].width = 14
+    ws_in.column_dimensions["B"].width = 20
+    ws_in.column_dimensions["C"].width = 44
 
     def ref(key: str) -> str:
         return f"{_M2_SHEETS['inputs']}!$B${key_row[key]}"
+
+    # Режим переноса процентов БРИДЖа — не флаг 1/0, а тот же выбор, что на
+    # странице: книга сравнивает ячейку с подписью варианта.
+    capitalized = f'({ref("bridge_interest_mode")}="Капитализация в ПФ")'
 
     # --- ТЭП ---------------------------------------------------------------
     ws_tep = sheets["tep"]
@@ -9355,6 +9410,17 @@ def build_plato_model_v2(
     costs.formula("own", "Оплачивается своими деньгами",
                   lambda i: f"={costs.at('total', i)}-{costs.at('debt', i)}", money)
 
+    # Расчётный лимит БРИДЖ — цена входа и проектирование, а при денежной
+    # компенсации соцобъектов ещё и она: до РнС эти расходы несёт БРИДЖ.
+    def cost_amount(key: str) -> str:
+        return f"{_M2_SHEETS['costs']}!{amount(key)}"
+
+    bridge_parts = "+".join(cost_amount(key) for key in ("purchase", "design_p", "design_rd")
+                            if key in calc_row) or "0"
+    social_part = (f'+IF({ref("social_mode")}="Денежная компенсация",{cost_amount("social")},0)'
+                   if "social" in calc_row else "")
+    ws_in.cell(row=key_row["bridge_limit"], column=2, value=f"={bridge_parts}{social_part}")
+
     line = max(costs._next, calc_line + len(articles) + 1) + 2
     sheets["costs"].cell(row=line, column=1, value="СТРУКТУРА РАСХОДОВ").font = styles["section"]
     line += 1
@@ -9380,8 +9446,30 @@ def build_plato_model_v2(
                      ("section", "БРИДЖ"), "bridge_spread", "bridge",
                      "bridge_cap_spread", "bridge_cap",
                      ("section", "Проектное финансирование"), "pf_spread", "pf_base", "pf_special")
-    rate_grid.values("key_rate", "Ключевая ставка (прогноз)",
-                     [float(item.get("key_rate") or 0.0) for item in rows], percent)
+    # Прогноз ключевой ставки собирается формулой, как в движке: плавный выход
+    # на цель сценария за срок нормализации, форма кривой задаётся показателем.
+    horizon = f"MAX(1,{ref('rate_normalization_months')})"
+    shape = f"MAX(0.05,{ref('rate_curve_shape')})"
+    target = (f'IF({ref("rate_scenario")}="Консервативный",{ref("rate_target_high_pct")},'
+              f'IF({ref("rate_scenario")}="Оптимистичный",{ref("rate_target_low_pct")},'
+              f'{ref("rate_target_base_pct")}))')
+    rate_grid.layout("months_from_start", "progress")
+    # Ряд прогноза начинается в дату стартовой ставки, а месяцы модели — первого
+    # числа: пока не наступило то же число, действует ставка предыдущего шага.
+    rate_grid.formula(
+        "months_from_start", "Месяцев от даты стартовой ставки",
+        lambda i: (f"=MAX(0,(YEAR({rate_grid.month(i)})-YEAR({ref('rate_start_date')}))*12"
+                   f"+MONTH({rate_grid.month(i)})-MONTH({ref('rate_start_date')})"
+                   f"-IF(DAY({ref('rate_start_date')})>1,1,0))"), "0")
+    rate_grid.formula(
+        "progress", "Пройдено до цели",
+        lambda i: (f"=IF({rate_grid.at('months_from_start', i)}>={horizon},1,"
+                   f"(1-EXP(-{shape}*{rate_grid.at('months_from_start', i)}/{horizon}))"
+                   f"/(1-EXP(-{shape})))"), percent)
+    rate_grid.formula(
+        "key_rate", "Ключевая ставка (прогноз)",
+        lambda i: (f"={ref('rate_start_pct')}+({target}-{ref('rate_start_pct')})"
+                   f"*{rate_grid.at('progress', i)}"), percent, bold=True)
     rate_grid.formula("bridge_spread", "Спред БРИДЖ", lambda i: f"={ref('bridge_spread_pp')}", percent)
     rate_grid.formula("bridge", "Ставка БРИДЖ",
                       lambda i: f"={rate_grid.at('key_rate', i)}+{rate_grid.at('bridge_spread', i)}",
@@ -9463,7 +9551,7 @@ def build_plato_model_v2(
                    lambda i: (f"=IF({credit.month(i)}>={ref('permit')},"
                               f"MAX({costs.outside('debt', i)},0),0)"
                               f"+{credit.at('bridge_refinance', i)}"
-                              f"+IF({ref('capitalize')}=1,0,{credit.at('bridge_transfer', i)})"), money)
+                              f"+IF({capitalized},0,{credit.at('bridge_transfer', i)})"), money)
     credit.formula("pf_gross", "Долг до погашения",
                    lambda i: f"={credit.before('pf_balance', i)}+{credit.at('pf_draw', i)}", money)
     credit.formula("pf_repayment", "Погашение (раскрытие эскроу и продажи после РВЭ)",
@@ -9497,7 +9585,7 @@ def build_plato_model_v2(
 
     def pf_payable_start(index: int) -> str:
         return (f"{credit.before('pf_payable', index)}"
-                f"+IF({ref('capitalize')}=1,{credit.at('bridge_transfer', index)},0)")
+                f"+IF({capitalized},{credit.at('bridge_transfer', index)},0)")
 
     credit.formula("pf_cap", "Капитализация процентов",
                    lambda i: (f"=IF({credit.at('pf_gross', i)}>0,({pf_payable_start(i)})"
@@ -9526,6 +9614,10 @@ def build_plato_model_v2(
                               f"+{credit.at('pf_interest', i)}+{credit.at('pf_cap', i)}"
                               f"+{credit.at('limit_fee', i)}+{credit.at('fees', i)}"),
                    money, bold=True)
+
+    # Лимит ПФ банк округляет вверх до десяти миллионов от общей выборки.
+    ws_in.cell(row=key_row["pf_limit"], column=2,
+               value=f"=CEILING(SUM({credit.span('pf_draw')}),10)")
 
     # --- НАЛОГИ ------------------------------------------------------------
     tax = _MonthGrid(sheets["tax"], months, styles, title="НАЛОГ НА ПРИБЫЛЬ · млн ₽")

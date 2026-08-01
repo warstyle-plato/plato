@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import calendar as _calendar
 import datetime as _dt
+import math as _math
 import re
 from typing import Any, Callable
 
@@ -72,6 +73,12 @@ def _edate(value: Any, offset: Any) -> _dt.date:
     return _dt.date(year, month + 1, day)
 
 
+def _ceiling(value: float, step: float) -> float:
+    if step == 0:
+        return 0.0
+    return _math.ceil(value / step) * step
+
+
 def _flatten(values: Any) -> list[Any]:
     if isinstance(values, list):
         out: list[Any] = []
@@ -98,6 +105,9 @@ FUNCTIONS: dict[str, Callable[[list[Any]], Any]] = {
         a * b for a, b in zip(*[[_as_number(v) for v in _flatten(arg)] for arg in args])
     ),
     "YEAR": lambda args: _as_date(args[0]).year,
+    "DAY": lambda args: _as_date(args[0]).day,
+    "EXP": lambda args: _math.exp(_as_number(args[0])),
+    "CEILING": lambda args: _ceiling(_as_number(args[0]), _as_number(args[1])),
     "EDATE": lambda args: _edate(args[0], args[1]),
     "MONTH": lambda args: _as_date(args[0]).month,
 }

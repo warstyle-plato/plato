@@ -239,7 +239,7 @@ def test_the_tax_rate_reaches_the_llcr(book):
 DRIVER_ROWS = {
     "ПРОДАЖИ": (),
     "СЕБЕСТОИМОСТЬ": ("cost_land_rights", "cost_social", "debt", "index"),
-    "СТАВКИ": ("key_rate",),
+    "СТАВКИ": (),
     "ЭСКРОУ": (),
     "КРЕДИТОВАНИЕ": (),
     "НАЛОГИ": ("margin", "adjust"),
@@ -416,6 +416,10 @@ DRIVES = [
     ("reservation_fee_pct", 2.0, "financing_cost"),
     ("profit_tax_pct", 0.5, "profit_tax"),
     ("purchase_price_mln", 2.0, "capex"),
+    ("rate_start_pct", 1.5, "financing_cost"),
+    ("rate_target_base_pct", 1.5, "financing_cost"),
+    ("rate_normalization_months", 2.0, "financing_cost"),
+    ("rate_curve_shape", 3.0, "financing_cost"),
 ]
 
 
@@ -521,6 +525,11 @@ SCENARIOS = {
     "денежная компенсация соцобъектов": {
         "social_mode": "Денежная компенсация", "social_compensation_mln": 580.7,
     },
+    "консервативный сценарий ставки": {"rate_scenario": "high"},
+    "оптимистичный сценарий ставки": {"rate_scenario": "low"},
+    "проценты БРИДЖ выплачиваются": {
+        "bridge_interest_mode": "Выплата при рефинансировании",
+    },
 }
 
 
@@ -557,6 +566,95 @@ def test_the_reserve_is_not_charged_on_the_purchase_price(name="цена вхо�
     row = 4 + core._M2_REPORT_KEYS.index("capex")
     expected = float(workbook["ОТЧЁТ"].cell(row=row, column=3).value)
     assert close(evaluator.cell("ОТЧЁТ", f"B{row}"), expected)
+
+
+def test_the_key_rate_curve_matches_the_engine(book):
+    """Прогноз ставки собирается формулой, а не приезжает рядом чисел."""
+    _, evaluator, engine, meta = book
+    line = meta["layout"]["rates"]["key_rate"]
+
+    for index, item in enumerate(engine["finance"]["rows"]):
+        got = evaluator.cell("СТАВКИ", f"{column(index)}{line}")
+        assert got == pytest.approx(float(item["key_rate"]), abs=1e-12), (
+            f"ключевая ставка в {item['month']}"
+        )
+
+
+def test_the_rate_scenario_is_chosen_in_the_workbook(book):
+    """Сценарий ставки — выбор из списка, и он двигает всю кривую."""
+    workbook, _, _, meta = book
+    fresh = _reopen(workbook)
+    line = meta["layout"]["rates"]["key_rate"]
+    was = Evaluator(fresh).cell("СТАВКИ", f"BD{line}")
+
+    fresh["Вводные"][f"B{meta['layout']['inputs']['rate_scenario']}"] = "Оптимистичный"
+
+    assert Evaluator(fresh).cell("СТАВКИ", f"BD{line}") < was
+
+
+# Поля, у которых на странице выбор из списка: в книге у них обязан быть
+# тот же список, иначе аналитик впишет своё и ветка расчёта уйдёт молча.
+CHOICE_FIELDS = [
+    ("vri_region", ["Москва", "Московская область"]),
+    ("land_right", ["Собственность", "Аренда"]),
+    ("vri_payment_mode", ["Единовременно", "Рассрочка"]),
+    ("vri_periodicity_months", ["Ежемесячно", "Ежеквартально", "Раз в полгода", "Раз в год"]),
+    ("vri_relief_mode", ["Нет", "Доля от суммы", "Фиксированная сумма"]),
+    ("vri_financing_mode", ["Как весь проект", "Заданные доли"]),
+    ("social_mode", ["Строительство", "Денежная компенсация"]),
+    ("bridge_interest_mode", ["Капитализация в ПФ", "Выплата при рефинансировании"]),
+    ("rate_scenario", ["Консервативный", "Базовый", "Оптимистичный"]),
+    ("vri_required", ["Да", "Нет"]),
+    ("offices_enabled", ["Да", "Нет"]),
+]
+
+
+@pytest.mark.parametrize("key,expected", CHOICE_FIELDS)
+def test_the_choice_fields_offer_the_same_list_as_the_page(book, key, expected):
+    workbook, _, _, meta = book
+    sheet = workbook["Вводные"]
+    address = f"B{meta['layout']['inputs'][key]}"
+
+    lists = [rule for rule in sheet.data_validations.dataValidation
+             if rule.type == "list" and address in str(rule.sqref)]
+    assert lists, f"у «{key}» нет выпадающего списка"
+
+    offered = lists[0].formula1.strip('"').split(",")
+    assert offered == expected, f"«{key}»: в книге {offered}, на странице {expected}"
+    assert sheet[address].value in expected, (
+        f"«{key}» хранит {sheet[address].value!r}, чего нет в списке"
+    )
+
+
+def test_every_choice_on_the_page_is_a_choice_in_the_workbook(book):
+    """Ни одно поле выбора не должно остаться свободным вводом."""
+    workbook, _, _, meta = book
+    sheet = workbook["Вводные"]
+    validated = {
+        address
+        for rule in sheet.data_validations.dataValidation if rule.type == "list"
+        for address in str(rule.sqref).split()
+    }
+
+    for _, fields in core.FIELD_GROUPS:
+        for field in fields:
+            key, kind = field[0], field[3]
+            if kind == "number" or kind == "date":
+                continue
+            address = f"B{meta['layout']['inputs'][key]}"
+            assert address in validated, f"«{key}» ({kind}) остался свободным вводом"
+
+
+def test_the_limits_are_calculated_not_typed(book):
+    """Лимит БРИДЖ и лимит ПФ — следствие расчёта, а не введённые числа."""
+    _, evaluator, engine, meta = book
+    finance = engine["finance"]
+
+    bridge = evaluator.cell("Вводные", f"B{meta['layout']['inputs']['bridge_limit']}")
+    pf = evaluator.cell("Вводные", f"B{meta['layout']['inputs']['pf_limit']}")
+
+    assert close(bridge, finance["calculated_bridge_limit"] / 1e6)
+    assert close(pf, finance["pf_limit"] / 1e6)
 
 
 # --- вспомогательное -------------------------------------------------------
