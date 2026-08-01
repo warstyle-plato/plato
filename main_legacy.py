@@ -41,7 +41,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.13.36"
+VERSION = "0.13.37"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -17200,8 +17200,7 @@ details.cadastral-box>summary::marker{color:#888}
             <div id="landCards" class="land-results"></div>
             <div id="landWarnings" class="note warning"></div>
             <div class="import-actions">
-              <button class="btn" onclick="saveLandLookup()">Сохранить участок в проект</button>
-              <span style="font-size:11px;color:#777">Расчётные вводные автоматически не меняются.</span>
+              <span style="font-size:11px;color:#777">Сведения сохранены в проекте автоматически. Расчётные вводные при этом не меняются.</span>
             </div>
           </div>
           <div id="cadastralPreview" class="cadastral-preview" style="display:none">
@@ -17209,8 +17208,7 @@ details.cadastral-box>summary::marker{color:#888}
             <div id="cadastralParcels" class="cadastral-parcels"></div>
             <div id="cadastralWarnings" class="note warning"></div>
             <div class="import-actions">
-              <button class="btn" onclick="saveCadastralTerritory()">Сохранить территорию в проект</button>
-              <span style="font-size:11px;color:#777">Территория сохранится вместе с проектом. Полный ТЭП появится ниже после автоматического расчёта.</span>
+              <span style="font-size:11px;color:#777">Территория сохранена в проекте автоматически. Полный ТЭП появится ниже после автоматического расчёта.</span>
             </div>
           </div>
           <iframe id="genplanAutomationFrame" class="genplan-automation-frame" title="Автоматический расчёт ТЭП ГлавАПУ" aria-hidden="true"></iframe>
@@ -17231,12 +17229,12 @@ details.cadastral-box>summary::marker{color:#888}
         <div id="moStatus" class="import-status" style="display:none"></div>
         <div id="moPreview" class="cadastral-preview" style="display:none">
             <div id="moSummary" class="import-summary"></div>
-            <div id="moTables"></div>
-            <div id="moWarnings" class="note warning"></div>
             <div class="import-actions">
               <button class="btn dark" onclick="applyMo()">Применить к Вводным и ТЭП</button>
               <span style="font-size:11px;color:#777">Заменит ТЭП, социальные мощности и стоимость смены ВРИ в текущем проекте.</span>
-          </div>
+            </div>
+            <div id="moTables"></div>
+            <div id="moWarnings" class="note warning"></div>
         </div>
         <div class="import-divider">Либо загрузить готовый ТЭП</div>
         <div class="upload-line" style="align-items:center">
@@ -17254,15 +17252,17 @@ details.cadastral-box>summary::marker{color:#888}
         <div id="glavapuStatus" class="import-status">Можно выбрать готовую предустановку Мишина / Мытищи с сервера или загрузить свой .xlsx ГлавАПУ.</div>
         <div id="glavapuPreview" class="import-preview" style="display:none">
           <div id="glavapuSummary" class="import-summary"></div>
-          <div class="scroll" style="max-height:360px"><table>
-            <thead><tr><th>Показатель</th><th>Распознано</th><th>Ед.</th><th>Куда попадёт</th></tr></thead>
-            <tbody id="glavapuRows"></tbody>
-          </table></div>
-          <div id="glavapuWarnings" class="note warning"></div>
           <div class="import-actions">
             <button class="btn dark" onclick="applyGlavapu()">Применить к Вводным и ТЭП</button>
             <span style="font-size:11px;color:#777">Текущие значения ТЭП квартир/коммерции будут заменены распознанными.</span>
           </div>
+          <div class="scroll" style="max-height:360px"><table>
+            <thead><tr><th>Показатель</th><th>Распознано</th><th>Ед.</th><th>Куда попадёт</th></tr></thead>
+            <tbody id="glavapuRows"></tbody>
+          </table></div>
+          <details><summary style="font-size:13px;padding:8px 0">Примечания к распознаванию</summary>
+            <div id="glavapuWarnings" class="note warning"></div>
+          </details>
         </div>
       </div>
       <div class="card">
@@ -18087,6 +18087,7 @@ async function obtainCadastralTep(preAnalysis){
    }
    if(!(analysis.recognized||[]).length)throw new Error('Калькулятор не распознал кадастровые номера');
    cadastralAnalysis=analysis;
+   inputs._cadastral_analysis=structuredClone(analysis);
    // Площадь из ЕГРН — пока нет ГлавАПУ и ручного ввода, участок мерится ей.
    {
     const cadArea=Number(((analysis||{}).territory||{}).area_ha||0);
@@ -18161,12 +18162,6 @@ function renderCadastralPreview(data){
  cadastralPreview.style.display='block';
 }
 
-function saveCadastralTerritory(){
- if(!cadastralAnalysis){cadastralStatus.innerHTML='<span class="import-error">Сначала определите территорию.</span>';return}
- inputs._cadastral_analysis=structuredClone(cadastralAnalysis);
- cadastralStatus.innerHTML='<span class="import-ok">Состав территории сохранён в текущем проекте.</span>';
-}
-
 let landLookup=null;
 
 function landNum(value,digits){
@@ -18203,6 +18198,9 @@ async function lookupLand(options){
   const data=await response.json();
   if(!response.ok)throw new Error(data.detail||'Не удалось получить сведения ЕГРН');
   landLookup=data;
+  // Снимок сохраняется в проект сразу: отдельная кнопка «Сохранить участок»
+  // была лишним шагом, и забытая, она молча теряла сведения при закрытии.
+  inputs._land_lookup=structuredClone(data);
   renderLandLookup(data);
   const found=Number(data.found_count||0);
   if(!(options&&options.quiet)){
@@ -18279,13 +18277,6 @@ function useLandForTep(){
  const field=document.getElementById('cadastralNumbers');
  if(field){field.value=numbers.join(', ');field.scrollIntoView({behavior:'smooth',block:'center'})}
  status.innerHTML='<span class="import-ok">Номера перенесены в блок ТЭП ГлавАПУ ('+numbers.length+').</span> Нормативный ТЭП считается только по Москве.';
-}
-
-function saveLandLookup(){
- const status=document.getElementById('cadastralStatus');
- if(!landLookup){status.innerHTML='<span class="import-error">Сначала выполните поиск.</span>';return}
- inputs._land_lookup=structuredClone(landLookup);
- status.innerHTML='<span class="import-ok">Сведения об участке сохранены в проекте.</span>';
 }
 
 function renderStoredLand(){
