@@ -41,7 +41,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.13.32"
+VERSION = "0.13.33"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -17273,6 +17273,30 @@ details.cadastral-box>summary::marker{color:#888}
 
     <div id="tep" class="panel">
       <div class="card">
+        <div class="section-title">Участок и плотность</div>
+        <div class="fields" style="grid-template-columns:repeat(4,minmax(160px,1fr))">
+          <div class="field">
+            <label>Площадь участка <span class="unit">га</span></label>
+            <input type="number" step="0.0001" id="siteAreaHa" onchange="setSiteArea(this.value)">
+            <span id="siteAreaSource" style="font-size:11px;color:#777"></span>
+          </div>
+          <div class="field">
+            <label>Плотность застройки <span class="unit">м² поэтажной площади / га</span></label>
+            <input type="number" step="100" id="siteDensity" onchange="setSiteDensity(this.value)">
+            <span id="siteDensitySource" style="font-size:11px;color:#777"></span>
+          </div>
+          <div class="field">
+            <label>Потенциал поэтажной площади <span class="unit">м²</span></label>
+            <b id="sitePotential" style="display:block;padding:9px 0;font-size:15px">—</b>
+          </div>
+          <div class="field">
+            <label>Использовано наземной ГНС <span class="unit">от потенциала</span></label>
+            <b id="siteUsage" style="display:block;padding:9px 0;font-size:15px">—</b>
+          </div>
+        </div>
+        <div id="siteDensityWarn" class="note warning" style="display:none"></div>
+      </div>
+      <div class="card">
         <div class="toolbar"><button class="btn" onclick="syncTep()">Обновить производные ТЭП из вводных</button><span style="color:#777;font-size:12px">В интерфейсе показывается 1 знак после запятой. При загруженном ГлавАПУ подземный паркинг является производным: постоянные + гостевые × 35 м².</span></div>
         <div class="scroll"><table class="teptable"><thead><tr><th>Продукт</th><th>ГНС, м²</th><th>Общая площадь, м²</th><th>Полезная площадь, м²</th><th>Продаваемая площадь, м²</th><th>Передаваемая площадь, м²</th><th>Количество, шт.</th></tr></thead><tbody id="tepBody"></tbody><tfoot><tr><th>Итого</th><th id="tg"></th><th id="ta"></th><th id="tu"></th><th id="ts"></th><th id="tt"></th><th id="tn"></th></tr></tfoot></table></div>
       </div>
@@ -18058,6 +18082,11 @@ async function obtainCadastralTep(preAnalysis){
    }
    if(!(analysis.recognized||[]).length)throw new Error('Калькулятор не распознал кадастровые номера');
    cadastralAnalysis=analysis;
+   // Площадь из ЕГРН — пока нет ГлавАПУ и ручного ввода, участок мерится ей.
+   {
+    const cadArea=Number(((analysis||{}).territory||{}).area_ha||0);
+    if(cadArea>0&&!inputs._site_area_user_set&&!inputs._glavapu_import)inputs.site_area_ha=cadArea;
+   }
    field.value=(analysis.requested||[]).join(', ');
    renderCadastralPreview(analysis);
 
@@ -18538,6 +18567,8 @@ async function applyMo(options){
  {
   const moArea=Number(((moResult.territory)||{}).site_area_ha||0);
   if(moArea>0)inputs.site_area_ha=moArea;
+  const moDensity=Number(moResult.density_sqm_per_ha||0);
+  if(moDensity>0&&!inputs._site_density_user_set)inputs.site_density_sqm_per_ha=moDensity;
  }
  inputs._mo_calc={
   query:moResult.query||'',
@@ -18838,13 +18869,14 @@ const TERRITORY_INPUT_KEYS=[
  // нового кадастра она обязана обнуляться. Иначе второй расчёт подряд считался
  // по цене предыдущего проекта, и это не бросалось в глаза.
  'purchase_price_mln',
- 'site_area_ha','land_rights_cost_mln','social_compensation_mln',
+ 'site_area_ha','site_density_sqm_per_ha','land_rights_cost_mln','social_compensation_mln',
  'kindergarten_places','school_places','clinic_capacity',
  'social_dou_gba_sqm','social_school_gba_sqm','social_clinic_gba_sqm',
  'offices_gba_sqm','offices_saleable_sqm','retail_gba_sqm','retail_saleable_sqm',
  'above_parking_spaces'
 ];
-const TERRITORY_MARKERS=['_glavapu_import','_manual_tep_import','_mo_calc','_cadastral_analysis'];
+const TERRITORY_MARKERS=['_glavapu_import','_manual_tep_import','_mo_calc','_cadastral_analysis',
+ '_site_area_user_set','_site_density_user_set'];
 
 // Предпосылки аналитика — цены, себестоимость, ставки, сроки, налоги — это не
 // данные участка, и сбрасывать их при смене территории нельзя.
@@ -18893,6 +18925,10 @@ async function applyGlavapu(){
  {
   const glavapuArea=Number(((glavapuImport.normalized)||{}).site_area_ha||0);
   if(glavapuArea>0)inputs.site_area_ha=glavapuArea;
+  // Москва: плотность от СПП приезжает тем же файлом и не должна оставаться
+  // справочной. Ручной ввод не перебивается.
+  const glavapuDensity=Number(((glavapuImport.normalized)||{}).density_spp_th_sqm_ha||0)*1000;
+  if(glavapuDensity>0&&!inputs._site_density_user_set)inputs.site_density_sqm_per_ha=0;
  }
 
  // Social mode is a scenario choice. Re-import must not silently reset it.
@@ -19188,6 +19224,70 @@ function updateTepTotals(){
  const sums={gns:0,total_area:0,useful:0,saleable:0,transfer:0,units:0};
  Object.values(tep).forEach(r=>Object.keys(sums).forEach(k=>sums[k]+=Number(r[k]||0)));
  tg.textContent=num(sums.gns);ta.textContent=num(sums.total_area);tu.textContent=num(sums.useful);ts.textContent=num(sums.saleable);tt.textContent=num(sums.transfer);tn.textContent=num(sums.units);
+ renderSitePanel();
+}
+// Участок и плотность. Площадь приходит из ГлавАПУ, из кадастра (ЕГРН) или
+// руками; плотность для Москвы — из калькулятора ГлавАПУ, для площади из
+// кадастра — 30 000 м²/га по умолчанию, и всё перебивается ручным вводом.
+function glavapuDensitySqmHa(){
+ const n=inputs._glavapu_import&&inputs._glavapu_import.normalized;
+ return n?Number(n.density_spp_th_sqm_ha||0)*1000:0;
+}
+function effectiveSiteDensity(){
+ const stored=Number(inputs.site_density_sqm_per_ha||0);
+ if(stored>0)return stored;
+ const g=glavapuDensitySqmHa();
+ return g>0?g:30000;
+}
+function siteAreaSourceLabel(){
+ if(inputs._site_area_user_set)return 'введена вручную';
+ if(inputs._glavapu_import)return 'из калькулятора ГлавАПУ';
+ if(inputs._mo_calc)return 'из калькулятора Подмосковья';
+ if(inputs._cadastral_analysis||cadastralAnalysis)return 'из кадастра (ЕГРН)';
+ return Number(inputs.site_area_ha||0)>0?'из сохранённого проекта':'не задана';
+}
+function siteDensitySourceLabel(){
+ if(inputs._site_density_user_set&&Number(inputs.site_density_sqm_per_ha||0)>0)return 'введена вручную';
+ if(Number(inputs.site_density_sqm_per_ha||0)>0&&inputs._mo_calc)return 'из калькулятора Подмосковья';
+ if(glavapuDensitySqmHa()>0)return 'из калькулятора ГлавАПУ (Москва)';
+ return 'по умолчанию 30 000 м²/га';
+}
+function setSiteArea(value){
+ inputs.site_area_ha=Number(value)||0;
+ inputs._site_area_user_set=inputs.site_area_ha>0;
+ renderSitePanel();
+}
+function setSiteDensity(value){
+ inputs.site_density_sqm_per_ha=Number(value)||0;
+ // Пустое поле — возврат к автоматике, а не плотность ноль.
+ inputs._site_density_user_set=inputs.site_density_sqm_per_ha>0;
+ renderSitePanel();
+}
+function renderSitePanel(){
+ const areaEl=document.getElementById('siteAreaHa');
+ if(!areaEl)return;
+ const densityEl=document.getElementById('siteDensity');
+ const area=Number(inputs.site_area_ha||0);
+ if(document.activeElement!==areaEl)areaEl.value=area>0?area:'';
+ const stored=Number(inputs.site_density_sqm_per_ha||0);
+ if(document.activeElement!==densityEl)densityEl.value=stored>0?stored:'';
+ densityEl.placeholder=num(effectiveSiteDensity());
+ document.getElementById('siteAreaSource').textContent=siteAreaSourceLabel();
+ document.getElementById('siteDensitySource').textContent=siteDensitySourceLabel();
+ const potential=area*effectiveSiteDensity();
+ // Плотность нормирует наземную поэтажную площадь: подземный паркинг в неё
+ // не входит.
+ let above=0;
+ Object.entries(tep).forEach(([key,row])=>{if(key!=='underground_parking')above+=Number(row.gns||0)});
+ document.getElementById('sitePotential').textContent=potential>0?num(potential)+' м²':'—';
+ const usage=potential>0?above/potential*100:0;
+ document.getElementById('siteUsage').textContent=potential>0?num(usage)+'%':'—';
+ const warn=document.getElementById('siteDensityWarn');
+ if(potential>0&&above>potential){
+  warn.style.display='';
+  warn.innerHTML='Наземная ГНС проекта <b>'+num(above)+' м²</b> превышает потенциал участка <b>'+num(potential)+
+   ' м²</b> при плотности '+num(effectiveSiteDensity())+' м²/га. Проверьте плотность или состав ТЭП.';
+ }else warn.style.display='none';
 }
 function applyRequiredSocialProgramFromGlavapu(){
  if(inputs.social_mode!=='Строительство')return false;
