@@ -41,7 +41,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.13.25"
+VERSION = "0.13.26"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -8543,6 +8543,442 @@ class PlatoTemplateRequest(BaseModel):
     scenario: str = "base"
 
 
+# --- Новая книга: вводные, помесячный расчёт, отчёт ------------------------
+#
+# Шаблон ПЛАТО — учётная модель действующего проекта: погашение и выборка там
+# приходят с листа «факт», рассрочка ВРИ зашита на шесть лет, а параллельный
+# лист «Расчет ВРИ (ТЭП)» считает свои нормативы. Свести его с движком удалось
+# восемью правками, и каждая проверялась чужим пересчётом, потому что здесь
+# посчитать книгу нечем.
+#
+# Эта книга собирается с нуля и устроена иначе. Вводные и помесячные драйверы —
+# продажи, затраты, ключевая ставка — приходят значениями: это сценарий, а не
+# расчёт, и спорить о нём книге незачем. Весь финансовый блок — эскроу, БРИДЖ,
+# ПФ, ставки, проценты, налог, LLCR — живые формулы по методике движка.
+# Аналитик меняет спред, ставку или налог и видит пересчёт.
+
+_MODEL2_INPUTS: list[tuple[str, str, str]] = [
+    ("Цена покупки / вход", "purchase_price_mln", "млн ₽"),
+    ("Смена ВРИ / земельные права", "land_rights_cost_mln", "млн ₽"),
+    ("Спред БРИДЖ", "bridge_spread_pp", "п.п."),
+    ("Спред капитализации БРИДЖ", "bridge_cap_spread_pp", "п.п."),
+    ("Спред ПФ", "pf_spread_pp", "п.п."),
+    ("Ставка ПФ при покрытии эскроу 1×", "pf_special_pct", "%"),
+    ("Плата за лимит", "limit_fee_pct", "%"),
+    ("Плата за резервирование", "reservation_fee_pct", "%"),
+    ("Налог на прибыль", "profit_tax_pct", "%"),
+]
+
+# Строки листа «Расчёт». Номер строки — часть договора между книгой и тестом,
+# поэтому он объявлен здесь, а не разбросан по формулам.
+_M2 = {
+    "month": 2,
+    "key_rate": 3,
+    "revenue": 4,
+    "capex": 5,
+    "operating": 6,
+    "debt_costs": 7,
+    "tax_margin": 8,
+    "tax_adjust": 9,
+    "escrow_in": 10,
+    "escrow_release": 11,
+    "escrow": 12,
+    "bridge_rate": 13,
+    "bridge_cap_rate": 14,
+    "bridge_draw": 15,
+    "bridge_gross": 16,
+    "bridge_refinance": 17,
+    "bridge_balance": 18,
+    "bridge_interest": 19,
+    "bridge_cap": 20,
+    "bridge_transfer": 21,
+    "bridge_payable": 22,
+    "pf_draw": 23,
+    "pf_gross": 24,
+    "pf_repayment": 25,
+    "pf_balance": 26,
+    "coverage": 27,
+    "pf_rate": 28,
+    "pf_interest": 29,
+    "pf_cap": 30,
+    "limit_fee": 31,
+    "interest_payment": 32,
+    "pf_payable": 33,
+    "tax_deduction": 34,
+    "margin_cum": 35,
+    "deduction_cum": 36,
+    "taxable": 37,
+    "profit_tax": 38,
+    "tax_cum": 39,
+}
+
+_M2_LABELS: list[tuple[str, str]] = [
+    ("month", "Месяц"),
+    ("key_rate", "Ключевая ставка"),
+    ("revenue", "Выручка"),
+    ("capex", "CAPEX (инвестиции)"),
+    ("operating", "Коммерческие и операционные расходы"),
+    ("debt_costs", "Затраты, финансируемые долгом"),
+    ("tax_margin", "Налоговая маржа (реализованная)"),
+    ("tax_adjust", "Корректировка налоговых вычетов"),
+    ("escrow_in", "Эскроу · поступления"),
+    ("escrow_release", "Эскроу · раскрытие"),
+    ("escrow", "Эскроу · остаток"),
+    ("bridge_rate", "БРИДЖ · ставка"),
+    ("bridge_cap_rate", "БРИДЖ · ставка капитализации"),
+    ("bridge_draw", "БРИДЖ · выборка"),
+    ("bridge_gross", "БРИДЖ · долг до рефинансирования"),
+    ("bridge_refinance", "БРИДЖ · рефинансирование в ПФ"),
+    ("bridge_balance", "БРИДЖ · остаток"),
+    ("bridge_interest", "БРИДЖ · проценты"),
+    ("bridge_cap", "БРИДЖ · капитализация процентов"),
+    ("bridge_transfer", "БРИДЖ · перенос процентов на РнС"),
+    ("bridge_payable", "БРИДЖ · начисленные проценты"),
+    ("pf_draw", "ПФ · выборка"),
+    ("pf_gross", "ПФ · долг до погашения"),
+    ("pf_repayment", "ПФ · погашение"),
+    ("pf_balance", "ПФ · остаток"),
+    ("coverage", "Покрытие эскроу, ×"),
+    ("pf_rate", "ПФ · ставка"),
+    ("pf_interest", "ПФ · проценты"),
+    ("pf_cap", "ПФ · капитализация процентов"),
+    ("limit_fee", "Плата за лимит"),
+    ("interest_payment", "ПФ · выплата процентов"),
+    ("pf_payable", "ПФ · начисленные проценты"),
+    ("tax_deduction", "Налог · вычет по финансированию"),
+    ("margin_cum", "Налог · маржа нарастающим"),
+    ("deduction_cum", "Налог · вычеты нарастающим"),
+    ("taxable", "Налог · база"),
+    ("profit_tax", "Налог на прибыль"),
+    ("tax_cum", "Налог · уплачено нарастающим"),
+]
+
+# Показатели отчёта: подпись, формула по листу «Расчёт», формат и путь к той же
+# величине в результате движка — для колонки сверки.
+_M2_REPORT_KEYS = [
+    "revenue", "capex", "operating", "ebitda", "financing_cost",
+    "profit_before_tax", "profit_tax", "net_profit",
+    "peak_bridge", "pf_draw_total", "peak_pf", "avg_pf_rate", "llcr",
+]
+
+
+def _model2_letter(index: int) -> str:
+    return get_column_letter(index)
+
+
+def build_plato_model_v2(
+    inputs: dict[str, Any],
+    tep: dict[str, dict[str, Any]],
+    rates: list[dict[str, Any]] | None = None,
+    project_name: str = "",
+) -> tuple[bytes, dict[str, Any]]:
+    """Собрать книгу заново: вводные, помесячный расчёт, отчёт.
+
+    Порядок операций внутри месяца повторяет движок (`simulate_financing`):
+    продажи копятся на эскроу до РВЭ; до РнС затраты несёт БРИДЖ; на РнС тело
+    БРИДЖа рефинансируется в ПФ, а начисленные проценты переносятся; покрытие
+    считается по эскроу до раскрытия и по долгу ПФ после выборки, но до
+    погашения; ставка — взвешенная сумма базовой и специальной; погашение идёт
+    раскрытием эскроу на РВЭ и продажами после.
+    """
+    import openpyxl
+    import openpyxl.styles
+
+    result = calculate(CalcRequest(inputs=dict(inputs), tep=dict(tep), rates=list(rates or [])))
+    finance = result.get("finance") or {}
+    rows = finance.get("rows") or []
+    monthly = result.get("monthly") or {}
+    if not rows:
+        raise HTTPException(status_code=500, detail="Расчёт не дал помесячных строк")
+
+    dates = result.get("dates") or {}
+    permit = d(dates.get("permit"))
+    rve = d(dates.get("rve"))
+    capitalize = str(inputs.get("bridge_interest_mode", "Капитализация в ПФ")) == "Капитализация в ПФ"
+    transferred = float(finance.get("transferred_bridge_interest") or 0.0)
+
+    workbook = openpyxl.Workbook()
+    ws_in = workbook.active
+    ws_in.title = "Вводные"
+    ws_calc = workbook.create_sheet("Расчёт")
+    ws_rep = workbook.create_sheet("ОТЧЁТ")
+
+    bold = openpyxl.styles.Font(bold=True)
+    grey = openpyxl.styles.Font(color="808080")
+    money = "#,##0.0"
+    percent = "0.00%"
+    ratio = "0.0000"
+    month_fmt = "mmm yyyy"
+
+    # --- Вводные -----------------------------------------------------------
+    ws_in["A1"] = "ВВОДНЫЕ"
+    ws_in["A1"].font = bold
+    ws_in["A2"] = "Меняйте значения в колонке B — «Расчёт» и «ОТЧЁТ» пересчитаются."
+    ws_in["A4"], ws_in["B4"], ws_in["C4"] = "Параметр", "Значение", "Ед. изм."
+    for cell in ("A4", "B4", "C4"):
+        ws_in[cell].font = bold
+
+    key_row: dict[str, int] = {}
+    row = 5
+    for label, key, unit in _MODEL2_INPUTS:
+        ws_in.cell(row=row, column=1, value=label)
+        value = n(inputs, key, 0.0)
+        cell = ws_in.cell(row=row, column=2)
+        if unit in ("%", "п.п."):
+            cell.value, cell.number_format = round(value / 100.0, 12), percent
+        else:
+            cell.value, cell.number_format = round(value, 3), money
+        ws_in.cell(row=row, column=3, value=unit)
+        key_row[key] = row
+        row += 1
+
+    row += 1
+    ws_in.cell(row=row, column=1, value="СРОКИ И ЛИМИТЫ").font = bold
+    row += 1
+    pf_limit = float(finance.get("pf_limit") or 0.0)
+    bridge_limit = float(finance.get("calculated_bridge_limit") or 0.0)
+    schedule: list[tuple[str, str, Any, str]] = [
+        ("permit", "Дата РнС", permit, month_fmt),
+        ("rve", "Дата РВЭ", rve, month_fmt),
+        ("pf_limit", "Лимит ПФ", round(pf_limit / 1e6, 3), money),
+        ("bridge_limit", "Расчётный лимит БРИДЖ", round(bridge_limit / 1e6, 3), money),
+        ("capitalize", "Проценты БРИДЖ капитализируются в ПФ (1 — да, 0 — в тело)",
+         1 if capitalize else 0, "0"),
+    ]
+    for key, label, value, fmt in schedule:
+        ws_in.cell(row=row, column=1, value=label)
+        cell = ws_in.cell(row=row, column=2, value=value)
+        cell.number_format = fmt
+        key_row[key] = row
+        row += 1
+
+    # Комиссии за резервирование — не вводные, а следствие лимитов и ставки.
+    for key, label, limit_key in (
+        ("bridge_fee", "Комиссия за резервирование БРИДЖ", "bridge_limit"),
+        ("pf_reservation_fee", "Комиссия за резервирование ПФ", "pf_limit"),
+    ):
+        ws_in.cell(row=row, column=1, value=label)
+        cell = ws_in.cell(
+            row=row, column=2,
+            value=f"=$B${key_row[limit_key]}*$B${key_row['reservation_fee_pct']}",
+        )
+        cell.number_format = money
+        ws_in.cell(row=row, column=3, value="млн ₽")
+        key_row[key] = row
+        row += 1
+
+    ws_in.column_dimensions["A"].width = 52
+    ws_in.column_dimensions["B"].width = 16
+    ws_in.column_dimensions["C"].width = 10
+
+    def ref(key: str) -> str:
+        return f"Вводные!$B${key_row[key]}"
+
+    # --- Помесячный расчёт -------------------------------------------------
+    ws_calc["A1"] = "ПОМЕСЯЧНЫЙ РАСЧЁТ · млн ₽"
+    ws_calc["A1"].font = bold
+    for key, label in _M2_LABELS:
+        cell = ws_calc.cell(row=_M2[key], column=1, value=label)
+        cell.font = bold if key in ("escrow", "bridge_balance", "pf_balance", "profit_tax") else grey
+    ws_calc.column_dimensions["A"].width = 44
+    ws_calc.freeze_panes = "B3"
+
+    drivers = {
+        "key_rate": [float(item.get("key_rate") or 0.0) for item in rows],
+        "revenue": [float(item.get("sales") or 0.0) / 1e6 for item in rows],
+        "capex": [float(v or 0.0) / 1e6 for v in monthly.get("capex_total") or []],
+        "operating": [float(v or 0.0) / 1e6 for v in monthly.get("commercial_costs") or []],
+        "tax_margin": [float(item.get("taxable_margin") or 0.0) / 1e6 for item in rows],
+    }
+    # Затраты, финансируемые долгом, берутся до переноса процентов БРИДЖа:
+    # движок в режиме «в тело» дописывает их в затраты месяца РнС, а книга
+    # добавляет перенос сама — иначе он посчитался бы дважды.
+    debt_costs = []
+    for item in rows:
+        value = float(item.get("project_costs") or 0.0)
+        if not capitalize and d(item["month"]) == permit:
+            value -= transferred
+        debt_costs.append(value / 1e6)
+    drivers["debt_costs"] = debt_costs
+
+    # Сверка налоговых вычетов: движок относит остаток на последний месяц.
+    adjust = [0.0] * len(rows)
+    if rows:
+        adjust[-1] = float(finance.get("financing_tax_reconciliation") or 0.0) / 1e6
+    drivers["tax_adjust"] = adjust
+
+    first = 2  # колонка B — первый месяц
+    for index, item in enumerate(rows):
+        column = first + index
+        c = _model2_letter(column)
+        p = _model2_letter(column - 1)
+        head = index == 0
+
+        cell = ws_calc.cell(row=_M2["month"], column=column, value=d(item["month"]))
+        cell.number_format = month_fmt
+        cell.font = bold
+        for key, values in drivers.items():
+            value = values[index] if index < len(values) else 0.0
+            cell = ws_calc.cell(row=_M2[key], column=column, value=round(value, 12))
+            cell.number_format = percent if key == "key_rate" else money
+
+        def r(key: str) -> str:
+            return f"{c}{_M2[key]}"
+
+        def prev(key: str) -> str:
+            return "0" if head else f"{p}{_M2[key]}"
+
+        def put(key: str, formula: str, fmt: str = money) -> None:
+            ws_calc.cell(row=_M2[key], column=column, value=formula).number_format = fmt
+
+        month = f"{c}${_M2['month']}"
+        before_rve = f"{month}<{ref('rve')}"
+        before_permit = f"{month}<{ref('permit')}"
+        at_permit = f"{month}={ref('permit')}"
+
+        # Эскроу: продажи копятся до РВЭ, на РВЭ раскрываются целиком.
+        put("escrow_in", f"=IF({before_rve},{r('revenue')},0)")
+        put("escrow_release", f"=IF({month}={ref('rve')},{prev('escrow')}+{r('escrow_in')},0)")
+        put("escrow", f"={prev('escrow')}+{r('escrow_in')}-{r('escrow_release')}")
+
+        # БРИДЖ несёт затраты до РнС; на РнС тело уходит в ПФ.
+        put("bridge_rate", f"={r('key_rate')}+{ref('bridge_spread_pp')}", percent)
+        put("bridge_cap_rate", f"={r('key_rate')}+{ref('bridge_cap_spread_pp')}", percent)
+        put("bridge_draw", f"=IF({before_permit},MAX({r('debt_costs')},0),0)")
+        put("bridge_gross", f"={prev('bridge_balance')}+{r('bridge_draw')}")
+        put("bridge_refinance", f"=IF({at_permit},{r('bridge_gross')},0)")
+        put("bridge_balance", f"={r('bridge_gross')}-{r('bridge_refinance')}")
+        accrue_bridge = f"AND({before_permit},{r('bridge_gross')}>0)"
+        put("bridge_interest", f"=IF({accrue_bridge},{r('bridge_gross')}*{r('bridge_rate')}/12,0)")
+        put("bridge_cap", f"=IF({accrue_bridge},{prev('bridge_payable')}*{r('bridge_cap_rate')}/12,0)")
+        accrued_bridge = f"{prev('bridge_payable')}+{r('bridge_interest')}+{r('bridge_cap')}"
+        put("bridge_transfer", f"=IF({at_permit},{accrued_bridge},0)")
+        put("bridge_payable", f"={accrued_bridge}-{r('bridge_transfer')}")
+
+        # ПФ: выборка на затраты с РнС плюс тело БРИДЖа; перенесённые проценты
+        # идут либо в тело, либо в начисленные — по переключателю на «Вводных».
+        put("pf_draw",
+            f"=IF({month}>={ref('permit')},MAX({r('debt_costs')},0),0)"
+            f"+{r('bridge_refinance')}"
+            f"+IF({ref('capitalize')}=1,0,{r('bridge_transfer')})")
+        put("pf_gross", f"={prev('pf_balance')}+{r('pf_draw')}")
+        put("pf_repayment",
+            f"=MIN(IF({month}={ref('rve')},{r('escrow_release')},"
+            f"IF({month}>{ref('rve')},{r('revenue')},0)),MAX({r('pf_gross')},0))")
+        put("pf_balance", f"={r('pf_gross')}-{r('pf_repayment')}")
+
+        # Покрытие — эскроу до раскрытия к долгу ПФ после выборки, до погашения.
+        put("coverage",
+            f"=IF(AND({month}>={ref('permit')},{r('pf_gross')}>0),"
+            f"({prev('escrow')}+{r('escrow_in')})/{r('pf_gross')},0)", ratio)
+        # Базовая ставка — на непокрытую эскроу часть долга, специальная — на
+        # покрытую. Излишек эскроу сверх долга ставку ниже специальной не тянет.
+        put("pf_rate",
+            f"=IF({month}>={ref('permit')},"
+            f"({r('key_rate')}+{ref('pf_spread_pp')})*(1-MIN({r('coverage')},1))"
+            f"+{ref('pf_special_pct')}*MIN({r('coverage')},1),0)", percent)
+        put("pf_interest", f"=IF({r('pf_gross')}>0,{r('pf_gross')}*{r('pf_rate')}/12,0)")
+        payable_start = f"{prev('pf_payable')}+IF({ref('capitalize')}=1,{r('bridge_transfer')},0)"
+        put("pf_cap", f"=IF({r('pf_gross')}>0,({payable_start})*{r('pf_rate')}/12,0)")
+        put("limit_fee",
+            f"=IF({r('pf_gross')}>0,MAX({ref('pf_limit')}-{r('pf_gross')},0)"
+            f"*{ref('limit_fee_pct')}/12,0)")
+        accrued_pf = (f"{payable_start}+{r('pf_interest')}+{r('pf_cap')}+{r('limit_fee')}")
+        put("interest_payment",
+            f"=IF(AND({month}>={ref('rve')},{accrued_pf}>0),{accrued_pf},0)")
+        put("pf_payable", f"={accrued_pf}-{r('interest_payment')}")
+
+        # Налог: база нарастающим итогом, платится с РВЭ, зачётом уплаченного.
+        put("tax_deduction",
+            f"={r('interest_payment')}+{r('tax_adjust')}"
+            f"+IF({at_permit},{ref('pf_reservation_fee')},0)"
+            + (f"+{ref('bridge_fee')}" if head else ""))
+        put("margin_cum", f"={prev('margin_cum')}+{r('tax_margin')}")
+        put("deduction_cum", f"={prev('deduction_cum')}+{r('tax_deduction')}")
+        put("taxable", f"=MAX({r('margin_cum')}-{r('deduction_cum')},0)")
+        put("profit_tax",
+            f"=IF({month}>={ref('rve')},"
+            f"MAX({r('taxable')}*{ref('profit_tax_pct')}-{prev('tax_cum')},0),0)")
+        put("tax_cum", f"={prev('tax_cum')}+{r('profit_tax')}")
+
+    last = _model2_letter(first + len(rows) - 1)
+
+    def total(key: str, function: str = "SUM") -> str:
+        return f"{function}(Расчёт!B{_M2[key]}:{last}{_M2[key]})"
+
+    # --- Отчёт -------------------------------------------------------------
+    ws_rep["A1"] = f"ОТЧЁТ · {project_name or 'проект'}"
+    ws_rep["A1"].font = bold
+    ws_rep["A2"] = "Колонка B считается формулами книги, C — тот же показатель из расчёта DevelopAid."
+    for column, label in ((1, "Показатель"), (2, "Книга"), (3, "DevelopAid"), (4, "Δ")):
+        ws_rep.cell(row=3, column=column, value=label).font = bold
+
+    summary = result.get("summary") or {}
+    row_of = {key: 4 + offset for offset, key in enumerate(_M2_REPORT_KEYS)}
+
+    def own(key: str) -> str:
+        return f"$B${row_of[key]}"
+
+    financing = (
+        f"{total('bridge_interest')}+{total('bridge_cap')}+{total('pf_interest')}"
+        f"+{total('pf_cap')}+{total('limit_fee')}+{ref('bridge_fee')}+{ref('pf_reservation_fee')}"
+    )
+    llcr_num = (f"{own('revenue')}-{own('operating')}-{own('profit_tax')}"
+                f"-{own('capex')}+{own('pf_draw_total')}")
+    llcr_den = f"{own('pf_draw_total')}+{own('financing_cost')}"
+    report_rows: list[tuple[str, str, str, str, float]] = [
+        ("revenue", "Выручка", f"={total('revenue')}", money,
+         float(summary.get("revenue") or 0.0) / 1e6),
+        ("capex", "CAPEX (инвестиции)", f"={total('capex')}", money,
+         float(summary.get("capex") or 0.0) / 1e6),
+        ("operating", "Коммерческие и операционные расходы", f"={total('operating')}", money,
+         float(summary.get("commercial_costs") or 0.0) / 1e6),
+        ("ebitda", "EBITDA", f"={own('revenue')}-{own('capex')}-{own('operating')}", money,
+         float(summary.get("ebitda") or 0.0) / 1e6),
+        ("financing_cost", "Проценты и комиссии", f"={financing}", money,
+         float(summary.get("financing_cost") or 0.0) / 1e6),
+        ("profit_before_tax", "Прибыль до налога",
+         f"={own('ebitda')}-{own('financing_cost')}", money,
+         float(summary.get("profit_before_tax") or 0.0) / 1e6),
+        ("profit_tax", "Налог на прибыль", f"={total('profit_tax')}", money,
+         float(summary.get("profit_tax") or 0.0) / 1e6),
+        ("net_profit", "Чистая прибыль",
+         f"={own('profit_before_tax')}-{own('profit_tax')}", money,
+         float(summary.get("net_profit") or 0.0) / 1e6),
+        ("peak_bridge", "Пик БРИДЖ", f"={total('bridge_balance', 'MAX')}", money,
+         float(finance.get("peak_bridge") or 0.0) / 1e6),
+        ("pf_draw_total", "Выборка ПФ", f"={total('pf_draw')}", money,
+         float(finance.get("pf_draw_total") or 0.0) / 1e6),
+        ("peak_pf", "Пик ПФ", f"={total('pf_balance', 'MAX')}", money,
+         float(finance.get("peak_pf") or 0.0) / 1e6),
+        ("avg_pf_rate", "Средневзвешенная ставка ПФ",
+         f"=IFERROR(SUMPRODUCT(Расчёт!B{_M2['pf_gross']}:{last}{_M2['pf_gross']},"
+         f"Расчёт!B{_M2['pf_rate']}:{last}{_M2['pf_rate']})/{total('pf_gross')},0)", percent,
+         float(finance.get("avg_pf_rate") or 0.0)),
+        ("llcr", "LLCR", f"=IFERROR(({llcr_num})/({llcr_den}),0)", ratio,
+         float(summary.get("llcr") or 0.0)),
+    ]
+    for key, label, formula, fmt, expected in report_rows:
+        row = row_of[key]
+        cell = ws_rep.cell(row=row, column=1, value=label)
+        if key in ("ebitda", "net_profit", "llcr"):
+            cell.font = bold
+        ws_rep.cell(row=row, column=2, value=formula).number_format = fmt
+        ws_rep.cell(row=row, column=3, value=round(expected, 12)).number_format = fmt
+        ws_rep.cell(row=row, column=4, value=f"=B{row}-C{row}").number_format = fmt
+    ws_rep.column_dimensions["A"].width = 40
+    for column in ("B", "C", "D"):
+        ws_rep.column_dimensions[column].width = 16
+
+    workbook.calculation.fullCalcOnLoad = True
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+    return buffer.getvalue(), {
+        "months": len(rows),
+        "engine": {key: expected for key, _, _, _, expected in report_rows},
+    }
+
+
 def build_plato_archive(
     inputs: dict[str, Any],
     tep: dict[str, dict[str, Any]],
@@ -8596,6 +9032,16 @@ def build_plato_archive(
     if vri_sheet:
         files.append((f"ВРИ_график_{stem}.xlsx", _build_model_xlsx([vri_sheet])))
 
+    # Собственная книга DevelopAid: те же вводные, но расчёт живыми формулами
+    # по методике движка. Шаблон ПЛАТО — учётная модель действующего проекта,
+    # и часть его листов приходит с «факта»; эта считает проект целиком.
+    try:
+        model_v2, _ = build_plato_model_v2(inputs, tep, rates or [], project_name=title)
+    except Exception as exc:  # книга не должна ронять выгрузку шаблона
+        reports.append({"file": "Модель_DevelopAid", "missing": [f"не собрана: {exc}"]})
+    else:
+        files.append((f"Модель_DevelopAid_{stem}.xlsx", model_v2))
+
     readme = [
         "DevelopAid · выгрузка в шаблон ПЛАТО",
         f"Проект: {title}",
@@ -8615,6 +9061,15 @@ def build_plato_archive(
         "",
         "Excel пересчитывает книгу при открытии. Если значения выглядят старыми,",
         "нажмите Ctrl+Alt+F9.",
+        "",
+        "МОДЕЛЬ DEVELOPAID",
+        "Файл «Модель_DevelopAid_…» — отдельная книга на три листа: «Вводные»,",
+        "«Расчёт» и «ОТЧЁТ». Помесячные драйверы (продажи, затраты, ключевая",
+        "ставка, налоговая маржа) записаны значениями — это сценарий. Весь",
+        "финансовый контур — эскроу, БРИДЖ, ПФ, покрытие, ставки, проценты,",
+        "налог и LLCR — живые формулы: меняете спред или ставку на «Вводных»",
+        "и видите пересчёт. На листе «ОТЧЁТ» колонка B считается книгой,",
+        "колонка C — тот же показатель из расчёта DevelopAid, колонка D — разница.",
         *([
             "",
             "КОНСОЛИДАТОР",

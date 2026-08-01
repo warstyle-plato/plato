@@ -239,8 +239,14 @@ def test_single_archive_has_one_workbook():
         main.DEFAULT_INPUTS, main.TEP_DEFAULT, project_name="Мытищи"
     )
     names = zipfile.ZipFile(io.BytesIO(content)).namelist()
-    # Один шаблон плюс книга с графиком ВРИ, которую шаблон вместить не может.
-    assert names == ["Мытищи_ПЛАТО.xlsx", "ВРИ_график_Мытищи.xlsx", "README.txt"]
+    # Шаблон, книга с графиком ВРИ, которую шаблон вместить не может, и
+    # собственная модель DevelopAid — та же экономика живыми формулами.
+    assert names == [
+        "Мытищи_ПЛАТО.xlsx",
+        "ВРИ_график_Мытищи.xlsx",
+        "Модель_DevelopAid_Мытищи.xlsx",
+        "README.txt",
+    ]
     assert meta["phased"] is False
     assert "ПЛАТО" in filename
 
