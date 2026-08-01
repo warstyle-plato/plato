@@ -41,7 +41,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.13.23"
+VERSION = "0.13.24"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -7764,6 +7764,62 @@ def _plato_land_parcel(inputs: dict[str, Any]) -> dict[str, Any]:
     return parcels[0] if parcels else {}
 
 
+def _plato_merge_management_and_smr(
+    sheet: Any, rows_by_label: dict[str, list[int]],
+    inputs: dict[str, Any], tep: dict[str, dict[str, Any]],
+    filled: list[dict[str, Any]],
+) -> None:
+    """Слить техзаказчика с управлением, а подземные СМР — с наземными.
+
+    Книга ведёт одну строку «Управление проектом» и одну «Основное
+    строительство ЖК». Движок считает управление, технический заказчик и
+    авторский надзор порознь, а СМР — отдельно по наземной и подземной части.
+    Пишется в колонки сценариев D–F. Колонка G — переключатель: там формула
+    INDEX, выбирающая сценарий, и запись значением её убивает.
+
+    Разложить их в книге некуда, поэтому передаётся то же самое одним числом:
+    процент, дающий сумму трёх статей на базе книги, и ставка, дающая сумму
+    обеих частей на всём ГНС.
+    """
+    result = calculate(CalcRequest(inputs=dict(inputs), tep=dict(tep), rates=[]))
+    capex = result.get("capex") or {}
+
+    def amount(name: str) -> float:
+        value = capex.get(name)
+        return float(value) if isinstance(value, (int, float)) else 0.0
+
+    # База книги под процент управления — строительные статьи плюс соцобъекты:
+    # ровно то, что она показывает строками «Расходы на строительство» и
+    # «Строительство соцобъектов».
+    base = sum(amount(name) for name in (
+        "ird", "design_p", "design_rd", "preparation", "main_above", "main_under",
+        "gc_fee", "utilities", "landscaping", "commissioning", "site_maintenance",
+        "reserve", "social",
+    ))
+    management = amount("project_management") + amount("technical_supervision") + amount("author_supervision")
+    if base > 0 and management > 0:
+        rows = rows_by_label.get(_plato_normalize("Управление проектом")) or []
+        if rows:
+            share = round(management / base, 6)
+            for column in range(4, 7):
+                sheet.cell(row=rows[0], column=column).value = share
+            filled.append({"sheet": "Вводные", "row": rows[0],
+                           "label": "Управление проектом · с техзаказчиком и надзором",
+                           "value": share})
+
+    gns = sum(float((tep.get(key) or {}).get("gns") or 0.0) for key in tep)
+    smr = amount("main_above") + amount("main_under")
+    if gns > 0 and smr > 0:
+        rows = rows_by_label.get(_plato_normalize("Основное строительство ЖК")) or []
+        if rows:
+            rate = round(smr / gns / 1000.0, 6)
+            for column in range(4, 7):
+                sheet.cell(row=rows[0], column=column).value = rate
+            filled.append({"sheet": "Вводные", "row": rows[0],
+                           "label": "Основное строительство · с подземной частью",
+                           "value": rate})
+
+
 def _plato_fill_land_sheet(
     workbook: Any, inputs: dict[str, Any], filled: list[dict[str, Any]]
 ) -> None:
@@ -8301,6 +8357,17 @@ def fill_plato_template(
         tep_sheet.cell(row=row, column=4).value = round(float(value), 3)
         filled.append({"sheet": "Расчет ВРИ (ТЭП)", "row": row,
                        "label": f"Компенсация · {label}", "value": round(float(value), 3)})
+
+    # Техзаказчик и авторский надзор — те же расходы на управление, а СМР
+    # подземной части — те же СМР: в книге под них нет отдельных строк, и
+    # держать их порознь незачем. Передаём слитыми: эффективный процент
+    # управления и взвешенная ставка строительства. Без этого книга считала
+    # управление своими 5% (291,9 млн ₽ против 523,1) и знала только наземную
+    # часть, отчего расходы на строительство расходились с расчётом.
+    try:
+        _plato_merge_management_and_smr(sheet, rows_by_label, merged, tep, filled)
+    except Exception as exc:
+        missing.append("Вводные · управление и СМР: " + _error_location(exc))
 
     _plato_fill_land_sheet(workbook, merged, filled)
     _plato_apply_pf_rate_methodology(workbook, filled, missing)
