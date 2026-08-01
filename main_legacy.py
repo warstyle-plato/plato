@@ -41,7 +41,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.13.22"
+VERSION = "0.13.23"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -7881,7 +7881,7 @@ def _plato_repair_vri_columns(
                    "label": "Первые месяцы рассрочки ВРИ", "value": "формулы достроены"})
 
 
-from openpyxl.utils import get_column_letter  # noqa: E402
+from openpyxl.utils import get_column_letter, column_index_from_string  # noqa: E402
 from openpyxl.formula.translate import Translator  # noqa: E402
 
 
@@ -7940,7 +7940,15 @@ def _plato_fix_social_capex_links(
                    "value": changed})
 
 
-def _plato_apply_pf_repayment(
+def _plato_backward_range(formula: str) -> bool:
+    """Есть ли в формуле диапазон, у которого конец левее начала."""
+    for start, end in re.findall(r"\$?([A-Z]{1,2})\d+:\$?([A-Z]{1,2})\d+", formula):
+        if column_index_from_string(end) < column_index_from_string(start):
+            return True
+    return False
+
+
+def _plato_apply_pf_cashflow(
     workbook: Any, filled: list[dict[str, Any]], missing: list[str],
 ) -> None:
     """Живая формула погашения ПФ вместо выборки из листа «факт».
@@ -7958,50 +7966,46 @@ def _plato_apply_pf_repayment(
     круговая ссылка: строка 51 сама зависит от погашения.
     """
     if "КРЕДИТЫ" not in workbook.sheetnames:
-        missing.append("КРЕДИТЫ · погашение ПФ")
+        missing.append("КРЕДИТЫ · движение ПФ")
         return
     sheet = workbook["КРЕДИТЫ"]
-    changed = 0
-    # Первая помесячная колонка не переносится: накопительные диапазоны в ней
-    # вырождаются (SUM($S61:R61)), Excel нормализует их и получает круговую
-    # ссылку на саму себя. В первом месяце гасить всё равно нечего.
-    first_month = next(
-        (c for c in range(2, sheet.max_column + 1)
-         if isinstance(sheet.cell(row=61, column=c).value, str)
-         and "факт!" in sheet.cell(row=61, column=c).value),
-        None,
-    )
-    for column in range(2, sheet.max_column + 1):
-        cell = sheet.cell(row=61, column=column)
-        if not isinstance(cell.value, str) or "факт!" not in cell.value:
-            continue
-        if column == first_month:
-            cell.value = 0
-            changed += 1
-            continue
-        # Формула не выдумывается: в остальных колонках она уже живая, и первые
-        # две приводятся к тому же виду. Своя редакция здесь означала бы два
-        # разных правила погашения в одной строке.
-        donor = next(
-            (sheet.cell(row=61, column=c).value for c in range(column + 1, sheet.max_column + 1)
-             if isinstance(sheet.cell(row=61, column=c).value, str)
-             and sheet.cell(row=61, column=c).value.startswith("=-IF(")),
-            None,
-        )
-        if not donor:
+    total = 0
+    for row, label in ((60, "Получение ПФ"), (61, "Погашение ПФ")):
+        stale = [c for c in range(2, sheet.max_column + 1)
+                 if isinstance(sheet.cell(row=row, column=c).value, str)
+                 and "факт!" in sheet.cell(row=row, column=c).value]
+        if not stale:
             continue
         donor_column = next(
-            c for c in range(column + 1, sheet.max_column + 1)
-            if sheet.cell(row=61, column=c).value == donor
+            (c for c in range(2, sheet.max_column + 1)
+             if isinstance(sheet.cell(row=row, column=c).value, str)
+             and sheet.cell(row=row, column=c).value.startswith("=")
+             and "факт!" not in sheet.cell(row=row, column=c).value
+             and "SUM(" != sheet.cell(row=row, column=c).value[1:5]
+             and c > max(stale)),
+            None,
         )
-        cell.value = Translator(donor, origin=f"{get_column_letter(donor_column)}61").translate_formula(
-            f"{get_column_letter(column)}61")
-        changed += 1
-    if not changed:
-        missing.append("КРЕДИТЫ · погашение ПФ")
-        return
-    filled.append({"sheet": "КРЕДИТЫ", "row": 61,
-                   "label": "Погашение ПФ · формула вместо листа «факт»", "value": changed})
+        if not donor_column:
+            missing.append(f"КРЕДИТЫ · {label.lower()}")
+            continue
+        donor = sheet.cell(row=row, column=donor_column).value
+        origin = f"{get_column_letter(donor_column)}{row}"
+        for column in stale:
+            target = f"{get_column_letter(column)}{row}"
+            moved = Translator(donor, origin=origin).translate_formula(target)
+            # Накопительные диапазоны в первой колонке вырождаются
+            # (SUM($S61:R61)): Excel нормализует их и получает ссылку на саму
+            # себя. Считать там нечего — ни выбирать, ни гасить ещё не из чего.
+            if _plato_backward_range(moved):
+                sheet.cell(row=row, column=column).value = 0
+            else:
+                sheet.cell(row=row, column=column).value = moved
+            total += 1
+        filled.append({"sheet": "КРЕДИТЫ", "row": row,
+                       "label": f"{label} · формула вместо листа «факт»",
+                       "value": len(stale)})
+    if not total:
+        missing.append("КРЕДИТЫ · движение ПФ")
 
 
 def _plato_apply_pf_rate_methodology(
@@ -8300,7 +8304,7 @@ def fill_plato_template(
 
     _plato_fill_land_sheet(workbook, merged, filled)
     _plato_apply_pf_rate_methodology(workbook, filled, missing)
-    _plato_apply_pf_repayment(workbook, filled, missing)
+    _plato_apply_pf_cashflow(workbook, filled, missing)
     _plato_fix_social_capex_links(workbook, filled, missing)
 
     # Имя проекта в шапке ОТЧЕТа — не украшение: без него каждая выгрузка

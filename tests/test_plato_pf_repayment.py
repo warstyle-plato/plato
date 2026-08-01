@@ -37,12 +37,27 @@ def credits_sheet():
     return openpyxl.load_workbook(io.BytesIO(data))["КРЕДИТЫ"], report
 
 
-def test_the_fact_sheet_is_no_longer_the_source():
+@pytest.mark.parametrize("row,label", [(60, "получение"), (61, "погашение")])
+def test_the_fact_sheet_is_no_longer_the_source(row, label):
+    """Из «факта» тянулись обе строки — и выборка, и погашение."""
     sheet, _ = credits_sheet()
     left = [c for c in range(1, sheet.max_column + 1)
-            if isinstance(sheet.cell(61, c).value, str) and "факт!" in sheet.cell(61, c).value]
+            if isinstance(sheet.cell(row, c).value, str) and "факт!" in sheet.cell(row, c).value]
 
-    assert left == [], "погашение всё ещё берётся из листа «факт»"
+    assert left == [], f"{label} ПФ всё ещё берётся из листа «факт»"
+
+
+def test_the_draw_shares_one_rule_across_months():
+    """Выборка ПФ: одна редакция формулы на все месяцы."""
+    import re
+    sheet, _ = credits_sheet()
+    monthly = [sheet.cell(60, c).value for c in range(1, sheet.max_column + 1)
+               if isinstance(sheet.cell(60, c).value, str)
+               and sheet.cell(60, c).value.startswith("=IF(")]
+
+    assert len(monthly) > 90
+    shapes = {re.sub(r"[A-Z]{1,2}(?=\d|\$)", "@", formula) for formula in monthly}
+    assert len(shapes) == 1, sorted(shapes)[:2]
 
 
 def test_the_repayment_stays_a_formula():
@@ -82,7 +97,8 @@ def test_the_first_month_has_no_circular_reference():
 def test_the_substitution_is_reported():
     _, report = credits_sheet()
     marks = [item for item in report["filled"]
-             if item.get("sheet") == "КРЕДИТЫ" and item.get("row") == 61]
+             if item.get("sheet") == "КРЕДИТЫ" and item.get("row") in (60, 61)]
 
-    assert marks and marks[0]["value"] >= 2
+    assert marks and all(m["value"] >= 2 for m in marks)
+    assert {m["row"] for m in marks} == {60, 61}
     assert not [m for m in report["missing"] if "погашение" in m]
