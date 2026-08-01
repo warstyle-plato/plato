@@ -41,7 +41,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.13.34"
+VERSION = "0.13.35"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -17274,7 +17274,7 @@ details.cadastral-box>summary::marker{color:#888}
     <div id="tep" class="panel">
       <div class="card">
         <div class="section-title">Участок и плотность</div>
-        <div class="fields" style="grid-template-columns:repeat(4,minmax(160px,1fr))">
+        <div class="fields" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr))">
           <div class="field">
             <label>Площадь участка <span class="unit">га</span></label>
             <input type="number" step="0.0001" id="siteAreaHa" onchange="setSiteArea(this.value)">
