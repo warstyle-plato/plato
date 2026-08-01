@@ -55,6 +55,14 @@ def _as_number(value: Any) -> float:
     raise FormulaError(f"не число: {value!r}")
 
 
+def _as_date(value: Any) -> _dt.date:
+    if isinstance(value, _dt.datetime):
+        return value.date()
+    if isinstance(value, _dt.date):
+        return value
+    return _dt.date(1899, 12, 30) + _dt.timedelta(days=int(_as_number(value)))
+
+
 def _flatten(values: Any) -> list[Any]:
     if isinstance(values, list):
         out: list[Any] = []
@@ -80,6 +88,8 @@ FUNCTIONS: dict[str, Callable[[list[Any]], Any]] = {
     "SUMPRODUCT": lambda args: sum(
         a * b for a, b in zip(*[[_as_number(v) for v in _flatten(arg)] for arg in args])
     ),
+    "YEAR": lambda args: _as_date(args[0]).year,
+    "MONTH": lambda args: _as_date(args[0]).month,
 }
 
 
