@@ -41,7 +41,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.13.21"
+VERSION = "0.13.22"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -7885,6 +7885,61 @@ from openpyxl.utils import get_column_letter  # noqa: E402
 from openpyxl.formula.translate import Translator  # noqa: E402
 
 
+def _plato_fix_social_capex_links(
+    workbook: Any, filled: list[dict[str, Any]], missing: list[str],
+) -> None:
+    """CAPEX соцобъектов при денежной компенсации ссылался на количество мест.
+
+    Формулы G6:G8 листа «ОБЪЕКТЫ КРТ» брали 'Расчет ВРИ (ТЭП)'!D54:D56 и делили
+    на тысячу. Но в строках 54–56 лежит мощность — 15 мест, 10, 5, — а деньги
+    ниже, в 84–86. Вместо 188,4 млн ₽ по ДОО выходило 0,015: ошибка ссылки на
+    строку, не методики. Подписи там повторяются дважды, и промахнуться легко —
+    на этом же месте я уже спотыкался, записывая компенсацию.
+    """
+    if "ОБЪЕКТЫ КРТ" not in workbook.sheetnames or "Расчет ВРИ (ТЭП)" not in workbook.sheetnames:
+        missing.append("ОБЪЕКТЫ КРТ · ссылки на компенсацию")
+        return
+    tep = workbook["Расчет ВРИ (ТЭП)"]
+    start = next(
+        (row for row in range(1, tep.max_row + 1)
+         if "компенсац" in _plato_normalize(tep.cell(row=row, column=2).value)),
+        None,
+    )
+    if not start:
+        missing.append("ОБЪЕКТЫ КРТ · ссылки на компенсацию")
+        return
+    money = {}
+    for row in range(start + 1, min(start + 8, tep.max_row + 1)):
+        label = _plato_normalize(tep.cell(row=row, column=2).value)
+        if label in ("доо", "школа", "поликлиника"):
+            money[label] = row
+
+    sheet = workbook["ОБЪЕКТЫ КРТ"]
+    changed = 0
+    for cell_row, label in ((6, "доо"), (7, "школа"), (8, "поликлиника")):
+        target = money.get(label)
+        cell = sheet.cell(row=cell_row, column=7)
+        if not target or not isinstance(cell.value, str):
+            continue
+        # Меняем только ссылку и убираем перевод в миллионы: в строках 84–86
+        # деньги уже в миллионах, делить их на тысячу незачем.
+        fixed = re.sub(
+            r"'Расчет ВРИ \(ТЭП\)'!\$?D\d+\s*/\s*1000",
+            f"'Расчет ВРИ (ТЭП)'!$D${target}",
+            cell.value,
+        )
+        if fixed == cell.value:
+            continue
+        cell.value = fixed
+        changed += 1
+    if not changed:
+        missing.append("ОБЪЕКТЫ КРТ · ссылки на компенсацию")
+        return
+    filled.append({"sheet": "ОБЪЕКТЫ КРТ", "row": 6,
+                   "label": "CAPEX соцобъектов · ссылка на деньги, а не на места",
+                   "value": changed})
+
+
 def _plato_apply_pf_repayment(
     workbook: Any, filled: list[dict[str, Any]], missing: list[str],
 ) -> None:
@@ -8246,6 +8301,7 @@ def fill_plato_template(
     _plato_fill_land_sheet(workbook, merged, filled)
     _plato_apply_pf_rate_methodology(workbook, filled, missing)
     _plato_apply_pf_repayment(workbook, filled, missing)
+    _plato_fix_social_capex_links(workbook, filled, missing)
 
     # Имя проекта в шапке ОТЧЕТа — не украшение: без него каждая выгрузка
     # уезжает заказчику подписанной чужим проектом из шаблона.
