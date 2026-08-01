@@ -41,7 +41,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.13.30"
+VERSION = "0.13.31"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -142,6 +142,11 @@ class AgentChatRequest(BaseModel):
     phasing: dict[str, Any] = {}
     history: list[dict[str, Any]] = []
     selected_view: str = "all"
+    # Сценарий кнопки: известный id считается движком без вызова модели.
+    scenario: str = ""
+    # Идентификатор запроса генерирует страница: он нужен ей раньше ответа,
+    # чтобы опрашивать стадию, пока запрос идёт.
+    trace_id: str = ""
 
 
 class CadastralAnalysisRequest(BaseModel):
@@ -16281,6 +16286,7 @@ def _agent_initial_snapshot(req: AgentChatRequest, bundle: dict[str, Any]) -> di
 def _call_openai_tool_agent(
     req: AgentChatRequest,
     bundle: dict[str, Any],
+    trace_id: str = "",
 ) -> dict[str, Any]:
     model = os.getenv("OPENAI_AGENT_MODEL", "gpt-5.6").strip() or "gpt-5.6"
 
@@ -16308,6 +16314,8 @@ def _call_openai_tool_agent(
     tool_cache: dict[str, dict[str, Any]] = {}
     final_ready_seen = False
     for _round in range(_AGENT_MAX_TOOL_ROUNDS):
+        _plato_trace_write(trace_id, f"llm_{_round + 1}",
+                           "Платон Сергеевич думает" + (f" · шаг {_round + 1}" if _round else ""))
         payload = {
             "model": model,
             "instructions": _AGENT_INSTRUCTIONS,
@@ -16337,6 +16345,8 @@ def _call_openai_tool_agent(
         for call in calls:
             name = str(call.get("name", ""))
             call_id = str(call.get("call_id", ""))
+            _plato_trace_write(trace_id, "tool",
+                               f"Считаю движком: {_AGENT_TOOL_LABELS.get(name, name)}")
             try:
                 args = json.loads(call.get("arguments") or "{}")
             except Exception:
@@ -16425,6 +16435,316 @@ def _call_openai_tool_agent(
     raise HTTPException(status_code=502, detail="Не удалось сформировать итоговый ответ по выполненным расчётам.")
 
 
+# --- Ускорение Платона -----------------------------------------------------
+# Ответ на кнопку занимал минуту по трём причинам сразу. Каждый вопрос шёл в
+# модель, даже когда ответ целиком считает движок: кнопка «Структура расходов» —
+# это explain_metric и форматирование, модели там решать нечего. Один и тот же
+# вопрос по тем же вводным считался заново. А пока запрос шёл, окно показывало
+# одну надпись, и «долго» было неотличимо от «зависло».
+#
+# Поэтому: у запроса есть trace_id и стадия на диске (воркера два, опрос стадии
+# может прийти не в тот, где идёт расчёт); ответы живут в кэше десять минут;
+# сценарии кнопок считаются движком без обращения к модели.
+
+_PLATO_STAGE_DIR = Path(__file__).resolve().parent / "data" / "platon_state" / "agent"
+_PLATO_TRACE_TTL = 3600
+_PLATO_ANSWER_TTL = 600
+_TRACE_ID_RE = re.compile(r"^[0-9a-f]{8,32}$")
+
+
+def _plato_stage_path(kind: str, key: str) -> Path:
+    return _PLATO_STAGE_DIR / f"{kind}_{key}.json"
+
+
+def _plato_trace_write(trace_id: str, stage: str, label: str) -> None:
+    if not trace_id:
+        return
+    try:
+        _PLATO_STAGE_DIR.mkdir(parents=True, exist_ok=True)
+        _plato_stage_path("trace", trace_id).write_text(
+            json.dumps({"stage": stage, "label": label, "at": time.time()},
+                       ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass  # стадия — удобство; ронять из-за неё ответ нельзя
+
+
+def _plato_stage_cleanup() -> None:
+    try:
+        cutoff = time.time() - _PLATO_TRACE_TTL
+        for path in _PLATO_STAGE_DIR.glob("*.json"):
+            if path.stat().st_mtime < cutoff:
+                path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+@app.get("/agent/trace/{trace_id}")
+def agent_trace(trace_id: str) -> dict[str, Any]:
+    """Текущая стадия запроса — окно опрашивает её, пока ждёт ответ."""
+    if not _TRACE_ID_RE.fullmatch(trace_id):
+        raise HTTPException(status_code=400, detail="Неверный идентификатор запроса.")
+    try:
+        return json.loads(_plato_stage_path("trace", trace_id).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"stage": "unknown", "label": ""}
+
+
+def _plato_answer_key(req: AgentChatRequest, scenario: str) -> str:
+    # Свободный вопрос зависит от истории диалога — «а почему?» без неё другой
+    # вопрос. Сценарий кнопки от истории не зависит, и класть её в ключ значило
+    # бы промахиваться мимо кэша при каждом повторном нажатии.
+    payload = {
+        "message": str(req.message or "").strip(),
+        "scenario": scenario,
+        "inputs": req.inputs,
+        "tep": req.tep,
+        "rates": req.rates,
+        "phasing": req.phasing,
+        "view": req.selected_view,
+    }
+    if not scenario:
+        payload["history"] = (req.history or [])[-6:]
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
+
+
+def _plato_answer_get(key: str) -> dict[str, Any] | None:
+    try:
+        data = json.loads(_plato_stage_path("answer", key).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if time.time() - float(data.get("at", 0) or 0) > _PLATO_ANSWER_TTL:
+        return None
+    payload = data.get("payload")
+    return payload if isinstance(payload, dict) else None
+
+
+def _plato_answer_put(key: str, payload: dict[str, Any]) -> None:
+    try:
+        _PLATO_STAGE_DIR.mkdir(parents=True, exist_ok=True)
+        _plato_stage_path("answer", key).write_text(
+            json.dumps({"at": time.time(), "payload": payload}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except (OSError, TypeError, ValueError):
+        pass
+
+
+# --- локальные сценарии кнопок ---------------------------------------------
+
+def _agent_num(value: Any, digits: int = 1) -> str:
+    text = f"{float(value or 0):,.{digits}f}"
+    return text.replace(",", " ").replace(".", ",")
+
+
+def _agent_mln(value: Any) -> str:
+    return f"{_agent_num(value, 1)} млн ₽"
+
+
+def _agent_x(value: Any) -> str:
+    return f"{_agent_num(value, 3)}x"
+
+
+def _agent_scope_of(bundle: dict[str, Any]) -> str:
+    return "weakest_phase" if bundle.get("mode") == "phased" else "consolidated"
+
+
+def _local_expense_structure(req: AgentChatRequest, bundle: dict[str, Any]) -> str:
+    data = _tool_explain_metric(req, bundle, "expense_structure", "consolidated")
+    totals = data.get("totals") or {}
+    lines = [f"**Структура расходов · {data.get('scope')}**", ""]
+    for item in data.get("expense_structure") or []:
+        lines.append(f"- {item.get('label')}: **{_agent_mln(item.get('value_mln'))}** "
+                     f"({_agent_num(item.get('share_pct'), 1)}%)")
+    lines += [
+        "",
+        f"Полные расходы: **{_agent_mln(totals.get('total_expenses_mln'))}**, из них "
+        f"CAPEX {_agent_mln(totals.get('capex_mln'))}, "
+        f"коммерческие {_agent_mln(totals.get('commercial_costs_mln'))}, "
+        f"проценты и комиссии {_agent_mln(totals.get('financing_cost_mln'))}, "
+        f"налог {_agent_mln(totals.get('profit_tax_mln'))}.",
+    ]
+    return "\n".join(lines)
+
+
+def _local_llcr_breakdown(req: AgentChatRequest, bundle: dict[str, Any]) -> str:
+    data = _tool_explain_metric(req, bundle, "llcr", _agent_scope_of(bundle))
+    numerator = data.get("numerator_components") or {}
+    denominator = data.get("denominator_components") or {}
+    value = float(data.get("value_x") or 0)
+    target = float(data.get("target_x") or 0)
+    lines = [
+        f"**LLCR = {_agent_x(value)}** · {data.get('scope')} · банковская цель {_agent_x(target)}",
+        "",
+        str(data.get("formula") or ""),
+        "",
+        f"**Числитель — {_agent_mln(data.get('numerator_mln'))}:**",
+        f"- выручка проекта: {_agent_mln(numerator.get('project_revenue_mln'))}",
+        f"- минус коммерческие расходы: {_agent_mln(numerator.get('minus_commercial_costs_mln'))}",
+        f"- минус налог на прибыль: {_agent_mln(numerator.get('minus_profit_tax_mln'))}",
+        f"- минус CAPEX: {_agent_mln(numerator.get('minus_capex_mln'))}",
+        f"- плюс выборка ПФ: {_agent_mln(numerator.get('plus_pf_draw_mln'))}",
+        "",
+        f"**Знаменатель — {_agent_mln(data.get('denominator_mln'))}:**",
+        f"- выборка ПФ: {_agent_mln(denominator.get('pf_draw_mln'))}",
+        f"- проценты и комиссии: {_agent_mln(denominator.get('actual_financing_cost_mln'))}",
+    ]
+    if value < target:
+        lines += ["", f"До цели не хватает {_agent_x(target - value)}: числитель должен вырасти "
+                      "(выручка) или знаменатель снизиться (долг и его стоимость)."]
+    phases = data.get("phase_llcr") or []
+    if phases:
+        lines += ["", "**По очередям:** " + ", ".join(
+            f"{p.get('phase')} — {_agent_x(p.get('llcr_x'))}" for p in phases)]
+    return "\n".join(lines)
+
+
+def _local_goal_seek(req: AgentChatRequest, bundle: dict[str, Any], variable: str) -> str:
+    data = _tool_goal_seek(
+        req, bundle, variable, "llcr", _AGENT_BANK_LLCR_TARGET,
+        "at_least", "maximum_variable", _agent_scope_of(bundle), None, None,
+    )
+    if not data.get("available"):
+        reason = str(data.get("reason") or "причина не указана").rstrip(".")
+        return f"Подбор параметра недоступен: {reason}."
+    current = data.get("current") or {}
+    solution = data.get("solution") or {}
+    label = str(data.get("variable_label") or variable)
+    lines = [
+        f"**{label}: максимум {_agent_num(solution.get('variable'), 1)} при LLCR ≥ "
+        f"{_agent_x(data.get('target_value'))}** · {data.get('scope_label')}",
+        "",
+        f"- сейчас: {_agent_num(current.get('variable'), 1)} → LLCR {_agent_x(current.get('metric'))}",
+        f"- на пределе: {_agent_num(solution.get('variable'), 1)} → LLCR {_agent_x(solution.get('metric'))}",
+        f"- запас: {_agent_num(solution.get('change_abs'), 1)}"
+        + (f" ({_agent_num(solution.get('change_pct'), 1)}%)" if solution.get("change_pct") is not None else ""),
+    ]
+    if data.get("threshold_beyond_bound"):
+        lines += ["", "Порог упёрся в границу поиска — реальный предел может лежать дальше."]
+    lines += ["", "Подбор выполнен полным пересчётом модели DevelopAid; текущая модель не изменена."]
+    return "\n".join(lines)
+
+
+def _local_max_purchase_price(req: AgentChatRequest, bundle: dict[str, Any]) -> str:
+    return _local_goal_seek(req, bundle, "purchase_price_mln")
+
+
+def _local_max_construction_cost(req: AgentChatRequest, bundle: dict[str, Any]) -> str:
+    return _local_goal_seek(req, bundle, "main_construction_cost_th_per_sqm")
+
+
+def _local_find_anomalies(req: AgentChatRequest, bundle: dict[str, Any]) -> str:
+    data = _tool_find_anomalies(req, bundle, _agent_scope_of(bundle))
+    anomalies = data.get("anomalies") or []
+    if not anomalies:
+        return ("**Существенных аномалий не найдено.** Проверены ТЭП, выручка, CAPEX, "
+                "маржа, очереди и финансирование по текущей модели.")
+    order = {"high": 0, "medium": 1, "low": 2}
+    anomalies = sorted(anomalies, key=lambda a: order.get(str(a.get("severity")), 3))
+    severity_mark = {"high": "существенно", "medium": "заметно", "low": "на контроль"}
+    lines = [f"**Найдено отклонений: {len(anomalies)}**", ""]
+    for item in anomalies:
+        mark = severity_mark.get(str(item.get("severity")), str(item.get("severity")))
+        lines.append(f"- **[{mark}]** {item.get('message')}")
+    return "\n".join(lines)
+
+
+def _local_phase_recovery(req: AgentChatRequest, bundle: dict[str, Any]) -> str:
+    data = _tool_phase_recovery_options(req, bundle, _AGENT_BANK_LLCR_TARGET)
+    if not data.get("available"):
+        summary = (bundle.get("consolidated") or {}).get("summary") or {}
+        return (f"Проект одноочередный, оздоравливать отдельную очередь не требуется. "
+                f"LLCR проекта — {_agent_x(summary.get('llcr'))} при цели "
+                f"{_agent_x(_AGENT_BANK_LLCR_TARGET)}.")
+    lines = [
+        f"**Слабейшая очередь — {data.get('weakest_phase')}: LLCR "
+        f"{_agent_x(data.get('baseline_min_llcr_x'))} при цели {_agent_x(data.get('target_llcr_x'))}**",
+        "",
+        "Варианты, посчитанные полным пересчётом (лучшие первыми):",
+        "",
+    ]
+    for index, option in enumerate((data.get("ranked_options") or [])[:5], start=1):
+        achieved = "достигает цели" if option.get("achieves_target") else "цели не достигает"
+        lines.append(
+            f"{index}. **{option.get('name')}** — минимальный LLCR "
+            f"{_agent_x(option.get('min_llcr_x'))} ({achieved}), прибыль "
+            f"{'+' if float(option.get('net_profit_change_mln') or 0) >= 0 else ''}"
+            f"{_agent_num(option.get('net_profit_change_mln'), 1)} млн ₽ к базе. "
+            f"{option.get('feasibility') or ''}"
+        )
+    fallback = data.get("fallback_thresholds") or {}
+    for key, title in (("max_purchase_price", "Предельная цена входа"),
+                       ("max_construction_cost", "Предельная ставка строительства")):
+        item = fallback.get(key) or {}
+        if item.get("available"):
+            solution = item.get("solution") or {}
+            lines.append(f"- {title}: {_agent_num(solution.get('variable'), 1)} "
+                         f"(LLCR {_agent_x(solution.get('metric'))}).")
+    return "\n".join(lines)
+
+
+def _local_purchase_evaluation(req: AgentChatRequest, bundle: dict[str, Any]) -> str:
+    offer = n(req.inputs, "purchase_price_mln", 0.0)
+    data = _tool_evaluate_purchase_offer(req, bundle, offer, _AGENT_BANK_LLCR_TARGET)
+    comparison = data.get("comparison") or {}
+    at_offer = data.get("at_offer") or {}
+    lines = [
+        f"**Оценка цены покупки {_agent_mln(offer)}** · цель LLCR {_agent_x(data.get('target_llcr_x'))}",
+        "",
+        f"- LLCR при этой цене: {_agent_x(at_offer.get('min_llcr_x'))}",
+    ]
+    if comparison.get("ceiling_mln") is not None:
+        lines.append(f"- расчётный потолок цены: {_agent_mln(comparison.get('ceiling_mln'))}")
+        above = float(comparison.get("offer_above_ceiling_mln") or 0)
+        if above > 0:
+            lines.append(f"- цена выше потолка на {_agent_mln(above)} "
+                         f"({_agent_num(comparison.get('offer_above_ceiling_pct'), 1)}%)")
+        else:
+            lines.append(f"- запас до потолка: {_agent_mln(-above)}")
+    decision = data.get("decision")
+    if decision:
+        lines += ["", str(decision)]
+    holds = data.get("if_seller_holds_price") or {}
+    price_needed = (holds.get("required_apartment_start_price") or {}).get("solution") or {}
+    cost_allowed = (holds.get("max_construction_cost") or {}).get("solution") or {}
+    if price_needed or cost_allowed:
+        lines += ["", "**Если продавец не двигается:**"]
+        if price_needed:
+            lines.append(f"- нужна стартовая цена квартир от {_agent_num(price_needed.get('variable'), 1)} тыс. ₽/м²")
+        if cost_allowed:
+            lines.append(f"- либо себестоимость строительства не выше {_agent_num(cost_allowed.get('variable'), 1)} тыс. ₽/м²")
+    return "\n".join(lines)
+
+
+# Сценарий кнопки -> подпись стадии и локальный обработчик. Ответ собирается
+# движком и форматируется детерминированно; модель не вызывается вовсе.
+_AGENT_LOCAL_SCENARIOS: dict[str, tuple[str, Any]] = {
+    "expense_structure": ("Структура расходов", _local_expense_structure),
+    "llcr_breakdown": ("Разбор LLCR", _local_llcr_breakdown),
+    "max_purchase_price": ("Подбор предельной цены покупки", _local_max_purchase_price),
+    "max_construction_cost": ("Подбор предельной себестоимости", _local_max_construction_cost),
+    "anomalies": ("Поиск аномалий", _local_find_anomalies),
+    "phase_recovery": ("Оздоровление слабой очереди", _local_phase_recovery),
+    "purchase_evaluation": ("Оценка цены покупки", _local_purchase_evaluation),
+}
+
+_AGENT_TOOL_LABELS = {
+    "explain_metric": "разбор показателя",
+    "trace_metric": "трассировка показателя",
+    "goal_seek": "подбор параметра",
+    "simulate_change": "сценарий с изменёнными вводными",
+    "normalize_market_benchmark": "нормализация бенчмарка",
+    "prepare_model_patch": "подготовка изменения вводных",
+    "find_anomalies": "поиск аномалий",
+    "evaluate_purchase_offer": "оценка цены покупки",
+    "diagnose_project_logic": "диагностика логики проекта",
+    "phase_recovery_options": "варианты оздоровления очереди",
+    "get_methodology": "справка по методике",
+}
+
+
 @app.get("/agent/status")
 def agent_status() -> dict[str, Any]:
     return {
@@ -16457,8 +16777,50 @@ def agent_chat(req: AgentChatRequest, request: Request) -> dict[str, Any]:
     if len(message) > 4000:
         raise HTTPException(status_code=400, detail="Вопрос слишком длинный.")
 
+    started = time.monotonic()
+    trace_id = str(req.trace_id or "").strip().lower()
+    if not _TRACE_ID_RE.fullmatch(trace_id):
+        trace_id = os.urandom(6).hex()
+    scenario = str(req.scenario or "").strip()
+    if scenario and scenario not in _AGENT_LOCAL_SCENARIOS:
+        scenario = ""
+    _plato_stage_cleanup()
+
+    # Кэш смотрится до пересчёта модели: повторный вопрос по тем же вводным
+    # не должен стоить ни пересчёта, ни похода в модель.
+    cache_key = _plato_answer_key(req, scenario)
+    cached = _plato_answer_get(cache_key)
+    if cached is not None:
+        _plato_trace_write(trace_id, "done", "Ответ найден в кэше")
+        _PLATON_LOG.info("Platon [%s] cache hit (%.2fs)", trace_id, time.monotonic() - started)
+        return {**cached, "cached": True, "trace_id": trace_id}
+
+    _plato_trace_write(trace_id, "model", "Пересчитываю модель DevelopAid")
     bundle = _run_authoritative_model(req.inputs, req.tep, req.rates, req.phasing)
-    return _call_openai_tool_agent(req, bundle)
+
+    if scenario:
+        stage_label, handler = _AGENT_LOCAL_SCENARIOS[scenario]
+        _plato_trace_write(trace_id, "local", f"Считаю движком: {stage_label.lower()}")
+        answer = handler(req, bundle)
+        result = {
+            "answer": answer,
+            "model": "developaid-engine",
+            "source": "local",
+            "response_id": None,
+            "tools_used": [{"name": scenario, "arguments": {}}],
+            "proposals": [],
+        }
+        _PLATON_LOG.info("Platon [%s] local scenario %s (%.2fs)",
+                         trace_id, scenario, time.monotonic() - started)
+    else:
+        result = _call_openai_tool_agent(req, bundle, trace_id=trace_id)
+        _PLATON_LOG.info("Platon [%s] llm answer, %d tool calls (%.2fs)",
+                         trace_id, len(result.get("tools_used") or []),
+                         time.monotonic() - started)
+
+    _plato_answer_put(cache_key, result)
+    _plato_trace_write(trace_id, "done", "Готово")
+    return {**result, "cached": False, "trace_id": trace_id}
 
 
 @app.get("/current-key-rate")
@@ -17267,13 +17629,13 @@ details.cadastral-box>summary::marker{color:#888}
     <button class="ai-close" onclick="toggleAgent(false)" aria-label="Закрыть">×</button>
   </div>
   <div class="ai-quick">
-    <button class="ai-chip" onclick="askAgentQuick('Разложи структуру расходов проекта: CAPEX, коммерческие расходы, проценты, налог и полную себестоимость. Что формирует основные затраты?')">Структура расходов</button>
-    <button class="ai-chip" onclick="askAgentQuick('Почему текущий LLCR именно такой? Разложи числитель и знаменатель и назови основные причины.')">Почему такой LLCR?</button>
-    <button class="ai-chip" onclick="askAgentQuick('За сколько максимум можно купить проект, чтобы LLCR оставался не ниже 1,20x? Сделай подбор параметра. Если проект многоочередный — контролируй слабейшую очередь.')">Макс. цена покупки при LLCR 1,20</button>
-    <button class="ai-chip" onclick="askAgentQuick('Какая максимальная ставка основного строительства допустима, чтобы LLCR был не ниже 1,20x? Сделай подбор параметра; для многоочередного проекта проверь слабейшую очередь.')">Себестоимость для LLCR 1,20</button>
-    <button class="ai-chip" onclick="askAgentQuick('Проверь текущую модель на очевидные аномалии: ТЭП, выручка, CAPEX, маржа, очереди и финансирование. Назови только существенные отклонения.')">Проверить аномалии</button>
-    <button class="ai-chip" onclick="askAgentQuick('Найди слабейшую очередь. Объясни причинно, почему её LLCR ниже целевого, и сам пересчитай реальные варианты оздоровления: перенос допустимых затрат, социалки, увеличение ТЭП. Дай ранжированную рекомендацию до LLCR не ниже 1,20.')">Оздоровить слабую очередь</button>
-    <button class="ai-chip" onclick="askAgentQuick('Оцени текущую цену покупки как инвестиционное решение: какой максимальный потолок цены при LLCR 1,20, насколько текущая цена от него отличается и что делать, если продавец не снижает цену.')">Оценить цену покупки</button>
+    <button class="ai-chip" onclick="askAgentQuick('Разложи структуру расходов проекта: CAPEX, коммерческие расходы, проценты, налог и полную себестоимость. Что формирует основные затраты?','expense_structure')">Структура расходов</button>
+    <button class="ai-chip" onclick="askAgentQuick('Почему текущий LLCR именно такой? Разложи числитель и знаменатель и назови основные причины.','llcr_breakdown')">Почему такой LLCR?</button>
+    <button class="ai-chip" onclick="askAgentQuick('За сколько максимум можно купить проект, чтобы LLCR оставался не ниже 1,20x? Сделай подбор параметра. Если проект многоочередный — контролируй слабейшую очередь.','max_purchase_price')">Макс. цена покупки при LLCR 1,20</button>
+    <button class="ai-chip" onclick="askAgentQuick('Какая максимальная ставка основного строительства допустима, чтобы LLCR был не ниже 1,20x? Сделай подбор параметра; для многоочередного проекта проверь слабейшую очередь.','max_construction_cost')">Себестоимость для LLCR 1,20</button>
+    <button class="ai-chip" onclick="askAgentQuick('Проверь текущую модель на очевидные аномалии: ТЭП, выручка, CAPEX, маржа, очереди и финансирование. Назови только существенные отклонения.','anomalies')">Проверить аномалии</button>
+    <button class="ai-chip" onclick="askAgentQuick('Найди слабейшую очередь. Объясни причинно, почему её LLCR ниже целевого, и сам пересчитай реальные варианты оздоровления: перенос допустимых затрат, социалки, увеличение ТЭП. Дай ранжированную рекомендацию до LLCR не ниже 1,20.','phase_recovery')">Оздоровить слабую очередь</button>
+    <button class="ai-chip" onclick="askAgentQuick('Оцени текущую цену покупки как инвестиционное решение: какой максимальный потолок цены при LLCR 1,20, насколько текущая цена от него отличается и что делать, если продавец не снижает цену.','purchase_evaluation')">Оценить цену покупки</button>
   </div>
   <div id="aiMessages" class="ai-messages"><div class="ai-msg system">Платон Сергеевич анализирует проект через расчётные инструменты DevelopAid. Цифры и подбор параметров считает движок модели, а не языковая модель.</div></div>
   <div class="ai-compose">
@@ -17443,21 +17805,28 @@ async function applyAgentProposal(idx){
  renderInputs();syncTep(false);syncProjectClassSelector();renderPhasing();await calculate();
  appendAiMessage('assistant','Изменение применено к текущим Inputs и модель пересчитана.');
 }
-function askAgentQuick(text){aiInput.value=text;sendAgentMessage()}
+function askAgentQuick(text,scenario){aiInput.value=text;sendAgentMessage(scenario)}
 async function refreshAgentStatus(){try{const r=await fetch('/agent/status'),s=await r.json();aiStatusDot.classList.toggle('ready',!!s.enabled);aiStatusDot.title=s.enabled?`AI готов · ${s.model} · думает через ${s.thinks_via||'этот сервер'}`:'AI не настроен: нет ни OPENAI_API_KEY, ни PLATO_AI_URL'}catch(e){aiStatusDot.classList.remove('ready')}}
 async function syncInputsForAgent(){document.querySelectorAll('[id^=f_]').forEach(el=>{const id=el.id.slice(2);inputs[id]=el.type==='checkbox'?el.checked:(el.type==='number'?Number(el.value):el.value)});if(document.getElementById('rateScenario'))inputs.rate_scenario=rateScenario.value||'base';generateRateCurve();repairParkingFromGlavapu();normalizeSocialObjectDates()}
-async function sendAgentMessage(){
+async function sendAgentMessage(scenario){
  if(aiBusy)return;const message=String(aiInput.value||'').trim();if(!message)return;
  aiBusy=true;aiSendBtn.disabled=true;aiInput.value='';appendAiMessage('user',message);aiHistory.push({role:'user',content:message});
  const thinking=document.createElement('div');thinking.className='ai-thinking';thinking.textContent='Анализирую текущую модель…';aiMessages.appendChild(thinking);aiMessages.scrollTop=aiMessages.scrollHeight;
+ // trace_id генерирует страница: он нужен ей раньше ответа, чтобы опрашивать
+ // стадию. Пока запрос идёт, подпись показывает, что именно сейчас происходит,
+ // и «долго» отличимо от «зависло».
+ const traceId=Array.from(crypto.getRandomValues(new Uint8Array(6))).map(b=>b.toString(16).padStart(2,'0')).join('');
+ const stagePoll=setInterval(async()=>{try{const r=await fetch('/agent/trace/'+traceId);const t=await r.json();if(t&&t.label&&t.stage!=='done')thinking.textContent=t.label+'…'}catch(e){}},1200);
  try{
   await syncInputsForAgent();
-  const response=await fetch('/agent/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message,inputs,tep,rates,phasing,history:aiHistory.slice(-8),selected_view:reportView||'all'})});
+  const response=await fetch('/agent/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message,scenario:scenario||'',trace_id:traceId,inputs,tep,rates,phasing,history:aiHistory.slice(-8),selected_view:reportView||'all'})});
   let data={};try{data=await response.json()}catch(e){}
   thinking.remove();if(!response.ok)throw new Error(data.detail||`Ошибка AI (${response.status})`);
-  const answer=String(data.answer||'Ответ не получен.');appendAiMessage('assistant',answer);if(Array.isArray(data.proposals)&&data.proposals.length)appendAiProposals(data.proposals);aiHistory.push({role:'assistant',content:answer});aiHistory=aiHistory.slice(-10);
+  const answer=String(data.answer||'Ответ не получен.');
+  appendAiMessage('assistant',answer+(data.cached?'\n\n*Ответ из кэша: тот же вопрос по тем же вводным за последние 10 минут.*':''));
+  if(Array.isArray(data.proposals)&&data.proposals.length)appendAiProposals(data.proposals);aiHistory.push({role:'assistant',content:answer});aiHistory=aiHistory.slice(-10);
  }catch(e){thinking.remove();appendAiMessage('assistant',String(e.message||e),'error')}
- finally{aiBusy=false;aiSendBtn.disabled=false;aiInput.focus()}
+ finally{clearInterval(stagePoll);aiBusy=false;aiSendBtn.disabled=false;aiInput.focus()}
 }
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&document.getElementById('aiDrawer')?.classList.contains('open'))toggleAgent(false);if((e.ctrlKey||e.metaKey)&&e.key==='Enter'&&document.getElementById('aiDrawer')?.classList.contains('open'))sendAgentMessage()});
 

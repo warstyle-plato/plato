@@ -73,11 +73,18 @@ def callbacks(reply_markup) -> list[str]:
     ]
 
 
+@pytest.fixture(autouse=True)
+def _isolated_answer_cache(tmp_path, monkeypatch):
+    """Кэш ответов Платона общий для воркеров и живёт на диске: без изоляции
+    второй тест получает ответ первого — с теми же вводными это законный хит."""
+    monkeypatch.setattr(core, "_PLATO_STAGE_DIR", tmp_path / "agent")
+
+
 def fake_agent(answer: str = "Разбор ТЭП: площади сбалансированы.", proposals=None):
     """Подмена только вызова OpenAI — модель при этом считается по-настоящему."""
     captured: dict = {}
 
-    def _call(req, bundle):
+    def _call(req, bundle, trace_id=""):
         captured["message"] = req.message
         captured["inputs"] = req.inputs
         captured["tep"] = req.tep
