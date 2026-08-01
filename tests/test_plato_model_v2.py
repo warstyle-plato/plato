@@ -237,7 +237,7 @@ def test_the_tax_rate_reaches_the_llcr(book):
 # Драйверы — это сценарий: объёмы, выручка по продуктам, статьи затрат, прогноз
 # ставки, налоговая маржа. Всё прочее на помесячных листах обязано быть формулой.
 DRIVER_ROWS = {
-    "ПРОДАЖИ": ("pace_", "index_"),
+    "ПРОДАЖИ": (),
     "СЕБЕСТОИМОСТЬ": ("cost_land_rights", "cost_social", "debt", "index"),
     "СТАВКИ": ("key_rate",),
     "ЭСКРОУ": (),
@@ -384,6 +384,179 @@ def test_every_input_of_the_model_is_on_the_sheet(book):
     expected = {field[0] for _, fields in core.FIELD_GROUPS for field in fields}
     assert not expected - on_sheet, f"на «Вводных» нет полей: {sorted(expected - on_sheet)}"
     assert len(expected) > 100
+
+
+# Вводные, которые обязаны двигать отчёт, и показатель, по которому это видно.
+DRIVES = [
+    ("apartment_price_th", 1.1, "revenue"),
+    ("commercial_price_th", 1.2, "revenue"),
+    ("parking_price_th", 1.3, "revenue"),
+    ("share_before_rve_pct", 0.9, "financing_cost"),
+    ("monthly_growth_pre_pct", 1.5, "revenue"),
+    ("monthly_growth_post_pct", 3.0, "revenue"),
+    ("seasonal_reduction_pct", 2.0, "financing_cost"),
+    ("pace_adjustment_pct", 2.0, "financing_cost"),
+    ("residual_sales_months", 2.0, "revenue"),
+    ("sales_lag_months", 3.0, "revenue"),
+    ("main_above_th_per_sqm", 1.2, "capex"),
+    ("main_under_th_per_sqm", 1.2, "capex"),
+    ("utilities_th_per_sqm", 1.5, "capex"),
+    ("gc_fee_pct", 1.5, "capex"),
+    ("reserve_pct", 1.5, "capex"),
+    ("project_management_pct", 1.5, "capex"),
+    ("technical_supervision_pct", 1.5, "capex"),
+    ("marketing_pct", 2.0, "operating"),
+    ("selling_pct", 2.0, "operating"),
+    ("ird_months", 1.5, "financing_cost"),
+    ("construction_months", 1.5, "financing_cost"),
+    ("bridge_spread_pp", 1.5, "financing_cost"),
+    ("pf_spread_pp", 1.5, "financing_cost"),
+    ("pf_special_pct", 2.0, "financing_cost"),
+    ("limit_fee_pct", 2.0, "financing_cost"),
+    ("reservation_fee_pct", 2.0, "financing_cost"),
+    ("profit_tax_pct", 0.5, "profit_tax"),
+    ("purchase_price_mln", 2.0, "capex"),
+]
+
+
+@pytest.mark.parametrize("key,factor,indicator", DRIVES)
+def test_the_input_reaches_the_report(book, key, factor, indicator):
+    """Вводная, которая ничего не двигает, — это подпись, а не параметр.
+
+    Сезонность и смещение темпа особенно: они уже были в интерфейсе и на
+    расчёт не влияли — уходили только в шаблон, и два расчёта по одним и тем же
+    вводным давали разную выручку.
+    """
+    workbook, _, _, meta = book
+    fresh = _reopen(workbook)
+    row = 4 + core._M2_REPORT_KEYS.index(indicator)
+    was = Evaluator(fresh).cell("ОТЧЁТ", f"B{row}")
+
+    line = meta["layout"]["inputs"][key]
+    value = fresh["Вводные"][f"B{line}"].value
+    fresh["Вводные"][f"B{line}"] = (value or 1.0) * factor if value else factor
+
+    after = Evaluator(fresh).cell("ОТЧЁТ", f"B{row}")
+    assert after != pytest.approx(was, rel=1e-9), (
+        f"«{key}» не двигает «{indicator}»: {was} → {after}"
+    )
+
+
+def test_the_share_before_the_permit_is_exactly_what_was_asked(book):
+    """Веса нормируются до и после РВЭ отдельно — доля не плывёт за сезонностью."""
+    _, evaluator, engine, meta = book
+    rve = engine["dates"]["rve"]
+    line = meta["layout"]["sales"]["quantity_apartments"]
+
+    before = after = 0.0
+    for index, item in enumerate(engine["finance"]["rows"]):
+        volume = evaluator.cell("ПРОДАЖИ", f"{column(index)}{line}")
+        if item["month"] < rve:
+            before += volume
+        else:
+            after += volume
+
+    share = core.n(core.DEFAULT_INPUTS, "share_before_rve_pct") / 100
+    assert before / (before + after) == pytest.approx(share, rel=1e-6)
+
+
+def test_the_seasonal_months_sell_less(book):
+    """Январь, май–август — месяцы пониженного спроса, как в шаблоне ПЛАТО."""
+    _, evaluator, engine, meta = book
+    line = meta["layout"]["sales"]["season_apartments"]
+
+    for index, item in enumerate(engine["finance"]["rows"]):
+        month = int(item["month"][5:7])
+        got = evaluator.cell("ПРОДАЖИ", f"{column(index)}{line}")
+        expected = 1 + core.n(core.DEFAULT_INPUTS, "seasonal_reduction_pct") / 100 \
+            if month in core._M2_SEASONAL_LOW_MONTHS else 1.0
+        assert got == pytest.approx(expected), f"сезонность в {item['month']}"
+
+
+def test_the_fields_the_engine_never_reads_are_marked(book):
+    """Помеченные поля обязаны быть ровно теми, что до расчёта не доходят.
+
+    Этап роста цены и инфляция после РВЭ живут на странице и уезжают в шаблон
+    ПЛАТО, а движок их не читает. Без пометки аналитик правит их в книге, ничего
+    не происходит, и виноватой выглядит книга.
+    """
+    workbook, _, _, meta = book
+    sheet = workbook["Вводные"]
+
+    inputs = dict(core.DEFAULT_INPUTS)
+    inputs.update({"offices_enabled": True, "retail_enabled": True,
+                   "above_parking_enabled": True, "purchase_price_mln": 700})
+
+    def outcome(data):
+        result = core.calculate(core.CalcRequest(
+            inputs=dict(data), tep=dict(core.TEP_DEFAULT), rates=[]))
+        summary = result["summary"]
+        return tuple(round(summary[k], 4) for k in
+                     ("revenue", "capex", "financing_cost", "profit_tax", "llcr"))
+
+    reference = outcome(inputs)
+    for key in core._M2_TEMPLATE_ONLY_INPUTS:
+        trial = dict(inputs)
+        trial[key] = core.n(inputs, key, 0.0) * 1.5 + 7
+        assert outcome(trial) == reference, (
+            f"«{key}» помечена как неучаствующая, но расчёт от неё меняется"
+        )
+        line = meta["layout"]["inputs"][key]
+        note = str(sheet.cell(row=line, column=3).value or "")
+        assert "не участвует" in note, f"«{key}» не помечена на «Вводных»"
+
+
+# Сценарии, на которых книга обязана сходиться с движком: одних умолчаний мало —
+# объекты КРТ, рассрочка ВРИ и денежная компенсация идут по своим ветвям.
+SCENARIOS = {
+    "умолчания": {},
+    "объекты КРТ и цена входа": {
+        "offices_enabled": True, "retail_enabled": True,
+        "above_parking_enabled": True, "purchase_price_mln": 700,
+    },
+    "рассрочка ВРИ": {
+        "vri_payment_mode": "installment", "vri_installment_years": 6,
+        "purchase_price_mln": 300,
+    },
+    "денежная компенсация соцобъектов": {
+        "social_mode": "Денежная компенсация", "social_compensation_mln": 580.7,
+    },
+}
+
+
+@pytest.mark.parametrize("name", list(SCENARIOS))
+def test_the_report_holds_on_other_scenarios(name):
+    """Сходимость на умолчаниях ничего не значит, если ветка одна."""
+    inputs = dict(core.DEFAULT_INPUTS)
+    inputs.update(SCENARIOS[name])
+    data, _ = core.build_plato_model_v2(inputs, dict(core.TEP_DEFAULT), [], project_name=name)
+    workbook = openpyxl.load_workbook(io.BytesIO(data))
+    evaluator = Evaluator(workbook)
+    sheet = workbook["ОТЧЁТ"]
+
+    for row in range(4, 4 + len(core._M2_REPORT_KEYS)):
+        expected = float(sheet.cell(row=row, column=3).value)
+        got = evaluator.cell("ОТЧЁТ", f"B{row}")
+        assert close(got, expected), (
+            f"{name}: {sheet.cell(row=row, column=1).value} — книга {got}, движок {expected}"
+        )
+
+
+def test_the_reserve_is_not_charged_on_the_purchase_price(name="цена входа"):
+    """Цена входа в базу резерва не входит: движок берёт процент не от неё.
+
+    Семьсот миллионов покупки давали тридцать пять миллионов резерва из ниоткуда,
+    и вслед за ними разъезжались CAPEX, прибыль и LLCR.
+    """
+    inputs = dict(core.DEFAULT_INPUTS)
+    inputs["purchase_price_mln"] = 700
+    data, meta = core.build_plato_model_v2(inputs, dict(core.TEP_DEFAULT), [], project_name=name)
+    workbook = openpyxl.load_workbook(io.BytesIO(data))
+    evaluator = Evaluator(workbook)
+
+    row = 4 + core._M2_REPORT_KEYS.index("capex")
+    expected = float(workbook["ОТЧЁТ"].cell(row=row, column=3).value)
+    assert close(evaluator.cell("ОТЧЁТ", f"B{row}"), expected)
 
 
 # --- вспомогательное -------------------------------------------------------

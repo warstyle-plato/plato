@@ -41,7 +41,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.13.28"
+VERSION = "0.13.29"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -8588,47 +8588,105 @@ _M2_SHEETS = {
     "report": "ОТЧЁТ",
 }
 
-# Продукт -> колонка базы в «ТЭП», вводная со стартовой ценой, множитель до
-# млн ₽ за единицу и подпись единицы. Объём берётся из ТЭП, цена — с «Вводных»:
-# поднял цену квартир — выручка выросла, и дальше поехали эскроу, покрытие,
-# ставка ПФ, налог и LLCR.
-_M2_PRODUCTS: dict[str, tuple[int, str, float, str]] = {
-    "apartments": (5, "apartment_price_th", 0.001, "м²"),
-    "ground_commercial": (5, "commercial_price_th", 0.001, "м²"),
-    "storage": (5, "storage_price_th", 0.001, "м²"),
-    "underground_parking": (7, "parking_price_th", 0.001, "м/м"),
-    "offices": (5, "offices_price_th_per_sqm", 0.001, "м²"),
-    "standalone_retail": (5, "retail_price_th_per_sqm", 0.001, "м²"),
-    "above_parking": (7, "above_parking_price_mln_per_space", 1.0, "м/м"),
+# Продукт -> как книга его считает. Колонка базы: 5 — продаваемая площадь,
+# 7 — единицы; у отдельных объектов КРТ база берётся не с «ТЭП», а прямо из
+# вводных — движок считает их по своим полям. Сезонность и смещение темпа
+# действуют только на основные продукты: к объектам КРТ движок их не применяет.
+_M2_PRODUCTS: dict[str, dict[str, Any]] = {
+    "apartments": {
+        "base_column": 5, "price": "apartment_price_th", "scale": 0.001, "unit": "м²",
+        "share": "share_before_rve_pct", "residual": "residual_sales_months",
+        "growth_pre": "monthly_growth_pre_pct", "growth_post": "monthly_growth_post_pct",
+        "core": True,
+    },
+    "ground_commercial": {
+        "base_column": 5, "price": "commercial_price_th", "scale": 0.001, "unit": "м²",
+        "share": "share_before_rve_pct", "residual": "residual_sales_months",
+        "growth_pre": "monthly_growth_pre_pct", "growth_post": "monthly_growth_post_pct",
+        "core": True,
+    },
+    "underground_parking": {
+        "base_column": 7, "price": "parking_price_th", "scale": 0.001, "unit": "м/м",
+        "share": "share_before_rve_pct", "residual": "residual_sales_months",
+        "growth_pre": "monthly_growth_pre_pct", "growth_post": "monthly_growth_post_pct",
+        "core": True,
+    },
+    "storage": {
+        "base_column": 7, "price": "storage_price_th", "scale": 0.001, "unit": "шт.",
+        "share": "share_before_rve_pct", "residual": "residual_sales_months",
+        "growth_pre": "monthly_growth_pre_pct", "growth_post": "monthly_growth_post_pct",
+        "core": True,
+    },
+    "offices": {
+        "base_input": "offices_saleable_sqm", "price": "offices_price_th_per_sqm",
+        "scale": 0.001, "unit": "м²", "share": "offices_share_before_rve_pct",
+        "residual": "offices_residual_months", "growth_pre": "offices_growth_pre_pct",
+        "growth_post": "offices_growth_post_pct", "core": False,
+        "sales_start": "offices_sales_start", "build_start": "offices_start",
+        "build_months": "offices_months",
+    },
+    "standalone_retail": {
+        "base_input": "retail_saleable_sqm", "price": "retail_price_th_per_sqm",
+        "scale": 0.001, "unit": "м²", "share": "retail_share_before_rve_pct",
+        "residual": "retail_residual_months", "growth_pre": "retail_growth_pre_pct",
+        "growth_post": "retail_growth_post_pct", "core": False,
+        "sales_start": "retail_sales_start", "build_start": "retail_start",
+        "build_months": "retail_months",
+    },
+    "above_parking": {
+        "base_input": "above_parking_spaces", "price": "above_parking_price_mln_per_space",
+        "scale": 1.0, "unit": "м/м", "share": "above_parking_share_before_rve_pct",
+        "residual": "above_parking_residual_months", "growth_pre": "above_parking_growth_pre_pct",
+        "growth_post": "above_parking_growth_post_pct", "core": False,
+        "sales_start": "above_parking_sales_start", "build_start": "above_parking_start",
+        "build_months": "above_parking_months",
+    },
 }
 
-# Статьи затрат в порядке листа. Плата за ВРИ и соцнагрузка идут по собственным
-# графикам — рассрочка на своём листе и объекты со своими сроками, — поэтому
-# они остаются рядом значений; всё остальное книга считает ставкой на базу.
-_M2_COST_ARTICLES: list[tuple[str, str]] = [
-    ("purchase", "Приобретение / вход"),
-    ("land_rights", "Земельные правоотношения / смена ВРИ"),
-    ("ird", "ИРД и согласования"),
-    ("design_p", "Проектирование, стадия П"),
-    ("design_rd", "Проектирование, стадия РД"),
-    ("preparation", "Подготовительные работы"),
-    ("main_above", "Основное строительство, наземная часть"),
-    ("main_under", "Основное строительство, подземная часть"),
-    ("utilities", "Наружные инженерные сети"),
-    ("site_maintenance", "Содержание стройплощадки"),
-    ("author_supervision", "Авторский надзор"),
-    ("technical_supervision", "Технический заказчик / стройконтроль"),
-    ("project_management", "Управление проектом"),
-    ("landscaping", "Благоустройство"),
-    ("commissioning", "Сдача и ввод"),
-    ("social", "Социальная нагрузка"),
-    ("offices", "МФОЦ / офисы"),
-    ("standalone_retail", "ТЦ / коммерция ОСЗ"),
-    ("above_parking", "Наземный паркинг"),
-    ("vri_interest", "Проценты по рассрочке ВРИ"),
-    ("vri_security", "Обеспечение по рассрочке ВРИ"),
-    ("gc_fee", "Вознаграждение генподрядчика"),
-    ("reserve", "Резерв"),
+# Месяцы пониженного спроса — те же, что в шаблоне ПЛАТО (лист ПОДБОР_КВ.М).
+_M2_SEASONAL_LOW_MONTHS = (1, 5, 6, 7, 8)
+
+# Поля страницы, до расчёта не доходящие: движок их не читает, они уезжают
+# только в шаблон ПЛАТО. В книге они помечены — иначе аналитик правит этап
+# роста цены, ничего не происходит, и виноватой оказывается книга.
+_M2_TEMPLATE_ONLY_INPUTS = frozenset({
+    "inflation_after_rve_pct", "growth_stage1_pct", "growth_stage2_pct",
+    "growth_stage3_pct", "growth_stage4_pct", "vat_pct",
+})
+
+# Из базы резерва движок исключает цену входа и стоимость рассрочки ВРИ:
+# процент берётся от набора статей, в который они не входят.
+_M2_RESERVE_EXCLUDED = frozenset({"reserve", "purchase", "vri_interest", "vri_security"})
+
+# Статьи затрат в порядке листа. Третий признак — считает ли книга статью сама.
+# Плата за ВРИ и соцнагрузка идут по собственным графикам (рассрочка на своём
+# листе, объекты со своими сроками ввода) и приходят рядом значений; считаемые
+# статьи стоят на листе всегда, даже с нулевой суммой, — иначе нулевая цена
+# входа лишает книгу строки и вписать покупку становится некуда.
+_M2_COST_ARTICLES: list[tuple[str, str, bool]] = [
+    ("purchase", "Приобретение / вход", True),
+    ("land_rights", "Земельные правоотношения / смена ВРИ", False),
+    ("ird", "ИРД и согласования", True),
+    ("design_p", "Проектирование, стадия П", True),
+    ("design_rd", "Проектирование, стадия РД", True),
+    ("preparation", "Подготовительные работы", True),
+    ("main_above", "Основное строительство, наземная часть", True),
+    ("main_under", "Основное строительство, подземная часть", True),
+    ("utilities", "Наружные инженерные сети", True),
+    ("site_maintenance", "Содержание стройплощадки", True),
+    ("author_supervision", "Авторский надзор", True),
+    ("technical_supervision", "Технический заказчик / стройконтроль", True),
+    ("project_management", "Управление проектом", True),
+    ("landscaping", "Благоустройство", True),
+    ("commissioning", "Сдача и ввод", True),
+    ("social", "Социальная нагрузка", False),
+    ("offices", "МФОЦ / офисы", False),
+    ("standalone_retail", "ТЦ / коммерция ОСЗ", False),
+    ("above_parking", "Наземный паркинг", False),
+    ("vri_interest", "Проценты по рассрочке ВРИ", False),
+    ("vri_security", "Обеспечение по рассрочке ВРИ", False),
+    ("gc_fee", "Вознаграждение генподрядчика", True),
+    ("reserve", "Резерв", True),
 ]
 
 # Показатели листа «ОТЧЁТ» — порядок строк, на него ссылается тест.
@@ -8842,7 +8900,13 @@ def build_plato_model_v2(
                 cell.number_format = "0"
             else:
                 cell.value = "" if raw is None else str(raw)
-            ws_in.cell(row=row, column=3, value=unit)
+            if key in _M2_TEMPLATE_ONLY_INPUTS:
+                ws_in.cell(row=row, column=1).font = styles["driver"]
+                cell.font = styles["driver"]
+                ws_in.cell(row=row, column=3,
+                           value=f"{unit} · в расчёте не участвует, уходит в шаблон ПЛАТО")
+            else:
+                ws_in.cell(row=row, column=3, value=unit)
             key_row[key] = row
             row += 1
         row += 1
@@ -8973,55 +9037,143 @@ def build_plato_model_v2(
         ws_dates.column_dimensions[column].width = 14
 
     # --- ПРОДАЖИ -----------------------------------------------------------
-    # Выручка не приходит числом: объём — это площадь из ТЭП, разложенная по
-    # графику продаж, цена — стартовая цена с «Вводных», умноженная на индекс.
-    # Поднял цену квартир — выручка выросла, и дальше поехали эскроу, покрытие,
-    # ставка ПФ, налог и LLCR.
+    # Здесь не осталось выгруженных чисел. Объём — база из ТЭП, разложенная по
+    # весам месяцев; веса складываются из сезонности и смещения темпа к поздним
+    # месяцам и нормируются отдельно до и после РВЭ, поэтому доля продаж до РВЭ
+    # остаётся ровно заданной. Цена растёт своим темпом до РВЭ и своим после.
+    # Ровно так же это считает движок — `sales_weights` и `sales_schedule`.
     sales = _MonthGrid(sheets["sales"], months, styles, title="ПРОДАЖИ")
-    quantity_rows = monthly.get("quantity") or []
-    revenue_rows = {item["key"]: item for item in (monthly.get("revenue") or [])}
-    products = []
-    for item in quantity_rows:
-        key = str(item["key"])
-        spec = _M2_PRODUCTS.get(key)
-        if spec is None or key not in tep_row_of:
+    labels = {str(item["key"]): item for item in (monthly.get("quantity") or [])}
+    products: list[tuple[str, dict[str, Any]]] = []
+    for key, spec in _M2_PRODUCTS.items():
+        # Основные продукты стоят всегда: нулевая площадь на «ТЭП» сама даёт
+        # нулевые продажи. Объекты КРТ появляются, только когда включены, —
+        # иначе книга посчитала бы их по вводным, а движок держит нули.
+        if not spec["core"] and key not in labels:
             continue
-        products.append((key, item, spec))
+        item = labels.get(key) or {
+            "key": key, "label": (TEP_DEFAULT.get(key) or {}).get("label") or key}
+        products.append((key, item))
 
-    layout: list[str | tuple[str, str]] = []
-    for key, item, _ in products:
-        layout += [("section", item.get("label") or key), f"pace_{key}",
-                   f"quantity_{key}", f"index_{key}", f"price_{key}", f"revenue_{key}"]
-    layout += [("section", "Итого"), "quantity_total", "revenue", "revenue_cum"]
-    sales.layout(*layout)
+    sales_layout: list[str | tuple[str, str]] = []
+    for key, item in products:
+        sales_layout += [
+            ("section", item.get("label") or key),
+            f"season_{key}", f"index_{key}", f"post_index_{key}",
+            f"wpre_{key}", f"wpost_{key}", f"weight_{key}",
+            f"quantity_{key}", f"price_{key}", f"revenue_{key}",
+        ]
+    sales_layout += [("section", "Итого"), "quantity_total", "revenue", "revenue_cum"]
+    sales.layout(*sales_layout)
 
-    for key, item, spec in products:
-        base_column, price_key, price_scale, unit_name = spec
-        quantity = [float(v or 0.0) for v in (item.get("values") or [])]
-        total_quantity = sum(quantity)
-        money_row = revenue_rows.get(key) or {}
-        proceeds = [float(v or 0.0) for v in (money_row.get("values") or [])]
-        base_price = n(inputs, price_key, 0.0) * price_scale  # млн ₽ за единицу
-        sales.values(f"pace_{key}", f"График продаж, доля периода ({unit_name})",
-                     [(v / total_quantity if total_quantity else 0.0) for v in quantity], percent)
-        sales.formula(f"quantity_{key}", f"Объём продаж, {unit_name}",
-                      lambda i, key=key, base_column=base_column: (
-                          f"={tep_cell(key, base_column)}*{sales.at(f'pace_{key}', i)}"), area)
-        sales.values(
-            f"index_{key}", "Индекс цены к стартовой",
-            [((proceeds[i] / 1e6 / quantity[i] / base_price)
-              if i < len(proceeds) and quantity[i] and base_price else 0.0)
-             for i in range(len(quantity))], ratio)
-        sales.formula(f"price_{key}", f"Цена, млн ₽ за {unit_name}",
-                      lambda i, key=key, price_key=price_key, price_scale=price_scale: (
-                          f"={ref(price_key)}*{price_scale}*{sales.at(f'index_{key}', i)}"), ratio)
-        sales.formula(f"revenue_{key}", "Выручка, млн ₽",
-                      lambda i, key=key: (
-                          f"={sales.at(f'quantity_{key}', i)}*{sales.at(f'price_{key}', i)}"),
-                      money, bold=True)
+    # Параметры продаж — отдельным блоком под сеткой: объём, стартовая цена,
+    # окно продаж, доля до РВЭ, темпы роста, сезонность и смещение темпа.
+    param_line = sales._next + 2
+    sheets["sales"].cell(row=param_line, column=1, value="ПАРАМЕТРЫ ПРОДАЖ").font = styles["section"]
+    param_line += 1
+    for column, label in enumerate((
+            "Продукт", "Ед.", "Объём", "Стартовая цена, млн ₽/ед.", "Старт продаж",
+            "Окончание (РВЭ продукта)", "Месяцев до РВЭ", "Остаточных месяцев",
+            "Доля до РВЭ", "Рост цены до РВЭ", "Рост цены после РВЭ",
+            "Сезонное снижение", "Смещение темпа"), start=1):
+        sheets["sales"].cell(row=param_line, column=column, value=label).font = styles["bold"]
+    param_row = {key: param_line + 1 + offset for offset, (key, _) in enumerate(products)}
 
-    quantity_keys = [f"quantity_{key}" for key, _, _ in products]
-    revenue_keys = [f"revenue_{key}" for key, _, _ in products]
+    for key, item in products:
+        spec = _M2_PRODUCTS[key]
+        line = param_row[key]
+        base = (tep_cell(key, spec["base_column"]) if spec.get("base_column")
+                else ref(spec["base_input"]))
+        if spec["core"]:
+            start = f"=EDATE({ref('permit')},{ref('sales_lag_months')})"
+            finish = f"={ref('rve')}"
+            seasonal = f"={ref('seasonal_reduction_pct')}"
+            pace = f"={ref('pace_adjustment_pct')}"
+        else:
+            start = f"={ref(spec['sales_start'])}"
+            finish = f"=EDATE({ref(spec['build_start'])},{ref(spec['build_months'])})"
+            seasonal, pace = "=0", "=0"
+        for column, value, fmt in (
+            (1, item.get("label") or key, None),
+            (2, spec["unit"], None),
+            (3, f"={base}", area),
+            (4, f"={ref(spec['price'])}*{spec['scale']}", ratio),
+            (5, start, month_fmt),
+            (6, finish, month_fmt),
+            (7, f"=MAX(1,(YEAR(F{line})-YEAR(E{line}))*12+MONTH(F{line})-MONTH(E{line}))", "0"),
+            (8, f"={ref(spec['residual'])}", "0"),
+            (9, f"={ref(spec['share'])}", percent),
+            (10, f"={ref(spec['growth_pre'])}", percent),
+            (11, f"={ref(spec['growth_post'])}", percent),
+            (12, seasonal, percent),
+            (13, pace, percent),
+        ):
+            cell = sheets["sales"].cell(row=line, column=column, value=value)
+            if fmt:
+                cell.number_format = fmt
+
+    def par(key: str, column: str) -> str:
+        return f"${column}${param_row[key]}"
+
+    low_season = ",".join(f"MONTH({{month}})={value}" for value in _M2_SEASONAL_LOW_MONTHS)
+
+    for key, item in products:
+        sales.formula(
+            f"season_{key}", "Сезонный коэффициент",
+            lambda i, key=key: (
+                f"=IF(OR({low_season.format(month=sales.month(i))}),1+{par(key, 'L')},1)"), ratio)
+        sales.formula(
+            f"index_{key}", "№ месяца от старта продаж",
+            lambda i, key=key: (
+                f"=(YEAR({sales.month(i)})-YEAR({par(key, 'E')}))*12"
+                f"+MONTH({sales.month(i)})-MONTH({par(key, 'E')})"), "0")
+        sales.formula(
+            f"post_index_{key}", "№ месяца от РВЭ",
+            lambda i, key=key: (
+                f"=(YEAR({sales.month(i)})-YEAR({par(key, 'F')}))*12"
+                f"+MONTH({sales.month(i)})-MONTH({par(key, 'F')})"), "0")
+        # Смещение темпа нарастает линейно от старта продаж и действует только
+        # до РВЭ; сезонность — на всём сроке продаж.
+        sales.formula(
+            f"wpre_{key}", "Вес месяца до РВЭ",
+            lambda i, key=key: (
+                f"=IF(AND({sales.month(i)}>={par(key, 'E')},{sales.month(i)}<{par(key, 'F')}),"
+                f"{sales.at(f'season_{key}', i)}"
+                f"*(1+{par(key, 'M')}*MIN(1,{sales.at(f'index_{key}', i)}/{par(key, 'G')})),0)"),
+            ratio)
+        sales.formula(
+            f"wpost_{key}", "Вес месяца после РВЭ",
+            lambda i, key=key: (
+                f"=IF(AND({sales.month(i)}>={par(key, 'F')},"
+                f"{sales.at(f'post_index_{key}', i)}<{par(key, 'H')}),"
+                f"{sales.at(f'season_{key}', i)},0)"), ratio)
+        # Веса нормируются отдельно до и после РВЭ — иначе заданная доля продаж
+        # до РВЭ поплывёт вслед за сезонностью.
+        sales.formula(
+            f"weight_{key}", "Доля периода в объёме",
+            lambda i, key=key: (
+                f"=IFERROR({par(key, 'I')}*{sales.at(f'wpre_{key}', i)}"
+                f"/SUM({sales.span(f'wpre_{key}')}),0)"
+                f"+IFERROR((1-{par(key, 'I')})*{sales.at(f'wpost_{key}', i)}"
+                f"/SUM({sales.span(f'wpost_{key}')}),0)"), percent)
+        sales.formula(
+            f"quantity_{key}", f"Объём продаж, {_M2_PRODUCTS[key]['unit']}",
+            lambda i, key=key: f"={par(key, 'C')}*{sales.at(f'weight_{key}', i)}", area)
+        sales.formula(
+            f"price_{key}", "Цена, млн ₽ за единицу",
+            lambda i, key=key: (
+                f"=IF({sales.month(i)}<{par(key, 'F')},"
+                f"{par(key, 'D')}*(1+{par(key, 'J')})^{sales.at(f'index_{key}', i)},"
+                f"{par(key, 'D')}*(1+{par(key, 'J')})^{par(key, 'G')}"
+                f"*(1+{par(key, 'K')})^{sales.at(f'post_index_{key}', i)})"), ratio)
+        sales.formula(
+            f"revenue_{key}", "Выручка, млн ₽",
+            lambda i, key=key: (
+                f"={sales.at(f'quantity_{key}', i)}*{sales.at(f'price_{key}', i)}"),
+            money, bold=True)
+
+    quantity_keys = [f"quantity_{key}" for key, _ in products]
+    revenue_keys = [f"revenue_{key}" for key, _ in products]
     sales.formula("quantity_total", "Объём продаж, всего",
                   lambda i: "=" + ("+".join(sales.at(k, i) for k in quantity_keys) or "0"), area)
     sales.formula("revenue", "Выручка, всего",
@@ -9030,27 +9182,23 @@ def build_plato_model_v2(
     sales.formula("revenue_cum", "Выручка нарастающим",
                   lambda i: f"={sales.before('revenue_cum', i)}+{sales.at('revenue', i)}", money)
 
-    line = sales._next + 2
-    sheets["sales"].cell(row=line, column=1, value="СВОДКА ПО ПРОДУКТАМ").font = styles["section"]
+    line = param_line + len(products) + 2
+    sheets["sales"].cell(row=line, column=1, value="ИТОГИ ПО ПРОДУКТАМ").font = styles["section"]
     line += 1
     for column, label in enumerate(
-            ("Продукт", "Ед.", "Объём", "Выручка, млн ₽", "Средняя цена, млн ₽/ед."), start=1):
+            ("Продукт", "Объём", "Выручка, млн ₽", "Средняя цена, млн ₽/ед."), start=1):
         sheets["sales"].cell(row=line, column=column, value=label).font = styles["bold"]
-    last_column = sales.letter(len(months) - 1)
-    for offset, (key, item, spec) in enumerate(products):
+    for offset, (key, item) in enumerate(products):
         current = line + 1 + offset
         sheets["sales"].cell(row=current, column=1, value=item.get("label") or key)
-        sheets["sales"].cell(row=current, column=2, value=spec[3])
-        sheets["sales"].cell(
-            row=current, column=3,
-            value=f"=SUM(B{sales.rows[f'quantity_{key}']}:{last_column}{sales.rows[f'quantity_{key}']})",
-        ).number_format = area
-        sheets["sales"].cell(
-            row=current, column=4,
-            value=f"=SUM(B{sales.rows[f'revenue_{key}']}:{last_column}{sales.rows[f'revenue_{key}']})",
-        ).number_format = money
-        sheets["sales"].cell(row=current, column=5,
-                             value=f"=IFERROR(D{current}/C{current},0)").number_format = ratio
+        sheets["sales"].cell(row=current, column=2,
+                             value=f"=SUM({sales.span(f'quantity_{key}')})").number_format = area
+        sheets["sales"].cell(row=current, column=3,
+                             value=f"=SUM({sales.span(f'revenue_{key}')})").number_format = money
+        sheets["sales"].cell(row=current, column=4,
+                             value=f"=IFERROR(C{current}/B{current},0)").number_format = ratio
+    for column in range(2, 14):
+        sheets["sales"].column_dimensions[get_column_letter(column)].width = 15
 
     # --- СЕБЕСТОИМОСТЬ -----------------------------------------------------
     # Статья считается как ставка × база, а по месяцам раскладывается ровно по
@@ -9058,7 +9206,9 @@ def build_plato_model_v2(
     # «Вводных», базу — на «ТЭП», окно — в блоке калькуляции под сеткой.
     costs = _MonthGrid(sheets["costs"], months, styles, title="СЕБЕСТОИМОСТЬ · млн ₽")
     cost_rows = {item["key"]: item for item in (monthly.get("costs") or [])}
-    articles = [(key, label) for key, label in _M2_COST_ARTICLES if key in cost_rows]
+    articles = [(key, label) for key, label, computed in _M2_COST_ARTICLES
+                if computed or key in cost_rows]
+    computed_keys = {key for key, _, computed in _M2_COST_ARTICLES if computed}
     cost_keys = [f"cost_{key}" for key, _ in articles]
     costs.layout("index", ("section", "Инвестиционные затраты"), *cost_keys, "capex",
                  ("section", "Операционные затраты"), "operating", "total", "total_cum",
@@ -9142,8 +9292,12 @@ def build_plato_model_v2(
         line = calc_row[key]
         sheets["costs"].cell(row=line, column=1, value=label)
         if key == "reserve":
-            # Резерв — процент от всех прочих статей, поэтому считается последним.
-            others = "+".join(amount(other) for other, _ in articles if other != "reserve")
+            # Резерв — процент от прочих статей и потому считается последним.
+            # Цена входа и стоимость рассрочки ВРИ в его базу не входят: в
+            # движке их нет в наборе, от которого берётся процент, и лишние
+            # 700 млн ₽ покупки дали бы 35 млн ₽ резерва из ниоткуда.
+            others = "+".join(amount(other) for other, _ in articles
+                              if other not in _M2_RESERVE_EXCLUDED)
             formula = f"=({others})*{ref('reserve_pct')}"
             start, length = f"={ref('permit')}", f"={build_months}"
         elif key in plan:
@@ -9164,7 +9318,7 @@ def build_plato_model_v2(
 
     for key, label in articles:
         row_key = f"cost_{key}"
-        if key in plan or key == "reserve":
+        if key in computed_keys:
             line = calc_row[key]
             costs.formula(row_key, label,
                           lambda i, line=line: (
