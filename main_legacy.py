@@ -41,7 +41,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.13.33"
+VERSION = "0.13.34"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -17295,6 +17295,11 @@ details.cadastral-box>summary::marker{color:#888}
           </div>
         </div>
         <div id="siteDensityWarn" class="note warning" style="display:none"></div>
+        <div class="toolbar" style="margin-top:10px">
+          <button class="btn" onclick="applyDensityToTep()">Рассчитать ТЭП от площади и плотности</button>
+          <span style="color:#777;font-size:12px">Работает в любом регионе: площадь и плотность можно ввести вручную. Квартиры и коммерция 1 этажа пересчитываются по методике DevelopAid (94% / 6% СПП); паркинг, кладовые и соцобъекты не трогаются.</span>
+        </div>
+        <div id="siteApplyStatus" class="import-status" style="display:none"></div>
       </div>
       <div class="card">
         <div class="toolbar"><button class="btn" onclick="syncTep()">Обновить производные ТЭП из вводных</button><span style="color:#777;font-size:12px">В интерфейсе показывается 1 знак после запятой. При загруженном ГлавАПУ подземный паркинг является производным: постоянные + гостевые × 35 м².</span></div>
@@ -19251,6 +19256,33 @@ function siteDensitySourceLabel(){
  if(Number(inputs.site_density_sqm_per_ha||0)>0&&inputs._mo_calc)return 'из калькулятора Подмосковья';
  if(glavapuDensitySqmHa()>0)return 'из калькулятора ГлавАПУ (Москва)';
  return 'по умолчанию 30 000 м²/га';
+}
+function applyDensityToTep(){
+ // Та же методика, что в ручном ТЭП бота и калькуляторе Подмосковья:
+ // СПП = площадь × плотность; квартиры — 94% СПП, коммерция 1 этажа — 6%;
+ // продаваемая квартир — 65% ГНС, коммерции — 90%; общая площадь — 90% ГНС.
+ const status=document.getElementById('siteApplyStatus');
+ const area=Number(inputs.site_area_ha||0);
+ if(!(area>0)){
+  status.style.display='';
+  status.innerHTML='<span class="import-error">Сначала укажите площадь участка — вручную или из калькулятора/кадастра.</span>';
+  return;
+ }
+ const density=effectiveSiteDensity();
+ const spp=area*density;
+ tep.apartments.gns=spp*0.94;
+ tep.apartments.total_area=tep.apartments.gns*0.9;
+ tep.apartments.saleable=tep.apartments.gns*0.65;
+ tep.apartments.useful=tep.apartments.saleable;
+ tep.ground_commercial.gns=spp*0.06;
+ tep.ground_commercial.total_area=tep.ground_commercial.gns*0.9;
+ tep.ground_commercial.saleable=tep.ground_commercial.gns*0.9;
+ tep.ground_commercial.useful=tep.ground_commercial.saleable;
+ renderTep();
+ status.style.display='';
+ status.innerHTML='<span class="import-ok">ТЭП пересчитан: СПП '+num(spp)+' м² при плотности '+num(density)+
+  ' м²/га. Квартиры '+num(tep.apartments.gns)+' м² ГНС, коммерция '+num(tep.ground_commercial.gns)+' м² ГНС.</span>';
+ calculate();
 }
 function setSiteArea(value){
  inputs.site_area_ha=Number(value)||0;

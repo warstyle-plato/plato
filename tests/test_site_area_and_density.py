@@ -173,3 +173,69 @@ def test_glavapu_import_feeds_the_density(monkeypatch):
         core.PAGE,
     )
     assert snippet, "ГлавАПУ-импорт не трогает плотность"
+
+
+# --- расчёт ТЭП от плотности ------------------------------------------------
+
+def run_apply(inputs: dict, tep: dict) -> dict:
+    """Настоящая applyDensityToTep из PAGE — с заглушками окружения."""
+    if not NODE:
+        pytest.skip("node недоступен")
+    match = re.search(r"(function applyDensityToTep\(\).*?)\nfunction setSiteArea",
+                      core.PAGE, re.S)
+    assert match, "applyDensityToTep не найдена на странице"
+    script = (
+        f"const inputs={json.dumps(inputs)};\n"
+        f"const tep={json.dumps(tep)};\n"
+        "const cadastralAnalysis=null;\n"
+        "const shown=[];\n"
+        "const document={getElementById:()=>({style:{},set innerHTML(v){shown.push(v)}})};\n"
+        "const num=v=>String(Math.round(v));\n"
+        "function renderTep(){}\n"
+        "function calculate(){}\n"
+        + re.search(r"(function glavapuDensitySqmHa\(\).*?)\nfunction siteAreaSourceLabel",
+                    core.PAGE, re.S).group(1) + "\n"
+        + match.group(1) + "\n"
+        "applyDensityToTep();\n"
+        "console.log(JSON.stringify({tep, shown}));\n"
+    )
+    done = subprocess.run([NODE, "-e", script], capture_output=True, text=True, timeout=30)
+    assert done.returncode == 0, done.stderr
+    return json.loads(done.stdout)
+
+
+def blank_tep() -> dict:
+    return {
+        "apartments": {"gns": 0, "total_area": 0, "useful": 0, "saleable": 0},
+        "ground_commercial": {"gns": 0, "total_area": 0, "useful": 0, "saleable": 0},
+    }
+
+
+def test_the_tep_is_built_from_area_and_density_in_any_region():
+    """Никакого импорта и никакого региона — площадь и плотность руками."""
+    got = run_apply({"site_area_ha": 2.0, "site_density_sqm_per_ha": 25000,
+                     "_site_density_user_set": True}, blank_tep())
+
+    spp = 2.0 * 25000
+    apartments = got["tep"]["apartments"]
+    commercial = got["tep"]["ground_commercial"]
+    assert apartments["gns"] == pytest.approx(spp * 0.94)
+    assert apartments["saleable"] == pytest.approx(spp * 0.94 * 0.65)
+    assert commercial["gns"] == pytest.approx(spp * 0.06)
+    assert commercial["saleable"] == pytest.approx(spp * 0.06 * 0.9)
+
+
+def test_the_default_density_feeds_the_calculation_too():
+    """Площадь из кадастра без плотности — считается по умолчанию 30 000."""
+    got = run_apply({"site_area_ha": 1.0}, blank_tep())
+
+    assert got["tep"]["apartments"]["gns"] == pytest.approx(30000 * 0.94)
+
+
+def test_without_an_area_nothing_is_overwritten():
+    tep = blank_tep()
+    tep["apartments"]["gns"] = 5000
+    got = run_apply({}, tep)
+
+    assert got["tep"]["apartments"]["gns"] == 5000, "ТЭП затёрт без площади"
+    assert any("площадь участка" in str(item) for item in got["shown"])
