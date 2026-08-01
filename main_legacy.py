@@ -41,7 +41,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.13.24"
+VERSION = "0.13.25"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -7764,6 +7764,35 @@ def _plato_land_parcel(inputs: dict[str, Any]) -> dict[str, Any]:
     return parcels[0] if parcels else {}
 
 
+def _plato_drop_external_links(data: bytes) -> bytes:
+    """Убрать из книги ссылку на отсутствующий внешний файл.
+
+    В шаблоне живёт ссылка на лист «ОПТИМУМ» с пометкой xlPathMissing: файла,
+    на который она указывает, нет. Excel при открытии спрашивает про обновление
+    связей, а часть программ такую книгу просто не грузит. Расчёт от неё не
+    зависит — ни одна формула наружу не смотрит, — поэтому связь удаляется
+    целиком: сама часть, ссылка из книги, отношение и запись типа.
+    """
+    source = zipfile.ZipFile(io.BytesIO(data))
+    if not any("externalLink" in name for name in source.namelist()):
+        return data
+    buffer = io.BytesIO()
+    result = zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED)
+    for item in source.infolist():
+        if "externalLink" in item.filename:
+            continue
+        payload = source.read(item.filename)
+        if item.filename == "xl/workbook.xml":
+            payload = re.sub(rb"<externalReferences>.*?</externalReferences>", b"", payload, flags=re.S)
+        elif item.filename == "xl/_rels/workbook.xml.rels":
+            payload = re.sub(rb"<Relationship[^>]*externalLink[^>]*/>", b"", payload)
+        elif item.filename == "[Content_Types].xml":
+            payload = re.sub(rb"<Override[^>]*externalLink[^>]*/>", b"", payload)
+        result.writestr(item, payload)
+    result.close()
+    return buffer.getvalue()
+
+
 def _plato_merge_management_and_smr(
     sheet: Any, rows_by_label: dict[str, list[int]],
     inputs: dict[str, Any], tep: dict[str, dict[str, Any]],
@@ -8384,7 +8413,7 @@ def fill_plato_template(
     workbook.calculation.fullCalcOnLoad = True
     buffer = io.BytesIO()
     workbook.save(buffer)
-    return buffer.getvalue(), {
+    return _plato_drop_external_links(buffer.getvalue()), {
         "filled": filled,
         "filled_count": len(filled),
         "missing": missing,
@@ -8498,7 +8527,7 @@ def fill_plato_consolidator(
     workbook.calculation.fullCalcOnLoad = True
     buffer = io.BytesIO()
     workbook.save(buffer)
-    return buffer.getvalue(), {
+    return _plato_drop_external_links(buffer.getvalue()), {
         "template": path.name,
         "phases": [file_name for _, file_name in phase_files[:used]],
         "notes": notes,
