@@ -22,6 +22,7 @@ import re
 import ssl
 import zipfile
 import xml.etree.ElementTree as ET
+from xml.sax.saxutils import escape as xml_escape
 import socket
 import urllib.parse
 import urllib.error
@@ -41,7 +42,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.13.37"
+VERSION = "0.14.0"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -7573,6 +7574,370 @@ def report_model(req: ModelExportRequest) -> Response:
 
 
 # ---------------------------------------------------------------------------
+# Единая книга проекта: templates/DevelopAid_model_v4.xlsx. Считает весь
+# проект живыми формулами; сюда пишутся только вводные листа «Вводные» —
+# каждая ячейка ввода подписана «Ключом API» движка. Книга несёт диаграммы,
+# которые openpyxl при перезаписи теряет, поэтому значения правятся прямо
+# в XML внутри zip — как и выгрузка в шаблон ПЛАТО ниже.
+# ---------------------------------------------------------------------------
+
+_V4_TEMPLATE_PATH = Path(__file__).resolve().parent / "templates" / "DevelopAid_model_v4.xlsx"
+
+# Ключ движка -> ячейка листа «Вводные». Проценты движок хранит в пунктах
+# (25 = 25%), книга — в долях, пересчёт по суффиксу _pct/_pp.
+_V4_INPUT_CELLS: dict[str, str] = {
+    "purchase_price_mln": "B15", "land_rights_cost_mln": "B16",
+    "social_compensation_mln": "B17", "marketing_pct": "B19", "selling_pct": "B20",
+    "profit_tax_pct": "B21", "vat_pct": "B22", "discount_rate_pct": "B23",
+    "bridge_spread_pp": "B25", "pf_spread_pp": "B27", "pf_special_pct": "B28",
+    "limit_fee_pct": "B29", "reservation_fee_pct": "B30",
+    "ird_th_per_sqm": "B40", "design_p_th_per_sqm": "B41",
+    "design_rd_th_per_sqm": "B42", "preparation_th_per_sqm": "B43",
+    "main_above_th_per_sqm": "B44", "main_under_th_per_sqm": "B45",
+    "utilities_th_per_sqm": "B46", "landscaping_th_per_sqm": "B47",
+    "commissioning_th_per_sqm": "B48", "site_maintenance_th_per_sqm": "B49",
+    "gc_fee_pct": "B50", "author_supervision_pct": "B51",
+    "project_management_pct": "B52", "technical_supervision_pct": "B53",
+    "reserve_pct": "B54",
+    "apartment_price_th": "B59", "commercial_price_th": "B60",
+    "parking_price_th": "B61", "storage_price_th": "B62",
+    "share_before_rve_pct": "B63", "monthly_growth_pre_pct": "B64",
+    "monthly_growth_post_pct": "B65", "sales_lag_months": "B68",
+    "residual_sales_months": "B69",
+    "vri_periodicity_months": "B78", "vri_interest_spread_pp": "B81",
+    "vri_relief_mln": "B82", "vri_security_cost_mln": "B83",
+    "site_area_ha": "K7",
+    "offices_gba_sqm": "K23", "offices_saleable_sqm": "K24",
+    "offices_start": "K27", "offices_months": "K28",
+    "offices_cost_th_per_sqm": "K29", "offices_sales_start": "K30",
+    "offices_price_th_per_sqm": "K31", "offices_share_before_rve_pct": "K32",
+    "offices_growth_pre_pct": "K34", "offices_growth_post_pct": "K35",
+    "retail_gba_sqm": "K43", "retail_saleable_sqm": "K44",
+    "retail_start": "K47", "retail_months": "K48",
+    "retail_cost_th_per_sqm": "K49", "retail_sales_start": "K50",
+    "retail_price_th_per_sqm": "K51", "retail_share_before_rve_pct": "K52",
+    "retail_growth_pre_pct": "K54", "retail_growth_post_pct": "K55",
+    "above_parking_spaces": "K63", "above_parking_area_per_space_sqm": "K64",
+    "above_parking_cost_mln_per_space": "K67", "above_parking_start": "K68",
+    "above_parking_months": "K69", "above_parking_sales_start": "K70",
+    "above_parking_price_mln_per_space": "K71",
+    "above_parking_share_before_rve_pct": "K72",
+    "above_parking_growth_pre_pct": "K74", "above_parking_growth_post_pct": "K75",
+}
+_V4_DATE_KEYS = frozenset({
+    "offices_start", "offices_sales_start", "retail_start", "retail_sales_start",
+    "above_parking_start", "above_parking_sales_start",
+})
+_V4_BOOL_CELLS = {  # ключ -> ячейка «Да/Нет»
+    "offices_enabled": "K20", "retail_enabled": "K40", "above_parking_enabled": "K60",
+}
+# Проценты в этих ячейках движок хранит пунктами, но сами ключи без суффикса.
+_V4_NO_PCT_KEYS = frozenset({"vri_relief_mln", "vri_security_cost_mln"})
+
+
+def _v4_excel_serial(value: Any) -> float | None:
+    """ISO-дата -> серийный номер Excel (стиль даты уже стоит на ячейке)."""
+    try:
+        parsed = datetime.strptime(str(value)[:10], "%Y-%m-%d").date()
+    except Exception:
+        return None
+    return float((parsed - date(1899, 12, 30)).days)
+
+
+def _v4_number(value: Any) -> str:
+    number = float(value)
+    if number == int(number) and abs(number) < 1e15:
+        return str(int(number))
+    return format(number, ".10g")
+
+
+def _v4_set_cell(
+    xml: str,
+    coord: str,
+    *,
+    number: Any = None,
+    text: str | None = None,
+    formula: str | None = None,
+) -> tuple[str, bool]:
+    """Заменяет содержимое ячейки, сохраняя её стиль. Формат листа — теги x:."""
+    pattern = re.compile(
+        r'<x:c r="%s"([^>]*?)(?:/>|>.*?</x:c>)' % re.escape(coord), re.S)
+    found = pattern.search(xml)
+    if not found:
+        return xml, False
+    style = re.search(r'\ss="(\d+)"', found.group(1))
+    style_attr = f' s="{style.group(1)}"' if style else ""
+    if formula is not None:
+        body = f"<x:f>{xml_escape(formula)}</x:f>"
+        replacement = f'<x:c r="{coord}"{style_attr}>{body}</x:c>'
+    elif text is not None:
+        replacement = (
+            f'<x:c r="{coord}"{style_attr} t="inlineStr">'
+            f"<x:is><x:t>{xml_escape(str(text))}</x:t></x:is></x:c>"
+        )
+    else:
+        replacement = f'<x:c r="{coord}"{style_attr}><x:v>{_v4_number(number)}</x:v></x:c>'
+    return xml[:found.start()] + replacement + xml[found.end():], True
+
+
+def _v4_inputs_sheet_path(archive: zipfile.ZipFile) -> str:
+    workbook = archive.read("xl/workbook.xml").decode("utf-8")
+    sheet = re.search(r'<x:sheet name="Вводные"[^>]*r:id="([^"]+)"', workbook)
+    if not sheet:
+        raise RuntimeError("в книге v4 нет листа «Вводные»")
+    rels = archive.read("xl/_rels/workbook.xml.rels").decode("utf-8")
+    rel = re.search(r'Target="([^"]+)"[^>]*Id="%s"' % re.escape(sheet.group(1)), rels) \
+        or re.search(r'Id="%s"[^>]*Target="([^"]+)"' % re.escape(sheet.group(1)), rels)
+    if not rel:
+        raise RuntimeError("лист «Вводные» не найден в связях книги v4")
+    target = rel.group(1)
+    return "xl/" + target.lstrip("/").removeprefix("xl/")
+
+
+def _v4_phase_weights(phasing: dict[str, Any], product: str, count: int) -> list[float]:
+    weights = [float(w or 0) for w in ((phasing.get("products") or {}).get(product) or [])]
+    if len(weights) < count or sum(weights) <= 0:
+        return [1.0 / count] * count
+    return weights[:count]
+
+
+def _v4_shared_weights(phasing: dict[str, Any], key: str, count: int) -> list[float]:
+    weights = [float(w or 0) for w in ((phasing.get("shared_allocation") or {}).get(key) or [])]
+    if len(weights) < count or sum(weights) <= 0:
+        return [1.0 if index == 0 else 0.0 for index in range(count)]
+    return weights[:count]
+
+
+def build_project_workbook(
+    inputs: dict[str, Any],
+    tep: dict[str, dict[str, Any]],
+    rates: list[dict[str, Any]] | None = None,
+    phasing: dict[str, Any] | None = None,
+    *,
+    project_name: str = "",
+    scenario: str = "base",
+) -> tuple[bytes, str, dict[str, Any]]:
+    """Книга DevelopAid v4, заполненная текущими вводными.
+
+    Пишутся только значения листа «Вводные»; весь расчёт — формулы книги.
+    Ячейка без соответствия уходит в meta["missing"], а не молчит.
+    """
+    x = {**DEFAULT_INPUTS, **{k: v for k, v in (inputs or {}).items() if not str(k).startswith("_")}}
+    p = phasing or {}
+    missing: list[str] = []
+
+    template = _V4_TEMPLATE_PATH.read_bytes()
+    source = zipfile.ZipFile(io.BytesIO(template))
+    sheet_path = _v4_inputs_sheet_path(source)
+    xml = source.read(sheet_path).decode("utf-8")
+
+    def put(coord: str, *, number=None, text=None, formula=None, label=""):
+        nonlocal xml
+        xml, done = _v4_set_cell(xml, coord, number=number, text=text, formula=formula)
+        if not done:
+            missing.append(label or coord)
+
+    def num_row(row: dict[str, Any] | None, field: str) -> float:
+        try:
+            return float((row or {}).get(field) or 0)
+        except Exception:
+            return 0.0
+
+    # --- скалярные вводные по карте ключей -------------------------------
+    for key, coord in _V4_INPUT_CELLS.items():
+        value = x.get(key)
+        if value in (None, ""):
+            continue
+        if key in _V4_DATE_KEYS:
+            serial = _v4_excel_serial(value)
+            if serial is not None:
+                put(coord, number=serial, label=key)
+            continue
+        try:
+            number = float(value)
+        except Exception:
+            missing.append(f"{key}: не число ({value!r})")
+            continue
+        if (key.endswith("_pct") or key.endswith("_pp")) and key not in _V4_NO_PCT_KEYS:
+            number /= 100.0
+        put(coord, number=number, label=key)
+
+    for key, coord in _V4_BOOL_CELLS.items():
+        put(coord, text="Да" if x.get(key) else "Нет", label=key)
+
+    # --- шапка, сценарий и ставка ----------------------------------------
+    title = str(project_name or x.get("project_name") or "Проект DevelopAid")
+    put("B4", text=title, label="project_name")
+    put("B6", text="Base", label="scenario")
+    put("E5", number=float(x.get("scenario_revenue_multiplier") or 1), label="scenario_revenue_multiplier")
+    put("E6", number=float(x.get("scenario_cost_multiplier") or 1), label="scenario_cost_multiplier")
+    start_serial = _v4_excel_serial(x.get("project_start")) or _v4_excel_serial("2027-01-01")
+    put("B8", number=start_serial, label="project_start")
+    put("B36", number=start_serial, label="price_cost_base_date")
+    put("B33", number=float(x.get("rate_start_pct") or 14) / 100.0, label="rate_start_pct")
+    put("B35", number=float(x.get("rate_normalization_months") or 24), label="rate_normalization_months")
+    put("E8", number=float(x.get("rate_target_base_pct") or 9) / 100.0, label="rate_target_base_pct")
+    put("F8", number=float(x.get("rate_target_low_pct") or 7) / 100.0, label="rate_target_low_pct")
+    put("G8", number=float(x.get("rate_target_high_pct") or 11) / 100.0, label="rate_target_high_pct")
+    # Сезонность: в движке одно значение на январь и май–август.
+    seasonal = float(x.get("seasonal_reduction_pct") or 0) / 100.0
+    put("B67", number=seasonal, label="seasonal_reduction_pct (январь)")
+    put("B70", number=seasonal, label="seasonal_reduction_pct (май–август)")
+    put("B31", text=str(x.get("bridge_interest_mode") or "Капитализация в ПФ"),
+        label="bridge_interest_mode")
+
+    # Лимит БРИДЖ в книге режет выборку (CF r34). Логика вводных DevelopAid —
+    # «всё финансирует банк», поэтому лимит расчётный: сделка, ВРИ, социалка
+    # и весь CAPEX. Фиксированные 3 500 млн душили проект крупнее Мишина.
+    put("B24", formula=(
+        "ROUNDUP(($B$15+$B$16+$B$17+$B$83"
+        "+SUM('CAPEX'!$B$35,'CAPEX'!$B$69,'CAPEX'!$B$103))/10,0)*10"
+    ), label="bridge_limit_mln")
+
+    # --- ВРИ ---------------------------------------------------------------
+    land_cost = float(x.get("land_rights_cost_mln") or 0)
+    put("B74", text="Да" if land_cost > 0 else "Нет", label="vri_required")
+    if str(x.get("vri_payment_mode") or "lump") == "installment":
+        years = int(float(x.get("vri_installment_years") or 3))
+        word = "год" if years == 1 else ("года" if years in (2, 3, 4) else "лет")
+        put("B75", text=f"{years} {word}", label="vri_payment_mode")
+    else:
+        put("B75", text="Единовременно", label="vri_payment_mode")
+    lead = {"before_rns_1m": 1, "before_rns_3m": 3, "at_rns": 0}.get(
+        str(x.get("vri_obligation_date_mode") or "before_rns_1m"), 1)
+    put("B76", number=float(lead), label="vri_obligation_lead_months")
+    put("B80", text="Нет" if x.get("vri_interest_enabled") is False else "Да",
+        label="vri_interest_enabled")
+    put("B84", text="Да" if x.get("vri_early_repay_after_pf") else "Нет",
+        label="vri_early_repay_after_pf")
+
+    # --- плотность: базовый потенциал равен применяемому, коэффициент 1 ----
+    put("K6", text="Москва" if str(x.get("vri_region") or "msk") == "msk"
+        else "Московская область", label="vri_region")
+    area = float(x.get("site_area_ha") or 0)
+    density = float(x.get("site_density_sqm_per_ha") or 0) or 30000.0
+    put("K7", number=area, label="site_area_ha")
+    put("K8", text="Нет", label="use_default_density")
+    put("K11", number=density, label="site_density_sqm_per_ha")
+    # Базовый потенциал равен применяемому: коэффициент пересчёта ТЭП = 1,
+    # базовый ТЭП очередей — ровно ТЭП проекта. При нулевой площади деление
+    # 0/0 гасится IFERROR и коэффициент тоже 1.
+    put("K13", number=(area * density if area > 0 else 0), label="base_gfa_potential_sqm")
+
+    # Полный срок продаж объектов = стройка + остаточные продажи движка.
+    for prefix, coord in (("offices", "K33"), ("retail", "K53"), ("above_parking", "K73")):
+        months = float(x.get(f"{prefix}_months") or 0)
+        residual = float(x.get(f"{prefix}_residual_months") or 0)
+        if months > 0:
+            put(coord, number=months + residual, label=f"{prefix}_sales_term_months")
+
+    # --- очереди: базовый ТЭП в W..AC, доли и сроки -------------------------
+    enabled_phases = int(p.get("phase_count") or 1) if p.get("enabled") else 1
+    count = max(1, min(3, enabled_phases))
+    if enabled_phases > 3:
+        missing.append(f"очередей {enabled_phases}, книга несёт 3 — лишние слиты в третью")
+    phases = list(p.get("phases") or [])
+    weights = {product: _v4_phase_weights(p, product, count)
+               for product in ("apartments", "ground_commercial", "underground_parking", "storage")}
+    shared = {key: _v4_shared_weights(p, key, count)
+              for key in ("purchase", "land_rights", "social_compensation")}
+    price_inflation = float(p.get("sales_price_inflation_pct") or 0) / 100.0 if count > 1 else 0.0
+    cost_inflation = float(p.get("cost_inflation_pct") or 0) / 100.0 if count > 1 else 0.0
+
+    apartments, commercial = tep.get("apartments"), tep.get("ground_commercial")
+    underground, storage = tep.get("underground_parking"), tep.get("storage")
+    for index in range(3):
+        row = 88 + index
+        active = index < count
+        share = (lambda product: weights[product][index] if active else 0.0)
+        phase = phases[index] if index < len(phases) else {}
+        put(f"B{row}", text="Да" if active else "Нет", label=f"очередь {index + 1}")
+        offset = float(phase.get("start_offset_months") or 0) if active else 0.0
+        put(f"D{row}", number=start_serial if not active else
+            (_v4_excel_serial(add_months(str(x.get("project_start") or "2027-01-01"), int(offset)))
+             or start_serial), label=f"старт очереди {index + 1}")
+        put(f"E{row}", number=float(x.get("ird_months") or 18), label=f"ИРД очереди {index + 1}")
+        put(f"F{row}", number=float(phase.get("construction_months")
+                                    or x.get("construction_months") or 24),
+            label=f"стройка очереди {index + 1}")
+        put(f"G{row}", number=float(x.get("sales_lag_months") or 0), label=f"лаг очереди {index + 1}")
+        put(f"P{row}", number=shared["purchase"][index] if active else 0.0, label="доля покупки")
+        put(f"Q{row}", number=shared["land_rights"][index] if active else 0.0, label="доля ВРИ")
+        put(f"R{row}", number=shared["social_compensation"][index] if active else 0.0,
+            label="доля соцнагрузки")
+        put(f"S{row}", number=1.0, label="множитель цены")
+        put(f"T{row}", number=1.0, label="множитель затрат")
+        put(f"U{row}", number=share("apartments"), label="доля лимита БРИДЖ")
+        put(f"V{row}", number=share("apartments"), label="доля лимита ПФ")
+        put(f"W{row}", number=num_row(apartments, "gns") * share("apartments"), label="ГНС квартир")
+        put(f"X{row}", number=num_row(commercial, "gns") * share("ground_commercial"),
+            label="ГНС коммерции")
+        put(f"Y{row}", number=num_row(underground, "gns") * share("underground_parking"),
+            label="ГНС подземная")
+        put(f"Z{row}", number=num_row(apartments, "saleable") * share("apartments"),
+            label="прод. квартир")
+        put(f"AA{row}", number=num_row(commercial, "saleable") * share("ground_commercial"),
+            label="прод. коммерции")
+        put(f"AB{row}", number=num_row(underground, "units") * share("underground_parking"),
+            label="паркинг, шт.")
+        put(f"AC{row}", number=num_row(storage, "units") * share("storage"), label="кладовые, шт.")
+        put(f"AE{row}", number=price_inflation, label="инфляция цены")
+        put(f"AF{row}", number=cost_inflation, label="инфляция затрат")
+
+    # --- сборка ------------------------------------------------------------
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as archive:
+        for item in source.infolist():
+            payload = source.read(item.filename)
+            if item.filename == sheet_path:
+                payload = xml.encode("utf-8")
+            archive.writestr(item, payload)
+    source.close()
+
+    stem = _safe_file_stem(title, "project")
+    filename = f"DevelopAid_модель_{stem}_{date.today().isoformat()}.xlsx"
+    return out.getvalue(), filename, {"missing": missing, "phased": count > 1}
+
+
+class WorkbookExportRequest(BaseModel):
+    inputs: dict[str, Any]
+    tep: dict[str, dict[str, Any]]
+    rates: list[dict[str, Any]] = []
+    phasing: dict[str, Any] = {}
+    project_name: str = ""
+    scenario: str = "base"
+
+
+_XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+@app.post("/report/workbook")
+def report_workbook(req: WorkbookExportRequest) -> Response:
+    try:
+        content, filename, meta = build_project_workbook(
+            req.inputs, req.tep, req.rates, req.phasing,
+            project_name=req.project_name, scenario=req.scenario,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Не удалось собрать книгу: {exc}") from exc
+    if meta.get("missing"):
+        # Молча пропущенное поле — потерянные данные: доносим в журнал.
+        _TELEGRAM_RUNTIME["last_error"] = "Книга v4, без соответствия: " + "; ".join(
+            str(item) for item in meta["missing"][:6])
+    encoded_name = urllib.parse.quote(filename)
+    return Response(
+        content=content,
+        media_type=_XLSX_MEDIA_TYPE,
+        headers={
+            "Content-Disposition":
+                f"attachment; filename=DevelopAid_model.xlsx; filename*=UTF-8''{encoded_name}",
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
 # Выгрузка в шаблон ПЛАТО: заполняем только листы-вводные, остальное считает
 # сам шаблон. В templates/PLATO_template.xlsx около ста тысяч формул на 27
 # листах, поэтому трогать их нельзя — иначе рушится вся модель.
@@ -10358,7 +10723,7 @@ def _telegram_send_attachments(
         try: _telegram_send_message(chat_id,"<i>Карточка рассчитана, но PDF временно не сформирован.</i>")
         except Exception: pass
     try:
-        model_bytes, model_filename = build_model_archive(
+        model_bytes, model_filename, model_meta = build_project_workbook(
             report_payload.get("inputs") or {},
             report_payload.get("tep") or {},
             report_payload.get("rates") or [],
@@ -10366,16 +10731,19 @@ def _telegram_send_attachments(
             project_name=str(report_payload.get("project_name") or project_name or ""),
             scenario=str(report_payload.get("scenario") or "base"),
         )
-        phased = bool((report_payload.get("phasing") or {}).get("enabled"))
+        if model_meta.get("missing"):
+            _TELEGRAM_RUNTIME["last_error"] = "Книга v4, без соответствия: " + "; ".join(
+                str(item) for item in model_meta["missing"][:6])
         _telegram_send_document_bytes(
             chat_id,
             model_bytes,
             model_filename,
             caption=(
-                "<b>Полная модель DevelopAid</b> · Excel в ZIP"
-                + (" · очереди и книга-консолидатор" if phased else " · единый расчёт")
+                "<b>Полная модель DevelopAid</b> · Excel считает формулами "
+                "из текущих вводных"
+                + (" · очереди на листе «Вводные»" if model_meta.get("phased") else "")
             ),
-            content_type="application/zip",
+            content_type=_XLSX_MEDIA_TYPE,
         )
     except Exception as exc:
         # Молчать нельзя: человек получал карточку и PDF, а модель просто не
@@ -17281,23 +17649,23 @@ details.cadastral-box>summary::marker{color:#888}
             <span id="siteAreaSource" style="font-size:11px;color:#777"></span>
           </div>
           <div class="field">
-            <label>Плотность застройки <span class="unit">м² поэтажной площади / га</span></label>
+            <label>Плотность застройки <span class="unit" id="siteDensityUnit">м² поэтажной площади / га</span></label>
             <input type="number" step="100" id="siteDensity" onchange="setSiteDensity(this.value)">
             <span id="siteDensitySource" style="font-size:11px;color:#777"></span>
           </div>
           <div class="field">
-            <label>Потенциал поэтажной площади <span class="unit">м²</span></label>
+            <label><span id="sitePotentialLabel">Потенциал поэтажной площади</span> <span class="unit">м²</span></label>
             <b id="sitePotential" style="display:block;padding:9px 0;font-size:15px">—</b>
           </div>
           <div class="field">
-            <label>Использовано наземной ГНС <span class="unit">от потенциала</span></label>
+            <label><span id="siteUsageLabel">Использовано наземной ГНС</span> <span class="unit">от потенциала</span></label>
             <b id="siteUsage" style="display:block;padding:9px 0;font-size:15px">—</b>
           </div>
         </div>
         <div id="siteDensityWarn" class="note warning" style="display:none"></div>
         <div class="toolbar" style="margin-top:10px">
           <button class="btn" onclick="applyDensityToTep()">Рассчитать ТЭП от площади и плотности</button>
-          <span style="color:#777;font-size:12px">Работает в любом регионе: площадь и плотность можно ввести вручную. Квартиры и коммерция 1 этажа пересчитываются по методике DevelopAid (94% / 6% СПП); паркинг, кладовые и соцобъекты не трогаются.</span>
+          <span style="color:#777;font-size:12px" id="siteApplyHint">Работает в любом регионе: площадь и плотность можно ввести вручную. Ручной ТЭП, кадастр и проект из калькулятора Подмосковья считаются нормативами РНГП: квартиры = площадь × плотность, социалка, паркинг и офисы — от населения. Москва с ГлавАПУ: квартиры и коммерция 1 этажа по методике DevelopAid (94% / 6% СПП).</span>
         </div>
         <div id="siteApplyStatus" class="import-status" style="display:none"></div>
       </div>
@@ -17539,8 +17907,7 @@ details.cadastral-box>summary::marker{color:#888}
           <div class="report-actions">
             <small>Агрегированный отчёт · значения пересчитываются из текущих вводных</small>
             <button class="btn dark no-print" onclick="exportReportPdf()">Экспорт PDF</button>
-            <button id="exportModelButton" class="btn no-print" onclick="exportModelArchive()">Скачать модель (ZIP)</button>
-            <button id="exportPlatoButton" class="btn no-print" onclick="exportPlatoTemplate()">Выгрузить в шаблон ПЛАТО</button>
+            <button id="exportModelButton" class="btn no-print" onclick="exportModelArchive()">Скачать модель (Excel)</button>
           </div>
         </div>
         <div class="pdf-report-meta">
@@ -19257,10 +19624,52 @@ function siteDensitySourceLabel(){
  if(glavapuDensitySqmHa()>0)return 'из калькулятора ГлавАПУ (Москва)';
  return 'по умолчанию 30 000 м²/га';
 }
+async function applyNormativeTep(){
+ // Нормативный пересчёт по РНГП МО — те же формулы, что в калькуляторе
+ // Подмосковья: квартиры = площадь × плотность, население 28 м²/чел, ДОО
+ // 65 и СОШ 135 мест на 1000 жителей, поликлиника 17,75 пос./смену,
+ // паркинг 356 м/м на 1000 (90% постоянные, подземные 35 м²/место),
+ // рабочие места 50% населения → офисы. Раньше ручной и кадастровый ТЭП
+ // считались долями 94/6, и социалка с объектами КРТ оставались от
+ // первоначального объёма квартир — очередям доставалась разбивка от
+ // проекта, которого больше нет.
+ const area=Number(inputs.site_area_ha||0);
+ const density=effectiveSiteDensity();
+ const stored=inputs._mo_calc||{};
+ const body={
+  query:stored.query||'',
+  limit:30,
+  site_area_ha:area,
+  density_sqm_per_ha:density,
+  district:(stored.territory&&stored.territory.district)||'',
+  market_price_rub_per_sqm:0,
+  vri_kd:0,
+  average_flat_sqm:Number((document.getElementById('moFlat')||{}).value||0)||58.75
+ };
+ const response=await fetch('/mo/calculate',{method:'POST',headers:{'Content-Type':'application/json'},
+  body:JSON.stringify(body)});
+ const data=await response.json();
+ if(!response.ok)throw new Error(data.detail||'Не удалось рассчитать нормативный ТЭП');
+ Object.entries(data.tep||{}).forEach(([key,values])=>{if(tep[key])Object.assign(tep[key],values)});
+ const keepLand=Number(inputs.land_rights_cost_mln||0);
+ const keepRegion=inputs.vri_region;
+ Object.assign(inputs,data.inputs||{});
+ const parcels=((data.vri||{}).parcels||[]).length;
+ // Плата за ВРИ считается от УПКС конкретных участков; без кадастра расчёта
+ // нет, и введённая руками сумма не затирается нулём. Регион ВРИ без
+ // кадастра МО тоже остаётся прежним.
+ if(!(Number((data.inputs||{}).land_rights_cost_mln||0)>0)&&keepLand>0)inputs.land_rights_cost_mln=keepLand;
+ if(!parcels&&keepRegion)inputs.vri_region=keepRegion;
+ inputs._mo_calc={query:body.query,territory:data.territory||{},
+  density_sqm_per_ha:data.density_sqm_per_ha,vri:data.vri||{},social:data.social||{},
+  balance:data.balance||{},warnings:data.warnings||[]};
+ moResult=data;
+ syncTep(false);
+ renderInputs();renderTep();
+ await calculate();
+ return data;
+}
 function applyDensityToTep(){
- // Та же методика, что в ручном ТЭП бота и калькуляторе Подмосковья:
- // СПП = площадь × плотность; квартиры — 94% СПП, коммерция 1 этажа — 6%;
- // продаваемая квартир — 65% ГНС, коммерции — 90%; общая площадь — 90% ГНС.
  const status=document.getElementById('siteApplyStatus');
  const area=Number(inputs.site_area_ha||0);
  if(!(area>0)){
@@ -19269,6 +19678,30 @@ function applyDensityToTep(){
   return;
  }
  const density=effectiveSiteDensity();
+ if(!inputs._glavapu_import){
+  // Ручной ТЭП, кадастр и проект из калькулятора Подмосковья считаются
+  // одинаково — нормативами РНГП от квартир. Долевой метод 94/6 пересчитывал
+  // только жильё: офисы на 92 тыс. м², 7 700 машино-мест и социалка
+  // оставались от первоначального объёма квартир, а разбивка на очереди
+  // делила проект, которого больше нет. Москва с ГлавАПУ идёт своей веткой:
+  // там нормативный расчёт делает сам калькулятор ГлавАПУ.
+  status.style.display='';
+  status.innerHTML='Считаю нормативный ТЭП по РНГП: квартиры '+num(area*density)+
+   ' м² продаваемой ('+num(area)+' га × '+num(density)+
+   ' м² квартир/га), социалка, паркинг и офисы — от населения…';
+  applyNormativeTep().then(()=>{
+   status.innerHTML='<span class="import-ok">ТЭП пересчитан нормативами РНГП: квартиры '+
+    num(tep.apartments.saleable)+' м² продаваемой ('+num(tep.apartments.gns)+
+    ' м² ГНС), подземный паркинг '+num(tep.underground_parking.units)+' м/м, ДОУ '+
+    num(tep.kindergarten.units)+' мест, СОШ '+num(tep.school.units)+' мест, офисы '+
+    num(Number(inputs.offices_gba_sqm||0))+' м² GBA.</span>';
+  }).catch(e=>{
+   status.innerHTML='<span class="import-error">'+escapeHtml(String(e.message||e))+'</span>';
+  });
+  return;
+ }
+ // Москва с ГлавАПУ: квартиры — 94% СПП, коммерция 1 этажа — 6%;
+ // продаваемая квартир — 65% ГНС, коммерции — 90%; общая площадь — 90% ГНС.
  const spp=area*density;
  tep.apartments.gns=spp*0.94;
  tep.apartments.total_area=tep.apartments.gns*0.9;
@@ -19281,7 +19714,8 @@ function applyDensityToTep(){
  renderTep();
  status.style.display='';
  status.innerHTML='<span class="import-ok">ТЭП пересчитан: СПП '+num(spp)+' м² при плотности '+num(density)+
-  ' м²/га. Квартиры '+num(tep.apartments.gns)+' м² ГНС, коммерция '+num(tep.ground_commercial.gns)+' м² ГНС.</span>';
+  ' м²/га. Квартиры '+num(tep.apartments.gns)+' м² ГНС (продаваемая '+num(tep.apartments.saleable)+
+  ' м²), коммерция '+num(tep.ground_commercial.gns)+' м² ГНС.</span>';
  calculate();
 }
 function setSiteArea(value){
@@ -19311,18 +19745,45 @@ function renderSitePanel(){
  document.getElementById('siteAreaSource').textContent=siteAreaSourceLabel();
  document.getElementById('siteDensitySource').textContent=siteDensitySourceLabel();
  const potential=area*effectiveSiteDensity();
- // Плотность нормирует наземную поэтажную площадь: подземный паркинг в неё
- // не входит.
- let above=0;
- Object.entries(tep).forEach(([key,row])=>{if(key!=='underground_parking')above+=Number(row.gns||0)});
+ // Семантика плотности зависит от источника. В нормативном расчёте (РНГП —
+ // ручной ТЭП, кадастр, калькулятор Подмосковья) плотность — м² продаваемой
+ // площади квартир на гектар: потенциал сравнивается с квартирами, а паркинг
+ // и социалка считаются от них нормативами. У Москвы с ГлавАПУ плотность
+ // нормирует наземную поэтажную площадь: подземный паркинг в неё не входит.
+ const normative=!inputs._glavapu_import;
+ const unitEl=document.getElementById('siteDensityUnit');
+ if(unitEl)unitEl.textContent=normative?'м² квартир / га · нормативы РНГП':'м² поэтажной площади / га';
+ const potLabel=document.getElementById('sitePotentialLabel');
+ if(potLabel)potLabel.textContent=normative?'Потенциал продаваемой площади квартир':'Потенциал поэтажной площади';
+ const useLabel=document.getElementById('siteUsageLabel');
+ if(useLabel)useLabel.textContent=normative?'Использовано квартирами':'Использовано наземной ГНС';
+ let above=0,core=0;
+ Object.entries(tep).forEach(([key,row])=>{
+   if(key==='underground_parking')return;
+   const gns=Number(row.gns||0);above+=gns;
+   if(key==='apartments'||key==='ground_commercial'||key==='storage')core+=gns;
+ });
+ const other=above-core;
+ const used=normative?Number((tep.apartments||{}).saleable||0):above;
  document.getElementById('sitePotential').textContent=potential>0?num(potential)+' м²':'—';
- const usage=potential>0?above/potential*100:0;
+ const usage=potential>0?used/potential*100:0;
  document.getElementById('siteUsage').textContent=potential>0?num(usage)+'%':'—';
  const warn=document.getElementById('siteDensityWarn');
- if(potential>0&&above>potential){
+ if(potential>0&&used>potential*1.005){
   warn.style.display='';
-  warn.innerHTML='Наземная ГНС проекта <b>'+num(above)+' м²</b> превышает потенциал участка <b>'+num(potential)+
-   ' м²</b> при плотности '+num(effectiveSiteDensity())+' м²/га. Проверьте плотность или состав ТЭП.';
+  warn.innerHTML=normative
+   ?'Продаваемая площадь квартир <b>'+num(used)+' м²</b> превышает потенциал <b>'+num(potential)+
+    ' м²</b> при плотности '+num(effectiveSiteDensity())+' м² квартир/га. Нажмите «Рассчитать ТЭП от площади и плотности» — '+
+    'проект пересчитается нормативами РНГП целиком.'
+   // Превышение чаще всего создают не квартиры, а офисы/ТЦ/наземный паркинг и
+   // соцобъекты: кнопка пересчёта их сознательно не трогает, а потенциал
+   // участка они занимают наравне с жильём. Без разбивки это выглядит как
+   // ошибка пересчёта.
+   :'Наземная ГНС проекта <b>'+num(above)+' м²</b> превышает потенциал участка <b>'+num(potential)+
+    ' м²</b> при плотности '+num(effectiveSiteDensity())+' м²/га.'+
+    (other>0.5?' В составе: жильё и коммерция 1 этажа — <b>'+num(core)+' м²</b>, прочие наземные (офисы, ТЦ, наземный паркинг, соцобъекты) — <b>'+
+     num(other)+' м²</b>. Кнопка пересчёта меняет только жильё и коммерцию; отключите лишние объекты или поднимите плотность.'
+     :' Проверьте плотность или состав ТЭП.');
  }else warn.style.display='none';
 }
 function applyRequiredSocialProgramFromGlavapu(){
@@ -20164,13 +20625,17 @@ function downloadBlobResponse(blob,disposition,fallback){
 }
 
 async function exportModelArchive(){
+ // Одна модель на выгрузку: книга DevelopAid v4, считающая проект формулами
+ // из текущих вводных. Архив детализации и шаблон ПЛАТО остались как API
+ // (/report/model, /report/plato), но с сайта их кнопки убраны — две
+ // выгрузки рядом читались как разные модели одного проекта.
  const button=document.getElementById('exportModelButton');
  const label=button?button.textContent:'';
  if(button){button.disabled=true;button.textContent='Собираю модель…'}
  try{
   await calculate();
   const manualMeta=inputs._manual_tep_import||null;
-  const response=await fetch('/report/model',{
+  const response=await fetch('/report/workbook',{
    method:'POST',headers:{'Content-Type':'application/json'},
    body:JSON.stringify({
     inputs,tep,rates,
@@ -20187,38 +20652,10 @@ async function exportModelArchive(){
   downloadBlobResponse(
    await response.blob(),
    response.headers.get('Content-Disposition'),
-   `DevelopAid_модель_${new Date().toISOString().slice(0,10)}.zip`
+   `DevelopAid_модель_${new Date().toISOString().slice(0,10)}.xlsx`
   );
  }finally{
-  if(button){button.disabled=false;button.textContent=label||'Скачать модель (ZIP)'}
- }
-}
-
-async function exportPlatoTemplate(){
- const button=document.getElementById('exportPlatoButton');
- const label=button?button.textContent:'';
- if(button){button.disabled=true;button.textContent='Заполняю шаблон…'}
- try{
-  await calculate();
-  const manualMeta=inputs._manual_tep_import||null;
-  const response=await fetch('/report/plato',{
-   method:'POST',headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({
-    inputs,tep,rates,
-    phasing:(typeof phasing!=='undefined'?phasing:{}),
-    project_name:(manualMeta&&manualMeta.project_name)||'',
-    scenario:scenarioSelect.value||'base'
-   })
-  });
-  if(!response.ok){
-   let detail='Не удалось заполнить шаблон ПЛАТО';
-   try{const x=await response.json();detail=x.detail||detail}catch(e){}
-   alert(detail);return;
-  }
-  downloadBlobResponse(await response.blob(),response.headers.get('Content-Disposition'),
-   `DevelopAid_ПЛАТО_${new Date().toISOString().slice(0,10)}.zip`);
- }finally{
-  if(button){button.disabled=false;button.textContent=label||'Выгрузить в шаблон ПЛАТО'}
+  if(button){button.disabled=false;button.textContent=label||'Скачать модель (Excel)'}
  }
 }
 

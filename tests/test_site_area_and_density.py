@@ -176,8 +176,11 @@ def test_glavapu_import_feeds_the_density(monkeypatch):
 
 
 # --- расчёт ТЭП от плотности ------------------------------------------------
+# Нормативный путь (РНГП) — для ручного ТЭП, кадастра и калькулятора
+# Подмосковья; долевой 94/6 — только для Москвы с ГлавАПУ, где нормативный
+# расчёт делает сам калькулятор ГлавАПУ.
 
-def run_apply(inputs: dict, tep: dict) -> dict:
+def run_apply(inputs: dict, tep: dict, extra_js: str = "") -> dict:
     """Настоящая applyDensityToTep из PAGE — с заглушками окружения."""
     if not NODE:
         pytest.skip("node недоступен")
@@ -193,6 +196,7 @@ def run_apply(inputs: dict, tep: dict) -> dict:
         "const num=v=>String(Math.round(v));\n"
         "function renderTep(){}\n"
         "function calculate(){}\n"
+        + extra_js
         + re.search(r"(function glavapuDensitySqmHa\(\).*?)\nfunction siteAreaSourceLabel",
                     core.PAGE, re.S).group(1) + "\n"
         + match.group(1) + "\n"
@@ -211,10 +215,43 @@ def blank_tep() -> dict:
     }
 
 
-def test_the_tep_is_built_from_area_and_density_in_any_region():
-    """Никакого импорта и никакого региона — площадь и плотность руками."""
+NORM_STUBS = (
+    "let moResult=null;\n"
+    "function escapeHtml(v){return String(v)}\n"
+    "function applyNormativeTep(){shown.push('NORM');return Promise.resolve({})}\n"
+)
+
+
+def test_a_manual_tep_is_recalculated_by_the_rngp_norms():
+    """Ручной ввод площади и плотности — нормативный расчёт, а не доли 94/6:
+    социалка, паркинг и офисы должны следовать за объёмом квартир."""
     got = run_apply({"site_area_ha": 2.0, "site_density_sqm_per_ha": 25000,
-                     "_site_density_user_set": True}, blank_tep())
+                     "_site_density_user_set": True}, blank_tep(), extra_js=NORM_STUBS)
+
+    assert got["tep"] == blank_tep(), "ручной ТЭП пересчитан долями мимо нормативов"
+    assert "NORM" in got["shown"], "нормативный пересчёт не вызван"
+    assert any("нормативный ТЭП по РНГП" in str(item) for item in got["shown"])
+
+
+def test_a_mo_project_goes_the_same_normative_way():
+    """У проекта из калькулятора Подмосковья офисы на 92 тыс. м² и 7 700
+    машино-мест переживали уменьшение жилья втрое — доли меняли только жильё."""
+    got = run_apply(
+        {"site_area_ha": 22.4, "site_density_sqm_per_ha": 8900,
+         "_site_density_user_set": True,
+         "_mo_calc": {"query": "50:12:0100131:497"}},
+        blank_tep(), extra_js=NORM_STUBS)
+
+    assert got["tep"] == blank_tep()
+    assert "NORM" in got["shown"]
+
+
+def test_moscow_with_glavapu_keeps_the_share_method():
+    """Для Москвы нормативный расчёт делает ГлавАПУ — кнопка делит СПП 94/6."""
+    got = run_apply({
+        "site_area_ha": 2.0,
+        "_glavapu_import": {"normalized": {"density_spp_th_sqm_ha": 25.0}},
+    }, blank_tep(), extra_js=NORM_STUBS)
 
     spp = 2.0 * 25000
     apartments = got["tep"]["apartments"]
@@ -223,22 +260,45 @@ def test_the_tep_is_built_from_area_and_density_in_any_region():
     assert apartments["saleable"] == pytest.approx(spp * 0.94 * 0.65)
     assert commercial["gns"] == pytest.approx(spp * 0.06)
     assert commercial["saleable"] == pytest.approx(spp * 0.06 * 0.9)
+    assert "NORM" not in got["shown"]
 
 
 def test_the_default_density_feeds_the_calculation_too():
-    """Площадь из кадастра без плотности — считается по умолчанию 30 000."""
-    got = run_apply({"site_area_ha": 1.0}, blank_tep())
+    """Площадь из кадастра без плотности — действует умолчание 30 000."""
+    got = run_apply({"site_area_ha": 1.0}, blank_tep(), extra_js=NORM_STUBS)
 
-    assert got["tep"]["apartments"]["gns"] == pytest.approx(30000 * 0.94)
+    assert "NORM" in got["shown"]
+    assert any("30 000" in str(item) or "30000" in str(item) for item in got["shown"])
 
 
 def test_without_an_area_nothing_is_overwritten():
     tep = blank_tep()
     tep["apartments"]["gns"] = 5000
-    got = run_apply({}, tep)
+    got = run_apply({}, tep, extra_js=NORM_STUBS)
 
     assert got["tep"]["apartments"]["gns"] == 5000, "ТЭП затёрт без площади"
     assert any("площадь участка" in str(item) for item in got["shown"])
+    assert "NORM" not in got["shown"]
+
+
+def test_the_normative_potential_is_compared_with_saleable_apartments():
+    """В нормативном режиме потенциал участка — м² квартир на га: сравнивать
+    его с наземной ГНС бессмысленно, ГНС всегда в полтора раза больше."""
+    panel = re.search(r"function renderSitePanel\(\).*?\n\}", core.PAGE, re.S).group(0)
+
+    assert "inputs._glavapu_import" in panel
+    assert "м² квартир / га" in panel
+    assert re.search(r"normative\?Number\(\(tep\.apartments\|\|\{\}\)\.saleable\|\|0\)", panel), \
+        "нормативный потенциал не сравнивается с продаваемой квартир"
+
+
+def test_the_normative_recalc_spares_the_manual_vri_payment():
+    """Без кадастра плата за ВРИ не считается — введённая руками сумма
+    не должна затираться нулём нормативного пересчёта."""
+    body = re.search(r"async function applyNormativeTep\(\).*?\n\}", core.PAGE, re.S).group(0)
+
+    assert "keepLand" in body
+    assert "land_rights_cost_mln=keepLand" in body.replace(" ", "")
 
 
 # --- одна величина, два окна -------------------------------------------------

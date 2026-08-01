@@ -522,11 +522,13 @@ def test_telegram_sends_model_archive_after_pdf(monkeypatch):
         },
     }))
     kinds = [item["filename"].rsplit(".", 1)[-1] for item in documents]
-    assert kinds == ["pdf", "zip"]
-    archive_item = documents[-1]
-    assert archive_item["type"] == "application/zip"
-    assert "Мишина" in archive_item["filename"]
-    assert zipfile.ZipFile(io.BytesIO(archive_item["content"])).namelist()[-1] == "README.txt"
+    assert kinds == ["pdf", "xlsx"], "бот шлёт PDF и единую книгу проекта, не архив"
+    book = documents[-1]
+    assert book["type"].startswith("application/vnd.openxmlformats")
+    assert "Мишина" in book["filename"]
+    names = zipfile.ZipFile(io.BytesIO(book["content"])).namelist()
+    assert "xl/workbook.xml" in names, "вложение бота — не книга Excel"
+    assert any("charts/chart" in name for name in names), "книга уехала без диаграмм"
 
 
 def test_export_is_available_through_wrapper():

@@ -835,7 +835,7 @@ def _send_model_archive(chat_id: int) -> None:
         return
     _send_message(chat_id, "<i>Собираю Excel-модель…</i>")
     try:
-        model_bytes, model_filename = core.build_model_archive(
+        model_bytes, model_filename, model_meta = core.build_project_workbook(
             context.get("inputs") or {},
             context.get("tep") or {},
             context.get("rates") or [],
@@ -850,12 +850,15 @@ def _send_model_archive(chat_id: int) -> None:
             f"<i>{html.escape(core._error_location(exc)[:300])}</i>",
         )
         return
-    phased = bool((context.get("phasing") or {}).get("enabled"))
+    if model_meta.get("missing"):
+        core._TELEGRAM_RUNTIME["last_error"] = "Книга v4, без соответствия: " + "; ".join(
+            str(item) for item in model_meta["missing"][:6])
     core._telegram_send_document_bytes(
         chat_id, model_bytes, model_filename,
-        caption=("<b>Полная модель DevelopAid</b> · Excel в ZIP"
-                 + (" · очереди и книга-консолидатор" if phased else " · единый расчёт")),
-        content_type="application/zip",
+        caption=("<b>Полная модель DevelopAid</b> · Excel считает формулами "
+                 "из текущих вводных"
+                 + (" · очереди на листе «Вводные»" if model_meta.get("phased") else "")),
+        content_type=core._XLSX_MEDIA_TYPE,
     )
 
 

@@ -141,7 +141,7 @@ def test_a_failed_model_export_is_reported(monkeypatch):
 
     def refuse(*a, **k):
         raise RuntimeError("шаблон ПЛАТО не читается")
-    monkeypatch.setattr(core, "build_model_archive", refuse)
+    monkeypatch.setattr(core, "build_project_workbook", refuse)
 
     core.telegram_result(core.TelegramResultRequest(session="s", summary={
         "purchase_price_mln": 6500, "net_profit_mln": 900, "llcr": 1.3,

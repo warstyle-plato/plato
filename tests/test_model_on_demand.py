@@ -45,12 +45,12 @@ def test_the_model_is_sent_on_demand(chat, monkeypatch):
     sent, documents = chat
     monkeypatch.setattr(wrapper, "_PLATON_CONTEXT_BY_SESSION", {"s-1": CONTEXT})
     monkeypatch.setattr(wrapper, "_PLATON_LAST_SESSION", {42: "s-1"})
-    monkeypatch.setattr(core, "build_model_archive",
-                        lambda *a, **k: (b"PK\x03\x04zip", "DevelopAid_модель.zip"))
+    monkeypatch.setattr(core, "build_project_workbook",
+                        lambda *a, **k: (b"PK\x03\x04xlsx", "DevelopAid_модель.xlsx", {}))
 
     wrapper._send_model_archive(42)
 
-    assert documents == [("DevelopAid_модель.zip", len(b"PK\x03\x04zip"))]
+    assert documents == [("DevelopAid_модель.xlsx", len(b"PK\x03\x04xlsx"))]
     assert any("Собираю" in text for text in sent), "человеку не сказали, что идёт сборка"
 
 
@@ -74,7 +74,7 @@ def test_a_failure_names_the_place_in_the_code(chat, monkeypatch):
 
     def refuse(*a, **k):
         None.get("x")  # noqa: B018
-    monkeypatch.setattr(core, "build_model_archive", refuse)
+    monkeypatch.setattr(core, "build_project_workbook", refuse)
 
     wrapper._send_model_archive(42)
 
