@@ -41,7 +41,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.13.27"
+VERSION = "0.13.28"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -8588,6 +8588,49 @@ _M2_SHEETS = {
     "report": "ОТЧЁТ",
 }
 
+# Продукт -> колонка базы в «ТЭП», вводная со стартовой ценой, множитель до
+# млн ₽ за единицу и подпись единицы. Объём берётся из ТЭП, цена — с «Вводных»:
+# поднял цену квартир — выручка выросла, и дальше поехали эскроу, покрытие,
+# ставка ПФ, налог и LLCR.
+_M2_PRODUCTS: dict[str, tuple[int, str, float, str]] = {
+    "apartments": (5, "apartment_price_th", 0.001, "м²"),
+    "ground_commercial": (5, "commercial_price_th", 0.001, "м²"),
+    "storage": (5, "storage_price_th", 0.001, "м²"),
+    "underground_parking": (7, "parking_price_th", 0.001, "м/м"),
+    "offices": (5, "offices_price_th_per_sqm", 0.001, "м²"),
+    "standalone_retail": (5, "retail_price_th_per_sqm", 0.001, "м²"),
+    "above_parking": (7, "above_parking_price_mln_per_space", 1.0, "м/м"),
+}
+
+# Статьи затрат в порядке листа. Плата за ВРИ и соцнагрузка идут по собственным
+# графикам — рассрочка на своём листе и объекты со своими сроками, — поэтому
+# они остаются рядом значений; всё остальное книга считает ставкой на базу.
+_M2_COST_ARTICLES: list[tuple[str, str]] = [
+    ("purchase", "Приобретение / вход"),
+    ("land_rights", "Земельные правоотношения / смена ВРИ"),
+    ("ird", "ИРД и согласования"),
+    ("design_p", "Проектирование, стадия П"),
+    ("design_rd", "Проектирование, стадия РД"),
+    ("preparation", "Подготовительные работы"),
+    ("main_above", "Основное строительство, наземная часть"),
+    ("main_under", "Основное строительство, подземная часть"),
+    ("utilities", "Наружные инженерные сети"),
+    ("site_maintenance", "Содержание стройплощадки"),
+    ("author_supervision", "Авторский надзор"),
+    ("technical_supervision", "Технический заказчик / стройконтроль"),
+    ("project_management", "Управление проектом"),
+    ("landscaping", "Благоустройство"),
+    ("commissioning", "Сдача и ввод"),
+    ("social", "Социальная нагрузка"),
+    ("offices", "МФОЦ / офисы"),
+    ("standalone_retail", "ТЦ / коммерция ОСЗ"),
+    ("above_parking", "Наземный паркинг"),
+    ("vri_interest", "Проценты по рассрочке ВРИ"),
+    ("vri_security", "Обеспечение по рассрочке ВРИ"),
+    ("gc_fee", "Вознаграждение генподрядчика"),
+    ("reserve", "Резерв"),
+]
+
 # Показатели листа «ОТЧЁТ» — порядок строк, на него ссылается тест.
 _M2_REPORT_KEYS = [
     "revenue", "capex", "operating", "ebitda", "financing_cost",
@@ -8762,49 +8805,76 @@ def build_plato_model_v2(
     }
 
     # --- Вводные -----------------------------------------------------------
+    # Вводные — это все поля модели, теми же группами, что и на странице: их
+    # больше сотни, и урезанный список делал книгу нередактируемой. Проценты
+    # хранятся долями, чтобы формулы умножали на них напрямую.
     ws_in["A1"] = "ВВОДНЫЕ"
     ws_in["A1"].font = styles["title"]
-    ws_in["A2"] = "Серым на помесячных листах помечены драйверы — они приходят значениями."
-    ws_in["A3"] = "Всё остальное книга считает сама: меняйте колонку B и смотрите «ОТЧЁТ»."
+    ws_in["A2"] = "Меняйте колонку B. Серым на помесячных листах помечены графики — они приходят значениями."
     for column, label in ((1, "Параметр"), (2, "Значение"), (3, "Ед. изм.")):
-        ws_in.cell(row=5, column=column, value=label).font = styles["bold"]
+        ws_in.cell(row=4, column=column, value=label).font = styles["bold"]
 
     key_row: dict[str, int] = {}
-    row = 6
-    for label, key, unit in _MODEL2_INPUTS:
-        ws_in.cell(row=row, column=1, value=label)
-        value = n(inputs, key, 0.0)
-        cell = ws_in.cell(row=row, column=2)
-        if unit in ("%", "п.п."):
-            cell.value, cell.number_format = round(value / 100.0, 12), percent
-        else:
-            cell.value, cell.number_format = round(value, 3), money
-        ws_in.cell(row=row, column=3, value=unit)
-        key_row[key] = row
+    percent_keys: set[str] = set()
+    row = 5
+    for group, fields in FIELD_GROUPS:
+        ws_in.cell(row=row, column=1, value=group.upper()).font = styles["section"]
+        row += 1
+        for field in fields:
+            key, label, unit, kind = field[0], field[1], field[2], field[3]
+            if key in key_row:
+                continue
+            ws_in.cell(row=row, column=1, value=label)
+            cell = ws_in.cell(row=row, column=2)
+            raw = inputs.get(key, DEFAULT_INPUTS.get(key))
+            if kind == "number":
+                value = n(inputs, key, float(DEFAULT_INPUTS.get(key) or 0.0))
+                if unit in ("%", "п.п.") or str(unit).startswith("%"):
+                    cell.value, cell.number_format = round(value / 100.0, 12), percent
+                    percent_keys.add(key)
+                else:
+                    cell.value, cell.number_format = round(value, 6), money
+            elif kind == "date":
+                cell.value = d(raw) if raw else None
+                cell.number_format = month_fmt
+            elif kind == "checkbox":
+                cell.value = 1 if raw else 0
+                cell.number_format = "0"
+            else:
+                cell.value = "" if raw is None else str(raw)
+            ws_in.cell(row=row, column=3, value=unit)
+            key_row[key] = row
+            row += 1
         row += 1
 
-    row += 1
-    ws_in.cell(row=row, column=1, value="СРОКИ И ЛИМИТЫ").font = styles["section"]
+    ws_in.cell(row=row, column=1, value="РАСЧЁТНЫЕ СРОКИ И ЛИМИТЫ").font = styles["section"]
     row += 1
     pf_limit = float(finance.get("pf_limit") or 0.0)
     bridge_limit = float(finance.get("calculated_bridge_limit") or 0.0)
-    for key, label, value, fmt, unit in (
-        ("project_start", "Начало проекта", months[0], month_fmt, ""),
-        ("permit", "РнС", permit, month_fmt, ""),
-        ("rve", "РВЭ", rve, month_fmt, ""),
+    # РнС и РВЭ не вводятся руками: это начало проекта плюс сроки ИРД и
+    # строительства. Сдвинули срок ИРД — поехали и график, и стоимость долга.
+    derived: list[tuple[str, str, Any, str, str]] = [
+        ("permit", "РнС (начало + срок ИРД)",
+         f"=EDATE($B${key_row['project_start']},$B${key_row['ird_months']})", month_fmt, ""),
+        ("rve", "РВЭ (РнС + срок строительства)",
+         f"=EDATE($B${key_row['permit'] if 'permit' in key_row else row},"
+         f"$B${key_row['construction_months']})", month_fmt, ""),
         ("pf_limit", "Лимит ПФ", round(pf_limit / 1e6, 3), money, "млн ₽"),
         ("bridge_limit", "Расчётный лимит БРИДЖ", round(bridge_limit / 1e6, 3), money, "млн ₽"),
         ("capitalize", "Проценты БРИДЖ капитализируются в ПФ (1 — да, 0 — в тело ПФ)",
          1 if capitalize else 0, "0", ""),
-    ):
+    ]
+    for key, label, value, fmt, unit in derived:
         ws_in.cell(row=row, column=1, value=label)
         ws_in.cell(row=row, column=2, value=value).number_format = fmt
         if unit:
             ws_in.cell(row=row, column=3, value=unit)
         key_row[key] = row
         row += 1
+    # РВЭ считается от строки РнС, а её номер известен только сейчас.
+    ws_in.cell(row=key_row["rve"], column=2,
+               value=f"=EDATE($B${key_row['permit']},$B${key_row['construction_months']})")
 
-    # Комиссии за резервирование — не вводные, а следствие лимита и ставки.
     for key, label, limit_key in (
         ("bridge_fee", "Комиссия за резервирование БРИДЖ", "bridge_limit"),
         ("pf_reservation_fee", "Комиссия за резервирование ПФ", "pf_limit"),
@@ -8819,8 +8889,8 @@ def build_plato_model_v2(
         row += 1
 
     ws_in.column_dimensions["A"].width = 56
-    ws_in.column_dimensions["B"].width = 16
-    ws_in.column_dimensions["C"].width = 10
+    ws_in.column_dimensions["B"].width = 18
+    ws_in.column_dimensions["C"].width = 14
 
     def ref(key: str) -> str:
         return f"{_M2_SHEETS['inputs']}!$B${key_row[key]}"
@@ -8829,29 +8899,57 @@ def build_plato_model_v2(
     ws_tep = sheets["tep"]
     ws_tep["A1"] = "ТЕХНИКО-ЭКОНОМИЧЕСКИЕ ПОКАЗАТЕЛИ"
     ws_tep["A1"].font = styles["title"]
+    ws_tep["A2"] = "Площади — исходные данные проекта. Всё, что ниже, книга считает от них."
     headers = ["Продукт", "ГНС, м²", "Общая площадь, м²", "Полезная, м²",
                "Продаваемая, м²", "Передаётся городу, м²", "Единиц"]
     for column, label in enumerate(headers, start=1):
-        ws_tep.cell(row=3, column=column, value=label).font = styles["bold"]
+        ws_tep.cell(row=4, column=column, value=label).font = styles["bold"]
     tep_rows = (result.get("tep") or {}).get("rows") or []
+    tep_row_of: dict[str, int] = {}
     for offset, item in enumerate(tep_rows):
-        line = 4 + offset
+        line = 5 + offset
+        tep_row_of[str(item.get("key"))] = line
         ws_tep.cell(row=line, column=1, value=item.get("label"))
         for column, key in enumerate(
                 ("gns", "total_area", "useful", "saleable", "transfer", "units"), start=2):
             ws_tep.cell(row=line, column=column,
-                        value=round(float(item.get(key) or 0.0), 2)).number_format = area
-    total_line = 4 + len(tep_rows)
+                        value=round(float(item.get(key) or 0.0), 6)).number_format = area
+    total_line = 5 + len(tep_rows)
     ws_tep.cell(row=total_line, column=1, value="ИТОГО").font = styles["bold"]
     for column in range(2, 8):
         letter = get_column_letter(column)
         cell = ws_tep.cell(row=total_line, column=column,
-                           value=f"=SUM({letter}4:{letter}{total_line - 1})")
+                           value=f"=SUM({letter}5:{letter}{total_line - 1})")
         cell.number_format = area
         cell.font = styles["bold"]
-    ws_tep.column_dimensions["A"].width = 30
+
+    # Базы для удельных ставок: наземная и подземная ГНС основных продуктов.
+    # Отдельные объекты КРТ считаются по своим ставкам и в базу не входят.
+    core_above_keys = ("apartments", "ground_commercial", "storage")
+    base_line = total_line + 2
+    ws_tep.cell(row=base_line, column=1, value="БАЗЫ ДЛЯ УДЕЛЬНЫХ СТАВОК").font = styles["section"]
+    tep_base: dict[str, int] = {}
+    above = "+".join(f"B{tep_row_of[key]}" for key in core_above_keys if key in tep_row_of) or "0"
+    under = f"B{tep_row_of['underground_parking']}" if "underground_parking" in tep_row_of else "0"
+    for offset, (key, label, formula) in enumerate((
+        ("core_above_gns", "ГНС наземная, м²", f"={above}"),
+        ("core_under_gns", "ГНС подземная, м²", f"={under}"),
+        ("core_total_gns", "ГНС всего, м²", f"=B{base_line + 1}+B{base_line + 2}"),
+    )):
+        line = base_line + 1 + offset
+        ws_tep.cell(row=line, column=1, value=label).font = styles["bold"]
+        ws_tep.cell(row=line, column=2, value=formula).number_format = area
+        tep_base[key] = line
+
+    ws_tep.column_dimensions["A"].width = 32
     for column in range(2, 8):
         ws_tep.column_dimensions[get_column_letter(column)].width = 20
+
+    def tep_ref(key: str) -> str:
+        return f"{_M2_SHEETS['tep']}!$B${tep_base[key]}"
+
+    def tep_cell(product: str, column: int) -> str:
+        return f"{_M2_SHEETS['tep']}!${get_column_letter(column)}${tep_row_of[product]}"
 
     # --- СРОКИ -------------------------------------------------------------
     ws_dates = sheets["schedule"]
@@ -8875,72 +8973,215 @@ def build_plato_model_v2(
         ws_dates.column_dimensions[column].width = 14
 
     # --- ПРОДАЖИ -----------------------------------------------------------
-    sales = _MonthGrid(sheets["sales"], months, styles, title="ПРОДАЖИ · млн ₽ и м²/шт.")
+    # Выручка не приходит числом: объём — это площадь из ТЭП, разложенная по
+    # графику продаж, цена — стартовая цена с «Вводных», умноженная на индекс.
+    # Поднял цену квартир — выручка выросла, и дальше поехали эскроу, покрытие,
+    # ставка ПФ, налог и LLCR.
+    sales = _MonthGrid(sheets["sales"], months, styles, title="ПРОДАЖИ")
     quantity_rows = monthly.get("quantity") or []
-    revenue_rows = monthly.get("revenue") or []
-    quantity_keys = [f"quantity_{item['key']}" for item in quantity_rows]
-    revenue_keys = [f"revenue_{item['key']}" for item in revenue_rows]
-    sales.layout(("section", "Объёмы"), *quantity_keys, "quantity_total",
-                 ("section", "Выручка"), *revenue_keys, "revenue", "revenue_cum")
-    for item, key in zip(quantity_rows, quantity_keys):
-        sales.values(key, item.get("label") or item["key"], item.get("values") or [], area)
-    sales.formula(
-        "quantity_total", "Объём, всего",
-        lambda i: "=" + "+".join(sales.at(key, i) for key in quantity_keys) if quantity_keys else "=0",
-        area, bold=True)
+    revenue_rows = {item["key"]: item for item in (monthly.get("revenue") or [])}
+    products = []
+    for item in quantity_rows:
+        key = str(item["key"])
+        spec = _M2_PRODUCTS.get(key)
+        if spec is None or key not in tep_row_of:
+            continue
+        products.append((key, item, spec))
 
-    for item, key in zip(revenue_rows, revenue_keys):
-        sales.values(key, item.get("label") or item["key"],
-                     [v / 1e6 for v in (item.get("values") or [])], money)
-    sales.formula(
-        "revenue", "Выручка, всего",
-        lambda i: "=" + "+".join(sales.at(key, i) for key in revenue_keys) if revenue_keys else "=0",
-        money, bold=True)
+    layout: list[str | tuple[str, str]] = []
+    for key, item, _ in products:
+        layout += [("section", item.get("label") or key), f"pace_{key}",
+                   f"quantity_{key}", f"index_{key}", f"price_{key}", f"revenue_{key}"]
+    layout += [("section", "Итого"), "quantity_total", "revenue", "revenue_cum"]
+    sales.layout(*layout)
+
+    for key, item, spec in products:
+        base_column, price_key, price_scale, unit_name = spec
+        quantity = [float(v or 0.0) for v in (item.get("values") or [])]
+        total_quantity = sum(quantity)
+        money_row = revenue_rows.get(key) or {}
+        proceeds = [float(v or 0.0) for v in (money_row.get("values") or [])]
+        base_price = n(inputs, price_key, 0.0) * price_scale  # млн ₽ за единицу
+        sales.values(f"pace_{key}", f"График продаж, доля периода ({unit_name})",
+                     [(v / total_quantity if total_quantity else 0.0) for v in quantity], percent)
+        sales.formula(f"quantity_{key}", f"Объём продаж, {unit_name}",
+                      lambda i, key=key, base_column=base_column: (
+                          f"={tep_cell(key, base_column)}*{sales.at(f'pace_{key}', i)}"), area)
+        sales.values(
+            f"index_{key}", "Индекс цены к стартовой",
+            [((proceeds[i] / 1e6 / quantity[i] / base_price)
+              if i < len(proceeds) and quantity[i] and base_price else 0.0)
+             for i in range(len(quantity))], ratio)
+        sales.formula(f"price_{key}", f"Цена, млн ₽ за {unit_name}",
+                      lambda i, key=key, price_key=price_key, price_scale=price_scale: (
+                          f"={ref(price_key)}*{price_scale}*{sales.at(f'index_{key}', i)}"), ratio)
+        sales.formula(f"revenue_{key}", "Выручка, млн ₽",
+                      lambda i, key=key: (
+                          f"={sales.at(f'quantity_{key}', i)}*{sales.at(f'price_{key}', i)}"),
+                      money, bold=True)
+
+    quantity_keys = [f"quantity_{key}" for key, _, _ in products]
+    revenue_keys = [f"revenue_{key}" for key, _, _ in products]
+    sales.formula("quantity_total", "Объём продаж, всего",
+                  lambda i: "=" + ("+".join(sales.at(k, i) for k in quantity_keys) or "0"), area)
+    sales.formula("revenue", "Выручка, всего",
+                  lambda i: "=" + ("+".join(sales.at(k, i) for k in revenue_keys) or "0"),
+                  money, bold=True)
     sales.formula("revenue_cum", "Выручка нарастающим",
                   lambda i: f"={sales.before('revenue_cum', i)}+{sales.at('revenue', i)}", money)
 
-    # Сводка по продуктам: цена — частное выручки и объёма, а не третье число.
     line = sales._next + 2
     sheets["sales"].cell(row=line, column=1, value="СВОДКА ПО ПРОДУКТАМ").font = styles["section"]
     line += 1
     for column, label in enumerate(
-            ("Продукт", "Ед.", "Объём", "Выручка, млн ₽", "Средняя цена, тыс. ₽/ед.",
-             "Доля до РВЭ", "Старт продаж", "Окончание"), start=1):
+            ("Продукт", "Ед.", "Объём", "Выручка, млн ₽", "Средняя цена, млн ₽/ед."), start=1):
         sheets["sales"].cell(row=line, column=column, value=label).font = styles["bold"]
-    for offset, item in enumerate(report.get("products") or []):
+    last_column = sales.letter(len(months) - 1)
+    for offset, (key, item, spec) in enumerate(products):
         current = line + 1 + offset
-        sheets["sales"].cell(row=current, column=1, value=item.get("label"))
-        sheets["sales"].cell(row=current, column=2, value=item.get("unit"))
-        sheets["sales"].cell(row=current, column=3,
-                             value=round(float(item.get("quantity") or 0.0), 2)).number_format = area
-        sheets["sales"].cell(row=current, column=4,
-                             value=round(float(item.get("revenue") or 0.0) / 1e6, 3)).number_format = money
+        sheets["sales"].cell(row=current, column=1, value=item.get("label") or key)
+        sheets["sales"].cell(row=current, column=2, value=spec[3])
+        sheets["sales"].cell(
+            row=current, column=3,
+            value=f"=SUM(B{sales.rows[f'quantity_{key}']}:{last_column}{sales.rows[f'quantity_{key}']})",
+        ).number_format = area
+        sheets["sales"].cell(
+            row=current, column=4,
+            value=f"=SUM(B{sales.rows[f'revenue_{key}']}:{last_column}{sales.rows[f'revenue_{key}']})",
+        ).number_format = money
         sheets["sales"].cell(row=current, column=5,
-                             value=f"=IFERROR(D{current}*1000/C{current},0)").number_format = money
-        sheets["sales"].cell(row=current, column=6,
-                             value=round(float(item.get("share_before_rve") or 0.0), 4)).number_format = percent
-        for column, key in ((7, "sales_start"), (8, "sales_end")):
-            when = item.get(key)
-            cell = sheets["sales"].cell(row=current, column=column, value=d(when) if when else None)
-            cell.number_format = month_fmt
+                             value=f"=IFERROR(D{current}/C{current},0)").number_format = ratio
 
     # --- СЕБЕСТОИМОСТЬ -----------------------------------------------------
+    # Статья считается как ставка × база, а по месяцам раскладывается ровно по
+    # окну освоения — так же, как это делает движок. Ставку правят на
+    # «Вводных», базу — на «ТЭП», окно — в блоке калькуляции под сеткой.
     costs = _MonthGrid(sheets["costs"], months, styles, title="СЕБЕСТОИМОСТЬ · млн ₽")
-    cost_rows = monthly.get("costs") or []
-    cost_keys = [f"cost_{item['key']}" for item in cost_rows]
-    costs.layout(("section", "Инвестиционные затраты"), *cost_keys, "capex",
+    cost_rows = {item["key"]: item for item in (monthly.get("costs") or [])}
+    articles = [(key, label) for key, label in _M2_COST_ARTICLES if key in cost_rows]
+    cost_keys = [f"cost_{key}" for key, _ in articles]
+    costs.layout("index", ("section", "Инвестиционные затраты"), *cost_keys, "capex",
                  ("section", "Операционные затраты"), "operating", "total", "total_cum",
                  ("section", "Потребность в долге"), "debt", "own")
-    for item, key in zip(cost_rows, cost_keys):
-        costs.values(key, item.get("label") or item["key"],
-                     [v / 1e6 for v in (item.get("values") or [])], money)
-    costs.formula(
-        "capex", "CAPEX, всего",
-        lambda i: "=" + "+".join(costs.at(key, i) for key in cost_keys) if cost_keys else "=0",
-        money, bold=True)
+    costs.formula("index", "№ месяца от старта проекта",
+                  lambda i: (f"=(YEAR({costs.month(i)})-YEAR({ref('project_start')}))*12"
+                             f"+MONTH({costs.month(i)})-MONTH({ref('project_start')})+1"), "0")
 
-    costs.values("operating", "Маркетинг, продажи и содержание",
-                 [v / 1e6 for v in (monthly.get("commercial_costs") or [])], money)
+    # Блок калькуляции под сеткой: сумма статьи, окно освоения и его номер.
+    calc_line = costs._next + 2
+    sheets["costs"].cell(row=calc_line, column=1, value="КАЛЬКУЛЯЦИЯ СТАТЕЙ").font = styles["section"]
+    calc_line += 1
+    for column, label in enumerate(
+            ("Статья", "Сумма, млн ₽", "Старт освоения", "Месяцев", "№ месяца старта"), start=1):
+        sheets["costs"].cell(row=calc_line, column=column, value=label).font = styles["bold"]
+    calc_row = {key: calc_line + 1 + offset for offset, (key, _) in enumerate(articles)}
+
+    def amount(key: str) -> str:
+        return f"$B${calc_row[key]}"
+
+    last_column = sales.letter(len(months) - 1)
+
+    def monthly_sum(row_key: str) -> str:
+        line = costs.rows[row_key]
+        return f"SUM(B{line}:{last_column}{line})"
+
+    # Окна освоения — те же, что в движке: ИРД от старта проекта, проектирование
+    # и подготовка прижаты к РнС, стройка идёт весь срок строительства,
+    # благоустройство и ввод — последние три месяца до РВЭ.
+    design_window = f"MIN(6,{ref('ird_months')})"
+    to_permit = f"EDATE({ref('permit')},-{design_window})"
+    before_rve = f"EDATE({ref('rve')},-3)"
+    build_months = ref("construction_months")
+    works = "+".join(amount(key) for key in
+                     ("main_above", "main_under", "social", "offices",
+                      "standalone_retail", "above_parking") if key in calc_row) or "0"
+    management = "+".join(amount(key) for key in
+                          ("ird", "design_p", "design_rd", "author_supervision", "preparation",
+                           "main_above", "main_under", "utilities", "landscaping",
+                           "site_maintenance") if key in calc_row) or "0"
+
+    def unit_rate(rate_key: str, base_key: str) -> str:
+        return f"={tep_ref(base_key)}*{ref(rate_key)}/1000"
+
+    plan: dict[str, tuple[str, str, str]] = {
+        "purchase": (f"={ref('purchase_price_mln')}", f"={ref('project_start')}", "=1"),
+        "ird": (unit_rate("ird_th_per_sqm", "core_total_gns"),
+                f"={ref('project_start')}", f"={ref('ird_months')}"),
+        "design_p": (unit_rate("design_p_th_per_sqm", "core_total_gns"),
+                     f"={to_permit}", f"={design_window}"),
+        "design_rd": (unit_rate("design_rd_th_per_sqm", "core_total_gns"),
+                      f"={to_permit}", f"={design_window}"),
+        "preparation": (unit_rate("preparation_th_per_sqm", "core_total_gns"),
+                        f"={to_permit}", f"={design_window}"),
+        "main_above": (unit_rate("main_above_th_per_sqm", "core_above_gns"),
+                       f"={ref('permit')}", f"={build_months}"),
+        "main_under": (unit_rate("main_under_th_per_sqm", "core_under_gns"),
+                       f"={ref('permit')}", f"={build_months}"),
+        "utilities": (unit_rate("utilities_th_per_sqm", "core_total_gns"),
+                      f"={ref('permit')}", f"={build_months}"),
+        "site_maintenance": (unit_rate("site_maintenance_th_per_sqm", "core_total_gns"),
+                             f"={ref('permit')}", f"={build_months}"),
+        "landscaping": (unit_rate("landscaping_th_per_sqm", "core_total_gns"),
+                        f"={before_rve}", "=3"),
+        "commissioning": (unit_rate("commissioning_th_per_sqm", "core_total_gns"),
+                          f"={before_rve}", "=3"),
+        "author_supervision": (
+            f"=({amount('design_p')}+{amount('design_rd')})*{ref('author_supervision_pct')}"
+            if "design_p" in calc_row else "=0",
+            f"={ref('permit')}", f"={build_months}"),
+        "technical_supervision": (f"=({works})*{ref('technical_supervision_pct')}",
+                                  f"={ref('permit')}", f"={build_months}"),
+        "gc_fee": (f"=({works})*{ref('gc_fee_pct')}", f"={ref('permit')}", f"={build_months}"),
+        "project_management": (
+            f"=({management})*{ref('project_management_pct')}", f"={ref('project_start')}",
+            f"=(YEAR({ref('rve')})-YEAR({ref('project_start')}))*12"
+            f"+MONTH({ref('rve')})-MONTH({ref('project_start')})"),
+    }
+
+    for key, label in articles:
+        line = calc_row[key]
+        sheets["costs"].cell(row=line, column=1, value=label)
+        if key == "reserve":
+            # Резерв — процент от всех прочих статей, поэтому считается последним.
+            others = "+".join(amount(other) for other, _ in articles if other != "reserve")
+            formula = f"=({others})*{ref('reserve_pct')}"
+            start, length = f"={ref('permit')}", f"={build_months}"
+        elif key in plan:
+            formula, start, length = plan[key]
+        else:
+            # Плата за ВРИ и соцнагрузка идут по собственным графикам: рассрочка
+            # на своём листе и три объекта со своими сроками. Сумма — итог ряда.
+            formula = f"={monthly_sum(f'cost_{key}')}"
+            start, length = "", ""
+        sheets["costs"].cell(row=line, column=2, value=formula).number_format = money
+        if start:
+            sheets["costs"].cell(row=line, column=3, value=start).number_format = month_fmt
+            sheets["costs"].cell(row=line, column=4, value=length).number_format = "0"
+            sheets["costs"].cell(
+                row=line, column=5,
+                value=f"=(YEAR(C{line})-YEAR({ref('project_start')}))*12"
+                      f"+MONTH(C{line})-MONTH({ref('project_start')})+1").number_format = "0"
+
+    for key, label in articles:
+        row_key = f"cost_{key}"
+        if key in plan or key == "reserve":
+            line = calc_row[key]
+            costs.formula(row_key, label,
+                          lambda i, line=line: (
+                              f"=IF(AND({costs.at('index', i)}>=$E${line},"
+                              f"{costs.at('index', i)}<$E${line}+$D${line}),"
+                              f"$B${line}/MAX($D${line},1),0)"), money)
+        else:
+            item = cost_rows.get(key) or {}
+            costs.values(row_key, f"{label} · свой график",
+                         [v / 1e6 for v in (item.get("values") or [])], money)
+
+    costs.formula("capex", "CAPEX, всего",
+                  lambda i: "=" + "+".join(costs.at(key, i) for key in cost_keys), money, bold=True)
+    # Маркетинг и продажи — процент от выручки, а не отдельный ряд чисел.
+    costs.formula("operating", "Маркетинг, продажи и содержание",
+                  lambda i: (f"={sales.outside('revenue', i)}"
+                             f"*({ref('marketing_pct')}+{ref('selling_pct')})"), money)
     costs.formula("total", "Расходы, всего",
                   lambda i: f"={costs.at('capex', i)}+{costs.at('operating', i)}", money, bold=True)
     costs.formula("total_cum", "Расходы нарастающим",
@@ -8960,7 +9201,7 @@ def build_plato_model_v2(
     costs.formula("own", "Оплачивается своими деньгами",
                   lambda i: f"={costs.at('total', i)}-{costs.at('debt', i)}", money)
 
-    line = costs._next + 2
+    line = max(costs._next, calc_line + len(articles) + 1) + 2
     sheets["costs"].cell(row=line, column=1, value="СТРУКТУРА РАСХОДОВ").font = styles["section"]
     line += 1
     for column, label in enumerate(("Статья", "Сумма, млн ₽", "Доля"), start=1):
@@ -8975,6 +9216,9 @@ def build_plato_model_v2(
             row=current, column=3,
             value=f"=IFERROR(B{current}/SUM($B${line + 1}:$B${line + len(structure)}),0)",
         ).number_format = percent
+    sheets["costs"].column_dimensions["B"].width = 16
+    for column in ("C", "D", "E"):
+        sheets["costs"].column_dimensions[column].width = 16
 
     # --- СТАВКИ ------------------------------------------------------------
     rate_grid = _MonthGrid(sheets["rates"], months, styles, title="СТАВКИ")

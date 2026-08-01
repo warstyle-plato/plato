@@ -37,9 +37,11 @@ openpyxl = pytest.importorskip("openpyxl")
 
 from openpyxl.utils import get_column_letter  # noqa: E402
 
-# Книга считает в миллионах: 1e-5 — это копейки на миллиардах, столько даёт
-# разный порядок сложения. Всё, что больше, — уже методика.
-KOPECK = 1e-5
+# Книга считает в миллионах. Драйверы графиков движок отдаёт округлёнными до
+# копеек, поэтому доли периода и
+# индексы цены несут копеечную погрешность: 1e-3 млн ₽ — это тысяча рублей на
+# сорока миллиардах. Всё, что больше, — уже методика.
+KOPECK = 1e-3
 
 
 @pytest.fixture(scope="module")
@@ -188,7 +190,7 @@ def test_the_llcr_sheet_shows_its_own_arithmetic(book):
 
     assert close(numerator, engine["finance"]["llcr_numerator"] / 1e6)
     assert close(denominator, engine["finance"]["llcr_denominator"] / 1e6)
-    assert llcr == pytest.approx(engine["summary"]["llcr"], rel=1e-9)
+    assert llcr == pytest.approx(engine["summary"]["llcr"], rel=1e-7)
     assert evaluator.cell("ОТЧЁТ", f"B{4 + core._M2_REPORT_KEYS.index('llcr')}") == pytest.approx(llcr)
 
 
@@ -235,8 +237,8 @@ def test_the_tax_rate_reaches_the_llcr(book):
 # Драйверы — это сценарий: объёмы, выручка по продуктам, статьи затрат, прогноз
 # ставки, налоговая маржа. Всё прочее на помесячных листах обязано быть формулой.
 DRIVER_ROWS = {
-    "ПРОДАЖИ": ("quantity_", "revenue_"),
-    "СЕБЕСТОИМОСТЬ": ("cost_", "operating", "debt"),
+    "ПРОДАЖИ": ("pace_", "index_"),
+    "СЕБЕСТОИМОСТЬ": ("cost_land_rights", "cost_social", "debt", "index"),
     "СТАВКИ": ("key_rate",),
     "ЭСКРОУ": (),
     "КРЕДИТОВАНИЕ": (),
@@ -286,6 +288,102 @@ def test_every_formula_is_understood(book):
                         pytest.fail(f"{name}!{cell.coordinate}: {exc}\n{cell.value}")
 
     assert total > 1000, f"формул подозрительно мало: {total}"
+
+
+def test_the_price_drives_the_revenue(book):
+    """Выручка — это объём из ТЭП на цену с «Вводных», а не выгруженный ряд.
+
+    Прежде продажи лежали в книге числами: правка цены квадратного метра ничего
+    не двигала, и модель нельзя было использовать по назначению — посмотреть,
+    что будет при другой цене.
+    """
+    workbook, _, _, meta = book
+    fresh = _reopen(workbook)
+    row = 4 + core._M2_REPORT_KEYS.index("revenue")
+    was = Evaluator(fresh).cell("ОТЧЁТ", f"B{row}")
+
+    line = meta["layout"]["inputs"]["apartment_price_th"]
+    fresh["Вводные"][f"B{line}"] = fresh["Вводные"][f"B{line}"].value * 1.1
+
+    after = Evaluator(fresh).cell("ОТЧЁТ", f"B{row}")
+    assert after > was * 1.05, f"плюс 10% к цене квартир не сдвинули выручку: {was} → {after}"
+
+
+def test_the_area_drives_the_revenue(book):
+    """Площадь живёт на «ТЭП», и продажи считаются от неё."""
+    workbook, _, _, meta = book
+    fresh = _reopen(workbook)
+    row = 4 + core._M2_REPORT_KEYS.index("revenue")
+    was = Evaluator(fresh).cell("ОТЧЁТ", f"B{row}")
+
+    sheet = fresh["ТЭП"]
+    line = [r for r in range(5, sheet.max_row + 1) if sheet.cell(r, 1).value == "Квартиры"][0]
+    sheet.cell(row=line, column=5).value = sheet.cell(row=line, column=5).value * 0.5
+
+    assert Evaluator(fresh).cell("ОТЧЁТ", f"B{row}") < was * 0.7
+
+
+def test_the_unit_rate_drives_the_capex(book):
+    """Себестоимость — ставка на базу: тысячи рублей за метр на ГНС."""
+    workbook, _, _, meta = book
+    fresh = _reopen(workbook)
+    row = 4 + core._M2_REPORT_KEYS.index("capex")
+    was = Evaluator(fresh).cell("ОТЧЁТ", f"B{row}")
+
+    line = meta["layout"]["inputs"]["main_above_th_per_sqm"]
+    fresh["Вводные"][f"B{line}"] = fresh["Вводные"][f"B{line}"].value + 10
+
+    after = Evaluator(fresh).cell("ОТЧЁТ", f"B{row}")
+    assert after > was + 1000, f"плюс 10 тыс. ₽/м² не сдвинули CAPEX: {was} → {after}"
+
+
+def test_the_marketing_share_follows_the_revenue(book):
+    """Маркетинг и продажи — процент от выручки, а не отдельный ряд чисел."""
+    workbook, _, _, meta = book
+    fresh = _reopen(workbook)
+    row = 4 + core._M2_REPORT_KEYS.index("operating")
+    was = Evaluator(fresh).cell("ОТЧЁТ", f"B{row}")
+
+    line = meta["layout"]["inputs"]["marketing_pct"]
+    fresh["Вводные"][f"B{line}"] = fresh["Вводные"][f"B{line}"].value * 2
+
+    assert Evaluator(fresh).cell("ОТЧЁТ", f"B{row}") > was * 1.3
+
+
+def test_the_term_of_the_permit_is_calculated_not_typed(book):
+    """РнС и РВЭ — это старт проекта плюс сроки ИРД и строительства."""
+    workbook, _, engine, meta = book
+    fresh = _reopen(workbook)
+    evaluator = Evaluator(fresh)
+
+    permit = evaluator.cell("Вводные", f"B{meta['layout']['inputs']['permit']}")
+    rve = evaluator.cell("Вводные", f"B{meta['layout']['inputs']['rve']}")
+
+    assert permit.isoformat()[:10] == engine["dates"]["permit"]
+    assert rve.isoformat()[:10] == engine["dates"]["rve"]
+
+
+def test_a_longer_permit_stage_moves_the_construction_window(book):
+    """Сдвинули срок ИРД — поехал и график освоения, и стоимость долга."""
+    workbook, _, _, meta = book
+    fresh = _reopen(workbook)
+    row = 4 + core._M2_REPORT_KEYS.index("financing_cost")
+    was = Evaluator(fresh).cell("ОТЧЁТ", f"B{row}")
+
+    line = meta["layout"]["inputs"]["ird_months"]
+    fresh["Вводные"][f"B{line}"] = fresh["Вводные"][f"B{line}"].value + 6
+
+    assert Evaluator(fresh).cell("ОТЧЁТ", f"B{row}") != pytest.approx(was)
+
+
+def test_every_input_of_the_model_is_on_the_sheet(book):
+    """Куцые вводные — это книга, в которой нечего менять."""
+    _, _, _, meta = book
+    on_sheet = set(meta["layout"]["inputs"])
+
+    expected = {field[0] for _, fields in core.FIELD_GROUPS for field in fields}
+    assert not expected - on_sheet, f"на «Вводных» нет полей: {sorted(expected - on_sheet)}"
+    assert len(expected) > 100
 
 
 # --- вспомогательное -------------------------------------------------------

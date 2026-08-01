@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import calendar as _calendar
 import datetime as _dt
 import re
 from typing import Any, Callable
@@ -63,6 +64,14 @@ def _as_date(value: Any) -> _dt.date:
     return _dt.date(1899, 12, 30) + _dt.timedelta(days=int(_as_number(value)))
 
 
+def _edate(value: Any, offset: Any) -> _dt.date:
+    start = _as_date(value)
+    total = start.year * 12 + start.month - 1 + int(_as_number(offset))
+    year, month = divmod(total, 12)
+    day = min(start.day, _calendar.monthrange(year, month + 1)[1])
+    return _dt.date(year, month + 1, day)
+
+
 def _flatten(values: Any) -> list[Any]:
     if isinstance(values, list):
         out: list[Any] = []
@@ -89,6 +98,7 @@ FUNCTIONS: dict[str, Callable[[list[Any]], Any]] = {
         a * b for a, b in zip(*[[_as_number(v) for v in _flatten(arg)] for arg in args])
     ),
     "YEAR": lambda args: _as_date(args[0]).year,
+    "EDATE": lambda args: _edate(args[0], args[1]),
     "MONTH": lambda args: _as_date(args[0]).month,
 }
 
