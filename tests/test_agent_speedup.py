@@ -171,6 +171,60 @@ def test_the_cache_expires(monkeypatch):
     assert core._plato_answer_get(key_seen["key"]) is None
 
 
+# --- бюджет размышлений ----------------------------------------------------
+
+def free_question(monkeypatch, captured):
+    """Свободный вопрос доходит до модели; перехватываем её payload."""
+    def fake(payload):
+        captured.append(payload)
+        return {"output": [{"type": "message",
+                            "content": [{"type": "output_text", "text": "ответ"}]}]}
+    monkeypatch.setattr(core, "_openai_responses_request", fake)
+    return ask("", message="Свободный вопрос без сценария?")
+
+
+def test_the_model_thinks_on_a_budget(monkeypatch):
+    """Числа считает движок; полный reasoning на каждом раунде — это и были
+    «пять минут» на вопрос."""
+    captured = []
+    response = free_question(monkeypatch, captured)
+
+    assert response.status_code == 200
+    payload = captured[0]
+    assert payload["reasoning"] == {"effort": "low"}
+    assert payload["parallel_tool_calls"] is True
+
+
+def test_the_budget_can_be_raised_by_env(monkeypatch):
+    monkeypatch.setenv("OPENAI_AGENT_REASONING", "high")
+    captured = []
+    free_question(monkeypatch, captured)
+
+    assert captured[0]["reasoning"] == {"effort": "high"}
+
+
+def test_the_budget_is_not_sent_to_a_model_that_rejects_it(monkeypatch):
+    """gpt-4-класс параметра reasoning не принимает — слать его туда нельзя."""
+    monkeypatch.setenv("OPENAI_AGENT_MODEL", "gpt-4o")
+    captured = []
+    free_question(monkeypatch, captured)
+
+    assert "reasoning" not in captured[0]
+
+
+def test_the_budget_can_be_switched_off(monkeypatch):
+    monkeypatch.setenv("OPENAI_AGENT_REASONING", "off")
+    captured = []
+    free_question(monkeypatch, captured)
+
+    assert "reasoning" not in captured[0]
+
+
+def test_the_status_reports_the_effort():
+    data = client.get("/agent/status").json()
+    assert data["reasoning_effort"] == "low"
+
+
 # --- trace -----------------------------------------------------------------
 
 def test_the_stage_is_readable_while_the_answer_is_prepared():

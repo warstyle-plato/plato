@@ -41,7 +41,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.13.31"
+VERSION = "0.13.32"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -16210,6 +16210,27 @@ def _plato_route() -> str:
     return "render_proxy" if _PLATO_AI_URL else "local_openai"
 
 
+def _agent_reasoning_effort(model: str) -> str | None:
+    """Бюджет размышлений модели на один раунд.
+
+    Числа Платону считает движок: модель в цикле только выбирает инструменты и
+    формулирует вывод, а думала при этом с полным бюджетом reasoning-модели —
+    десятки секунд на раунд, при восьми раундах это и были «пять минут».
+    По умолчанию бюджет низкий; OPENAI_AGENT_REASONING поднимает его обратно
+    (medium/high) или выключает параметр совсем (off) для моделей, которые его
+    не принимают.
+    """
+    effort = os.getenv("OPENAI_AGENT_REASONING", "").strip().lower()
+    if effort == "off":
+        return None
+    if effort in ("minimal", "low", "medium", "high"):
+        return effort
+    # Параметр понимают только reasoning-модели; остальным его слать нельзя.
+    if model.startswith(("gpt-5", "o1", "o3", "o4")):
+        return "low"
+    return None
+
+
 def _openai_responses_request(payload: dict[str, Any]) -> dict[str, Any]:
     route = _plato_route()
     # Маршрут — первое, что спрашивают при разборе «Платон молчит». В сообщении
@@ -16313,6 +16334,7 @@ def _call_openai_tool_agent(
     proposals: list[dict[str, Any]] = []
     tool_cache: dict[str, dict[str, Any]] = {}
     final_ready_seen = False
+    effort = _agent_reasoning_effort(model)
     for _round in range(_AGENT_MAX_TOOL_ROUNDS):
         _plato_trace_write(trace_id, f"llm_{_round + 1}",
                            "Платон Сергеевич думает" + (f" · шаг {_round + 1}" if _round else ""))
@@ -16321,10 +16343,15 @@ def _call_openai_tool_agent(
             "instructions": _AGENT_INSTRUCTIONS,
             "input": input_items,
             "tools": _AGENT_TOOLS,
-            "parallel_tool_calls": False,
+            # Несколько инструментов за раунд: каждый раунд — это полный проход
+            # модели, и просить explain_metric и goal_seek по очереди означало
+            # платить за два прохода там, где хватает одного.
+            "parallel_tool_calls": True,
             "max_output_tokens": 2600,
             "store": False,
         }
+        if effort:
+            payload["reasoning"] = {"effort": effort}
         response = _openai_responses_request(payload)
         output = response.get("output") or []
         input_items.extend(output)
@@ -16384,6 +16411,7 @@ def _call_openai_tool_agent(
     # Force one final synthesis pass without tools using all accumulated verified outputs.
     synthesis_payload = {
         "model": model,
+        **({"reasoning": {"effort": effort}} if effort else {}),
         "instructions": (
             _AGENT_INSTRUCTIONS
             + "\n\nКРИТИЧЕСКОЕ ПРАВИЛО: инструментов больше нет. "
@@ -16760,6 +16788,8 @@ def agent_status() -> dict[str, Any]:
         "route": _plato_route(),
         "proxy_configured": bool(_PLATO_AI_URL and _PLATO_AI_PROXY_SECRET),
         "model": os.getenv("OPENAI_AGENT_MODEL", "gpt-5.6"),
+        "reasoning_effort": _agent_reasoning_effort(
+            os.getenv("OPENAI_AGENT_MODEL", "gpt-5.6").strip() or "gpt-5.6") or "default",
         "agent_name": "Платон Сергеевич Федоскин",
         "mode": "reasoning_agent_with_confirmed_input_patches",
         "bank_llcr_target": _AGENT_BANK_LLCR_TARGET,
