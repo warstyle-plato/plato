@@ -315,6 +315,32 @@ def test_the_tep_sheet_does_not_double_count_the_objects():
     assert str(template["ТЭП"]["G22"].value).replace(" ", "") == "=SUM(G8,G14,G20)"
 
 
+def test_a_fourth_queue_is_folded_into_the_third_not_smeared():
+    """Листов CF в книге три. Объёмы 4-й очереди ближе по срокам к третьей,
+    чем к первой: хвост сливается в О3, а не размазывается по всем, и
+    сборка честно говорит об этом в meta."""
+    phasing = {
+        "enabled": True, "phase_count": 4,
+        "phases": [{"start_offset_months": 12 * i, "construction_months": 24}
+                   for i in range(4)],
+        "products": {k: [30, 30, 20, 20] for k in ("apartments", "ground_commercial",
+                                                   "underground_parking", "storage")},
+        "shared_allocation": {"purchase": [100, 0, 0, 0], "land_rights": [25, 25, 25, 25],
+                              "social_compensation": [100, 0, 0, 0]},
+        "cost_inflation_pct": 8, "sales_price_inflation_pct": 8,
+    }
+    content, _, meta = build(phasing=phasing)
+    sheet = openpyxl.load_workbook(io.BytesIO(content), data_only=False)["Вводные"]
+    total = core.TEP_DEFAULT["apartments"]["gns"]
+
+    assert any("слиты в третью" in str(item) for item in meta["missing"])
+    assert sheet["W88"].value == pytest.approx(total * 0.30, rel=1e-6)
+    assert sheet["W89"].value == pytest.approx(total * 0.30, rel=1e-6)
+    assert sheet["W90"].value == pytest.approx(total * 0.40, rel=1e-6), \
+        "объём четвёртой очереди не слит в третью"
+    assert sheet["Q90"].value == pytest.approx(0.50)  # доли ВРИ 25+25
+
+
 def test_the_objects_inherit_their_queue_from_the_phasing():
     """Шаблонная «очередь 1» сажала офисы в первую очередь, а движок ведёт их
     в третьей: продаваемая площадь очередей расходилась с отчётом."""

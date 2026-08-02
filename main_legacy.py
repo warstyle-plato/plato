@@ -42,7 +42,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.14.6"
+VERSION = "0.14.7"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -7740,15 +7740,31 @@ def _v4_normalized(weights: list[float], count: int) -> list[float]:
     return [w / total for w in weights[:count]]
 
 
-def _v4_phase_weights(phasing: dict[str, Any], product: str, count: int) -> list[float]:
+def _v4_fold_tail(weights: list[float], enabled: int, book: int) -> list[float]:
+    """Очередей больше, чем листов CF в книге: хвост сливается в последнюю
+    книжную очередь, а не размазывается по всем — объёмы четвёртой очереди
+    ближе по срокам к третьей, чем к первой."""
+    trimmed = weights[:enabled]
+    if enabled > book and len(trimmed) >= book:
+        trimmed = trimmed[:book - 1] + [sum(trimmed[book - 1:])]
+    return trimmed
+
+
+def _v4_phase_weights(
+    phasing: dict[str, Any], product: str, count: int, enabled: int | None = None
+) -> list[float]:
     weights = [float(w or 0) for w in ((phasing.get("products") or {}).get(product) or [])]
+    weights = _v4_fold_tail(weights, enabled or count, count)
     if len(weights) < count or sum(weights[:count]) <= 0:
         return [1.0 / count] * count
     return _v4_normalized(weights, count)
 
 
-def _v4_shared_weights(phasing: dict[str, Any], key: str, count: int) -> list[float]:
+def _v4_shared_weights(
+    phasing: dict[str, Any], key: str, count: int, enabled: int | None = None
+) -> list[float]:
     weights = [float(w or 0) for w in ((phasing.get("shared_allocation") or {}).get(key) or [])]
+    weights = _v4_fold_tail(weights, enabled or count, count)
     if len(weights) < count or sum(weights[:count]) <= 0:
         return [1.0 if index == 0 else 0.0 for index in range(count)]
     return _v4_normalized(weights, count)
@@ -7934,11 +7950,14 @@ def build_project_workbook(
     enabled_phases = int(p.get("phase_count") or 1) if p.get("enabled") else 1
     count = max(1, min(3, enabled_phases))
     if enabled_phases > 3:
-        missing.append(f"очередей {enabled_phases}, книга несёт 3 — лишние слиты в третью")
+        missing.append(
+            f"очередей {enabled_phases}, а листов CF в книге три: объёмы и доли "
+            "4-й и последующих слиты в третью очередь"
+        )
     phases = list(p.get("phases") or [])
-    weights = {product: _v4_phase_weights(p, product, count)
+    weights = {product: _v4_phase_weights(p, product, count, enabled_phases)
                for product in ("apartments", "ground_commercial", "underground_parking", "storage")}
-    shared = {key: _v4_shared_weights(p, key, count)
+    shared = {key: _v4_shared_weights(p, key, count, enabled_phases)
               for key in ("purchase", "land_rights", "social_compensation")}
     # Индексация очередей — готовыми множителями к сдвигу старта, как в
     # движке: О1 ×1, О2 ×1,08, О3 ×1,166 при 8% в год. Годовая инфляция в
