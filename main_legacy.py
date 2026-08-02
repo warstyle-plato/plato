@@ -42,7 +42,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.15.9"
+VERSION = "0.16.0"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -9933,6 +9933,17 @@ def build_plato_model_v2(
                 value=f"=(YEAR(C{line})-YEAR({ref('project_start')}))*12"
                       f"+MONTH(C{line})-MONTH({ref('project_start')})+1").number_format = "0"
 
+    # Стройка идёт S-кривой движка, а не равномерным окном. Профиль месяца —
+    # доля из фактического движкового ряда (числом), сумма статьи — живая
+    # формула калькуляции: ставку правят на «Вводных», профиль остаётся.
+    s_curve_keys = {"main_above", "main_under", "utilities", "site_maintenance",
+                    "author_supervision", "technical_supervision", "gc_fee", "reserve"}
+
+    def s_profile(key: str) -> list[float]:
+        values = [float(v or 0) for v in ((cost_rows.get(key) or {}).get("values") or [])]
+        total = sum(values)
+        return [v / total for v in values] if total else []
+
     for key, label in articles:
         row_key = f"cost_{key}"
         if key == "project_management" and key in computed_keys:
@@ -9940,6 +9951,12 @@ def build_plato_model_v2(
                           lambda i: ("=(" + "+".join(
                               costs.at(f"cost_{k}", i) for k in management_profile_keys)
                               + f")*{ref('project_management_pct')}"), money)
+        elif key in s_curve_keys and key in computed_keys:
+            profile = s_profile(key)
+            costs.formula(row_key, label,
+                          lambda i, profile=profile, key=key: (
+                              f"={amount(key)}*{profile[i]:.12f}"
+                              if i < len(profile) and profile[i] else "=0"), money)
         elif key in computed_keys:
             line = calc_row[key]
             costs.formula(row_key, label,
@@ -12073,6 +12090,21 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
         for bucket_month, bucket_value in bucket.items():
             add_capex(article, bucket_month, bucket_value)
 
+    def spread_s_curve(article: str, amount: float, start: date, months: int) -> None:
+        # S-кривая книги (лист CF_x, строка 12): первые 20% срока — вес 0,6,
+        # середина — 1,2, последние 20% — 0,8, нормируется на сумму весов.
+        # Равномерный разнос стройки расходился с книгой на 2-3% по процентам
+        # ПФ: деньги те же, помесячный профиль другой.
+        if not amount:
+            return
+        months = max(1, int(months))
+        weights = [0.6 if (index + 1) / months <= 0.2
+                   else (1.2 if (index + 1) / months <= 0.8 else 0.8)
+                   for index in range(months)]
+        total = sum(weights)
+        for index, weight in enumerate(weights):
+            add_capex(article, add_months(start, index), amount * weight / total)
+
     add_capex("purchase", project_start, n(x, "purchase_price_mln") * 1_000_000)
 
     # Плата за смену ВРИ идёт по собственному графику: единовременно или
@@ -12125,12 +12157,12 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
     spread_article("preparation", amounts["preparation"], add_months(permit, -design_window), design_window)
 
     construction_months = max(1, int(n(x, "construction_months", 24)))
-    spread_article("main_above", amounts["main_above"], permit, construction_months)
-    spread_article("main_under", amounts["main_under"], permit, construction_months)
-    spread_article("utilities", amounts["utilities"], permit, construction_months)
-    spread_article("site_maintenance", amounts["site_maintenance"], permit, construction_months)
-    spread_article("author_supervision", amounts["author_supervision"], permit, construction_months)
-    spread_article("technical_supervision", amounts["technical_supervision"], permit, construction_months)
+    spread_s_curve("main_above", amounts["main_above"], permit, construction_months)
+    spread_s_curve("main_under", amounts["main_under"], permit, construction_months)
+    spread_s_curve("utilities", amounts["utilities"], permit, construction_months)
+    spread_s_curve("site_maintenance", amounts["site_maintenance"], permit, construction_months)
+    spread_s_curve("author_supervision", amounts["author_supervision"], permit, construction_months)
+    spread_s_curve("technical_supervision", amounts["technical_supervision"], permit, construction_months)
     spread_article("landscaping", amounts["landscaping"], add_months(rve, -3), 3)
     spread_article("commissioning", amounts["commissioning"], add_months(rve, -3), 3)
 
@@ -12176,8 +12208,8 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
 
     # GC, reserve and project management belong to the construction phase rather than the pre-RnS bridge period.
     # This is closer to the timing used in the current Excel cash-flow model.
-    spread_article("gc_fee", amounts["gc_fee"], permit, construction_months)
-    spread_article("reserve", amounts["reserve"], permit, construction_months)
+    spread_s_curve("gc_fee", amounts["gc_fee"], permit, construction_months)
+    spread_s_curve("reserve", amounts["reserve"], permit, construction_months)
 
     # Apply expense scenario to ALL project-side cash outflows exactly once:
     # acquisition, VRI, social burden, design, construction, overheads, etc.
