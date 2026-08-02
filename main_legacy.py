@@ -9856,10 +9856,6 @@ def build_plato_model_v2(
     works = "+".join(amount(key) for key in
                      ("main_above", "main_under", "social", "offices",
                       "standalone_retail", "above_parking") if key in calc_row) or "0"
-    management = "+".join(amount(key) for key in
-                          ("ird", "design_p", "design_rd", "author_supervision", "preparation",
-                           "main_above", "main_under", "utilities", "landscaping",
-                           "site_maintenance") if key in calc_row) or "0"
 
     def unit_rate(rate_key: str, base_key: str) -> str:
         return f"={tep_ref(base_key)}*{ref(rate_key)}/1000"
@@ -9893,11 +9889,16 @@ def build_plato_model_v2(
         "technical_supervision": (f"=({works})*{ref('technical_supervision_pct')}",
                                   f"={ref('permit')}", f"={build_months}"),
         "gc_fee": (f"=({works})*{ref('gc_fee_pct')}", f"={ref('permit')}", f"={build_months}"),
-        "project_management": (
-            f"=({management})*{ref('project_management_pct')}", f"={ref('project_start')}",
-            f"=(YEAR({ref('rve')})-YEAR({ref('project_start')}))*12"
-            f"+MONTH({ref('rve')})-MONTH({ref('project_start')})"),
     }
+    # Управление проектом не имеет собственного окна: оно идёт за расходами,
+    # которыми вызвано, — процент от прямых затрат каждого месяца, как в
+    # движке. Сумма статьи в калькуляции — итог этого ряда.
+    management_profile_keys = [
+        key for key in ("ird", "design_p", "design_rd", "author_supervision",
+                        "preparation", "main_above", "main_under", "utilities",
+                        "landscaping", "site_maintenance")
+        if key in calc_row
+    ]
 
     for key, label in articles:
         line = calc_row[key]
@@ -9929,7 +9930,12 @@ def build_plato_model_v2(
 
     for key, label in articles:
         row_key = f"cost_{key}"
-        if key in computed_keys:
+        if key == "project_management" and key in computed_keys:
+            costs.formula(row_key, label,
+                          lambda i: ("=(" + "+".join(
+                              costs.at(f"cost_{k}", i) for k in management_profile_keys)
+                              + f")*{ref('project_management_pct')}"), money)
+        elif key in computed_keys:
             line = calc_row[key]
             costs.formula(row_key, label,
                           lambda i, line=line: (
