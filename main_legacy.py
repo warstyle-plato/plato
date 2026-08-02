@@ -42,7 +42,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.15.0"
+VERSION = "0.15.1"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -6139,6 +6139,11 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         ["Смена ВРИ / земельные права",_pdf_money(float(inputs.get('land_rights_cost_mln') or 0)*1_000_000)],
         ["Выручка",_pdf_money(summary.get('revenue'))],["Расходы всего",_pdf_money(summary.get('total_expenses'))],["EBITDA",_pdf_money(summary.get('ebitda'))],["Чистая прибыль",_pdf_money(summary.get('net_profit'))],["Маржинальность",_pdf_pct(summary.get('margin'))],["LLCR",_pdf_num(summary.get('llcr'),2)+"x"],["Расчётный БРИДЖ",_pdf_money(financing.get('calculated_bridge'))],["Фактический пик БРИДЖ",_pdf_money(financing.get('actual_bridge'))],["Пиковая (непокрытая эскроу) задолженность ПФ",_pdf_money(financing.get('pf_uncovered_peak'))],["Проценты и комиссии",_pdf_money(financing.get('interest_and_fees'))],
     ]
+    # Остаток ПФ на конец проекта — это несостоявшееся погашение, а не деталь
+    # финансирования: без него отчёт выглядел безупречно при непогашенном долге.
+    _ending_pf=float(financing.get('ending_pf') or 0)
+    if _ending_pf>500_000:
+        kpis.append(["Непогашенный долг ПФ на конец проекта",_pdf_money(_ending_pf)])
     story.append(table([["Показатель","Значение"]]+kpis,[112*mm,58*mm]))
     purchase_assessment = _purchase_feasibility(
         inputs.get("purchase_price_mln"),
@@ -6288,7 +6293,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         product_rows.append([item.get('label') or '—',_pdf_num(quantity,0)+(' '+unit if unit else ''),_pdf_num(item.get('start_price_th'),0)+" тыс. ₽",_pdf_num(item.get('avg_price_th'),0)+" тыс. ₽",_pdf_money(revenue)])
     story.append(table(product_rows,[55*mm,28*mm,30*mm,30*mm,32*mm],font_size=7.4))
     story.append(PageBreak());story.append(P("Финансирование и динамика проекта",h2))
-    finance_rows=[["Показатель","Значение"],["Расчётный БРИДЖ",_pdf_money(financing.get('calculated_bridge'))],["Пиковый фактический БРИДЖ",_pdf_money(financing.get('actual_bridge'))],["Пиковая (непокрытая эскроу) задолженность ПФ",_pdf_money(financing.get('pf_uncovered_peak'))],["Лимит ПФ",_pdf_money(financing.get('pf_limit'))],["Текущая ключевая ставка",_pdf_pct(financing.get('current_key_rate'))],["Спред БРИДЖ",_pdf_pct(financing.get('bridge_spread'))],["Ставка БРИДЖ на текущей ключевой",_pdf_pct(financing.get('current_bridge_rate'))],["Средняя ключевая за период БРИДЖ",_pdf_pct(financing.get('avg_bridge_key_rate'))],["Средневзвешенная ставка БРИДЖ за период",_pdf_pct(financing.get('avg_bridge_rate'))],["Средняя фактическая ставка ПФ",_pdf_pct(financing.get('avg_pf_effective_rate'))],["Проценты и комиссии",_pdf_money(financing.get('interest_and_fees'))],["LLCR",_pdf_num(summary.get('llcr'),2)+"x"]]
+    finance_rows=[["Показатель","Значение"],["Расчётный БРИДЖ",_pdf_money(financing.get('calculated_bridge'))],["Пиковый фактический БРИДЖ",_pdf_money(financing.get('actual_bridge'))],["Пиковая (непокрытая эскроу) задолженность ПФ",_pdf_money(financing.get('pf_uncovered_peak'))],["Лимит ПФ",_pdf_money(financing.get('pf_limit'))],["Текущая ключевая ставка",_pdf_pct(financing.get('current_key_rate'))],["Спред БРИДЖ",_pdf_pct(financing.get('bridge_spread'))],["Ставка БРИДЖ на текущей ключевой",_pdf_pct(financing.get('current_bridge_rate'))],["Средняя ключевая за период БРИДЖ",_pdf_pct(financing.get('avg_bridge_key_rate'))],["Средневзвешенная ставка БРИДЖ за период",_pdf_pct(financing.get('avg_bridge_rate'))],["Средняя фактическая ставка ПФ",_pdf_pct(financing.get('avg_pf_effective_rate'))],["Проценты и комиссии",_pdf_money(financing.get('interest_and_fees'))],["Непогашенный долг ПФ на конец проекта",_pdf_money(financing.get('ending_pf'))],["LLCR",_pdf_num(summary.get('llcr'),2)+"x"]]
     story.append(table(finance_rows,[112*mm,58*mm],font_size=7.6))
 
     # Restore the bridge-purpose disclosure that exists in the web report.
@@ -10707,6 +10712,19 @@ def telegram_result(req: TelegramResultRequest,
         scope_line = f"Проект: <b>{html.escape(project_name)}</b>\n"
     else:
         scope_line = ""
+    # Непогашенный ПФ — это дефолт по кредиту, а не строка детализации. Раньше
+    # остаток считался, но никуда не выводился, и карточка выглядела безупречно
+    # при долге в миллиарды. Порог 0,5 млн отсекает копеечные хвосты округления.
+    ending_pf_mln = float(summary.get("ending_pf_mln") or 0)
+    if ending_pf_mln > 0.5:
+        debt_warning = (
+            "⚠️ <b>Долг ПФ не погашается к концу проекта</b>\n"
+            f"• остаток — {_telegram_money_mln(ending_pf_mln)}\n"
+            "• выручки через эскроу не хватает на полное погашение проектного "
+            "финансирования — для банка это риск дефолта.\n\n"
+        )
+    else:
+        debt_warning = ""
     text = (
         "<b>Расчёт DevelopAid готов</b>\n"
         + scope_line +
@@ -10727,6 +10745,7 @@ def telegram_result(req: TelegramResultRequest,
         f"• LLCR — {_telegram_number(summary.get('llcr'), 2)}x\n"
         f"• расчётный БРИДЖ — {_telegram_money_mln(summary.get('calculated_bridge_mln'))}\n"
         f"• Пиковая (непокрытая эскроу) задолженность ПФ — {_telegram_money_mln(summary.get('pf_uncovered_peak_mln'))}\n\n"
+        + debt_warning +
         "<b>Оценка целесообразности покупки</b>\n"
         f"• <b>{html.escape(purchase_assessment['title'])}</b>\n"
         f"• {html.escape(purchase_assessment['text'])}\n\n"
@@ -12903,6 +12922,7 @@ def calculate(req: CalcRequest) -> dict:
             "net_profit": net_profit,
             "margin": net_profit / total_revenue if total_revenue else 0.0,
             "llcr": fin["llcr"],
+            "ending_pf": fin.get("ending_pf", 0.0),
             "scenario_revenue_multiplier": n(x, "scenario_revenue_multiplier", 1.0),
             "scenario_cost_multiplier": n(x, "scenario_cost_multiplier", 1.0),
             "npv": project_npv,
@@ -12968,6 +12988,7 @@ def calculate(req: CalcRequest) -> dict:
                 "avg_pf_key_rate": fin["avg_pf_key_rate"],
                 "pf_special_rate": fin["pf_special_rate"],
                 "interest_and_fees": fin["financing_cost"],
+                "ending_pf": fin.get("ending_pf", 0.0),
             }
         },
         "cashflow": {
@@ -13570,6 +13591,7 @@ def _consolidate_phase_results(
             "profit_tax": finance["profit_tax"], "net_profit": net_profit,
             "margin": net_profit / total_revenue if total_revenue else 0.0,
             "llcr": finance["llcr"],
+            "ending_pf": finance.get("ending_pf", 0.0),
             "min_phase_llcr": min((r["summary"]["llcr"] for r in results), default=0.0),
             "scenario_revenue_multiplier": n(master_inputs, "scenario_revenue_multiplier", 1.0),
             "scenario_cost_multiplier": n(master_inputs, "scenario_cost_multiplier", 1.0),
@@ -13618,6 +13640,7 @@ def _consolidate_phase_results(
                 "avg_pf_key_rate": finance["avg_pf_key_rate"],
                 "pf_special_rate": finance["pf_special_rate"],
                 "interest_and_fees": finance["financing_cost"],
+                "ending_pf": finance.get("ending_pf", 0.0),
                 "peak_total_debt": finance["peak_total_debt"],
                 "peak_escrow": finance["peak_escrow"],
             },
@@ -19358,6 +19381,7 @@ async function sendTelegramResult(){
    llcr:Number(s.llcr||0),
    calculated_bridge_mln:Number(f.calculated_bridge||0)/1e6,
    pf_uncovered_peak_mln:Number(f.pf_uncovered_peak||0)/1e6,
+   ending_pf_mln:Number(f.ending_pf||0)/1e6,
     report_payload:currentPdfReportPayload(cads)
  };
  try{
