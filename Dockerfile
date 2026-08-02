@@ -28,4 +28,5 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
 
 # Одного воркера мало: выгрузка модели с очередями занимает около 22 секунд и
 # блокирует процесс. Два воркера — минимум, чтобы страница отвечала во время выгрузки.
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2", "--timeout-keep-alive", "75"]
+# main_registry импортирует штатный main и добавляет только реестр Telegram-пользователей.
+CMD ["uvicorn", "main_registry:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2", "--timeout-keep-alive", "75"]
