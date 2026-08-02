@@ -86,3 +86,13 @@ def test_the_manual_area_and_district_are_parsed(monkeypatch, tmp_path):
     assert calls[-1]["site_area_ha"] == pytest.approx(10.5)
     assert calls[-1]["district"] == "Городской округ Мытищи"
     assert calls[-1]["query"] == ""
+
+
+def test_the_button_lives_in_both_menus():
+    """Стартовое меню бота живёт в движке, меню помощи — в обёртке: кнопка
+    была только во втором, и /start её не показывал."""
+    legacy = open("main_legacy.py", encoding="utf-8").read()
+    assert legacy.count('"vritep_start"') >= 1, "кнопки нет в стартовом меню"
+    wrapper_src = open("main.py", encoding="utf-8").read()
+    assert wrapper_src.count('"vritep_start"') >= 2, \
+        "кнопка или колбэк пропали из обёртки"

@@ -42,7 +42,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.0"
+VERSION = "0.17.1"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -4911,6 +4911,7 @@ def _telegram_start_message(chat_id: int, user_id: int) -> None:
         [{"text": "Расчёт по кадастровым номерам", "callback_data": "flow_cad_yes"}],
         [{"text": "Поиск участка по адресу", "callback_data": "flow_address"}],
         [{"text": "Собрать ТЭП без кадастра", "callback_data": "flow_cad_no"}],
+        [{"text": "Посчитать ВРИ и ТЭП", "callback_data": "vritep_start"}],
         [{"text": "Спросить Платона Сергеевича", "callback_data": "ask_platon"}],
         [{"text": "Скачать Excel-шаблон ТЭП", "callback_data": "tep_template"}],
         [{"text": "Открыть мини-приложение DevelopAid", "web_app": {"url": _telegram_web_app_url(chat_id, [])}}],
