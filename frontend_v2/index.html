@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#07111f">
+  <title>DevelopAid 2.0</title>
+  <link rel="stylesheet" href="/v2/assets/styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="brand" href="/v2" aria-label="DevelopAid 2.0">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span><strong>DevelopAid</strong><small>Investment OS</small></span>
+      </a>
+
+      <div class="project-switcher">
+        <span class="eyebrow">Текущий проект</span>
+        <button id="projectButton" class="project-button" type="button" aria-expanded="false">
+          <span><strong id="projectButtonName">Загрузка…</strong><small id="projectButtonRegion"></small></span>
+          <span class="chevron">⌄</span>
+        </button>
+        <div id="projectMenu" class="project-menu" hidden></div>
+      </div>
+
+      <nav class="main-nav" aria-label="Разделы проекта">
+        <button class="nav-item is-active" data-view="summary"><span>◫</span>Обзор</button>
+        <button class="nav-item" data-view="tep"><span>⌂</span>ТЭП и ВРИ</button>
+        <button class="nav-item" data-view="finance"><span>⌁</span>Финансирование</button>
+        <button class="nav-item" data-view="phases"><span>≋</span>Очереди</button>
+        <button class="nav-item" data-view="sensitivity"><span>↔</span>Чувствительность</button>
+        <button class="nav-item" data-view="platon"><span>✦</span>Платон</button>
+      </nav>
+
+      <div class="sidebar-note">
+        <strong>DevelopAid 2.0</strong>
+        <span>Изолированный прототип. Действующая модель и формулы не изменены.</span>
+      </div>
+    </aside>
+
+    <main class="workspace">
+      <header class="topbar">
+        <div>
+          <span id="projectRegion" class="eyebrow"></span>
+          <h1 id="projectName">DevelopAid</h1>
+          <p id="projectSubtitle"></p>
+        </div>
+        <div class="topbar-actions">
+          <span id="prototypeBadge" class="prototype-badge">Контрольный прототип</span>
+          <button class="icon-button" type="button" aria-label="Уведомления">●</button>
+          <button class="avatar" type="button" aria-label="Профиль">VS</button>
+        </div>
+      </header>
+
+      <div class="mobile-tabs" aria-label="Разделы проекта">
+        <button class="is-active" data-view="summary">Обзор</button>
+        <button data-view="tep">ТЭП</button>
+        <button data-view="finance">Финансы</button>
+        <button data-view="phases">Очереди</button>
+        <button data-view="sensitivity">Tornado</button>
+        <button data-view="platon">Платон</button>
+      </div>
+
+      <section id="view-summary" class="view is-active">
+        <div class="hero-grid">
+          <article id="decisionCard" class="decision-card panel"></article>
+          <article class="panel signal-card">
+            <div class="panel-heading"><div><span class="eyebrow">Кредитный сигнал</span><h2>LLCR</h2></div><span id="llcrChip" class="metric-chip"></span></div>
+            <div class="gauge-wrap">
+              <div class="gauge" id="llcrGauge"><div><strong id="llcrGaugeValue"></strong><small>цель 1,20x</small></div></div>
+              <p id="llcrComment"></p>
+            </div>
+          </article>
+        </div>
+
+        <div id="kpiGrid" class="kpi-grid"></div>
+
+        <div class="content-grid two-one">
+          <article class="panel chart-panel">
+            <div class="panel-heading">
+              <div><span class="eyebrow">Динамика проекта</span><h2>Денежный поток</h2></div>
+              <div class="legend"><span class="legend-cash">Cash flow</span><span class="legend-debt">Долг</span><span class="legend-escrow">Эскроу</span></div>
+            </div>
+            <div id="cashflowChart" class="chart"></div>
+            <div id="chartTimeline" class="chart-timeline"></div>
+          </article>
+
+          <article class="panel costs-panel">
+            <div class="panel-heading"><div><span class="eyebrow">Структура затрат</span><h2>Крупнейшие статьи</h2></div></div>
+            <div id="costBars" class="cost-bars"></div>
+          </article>
+        </div>
+
+        <div class="content-grid one-one">
+          <article class="panel">
+            <div class="panel-heading"><div><span class="eyebrow">Продукт</span><h2>Структура выручки</h2></div></div>
+            <div class="product-layout"><div id="productDonut" class="donut"></div><div id="productLegend" class="product-legend"></div></div>
+          </article>
+          <article class="panel">
+            <div class="panel-heading"><div><span class="eyebrow">Фокус управления</span><h2>Ключевые риски</h2></div><button class="text-button" data-view-target="platon">Спросить Платона</button></div>
+            <div id="riskList" class="risk-list"></div>
+          </article>
+        </div>
+      </section>
+
+      <section id="view-tep" class="view">
+        <div class="section-heading"><div><span class="eyebrow">Параметры территории</span><h2>ТЭП и земельные платежи</h2></div><span id="tepSource" class="source-label"></span></div>
+        <div id="tepGrid" class="kpi-grid tep-grid"></div>
+        <div class="content-grid two-one">
+          <article class="panel visual-building">
+            <div class="panel-heading"><div><span class="eyebrow">Баланс площадей</span><h2>Состав проекта</h2></div></div>
+            <div id="buildingStack" class="building-stack"></div>
+          </article>
+          <article class="panel">
+            <div class="panel-heading"><div><span class="eyebrow">До РнС</span><h2>ВРИ и социалка</h2></div></div>
+            <div id="landCards" class="land-cards"></div>
+          </article>
+        </div>
+      </section>
+
+      <section id="view-finance" class="view">
+        <div class="section-heading"><div><span class="eyebrow">Структура капитала</span><h2>БРИДЖ, ПФ и эскроу</h2></div></div>
+        <div id="financeKpis" class="kpi-grid"></div>
+        <article class="panel chart-panel large-chart">
+          <div class="panel-heading"><div><span class="eyebrow">Капитал во времени</span><h2>Долг и наполнение эскроу</h2></div></div>
+          <div id="financeChart" class="chart"></div>
+          <div id="financeTimeline" class="chart-timeline"></div>
+        </article>
+      </section>
+
+      <section id="view-phases" class="view">
+        <div class="section-heading"><div><span class="eyebrow">Календарь и экономика</span><h2>Очереди проекта</h2></div></div>
+        <article class="panel phase-panel"><div id="phaseRows" class="phase-rows"></div></article>
+        <article class="panel queue-panel"><div id="queueTable" class="queue-table"></div></article>
+      </section>
+
+      <section id="view-sensitivity" class="view">
+        <div class="section-heading"><div><span class="eyebrow">Tornado Analysis</span><h2>Чувствительность LLCR</h2></div><span class="source-label">±10% · сроки ±6 мес.</span></div>
+        <article class="panel tornado-panel"><div id="tornadoChart" class="tornado-chart"></div></article>
+      </section>
+
+      <section id="view-platon" class="view">
+        <div class="platon-layout">
+          <article class="panel platon-card">
+            <span class="platon-orbit">✦</span>
+            <span class="eyebrow">Платон Сергеевич Федоскин</span>
+            <h2>Что проверить в этом проекте?</h2>
+            <p>Платон получит текущий расчёт, разберёт экономику и предложит изменения. В прототипе действия показаны как будущий интерфейс и ничего не меняют в модели.</p>
+            <div class="prompt-grid">
+              <button>Найти слабую очередь</button>
+              <button>Довести LLCR до 1,20</button>
+              <button>Снизить потребность в БРИДЖе</button>
+              <button>Проверить цену покупки</button>
+              <button>Построить стресс-сценарий</button>
+              <button>Объяснить риски ТЭП</button>
+            </div>
+          </article>
+          <article class="panel chat-preview">
+            <div class="chat-header"><span class="avatar platon-avatar">ПС</span><div><strong>Платон</strong><small>Контекст проекта загружен</small></div></div>
+            <div class="chat-body">
+              <div class="message assistant-message">Вижу расчёт. Сначала проверю LLCR, пик БРИДЖа и экономику очередей.</div>
+              <div class="message user-message">Какая главная проблема проекта?</div>
+              <div id="platonAnswer" class="message assistant-message"></div>
+            </div>
+            <div class="chat-input"><span>Задайте вопрос по проекту…</span><button>➤</button></div>
+          </article>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="loading" class="loading"><span></span><p>Загружаем проект</p></div>
+  <script src="/v2/assets/app.js" defer></script>
+</body>
+</html>
