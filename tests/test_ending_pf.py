@@ -144,3 +144,39 @@ def test_the_template_labels_the_debt_row():
     for sheet in ("CF_1", "CF_2", "CF_3", "CF_4"):
         assert template[sheet]["A86"].value == "Непогашенный долг на конец проекта"
     assert "Непогашенный долг" in str(template["ОТЧЕТ"]["A22"].value)
+
+
+def test_the_two_bridge_peaks_are_separate_indicators():
+    """Книга ведёт остаток БРИДЖа с капитализацией процентов, движок «пиком»
+    называет тело долга: одинаковое слово читалось как расхождение моделей
+    (2 952 против 2 740 на 77:09). Теперь это два разных показателя."""
+    inputs = dict(core.DEFAULT_INPUTS)
+    tep = {key: dict(value) for key, value in core.TEP_DEFAULT.items()}
+    result = core._run_authoritative_model(inputs, tep, [], {})["consolidated"]
+    financing = result["report"]["financing"]
+    fin = result["finance"]
+    assert financing["bridge_peak_capitalized"] == pytest.approx(
+        fin["peak_bridge"] + fin["transferred_bridge_interest"])
+
+    phasing = {"enabled": True, "phase_count": 2, "phase_gap_months": 12, "phases": []}
+    phased = core._run_authoritative_model(inputs, tep, [], phasing)["consolidated"]
+    assert phased["report"]["financing"]["bridge_peak_capitalized"] >= \
+        phased["report"]["financing"]["actual_bridge"]
+
+    template = openpyxl.load_workbook(core._V4_TEMPLATE_PATH, data_only=False)
+    for sheet in ("CF_1", "CF_2", "CF_3", "CF_4"):
+        assert "капитализацией процентов" in str(template[sheet]["A82"].value)
+
+
+def test_the_pdf_shows_both_bridge_peaks():
+    pypdf = pytest.importorskip("pypdf")
+    inputs, tep = weak_single()
+    bundle = core._run_authoritative_model(inputs, tep, [], {})
+    data = core._build_developaid_pdf({
+        "result": bundle["consolidated"], "inputs": inputs, "tep": tep,
+        "rates": [], "phasing": {}, "scenario": "base", "project_name": "Пики",
+    })
+    reader = pypdf.PdfReader(io.BytesIO(data))
+    text = " ".join(page.extract_text() or "" for page in reader.pages).replace("\n", " ")
+    assert "тело долга" in text
+    assert "капитализацией процентов" in text
