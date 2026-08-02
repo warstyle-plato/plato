@@ -42,7 +42,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.16.3"
+VERSION = "0.17.0"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -3445,6 +3445,124 @@ def mo_calculate(req: MoCalculateRequest) -> dict[str, Any]:
             "calculated_at": date.today().isoformat(),
         },
     }
+
+
+def vri_tep_quick(region: str, query: str,
+                 site_area_ha: float | None = None,
+                 district: str | None = None) -> dict[str, Any]:
+    """Кнопка бота «Посчитать ВРИ и ТЭП»: карточка + файл формата ГлавАПУ.
+
+    МО считается полностью (РНГП, УПКС, Кд); для Москвы серверу доступен
+    анализ территории и методика DevelopAid (94/6 от плотности) — точный
+    расчёт ГлавАПУ со сменой ВРИ живёт в мини-приложении, и карточка честно
+    об этом говорит.
+    """
+    def fmt(value: Any, digits: int = 1) -> str:
+        try:
+            return f"{float(value):,.{digits}f}".replace(",", " ").replace(".", ",")
+        except (TypeError, ValueError):
+            return "—"
+
+    if region == "mo":
+        result = mo_calculate(MoCalculateRequest(
+            query=query, site_area_ha=float(site_area_ha or 0),
+            district=str(district or "")))
+        tep = result.get("tep") or {}
+        social = result.get("social") or {}
+        vri = result.get("vri") or {}
+        parcel = result.get("territory") or {}
+        area = float(parcel.get("site_area_ha") or site_area_ha or 0)
+        apartments = float((tep.get("apartments") or {}).get("saleable") or 0)
+        density = float(result.get("density_sqm_per_ha") or 0)
+        vri_mln = float(vri.get("payment_used_mln") or vri.get("payment_mln") or 0)
+        dou = float((social.get("kindergarten") or {}).get("places") or 0)
+        school = float((social.get("school") or {}).get("places") or 0)
+        clinic = float((social.get("clinic") or {}).get("capacity") or 0)
+        parking = float((tep.get("underground_parking") or {}).get("units") or 0)
+        rows = [
+            ["№", "Наименования", "Единицы измерения", "Показатель"],
+            ["1", "Площадь территории проектирования", "га", fmt(area, 4)],
+            ["2", "Плотность от СПП", "тыс.кв.м./га", fmt(density / 1000, 2)],
+            ["5", "Количество квартир", "шт.",
+             fmt(apartments / 58.75, 0)],
+            ["7.1", "СПП жилая", "тыс.кв.м.",
+             fmt(float((tep.get("apartments") or {}).get("gns") or 0) / 1000, 3)],
+            ["9.1.1", "НП жилая", "тыс.кв.м.",
+             fmt(float((tep.get("apartments") or {}).get("gns") or 0) / 1000, 3)],
+            ["10", "Площадь квартир", "тыс.кв.м.", fmt(apartments / 1000, 3)],
+            ["18", "количество мест", "мест", fmt(dou, 0)],
+            ["22", "количество мест", "мест", fmt(school, 0)],
+            ["26", "мощность", "пос./см.", fmt(clinic, 0)],
+            ["42", "Места хранения и паркирования, в т.ч.:", "м/м", fmt(parking, 0)],
+            ["44", "Многоквартирная жилые здания", "млн.руб.", fmt(vri_mln, 3)],
+            ["54", "ДОО", "млн.руб.", "0"],
+            ["60", "Озелененные территории общего пользования", "га", "0"],
+        ]
+        params = [
+            ["Регион", "Московская область"],
+            ["Округ", str(parcel.get("district") or "")],
+            ["Методика", "Нормативы РНГП МО, УПКС, Кд (Таблица 3)"],
+        ]
+        card = (
+            "<b>ВРИ и ТЭП · Московская область</b>\n"
+            f"Участок: <code>{html.escape(str(query)[:80])}</code>\n"
+            f"• площадь — {fmt(area, 4)} га"
+            f" · округ — {html.escape(str(parcel.get('district') or '—'))}\n"
+            f"• квартиры — {fmt(apartments, 0)} м² продаваемой"
+            f" (плотность {fmt(density, 0)} м²/га)\n"
+            f"• соцобъекты — ДОО {fmt(dou, 0)} мест, СОШ {fmt(school, 0)} мест, "
+            f"поликлиника {fmt(clinic, 0)} пос./см.\n"
+            f"• подземный паркинг — {fmt(parking, 0)} м/м\n"
+            f"• <b>плата за смену ВРИ — {fmt(vri_mln, 1)} млн ₽</b>\n"
+        )
+        warn = [str(w) for w in (result.get("warnings") or [])][:3]
+        if warn:
+            card += "<i>" + html.escape("; ".join(warn)) + "</i>\n"
+    else:
+        analysis = analyze_cadastral_territory(CadastralAnalysisRequest(
+            cadastral_numbers=[query]))
+        territory = analysis.get("territory") or {}
+        coeff = analysis.get("coefficients") or {}
+        area = float(territory.get("area_ha") or site_area_ha or 0)
+        density = 35000.0
+        spp = area * density
+        apartments_gns = spp * 0.94
+        apartments = apartments_gns * 0.65
+        commerce_gns = spp * 0.06
+        rows = [
+            ["№", "Наименования", "Единицы измерения", "Показатель"],
+            ["1", "Площадь территории проектирования", "га", fmt(area, 4)],
+            ["2", "Плотность от СПП", "тыс.кв.м./га", fmt(density / 1000, 0)],
+            ["6", "СПП, всего:", "тыс.кв.м.", fmt(spp / 1000, 3)],
+            ["7.1", "СПП жилая", "тыс.кв.м.", fmt(apartments_gns / 1000, 3)],
+            ["7.2", "СПП нежилой части жилых зданий", "тыс.кв.м.",
+             fmt(commerce_gns / 1000, 3)],
+            ["10", "Площадь квартир", "тыс.кв.м.", fmt(apartments / 1000, 3)],
+        ]
+        params = [
+            ["Регион", "Москва"],
+            ["Район", str(territory.get("district") or "")],
+            ["Кадастровый квартал", str(territory.get("cadastral_quarter") or "")],
+            ["К1 — доступность рельсового каркаса", coeff.get("rail")],
+            ["Коэффициент аренды", coeff.get("rent")],
+            ["Методика", "DevelopAid 94/6 от плотности; точный ГлавАПУ — в мини-приложении"],
+        ]
+        card = (
+            "<b>ВРИ и ТЭП · Москва</b>\n"
+            f"Участок: <code>{html.escape(str(query)[:80])}</code>\n"
+            f"• площадь — {fmt(area, 4)} га · район — "
+            f"{html.escape(str(territory.get('district') or '—'))}\n"
+            f"• потенциал СПП при плотности 35 — {fmt(spp / 1000, 1)} тыс. м²\n"
+            f"• квартиры — {fmt(apartments, 0)} м² продаваемой (методика 94/6)\n"
+            f"• К1 рельсовый — {coeff.get('rail') or '—'} · аренда — "
+            f"{coeff.get('rent') or '—'}\n"
+            "<i>Точный расчёт ГлавАПУ со сменой ВРИ — в мини-приложении: "
+            "кнопка «Открыть и изменить расчёт».</i>\n"
+        )
+    workbook = _build_glavapu_xlsx_from_rows(rows, params)
+    safe = re.sub(r"[^0-9A-Za-zА-Яа-я_-]+", "_", str(query))[:40] or "участок"
+    filename = f"ВРИ_ТЭП_{safe}_{date.today().isoformat()}.xlsx"
+    return {"card": card, "file": workbook, "filename": filename}
 
 
 _GENPLAN_BASE_URL = "https://genplan.tech/calc/"

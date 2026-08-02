@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import html
+import re
 import importlib.util
 import inspect
 import os
@@ -394,10 +395,88 @@ def _send_tep_review(chat_id: int, parsed: dict[str, Any], *, dialog_mode: bool)
 core._telegram_send_tep_review = _send_tep_review
 
 
+def _start_vritep(chat_id: int) -> None:
+    _send_message(
+        chat_id,
+        "<b>Посчитать стоимость ВРИ и ТЭП</b>\n"
+        "Выберите регион участка:",
+        reply_markup={"inline_keyboard": [
+            [{"text": "Москва", "callback_data": "vritep_msk"}],
+            [{"text": "Московская область", "callback_data": "vritep_mo"}],
+        ]},
+    )
+
+
+def _vritep_ask_input(chat_id: int, region: str) -> None:
+    pointer = _state_read(f"chat:{chat_id}")
+    pointer["vritep"] = region
+    _state_write(f"chat:{chat_id}", pointer)
+    if region == "mo":
+        _send_message(
+            chat_id,
+            "<b>Московская область.</b> Пришлите кадастровый номер участка — "
+            "площадь возьмётся из ЕГРН.\n"
+            "Без кадастра можно так: <code>10,5 га Городской округ Мытищи</code>.",
+        )
+    else:
+        _send_message(
+            chat_id,
+            "<b>Москва.</b> Пришлите кадастровый номер участка — территорию "
+            "и коэффициенты определит анализ ГлавАПУ.",
+        )
+
+
+def _vritep_region(chat_id: int) -> str:
+    return str(_state_read(f"chat:{chat_id}").get("vritep") or "")
+
+
+def _vritep_clear(chat_id: int) -> None:
+    pointer = _state_read(f"chat:{chat_id}")
+    if pointer.pop("vritep", None) is not None:
+        _state_write(f"chat:{chat_id}", pointer)
+
+
+def _vritep_handle_text(chat_id: int, text: str) -> bool:
+    region = _vritep_region(chat_id)
+    if not region or not text:
+        return False
+    _vritep_clear(chat_id)
+    _send_message(chat_id, "<i>Считаю ВРИ и ТЭП…</i>")
+    query, area, district = text.strip(), None, None
+    if region == "mo":
+        # «10,5 га Городской округ Мытищи» — площадь руками, остаток — округ.
+        match = re.search(r"([\d.,]+)\s*га\s*(.*)", text, re.IGNORECASE)
+        if match and not re.search(r"\d{2}:\d{2}:", text):
+            area = float(match.group(1).replace(",", "."))
+            district = match.group(2).strip() or None
+            query = ""
+    try:
+        result = core.vri_tep_quick(region, query, site_area_ha=area,
+                                    district=district)
+    except Exception as exc:
+        detail = getattr(exc, "detail", None) or core._error_location(exc)
+        _send_message(
+            chat_id,
+            "<b>Расчёт ВРИ и ТЭП не получился.</b>\n"
+            f"<i>{html.escape(str(detail)[:300])}</i>",
+        )
+        return True
+    _send_message(chat_id, result["card"])
+    try:
+        core._telegram_send_document_bytes(
+            chat_id, result["file"], result["filename"],
+            caption="Файл в формате калькулятора ГлавАПУ — его можно "
+                    "загрузить в DevelopAid как обычный ТЭП.")
+    except Exception as exc:
+        core._TELEGRAM_RUNTIME["last_error"] = "ВРИ/ТЭП файл: " + str(exc)
+    return True
+
+
 def _help_markup(chat_id: int) -> dict[str, Any]:
     rows: list[list[dict[str, Any]]] = [
         [{"text": "Расчёт по кадастровым номерам", "callback_data": "flow_cad_yes"}],
         [{"text": "Собрать ТЭП без кадастра", "callback_data": "flow_cad_no"}],
+        [{"text": "Посчитать ВРИ и ТЭП", "callback_data": "vritep_start"}],
         [{"text": "Прокомментировать ТЭП", "callback_data": "platon_tep"}],
         [{"text": "Спросить Платона", "callback_data": "ask_platon"}],
     ]
@@ -904,6 +983,8 @@ def _handle_message(message: dict[str, Any]) -> None:
     if command in {"/model", "/модель"}:
         _send_model_archive(chat_id)
         return
+    if text and not command and _vritep_handle_text(chat_id, text):
+        return
     if _dialog_active(chat_id) and text:
         if command == "/cancel" or text.lower() in {"стоп", "отмена", "завершить"}:
             _dialog_stop(chat_id)
@@ -927,6 +1008,13 @@ def _handle_update(update: dict[str, Any]) -> None:
         message = query.get("message") or {}
         sender = query.get("from") or {}
         chat_id = int(((message.get("chat") or {}).get("id")) or sender.get("id") or 0)
+        if data in {"vritep_start", "vritep_msk", "vritep_mo"}:
+            _answer_callback(query)
+            if data == "vritep_start":
+                _start_vritep(chat_id)
+            else:
+                _vritep_ask_input(chat_id, "msk" if data == "vritep_msk" else "mo")
+            return
         if data in {"ask_platon", "platon_tep", "platon_stop", "platon_discard",
                     "platon_apply", "show_help", "send_model"}:
             _answer_callback(query)
