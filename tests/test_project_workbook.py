@@ -352,6 +352,38 @@ def test_the_report_carries_a_pdf_comparable_unit_revenue():
         assert f"'КОНСОЛИДАТОР'!{consolidator}" in formula, f"{cell} не делит выручку консолидатора"
 
 
+def test_both_surfaces_carry_the_pure_apartment_unit_price():
+    """Смешанные периметры удельных («вся выручка» против «площадных») не
+    сверить глазами. Чисто квартирная цена на м² продаваемой — общий
+    знаменатель: колонка «в т.ч. квартиры» в PDF и строка 95 книги."""
+    import inspect
+    module = inspect.getsource(core)
+    assert "в т.ч. квартиры" in module, "в PDF нет квартирной колонки"
+
+    phasing = {
+        "enabled": True, "phase_count": 2,
+        "phases": [{"start_offset_months": 0, "construction_months": 24},
+                   {"start_offset_months": 12, "construction_months": 24}],
+        "products": {k: [55, 45] for k in ("apartments", "ground_commercial",
+                                           "underground_parking", "storage")},
+        "shared_allocation": {}, "cost_inflation_pct": 8,
+        "sales_price_inflation_pct": 8,
+    }
+    bundle = core.calculate_phased(core.PhasedCalcRequest(
+        inputs=dict(core.DEFAULT_INPUTS),
+        tep={k: dict(v) for k, v in core.TEP_DEFAULT.items()},
+        rates=[], phasing=phasing))
+    row = (bundle.get("comparison") or [{}])[0]
+    assert row.get("apartment_price_th"), "сравнение очередей не несёт цену квартир"
+    assert row.get("apartment_saleable_sqm"), "нет квартирной продаваемой для итога"
+
+    template = openpyxl.load_workbook(core._V4_TEMPLATE_PATH, data_only=False)["ОТЧЕТ"]
+    for cell, sales in (("B95", "B16"), ("C95", "B39"), ("D95", "B62")):
+        formula = str(template[cell].value)
+        assert f"'Продажи'!{sales}" in formula and "$L$" in formula, \
+            f"{cell} книги не делит квартирную выручку на квартирную продаваемую"
+
+
 def test_the_queue_price_multiplier_carries_the_phase_indexation():
     """Индексация очередей — множителем к сдвигу старта, как в движке:
     книга вела годовую инфляцию от даты базы цен и индексировала даже

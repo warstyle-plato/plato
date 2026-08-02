@@ -42,7 +42,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.14.4"
+VERSION = "0.14.5"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -6207,21 +6207,31 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
             area=sum(float(i.get(area_key) or 0) for i in comparison)
             value=sum(float(i.get(value_key) or 0) for i in comparison)
             return _pdf_num(value/area/1000,1) if area else "—"
-        units=[["Очередь","Выручка на м² прод.","Выручка на м² ГНС","Расходы на м² прод.","Расходы на м² ГНС","Прибыль на м² прод."]]
+        # «Выручка на м² прод.» делит всю выручку очереди, включая паркинг и
+        # кладовые; чисто квартирная колонка — общий знаменатель с книгой:
+        # в ней та же строка, и цифры обязаны совпадать один в один.
+        def apartments_total() -> str:
+            area=sum(float(i.get("apartment_saleable_sqm") or 0) for i in comparison)
+            value=sum(float(i.get("apartment_price_th") or 0)
+                      *float(i.get("apartment_saleable_sqm") or 0) for i in comparison)
+            return _pdf_num(value/area,1) if area else "—"
+        units=[["Очередь","Выручка на м² прод.","в т.ч. квартиры","Выручка на м² ГНС","Расходы на м² прод.","Расходы на м² ГНС","Прибыль на м² прод."]]
         for item in comparison:
             units.append([
                 str(item.get("name") or "—"),
-                _pdf_num(item.get("revenue_per_saleable_th"),1),_pdf_num(item.get("revenue_per_gns_th"),1),
+                _pdf_num(item.get("revenue_per_saleable_th"),1),
+                _pdf_num(item.get("apartment_price_th"),1),
+                _pdf_num(item.get("revenue_per_gns_th"),1),
                 _pdf_num(item.get("expenses_per_saleable_th"),1),_pdf_num(item.get("expenses_per_gns_th"),1),
                 _pdf_num(item.get("net_profit_per_saleable_th"),1),
             ])
         units.append([
-            "Итого",ratio("revenue","saleable_sqm"),ratio("revenue","gns_sqm"),
+            "Итого",ratio("revenue","saleable_sqm"),apartments_total(),ratio("revenue","gns_sqm"),
             ratio("total_expenses","saleable_sqm"),ratio("total_expenses","gns_sqm"),
             ratio("net_profit","saleable_sqm"),
         ])
-        story.append(table(units,[22*mm,30*mm,29*mm,30*mm,29*mm,30*mm],font_size=7.0))
-        story.append(P("Значения удельных показателей — в тыс. ₽ за м². Итоговая строка считается как отношение сумм, а не как среднее по очередям.",small))
+        story.append(table(units,[20*mm,26*mm,24*mm,25*mm,26*mm,25*mm,24*mm],font_size=6.8))
+        story.append(P("Значения удельных показателей — в тыс. ₽ за м². «Выручка на м² прод.» включает штучные продукты (паркинг, кладовые); «в т.ч. квартиры» — только квартиры на м² их продаваемой площади, эта же строка есть в Excel-книге. Итоговая строка считается как отношение сумм, а не как среднее по очередям.",small))
 
     # Раздел появляется только если чувствительность считали на вкладке.
     # Гнать полсотни расчётов внутри сборки PDF ради раздела, который никто не
@@ -13985,6 +13995,11 @@ def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
 
         comparison.append({
             "name":name,"saleable_sqm":result["summary"]["monetizable_saleable_sqm"],
+            # Чисто квартирная удельная цена: смешанные периметры («вся выручка
+            # на м²» против «площадные продукты») не сверить глазами, а
+            # квартиры на м² продаваемой — общий знаменатель отчёта и книги.
+            "apartment_price_th":result["summary"].get("average_apartment_price_th", 0.0),
+            "apartment_saleable_sqm":result["summary"].get("apartment_saleable_sqm", 0.0),
             "gns_sqm":p_gns,"total_expenses":p_expenses,
             "revenue_per_saleable_th":per_th(result["summary"]["revenue"], p_saleable),
             "revenue_per_gns_th":per_th(result["summary"]["revenue"], p_gns),
