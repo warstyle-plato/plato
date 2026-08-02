@@ -628,6 +628,35 @@ def test_the_project_aggregates_include_the_fourth_block():
     assert "B88:B91" in validations
     assert "AD88:AF91" in validations
 
+    # удельный блок ОТЧЁТа: колонка «Проект» делила итоги на данные О4
+    # (артефакт сдвига колонок E→F), колонка О3 несла расходы и долг О4
+    # (артефакт дубль-пасса CF_3→CF_4), GBA очереди захватывала соседку,
+    # а «объёмы» продаж О3/О4 включали строку цены двухстрочным диапазоном
+    assert flat(template["ОТЧЕТ"]["F60"]) == "=IFERROR(F59*1000/F57,0)"
+    assert "/F58" in flat(template["ОТЧЕТ"]["F62"])
+    assert "/F57" in flat(template["ОТЧЕТ"]["F63"])
+    assert "($B$5-F59))*1000/F57" in flat(template["ОТЧЕТ"]["F64"])
+    assert "/F57" in flat(template["ОТЧЕТ"]["F73"])
+    for cell in ("D63", "D64", "D71", "D72"):
+        assert "CF_4" not in flat(template["ОТЧЕТ"][cell]), \
+            f"колонка О3 ({cell}) несёт данные четвёртой очереди"
+    assert "'CF_4'!$D$38:$DS$38,'CF_4'!$D$39:$DS$39" in flat(template["ОТЧЕТ"]["F71"])
+    assert "$I$88:$K$88" in flat(template["ОТЧЕТ"]["B58"])
+    assert "$I$89:$K$89" in flat(template["ОТЧЕТ"]["C58"])
+    assert "$I$90:$K$90" in flat(template["ОТЧЕТ"]["D58"])
+    for cell in ("D65", "D68", "E65", "E68", "F65", "F68"):
+        formula = flat(template["ОТЧЕТ"][cell])
+        for two_rows in ("$D$63:$DS$64", "$D$66:$DS$67", "$D$69:$DS$70",
+                         "$D$86:$DS$87", "$D$89:$DS$90", "$D$92:$DS$93"):
+            assert two_rows not in formula, \
+                f"{cell}: в объём продаж попадает строка цены ({two_rows})"
+
+    # сводные сроки не смотрят на выключенные очереди
+    assert flat(template["КОНСОЛИДАТОР"]["C7"]).startswith(
+        "=IF('Вводные'!$B$91=\"Да\"")
+    assert flat(template["КОНСОЛИДАТОР"]["E4"]).startswith(
+        "=IF('Вводные'!$B$88=\"Да\"")
+
     # INDEX по очередям обязан дотягиваться до строки 91, а кэш шаблона —
     # отсутствовать: смесь старых значений и пустых клонов О4 выглядела как
     # посчитанная книга для всего, что читает значения без пересчёта
