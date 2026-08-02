@@ -63,3 +63,23 @@ def test_the_switched_on_calculation_produces_a_payment_schedule():
 
     assert schedule["enabled"] is True
     assert schedule["rows"], "график платежей пуст"
+
+
+def social_import(compensation_mln, kindergarten_places):
+    rows = [
+        ["№", "Наименования", "Единицы измерения", "Показатель"],
+        ["18", "ДОУ мест", "мест", kindergarten_places],
+        ["54", "Компенсация ДОУ", "млн.руб.", compensation_mln],
+    ]
+    data = core._build_glavapu_xlsx_from_rows(rows, [])
+    return core.parse_glavapu_xlsx(data, "ГлавАПУ.xlsx")["normalized"]
+
+
+def test_moscow_always_suggests_the_compensation_mode():
+    """ГлавАПУ — московский калькулятор, а в Москве социалка исполняется
+    только денежной компенсацией. Места ДОУ/СОШ из документа — параметры
+    расчёта компенсации, а не обязательство строить: раньше «есть места →
+    Строительство», и на 77:09:0004014:13 режим переключали руками."""
+    assert social_import(580.668, 19)["suggested_social_mode"] == "Денежная компенсация"
+    assert social_import(0, 19)["suggested_social_mode"] == "Денежная компенсация"
+    assert social_import(0, 0)["suggested_social_mode"] == "Денежная компенсация"

@@ -42,7 +42,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.15.7"
+VERSION = "0.15.8"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -518,11 +518,12 @@ def parse_glavapu_xlsx(data: bytes, filename: str = "") -> dict[str, Any]:
         data_norm["actual_school_places"] or 0,
         data_norm["actual_clinic_capacity"] or 0,
     ])
-    suggested_social_mode = (
-        "Денежная компенсация"
-        if actual_social_units == 0 and (data_norm["social_compensation_total_mln"] or 0) > 0
-        else "Строительство"
-    )
+    # ГлавАПУ — московский калькулятор, а в Москве социалка исполняется только
+    # денежной компенсацией: места ДОУ/СОШ из документа — параметры, по которым
+    # компенсация посчитана, а не обязательство строить самому. Прежний
+    # приоритет «есть места → Строительство» ставил московскому проекту стройку,
+    # и режим приходилось переключать руками.
+    suggested_social_mode = "Денежная компенсация"
 
     data_norm["suggested_social_mode"] = suggested_social_mode
 
