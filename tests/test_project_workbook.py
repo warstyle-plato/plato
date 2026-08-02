@@ -346,8 +346,8 @@ def test_the_report_carries_a_pdf_comparable_unit_revenue():
     читались как ошибка. Строка-мостик считает по определению PDF."""
     template = openpyxl.load_workbook(core._V4_TEMPLATE_PATH, data_only=False)["ОТЧЕТ"]
 
-    assert "как в PDF" in str(template["A72"].value)
-    for cell, consolidator in (("B72", "G4"), ("C72", "G5"), ("D72", "G6"), ("E72", "G7")):
+    assert "как в PDF" in str(template["A73"].value)
+    for cell, consolidator in (("B73", "G4"), ("C73", "G5"), ("D73", "G6"), ("E73", "G7")):
         formula = str(template[cell].value)
         assert f"'КОНСОЛИДАТОР'!{consolidator}" in formula, f"{cell} не делит выручку консолидатора"
 
@@ -377,11 +377,21 @@ def test_both_surfaces_carry_the_pure_apartment_unit_price():
     assert row.get("apartment_price_th"), "сравнение очередей не несёт цену квартир"
     assert row.get("apartment_saleable_sqm"), "нет квартирной продаваемой для итога"
 
+    # Строка стоит внутри таблицы удельных — сразу после «Средней цены
+    # реализации», как колонка в PDF, — а не отдельным блоком под отчётом.
     template = openpyxl.load_workbook(core._V4_TEMPLATE_PATH, data_only=False)["ОТЧЕТ"]
-    for cell, sales in (("B95", "B16"), ("C95", "B39"), ("D95", "B62")):
+    assert template["A60"].value == "Средняя цена реализации"
+    assert template["A61"].value == "в т.ч. квартиры"
+    for cell, sales in (("B61", "B16"), ("C61", "B39"), ("D61", "B62")):
         formula = str(template[cell].value)
         assert f"'Продажи'!{sales}" in formula and "$L$" in formula, \
             f"{cell} книги не делит квартирную выручку на квартирную продаваемую"
+    assert template["B61"].number_format == template["B60"].number_format, \
+        "квартирная строка без числового формата удельных"
+    # Сдвиг не разорвал ссылки соседних блоков: юнит-экономика читает
+    # сдвинутые строки, чеки книги — тоже (это проверяет паритет-тест).
+    assert str(template["G9"].value) == "=E62"
+    assert str(template["G21"].value) == "=E70"
 
 
 def test_the_queue_price_multiplier_carries_the_phase_indexation():
