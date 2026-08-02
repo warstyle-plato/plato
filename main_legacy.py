@@ -42,7 +42,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.14.7"
+VERSION = "0.15.0"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -7858,7 +7858,7 @@ def build_project_workbook(
     # График строительства при этом сворачивается в разовый платёж за месяц
     # до РнС (дата B18 — формула книги): приближение, но расход не теряется.
     if str(x.get("social_mode") or "") == "Строительство":
-        social_count = max(1, min(3, int(p.get("phase_count") or 1) if p.get("enabled") else 1))
+        social_count = max(1, min(4, int(p.get("phase_count") or 1) if p.get("enabled") else 1))
         social_phases = list(p.get("phases") or [])
         social_inflation = (float(p.get("cost_inflation_pct") or 0) / 100.0
                             if social_count > 1 else 0.0)
@@ -7938,21 +7938,38 @@ def build_project_workbook(
     # Шаблонная единица сажала офисы в первую очередь: продаваемая площадь
     # очередей и их средние цены расходились с отчётом.
     discrete = (phasing or {}).get("discrete") or {}
-    queue_cap = max(1, min(3, int((phasing or {}).get("phase_count") or 1)
+    queue_cap = max(1, min(4, int((phasing or {}).get("phase_count") or 1)
                            if (phasing or {}).get("enabled") else 1))
-    for field, coord, default in (("offices", "K21", 3),
-                                  ("standalone_retail", "K41", 2),
-                                  ("above_parking", "K61", 2)):
-        queue = int(float(discrete.get(field) or default))
-        put(coord, number=float(max(1, min(queue_cap, queue))), label=f"очередь {field}")
+    phase_offsets = [float(item.get("start_offset_months") or 0)
+                     for item in ((phasing or {}).get("phases") or [])]
+    for field, coord, default, date_cells, date_keys in (
+        ("offices", "K21", 3, ("K27", "K30"), ("offices_start", "offices_sales_start")),
+        ("standalone_retail", "K41", 2, ("K47", "K50"), ("retail_start", "retail_sales_start")),
+        ("above_parking", "K61", 2, ("K68", "K70"),
+         ("above_parking_start", "above_parking_sales_start")),
+    ):
+        queue = max(1, min(queue_cap, int(float(discrete.get(field) or default))))
+        put(coord, number=float(queue), label=f"очередь {field}")
+        # Даты объекта сдвигаются на сдвиг старта его очереди — как в движке.
+        # Сырая мастер-дата строила офисы третьей очереди на два года раньше:
+        # CAPEX падал в БРИДЖ до РнС, и пик завышался почти вдвое.
+        offset = (phase_offsets[queue - 1]
+                  if (phasing or {}).get("enabled") and queue - 1 < len(phase_offsets) else 0.0)
+        if offset:
+            for cell, key in zip(date_cells, date_keys):
+                base = x.get(key)
+                if base:
+                    shifted = _v4_excel_serial(add_months(str(base)[:10], int(offset)))
+                    if shifted is not None:
+                        put(cell, number=shifted, label=f"{key} (сдвиг очереди)")
 
     # --- очереди: базовый ТЭП в W..AC, доли и сроки -------------------------
     enabled_phases = int(p.get("phase_count") or 1) if p.get("enabled") else 1
-    count = max(1, min(3, enabled_phases))
-    if enabled_phases > 3:
+    count = max(1, min(4, enabled_phases))
+    if enabled_phases > 4:
         missing.append(
-            f"очередей {enabled_phases}, а листов CF в книге три: объёмы и доли "
-            "4-й и последующих слиты в третью очередь"
+            f"очередей {enabled_phases}, а листов CF в книге четыре: объёмы и доли "
+            "5-й и последующих слиты в четвёртую очередь"
         )
     phases = list(p.get("phases") or [])
     weights = {product: _v4_phase_weights(p, product, count, enabled_phases)
@@ -7968,7 +7985,7 @@ def build_project_workbook(
 
     apartments, commercial = tep.get("apartments"), tep.get("ground_commercial")
     underground, storage = tep.get("underground_parking"), tep.get("storage")
-    for index in range(3):
+    for index in range(4):
         row = 88 + index
         active = index < count
         share = (lambda product: weights[product][index] if active else 0.0)

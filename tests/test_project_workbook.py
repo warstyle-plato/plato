@@ -312,33 +312,88 @@ def test_the_tep_sheet_does_not_double_count_the_objects():
     """«ИТОГО ЖИЛЫЕ ОЧЕРЕДИ» ссылался на CF!B6, который уже включает офисы,
     ТЦ и наземный паркинг, — и лист ТЭП считал объекты дважды."""
     template = openpyxl.load_workbook(core._V4_TEMPLATE_PATH, data_only=False)
-    assert str(template["ТЭП"]["G22"].value).replace(" ", "") == "=SUM(G8,G14,G20)"
+    assert str(template["ТЭП"]["G28"].value).replace(" ", "") == "=SUM(G8,G14,G20,G26)"
 
 
-def test_a_fourth_queue_is_folded_into_the_third_not_smeared():
-    """Листов CF в книге три. Объёмы 4-й очереди ближе по срокам к третьей,
-    чем к первой: хвост сливается в О3, а не размазывается по всем, и
-    сборка честно говорит об этом в meta."""
+def test_a_fourth_queue_gets_its_own_cf_sheet():
+    """Книга несёт четыре очереди: CF_4, строка 91 на «Вводных», свой блок
+    продаж — четырёхочередной проект больше не режется."""
     phasing = {
         "enabled": True, "phase_count": 4,
         "phases": [{"start_offset_months": 12 * i, "construction_months": 24}
                    for i in range(4)],
-        "products": {k: [30, 30, 20, 20] for k in ("apartments", "ground_commercial",
+        "products": {k: [32, 26, 22, 20] for k in ("apartments", "ground_commercial",
                                                    "underground_parking", "storage")},
-        "shared_allocation": {"purchase": [100, 0, 0, 0], "land_rights": [25, 25, 25, 25],
+        "shared_allocation": {"purchase": [100, 0, 0, 0], "land_rights": [40, 30, 20, 10],
                               "social_compensation": [100, 0, 0, 0]},
+        "cost_inflation_pct": 8, "sales_price_inflation_pct": 8,
+    }
+    content, _, meta = build(phasing=phasing)
+    book = openpyxl.load_workbook(io.BytesIO(content), data_only=False)
+    sheet = book["Вводные"]
+    total = core.TEP_DEFAULT["apartments"]["gns"]
+
+    assert meta["missing"] == []
+    assert "CF_4" in book.sheetnames
+    assert sheet["B91"].value == "Да"
+    assert sheet["W91"].value == pytest.approx(total * 0.20, rel=1e-6)
+    assert sheet["S91"].value == pytest.approx(1.08 ** 3, rel=1e-6)
+    assert book["КОНСОЛИДАТОР"]["A8"].value == "КОНСОЛИДИРОВАНО"
+
+
+def test_objects_are_not_double_counted_by_the_idle_fourth_queue():
+    """Аллокация объектов очереди 4 — клон третьей: признак очереди в ней
+    хранится в ОБЪЕКТЫ!$B$8/$B$36/$B$64, и не заменённая тройка дублировала
+    офисы третьей очереди в спящий CF_4 — плюс 15 млрд выручки из воздуха."""
+    import sys
+    sys.setrecursionlimit(300000)
+    from xlsx_eval import Evaluator
+
+    inputs = {**core.DEFAULT_INPUTS, "offices_enabled": True}
+    tep = {k: dict(v) for k, v in core.TEP_DEFAULT.items()}
+    phasing = {
+        "enabled": True, "phase_count": 3,
+        "phases": [{"start_offset_months": 12 * i, "construction_months": 24}
+                   for i in range(3)],
+        "products": {k: [40, 32, 28] for k in ("apartments", "ground_commercial",
+                                               "underground_parking", "storage")},
+        "shared_allocation": {},
+        "discrete": {"offices": 3, "standalone_retail": 2, "above_parking": 2},
+        "cost_inflation_pct": 8, "sales_price_inflation_pct": 8,
+    }
+    content, _, _ = core.build_project_workbook(inputs, tep, [], phasing, project_name="Т")
+    book = openpyxl.load_workbook(io.BytesIO(content), data_only=False)
+    evaluator = Evaluator(book)
+
+    offices = float(evaluator.cell("ОБЪЕКТЫ", "B24"))
+    assert offices > 0, "офисы включены, но выручки нет"
+    assert float(evaluator.cell("ОБЪЕКТЫ", "B116")) == pytest.approx(0.0, abs=0.01), \
+        "аллокация спящей четвёртой очереди дублирует объекты третьей"
+    assert float(evaluator.cell("CF_4", "B10")) == pytest.approx(0.0, abs=0.01), \
+        "выключенная четвёртая очередь несёт выручку"
+    # сквозной чек книги: выручка продуктов равна консолидированному CF
+    assert evaluator.cell("ПРОВЕРКИ", "F48") == "OK"
+
+
+def test_a_fifth_queue_is_folded_into_the_fourth():
+    """Пятая очередь в книгу не помещается — сливается в четвёртую с
+    предупреждением, а не теряется и не размазывается."""
+    phasing = {
+        "enabled": True, "phase_count": 5,
+        "phases": [{"start_offset_months": 12 * i, "construction_months": 24}
+                   for i in range(5)],
+        "products": {k: [28, 22, 19, 16, 15] for k in ("apartments", "ground_commercial",
+                                                       "underground_parking", "storage")},
+        "shared_allocation": {},
         "cost_inflation_pct": 8, "sales_price_inflation_pct": 8,
     }
     content, _, meta = build(phasing=phasing)
     sheet = openpyxl.load_workbook(io.BytesIO(content), data_only=False)["Вводные"]
     total = core.TEP_DEFAULT["apartments"]["gns"]
 
-    assert any("слиты в третью" in str(item) for item in meta["missing"])
-    assert sheet["W88"].value == pytest.approx(total * 0.30, rel=1e-6)
-    assert sheet["W89"].value == pytest.approx(total * 0.30, rel=1e-6)
-    assert sheet["W90"].value == pytest.approx(total * 0.40, rel=1e-6), \
-        "объём четвёртой очереди не слит в третью"
-    assert sheet["Q90"].value == pytest.approx(0.50)  # доли ВРИ 25+25
+    assert any("слиты в четвёртую" in str(item) for item in meta["missing"])
+    assert sheet["W91"].value == pytest.approx(total * 0.31, rel=1e-6), \
+        "объём пятой очереди не слит в четвёртую"
 
 
 def test_the_objects_inherit_their_queue_from_the_phasing():
@@ -360,6 +415,11 @@ def test_the_objects_inherit_their_queue_from_the_phasing():
     assert sheet["K21"].value == pytest.approx(3)   # офисы
     assert sheet["K41"].value == pytest.approx(2)   # ТЦ
     assert sheet["K61"].value == pytest.approx(2)   # наземный паркинг
+    # Даты объекта сдвигаются на сдвиг старта его очереди, как в движке:
+    # сырая мастер-дата строила офисы третьей очереди на два года раньше,
+    # CAPEX падал в БРИДЖ до РнС, и пик завышался почти вдвое.
+    assert sheet["K27"].value == datetime(2030, 7, 1)   # офисы: 2028-07 + 24 мес
+    assert sheet["K47"].value == datetime(2029, 7, 1)   # ТЦ: 2028-07 + 12 мес
 
     single, _, _ = build()  # без очередей всё в первой
     sheet_single = openpyxl.load_workbook(io.BytesIO(single), data_only=False)["Вводные"]
@@ -373,7 +433,8 @@ def test_the_report_carries_a_pdf_comparable_unit_revenue():
     template = openpyxl.load_workbook(core._V4_TEMPLATE_PATH, data_only=False)["ОТЧЕТ"]
 
     assert "как в PDF" in str(template["A73"].value)
-    for cell, consolidator in (("B73", "G4"), ("C73", "G5"), ("D73", "G6"), ("E73", "G7")):
+    for cell, consolidator in (("B73", "G4"), ("C73", "G5"), ("D73", "G6"),
+                               ("E73", "G7"), ("F73", "G8")):
         formula = str(template[cell].value)
         assert f"'КОНСОЛИДАТОР'!{consolidator}" in formula, f"{cell} не делит выручку консолидатора"
 
@@ -414,10 +475,10 @@ def test_both_surfaces_carry_the_pure_apartment_unit_price():
             f"{cell} книги не делит квартирную выручку на квартирную продаваемую"
     assert template["B61"].number_format == template["B60"].number_format, \
         "квартирная строка без числового формата удельных"
-    # Сдвиг не разорвал ссылки соседних блоков: юнит-экономика читает
-    # сдвинутые строки, чеки книги — тоже (это проверяет паритет-тест).
-    assert str(template["G9"].value) == "=E62"
-    assert str(template["G21"].value) == "=E70"
+    # Сдвиг не разорвал ссылки соседних блоков: колонка проекта после
+    # добавления «Очереди 4» переехала из E в F, и G-блок читает её оттуда.
+    assert str(template["G9"].value) == "=F62"
+    assert str(template["G21"].value) == "=F70"
 
 
 def test_the_queue_price_multiplier_carries_the_phase_indexation():
