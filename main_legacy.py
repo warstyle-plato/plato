@@ -42,7 +42,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.16.2"
+VERSION = "0.16.3"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -7789,6 +7789,7 @@ def build_project_workbook(
     *,
     project_name: str = "",
     scenario: str = "base",
+    finance_hints: dict[str, Any] | None = None,
 ) -> tuple[bytes, str, dict[str, Any]]:
     """Книга DevelopAid v4, заполненная текущими вводными.
 
@@ -7796,6 +7797,33 @@ def build_project_workbook(
     Ячейка без соответствия уходит в meta["missing"], а не молчит.
     """
     x = {**DEFAULT_INPUTS, **{k: v for k, v in (inputs or {}).items() if not str(k).startswith("_")}}
+    # Лимиты финансирования — из движка: книжная пропорция от CAPEX-блоков
+    # занижала лимит ПФ очереди с офисами, и плата за невыбранный лимит
+    # выходила вдвое меньше движковой. Поверхности считают один раз: бот
+    # передаёт готовый результат, остальные пути считают здесь; при падении
+    # движка книга остаётся на собственных формулах долей.
+    if finance_hints is None:
+        try:
+            _hint_bundle = _run_authoritative_model(
+                inputs or {}, tep or {}, rates or [], phasing or {})
+            _hint_phases = _hint_bundle.get("phases") or []
+            if _hint_phases:
+                finance_hints = {
+                    "pf_limit_by_phase": [
+                        float(p["result"]["finance"].get("pf_limit", 0.0)) / 1e6
+                        for p in _hint_phases],
+                    "bridge_peak_by_phase": [
+                        float(p["result"]["finance"].get("peak_bridge", 0.0)) / 1e6
+                        for p in _hint_phases],
+                }
+            else:
+                _hint_fin = _hint_bundle["consolidated"]["finance"]
+                finance_hints = {
+                    "pf_limit_by_phase": [float(_hint_fin.get("pf_limit", 0.0)) / 1e6],
+                    "bridge_peak_by_phase": [float(_hint_fin.get("peak_bridge", 0.0)) / 1e6],
+                }
+        except Exception:
+            finance_hints = {}
     p = phasing or {}
     missing: list[str] = []
 
@@ -7947,6 +7975,14 @@ def build_project_workbook(
         "+SUM('CAPEX'!$B$35,'CAPEX'!$B$69,'CAPEX'!$B$103,'CAPEX'!$B$137))/10,0)*10"
     ), label="bridge_limit_mln")
 
+    # Лимит ПФ — движковый: у движка лимит равен потребности фазы, и книжный
+    # ROUNDUP от CAPEX занижал его на проценты вместе с платой за невыбранный
+    # лимит. Без движка остаётся шаблонная формула от CAPEX-блоков.
+    hint_limits = list((finance_hints or {}).get("pf_limit_by_phase") or [])
+    if hint_limits:
+        pf_limit_total = math.ceil(sum(hint_limits) / 10.0) * 10.0
+        put("B26", number=pf_limit_total, label="pf_limit_mln (движок)")
+
     # --- ВРИ ---------------------------------------------------------------
     land_cost = float(x.get("land_rights_cost_mln") or 0)
     put("B74", text="Да" if land_cost > 0 else "Нет", label="vri_required")
@@ -8061,8 +8097,33 @@ def build_project_workbook(
         offset_years = (offset if active else 0.0) / 12.0
         put(f"S{row}", number=(1.0 + price_inflation) ** offset_years, label="множитель цены")
         put(f"T{row}", number=(1.0 + cost_inflation) ** offset_years, label="множитель затрат")
-        put(f"U{row}", number=share("apartments"), label="доля лимита БРИДЖ")
-        put(f"V{row}", number=share("apartments"), label="доля лимита ПФ")
+        # Доли лимитов — от движковых лимитов фаз, а не от квартирных весов:
+        # очередь с офисами на 13,5 млрд получала 28% лимита ПФ по весу
+        # квартир, и книга недосчитывала плату за невыбранный лимит вдвое.
+        # Без движка (fallback) — живой формулой от полных расходов очереди:
+        # блочные итоги CAPEX несут покупку, ВРИ, социалку и объекты.
+        pf_hint = list((finance_hints or {}).get("pf_limit_by_phase") or [])
+        bridge_hint = list((finance_hints or {}).get("bridge_peak_by_phase") or [])
+        pf_hint = _v4_fold_tail(pf_hint, len(pf_hint), count) if pf_hint else []
+        bridge_hint = _v4_fold_tail(bridge_hint, len(bridge_hint), count) if bridge_hint else []
+        pf_total = sum(pf_hint)
+        bridge_total = sum(bridge_hint)
+        if active and pf_total > 0 and index < len(pf_hint):
+            put(f"V{row}", number=pf_hint[index] / pf_total, label="доля лимита ПФ")
+            put(f"U{row}", number=(bridge_hint[index] / bridge_total
+                                   if bridge_total > 0 and index < len(bridge_hint)
+                                   else pf_hint[index] / pf_total),
+                label="доля лимита БРИДЖ")
+        elif active:
+            need_cell = ("'CAPEX'!$B$35", "'CAPEX'!$B$69",
+                         "'CAPEX'!$B$103", "'CAPEX'!$B$137")[index]
+            need_total = "SUM('CAPEX'!$B$35,'CAPEX'!$B$69,'CAPEX'!$B$103,'CAPEX'!$B$137)"
+            share_formula = f"IFERROR({need_cell}/{need_total},{1.0 if index == 0 else 0.0})"
+            put(f"U{row}", formula=share_formula, label="доля лимита БРИДЖ")
+            put(f"V{row}", formula=share_formula, label="доля лимита ПФ")
+        else:
+            put(f"U{row}", number=0.0, label="доля лимита БРИДЖ")
+            put(f"V{row}", number=0.0, label="доля лимита ПФ")
         put(f"W{row}", number=num_row(apartments, "gns") * share("apartments"), label="ГНС квартир")
         put(f"X{row}", number=num_row(commercial, "gns") * share("ground_commercial"),
             label="ГНС коммерции")
@@ -10964,6 +11025,29 @@ def _telegram_send_attachments(
         try: _telegram_send_message(chat_id,"<i>Карточка рассчитана, но PDF временно не сформирован.</i>")
         except Exception: pass
     try:
+        # Авторитетный расчёт мог не состояться (bundle не существует) —
+        # книга тогда собирается без подсказок, но обязана собраться.
+        workbook_hints = None
+        try:
+            hint_phases = (bundle.get("phases") or []) if isinstance(bundle, dict) else []
+            if hint_phases:
+                workbook_hints = {
+                    "pf_limit_by_phase": [
+                        float(p["result"]["finance"].get("pf_limit", 0.0)) / 1e6
+                        for p in hint_phases],
+                    "bridge_peak_by_phase": [
+                        float(p["result"]["finance"].get("peak_bridge", 0.0)) / 1e6
+                        for p in hint_phases],
+                }
+            else:
+                _fin = ((bundle or {}).get("consolidated") or {}).get("finance") or {}
+                if _fin:
+                    workbook_hints = {
+                        "pf_limit_by_phase": [float(_fin.get("pf_limit", 0.0)) / 1e6],
+                        "bridge_peak_by_phase": [float(_fin.get("peak_bridge", 0.0)) / 1e6],
+                    }
+        except Exception:
+            workbook_hints = None
         model_bytes, model_filename, model_meta = build_project_workbook(
             report_payload.get("inputs") or {},
             report_payload.get("tep") or {},
@@ -10971,6 +11055,7 @@ def _telegram_send_attachments(
             report_payload.get("phasing") or {},
             project_name=str(report_payload.get("project_name") or project_name or ""),
             scenario=str(report_payload.get("scenario") or "base"),
+            finance_hints=workbook_hints,
         )
         if model_meta.get("missing"):
             _TELEGRAM_RUNTIME["last_error"] = "Книга v4, без соответствия: " + "; ".join(

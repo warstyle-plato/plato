@@ -190,7 +190,10 @@ def test_percent_weights_are_normalized_to_shares():
     assert sheet["W88"].value == pytest.approx(total * 0.40, rel=1e-6)
     assert sheet["W90"].value == pytest.approx(total * 0.28, rel=1e-6)
     assert sheet["P88"].value == pytest.approx(1.0)
-    assert sheet["U88"].value == pytest.approx(0.40)
+    # Доли лимитов — числа из движковых лимитов фаз (billder сам запускает
+    # авторитетную модель); сумма долей — единица.
+    shares = [float(sheet[f"U{r}"].value or 0) for r in (88, 89, 90)]
+    assert sum(shares) == pytest.approx(1.0, abs=1e-6)
 
 
 def test_social_construction_is_not_lost_by_the_book():
