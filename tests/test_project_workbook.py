@@ -651,6 +651,9 @@ def test_the_project_aggregates_include_the_fourth_block():
             assert two_rows not in formula, \
                 f"{cell}: в объём продаж попадает строка цены ({two_rows})"
 
+    # модель без единой включённой очереди — FAIL, а не нулевые даты
+    assert "COUNTIF('Вводные'!B88:B91" in flat(template["ПРОВЕРКИ"]["B73"])
+
     # сводные сроки не смотрят на выключенные очереди
     assert flat(template["КОНСОЛИДАТОР"]["C7"]).startswith(
         "=IF('Вводные'!$B$91=\"Да\"")
@@ -677,3 +680,19 @@ def test_the_project_aggregates_include_the_fourth_block():
 def test_the_builder_bridge_limit_sees_the_fourth_queue_capex(default_book):
     _, _, _, sheet = default_book
     assert "'CAPEX'!$B$137" in str(sheet["B24"].value)
+
+
+def test_the_rows_of_every_sheet_are_ordered_and_unique(default_book):
+    """Excel отказывался открывать книгу: хирургия четвёртой очереди дописала
+    строку 91 «Вводных» в конец sheetData, а в СРОКАХ оставила две строки 35.
+    openpyxl такое молча терпит, поэтому structura проверяется по XML."""
+    import re as _re
+    content, _, _, _ = default_book
+    with zipfile.ZipFile(io.BytesIO(content)) as z:
+        for name in z.namelist():
+            if not (name.startswith("xl/worksheets/") and name.endswith(".xml")):
+                continue
+            rows = [int(m.group(1)) for m in
+                    _re.finditer(r'<x:row r="(\d+)"', z.read(name).decode())]
+            assert rows == sorted(rows), f"{name}: строки не по порядку"
+            assert len(rows) == len(set(rows)), f"{name}: дубли строк"
