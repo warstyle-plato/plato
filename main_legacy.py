@@ -42,7 +42,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.14.1"
+VERSION = "0.14.2"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -7896,6 +7896,10 @@ def build_project_workbook(
                for product in ("apartments", "ground_commercial", "underground_parking", "storage")}
     shared = {key: _v4_shared_weights(p, key, count)
               for key in ("purchase", "land_rights", "social_compensation")}
+    # Индексация очередей — готовыми множителями к сдвигу старта, как в
+    # движке: О1 ×1, О2 ×1,08, О3 ×1,166 при 8% в год. Годовая инфляция в
+    # AE/AF здесь не пишется: книга ведёт её от даты базы цен до старта
+    # продаж и индексировала даже первую очередь — на +12% против движка.
     price_inflation = float(p.get("sales_price_inflation_pct") or 0) / 100.0 if count > 1 else 0.0
     cost_inflation = float(p.get("cost_inflation_pct") or 0) / 100.0 if count > 1 else 0.0
 
@@ -7920,8 +7924,9 @@ def build_project_workbook(
         put(f"Q{row}", number=shared["land_rights"][index] if active else 0.0, label="доля ВРИ")
         put(f"R{row}", number=shared["social_compensation"][index] if active else 0.0,
             label="доля соцнагрузки")
-        put(f"S{row}", number=1.0, label="множитель цены")
-        put(f"T{row}", number=1.0, label="множитель затрат")
+        offset_years = (offset if active else 0.0) / 12.0
+        put(f"S{row}", number=(1.0 + price_inflation) ** offset_years, label="множитель цены")
+        put(f"T{row}", number=(1.0 + cost_inflation) ** offset_years, label="множитель затрат")
         put(f"U{row}", number=share("apartments"), label="доля лимита БРИДЖ")
         put(f"V{row}", number=share("apartments"), label="доля лимита ПФ")
         put(f"W{row}", number=num_row(apartments, "gns") * share("apartments"), label="ГНС квартир")
@@ -7936,8 +7941,8 @@ def build_project_workbook(
         put(f"AB{row}", number=num_row(underground, "units") * share("underground_parking"),
             label="паркинг, шт.")
         put(f"AC{row}", number=num_row(storage, "units") * share("storage"), label="кладовые, шт.")
-        put(f"AE{row}", number=price_inflation, label="инфляция цены")
-        put(f"AF{row}", number=cost_inflation, label="инфляция затрат")
+        put(f"AE{row}", number=0.0, label="инфляция цены")
+        put(f"AF{row}", number=0.0, label="инфляция затрат")
 
     # --- сборка ------------------------------------------------------------
     # Кэшированные результаты формул шаблона стираются на всех листах:
@@ -19712,8 +19717,14 @@ async function applyNormativeTep(){
  const district=(stored.territory&&stored.territory.district)
   ||((document.getElementById('moDistrict')||{}).value||'')
   ||inputs.mo_district||'';
+ // Кадастры проекта уезжают в запрос: сервер определяет округ по адресам
+ // участков из ЕГРН, а плату за ВРИ считает по разнице кадастровых
+ // стоимостей — точнее прямой формулы. Раньше запрос был пуст, если проект
+ // пришёл не из калькулятора МО, и расчёт не знал, что это Мытищи.
+ const analysis=inputs._cadastral_analysis||cadastralAnalysis||{};
+ const projectNumbers=(analysis.recognized||analysis.requested||[]).filter(Boolean).join(', ');
  const body={
-  query:stored.query||'',
+  query:stored.query||projectNumbers||'',
   limit:30,
   site_area_ha:area,
   density_sqm_per_ha:density,
@@ -19742,6 +19753,14 @@ async function applyNormativeTep(){
  if(data.territory&&data.territory.district)inputs.mo_district=data.territory.district;
  moResult=data;
  syncTep(false);
+ // Разбивка соцобъектов по очередям пересобирается под новые мощности.
+ // Старый список строил семь ДОУ на 1 562 места и СОШ на 3 250 от проекта,
+ // которого больше нет: вводные уже показывали 453 и 950, а модель платила
+ // за старую социалку — расход не следовал ни за площадями, ни за очередями.
+ if(typeof phasing!=='undefined'&&phasing&&Array.isArray(phasing.social_objects)){
+  autoSocialObjects(false);
+  renderPhasing();
+ }
  renderInputs();renderTep();
  await calculate();
  return data;

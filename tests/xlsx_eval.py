@@ -92,6 +92,89 @@ def _numbers(values: Any) -> list[float]:
     return [_as_number(v) for v in _flatten(values) if v is not None and v != ""]
 
 
+class RangeValue(list):
+    """Диапазон, помнящий свою форму: INDEX(range, r, c) без неё не собрать."""
+
+    def __init__(self, values: list[Any], rows: int, cols: int) -> None:
+        super().__init__(values)
+        self.rows = rows
+        self.cols = cols
+
+
+def _excel_round(value: float, digits: float, up: bool = False) -> float:
+    n = int(digits)
+    scale = 10.0 ** n
+    scaled = value * scale
+    if up:
+        result = _math.ceil(abs(scaled)) * (1 if scaled >= 0 else -1)
+    else:
+        # Excel округляет половину от нуля, а не к чётному, как round().
+        result = _math.floor(abs(scaled) + 0.5) * (1 if scaled >= 0 else -1)
+    return result / scale
+
+
+def _index(args: list[Any]) -> Any:
+    values = args[0]
+    row = int(_as_number(args[1])) if len(args) > 1 else 1
+    col = int(_as_number(args[2])) if len(args) > 2 else 0
+    if isinstance(values, RangeValue) and col:
+        return values[(row - 1) * values.cols + (col - 1)]
+    flat = _flatten(values)
+    position = max(row, col, 1)
+    if not 1 <= position <= len(flat):
+        raise FormulaError(f"INDEX за пределами диапазона: {position} из {len(flat)}")
+    return flat[position - 1]
+
+
+def _match(args: list[Any]) -> int:
+    target = args[0]
+    flat = _flatten(args[1])
+    mode = int(_as_number(args[2])) if len(args) > 2 else 1
+    if mode != 0:
+        raise FormulaError("MATCH поддержан только с точным совпадением (0)")
+    for position, item in enumerate(flat, start=1):
+        if _compare("=", item, target):
+            return position
+    raise FormulaError(f"MATCH: {target!r} не найдено")
+
+
+def _countif(args: list[Any]) -> int:
+    criteria = args[1]
+    return sum(1 for item in _flatten(args[0]) if _compare("=", item, criteria))
+
+
+def _npv(args: list[Any]) -> float:
+    rate = _as_number(args[0])
+    flows = _numbers(args[1:])
+    return sum(flow / (1 + rate) ** period for period, flow in enumerate(flows, start=1))
+
+
+def _xirr(args: list[Any]) -> float:
+    flows = [_as_number(v) for v in _flatten(args[0])]
+    days = [_as_number(v) for v in _flatten(args[1])]
+    if len(flows) != len(days) or not flows:
+        raise FormulaError("XIRR: потоки и даты разной длины")
+    base = days[0]
+
+    def value(rate: float) -> float:
+        return sum(f / (1 + rate) ** ((d - base) / 365.0) for f, d in zip(flows, days))
+
+    low, high = -0.9999, 100.0
+    f_low, f_high = value(low), value(high)
+    if f_low * f_high > 0:
+        raise _DivZero()  # IRR не существует — Excel вернул бы #NUM!, ловится IFERROR
+    for _ in range(200):
+        mid = (low + high) / 2
+        f_mid = value(mid)
+        if abs(f_mid) < 1e-9:
+            return mid
+        if f_low * f_mid <= 0:
+            high, f_high = mid, f_mid
+        else:
+            low, f_low = mid, f_mid
+    return (low + high) / 2
+
+
 FUNCTIONS: dict[str, Callable[[list[Any]], Any]] = {
     "SUM": lambda args: sum(_numbers(args)),
     "MAX": lambda args: max(_numbers(args) or [0.0]),
@@ -108,8 +191,21 @@ FUNCTIONS: dict[str, Callable[[list[Any]], Any]] = {
     "DAY": lambda args: _as_date(args[0]).day,
     "EXP": lambda args: _math.exp(_as_number(args[0])),
     "CEILING": lambda args: _ceiling(_as_number(args[0]), _as_number(args[1])),
+    "CEILING.MATH": lambda args: _ceiling(_as_number(args[0]),
+                                          _as_number(args[1]) if len(args) > 1 else 1.0),
     "EDATE": lambda args: _edate(args[0], args[1]),
     "MONTH": lambda args: _as_date(args[0]).month,
+    "MOD": lambda args: _as_number(args[0]) - _as_number(args[1]) * _math.floor(
+        _as_number(args[0]) / _as_number(args[1])),
+    "ROUND": lambda args: _excel_round(_as_number(args[0]), _as_number(args[1])),
+    "ROUNDUP": lambda args: _excel_round(_as_number(args[0]), _as_number(args[1]), up=True),
+    "COUNT": lambda args: len(_numbers(args)),
+    "COUNTIF": _countif,
+    "INDEX": _index,
+    "MATCH": _match,
+    "TEXT": lambda args: _text(args[0]),
+    "NPV": _npv,
+    "XIRR": _xirr,
 }
 
 
@@ -154,7 +250,7 @@ class Evaluator:
         for row in range(min(r1, r2), max(r1, r2) + 1):
             for column in range(min(c1, c2), max(c1, c2) + 1):
                 out.append(self.cell(sheet, f"{get_column_letter(column)}{row}"))
-        return out
+        return RangeValue(out, abs(r2 - r1) + 1, abs(c2 - c1) + 1)
 
     # --- разбор ------------------------------------------------------------
 
@@ -248,7 +344,7 @@ class Evaluator:
         if kind == "cell":
             return self._reference(self._sheet, token)
         if kind == "name":
-            return self._call(text.upper())
+            return self._call(text.upper().removeprefix("_XLFN."))
         raise FormulaError(f"неожиданный токен {text!r}")
 
     def _reference(self, sheet: str, token: tuple[str, str]) -> Any:
@@ -258,8 +354,12 @@ class Evaluator:
         if (nxt := self._peek()) and nxt == ("op", ":"):
             self._take()
             end = self._take()
-            if end[0] == "sheet":  # «Лист!A1:Лист!B2» — так книга писать не должна
-                raise FormulaError("имя листа в диапазоне указывается один раз")
+            if end[0] == "sheet":
+                # «Лист!A1:Лист!B2» — легальная запись Excel; лист обязан
+                # совпадать с началом диапазона.
+                if end[1][:-1].strip("'") != sheet:
+                    raise FormulaError("диапазон через два разных листа")
+                end = self._take()
             return self._range(sheet, start, end[1])
         return self.cell(sheet, start)
 

@@ -165,7 +165,9 @@ def test_the_phases_split_the_tep_by_their_weights():
     assert sheet["D89"].value == datetime(2028, 1, 1)
     assert sheet["F89"].value == pytest.approx(30)
     assert sheet["Q89"].value == pytest.approx(0.5)
-    assert sheet["AE89"].value == pytest.approx(0.08)
+    # Индексация очереди — множителем цены к сдвигу старта, как в движке.
+    assert sheet["S89"].value == pytest.approx(1.08)
+    assert sheet["AE89"].value == pytest.approx(0.0)
 
 
 def test_percent_weights_are_normalized_to_shares():
@@ -223,6 +225,91 @@ def test_stale_formula_caches_are_stripped(default_book):
             stale += len(_re.findall(r"</x:f><x:v>", text))
             stale += len(_re.findall(r"<x:f[^>]*/><x:v>", text))
     assert stale == 0, f"в книге осталось {stale} кэшированных результатов формул"
+
+
+# --- книга считает так же, как движок ---------------------------------------
+
+def test_the_book_passes_its_own_checks_and_matches_the_engine():
+    """Книга вся из формул, и ошибка в любой уедет к аналитику молча. Поэтому
+    заполненная книга пересчитывается своим вычислителем: собственные проверки
+    книги не дают FAIL, а выручка и LLCR сходятся с движком. Так был пойман
+    двойной счёт офисов на листе ТЭП и индексация цены первой очереди."""
+    import sys
+    sys.setrecursionlimit(300000)
+    from xlsx_eval import Evaluator
+
+    # Цена выше умолчания: паритет проверяется на проекте, который гасит долг.
+    # На слабом проекте книга честно даёт FAIL «финальный долг не ноль» — это
+    # её бизнес-чек, а не расхождение с движком.
+    inputs = {**core.DEFAULT_INPUTS, "apartment_price_th": 500, "commercial_price_th": 500}
+    tep = {k: dict(v) for k, v in core.TEP_DEFAULT.items()}
+    phasing = {
+        "enabled": True, "phase_count": 2,
+        "phases": [{"start_offset_months": 0, "construction_months": 24},
+                   {"start_offset_months": 12, "construction_months": 24}],
+        "products": {k: [55, 45] for k in ("apartments", "ground_commercial",
+                                           "underground_parking", "storage")},
+        "shared_allocation": {"purchase": [100, 0], "land_rights": [60, 40],
+                              "social_compensation": [100, 0]},
+        "cost_inflation_pct": 8, "sales_price_inflation_pct": 8,
+    }
+    content, _, meta = core.build_project_workbook(
+        inputs, tep, [], phasing, project_name="Паритет")
+    assert meta["missing"] == []
+
+    book = openpyxl.load_workbook(io.BytesIO(content), data_only=False)
+    evaluator = Evaluator(book)
+    status = evaluator.cell("ПРОВЕРКИ", "B3")
+    if status not in ("PASS", "PASS WITH WARNINGS"):
+        broken = [
+            f'{book["ПРОВЕРКИ"][f"A{row}"].value}: '
+            f'факт={evaluator.cell("ПРОВЕРКИ", f"B{row}")} '
+            f'ожид={evaluator.cell("ПРОВЕРКИ", f"C{row}")}'
+            for row in range(6, 62)
+            if book["ПРОВЕРКИ"][f"A{row}"].value
+            and evaluator.cell("ПРОВЕРКИ", f"F{row}") == "FAIL"
+        ]
+        raise AssertionError(f"книга не проходит свои проверки: {broken}")
+
+    engine = core.calculate_phased(core.PhasedCalcRequest(
+        inputs=inputs, tep=tep, rates=[], phasing=phasing))
+    summary = engine["consolidated"]["summary"]
+    book_revenue = float(evaluator.cell("CF", "B6"))
+    book_llcr = float(evaluator.cell("CF", "B30"))
+
+    assert book_revenue == pytest.approx(summary["revenue"] / 1e6, rel=0.02), \
+        "выручка книги разошлась с движком больше чем на 2%"
+    assert book_llcr == pytest.approx(summary["llcr"], rel=0.05), \
+        "LLCR книги разошёлся с движком больше чем на 5%"
+
+
+def test_the_tep_sheet_does_not_double_count_the_objects():
+    """«ИТОГО ЖИЛЫЕ ОЧЕРЕДИ» ссылался на CF!B6, который уже включает офисы,
+    ТЦ и наземный паркинг, — и лист ТЭП считал объекты дважды."""
+    template = openpyxl.load_workbook(core._V4_TEMPLATE_PATH, data_only=False)
+    assert str(template["ТЭП"]["G22"].value).replace(" ", "") == "=SUM(G8,G14,G20)"
+
+
+def test_the_queue_price_multiplier_carries_the_phase_indexation():
+    """Индексация очередей — множителем к сдвигу старта, как в движке:
+    книга вела годовую инфляцию от даты базы цен и индексировала даже
+    первую очередь — на +12% против движка."""
+    phasing = {
+        "enabled": True, "phase_count": 2,
+        "phases": [{"start_offset_months": 0, "construction_months": 24},
+                   {"start_offset_months": 12, "construction_months": 24}],
+        "products": {k: [55, 45] for k in ("apartments", "ground_commercial",
+                                           "underground_parking", "storage")},
+        "shared_allocation": {}, "cost_inflation_pct": 8,
+        "sales_price_inflation_pct": 8,
+    }
+    content, _, _ = build(phasing=phasing)
+    sheet = openpyxl.load_workbook(io.BytesIO(content), data_only=False)["Вводные"]
+
+    assert sheet["S88"].value == pytest.approx(1.0)
+    assert sheet["S89"].value == pytest.approx(1.08)
+    assert sheet["AE88"].value == pytest.approx(0.0)
+    assert sheet["AE89"].value == pytest.approx(0.0)
 
 
 # --- поверхности -----------------------------------------------------------

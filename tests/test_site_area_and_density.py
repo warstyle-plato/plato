@@ -305,6 +305,28 @@ def test_the_normative_recalc_carries_the_district():
         "пресет Мытищ не несёт свой округ"
 
 
+def test_the_normative_recalc_sends_the_project_cadastre():
+    """Кадастры проекта — путь к округу и точному ВРИ: сервер определяет округ
+    по адресам участков и считает плату по разнице кадастровых стоимостей.
+    Пустой запрос оставлял расчёту только среднюю цену по области."""
+    body = re.search(r"async function applyNormativeTep\(\).*?\n\}", core.PAGE, re.S).group(0)
+
+    assert "_cadastral_analysis" in body, "кадастры проекта не передаются в пересчёт"
+    assert "projectNumbers" in body
+    assert re.search(r"query:stored\.query\|\|projectNumbers\|\|''", body)
+
+
+def test_the_normative_recalc_rebuilds_the_social_split():
+    """Разбивка соцобъектов по очередям — производная от мощностей. Старый
+    список строил семь ДОУ на 1 562 места от проекта, которого больше нет:
+    вводные показывали 453, а модель платила за 1 562."""
+    body = re.search(r"async function applyNormativeTep\(\).*?\n\}", core.PAGE, re.S).group(0)
+
+    assert "autoSocialObjects(false)" in body, \
+        "нормативный пересчёт не пересобирает разбивку соцобъектов"
+    assert "renderPhasing()" in body
+
+
 def test_the_normative_recalc_spares_the_manual_vri_payment():
     """Без кадастра плата за ВРИ не считается — введённая руками сумма
     не должна затираться нулём нормативного пересчёта."""
