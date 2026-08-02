@@ -205,6 +205,31 @@ def test_social_construction_is_not_lost_by_the_book():
     assert sheet["B17"].value == pytest.approx(100 + 465 * 2.75 + 975 * 3)
 
 
+def test_social_construction_is_indexed_to_its_queue():
+    """Движок строит соцобъекты в своих очередях с инфляцией затрат: сады во
+    второй (×1,08), школа в третьей (×1,166). Базовая сумма занижала
+    социалку книги на 12% против движка."""
+    phasing = {
+        "enabled": True, "phase_count": 3,
+        "phases": [{"start_offset_months": 12 * i, "construction_months": 24}
+                   for i in range(3)],
+        "products": {k: [40, 32, 28] for k in ("apartments", "ground_commercial",
+                                               "underground_parking", "storage")},
+        "shared_allocation": {}, "cost_inflation_pct": 8,
+        "sales_price_inflation_pct": 8,
+    }
+    content, _, _ = build(
+        {"social_mode": "Строительство", "social_compensation_mln": 0,
+         "kindergarten_places": 453, "kindergarten_cost_mln_per_place": 2.75,
+         "school_places": 950, "school_cost_mln_per_place": 3,
+         "clinic_capacity": 124, "clinic_cost_mln_per_unit": 3},
+        phasing=phasing)
+    sheet = openpyxl.load_workbook(io.BytesIO(content), data_only=False)["Вводные"]
+
+    expected = (453 * 2.75 * 1.08 + 950 * 3 * 1.08 ** 2 + 124 * 3 * 1.08)
+    assert sheet["B17"].value == pytest.approx(expected, rel=1e-6)
+
+
 def test_a_pure_compensation_stays_as_entered():
     _, _, _, sheet = _book({"social_mode": "Денежная компенсация",
                             "social_compensation_mln": 575.379,
@@ -288,6 +313,31 @@ def test_the_tep_sheet_does_not_double_count_the_objects():
     ТЦ и наземный паркинг, — и лист ТЭП считал объекты дважды."""
     template = openpyxl.load_workbook(core._V4_TEMPLATE_PATH, data_only=False)
     assert str(template["ТЭП"]["G22"].value).replace(" ", "") == "=SUM(G8,G14,G20)"
+
+
+def test_the_objects_inherit_their_queue_from_the_phasing():
+    """Шаблонная «очередь 1» сажала офисы в первую очередь, а движок ведёт их
+    в третьей: продаваемая площадь очередей расходилась с отчётом."""
+    phasing = {
+        "enabled": True, "phase_count": 3,
+        "phases": [{"start_offset_months": 12 * i, "construction_months": 24}
+                   for i in range(3)],
+        "products": {k: [40, 32, 28] for k in ("apartments", "ground_commercial",
+                                               "underground_parking", "storage")},
+        "shared_allocation": {},
+        "discrete": {"offices": 3, "standalone_retail": 2, "above_parking": 2},
+        "cost_inflation_pct": 8, "sales_price_inflation_pct": 8,
+    }
+    content, _, _ = build(phasing=phasing)
+    sheet = openpyxl.load_workbook(io.BytesIO(content), data_only=False)["Вводные"]
+
+    assert sheet["K21"].value == pytest.approx(3)   # офисы
+    assert sheet["K41"].value == pytest.approx(2)   # ТЦ
+    assert sheet["K61"].value == pytest.approx(2)   # наземный паркинг
+
+    single, _, _ = build()  # без очередей всё в первой
+    sheet_single = openpyxl.load_workbook(io.BytesIO(single), data_only=False)["Вводные"]
+    assert sheet_single["K21"].value == pytest.approx(1)
 
 
 def test_the_queue_price_multiplier_carries_the_phase_indexation():

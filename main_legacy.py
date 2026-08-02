@@ -42,7 +42,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.14.2"
+VERSION = "0.14.3"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -7825,18 +7825,39 @@ def build_project_workbook(
     # Социалка строительством: в книге v4 один канал соцнагрузки —
     # компенсация (B17). Без свёртки стоимость строительства садов, школ и
     # поликлиники выпадала из расходов книги целиком — у Мытищ это миллиарды,
-    # и LLCR книги завышался против движка. График строительства при этом
-    # сворачивается в разовый платёж за месяц до РнС (дата B18 — формула
-    # книги): приближение, но расход не теряется.
+    # и LLCR книги завышался против движка. Сумма индексируется как в движке:
+    # каждый объект раскладывается по очередям той же
+    # _phase_social_allocation, и его стоимость растёт с инфляцией затрат к
+    # старту своей очереди — базовая сумма занижала социалку на 12%.
+    # График строительства при этом сворачивается в разовый платёж за месяц
+    # до РнС (дата B18 — формула книги): приближение, но расход не теряется.
     if str(x.get("social_mode") or "") == "Строительство":
-        social_build = (
-            float(x.get("kindergarten_places") or 0)
-            * float(x.get("kindergarten_cost_mln_per_place") or 0)
-            + float(x.get("school_places") or 0)
-            * float(x.get("school_cost_mln_per_place") or 0)
-            + float(x.get("clinic_capacity") or 0)
-            * float(x.get("clinic_cost_mln_per_unit") or 0)
-        )
+        social_count = max(1, min(3, int(p.get("phase_count") or 1) if p.get("enabled") else 1))
+        social_phases = list(p.get("phases") or [])
+        social_inflation = (float(p.get("cost_inflation_pct") or 0) / 100.0
+                            if social_count > 1 else 0.0)
+        cost_per = {
+            "kindergarten": float(x.get("kindergarten_cost_mln_per_place") or 0),
+            "school": float(x.get("school_cost_mln_per_place") or 0),
+            "clinic": float(x.get("clinic_cost_mln_per_unit") or 0),
+        }
+        objects = [dict(obj) for obj in (p.get("social_objects") or []) if isinstance(obj, dict)]
+        if not objects:
+            for typ, key in (("kindergarten", "kindergarten_places"),
+                             ("school", "school_places"), ("clinic", "clinic_capacity")):
+                capacity = float(x.get(key) or 0)
+                if capacity > 0:
+                    objects.append({"type": typ, "capacity": capacity, "auto": True})
+        if objects:
+            _phase_social_allocation(objects, social_count)
+        social_build = 0.0
+        for obj in objects:
+            phase_index = max(1, min(social_count, int(obj.get("phase") or 1))) - 1
+            offset_months = (float(social_phases[phase_index].get("start_offset_months") or 0)
+                             if phase_index < len(social_phases) else 0.0)
+            factor = (1.0 + social_inflation) ** (offset_months / 12.0)
+            social_build += (float(obj.get("capacity") or 0)
+                             * cost_per.get(str(obj.get("type") or "kindergarten"), 0.0) * factor)
         if social_build > 0:
             put("B17", number=float(x.get("social_compensation_mln") or 0) + social_build,
                 label="социалка строительством")
@@ -7885,6 +7906,19 @@ def build_project_workbook(
         residual = float(x.get(f"{prefix}_residual_months") or 0)
         if months > 0:
             put(coord, number=months + residual, label=f"{prefix}_sales_term_months")
+
+    # Очередь финансирования объектов — из очерёдности проекта, как в движке
+    # (офисы по умолчанию в третьей, ТЦ и наземный паркинг во второй).
+    # Шаблонная единица сажала офисы в первую очередь: продаваемая площадь
+    # очередей и их средние цены расходились с отчётом.
+    discrete = (phasing or {}).get("discrete") or {}
+    queue_cap = max(1, min(3, int((phasing or {}).get("phase_count") or 1)
+                           if (phasing or {}).get("enabled") else 1))
+    for field, coord, default in (("offices", "K21", 3),
+                                  ("standalone_retail", "K41", 2),
+                                  ("above_parking", "K61", 2)):
+        queue = int(float(discrete.get(field) or default))
+        put(coord, number=float(max(1, min(queue_cap, queue))), label=f"очередь {field}")
 
     # --- очереди: базовый ТЭП в W..AC, доли и сроки -------------------------
     enabled_phases = int(p.get("phase_count") or 1) if p.get("enabled") else 1
