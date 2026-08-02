@@ -202,7 +202,9 @@ def test_social_construction_is_not_lost_by_the_book():
         "school_places": 975, "school_cost_mln_per_place": 3,
         "clinic_capacity": 0,
     })
-    assert sheet["B17"].value == pytest.approx(100 + 465 * 2.75 + 975 * 3)
+    # Компенсация в режиме «Строительство» не платится: движок считает
+    # social_total только из строительства, и книга обязана совпадать.
+    assert sheet["B17"].value == pytest.approx(465 * 2.75 + 975 * 3)
 
 
 def test_social_construction_is_indexed_to_its_queue():
@@ -776,3 +778,54 @@ def test_the_shared_costs_are_paid_by_the_cash_schedule():
     assert sheet["Q88"].value == pytest.approx(1.0)
     assert sheet["Q89"].value == pytest.approx(0.0)
     assert sheet["Q90"].value == pytest.approx(0.0)
+
+
+def test_the_cadastre_77_09_regression_social_is_construction_only():
+    """Регресс по 77:09:0004014:13. Билдер складывал денежную компенсацию
+    (580,668) со стройкой соцобъектов (193,25 = ДОУ 19×2,75 + СОШ 38×3 +
+    поликлиника 9×3): книга несла 773,918 млн социалки против 193,25 у
+    движка — минус 648 млн EBITDA, минус 5% LLCR, плюс 11% к пику БРИДЖа.
+    Движок в режиме «Строительство» компенсацию не платит вовсе."""
+    import sys
+    sys.setrecursionlimit(400000)
+    from xlsx_eval import Evaluator
+
+    inputs = {**core.DEFAULT_INPUTS,
+              "purchase_price_mln": 790.0,
+              "land_rights_cost_mln": 1267.539,
+              "apartment_price_th": 700.0, "commercial_price_th": 700.0,
+              "parking_price_th": 5000.0,
+              "main_above_th_per_sqm": 190.0, "main_under_th_per_sqm": 190.0,
+              "social_mode": "Строительство",
+              "social_compensation_mln": 580.668,
+              "kindergarten_places": 19, "kindergarten_cost_mln_per_place": 2.75,
+              "school_places": 38, "school_cost_mln_per_place": 3.0,
+              "clinic_capacity": 9, "clinic_cost_mln_per_unit": 3.0}
+    tep = {k: dict(v) for k, v in core.TEP_DEFAULT.items()}
+    tep["apartments"] = {"label": "Квартиры", "gns": 21415.0, "saleable": 13920.0}
+    tep["ground_commercial"] = {"label": "Коммерция 1 эт.", "gns": 1367.0,
+                                "saleable": 1230.0}
+    tep["underground_parking"] = {"label": "Подземный паркинг", "gns": 3185.0,
+                                  "units": 91.0}
+    tep["storage"] = {"label": "Кладовые", "gns": 0.0, "units": 0.0}
+
+    social = 19 * 2.75 + 38 * 3.0 + 9 * 3.0  # 193.25
+    content, _, _ = core.build_project_workbook(inputs, tep, [], {},
+                                                project_name="77:09")
+    book = openpyxl.load_workbook(io.BytesIO(content), data_only=False)
+    assert book["Вводные"]["B17"].value == pytest.approx(social, abs=0.01), \
+        "компенсация добавлена поверх строительства соцобъектов"
+
+    engine = core.calculate_phased(core.PhasedCalcRequest(
+        inputs=inputs, tep=tep, rates=[], phasing={}))
+    summary = engine["consolidated"]["summary"]
+    assert summary["social_payment"] / 1e6 == pytest.approx(social, abs=0.01)
+
+    # постатейно: книга и движок на одних вводных
+    evaluator = Evaluator(book)
+    b = lambda cell, sheet="ОТЧЕТ": float(evaluator.cell(sheet, cell))
+    assert b("B31", "CAPEX") == pytest.approx(social, abs=0.01), "социалка CAPEX"
+    assert b("B8") == pytest.approx(summary["ebitda"] / 1e6, rel=0.02), "EBITDA"
+    assert b("B11") == pytest.approx(summary["profit_tax"] / 1e6, rel=0.05), "налог"
+    assert b("B12") == pytest.approx(summary["net_profit"] / 1e6, rel=0.03), "ЧП"
+    assert b("B19") == pytest.approx(summary["llcr"], abs=0.01), "LLCR"
