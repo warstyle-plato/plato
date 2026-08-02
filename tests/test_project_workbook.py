@@ -682,6 +682,38 @@ def test_the_builder_bridge_limit_sees_the_fourth_queue_capex(default_book):
     assert "'CAPEX'!$B$137" in str(sheet["B24"].value)
 
 
+def test_the_social_construction_is_spread_like_the_engine():
+    """Социалка строительством платилась в книге одним куском за месяц до РнС,
+    и пик БРИДЖа выходил на 17% выше движкового: движок строит соцобъекты
+    месяцами. Теперь билдер пишет старт и окно (B18/E18), книга размазывает
+    сумму равномерно, и пики сходятся."""
+    import sys
+    sys.setrecursionlimit(400000)
+    from xlsx_eval import Evaluator
+
+    inputs = {**core.DEFAULT_INPUTS, "apartment_price_th": 500,
+              "commercial_price_th": 500}
+    tep = {k: dict(v) for k, v in core.TEP_DEFAULT.items()}
+    content, _, _ = core.build_project_workbook(inputs, tep, [], {},
+                                                project_name="Бридж")
+    book = openpyxl.load_workbook(io.BytesIO(content), data_only=False)
+    evaluator = Evaluator(book)
+
+    assert book["Вводные"]["E18"].value == pytest.approx(24)
+    social = [evaluator.cell("CAPEX", f"{col}31") or 0 for col in
+              (openpyxl.utils.get_column_letter(i) for i in range(4, 130))]
+    active = [v for v in social if float(v or 0) > 0]
+    assert len(active) == 24, "социалка не размазана по месяцам строительства"
+
+    engine = core.calculate_phased(core.PhasedCalcRequest(
+        inputs=inputs, tep=tep, rates=[], phasing={}))
+    peak_engine = engine["consolidated"]["finance"]["peak_bridge"] / 1e6
+    balances = [float(evaluator.cell("CF_1", f"{col}36") or 0) for col in
+                (openpyxl.utils.get_column_letter(i) for i in range(4, 130))]
+    assert max(balances) == pytest.approx(peak_engine, rel=0.05), \
+        "пик БРИДЖа книги разошёлся с движком больше чем на 5%"
+
+
 def test_the_rows_of_every_sheet_are_ordered_and_unique(default_book):
     """Excel отказывался открывать книгу: хирургия четвёртой очереди дописала
     строку 91 «Вводных» в конец sheetData, а в СРОКАХ оставила две строки 35.

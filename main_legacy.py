@@ -42,7 +42,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.15.4"
+VERSION = "0.15.5"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -7892,6 +7892,32 @@ def build_project_workbook(
         if social_build > 0:
             put("B17", number=float(x.get("social_compensation_mln") or 0) + social_build,
                 label="социалка строительством")
+            # Разовый платёж завышал пик БРИДЖа на сотни миллионов: движок
+            # строит соцобъекты месяцами, книга платила всё за месяц до РнС.
+            # Теперь книга размазывает сумму равномерно: B18 — старт первого
+            # объекта, E18 — окно до конца последнего (компенсация: E18=1).
+            spans = []
+            for typ, start_key, months_key, months_default in (
+                ("kindergarten", "kindergarten_start", "kindergarten_months", 24),
+                ("school", "school_start", "school_months", 30),
+                ("clinic", "clinic_start", "clinic_months", 24),
+            ):
+                if not any(str(obj.get("type")) == typ for obj in objects):
+                    continue
+                start = str(x.get(start_key) or "")[:10]
+                if not start:
+                    continue
+                months = max(1, int(float(x.get(months_key) or months_default)))
+                spans.append((start, add_months(start, months)))
+            if spans:
+                social_start = min(span[0] for span in spans)
+                social_end = max(span[1] for span in spans)
+                window = max(1, months_between(
+                    date.fromisoformat(social_start), social_end))
+                serial = _v4_excel_serial(social_start)
+                if serial is not None:
+                    put("B18", number=serial, label="старт соцстроительства")
+                    put("E18", number=float(window), label="окно соцстроительства")
 
     # Лимит БРИДЖ в книге режет выборку (CF r34). Логика вводных DevelopAid —
     # «всё финансирует банк», поэтому лимит расчётный: сделка, ВРИ, социалка
