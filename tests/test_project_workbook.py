@@ -340,6 +340,18 @@ def test_the_objects_inherit_their_queue_from_the_phasing():
     assert sheet_single["K21"].value == pytest.approx(1)
 
 
+def test_the_report_carries_a_pdf_comparable_unit_revenue():
+    """«Средняя цена реализации» книги — площадные продукты без паркинга, а
+    PDF делит всю выручку очереди: цифры расходились на цену паркинга и
+    читались как ошибка. Строка-мостик считает по определению PDF."""
+    template = openpyxl.load_workbook(core._V4_TEMPLATE_PATH, data_only=False)["ОТЧЕТ"]
+
+    assert "как в PDF" in str(template["A72"].value)
+    for cell, consolidator in (("B72", "G4"), ("C72", "G5"), ("D72", "G6"), ("E72", "G7")):
+        formula = str(template[cell].value)
+        assert f"'КОНСОЛИДАТОР'!{consolidator}" in formula, f"{cell} не делит выручку консолидатора"
+
+
 def test_the_queue_price_multiplier_carries_the_phase_indexation():
     """Индексация очередей — множителем к сдвигу старта, как в движке:
     книга вела годовую инфляцию от даты базы цен и индексировала даже
