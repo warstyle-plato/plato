@@ -348,3 +348,13 @@ def test_the_mo_fields_and_the_tep_panel_are_the_same_value():
     set_density = re.search(r"function setSiteDensity\(value\).*?\n\}", core.PAGE, re.S).group(0)
     assert "moArea" in set_area, "правка площади на ТЭП не доезжает в МО-блок"
     assert "moDensity" in set_density, "правка плотности на ТЭП не доезжает в МО-блок"
+
+
+def test_the_density_field_shows_the_equivalent_in_the_other_metric():
+    """Две «плотности» под одним словом: московская — м² СПП/га, подмосковная —
+    м² квартир/га. 15 482 СПП выглядели как «в полтора раза больше» 8 700
+    квартирных, хотя это одна застройка. Эквивалент держит обе метрики рядом."""
+    assert 'siteDensityEquiv' in core.PAGE
+    assert 'м² квартир / га в нормативах РНГП' in core.PAGE
+    assert 'поэтажной площади (СПП) / га по методике Москвы' in core.PAGE
+    assert '0.94*0.65' in core.PAGE

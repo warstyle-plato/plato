@@ -42,7 +42,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.16.1"
+VERSION = "0.16.2"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -17953,6 +17953,7 @@ details.cadastral-box>summary::marker{color:#888}
             <label>Плотность застройки <span class="unit" id="siteDensityUnit">м² поэтажной площади / га</span></label>
             <input type="number" step="100" id="siteDensity" onchange="setSiteDensity(this.value)">
             <span id="siteDensitySource" style="font-size:11px;color:#777"></span>
+            <span id="siteDensityEquiv" style="display:block;font-size:11px;color:#777"></span>
           </div>
           <div class="field">
             <label><span id="sitePotentialLabel">Потенциал поэтажной площади</span> <span class="unit">м²</span></label>
@@ -20085,6 +20086,18 @@ function renderSitePanel(){
  const normative=!inputs._glavapu_import;
  const unitEl=document.getElementById('siteDensityUnit');
  if(unitEl)unitEl.textContent=normative?'м² квартир / га · нормативы РНГП':'м² поэтажной площади / га';
+ // Две «плотности» под одним словом путали: московская считается в м² СПП/га,
+ // подмосковная — в м² продаваемых квартир/га. Эквивалент по методике
+ // ГлавАПУ-ТЭП (квартиры 94% СПП, продаваемая 65% ГНС) держит обе рядом.
+ const equivEl=document.getElementById('siteDensityEquiv');
+ if(equivEl){
+   const density=effectiveSiteDensity();
+   equivEl.textContent=density>0
+     ? (normative
+        ? '≈ '+num(density/(0.94*0.65))+' м² поэтажной площади (СПП) / га по методике Москвы'
+        : '≈ '+num(density*0.94*0.65)+' м² квартир / га в нормативах РНГП')
+     : '';
+ }
  const potLabel=document.getElementById('sitePotentialLabel');
  if(potLabel)potLabel.textContent=normative?'Потенциал продаваемой площади квартир':'Потенциал поэтажной площади';
  const useLabel=document.getElementById('siteUsageLabel');
