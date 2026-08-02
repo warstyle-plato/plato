@@ -531,3 +531,120 @@ def test_the_bot_attachment_is_the_same_workbook():
     source = inspect.getsource(core._telegram_send_attachments)
     assert "build_project_workbook" in source
     assert "build_model_archive" not in source
+
+
+# --- четвёртая очередь как драйвер, а не только листы -----------------------
+
+def test_the_fourth_queue_drives_the_whole_book_not_just_its_sheets():
+    """О4 существовала листами, но не драйвером: INDEX по очередям упирался в
+    строку 90, объект в четвёртой очереди ронял ТЭП и аллокацию, лимиты БРИДЖ
+    и ПФ не видели CAPEX четвёртого блока, а проектные агрегаты ОТЧЁТа
+    складывали три блока продаж из четырёх."""
+    import sys
+    sys.setrecursionlimit(400000)
+    from xlsx_eval import Evaluator
+
+    inputs = {**core.DEFAULT_INPUTS, "apartment_price_th": 500,
+              "commercial_price_th": 500, "offices_enabled": True}
+    tep = {k: dict(v) for k, v in core.TEP_DEFAULT.items()}
+    phasing = {
+        "enabled": True, "phase_count": 4,
+        "phases": [{"start_offset_months": 12 * i, "construction_months": 24}
+                   for i in range(4)],
+        "products": {k: [32, 26, 22, 20] for k in ("apartments", "ground_commercial",
+                                                   "underground_parking", "storage")},
+        "shared_allocation": {"purchase": [100, 0, 0, 0], "land_rights": [40, 30, 20, 10],
+                              "social_compensation": [100, 0, 0, 0]},
+        "discrete": {"offices": 4, "standalone_retail": 2, "above_parking": 2},
+        "cost_inflation_pct": 8, "sales_price_inflation_pct": 8,
+    }
+    content, _, meta = core.build_project_workbook(inputs, tep, [], phasing,
+                                                   project_name="О4-драйвер")
+    assert meta["missing"] == []
+    book = openpyxl.load_workbook(io.BytesIO(content), data_only=False)
+    evaluator = Evaluator(book)
+
+    assert book["Вводные"]["K21"].value == pytest.approx(4)
+    assert evaluator.cell("ПРОВЕРКИ", "B3") in ("PASS", "PASS WITH WARNINGS"), [
+        f'{book["ПРОВЕРКИ"][f"A{row}"].value}: '
+        f'факт={evaluator.cell("ПРОВЕРКИ", f"B{row}")} '
+        f'ожид={evaluator.cell("ПРОВЕРКИ", f"C{row}")}'
+        for row in range(6, 76)
+        if book["ПРОВЕРКИ"][f"A{row}"].value
+        and evaluator.cell("ПРОВЕРКИ", f"F{row}") == "FAIL"
+    ]
+    assert float(evaluator.cell("ОБЪЕКТЫ", "B116")) > 0, \
+        "аллокация офисов четвёртой очереди пуста"
+
+    engine = core.calculate_phased(core.PhasedCalcRequest(
+        inputs=inputs, tep=tep, rates=[], phasing=phasing))
+    summary = engine["consolidated"]["summary"]
+    assert float(evaluator.cell("CF", "B6")) == pytest.approx(
+        summary["revenue"] / 1e6, rel=0.02)
+    assert float(evaluator.cell("ОТЧЕТ", "F61")) == pytest.approx(
+        summary["average_apartment_price_th"], rel=0.02), \
+        "«в т.ч. квартиры» проекта не сходится с движком"
+
+
+def test_the_project_aggregates_include_the_fourth_block():
+    """Формулы-агрегаты, где четвёртый блок терялся: лимиты, ОТЧЁТ, чеки."""
+    template = openpyxl.load_workbook(core._V4_TEMPLATE_PATH, data_only=False)
+    flat = lambda cell: str(cell.value).replace(" ", "")
+
+    # витринный ID четвёртой очереди и признак ТЦ в консолидации были «3»:
+    # ТЦ третьей очереди попадал в площадь четвёртой
+    assert template["Вводные"]["A91"].value == 4
+    assert "$K$41=4" in flat(template["КОНСОЛИДАТОР"]["F7"])
+    assert "$K$41=3" not in flat(template["КОНСОЛИДАТОР"]["F7"])
+    assert "H91" in flat(template["ПРОВЕРКИ"]["B57"])
+
+    # контур финансирования: суммы долей лимитов, даты объектов против старта
+    # их очереди, пик ПФ в пределах лимита с рефинансируемым БРИДЖем
+    assert "U88:U91" in flat(template["ПРОВЕРКИ"]["B69"])
+    assert "V88:V91" in flat(template["ПРОВЕРКИ"]["B70"])
+    assert "$K$27" in flat(template["ПРОВЕРКИ"]["B71"])
+    assert "$D$88:$D$91" in flat(template["ПРОВЕРКИ"]["B71"])
+    assert "'CF_4'!B83" in flat(template["ПРОВЕРКИ"]["B72"])
+    assert "$B$24" in flat(template["ПРОВЕРКИ"]["B72"])
+    assert "F6:F75" in flat(template["ПРОВЕРКИ"]["B3"])
+
+    assert "'CAPEX'!$B$137" in flat(template["Вводные"]["B26"])
+    assert "'Продажи'!B85" in flat(template["ОТЧЕТ"]["F61"])
+    assert "$L$88:$L$91" in flat(template["ОТЧЕТ"]["F61"])
+    assert "'Продажи'!B85" in flat(template["ОТЧЕТ"]["E46"])
+    assert "'ОБЪЕКТЫ'!B116" in flat(template["ПРОВЕРКИ"]["B50"])
+    assert "'ОБЪЕКТЫ'!B120" in flat(template["ПРОВЕРКИ"]["B51"])
+    assert "$D$83:$DS$83" in flat(template["ОТЧЕТ"]["B87"]), \
+        "темп квартир проекта не видит четвёртый блок продаж"
+
+    # выпадающие списки: объект можно поставить в четвёртую очередь,
+    # переключатель и ограничения тренда действуют и на строку 91
+    validations = {}
+    for dv in template["Вводные"].data_validations.dataValidation:
+        validations[str(dv.sqref)] = dv.formula1
+    assert validations.get("K21") == '"1,2,3,4"'
+    assert validations.get("K41") == '"1,2,3,4"'
+    assert validations.get("K61") == '"1,2,3,4"'
+    assert "B88:B91" in validations
+    assert "AD88:AF91" in validations
+
+    # INDEX по очередям обязан дотягиваться до строки 91, а кэш шаблона —
+    # отсутствовать: смесь старых значений и пустых клонов О4 выглядела как
+    # посчитанная книга для всего, что читает значения без пересчёта
+    import re as _re, zipfile as _zip
+    with _zip.ZipFile(core._V4_TEMPLATE_PATH) as z:
+        for name in z.namelist():
+            if not name.startswith("xl/worksheets/"):
+                continue
+            text = z.read(name).decode()
+            leftovers = _re.findall(
+                r"INDEX\('Вводные'!\$[A-Z]{1,2}\$88:\$[A-Z]{1,2}\$90,", text)
+            assert not leftovers, f"{name}: INDEX всё ещё упирается в строку 90"
+            cached = len(_re.findall(r"</x:f><x:v>", text)) + \
+                len(_re.findall(r"<x:f[^>]*/><x:v>", text))
+            assert cached == 0, f"{name}: {cached} кэшированных значений в шаблоне"
+
+
+def test_the_builder_bridge_limit_sees_the_fourth_queue_capex(default_book):
+    _, _, _, sheet = default_book
+    assert "'CAPEX'!$B$137" in str(sheet["B24"].value)
