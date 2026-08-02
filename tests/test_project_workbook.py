@@ -168,6 +168,63 @@ def test_the_phases_split_the_tep_by_their_weights():
     assert sheet["AE89"].value == pytest.approx(0.08)
 
 
+def test_percent_weights_are_normalized_to_shares():
+    """Страница хранит веса очередей в процентах ([40, 32, 28]): записанные
+    как есть, они раздували ГНС очереди в сорок раз, а долю покупки — в сто."""
+    phasing = {
+        "enabled": True, "phase_count": 3,
+        "phases": [{"start_offset_months": 12 * i, "construction_months": 24}
+                   for i in range(3)],
+        "products": {"apartments": [40, 32, 28], "ground_commercial": [40, 32, 28],
+                     "underground_parking": [40, 32, 28], "storage": [40, 32, 28]},
+        "shared_allocation": {"purchase": [100, 0, 0], "land_rights": [100, 0, 0],
+                              "social_compensation": [100, 0, 0]},
+        "cost_inflation_pct": 8, "sales_price_inflation_pct": 8,
+    }
+    content, _, _ = build(phasing=phasing)
+    sheet = openpyxl.load_workbook(io.BytesIO(content), data_only=False)["Вводные"]
+    total = core.TEP_DEFAULT["apartments"]["gns"]
+
+    assert sheet["W88"].value == pytest.approx(total * 0.40, rel=1e-6)
+    assert sheet["W90"].value == pytest.approx(total * 0.28, rel=1e-6)
+    assert sheet["P88"].value == pytest.approx(1.0)
+    assert sheet["U88"].value == pytest.approx(0.40)
+
+
+def test_social_construction_is_not_lost_by_the_book():
+    """Книга знает один канал соцнагрузки — компенсацию. Строительство садов
+    и школ (у Мытищ — миллиарды) иначе выпадало из расходов, завышая LLCR."""
+    _, _, _, sheet = _book({
+        "social_mode": "Строительство", "social_compensation_mln": 100,
+        "kindergarten_places": 465, "kindergarten_cost_mln_per_place": 2.75,
+        "school_places": 975, "school_cost_mln_per_place": 3,
+        "clinic_capacity": 0,
+    })
+    assert sheet["B17"].value == pytest.approx(100 + 465 * 2.75 + 975 * 3)
+
+
+def test_a_pure_compensation_stays_as_entered():
+    _, _, _, sheet = _book({"social_mode": "Денежная компенсация",
+                            "social_compensation_mln": 575.379,
+                            "kindergarten_places": 465})
+    assert sheet["B17"].value == pytest.approx(575.379)
+
+
+def test_stale_formula_caches_are_stripped(default_book):
+    """Просмотрщики формулы не считают: кэшированные результаты шаблона
+    показывали числа проекта, под который книга собиралась в прошлый раз."""
+    import re as _re
+    content, _, _, _ = default_book
+    archive = zipfile.ZipFile(io.BytesIO(content))
+    stale = 0
+    for name in archive.namelist():
+        if name.startswith("xl/worksheets/") and name.endswith(".xml"):
+            text = archive.read(name).decode("utf-8")
+            stale += len(_re.findall(r"</x:f><x:v>", text))
+            stale += len(_re.findall(r"<x:f[^>]*/><x:v>", text))
+    assert stale == 0, f"в книге осталось {stale} кэшированных результатов формул"
+
+
 # --- поверхности -----------------------------------------------------------
 
 def test_the_endpoint_returns_a_single_workbook():

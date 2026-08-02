@@ -292,6 +292,19 @@ def test_the_normative_potential_is_compared_with_saleable_apartments():
         "нормативный потенциал не сравнивается с продаваемой квартир"
 
 
+def test_the_normative_recalc_carries_the_district():
+    """Без округа плата за ВРИ берёт среднюю цену по области: на Мытищах это
+    198 907 ₽ вместо 238 052 ₽ за метр — и плата занижается на четверть."""
+    body = re.search(r"async function applyNormativeTep\(\).*?\n\}", core.PAGE, re.S).group(0)
+
+    assert "inputs.mo_district" in body, "округ проекта не передаётся в расчёт"
+    assert "district:district" in body.replace(" ", "")
+    assert "inputs.mo_district=data.territory.district" in body.replace(" ", ""), \
+        "определённый расчётом округ не запоминается в проекте"
+    assert "mo_district='Городской округ Мытищи'" in core.PAGE, \
+        "пресет Мытищ не несёт свой округ"
+
+
 def test_the_normative_recalc_spares_the_manual_vri_payment():
     """Без кадастра плата за ВРИ не считается — введённая руками сумма
     не должна затираться нулём нормативного пересчёта."""

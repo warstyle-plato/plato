@@ -42,7 +42,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.14.0"
+VERSION = "0.14.1"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -1859,7 +1859,12 @@ def _nspd_search_features(query: str) -> list[dict[str, Any]]:
         service="Сервис НСПД",
     )
     features = _nspd_features(payload)
-    _land_cache_put(cache_key, features)
+    # Пустой ответ не кэшируется: НСПД отвечает не на каждый запрос, и
+    # прилипший в кэше промах 15 минут выдавал «участок не найден» на все
+    # повторы — так из 22 участков Мытищ считались 20, а площадь территории
+    # молча теряла восемь гектаров.
+    if features:
+        _land_cache_put(cache_key, features)
     return features
 
 
@@ -2013,7 +2018,20 @@ def _land_lookup_by_numbers(numbers: list[str]) -> list[dict[str, Any]]:
         workers = min(_LAND_LOOKUP_WORKERS, len(numbers))
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
             batches = list(pool.map(lambda number: _land_lookup_by_numbers([number]), numbers))
-        return [item for batch in batches for item in batch]
+        results = [item for batch in batches for item in batch]
+        # Второй заход по промахам — последовательный, чтобы не давить на
+        # портал: при параллельном опросе НСПД часть номеров отвечает пусто,
+        # и без повтора участок выпадал из расчёта вместе со своей площадью.
+        misses = [item["cadastral_number"] for item in results if not item.get("found")]
+        if misses:
+            retried = {number: _land_lookup_by_numbers([number])[0] for number in misses}
+            results = [
+                retried.get(item["cadastral_number"], item)
+                if not item.get("found") and retried.get(item["cadastral_number"], {}).get("found")
+                else item
+                for item in results
+            ]
+        return results
     results: list[dict[str, Any]] = []
     for number in numbers:
         parts = _cadastral_number_parts(number)
@@ -5141,11 +5159,21 @@ def _telegram_handle_mo_numbers(chat_id: int, numbers: list[str], query: str = "
     requested = len(numbers)
     found = int(territory.get("parcel_count") or 0)
     parcels = f"<b>{found}</b>" + (f" из {requested}" if requested and found != requested else "")
+    # Потерянный участок — потерянные гектары: площадь, квартиры и вся
+    # социалка занижены, и молчать об этом рядом с площадью нельзя.
+    missing_note = ""
+    if requested and found < requested:
+        missing_note = (
+            f"⚠️ <b>Без сведений ЕГРН: {requested - found} участков — площадь и весь "
+            "расчёт занижены.</b> Повторите запрос: НСПД отвечает не с первого раза. "
+            "Номера — в предупреждениях ниже.\n"
+        )
     _telegram_send_message(
         chat_id,
         "<b>Участок в Московской области</b>\n"
         f"Участков: {parcels}\n"
         f"Площадь: <b>{_telegram_number(territory.get('site_area_ha'), 4)} га</b>\n"
+        f"{missing_note}"
         f"Округ: <b>{html.escape(str(territory.get('district') or '—'))}</b>\n"
         f"Кадастровый квартал: <b>{html.escape(str(territory.get('quarter') or '—'))}</b>\n\n"
         f"Плотность: {_telegram_number(mo.get('density_sqm_per_ha'), 0)} м² квартир на 1 га\n"
@@ -7694,18 +7722,26 @@ def _v4_inputs_sheet_path(archive: zipfile.ZipFile) -> str:
     return "xl/" + target.lstrip("/").removeprefix("xl/")
 
 
+def _v4_normalized(weights: list[float], count: int) -> list[float]:
+    """Веса очередей в долях единицы. Страница хранит их в процентах
+    ([40, 32, 28]); записанные как есть, они раздували ГНС очереди в
+    сорок раз. Нормировка на сумму принимает оба формата."""
+    total = sum(weights[:count])
+    return [w / total for w in weights[:count]]
+
+
 def _v4_phase_weights(phasing: dict[str, Any], product: str, count: int) -> list[float]:
     weights = [float(w or 0) for w in ((phasing.get("products") or {}).get(product) or [])]
-    if len(weights) < count or sum(weights) <= 0:
+    if len(weights) < count or sum(weights[:count]) <= 0:
         return [1.0 / count] * count
-    return weights[:count]
+    return _v4_normalized(weights, count)
 
 
 def _v4_shared_weights(phasing: dict[str, Any], key: str, count: int) -> list[float]:
     weights = [float(w or 0) for w in ((phasing.get("shared_allocation") or {}).get(key) or [])]
-    if len(weights) < count or sum(weights) <= 0:
+    if len(weights) < count or sum(weights[:count]) <= 0:
         return [1.0 if index == 0 else 0.0 for index in range(count)]
-    return weights[:count]
+    return _v4_normalized(weights, count)
 
 
 def build_project_workbook(
@@ -7785,6 +7821,25 @@ def build_project_workbook(
     put("B70", number=seasonal, label="seasonal_reduction_pct (май–август)")
     put("B31", text=str(x.get("bridge_interest_mode") or "Капитализация в ПФ"),
         label="bridge_interest_mode")
+
+    # Социалка строительством: в книге v4 один канал соцнагрузки —
+    # компенсация (B17). Без свёртки стоимость строительства садов, школ и
+    # поликлиники выпадала из расходов книги целиком — у Мытищ это миллиарды,
+    # и LLCR книги завышался против движка. График строительства при этом
+    # сворачивается в разовый платёж за месяц до РнС (дата B18 — формула
+    # книги): приближение, но расход не теряется.
+    if str(x.get("social_mode") or "") == "Строительство":
+        social_build = (
+            float(x.get("kindergarten_places") or 0)
+            * float(x.get("kindergarten_cost_mln_per_place") or 0)
+            + float(x.get("school_places") or 0)
+            * float(x.get("school_cost_mln_per_place") or 0)
+            + float(x.get("clinic_capacity") or 0)
+            * float(x.get("clinic_cost_mln_per_unit") or 0)
+        )
+        if social_build > 0:
+            put("B17", number=float(x.get("social_compensation_mln") or 0) + social_build,
+                label="социалка строительством")
 
     # Лимит БРИДЖ в книге режет выборку (CF r34). Логика вводных DevelopAid —
     # «всё финансирует банк», поэтому лимит расчётный: сделка, ВРИ, социалка
@@ -7885,12 +7940,22 @@ def build_project_workbook(
         put(f"AF{row}", number=cost_inflation, label="инфляция затрат")
 
     # --- сборка ------------------------------------------------------------
+    # Кэшированные результаты формул шаблона стираются на всех листах:
+    # просмотрщики (Telegram, iOS) формулы не считают и показывали числа
+    # проекта, под который книга собиралась в прошлый раз, — «модель не
+    # подтянула вводные». Excel пересчитает всё при открытии
+    # (fullCalcOnLoad уже стоит в книге).
     out = io.BytesIO()
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as archive:
         for item in source.infolist():
             payload = source.read(item.filename)
             if item.filename == sheet_path:
                 payload = xml.encode("utf-8")
+            if item.filename.startswith("xl/worksheets/") and item.filename.endswith(".xml"):
+                text = payload.decode("utf-8")
+                text = re.sub(r"(<x:f(?:\s[^>]*)?>[^<]*</x:f>)<x:v>[^<]*</x:v>", r"\1", text)
+                text = re.sub(r"(<x:f(?:\s[^>]*)?/>)<x:v>[^<]*</x:v>", r"\1", text)
+                payload = text.encode("utf-8")
             archive.writestr(item, payload)
     source.close()
 
@@ -10742,6 +10807,7 @@ def _telegram_send_attachments(
                 "<b>Полная модель DevelopAid</b> · Excel считает формулами "
                 "из текущих вводных"
                 + (" · очереди на листе «Вводные»" if model_meta.get("phased") else "")
+                + ". Откройте в Excel: предпросмотр формулы не считает."
             ),
             content_type=_XLSX_MEDIA_TYPE,
         )
@@ -19084,6 +19150,9 @@ function applyServerPresetProjectConfig(presetId){
 
  if(presetId==='mytishchi'){
    // Full project preset: reset phasing so no stale settings survive from another project.
+   // Округ решает Кср и Кд платы за ВРИ в нормативном пересчёте: без него
+   // расчёт берёт среднее по области и плата занижается на четверть.
+   inputs.mo_district='Городской округ Мытищи';
    inputs.technical_supervision_pct=5;
    inputs.offices_enabled=true;
    inputs.offices_gba_sqm=Number((inputs._glavapu_import&&inputs._glavapu_import.normalized&&inputs._glavapu_import.normalized.office_gba_sqm)||26700);
@@ -19636,12 +19705,19 @@ async function applyNormativeTep(){
  const area=Number(inputs.site_area_ha||0);
  const density=effectiveSiteDensity();
  const stored=inputs._mo_calc||{};
+ // Округ решает Кср и Кд платы за ВРИ. Без него расчёт берёт среднее по
+ // области: на Мытищах это 198 907 ₽ вместо 238 052 ₽ за метр — и плата
+ // расходится на четверть. Округ ищется в сохранённом расчёте МО, в поле
+ // на вкладке импорта и в самом проекте (пресет несёт его отдельным ключом).
+ const district=(stored.territory&&stored.territory.district)
+  ||((document.getElementById('moDistrict')||{}).value||'')
+  ||inputs.mo_district||'';
  const body={
   query:stored.query||'',
   limit:30,
   site_area_ha:area,
   density_sqm_per_ha:density,
-  district:(stored.territory&&stored.territory.district)||'',
+  district:district,
   market_price_rub_per_sqm:0,
   vri_kd:0,
   average_flat_sqm:Number((document.getElementById('moFlat')||{}).value||0)||58.75
@@ -19663,6 +19739,7 @@ async function applyNormativeTep(){
  inputs._mo_calc={query:body.query,territory:data.territory||{},
   density_sqm_per_ha:data.density_sqm_per_ha,vri:data.vri||{},social:data.social||{},
   balance:data.balance||{},warnings:data.warnings||[]};
+ if(data.territory&&data.territory.district)inputs.mo_district=data.territory.district;
  moResult=data;
  syncTep(false);
  renderInputs();renderTep();
@@ -19689,12 +19766,17 @@ function applyDensityToTep(){
   status.innerHTML='Считаю нормативный ТЭП по РНГП: квартиры '+num(area*density)+
    ' м² продаваемой ('+num(area)+' га × '+num(density)+
    ' м² квартир/га), социалка, паркинг и офисы — от населения…';
-  applyNormativeTep().then(()=>{
+  applyNormativeTep().then(data=>{
+   // Плата за ВРИ и её основание — часть того же пересчёта: молчаливое
+   // среднее по области занижало плату на четверть против цены округа.
+   const priceWarn=(((data||{}).warnings)||[]).find(w=>String(w).includes('среднее значение по Московской области')||String(w).includes('Округ не определён'));
    status.innerHTML='<span class="import-ok">ТЭП пересчитан нормативами РНГП: квартиры '+
     num(tep.apartments.saleable)+' м² продаваемой ('+num(tep.apartments.gns)+
     ' м² ГНС), подземный паркинг '+num(tep.underground_parking.units)+' м/м, ДОУ '+
     num(tep.kindergarten.units)+' мест, СОШ '+num(tep.school.units)+' мест, офисы '+
-    num(Number(inputs.offices_gba_sqm||0))+' м² GBA.</span>';
+    num(Number(inputs.offices_gba_sqm||0))+' м² GBA. Смена ВРИ: '+
+    num(Number(inputs.land_rights_cost_mln||0))+' млн ₽.</span>'+
+    (priceWarn?'<div class="import-error" style="margin-top:4px">'+escapeHtml(String(priceWarn))+'</div>':'');
   }).catch(e=>{
    status.innerHTML='<span class="import-error">'+escapeHtml(String(e.message||e))+'</span>';
   });

@@ -572,3 +572,54 @@ def test_no_hidden_limit_of_five_or_ten_anywhere():
     assert main.MoCalculateRequest().limit == 30
     assert "limit:5" not in main.PAGE
     assert main.PAGE.count("limit:30") >= 2
+
+
+# --- капризы НСПД: промах — это повтор, а не приговор ------------------------
+# Из 22 участков Мытищ в расчёт вошли 20: НСПД ответил пусто на два номера,
+# пустой ответ прилип в кэш на 15 минут, и площадь территории молча потеряла
+# восемь гектаров — вместе с квартирами, населением и социалкой.
+
+def nspd_search_payload():
+    return {"data": {"features": [MYTISHCHI_FEATURE]}}
+
+
+def test_an_empty_nspd_answer_is_not_cached(monkeypatch):
+    """Пустой ответ — чаще сбой портала, чем отсутствие сведений."""
+    answers = [{"data": {"features": []}}, nspd_search_payload()]
+    monkeypatch.setattr(main, "_land_fetch_json", lambda url, service="": answers.pop(0))
+
+    assert main._nspd_search_features("50:12:0080205:123") == []
+    assert main._nspd_search_features("50:12:0080205:123"), \
+        "промах прилип в кэше — повторный запрос не дошёл до НСПД"
+
+
+def test_a_missed_parcel_is_retried_before_giving_up(monkeypatch):
+    """Параллельный опрос теряет часть номеров — второй заход обязателен."""
+    calls: dict[str, int] = {}
+
+    def flaky(number):
+        calls[number] = calls.get(number, 0) + 1
+        # Первый запрос второго участка — «пусто», повторный — находит.
+        if number.endswith(":2") and calls[number] == 1:
+            return []
+        feature = {**MYTISHCHI_FEATURE, "properties": {
+            **MYTISHCHI_FEATURE["properties"],
+            "options": {**MYTISHCHI_FEATURE["properties"]["options"], "cad_num": number},
+        }}
+        return [feature]
+
+    monkeypatch.setattr(main, "_nspd_search_features", flaky)
+    results = main._land_lookup_by_numbers(["50:12:0080205:1", "50:12:0080205:2"])
+
+    assert [item["found"] for item in results] == [True, True], \
+        "участок выпал из расчёта без повторной попытки"
+    assert calls["50:12:0080205:2"] == 2
+
+
+def test_the_card_shouts_about_missing_parcels():
+    """Площадь занижена — предупреждение стоит рядом с площадью, а не в логе."""
+    import inspect
+    module_source = inspect.getsource(main)
+    card = module_source[module_source.index("Участок в Московской области") - 4000:]
+    card = card[:card.index("Социальная нагрузка")]
+    assert "занижены" in card, "карточка МО молчит о потерянных участках"
