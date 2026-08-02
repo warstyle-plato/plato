@@ -150,8 +150,8 @@ def test_the_phases_split_the_tep_by_their_weights():
                    {"start_offset_months": 12, "construction_months": 30}],
         "products": {"apartments": [0.6, 0.4], "ground_commercial": [0.5, 0.5],
                      "underground_parking": [0.7, 0.3], "storage": [1, 0]},
-        "shared_allocation": {"purchase": [1, 0], "land_rights": [0.5, 0.5],
-                              "social_compensation": [0, 1]},
+        "shared_cash": {"purchase": [1, 0], "land_rights": [0.5, 0.5],
+                        "social_compensation": [0, 1]},
         "cost_inflation_pct": 8, "sales_price_inflation_pct": 8,
     }
     content, _, meta = build(phasing=phasing)
@@ -179,8 +179,8 @@ def test_percent_weights_are_normalized_to_shares():
                    for i in range(3)],
         "products": {"apartments": [40, 32, 28], "ground_commercial": [40, 32, 28],
                      "underground_parking": [40, 32, 28], "storage": [40, 32, 28]},
-        "shared_allocation": {"purchase": [100, 0, 0], "land_rights": [100, 0, 0],
-                              "social_compensation": [100, 0, 0]},
+        "shared_cash": {"purchase": [100, 0, 0], "land_rights": [100, 0, 0],
+                        "social_compensation": [100, 0, 0]},
         "cost_inflation_pct": 8, "sales_price_inflation_pct": 8,
     }
     content, _, _ = build(phasing=phasing)
@@ -728,3 +728,51 @@ def test_the_rows_of_every_sheet_are_ordered_and_unique(default_book):
                     _re.finditer(r'<x:row r="(\d+)"', z.read(name).decode())]
             assert rows == sorted(rows), f"{name}: строки не по порядку"
             assert len(rows) == len(set(rows)), f"{name}: дубли строк"
+
+
+def test_the_management_follows_the_direct_costs_not_the_calendar():
+    """Управление проектом (5% прямых затрат) размазывалось равномерно от
+    старта до РВЭ: полный штаб с первого дня клал в БРИДЖ 478 млн при
+    реальных тратах до РнС в одно проектирование. Теперь и движок, и книга
+    ведут управление по профилю прямых затрат месяца."""
+    inputs = {**core.DEFAULT_INPUTS, "apartment_price_th": 500,
+              "commercial_price_th": 500}
+    tep = {k: dict(v) for k, v in core.TEP_DEFAULT.items()}
+    engine = core.calculate_phased(core.PhasedCalcRequest(
+        inputs=inputs, tep=tep, rates=[], phasing={}))
+    monthly = engine["consolidated"]["monthly"]
+    months = monthly["months"]
+    rows = engine["consolidated"]["finance"]["rows"]
+    permit = next(r["month"] for r in rows if r["pf_draw"] > 0)
+    management = next(c for c in monthly["costs"]
+                      if "Управление" in str(c.get("label")))
+    values = management.get("values") or []
+    before = sum(v for m, v in zip(months, values) if m < permit)
+    total = sum(values)
+    assert total > 0
+    assert before / total < 0.15, \
+        "управление до РнС всё ещё платится равномерным календарём"
+
+    template = openpyxl.load_workbook(core._V4_TEMPLATE_PATH, data_only=False)
+    formula = str(template["CAPEX"]["D28"].value).replace(" ", "")
+    assert "SUM(D16:D26)" in formula, "книга не ведёт управление по профилю"
+
+
+def test_the_shared_costs_are_paid_by_the_cash_schedule():
+    """Доли P/Q/R — кассовый график: ВРИ платится перед первым РнС, а не
+    тремя кусками перед РнС каждой очереди. Экономическая аллокация движка
+    (shared_allocation) на кассу книги больше не влияет."""
+    phasing = {
+        "enabled": True, "phase_count": 3,
+        "phases": [{"start_offset_months": 12 * i, "construction_months": 24}
+                   for i in range(3)],
+        "products": {k: [40, 32, 28] for k in ("apartments", "ground_commercial",
+                                               "underground_parking", "storage")},
+        "shared_allocation": {"land_rights": [40, 30, 30]},
+        "cost_inflation_pct": 8, "sales_price_inflation_pct": 8,
+    }
+    content, _, _ = build(phasing=phasing)
+    sheet = openpyxl.load_workbook(io.BytesIO(content), data_only=False)["Вводные"]
+    assert sheet["Q88"].value == pytest.approx(1.0)
+    assert sheet["Q89"].value == pytest.approx(0.0)
+    assert sheet["Q90"].value == pytest.approx(0.0)

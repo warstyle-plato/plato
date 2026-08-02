@@ -42,7 +42,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.15.5"
+VERSION = "0.15.6"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -7768,7 +7768,12 @@ def _v4_phase_weights(
 def _v4_shared_weights(
     phasing: dict[str, Any], key: str, count: int, enabled: int | None = None
 ) -> list[float]:
-    weights = [float(w or 0) for w in ((phasing.get("shared_allocation") or {}).get(key) or [])]
+    # Доли P/Q/R в книге — кассовый график платежа, поэтому источником служат
+    # кассовые доли движка (shared_cash), а не экономическая аллокация
+    # (shared_allocation): с аллокацией книга платила ВРИ тремя кусками перед
+    # РнС каждой очереди, а движок — целиком перед первым РнС. Дефолт движка
+    # тот же: покупка, ВРИ и соцкомпенсация кассово в первой очереди.
+    weights = [float(w or 0) for w in ((phasing.get("shared_cash") or {}).get(key) or [])]
     weights = _v4_fold_tail(weights, enabled or count, count)
     if len(weights) < count or sum(weights[:count]) <= 0:
         return [1.0 if index == 0 else 0.0 for index in range(count)]
@@ -12115,9 +12120,28 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
     spread_article("site_maintenance", amounts["site_maintenance"], permit, construction_months)
     spread_article("author_supervision", amounts["author_supervision"], permit, construction_months)
     spread_article("technical_supervision", amounts["technical_supervision"], permit, construction_months)
-    spread_article("project_management", amounts["project_management"], project_start, max(1, months_between(project_start, rve)))
     spread_article("landscaping", amounts["landscaping"], add_months(rve, -3), 3)
     spread_article("commissioning", amounts["commissioning"], add_months(rve, -3), 3)
+
+    # Управление проектом — следом за расходами, которыми оно вызвано: равный
+    # календарный разнос от старта до РВЭ сажал полный штаб с первого дня и
+    # догружал БРИДЖ сотнями миллионов при реальных тратах в одно проектирование.
+    management_profile_articles = (
+        "ird", "design_p", "design_rd", "author_supervision", "preparation",
+        "main_above", "main_under", "utilities", "landscaping", "site_maintenance",
+    )
+    management_profile: dict[date, float] = defaultdict(float)
+    for profile_article in management_profile_articles:
+        for profile_month, profile_value in capex_by_article[profile_article].items():
+            management_profile[profile_month] += profile_value
+    management_total = sum(management_profile.values())
+    if management_total > 0:
+        for profile_month, profile_value in management_profile.items():
+            add_capex("project_management", profile_month,
+                      amounts["project_management"] * profile_value / management_total)
+    else:
+        spread_article("project_management", amounts["project_management"],
+                       project_start, max(1, months_between(project_start, rve)))
 
     if str(x.get("social_mode", "Строительство")) == "Строительство":
         if social_program["kindergarten_places"]:
