@@ -42,7 +42,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.16.0"
+VERSION = "0.16.1"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -7868,6 +7868,7 @@ def build_project_workbook(
     # старту своей очереди — базовая сумма занижала социалку на 12%.
     # График строительства при этом сворачивается в разовый платёж за месяц
     # до РнС (дата B18 — формула книги): приближение, но расход не теряется.
+    social_cash_by_phase: list[float] | None = None
     if str(x.get("social_mode") or "") == "Строительство":
         social_count = max(1, min(4, int(p.get("phase_count") or 1) if p.get("enabled") else 1))
         social_phases = list(p.get("phases") or [])
@@ -7888,13 +7889,16 @@ def build_project_workbook(
         if objects:
             _phase_social_allocation(objects, social_count)
         social_build = 0.0
+        social_build_by_phase = [0.0, 0.0, 0.0, 0.0]
         for obj in objects:
             phase_index = max(1, min(social_count, int(obj.get("phase") or 1))) - 1
             offset_months = (float(social_phases[phase_index].get("start_offset_months") or 0)
                              if phase_index < len(social_phases) else 0.0)
             factor = (1.0 + social_inflation) ** (offset_months / 12.0)
-            social_build += (float(obj.get("capacity") or 0)
-                             * cost_per.get(str(obj.get("type") or "kindergarten"), 0.0) * factor)
+            cost = (float(obj.get("capacity") or 0)
+                    * cost_per.get(str(obj.get("type") or "kindergarten"), 0.0) * factor)
+            social_build += cost
+            social_build_by_phase[min(phase_index, 3)] += cost
         if social_build > 0:
             # Только стройка: движок в режиме «Строительство» денежную
             # компенсацию не платит вовсе — либо одно, либо другое. Сложение
@@ -7902,6 +7906,12 @@ def build_project_workbook(
             # в вводных: 774 млн в книге против 166 у движка, минус 648 млн
             # EBITDA и плюс 11% к пику БРИДЖа.
             put("B17", number=social_build, label="социалка строительством")
+            # Кассовые доли R — по очередям объектов: «всё в первую» верно
+            # для денежной компенсации, а стройка платится там, где стоит
+            # объект. Доля 100% в О1 перегружала её ПФ на миллиарды и
+            # уводила первую очередь в дефолт при гасящем долг движке.
+            social_cash_by_phase = [share / social_build
+                                    for share in social_build_by_phase]
             # Разовый платёж завышал пик БРИДЖа на сотни миллионов: движок
             # строит соцобъекты месяцами, книга платила всё за месяц до РнС.
             # Теперь книга размазывает сумму равномерно: B18 — старт первого
@@ -8043,7 +8053,10 @@ def build_project_workbook(
         put(f"G{row}", number=float(x.get("sales_lag_months") or 0), label=f"лаг очереди {index + 1}")
         put(f"P{row}", number=shared["purchase"][index] if active else 0.0, label="доля покупки")
         put(f"Q{row}", number=shared["land_rights"][index] if active else 0.0, label="доля ВРИ")
-        put(f"R{row}", number=shared["social_compensation"][index] if active else 0.0,
+        put(f"R{row}", number=(
+            (social_cash_by_phase[index] if index < len(social_cash_by_phase) else 0.0)
+            if social_cash_by_phase is not None
+            else shared["social_compensation"][index]) if active else 0.0,
             label="доля соцнагрузки")
         offset_years = (offset if active else 0.0) / 12.0
         put(f"S{row}", number=(1.0 + price_inflation) ** offset_years, label="множитель цены")
@@ -14096,8 +14109,17 @@ def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
                 "gns":0.0,"total_area":sums["clinic"]*n(x_master,"social_clinic_norm_sqm",15),
                 "useful":0.0,"saleable":0.0,"transfer":sums["clinic"]*n(x_master,"social_clinic_norm_sqm",15),"units":sums["clinic"]}
 
-        for prefix, tep_key in (("offices","offices"),("retail","standalone_retail"),("above_parking","above_parking")):
-            assigned = int(discrete.get(tep_key,1) or 1)
+        # Дефолтные очереди объектов — те же, что на странице и в билдере
+        # книги (офисы — 3, ТЦ и паркинг — 2): без discrete движок сажал
+        # офисы в первую очередь, книга — в третью, и поверхности молча
+        # расходились на весь объём объекта.
+        for prefix, tep_key, default_queue in (
+                ("offices", "offices", 3),
+                ("retail", "standalone_retail", 2),
+                ("above_parking", "above_parking", 2)):
+            assigned = int(discrete.get(tep_key, default_queue) or default_queue)
+            # Очередь за пределами проекта уронила бы объект в никуда.
+            assigned = max(1, min(count, assigned))
             enabled_key = "offices_enabled" if prefix=="offices" else "retail_enabled" if prefix=="retail" else "above_parking_enabled"
             p_inputs[enabled_key] = bool(x_master.get(enabled_key)) and assigned==idx+1
             if tep_key in p_tep and assigned != idx+1:

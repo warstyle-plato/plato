@@ -829,3 +829,89 @@ def test_the_cadastre_77_09_regression_social_is_construction_only():
     assert b("B11") == pytest.approx(summary["profit_tax"] / 1e6, rel=0.05), "налог"
     assert b("B12") == pytest.approx(summary["net_profit"] / 1e6, rel=0.03), "ЧП"
     assert b("B19") == pytest.approx(summary["llcr"], abs=0.01), "LLCR"
+
+
+def test_the_default_object_queues_match_on_both_surfaces():
+    """Без phasing.discrete движок сажал офисы в первую очередь, а билдер
+    книги — в третью: на Мытищах 13,5 млрд выручки офисов молча жили в
+    разных очередях двух поверхностей. Дефолты единые: офисы — 3, ТЦ и
+    паркинг — 2, с кэпом по числу очередей."""
+    inputs = {**core.DEFAULT_INPUTS, "offices_enabled": True}
+    tep = {k: dict(v) for k, v in core.TEP_DEFAULT.items()}
+    phasing = {
+        "enabled": True, "phase_count": 3,
+        "phases": [{"start_offset_months": 12 * i, "construction_months": 24}
+                   for i in range(3)],
+        "products": {k: [40, 32, 28] for k in ("apartments", "ground_commercial",
+                                               "underground_parking", "storage")},
+        "shared_allocation": {}, "cost_inflation_pct": 8,
+        "sales_price_inflation_pct": 8,
+    }
+    engine = core.calculate_phased(core.PhasedCalcRequest(
+        inputs=inputs, tep=tep, rates=[], phasing=phasing))
+    offices_by_phase = [
+        next((p["revenue"] for p in ph["result"]["report"]["products"]
+              if "фис" in str(p.get("label"))), 0.0)
+        for ph in engine["phases"]
+    ]
+    assert offices_by_phase[0] == 0 and offices_by_phase[1] == 0
+    assert offices_by_phase[2] > 0, "движок без discrete не сажает офисы в третью"
+
+    content, _, _ = core.build_project_workbook(inputs, tep, [], phasing,
+                                                project_name="Дефолт очередей")
+    sheet = openpyxl.load_workbook(io.BytesIO(content), data_only=False)["Вводные"]
+    assert sheet["K21"].value == pytest.approx(3)
+
+    # две очереди: дефолт капится, объект не пропадает
+    ph2 = dict(phasing, phase_count=2, phases=phasing["phases"][:2],
+               products={k: [55, 45] for k in phasing["products"]})
+    engine2 = core.calculate_phased(core.PhasedCalcRequest(
+        inputs=inputs, tep=tep, rates=[], phasing=ph2))
+    offices2 = [
+        next((p["revenue"] for p in ph["result"]["report"]["products"]
+              if "фис" in str(p.get("label"))), 0.0)
+        for ph in engine2["phases"]
+    ]
+    assert sum(offices2) > 0, "офисы пропали при дефолтной очереди больше числа фаз"
+    assert offices2[-1] > 0
+
+
+def test_the_social_construction_cash_follows_the_objects_queues():
+    """Кассовая доля соцнагрузки «всё в первую очередь» верна для денежной
+    компенсации, а стройка платится там, где стоит объект: на Мытищах с
+    5,4 млрд соцобъектов первая очередь книги брала весь платёж, уходила
+    в дефолт с 2,2 млрд непогашенного ПФ — при гасящем долг движке."""
+    import sys
+    sys.setrecursionlimit(400000)
+    from xlsx_eval import Evaluator
+
+    inputs = {**core.DEFAULT_INPUTS, "apartment_price_th": 500,
+              "commercial_price_th": 500, "social_mode": "Строительство",
+              "kindergarten_places": 700, "kindergarten_cost_mln_per_place": 2.75,
+              "school_places": 825, "school_cost_mln_per_place": 3.0}
+    tep = {k: dict(v) for k, v in core.TEP_DEFAULT.items()}
+    phasing = {
+        "enabled": True, "phase_count": 3,
+        "phases": [{"start_offset_months": 12 * i, "construction_months": 24}
+                   for i in range(3)],
+        "products": {k: [40, 32, 28] for k in ("apartments", "ground_commercial",
+                                               "underground_parking", "storage")},
+        "shared_allocation": {}, "cost_inflation_pct": 8,
+        "sales_price_inflation_pct": 8,
+    }
+    content, _, _ = core.build_project_workbook(inputs, tep, [], phasing,
+                                                project_name="Соцдоли")
+    sheet = openpyxl.load_workbook(io.BytesIO(content), data_only=False)["Вводные"]
+    shares = [float(sheet[f"R{r}"].value or 0) for r in (88, 89, 90)]
+    assert sum(shares) == pytest.approx(1.0, abs=1e-9)
+    assert shares[0] < 1.0, "вся социалка строительством по-прежнему в первой очереди"
+
+    engine = core.calculate_phased(core.PhasedCalcRequest(
+        inputs=inputs, tep=tep, rates=[], phasing=phasing))
+    by_phase = [0.0, 0.0, 0.0]
+    for i, ph in enumerate(engine["phases"]):
+        by_phase[i] = ph["result"]["summary"]["social_payment"] / 1e6
+    total = sum(by_phase)
+    for i in range(3):
+        assert shares[i] == pytest.approx(by_phase[i] / total, abs=0.02), \
+            f"доля соцнагрузки очереди {i + 1} разошлась с движком"
