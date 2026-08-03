@@ -58,6 +58,24 @@ class DevelopAidV2PrototypeTests(unittest.TestCase):
         self.assertIn('id="installBar"', index)
         self.assertIn('/v2/assets/pwa.js', index)
 
+    def test_application_state_is_persistent(self) -> None:
+        index = (_FRONTEND / "index.html").read_text(encoding="utf-8")
+        self.assertIn("developaid-v2-last-project", index)
+        self.assertIn("developaid-v2-last-view", index)
+        self.assertIn('id="connectionStatus"', index)
+        self.assertIn('id="appUpdateBar"', index)
+
+    def test_telegram_mini_app_shell_is_enabled(self) -> None:
+        index = (_FRONTEND / "index.html").read_text(encoding="utf-8")
+        self.assertIn("telegram.org/js/telegram-web-app.js", index)
+        self.assertIn("telegram.BackButton", index)
+        self.assertIn("telegram.expand()", index)
+
+    def test_shell_update_does_not_cache_financial_results(self) -> None:
+        index = (_FRONTEND / "index.html").read_text(encoding="utf-8")
+        self.assertIn("Расчётные API не кешируются", index)
+        self.assertIn("developaid-v2-shell-", index)
+
     def test_accepted_mishina_series_are_not_demo_data(self) -> None:
         mishina = _PROJECTS["mishina"]
         self.assertTrue(mishina["acceptedBaseline"])
