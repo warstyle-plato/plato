@@ -13,6 +13,106 @@
   <link rel="icon" href="/v2/assets/icon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/v2/assets/styles.css">
   <link rel="stylesheet" href="/v2/assets/pwa.css">
+  <style>
+    .connection-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 7px 10px;
+      border: 1px solid rgba(125, 190, 255, .18);
+      border-radius: 999px;
+      color: #8ea4bd;
+      background: rgba(9, 23, 39, .58);
+      font-size: 10px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+    .connection-status::before {
+      content: "";
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #27d7a2;
+      box-shadow: 0 0 11px rgba(39, 215, 162, .52);
+    }
+    .connection-status.is-offline {
+      color: #ffc6ce;
+      border-color: rgba(255, 102, 122, .24);
+      background: rgba(255, 102, 122, .08);
+    }
+    .connection-status.is-offline::before {
+      background: #ff667a;
+      box-shadow: 0 0 11px rgba(255, 102, 122, .48);
+    }
+    .app-update-bar {
+      position: fixed;
+      z-index: 115;
+      left: max(18px, env(safe-area-inset-left));
+      right: max(18px, env(safe-area-inset-right));
+      bottom: max(18px, env(safe-area-inset-bottom));
+      max-width: 620px;
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto auto;
+      align-items: center;
+      gap: 12px;
+      padding: 13px 14px 13px 17px;
+      border: 1px solid rgba(56, 215, 255, .32);
+      border-radius: 18px;
+      background: rgba(8, 21, 37, .96);
+      box-shadow: 0 24px 80px rgba(0, 0, 0, .44), 0 0 40px rgba(47, 140, 255, .12);
+      backdrop-filter: blur(22px);
+    }
+    .app-update-bar[hidden] { display: none; }
+    .app-update-bar strong, .app-update-bar span { display: block; }
+    .app-update-bar strong { font-size: 13px; }
+    .app-update-bar span { margin-top: 3px; color: #8ea4bd; font-size: 10px; line-height: 1.35; }
+    .app-update-bar button {
+      border: 0;
+      border-radius: 11px;
+      padding: 9px 12px;
+      cursor: pointer;
+      font-size: 11px;
+      font-weight: 800;
+    }
+    .app-update-confirm {
+      color: #fff;
+      background: linear-gradient(135deg, #2f8cff, #7061ff);
+    }
+    .app-update-dismiss { color: #7890ab; background: transparent; }
+    @media (max-width: 900px) {
+      .connection-status { display: none; }
+      .app-update-bar {
+        left: 10px;
+        right: 10px;
+        bottom: max(10px, env(safe-area-inset-bottom));
+        grid-template-columns: minmax(0, 1fr) auto;
+      }
+      .app-update-dismiss { display: none; }
+    }
+  </style>
+  <script>
+    (() => {
+      const storageKey = 'developaid-v2-last-project';
+      const url = new URL(window.location.href);
+      const savedProject = localStorage.getItem(storageKey);
+      if (!url.searchParams.get('project') && savedProject) {
+        url.searchParams.set('project', savedProject);
+        history.replaceState(history.state, '', url);
+      }
+      const nativeReplaceState = history.replaceState.bind(history);
+      history.replaceState = (state, title, nextUrl) => {
+        nativeReplaceState(state, title, nextUrl);
+        try {
+          const resolved = new URL(nextUrl || window.location.href, window.location.origin);
+          const project = resolved.searchParams.get('project');
+          if (project) localStorage.setItem(storageKey, project);
+        } catch (_) {
+          // URL persistence must never interfere with the calculation UI.
+        }
+      };
+    })();
+  </script>
 </head>
 <body>
   <div class="app-shell">
@@ -54,6 +154,7 @@
           <p id="projectSubtitle"></p>
         </div>
         <div class="topbar-actions">
+          <span id="connectionStatus" class="connection-status">В сети</span>
           <span id="launchMode" class="launch-mode">Веб-приложение</span>
           <span id="prototypeBadge" class="prototype-badge">Контрольный прототип</span>
           <button class="icon-button" type="button" aria-label="Уведомления">●</button>
@@ -185,8 +286,122 @@
     <button id="installDismiss" class="install-dismiss" type="button" aria-label="Закрыть">×</button>
   </div>
 
+  <div id="appUpdateBar" class="app-update-bar" hidden>
+    <div><strong>Доступно обновление DevelopAid</strong><span>Обновится только интерфейс. Расчётные API не кешируются.</span></div>
+    <button id="appUpdateConfirm" class="app-update-confirm" type="button">Обновить</button>
+    <button id="appUpdateDismiss" class="app-update-dismiss" type="button">Позже</button>
+  </div>
+
   <div id="loading" class="loading"><span></span><p>Загружаем проект</p></div>
+  <script src="https://telegram.org/js/telegram-web-app.js?59"></script>
   <script src="/v2/assets/app.js" defer></script>
   <script src="/v2/assets/pwa.js" defer></script>
+  <script defer>
+    (() => {
+      'use strict';
+      const viewStorageKey = 'developaid-v2-last-view';
+      const connectionStatus = document.getElementById('connectionStatus');
+      const updateBar = document.getElementById('appUpdateBar');
+      const updateConfirm = document.getElementById('appUpdateConfirm');
+      const updateDismiss = document.getElementById('appUpdateDismiss');
+      const loading = document.getElementById('loading');
+      const telegram = window.Telegram?.WebApp;
+
+      function updateConnectionStatus() {
+        const online = navigator.onLine;
+        if (!connectionStatus) return;
+        connectionStatus.textContent = online ? 'В сети' : 'Нет сети';
+        connectionStatus.classList.toggle('is-offline', !online);
+      }
+
+      function setTelegramBackButton(view) {
+        if (!telegram?.BackButton) return;
+        if (view === 'summary') telegram.BackButton.hide();
+        else telegram.BackButton.show();
+      }
+
+      function bindApplicationState() {
+        document.querySelectorAll('[data-view]').forEach((button) => {
+          button.addEventListener('click', () => {
+            const view = button.dataset.view;
+            if (!view) return;
+            localStorage.setItem(viewStorageKey, view);
+            setTelegramBackButton(view);
+            telegram?.HapticFeedback?.selectionChanged?.();
+          });
+        });
+        document.querySelectorAll('#projectMenu button').forEach((button) => {
+          button.addEventListener('click', () => telegram?.HapticFeedback?.selectionChanged?.());
+        });
+      }
+
+      function restoreView() {
+        const requested = localStorage.getItem(viewStorageKey) || 'summary';
+        const target = document.querySelector(`.nav-item[data-view="${requested}"]`) || document.querySelector('.nav-item[data-view="summary"]');
+        target?.click();
+      }
+
+      function initializeAfterProjectLoad() {
+        bindApplicationState();
+        restoreView();
+      }
+
+      if (loading) {
+        const observer = new MutationObserver(() => {
+          if (loading.classList.contains('is-hidden')) {
+            observer.disconnect();
+            initializeAfterProjectLoad();
+          }
+        });
+        observer.observe(loading, { attributes: true, attributeFilter: ['class'] });
+      }
+
+      window.addEventListener('online', updateConnectionStatus);
+      window.addEventListener('offline', updateConnectionStatus);
+      updateConnectionStatus();
+
+      if (telegram) {
+        telegram.ready();
+        telegram.expand();
+        try {
+          telegram.setHeaderColor?.('#07111f');
+          telegram.setBackgroundColor?.('#06101d');
+        } catch (_) {
+          // Older Telegram clients may not support application colors.
+        }
+        telegram.BackButton?.onClick?.(() => {
+          document.querySelector('.nav-item[data-view="summary"]')?.click();
+        });
+      }
+
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', async () => {
+          const registration = await navigator.serviceWorker.getRegistration('/v2/').catch(() => null);
+          if (!registration) return;
+          registration.update().catch(() => undefined);
+          if (registration.waiting) updateBar.hidden = false;
+          registration.addEventListener('updatefound', () => {
+            const worker = registration.installing;
+            worker?.addEventListener('statechange', () => {
+              if (worker.state === 'installed' && navigator.serviceWorker.controller) updateBar.hidden = false;
+            });
+          });
+        });
+      }
+
+      updateConfirm?.addEventListener('click', async () => {
+        updateConfirm.disabled = true;
+        updateConfirm.textContent = 'Обновляем…';
+        const registration = await navigator.serviceWorker.getRegistration('/v2/').catch(() => null);
+        await registration?.unregister?.().catch(() => undefined);
+        if ('caches' in window) {
+          const keys = await caches.keys();
+          await Promise.all(keys.filter((key) => key.startsWith('developaid-v2-shell-')).map((key) => caches.delete(key)));
+        }
+        window.location.reload();
+      });
+      updateDismiss?.addEventListener('click', () => { updateBar.hidden = true; });
+    })();
+  </script>
 </body>
 </html>
