@@ -9,11 +9,13 @@ acceptance of the information architecture.
 
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 
 _ROOT = Path(__file__).resolve().parent
 _FRONTEND = _ROOT / "frontend_v2"
@@ -166,6 +168,17 @@ _PROJECTS: dict[str, dict[str, Any]] = {
 }
 
 
+class TepSearchRequest(BaseModel):
+    """Запрос «Поиска ТЭП»: модуль-левел, иначе отложенные аннотации
+    (from __future__ import annotations) не дают FastAPI распознать тело."""
+
+    region: str = "msk"
+    query: str = ""
+    site_area_ha: float | None = None
+    district: str | None = None
+    density_sqm_per_ha: float | None = None
+
+
 def install(app: FastAPI) -> None:
     """Mount the isolated read-only prototype routes."""
 
@@ -200,3 +213,34 @@ def install(app: FastAPI) -> None:
         if project is None:
             raise HTTPException(status_code=404, detail="Project not found")
         return project
+
+    @app.post("/api/v2/tep-search")
+    def developaid_v2_tep_search(req: TepSearchRequest) -> dict[str, Any]:
+        """Поиск ТЭП для левого меню 2.0 — считает настоящий движок.
+
+        Ровно та же точка, что у кнопки бота «Посчитать ВРИ и ТЭП»: Москва по
+        формулам калькулятора ГлавАПУ, Подмосковье по нормативам РНГП. Движок
+        берётся через обёртку: она грузит его единственным экземпляром
+        (developaid_core), прямой import main_legacy поднял бы второй."""
+        import main as _wrapper
+        _core = _wrapper.core
+
+        region = req.region if req.region in {"msk", "mo"} else "msk"
+        try:
+            result = _core.vri_tep_quick(
+                region, str(req.query or "").strip(),
+                site_area_ha=req.site_area_ha,
+                district=req.district,
+                density_sqm_per_ha=req.density_sqm_per_ha,
+            )
+        except HTTPException:
+            raise
+        except Exception as exc:  # ошибка обязана дойти до экрана, не до лога
+            raise HTTPException(
+                status_code=500,
+                detail=_core._error_location(exc)[:300]) from exc
+        return {
+            "card": result["card"],
+            "filename": result["filename"],
+            "file_b64": base64.b64encode(result["file"]).decode("ascii"),
+        }

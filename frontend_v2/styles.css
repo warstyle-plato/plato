@@ -326,3 +326,27 @@ body::before {
   .platon-card, .chat-preview { padding: 20px; }
   .platon-card h2 { font-size: 28px; }
 }
+
+/* --- Поиск ТЭП ------------------------------------------------------------ */
+.tep-search-panel { display: flex; flex-direction: column; gap: 14px; max-width: 760px; }
+.tep-search-region { display: flex; gap: 8px; }
+.region-chip { padding: 9px 15px; border-radius: 99px; border: 1px solid var(--line); background: rgba(11, 25, 43, .74); color: var(--muted); font-size: 12px; cursor: pointer; }
+.region-chip.is-active { border-color: rgba(56, 215, 255, .4); background: rgba(47, 140, 255, .16); color: #dce9f7; }
+.tep-search-form { display: flex; gap: 10px; }
+.tep-search-form input { flex: 1; min-width: 0; padding: 12px 14px; border-radius: 13px; border: 1px solid var(--line-strong); background: rgba(9, 21, 36, .9); color: #e6eef8; }
+.tep-search-form input::placeholder { color: var(--muted); }
+.search-button { padding: 12px 20px; border: 0; border-radius: 13px; background: linear-gradient(135deg, var(--blue), var(--cyan)); color: #06121f; font-weight: 600; cursor: pointer; }
+.search-button:hover { filter: brightness(1.08); }
+.tep-search-mo { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.tep-search-mo label { display: flex; flex-direction: column; gap: 6px; font-size: 11px; color: var(--muted); }
+.tep-search-mo input { padding: 10px 12px; border-radius: 11px; border: 1px solid var(--line); background: rgba(9, 21, 36, .9); color: #e6eef8; }
+.tep-search-status { font-size: 12px; color: var(--muted); line-height: 1.5; }
+.tep-search-result { padding: 15px 16px; border: 1px solid var(--line-strong); border-radius: 15px; background: rgba(9, 23, 40, .85); font-size: 13px; line-height: 1.65; }
+.tep-search-result code { color: var(--cyan); font-size: 12px; }
+.tep-search-result b { color: #eaf3fc; }
+.tep-search-result i { color: var(--muted); font-style: normal; font-size: 12px; }
+.tep-search-actions .text-button { font-size: 12px; text-decoration: none; }
+@media (max-width: 760px) {
+  .tep-search-form { flex-direction: column; }
+  .tep-search-mo { grid-template-columns: 1fr; }
+}

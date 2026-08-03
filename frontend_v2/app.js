@@ -332,9 +332,94 @@ function bindProjectMenu() {
   });
 }
 
+// --- Поиск ТЭП: настоящий движок, та же точка, что у кнопки бота -----------
+
+const tepSearch = { region: 'msk', busy: false };
+
+function detectRegionFromQuery(query) {
+  const cadastral = String(query).match(/(\d{2}):\d{2}:/);
+  if (!cadastral) return null;
+  return cadastral[1] === '50' ? 'mo' : cadastral[1] === '77' ? 'msk' : null;
+}
+
+function setTepSearchRegion(region) {
+  tepSearch.region = region;
+  $$('.region-chip').forEach((chip) => chip.classList.toggle('is-active', chip.dataset.region === region));
+  $('#tepSearchMoFields').hidden = region !== 'mo';
+}
+
+async function runTepSearch() {
+  if (tepSearch.busy) return;
+  const status = $('#tepSearchStatus');
+  const result = $('#tepSearchResult');
+  const download = $('#tepSearchDownload');
+  const query = $('#tepSearchQuery').value.trim();
+  const area = Number($('#tepSearchArea').value || 0);
+  if (!query && !(tepSearch.region === 'mo' && area > 0)) {
+    status.textContent = 'Введите кадастровый номер или адрес участка — либо площадь в гектарах для Подмосковья.';
+    return;
+  }
+  // Плотность в метрике ГлавАПУ: до 1000 — тыс. м² СПП/га, больше — уже
+  // м² квартир/га. Конверсия та же, что в боте: 94% жилой доли, 65% выхода.
+  const rawDensity = Number($('#tepSearchDensity').value || 0);
+  const density = rawDensity > 0
+    ? (rawDensity <= 1000 ? rawDensity * 1000 * 0.94 * 0.65 : rawDensity)
+    : null;
+  tepSearch.busy = true;
+  status.textContent = 'Считаю ТЭП и ВРИ…';
+  result.hidden = true;
+  download.hidden = true;
+  try {
+    const response = await fetch('/api/v2/tep-search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        region: tepSearch.region,
+        query,
+        site_area_ha: tepSearch.region === 'mo' && area > 0 ? area : null,
+        district: tepSearch.region === 'mo' ? ($('#tepSearchDistrict').value.trim() || null) : null,
+        density_sqm_per_ha: tepSearch.region === 'mo' ? density : null,
+      }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.detail || 'Расчёт не получился');
+    // Карточка приходит той же разметкой, что в Telegram: наш собственный
+    // серверный HTML с <b>/<i>/<code>.
+    result.innerHTML = payload.card.replace(/\n/g, '<br>');
+    result.hidden = false;
+    const bytes = Uint8Array.from(atob(payload.file_b64), (char) => char.charCodeAt(0));
+    const blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    if (download.dataset.url) URL.revokeObjectURL(download.dataset.url);
+    download.href = download.dataset.url = URL.createObjectURL(blob);
+    download.download = payload.filename;
+    download.hidden = false;
+    status.textContent = 'Готово. Файл читается импортом DevelopAid как обычный ТЭП.';
+  } catch (error) {
+    status.textContent = String(error.message || error);
+  } finally {
+    tepSearch.busy = false;
+  }
+}
+
+function bindTepSearch() {
+  if (!$('#tepSearchButton')) return;
+  $$('.region-chip').forEach((chip) => {
+    chip.addEventListener('click', () => setTepSearchRegion(chip.dataset.region));
+  });
+  $('#tepSearchQuery').addEventListener('input', () => {
+    const detected = detectRegionFromQuery($('#tepSearchQuery').value);
+    if (detected && detected !== tepSearch.region) setTepSearchRegion(detected);
+  });
+  $('#tepSearchQuery').addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') runTepSearch();
+  });
+  $('#tepSearchButton').addEventListener('click', runTepSearch);
+}
+
 async function init() {
   bindNavigation();
   bindProjectMenu();
+  bindTepSearch();
   const projectsResponse = await fetch('/api/v2/projects');
   if (!projectsResponse.ok) throw new Error('Не удалось получить список проектов');
   state.projects = await projectsResponse.json();

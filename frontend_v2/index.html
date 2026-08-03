@@ -26,6 +26,7 @@
 
       <nav class="main-nav" aria-label="Разделы проекта">
         <button class="nav-item is-active" data-view="summary"><span>◫</span>Обзор</button>
+        <button class="nav-item" data-view="tepsearch"><span>⌕</span>Поиск ТЭП</button>
         <button class="nav-item" data-view="tep"><span>⌂</span>ТЭП и ВРИ</button>
         <button class="nav-item" data-view="finance"><span>⌁</span>Финансирование</button>
         <button class="nav-item" data-view="phases"><span>≋</span>Очереди</button>
@@ -55,6 +56,7 @@
 
       <div class="mobile-tabs" aria-label="Разделы проекта">
         <button class="is-active" data-view="summary">Обзор</button>
+        <button data-view="tepsearch">Поиск</button>
         <button data-view="tep">ТЭП</button>
         <button data-view="finance">Финансы</button>
         <button data-view="phases">Очереди</button>
@@ -102,6 +104,29 @@
             <div id="riskList" class="risk-list"></div>
           </article>
         </div>
+      </section>
+
+      <section id="view-tepsearch" class="view">
+        <div class="section-heading"><div><span class="eyebrow">Быстрый расчёт по участку</span><h2>Поиск ТЭП и ВРИ</h2></div><span class="source-label">ЕГРН · ГлавАПУ · РНГП МО</span></div>
+        <article class="panel tep-search-panel">
+          <div class="tep-search-region" role="group" aria-label="Регион участка">
+            <button type="button" class="region-chip is-active" data-region="msk">Москва</button>
+            <button type="button" class="region-chip" data-region="mo">Московская область</button>
+          </div>
+          <div class="tep-search-form">
+            <input id="tepSearchQuery" type="text" autocomplete="off"
+                   placeholder="Кадастровый номер или адрес участка">
+            <button id="tepSearchButton" class="search-button" type="button">Посчитать</button>
+          </div>
+          <div id="tepSearchMoFields" class="tep-search-mo" hidden>
+            <label>Плотность, тыс. м² СПП/га<input id="tepSearchDensity" type="number" value="35" step="0.1" min="0"></label>
+            <label>Площадь, га — если без кадастра<input id="tepSearchArea" type="number" step="0.0001" min="0" placeholder="из ЕГРН"></label>
+            <label>Городской округ<input id="tepSearchDistrict" type="text" placeholder="определить по участку"></label>
+          </div>
+          <div id="tepSearchStatus" class="tep-search-status">Москва считается по формулам калькулятора ГлавАПУ, Подмосковье — по нормативам РНГП, УПКС и Кд. На внешние сервисы уходит только строка поиска.</div>
+          <div id="tepSearchResult" class="tep-search-result" hidden></div>
+          <div class="tep-search-actions"><a id="tepSearchDownload" class="text-button" hidden>Скачать файл формата ГлавАПУ (.xlsx)</a></div>
+        </article>
       </section>
 
       <section id="view-tep" class="view">
