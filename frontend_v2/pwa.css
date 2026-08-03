@@ -1,0 +1,119 @@
+.launch-mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 10px;
+  border: 1px solid rgba(125, 190, 255, .22);
+  border-radius: 999px;
+  color: #9db7d4;
+  background: rgba(9, 23, 39, .66);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .02em;
+  white-space: nowrap;
+}
+
+.launch-mode::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #2f8cff;
+  box-shadow: 0 0 12px rgba(47, 140, 255, .55);
+}
+
+.launch-mode[data-mode="telegram"]::before { background: #38d7ff; }
+.launch-mode[data-mode="standalone"]::before { background: #27d7a2; }
+
+.install-bar {
+  position: fixed;
+  z-index: 110;
+  left: max(18px, env(safe-area-inset-left));
+  right: max(18px, env(safe-area-inset-right));
+  bottom: max(18px, env(safe-area-inset-bottom));
+  margin: 0 auto;
+  max-width: 760px;
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) auto 30px;
+  align-items: center;
+  gap: 14px;
+  padding: 13px 13px 13px 15px;
+  border: 1px solid rgba(76, 167, 255, .34);
+  border-radius: 18px;
+  background: rgba(8, 21, 37, .94);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, .42), 0 0 40px rgba(47, 140, 255, .12);
+  backdrop-filter: blur(22px);
+  animation: installReveal .28s ease both;
+}
+
+.install-bar[hidden] { display: none; }
+
+.install-app-icon {
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  border-radius: 13px;
+  background: linear-gradient(145deg, #0c2f61, #174c9f);
+  box-shadow: inset 0 0 18px rgba(56, 215, 255, .12), 0 8px 24px rgba(47, 140, 255, .22);
+}
+
+.install-app-icon img { width: 32px; height: 32px; }
+.install-copy strong, .install-copy span { display: block; }
+.install-copy strong { font-size: 13px; }
+.install-copy span { margin-top: 3px; color: #8ea4bd; font-size: 11px; line-height: 1.4; }
+
+.install-button {
+  border: 0;
+  border-radius: 12px;
+  padding: 10px 14px;
+  color: #fff;
+  background: linear-gradient(135deg, #2f8cff, #7061ff);
+  box-shadow: 0 10px 24px rgba(47, 140, 255, .22);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.install-dismiss {
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 10px;
+  color: #7590ad;
+  background: transparent;
+  cursor: pointer;
+  font-size: 18px;
+}
+.install-dismiss:hover { background: rgba(255, 255, 255, .05); color: #fff; }
+
+@keyframes installReveal {
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (display-mode: standalone) {
+  body { overscroll-behavior-y: none; }
+  .prototype-badge { display: none; }
+}
+
+@media (max-width: 900px) {
+  .launch-mode { display: none; }
+  .install-bar {
+    grid-template-columns: 40px minmax(0, 1fr) auto;
+    gap: 10px;
+    left: 10px;
+    right: 10px;
+    bottom: max(10px, env(safe-area-inset-bottom));
+    padding: 11px;
+  }
+  .install-app-icon { width: 40px; height: 40px; border-radius: 12px; }
+  .install-app-icon img { width: 28px; height: 28px; }
+  .install-copy span { font-size: 10px; }
+  .install-dismiss { position: absolute; right: 3px; top: -35px; background: rgba(8, 21, 37, .92); border: 1px solid rgba(125, 190, 255, .16); }
+}
+
+@media (max-width: 520px) {
+  .install-copy strong { font-size: 12px; }
+  .install-button { padding: 9px 11px; }
+}
