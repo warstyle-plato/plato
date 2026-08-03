@@ -42,7 +42,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.8"
+VERSION = "0.17.9"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -8499,18 +8499,22 @@ def _v4_set_cell(
     return xml[:found.start()] + replacement + xml[found.end():], True
 
 
-def _v4_inputs_sheet_path(archive: zipfile.ZipFile) -> str:
+def _v4_sheet_path(archive: zipfile.ZipFile, name: str) -> str:
     workbook = archive.read("xl/workbook.xml").decode("utf-8")
-    sheet = re.search(r'<x:sheet name="Вводные"[^>]*r:id="([^"]+)"', workbook)
+    sheet = re.search(r'<x:sheet name="%s"[^>]*r:id="([^"]+)"' % re.escape(name), workbook)
     if not sheet:
-        raise RuntimeError("в книге v4 нет листа «Вводные»")
+        raise RuntimeError(f"в книге v4 нет листа «{name}»")
     rels = archive.read("xl/_rels/workbook.xml.rels").decode("utf-8")
     rel = re.search(r'Target="([^"]+)"[^>]*Id="%s"' % re.escape(sheet.group(1)), rels) \
         or re.search(r'Id="%s"[^>]*Target="([^"]+)"' % re.escape(sheet.group(1)), rels)
     if not rel:
-        raise RuntimeError("лист «Вводные» не найден в связях книги v4")
+        raise RuntimeError(f"лист «{name}» не найден в связях книги v4")
     target = rel.group(1)
     return "xl/" + target.lstrip("/").removeprefix("xl/")
+
+
+def _v4_inputs_sheet_path(archive: zipfile.ZipFile) -> str:
+    return _v4_sheet_path(archive, "Вводные")
 
 
 def _v4_normalized(weights: list[float], count: int) -> list[float]:
@@ -8672,7 +8676,10 @@ def build_project_workbook(
     # График строительства при этом сворачивается в разовый платёж за месяц
     # до РнС (дата B18 — формула книги): приближение, но расход не теряется.
     social_cash_by_phase: list[float] | None = None
-    if str(x.get("social_mode") or "") == "Строительство":
+    social_breakdown = {typ: {"places": 0.0, "cost": 0.0, "phases": set()}
+                        for typ in ("kindergarten", "school", "clinic")}
+    social_is_construction = str(x.get("social_mode") or "") == "Строительство"
+    if social_is_construction:
         social_count = max(1, min(4, int(p.get("phase_count") or 1) if p.get("enabled") else 1))
         social_phases = list(p.get("phases") or [])
         social_inflation = (float(p.get("cost_inflation_pct") or 0) / 100.0
@@ -8693,6 +8700,8 @@ def build_project_workbook(
             _phase_social_allocation(objects, social_count)
         social_build = 0.0
         social_build_by_phase = [0.0, 0.0, 0.0, 0.0]
+        # Расшифровка для ОТЧЁТа и ТЭП: сумма B17 приезжала чёрным ящиком,
+        # и «где расходы на садик и школы» было не увидеть нигде в книге.
         for obj in objects:
             phase_index = max(1, min(social_count, int(obj.get("phase") or 1))) - 1
             offset_months = (float(social_phases[phase_index].get("start_offset_months") or 0)
@@ -8702,6 +8711,11 @@ def build_project_workbook(
                     * cost_per.get(str(obj.get("type") or "kindergarten"), 0.0) * factor)
             social_build += cost
             social_build_by_phase[min(phase_index, 3)] += cost
+            slot = social_breakdown.get(str(obj.get("type") or "kindergarten"))
+            if slot is not None:
+                slot["places"] += float(obj.get("capacity") or 0)
+                slot["cost"] += cost
+                slot["phases"].add(phase_index + 1)
         if social_build > 0:
             # Только стройка: движок в режиме «Строительство» денежную
             # компенсацию не платит вовсе — либо одно, либо другое. Сложение
@@ -8741,6 +8755,44 @@ def build_project_workbook(
                 if serial is not None:
                     put("B18", number=serial, label="старт соцстроительства")
                     put("E18", number=float(window), label="окно соцстроительства")
+
+    # --- расшифровка соцнагрузки: ОТЧЕТ (E31:H37) и ТЭП (38–44) -----------
+    # «Где в Excel расходы на садик и школы?» — раньше нигде: B17 приезжал
+    # одной цифрой. Значения пишутся числами на дату сборки; контрольные
+    # итоги в книге — формулами (H37, E44), чтобы сумма сходилась с B17.
+    report_sheet_path = _v4_sheet_path(source, "ОТЧЕТ")
+    tep_sheet_path = _v4_sheet_path(source, "ТЭП")
+    report_xml = source.read(report_sheet_path).decode("utf-8")
+    tep_xml = source.read(tep_sheet_path).decode("utf-8")
+
+    def _put_extra(sheet_xml: str, coord: str, *, number=None, text=None) -> str:
+        updated, done = _v4_set_cell(sheet_xml, coord, number=number, text=text)
+        if not done:
+            missing.append(f"расшифровка соцнагрузки: {coord}")
+        return updated
+
+    social_compensation_amount = (
+        0.0 if social_is_construction else float(x.get("social_compensation_mln") or 0))
+    _social_rows = (
+        ("kindergarten", 33, 40, "kindergarten_places", "social_dou_gba_sqm"),
+        ("school", 34, 41, "school_places", "social_school_gba_sqm"),
+        ("clinic", 35, 42, "clinic_capacity", "social_clinic_gba_sqm"),
+    )
+    for typ, report_row, tep_row, places_key, gba_key in _social_rows:
+        slot = social_breakdown[typ]
+        places = slot["places"] if social_is_construction else float(x.get(places_key) or 0)
+        cost = round(slot["cost"], 3)
+        queue_label = ("+".join(f"О{n}" for n in sorted(slot["phases"]))
+                       if slot["phases"] else "—")
+        report_xml = _put_extra(report_xml, f"F{report_row}", number=round(places))
+        report_xml = _put_extra(report_xml, f"G{report_row}", text=queue_label)
+        report_xml = _put_extra(report_xml, f"H{report_row}", number=cost)
+        tep_xml = _put_extra(tep_xml, f"B{tep_row}", number=round(places))
+        tep_xml = _put_extra(tep_xml, f"C{tep_row}", number=round(float(x.get(gba_key) or 0)))
+        tep_xml = _put_extra(tep_xml, f"D{tep_row}", text=queue_label)
+        tep_xml = _put_extra(tep_xml, f"E{tep_row}", number=cost)
+    report_xml = _put_extra(report_xml, "H36", number=round(social_compensation_amount, 3))
+    tep_xml = _put_extra(tep_xml, "E43", number=round(social_compensation_amount, 3))
 
     # Лимит БРИДЖ в книге режет выборку (CF r34). Логика вводных DevelopAid —
     # «всё финансирует банк», поэтому лимит расчётный: сделка, ВРИ, социалка
@@ -8926,6 +8978,10 @@ def build_project_workbook(
             payload = source.read(item.filename)
             if item.filename == sheet_path:
                 payload = xml.encode("utf-8")
+            elif item.filename == report_sheet_path:
+                payload = report_xml.encode("utf-8")
+            elif item.filename == tep_sheet_path:
+                payload = tep_xml.encode("utf-8")
             if item.filename.startswith("xl/worksheets/") and item.filename.endswith(".xml"):
                 text = payload.decode("utf-8")
                 text = re.sub(r"(<x:f(?:\s[^>]*)?>[^<]*</x:f>)<x:v>[^<]*</x:v>", r"\1", text)

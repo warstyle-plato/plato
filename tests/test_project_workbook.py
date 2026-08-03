@@ -918,3 +918,66 @@ def test_the_social_construction_cash_follows_the_objects_queues():
     for i in range(3):
         assert shares[i] == pytest.approx(by_phase[i] / total, abs=0.02), \
             f"доля соцнагрузки очереди {i + 1} разошлась с движком"
+
+
+def test_the_social_breakdown_is_visible_in_the_report_and_tep():
+    """«Где в Excel расходы на садик и школы?» — раньше нигде: B17 приезжал
+    одной цифрой. Теперь ОТЧЕТ (E31:H37) и ТЭП (38–44) несут расшифровку по
+    типам с очередями, и сумма строк обязана сходиться с B17."""
+    inputs = dict(core.DEFAULT_INPUTS)
+    inputs.update({
+        "social_mode": "Строительство",
+        "kindergarten_places": 465, "school_places": 675, "clinic_capacity": 127,
+        "social_dou_gba_sqm": 12231, "social_school_gba_sqm": 25650,
+        "social_clinic_gba_sqm": 1860,
+    })
+    tep = {key: dict(value) for key, value in core.TEP_DEFAULT.items()}
+    phasing = {
+        "enabled": True, "phase_count": 3, "phase_gap_months": 12,
+        "cost_inflation_pct": 8, "sales_price_inflation_pct": 8, "phases": [],
+        "products": {"apartments": [40, 32, 28], "ground_commercial": [40, 32, 28],
+                     "underground_parking": [40, 32, 28], "storage": [40, 32, 28]},
+        "social_objects": [
+            {"id": "a", "name": "ДОУ №1", "type": "kindergarten", "capacity": 250, "phase": 1},
+            {"id": "b", "name": "ДОУ №2", "type": "kindergarten", "capacity": 215, "phase": 3},
+            {"id": "c", "name": "СОШ №1", "type": "school", "capacity": 675, "phase": 2},
+            {"id": "d", "name": "Поликлиника", "type": "clinic", "capacity": 127, "phase": 2},
+        ],
+    }
+    content, _, meta = core.build_project_workbook(
+        inputs, tep, [], phasing, project_name="Расшифровка")
+    assert not [m for m in meta["missing"] if "расшифровка" in str(m)]
+    book = openpyxl.load_workbook(io.BytesIO(content), data_only=False)
+    report = book["ОТЧЕТ"]
+    assert report["F33"].value == 465
+    assert report["G33"].value == "О1+О3"
+    assert report["F34"].value == 675 and report["G34"].value == "О2"
+    assert report["F35"].value == 127
+    parts = sum(float(report[c].value or 0) for c in ("H33", "H34", "H35", "H36"))
+    b17 = float(book["Вводные"]["B17"].value or 0)
+    assert parts == pytest.approx(b17, abs=0.01), \
+        "расшифровка обязана сходиться с суммой соцнагрузки B17"
+    tep_sheet = book["ТЭП"]
+    assert tep_sheet["B40"].value == 465
+    assert tep_sheet["C41"].value == 25650
+    assert str(tep_sheet["E44"].value).startswith("=SUM")
+
+
+def test_the_compensation_mode_shows_places_and_the_payment():
+    """При денежной компенсации расшифровка не выдумывает стройку: места
+    справочно, деньги — одной строкой компенсации."""
+    inputs = dict(core.DEFAULT_INPUTS)
+    inputs.update({
+        "social_mode": "Денежная компенсация",
+        "social_compensation_mln": 580.668,
+        "kindergarten_places": 19, "school_places": 38, "clinic_capacity": 9,
+    })
+    tep = {key: dict(value) for key, value in core.TEP_DEFAULT.items()}
+    content, _, meta = core.build_project_workbook(
+        inputs, tep, [], {}, project_name="Компенсация")
+    book = openpyxl.load_workbook(io.BytesIO(content), data_only=False)
+    report = book["ОТЧЕТ"]
+    assert report["H36"].value == pytest.approx(580.668)
+    assert float(report["H33"].value or 0) == 0
+    assert report["F33"].value == 19
+    assert book["ТЭП"]["E43"].value == pytest.approx(580.668)
