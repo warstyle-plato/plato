@@ -3541,14 +3541,27 @@ _GLAVAPU_TEP_SKELETON: list[tuple[str, str, str]] = [
 ]
 
 
+# Нули калькулятор пишет в формате единицы измерения: «0,000» у тысяч
+# квадратных метров, «0,0000» у гектаров — голый «0» сразу выдаёт подделку.
+_GLAVAPU_ZERO_BY_UNIT = {
+    "тыс.кв.м.": "0,000",
+    "га": "0,0000",
+    "млн.руб.": "0,000",
+    "тыс.кв.м./га": "0,00",
+}
+
+
 def _glavapu_rows(values: dict[str, str]) -> list[list[str]]:
     """Полный 91-строчный лист ТЭП формата калькулятора ГлавАПУ: секции и
-    номера строк — как в эталоне; незаполненное — нули, а не пропуски."""
+    номера строк — как в эталоне; незаполненное — нули в формате единицы.
+    Секции «Расчёт стоимости смены ВРИ:» и «Расчёт компенсации…» несут итог
+    прямо в строке секции — значение подставляется по ключу «#Имя секции»."""
     rows: list[list[str]] = [["№", "Наименования", "Единицы измерения", "Показатель"]]
     for code, name, unit in _GLAVAPU_TEP_SKELETON:
-        value = values.get(code, "") if code else ""
-        if code and not value:
-            value = "0"
+        if code:
+            value = values.get(code, "") or _GLAVAPU_ZERO_BY_UNIT.get(unit, "0")
+        else:
+            value = values.get("#" + name, "")
         rows.append([code, name, unit, value])
     return rows
 
@@ -3658,15 +3671,36 @@ def vri_tep_quick(region: str, query: str,
             "42": fmt(permanent + temporary, 0),
             "42.1": fmt(permanent, 0),
             "42.2": fmt(temporary, 0),
+            "#Расчёт стоимости смены ВРИ:": fmt(vri_mln, 3),
             "44": fmt(vri_mln, 3),
             "57": fmt(float(green.get("quarter_sqm") or 0) / 10000.0, 4),
             "60": fmt(float(green.get("public_ha") or 0), 4),
         }
         rows = _glavapu_rows(values)
+        extra_sheets = [
+            ("МПТ", [
+                ["№", "Наименования", "Единицы измерения", "Показатель"],
+                ["1", "Встроенно-пристроенные помещения многоквартирного дома (2.1.1, 2.5, 2.6)",
+                 "рабочие места",
+                 fmt(math.ceil(comm_gns / 36.0) if comm_gns > 0 else 0, 0)],
+            ]),
+            ("Машино-места", [
+                ["№", "Наименования", "Единицы измерения", "Всего",
+                 "Приобъектные", "Постоянные", "Гостевые", "Кратковременные"],
+                ["1", "Многоквартирный дом (2.1.1, 2.5, 2.6)", "машино-места",
+                 fmt(permanent + temporary, 0), "0", fmt(permanent, 0),
+                 fmt(temporary, 0), "0"],
+                ["2", "Встроенно-пристроенные помещения многоквартирного дома (2.1.1, 2.5, 2.6)",
+                 "машино-места", "0", "0", "0", "0", "0"],
+            ]),
+        ]
         params = [
-            ["Регион", "Московская область"],
-            ["Округ", str(parcel.get("district") or "")],
-            ["Методика", "Нормативы РНГП МО, УПКС, Кд (Таблица 3)"],
+            ["Параметр", "Значение", "Ед.изм."],
+            ["Социальные объекты", "", ""],
+            ["Округ", str(parcel.get("district") or ""), "—"],
+            ["Плотность застройки", fmt(density, 0), "м² квартир / га"],
+            ["Стоимость смены ВРИ", "", ""],
+            ["Методика", "Нормативы РНГП МО, УПКС, Кд (Таблица 3)", "—"],
         ]
         card = (
             "<b>ВРИ и ТЭП · Московская область</b>\n"
@@ -3704,9 +3738,10 @@ def vri_tep_quick(region: str, query: str,
         coeff = analysis.get("coefficients") or {}
         area = float(territory.get("area_ha") or site_area_ha or 0)
         # Воспроизводим формулы калькулятора ГлавАПУ, восстановленные по двум
-        # его выгрузкам: СПП 94/6, НП — 90% СПП, квартиры — 65% жилой СПП,
-        # население — 33 м² квартир на человека, соцпотребность — нормативы
-        # на тысячу жителей (ДОО 44, СОШ 90, поликлиники 13,3+6,5).
+        # его выгрузкам (население 422 и 1224 — обе сходятся до последней
+        # цифры): СПП 94/6, НП — 90% СПП, квартиры — 65% жилой СПП, население —
+        # 33 м² квартир на человека, квартир — население/2,1, соцпотребность и
+        # обслуживание — нормативы на тысячу жителей с округлением вверх.
         density = 35000.0
         spp = area * density
         apartments_gns = spp * 0.94
@@ -3719,8 +3754,16 @@ def vri_tep_quick(region: str, query: str,
         clinic_adult = math.ceil(population * 13.3 / 1000) if population else 0
         clinic_child = math.ceil(population * 6.5 / 1000) if population else 0
         clinic = clinic_adult + clinic_child
+        per_k = lambda norm, digits: math.ceil(population * norm / 1000 * 10 ** digits) / 10 ** digits
+        # Компенсация за соцобъекты — ставки из выгрузки калькулятора от
+        # 01.08.2026 (188,414/19, 294,540/38 и 97,714/9): город индексирует их
+        # поквартально, выгрузка от 21.07 несла ставки на ~11% ниже.
+        comp_dou = dou * 9.916526
+        comp_school = school * 7.751053
+        comp_clinic = clinic * 10.857111
+        jobs = math.ceil(commerce_gns / 36.0) if commerce_gns > 0 else 0
         rows = _glavapu_rows({
-            "1": fmt(area, 4),
+            "1": fmt(area, 3),
             "2": fmt(density / 1000, 0),
             "3": fmt(density * 0.9 / 1000, 1),
             "4": fmt(population, 0),
@@ -3735,21 +3778,69 @@ def vri_tep_quick(region: str, query: str,
             "9.1.2": fmt(commerce_gns * 0.9 / 1000, 3),
             "10": fmt(apartments / 1000, 3),
             "11": fmt(commerce_gns * 0.9 / 1000, 3),
+            # Социалка компенсацией: участки не выделяются, вся территория —
+            # жилая, как в эталоне («0,651 (100,0%)»).
+            "12": f"{fmt(area, 3)} (100,0%)",
+            "12.1": f"{fmt(area, 3)} (100,0%)",
+            "12.2": "0 (0,0%)",
+            "13": "0 (0,0%)",
+            "14": "0 (0,0%)",
+            "15": fmt(density * 0.9 / 1000, 2),
+            "16": "0,00",
+            "17": "0,00",
             "30": fmt(dou, 0),
             "31": fmt(school, 0),
             "32": fmt(clinic, 0),
             "33": fmt(clinic_adult, 0),
             "34": fmt(clinic_child, 0),
+            "35": fmt(per_k(0.097, 4), 4),
+            "36": fmt(per_k(0.8, 3), 3),
+            "36.1": fmt(per_k(0.32, 3), 3),
+            "36.2": fmt(per_k(0.48, 3), 3),
+            "37": fmt(per_k(0.27, 3), 3),
+            "38": fmt(per_k(0.1, 3), 3),
+            "39": fmt(per_k(0.12, 3), 3),
+            "40": fmt(per_k(0.15, 3), 3),
+            "41": fmt(per_k(0.09, 3), 3),
+            "#Расчёт компенсации за социальные объекты:":
+                fmt(comp_dou + comp_school + comp_clinic, 3),
+            "54": fmt(comp_dou, 3),
+            "55": fmt(comp_school, 3),
+            "56": fmt(comp_clinic, 3),
+            "57": fmt(per_k(5.0, 4) / 10, 4),
+            "58": fmt(per_k(0.5, 4) / 10, 4),
+            "59": fmt(math.ceil(population * 0.1 / 10000 * 10 ** 4) / 10 ** 4, 4),
+            "60": fmt(math.ceil(population * 0.7 / 10000 * 10 ** 4) / 10 ** 4, 4),
         })
+        extra_sheets = [
+            ("МПТ", [
+                ["№", "Наименования", "Единицы измерения", "Показатель"],
+                ["1", "Встроенно-пристроенные помещения многоквартирного дома (2.1.1, 2.5, 2.6)",
+                 "рабочие места", fmt(jobs, 0)],
+            ]),
+            ("Машино-места", [
+                ["№", "Наименования", "Единицы измерения", "Всего",
+                 "Приобъектные", "Постоянные", "Гостевые", "Кратковременные"],
+                ["1", "Многоквартирный дом (2.1.1, 2.5, 2.6)", "машино-места",
+                 "0", "0", "0", "0", "0"],
+                ["2", "Встроенно-пристроенные помещения многоквартирного дома (2.1.1, 2.5, 2.6)",
+                 "машино-места", "0", "0", "0", "0", "0"],
+            ]),
+        ]
         params = [
-            ["Регион", "Москва"],
-            ["Район", str(territory.get("district") or "")],
-            ["Кадастровый квартал", str(territory.get("cadastral_quarter") or "")],
-            ["К1 — доступность рельсового каркаса", coeff.get("rail")],
-            ["Коэффициент аренды", coeff.get("rent")],
-            ["Методика", "Формулы калькулятора ГлавАПУ (СПП 94/6, НП 90%, "
-                          "население 33 м²/чел); машино-места и плата за ВРИ — "
-                          "в мини-приложении"],
+            ["Параметр", "Значение", "Ед.изм."],
+            ["Машино-места", "", ""],
+            ["К1 — доступность рельсового каркаса", coeff.get("rail") or "", "—"],
+            ["К2 — деловая активность (вне ТТК)", coeff.get("business_outside_ttc") or "", "—"],
+            ["Социальные объекты", "", ""],
+            ["Район", str(territory.get("district") or ""), "—"],
+            ["Норматив ДОО", "44", "мест / 1000 жит."],
+            ["Норматив школ", "90", "мест / 1000 жит."],
+            ["Стоимость смены ВРИ", "", ""],
+            ["Кадастровый квартал", str(territory.get("cadastral_quarter") or ""), "—"],
+            ["Коэффициент аренды", coeff.get("rent") or "", "—"],
+            ["Методика", "Формулы калькулятора ГлавАПУ; машино-места и плата "
+                         "за смену ВРИ — расчёт в мини-приложении", "—"],
         ]
         card = (
             "<b>ВРИ и ТЭП · Москва</b>\n"
@@ -3761,12 +3852,15 @@ def vri_tep_quick(region: str, query: str,
             f"• население — {fmt(population, 0)} чел. · квартир — {fmt(units, 0)}\n"
             f"• соцпотребность — ДОО {fmt(dou, 0)} мест, СОШ {fmt(school, 0)} мест, "
             f"поликлиники {fmt(clinic_adult, 0)}+{fmt(clinic_child, 0)} пос./см.\n"
+            f"• <b>компенсация за соцобъекты — "
+            f"{fmt(comp_dou + comp_school + comp_clinic, 1)} млн ₽</b> "
+            "(ставки города, индексируются поквартально)\n"
             f"• К1 рельсовый — {coeff.get('rail') or '—'} · аренда — "
             f"{coeff.get('rent') or '—'}\n"
             "<i>Машино-места и плату за смену ВРИ считает калькулятор ГлавАПУ "
             "в мини-приложении: кнопка «Открыть и изменить расчёт».</i>\n"
         )
-    workbook = _build_glavapu_xlsx_from_rows(rows, params)
+    workbook = _build_glavapu_xlsx_from_rows(rows, params, extra_sheets)
     safe = re.sub(r"[^0-9A-Za-zА-Яа-я_-]+", "_", str(query))[:40] or "участок"
     filename = f"ВРИ_ТЭП_{safe}_{date.today().isoformat()}.xlsx"
     return {"card": card, "file": workbook, "filename": filename}
@@ -3890,27 +3984,42 @@ def _xlsx_inline_sheet(rows: list[list[Any]]) -> bytes:
     ).encode("utf-8")
 
 
-def _build_glavapu_xlsx_from_rows(rows: list[list[Any]], parameters: list[list[Any]]) -> bytes:
+def _build_glavapu_xlsx_from_rows(rows: list[list[Any]], parameters: list[list[Any]],
+                                  extra_sheets: list[tuple[str, list[list[Any]]]] | None = None) -> bytes:
+    """Книга формата выгрузки калькулятора ГлавАПУ. Эталон ведёт четыре
+    листа — ТЭП, МПТ, Машино-места, Параметры территории; extra_sheets
+    вставляются между ТЭП и параметрами в переданном порядке."""
+    sheets: list[tuple[str, list[list[Any]]]] = [("ТЭП", rows)]
+    sheets.extend(extra_sheets or [])
+    sheets.append(("Параметры территории", parameters))
+    overrides = "\n".join(
+        f'  <Override PartName="/xl/worksheets/sheet{i}.xml" '
+        'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+        for i in range(1, len(sheets) + 1))
     content_types = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
   <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
   <Default Extension="xml" ContentType="application/xml"/>
   <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
-  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
-  <Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+{overrides}
 </Types>'''.encode("utf-8")
     package_rels = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="{_XLSX_PKG_REL_NS}">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
 </Relationships>'''.encode("utf-8")
+    sheet_tags = "".join(
+        f'<sheet name="{html.escape(name, quote=True)}" sheetId="{i}" r:id="rId{i}"/>'
+        for i, (name, _) in enumerate(sheets, 1))
     workbook = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <workbook xmlns="{_XLSX_MAIN_NS}" xmlns:r="{_XLSX_REL_NS}">
-  <sheets><sheet name="ТЭП" sheetId="1" r:id="rId1"/><sheet name="Параметры территории" sheetId="2" r:id="rId2"/></sheets>
+  <sheets>{sheet_tags}</sheets>
 </workbook>'''.encode("utf-8")
+    rel_tags = "\n".join(
+        f'  <Relationship Id="rId{i}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet{i}.xml"/>'
+        for i in range(1, len(sheets) + 1))
     workbook_rels = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="{_XLSX_PKG_REL_NS}">
-  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
-  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/>
+{rel_tags}
 </Relationships>'''.encode("utf-8")
     out = io.BytesIO()
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as archive:
@@ -3918,8 +4027,8 @@ def _build_glavapu_xlsx_from_rows(rows: list[list[Any]], parameters: list[list[A
         archive.writestr("_rels/.rels", package_rels)
         archive.writestr("xl/workbook.xml", workbook)
         archive.writestr("xl/_rels/workbook.xml.rels", workbook_rels)
-        archive.writestr("xl/worksheets/sheet1.xml", _xlsx_inline_sheet(rows))
-        archive.writestr("xl/worksheets/sheet2.xml", _xlsx_inline_sheet(parameters))
+        for index, (_, sheet_rows) in enumerate(sheets, 1):
+            archive.writestr(f"xl/worksheets/sheet{index}.xml", _xlsx_inline_sheet(sheet_rows))
     return out.getvalue()
 
 

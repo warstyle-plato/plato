@@ -35,7 +35,9 @@ def test_the_mo_branch_counts_vri_and_returns_a_readable_file():
     assert "плата за смену ВРИ — 4 643,9" in result["card"]
     import io
     import openpyxl
-    sheet = openpyxl.load_workbook(io.BytesIO(result["file"]))["ТЭП"]
+    book = openpyxl.load_workbook(io.BytesIO(result["file"]))
+    assert book.sheetnames == ["ТЭП", "МПТ", "Машино-места", "Параметры территории"]
+    sheet = book["ТЭП"]
     assert sheet.max_row == 91, "формат неполный — калькулятор ГлавАПУ ведёт 91 строку"
     labels = {str(sheet.cell(row=r, column=1).value): r for r in range(2, 92)}
     assert sheet.cell(row=labels["44"], column=4).value == "4 643,921"
@@ -49,10 +51,12 @@ def test_the_mo_branch_counts_vri_and_returns_a_readable_file():
     assert normalized["actual_kindergarten_places"] == pytest.approx(453)
 
 
-def test_the_msk_branch_follows_the_glavapu_formulas(monkeypatch):
-    """Московская ветка воспроизводит формулы калькулятора ГлавАПУ,
-    восстановленные по двум его выгрузкам: население 33 м²/чел, соцпотребность
-    на тысячу жителей. Первый вариант отдавал только площади."""
+def test_the_msk_branch_reproduces_the_calculator_export(monkeypatch):
+    """Московская ветка воспроизводит настоящую выгрузку калькулятора ГлавАПУ
+    (эталон — файл по 77:09:0004014:13, население 422): четыре листа, итоги в
+    строках секций, спорт/торговля/озеленение по нормативам на тысячу жителей
+    с округлением вверх, компенсация по городским ставкам. Первый вариант был
+    двухлистовым и отдавал только площади."""
     monkeypatch.setattr(core, "analyze_cadastral_territory", lambda req: {
         "territory": {"area_ha": 0.651, "district": "Савеловский",
                       "cadastral_quarter": "77:09:0004014"},
@@ -61,25 +65,47 @@ def test_the_msk_branch_follows_the_glavapu_formulas(monkeypatch):
     result = core.vri_tep_quick("msk", "77:09:0004014:13")
     assert "Москва" in result["card"]
     assert "мини-приложении" in result["card"]
+    assert "580,7 млн ₽" in result["card"]
     import io
-    import math
     import openpyxl
-    sheet = openpyxl.load_workbook(io.BytesIO(result["file"]))["ТЭП"]
+    book = openpyxl.load_workbook(io.BytesIO(result["file"]))
+    assert book.sheetnames == ["ТЭП", "МПТ", "Машино-места", "Параметры территории"], \
+        "выгрузка калькулятора ведёт четыре листа именно в этом порядке"
+    sheet = book["ТЭП"]
+    assert sheet.max_row == 91
     labels = {str(sheet.cell(row=r, column=1).value): r for r in range(2, 92)}
-    # 0,651 га × 35 000 × 0,94 × 0,65 = 13 921 м² квартир → 422 человека.
-    population = math.ceil(0.651 * 35000 * 0.94 * 0.65 / 33)
-    assert population == 422
-    assert sheet.cell(row=labels["4"], column=4).value == "422"
-    assert sheet.cell(row=labels["30"], column=4).value == "19"   # round(422×0,044)
-    assert sheet.cell(row=labels["31"], column=4).value == "38"   # ceil(422×0,09)
-    assert sheet.cell(row=labels["33"], column=4).value == "6"    # ceil(422×0,0133)
-    assert sheet.cell(row=labels["34"], column=4).value == "3"    # ceil(422×0,0065)
-    assert sheet.cell(row=labels["32"], column=4).value == "9"
-    # Машино-места и ВРИ бот не реверсирует — они честные нули с отсылкой.
-    assert sheet.cell(row=labels["42"], column=4).value == "0"
-    assert sheet.cell(row=labels["44"], column=4).value == "0"
+    cell = lambda code: sheet.cell(row=labels[code], column=4).value
+    # Числа эталона: население 422, квартир 201, соцпотребность 19/38/9 (6+3).
+    assert cell("4") == "422"
+    assert cell("5") == "201"
+    assert cell("3") == "31,5"
+    assert cell("12") == "0,651 (100,0%)"
+    assert [cell(c) for c in ("30", "31", "32", "33", "34")] == \
+        ["19", "38", "9", "6", "3"]
+    # Спорт, торговля и озеленение — нормативы на тысячу жителей, копейка в
+    # копейку с эталоном (округление вверх до последнего знака).
+    assert [cell(c) for c in ("35", "36", "36.1", "36.2")] == \
+        ["0,0410", "0,338", "0,136", "0,203"]
+    assert [cell(c) for c in ("37", "38", "39", "40", "41")] == \
+        ["0,114", "0,043", "0,051", "0,064", "0,038"]
+    assert [cell(c) for c in ("57", "58", "59", "60")] == \
+        ["0,2110", "0,0211", "0,0043", "0,0296"]
+    # Компенсация — как в эталонной выгрузке от 01.08.2026.
+    assert [cell(c) for c in ("54", "55", "56")] == \
+        ["188,414", "294,540", "97,714"]
+    comp_row = next(r for r in range(2, 92)
+                    if "компенсации за социальные" in str(sheet.cell(row=r, column=2).value or ""))
+    assert sheet.cell(row=comp_row, column=4).value == "580,668"
+    # Машино-места и ВРИ бот не реверсирует — честные нули с отсылкой.
+    assert cell("42") == "0"
+    assert cell("44") == "0,000"
+    # МПТ: 1 367 м² нежилой СПП по 36 м² на рабочее место.
+    assert book["МПТ"].cell(row=2, column=4).value == "38"
     parsed = core.parse_glavapu_xlsx(result["file"], result["filename"])
-    assert parsed["normalized"]["site_area_ha"] == pytest.approx(0.651)
+    normalized = parsed["normalized"]
+    assert normalized["site_area_ha"] == pytest.approx(0.651)
+    assert normalized["social_compensation_total_mln"] == pytest.approx(580.668, abs=0.01)
+    assert normalized["suggested_social_mode"] == "Денежная компенсация"
 
 
 def test_the_msk_branch_finds_the_parcel_by_address(monkeypatch):
