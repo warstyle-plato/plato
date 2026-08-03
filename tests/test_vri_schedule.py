@@ -606,3 +606,24 @@ def test_a_zero_charge_needs_no_restoring():
 
     assert result["warnings"] == [] or not any(
         "банковский бюджет" in text for text in result["warnings"])
+
+
+# --- отчётная таблица расходов ----------------------------------------------
+
+def test_the_report_capex_carries_only_real_articles():
+    """Валовая плата и льгота — справочные величины, а не статьи расходов.
+
+    Таблица расходов на странице рисует все ключи report.capex подряд, и два
+    внутренних ключа показывались пользователю сырыми именами
+    «land_rights_gross» и «land_rights_relief» — при том, что в итог CAPEX
+    они и не входили. Их место — vri.totals."""
+    result = model(vri_relief_mode="percent", vri_relief_pct=30)
+    capex = result["capex"]
+
+    assert "land_rights_gross" not in capex
+    assert "land_rights_relief" not in capex
+    assert result["vri"]["totals"]["gross"] == pytest.approx(AMOUNT)
+    assert result["vri"]["totals"]["relief"] > 0
+    articles = sum(value for key, value in capex.items() if key != "total")
+    assert capex["total"] == pytest.approx(articles, rel=1e-9), \
+        "итог CAPEX обязан быть суммой показанных статей"

@@ -13533,7 +13533,13 @@ def calculate(req: CalcRequest) -> dict:
             "core_under_gns": op["core_under_gns"],
         },
         "revenue": {"total": total_revenue, **op["revenue_by_product"]},
-        "capex": {"total": total_capex, **op["capex_amounts"]},
+        # land_rights_gross и land_rights_relief — справочные величины платы
+        # до льготы: в total их нет, а таблица расходов на странице рисует все
+        # ключи подряд — и показывала их сырыми именами. Валовая плата и льгота
+        # уходят наружу полем vri.totals, не статьями CAPEX.
+        "capex": {"total": total_capex,
+                  **{key: value for key, value in op["capex_amounts"].items()
+                     if key not in ("land_rights_gross", "land_rights_relief")}},
         "vri": op["vri"],
         "commercial_costs": fin["commercial_costs"],
         "finance": fin,
