@@ -42,7 +42,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.1"
+VERSION = "0.17.2"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -3447,9 +3447,116 @@ def mo_calculate(req: MoCalculateRequest) -> dict[str, Any]:
     }
 
 
+_GLAVAPU_TEP_SKELETON: list[tuple[str, str, str]] = [
+    ('1', 'Площадь территории проектирования', 'га'),
+    ('2', 'Плотность от СПП', 'тыс.кв.м./га'),
+    ('3', 'Плотность от НП', 'тыс.кв.м./га'),
+    ('4', 'Население', 'чел.'),
+    ('5', 'Количество квартир', 'шт.'),
+    ('', 'СПП в ГНС:', ''),
+    ('6', 'СПП, всего:', 'тыс.кв.м.'),
+    ('7', 'СПП жилых зданий, в т.ч.:', 'тыс.кв.м.'),
+    ('7.1', 'СПП жилая', 'тыс.кв.м.'),
+    ('7.2', 'СПП нежилой части жилых зданий', 'тыс.кв.м.'),
+    ('8', 'СПП нежилых зданий, в т.ч.:', 'тыс.кв.м.'),
+    ('8.1', 'СПП общественных, производственных объектов', 'тыс.кв.м.'),
+    ('8.2', 'СПП социальных объектов', 'тыс.кв.м.'),
+    ('', 'Наземная площадь:', ''),
+    ('9', 'НП, всего:', 'тыс.кв.м.'),
+    ('9.1', 'НП жилых зданий, в т.ч.:', 'тыс.кв.м.'),
+    ('9.1.1', 'НП жилая', 'тыс.кв.м.'),
+    ('9.1.2', 'НП нежилой части жилых зданий', 'тыс.кв.м.'),
+    ('9.2', 'НП нежилых зданий, в т.ч.:', 'тыс.кв.м.'),
+    ('9.2.1', 'НП общественных, производственных объектов', 'тыс.кв.м.'),
+    ('9.2.2', 'НП социальных объектов', 'тыс.кв.м.'),
+    ('', 'Единый показатель:', ''),
+    ('10', 'Площадь квартир', 'тыс.кв.м.'),
+    ('11', 'Нежилая наземная площадь (ННП)', 'тыс.кв.м.'),
+    ('', 'Баланс территории:', ''),
+    ('12', 'Территория жилых зданий, в т.ч.:', 'га'),
+    ('12.1', 'участки многоквартирных жилых зданий', 'га'),
+    ('12.2', 'незастраиваемая территория', 'га'),
+    ('13', 'Участки социальных объектов', 'га'),
+    ('14', 'Участки общественных, производственных объектов', 'га'),
+    ('', 'Расчётная плотность территории от НП:', ''),
+    ('15', 'жилых участков', 'тыс.кв.м./га'),
+    ('16', 'социальных объектов', 'тыс.кв.м./га'),
+    ('17', 'общественных, производственных объектов', 'тыс.кв.м./га'),
+    ('', 'ДОО:', ''),
+    ('18', 'количество мест', 'мест'),
+    ('19', 'СПП', 'тыс.кв.м.'),
+    ('20', 'наземная площадь', 'тыс.кв.м.'),
+    ('21', 'площадь земельного участка', 'га'),
+    ('', 'Школы:', ''),
+    ('22', 'количество мест', 'мест'),
+    ('23', 'СПП', 'тыс.кв.м.'),
+    ('24', 'наземная площадь', 'тыс.кв.м.'),
+    ('25', 'площадь земельного участка', 'га'),
+    ('', 'Поликлиники:', ''),
+    ('26', 'мощность', 'пос./см.'),
+    ('27', 'СПП', 'тыс.кв.м.'),
+    ('28', 'наземная площадь', 'тыс.кв.м.'),
+    ('29', 'площадь земельного участка', 'га'),
+    ('', 'Расчёт объектов обслуживания:', ''),
+    ('30', 'ДОО', 'мест'),
+    ('31', 'Школа', 'мест'),
+    ('32', 'Поликлиника смешанного типа', 'пос./см.'),
+    ('33', 'Поликлиника взрослая', 'пос./см.'),
+    ('34', 'Поликлиника детская', 'пос./см.'),
+    ('35', 'Плоскостные спортивные сооружения', 'га'),
+    ('36', 'Крытые объекты спорта (ННП), в т.ч.:', 'тыс.кв.м.'),
+    ('36.1', 'в радиусе пешеходной доступности до 500 м', 'тыс.кв.м.'),
+    ('36.2', 'в радиусе пешеходной доступности до 1500 м', 'тыс.кв.м.'),
+    ('37', 'Объекты торговли (ННП)', 'тыс.кв.м.'),
+    ('38', 'Объекты бытового обслуживания населения (ННП)', 'тыс.кв.м.'),
+    ('39', 'Объекты общественного питания (ННП)', 'тыс.кв.м.'),
+    ('40', 'Объекты культуры и досуга (ННП)', 'тыс.кв.м.'),
+    ('41', 'Объекты для размещения городских служб (ННП)', 'тыс.кв.м.'),
+    ('', 'Расчёт машино-мест:', ''),
+    ('42', 'Места хранения и паркирования, в т.ч.:', 'м/м'),
+    ('42.1', 'Постоянные парковки', 'м/м'),
+    ('42.2', 'Гостевые парковки', 'м/м'),
+    ('42.3', 'Приобъектные парковки', 'м/м'),
+    ('43', 'Места кратковременной остановки', 'м/м'),
+    ('', 'Расчёт стоимости смены ВРИ:', 'млн.руб.'),
+    ('44', 'Многоквартирная жилые здания', 'млн.руб.'),
+    ('45', 'Индивидуальные, блочные жилые здания', 'млн.руб.'),
+    ('46', 'Хранение индивидуального транспорта', 'млн.руб.'),
+    ('47', 'Объекты мультифункционального назначения', 'млн.руб.'),
+    ('48', 'Объекты для временного проживания', 'млн.руб.'),
+    ('49', 'Административные, офисные здания', 'млн.руб.'),
+    ('50', 'Производственные здания', 'млн.руб.'),
+    ('51', 'Социальные объекты', 'млн.руб.'),
+    ('52', 'Льгота на стр-во жилья за создание МПТ', 'млн.руб.'),
+    ('53', 'Льгота на стр-во жилья за передачу жилых помещений в собственность города Москвы', 'млн.руб.'),
+    ('', 'Расчёт компенсации за социальные объекты:', 'млн.руб.'),
+    ('54', 'ДОО', 'млн.руб.'),
+    ('55', 'Школа', 'млн.руб.'),
+    ('56', 'Поликлиника', 'млн.руб.'),
+    ('', 'Элементы жилых территорий:', ''),
+    ('57', 'Озелененные территории ЖК', 'га'),
+    ('58', 'Территории детских площадок', 'га'),
+    ('59', 'Территории площадок отдыха взрослых', 'га'),
+    ('60', 'Озелененные территории общего пользования', 'га'),
+]
+
+
+def _glavapu_rows(values: dict[str, str]) -> list[list[str]]:
+    """Полный 91-строчный лист ТЭП формата калькулятора ГлавАПУ: секции и
+    номера строк — как в эталоне; незаполненное — нули, а не пропуски."""
+    rows: list[list[str]] = [["№", "Наименования", "Единицы измерения", "Показатель"]]
+    for code, name, unit in _GLAVAPU_TEP_SKELETON:
+        value = values.get(code, "") if code else ""
+        if code and not value:
+            value = "0"
+        rows.append([code, name, unit, value])
+    return rows
+
+
 def vri_tep_quick(region: str, query: str,
                  site_area_ha: float | None = None,
-                 district: str | None = None) -> dict[str, Any]:
+                 district: str | None = None,
+                 density_sqm_per_ha: float | None = None) -> dict[str, Any]:
     """Кнопка бота «Посчитать ВРИ и ТЭП»: карточка + файл формата ГлавАПУ.
 
     МО считается полностью (РНГП, УПКС, Кд); для Москвы серверу доступен
@@ -3464,9 +3571,12 @@ def vri_tep_quick(region: str, query: str,
             return "—"
 
     if region == "mo":
-        result = mo_calculate(MoCalculateRequest(
+        request_kwargs: dict[str, Any] = dict(
             query=query, site_area_ha=float(site_area_ha or 0),
-            district=str(district or "")))
+            district=str(district or ""))
+        if density_sqm_per_ha and density_sqm_per_ha > 0:
+            request_kwargs["density_sqm_per_ha"] = float(density_sqm_per_ha)
+        result = mo_calculate(MoCalculateRequest(**request_kwargs))
         tep = result.get("tep") or {}
         social = result.get("social") or {}
         vri = result.get("vri") or {}
@@ -3479,25 +3589,78 @@ def vri_tep_quick(region: str, query: str,
         school = float((social.get("school") or {}).get("places") or 0)
         clinic = float((social.get("clinic") or {}).get("capacity") or 0)
         parking = float((tep.get("underground_parking") or {}).get("units") or 0)
-        rows = [
-            ["№", "Наименования", "Единицы измерения", "Показатель"],
-            ["1", "Площадь территории проектирования", "га", fmt(area, 4)],
-            ["2", "Плотность от СПП", "тыс.кв.м./га", fmt(density / 1000, 2)],
-            ["5", "Количество квартир", "шт.",
-             fmt(apartments / 58.75, 0)],
-            ["7.1", "СПП жилая", "тыс.кв.м.",
-             fmt(float((tep.get("apartments") or {}).get("gns") or 0) / 1000, 3)],
-            ["9.1.1", "НП жилая", "тыс.кв.м.",
-             fmt(float((tep.get("apartments") or {}).get("gns") or 0) / 1000, 3)],
-            ["10", "Площадь квартир", "тыс.кв.м.", fmt(apartments / 1000, 3)],
-            ["18", "количество мест", "мест", fmt(dou, 0)],
-            ["22", "количество мест", "мест", fmt(school, 0)],
-            ["26", "мощность", "пос./см.", fmt(clinic, 0)],
-            ["42", "Места хранения и паркирования, в т.ч.:", "м/м", fmt(parking, 0)],
-            ["44", "Многоквартирная жилые здания", "млн.руб.", fmt(vri_mln, 3)],
-            ["54", "ДОО", "млн.руб.", "0"],
-            ["60", "Озелененные территории общего пользования", "га", "0"],
-        ]
+        apartments_row = tep.get("apartments") or {}
+        commerce_row = tep.get("ground_commercial") or {}
+        kinder = social.get("kindergarten") or {}
+        school_row = social.get("school") or {}
+        clinic_row = social.get("clinic") or {}
+        parking_row = social.get("parking") or {}
+        green = social.get("green") or {}
+        premises = {str(item.get("label") or ""): float(item.get("gba_sqm") or 0)
+                    for item in (social.get("public_premises") or [])}
+        social_gba = (float(kinder.get("gba_sqm") or 0)
+                      + float(school_row.get("gba_sqm") or 0)
+                      + float(clinic_row.get("gba_sqm") or 0))
+        social_site = (float(kinder.get("site_ha") or 0)
+                       + float(school_row.get("site_ha") or 0)
+                       + float(clinic_row.get("site_ha") or 0))
+        apart_gns = float(apartments_row.get("gns") or 0)
+        apart_np = float(apartments_row.get("total_area") or 0)
+        comm_gns = float(commerce_row.get("gns") or 0)
+        comm_np = float(commerce_row.get("total_area") or 0)
+        permanent = float(parking_row.get("permanent_spaces") or 0)
+        temporary = float(parking_row.get("temporary_spaces") or 0)
+        th = lambda v, d=3: fmt(v / 1000.0, d)
+        values = {
+            "1": fmt(area, 4),
+            "2": fmt(density / 1000.0, 2),
+            "3": fmt(density * (apart_np / apart_gns if apart_gns else 0.9) / 1000.0, 2),
+            "4": fmt(float(social.get("population") or 0), 0),
+            "5": fmt(float(apartments_row.get("units") or 0), 0),
+            "6": th(apart_gns + comm_gns + social_gba),
+            "7": th(apart_gns + comm_gns),
+            "7.1": th(apart_gns),
+            "7.2": th(comm_gns),
+            "8": th(social_gba),
+            "8.2": th(social_gba),
+            "9": th(apart_np + comm_np + social_gba),
+            "9.1": th(apart_np + comm_np),
+            "9.1.1": th(apart_np),
+            "9.1.2": th(comm_np),
+            "9.2": th(social_gba),
+            "9.2.2": th(social_gba),
+            "10": th(apartments),
+            "11": th(float(commerce_row.get("saleable") or 0)),
+            "12": fmt(max(area - social_site, 0.0), 4),
+            "13": fmt(social_site, 4),
+            "18": fmt(dou, 0),
+            "19": th(float(kinder.get("gba_sqm") or 0)),
+            "20": th(float(kinder.get("gba_sqm") or 0)),
+            "21": fmt(float(kinder.get("site_ha") or 0), 4),
+            "22": fmt(school, 0),
+            "23": th(float(school_row.get("gba_sqm") or 0)),
+            "24": th(float(school_row.get("gba_sqm") or 0)),
+            "25": fmt(float(school_row.get("site_ha") or 0), 4),
+            "26": fmt(clinic, 0),
+            "27": th(float(clinic_row.get("gba_sqm") or 0)),
+            "28": th(float(clinic_row.get("gba_sqm") or 0)),
+            "29": fmt(float(clinic_row.get("site_ha") or 0), 4),
+            "30": fmt(dou, 0),
+            "31": fmt(school, 0),
+            "32": fmt(clinic, 0),
+            "37": th(premises.get("Торговые объекты", 0)),
+            "38": th(premises.get("Бытовое обслуживание", 0)),
+            "39": th(premises.get("Общественное питание", 0)),
+            "40": th(premises.get("Культура и досуг", 0)),
+            "41": th(premises.get("Городские службы", 0)),
+            "42": fmt(permanent + temporary, 0),
+            "42.1": fmt(permanent, 0),
+            "42.2": fmt(temporary, 0),
+            "44": fmt(vri_mln, 3),
+            "57": fmt(float(green.get("quarter_sqm") or 0) / 10000.0, 4),
+            "60": fmt(float(green.get("public_ha") or 0), 4),
+        }
+        rows = _glavapu_rows(values)
         params = [
             ["Регион", "Московская область"],
             ["Округ", str(parcel.get("district") or "")],
@@ -3509,7 +3672,8 @@ def vri_tep_quick(region: str, query: str,
             f"• площадь — {fmt(area, 4)} га"
             f" · округ — {html.escape(str(parcel.get('district') or '—'))}\n"
             f"• квартиры — {fmt(apartments, 0)} м² продаваемой"
-            f" (плотность {fmt(density, 0)} м²/га)\n"
+            f" (плотность {fmt(density, 0)} м² квартир/га"
+            f"{' — по умолчанию' if not density_sqm_per_ha else ''})\n"
             f"• соцобъекты — ДОО {fmt(dou, 0)} мест, СОШ {fmt(school, 0)} мест, "
             f"поликлиника {fmt(clinic, 0)} пос./см.\n"
             f"• подземный паркинг — {fmt(parking, 0)} м/м\n"
@@ -3529,16 +3693,19 @@ def vri_tep_quick(region: str, query: str,
         apartments_gns = spp * 0.94
         apartments = apartments_gns * 0.65
         commerce_gns = spp * 0.06
-        rows = [
-            ["№", "Наименования", "Единицы измерения", "Показатель"],
-            ["1", "Площадь территории проектирования", "га", fmt(area, 4)],
-            ["2", "Плотность от СПП", "тыс.кв.м./га", fmt(density / 1000, 0)],
-            ["6", "СПП, всего:", "тыс.кв.м.", fmt(spp / 1000, 3)],
-            ["7.1", "СПП жилая", "тыс.кв.м.", fmt(apartments_gns / 1000, 3)],
-            ["7.2", "СПП нежилой части жилых зданий", "тыс.кв.м.",
-             fmt(commerce_gns / 1000, 3)],
-            ["10", "Площадь квартир", "тыс.кв.м.", fmt(apartments / 1000, 3)],
-        ]
+        rows = _glavapu_rows({
+            "1": fmt(area, 4),
+            "2": fmt(density / 1000, 0),
+            "6": fmt(spp / 1000, 3),
+            "7": fmt(spp / 1000, 3),
+            "7.1": fmt(apartments_gns / 1000, 3),
+            "7.2": fmt(commerce_gns / 1000, 3),
+            "9": fmt(spp * 0.9 / 1000, 3),
+            "9.1": fmt(spp * 0.9 / 1000, 3),
+            "9.1.1": fmt(apartments_gns * 0.9 / 1000, 3),
+            "9.1.2": fmt(commerce_gns * 0.9 / 1000, 3),
+            "10": fmt(apartments / 1000, 3),
+        })
         params = [
             ["Регион", "Москва"],
             ["Район", str(territory.get("district") or "")],

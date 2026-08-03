@@ -416,7 +416,9 @@ def _vritep_ask_input(chat_id: int, region: str) -> None:
             chat_id,
             "<b>Московская область.</b> Пришлите кадастровый номер участка — "
             "площадь возьмётся из ЕГРН.\n"
-            "Без кадастра можно так: <code>10,5 га Городской округ Мытищи</code>.",
+            "Без кадастра можно так: <code>10,5 га Городской округ Мытищи</code>.\n"
+            "Плотность по умолчанию 30 000 м² квартир/га; своя — добавьте "
+            "<code>плотность 8700</code> в то же сообщение.",
         )
     else:
         _send_message(
@@ -442,8 +444,14 @@ def _vritep_handle_text(chat_id: int, text: str) -> bool:
         return False
     _vritep_clear(chat_id)
     _send_message(chat_id, "<i>Считаю ВРИ и ТЭП…</i>")
-    query, area, district = text.strip(), None, None
+    query, area, district, density = text.strip(), None, None, None
     if region == "mo":
+        # «плотность 8700» в любом месте сообщения — м² квартир на гектар.
+        density_match = re.search(r"плотн\w*\s*[:=]?\s*([\d\s.,]+)", text, re.IGNORECASE)
+        if density_match:
+            density = float(density_match.group(1).replace(" ", "").replace(",", "."))
+            text = text[:density_match.start()] + text[density_match.end():]
+            query = text.strip()
         # «10,5 га Городской округ Мытищи» — площадь руками, остаток — округ.
         match = re.search(r"([\d.,]+)\s*га\s*(.*)", text, re.IGNORECASE)
         if match and not re.search(r"\d{2}:\d{2}:", text):
@@ -452,7 +460,8 @@ def _vritep_handle_text(chat_id: int, text: str) -> bool:
             query = ""
     try:
         result = core.vri_tep_quick(region, query, site_area_ha=area,
-                                    district=district)
+                                    district=district,
+                                    density_sqm_per_ha=density)
     except Exception as exc:
         detail = getattr(exc, "detail", None) or core._error_location(exc)
         _send_message(

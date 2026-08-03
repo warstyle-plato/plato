@@ -23,15 +23,27 @@ core = wrapper.core
 
 
 def test_the_mo_branch_counts_vri_and_returns_a_readable_file():
-    result = core.vri_tep_quick("mo", "", site_area_ha=10.0,
-                                district="Городской округ Мытищи")
+    """Файл — полный 91-строчный формат калькулятора с секциями: первый
+    вариант был огрызком из 13 строк, без секции ВРИ и с «ДОО 0 млн.руб»."""
+    result = core.vri_tep_quick("mo", "", site_area_ha=22.423,
+                                district="Городской округ Мытищи",
+                                density_sqm_per_ha=8700)
     assert "Московская область" in result["card"]
-    assert "плата за смену ВРИ" in result["card"]
+    assert "плата за смену ВРИ — 4 643,9" in result["card"]
+    import io
+    import openpyxl
+    sheet = openpyxl.load_workbook(io.BytesIO(result["file"]))["ТЭП"]
+    assert sheet.max_row == 91, "формат неполный — калькулятор ГлавАПУ ведёт 91 строку"
+    labels = {str(sheet.cell(row=r, column=1).value): r for r in range(2, 92)}
+    assert sheet.cell(row=labels["44"], column=4).value == "4 643,921"
+    assert sheet.cell(row=labels["18"], column=4).value == "453"
+    assert sheet.cell(row=labels["22"], column=4).value == "950"
     parsed = core.parse_glavapu_xlsx(result["file"], result["filename"])
     normalized = parsed["normalized"]
-    assert normalized["site_area_ha"] == pytest.approx(10.0)
-    assert normalized["apartment_area_sqm"] == pytest.approx(300000.0)
-    assert (normalized["change_vri_mln"] or 0) > 0, "плата за ВРИ потерялась в файле"
+    assert normalized["site_area_ha"] == pytest.approx(22.423)
+    assert normalized["apartment_area_sqm"] == pytest.approx(195080.0, rel=0.001)
+    assert normalized["change_vri_mln"] == pytest.approx(4643.921, rel=0.001)
+    assert normalized["actual_kindergarten_places"] == pytest.approx(453)
 
 
 def test_the_msk_branch_says_where_the_exact_calculation_lives(monkeypatch):
@@ -96,3 +108,19 @@ def test_the_button_lives_in_both_menus():
     wrapper_src = open("main.py", encoding="utf-8").read()
     assert wrapper_src.count('"vritep_start"') >= 2, \
         "кнопка или колбэк пропали из обёртки"
+
+
+def test_the_density_is_parsed_from_the_bot_text(monkeypatch, tmp_path):
+    monkeypatch.setattr(wrapper, "_STATE_DIR", tmp_path)
+    calls: list[dict] = []
+    monkeypatch.setattr(wrapper, "_send_message", lambda *a, **kw: None)
+    monkeypatch.setattr(core, "_telegram_send_document_bytes", lambda *a, **kw: None)
+    monkeypatch.setattr(core, "vri_tep_quick",
+                        lambda region, query, **kw: calls.append(
+                            {"region": region, "query": query, **kw}) or {
+                            "card": "к", "file": b"PK", "filename": "f.xlsx"})
+    wrapper._vritep_ask_input(42, "mo")
+    wrapper._vritep_handle_text(42, "22,4 га Городской округ Мытищи плотность 8700")
+    assert calls[-1]["density_sqm_per_ha"] == pytest.approx(8700)
+    assert calls[-1]["site_area_ha"] == pytest.approx(22.4)
+    assert calls[-1]["district"] == "Городской округ Мытищи"
