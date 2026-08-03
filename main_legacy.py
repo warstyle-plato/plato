@@ -42,7 +42,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.3"
+VERSION = "0.17.4"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -19854,7 +19854,10 @@ async function loadServerPreset(){
    if(!response.ok)throw new Error(payload.detail||'Ошибка загрузки предустановки');
    glavapuImport=payload;
    renderGlavapuPreview(payload);
-   glavapuStatus.innerHTML='<span class="import-ok">Предустановка «'+label+'» загружена с сервера. Проверьте значения и нажмите «Применить к Вводным и ТЭП».</span>';
+   // Предустановка — готовый проект, проверять перед применением нечего.
+   // Двухшаговый сценарий заканчивался «загрузил, а в расчёте пусто»:
+   // второй клик пропускали, и вводные оставались прежними.
+   await applyGlavapu();
  }catch(e){
    glavapuStatus.innerHTML='<span class="import-error">'+String(e.message||e)+'</span>';
  }
@@ -20104,6 +20107,17 @@ function resetTerritoryData(options){
 
 async function applyGlavapu(){
  if(!glavapuImport){glavapuStatus.innerHTML='<span class="import-error">Сначала разберите файл.</span>';return}
+ // Проект, сохранённый прежними версиями, не нёс mappings: применение
+ // сначала обнуляло территорию, затем применяло пустоту — ВРИ, соцплатёж и
+ // площади пропадали молча. Без mappings применять нечего — и портить нечего.
+ {
+  const m=glavapuImport.mappings||{};
+  if(!Object.keys(m.inputs||{}).length&&!Object.keys(m.tep||{}).length){
+   glavapuStatus.innerHTML='<span class="import-error">Показаны данные уже применённого файла — они в проекте. '+
+    'Чтобы применить заново, загрузите предустановку или разберите файл ещё раз.</span>';
+   return;
+  }
+ }
  const incoming=glavapuImport;
  resetTerritoryData();
  glavapuImport=incoming;
@@ -20117,7 +20131,10 @@ async function applyGlavapu(){
    source:glavapuImport.source,
    normalized:glavapuImport.normalized,
    recognized:glavapuImport.recognized,
-   warnings:glavapuImport.warnings
+   warnings:glavapuImport.warnings,
+   // Без mappings повторное «Применить» после перезагрузки обнуляло
+   // территорию (resetTerritoryData) и применяло пустоту.
+   mappings:glavapuImport.mappings
  };
  // Площадь территории ГлавАПУ знает точно — она не должна оставаться справочной.
  {
@@ -20168,7 +20185,8 @@ async function applyGlavapu(){
 function renderStoredGlavapu(){
  const stored=inputs._glavapu_import;
  if(!stored)return;
- glavapuImport={source:stored.source||{},normalized:stored.normalized||{},recognized:stored.recognized||[],warnings:stored.warnings||[],mappings:{inputs:{},tep:{}}};
+ glavapuImport={source:stored.source||{},normalized:stored.normalized||{},recognized:stored.recognized||[],warnings:stored.warnings||[],
+  mappings:stored.mappings||{inputs:{},tep:{}}};
  renderGlavapuPreview(glavapuImport);
  glavapuStatus.innerHTML='<span class="import-ok">Показаны данные последнего применённого файла ГлавАПУ.</span>';
 }
@@ -20884,7 +20902,11 @@ async function calculate(){
  }
  repairParkingFromGlavapu();renderResult();renderPhaseReportControls();
  if(document.getElementById('tep')&&document.getElementById('tep').classList.contains('active'))renderTep();
-  if(telegramMode==='edit')persistLocalSilently();
+ // Состояние сохраняется каждым пересчётом, а не только кнопкой «Сохранить»
+ // и телеграм-потоком: применённая предустановка не переживала перезагрузку —
+ // вводные молча возвращались к умолчаниям (ВРИ 2 864,29, покупка 0), и
+ // выглядело это как «предустановка не проедается в расчёт».
+ persistLocalSilently();
  return lastResult;
 }
 
