@@ -42,7 +42,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.2"
+VERSION = "0.17.3"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -3559,10 +3559,12 @@ def vri_tep_quick(region: str, query: str,
                  density_sqm_per_ha: float | None = None) -> dict[str, Any]:
     """Кнопка бота «Посчитать ВРИ и ТЭП»: карточка + файл формата ГлавАПУ.
 
-    МО считается полностью (РНГП, УПКС, Кд); для Москвы серверу доступен
-    анализ территории и методика DevelopAid (94/6 от плотности) — точный
-    расчёт ГлавАПУ со сменой ВРИ живёт в мини-приложении, и карточка честно
-    об этом говорит.
+    МО считается полностью (РНГП, УПКС, Кд); Москва — по формулам
+    калькулятора ГлавАПУ, восстановленным из его выгрузок: СПП 94/6,
+    НП 90% СПП, квартиры 65% жилой СПП, население 33 м² квартир на человека,
+    соцпотребность по нормативам на тысячу жителей. Машино-места и плату за
+    смену ВРИ бот не реверсирует (их формулы живут в браузерном калькуляторе)
+    — они нули, а карточка отсылает в мини-приложение.
     """
     def fmt(value: Any, digits: int = 1) -> str:
         try:
@@ -3683,19 +3685,46 @@ def vri_tep_quick(region: str, query: str,
         if warn:
             card += "<i>" + html.escape("; ".join(warn)) + "</i>\n"
     else:
+        # По адресу калькулятор не искал: «Мишина 46 Москва» падал в анализе
+        # территории. Кадастры добываются тем же поиском, что и основной бот.
+        numbers = _CADASTRAL_NUMBER_RE.findall(str(query or "").replace("：", ":"))
+        if not numbers:
+            lookup = land_lookup_via_core(str(query or ""))
+            numbers = [str(item.get("cadastral_number") or "")
+                       for item in (lookup.get("results") or [])
+                       if item.get("kind") == "land" and item.get("cadastral_number")][:10]
+            if not numbers:
+                raise HTTPException(
+                    status_code=400,
+                    detail="По этому адресу участок в ЕГРН не нашёлся. "
+                           "Пришлите кадастровый номер или уточните адрес.")
         analysis = analyze_cadastral_territory(CadastralAnalysisRequest(
-            cadastral_numbers=[query]))
+            cadastral_numbers=numbers))
         territory = analysis.get("territory") or {}
         coeff = analysis.get("coefficients") or {}
         area = float(territory.get("area_ha") or site_area_ha or 0)
+        # Воспроизводим формулы калькулятора ГлавАПУ, восстановленные по двум
+        # его выгрузкам: СПП 94/6, НП — 90% СПП, квартиры — 65% жилой СПП,
+        # население — 33 м² квартир на человека, соцпотребность — нормативы
+        # на тысячу жителей (ДОО 44, СОШ 90, поликлиники 13,3+6,5).
         density = 35000.0
         spp = area * density
         apartments_gns = spp * 0.94
         apartments = apartments_gns * 0.65
         commerce_gns = spp * 0.06
+        population = math.ceil(apartments / 33.0) if apartments > 0 else 0
+        units = round(population / 2.1) if population else 0
+        dou = round(population * 44 / 1000)
+        school = math.ceil(population * 90 / 1000) if population else 0
+        clinic_adult = math.ceil(population * 13.3 / 1000) if population else 0
+        clinic_child = math.ceil(population * 6.5 / 1000) if population else 0
+        clinic = clinic_adult + clinic_child
         rows = _glavapu_rows({
             "1": fmt(area, 4),
             "2": fmt(density / 1000, 0),
+            "3": fmt(density * 0.9 / 1000, 1),
+            "4": fmt(population, 0),
+            "5": fmt(units, 0),
             "6": fmt(spp / 1000, 3),
             "7": fmt(spp / 1000, 3),
             "7.1": fmt(apartments_gns / 1000, 3),
@@ -3705,6 +3734,12 @@ def vri_tep_quick(region: str, query: str,
             "9.1.1": fmt(apartments_gns * 0.9 / 1000, 3),
             "9.1.2": fmt(commerce_gns * 0.9 / 1000, 3),
             "10": fmt(apartments / 1000, 3),
+            "11": fmt(commerce_gns * 0.9 / 1000, 3),
+            "30": fmt(dou, 0),
+            "31": fmt(school, 0),
+            "32": fmt(clinic, 0),
+            "33": fmt(clinic_adult, 0),
+            "34": fmt(clinic_child, 0),
         })
         params = [
             ["Регион", "Москва"],
@@ -3712,19 +3747,24 @@ def vri_tep_quick(region: str, query: str,
             ["Кадастровый квартал", str(territory.get("cadastral_quarter") or "")],
             ["К1 — доступность рельсового каркаса", coeff.get("rail")],
             ["Коэффициент аренды", coeff.get("rent")],
-            ["Методика", "DevelopAid 94/6 от плотности; точный ГлавАПУ — в мини-приложении"],
+            ["Методика", "Формулы калькулятора ГлавАПУ (СПП 94/6, НП 90%, "
+                          "население 33 м²/чел); машино-места и плата за ВРИ — "
+                          "в мини-приложении"],
         ]
         card = (
             "<b>ВРИ и ТЭП · Москва</b>\n"
             f"Участок: <code>{html.escape(str(query)[:80])}</code>\n"
             f"• площадь — {fmt(area, 4)} га · район — "
             f"{html.escape(str(territory.get('district') or '—'))}\n"
-            f"• потенциал СПП при плотности 35 — {fmt(spp / 1000, 1)} тыс. м²\n"
-            f"• квартиры — {fmt(apartments, 0)} м² продаваемой (методика 94/6)\n"
+            f"• СПП при плотности 35 — {fmt(spp / 1000, 1)} тыс. м² "
+            f"· квартиры — {fmt(apartments, 0)} м²\n"
+            f"• население — {fmt(population, 0)} чел. · квартир — {fmt(units, 0)}\n"
+            f"• соцпотребность — ДОО {fmt(dou, 0)} мест, СОШ {fmt(school, 0)} мест, "
+            f"поликлиники {fmt(clinic_adult, 0)}+{fmt(clinic_child, 0)} пос./см.\n"
             f"• К1 рельсовый — {coeff.get('rail') or '—'} · аренда — "
             f"{coeff.get('rent') or '—'}\n"
-            "<i>Точный расчёт ГлавАПУ со сменой ВРИ — в мини-приложении: "
-            "кнопка «Открыть и изменить расчёт».</i>\n"
+            "<i>Машино-места и плату за смену ВРИ считает калькулятор ГлавАПУ "
+            "в мини-приложении: кнопка «Открыть и изменить расчёт».</i>\n"
         )
     workbook = _build_glavapu_xlsx_from_rows(rows, params)
     safe = re.sub(r"[^0-9A-Za-zА-Яа-я_-]+", "_", str(query))[:40] or "участок"

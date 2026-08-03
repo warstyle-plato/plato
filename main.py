@@ -409,23 +409,48 @@ def _start_vritep(chat_id: int) -> None:
 
 def _vritep_ask_input(chat_id: int, region: str) -> None:
     pointer = _state_read(f"chat:{chat_id}")
-    pointer["vritep"] = region
+    # МО начинается с плотности: калькулятор ГлавАПУ ведёт её в тыс. м²
+    # поэтажной площади на гектар, и без явного вопроса пользователи получали
+    # расчёт на зашитом умолчании, не подозревая об этом.
+    pointer["vritep"] = "mo_density" if region == "mo" else region
+    pointer.pop("vritep_density", None)
     _state_write(f"chat:{chat_id}", pointer)
     if region == "mo":
         _send_message(
             chat_id,
-            "<b>Московская область.</b> Пришлите кадастровый номер участка — "
-            "площадь возьмётся из ЕГРН.\n"
-            "Без кадастра можно так: <code>10,5 га Городской округ Мытищи</code>.\n"
-            "Плотность по умолчанию 30 000 м² квартир/га; своя — добавьте "
-            "<code>плотность 8700</code> в то же сообщение.",
+            "<b>Московская область.</b> Какая плотность застройки?\n"
+            "Пришлите число в тыс. м² поэтажной площади на га — "
+            "по умолчанию <b>35</b> (≈ 21 400 м² квартир/га).\n"
+            "Метрика РНГП тоже понимается: <code>квартир 8700</code> — "
+            "это м² квартир на га.\n"
+            "Можно сразу прислать участок — тогда возьмётся умолчание 35.",
         )
     else:
         _send_message(
             chat_id,
-            "<b>Москва.</b> Пришлите кадастровый номер участка — территорию "
-            "и коэффициенты определит анализ ГлавАПУ.",
+            "<b>Москва.</b> Пришлите кадастровый номер или адрес участка — "
+            "территорию и коэффициенты определит анализ ГлавАПУ.",
         )
+
+
+# 35 тыс. м² СПП/га умолчания ГлавАПУ: квартиры из СПП — 94% жилой доли и
+# 65% выхода продаваемой площади, то есть ≈ 21 385 м² квартир на гектар.
+_VRITEP_MO_DENSITY_DEFAULT = 35 * 1000 * 0.94 * 0.65
+
+
+def _vritep_mo_density(text: str) -> float | None:
+    """Число из ответа на вопрос о плотности: до 1000 — тыс. м² СПП/га
+    (метрика ГлавАПУ), больше — уже м² квартир/га (метрика РНГП)."""
+    stripped = text.strip()
+    apartments = re.search(r"квартир\w*\s*[:=]?\s*([\d\s.,]+)", stripped, re.IGNORECASE)
+    if apartments:
+        return float(apartments.group(1).replace(" ", "").replace(",", "."))
+    if not re.fullmatch(r"[\d\s.,]+", stripped):
+        return None
+    value = float(stripped.replace(" ", "").replace(",", "."))
+    if value <= 0:
+        return None
+    return value * 1000 * 0.94 * 0.65 if value <= 1000 else value
 
 
 def _vritep_region(chat_id: int) -> str:
@@ -434,7 +459,9 @@ def _vritep_region(chat_id: int) -> str:
 
 def _vritep_clear(chat_id: int) -> None:
     pointer = _state_read(f"chat:{chat_id}")
-    if pointer.pop("vritep", None) is not None:
+    removed = pointer.pop("vritep", None) is not None
+    removed = pointer.pop("vritep_density", None) is not None or removed
+    if removed:
         _state_write(f"chat:{chat_id}", pointer)
 
 
@@ -442,9 +469,37 @@ def _vritep_handle_text(chat_id: int, text: str) -> bool:
     region = _vritep_region(chat_id)
     if not region or not text:
         return False
+    saved_density = None
+    if region == "mo_density":
+        density_answer = _vritep_mo_density(text)
+        if density_answer is not None:
+            pointer = _state_read(f"chat:{chat_id}")
+            pointer["vritep"] = "mo"
+            pointer["vritep_density"] = density_answer
+            _state_write(f"chat:{chat_id}", pointer)
+            _send_message(
+                chat_id,
+                f"Плотность принята: <b>{density_answer:,.0f}".replace(",", " ")
+                + " м² квартир/га</b>.\n"
+                "Теперь пришлите кадастровый номер участка — площадь возьмётся "
+                "из ЕГРН.\nБез кадастра можно так: "
+                "<code>10,5 га Городской округ Мытищи</code>.",
+            )
+            return True
+        # Пришёл сразу участок — плотность остаётся умолчанием ГлавАПУ.
+        region = "mo"
+        saved_density = _VRITEP_MO_DENSITY_DEFAULT
+    elif region == "mo":
+        raw = _state_read(f"chat:{chat_id}").get("vritep_density")
+        try:
+            saved_density = float(raw) if raw else None
+        except (TypeError, ValueError):
+            saved_density = None
+        if not saved_density:
+            saved_density = _VRITEP_MO_DENSITY_DEFAULT
     _vritep_clear(chat_id)
     _send_message(chat_id, "<i>Считаю ВРИ и ТЭП…</i>")
-    query, area, district, density = text.strip(), None, None, None
+    query, area, district, density = text.strip(), None, None, saved_density
     if region == "mo":
         # «плотность 8700» в любом месте сообщения — м² квартир на гектар.
         density_match = re.search(r"плотн\w*\s*[:=]?\s*([\d\s.,]+)", text, re.IGNORECASE)
@@ -992,6 +1047,9 @@ def _handle_message(message: dict[str, Any]) -> None:
     if command in {"/model", "/модель"}:
         _send_model_archive(chat_id)
         return
+    if command in {"/vritep", "/vri", "/ври"}:
+        _start_vritep(chat_id)
+        return
     if text and not command and _vritep_handle_text(chat_id, text):
         return
     if _dialog_active(chat_id) and text:
@@ -1067,6 +1125,7 @@ def _configure_platon_command() -> None:
                 {"command": "start", "description": "Главное меню"},
                 {"command": "cadastre", "description": "ТЭП по кадастровым номерам"},
                 {"command": "tep", "description": "Собрать ТЭП без кадастра"},
+                {"command": "vritep", "description": "Посчитать ВРИ и ТЭП"},
                 {"command": "model", "description": "Открыть модель DevelopAid"},
                 {"command": "platon", "description": "Спросить Платона"},
                 {"command": "comment", "description": "Комментарий Платона к ТЭП"},
