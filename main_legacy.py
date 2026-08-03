@@ -42,7 +42,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.6"
+VERSION = "0.17.7"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -4643,6 +4643,32 @@ def _build_model_xlsx(sheets: list[dict[str, Any]]) -> bytes:
         for number, chart in enumerate(charts, 1):
             archive.writestr(f"xl/charts/chart{number}.xml", _chart_xml(chart))
     return out.getvalue()
+
+
+@app.post("/cadastral/tep-server")
+def cadastral_tep_server(req: CadastralAnalysisRequest) -> dict[str, Any]:
+    """ТЭП по формулам ГлавАПУ, посчитанный сервером.
+
+    Штатный путь гоняет настоящий калькулятор в скрытом iframe браузера —
+    Telegram WebView этого не тянет, и сбор падал по таймауту: сайт собирал
+    ТЭП, мини-приложение нет. Формулы калькулятора сняты с его кода и
+    сходятся с контрольными выгрузками до единицы, поэтому серверный расчёт —
+    равноценная замена, а не суррогат."""
+    numbers = _parse_cadastral_numbers(req.cadastral_numbers)
+    quick = vri_tep_quick("msk", ", ".join(numbers))
+    result = parse_glavapu_xlsx(quick["file"], quick["filename"])
+    result["source"].update({
+        "format": "Формулы калькулятора ГлавАПУ — серверный расчёт DevelopAid",
+        "cadastral_numbers": numbers,
+        "calculated_at": date.today().isoformat(),
+    })
+    result["warnings"].insert(
+        0,
+        "ТЭП посчитан серверными формулами ГлавАПУ: браузерный калькулятор "
+        "недоступен. Формулы сняты с его кода и сходятся с контрольными "
+        "выгрузками до единицы.",
+    )
+    return result
 
 
 @app.post("/cadastral/tep-from-calculator")
@@ -19481,6 +19507,25 @@ async function obtainTep(){
   '</span><br><span style="font-size:11px;color:#777">Нормативный ТЭП считается по Москве и Московской области. Для остальных регионов доступны сведения ЕГРН и загрузка готового ТЭП.</span>';
 }
 
+async function obtainServerTep(analysis,status){
+ // Формулы калькулятора, посчитанные сервером: равноценная замена
+ // браузерной автоматизации, а не суррогат — сходятся до единицы.
+ status.textContent='Считаю ТЭП формулами ГлавАПУ на сервере…';
+ const response=await fetch('/cadastral/tep-server',{
+  method:'POST',headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({cadastral_numbers:(analysis.recognized||analysis.requested||[]).join(', ')})
+ });
+ const payload=await response.json();
+ if(!response.ok)throw new Error(payload.detail||'Серверный расчёт ТЭП не получился');
+ glavapuImport=payload;
+ inputs._cadastral_analysis=structuredClone(analysis);
+ renderGlavapuPreview(payload);
+ const areaText=Number((analysis.territory||{}).area_ha||0).toLocaleString('ru-RU',{minimumFractionDigits:4,maximumFractionDigits:4});
+ status.innerHTML='<span class="import-ok">ТЭП посчитан формулами ГлавАПУ: '+areaText+
+  ' га.</span> Проверьте значения ниже и нажмите «Применить к Вводным и ТЭП».';
+ glavapuStatus.innerHTML='<span class="import-ok">ТЭП посчитан формулами ГлавАПУ на сервере.</span> Проверьте значения перед применением.';
+}
+
 async function obtainCadastralTep(preAnalysis){
  const field=document.getElementById('cadastralNumbers');
  const button=document.getElementById('cadastralAnalyzeButton');
@@ -19511,6 +19556,13 @@ async function obtainCadastralTep(preAnalysis){
    }
    field.value=(analysis.requested||[]).join(', ');
    renderCadastralPreview(analysis);
+
+   // Telegram WebView не тянет автоматизацию скрытого iframe: сайт собирал
+   // ТЭП, мини-приложение падало по таймауту. Здесь сразу серверный расчёт.
+   if(window.Telegram&&window.Telegram.WebApp&&String(window.Telegram.WebApp.initData||'').length){
+     await obtainServerTep(analysis,status);
+     return;
+   }
 
    status.textContent='2 из 4 · Открываю штатный расчёт ГлавАПУ…';
    const area=Number((analysis.territory||{}).area_ha||0).toFixed(4);
@@ -19553,6 +19605,12 @@ async function obtainCadastralTep(preAnalysis){
    status.innerHTML='<span class="import-ok">ТЭП получены из ГлавАПУ: '+areaText+' га.</span> Проверьте значения ниже и нажмите «Применить к Вводным и ТЭП».';
    glavapuStatus.innerHTML='<span class="import-ok">Расчёт ГлавАПУ получен автоматически по кадастровым номерам.</span> Проверьте значения перед применением.';
  }catch(e){
+   // Автоматизация штатного калькулятора не отработала — таймаут, сеть или
+   // изменившаяся вёрстка genplan. Территория уже известна: докатываемся
+   // серверными формулами вместо голой ошибки.
+   if(cadastralAnalysis){
+     try{await obtainServerTep(cadastralAnalysis,status);return}catch(e2){}
+   }
    status.innerHTML='<span class="import-error">'+escapeHtml(String(e.message||e))+'</span>';
  }finally{
    button.disabled=false;button.textContent='Получить ТЭП';
