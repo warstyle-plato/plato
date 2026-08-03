@@ -4,6 +4,9 @@ import json
 import unittest
 
 from developaid_v2 import _FRONTEND, _PROJECTS
+from developaid_v2_baselines import apply_accepted_baselines
+
+apply_accepted_baselines(_PROJECTS)
 
 
 class DevelopAidV2PrototypeTests(unittest.TestCase):
@@ -13,8 +16,12 @@ class DevelopAidV2PrototypeTests(unittest.TestCase):
     def test_control_kpis_match_accepted_reports(self) -> None:
         mishina = _PROJECTS["mishina"]["kpi"]
         mytishchi = _PROJECTS["mytishchi"]["kpi"]
-        self.assertEqual(mishina["revenue"], 12.74)
-        self.assertEqual(mishina["llcr"], 1.12)
+        self.assertAlmostEqual(mishina["revenue"], 12.74300931780029)
+        self.assertAlmostEqual(mishina["costs"], 11.662565375599463)
+        self.assertAlmostEqual(mishina["netProfit"], 1.0804439422008295)
+        self.assertAlmostEqual(mishina["llcr"], 1.0947782477164054)
+        self.assertAlmostEqual(mishina["bridgePeak"], 2.76125545)
+        self.assertEqual(mishina["source"], "Эталон Excel/PDF DevelopAid · 03.08.2026")
         self.assertEqual(mytishchi["revenue"], 123.50)
         self.assertEqual(mytishchi["llcr"], 1.11)
         self.assertEqual(len(_PROJECTS["mytishchi"]["queues"]), 3)
@@ -50,6 +57,14 @@ class DevelopAidV2PrototypeTests(unittest.TestCase):
         self.assertIn('/v2/manifest.webmanifest', index)
         self.assertIn('id="installBar"', index)
         self.assertIn('/v2/assets/pwa.js', index)
+
+    def test_accepted_mishina_series_are_not_demo_data(self) -> None:
+        mishina = _PROJECTS["mishina"]
+        self.assertTrue(mishina["acceptedBaseline"])
+        self.assertFalse(mishina["seriesPrototype"])
+        self.assertEqual(len(mishina["timeline"]), 16)
+        self.assertAlmostEqual(max(mishina["debt"]), 11.088876999741698)
+        self.assertAlmostEqual(max(mishina["escrow"]), 10.519298044546511)
 
     def test_series_have_consistent_length(self) -> None:
         for project in _PROJECTS.values():
