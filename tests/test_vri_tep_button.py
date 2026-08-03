@@ -302,3 +302,28 @@ def test_the_native_menu_and_the_command_open_the_button(monkeypatch, tmp_path):
     wrapper._handle_message({"chat": {"id": 42}, "from": {"id": 42},
                              "text": "/vritep"})
     assert sent and "Выберите регион" in sent[-1]
+
+
+def test_the_chat_accepts_both_of_its_own_file_formats(monkeypatch):
+    """Подпись к выгрузке обещает «загрузить как обычный ТЭП», а чат принимал
+    только шаблон DevelopAid — файл ГлавАПУ падал с ошибкой структуры.
+    Теперь бот принимает оба собственных формата."""
+    result = core.vri_tep_quick("mo", "", site_area_ha=22.423,
+                                district="Городской округ Мытищи",
+                                density_sqm_per_ha=8700)
+    sent: list[str] = []
+    monkeypatch.setattr(core, "_telegram_send_message",
+                        lambda chat_id, text, **kw: sent.append(text))
+    monkeypatch.setattr(core, "_telegram_web_app_url",
+                        lambda *a, **kw: "https://example.org/")
+
+    monkeypatch.setattr(core, "_telegram_download_document",
+                        lambda doc: (result["file"], result["filename"]))
+    core._telegram_handle_manual_document(42, {"file_name": result["filename"]})
+    assert "Файл калькулятора ГлавАПУ распознан" in sent[-1]
+    assert "22,4230 га" in sent[-1]
+
+    monkeypatch.setattr(core, "_telegram_download_document",
+                        lambda doc: (result["template_file"], result["template_filename"]))
+    core._telegram_handle_manual_document(42, {"file_name": result["template_filename"]})
+    assert "Ручной ТЭП распознан" in sent[-1]

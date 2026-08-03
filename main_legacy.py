@@ -42,7 +42,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.5"
+VERSION = "0.17.6"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -5412,15 +5412,73 @@ def _telegram_start_message(chat_id: int, user_id: int) -> None:
     )
 
 
+def _telegram_handle_glavapu_document(chat_id: int, data: bytes, filename: str) -> bool:
+    """Файл формата калькулятора ГлавАПУ, присланный прямо в чат.
+
+    Подпись к выгрузке кнопки «Посчитать ВРИ и ТЭП» обещает, что файл
+    «можно загрузить в DevelopAid как обычный ТЭП», — а чат принимал только
+    шаблон DevelopAid, и обещание работало лишь через мини-приложение."""
+    try:
+        parsed = parse_glavapu_xlsx(data, filename)
+    except Exception:
+        return False
+    normalized = parsed.get("normalized") or {}
+    mappings = parsed.get("mappings") or {}
+    session = {
+        "project_name": "",
+        "region": "Москва",
+        "site_area_ha": normalized.get("site_area_ha") or 0,
+        "source": parsed.get("source") or {},
+        "inputs": {
+            **(mappings.get("inputs") or {}),
+            "_glavapu_import": {
+                "source": parsed.get("source") or {},
+                "normalized": normalized,
+                "recognized": parsed.get("recognized") or [],
+                "warnings": parsed.get("warnings") or [],
+                "mappings": mappings,
+            },
+        },
+        "tep": mappings.get("tep") or {},
+    }
+    button = {"inline_keyboard": [[{
+        "text": "Открыть ТЭП в DevelopAid",
+        "web_app": {"url": _telegram_web_app_url(chat_id, [], session)},
+    }]]}
+    _telegram_send_message(
+        chat_id,
+        "<b>Файл калькулятора ГлавАПУ распознан</b>\n"
+        f"Территория: <b>{_telegram_number(normalized.get('site_area_ha'), 4)} га</b>\n"
+        f"Квартиры: <b>{_telegram_number(normalized.get('apartment_area_sqm'), 0)} м²</b>\n"
+        f"Смена ВРИ: <b>{_telegram_money_mln(normalized.get('change_vri_mln'))}</b>\n"
+        f"Социальная компенсация: <b>{_telegram_money_mln(normalized.get('social_compensation_total_mln'))}</b>\n\n"
+        "Проверьте сводку и откройте модель — ТЭП перенесётся целиком.",
+        reply_markup=button,
+    )
+    return True
+
+
 def _telegram_handle_manual_document(chat_id: int, document: dict[str, Any]) -> None:
     try:
         data, filename = _telegram_download_document(document)
-        parsed = parse_manual_tep_xlsx(data, filename)
     except (ValueError, RuntimeError) as exc:
         _telegram_send_message(
             chat_id,
+            "<b>Не удалось принять файл.</b>\n" + html.escape(str(exc)),
+        )
+        return
+    try:
+        parsed = parse_manual_tep_xlsx(data, filename)
+    except (ValueError, RuntimeError) as exc:
+        # В чат приходят два наших же формата: шаблон DevelopAid и файл
+        # калькулятора ГлавАПУ (в т.ч. выгрузка кнопки «Посчитать ВРИ и ТЭП»).
+        if _telegram_handle_glavapu_document(chat_id, data, filename):
+            return
+        _telegram_send_message(
+            chat_id,
             "<b>Не удалось принять ручной ТЭП.</b>\n" + html.escape(str(exc)) +
-            "\n\nСкачайте актуальный шаблон командой /template и не меняйте его структуру.",
+            "\n\nСкачайте актуальный шаблон командой /template и не меняйте его структуру. "
+            "Бот принимает в чате два формата: шаблон DevelopAid и файл калькулятора ГлавАПУ.",
         )
         return
 
