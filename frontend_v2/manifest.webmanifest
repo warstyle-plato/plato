@@ -1,0 +1,52 @@
+{
+  "id": "/v2/",
+  "name": "DevelopAid Investment OS",
+  "short_name": "DevelopAid",
+  "description": "Инвестиционная модель девелоперского проекта: ТЭП, ВРИ, CAPEX, БРИДЖ, ПФ, LLCR, очереди и Платон.",
+  "lang": "ru-RU",
+  "start_url": "/v2/?source=pwa",
+  "scope": "/v2/",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
+  "orientation": "any",
+  "background_color": "#06101d",
+  "theme_color": "#07111f",
+  "categories": ["business", "finance", "productivity"],
+  "icons": [
+    {
+      "src": "/v2/assets/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/v2/assets/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/v2/assets/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Мишина",
+      "short_name": "Мишина",
+      "url": "/v2/?project=mishina&source=shortcut"
+    },
+    {
+      "name": "Мытищи",
+      "short_name": "Мытищи",
+      "url": "/v2/?project=mytishchi&source=shortcut"
+    },
+    {
+      "name": "Поиск ТЭП",
+      "short_name": "Поиск ТЭП",
+      "url": "/v2/?view=tepsearch&source=shortcut"
+    }
+  ]
+}
