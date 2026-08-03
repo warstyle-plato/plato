@@ -369,6 +369,7 @@ async function runTepSearch() {
   status.textContent = 'Считаю ТЭП и ВРИ…';
   result.hidden = true;
   download.hidden = true;
+  if ($('#tepSearchTemplate')) $('#tepSearchTemplate').hidden = true;
   try {
     const response = await fetch('/api/v2/tep-search', {
       method: 'POST',
@@ -387,13 +388,18 @@ async function runTepSearch() {
     // серверный HTML с <b>/<i>/<code>.
     result.innerHTML = payload.card.replace(/\n/g, '<br>');
     result.hidden = false;
-    const bytes = Uint8Array.from(atob(payload.file_b64), (char) => char.charCodeAt(0));
-    const blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-    if (download.dataset.url) URL.revokeObjectURL(download.dataset.url);
-    download.href = download.dataset.url = URL.createObjectURL(blob);
-    download.download = payload.filename;
-    download.hidden = false;
-    status.textContent = 'Готово. Файл читается импортом DevelopAid как обычный ТЭП.';
+    const attach = (link, b64, name) => {
+      if (!link || !b64) return;
+      const bytes = Uint8Array.from(atob(b64), (char) => char.charCodeAt(0));
+      const blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      if (link.dataset.url) URL.revokeObjectURL(link.dataset.url);
+      link.href = link.dataset.url = URL.createObjectURL(blob);
+      link.download = name;
+      link.hidden = false;
+    };
+    attach(download, payload.file_b64, payload.filename);
+    attach($('#tepSearchTemplate'), payload.template_b64, payload.template_filename);
+    status.textContent = 'Готово. Оба файла читаются импортом DevelopAid: шаблон можно поправить и загрузить обратно.';
   } catch (error) {
     status.textContent = String(error.message || error);
   } finally {

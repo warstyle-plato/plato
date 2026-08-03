@@ -531,6 +531,11 @@ def _vritep_handle_text(chat_id: int, text: str) -> bool:
             chat_id, result["file"], result["filename"],
             caption="Файл в формате калькулятора ГлавАПУ — его можно "
                     "загрузить в DevelopAid как обычный ТЭП.")
+        if result.get("template_file"):
+            core._telegram_send_document_bytes(
+                chat_id, result["template_file"], result["template_filename"],
+                caption="Тот же расчёт в шаблоне DevelopAid — поправьте "
+                        "значения и отправьте файл обратно боту.")
     except Exception as exc:
         core._TELEGRAM_RUNTIME["last_error"] = "ВРИ/ТЭП файл: " + str(exc)
     return True

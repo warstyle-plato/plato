@@ -239,8 +239,13 @@ def install(app: FastAPI) -> None:
             raise HTTPException(
                 status_code=500,
                 detail=_core._error_location(exc)[:300]) from exc
-        return {
+        payload = {
             "card": result["card"],
             "filename": result["filename"],
             "file_b64": base64.b64encode(result["file"]).decode("ascii"),
         }
+        if result.get("template_file"):
+            payload["template_filename"] = result["template_filename"]
+            payload["template_b64"] = base64.b64encode(
+                result["template_file"]).decode("ascii")
+        return payload

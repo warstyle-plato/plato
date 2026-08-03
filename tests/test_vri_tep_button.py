@@ -60,12 +60,14 @@ def test_the_msk_branch_reproduces_the_calculator_export(monkeypatch):
     monkeypatch.setattr(core, "analyze_cadastral_territory", lambda req: {
         "territory": {"area_ha": 0.651, "district": "Савеловский",
                       "cadastral_quarter": "77:09:0004014"},
-        "coefficients": {"rail": 0.75, "rent": 0.1281},
+        "coefficients": {"rail": 0.75, "business_outside_ttc": 0.5,
+                         "rent": 0.1281},
     })
     result = core.vri_tep_quick("msk", "77:09:0004014:13")
     assert "Москва" in result["card"]
     assert "мини-приложении" in result["card"]
     assert "580,7 млн ₽" in result["card"]
+    assert "паркинг — 91 м/м" in result["card"]
     import io
     import openpyxl
     book = openpyxl.load_workbook(io.BytesIO(result["file"]))
@@ -96,8 +98,16 @@ def test_the_msk_branch_reproduces_the_calculator_export(monkeypatch):
     comp_row = next(r for r in range(2, 92)
                     if "компенсации за социальные" in str(sheet.cell(row=r, column=2).value or ""))
     assert sheet.cell(row=comp_row, column=4).value == "580,668"
-    # Машино-места и ВРИ бот не реверсирует — честные нули с отсылкой.
-    assert cell("42") == "0"
+    # Машино-места — формулы из кода калькулятора (Rf/zf/Bf/Vf): эталонная
+    # выгрузка по этому участку даёт 82+9+6 и 1+3 кратковременных.
+    assert [cell(c) for c in ("42", "42.1", "42.2", "42.3", "43")] == \
+        ["97", "82", "9", "6", "4"]
+    mm_sheet = book["Машино-места"]
+    assert [mm_sheet.cell(row=2, column=c).value for c in range(4, 9)] == \
+        ["92", "0", "82", "9", "1"]
+    assert [mm_sheet.cell(row=3, column=c).value for c in range(4, 9)] == \
+        ["9", "6", "0", "0", "3"]
+    # ВРИ Москвы по-прежнему не реверсируется — честный ноль с отсылкой.
     assert cell("44") == "0,000"
     # МПТ: 1 367 м² нежилой СПП по 36 м² на рабочее место.
     assert book["МПТ"].cell(row=2, column=4).value == "38"
@@ -106,6 +116,43 @@ def test_the_msk_branch_reproduces_the_calculator_export(monkeypatch):
     assert normalized["site_area_ha"] == pytest.approx(0.651)
     assert normalized["social_compensation_total_mln"] == pytest.approx(580.668, abs=0.01)
     assert normalized["suggested_social_mode"] == "Денежная компенсация"
+    assert normalized["parking_permanent"] == pytest.approx(82)
+    assert normalized["parking_guest"] == pytest.approx(9)
+
+
+def test_a_missing_coefficient_keeps_the_parking_honest(monkeypatch):
+    """Без К1/К2 машино-места не выдумываются — нули и прежняя отсылка."""
+    monkeypatch.setattr(core, "analyze_cadastral_territory", lambda req: {
+        "territory": {"area_ha": 0.651}, "coefficients": {},
+    })
+    result = core.vri_tep_quick("msk", "77:09:0004014:13")
+    assert "Машино-места и плату за смену ВРИ считает калькулятор" in result["card"]
+    parsed = core.parse_glavapu_xlsx(result["file"], result["filename"])
+    assert (parsed["normalized"]["parking_permanent"] or 0) == 0
+
+
+def test_both_branches_attach_the_filled_developaid_template(monkeypatch):
+    """Экспорт — ещё и в формате шаблона DevelopAid: тот же файл, что бот
+    предлагает заполнить и загрузить, — его правят и возвращают в расчёт."""
+    monkeypatch.setattr(core, "analyze_cadastral_territory", lambda req: {
+        "territory": {"area_ha": 0.651, "district": "Савеловский"},
+        "coefficients": {"rail": 0.75, "business_outside_ttc": 0.5},
+    })
+    msk = core.vri_tep_quick("msk", "77:09:0004014:13")
+    parsed = core.parse_manual_tep_xlsx(msk["template_file"], msk["template_filename"])
+    assert parsed["inputs"]["social_compensation_mln"] == pytest.approx(580.668, abs=0.01)
+    assert parsed["inputs"]["social_mode"] == "Денежная компенсация"
+    assert parsed["tep"]["apartments"]["saleable"] == pytest.approx(13921.6, rel=0.001)
+    assert parsed["tep"]["underground_parking"]["units"] == pytest.approx(91)
+
+    mo = core.vri_tep_quick("mo", "", site_area_ha=22.423,
+                            district="Городской округ Мытищи",
+                            density_sqm_per_ha=8700)
+    parsed = core.parse_manual_tep_xlsx(mo["template_file"], mo["template_filename"])
+    assert parsed["inputs"]["land_rights_cost_mln"] == pytest.approx(4643.921, rel=0.001)
+    assert parsed["tep"]["apartments"]["saleable"] == pytest.approx(195080.1, rel=0.001)
+    assert parsed["tep"]["kindergarten"]["units"] == pytest.approx(453)
+    assert parsed["tep"]["apartments"]["units"] == pytest.approx(3321)
 
 
 def test_the_msk_branch_finds_the_parcel_by_address(monkeypatch):

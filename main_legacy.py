@@ -42,7 +42,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.4"
+VERSION = "0.17.5"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -3566,6 +3566,48 @@ def _glavapu_rows(values: dict[str, str]) -> list[list[str]]:
     return rows
 
 
+def _manual_tep_filled_template(project_name: str, region_label: str,
+                                area_ha: float, vri_mln: float, comp_mln: float,
+                                products: dict[str, dict[str, float]]) -> bytes:
+    """Шаблон DevelopAid, заполненный расчётом: тот же файл, что отдаёт
+    /template, — его можно поправить руками и загрузить обратно боту."""
+    from openpyxl import load_workbook
+
+    content = base64.b64decode(
+        MANUAL_TEP_TEMPLATE_B64_PATH.read_text(encoding="ascii").strip())
+    book = load_workbook(io.BytesIO(content))
+    sheet = book["ТЭП DevelopAid"]
+    rows_by_label = {str(sheet.cell(row=r, column=1).value or "").strip(): r
+                     for r in range(1, sheet.max_row + 1)}
+
+    def put(label: str, value: Any) -> None:
+        row = rows_by_label.get(label)
+        if row:
+            sheet.cell(row=row, column=2, value=value)
+
+    put("Название проекта", project_name)
+    put("Регион / город", region_label)
+    put("Площадь территории", round(float(area_ha or 0), 4))
+    put("Смена ВРИ / земельные права", round(float(vri_mln or 0), 3))
+    put("Социальная компенсация", round(float(comp_mln or 0), 3))
+    columns = {"gns": 3, "total_area": 4, "useful": 5,
+               "saleable": 6, "transfer": 7, "units": 8}
+    for code, fields in products.items():
+        row = rows_by_label.get(code)
+        if not row:
+            continue
+        for field, column in columns.items():
+            value = float(fields.get(field) or 0)
+            if value > 0:
+                # Количество — штуки: дробные 3 320,51 квартиры из плотности
+                # выглядят ошибкой ввода.
+                sheet.cell(row=row, column=column,
+                           value=round(value) if field == "units" else round(value, 2))
+    out = io.BytesIO()
+    book.save(out)
+    return out.getvalue()
+
+
 def vri_tep_quick(region: str, query: str,
                  site_area_ha: float | None = None,
                  district: str | None = None,
@@ -3718,6 +3760,23 @@ def vri_tep_quick(region: str, query: str,
         warn = [str(w) for w in (result.get("warnings") or [])][:3]
         if warn:
             card += "<i>" + html.escape("; ".join(warn)) + "</i>\n"
+        template_region = "Московская область" + (
+            f" · {parcel.get('district')}" if parcel.get("district") else "")
+        template_vri, template_comp = vri_mln, 0.0
+        template_products = {
+            "apartments": {"gns": apart_gns, "total_area": apart_np,
+                           "saleable": apartments,
+                           "units": float(apartments_row.get("units") or 0)},
+            "ground_commercial": {"gns": comm_gns, "total_area": comm_np,
+                                  "saleable": float(commerce_row.get("saleable") or 0)},
+            "underground_parking": {"units": permanent + temporary},
+            "kindergarten": {"units": dou,
+                             "total_area": float(kinder.get("gba_sqm") or 0)},
+            "school": {"units": school,
+                       "total_area": float(school_row.get("gba_sqm") or 0)},
+            "clinic": {"units": clinic,
+                       "total_area": float(clinic_row.get("gba_sqm") or 0)},
+        }
     else:
         # По адресу калькулятор не искал: «Мишина 46 Москва» падал в анализе
         # территории. Кадастры добываются тем же поиском, что и основной бот.
@@ -3762,6 +3821,28 @@ def vri_tep_quick(region: str, query: str,
         comp_school = school * 7.751053
         comp_clinic = clinic * 10.857111
         jobs = math.ceil(commerce_gns / 36.0) if commerce_gns > 0 else 0
+        # Машино-места — формулы из кода калькулятора ГлавАПУ (genplan_assets,
+        # функции Rf/zf/Bf/Vf): постоянные — площадь квартир × 0,257/33 × К1,
+        # гостевые — десятая часть постоянных, приобъектные встроенных
+        # помещений — НП/90 × К1 × К2, кратковременные — квартиры/22 100 и
+        # НП/450 с кэпом 4; округление всюду вверх. К2 берётся «вне ТТК» —
+        # признак попадания внутрь ТТК анализ не отдаёт. Обе контрольные
+        # выгрузки (население 422 и 1224) сходятся до единицы.
+        k1 = _land_float(coeff.get("rail")) or 0.0
+        k2 = _land_float(coeff.get("business_outside_ttc")) or 0.0
+        commerce_np = commerce_gns * 0.9
+        mm = None
+        if k1 > 0 and k2 > 0 and apartments > 0:
+            mm_permanent = math.ceil(apartments * 0.257 / 33.0 * k1)
+            mm_guest = math.ceil(mm_permanent / 10.0)
+            mm_onsite = math.ceil(commerce_np / 90.0 * k1 * k2)
+            mm = {
+                "permanent": mm_permanent,
+                "guest": mm_guest,
+                "onsite": mm_onsite,
+                "short_mkd": math.ceil(apartments / 22100.0),
+                "short_nzh": min(4, math.ceil(commerce_np / 450.0)),
+            }
         rows = _glavapu_rows({
             "1": fmt(area, 3),
             "2": fmt(density / 1000, 0),
@@ -3811,7 +3892,13 @@ def vri_tep_quick(region: str, query: str,
             "58": fmt(per_k(0.5, 4) / 10, 4),
             "59": fmt(math.ceil(population * 0.1 / 10000 * 10 ** 4) / 10 ** 4, 4),
             "60": fmt(math.ceil(population * 0.7 / 10000 * 10 ** 4) / 10 ** 4, 4),
-        })
+        } | ({} if not mm else {
+            "42": fmt(mm["permanent"] + mm["guest"] + mm["onsite"], 0),
+            "42.1": fmt(mm["permanent"], 0),
+            "42.2": fmt(mm["guest"], 0),
+            "42.3": fmt(mm["onsite"], 0),
+            "43": fmt(mm["short_mkd"] + mm["short_nzh"], 0),
+        }))
         extra_sheets = [
             ("МПТ", [
                 ["№", "Наименования", "Единицы измерения", "Показатель"],
@@ -3822,9 +3909,17 @@ def vri_tep_quick(region: str, query: str,
                 ["№", "Наименования", "Единицы измерения", "Всего",
                  "Приобъектные", "Постоянные", "Гостевые", "Кратковременные"],
                 ["1", "Многоквартирный дом (2.1.1, 2.5, 2.6)", "машино-места",
-                 "0", "0", "0", "0", "0"],
+                 fmt(mm["permanent"] + mm["guest"] + mm["short_mkd"], 0) if mm else "0",
+                 "0",
+                 fmt(mm["permanent"], 0) if mm else "0",
+                 fmt(mm["guest"], 0) if mm else "0",
+                 fmt(mm["short_mkd"], 0) if mm else "0"],
                 ["2", "Встроенно-пристроенные помещения многоквартирного дома (2.1.1, 2.5, 2.6)",
-                 "машино-места", "0", "0", "0", "0", "0"],
+                 "машино-места",
+                 fmt(mm["onsite"] + mm["short_nzh"], 0) if mm else "0",
+                 fmt(mm["onsite"], 0) if mm else "0",
+                 "0", "0",
+                 fmt(mm["short_nzh"], 0) if mm else "0"],
             ]),
         ]
         params = [
@@ -3839,8 +3934,10 @@ def vri_tep_quick(region: str, query: str,
             ["Стоимость смены ВРИ", "", ""],
             ["Кадастровый квартал", str(territory.get("cadastral_quarter") or ""), "—"],
             ["Коэффициент аренды", coeff.get("rent") or "", "—"],
-            ["Методика", "Формулы калькулятора ГлавАПУ; машино-места и плата "
-                         "за смену ВРИ — расчёт в мини-приложении", "—"],
+            ["Методика", ("Формулы калькулятора ГлавАПУ; плата за смену ВРИ — "
+                          "расчёт в мини-приложении" if mm else
+                          "Формулы калькулятора ГлавАПУ; машино-места и плата "
+                          "за смену ВРИ — расчёт в мини-приложении"), "—"],
         ]
         card = (
             "<b>ВРИ и ТЭП · Москва</b>\n"
@@ -3855,15 +3952,50 @@ def vri_tep_quick(region: str, query: str,
             f"• <b>компенсация за соцобъекты — "
             f"{fmt(comp_dou + comp_school + comp_clinic, 1)} млн ₽</b> "
             "(ставки города, индексируются поквартально)\n"
-            f"• К1 рельсовый — {coeff.get('rail') or '—'} · аренда — "
-            f"{coeff.get('rent') or '—'}\n"
-            "<i>Машино-места и плату за смену ВРИ считает калькулятор ГлавАПУ "
-            "в мини-приложении: кнопка «Открыть и изменить расчёт».</i>\n"
+            + (f"• паркинг — {fmt(mm['permanent'] + mm['guest'], 0)} м/м "
+               f"(постоянные {fmt(mm['permanent'], 0)} + гостевые "
+               f"{fmt(mm['guest'], 0)}) · приобъектные {fmt(mm['onsite'], 0)}\n"
+               if mm else "")
+            + f"• К1 рельсовый — {coeff.get('rail') or '—'} · аренда — "
+              f"{coeff.get('rent') or '—'}\n"
+            + ("<i>Плату за смену ВРИ считает калькулятор ГлавАПУ "
+               "в мини-приложении: кнопка «Открыть и изменить расчёт».</i>\n"
+               if mm else
+               "<i>Машино-места и плату за смену ВРИ считает калькулятор "
+               "ГлавАПУ в мини-приложении: кнопка «Открыть и изменить "
+               "расчёт».</i>\n")
         )
+        template_region = "Москва" + (
+            f" · {territory.get('district')}" if territory.get("district") else "")
+        # Плату за ВРИ Москвы бот не считает, а соцнагрузка исполняется
+        # компенсацией — объектов в составе проекта нет.
+        template_vri, template_comp = 0.0, comp_dou + comp_school + comp_clinic
+        template_products = {
+            "apartments": {"gns": apartments_gns,
+                           "total_area": apartments_gns * 0.9,
+                           "saleable": apartments, "units": units},
+            "ground_commercial": {"gns": commerce_gns, "total_area": commerce_np,
+                                  "saleable": commerce_np},
+        }
+        if mm:
+            template_products["underground_parking"] = {
+                "units": mm["permanent"] + mm["guest"]}
     workbook = _build_glavapu_xlsx_from_rows(rows, params, extra_sheets)
     safe = re.sub(r"[^0-9A-Za-zА-Яа-я_-]+", "_", str(query))[:40] or "участок"
-    filename = f"ВРИ_ТЭП_{safe}_{date.today().isoformat()}.xlsx"
-    return {"card": card, "file": workbook, "filename": filename}
+    today = date.today().isoformat()
+    filename = f"ВРИ_ТЭП_{safe}_{today}.xlsx"
+    result_payload = {"card": card, "file": workbook, "filename": filename}
+    # Второй файл — заполненный шаблон DevelopAid: формат, который бот сам
+    # предлагает заполнить и загрузить, — его правят и возвращают в расчёт.
+    try:
+        result_payload["template_file"] = _manual_tep_filled_template(
+            str(query or district or "Участок").strip()[:80] or "Участок",
+            template_region, area, template_vri, template_comp,
+            template_products)
+        result_payload["template_filename"] = f"ТЭП_DevelopAid_{safe}_{today}.xlsx"
+    except Exception as exc:
+        _TELEGRAM_RUNTIME["last_error"] = "Шаблон ВРИ/ТЭП: " + _error_location(exc)
+    return result_payload
 
 
 _GENPLAN_BASE_URL = "https://genplan.tech/calc/"
