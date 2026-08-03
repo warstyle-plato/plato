@@ -360,6 +360,7 @@ def test_only_one_close_path_remains():
 
 
 def test_unrecognized_territory_also_closes_with_an_explanation():
-    """Если ТЭП не собрался, окно тоже не должно висеть молча."""
+    """Если ТЭП не собрался, окно тоже не должно висеть молча — сценарий
+    останавливается с честным сообщением и ничего не шлёт в чат."""
     page = main.PAGE
-    assert "Территория не распознана" in page
+    assert "finishTelegramSession('ТЭП не получен" in page

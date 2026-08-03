@@ -278,7 +278,9 @@ def test_web_app_link_can_leave_the_webhook_host(monkeypatch):
     monkeypatch.setattr(main, "_TELEGRAM_WEB_APP_BASE_URL", "https://developaid.ru")
     monkeypatch.setattr(main, "_telegram_session", lambda *a, **k: "session")
     url = main._telegram_web_app_url(1, [])
-    assert url.startswith("https://developaid.ru/?telegram=1#")
+    # v=VERSION ломает кэш Telegram WebView: без него после выкатки
+    # мини-приложение открывало старую сборку страницы.
+    assert url.startswith(f"https://developaid.ru/?telegram=1&v={main.VERSION}#")
     assert main._TELEGRAM_PUBLIC_BASE_URL not in url
 
 
