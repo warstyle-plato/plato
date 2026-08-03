@@ -1122,22 +1122,12 @@ core._telegram_handle_update = _handle_update
 
 @app.on_event("startup")
 def _configure_platon_command() -> None:
+    # Список команд — один, живёт в движке (TELEGRAM_BOT_COMMANDS): у обёртки
+    # был свой, движок ставил свой при настройке вебхука, и побеждал
+    # последний — /vritep из меню пропадал, хотя команда работала.
     if not core._telegram_token():
         return
     try:
-        core._telegram_api("setMyCommands", {
-            "commands": [
-                {"command": "start", "description": "Главное меню"},
-                {"command": "cadastre", "description": "ТЭП по кадастровым номерам"},
-                {"command": "tep", "description": "Собрать ТЭП без кадастра"},
-                {"command": "vritep", "description": "Посчитать ВРИ и ТЭП"},
-                {"command": "model", "description": "Открыть модель DevelopAid"},
-                {"command": "platon", "description": "Спросить Платона"},
-                {"command": "comment", "description": "Комментарий Платона к ТЭП"},
-                {"command": "template", "description": "Скачать Excel-шаблон ТЭП"},
-                {"command": "help", "description": "Инструкция по работе"},
-                {"command": "status", "description": "Статус и версия"},
-            ]
-        })
+        core._telegram_api("setMyCommands", {"commands": core.TELEGRAM_BOT_COMMANDS})
     except Exception as exc:
         core._TELEGRAM_RUNTIME["last_error"] = str(exc)

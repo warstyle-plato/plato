@@ -282,10 +282,19 @@ def test_the_density_step_understands_both_metrics(monkeypatch, tmp_path):
 
 
 def test_the_native_menu_and_the_command_open_the_button(monkeypatch, tmp_path):
-    """Нативное меню Telegram собирается из setMyCommands — кнопки там не
-    было, и /vritep бот не понимал."""
+    """Нативное меню Telegram объявляется один раз — в движке. Списка было
+    два (движок при вебхуке, обёртка на старте), побеждал последний, и
+    /vritep из меню пропадал, хотя команда работала."""
+    commands = {item["command"] for item in core.TELEGRAM_BOT_COMMANDS}
+    assert "vritep" in commands
+    assert {"address", "comment", "status"} <= commands, \
+        "единый список обязан покрывать команды и движка, и обёртки"
     wrapper_src = open("main.py", encoding="utf-8").read()
-    assert '{"command": "vritep", "description": "Посчитать ВРИ и ТЭП"}' in wrapper_src
+    assert wrapper_src.count('{"command"') == 0, \
+        "у обёртки не должно быть собственного списка команд"
+    assert "core.TELEGRAM_BOT_COMMANDS" in wrapper_src
+    legacy_src = open("main_legacy.py", encoding="utf-8").read()
+    assert legacy_src.count('"commands": TELEGRAM_BOT_COMMANDS') == 1
     monkeypatch.setattr(wrapper, "_STATE_DIR", tmp_path)
     sent: list[str] = []
     monkeypatch.setattr(wrapper, "_send_message",
