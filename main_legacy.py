@@ -1406,6 +1406,9 @@ def analyze_cadastral_territory(req: CadastralAnalysisRequest) -> dict[str, Any]
             "business_outside_ttc": business.get("coeff_ba_outside_ttc"),
             "rent": cad_quarter.get("coeff_rent"),
             "mpt_location": bool(cad_quarter.get("coeff_mpt_of_location")),
+            # Базовая стоимость МКД по кварталу — основание платы за смену
+            # ВРИ: без неё плата не считается и честно остаётся нулём.
+            "base_cost_zh_high": cad_quarter.get("base_cost_zh_high"),
         },
         "calculator_url": calculator_url,
         "warnings": warnings,
@@ -3848,6 +3851,17 @@ def vri_tep_quick(region: str, query: str,
         k1 = _land_float(coeff.get("rail")) or 0.0
         k2 = _land_float(coeff.get("business_outside_ttc")) or 0.0
         commerce_np = commerce_gns * 0.9
+        # Плата за смену ВРИ МКД — формула калькулятора (класс Df, calcOwn):
+        # 1,8964 × СПП жилых зданий × коэффициент аренды квартала × базовая
+        # стоимость МКД / 1,00001. Обе контрольные выгрузки сходятся:
+        # 1 267,5 и 2 917,9 млн ₽. Считается для права собственности — у
+        # аренды жилья делитель 1,001, разница 0,1%; льготы за МПТ и передачу
+        # жилья городу требуют условий соглашения и остаются мини-приложению.
+        rent_coeff = _land_float(coeff.get("rent")) or 0.0
+        base_cost = _land_float(coeff.get("base_cost_zh_high")) or 0.0
+        vri_msk = 0.0
+        if rent_coeff > 0 and base_cost > 0 and spp > 0:
+            vri_msk = round(1.8964 * spp * rent_coeff * base_cost / 1.00001 / 1e6, 3)
         mm = None
         if k1 > 0 and k2 > 0 and apartments > 0:
             mm_permanent = math.ceil(apartments * 0.257 / 33.0 * k1)
@@ -3915,6 +3929,9 @@ def vri_tep_quick(region: str, query: str,
             "42.2": fmt(mm["guest"], 0),
             "42.3": fmt(mm["onsite"], 0),
             "43": fmt(mm["short_mkd"] + mm["short_nzh"], 0),
+        }) | ({} if not vri_msk else {
+            "#Расчёт стоимости смены ВРИ:": fmt(vri_msk, 3),
+            "44": fmt(vri_msk, 3),
         }))
         extra_sheets = [
             ("МПТ", [
@@ -3951,10 +3968,12 @@ def vri_tep_quick(region: str, query: str,
             ["Стоимость смены ВРИ", "", ""],
             ["Кадастровый квартал", str(territory.get("cadastral_quarter") or ""), "—"],
             ["Коэффициент аренды", coeff.get("rent") or "", "—"],
-            ["Методика", ("Формулы калькулятора ГлавАПУ; плата за смену ВРИ — "
-                          "расчёт в мини-приложении" if mm else
-                          "Формулы калькулятора ГлавАПУ; машино-места и плата "
-                          "за смену ВРИ — расчёт в мини-приложении"), "—"],
+            ["Базовая стоимость МКД", coeff.get("base_cost_zh_high") or "", "руб/м²"],
+            ["Методика", "Формулы калькулятора ГлавАПУ"
+                         + ("" if vri_msk else "; плата за смену ВРИ — расчёт "
+                                               "в мини-приложении")
+                         + ("" if mm else "; машино-места — расчёт "
+                                          "в мини-приложении"), "—"],
         ]
         card = (
             "<b>ВРИ и ТЭП · Москва</b>\n"
@@ -3973,20 +3992,26 @@ def vri_tep_quick(region: str, query: str,
                f"(постоянные {fmt(mm['permanent'], 0)} + гостевые "
                f"{fmt(mm['guest'], 0)}) · приобъектные {fmt(mm['onsite'], 0)}\n"
                if mm else "")
+            + (f"• <b>плата за смену ВРИ — {fmt(vri_msk, 1)} млн ₽</b> "
+               "(собственность, без льгот и МАИП)\n" if vri_msk else "")
             + f"• К1 рельсовый — {coeff.get('rail') or '—'} · аренда — "
               f"{coeff.get('rent') or '—'}\n"
-            + ("<i>Плату за смену ВРИ считает калькулятор ГлавАПУ "
-               "в мини-приложении: кнопка «Открыть и изменить расчёт».</i>\n"
-               if mm else
-               "<i>Машино-места и плату за смену ВРИ считает калькулятор "
-               "ГлавАПУ в мини-приложении: кнопка «Открыть и изменить "
-               "расчёт».</i>\n")
+            + ("<i>Льготы по ВРИ (МПТ, передача жилья городу), аренда и МАИП "
+               "— в мини-приложении: кнопка «Открыть и изменить расчёт».</i>\n"
+               if mm and vri_msk else
+               "<i>"
+               + ("" if vri_msk else "Плату за смену ВРИ")
+               + (" и машино-места" if not mm and not vri_msk else
+                  ("Машино-места" if not mm else ""))
+               + " считает калькулятор ГлавАПУ в мини-приложении: "
+               "кнопка «Открыть и изменить расчёт».</i>\n")
         )
         template_region = "Москва" + (
             f" · {territory.get('district')}" if territory.get("district") else "")
-        # Плату за ВРИ Москвы бот не считает, а соцнагрузка исполняется
-        # компенсацией — объектов в составе проекта нет.
-        template_vri, template_comp = 0.0, comp_dou + comp_school + comp_clinic
+        # Соцнагрузка Москвы исполняется компенсацией — объектов в составе
+        # проекта нет; плата за ВРИ уезжает посчитанной, если у квартала
+        # известна базовая стоимость МКД.
+        template_vri, template_comp = vri_msk, comp_dou + comp_school + comp_clinic
         template_products = {
             "apartments": {"gns": apartments_gns,
                            "total_area": apartments_gns * 0.9,

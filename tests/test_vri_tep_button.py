@@ -61,13 +61,16 @@ def test_the_msk_branch_reproduces_the_calculator_export(monkeypatch):
         "territory": {"area_ha": 0.651, "district": "Савеловский",
                       "cadastral_quarter": "77:09:0004014"},
         "coefficients": {"rail": 0.75, "business_outside_ttc": 0.5,
-                         "rent": 0.1281},
+                         "rent": 0.1281, "base_cost_zh_high": 229036.29},
     })
     result = core.vri_tep_quick("msk", "77:09:0004014:13")
     assert "Москва" in result["card"]
     assert "мини-приложении" in result["card"]
     assert "580,7 млн ₽" in result["card"]
     assert "паркинг — 91 м/м" in result["card"]
+    # Формула Df.calcOwn на площади 0,651 га (СПП 22 785 против 22 782 в
+    # эталоне из-за округления площади): 1 267,7 млн ₽.
+    assert "плата за смену ВРИ — 1 267,7 млн ₽" in result["card"]
     import io
     import openpyxl
     book = openpyxl.load_workbook(io.BytesIO(result["file"]))
@@ -107,8 +110,15 @@ def test_the_msk_branch_reproduces_the_calculator_export(monkeypatch):
         ["92", "0", "82", "9", "1"]
     assert [mm_sheet.cell(row=3, column=c).value for c in range(4, 9)] == \
         ["9", "6", "0", "0", "3"]
-    # ВРИ Москвы по-прежнему не реверсируется — честный ноль с отсылкой.
-    assert cell("44") == "0,000"
+    # Плата за смену ВРИ — формула Df.calcOwn из кода калькулятора:
+    # 1,8964 × СПП × 0,1281 × 229 036,29 / 1,00001. Эталон по точной площади
+    # 0,65091 га даёт 1 267,545; здесь площадь округлена до 0,651.
+    expected_vri = round(1.8964 * 0.651 * 35000 * 0.1281 * 229036.29 / 1.00001 / 1e6, 3)
+    expected_text = f"{expected_vri:,.3f}".replace(",", " ").replace(".", ",")
+    assert cell("44") == expected_text == "1 267,734"
+    vri_row = next(r for r in range(2, 92)
+                   if "стоимости смены ВРИ" in str(sheet.cell(row=r, column=2).value or ""))
+    assert sheet.cell(row=vri_row, column=4).value == expected_text
     # МПТ: 1 367 м² нежилой СПП по 36 м² на рабочее место.
     assert book["МПТ"].cell(row=2, column=4).value == "38"
     parsed = core.parse_glavapu_xlsx(result["file"], result["filename"])
@@ -118,17 +128,20 @@ def test_the_msk_branch_reproduces_the_calculator_export(monkeypatch):
     assert normalized["suggested_social_mode"] == "Денежная компенсация"
     assert normalized["parking_permanent"] == pytest.approx(82)
     assert normalized["parking_guest"] == pytest.approx(9)
+    assert normalized["change_vri_mln"] == pytest.approx(1267.734, abs=0.001)
 
 
 def test_a_missing_coefficient_keeps_the_parking_honest(monkeypatch):
-    """Без К1/К2 машино-места не выдумываются — нули и прежняя отсылка."""
+    """Без К1/К2 и базовой стоимости квартала ни машино-места, ни плата за
+    ВРИ не выдумываются — нули и честная отсылка в мини-приложение."""
     monkeypatch.setattr(core, "analyze_cadastral_territory", lambda req: {
         "territory": {"area_ha": 0.651}, "coefficients": {},
     })
     result = core.vri_tep_quick("msk", "77:09:0004014:13")
-    assert "Машино-места и плату за смену ВРИ считает калькулятор" in result["card"]
+    assert "Плату за смену ВРИ и машино-места считает калькулятор" in result["card"]
     parsed = core.parse_glavapu_xlsx(result["file"], result["filename"])
     assert (parsed["normalized"]["parking_permanent"] or 0) == 0
+    assert (parsed["normalized"]["change_vri_mln"] or 0) == 0
 
 
 def test_both_branches_attach_the_filled_developaid_template(monkeypatch):
