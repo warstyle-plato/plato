@@ -169,6 +169,9 @@ class AgentChatRequest(BaseModel):
 
 class CadastralAnalysisRequest(BaseModel):
     cadastral_numbers: str | list[str]
+    # Идентификатор запуска со страницы: по нему в журнале сшиваются старт,
+    # ответ и применение одного клика «Получить ТЭП».
+    request_id: str = ""
 
 
 class CadastralTepRequest(BaseModel):
@@ -4711,6 +4714,8 @@ def cadastral_tep_server(req: CadastralAnalysisRequest) -> dict[str, Any]:
     сходятся с контрольными выгрузками до единицы, поэтому серверный расчёт —
     равноценная замена, а не суррогат."""
     numbers = _parse_cadastral_numbers(req.cadastral_numbers)
+    logging.info("tep-server rid=%s numbers=%s", req.request_id or "-",
+                 ", ".join(numbers))
     quick = vri_tep_quick("msk", ", ".join(numbers))
     result = parse_glavapu_xlsx(quick["file"], quick["filename"])
     result["source"].update({
@@ -5015,7 +5020,10 @@ def _telegram_web_app_url(
         fragment["cad"] = ", ".join(cadastral_numbers)
     if mode:
         fragment["mode"] = str(mode)
-    return _TELEGRAM_WEB_APP_BASE_URL + "/?telegram=1#" + urllib.parse.urlencode(fragment)
+    # v=VERSION ломает кэш Telegram WebView: без него после выкатки открывалась
+    # старая сборка страницы, и починки «не доезжали» до мини-приложения.
+    return (_TELEGRAM_WEB_APP_BASE_URL + "/?telegram=1&v="
+            + urllib.parse.quote(VERSION) + "#" + urllib.parse.urlencode(fragment))
 
 
 def _telegram_send_message(
@@ -19592,16 +19600,30 @@ async function obtainTep(){
   '</span><br><span style="font-size:11px;color:#777">Нормативный ТЭП считается по Москве и Московской области. Для остальных регионов доступны сведения ЕГРН и загрузка готового ТЭП.</span>';
 }
 
-async function obtainServerTep(analysis,status){
+// Токен запуска: каждый клик «Получить ТЭП» получает свой номер, и ответ
+// устаревшего запуска не имеет права трогать интерфейс и данные. Повторный
+// клик при живом запросе игнорируется целиком.
+let tepRunSequence=0;
+function tepRunLog(runId,stage,detail){
+ try{
+  const client=(window.Telegram&&window.Telegram.WebApp&&String(window.Telegram.WebApp.initData||'').length)?'telegram':'site';
+  console.log('[tep#'+runId+' '+client+'] '+stage+(detail?' · '+detail:''));
+ }catch(e){}
+}
+
+async function obtainServerTep(analysis,status,runId){
  // Формулы калькулятора, посчитанные сервером: равноценная замена
  // браузерной автоматизации, а не суррогат — сходятся до единицы.
  status.textContent='Считаю ТЭП формулами ГлавАПУ на сервере…';
+ tepRunLog(runId,'серверный расчёт: запрос');
  const response=await fetch('/cadastral/tep-server',{
   method:'POST',headers:{'Content-Type':'application/json'},
-  body:JSON.stringify({cadastral_numbers:(analysis.recognized||analysis.requested||[]).join(', ')})
+  body:JSON.stringify({cadastral_numbers:(analysis.recognized||analysis.requested||[]).join(', '),
+   request_id:'tep-'+runId})
  });
  const payload=await response.json();
  if(!response.ok)throw new Error(payload.detail||'Серверный расчёт ТЭП не получился');
+ if(runId!==tepRunSequence){tepRunLog(runId,'ответ устаревшего запуска отброшен');return null}
  glavapuImport=payload;
  inputs._cadastral_analysis=structuredClone(analysis);
  renderGlavapuPreview(payload);
@@ -19609,6 +19631,8 @@ async function obtainServerTep(analysis,status){
  status.innerHTML='<span class="import-ok">ТЭП посчитан формулами ГлавАПУ: '+areaText+
   ' га.</span> Проверьте значения ниже и нажмите «Применить к Вводным и ТЭП».';
  glavapuStatus.innerHTML='<span class="import-ok">ТЭП посчитан формулами ГлавАПУ на сервере.</span> Проверьте значения перед применением.';
+ tepRunLog(runId,'серверный расчёт: получен', areaText+' га');
+ return payload;
 }
 
 async function obtainCadastralTep(preAnalysis){
@@ -19617,7 +19641,10 @@ async function obtainCadastralTep(preAnalysis){
  const status=document.getElementById('cadastralStatus');
  const frame=document.getElementById('genplanAutomationFrame');
  const raw=(field&&field.value||'').trim();
- if(!raw){status.innerHTML='<span class="import-error">Введите хотя бы один кадастровый номер.</span>';return}
+ if(!raw){status.innerHTML='<span class="import-error">Введите хотя бы один кадастровый номер.</span>';return null}
+ if(button.disabled)return null; // запрос уже идёт — второй клик игнорируется
+ const runId=++tepRunSequence;
+ tepRunLog(runId,'старт','кадастры: '+raw.slice(0,80));
  button.disabled=true;button.textContent='Получаю ТЭП…';
  document.getElementById('cadastralPreview').style.display='none';
  document.getElementById('glavapuPreview').style.display='none';
@@ -19645,8 +19672,7 @@ async function obtainCadastralTep(preAnalysis){
    // Telegram WebView не тянет автоматизацию скрытого iframe: сайт собирал
    // ТЭП, мини-приложение падало по таймауту. Здесь сразу серверный расчёт.
    if(window.Telegram&&window.Telegram.WebApp&&String(window.Telegram.WebApp.initData||'').length){
-     await obtainServerTep(analysis,status);
-     return;
+     return await obtainServerTep(analysis,status,runId);
    }
 
    status.textContent='2 из 4 · Открываю штатный расчёт ГлавАПУ…';
@@ -19681,6 +19707,7 @@ async function obtainCadastralTep(preAnalysis){
    });
    const payload=await tepResponse.json();
    if(!tepResponse.ok)throw new Error(payload.detail||'Не удалось перенести ТЭП в DevelopAid');
+   if(runId!==tepRunSequence){tepRunLog(runId,'ответ устаревшего запуска отброшен');return null}
 
    status.textContent='4 из 4 · Подготавливаю сверку перед применением…';
    glavapuImport=payload;
@@ -19689,14 +19716,19 @@ async function obtainCadastralTep(preAnalysis){
    const areaText=Number((analysis.territory||{}).area_ha||0).toLocaleString('ru-RU',{minimumFractionDigits:4,maximumFractionDigits:4});
    status.innerHTML='<span class="import-ok">ТЭП получены из ГлавАПУ: '+areaText+' га.</span> Проверьте значения ниже и нажмите «Применить к Вводным и ТЭП».';
    glavapuStatus.innerHTML='<span class="import-ok">Расчёт ГлавАПУ получен автоматически по кадастровым номерам.</span> Проверьте значения перед применением.';
+   tepRunLog(runId,'штатный калькулятор: получено', areaText+' га');
+   return payload;
  }catch(e){
+   tepRunLog(runId,'ошибка',String(e.message||e).slice(0,120));
+   if(runId!==tepRunSequence)return null;
    // Автоматизация штатного калькулятора не отработала — таймаут, сеть или
    // изменившаяся вёрстка genplan. Территория уже известна: докатываемся
    // серверными формулами вместо голой ошибки.
    if(cadastralAnalysis){
-     try{await obtainServerTep(cadastralAnalysis,status);return}catch(e2){}
+     try{return await obtainServerTep(cadastralAnalysis,status,runId)}catch(e2){}
    }
    status.innerHTML='<span class="import-error">'+escapeHtml(String(e.message||e))+'</span>';
+   return null;
  }finally{
    button.disabled=false;button.textContent='Получить ТЭП';
    frame.src='about:blank';
@@ -22174,13 +22206,23 @@ async function initializeTelegramLaunch(){
   const status=document.getElementById('cadastralStatus');
   if(status)status.textContent='Получаю ТЭП ГлавАПУ и рассчитываю проект…';
   telegramProgress('Считаю…');
-  await obtainCadastralTep();
-  if(glavapuImport){
+  // Применяется и уходит в чат ТОЛЬКО результат этого запуска. Проверка
+  // глобального glavapuImport здесь была гонкой: renderStoredGlavapu на
+  // старте поднимал импорт из сохранённого проекта, и после таймаута сбора
+  // мини-приложение показывало ошибку — а затем «Готов. Отправляю в чат…»
+  // со старым ТЭП, как будто расчёт удался.
+  const payload=await obtainCadastralTep();
+  const usable=payload&&payload.mappings&&(
+   Object.keys(payload.mappings.inputs||{}).length||Object.keys(payload.mappings.tep||{}).length)
+   &&Number((payload.normalized||{}).site_area_ha||0)>0;
+  if(usable){
    // Закрытие после успешной отправки делает сам sendTelegramResult: путь один
    // на все источники, иначе часть расчётов снова осталась бы висеть.
+   glavapuImport=payload;
    await applyGlavapu();
   }else{
-   finishTelegramSession('Территория не распознана. Проверьте кадастровые номера в чате.');
+   telegramProgress('');
+   finishTelegramSession('ТЭП не получен: '+(payload?'в ответе нет обязательных полей.':'территория или расчёт не отработали.')+' Проверьте кадастровые номера и повторите из чата.');
   }
   return;
  }

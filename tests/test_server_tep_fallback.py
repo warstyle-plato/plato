@@ -57,7 +57,7 @@ def test_the_page_goes_server_side_in_telegram_and_on_failure():
     automation = body.find("Открываю штатный расчёт ГлавАПУ")
     assert 0 < telegram_branch < automation, \
         "Telegram обязан уходить в серверный расчёт до запуска iframe"
-    assert "await obtainServerTep(cadastralAnalysis,status)" in body, \
+    assert "await obtainServerTep(cadastralAnalysis,status,runId)" in body, \
         "падение автоматизации должно докатываться серверными формулами"
     assert "function obtainServerTep" in core.PAGE
     assert "/cadastral/tep-server" in core.PAGE
@@ -123,3 +123,37 @@ def test_a_changed_methodology_screams_everywhere(monkeypatch):
     assert "разошлись со штатным калькулятором" in card
 
     core._GLAVAPU_FORMULA_DRIFT.update(items=[], found_at="", numbers=[])
+
+
+# --- гонка телеграм-потока ---------------------------------------------------
+# Mini App показывал «Калькулятор ГлавАПУ не ответил вовремя», а затем всё
+# равно «Готов. Отправляю в чат…»: телеграм-ветка проверяла глобальный
+# glavapuImport, который renderStoredGlavapu поднимал из сохранённого проекта,
+# и слала старый ТЭП как свежий.
+
+def test_the_telegram_flow_only_uses_this_runs_result():
+    launch = re.search(r"if\(telegramCad\)\{.*?\n \}", core.PAGE, re.S)
+    assert launch, "телеграм-ветка запуска не найдена"
+    body = launch.group(0)
+    assert "const payload=await obtainCadastralTep()" in body, \
+        "в чат обязан уходить результат именно этого запуска, не глобальное состояние"
+    assert "site_area_ha" in body, "перед отправкой проверяются обязательные поля"
+    assert "finishTelegramSession('ТЭП не получен" in body, \
+        "после ошибки сценарий обязан остановиться с честным сообщением"
+
+
+def test_every_run_is_tokenized_and_double_clicks_are_ignored():
+    assert "let tepRunSequence=0" in core.PAGE
+    assert "const runId=++tepRunSequence" in core.PAGE
+    flow = re.search(r"async function obtainCadastralTep\(.*?\n\}", core.PAGE, re.S).group(0)
+    assert "if(button.disabled)return null" in flow, "повторный клик не должен запускать второй запрос"
+    assert flow.count("runId!==tepRunSequence") >= 2, \
+        "ответы устаревших запусков обязаны отбрасываться"
+    assert "finally" in flow
+
+
+def test_the_mini_app_url_busts_the_webview_cache(monkeypatch):
+    monkeypatch.setattr(core, "_telegram_session", lambda *a, **kw: "sess")
+    url = core._telegram_web_app_url(42, [])
+    assert f"v={core.VERSION}" in url, \
+        "URL мини-приложения обязан включать версию для сброса кэша WebView"
