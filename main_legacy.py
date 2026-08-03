@@ -42,7 +42,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.7"
+VERSION = "0.17.8"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -11024,7 +11024,10 @@ def build_plato_model_v2(
                    lambda i: (f"=IF({credit.at('pf_gross', i)}>0,({pf_payable_start(i)})"
                               f"*{credit.at('pf_rate', i)}/12,0)"), money)
     credit.formula("limit_fee", "Плата за неиспользованный лимит",
-                   lambda i: (f"=IF({credit.at('pf_gross', i)}>0,"
+                   # Окно доступности линии: до РВЭ. После РВЭ лимита, за
+                   # который платят, больше нет — решение владельца.
+                   lambda i: (f"=IF(AND({credit.at('pf_gross', i)}>0,"
+                              f"{credit.month(i)}<{ref('rve')}),"
                               f"MAX({ref('pf_limit')}-{credit.at('pf_gross', i)},0)"
                               f"*{ref('limit_fee_pct')}/12,0)"), money)
 
@@ -13260,7 +13263,13 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
                     weighted_pf_key_num += pf_balance * key_rate
                     weighted_pf_den += pf_balance
 
-                    if pf_limit:
+                    # Плата за невыбранный лимит — только в период доступности
+                    # линии: с открытия ПФ до РВЭ. После РВЭ эскроу раскрыт и
+                    # лимита, за который платят, больше нет — решение владельца
+                    # («после РВЭ платить не за что, всё погашено»). Прежде
+                    # плата тикала, пока жив долг, и на Мытищах давала +465 млн
+                    # комиссий к книге.
+                    if pf_limit and month < rve:
                         limit_fee = max(pf_limit - pf_balance, 0.0) * n(x, "limit_fee_pct") / 100 / 12
                         pf_interest_payable += limit_fee
                         pf_limit_fee_total += limit_fee
