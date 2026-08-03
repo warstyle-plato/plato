@@ -42,7 +42,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.11"
+VERSION = "0.17.12"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -8936,8 +8936,12 @@ def build_project_workbook(
     # движке: О1 ×1, О2 ×1,08, О3 ×1,166 при 8% в год. Годовая инфляция в
     # AE/AF здесь не пишется: книга ведёт её от даты базы цен до старта
     # продаж и индексировала даже первую очередь — на +12% против движка.
-    price_inflation = float(p.get("sales_price_inflation_pct") or 0) / 100.0 if count > 1 else 0.0
-    cost_inflation = float(p.get("cost_inflation_pct") or 0) / 100.0 if count > 1 else 0.0
+    # Отсутствующий ключ — не ноль: движок при пропуске берёт 8% годовых
+    # (_phase_sales_price_inflation_factor), и книга обязана взять те же 8%,
+    # иначе О2/О3 продаются по ценам первой очереди — минус 2,5 млрд выручки
+    # на дефолтных вводных, которых нет в расчёте.
+    price_inflation = float(p.get("sales_price_inflation_pct", 8.0) or 0) / 100.0 if count > 1 else 0.0
+    cost_inflation = float(p.get("cost_inflation_pct", 8.0) or 0) / 100.0 if count > 1 else 0.0
 
     for index in range(4):
         row = 88 + index
@@ -9005,6 +9009,12 @@ def build_project_workbook(
         put(f"AC{row}", number=num_row(crow.get("storage"), "units"), label="кладовые, шт.")
         put(f"AE{row}", number=0.0, label="инфляция цены")
         put(f"AF{row}", number=0.0, label="инфляция затрат")
+        # Тренд темпа продаж — движковый pace (25% по умолчанию): вес месяца
+        # растёт линейно от старта продаж к РВЭ, после РВЭ не действует.
+        # Дефолт шаблона 1%/мес компаундился всё окно продаж и смещал объём
+        # в дорогие месяцы: +36 млн по квартирам на Мытищах из ниоткуда.
+        put(f"AD{row}", number=float(x.get("pace_adjustment_pct") or 0) / 100.0,
+            label="тренд темпа продаж")
 
     # --- сборка ------------------------------------------------------------
     # Кэшированные результаты формул шаблона стираются на всех листах:
