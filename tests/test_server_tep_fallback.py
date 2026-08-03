@@ -61,3 +61,65 @@ def test_the_page_goes_server_side_in_telegram_and_on_failure():
         "падение автоматизации должно докатываться серверными формулами"
     assert "function obtainServerTep" in core.PAGE
     assert "/cadastral/tep-server" in core.PAGE
+
+
+# --- дрейф-контроль ----------------------------------------------------------
+# «Если расчёты ГлавАПУ поменяются, бот будет давать заведомо ложную
+# информацию, а сайт верную?» — нет: каждый успешный сбор штатного
+# калькулятора на сайте сверяется с серверными формулами, и расхождение
+# кричит в предупреждениях импорта, в /status и в ответах серверного пути.
+
+def _mock_analysis(monkeypatch):
+    monkeypatch.setattr(core, "analyze_cadastral_territory", lambda req: {
+        "territory": {"area_ha": 0.651, "district": "Савеловский",
+                      "cadastral_quarter": "77:09:0004014"},
+        "coefficients": {"rail": 0.75, "business_outside_ttc": 0.5,
+                         "rent": 0.1281, "base_cost_zh_high": 229036.29},
+    })
+
+
+def _calculator_rows(monkeypatch) -> list[dict]:
+    """Таблица «штатного калькулятора» — из собственного серверного файла:
+    идеальный случай без дрейфа."""
+    _mock_analysis(monkeypatch)
+    quick = core.vri_tep_quick("msk", "77:09:0004014:13")
+    rows = [list(r) + [""] * (4 - len(r)) for r in
+            core._xlsx_read_tables(quick["file"])["ТЭП"]]
+    return [{"code": str(r[0] or ""), "name": str(r[1] or ""),
+             "unit": str(r[2] or ""), "value": str(r[3] or "")}
+            for r in rows[1:] if str(r[1] or "").strip()]
+
+
+def test_a_matching_calculator_clears_the_drift_flag(monkeypatch):
+    _mock_analysis(monkeypatch)
+    core._GLAVAPU_FORMULA_DRIFT.update(items=["старый дрейф"], found_at="x")
+    result = core.import_cadastral_tep(core.CadastralTepRequest(
+        rows=_calculator_rows(monkeypatch),
+        cadastral_analysis={"recognized": ["77:09:0004014:13"]}))
+    assert core._GLAVAPU_FORMULA_DRIFT["items"] == [], \
+        "совпавший сбор обязан снимать флаг дрейфа"
+    assert not any("разошлись" in w for w in result["warnings"])
+
+
+def test_a_changed_methodology_screams_everywhere(monkeypatch):
+    _mock_analysis(monkeypatch)
+    rows = _calculator_rows(monkeypatch)
+    for row in rows:
+        if row["code"] == "44":
+            row["value"] = "2 000,000"  # ГлавАПУ «поменял» методику платы
+    result = core.import_cadastral_tep(core.CadastralTepRequest(
+        rows=rows, cadastral_analysis={"recognized": ["77:09:0004014:13"]}))
+
+    assert any("разошлись" in w for w in result["warnings"]), \
+        "расхождение обязано попасть в предупреждения импорта"
+    assert core._GLAVAPU_FORMULA_DRIFT["items"], "флаг дрейфа не взведён"
+    assert "Дрейф формул ГлавАПУ" in core._TELEGRAM_RUNTIME.get("last_error", "")
+
+    # Серверный путь и карточка бота предупреждают, пока дрейф не снят.
+    server = core.cadastral_tep_server(core.CadastralAnalysisRequest(
+        cadastral_numbers="77:09:0004014:13"))
+    assert "разошлись" in server["warnings"][0]
+    card = core.vri_tep_quick("msk", "77:09:0004014:13")["card"]
+    assert "разошлись со штатным калькулятором" in card
+
+    core._GLAVAPU_FORMULA_DRIFT.update(items=[], found_at="", numbers=[])

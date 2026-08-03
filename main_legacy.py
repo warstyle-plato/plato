@@ -4005,6 +4005,9 @@ def vri_tep_quick(region: str, query: str,
                   ("Машино-места" if not mm else ""))
                + " считает калькулятор ГлавАПУ в мини-приложении: "
                "кнопка «Открыть и изменить расчёт».</i>\n")
+            + ("<b>ВНИМАНИЕ:</b> серверные формулы разошлись со штатным "
+               "калькулятором — методика ГлавАПУ могла измениться, сверьте "
+               "расчёт на сайте.\n" if _GLAVAPU_FORMULA_DRIFT["items"] else "")
         )
         template_region = "Москва" + (
             f" · {territory.get('district')}" if territory.get("district") else "")
@@ -4645,6 +4648,59 @@ def _build_model_xlsx(sheets: list[dict[str, Any]]) -> bytes:
     return out.getvalue()
 
 
+# Дрейф-контроль серверных формул ГлавАПУ. Штатный браузерный калькулятор —
+# первоисточник; серверные формулы (путь Telegram и кнопки бота) сняты с его
+# кода и обязаны совпадать. Каждый успешный сбор штатного калькулятора на
+# сайте сверяется с формулами: если ГлавАПУ поменяет методику, расхождение
+# всплывёт в тот же день — в предупреждениях импорта, в /status и в ответах
+# серверного пути, — а не будет молча жить в Telegram. Память процесса: после
+# перезапуска флаг снимается до следующего сбора на сайте.
+_GLAVAPU_DRIFT_CHECKS = [
+    ("4", "население", 3.0, "abs"),
+    ("10", "площадь квартир", 0.01, "rel"),
+    ("30", "ДОО", 2.0, "abs"),
+    ("31", "школа", 2.0, "abs"),
+    ("32", "поликлиника", 2.0, "abs"),
+    ("42.1", "постоянные машино-места", 2.0, "abs"),
+    ("42.2", "гостевые машино-места", 2.0, "abs"),
+    ("44", "плата за смену ВРИ", 0.01, "rel"),
+    ("54", "компенсация ДОО", 0.01, "rel"),
+    ("55", "компенсация школа", 0.01, "rel"),
+    ("56", "компенсация поликлиника", 0.01, "rel"),
+]
+_GLAVAPU_FORMULA_DRIFT: dict[str, Any] = {"items": []}
+
+
+def _glavapu_formula_drift(rows: list[list[Any]], numbers: list[str]) -> list[str]:
+    """Сравнивает собранную таблицу штатного калькулятора с серверными
+    формулами по тем же кадастрам. Возвращает список расхождений."""
+    if not numbers:
+        return []
+    quick = vri_tep_quick("msk", ", ".join(str(n) for n in numbers))
+    server_rows = _xlsx_read_tables(quick["file"]).get("ТЭП") or []
+
+    def as_map(items: list[list[Any]]) -> dict[str, float | None]:
+        out: dict[str, float | None] = {}
+        for row in items:
+            if not row or len(row) < 4:
+                continue
+            code = str(row[0] or "").strip()
+            if code:
+                out[code] = _ru_number(str(row[3] or "").split("(")[0])
+        return out
+
+    browser, server = as_map(rows), as_map(server_rows)
+    drift: list[str] = []
+    for code, label, tolerance, kind in _GLAVAPU_DRIFT_CHECKS:
+        b, s = browser.get(code), server.get(code)
+        if not b or not s or b <= 0 or s <= 0:
+            continue
+        limit = tolerance if kind == "abs" else max(abs(b), abs(s)) * tolerance
+        if abs(b - s) > limit:
+            drift.append(f"{label}: калькулятор {b:g}, формулы {s:g}")
+    return drift
+
+
 @app.post("/cadastral/tep-server")
 def cadastral_tep_server(req: CadastralAnalysisRequest) -> dict[str, Any]:
     """ТЭП по формулам ГлавАПУ, посчитанный сервером.
@@ -4668,6 +4724,13 @@ def cadastral_tep_server(req: CadastralAnalysisRequest) -> dict[str, Any]:
         "недоступен. Формулы сняты с его кода и сходятся с контрольными "
         "выгрузками до единицы.",
     )
+    if _GLAVAPU_FORMULA_DRIFT["items"]:
+        result["warnings"].insert(
+            0,
+            "ВНИМАНИЕ: серверные формулы разошлись со штатным калькулятором "
+            "(" + "; ".join(_GLAVAPU_FORMULA_DRIFT["items"][:4]) + "). "
+            "Методика ГлавАПУ могла измениться — сверьте расчёт на сайте.",
+        )
     return result
 
 
@@ -4713,8 +4776,30 @@ def import_cadastral_tep(req: CadastralTepRequest) -> dict[str, Any]:
     })
     result["warnings"].insert(
         0,
-        "Показатели автоматически считаны из готовой таблицы genplan.tech; формулы ГлавАПУ в DevelopAid не воспроизводятся.",
+        "Показатели автоматически считаны из готовой таблицы genplan.tech.",
     )
+    # Каждый успешный сбор штатного калькулятора — бесплатная сверка серверных
+    # формул: разошлись — значит, ГлавАПУ поменял методику, и путь Telegram
+    # начал бы врать. Ошибка, ушедшая только в лог, — ошибка, которой нет,
+    # поэтому расхождение кричит здесь, в /status и в серверных ответах.
+    try:
+        drift = _glavapu_formula_drift(table_rows, [str(n) for n in numbers])
+    except Exception:
+        drift = []
+    if drift:
+        _GLAVAPU_FORMULA_DRIFT.update(
+            items=drift, found_at=datetime.now(timezone.utc).isoformat(),
+            numbers=[str(n) for n in numbers])
+        _TELEGRAM_RUNTIME["last_error"] = "Дрейф формул ГлавАПУ: " + "; ".join(drift[:4])
+        result["warnings"].insert(
+            0,
+            "ВНИМАНИЕ: серверные формулы DevelopAid разошлись со штатным "
+            "калькулятором (" + "; ".join(drift[:4]) + "). Методика ГлавАПУ "
+            "могла измениться — расчёты Telegram и кнопки бота требуют сверки.",
+        )
+    elif _GLAVAPU_FORMULA_DRIFT["items"]:
+        # Формулы снова сходятся — снять флаг, чтобы Telegram не пугал зря.
+        _GLAVAPU_FORMULA_DRIFT.update(items=[], found_at="", numbers=[])
     return result
 
 
