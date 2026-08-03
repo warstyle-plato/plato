@@ -42,7 +42,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.9"
+VERSION = "0.17.10"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -8535,14 +8535,23 @@ def _v4_fold_tail(weights: list[float], enabled: int, book: int) -> list[float]:
     return trimmed
 
 
-def _v4_phase_weights(
-    phasing: dict[str, Any], product: str, count: int, enabled: int | None = None
-) -> list[float]:
-    weights = [float(w or 0) for w in ((phasing.get("products") or {}).get(product) or [])]
-    weights = _v4_fold_tail(weights, enabled or count, count)
-    if len(weights) < count or sum(weights[:count]) <= 0:
-        return [1.0 / count] * count
-    return _v4_normalized(weights, count)
+def _v4_fold_tep_rows(
+    rows: list[dict[str, dict[str, Any]]], book: int
+) -> list[dict[str, dict[str, Any]]]:
+    """Очередей больше, чем листов CF в книге: объёмы хвоста складываются в
+    последнюю книжную очередь — та же логика, что у долей в _v4_fold_tail."""
+    if len(rows) <= book:
+        return rows
+    merged: dict[str, dict[str, Any]] = {}
+    for tail_row in rows[book - 1:]:
+        for key, product in tail_row.items():
+            if key not in merged:
+                merged[key] = copy.deepcopy(product)
+            else:
+                for field in ("gns", "total_area", "useful", "saleable", "transfer", "units"):
+                    merged[key][field] = (
+                        float(merged[key].get(field) or 0) + float(product.get(field) or 0))
+    return rows[:book - 1] + [merged]
 
 
 def _v4_shared_weights(
@@ -8886,8 +8895,14 @@ def build_project_workbook(
             "5-й и последующих слиты в четвёртую очередь"
         )
     phases = list(p.get("phases") or [])
-    weights = {product: _v4_phase_weights(p, product, count, enabled_phases)
-               for product in ("apartments", "ground_commercial", "underground_parking", "storage")}
+    # ТЭП очередей — канонической аллокацией движка (_phase_tep_product_rows):
+    # книга получает готовые числа и не может разойтись с расчётом ни в долях,
+    # ни в округлении штучных продуктов.
+    canon_rows = _v4_fold_tep_rows(
+        _phase_tep_product_rows(
+            {key: dict(value) for key, value in (tep or {}).items() if isinstance(value, dict)},
+            p, max(1, min(5, enabled_phases)))[0],
+        count)
     shared = {key: _v4_shared_weights(p, key, count, enabled_phases)
               for key in ("purchase", "land_rights", "social_compensation")}
     # Индексация очередей — готовыми множителями к сдвигу старта, как в
@@ -8897,12 +8912,10 @@ def build_project_workbook(
     price_inflation = float(p.get("sales_price_inflation_pct") or 0) / 100.0 if count > 1 else 0.0
     cost_inflation = float(p.get("cost_inflation_pct") or 0) / 100.0 if count > 1 else 0.0
 
-    apartments, commercial = tep.get("apartments"), tep.get("ground_commercial")
-    underground, storage = tep.get("underground_parking"), tep.get("storage")
     for index in range(4):
         row = 88 + index
         active = index < count
-        share = (lambda product: weights[product][index] if active else 0.0)
+        crow = canon_rows[index] if active and index < len(canon_rows) else {}
         phase = phases[index] if index < len(phases) else {}
         put(f"B{row}", text="Да" if active else "Нет", label=f"очередь {index + 1}")
         offset = float(phase.get("start_offset_months") or 0) if active else 0.0
@@ -8951,18 +8964,18 @@ def build_project_workbook(
         else:
             put(f"U{row}", number=0.0, label="доля лимита БРИДЖ")
             put(f"V{row}", number=0.0, label="доля лимита ПФ")
-        put(f"W{row}", number=num_row(apartments, "gns") * share("apartments"), label="ГНС квартир")
-        put(f"X{row}", number=num_row(commercial, "gns") * share("ground_commercial"),
+        put(f"W{row}", number=num_row(crow.get("apartments"), "gns"), label="ГНС квартир")
+        put(f"X{row}", number=num_row(crow.get("ground_commercial"), "gns"),
             label="ГНС коммерции")
-        put(f"Y{row}", number=num_row(underground, "gns") * share("underground_parking"),
+        put(f"Y{row}", number=num_row(crow.get("underground_parking"), "gns"),
             label="ГНС подземная")
-        put(f"Z{row}", number=num_row(apartments, "saleable") * share("apartments"),
+        put(f"Z{row}", number=num_row(crow.get("apartments"), "saleable"),
             label="прод. квартир")
-        put(f"AA{row}", number=num_row(commercial, "saleable") * share("ground_commercial"),
+        put(f"AA{row}", number=num_row(crow.get("ground_commercial"), "saleable"),
             label="прод. коммерции")
-        put(f"AB{row}", number=num_row(underground, "units") * share("underground_parking"),
+        put(f"AB{row}", number=num_row(crow.get("underground_parking"), "units"),
             label="паркинг, шт.")
-        put(f"AC{row}", number=num_row(storage, "units") * share("storage"), label="кладовые, шт.")
+        put(f"AC{row}", number=num_row(crow.get("storage"), "units"), label="кладовые, шт.")
         put(f"AE{row}", number=0.0, label="инфляция цены")
         put(f"AF{row}", number=0.0, label="инфляция затрат")
 
@@ -14229,6 +14242,55 @@ def _scale_tep_row_by_units(
     return result
 
 
+_PHASE_MASS_PRODUCTS = ("apartments", "ground_commercial", "underground_parking", "storage")
+
+
+def _phase_tep_product_rows(
+    t_master: dict[str, dict[str, Any]],
+    phasing: dict[str, Any],
+    count: int,
+) -> tuple[list[dict[str, dict[str, Any]]], dict[str, list[float]]]:
+    """Каноническое деление массовых продуктов по очередям.
+
+    Единственное место, где ТЭП режется на очереди: движок собирает из этих
+    строк вводные каждой фазы, а книга получает готовые числа. Раньше книга
+    нормировала доли сама — с собственным запасным раскладом «поровну» против
+    движкового пресета 40/32/28 — и умножала итог на дробную долю даже для
+    паркинга, который движок раздаёт целыми местами: очереди расходились на
+    ±1 машино-место и десятки метров ГНС. Дробные метры делятся долями как
+    есть, штучные продукты — целыми с сохранением итога. Одна очередь —
+    не деление: движок без очередей считает атомарно по сырому ТЭП с дробными
+    местами, и округлять их здесь значило бы разойтись с ним на полместа.
+    """
+    if count <= 1:
+        return ([{key: copy.deepcopy(t_master[key])
+                  for key in _PHASE_MASS_PRODUCTS if key in t_master}],
+                {key: [100.0] for key in _PHASE_MASS_PRODUCTS})
+    default_weights = _default_phase_weights(count)
+    products_cfg = (phasing or {}).get("products") or {}
+    product_weights = {
+        key: _normalized_phase_weights(products_cfg.get(key), count, default_weights)
+        for key in _PHASE_MASS_PRODUCTS
+    }
+    indivisible = {
+        key: _integer_phase_allocations(n(t_master.get(key, {}), "units"), product_weights[key])
+        for key in ("underground_parking", "storage")
+        if key in t_master
+    }
+    rows: list[dict[str, dict[str, Any]]] = []
+    for idx in range(count):
+        per: dict[str, dict[str, Any]] = {}
+        for key in _PHASE_MASS_PRODUCTS:
+            if key not in t_master:
+                continue
+            if key in indivisible:
+                per[key] = _scale_tep_row_by_units(t_master[key], indivisible[key], idx)
+            else:
+                per[key] = _scale_tep_row(t_master[key], product_weights[key][idx])
+        rows.append(per)
+    return rows, product_weights
+
+
 _PHASE_INFLATABLE_INPUTS = (
     "ird_th_per_sqm",
     "design_p_th_per_sqm",
@@ -14850,16 +14912,7 @@ def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
     phasing["phases"] = phases_cfg
 
     default_weights = _default_phase_weights(count)
-    products_cfg = phasing.get("products") or {}
-    product_weights = {
-        key: _normalized_phase_weights(products_cfg.get(key), count, default_weights)
-        for key in ("apartments", "ground_commercial", "underground_parking", "storage")
-    }
-    indivisible_allocations = {
-        key: _integer_phase_allocations(n(t_master.get(key, {}), "units"), product_weights[key])
-        for key in ("underground_parking", "storage")
-        if key in t_master
-    }
+    phase_product_rows, product_weights = _phase_tep_product_rows(t_master, phasing, count)
 
     shared_cash = phasing.get("shared_cash") or {}
     shared_alloc = phasing.get("shared_allocation") or {}
@@ -14945,13 +14998,9 @@ def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
         p_inputs.pop("_glavapu_import", None)
 
         # Mass products are split only in the phasing wrapper; the atomic single-phase engine is unchanged.
-        for key in ("apartments","ground_commercial","underground_parking","storage"):
-            if key not in p_tep:
-                continue
-            if key in indivisible_allocations:
-                p_tep[key] = _scale_tep_row_by_units(p_tep[key], indivisible_allocations[key], idx)
-            else:
-                p_tep[key] = _scale_tep_row(p_tep[key], product_weights[key][idx])
+        for key, split_row in phase_product_rows[idx].items():
+            if key in p_tep:
+                p_tep[key] = copy.deepcopy(split_row)
 
         # Cost inflation belongs to the queue wrapper, not to the atomic engine.
         cost_inflation_factor = _phase_cost_inflation_factor(phasing, offset)
