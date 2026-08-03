@@ -4,8 +4,15 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#07111f">
+  <meta name="application-name" content="DevelopAid">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="DevelopAid">
   <title>DevelopAid 2.0</title>
+  <link rel="manifest" href="/v2/manifest.webmanifest">
+  <link rel="icon" href="/v2/assets/icon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/v2/assets/styles.css">
+  <link rel="stylesheet" href="/v2/assets/pwa.css">
 </head>
 <body>
   <div class="app-shell">
@@ -47,6 +54,7 @@
           <p id="projectSubtitle"></p>
         </div>
         <div class="topbar-actions">
+          <span id="launchMode" class="launch-mode">Веб-приложение</span>
           <span id="prototypeBadge" class="prototype-badge">Контрольный прототип</span>
           <button class="icon-button" type="button" aria-label="Уведомления">●</button>
           <button class="avatar" type="button" aria-label="Профиль">VS</button>
@@ -170,7 +178,15 @@
     </main>
   </div>
 
+  <div id="installBar" class="install-bar" hidden>
+    <span class="install-app-icon"><img src="/v2/assets/icon.svg" alt=""></span>
+    <span class="install-copy"><strong>DevelopAid — приложение</strong><span id="installText">Установите отдельную иконку для быстрого доступа к проектам.</span></span>
+    <button id="installButton" class="install-button" type="button">Установить</button>
+    <button id="installDismiss" class="install-dismiss" type="button" aria-label="Закрыть">×</button>
+  </div>
+
   <div id="loading" class="loading"><span></span><p>Загружаем проект</p></div>
   <script src="/v2/assets/app.js" defer></script>
+  <script src="/v2/assets/pwa.js" defer></script>
 </body>
 </html>
