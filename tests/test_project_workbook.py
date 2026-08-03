@@ -290,7 +290,7 @@ def test_the_book_passes_its_own_checks_and_matches_the_engine():
     book = openpyxl.load_workbook(io.BytesIO(content), data_only=False)
     evaluator = Evaluator(book)
     status = evaluator.cell("ПРОВЕРКИ", "B3")
-    if status not in ("PASS", "PASS WITH WARNINGS"):
+    if status not in ("ПРОЙДЕНО", "ПРОЙДЕНО С ПРЕДУПРЕЖДЕНИЯМИ"):
         broken = [
             f'{book["ПРОВЕРКИ"][f"A{row}"].value}: '
             f'факт={evaluator.cell("ПРОВЕРКИ", f"B{row}")} '
@@ -570,7 +570,8 @@ def test_the_fourth_queue_drives_the_whole_book_not_just_its_sheets():
     evaluator = Evaluator(book)
 
     assert book["Вводные"]["K21"].value == pytest.approx(4)
-    assert evaluator.cell("ПРОВЕРКИ", "B3") in ("PASS", "PASS WITH WARNINGS"), [
+    assert evaluator.cell("ПРОВЕРКИ", "B3") in (
+        "ПРОЙДЕНО", "ПРОЙДЕНО С ПРЕДУПРЕЖДЕНИЯМИ"), [
         f'{book["ПРОВЕРКИ"][f"A{row}"].value}: '
         f'факт={evaluator.cell("ПРОВЕРКИ", f"B{row}")} '
         f'ожид={evaluator.cell("ПРОВЕРКИ", f"C{row}")}'

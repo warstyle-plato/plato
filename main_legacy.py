@@ -42,7 +42,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.10"
+VERSION = "0.17.11"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -6921,6 +6921,31 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     if _ending_pf>500_000:
         kpis.append(["Непогашенный долг ПФ на конец проекта",_pdf_money(_ending_pf)])
     story.append(table([["Показатель","Значение"]]+kpis,[112*mm,58*mm]))
+    # Удельные расходы стройки — на первой странице, рядом с ключевой
+    # экономикой: по ним читается себестоимость, и именно их просили видеть
+    # в отчёте, не раскапывая структуру расходов по группам.
+    construction_costs = report.get("construction_costs") or []
+    if construction_costs:
+        cc_rows = [["Статья", "млн ₽", "тыс ₽/м² ГНС"]]
+        for item in construction_costs:
+            cc_rows.append([
+                str(item.get("label") or "—"),
+                _pdf_num(float(item.get("value") or 0) / 1e6, 1),
+                _pdf_num(item.get("per_gns_th"), 2),
+            ])
+        cc_total = sum(float(item.get("value") or 0) for item in construction_costs)
+        cc_gns = float(summary.get("project_gns_sqm") or 0)
+        cc_rows.append([
+            "Итого строительство",
+            _pdf_num(cc_total / 1e6, 1),
+            _pdf_num(cc_total / cc_gns / 1000 if cc_gns else 0, 2),
+        ])
+        story.append(KeepTogether([
+            P("Удельные расходы строительства", h2),
+            table(cc_rows, [100*mm, 35*mm, 35*mm], font_size=7.6),
+            P("Удельные значения — на м² ГНС всего проекта. Внутренние инженерные "
+              "сети входят в СМР соответствующей части.", small),
+        ]))
     purchase_assessment = _purchase_feasibility(
         inputs.get("purchase_price_mln"),
         float(summary.get("net_profit") or 0) / 1_000_000,
@@ -8657,6 +8682,8 @@ def build_project_workbook(
     # --- шапка, сценарий и ставка ----------------------------------------
     title = str(project_name or x.get("project_name") or "Проект DevelopAid")
     put("B4", text=title, label="project_name")
+    # B6 — не надпись, а ключ: книга ищет его MATCH'ем по списку сценариев
+    # («Base»/«Optimistic»/…), русское слово роняет весь расчёт.
     put("B6", text="Base", label="scenario")
     put("E5", number=float(x.get("scenario_revenue_multiplier") or 1), label="scenario_revenue_multiplier")
     put("E6", number=float(x.get("scenario_cost_multiplier") or 1), label="scenario_cost_multiplier")
@@ -11628,6 +11655,19 @@ async def report_pdf(request: Request) -> Response:
     payload=await request.json()
     if not isinstance(payload,dict) or not isinstance(payload.get("result"),dict):
         raise HTTPException(status_code=400,detail="Нет данных расчёта для PDF")
+    # Торнадо в PDF с сайта: страница шлёт чувствительность, только если её
+    # считали в окне, а бот дообогащал отчёт сам — и его PDF выходил «лучше»
+    # при тех же вводных. Считает движок; пул потоков — чтобы десятки
+    # пересчётов чувствительности не держали event loop обоих воркеров.
+    if not payload.get("sensitivity") and isinstance(payload.get("inputs"), dict) and payload.get("tep"):
+        try:
+            from starlette.concurrency import run_in_threadpool
+            payload = {**payload, "sensitivity": await run_in_threadpool(
+                run_sensitivity,
+                payload.get("inputs") or {}, payload.get("tep") or {},
+                payload.get("rates") or [], payload.get("phasing") or {})}
+        except Exception:
+            pass  # без анализа отчёт всё равно нужен — раздела просто не будет
     try: content=_build_developaid_pdf(payload)
     except Exception as exc: raise HTTPException(status_code=500,detail=f"Не удалось сформировать PDF: {exc}") from exc
     project_name=str(payload.get("project_name") or "DevelopAid").strip();safe=re.sub(r"[^0-9A-Za-zА-Яа-я_-]+","_",project_name).strip("_")[:60] or "DevelopAid";filename=f"DevelopAid_Отчет_{safe}_{date.today().isoformat()}.pdf";encoded_name=urllib.parse.quote(filename)
@@ -13732,6 +13772,37 @@ def calculate(req: CalcRequest) -> dict:
         },
     ]
 
+    # Удельные расходы строительства: статьи стройки в деньгах и на м² ГНС.
+    # В структуре расходов они склеены крупными группами, а решение о
+    # себестоимости принимают по статьям — СМР, сети, благоустройство.
+    # Внутренние инженерные сети отдельной статьёй не живут: они в составе
+    # СМР соответствующей части, об этом отчёт говорит явно.
+    construction_costs = []
+    for cc_label, cc_keys in (
+        ("ИРД", ("ird",)),
+        ("Проектирование (П, РД) и авторский надзор",
+         ("design_p", "design_rd", "author_supervision")),
+        ("Подготовка территории", ("preparation",)),
+        ("СМР наземной части", ("main_above",)),
+        ("СМР подземной части", ("main_under",)),
+        ("Наружные инженерные сети", ("utilities",)),
+        ("Благоустройство", ("landscaping",)),
+        ("Сдача и ввод", ("commissioning",)),
+        ("Содержание стройплощадки", ("site_maintenance",)),
+        ("Вознаграждение генподрядчика", ("gc_fee",)),
+        ("Технический заказчик / стройконтроль", ("technical_supervision",)),
+        ("Управление проектом", ("project_management",)),
+        ("Резерв", ("reserve",)),
+    ):
+        cc_value = sum(op["capex_amounts"].get(key, 0.0) for key in cc_keys)
+        if cc_value <= 0:
+            continue
+        construction_costs.append({
+            "label": cc_label,
+            "value": cc_value,
+            "per_gns_th": per_sqm_th(cc_value, project_gns_sqm),
+        })
+
     # Expense structure: categories are mutually exclusive and sum to total expenses.
     purchase_value = n(x, "purchase_price_mln") * 1_000_000
     expense_groups = [
@@ -14014,6 +14085,7 @@ def calculate(req: CalcRequest) -> dict:
         "report": {
             "products": products_report,
             "unit_economics": unit_economics,
+            "construction_costs": construction_costs,
             "expense_structure": expense_structure,
             "calendar": {
                 "start": calendar_start.isoformat(),
@@ -14580,6 +14652,18 @@ def _consolidate_phase_results(
             "per_saleable_th": per_th(value, saleable),
         })
 
+    # Статьи стройки суммируются по очередям; порядок статей задан движком
+    # и сохраняется словарём — сортировать по сумме их нельзя, это смета.
+    construction_map: dict[str, float] = {}
+    for result in results:
+        for item in result["report"].get("construction_costs") or []:
+            construction_map[item["label"]] = (
+                construction_map.get(item["label"], 0.0) + float(item["value"] or 0.0))
+    construction_costs = [
+        {"label": label, "value": value, "per_gns_th": per_th(value, project_gns)}
+        for label, value in construction_map.items() if value > 0
+    ]
+
     expense_map: dict[str, float] = defaultdict(float)
     for result in results:
         for item in result["report"]["expense_structure"]:
@@ -14724,6 +14808,7 @@ def _consolidate_phase_results(
             "products": list(product_map.values()),
             "phase_products": phase_sales,
             "unit_economics": unit_economics,
+            "construction_costs": construction_costs,
             "expense_structure": expense_structure,
             "calendar": {"start": cal_start.isoformat(), "end": cal_end.isoformat(), "events": events},
             "financing": {
