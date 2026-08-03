@@ -42,7 +42,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.12"
+VERSION = "0.17.13"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -8718,7 +8718,9 @@ def build_project_workbook(
     if social_is_construction:
         social_count = max(1, min(4, int(p.get("phase_count") or 1) if p.get("enabled") else 1))
         social_phases = list(p.get("phases") or [])
-        social_inflation = (float(p.get("cost_inflation_pct") or 0) / 100.0
+        # Отсутствующий ключ — не ноль: движок без cost_inflation_pct берёт
+        # 8% годовых, и социалка поздних очередей растёт тем же фактором.
+        social_inflation = (float(p.get("cost_inflation_pct", 8.0) or 0) / 100.0
                             if social_count > 1 else 0.0)
         cost_per = {
             "kindergarten": float(x.get("kindergarten_cost_mln_per_place") or 0),
