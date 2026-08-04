@@ -142,3 +142,50 @@ def test_the_status_counts_queue_timeouts():
     from fastapi.testclient import TestClient
     status = TestClient(core.app).get("/telegram/status").json()["glavapu_headless"]
     assert "queue_timeouts" in status and "parallel_slots" in status
+
+
+def test_the_calculation_is_forwarded_to_the_core(monkeypatch):
+    """Браузер живёт на ядре: там свой образ, четыре гигабайта и нет
+    засыпания. Render пересылает расчёт туда же, куда и анализ территории."""
+    seen = {}
+
+    def fake_core_url(path):
+        return "https://core.example" + path if path == "/cadastral/tep-server" else ""
+
+    def fake_post(url, payload, timeout):
+        seen["url"] = url
+        seen["timeout"] = timeout
+        return {"normalized": {}, "source": {"format": "ядро"}, "warnings": []}
+
+    monkeypatch.setattr(core, "_core_api_url", fake_core_url)
+    monkeypatch.setattr(core, "_core_post", fake_post)
+    result = core.cadastral_tep_server(
+        core.CadastralAnalysisRequest(cadastral_numbers=", ".join(_NUMBERS)))
+    assert seen["url"].endswith("/cadastral/tep-server")
+    assert result["source"]["format"] == "ядро"
+    # Срок ожидания — общий с остальными вызовами ядра: браузер медленнее
+    # формул, и короткий таймаут рвал бы честный расчёт.
+    assert seen["timeout"] == core._MO_CALC_TIMEOUT_SECONDS
+
+
+def test_a_silent_core_still_answers_from_here(monkeypatch):
+    """Ядро не ответило — считаем формулами здесь, а не отдаём ошибку."""
+    monkeypatch.setattr(core, "_core_api_url",
+                        lambda path: "https://core.example" + path)
+
+    def boom(url, payload, timeout):
+        raise TimeoutError("ядро молчит")
+
+    calls = {}
+
+    def fake_quick(region, query, **kwargs):
+        calls["local"] = True
+        return {"file": b"", "filename": "x.xlsx"}
+
+    monkeypatch.setattr(core, "_core_post", boom)
+    monkeypatch.setattr(core, "vri_tep_quick", fake_quick)
+    monkeypatch.setattr(core, "parse_glavapu_xlsx",
+                        lambda data, filename: {"normalized": {}, "source": {}, "warnings": []})
+    core.cadastral_tep_server(
+        core.CadastralAnalysisRequest(cadastral_numbers=", ".join(_NUMBERS)))
+    assert calls.get("local") is True

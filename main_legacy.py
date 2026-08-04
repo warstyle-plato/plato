@@ -42,7 +42,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.27"
+VERSION = "0.17.28"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -4844,6 +4844,21 @@ def cadastral_tep_server(req: CadastralAnalysisRequest) -> dict[str, Any]:
     numbers = _parse_cadastral_numbers(req.cadastral_numbers)
     logging.info("tep-server rid=%s numbers=%s", req.request_id or "-",
                  ", ".join(numbers))
+
+    # Расчёт уходит на ядро — тем же путём, что и анализ территории. Браузер
+    # для штатного калькулятора живёт там: на ядре свой образ, четыре гигабайта
+    # и нет засыпания, а Render к тому же не наш Dockerfile. На самом ядре
+    # адрес пуст, и пересылать некуда — там считаем.
+    if _core_api_url("/cadastral/tep-server"):
+        try:
+            return _core_post(
+                _core_api_url("/cadastral/tep-server"),
+                _core_forward_payload(req),
+                _MO_CALC_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:
+            # Ядро не ответило — считаем здесь формулами, как раньше.
+            logging.warning("tep-server core forward failed: %s", exc)
 
     # Сначала — настоящий калькулятор. Формулы остаются фолбэком: копия
     # методики отстаёт от города на неизвестный срок, и это уже дважды
