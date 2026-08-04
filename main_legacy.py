@@ -42,7 +42,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.16"
+VERSION = "0.17.17"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -5534,6 +5534,8 @@ def _telegram_start_message(chat_id: int, user_id: int) -> None:
         "купить проект по 100 тысяч рублей за метр, или вы просто решили немного оптимизировать расходы "
         "на аналитиков перед покупкой проекта в Ховрино — <b>DevelopAid вам поможет</b>.\n\n"
         "Модель работает с проектами <b>по всей России</b>, а не только в Москве.\n\n"
+        "Считает плату за изменение ВРИ (Москва и область) и собирает ТЭП "
+        "по нормативам ГлавАПУ прямо из кадастра.\n\n"
         "Начать расчёт можно:\n"
         "• по кадастровым номерам участков;\n"
         "• без кадастра, ответив на вопросы бота;\n"
@@ -5549,7 +5551,8 @@ def _telegram_start_message(chat_id: int, user_id: int) -> None:
         "• строительство или компенсацию социальных объектов;\n"
         "• сценарии изменения доходов и затрат.\n\n"
         "DevelopAid рассчитает экономику, потребность в финансировании, динамику долга и эскроу, прибыль, "
-        "маржинальность и LLCR, а также сформирует PDF-отчёт с графиками и календарным планом.\n\n"
+        "маржинальность и LLCR, а также сформирует PDF-отчёт с графиками и календарным планом — "
+        "и живую Excel-модель со всеми формулами: открывайте, проверяйте, показывайте банку.\n\n"
         "<i>Доплату по коэффициенту Д, увы, пока не предсказывает.</i>\n\n"
         "<b>С чего начнём?</b>",
         reply_markup=button,
@@ -6926,7 +6929,9 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     # в отчёте, не раскапывая структуру расходов по группам.
     construction_costs = report.get("construction_costs") or []
     if construction_costs:
-        cc_rows = [["Статья", "млн ₽", "тыс ₽/м² ГНС"]]
+        # «ГНС проекта» в заголовке обязателен: без него 23 тыс ₽/м² подземной
+        # части читались как ставка на подземный метр (она — 190, во вводных).
+        cc_rows = [["Статья", "млн ₽", "тыс ₽/м² ГНС проекта"]]
         for item in construction_costs:
             cc_rows.append([
                 str(item.get("label") or "—"),
@@ -8924,6 +8929,27 @@ def build_project_workbook(
             missing.append(f"кривая ключевой ставки: колонка {_rate_index}")
             break
 
+    # Лист «Источники» — данными этого проекта, а не шаблонного: там жил
+    # кадастр 77:09 и московское 593-ПП даже у областных проектов, и сверка
+    # честно читала это как «источники от другой юрисдикции».
+    sources_sheet_path = _v4_sheet_path(source, "Источники")
+    sources_xml = source.read(sources_sheet_path).decode("utf-8")
+    _tep_source = ("Импорт ГлавАПУ" if (inputs or {}).get("_glavapu_import")
+                   else "ТЭП DevelopAid (вводные проекта)")
+    sources_xml, _ = _v4_set_cell(sources_xml, "C6", text=_tep_source)
+    sources_xml, _ = _v4_set_cell(sources_xml, "D6", text=str(
+        project_name or x.get("project_name") or "текущий проект"))
+    if str(x.get("vri_region") or "msk") == "mo":
+        sources_xml, _ = _v4_set_cell(
+            sources_xml, "C7", text="Московская область")
+        sources_xml, _ = _v4_set_cell(
+            sources_xml, "D7",
+            text="Диапазоны платы за смену ВРИ по округам МО (справочник DevelopAid)")
+    sources_xml, _ = _v4_set_cell(
+        sources_xml, "C16", text=f"Сборка DevelopAid {VERSION}")
+    sources_xml, _ = _v4_set_cell(
+        sources_xml, "D16", text=f"собрано {date.today().isoformat()}")
+
     def _put_extra(sheet_xml: str, coord: str, *, number=None, text=None) -> str:
         updated, done = _v4_set_cell(sheet_xml, coord, number=number, text=text)
         if not done:
@@ -9159,6 +9185,8 @@ def build_project_workbook(
                 payload = capex_xml.encode("utf-8")
             elif item.filename == rates_sheet_path:
                 payload = rates_xml.encode("utf-8")
+            elif item.filename == sources_sheet_path:
+                payload = sources_xml.encode("utf-8")
             if item.filename.startswith("xl/worksheets/") and item.filename.endswith(".xml"):
                 text = payload.decode("utf-8")
                 text = re.sub(r"(<x:f(?:\s[^>]*)?>[^<]*</x:f>)<x:v>[^<]*</x:v>", r"\1", text)
