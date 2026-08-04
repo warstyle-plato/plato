@@ -1,14 +1,17 @@
-"""Подземную площадь можно задать руками, и её никто не затирает.
+"""Подземный паркинг задаётся решением проекта, а не только нормативом.
 
-Норматив 35 м² на место описывает потребность, а реальный подземный этаж
-диктуют пятно застройки, рампы и техпомещения — площадь почти всегда
-другая. Задать её было негде: и страница (repairParkingFromGlavapu), и
-движок принудительно пересчитывали паркинг из импорта ГлавАПУ перед
-каждым расчётом, так что любое ручное значение жило до первого пересчёта.
+ГлавАПУ даёт норматив обеспеченности — минимум, который обязан построить
+застройщик. Девелопер решает иначе: нужно 50 мест на продажу против 28 по
+нормативу — значит строится ещё подземный этаж, и площадь 50 × 35 = 1 750 м²,
+а не 980. Норматив 35 м²/место — гросс: рампы, проезды и техпомещения уже
+внутри, поэтому пересчёт мест в площадь прямой.
 
-Теперь заданная площадь главнее импорта, количество мест считается от неё
-по нормативу, а сам норматив вынесен во вводные. Пока поле пустое, защита
-от устаревших значений localStorage работает ровно как раньше.
+Задать это было негде: и страница (repairParkingFromGlavapu), и движок перед
+каждым расчётом принудительно пересчитывали паркинг из импорта ГлавАПУ, и
+любое ручное значение жило до первого пересчёта. Теперь ведущее — количество
+мест, площадь производная; площадь можно задать и прямо, когда она известна
+из проекта. Пока поля пустые, защита от устаревших значений localStorage
+работает ровно как раньше.
 
 Запуск: python3 -m pytest tests -q
 """
@@ -44,12 +47,28 @@ def test_the_import_still_repairs_stale_values_when_no_manual_area():
     assert row["gns"] == pytest.approx(28 * 35)
 
 
-def test_a_manual_area_outranks_the_import():
-    """Заданная площадь переживает пересчёт, а места считаются от неё."""
+def test_the_project_decision_outranks_the_norm():
+    """Сценарий владельца: норматив ГлавАПУ 28 мест, проекту нужно 50 —
+    значит ещё этаж, и площадь 1 750 м², а не 980."""
+    row = _calc({"_glavapu_import": _IMPORT, "underground_manual_spaces": 50})
+    assert row["units"] == pytest.approx(50)
+    assert row["gns"] == pytest.approx(1750), "50 × 35, а не 28 × 35"
+    assert row["total_area"] == pytest.approx(1750)
+
+
+def test_a_known_area_outranks_the_import_too():
+    """Площадь из проекта задаётся прямо, места считаются от неё."""
     row = _calc({"_glavapu_import": _IMPORT, "underground_manual_gns_sqm": 1400})
     assert row["gns"] == pytest.approx(1400)
-    assert row["total_area"] == pytest.approx(1400)
     assert row["units"] == pytest.approx(40), "1400 ÷ 35 = 40 машино-мест"
+
+
+def test_spaces_and_area_can_be_set_together():
+    """Заданы оба — берём как есть: человек знает свой проект, и подгонять
+    одно под другое означало бы спорить с ним о его же цифрах."""
+    row = _calc({"underground_manual_spaces": 50, "underground_manual_gns_sqm": 1900})
+    assert row["units"] == pytest.approx(50)
+    assert row["gns"] == pytest.approx(1900)
 
 
 def test_the_norm_per_space_is_an_input_not_a_constant():
@@ -59,6 +78,13 @@ def test_the_norm_per_space_is_an_input_not_a_constant():
     assert row["units"] == pytest.approx(40), "1200 ÷ 30 = 40"
     row_default = _calc({"underground_manual_gns_sqm": 1200})
     assert row_default["units"] == pytest.approx(34), "1200 ÷ 35 ≈ 34"
+
+
+def test_the_norm_is_gross_so_spaces_convert_directly():
+    """35 м² — гросс с рампами и проездами: 50 мест это ровно 1 750 м²,
+    накидывать сверху на общие зоны не нужно."""
+    row = _calc({"underground_manual_spaces": 50})
+    assert row["gns"] == pytest.approx(50 * 35)
 
 
 def test_a_manual_area_keeps_parking_unsaleable():
@@ -72,11 +98,12 @@ def test_a_manual_area_keeps_parking_unsaleable():
 
 def test_the_page_offers_both_fields_and_warns_about_the_shortfall():
     page = core.PAGE
+    assert "Машино-места — решение проекта" in page
     assert "Площадь подземной парковки" in page
     assert "Норматив площади на машино-место" in page
     assert "function undergroundShortfallNote()" in page
     # Места ГлавАПУ — норматив обеспеченности: нехватку человек должен видеть.
-    assert "норматив ГлавАПУ" in page
+    assert "норматив обеспеченности ГлавАПУ" in page
     assert '"underground_manual_gns_sqm": 0' in page
 
 
