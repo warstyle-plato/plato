@@ -43,7 +43,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.31"
+VERSION = "0.17.32"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -4737,7 +4737,11 @@ _GLAVAPU_HEADLESS_QUEUE_SECONDS = max(5.0, _env_float("GLAVAPU_HEADLESS_QUEUE_SE
 # Синхронный Playwright привязан к потоку, в котором создан, поэтому браузером
 # владеет один выделенный поток, а расчёты приходят к нему очередью. Заодно это
 # и есть ограничение «один Chromium на машину»: второго потока не бывает.
-_GLAVAPU_HEADLESS_IDLE_SECONDS = max(30.0, _env_float("GLAVAPU_HEADLESS_IDLE_SECONDS", 900.0))
+# Ноль (умолчание) — браузер живёт, пока живёт процесс. Таймер простоя экономил
+# 300–400 МБ, но платил холодным стартом за каждый расчёт: боты не работают
+# непрерывно, и пятнадцати минут между двумя участками хватает, чтобы Chromium
+# успел закрыться. Кому память дороже секунд — ставит секунды.
+_GLAVAPU_HEADLESS_IDLE_SECONDS = max(0.0, _env_float("GLAVAPU_HEADLESS_IDLE_SECONDS", 0.0))
 _GLAVAPU_HEADLESS_POLL_MS = int(max(50.0, _env_float("GLAVAPU_HEADLESS_POLL_MS", 200.0)))
 _GLAVAPU_HEADLESS_JOBS: "queue.Queue[tuple[list[str], float, dict[str, Any], threading.Event]]" = queue.Queue()
 _GLAVAPU_BROWSER_LOCK = threading.Lock()
@@ -4811,6 +4815,8 @@ def _glavapu_drive_page(page: Any, numbers: list[str], area_ha: float,
            + "&restrictArea=0&plato=" + str(int(time.time() * 1000)))
     page.goto(url, wait_until="domcontentloaded")
     mark("load")
+    if not numbers:
+        return []  # прогрев: страница загружена, ассеты в кэше браузера
     page.get_by_role("button", name="Участок").click()
     page.fill("#id-cad-numbers-text-field", ", ".join(numbers))
     page.get_by_role("button", name="Отправить").click()
@@ -4846,7 +4852,8 @@ def _glavapu_browser_worker() -> None:
         with sync_playwright() as playwright:
             while True:
                 try:
-                    job = _GLAVAPU_HEADLESS_JOBS.get(timeout=_GLAVAPU_HEADLESS_IDLE_SECONDS)
+                    job = _GLAVAPU_HEADLESS_JOBS.get(
+                        timeout=_GLAVAPU_HEADLESS_IDLE_SECONDS or None)
                 except queue.Empty:
                     with _GLAVAPU_BROWSER_LOCK:
                         if _GLAVAPU_HEADLESS_JOBS.empty():
@@ -4899,6 +4906,18 @@ def _glavapu_browser_worker() -> None:
                 break
             holder.setdefault("error", RuntimeError("поток браузера остановлен"))
             done.set()
+
+
+def _glavapu_warm_up() -> None:
+    """Поднимает браузер и прогревает страницу калькулятора заранее.
+
+    Иначе первый расчёт после выкатки платит и за старт Chromium, и за полную
+    загрузку ассетов ГлавАПУ — а первый расчёт всегда чей-то.
+    """
+    try:
+        _glavapu_headless_rows([], 0.0)
+    except Exception as exc:
+        logging.info("glavapu warm-up finished: %s", exc)
 
 
 def _glavapu_headless_rows(numbers: list[str], area_ha: float) -> list[dict[str, Any]]:
@@ -4956,7 +4975,54 @@ _GLAVAPU_DRIFT_CHECKS = [
     ("55", "компенсация школа", 0.01, "rel"),
     ("56", "компенсация поликлиника", 0.01, "rel"),
 ]
-_GLAVAPU_FORMULA_DRIFT: dict[str, Any] = {"items": []}
+_GLAVAPU_FORMULA_DRIFT: dict[str, Any] = {"items": [], "checked_at": 0.0, "running": False}
+# Сверка формул со штатным калькулятором стоит целого серверного расчёта: она
+# заново спрашивает территорию у ГлавАПУ и собирает книгу ТЭП, чтобы сравнить
+# одиннадцать чисел. Держать в этом человека, который ждёт свой ТЭП, незачем —
+# дрейф методики появляется не чаще раза в квартал, а не раза в клик.
+_GLAVAPU_DRIFT_INTERVAL_SECONDS = max(60.0, _env_float("GLAVAPU_DRIFT_INTERVAL_SECONDS", 3600.0))
+_GLAVAPU_DRIFT_LOCK = threading.Lock()
+
+
+def _glavapu_drift_in_background(rows: list[list[Any]], numbers: list[str]) -> None:
+    """Ставит сверку формул в фон, но не чаще раза в интервал.
+
+    Ошибка, ушедшая только в лог, — ошибка, которой нет, поэтому результат
+    по-прежнему кричит в /status и в предупреждениях расчёта. Но кричать он
+    может и со следующего расчёта: дрейф методики — это про квартал, а не про
+    секунды ожидания.
+    """
+    if not numbers:
+        return
+    with _GLAVAPU_DRIFT_LOCK:
+        if _GLAVAPU_FORMULA_DRIFT.get("running"):
+            return
+        last = float(_GLAVAPU_FORMULA_DRIFT.get("checked_at") or 0.0)
+        if last and time.monotonic() - last < _GLAVAPU_DRIFT_INTERVAL_SECONDS:
+            return
+        _GLAVAPU_FORMULA_DRIFT["running"] = True
+
+    def worker() -> None:
+        try:
+            drift = _glavapu_formula_drift(rows, numbers)
+        except Exception as exc:
+            logging.warning("glavapu drift check failed: %s", exc)
+            drift = []
+        else:
+            if drift:
+                _GLAVAPU_FORMULA_DRIFT.update(
+                    items=drift, found_at=datetime.now(timezone.utc).isoformat(),
+                    numbers=[str(n) for n in numbers])
+                _TELEGRAM_RUNTIME["last_error"] = "Дрейф формул ГлавАПУ: " + "; ".join(drift[:4])
+            elif _GLAVAPU_FORMULA_DRIFT.get("items"):
+                # Формулы снова сходятся — снять флаг, чтобы Telegram не пугал зря.
+                _GLAVAPU_FORMULA_DRIFT.update(items=[], found_at="", numbers=[])
+        finally:
+            with _GLAVAPU_DRIFT_LOCK:
+                _GLAVAPU_FORMULA_DRIFT["checked_at"] = time.monotonic()
+                _GLAVAPU_FORMULA_DRIFT["running"] = False
+
+    threading.Thread(target=worker, name="glavapu-drift", daemon=True).start()
 
 
 def _glavapu_formula_drift(rows: list[list[Any]], numbers: list[str]) -> list[str]:
@@ -4987,6 +5053,44 @@ def _glavapu_formula_drift(rows: list[list[Any]], numbers: list[str]) -> list[st
         if abs(b - s) > limit:
             drift.append(f"{label}: калькулятор {b:g}, формулы {s:g}")
     return drift
+
+
+# Один участок считают по многу раз подряд: поменяли цену — пересчитали,
+# поменяли нарезку — пересчитали, и каждый раз заново поднимался браузер и
+# заново считал ГлавАПУ. ТЭП участка за это время не меняется — меняются наши
+# вводные. Ставки город индексирует поквартально, поэтому шесть часов памяти
+# безопасны, а ждать минуту ради того же ответа — нет.
+_GLAVAPU_TEP_CACHE_SECONDS = max(0.0, _env_float("GLAVAPU_TEP_CACHE_SECONDS", 21600.0))
+_GLAVAPU_TEP_CACHE: dict[tuple[str, ...], tuple[float, dict[str, Any]]] = {}
+_GLAVAPU_TEP_CACHE_LOCK = threading.Lock()
+_GLAVAPU_TEP_CACHE_HITS = {"hits": 0}
+
+
+def _glavapu_tep_cached(numbers: list[str]) -> dict[str, Any] | None:
+    if _GLAVAPU_TEP_CACHE_SECONDS <= 0:
+        return None
+    key = tuple(sorted(str(x).strip() for x in numbers))
+    with _GLAVAPU_TEP_CACHE_LOCK:
+        item = _GLAVAPU_TEP_CACHE.get(key)
+        if not item:
+            return None
+        stored_at, payload = item
+        if time.monotonic() - stored_at > _GLAVAPU_TEP_CACHE_SECONDS:
+            _GLAVAPU_TEP_CACHE.pop(key, None)
+            return None
+        _GLAVAPU_TEP_CACHE_HITS["hits"] += 1
+    return copy.deepcopy(payload)
+
+
+def _glavapu_tep_store(numbers: list[str], payload: dict[str, Any]) -> None:
+    if _GLAVAPU_TEP_CACHE_SECONDS <= 0 or not numbers:
+        return
+    key = tuple(sorted(str(x).strip() for x in numbers))
+    with _GLAVAPU_TEP_CACHE_LOCK:
+        if len(_GLAVAPU_TEP_CACHE) >= 64:
+            oldest = min(_GLAVAPU_TEP_CACHE, key=lambda k: _GLAVAPU_TEP_CACHE[k][0])
+            _GLAVAPU_TEP_CACHE.pop(oldest, None)
+        _GLAVAPU_TEP_CACHE[key] = (time.monotonic(), copy.deepcopy(payload))
 
 
 def _cadastral_analysis_for(numbers: list[str],
@@ -5039,8 +5143,17 @@ def cadastral_tep_server(req: CadastralAnalysisRequest) -> dict[str, Any]:
     # Сначала — настоящий калькулятор. Формулы остаются фолбэком: копия
     # методики отстаёт от города на неизвестный срок, и это уже дважды
     # находил человек на скриншотах, а не мы.
+    # Тот же участок, посчитанный настоящим калькулятором час назад, — это тот
+    # же ТЭП. Браузер поднимать незачем.
+    if _GLAVAPU_HEADLESS_ENABLED and numbers:
+        cached = _glavapu_tep_cached(numbers)
+        if cached is not None:
+            logging.info("tep-server rid=%s из кэша", req.request_id or "-")
+            return cached
+
     if _GLAVAPU_HEADLESS_ENABLED and numbers:
         try:
+            started = time.monotonic()
             analysis = _cadastral_analysis_for(numbers, req.cadastral_analysis)
             area = float((analysis.get("territory") or {}).get("area_ha") or 0.0)
             rows = _glavapu_headless_rows(numbers, area)
@@ -5054,6 +5167,9 @@ def cadastral_tep_server(req: CadastralAnalysisRequest) -> dict[str, Any]:
                 "cadastral_numbers": numbers,
                 "calculated_at": date.today().isoformat(),
             })
+            logging.info("tep-server rid=%s готов за %.1f с",
+                         req.request_id or "-", time.monotonic() - started)
+            _glavapu_tep_store(numbers, imported)
             return imported
         except Exception as exc:
             _GLAVAPU_HEADLESS["fallbacks"] += 1
@@ -5135,24 +5251,15 @@ def import_cadastral_tep(req: CadastralTepRequest) -> dict[str, Any]:
     # формул: разошлись — значит, ГлавАПУ поменял методику, и путь Telegram
     # начал бы врать. Ошибка, ушедшая только в лог, — ошибка, которой нет,
     # поэтому расхождение кричит здесь, в /status и в серверных ответах.
-    try:
-        drift = _glavapu_formula_drift(table_rows, [str(n) for n in numbers])
-    except Exception:
-        drift = []
-    if drift:
-        _GLAVAPU_FORMULA_DRIFT.update(
-            items=drift, found_at=datetime.now(timezone.utc).isoformat(),
-            numbers=[str(n) for n in numbers])
-        _TELEGRAM_RUNTIME["last_error"] = "Дрейф формул ГлавАПУ: " + "; ".join(drift[:4])
+    _glavapu_drift_in_background(table_rows, [str(n) for n in numbers])
+    if _GLAVAPU_FORMULA_DRIFT.get("items"):
         result["warnings"].insert(
             0,
             "ВНИМАНИЕ: серверные формулы DevelopAid разошлись со штатным "
-            "калькулятором (" + "; ".join(drift[:4]) + "). Методика ГлавАПУ "
-            "могла измениться — расчёты Telegram и кнопки бота требуют сверки.",
+            "калькулятором (" + "; ".join(_GLAVAPU_FORMULA_DRIFT["items"][:4]) + "). "
+            "Методика ГлавАПУ могла измениться — расчёты Telegram и кнопки бота "
+            "требуют сверки.",
         )
-    elif _GLAVAPU_FORMULA_DRIFT["items"]:
-        # Формулы снова сходятся — снять флаг, чтобы Telegram не пугал зря.
-        _GLAVAPU_FORMULA_DRIFT.update(items=[], found_at="", numbers=[])
     return result
 
 
@@ -6692,6 +6799,10 @@ def telegram_status() -> dict[str, Any]:
             # Секунды расчёта по шагам: «считает минуту» — это диагноз, а не
             # жалоба, только когда видно, какой шаг эту минуту берёт.
             "last_ms": dict(_GLAVAPU_HEADLESS.get("last_ms") or {}),
+            # Повторный расчёт того же участка обязан быть мгновенным: если
+            # попаданий нет, значит браузер поднимается там, где не должен.
+            "cache_hits": _GLAVAPU_TEP_CACHE_HITS["hits"],
+            "cache_size": len(_GLAVAPU_TEP_CACHE),
             "browser_warm": bool(_GLAVAPU_BROWSER_THREAD
                                  and _GLAVAPU_BROWSER_THREAD.is_alive()),
             "last_ok": _GLAVAPU_HEADLESS.get("last_ok", ""),
@@ -18956,6 +19067,18 @@ def _start_plato_keepalive() -> None:
     """
     if _PLATO_AI_URL and _PLATO_KEEPALIVE_MINUTES > 0:
         threading.Thread(target=_plato_keepalive_loop, daemon=True).start()
+
+
+@app.on_event("startup")
+def _start_glavapu_warm_up() -> None:
+    """Браузер греется сразу после старта, а не на первом расчёте.
+
+    Прогрев идёт в фоне и в отдельном потоке: контейнер обязан подняться и
+    начать отвечать, даже если ГлавАПУ в этот момент недоступен.
+    """
+    if _GLAVAPU_HEADLESS_ENABLED:
+        threading.Thread(target=_glavapu_warm_up, name="glavapu-warm-up",
+                         daemon=True).start()
 
 
 def _plato_route() -> str:

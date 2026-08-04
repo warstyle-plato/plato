@@ -19,6 +19,16 @@ import main as _wrapper  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
+def empty_glavapu_tep_cache():
+    """ТЭП участка кэшируется на шесть часов — в жизни это ускорение, в тестах
+    чужой ответ: один тест кладёт результат по номеру, следующий проверяет
+    поведение при сбое и получает вчерашний успех."""
+    _wrapper.core._GLAVAPU_TEP_CACHE.clear()
+    yield
+    _wrapper.core._GLAVAPU_TEP_CACHE.clear()
+
+
+@pytest.fixture(autouse=True)
 def isolated_platon_state(tmp_path, monkeypatch):
     monkeypatch.setattr(_wrapper, "_STATE_DIR", tmp_path / "platon_state")
     for name in ("_PLATON_CONTEXT_BY_SESSION", "_PLATON_LAST_SESSION",
