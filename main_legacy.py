@@ -43,7 +43,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.29"
+VERSION = "0.17.30"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -7104,10 +7104,12 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
             ))
         return drawing
 
-    def sales_bar_chart(rows: list[dict[str, Any]], height: float = 108) -> Drawing | None:
+    def sales_bar_chart(rows: list[dict[str, Any]], height: float = 108,
+                        key: str = "sales", factor: float = 1 / 1_000_000_000,
+                        unit_label: str = "млрд ₽/мес.", digits: int = 1) -> Drawing | None:
         if not rows:
             return None
-        values = [max(0.0, float(row.get("sales", 0.0) or 0.0) / 1_000_000_000) for row in rows]
+        values = [max(0.0, float(row.get(key, 0.0) or 0.0) * factor) for row in rows]
         maximum = max(values or [0.0])
         if maximum <= 0:
             return None
@@ -7121,7 +7123,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
             y = bottom + plot_h * value / maximum
             drawing.add(Line(left, y, width - right, y, strokeColor=colors.HexColor("#E5E5E5"), strokeWidth=0.5))
             drawing.add(String(
-                left - 5, y - 2, _pdf_num(value, 1), fontName=regular,
+                left - 5, y - 2, _pdf_num(value, digits), fontName=regular,
                 fontSize=6.5, textAnchor="end", fillColor=colors.HexColor("#777777"),
             ))
         slot = plot_w / max(len(rows), 1)
@@ -7135,7 +7137,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
                 fillColor=colors.HexColor("#202020"), strokeColor=None,
             ))
         drawing.add(String(
-            width - right, height - 8, "млрд ₽/мес.", fontName=regular,
+            width - right, height - 8, unit_label, fontName=regular,
             fontSize=6.5, textAnchor="end", fillColor=colors.HexColor("#777777"),
         ))
         for index in sorted(set([0, len(rows) // 2, len(rows) - 1])):
@@ -7311,6 +7313,28 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
             " Базовую стоимость город индексирует поквартально — расчёты разных"
             " дат по одному участку могут отличаться на величину индексации.",
             small))
+    # Удельная экономика проекта была только в книге и на странице, а в отчёте
+    # её не было вовсе: решение принимают по рублю на метр, а не по миллиардам.
+    # Обе базы обязаны стоять рядом — на ГНС считают стройку, на продаваемую
+    # сравнивают с ценой продажи, и подмена одной другой ошибается вдвое.
+    unit_economics = report.get("unit_economics") or []
+    if unit_economics:
+        ue_rows = [["Показатель", "Всего", "тыс ₽/м² ГНС", "тыс ₽/м² продаваемой"]]
+        for item in unit_economics:
+            ue_rows.append([
+                str(item.get("label") or "—"),
+                _pdf_money(item.get("total")),
+                _pdf_num(item.get("per_gns_th"), 1),
+                _pdf_num(item.get("per_saleable_th"), 1),
+            ])
+        story.append(KeepTogether([
+            P("Удельная экономика проекта", h2),
+            table(ue_rows, [62*mm, 40*mm, 34*mm, 34*mm], font_size=7.6),
+            P(f"База ГНС — {_pdf_num(summary.get('project_gns_sqm'), 0)} м² всего проекта; "
+              f"база продаваемой — {_pdf_num(summary.get('monetizable_saleable_sqm'), 0)} м² "
+              "монетизируемой площади (паркинг и кладовые продаются штуками и в неё "
+              "не входят).", small),
+        ]))
     # Удельные расходы стройки — на первой странице, рядом с ключевой
     # экономикой: по ним читается себестоимость, и именно их просили видеть
     # в отчёте, не раскапывая структуру расходов по группам.
@@ -7318,25 +7342,27 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     if construction_costs:
         # «ГНС проекта» в заголовке обязателен: без него 23 тыс ₽/м² подземной
         # части читались как ставка на подземный метр (она — 190, во вводных).
-        cc_rows = [["Статья", "млн ₽", "тыс ₽/м² ГНС проекта"]]
+        cc_rows = [["Статья", "млн ₽", "тыс ₽/м² ГНС проекта", "тыс ₽/м² продаваемой"]]
         for item in construction_costs:
             cc_rows.append([
                 str(item.get("label") or "—"),
                 _pdf_num(float(item.get("value") or 0) / 1e6, 1),
                 _pdf_num(item.get("per_gns_th"), 2),
+                _pdf_num(item.get("per_saleable_th"), 2),
             ])
         cc_total = sum(float(item.get("value") or 0) for item in construction_costs)
         cc_gns = float(summary.get("project_gns_sqm") or 0)
+        cc_saleable = float(summary.get("monetizable_saleable_sqm") or 0)
         cc_rows.append([
             "Итого строительство",
             _pdf_num(cc_total / 1e6, 1),
             _pdf_num(cc_total / cc_gns / 1000 if cc_gns else 0, 2),
+            _pdf_num(cc_total / cc_saleable / 1000 if cc_saleable else 0, 2),
         ])
         story.append(KeepTogether([
             P("Удельные расходы строительства", h2),
-            table(cc_rows, [100*mm, 35*mm, 35*mm], font_size=7.6),
-            P("Удельные значения — на м² ГНС всего проекта. Внутренние инженерные "
-              "сети входят в СМР соответствующей части.", small),
+            table(cc_rows, [70*mm, 30*mm, 35*mm, 35*mm], font_size=7.6),
+            P("Внутренние инженерные сети входят в СМР соответствующей части.", small),
         ]))
     purchase_assessment = _purchase_feasibility(
         inputs.get("purchase_price_mln"),
@@ -7491,13 +7517,35 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         expense_rows.append([item.get('label') or '—',_pdf_money(value),(_pdf_num(value/total_expense*100,1)+'%') if total_expense else '—'])
     story.append(table(expense_rows,[98*mm,45*mm,27*mm]))
     story.append(P("Продажи и продукты",h2))
-    product_rows=[["Продукт","Объём","Стартовая цена","Средняя цена","Выручка"]]
+    product_rows=[["Продукт","Объём","Темп до РВЭ","Стартовая цена","Средняя цена","Выручка"]]
     for item in products:
         quantity=float(item.get('quantity') or 0);revenue=float(item.get('revenue') or 0)
         if quantity<=0 and revenue<=0: continue
         unit=item.get('unit') or ''
-        product_rows.append([item.get('label') or '—',_pdf_num(quantity,0)+(' '+unit if unit else ''),_pdf_num(item.get('start_price_th'),0)+" тыс. ₽",_pdf_num(item.get('avg_price_th'),0)+" тыс. ₽",_pdf_money(revenue)])
-    story.append(table(product_rows,[55*mm,28*mm,30*mm,30*mm,32*mm],font_size=7.4))
+        pace=item.get('pace_pre')
+        product_rows.append([item.get('label') or '—',_pdf_num(quantity,0)+(' '+unit if unit else ''),
+                             (_pdf_num(pace,0)+' '+unit+'/мес') if pace else '—',
+                             _pdf_num(item.get('start_price_th'),0)+" тыс. ₽",_pdf_num(item.get('avg_price_th'),0)+" тыс. ₽",_pdf_money(revenue)])
+    story.append(table(product_rows,[45*mm,26*mm,28*mm,26*mm,26*mm,29*mm],font_size=7.4))
+    # Квартиры продаются штуками. «40 квартир в месяц» проверяется отделом
+    # продаж и рынком, «2 400 м² в месяц» — нет, а в отчёте был только метр.
+    apartment_sales = report.get("apartment_sales") or {}
+    if float(apartment_sales.get("units_total") or 0) > 0:
+        story.append(KeepTogether([
+            P("Темп продаж квартир", h2),
+            table([
+                ["Показатель", "Значение"],
+                ["Квартир в проекте", _pdf_num(apartment_sales.get("units_total"), 0) + " шт."],
+                ["Средняя площадь квартиры", _pdf_num(apartment_sales.get("avg_unit_sqm"), 1) + " м²"],
+                ["Средняя цена квартиры", _pdf_money(float(apartment_sales.get("avg_unit_price_mln") or 0) * 1e6)],
+                ["Темп до РВЭ", _pdf_num(apartment_sales.get("pace_pre_rve_units"), 1) + " кв./мес."],
+                ["Средний темп за весь период продаж", _pdf_num(apartment_sales.get("pace_units"), 1) + " кв./мес."],
+                ["Пиковый месяц", _pdf_num(apartment_sales.get("peak_units"), 1) + " кв."],
+                ["Длительность продаж", _pdf_num(apartment_sales.get("months"), 0) + " мес."],
+            ], [112*mm, 58*mm], font_size=7.6),
+            P("Штуки пересчитаны из помесячных продаж по средней площади квартиры "
+              "из ТЭП: изменится нарезка — изменится и темп.", small),
+        ]))
     story.append(PageBreak());story.append(P("Финансирование и динамика проекта",h2))
     finance_rows=[["Показатель","Значение"],["Расчётный БРИДЖ",_pdf_money(financing.get('calculated_bridge'))],["Пиковый фактический БРИДЖ (тело долга)",_pdf_money(financing.get('actual_bridge'))],["Пик БРИДЖ с капитализацией процентов (справочно)",_pdf_money(financing.get('bridge_peak_capitalized') or financing.get('actual_bridge'))],["Пиковая (непокрытая эскроу) задолженность ПФ",_pdf_money(financing.get('pf_uncovered_peak'))],["Лимит ПФ",_pdf_money(financing.get('pf_limit'))],["Текущая ключевая ставка",_pdf_pct(financing.get('current_key_rate'))],["Спред БРИДЖ",_pdf_pct(financing.get('bridge_spread'))],["Ставка БРИДЖ на текущей ключевой",_pdf_pct(financing.get('current_bridge_rate'))],["Средняя ключевая за период БРИДЖ",_pdf_pct(financing.get('avg_bridge_key_rate'))],["Средневзвешенная ставка БРИДЖ за период",_pdf_pct(financing.get('avg_bridge_rate'))],["Средняя фактическая ставка ПФ",_pdf_pct(financing.get('avg_pf_effective_rate'))],["Проценты и комиссии",_pdf_money(financing.get('interest_and_fees'))],["Непогашенный долг ПФ на конец проекта",_pdf_money(financing.get('ending_pf'))],["LLCR",_pdf_num(summary.get('llcr'),2)+"x"]]
     story.append(table(finance_rows,[112*mm,58*mm],font_size=7.6))
@@ -7568,6 +7616,14 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     pace_chart=sales_bar_chart(timeline_rows,height=104)
     if pace_chart:
         story.append(KeepTogether([P("Месячный темп продаж",h2),pace_chart]))
+
+    # Тот же темп в штуках квартир: денежный график прячет и рост цены, и
+    # изменение нарезки — по нему не видно, сколько квартир уходит в месяц.
+    apartment_pace_rows = (report.get("apartment_sales") or {}).get("rows") or []
+    units_chart=sales_bar_chart(apartment_pace_rows,height=104,key="units",
+                                factor=1.0,unit_label="квартир/мес.",digits=0)
+    if units_chart:
+        story.append(KeepTogether([P("Месячный темп продаж квартир, шт.",h2),units_chart]))
 
     events=calendar_data.get('events') or []
     if events:
@@ -7843,6 +7899,20 @@ def _model_sheet_revenue(result: dict[str, Any]) -> dict[str, Any]:
                 _cell_num(item.get("per_gns_th")),
                 _cell_num(item.get("per_saleable_th")),
             ])
+    # Темп в штуках — та же цифра, что в отчёте: квартиры продаются штуками,
+    # и отдел продаж считает планы в них, а не в метрах.
+    apartment_sales = report.get("apartment_sales") or {}
+    if float(apartment_sales.get("units_total") or 0) > 0:
+        rows.extend([
+            [], [_cell_text("Темп продаж квартир", _XLSX_STYLE_BOLD)],
+            _header_row(["Показатель", "Значение"]),
+            [_cell_text("Квартир в проекте, шт."), _cell_num(apartment_sales.get("units_total"), _XLSX_STYLE_INT)],
+            [_cell_text("Средняя площадь квартиры, м²"), _cell_num(apartment_sales.get("avg_unit_sqm"))],
+            [_cell_text("Средняя цена квартиры, млн ₽"), _cell_num(apartment_sales.get("avg_unit_price_mln"))],
+            [_cell_text("Темп до РВЭ, кв./мес."), _cell_num(apartment_sales.get("pace_pre_rve_units"))],
+            [_cell_text("Средний темп за период продаж, кв./мес."), _cell_num(apartment_sales.get("pace_units"))],
+            [_cell_text("Пиковый месяц, кв."), _cell_num(apartment_sales.get("peak_units"))],
+        ])
     return {"name": "Выручка", "rows": rows, "widths": [34, 14, 16, 20, 20, 18], "freeze": "A4", "split_y": 3}
 
 
@@ -14454,7 +14524,36 @@ def calculate(req: CalcRequest) -> dict:
             "label": cc_label,
             "value": cc_value,
             "per_gns_th": per_sqm_th(cc_value, project_gns_sqm),
+            # На продаваемую — та база, в которой считают цену: стройка на м²
+            # ГНС и стройка на м² продаж различаются в полтора-два раза, и
+            # сравнивать с ценой продажи можно только вторую.
+            "per_saleable_th": per_sqm_th(cc_value, monetizable_saleable_sqm),
         })
+
+    # Темп продаж квартир в штуках. В метрах он есть везде, но продаются
+    # квартиры штуками: «40 квартир в месяц» проверяется отделом продаж и
+    # рынком, а «2 400 м² в месяц» — нет. Пересчёт идёт через среднюю площадь
+    # квартиры из ТЭП, поэтому меняется вместе с ней.
+    apartment_units_total = n(t.get("apartments", {}), "units")
+    avg_apartment_sqm = (apartment_saleable_sqm / apartment_units_total
+                         if apartment_units_total else 0.0)
+    apartment_sales: dict[str, Any] = {}
+    apartment_quantity = op.get("quantity_product_schedules", {}).get("apartments") or {}
+    if avg_apartment_sqm > 0 and apartment_quantity:
+        monthly = [(month, sqm / avg_apartment_sqm)
+                   for month, sqm in sorted(apartment_quantity.items()) if sqm > 0]
+        before_rve = [units for month, units in monthly if month <= op["rve"]]
+        apartment_sales = {
+            "units_total": apartment_units_total,
+            "avg_unit_sqm": avg_apartment_sqm,
+            "avg_unit_price_mln": (avg_apartment_sqm * avg_apartment_price / 1000
+                                   if avg_apartment_price else 0.0),
+            "pace_pre_rve_units": sum(before_rve) / len(before_rve) if before_rve else 0.0,
+            "pace_units": sum(u for _, u in monthly) / len(monthly) if monthly else 0.0,
+            "peak_units": max((u for _, u in monthly), default=0.0),
+            "months": len(monthly),
+            "rows": [{"month": month.isoformat(), "units": units} for month, units in monthly],
+        }
 
     # Expense structure: categories are mutually exclusive and sum to total expenses.
     purchase_value = n(x, "purchase_price_mln") * 1_000_000
@@ -14739,6 +14838,7 @@ def calculate(req: CalcRequest) -> dict:
             "products": products_report,
             "unit_economics": unit_economics,
             "construction_costs": construction_costs,
+            "apartment_sales": apartment_sales,
             "expense_structure": expense_structure,
             "calendar": {
                 "start": calendar_start.isoformat(),
@@ -15313,9 +15413,41 @@ def _consolidate_phase_results(
             construction_map[item["label"]] = (
                 construction_map.get(item["label"], 0.0) + float(item["value"] or 0.0))
     construction_costs = [
-        {"label": label, "value": value, "per_gns_th": per_th(value, project_gns)}
+        {"label": label, "value": value, "per_gns_th": per_th(value, project_gns),
+         "per_saleable_th": per_th(value, saleable)}
         for label, value in construction_map.items() if value > 0
     ]
+
+    # Темп продаж квартир в штуках складывается по месяцам всех очередей:
+    # в один месяц могут продаваться квартиры двух очередей сразу, и отдел
+    # продаж видит их одной цифрой, а не двумя.
+    apartment_units_by_month: dict[str, float] = defaultdict(float)
+    apartment_units_total = 0.0
+    apartment_area_total = 0.0
+    for result in results:
+        phase_sales_apartments = (result["report"].get("apartment_sales") or {})
+        apartment_units_total += float(phase_sales_apartments.get("units_total") or 0.0)
+        apartment_area_total += (float(phase_sales_apartments.get("units_total") or 0.0)
+                                 * float(phase_sales_apartments.get("avg_unit_sqm") or 0.0))
+        for row in phase_sales_apartments.get("rows") or []:
+            apartment_units_by_month[str(row["month"])] += float(row["units"] or 0.0)
+    apartment_sales: dict[str, Any] = {}
+    if apartment_units_by_month:
+        monthly = sorted(apartment_units_by_month.items())
+        last_rve = max(d(r["dates"]["rve"]) for r in results)
+        before_rve = [units for month, units in monthly if d(month) <= last_rve]
+        apartment_sales = {
+            "units_total": apartment_units_total,
+            "avg_unit_sqm": (apartment_area_total / apartment_units_total
+                             if apartment_units_total else 0.0),
+            "avg_unit_price_mln": (apartment_area_total / apartment_units_total
+                                   * avg_apt_price / 1000 if apartment_units_total else 0.0),
+            "pace_pre_rve_units": sum(before_rve) / len(before_rve) if before_rve else 0.0,
+            "pace_units": sum(u for _, u in monthly) / len(monthly),
+            "peak_units": max(u for _, u in monthly),
+            "months": len(monthly),
+            "rows": [{"month": month, "units": units} for month, units in monthly],
+        }
 
     expense_map: dict[str, float] = defaultdict(float)
     for result in results:
@@ -15462,6 +15594,7 @@ def _consolidate_phase_results(
             "phase_products": phase_sales,
             "unit_economics": unit_economics,
             "construction_costs": construction_costs,
+            "apartment_sales": apartment_sales,
             "expense_structure": expense_structure,
             "calendar": {"start": cal_start.isoformat(), "end": cal_end.isoformat(), "events": events},
             "financing": {
@@ -20138,6 +20271,9 @@ details.cadastral-box>summary::marker{color:#888}
             <tbody id="salesReportTable"></tbody>
           </table>
         </div>
+        <!-- Квартиры продаются штуками: план отдела продаж и рыночная проверка
+             живут в них, а таблица выше говорит только метрами. -->
+        <table class="metric-table metric-compact" id="apartmentPaceTable"></table>
       </div>
 
       <div class="report-2col">
@@ -22617,6 +22753,19 @@ function renderResult(){
     <td>${dateRu(p.sales_start)}</td>
     <td>${dateRu(p.sales_end)}</td>
    </tr>`).join('');
+ }
+
+ {
+  const ap=r.report.apartment_sales||{};
+  const paceEl=document.getElementById('apartmentPaceTable');
+  if(paceEl)paceEl.innerHTML=Number(ap.units_total||0)>0?
+   row('Квартир в проекте',num(ap.units_total)+' шт.')+
+   row('Средняя площадь квартиры',num2(ap.avg_unit_sqm)+' м²')+
+   row('Средняя цена квартиры',money(Number(ap.avg_unit_price_mln||0)*1e6))+
+   row('Темп продаж до РВЭ',num2(ap.pace_pre_rve_units)+' кв./мес.')+
+   row('Средний темп за период продаж',num2(ap.pace_units)+' кв./мес.')+
+   row('Пиковый месяц',num2(ap.peak_units)+' кв.')
+   :'';
  }
 
  calendarDateBoxes.innerHTML=[
