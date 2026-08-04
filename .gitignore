@@ -5,3 +5,6 @@ __pycache__/
 .env.local
 run.err
 data/platon_state/
+# Реестр Telegram-пользователей — рантайм-состояние: заводится при первом
+# запуске и живёт в томе data/, как и состояние Платона выше.
+data/telegram_users.sqlite3
