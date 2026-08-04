@@ -151,7 +151,57 @@ def test_proxy_sends_the_secret_in_a_header(monkeypatch):
     # Ключ OpenAI не должен покидать сервис, где он задан.
     assert not any("authorization" in name.lower() for name in captured["headers"])
     assert captured["body"] == {"payload": PAYLOAD}
-    assert captured["timeout"] == 120.0
+    # Первая попытка ждёт окно пробуждения, а не полный таймаут: спящий Render
+    # в него всё равно не уложится, а живой отвечает быстрее.
+    assert captured["timeout"] == pytest.approx(main._PLATO_WAKE_TIMEOUT_SECONDS)
+
+
+def test_a_timeout_is_retried_instead_of_becoming_a_504(monkeypatch):
+    """Первый запрос будит уснувший Render и честно не получает ответа —
+    раньше человек видел «Ошибка AI (504)» на вопрос, который проходил со
+    второй попытки. Теперь таймаут повторяется, и ответ доезжает."""
+    import socket
+    attempts = []
+
+    class Response:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return json.dumps({"output": [{"text": "ок"}]}).encode()
+
+    def fake_urlopen(request, timeout=None):
+        attempts.append(timeout)
+        if len(attempts) == 1:
+            raise socket.timeout("timed out")
+        return Response()
+
+    monkeypatch.setattr(main, "_PLATO_AI_URL", "https://bot.example/internal/plato/chat")
+    monkeypatch.setattr(main, "_PLATO_AI_PROXY_SECRET", "s3cret")
+    monkeypatch.setattr(main.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(main.urllib.request, "urlopen", fake_urlopen)
+
+    answer = main._openai_proxy_request(PAYLOAD)
+    assert answer == {"output": [{"text": "ок"}]}
+    assert len(attempts) == 2, "таймаут обязан повторяться"
+    assert attempts[0] < attempts[1], "первая попытка — короткое окно пробуждения"
+    assert attempts[1] == pytest.approx(main._PLATO_AI_TIMEOUT_SECONDS)
+
+
+def test_only_a_full_run_of_timeouts_becomes_a_504(monkeypatch):
+    """Когда сервис молчит все попытки — это честная 504 с числом попыток."""
+    import socket
+
+    def always_timeout(request, timeout=None):
+        raise socket.timeout("timed out")
+
+    monkeypatch.setattr(main, "_PLATO_AI_URL", "https://bot.example/internal/plato/chat")
+    monkeypatch.setattr(main, "_PLATO_AI_PROXY_SECRET", "s3cret")
+    monkeypatch.setattr(main.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(main.urllib.request, "urlopen", always_timeout)
+
+    with pytest.raises(HTTPException) as exc:
+        main._openai_proxy_request(PAYLOAD)
+    assert exc.value.status_code == 504
+    assert "попытки" in str(exc.value.detail)
 
 
 # --- служебный эндпоинт ------------------------------------------------------

@@ -42,7 +42,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.20"
+VERSION = "0.17.21"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -18048,6 +18048,10 @@ def _extract_openai_text(data: dict[str, Any]) -> str:
 _PLATO_AI_URL = _env_str("PLATO_AI_URL", "").strip()
 _PLATO_AI_PROXY_SECRET = _env_str("PLATO_AI_PROXY_SECRET", "").strip()
 _PLATO_AI_TIMEOUT_SECONDS = max(30.0, _env_float("PLATO_AI_TIMEOUT_SECONDS", 120.0))
+# Окно первой попытки — на пробуждение Render после простоя: он засыпает и
+# первый запрос уходит в тишину. Живой сервис отвечает быстрее, а долгие
+# ответы дожидаются на повторе с полным таймаутом.
+_PLATO_WAKE_TIMEOUT_SECONDS = max(15.0, _env_float("PLATO_AI_WAKE_TIMEOUT_SECONDS", 45.0))
 _PLATON_LOG = logging.getLogger("developaid.platon")
 
 # Между Яндексом и Render TLS-соединение изредка обрывается на чтении ответа:
@@ -18142,12 +18146,20 @@ def _openai_proxy_request(payload: dict[str, Any]) -> dict[str, Any]:
     body = json.dumps({"payload": payload}, ensure_ascii=False).encode("utf-8")
 
     last_transport: Exception | None = None
+    timed_out = False
     for attempt in range(1, _PLATO_PROXY_ATTEMPTS + 1):
         # Новый Request на каждую попытку: прежний тянет за собой то же
         # соединение, на котором и оборвалось.
         request = urllib.request.Request(_PLATO_AI_URL, data=body, headers=headers, method="POST")
+        # Первая попытка ждёт меньше: спящий Render всё равно не ответит, а
+        # человек не должен сидеть перед пустым окном полный таймаут, чтобы
+        # только потом начался повтор. Живой сервис в это окно укладывается —
+        # долгие ответы дожидаются на второй попытке с полным сроком.
+        attempt_timeout = (min(_PLATO_WAKE_TIMEOUT_SECONDS, _PLATO_AI_TIMEOUT_SECONDS)
+                           if attempt == 1 and _PLATO_PROXY_ATTEMPTS > 1
+                           else _PLATO_AI_TIMEOUT_SECONDS)
         try:
-            with urllib.request.urlopen(request, timeout=_PLATO_AI_TIMEOUT_SECONDS) as response:
+            with urllib.request.urlopen(request, timeout=attempt_timeout) as response:
                 raw = response.read()
             if not raw:
                 raise http.client.IncompleteRead(b"")
@@ -18178,14 +18190,21 @@ def _openai_proxy_request(payload: dict[str, Any]) -> dict[str, Any]:
             delay = _PLATO_PROXY_BACKOFF[attempt - 1]
             _PLATON_LOG.info("Platon proxy retry in %ds", delay)
             time.sleep(delay)
-        except socket.timeout as exc:
-            raise HTTPException(
-                status_code=504,
-                detail=(
-                    f"Платон Сергеевич не ответил за {int(_PLATO_AI_TIMEOUT_SECONDS)} с. "
-                    "Повторите вопрос — обычно это перезапуск сервиса после простоя."
-                ),
-            ) from exc
+        except (socket.timeout, TimeoutError) as exc:
+            # Таймаут — тоже повод повторить, а не сдаваться. Render засыпает
+            # после простоя, и первый запрос уходит на его пробуждение: он
+            # честно не отвечает, зато следующий попадает в живой сервис.
+            # Прежде первая же тишина отдавалась как окончательная 504, и
+            # человек видел «Ошибка AI (504)» на вопрос, который сработал бы
+            # со второй попытки.
+            last_transport = exc
+            timed_out = True
+            _PLATON_LOG.info("Platon proxy attempt %d/%d timed out after %ds",
+                             attempt, _PLATO_PROXY_ATTEMPTS,
+                             int(_PLATO_AI_TIMEOUT_SECONDS))
+            if attempt >= _PLATO_PROXY_ATTEMPTS:
+                break
+            time.sleep(_PLATO_PROXY_BACKOFF[attempt - 1])
         except json.JSONDecodeError as exc:
             # Тело пришло рваным: 200 без разобранного JSON успехом не считаем.
             last_transport = exc
@@ -18195,6 +18214,15 @@ def _openai_proxy_request(payload: dict[str, Any]) -> dict[str, Any]:
                 break
             time.sleep(_PLATO_PROXY_BACKOFF[attempt - 1])
 
+    if timed_out:
+        raise HTTPException(
+            status_code=504,
+            detail=(
+                f"Платон Сергеевич не ответил за {int(_PLATO_AI_TIMEOUT_SECONDS)} с "
+                f"({_PLATO_PROXY_ATTEMPTS} попытки). Обычно это пробуждение сервиса "
+                "после простоя — повторите вопрос через минуту."
+            ),
+        ) from last_transport
     raise HTTPException(
         status_code=502,
         detail=(
