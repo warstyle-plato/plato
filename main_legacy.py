@@ -14,6 +14,7 @@ import http.client
 import json
 import logging
 import os
+import queue
 import threading
 import time
 import math
@@ -42,7 +43,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.28"
+VERSION = "0.17.29"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -172,6 +173,11 @@ class CadastralAnalysisRequest(BaseModel):
     # Идентификатор запуска со страницы: по нему в журнале сшиваются старт,
     # ответ и применение одного клика «Получить ТЭП».
     request_id: str = ""
+    # Территория, уже собранная страницей перед этим запросом. Серверный расчёт
+    # ТЭП спрашивал её у ГлавАПУ второй раз за тот же клик — лишний внешний
+    # запрос в цепочке, которая и без него небыстрая. Присланная территория
+    # принимается, только если это территория запрошенных участков.
+    cadastral_analysis: dict[str, Any] | None = None
 
 
 class CadastralTepRequest(BaseModel):
@@ -4714,7 +4720,7 @@ _GLAVAPU_COMPENSATION_RATES_DATE = "01.08.2026"
 _GLAVAPU_HEADLESS_ENABLED = _env_str("GLAVAPU_HEADLESS", "").strip().lower() in ("1", "true", "yes", "on")
 _GLAVAPU_HEADLESS_TIMEOUT_MS = int(max(20.0, _env_float("GLAVAPU_HEADLESS_TIMEOUT_SECONDS", 90.0)) * 1000)
 _GLAVAPU_HEADLESS: dict[str, Any] = {"last_ok": "", "last_error": "", "runs": 0,
-                                     "fallbacks": 0, "waits": 0}
+                                     "fallbacks": 0, "waits": 0, "last_ms": {}}
 # Браузер запускается по одному на машину: ядро — 2 vCPU и 4 ГБ, воркеров два,
 # и каждый Chromium берёт 300–400 МБ. Два одновременных расчёта клали бы не
 # только ТЭП, а весь контейнер по нехватке памяти. Второй запрос ждёт очереди
@@ -4722,6 +4728,33 @@ _GLAVAPU_HEADLESS: dict[str, Any] = {"last_ok": "", "last_error": "", "runs": 0,
 _GLAVAPU_HEADLESS_SLOTS = max(1, int(_env_float("GLAVAPU_HEADLESS_PARALLEL", 1)))
 _GLAVAPU_HEADLESS_LOCK = threading.Semaphore(_GLAVAPU_HEADLESS_SLOTS)
 _GLAVAPU_HEADLESS_QUEUE_SECONDS = max(5.0, _env_float("GLAVAPU_HEADLESS_QUEUE_SECONDS", 120.0))
+
+# Браузер живёт между расчётами. Холодный запуск Chromium и первая загрузка
+# страницы калькулятора со всеми её ассетами стоили большую часть минуты, и
+# платились они каждый раз заново. Тёплый браузер отдаёт ассеты из своего кэша,
+# а платится за это памятью — поэтому после простоя он закрывается сам.
+#
+# Синхронный Playwright привязан к потоку, в котором создан, поэтому браузером
+# владеет один выделенный поток, а расчёты приходят к нему очередью. Заодно это
+# и есть ограничение «один Chromium на машину»: второго потока не бывает.
+_GLAVAPU_HEADLESS_IDLE_SECONDS = max(30.0, _env_float("GLAVAPU_HEADLESS_IDLE_SECONDS", 900.0))
+_GLAVAPU_HEADLESS_POLL_MS = int(max(50.0, _env_float("GLAVAPU_HEADLESS_POLL_MS", 200.0)))
+_GLAVAPU_HEADLESS_JOBS: "queue.Queue[tuple[list[str], float, dict[str, Any], threading.Event]]" = queue.Queue()
+_GLAVAPU_BROWSER_LOCK = threading.Lock()
+_GLAVAPU_BROWSER_THREAD: threading.Thread | None = None
+# --disable-dev-shm-usage: в контейнере /dev/shm мал, и Chromium на тяжёлой
+# странице падает молча, вместо того чтобы честно отработать.
+_GLAVAPU_HEADLESS_ARGS = [
+    "--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu",
+    "--disable-extensions", "--disable-background-networking",
+    "--disable-features=Translate,BackForwardCache", "--mute-audio", "--no-first-run",
+]
+# Картинки, шрифты и счётчики к таблице ТЭП отношения не имеют, а тянутся
+# дольше самого расчёта. Всё, что участвует в счёте, — запросы к API ГлавАПУ.
+_GLAVAPU_BLOCKED_TYPES = {"image", "font", "media"}
+_GLAVAPU_BLOCKED_HOSTS = ("mc.yandex.", "metrika", "google-analytics.com",
+                          "googletagmanager.com", "top-fwz1.mail.ru",
+                          "doubleclick.net", "vk.com/rtrg")
 
 _GLAVAPU_READ_ROWS_JS = """() => {
   const table = document.querySelector('table[aria-label="calc table"]');
@@ -4736,51 +4769,175 @@ _GLAVAPU_READ_ROWS_JS = """() => {
 }"""
 
 
+def _glavapu_block_junk(route: Any) -> None:
+    """Отсекает то, что к расчёту отношения не имеет."""
+    request = route.request
+    junk = (request.resource_type in _GLAVAPU_BLOCKED_TYPES
+            or any(host in request.url for host in _GLAVAPU_BLOCKED_HOSTS))
+    try:
+        route.abort() if junk else route.continue_()
+    except Exception:  # страница уже ушла — нечего продолжать
+        pass
+
+
+def _glavapu_drive_page(page: Any, numbers: list[str], area_ha: float,
+                        timings: dict[str, int]) -> list[dict[str, Any]]:
+    """Шаги браузерной автоматизации — те же, что отрабатывает скрытый iframe
+    на сайте: «Участок» → кадастровые номера → «Отправить» → «Перейти к
+    расчётам» → чтение таблицы. Готовность таблицы определяется так же, как на
+    странице: есть коды 60 и 54 и не меньше шестидесяти строк — иначе рискуем
+    снять её недосчитанной.
+
+    Страница переиспользуется между расчётами, поэтому хранилище прошлого
+    прогона стирается: восстановленный оттуда чужой участок дал бы правдоподобно
+    выглядящий чужой ТЭП. Сама таблица переживает переход не может — переход
+    пересобирает DOM.
+    """
+    step = time.monotonic()
+
+    def mark(name: str) -> None:
+        nonlocal step
+        now = time.monotonic()
+        timings[name] = int((now - step) * 1000)
+        step = now
+
+    try:
+        if "genplan.tech" in str(page.url or ""):
+            page.evaluate("() => { try { localStorage.clear(); sessionStorage.clear(); }"
+                          " catch (e) {} }")
+    except Exception:
+        pass
+    url = ("https://genplan.tech/calc/?terrArea=" + urllib.parse.quote(f"{area_ha:.4f}")
+           + "&restrictArea=0&plato=" + str(int(time.time() * 1000)))
+    page.goto(url, wait_until="domcontentloaded")
+    mark("load")
+    page.get_by_role("button", name="Участок").click()
+    page.fill("#id-cad-numbers-text-field", ", ".join(numbers))
+    page.get_by_role("button", name="Отправить").click()
+    page.get_by_role("button", name="Перейти к расчётам").click()
+    mark("parcel")
+    deadline = time.monotonic() + _GLAVAPU_HEADLESS_TIMEOUT_MS / 1000.0
+    while True:
+        rows = page.evaluate(_GLAVAPU_READ_ROWS_JS) or []
+        codes = {str(r.get("code") or "") for r in rows}
+        if "60" in codes and "54" in codes and len(rows) >= 60:
+            mark("table")
+            return rows
+        if time.monotonic() > deadline:
+            raise TimeoutError(
+                f"калькулятор не отдал таблицу за {_GLAVAPU_HEADLESS_TIMEOUT_MS // 1000} с "
+                f"(строк {len(rows)})")
+        page.wait_for_timeout(_GLAVAPU_HEADLESS_POLL_MS)
+
+
+def _glavapu_browser_worker() -> None:
+    """Единственный поток, владеющий браузером.
+
+    Синхронный Playwright нельзя дёргать из чужого потока, а воркеров у нас
+    два, и запросы приходят из пула FastAPI. Поэтому браузер держит один поток,
+    расчёты приходят к нему очередью, и он же закрывает Chromium после простоя:
+    держать 300–400 МБ ради расчёта, которого может не быть до вечера, дорого.
+    """
+    global _GLAVAPU_BROWSER_THREAD
+    from playwright.sync_api import sync_playwright
+
+    browser = page = None
+    try:
+        with sync_playwright() as playwright:
+            while True:
+                try:
+                    job = _GLAVAPU_HEADLESS_JOBS.get(timeout=_GLAVAPU_HEADLESS_IDLE_SECONDS)
+                except queue.Empty:
+                    with _GLAVAPU_BROWSER_LOCK:
+                        if _GLAVAPU_HEADLESS_JOBS.empty():
+                            _GLAVAPU_BROWSER_THREAD = None
+                            return
+                    continue
+                numbers, area_ha, holder, done = job
+                timings: dict[str, int] = {}
+                try:
+                    if browser is None or not browser.is_connected():
+                        started = time.monotonic()
+                        browser = playwright.chromium.launch(
+                            headless=True, args=_GLAVAPU_HEADLESS_ARGS)
+                        page = None
+                        timings["launch"] = int((time.monotonic() - started) * 1000)
+                    if page is None or page.is_closed():
+                        page = browser.new_page()
+                        page.set_default_timeout(_GLAVAPU_HEADLESS_TIMEOUT_MS)
+                        page.route("**/*", _glavapu_block_junk)
+                    holder["rows"] = _glavapu_drive_page(page, numbers, area_ha, timings)
+                except Exception as exc:
+                    holder["error"] = exc
+                    # Упавший прогон мог оставить страницу в неизвестном
+                    # состоянии, а тихо считать на ней дальше — это чужой ТЭП
+                    # под своим именем. Рвём браузер: следующий начнёт с нуля.
+                    try:
+                        if browser is not None:
+                            browser.close()
+                    except Exception:
+                        pass
+                    browser = page = None
+                finally:
+                    holder["timings"] = timings
+                    done.set()
+    finally:
+        with _GLAVAPU_BROWSER_LOCK:
+            if _GLAVAPU_BROWSER_THREAD is threading.current_thread():
+                _GLAVAPU_BROWSER_THREAD = None
+        try:
+            if browser is not None:
+                browser.close()
+        except Exception:
+            pass
+        # Поток умер — ждущие расчёты обязаны узнать об этом сейчас, а не по
+        # таймауту через три минуты: их место на серверных формулах.
+        while True:
+            try:
+                _, _, holder, done = _GLAVAPU_HEADLESS_JOBS.get_nowait()
+            except queue.Empty:
+                break
+            holder.setdefault("error", RuntimeError("поток браузера остановлен"))
+            done.set()
+
+
 def _glavapu_headless_rows(numbers: list[str], area_ha: float) -> list[dict[str, Any]]:
     """Таблица ТЭП, снятая с настоящего калькулятора ГлавАПУ.
 
-    Повторяет шаги браузерной автоматизации: «Участок» → кадастровые номера →
-    «Отправить» → «Перейти к расчётам» → чтение таблицы. Готовность таблицы
-    определяется так же, как на странице: есть коды 60 и 54 и не меньше
-    шестидесяти строк — иначе рискуем снять её недосчитанной.
+    Расчёт уходит потоку-владельцу браузера и ждёт его ответа. Ожидание в
+    очереди конечно: не дождался — уходим на серверные формулы, а не висим.
     """
-    from playwright.sync_api import sync_playwright
+    global _GLAVAPU_BROWSER_THREAD
+
+    # Проверяется здесь, а не в потоке: без Playwright в образе поток умрёт
+    # молча, и расчёт вместо мгновенного отката на формулы ждал бы ответа
+    # три минуты.
+    from playwright.sync_api import sync_playwright  # noqa: F401
 
     if not _GLAVAPU_HEADLESS_LOCK.acquire(timeout=_GLAVAPU_HEADLESS_QUEUE_SECONDS):
         _GLAVAPU_HEADLESS["waits"] += 1
         raise TimeoutError(
             f"браузер занят дольше {int(_GLAVAPU_HEADLESS_QUEUE_SECONDS)} с "
             "— расчёт уходит на серверные формулы")
-    url = ("https://genplan.tech/calc/?terrArea=" + urllib.parse.quote(f"{area_ha:.4f}")
-           + "&restrictArea=0&plato=" + str(int(time.time() * 1000)))
+    started = time.monotonic()
     try:
-      with sync_playwright() as playwright:
-        # --disable-dev-shm-usage: в контейнере /dev/shm мал, и Chromium на
-        # тяжёлой странице падает молча, вместо того чтобы честно отработать.
-        browser = playwright.chromium.launch(
-            headless=True,
-            args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"])
-        try:
-            page = browser.new_page()
-            page.set_default_timeout(_GLAVAPU_HEADLESS_TIMEOUT_MS)
-            page.goto(url, wait_until="domcontentloaded")
-            page.get_by_role("button", name="Участок").click()
-            page.fill("#id-cad-numbers-text-field", ", ".join(numbers))
-            page.get_by_role("button", name="Отправить").click()
-            page.get_by_role("button", name="Перейти к расчётам").click()
-            deadline = time.monotonic() + _GLAVAPU_HEADLESS_TIMEOUT_MS / 1000.0
-            while True:
-                rows = page.evaluate(_GLAVAPU_READ_ROWS_JS) or []
-                codes = {str(r.get("code") or "") for r in rows}
-                if "60" in codes and "54" in codes and len(rows) >= 60:
-                    return rows
-                if time.monotonic() > deadline:
-                    raise TimeoutError(
-                        f"калькулятор не отдал таблицу за {_GLAVAPU_HEADLESS_TIMEOUT_MS // 1000} с "
-                        f"(строк {len(rows)})")
-                page.wait_for_timeout(500)
-        finally:
-            browser.close()
+        holder: dict[str, Any] = {}
+        done = threading.Event()
+        with _GLAVAPU_BROWSER_LOCK:
+            if _GLAVAPU_BROWSER_THREAD is None or not _GLAVAPU_BROWSER_THREAD.is_alive():
+                _GLAVAPU_BROWSER_THREAD = threading.Thread(
+                    target=_glavapu_browser_worker, name="glavapu-browser", daemon=True)
+                _GLAVAPU_BROWSER_THREAD.start()
+            _GLAVAPU_HEADLESS_JOBS.put((list(numbers), float(area_ha), holder, done))
+        if not done.wait(_GLAVAPU_HEADLESS_TIMEOUT_MS / 1000.0 + 60.0):
+            raise TimeoutError("поток браузера не ответил — расчёт уходит на формулы")
+        timings = dict(holder.get("timings") or {})
+        timings["total"] = int((time.monotonic() - started) * 1000)
+        _GLAVAPU_HEADLESS["last_ms"] = timings
+        logging.info("glavapu headless timings: %s", timings)
+        if holder.get("error") is not None:
+            raise holder["error"]
+        return holder.get("rows") or []
     finally:
         _GLAVAPU_HEADLESS_LOCK.release()
 
@@ -4832,6 +4989,25 @@ def _glavapu_formula_drift(rows: list[list[Any]], numbers: list[str]) -> list[st
     return drift
 
 
+def _cadastral_analysis_for(numbers: list[str],
+                            supplied: dict[str, Any] | None) -> dict[str, Any]:
+    """Территория запрошенных участков — присланная страницей или своя.
+
+    Страница собирает территорию перед расчётом ТЭП и держит её в руках; тот же
+    вопрос ГлавАПУ второй раз за один клик стоил внешнего запроса на ровном
+    месте. Принимается присланная территория только тех участков, что запрошены:
+    иначе ТЭП посчитался бы по чужим коэффициентам, выглядя безупречно.
+    """
+    if isinstance(supplied, dict):
+        recognized = {str(x).strip() for x in (supplied.get("recognized") or [])}
+        coefficients = supplied.get("coefficients") or {}
+        area = float((supplied.get("territory") or {}).get("area_ha") or 0.0)
+        if recognized == {str(x).strip() for x in numbers} and coefficients and area > 0:
+            return supplied
+    return analyze_cadastral_territory(
+        CadastralAnalysisRequest(cadastral_numbers=numbers))
+
+
 @app.post("/cadastral/tep-server")
 def cadastral_tep_server(req: CadastralAnalysisRequest) -> dict[str, Any]:
     """ТЭП по формулам ГлавАПУ, посчитанный сервером.
@@ -4865,8 +5041,7 @@ def cadastral_tep_server(req: CadastralAnalysisRequest) -> dict[str, Any]:
     # находил человек на скриншотах, а не мы.
     if _GLAVAPU_HEADLESS_ENABLED and numbers:
         try:
-            analysis = analyze_cadastral_territory(
-                CadastralAnalysisRequest(cadastral_numbers=numbers))
+            analysis = _cadastral_analysis_for(numbers, req.cadastral_analysis)
             area = float((analysis.get("territory") or {}).get("area_ha") or 0.0)
             rows = _glavapu_headless_rows(numbers, area)
             imported = import_cadastral_tep(CadastralTepRequest(
@@ -6514,6 +6689,11 @@ def telegram_status() -> dict[str, Any]:
             # машине мало памяти под параллельные запуски.
             "queue_timeouts": _GLAVAPU_HEADLESS.get("waits", 0),
             "parallel_slots": _GLAVAPU_HEADLESS_SLOTS,
+            # Секунды расчёта по шагам: «считает минуту» — это диагноз, а не
+            # жалоба, только когда видно, какой шаг эту минуту берёт.
+            "last_ms": dict(_GLAVAPU_HEADLESS.get("last_ms") or {}),
+            "browser_warm": bool(_GLAVAPU_BROWSER_THREAD
+                                 and _GLAVAPU_BROWSER_THREAD.is_alive()),
             "last_ok": _GLAVAPU_HEADLESS.get("last_ok", ""),
             "last_error": _GLAVAPU_HEADLESS.get("last_error", ""),
         },
@@ -20392,8 +20572,10 @@ async function obtainServerTep(analysis,status,runId){
  tepRunLog(runId,'серверный расчёт: запрос');
  const response=await fetch('/cadastral/tep-server',{
   method:'POST',headers:{'Content-Type':'application/json'},
+  // Территория уже собрана — отдаём её серверу, чтобы он не спрашивал ГлавАПУ
+  // второй раз за один клик: этот запрос стоит секунд, а расчёт и так не быстр.
   body:JSON.stringify({cadastral_numbers:(analysis.recognized||analysis.requested||[]).join(', '),
-   request_id:'tep-'+runId})
+   request_id:'tep-'+runId,cadastral_analysis:analysis})
  });
  const payload=await response.json();
  if(!response.ok)throw new Error(payload.detail||'Серверный расчёт ТЭП не получился');

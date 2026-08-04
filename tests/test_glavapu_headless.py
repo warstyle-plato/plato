@@ -109,7 +109,7 @@ def test_the_automation_repeats_the_page_steps():
     """Серверные шаги — те же, что у скрытого iframe: другая последовательность
     молча дала бы другой расчёт."""
     import inspect
-    source = inspect.getsource(core._glavapu_headless_rows)
+    source = inspect.getsource(core._glavapu_drive_page)
     for step in ("Участок", "id-cad-numbers-text-field", "Отправить",
                  "Перейти к расчётам"):
         assert step in source, step
@@ -132,10 +132,164 @@ def test_only_one_browser_runs_at_a_time():
 
 def test_the_container_flags_are_set_for_a_small_machine():
     """В контейнере /dev/shm мал, и без флага Chromium падает молча."""
+    assert "--disable-dev-shm-usage" in core._GLAVAPU_HEADLESS_ARGS
+    assert "--no-sandbox" in core._GLAVAPU_HEADLESS_ARGS
+
+
+# --- скорость ---------------------------------------------------------------
+
+class _FakePage:
+    def __init__(self, counter):
+        self.counter, self.url, self._closed = counter, "", False
+
+    def set_default_timeout(self, ms): pass
+
+    def route(self, pattern, handler):
+        self.counter["routed"] += 1
+
+    def is_closed(self): return self._closed
+
+
+class _FakeBrowser:
+    def __init__(self, counter):
+        self.counter, self._connected = counter, True
+
+    def is_connected(self): return self._connected
+
+    def new_page(self):
+        self.counter["pages"] += 1
+        return _FakePage(self.counter)
+
+    def close(self): self._connected = False
+
+
+class _FakeChromium:
+    def __init__(self, counter): self.counter = counter
+
+    def launch(self, headless=True, args=None):
+        self.counter["launches"] += 1
+        return _FakeBrowser(self.counter)
+
+
+class _FakeSyncPlaywright:
+    def __init__(self, counter): self.chromium = _FakeChromium(counter)
+
+    def __enter__(self): return self
+
+    def __exit__(self, *exc): return False
+
+
+@pytest.fixture
+def fake_browser(monkeypatch):
+    """Подменяет Playwright: Chromium в песочнице нет, а считать нужно не его,
+    а число запусков."""
+    import types
+    counter = {"launches": 0, "pages": 0, "routed": 0}
+    module = types.ModuleType("playwright.sync_api")
+    module.sync_playwright = lambda: _FakeSyncPlaywright(counter)
+    root = types.ModuleType("playwright")
+    root.sync_api = module
+    monkeypatch.setitem(sys.modules, "playwright", root)
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", module)
+    monkeypatch.setattr(core, "_GLAVAPU_BROWSER_THREAD", None)
+    monkeypatch.setattr(core, "_GLAVAPU_HEADLESS_IDLE_SECONDS", 5.0)
+    yield counter
+    # Поток простоя уходит сам — дожидаемся, чтобы подменённый Playwright
+    # не пережил тест.
+    thread = core._GLAVAPU_BROWSER_THREAD
+    if thread is not None:
+        thread.join(timeout=20)
+
+
+def test_the_browser_is_reused_between_calculations(fake_browser, monkeypatch):
+    """Холодный старт Chromium и первая загрузка страницы калькулятора со всеми
+    ассетами платились каждым расчётом заново — отсюда и минута. Браузер живёт
+    между расчётами, и второй расчёт начинается с готовой машины."""
+    monkeypatch.setattr(core, "_glavapu_drive_page",
+                        lambda page, numbers, area, timings: [{"code": "60"}])
+
+    core._glavapu_headless_rows(_NUMBERS, 0.19)
+    core._glavapu_headless_rows(_NUMBERS, 0.19)
+
+    assert fake_browser["launches"] == 1, "второй расчёт обязан взять тёплый браузер"
+    assert fake_browser["pages"] == 1
+    assert fake_browser["routed"] == 1, "лишнее в загрузке режется один раз"
+
+
+def test_a_failed_run_throws_the_browser_away(fake_browser, monkeypatch):
+    """Упавший прогон мог оставить страницу в неизвестном состоянии. Считать на
+    ней дальше — значит выдать чужой ТЭП под своим именем, поэтому браузер
+    рвётся, а следующий расчёт начинает с нуля."""
+    def boom(page, numbers, area, timings):
+        raise RuntimeError("калькулятор сломался посреди расчёта")
+
+    monkeypatch.setattr(core, "_glavapu_drive_page", boom)
+    with pytest.raises(RuntimeError):
+        core._glavapu_headless_rows(_NUMBERS, 0.19)
+
+    monkeypatch.setattr(core, "_glavapu_drive_page",
+                        lambda page, numbers, area, timings: [{"code": "60"}])
+    core._glavapu_headless_rows(_NUMBERS, 0.19)
+    assert fake_browser["launches"] == 2, "после сбоя браузер поднимается заново"
+
+
+def test_the_steps_are_timed(fake_browser, monkeypatch):
+    """«Считает около минуты» — это диагноз только тогда, когда видно, какой
+    шаг её берёт. Без замера ускорять пришлось бы наугад."""
+    monkeypatch.setattr(core, "_glavapu_drive_page",
+                        lambda page, numbers, area, timings: timings.update(
+                            {"load": 900, "parcel": 2500, "table": 4000}) or [{"code": "60"}])
+    core._glavapu_headless_rows(_NUMBERS, 0.19)
+
+    from fastapi.testclient import TestClient
+    status = TestClient(core.app).get("/telegram/status").json()["glavapu_headless"]
+    assert status["last_ms"]["table"] == 4000
+    assert status["last_ms"]["total"] >= 0, "общее время расчёта тоже видно"
+    assert status["browser_warm"] is True
+
+
+def test_the_page_is_cleaned_between_calculations():
+    """Страница переиспользуется — хранилище прошлого прогона обязано стираться:
+    восстановленный оттуда чужой участок дал бы правдоподобный чужой ТЭП."""
     import inspect
-    source = inspect.getsource(core._glavapu_headless_rows)
-    assert "--disable-dev-shm-usage" in source
-    assert "--no-sandbox" in source
+    source = inspect.getsource(core._glavapu_drive_page)
+    assert "localStorage.clear()" in source and "sessionStorage.clear()" in source
+
+
+def test_the_ready_territory_is_not_asked_for_twice(monkeypatch):
+    """Страница собирает территорию перед расчётом и держит её в руках. Тот же
+    вопрос ГлавАПУ второй раз за один клик стоил внешнего запроса впустую."""
+    analysis = {"recognized": _NUMBERS, "territory": {"area_ha": 0.1963},
+                "coefficients": {"rent": 1.0}, "warnings": []}
+    asked = {"count": 0}
+
+    def counted(request):
+        asked["count"] += 1
+        return analysis
+
+    monkeypatch.setattr(core, "analyze_cadastral_territory", counted)
+    monkeypatch.setattr(core, "_GLAVAPU_HEADLESS_ENABLED", True)
+    monkeypatch.setattr(core, "_glavapu_headless_rows",
+                        lambda numbers, area_ha: [{"code": "60", "name": "x",
+                                                   "unit": "га", "value": "1"}])
+    monkeypatch.setattr(core, "import_cadastral_tep",
+                        lambda request: {"normalized": {}, "source": {}, "warnings": []})
+
+    core.cadastral_tep_server(core.CadastralAnalysisRequest(
+        cadastral_numbers=", ".join(_NUMBERS), cadastral_analysis=analysis))
+    assert asked["count"] == 0, "готовая территория обязана приниматься как есть"
+
+
+def test_a_territory_of_other_parcels_is_refused(monkeypatch):
+    """Присланная территория принимается только для запрошенных участков:
+    иначе ТЭП посчитался бы по чужим коэффициентам, выглядя безупречно."""
+    stranger = {"recognized": ["77:09:0004014:13"], "territory": {"area_ha": 5.0},
+                "coefficients": {"rent": 2.0}, "warnings": []}
+    mine = {"recognized": _NUMBERS, "territory": {"area_ha": 0.1963},
+            "coefficients": {"rent": 1.0}, "warnings": []}
+    monkeypatch.setattr(core, "analyze_cadastral_territory", lambda request: mine)
+    used = core._cadastral_analysis_for(_NUMBERS, stranger)
+    assert used is mine, "чужая территория обязана быть пересобрана"
 
 
 def test_the_status_counts_queue_timeouts():
