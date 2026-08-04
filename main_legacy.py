@@ -43,7 +43,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.30"
+VERSION = "0.17.31"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -6874,6 +6874,51 @@ def _purchase_feasibility(
     }
 
 
+class _PdfSection:
+    """Метка секции в потоке отчёта.
+
+    Разделы собирались в том порядке, в каком их удобно было считать, и отчёт
+    читался не как разбор проекта, а как история правок: удельные расходы
+    стройки стояли на первой странице до ТЭП, вводные — после выводов и
+    чувствительности, а графики продаж жили в блоке финансирования. Порядок
+    вычислений менять нельзя (одно опирается на другое), поэтому разделы
+    помечаются здесь, а собираются в читаемом порядке при сборке документа.
+    """
+
+    __slots__ = ("name",)
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+
+def _pdf_ordered_story(story: list[Any], order: list[tuple[str, bool]],
+                       page_break: Any) -> list[Any]:
+    """Поток отчёта, пересобранный по секциям.
+
+    До первой метки идёт шапка — она остаётся на месте. Разрыв страницы
+    ставится перед секцией, только если в ней что-то есть: пустая секция не
+    имеет права оставлять за собой пустую страницу.
+    """
+    head: list[Any] = []
+    sections: dict[str, list[Any]] = {}
+    current: str | None = None
+    for item in story:
+        if isinstance(item, _PdfSection):
+            current = item.name
+            sections.setdefault(current, [])
+            continue
+        (sections[current] if current is not None else head).append(item)
+    out = list(head)
+    for name, breaks_page in order:
+        block = sections.get(name) or []
+        if not block:
+            continue
+        if breaks_page and out:
+            out.append(page_break())
+        out.extend(block)
+    return out
+
+
 def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4
@@ -7285,7 +7330,16 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
                  f"{_calculation_fingerprint(inputs, payload.get('tep'), payload.get('phasing'))}"
                  f" · DevelopAid {VERSION}"])
     if cads: meta.append(["Кадастровые номера",", ".join(str(x) for x in cads)])
-    story += [Spacer(1,4*mm),table(meta,[45*mm,125*mm],header=False),Spacer(1,5*mm),P("Ключевая экономика",h2)]
+    parity_problems = [str(item) for item in (payload.get("parity_problems") or [])]
+    story += [Spacer(1,4*mm),table(meta,[45*mm,125*mm],header=False),Spacer(1,5*mm)]
+    if parity_problems:
+        story.append(P(
+            "<b>Расчёт в окне разошёлся с расчётом на сервере.</b> В отчёт взяты "
+            "числа сервера: " + "; ".join(parity_problems[:4])
+            + ". Чаще всего это старая страница в браузере — обновите её.",
+            ParagraphStyle("parity", parent=small, fontSize=8.0,
+                           textColor=colors.HexColor("#A35D00"))))
+    story.append(_PdfSection("summary"));story.append(P("Ключевая экономика",h2))
     kpis=[
         ["Цена приобретения",_pdf_money(float(inputs.get('purchase_price_mln') or 0)*1_000_000)],
         ["Смена ВРИ / земельные права",_pdf_money(float(inputs.get('land_rights_cost_mln') or 0)*1_000_000)],
@@ -7297,6 +7351,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     if _ending_pf>500_000:
         kpis.append(["Непогашенный долг ПФ на конец проекта",_pdf_money(_ending_pf)])
     story.append(table([["Показатель","Значение"]]+kpis,[112*mm,58*mm]))
+    story.append(_PdfSection("vri"))
     # Основание платы за ВРИ — тремя множителями формулы ГлавАПУ. Расхождение
     # платы между двумя расчётами одного участка всегда сидит в одном из них
     # (чаще в базовой стоимости — город индексирует её поквартально), и без
@@ -7313,6 +7368,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
             " Базовую стоимость город индексирует поквартально — расчёты разных"
             " дат по одному участку могут отличаться на величину индексации.",
             small))
+    story.append(_PdfSection("summary"))
     # Удельная экономика проекта была только в книге и на странице, а в отчёте
     # её не было вовсе: решение принимают по рублю на метр, а не по миллиардам.
     # Обе базы обязаны стоять рядом — на ГНС считают стройку, на продаваемую
@@ -7335,9 +7391,9 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
               "монетизируемой площади (паркинг и кладовые продаются штуками и в неё "
               "не входят).", small),
         ]))
-    # Удельные расходы стройки — на первой странице, рядом с ключевой
-    # экономикой: по ним читается себестоимость, и именно их просили видеть
-    # в отчёте, не раскапывая структуру расходов по группам.
+    story.append(_PdfSection("expenses_detail"))
+    # Удельные расходы стройки — детализация структуры расходов, а не свод:
+    # по ним читается себестоимость, но читать её раньше ТЭП бессмысленно.
     construction_costs = report.get("construction_costs") or []
     if construction_costs:
         # «ГНС проекта» в заголовке обязателен: без него 23 тыс ₽/м² подземной
@@ -7364,6 +7420,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
             table(cc_rows, [70*mm, 30*mm, 35*mm, 35*mm], font_size=7.6),
             P("Внутренние инженерные сети входят в СМР соответствующей части.", small),
         ]))
+    story.append(_PdfSection("summary"))
     purchase_assessment = _purchase_feasibility(
         inputs.get("purchase_price_mln"),
         float(summary.get("net_profit") or 0) / 1_000_000,
@@ -7380,7 +7437,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
             ["Основание", purchase_assessment["text"]],
         ], [45*mm, 125*mm], header=False, font_size=8.0),
     ]))
-    story.append(P("ТЭП",h2))
+    story.append(_PdfSection("tep"));story.append(P("ТЭП",h2))
     tep_rows=[["Продукт","ГНС, м²","Продаваемая, м²","Кол-во"]]
     for row in tep_report.get('rows') or []:
         if not any(float(row.get(k) or 0) for k in ('gns','saleable','units')): continue
@@ -7394,7 +7451,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     # а из чего они сложились, увидеть было негде.
     comparison = result.get("comparison") or []
     if len(comparison) > 1:
-        story.append(PageBreak());story.append(P("Очереди проекта",h2))
+        story.append(_PdfSection("phases"));story.append(P("Очереди проекта",h2))
         phase_cfg = {str(item.get("name") or ""): item for item in
                      ((payload.get("phasing") or {}).get("phases") or [])}
         params=[["Очередь","Сдвиг старта, мес.","Строительство, мес.","Инфляция затрат","Индексация цены"]]
@@ -7452,7 +7509,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
             value=sum(float(i.get("apartment_price_th") or 0)
                       *float(i.get("apartment_saleable_sqm") or 0) for i in comparison)
             return _pdf_num(value/area,1) if area else "—"
-        units=[["Очередь","Выручка на м² прод.","в т.ч. квартиры","Выручка на м² ГНС","Расходы на м² прод.","Расходы на м² ГНС","Прибыль на м² прод."]]
+        units=[["Очередь","Выручка на м² прод.","в т.ч. квартиры","Выручка на м² ГНС","Расходы на м² прод.","Расходы на м² ГНС","Прибыль на м² прод.","Прибыль на м² ГНС"]]
         for item in comparison:
             units.append([
                 str(item.get("name") or "—"),
@@ -7461,13 +7518,14 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
                 _pdf_num(item.get("revenue_per_gns_th"),1),
                 _pdf_num(item.get("expenses_per_saleable_th"),1),_pdf_num(item.get("expenses_per_gns_th"),1),
                 _pdf_num(item.get("net_profit_per_saleable_th"),1),
+                _pdf_num(item.get("net_profit_per_gns_th"),1),
             ])
         units.append([
             "Итого",ratio("revenue","saleable_sqm"),apartments_total(),ratio("revenue","gns_sqm"),
             ratio("total_expenses","saleable_sqm"),ratio("total_expenses","gns_sqm"),
-            ratio("net_profit","saleable_sqm"),
+            ratio("net_profit","saleable_sqm"),ratio("net_profit","gns_sqm"),
         ])
-        story.append(table(units,[20*mm,26*mm,24*mm,25*mm,26*mm,25*mm,24*mm],font_size=6.8))
+        story.append(table(units,[18*mm,23*mm,21*mm,22*mm,23*mm,22*mm,21*mm,20*mm],font_size=6.6))
         story.append(P("Значения удельных показателей — в тыс. ₽ за м². «Выручка на м² прод.» включает штучные продукты (паркинг, кладовые); «в т.ч. квартиры» — только квартиры на м² их продаваемой площади, эта же строка есть в Excel-книге. Итоговая строка считается как отношение сумм, а не как среднее по очередям.",small))
 
     # Раздел появляется только если чувствительность считали на вкладке.
@@ -7478,7 +7536,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         base = sensitivity.get("base") or {}
         digits = int(base.get("digits") or 2)
         rows = list(sensitivity["items"])[:14]
-        story.append(PageBreak())
+        story.append(_PdfSection("sensitivity"))
         story.append(P("Чувствительность проекта",h2))
         story.append(P(
             f"Показатель: {base.get('label') or ''} · база "
@@ -7502,21 +7560,34 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         for line in (sensitivity.get("verdict") or []):
             story.append(P(str(line), small))
 
-    story.append(PageBreak());story.append(P("Цены и основные предпосылки",h2))
+    story.append(_PdfSection("premises"));story.append(P("Цены и основные предпосылки",h2))
     premise_rows=[["Параметр","Значение"],["Стартовая цена квартир",_pdf_num(inputs.get('apartment_price_th'),0)+" тыс. ₽/м²"],["Стартовая цена коммерции",_pdf_num(inputs.get('commercial_price_th'),0)+" тыс. ₽/м²"],["Цена подземного машино-места",_pdf_num(inputs.get('parking_price_th'),0)+" тыс. ₽/шт."],["СМР наземной части",_pdf_num(inputs.get('main_above_th_per_sqm'),0)+" тыс. ₽/м² ГНС"],["СМР подземной части",_pdf_num(inputs.get('main_under_th_per_sqm'),0)+" тыс. ₽/м² ГНС"],["Наружные инженерные сети",_pdf_num(inputs.get('utilities_th_per_sqm'),1)+" тыс. ₽/м² ГНС"],["Доля продаж до РВЭ",_pdf_num(inputs.get('share_before_rve_pct'),1)+"%"],["Налог на прибыль",_pdf_num(inputs.get('profit_tax_pct'),1)+"%"]]
     story.append(table(premise_rows,[105*mm,65*mm]))
-    story.append(P("Структура расходов",h2))
+    story.append(_PdfSection("expenses"));story.append(P("Структура расходов",h2))
     expense_chart=expense_bar_chart(expense_structure)
     if expense_chart:
         story.extend([expense_chart,Spacer(1,2*mm)])
-    expense_rows=[["Статья","Сумма","Доля"]]
+    # Рубль на метр — в обеих базах, как во всех удельных отчёта: именно по
+    # этим статьям спорят с подрядчиком и с банком, а в долях процента спор
+    # не ведут.
+    expense_rows=[["Статья","Сумма","Доля","тыс ₽/м² ГНС","тыс ₽/м² продаваемой"]]
     total_expense=sum(float(item.get('value') or 0) for item in expense_structure) or float(summary.get('total_expenses') or 0)
+    _exp_gns=float(summary.get('project_gns_sqm') or 0)
+    _exp_saleable=float(summary.get('monetizable_saleable_sqm') or 0)
     for item in expense_structure:
         value=float(item.get('value') or 0)
         if value<=0: continue
-        expense_rows.append([item.get('label') or '—',_pdf_money(value),(_pdf_num(value/total_expense*100,1)+'%') if total_expense else '—'])
-    story.append(table(expense_rows,[98*mm,45*mm,27*mm]))
-    story.append(P("Продажи и продукты",h2))
+        expense_rows.append([item.get('label') or '—',_pdf_money(value),
+                             (_pdf_num(value/total_expense*100,1)+'%') if total_expense else '—',
+                             _pdf_num(item.get('per_gns_th') if item.get('per_gns_th') is not None
+                                      else (value/_exp_gns/1000 if _exp_gns else 0),1),
+                             _pdf_num(item.get('per_saleable_th') if item.get('per_saleable_th') is not None
+                                      else (value/_exp_saleable/1000 if _exp_saleable else 0),1)])
+    expense_rows.append(["Итого расходы",_pdf_money(total_expense),"100,0%" if total_expense else "—",
+                         _pdf_num(total_expense/_exp_gns/1000 if _exp_gns else 0,1),
+                         _pdf_num(total_expense/_exp_saleable/1000 if _exp_saleable else 0,1)])
+    story.append(table(expense_rows,[62*mm,32*mm,20*mm,28*mm,28*mm],font_size=7.4))
+    story.append(_PdfSection("income"));story.append(P("Продажи и продукты",h2))
     product_rows=[["Продукт","Объём","Темп до РВЭ","Стартовая цена","Средняя цена","Выручка"]]
     for item in products:
         quantity=float(item.get('quantity') or 0);revenue=float(item.get('revenue') or 0)
@@ -7546,7 +7617,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
             P("Штуки пересчитаны из помесячных продаж по средней площади квартиры "
               "из ТЭП: изменится нарезка — изменится и темп.", small),
         ]))
-    story.append(PageBreak());story.append(P("Финансирование и динамика проекта",h2))
+    story.append(_PdfSection("financing"));story.append(P("Финансирование и динамика проекта",h2))
     finance_rows=[["Показатель","Значение"],["Расчётный БРИДЖ",_pdf_money(financing.get('calculated_bridge'))],["Пиковый фактический БРИДЖ (тело долга)",_pdf_money(financing.get('actual_bridge'))],["Пик БРИДЖ с капитализацией процентов (справочно)",_pdf_money(financing.get('bridge_peak_capitalized') or financing.get('actual_bridge'))],["Пиковая (непокрытая эскроу) задолженность ПФ",_pdf_money(financing.get('pf_uncovered_peak'))],["Лимит ПФ",_pdf_money(financing.get('pf_limit'))],["Текущая ключевая ставка",_pdf_pct(financing.get('current_key_rate'))],["Спред БРИДЖ",_pdf_pct(financing.get('bridge_spread'))],["Ставка БРИДЖ на текущей ключевой",_pdf_pct(financing.get('current_bridge_rate'))],["Средняя ключевая за период БРИДЖ",_pdf_pct(financing.get('avg_bridge_key_rate'))],["Средневзвешенная ставка БРИДЖ за период",_pdf_pct(financing.get('avg_bridge_rate'))],["Средняя фактическая ставка ПФ",_pdf_pct(financing.get('avg_pf_effective_rate'))],["Проценты и комиссии",_pdf_money(financing.get('interest_and_fees'))],["Непогашенный долг ПФ на конец проекта",_pdf_money(financing.get('ending_pf'))],["LLCR",_pdf_num(summary.get('llcr'),2)+"x"]]
     story.append(table(finance_rows,[112*mm,58*mm],font_size=7.6))
 
@@ -7613,6 +7684,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     if rate_chart:
         story.append(KeepTogether([P("Ставки финансирования",h2),rate_chart]))
 
+    story.append(_PdfSection("income"))
     pace_chart=sales_bar_chart(timeline_rows,height=104)
     if pace_chart:
         story.append(KeepTogether([P("Месячный темп продаж",h2),pace_chart]))
@@ -7625,6 +7697,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     if units_chart:
         story.append(KeepTogether([P("Месячный темп продаж квартир, шт.",h2),units_chart]))
 
+    story.append(_PdfSection("calendar"))
     events=calendar_data.get('events') or []
     if events:
         gantt_pages=gantt_drawings(events)
@@ -7634,10 +7707,21 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
             story.append(gantt)
         story.append(Spacer(1,2*mm))
         story.append(P("Полосы построены по фактическим датам модели; ромбами отмечены ключевые вехи. При включённой очередности этапы каждой очереди показаны отдельными строками.",small))
+    story.append(_PdfSection("footer"))
     story.extend([Spacer(1,4*mm),P("Отчёт сформирован автоматически DevelopAid на основании текущих вводных модели. Перед инвестиционным решением требуется проверка исходных данных, юридических предпосылок и условий кредитования.",small)])
 
     def footer(canvas,doc_obj):
         canvas.saveState();canvas.setFont(regular,7);canvas.setFillColor(colors.HexColor('#777777'));canvas.drawString(14*mm,8*mm,'DevelopAid · Девелоперская инвестиционная модель');canvas.drawRightString(A4[0]-14*mm,8*mm,f'Стр. {doc_obj.page}');canvas.restoreState()
+    # Разбор проекта, а не история правок: что за участок → что на нём выходит
+    # → на чём считали → сколько стоит → сколько приносит → чем финансируется
+    # → чем рискуем → когда.
+    story = _pdf_ordered_story(story, [
+        ("tep", False), ("vri", False), ("summary", False),
+        ("phases", True), ("premises", True),
+        ("expenses", False), ("expenses_detail", False),
+        ("income", True), ("financing", True), ("sensitivity", True),
+        ("calendar", False), ("footer", False),
+    ], PageBreak)
     doc.build(story,onFirstPage=footer,onLaterPages=footer)
     return buf.getvalue()
 
@@ -8467,10 +8551,11 @@ def _model_sheet_phase_comparison(bundle: dict[str, Any]) -> dict[str, Any]:
         "Очередь", "Продаваемая площадь, м²", "Общая площадь ГНС, м²",
         "Выручка, млн ₽",
         "Цена реализации, тыс ₽/м² продаваемой", "Цена реализации, тыс ₽/м² ГНС",
-        "CAPEX, млн ₽", "CAPEX, тыс ₽/м² ГНС",
+        "CAPEX, млн ₽",
+        "CAPEX, тыс ₽/м² продаваемой", "CAPEX, тыс ₽/м² ГНС",
         "Полные расходы, млн ₽",
         "Полные расходы, тыс ₽/м² продаваемой", "Полные расходы, тыс ₽/м² ГНС",
-        "Чистая прибыль, тыс ₽/м² продаваемой",
+        "Чистая прибыль, тыс ₽/м² продаваемой", "Чистая прибыль, тыс ₽/м² ГНС",
         "Общие расходы (касса), млн ₽", "Общие расходы (аллокация), млн ₽",
         "Пик БРИДЖ, млн ₽", "Пик ПФ, млн ₽", "LLCR",
         "Чистая прибыль, млн ₽", "Прибыль с аллокацией, млн ₽", "Маржинальность",
@@ -8496,11 +8581,13 @@ def _model_sheet_phase_comparison(bundle: dict[str, Any]) -> dict[str, Any]:
             _cell_num(item.get("revenue_per_saleable_th")),
             _cell_num(item.get("revenue_per_gns_th")),
             _cell_mln(item.get("capex")),
+            _cell_num(item.get("capex_per_saleable_th")),
             _cell_num(item.get("capex_per_gns_th")),
             _cell_mln(item.get("total_expenses")),
             _cell_num(item.get("expenses_per_saleable_th")),
             _cell_num(item.get("expenses_per_gns_th")),
             _cell_num(item.get("net_profit_per_saleable_th")),
+            _cell_num(item.get("net_profit_per_gns_th")),
             _cell_mln(item.get("cash_shared_cost")),
             _cell_mln(item.get("allocated_shared_cost")),
             _cell_mln(item.get("peak_bridge")),
@@ -8517,20 +8604,35 @@ def _model_sheet_phase_comparison(bundle: dict[str, Any]) -> dict[str, Any]:
     last_data_row = len(rows)
     if comparison:
         total_row: list[_XlsxCell] = [_cell_text("Итого", _XLSX_STYLE_BOLD)]
-        area_columns = {1: "saleable_sqm", 2: "gns_sqm"}
+        # Колонки — по заголовку, а не по номеру: номера разъезжаются каждый
+        # раз, когда в таблицу добавляется показатель, и итоговая строка молча
+        # начинает суммировать чужой столбец. Графики этот урок уже усвоили.
+        area_columns = {
+            header.index("Продаваемая площадь, м²"): "saleable_sqm",
+            header.index("Общая площадь ГНС, м²"): "gns_sqm",
+        }
         money_columns = {
-            3: "revenue", 6: "capex", 8: "total_expenses", 12: "cash_shared_cost",
-            13: "allocated_shared_cost", 17: "net_profit", 18: "allocated_net_profit",
-            20: "social_cost",
+            header.index("Выручка, млн ₽"): "revenue",
+            header.index("CAPEX, млн ₽"): "capex",
+            header.index("Полные расходы, млн ₽"): "total_expenses",
+            header.index("Общие расходы (касса), млн ₽"): "cash_shared_cost",
+            header.index("Общие расходы (аллокация), млн ₽"): "allocated_shared_cost",
+            header.index("Чистая прибыль, млн ₽"): "net_profit",
+            header.index("Прибыль с аллокацией, млн ₽"): "allocated_net_profit",
+            header.index("Социальная нагрузка, млн ₽"): "social_cost",
         }
         # Удельные показатели складывать нельзя: сумма рублей на метр по очередям
         # ничего не значит. В итоге считаем отношение сводных величин — это и есть
         # показатель по проекту целиком.
         ratio_columns = {
-            4: ("revenue", "saleable_sqm"), 5: ("revenue", "gns_sqm"),
-            7: ("capex", "gns_sqm"),
-            9: ("total_expenses", "saleable_sqm"), 10: ("total_expenses", "gns_sqm"),
-            11: ("net_profit", "saleable_sqm"),
+            header.index("Цена реализации, тыс ₽/м² продаваемой"): ("revenue", "saleable_sqm"),
+            header.index("Цена реализации, тыс ₽/м² ГНС"): ("revenue", "gns_sqm"),
+            header.index("CAPEX, тыс ₽/м² продаваемой"): ("capex", "saleable_sqm"),
+            header.index("CAPEX, тыс ₽/м² ГНС"): ("capex", "gns_sqm"),
+            header.index("Полные расходы, тыс ₽/м² продаваемой"): ("total_expenses", "saleable_sqm"),
+            header.index("Полные расходы, тыс ₽/м² ГНС"): ("total_expenses", "gns_sqm"),
+            header.index("Чистая прибыль, тыс ₽/м² продаваемой"): ("net_profit", "saleable_sqm"),
+            header.index("Чистая прибыль, тыс ₽/м² ГНС"): ("net_profit", "gns_sqm"),
         }
 
         def column_total(key: str) -> float:
@@ -12343,6 +12445,30 @@ async def report_pdf(request: Request) -> Response:
     payload=await request.json()
     if not isinstance(payload,dict) or not isinstance(payload.get("result"),dict):
         raise HTTPException(status_code=400,detail="Нет данных расчёта для PDF")
+    # Один расчёт на обе поверхности. Правило применили к боту и забыли про
+    # сайт: бот пересчитывал модель на сервере, а здесь отчёт строился по
+    # результату из браузера. Пока вкладка свежая, разницы нет; стоит ей
+    # устареть — сайт печатает своё, бот своё, и оба выглядят достоверно.
+    if isinstance(payload.get("inputs"), dict) and payload.get("tep"):
+        try:
+            from starlette.concurrency import run_in_threadpool
+            bundle = await run_in_threadpool(
+                _run_authoritative_model,
+                payload.get("inputs") or {}, payload.get("tep") or {},
+                payload.get("rates") or [], payload.get("phasing") or {})
+            server_result = bundle["consolidated"]
+            problems = _parity_mismatch(
+                {**server_result, "inputs": payload.get("inputs") or {}},
+                {**(payload.get("result") or {}), "inputs": payload.get("inputs") or {}},
+            )
+            payload = {**payload, "result": server_result}
+            if problems:
+                # В чат тут писать некому — расхождение печатается в самом
+                # отчёте: молча подменить числа нельзя, человек увидит в PDF
+                # не то, что было на экране, и не поймёт почему.
+                payload["parity_problems"] = problems
+        except Exception as exc:
+            logging.warning("report pdf recalculation failed: %s", exc)
     # Торнадо в PDF с сайта: страница шлёт чувствительность, только если её
     # считали в окне, а бот дообогащал отчёт сам — и его PDF выходил «лучше»
     # при тех же вводных. Считает движок; пул потоков — чтобы десятки
@@ -14601,6 +14727,10 @@ def calculate(req: CalcRequest) -> dict:
             "label": label,
             "value": value,
             "share": value / expense_base if expense_base else 0.0,
+            # Удельные — обе базы, как везде в отчёте. Именно по этим статьям
+            # спорят с подрядчиком и с банком, а в рублях на метр их не было.
+            "per_gns_th": per_sqm_th(value, project_gns_sqm),
+            "per_saleable_th": per_sqm_th(value, monetizable_saleable_sqm),
         })
     expense_structure.sort(key=lambda item: item["value"], reverse=True)
 
@@ -14804,10 +14934,18 @@ def calculate(req: CalcRequest) -> dict:
             "monetizable_saleable_sqm": monetizable_saleable_sqm,
             "apartment_saleable_sqm": apartment_saleable_sqm,
             "average_apartment_price_th": avg_apartment_price,
+            # Каждый удельный показатель — в двух базах. Одна база без второй
+            # уже стоила разбирательств: 23 тыс ₽/м² подземной части читались
+            # как ставка за подземный метр, а она 190.
             "full_cost_per_saleable_th": full_cost_per_saleable,
+            "full_cost_per_gns_th": per_sqm_th(full_project_cost, project_gns_sqm),
             "construction_cost_per_gns_th": construction_cost_per_gns,
+            "construction_cost_per_saleable_th": per_sqm_th(
+                construction_capex, monetizable_saleable_sqm),
             "ebitda_per_saleable_th": ebitda_per_saleable,
+            "ebitda_per_gns_th": per_sqm_th(ebitda, project_gns_sqm),
             "net_profit_per_saleable_th": net_profit_per_saleable,
+            "net_profit_per_gns_th": per_sqm_th(net_profit, project_gns_sqm),
             "project_gns_sqm": project_gns_sqm,
             "total_expenses": total_expenses,
             "social_payment": op["capex_amounts"].get("social", 0.0),
@@ -15574,9 +15712,13 @@ def _consolidate_phase_results(
             "apartment_saleable_sqm": apartment_saleable,
             "average_apartment_price_th": avg_apt_price,
             "full_cost_per_saleable_th": per_th(full_cost, saleable),
+            "full_cost_per_gns_th": per_th(full_cost, project_gns),
             "construction_cost_per_gns_th": per_th(construction_capex, core_gns),
+            "construction_cost_per_saleable_th": per_th(construction_capex, saleable),
             "ebitda_per_saleable_th": per_th(ebitda, saleable),
+            "ebitda_per_gns_th": per_th(ebitda, project_gns),
             "net_profit_per_saleable_th": per_th(net_profit, saleable),
+            "net_profit_per_gns_th": per_th(net_profit, project_gns),
             "project_gns_sqm": project_gns, "total_expenses": full_cost,
             "social_payment": sum(r["summary"]["social_payment"] for r in results),
             "social_payment_mode": str(master_inputs.get("social_mode", "")),
@@ -16036,9 +16178,11 @@ def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
             "revenue_per_saleable_th":per_th(result["summary"]["revenue"], p_saleable),
             "revenue_per_gns_th":per_th(result["summary"]["revenue"], p_gns),
             "capex_per_gns_th":per_th(result["summary"]["capex"], p_gns),
+            "capex_per_saleable_th":per_th(result["summary"]["capex"], p_saleable),
             "expenses_per_saleable_th":per_th(p_expenses, p_saleable),
             "expenses_per_gns_th":per_th(p_expenses, p_gns),
             "net_profit_per_saleable_th":per_th(result["summary"]["net_profit"], p_saleable),
+            "net_profit_per_gns_th":per_th(result["summary"]["net_profit"], p_gns),
             "revenue":result["summary"]["revenue"],"capex":result["summary"]["capex"],
             "cash_shared_cost":cash_shared,"allocated_shared_cost":allocated_shared,
             "peak_bridge":result["finance"]["peak_bridge"],"peak_pf":result["finance"]["peak_pf"],
@@ -16351,10 +16495,12 @@ def _phase_comparison_for_agent(bundle: dict[str, Any]) -> list[dict[str, Any]]:
             "revenue_per_gns_th": round(float(item.get("revenue_per_gns_th", 0) or 0), 2),
             "capex_mln": round(float(item.get("capex", 0) or 0) / 1e6, 2),
             "capex_per_gns_th": round(float(item.get("capex_per_gns_th", 0) or 0), 2),
+            "capex_per_saleable_th": round(float(item.get("capex_per_saleable_th", 0) or 0), 2),
             "total_expenses_mln": round(float(item.get("total_expenses", 0) or 0) / 1e6, 2),
             "expenses_per_saleable_th": round(float(item.get("expenses_per_saleable_th", 0) or 0), 2),
             "expenses_per_gns_th": round(float(item.get("expenses_per_gns_th", 0) or 0), 2),
             "net_profit_per_saleable_th": round(float(item.get("net_profit_per_saleable_th", 0) or 0), 2),
+            "net_profit_per_gns_th": round(float(item.get("net_profit_per_gns_th", 0) or 0), 2),
             "cash_shared_cost_mln": round(float(item.get("cash_shared_cost", 0) or 0) / 1e6, 2),
             "allocated_shared_cost_mln": round(float(item.get("allocated_shared_cost", 0) or 0) / 1e6, 2),
             "peak_bridge_mln": round(float(item.get("peak_bridge", 0) or 0) / 1e6, 2),
@@ -16384,7 +16530,9 @@ def _result_snapshot(result: dict[str, Any]) -> dict[str, Any]:
         "peak_pf_mln": round(float(f.get("peak_pf", 0) or 0) / 1e6, 2),
         "pf_draw_total_mln": round(float(f.get("pf_draw_total", 0) or 0) / 1e6, 2),
         "full_cost_per_saleable_th_per_sqm": round(float(s.get("full_cost_per_saleable_th", 0) or 0), 2),
+        "full_cost_per_gns_th_per_sqm": round(float(s.get("full_cost_per_gns_th", 0) or 0), 2),
         "construction_cost_per_gns_th_per_sqm": round(float(s.get("construction_cost_per_gns_th", 0) or 0), 2),
+        "construction_cost_per_saleable_th_per_sqm": round(float(s.get("construction_cost_per_saleable_th", 0) or 0), 2),
         "average_apartment_price_th_per_sqm": round(float(s.get("average_apartment_price_th", 0) or 0), 2),
     }
 
@@ -16952,7 +17100,9 @@ def _tool_explain_metric(
     if metric == "unit_cost":
         base.update({
             "construction_cost_per_gns_th_per_sqm": round(float(s.get("construction_cost_per_gns_th", 0) or 0), 2),
+            "construction_cost_per_saleable_th_per_sqm": round(float(s.get("construction_cost_per_saleable_th", 0) or 0), 2),
             "full_cost_per_saleable_th_per_sqm": round(float(s.get("full_cost_per_saleable_th", 0) or 0), 2),
+            "full_cost_per_gns_th_per_sqm": round(float(s.get("full_cost_per_gns_th", 0) or 0), 2),
             "project_gns_sqm": round(float(s.get("project_gns_sqm", 0) or 0), 2),
             "monetizable_saleable_sqm": round(float(s.get("monetizable_saleable_sqm", 0) or 0), 2),
             "expense_structure": [
@@ -16960,6 +17110,8 @@ def _tool_explain_metric(
                     "label": i.get("label"),
                     "value_mln": round(float(i.get("value", 0) or 0) / 1e6, 2),
                     "share_pct": round(float(i.get("share", 0) or 0) * 100, 2),
+                    "per_gns_th_per_sqm": round(float(i.get("per_gns_th", 0) or 0), 2),
+                    "per_saleable_th_per_sqm": round(float(i.get("per_saleable_th", 0) or 0), 2),
                 }
                 for i in (report.get("expense_structure") or [])
             ],
@@ -17431,7 +17583,8 @@ def _tool_simulate_change(
         "revenue_mln", "capex_mln", "commercial_costs_mln", "financing_cost_mln",
         "profit_tax_mln", "net_profit_mln", "margin_pct", "llcr_x", "npv_mln",
         "peak_bridge_mln", "peak_pf_mln", "full_cost_per_saleable_th_per_sqm",
-        "construction_cost_per_gns_th_per_sqm",
+        "full_cost_per_gns_th_per_sqm", "construction_cost_per_gns_th_per_sqm",
+        "construction_cost_per_saleable_th_per_sqm",
     ):
         bv, nv = b.get(key), nres.get(key)
         if isinstance(bv, (int, float)) and isinstance(nv, (int, float)):
@@ -17560,7 +17713,8 @@ def _tool_prepare_model_patch(
     for key in (
         "revenue_mln", "capex_mln", "financing_cost_mln", "net_profit_mln",
         "margin_pct", "llcr_x", "npv_mln", "peak_bridge_mln", "peak_pf_mln",
-        "full_cost_per_saleable_th_per_sqm", "construction_cost_per_gns_th_per_sqm",
+        "full_cost_per_saleable_th_per_sqm", "full_cost_per_gns_th_per_sqm",
+        "construction_cost_per_gns_th_per_sqm", "construction_cost_per_saleable_th_per_sqm",
     ):
         bv, nv = base_snap.get(key), new_snap.get(key)
         if isinstance(bv, (int, float)) and isinstance(nv, (int, float)):
@@ -20226,9 +20380,9 @@ details.cadastral-box>summary::marker{color:#888}
           <div id="expenseStructureChart" class="expense-bars"></div>
           <div class="scroll" style="max-height:none">
             <table class="metric-table metric-compact">
-              <thead><tr><th>Категория</th><th>Сумма</th><th>Доля</th></tr></thead>
+              <thead><tr><th>Категория</th><th>Сумма</th><th>Доля</th><th>тыс ₽/м² ГНС</th><th>тыс ₽/м² прод.</th></tr></thead>
               <tbody id="expenseStructureTable"></tbody>
-              <tfoot><tr><th>Итого расходов</th><th id="expenseTotal"></th><th>100%</th></tr></tfoot>
+              <tfoot><tr><th>Итого расходов</th><th id="expenseTotal"></th><th>100%</th><th id="expenseTotalGns"></th><th id="expenseTotalSaleable"></th></tr></tfoot>
             </table>
           </div>
         </div>
@@ -22628,10 +22782,11 @@ function renderResult(){
   row('Проектирование П и РД',money((r.capex.design_p||0)+(r.capex.design_rd||0)))+
   row('Продаваемая площадь',num(r.summary.monetizable_saleable_sqm)+' м²')+
   row('Средняя цена квартир',th(r.summary.average_apartment_price_th))+
-  row('Полная себестоимость',th(r.summary.full_cost_per_saleable_th)+'/м²')+
-  row('Строительная себестоимость',th(r.summary.construction_cost_per_gns_th)+'/м² ГНС')+
-  row('EBITDA на продаваемый м²',th(r.summary.ebitda_per_saleable_th)+'/м²')+
-  row('Чистая прибыль на продаваемый м²',th(r.summary.net_profit_per_saleable_th)+'/м²');
+  // Каждый удельный — в обеих базах: одна без второй читается как другая.
+  row('Полная себестоимость',th(r.summary.full_cost_per_saleable_th)+'/м² прод. · '+th(r.summary.full_cost_per_gns_th)+'/м² ГНС')+
+  row('Строительная себестоимость',th(r.summary.construction_cost_per_saleable_th)+'/м² прод. · '+th(r.summary.construction_cost_per_gns_th)+'/м² ГНС')+
+  row('EBITDA на метр',th(r.summary.ebitda_per_saleable_th)+'/м² прод. · '+th(r.summary.ebitda_per_gns_th)+'/м² ГНС')+
+  row('Чистая прибыль на метр',th(r.summary.net_profit_per_saleable_th)+'/м² прод. · '+th(r.summary.net_profit_per_gns_th)+'/м² ГНС');
 
  reportFinanceTable.innerHTML=
   row('Расчётный БРИДЖ',money(r.report.financing.calculated_bridge))+
@@ -22711,8 +22866,16 @@ function renderResult(){
    <td>${x.label}</td>
    <td>${money(x.value)}</td>
    <td>${(Number(x.share||0)*100).toLocaleString('ru-RU',{minimumFractionDigits:1,maximumFractionDigits:1})}%</td>
+   <td>${num2(x.per_gns_th)}</td>
+   <td>${num2(x.per_saleable_th)}</td>
  </tr>`).join('');
- expenseTotal.textContent=money(r.summary.total_expenses||expenseRows.reduce((s,x)=>s+Number(x.value||0),0));
+ {
+  const expenseSum=Number(r.summary.total_expenses||0)||expenseRows.reduce((s,x)=>s+Number(x.value||0),0);
+  const eGns=Number(r.summary.project_gns_sqm||0),eSaleable=Number(r.summary.monetizable_saleable_sqm||0);
+  expenseTotal.textContent=money(expenseSum);
+  document.getElementById('expenseTotalGns').textContent=num2(eGns?expenseSum/eGns/1000:0);
+  document.getElementById('expenseTotalSaleable').textContent=num2(eSaleable?expenseSum/eSaleable/1000:0);
+ }
 
  ratesDebtTable.innerHTML=
   row('Сценарий ключевой ставки',rateScenarioLabel(inputs.rate_scenario))+
