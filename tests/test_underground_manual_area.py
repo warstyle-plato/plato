@@ -112,3 +112,41 @@ def test_both_default_sets_carry_the_new_inputs():
     assert core.DEFAULT_INPUTS["underground_area_per_space_sqm"] == 35
     assert core.DEFAULT_INPUTS["underground_manual_gns_sqm"] == 0
     assert '"underground_area_per_space_sqm": 35' in core.PAGE
+
+
+# --- отказ от подземного паркинга -------------------------------------------
+
+def test_the_underground_can_be_dropped_entirely():
+    """В области нормативную потребность закрывают наземным гаражом. Ноль в
+    поле мест означает «по нормативу», поэтому отказ — отдельный признак:
+    иначе импорт ГлавАПУ вернул бы паркинг при первом же пересчёте."""
+    row = _calc({"_glavapu_import": _IMPORT, "underground_parking_disabled": True})
+    assert row["units"] == pytest.approx(0)
+    assert row["gns"] == pytest.approx(0)
+    assert row["total_area"] == pytest.approx(0)
+
+
+def test_the_opt_out_flag_is_inverse_on_purpose():
+    """Признак назван отказом, а не включением, намеренно: чекбокс «включён»
+    с умолчанием «Да» у сохранённого раньше проекта пришёл бы снятым и молча
+    обнулил паркинг. Отсутствующий ключ обязан означать «паркинг на месте»."""
+    assert core.DEFAULT_INPUTS["underground_parking_disabled"] is False
+    row = _calc({"_glavapu_import": _IMPORT})  # ключа в наборе нет вовсе
+    assert row["units"] == pytest.approx(28), "без признака паркинг остаётся"
+
+
+def test_the_opt_out_beats_manual_numbers_too():
+    """Отказ сильнее заданных вручную мест: иначе снятый флаг спорил бы с
+    числом, оставшимся в поле от прежнего решения."""
+    row = _calc({"underground_manual_spaces": 50,
+                 "underground_parking_disabled": True})
+    assert row["units"] == pytest.approx(0)
+    assert row["gns"] == pytest.approx(0)
+
+
+def test_the_page_explains_the_opt_out():
+    page = core.PAGE
+    assert "Отказ от подземного паркинга" in page
+    assert "потребность закрывает наземный" in page
+    # Наземные места идут в зачёт норматива, когда подземного нет.
+    assert "off?above:0" in page
