@@ -155,14 +155,29 @@ def test_the_connection_is_closed_each_time(monkeypatch):
     assert headers.get("Connection") == "close"
 
 
-def test_a_timeout_is_not_retried(monkeypatch):
+def test_a_timeout_is_retried_like_any_other_break(monkeypatch):
+    """Раньше таймаут был исключением из правила: обрывы повторялись, а он
+    поднимал 504 из первой же тишины. Но первый запрос как раз и уходит на
+    пробуждение уснувшего Render — человек видел «Ошибка AI (504)» на
+    вопрос, который проходил со второй попытки."""
     fake, calls = urlopen_returning(socket.timeout(), Response())
+    monkeypatch.setattr(core.urllib.request, "urlopen", fake)
+
+    assert core._openai_proxy_request(PAYLOAD) == ANSWER
+    assert calls["n"] == 2
+
+
+def test_a_full_run_of_timeouts_is_still_a_504(monkeypatch):
+    """Когда сервис молчит все попытки — это честная 504, а не бесконечное
+    ожидание."""
+    fake, calls = urlopen_returning(
+        socket.timeout(), socket.timeout(), socket.timeout())
     monkeypatch.setattr(core.urllib.request, "urlopen", fake)
 
     with pytest.raises(HTTPException) as exc:
         core._openai_proxy_request(PAYLOAD)
 
-    assert calls["n"] == 1
+    assert calls["n"] == core._PLATO_PROXY_ATTEMPTS
     assert exc.value.status_code == 504
 
 
