@@ -20,6 +20,18 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Chromium для запуска штатного калькулятора ГлавАПУ на сервере: копия его
+# методики отставала от города, и расхождение находил человек, а не мы.
+# В python:3.11-slim нет ни браузера, ни системных библиотек к нему, поэтому
+# ставим их вместе (--with-deps). Образ тяжелеет примерно на 500 МБ; сборка
+# без браузера — docker build --build-arg INSTALL_BROWSER=0, тогда расчёт
+# останется на серверных формулах, как до перехода.
+ARG INSTALL_BROWSER=1
+RUN if [ "$INSTALL_BROWSER" = "1" ]; then \
+      playwright install --with-deps chromium \
+      && rm -rf /var/lib/apt/lists/*; \
+    fi
+
 COPY . .
 
 EXPOSE 8000
