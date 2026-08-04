@@ -58,8 +58,10 @@ def test_the_book_window_matches_the_decision():
         assert "D$3>=$B$7" in formula and "D$3<$B$8" in formula
         assert "EDATE($B$8" not in formula, "хвост после РВЭ должен быть срезан"
         assert "OR(D38>0" not in formula
-        # Разовая комиссия резервирования в месяц открытия ПФ остаётся.
-        assert "MONTH($B$7)" in formula
+        # Разовые комиссии выдачи (БРИДЖ на старте, резервирование ПФ в РнС)
+        # живут отдельной строкой 57 и платятся кассой, как в движке.
+        fees = str(template[sheet]["D57"].value)
+        assert "MONTH($B$7)" in fees and "MONTH($B$6)" in fees
 
 
 def test_the_mini_model_follows_the_same_window():

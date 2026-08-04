@@ -42,7 +42,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.13"
+VERSION = "0.17.14"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -8712,6 +8712,7 @@ def build_project_workbook(
     # График строительства при этом сворачивается в разовый платёж за месяц
     # до РнС (дата B18 — формула книги): приближение, но расход не теряется.
     social_cash_by_phase: list[float] | None = None
+    social_monthly_by_phase: list[list[float]] | None = None
     social_breakdown = {typ: {"places": 0.0, "cost": 0.0, "phases": set()}
                         for typ in ("kindergarten", "school", "clinic")}
     social_is_construction = str(x.get("social_mode") or "") == "Строительство"
@@ -8793,6 +8794,61 @@ def build_project_workbook(
                 if serial is not None:
                     put("B18", number=serial, label="старт соцстроительства")
                     put("E18", number=float(window), label="окно соцстроительства")
+            # Помесячный график соцстройки — готовыми числами по очередям:
+            # единое окно B18/E18 платило социалку всех очередей одним куском,
+            # а движок строит каждый объект в своей очереди — объект без
+            # своей даты стартует со старта очереди, введённая дата раньше
+            # очереди объекту не положена. Расхождение держало БРИДЖ первой
+            # очереди на сотни миллионов меньше движка.
+            months_by_type = {
+                "kindergarten": max(1, int(float(x.get("kindergarten_months") or 24))),
+                "school": max(1, int(float(x.get("school_months") or 30))),
+                "clinic": max(1, int(float(x.get("clinic_months") or 24))),
+            }
+            project_start_iso = str(x.get("project_start") or "2027-01-01")[:10]
+            # Атомарный движок (одна очередь) строит по введённым датам типов;
+            # подмена «объект стартует со старта своей очереди» — только
+            # фазовая. Иначе single-режим строил социалку с первого месяца
+            # и завышал пик БРИДЖа на десять процентов.
+            typed_starts = {
+                "kindergarten": str(x.get("kindergarten_start") or "")[:10],
+                "school": str(x.get("school_start") or "")[:10],
+                "clinic": str(x.get("clinic_start") or "")[:10],
+            }
+            # Движок агрегирует объекты типа внутри фазы: сумма мест и
+            # минимальная из собственных дат; общие вводные даты в
+            # фазированном режиме не участвуют.
+            grouped: dict[tuple[int, str], dict[str, Any]] = {}
+            for obj in objects:
+                phase_index = max(1, min(social_count, int(obj.get("phase") or 1))) - 1
+                typ = str(obj.get("type") or "kindergarten")
+                slot = grouped.setdefault((phase_index, typ), {"capacity": 0.0, "dates": []})
+                slot["capacity"] += float(obj.get("capacity") or 0)
+                if obj.get("start_date"):
+                    slot["dates"].append(str(obj["start_date"])[:10])
+            social_monthly_by_phase = [[0.0] * 120 for _ in range(4)]
+            for (phase_index, typ), slot in grouped.items():
+                offset_months = (float(social_phases[phase_index].get("start_offset_months") or 0)
+                                 if phase_index < len(social_phases) else 0.0)
+                cost = (slot["capacity"] * cost_per.get(typ, 0.0)
+                        * (1.0 + social_inflation) ** (offset_months / 12.0))
+                if cost <= 0:
+                    continue
+                phase_start = add_months(project_start_iso, int(offset_months)).isoformat()
+                if social_count == 1:
+                    own_start = (min(slot["dates"]) if slot["dates"]
+                                 else typed_starts.get(typ) or phase_start)
+                    obj_start = max(own_start, project_start_iso)
+                else:
+                    obj_start = max(min(slot["dates"]) if slot["dates"] else phase_start,
+                                    phase_start)
+                span_months = months_by_type.get(typ, 24)
+                first_col = months_between(
+                    date.fromisoformat(project_start_iso), date.fromisoformat(obj_start))
+                for month_index in range(span_months):
+                    column = first_col + month_index
+                    if 0 <= column < 120:
+                        social_monthly_by_phase[min(phase_index, 3)][column] += cost / span_months
 
     # --- расшифровка соцнагрузки: ОТЧЕТ (E31:H37) и ТЭП (38–44) -----------
     # «Где в Excel расходы на садик и школы?» — раньше нигде: B17 приезжал
@@ -8802,6 +8858,27 @@ def build_project_workbook(
     tep_sheet_path = _v4_sheet_path(source, "ТЭП")
     report_xml = source.read(report_sheet_path).decode("utf-8")
     tep_xml = source.read(tep_sheet_path).decode("utf-8")
+
+    # Соцстройка — готовыми числами в строку 31 блока каждой очереди CAPEX:
+    # объект платится в своей очереди её календарём, как в движке. Итог
+    # строки становится суммой месяцев — прежняя формула с R-долей осталась
+    # бы жить своей жизнью поверх записанных чисел.
+    capex_sheet_path = _v4_sheet_path(source, "CAPEX")
+    capex_xml = source.read(capex_sheet_path).decode("utf-8")
+    if social_monthly_by_phase is not None:
+        from openpyxl.utils import get_column_letter as _col
+        for phase_index in range(4):
+            row = 31 + 34 * phase_index
+            for column_index, value in enumerate(social_monthly_by_phase[phase_index]):
+                capex_xml, done = _v4_set_cell(
+                    capex_xml, f"{_col(4 + column_index)}{row}", number=round(value, 6))
+                if not done:
+                    missing.append(f"соцграфик CAPEX: колонка {column_index} очереди {phase_index + 1}")
+                    break
+            capex_xml, done = _v4_set_cell(
+                capex_xml, f"B{row}", formula=f"SUM(D{row}:DS{row})")
+            if not done:
+                missing.append(f"соцграфик CAPEX: итог очереди {phase_index + 1}")
 
     def _put_extra(sheet_xml: str, coord: str, *, number=None, text=None) -> str:
         updated, done = _v4_set_cell(sheet_xml, coord, number=number, text=text)
@@ -9034,6 +9111,8 @@ def build_project_workbook(
                 payload = report_xml.encode("utf-8")
             elif item.filename == tep_sheet_path:
                 payload = tep_xml.encode("utf-8")
+            elif item.filename == capex_sheet_path:
+                payload = capex_xml.encode("utf-8")
             if item.filename.startswith("xl/worksheets/") and item.filename.endswith(".xml"):
                 text = payload.decode("utf-8")
                 text = re.sub(r"(<x:f(?:\s[^>]*)?>[^<]*</x:f>)<x:v>[^<]*</x:v>", r"\1", text)
