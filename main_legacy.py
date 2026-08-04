@@ -42,7 +42,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.22"
+VERSION = "0.17.23"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -4671,6 +4671,14 @@ def _build_model_xlsx(sheets: list[dict[str, Any]]) -> bytes:
 # всплывёт в тот же день — в предупреждениях импорта, в /status и в ответах
 # серверного пути, — а не будет молча жить в Telegram. Память процесса: после
 # перезапуска флаг снимается до следующего сбора на сайте.
+# Дата, на которую сняты зашитые ставки компенсации за соцобъекты. Город
+# индексирует их поквартально: 04.08.2026 штатный калькулятор дал по одному
+# участку 220,3 млн ₽ против серверных 185,1 — отставание в 19%. Дата едет в
+# предупреждение серверного ответа, чтобы отставание было видно сразу, а не
+# всплывало при сравнении расчётов с двух компьютеров.
+_GLAVAPU_COMPENSATION_RATES_DATE = "01.08.2026"
+
+
 _GLAVAPU_DRIFT_CHECKS = [
     ("4", "население", 3.0, "abs"),
     ("10", "площадь квартир", 0.01, "rel"),
@@ -4740,7 +4748,9 @@ def cadastral_tep_server(req: CadastralAnalysisRequest) -> dict[str, Any]:
         0,
         "ТЭП посчитан серверными формулами ГлавАПУ: браузерный калькулятор "
         "недоступен. Формулы сняты с его кода и сходятся с контрольными "
-        "выгрузками до единицы.",
+        "выгрузками до единицы, но ставки компенсации за соцобъекты зашиты "
+        f"на {_GLAVAPU_COMPENSATION_RATES_DATE} — город индексирует их "
+        "поквартально, и расчёт штатного калькулятора может быть выше.",
     )
     if _GLAVAPU_FORMULA_DRIFT["items"]:
         result["warnings"].insert(
@@ -20173,6 +20183,15 @@ function tepRunLog(runId,stage,detail){
  }catch(e){}
 }
 
+function tepSourceLabel(manual){
+ // Штатный калькулятор и серверные формулы помечались одинаково — «ГлавАПУ»,
+ // и два отчёта с разными числами выглядели одинаково достоверно. Различие
+ // видно только по имени файла выгрузки, чего человек знать не обязан.
+ if(manual)return 'Ручной шаблон DevelopAid';
+ const fmt=String(((glavapuImport||{}).source||{}).format||'');
+ return /серверн/i.test(fmt)?'ГлавАПУ · серверный расчёт DevelopAid'
+                            :'ГлавАПУ · штатный калькулятор';
+}
 async function obtainServerTep(analysis,status,runId){
  // Формулы калькулятора, посчитанные сервером: равноценная замена
  // браузерной автоматизации, а не суррогат — сходятся до единицы.
@@ -20971,7 +20990,7 @@ async function sendTelegramResult(){
  const payload={
    cadastral_numbers:cads,
    project_name:manual?String(manualMeta.project_name||''):'',
-   source_label:manual?'Ручной шаблон DevelopAid':'ГлавАПУ',
+   source_label:tepSourceLabel(manual),
     purchase_price_mln:Number(inputs.purchase_price_mln||0),
     // Источник проекта важнее сохранённого значения: в inputs могла остаться
     // площадь прошлого расчёта, и она перебивала площадь текущего участка.
@@ -22454,7 +22473,7 @@ function currentPdfReportPayload(cads=[]){
  const glavapuMeta=inputs._glavapu_import||null;
  const manualMeta=inputs._manual_tep_import||null;
  const source=(glavapuMeta&&glavapuMeta.source)||(manualMeta&&manualMeta.source)||{};
- return {result:lastResult,inputs:inputs,tep:tep,rates:rates,phasing:phasing,scenario:scenarioSelect.value||'base',cadastral_numbers:cads.length?cads:((cadastralAnalysis&&cadastralAnalysis.recognized)||source.cadastral_numbers||[]),project_name:(manualMeta&&manualMeta.project_name)||'',source_label:manualMeta?'Ручной шаблон DevelopAid':'ГлавАПУ',
+ return {result:lastResult,inputs:inputs,tep:tep,rates:rates,phasing:phasing,scenario:scenarioSelect.value||'base',cadastral_numbers:cads.length?cads:((cadastralAnalysis&&cadastralAnalysis.recognized)||source.cadastral_numbers||[]),project_name:(manualMeta&&manualMeta.project_name)||'',source_label:tepSourceLabel(!!manualMeta),
    // Чувствительность попадает в отчёт только если её считали: гнать полсотни
    // расчётов внутри сборки PDF ради раздела, который никто не просил, незачем.
    sensitivity:sensitivityReport};

@@ -157,3 +157,28 @@ def test_the_mini_app_url_busts_the_webview_cache(monkeypatch):
     url = core._telegram_web_app_url(42, [])
     assert f"v={core.VERSION}" in url, \
         "URL мини-приложения обязан включать версию для сброса кэша WebView"
+
+
+def test_the_two_tep_sources_are_labelled_apart():
+    """Штатный калькулятор и серверные формулы помечались одинаково —
+    «ГлавАПУ», — и два отчёта с разными числами выглядели одинаково
+    достоверно: отличить их можно было только по имени файла выгрузки.
+    На двух компьютерах это дало соцплатёж 185,1 и 220,3 млн ₽ без
+    единого признака, какой расчёт откуда."""
+    page = core.PAGE
+    assert "function tepSourceLabel(" in page
+    assert "ГлавАПУ · серверный расчёт DevelopAid" in page
+    assert "ГлавАПУ · штатный калькулятор" in page
+    # Старая безусловная метка не должна вернуться ни в одну из точек сборки.
+    assert "source_label:manual?'Ручной шаблон DevelopAid':'ГлавАПУ'" not in page
+
+
+def test_the_server_answer_dates_its_compensation_rates():
+    """Ставки компенсации зашиты на дату и отстают от города: серверный
+    ответ обязан называть эту дату, иначе отставание всплывает только при
+    сравнении расчётов с разных машин."""
+    import inspect
+    source = inspect.getsource(core.cadastral_tep_server)
+    assert "_GLAVAPU_COMPENSATION_RATES_DATE" in source
+    assert "индексирует их" in source
+    assert core._GLAVAPU_COMPENSATION_RATES_DATE
