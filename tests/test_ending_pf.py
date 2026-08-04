@@ -147,9 +147,11 @@ def test_the_template_labels_the_debt_row():
 
 
 def test_the_two_bridge_peaks_are_separate_indicators():
-    """Книга ведёт остаток БРИДЖа с капитализацией процентов, движок «пиком»
-    называет тело долга: одинаковое слово читалось как расхождение моделей
-    (2 952 против 2 740 на 77:09). Теперь это два разных показателя."""
+    """Пик тела долга и пик с капитализацией — разные показатели: одинаковое
+    слово читалось как расхождение моделей (2 952 против 2 740 на 77:09).
+    С payable-механикой 0.17.14 тело книги капитализацию больше не несёт,
+    и строка 82 честно названа телом; пик с капитализацией остаётся
+    движковым справочным показателем в PDF."""
     inputs = dict(core.DEFAULT_INPUTS)
     tep = {key: dict(value) for key, value in core.TEP_DEFAULT.items()}
     result = core._run_authoritative_model(inputs, tep, [], {})["consolidated"]
@@ -165,7 +167,7 @@ def test_the_two_bridge_peaks_are_separate_indicators():
 
     template = openpyxl.load_workbook(core._V4_TEMPLATE_PATH, data_only=False)
     for sheet in ("CF_1", "CF_2", "CF_3", "CF_4"):
-        assert "капитализацией процентов" in str(template[sheet]["A82"].value)
+        assert "тело долга" in str(template[sheet]["A82"].value)
 
 
 def test_the_pdf_shows_both_bridge_peaks():
