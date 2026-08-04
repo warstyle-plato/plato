@@ -42,7 +42,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.15"
+VERSION = "0.17.16"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -8893,6 +8893,37 @@ def build_project_workbook(
             if not done:
                 missing.append(f"соцграфик CAPEX: итог очереди {phase_index + 1}")
 
+    # Ключевая ставка — движковой кривой, а не линейкой шаблона: движок ведёт
+    # экспоненциальное снижение от даты стартовой ставки (generate_rate_curve),
+    # книга линейно снижала от первого месяца проекта. На старте в январе 2027
+    # при ставке с июля 2026 книга держала ключ 14% там, где у движка уже 12%,
+    # и БРИДЖ с ПФ дорожали на десятки миллионов из ниоткуда. Сценарный
+    # переключатель сохранён: целевая ставка остаётся ячейкой B34 (= H8).
+    rates_sheet_path = _v4_sheet_path(source, "Ставки")
+    rates_xml = source.read(rates_sheet_path).decode("utf-8")
+    try:
+        _rs_raw = str(x.get("rate_start_date") or "")[:10]
+        _ps_date = date.fromisoformat(str(x.get("project_start") or "2027-01-01")[:10])
+        _rs_date = date.fromisoformat(_rs_raw) if _rs_raw else _ps_date
+        _curve_offset = ((_ps_date.year - _rs_date.year) * 12
+                         + (_ps_date.month - _rs_date.month)
+                         - (1 if _rs_date.day > 1 else 0))
+        _curve_shape = max(0.05, float(x.get("rate_curve_shape") or 2.0))
+    except Exception:
+        _curve_offset, _curve_shape = 0, 2.0
+    from openpyxl.utils import get_column_letter as _rate_col
+    for _rate_index in range(120):
+        _X = _rate_col(4 + _rate_index)
+        _progress = (f"(1-EXP(-{_curve_shape:g}*MIN(MAX(0,{_X}$4-1+{_curve_offset}),"
+                     f"'Вводные'!$B$35)/'Вводные'!$B$35))/(1-EXP(-{_curve_shape:g}))")
+        rates_xml, done = _v4_set_cell(
+            rates_xml, f"{_X}5",
+            formula=(f"MAX(0,'Вводные'!$B$34,'Вводные'!$B$33"
+                     f"+('Вводные'!$B$34-'Вводные'!$B$33)*{_progress})"))
+        if not done:
+            missing.append(f"кривая ключевой ставки: колонка {_rate_index}")
+            break
+
     def _put_extra(sheet_xml: str, coord: str, *, number=None, text=None) -> str:
         updated, done = _v4_set_cell(sheet_xml, coord, number=number, text=text)
         if not done:
@@ -9126,6 +9157,8 @@ def build_project_workbook(
                 payload = tep_xml.encode("utf-8")
             elif item.filename == capex_sheet_path:
                 payload = capex_xml.encode("utf-8")
+            elif item.filename == rates_sheet_path:
+                payload = rates_xml.encode("utf-8")
             if item.filename.startswith("xl/worksheets/") and item.filename.endswith(".xml"):
                 text = payload.decode("utf-8")
                 text = re.sub(r"(<x:f(?:\s[^>]*)?>[^<]*</x:f>)<x:v>[^<]*</x:v>", r"\1", text)

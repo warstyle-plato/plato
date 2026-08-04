@@ -89,3 +89,27 @@ def test_the_template_rows_exist():
         assert str(ws["B74"].value).startswith("=SUM(B53,B57)")
         # Налоговая база вычитает кассовую уплату, как движок.
         assert "D53" in str(ws["D22"].value) and "D57" in str(ws["D22"].value)
+
+
+def test_the_key_rate_curve_matches_the_engine():
+    """Ключевая ставка книги — движковая экспоненциальная кривая от даты
+    стартовой ставки: линейка от первого месяца проекта держала ключ 14%
+    там, где у движка уже 12%, и финансирование дорожало из ниоткуда."""
+    sys.setrecursionlimit(400000)
+    from openpyxl.utils import get_column_letter
+    inputs = dict(core.DEFAULT_INPUTS)
+    tep = {key: dict(value) for key, value in core.TEP_DEFAULT.items()}
+    rates = core.generate_rate_curve(
+        core.d(inputs["rate_start_date"]), inputs["rate_start_pct"],
+        inputs["rate_target_high_pct"], inputs["rate_target_base_pct"],
+        inputs["rate_target_low_pct"], int(inputs["rate_normalization_months"]),
+        180, inputs["rate_curve_shape"])
+    content, _, _ = core.build_project_workbook(inputs, tep, [], {}, finance_hints={})
+    book = openpyxl.load_workbook(io.BytesIO(content), data_only=False)
+    evaluator = Evaluator(book)
+    start = core.d(inputs["project_start"])
+    for col in (4, 5, 10, 30, 60):
+        month = core.add_months(start, col - 4)
+        engine = core.rate_lookup(rates, month, "base")
+        value = float(evaluator.cell("Ставки", f"{get_column_letter(col)}5") or 0)
+        assert value == pytest.approx(engine, abs=5e-5), str(month)
