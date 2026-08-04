@@ -36,6 +36,10 @@ def empty_glavapu_tep_cache():
 @pytest.fixture(autouse=True)
 def isolated_platon_state(tmp_path, monkeypatch):
     monkeypatch.setattr(_wrapper, "_STATE_DIR", tmp_path / "platon_state")
+    # Кэш ответов агента и стадии запросов тоже живут на диске — иначе ответ,
+    # положенный одним тестом, приходит другому вместо похода в модель, и тест
+    # «свободный вопрос доходит до модели» падает через раз.
+    monkeypatch.setattr(_wrapper.core, "_PLATO_STAGE_DIR", tmp_path / "agent_state")
     for name in ("_PLATON_CONTEXT_BY_SESSION", "_PLATON_LAST_SESSION",
                  "_PLATON_TEP_CONTEXT", "_PLATON_MODE", "_PLATON_HISTORY",
                  "_PLATON_PENDING", "_PLATON_LAST_URL"):

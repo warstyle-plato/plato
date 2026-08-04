@@ -63,6 +63,8 @@ def run_flow(scenario_js: str) -> dict:
         "function applyRequiredSocialProgramFromGlavapu(){}\n"
         "function syncTep(){}\n"
         "function repairParkingFromGlavapu(){}\n"
+        # Пара «места ↔ площадь» перезаполняется расчётом нового участка.
+        "function fillUndergroundFromTep(){}\n"
         "function applyServerPresetProjectConfig(){return ''}\n"
         "function applyTelegramCalcOverrides(){}\n"
         "function renderInputs(){}\nfunction renderTep(){}\nfunction renderPhasing(){}\n"
