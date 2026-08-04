@@ -434,3 +434,40 @@ def test_the_missing_piece_is_named(monkeypatch):
 
     monkeypatch.delenv("PLATO_AI_URL", raising=False)
     assert "PLATO_AI_URL" in _wrapper._agent_unready_reason()
+
+
+# --- пинг против засыпания сервиса модели ------------------------------------
+
+def test_keepalive_pings_health_not_the_model(monkeypatch):
+    """Будим сервис health-запросом: сам /internal/plato/chat вызывает модель
+    и стоит токенов, а инстансу для пробуждения довольно любого обращения."""
+    monkeypatch.setattr(main, "_PLATO_AI_URL",
+                        "https://developaid.onrender.com/internal/plato/chat")
+    assert main._plato_keepalive_url() == "https://developaid.onrender.com/health"
+
+
+def test_keepalive_stays_quiet_where_the_service_is_local(monkeypatch):
+    """На самом Render адрес прокси пуст — там будить некого, и поток
+    не поднимается: инстанс всё равно уснёт вместе с ним."""
+    monkeypatch.setattr(main, "_PLATO_AI_URL", "")
+    assert main._plato_keepalive_url() == ""
+    started = []
+    monkeypatch.setattr(main.threading, "Thread",
+                        lambda *a, **k: started.append(k) or _NoThread())
+    main._start_plato_keepalive()
+    assert started == [], "на сервере с локальной моделью пинг не нужен"
+
+
+class _NoThread:
+    def start(self):  # pragma: no cover - защита от случайного запуска
+        raise AssertionError("поток не должен подниматься")
+
+
+def test_agent_status_shows_the_keepalive(monkeypatch):
+    monkeypatch.setattr(main, "_PLATO_AI_URL",
+                        "https://developaid.onrender.com/internal/plato/chat")
+    status = main.agent_status()["keepalive"]
+    assert status["url"].endswith("/health")
+    assert status["every_minutes"] > 0
+    # Поля отклика есть всегда: «Платон опять засыпает» должно быть чем объяснить.
+    assert "last_ok" in status and "last_error" in status

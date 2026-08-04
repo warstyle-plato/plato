@@ -42,7 +42,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.21"
+VERSION = "0.17.22"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -18052,6 +18052,10 @@ _PLATO_AI_TIMEOUT_SECONDS = max(30.0, _env_float("PLATO_AI_TIMEOUT_SECONDS", 120
 # первый запрос уходит в тишину. Живой сервис отвечает быстрее, а долгие
 # ответы дожидаются на повторе с полным таймаутом.
 _PLATO_WAKE_TIMEOUT_SECONDS = max(15.0, _env_float("PLATO_AI_WAKE_TIMEOUT_SECONDS", 45.0))
+# Пинг, чтобы сервис модели не засыпал: Render гасит бесплатный инстанс после
+# ~15 минут тишины, и первый живой вопрос платит за пробуждение. Ноль — выключить.
+_PLATO_KEEPALIVE_MINUTES = max(0.0, _env_float("PLATO_AI_KEEPALIVE_MINUTES", 10.0))
+_PLATO_KEEPALIVE: dict[str, Any] = {"enabled": False, "last_ok": "", "last_error": ""}
 _PLATON_LOG = logging.getLogger("developaid.platon")
 
 # Между Яндексом и Render TLS-соединение изредка обрывается на чтении ответа:
@@ -18230,6 +18234,58 @@ def _openai_proxy_request(payload: dict[str, Any]) -> dict[str, Any]:
             f"Попыток: {_PLATO_PROXY_ATTEMPTS}. Повторите вопрос через минуту."
         ),
     ) from last_transport
+
+
+def _plato_keepalive_url() -> str:
+    """Адрес пробуждения — /health на хосте сервиса модели.
+
+    Пингуем именно health, а не сам /internal/plato/chat: тот вызывает модель
+    и стоит токенов, а разбудить инстанс достаточно любым запросом.
+    """
+    if not _PLATO_AI_URL:
+        return ""
+    try:
+        parts = urllib.parse.urlsplit(_PLATO_AI_URL)
+        if not parts.scheme or not parts.netloc:
+            return ""
+        return urllib.parse.urlunsplit((parts.scheme, parts.netloc, "/health", "", ""))
+    except Exception:
+        return ""
+
+
+def _plato_keepalive_loop() -> None:
+    url = _plato_keepalive_url()
+    if not url:
+        return
+    interval = _PLATO_KEEPALIVE_MINUTES * 60.0
+    _PLATO_KEEPALIVE["enabled"] = True
+    while True:
+        try:
+            request = urllib.request.Request(
+                url, headers={"User-Agent": USER_AGENT}, method="GET")
+            with urllib.request.urlopen(request, timeout=30) as response:
+                response.read(2048)
+            _PLATO_KEEPALIVE["last_ok"] = datetime.now().isoformat(timespec="seconds")
+            _PLATO_KEEPALIVE["last_error"] = ""
+        except Exception as exc:
+            # Пинг — удобство, а не работа: молчаливо переживаем любой сбой,
+            # но оставляем след, чтобы «Платон опять засыпает» было чем
+            # объяснить, не заходя на хостинг.
+            _PLATO_KEEPALIVE["last_error"] = (
+                f"{datetime.now().isoformat(timespec='seconds')}: {type(exc).__name__}")
+            _PLATON_LOG.info("Platon keepalive failed: %s", type(exc).__name__)
+        time.sleep(interval)
+
+
+@app.on_event("startup")
+def _start_plato_keepalive() -> None:
+    """Будим сервис модели только оттуда, где он внешний.
+
+    На самом Render PLATO_AI_URL пуст — там пинговать некого и незачем:
+    инстанс, который сам себя пингует, всё равно уснёт вместе с потоком.
+    """
+    if _PLATO_AI_URL and _PLATO_KEEPALIVE_MINUTES > 0:
+        threading.Thread(target=_plato_keepalive_loop, daemon=True).start()
 
 
 def _plato_route() -> str:
@@ -18819,6 +18875,15 @@ def agent_status() -> dict[str, Any]:
         # «Platon route» с чужой машины нечем.
         "route": _plato_route(),
         "proxy_configured": bool(_PLATO_AI_URL and _PLATO_AI_PROXY_SECRET),
+        # Пинг против засыпания сервиса модели: видно, живёт ли он и когда
+        # последний раз отзывался, — иначе «Ошибка AI (504)» объяснять нечем.
+        "keepalive": {
+            "enabled": bool(_PLATO_KEEPALIVE["enabled"]),
+            "every_minutes": _PLATO_KEEPALIVE_MINUTES if _PLATO_AI_URL else 0.0,
+            "url": _plato_keepalive_url(),
+            "last_ok": _PLATO_KEEPALIVE["last_ok"],
+            "last_error": _PLATO_KEEPALIVE["last_error"],
+        },
         "model": os.getenv("OPENAI_AGENT_MODEL", "gpt-5.6"),
         "reasoning_effort": _agent_reasoning_effort(
             os.getenv("OPENAI_AGENT_MODEL", "gpt-5.6").strip() or "gpt-5.6") or "default",
