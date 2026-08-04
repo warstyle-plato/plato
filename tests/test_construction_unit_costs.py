@@ -13,6 +13,7 @@ PDF с сайта был беднее ботовского при тех же в
 from __future__ import annotations
 
 import io
+import re
 import sys
 from pathlib import Path
 
@@ -112,7 +113,9 @@ def test_the_book_verdict_speaks_russian():
     xml = zipfile.ZipFile(core._V4_TEMPLATE_PATH).read(
         "xl/worksheets/sheet16.xml").decode("utf-8")
     assert "ПРОЙДЕНО С ПРЕДУПРЕЖДЕНИЯМИ" in xml
-    assert 'COUNTIF(F6:F75,"FAIL")' in xml
+    # Диапазон растёт вместе с parity-строками (0.17.18: F6:F84) — тесту
+    # важен сам механизм COUNTIF по колонке, а не конкретная граница.
+    assert re.search(r'COUNTIF\(F6:F\d+,"FAIL"\)', xml)
     assert '"PASS WITH WARNINGS"' not in xml
 
 
