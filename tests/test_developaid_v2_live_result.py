@@ -161,6 +161,21 @@ def test_the_result_serializes_stably(client):
     assert stable(first) == stable(second)
 
 
+def test_the_static_assets_are_revalidated(client):
+    """Страница и скрипт перепроверяются, а не живут в кеше вебвью.
+
+    Без `Cache-Control` браузер считает файл свежим по эвристике: сервер уже
+    новый, страница ещё прежняя — и это неотличимо от несостоявшейся выкатки.
+    """
+    for path in ("/v2", "/v2/assets/app.js", "/v2/assets/styles.css"):
+        response = client.get(path)
+        assert response.status_code == 200, path
+        assert "no-cache" in response.headers.get("cache-control", ""), path
+        # etag есть, но 304 на If-None-Match Starlette не отвечает: файл
+        # приходит целиком. Тридцати килобайт свежесть страницы стоит.
+        assert response.headers.get("etag"), path
+
+
 def test_the_response_is_never_cached(client):
     for response in (
         client.post("/api/v2/calculate", json=simple_payload()),

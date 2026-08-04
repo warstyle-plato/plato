@@ -42,6 +42,17 @@ _NO_STORE = {
     "Pragma": "no-cache",
 }
 
+# Статика отдаётся с обязательной перепроверкой. Без `Cache-Control` браузер
+# вправе считать файл свежим сам — по эвристике от `last-modified`, — и вебвью
+# Telegram так и делает: сервер уже новый, страница ещё прежняя. Выглядит это
+# как «выкатка не состоялась», а на деле старый расчёт в окне против нового на
+# сервере — та самая вторая экономика, которую ловит `_parity_mismatch`.
+# `no-cache` кеш не запрещает — он запрещает отдавать файл без подтверждения.
+# Ответить 304 на If-None-Match Starlette не умеет, поэтому подтверждение
+# стоит полной отдачи: 30 КБ скрипта и 26 КБ стилей на загрузку страницы.
+# Свежесть этих денег стоит: расхождение окна с сервером ищут потом часами.
+_REVALIDATE = {"Cache-Control": "no-cache, must-revalidate"}
+
 
 def _prototype_fixtures_enabled() -> bool:
     """Контрольные fixtures — dev-only, по явному переключателю."""
@@ -102,15 +113,19 @@ def install(app: FastAPI) -> None:
     @app.get("/v2", include_in_schema=False)
     @app.get("/v2/", include_in_schema=False)
     async def developaid_v2_index() -> FileResponse:
-        return FileResponse(_FRONTEND / "index.html", media_type="text/html")
+        return FileResponse(_FRONTEND / "index.html", media_type="text/html",
+                            headers=_REVALIDATE)
 
     @app.get("/v2/assets/styles.css", include_in_schema=False)
     async def developaid_v2_styles() -> FileResponse:
-        return FileResponse(_FRONTEND / "styles.css", media_type="text/css")
+        return FileResponse(_FRONTEND / "styles.css", media_type="text/css",
+                            headers=_REVALIDATE)
 
     @app.get("/v2/assets/app.js", include_in_schema=False)
     async def developaid_v2_script() -> FileResponse:
-        return FileResponse(_FRONTEND / "app.js", media_type="application/javascript")
+        return FileResponse(_FRONTEND / "app.js",
+                            media_type="application/javascript",
+                            headers=_REVALIDATE)
 
     @app.post("/api/v2/calculate")
     def developaid_v2_calculate(req: CalculateRequest) -> JSONResponse:
