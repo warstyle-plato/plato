@@ -1,6 +1,15 @@
+/* DevelopAid 2.0 — интерфейс единственного результата движка.
+
+   Здесь ничего не считается. Страница отправляет вводные, получает
+   ProjectResult и рисует его поля. Единственная арифметика в файле —
+   форматирование (рубли в миллиарды) и геометрия графиков (доли круга,
+   координаты точек): экономику считает движок, и второй её реализации на
+   странице быть не должно. */
+
 const state = {
   projects: [],
-  project: null,
+  slug: null,
+  result: null,
   activeView: 'summary',
 };
 
@@ -12,16 +21,50 @@ const icons = {
   gns: '▦', saleable: '▤', apartments: '⌂', commercial: '□', parking: 'P', social: '◎',
 };
 
-function formatBn(value) {
-  return `${Number(value).toLocaleString('ru-RU', { minimumFractionDigits: value < 1 ? 2 : 1, maximumFractionDigits: 2 })} млрд ₽`;
-}
+const LLCR_TARGET = 1.2;
 
-function formatM(value) {
-  return `${Number(value).toLocaleString('ru-RU', { maximumFractionDigits: 1 })} млн ₽`;
+// --- форматирование ---------------------------------------------------------
+
+const num = (value) => (value === null || value === undefined || Number.isNaN(Number(value)))
+  ? null : Number(value);
+
+function formatMoney(value) {
+  const amount = num(value);
+  if (amount === null) return '—';
+  const billions = amount / 1e9;
+  if (Math.abs(billions) >= 1) {
+    return `${billions.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} млрд ₽`;
+  }
+  return `${(amount / 1e6).toLocaleString('ru-RU', { maximumFractionDigits: 1 })} млн ₽`;
 }
 
 function formatInt(value) {
-  return Number(value || 0).toLocaleString('ru-RU');
+  const amount = num(value);
+  return amount === null ? '—' : amount.toLocaleString('ru-RU', { maximumFractionDigits: 0 });
+}
+
+function formatRatio(value, digits = 2) {
+  const amount = num(value);
+  return amount === null ? '—' : `${amount.toFixed(digits).replace('.', ',')}x`;
+}
+
+function formatPercent(fraction, digits = 1) {
+  const amount = num(fraction);
+  return amount === null ? '—' : `${(amount * 100).toFixed(digits).replace('.', ',')}%`;
+}
+
+function formatMonth(iso) {
+  if (!iso) return '';
+  const [year, month] = String(iso).split('-');
+  return `${month}.${String(year).slice(2)}`;
+}
+
+function formatDateTime(iso) {
+  if (!iso) return '—';
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime())
+    ? String(iso)
+    : date.toLocaleString('ru-RU', { dateStyle: 'short', timeStyle: 'short' });
 }
 
 function escapeHtml(value) {
@@ -56,41 +99,46 @@ function bindNavigation() {
   });
 }
 
+// --- графики: только геометрия ---------------------------------------------
+
 function linePath(values, width, height, minValue, maxValue) {
   const range = maxValue - minValue || 1;
   const step = values.length > 1 ? width / (values.length - 1) : width;
   const points = values.map((value, index) => {
     const x = index * step;
-    const y = height - ((value - minValue) / range) * height;
+    const y = height - ((Number(value || 0) - minValue) / range) * height;
     return [x, y];
   });
   const path = points.map(([x, y], index) => `${index ? 'L' : 'M'} ${x.toFixed(2)} ${y.toFixed(2)}`).join(' ');
   return { path, points };
 }
 
-function renderMultiChart(element, project, mode = 'all') {
+function renderMultiChart(element, mode = 'all') {
+  const monthly = state.result.monthly || {};
+  const cash = (monthly.cashflow_project || []).map((value) => Number(value || 0));
+  const debt = (monthly.pf_balance || []).map((value, index) => Number(value || 0) + Number((monthly.bridge_balance || [])[index] || 0));
+  const escrow = (monthly.escrow || []).map((value) => Number(value || 0));
   const width = 980;
   const height = 250;
   const padding = 10;
-  const series = mode === 'finance'
-    ? [project.debt, project.escrow]
-    : [project.cashflow, project.debt, project.escrow];
+  const series = mode === 'finance' ? [debt, escrow] : [cash, debt, escrow];
   const values = series.flat().concat([0]);
+  if (!values.length) { element.innerHTML = ''; return; }
   const rawMin = Math.min(...values);
   const rawMax = Math.max(...values);
   const buffer = Math.max((rawMax - rawMin) * 0.12, 1);
   const minValue = rawMin - buffer;
   const maxValue = rawMax + buffer;
   const innerHeight = height - padding * 2;
-  const cash = linePath(project.cashflow, width, innerHeight, minValue, maxValue);
-  const debt = linePath(project.debt, width, innerHeight, minValue, maxValue);
-  const escrow = linePath(project.escrow, width, innerHeight, minValue, maxValue);
+  const cashLine = linePath(cash, width, innerHeight, minValue, maxValue);
+  const debtLine = linePath(debt, width, innerHeight, minValue, maxValue);
+  const escrowLine = linePath(escrow, width, innerHeight, minValue, maxValue);
   const zeroY = padding + innerHeight - ((0 - minValue) / (maxValue - minValue)) * innerHeight;
   const gridLines = [0, .25, .5, .75, 1].map((fraction) => {
     const y = padding + innerHeight * fraction;
     return `<line class="chart-grid" x1="0" y1="${y}" x2="${width}" y2="${y}"></line>`;
   }).join('');
-  const area = `${cash.path} L ${width} ${zeroY} L 0 ${zeroY} Z`;
+  const area = `${cashLine.path} L ${width} ${zeroY} L 0 ${zeroY} Z`;
   const dots = (points, className, color) => points.map(([x, y], index) => {
     if (index !== points.length - 1) return '';
     return `<circle class="chart-dot ${className}" cx="${x}" cy="${y + padding}" r="5" fill="${color}"></circle>`;
@@ -107,202 +155,302 @@ function renderMultiChart(element, project, mode = 'all') {
       ${gridLines}
       <line class="chart-zero" x1="0" y1="${zeroY}" x2="${width}" y2="${zeroY}"></line>
       ${mode === 'all' ? `<path d="${area}" fill="url(#cashGradient-${mode})"></path>` : ''}
-      ${mode === 'all' ? `<path class="chart-cash" d="${cash.path}" transform="translate(0 ${padding})"></path>${dots(cash.points, 'cash-dot', '#38d7ff')}` : ''}
-      <path class="chart-debt" d="${debt.path}" transform="translate(0 ${padding})"></path>
-      <path class="chart-escrow" d="${escrow.path}" transform="translate(0 ${padding})"></path>
-      ${dots(debt.points, 'debt-dot', '#ffb957')}
-      ${dots(escrow.points, 'escrow-dot', '#27d7a2')}
+      ${mode === 'all' ? `<path class="chart-cash" d="${cashLine.path}" transform="translate(0 ${padding})"></path>${dots(cashLine.points, 'cash-dot', '#38d7ff')}` : ''}
+      <path class="chart-debt" d="${debtLine.path}" transform="translate(0 ${padding})"></path>
+      <path class="chart-escrow" d="${escrowLine.path}" transform="translate(0 ${padding})"></path>
+      ${dots(debtLine.points, 'debt-dot', '#ffb957')}
+      ${dots(escrowLine.points, 'escrow-dot', '#27d7a2')}
     </svg>`;
 }
 
-function renderTimeline(element, labels) {
-  element.innerHTML = labels.map((label) => `<span>${escapeHtml(label)}</span>`).join('');
+function renderTimeline(element) {
+  const months = (state.result.monthly || {}).months || [];
+  if (!months.length) { element.innerHTML = ''; return; }
+  const picks = 7;
+  const labels = [];
+  for (let index = 0; index < picks; index += 1) {
+    labels.push(months[Math.round((months.length - 1) * (index / (picks - 1)))]);
+  }
+  element.innerHTML = labels.map((iso) => `<span>${escapeHtml(formatMonth(iso))}</span>`).join('');
 }
 
-function renderDecision(project) {
-  const belowTarget = project.kpi.llcr < 1.2;
-  const isMytishchi = project.slug === 'mytishchi';
-  const headline = isMytishchi
-    ? 'Сильная третья очередь пока оплачивает слабость первой'
-    : 'Проект прибыльный, но кредитная устойчивость ниже целевой';
-  const copy = isMytishchi
-    ? 'Без цены входа вывод о покупке не формируется. О1 убыточна, а общий LLCR держится ниже 1,20x — проект нельзя оценивать только по консолидированной прибыли.'
-    : 'LLCR ниже 1,20x, а фактический пик БРИДЖа существенно выше расчётного. Нужна настройка цены покупки, сроков, себестоимости и земельных платежей.';
+// --- разделы ----------------------------------------------------------------
+
+function renderMeta() {
+  const result = state.result;
+  $('#engineBadge').textContent = `Движок ${result.engine_version}`;
+  $('#resultMeta').innerHTML = [
+    `<span>Расчёт <code>${escapeHtml(String(result.calculation_id).slice(0, 12))}</code></span>`,
+    `<span>${escapeHtml(formatDateTime(result.calculated_at))}</span>`,
+    `<span title="${escapeHtml(result.input_hash)}">вводные <code>${escapeHtml(String(result.input_hash).slice(7, 19))}</code></span>`,
+    `<span>${escapeHtml(result.engine_entry_point)}</span>`,
+  ].join('');
+}
+
+function renderDecision() {
+  const result = state.result;
+  const verdict = result.verdict || {};
+  const llcr = num(result.kpi.llcr);
+  const covenant = llcr === null ? '—' : (llcr >= LLCR_TARGET ? 'Ковенант выполнен' : 'Ковенант не держится');
   $('#decisionCard').innerHTML = `
     <span class="eyebrow">Инвестиционный вывод</span>
-    <h2>${headline}</h2>
-    <p>${copy}</p>
-    <div class="decision-meta"><span>${escapeHtml(project.status)}</span><span>${escapeHtml(project.source)}</span><span>${belowTarget ? 'Ковенант не держится' : 'Ковенант выполнен'}</span></div>`;
+    <h2>${escapeHtml(verdict.title || 'Вывод не сформирован')}</h2>
+    <p>${escapeHtml(verdict.text || '')}</p>
+    <div class="decision-meta"><span>${escapeHtml(result.project.source_label || 'Расчёт движка DevelopAid')}</span><span>${escapeHtml(covenant)}</span></div>`;
 }
 
-function renderGauge(project) {
-  const llcr = project.kpi.llcr;
+function renderGauge() {
+  const llcr = num(state.result.kpi.llcr) ?? 0;
   const score = Math.max(0, Math.min(100, (llcr / 1.35) * 100));
-  const color = llcr >= 1.2 ? '#27d7a2' : llcr >= 1.1 ? '#ffb957' : '#ff667a';
+  const color = llcr >= LLCR_TARGET ? '#27d7a2' : llcr >= 1.1 ? '#ffb957' : '#ff667a';
   $('#llcrGauge').style.setProperty('--value', score.toFixed(1));
   $('#llcrGauge').style.setProperty('--gauge-color', color);
-  $('#llcrGaugeValue').textContent = `${llcr.toFixed(2).replace('.', ',')}x`;
-  $('#llcrChip').textContent = llcr >= 1.2 ? 'Цель выполнена' : `−${(1.2 - llcr).toFixed(2).replace('.', ',')}x до цели`;
-  $('#llcrChip').style.color = llcr >= 1.2 ? '#66e5bd' : '';
-  $('#llcrComment').textContent = llcr >= 1.2
+  $('#llcrGaugeValue').textContent = formatRatio(llcr);
+  $('#llcrChip').textContent = llcr >= LLCR_TARGET ? 'Цель выполнена' : 'Ниже цели 1,20x';
+  $('#llcrComment').textContent = llcr >= LLCR_TARGET
     ? 'Долговая нагрузка покрывается денежным потоком с нормативным запасом.'
     : 'Денежного потока недостаточно для целевого запаса обслуживания долга.';
 }
 
-function renderKpis(project) {
-  const k = project.kpi;
+function renderKpis() {
+  const kpi = state.result.kpi;
+  const financing = state.result.financing || {};
+  const netProfit = num(kpi.net_profit) ?? 0;
   const cards = [
-    { icon: icons.revenue, label: 'Выручка', value: formatBn(k.revenue), note: 'весь проект' },
-    { icon: icons.costs, label: 'Расходы', value: formatBn(k.costs), note: `${((k.costs / k.revenue) * 100).toFixed(1).replace('.', ',')}% выручки` },
-    { icon: icons.profit, label: 'Чистая прибыль', value: formatBn(k.netProfit), note: `маржа ${k.margin.toFixed(1).replace('.', ',')}%`, tone: k.netProfit > 0 ? 'good' : 'critical' },
-    { icon: icons.bridge, label: 'Пик БРИДЖа', value: formatBn(k.bridgePeak), note: `расчётный ${formatBn(k.bridgeCalc)}`, tone: k.bridgePeak > k.bridgeCalc * 2 ? 'critical' : '' },
-    { icon: icons.pf, label: 'Пиковый долг ПФ', value: formatBn(k.pfPeak), note: 'не покрыт эскроу' },
-    { icon: '₽', label: 'Проценты и комиссии', value: formatBn(k.interest), note: `${((k.interest / k.costs) * 100).toFixed(1).replace('.', ',')}% расходов` },
+    { icon: icons.revenue, label: 'Выручка', value: formatMoney(kpi.revenue), note: 'весь проект' },
+    { icon: icons.costs, label: 'Расходы всего', value: formatMoney(kpi.total_expenses), note: 'CAPEX, коммерческие и финансирование' },
+    { icon: icons.profit, label: 'Чистая прибыль', value: formatMoney(kpi.net_profit), note: `маржа ${formatPercent(kpi.margin)}`, tone: netProfit > 0 ? 'good' : 'critical' },
+    { icon: icons.bridge, label: 'Пик БРИДЖа', value: formatMoney(financing.actual_bridge), note: `расчётный ${formatMoney(financing.calculated_bridge)}` },
+    { icon: icons.pf, label: 'Пик ПФ без эскроу', value: formatMoney(financing.pf_uncovered_peak), note: `пик тела ${formatMoney(financing.pf_peak)}` },
+    { icon: '₽', label: 'Проценты и комиссии', value: formatMoney(kpi.financing_cost), note: `EBITDA ${formatMoney(kpi.ebitda)}` },
   ];
   $('#kpiGrid').innerHTML = cards.map(kpiCard).join('');
 }
 
-function renderCosts(project) {
-  const max = Math.max(...project.costStructure.map((item) => item.value));
-  $('#costBars').innerHTML = project.costStructure.map((item) => `
+function renderCosts() {
+  const structure = (state.result.capex || {}).structure || [];
+  const rows = [...structure].sort((a, b) => Number(b.value || 0) - Number(a.value || 0)).slice(0, 6);
+  const max = Math.max(...rows.map((item) => Number(item.value || 0)), 1);
+  $('#costBars').innerHTML = rows.map((item) => `
     <div class="cost-row">
-      <label>${escapeHtml(item.name)}</label><strong>${formatBn(item.value)}</strong>
-      <div class="cost-track"><i style="width:${Math.max(5, item.value / max * 100)}%"></i></div>
+      <label>${escapeHtml(item.label)}</label><strong>${formatMoney(item.value)}</strong>
+      <div class="cost-track"><i style="width:${Math.max(5, Number(item.value || 0) / max * 100)}%"></i></div>
     </div>`).join('');
 }
 
-function renderProducts(project) {
-  const colors = ['#2f8cff', '#38d7ff', '#7b61ff', '#27d7a2', '#ffb957'];
+function renderProducts() {
+  const colors = ['#2f8cff', '#38d7ff', '#7b61ff', '#27d7a2', '#ffb957', '#ff667a'];
+  const products = ((state.result.revenue || {}).products || [])
+    .filter((item) => Number(item.revenue || 0) > 0);
+  // Доли круга — геометрия отрисовки, а не показатель: подписи несут рубли.
+  const total = products.reduce((sum, item) => sum + Number(item.revenue || 0), 0) || 1;
   let cursor = 0;
-  const gradient = project.products.map((item, index) => {
+  const gradient = products.map((item, index) => {
     const start = cursor;
-    cursor += item.share;
+    cursor += Number(item.revenue || 0) / total * 100;
     return `${colors[index % colors.length]} ${start}% ${cursor}%`;
   }).join(', ');
-  $('#productDonut').style.setProperty('--segments', `conic-gradient(${gradient})`);
-  $('#productLegend').innerHTML = project.products.map((item, index) => `
-    <div class="product-item"><i style="background:${colors[index % colors.length]}"></i><span>${escapeHtml(item.name)}</span><strong>${item.share.toFixed(1).replace('.', ',')}%</strong></div>`).join('');
+  $('#productDonut').style.setProperty('--segments', `conic-gradient(${gradient || '#2f8cff 0% 100%'})`);
+  $('#productLegend').innerHTML = products.map((item, index) => `
+    <div class="product-item"><i style="background:${colors[index % colors.length]}"></i><span>${escapeHtml(item.label)}</span><strong>${formatMoney(item.revenue)}</strong></div>`).join('');
 }
 
-function renderRisks(project) {
-  $('#riskList').innerHTML = project.risks.map((risk, index) => `
+function renderRisks() {
+  const warnings = state.result.warnings || [];
+  if (!warnings.length) {
+    $('#riskList').innerHTML = '<div class="empty-state">Движок не сообщил предупреждений по этому расчёту.</div>';
+    return;
+  }
+  $('#riskList').innerHTML = warnings.map((risk, index) => `
     <div class="risk-item"><i>${String(index + 1).padStart(2, '0')}</i><span>${escapeHtml(risk)}</span></div>`).join('');
 }
 
-function renderTep(project) {
-  const t = project.tep;
+function tepRow(key) {
+  return ((state.result.tep || {}).rows || []).find((row) => row.key === key) || {};
+}
+
+function renderTep() {
+  const result = state.result;
+  const total = (result.tep || {}).total || {};
+  const apartments = tepRow('apartments');
+  const parking = tepRow('underground_parking');
   const cards = [
-    { icon: icons.gns, label: 'ГНС проекта', value: `${formatInt(t.gns)} м²`, note: 'совокупный объём' },
-    { icon: icons.saleable, label: 'Продаваемая площадь', value: `${formatInt(t.saleable)} м²`, note: `${(t.saleable / t.gns * 100).toFixed(1).replace('.', ',')}% ГНС` },
-    { icon: icons.apartments, label: 'Квартиры', value: `${formatInt(t.apartments)} м²`, note: 'продаваемая площадь' },
-    { icon: icons.parking, label: 'Паркинг', value: `${formatInt(t.parking)} м/м`, note: 'подземные места' },
+    { icon: icons.gns, label: 'ГНС проекта', value: `${formatInt(result.kpi.project_gns_sqm ?? total.gns)} м²`, note: 'совокупный объём' },
+    { icon: icons.saleable, label: 'Продаваемая площадь', value: `${formatInt(result.kpi.monetizable_saleable_sqm)} м²`, note: 'монетизируемая' },
+    { icon: icons.apartments, label: 'Квартиры', value: `${formatInt(apartments.saleable)} м²`, note: `${formatInt(apartments.units)} шт.` },
+    { icon: icons.parking, label: 'Подземный паркинг', value: `${formatInt(parking.units)} м/м`, note: `${formatInt(parking.gns)} м² ГНС` },
   ];
   $('#tepGrid').innerHTML = cards.map(kpiCard).join('');
-  $('#tepSource').textContent = project.source;
+  $('#tepSource').textContent = result.project.source_label || 'Расчёт движка DevelopAid';
 
-  const blocks = [
-    { name: 'Жильё', value: t.apartments, color: '#2f8cff' },
-    { name: 'Коммерция', value: t.commercial || 0, color: '#38d7ff' },
-    { name: 'Офисы', value: t.offices || 0, color: '#7b61ff' },
-    { name: 'Паркинг', value: t.parking * 35, color: '#27d7a2' },
-  ].filter((item) => item.value > 0);
-  const maxBlock = Math.max(...blocks.map((item) => item.value));
-  $('#buildingStack').innerHTML = blocks.map((item) => `
-    <div class="building-block" style="height:${Math.max(52, item.value / maxBlock * 270)}px;border-color:${item.color};background:linear-gradient(to top, ${item.color}55, ${item.color}12)"><label>${escapeHtml(item.name)}</label></div>`).join('');
+  const blocks = ((result.tep || {}).rows || [])
+    .filter((row) => Number(row.gns || 0) > 0)
+    .map((row) => ({ name: row.label, value: Number(row.gns || 0) }));
+  const maxBlock = Math.max(...blocks.map((item) => item.value), 1);
+  const palette = ['#2f8cff', '#38d7ff', '#7b61ff', '#27d7a2', '#ffb957', '#ff667a'];
+  $('#buildingStack').innerHTML = blocks.map((item, index) => {
+    const color = palette[index % palette.length];
+    return `<div class="building-block" style="height:${Math.max(52, item.value / maxBlock * 270)}px;border-color:${color};background:linear-gradient(to top, ${color}55, ${color}12)"><label>${escapeHtml(item.name)}</label></div>`;
+  }).join('');
 
+  const program = (result.social || {}).program || {};
   const social = [
-    t.kindergarten ? `ДОУ: ${formatInt(t.kindergarten)} мест` : '',
-    t.school ? `СОШ: ${formatInt(t.school)} мест` : '',
-    t.clinic ? `Поликлиника: ${formatInt(t.clinic)} посещений` : '',
+    program.kindergarten_places ? `ДОУ: ${formatInt(program.kindergarten_places)} мест` : '',
+    program.school_places ? `СОШ: ${formatInt(program.school_places)} мест` : '',
+    program.clinic_capacity ? `Поликлиника: ${formatInt(program.clinic_capacity)} посещений` : '',
   ].filter(Boolean).join(' · ');
+  const vri = (result.vri || {}).totals || {};
   $('#landCards').innerHTML = `
-    <div class="land-card"><span>Смена ВРИ / земельные права</span><strong>${formatBn(t.vri)}</strong><small>Должна попадать в cash flow по выбранному графику платежей.</small></div>
-    <div class="land-card"><span>Социальная инфраструктура</span><strong>${formatInt((t.kindergarten || 0) + (t.school || 0) + (t.clinic || 0))}</strong><small>${escapeHtml(social || 'Нет отдельных объектов')}</small></div>
-    <div class="land-card"><span>Коммерция и офисы</span><strong>${formatInt((t.commercial || 0) + (t.offices || 0))} м²</strong><small>Продаваемая нежилая площадь проекта.</small></div>`;
+    <div class="land-card"><span>Смена ВРИ / земельные права</span><strong>${formatMoney(vri.amount)}</strong><small>Касса ${formatMoney(vri.cash)} · БРИДЖ ${formatMoney(vri.bridge)} · ПФ ${formatMoney(vri.pf)}</small></div>
+    <div class="land-card"><span>Социальная нагрузка</span><strong>${formatMoney((result.social || {}).payment)}</strong><small>${escapeHtml((result.social || {}).payment_mode || '')}${social ? ` · ${social}` : ''}</small></div>
+    <div class="land-card"><span>Стоимость проекта</span><strong>${formatMoney(result.kpi.full_project_cost)}</strong><small>CAPEX ${formatMoney(result.kpi.capex)} · коммерческие ${formatMoney(result.kpi.commercial_costs)}</small></div>`;
 }
 
-function renderFinance(project) {
-  const k = project.kpi;
+function renderFinance() {
+  const financing = state.result.financing || {};
+  const kpi = state.result.kpi;
+  const ending = num(financing.ending_pf) ?? 0;
   $('#financeKpis').innerHTML = [
-    { icon: icons.bridge, label: 'Расчётный БРИДЖ', value: formatBn(k.bridgeCalc), note: 'структура до РнС' },
-    { icon: '▲', label: 'Фактический пик', value: formatBn(k.bridgePeak), note: `${(k.bridgePeak / k.bridgeCalc).toFixed(1).replace('.', ',')}x расчётного`, tone: 'critical' },
-    { icon: icons.pf, label: 'Пиковый долг ПФ', value: formatBn(k.pfPeak), note: 'не покрыт эскроу' },
-    { icon: '₽', label: 'Стоимость финансирования', value: formatBn(k.interest), note: 'проценты и комиссии' },
-    { icon: '✓', label: 'Долг на конец', value: '0,0 млрд ₽', note: 'по контрольному отчёту', tone: 'good' },
-    { icon: '×', label: 'LLCR', value: `${k.llcr.toFixed(2).replace('.', ',')}x`, note: 'цель 1,20x', tone: k.llcr >= 1.2 ? 'good' : 'critical' },
+    { icon: icons.bridge, label: 'Расчётный БРИДЖ', value: formatMoney(financing.calculated_bridge), note: 'структура до РнС' },
+    { icon: '▲', label: 'Фактический пик БРИДЖа', value: formatMoney(financing.actual_bridge), note: `с капитализацией ${formatMoney(financing.bridge_peak_capitalized)}` },
+    { icon: icons.pf, label: 'Лимит ПФ', value: formatMoney(financing.pf_limit), note: `пик тела ${formatMoney(financing.pf_peak)}` },
+    { icon: '₽', label: 'Стоимость финансирования', value: formatMoney(financing.interest_and_fees), note: `средняя ставка ПФ ${formatPercent(financing.avg_pf_rate)}` },
+    { icon: ending > 0 ? '×' : '✓', label: 'Долг ПФ на конец', value: formatMoney(financing.ending_pf), note: ending > 0 ? 'не погашен' : 'погашен полностью', tone: ending > 0 ? 'critical' : 'good' },
+    { icon: '×', label: 'LLCR', value: formatRatio(kpi.llcr), note: 'цель 1,20x', tone: (num(kpi.llcr) ?? 0) >= LLCR_TARGET ? 'good' : 'critical' },
   ].map(kpiCard).join('');
-  renderMultiChart($('#financeChart'), project, 'finance');
-  renderTimeline($('#financeTimeline'), project.timeline);
+  renderMultiChart($('#financeChart'), 'finance');
+  renderTimeline($('#financeTimeline'));
 }
 
-function renderPhases(project) {
-  $('#phaseRows').innerHTML = project.phases.map((phase) => `
-    <div class="phase-row"><label>${escapeHtml(phase.name)}</label><div class="phase-track"><i class="phase-bar tone-${phase.tone}" style="left:${phase.start}%;width:${phase.length}%"></i></div></div>`).join('');
-  if (!project.queues.length) {
-    $('#queueTable').innerHTML = '<div class="empty-state">Очередность не включена. Экран остаётся компактным для одностадийного проекта.</div>';
+function renderPhases() {
+  const result = state.result;
+  const months = (result.monthly || {}).months || [];
+  const queues = result.queues || [];
+  if (!queues.length) {
+    $('#phaseRows').innerHTML = '<div class="empty-state">Проект одноочередной: очередность в расчёте не включена.</div>';
+    $('#queueTable').innerHTML = '<div class="empty-state">Сравнение очередей появляется, когда движок считает проект по очередям.</div>';
     return;
   }
+  const tones = ['blue', 'amber', 'green', 'violet', 'cyan'];
+  // Полоса очереди — её собственный календарь строительства из расчёта,
+  // положенный на общую ось месяцев. Никаких сроков здесь не выводится.
+  const position = (iso) => {
+    const index = months.indexOf(String(iso || '').slice(0, 7) + '-01');
+    return index < 0 ? null : index / Math.max(months.length - 1, 1) * 100;
+  };
+  $('#phaseRows').innerHTML = queues.map((queue, index) => {
+    const calendar = queue.calendar || {};
+    const start = position(calendar.start) ?? 0;
+    const end = position(calendar.end) ?? 100;
+    return `<div class="phase-row"><label>${escapeHtml(queue.name)}</label><div class="phase-track"><i class="phase-bar tone-${tones[index % tones.length]}" style="left:${start}%;width:${Math.max(4, end - start)}%"></i></div></div>`;
+  }).join('');
+
   $('#queueTable').innerHTML = `
     <table>
       <thead><tr><th>Очередь</th><th>ГНС, м²</th><th>Прод., м²</th><th>Выручка</th><th>Расходы</th><th>Прибыль</th><th>LLCR</th></tr></thead>
-      <tbody>${project.queues.map((q) => `<tr>
-        <td><strong>${q.name}</strong></td><td>${formatInt(q.gns)}</td><td>${formatInt(q.saleable)}</td><td>${formatBn(q.revenue)}</td><td>${formatBn(q.costs)}</td>
-        <td class="${q.profit < 0 ? 'negative' : 'positive'}">${formatBn(q.profit)}</td><td class="${q.llcr < 1.2 ? 'negative' : 'positive'}">${q.llcr.toFixed(2).replace('.', ',')}x</td>
-      </tr>`).join('')}</tbody>
+      <tbody>${queues.map((queue) => {
+        const kpi = queue.kpi || {};
+        const profit = num(kpi.net_profit) ?? 0;
+        const llcr = num(kpi.llcr) ?? 0;
+        return `<tr>
+        <td><strong>${escapeHtml(queue.name)}</strong></td><td>${formatInt(kpi.project_gns_sqm)}</td><td>${formatInt(kpi.monetizable_saleable_sqm)}</td>
+        <td>${formatMoney(kpi.revenue)}</td><td>${formatMoney(kpi.total_expenses)}</td>
+        <td class="${profit < 0 ? 'negative' : 'positive'}">${formatMoney(kpi.net_profit)}</td>
+        <td class="${llcr < LLCR_TARGET ? 'negative' : 'positive'}">${formatRatio(llcr)}</td>
+      </tr>`;
+      }).join('')}</tbody>
     </table>`;
 }
 
-function renderTornado(project) {
-  const spreads = project.sensitivity.map((row) => Math.max(Math.abs(row.base - row.low), Math.abs(row.high - row.base)));
-  const maxSpread = Math.max(...spreads, .01);
-  $('#tornadoChart').innerHTML = project.sensitivity.map((row) => {
-    const lowWidth = Math.abs(row.base - row.low) / maxSpread * 48;
-    const highWidth = Math.abs(row.high - row.base) / maxSpread * 48;
+function renderTornado() {
+  const sensitivity = state.result.sensitivity;
+  const element = $('#tornadoChart');
+  if (!sensitivity || !(sensitivity.items || []).length) {
+    const reason = state.result.sensitivity_error
+      ? `Анализ не выполнен: ${state.result.sensitivity_error}`
+      : 'Анализ чувствительности не запрашивался для этого расчёта.';
+    element.innerHTML = `<div class="empty-state">${escapeHtml(reason)}</div>`;
+    return;
+  }
+  const base = Number(sensitivity.base.value || 0);
+  const digits = Number(sensitivity.base.digits ?? 3);
+  const spreads = sensitivity.items.map((row) => Math.max(
+    Math.abs(base - Number(row.low_result || base)),
+    Math.abs(Number(row.high_result || base) - base),
+  ));
+  const maxSpread = Math.max(...spreads, .001);
+  element.innerHTML = sensitivity.items.map((row) => {
+    const lowWidth = Math.abs(base - Number(row.low_result || base)) / maxSpread * 48;
+    const highWidth = Math.abs(Number(row.high_result || base) - base) / maxSpread * 48;
     return `
       <div class="tornado-row">
-        <label>${escapeHtml(row.name)}</label>
+        <label>${escapeHtml(row.label)}</label>
         <div class="tornado-track"><i class="tornado-low" style="width:${lowWidth}%"></i><i class="tornado-high" style="width:${highWidth}%"></i></div>
-        <strong>${row.base.toFixed(3).replace('.', ',')}</strong>
+        <strong>${escapeHtml(Number(row.low_result ?? base).toFixed(digits).replace('.', ','))} → ${escapeHtml(Number(row.high_result ?? base).toFixed(digits).replace('.', ','))}</strong>
       </div>`;
   }).join('');
 }
 
-function renderPlaton(project) {
-  const answer = project.slug === 'mytishchi'
-    ? 'Главная проблема — первая очередь: чистая прибыль отрицательная, LLCR 0,98x. Консолидированный результат маскирует зависимость проекта от О3. До решения о входе нужно задать цену покупки и проверить разрыв между расчётным и фактическим БРИДЖем.'
-    : 'Главная проблема — не прибыль, а ликвидность. LLCR 1,12x ниже цели, а фактический пик БРИДЖа 2,17 млрд ₽ против расчётных 0,83 млрд ₽. Сначала проверил бы график ВРИ, срок до РнС и цену входа.';
-  $('#platonAnswer').textContent = answer;
+function renderPlaton() {
+  const result = state.result;
+  const verdict = result.verdict || {};
+  const lines = [
+    `${verdict.title || 'Вывод не сформирован'}. ${verdict.text || ''}`,
+    ...(result.warnings || []),
+  ];
+  $('#platonAnswer').textContent = lines.join(' ');
 }
 
-function renderProject(project) {
-  state.project = project;
-  $('#projectName').textContent = project.name;
-  $('#projectRegion').textContent = project.region;
-  $('#projectSubtitle').textContent = project.subtitle;
-  $('#projectButtonName').textContent = project.name;
-  $('#projectButtonRegion').textContent = project.region;
-  renderDecision(project);
-  renderGauge(project);
-  renderKpis(project);
-  renderMultiChart($('#cashflowChart'), project, 'all');
-  renderTimeline($('#chartTimeline'), project.timeline);
-  renderCosts(project);
-  renderProducts(project);
-  renderRisks(project);
-  renderTep(project);
-  renderFinance(project);
-  renderPhases(project);
-  renderTornado(project);
-  renderPlaton(project);
+function renderResult(result) {
+  state.result = result;
+  const project = result.project || {};
+  const title = project.name || (project.cadastral_numbers || []).join(', ') || 'Проект';
+  $('#projectName').textContent = title;
+  $('#projectRegion').textContent = project.region || '';
+  $('#projectSubtitle').textContent = (state.projects.find((item) => item.slug === project.slug) || {}).subtitle
+    || (project.cadastral_numbers || []).join(', ')
+    || (result.mode === 'phased' ? 'Многоочередной расчёт' : 'Одноочередной расчёт');
+  $('#projectButtonName').textContent = title;
+  $('#projectButtonRegion').textContent = project.region || '';
+  renderMeta();
+  renderDecision();
+  renderGauge();
+  renderKpis();
+  renderMultiChart($('#cashflowChart'), 'all');
+  renderTimeline($('#chartTimeline'));
+  renderCosts();
+  renderProducts();
+  renderRisks();
+  renderTep();
+  renderFinance();
+  renderPhases();
+  renderTornado();
+  renderPlaton();
   $$('#projectMenu button').forEach((button) => button.classList.toggle('is-active', button.dataset.slug === project.slug));
-  document.title = `${project.name} · DevelopAid 2.0`;
+  document.title = `${title} · DevelopAid 2.0`;
+}
+
+/* Расчёт по произвольным вводным: тот же payload, что шлёт действующее
+   мини-приложение. Страница ничего не считает — только отправляет и рисует. */
+async function calculateProject(payload) {
+  const response = await fetch('/api/v2/calculate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    cache: 'no-store',
+    body: JSON.stringify(payload),
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.detail || 'Расчёт не выполнен');
+  renderResult(result);
+  return result;
 }
 
 async function loadProject(slug) {
-  const response = await fetch(`/api/v2/projects/${encodeURIComponent(slug)}`);
-  if (!response.ok) throw new Error('Не удалось загрузить проект');
-  const project = await response.json();
-  renderProject(project);
+  const response = await fetch(`/api/v2/projects/${encodeURIComponent(slug)}`, { cache: 'no-store' });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.detail || 'Не удалось посчитать проект');
+  state.slug = slug;
+  renderResult(result);
   history.replaceState(null, '', `/v2?project=${encodeURIComponent(slug)}`);
 }
 
@@ -426,17 +574,23 @@ async function init() {
   bindNavigation();
   bindProjectMenu();
   bindTepSearch();
-  const projectsResponse = await fetch('/api/v2/projects');
+  const projectsResponse = await fetch('/api/v2/projects', { cache: 'no-store' });
   if (!projectsResponse.ok) throw new Error('Не удалось получить список проектов');
   state.projects = await projectsResponse.json();
   renderProjectMenu();
   const requested = new URLSearchParams(location.search).get('project');
-  const slug = state.projects.some((project) => project.slug === requested) ? requested : 'mishina';
+  const fallback = (state.projects[0] || {}).slug;
+  const slug = state.projects.some((project) => project.slug === requested) ? requested : fallback;
   await loadProject(slug);
   $('#loading').classList.add('is-hidden');
 }
 
-init().catch((error) => {
-  console.error(error);
-  $('#loading').innerHTML = `<p>${escapeHtml(error.message)}</p>`;
-});
+if (typeof window !== 'undefined' && typeof document !== 'undefined') {
+  // Точка входа для формы вводных: оболочка и Telegram-режим зовут её с тем
+  // же payload, что уходит из действующего мини-приложения.
+  window.DevelopAidV2 = { calculateProject, loadProject, renderResult, state };
+  init().catch((error) => {
+    console.error(error);
+    $('#loading').innerHTML = `<p>${escapeHtml(error.message)}</p>`;
+  });
+}
