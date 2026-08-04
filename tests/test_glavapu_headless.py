@@ -102,7 +102,7 @@ def test_the_status_tells_who_counted():
     """«Бот опять посчитал не то» проверяется статусом, а не скриншотами."""
     from fastapi.testclient import TestClient
     status = TestClient(core.app).get("/telegram/status").json()["glavapu_headless"]
-    assert set(status) == {"enabled", "runs", "fallbacks", "last_ok", "last_error"}
+    assert {"enabled", "runs", "fallbacks", "last_ok", "last_error"} <= set(status)
 
 
 def test_the_automation_repeats_the_page_steps():
@@ -116,3 +116,29 @@ def test_the_automation_repeats_the_page_steps():
     # Готовность таблицы определяется как на странице: коды 60 и 54, ≥60 строк.
     assert '"60" in codes' in source and '"54" in codes' in source
     assert "len(rows) >= 60" in source
+
+
+def test_only_one_browser_runs_at_a_time():
+    """Ядро — 2 vCPU и 4 ГБ, воркеров два, Chromium берёт 300–400 МБ:
+    два одновременных запуска клали бы не расчёт, а весь контейнер."""
+    assert core._GLAVAPU_HEADLESS_SLOTS == 1
+    import inspect
+    source = inspect.getsource(core._glavapu_headless_rows)
+    assert "_GLAVAPU_HEADLESS_LOCK.acquire" in source
+    assert "_GLAVAPU_HEADLESS_LOCK.release" in source
+    # Ожидание в очереди конечно: не дождался — уходим на формулы, а не висим.
+    assert "_GLAVAPU_HEADLESS_QUEUE_SECONDS" in source
+
+
+def test_the_container_flags_are_set_for_a_small_machine():
+    """В контейнере /dev/shm мал, и без флага Chromium падает молча."""
+    import inspect
+    source = inspect.getsource(core._glavapu_headless_rows)
+    assert "--disable-dev-shm-usage" in source
+    assert "--no-sandbox" in source
+
+
+def test_the_status_counts_queue_timeouts():
+    from fastapi.testclient import TestClient
+    status = TestClient(core.app).get("/telegram/status").json()["glavapu_headless"]
+    assert "queue_timeouts" in status and "parallel_slots" in status

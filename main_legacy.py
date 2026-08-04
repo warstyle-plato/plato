@@ -42,7 +42,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.26"
+VERSION = "0.17.27"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -4713,7 +4713,15 @@ _GLAVAPU_COMPENSATION_RATES_DATE = "01.08.2026"
 # запасной, вместо тихой выдачи устаревшей методики.
 _GLAVAPU_HEADLESS_ENABLED = _env_str("GLAVAPU_HEADLESS", "").strip().lower() in ("1", "true", "yes", "on")
 _GLAVAPU_HEADLESS_TIMEOUT_MS = int(max(20.0, _env_float("GLAVAPU_HEADLESS_TIMEOUT_SECONDS", 90.0)) * 1000)
-_GLAVAPU_HEADLESS: dict[str, Any] = {"last_ok": "", "last_error": "", "runs": 0, "fallbacks": 0}
+_GLAVAPU_HEADLESS: dict[str, Any] = {"last_ok": "", "last_error": "", "runs": 0,
+                                     "fallbacks": 0, "waits": 0}
+# Браузер запускается по одному на машину: ядро — 2 vCPU и 4 ГБ, воркеров два,
+# и каждый Chromium берёт 300–400 МБ. Два одновременных расчёта клали бы не
+# только ТЭП, а весь контейнер по нехватке памяти. Второй запрос ждёт очереди
+# — секунды ожидания дешевле перезапуска бота.
+_GLAVAPU_HEADLESS_SLOTS = max(1, int(_env_float("GLAVAPU_HEADLESS_PARALLEL", 1)))
+_GLAVAPU_HEADLESS_LOCK = threading.Semaphore(_GLAVAPU_HEADLESS_SLOTS)
+_GLAVAPU_HEADLESS_QUEUE_SECONDS = max(5.0, _env_float("GLAVAPU_HEADLESS_QUEUE_SECONDS", 120.0))
 
 _GLAVAPU_READ_ROWS_JS = """() => {
   const table = document.querySelector('table[aria-label="calc table"]');
@@ -4738,10 +4746,20 @@ def _glavapu_headless_rows(numbers: list[str], area_ha: float) -> list[dict[str,
     """
     from playwright.sync_api import sync_playwright
 
+    if not _GLAVAPU_HEADLESS_LOCK.acquire(timeout=_GLAVAPU_HEADLESS_QUEUE_SECONDS):
+        _GLAVAPU_HEADLESS["waits"] += 1
+        raise TimeoutError(
+            f"браузер занят дольше {int(_GLAVAPU_HEADLESS_QUEUE_SECONDS)} с "
+            "— расчёт уходит на серверные формулы")
     url = ("https://genplan.tech/calc/?terrArea=" + urllib.parse.quote(f"{area_ha:.4f}")
            + "&restrictArea=0&plato=" + str(int(time.time() * 1000)))
-    with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=True, args=["--no-sandbox"])
+    try:
+      with sync_playwright() as playwright:
+        # --disable-dev-shm-usage: в контейнере /dev/shm мал, и Chromium на
+        # тяжёлой странице падает молча, вместо того чтобы честно отработать.
+        browser = playwright.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"])
         try:
             page = browser.new_page()
             page.set_default_timeout(_GLAVAPU_HEADLESS_TIMEOUT_MS)
@@ -4763,6 +4781,8 @@ def _glavapu_headless_rows(numbers: list[str], area_ha: float) -> list[dict[str,
                 page.wait_for_timeout(500)
         finally:
             browser.close()
+    finally:
+        _GLAVAPU_HEADLESS_LOCK.release()
 
 
 
@@ -6475,6 +6495,10 @@ def telegram_status() -> dict[str, Any]:
             "enabled": _GLAVAPU_HEADLESS_ENABLED,
             "runs": _GLAVAPU_HEADLESS.get("runs", 0),
             "fallbacks": _GLAVAPU_HEADLESS.get("fallbacks", 0),
+            # Сколько раз расчёт не дождался свободного браузера: если растёт,
+            # машине мало памяти под параллельные запуски.
+            "queue_timeouts": _GLAVAPU_HEADLESS.get("waits", 0),
+            "parallel_slots": _GLAVAPU_HEADLESS_SLOTS,
             "last_ok": _GLAVAPU_HEADLESS.get("last_ok", ""),
             "last_error": _GLAVAPU_HEADLESS.get("last_error", ""),
         },
