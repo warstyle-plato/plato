@@ -430,6 +430,197 @@ function renderResult(result) {
   document.title = `${title} · DevelopAid 2.0`;
 }
 
+// --- Форма вводных: блоки движка, по одному за раз ------------------------
+// Справочник полей приходит с сервера из FIELD_GROUPS — того же, которым
+// рисуется действующая страница. Своего списка полей здесь нет: третья копия
+// разъехалась бы молча, а поле, которого нет в карте, остаётся мусором.
+
+const form = { blocks: [], defaults: null, step: 0, draft: null };
+
+function draftFromResult(result) {
+  // Форма показывает то, из чего посчитан текущий результат: вводные едут
+  // вместе с ним полем request.
+  const request = (result && result.request) || {};
+  return {
+    inputs: { ...(form.defaults ? form.defaults.inputs : {}), ...(request.inputs || {}) },
+    tep: JSON.parse(JSON.stringify(request.tep || (form.defaults || {}).tep || {})),
+    phasing: { ...(form.defaults ? form.defaults.phasing : {}), ...(request.phasing || {}) },
+  };
+}
+
+function fieldControl(field, value, onChange) {
+  const id = `f_${field.key}`;
+  let control;
+  if (field.type === 'checkbox') {
+    control = document.createElement('input');
+    control.type = 'checkbox';
+    control.checked = value === true;
+    control.addEventListener('change', () => onChange(control.checked));
+  } else if (field.type === 'select') {
+    control = document.createElement('select');
+    field.options.forEach((option) => {
+      const node = document.createElement('option');
+      node.value = option.value;
+      node.textContent = option.label;
+      control.appendChild(node);
+    });
+    control.value = value === undefined || value === null ? '' : String(value);
+    control.addEventListener('change', () => onChange(control.value));
+  } else {
+    control = document.createElement('input');
+    control.type = field.type === 'date' ? 'date' : 'number';
+    if (control.type === 'number') control.step = 'any';
+    control.value = value === undefined || value === null ? '' : String(value);
+    control.addEventListener('change', () => onChange(
+      control.type === 'number'
+        ? (control.value === '' ? '' : Number(control.value))
+        : control.value));
+  }
+  control.id = id;
+  return control;
+}
+
+function fieldRow(field, value, onChange) {
+  const row = document.createElement('label');
+  row.className = 'input-row';
+  const caption = document.createElement('span');
+  caption.className = 'input-label';
+  caption.textContent = field.label;
+  const unit = document.createElement('small');
+  unit.textContent = field.unit || '';
+  row.append(caption, fieldControl(field, value, onChange), unit);
+  return row;
+}
+
+function renderInputsBlock(block, host) {
+  block.fields.forEach((field) => {
+    host.appendChild(fieldRow(field, form.draft.inputs[field.key],
+      (value) => { form.draft.inputs[field.key] = value; }));
+  });
+}
+
+function renderTepBlock(block, host) {
+  block.rows.forEach((row) => {
+    const group = document.createElement('div');
+    group.className = 'input-group';
+    const title = document.createElement('h4');
+    title.textContent = row.label;
+    group.appendChild(title);
+    if (!form.draft.tep[row.key]) form.draft.tep[row.key] = { label: row.label };
+    row.fields.forEach((field) => {
+      group.appendChild(fieldRow(
+        { ...field, type: 'number' },
+        form.draft.tep[row.key][field.key],
+        (value) => { form.draft.tep[row.key][field.key] = value; }));
+    });
+    host.appendChild(group);
+  });
+}
+
+function renderPhasingBlock(block, host) {
+  block.fields.forEach((field) => {
+    host.appendChild(fieldRow(field, form.draft.phasing[field.key], (value) => {
+      form.draft.phasing[field.key] = value;
+      if (field.key === 'phase_count' || field.key === 'enabled') renderStep();
+    }));
+  });
+  const count = Math.max(1, Math.min(5, Number(form.draft.phasing.phase_count || 1)));
+  if (!form.draft.phasing.enabled || count < 2) return;
+  const group = document.createElement('div');
+  group.className = 'input-group';
+  const title = document.createElement('h4');
+  title.textContent = 'Доли продуктов по очередям, %';
+  group.appendChild(title);
+  if (!form.draft.phasing.products) form.draft.phasing.products = {};
+  block.products.forEach((product) => {
+    const weights = form.draft.phasing.products[product.key] || [];
+    const row = document.createElement('div');
+    row.className = 'input-row weights-row';
+    const caption = document.createElement('span');
+    caption.className = 'input-label';
+    caption.textContent = product.label;
+    row.appendChild(caption);
+    for (let index = 0; index < count; index += 1) {
+      const cell = document.createElement('input');
+      cell.type = 'number';
+      cell.step = 'any';
+      cell.setAttribute('aria-label', `${product.label}, очередь ${index + 1}`);
+      cell.value = weights[index] === undefined ? '' : String(weights[index]);
+      cell.addEventListener('change', () => {
+        const current = form.draft.phasing.products[product.key] || [];
+        while (current.length < count) current.push(0);
+        current[index] = cell.value === '' ? 0 : Number(cell.value);
+        form.draft.phasing.products[product.key] = current.slice(0, count);
+      });
+      row.appendChild(cell);
+    }
+    group.appendChild(row);
+  });
+  host.appendChild(group);
+}
+
+function renderSteps() {
+  $('#inputSteps').innerHTML = form.blocks.map((block, index) => `
+    <button type="button" data-step="${index}" class="${index === form.step ? 'is-active' : ''}">${escapeHtml(block.title)}</button>`).join('');
+  $$('#inputSteps button').forEach((button) => {
+    button.addEventListener('click', () => { form.step = Number(button.dataset.step); renderStep(); });
+  });
+}
+
+function renderStep() {
+  const block = form.blocks[form.step];
+  if (!block) return;
+  $('#inputBlockTitle').textContent = block.title;
+  $('#inputProgress').textContent = `Блок ${form.step + 1} из ${form.blocks.length}`;
+  $('#inputHint').textContent = block.hint || '';
+  $('#inputHint').hidden = !block.hint;
+  const host = $('#inputBlock');
+  host.innerHTML = '';
+  if (block.kind === 'tep') renderTepBlock(block, host);
+  else if (block.kind === 'phasing') renderPhasingBlock(block, host);
+  else renderInputsBlock(block, host);
+  $('#inputPrev').disabled = form.step === 0;
+  $('#inputNext').disabled = form.step === form.blocks.length - 1;
+  renderSteps();
+}
+
+async function submitDraft() {
+  const status = $('#inputStatus');
+  const project = (state.result && state.result.project) || {};
+  status.textContent = 'Считаю движком…';
+  try {
+    await calculateProject({
+      inputs: form.draft.inputs,
+      tep: form.draft.tep,
+      rates: [],
+      phasing: form.draft.phasing,
+      project_name: project.name || '',
+      region: project.region || '',
+      cadastral_numbers: project.cadastral_numbers || [],
+      source_label: 'Вводные из формы 2.0',
+      scenario: project.scenario || 'base',
+      sensitivity: true,
+    });
+    status.textContent = 'Готово — на «Обзоре» результат этого расчёта.';
+    setView('summary');
+  } catch (error) {
+    status.textContent = String(error.message || error);
+  }
+}
+
+async function initForm() {
+  const response = await fetch('/api/v2/form', { cache: 'no-store' });
+  if (!response.ok) throw new Error('Не удалось получить описание формы');
+  const description = await response.json();
+  form.blocks = description.blocks;
+  form.defaults = description.defaults;
+  form.draft = draftFromResult(state.result);
+  $('#inputPrev').addEventListener('click', () => { form.step -= 1; renderStep(); });
+  $('#inputNext').addEventListener('click', () => { form.step += 1; renderStep(); });
+  $('#inputCalc').addEventListener('click', submitDraft);
+  renderStep();
+}
+
 /* Расчёт по произвольным вводным: тот же payload, что шлёт действующее
    мини-приложение. Страница ничего не считает — только отправляет и рисует. */
 async function calculateProject(payload) {
@@ -451,6 +642,12 @@ async function loadProject(slug) {
   if (!response.ok) throw new Error(result.detail || 'Не удалось посчитать проект');
   state.slug = slug;
   renderResult(result);
+  // Форма показывает вводные того расчёта, который на экране: иначе правка
+  // уйдёт от чужих значений, а выглядеть будет как правка этого проекта.
+  if (form.blocks.length) {
+    form.draft = draftFromResult(result);
+    renderStep();
+  }
   history.replaceState(null, '', `/v2?project=${encodeURIComponent(slug)}`);
 }
 
@@ -582,6 +779,7 @@ async function init() {
   const fallback = (state.projects[0] || {}).slug;
   const slug = state.projects.some((project) => project.slug === requested) ? requested : fallback;
   await loadProject(slug);
+  await initForm();
   $('#loading').classList.add('is-hidden');
 }
 

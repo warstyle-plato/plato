@@ -305,6 +305,78 @@ def test_the_prototype_fixtures_are_available_for_development(client, monkeypatc
     assert response.json()["prototype"] is True
 
 
+# --- форма вводных ------------------------------------------------------------
+
+def test_the_form_comes_from_the_engine_dictionary(client):
+    """Блоки и поля формы — из FIELD_GROUPS, а не из своего списка.
+
+    Копий справочника уже две — питоновская и в PAGE, их сверяет
+    test_saved_state_migration. Третья разъехалась бы молча, а поле, которого
+    нет в карте, остаётся мусором из шаблона.
+    """
+    description = client.get("/api/v2/form").json()
+    blocks = {block["key"]: block for block in description["blocks"]}
+
+    groups = [block for block in description["blocks"] if block["kind"] == "inputs"]
+    assert [block["title"] for block in groups] == [name for name, _ in core.FIELD_GROUPS]
+    for block, (_, fields) in zip(groups, core.FIELD_GROUPS):
+        assert [field["key"] for field in block["fields"]] == [item[0] for item in fields]
+        assert [field["label"] for field in block["fields"]] == [item[1] for item in fields]
+
+    assert blocks["tep"]["kind"] == "tep"
+    assert [row["key"] for row in blocks["tep"]["rows"]] == list(core.TEP_DEFAULT)
+    assert blocks["phasing"]["kind"] == "phasing"
+    assert description["defaults"]["inputs"] == core.DEFAULT_INPUTS
+
+
+def test_the_select_options_match_the_page():
+    """Варианты двух списков продублированы из PAGE — расхождение ловится тут."""
+    import re
+
+    import developaid_v2_form as form
+
+    page_select = re.search(r"type==='select'\)\{[^}]*?\[([^\]]+)\]\.forEach", core.PAGE)
+    page_finance = re.search(r"type==='finance_select'\)\{[^}]*?\[([^\]]+)\]\.forEach", core.PAGE)
+    assert page_select and page_finance, "списки вариантов не найдены на странице"
+    extract = lambda text: re.findall(r"'([^']+)'", text)  # noqa: E731
+
+    assert extract(page_select.group(1)) == form.SOCIAL_MODE_OPTIONS
+    assert extract(page_finance.group(1)) == form.BRIDGE_INTEREST_OPTIONS
+
+
+def test_the_form_does_not_lose_a_field(client):
+    """Каждая вводная движка попадает хотя бы в один блок формы.
+
+    Кроме служебных: их страница не показывает и не редактирует.
+    """
+    description = client.get("/api/v2/form").json()
+    shown = {field["key"] for block in description["blocks"]
+             for field in block.get("fields", [])}
+    # Ставки задаются кривой и сценарием, не полем формы; ключи с подчёркиванием
+    # служебные (импорт ГлавАПУ, метки миграций).
+    skip = {"project_class", "rate_scenario", "rate_start_pct", "rate_start_date",
+            "rate_target_high_pct", "rate_target_base_pct", "rate_target_low_pct",
+            "rate_normalization_months", "rate_curve_shape"}
+    missing = {key for key in core.DEFAULT_INPUTS
+               if not key.startswith("_") and key not in skip and key not in shown}
+
+    assert not missing, f"вводные без поля в форме: {sorted(missing)}"
+
+
+def test_the_page_has_the_block_form():
+    html = (Path(__file__).resolve().parent.parent
+            / "frontend_v2" / "index.html").read_text(encoding="utf-8")
+    script = (Path(__file__).resolve().parent.parent
+              / "frontend_v2" / "app.js").read_text(encoding="utf-8")
+
+    assert html.count('data-view="inputs"') >= 2, \
+        "«Вводные» должны быть в левом меню и мобильных вкладках"
+    assert 'id="view-inputs"' in html and 'id="inputSteps"' in html
+    assert "/api/v2/form" in script
+    # Форма отправляет вводные в тот же production-маршрут, что и всё остальное.
+    assert "calculateProject(" in script
+
+
 def test_the_frontend_does_not_calculate():
     """Страница отправляет вводные и рисует ProjectResult — и только."""
     script = (Path(__file__).resolve().parent.parent

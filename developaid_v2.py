@@ -29,6 +29,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 import developaid_v2_demo as demo
+import developaid_v2_form as form
 import developaid_v2_result as project_result
 
 _ROOT = Path(__file__).resolve().parent
@@ -151,6 +152,11 @@ def install(app: FastAPI) -> None:
         except Exception as exc:
             raise _fail(core, exc) from exc
         return JSONResponse(payload, headers=_NO_STORE)
+
+    @app.get("/api/v2/form")
+    def developaid_v2_form() -> JSONResponse:
+        """Блоки формы вводных и умолчания — из справочников движка."""
+        return JSONResponse(form.form_description(_core()), headers=_NO_STORE)
 
     @app.get("/api/v2/projects")
     def developaid_v2_projects() -> JSONResponse:
