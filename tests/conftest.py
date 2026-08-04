@@ -24,8 +24,13 @@ def empty_glavapu_tep_cache():
     чужой ответ: один тест кладёт результат по номеру, следующий проверяет
     поведение при сбое и получает вчерашний успех."""
     _wrapper.core._GLAVAPU_TEP_CACHE.clear()
+    # Предохранитель после сбоя держит браузер закрытым пять минут — в жизни
+    # это спасает от полутора минут ожидания на каждом расчёте, в тестах
+    # сбой одного проверяющего сценария молча отключал бы браузер соседям.
+    _wrapper.core._GLAVAPU_HEADLESS_BLOCKED_UNTIL["at"] = 0.0
     yield
     _wrapper.core._GLAVAPU_TEP_CACHE.clear()
+    _wrapper.core._GLAVAPU_HEADLESS_BLOCKED_UNTIL["at"] = 0.0
 
 
 @pytest.fixture(autouse=True)
