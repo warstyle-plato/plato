@@ -42,7 +42,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.25"
+VERSION = "0.17.26"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -4702,6 +4702,69 @@ def _build_model_xlsx(sheets: list[dict[str, Any]]) -> bytes:
 # всплывало при сравнении расчётов с двух компьютеров.
 _GLAVAPU_COMPENSATION_RATES_DATE = "01.08.2026"
 
+# --- штатный калькулятор ГлавАПУ на сервере ---------------------------------
+# Копировать методику ГлавАПУ оказалось тупиком: плата за ВРИ разошлась на
+# 1,75%, компенсация — на 19%, и оба раза расхождение находил человек на
+# скриншотах, а не мы. Ставки индексируются, коэффициенты меняются, и наш
+# пересказ отстаёт на неизвестный срок. Поэтому расчёт делает сам калькулятор,
+# запущенный браузером без экрана: та же последовательность, что отрабатывает
+# скрытый iframe на сайте. Наши формулы остаются фолбэком — если ГлавАПУ
+# недоступен или сломалась автоматизация, отчёт честно говорит, что расчёт
+# запасной, вместо тихой выдачи устаревшей методики.
+_GLAVAPU_HEADLESS_ENABLED = _env_str("GLAVAPU_HEADLESS", "").strip().lower() in ("1", "true", "yes", "on")
+_GLAVAPU_HEADLESS_TIMEOUT_MS = int(max(20.0, _env_float("GLAVAPU_HEADLESS_TIMEOUT_SECONDS", 90.0)) * 1000)
+_GLAVAPU_HEADLESS: dict[str, Any] = {"last_ok": "", "last_error": "", "runs": 0, "fallbacks": 0}
+
+_GLAVAPU_READ_ROWS_JS = """() => {
+  const table = document.querySelector('table[aria-label="calc table"]');
+  if (!table) return [];
+  return Array.from(table.querySelectorAll('tbody tr')).map(row => {
+    const cells = Array.from(row.children).map(c => String(c.textContent || '').replace(/\s+/g, ' ').trim());
+    if (cells.length < 4) return null;
+    const raw = cells[0];
+    const code = /^\d+(?:[.,]\d+)*$/.test(raw) ? raw.replace(/,/g, '.') : '';
+    return {code, name: cells[1], unit: cells[2], value: cells[3]};
+  }).filter(r => r && r.name && r.value);
+}"""
+
+
+def _glavapu_headless_rows(numbers: list[str], area_ha: float) -> list[dict[str, Any]]:
+    """Таблица ТЭП, снятая с настоящего калькулятора ГлавАПУ.
+
+    Повторяет шаги браузерной автоматизации: «Участок» → кадастровые номера →
+    «Отправить» → «Перейти к расчётам» → чтение таблицы. Готовность таблицы
+    определяется так же, как на странице: есть коды 60 и 54 и не меньше
+    шестидесяти строк — иначе рискуем снять её недосчитанной.
+    """
+    from playwright.sync_api import sync_playwright
+
+    url = ("https://genplan.tech/calc/?terrArea=" + urllib.parse.quote(f"{area_ha:.4f}")
+           + "&restrictArea=0&plato=" + str(int(time.time() * 1000)))
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True, args=["--no-sandbox"])
+        try:
+            page = browser.new_page()
+            page.set_default_timeout(_GLAVAPU_HEADLESS_TIMEOUT_MS)
+            page.goto(url, wait_until="domcontentloaded")
+            page.get_by_role("button", name="Участок").click()
+            page.fill("#id-cad-numbers-text-field", ", ".join(numbers))
+            page.get_by_role("button", name="Отправить").click()
+            page.get_by_role("button", name="Перейти к расчётам").click()
+            deadline = time.monotonic() + _GLAVAPU_HEADLESS_TIMEOUT_MS / 1000.0
+            while True:
+                rows = page.evaluate(_GLAVAPU_READ_ROWS_JS) or []
+                codes = {str(r.get("code") or "") for r in rows}
+                if "60" in codes and "54" in codes and len(rows) >= 60:
+                    return rows
+                if time.monotonic() > deadline:
+                    raise TimeoutError(
+                        f"калькулятор не отдал таблицу за {_GLAVAPU_HEADLESS_TIMEOUT_MS // 1000} с "
+                        f"(строк {len(rows)})")
+                page.wait_for_timeout(500)
+        finally:
+            browser.close()
+
+
 
 _GLAVAPU_DRIFT_CHECKS = [
     ("4", "население", 3.0, "abs"),
@@ -4761,6 +4824,33 @@ def cadastral_tep_server(req: CadastralAnalysisRequest) -> dict[str, Any]:
     numbers = _parse_cadastral_numbers(req.cadastral_numbers)
     logging.info("tep-server rid=%s numbers=%s", req.request_id or "-",
                  ", ".join(numbers))
+
+    # Сначала — настоящий калькулятор. Формулы остаются фолбэком: копия
+    # методики отстаёт от города на неизвестный срок, и это уже дважды
+    # находил человек на скриншотах, а не мы.
+    if _GLAVAPU_HEADLESS_ENABLED and numbers:
+        try:
+            analysis = analyze_cadastral_territory(
+                CadastralAnalysisRequest(cadastral_numbers=numbers))
+            area = float((analysis.get("territory") or {}).get("area_ha") or 0.0)
+            rows = _glavapu_headless_rows(numbers, area)
+            imported = import_cadastral_tep(CadastralTepRequest(
+                rows=rows, cadastral_analysis=analysis))
+            _GLAVAPU_HEADLESS["runs"] += 1
+            _GLAVAPU_HEADLESS["last_ok"] = datetime.now().isoformat(timespec="seconds")
+            _GLAVAPU_HEADLESS["last_error"] = ""
+            imported.setdefault("source", {}).update({
+                "format": "Штатный калькулятор ГлавАПУ — серверный запуск",
+                "cadastral_numbers": numbers,
+                "calculated_at": date.today().isoformat(),
+            })
+            return imported
+        except Exception as exc:
+            _GLAVAPU_HEADLESS["fallbacks"] += 1
+            _GLAVAPU_HEADLESS["last_error"] = (
+                f"{datetime.now().isoformat(timespec='seconds')}: {_error_location(exc)}")
+            logging.warning("glavapu headless failed, falling back: %s", exc)
+
     quick = vri_tep_quick("msk", ", ".join(numbers))
     result = parse_glavapu_xlsx(quick["file"], quick["filename"])
     result["source"].update({
@@ -4772,9 +4862,10 @@ def cadastral_tep_server(req: CadastralAnalysisRequest) -> dict[str, Any]:
         0,
         "ТЭП посчитан серверными формулами ГлавАПУ: браузерный калькулятор "
         "недоступен. Формулы сняты с его кода и сходятся с контрольными "
-        "выгрузками до единицы, но ставки компенсации за соцобъекты зашиты "
-        f"на {_GLAVAPU_COMPENSATION_RATES_DATE} — город индексирует их "
-        "поквартально, и расчёт штатного калькулятора может быть выше.",
+        "выгрузками до единицы, но методику город меняет — расчёт штатного "
+        "калькулятора имеет приоритет."
+        + (f" Последняя ошибка запуска калькулятора: {_GLAVAPU_HEADLESS['last_error']}."
+           if _GLAVAPU_HEADLESS.get("last_error") else ""),
     )
     if _GLAVAPU_FORMULA_DRIFT["items"]:
         result["warnings"].insert(
@@ -6378,6 +6469,15 @@ def telegram_status() -> dict[str, Any]:
         "allowed_users_count": len(allowed),
         "configured_at": _TELEGRAM_RUNTIME.get("configured_at") or "",
         "last_error": _TELEGRAM_RUNTIME.get("last_error") or "",
+        # Кто считает ТЭП: настоящий калькулятор или наш пересказ методики.
+        # Без этого «бот опять посчитал не то» проверяется только скриншотами.
+        "glavapu_headless": {
+            "enabled": _GLAVAPU_HEADLESS_ENABLED,
+            "runs": _GLAVAPU_HEADLESS.get("runs", 0),
+            "fallbacks": _GLAVAPU_HEADLESS.get("fallbacks", 0),
+            "last_ok": _GLAVAPU_HEADLESS.get("last_ok", ""),
+            "last_error": _GLAVAPU_HEADLESS.get("last_error", ""),
+        },
         "version": VERSION,
     }
 

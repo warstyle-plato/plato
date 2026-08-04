@@ -173,12 +173,14 @@ def test_the_two_tep_sources_are_labelled_apart():
     assert "source_label:manual?'Ручной шаблон DevelopAid':'ГлавАПУ'" not in page
 
 
-def test_the_server_answer_dates_its_compensation_rates():
-    """Ставки компенсации зашиты на дату и отстают от города: серверный
-    ответ обязан называть эту дату, иначе отставание всплывает только при
-    сравнении расчётов с разных машин."""
+def test_the_fallback_answer_says_it_is_a_fallback():
+    """Утром здесь проверялась дата зашитых ставок компенсации. Ставок больше
+    нет — компенсация считается формулой с УПКС квартала, а расчёт по нашим
+    формулам стал запасным путём при недоступном калькуляторе. Предупреждение
+    обязано говорить именно это: приоритет у штатного калькулятора."""
     import inspect
     source = inspect.getsource(core.cadastral_tep_server)
-    assert "_GLAVAPU_COMPENSATION_RATES_DATE" in source
-    assert "индексирует их" in source
-    assert core._GLAVAPU_COMPENSATION_RATES_DATE
+    assert "серверными формулами" in source
+    assert "приоритет" in source
+    # След последнего сбоя запуска калькулятора едет в то же предупреждение.
+    assert "_GLAVAPU_HEADLESS" in source
