@@ -612,7 +612,7 @@ def test_the_project_aggregates_include_the_fourth_block():
     assert "$D$88:$D$91" in flat(template["ПРОВЕРКИ"]["B71"])
     assert "'CF_4'!B83" in flat(template["ПРОВЕРКИ"]["B72"])
     assert "$B$24" in flat(template["ПРОВЕРКИ"]["B72"])
-    assert "F6:F75" in flat(template["ПРОВЕРКИ"]["B3"])
+    assert "F6:F84" in flat(template["ПРОВЕРКИ"]["B3"])  # parity-строки 76-84 входят в вердикт
 
     assert "'CAPEX'!$B$137" in flat(template["Вводные"]["B26"])
     assert "'Продажи'!B85" in flat(template["ОТЧЕТ"]["F61"])

@@ -42,7 +42,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.17"
+VERSION = "0.17.18"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -6911,6 +6911,11 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
 
     story=[P("DevelopAid",h1),P("Инвестиционный отчёт по девелоперскому проекту",h2),P(title_scope,ParagraphStyle("scope",parent=h2,fontSize=11,textColor=colors.HexColor('#555555')))]
     meta=[["Дата расчёта",date.today().strftime("%d.%m.%Y")],["Источник ТЭП",source_label],["Класс жилья",class_label],["Сценарий",scenario_label]]
+    # Один расчёт — один идентификатор: у пары «PDF + книга» из одного ответа
+    # бота он совпадает, и сверка начинается с него, а не со спора о версиях.
+    meta.append(["Идентификатор расчёта",
+                 f"{_calculation_fingerprint(inputs, payload.get('tep'), payload.get('phasing'))}"
+                 f" · DevelopAid {VERSION}"])
     if cads: meta.append(["Кадастровые номера",", ".join(str(x) for x in cads)])
     story += [Spacer(1,4*mm),table(meta,[45*mm,125*mm],header=False),Spacer(1,5*mm),P("Ключевая экономика",h2)]
     kpis=[
@@ -8578,6 +8583,43 @@ def _v4_fold_tail(weights: list[float], enabled: int, book: int) -> list[float]:
     return trimmed
 
 
+def _v4_parity_targets(consolidated: dict[str, Any]) -> dict[str, float]:
+    """Контрольные числа движка для parity-блока листа ПРОВЕРКИ."""
+    summary = consolidated.get("summary") or {}
+    finance = consolidated.get("finance") or {}
+    return {
+        "revenue_mln": float(summary.get("revenue") or 0) / 1e6,
+        "capex_mln": float(summary.get("capex") or 0) / 1e6,
+        "ebitda_mln": float(summary.get("ebitda") or 0) / 1e6,
+        "financing_mln": float(summary.get("financing_cost") or 0) / 1e6,
+        "tax_mln": float(summary.get("profit_tax") or 0) / 1e6,
+        "net_profit_mln": float(summary.get("net_profit") or 0) / 1e6,
+        "llcr": float(summary.get("llcr") or 0),
+        "peak_bridge_mln": float(finance.get("peak_bridge") or 0) / 1e6,
+        "peak_pf_mln": float(finance.get("peak_pf") or 0) / 1e6,
+    }
+
+
+def _calculation_fingerprint(
+    inputs: dict[str, Any] | None,
+    tep: dict[str, Any] | None,
+    phasing: dict[str, Any] | None,
+) -> str:
+    """Отпечаток вводных: один расчёт — один идентификатор в PDF и книге.
+
+    Сверка пары «PDF + книга» начинается с вопроса, один ли это расчёт;
+    без отпечатка его выясняли, сравнивая цифры и споря о версиях."""
+    payload = json.dumps(
+        {
+            "inputs": {k: v for k, v in sorted((inputs or {}).items())
+                       if not str(k).startswith("_")},
+            "tep": tep or {},
+            "phasing": phasing or {},
+        },
+        ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
+
+
 def _v4_fold_tep_rows(
     rows: list[dict[str, dict[str, Any]]], book: int
 ) -> list[dict[str, dict[str, Any]]]:
@@ -8653,6 +8695,7 @@ def build_project_workbook(
                     "pf_limit_by_phase": [float(_hint_fin.get("pf_limit", 0.0)) / 1e6],
                     "bridge_peak_by_phase": [float(_hint_fin.get("peak_bridge", 0.0)) / 1e6],
                 }
+            finance_hints["parity"] = _v4_parity_targets(_hint_bundle["consolidated"])
         except Exception:
             finance_hints = {}
     p = phasing or {}
@@ -8945,10 +8988,36 @@ def build_project_workbook(
         sources_xml, _ = _v4_set_cell(
             sources_xml, "D7",
             text="Диапазоны платы за смену ВРИ по округам МО (справочник DevelopAid)")
+    calculation_id = _calculation_fingerprint(inputs, tep, phasing)
     sources_xml, _ = _v4_set_cell(
         sources_xml, "C16", text=f"Сборка DevelopAid {VERSION}")
     sources_xml, _ = _v4_set_cell(
-        sources_xml, "D16", text=f"собрано {date.today().isoformat()}")
+        sources_xml, "D16",
+        text=f"собрано {date.today().isoformat()} · расчёт {calculation_id}")
+
+    # Parity-блок ПРОВЕРОК: контрольные числа движка — значениями в C, допуск
+    # в E; формулы книги в B посчитает Excel, и вердикт листа скажет FAIL,
+    # если поверхности разойдутся. Без движковых чисел строки молчат.
+    checks_sheet_path = _v4_sheet_path(source, "ПРОВЕРКИ")
+    checks_xml = source.read(checks_sheet_path).decode("utf-8")
+    _parity = (finance_hints or {}).get("parity") or {}
+    if _parity:
+        _parity_rows = (
+            (76, "revenue_mln"), (77, "capex_mln"), (78, "ebitda_mln"),
+            (79, "financing_mln"), (80, "tax_mln"), (81, "net_profit_mln"),
+            (82, "llcr"), (83, "peak_bridge_mln"), (84, "peak_pf_mln"),
+        )
+        for _row, _key in _parity_rows:
+            _target = float(_parity.get(_key) or 0.0)
+            # Допуск: полпроцента от величины, но не уже 1 млн (LLCR: 0,02) —
+            # ловим методические разъезды, а не шум сериализации.
+            _tol = 0.02 if _key == "llcr" else max(1.0, abs(_target) * 0.005)
+            checks_xml, done = _v4_set_cell(checks_xml, f"C{_row}", number=round(_target, 4))
+            if done:
+                checks_xml, done = _v4_set_cell(checks_xml, f"E{_row}", number=round(_tol, 4))
+            if not done:
+                missing.append(f"паритет ПРОВЕРКИ: строка {_row}")
+                break
 
     def _put_extra(sheet_xml: str, coord: str, *, number=None, text=None) -> str:
         updated, done = _v4_set_cell(sheet_xml, coord, number=number, text=text)
@@ -9187,6 +9256,8 @@ def build_project_workbook(
                 payload = rates_xml.encode("utf-8")
             elif item.filename == sources_sheet_path:
                 payload = sources_xml.encode("utf-8")
+            elif item.filename == checks_sheet_path:
+                payload = checks_xml.encode("utf-8")
             if item.filename.startswith("xl/worksheets/") and item.filename.endswith(".xml"):
                 text = payload.decode("utf-8")
                 text = re.sub(r"(<x:f(?:\s[^>]*)?>[^<]*</x:f>)<x:v>[^<]*</x:v>", r"\1", text)
@@ -12098,6 +12169,11 @@ def _telegram_send_attachments(
                         "pf_limit_by_phase": [float(_fin.get("pf_limit", 0.0)) / 1e6],
                         "bridge_peak_by_phase": [float(_fin.get("peak_bridge", 0.0)) / 1e6],
                     }
+            if workbook_hints is not None and isinstance(bundle, dict):
+                # Контрольные числа для parity-блока ПРОВЕРОК: движок уже
+                # посчитан — книга получает те же цели, что видел PDF.
+                workbook_hints["parity"] = _v4_parity_targets(
+                    bundle.get("consolidated") or {})
         except Exception:
             workbook_hints = None
         model_bytes, model_filename, model_meta = build_project_workbook(
