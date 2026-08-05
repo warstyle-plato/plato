@@ -43,7 +43,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.46"
+VERSION = "0.17.47"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -19395,6 +19395,15 @@ def _openai_proxy_request(payload: dict[str, Any]) -> dict[str, Any]:
         attempt_timeout = (min(_PLATO_WAKE_TIMEOUT_SECONDS, _PLATO_AI_TIMEOUT_SECONDS)
                            if attempt == 1 and _PLATO_PROXY_ATTEMPTS > 1
                            else _PLATO_AI_TIMEOUT_SECONDS)
+        # Срок задуман на весь вызов модели, а тратился на каждую попытку:
+        # 45 + 240 + 240 — это 525 с там, где обещано 240, и окно успевало
+        # сдаться раньше, чем ядро переставало ждать. Остаток бюджета режет
+        # каждую следующую попытку.
+        left = deadline - time.monotonic()
+        if left <= 1.0:
+            timed_out = True
+            break
+        attempt_timeout = min(attempt_timeout, left)
         # Номер попытки виден человеку. Вторая попытка означает ровно одно:
         # сервис модели не ответил за окно пробуждения — и это первое, что надо
         # знать при разборе «Платон завис», не заглядывая в лог.
@@ -19449,8 +19458,7 @@ def _openai_proxy_request(payload: dict[str, Any]) -> dict[str, Any]:
             last_transport = exc
             timed_out = True
             _PLATON_LOG.info("Platon proxy attempt %d/%d timed out after %ds",
-                             attempt, _PLATO_PROXY_ATTEMPTS,
-                             int(_PLATO_AI_TIMEOUT_SECONDS))
+                             attempt, _PLATO_PROXY_ATTEMPTS, int(attempt_timeout))
             if attempt >= _PLATO_PROXY_ATTEMPTS:
                 break
             time.sleep(_PLATO_PROXY_BACKOFF[attempt - 1])
@@ -21533,6 +21541,9 @@ async function sendAgentMessage(scenario){
   if(response&&!response.ok&&(response.status===502||response.status===504)){
    const late=await awaitAgentResult(traceId,thinking);
    if(late&&late.answer){data=late;response={ok:true,status:200}}
+   // Сохранённая причина отказа лучше общего текста: прежде она здесь
+   // терялась, и человек читал «временно не получил ответ» вместо неё.
+   else if(late&&late.detail&&!data.detail)data={detail:late.detail};
   }
   thinking.remove();
   if(!response.ok)throw new Error(data.detail||AI_UNAVAILABLE);
@@ -21548,6 +21559,7 @@ async function awaitAgentResult(traceId,thinking,accepted){
  // Ответ ждёт на сервере под номером запуска. Опрос короткий и частый: его
  // не рвёт ни прокси, ни спящий мобильный интернет.
  let deadline=Date.now()+300000;const hardStop=Date.now()+900000;let seenStage='';
+ const startedAt=Date.now();let lastStage='';
  while(Date.now()<deadline){
   await new Promise(r=>setTimeout(r,2000));
   try{
@@ -21563,6 +21575,7 @@ async function awaitAgentResult(traceId,thinking,accepted){
   try{const t=await(await fetch('/agent/trace/'+traceId)).json();if(t&&t.label&&t.stage!=='done')stage=t.label}catch(e){}
   // Пока движок отчитывается о новом шаге, работа идёт, а не висит: сдаваться
   // по часам, когда на той стороне что-то происходит, — терять посчитанное.
+  if(stage)lastStage=stage;
   if(stage&&stage!==seenStage){seenStage=stage;deadline=Math.min(hardStop,Date.now()+180000)}
   // Пока ждём, показываем стадию: «долго» должно отличаться от «зависло».
   if(thinking){
@@ -21573,7 +21586,13 @@ async function awaitAgentResult(traceId,thinking,accepted){
                             :(accepted?'Работа принята, жду ответ…':'Соединение оборвалось, забираю готовый ответ…');
   }
  }
- return {detail:AI_UNAVAILABLE};
+ // Сдаваясь, окно называет причину. Общий текст «временно не получил ответ»
+ // одинаков и когда молчит AI-сервис, и когда стоит очередь у сервиса модели,
+ // и когда работа давно упала, — по нему разобрать нечего.
+ const waited=Math.round((Date.now()-startedAt)/1000);
+ return {detail:'Ответ не пришёл за '+Math.floor(waited/60)+' мин '+(waited%60)+' с.'
+   +(lastStage?' Последняя стадия: '+lastStage+'.':'')
+   +' '+AI_UNAVAILABLE};
 }
 
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&document.getElementById('aiDrawer')?.classList.contains('open'))toggleAgent(false);if((e.ctrlKey||e.metaKey)&&e.key==='Enter'&&document.getElementById('aiDrawer')?.classList.contains('open'))sendAgentMessage()});

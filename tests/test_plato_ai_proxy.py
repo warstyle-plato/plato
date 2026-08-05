@@ -186,7 +186,12 @@ def test_a_timeout_is_retried_instead_of_becoming_a_504(monkeypatch):
     assert answer == {"output": [{"text": "ок"}]}
     assert len(attempts) == 2, "таймаут обязан повторяться"
     assert attempts[0] < attempts[1], "первая попытка — короткое окно пробуждения"
-    assert attempts[1] == pytest.approx(main._PLATO_AI_TIMEOUT_SECONDS)
+    # Вторая попытка получает остаток общего бюджета, а не полный срок заново:
+    # 45 + 240 + 240 — это 525 с там, где обещано 240, и окно успевало сдаться
+    # раньше, чем ядро переставало ждать.
+    # (Здесь сон подменён, поэтому остаток почти равен полному сроку; в жизни
+    # он меньше на всё, что уже потрачено.)
+    assert attempts[1] <= main._PLATO_AI_TIMEOUT_SECONDS
 
 
 def test_only_a_full_run_of_timeouts_becomes_a_504(monkeypatch):

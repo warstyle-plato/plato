@@ -180,6 +180,49 @@ def test_the_budget_is_shorter_than_the_window_is_willing_to_wait():
     assert core._PLATO_AGENT_BUDGET_SECONDS <= 900
 
 
+# --- один вызов модели укладывается в свой срок целиком ----------------------
+
+def test_the_retries_fit_inside_the_call_budget(monkeypatch):
+    """Срок задуман на весь вызов, а тратился на каждую попытку: 45 + 240 + 240
+    — это 525 с там, где обещано 240. Окно сдавалось на пятой минуте, а ядро
+    ещё ждало, и посчитанный ответ ложился в пустоту."""
+    monkeypatch.setattr(core, "_PLATO_AI_URL", "https://render.example/internal/plato/chat")
+    monkeypatch.setattr(core, "_PLATO_AI_PROXY_SECRET", "s3cret")
+    monkeypatch.setattr(core, "_PLATO_AI_TIMEOUT_SECONDS", 1.0)
+    monkeypatch.setattr(core, "_PLATO_WAKE_TIMEOUT_SECONDS", 0.4)
+    monkeypatch.setattr(core, "_PLATO_PROXY_BACKOFF", (0, 0))
+
+    def always_silent(request, timeout=None):
+        time.sleep(timeout)
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr(core.urllib.request, "urlopen", always_silent)
+    started = time.monotonic()
+    with pytest.raises(core.HTTPException) as exc:
+        core._openai_proxy_request({"model": "m"})
+    spent = time.monotonic() - started
+    assert exc.value.status_code == 504
+    assert spent < 1.0 + 0.6, f"вызов вылез за собственный срок: {spent:.1f} с"
+
+
+def test_the_window_is_more_patient_than_one_model_call():
+    """Иначе окно сдаётся раньше, чем ядро перестаёт ждать: ответ приходит в
+    пустоту, а человек уже прочитал отказ."""
+    assert core._PLATO_AI_TIMEOUT_SECONDS <= 300
+
+
+def test_the_window_says_how_long_it_waited_and_where_it_stood():
+    page = core.PAGE
+    assert "'Ответ не пришёл за '" in page
+    assert "Последняя стадия: " in page
+
+
+def test_a_stored_reason_is_not_replaced_by_the_general_text():
+    """В ветке 502/504 сохранённая причина терялась, и человек читал общий
+    текст вместо неё."""
+    assert "else if(late&&late.detail&&!data.detail)data={detail:late.detail}" in core.PAGE
+
+
 def test_the_round_time_reaches_the_log():
     """По логу должно быть видно, ушли минуты в модель или в цепочку до неё."""
     import inspect
