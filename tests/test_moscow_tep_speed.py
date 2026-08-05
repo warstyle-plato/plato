@@ -253,7 +253,9 @@ def test_the_fallback_explains_itself(monkeypatch):
         cadastral_numbers=", ".join(_NUMBERS)))
     state = result["source"]["headless"]
     assert state["state"] == "выключен"
-    assert state["where"] in ("ядро", "Render")
+    # «Где» — имя машины, а не догадка: на Render без адреса ядра прежняя
+    # проверка честно писала «ядро», хотя ядра там нет и близко.
+    assert "считает сам" in state["where"] or "пересылает на ядро" in state["where"]
     assert "GLAVAPU_HEADLESS=1" in state["hint"] or "Render" in state["hint"]
     assert any("штатный калькулятор" in str(w).lower() for w in result["warnings"])
 

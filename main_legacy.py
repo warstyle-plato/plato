@@ -43,7 +43,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.36"
+VERSION = "0.17.37"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -5131,7 +5131,12 @@ def _glavapu_headless_state() -> dict[str, Any]:
     «Ошибка, ушедшая только в лог, — это ошибка, которой нет»: причина отката
     должна доезжать до человека вместе с расчётом.
     """
-    where = "Render" if _core_api_url("/cadastral/tep-server") else "ядро"
+    try:
+        host = socket.gethostname()
+    except Exception:
+        host = "?"
+    where = (f"пересылает на ядро, отвечает {host}"
+             if _core_api_url("/cadastral/tep-server") else f"считает сам, {host}")
     if not _GLAVAPU_HEADLESS_ENABLED:
         return {"state": "выключен", "where": where,
                 "hint": ("Штатный калькулятор запускает ядро. Нужны GLAVAPU_HEADLESS=1 "
@@ -21141,7 +21146,7 @@ function tepSourceLabel(manual){
 async function obtainServerTep(analysis,status,runId){
  // Формулы калькулятора, посчитанные сервером: равноценная замена
  // браузерной автоматизации, а не суррогат — сходятся до единицы.
- status.textContent='Считаю ТЭП формулами ГлавАПУ на сервере…';
+ status.textContent='Считаю ТЭП на сервере…';
  tepRunLog(runId,'серверный расчёт: запрос');
  const response=await fetch('/cadastral/tep-server',{
   method:'POST',headers:{'Content-Type':'application/json'},
