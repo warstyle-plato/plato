@@ -43,7 +43,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.38"
+VERSION = "0.17.39"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -5136,12 +5136,26 @@ def _glavapu_formula_drift(rows: list[list[Any]], numbers: list[str]) -> list[st
 # вводные. Ставки город индексирует поквартально, поэтому шесть часов памяти
 # безопасны, а ждать минуту ради того же ответа — нет.
 _GLAVAPU_TEP_CACHE_SECONDS = max(0.0, _env_float("GLAVAPU_TEP_CACHE_SECONDS", 21600.0))
-_GLAVAPU_TEP_CACHE: dict[tuple[str, ...], tuple[float, dict[str, Any]]] = {}
+# Запасной ответ помнится минутами, а не часами. Шесть часов — срок для расчёта
+# штатного калькулятора: ТЭП участка за это время не меняется. Ответ формул —
+# это «калькулятор был недоступен в ту секунду», и держать его наравне со
+# штатным значит месяцами отдавать запасной расчёт после одного срыва: браузер
+# уже починен, предохранитель снят через пять минут, а кэш всё ещё отвечает
+# формулами.
+_GLAVAPU_TEP_FALLBACK_CACHE_SECONDS = max(0.0, _env_float("GLAVAPU_TEP_FALLBACK_CACHE_SECONDS", 300.0))
+_GLAVAPU_TEP_CACHE: dict[tuple[str, ...], tuple[float, dict[str, Any], bool]] = {}
 _GLAVAPU_TEP_CACHE_LOCK = threading.Lock()
 _GLAVAPU_TEP_CACHE_HITS = {"hits": 0}
 
 
-def _glavapu_tep_cached(numbers: list[str]) -> dict[str, Any] | None:
+def _glavapu_tep_cached(numbers: list[str],
+                        want_calculator: bool = False) -> dict[str, Any] | None:
+    """Запомненный ТЭП участка.
+
+    `want_calculator` — «браузер сейчас на ходу»: тогда запасной ответ из памяти
+    не отдаётся, иначе один срыв калькулятора обрекал участок на формулы до
+    конца дня.
+    """
     if _GLAVAPU_TEP_CACHE_SECONDS <= 0:
         return None
     key = tuple(sorted(str(x).strip() for x in numbers))
@@ -5149,15 +5163,20 @@ def _glavapu_tep_cached(numbers: list[str]) -> dict[str, Any] | None:
         item = _GLAVAPU_TEP_CACHE.get(key)
         if not item:
             return None
-        stored_at, payload = item
-        if time.monotonic() - stored_at > _GLAVAPU_TEP_CACHE_SECONDS:
+        stored_at, payload, is_fallback = item
+        if is_fallback and want_calculator:
+            return None
+        limit = (_GLAVAPU_TEP_FALLBACK_CACHE_SECONDS if is_fallback
+                 else _GLAVAPU_TEP_CACHE_SECONDS)
+        if limit <= 0 or time.monotonic() - stored_at > limit:
             _GLAVAPU_TEP_CACHE.pop(key, None)
             return None
         _GLAVAPU_TEP_CACHE_HITS["hits"] += 1
     return copy.deepcopy(payload)
 
 
-def _glavapu_tep_store(numbers: list[str], payload: dict[str, Any]) -> None:
+def _glavapu_tep_store(numbers: list[str], payload: dict[str, Any],
+                       is_fallback: bool = False) -> None:
     if _GLAVAPU_TEP_CACHE_SECONDS <= 0 or not numbers:
         return
     key = tuple(sorted(str(x).strip() for x in numbers))
@@ -5165,7 +5184,7 @@ def _glavapu_tep_store(numbers: list[str], payload: dict[str, Any]) -> None:
         if len(_GLAVAPU_TEP_CACHE) >= 64:
             oldest = min(_GLAVAPU_TEP_CACHE, key=lambda k: _GLAVAPU_TEP_CACHE[k][0])
             _GLAVAPU_TEP_CACHE.pop(oldest, None)
-        _GLAVAPU_TEP_CACHE[key] = (time.monotonic(), copy.deepcopy(payload))
+        _GLAVAPU_TEP_CACHE[key] = (time.monotonic(), copy.deepcopy(payload), is_fallback)
 
 
 def _glavapu_headless_state() -> dict[str, Any]:
@@ -5256,7 +5275,9 @@ def cadastral_tep_server(req: CadastralAnalysisRequest) -> dict[str, Any]:
     # Тот же участок, посчитанный настоящим калькулятором час назад, — это тот
     # же ТЭП. Браузер поднимать незачем.
     if _glavapu_headless_available() and numbers:
-        cached = _glavapu_tep_cached(numbers)
+        # Браузер на ходу — запасной ответ из памяти не годится: он отвечал бы
+        # за калькулятор, который снова работает.
+        cached = _glavapu_tep_cached(numbers, want_calculator=True)
         if cached is not None:
             logging.info("tep-server rid=%s из кэша", req.request_id or "-")
             return cached
@@ -5339,7 +5360,7 @@ def cadastral_tep_server(req: CadastralAnalysisRequest) -> dict[str, Any]:
             "Методика ГлавАПУ могла измениться — сверьте расчёт на сайте.",
         )
     if numbers:
-        _glavapu_tep_store(numbers, result)
+        _glavapu_tep_store(numbers, result, is_fallback=True)
     logging.info("tep-server rid=%s формулы за %.1f с", req.request_id or "-",
                  time.monotonic() - request_started)
     return result

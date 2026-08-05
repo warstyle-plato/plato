@@ -288,3 +288,57 @@ def test_the_page_prints_the_reason():
     assert "Штатный калькулятор недоступен" in page
     assert "byCalculator" in page
     assert "hl.hint" in page
+
+
+# --- запасной ответ не имеет права подменять штатный -------------------------
+
+def test_a_fallback_answer_does_not_outlive_the_outage(monkeypatch):
+    """Один срыв калькулятора обрекал участок на формулы до конца дня: ответ
+    формул ложился в ту же память на шесть часов. Предохранитель снимается
+    через пять минут, а кэш всё ещё отвечал запасным расчётом."""
+    monkeypatch.setattr(core, "analyze_cadastral_territory", lambda request: {
+        "territory": {"area_ha": 0.651}, "recognized": _NUMBERS,
+        "coefficients": {"rent": 0.1281, "base_cost_zh_high": 229036.29},
+        "warnings": []})
+    # Калькулятор сорвался — считаем формулами и запоминаем это как запасное.
+    monkeypatch.setattr(core, "_GLAVAPU_HEADLESS_ENABLED", False)
+    first = core.cadastral_tep_server(core.CadastralAnalysisRequest(
+        cadastral_numbers=", ".join(_NUMBERS)))
+    assert first["source"]["format"].startswith("Формулы")
+
+    # Браузер починился — запасной ответ из памяти больше не годится.
+    calls: dict = {}
+    _server_path(monkeypatch, calls)
+    second = core.cadastral_tep_server(core.CadastralAnalysisRequest(
+        cadastral_numbers=", ".join(_NUMBERS)))
+    assert calls.get("count") == 1, "починенный калькулятор обязан посчитать заново"
+    assert "Штатный калькулятор" in second["source"]["format"]
+
+
+def test_the_fallback_is_still_remembered_while_the_outage_lasts(monkeypatch):
+    """Пока калькулятор лежит, повторный расчёт того же участка не должен
+    снова ходить в сеть — но помнится это минутами, а не часами."""
+    runs = {"count": 0}
+    original = core.vri_tep_quick
+
+    def counted(region, query, **kwargs):
+        runs["count"] += 1
+        return original(region, query, **kwargs)
+
+    monkeypatch.setattr(core, "analyze_cadastral_territory", lambda request: {
+        "territory": {"area_ha": 0.651}, "recognized": _NUMBERS,
+        "coefficients": {"rent": 0.1281, "base_cost_zh_high": 229036.29},
+        "warnings": []})
+    monkeypatch.setattr(core, "vri_tep_quick", counted)
+    monkeypatch.setattr(core, "_GLAVAPU_HEADLESS_ENABLED", False)
+    request = core.CadastralAnalysisRequest(cadastral_numbers=", ".join(_NUMBERS))
+    core.cadastral_tep_server(request)
+    core.cadastral_tep_server(request)
+    assert runs["count"] == 1
+
+
+def test_the_fallback_memory_is_much_shorter_than_the_calculators():
+    """Шесть часов — срок для расчёта штатного калькулятора: ТЭП участка за это
+    время не меняется. Ответ формул — это «калькулятор был недоступен в ту
+    секунду», и такой срок ему не полагается."""
+    assert core._GLAVAPU_TEP_FALLBACK_CACHE_SECONDS < core._GLAVAPU_TEP_CACHE_SECONDS / 10
