@@ -151,3 +151,50 @@ def test_an_unknown_scenario_is_not_an_error(monkeypatch, client):
 
 def test_the_server_timeout_is_not_shorter_than_ninety_seconds():
     assert core._PLATO_AI_TIMEOUT_SECONDS >= 90
+
+
+# --- тяжёлый вопрос: работа падает — окно узнаёт причину ---------------------
+
+def test_a_failure_is_remembered_under_the_run_id(client, monkeypatch):
+    """Иначе окно, потерявшее соединение, опрашивает результат до конца и не
+    узнаёт, что работа давно упала: «забираю готовый ответ» висит пять минут
+    вместо честной причины."""
+    def boom(req, bundle, trace_id=None):
+        raise RuntimeError("модель не ответила")
+
+    monkeypatch.setattr(core, "_call_openai_tool_agent", boom)
+    trace = "dead0000beef"
+    try:
+        client.post("/agent/chat", json={
+            "message": "тяжёлый вопрос", "trace_id": trace,
+            "inputs": dict(core.DEFAULT_INPUTS),
+            "tep": {k: dict(v) for k, v in core.TEP_DEFAULT.items()},
+            "rates": [], "phasing": {}, "history": [], "selected_view": "all"})
+    except Exception:
+        pass
+
+    stored = client.get("/agent/result/" + trace).json()
+    assert stored.get("pending") is False
+    assert "модель не ответила" in str(stored.get("error"))
+
+
+def test_the_page_shows_the_stored_failure():
+    """Причина показывается вместо бесконечного ожидания."""
+    page = core.PAGE
+    assert "x.error" in page and "detail:String(x.error)" in page
+
+
+def test_the_page_shows_the_stage_while_it_waits():
+    """«Долго» должно отличаться от «зависло»: пока ждём, видно, что делает
+    движок."""
+    page = core.PAGE
+    assert "'/agent/trace/'+traceId" in page
+    assert "соединение оборвалось, жду ответ" in page
+
+
+def test_the_wait_is_long_enough_for_a_heavy_question():
+    """Свободный вопрос гоняет goal_seek и simulate_change по нескольку раз;
+    соединение до окна всё равно не держат, значит ждать дешевле, чем терять
+    посчитанный ответ."""
+    assert core._PLATO_AI_TIMEOUT_SECONDS >= 240
+    assert "Date.now()+300000" in core.PAGE

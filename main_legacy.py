@@ -43,7 +43,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.42"
+VERSION = "0.17.43"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -16692,6 +16692,26 @@ _DevelopAid_METHODOLOGY = [
         "rule": "Для импортированной логики ГлавАПУ подземный паркинг формируется из постоянных + гостевых мест, площадь принимается 35 м²/место; места присоединённых объектов и кратковременной остановки не дублировать.",
     },
     {
+        "id": "SOCIAL_IS_AN_OBLIGATION",
+        "topic": "social",
+        "rule": "Социальная нагрузка — обязательство по градостроительной документации, а не параметр оптимизации. В Москве обнулить её нельзя: строить не дадут. Допустимые решения — форма исполнения (строительство против денежной компенсации), уточнение мощностей по нормативу и сроки в пределах обязательств. Сценарий «социалка = 0» показывает предел чувствительности, а не путь оздоровления.",
+    },
+    {
+        "id": "VRI_RELIEF",
+        "topic": "social",
+        "rule": "Земельно-правовую нагрузку в Москве снижают законно двумя способами: льготой по плате за смену ВРИ (её получают через места приложения труда — поля «Льгота — доля от суммы» и «Льгота — сумма») и рассрочкой платежа (1, 3 или 6 лет, платежи квартальные). Рассрочка меняет не сумму, а её распределение: первые платежи приходятся на дату обязательства, до открытия ПФ их несёт БРИДЖ, поэтому эффект на LLCR считается моделью. Саму плату девелопер не выбирает — её считает город по формуле.",
+    },
+    {
+        "id": "PARKING_2118PP",
+        "topic": "tep",
+        "rule": "Постановление Правительства Москвы № 2118-ПП (подписано 05.08.2026, краткое изложение — перед применением к проекту сверить с текстом документа): расчёт машино-мест на стадии ГЗК ведётся по общей площади квартир, на стадии АГР — по количеству квартир с учётом их площади. Нормативы обеспеченности постоянными местами: 0,8 места на квартиру до 70 м², 1,2 — от 70 до 100 м², 1,6 — свыше 100 м², а также для индивидуальных и блокированных домов. Нормы 945-ПП в новой редакции применяются независимо от ПЗЗ; противоречащие нормы ПЗЗ не действуют. Переходные положения: требования не распространяются на объекты, у которых на 05.08.2026 уже есть разрешения, положительные заключения экспертизы или утверждённые АГР.",
+    },
+    {
+        "id": "PARKING_2118PP_ECONOMY",
+        "topic": "expenses",
+        "rule": "Рост нормативной обеспеченности машино-местами увеличивает подземную часть, а с ней СМР подземной части и полную себестоимость на продаваемый метр. В модели это проверяется полями «Машино-места — решение проекта» и «Площадь подземной парковки»: пара согласована, ввод одного пересчитывает другое по нормативу площади. Пока калькулятор ГлавАПУ не обновлён под новые нормативы, он отдаёт прежнюю потребность — новое число вводится вручную.",
+    },
+    {
         "id": "SOCIAL",
         "topic": "social",
         "rule": "При режиме «Строительство» социальные объекты учитывать как дискретные объекты с привязкой к очереди и графику; при компенсации — как денежный платёж. Не учитывать один и тот же объём дважды.",
@@ -16775,6 +16795,8 @@ _AGENT_INSTRUCTIONS = """
 2. Для многоочередного проекта при банковской рекомендации предпочитай scope=weakest_phase, если пользователь явно не просит только сводный проект.
 2a. Если хотя бы одна очередь ниже 1,20x, не ограничивайся констатацией. Сначала вызови diagnose_project_logic, затем phase_recovery_options. Построй причинный вывод: хватает ли слабой очереди ТЭП/выручки относительно CAPEX, ранних общепроектных затрат, Bridge и социалки; затем ранжируй реальные варианты оздоровления.
 2b. Различай реальное улучшение проекта и косметическую перекладку. Покупку/ВРИ нельзя просто перенести в другую очередь ради красивого LLCR. Социалку и сети можно предлагать переносить только как сценарий при фактической реализуемости по графику/обязательствам.
+2f. Социальная нагрузка и плата за смену ВРИ — обязательства, а не параметры оптимизации. В Москве обнулить социалку нельзя: строить не дадут. Не подавай «социалка = 0» или «плата за ВРИ = 0» как способ оздоровления, даже если инструмент такой сценарий посчитал; если считаешь для оценки чувствительности, называй это пределом, а не решением, и повторяй оговорку инструмента.
+2g. Законные рычаги земельно-правовой нагрузки в Москве: льгота по плате за смену ВРИ (её получают через места приложения труда) — поля vri_relief_pct / vri_relief_mln; рассрочка платежа — vri_installment_years, vri_initial_pct (Москва: 1, 3 или 6 лет, платежи квартальные). Рассрочка меняет не сумму, а её распределение во времени: первые платежи до открытия ПФ несёт БРИДЖ, поэтому эффект на LLCR считай моделью, а не на глаз. Форма исполнения социалки (строительство против денежной компенсации) — тоже решение, но это не обнуление.
 2c. Различай годовую инфляцию стартовой цены между очередями и месячный рост цены внутри каждой очереди. Не индексируй О2/О3 месячным ростом за период до их старта продаж.
 2d. Класс проекта задаёт базовые цены/затраты; сценарий — относительный стресс или апсайд ±10% поверх выбранного класса.
 2e. Управление проектом 5% и технический заказчик/стройконтроль 5% — разные статьи с разным экономическим смыслом.
@@ -17687,8 +17709,52 @@ _GOAL_VARIABLES = {
 }
 
 
+# Земельно-правовые рычаги Москвы. Обнулить социальную нагрузку нельзя —
+# строить не дадут, — а вот льгота по плате за смену ВРИ (её получают через
+# места приложения труда) и рассрочка платежа законны и работают. Пока этих
+# переменных у агента не было, единственным рычагом такого масштаба оставалась
+# `social_compensation_mln`, и совет «обнулить социалку» был продиктован не
+# пониманием, а набором инструментов.
+# Величины, которые задаёт не девелопер, а обязательство. Крутить их как
+# «что если» можно — предлагать как способ оздоровления нельзя: социальную
+# нагрузку в Москве не обнуляют, строить не дадут. Оговорка возвращается самим
+# инструментом, потому что правило «упоминай предупреждения инструмента» агент
+# соблюдает, а помнить инструкцию под конец длинного разбора — не обязан.
+_AGENT_REGULATED_VARIABLES = {
+    "social_compensation_mln": (
+        "Социальная нагрузка — обязательство по градостроительной документации, "
+        "а не параметр оптимизации: обнулять её нельзя. Законные пути — форма "
+        "исполнения (строительство против компенсации), уточнение мощностей по "
+        "нормативу и сроки в пределах обязательств."),
+    "land_rights_cost_mln": (
+        "Плата за смену ВРИ считается городом по формуле и не выбирается "
+        "девелопером. Снижают её льготой (в Москве — через места приложения "
+        "труда, поле «Льгота по плате») и рассрочкой платежа, а не уменьшением "
+        "самой платы."),
+    "parking_price_th": "",
+}
+
+
+def _regulated_notes(variables: list[str]) -> list[str]:
+    """Оговорки к сценариям, трогающим нормативные величины."""
+    notes: list[str] = []
+    for variable in variables:
+        note = _AGENT_REGULATED_VARIABLES.get(variable)
+        if note and note not in notes:
+            notes.append(note)
+    return notes
+
+
+_VRI_RELIEF_VARIABLES = {
+    "vri_relief_pct": "Льгота по плате за смену ВРИ, % от суммы (МПТ и иные основания)",
+    "vri_relief_mln": "Льгота по плате за смену ВРИ, млн ₽",
+    "vri_installment_years": "Срок рассрочки платы за ВРИ, лет (Москва: 1, 3, 6)",
+    "vri_initial_pct": "Первый взнос по рассрочке ВРИ, % от суммы",
+}
+
 _PATCH_VARIABLES = {
     **_GOAL_VARIABLES,
+    **_VRI_RELIEF_VARIABLES,
     "main_above_th_per_sqm": "Основное строительство — наземная часть, тыс. ₽/м² ГНС",
     "main_under_th_per_sqm": "Основное строительство — подземная часть, тыс. ₽/м² ГНС",
     "storage_price_th": "Цена кладовой, тыс. ₽/шт.",
@@ -17713,6 +17779,15 @@ def _apply_patch_value(inputs: dict[str, Any], variable: str, value: float) -> N
         _apply_variable(inputs, variable, value)
     elif variable in _PATCH_VARIABLES:
         inputs[variable] = value
+        # Режим — следствие заданного числа, а не отдельное решение: льгота в
+        # процентах без режима «доля от суммы» осталась бы нулём, а срок
+        # рассрочки без режима «рассрочка» — единовременным платежом.
+        if variable == "vri_relief_pct" and value > 0:
+            inputs["vri_relief_mode"] = "percent"
+        elif variable == "vri_relief_mln" and value > 0:
+            inputs["vri_relief_mode"] = "amount"
+        elif variable in ("vri_installment_years", "vri_initial_pct") and value > 0:
+            inputs["vri_payment_mode"] = "installment"
 
 
 def _get_variable_value(inputs: dict[str, Any], variable: str) -> float:
@@ -17904,6 +17979,7 @@ def _tool_goal_seek(
         "available": True,
         "variable": variable,
         "variable_label": _GOAL_VARIABLES[variable],
+        "regulatory_notes": _regulated_notes([variable]),
         "target_metric": target_metric,
         "target_value": target_value,
         "constraint": constraint,
@@ -17959,6 +18035,8 @@ def _tool_simulate_change(
     if not applied:
         return {"available": False, "reason": "Нет допустимых изменений для моделирования."}
 
+    regulated = _regulated_notes([item["variable"] for item in applied])
+
     scenario_bundle = _run_authoritative_model(x, req.tep, req.rates, req.phasing)
     resolved_scope = scope if not (scope == "weakest_phase" and bundle.get("mode") != "phased") else "consolidated"
     base_label, base_result = _scope_result(bundle, resolved_scope, req.selected_view)
@@ -17983,6 +18061,7 @@ def _tool_simulate_change(
         "scope": resolved_scope,
         "scope_label": new_label,
         "changes": applied,
+        "regulatory_notes": regulated,
         "current": b,
         "scenario": nres,
         "delta": delta,
@@ -19105,7 +19184,12 @@ def _extract_openai_text(data: dict[str, Any]) -> str:
 # разрывать этот цикл нельзя.
 _PLATO_AI_URL = _env_str("PLATO_AI_URL", "").strip()
 _PLATO_AI_PROXY_SECRET = _env_str("PLATO_AI_PROXY_SECRET", "").strip()
-_PLATO_AI_TIMEOUT_SECONDS = max(30.0, _env_float("PLATO_AI_TIMEOUT_SECONDS", 120.0))
+# Свободный вопрос вроде «при каких параметрах проект станет рентабельным»
+# гоняет goal_seek и simulate_change по нескольку раз, каждый — полный пересчёт
+# модели. В сто двадцать секунд это не укладывалось, а соединение до окна всё
+# равно рвётся раньше и результат забирается опросом — значит ждать модель
+# дольше ничего не стоит.
+_PLATO_AI_TIMEOUT_SECONDS = max(30.0, _env_float("PLATO_AI_TIMEOUT_SECONDS", 240.0))
 # Окно первой попытки — на пробуждение Render после простоя: он засыпает и
 # первый запрос уходит в тишину. Живой сервис отвечает быстрее, а долгие
 # ответы дожидаются на повторе с полным таймаутом.
@@ -19992,8 +20076,26 @@ def agent_chat(req: AgentChatRequest, request: Request) -> dict[str, Any]:
         _PLATON_LOG.info("Platon [%s] cache hit (%.2fs)", trace_id, time.monotonic() - started)
         return {**cached, "cached": True, "trace_id": trace_id}
 
+    def _remember_failure(exc: Exception) -> None:
+        """Неудача тоже кладётся под номер запуска.
+
+        Иначе окно, потерявшее соединение, опрашивает результат до самого конца
+        и не узнаёт, что работа давно упала: «забираю готовый ответ» висит
+        пять минут вместо честной причины.
+        """
+        detail = getattr(exc, "detail", None) or str(exc)
+        _plato_answer_put("run" + trace_id, {
+            "answer": "", "error": str(detail)[:500],
+            "model": "", "source": "error", "response_id": None,
+            "tools_used": [], "proposals": [],
+        })
+
     _plato_trace_write(trace_id, "model", "Пересчитываю модель DevelopAid")
-    bundle = _run_authoritative_model(req.inputs, req.tep, req.rates, req.phasing)
+    try:
+        bundle = _run_authoritative_model(req.inputs, req.tep, req.rates, req.phasing)
+    except Exception as exc:
+        _remember_failure(exc)
+        raise
 
     if scenario:
         stage_label, handler = _AGENT_LOCAL_SCENARIOS[scenario]
@@ -20010,7 +20112,11 @@ def agent_chat(req: AgentChatRequest, request: Request) -> dict[str, Any]:
         _PLATON_LOG.info("Platon [%s] local scenario %s (%.2fs)",
                          trace_id, scenario, time.monotonic() - started)
     else:
-        result = _call_openai_tool_agent(req, bundle, trace_id=trace_id)
+        try:
+            result = _call_openai_tool_agent(req, bundle, trace_id=trace_id)
+        except Exception as exc:
+            _remember_failure(exc)
+            raise
         _PLATON_LOG.info("Platon [%s] llm answer, %d tool calls (%.2fs)",
                          trace_id, len(result.get("tools_used") or []),
                          time.monotonic() - started)
@@ -21113,14 +21219,25 @@ const AI_UNAVAILABLE='Платон Сергеевич временно не по
 async function awaitAgentResult(traceId,thinking){
  // Ответ ждёт на сервере под номером запуска. Опрос короткий и частый: его
  // не рвёт ни прокси, ни спящий мобильный интернет.
- const deadline=Date.now()+180000;
+ const deadline=Date.now()+300000;
  while(Date.now()<deadline){
   await new Promise(r=>setTimeout(r,2000));
   try{
    const r=await fetch('/agent/result/'+traceId);
-   if(r.ok){const x=await r.json();if(x&&!x.pending&&x.answer)return x}
+   if(r.ok){
+    const x=await r.json();
+    if(x&&!x.pending&&x.answer)return x;
+    // Работа упала — причина лежит там же, под номером запуска.
+    if(x&&!x.pending&&x.error)return {detail:String(x.error)};
+   }
   }catch(e){}
-  if(thinking)thinking.textContent='Соединение оборвалось, забираю готовый ответ…';
+  // Пока ждём, показываем стадию: «долго» должно отличаться от «зависло».
+  if(thinking){
+   let stage='';
+   try{const t=await(await fetch('/agent/trace/'+traceId)).json();if(t&&t.label&&t.stage!=='done')stage=t.label}catch(e){}
+   thinking.textContent=stage?stage+'… (соединение оборвалось, жду ответ)'
+                            :'Соединение оборвалось, забираю готовый ответ…';
+  }
  }
  return {detail:AI_UNAVAILABLE};
 }
