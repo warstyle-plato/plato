@@ -43,7 +43,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.35"
+VERSION = "0.17.36"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -5124,6 +5124,30 @@ def _glavapu_tep_store(numbers: list[str], payload: dict[str, Any]) -> None:
         _GLAVAPU_TEP_CACHE[key] = (time.monotonic(), copy.deepcopy(payload))
 
 
+def _glavapu_headless_state() -> dict[str, Any]:
+    """Почему расчёт идёт формулами — в самом ответе, а не только в логе.
+
+    Браузер живёт на ядре, и с телефона его состояние никак не увидеть.
+    «Ошибка, ушедшая только в лог, — это ошибка, которой нет»: причина отката
+    должна доезжать до человека вместе с расчётом.
+    """
+    where = "Render" if _core_api_url("/cadastral/tep-server") else "ядро"
+    if not _GLAVAPU_HEADLESS_ENABLED:
+        return {"state": "выключен", "where": where,
+                "hint": ("Штатный калькулятор запускает ядро. Нужны GLAVAPU_HEADLESS=1 "
+                         "в .env ядра и образ с Chromium (docker compose build).")
+                if where == "ядро" else
+                ("Расчёт остался на Render — ядро не ответило или его адрес не задан. "
+                 "Браузер живёт только на ядре.")}
+    blocked = max(0, int(_GLAVAPU_HEADLESS_BLOCKED_UNTIL["at"] - time.monotonic()))
+    if blocked:
+        return {"state": "предохранитель", "where": where, "blocked_for": blocked,
+                "last_error": str(_GLAVAPU_HEADLESS.get("last_error") or ""),
+                "hint": "Браузер сорвался; следующая попытка через "
+                        f"{blocked} с. Причина — в last_error."}
+    return {"state": "готов", "where": where}
+
+
 def _cadastral_analysis_for(numbers: list[str],
                             supplied: dict[str, Any] | None) -> dict[str, Any]:
     """Территория запрошенных участков — присланная страницей или своя.
@@ -5204,6 +5228,7 @@ def cadastral_tep_server(req: CadastralAnalysisRequest) -> dict[str, Any]:
                 "format": "Штатный калькулятор ГлавАПУ — серверный запуск",
                 "cadastral_numbers": numbers,
                 "calculated_at": date.today().isoformat(),
+                "headless": {"state": "готов", "where": "ядро"},
             })
             logging.info("tep-server rid=%s готов за %.1f с",
                          req.request_id or "-", time.monotonic() - started)
@@ -5239,13 +5264,17 @@ def cadastral_tep_server(req: CadastralAnalysisRequest) -> dict[str, Any]:
         "cadastral_numbers": numbers,
         "calculated_at": date.today().isoformat(),
     })
+    headless_state = _glavapu_headless_state()
+    result["source"]["headless"] = headless_state
     result["warnings"].insert(
         0,
-        "ТЭП посчитан серверными формулами ГлавАПУ: браузерный калькулятор "
-        "недоступен. Формулы сняты с его кода и сходятся с контрольными "
-        "выгрузками до единицы, но методику город меняет — расчёт штатного "
-        "калькулятора имеет приоритет."
-        + (f" Последняя ошибка запуска калькулятора: {_GLAVAPU_HEADLESS['last_error']}."
+        "ТЭП посчитан серверными формулами ГлавАПУ: штатный калькулятор "
+        f"недоступен ({headless_state['state']}, {headless_state['where']}). "
+        + str(headless_state.get("hint") or "")
+        + " Формулы сняты с его кода и сходятся с контрольными выгрузками до "
+        "единицы, но методику город меняет — расчёт штатного калькулятора имеет "
+        "приоритет."
+        + (f" Последняя ошибка запуска: {_GLAVAPU_HEADLESS['last_error']}."
            if _GLAVAPU_HEADLESS.get("last_error") else ""),
     )
     if _GLAVAPU_FORMULA_DRIFT["items"]:
@@ -21128,9 +21157,16 @@ async function obtainServerTep(analysis,status,runId){
  inputs._cadastral_analysis=structuredClone(analysis);
  renderGlavapuPreview(payload);
  const areaText=Number((analysis.territory||{}).area_ha||0).toLocaleString('ru-RU',{minimumFractionDigits:4,maximumFractionDigits:4});
- status.innerHTML='<span class="import-ok">ТЭП посчитан формулами ГлавАПУ: '+areaText+
-  ' га.</span> Проверьте значения ниже и нажмите «Применить к Вводным и ТЭП».';
- glavapuStatus.innerHTML='<span class="import-ok">ТЭП посчитан формулами ГлавАПУ на сервере.</span> Проверьте значения перед применением.';
+ // Кто посчитал — штатный калькулятор или наши формулы, и если формулы, то
+ // почему. Браузер живёт на ядре, и с телефона его состояние иначе не увидеть.
+ const hl=((payload.source||{}).headless)||{};
+ const byCalculator=/Штатный калькулятор/i.test(String((payload.source||{}).format||''));
+ const why=byCalculator?'':' <span style="color:#8a4b08">Штатный калькулятор недоступен ('+
+   escapeHtml(hl.state||'нет данных')+', '+escapeHtml(hl.where||'—')+').'+
+   (hl.hint?' '+escapeHtml(hl.hint):'')+'</span>';
+ status.innerHTML='<span class="import-ok">ТЭП посчитан '+(byCalculator?'штатным калькулятором ГлавАПУ':'формулами ГлавАПУ')+': '+areaText+
+  ' га.</span>'+why+' Проверьте значения ниже и нажмите «Применить к Вводным и ТЭП».';
+ glavapuStatus.innerHTML='<span class="import-ok">ТЭП посчитан '+(byCalculator?'штатным калькулятором ГлавАПУ':'формулами ГлавАПУ')+' на сервере.</span>'+why+' Проверьте значения перед применением.';
  tepRunLog(runId,'серверный расчёт: получен', areaText+' га');
  return payload;
 }

@@ -236,3 +236,53 @@ def test_the_chain_is_timed_in_the_log():
     assert "готов за" in source
     # В первой же строке видно, пришла ли территория и жив ли браузер.
     assert "analysis=%s headless=%s" in source
+
+
+# --- почему считали формулами, видно без доступа к серверу -------------------
+
+def test_the_fallback_explains_itself(monkeypatch):
+    """«Прошло мгновенно, но формулами» — законный вопрос, и ответ на него не
+    должен требовать ssh на ядро. Браузер живёт там, и с телефона его
+    состояние иначе не увидеть."""
+    monkeypatch.setattr(core, "_GLAVAPU_HEADLESS_ENABLED", False)
+    monkeypatch.setattr(core, "analyze_cadastral_territory", lambda request: {
+        "territory": {"area_ha": 0.651}, "recognized": _NUMBERS,
+        "coefficients": {"rent": 0.1281, "base_cost_zh_high": 229036.29},
+        "warnings": []})
+    result = core.cadastral_tep_server(core.CadastralAnalysisRequest(
+        cadastral_numbers=", ".join(_NUMBERS)))
+    state = result["source"]["headless"]
+    assert state["state"] == "выключен"
+    assert state["where"] in ("ядро", "Render")
+    assert "GLAVAPU_HEADLESS=1" in state["hint"] or "Render" in state["hint"]
+    assert any("штатный калькулятор" in str(w).lower() for w in result["warnings"])
+
+
+def test_the_fuse_names_itself_too(monkeypatch):
+    """Взведённый предохранитель — отдельная причина: калькулятор есть, но
+    сорвался, и следующая попытка будет через известное время."""
+    monkeypatch.setattr(core, "_GLAVAPU_HEADLESS_ENABLED", True)
+    core._GLAVAPU_HEADLESS_BLOCKED_UNTIL["at"] = time.monotonic() + 120
+    try:
+        state = core._glavapu_headless_state()
+    finally:
+        core._GLAVAPU_HEADLESS_BLOCKED_UNTIL["at"] = 0.0
+    assert state["state"] == "предохранитель"
+    assert state["blocked_for"] > 0
+    assert "last_error" in state
+
+
+def test_a_working_calculator_says_so(monkeypatch):
+    calls: dict = {}
+    _server_path(monkeypatch, calls)
+    result = core.cadastral_tep_server(core.CadastralAnalysisRequest(
+        cadastral_numbers=", ".join(_NUMBERS)))
+    assert result["source"]["headless"]["state"] == "готов"
+
+
+def test_the_page_prints_the_reason():
+    """Строка статуса говорит, кто посчитал, и если формулы — почему."""
+    page = core.PAGE
+    assert "Штатный калькулятор недоступен" in page
+    assert "byCalculator" in page
+    assert "hl.hint" in page
