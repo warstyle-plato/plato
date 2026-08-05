@@ -150,7 +150,10 @@ def test_proxy_sends_the_secret_in_a_header(monkeypatch):
     assert captured["headers"]["X-plato-secret"] == "s3cret-ascii"
     # Ключ OpenAI не должен покидать сервис, где он задан.
     assert not any("authorization" in name.lower() for name in captured["headers"])
-    assert captured["body"] == {"payload": PAYLOAD}
+    assert captured["body"]["payload"] == PAYLOAD
+    # Билет — согласие забрать ответ опросом: с ним сервис модели не держит
+    # соединение под вызов, который длиннее любого чужого таймаута.
+    assert main._TRACE_ID_RE.fullmatch(captured["body"]["ticket"])
     # Первая попытка ждёт окно пробуждения, а не полный таймаут: спящий Render
     # в него всё равно не уложится, а живой отвечает быстрее.
     assert captured["timeout"] == pytest.approx(main._PLATO_WAKE_TIMEOUT_SECONDS)
