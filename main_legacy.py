@@ -43,7 +43,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.40"
+VERSION = "0.17.41"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -4829,12 +4829,30 @@ _GLAVAPU_NUMBER_FIELD_SELECTORS = (
 
 # Что вообще есть на странице в момент срыва: без этого следующая правка
 # селектора — это ещё один круг переписки со скриншотами.
+#
+# Видимость считается по прямоугольнику, а не по offsetParent: у всего, что
+# лежит внутри position:fixed — а диалоги MUI именно такие, — offsetParent
+# равен null, и поле в открытом диалоге не попало бы в список вовсе. Первая
+# версия этой диагностики честно сообщила «полей нет» там, где они могли быть.
 _GLAVAPU_VISIBLE_FIELDS_JS = """() => {
-  return Array.from(document.querySelectorAll('input, textarea'))
-    .filter(el => el.offsetParent !== null)
-    .slice(0, 12)
-    .map(el => [el.tagName.toLowerCase(), el.id || '-', el.getAttribute('placeholder') || '-']
-      .join(':'));
+  const shown = el => {
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  };
+  const fields = Array.from(document.querySelectorAll('input, textarea'))
+    .slice(0, 15)
+    .map(el => [el.tagName.toLowerCase(), el.id || '-',
+                el.getAttribute('placeholder') || el.getAttribute('aria-label') || '-',
+                shown(el) ? 'виден' : 'скрыт'].join(':'));
+  const buttons = Array.from(document.querySelectorAll('button, [role="button"]'))
+    .filter(shown)
+    .slice(0, 15)
+    .map(el => String(el.textContent || '').trim().slice(0, 24) || '·');
+  return {
+    url: String(location.href).slice(0, 120),
+    fields: fields.length ? fields : ['нет'],
+    buttons: buttons.length ? buttons : ['нет'],
+  };
 }"""
 
 _GLAVAPU_READ_ROWS_JS = """() => {
@@ -4882,6 +4900,27 @@ def _glavapu_drive_page(page: Any, numbers: list[str], area_ha: float,
         timings[name] = int((now - step) * 1000)
         step = now
 
+    def open_parcel_dialog() -> None:
+        """Открывает панель ввода участка.
+
+        «Участок» может оказаться и кнопкой, и вкладкой, и пунктом меню —
+        роль button находит не всё. Промах здесь виден не сразу: клик проходит
+        вхолостую, а падает уже поиск поля, и причина выглядит чужой.
+        """
+        attempts = (
+            lambda: page.get_by_role("button", name="Участок").first,
+            lambda: page.get_by_role("tab", name="Участок").first,
+            lambda: page.get_by_text("Участок", exact=True).first,
+        )
+        for index, attempt in enumerate(attempts):
+            try:
+                attempt().click(timeout=7000)
+                timings["parcel_click"] = index
+                return
+            except Exception:
+                continue
+        raise TimeoutError("кнопка «Участок» не нажалась ни одним способом")
+
     def fill_numbers(text: str) -> None:
         """Вводит кадастровые номера, чем бы ни было поле в текущей вёрстке."""
         for selector in _GLAVAPU_NUMBER_FIELD_SELECTORS:
@@ -4894,12 +4933,15 @@ def _glavapu_drive_page(page: Any, numbers: list[str], area_ha: float,
             except Exception:
                 continue
         try:
-            fields = page.evaluate(_GLAVAPU_VISIBLE_FIELDS_JS) or []
+            seen = page.evaluate(_GLAVAPU_VISIBLE_FIELDS_JS) or {}
         except Exception:
-            fields = []
+            seen = {}
         raise TimeoutError(
-            "поле кадастровых номеров не найдено; видимые поля страницы: "
-            + ("; ".join(str(x) for x in fields)[:300] or "их нет"))
+            "поле кадастровых номеров не найдено. Поля: "
+            + ("; ".join(str(x) for x in (seen.get("fields") or ["?"]))[:220])
+            + ". Кнопки: "
+            + ("; ".join(str(x) for x in (seen.get("buttons") or ["?"]))[:220])
+            + f". Адрес: {seen.get('url') or '?'}")
 
     def dismiss_tour() -> None:
         """Снимает обучающий тур, если он перехватывает клики."""
@@ -4926,7 +4968,7 @@ def _glavapu_drive_page(page: Any, numbers: list[str], area_ha: float,
     # Тур показывается по шагам и всплывает на каждом новом экране, поэтому
     # снимается перед каждым кликом, а не однажды.
     dismiss_tour()
-    page.get_by_role("button", name="Участок").click()
+    open_parcel_dialog()
     dismiss_tour()
     fill_numbers(", ".join(numbers))
     page.get_by_role("button", name="Отправить").click()

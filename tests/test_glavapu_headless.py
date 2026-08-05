@@ -360,9 +360,11 @@ def test_the_onboarding_tour_is_dismissed_before_every_click():
     source = inspect.getsource(core._glavapu_drive_page)
     assert source.count("dismiss_tour()") >= 4, (
         "тур показывается по шагам — снимать его надо перед каждым кликом")
-    # Порядок обязателен: сначала снять оверлей, потом кликать.
-    first_click = source.find('name="Участок"')
-    assert 0 < source.find("dismiss_tour()") < first_click
+    # Порядок обязателен: сначала снять оверлей, потом кликать. Ищем именно
+    # соседство вызовов — определения функций стоят выше по тексту.
+    import re
+    assert re.search(r"dismiss_tour\(\)\s*\n\s*open_parcel_dialog\(\)", source), \
+        "клик по «Участок» обязан идти сразу после снятия тура"
 
 
 def test_the_tour_is_closed_properly_before_being_torn_out():
@@ -412,7 +414,25 @@ def test_a_missing_field_reports_what_the_page_actually_has():
     import inspect
     source = inspect.getsource(core._glavapu_drive_page)
     assert "_GLAVAPU_VISIBLE_FIELDS_JS" in source
-    assert "видимые поля страницы" in source
+    assert "Поля:" in source and "Кнопки:" in source
     js = core._GLAVAPU_VISIBLE_FIELDS_JS
-    assert "offsetParent" in js, "невидимые поля в диагностике только мешают"
+    # Видимость — по прямоугольнику: у всего внутри position:fixed (а диалоги
+    # MUI именно такие) offsetParent равен null, и поле в открытом диалоге не
+    # попало бы в список вовсе.
+    assert "getBoundingClientRect" in js
+    assert "offsetParent" not in js
     assert "placeholder" in js and "el.id" in js
+
+
+def test_the_parcel_button_is_found_by_more_than_its_role():
+    """«Участок» может оказаться и кнопкой, и вкладкой, и пунктом меню. Промах
+    здесь виден не сразу: клик проходит вхолостую, панель не открывается, а
+    падает уже поиск поля — и причина выглядит чужой."""
+    import inspect
+    source = inspect.getsource(core._glavapu_drive_page)
+    assert "def open_parcel_dialog()" in source
+    for role in ('get_by_role("button", name="Участок")',
+                 'get_by_role("tab", name="Участок")',
+                 'get_by_text("Участок", exact=True)'):
+        assert role in source, role
+    assert "не нажалась ни одним способом" in source
