@@ -109,7 +109,8 @@ def test_the_page_shows_the_agreed_wording_when_the_model_is_silent():
 def test_the_server_logs_enough_to_find_the_cause():
     """Причину неудачного запроса ищут по логу, а не по скриншотам."""
     import inspect
-    source = inspect.getsource(core.agent_chat)
+    # Сама работа ушла из запроса в фоновый поток — вместе с записями о ней.
+    source = inspect.getsource(core.agent_chat) + inspect.getsource(core._plato_chat_launch)
     for part in ("trace_id", "route=", "model=", "kind="):
         assert part in source, part
 

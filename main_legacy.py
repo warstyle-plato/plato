@@ -43,7 +43,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.44"
+VERSION = "0.17.45"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -19197,6 +19197,17 @@ _PLATO_WAKE_TIMEOUT_SECONDS = max(15.0, _env_float("PLATO_AI_WAKE_TIMEOUT_SECOND
 # Пинг, чтобы сервис модели не засыпал: Render гасит бесплатный инстанс после
 # ~15 минут тишины, и первый живой вопрос платит за пробуждение. Ноль — выключить.
 _PLATO_KEEPALIVE_MINUTES = max(0.0, _env_float("PLATO_AI_KEEPALIVE_MINUTES", 10.0))
+# Сколько сервер держит соединение, прежде чем отдать работу опросу. Быстрый
+# ответ приходит тем же запросом — лишнего похода за ним не будет; всё, что
+# длиннее, забирается по номеру запуска. Двадцать секунд — с запасом ниже
+# любого чужого предела: ни nginx, ни Render, ни мобильная сеть на таком сроке
+# соединение не рвут.
+_PLATO_CHAT_HANDOFF_SECONDS = max(1.0, _env_float("PLATO_CHAT_HANDOFF_SECONDS", 20.0))
+_PLATO_PROXY_HANDOFF_SECONDS = max(1.0, _env_float("PLATO_AI_HANDOFF_SECONDS", 20.0))
+_PLATO_PROXY_POLL_SECONDS = max(0.2, _env_float("PLATO_AI_POLL_SECONDS", 2.0))
+_PLATO_PROXY_POLL_TIMEOUT = max(5.0, _env_float("PLATO_AI_POLL_TIMEOUT_SECONDS", 30.0))
+# Сколько ждёт тот, кому соединение держать не перед кем — бот в своём потоке.
+_PLATO_AGENT_WAIT_SECONDS = max(60.0, _env_float("PLATO_AGENT_WAIT_SECONDS", 900.0))
 _PLATO_KEEPALIVE: dict[str, Any] = {"enabled": False, "last_ok": "", "last_error": ""}
 _PLATON_LOG = logging.getLogger("developaid.platon")
 
@@ -19264,6 +19275,69 @@ def _openai_direct_request(payload: dict[str, Any]) -> dict[str, Any]:
         raise HTTPException(status_code=502, detail=f"Не удалось обратиться к OpenAI API: {str(exc)[:500]}")
 
 
+def _plato_proxy_result_url(ticket: str) -> str:
+    """Адрес выдачи ответа по билету — сосед `/chat` на том же сервисе."""
+    if not _PLATO_AI_URL or not ticket:
+        return ""
+    try:
+        parts = urllib.parse.urlsplit(_PLATO_AI_URL)
+        if not parts.scheme or not parts.netloc:
+            return ""
+        base = parts.path[: -len("/chat")] if parts.path.endswith("/chat") else parts.path
+        return urllib.parse.urlunsplit(
+            (parts.scheme, parts.netloc, base.rstrip("/") + "/result/" + ticket, "", ""))
+    except Exception:
+        return ""
+
+
+def _plato_proxy_await(ticket: str, headers: dict[str, str], deadline: float) -> dict[str, Any]:
+    """Забирает ответ сервиса модели по билету — короткими запросами.
+
+    Длинного соединения между машинами больше нет вообще: сервис модели принял
+    работу и считает её у себя, а мы спрашиваем результат по секундам. Рвать
+    тут нечему — ни у прокси, ни у мобильной сети нет повода закрыть запрос,
+    который живёт две секунды.
+    """
+    url = _plato_proxy_result_url(ticket)
+    if not url:
+        raise HTTPException(
+            status_code=502,
+            detail="Сервис модели принял работу, но адрес выдачи ответа собрать не удалось.")
+    poll_headers = {key: value for key, value in headers.items() if key != "Content-Type"}
+    broken = ""
+    while time.monotonic() < deadline:
+        time.sleep(_PLATO_PROXY_POLL_SECONDS)
+        try:
+            request = urllib.request.Request(url, headers=poll_headers, method="GET")
+            with urllib.request.urlopen(request, timeout=_PLATO_PROXY_POLL_TIMEOUT) as response:
+                data = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Сервис модели не отдал ответ по билету: код {exc.code}.") from exc
+        except Exception as exc:
+            # Сорванный опрос работу не отменяет: она идёт на той стороне.
+            broken = f"{type(exc).__name__}: {str(exc)[:200]}"
+            continue
+        if data.get("pending"):
+            continue
+        if data.get("error"):
+            raise HTTPException(status_code=int(data.get("status") or 502),
+                                detail=str(data["error"])[:700])
+        answer = data.get("answer")
+        if isinstance(answer, dict):
+            return answer
+        raise HTTPException(status_code=502,
+                            detail="Сервис модели вернул пустой ответ по билету.")
+    raise HTTPException(
+        status_code=504,
+        detail=(
+            f"Платон Сергеевич не ответил за {int(_PLATO_AI_TIMEOUT_SECONDS)} с."
+            + (f" Опрос срывался: {broken}." if broken else "")
+        ),
+    )
+
+
 def _openai_proxy_request(payload: dict[str, Any]) -> dict[str, Any]:
     """Тот же вызов, но руками другого сервиса — там, где лежит ключ."""
     headers = {
@@ -19289,7 +19363,11 @@ def _openai_proxy_request(payload: dict[str, Any]) -> dict[str, Any]:
     # keep-alive рвётся на чтении ответа, и клиент получает TLS EOF там, где на
     # той стороне запрос уже отработал с кодом 200.
     headers["Connection"] = "close"
-    body = json.dumps({"payload": payload}, ensure_ascii=False).encode("utf-8")
+    # Билет — один на весь вызов, а не на попытку: повтор после обрыва должен
+    # подобрать уже начатую работу, а не заказать её второй раз.
+    ticket = os.urandom(6).hex()
+    body = json.dumps({"payload": payload, "ticket": ticket}, ensure_ascii=False).encode("utf-8")
+    deadline = time.monotonic() + _PLATO_AI_TIMEOUT_SECONDS
 
     last_transport: Exception | None = None
     timed_out = False
@@ -19312,6 +19390,11 @@ def _openai_proxy_request(payload: dict[str, Any]) -> dict[str, Any]:
             answer = json.loads(raw.decode("utf-8"))
             if attempt > 1:
                 _PLATON_LOG.info("Platon proxy attempt %d/%d succeeded", attempt, _PLATO_PROXY_ATTEMPTS)
+            if isinstance(answer, dict) and answer.get("pending"):
+                # Сервис модели принял работу и соединение не держит. Дальше —
+                # опрос по билету: длинного запроса между машинами не остаётся.
+                _PLATON_LOG.info("Platon proxy job accepted, ticket %s", ticket)
+                return _plato_proxy_await(ticket, headers, deadline)
             return answer
         except urllib.error.HTTPError as exc:
             # Ответ приложения — не транспортный сбой: повторять нечего.
@@ -19495,15 +19578,84 @@ def _openai_responses_request(payload: dict[str, Any]) -> dict[str, Any]:
 
 class PlatoAiProxyRequest(BaseModel):
     payload: dict[str, Any] = {}
+    # Билет присылает клиент, который готов забрать ответ опросом. Старый
+    # клиент его не шлёт — и получает ответ тем же запросом, как раньше.
+    ticket: str = ""
 
 
-@app.post("/internal/plato/chat")
-def internal_plato_chat(req: PlatoAiProxyRequest, request: Request) -> dict[str, Any]:
-    """Служебный вызов OpenAI для сервера, где ключа нет. Наружу не публикуется.
+_PLATO_PROXY_JOBS: dict[str, threading.Event] = {}
+_PLATO_PROXY_JOBS_LOCK = threading.Lock()
 
-    Браузер сюда не ходит: он обращается только к своему серверу, поэтому нет
-    ни CORS, ни зависимости от VPN, ни раскрытия внутреннего адреса.
+
+def _plato_proxy_stored(stored: dict[str, Any]) -> dict[str, Any]:
+    if stored.get("error"):
+        raise HTTPException(status_code=int(stored.get("status") or 502),
+                            detail=str(stored["error"])[:700])
+    answer = stored.get("answer")
+    if isinstance(answer, dict):
+        return answer
+    raise HTTPException(status_code=502, detail="Пустой ответ модели.")
+
+
+def _plato_proxy_job(ticket: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Работа по билету: считаем у себя, соединение не держим.
+
+    Один вызов reasoning-модели с инструментами занимает больше, чем держит
+    соединение любое промежуточное звено. Раньше это ломалось молча: на той
+    стороне работа доходила до конца, а клиент получал разорванный запрос и
+    начинал всё заново — и так по кругу, пока человек не переставал ждать.
     """
+    stored = _plato_answer_get("proxy" + ticket)
+    if stored is not None:
+        return _plato_proxy_stored(stored)
+
+    with _PLATO_PROXY_JOBS_LOCK:
+        done = _PLATO_PROXY_JOBS.get(ticket)
+        fresh = done is None
+        if fresh:
+            done = _PLATO_PROXY_JOBS[ticket] = threading.Event()
+
+    if fresh:
+        def worker() -> None:
+            try:
+                _plato_answer_put("proxy" + ticket, {"answer": _openai_direct_request(payload)})
+            except HTTPException as exc:
+                _plato_answer_put("proxy" + ticket,
+                                  {"error": str(exc.detail)[:700], "status": exc.status_code})
+            except Exception as exc:
+                _plato_answer_put("proxy" + ticket,
+                                  {"error": f"{type(exc).__name__}: {str(exc)[:600]}", "status": 502})
+            finally:
+                # Ответ на диске раньше, чем снят признак работы: повтор с тем
+                # же билетом обязан найти либо работу, либо результат — но не
+                # пустоту, из которой закажет второй вызов модели.
+                done.set()
+                with _PLATO_PROXY_JOBS_LOCK:
+                    _PLATO_PROXY_JOBS.pop(ticket, None)
+
+        threading.Thread(target=worker, name="plato-proxy-" + ticket, daemon=True).start()
+
+    if done.wait(_PLATO_PROXY_HANDOFF_SECONDS):
+        stored = _plato_answer_get("proxy" + ticket)
+        if stored is not None:
+            return _plato_proxy_stored(stored)
+    return {"pending": True, "ticket": ticket}
+
+
+@app.get("/internal/plato/result/{ticket}")
+def internal_plato_result(ticket: str, request: Request) -> dict[str, Any]:
+    """Выдача ответа по билету. Тот же секрет, что и у самого вызова."""
+    _plato_internal_guard(request)
+    if not _TRACE_ID_RE.fullmatch(str(ticket or "").strip().lower()):
+        raise HTTPException(status_code=400, detail="Неверный билет.")
+    stored = _plato_answer_get("proxy" + str(ticket).strip().lower())
+    if stored is None:
+        return {"pending": True}
+    return {"pending": False, **stored}
+
+
+def _plato_internal_guard(request: Request) -> None:
+    """Служебный путь обслуживает только тот, у кого нет своего прокси."""
     # Секрет задан на обеих машинах — он общий, — поэтому одного секрета мало,
     # чтобы отличить Render от ядра. Отличает адрес прокси: он задан только у
     # клиента. Без этой проверки вызов этого пути на ядре ушёл бы прямо на
@@ -19525,9 +19677,24 @@ def internal_plato_chat(req: PlatoAiProxyRequest, request: Request) -> dict[str,
     supplied = str(request.headers.get("X-Plato-Secret") or "")
     if not hmac.compare_digest(supplied, expected):
         raise HTTPException(status_code=403, detail="Неверный секрет служебного вызова.")
+
+
+@app.post("/internal/plato/chat")
+def internal_plato_chat(req: PlatoAiProxyRequest, request: Request) -> dict[str, Any]:
+    """Служебный вызов OpenAI для сервера, где ключа нет. Наружу не публикуется.
+
+    Браузер сюда не ходит: он обращается только к своему серверу, поэтому нет
+    ни CORS, ни зависимости от VPN, ни раскрытия внутреннего адреса.
+    """
+    _plato_internal_guard(request)
     payload = req.payload if isinstance(req.payload, dict) else {}
     if not payload:
         raise HTTPException(status_code=400, detail="Пустой запрос к модели.")
+    ticket = str(req.ticket or "").strip().lower()
+    if ticket and _TRACE_ID_RE.fullmatch(ticket):
+        return _plato_proxy_job(ticket, payload)
+    # Клиент без билета забрать ответ опросом не умеет — держим соединение,
+    # как держали: ломать старую машину выкаткой новой мы не вправе.
     return _openai_direct_request(payload)
 
 
@@ -20049,8 +20216,15 @@ def agent_status() -> dict[str, Any]:
     }
 
 
-@app.post("/agent/chat")
-def agent_chat(req: AgentChatRequest, request: Request) -> dict[str, Any]:
+def _plato_chat_launch(
+    req: AgentChatRequest, request: Request,
+) -> tuple[str, threading.Event, dict[str, Any]]:
+    """Проверки, кэш и запуск работы фоном.
+
+    Возвращает номер запуска, признак завершения и общий с работой словарь
+    результата. Ждать завершения — дело зовущего: у окна на это двадцать
+    секунд, у бота столько, сколько нужно.
+    """
     _agent_rate_limit(request)
     message = str(req.message or "").strip()
     if not message:
@@ -20070,11 +20244,16 @@ def agent_chat(req: AgentChatRequest, request: Request) -> dict[str, Any]:
     # Кэш смотрится до пересчёта модели: повторный вопрос по тем же вводным
     # не должен стоить ни пересчёта, ни похода в модель.
     cache_key = _plato_answer_key(req, scenario)
+    outcome: dict[str, Any] = {}
+    done = threading.Event()
     cached = _plato_answer_get(cache_key)
     if cached is not None:
         _plato_trace_write(trace_id, "done", "Ответ найден в кэше")
         _PLATON_LOG.info("Platon [%s] cache hit (%.2fs)", trace_id, time.monotonic() - started)
-        return {**cached, "cached": True, "trace_id": trace_id}
+        outcome["result"] = cached
+        outcome["cached"] = True
+        done.set()
+        return trace_id, done, outcome
 
     def _remember_failure(exc: Exception) -> None:
         """Неудача тоже кладётся под номер запуска.
@@ -20090,51 +20269,92 @@ def agent_chat(req: AgentChatRequest, request: Request) -> dict[str, Any]:
             "tools_used": [], "proposals": [],
         })
 
-    _plato_trace_write(trace_id, "model", "Пересчитываю модель DevelopAid")
-    try:
+    def _work() -> dict[str, Any]:
+        _plato_trace_write(trace_id, "model", "Пересчитываю модель DevelopAid")
         bundle = _run_authoritative_model(req.inputs, req.tep, req.rates, req.phasing)
-    except Exception as exc:
-        _remember_failure(exc)
-        raise
 
-    if scenario:
-        stage_label, handler = _AGENT_LOCAL_SCENARIOS[scenario]
-        _plato_trace_write(trace_id, "local", f"Считаю движком: {stage_label.lower()}")
-        answer = handler(req, bundle)
-        result = {
-            "answer": answer,
-            "model": "developaid-engine",
-            "source": "local",
-            "response_id": None,
-            "tools_used": [{"name": scenario, "arguments": {}}],
-            "proposals": [],
-        }
-        _PLATON_LOG.info("Platon [%s] local scenario %s (%.2fs)",
-                         trace_id, scenario, time.monotonic() - started)
-    else:
-        try:
+        if scenario:
+            stage_label, handler = _AGENT_LOCAL_SCENARIOS[scenario]
+            _plato_trace_write(trace_id, "local", f"Считаю движком: {stage_label.lower()}")
+            result = {
+                "answer": handler(req, bundle),
+                "model": "developaid-engine",
+                "source": "local",
+                "response_id": None,
+                "tools_used": [{"name": scenario, "arguments": {}}],
+                "proposals": [],
+            }
+            _PLATON_LOG.info("Platon [%s] local scenario %s (%.2fs)",
+                             trace_id, scenario, time.monotonic() - started)
+        else:
             result = _call_openai_tool_agent(req, bundle, trace_id=trace_id)
+            _PLATON_LOG.info("Platon [%s] llm answer, %d tool calls (%.2fs)",
+                             trace_id, len(result.get("tools_used") or []),
+                             time.monotonic() - started)
+
+        _plato_answer_put(cache_key, result)
+        # Ответ кладётся ещё и под номер запуска: соединение до окна короче
+        # работы, и забирают его отдельным запросом. На диск — потому что
+        # воркеров два, и опрос попадёт в другой.
+        _plato_answer_put("run" + trace_id, result)
+        _plato_trace_write(trace_id, "done", "Готово")
+        _PLATON_LOG.info(
+            "Platon [%s] done route=%s model=%s kind=%s %.2fs",
+            trace_id, _plato_route(), result.get("model") or "-",
+            "scenario:" + scenario if scenario else "free", time.monotonic() - started)
+        return result
+
+    def _worker() -> None:
+        try:
+            outcome["result"] = _work()
         except Exception as exc:
             _remember_failure(exc)
-            raise
-        _PLATON_LOG.info("Platon [%s] llm answer, %d tool calls (%.2fs)",
-                         trace_id, len(result.get("tools_used") or []),
-                         time.monotonic() - started)
+            _plato_trace_write(trace_id, "done", "Не получилось")
+            outcome["error"] = exc
+        finally:
+            done.set()
 
-    _plato_answer_put(cache_key, result)
-    # Ответ кладётся ещё и под номер запуска. Одно длинное соединение до
-    # браузера рвётся раньше, чем модель успевает ответить: nginx закрывает на
-    # шестидесяти секундах, мобильный Safari — на своём сроке, и человек
-    # видит «Load failed» на готовый ответ, который уже посчитан. Окно заберёт
-    # его отдельным коротким запросом. На диск — потому что воркеров два, и
-    # опрос попадёт в другой.
-    _plato_answer_put("run" + trace_id, result)
-    _plato_trace_write(trace_id, "done", "Готово")
-    _PLATON_LOG.info(
-        "Platon [%s] done route=%s model=%s kind=%s %.2fs",
-        trace_id, _plato_route(), result.get("model") or "-",
-        "scenario:" + scenario if scenario else "free", time.monotonic() - started)
-    return {**result, "cached": False, "trace_id": trace_id}
+    # Работа идёт фоном, а не внутри запроса. Прежде запрос держали до конца, и
+    # это упиралось в чужие сроки на всём пути: nginx рвёт на шестидесяти
+    # секундах, мобильный Safari на своём, Render — на своём. Тяжёлый вопрос
+    # гоняет модель с инструментами по нескольку раундов и не укладывается ни в
+    # один из них: работа доходила до конца, а человек видел «Load failed» или
+    # вечное «думает». Теперь длительность работы не упирается ни в чей таймаут.
+    threading.Thread(target=_worker, name="platon-" + trace_id, daemon=True).start()
+    return trace_id, done, outcome
+
+
+def _plato_chat_result(trace_id: str, outcome: dict[str, Any]) -> dict[str, Any]:
+    if outcome.get("error") is not None:
+        raise outcome["error"]
+    return {**outcome["result"], "cached": bool(outcome.get("cached")), "trace_id": trace_id}
+
+
+@app.post("/agent/chat")
+def agent_chat(req: AgentChatRequest, request: Request) -> dict[str, Any]:
+    """Вопрос Платону. Соединение держится ровно до передачи работы опросу."""
+    trace_id, done, outcome = _plato_chat_launch(req, request)
+    if not done.wait(_PLATO_CHAT_HANDOFF_SECONDS):
+        _PLATON_LOG.info("Platon [%s] handed off to polling after %ds",
+                         trace_id, int(_PLATO_CHAT_HANDOFF_SECONDS))
+        return {"pending": True, "trace_id": trace_id}
+    return _plato_chat_result(trace_id, outcome)
+
+
+def plato_answer(req: AgentChatRequest, request: Request) -> dict[str, Any]:
+    """Тот же вопрос, но для того, кому соединение держать не перед кем.
+
+    Бот живёт в этом же процессе и ждёт ответ в своём потоке: отдавать ему
+    «работа принята» бессмысленно — забирать результат ему неоткуда, и человек
+    в телеграме получил бы вместо ответа пустоту.
+    """
+    trace_id, done, outcome = _plato_chat_launch(req, request)
+    if not done.wait(_PLATO_AGENT_WAIT_SECONDS):
+        raise HTTPException(
+            status_code=504,
+            detail=(f"Платон Сергеевич не ответил за {int(_PLATO_AGENT_WAIT_SECONDS)} с. "
+                    "Повторите вопрос."))
+    return _plato_chat_result(trace_id, outcome)
 
 
 @app.get("/agent/result/{trace_id}")
@@ -21233,6 +21453,13 @@ async function sendAgentMessage(scenario){
   try{
    response=await fetch('/agent/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message,scenario:scenario||'',trace_id:traceId,inputs,tep,rates,phasing,history:aiHistory.slice(-8),selected_view:reportView||'all'})});
    try{data=await response.json()}catch(e){}
+   if(response.ok&&data&&data.pending){
+    // Сервер не держит соединение: работа принята и идёт, ответ ждёт под
+    // номером запуска. Так длительность работы перестаёт упираться в чужие
+    // сроки — nginx, Render и мобильная сеть рвали её на полпути.
+    data=await awaitAgentResult(traceId,thinking,true);
+    response={ok:!!data.answer,status:200};
+   }
   }catch(networkError){
    // «Load failed» — не ответ сервера, а обрыв соединения: один длинный
    // запрос не переживает ни nginx, ни мобильную сеть, а работа на сервере
@@ -21254,10 +21481,10 @@ async function sendAgentMessage(scenario){
 }
 const AI_UNAVAILABLE='Платон Сергеевич временно не получил ответ от AI-сервиса. Расчётная модель продолжает работать. Повторите вопрос через несколько секунд.';
 
-async function awaitAgentResult(traceId,thinking){
+async function awaitAgentResult(traceId,thinking,accepted){
  // Ответ ждёт на сервере под номером запуска. Опрос короткий и частый: его
  // не рвёт ни прокси, ни спящий мобильный интернет.
- const deadline=Date.now()+300000;
+ let deadline=Date.now()+300000;const hardStop=Date.now()+900000;let seenStage='';
  while(Date.now()<deadline){
   await new Promise(r=>setTimeout(r,2000));
   try{
@@ -21269,12 +21496,18 @@ async function awaitAgentResult(traceId,thinking){
     if(x&&!x.pending&&x.error)return {detail:String(x.error)};
    }
   }catch(e){}
+  let stage='';
+  try{const t=await(await fetch('/agent/trace/'+traceId)).json();if(t&&t.label&&t.stage!=='done')stage=t.label}catch(e){}
+  // Пока движок отчитывается о новом шаге, работа идёт, а не висит: сдаваться
+  // по часам, когда на той стороне что-то происходит, — терять посчитанное.
+  if(stage&&stage!==seenStage){seenStage=stage;deadline=Math.min(hardStop,Date.now()+180000)}
   // Пока ждём, показываем стадию: «долго» должно отличаться от «зависло».
   if(thinking){
-   let stage='';
-   try{const t=await(await fetch('/agent/trace/'+traceId)).json();if(t&&t.label&&t.stage!=='done')stage=t.label}catch(e){}
-   thinking.textContent=stage?stage+'… (соединение оборвалось, жду ответ)'
-                            :'Соединение оборвалось, забираю готовый ответ…';
+   // Принятая работа и оборванное соединение — разные вещи, и человеку врать
+   // ни в ту, ни в другую сторону нельзя.
+   const tail=accepted?' (работа идёт, жду ответ)':' (соединение оборвалось, жду ответ)';
+   thinking.textContent=stage?stage+'…'+tail
+                            :(accepted?'Работа принята, жду ответ…':'Соединение оборвалось, забираю готовый ответ…');
   }
  }
  return {detail:AI_UNAVAILABLE};

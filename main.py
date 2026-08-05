@@ -840,7 +840,10 @@ def _run_agent(chat_id: int, text: str, *, intro: str = "") -> None:
     except Exception:
         pass
     try:
-        result = core.agent_chat(req, _request_for_agent(chat_id))
+        # Не `agent_chat`: тот отдаёт «работа принята» через двадцать секунд, и
+        # забирать результат браузер идёт опросом. Боту забирать неоткуда — он
+        # ждёт ответ в своём потоке, и никто это ожидание не рвёт.
+        result = core.plato_answer(req, _request_for_agent(chat_id))
         if inspect.isawaitable(result):
             result = asyncio.run(result)
         answer = str((result or {}).get("answer") or "Платон не вернул текстового ответа.").strip()
