@@ -43,7 +43,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.41"
+VERSION = "0.17.42"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -4807,11 +4807,21 @@ _GLAVAPU_DISMISS_TOUR_JS = """() => {
       break;
     }
   }
-  let removed = 0;
-  document.querySelectorAll(
-    '#react-joyride-portal, .react-joyride__overlay, .react-joyride__spotlight'
-  ).forEach(node => { node.remove(); removed += 1; });
-  return {closed, removed};
+  // Узлы не удаляем: React считает портал своим и при следующем обновлении
+  // обращается к нему. Удаление роняло всё приложение — калькулятор показывал
+  // экран «Перезагрузить страницу», и расчёт упирался в отсутствие полей.
+  // Стиль тур гасит так же надёжно, а чужой DOM остаётся нетронутым.
+  let hidden = 0;
+  if (!document.getElementById('plato-tour-off')) {
+    const style = document.createElement('style');
+    style.id = 'plato-tour-off';
+    style.textContent = '#react-joyride-portal, .react-joyride__overlay,'
+      + ' .react-joyride__spotlight, .react-joyride__tooltip'
+      + ' { display: none !important; pointer-events: none !important; }';
+    document.head.appendChild(style);
+    hidden = 1;
+  }
+  return {closed, hidden};
 }"""
 
 # Поле кадастровых номеров ищется по нескольким признакам. Один жёсткий
@@ -4900,6 +4910,21 @@ def _glavapu_drive_page(page: Any, numbers: list[str], area_ha: float,
         timings[name] = int((now - step) * 1000)
         step = now
 
+    def recover_if_crashed() -> None:
+        """Калькулятор мог упасть и показать экран «Перезагрузить страницу».
+
+        Своя кнопка перезагрузки у него есть — нажимаем её и даём приложению
+        собраться заново, вместо того чтобы искать поля на экране ошибки.
+        """
+        try:
+            button = page.get_by_role("button", name="Перезагрузить страницу").first
+            if button.is_visible(timeout=1500):
+                button.click(timeout=5000)
+                page.wait_for_timeout(2500)
+                timings["reloaded"] = timings.get("reloaded", 0) + 1
+        except Exception:
+            pass
+
     def open_parcel_dialog() -> None:
         """Открывает панель ввода участка.
 
@@ -4949,7 +4974,7 @@ def _glavapu_drive_page(page: Any, numbers: list[str], area_ha: float,
             result = page.evaluate(_GLAVAPU_DISMISS_TOUR_JS) or {}
         except Exception:
             return
-        if result.get("closed") or result.get("removed"):
+        if result.get("closed") or result.get("hidden"):
             timings["tour"] = timings.get("tour", 0) + 1
 
     try:
@@ -4967,6 +4992,7 @@ def _glavapu_drive_page(page: Any, numbers: list[str], area_ha: float,
         return []  # страница загружена, ассеты в кэше браузера
     # Тур показывается по шагам и всплывает на каждом новом экране, поэтому
     # снимается перед каждым кликом, а не однажды.
+    recover_if_crashed()
     dismiss_tour()
     open_parcel_dialog()
     dismiss_tour()

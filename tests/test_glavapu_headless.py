@@ -367,13 +367,28 @@ def test_the_onboarding_tour_is_dismissed_before_every_click():
         "клик по «Участок» обязан идти сразу после снятия тура"
 
 
-def test_the_tour_is_closed_properly_before_being_torn_out():
-    """Кнопка пропуска пишет в хранилище, что тур пройден, и он не вернётся.
-    Удаление узлов — запасной путь: React может отрисовать оверлей заново."""
+def test_the_tour_is_hidden_without_touching_the_page_dom():
+    """Узлы тура не удаляются. React считает портал своим и при следующем
+    обновлении обращается к нему — удаление роняло всё приложение, калькулятор
+    показывал экран «Перезагрузить страницу», и расчёт упирался в отсутствие
+    полей. Стиль гасит тур так же надёжно, а чужой DOM цел."""
     js = core._GLAVAPU_DISMISS_TOUR_JS
     assert 'data-action="skip"' in js and "button.click()" in js
     assert "#react-joyride-portal" in js
-    assert js.find("button.click()") < js.find("node.remove()")
+    assert "display: none" in js and "pointer-events: none" in js
+    assert ".remove()" not in js, "удаление чужих узлов роняет приложение"
+
+
+def test_a_crashed_calculator_is_reloaded_not_stared_at():
+    """Экран ошибки калькулятора несёт свою кнопку перезагрузки — жмём её и
+    даём приложению собраться, вместо того чтобы искать поля на экране,
+    где их нет по определению."""
+    import inspect
+    source = inspect.getsource(core._glavapu_drive_page)
+    assert "def recover_if_crashed()" in source
+    assert "Перезагрузить страницу" in source
+    # Проверка идёт до шагов: искать поля на экране ошибки бессмысленно.
+    assert source.find("recover_if_crashed()\n") < source.find("open_parcel_dialog()\n")
 
 
 def test_the_failure_names_the_culprit(monkeypatch):
