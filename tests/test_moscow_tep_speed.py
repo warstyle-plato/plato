@@ -159,3 +159,80 @@ def test_the_status_shows_whether_the_cache_works():
     from fastapi.testclient import TestClient
     status = TestClient(core.app).get("/telegram/status").json()["glavapu_headless"]
     assert "cache_hits" in status and "cache_size" in status
+
+
+# --- запасной путь платил столько же, сколько штатный ------------------------
+
+def test_the_formulas_do_not_ask_glavapu_twice(monkeypatch):
+    """Страница спрашивает территорию перед расчётом и держит её в руках, а
+    формулы шли за ней второй раз за тот же клик. Расчёт формул стоит 0,05 с —
+    всё остальное время в этом пути было сетью."""
+    asked = {"count": 0}
+
+    def counted(request):
+        asked["count"] += 1
+        return {"territory": {"area_ha": 0.651}, "recognized": _NUMBERS,
+                "coefficients": {"rent": 0.1281, "base_cost_zh_high": 229036.29},
+                "warnings": []}
+
+    monkeypatch.setattr(core, "analyze_cadastral_territory", counted)
+    monkeypatch.setattr(core, "_GLAVAPU_HEADLESS_ENABLED", False)
+    core.cadastral_tep_server(core.CadastralAnalysisRequest(
+        cadastral_numbers=", ".join(_NUMBERS),
+        cadastral_analysis={"recognized": _NUMBERS,
+                            "territory": {"area_ha": 0.651},
+                            "coefficients": {"rent": 0.1281,
+                                             "base_cost_zh_high": 229036.29}}))
+    assert asked["count"] == 0, "готовая территория обязана приниматься и формулами"
+
+
+def test_the_formulas_are_remembered_too(monkeypatch):
+    """Пока штатный калькулятор недоступен, повторный расчёт того же участка
+    не должен снова ходить в сеть: помнится и запасной ответ."""
+    runs = {"count": 0}
+    original = core.vri_tep_quick
+
+    def counted(region, query, **kwargs):
+        runs["count"] += 1
+        return original(region, query, **kwargs)
+
+    monkeypatch.setattr(core, "analyze_cadastral_territory", lambda request: {
+        "territory": {"area_ha": 0.651}, "recognized": _NUMBERS,
+        "coefficients": {"rent": 0.1281, "base_cost_zh_high": 229036.29},
+        "warnings": []})
+    monkeypatch.setattr(core, "vri_tep_quick", counted)
+    monkeypatch.setattr(core, "_GLAVAPU_HEADLESS_ENABLED", False)
+    request = core.CadastralAnalysisRequest(cadastral_numbers=", ".join(_NUMBERS))
+    first = core.cadastral_tep_server(request)
+    second = core.cadastral_tep_server(request)
+    assert runs["count"] == 1
+    assert second["normalized"] == first["normalized"]
+
+
+def test_a_broken_analysis_does_not_break_the_fallback(monkeypatch):
+    """Территорию взять не удалось — формулы спрашивают сами, а не падают:
+    запасной путь обязан оставаться запасным."""
+    def boom(request):
+        raise TimeoutError("ГлавАПУ молчит")
+
+    monkeypatch.setattr(core, "analyze_cadastral_territory", boom)
+    monkeypatch.setattr(core, "_GLAVAPU_HEADLESS_ENABLED", False)
+    monkeypatch.setattr(core, "vri_tep_quick",
+                        lambda region, query, **kwargs: {"file": b"", "filename": "x.xlsx"})
+    monkeypatch.setattr(core, "parse_glavapu_xlsx",
+                        lambda data, filename: {"normalized": {}, "source": {}, "warnings": []})
+    result = core.cadastral_tep_server(core.CadastralAnalysisRequest(
+        cadastral_numbers=", ".join(_NUMBERS)))
+    assert result["source"]["format"].startswith("Формулы")
+
+
+def test_the_chain_is_timed_in_the_log():
+    """«Очень долго» — это диагноз только тогда, когда в журнале видно, какое
+    звено цепочки его берёт."""
+    import inspect
+    source = inspect.getsource(core.cadastral_tep_server)
+    assert "ядро ответило за" in source
+    assert "формулы за" in source
+    assert "готов за" in source
+    # В первой же строке видно, пришла ли территория и жив ли браузер.
+    assert "analysis=%s headless=%s" in source

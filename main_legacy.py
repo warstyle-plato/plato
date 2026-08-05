@@ -43,7 +43,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.33"
+VERSION = "0.17.34"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -3651,7 +3651,8 @@ def _manual_tep_filled_template(project_name: str, region_label: str,
 def vri_tep_quick(region: str, query: str,
                  site_area_ha: float | None = None,
                  district: str | None = None,
-                 density_sqm_per_ha: float | None = None) -> dict[str, Any]:
+                 density_sqm_per_ha: float | None = None,
+                 analysis: dict[str, Any] | None = None) -> dict[str, Any]:
     """Кнопка бота «Посчитать ВРИ и ТЭП»: карточка + файл формата ГлавАПУ.
 
     МО считается полностью (РНГП, УПКС, Кд); Москва — по формулам
@@ -3831,8 +3832,12 @@ def vri_tep_quick(region: str, query: str,
                     status_code=400,
                     detail="По этому адресу участок в ЕГРН не нашёлся. "
                            "Пришлите кадастровый номер или уточните адрес.")
-        analysis = analyze_cadastral_territory(CadastralAnalysisRequest(
-            cadastral_numbers=numbers))
+        # Территорию мог принести вызывающий: страница спрашивает её перед
+        # расчётом, и второй поход к ГлавАПУ за тот же клик — это лишние
+        # секунды на ровном месте. Именно они и складывались в «очень долго».
+        if not isinstance(analysis, dict) or not (analysis.get("coefficients") or {}):
+            analysis = analyze_cadastral_territory(CadastralAnalysisRequest(
+                cadastral_numbers=numbers))
         territory = analysis.get("territory") or {}
         coeff = analysis.get("coefficients") or {}
         area = float(territory.get("area_ha") or site_area_ha or 0)
@@ -5148,8 +5153,11 @@ def cadastral_tep_server(req: CadastralAnalysisRequest) -> dict[str, Any]:
     сходятся с контрольными выгрузками до единицы, поэтому серверный расчёт —
     равноценная замена, а не суррогат."""
     numbers = _parse_cadastral_numbers(req.cadastral_numbers)
-    logging.info("tep-server rid=%s numbers=%s", req.request_id or "-",
-                 ", ".join(numbers))
+    request_started = time.monotonic()
+    logging.info("tep-server rid=%s numbers=%s analysis=%s headless=%s",
+                 req.request_id or "-", ", ".join(numbers),
+                 "прислана" if req.cadastral_analysis else "нет",
+                 "готов" if _glavapu_headless_available() else "недоступен")
 
     # Расчёт уходит на ядро — тем же путём, что и анализ территории. Браузер
     # для штатного калькулятора живёт там: на ядре свой образ, четыре гигабайта
@@ -5157,11 +5165,14 @@ def cadastral_tep_server(req: CadastralAnalysisRequest) -> dict[str, Any]:
     # адрес пуст, и пересылать некуда — там считаем.
     if _core_api_url("/cadastral/tep-server"):
         try:
-            return _core_post(
+            forwarded = _core_post(
                 _core_api_url("/cadastral/tep-server"),
                 _core_forward_payload(req),
                 _MO_CALC_TIMEOUT_SECONDS,
             )
+            logging.info("tep-server rid=%s ядро ответило за %.1f с",
+                         req.request_id or "-", time.monotonic() - request_started)
+            return forwarded
         except Exception as exc:
             # Ядро не ответило — считаем здесь формулами, как раньше.
             logging.warning("tep-server core forward failed: %s", exc)
@@ -5206,7 +5217,22 @@ def cadastral_tep_server(req: CadastralAnalysisRequest) -> dict[str, Any]:
             logging.warning("glavapu headless failed, falling back for %ds: %s",
                             int(_GLAVAPU_HEADLESS_COOLDOWN_SECONDS), exc)
 
-    quick = vri_tep_quick("msk", ", ".join(numbers))
+    # Формулы тоже помнятся: пока штатный калькулятор недоступен, повторный
+    # расчёт того же участка не должен снова ходить к ГлавАПУ за территорией.
+    cached_formulas = _glavapu_tep_cached(numbers) if numbers else None
+    if cached_formulas is not None:
+        logging.info("tep-server rid=%s формулы из кэша", req.request_id or "-")
+        return cached_formulas
+
+    # Территория для формул: присланная страницей идёт без сети вовсе. Если её
+    # нет и спросить не у кого — не роняем расчёт, формулы спросят сами.
+    formulas_analysis = None
+    if numbers:
+        try:
+            formulas_analysis = _cadastral_analysis_for(numbers, req.cadastral_analysis)
+        except Exception as exc:
+            logging.info("tep-server: территорию для формул взять не удалось: %s", exc)
+    quick = vri_tep_quick("msk", ", ".join(numbers), analysis=formulas_analysis)
     result = parse_glavapu_xlsx(quick["file"], quick["filename"])
     result["source"].update({
         "format": "Формулы калькулятора ГлавАПУ — серверный расчёт DevelopAid",
@@ -5229,6 +5255,10 @@ def cadastral_tep_server(req: CadastralAnalysisRequest) -> dict[str, Any]:
             "(" + "; ".join(_GLAVAPU_FORMULA_DRIFT["items"][:4]) + "). "
             "Методика ГлавАПУ могла измениться — сверьте расчёт на сайте.",
         )
+    if numbers:
+        _glavapu_tep_store(numbers, result)
+    logging.info("tep-server rid=%s формулы за %.1f с", req.request_id or "-",
+                 time.monotonic() - request_started)
     return result
 
 
