@@ -343,3 +343,60 @@ def test_a_silent_core_still_answers_from_here(monkeypatch):
     core.cadastral_tep_server(
         core.CadastralAnalysisRequest(cadastral_numbers=", ".join(_NUMBERS)))
     assert calls.get("local") is True
+
+
+# --- чужая страница живёт своей жизнью ---------------------------------------
+
+def test_the_onboarding_tour_is_dismissed_before_every_click():
+    """Обучающий тур genplan.tech (react-joyride) висит поверх интерфейса с
+    затемнением и перехватывает клики: Playwright повторил попытку 168 раз и
+    ушёл в таймаут. В браузере человека тур закрыт однажды и больше не
+    появляется, свежий Chromium на сервере видит его каждый раз."""
+    import inspect
+    source = inspect.getsource(core._glavapu_drive_page)
+    assert source.count("dismiss_tour()") >= 4, (
+        "тур показывается по шагам — снимать его надо перед каждым кликом")
+    # Порядок обязателен: сначала снять оверлей, потом кликать.
+    first_click = source.find('name="Участок"')
+    assert 0 < source.find("dismiss_tour()") < first_click
+
+
+def test_the_tour_is_closed_properly_before_being_torn_out():
+    """Кнопка пропуска пишет в хранилище, что тур пройден, и он не вернётся.
+    Удаление узлов — запасной путь: React может отрисовать оверлей заново."""
+    js = core._GLAVAPU_DISMISS_TOUR_JS
+    assert 'data-action="skip"' in js and "button.click()" in js
+    assert "#react-joyride-portal" in js
+    assert js.find("button.click()") < js.find("node.remove()")
+
+
+def test_the_failure_names_the_culprit(monkeypatch):
+    """Причина срыва обязана быть в статусе, а не только в логах контейнера:
+    «<div id=react-joyride-portal> intercepts pointer events» — это готовый
+    диагноз, за которым не надо идти на сервер."""
+    def boom(numbers, area_ha):
+        raise TimeoutError(
+            '<div id="react-joyride-portal">…</div> subtree intercepts pointer events\n'
+            "  - retrying click action\n  - waiting 500ms")
+
+    monkeypatch.setattr(core, "_GLAVAPU_HEADLESS_ENABLED", True)
+    monkeypatch.setattr(core, "_glavapu_headless_rows", boom)
+    monkeypatch.setattr(core, "analyze_cadastral_territory", lambda req: {
+        "territory": {"area_ha": 0.1963}, "recognized": _NUMBERS,
+        "coefficients": {"rent": 0.1281}, "warnings": []})
+    monkeypatch.setattr(core, "vri_tep_quick",
+                        lambda region, query, **kwargs: {"file": b"", "filename": "x.xlsx"})
+    monkeypatch.setattr(core, "parse_glavapu_xlsx",
+                        lambda data, filename: {"normalized": {}, "source": {}, "warnings": []})
+    core.cadastral_tep_server(core.CadastralAnalysisRequest(
+        cadastral_numbers=", ".join(_NUMBERS)))
+    assert "react-joyride-portal" in core._GLAVAPU_HEADLESS["last_error"]
+
+
+def test_the_warm_up_also_kills_the_tour():
+    """Прогрев открывает страницу заранее — пусть заодно закроет тур: тогда
+    первый настоящий расчёт не тратит на него ни попытки."""
+    import inspect
+    source = inspect.getsource(core._glavapu_drive_page)
+    warm = source[source.find("if not numbers:"):]
+    assert "dismiss_tour()" in warm.split("return")[0]

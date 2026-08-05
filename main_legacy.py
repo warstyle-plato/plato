@@ -43,7 +43,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.37"
+VERSION = "0.17.38"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -4785,6 +4785,35 @@ _GLAVAPU_BLOCKED_HOSTS = ("mc.yandex.", "metrika", "google-analytics.com",
                           "googletagmanager.com", "top-fwz1.mail.ru",
                           "doubleclick.net", "vk.com/rtrg")
 
+# Обучающий тур genplan.tech (react-joyride) висит поверх интерфейса с
+# затемнением и перехватывает клики: Playwright честно повторял попытку 168 раз
+# и уходил в таймаут. В браузере человека тур закрыт однажды и больше не
+# появляется, а свежий Chromium на сервере видит его каждый раз.
+#
+# Сначала пробуем закрыть штатно — кнопкой пропуска: она пишет в хранилище, что
+# тур пройден, и он не возвращается. Если кнопки нет, снимаем оверлей из DOM.
+_GLAVAPU_DISMISS_TOUR_JS = """() => {
+  let closed = 0;
+  const buttons = document.querySelectorAll(
+    '[data-action="skip"], [data-action="close"], [aria-label="Close"],'
+    + ' .react-joyride__tooltip button');
+  for (const button of buttons) {
+    const label = String(button.textContent || '').trim().toLowerCase();
+    const action = String(button.getAttribute('data-action') || '');
+    if (action === 'skip' || action === 'close'
+        || /пропустить|закрыть|skip|close|понятно/.test(label)) {
+      button.click();
+      closed += 1;
+      break;
+    }
+  }
+  let removed = 0;
+  document.querySelectorAll(
+    '#react-joyride-portal, .react-joyride__overlay, .react-joyride__spotlight'
+  ).forEach(node => { node.remove(); removed += 1; });
+  return {closed, removed};
+}"""
+
 _GLAVAPU_READ_ROWS_JS = """() => {
   const table = document.querySelector('table[aria-label="calc table"]');
   if (!table) return [];
@@ -4830,6 +4859,15 @@ def _glavapu_drive_page(page: Any, numbers: list[str], area_ha: float,
         timings[name] = int((now - step) * 1000)
         step = now
 
+    def dismiss_tour() -> None:
+        """Снимает обучающий тур, если он перехватывает клики."""
+        try:
+            result = page.evaluate(_GLAVAPU_DISMISS_TOUR_JS) or {}
+        except Exception:
+            return
+        if result.get("closed") or result.get("removed"):
+            timings["tour"] = timings.get("tour", 0) + 1
+
     try:
         if "genplan.tech" in str(page.url or ""):
             page.evaluate("() => { try { localStorage.clear(); sessionStorage.clear(); }"
@@ -4841,10 +4879,16 @@ def _glavapu_drive_page(page: Any, numbers: list[str], area_ha: float,
     page.goto(url, wait_until="domcontentloaded")
     mark("load")
     if not numbers:
-        return []  # прогрев: страница загружена, ассеты в кэше браузера
+        dismiss_tour()  # прогрев заодно гасит тур: он пишется в хранилище
+        return []  # страница загружена, ассеты в кэше браузера
+    # Тур показывается по шагам и всплывает на каждом новом экране, поэтому
+    # снимается перед каждым кликом, а не однажды.
+    dismiss_tour()
     page.get_by_role("button", name="Участок").click()
+    dismiss_tour()
     page.fill("#id-cad-numbers-text-field", ", ".join(numbers))
     page.get_by_role("button", name="Отправить").click()
+    dismiss_tour()
     page.get_by_role("button", name="Перейти к расчётам").click()
     mark("parcel")
     deadline = time.monotonic() + _GLAVAPU_HEADLESS_TIMEOUT_MS / 1000.0
@@ -5241,8 +5285,13 @@ def cadastral_tep_server(req: CadastralAnalysisRequest) -> dict[str, Any]:
             return imported
         except Exception as exc:
             _GLAVAPU_HEADLESS["fallbacks"] += 1
+            # Первая строка сообщения Playwright называет виновника прямо:
+            # «<div id="react-joyride-portal"> intercepts pointer events» —
+            # без неё причина срыва читалась только из логов контейнера.
+            _reason = str(exc).strip().splitlines()
             _GLAVAPU_HEADLESS["last_error"] = (
-                f"{datetime.now().isoformat(timespec='seconds')}: {_error_location(exc)}")
+                f"{datetime.now().isoformat(timespec='seconds')}: {_error_location(exc)}"
+                + (f" — {_reason[0][:200]}" if _reason else ""))
             _glavapu_headless_failed()
             logging.warning("glavapu headless failed, falling back for %ds: %s",
                             int(_GLAVAPU_HEADLESS_COOLDOWN_SECONDS), exc)
