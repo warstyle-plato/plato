@@ -22764,7 +22764,7 @@ function renderVri(vri){
  tab.style.display=enabled?'':'none';
  if(empty)empty.style.display=enabled?'none':'';
  if(!enabled)return;
- document.getElementById('vriTabTotals').innerHTML=vriTotalsRows(t);
+ document.getElementById('vriTabTotals').innerHTML=vriTotalsRows(t,(lastResult||{}).summary);
  document.getElementById('vriTabSchedule').innerHTML=vriScheduleRows(vri.rows);
  const tabWarn=document.getElementById('vriTabWarnings');
  tabWarn.style.display=list.length?'':'none';
