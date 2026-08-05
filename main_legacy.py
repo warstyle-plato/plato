@@ -43,7 +43,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.43"
+VERSION = "0.17.44"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -20224,6 +20224,14 @@ tfoot th{border-top:2px solid #111;color:#111;background:#fff}
 .chart svg{width:100%;height:100%}.legend{display:flex;gap:18px;font-size:11px;color:#666;margin-top:8px}.legend i{display:inline-block;width:18px;height:3px;background:#111;vertical-align:middle;margin-right:5px}.legend i.gray{background:#999}
 .monthly th{position:sticky;top:0;z-index:2}.monthly td{white-space:nowrap}.monthly .money{font-variant-numeric:tabular-nums}
 .toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:13px}
+/* Оглавление отчёта: он длинный, и до календаря доезжали прокруткой. */
+.report-toc{position:sticky;top:0;z-index:5;background:#fff;border-bottom:1px solid var(--line);
+  padding:10px 0;margin-bottom:16px;display:flex;gap:6px;overflow-x:auto;white-space:nowrap}
+.report-toc a{font-size:12px;font-weight:650;color:#555;text-decoration:none;padding:6px 11px;border:1px solid var(--line)}
+.report-toc a:hover{color:#111;border-color:#111}
+.report-section{scroll-margin-top:56px;margin-bottom:6px}
+.report-section-title{font-size:11px;text-transform:uppercase;letter-spacing:.14em;color:#111;
+  font-weight:750;margin:22px 0 12px;padding-bottom:7px;border-bottom:2px solid #111}
 .import-card{border-top:8px solid #000}
 .expense-bars{display:grid;gap:11px;margin-top:8px}
 .expense-row{display:grid;grid-template-columns:minmax(180px,1.25fr) minmax(220px,3fr) 70px 120px;gap:10px;align-items:center;font-size:12px}
@@ -20850,37 +20858,14 @@ details.cadastral-box>summary::marker{color:#888}
         <div class="kpis report-kpis" id="reportKpi"></div>
       </div>
 
-      <div id="phaseReportControls" class="phase-report-nav no-print" style="display:none"></div>
+      <div class="report-toc no-print" id="reportToc"></div>
 
-      <div id="phaseComparisonCard" class="card phase-comparison-card">
-        <div class="section-title">Сравнение очередей</div>
-        <div class="scroll" style="max-height:none"><table class="metric-table">
-          <thead id="phaseComparisonHead"></thead>
-          <tbody id="phaseComparisonBody"></tbody>
-        </table></div>
-        <div class="note">Аналитическая прибыль после аллокации перераспределяет общепроектные расходы только для сравнения очередей. Сводный CF не меняется.</div>
-      </div>
-
-      <div class="report-3col">
-        <div class="card">
-          <div class="section-title">Экономика проекта</div>
-          <table class="metric-table metric-compact" id="economicsTable"></table>
-        </div>
-        <div class="card">
-          <div class="section-title">Ключевые параметры</div>
-          <table class="metric-table metric-compact" id="projectParamsTable"></table>
-        </div>
-        <div class="card">
-          <div class="section-title">Финансирование</div>
-          <table class="metric-table metric-compact" id="reportFinanceTable"></table>
-        </div>
-      </div>
-
+      <div class="report-section" id="rsSite">
+        <div class="report-section-title">Участок и продукт</div>
       <div class="card">
-        <div class="section-title">Налоговая база по реализованным продуктам</div>
-        <table class="metric-table metric-compact" id="reportTaxTable"></table>
+        <div class="section-title">ТЭП</div>
+        <div class="scroll" style="max-height:none"><table id="reportTep"></table></div>
       </div>
-
       <div class="card" id="vriCard" style="display:none">
         <div class="report-title">
           <div>
@@ -20900,7 +20885,53 @@ details.cadastral-box>summary::marker{color:#888}
         </div>
         <div id="vriWarnings" class="note" style="display:none"></div>
       </div>
+      <div class="card">
+        <div class="section-title">Социальная нагрузка</div>
+        <table class="metric-table metric-compact" id="socialTable"></table>
+      </div>
+      </div>
 
+      <div class="report-section" id="rsSummary">
+        <div class="report-section-title">Итог</div>
+      <div class="report-2col">
+        <div class="card">
+          <div class="section-title">Экономика проекта</div>
+          <table class="metric-table metric-compact" id="economicsTable"></table>
+        </div>
+        <div class="card">
+          <div class="section-title">Ключевые параметры</div>
+          <table class="metric-table metric-compact" id="projectParamsTable"></table>
+        </div>
+      </div>
+      <div class="card">
+        <div class="section-title">Удельная экономика</div>
+        <div style="font-size:11px;color:#777;margin:-5px 0 10px">
+          Все значения приведены одновременно на 1 м² ГНС и на 1 м² продаваемой площади.
+        </div>
+        <div class="scroll" style="max-height:none">
+          <table class="unit-table">
+            <thead><tr><th>Показатель</th><th>Всего</th><th>тыс. ₽ / м² ГНС</th><th>тыс. ₽ / м² продаваемой</th></tr></thead>
+            <tbody id="unitEconomicsTable"></tbody>
+          </table>
+        </div>
+      </div>
+      </div>
+
+      <div class="report-section" id="rsPhases">
+        <div class="report-section-title">Очереди проекта</div>
+      <div id="phaseReportControls" class="phase-report-nav no-print" style="display:none"></div>
+      <div id="phaseComparisonCard" class="card phase-comparison-card">
+        <div class="section-title">Сравнение очередей</div>
+        <div class="scroll" style="max-height:none"><table class="metric-table">
+          <thead id="phaseComparisonHead"></thead>
+          <tbody id="phaseComparisonBody"></tbody>
+        </table></div>
+        <div class="note">Аналитическая прибыль после аллокации перераспределяет общепроектные расходы только для сравнения очередей. Сводный CF не меняется.</div>
+      </div>
+      </div>
+
+      <div class="report-section" id="rsExpenses">
+        <div class="report-section-title">Расходы</div>
       <div class="card">
         <div class="report-title">
           <div>
@@ -20920,36 +20951,20 @@ details.cadastral-box>summary::marker{color:#888}
           </div>
         </div>
       </div>
-
       <div class="card">
-        <div class="section-title">Удельная экономика</div>
-        <div style="font-size:11px;color:#777;margin:-5px 0 10px">
-          Все значения приведены одновременно на 1 м² ГНС и на 1 м² продаваемой площади.
-        </div>
-        <div class="scroll" style="max-height:none">
-          <table class="unit-table">
-            <thead><tr><th>Показатель</th><th>Всего</th><th>тыс. ₽ / м² ГНС</th><th>тыс. ₽ / м² продаваемой</th></tr></thead>
-            <tbody id="unitEconomicsTable"></tbody>
-          </table>
-        </div>
+        <div class="section-title">Структура затрат по статьям</div>
+        <table><thead><tr><th>Статья</th><th>Сумма</th><th>тыс ₽/м² ГНС</th><th>тыс ₽/м² прод.</th></tr></thead>
+        <tbody id="capexTable"></tbody></table>
+      </div>
       </div>
 
-      <div class="report-2col">
-        <div class="card">
-          <div class="section-title">Структура выручки</div>
-          <table id="revenueTable"></table>
-        </div>
-        <div class="card">
-          <div class="section-title">Структура затрат</div>
-          <table id="capexTable"></table>
-        </div>
-      </div>
-
+      <div class="report-section" id="rsIncome">
+        <div class="report-section-title">Доходы</div>
       <div class="card">
-        <div class="section-title">ТЭП</div>
-        <div class="scroll" style="max-height:none"><table id="reportTep"></table></div>
+        <div class="section-title">Структура выручки</div>
+        <table><thead><tr><th>Продукт</th><th>Выручка</th><th>тыс ₽/м² ГНС</th><th>тыс ₽/м² прод.</th></tr></thead>
+        <tbody id="revenueTable"></tbody></table>
       </div>
-
       <div class="card">
         <div class="section-title">Темпы и цены продаж</div>
         <div class="scroll" style="max-height:none">
@@ -20962,21 +20977,44 @@ details.cadastral-box>summary::marker{color:#888}
              живут в них, а таблица выше говорит только метрами. -->
         <table class="metric-table metric-compact" id="apartmentPaceTable"></table>
       </div>
+      <div class="card">
+        <div class="section-title">Налоговая база по реализованным продуктам</div>
+        <table class="metric-table metric-compact" id="reportTaxTable"></table>
+      </div>
+      </div>
 
+      <div class="report-section" id="rsFinance">
+        <div class="report-section-title">Финансирование</div>
       <div class="report-2col">
         <div class="card">
-          <div class="section-title">Социальная нагрузка</div>
-          <table class="metric-table metric-compact" id="socialTable"></table>
-          <div class="bridge-purpose-block">
-            <div class="section-title">Структура расчётного БРИДЖа</div>
-            <table class="metric-table metric-compact bridge-purpose-table" id="bridgePurposeTable"></table>
-            <div class="bridge-purpose-note">Смена ВРИ / земельные права, проценты и комиссии в расчётный лимит БРИДЖа не входят.</div>
-          </div>
+          <div class="section-title">Финансирование</div>
+          <table class="metric-table metric-compact" id="reportFinanceTable"></table>
         </div>
         <div class="card">
           <div class="section-title">Ставки и долговая нагрузка</div>
           <table class="metric-table metric-compact" id="ratesDebtTable"></table>
         </div>
+      </div>
+      <div class="card">
+        <div class="section-title">Структура расчётного БРИДЖа</div>
+        <table class="metric-table metric-compact bridge-purpose-table" id="bridgePurposeTable"></table>
+        <div class="bridge-purpose-note">Смена ВРИ / земельные права, проценты и комиссии в расчётный лимит БРИДЖа не входят.</div>
+      </div>
+      </div>
+
+      <div class="report-section" id="rsSensitivity">
+        <div class="report-section-title">Чувствительность</div>
+      <div class="card">
+        <div id="reportSensitivity"></div>
+      </div>
+      </div>
+
+      <div class="report-section" id="rsCalendar">
+        <div class="report-section-title">Календарный план</div>
+      <div class="card">
+        <div class="dates" id="reportCalendarDates"></div>
+        <div id="reportCalendarGantt" class="gantt"></div>
+      </div>
       </div>
 
       <div class="note warning">LLCR, NPV и IRR в веб-модели являются расчётными показателями текущего движка. До полного отказа от Excel кредитный CF и доходность должны быть окончательно сверены помесячно с эталонной моделью.</div>
@@ -22655,7 +22693,17 @@ function renderInputs(){
  rateScenario.value=inputs.rate_scenario||'base';
 }
 
-function vriTotalsRows(t){
+function vriTotalsRows(t,summary){
+ // Плата за ВРИ на метр — то, чем участки сравнивают между собой: сама сумма
+ // ни о чём не говорит без площади, которую на ней построят.
+ const perMetre=(()=>{
+  const s=summary||{};
+  const gns=Number(s.project_gns_sqm||0),saleable=Number(s.monetizable_saleable_sqm||0);
+  const value=Number(t.amount||0);
+  if(!(value>0)||!(gns>0))return '';
+  const per=(area)=>area>0?num2(value/area/1000)+' тыс ₽/м²':'—';
+  return row('Плата на метр',per(gns)+' ГНС · '+per(saleable)+' прод.');
+ })();
  return ((Number(t.relief||0)>0)?row('Обязательство до льготы',money(t.gross))+row('Льгота',money(t.relief)):'')+
    row('Сумма обязательства',money(t.amount))+
    row('Основной долг',money(t.principal))+
@@ -22666,7 +22714,7 @@ function vriTotalsRows(t){
    row('Профинансировано БРИДЖем',money(t.bridge))+
    row('Профинансировано ПФ',money(t.pf))+
    row('Профинансировано капиталом',money(t.equity))+
-   row('Денежный поток по ВРИ, всего',money(t.cash));
+   row('Денежный поток по ВРИ, всего',money(t.cash))+perMetre;
 }
 
 function vriScheduleRows(rows){
@@ -22701,7 +22749,7 @@ function renderVri(vri){
      const basis=(vri.settings&&vri.settings.obligation_basis)||'';
      document.getElementById('vriMode').textContent=
        (REGION[vri.region]||vri.region||'')+' · '+(MODE[vri.payment_mode]||vri.payment_mode||'')+(basis?' · '+basis:'');
-     document.getElementById('vriTotalsTable').innerHTML=vriTotalsRows(t);
+     document.getElementById('vriTotalsTable').innerHTML=vriTotalsRows(t,(lastResult||{}).summary);
      document.getElementById('vriScheduleTable').innerHTML=vriScheduleRows(vri.rows);
      const warn=document.getElementById('vriWarnings');
      warn.style.display=list.length?'':'none';
@@ -23450,6 +23498,7 @@ function renderResult(){
     row(`СОШ — ${num(program.school_places||0)} мест`,money(Number(construction.school_mln||0)*1e6))+
     row(`Поликлиника — ${num(program.clinic_capacity||0)} пос./смену`,money(Number(construction.clinic_mln||0)*1e6))+
     `<tr><th>Стоимость строительства / всего</th><th>${socialMoney(r.summary.social_payment)}</th></tr>`+
+    socialPerMetre(r)+
     `<tr><td colspan="2" style="color:#777;font-size:11px">Справочно: компенсация по ГлавАПУ — ${money((Number(compensation.kindergarten_mln||0)+Number(compensation.school_mln||0)+Number(compensation.clinic_mln||0))*1e6)}</td></tr>`;
  }else{
    socialTable.innerHTML=
@@ -23457,7 +23506,8 @@ function renderResult(){
     row('ДОО — компенсация',money(Number(compensation.kindergarten_mln||0)*1e6))+
     row('СОШ — компенсация',money(Number(compensation.school_mln||0)*1e6))+
     row('Поликлиника — компенсация',money(Number(compensation.clinic_mln||0)*1e6))+
-    `<tr><th>Компенсация / всего</th><th>${socialMoney(r.summary.social_payment)}</th></tr>`;
+    `<tr><th>Компенсация / всего</th><th>${socialMoney(r.summary.social_payment)}</th></tr>`+
+    socialPerMetre(r);
  }
 
  const bridgeTotal=Number(r.report.financing.calculated_bridge||0);
@@ -23572,10 +23622,38 @@ function renderResult(){
  renderGantt('calendarGantt',r.report.calendar);
  calendarRange.textContent=dateRu(r.report.calendar.start)+' — '+dateRu(r.report.calendar.end);
 
+ // Календарь и чувствительность жили только на своих вкладках и в PDF: человек
+ // смотрел отчёт на экране, печатал его и видел два незнакомых раздела. Отчёт
+ // обязан быть тем же документом, что уходит в печать.
+ {
+  const dates=document.getElementById('reportCalendarDates');
+  if(dates)dates.innerHTML=[
+   ['Начало',r.dates.project_start],['РнС',r.dates.permit],
+   ['Старт продаж',r.dates.sales_start],['РВЭ',r.dates.rve]
+  ].map(x=>`<div class="datebox">${x[0]}<b>${dateRu(x[1])}</b></div>`).join('');
+  renderGantt('reportCalendarGantt',r.report.calendar);
+  renderReportSensitivity();
+  renderReportToc();
+ }
+
  const revNames={apartments:'Квартиры',ground_commercial:'Коммерция 1 этажа',underground_parking:'Подземный паркинг',storage:'Кладовки',offices:'Офисы',standalone_retail:'Коммерция ОСЗ',above_parking:'Наземный паркинг'};
- revenueTable.innerHTML=Object.entries(r.revenue).filter(([key])=>key!=='total').map(([key,v])=>row(revNames[key]||key,money(v))).join('')+`<tr><th>Итого</th><th>${money(r.revenue.total)}</th></tr>`;
+ {
+  // Рубль на метр в обеих базах: сумма сама по себе не сравнивается ни с
+  // рынком, ни с себестоимостью.
+  const rGns=Number(r.summary.project_gns_sqm||0),rSaleable=Number(r.summary.monetizable_saleable_sqm||0);
+  const perTh=(v,area)=>area>0?num2(Number(v||0)/area/1000):'—';
+  revenueTable.innerHTML=Object.entries(r.revenue).filter(([key])=>key!=='total')
+   .map(([key,v])=>`<tr><td>${revNames[key]||key}</td><td>${money(v)}</td><td>${perTh(v,rGns)}</td><td>${perTh(v,rSaleable)}</td></tr>`).join('')
+   +`<tr><th>Итого</th><th>${money(r.revenue.total)}</th><th>${perTh(r.revenue.total,rGns)}</th><th>${perTh(r.revenue.total,rSaleable)}</th></tr>`;
+ }
  const capNames={land_rights:'Земля / смена ВРИ',vri_security:'Обеспечение обязательства по ВРИ',vri_interest:'Проценты по рассрочке ВРИ',ird:'ИРД',design_p:'Проект П',design_rd:'Проект РД',author_supervision:'Авторский надзор',technical_supervision:'Технический заказчик / стройконтроль',project_management:'Управление проектом',preparation:'Подготовительные работы',main_above:'Основное строительство — наземная часть',main_under:'Основное строительство — подземная часть',utilities:'Наружные сети',landscaping:'Благоустройство',commissioning:'Сдача и ввод',site_maintenance:'Содержание стройплощадки',social:'Социальный платеж / соцобъекты',offices:'Офисы',standalone_retail:'Коммерция ОСЗ',above_parking:'Наземный паркинг',gc_fee:'Генподрядчик',reserve:'Резерв'};
- capexTable.innerHTML=Object.entries(r.capex).filter(([key])=>key!=='total').map(([key,v])=>row(capNames[key]||key,money(v))).join('')+`<tr><th>Итого</th><th>${money(r.capex.total)}</th></tr>`;
+ {
+  const cGns=Number(r.summary.project_gns_sqm||0),cSaleable=Number(r.summary.monetizable_saleable_sqm||0);
+  const perTh=(v,area)=>area>0?num2(Number(v||0)/area/1000):'—';
+  capexTable.innerHTML=Object.entries(r.capex).filter(([key])=>key!=='total')
+   .map(([key,v])=>`<tr><td>${capNames[key]||key}</td><td>${money(v)}</td><td>${perTh(v,cGns)}</td><td>${perTh(v,cSaleable)}</td></tr>`).join('')
+   +`<tr><th>Итого</th><th>${money(r.capex.total)}</th><th>${perTh(r.capex.total,cGns)}</th><th>${perTh(r.capex.total,cSaleable)}</th></tr>`;
+ }
  reportTep.innerHTML=
   `<thead><tr><th>Продукт</th><th>ГНС, м²</th><th>Продаваемая площадь, м²</th><th>Количество, шт.</th></tr></thead>`+
   `<tbody>`+
@@ -23583,6 +23661,52 @@ function renderResult(){
   `</tbody><tfoot><tr><th>Итого</th><th>${num(r.tep.total.gns)}</th><th>${num(r.tep.total.saleable)}</th><th>${num(r.tep.total.units)}</th></tr></tfoot>`;
 }
 
+
+const REPORT_SECTIONS=[
+ ['rsSite','Участок'],['rsSummary','Итог'],['rsPhases','Очереди'],
+ ['rsExpenses','Расходы'],['rsIncome','Доходы'],['rsFinance','Финансирование'],
+ ['rsSensitivity','Чувствительность'],['rsCalendar','Календарь'],
+];
+
+function socialPerMetre(r){
+ // Социальная нагрузка на метр читается как цена входа в проект и сравнивается
+ // между площадками; в миллиардах такое сравнение не делают.
+ const gns=Number(r.summary.project_gns_sqm||0),saleable=Number(r.summary.monetizable_saleable_sqm||0);
+ const value=Number(r.summary.social_payment||0);
+ if(!(value>0)||!(gns>0))return '';
+ const per=(area)=>area>0?num2(value/area/1000)+' тыс ₽/м²':'—';
+ return row('Нагрузка на метр',per(gns)+' ГНС · '+per(saleable)+' прод.');
+}
+
+function renderReportSensitivity(){
+ const box=document.getElementById('reportSensitivity');
+ if(!box)return;
+ if(!sensitivityReport||!(sensitivityReport.items||[]).length){
+  box.innerHTML='<div class="section-title">Чувствительность</div>'
+   +'<div style="font-size:12px;color:#777;margin-bottom:10px">Не рассчитана. '
+   +'В PDF она досчитывается сама, поэтому печатный отчёт будет полнее экранного.</div>'
+   +'<button class="btn no-print" onclick="openTab(\'sensitivity\',null);renderSensitivityForm()">Открыть расчёт чувствительности</button>';
+  return;
+ }
+ const base=sensitivityReport.base;
+ box.innerHTML='<div class="section-title">Чувствительность · '+escapeHtml(base.label)+'</div>'
+  +'<div style="font-size:12px;color:#777;margin-bottom:10px">'+escapeHtml(base.scope_label||'')+' · база '
+  +sensFormat(base.value,base.digits)+' '+escapeHtml(base.unit||'')+'</div>'
+  +'<div id="reportTornado"></div>'
+  +(sensitivityReport.verdict||[]).map(line=>`<div class="note">${escapeHtml(String(line))}</div>`).join('');
+ renderTornado(sensitivityReport,'reportTornado');
+}
+
+function renderReportToc(){
+ // Ссылка, ведущая в пустоту, хуже её отсутствия: очередей у одноочередного
+ // проекта нет, чувствительности — пока её не посчитали.
+ const toc=document.getElementById('reportToc');
+ if(!toc)return;
+ toc.innerHTML=REPORT_SECTIONS.filter(([id])=>{
+  const node=document.getElementById(id);
+  return node&&node.offsetParent!==null&&node.getBoundingClientRect().height>0;
+ }).map(([id,label])=>`<a href="#${id}" onclick="event.preventDefault();document.getElementById('${id}').scrollIntoView({behavior:'smooth',block:'start'})">${label}</a>`).join('');
+}
 
 function renderGantt(targetId,calendar){
  const target=document.getElementById(targetId);if(!target||!calendar){return}
@@ -23811,8 +23935,11 @@ function renderSensitivityReport(report){
 
 // Диаграмма своя, на SVG: тащить графическую библиотеку ради одного графика
 // незачем, а печать и PDF со сторонним холстом работают хуже.
-function renderTornado(report){
- const box=document.getElementById('sensitivityChart');
+function renderTornado(report,targetId){
+ // Торнадо рисуется и на вкладке чувствительности, и в отчёте: одна картинка
+ // на две поверхности, чтобы экран и печать показывали одно.
+ const box=document.getElementById(targetId||'sensitivityChart');
+ if(!box)return;
  const items=report.items.slice(0,14);
  if(!items.length){box.innerHTML='';return}
  const base=report.base.value, digits=report.base.digits;
