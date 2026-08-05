@@ -43,7 +43,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.45"
+VERSION = "0.17.46"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -19208,6 +19208,10 @@ _PLATO_PROXY_POLL_SECONDS = max(0.2, _env_float("PLATO_AI_POLL_SECONDS", 2.0))
 _PLATO_PROXY_POLL_TIMEOUT = max(5.0, _env_float("PLATO_AI_POLL_TIMEOUT_SECONDS", 30.0))
 # Сколько ждёт тот, кому соединение держать не перед кем — бот в своём потоке.
 _PLATO_AGENT_WAIT_SECONDS = max(60.0, _env_float("PLATO_AGENT_WAIT_SECONDS", 900.0))
+# Сколько всего отпущено разговору с моделью. Восемь раундов, каждый со своим
+# сроком в четыре минуты, дают полчаса — столько не ждёт никто, и ответа за
+# этим всё равно нет. Кончился бюджет — собираем ответ из посчитанного.
+_PLATO_AGENT_BUDGET_SECONDS = max(60.0, _env_float("PLATO_AGENT_BUDGET_SECONDS", 420.0))
 _PLATO_KEEPALIVE: dict[str, Any] = {"enabled": False, "last_ok": "", "last_error": ""}
 _PLATON_LOG = logging.getLogger("developaid.platon")
 
@@ -19305,8 +19309,17 @@ def _plato_proxy_await(ticket: str, headers: dict[str, str], deadline: float) ->
             detail="Сервис модели принял работу, но адрес выдачи ответа собрать не удалось.")
     poll_headers = {key: value for key, value in headers.items() if key != "Content-Type"}
     broken = ""
+    started = time.monotonic()
+    announced = 0.0
     while time.monotonic() < deadline:
         time.sleep(_PLATO_PROXY_POLL_SECONDS)
+        waited = time.monotonic() - started
+        # Ожидание с секундомером: «сервис модели считает 70 с» — это работа,
+        # «жду ответ» без числа — это неизвестно что.
+        _plato_trace_stage("ai_wait", f"Сервис модели считает · {int(waited)} с")
+        if waited - announced >= 30:
+            announced = waited
+            _PLATON_LOG.info("Platon proxy waiting on ticket %s, %.0fs", ticket, waited)
         try:
             request = urllib.request.Request(url, headers=poll_headers, method="GET")
             with urllib.request.urlopen(request, timeout=_PLATO_PROXY_POLL_TIMEOUT) as response:
@@ -19382,6 +19395,13 @@ def _openai_proxy_request(payload: dict[str, Any]) -> dict[str, Any]:
         attempt_timeout = (min(_PLATO_WAKE_TIMEOUT_SECONDS, _PLATO_AI_TIMEOUT_SECONDS)
                            if attempt == 1 and _PLATO_PROXY_ATTEMPTS > 1
                            else _PLATO_AI_TIMEOUT_SECONDS)
+        # Номер попытки виден человеку. Вторая попытка означает ровно одно:
+        # сервис модели не ответил за окно пробуждения — и это первое, что надо
+        # знать при разборе «Платон завис», не заглядывая в лог.
+        _plato_trace_stage(
+            "ai_ask",
+            "Спрашиваю сервис модели"
+            + (f" (попытка {attempt} из {_PLATO_PROXY_ATTEMPTS})" if attempt > 1 else ""))
         try:
             with urllib.request.urlopen(request, timeout=attempt_timeout) as response:
                 raw = response.read()
@@ -19744,9 +19764,23 @@ def _call_openai_tool_agent(
     tool_cache: dict[str, dict[str, Any]] = {}
     final_ready_seen = False
     effort = _agent_reasoning_effort(model)
+    # Номер запуска — в поток: вызов модели лежит на три этажа ниже и стадию
+    # оттуда писать больше нечем.
+    _PLATO_TRACE_LOCAL.trace_id = trace_id
+    conversation_started = time.monotonic()
     for _round in range(_AGENT_MAX_TOOL_ROUNDS):
+        spent = time.monotonic() - conversation_started
+        if spent > _PLATO_AGENT_BUDGET_SECONDS:
+            # Восемь раундов по несколько минут — это полчаса, которых нет ни у
+            # кого. Дальше не спрашиваем, а собираем ответ из посчитанного:
+            # оборванный разговор человеку бесполезен, неполный — нет.
+            _PLATON_LOG.info("Platon [%s] budget spent after %d rounds (%.0fs), synthesising",
+                             trace_id, _round, spent)
+            _plato_trace_write(trace_id, "synthesis", "Собираю ответ из посчитанного")
+            break
         _plato_trace_write(trace_id, f"llm_{_round + 1}",
                            "Платон Сергеевич думает" + (f" · шаг {_round + 1}" if _round else ""))
+        round_started = time.monotonic()
         payload = {
             "model": model,
             "instructions": _AGENT_INSTRUCTIONS,
@@ -19762,6 +19796,10 @@ def _call_openai_tool_agent(
         if effort:
             payload["reasoning"] = {"effort": effort}
         response = _openai_responses_request(payload)
+        # Время раунда — то, чего не хватало при разборе «Платон завис»: по
+        # логу видно, ушли минуты в модель или в цепочку до неё.
+        _PLATON_LOG.info("Platon [%s] round %d took %.1fs",
+                         trace_id, _round + 1, time.monotonic() - round_started)
         output = response.get("output") or []
         input_items.extend(output)
 
@@ -19834,6 +19872,7 @@ def _call_openai_tool_agent(
         "max_output_tokens": 2600,
         "store": False,
     }
+    _plato_trace_write(trace_id, "synthesis", "Собираю окончательный ответ")
     try:
         final_response = _openai_responses_request(synthesis_payload)
         answer = _extract_openai_text(final_response)
@@ -19869,7 +19908,18 @@ def _call_openai_tool_agent(
                 "forced_synthesis": True,
             }
 
-    raise HTTPException(status_code=502, detail="Не удалось сформировать итоговый ответ по выполненным расчётам.")
+    # Сюда доходят, когда модель молчала весь разговор. Молча отдавать 502
+    # нельзя: человеку нужно знать, где ушло время — иначе «завис» неотличимо
+    # от «думает».
+    spent_total = time.monotonic() - conversation_started
+    raise HTTPException(
+        status_code=502,
+        detail=(
+            "Не удалось сформировать итоговый ответ по выполненным расчётам: "
+            f"модель молчала {int(spent_total)} с, инструментов выполнено "
+            f"{len(tools_used)}. Расчётная модель работает — повторите вопрос."
+        ),
+    )
 
 
 # --- Ускорение Платона -----------------------------------------------------
@@ -19887,6 +19937,7 @@ _PLATO_STAGE_DIR = Path(__file__).resolve().parent / "data" / "platon_state" / "
 _PLATO_TRACE_TTL = 3600
 _PLATO_ANSWER_TTL = 600
 _TRACE_ID_RE = re.compile(r"^[0-9a-f]{8,32}$")
+_PLATO_TRACE_LOCAL = threading.local()
 
 
 def _plato_stage_path(kind: str, key: str) -> Path:
@@ -19905,6 +19956,18 @@ def _plato_trace_write(trace_id: str, stage: str, label: str) -> None:
         )
     except OSError:
         pass  # стадия — удобство; ронять из-за неё ответ нельзя
+
+
+def _plato_trace_stage(stage: str, label: str) -> None:
+    """Стадия текущего запроса — оттуда, где номер запуска не передавали.
+
+    Вызов модели лежит на три этажа ниже разбора вопроса, и тащить номер
+    параметром через каждый — значит трогать всё, что зовёт OpenAI. Работа
+    каждого запроса и так идёт в своём потоке, поэтому номер живёт в потоке.
+    """
+    trace_id = getattr(_PLATO_TRACE_LOCAL, "trace_id", "") or ""
+    if trace_id:
+        _plato_trace_write(trace_id, stage, label)
 
 
 def _plato_stage_cleanup() -> None:
