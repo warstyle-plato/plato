@@ -43,7 +43,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.39"
+VERSION = "0.17.40"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -4814,6 +4814,29 @@ _GLAVAPU_DISMISS_TOUR_JS = """() => {
   return {closed, removed};
 }"""
 
+# Поле кадастровых номеров ищется по нескольким признакам. Один жёсткий
+# селектор на чужой странице — это обещание, что вёрстка genplan.tech никогда
+# не изменится; она изменилась, и `#id-cad-numbers-text-field` перестал
+# находиться, а расчёт девяносто секунд ждал элемент, которого нет.
+_GLAVAPU_NUMBER_FIELD_SELECTORS = (
+    "#id-cad-numbers-text-field",
+    "[id*='cad-numbers']",
+    "textarea[placeholder*='адастр']",
+    "input[placeholder*='адастр']",
+    "[aria-label*='адастр']",
+    ".MuiDialog-root textarea, .MuiDialog-root input[type='text']",
+)
+
+# Что вообще есть на странице в момент срыва: без этого следующая правка
+# селектора — это ещё один круг переписки со скриншотами.
+_GLAVAPU_VISIBLE_FIELDS_JS = """() => {
+  return Array.from(document.querySelectorAll('input, textarea'))
+    .filter(el => el.offsetParent !== null)
+    .slice(0, 12)
+    .map(el => [el.tagName.toLowerCase(), el.id || '-', el.getAttribute('placeholder') || '-']
+      .join(':'));
+}"""
+
 _GLAVAPU_READ_ROWS_JS = """() => {
   const table = document.querySelector('table[aria-label="calc table"]');
   if (!table) return [];
@@ -4859,6 +4882,25 @@ def _glavapu_drive_page(page: Any, numbers: list[str], area_ha: float,
         timings[name] = int((now - step) * 1000)
         step = now
 
+    def fill_numbers(text: str) -> None:
+        """Вводит кадастровые номера, чем бы ни было поле в текущей вёрстке."""
+        for selector in _GLAVAPU_NUMBER_FIELD_SELECTORS:
+            try:
+                field = page.locator(selector).first
+                field.wait_for(state="visible", timeout=5000)
+                field.fill(text)
+                timings["field"] = _GLAVAPU_NUMBER_FIELD_SELECTORS.index(selector)
+                return
+            except Exception:
+                continue
+        try:
+            fields = page.evaluate(_GLAVAPU_VISIBLE_FIELDS_JS) or []
+        except Exception:
+            fields = []
+        raise TimeoutError(
+            "поле кадастровых номеров не найдено; видимые поля страницы: "
+            + ("; ".join(str(x) for x in fields)[:300] or "их нет"))
+
     def dismiss_tour() -> None:
         """Снимает обучающий тур, если он перехватывает клики."""
         try:
@@ -4886,7 +4928,7 @@ def _glavapu_drive_page(page: Any, numbers: list[str], area_ha: float,
     dismiss_tour()
     page.get_by_role("button", name="Участок").click()
     dismiss_tour()
-    page.fill("#id-cad-numbers-text-field", ", ".join(numbers))
+    fill_numbers(", ".join(numbers))
     page.get_by_role("button", name="Отправить").click()
     dismiss_tour()
     page.get_by_role("button", name="Перейти к расчётам").click()

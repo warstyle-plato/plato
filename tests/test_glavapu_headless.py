@@ -110,9 +110,13 @@ def test_the_automation_repeats_the_page_steps():
     молча дала бы другой расчёт."""
     import inspect
     source = inspect.getsource(core._glavapu_drive_page)
-    for step in ("Участок", "id-cad-numbers-text-field", "Отправить",
-                 "Перейти к расчётам"):
+    for step in ("Участок", "fill_numbers", "Отправить", "Перейти к расчётам"):
         assert step in source, step
+    # Поле кадастровых номеров ищется по нескольким признакам: один жёсткий
+    # селектор — это обещание, что вёрстка genplan.tech не изменится, а она
+    # изменилась, и расчёт девяносто секунд ждал элемент, которого нет.
+    assert "#id-cad-numbers-text-field" in core._GLAVAPU_NUMBER_FIELD_SELECTORS
+    assert len(core._GLAVAPU_NUMBER_FIELD_SELECTORS) >= 4
     # Готовность таблицы определяется как на странице: коды 60 и 54, ≥60 строк.
     assert '"60" in codes' in source and '"54" in codes' in source
     assert "len(rows) >= 60" in source
@@ -400,3 +404,15 @@ def test_the_warm_up_also_kills_the_tour():
     source = inspect.getsource(core._glavapu_drive_page)
     warm = source[source.find("if not numbers:"):]
     assert "dismiss_tour()" in warm.split("return")[0]
+
+
+def test_a_missing_field_reports_what_the_page_actually_has():
+    """Срыв на поиске поля обязан приносить вёрстку, а не только таймаут:
+    иначе каждая правка селектора — это ещё один круг переписки."""
+    import inspect
+    source = inspect.getsource(core._glavapu_drive_page)
+    assert "_GLAVAPU_VISIBLE_FIELDS_JS" in source
+    assert "видимые поля страницы" in source
+    js = core._GLAVAPU_VISIBLE_FIELDS_JS
+    assert "offsetParent" in js, "невидимые поля в диагностике только мешают"
+    assert "placeholder" in js and "el.id" in js
