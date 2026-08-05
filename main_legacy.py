@@ -43,7 +43,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.34"
+VERSION = "0.17.35"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -20730,6 +20730,16 @@ const telegramSession=TELEGRAM_HASH_PARAMS.get('telegram_session')||'';
 const telegramCad=TELEGRAM_HASH_PARAMS.get('cad')||'';
 const telegramMode=TELEGRAM_HASH_PARAMS.get('mode')||'calc';
 let telegramResultSent=false;
+function isTelegramWebApp(){
+ // SDK Telegram на странице не подключён, и window.Telegram здесь не бывает:
+ // мини-приложение открывается обычной ссылкой с параметрами сессии в хеше.
+ // Проверка «есть initData» была поэтому всегда ложной, и WebView каждый раз
+ // уходил в скрытый iframe ГлавАПУ — тот его не тянет, ждал по минуте на шаг
+ // и падал на серверные формулы. Отсюда и «две минуты», и «штатный расчёт не
+ // открывается». Признак телеграма — параметры, которыми бот открыл окно.
+ if(telegramSession||telegramCad)return true;
+ try{return !!(window.Telegram&&window.Telegram.WebApp&&String(window.Telegram.WebApp.initData||'').length)}catch(e){return false}
+}
 let telegramCalcOverrides={};
 const money=v=>(Number(v||0)/1e9).toLocaleString('ru-RU',{minimumFractionDigits:0,maximumFractionDigits:2})+' млрд ₽';
 const socialMoney=v=>{
@@ -21085,7 +21095,7 @@ async function obtainTep(){
 let tepRunSequence=0;
 function tepRunLog(runId,stage,detail){
  try{
-  const client=(window.Telegram&&window.Telegram.WebApp&&String(window.Telegram.WebApp.initData||'').length)?'telegram':'site';
+  const client=isTelegramWebApp()?'telegram':'site';
   console.log('[tep#'+runId+' '+client+'] '+stage+(detail?' · '+detail:''));
  }catch(e){}
 }
@@ -21161,7 +21171,7 @@ async function obtainCadastralTep(preAnalysis){
 
    // Telegram WebView не тянет автоматизацию скрытого iframe: сайт собирал
    // ТЭП, мини-приложение падало по таймауту. Здесь сразу серверный расчёт.
-   if(window.Telegram&&window.Telegram.WebApp&&String(window.Telegram.WebApp.initData||'').length){
+   if(isTelegramWebApp()){
      return await obtainServerTep(analysis,status,runId);
    }
 

@@ -54,10 +54,13 @@ def test_the_page_goes_server_side_in_telegram_and_on_failure():
     flow = re.search(r"async function obtainCadastralTep\(.*?\n\}", core.PAGE, re.S)
     assert flow, "obtainCadastralTep не найдена на странице"
     body = flow.group(0)
-    telegram_branch = body.find("window.Telegram&&window.Telegram.WebApp")
+    telegram_branch = body.find("isTelegramWebApp()")
     automation = body.find("Открываю штатный расчёт ГлавАПУ")
     assert 0 < telegram_branch < automation, \
         "Telegram обязан уходить в серверный расчёт до запуска iframe"
+    # Признак телеграма — параметры, которыми бот открыл окно. Проверка по
+    # initData была всегда ложной: SDK Telegram на странице не подключён.
+    assert "initData" not in body
     assert "await obtainServerTep(cadastralAnalysis,status,runId)" in body, \
         "падение автоматизации должно докатываться серверными формулами"
     assert "function obtainServerTep" in core.PAGE
