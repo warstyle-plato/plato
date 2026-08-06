@@ -17,6 +17,12 @@ name: Сборка образа в Yandex Container Registry
 on:
   push:
     branches: [main]
+    # Правка workflow или документации приложение не меняет, а сборку с
+    # Chromium и полным набором тестов запускает на двадцать минут. Условие
+    # перенесено из прежнего deploy-yandex.yml — оно там появилось не зря.
+    paths-ignore:
+      - ".github/**"
+      - "docs/**"
   workflow_dispatch:
 
 concurrency:
