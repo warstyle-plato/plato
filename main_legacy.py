@@ -43,7 +43,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.61"
+VERSION = "0.17.62"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -706,7 +706,13 @@ def parse_glavapu_xlsx(data: bytes, filename: str = "") -> dict[str, Any]:
         item("Кадастровый квартал", "cadastral_quarter", "", "Справочно / ГлавАПУ"),
     ]
 
-    warnings = [
+    # Справка о том, как читается файл, печаталась в одном списке с
+    # предупреждениями и всегда — шесть абзацев на каждый импорт. Настоящее
+    # «ВНИМАНИЕ: продаваемая площадь не прочитана» приписывалось следом и
+    # тонуло в них: предупреждение, которое видно всегда, не видно никогда.
+    # Теперь справка отдельно и по требованию, предупреждения — только когда
+    # есть о чём предупреждать.
+    notes = [
         "Числа нормализованы по русскому формату: пробел/неразрывный пробел — разделитель тысяч, запятая — десятичный разделитель.",
         "Показатели в тыс. кв. м автоматически приведены к м²; денежные суммы автоматически нормализуются в млн ₽ с учётом исходной единицы (тыс./млн/млрд).",
         "Подземный паркинг: стандартно постоянные + гостевые; в DevelopAid preset может отдельно добавляться парковка МФК из строк 60/61. Приобъектные и кратковременные места исключаются.",
@@ -714,6 +720,7 @@ def parse_glavapu_xlsx(data: bytes, filename: str = "") -> dict[str, Any]:
         "Для коммерции 1 этажа строка 11 используется как продаваемая площадь, а 9.1.2 — как общая площадь: это устраняет прежнее завышение saleable.",
         "Если строки 57/58 заполнены, объект 8.1 трактуется как МФК/офисы, а не как отдельный retail — двойной учёт исключается.",
     ]
+    warnings: list[str] = []
 
     # Непрочитанная строка молча превращалась в ноль: жилая застройка входила
     # в расчёт с полной себестоимостью от ГНС и нулевой выручкой, и проект
@@ -749,6 +756,7 @@ def parse_glavapu_xlsx(data: bytes, filename: str = "") -> dict[str, Any]:
         "recognized": recognized,
         "mappings": {"inputs": input_mapping, "tep": tep_mapping},
         "warnings": warnings,
+        "notes": notes,
     }
 
 
@@ -5526,7 +5534,7 @@ def import_cadastral_tep(req: CadastralTepRequest) -> dict[str, Any]:
         "calculated_at": date.today().isoformat(),
         "calculator_url": analysis.get("calculator_url") or "https://genplan.tech/calc/",
     })
-    result["warnings"].insert(
+    result.setdefault("notes", []).insert(
         0,
         "Показатели автоматически считаны из готовой таблицы genplan.tech.",
     )
@@ -21299,7 +21307,11 @@ details.cadastral-box>summary::marker{color:#888}
 .land-grid small{display:block;color:#777;font-size:10px;text-transform:uppercase;letter-spacing:.06em}
 .land-grid b{display:block;margin-top:3px;font-weight:600;line-height:1.35}
 .land-links{margin-top:9px;font-size:11px}
-.mo-box{border-left:4px solid #111}
+.mo-box{border-left:4px solid #111;margin-top:12px}
+/* Запасной путь: виден, но не спорит за внимание с главным. */
+.import-fallback{margin-top:14px;border-top:1px solid #e2e2e0;padding-top:10px}
+.import-fallback>summary{font-size:12px;color:#777;cursor:pointer;padding:2px 0}
+.import-fallback[open]>summary{color:#111;margin-bottom:4px}
 .mo-params{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px 14px;margin-top:12px}
 .mo-params .field label{font-size:11px}
 .mo-params input[readonly]{background:#eeeeec;color:#444}
@@ -21547,19 +21559,10 @@ details.cadastral-box>summary::marker{color:#888}
           </div>
           <iframe id="genplanAutomationFrame" class="genplan-automation-frame" title="Автоматический расчёт ТЭП ГлавАПУ" aria-hidden="true"></iframe>
         </div>
-        <details class="cadastral-box mo-box" id="moParamsBox">
-          <summary>Параметры расчёта по Московской области</summary>
-          <p>Заполняются из справочников автоматически. Меняйте, только если знаете фактические значения по проекту — введённое всегда важнее справочного. <b>Правка любого параметра сразу пересчитывает результат</b> по тому же участку.</p>
-          <div class="mo-params">
-            <div class="field"><label>Плотность <span class="unit">м² на 1 га · то же поле, что на вкладке ТЭП</span></label><input type="number" id="moDensity" value="30000" step="500"></div>
-            <div class="field"><label>Площадь участка вручную <span class="unit">га, если участка нет в ЕГРН · то же поле, что на вкладке ТЭП</span></label><input type="number" id="moArea" value="" step="0.0001" placeholder="из ЕГРН"></div>
-            <div class="field"><label>Городской округ <span class="unit">для УПКС и Кср</span></label><select id="moDistrict"><option value="">определить по участку</option></select></div>
-            <div class="field"><label>Средняя цена м², Кср <span class="unit" id="moPriceUnit">₽/м² · из справочника</span></label><input type="number" id="moPrice" value="" step="1000" readonly><label class="mo-manual"><input type="checkbox" id="moPriceManual" onchange="toggleMoPrice()"> задать вручную</label></div>
-            <div class="field"><label>Коэффициент доходности Кд <span class="unit" id="moKdUnit">доля · из справочника</span></label><input type="number" id="moKd" value="" step="0.01" readonly><label class="mo-manual"><input type="checkbox" id="moKdManual" onchange="toggleMoKd()"> задать вручную</label></div>
-            <div class="field"><label>Средняя площадь квартиры <span class="unit">м²</span></label><input type="number" id="moFlat" value="58.75" step="0.25"></div>
-          </div>
-          <div class="mo-price-line"><span id="moPriceState">Справочники загружаются…</span></div>
-        </details>
+        <!-- Результат расчёта идёт сразу за сведениями ЕГРН. Прежде между
+             ними стояли параметры Подмосковья и загрузка готового файла, и
+             посчитанный ТЭП оказывался в самом низу карточки: человек нажимал
+             кнопку и не находил ответа там, где его ищут. -->
         <div id="moStatus" class="import-status" style="display:none"></div>
         <div id="moPreview" class="cadastral-preview" style="display:none">
             <div id="moSummary" class="import-summary"></div>
@@ -21569,19 +21572,6 @@ details.cadastral-box>summary::marker{color:#888}
             </div>
             <div id="moTables"></div>
             <div id="moWarnings" class="note warning"></div>
-        </div>
-        <div class="import-divider">Либо загрузить готовый ТЭП</div>
-        <div class="upload-line" style="align-items:center">
-          <select id="serverPresetSelect" style="min-width:260px">
-            <option value="">Предустановка с сервера…</option>
-          </select>
-          <button class="btn dark" onclick="loadServerPreset()">Загрузить предустановку</button>
-          <a id="serverPresetDownload" class="btn" href="#" style="display:none;text-decoration:none">Скачать Excel</a>
-        </div>
-        <div style="font-size:11px;color:#888;margin:7px 0 8px">или загрузить свой файл</div>
-        <div class="upload-line">
-          <input type="file" id="glavapuFile" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
-          <button class="btn dark" onclick="uploadGlavapu()">Разобрать файл</button>
         </div>
         <div id="glavapuStatus" class="import-status">Можно выбрать готовую предустановку Мишина / Мытищи с сервера или загрузить свой .xlsx ГлавАПУ.</div>
         <div id="glavapuPreview" class="import-preview" style="display:none">
@@ -21594,10 +21584,31 @@ details.cadastral-box>summary::marker{color:#888}
             <thead><tr><th>Показатель</th><th>Распознано</th><th>Ед.</th><th>Куда попадёт</th></tr></thead>
             <tbody id="glavapuRows"></tbody>
           </table></div>
-          <details><summary style="font-size:13px;padding:8px 0">Примечания к распознаванию</summary>
-            <div id="glavapuWarnings" class="note warning"></div>
+          <!-- Предупреждения показываются, только когда есть о чём. Справка о
+               том, как читается файл, уехала в «как это читается» ниже. -->
+          <div id="glavapuWarnings" class="note warning" style="display:none"></div>
+          <details id="glavapuNotesBox" style="display:none"><summary style="font-size:13px;padding:8px 0">Как читается файл</summary>
+            <div id="glavapuNotes" class="note"></div>
           </details>
         </div>
+        <!-- Загрузка готового файла — запасной путь для тех, у кого он уже на
+             руках, а не первый шаг. Свёрнута, чтобы не разрывать «ввёл участок
+             — получил ТЭП». -->
+        <details class="import-fallback">
+          <summary>Готовый ТЭП: предустановка или файл ГлавАПУ</summary>
+          <div class="upload-line" style="align-items:center;margin-top:10px">
+            <select id="serverPresetSelect" style="min-width:260px">
+              <option value="">Предустановка с сервера…</option>
+            </select>
+            <button class="btn dark" onclick="loadServerPreset()">Загрузить предустановку</button>
+            <a id="serverPresetDownload" class="btn" href="#" style="display:none;text-decoration:none">Скачать Excel</a>
+          </div>
+          <div style="font-size:11px;color:#888;margin:7px 0 8px">или загрузить свой файл</div>
+          <div class="upload-line">
+            <input type="file" id="glavapuFile" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
+            <button class="btn dark" onclick="uploadGlavapu()">Разобрать файл</button>
+          </div>
+        </details>
       </div>
       <div class="card">
         <div class="section-title">Вводные данные</div>
@@ -21630,6 +21641,23 @@ details.cadastral-box>summary::marker{color:#888}
           </div>
         </div>
         <div id="siteDensityWarn" class="note warning" style="display:none"></div>
+        <!-- Параметры Подмосковья стоят здесь, а не на «Вводных»: два поля из
+             шести — та же плотность и та же площадь участка, что выше, и рядом
+             видно, что правится одно и то же. На «Вводных» они разрывали путь
+             «ввёл участок — получил ТЭП». -->
+        <details class="cadastral-box mo-box" id="moParamsBox">
+          <summary>Параметры расчёта по Московской области</summary>
+          <p>Заполняются из справочников автоматически. Меняйте, только если знаете фактические значения по проекту — введённое всегда важнее справочного. <b>Правка любого параметра сразу пересчитывает результат</b> по тому же участку; результат показывается на вкладке «Вводные», под сведениями ЕГРН.</p>
+          <div class="mo-params">
+            <div class="field"><label>Плотность <span class="unit">м² на 1 га · то же поле, что выше</span></label><input type="number" id="moDensity" value="30000" step="500"></div>
+            <div class="field"><label>Площадь участка вручную <span class="unit">га, если участка нет в ЕГРН · то же поле, что выше</span></label><input type="number" id="moArea" value="" step="0.0001" placeholder="из ЕГРН"></div>
+            <div class="field"><label>Городской округ <span class="unit">для УПКС и Кср</span></label><select id="moDistrict"><option value="">определить по участку</option></select></div>
+            <div class="field"><label>Средняя цена м², Кср <span class="unit" id="moPriceUnit">₽/м² · из справочника</span></label><input type="number" id="moPrice" value="" step="1000" readonly><label class="mo-manual"><input type="checkbox" id="moPriceManual" onchange="toggleMoPrice()"> задать вручную</label></div>
+            <div class="field"><label>Коэффициент доходности Кд <span class="unit" id="moKdUnit">доля · из справочника</span></label><input type="number" id="moKd" value="" step="0.01" readonly><label class="mo-manual"><input type="checkbox" id="moKdManual" onchange="toggleMoKd()"> задать вручную</label></div>
+            <div class="field"><label>Средняя площадь квартиры <span class="unit">м²</span></label><input type="number" id="moFlat" value="58.75" step="0.25"></div>
+          </div>
+          <div class="mo-price-line"><span id="moPriceState">Справочники загружаются…</span></div>
+        </details>
         <div class="toolbar" style="margin-top:10px">
           <button class="btn" onclick="applyDensityToTep()">Рассчитать ТЭП от площади и плотности</button>
           <span style="color:#777;font-size:12px" id="siteApplyHint">Работает в любом регионе: площадь и плотность можно ввести вручную. Ручной ТЭП, кадастр и проект из калькулятора Подмосковья считаются нормативами РНГП: квартиры = площадь × плотность, социалка, паркинг и офисы — от населения. Москва с ГлавАПУ: квартиры и коммерция 1 этажа по методике DevelopAid (94% / 6% СПП).</span>
@@ -23236,7 +23264,18 @@ function renderGlavapuPreview(data){
  glavapuRows.innerHTML=(data.recognized||[]).map(x=>`<tr>
    <td>${x.label}</td><td>${x.display}</td><td>${x.unit||''}</td><td>${x.target}</td>
  </tr>`).join('');
- glavapuWarnings.innerHTML=(data.warnings||[]).map(x=>'• '+x).join('<br>');
+ // Предупреждение, которое видно всегда, не видно никогда: шесть абзацев
+ // справки печатались на каждый импорт, и «продаваемая площадь не прочитана»
+ // терялось между ними. Теперь блок появляется, только когда есть что сказать.
+ const gw=(data.warnings||[]).filter(x=>String(x||'').trim());
+ glavapuWarnings.innerHTML=gw.map(x=>'• '+x).join('<br>');
+ glavapuWarnings.style.display=gw.length?'block':'none';
+ const gn=(data.notes||[]).filter(x=>String(x||'').trim());
+ const notesBox=document.getElementById('glavapuNotesBox');
+ if(notesBox){
+   document.getElementById('glavapuNotes').innerHTML=gn.map(x=>'• '+x).join('<br>');
+   notesBox.style.display=gn.length?'block':'none';
+ }
  glavapuPreview.style.display='block';
 }
 
