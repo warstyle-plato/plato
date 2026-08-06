@@ -1,6 +1,8 @@
+from types import SimpleNamespace
+
 from fastapi import HTTPException
 
-from market_analysis import MarketAnalysisRequest, analyse_market
+from market_analysis import MarketAnalysisRequest, _patch_page, analyse_market
 
 
 def test_mishina_reference_returns_price_recommendation() -> None:
@@ -29,3 +31,17 @@ def test_unknown_address_is_not_invented() -> None:
         assert "Мишина" in str(exc.detail)
     else:
         raise AssertionError("unknown address must fail until a live provider is connected")
+
+
+def test_market_tab_is_injected_into_the_main_page() -> None:
+    core = SimpleNamespace(PAGE=(
+        '<html><head><style>.x{display:block}</style></head><body>'
+        '<button class="tab" data-tab="report" onclick="openTab(\'report\',this)">Отчёт</button>'
+        '<div id="report" class="panel"></div></body></html>'
+    ))
+    _patch_page(core)
+
+    assert 'data-tab="market"' in core.PAGE
+    assert '<div id="market" class="panel">' in core.PAGE
+    assert "/market/analysis" in core.PAGE
+    assert "applyMarketPrice" in core.PAGE
