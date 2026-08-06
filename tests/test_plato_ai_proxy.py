@@ -479,3 +479,23 @@ def test_agent_status_shows_the_keepalive(monkeypatch):
     assert status["every_minutes"] > 0
     # Поля отклика есть всегда: «Платон опять засыпает» должно быть чем объяснить.
     assert "last_ok" in status and "last_error" in status
+
+
+def test_a_failed_ping_names_the_reason_not_the_class(monkeypatch):
+    """«URLError» не отличает «имя не разрешается» от «сеть не пускает» и от
+    «сертификат не сошёлся», а лечится это тремя разными способами. Один разбор
+    на этом уже стоил дня переписки."""
+    import urllib.error
+
+    monkeypatch.setattr(main, "_PLATO_AI_URL",
+                        "https://developaid.onrender.com/internal/plato/chat")
+    monkeypatch.setattr(main, "_PLATO_KEEPALIVE_MINUTES", 0.0001)
+    monkeypatch.setattr(main.time, "sleep", lambda _s: (_ for _ in ()).throw(SystemExit))
+
+    def refuse(request, timeout=None):
+        raise urllib.error.URLError(OSError(-2, "Name or service not known"))
+
+    monkeypatch.setattr(main.urllib.request, "urlopen", refuse)
+    with pytest.raises(SystemExit):
+        main._plato_keepalive_loop()
+    assert "Name or service not known" in main._PLATO_KEEPALIVE["last_error"]

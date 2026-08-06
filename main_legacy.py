@@ -43,7 +43,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.55"
+VERSION = "0.17.56"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -19704,9 +19704,16 @@ def _plato_keepalive_loop() -> None:
             # Пинг — удобство, а не работа: молчаливо переживаем любой сбой,
             # но оставляем след, чтобы «Платон опять засыпает» было чем
             # объяснить, не заходя на хостинг.
+            # Причина целиком, а не одно имя класса: «URLError» не отличает
+            # «имя не разрешается» от «сеть не пускает» и от «сертификат не
+            # сошёлся», а лечится это тремя разными способами. Один разбор на
+            # этом уже стоил дня переписки.
+            reason = getattr(exc, "reason", None)
             _PLATO_KEEPALIVE["last_error"] = (
-                f"{datetime.now().isoformat(timespec='seconds')}: {type(exc).__name__}")
-            _PLATON_LOG.info("Platon keepalive failed: %s", type(exc).__name__)
+                f"{datetime.now().isoformat(timespec='seconds')}: "
+                f"{type(exc).__name__}: {str(reason or exc)[:200]}")
+            _PLATON_LOG.info("Platon keepalive failed: %s: %s",
+                             type(exc).__name__, str(reason or exc)[:200])
         time.sleep(interval)
 
 
