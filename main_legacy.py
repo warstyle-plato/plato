@@ -43,7 +43,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.50"
+VERSION = "0.17.51"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -19262,8 +19262,13 @@ def _plato_transport_failure(exc: Exception) -> bool:
     return any(marker in str(reason or exc).lower() for marker in _PLATO_TRANSPORT_MARKERS)
 
 
-def _openai_direct_request(payload: dict[str, Any]) -> dict[str, Any]:
-    """Прямой вызов OpenAI. Ключ нужен только здесь."""
+def _openai_direct_request(payload: dict[str, Any],
+                           budget_seconds: float | None = None) -> dict[str, Any]:
+    """Прямой вызов OpenAI. Ключ нужен только здесь.
+
+    Срок задаётся снаружи ради самопроверки: ей нужен короткий ответ «дошло или
+    нет», а не полный срок тяжёлого вопроса.
+    """
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
     if not api_key:
         # Сюда попадают двумя путями, и лечатся они по-разному: на Render не
@@ -19288,7 +19293,8 @@ def _openai_direct_request(payload: dict[str, Any]) -> dict[str, Any]:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=_PLATO_AI_TIMEOUT_SECONDS) as response:
+        with urllib.request.urlopen(
+                request, timeout=budget_seconds or _PLATO_AI_TIMEOUT_SECONDS) as response:
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         try:
@@ -19373,7 +19379,8 @@ def _plato_proxy_await(ticket: str, headers: dict[str, str], deadline: float) ->
     )
 
 
-def _openai_proxy_request(payload: dict[str, Any]) -> dict[str, Any]:
+def _openai_proxy_request(payload: dict[str, Any],
+                          budget_seconds: float | None = None) -> dict[str, Any]:
     """Тот же вызов, но руками другого сервиса — там, где лежит ключ."""
     headers = {
         "Content-Type": "application/json",
@@ -19402,7 +19409,8 @@ def _openai_proxy_request(payload: dict[str, Any]) -> dict[str, Any]:
     # подобрать уже начатую работу, а не заказать её второй раз.
     ticket = os.urandom(6).hex()
     body = json.dumps({"payload": payload, "ticket": ticket}, ensure_ascii=False).encode("utf-8")
-    deadline = time.monotonic() + _PLATO_AI_TIMEOUT_SECONDS
+    budget = float(budget_seconds or _PLATO_AI_TIMEOUT_SECONDS)
+    deadline = time.monotonic() + budget
 
     last_transport: Exception | None = None
     timed_out = False
@@ -19414,15 +19422,15 @@ def _openai_proxy_request(payload: dict[str, Any]) -> dict[str, Any]:
         # человек не должен сидеть перед пустым окном полный таймаут, чтобы
         # только потом начался повтор. Живой сервис в это окно укладывается —
         # долгие ответы дожидаются на второй попытке с полным сроком.
-        attempt_timeout = (min(_PLATO_WAKE_TIMEOUT_SECONDS, _PLATO_AI_TIMEOUT_SECONDS)
+        attempt_timeout = (min(_PLATO_WAKE_TIMEOUT_SECONDS, budget)
                            if attempt == 1 and _PLATO_PROXY_ATTEMPTS > 1
-                           else _PLATO_AI_TIMEOUT_SECONDS)
+                           else budget)
         # Срок задуман на весь вызов модели, а тратился на каждую попытку:
         # 45 + 240 + 240 — это 525 с там, где обещано 240, и окно успевало
         # сдаться раньше, чем ядро переставало ждать. Остаток бюджета режет
         # каждую следующую попытку.
         left = deadline - time.monotonic()
-        if left <= 1.0:
+        if left <= 0.05:
             timed_out = True
             break
         attempt_timeout = min(attempt_timeout, left)
@@ -19606,7 +19614,8 @@ def _agent_reasoning_effort(model: str) -> str | None:
     return None
 
 
-def _openai_responses_request(payload: dict[str, Any]) -> dict[str, Any]:
+def _openai_responses_request(payload: dict[str, Any],
+                              budget_seconds: float | None = None) -> dict[str, Any]:
     route = _plato_route()
     # Маршрут — первое, что спрашивают при разборе «Платон молчит». В сообщении
     # только имя маршрута: ни адреса, ни секрета, ни ключа.
@@ -19622,8 +19631,8 @@ def _openai_responses_request(payload: dict[str, Any]) -> dict[str, Any]:
                     "PLATO_AI_PROXY_SECRET. Без секрета Render отклонит служебный вызов."
                 ),
             )
-        return _openai_proxy_request(payload)
-    return _openai_direct_request(payload)
+        return _openai_proxy_request(payload, budget_seconds)
+    return _openai_direct_request(payload, budget_seconds)
 
 
 class PlatoAiProxyRequest(BaseModel):
@@ -20610,6 +20619,88 @@ def _plato_chat_result(trace_id: str, outcome: dict[str, Any]) -> dict[str, Any]
     if outcome.get("error") is not None:
         raise outcome["error"]
     return {**outcome["result"], "cached": bool(outcome.get("cached")), "trace_id": trace_id}
+
+
+_PLATO_SELFTEST = {"at": 0.0, "result": None}
+_PLATO_SELFTEST_INTERVAL = 20.0
+_PLATO_SELFTEST_BUDGET = max(15.0, _env_float("PLATO_SELFTEST_SECONDS", 60.0))
+
+
+@app.get("/agent/selftest")
+def agent_selftest(request: Request) -> dict[str, Any]:
+    """Проходит цепочку до модели и называет, где она встала.
+
+    «Платон не отвечает» разбиралось скриншотами и логом закрытого хостинга, а
+    вопрос всегда один: доходит ли вызов до модели и сколько это занимает.
+    Проверка идёт тем же маршрутом, что и настоящий вопрос, — с тем же секретом,
+    билетом и опросом, — но коротким сроком и запросом на один токен: она
+    отвечает «дошло или нет», а не решает задачу.
+    """
+    _agent_rate_limit(request)
+    now = time.monotonic()
+    if _PLATO_SELFTEST["result"] and now - float(_PLATO_SELFTEST["at"]) < _PLATO_SELFTEST_INTERVAL:
+        # Проверка стоит токенов: частым обновлением страницы её не гоняют.
+        return {**_PLATO_SELFTEST["result"], "cached": True}
+
+    model = os.getenv("OPENAI_AGENT_MODEL", "gpt-5.6").strip() or "gpt-5.6"
+    started = time.monotonic()
+    outcome: dict[str, Any] = {
+        "route": _plato_route(),
+        "model": model,
+        "budget_seconds": int(_PLATO_SELFTEST_BUDGET),
+        "keepalive": {
+            "last_ok": _PLATO_KEEPALIVE["last_ok"],
+            "last_error": _PLATO_KEEPALIVE["last_error"],
+            "url": _plato_keepalive_url(),
+        },
+    }
+    try:
+        response = _openai_responses_request({
+            "model": model,
+            "instructions": "Ответь одним словом: ок.",
+            "input": [{"role": "user", "content": "ок?"}],
+            "max_output_tokens": 16,
+            "store": False,
+        }, budget_seconds=_PLATO_SELFTEST_BUDGET)
+        outcome.update(ok=True, seconds=round(time.monotonic() - started, 1),
+                       response_id=str(response.get("id") or ""))
+    except HTTPException as exc:
+        outcome.update(ok=False, seconds=round(time.monotonic() - started, 1),
+                       status=exc.status_code, error=str(exc.detail)[:500])
+    except Exception as exc:
+        outcome.update(ok=False, seconds=round(time.monotonic() - started, 1),
+                       status=502, error=f"{type(exc).__name__}: {str(exc)[:400]}")
+    outcome["verdict"] = _plato_selftest_verdict(outcome)
+    _PLATO_SELFTEST.update(at=time.monotonic(), result=outcome)
+    _PLATON_LOG.info("Platon selftest route=%s ok=%s %.1fs %s",
+                     outcome["route"], outcome.get("ok"), outcome.get("seconds", 0),
+                     outcome.get("error", ""))
+    return {**outcome, "cached": False}
+
+
+def _plato_selftest_verdict(outcome: dict[str, Any]) -> str:
+    """Человеческий вывод: что делать с этим результатом.
+
+    Голый код ошибки требует знать устройство цепочки; здесь оно уже известно,
+    и незачем заставлять человека вспоминать, чья это сторона.
+    """
+    if outcome.get("ok"):
+        return (f"Цепочка работает: ответ за {outcome.get('seconds')} с "
+                f"через {'Render' if outcome['route'] == 'render_proxy' else 'этот сервер'}.")
+    error = str(outcome.get("error") or "")
+    if outcome["route"] == "render_proxy":
+        if "не ответил за" in error or outcome.get("status") == 504:
+            return ("Сервис модели на Render не отвечает этому серверу. Ключ и модель "
+                    "ни при чём: до них вызов не доходит. Проверьте, поднят ли сервис "
+                    "и та ли версия на нём выкачена.")
+        if outcome.get("status") == 403:
+            return "PLATO_AI_PROXY_SECRET на двух машинах разный."
+        if outcome.get("status") == 503:
+            return "Маршрут задан не полностью: смотрите текст ошибки."
+        return "Вызов до Render дошёл, но вернулся ошибкой — текст в поле error."
+    if "OPENAI_API_KEY" in error:
+        return "Ключ OpenAI на этом сервере не задан."
+    return "Вызов модели с этого сервера не прошёл — текст в поле error."
 
 
 @app.post("/agent/chat")

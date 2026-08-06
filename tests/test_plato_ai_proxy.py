@@ -45,7 +45,7 @@ def http_error(code: int, detail: str):
 def test_call_goes_direct_when_no_proxy_configured(monkeypatch):
     seen = {}
     monkeypatch.setattr(main, "_PLATO_AI_URL", "")
-    monkeypatch.setattr(main, "_openai_direct_request", lambda p: seen.setdefault("direct", p))
+    monkeypatch.setattr(main, "_openai_direct_request", lambda p, budget_seconds=None: seen.setdefault("direct", p))
     main._openai_responses_request(PAYLOAD)
     assert seen == {"direct": PAYLOAD}
 
@@ -54,7 +54,7 @@ def test_call_goes_through_the_proxy_when_configured(monkeypatch):
     seen = {}
     monkeypatch.setattr(main, "_PLATO_AI_URL", "https://bot.example/internal/plato/chat")
     monkeypatch.setattr(main, "_PLATO_AI_PROXY_SECRET", "s3cret-ascii")
-    monkeypatch.setattr(main, "_openai_proxy_request", lambda p: seen.setdefault("proxy", p))
+    monkeypatch.setattr(main, "_openai_proxy_request", lambda p, budget_seconds=None: seen.setdefault("proxy", p))
     main._openai_responses_request(PAYLOAD)
     assert seen == {"proxy": PAYLOAD}
 
@@ -95,7 +95,7 @@ def test_an_address_without_a_secret_is_refused_not_rerouted(monkeypatch):
 def test_the_route_is_logged_without_secrets(monkeypatch, caplog):
     monkeypatch.setattr(main, "_PLATO_AI_URL", "https://bot.example/internal/plato/chat")
     monkeypatch.setattr(main, "_PLATO_AI_PROXY_SECRET", "s3cret-ascii")
-    monkeypatch.setattr(main, "_openai_proxy_request", lambda p: {})
+    monkeypatch.setattr(main, "_openai_proxy_request", lambda p, budget_seconds=None: {})
 
     with caplog.at_level("INFO", logger="developaid.platon"):
         main._openai_responses_request(PAYLOAD)
@@ -108,7 +108,7 @@ def test_the_route_is_logged_without_secrets(monkeypatch, caplog):
 
 def test_the_local_route_is_logged_too(monkeypatch, caplog):
     monkeypatch.setattr(main, "_PLATO_AI_URL", "")
-    monkeypatch.setattr(main, "_openai_direct_request", lambda p: {})
+    monkeypatch.setattr(main, "_openai_direct_request", lambda p, budget_seconds=None: {})
 
     with caplog.at_level("INFO", logger="developaid.platon"):
         main._openai_responses_request(PAYLOAD)
@@ -231,7 +231,7 @@ def test_internal_endpoint_refuses_when_no_secret_is_set(monkeypatch):
 
 def test_internal_endpoint_forwards_to_openai(monkeypatch):
     monkeypatch.setenv("PLATO_AI_PROXY_SECRET", "s3cret-ascii")
-    monkeypatch.setattr(main, "_openai_direct_request", lambda p: {"echo": p})
+    monkeypatch.setattr(main, "_openai_direct_request", lambda p, budget_seconds=None: {"echo": p})
     response = client.post("/internal/plato/chat",
                            json={"payload": PAYLOAD},
                            headers={"X-Plato-Secret": "s3cret-ascii"})

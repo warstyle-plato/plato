@@ -219,7 +219,8 @@ def test_the_result_endpoint_is_closed_without_the_secret(client, render_side):
 
 def test_an_old_client_without_a_ticket_still_gets_the_answer(client, render_side, monkeypatch):
     """Выкатка новой машины не имеет права сломать старую."""
-    monkeypatch.setattr(core, "_openai_direct_request", lambda payload: {"id": "sync"})
+    monkeypatch.setattr(core, "_openai_direct_request",
+                        lambda payload, budget_seconds=None: {"id": "sync"})
     body = client.post("/internal/plato/chat", json={"payload": {"model": "m"}},
                        headers=render_side).json()
     assert body == {"id": "sync"}
