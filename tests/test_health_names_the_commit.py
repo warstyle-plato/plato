@@ -97,14 +97,16 @@ def test_the_build_carries_no_permanent_yandex_key():
     assert workflow.count("::add-mask::") >= 2
 
 
-def test_the_first_stage_does_not_touch_the_machine():
-    """Этап первый — только реестр. Ни SSH, ни остановки контейнера: прод
-    продолжает жить на том, что на нём сейчас."""
-    workflows = Path(".github/workflows")
-    for path in workflows.glob("*.yml"):
-        text = path.read_text(encoding="utf-8")
-        for forbidden in ("ssh-action", "CORE_HOST", "CORE_SSH_KEY", "docker rm -f"):
-            assert forbidden not in text, f"{path.name}: {forbidden}"
+def test_the_production_build_does_not_touch_the_machine():
+    """Производственная сборка доходит до реестра и останавливается: ни SSH,
+    ни остановки контейнера. Прод продолжает жить на том, что на нём сейчас.
+
+    Запрет распространяется на эту цепочку, а не на все workflow разом:
+    preview-стенд имеет полное право подниматься по SSH — он живёт на своём
+    порту и прод не трогает."""
+    workflow = Path(".github/workflows/build-yandex.yml").read_text(encoding="utf-8")
+    for forbidden in ("ssh-action", "CORE_HOST", "CORE_SSH_KEY", "docker rm -f"):
+        assert forbidden not in workflow, forbidden
 
 
 def test_the_browser_stays_in_the_production_image():
