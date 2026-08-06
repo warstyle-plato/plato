@@ -16,6 +16,11 @@ name: Выкатка в Yandex Cloud
 on:
   push:
     branches: [main]
+    # Workflow- и документационные изменения сами по себе не меняют приложение
+    # и не должны запускать двадцатиминутную production-выкладку.
+    paths-ignore:
+      - ".github/**"
+      - "docs/**"
   workflow_dispatch:
     inputs:
       skip_tests:
