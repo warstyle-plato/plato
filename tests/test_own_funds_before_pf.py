@@ -151,3 +151,36 @@ def test_the_page_and_the_print_show_the_amount():
     assert "Собственные средства до ПФ" in core.PAGE
     import inspect
     assert "Собственные средства до ПФ" in inspect.getsource(core._build_developaid_pdf)
+
+
+# --- поле доезжает до страницы, а не только до движка -------------------------
+
+def test_the_page_renders_the_field_from_the_engine_list():
+    """Список полей жил на странице отдельной копией, и поле, добавленное в
+    движок, там не появлялось: движок его считал, а нарисовать было некому.
+    Проверяем не наличие строки, а совпадение самих списков."""
+    import json
+    import re
+
+    page = core.PAGE
+    groups = json.loads(re.search(r"^const FIELD_GROUPS=(\[.*\]);$", page, re.M).group(1))
+    assert groups == json.loads(json.dumps(core.FIELD_GROUPS, ensure_ascii=False)), \
+        "список полей страницы разошёлся с движком"
+    assert any(field[0] == "pre_pf_own_funds_mln" for group in groups for field in group[1])
+
+
+def test_the_page_defaults_are_the_engine_defaults():
+    """Вторая такая же копия: умолчания. Разойдясь, они дают поле, которое
+    выглядит пустым, хотя движок считает его заполненным."""
+    import json
+    import re
+
+    page = core.PAGE
+    defaults = json.loads(re.search(r"^const INPUT_DEFAULT=(\{.*\});$", page, re.M).group(1))
+    assert defaults == json.loads(json.dumps(core.DEFAULT_INPUTS, ensure_ascii=False))
+
+
+def test_no_placeholder_survives_into_the_page():
+    """Незамещённый плейсхолдер — это синтаксическая ошибка в браузере, то есть
+    белый экран вместо приложения."""
+    assert "__DEVELOPAID_" not in core.PAGE
