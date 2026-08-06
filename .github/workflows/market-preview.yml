@@ -8,6 +8,7 @@ on:
       - "market_search/**"
       - "main_registry.py"
       - "tests/test_market_discovery*.py"
+      - "tests/test_market_preview_deploy.py"
       - "deploy-market-preview.sh"
       - ".github/workflows/market-preview.yml"
   workflow_dispatch:
@@ -37,7 +38,10 @@ jobs:
       - name: Синтаксис и unit-тесты
         run: |
           python -m py_compile market_search/*.py market_search/providers/*.py main_registry.py
-          python -m pytest tests/test_market_discovery.py tests/test_market_discovery_ui.py -q
+          python -m pytest \
+            tests/test_market_discovery.py \
+            tests/test_market_discovery_ui.py \
+            tests/test_market_preview_deploy.py -q
       - name: Интеграция с основным entrypoint
         run: |
           python - <<'PY'
