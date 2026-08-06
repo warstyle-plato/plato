@@ -43,7 +43,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.47"
+VERSION = "0.17.48"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -20040,6 +20040,195 @@ def _plato_answer_put(key: str, payload: dict[str, Any]) -> None:
         pass
 
 
+# --- Кто пользуется и о чём спрашивает --------------------------------------
+# Пользователей считали по ощущениям, а вопросы читали через плечо. Ни того, ни
+# другого не хватает, чтобы решать, что делать дальше: непонятно, растёт ли
+# аудитория, и непонятно, о чём её спрашивают чаще всего.
+#
+# Журнал — построчный файл на день. Строка пишется одним `write` в режиме
+# добавления: воркеров два, и перезаписывать общий файл им нельзя. Хранится
+# полгода, чистится при записи. Выключается переменной, потому что журнал
+# пользовательских текстов — это данные людей, и решение хранить их принимает
+# владелец, а не код.
+
+_USAGE_DIR = Path(_env_str("DEVELOPAID_USAGE_DIR", "").strip()
+                  or (Path(__file__).resolve().parent / "data" / "usage"))
+_USAGE_KEEP_DAYS = max(1, int(_env_float("DEVELOPAID_USAGE_KEEP_DAYS", 180.0)))
+_USAGE_TEXT_LIMIT = 500
+_USAGE_LOCK = threading.Lock()
+_USAGE_SWEPT: dict[str, str] = {}
+
+
+def _usage_enabled() -> bool:
+    return _env_str("DEVELOPAID_USAGE_JOURNAL", "on").strip().lower() not in {
+        "off", "0", "no", "false", "выкл"}
+
+
+def _usage_day(at: float) -> str:
+    return datetime.fromtimestamp(at, tz=timezone.utc).strftime("%Y-%m-%d")
+
+
+def _usage_path(day: str) -> Path:
+    return _USAGE_DIR / f"events-{day}.jsonl"
+
+
+def _usage_sweep(today: str) -> None:
+    """Старое удаляется раз в день, а не на каждой записи."""
+    if _USAGE_SWEPT.get("day") == today:
+        return
+    _USAGE_SWEPT["day"] = today
+    try:
+        cutoff = (datetime.now(tz=timezone.utc)
+                  - timedelta(days=_USAGE_KEEP_DAYS)).strftime("%Y-%m-%d")
+        for path in _USAGE_DIR.glob("events-*.jsonl"):
+            if path.stem[len("events-"):] < cutoff:
+                path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def usage_track(kind: str, *, surface: str = "bot", chat_id: int = 0, user_id: int = 0,
+                name: str = "", text: str = "", **extra: Any) -> None:
+    """Одно событие в журнал. Молча — учёт не имеет права ронять ответ."""
+    if not _usage_enabled():
+        return
+    at = time.time()
+    record = {
+        "at": round(at, 3),
+        "surface": surface,
+        "kind": kind,
+        "chat": int(chat_id or 0),
+        "user": int(user_id or 0),
+        "name": str(name or "")[:80],
+        "text": str(text or "").strip()[:_USAGE_TEXT_LIMIT],
+    }
+    record.update({key: value for key, value in extra.items() if value not in (None, "")})
+    day = _usage_day(at)
+    try:
+        with _USAGE_LOCK:
+            _USAGE_DIR.mkdir(parents=True, exist_ok=True)
+            _usage_sweep(day)
+            with _usage_path(day).open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except (OSError, TypeError, ValueError):
+        pass
+
+
+def usage_events(days: int = 30) -> list[dict[str, Any]]:
+    """События за последние N суток, по возрастанию времени."""
+    events: list[dict[str, Any]] = []
+    now = datetime.now(tz=timezone.utc)
+    for back in range(max(1, int(days))):
+        path = _usage_path((now - timedelta(days=back)).strftime("%Y-%m-%d"))
+        if not path.is_file():
+            continue
+        try:
+            for line in path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    continue  # оборванная строка не отменяет остальной день
+                if isinstance(record, dict):
+                    events.append(record)
+        except OSError:
+            continue
+    events.sort(key=lambda item: float(item.get("at") or 0))
+    return events
+
+
+def usage_summary(days: int = 30) -> dict[str, Any]:
+    """Свод: сколько людей, сколько новых, что нажимают, о чём спрашивают.
+
+    Читается весь журнал, а не окно свода: «новый» — это тот, кого раньше не
+    было вообще, а не тот, кого не было последний месяц. По окну в тридцать дней
+    вернувшийся через полгода человек считался новым. Команда ручная, файлов за
+    полгода меньше двух сотен — цена чтения того стоит.
+    """
+    events = usage_events(max(days, _USAGE_KEEP_DAYS))
+    now = time.time()
+
+    def users_since(seconds: float) -> set[int]:
+        return {int(e.get("user") or 0) for e in events
+                if e.get("surface") == "bot" and float(e.get("at") or 0) >= now - seconds
+                and int(e.get("user") or 0)}
+
+    window = [e for e in events if float(e.get("at") or 0) >= now - days * 86400]
+    seen_before: dict[int, float] = {}
+    for event in events:
+        user = int(event.get("user") or 0)
+        if user and user not in seen_before:
+            seen_before[user] = float(event.get("at") or 0)
+
+    commands: dict[str, int] = {}
+    buttons: dict[str, int] = {}
+    questions: list[dict[str, Any]] = []
+    for event in window:
+        kind = str(event.get("kind") or "")
+        text = str(event.get("text") or "")
+        if kind == "command":
+            key = text.split(maxsplit=1)[0].split("@", 1)[0].lower()
+            commands[key] = commands.get(key, 0) + 1
+        elif kind == "button":
+            buttons[text] = buttons.get(text, 0) + 1
+        elif kind == "question":
+            questions.append(event)
+
+    return {
+        "days": int(days),
+        "users_today": len(users_since(86400)),
+        "users_7d": len(users_since(7 * 86400)),
+        "users_30d": len(users_since(30 * 86400)),
+        "users_window": len({int(e.get("user") or 0) for e in window
+                             if e.get("surface") == "bot" and int(e.get("user") or 0)}),
+        "new_users_window": len([user for user, first in seen_before.items()
+                                 if first >= now - days * 86400]),
+        "events_window": len(window),
+        "questions_bot": len([q for q in questions if q.get("surface") == "bot"]),
+        "questions_site": len([q for q in questions if q.get("surface") == "site"]),
+        "top_commands": sorted(commands.items(), key=lambda kv: -kv[1])[:8],
+        "top_buttons": sorted(buttons.items(), key=lambda kv: -kv[1])[:8],
+        "last_questions": questions[-15:],
+        "enabled": _usage_enabled(),
+        "keep_days": _USAGE_KEEP_DAYS,
+        "dir": str(_USAGE_DIR),
+    }
+
+
+def usage_csv(days: int = 30) -> bytes:
+    """Выгрузка для разбора вопросов не глазами.
+
+    Точка с запятой и BOM — чтобы Excel открыл кириллицу и не склеил колонки.
+    """
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, delimiter=";")
+    writer.writerow(["время (UTC)", "поверхность", "событие", "chat_id", "user_id",
+                     "кто", "текст"])
+    for event in usage_events(days):
+        writer.writerow([
+            datetime.fromtimestamp(float(event.get("at") or 0),
+                                   tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+            event.get("surface", ""), event.get("kind", ""),
+            event.get("chat", ""), event.get("user", ""),
+            event.get("name", ""), str(event.get("text") or "").replace("\n", " "),
+        ])
+    return ("﻿" + buffer.getvalue()).encode("utf-8")
+
+
+def usage_admin_ids() -> set[int]:
+    """Кому показывать статистику. Пусто — значит никому: список чужих вопросов
+    не та вещь, которую отдают по умолчанию."""
+    raw = _env_str("DEVELOPAID_ADMIN_IDS", "")
+    ids: set[int] = set()
+    for piece in re.split(r"[,\s;]+", raw or ""):
+        piece = piece.strip()
+        if piece.lstrip("-").isdigit():
+            ids.add(int(piece))
+    return ids
+
+
 # --- локальные сценарии кнопок ---------------------------------------------
 
 def _agent_num(value: Any, digits: int = 1) -> str:
@@ -20404,6 +20593,10 @@ def _plato_chat_result(trace_id: str, outcome: dict[str, Any]) -> dict[str, Any]
 @app.post("/agent/chat")
 def agent_chat(req: AgentChatRequest, request: Request) -> dict[str, Any]:
     """Вопрос Платону. Соединение держится ровно до передачи работы опросу."""
+    # Учёт здесь, а не в общей части: бот идёт тем же путём, но его вопросы уже
+    # записаны в журнал как сообщения — иначе каждый считался бы дважды.
+    usage_track("question", surface="site", text=str(req.message or ""),
+                scenario=str(req.scenario or ""))
     trace_id, done, outcome = _plato_chat_launch(req, request)
     if not done.wait(_PLATO_CHAT_HANDOFF_SECONDS):
         _PLATON_LOG.info("Platon [%s] handed off to polling after %ds",

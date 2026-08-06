@@ -9,6 +9,8 @@ import inspect
 import os
 import sys
 import threading
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -825,6 +827,15 @@ def _run_agent(chat_id: int, text: str, *, intro: str = "") -> None:
     if intro:
         _send_message(chat_id, intro)
 
+    # Вопрос к Платону — отдельное событие: по нему видно, о чём спрашивают, а
+    # не только сколько раз нажали кнопку. Разбор ТЭП — не вопрос человека, и
+    # складывать его в один ряд с вопросами значило бы завысить их число.
+    if text == _TEP_COMMENT_REQUEST:
+        core.usage_track("tep_comment", chat_id=chat_id, user_id=chat_id,
+                         text="(разбор ТЭП кнопкой)")
+    else:
+        core.usage_track("question", chat_id=chat_id, user_id=chat_id, text=text)
+
     history.append({"role": "user", "content": text})
     req = core.AgentChatRequest(
         message=text,
@@ -1035,16 +1046,143 @@ def _comment_tep(chat_id: int) -> None:
     _run_agent(chat_id, _TEP_COMMENT_REQUEST, intro=intro)
 
 
+def _sender_name(message: dict[str, Any]) -> str:
+    sender = (message.get("message") if isinstance(message.get("message"), dict) else message).get("from") or {}
+    username = str(sender.get("username") or "").strip()
+    if username:
+        return "@" + username
+    return " ".join(part for part in (str(sender.get("first_name") or "").strip(),
+                                      str(sender.get("last_name") or "").strip()) if part)
+
+
+def _stats_message(chat_id: int, user_id: int, argument: str) -> None:
+    """Кто пользуется ботом и о чём спрашивает.
+
+    Список чужих вопросов открыт не всем: без `DEVELOPAID_ADMIN_IDS` команда
+    отвечает отказом и говорит, чей номер вписать — свой человек видит его в
+    `/status`.
+    """
+    admins = core.usage_admin_ids()
+    if not admins or user_id not in admins:
+        _send_message(
+            chat_id,
+            "<b>Статистика закрыта.</b>\n"
+            + ("Задайте <code>DEVELOPAID_ADMIN_IDS</code> в переменных сервиса: "
+               f"ваш Telegram ID <code>{user_id}</code>."
+               if not admins else "Ваш Telegram ID не в списке администраторов."),
+        )
+        return
+
+    argument = (argument or "").strip().lower()
+    days = 30
+    for piece in argument.split():
+        if piece.isdigit():
+            days = max(1, min(365, int(piece)))
+    if "csv" in argument:
+        try:
+            core._telegram_send_document_bytes(
+                chat_id, core.usage_csv(days), f"developaid-usage-{days}d.csv",
+                caption=f"Журнал обращений за {days} дн.", content_type="text/csv")
+        except Exception as exc:
+            _send_message(chat_id, "<b>Выгрузка не собралась.</b>\n"
+                          + html.escape(f"{type(exc).__name__}: {exc}"))
+        return
+
+    s = core.usage_summary(days)
+    if not s["enabled"]:
+        _send_message(chat_id, "<b>Журнал обращений выключен</b> переменной "
+                               "<code>DEVELOPAID_USAGE_JOURNAL</code>.")
+        return
+
+    def listing(pairs: list[tuple[str, int]]) -> str:
+        return " · ".join(f"{html.escape(str(name))} {count}" for name, count in pairs) or "—"
+
+    lines = [
+        f"<b>Обращения за {days} дн.</b>",
+        f"Пользователей: сегодня <b>{s['users_today']}</b> · "
+        f"за 7 дн. <b>{s['users_7d']}</b> · за 30 дн. <b>{s['users_30d']}</b>",
+        f"За период: <b>{s['users_window']}</b> человек, из них новых <b>{s['new_users_window']}</b>",
+        f"Событий: {s['events_window']} · вопросов Платону: "
+        f"{s['questions_bot']} в боте, {s['questions_site']} на сайте",
+        "",
+        "<b>Команды:</b> " + listing(s["top_commands"]),
+        "<b>Кнопки:</b> " + listing(s["top_buttons"]),
+    ]
+    if s["last_questions"]:
+        lines.append("")
+        lines.append("<b>Последние вопросы:</b>")
+        for event in reversed(s["last_questions"]):
+            when = datetime.fromtimestamp(float(event.get("at") or 0),
+                                          tz=timezone.utc).strftime("%d.%m %H:%M")
+            who = str(event.get("name") or event.get("user") or "—")
+            where = "сайт" if event.get("surface") == "site" else "бот"
+            lines.append(f"• <i>{when} · {html.escape(who)} · {where}</i>\n"
+                         f"{html.escape(str(event.get('text') or '')[:180])}")
+    lines.append("")
+    lines.append(f"<i>Хранится {s['keep_days']} дн. Выгрузка: <code>/stats csv</code>, "
+                 f"период: <code>/stats 7</code>.</i>")
+    _send_message(chat_id, "\n".join(lines))
+
+
+def _usage_digest_hour() -> int:
+    raw = os.getenv("DEVELOPAID_USAGE_DIGEST_HOUR", "6").strip()
+    return min(23, max(0, int(raw))) if raw.lstrip("-").isdigit() else 6
+
+
+def _usage_digest_due() -> bool:
+    """Раз в сутки — сводка администраторам, если её ещё не отправляли.
+
+    Диск под ботом живёт до следующей выкатки, и журнал вместе с ним. Сводка,
+    ушедшая в чат, переживает и выкатку, и пересоздание контейнера — поэтому
+    отслеживание не сводится к файлу, который в любой момент может исчезнуть.
+
+    Отправляет только тот хост, что держит вебхук: второй экземпляр с тем же
+    токеном обязан молчать. Отметка создаётся исключительным созданием файла —
+    воркеров два, и оба доходят сюда одновременно.
+    """
+    if not core.usage_admin_ids() or not core._telegram_webhook_enabled():
+        return False
+    now = datetime.now(timezone.utc)
+    if now.hour < _usage_digest_hour():
+        return False
+    try:
+        core._USAGE_DIR.mkdir(parents=True, exist_ok=True)
+        (core._USAGE_DIR / f"digest-{now:%Y-%m-%d}.done").open("x").close()
+    except FileExistsError:
+        return False
+    except OSError:
+        return False
+    return True
+
+
+def _usage_digest_loop() -> None:
+    while True:
+        try:
+            if _usage_digest_due():
+                for admin in sorted(core.usage_admin_ids()):
+                    _stats_message(admin, admin, "1")
+        except Exception:
+            pass  # сводка — удобство: молчание лучше падения фонового потока
+        time.sleep(900)
+
+
 def _handle_message(message: dict[str, Any]) -> None:
     chat_id, user_id, text = _extract_message(message)
     if not chat_id:
         return
     command = text.split(maxsplit=1)[0].split("@", 1)[0].lower() if text.startswith("/") else ""
+    # Учёт до разбора: сюда сходятся все сообщения бота, и считать их дальше по
+    # веткам значило бы потерять те, что уходят в движок.
+    core.usage_track("command" if command else "message", chat_id=chat_id, user_id=user_id,
+                     name=_sender_name(message), text=text)
     if command == "/status":
         _status_message(chat_id, user_id)
         return
     if command == "/help":
         _send_help(chat_id)
+        return
+    if command in {"/stats", "/статистика"}:
+        _stats_message(chat_id, user_id, text.split(maxsplit=1)[1] if " " in text else "")
         return
     if command in {"/platon", "/платон"}:
         _start_platon(chat_id)
@@ -1083,6 +1221,9 @@ def _handle_update(update: dict[str, Any]) -> None:
         message = query.get("message") or {}
         sender = query.get("from") or {}
         chat_id = int(((message.get("chat") or {}).get("id")) or sender.get("id") or 0)
+        core.usage_track("button", chat_id=chat_id,
+                         user_id=int(sender.get("id") or chat_id or 0),
+                         name=_sender_name({"from": sender}), text=data)
         if data in {"vritep_start", "vritep_msk", "vritep_mo"}:
             _answer_callback(query)
             if data == "vritep_start":
@@ -1121,6 +1262,13 @@ def _handle_update(update: dict[str, Any]) -> None:
 
 core._telegram_handle_message = _handle_message
 core._telegram_handle_update = _handle_update
+
+
+@app.on_event("startup")
+def _start_usage_digest() -> None:
+    """Сводка сама приходит раз в сутки — иначе «отслеживать» означает не
+    забывать спрашивать."""
+    threading.Thread(target=_usage_digest_loop, name="usage-digest", daemon=True).start()
 
 
 @app.on_event("startup")

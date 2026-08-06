@@ -40,6 +40,10 @@ def isolated_platon_state(tmp_path, monkeypatch):
     # положенный одним тестом, приходит другому вместо похода в модель, и тест
     # «свободный вопрос доходит до модели» падает через раз.
     monkeypatch.setattr(_wrapper.core, "_PLATO_STAGE_DIR", tmp_path / "agent_state")
+    # Журнал обращений тоже на диске: без изоляции тесты писали бы в рабочий
+    # каталог, а свод одного теста считал бы события соседнего.
+    monkeypatch.setattr(_wrapper.core, "_USAGE_DIR", tmp_path / "usage")
+    _wrapper.core._USAGE_SWEPT.clear()
     for name in ("_PLATON_CONTEXT_BY_SESSION", "_PLATON_LAST_SESSION",
                  "_PLATON_TEP_CONTEXT", "_PLATON_MODE", "_PLATON_HISTORY",
                  "_PLATON_PENDING", "_PLATON_LAST_URL"):
