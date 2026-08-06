@@ -26,6 +26,17 @@ APP_BIND=$(grep -E '^APP_BIND=' .env 2>/dev/null | tail -1 | cut -d= -f2- || tru
 [ -n "${APP_PORT:-}" ] || APP_PORT=8080
 [ -n "${APP_BIND:-}" ] || APP_BIND=0.0.0.0
 
+# Сеть с ядра до pypi.org рвётся на чтении, и сборка виснет на установке
+# зависимостей. Зеркало и отказ от браузера передаются сборке, а не правятся
+# в Dockerfile: на GitHub и на Render дорога до pypi открыта, и умолчание
+# должно остаться прежним.
+#
+#   PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple sh run.sh
+#   INSTALL_BROWSER=0 sh run.sh    — без Chromium, расчёт ВРИ на формулах
+BUILD_ARGS=""
+[ -n "${PIP_INDEX_URL:-}" ] && BUILD_ARGS="$BUILD_ARGS --build-arg PIP_INDEX_URL=$PIP_INDEX_URL"
+[ -n "${INSTALL_BROWSER:-}" ] && BUILD_ARGS="$BUILD_ARGS --build-arg INSTALL_BROWSER=$INSTALL_BROWSER"
+
 # Порт мог занять контейнер, поднятый раньше и под другим именем — например
 # через docker compose, где имя собирается из папки проекта. Ищем по порту, а
 # не по имени, иначе старая сборка продолжит работать, а новая не поднимется.
@@ -186,7 +197,8 @@ case "${1:-up}" in
 esac
 
 echo "Сборка образа…"
-docker build -t "$NAME" .
+# shellcheck disable=SC2086 — аргументы сборки должны разделиться на слова.
+docker build $BUILD_ARGS -t "$NAME" .
 
 echo "Остановка прежнего контейнера…"
 docker rm -f "$NAME" >/dev/null 2>&1 || true
