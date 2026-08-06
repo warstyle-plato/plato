@@ -104,11 +104,107 @@ def test_the_tab_has_a_table_of_contents(report_tab):
 
 def test_the_contents_skip_empty_sections():
     """Ссылка, ведущая в пустоту, хуже её отсутствия: очередей у одноочередного
-    проекта нет, чувствительности — пока её не посчитали."""
+    проекта нет, чувствительности — пока её не посчитали.
+
+    Но пустоту определяет содержимое, а не видимость. Первая версия смотрела на
+    `offsetParent` и высоту — и это отвечало «пусто» на всё, потому что меню
+    строится сразу после расчёта, когда вкладка отчёта ещё закрыта, а у скрытой
+    панели display:none. Меню отфильтровывало себя целиком каждый раз.
+    """
     page = core.PAGE
     assert "function renderReportToc()" in page
-    assert "offsetParent!==null" in page
-    assert "getBoundingClientRect().height>0" in page
+    assert "getComputedStyle(el).display!=='none'" in page
+    assert "child.textContent.trim().length>0" in page
+    assert "offsetParent" not in page.split("function renderReportToc()")[1][:900]
+
+
+def _toc_html(sections: dict[str, list[tuple[str, str, str]]]) -> str:
+    """Гоняем настоящий renderReportToc из PAGE через node.
+
+    Разделы описываются как (класс, стиль display, текст) — так же, как они
+    выглядят в разметке отчёта: заголовок плюс карточки.
+    """
+    import json
+    import re
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node недоступен")
+    listed = re.search(r"const REPORT_SECTIONS=\[.*?\];", core.PAGE, re.S)
+    body = re.search(r"function renderReportToc\(\)\{.*?\n\}", core.PAGE, re.S)
+    assert listed and body, "оглавление отчёта не найдено на странице"
+
+    stand = {
+        name: {"style": {"display": display},
+               "children": [{"style": {"display": child_display},
+                             "classList": {"contains": None}, "cls": cls,
+                             "textContent": text}
+                            for cls, child_display, text in children]}
+        for name, (display, children) in sections.items()
+    }
+    script = (
+        listed.group(0) + "\n" + body.group(0) + "\n"
+        + "const stand=" + json.dumps(stand, ensure_ascii=False) + ";\n"
+        + "Object.values(stand).forEach(s=>s.children.forEach(c=>{"
+          "c.classList={contains:name=>c.cls===name}}));\n"
+        # Вкладка закрыта — ровно то состояние, в котором меню и строится:
+        # ни родителя раскладки, ни высоты. Прежняя проверка на этом
+        # вычёркивала все разделы разом.
+        + "Object.values(stand).forEach(s=>{s.offsetParent=null;"
+          "s.getBoundingClientRect=()=>({height:0,width:0})});\n"
+        + "const toc={innerHTML:''};\n"
+        + "const document={getElementById:id=>id==='reportToc'?toc:(stand[id]||null)};\n"
+        + "function getComputedStyle(el){return {display:(el.style&&el.style.display)||'block'}}\n"
+        + "renderReportToc();console.log(toc.innerHTML);"
+    )
+    return subprocess.run([node, "-e", script], capture_output=True, text=True,
+                          check=True).stdout
+
+
+def test_a_closed_tab_no_longer_empties_the_contents():
+    """Настоящая причина пустого меню: оно строится сразу после расчёта, когда
+    вкладка отчёта ещё закрыта. У скрытой панели display:none, и проверка
+    видимости отвечала «пусто» на каждый раздел — меню вычёркивало себя целиком.
+    Разделы при этом свои стили не меняют, поэтому судим по ним."""
+    html = _toc_html({
+        "rsSite": ("block", [("report-section-title", "block", "Участок и продукт"),
+                             ("card", "block", "Кадастровый номер 77:09:…")]),
+        "rsSummary": ("block", [("report-section-title", "block", "Итог"),
+                                ("card", "block", "LLCR 1,27x")]),
+    })
+    assert "Участок" in html and "Итог" in html
+
+
+def test_a_single_phase_project_gets_no_phases_link():
+    """У одноочередного проекта обе карточки очередей скрыты своим стилем —
+    ссылка вела бы в один заголовок."""
+    html = _toc_html({
+        "rsSummary": ("block", [("report-section-title", "block", "Итог"),
+                                ("card", "block", "LLCR 1,27x")]),
+        "rsPhases": ("block", [("report-section-title", "block", "Очереди проекта"),
+                               ("phase-report-nav", "none", "Весь проект"),
+                               ("card", "none", "Сравнение очередей")]),
+    })
+    assert "Итог" in html
+    assert "Очереди" not in html
+
+
+def test_an_empty_section_is_not_listed():
+    html = _toc_html({
+        "rsCalendar": ("block", [("report-section-title", "block", "Календарный план"),
+                                 ("card", "block", "   ")]),
+    })
+    assert html.strip() == ""
+
+
+def test_the_contents_are_rebuilt_when_the_tab_opens():
+    """Расчёт почти всегда проходит при закрытой вкладке отчёта: кнопка
+    «Рассчитать и открыть» сначала считает и только потом открывает."""
+    page = core.PAGE
+    opener = page[page.find("function openTab(id,btn)"):]
+    assert "renderReportToc()" in opener[:600]
 
 
 def test_every_section_of_the_contents_exists(report_tab):

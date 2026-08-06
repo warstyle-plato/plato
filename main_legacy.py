@@ -43,7 +43,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.48"
+VERSION = "0.17.49"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -21603,6 +21603,9 @@ function openTab(id,btn){
  document.querySelectorAll('.panel').forEach(x=>x.classList.remove('active'));document.getElementById(id).classList.add('active');
  document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
  (btn||document.querySelector(`[data-tab="${id}"]`)).classList.add('active');
+ // Оглавление собирается заново при открытии: расчёт мог пройти при закрытой
+ // вкладке — а он почти всегда так и проходит.
+ if(id==='report'&&typeof renderReportToc==='function')renderReportToc();
 }
 function calculateAndOpen(id){
  // В Telegram расчёт — это законченное действие: человек пришёл за цифрами в
@@ -24208,11 +24211,20 @@ function renderReportSensitivity(){
 function renderReportToc(){
  // Ссылка, ведущая в пустоту, хуже её отсутствия: очередей у одноочередного
  // проекта нет, чувствительности — пока её не посчитали.
+ //
+ // Но «раздел есть» — это не «раздел виден сейчас». Меню строится сразу после
+ // расчёта, а вкладка отчёта в этот момент закрыта: у скрытой панели
+ // display:none, и на вопрос о видимости все её разделы отвечали «меня нет».
+ // Меню отфильтровывало себя до пустоты каждый раз. Смотрим на содержимое:
+ // скрытый своим стилем раздел и раздел без карточек — мимо, остальные — в меню.
  const toc=document.getElementById('reportToc');
  if(!toc)return;
+ const shown=el=>{try{return getComputedStyle(el).display!=='none'}catch(e){return true}};
  toc.innerHTML=REPORT_SECTIONS.filter(([id])=>{
   const node=document.getElementById(id);
-  return node&&node.offsetParent!==null&&node.getBoundingClientRect().height>0;
+  if(!node||!shown(node))return false;
+  return Array.from(node.children).some(child=>!child.classList.contains('report-section-title')
+   &&shown(child)&&child.textContent.trim().length>0);
  }).map(([id,label])=>`<a href="#${id}" onclick="event.preventDefault();document.getElementById('${id}').scrollIntoView({behavior:'smooth',block:'start'})">${label}</a>`).join('');
 }
 
