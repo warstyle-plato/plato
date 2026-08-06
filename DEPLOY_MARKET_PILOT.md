@@ -17,8 +17,14 @@ printf '\nTELEGRAM_WEBHOOK_ENABLED=0\n' >> .env
 
 ## 2. Собрать и запустить отдельный контейнер
 
+На ВМ Yandex Cloud пакеты ставятся через зеркало Aliyun. В `Dockerfile` обычный PyPI оставлен дефолтом намеренно, поэтому зеркало нужно передавать build-аргументом.
+
 ```bash
-docker build -t developaid-market-pilot .
+docker build \
+  --build-arg INSTALL_BROWSER=0 \
+  --build-arg PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple \
+  -t developaid-market-pilot .
+
 docker rm -f developaid-market-pilot 2>/dev/null || true
 docker run -d \
   --name developaid-market-pilot \
