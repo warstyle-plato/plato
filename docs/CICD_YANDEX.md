@@ -1,216 +1,173 @@
-# Выкатка ядра: GitHub собирает, Yandex хранит и запускает
+# Выкатка ядра: GitHub собирает, Яндекс хранит
 
-Однократная настройка. Дальше выкатка — это merge в `main` или кнопка
-Run workflow.
+Собирать образ на самой машине больше нельзя всерьёз. С неё закрыты
+`*.onrender.com` и `api.telegram.org`, а `pypi.org` рвёт соединение и на
+рукопожатии (`SSL: UNEXPECTED_EOF_WHILE_READING`), и на чтении
+(`Read timed out`). Зеркала лечат симптом: сборке нужен открытый интернет,
+которого у машины нет.
 
 ```
-GitHub → GitHub Actions → Yandex Container Registry → виртуальная машина
+GitHub → GitHub Actions → Yandex Container Registry → (этап 2) машина
 ```
 
-На машине не остаётся ни `docker build`, ни `pip install`, ни установки
-Playwright. С неё закрыты `*.onrender.com` и `api.telegram.org`, а `pypi.org`
-рвёт соединение и на рукопожатии (`SSL: UNEXPECTED_EOF_WHILE_READING`), и на
-чтении (`Read timed out`). Собирать там — значит каждый раз выяснять, какой
-канал отвалился сегодня.
+Этап первый — до реестра включительно — сделан. Этап второй, запуск образа на
+машине, ещё нет: список оставшихся действий в конце.
 
 ---
 
-## 1. Реестр
+## Как GitHub входит в реестр
 
-Консоль → **Container Registry** → «Создать реестр». Имя `developaid`.
-Скопируйте идентификатор — строка вида `crp1a2b3c4d5e6f7g8h9i`.
+Постоянных ключей Яндекса в репозитории нет и быть не должно: ключ, который
+можно потерять, теряют не заметив. Вместо него — обмен токенами.
 
-Через CLI то же самое:
+1. GitHub выдаёт workflow собственный OIDC-токен. Он живёт минуты и
+   называет, кто его просил: репозиторий, ветку, тип события.
+2. Яндекс проверяет подпись GitHub и сверяет `sub` с привязкой федерации.
+3. В обмен выдаёт IAM-токен сервисного аккаунта на время одного запуска.
 
-```bash
-yc container registry create --name developaid
-yc container registry list          # запомните ID
-```
+Обмен идёт на `https://auth.yandex.cloud/oauth/token`, grant type
+`urn:ietf:params:oauth:grant-type:token-exchange`.
 
-Хранение последних десяти образов — политикой, а не уборкой руками:
+### Что настроено
 
-```bash
-yc container repository lifecycle-policy create \
-  --repository-name crp<ID>/developaid \
-  --name keep-10 --active \
-  --rule "untagged=true,expire-period=48h" \
-  --rule "tag-regexp=^[0-9a-f]{7}$,retained-top=10,expire-period=168h"
-```
-
-Теги `prod` и `v0.17.*` под правила не подпадают и живут всегда — по ним
-откатываются.
-
-## 2. Два сервисных аккаунта
-
-Разные роли не для красоты: аккаунт, которым собирают, не должен уметь
-трогать прод, а аккаунт машины — переписывать образы.
-
-**Для GitHub** — только публикация:
-
-```bash
-yc iam service-account create --name github-pusher
-yc container registry add-access-binding developaid \
-  --service-account-name github-pusher \
-  --role container-registry.images.pusher
-```
-
-**Для машины** — только скачивание:
-
-```bash
-yc iam service-account create --name vm-puller
-yc container registry add-access-binding developaid \
-  --service-account-name vm-puller \
-  --role container-registry.images.puller
-```
-
-Никаких `admin`, `editor` и доступа к Compute ни у того, ни у другого.
-
-## 3. Как GitHub входит в реестр
-
-### Предпочтительно: OIDC, без постоянного ключа
-
-Федерация меняет короткоживущий токен GitHub на IAM-токен Яндекса. Ключа,
-который можно потерять, не существует.
-
-```bash
-yc iam workload-identity oidc-federation create \
-  --name github \
-  --issuer "https://token.actions.githubusercontent.com" \
-  --audience "sts.yandexcloud.net" \
-  --jwks-url "https://token.actions.githubusercontent.com/.well-known/jwks"
-
-yc iam workload-identity federated-credential create \
-  --service-account-name github-pusher \
-  --federation-name github \
-  --external-subject-id "repo:warstyle-plato/plato:ref:refs/heads/main"
-```
-
-Внешний субъект привязывает доверие к одной ветке одного репозитория: токен
-из чужого форка не подойдёт.
-
-В GitHub → Settings → Secrets and variables → Actions → вкладка **Variables**:
-
-| Имя | Значение |
+| Что | Значение |
 |---|---|
-| `YC_WORKLOAD_FEDERATION_ID` | идентификатор федерации (`yc iam workload-identity oidc-federation list`) |
-| `YC_SA_ID` | идентификатор `github-pusher` (`yc iam service-account get github-pusher`) |
+| Реестр | `developaid-registry` |
+| Сервисный аккаунт | `developaid-github-pusher`, роль `container-registry.images.pusher` |
+| Федерация | `developaid-github` |
+| issuer | `https://token.actions.githubusercontent.com` |
+| audience | `https://github.com/warstyle-plato` |
+| JWKS | `https://token.actions.githubusercontent.com/.well-known/jwks` |
+| Привязка (`sub`) | `repo:warstyle-plato@306601199/plato@1305201407:ref:refs/heads/main` |
 
-### Запасной путь: ключ сервисного аккаунта
+Привязка сужает доверие до одной ветки одного репозитория: токен из форка или
+из другой ветки не подойдёт.
 
-Если федерацию заводить некогда — авторизованный ключ:
+### Переменные GitHub
 
-```bash
-yc iam key create --service-account-name github-pusher \
-  --output github-pusher.json
-```
+Settings → Secrets and variables → Actions → вкладка **Variables**. Секретов у
+этой цепочки нет вовсе — только переменные, и все три не секретны.
 
-Содержимое файла целиком — в **Secrets** под именем `YC_SA_KEY`. Файл после
-этого удалить: он показывается один раз и больше нигде не хранится.
-
-Workflow берёт федерацию, если она объявлена, и ключ, если нет.
-
-## 4. Секреты GitHub
-
-Settings → Secrets and variables → Actions → **Secrets**:
-
-| Имя | Значение |
+| Имя | Что это |
 |---|---|
-| `YC_REGISTRY_ID` | `crp...` из шага 1 |
-| `CORE_HOST` | публичный адрес машины |
-| `CORE_USER` | пользователь SSH |
-| `CORE_SSH_KEY` | закрытый ключ для входа на машину, целиком |
-| `YC_SA_KEY` | только если не настроили OIDC |
+| `YC_FEDERATION_ID` | идентификатор федерации |
+| `YC_SERVICE_ACCOUNT_ID` | идентификатор `developaid-github-pusher`; он же `audience` при обмене |
+| `YC_REGISTRY_ID` | идентификатор реестра, из него собирается имя образа |
 
-Ключ SSH заведите отдельный, не свой рабочий:
+---
 
-```bash
-ssh-keygen -t ed25519 -C github-deploy -f ~/.ssh/github-deploy
-ssh-copy-id -i ~/.ssh/github-deploy.pub <user>@<host>
-```
+## Что делает сборка
 
-В секрет кладётся `~/.ssh/github-deploy` — закрытая половина.
+`.github/workflows/build-yandex.yml`, триггеры — push в `main` и кнопка
+**Run workflow**.
 
-## 5. Однократная настройка машины
+1. **Тесты.** `python3 -m pytest tests -q` — штатный набор проекта целиком,
+   около 1266 тестов и девятнадцати минут. Сокращать его нельзя: он и написан
+   затем, чтобы ловить то, чего глазами не видно.
+2. **OIDC-токен** с audience `https://github.com/warstyle-plato`. В журнал
+   печатаются только `sub`, `aud`, `repository`, `ref` — по ним сверяется
+   привязка, если обмен отвергнут. Сам токен маскируется.
+3. **Обмен на IAM-токен.** Отказ печатает `error` и `error_description`, но не
+   тело токена.
+4. **Вход в реестр** временным токеном, `docker login --username iam`.
+5. **Сборка** с Buildx и кэшем GitHub Actions. Chromium в образе остаётся: без
+   него расчёт ВРИ уходит на копию методики, которая отстаёт от города.
+   Ускорять CI за счёт того, чем считают, нельзя.
+6. **Публикация** двух тегов: полный SHA коммита и `prod`. Одного `latest`
+   мало — по нему ни откатиться, ни понять, что подняли.
 
-**Сервисный аккаунт машине.** Консоль → виртуальная машина → «Изменить» →
-«Сервисный аккаунт» → `vm-puller`. Яндекс может потребовать остановить машину
-на время правки — это единственный простой в настройке.
+Красный шаг останавливает цепочку. Тесты не прошли — в реестр ничего не
+уезжает.
 
-**Идентификатор реестра в `.env`:**
+### Коммит внутри образа
 
-```bash
-cd ~/plato
-echo 'YC_REGISTRY_ID=crp1a2b3c4d5e6f7g8h9i' >> .env
-```
-
-`.env` и `data/` остаются на машине и не входят ни в образ, ни в репозиторий.
-Выкатка их не трогает.
-
-**Проверка доступа:**
-
-```bash
-curl -s -H 'Metadata-Flavor: Google' \
-  http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/token \
-  | python3 -c 'import sys,json; print(json.load(sys.stdin)["access_token"])' \
-  | docker login --username iam --password-stdin cr.yandex
-```
-
-Ответ `Login Succeeded` — аккаунт привязан правильно.
-
-## 6. Выкатка
-
-Автоматически: merge в `main`. Порядок жёсткий — тесты, сборка, публикация,
-выкатка; красный шаг останавливает цепочку, прод продолжает работать.
-
-Кнопкой: Actions → «Выкатка в Yandex Cloud» → Run workflow. Cloud Shell и SSH
-для этого не нужны.
-
-Руками с машины:
-
-```bash
-cd ~/plato && sh deploy-developaid.sh <коммит>
-sh deploy-developaid.sh prod        # то, что помечено как рабочее
-sh deploy-developaid.sh --rollback  # вернуть предыдущий образ
-sh deploy-developaid.sh --log       # журнал выкаток
-```
-
-### Что делает скрипт
-
-1. Скачивает образ по точному тегу.
-2. Поднимает его на `127.0.0.1:18080` — снаружи этот порт закрыт, работающая
-   версия не тронута.
-3. Проверяет `/health`: статус, коммит совпадает с выкатываемым, каталог
-   данных доступен на запись.
-4. Только после успеха меняет рабочий контейнер и проверяет ещё раз.
-5. Не поднялось на пробе — гасит пробный контейнер, прод остаётся прежним.
-6. Не поднялось на рабочем порту — возвращает прежний образ и пишет откат в
-   журнал.
-
-Журнал — `data/deploy.log`: коммит, теги, время начала и конца, обе проверки,
-был ли откат, что было до и что стало.
-
-## 7. Проверка, что всё сложилось
-
-```bash
-curl -s https://developaid.ru/health
-```
+`Dockerfile` принимает `ARG APP_COMMIT`, workflow передаёт туда `github.sha`.
+Приложение читает его при старте, и `/health` отвечает:
 
 ```json
-{"status":"ok","version":"0.17.61","commit":"ae3bb26",
+{"status":"ok","version":"0.17.61","commit":"fa3698a…",
  "data_dir":"data","data_writable":true}
 ```
 
-`commit` — сокращённый SHA того коммита, из которого собран образ. Он
-запекается сборкой (`ARG GIT_COMMIT`), задать его при запуске нельзя: иначе
-ответ говорил бы то, что попросили, а не то, что выкачено.
+Слой с аргументом — последний в `Dockerfile`, иначе правка кода сбрасывала бы
+весь кэш сборки.
 
-### Проверить откат, не ломая прод
+Версия отвечает на «что выпущено», коммит — на «что сейчас крутится»: одна
+версия живёт много правок, и по ней собранное вчера неотличимо от собранного
+час назад. Задать коммит при запуске нельзя: тогда ответ скажет то, что
+попросили, а не то, что выкачено.
+
+`data_writable` там же и не для красоты: контейнер без примонтированного тома
+отвечает так же бодро, а данные при этом уходят в слой образа и исчезают со
+следующей выкаткой.
+
+---
+
+## Хранение образов
+
+Чтобы реестр не рос бесконечно:
 
 ```bash
-sh deploy-developaid.sh <любой прежний коммит>   # уехали назад
-sh deploy-developaid.sh --rollback               # вернулись
-sh deploy-developaid.sh --log
+yc container repository lifecycle-policy create \
+  --repository-name <registry-id>/developaid \
+  --name keep-10 --active \
+  --rule "untagged=true,expire-period=48h" \
+  --rule "tag-regexp=^[0-9a-f]{40}$,retained-top=10,expire-period=168h"
 ```
 
-Проверить, что провал не роняет прод, можно тегом, которого нет: скрипт
-остановится на `docker pull` и не тронет контейнер.
+Тег `prod` под правила не подпадает и живёт всегда — по нему откатываются.
+
+---
+
+## Этап 2: запуск образа на машине
+
+Ещё не сделано. Что осталось:
+
+1. **Сервисный аккаунт машине.** Отдельный от сборочного:
+   ```bash
+   yc iam service-account create --name developaid-vm-puller
+   yc container registry add-access-binding developaid-registry \
+     --service-account-name developaid-vm-puller \
+     --role container-registry.images.puller
+   ```
+   Только `puller`: машина не должна уметь переписывать или удалять образы.
+
+2. **Привязать его к виртуальной машине.** Консоль → виртуальная машина →
+   «Изменить» → «Сервисный аккаунт». Яндекс может потребовать остановить
+   машину — это единственный простой в настройке.
+
+3. **Идентификатор реестра на машине:**
+   ```bash
+   echo 'YC_REGISTRY_ID=<registry-id>' >> ~/plato/.env
+   ```
+
+4. **Проверить доступ:**
+   ```bash
+   curl -s -H 'Metadata-Flavor: Google' \
+     http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/token \
+     | python3 -c 'import sys,json; print(json.load(sys.stdin)["access_token"])' \
+     | docker login --username iam --password-stdin cr.yandex
+   ```
+   `Login Succeeded` — привязка правильная.
+
+5. **Безопасный запуск.** Скрипт `deploy-developaid.sh` в репозитории уже
+   написан и работает так: скачивает образ по точному тегу, поднимает его на
+   закрытом `127.0.0.1:18080`, проверяет `/health` (статус, коммит совпадает с
+   выкатываемым, каталог данных доступен на запись) — и только после этого
+   меняет рабочий контейнер. Не прошёл пробу — прод не тронут; упал на рабочем
+   порту — возвращается прежний образ.
+
+   ```bash
+   cd ~/plato && sh deploy-developaid.sh <sha>
+   sh deploy-developaid.sh --rollback
+   sh deploy-developaid.sh --log
+   ```
+
+6. **Решить, кто запускает выкатку.** Вариант с SSH из GitHub Actions
+   непроверен: бегунки стоят за границей, и дойдёт ли входящее соединение до
+   машины — вопрос открытый. Если нет, машина сама забирает `prod` по
+   расписанию или по кнопке; исходящее к `cr.yandex` внутри ru-central1
+   работает заведомо.
+
+`run.sh` для ручной сборки на месте оставлен как был — на случай, если реестр
+однажды подведёт.

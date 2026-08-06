@@ -41,10 +41,10 @@ def test_the_commit_comes_from_the_build_not_from_the_launch():
     """Коммит запекается сборкой. Задавать его при запуске нельзя: тогда он
     скажет то, что попросили, а не то, что выкачено."""
     dockerfile = Path("Dockerfile").read_text(encoding="utf-8")
-    assert "ARG GIT_COMMIT" in dockerfile
-    assert "ENV GIT_COMMIT=$GIT_COMMIT" in dockerfile
+    assert "ARG APP_COMMIT" in dockerfile
+    assert "ENV APP_COMMIT=$APP_COMMIT" in dockerfile
     source = Path("main_legacy.py").read_text(encoding="utf-8")
-    assert 'os.getenv("GIT_COMMIT")' in source
+    assert 'os.getenv("APP_COMMIT")' in source
 
 
 def test_health_reports_whether_the_data_survives(client):
@@ -74,11 +74,41 @@ def test_the_deploy_script_keeps_the_old_container_until_the_new_one_proves():
 
 
 def test_the_workflow_stops_before_a_red_test():
-    """Красные тесты не должны доезжать до прода."""
-    workflow = Path(".github/workflows/deploy-yandex.yml").read_text(encoding="utf-8")
+    """Красные тесты не должны доезжать до реестра."""
+    workflow = Path(".github/workflows/build-yandex.yml").read_text(encoding="utf-8")
     assert "needs: [test]" in workflow
-    assert "needs: [build]" in workflow
     assert "workflow_dispatch" in workflow
     # Один latest не даёт ни откатиться, ни понять, что подняли.
-    assert ":${{ steps.meta.outputs.sha }}" in workflow
+    assert ":${{ github.sha }}" in workflow
     assert ":prod" in workflow
+    assert ":latest" not in workflow
+
+
+def test_the_build_carries_no_permanent_yandex_key():
+    """Постоянный ключ в репозитории — ключ, утечку которого не заметишь.
+    Права берутся обменом короткоживущего токена GitHub на IAM-токен."""
+    workflow = Path(".github/workflows/build-yandex.yml").read_text(encoding="utf-8")
+    assert "id-token: write" in workflow
+    assert "urn:ietf:params:oauth:grant-type:token-exchange" in workflow
+    assert "https://auth.yandex.cloud/oauth/token" in workflow
+    for forbidden in ("YC_SA_KEY", "json_key", "authorized_key", "secrets.YC"):
+        assert forbidden not in workflow, forbidden
+    # Токены маскируются: журнал Actions читают все, у кого есть репозиторий.
+    assert workflow.count("::add-mask::") >= 2
+
+
+def test_the_first_stage_does_not_touch_the_machine():
+    """Этап первый — только реестр. Ни SSH, ни остановки контейнера: прод
+    продолжает жить на том, что на нём сейчас."""
+    workflows = Path(".github/workflows")
+    for path in workflows.glob("*.yml"):
+        text = path.read_text(encoding="utf-8")
+        for forbidden in ("ssh-action", "CORE_HOST", "CORE_SSH_KEY", "docker rm -f"):
+            assert forbidden not in text, f"{path.name}: {forbidden}"
+
+
+def test_the_browser_stays_in_the_production_image():
+    """Ускорять CI за счёт того, чем считают, нельзя: без Chromium расчёт ВРИ
+    уходит на копию методики, которая отстаёт от города."""
+    workflow = Path(".github/workflows/build-yandex.yml").read_text(encoding="utf-8")
+    assert "INSTALL_BROWSER=0" not in workflow
