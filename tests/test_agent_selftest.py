@@ -48,6 +48,7 @@ def test_a_working_chain_answers_with_how_long_it_took(client, monkeypatch):
     assert body["ok"] is True
     assert body["response_id"] == "resp_ok"
     assert "Цепочка работает" in body["verdict"]
+    assert "на этом сервере" in body["verdict"]
     assert body["seconds"] >= 0
 
 

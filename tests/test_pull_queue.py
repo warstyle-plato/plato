@@ -276,6 +276,16 @@ def test_the_selftest_names_a_silent_worker(client, core_side, monkeypatch):
     assert "PLATO_PULL_URL" in verdict
 
 
+def test_a_working_pull_chain_says_where_the_answer_came_from(client, core_side, monkeypatch):
+    """«Через этот сервер» верно только для локального ключа: в обратной схеме
+    ответ тоже приходит с Render, просто он сам за ним пришёл."""
+    core._PLATO_SELFTEST.update(at=0.0, result=None)
+    monkeypatch.setattr(core, "_openai_responses_request",
+                        lambda payload, budget_seconds=None: {"id": "resp_ok"})
+    verdict = client.get("/agent/selftest").json()["verdict"]
+    assert "через Render, по очереди заданий" in verdict
+
+
 def test_the_keepalive_is_silent_in_pull_mode():
     """Пинговать некого: до сервиса не дойти, ради этого схему и развернули."""
     import inspect

@@ -43,7 +43,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.58"
+VERSION = "0.17.59"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -21077,8 +21077,14 @@ def _plato_selftest_verdict(outcome: dict[str, Any]) -> str:
     и незачем заставлять человека вспоминать, чья это сторона.
     """
     if outcome.get("ok"):
-        return (f"Цепочка работает: ответ за {outcome.get('seconds')} с "
-                f"через {'Render' if outcome['route'] == 'render_proxy' else 'этот сервер'}.")
+        # Маршрутов три, и «через этот сервер» верно только для одного. В
+        # обратной схеме ответ тоже приходит с Render — просто он сам за ним
+        # пришёл, и называть это «своим сервером» значит путать.
+        where = {
+            "render_proxy": "через Render",
+            "render_pull": "через Render, по очереди заданий",
+        }.get(outcome["route"], "на этом сервере")
+        return f"Цепочка работает: ответ за {outcome.get('seconds')} с {where}."
     error = str(outcome.get("error") or "")
     if outcome["route"] == "render_pull":
         if "не забрал задание" in error or outcome.get("status") == 504:
