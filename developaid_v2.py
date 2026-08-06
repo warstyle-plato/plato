@@ -17,6 +17,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
+import market_analysis
+
 _ROOT = Path(__file__).resolve().parent
 _FRONTEND = _ROOT / "frontend_v2"
 
@@ -182,6 +184,8 @@ class TepSearchRequest(BaseModel):
 def install(app: FastAPI) -> None:
     """Mount the isolated read-only prototype routes."""
 
+    market_analysis.install(app)
+
     @app.get("/v2", include_in_schema=False)
     @app.get("/v2/", include_in_schema=False)
     async def developaid_v2_index() -> FileResponse:
@@ -235,7 +239,7 @@ def install(app: FastAPI) -> None:
             )
         except HTTPException:
             raise
-        except Exception as exc:  # ошибка обязана дойти до экрана, не до лога
+        except Exception as exc:
             raise HTTPException(
                 status_code=500,
                 detail=_core._error_location(exc)[:300]) from exc
