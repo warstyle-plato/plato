@@ -14,6 +14,12 @@ def test_preview_deploy_isolated_from_production() -> None:
     assert "PORT=${APP_PORT" not in script
 
 
+def test_preview_health_json_is_passed_as_data_not_python_stdin() -> None:
+    script = Path("deploy-market-preview.sh").read_text(encoding="utf-8")
+    assert 'json.loads(sys.argv[2])' in script
+    assert 'json.load(sys.stdin)' not in script.split("health_check()", 1)[1].split("route_check()", 1)[0]
+
+
 def test_preview_workflow_builds_in_github_and_pushes_to_registry() -> None:
     workflow = Path(".github/workflows/market-preview.yml").read_text(encoding="utf-8")
     assert "docker/build-push-action@v6" in workflow
