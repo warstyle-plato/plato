@@ -43,7 +43,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.51"
+VERSION = "0.17.52"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -7987,12 +7987,15 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     for item in expense_structure:
         value=float(item.get('value') or 0)
         if value<=0: continue
+        # Удельные берутся из расчёта, без запасного счёта на месте. Запасной
+        # счёт здесь уже стоил дорого: свод по очередям приходил без удельных,
+        # печать досчитывала их сама и выглядела безупречно, а страница
+        # показывала нули во всех строках. Одна поверхность прикрывала ошибку
+        # другой, и найти её удалось только глазами.
         expense_rows.append([item.get('label') or '—',_pdf_money(value),
                              (_pdf_num(value/total_expense*100,1)+'%') if total_expense else '—',
-                             _pdf_num(item.get('per_gns_th') if item.get('per_gns_th') is not None
-                                      else (value/_exp_gns/1000 if _exp_gns else 0),1),
-                             _pdf_num(item.get('per_saleable_th') if item.get('per_saleable_th') is not None
-                                      else (value/_exp_saleable/1000 if _exp_saleable else 0),1)])
+                             _pdf_num(item.get('per_gns_th') or 0,1),
+                             _pdf_num(item.get('per_saleable_th') or 0,1)])
     expense_rows.append(["Итого расходы",_pdf_money(total_expense),"100,0%" if total_expense else "—",
                          _pdf_num(total_expense/_exp_gns/1000 if _exp_gns else 0,1),
                          _pdf_num(total_expense/_exp_saleable/1000 if _exp_saleable else 0,1)])
@@ -16003,7 +16006,17 @@ def _consolidate_phase_results(
             expense_map[item["label"]] += float(item["value"] or 0.0)
     expense_base = sum(expense_map.values())
     expense_structure = [
-        {"label": label, "value": value, "share": value / expense_base if expense_base else 0.0}
+        {
+            "label": label,
+            "value": value,
+            "share": value / expense_base if expense_base else 0.0,
+            # Удельные складывать нельзя — их пересчитывают от сводных площадей.
+            # Пока их тут не было, свод по всему проекту показывал нули во всех
+            # строках, а итоговая строка считалась отдельно и стояла живая:
+            # таблица выглядела сломанной ровно там, где по ней и спорят.
+            "per_gns_th": value / project_gns / 1000 if project_gns else 0.0,
+            "per_saleable_th": value / saleable / 1000 if saleable else 0.0,
+        }
         for label, value in expense_map.items() if value > 0
     ]
     expense_structure.sort(key=lambda x: x["value"], reverse=True)

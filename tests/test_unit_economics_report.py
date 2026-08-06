@@ -69,6 +69,50 @@ def test_the_phased_report_keeps_both_bases():
         assert row["per_saleable_th"] == pytest.approx(row["value"] / saleable / 1000)
 
 
+def test_the_expense_structure_keeps_both_bases_in_every_mode():
+    """Свод по всему проекту показывал нули во всех строках структуры расходов,
+    а итоговая строка считалась отдельно и стояла живая: таблица выглядела
+    сломанной ровно там, где по ней спорят с подрядчиком и банком.
+
+    Причина — консолидация собирала строки заново, из сумм по очередям, и
+    удельных в них не клала: складывать их нельзя, а пересчитать от сводных
+    площадей забыли."""
+    for phasing in ({}, {"enabled": True, "phase_count": 3, "phase_gap_months": 12}):
+        bundle, _, _ = _bundle(phasing)
+        consolidated = bundle["consolidated"]
+        gns = float(consolidated["summary"]["project_gns_sqm"])
+        saleable = float(consolidated["summary"]["monetizable_saleable_sqm"])
+        rows = consolidated["report"]["expense_structure"]
+        assert rows, "структура расходов обязана доехать до свода"
+        for row in rows:
+            assert row["per_gns_th"] == pytest.approx(row["value"] / gns / 1000), row["label"]
+            assert row["per_saleable_th"] == pytest.approx(row["value"] / saleable / 1000)
+
+
+def test_the_rows_of_the_structure_add_up_to_its_total_line():
+    """Итоговая строка таблицы считается из сводки, а строки — из структуры:
+    разойдись они, обе выглядели бы достоверно."""
+    bundle, _, _ = _bundle({"enabled": True, "phase_count": 2, "phase_gap_months": 12})
+    consolidated = bundle["consolidated"]
+    rows = consolidated["report"]["expense_structure"]
+    assert sum(row["per_gns_th"] for row in rows) == pytest.approx(
+        consolidated["summary"]["full_cost_per_gns_th"], rel=1e-6)
+    assert sum(row["per_saleable_th"] for row in rows) == pytest.approx(
+        consolidated["summary"]["full_cost_per_saleable_th"], rel=1e-6)
+
+
+def test_the_print_does_not_recount_what_the_engine_gives():
+    """Запасной счёт в печати прикрыл ошибку страницы: свод приходил без
+    удельных, PDF досчитывал их сам и выглядел безупречно, а на экране стояли
+    нули. Поверхности считают один раз — источник один."""
+    import inspect
+    source = inspect.getsource(core._build_developaid_pdf)
+    block = source[source.find('expense_rows=[["Статья"'):]
+    block = block[:block.find('story.append(_PdfSection("income")')]
+    assert "per_gns_th" in block
+    assert "value/_exp_gns/1000" not in block, "печать снова считает своё"
+
+
 def test_the_pdf_prints_the_unit_economics(payload):
     """Раздела не было в отчёте вовсе — при том, что в книге он есть."""
     pypdf = pytest.importorskip("pypdf")
