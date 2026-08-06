@@ -43,7 +43,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.56"
+VERSION = "0.17.57"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -19724,7 +19724,10 @@ def _start_plato_keepalive() -> None:
     На самом Render PLATO_AI_URL пуст — там пинговать некого и незачем:
     инстанс, который сам себя пингует, всё равно уснёт вместе с потоком.
     """
-    if _PLATO_AI_URL and _PLATO_KEEPALIVE_MINUTES > 0:
+    # В обратной схеме пинговать некого: до сервиса модели с этой машины не
+    # дойти, ради этого схему и развернули. Строка «пинг не проходит» там была
+    # бы вечной и ничего не значила.
+    if _PLATO_AI_URL and _PLATO_KEEPALIVE_MINUTES > 0 and not _PLATO_PULL_ENABLED:
         threading.Thread(target=_plato_keepalive_loop, daemon=True).start()
 
 
@@ -19741,13 +19744,19 @@ def _start_glavapu_warm_up() -> None:
 
 
 def _plato_route() -> str:
-    """Куда уйдёт вызов модели: «render_proxy» или «local_openai».
+    """Куда уйдёт вызов модели: «render_pull», «render_proxy» или «local_openai».
 
     Решает адрес прокси, а не наличие ключа. На Яндексе ключа нет и быть не
     должно: если адрес задан, вызов обязан уйти на Render — молчаливый откат к
     api.openai.com увёл бы запрос туда, куда с этой машины ходить нельзя.
+
+    «render_pull» — то же самое, но наоборот: ядро не зовёт сервис модели, а
+    кладёт задание и ждёт, пока его заберут. Так работает там, где исходящее
+    соединение до сервиса не устанавливается вовсе.
     """
-    return "render_proxy" if _PLATO_AI_URL else "local_openai"
+    if _PLATO_AI_URL:
+        return "render_pull" if _PLATO_PULL_ENABLED else "render_proxy"
+    return "local_openai"
 
 
 def _agent_reasoning_effort(model: str) -> str | None:
@@ -19777,7 +19786,7 @@ def _openai_responses_request(payload: dict[str, Any],
     # Маршрут — первое, что спрашивают при разборе «Платон молчит». В сообщении
     # только имя маршрута: ни адреса, ни секрета, ни ключа.
     _PLATON_LOG.info("Platon route: %s", route)
-    if route == "render_proxy":
+    if route in ("render_proxy", "render_pull"):
         if not _PLATO_AI_PROXY_SECRET:
             # Отступать некуда: с заданным адресом прокси прямой вызов OpenAI
             # запрещён, поэтому это отказ, а не переключение маршрута.
@@ -19788,6 +19797,8 @@ def _openai_responses_request(payload: dict[str, Any],
                     "PLATO_AI_PROXY_SECRET. Без секрета Render отклонит служебный вызов."
                 ),
             )
+        if route == "render_pull":
+            return _openai_pull_request(payload, budget_seconds)
         return _openai_proxy_request(payload, budget_seconds)
     return _openai_direct_request(payload, budget_seconds)
 
@@ -19868,6 +19879,222 @@ def internal_plato_result(ticket: str, request: Request) -> dict[str, Any]:
     if stored is None:
         return {"pending": True}
     return {"pending": False, **stored}
+
+
+# --- Обратное направление: работу забирает сервис модели ---------------------
+# Из российского дата-центра до Render не дойти: TCP до его адресов не
+# устанавливается вовсе — при том, что сам Cloudflare, за которым Render стоит,
+# доступен. Ни сроками, ни адресом, ни группой безопасности это не лечится.
+# Поэтому направление разворачивается: ядро кладёт задание у себя, а сервис
+# модели — которому наружу ходить не мешает никто, он и до OpenAI, и до Telegram
+# дозванивается — забирает его коротким опросом и приносит ответ обратно.
+#
+# Очередь живёт на диске: воркеров два, и задание, положенное одним, обязан
+# видеть другой. Забрать задание может только один — файл переименовывается, и
+# проигравший получает его отсутствие, а не вторую копию работы.
+
+_PLATO_PULL_ENABLED = _env_str("PLATO_AI_PULL", "").strip().lower() in {
+    "1", "on", "yes", "true", "да"}
+_PLATO_PULL_URL = _env_str("PLATO_PULL_URL", "").strip().rstrip("/")
+_PLATO_QUEUE_WAIT_SECONDS = max(5.0, _env_float("PLATO_QUEUE_WAIT_SECONDS", 25.0))
+_PLATO_QUEUE_POLL_SECONDS = 0.4
+
+
+def _plato_job_path(job_id: str, suffix: str = "json") -> Path:
+    return _PLATO_STAGE_DIR / f"job_{job_id}.{suffix}"
+
+
+def _plato_job_claim() -> dict[str, Any]:
+    """Старейшее задание, забранное насовсем.
+
+    Переименование — единственная операция, которая на общем диске атомарна:
+    два опроса не могут забрать одно задание, и работа не будет сделана дважды.
+    """
+    try:
+        paths = sorted(_PLATO_STAGE_DIR.glob("job_*.json"))
+    except OSError:
+        return {}
+    for path in paths:
+        taken = path.with_suffix(".taken")
+        try:
+            path.rename(taken)
+        except OSError:
+            continue  # забрал сосед
+        try:
+            data = json.loads(taken.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            taken.unlink(missing_ok=True)
+            continue
+        return {"job_id": path.stem[len("job_"):], "payload": data.get("payload") or {}}
+    return {}
+
+
+def _openai_pull_request(payload: dict[str, Any],
+                         budget_seconds: float | None = None) -> dict[str, Any]:
+    """Кладёт задание в очередь и ждёт, пока сервис модели вернёт ответ."""
+    job_id = os.urandom(6).hex()
+    deadline = time.monotonic() + float(budget_seconds or _PLATO_AI_TIMEOUT_SECONDS)
+    try:
+        _PLATO_STAGE_DIR.mkdir(parents=True, exist_ok=True)
+        _plato_job_path(job_id).write_text(
+            json.dumps({"at": time.time(), "payload": payload}, ensure_ascii=False),
+            encoding="utf-8")
+    except OSError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Не удалось поставить задание в очередь: {type(exc).__name__}") from exc
+
+    _plato_trace_stage("ai_queue", "Задание передано сервису модели")
+    waited = 0.0
+    while time.monotonic() < deadline:
+        time.sleep(_PLATO_QUEUE_POLL_SECONDS)
+        waited += _PLATO_QUEUE_POLL_SECONDS
+        stored = _plato_answer_get("pull" + job_id)
+        if stored is not None:
+            _PLATON_LOG.info("Platon pull job %s answered in %.1fs", job_id, waited)
+            return _plato_proxy_stored(stored)
+        _plato_trace_stage("ai_queue", f"Сервис модели считает · {int(waited)} с")
+
+    _plato_job_path(job_id).unlink(missing_ok=True)
+    _plato_job_path(job_id, "taken").unlink(missing_ok=True)
+    _PLATON_LOG.info("Platon pull job %s expired after %.0fs", job_id, waited)
+    raise HTTPException(
+        status_code=504,
+        detail=(f"Сервис модели не забрал задание за {int(waited)} с. "
+                "Проверьте, запущен ли на нём разбор очереди (PLATO_PULL_URL)."))
+
+
+def _plato_queue_guard(request: Request) -> None:
+    """Очередь открыта только по общему секрету и только когда она включена."""
+    if not _PLATO_PULL_ENABLED:
+        raise HTTPException(
+            status_code=503,
+            detail="Очередь заданий выключена: задайте PLATO_AI_PULL=1 на этом сервере.")
+    expected = _env_str("PLATO_AI_PROXY_SECRET", "").strip()
+    if not expected:
+        raise HTTPException(
+            status_code=503,
+            detail="PLATO_AI_PROXY_SECRET не задан: очередь заданий выключена.")
+    supplied = str(request.headers.get("X-Plato-Secret") or "")
+    if not hmac.compare_digest(supplied, expected):
+        raise HTTPException(status_code=403, detail="Неверный секрет служебного вызова.")
+
+
+class PlatoJobResult(BaseModel):
+    answer: dict[str, Any] | None = None
+    error: str = ""
+    status: int = 502
+
+
+@app.get("/internal/plato/queue")
+def internal_plato_queue(request: Request, wait: float = 0.0) -> dict[str, Any]:
+    """Очередное задание для сервиса модели.
+
+    Запрос ждёт появления задания до `wait` секунд: без ожидания сервис модели
+    либо частил бы опросом, либо отвечал бы с задержкой в целый интервал.
+    """
+    _plato_queue_guard(request)
+    limit = min(max(0.0, float(wait or 0.0)), _PLATO_QUEUE_WAIT_SECONDS)
+    deadline = time.monotonic() + limit
+    while True:
+        job = _plato_job_claim()
+        if job:
+            _PLATON_LOG.info("Platon pull job %s taken", job.get("job_id"))
+            return job
+        if time.monotonic() >= deadline:
+            return {}
+        time.sleep(_PLATO_QUEUE_POLL_SECONDS)
+
+
+@app.post("/internal/plato/queue/{job_id}")
+def internal_plato_queue_result(job_id: str, req: PlatoJobResult,
+                                request: Request) -> dict[str, Any]:
+    """Ответ на задание. Неудача кладётся так же, как успех: ждать нечего."""
+    _plato_queue_guard(request)
+    job_id = str(job_id or "").strip().lower()
+    if not _TRACE_ID_RE.fullmatch(job_id):
+        raise HTTPException(status_code=400, detail="Неверный номер задания.")
+    if isinstance(req.answer, dict) and req.answer:
+        _plato_answer_put("pull" + job_id, {"answer": req.answer})
+    else:
+        _plato_answer_put("pull" + job_id, {
+            "error": str(req.error or "Сервис модели вернул пустой ответ.")[:700],
+            "status": int(req.status or 502)})
+    _plato_job_path(job_id, "taken").unlink(missing_ok=True)
+    return {"stored": True}
+
+
+def _plato_pull_once(base: str, headers: dict[str, str]) -> bool:
+    """Один круг: забрать задание, посчитать, вернуть ответ.
+
+    Возвращает True, если задание было. Ошибка модели возвращается тем же путём,
+    что и ответ: молчание оставило бы ядро ждать до конца срока впустую.
+    """
+    try:
+        request = urllib.request.Request(
+            f"{base}/internal/plato/queue?wait={int(_PLATO_QUEUE_WAIT_SECONDS)}",
+            headers=headers, method="GET")
+        with urllib.request.urlopen(
+                request, timeout=_PLATO_QUEUE_WAIT_SECONDS + 15) as response:
+            job = json.loads(response.read().decode("utf-8") or "{}")
+    except Exception as exc:
+        _PLATON_LOG.info("Platon pull: очередь недоступна: %s", type(exc).__name__)
+        time.sleep(5.0)
+        return False
+
+    job_id = str((job or {}).get("job_id") or "")
+    if not job_id:
+        return False
+
+    started = time.monotonic()
+    try:
+        body: dict[str, Any] = {"answer": _openai_direct_request(job.get("payload") or {})}
+    except HTTPException as exc:
+        body = {"error": str(exc.detail)[:700], "status": exc.status_code}
+    except Exception as exc:
+        body = {"error": f"{type(exc).__name__}: {str(exc)[:600]}", "status": 502}
+
+    data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+    post_headers = {**headers, "Content-Type": "application/json"}
+    for attempt in (1, 2, 3):
+        try:
+            request = urllib.request.Request(
+                f"{base}/internal/plato/queue/{job_id}", data=data,
+                headers=post_headers, method="POST")
+            with urllib.request.urlopen(request, timeout=30) as response:
+                response.read(256)
+            _PLATON_LOG.info("Platon pull job %s done in %.1fs", job_id,
+                             time.monotonic() - started)
+            return True
+        except Exception as exc:
+            _PLATON_LOG.info("Platon pull: ответ по заданию %s не доставлен (%d/3): %s",
+                             job_id, attempt, type(exc).__name__)
+            time.sleep(2.0 * attempt)
+    return True
+
+
+def _plato_pull_worker() -> None:
+    base = _PLATO_PULL_URL
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": USER_AGENT,
+        "X-Plato-Secret": _PLATO_AI_PROXY_SECRET,
+        "Connection": "close",
+    }
+    _PLATON_LOG.info("Platon pull worker started for %s", base)
+    while True:
+        try:
+            _plato_pull_once(base, headers)
+        except Exception as exc:  # поток обязан пережить любую неожиданность
+            _PLATON_LOG.info("Platon pull worker error: %s", type(exc).__name__)
+            time.sleep(5.0)
+
+
+@app.on_event("startup")
+def _start_plato_pull_worker() -> None:
+    """Очередь разбирает тот, у кого есть ключ и нет своего прокси, — Render."""
+    if _PLATO_PULL_URL and not _PLATO_AI_URL and os.getenv("OPENAI_API_KEY", "").strip():
+        threading.Thread(target=_plato_pull_worker, name="plato-pull", daemon=True).start()
 
 
 def _plato_internal_guard(request: Request) -> None:
@@ -20169,9 +20396,10 @@ def _plato_trace_stage(stage: str, label: str) -> None:
 def _plato_stage_cleanup() -> None:
     try:
         cutoff = time.time() - _PLATO_TRACE_TTL
-        for path in _PLATO_STAGE_DIR.glob("*.json"):
-            if path.stat().st_mtime < cutoff:
-                path.unlink(missing_ok=True)
+        for pattern in ("*.json", "*.taken"):
+            for path in _PLATO_STAGE_DIR.glob(pattern):
+                if path.stat().st_mtime < cutoff:
+                    path.unlink(missing_ok=True)
     except OSError:
         pass
 
@@ -20644,6 +20872,13 @@ def agent_status() -> dict[str, Any]:
         # «Platon route» с чужой машины нечем.
         "route": _plato_route(),
         "proxy_configured": bool(_PLATO_AI_URL and _PLATO_AI_PROXY_SECRET),
+        # Обратная схема: ядро не зовёт сервис модели, а ждёт, пока заберут.
+        "pull_queue": {
+            "enabled": _PLATO_PULL_ENABLED,
+            "waiting_jobs": len(list(_PLATO_STAGE_DIR.glob("job_*.json")))
+                            if _PLATO_STAGE_DIR.exists() else 0,
+            "worker_here": bool(_PLATO_PULL_URL and not _PLATO_AI_URL),
+        },
         # Пинг против засыпания сервиса модели: видно, живёт ли он и когда
         # последний раз отзывался, — иначе «Ошибка AI (504)» объяснять нечем.
         "keepalive": {
@@ -20845,6 +21080,11 @@ def _plato_selftest_verdict(outcome: dict[str, Any]) -> str:
         return (f"Цепочка работает: ответ за {outcome.get('seconds')} с "
                 f"через {'Render' if outcome['route'] == 'render_proxy' else 'этот сервер'}.")
     error = str(outcome.get("error") or "")
+    if outcome["route"] == "render_pull":
+        if "не забрал задание" in error or outcome.get("status") == 504:
+            return ("Сервис модели не забирает задания из очереди. Проверьте, что на нём "
+                    "задан PLATO_PULL_URL и он перезапущен: ключ и модель ни при чём.")
+        return "Задание забрали, но ответ вернулся ошибкой — текст в поле error."
     if outcome["route"] == "render_proxy":
         if "не ответил за" in error or outcome.get("status") == 504:
             return ("Сервис модели на Render не отвечает этому серверу. Ключ и модель "
