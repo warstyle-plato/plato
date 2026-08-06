@@ -2,6 +2,7 @@
 
 import main as _base
 import market_analysis
+import market_apply_fix
 from developaid_v2 import install as install_v2
 from telegram_user_registry import install
 
@@ -11,6 +12,10 @@ registry = install(_base)
 # Один модуль обслуживает основной веб-интерфейс и действующий Telegram-бот.
 # Установка идёт до /v2: тестовый интерфейс не является владельцем расчёта.
 market_analysis.install(_base)
+# Первый пилот искал поле цены по жёсткому DOM-id и сообщал об успехе даже при
+# его отсутствии. Патч находит динамически созданное поле по ключу/подписи,
+# отправляет штатные события формы и проверяет принятое значение.
+market_apply_fix.install(core)
 # market_analysis кладёт собственный style-блок рядом с существующими стилями
 # монолитной PAGE. Внутри исходного <style> вложенный тег недопустим, поэтому
 # оставляем сами правила в исходном блоке и одну закрывающую метку.
