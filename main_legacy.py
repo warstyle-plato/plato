@@ -43,7 +43,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.49"
+VERSION = "0.17.50"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -7197,6 +7197,29 @@ def _pdf_pct(value: Any) -> str:
         return "—"
 
 
+def _pdf_entry_cost_rows(result: dict[str, Any],
+                         expense_structure: list[dict[str, Any]]) -> list[list[str]]:
+    """Цена входа и плата за ВРИ — из расчёта, а не из формы.
+
+    Форма не знает ни о льготе, ни о доле очереди. При стопроцентной льготе
+    отчёт печатал полную плату за смену ВРИ как расход, которого в модели нет:
+    ключевая экономика не сходилась с собственной структурой расходов ниже, и
+    оба числа выглядели достоверно.
+    """
+    purchase = 0.0
+    for group in expense_structure or []:
+        if str(group.get("label")) == "Цена приобретения":
+            purchase = float(group.get("value") or 0)
+            break
+    paid = float((result.get("capex") or {}).get("land_rights") or 0)
+    relief = float(((result.get("vri") or {}).get("totals") or {}).get("relief") or 0)
+    return [
+        ["Цена приобретения", _pdf_money(purchase)],
+        ["Смена ВРИ / земельные права",
+         _pdf_money(paid) + (f" (льгота {_pdf_money(relief)})" if relief > 0 else "")],
+    ]
+
+
 def _purchase_feasibility(
     purchase_price_mln: Any,
     net_profit_mln: Any,
@@ -7729,8 +7752,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
                            textColor=colors.HexColor("#A35D00"))))
     story.append(_PdfSection("summary"));story.append(P("Ключевая экономика",h2))
     kpis=[
-        ["Цена приобретения",_pdf_money(float(inputs.get('purchase_price_mln') or 0)*1_000_000)],
-        ["Смена ВРИ / земельные права",_pdf_money(float(inputs.get('land_rights_cost_mln') or 0)*1_000_000)],
+        *_pdf_entry_cost_rows(result, expense_structure),
         ["Выручка",_pdf_money(summary.get('revenue'))],["Расходы всего",_pdf_money(summary.get('total_expenses'))],["EBITDA",_pdf_money(summary.get('ebitda'))],["Чистая прибыль",_pdf_money(summary.get('net_profit'))],["Маржинальность",_pdf_pct(summary.get('margin'))],["LLCR",_pdf_num(summary.get('llcr'),2)+"x"],["Расчётный БРИДЖ",_pdf_money(financing.get('calculated_bridge'))],["Фактический пик БРИДЖ",_pdf_money(financing.get('actual_bridge'))],["Пиковая (непокрытая эскроу) задолженность ПФ",_pdf_money(financing.get('pf_uncovered_peak'))],["Проценты и комиссии",_pdf_money(financing.get('interest_and_fees'))],
     ]
     # Остаток ПФ на конец проекта — это несостоявшееся погашение, а не деталь
@@ -23961,14 +23983,25 @@ function renderResult(){
   row('NPV',money(r.summary.npv))+
   row('IRR equity',irrFmt(r.summary.irr_equity));
 
+ // Числа карточки — из результата, а не из формы. Форма не знает ни о льготе,
+ // ни о доле очереди: при стопроцентной льготе строка показывала полную плату
+ // за ВРИ, которой проект не платит, а в разрезе очереди — цену покупки и плату
+ // всего проекта рядом с расходами одной очереди. Соседние строки давно берутся
+ // из расчёта, и эти две выбивались из общего правила.
+ const expenseGroup=label=>{
+  const found=(r.report.expense_structure||[]).find(g=>g.label===label);
+  return found?Number(found.value||0):0;
+ };
+ const vriRelief=Number(((r.vri||{}).totals||{}).relief||0);
  projectParamsTable.innerHTML=
   (r.summary.phase_count?row('Очередность',r.summary.phase_count+' очереди'):'')+
   row('Класс проекта',inputs.project_class&&PROJECT_CLASS_PRESETS[inputs.project_class]?PROJECT_CLASS_PRESETS[inputs.project_class].label:'Пользовательский')+
   row('Сценарий',scenarioSelect.options[scenarioSelect.selectedIndex].text)+
   row('Доходы к базовому сценарию',Number(r.summary.scenario_revenue_multiplier||1).toLocaleString('ru-RU',{minimumFractionDigits:2,maximumFractionDigits:2})+'x')+
   row('Расходы к базовому сценарию',Number(r.summary.scenario_cost_multiplier||1).toLocaleString('ru-RU',{minimumFractionDigits:2,maximumFractionDigits:2})+'x')+
-  row('Стоимость покупки',money(Number(inputs.purchase_price_mln||0)*1e6))+
-  row('Стоимость смены ВРИ / права',money(Number(inputs.land_rights_cost_mln||0)*1e6))+
+  row('Стоимость покупки',money(expenseGroup('Цена приобретения')))+
+  row('Стоимость смены ВРИ / права',money(Number(r.capex.land_rights||0))
+   +(vriRelief>0?' <span style="color:#777;font-weight:400">льгота '+money(vriRelief)+'</span>':''))+
   row(r.summary.social_payment_mode==='Строительство'?'Строительство соцобъектов':'Социальная компенсация',socialMoney(r.summary.social_payment))+
   row('Проектирование П и РД',money((r.capex.design_p||0)+(r.capex.design_rd||0)))+
   row('Продаваемая площадь',num(r.summary.monetizable_saleable_sqm)+' м²')+
