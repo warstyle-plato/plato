@@ -18,7 +18,14 @@ ENV TZ=Europe/Moscow \
 
 WORKDIR /app
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Сеть на ядре до pypi.org рвётся на чтении: соединение устанавливается, а
+# ответ приходит не всегда, и сборка падала на «Read timed out (read
+# timeout=15)». Пятнадцати секунд там мало, а повторов по умолчанию пять —
+# ждём дольше и упорнее. Зеркало подставляется без правки файла:
+# docker build --build-arg PIP_INDEX_URL=<адрес зеркала> .
+ARG PIP_INDEX_URL=https://pypi.org/simple
+RUN pip install --no-cache-dir --timeout 120 --retries 10 \
+      --index-url "$PIP_INDEX_URL" -r requirements.txt
 
 # Chromium для запуска штатного калькулятора ГлавАПУ на сервере: копия его
 # методики отставала от города, и расхождение находил человек, а не мы.
@@ -27,8 +34,14 @@ RUN pip install --no-cache-dir -r requirements.txt
 # без браузера — docker build --build-arg INSTALL_BROWSER=0, тогда расчёт
 # останется на серверных формулах, как до перехода.
 ARG INSTALL_BROWSER=1
+# Браузер тоже качается из сети, и на той же сети скачивание срывается. Три
+# попытки вместо одной: пересобирать весь образ из-за одного оборванного
+# соединения — двадцать минут на ровном месте.
 RUN if [ "$INSTALL_BROWSER" = "1" ]; then \
-      playwright install --with-deps chromium \
+      for attempt in 1 2 3; do \
+        playwright install --with-deps chromium && break || \
+        { echo "playwright install: попытка $attempt не удалась"; sleep 10; }; \
+      done \
       && rm -rf /var/lib/apt/lists/*; \
     fi
 
