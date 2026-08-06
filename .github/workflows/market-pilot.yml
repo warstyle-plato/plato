@@ -1,0 +1,27 @@
+name: Market pilot
+
+on:
+  pull_request:
+    paths:
+      - market_analysis.py
+      - main_registry.py
+      - tests/test_market_analysis.py
+      - .github/workflows/market-pilot.yml
+  workflow_dispatch:
+
+jobs:
+  test-market-pilot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Compile integration files
+        run: python -m py_compile market_analysis.py main_registry.py
+      - name: Run market tests
+        run: pytest -q tests/test_market_analysis.py
