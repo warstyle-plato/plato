@@ -58,7 +58,7 @@ jobs:
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event.pull_request.head.repo.full_name == github.repository &&
-       github.head_ref == 'agent/market-domrf-search')
+       github.head_ref == 'agent/market-domrf-search-v2')
     timeout-minutes: 60
     permissions:
       contents: read
@@ -127,8 +127,8 @@ jobs:
           script: |
             set -eu
             cd ~/plato
-            git fetch --quiet origin agent/market-domrf-search
-            git show origin/agent/market-domrf-search:deploy-market-preview.sh > /tmp/deploy-market-preview.sh
+            git fetch --quiet origin agent/market-domrf-search-v2
+            git show origin/agent/market-domrf-search-v2:deploy-market-preview.sh > /tmp/deploy-market-preview.sh
             chmod 700 /tmp/deploy-market-preview.sh
             DEVELOPAID_ROOT="$HOME/plato" \
               sh /tmp/deploy-market-preview.sh \
