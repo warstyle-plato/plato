@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 
@@ -21,6 +21,21 @@ _USER_AGENT = os.getenv(
 )
 
 
+def _ascii_url(url: str) -> str:
+    parts = urlsplit(url)
+    host = parts.hostname.encode("idna").decode("ascii") if parts.hostname else ""
+    netloc = host
+    if parts.port:
+        netloc += f":{parts.port}"
+    if parts.username:
+        auth = parts.username
+        if parts.password:
+            auth += f":{parts.password}"
+        netloc = f"{auth}@{netloc}"
+    path = quote(parts.path, safe="/%:@")
+    return urlunsplit((parts.scheme, netloc, path, parts.query, parts.fragment))
+
+
 def get_json(
     url: str,
     *,
@@ -32,6 +47,7 @@ def get_json(
     if params:
         query = urlencode({k: v for k, v in params.items() if v is not None})
         url = f"{url}{'&' if '?' in url else '?'}{query}"
+    url = _ascii_url(url)
     request_headers = {
         "Accept": "application/json, text/plain, */*",
         "User-Agent": _USER_AGENT,
