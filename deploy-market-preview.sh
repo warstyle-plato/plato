@@ -42,10 +42,10 @@ health_check() {
     attempt=$((attempt + 1))
     body=$(curl -fsS --max-time 5 "http://127.0.0.1:${port}/health" 2>/dev/null || true)
     if [ -n "$body" ]; then
-      printf '%s' "$body" | python3 - "$EXPECT_COMMIT" <<'PY'
+      python3 - "$EXPECT_COMMIT" "$body" <<'PY'
 import json, sys
 expect = sys.argv[1]
-data = json.load(sys.stdin)
+data = json.loads(sys.argv[2])
 problems = []
 if data.get("status") != "ok":
     problems.append(f"status={data.get('status')!r}")
