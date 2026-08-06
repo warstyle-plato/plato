@@ -134,6 +134,8 @@ def test_the_fee_defaults_follow_the_credit_agreements():
     assert core.DEFAULT_INPUTS["limit_fee_pct"] == pytest.approx(0.7)
     assert core.DEFAULT_INPUTS["reservation_fee_pct"] == pytest.approx(0.1)
     assert 3.3 <= core.DEFAULT_INPUTS["pf_spread_pp"] <= 4.75
-    # Страница несёт собственную копию умолчаний — она обязана совпадать.
-    page = open("main_legacy.py", encoding="utf-8").read()
-    assert '"limit_fee_pct": 0.7' in page and '"reservation_fee_pct": 0.1' in page
+    # Копии умолчаний на странице больше нет — она подставляется из движка,
+    # и проверять надо подстановку, а не совпадение двух списков.
+    assert core.INPUT_DEFAULT_PLACEHOLDER not in core.PAGE
+    assert '"limit_fee_pct": 0.7' in core.PAGE
+    assert '"reservation_fee_pct": 0.1' in core.PAGE
