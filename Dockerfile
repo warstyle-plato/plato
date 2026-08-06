@@ -50,8 +50,8 @@ COPY . .
 # Коммит запекается в образ: по версии не отличить выкаченный образ от
 # собранного часом раньше, а выкатка обязана убедиться, что подняла именно то,
 # что выпускала. Слой последний — иначе правка кода сбрасывала бы кэш сборки.
-ARG GIT_COMMIT=""
-ENV GIT_COMMIT=$GIT_COMMIT
+ARG APP_COMMIT=""
+ENV APP_COMMIT=$APP_COMMIT
 
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
