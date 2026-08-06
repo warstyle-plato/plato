@@ -44,6 +44,11 @@ from pydantic import BaseModel
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
 VERSION = "0.17.61"
+# Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
+# на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
+# выкаченный образ от собранного часом раньше. Значение запекается сборкой
+# (ARG GIT_COMMIT), запуску его задавать неоткуда — вне контейнера пусто.
+COMMIT = (os.getenv("GIT_COMMIT") or "").strip()[:40]
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -15665,7 +15670,17 @@ def _bridge_actual_structure(monthlies: list[dict[str, Any]], peak_month: str,
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "version": VERSION}
+    # Выкатка сверяет ответ с тем коммитом, который выпускала: без этого
+    # «поднялось» означает лишь «что-то поднялось». Данные тоже проверяются —
+    # каталог примонтирован томом, и потерять его молча дороже всего.
+    data_dir = Path(os.getenv("DEVELOPAID_DATA_DIR") or "data")
+    return {
+        "status": "ok",
+        "version": VERSION,
+        "commit": COMMIT,
+        "data_dir": str(data_dir),
+        "data_writable": os.access(data_dir, os.W_OK) if data_dir.exists() else False,
+    }
 
 
 @app.get("/defaults")

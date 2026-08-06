@@ -47,6 +47,12 @@ RUN if [ "$INSTALL_BROWSER" = "1" ]; then \
 
 COPY . .
 
+# Коммит запекается в образ: по версии не отличить выкаченный образ от
+# собранного часом раньше, а выкатка обязана убедиться, что подняла именно то,
+# что выпускала. Слой последний — иначе правка кода сбрасывала бы кэш сборки.
+ARG GIT_COMMIT=""
+ENV GIT_COMMIT=$GIT_COMMIT
+
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD curl -fsS http://127.0.0.1:8000/health || exit 1
