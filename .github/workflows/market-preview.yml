@@ -1,3 +1,4 @@
+# Автоматическая preview-выкладка только для рыночной ветки; production не затрагивается.
 name: Market preview
 
 on:
