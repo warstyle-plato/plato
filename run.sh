@@ -6,6 +6,7 @@
 # docker: гасит прежний контейнер, пересобирает образ и поднимает заново.
 #
 #   sh run.sh            — собрать и запустить
+#   sh run.sh pull       — взять готовый образ из реестра и запустить
 #   sh run.sh stop       — остановить
 #   sh run.sh logs       — смотреть журнал
 #   sh run.sh doctor     — общая картина: контейнер, порт, версии, службы
@@ -194,11 +195,42 @@ case "${1:-up}" in
   logs)
     exec docker logs -f "$NAME"
     ;;
+  pull)
+    # Готовый образ из Yandex Container Registry вместо сборки на месте.
+    # Собирать здесь всерьёз нельзя: pypi рвёт соединение, а Chromium
+    # качается по получасу. Реестр — в том же ru-central1, между ним и
+    # машиной блокировать нечего.
+    [ -n "${YC_REGISTRY_ID:-}" ] || YC_REGISTRY_ID=$(grep -E '^YC_REGISTRY_ID=' .env 2>/dev/null | tail -1 | cut -d= -f2- || true)
+    [ -n "${YC_REGISTRY_ID:-}" ] || {
+      echo "Не задан YC_REGISTRY_ID — положите его в .env." >&2
+      echo "Идентификатор реестра показывает консоль: Container Registry → реестр." >&2
+      exit 1
+    }
+    IMAGE="cr.yandex/${YC_REGISTRY_ID}/developaid:${IMAGE_TAG:-latest}"
+    # Токен живёт двенадцать часов, поэтому вход делается каждый раз, а не
+    # однажды руками: иначе через сутки pull молча упрётся в отказ доступа.
+    echo "Вход в реестр…"
+    token=$(curl -sf -H 'Metadata-Flavor: Google' \
+      'http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/token' \
+      | python3 -c 'import sys,json; print(json.load(sys.stdin)["access_token"])' 2>/dev/null || true)
+    [ -n "$token" ] || {
+      echo "Метаданные не дали токен: к машине не привязан сервисный аккаунт." >&2
+      echo "Консоль: виртуальная машина → Изменить → Сервисный аккаунт (роль container-registry.images.puller)." >&2
+      exit 1
+    }
+    echo "$token" | docker login --username iam --password-stdin cr.yandex >/dev/null
+    echo "Скачивание ${IMAGE}…"
+    docker pull "$IMAGE"
+    docker tag "$IMAGE" "$NAME"
+    SKIP_BUILD=1
+    ;;
 esac
 
+if [ "${SKIP_BUILD:-0}" != "1" ]; then
 echo "Сборка образа…"
 # shellcheck disable=SC2086 — аргументы сборки должны разделиться на слова.
 docker build $BUILD_ARGS -t "$NAME" .
+fi
 
 echo "Остановка прежнего контейнера…"
 docker rm -f "$NAME" >/dev/null 2>&1 || true

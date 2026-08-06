@@ -1,0 +1,70 @@
+name: Образ ядра
+
+# Собирать образ на самом ядре больше нельзя всерьёз: с той машины закрыты
+# *.onrender.com и api.telegram.org, а pypi.org рвёт соединение на чтении —
+# сборка падает то на «Read timed out», то на «SSL: UNEXPECTED_EOF». Лечить
+# это зеркалами значит каждый раз выяснять, какой канал отвалился сегодня.
+#
+# Здесь интернет открыт весь. Образ собирается тут и кладётся в Yandex
+# Container Registry — он в том же ru-central1, что и ядро, и блокировать
+# между ними нечего. На машине остаётся docker pull.
+#
+# Сборка на месте никуда не делась: sh run.sh собирает, как раньше. Реестр —
+# короткая дорога, а не единственная.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "main*.py"
+      - "requirements.txt"
+      - "Dockerfile"
+      - "templates/**"
+      - "presets/**"
+      - "genplan_assets/**"
+      - ".github/workflows/core-image.yml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # Chromium в образе тянет полчаса на плохой сети; на бегунке GitHub он
+    # качается за минуты, но запас нужен.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Версия приложения
+        id: version
+        # Версия объявляется один раз — main_legacy.VERSION. Тег образа берётся
+        # оттуда же, иначе на машине не понять, что именно приехало.
+        run: |
+          version=$(grep -m1 '^VERSION = ' main_legacy.py | cut -d'"' -f2)
+          [ -n "$version" ] || { echo "VERSION не найдена" >&2; exit 1; }
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Вход в реестр
+        # Ключ сервисного аккаунта — JSON целиком, в секрете YC_SA_KEY.
+        run: |
+          echo '${{ secrets.YC_SA_KEY }}' \
+            | docker login --username json_key --password-stdin cr.yandex
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Сборка и публикация
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            cr.yandex/${{ secrets.YC_REGISTRY_ID }}/developaid:latest
+            cr.yandex/${{ secrets.YC_REGISTRY_ID }}/developaid:${{ steps.version.outputs.value }}
+          # Кэш слоёв в самом реестре: без него каждая сборка ставит Chromium
+          # заново, и двадцать минут возвращаются.
+          cache-from: type=registry,ref=cr.yandex/${{ secrets.YC_REGISTRY_ID }}/developaid:buildcache
+          cache-to: type=registry,ref=cr.yandex/${{ secrets.YC_REGISTRY_ID }}/developaid:buildcache,mode=max
+
+      - name: Что уехало
+        run: |
+          echo "cr.yandex/${{ secrets.YC_REGISTRY_ID }}/developaid:${{ steps.version.outputs.value }}"
+          echo "На ядре: sh run.sh pull"
