@@ -43,7 +43,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.52"
+VERSION = "0.17.53"
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
@@ -8070,6 +8070,31 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         table(bridge_rows, [98*mm, 45*mm, 27*mm], font_size=8.0),
     ]))
 
+    # Фактический пик — по статьям, оплаченным к его месяцу. Без этой таблицы
+    # разница между лимитом методики и реальной потребностью («остальное
+    # вашими») читалась только глазами по структуре расходов.
+    actual_structure = list(financing.get("actual_bridge_structure") or [])
+    if actual_structure:
+        actual_peak = float(financing.get("actual_bridge") or 0)
+        actual_rows = [["Статья", "Оплачено к пику", "Доля"]]
+        for item in actual_structure:
+            value = float(item.get("value") or 0)
+            actual_rows.append([
+                str(item.get("label") or "—"), _pdf_money(value),
+                _pdf_num(float(item.get("share") or 0) * 100, 1) + "%",
+            ])
+        actual_rows.append(["ПИК БРИДЖА", _pdf_money(actual_peak),
+                            "100,0%" if actual_peak else "—"])
+        month = str(financing.get("actual_bridge_month") or "")
+        story.append(KeepTogether([
+            P("Структура фактического БРИДЖА"
+              + (f" · {'.'.join(reversed(month.split('-')))}" if month else ""), h2),
+            table(actual_rows, [98*mm, 45*mm, 27*mm], font_size=8.0),
+            P("Оплачено к месяцу пика. До открытия ПФ у проекта нет ни выручки, ни ПФ, "
+              "поэтому остаток БРИДЖа равен оплаченному; разница с расчётным лимитом — "
+              "расходы, под которые лимит не даётся.", small),
+        ]))
+
     timeline_rows=list((result.get("finance") or {}).get("rows") or [])
     debt_chart=line_chart(
         timeline_rows,
@@ -15303,6 +15328,12 @@ def calculate(req: CalcRequest) -> dict:
     calendar_start = min(d(e["start"]) for e in calendar_events)
     calendar_end = max(d(e["end"]) for e in calendar_events)
 
+    # Фактический пик БРИДЖа расшифровывается по статьям: расчётный лимит имеет
+    # разбивку по целям, а пик — не имел, и разница между ними («остальное
+    # вашими») читалась только глазами по структуре расходов.
+    monthly_detail = _monthly_detail(op, timeline, row_by_month)
+    bridge_peak_month = _bridge_peak_month(fin["rows"])
+
     return {
         "dates": {
             "project_start": op["project_start"].isoformat(),
@@ -15399,6 +15430,9 @@ def calculate(req: CalcRequest) -> dict:
             "financing": {
                 "calculated_bridge": fin["calculated_bridge_limit"],
                 "actual_bridge": fin["peak_bridge"],
+                "actual_bridge_month": bridge_peak_month,
+                "actual_bridge_structure": _bridge_actual_structure(
+                    [monthly_detail], bridge_peak_month, fin["peak_bridge"]),
                 "pf_peak": fin["peak_pf"],
                 "pf_uncovered_peak": fin.get("peak_uncovered_pf", 0.0),
                 "pf_limit": fin["pf_limit"],
@@ -15433,7 +15467,7 @@ def calculate(req: CalcRequest) -> dict:
         },
         # Помесячная детализация финмодели: статьи расходов, продукты продаж и
         # физические объёмы по месяцам. Суммы сходятся с итогами выше.
-        "monthly": _monthly_detail(op, timeline, row_by_month),
+        "monthly": monthly_detail,
         "excel_control": EXCEL_CONTROL,
         "notes": {
             "llcr": "LLCR рассчитан по структуре действующего листа LLCR: поступления минус операционные/инвестиционные расходы плюс ПФ, делённые на ПФ и стоимость долга.",
@@ -15532,6 +15566,51 @@ def _monthly_detail(
             for month in timeline
         ],
     }
+
+
+def _bridge_peak_month(rows: list[dict[str, Any]]) -> str:
+    peak = max(rows, key=lambda row: float(row.get("bridge_balance") or 0.0), default=None)
+    if not peak or float(peak.get("bridge_balance") or 0.0) <= 0:
+        return ""
+    month = peak.get("month")
+    return month.isoformat() if hasattr(month, "isoformat") else str(month)
+
+
+def _bridge_actual_structure(monthlies: list[dict[str, Any]], peak_month: str,
+                             peak_value: float) -> list[dict[str, Any]]:
+    """Что оплачено к месяцу пика БРИДЖа — по статьям.
+
+    Расчётный лимит расшифрован по четырём целям методики, а фактический пик —
+    ничем; разница между ними разбиралась перепиской, хотя это и есть то, что
+    банк называет «остальное вашими». До открытия ПФ у проекта нет ни выручки,
+    ни ПФ, поэтому остаток БРИДЖа в месяц пика равен всему, что к этому месяцу
+    оплачено. Если сходится не до конца — расхождение показывается строкой, а не
+    прячется в округление.
+    """
+    if not peak_month:
+        return []
+    totals: dict[str, float] = defaultdict(float)
+    for monthly in monthlies:
+        months = [str(month) for month in (monthly.get("months") or [])]
+        upto = [index for index, month in enumerate(months) if month <= peak_month]
+        for cost in monthly.get("costs") or []:
+            values = cost.get("values") or []
+            totals[str(cost.get("label") or "—")] += sum(
+                float(values[index] or 0.0) for index in upto if index < len(values))
+    rows = [{"label": label, "value": value}
+            for label, value in totals.items() if value > 1_000_000]
+    rows.sort(key=lambda item: -item["value"])
+    paid = sum(item["value"] for item in rows)
+    residual = float(peak_value or 0.0) - paid
+    if abs(residual) > max(float(peak_value or 0.0) * 0.01, 1_000_000):
+        rows.append({
+            "label": "Покрыто выручкой и ПФ" if residual < 0 else "Проценты и капитализация",
+            "value": residual,
+        })
+    base = float(peak_value or 0.0) or paid
+    for item in rows:
+        item["share"] = item["value"] / base if base else 0.0
+    return rows
 
 
 @app.get("/health")
@@ -15890,6 +15969,7 @@ def _consolidate_phase_results(
 ) -> dict[str, Any]:
     results = [item["result"] for item in phase_items]
     finance = _aggregate_finance(results)
+    consolidated_bridge_month = _bridge_peak_month(finance["rows"])
 
     tep_map: dict[str, dict[str, Any]] = {}
     for result in results:
@@ -16165,6 +16245,12 @@ def _consolidate_phase_results(
             "financing": {
                 "calculated_bridge": finance["calculated_bridge_limit"],
                 "actual_bridge": finance["peak_bridge"],
+                # Пик свода — общий месяц, а не сумма пиков очередей, поэтому и
+                # расшифровка собирается на этот общий месяц по всем очередям.
+                "actual_bridge_month": consolidated_bridge_month,
+                "actual_bridge_structure": _bridge_actual_structure(
+                    [result.get("monthly") or {} for result in results],
+                    consolidated_bridge_month, finance["peak_bridge"]),
                 "pf_peak": finance["peak_pf"],
                 "pf_uncovered_peak": finance["peak_uncovered_pf"],
                 "pf_limit": finance["pf_limit"],
@@ -21609,6 +21695,12 @@ details.cadastral-box>summary::marker{color:#888}
         <div class="section-title">Структура расчётного БРИДЖа</div>
         <table class="metric-table metric-compact bridge-purpose-table" id="bridgePurposeTable"></table>
         <div class="bridge-purpose-note">Смена ВРИ / земельные права, проценты и комиссии в расчётный лимит БРИДЖа не входят.</div>
+        <!-- Расчётный лимит расшифрован по целям методики, а фактический пик не
+             был расшифрован ничем — и разница между ними, то самое «остальное
+             вашими», разбиралась перепиской. -->
+        <div class="section-title" style="margin-top:20px">Структура фактического БРИДЖа<span id="bridgeActualMonth"></span></div>
+        <table class="metric-table metric-compact bridge-purpose-table" id="bridgeActualTable"></table>
+        <div class="bridge-purpose-note" id="bridgeActualNote"></div>
       </div>
       </div>
 
@@ -24175,6 +24267,27 @@ function renderResult(){
    `<thead><tr><th>Цель</th><th>Сумма</th><th>Доля</th></tr></thead>`+
    `<tbody>${bridgeUses.map(x=>`<tr><td>${x[0]}</td><td>${money(x[1])}</td><td>${bridgeShare(x[1])}</td></tr>`).join('')}</tbody>`+
    `<tfoot><tr><th>Итого БРИДЖ</th><th>${money(bridgeTotal)}</th><th>${bridgeTotal>0?'100,0%':'—'}</th></tr></tfoot>`;
+
+ // Фактический пик — по статьям, оплаченным к месяцу пика. Лимит методики и
+ // реальная потребность расходятся всегда, и разница — это то, что банк
+ // называет «остальное вашими»; до сих пор её приходилось считать глазами.
+ const bridgeActual=(r.report.financing.actual_bridge_structure||[]);
+ const bridgeActualTotal=Number(r.report.financing.actual_bridge||0);
+ const bridgeActualEl=document.getElementById('bridgeActualTable');
+ if(bridgeActualEl){
+  bridgeActualEl.innerHTML=bridgeActual.length?
+   (`<thead><tr><th>Статья</th><th>Оплачено к пику</th><th>Доля</th></tr></thead>`
+    +`<tbody>${bridgeActual.map(x=>`<tr><td>${escapeHtml(x.label)}</td><td>${money(x.value)}</td><td>${(Number(x.share||0)*100).toLocaleString('ru-RU',{minimumFractionDigits:1,maximumFractionDigits:1})}%</td></tr>`).join('')}</tbody>`
+    +`<tfoot><tr><th>Пик БРИДЖа</th><th>${money(bridgeActualTotal)}</th><th>${bridgeActualTotal>0?'100,0%':'—'}</th></tr></tfoot>`)
+   :'';
+  const monthEl=document.getElementById('bridgeActualMonth');
+  const when=String(r.report.financing.actual_bridge_month||'');
+  if(monthEl)monthEl.textContent=when?' · '+dateRu(when):'';
+  const noteEl=document.getElementById('bridgeActualNote');
+  if(noteEl)noteEl.textContent=bridgeActual.length
+   ?'Оплачено к месяцу пика. До открытия ПФ у проекта нет ни выручки, ни ПФ, поэтому остаток БРИДЖа равен оплаченному. Разница с расчётным лимитом — расходы, под которые лимит не даётся.'
+   :'БРИДЖ не привлекался.';
+ }
 
  unitEconomicsTable.innerHTML=(r.report.unit_economics||[]).map(x=>`<tr>
   <td>${x.label}</td>
