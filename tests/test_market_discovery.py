@@ -2,12 +2,19 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from market_search.http import _ascii_url
 from market_search.providers.domrf import DomRfProvider, haversine_km
 from market_search.service import MarketDiscoveryService
 
 
 def test_haversine_is_zero_for_same_point() -> None:
     assert haversine_km(55.0, 37.0, 55.0, 37.0) == 0
+
+
+def test_cyrillic_domrf_path_is_percent_encoded() -> None:
+    url = _ascii_url("https://xn--80az8a.xn--d1aqf.xn--p1ai/сервисы/api/object/64438")
+    assert "%D1%81" in url
+    assert "сервисы" not in url
 
 
 def test_domrf_normalises_official_links(tmp_path: Path) -> None:
