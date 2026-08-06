@@ -11,7 +11,7 @@ def test_preview_deploy_isolated_from_production() -> None:
     assert "TELEGRAM_BOT_TOKEN=" in script
     assert "TELEGRAM_WEBHOOK_ENABLED=0" in script
     assert "docker build" not in script
-    assert "developaid\n" not in script
+    assert "PORT=${APP_PORT" not in script
 
 
 def test_preview_workflow_builds_in_github_and_pushes_to_registry() -> None:
