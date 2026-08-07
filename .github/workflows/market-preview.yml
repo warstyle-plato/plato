@@ -41,8 +41,20 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_ref || github.ref }}
+      - name: Переключиться на preview-ветку
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          SOURCE_REF: ${{ inputs.source_ref }}
+        run: |
+          set -euo pipefail
+          case "$SOURCE_REF" in
+            agent/market-*) ;;
+            *) echo "Разрешены только ветки agent/market-*" >&2; exit 1 ;;
+          esac
+          git fetch --no-tags --depth=1 origin "$SOURCE_REF"
+          git checkout --detach FETCH_HEAD
+          echo "Preview ref: $SOURCE_REF"
+          git rev-parse --short=7 HEAD
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -66,9 +78,9 @@ jobs:
           paths = {getattr(route, "path", None) for route in main_registry.app.routes}
           assert "/market/discovery" in paths
           assert 'data-tab="marketDiscovery"' in main_registry.core.PAGE
-          service = main_registry.app.state.market_discovery_service
-          assert service.__class__.__module__ == "market_search.service_v5", service.__class__.__module__
-          assert service.__class__.__name__ == "MarketDiscoveryService"
+          service = main_registry.market_search
+          assert service is main_registry.app.state.market_discovery_service, service
+          assert service.__class__.__module__.endswith("service_v6"), service.__class__
           PY
 
   build:
@@ -85,17 +97,19 @@ jobs:
       tag: ${{ steps.meta.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.source_ref }}
-
-      - name: Проверить ветку preview
+      - name: Переключиться на preview-ветку
         env:
           SOURCE_REF: ${{ inputs.source_ref }}
         run: |
+          set -euo pipefail
           case "$SOURCE_REF" in
             agent/market-*) ;;
             *) echo "Разрешены только ветки agent/market-*" >&2; exit 1 ;;
           esac
+          git fetch --no-tags --depth=1 origin "$SOURCE_REF"
+          git checkout --detach FETCH_HEAD
+          echo "Preview ref: $SOURCE_REF"
+          git rev-parse --short=7 HEAD
 
       - name: Имя и тег preview
         id: meta
