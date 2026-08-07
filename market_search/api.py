@@ -52,5 +52,8 @@ def install(app: FastAPI) -> MarketDiscoveryService:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except RemoteServiceError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
+        except Exception as exc:  # preview: never return an opaque HTML 500 to the UI
+            detail = f"Внутренняя ошибка market discovery: {type(exc).__name__}: {exc}"
+            raise HTTPException(status_code=500, detail=detail) from exc
 
     return service
