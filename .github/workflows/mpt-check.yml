@@ -1,0 +1,39 @@
+name: MPT calculator
+
+on:
+  pull_request:
+    paths:
+      - "mpt_calculator.py"
+      - "mpt_extension.py"
+      - "main_registry.py"
+      - "tests/test_mpt_*.py"
+      - ".github/workflows/mpt-check.yml"
+
+jobs:
+  mpt-checks:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: python -m pip install -r requirements-dev.txt
+      - name: Compile MPT modules
+        run: python -m py_compile mpt_calculator.py mpt_extension.py main_registry.py
+      - name: Run MPT tests
+        run: python -m pytest tests/test_mpt_calculator.py tests/test_mpt_extension.py -q
+      - name: Smoke production entrypoint
+        env:
+          TELEGRAM_BOT_TOKEN: ""
+          OPENAI_API_KEY: ""
+        run: |
+          python - <<'PY'
+          import main_registry
+          paths = {getattr(route, "path", "") for route in main_registry.app.routes}
+          assert "/api/mpt/meta" in paths, paths
+          assert "/api/mpt/calculate" in paths, paths
+          page = getattr(main_registry.core, "PAGE", "")
+          assert 'id="mpt-benefit-template"' in page, "MPT panel was not injected into core.PAGE"
+          print("MPT production entrypoint: OK")
+          PY
