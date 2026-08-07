@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from .geocoder import GeocodingError
 from .http import RemoteServiceError
-from .service_v5 import MarketDiscoveryService
+from .service_v51 import MarketDiscoveryService
 
 
 class MarketDiscoveryRequest(BaseModel):
