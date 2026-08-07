@@ -3,11 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from .candidates_v5 import extract_project_candidates_v5
 from .geocoder import GeoPoint
 from .http import RemoteServiceError
 from .recommendation import market_recommendation
 from .service import MarketDiscoveryService as LegacyMarketDiscoveryService, haversine_km
-from .yandex_search import extract_project_candidates, official_cards_from_docs
+from .yandex_search import official_cards_from_docs
 
 
 class MarketDiscoveryService(LegacyMarketDiscoveryService):
@@ -55,7 +56,7 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                 seen_urls.add(doc.url)
                 docs.append(doc)
 
-        candidates = extract_project_candidates(docs)
+        candidates = extract_project_candidates_v5(docs)
         projects: list[dict[str, Any]] = []
         max_candidates = min(max(limit * 4, 16), 40)
 
@@ -124,7 +125,11 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                 }
 
             price_info = self._combine_price_sources(official_price, asking_price)
-            source_domains = {str(candidate.get("source_domain") or "").strip().lower()}
+            source_domains = {
+                str(domain or "").strip().lower()
+                for domain in (candidate.get("discovery_sources") or [])
+            }
+            source_domains.add(str(candidate.get("source_domain") or "").strip().lower())
             for source in asking_price.get("sources") or []:
                 name = str(source.get("source") or "").strip().lower()
                 if name:
@@ -150,6 +155,7 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                         "title": candidate["source_title"],
                     },
                     "market_source_count": max(len(source_domains), 1),
+                    "extraction_evidence": candidate.get("extraction_evidence"),
                     "official_cards": cards,
                     "confirmed": confirmed,
                     "eligible_analogue": priced,
