@@ -12,6 +12,8 @@ on:
       - "main_registry.py"
       - "tests/test_market_discovery*.py"
       - "tests/test_market_geo_apply_sources.py"
+      - "tests/test_market_v5_strategy.py"
+      - "tests/fixtures/market_golden_*.json"
       - "tests/test_market_preview_deploy.py"
       - "deploy-market-preview.sh"
       - ".github/workflows/market-preview.yml"
@@ -20,7 +22,7 @@ on:
       source_ref:
         description: "Ветка рыночного preview"
         required: true
-        default: "agent/market-domrf-search-v4"
+        default: "agent/market-search-v5"
         type: string
 
 concurrency:
@@ -54,6 +56,7 @@ jobs:
             tests/test_market_discovery.py \
             tests/test_market_discovery_ui.py \
             tests/test_market_geo_apply_sources.py \
+            tests/test_market_v5_strategy.py \
             tests/test_market_preview_deploy.py -q
       - name: Интеграция с основным entrypoint
         run: |
@@ -86,8 +89,8 @@ jobs:
           SOURCE_REF: ${{ inputs.source_ref }}
         run: |
           case "$SOURCE_REF" in
-            agent/market-domrf-search-*) ;;
-            *) echo "Разрешены только ветки agent/market-domrf-search-*" >&2; exit 1 ;;
+            agent/market-*) ;;
+            *) echo "Разрешены только ветки agent/market-*" >&2; exit 1 ;;
           esac
 
       - name: Имя и тег preview
