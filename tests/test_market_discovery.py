@@ -4,7 +4,7 @@ import base64
 import json
 from pathlib import Path
 
-from market_search.geocoder import GeoPoint
+from market_search.geocoder import GeoPoint, GeocodingError
 from market_search.service import MarketDiscoveryService, haversine_km
 from market_search.yandex_search import (
     SearchDoc,
@@ -70,6 +70,27 @@ def test_official_domrf_card_is_recognised_without_fetching_page() -> None:
     assert cards[0]["url"].endswith("/64438")
 
 
+def test_official_card_requires_name_or_address_match(tmp_path: Path) -> None:
+    service = MarketDiscoveryService(tmp_path)
+    wrong = {
+        "title": "ЖК Городские истории",
+        "snippet": "Москва, Бескудниковский район, Дмитровское шоссе, дом 89",
+    }
+    assert service._official_card_matches("Symphony 34", None, wrong) is False
+
+    right_by_name = {
+        "title": "ЖК Symphony 34",
+        "snippet": "Официальный объект строительства",
+    }
+    assert service._official_card_matches("Symphony 34", None, right_by_name) is True
+
+    right_by_address = {
+        "title": "Жилой дом",
+        "snippet": "Москва, улица Мишина, дом 46",
+    }
+    assert service._official_card_matches("Проект без маркетингового имени", "Москва, улица Мишина, 46", right_by_address) is True
+
+
 def test_service_filters_by_radius_and_requires_official_confirmation(tmp_path: Path) -> None:
     service = MarketDiscoveryService(tmp_path)
 
@@ -106,3 +127,31 @@ def test_service_filters_by_radius_and_requires_official_confirmation(tmp_path: 
     assert result["confirmed_count"] == 1
     assert result["projects"][0]["confirmed"] is True
     assert result["source"]["discovery"] == "Yandex Search API"
+
+
+def test_service_drops_candidate_without_coordinates(tmp_path: Path) -> None:
+    service = MarketDiscoveryService(tmp_path)
+    discovery = [
+        SearchDoc(
+            title="ЖК Unknown Place — квартиры",
+            url="https://domclick.ru/complexes/unknown",
+            domain="domclick.ru",
+            snippet="Москва",
+            rank=1,
+        )
+    ]
+    service.search.search = lambda query, groups_on_page=10: [] if "site:наш.дом.рф" in query else discovery  # type: ignore[method-assign]
+
+    def no_geo(query: str) -> GeoPoint:
+        raise GeocodingError("не найдено")
+
+    service.geocoder.geocode = no_geo  # type: ignore[method-assign]
+    result = service.discover(
+        address="Москва, ул. Мишина, 46",
+        latitude=55.795,
+        longitude=37.575,
+        radius_km=3,
+        limit=10,
+    )
+    assert result["count"] == 0
+    assert result["confirmed_count"] == 0
