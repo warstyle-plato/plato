@@ -1,0 +1,52 @@
+name: MPT calculator
+
+on:
+  pull_request:
+    paths:
+      - "mpt_calculator.py"
+      - "mpt_extension.py"
+      - "mpt_bot_menu.py"
+      - "main_registry.py"
+      - "tests/test_mpt_*.py"
+      - ".github/workflows/mpt-check.yml"
+
+jobs:
+  mpt-checks:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: python -m pip install -r requirements-dev.txt
+      - name: Compile MPT modules
+        run: python -m py_compile mpt_calculator.py mpt_extension.py mpt_bot_menu.py main_registry.py
+      - name: Run MPT tests
+        run: python -m pytest tests/test_mpt_*.py -q
+      - name: Smoke production entrypoint
+        env:
+          TELEGRAM_BOT_TOKEN: ""
+          OPENAI_API_KEY: ""
+        run: |
+          python - <<'PY'
+          import main_registry
+          paths = {getattr(route, "path", "") for route in main_registry.app.routes}
+          assert "/api/mpt/meta" in paths, paths
+          assert "/api/mpt/calculate" in paths, paths
+          page = getattr(main_registry.core, "PAGE", "")
+          assert 'id="mpt-benefit-template"' in page, "MPT panel was not injected into core.PAGE"
+          commands = getattr(main_registry.core, "TELEGRAM_BOT_COMMANDS", [])
+          assert any(isinstance(item, dict) and item.get("command") == "mpt" for item in commands), commands
+          original_url = main_registry.core._telegram_web_app_url
+          try:
+              main_registry.core._telegram_web_app_url = lambda chat_id, cad: "https://example.test/app?session=ci"
+              markup = main_registry._base._help_markup(1)
+          finally:
+              main_registry.core._telegram_web_app_url = original_url
+          buttons = [button for row in markup.get("inline_keyboard", []) for button in row]
+          mpt = [button for button in buttons if button.get("text") == "🏗 Льгота МПТ — Москва"]
+          assert len(mpt) == 1, buttons
+          assert "section=mpt" in mpt[0]["web_app"]["url"], mpt[0]
+          print("MPT production entrypoint and Telegram menu: OK")
+          PY
