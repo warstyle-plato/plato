@@ -24,7 +24,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
@@ -53,6 +53,10 @@ _NO_STORE = {
 # стоит полной отдачи: 30 КБ скрипта и 26 КБ стилей на загрузку страницы.
 # Свежесть этих денег стоит: расхождение окна с сервером ищут потом часами.
 _REVALIDATE = {"Cache-Control": "no-cache, must-revalidate"}
+
+# Иконки приложения. Список закрытый: имя из адреса иначе склеивается с путём
+# и превращает маршрут в чтение файлов сервера.
+_ICONS = frozenset({"icon-192.png", "icon-512.png", "maskable-512.png"})
 
 
 def _prototype_fixtures_enabled() -> bool:
@@ -127,6 +131,40 @@ def install(app: FastAPI) -> None:
         return FileResponse(_FRONTEND / "app.js",
                             media_type="application/javascript",
                             headers=_REVALIDATE)
+
+    @app.get("/v2/manifest.webmanifest", include_in_schema=False)
+    async def developaid_v2_manifest() -> FileResponse:
+        return FileResponse(_FRONTEND / "manifest.webmanifest",
+                            media_type="application/manifest+json",
+                            headers=_REVALIDATE)
+
+    @app.get("/v2/assets/icons/{name}", include_in_schema=False)
+    async def developaid_v2_icon(name: str) -> FileResponse:
+        # Имя сверяется со списком, а не склеивается с путём: иначе адрес
+        # становится чтением файлов сервера.
+        if name not in _ICONS:
+            raise HTTPException(status_code=404, detail="Иконка не найдена")
+        return FileResponse(_FRONTEND / "icons" / name, media_type="image/png",
+                            headers=_REVALIDATE)
+
+    @app.get("/v2/sw.js", include_in_schema=False)
+    def developaid_v2_service_worker() -> Response:
+        """Service worker с подставленной версией приложения.
+
+        Версия объявляется один раз — `main_legacy.VERSION`; сюда она попадает
+        тем же плейсхолдером, что и на страницу движка. Имя кеша ею и живёт,
+        поэтому новый выпуск сбрасывает прежние кеши сам.
+
+        `Service-Worker-Allowed` расширяет область до `/v2`, иначе worker,
+        лежащий в `/v2/`, не управлял бы страницей по адресу без слеша.
+        """
+        core = _core()
+        source = (_FRONTEND / "sw.js").read_text(encoding="utf-8")
+        return Response(
+            content=source.replace(core.VERSION_PLACEHOLDER, core.VERSION),
+            media_type="application/javascript",
+            headers={**_REVALIDATE, "Service-Worker-Allowed": "/v2"},
+        )
 
     @app.post("/api/v2/calculate")
     def developaid_v2_calculate(req: CalculateRequest) -> JSONResponse:

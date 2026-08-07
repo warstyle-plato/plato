@@ -305,6 +305,66 @@ def test_the_prototype_fixtures_are_available_for_development(client, monkeypatc
     assert response.json()["prototype"] is True
 
 
+# --- установка на экран -------------------------------------------------------
+
+def test_the_manifest_makes_the_app_installable(client):
+    response = client.get("/v2/manifest.webmanifest")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/manifest+json")
+    manifest = response.json()
+    assert manifest["start_url"] == "/v2/"
+    assert manifest["display"] == "standalone"
+    # Установка требует иконки 192 и 512; maskable — чтобы Android не обрезал знак.
+    sizes = {icon["sizes"] for icon in manifest["icons"]}
+    assert {"192x192", "512x512"} <= sizes
+    assert any(icon.get("purpose") == "maskable" for icon in manifest["icons"])
+    for icon in manifest["icons"]:
+        assert client.get(icon["src"]).status_code == 200, icon["src"]
+
+
+def test_the_service_worker_never_caches_the_calculation(client):
+    """Worker обязан ходить за расчётом в сеть.
+
+    Сохранённый ProjectResult — это вчерашние цифры, неотличимые от сегодняшних:
+    ровно то, ради чего /v2 переведён на движок.
+    """
+    response = client.get("/v2/sw.js")
+
+    assert response.status_code == 200
+    # Область шире каталога worker'а — иначе адрес без слеша остаётся без него.
+    assert response.headers.get("service-worker-allowed") == "/v2"
+    source = response.text
+    assert "/api/" in source and "return" in source
+    assert core.VERSION in source, "версия приложения не подставлена в имя кеша"
+    assert core.VERSION_PLACEHOLDER not in source
+
+
+def test_the_service_worker_version_has_one_source():
+    """Номер в worker'е не поднимают руками: его негде поднимать, кроме VERSION."""
+    source = (Path(__file__).resolve().parent.parent
+              / "frontend_v2" / "sw.js").read_text(encoding="utf-8")
+
+    assert core.VERSION_PLACEHOLDER in source
+    assert core.VERSION not in source, "версия зашита в файл вместо подстановки"
+
+
+def test_an_icon_name_cannot_read_the_server(client):
+    for name in ("../../main.py", "..%2F..%2Fmain.py", "unknown.png"):
+        assert client.get(f"/v2/assets/icons/{name}").status_code == 404, name
+
+
+def test_the_page_declares_the_installation():
+    html = (Path(__file__).resolve().parent.parent
+            / "frontend_v2" / "index.html").read_text(encoding="utf-8")
+    script = (Path(__file__).resolve().parent.parent
+              / "frontend_v2" / "app.js").read_text(encoding="utf-8")
+
+    assert 'rel="manifest"' in html and "manifest.webmanifest" in html
+    assert "apple-touch-icon" in html
+    assert "serviceWorker.register" in script
+
+
 # --- форма вводных ------------------------------------------------------------
 
 def test_the_form_comes_from_the_engine_dictionary(client):

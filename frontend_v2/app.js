@@ -783,12 +783,45 @@ async function init() {
   $('#loading').classList.add('is-hidden');
 }
 
+/* Установка на экран. Worker кеширует только оболочку: за расчётом он всегда
+   ходит в сеть, потому что сохранённый ProjectResult — это вчерашние цифры,
+   выглядящие как сегодняшние. Обновление применяется сразу, без ожидания
+   закрытия всех вкладок: устаревшая страница здесь дороже перезагрузки. */
+function registerServiceWorker() {
+  if (!('serviceWorker' in navigator)) return;
+  navigator.serviceWorker.register('/v2/sw.js', { scope: '/v2' }).then((registration) => {
+    registration.addEventListener('updatefound', () => {
+      const installing = registration.installing;
+      if (!installing) return;
+      installing.addEventListener('statechange', () => {
+        if (installing.state === 'installed' && navigator.serviceWorker.controller) {
+          installing.postMessage('skip-waiting');
+        }
+      });
+    });
+  }).catch((error) => console.warn('Service worker не зарегистрирован:', error));
+  let reloading = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (reloading) return;
+    reloading = true;
+    window.location.reload();
+  });
+}
+
 if (typeof window !== 'undefined' && typeof document !== 'undefined') {
+  registerServiceWorker();
   // Точка входа для формы вводных: оболочка и Telegram-режим зовут её с тем
   // же payload, что уходит из действующего мини-приложения.
   window.DevelopAidV2 = { calculateProject, loadProject, renderResult, state };
   init().catch((error) => {
     console.error(error);
-    $('#loading').innerHTML = `<p>${escapeHtml(error.message)}</p>`;
+    // Без сети оболочка открывается из кеша, а расчёта нет и быть не может:
+    // за ним ходят в движок. Сказать это прямо честнее, чем показать
+    // сохранённые цифры или системное «Failed to fetch».
+    const offline = !navigator.onLine || error instanceof TypeError;
+    $('#loading').innerHTML = offline
+      ? '<p>Нет связи с сервером. Приложение открылось из памяти устройства, '
+        + 'но расчёт считает движок — без сети показывать нечего.</p>'
+      : `<p>${escapeHtml(error.message)}</p>`;
   });
 }
