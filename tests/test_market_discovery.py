@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import json
 from pathlib import Path
 
 from market_search.geocoder import GeoPoint
@@ -16,15 +18,24 @@ def test_haversine_is_zero_for_same_point() -> None:
     assert haversine_km(55.0, 37.0, 55.0, 37.0) == 0
 
 
-def test_yandex_search_xml_is_parsed() -> None:
-    body = b'''<?xml version="1.0" encoding="utf-8"?>
+def _search_xml() -> bytes:
+    return b'''<?xml version="1.0" encoding="utf-8"?>
     <yandexsearch><response><results><grouping><group><doc>
       <url>https://domclick.ru/complexes/test</url>
       <domain>domclick.ru</domain>
       <title>\xd0\x96\xd0\x9a <hlword>Symphony 34</hlword> \xe2\x80\x94 \xd0\xba\xd0\xb2\xd0\xb0\xd1\x80\xd1\x82\xd0\xb8\xd1\x80\xd1\x8b</title>
       <passages><passage>\xd0\x96\xd0\xb8\xd0\xbb\xd0\xbe\xd0\xb9 \xd0\xba\xd0\xbe\xd0\xbc\xd0\xbf\xd0\xbb\xd0\xb5\xd0\xba\xd1\x81 \xd0\xb2 \xd0\x9c\xd0\xbe\xd1\x81\xd0\xba\xd0\xb2\xd0\xb5</passage></passages>
     </doc></group></grouping></results></response></yandexsearch>'''
-    docs = YandexSearchClient._parse_response(body)
+
+
+def test_yandex_search_rest_raw_data_is_decoded() -> None:
+    xml = _search_xml()
+    body = json.dumps({"rawData": base64.b64encode(xml).decode("ascii")}).encode("utf-8")
+    assert YandexSearchClient._decode_rest_response(body) == xml
+
+
+def test_yandex_search_xml_is_parsed() -> None:
+    docs = YandexSearchClient._parse_response(_search_xml())
     assert len(docs) == 1
     assert docs[0].title.startswith("ЖК Symphony 34")
     assert docs[0].domain == "domclick.ru"
