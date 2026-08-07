@@ -43,42 +43,50 @@ class MarketDiscoveryService:
 
         candidates = extract_project_candidates(docs)
         projects: list[dict[str, Any]] = []
-        max_candidates = min(max(limit, 3), 10)
+        max_candidates = min(max(limit * 2, 6), 20)
         for candidate in candidates[:max_candidates]:
             project_point = self._geocode_project(candidate, locality)
-            distance = None
-            if project_point is not None:
-                distance = round(
-                    haversine_km(
-                        subject.latitude,
-                        subject.longitude,
-                        project_point.latitude,
-                        project_point.longitude,
-                    ),
-                    3,
-                )
-                if distance > radius_km:
-                    continue
+            if project_point is None:
+                # Без координат нельзя честно утверждать, что проект находится в радиусе.
+                continue
 
-            official_query = f'site:наш.дом.рф "{candidate["name"]}" {locality}'
+            distance = round(
+                haversine_km(
+                    subject.latitude,
+                    subject.longitude,
+                    project_point.latitude,
+                    project_point.longitude,
+                ),
+                3,
+            )
+            if distance > radius_km:
+                continue
+
+            source_text = " ".join(
+                str(candidate.get(key) or "")
+                for key in ("source_title", "source_snippet")
+            )
+            address_hint = self._address_hint(source_text)
+            official_query = f'site:наш.дом.рф "{candidate["name"]}" {address_hint or locality}'
             official_docs = self.search.search(official_query, groups_on_page=8)
-            cards = official_cards_from_docs(official_docs)
+            raw_cards = official_cards_from_docs(official_docs)
+            cards = [
+                card
+                for card in raw_cards
+                if self._official_card_matches(candidate["name"], address_hint, card)
+            ]
 
             projects.append(
                 {
                     "name": candidate["name"],
                     "distance_km": distance,
-                    "within_radius": distance is not None and distance <= radius_km,
-                    "coordinates": (
-                        {
-                            "latitude": project_point.latitude,
-                            "longitude": project_point.longitude,
-                            "display_name": project_point.display_name,
-                            "provider": project_point.provider,
-                        }
-                        if project_point is not None
-                        else None
-                    ),
+                    "within_radius": True,
+                    "coordinates": {
+                        "latitude": project_point.latitude,
+                        "longitude": project_point.longitude,
+                        "display_name": project_point.display_name,
+                        "provider": project_point.provider,
+                    },
                     "market_source": {
                         "url": candidate["source_url"],
                         "domain": candidate["source_domain"],
@@ -87,22 +95,16 @@ class MarketDiscoveryService:
                     "official_cards": cards,
                     "confirmed": bool(cards),
                     "confirmation": (
-                        "Официальная карточка Наш.Дом.РФ найдена"
+                        "Официальная карточка Наш.Дом.РФ сопоставлена"
                         if cards
-                        else "Официальная карточка пока не сопоставлена"
+                        else "Официальная карточка пока не подтверждена по названию или адресу"
                     ),
                 }
             )
             if len(projects) >= limit:
                 break
 
-        projects.sort(
-            key=lambda item: (
-                item["distance_km"] is None,
-                item["distance_km"] if item["distance_km"] is not None else 9999,
-                not item["confirmed"],
-            )
-        )
+        projects.sort(key=lambda item: (item["distance_km"], not item["confirmed"]))
         confirmed_count = sum(1 for item in projects if item["confirmed"])
         return {
             "query": {
@@ -150,7 +152,7 @@ class MarketDiscoveryService:
     def _address_hint(value: str) -> str | None:
         # Search snippets frequently contain a street + house; use it before a project-name lookup.
         match = re.search(
-            r"(?:Москва|Московская область)[,.:\s]+([^.;]{3,90}?(?:ул\.?|улица|проспект|проезд|шоссе|наб\.?|набережная)[^.;]{2,80}?\d+[А-Яа-яA-Za-z0-9/\-]*)",
+            r"(?:Москва|Московская область)[,.:\s]+([^.;]{3,90}?(?:ул\.?|улица|проспект|проезд|шоссе|ш\.|наб\.?|набережная)[^.;]{2,80}?\d+[А-Яа-яA-Za-z0-9/\-]*)",
             value,
             flags=re.I,
         )
@@ -158,13 +160,63 @@ class MarketDiscoveryService:
             return None
         return "Москва, " + " ".join(match.group(1).split())
 
+    @classmethod
+    def _official_card_matches(
+        cls,
+        project_name: str,
+        address_hint: str | None,
+        card: dict[str, Any],
+    ) -> bool:
+        haystack = " ".join(
+            str(card.get(key) or "")
+            for key in ("title", "snippet")
+        )
+        hay_norm = cls._compact(haystack)
+        name_norm = cls._compact(project_name)
+        if len(name_norm) >= 4 and name_norm in hay_norm:
+            return True
+
+        if address_hint:
+            address_tokens = cls._address_match_tokens(address_hint)
+            hay_tokens = set(cls._words(haystack))
+            number_tokens = [token for token in address_tokens if any(ch.isdigit() for ch in token)]
+            street_tokens = [token for token in address_tokens if token not in number_tokens]
+            if number_tokens and street_tokens:
+                number_ok = any(token in hay_tokens for token in number_tokens)
+                street_ok = any(token in hay_tokens for token in street_tokens)
+                if number_ok and street_ok:
+                    return True
+        return False
+
+    @staticmethod
+    def _compact(value: str) -> str:
+        return re.sub(r"[^a-zа-яё0-9]+", "", str(value or "").lower().replace("ё", "е"))
+
+    @staticmethod
+    def _words(value: str) -> list[str]:
+        return re.findall(r"[a-zа-яё0-9/\-]+", str(value or "").lower().replace("ё", "е"))
+
+    @classmethod
+    def _address_match_tokens(cls, value: str) -> list[str]:
+        stop = {
+            "москва", "московская", "область", "город", "улица", "ул", "шоссе", "ш",
+            "проспект", "проезд", "набережная", "наб", "дом", "д", "корпус", "корп",
+        }
+        tokens = []
+        for token in cls._words(value):
+            clean = token.strip("-/")
+            if not clean or clean in stop:
+                continue
+            if any(ch.isdigit() for ch in clean) or len(clean) >= 4:
+                tokens.append(clean)
+        return tokens
+
     @staticmethod
     def _district_hint(value: str) -> str | None:
         match = re.search(r"([^,]{2,50}\s+район)", value, flags=re.I)
         if not match:
             return None
         district = " ".join(match.group(1).split())
-        # Trim administrative prefixes that do not improve search relevance.
         district = re.sub(r"^(?:внутригородская территория|муниципальный округ)\s+", "", district, flags=re.I)
         return district
 
@@ -193,9 +245,9 @@ class MarketDiscoveryService:
     @staticmethod
     def _warning(projects: list[dict[str, Any]], confirmed_count: int) -> str | None:
         if not projects:
-            return "Поисковый индекс не дал проектов, которые удалось привязать к заданному радиусу"
+            return "Поисковый индекс не дал проектов, которые удалось уверенно привязать к заданному радиусу"
         if confirmed_count == 0:
-            return "Кандидаты найдены, но ни один пока не подтверждён ссылкой Наш.Дом.РФ"
+            return "Кандидаты найдены в радиусе, но ни один пока не подтверждён карточкой Наш.Дом.РФ"
         return None
 
 
