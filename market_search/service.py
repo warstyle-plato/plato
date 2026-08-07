@@ -7,6 +7,7 @@ from typing import Any
 
 from .geocoder import AddressGeocoder, GeoPoint, GeocodingError
 from .http import RemoteServiceError
+from .official_price import OfficialPriceEnricher
 from .price import MarketPriceEnricher, weighted_market_price
 from .yandex_search import YandexSearchClient, extract_project_candidates, official_cards_from_docs
 
@@ -16,6 +17,7 @@ class MarketDiscoveryService:
         self.geocoder = AddressGeocoder(data_dir)
         self.search = YandexSearchClient(data_dir)
         self.prices = MarketPriceEnricher(self.search)
+        self.official_prices = OfficialPriceEnricher(self.search)
 
     def discover(
         self,
@@ -80,18 +82,31 @@ class MarketDiscoveryService:
 
             price_info: dict[str, Any] = {
                 "available": False,
-                "method": "indexed_asking_prices",
+                "basis": "none",
                 "note": "Цена запрашивается только для подтверждённых аналогов",
             }
             if cards:
+                asking_price: dict[str, Any]
+                official_price: dict[str, Any]
                 try:
-                    price_info = self.prices.project_price(candidate["name"], locality)
+                    asking_price = self.prices.project_price(candidate["name"], locality)
                 except RemoteServiceError as exc:
-                    price_info = {
+                    asking_price = {
                         "available": False,
                         "method": "indexed_asking_prices",
                         "error": str(exc),
                     }
+                try:
+                    official_price = self.official_prices.project_price(
+                        candidate["name"], locality, cards
+                    )
+                except RemoteServiceError as exc:
+                    official_price = {
+                        "available": False,
+                        "method": "official_domrf_average",
+                        "error": str(exc),
+                    }
+                price_info = self._combine_price_sources(official_price, asking_price)
 
             projects.append(
                 {
@@ -136,7 +151,7 @@ class MarketDiscoveryService:
             "source": {
                 "discovery": "Yandex Search API",
                 "confirmation": "Наш.Дом.РФ / ЕИСЖС через поисковый индекс Яндекса",
-                "pricing": "ЦИАН; Домклик; Яндекс Недвижимость через поисковый индекс",
+                "pricing": "Наш.Дом.РФ — официальная средняя; ЦИАН / Домклик / Яндекс Недвижимость — рынок предложения",
                 "mode": "supported_search_api",
             },
             "projects": projects,
@@ -270,13 +285,59 @@ class MarketDiscoveryService:
         return queries
 
     @staticmethod
+    def _combine_price_sources(
+        official_price: dict[str, Any],
+        asking_price: dict[str, Any],
+    ) -> dict[str, Any]:
+        official_available = bool(
+            official_price.get("available") and official_price.get("price_per_sqm")
+        )
+        asking_available = bool(
+            asking_price.get("available") and asking_price.get("price_per_sqm")
+        )
+        if not official_available and not asking_available:
+            return {
+                "available": False,
+                "basis": "none",
+                "official": official_price,
+                "asking": asking_price,
+            }
+
+        if official_available:
+            official_value = int(official_price["price_per_sqm"])
+            result: dict[str, Any] = {
+                "available": True,
+                "basis": "official_domrf_average",
+                "price_per_sqm": official_value,
+                "official": official_price,
+                "asking": asking_price,
+                "note": "Базовая цена — официальная средняя Наш.Дом.РФ; внешние площадки показаны отдельно",
+            }
+            if asking_available:
+                asking_value = int(asking_price["price_per_sqm"])
+                discrepancy = abs(asking_value - official_value) / official_value
+                result["asking_price_per_sqm"] = asking_value
+                result["asking_discrepancy_pct"] = round(discrepancy * 100, 1)
+                result["asking_conflict"] = discrepancy > 0.25
+            return result
+
+        return {
+            "available": True,
+            "basis": "indexed_asking_prices",
+            "price_per_sqm": int(asking_price["price_per_sqm"]),
+            "official": official_price,
+            "asking": asking_price,
+            "note": "Официальная средняя цена не извлечена; временно используется рынок предложения",
+        }
+
+    @staticmethod
     def _warning(projects: list[dict[str, Any]], confirmed_count: int) -> str | None:
         if not projects:
             return "Поисковый индекс не дал проектов, которые удалось уверенно привязать к заданному радиусу"
         if confirmed_count == 0:
             return "Кандидаты найдены в радиусе, но ни один пока не подтверждён карточкой Наш.Дом.РФ"
         if not any((item.get("market_price") or {}).get("available") for item in projects if item.get("confirmed")):
-            return "Аналоги подтверждены, но индекс пока не вернул пригодные наблюдения цены за м²"
+            return "Аналоги подтверждены, но ни официальную, ни рыночную цену за м² пока извлечь не удалось"
         return None
 
 
