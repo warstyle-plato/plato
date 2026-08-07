@@ -5,7 +5,8 @@ from pathlib import Path
 
 from market_search.candidates_v5 import extract_project_candidates_v5
 from market_search.recommendation import market_recommendation
-from market_search.service_v5 import MarketDiscoveryService
+from market_search.service_v5 import MarketDiscoveryService as MarketDiscoveryServiceV5
+from market_search.service_v51 import MarketDiscoveryService as MarketDiscoveryServiceV51
 from market_search.ui_v5 import install
 from market_search.yandex_search import SearchDoc
 
@@ -21,7 +22,7 @@ class FakeCore:
 
 
 def test_v5_queries_cover_multiple_market_channels() -> None:
-    queries = MarketDiscoveryService._discovery_queries(
+    queries = MarketDiscoveryServiceV5._discovery_queries(
         "Москва, Саввинская набережная, 25",
         "Москва",
         "Хамовники район",
@@ -32,6 +33,20 @@ def test_v5_queries_cover_multiple_market_channels() -> None:
     assert "site:realty.yandex.ru" in joined
     assert "клубный дом" in joined
     assert "элитные новостройки" in joined
+
+
+def test_v51_catalog_first_queries_are_runtime_default() -> None:
+    queries = MarketDiscoveryServiceV51._discovery_queries(
+        "Москва, Саввинская набережная, 25",
+        "Москва",
+        "Хамовники район",
+    )
+    joined = "\n".join(queries)
+    assert queries[0].startswith('site:cian.ru')
+    assert '"Хамовники"' in joined
+    assert "site:realty.yandex.ru" in joined
+    assert "site:novostroy.ru/buildings" in joined
+    assert "новостройки рядом" in joined
 
 
 def test_v5_extracts_branded_premium_projects_without_zhk_prefix() -> None:
@@ -97,7 +112,7 @@ def test_v5_prefers_current_asking_price_over_lagging_official_average() -> None
         "price_per_sqm": 601_000,
         "sources": [{"source": "realty.yandex.ru"}],
     }
-    result = MarketDiscoveryService._combine_price_sources(official, asking)
+    result = MarketDiscoveryServiceV5._combine_price_sources(official, asking)
     assert result["available"] is True
     assert result["basis"] == "indexed_asking_prices"
     assert result["price_per_sqm"] == 601_000
@@ -112,7 +127,7 @@ def test_v5_uses_official_average_only_as_fallback() -> None:
         "price_per_sqm": 500_000,
     }
     asking = {"available": False, "method": "indexed_asking_prices"}
-    result = MarketDiscoveryService._combine_price_sources(official, asking)
+    result = MarketDiscoveryServiceV5._combine_price_sources(official, asking)
     assert result["available"] is True
     assert result["basis"] == "official_domrf_fallback"
     assert result["price_per_sqm"] == 500_000
