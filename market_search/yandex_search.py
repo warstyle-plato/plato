@@ -58,6 +58,15 @@ class YandexSearchClient:
             raise RemoteServiceError(
                 "Yandex Search API не настроен: нужны YANDEX_SEARCH_API_KEY и YANDEX_SEARCH_FOLDER_ID"
             )
+        if not self.api_key.isascii():
+            raise RemoteServiceError(
+                "YANDEX_SEARCH_API_KEY содержит посторонние Unicode-символы. "
+                "Скопируйте полный API-ключ из Yandex Cloud заново и пересохраните .env"
+            )
+        if not self.folder_id.isascii():
+            raise RemoteServiceError(
+                "YANDEX_SEARCH_FOLDER_ID содержит посторонние символы; пересохраните идентификатор каталога"
+            )
         if not query:
             return []
 
