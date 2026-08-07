@@ -131,6 +131,47 @@ def test_price_enricher_extracts_price_range_and_offers(tmp_path: Path) -> None:
     assert price["offers_count"] == 140
 
 
+def test_price_enricher_parses_cian_thousand_format_and_roman_suffix(tmp_path: Path) -> None:
+    search = YandexSearchClient(tmp_path)
+    docs = [
+        SearchDoc(
+            title="Купить квартиру в ЖК Петровский парк II в Москве",
+            url="https://www.cian.ru/kupit-kvartiru-zhiloy-kompleks-petrovskiy-park-ii-4117962/",
+            domain="cian.ru",
+            snippet="Найдено 182 объявления. Цена за м²: 598,5 тыс. ₽/м²",
+            rank=1,
+        )
+    ]
+    search.search = lambda query, groups_on_page=10: docs  # type: ignore[method-assign]
+    enricher = MarketPriceEnricher(search)
+    price = enricher.project_price("Петровский парк II", "Москва")
+    assert price["available"] is True
+    assert price["price_per_sqm"] == 598_500
+    assert price["offers_count"] == 182
+    assert price["sources"][0]["source"] == "ЦИАН"
+
+    old_project = enricher.project_price("Петровский парк", "Москва")
+    assert old_project["available"] is False
+
+
+def test_price_enricher_derives_sqm_price_from_total_and_area(tmp_path: Path) -> None:
+    search = YandexSearchClient(tmp_path)
+    docs = [
+        SearchDoc(
+            title="ЖК Петровский парк — квартира",
+            url="https://www.cian.ru/sale/flat/1/",
+            domain="cian.ru",
+            snippet="2-комн. квартира, 48,4 м². Цена 28 500 000 ₽",
+            rank=1,
+        )
+    ]
+    search.search = lambda query, groups_on_page=10: docs  # type: ignore[method-assign]
+    price = MarketPriceEnricher(search).project_price("Петровский парк", "Москва")
+    assert price["available"] is True
+    assert price["price_per_sqm"] == 588_843
+    assert price["observations"][0]["method"] == "derived_total_div_area"
+
+
 def test_weighted_market_price_uses_confirmed_analogues_only() -> None:
     result = weighted_market_price(
         [
