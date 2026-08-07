@@ -12,6 +12,8 @@ _STYLE = r"""
 #marketDiscovery.panel .md-status{margin:14px 0;color:var(--muted,#667085);font-size:13px;white-space:pre-wrap}
 #marketDiscovery.panel .md-summary{display:flex;gap:10px;flex-wrap:wrap;margin:12px 0}
 #marketDiscovery.panel .md-chip{padding:7px 10px;border:1px solid var(--line,#dce2ea);border-radius:999px;font-size:12px}
+#marketDiscovery.panel .md-apply-wrap{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:8px 0 16px}
+#marketDiscovery.panel .md-apply-note{font-size:12px;color:var(--muted,#667085)}
 #marketDiscovery.panel .md-list{display:grid;gap:12px}
 #marketDiscovery.panel .md-card{padding:15px;border:1px solid var(--line,#dce2ea);border-radius:12px;background:var(--card,#fff)}
 #marketDiscovery.panel .md-title{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
@@ -35,7 +37,7 @@ _STYLE = r"""
 _PANEL = r"""
 <div id="marketDiscovery" class="panel">
   <h2>Рынок: объекты рядом</h2>
-  <p class="hint">Поиск кандидатов идёт через Yandex Search API. Аналог подтверждается карточкой Наш.Дом.РФ. Официальная средняя цена Наш.Дом.РФ используется как контрольная база; ЦИАН / Домклик / Яндекс Недвижимость показываются отдельно как рынок предложения.</p>
+  <p class="hint">Поиск кандидатов идёт через Yandex Search API. Аналог подтверждается карточкой Наш.Дом.РФ и совпадением географии. Официальная средняя цена Наш.Дом.РФ используется как контрольная база; ЦИАН / Домклик / Яндекс Недвижимость показываются отдельно как рынок предложения.</p>
   <div class="md-form">
     <label>Адрес<input id="mdAddress" value="Москва, ул. Мишина, 46" autocomplete="street-address"></label>
     <label>Радиус<select id="mdRadius"><option value="1">1 км</option><option value="3" selected>3 км</option><option value="5">5 км</option></select></label>
@@ -45,6 +47,7 @@ _PANEL = r"""
   <div id="mdStatus" class="md-status">Введите адрес и запустите поиск.</div>
   <div id="mdResult" style="display:none">
     <div id="mdSummary" class="md-summary"></div>
+    <div id="mdApply" class="md-apply-wrap"></div>
     <div id="mdObjects" class="md-list"></div>
   </div>
 </div>
@@ -55,6 +58,63 @@ _SCRIPT = r"""
 function mdEsc(value){return String(value??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[c]))}
 function mdNum(value){return Number(value||0).toLocaleString('ru-RU')}
 function mdRubM2(value){return value?mdNum(Math.round(Number(value)))+' ₽/м²':'—'}
+function mdTrustedPriceSources(sources){
+  const allowed=new Set(['ЦИАН','Домклик','Яндекс Недвижимость']);
+  const best=new Map();
+  for(const src of (Array.isArray(sources)?sources:[])){
+    const name=String(src&&src.source||'');
+    const url=String(src&&src.url||'');
+    if(!allowed.has(name)||!/^https?:\/\//i.test(url))continue;
+    let score=0;
+    if(name==='ЦИАН'&&/(zhiloy-kompleks|kupit-kvartiru-zhiloy-kompleks)/i.test(url))score=3;
+    if(name==='Домклик'&&/\/(complex|complexes)\//i.test(url))score=3;
+    if(name==='Яндекс Недвижимость'&&/(\/complex\/|novostroj|newbuild)/i.test(url))score=3;
+    if(score===0)continue;
+    const prev=best.get(name);
+    if(!prev||score>prev.score)best.set(name,{name,url,score});
+  }
+  return Array.from(best.values());
+}
+function mdApartmentPriceInput(){
+  const direct=[
+    document.getElementById('apartment_price_th'),
+    document.querySelector('[name="apartment_price_th"]'),
+    document.querySelector('[data-key="apartment_price_th"]'),
+    document.querySelector('[data-field="apartment_price_th"]')
+  ].find(Boolean);
+  if(direct)return direct;
+  for(const el of document.querySelectorAll('input,select')){
+    const key=((el.id||'')+' '+(el.name||'')+' '+(el.dataset&&el.dataset.key||'')+' '+(el.dataset&&el.dataset.field||'')).toLowerCase();
+    if(key.includes('apartment')&&key.includes('price'))return el;
+  }
+  for(const label of document.querySelectorAll('label')){
+    const text=String(label.textContent||'').toLowerCase().replace('ё','е');
+    if((text.includes('цена квартир')||text.includes('цена жилья'))&&(text.includes('м²')||text.includes('м2')||text.includes('тыс'))){
+      const el=label.querySelector('input,select');
+      if(el)return el;
+    }
+  }
+  return null;
+}
+function mdSetNativeValue(el,value){
+  let proto=el;
+  let descriptor=null;
+  while(proto&&!descriptor){proto=Object.getPrototypeOf(proto);if(proto)descriptor=Object.getOwnPropertyDescriptor(proto,'value')}
+  if(descriptor&&descriptor.set)descriptor.set.call(el,value);else el.value=value;
+  el.dispatchEvent(new Event('input',{bubbles:true}));
+  el.dispatchEvent(new Event('change',{bubbles:true}));
+}
+function applyMarketPriceToModel(priceRurM2){
+  const price=Number(priceRurM2||0);
+  const status=document.getElementById('mdStatus');
+  if(!Number.isFinite(price)||price<=0){status.textContent='Не удалось определить цену для передачи в модель.';return}
+  const input=mdApartmentPriceInput();
+  if(!input){status.textContent='Не найдено поле «Цена квартир» во вводных модели. Цена не применена.';return}
+  const valueTh=Math.round(price)/1000;
+  mdSetNativeValue(input,String(valueTh));
+  try{if(typeof calculate==='function')calculate()}catch(error){console.error(error)}
+  status.textContent='Применено в модель: '+valueTh.toLocaleString('ru-RU',{maximumFractionDigits:3})+' тыс. ₽/м² в поле «Цена квартир».';
+}
 async function runMarketDiscovery(){
   const status=document.getElementById('mdStatus');
   const result=document.getElementById('mdResult');
@@ -93,11 +153,12 @@ function renderMarketDiscovery(payload){
   ];
   if(summary&&summary.price_per_sqm)chips.push('Ориентир по аналогам: '+mdRubM2(summary.price_per_sqm)+' · '+mdEsc(summary.analogue_count)+' аналог.');
   document.getElementById('mdSummary').innerHTML=chips.map(v=>'<span class="md-chip">'+v+'</span>').join('');
+  document.getElementById('mdApply').innerHTML=(summary&&summary.price_per_sqm)?
+    '<button type="button" onclick="applyMarketPriceToModel('+Number(summary.price_per_sqm)+')">Применить '+mdRubM2(summary.price_per_sqm)+' в модель</button><span class="md-apply-note">Запишет ориентир в «Цена квартир», тыс. ₽/м², и пересчитает модель.</span>':'';
   const projects=Array.isArray(payload.projects)?payload.projects:[];
   document.getElementById('mdObjects').innerHTML=projects.length?projects.map(item=>{
     const cards=Array.isArray(item.official_cards)?item.official_cards:[];
-    const officialLinks=cards.map(card=>'<a href="'+mdEsc(card.url)+'" target="_blank" rel="noopener noreferrer">Наш.Дом.РФ'+(card.object_id?' · ID '+mdEsc(card.object_id):'')+'</a>').join('');
-    const market=item.market_source&&item.market_source.url?'<a href="'+mdEsc(item.market_source.url)+'" target="_blank" rel="noopener noreferrer">Источник поиска</a>':'';
+    const firstOfficial=cards.length&&cards[0]&&cards[0].url?'<a href="'+mdEsc(cards[0].url)+'" target="_blank" rel="noopener noreferrer">Официально · Наш.Дом.РФ</a>':'';
     const distance=item.distance_km==null?'расстояние не определено':mdNum(item.distance_km)+' км';
     const confirmation=item.confirmed?'<span class="md-ok">Подтверждён Наш.Дом.РФ</span>':'<span class="md-warn">Не подтверждён — в расчёт цены не идёт</span>';
     const geo=item.coordinates&&item.coordinates.display_name?'<span>'+mdEsc(item.coordinates.display_name)+'</span>':'';
@@ -125,17 +186,17 @@ function renderMarketDiscovery(payload){
           priceBlock+='<div class="md-marketline">Диапазон '+mdRubM2(asking.min_price_per_sqm)+' — '+mdRubM2(asking.max_price_per_sqm)+' · наблюдений '+mdEsc(asking.observation_count||0)+'</div>';
         }
       }
-      const sources=Array.isArray(asking.sources)?asking.sources:[];
-      priceSources=sources.slice(0,3).map(src=>'<a href="'+mdEsc(src.url)+'" target="_blank" rel="noopener noreferrer">Рынок · '+mdEsc(src.source||'источник')+'</a>').join('');
+      const trusted=mdTrustedPriceSources(asking.sources);
+      priceSources=trusted.map(src=>'<a href="'+mdEsc(src.url)+'" target="_blank" rel="noopener noreferrer">Цена · '+mdEsc(src.name)+'</a>').join('');
     }else if(item.confirmed){
       priceBlock='<div class="md-meta"><span class="md-warn">Цена за м² пока не извлечена ни из Наш.Дом.РФ, ни из рыночных источников</span></div>';
     }
+    const bodies=cards.length?'<span>Корпусов/объектов в ЕИСЖС: '+mdEsc(cards.length)+'</span>':'';
     return '<article class="md-card">'+
       '<div class="md-title"><strong>'+mdEsc(item.name)+'</strong><span class="md-distance">'+distance+'</span></div>'+
       priceBlock+
-      '<div class="md-meta">'+confirmation+geo+'</div>'+
-      '<div class="md-meta"><span>Источник discovery: '+mdEsc((item.market_source&&item.market_source.domain)||'—')+'</span></div>'+
-      '<div class="md-actions">'+officialLinks+priceSources+market+'</div>'+
+      '<div class="md-meta">'+confirmation+geo+bodies+'</div>'+
+      '<div class="md-actions">'+firstOfficial+priceSources+'</div>'+
     '</article>';
   }).join(''):'<div class="md-card">Подходящие проекты пока не найдены.</div>';
 }
