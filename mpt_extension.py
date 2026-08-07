@@ -151,9 +151,9 @@ _MPT_FRAGMENT = r'''
         <div><label id="mpt-area-label" for="mpt-area">Общая площадь МПТ, м²</label><input id="mpt-area" type="number" min="0" step="1" placeholder="10000"></div>
         <div><label for="mpt-parking">Парковки, м²</label><input id="mpt-parking" type="number" min="0" step="1" value="0"></div>
         <div><label for="mpt-garages">Гаражи, м²</label><input id="mpt-garages" type="number" min="0" step="1" value="0"></div>
-        <div><label for="mpt-warehouse">Склад внутри здания, м²</label><input id="mpt-warehouse" type="number" min="0" step="1" value="0"></div>
-        <div><label for="mpt-yard">Открытая складская площадка, м²</label><input id="mpt-yard" type="number" min="0" step="1" value="0"></div>
-        <div><label for="mpt-kterm">Срок исполнения</label><select id="mpt-kterm"><option value="1">Обычный — Ксрок 1,00</option><option value="1.05">Быстрее на 6–12 мес. — 1,05</option><option value="1.1">Быстрее на 12+ мес. — 1,10</option></select></div>
+        <div id="mpt-warehouse-wrap"><label for="mpt-warehouse">Склад внутри здания, м²</label><input id="mpt-warehouse" type="number" min="0" step="1" value="0"></div>
+        <div id="mpt-yard-wrap"><label for="mpt-yard">Открытая складская площадка, м²</label><input id="mpt-yard" type="number" min="0" step="1" value="0"></div>
+        <div><label for="mpt-kterm">Срок исполнения</label><select id="mpt-kterm"><option value="1">Обычный — Ксрок 1,00</option><option value="1.05">Сокращение на 6–12 мес. — 1,05</option><option value="1.1">Сокращение на 12+ мес. — 1,10</option></select></div>
         <div id="mpt-ons-wrap" class="mpt-wide mpt-hidden">
           <div class="mpt-grid">
             <div><label for="mpt-ready">Готовность ОНС, %</label><input id="mpt-ready" type="number" min="0" max="99.99" step="0.1" value="0"></div>
@@ -206,15 +206,27 @@ _MPT_FRAGMENT = r'''
   function sync(){
     if(!meta) return;
     const category=q('mpt-category').value, district=q('mpt-district').value, mode=q('mpt-mode').value;
+    const hotel=category==='hotel';
     q('mpt-cad-wrap').classList.toggle('mpt-hidden',category!=='office');
     const g2=(meta.group_2_districts||[]).includes(district);
     const needs=g2 && (meta.ttk_categories||[]).includes(category) && !(category==='office' && specialQuarter());
     q('mpt-ttk-wrap').classList.toggle('mpt-hidden',!needs);
     q('mpt-ons-wrap').classList.toggle('mpt-hidden',mode!=='ons');
-    q('mpt-area-label').textContent=mode==='reconstruction'?'Прирост общей площади МПТ, м²':'Общая площадь МПТ, м²';
+    q('mpt-warehouse-wrap').classList.toggle('mpt-hidden',hotel);
+    q('mpt-yard-wrap').classList.toggle('mpt-hidden',hotel);
+    if(hotel){q('mpt-warehouse').value='0';q('mpt-yard').value='0';}
+    if(hotel){
+      q('mpt-area-label').textContent=mode==='reconstruction'
+        ? 'Прирост площади допустимых помещений средства размещения, м²'
+        : 'Площадь допустимых помещений средства размещения, м²';
+    }else{
+      q('mpt-area-label').textContent=mode==='reconstruction'?'Прирост общей площади МПТ, м²':'Общая площадь МПТ, м²';
+    }
     q('mpt-context-note').textContent=category==='industrial'
       ? 'Light Industrial считается как промышленно-производственный МПТ. Закрытый склад учитывается максимум в пределах 25% площади; открытая складская площадка, парковки и гаражи исключаются.'
-      : 'Для этой категории парковки, гаражи, склад внутри здания и открытая складская площадка исключаются из Sмпт.';
+      : hotel
+        ? 'Для средства размещения вводится площадь помещений, предусмотренных требованиями к соответствующему типу/категории и технологически связанных с профильной деятельностью. Парковки и гаражи исключаются.'
+        : 'Для этой категории парковки, гаражи, склад внутри здания и открытая складская площадка исключаются из Sмпт.';
   }
   async function loadMeta(){
     const r=await fetch('/api/mpt/meta',{credentials:'same-origin'});
