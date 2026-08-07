@@ -5,6 +5,7 @@
 #   sh deploy-developaid.sh prod        — поднять то, что помечено prod
 #   sh deploy-developaid.sh --rollback  — вернуть предыдущий образ
 #   sh deploy-developaid.sh --log       — журнал выкаток
+#   sh deploy-developaid.sh --check 8080 [коммит] — проверить, что отвечает порт
 #
 # Главное правило: прежний контейнер живёт, пока новый не доказал, что
 # работает. Раньше выкатка гасила его первой командой, и любая осечка —
@@ -34,12 +35,17 @@ APP_BIND=$(grep -E '^APP_BIND=' .env 2>/dev/null | tail -1 | cut -d= -f2- || tru
 [ -n "${APP_BIND:-}" ] || APP_BIND=0.0.0.0
 
 [ -n "${YC_REGISTRY_ID:-}" ] || YC_REGISTRY_ID=$(grep -E '^YC_REGISTRY_ID=' .env 2>/dev/null | tail -1 | cut -d= -f2- || true)
-[ -n "${YC_REGISTRY_ID:-}" ] || {
-  echo "Не задан YC_REGISTRY_ID — впишите его в .env." >&2
-  echo "Идентификатор показывает консоль: Container Registry → реестр." >&2
-  exit 1
+# Реестр нужен только тому, кто качает образ. Журналу и проверке живости он ни
+# к чему, а требование его наличия закрывало бы их на машине, где выкатка ещё
+# не настроена.
+require_registry() {
+  [ -n "${YC_REGISTRY_ID:-}" ] || {
+    echo "Не задан YC_REGISTRY_ID — впишите его в .env." >&2
+    echo "Идентификатор показывает консоль: Container Registry → реестр." >&2
+    exit 1
+  }
+  REPO="cr.yandex/${YC_REGISTRY_ID}/${NAME}"
 }
-REPO="cr.yandex/${YC_REGISTRY_ID}/${NAME}"
 
 mkdir -p "$ROOT/data"
 
@@ -71,15 +77,31 @@ registry_login() {
 health_check() {
   port="$1"
   expect="$2"
+  # Во временный каталог, а не в data: data — том пользователя, ему чужого
+  # мусора не надо.
+  body_file="${TMPDIR:-/tmp}/developaid-health.$$.json"
   attempt=0
   while [ "$attempt" -lt 40 ]; do
     attempt=$((attempt + 1))
-    body=$(curl -fsS --max-time 5 "http://127.0.0.1:${port}/health" 2>/dev/null || true)
-    if [ -n "$body" ]; then
-      echo "$body" | python3 - "$expect" <<'PY'
+    # Ответ ложится в файл, а не в трубу. Труба сюда не годится: программу
+    # ниже python читает со стандартного ввода, и он у него уже занят —
+    # `json.load(sys.stdin)` получал EOF, проверка валилась при живом
+    # приложении, и рабочий контейнер не менялся никогда.
+    if curl -fsS --max-time 5 "http://127.0.0.1:${port}/health" \
+         -o "$body_file" 2>/dev/null && [ -s "$body_file" ]; then
+      # `|| verdict=$?` обязателен: под `set -e` неуспех программы оборвал бы
+      # скрипт на месте, не дав ни убрать временный файл, ни вернуть вердикт
+      # вызывающему.
+      verdict=0
+      python3 - "$expect" "$body_file" <<'PY' || verdict=$?
 import json, sys
 expect = sys.argv[1]
-data = json.load(sys.stdin)
+try:
+    with open(sys.argv[2], encoding="utf-8") as handle:
+        data = json.load(handle)
+except ValueError as error:
+    print(f"ответ /health не разобрался как JSON: {error}", file=sys.stderr)
+    sys.exit(1)
 problems = []
 if data.get("status") != "ok":
     problems.append(f"status={data.get('status')!r}")
@@ -92,10 +114,12 @@ if problems:
     sys.exit(1)
 print(f"версия {data.get('version')}, коммит {data.get('commit')}")
 PY
-      return $?
+      rm -f "$body_file"
+      return "$verdict"
     fi
     sleep 3
   done
+  rm -f "$body_file"
   echo "порт ${port} не ответил за две минуты" >&2
   return 1
 }
@@ -123,6 +147,14 @@ case "${1:-}" in
     echo "Журнал пуст."
     exit 0
     ;;
+  --check)
+    # Та же проверка живости, что решает судьбу выкатки, — отдельной командой.
+    # Иначе её единственный способ запустить лежит внутри выкатки, и ошибка в
+    # ней обнаруживается только тем, что прод молча не обновляется.
+    [ -n "${2:-}" ] || { echo "Укажите порт: sh deploy-developaid.sh --check 8080 [коммит]" >&2; exit 1; }
+    health_check "$2" "${3:-}"
+    exit $?
+    ;;
   --rollback)
     [ -f "$PREVIOUS" ] || { echo "Возвращаться некуда: предыдущий образ не записан." >&2; exit 1; }
     TAG=$(cat "$PREVIOUS")
@@ -137,6 +169,7 @@ case "${1:-}" in
     ;;
 esac
 
+require_registry
 IMAGE="${REPO}:${TAG}"
 STARTED=$(date '+%Y-%m-%d %H:%M:%S')
 WAS=$(current_image)
