@@ -24,6 +24,17 @@ _GENERIC_TITLES = {
     "жилые комплексы москвы",
     "квартиры в новостройках",
 }
+_LISTING_PREFIXES = (
+    "купить ",
+    "продажа ",
+    "продается ",
+    "продаётся ",
+    "снять ",
+    "аренда ",
+    "квартира ",
+    "апартаменты ",
+    "студия ",
+)
 
 
 @dataclass(frozen=True)
@@ -179,7 +190,7 @@ class YandexSearchClient:
 
 
 def extract_project_candidates(docs: list[SearchDoc]) -> list[dict[str, Any]]:
-    """Extract named residential projects from normal web-search results."""
+    """Extract named residential projects, never individual listings or bare addresses."""
     found: dict[str, dict[str, Any]] = {}
     for doc in docs:
         text = " ".join(part for part in (doc.title, doc.snippet) if part)
@@ -192,10 +203,16 @@ def extract_project_candidates(docs: list[SearchDoc]) -> list[dict[str, Any]]:
             names.extend(match.group(1) for match in re.finditer(pattern, text, flags=re.I))
 
         try:
-            host = (urlsplit(doc.url).hostname or "").lower()
+            split = urlsplit(doc.url)
+            host = (split.hostname or "").lower()
+            path = split.path.lower()
         except ValueError:
             host = ""
-        if "domclick.ru" in host:
+            path = ""
+
+        # Domclick search results include both project pages and thousands of flat listings.
+        # A title-only fallback is allowed exclusively for an explicit project URL.
+        if "domclick.ru" in host and re.search(r"/(?:complex|complexes)/", path):
             prefix = re.split(r"\s+[—–|]\s+|\s+-\s+", doc.title, maxsplit=1)[0]
             prefix = re.sub(r"^(?:ЖК|жилой комплекс)\s+", "", prefix, flags=re.I)
             if 2 < len(prefix) <= 70:
@@ -203,7 +220,7 @@ def extract_project_candidates(docs: list[SearchDoc]) -> list[dict[str, Any]]:
 
         for raw_name in names:
             name = clean_project_name(raw_name)
-            if not name or name.lower() in _GENERIC_TITLES:
+            if not _looks_like_project_name(name):
                 continue
             key = re.sub(r"[^a-zа-яё0-9]+", "", name.lower())
             if len(key) < 3:
@@ -223,17 +240,37 @@ def extract_project_candidates(docs: list[SearchDoc]) -> list[dict[str, Any]]:
     return sorted(found.values(), key=lambda item: item["search_rank"])
 
 
+def _looks_like_project_name(value: str) -> bool:
+    name = clean_project_name(value)
+    low = name.lower()
+    if not name or low in _GENERIC_TITLES:
+        return False
+    if any(low.startswith(prefix) for prefix in _LISTING_PREFIXES):
+        return False
+    if re.match(r"^(?:ул\.?|улица|проспект|проезд|шоссе|наб\.?|набережная)\b", low):
+        return False
+    # Bare postal/address titles such as "Башиловская улица, 23 к4" are not projects.
+    if re.search(r"\b(?:улица|ул\.?|проспект|проезд|шоссе|набережная|наб\.?)\b", low) and re.search(
+        r"\b\d+[а-яa-z0-9/\-]*\b", low
+    ):
+        return False
+    if re.search(r"\b(?:\d+[,.]?\d*)\s*м[²2]\b", low):
+        return False
+    return 2 < len(name) <= 70
+
+
 def clean_project_name(value: str) -> str:
     value = html.unescape(str(value or ""))
     value = value.strip(" \t\r\n«»\"'()[]")
     value = re.sub(r"\s+", " ", value)
     value = re.sub(r"\s+(?:Москва|в Москве|официальный сайт|новостройка)$", "", value, flags=re.I)
-    return value.strip(" ,.;:—–-")
+    return value.strip(" ,.;:—–-«»\"'")
 
 
 def official_cards_from_docs(docs: list[SearchDoc]) -> list[dict[str, Any]]:
+    """Return only concrete EISZhS construction-object cards with a stable numeric id."""
     result: list[dict[str, Any]] = []
-    seen: set[str] = set()
+    seen: set[int] = set()
     for doc in docs:
         try:
             split = urlsplit(doc.url)
@@ -243,15 +280,17 @@ def official_cards_from_docs(docs: list[SearchDoc]) -> list[dict[str, Any]]:
             continue
         if host != _OFFICIAL_HOST:
             continue
+
         object_match = re.search(r"/(\d{4,12})(?:/)?$", path)
-        object_id = object_match.group(1) if object_match else None
-        key = object_id or doc.url
-        if key in seen:
+        if object_match is None:
             continue
-        seen.add(key)
+        object_id = int(object_match.group(1))
+        if object_id in seen:
+            continue
+        seen.add(object_id)
         result.append(
             {
-                "object_id": int(object_id) if object_id else None,
+                "object_id": object_id,
                 "title": doc.title,
                 "url": doc.url,
                 "snippet": doc.snippet,
