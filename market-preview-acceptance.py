@@ -55,6 +55,21 @@ def equivalent(expected: str, actual: str) -> bool:
     return b in aliases.get(a, set())
 
 
+def get_json(url: str, timeout: int = 30) -> dict:
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as response:
+            body = response.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"HTTP {exc.code}: {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Не удалось подключиться к {url}: {exc}") from exc
+    data = json.loads(body)
+    if not isinstance(data, dict):
+        raise RuntimeError("API вернул неожиданный JSON")
+    return data
+
+
 def post_json(base_url: str, payload: dict) -> dict:
     url = base_url.rstrip("/") + "/market/discovery"
     request = urllib.request.Request(
@@ -77,6 +92,21 @@ def post_json(base_url: str, payload: dict) -> dict:
     return data
 
 
+def validate_contract(data: dict) -> tuple[bool, str]:
+    source = data.get("source") or {}
+    mode = source.get("mode")
+    required = ("priced_count", "eligible_count", "diagnostics")
+    missing = [key for key in required if key not in data]
+    diagnostics = data.get("diagnostics") or {}
+    if mode != "multi_source_search_v5":
+        return False, f"старый market API: source.mode={mode!r}, ожидался 'multi_source_search_v5'"
+    if missing:
+        return False, "v5 API неполный: нет полей " + ", ".join(missing)
+    if "candidates_geofiltered" not in diagnostics:
+        return False, "v5 API неполный: diagnostics.candidates_geofiltered отсутствует"
+    return True, ""
+
+
 def validate_case(name: str, spec: dict, data: dict) -> bool:
     projects = data.get("projects") or []
     actual = [str(item.get("name") or "") for item in projects]
@@ -84,13 +114,31 @@ def validate_case(name: str, spec: dict, data: dict) -> bool:
     summary = data.get("price_summary")
 
     print(f"\n=== {name} ===")
+    contract_ok, contract_error = validate_contract(data)
+    if not contract_ok:
+        print(f"FAIL: {contract_error}")
+        visible_prices = sum(
+            1
+            for item in projects
+            if (item.get("market_price") or {}).get("price_per_sqm")
+        )
+        print(
+            "Это не ошибка подсчёта цен acceptance-скриптом: стенд отвечает старым контрактом. "
+            f"В старом ответе визуально цен: {visible_prices}."
+        )
+
     print(f"Найдено: {len(actual)}; с ценой: {priced}; подтверждено: {int(data.get('confirmed_count') or 0)}")
     for item in projects:
         price = (item.get("market_price") or {}).get("price_per_sqm")
         price_text = f"{int(price):,} ₽/м²".replace(",", " ") if price else "цены нет"
-        print(f"- {item.get('name')} | {item.get('distance_km')} км | {price_text} | {item.get('evidence')}")
+        evidence = item.get("evidence") or "старый контракт"
+        basis = (item.get("market_price") or {}).get("basis") or "—"
+        print(
+            f"- {item.get('name')} | {item.get('distance_km')} км | {price_text} "
+            f"| {evidence} | basis={basis}"
+        )
 
-    ok = True
+    ok = contract_ok
     must = list(spec.get("must") or [])
     matched = []
     missing = []
@@ -114,7 +162,7 @@ def validate_case(name: str, spec: dict, data: dict) -> bool:
             print(f"FAIL: обязательный аналог не найден: {mandatory}")
             ok = False
 
-    if priced <= 0:
+    if contract_ok and priced <= 0:
         print("FAIL: нет ни одного пригодного ценового наблюдения")
         ok = False
     if summary is None:
@@ -143,7 +191,22 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Live acceptance test for DevelopAid market preview")
     parser.add_argument("--base-url", default="http://127.0.0.1:8081")
     parser.add_argument("--only", choices=["savvinskaya", "mishina", "all"], default="all")
+    parser.add_argument("--expect-commit", default="")
     args = parser.parse_args()
+
+    try:
+        health = get_json(args.base_url.rstrip("/") + "/health")
+    except Exception as exc:
+        print(f"FAIL: health check: {exc}", file=sys.stderr)
+        return 1
+    actual_commit = str(health.get("commit") or "")
+    print(f"Preview health: version={health.get('version')}; commit={actual_commit or '—'}")
+    if args.expect_commit and actual_commit != args.expect_commit:
+        print(
+            f"FAIL: на 8081 запущен commit {actual_commit!r}, ожидался {args.expect_commit!r}",
+            file=sys.stderr,
+        )
+        return 1
 
     selected = GOLDEN.items()
     if args.only == "savvinskaya":
