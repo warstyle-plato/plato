@@ -1,5 +1,6 @@
 # Рыночный preview: PR сам гоняет тесты, а образ собирается только из workflow_dispatch
 # на main. Это принципиально: привязка OIDC в Yandex Cloud разрешает ref=refs/heads/main.
+# Автоматического SSH-deploy здесь нет: второй этап CI/CD проекта пока не настроен.
 name: Market preview
 
 on:
@@ -157,39 +158,14 @@ jobs:
           cache-from: type=gha,scope=market-preview
           cache-to: type=gha,mode=max,scope=market-preview
 
-  deploy:
-    name: Заменить стенд на 8081
+  ready:
+    name: Preview-образ готов
     runs-on: ubuntu-latest
     needs: [build]
-    timeout-minutes: 20
+    if: needs.build.result == 'success'
     steps:
-      - name: Скачать готовый образ и поднять preview
-        uses: appleboy/ssh-action@v1
-        env:
-          SOURCE_REF: ${{ inputs.source_ref }}
-          YC_REGISTRY_ID: ${{ vars.YC_REGISTRY_ID }}
-        with:
-          host: ${{ secrets.CORE_HOST }}
-          username: ${{ secrets.CORE_USER }}
-          key: ${{ secrets.CORE_SSH_KEY }}
-          envs: SOURCE_REF,YC_REGISTRY_ID
-          script_stop: true
-          script: |
-            set -eu
-            case "$SOURCE_REF" in
-              agent/market-domrf-search-*) ;;
-              *) echo "Недопустимая preview-ветка" >&2; exit 1 ;;
-            esac
-            cd ~/plato
-            git fetch --quiet origin "$SOURCE_REF"
-            git show FETCH_HEAD:deploy-market-preview.sh > /tmp/deploy-market-preview.sh
-            chmod 700 /tmp/deploy-market-preview.sh
-            YC_REGISTRY_ID="$YC_REGISTRY_ID" DEVELOPAID_ROOT="$HOME/plato" \
-              sh /tmp/deploy-market-preview.sh \
-              "${{ needs.build.outputs.tag }}" \
-              "${{ needs.build.outputs.sha }}"
-
-      - name: Адрес стенда
+      - name: Что запускать на ВМ
         run: |
-          echo "Preview обновлён готовым образом ${{ needs.build.outputs.tag }}."
-          echo "Проверка: http://${{ secrets.CORE_HOST }}:8081/"
+          echo "Готов образ ${{ needs.build.outputs.tag }} для ветки ${{ inputs.source_ref }}."
+          echo "Автоматический SSH-deploy отключён: CORE_HOST/SSH второй этап CI/CD не настроен."
+          echo "Запускать на ВМ через deploy-market-preview.sh из preview-ветки."
