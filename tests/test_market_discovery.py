@@ -41,7 +41,7 @@ def test_yandex_search_xml_is_parsed() -> None:
     assert docs[0].domain == "domclick.ru"
 
 
-def test_candidate_name_is_extracted_from_domclick_result() -> None:
+def test_candidate_name_is_extracted_from_domclick_project_result() -> None:
     docs = [
         SearchDoc(
             title="ЖК Symphony 34 — квартиры от застройщика",
@@ -53,6 +53,26 @@ def test_candidate_name_is_extracted_from_domclick_result() -> None:
     ]
     candidates = extract_project_candidates(docs)
     assert candidates[0]["name"] == "Symphony 34"
+
+
+def test_domclick_flat_listing_is_not_a_project_candidate() -> None:
+    docs = [
+        SearchDoc(
+            title="Купить 1-комнатную квартиру, 35.8 м² по адресу Москва, Писцовая",
+            url="https://domclick.ru/card/sale__flat__12345",
+            domain="domclick.ru",
+            snippet="1-комнатная квартира в Савёловском районе",
+            rank=1,
+        ),
+        SearchDoc(
+            title="Башиловская улица, 23 к4",
+            url="https://domclick.ru/building/12345",
+            domain="domclick.ru",
+            snippet="Квартиры в доме",
+            rank=2,
+        ),
+    ]
+    assert extract_project_candidates(docs) == []
 
 
 def test_official_domrf_card_is_recognised_without_fetching_page() -> None:
@@ -68,6 +88,19 @@ def test_official_domrf_card_is_recognised_without_fetching_page() -> None:
     cards = official_cards_from_docs(docs)
     assert cards[0]["object_id"] == 64438
     assert cards[0]["url"].endswith("/64438")
+
+
+def test_non_object_domrf_page_is_not_an_official_card() -> None:
+    docs = [
+        SearchDoc(
+            title="Наш.Дом.РФ",
+            url="https://наш.дом.рф/сервисы/проверка_новостроек",
+            domain="наш.дом.рф",
+            snippet="Каталог новостроек",
+            rank=1,
+        )
+    ]
+    assert official_cards_from_docs(docs) == []
 
 
 def test_official_card_requires_name_or_address_match(tmp_path: Path) -> None:
