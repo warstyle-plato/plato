@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="DevelopAid">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#07111f"/>
+      <stop offset="1" stop-color="#0d2a4d"/>
+    </linearGradient>
+    <linearGradient id="a" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#38d7ff"/>
+      <stop offset="1" stop-color="#2f8cff"/>
+    </linearGradient>
+    <linearGradient id="b" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2f8cff"/>
+      <stop offset="1" stop-color="#7b61ff"/>
+    </linearGradient>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="12" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <rect width="512" height="512" rx="118" fill="url(#bg)"/>
+  <circle cx="372" cy="122" r="132" fill="#2f8cff" opacity=".10"/>
+  <g filter="url(#glow)">
+    <path d="M118 154 217 98l99 56v112l-99 56-99-56z" fill="url(#a)"/>
+    <path d="M218 246 317 190l99 56v112l-99 56-99-56z" fill="url(#b)"/>
+    <path d="M117 278 216 222l99 56v112l-99 56-99-56z" fill="#1b66d5" opacity=".92"/>
+  </g>
+  <path d="M217 98v224M118 154l198 112M118 266l198-112M317 190v224M218 246l198 112M218 358l198-112M216 222v224M117 278l198 112M117 390l198-112" stroke="#d8f6ff" stroke-opacity=".34" stroke-width="5" fill="none"/>
+</svg>
