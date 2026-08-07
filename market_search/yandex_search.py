@@ -35,6 +35,27 @@ _LISTING_PREFIXES = (
     "апартаменты ",
     "студия ",
 )
+_COMMERCIAL_PROJECT_RE = re.compile(
+    r"\b(?:бц|бизнес[-\s]?центр|деловой\s+центр|офисн(?:ый|ое|ого|ом|ые|ых)\s+(?:центр|здание|комплекс)|"
+    r"коммерческая\s+недвижимость|office\s+center|business\s+center)\b",
+    flags=re.I,
+)
+_APART_PROJECT_RE = re.compile(
+    r"\b(?:апарт[-\s]?(?:отель|комплекс)|комплекс\s+апартаментов|апартаменты)\b",
+    flags=re.I,
+)
+_SECONDARY_RE = re.compile(
+    r"\b(?:вторичн(?:ая|ое|ый|ом|ого|ые|ых)|вторичный\s+рынок|перепродаж[аи])\b",
+    flags=re.I,
+)
+_COMPLETED_RE = re.compile(
+    r"\b(?:дом\s+сдан|сдан(?:ный|а|о|ы)?|введ[её]н\s+в\s+эксплуатацию|готовый\s+дом)\b",
+    flags=re.I,
+)
+_ACTIVE_PRIMARY_RE = re.compile(
+    r"\b(?:от\s+застройщика|строит(?:ся|ельство)|срок\s+сдачи|старт\s+продаж|в\s+продаже|дду|новостройк)\b",
+    flags=re.I,
+)
 
 
 @dataclass(frozen=True)
@@ -190,9 +211,12 @@ class YandexSearchClient:
 
 
 def extract_project_candidates(docs: list[SearchDoc]) -> list[dict[str, Any]]:
-    """Extract named residential projects, never individual listings or bare addresses."""
+    """Extract named active residential-primary projects, never listings, apartments or offices."""
     found: dict[str, dict[str, Any]] = {}
     for doc in docs:
+        if not _looks_like_residential_primary_doc(doc):
+            continue
+
         text = " ".join(part for part in (doc.title, doc.snippet) if part)
         names: list[str] = []
         patterns = (
@@ -238,6 +262,34 @@ def extract_project_candidates(docs: list[SearchDoc]) -> list[dict[str, Any]]:
                 found[key] = candidate
 
     return sorted(found.values(), key=lambda item: item["search_rank"])
+
+
+def _looks_like_residential_primary_doc(doc: SearchDoc) -> bool:
+    title = " ".join(str(doc.title or "").split())
+    text = " ".join(part for part in (doc.title, doc.snippet) if part)
+
+    # A project explicitly presented as offices/business centre is not a housing analogue.
+    if _COMMERCIAL_PROJECT_RE.search(title):
+        return False
+    if _COMMERCIAL_PROJECT_RE.search(text) and not re.search(r"\b(?:жилой\s+комплекс|жилой\s+дом|квартир[а-я]*)\b", text, flags=re.I):
+        return False
+
+    # Apartment/hotel projects are legally and economically different from an apartment house.
+    if _APART_PROJECT_RE.search(title):
+        return False
+    if _APART_PROJECT_RE.search(text) and not re.search(r"\bквартир[а-я]*\b", text, flags=re.I):
+        return False
+
+    # Explicit secondary-market pages never form the development-primary comparable set.
+    if _SECONDARY_RE.search(text):
+        return False
+
+    # A completed old building is retained only if the same result explicitly shows active
+    # primary-market/developer sales; otherwise it is stale stock/resale rather than competition.
+    if _COMPLETED_RE.search(text) and not _ACTIVE_PRIMARY_RE.search(text):
+        return False
+
+    return True
 
 
 def _looks_like_project_name(value: str) -> bool:
