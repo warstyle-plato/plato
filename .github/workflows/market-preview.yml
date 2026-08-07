@@ -22,7 +22,7 @@ on:
       source_ref:
         description: "Ветка рыночного preview"
         required: true
-        default: "agent/market-search-v5"
+        default: "agent/market-domrf-search-v4"
         type: string
 
 concurrency:
