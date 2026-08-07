@@ -1,0 +1,24 @@
+.market-search-panel { margin-bottom: 18px; }
+.market-form { display: grid; grid-template-columns: minmax(240px, 2fr) repeat(3, minmax(150px, 1fr)) auto; gap: 12px; align-items: end; }
+.market-form label { display: flex; flex-direction: column; gap: 7px; color: var(--muted); font-size: 12px; }
+.market-form input { width: 100%; min-height: 44px; border: 1px solid var(--line); border-radius: 10px; background: rgba(7,17,31,.64); color: var(--text); padding: 0 12px; font: inherit; }
+.market-kpis { margin-bottom: 18px; }
+.market-recommendation > strong { display: block; margin: 8px 0 12px; font-size: clamp(34px, 4vw, 56px); line-height: 1; color: #66e5bd; }
+.market-recommendation p { max-width: 620px; color: var(--muted); line-height: 1.6; }
+.market-formula { margin-top: 18px; padding: 12px 14px; border: 1px solid rgba(56,215,255,.22); border-radius: 10px; background: rgba(56,215,255,.06); color: #a9dff0; font-size: 13px; }
+.market-supply { display: grid; gap: 12px; }
+.market-supply > div { display: flex; justify-content: space-between; gap: 18px; align-items: baseline; padding-bottom: 11px; border-bottom: 1px solid var(--line); }
+.market-supply span { color: var(--muted); font-size: 13px; }
+.market-supply strong { text-align: right; font-size: 18px; }
+.market-table-panel { margin-top: 18px; overflow: hidden; }
+.market-table { overflow-x: auto; }
+.market-row { min-width: 800px; display: grid; grid-template-columns: 1.8fr .7fr .9fr .7fr .9fr .5fr; gap: 12px; align-items: center; padding: 13px 0; border-bottom: 1px solid var(--line); }
+.market-row:last-child { border-bottom: 0; }
+.market-row span { font-size: 13px; }
+.market-row span:first-child { display: flex; flex-direction: column; gap: 4px; }
+.market-row small { color: var(--muted); }
+.market-head { color: var(--muted); text-transform: uppercase; letter-spacing: .06em; font-size: 11px; }
+.market-note-panel { margin-top: 18px; color: var(--muted); }
+.market-note-panel p { margin: 6px 0; }
+@media (max-width: 1100px) { .market-form { grid-template-columns: 1fr 1fr; } .market-form .search-button { width: 100%; } }
+@media (max-width: 680px) { .market-form { grid-template-columns: 1fr; } .market-recommendation > strong { font-size: 34px; } }
