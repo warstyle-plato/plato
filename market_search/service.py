@@ -77,7 +77,9 @@ class MarketDiscoveryService:
             cards = [
                 card
                 for card in raw_cards
-                if self._official_card_matches(candidate["name"], address_hint, card)
+                if self._official_card_matches(
+                    candidate["name"], address_hint, card, locality=locality
+                )
             ]
 
             price_info: dict[str, Any] = {
@@ -127,9 +129,9 @@ class MarketDiscoveryService:
                     "official_cards": cards,
                     "confirmed": bool(cards),
                     "confirmation": (
-                        "Официальная карточка Наш.Дом.РФ сопоставлена"
+                        "Официальная карточка Наш.Дом.РФ сопоставлена по проекту и географии"
                         if cards
-                        else "Официальная карточка пока не подтверждена по названию или адресу"
+                        else "Официальная карточка пока не подтверждена по проекту и географии"
                     ),
                     "market_price": price_info,
                 }
@@ -201,6 +203,8 @@ class MarketDiscoveryService:
         project_name: str,
         address_hint: str | None,
         card: dict[str, Any],
+        *,
+        locality: str | None = None,
     ) -> bool:
         haystack = " ".join(
             str(card.get(key) or "")
@@ -208,9 +212,9 @@ class MarketDiscoveryService:
         )
         hay_norm = cls._compact(haystack)
         name_norm = cls._compact(project_name)
-        if len(name_norm) >= 4 and name_norm in hay_norm:
-            return True
 
+        # Сильное совпадение по адресу важнее маркетингового названия. Оно также
+        # защищает от одноимённых ЖК в других регионах.
         if address_hint:
             address_tokens = cls._address_match_tokens(address_hint)
             hay_tokens = set(cls._words(haystack))
@@ -221,7 +225,26 @@ class MarketDiscoveryService:
                 street_ok = any(token in hay_tokens for token in street_tokens)
                 if number_ok and street_ok:
                     return True
+
+        # Одного совпадения названия недостаточно: "СВОЙ" в Хабаровске не может
+        # подтверждать московский аналог. Для name-only матча требуем целевую
+        # географию прямо в поисковом результате Наш.Дом.РФ.
+        if len(name_norm) >= 4 and name_norm in hay_norm:
+            return cls._locality_matches(locality, haystack)
         return False
+
+    @classmethod
+    def _locality_matches(cls, locality: str | None, value: str) -> bool:
+        if not locality:
+            return True
+        low = str(value or "").lower().replace("ё", "е")
+        target = locality.lower().replace("ё", "е")
+        if target == "москва":
+            return bool(re.search(r"\bмоскв(?:а|ы|е|у|ой|ою)\b", low))
+        if "московск" in target and "област" in target:
+            return "московск" in low and "област" in low
+        target_tokens = [token for token in cls._words(target) if len(token) >= 4]
+        return bool(target_tokens) and all(token in cls._words(low) for token in target_tokens)
 
     @staticmethod
     def _compact(value: str) -> str:
