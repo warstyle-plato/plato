@@ -38,8 +38,15 @@ jobs:
           assert 'id="mpt-benefit-template"' in page, "MPT panel was not injected into core.PAGE"
           commands = getattr(main_registry.core, "TELEGRAM_BOT_COMMANDS", [])
           assert any(isinstance(item, dict) and item.get("command") == "mpt" for item in commands), commands
-          markup = main_registry._base._help_markup(1)
+          original_url = main_registry.core._telegram_web_app_url
+          try:
+              main_registry.core._telegram_web_app_url = lambda chat_id, cad: "https://example.test/app?session=ci"
+              markup = main_registry._base._help_markup(1)
+          finally:
+              main_registry.core._telegram_web_app_url = original_url
           buttons = [button for row in markup.get("inline_keyboard", []) for button in row]
-          assert any(button.get("text") == "🏗 Льгота МПТ — Москва" for button in buttons), buttons
+          mpt = [button for button in buttons if button.get("text") == "🏗 Льгота МПТ — Москва"]
+          assert len(mpt) == 1, buttons
+          assert "section=mpt" in mpt[0]["web_app"]["url"], mpt[0]
           print("MPT production entrypoint and Telegram menu: OK")
           PY
