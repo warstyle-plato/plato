@@ -15,6 +15,10 @@ _BAD_TITLE_RE = re.compile(
     r"^(?:купить|продажа|прода[её]тся|снять|аренда|квартира|апартаменты|студия)\b",
     flags=re.I,
 )
+_BRANDED_PREFIX_RE = re.compile(
+    r"^(?:клубный\s+квартал|клубный\s+дом|жилой\s+квартал)\b",
+    flags=re.I,
+)
 
 
 def _key(name: str) -> str:
@@ -25,6 +29,12 @@ def _key(name: str) -> str:
         flags=re.I,
     )
     return re.sub(r"[^a-zа-яё0-9]+", "", normalized)
+
+
+def _label_score(name: str) -> tuple[int, int]:
+    """Prefer a complete branded project label when aliases collapse to the same key."""
+    clean = clean_project_name(name)
+    return (1 if _BRANDED_PREFIX_RE.search(clean) else 0, len(clean))
 
 
 def _trusted_project_page(doc: SearchDoc) -> bool:
@@ -129,7 +139,12 @@ def extract_project_candidates_v5(docs: list[SearchDoc]) -> list[dict[str, Any]]
         if doc.domain:
             domains.add(doc.domain)
         current["discovery_sources"] = sorted(domains)
-        if doc.rank < int(current.get("search_rank") or 10_000):
+        current_rank = int(current.get("search_rank") or 10_000)
+        replace = doc.rank < current_rank or (
+            doc.rank == current_rank
+            and _label_score(cleaned) > _label_score(str(current.get("name") or ""))
+        )
+        if replace:
             candidate["discovery_sources"] = current["discovery_sources"]
             found[key] = candidate
 
