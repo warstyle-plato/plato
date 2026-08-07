@@ -11,6 +11,7 @@ on:
       - "market_search/**"
       - "main_registry.py"
       - "tests/test_market_discovery*.py"
+      - "tests/test_market_geo_apply_sources.py"
       - "tests/test_market_preview_deploy.py"
       - "deploy-market-preview.sh"
       - ".github/workflows/market-preview.yml"
@@ -19,7 +20,7 @@ on:
       source_ref:
         description: "Ветка рыночного preview"
         required: true
-        default: "agent/market-domrf-search-v3"
+        default: "agent/market-domrf-search-v4"
         type: string
 
 concurrency:
@@ -52,6 +53,7 @@ jobs:
           python -m pytest \
             tests/test_market_discovery.py \
             tests/test_market_discovery_ui.py \
+            tests/test_market_geo_apply_sources.py \
             tests/test_market_preview_deploy.py -q
       - name: Интеграция с основным entrypoint
         run: |
