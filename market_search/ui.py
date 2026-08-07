@@ -60,11 +60,19 @@ async function runMarketDiscovery(){
       radius_km:Number(document.getElementById('mdRadius').value||3),
       limit:Number(document.getElementById('mdLimit').value||10)
     })});
-    const payload=await response.json();
-    if(!response.ok)throw new Error(payload.detail||'Поиск не выполнен');
+    const raw=await response.text();
+    let payload=null;
+    try{payload=raw?JSON.parse(raw):null}catch(parseError){
+      throw new Error('HTTP '+response.status+': сервер вернул не JSON: '+(raw||'<пустой ответ>').slice(0,500));
+    }
+    if(!response.ok){
+      const detail=payload&&payload.detail?payload.detail:('HTTP '+response.status+': поиск не выполнен');
+      throw new Error(detail);
+    }
+    if(!payload||typeof payload!=='object')throw new Error('Сервер вернул пустой результат поиска');
     renderMarketDiscovery(payload);
     status.textContent=payload.warning||('Найдено проектов: '+payload.count+', подтверждено Наш.Дом.РФ: '+payload.confirmed_count);
-  }catch(error){status.textContent=String(error.message||error)}
+  }catch(error){status.textContent=String((error&&error.message)||error)}
 }
 function renderMarketDiscovery(payload){
   const result=document.getElementById('mdResult');
