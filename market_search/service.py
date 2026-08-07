@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import re
 from pathlib import Path
 from typing import Any
 
@@ -33,17 +34,18 @@ class MarketDiscoveryService:
         else:
             subject = self.geocoder.geocode(address or "")
 
-        locality = self._locality_hint(address or subject.display_name)
-        queries = self._discovery_queries(address or subject.display_name, locality)
+        locality = self._locality_hint(f"{address or ''} {subject.display_name}")
+        district = self._district_hint(subject.display_name)
+        queries = self._discovery_queries(address or subject.display_name, locality, district)
         docs = []
         for query in queries:
             docs.extend(self.search.search(query, groups_on_page=12))
 
         candidates = extract_project_candidates(docs)
         projects: list[dict[str, Any]] = []
-        max_candidates = min(max(limit, 3), 8)
+        max_candidates = min(max(limit, 3), 10)
         for candidate in candidates[:max_candidates]:
-            project_point = self._geocode_project(candidate["name"], locality)
+            project_point = self._geocode_project(candidate, locality)
             distance = None
             if project_point is not None:
                 distance = round(
@@ -103,7 +105,12 @@ class MarketDiscoveryService:
         )
         confirmed_count = sum(1 for item in projects if item["confirmed"])
         return {
-            "query": {"address": address, "radius_km": radius_km, "limit": limit},
+            "query": {
+                "address": address,
+                "radius_km": radius_km,
+                "limit": limit,
+                "district": district,
+            },
             "location": subject.to_dict(),
             "source": {
                 "discovery": "Yandex Search API",
@@ -121,8 +128,17 @@ class MarketDiscoveryService:
             },
         }
 
-    def _geocode_project(self, name: str, locality: str) -> GeoPoint | None:
-        attempts = [f"ЖК {name}, {locality}", f"{name}, {locality}"]
+    def _geocode_project(self, candidate: dict[str, Any], locality: str) -> GeoPoint | None:
+        name = candidate["name"]
+        snippet = " ".join(
+            str(candidate.get(key) or "")
+            for key in ("source_title", "source_snippet")
+        )
+        address_hint = self._address_hint(snippet)
+        attempts = []
+        if address_hint:
+            attempts.append(address_hint)
+        attempts.extend([f"ЖК {name}, {locality}", f"{name}, {locality}"])
         for query in attempts:
             try:
                 return self.geocoder.geocode(query)
@@ -131,19 +147,48 @@ class MarketDiscoveryService:
         return None
 
     @staticmethod
+    def _address_hint(value: str) -> str | None:
+        # Search snippets frequently contain a street + house; use it before a project-name lookup.
+        match = re.search(
+            r"(?:Москва|Московская область)[,.:\s]+([^.;]{3,90}?(?:ул\.?|улица|проспект|проезд|шоссе|наб\.?|набережная)[^.;]{2,80}?\d+[А-Яа-яA-Za-z0-9/\-]*)",
+            value,
+            flags=re.I,
+        )
+        if not match:
+            return None
+        return "Москва, " + " ".join(match.group(1).split())
+
+    @staticmethod
+    def _district_hint(value: str) -> str | None:
+        match = re.search(r"([^,]{2,50}\s+район)", value, flags=re.I)
+        if not match:
+            return None
+        district = " ".join(match.group(1).split())
+        # Trim administrative prefixes that do not improve search relevance.
+        district = re.sub(r"^(?:внутригородская территория|муниципальный округ)\s+", "", district, flags=re.I)
+        return district
+
+    @staticmethod
     def _locality_hint(value: str) -> str:
         low = value.lower()
-        if "московск" in low and "област" in low:
+        if "московск" in low and "област" in low and "москва" not in low.replace("московская область", ""):
             return "Московская область"
         return "Москва"
 
     @staticmethod
-    def _discovery_queries(address: str, locality: str) -> list[str]:
+    def _discovery_queries(address: str, locality: str, district: str | None) -> list[str]:
         clean = " ".join(address.split())
-        return [
-            f'новостройки рядом с "{clean}" {locality}',
-            f'site:domclick.ru новостройки "{clean}" {locality}',
-        ]
+        queries = [f'новостройки рядом с "{clean}" {locality}']
+        if district:
+            queries.extend(
+                [
+                    f'новостройки "{district}" {locality}',
+                    f'site:domclick.ru новостройки "{district}" {locality}',
+                ]
+            )
+        else:
+            queries.append(f'site:domclick.ru новостройки "{clean}" {locality}')
+        return queries
 
     @staticmethod
     def _warning(projects: list[dict[str, Any]], confirmed_count: int) -> str | None:
