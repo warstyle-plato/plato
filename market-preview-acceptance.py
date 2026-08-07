@@ -7,6 +7,11 @@ import sys
 import urllib.error
 import urllib.request
 
+# Ключ сущности берётся из движка, а не пересказывается здесь: приёмка, не
+# знающая, что «Savvin River Residence» и «Саввин Ривер Резиденс» — один проект,
+# пропустит ровно тот дубль, ради которого её и писали.
+from market_search.normalize import same_project
+
 
 GOLDEN = {
     "Саввинская 25": {
@@ -30,6 +35,17 @@ GOLDEN = {
         "must": [],
         "mandatory": [],
         "minimum_recall": 0.0,
+        # Активная первичка не должна подменяться прежней очередью того же имени.
+        "forbid_when_present": {"Петровский парк II": ["Петровский парк"]},
+    },
+    "Гродненская 18": {
+        "address": "Москва, Гродненская улица, 18",
+        "radius_km": 3,
+        "limit": 15,
+        "must": [],
+        "mandatory": [],
+        "minimum_recall": 0.0,
+        "forbid_regions": ["хабаровск", "владивосток", "краснодар", "сочи", "дубай"],
     },
 }
 
@@ -43,6 +59,9 @@ def equivalent(expected: str, actual: str) -> bool:
     a = normalize(expected)
     b = normalize(actual)
     if a == b:
+        return True
+    # «Хамовники 12» и «Хамовники XII» — одна вывеска в двух записях номера.
+    if same_project(expected, actual):
         return True
     aliases = {
         normalize("Клубный квартал Фрунзенский"): {normalize("Фрунзенский")},
@@ -92,19 +111,56 @@ def post_json(base_url: str, payload: dict) -> dict:
     return data
 
 
+EXPECTED_MODE = "forensic_entity_pipeline_v6"
+
+
 def validate_contract(data: dict) -> tuple[bool, str]:
     source = data.get("source") or {}
     mode = source.get("mode")
-    required = ("priced_count", "eligible_count", "diagnostics")
+    required = ("priced_count", "eligible_count", "quarantine", "quarantine_count", "diagnostics")
     missing = [key for key in required if key not in data]
     diagnostics = data.get("diagnostics") or {}
-    if mode != "multi_source_search_v5":
-        return False, f"старый market API: source.mode={mode!r}, ожидался 'multi_source_search_v5'"
+    if mode != EXPECTED_MODE:
+        return False, f"старый market API: source.mode={mode!r}, ожидался {EXPECTED_MODE!r}"
     if missing:
-        return False, "v5 API неполный: нет полей " + ", ".join(missing)
-    if "candidates_geofiltered" not in diagnostics:
-        return False, "v5 API неполный: diagnostics.candidates_geofiltered отсутствует"
+        return False, "v6 API неполный: нет полей " + ", ".join(missing)
+    for key in ("candidates_geofiltered", "geo_unresolved", "documents_by_kind"):
+        if key not in diagnostics:
+            return False, f"v6 API неполный: diagnostics.{key} отсутствует"
     return True, ""
+
+
+def validate_data_quality(projects: list) -> list[str]:
+    """Проверки, которые ловят прежний мусор независимо от адреса.
+
+    Именно эти четыре класса пришли с живого preview: ноль километров без
+    адреса, дубли одного ЖК, цена без доказанной привязки и экспозиция без
+    источника. Они проверяются на любом контрольном адресе, а не только там,
+    где были замечены."""
+    problems: list[str] = []
+    seen: list[str] = []
+    for item in projects:
+        name = str(item.get("name") or "")
+        distance = item.get("distance_km")
+        if distance is not None and float(distance) <= 0.0:
+            problems.append(f"{name}: расстояние 0 км — признак наследования адреса объекта оценки")
+        if item.get("geo_status") not in (None, "resolved"):
+            problems.append(f"{name}: попал в выдачу без подтверждённой географии")
+        if not item.get("address"):
+            problems.append(f"{name}: нет собственного адреса проекта")
+        twin = next((other for other in seen if same_project(other, name)), None)
+        if twin:
+            problems.append(f"{name}: дубль уже показанного проекта {twin!r}")
+        seen.append(name)
+        price = item.get("market_price") or {}
+        if price.get("available") and not price.get("verified"):
+            problems.append(f"{name}: цена показана без доказанной привязки к проекту")
+        if price.get("available") and not price.get("sources"):
+            problems.append(f"{name}: у цены нет источника")
+        inventory = item.get("inventory") or {}
+        if inventory.get("units") is not None and not inventory.get("source"):
+            problems.append(f"{name}: экспозиция без источника")
+    return problems
 
 
 def validate_case(name: str, spec: dict, data: dict) -> bool:
@@ -132,10 +188,12 @@ def validate_case(name: str, spec: dict, data: dict) -> bool:
         price = (item.get("market_price") or {}).get("price_per_sqm")
         price_text = f"{int(price):,} ₽/м²".replace(",", " ") if price else "цены нет"
         evidence = item.get("evidence") or "старый контракт"
-        basis = (item.get("market_price") or {}).get("basis") or "—"
+        inventory = item.get("inventory") or {}
+        units = inventory.get("units")
+        exposure = f"{units} лот." if units else f"экспозиция: {inventory.get('quality') or '—'}"
         print(
             f"- {item.get('name')} | {item.get('distance_km')} км | {price_text} "
-            f"| {evidence} | basis={basis}"
+            f"| {exposure} | {evidence} | {item.get('address') or 'адрес не разрешён'}"
         )
 
     ok = contract_ok
@@ -162,6 +220,30 @@ def validate_case(name: str, spec: dict, data: dict) -> bool:
             print(f"FAIL: обязательный аналог не найден: {mandatory}")
             ok = False
 
+    problems = validate_data_quality(projects)
+    for problem in problems:
+        print(f"FAIL: {problem}")
+    if problems:
+        ok = False
+
+    for anchor, forbidden in (spec.get("forbid_when_present") or {}).items():
+        if not any(equivalent(anchor, candidate) for candidate in actual):
+            continue
+        for name in forbidden:
+            if any(equivalent(name, candidate) for candidate in actual):
+                print(f"FAIL: рядом с {anchor} показана прежняя очередь {name}")
+                ok = False
+
+    for marker in spec.get("forbid_regions") or []:
+        for item in projects:
+            haystack = " ".join(
+                str(part or "")
+                for part in (item.get("name"), item.get("address"), (item.get("coordinates") or {}).get("display_name"))
+            ).lower()
+            if marker in haystack:
+                print(f"FAIL: чужая география в выдаче: {item.get('name')} ({marker})")
+                ok = False
+
     if contract_ok and priced <= 0:
         print("FAIL: нет ни одного пригодного ценового наблюдения")
         ok = False
@@ -180,9 +262,15 @@ def validate_case(name: str, spec: dict, data: dict) -> bool:
     print(
         "Диагностика: "
         f"docs={diagnostics.get('raw_search_documents')}, "
-        f"names={diagnostics.get('project_names_extracted')}, "
-        f"geo={diagnostics.get('candidates_geofiltered')}"
+        f"kinds={diagnostics.get('documents_by_kind')}, "
+        f"кандидатов={diagnostics.get('candidates_extracted')}, "
+        f"сущностей={diagnostics.get('entities_resolved')}, "
+        f"в радиусе={diagnostics.get('candidates_geofiltered')}, "
+        f"без адреса={diagnostics.get('geo_unresolved')}, "
+        f"карантин={data.get('quarantine_count')}"
     )
+    for item in (data.get("quarantine") or [])[:10]:
+        print(f"  карантин: {item.get('name')} — {item.get('status')}: {item.get('reason')}")
     print("PASS" if ok else "FAIL")
     return ok
 
@@ -190,7 +278,9 @@ def validate_case(name: str, spec: dict, data: dict) -> bool:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Live acceptance test for DevelopAid market preview")
     parser.add_argument("--base-url", default="http://127.0.0.1:8081")
-    parser.add_argument("--only", choices=["savvinskaya", "mishina", "all"], default="all")
+    parser.add_argument(
+        "--only", choices=["savvinskaya", "mishina", "grodnenskaya", "all"], default="all"
+    )
     parser.add_argument("--expect-commit", default="")
     args = parser.parse_args()
 
@@ -213,6 +303,8 @@ def main() -> int:
         selected = [("Саввинская 25", GOLDEN["Саввинская 25"])]
     elif args.only == "mishina":
         selected = [("Мишина 46", GOLDEN["Мишина 46"])]
+    elif args.only == "grodnenskaya":
+        selected = [("Гродненская 18", GOLDEN["Гродненская 18"])]
 
     overall = True
     for name, spec in selected:

@@ -13,7 +13,8 @@ on:
       - "market-preview-acceptance.py"
       - "tests/test_market_discovery*.py"
       - "tests/test_market_geo_apply_sources.py"
-      - "tests/test_market_v5_strategy.py"
+      - "tests/test_market_v6_strategy.py"
+      - "tests/test_market_forensic_v6.py"
       - "tests/fixtures/market_golden_*.json"
       - "tests/test_market_preview_deploy.py"
       - "deploy-market-preview.sh"
@@ -69,7 +70,8 @@ jobs:
             tests/test_market_discovery.py \
             tests/test_market_discovery_ui.py \
             tests/test_market_geo_apply_sources.py \
-            tests/test_market_v5_strategy.py \
+            tests/test_market_v6_strategy.py \
+            tests/test_market_forensic_v6.py \
             tests/test_market_preview_deploy.py -q
       - name: Интеграция с основным entrypoint
         run: |

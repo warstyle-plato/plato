@@ -40,10 +40,19 @@ def market_recommendation(projects: list[dict[str, Any]]) -> dict[str, Any] | No
     Official EISZhS confirmation increases confidence but is not a hard gate: a project can
     participate when it is geocoded inside the radius and has a usable indexed asking price.
     This avoids the recall collapse caused by treating search-index confirmation as discovery.
+
+    Что действительно является условием — доказанная привязка цены к проекту.
+    ``price_verified`` читается явно и не имеет умолчания: отсутствующий ключ
+    здесь означает «не доказано», потому что неподтверждённое наблюдение в
+    медиане неотличимо от подтверждённого и портит ориентир молча.
     """
     rows: list[dict[str, Any]] = []
     for project in projects:
         if not project.get("within_radius"):
+            continue
+        if project.get("geo_status") not in (None, "resolved"):
+            continue
+        if not project.get("price_verified"):
             continue
         price = project.get("market_price") or {}
         if not price.get("available") or not price.get("price_per_sqm"):

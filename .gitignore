@@ -5,3 +5,5 @@ __pycache__/
 .env.local
 run.err
 data/platon_state/
+# Журнал обращений, который создаёт прогон тестов. В репозиторий не возится.
+data/telegram_users.sqlite3

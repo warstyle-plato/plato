@@ -10,15 +10,14 @@ from .http import RemoteServiceError, request_bytes
 from .yandex_search import SearchDoc, YandexSearchClient
 
 _OFFICIAL_HOST = "xn--80az8a.xn--d1aqf.xn--p1ai"
+# Шаблон «₽/м²» один на модуль — свой в official_price жил с той же ошибкой в
+# длине числа, и официальная средняя элитного проекта тоже делилась на десять.
+from .price import _PRICE_M2_RE  # noqa: E402
+
 _LABEL_PRICE_RE = re.compile(
     r"средн(?:яя|ей)\s+цена\s+за\s+1\s*(?:м(?:²|2)|кв\.?\s*м)"
-    r"[^0-9]{0,100}(?P<value>\d{2,3}(?:[\s\u00a0\u202f]\d{3}){1,2}|\d{5,7}|\d{2,4}(?:[.,]\d{1,2})?)"
+    r"[^0-9]{0,100}(?P<value>\d{1,3}(?:[\s\u00a0\u202f]\d{3}){1,3}|\d{5,8}|\d{2,4}(?:[.,]\d{1,2})?)"
     r"\s*(?P<thousand>тыс\.?)?\s*(?:₽|руб\.?)",
-    flags=re.I,
-)
-_PRICE_M2_RE = re.compile(
-    r"(?<!\d)(?P<value>\d{2,3}(?:[\s\u00a0\u202f]\d{3}){1,2}|\d{5,7}|\d{2,4}(?:[.,]\d{1,2})?)\s*"
-    r"(?P<thousand>тыс\.?)?\s*(?:₽|руб\.?)\s*/?\s*м(?:²|2)",
     flags=re.I,
 )
 
