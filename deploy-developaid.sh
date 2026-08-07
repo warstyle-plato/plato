@@ -107,12 +107,23 @@ if data.get("status") != "ok":
     problems.append(f"status={data.get('status')!r}")
 if expect and expect not in ("prod", "latest") and data.get("commit") != expect:
     problems.append(f"поднят коммит {data.get('commit')!r}, ожидался {expect!r}")
-if not data.get("data_writable"):
+notes = []
+# Отсутствие поля — не отрицательный ответ, а отсутствие ответа. Образы
+# старше 0.17.61 про каталог данных не сообщают вовсе, и чтение пропуска как
+# «ложь» валило проверку на здоровом контейнере. Хуже того, откат на такой
+# образ проваливался бы всегда, и скрипт писал бы «ОТКАТ НЕ УДАЛСЯ — нужен
+# человек» там, где всё в порядке.
+if "data_writable" not in data:
+    notes.append("образ не сообщает о каталоге данных — собран до этой проверки")
+elif not data.get("data_writable"):
     problems.append(f"каталог данных недоступен на запись: {data.get('data_dir')!r}")
 if problems:
     print("; ".join(problems), file=sys.stderr)
     sys.exit(1)
-print(f"версия {data.get('version')}, коммит {data.get('commit')}")
+line = f"версия {data.get('version')}, коммит {data.get('commit') or '—'}"
+if notes:
+    line += " (" + "; ".join(notes) + ")"
+print(line)
 PY
       rm -f "$body_file"
       return "$verdict"

@@ -136,6 +136,31 @@ def test_data_that_did_not_mount_is_a_failure():
     assert "каталог данных" in result.stderr
 
 
+def test_an_image_older_than_the_check_is_not_a_failure():
+    """На ядре крутился 0.17.58 — образ без поля `data_writable`. Пропуск
+    читался как «ложь», и проверка объявляла провал на здоровом контейнере.
+    Отсутствие ответа — не отрицательный ответ."""
+    result = check({"status": "ok", "version": "0.17.58"})
+    assert result.returncode == 0, result.stderr
+    assert "собран до этой проверки" in result.stdout
+
+
+def test_the_rollback_to_an_old_image_still_works():
+    """Худшее следствие: откат на образ старше проверки проваливался бы
+    всегда, и скрипт писал бы «ОТКАТ НЕ УДАЛСЯ — нужен человек» там, где всё
+    в порядке. Откат зовёт проверку без ожидаемого коммита."""
+    result = check({"status": "ok", "version": "0.17.58"}, "")
+    assert result.returncode == 0, result.stderr
+
+
+def test_data_reported_as_broken_is_still_a_failure():
+    """Пропуск и явное «нет» — разные вещи: второе по-прежнему провал."""
+    result = check({"status": "ok", "version": "0.17.62", "data_writable": False,
+                    "data_dir": "data"})
+    assert result.returncode == 1
+    assert "каталог данных" in result.stderr
+
+
 def test_a_broken_status_is_a_failure():
     result = check(healthy(status="degraded"))
     assert result.returncode == 1
