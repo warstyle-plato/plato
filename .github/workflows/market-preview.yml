@@ -33,9 +33,7 @@ jobs:
           python-version: "3.11"
           cache: pip
       - name: Зависимости
-        run: |
-          python -m pip install -r requirements.txt
-          python -m pip install pytest
+        run: python -m pip install -r requirements-dev.txt
       - name: Синтаксис и unit-тесты
         run: |
           python -m py_compile market_search/*.py market_search/providers/*.py main_registry.py
@@ -59,7 +57,7 @@ jobs:
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event.pull_request.head.repo.full_name == github.repository &&
-       github.head_ref == 'agent/market-domrf-search-v2')
+       github.head_ref == 'agent/market-domrf-search-v3')
     timeout-minutes: 60
     permissions:
       contents: read
@@ -128,8 +126,8 @@ jobs:
           script: |
             set -eu
             cd ~/plato
-            git fetch --quiet origin agent/market-domrf-search-v2
-            git show origin/agent/market-domrf-search-v2:deploy-market-preview.sh > /tmp/deploy-market-preview.sh
+            git fetch --quiet origin agent/market-domrf-search-v3
+            git show origin/agent/market-domrf-search-v3:deploy-market-preview.sh > /tmp/deploy-market-preview.sh
             chmod 700 /tmp/deploy-market-preview.sh
             DEVELOPAID_ROOT="$HOME/plato" \
               sh /tmp/deploy-market-preview.sh \
