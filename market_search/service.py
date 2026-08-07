@@ -136,7 +136,7 @@ class MarketDiscoveryService:
             "source": {
                 "discovery": "Yandex Search API",
                 "confirmation": "Наш.Дом.РФ / ЕИСЖС через поисковый индекс Яндекса",
-                "pricing": "Домклик; fallback Яндекс Недвижимость через поисковый индекс",
+                "pricing": "ЦИАН; Домклик; Яндекс Недвижимость через поисковый индекс",
                 "mode": "supported_search_api",
             },
             "projects": projects,
@@ -256,10 +256,17 @@ class MarketDiscoveryService:
                 [
                     f'новостройки "{district}" {locality}',
                     f'site:domclick.ru новостройки "{district}" {locality}',
+                    f'site:cian.ru новостройки "{district}" {locality}',
+                    f'site:cian.ru "ЖК" "{district}" {locality} "от застройщика"',
                 ]
             )
         else:
-            queries.append(f'site:domclick.ru новостройки "{clean}" {locality}')
+            queries.extend(
+                [
+                    f'site:domclick.ru новостройки "{clean}" {locality}',
+                    f'site:cian.ru новостройки "{clean}" {locality}',
+                ]
+            )
         return queries
 
     @staticmethod
