@@ -59,7 +59,11 @@ def _cian(host: str, path: str) -> SourceRef:
         return SourceRef("cian", ARTICLE)
     if re.search(r"/(?:novostrojki|novostroyki|zhiloy-kompleks)(?:-|/)", path):
         return SourceRef("cian", CATALOG)
-    if re.search(r"/(?:kupit|snyat|arenda|sale|rent)-", path) or "/cat.php" in path:
+    if (
+        re.search(r"/(?:kupit|snyat|arenda|sale|rent)-", path)
+        or re.search(r"/(?:sale|rent|flat|suburban|commercial)/", path)
+        or "/cat.php" in path
+    ):
         return SourceRef("cian", LISTING)
     return SourceRef("cian", UNKNOWN)
 

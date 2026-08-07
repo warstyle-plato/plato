@@ -322,6 +322,41 @@ def test_extract_address_adds_locality_when_snippet_omits_it() -> None:
     )
 
 
+def test_ordinal_prefix_stays_in_the_street_name() -> None:
+    """«1-й переулок Тружеников» без порядкового номера — другой переулок."""
+    assert extract_address("Клубный дом, Москва, 1-й переулок Тружеников, 12А", "Москва") == (
+        "Москва, 1-й переулок Тружеников, 12А"
+    )
+
+
+def test_targeted_address_search_is_bounded() -> None:
+    """Два вызова Search API на сущность без потолка растягивают запрос на сотни."""
+    search = FakeSearch(default=[])
+    resolver = ProjectGeoResolver(
+        FakeGeocoder({}),
+        search,
+        locality="Москва",
+        subject_signature=address_signature(SUBJECT),
+        locality_matches=LegacyService._locality_matches,
+        search_budget=2,
+    )
+    entities = resolve_entities(
+        extract_candidates(
+            [
+                doc(
+                    "Новостройки (ЖК) в Хамовниках",
+                    "https://www.cian.ru/novostroyki-hamovniki/",
+                    'ЖК «Мод», ЖК «Тургенев», ЖК «Cult», ЖК «Лаврушинский», ЖК «Титул»',
+                )
+            ]
+        )
+    )
+    assert len(entities) >= 5
+    for entity in entities:
+        assert resolver.resolve(entity).status == UNRESOLVED
+    assert len(search.queries) <= 4, search.queries
+
+
 # --- класс 5: цена, не принадлежащая проекту ---------------------------------
 
 

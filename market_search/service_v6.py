@@ -158,6 +158,17 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
 
             rows.append(self._row(entity, geo, distance))
 
+        # Хвост, до которого не дошёл бюджет разбора, тоже виден: молчаливое
+        # отбрасывание кандидата — это потеря recall, которую не с чем сравнить.
+        for entity in entities[budget:]:
+            quarantine.append(
+                self._quarantined(
+                    entity,
+                    "not_evaluated",
+                    f"Бюджет разбора {budget} сущностей исчерпан; кандидат не проверялся",
+                )
+            )
+
         rows = merge_geographic_duplicates(rows)
 
         for row in rows:

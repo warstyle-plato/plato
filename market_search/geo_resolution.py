@@ -159,12 +159,17 @@ class ProjectGeoResolver:
         locality: str,
         subject_signature: str | None,
         locality_matches,
+        search_budget: int = 20,
     ):
         self.geocoder = geocoder
         self.search = search
         self.locality = locality
         self.subject_signature = subject_signature
         self._locality_matches = locality_matches
+        # Целевой поиск адреса — два вызова Search API на сущность. Без потолка
+        # один запрос с широким каталогом растягивается на сотни вызовов, и окно
+        # ответа перестаёт держаться.
+        self._search_budget = max(int(search_budget), 0)
 
     def resolve(self, entity) -> GeoResolution:
         hints: list[tuple[str, str]] = []
@@ -229,8 +234,9 @@ class ProjectGeoResolver:
         hints: list[tuple[str, str]] = []
         echo = False
         name = entity.canonical_name
-        if not name:
+        if not name or self._search_budget <= 0:
             return hints, echo
+        self._search_budget -= 1
         queries = (
             f'"{name}" ЖК {self.locality} адрес',
             f'"{name}" {self.locality} новостройка официальный сайт',
