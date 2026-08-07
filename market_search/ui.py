@@ -17,6 +17,9 @@ _STYLE = r"""
 #marketDiscovery.panel .md-title{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
 #marketDiscovery.panel .md-title strong{font-size:17px}
 #marketDiscovery.panel .md-distance{white-space:nowrap;font-weight:700;color:var(--accent,#1769aa)}
+#marketDiscovery.panel .md-price{display:flex;gap:16px;align-items:baseline;flex-wrap:wrap;margin:10px 0}
+#marketDiscovery.panel .md-price strong{font-size:22px}
+#marketDiscovery.panel .md-price span{font-size:12px;color:var(--muted,#667085)}
 #marketDiscovery.panel .md-meta{display:flex;gap:8px;flex-wrap:wrap;margin:9px 0;color:var(--muted,#667085);font-size:12px}
 #marketDiscovery.panel .md-actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px}
 #marketDiscovery.panel .md-actions a{display:inline-flex;align-items:center;padding:8px 11px;border:1px solid var(--line,#dce2ea);border-radius:9px;text-decoration:none}
@@ -30,7 +33,7 @@ _STYLE = r"""
 _PANEL = r"""
 <div id="marketDiscovery" class="panel">
   <h2>Рынок: объекты рядом</h2>
-  <p class="hint">Поиск кандидатов идёт через Yandex Search API. Аналог считается подтверждённым только после сопоставления с официальной карточкой Наш.Дом.РФ. Цена на этом этапе ещё не рассчитывается.</p>
+  <p class="hint">Поиск кандидатов идёт через Yandex Search API. Аналог подтверждается карточкой Наш.Дом.РФ; для подтверждённых проектов собираются индексируемые цены предложения Домклик / Яндекс Недвижимость. Это цены предложения, не фактических сделок.</p>
   <div class="md-form">
     <label>Адрес<input id="mdAddress" value="Москва, ул. Мишина, 46" autocomplete="street-address"></label>
     <label>Радиус<select id="mdRadius"><option value="1">1 км</option><option value="3" selected>3 км</option><option value="5">5 км</option></select></label>
@@ -49,10 +52,11 @@ _SCRIPT = r"""
 <script id="market-discovery-script">
 function mdEsc(value){return String(value??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[c]))}
 function mdNum(value){return Number(value||0).toLocaleString('ru-RU')}
+function mdRubM2(value){return value?mdNum(Math.round(Number(value)))+' ₽/м²':'—'}
 async function runMarketDiscovery(){
   const status=document.getElementById('mdStatus');
   const result=document.getElementById('mdResult');
-  status.textContent='Определяю координаты и ищу проекты через Yandex Search API…';
+  status.textContent='Определяю координаты, ищу проекты и цены предложения…';
   result.style.display='none';
   try{
     const response=await fetch('/market/discovery',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
@@ -78,26 +82,39 @@ function renderMarketDiscovery(payload){
   const result=document.getElementById('mdResult');
   result.style.display='block';
   const location=payload.location||{};
-  document.getElementById('mdSummary').innerHTML=[
+  const summary=payload.price_summary||null;
+  const chips=[
     'Адрес: '+mdEsc(location.display_name||'—'),
     'Координаты: '+Number(location.latitude).toFixed(6)+', '+Number(location.longitude).toFixed(6),
-    'Геокодер: '+mdEsc(location.provider||'—'),
     'Радиус: '+mdEsc(payload.query.radius_km)+' км',
     'Подтверждено: '+mdEsc(payload.confirmed_count)+' / '+mdEsc(payload.count)
-  ].map(v=>'<span class="md-chip">'+v+'</span>').join('');
+  ];
+  if(summary&&summary.price_per_sqm)chips.push('Рыночный ориентир: '+mdRubM2(summary.price_per_sqm)+' · '+mdEsc(summary.analogue_count)+' аналог.');
+  document.getElementById('mdSummary').innerHTML=chips.map(v=>'<span class="md-chip">'+v+'</span>').join('');
   const projects=Array.isArray(payload.projects)?payload.projects:[];
   document.getElementById('mdObjects').innerHTML=projects.length?projects.map(item=>{
     const cards=Array.isArray(item.official_cards)?item.official_cards:[];
     const official=cards.map(card=>'<a href="'+mdEsc(card.url)+'" target="_blank" rel="noopener noreferrer">Наш.Дом.РФ'+(card.object_id?' · ID '+mdEsc(card.object_id):'')+'</a>').join('');
     const market=item.market_source&&item.market_source.url?'<a href="'+mdEsc(item.market_source.url)+'" target="_blank" rel="noopener noreferrer">Источник поиска</a>':'';
     const distance=item.distance_km==null?'расстояние не определено':mdNum(item.distance_km)+' км';
-    const confirmation=item.confirmed?'<span class="md-ok">Подтверждён Наш.Дом.РФ</span>':'<span class="md-warn">Не подтверждён — в расчёт цены не пойдёт</span>';
+    const confirmation=item.confirmed?'<span class="md-ok">Подтверждён Наш.Дом.РФ</span>':'<span class="md-warn">Не подтверждён — в расчёт цены не идёт</span>';
     const geo=item.coordinates&&item.coordinates.display_name?'<span>'+mdEsc(item.coordinates.display_name)+'</span>':'';
+    const price=item.market_price||{};
+    let priceBlock='';
+    let priceSources='';
+    if(price.available){
+      priceBlock='<div class="md-price"><strong>'+mdRubM2(price.price_per_sqm)+'</strong><span>диапазон '+mdRubM2(price.min_price_per_sqm)+' — '+mdRubM2(price.max_price_per_sqm)+' · наблюдений '+mdEsc(price.observation_count||0)+(price.offers_count?' · предложений '+mdEsc(price.offers_count):'')+'</span></div>';
+      const sources=Array.isArray(price.sources)?price.sources:[];
+      priceSources=sources.slice(0,3).map(src=>'<a href="'+mdEsc(src.url)+'" target="_blank" rel="noopener noreferrer">Цена · '+mdEsc(src.source||'источник')+'</a>').join('');
+    }else if(item.confirmed){
+      priceBlock='<div class="md-meta"><span class="md-warn">Цена за м² пока не извлечена из индексируемых источников</span></div>';
+    }
     return '<article class="md-card">'+
       '<div class="md-title"><strong>'+mdEsc(item.name)+'</strong><span class="md-distance">'+distance+'</span></div>'+
+      priceBlock+
       '<div class="md-meta">'+confirmation+geo+'</div>'+
-      '<div class="md-meta"><span>Рыночный источник: '+mdEsc((item.market_source&&item.market_source.domain)||'—')+'</span></div>'+
-      '<div class="md-actions">'+official+market+'</div>'+
+      '<div class="md-meta"><span>Источник discovery: '+mdEsc((item.market_source&&item.market_source.domain)||'—')+'</span></div>'+
+      '<div class="md-actions">'+official+priceSources+market+'</div>'+
     '</article>';
   }).join(''):'<div class="md-card">Подходящие проекты пока не найдены.</div>';
 }
