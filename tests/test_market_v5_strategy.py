@@ -85,6 +85,39 @@ def test_v5_extractor_rejects_listing_and_commercial_noise() -> None:
     assert extract_project_candidates_v5(docs) == []
 
 
+def test_v5_prefers_current_asking_price_over_lagging_official_average() -> None:
+    official = {
+        "available": True,
+        "method": "official_domrf_average",
+        "price_per_sqm": 218_245,
+    }
+    asking = {
+        "available": True,
+        "method": "indexed_asking_prices",
+        "price_per_sqm": 601_000,
+        "sources": [{"source": "realty.yandex.ru"}],
+    }
+    result = MarketDiscoveryService._combine_price_sources(official, asking)
+    assert result["available"] is True
+    assert result["basis"] == "indexed_asking_prices"
+    assert result["price_per_sqm"] == 601_000
+    assert result["official_price_per_sqm"] == 218_245
+    assert result["official_conflict"] is True
+
+
+def test_v5_uses_official_average_only_as_fallback() -> None:
+    official = {
+        "available": True,
+        "method": "official_domrf_average",
+        "price_per_sqm": 500_000,
+    }
+    asking = {"available": False, "method": "indexed_asking_prices"}
+    result = MarketDiscoveryService._combine_price_sources(official, asking)
+    assert result["available"] is True
+    assert result["basis"] == "official_domrf_fallback"
+    assert result["price_per_sqm"] == 500_000
+
+
 def test_recommendation_does_not_require_domrf_confirmation() -> None:
     projects = [
         {
