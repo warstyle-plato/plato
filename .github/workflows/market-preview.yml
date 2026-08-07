@@ -1,4 +1,5 @@
-# Автоматическая preview-выкладка только для рыночной ветки; production не затрагивается.
+# Рыночный preview: PR сам гоняет тесты, а образ собирается только из workflow_dispatch
+# на main. Это принципиально: привязка OIDC в Yandex Cloud разрешает ref=refs/heads/main.
 name: Market preview
 
 on:
@@ -13,6 +14,12 @@ on:
       - "deploy-market-preview.sh"
       - ".github/workflows/market-preview.yml"
   workflow_dispatch:
+    inputs:
+      source_ref:
+        description: "Ветка рыночного preview"
+        required: true
+        default: "agent/market-domrf-search-v3"
+        type: string
 
 concurrency:
   group: market-preview
@@ -20,6 +27,7 @@ concurrency:
 
 env:
   IMAGE_NAME: developaid
+  OIDC_AUDIENCE: https://github.com/warstyle-plato
 
 jobs:
   test:
@@ -28,10 +36,13 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_ref || github.ref }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: pip
+          cache-dependency-path: requirements-dev.txt
       - name: Зависимости
         run: python -m pip install -r requirements-dev.txt
       - name: Синтаксис и unit-тесты
@@ -54,10 +65,7 @@ jobs:
     name: Сборка preview-образа
     runs-on: ubuntu-latest
     needs: [test]
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.pull_request.head.repo.full_name == github.repository &&
-       github.head_ref == 'agent/market-domrf-search-v3')
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     timeout-minutes: 60
     permissions:
       contents: read
@@ -67,34 +75,73 @@ jobs:
       tag: ${{ steps.meta.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
 
-      - name: Тег preview
+      - name: Проверить ветку preview
+        env:
+          SOURCE_REF: ${{ inputs.source_ref }}
+        run: |
+          case "$SOURCE_REF" in
+            agent/market-domrf-search-*) ;;
+            *) echo "Разрешены только ветки agent/market-domrf-search-*" >&2; exit 1 ;;
+          esac
+
+      - name: Имя и тег preview
         id: meta
         run: |
           sha=$(git rev-parse --short=7 HEAD)
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "tag=market-$sha" >> "$GITHUB_OUTPUT"
+          echo "image=cr.yandex/${{ vars.YC_REGISTRY_ID }}/${IMAGE_NAME}" >> "$GITHUB_OUTPUT"
 
-      - name: IAM-токен по OIDC
-        id: oidc
-        if: ${{ vars.YC_WORKLOAD_FEDERATION_ID != '' }}
-        uses: yc-actions/yc-iam-token-fed@v1
-        with:
-          yc-sa-id: ${{ vars.YC_SA_ID }}
-          yc-federation-id: ${{ vars.YC_WORKLOAD_FEDERATION_ID }}
+      - name: OIDC-токен GitHub
+        run: |
+          set -euo pipefail
+          curl -sS --fail -G "${ACTIONS_ID_TOKEN_REQUEST_URL}" \
+            -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            --data-urlencode "audience=${OIDC_AUDIENCE}" \
+            -o "${RUNNER_TEMP}/oidc.json"
+          python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["value"])' \
+            "${RUNNER_TEMP}/oidc.json" > "${RUNNER_TEMP}/oidc.jwt"
+          echo "::add-mask::$(cat "${RUNNER_TEMP}/oidc.jwt")"
+          python3 - "${RUNNER_TEMP}/oidc.jwt" <<'PY'
+          import base64, json, sys
+          token = open(sys.argv[1]).read().strip()
+          payload = token.split(".")[1]
+          payload += "=" * (-len(payload) % 4)
+          claims = json.loads(base64.urlsafe_b64decode(payload))
+          for key in ("sub", "aud", "repository", "ref"):
+              print(f"{key}: {claims.get(key)!r}")
+          PY
+
+      - name: Обмен на IAM-токен Яндекса
+        id: iam
+        run: |
+          set -euo pipefail
+          code=$(curl -sS -o "${RUNNER_TEMP}/iam.json" -w '%{http_code}' \
+            -X POST https://auth.yandex.cloud/oauth/token \
+            --data-urlencode "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
+            --data-urlencode "requested_token_type=urn:ietf:params:oauth:token-type:access_token" \
+            --data-urlencode "audience=${{ vars.YC_SERVICE_ACCOUNT_ID }}" \
+            --data-urlencode "subject_token@${RUNNER_TEMP}/oidc.jwt" \
+            --data-urlencode "subject_token_type=urn:ietf:params:oauth:token-type:id_token")
+          if [ "$code" != "200" ]; then
+            echo "Обмен отвергнут, код ${code}." >&2
+            python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print({k: d.get(k) for k in ("error","error_description")}, file=sys.stderr)' \
+              "${RUNNER_TEMP}/iam.json" 2>/dev/null || cat "${RUNNER_TEMP}/iam.json" >&2
+            rm -f "${RUNNER_TEMP}/oidc.jwt" "${RUNNER_TEMP}/iam.json"
+            exit 1
+          fi
+          token=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["access_token"])' "${RUNNER_TEMP}/iam.json")
+          echo "::add-mask::${token}"
+          echo "token=${token}" >> "$GITHUB_OUTPUT"
+          rm -f "${RUNNER_TEMP}/oidc.jwt" "${RUNNER_TEMP}/iam.json"
 
       - name: Вход в Yandex Registry
         run: |
-          if [ -n "${{ steps.oidc.outputs.token }}" ]; then
-            echo "${{ steps.oidc.outputs.token }}" \
-              | docker login --username iam --password-stdin cr.yandex
-          elif [ -n "${{ secrets.YC_SA_KEY }}" ]; then
-            printf '%s' '${{ secrets.YC_SA_KEY }}' \
-              | docker login --username json_key --password-stdin cr.yandex
-          else
-            echo "Нет OIDC-федерации и резервного YC_SA_KEY." >&2
-            exit 1
-          fi
+          printf '%s' '${{ steps.iam.outputs.token }}' \
+            | docker login --username iam --password-stdin cr.yandex
 
       - uses: docker/setup-buildx-action@v3
 
@@ -105,8 +152,8 @@ jobs:
           push: true
           build-args: |
             INSTALL_BROWSER=0
-            GIT_COMMIT=${{ steps.meta.outputs.sha }}
-          tags: cr.yandex/${{ secrets.YC_REGISTRY_ID }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.tag }}
+            APP_COMMIT=${{ steps.meta.outputs.sha }}
+          tags: ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}
           cache-from: type=gha,scope=market-preview
           cache-to: type=gha,mode=max,scope=market-preview
 
@@ -118,18 +165,26 @@ jobs:
     steps:
       - name: Скачать готовый образ и поднять preview
         uses: appleboy/ssh-action@v1
+        env:
+          SOURCE_REF: ${{ inputs.source_ref }}
+          YC_REGISTRY_ID: ${{ vars.YC_REGISTRY_ID }}
         with:
           host: ${{ secrets.CORE_HOST }}
           username: ${{ secrets.CORE_USER }}
           key: ${{ secrets.CORE_SSH_KEY }}
+          envs: SOURCE_REF,YC_REGISTRY_ID
           script_stop: true
           script: |
             set -eu
+            case "$SOURCE_REF" in
+              agent/market-domrf-search-*) ;;
+              *) echo "Недопустимая preview-ветка" >&2; exit 1 ;;
+            esac
             cd ~/plato
-            git fetch --quiet origin agent/market-domrf-search-v3
-            git show origin/agent/market-domrf-search-v3:deploy-market-preview.sh > /tmp/deploy-market-preview.sh
+            git fetch --quiet origin "$SOURCE_REF"
+            git show FETCH_HEAD:deploy-market-preview.sh > /tmp/deploy-market-preview.sh
             chmod 700 /tmp/deploy-market-preview.sh
-            DEVELOPAID_ROOT="$HOME/plato" \
+            YC_REGISTRY_ID="$YC_REGISTRY_ID" DEVELOPAID_ROOT="$HOME/plato" \
               sh /tmp/deploy-market-preview.sh \
               "${{ needs.build.outputs.tag }}" \
               "${{ needs.build.outputs.sha }}"
