@@ -23,7 +23,7 @@ on:
       source_ref:
         description: "Ветка рыночного preview"
         required: true
-        default: "agent/market-domrf-search-v4"
+        default: "agent/market-search-v5"
         type: string
 
 concurrency:
@@ -66,6 +66,9 @@ jobs:
           paths = {getattr(route, "path", None) for route in main_registry.app.routes}
           assert "/market/discovery" in paths
           assert 'data-tab="marketDiscovery"' in main_registry.core.PAGE
+          service = main_registry.app.state.market_discovery_service
+          assert service.__class__.__module__ == "market_search.service_v5", service.__class__.__module__
+          assert service.__class__.__name__ == "MarketDiscoveryService"
           PY
 
   build:
