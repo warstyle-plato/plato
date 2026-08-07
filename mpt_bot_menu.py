@@ -62,10 +62,16 @@ def _help_with_mpt(base: Any, chat_id: int, markup: Any) -> Any:
     )
     if not has_vri_entry:
         return markup
+    try:
+        url = _mpt_url(base, chat_id)
+    except Exception:
+        # The application can be imported in CI/diagnostic mode without a
+        # configured Telegram token. The existing help menu must still work.
+        return markup
     updated = copy.deepcopy(markup)
     updated["inline_keyboard"].append([{
         "text": _MENU_TEXT,
-        "web_app": {"url": _mpt_url(base, chat_id)},
+        "web_app": {"url": url},
     }])
     return updated
 
