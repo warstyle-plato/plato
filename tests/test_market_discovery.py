@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from market_search.geocoder import GeoPoint, GeocodingError
+from market_search.price import MarketPriceEnricher, weighted_market_price
 from market_search.service import MarketDiscoveryService, haversine_km
 from market_search.yandex_search import (
     SearchDoc,
@@ -101,6 +102,61 @@ def test_non_object_domrf_page_is_not_an_official_card() -> None:
         )
     ]
     assert official_cards_from_docs(docs) == []
+
+
+def test_price_enricher_extracts_price_range_and_offers(tmp_path: Path) -> None:
+    search = YandexSearchClient(tmp_path)
+    docs = [
+        SearchDoc(
+            title="ЖК Symphony 34 — квартиры от застройщика",
+            url="https://domclick.ru/complexes/symphony34",
+            domain="domclick.ru",
+            snippet="140 квартир. Цена за м² от 518 940 ₽/м² до 664 000 ₽/м²",
+            rank=1,
+        ),
+        SearchDoc(
+            title="ЖК Symphony 34 — новостройка",
+            url="https://realty.yandex.ru/complex/symphony34",
+            domain="realty.yandex.ru",
+            snippet="Средняя цена 601 000 ₽/м², 139 предложений",
+            rank=2,
+        ),
+    ]
+    search.search = lambda query, groups_on_page=10: docs  # type: ignore[method-assign]
+    price = MarketPriceEnricher(search).project_price("Symphony 34", "Москва")
+    assert price["available"] is True
+    assert price["min_price_per_sqm"] == 518_940
+    assert price["max_price_per_sqm"] == 664_000
+    assert price["price_per_sqm"] == 601_000
+    assert price["offers_count"] == 140
+
+
+def test_weighted_market_price_uses_confirmed_analogues_only() -> None:
+    result = weighted_market_price(
+        [
+            {
+                "name": "A",
+                "confirmed": True,
+                "distance_km": 1.0,
+                "market_price": {"available": True, "price_per_sqm": 600_000},
+            },
+            {
+                "name": "B",
+                "confirmed": True,
+                "distance_km": 2.0,
+                "market_price": {"available": True, "price_per_sqm": 700_000},
+            },
+            {
+                "name": "C",
+                "confirmed": False,
+                "distance_km": 0.1,
+                "market_price": {"available": True, "price_per_sqm": 1_500_000},
+            },
+        ]
+    )
+    assert result is not None
+    assert result["analogue_count"] == 2
+    assert result["price_per_sqm"] == 633_333
 
 
 def test_official_card_requires_name_or_address_match(tmp_path: Path) -> None:
