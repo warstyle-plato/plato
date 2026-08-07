@@ -79,7 +79,7 @@ jobs:
           assert "/market/discovery" in paths
           assert 'data-tab="marketDiscovery"' in main_registry.core.PAGE
           service = main_registry.market_search
-          assert service.__class__.__module__.endswith("service_v5"), service.__class__
+          assert service.__class__.__module__.endswith("service_v51"), service.__class__
           PY
 
   build:
