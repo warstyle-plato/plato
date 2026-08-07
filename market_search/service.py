@@ -226,11 +226,14 @@ class MarketDiscoveryService:
                 if number_ok and street_ok:
                     return True
 
-        # Одного совпадения названия недостаточно: "СВОЙ" в Хабаровске не может
-        # подтверждать московский аналог. Для name-only матча требуем целевую
-        # географию прямо в поисковом результате Наш.Дом.РФ.
         if len(name_norm) >= 4 and name_norm in hay_norm:
-            return cls._locality_matches(locality, haystack)
+            if cls._locality_matches(locality, haystack):
+                return True
+            # В старых карточках поисковый сниппет иногда вообще не содержит
+            # географию. Такое совпадение имени оставляем допустимым, но если в
+            # сниппете явно указан другой субъект РФ — отклоняем. Именно сюда
+            # попадает «СВОЙ, Хабаровск, Хабаровский край» при поиске по Москве.
+            return not cls._has_explicit_other_region(locality, haystack)
         return False
 
     @classmethod
@@ -245,6 +248,21 @@ class MarketDiscoveryService:
             return "московск" in low and "област" in low
         target_tokens = [token for token in cls._words(target) if len(token) >= 4]
         return bool(target_tokens) and all(token in cls._words(low) for token in target_tokens)
+
+    @classmethod
+    def _has_explicit_other_region(cls, locality: str | None, value: str) -> bool:
+        if not locality or cls._locality_matches(locality, value):
+            return False
+        low = " " + str(value or "").lower().replace("ё", "е") + " "
+        regional_markers = (
+            " край ",
+            " область ",
+            " республика ",
+            " автономный округ ",
+            " автономная область ",
+            " федеральный округ ",
+        )
+        return any(marker in low for marker in regional_markers)
 
     @staticmethod
     def _compact(value: str) -> str:
