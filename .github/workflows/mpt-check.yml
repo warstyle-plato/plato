@@ -22,7 +22,7 @@ jobs:
       - name: Compile MPT modules
         run: python -m py_compile mpt_calculator.py mpt_extension.py main_registry.py
       - name: Run MPT tests
-        run: python -m pytest tests/test_mpt_calculator.py tests/test_mpt_extension.py -q
+        run: python -m pytest tests/test_mpt_*.py -q
       - name: Smoke production entrypoint
         env:
           TELEGRAM_BOT_TOKEN: ""
