@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Any
 
 from .geocoder import AddressGeocoder, GeoPoint, GeocodingError
+from .http import RemoteServiceError
+from .price import MarketPriceEnricher, weighted_market_price
 from .yandex_search import YandexSearchClient, extract_project_candidates, official_cards_from_docs
 
 
@@ -13,6 +15,7 @@ class MarketDiscoveryService:
     def __init__(self, data_dir: Path):
         self.geocoder = AddressGeocoder(data_dir)
         self.search = YandexSearchClient(data_dir)
+        self.prices = MarketPriceEnricher(self.search)
 
     def discover(
         self,
@@ -47,7 +50,6 @@ class MarketDiscoveryService:
         for candidate in candidates[:max_candidates]:
             project_point = self._geocode_project(candidate, locality)
             if project_point is None:
-                # Без координат нельзя честно утверждать, что проект находится в радиусе.
                 continue
 
             distance = round(
@@ -76,6 +78,21 @@ class MarketDiscoveryService:
                 if self._official_card_matches(candidate["name"], address_hint, card)
             ]
 
+            price_info: dict[str, Any] = {
+                "available": False,
+                "method": "indexed_asking_prices",
+                "note": "Цена запрашивается только для подтверждённых аналогов",
+            }
+            if cards:
+                try:
+                    price_info = self.prices.project_price(candidate["name"], locality)
+                except RemoteServiceError as exc:
+                    price_info = {
+                        "available": False,
+                        "method": "indexed_asking_prices",
+                        "error": str(exc),
+                    }
+
             projects.append(
                 {
                     "name": candidate["name"],
@@ -99,6 +116,7 @@ class MarketDiscoveryService:
                         if cards
                         else "Официальная карточка пока не подтверждена по названию или адресу"
                     ),
+                    "market_price": price_info,
                 }
             )
             if len(projects) >= limit:
@@ -106,6 +124,7 @@ class MarketDiscoveryService:
 
         projects.sort(key=lambda item: (item["distance_km"], not item["confirmed"]))
         confirmed_count = sum(1 for item in projects if item["confirmed"])
+        price_summary = weighted_market_price(projects)
         return {
             "query": {
                 "address": address,
@@ -117,11 +136,13 @@ class MarketDiscoveryService:
             "source": {
                 "discovery": "Yandex Search API",
                 "confirmation": "Наш.Дом.РФ / ЕИСЖС через поисковый индекс Яндекса",
+                "pricing": "Домклик; fallback Яндекс Недвижимость через поисковый индекс",
                 "mode": "supported_search_api",
             },
             "projects": projects,
             "count": len(projects),
             "confirmed_count": confirmed_count,
+            "price_summary": price_summary,
             "warning": self._warning(projects, confirmed_count),
             "diagnostics": {
                 "search_queries": queries,
@@ -150,7 +171,6 @@ class MarketDiscoveryService:
 
     @staticmethod
     def _address_hint(value: str) -> str | None:
-        # Search snippets frequently contain a street + house; use it before a project-name lookup.
         match = re.search(
             r"(?:Москва|Московская область)[,.:\s]+([^.;]{3,90}?(?:ул\.?|улица|проспект|проезд|шоссе|ш\.|наб\.?|набережная)[^.;]{2,80}?\d+[А-Яа-яA-Za-z0-9/\-]*)",
             value,
@@ -248,6 +268,8 @@ class MarketDiscoveryService:
             return "Поисковый индекс не дал проектов, которые удалось уверенно привязать к заданному радиусу"
         if confirmed_count == 0:
             return "Кандидаты найдены в радиусе, но ни один пока не подтверждён карточкой Наш.Дом.РФ"
+        if not any((item.get("market_price") or {}).get("available") for item in projects if item.get("confirmed")):
+            return "Аналоги подтверждены, но индекс пока не вернул пригодные наблюдения цены за м²"
         return None
 
 
