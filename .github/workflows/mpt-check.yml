@@ -5,6 +5,7 @@ on:
     paths:
       - "mpt_calculator.py"
       - "mpt_extension.py"
+      - "mpt_bot_menu.py"
       - "main_registry.py"
       - "tests/test_mpt_*.py"
       - ".github/workflows/mpt-check.yml"
@@ -20,7 +21,7 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r requirements-dev.txt
       - name: Compile MPT modules
-        run: python -m py_compile mpt_calculator.py mpt_extension.py main_registry.py
+        run: python -m py_compile mpt_calculator.py mpt_extension.py mpt_bot_menu.py main_registry.py
       - name: Run MPT tests
         run: python -m pytest tests/test_mpt_*.py -q
       - name: Smoke production entrypoint
@@ -35,5 +36,10 @@ jobs:
           assert "/api/mpt/calculate" in paths, paths
           page = getattr(main_registry.core, "PAGE", "")
           assert 'id="mpt-benefit-template"' in page, "MPT panel was not injected into core.PAGE"
-          print("MPT production entrypoint: OK")
+          commands = getattr(main_registry.core, "TELEGRAM_BOT_COMMANDS", [])
+          assert any(isinstance(item, dict) and item.get("command") == "mpt" for item in commands), commands
+          markup = main_registry._base._help_markup(1)
+          buttons = [button for row in markup.get("inline_keyboard", []) for button in row]
+          assert any(button.get("text") == "🏗 Льгота МПТ — Москва" for button in buttons), buttons
+          print("MPT production entrypoint and Telegram menu: OK")
           PY
