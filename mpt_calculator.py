@@ -416,12 +416,28 @@ def calculate_mpt_benefit(data: MptInput, *, today: date | None = None) -> MptRe
             "Light Industrial считается как промышленно-производственный МПТ; "
             "нужно подтвердить производственный ВРИ и профильную деятельность."
         )
+    elif category == "hotel":
+        # Для средств размещения 1874-ПП использует площадь помещений,
+        # предусмотренных требованиями к соответствующему типу/категории и
+        # технологически связанных с профильной деятельностью; из неё отдельно
+        # исключаются только парковки и гаражи. Поэтому складские поля здесь не
+        # являются автоматическими вычетами: базовую площадь пользователь должен
+        # вводить уже по допустимой гостиничной экспликации.
+        warehouse_excluded = 0.0
+        eligible_area = area - parking - garages
+        if warehouse or yard:
+            warnings.append(
+                "Для средства размещения поля склада и открытой складской площадки не вычитаются "
+                "автоматически. Базовая площадь должна включать только помещения, допустимые "
+                "требованиями к соответствующему типу/категории средства размещения."
+            )
     else:
         warehouse_excluded = warehouse
         eligible_area = area - parking - garages - warehouse - yard
 
-    if parking + garages + warehouse + yard > area:
-        warnings.append("Сумма компонент площади превышает базовую площадь — проверьте ТЭП.")
+    components_total = parking + garages if category == "hotel" else parking + garages + warehouse + yard
+    if components_total > area:
+        warnings.append("Сумма исключаемых компонент площади превышает базовую площадь — проверьте ТЭП.")
     eligible_area = max(eligible_area, 0.0)
     excluded_area = max(area - eligible_area, 0.0)
 
