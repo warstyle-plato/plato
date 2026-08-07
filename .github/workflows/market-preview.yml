@@ -10,6 +10,7 @@ on:
     paths:
       - "market_search/**"
       - "main_registry.py"
+      - "market-preview-acceptance.py"
       - "tests/test_market_discovery*.py"
       - "tests/test_market_geo_apply_sources.py"
       - "tests/test_market_v5_strategy.py"
@@ -51,7 +52,7 @@ jobs:
         run: python -m pip install -r requirements-dev.txt
       - name: Синтаксис и unit-тесты
         run: |
-          python -m py_compile market_search/*.py market_search/providers/*.py main_registry.py
+          python -m py_compile market_search/*.py market_search/providers/*.py main_registry.py market-preview-acceptance.py
           python -m pytest \
             tests/test_market_discovery.py \
             tests/test_market_discovery_ui.py \
