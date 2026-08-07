@@ -201,7 +201,7 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
             "source": {
                 "discovery": "Yandex Search API across indexed market/developer sources",
                 "confirmation": "Наш.Дом.РФ / ЕИСЖС через поисковый индекс Яндекса",
-                "pricing": "Наш.Дом.РФ + ЦИАН + Домклик + Яндекс Недвижимость",
+                "pricing": "ЦИАН + Домклик + Яндекс Недвижимость; Наш.Дом.РФ — контрольная официальная средняя",
                 "mode": "multi_source_search_v5",
             },
             "projects": projects,
@@ -217,6 +217,63 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                 "project_names_extracted": len(candidates),
                 "candidates_geofiltered": len(projects),
             },
+        }
+
+    @staticmethod
+    def _combine_price_sources(
+        official_price: dict[str, Any],
+        asking_price: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Choose the price relevant for a sale-price recommendation.
+
+        EISZhS/Наш.Дом.РФ is a useful official control source, but its published average can
+        represent historical registered sales and materially lag the current developer ask.
+        For a launch-price recommendation v5 therefore uses observed primary-market asking
+        price whenever it is available. The official average remains attached as validation
+        evidence and becomes a fallback only when the market ask cannot be observed.
+        """
+        official_available = bool(
+            official_price.get("available") and official_price.get("price_per_sqm")
+        )
+        asking_available = bool(
+            asking_price.get("available") and asking_price.get("price_per_sqm")
+        )
+
+        if asking_available:
+            asking_value = int(asking_price["price_per_sqm"])
+            result: dict[str, Any] = {
+                "available": True,
+                "basis": "indexed_asking_prices",
+                "price_per_sqm": asking_value,
+                "asking": asking_price,
+                "official": official_price,
+                "note": "Базовая цена для рекомендации — наблюдаемая цена предложения первичного рынка",
+            }
+            if official_available:
+                official_value = int(official_price["price_per_sqm"])
+                discrepancy = abs(asking_value - official_value) / max(asking_value, 1)
+                result["official_price_per_sqm"] = official_value
+                result["official_discrepancy_pct"] = round(discrepancy * 100, 1)
+                result["official_conflict"] = discrepancy > 0.25
+                if result["official_conflict"]:
+                    result["note"] += "; официальная средняя существенно отличается и не подменяет текущий рынок"
+            return result
+
+        if official_available:
+            return {
+                "available": True,
+                "basis": "official_domrf_fallback",
+                "price_per_sqm": int(official_price["price_per_sqm"]),
+                "asking": asking_price,
+                "official": official_price,
+                "note": "Рыночная цена предложения не найдена; используется официальная средняя как fallback",
+            }
+
+        return {
+            "available": False,
+            "basis": "none",
+            "asking": asking_price,
+            "official": official_price,
         }
 
     @staticmethod
