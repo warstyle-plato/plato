@@ -32,7 +32,7 @@ from typing import Any
 from .documents import PROJECT_PAGE, classify_document
 from .geocoder import AddressGeocoder, GeocodingError, GeoPoint
 from .http import RemoteServiceError
-from .normalize import canonical_key, cut_at_separator, name_similarity
+from .normalize import cut_at_separator, labels_match, search_name
 from .yandex_search import SearchDoc, YandexSearchClient
 
 
@@ -233,7 +233,7 @@ class ProjectGeoResolver:
         """
         hints: list[tuple[str, str]] = []
         echo = False
-        name = entity.canonical_name
+        name = search_name(entity.canonical_name)
         if not name or self._search_budget <= 0:
             return hints, echo
         self._search_budget -= 1
@@ -271,7 +271,4 @@ class ProjectGeoResolver:
         title_name = cut_at_separator(doc.title)
         if not title_name:
             return False
-        names = [entity.canonical_name, *entity.aliases]
-        if any(canonical_key(title_name) == canonical_key(name) for name in names if name):
-            return True
-        return any(name_similarity(title_name, name) >= 0.92 for name in names if name)
+        return labels_match(title_name, [entity.canonical_name, *entity.aliases])

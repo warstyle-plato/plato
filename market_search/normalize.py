@@ -100,7 +100,13 @@ def clean_display_name(value: str) -> str:
     text = html.unescape(str(value or ""))
     text = re.sub(r"\s+", " ", text).strip(" \t\r\n«»\"'“”„")
     text = _BARE_TYPE_PREFIX_RE.sub("", text)
-    return text.strip(" ,.;:—–-«»\"'“”„")
+    text = text.strip(" ,.;:—–-«»\"'“”„")
+    # Обрезка с краёв оставляет непарную кавычку: «Клубный дом «Саввинская 17»
+    # превращался в «Клубный дом «Саввинская 17». Одиночную кавычку убираем —
+    # она и в показе мусор, и номер очереди за собой прячет.
+    if text.count("«") != text.count("»"):
+        text = text.replace("«", "").replace("»", "")
+    return text.strip()
 
 
 def cut_at_separator(value: str) -> str:
@@ -112,6 +118,73 @@ def cut_at_separator(value: str) -> str:
     """
     text = " ".join(str(value or "").split())
     return _SEPARATOR_RE.split(text, maxsplit=1)[0].strip()
+
+
+_TRAILING_PAREN_RE = re.compile(r"\s*\(([^()]{2,60})\)\s*$")
+
+
+def _rough(value: str) -> str:
+    """Грубый ключ без обращения к canonical_key — иначе рекурсия."""
+    return _fold(_TYPE_PREFIX_RE.sub("", str(value or "")))
+
+
+def drop_duplicate_parenthetical(value: str) -> str:
+    """Убрать хвост в скобках, повторяющий само название.
+
+    Агрегаторы пишут «Клубный дом «Саввинская 17» (Саввинская 17)». Задвоение
+    попадало в ключ сущности, и проект переставал узнавать собственную карточку:
+    ключ страницы savinskaya17 против savinskaya17savinskaya17, похожесть 0,67
+    при пороге 0,92. Следствием были и «цена не найдена», и потеря адреса.
+
+    Двуязычная пара — «Сидней Сити (Sidney City)» — не задвоение и остаётся.
+    """
+    text = " ".join(str(value or "").split())
+    match = _TRAILING_PAREN_RE.search(text)
+    if not match:
+        return text
+    head, inner = text[: match.start()].strip(), match.group(1).strip()
+    if not head or not inner:
+        return text
+    head_key, inner_key = _rough(head), _rough(inner)
+    if not head_key or not inner_key:
+        return text
+    if inner_key == head_key or (len(inner_key) >= 4 and inner_key in head_key):
+        return head
+    return text
+
+
+def search_name(value: str) -> str:
+    """Название для поискового запроса: без кавычек и скобок.
+
+    В кавычках Search API ищет точную фразу, и «Клубный дом «Саввинская 17»»
+    с внутренними кавычками не находит ничего.
+    """
+    text = drop_duplicate_parenthetical(strip_marketing_tail(value))
+    text = re.sub(r"[«»\"“”„()\[\]]", " ", text)
+    return " ".join(text.split())
+
+
+def labels_match(candidate: str, names) -> bool:
+    """Одна ли это вывеска — с учётом сокращений.
+
+    «Клубный дом Саввинская 17» и «Саввинская 17» — один проект: короткое имя
+    целиком лежит внутри длинного. Порог по длине не даёт склеить короткие
+    бренды, а номер очереди — разные очереди одного имени.
+    """
+    left = canonical_key(candidate)
+    if not left:
+        return False
+    for name in names:
+        if not name:
+            continue
+        if same_project(candidate, name):
+            return True
+        right = canonical_key(name)
+        if len(left) < 8 or len(right) < 8:
+            continue
+        if (left in right or right in left) and phase_number(candidate) == phase_number(name):
+            return True
+    return False
 
 
 def strip_marketing_tail(value: str) -> str:
@@ -130,7 +203,7 @@ def strip_marketing_tail(value: str) -> str:
             if trimmed != text:
                 text = trimmed
                 changed = True
-    return text.strip(" ,.;:—–-")
+    return drop_duplicate_parenthetical(text).strip(" ,.;:—–-")
 
 
 def transliterate(value: str) -> str:
@@ -200,7 +273,7 @@ def phase_number(value: str) -> int | None:
     tokens = _normalize_phase_numeral(name).split()
     if len(tokens) < 2:
         return None
-    last = tokens[-1].strip(".,")
+    last = tokens[-1].strip(".,«»\"'“”„()")
     return int(last) if last.isdigit() else None
 
 

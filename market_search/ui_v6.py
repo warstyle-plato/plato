@@ -93,6 +93,35 @@ _NEW_PRICE = """    const price=item.market_price||{};
 """
 
 
+# Карантин виден на странице, а не только числом в шапке. Скрытая потеря
+# кандидата выглядит как хороший результат: на живом стенде было видно два
+# проекта и не видно, почему не десять.
+_OLD_LIST_HEAD = "document.getElementById('mdObjects').innerHTML=projects.length?projects.map(item=>{"
+_NEW_LIST_HEAD = "document.getElementById('mdObjects').innerHTML=(projects.length?projects.map(item=>{"
+_OLD_LIST_TAIL = (
+    "}).join(''):'<div class=\"md-card\">Подходящие проекты пока не найдены.</div>';"
+)
+_NEW_LIST_TAIL = (
+    "}).join(''):'<div class=\"md-card\">Подходящие проекты пока не найдены.</div>')+mdQuarantine(payload);"
+)
+_QUARANTINE_FN = """function mdQuarantineLabel(status){
+  const map={geo_unresolved:'адрес проекта не подтверждён',outside_radius:'вне радиуса',
+    over_limit:'не вошёл в лимит выдачи',not_evaluated:'бюджет разбора исчерпан'};
+  return map[status]||status||'отсеян';
+}
+function mdQuarantine(payload){
+  const rows=Array.isArray(payload.quarantine)?payload.quarantine:[];
+  if(!rows.length)return '';
+  const items=rows.slice(0,20).map(item=>'<li><b>'+mdEsc(item.name||'—')+'</b> — '+
+    mdEsc(mdQuarantineLabel(item.status))+
+    (item.distance_km!=null?' ('+mdNum(item.distance_km)+' км)':'')+
+    (item.reason?'<br><span class="md-marketline">'+mdEsc(item.reason)+'</span>':'')+'</li>').join('');
+  return '<details class="md-card"><summary>Карантин: '+mdEsc(rows.length)+
+    ' — найдены, но в расчёт не взяты</summary><ul>'+items+'</ul></details>';
+}
+function renderMarketDiscovery(payload){"""
+
+
 def install(core: Any) -> None:
     """Поставить панель v4 и привести её к контракту v6."""
     install_v4(core)
@@ -105,6 +134,9 @@ def install(core: Any) -> None:
     page = page[:start] + _NEW_PRICE + page[end:]
 
     for old, new in (
+        (_OLD_LIST_HEAD, _NEW_LIST_HEAD),
+        (_OLD_LIST_TAIL, _NEW_LIST_TAIL),
+        ("function renderMarketDiscovery(payload){", _QUARANTINE_FN),
         (_OLD_HINT, _NEW_HINT),
         (_OLD_STATUS, _NEW_STATUS),
         (_OLD_CHIP, _NEW_CHIP),

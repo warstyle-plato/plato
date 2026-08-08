@@ -24,8 +24,8 @@ from typing import Any
 
 from .documents import PROJECT_PAGE, classify_document, is_pricing_source
 from .http import RemoteServiceError
-from .normalize import canonical_key, cut_at_separator, name_similarity
-from .price import _PRICE_M2_RE, MarketPriceEnricher
+from .normalize import cut_at_separator, labels_match, search_name
+from .price import _PRICE_M2_RE, _PRICE_M2_REVERSED_RE, MarketPriceEnricher
 from .yandex_search import SearchDoc, YandexSearchClient
 
 
@@ -101,14 +101,8 @@ def document_matches_entity(entity, doc: SearchDoc) -> str:
     title_name = cut_at_separator(doc.title)
     if not title_name:
         return MATCH_NONE
-    names = [entity.canonical_name, *entity.aliases]
-    for name in names:
-        if not name:
-            continue
-        if canonical_key(title_name) == canonical_key(name):
-            return MATCH_TITLE
-        if name_similarity(title_name, name) >= 0.92:
-            return MATCH_TITLE
+    if labels_match(title_name, [entity.canonical_name, *entity.aliases]):
+        return MATCH_TITLE
     return MATCH_NONE
 
 
@@ -118,13 +112,22 @@ class VerifiedPriceEnricher:
         self.today = today or date.today()
 
     def collect(self, entity, locality: str) -> dict[str, Any]:
-        name = entity.canonical_name
+        # В запрос идёт имя без кавычек и скобок: Search API внутри кавычек ищет
+        # точную фразу, и «Клубный дом «Саввинская 17»» не находил ничего.
+        name = search_name(entity.canonical_name)
+        short = min(
+            (search_name(alias) for alias in entity.aliases if search_name(alias)),
+            key=len,
+            default=name,
+        )
         queries = [
             f'site:cian.ru "{name}" {locality} ЖК цены',
             f'site:realty.yandex.ru "{name}" {locality} новостройка цена',
             f'site:domclick.ru "{name}" {locality} ЖК цена',
             f'site:novostroy.ru "{name}" {locality} цены',
         ]
+        if short and short != name:
+            queries.append(f'site:cian.ru "{short}" {locality} ЖК цена за м²')
         docs: list[SearchDoc] = []
         seen: set[str] = set()
         errors: list[str] = []
@@ -199,10 +202,16 @@ class VerifiedPriceEnricher:
     @staticmethod
     def _prices(text: str) -> list[int]:
         values: list[int] = []
-        for match in _PRICE_M2_RE.finditer(text):
-            value = MarketPriceEnricher._price_m2_match_to_int(match)
-            if _MIN_PRICE <= value <= _MAX_PRICE:
-                values.append(value)
+        seen: set[tuple[int, int]] = set()
+        for pattern in (_PRICE_M2_RE, _PRICE_M2_REVERSED_RE):
+            for match in pattern.finditer(text):
+                span = match.span("value")
+                if span in seen:
+                    continue
+                seen.add(span)
+                value = MarketPriceEnricher._price_m2_match_to_int(match)
+                if _MIN_PRICE <= value <= _MAX_PRICE:
+                    values.append(value)
         return values
 
     @staticmethod

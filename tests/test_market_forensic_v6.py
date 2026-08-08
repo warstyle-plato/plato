@@ -753,3 +753,106 @@ def test_document_classification_covers_the_live_aggregators() -> None:
         ref = documents.classify_document(url)
         assert ref.kind == kind, url
         assert ref.external_id == external, url
+
+
+# --- класс 8: находки живого стенда 08.08 (2 проекта, 0 цен) ------------------
+
+
+def test_duplicated_parenthetical_no_longer_breaks_self_match() -> None:
+    """«Клубный дом «Саввинская 17» (Саввинская 17)» не узнавал собственную карточку."""
+    from market_search.normalize import drop_duplicate_parenthetical, labels_match, search_name
+
+    raw = "Клубный дом «Саввинская 17» (Саввинская 17)"
+    assert drop_duplicate_parenthetical(raw) == "Клубный дом «Саввинская 17»"
+    assert canonical_key(raw) == canonical_key("Саввинская 17")
+    assert labels_match("Клубный дом «Саввинская 17»", [raw])
+    # Двуязычная вывеска — не задвоение, её трогать нельзя.
+    assert drop_duplicate_parenthetical("Сидней Сити (Sidney City)") == "Сидней Сити (Sidney City)"
+    # В запрос уходит имя без кавычек: точная фраза с «» не находит ничего.
+    assert search_name(raw) == "Клубный дом Саввинская 17"
+
+
+def test_project_page_price_survives_a_duplicated_entity_label() -> None:
+    entity = resolve_entities(
+        extract_candidates(
+            [
+                doc(
+                    "Клубный дом «Саввинская 17» (Саввинская 17) — купить квартиру",
+                    "https://realty.yandex.ru/moskva/kupit/novostrojka/savvinskaya-17-1234567/",
+                    "Квартиры от застройщика",
+                )
+            ]
+        )
+    )[0]
+    page = doc(
+        "Саввинская 17 — цены и планировки",
+        "https://www.cian.ru/zhiloy-kompleks-savvinskaya-17-7654321/",
+        "от 2 256 990 ₽ за м². В продаже 22 квартиры",
+    )
+    result = VerifiedPriceEnricher(FakeSearch(default=[page]), today=date(2026, 8, 8)).collect(
+        entity, "Москва"
+    )
+    assert result["price"]["verified"] is True
+    assert result["price"]["price_per_sqm"] == 2_256_990
+    assert result["inventory"]["units"] == 22
+
+
+def test_price_is_read_in_every_common_russian_form() -> None:
+    """Раньше из пяти ходовых форм читалась одна — «₽/м²»."""
+    cases = {
+        "3 306 021 ₽/м²": 3_306_021,
+        "от 2 256 990 ₽ за м²": 2_256_990,
+        "1 200 000 руб. за кв. м": 1_200_000,
+        "от 598,5 тыс. ₽ за м²": 598_500,
+        "цена за м²: 900 000 ₽": 900_000,
+    }
+    for text, expected in cases.items():
+        assert VerifiedPriceEnricher._prices(text) == [expected], text
+    # Цена лота и площадь рядом — не цена метра.
+    assert VerifiedPriceEnricher._prices("120 м² за 50 000 000 ₽") == []
+    assert VerifiedPriceEnricher._prices("5 000 000 ₽ за квартиру") == []
+
+
+def test_catalog_list_yields_each_project_separately() -> None:
+    """Каталог перечисляет проекты списком; кавычек в сниппете обычно нет."""
+    catalog = doc(
+        "Новостройки (ЖК) в Хамовниках — купить квартиру",
+        "https://www.cian.ru/novostroyki-hamovniki/",
+        "ЖК Хамовники 12 · ДОМ XXII · Клубный квартал Фрунзенский · Саввинская 27",
+    )
+    names = {item.canonical_name for item in extract_candidates([catalog])}
+    assert {"Хамовники 12", "ДОМ XXII", "Саввинская 27"} <= names
+    assert any("Фрунзенский" in name for name in names)
+    # Ни одно имя не склеило соседей списка.
+    assert not any("·" in name for name in names)
+    assert all(
+        item.address_attributable is False for item in extract_candidates([catalog])
+    ), "каталожный кандидат адреса не наследует"
+
+
+def test_catalog_advertising_line_yields_nothing() -> None:
+    noise = doc(
+        "Новостройки Москвы",
+        "https://www.cian.ru/novostroyki-moskva/",
+        "Рейтинг застройщиков · Ипотека от 5% · Скидки до 20% · Консультация бесплатно",
+    )
+    assert extract_candidates([noise]) == []
+
+
+def test_ui_shows_why_candidates_were_dropped() -> None:
+    from market_search.ui_v6 import install as install_ui
+
+    class FakeCore:
+        PAGE = (
+            "<html><head></head><body>"
+            '<input id="apartment_price_th" type="number" value="500">'
+            "<button class=\"tab\" data-tab=\"report\" onclick=\"openTab('report',this)\">Отчёт</button>"
+            '<div id="report" class="panel"></div>'
+            "</body></html>"
+        )
+
+    core = FakeCore()
+    install_ui(core)
+    assert "mdQuarantine(payload)" in core.PAGE
+    assert "адрес проекта не подтверждён" in core.PAGE
+    assert "найдены, но в расчёт не взяты" in core.PAGE

@@ -29,6 +29,7 @@ from .documents import (
 )
 from .normalize import (
     canonical_key,
+    name_tokens,
     clean_display_name,
     cut_at_separator,
     looks_like_project_name,
@@ -53,9 +54,17 @@ _RESIDENTIAL_RE = re.compile(r"\bквартир[а-я]*\b|\bжил(?:ой|ая|�
 _TITLE_PROJECT_RE = re.compile(
     r"\b(?:ЖК|жил(?:ой|ого)\s+комплекс(?:а)?|клубн(?:ый|ого)\s+(?:дом|квартал)а?|жил(?:ой|ого)\s+квартал(?:а)?)\s+"
     r"(?P<name>[^«»\"'|\n]{2,60}?)"
-    r"(?=\s*[—–|,:]|\s+в\s+(?:Москве|Московской)|\s+от\s+застройщика|\s*[-−]\s|$)",
+    # Терминаторы перечисляются полностью: без «·» шаблон захватывал три проекта
+    # каталожного списка в одно имя — та же ошибка, что прежде с ASCII-дефисом.
+    r"(?=\s*[—–|,:·•;]|\s+в\s+(?:Москве|Московской)|\s+от\s+застройщика|\s*[-−]\s|$)",
     flags=re.I,
 )
+
+# Каталожный сниппет перечисляет проекты через настоящие разделители списка.
+# Запятую сюда не берём: в прозе она стоит на каждом шагу, и v5 именно так
+# набрал мусора. Точка с запятой, средняя точка и вертикальная черта в связном
+# тексте почти не встречаются.
+_LIST_SPLIT_RE = re.compile(r"\s*[·•|;]\s*|\s+—\s+|\n")
 
 _DEVELOPER_RE = re.compile(
     r"(?:застройщик|девелопер)[:\s]+[«\"']?([A-Za-zА-ЯЁа-яё0-9 .\-&]{2,40}?)[»\"']?(?=[,.;)]|\s+в\s|$)",
@@ -212,4 +221,18 @@ def _candidates_from_doc(doc: SearchDoc, ref: SourceRef) -> list[Candidate]:
             continue
         seen.add(name.lower())
         emit(name, f"{evidence_prefix}_typed", 0.7 if attributable else 0.55, attributable)
+
+    if ref.kind == CATALOG:
+        # Каталог перечисляет проекты списком, и кавычек в сниппете обычно нет.
+        # Такой кандидат — лишь наводка: адреса он не даёт и обязан подтвердить
+        # собственный адрес, иначе уйдёт в карантин. Поэтому планку узнавания
+        # здесь можно опустить, не возвращая мусор в выдачу.
+        for fragment in _LIST_SPLIT_RE.split(str(doc.snippet or "")):
+            fragment = fragment.strip(" .,:;")
+            if not fragment or fragment.lower() in seen:
+                continue
+            if len(name_tokens(fragment)) > 4:
+                continue
+            seen.add(fragment.lower())
+            emit(fragment, "catalog_child_listed", 0.45, False)
     return out
