@@ -66,6 +66,7 @@ class MptCalculateRequest(BaseModel):
     area_social_sqm: float = Field(default=0, ge=0)
     kzatr: float = Field(default=KZATR_DEFAULT, gt=0)
     kzatr_quarter: str = ""
+    kzatr_fixed_by_agreement: bool = False
     ons_readiness_pct: float = Field(default=0, ge=0, lt=100)
     ons_registered_before_2019_11_01: bool | None = None
 
@@ -201,7 +202,9 @@ _MPT_FRAGMENT = r'''
         <div id="mpt-yard-wrap"><label for="mpt-yard">Открытая складская площадка, м²</label><input id="mpt-yard" type="number" min="0" step="1" value="0"></div>
         <div id="mpt-rooms-wrap" class="mpt-hidden"><label for="mpt-rooms">Номерной фонд, м² <span style="opacity:.6">не менее 75%</span></label><input id="mpt-rooms" type="number" min="0" step="1" value="0"></div>
         <div><label for="mpt-kzatr">Кзатр <span style="opacity:.6">приказ ДИиПП</span></label><input id="mpt-kzatr" type="number" min="0" step="0.00001" value="166.23078"></div>
-        <div><label for="mpt-kzatr-quarter">Квартал, к которому относится Кзатр</label><input id="mpt-kzatr-quarter" type="text" placeholder="напр. 2025-Q1"></div>
+        <div><label for="mpt-kzatr-quarter">Квартал, к которому относится Кзатр</label><input id="mpt-kzatr-quarter" type="text" placeholder="напр. 2026-Q1"></div>
+        <div class="mpt-wide"><label><input id="mpt-kzatr-fixed" type="checkbox" style="width:auto"> Соглашение заключено до вступления приказа от 10.03.2026 в силу — Кзатр не индексируется</label>
+          <p id="mpt-kzatr-note" class="mpt-note" style="margin:4px 0 0"></p></div>
         <div id="mpt-split-wrap" class="mpt-wide">
           <p class="mpt-note" style="margin:2px 0 8px">Если назначение сразу по нескольким ВРИ из граф 2 и 3, укажите площади: коэффициенты применяются пропорционально (примечание к таблице приложения 3), а минимальная площадь поднимается до 5 000 м² (п. 3.1.3). Пустые поля — весь объект идёт по графе выбранного типа.</p>
           <div class="mpt-grid">
@@ -312,6 +315,7 @@ _MPT_FRAGMENT = r'''
     // выглядело бы действующим.
     if(meta.current_quarter) q('mpt-kzatr-quarter').placeholder='сейчас '+meta.current_quarter;
     if(meta.kzatr_default) q('mpt-kzatr').value=meta.kzatr_default;
+    if(meta.kzatr_source) q('mpt-kzatr-note').textContent=meta.kzatr_source;
     q('mpt-category').innerHTML=(meta.categories||[]).map(x=>`<option value="${x.value}">${x.label}</option>`).join('');
     q('mpt-district').innerHTML='<option value="">— выберите район —</option>'+(meta.districts||[]).map(x=>`<option value="${x}">${x}</option>`).join('');
     sync();
@@ -334,6 +338,7 @@ _MPT_FRAGMENT = r'''
       area_social_sqm:Number(q('mpt-area-social').value||0),
       kzatr:Number(q('mpt-kzatr').value||0)||undefined,
       kzatr_quarter:(q('mpt-kzatr-quarter').value||'').trim(),
+      kzatr_fixed_by_agreement:q('mpt-kzatr-fixed').checked,
       ons_readiness_pct:Number(q('mpt-ready').value||0),
       ons_registered_before_2019_11_01:q('mpt-mode').value==='ons'?q('mpt-ons-date').checked:null
     };

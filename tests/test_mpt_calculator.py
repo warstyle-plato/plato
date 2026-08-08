@@ -230,17 +230,17 @@ def test_a_hotel_is_not_split_between_columns():
 # --- Кзатр и его квартал ------------------------------------------------------
 
 def test_the_kzatr_without_a_quarter_is_flagged():
-    """Приказ ДИПП-ПР-35/25: база 138,11132 с 01.01.2025 корректируется с
-    первого числа каждого квартала. Зашитое число протухает молча."""
+    """Приказ от 10.03.2026: 166,23078 с 01.01.2026, а со второго квартала
+    2026 года — корректировка каждый квартал. Зашитое число протухает молча."""
     result = calc()
     assert result.kzatr_quarter == "2026-Q3"
     assert any("квартал" in warning for warning in result.warnings)
 
 
 def test_a_stale_quarter_is_named():
-    result = calc(kzatr=138.11132, kzatr_quarter="2025-Q1")
-    assert result.kzatr_quarter == "2025-Q1"
-    assert any("2025-Q1" in warning and "2026-Q3" in warning for warning in result.warnings)
+    result = calc(kzatr=166.23078, kzatr_quarter="2026-Q2")
+    assert result.kzatr_quarter == "2026-Q2"
+    assert any("2026-Q2" in warning and "2026-Q3" in warning for warning in result.warnings)
 
 
 def test_the_current_quarter_passes_without_a_warning():
@@ -248,10 +248,35 @@ def test_the_current_quarter_passes_without_a_warning():
     assert not any("квартал" in warning for warning in result.warnings)
 
 
-def test_the_base_value_comes_from_the_order():
-    assert metadata()["kzatr_base"] == 138.11132
-    assert metadata()["kzatr_base_from"] == "2025-01-01"
-    assert "ДИПП-ПР-35/25" in metadata()["kzatr_source"]
+def test_before_the_indexation_starts_the_value_needs_no_checking():
+    """Индексация начинается со второго квартала 2026 года: до неё значение
+    установлено приказом прямо, и требовать сверки не за что."""
+    early = calculate_mpt_benefit(
+        MptInput(category="office", district="Ясенево", area_sqm=10_000.0,
+                 ttk_position="outside"),
+        today=date(2026, 2, 1),
+    )
+    assert early.kzatr_quarter == "2026-Q1"
+    assert not any("квартал" in warning for warning in early.warnings)
+
+
+def test_an_agreement_signed_earlier_freezes_the_coefficient():
+    """Переходное положение приказа от 10.03.2026: по ранее заключённому
+    соглашению квартальная корректировка не применяется, кроме прироста
+    площади и только в его части."""
+    result = calc(kzatr_fixed_by_agreement=True)
+    assert not any("сверьте действующее значение" in warning for warning in result.warnings)
+    frozen = [w for w in result.warnings if "зафиксированным" in w]
+    assert frozen and "прироста такой площади" in frozen[0]
+
+
+def test_the_base_value_comes_from_the_current_edition():
+    assert KZATR_DEFAULT == 166.23078
+    assert metadata()["kzatr_base"] == 166.23078
+    assert metadata()["kzatr_base_from"] == "2026-01-01"
+    assert metadata()["kzatr_indexation_from_quarter"] == "2026-Q2"
+    assert "10.03.2026" in metadata()["kzatr_source"]
+    assert "декабрю 2025" in metadata()["kzatr_source"]
 
 
 def test_below_the_minimum_the_benefit_is_zero_but_the_math_is_visible():

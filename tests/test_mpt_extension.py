@@ -88,6 +88,15 @@ def test_the_old_mixed_use_flag_is_refused_not_ignored(client):
 
 def test_the_meta_names_the_order_behind_the_kzatr(client):
     meta = client.get("/api/mpt/meta").json()
-    assert meta["kzatr_base"] == 138.11132
-    assert "ДИПП-ПР-35/25" in meta["kzatr_source"]
+    assert meta["kzatr_base"] == 166.23078
+    assert meta["kzatr_base_from"] == "2026-01-01"
+    assert "10.03.2026" in meta["kzatr_source"]
+    assert meta["kzatr_indexation_from_quarter"] == "2026-Q2"
     assert meta["current_quarter"]
+
+
+def test_the_panel_offers_the_transition_clause():
+    """Переходное положение приказа меняет число, значит спрашивать о нём надо
+    явно, а не оставлять на догадку."""
+    assert 'id="mpt-kzatr-fixed"' in _MPT_FRAGMENT
+    assert "kzatr_fixed_by_agreement" in _MPT_FRAGMENT
