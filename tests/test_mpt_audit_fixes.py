@@ -41,7 +41,8 @@ def client():
 
 
 def calc(**kwargs):
-    base = dict(category="office", district="Ясенево", area_sqm=10_000.0)
+    base = dict(category="office", district="Ясенево", area_sqm=10_000.0,
+                ttk_position="outside")
     return calculate_mpt_benefit(MptInput(**{**base, **kwargs}))
 
 
@@ -71,7 +72,7 @@ def test_a_hidden_panel_says_so_instead_of_showing_a_blank_screen():
 def test_infinity_is_refused_not_served_as_zero(client):
     response = client.post(
         "/api/mpt/calculate",
-        content='{"category":"office","district":"Ясенево","area_sqm":Infinity}',
+        content='{"category":"office","district":"Ясенево","area_sqm":Infinity,"ttk_position":"outside"}',
         headers={"Content-Type": "application/json"},
     )
     assert response.status_code == 400
@@ -81,7 +82,7 @@ def test_infinity_is_refused_not_served_as_zero(client):
 def test_nan_is_refused_without_a_500(client):
     response = client.post(
         "/api/mpt/calculate",
-        content='{"category":"office","district":"Ясенево","area_sqm":NaN}',
+        content='{"category":"office","district":"Ясенево","area_sqm":NaN,"ttk_position":"outside"}',
         headers={"Content-Type": "application/json"},
     )
     assert response.status_code == 400
@@ -97,7 +98,8 @@ def test_broken_json_is_named(client):
 
 def test_validation_errors_stay_readable(client):
     response = client.post("/api/mpt/calculate",
-                           json={"category": "office", "district": "Ясенево", "area_sqm": -1})
+                           json={"category": "office", "district": "Ясенево", "area_sqm": -1,
+                                 "ttk_position": "outside"})
     assert response.status_code == 400
     assert "area_sqm" in response.json()["detail"]
 
@@ -125,12 +127,12 @@ def test_the_formula_still_shows_what_it_would_have_been():
     """Ноль должен читаться как недобор порога, а не как поломка расчёта."""
     result = calc(area_sqm=1_000)
     assert result.potential_benefit_rub > 0
-    assert "минимальная площадь не достигнута" in result.formula
-    assert any("статус МПТ не присваивается" in warning for warning in result.warnings)
+    assert "условия присвоения статуса не выполнены" in result.formula
+    assert any("ниже минимума" in blocker for blocker in result.blockers)
 
 
 def test_above_the_minimum_nothing_changed():
     result = calc(area_sqm=10_000)
     assert result.eligible_for_minimum is True
     assert result.benefit_rub == result.potential_benefit_rub
-    assert result.benefit_rub == pytest.approx(1_163_615_460.0)
+    assert result.benefit_rub == pytest.approx(1_000.0 * 10_000.0 * 166.23078 * 0.75)

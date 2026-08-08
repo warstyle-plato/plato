@@ -16,7 +16,13 @@ import json
 from fastapi import HTTPException, Request
 from pydantic import BaseModel, Field, ValidationError
 
-from mpt_calculator import MptCalculationError, MptInput, calculate_mpt_benefit, metadata
+from mpt_calculator import (
+    KZATR_DEFAULT,
+    MptCalculationError,
+    MptInput,
+    calculate_mpt_benefit,
+    metadata,
+)
 
 
 def _strict_json(raw: bytes) -> Any:
@@ -50,15 +56,25 @@ class MptCalculateRequest(BaseModel):
     district: str
     area_sqm: float = Field(gt=0)
     mode: str = "new"
-    cadastral_number: str = ""
     ttk_position: str | None = None
     parking_sqm: float = Field(default=0, ge=0)
     garages_sqm: float = Field(default=0, ge=0)
     warehouse_inside_sqm: float = Field(default=0, ge=0)
     warehouse_yard_sqm: float = Field(default=0, ge=0)
-    kterm: float = 1.0
+    hotel_rooms_sqm: float = Field(default=0, ge=0)
+    mixed_use: bool = False
+    kzatr: float = Field(default=KZATR_DEFAULT, gt=0)
     ons_readiness_pct: float = Field(default=0, ge=0, lt=100)
     ons_registered_before_2019_11_01: bool | None = None
+
+
+# Прежний интерфейс слал «Ксрок» и кадастровый номер: первого в постановлении
+# нет вовсе, второй был нужен таблице из 99 кварталов, которой там тоже нет.
+# Молча проглотить их нельзя — Ксрок менял ответ до 10%.
+_REMOVED_FIELDS = {
+    "kterm": "Ксрок в 1874-ПП отсутствует: формула п. 1.14.1 — 1000 × Sмпт × Кзатр × Кмест.",
+    "cadastral_number": "Таблицы кадастровых кварталов в 1874-ПП нет; Кмест берётся по району.",
+}
 
 
 def _append_query(url: str, **values: str) -> str:
@@ -170,14 +186,15 @@ _MPT_FRAGMENT = r'''
         <div><label for="mpt-category">Тип МПТ</label><select id="mpt-category"></select></div>
         <div><label for="mpt-mode">Сценарий</label><select id="mpt-mode"><option value="new">Новое строительство</option><option value="reconstruction">Реконструкция</option><option value="ons">ОНС</option></select></div>
         <div><label for="mpt-district">Район Москвы</label><select id="mpt-district"><option value="">— выберите район —</option></select></div>
-        <div id="mpt-ttk-wrap" class="mpt-hidden"><label for="mpt-ttk">Положение относительно ТТК</label><select id="mpt-ttk"><option value="">— выберите —</option><option value="inside">Внутри ТТК</option><option value="outside">За внешней границей ТТК</option></select></div>
-        <div id="mpt-cad-wrap" class="mpt-hidden"><label for="mpt-cad">Кадастровый номер / квартал</label><input id="mpt-cad" placeholder="77:04:0001008:1234"></div>
+        <div id="mpt-ttk-wrap"><label for="mpt-ttk">Положение относительно ТТК <span style="opacity:.6">п. 1.2</span></label><select id="mpt-ttk"><option value="">— выберите —</option><option value="outside">За внешней границей ТТК</option><option value="inside">Внутри ТТК</option></select></div>
         <div><label id="mpt-area-label" for="mpt-area">Общая площадь МПТ, м²</label><input id="mpt-area" type="number" min="0" step="1" placeholder="10000"></div>
         <div><label for="mpt-parking">Парковки, м²</label><input id="mpt-parking" type="number" min="0" step="1" value="0"></div>
         <div><label for="mpt-garages">Гаражи, м²</label><input id="mpt-garages" type="number" min="0" step="1" value="0"></div>
         <div id="mpt-warehouse-wrap"><label for="mpt-warehouse">Склад внутри здания, м²</label><input id="mpt-warehouse" type="number" min="0" step="1" value="0"></div>
         <div id="mpt-yard-wrap"><label for="mpt-yard">Открытая складская площадка, м²</label><input id="mpt-yard" type="number" min="0" step="1" value="0"></div>
-        <div><label for="mpt-kterm">Срок исполнения</label><select id="mpt-kterm"><option value="1">Обычный — Ксрок 1,00</option><option value="1.05">Сокращение на 6–12 мес. — 1,05</option><option value="1.1">Сокращение на 12+ мес. — 1,10</option></select></div>
+        <div id="mpt-rooms-wrap" class="mpt-hidden"><label for="mpt-rooms">Номерной фонд, м² <span style="opacity:.6">не менее 75%</span></label><input id="mpt-rooms" type="number" min="0" step="1" value="0"></div>
+        <div><label for="mpt-kzatr">Кзатр <span style="opacity:.6">акт ДИиПП</span></label><input id="mpt-kzatr" type="number" min="0" step="0.00001" value="166.23078"></div>
+        <div class="mpt-wide"><label><input id="mpt-mixed" type="checkbox" style="width:auto"> Назначение сразу по нескольким ВРИ из граф 2 и 3 (порог 5 000 м², п. 3.1.3)</label></div>
         <div id="mpt-ons-wrap" class="mpt-wide mpt-hidden">
           <div class="mpt-grid">
             <div><label for="mpt-ready">Готовность ОНС, %</label><input id="mpt-ready" type="number" min="0" max="99.99" step="0.1" value="0"></div>
@@ -193,6 +210,7 @@ _MPT_FRAGMENT = r'''
           <div class="mpt-kpi"><small>Sмпт в расчёте</small><strong id="mpt-eligible">—</strong></div>
           <div class="mpt-kpi"><small>Кмест</small><strong id="mpt-kmest">—</strong></div>
         </div>
+        <div id="mpt-blockers" class="mpt-warnings mpt-hidden"></div>
         <div id="mpt-formula" class="mpt-formula"></div>
         <div id="mpt-warnings" class="mpt-warnings"></div>
       </div>
@@ -242,18 +260,14 @@ _MPT_FRAGMENT = r'''
     host.appendChild(tpl.content.cloneNode(true));
     wire();
   }
-  function specialQuarter(){
-    const raw=(q('mpt-cad')?.value||'').trim().split(':');
-    return raw.length>=3?raw.slice(0,3).join(':'):'';
-  }
   function sync(){
     if(!meta) return;
-    const category=q('mpt-category').value, district=q('mpt-district').value, mode=q('mpt-mode').value;
+    const category=q('mpt-category').value, mode=q('mpt-mode').value;
     const hotel=category==='hotel';
-    q('mpt-cad-wrap').classList.toggle('mpt-hidden',category!=='office');
-    const g2=(meta.group_2_districts||[]).includes(district);
-    const needs=g2 && (meta.ttk_categories||[]).includes(category) && !(category==='office' && specialQuarter());
-    q('mpt-ttk-wrap').classList.toggle('mpt-hidden',!needs);
+    // ТТК — условие присвоения статуса (п. 1.2), а не множитель Кмест:
+    // спрашиваем у всех, кроме гостиниц, а не у двух категорий в одной группе.
+    q('mpt-ttk-wrap').classList.toggle('mpt-hidden',hotel);
+    q('mpt-rooms-wrap').classList.toggle('mpt-hidden',!hotel);
     q('mpt-ons-wrap').classList.toggle('mpt-hidden',mode!=='ons');
     q('mpt-warehouse-wrap').classList.toggle('mpt-hidden',hotel);
     q('mpt-yard-wrap').classList.toggle('mpt-hidden',hotel);
@@ -266,10 +280,10 @@ _MPT_FRAGMENT = r'''
       q('mpt-area-label').textContent=mode==='reconstruction'?'Прирост общей площади МПТ, м²':'Общая площадь МПТ, м²';
     }
     q('mpt-context-note').textContent=category==='industrial'
-      ? 'Light Industrial считается как промышленно-производственный МПТ. Закрытый склад учитывается максимум в пределах 25% площади; открытая складская площадка, парковки и гаражи исключаются.'
+      ? 'Приложение 3 исключает склады и складские площадки из производственного ВРИ: закрытый склад учитывается максимум в пределах 25% площади, открытая площадка, парковки и гаражи исключаются.'
       : hotel
-        ? 'Для средства размещения вводится площадь помещений, предусмотренных требованиями к соответствующему типу/категории и технологически связанных с профильной деятельностью. Парковки и гаражи исключаются.'
-        : 'Для этой категории парковки, гаражи, склад внутри здания и открытая складская площадка исключаются из Sмпт.';
+        ? 'Гостиница — единственная категория, которой ТТК не мешает (п. 1.2). Номерной фонд должен быть не менее 75% площади (п. 4.2). Исключаются парковки и гаражи.'
+        : 'Парковки, гаражи, склад внутри здания и открытая складская площадка исключаются из Sмпт.';
   }
   async function loadMeta(){
     const r=await fetch('/api/mpt/meta',{credentials:'same-origin'});
@@ -287,13 +301,14 @@ _MPT_FRAGMENT = r'''
       district:q('mpt-district').value,
       area_sqm:Number(q('mpt-area').value||0),
       mode:q('mpt-mode').value,
-      cadastral_number:q('mpt-cad').value||'',
       ttk_position:q('mpt-ttk').value||null,
       parking_sqm:Number(q('mpt-parking').value||0),
       garages_sqm:Number(q('mpt-garages').value||0),
       warehouse_inside_sqm:Number(q('mpt-warehouse').value||0),
       warehouse_yard_sqm:Number(q('mpt-yard').value||0),
-      kterm:Number(q('mpt-kterm').value||1),
+      hotel_rooms_sqm:Number(q('mpt-rooms').value||0),
+      mixed_use:q('mpt-mixed').checked,
+      kzatr:Number(q('mpt-kzatr').value||0)||undefined,
       ons_readiness_pct:Number(q('mpt-ready').value||0),
       ons_registered_before_2019_11_01:q('mpt-mode').value==='ons'?q('mpt-ons-date').checked:null
     };
@@ -304,16 +319,19 @@ _MPT_FRAGMENT = r'''
       q('mpt-benefit').textContent=rub(data.benefit_rub);
       q('mpt-eligible').textContent=num(data.eligible_area_sqm)+' м²';
       q('mpt-kmest').textContent=num(data.kmest,2);
+      const blockers=q('mpt-blockers');
+      blockers.textContent=(data.blockers||[]).map(x=>'✕ '+x).join('\n');
+      blockers.classList.toggle('mpt-hidden',!(data.blockers||[]).length);
       q('mpt-formula').textContent=data.formula+'\n'+data.kmest_source+'\n'+data.normative_snapshot;
       warnings.textContent=(data.warnings||[]).length?(data.warnings||[]).map(x=>'• '+x).join('\n'):'Расчёт выполнен без дополнительных предупреждений.';
     }catch(err){
       q('mpt-benefit').textContent='—';q('mpt-eligible').textContent='—';q('mpt-kmest').textContent='—';
-      q('mpt-formula').textContent='';warnings.textContent=err?.message||String(err);
+      q('mpt-formula').textContent='';q('mpt-blockers').classList.add('mpt-hidden');
+      warnings.textContent=err?.message||String(err);
     }
   }
   function wire(){
-    ['mpt-category','mpt-mode','mpt-district','mpt-ttk','mpt-kterm'].forEach(id=>q(id)?.addEventListener('change',sync));
-    q('mpt-cad')?.addEventListener('input',sync);
+    ['mpt-category','mpt-mode','mpt-district','mpt-ttk'].forEach(id=>q(id)?.addEventListener('change',sync));
     q('mpt-calc')?.addEventListener('click',calculate);
     loadMeta().catch(err=>{q('mpt-context-note').textContent=err?.message||String(err);});
     const params=new URLSearchParams(location.search);
@@ -374,6 +392,9 @@ def install(base: Any) -> None:
             payload = _strict_json(await request.body())
             if not isinstance(payload, dict):
                 raise MptCalculationError("Тело запроса должно быть объектом JSON.")
+            for field, reason in _REMOVED_FIELDS.items():
+                if field in payload:
+                    raise MptCalculationError(f"Поле «{field}» больше не применяется. {reason}")
             data = MptCalculateRequest(**payload)
             result = calculate_mpt_benefit(
                 MptInput(**(data.model_dump() if hasattr(data, "model_dump") else data.dict()))
