@@ -165,9 +165,93 @@ def test_minimum_areas_follow_the_decree(category, minimum):
 def test_mixed_use_raises_the_threshold_to_five_thousand():
     """П. 3.1.3: назначение сразу по нескольким ВРИ из 3.1.1 и 3.1.2."""
     assert MIXED_USE_MIN_AREA_SQM == 5_000.0
-    result = calc(category="industrial", area_sqm=4_000, mixed_use=True)
+    result = calc(category="industrial", area_sqm=4_000,
+                  area_business_sqm=3_000, area_social_sqm=1_000)
     assert result.minimum_area_sqm == 5_000.0
     assert result.eligible_for_status is False
+
+
+# --- пропорция по графам 2 и 3 ------------------------------------------------
+
+def test_the_kmest_is_weighted_by_area_across_columns():
+    """Примечание к таблице приложения 3: при назначении по нескольким ВРИ
+    коэффициенты применяются пропорционально площади с соответствующим видом
+    использования. В Ясеневе графа 2 даёт 0,75, графа 3 — 0,3."""
+    result = calc(area_sqm=10_000, area_business_sqm=6_000, area_social_sqm=4_000)
+    assert result.kmest == pytest.approx((6_000 * 0.75 + 4_000 * 0.3) / 10_000)
+    assert result.benefit_rub == pytest.approx(1000.0 * 10_000.0 * KZATR_DEFAULT * result.kmest)
+
+
+def test_a_single_column_split_equals_the_plain_lookup():
+    """Вся площадь по одной графе — то же, что и без разбивки: пропорция не
+    должна незаметно менять ответ обычному объекту."""
+    plain = calc(area_sqm=10_000)
+    split = calc(area_sqm=10_000, area_business_sqm=10_000)
+    assert split.kmest == plain.kmest
+    assert split.benefit_rub == pytest.approx(plain.benefit_rub)
+
+
+def test_the_split_must_add_up_to_the_area():
+    """Иначе часть площади осталась бы без графы, а льгота — заниженной или
+    завышенной ровно на неё."""
+    with pytest.raises(MptCalculationError):
+        calc(area_sqm=10_000, area_business_sqm=6_000, area_social_sqm=1_000)
+
+
+def test_the_exclusions_shrink_both_columns_proportionally():
+    """Парковка вычитается из Sмпт, а к какой графе относится её площадь,
+    постановление не говорит: снимаем пропорционально, иначе выбор «откуда
+    вычесть» менял бы льготу."""
+    result = calc(area_sqm=10_000, parking_sqm=2_000,
+                  area_business_sqm=5_000, area_social_sqm=5_000)
+    assert result.eligible_area_sqm == 8_000
+    assert result.kmest == pytest.approx((0.75 + 0.3) / 2)
+    columns = {column: area for column, area, _value in result.kmest_mix}
+    assert columns["business"] == pytest.approx(4_000)
+    assert columns["social"] == pytest.approx(4_000)
+
+
+def test_the_source_line_keeps_its_punctuation():
+    """Разделитель тысяч ставился глобальной заменой запятых — она съедала и
+    запятые предложения: «Приложение 3  примечание: … 0.75  графа 3»."""
+    result = calc(area_sqm=10_000, area_business_sqm=6_000, area_social_sqm=4_000)
+    assert result.kmest_source.startswith("Приложение 3, примечание:")
+    assert "6 000 м²" in result.kmest_source
+    assert ", графа 3" in result.kmest_source
+
+
+def test_a_hotel_is_not_split_between_columns():
+    """Гостиница — графа 4 целиком."""
+    with pytest.raises(MptCalculationError):
+        calc(category="hotel", ttk_position=None, area_sqm=10_000,
+             area_business_sqm=5_000, area_social_sqm=5_000)
+
+
+# --- Кзатр и его квартал ------------------------------------------------------
+
+def test_the_kzatr_without_a_quarter_is_flagged():
+    """Приказ ДИПП-ПР-35/25: база 138,11132 с 01.01.2025 корректируется с
+    первого числа каждого квартала. Зашитое число протухает молча."""
+    result = calc()
+    assert result.kzatr_quarter == "2026-Q3"
+    assert any("квартал" in warning for warning in result.warnings)
+
+
+def test_a_stale_quarter_is_named():
+    result = calc(kzatr=138.11132, kzatr_quarter="2025-Q1")
+    assert result.kzatr_quarter == "2025-Q1"
+    assert any("2025-Q1" in warning and "2026-Q3" in warning for warning in result.warnings)
+
+
+def test_the_current_quarter_passes_without_a_warning():
+    result = calc(kzatr_quarter="2026-Q3")
+    assert not any("квартал" in warning for warning in result.warnings)
+
+
+def test_the_base_value_comes_from_the_order():
+    assert metadata()["kzatr_base"] == 138.11132
+    assert metadata()["kzatr_base_from"] == "2025-01-01"
+    assert "ДИПП-ПР-35/25" in metadata()["kzatr_source"]
 
 
 def test_below_the_minimum_the_benefit_is_zero_but_the_math_is_visible():

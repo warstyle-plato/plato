@@ -62,8 +62,10 @@ class MptCalculateRequest(BaseModel):
     warehouse_inside_sqm: float = Field(default=0, ge=0)
     warehouse_yard_sqm: float = Field(default=0, ge=0)
     hotel_rooms_sqm: float = Field(default=0, ge=0)
-    mixed_use: bool = False
+    area_business_sqm: float = Field(default=0, ge=0)
+    area_social_sqm: float = Field(default=0, ge=0)
     kzatr: float = Field(default=KZATR_DEFAULT, gt=0)
+    kzatr_quarter: str = ""
     ons_readiness_pct: float = Field(default=0, ge=0, lt=100)
     ons_registered_before_2019_11_01: bool | None = None
 
@@ -74,6 +76,11 @@ class MptCalculateRequest(BaseModel):
 _REMOVED_FIELDS = {
     "kterm": "Ксрок в 1874-ПП отсутствует: формула п. 1.14.1 — 1000 × Sмпт × Кзатр × Кмест.",
     "cadastral_number": "Таблицы кадастровых кварталов в 1874-ПП нет; Кмест берётся по району.",
+    "mixed_use": (
+        "Признак смешанного назначения заменён площадями: примечание к таблице "
+        "приложения 3 требует применять коэффициенты пропорционально площади, "
+        "поэтому нужны area_business_sqm и area_social_sqm, а не флаг."
+    ),
 }
 
 
@@ -193,8 +200,15 @@ _MPT_FRAGMENT = r'''
         <div id="mpt-warehouse-wrap"><label for="mpt-warehouse">Склад внутри здания, м²</label><input id="mpt-warehouse" type="number" min="0" step="1" value="0"></div>
         <div id="mpt-yard-wrap"><label for="mpt-yard">Открытая складская площадка, м²</label><input id="mpt-yard" type="number" min="0" step="1" value="0"></div>
         <div id="mpt-rooms-wrap" class="mpt-hidden"><label for="mpt-rooms">Номерной фонд, м² <span style="opacity:.6">не менее 75%</span></label><input id="mpt-rooms" type="number" min="0" step="1" value="0"></div>
-        <div><label for="mpt-kzatr">Кзатр <span style="opacity:.6">акт ДИиПП</span></label><input id="mpt-kzatr" type="number" min="0" step="0.00001" value="166.23078"></div>
-        <div class="mpt-wide"><label><input id="mpt-mixed" type="checkbox" style="width:auto"> Назначение сразу по нескольким ВРИ из граф 2 и 3 (порог 5 000 м², п. 3.1.3)</label></div>
+        <div><label for="mpt-kzatr">Кзатр <span style="opacity:.6">приказ ДИиПП</span></label><input id="mpt-kzatr" type="number" min="0" step="0.00001" value="166.23078"></div>
+        <div><label for="mpt-kzatr-quarter">Квартал, к которому относится Кзатр</label><input id="mpt-kzatr-quarter" type="text" placeholder="напр. 2025-Q1"></div>
+        <div id="mpt-split-wrap" class="mpt-wide">
+          <p class="mpt-note" style="margin:2px 0 8px">Если назначение сразу по нескольким ВРИ из граф 2 и 3, укажите площади: коэффициенты применяются пропорционально (примечание к таблице приложения 3), а минимальная площадь поднимается до 5 000 м² (п. 3.1.3). Пустые поля — весь объект идёт по графе выбранного типа.</p>
+          <div class="mpt-grid">
+            <div><label for="mpt-area-business">Площадь по графе 2 (деловое управление, производство), м²</label><input id="mpt-area-business" type="number" min="0" step="1" value="0"></div>
+            <div><label for="mpt-area-social">Площадь по графе 3 (социальное, спорт, культура, образование), м²</label><input id="mpt-area-social" type="number" min="0" step="1" value="0"></div>
+          </div>
+        </div>
         <div id="mpt-ons-wrap" class="mpt-wide mpt-hidden">
           <div class="mpt-grid">
             <div><label for="mpt-ready">Готовность ОНС, %</label><input id="mpt-ready" type="number" min="0" max="99.99" step="0.1" value="0"></div>
@@ -271,7 +285,10 @@ _MPT_FRAGMENT = r'''
     q('mpt-ons-wrap').classList.toggle('mpt-hidden',mode!=='ons');
     q('mpt-warehouse-wrap').classList.toggle('mpt-hidden',hotel);
     q('mpt-yard-wrap').classList.toggle('mpt-hidden',hotel);
-    if(hotel){q('mpt-warehouse').value='0';q('mpt-yard').value='0';}
+    // Гостиница — графа 4 целиком: делить её площадь между графами 2 и 3
+    // постановление не предусматривает, и расчёт такой запрос отклоняет.
+    q('mpt-split-wrap').classList.toggle('mpt-hidden',hotel);
+    if(hotel){q('mpt-warehouse').value='0';q('mpt-yard').value='0';q('mpt-area-business').value='0';q('mpt-area-social').value='0';}
     if(hotel){
       q('mpt-area-label').textContent=mode==='reconstruction'
         ? 'Прирост площади допустимых помещений средства размещения, м²'
@@ -289,6 +306,12 @@ _MPT_FRAGMENT = r'''
     const r=await fetch('/api/mpt/meta',{credentials:'same-origin'});
     if(!r.ok) throw new Error('Не удалось загрузить нормативный справочник МПТ');
     meta=await r.json();
+    // Кзатр пересматривается с первого числа каждого квартала, поэтому поле
+    // квартала остаётся пустым: расчёт тогда прямо говорит, что значение не
+    // сверено. Подставлять сюда текущий квартал нельзя — зашитое число
+    // выглядело бы действующим.
+    if(meta.current_quarter) q('mpt-kzatr-quarter').placeholder='сейчас '+meta.current_quarter;
+    if(meta.kzatr_default) q('mpt-kzatr').value=meta.kzatr_default;
     q('mpt-category').innerHTML=(meta.categories||[]).map(x=>`<option value="${x.value}">${x.label}</option>`).join('');
     q('mpt-district').innerHTML='<option value="">— выберите район —</option>'+(meta.districts||[]).map(x=>`<option value="${x}">${x}</option>`).join('');
     sync();
@@ -307,8 +330,10 @@ _MPT_FRAGMENT = r'''
       warehouse_inside_sqm:Number(q('mpt-warehouse').value||0),
       warehouse_yard_sqm:Number(q('mpt-yard').value||0),
       hotel_rooms_sqm:Number(q('mpt-rooms').value||0),
-      mixed_use:q('mpt-mixed').checked,
+      area_business_sqm:Number(q('mpt-area-business').value||0),
+      area_social_sqm:Number(q('mpt-area-social').value||0),
       kzatr:Number(q('mpt-kzatr').value||0)||undefined,
+      kzatr_quarter:(q('mpt-kzatr-quarter').value||'').trim(),
       ons_readiness_pct:Number(q('mpt-ready').value||0),
       ons_registered_before_2019_11_01:q('mpt-mode').value==='ons'?q('mpt-ons-date').checked:null
     };

@@ -40,15 +40,31 @@ Category = Literal[
 Mode = Literal["new", "reconstruction", "ons"]
 TtkPosition = Literal["inside", "outside"]
 
-# Кзатр устанавливается не постановлением, а правовым актом ДИиПП города
-# Москвы (п. 1.14.1). В тексте 1874-ПП его значения нет, подтвердить по
-# документу нельзя — поэтому значение вводимое, а умолчание помечено как
-# неподтверждённое.
+# Кзатр устанавливается не постановлением, а приказом ДИиПП (п. 1.14.1), и он
+# не константа. Приказ ДИПП-ПР-35/25 от 11.02.2025: с 01.01.2025 Кзатр равен
+# 138,11132, а со второго квартала 2025 года корректируется с первого числа
+# первого месяца каждого квартала на обобщённый индекс изменения стоимости
+# строительства к декабрю 2024 года (распоряжение ДЭПиР). Зашитое число
+# протухает раз в три месяца молча — поэтому значение вводится вместе с
+# кварталом, к которому относится, и расчёт говорит, когда квартал сменился.
+KZATR_BASE = 138.11132
+KZATR_BASE_FROM = date(2025, 1, 1)
 KZATR_DEFAULT = 166.23078
-KZATR_SOURCE = "правовой акт ДИиПП; в тексте 1874-ПП значение отсутствует"
+KZATR_SOURCE = (
+    "приказ ДИиПП ДИПП-ПР-35/25 от 11.02.2025: база 138,11132 с 01.01.2025, "
+    "далее ежеквартальная индексация по обобщённому индексу стоимости "
+    "строительства (распоряжение ДЭПиР)"
+)
+
+
+def quarter_of(day: date) -> str:
+    return f"{day.year}-Q{(day.month - 1) // 3 + 1}"
+
+
 NORMATIVE_SNAPSHOT = (
     "ПП Москвы № 1874-ПП от 31.12.2019 · приложение 3 (Кмест), приложение 1 "
-    "(формула, пороги, условия) · Кзатр — акт ДИиПП, по постановлению не сверяется"
+    "(формула, пороги, условия) · Кзатр — приказ ДИиПП ДИПП-ПР-35/25, "
+    "пересматривается ежеквартально"
 )
 
 CATEGORY_LABELS: dict[str, str] = {
@@ -178,8 +194,14 @@ class MptInput:
     warehouse_inside_sqm: float = 0.0
     warehouse_yard_sqm: float = 0.0
     hotel_rooms_sqm: float = 0.0
-    mixed_use: bool = False
+    # Примечание к таблице приложения 3: если назначение соответствует
+    # нескольким ВРИ из граф 2 и 3, коэффициенты применяются пропорционально
+    # площади с соответствующим видом использования. Пусто — весь объект идёт
+    # по графе выбранной категории.
+    area_business_sqm: float = 0.0
+    area_social_sqm: float = 0.0
     kzatr: float = KZATR_DEFAULT
+    kzatr_quarter: str = ""
     ons_readiness_pct: float = 0.0
     ons_registered_before_2019_11_01: bool | None = None
 
@@ -197,7 +219,9 @@ class MptResult:
     kmest: float
     kmest_source: str
     kmest_column: str
+    kmest_mix: tuple[tuple[str, float, float], ...]
     kzatr: float
+    kzatr_quarter: str
     readiness_factor: float
     minimum_area_sqm: float
     eligible_for_minimum: bool
@@ -212,6 +236,10 @@ class MptResult:
         payload = asdict(self)
         payload["warnings"] = list(self.warnings)
         payload["blockers"] = list(self.blockers)
+        payload["kmest_mix"] = [
+            {"column": column, "area_sqm": area, "kmest": value}
+            for column, area, value in self.kmest_mix
+        ]
         return payload
 
 
@@ -258,6 +286,10 @@ def kmest_for(category: str, district: str) -> tuple[float, str, str]:
     return value, f"Приложение 3, графа {graph}, строка {group + 1}: {canonical}", column
 
 
+def _thousands(value: float) -> str:
+    return f"{value:,.0f}".replace(",", " ")
+
+
 def _finite(label: str, value: float) -> float:
     value = float(value)
     # NaN не меньше нуля и не больше — любое сравнение с ним ложно, поэтому
@@ -286,11 +318,27 @@ def calculate_mpt_benefit(data: MptInput, *, today: date | None = None) -> MptRe
     warehouse = _finite("Площадь склада внутри здания", data.warehouse_inside_sqm)
     yard = _finite("Площадь открытой складской площадки", data.warehouse_yard_sqm)
     rooms = _finite("Площадь номерного фонда", data.hotel_rooms_sqm)
+    part_business = _finite("Площадь по графе 2", data.area_business_sqm)
+    part_social = _finite("Площадь по графе 3", data.area_social_sqm)
     kzatr = _finite("Кзатр", data.kzatr)
     if kzatr <= 0:
         raise MptCalculationError("Кзатр должен быть больше нуля.")
 
     kmest, kmest_source, column = kmest_for(category, data.district)
+
+    # Пропорция по примечанию к таблице приложения 3.
+    split = part_business > 0 or part_social > 0
+    if split:
+        if category == "hotel":
+            raise MptCalculationError(
+                "Гостиница — отдельная графа 4; распределять её площадь между "
+                "графами 2 и 3 постановление не предусматривает."
+            )
+        if abs(part_business + part_social - area) > 0.5:
+            raise MptCalculationError(
+                f"Сумма площадей по графам ({part_business + part_social:.0f} м²) "
+                f"не совпадает с общей площадью ({area:.0f} м²)."
+            )
 
     warnings: list[str] = []
     blockers: list[str] = []
@@ -345,13 +393,13 @@ def calculate_mpt_benefit(data: MptInput, *, today: date | None = None) -> MptRe
                 "Исключение сделано только для гостиниц."
             )
 
-    minimum = MIXED_USE_MIN_AREA_SQM if data.mixed_use else MIN_AREA_SQM[category]
+    mixed = split and part_business > 0 and part_social > 0
+    minimum = MIXED_USE_MIN_AREA_SQM if mixed else MIN_AREA_SQM[category]
     meets_minimum = eligible_area >= minimum
     if not meets_minimum:
         blockers.append(
-            f"Sмпт {eligible_area:,.0f} м² ниже минимума {minimum:,.0f} м² "
-            "(п. 3.1): статус не присваивается."
-            .replace(",", " ")
+            f"Sмпт {_thousands(eligible_area)} м² ниже минимума "
+            f"{_thousands(minimum)} м² (п. 3.1): статус не присваивается."
         )
 
     if category == "hotel":
@@ -386,11 +434,53 @@ def calculate_mpt_benefit(data: MptInput, *, today: date | None = None) -> MptRe
         )
     if kmest == 0:
         warnings.append("Кмест = 0 по приложению 3: расчётная льгота равна нулю.")
-    if abs(kzatr - KZATR_DEFAULT) < 1e-9:
+    current_quarter = quarter_of(today)
+    stated_quarter = str(data.kzatr_quarter or "").strip()
+    if not stated_quarter:
         warnings.append(
-            f"Кзатр {KZATR_DEFAULT} принят по умолчанию и по тексту 1874-ПП не "
-            f"проверяется: он устанавливается актом ДИиПП. Сверьте действующее значение."
+            f"Кзатр {kzatr:g} принят без указания квартала. С 01.01.2025 база "
+            f"{KZATR_BASE} индексируется каждый квартал (приказ ДИиПП "
+            f"ДИПП-ПР-35/25), сейчас {current_quarter} — сверьте действующее значение."
         )
+    elif stated_quarter != current_quarter:
+        warnings.append(
+            f"Кзатр относится к {stated_quarter}, а сейчас {current_quarter}: "
+            "коэффициент пересматривается с первого числа каждого квартала."
+        )
+
+    kmest_mix: tuple[tuple[str, float, float], ...] = ()
+    if split and area > 0:
+        # Исключения (парковки, гаражи, склад) снимаются пропорционально: какая
+        # часть площади к какой графе относится, постановление берёт по ВРИ, а
+        # не по тому, где именно стоит парковка.
+        scale = eligible_area / area
+        business_area = part_business * scale
+        social_area = part_social * scale
+        k_business = kmest_for("office", data.district)[0]
+        k_social = kmest_for("sport", data.district)[0]
+        weighted_sum = business_area * k_business + social_area * k_social
+        kmest = weighted_sum / eligible_area if eligible_area else 0.0
+        kmest_mix = (
+            (COLUMN_BUSINESS, business_area, k_business),
+            (COLUMN_SOCIAL, social_area, k_social),
+        )
+        # Пробел как разделитель тысяч ставится в самих числах: глобальный
+        # `replace(",", " ")` съедал бы и запятые предложения.
+        kmest_source = (
+            f"Приложение 3, примечание: графа 2 — {_thousands(business_area)} м² × "
+            f"{k_business}, графа 3 — {_thousands(social_area)} м² × {k_social}"
+        )
+        if mixed:
+            warnings.append(
+                "Назначение по нескольким ВРИ из граф 2 и 3: коэффициенты применены "
+                "пропорционально площади (примечание к таблице приложения 3), порог — 5 000 м²."
+            )
+        if category == "industrial":
+            warnings.append(
+                "Послабление по складу в пределах 25% рассчитано для чисто "
+                "производственного объекта; при смешанном назначении долю склада "
+                "подтверждайте экспликацией."
+            )
 
     potential = 1000.0 * eligible_area * readiness_factor * kzatr * kmest
     eligible_for_status = not blockers
@@ -414,7 +504,9 @@ def calculate_mpt_benefit(data: MptInput, *, today: date | None = None) -> MptRe
         kmest=kmest,
         kmest_source=kmest_source,
         kmest_column=column,
+        kmest_mix=kmest_mix,
         kzatr=kzatr,
+        kzatr_quarter=stated_quarter or current_quarter,
         readiness_factor=readiness_factor,
         minimum_area_sqm=minimum,
         eligible_for_minimum=meets_minimum,
@@ -439,7 +531,10 @@ def metadata() -> dict[str, Any]:
         "mixed_use_minimum_sqm": MIXED_USE_MIN_AREA_SQM,
         "hotel_rooms_min_share": HOTEL_ROOMS_MIN_SHARE,
         "kzatr_default": KZATR_DEFAULT,
+        "kzatr_base": KZATR_BASE,
+        "kzatr_base_from": KZATR_BASE_FROM.isoformat(),
         "kzatr_source": KZATR_SOURCE,
+        "current_quarter": quarter_of(date.today()),
         "ttk_required_outside": True,
         "normative_snapshot": NORMATIVE_SNAPSHOT,
     }

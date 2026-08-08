@@ -5,3 +5,4 @@ __pycache__/
 .env.local
 run.err
 data/platon_state/
+data/telegram_users.sqlite3
