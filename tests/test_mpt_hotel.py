@@ -34,4 +34,5 @@ def test_hotel_warns_that_base_area_must_already_be_normatively_eligible():
         ),
         today=TODAY,
     )
-    assert any("Базовая площадь должна включать только помещения" in warning for warning in result.warnings)
+    assert any("базовая площадь должна включать только помещения" in warning.lower()
+               for warning in result.warnings)
