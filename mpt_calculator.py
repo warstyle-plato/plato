@@ -9,6 +9,7 @@ Normative snapshot: rules and coefficients verified for 2026-08-08.
 
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, dataclass
 from datetime import date
 from typing import Any, Literal
@@ -276,6 +277,9 @@ class MptInput:
 @dataclass(frozen=True)
 class MptResult:
     benefit_rub: float
+    # Что дала бы формула, будь порог соблюдён. Нужно, чтобы недобор было
+    # видно как недобор, а не как поломку расчёта.
+    potential_benefit_rub: float
     eligible_area_sqm: float
     excluded_area_sqm: float
     warehouse_counted_sqm: float
@@ -372,6 +376,12 @@ def kmest_for(
 
 def _validate_non_negative(label: str, value: float) -> float:
     value = float(value)
+    # NaN не меньше нуля и не больше — любое сравнение с ним ложно, поэтому
+    # проверка «< 0» его пропускала, а бесконечность проходила как обычное
+    # число. Дальше расчёт давал nan/inf, и FastAPI отдавал его как null:
+    # пользователь видел ноль там, где вводных вообще не было.
+    if not math.isfinite(value):
+        raise MptCalculationError(f"{label} должна быть числом.")
     if value < 0:
         raise MptCalculationError(f"{label} не может быть отрицательной.")
     return value
@@ -456,7 +466,8 @@ def calculate_mpt_benefit(data: MptInput, *, today: date | None = None) -> MptRe
     meets_minimum = eligible_area >= minimum
     if not meets_minimum:
         warnings.append(
-            f"Sмпт {eligible_area:,.0f} м² ниже минимального порога {minimum:,.0f} м²."
+            f"Sмпт {eligible_area:,.0f} м² ниже минимального порога {minimum:,.0f} м²: "
+            "статус МПТ не присваивается, льгота равна нулю."
             .replace(",", " ")
         )
     if kmest == 0:
@@ -467,7 +478,7 @@ def calculate_mpt_benefit(data: MptInput, *, today: date | None = None) -> MptRe
             "перед использованием расчёта обновите коэффициент."
         )
 
-    benefit = (
+    potential = (
         1000.0
         * eligible_area
         * readiness_factor
@@ -475,6 +486,11 @@ def calculate_mpt_benefit(data: MptInput, *, today: date | None = None) -> MptRe
         * kmest
         * float(data.kterm)
     )
+    # Объект, не добравший минимальной площади, статуса МПТ не получает, а
+    # значит и льготы не создаёт. Раньше расчёт показывал положительное число
+    # с предупреждением мелким шрифтом — офис 1 000 м² при пороге 5 000 давал
+    # 116 млн ₽. Именно это число человек и унесёт в презентацию.
+    benefit = potential if meets_minimum else 0.0
     pieces = [
         "1 000",
         f"{eligible_area:.2f}",
@@ -482,10 +498,13 @@ def calculate_mpt_benefit(data: MptInput, *, today: date | None = None) -> MptRe
     if data.mode == "ons":
         pieces.append(f"{readiness_factor:.6f}")
     pieces.extend([f"{KZATR_2026:.5f}", f"{kmest:.2f}", f"{float(data.kterm):.2f}"])
-    formula = " × ".join(pieces) + f" = {benefit:.2f} ₽"
+    formula = " × ".join(pieces) + f" = {potential:.2f} ₽"
+    if not meets_minimum:
+        formula += " → 0,00 ₽: минимальная площадь не достигнута"
 
     return MptResult(
         benefit_rub=benefit,
+        potential_benefit_rub=potential,
         eligible_area_sqm=eligible_area,
         excluded_area_sqm=excluded_area,
         warehouse_counted_sqm=warehouse_counted,

@@ -121,13 +121,20 @@ def test_kterm_multiplier():
     assert fast.benefit_rub == pytest.approx(base.benefit_rub * 1.1)
 
 
-def test_minimum_area_warning_does_not_hide_calculation():
+def test_below_the_minimum_the_benefit_is_zero_but_the_math_is_visible():
+    """Прежде здесь стояло `benefit_rub > 0`: недобор порога считался
+    предупреждением, а не отказом, и объект на 4 000 м² при пороге 5 000
+    показывал полмиллиарда рублей льготы. Статуса МПТ такой объект не
+    получает — значит, и льготы не создаёт. Сам расчёт остаётся видимым в
+    `potential_benefit_rub` и в формуле, чтобы ноль читался как недобор, а не
+    как поломка."""
     result = calculate_mpt_benefit(
         MptInput(category="office", district="Ясенево", area_sqm=4_000),
         today=TODAY,
     )
     assert result.eligible_for_minimum is False
-    assert result.benefit_rub > 0
+    assert result.benefit_rub == 0
+    assert result.potential_benefit_rub > 0
     assert any("минимального порога" in warning for warning in result.warnings)
 
 

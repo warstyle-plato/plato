@@ -11,10 +11,34 @@ import copy
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from fastapi import HTTPException
-from pydantic import BaseModel, Field
+import json
+
+from fastapi import HTTPException, Request
+from pydantic import BaseModel, Field, ValidationError
 
 from mpt_calculator import MptCalculationError, MptInput, calculate_mpt_benefit, metadata
+
+
+def _strict_json(raw: bytes) -> Any:
+    """JSON без NaN и Infinity: в расчёте им места нет, а json.loads их берёт."""
+    def reject(token: str) -> Any:
+        raise MptCalculationError(f"Числовое поле содержит {token} — это не число.")
+
+    try:
+        return json.loads(raw or b"{}", parse_constant=reject)
+    except json.JSONDecodeError as exc:
+        raise MptCalculationError(f"Тело запроса не разобралось как JSON: {exc}") from exc
+
+
+def _first_error(exc: ValidationError) -> str:
+    """Читаемая причина вместо списка словарей — её увидит человек в панели."""
+    errors = exc.errors()
+    if not errors:
+        return "Запрос не прошёл проверку."
+    first = errors[0]
+    field = ".".join(str(part) for part in first.get("loc", ()) if part != "body")
+    return f"Поле «{field}»: {first.get('msg', 'некорректное значение')}" if field else str(
+        first.get("msg", "некорректное значение"))
 
 _INSTALLED = False
 _MENU_TEXT = "🏗 Льгота МПТ — Москва"
@@ -182,21 +206,40 @@ _MPT_FRAGMENT = r'''
   const num=(v,d=1)=>new Intl.NumberFormat('ru-RU',{maximumFractionDigits:d}).format(v||0);
   let meta=null;
 
+  let host=null;
   function findVriHost(){
+    // Панель ВРИ по имени, а не по угадыванию текста: прежний перебор
+    // `.panel` находил первую попавшуюся — «Вводные», — и панель оседала на
+    // чужой вкладке.
+    const vri=document.getElementById('vri');
+    if(vri && vri.classList.contains('panel')) return vri;
     const candidates=[...document.querySelectorAll('[role="tabpanel"],section,.card,.panel,.sheet,.tab-pane')];
     const direct=candidates.find(el=>el.id!=='mpt-benefit-panel' && /(^|\s)ВРИ(\s|$)/i.test((el.textContent||'').slice(0,800)) && el.querySelector('input,select,button'));
     return direct || document.querySelector('main') || document.body;
   }
-  function clickVriTab(){
-    const tabs=[...document.querySelectorAll('[role="tab"],button')];
-    const tab=tabs.find(el=>{const t=(el.textContent||'').trim();return t.length<30 && (/^ВРИ$/i.test(t)||/^ВРИ\b/i.test(t));});
+  function revealHost(){
+    // Открывать надо ту вкладку, где панель действительно лежит. Прежний код
+    // жал «ВРИ» вслепую: панель оставалась на скрытой вкладке, и переход по
+    // ?section=mpt показывал пустой экран.
+    const panel=q('mpt-benefit-panel');
+    const owner=panel&&panel.closest('.panel,[role="tabpanel"],.tab-pane');
+    const id=owner&&owner.id?owner.id:'';
+    if(!id) return;
+    const tab=document.querySelector('.tab[data-tab="'+id+'"]')
+      ||[...document.querySelectorAll('[role="tab"],button')].find(el=>el.getAttribute&&el.getAttribute('data-tab')===id);
     if(tab) try{tab.click();}catch(_e){}
+  }
+  function hostVisible(){
+    const panel=q('mpt-benefit-panel');
+    const owner=panel&&panel.closest('.panel,[role="tabpanel"],.tab-pane');
+    return !owner||getComputedStyle(owner).display!=='none';
   }
   function mount(){
     if(q('mpt-benefit-panel')) return;
     const tpl=q('mpt-benefit-template');
     if(!tpl) return;
-    findVriHost().appendChild(tpl.content.cloneNode(true));
+    host=findVriHost();
+    host.appendChild(tpl.content.cloneNode(true));
     wire();
   }
   function specialQuarter(){
@@ -275,9 +318,19 @@ _MPT_FRAGMENT = r'''
     loadMeta().catch(err=>{q('mpt-context-note').textContent=err?.message||String(err);});
     const params=new URLSearchParams(location.search);
     if(params.get('section')==='mpt'){
-      clickVriTab();
+      revealHost();
       const panel=q('mpt-benefit-panel');
-      if(panel){panel.open=true;setTimeout(()=>panel.scrollIntoView({behavior:'smooth',block:'start'}),80);}
+      if(panel){
+        panel.open=true;
+        setTimeout(()=>{
+          // Если вкладку открыть не удалось, панель осталась бы невидимой, а
+          // человек по ссылке из бота увидел бы пустой экран. Скажем об этом
+          // вслух, а не оставим гадать.
+          if(!hostVisible()) q('mpt-context-note').textContent=
+            'Панель МПТ открыта на вкладке, которая сейчас скрыта. Откройте вкладку «ВРИ».';
+          panel.scrollIntoView({behavior:'smooth',block:'start'});
+        },80);
+      }
     }
   }
   if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',mount); else mount();
@@ -310,10 +363,23 @@ def install(base: Any) -> None:
         return metadata()
 
     @base.app.post("/api/mpt/calculate")
-    def mpt_calculate(req: MptCalculateRequest) -> dict[str, Any]:
+    async def mpt_calculate(request: Request) -> dict[str, Any]:
+        # Тело читается своим разбором, а не аргументом-моделью. NaN и
+        # Infinity — валидные литералы для json.loads, и стандартный путь на
+        # них ломался дважды: Infinity проходил проверку «> 0» и давал ответ
+        # 200 с benefit_rub: null, а NaN валил уже сам обработчик ошибки —
+        # он пытался положить nan в тело ответа 422 и получал 500 без
+        # объяснения.
         try:
-            payload = req.model_dump() if hasattr(req, "model_dump") else req.dict()
-            result = calculate_mpt_benefit(MptInput(**payload))
+            payload = _strict_json(await request.body())
+            if not isinstance(payload, dict):
+                raise MptCalculationError("Тело запроса должно быть объектом JSON.")
+            data = MptCalculateRequest(**payload)
+            result = calculate_mpt_benefit(
+                MptInput(**(data.model_dump() if hasattr(data, "model_dump") else data.dict()))
+            )
+        except ValidationError as exc:
+            raise HTTPException(status_code=400, detail=_first_error(exc)) from exc
         except (MptCalculationError, TypeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return result.as_dict()
