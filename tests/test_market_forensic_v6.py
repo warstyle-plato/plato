@@ -1311,3 +1311,23 @@ def test_premium_neighbour_returns_to_the_elite_comparable_set(tmp_path: Path) -
     assert "Savvin River Residence" in names
     assert "бизнес-сосед" not in names
     assert quarantine[0]["status"] == "class_mismatch"
+
+
+def test_quarantine_list_is_never_silently_truncated() -> None:
+    """Обрезка на двадцати позициях прятала проект и выглядела как его отсутствие."""
+    from market_search.ui_v6 import install as install_ui
+
+    class FakeCore:
+        PAGE = (
+            "<html><head></head><body>"
+            '<input id="apartment_price_th" type="number" value="500">'
+            "<button class=\"tab\" data-tab=\"report\" onclick=\"openTab('report',this)\">Отчёт</button>"
+            '<div id="report" class="panel"></div>'
+            "</body></html>"
+        )
+
+    core = FakeCore()
+    install_ui(core)
+    assert "rows.slice(0,20)" not in core.PAGE
+    assert "rows.map(item=>" in core.PAGE
+    assert "byStatus" in core.PAGE

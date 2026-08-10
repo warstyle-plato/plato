@@ -30,6 +30,14 @@ from .service import MarketDiscoveryService as LegacyMarketDiscoveryService, hav
 from .yandex_search import official_cards_from_docs
 
 
+def _count_by_status(rows: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        key = str(row.get("status") or "unknown")
+        counts[key] = counts.get(key, 0) + 1
+    return dict(sorted(counts.items(), key=lambda item: (-item[1], item[0])))
+
+
 class MarketDiscoveryService(LegacyMarketDiscoveryService):
     """Ревизованный конвейер.
 
@@ -268,6 +276,7 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                 "entities_resolved": len(entities),
                 "candidates_geofiltered": len(rows),
                 "geo_unresolved": sum(1 for item in quarantine if item["status"] == "geo_unresolved"),
+                "quarantine_by_status": _count_by_status(quarantine),
                 "outside_radius": sum(1 for item in quarantine if item["status"] == "outside_radius"),
             },
         }

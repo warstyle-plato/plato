@@ -118,13 +118,20 @@ _QUARANTINE_FN = """function mdQuarantineLabel(status){
 function mdQuarantine(payload){
   const rows=Array.isArray(payload.quarantine)?payload.quarantine:[];
   if(!rows.length)return '';
-  const items=rows.slice(0,20).map(item=>'<li><b>'+mdEsc(item.name||'—')+'</b> — '+
+  const byStatus={};
+  rows.forEach(item=>{const key=item.status||'отсеян';byStatus[key]=(byStatus[key]||0)+1});
+  const summary=Object.keys(byStatus).sort((a,b)=>byStatus[b]-byStatus[a])
+    .map(key=>mdEsc(mdQuarantineLabel(key))+' — '+mdEsc(byStatus[key])).join(' · ');
+  // Список показывается целиком. Обрезка на двадцати позициях прятала проект,
+  // о котором спрашивали, и выглядела как его отсутствие.
+  const items=rows.map(item=>'<li><b>'+mdEsc(item.name||'—')+'</b> — '+
     mdEsc(mdQuarantineLabel(item.status))+
     (item.distance_km!=null?' ('+mdNum(item.distance_km)+' км)':'')+
     (item.segment?' · '+mdEsc(item.segment):'')+
     (item.reason?'<br><span class="md-marketline">'+mdEsc(item.reason)+'</span>':'')+'</li>').join('');
   return '<details class="md-card"><summary>Карантин: '+mdEsc(rows.length)+
-    ' — найдены, но в расчёт не взяты</summary><ul>'+items+'</ul></details>';
+    ' — найдены, но в расчёт не взяты</summary>'+
+    '<div class="md-marketline">'+summary+'</div><ul>'+items+'</ul></details>';
 }
 function renderMarketDiscovery(payload){"""
 
