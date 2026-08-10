@@ -98,3 +98,46 @@ def districts_match(left: str | None, right: str | None) -> bool:
 
 def _fold(value: str) -> str:
     return re.sub(r"[^а-яa-z]+", "", str(value or "").lower().replace("ё", "е"))
+
+
+class SegmentResolver:
+    """Дознание о классе для проектов, у которых его никто не назвал.
+
+    На живом стенде «Японский дом» в 630 метрах и «Fusion Park» в километре
+    вылетели из выборки со статусом «класс не определён». Это не повод ослаблять
+    отбор: класс у них есть, просто его не было в тех сниппетах, которые пришли
+    с каталожных запросов. Один целевой запрос на проект возвращает их обратно.
+
+    Принимается только документ, доказанно говорящий об этом проекте, — то же
+    правило, что и для адреса. Иначе класс соседа станет твоим.
+    """
+
+    def __init__(self, search, *, locality: str, budget: int = 12):
+        self.search = search
+        self.locality = locality
+        self._budget = max(int(budget), 0)
+
+    def resolve(self, entity) -> str | None:
+        from .http import RemoteServiceError
+        from .normalize import cut_at_separator, labels_match, search_name
+
+        name = search_name(entity.canonical_name)
+        if not name or self._budget <= 0:
+            return None
+        self._budget -= 1
+        try:
+            docs = self.search.search(
+                f"ЖК {name} {self.locality} класс жилья элитный премиум бизнес комфорт",
+                groups_on_page=10,
+            )
+        except RemoteServiceError:
+            return None
+
+        names = [entity.canonical_name, *entity.aliases]
+        texts = []
+        for doc in docs:
+            title = cut_at_separator(doc.title)
+            if not title or not labels_match(title, names):
+                continue
+            texts.append(" ".join(part for part in (doc.title, doc.snippet) if part))
+        return dominant_segment(segment_votes(texts))

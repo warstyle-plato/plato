@@ -1235,3 +1235,47 @@ def test_class_filter_stays_off_when_almost_nothing_has_a_class(tmp_path: Path) 
     assert info["class_filter_active"] is False
     assert len(kept) == 2
     assert quarantine == []
+
+
+def test_class_is_looked_up_for_projects_the_catalog_did_not_label() -> None:
+    """«Японский дом» в 630 метрах вылетал со статусом «класс не определён»."""
+    from market_search.segments import SegmentResolver
+
+    entity = next(
+        item
+        for item in resolve_entities(
+            extract_candidates(
+                [doc("Новостройки Хамовников", "https://www.cian.ru/novostroyki-hamovniki/", "Японский дом · Мод")]
+            )
+        )
+        if item.canonical_name == "Японский дом"
+    )
+    assert entity.segment is None, "каталог класс не назвал"
+
+    found = doc(
+        "Японский дом — квартиры от застройщика",
+        "https://www.cian.ru/zhiloy-kompleks-yaponskiy-dom-5150001/",
+        "Элитный клубный дом в Хамовниках",
+    )
+    assert SegmentResolver(FakeSearch(default=[found]), locality="Москва").resolve(entity) == "элитный"
+
+    # Класс соседа своим не становится.
+    foreign = doc(
+        "Прайм Парк — премиум-класс",
+        "https://www.cian.ru/zhiloy-kompleks-prime-park-9990001/",
+        "Премиум-класс на Ленинградском проспекте",
+    )
+    assert SegmentResolver(FakeSearch(default=[foreign]), locality="Москва").resolve(entity) is None
+
+
+def test_completion_dates_and_prose_are_not_projects() -> None:
+    """«2 квартал 2026 года», «Прямо напротив», «…по соседству» — из живого карантина."""
+    catalog = doc(
+        "Новостройки Хамовников",
+        "https://www.cian.ru/novostroyki-hamovniki/",
+        "Японский дом · 2 квартал 2026 года · Прямо напротив · Новодевичий монастырь, по соседству · Феникс-Парк",
+    )
+    names = {item.canonical_name for item in extract_candidates([catalog])}
+    assert {"Японский дом", "Феникс-Парк"} <= names
+    for junk in ("2 квартал 2026 года", "Прямо напротив", "Новодевичий монастырь, по соседству"):
+        assert junk not in names, junk

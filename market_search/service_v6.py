@@ -25,7 +25,7 @@ from .geocoder import GeoPoint
 from .http import RemoteServiceError
 from .price_evidence import VerifiedPriceEnricher
 from .recommendation import market_recommendation
-from .segments import detect_district, districts_match
+from .segments import SegmentResolver, detect_district, districts_match
 from .service import MarketDiscoveryService as LegacyMarketDiscoveryService, haversine_km
 from .yandex_search import official_cards_from_docs
 
@@ -168,6 +168,16 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                 continue
 
             rows.append(self._row(entity, geo, distance))
+
+        # Класс дознаётся отдельно у тех, кому его не назвали каталожные
+        # сниппеты: иначе жёсткий отбор выкидывает соседей в шестистах метрах.
+        segments = SegmentResolver(self.search, locality=locality)
+        for row in rows:
+            if not row.get("segment"):
+                found = segments.resolve(row["_entity"])
+                if found:
+                    row["segment"] = found
+                    row["segment_source"] = "targeted_class_search"
 
         rows, class_filter = self._apply_comparability(
             rows, quarantine, subject_district=subject_district, requested=segment
