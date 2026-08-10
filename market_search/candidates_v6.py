@@ -76,7 +76,10 @@ _LIST_JUNK_RE = re.compile(
     r"|^(?:ход\s+строительства|о\s+проекте|подробнее|все\s+объекты)\b",
     flags=re.I,
 )
-_DEVELOPER_SUFFIX_RE = re.compile(r"^\S+(?:строй|девелопмент|групп|инвест|development)$", flags=re.I)
+_DEVELOPER_SUFFIX_RE = re.compile(
+    r"^\S+(?:строй|девелопмент|инвест|development)$|^(?:ук|ооо|ао|гк)\s|\bгрупп$|\bgroup$",
+    flags=re.I,
+)
 _STREET_TAIL_RE = re.compile(
     r"\b(?:проспект|улица|набережная|шоссе|переулок|бульвар|проезд|аллея)$", flags=re.I
 )
@@ -196,6 +199,13 @@ def _candidates_from_doc(doc: SearchDoc, ref: SourceRef) -> list[Candidate]:
         display = _accept(name)
         if not display:
             return
+        # Проверка мусора применяется ко всему, что не является карточкой
+        # проекта. На карточке заголовок авторитетен: ЖК «Фрунзенская
+        # набережная» существует. А «Мичуринский проспект», «Донстрой» и «УК АСК
+        # ГРУПП», пришедшие из каталога, — это улица и две компании; на живом
+        # стенде они дошли до геокодера и получили координаты.
+        if ref.kind != PROJECT_PAGE and _looks_like_list_junk(display):
+            return
         key = canonical_key(display)
         if len(key) < 3:
             return
@@ -256,7 +266,7 @@ def _candidates_from_doc(doc: SearchDoc, ref: SourceRef) -> list[Candidate]:
             fragment = fragment.strip(" .,:;")
             if not fragment or fragment.lower() in seen:
                 continue
-            if len(name_tokens(fragment)) > 4 or _looks_like_list_junk(fragment):
+            if len(name_tokens(fragment)) > 4:
                 continue
             seen.add(fragment.lower())
             emit(fragment, "catalog_child_listed", 0.45, False)

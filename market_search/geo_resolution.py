@@ -33,7 +33,7 @@ from .documents import ARTICLE, CATALOG, LISTING, PROJECT_PAGE, classify_documen
 from .geocoder import AddressGeocoder, GeocodingError, GeoPoint
 from .http import RemoteServiceError
 from .normalize import cut_at_separator, labels_match, search_name
-from .yandex_search import SearchDoc, YandexSearchClient
+from .yandex_search import SearchDoc, YandexSearchClient, official_cards_from_docs
 
 
 RESOLVED = "resolved"
@@ -135,6 +135,24 @@ def extract_address(text: str, locality: str) -> str | None:
     return None
 
 
+def labels_match_text(text: str, names) -> bool:
+    """Название проекта встречается в тексте карточки.
+
+    У официальной карточки заголовок не строится по шаблону агрегатора, поэтому
+    сравнивать надо не начало заголовка, а весь текст.
+    """
+    from .normalize import canonical_key
+
+    hay = canonical_key(text)
+    if not hay:
+        return False
+    return any(
+        len(canonical_key(name)) >= 5 and canonical_key(name) in hay
+        for name in names
+        if name
+    )
+
+
 def precision_is_usable(point: GeoPoint) -> bool:
     precision = str(point.precision or "").lower()
     if point.provider == "yandex":
@@ -208,6 +226,25 @@ class ProjectGeoResolver:
                 continue
             return GeoResolution(RESOLVED, point=point, address=address, address_source=source)
 
+        if not hints:
+            # Официальная карточка ЕИСЖС несёт строительный адрес объекта — это
+            # самый надёжный источник адреса, какой у нас есть. Прежде её
+            # спрашивали только после геокодирования, для подтверждения, и
+            # проекту, не нашедшему адрес, она уже ничем не помогала.
+            found, echo = self._official_address(entity)
+            rejected_subject_echo = rejected_subject_echo or echo
+            hints.extend(found)
+            for address, source in hints:
+                try:
+                    point = self.geocoder.geocode(address)
+                except (GeocodingError, RemoteServiceError):
+                    continue
+                if not self._locality_matches(self.locality, point.display_name):
+                    continue
+                if not precision_is_usable(point):
+                    continue
+                return GeoResolution(RESOLVED, point=point, address=address, address_source=source)
+
         # Последняя попытка — спросить геокодер о самом бренде. Принимается
         # только попадание в дом: precision exact/number значит, что объект у
         # геокодера есть. Уровень улицы и грубее сюда не проходят — именно так
@@ -224,6 +261,32 @@ class ProjectGeoResolver:
             else "Проект найден, но ни один источник не назвал его адрес"
         )
         return GeoResolution(UNRESOLVED, reason=reason)
+
+    def _official_address(self, entity) -> tuple[list[tuple[str, str]], bool]:
+        hints: list[tuple[str, str]] = []
+        echo = False
+        name = search_name(entity.canonical_name)
+        if not name or self._search_budget <= 0:
+            return hints, echo
+        self._search_budget -= 1
+        try:
+            docs = self.search.search(
+                f'site:наш.дом.рф {name} {self.locality}', groups_on_page=8
+            )
+        except RemoteServiceError:
+            return hints, echo
+        for card in official_cards_from_docs(docs):
+            text = " ".join(str(card.get(key) or "") for key in ("title", "snippet"))
+            if not labels_match_text(text, [entity.canonical_name, *entity.aliases]):
+                continue
+            address = extract_address(text, self.locality)
+            if not address:
+                continue
+            if self._is_subject_echo(address):
+                echo = True
+                continue
+            self._append(hints, address, "official_eiszhs_card")
+        return hints, echo
 
     def _geocode_brand(self, entity) -> GeoResolution | None:
         name = search_name(entity.canonical_name)

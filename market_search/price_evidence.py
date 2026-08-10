@@ -120,14 +120,21 @@ class VerifiedPriceEnricher:
             key=len,
             default=name,
         )
+        # Кавычки в запросе требуют точной фразы. Вместе с оператором site: это
+        # почти всегда пустая выдача: на живом стенде цену не нашёл ни один
+        # проект. Отбор всё равно делает не запрос, а доказательство привязки
+        # документа к сущности, поэтому кавычки здесь только вредят.
+        # Слова «цена за м²» в запросе нужны, чтобы поисковик собрал сниппет с
+        # ценой: разбираем мы именно сниппет, а не саму страницу.
         queries = [
-            f'site:cian.ru "{name}" {locality} ЖК цены',
-            f'site:realty.yandex.ru "{name}" {locality} новостройка цена',
-            f'site:domclick.ru "{name}" {locality} ЖК цена',
-            f'site:novostroy.ru "{name}" {locality} цены',
+            f"site:cian.ru {name} ЖК {locality} цена за м²",
+            f"site:realty.yandex.ru {name} {locality} новостройка цена за м²",
+            f"site:domclick.ru {name} {locality} ЖК стоимость квадратного метра",
+            f"site:novostroy.ru {name} {locality} цены за м²",
+            f"{name} {locality} ЖК официальный сайт цена за м²",
         ]
         if short and short != name:
-            queries.append(f'site:cian.ru "{short}" {locality} ЖК цена за м²')
+            queries.append(f"{short} {locality} ЖК цена за м²")
         docs: list[SearchDoc] = []
         seen: set[str] = set()
         errors: list[str] = []

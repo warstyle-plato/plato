@@ -1016,3 +1016,93 @@ def test_developer_own_page_is_a_price_source_when_the_entity_matches() -> None:
         other, "Москва"
     )
     assert rejected["price"]["available"] is False
+
+
+# --- класс 10: стенд 08.08 после починки адресов ------------------------------
+
+
+def test_official_eiszhs_card_supplies_the_address() -> None:
+    """Карточка ЕИСЖС несёт строительный адрес — надёжнее любого агрегатора."""
+    entity = next(
+        item
+        for item in resolve_entities(
+            extract_candidates(
+                [doc("Новостройки Хамовников", "https://www.cian.ru/novostroyki-hamovniki/", "Хамовники 12 · Мод")]
+            )
+        )
+        if item.canonical_name == "Хамовники 12"
+    )
+    card = doc(
+        "Жилой комплекс Хамовники 12 — ЕИСЖС",
+        "https://xn--80az8a.xn--d1aqf.xn--p1ai/lk/na-dom/2079406",
+        "Москва, 1-й переулок Тружеников, 12А. Застройщик COLDY",
+    )
+    resolver = ProjectGeoResolver(
+        FakeGeocoder({"Тружеников, 12А": point(55.7360, 37.5730, "Москва, 1-й переулок Тружеников, 12А")}),
+        FakeSearch(responses={"наш.дом.рф": [card]}, default=[]),
+        locality="Москва",
+        subject_signature=address_signature(SUBJECT),
+        locality_matches=LegacyService._locality_matches,
+    )
+    resolution = resolver.resolve(entity)
+    assert resolution.status == RESOLVED
+    assert resolution.address_source == "official_eiszhs_card"
+    assert resolution.address == "Москва, 1-й переулок Тружеников, 12А"
+
+
+def test_official_card_of_another_project_is_not_borrowed() -> None:
+    entity = next(
+        item
+        for item in resolve_entities(
+            extract_candidates(
+                [doc("Новостройки Хамовников", "https://www.cian.ru/novostroyki-hamovniki/", "Хамовники 12 · Мод")]
+            )
+        )
+        if item.canonical_name == "Хамовники 12"
+    )
+    foreign = doc(
+        "Жилой комплекс Прайм Парк — ЕИСЖС",
+        "https://xn--80az8a.xn--d1aqf.xn--p1ai/lk/na-dom/1111111",
+        "Москва, Ленинградский проспект, 37",
+    )
+    resolver = ProjectGeoResolver(
+        FakeGeocoder({"Ленинградский": point(55.7900, 37.5300, "Москва, Ленинградский проспект, 37")}),
+        FakeSearch(responses={"наш.дом.рф": [foreign]}, default=[]),
+        locality="Москва",
+        subject_signature=address_signature(SUBJECT),
+        locality_matches=LegacyService._locality_matches,
+    )
+    assert resolver.resolve(entity).status == UNRESOLVED
+
+
+def test_street_and_company_names_never_reach_the_geocoder() -> None:
+    """«Мичуринский проспект», «Донстрой», «УК АСК ГРУПП» получали координаты."""
+    catalog = doc(
+        "Новостройки Москвы",
+        "https://www.cian.ru/novostroyki-moskva/",
+        "ЖК Мичуринский проспект · ЖК Донстрой · УК АСК ГРУПП · 2 корпуса · ЖК Дом Дау",
+    )
+    names = {item.canonical_name for item in extract_candidates([catalog])}
+    assert "Дом Дау" in names
+    for junk in ("Мичуринский проспект", "Донстрой", "УК АСК ГРУПП", "2 корпуса"):
+        assert junk not in names, junk
+
+
+def test_price_queries_are_not_quoted() -> None:
+    """Точная фраза внутри site: почти всегда даёт пустую выдачу."""
+    entity = resolve_entities(
+        extract_candidates(
+            [
+                doc(
+                    "Клубный дом «Саввинская 17» — купить квартиру",
+                    "https://realty.yandex.ru/moskva/kupit/novostrojka/savvinskaya-17-1234567/",
+                    "Квартиры от застройщика",
+                )
+            ]
+        )
+    )[0]
+    search = FakeSearch(default=[])
+    VerifiedPriceEnricher(search, today=date(2026, 8, 8)).collect(entity, "Москва")
+    assert search.queries, "запросы должны быть"
+    assert not any('"' in query for query in search.queries), search.queries
+    assert any("цена за м²" in query for query in search.queries), search.queries
