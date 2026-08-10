@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
-from .documents import PROJECT_PAGE, classify_document, is_pricing_source
+from .documents import DEVELOPER_PAGE, PROJECT_PAGE, classify_document, is_pricing_source
 from .http import RemoteServiceError
 from .normalize import cut_at_separator, labels_match, search_name
 from .price import _PRICE_M2_RE, _PRICE_M2_REVERSED_RE, MarketPriceEnricher
@@ -146,7 +146,7 @@ class VerifiedPriceEnricher:
         # Карточки самой сущности уже есть в выдаче discovery — их тоже
         # используем, повторный запрос за ними не нужен.
         for candidate in entity.candidates:
-            if candidate.source_kind != PROJECT_PAGE or candidate.source_url in seen:
+            if candidate.source_kind not in {PROJECT_PAGE, DEVELOPER_PAGE} or candidate.source_url in seen:
                 continue
             seen.add(candidate.source_url)
             docs.append(

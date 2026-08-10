@@ -354,7 +354,8 @@ def test_targeted_address_search_is_bounded() -> None:
     assert len(entities) >= 5
     for entity in entities:
         assert resolver.resolve(entity).status == UNRESOLVED
-    assert len(search.queries) <= 4, search.queries
+    # Потолок выражен в бюджете, а не в числе: форм запроса на сущность три.
+    assert len(search.queries) <= 2 * 3, search.queries
 
 
 # --- класс 5: цена, не принадлежащая проекту ---------------------------------
@@ -856,3 +857,162 @@ def test_ui_shows_why_candidates_were_dropped() -> None:
     assert "mdQuarantine(payload)" in core.PAGE
     assert "адрес проекта не подтверждён" in core.PAGE
     assert "найдены, но в расчёт не взяты" in core.PAGE
+
+
+# --- класс 9: адрес не находился ни у кого (стенд 08.08, 21 в карантине) ------
+
+
+def test_developer_site_is_accepted_as_address_evidence() -> None:
+    """Официальный сайт застройщика — лучший источник адреса, а его отвергали."""
+    entities = resolve_entities(
+        extract_candidates(
+            [
+                doc(
+                    "Новостройки (ЖК) в Хамовниках",
+                    "https://www.cian.ru/novostroyki-hamovniki/",
+                    "Дом Дау · West Garden · Хедлайнер",
+                )
+            ]
+        )
+    )
+    entity = next(item for item in entities if item.canonical_name == "Дом Дау")
+    developer_page = doc(
+        "Дом Дау — официальный сайт застройщика",
+        "https://domdau.example/projects/dom-dau/",
+        "Небоскрёб в Москва-Сити. Адрес: Москва, Пресненская набережная, 14",
+    )
+    resolver = ProjectGeoResolver(
+        FakeGeocoder({"Пресненская набережная, 14": point(55.7473, 37.5378, "Москва, Пресненская набережная, 14")}),
+        FakeSearch(default=[developer_page]),
+        locality="Москва",
+        subject_signature=address_signature(SUBJECT),
+        locality_matches=LegacyService._locality_matches,
+    )
+    resolution = resolver.resolve(entity)
+    assert resolution.status == RESOLVED
+    assert resolution.address == "Москва, Пресненская набережная, 14"
+    assert resolution.address_source == "targeted_address_search"
+
+
+def test_catalog_and_article_still_never_give_an_address() -> None:
+    entity = resolve_entities(
+        extract_candidates(
+            [doc("Новостройки Хамовников", "https://www.cian.ru/novostroyki-hamovniki/", "Дом Дау · Мод")]
+        )
+    )[0]
+    wrong = [
+        doc(
+            "Дом Дау — обзор проекта",
+            "https://example.ru/stati/dom-dau/",
+            "Адрес: Москва, Тверская улица, 1",
+        ),
+        doc(
+            "Новостройки Пресни",
+            "https://www.cian.ru/novostroyki-presnya/",
+            "Дом Дау, Москва, Пресненская набережная, 14",
+        ),
+    ]
+    resolver = ProjectGeoResolver(
+        FakeGeocoder({"Тверская": point(55.7601, 37.6100, "Москва, Тверская улица, 1")}),
+        FakeSearch(default=wrong),
+        locality="Москва",
+        subject_signature=address_signature(SUBJECT),
+        locality_matches=LegacyService._locality_matches,
+    )
+    assert resolver.resolve(entity).status == UNRESOLVED
+
+
+def test_geocoder_resolves_a_known_brand_only_at_house_precision() -> None:
+    """Бренд, который геокодер знает домом, — законная последняя попытка."""
+    entity = resolve_entities(
+        extract_candidates(
+            [doc("Новостройки Хамовников", "https://www.cian.ru/novostroyki-hamovniki/", "West Garden · Мод")]
+        )
+    )[0]
+
+    exact = ProjectGeoResolver(
+        FakeGeocoder({"West Garden": point(55.7015, 37.5158, "Москва, улица Лобачевского, 122", "exact")}),
+        FakeSearch(default=[]),
+        locality="Москва",
+        subject_signature=address_signature(SUBJECT),
+        locality_matches=LegacyService._locality_matches,
+    ).resolve(entity)
+    assert exact.status == RESOLVED
+    assert exact.address_source == "geocoder_brand_exact"
+
+    coarse = ProjectGeoResolver(
+        FakeGeocoder({"West Garden": point(55.7558, 37.6173, "Москва", "street")}),
+        FakeSearch(default=[]),
+        locality="Москва",
+        subject_signature=address_signature(SUBJECT),
+        locality_matches=LegacyService._locality_matches,
+    ).resolve(entity)
+    assert coarse.status == UNRESOLVED, "уровень улицы — не адрес проекта"
+
+
+def test_catalog_list_junk_is_dropped_before_it_eats_the_budget() -> None:
+    """«2 корпуса», «Донстрой», «Мичуринский проспект» — из живого карантина."""
+    catalog = doc(
+        "Новостройки Москвы",
+        "https://www.cian.ru/novostroyki-moskva/",
+        "Дом Дау · 2 корпуса · Донстрой · Мичуринский проспект · Ход строительства · West Garden",
+    )
+    names = {item.canonical_name for item in extract_candidates([catalog])}
+    assert "Дом Дау" in names
+    assert "West Garden" in names
+    for junk in ("2 корпуса", "Донстрой", "Мичуринский проспект", "Ход строительства"):
+        assert junk not in names, junk
+
+
+def test_project_pages_get_the_parsing_budget_before_catalog_leads() -> None:
+    """Наводка из списка не должна съедать целевые поиски у настоящей карточки."""
+    docs = [
+        doc(
+            "Новостройки Хамовников",
+            "https://www.cian.ru/novostroyki-hamovniki/",
+            "Альфа · Бета · Гамма · Дельта",
+            rank=1,
+        ),
+        doc(
+            "Хамовники 12 — квартиры",
+            "https://realty.yandex.ru/moskva/kupit/novostrojka/hamovniki-12-3186893/",
+            "Клубный дом",
+            rank=9,
+        ),
+    ]
+    entities = resolve_entities(extract_candidates(docs))
+    ordered = sorted(
+        entities,
+        key=lambda item: (not item.project_pages, -item.extraction_confidence, item.search_rank),
+    )
+    assert ordered[0].canonical_name == "Хамовники 12"
+
+
+def test_developer_own_page_is_a_price_source_when_the_entity_matches() -> None:
+    """Собственная цена застройщика — самая авторитетная, её нельзя игнорировать."""
+    entity = resolve_entities(
+        extract_candidates(
+            [doc("Новостройки Москвы", "https://www.cian.ru/novostroyki-moskva/", "Дом Дау · Мод")]
+        )
+    )[0]
+    own = doc(
+        "Дом Дау — официальный сайт застройщика",
+        "https://domdau.example/projects/dom-dau/",
+        "Квартиры от 1 250 000 ₽ за м². Москва, Пресненская набережная, 14",
+    )
+    result = VerifiedPriceEnricher(FakeSearch(default=[own]), today=date(2026, 8, 8)).collect(
+        entity, "Москва"
+    )
+    assert result["price"]["verified"] is True
+    assert result["price"]["price_per_sqm"] == 1_250_000
+
+    # Чужой проект на том же сайте цену не отдаёт.
+    other = resolve_entities(
+        extract_candidates(
+            [doc("Новостройки Москвы", "https://www.cian.ru/novostroyki-moskva/", "Мод · Тургенев")]
+        )
+    )[0]
+    rejected = VerifiedPriceEnricher(FakeSearch(default=[own]), today=date(2026, 8, 8)).collect(
+        other, "Москва"
+    )
+    assert rejected["price"]["available"] is False

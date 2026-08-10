@@ -66,6 +66,31 @@ _TITLE_PROJECT_RE = re.compile(
 # тексте почти не встречаются.
 _LIST_SPLIT_RE = re.compile(r"\s*[·•|;]\s*|\s+—\s+|\n")
 
+# Мусор, который каталожный список подсовывает наравне с проектами: строка о
+# ходе стройки, число корпусов, имя застройщика и голая улица. На карточке
+# проекта заголовок авторитетен — там эти правила не применяются: ЖК
+# «Фрунзенская набережная» существует, а «Мичуринский проспект» из каталожного
+# перечисления — это улица.
+_LIST_JUNK_RE = re.compile(
+    r"^\d+\s+(?:корпус[а-я]*|очеред[ьи]|секци[яи]|этаж[а-я]*)$"
+    r"|^(?:ход\s+строительства|о\s+проекте|подробнее|все\s+объекты)\b",
+    flags=re.I,
+)
+_DEVELOPER_SUFFIX_RE = re.compile(r"^\S+(?:строй|девелопмент|групп|инвест|development)$", flags=re.I)
+_STREET_TAIL_RE = re.compile(
+    r"\b(?:проспект|улица|набережная|шоссе|переулок|бульвар|проезд|аллея)$", flags=re.I
+)
+
+
+def _looks_like_list_junk(value: str) -> bool:
+    text = " ".join(str(value or "").split())
+    if _LIST_JUNK_RE.search(text):
+        return True
+    if _DEVELOPER_SUFFIX_RE.match(text):
+        return True
+    return bool(_STREET_TAIL_RE.search(text))
+
+
 _DEVELOPER_RE = re.compile(
     r"(?:застройщик|девелопер)[:\s]+[«\"']?([A-Za-zА-ЯЁа-яё0-9 .\-&]{2,40}?)[»\"']?(?=[,.;)]|\s+в\s|$)",
     flags=re.I,
@@ -231,7 +256,7 @@ def _candidates_from_doc(doc: SearchDoc, ref: SourceRef) -> list[Candidate]:
             fragment = fragment.strip(" .,:;")
             if not fragment or fragment.lower() in seen:
                 continue
-            if len(name_tokens(fragment)) > 4:
+            if len(name_tokens(fragment)) > 4 or _looks_like_list_junk(fragment):
                 continue
             seen.add(fragment.lower())
             emit(fragment, "catalog_child_listed", 0.45, False)

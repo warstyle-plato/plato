@@ -121,19 +121,27 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         candidates = extract_candidates(docs)
         entities = resolve_entities(candidates)
 
+        budget = min(max(limit * 4, 20), 40)
         resolver = ProjectGeoResolver(
             self.geocoder,
             self.search,
             locality=locality,
             subject_signature=subject_signature,
             locality_matches=self._locality_matches,
+            search_budget=budget,
         )
 
         rows: list[dict[str, Any]] = []
         quarantine: list[dict[str, Any]] = []
-        budget = min(max(limit * 3, 15), 30)
 
-        for entity in entities[:budget]:
+        # Бюджет разбора тратится сначала на то, у чего есть карточка проекта, и
+        # только потом на наводки из каталожных списков. Иначе мусор из списка
+        # съедает целевые поиски адреса, и настоящие проекты остаются без него.
+        ordered = sorted(
+            entities,
+            key=lambda item: (not item.project_pages, -item.extraction_confidence, item.search_rank),
+        )
+        for entity in ordered[:budget]:
             geo = resolver.resolve(entity)
             if geo.status != RESOLVED or geo.point is None:
                 quarantine.append(self._quarantined(entity, geo.status, geo.reason))
@@ -160,7 +168,7 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
 
         # Хвост, до которого не дошёл бюджет разбора, тоже виден: молчаливое
         # отбрасывание кандидата — это потеря recall, которую не с чем сравнить.
-        for entity in entities[budget:]:
+        for entity in ordered[budget:]:
             quarantine.append(
                 self._quarantined(
                     entity,

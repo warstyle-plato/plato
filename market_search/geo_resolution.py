@@ -29,7 +29,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from .documents import PROJECT_PAGE, classify_document
+from .documents import ARTICLE, CATALOG, LISTING, PROJECT_PAGE, classify_document
 from .geocoder import AddressGeocoder, GeocodingError, GeoPoint
 from .http import RemoteServiceError
 from .normalize import cut_at_separator, labels_match, search_name
@@ -208,12 +208,43 @@ class ProjectGeoResolver:
                 continue
             return GeoResolution(RESOLVED, point=point, address=address, address_source=source)
 
+        # Последняя попытка — спросить геокодер о самом бренде. Принимается
+        # только попадание в дом: precision exact/number значит, что объект у
+        # геокодера есть. Уровень улицы и грубее сюда не проходят — именно так
+        # прежде в радиус попадал центр Москвы.
+        brand = self._geocode_brand(entity)
+        if brand is not None:
+            return brand
+
         reason = (
             "Единственный найденный адрес совпал с адресом объекта оценки и отброшен как эхо запроса"
             if rejected_subject_echo
-            else "Собственный адрес проекта не найден в проиндексированных источниках"
+            else "Собственный адрес проекта не найден ни в источниках, ни у геокодера"
+            if hints
+            else "Проект найден, но ни один источник не назвал его адрес"
         )
         return GeoResolution(UNRESOLVED, reason=reason)
+
+    def _geocode_brand(self, entity) -> GeoResolution | None:
+        name = search_name(entity.canonical_name)
+        if not name:
+            return None
+        for query in (f"ЖК {name}, {self.locality}", f"{name}, {self.locality}"):
+            try:
+                point = self.geocoder.geocode(query)
+            except (GeocodingError, RemoteServiceError):
+                continue
+            if not self._locality_matches(self.locality, point.display_name):
+                continue
+            if str(point.precision or "").lower() not in {"exact", "number"}:
+                continue
+            return GeoResolution(
+                RESOLVED,
+                point=point,
+                address=point.display_name,
+                address_source="geocoder_brand_exact",
+            )
+        return None
 
     def _append(self, hints: list[tuple[str, str]], address: str, source: str) -> None:
         if all(existing != address for existing, _ in hints):
@@ -239,11 +270,12 @@ class ProjectGeoResolver:
         self._search_budget -= 1
         queries = (
             f'"{name}" ЖК {self.locality} адрес',
-            f'"{name}" {self.locality} новостройка официальный сайт',
+            f'"{name}" {self.locality} новостройка официальный сайт застройщика',
+            f'ЖК "{name}" {self.locality} строительный адрес улица дом',
         )
         for query in queries:
             try:
-                docs = self.search.search(query, groups_on_page=8)
+                docs = self.search.search(query, groups_on_page=10)
             except RemoteServiceError:
                 continue
             for doc in docs:
@@ -263,11 +295,23 @@ class ProjectGeoResolver:
 
     @staticmethod
     def _document_belongs(entity, doc: SearchDoc) -> bool:
+        """Документ говорит об этом проекте — чем бы он ни был.
+
+        Прежде принималась только карточка агрегатора, и официальный сайт
+        застройщика — лучший источник адреса — отвергался. На живом стенде это
+        оставило без адреса двадцать один найденный проект: карточка не всегда
+        попадает в первую десятку по запросу об адресе, а сайт девелопера
+        попадает почти всегда.
+
+        Каталог, объявление и статья по-прежнему не годятся: каталог перечисляет
+        много проектов, у объявления адрес квартиры, а статья — чужой текст с
+        произвольными адресами внутри.
+        """
         ref = classify_document(doc.url, doc.title, doc.snippet)
-        if ref.kind != PROJECT_PAGE:
-            return False
         if ref.external_id and ref.external_id in entity.external_ids:
             return True
+        if ref.kind in {CATALOG, ARTICLE, LISTING}:
+            return False
         title_name = cut_at_separator(doc.title)
         if not title_name:
             return False
