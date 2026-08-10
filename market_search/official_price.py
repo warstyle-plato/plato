@@ -12,12 +12,13 @@ from .yandex_search import SearchDoc, YandexSearchClient
 _OFFICIAL_HOST = "xn--80az8a.xn--d1aqf.xn--p1ai"
 # Шаблон «₽/м²» один на модуль — свой в official_price жил с той же ошибкой в
 # длине числа, и официальная средняя элитного проекта тоже делилась на десять.
-from .price import _PRICE_M2_RE  # noqa: E402
+from .price import _MONEY, _NUM, _PRICE_M2_RE, price_match_to_int  # noqa: E402
 
+# Число и валюта берутся из общего словаря price.py. Своя копия здесь дважды
+# расходилась с ним: сначала по длине числа, потом по множителю «млн».
 _LABEL_PRICE_RE = re.compile(
-    r"средн(?:яя|ей)\s+цена\s+за\s+1\s*(?:м(?:²|2)|кв\.?\s*м)"
-    r"[^0-9]{0,100}(?P<value>\d{1,3}(?:[\s\u00a0\u202f]\d{3}){1,3}|\d{5,8}|\d{2,4}(?:[.,]\d{1,2})?)"
-    r"\s*(?P<thousand>тыс\.?)?\s*(?:₽|руб\.?)",
+    rf"средн(?:яя|ей)\s+цена\s+за\s+1\s*(?:м(?:²|2)|кв\.?\s*м)"
+    rf"[^0-9]{{0,100}}(?P<value>{_NUM})\s*(?P<scale>тыс\.?|млн\.?)?\s*{_MONEY}",
     flags=re.I,
 )
 
@@ -141,12 +142,7 @@ class OfficialPriceEnricher:
         result: list[int] = []
         for pattern in (_LABEL_PRICE_RE, _PRICE_M2_RE):
             for match in pattern.finditer(text):
-                raw = match.group("value").replace("\u00a0", " ").replace("\u202f", " ").strip()
-                if match.group("thousand"):
-                    numeric = float(raw.replace(" ", "").replace(",", "."))
-                    price = int(round(numeric * 1000))
-                else:
-                    price = int(re.sub(r"\D", "", raw))
+                price = price_match_to_int(match)
                 if 80_000 <= price <= 5_000_000:
                     result.append(price)
         return result

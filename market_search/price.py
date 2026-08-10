@@ -20,13 +20,13 @@ _MONEY = r"(?:₽|руб\.?|р\.)"
 _SQM = r"(?:м\s*(?:²|2)\b|кв\.?\s*м(?:етр[а-я]*)?\.?)"
 
 _PRICE_M2_RE = re.compile(
-    rf"(?<![\d.,])(?P<value>{_NUM})\s*(?P<thousand>тыс\.?)?\s*{_MONEY}\s*"
+    rf"(?<![\d.,])(?P<value>{_NUM})\s*(?P<scale>тыс\.?|млн\.?)?\s*{_MONEY}\s*"
     rf"(?:/|за\s+|в\s+|\s)\s*{_SQM}",
     flags=re.I,
 )
 # Обратный порядок: «цена за м²: 900 000 ₽».
 _PRICE_M2_REVERSED_RE = re.compile(
-    rf"за\s+{_SQM}\s*[:—–\-]?\s*(?:от\s+)?(?P<value>{_NUM})\s*(?P<thousand>тыс\.?)?\s*{_MONEY}",
+    rf"за\s+{_SQM}\s*[:—–\-]?\s*(?:от\s+)?(?P<value>{_NUM})\s*(?P<scale>тыс\.?|млн\.?)?\s*{_MONEY}",
     flags=re.I,
 )
 _OFFERS_RE = re.compile(
@@ -49,6 +49,22 @@ class PriceObservation:
     url: str
     title: str
     method: str = "explicit_per_sqm"
+
+
+def price_match_to_int(match: re.Match[str]) -> int:
+    """Число цены вместе с его множителем.
+
+    Элитная Москва котируется в миллионах за метр — «от 1,5 млн ₽ за м²».
+    Шаблон знал только «тыс.», поэтому у дорогих проектов цена не находилась
+    вовсе: на живом стенде она была ровно у одного из пяти.
+    """
+    raw = match.group("value").replace("\u00a0", " ").replace("\u202f", " ").strip()
+    scale = (match.groupdict().get("scale") or "").lower()
+    if scale.startswith("млн"):
+        return int(round(float(raw.replace(" ", "").replace(",", ".")) * 1_000_000))
+    if scale.startswith("тыс"):
+        return int(round(float(raw.replace(" ", "").replace(",", ".")) * 1_000))
+    return int(re.sub(r"\D", "", raw))
 
 
 class MarketPriceEnricher:
@@ -191,11 +207,7 @@ class MarketPriceEnricher:
 
     @staticmethod
     def _price_m2_match_to_int(match: re.Match[str]) -> int:
-        raw = match.group("value").replace("\u00a0", " ").replace("\u202f", " ").strip()
-        if match.group("thousand"):
-            numeric = float(raw.replace(" ", "").replace(",", "."))
-            return int(round(numeric * 1000))
-        return int(re.sub(r"\D", "", raw))
+        return price_match_to_int(match)
 
     @classmethod
     def _derived_prices_from_area_and_total(cls, text: str) -> list[int]:

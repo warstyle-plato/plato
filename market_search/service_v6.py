@@ -87,6 +87,11 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
             f'элитные новостройки "{area}" {locality}',
             f'премиальные новостройки "{area}" {locality}',
             f'новостройки рядом с "{clean}" {locality}',
+            # Реестр ЕИСЖС — единственный полный список строек района, и в нём
+            # у каждой есть адрес. Без него проект, не попавший в каталоги
+            # агрегаторов, не находился вовсе.
+            f'site:наш.дом.рф жилой комплекс "{area}" {locality}',
+            f'site:наш.дом.рф строящиеся дома "{area}" {locality}',
         ]
         if district:
             queries.extend(

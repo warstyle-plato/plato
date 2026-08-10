@@ -186,10 +186,8 @@ def extract_candidates(docs: list[SearchDoc]) -> list[Candidate]:
     result: list[Candidate] = []
     for doc in docs:
         ref = classify_document(doc.url, doc.title, doc.snippet)
-        if ref.kind in {ARTICLE, LISTING, OFFICIAL_CARD}:
-            # Статья, объявление и официальная карточка сущностью проекта не
-            # становятся. Карточка Наш.Дом.РФ подтверждает уже найденный проект,
-            # но сама его не создаёт.
+        if ref.kind in {ARTICLE, LISTING}:
+            # Статья и объявление сущностью проекта не становятся.
             continue
         if not document_is_residential(doc):
             continue
@@ -236,6 +234,20 @@ def _candidates_from_doc(doc: SearchDoc, ref: SourceRef) -> list[Candidate]:
                 discovery_sources=[doc.domain] if doc.domain else [],
             )
         )
+
+    if ref.kind == OFFICIAL_CARD:
+        # Реестр ЕИСЖС — самый авторитетный список строек района: он знает
+        # проект поимённо и с адресом. Прежде карточка сущность не создавала,
+        # чтобы случайная не плодила проекты, и из-за этого Хамовники 12 не
+        # попадали в кандидаты вовсе — их не приносила ни одна выдача.
+        # Заголовок карточки берём не целиком: он часто начинается с «Дом 1»,
+        # поэтому годятся только имя в кавычках и конструкция «ЖК X».
+        for name in quoted_names(text):
+            emit(name, "official_eiszhs_card_quoted", 0.9, True)
+        if not out:
+            for match in _TITLE_PROJECT_RE.finditer(text):
+                emit(match.group("name"), "official_eiszhs_card_typed", 0.85, True)
+        return out
 
     if ref.kind == PROJECT_PAGE:
         # Единственный случай, когда заголовку страницы можно верить как названию:

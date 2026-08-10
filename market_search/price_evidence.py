@@ -64,6 +64,10 @@ class PriceObservation:
 
     @property
     def quality(self) -> str:
+        if self.method == "derived_total_div_area":
+            # Цена метра, посчитанная из цены лота и его площади, зависит от
+            # того, какой именно лот попал в сниппет. Это ориентир, не котировка.
+            return "low"
         return "high" if self.match == MATCH_EXTERNAL_ID else "medium"
 
     def to_dict(self) -> dict[str, Any]:
@@ -183,14 +187,14 @@ class VerifiedPriceEnricher:
 
             source = MarketPriceEnricher._source_name(doc)
             when = observed_date(text)
-            for value in self._prices(text):
+            for value, method in self._priced(text):
                 observations.append(
                     PriceObservation(
                         price_per_sqm=value,
                         source=source,
                         url=doc.url,
                         title=doc.title,
-                        method="explicit_per_sqm",
+                        method=method,
                         match=match,
                         observed_at=when,
                     )
@@ -208,7 +212,16 @@ class VerifiedPriceEnricher:
 
     @staticmethod
     def _prices(text: str) -> list[int]:
-        values: list[int] = []
+        return [value for value, _ in VerifiedPriceEnricher._priced(text)]
+
+    @staticmethod
+    def _priced(text: str) -> list[tuple[int, str]]:
+        """Цена метра и то, как она получена.
+
+        Прямая котировка надёжнее производной, поэтому способ едет вместе с
+        числом: по нему потом ставится качество наблюдения.
+        """
+        out: list[tuple[int, str]] = []
         seen: set[tuple[int, int]] = set()
         for pattern in (_PRICE_M2_RE, _PRICE_M2_REVERSED_RE):
             for match in pattern.finditer(text):
@@ -218,8 +231,16 @@ class VerifiedPriceEnricher:
                 seen.add(span)
                 value = MarketPriceEnricher._price_m2_match_to_int(match)
                 if _MIN_PRICE <= value <= _MAX_PRICE:
-                    values.append(value)
-        return values
+                    out.append((value, "explicit_per_sqm"))
+        if out:
+            return out
+        # Второй путь, потерянный при переписывании: страница называет цену лота
+        # и его площадь, но не цену метра. У v4 он был, у v6 пропал, и элитные
+        # карточки, где пишут «квартира 120 м² — 250 млн ₽», остались без цены.
+        for value in MarketPriceEnricher._derived_prices_from_area_and_total(text):
+            if _MIN_PRICE <= value <= _MAX_PRICE:
+                out.append((value, "derived_total_div_area"))
+        return out
 
     @staticmethod
     def _dedupe(items: list[PriceObservation]) -> list[PriceObservation]:
@@ -256,7 +277,8 @@ class VerifiedPriceEnricher:
             }
         values = [item.price_per_sqm for item in observations]
         dates = sorted(item.observed_at for item in observations if item.observed_at)
-        best = "high" if any(item.match == MATCH_EXTERNAL_ID for item in observations) else "medium"
+        order = {"high": 3, "medium": 2, "low": 1}
+        best = max((item.quality for item in observations), key=lambda value: order[value])
         return {
             "available": True,
             "verified": True,

@@ -809,8 +809,14 @@ def test_price_is_read_in_every_common_russian_form() -> None:
     }
     for text, expected in cases.items():
         assert VerifiedPriceEnricher._prices(text) == [expected], text
-    # Цена лота и площадь рядом — не цена метра.
-    assert VerifiedPriceEnricher._prices("120 м² за 50 000 000 ₽") == []
+    # Элитная Москва котируется в миллионах за метр — это тоже цена метра.
+    assert VerifiedPriceEnricher._prices("от 1,5 млн ₽ за м²") == [1_500_000]
+    # Цена лота с площадью рядом даёт производную цену метра, помеченную как
+    # таковую: она зависит от того, какой лот попал в сниппет.
+    assert VerifiedPriceEnricher._priced("120 м² за 50 000 000 ₽") == [
+        (416_667, "derived_total_div_area")
+    ]
+    # Цена лота без площади не даёт ничего.
     assert VerifiedPriceEnricher._prices("5 000 000 ₽ за квартиру") == []
 
 
@@ -1331,3 +1337,82 @@ def test_quarantine_list_is_never_silently_truncated() -> None:
     assert "rows.slice(0,20)" not in core.PAGE
     assert "rows.map(item=>" in core.PAGE
     assert "byStatus" in core.PAGE
+
+
+# --- класс 12: реестр ЕИСЖС как источник поиска -------------------------------
+
+
+def test_official_registry_card_creates_a_candidate_with_its_address() -> None:
+    """Хамовники 12 не попадали в кандидаты вовсе — их не приносила ни одна выдача."""
+    card = doc(
+        'Жилой комплекс «Хамовники 12» — проектная декларация',
+        "https://xn--80az8a.xn--d1aqf.xn--p1ai/lk/na-dom/2079406",
+        "Москва, 1-й переулок Тружеников, 12А. Застройщик COLDY. Срок ввода 2026",
+    )
+    candidates = extract_candidates([card])
+    assert [item.canonical_name for item in candidates] == ["Хамовники 12"]
+    assert candidates[0].address_attributable is True
+    assert candidates[0].extraction_confidence >= 0.85
+
+    entity = resolve_entities(candidates)[0]
+    resolver = ProjectGeoResolver(
+        FakeGeocoder({"Тружеников, 12А": point(55.7360, 37.5730, "1-й переулок Тружеников, 12А, район Хамовники, Москва")}),
+        FakeSearch(default=[]),
+        locality="Москва",
+        subject_signature=address_signature(SUBJECT),
+        locality_matches=LegacyService._locality_matches,
+    )
+    resolution = resolver.resolve(entity)
+    assert resolution.status == RESOLVED
+    assert resolution.address == "Москва, 1-й переулок Тружеников, 12А"
+
+
+def test_registry_card_without_a_project_name_creates_nothing() -> None:
+    """Заголовок карточки часто начинается с «Дом 1» — это не название проекта."""
+    card = doc(
+        "Дом 1 — объект строительства",
+        "https://xn--80az8a.xn--d1aqf.xn--p1ai/lk/na-dom/3333333",
+        "Москва, Ленинский проспект, 5",
+    )
+    assert extract_candidates([card]) == []
+
+
+def test_discovery_asks_the_registry_for_the_district() -> None:
+    queries = ServiceV6._discovery_queries(SUBJECT, "Москва", "Хамовники район")
+    assert any("site:наш.дом.рф" in query and "Хамовники" in query for query in queries), queries
+
+
+def test_elite_prices_quoted_in_millions_per_metre_are_read() -> None:
+    """На стенде цена была ровно у одного проекта из пяти: «млн» шаблон не знал."""
+    from market_search.official_price import OfficialPriceEnricher
+
+    assert VerifiedPriceEnricher._prices("от 1,5 млн ₽ за м²") == [1_500_000]
+    assert VerifiedPriceEnricher._prices("цена 3,3 млн руб./м²") == [3_300_000]
+    assert VerifiedPriceEnricher._prices("от 850 тыс. ₽ за м²") == [850_000]
+    # Официальная средняя читается тем же словарём чисел, а не своей копией.
+    assert OfficialPriceEnricher._extract_prices("Средняя цена за 1 м²: 1,2 млн ₽") == [1_200_000]
+
+
+def test_derived_price_is_marked_low_quality() -> None:
+    entity = resolve_entities(
+        extract_candidates(
+            [
+                doc(
+                    "Brodsky — купить квартиру",
+                    "https://www.cian.ru/zhiloy-kompleks-brodsky-6001001/",
+                    "Клубный дом",
+                )
+            ]
+        )
+    )[0]
+    page = doc(
+        "Brodsky — квартиры",
+        "https://www.cian.ru/zhiloy-kompleks-brodsky-6001001/",
+        "Квартира 120 м² — 250 млн ₽",
+    )
+    result = VerifiedPriceEnricher(FakeSearch(default=[page]), today=date(2026, 8, 10)).collect(
+        entity, "Москва"
+    )
+    assert result["price"]["verified"] is True
+    assert result["price"]["quality"] == "low"
+    assert result["price"]["observations"][0]["method"] == "derived_total_div_area"
