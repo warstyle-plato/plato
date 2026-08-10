@@ -25,7 +25,7 @@ from .geocoder import GeoPoint
 from .http import RemoteServiceError
 from .price_evidence import VerifiedPriceEnricher
 from .recommendation import market_recommendation
-from .segments import SegmentResolver, detect_district, districts_match
+from .segments import SegmentResolver, detect_district, districts_match, segments_comparable
 from .service import MarketDiscoveryService as LegacyMarketDiscoveryService, haversine_km
 from .yandex_search import official_cards_from_docs
 
@@ -340,12 +340,12 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                         )
                     )
                     continue
-                if row["segment"] != reference:
+                if not segments_comparable(row["segment"], reference):
                     quarantine.append(
                         self._quarantined_row(
                             row,
                             "class_mismatch",
-                            f"Класс {row['segment']} против {reference}",
+                            f"Класс {row['segment']} против {reference}: не соседний уровень",
                         )
                     )
                     continue

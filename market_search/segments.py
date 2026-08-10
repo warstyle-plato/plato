@@ -89,6 +89,26 @@ def detect_district(value: str) -> str | None:
     return district or None
 
 
+# Уровни по возрастанию доступности. Соседние считаются сопоставимыми: элитный и
+# премиум в одном районе конкурируют за одного покупателя, а бизнес-класс — уже
+# нет. Решение владельца от 10.08.2026 по живому случаю: Savvin River Residence
+# определился как премиум в 748 метрах при ориентире «элитный» и вылетал из
+# выборки, будучи прямым соседом.
+_LADDER = (ELITE, PREMIUM, BUSINESS, COMFORT, ECONOMY)
+
+
+def segments_comparable(left: str | None, right: str | None) -> bool:
+    """Сопоставимы ли классы: тот же уровень или соседний."""
+    if not left or not right:
+        return False
+    if left == right:
+        return True
+    try:
+        return abs(_LADDER.index(left) - _LADDER.index(right)) == 1
+    except ValueError:
+        return False
+
+
 def districts_match(left: str | None, right: str | None) -> bool:
     """Район сравним, только когда известен у обоих."""
     if not left or not right:

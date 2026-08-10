@@ -1279,3 +1279,35 @@ def test_completion_dates_and_prose_are_not_projects() -> None:
     assert {"Японский дом", "Феникс-Парк"} <= names
     for junk in ("2 квартал 2026 года", "Прямо напротив", "Новодевичий монастырь, по соседству"):
         assert junk not in names, junk
+
+
+def test_adjacent_classes_are_comparable_but_distant_ones_are_not() -> None:
+    """Решение владельца: элитный и премиум конкурируют, бизнес — уже нет."""
+    from market_search.segments import segments_comparable
+
+    assert segments_comparable("элитный", "элитный")
+    assert segments_comparable("элитный", "премиум")
+    assert segments_comparable("премиум", "бизнес")
+    assert not segments_comparable("элитный", "бизнес")
+    assert not segments_comparable("элитный", "комфорт")
+    assert not segments_comparable("элитный", None)
+
+
+def test_premium_neighbour_returns_to_the_elite_comparable_set(tmp_path: Path) -> None:
+    """Savvin River Residence — премиум в 748 метрах при ориентире «элитный»."""
+    service = ServiceV6(tmp_path)
+    rows = [
+        {"name": "Хамовники 12", "segment": "элитный", "distance_km": 0.65, "coordinates": {}},
+        {"name": "ДОМ XXII", "segment": "элитный", "distance_km": 0.51, "coordinates": {}},
+        {"name": "Savvin River Residence", "segment": "премиум", "distance_km": 0.748, "coordinates": {}},
+        {"name": "бизнес-сосед", "segment": "бизнес", "distance_km": 0.8, "coordinates": {}},
+    ]
+    quarantine: list[dict] = []
+    kept, info = service._apply_comparability(
+        rows, quarantine, subject_district=None, requested=None
+    )
+    assert info["reference_segment"] == "элитный"
+    names = {row["name"] for row in kept}
+    assert "Savvin River Residence" in names
+    assert "бизнес-сосед" not in names
+    assert quarantine[0]["status"] == "class_mismatch"
