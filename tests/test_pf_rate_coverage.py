@@ -63,8 +63,13 @@ def test_without_escrow_the_debt_costs_the_base_rate():
 
 
 def test_coverage_above_one_does_not_go_below_the_special_rate():
-    """Та самая ошибка: при покрытии 2,38× долг выходил почти бесплатным."""
-    inputs, result = finance(apartment_price_th=1000)
+    """Та самая ошибка: при покрытии 2,38× долг выходил почти бесплатным.
+
+    Цена подобрана так, чтобы сценарий переваливал за 2×. После сверки удельных
+    ставок с банковским бюджетом стройка подорожала, долг вырос, и прежней тысячи
+    хватает только до 1,996× — то есть ветка, ради которой тест существует,
+    перестала бы достигаться, а тест остался бы зелёным."""
+    inputs, result = finance(apartment_price_th=1400)
     special = inputs["pf_special_pct"] / 100
     rows = [row for row in months_under_debt(result) if row["coverage"] > 1]
 

@@ -99,8 +99,14 @@ def template_params(content: bytes) -> dict:
     """Читает обратно то, что выгрузка записала в шаблон."""
     book = load_workbook(io.BytesIO(content))
     sheet = book["Вводные"]
-    rows = {main._plato_normalize(sheet.cell(row=r, column=2).value): r
-            for r in range(1, sheet.max_row + 1)}
+    # Первое вхождение, а не последнее: «Доля продаж до РВЭ», «Остаточные
+    # продажи» и «Старт продаж» повторяются на листе — у основного проекта и у
+    # каждого дочернего объекта (офисы, ТЦ, наземный паркинг) своя строка с тем
+    # же названием. Словарь брал последнюю, то есть параметры наземного паркинга,
+    # и это не было видно ровно до тех пор, пока все доли стояли одинаковыми.
+    rows: dict[str, int] = {}
+    for r in range(1, sheet.max_row + 1):
+        rows.setdefault(main._plato_normalize(sheet.cell(row=r, column=2).value), r)
     value = lambda label: sheet.cell(row=rows[label], column=5).value  # noqa: E731
 
     tep = book["Расчет ВРИ (ТЭП)"]

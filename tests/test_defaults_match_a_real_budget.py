@@ -75,10 +75,13 @@ def test_the_commercial_split_matches_the_ledger():
     assert marketing > selling
 
 
-def test_the_share_before_rve_is_not_optimistic():
-    """85% задавали покрытие эскроу выше фактического, а покрытие задаёт ставку
-    ПФ: модель показывала более дешёвые деньги, чем проект получает."""
-    assert core.DEFAULT_INPUTS["share_before_rve_pct"] == 71
+def test_the_share_before_rve_stayed_at_the_owners_value():
+    """Замер даёт 71% (69% по машино-местам, 73% по кладовым), но доля осталась
+    на 85% — решение владельца (10.08.2026). Она не из той группы, что удельные
+    ставки: те задают расход, а доля задаёт покрытие эскроу, покрытие — ставку
+    ПФ, и на 71% проект по умолчаниям перестаёт гасить долг. Тест держит
+    значение от правки «за компанию» со следующей сверкой."""
+    assert core.DEFAULT_INPUTS["share_before_rve_pct"] == 85
 
 
 @pytest.mark.parametrize("key,value", [
