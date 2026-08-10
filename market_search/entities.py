@@ -20,6 +20,7 @@ from typing import Any
 
 from .candidates_v6 import Candidate
 from .normalize import canonical_key, name_similarity, same_project
+from .segments import dominant_segment, segment_votes
 
 
 _MERGE_SIMILARITY = 0.88
@@ -46,6 +47,20 @@ class ProjectEntity:
     @property
     def source_domains(self) -> set[str]:
         return {item.source_domain for item in self.candidates if item.source_domain}
+
+    @property
+    def segment(self) -> str | None:
+        """Класс проекта по всем его документам сразу.
+
+        Один сниппет может класс не назвать, другой назовёт: голосование по всем
+        источникам устойчивее, чем чтение первого попавшегося.
+        """
+        return dominant_segment(
+            segment_votes(
+                " ".join(part for part in (item.source_title, item.source_snippet) if part)
+                for item in self.candidates
+            )
+        )
 
     @property
     def project_pages(self) -> list[Candidate]:
@@ -77,6 +92,7 @@ class ProjectEntity:
             "discovery_sources": sorted(self.source_domains),
             "discovery_source_count": len(self.source_domains),
             "has_project_page": bool(self.project_pages),
+            "segment": self.segment,
         }
 
 

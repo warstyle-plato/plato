@@ -57,6 +57,12 @@ def market_recommendation(projects: list[dict[str, Any]]) -> dict[str, Any] | No
         price = project.get("market_price") or {}
         if not price.get("available") or not price.get("price_per_sqm"):
             continue
+        # Официальная средняя ЕИСЖС — это среднее по зарегистрированным сделкам,
+        # оно отстаёт от рынка предложения. Привязка к проекту у неё доказана,
+        # поэтому показывать её честно, но подменять ею текущий ориентир нельзя:
+        # «доказано, чьё это число» и «годится как основание» — разные вопросы.
+        if price.get("basis") == "official_domrf_fallback":
+            continue
         value = int(price["price_per_sqm"])
         if value <= 0:
             continue

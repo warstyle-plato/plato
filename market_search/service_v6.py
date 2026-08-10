@@ -25,6 +25,7 @@ from .geocoder import GeoPoint
 from .http import RemoteServiceError
 from .price_evidence import VerifiedPriceEnricher
 from .recommendation import market_recommendation
+from .segments import detect_district, districts_match
 from .service import MarketDiscoveryService as LegacyMarketDiscoveryService, haversine_km
 from .yandex_search import official_cards_from_docs
 
@@ -96,11 +97,13 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         longitude: float | None,
         radius_km: float,
         limit: int,
+        segment: str | None = None,
     ) -> dict[str, Any]:
         subject = self._subject_point(address, latitude, longitude)
         locality = self._locality_hint(f"{address or ''} {subject.display_name}")
         district = self._district_hint(subject.display_name)
         subject_signature = address_signature(address or subject.display_name)
+        subject_district = detect_district(subject.display_name)
 
         queries = self._discovery_queries(address or subject.display_name, locality, district)
         docs = []
@@ -166,6 +169,10 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
 
             rows.append(self._row(entity, geo, distance))
 
+        rows, class_filter = self._apply_comparability(
+            rows, quarantine, subject_district=subject_district, requested=segment
+        )
+
         # Хвост, до которого не дошёл бюджет разбора, тоже виден: молчаливое
         # отбрасывание кандидата — это потеря recall, которую не с чем сравнить.
         for entity in ordered[budget:]:
@@ -220,6 +227,10 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                 "radius_km": radius_km,
                 "limit": limit,
                 "district": district,
+                "subject_district": subject_district,
+                "segment": class_filter.get("reference_segment"),
+                "segment_source": class_filter.get("source"),
+                "comparability": class_filter,
             },
             "location": subject.to_dict(),
             "source": {
@@ -249,6 +260,93 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                 "geo_unresolved": sum(1 for item in quarantine if item["status"] == "geo_unresolved"),
                 "outside_radius": sum(1 for item in quarantine if item["status"] == "outside_radius"),
             },
+        }
+
+    @staticmethod
+    def _reference_segment(rows: list[dict[str, Any]]) -> str | None:
+        """Класс, к которому приравнивается участок.
+
+        Своего класса у площадки нет — она ещё не построена. Ориентиром служит
+        то, чем торгуют ближайшие соседи: голос каждого весит обратно
+        расстоянию, поэтому дом через дорогу значит больше, чем проект на краю
+        радиуса.
+        """
+        votes: dict[str, float] = {}
+        for row in rows:
+            value = row.get("segment")
+            if not value:
+                continue
+            distance = max(float(row.get("distance_km") or 0.25), 0.25)
+            votes[value] = votes.get(value, 0.0) + 1.0 / distance
+        if not votes:
+            return None
+        return max(votes.items(), key=lambda item: item[1])[0]
+
+    def _apply_comparability(
+        self,
+        rows: list[dict[str, Any]],
+        quarantine: list[dict[str, Any]],
+        *,
+        subject_district: str | None,
+        requested: str | None,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        """Жёсткий отбор по сопоставимости: класс и район.
+
+        Радиус — геометрия, а не сравнимость. На Саввинской набережной он честно
+        приводил Дом Дау: 2,2 км по прямой через реку, но небоскрёб в ММДЦ и
+        клубные дома Хамовников — разный продукт. Класс один его не отсекает, он
+        тоже элитный; отсекает пара «класс и район».
+
+        Фильтр по классу включается, только когда класс известен хотя бы у двух
+        проектов: иначе отбор шёл бы по одному наблюдению и выкосил бы выдачу
+        целиком. По району не фильтруем там, где геокодер района не назвал.
+        """
+        reference = requested or self._reference_segment(rows)
+        known = sum(1 for row in rows if row.get("segment"))
+        class_active = bool(reference) and (bool(requested) or known >= 2)
+
+        kept: list[dict[str, Any]] = []
+        for row in rows:
+            row_district = detect_district(
+                str((row.get("coordinates") or {}).get("display_name") or "")
+            )
+            row["district"] = row_district
+            if not districts_match(subject_district, row_district):
+                quarantine.append(
+                    self._quarantined_row(
+                        row,
+                        "district_mismatch",
+                        f"Другой район: {row_district} против {subject_district}",
+                    )
+                )
+                continue
+            if class_active:
+                if not row.get("segment"):
+                    quarantine.append(
+                        self._quarantined_row(
+                            row,
+                            "class_unknown",
+                            f"Класс проекта не назван ни одним источником; ориентир — {reference}",
+                        )
+                    )
+                    continue
+                if row["segment"] != reference:
+                    quarantine.append(
+                        self._quarantined_row(
+                            row,
+                            "class_mismatch",
+                            f"Класс {row['segment']} против {reference}",
+                        )
+                    )
+                    continue
+            kept.append(row)
+
+        return kept, {
+            "reference_segment": reference,
+            "source": "запрошен" if requested else "по ближайшим соседям" if reference else "не определён",
+            "class_filter_active": class_active,
+            "subject_district": subject_district,
+            "known_segment_count": known,
         }
 
     def _subject_point(
@@ -311,6 +409,8 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
             "status": status,
             "reason": reason,
             "distance_km": row.get("distance_km"),
+            "segment": row.get("segment"),
+            "district": row.get("district"),
         }
 
     def _with_official_fallback(

@@ -18,6 +18,9 @@ class MarketDiscoveryRequest(BaseModel):
     longitude: float | None = Field(default=None, ge=-180, le=180)
     radius_km: float = Field(default=3.0, ge=0.25, le=10.0)
     limit: int = Field(default=10, ge=1, le=20)
+    # Пусто — класс выводится по ближайшим соседям: своего класса у площадки нет,
+    # она ещё не построена.
+    segment: str | None = None
 
     @model_validator(mode="after")
     def address_or_coordinates(self) -> "MarketDiscoveryRequest":
@@ -47,6 +50,7 @@ def install(app: FastAPI) -> MarketDiscoveryService:
                 longitude=req.longitude,
                 radius_km=req.radius_km,
                 limit=req.limit,
+                segment=req.segment,
             )
         except GeocodingError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc

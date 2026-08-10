@@ -124,6 +124,9 @@ def validate_contract(data: dict) -> tuple[bool, str]:
         return False, f"старый market API: source.mode={mode!r}, ожидался {EXPECTED_MODE!r}"
     if missing:
         return False, "v6 API неполный: нет полей " + ", ".join(missing)
+    query = data.get("query") or {}
+    if "comparability" not in query:
+        return False, "v6 API неполный: query.comparability отсутствует"
     for key in ("candidates_geofiltered", "geo_unresolved", "documents_by_kind"):
         if key not in diagnostics:
             return False, f"v6 API неполный: diagnostics.{key} отсутствует"
@@ -144,6 +147,8 @@ def validate_data_quality(projects: list) -> list[str]:
         distance = item.get("distance_km")
         if distance is not None and float(distance) <= 0.0:
             problems.append(f"{name}: расстояние 0 км — признак наследования адреса объекта оценки")
+        if item.get("segment") is None and (item.get("comparability_required") or False):
+            problems.append(f"{name}: класс не определён, но объект показан аналогом")
         if item.get("geo_status") not in (None, "resolved"):
             problems.append(f"{name}: попал в выдачу без подтверждённой географии")
         if not item.get("address"):

@@ -1106,3 +1106,132 @@ def test_price_queries_are_not_quoted() -> None:
     assert search.queries, "запросы должны быть"
     assert not any('"' in query for query in search.queries), search.queries
     assert any("цена за м²" in query for query in search.queries), search.queries
+
+
+# --- класс 11: сопоставимость, а не только география --------------------------
+
+
+def test_class_alone_would_not_have_excluded_the_skyscraper() -> None:
+    """Дом Дау тоже элитный — класс его не отсекает, отсекает пара с районом."""
+    from market_search.segments import detect_district, detect_segment, districts_match
+
+    assert detect_segment("Дом Дау — элитный небоскрёб в Москва-Сити") == "элитный"
+    assert detect_segment("Хамовники 12 — элитный клубный дом") == "элитный"
+    assert not districts_match(
+        detect_district("Москва, район Хамовники, Саввинская набережная, 25"),
+        detect_district("Москва, Пресненский район, 1-й Красногвардейский проезд, 14"),
+    )
+
+
+def test_deluxe_and_elite_are_one_tier() -> None:
+    """Саввинская 27 — делюкс, Хамовники 12 — элитный; это прямые конкуренты."""
+    from market_search.segments import detect_segment
+
+    assert detect_segment("Делюкс-проект Level Group") == detect_segment("Элитный клубный дом")
+
+
+def test_marketing_adjective_alone_is_not_a_class() -> None:
+    from market_search.segments import detect_segment
+
+    assert detect_segment("Премиальный жилой комплекс у реки") is None
+
+
+def test_pipeline_drops_a_neighbouring_district_project(tmp_path: Path, monkeypatch) -> None:
+    service = ServiceV6(tmp_path)
+    discovery = [
+        doc(
+            "Хамовники 12 — квартиры",
+            "https://realty.yandex.ru/moskva/kupit/novostrojka/hamovniki-12-3186893/",
+            "Элитный клубный дом. Москва, 1-й переулок Тружеников, 12А. 3 306 021 ₽ за м²",
+            rank=1,
+        ),
+        doc(
+            "Дом Дау — квартиры",
+            "https://realty.yandex.ru/moskva/kupit/novostrojka/dom-dau-7777777/",
+            "Элитный небоскрёб. Москва, 1-й Красногвардейский проезд, 14. 1 500 000 ₽ за м²",
+            rank=2,
+        ),
+    ]
+    search = FakeSearch(default=discovery)
+    monkeypatch.setattr(service, "search", search)
+    monkeypatch.setattr(service.verified_prices, "search", search)
+    monkeypatch.setattr(
+        service,
+        "geocoder",
+        FakeGeocoder(
+            {
+                "Саввинская набережная, 25": point(
+                    55.7333, 37.5638, "Саввинская набережная, 25, район Хамовники, Москва"
+                ),
+                "Тружеников, 12А": point(
+                    55.7360, 37.5730, "1-й переулок Тружеников, 12А, район Хамовники, Москва"
+                ),
+                "Красногвардейский проезд, 14": point(
+                    55.7480, 37.5390, "1-й Красногвардейский проезд, 14, Пресненский район, Москва"
+                ),
+            }
+        ),
+    )
+    result = service.discover(address=SUBJECT, latitude=None, longitude=None, radius_km=3.0, limit=10)
+
+    names = [row["name"] for row in result["projects"]]
+    assert "Хамовники 12" in names
+    assert "Дом Дау" not in names, "Пресненский район — не аналог Хамовников"
+    dropped = {item["name"]: item for item in result["quarantine"]}
+    assert dropped["Дом Дау"]["status"] == "district_mismatch"
+    assert "Пресненский" in dropped["Дом Дау"]["reason"]
+    assert result["query"]["subject_district"] == "Хамовники"
+
+
+def test_official_average_is_shown_but_never_sets_the_benchmark() -> None:
+    """Средняя ЕИСЖС отражает сделки и отстаёт: показывать можно, считать нельзя."""
+    rows = [
+        {
+            "name": "рынок",
+            "within_radius": True,
+            "geo_status": "resolved",
+            "price_verified": True,
+            "distance_km": 0.5,
+            "confirmed": True,
+            "market_source_count": 1,
+            "market_price": {
+                "available": True,
+                "basis": "verified_project_page_asking",
+                "price_per_sqm": 3_000_000,
+            },
+        },
+        {
+            "name": "официальная средняя",
+            "within_radius": True,
+            "geo_status": "resolved",
+            "price_verified": True,
+            "distance_km": 0.4,
+            "confirmed": True,
+            "market_source_count": 1,
+            "market_price": {
+                "available": True,
+                "basis": "official_domrf_fallback",
+                "price_per_sqm": 919_717,
+            },
+        },
+    ]
+    result = market_recommendation(rows)
+    assert result is not None
+    assert result["projects"] == ["рынок"]
+    assert result["price_per_sqm"] == 3_000_000
+
+
+def test_class_filter_stays_off_when_almost_nothing_has_a_class(tmp_path: Path) -> None:
+    """Отбор по одному наблюдению выкосил бы выдачу целиком."""
+    service = ServiceV6(tmp_path)
+    rows = [
+        {"name": "с классом", "segment": "элитный", "distance_km": 0.5, "coordinates": {}},
+        {"name": "без класса", "segment": None, "distance_km": 0.6, "coordinates": {}},
+    ]
+    quarantine: list[dict] = []
+    kept, info = service._apply_comparability(
+        rows, quarantine, subject_district="Хамовники", requested=None
+    )
+    assert info["class_filter_active"] is False
+    assert len(kept) == 2
+    assert quarantine == []

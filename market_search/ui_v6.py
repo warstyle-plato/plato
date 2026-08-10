@@ -45,6 +45,8 @@ _OLD_CHIP = "'Подтверждено: '+mdEsc(payload.confirmed_count)+' / '+m
 _NEW_CHIP = (
     "'Проверенная цена: '+mdEsc(payload.priced_count||0)+' / '+mdEsc(payload.count)"
     "+' · карантин: '+mdEsc(payload.quarantine_count||0)"
+    "+((payload.query&&payload.query.segment)?' · класс: '+mdEsc(payload.query.segment)"
+    "+' ('+mdEsc(payload.query.segment_source||'')+')':'')"
 )
 
 _OLD_CONFIRMATION = (
@@ -60,8 +62,10 @@ _OLD_GEO = (
     "const geo=item.coordinates&&item.coordinates.display_name?'<span>'+mdEsc(item.coordinates.display_name)+'</span>':'';"
 )
 _NEW_GEO = (
-    "const geo=item.address?'<span>Адрес проекта: '+mdEsc(item.address)+'</span>':"
-    "'<span class=\"md-warn\">Адрес проекта не разрешён</span>';"
+    "const geo=(item.address?'<span>Адрес проекта: '+mdEsc(item.address)+'</span>':"
+    "'<span class=\"md-warn\">Адрес проекта не разрешён</span>')"
+    "+(item.segment?'<span>Класс: '+mdEsc(item.segment)+'</span>':'')"
+    "+(item.district?'<span>Район: '+mdEsc(item.district)+'</span>':'');"
 )
 
 # Блок цены целиком: старая форма ссылалась на price.asking / price.official,
@@ -106,7 +110,9 @@ _NEW_LIST_TAIL = (
 )
 _QUARANTINE_FN = """function mdQuarantineLabel(status){
   const map={geo_unresolved:'адрес проекта не подтверждён',outside_radius:'вне радиуса',
-    over_limit:'не вошёл в лимит выдачи',not_evaluated:'бюджет разбора исчерпан'};
+    over_limit:'не вошёл в лимит выдачи',not_evaluated:'бюджет разбора исчерпан',
+    district_mismatch:'другой район',class_mismatch:'другой класс',
+    class_unknown:'класс не определён'};
   return map[status]||status||'отсеян';
 }
 function mdQuarantine(payload){
@@ -115,6 +121,7 @@ function mdQuarantine(payload){
   const items=rows.slice(0,20).map(item=>'<li><b>'+mdEsc(item.name||'—')+'</b> — '+
     mdEsc(mdQuarantineLabel(item.status))+
     (item.distance_km!=null?' ('+mdNum(item.distance_km)+' км)':'')+
+    (item.segment?' · '+mdEsc(item.segment):'')+
     (item.reason?'<br><span class="md-marketline">'+mdEsc(item.reason)+'</span>':'')+'</li>').join('');
   return '<details class="md-card"><summary>Карантин: '+mdEsc(rows.length)+
     ' — найдены, но в расчёт не взяты</summary><ul>'+items+'</ul></details>';
