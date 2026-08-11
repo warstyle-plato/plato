@@ -173,6 +173,24 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
             key=lambda item: (not item.project_pages, -item.extraction_confidence, item.search_rank),
         )
         for entity in ordered[:budget]:
+            if self._is_subject_itself(entity, address, subject.display_name):
+                quarantine.append(
+                    self._quarantined(
+                        entity,
+                        "subject_itself",
+                        "Это сам объект оценки, а не соседний проект",
+                    )
+                )
+                continue
+            if self.registry.is_developer_name(entity.canonical_name):
+                quarantine.append(
+                    self._quarantined(
+                        entity,
+                        "developer_not_project",
+                        f"{entity.canonical_name} — застройщик из справочника, а не проект",
+                    )
+                )
+                continue
             geo = resolver.resolve(entity)
             if geo.status != RESOLVED or geo.point is None:
                 quarantine.append(self._quarantined(entity, geo.status, geo.reason))
@@ -314,6 +332,21 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                 "outside_radius": sum(1 for item in quarantine if item["status"] == "outside_radius"),
             },
         }
+
+    @staticmethod
+    def _is_subject_itself(entity: ProjectEntity, address: str | None, display_name: str) -> bool:
+        """Участок сам стал кандидатом.
+
+        На Мишина, 46 каталог назвал адрес объекта оценки, и он приехал в
+        карантин как жилой комплекс «Мишина 46» с причиной «адрес совпал с
+        адресом объекта оценки». Причина верная, но объект здесь вообще не
+        кандидат: сравнивать площадку саму с собой бессмысленно.
+        """
+        subject = address_signature(address or display_name)
+        if not subject:
+            return False
+        names = [entity.canonical_name, *entity.aliases]
+        return any(address_signature(name) == subject for name in names if name)
 
     @staticmethod
     def _reference_segment(rows: list[dict[str, Any]]) -> str | None:

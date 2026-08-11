@@ -1770,3 +1770,60 @@ def test_page_of_another_project_does_not_donate_its_price(tmp_path: Path) -> No
     finally:
         page_price.request_bytes = original
     assert result["price"]["available"] is False
+
+
+# --- класс 15: находки Мишина, 46 ---------------------------------------------
+
+
+def test_a_price_is_not_a_project_name() -> None:
+    """«979 640 ₽» доехало до карантина как жилой комплекс."""
+    assert not looks_like_project_name("979 640 ₽")
+    assert not looks_like_project_name("3,5 млн ₽")
+    assert not looks_like_project_name("от 250 000 руб")
+    assert looks_like_project_name("Петровский парк II")
+    assert looks_like_project_name("Мишина 46")
+
+
+def test_business_park_is_commercial_like_a_business_centre() -> None:
+    from market_search.candidates_v6 import document_is_residential
+
+    assert not document_is_residential(
+        doc("БИЗНЕС ПАРК САВЕЛОВСКИЙ", "https://example.ru/p/1", "Офисы и коворкинги")
+    )
+    assert not document_is_residential(
+        doc("Технопарк Мичуринский", "https://example.ru/p/2", "Аренда офисов")
+    )
+
+
+def test_the_subject_site_is_not_its_own_comparable(tmp_path: Path) -> None:
+    """На Мишина, 46 каталог назвал адрес участка, и он стал кандидатом."""
+    service = ServiceV6(tmp_path)
+    entity = resolve_entities(
+        extract_candidates(
+            [
+                doc(
+                    "Новостройки Савёловского района",
+                    "https://www.cian.ru/novostroyki-savelovskiy/",
+                    "Мишина 46 · Петровский парк II",
+                )
+            ]
+        )
+    )
+    subject_row = next(item for item in entity if item.canonical_name == "Мишина 46")
+    other = next(item for item in entity if item.canonical_name != "Мишина 46")
+    assert service._is_subject_itself(subject_row, "Москва, ул. Мишина, 46", "")
+    assert not service._is_subject_itself(other, "Москва, ул. Мишина, 46", "")
+
+
+def test_developer_names_are_rejected_by_the_registry_not_by_guesswork() -> None:
+    """«Гранель» ни на что не оканчивается — списком суффиксов её не поймать."""
+    from market_search.registry import ProjectRegistry
+
+    registry = ProjectRegistry.load(ProjectRegistry.bundled_directory())
+    assert registry.is_developer_name("Гранель")
+    assert registry.is_developer_name("Донстрой")
+    assert registry.is_developer_name("Sminex")
+    # Проекты застройщиками не считаются.
+    assert not registry.is_developer_name("Лучи")
+    assert not registry.is_developer_name("Дом XXII")
+    assert not registry.is_developer_name("Хамовники 12")

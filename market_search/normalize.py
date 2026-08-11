@@ -334,6 +334,12 @@ def looks_like_project_name(value: str) -> bool:
     if tokens[0] in _PREPOSITIONS or tokens[-1] in _PREPOSITIONS:
         return False
 
+    # Число с валютой — это цена, приехавшая из соседней колонки каталога.
+    # На Мишина, 46 «979 640 ₽» дошло до карантина как жилой комплекс.
+    if re.search(r"[₽$€]|\bруб\b|\bмлн\b|\bтыс\b", low):
+        return False
+    if not re.search(r"[а-яёa-z]", low):
+        return False
     # Голый почтовый адрес — не проект.
     if re.search(r"\b(?:улица|ул|проспект|пр-т|проезд|шоссе|ш|набережная|наб|переулок|пер|бульвар)\b", low) and re.search(
         r"\b\d", low

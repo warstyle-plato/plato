@@ -92,6 +92,10 @@ class ProjectRegistry:
     def __init__(self, projects: list[RegistryProject] | None = None):
         self.projects = list(projects or [])
         self._by_key = {item.key: item for item in self.projects if item.key}
+        self._developer_keys = {
+            canonical_key(item.developer) for item in self.projects if item.developer
+        }
+        self._developer_keys.discard("")
 
     def __len__(self) -> int:
         return len(self.projects)
@@ -160,6 +164,23 @@ class ProjectRegistry:
             return []
         target = _fold(district)
         return [item for item in self.projects if item.district and _fold(item.district) == target]
+
+    def is_developer_name(self, name: str) -> bool:
+        """Это имя застройщика, а не проекта.
+
+        «Гранель», «Донстрой», «МДС-ГРУПП» приезжали из каталогов наравне с
+        проектами и доходили до геокодера. Списком суффиксов их не поймать:
+        «Гранель» ни на что не оканчивается. Зато справочник знает всех
+        застройщиков поимённо — это данные, а не догадка.
+        """
+        key = canonical_key(name)
+        if not key or len(key) < 3:
+            return False
+        if key in self._by_key:
+            # Бывает и то и другое: проект «Донстрой» отсутствует, но если имя
+            # совпало с проектом справочника — это проект.
+            return False
+        return key in self._developer_keys
 
     def find(self, name: str) -> RegistryProject | None:
         """Проект справочника по названию, с учётом сокращений и алфавита."""
