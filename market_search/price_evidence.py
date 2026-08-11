@@ -25,6 +25,7 @@ from typing import Any
 from .documents import DEVELOPER_PAGE, PROJECT_PAGE, classify_document, is_pricing_source
 from .http import RemoteServiceError
 from .normalize import cut_at_separator, labels_match, search_name
+from .page_price import PageFetcher, fetchable
 from .price import _PRICE_M2_RE, _PRICE_M2_REVERSED_RE, MarketPriceEnricher
 from .yandex_search import SearchDoc, YandexSearchClient
 
@@ -98,6 +99,10 @@ class PriceObservation:
 
     @property
     def quality(self) -> str:
+        if self.method.endswith("_from_page"):
+            # Со страницы обычно снимается «от N ₽/м²» — нижняя граница прайса,
+            # а не средняя по проекту. Как ориентир годится, как котировка нет.
+            return "low"
         if self.market == MARKET_DEVELOPER_STOCK:
             # Остатки в сданном доме — законная цена предложения, но лотов мало
             # и выбор смещён, поэтому качество ниже котировки первичного рынка.
@@ -150,9 +155,17 @@ def document_matches_entity(entity, doc: SearchDoc) -> str:
 
 
 class VerifiedPriceEnricher:
-    def __init__(self, search: YandexSearchClient, *, today: date | None = None):
+    def __init__(
+        self,
+        search: YandexSearchClient,
+        *,
+        today: date | None = None,
+        pages: PageFetcher | None = None,
+    ):
         self.search = search
         self.today = today or date.today()
+        # Дозагрузка страниц необязательна: без неё поведение прежнее.
+        self.pages = pages
 
     def collect(self, entity, locality: str) -> dict[str, Any]:
         # В запрос идёт имя без кавычек и скобок: Search API внутри кавычек ищет
@@ -243,6 +256,11 @@ class VerifiedPriceEnricher:
             if inventory is None:
                 inventory = self._inventory(text, source, doc.url, match, when)
 
+        if not observations and self.pages is not None:
+            # Сниппет цены не дал — открываем страницу. Только ту, что уже
+            # доказана принадлежащей проекту: искать цену «где-нибудь» нельзя.
+            observations = self._prices_from_pages(entity, docs)
+
         observations = self._dedupe(observations)
         price = self._summarize(observations, queries, errors, rejected)
         return {
@@ -250,6 +268,45 @@ class VerifiedPriceEnricher:
             "inventory": inventory or self._unknown_inventory(),
             "rejected_observations": rejected[:10],
         }
+
+    def _prices_from_pages(self, entity, docs: list[SearchDoc]) -> list[PriceObservation]:
+        out: list[PriceObservation] = []
+        for doc in docs:
+            if not fetchable(doc.url):
+                continue
+            match = document_matches_entity(entity, doc)
+            if match == MATCH_NONE:
+                continue
+            page = self.pages.get(doc.url)
+            if page is None:
+                continue
+            # Заголовок страницы — второе доказательство, что открылось то самое:
+            # адрес мог увести на общий раздел сайта застройщика.
+            if page.title and not labels_match(
+                cut_at_separator(page.title), [entity.canonical_name, *entity.aliases]
+            ):
+                continue
+            market = offer_market(page.text)
+            if market == MARKET_RESALE:
+                continue
+            source = MarketPriceEnricher._source_name(doc)
+            when = observed_date(page.text)
+            for value, method in self._priced(page.text):
+                out.append(
+                    PriceObservation(
+                        price_per_sqm=value,
+                        source=source,
+                        url=doc.url,
+                        title=page.title or doc.title,
+                        method=f"{method}_from_page",
+                        match=match,
+                        observed_at=when,
+                        market=market,
+                    )
+                )
+            if out:
+                break
+        return out
 
     @staticmethod
     def _prices(text: str) -> list[int]:

@@ -1634,3 +1634,139 @@ def test_registry_service_uses_it_as_a_discovery_anchor(tmp_path: Path, monkeypa
     assert row["developer"] == "Донстрой"
     assert row["district"] == "Хамовники"
     assert row["sales"]["quality"] == "registry"
+
+
+# --- класс 14: цена со страницы, когда сниппет её не дал ----------------------
+
+
+def test_aggregators_that_block_robots_are_never_fetched() -> None:
+    """Открывать ЦИАН и Яндекс бесполезно: цена там рисуется скриптом."""
+    from market_search.page_price import fetchable
+
+    assert not fetchable("https://www.cian.ru/zhiloy-kompleks-brodsky-6001001/")
+    assert not fetchable("https://realty.yandex.ru/moskva/kupit/novostrojka/x-1/")
+    assert not fetchable("https://domclick.ru/complex/x-1/")
+    assert fetchable("https://www.novostroy.ru/buildings/savvinskaya-27/")
+    assert fetchable("https://brodsky.example/projects/brodsky/")
+
+
+def test_page_fetcher_is_bounded_cached_and_silent_on_failure(tmp_path: Path) -> None:
+    """Худший исход дозагрузки обязан совпадать с прежним поведением."""
+    from market_search import page_price
+    from market_search.http import RemoteServiceError
+    from market_search.page_price import PageFetcher
+
+    calls: list[str] = []
+    original = page_price.request_bytes
+
+    def fake_request(url, **kwargs):
+        calls.append(url)
+        return "<html><head><title>Brodsky</title></head><body>от 1,5 млн ₽ за м²</body></html>".encode(
+            "utf-8"
+        )
+
+    fetcher = PageFetcher(tmp_path / "pages", budget=1)
+    page_price.request_bytes = fake_request
+    try:
+        first = fetcher.get("https://brodsky.example/projects/brodsky/")
+        assert first is not None and first.title == "Brodsky"
+        # Второй раз берётся из кэша, обращения к сети нет.
+        again = fetcher.get("https://brodsky.example/projects/brodsky/")
+        assert again is not None and len(calls) == 1
+        # Потолок исчерпан — молча ничего, а не исключение.
+        assert fetcher.get("https://other.example/projects/x/") is None
+        assert any("потолок" in item["reason"] for item in fetcher.skipped)
+
+        def failing(url, **kwargs):
+            raise RemoteServiceError("403 Forbidden")
+
+        page_price.request_bytes = failing
+        broken = PageFetcher(tmp_path / "pages2", budget=3)
+        assert broken.get("https://blocked.example/x/") is None
+        assert broken.diagnostics()["pages_fetched"] == 0
+    finally:
+        page_price.request_bytes = original
+
+
+def test_price_is_taken_from_the_page_when_the_snippet_had_none(tmp_path: Path) -> None:
+    from market_search import page_price
+    from market_search.page_price import PageFetcher
+
+    entity = resolve_entities(
+        extract_candidates(
+            [
+                doc(
+                    "Саввинская 27 — квартиры",
+                    "https://www.novostroy.ru/buildings/savvinskaya-27/",
+                    "Дом сдан. Level Group",
+                )
+            ]
+        )
+    )[0]
+    silent = doc(
+        "Саввинская 27 — квартиры",
+        "https://www.novostroy.ru/buildings/savvinskaya-27/",
+        "Клубный дом на Саввинской набережной",  # цены в сниппете нет
+    )
+
+    original = page_price.request_bytes
+    page_price.request_bytes = lambda url, **kwargs: (
+        "<html><head><title>Саввинская 27 — купить квартиру</title></head>"
+        "<body><div>Квартиры от застройщика от 2 256 990 ₽ за м²</div></body></html>"
+    ).encode("utf-8")
+    try:
+        enricher = VerifiedPriceEnricher(
+            FakeSearch(default=[silent]),
+            today=date(2026, 8, 11),
+            pages=PageFetcher(tmp_path / "pages", budget=5),
+        )
+        result = enricher.collect(entity, "Москва")
+    finally:
+        page_price.request_bytes = original
+
+    price = result["price"]
+    assert price["verified"] is True
+    assert price["price_per_sqm"] == 2_256_990
+    # Со страницы обычно снимается «от N» — нижняя граница, а не средняя.
+    assert price["quality"] == "low"
+    assert price["observations"][0]["method"].endswith("_from_page")
+
+
+def test_page_of_another_project_does_not_donate_its_price(tmp_path: Path) -> None:
+    from market_search import page_price
+    from market_search.page_price import PageFetcher
+
+    entity = resolve_entities(
+        extract_candidates(
+            [
+                doc(
+                    "Саввинская 27 — квартиры",
+                    "https://www.novostroy.ru/buildings/savvinskaya-27/",
+                    "Дом сдан",
+                )
+            ]
+        )
+    )[0]
+    original = page_price.request_bytes
+    page_price.request_bytes = lambda url, **kwargs: (
+        "<html><head><title>Прайм Парк — купить квартиру</title></head>"
+        "<body>от 900 000 ₽ за м²</body></html>"
+    ).encode("utf-8")
+    try:
+        enricher = VerifiedPriceEnricher(
+            FakeSearch(
+                default=[
+                    doc(
+                        "Саввинская 27",
+                        "https://www.novostroy.ru/buildings/savvinskaya-27/",
+                        "Клубный дом",
+                    )
+                ]
+            ),
+            today=date(2026, 8, 11),
+            pages=PageFetcher(tmp_path / "pages", budget=5),
+        )
+        result = enricher.collect(entity, "Москва")
+    finally:
+        page_price.request_bytes = original
+    assert result["price"]["available"] is False

@@ -23,6 +23,7 @@ from .entities import ProjectEntity, merge_geographic_duplicates, resolve_entiti
 from .geo_resolution import RESOLVED, ProjectGeoResolver, address_signature
 from .geocoder import GeoPoint
 from .http import RemoteServiceError
+from .page_price import PageFetcher
 from .price_evidence import VerifiedPriceEnricher
 from .recommendation import market_recommendation
 from .registry import ProjectRegistry
@@ -50,7 +51,8 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
 
     def __init__(self, data_dir: Path):
         super().__init__(data_dir)
-        self.verified_prices = VerifiedPriceEnricher(self.search)
+        self.pages = PageFetcher(Path(data_dir) / "pages")
+        self.verified_prices = VerifiedPriceEnricher(self.search, pages=self.pages)
         # Справочника может не быть — тогда конвейер работает как прежде, только
         # без якоря. Пустой реестр не ошибка, а отсутствие выгрузки.
         self.registry = ProjectRegistry.load(
@@ -300,6 +302,7 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                 "search_errors": search_errors[:5],
                 "raw_search_documents": len(docs),
                 "documents_by_kind": self._documents_by_kind(docs),
+                "pages": self.pages.diagnostics(),
                 "registry_projects": len(self.registry),
                 "registry_seeded": len(registry_seeded),
                 "candidates_extracted": len(candidates),
