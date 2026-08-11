@@ -82,14 +82,14 @@ def _ensure_command(core: Any) -> None:
         return
     if any(isinstance(item, dict) and str(item.get("command") or "") == "mpt" for item in commands):
         return
-    entry = {"command": "mpt", "description": "Льгота МПТ — Москва"}
-    # Дописать в конец значило поставить рабочий расчёт ниже «Статуса и версии»:
-    # меню Telegram плоское, и порядок в нём — единственное объяснение
-    # устройства бота. Встаём перед служебным хвостом движка.
-    service = set(getattr(core, "TELEGRAM_SERVICE_COMMANDS", ()) or ())
+    entry = {"command": "mpt", "description": "Расчёт льготы МПТ — Москва"}
+    # Дописать в конец значило поставить расчёт ниже помощи: меню Telegram
+    # плоское, и порядок в нём — единственное объяснение устройства бота.
+    # Место задаёт движок якорем — расчёт встаёт среди расчётов.
+    anchor = str(getattr(core, "TELEGRAM_MENU_EXTENSION_ANCHOR", "") or "")
     position = next(
         (index for index, item in enumerate(commands)
-         if isinstance(item, dict) and str(item.get("command") or "") in service),
+         if isinstance(item, dict) and str(item.get("command") or "") == anchor),
         len(commands),
     )
     commands.insert(position, entry)

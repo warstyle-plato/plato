@@ -300,7 +300,12 @@ def test_the_native_menu_and_the_command_open_the_button(monkeypatch, tmp_path):
     /vritep из меню пропадал, хотя команда работала."""
     commands = {item["command"] for item in core.TELEGRAM_BOT_COMMANDS}
     assert "vritep" in commands
-    assert {"address", "comment", "status"} <= commands, \
+    # Команды движка и обёртки объявляются в одном месте — но не все попадают в
+    # само меню: оно сведено к пяти решениям, остальные живут рядом, в
+    # TELEGRAM_EXTRA_COMMANDS, и перечисляются помощью. Единственность источника
+    # от этого не меняется, а вот «всё обязано быть в меню» больше не условие.
+    declared = commands | {item["command"] for item in core.TELEGRAM_EXTRA_COMMANDS}
+    assert {"address", "comment", "status"} <= declared, \
         "единый список обязан покрывать команды и движка, и обёртки"
     wrapper_src = open("main.py", encoding="utf-8").read()
     assert wrapper_src.count('{"command"') == 0, \
