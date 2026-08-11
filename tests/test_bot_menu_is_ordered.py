@@ -1,4 +1,4 @@
-"""Меню бота — пять решений, а не тринадцать команд.
+"""Меню бота — шесть решений, а не тринадцать команд.
 
 Список Telegram плоский: заголовков групп в нём нет, и тринадцать строк
 читались простынёй, где всё одинаково важно. Пять входов в ТЭП стояли
@@ -6,13 +6,14 @@
 ВРИ и ТЭП» на вид не отличались, а `/mpt` дописывался расширением в самый конец
 — ниже «Статуса и версии».
 
-Человек выбирает из пяти вещей: войти, посчитать ВРИ и ТЭП, посчитать льготу
-МПТ, спросить Платона, разобраться. Столько в меню и осталось.
+Вложенности в меню нет, но есть второй уровень — inline-кнопки. Отсюда правило,
+которое здесь и закреплено: **пункт меню — решение, второй уровень —
+уточнение.** «Расчёт модели» спрашивает, откуда взять ТЭП; «Расчёт ВРИ и ТЭП»
+— где участок. Способ выбирается там, где видно, что это выбор одного и того
+же, а не четыре разные функции подряд.
 
-Остальные команды работают по-прежнему. Четыре входа в ТЭП стоят кнопками на
-главном экране, где виден выбор между ними, а полный список даёт `/help`.
-Отсюда главное правило этого файла: **команда вне меню обязана быть названа в
-помощи и иметь разбор** — иначе она просто спрятана.
+Остальные команды работают по-прежнему, но команда вне меню, о которой негде
+узнать, просто спрятана — поэтому помощь обязана называть каждую.
 
 Запуск: python3 -m pytest tests -q
 """
@@ -45,11 +46,11 @@ def sources() -> str:
     return "\n".join((ROOT / name).read_text(encoding="utf-8") for name in files)
 
 
-# --- пять решений --------------------------------------------------------------
+# --- шесть решений -------------------------------------------------------------
 
-def test_the_menu_holds_five_decisions():
-    """Шестой пункт — повод спросить, решение ли это или ещё одна команда."""
-    assert NAMES == ["start", "vritep", "mpt", "platon", "help"], NAMES
+def test_the_menu_holds_six_decisions():
+    """Седьмой пункт — повод спросить, решение ли это или ещё одна команда."""
+    assert NAMES == ["calc", "model", "vritep", "mpt", "platon", "help"], NAMES
 
 
 def test_the_calculations_stand_together():
@@ -80,11 +81,64 @@ def test_the_extension_does_not_duplicate_its_command():
     assert len(MENU) == before
 
 
+def test_no_empty_word_stands_in_the_menu():
+    """«Вход» и «Главное меню» — не то, что человек собирается сделать."""
+    words = " ".join(item["description"] for item in MENU).lower()
+    for empty in ("вход", "главное меню"):
+        assert empty not in words, f"в меню вернулось пустое слово «{empty}»"
+
+
+def test_the_analyst_says_what_he_is():
+    """«Платон Сергеевич» само по себе не объясняет, что это ИИ-аналитик."""
+    description = next(item["description"] for item in MENU if item["command"] == "platon")
+    assert "ИИ" in description and "аналитик" in description
+
+
+# --- второй уровень ------------------------------------------------------------
+
+def test_the_calc_screen_offers_all_four_ways():
+    """Способы ушли из меню — значит выбор между ними живёт здесь, иначе он
+    просто исчез."""
+    replies = []
+    original = core._telegram_send_message
+    core._telegram_send_message = lambda chat_id, text, **kw: replies.append((text, kw))
+    try:
+        core._telegram_calc_menu(1)
+    finally:
+        core._telegram_send_message = original
+
+    assert len(replies) == 1
+    text, kw = replies[0]
+    assert "Расчёт модели" in text
+    buttons = [row[0]["callback_data"] for row in kw["reply_markup"]["inline_keyboard"]]
+    assert buttons == ["flow_cad_no", "flow_address", "flow_cad_yes", "tep_template"]
+
+
+def test_the_calc_command_opens_that_screen():
+    assert '"/calc"' in sources()
+
+
+def test_the_vritep_screen_splits_moscow_and_the_region():
+    """Второй уровень у ВРИ с ТЭП существовал и до нас — методики там разные."""
+    text = (ROOT / "main.py").read_text(encoding="utf-8")
+    assert '"callback_data": "vritep_msk"' in text
+    assert '"callback_data": "vritep_mo"' in text
+
+
+def test_the_welcome_screen_still_shows_everything():
+    """`/start` ушёл из списка команд, но кнопка Start у Telegram есть всегда, и
+    за ней должен быть тот же выбор."""
+    text = (ROOT / "main_legacy.py").read_text(encoding="utf-8")
+    for callback in ("flow_cad_yes", "flow_address", "flow_cad_no", "vritep_start",
+                     "tep_template", "ask_platon"):
+        assert f'"callback_data": "{callback}"' in text, callback
+
+
 # --- команды вне меню не спрятаны ---------------------------------------------
 
 def test_the_working_commands_did_not_disappear():
     """Сокращение меню не должно быть тихим удалением возможностей."""
-    for name in ("cadastre", "address", "tep", "template", "model", "comment",
+    for name in ("start", "tep", "address", "cadastre", "template", "comment",
                  "cancel", "status"):
         assert name in EXTRA_NAMES, f"/{name} потерялась при сокращении меню"
 
@@ -101,15 +155,6 @@ def test_the_help_names_the_menu_itself():
     block = wrapper._commands_block()
     for name in NAMES:
         assert f"/{name}" in block
-
-
-def test_the_four_ways_into_a_tep_are_on_the_main_screen():
-    """Из меню они ушли — значит выбор между ними должен быть виден кнопками,
-    иначе он исчез."""
-    text = (ROOT / "main_legacy.py").read_text(encoding="utf-8")
-    for callback in ("flow_cad_yes", "flow_address", "flow_cad_no", "vritep_start",
-                     "tep_template"):
-        assert f'"callback_data": "{callback}"' in text, callback
 
 
 # --- меню и код не расходятся --------------------------------------------------

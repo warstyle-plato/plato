@@ -64,37 +64,40 @@ app = FastAPI(title="DevelopAid Development Investment Model", version=VERSION)
 # Нативное меню Telegram объявляется один раз — как VERSION. Список ставили
 # два места: движок при настройке вебхука и обёртка на старте, побеждал
 # последний — и /vritep из меню пропадал, хотя команда работала.
-# Меню — пять решений, а не тринадцать команд. Список Telegram плоский, и
-# тринадцать строк в нём читаются как простыня, где всё одинаково важно.
-# Человек же выбирает из пяти вещей: войти, посчитать ВРИ и ТЭП, посчитать
-# льготу МПТ, спросить Платона, разобраться.
+# Меню — шесть решений, а не тринадцать команд. Список Telegram плоский, и
+# тринадцать строк в нём читались простынёй, где всё одинаково важно: пять
+# входов в ТЭП вперемешку с Платоном и служебным, «ТЭП по кадастровым номерам»
+# и «Посчитать ВРИ и ТЭП» на вид неразличимы.
 #
-# Остальные команды никуда не делись и работают по-прежнему — /cadastre,
-# /address, /tep, /template, /model, /comment, /cancel, /status. Просто их место
-# не в меню: четыре входа в ТЭП стоят кнопками на главном экране, где виден
-# выбор между ними, а полный список команд перечисляет /help. Команда, которой
-# нет в меню, обязана быть названа в помощи — иначе она невидима.
+# Вложенности в меню нет, но есть второй уровень — inline-кнопки. Пункт меню =
+# решение, второй уровень = уточнение: «Расчёт модели» спрашивает, откуда взять
+# ТЭП, «Расчёт ВРИ и ТЭП» — где участок. Способ выбирается там, где видно, что
+# это выбор одного и того же, а не четыре разные функции подряд.
+#
+# Остальные команды работают по-прежнему и названы в помощи: команда вне меню,
+# о которой негде узнать, просто спрятана.
 TELEGRAM_BOT_COMMANDS = [
-    {"command": "start", "description": "Вход"},
+    {"command": "calc", "description": "Расчёт модели"},
+    {"command": "model", "description": "Открыть готовую модель"},
     {"command": "vritep", "description": "Расчёт ВРИ и ТЭП"},
-    {"command": "platon", "description": "Платон Сергеевич"},
-    {"command": "help", "description": "Помощь"},
+    {"command": "platon", "description": "Платон Сергеевич — ИИ-аналитик проекта"},
+    {"command": "help", "description": "Помощь · все команды"},
 ]
-# Команды, работающие вне меню. Список нужен помощи и проверке: он держит их
-# видимыми для человека и не даёт молча потерять разбор.
+# Команды вне меню. Список нужен помощи и проверке: он держит их видимыми для
+# человека и не даёт молча потерять разбор.
 TELEGRAM_EXTRA_COMMANDS = [
-    {"command": "cadastre", "description": "ТЭП по кадастровому номеру"},
-    {"command": "address", "description": "ТЭП по адресу участка"},
-    {"command": "tep", "description": "ТЭП вопросами, без кадастра"},
-    {"command": "template", "description": "Excel-шаблон ТЭП — заполнить и прислать"},
-    {"command": "model", "description": "Открыть модель DevelopAid"},
+    {"command": "start", "description": "Приветствие и все кнопки сразу"},
+    {"command": "tep", "description": "Расчёт модели: свои вводные"},
+    {"command": "address", "description": "Расчёт модели: по адресу"},
+    {"command": "cadastre", "description": "Расчёт модели: по кадастровому номеру"},
+    {"command": "template", "description": "Скачать Excel-шаблон ТЭП"},
     {"command": "comment", "description": "Платон о текущем ТЭП"},
     {"command": "cancel", "description": "Прервать диалог и начать заново"},
     {"command": "status", "description": "Статус и версия"},
 ]
 # Куда расширения вставляют свои пункты. Прежде они дописывали в конец, и
 # расчёт льготы МПТ оказывался последним — ниже помощи. Якорем задано место:
-# перед Платоном, то есть среди расчётов, а не после них.
+# среди расчётов, перед Платоном.
 TELEGRAM_MENU_EXTENSION_ANCHOR = "platon"
 
 PRESET_DIR = Path(__file__).resolve().parent / "presets"
@@ -6286,6 +6289,27 @@ def _telegram_handle_dialog_text(chat_id: int, text: str) -> bool:
     return False
 
 
+def _telegram_calc_menu(chat_id: int) -> None:
+    """Второй уровень «Расчёта модели»: четыре способа взять ТЭП.
+
+    В плоском списке команд они стояли четырьмя похожими строками, и выбирать
+    приходилось между функциями, которые на вид не отличались. Расчёт при этом
+    один и тот же — разное только то, откуда берутся исходные данные, и здесь
+    это видно.
+    """
+    _telegram_send_message(
+        chat_id,
+        "<b>Расчёт модели</b>\n"
+        "Откуда взять ТЭП проекта?",
+        reply_markup={"inline_keyboard": [
+            [{"text": "Свои вводные, без кадастра", "callback_data": "flow_cad_no"}],
+            [{"text": "По адресу участка", "callback_data": "flow_address"}],
+            [{"text": "По кадастровому номеру", "callback_data": "flow_cad_yes"}],
+            [{"text": "Скачать Excel-шаблон ТЭП", "callback_data": "tep_template"}],
+        ]},
+    )
+
+
 def _telegram_start_message(chat_id: int, user_id: int) -> None:
     if not _telegram_user_allowed(user_id):
         _telegram_send_message(
@@ -6960,6 +6984,9 @@ def _telegram_handle_message(message: dict[str, Any]) -> None:
         return
     if command == "/template":
         _telegram_send_template(chat_id)
+        return
+    if command == "/calc":
+        _telegram_calc_menu(chat_id)
         return
     if command == "/cadastre":
         _telegram_dialog_callback(chat_id, user_id, "flow_cad_yes")

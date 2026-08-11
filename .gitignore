@@ -6,3 +6,4 @@ __pycache__/
 run.err
 data/platon_state/
 data/telegram_users.sqlite3
+data/usage/
