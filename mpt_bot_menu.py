@@ -82,7 +82,17 @@ def _ensure_command(core: Any) -> None:
         return
     if any(isinstance(item, dict) and str(item.get("command") or "") == "mpt" for item in commands):
         return
-    commands.append({"command": "mpt", "description": "Льгота МПТ — Москва"})
+    entry = {"command": "mpt", "description": "Льгота МПТ — Москва"}
+    # Дописать в конец значило поставить рабочий расчёт ниже «Статуса и версии»:
+    # меню Telegram плоское, и порядок в нём — единственное объяснение
+    # устройства бота. Встаём перед служебным хвостом движка.
+    service = set(getattr(core, "TELEGRAM_SERVICE_COMMANDS", ()) or ())
+    position = next(
+        (index for index, item in enumerate(commands)
+         if isinstance(item, dict) and str(item.get("command") or "") in service),
+        len(commands),
+    )
+    commands.insert(position, entry)
 
 
 def install(base: Any) -> None:

@@ -64,19 +64,36 @@ app = FastAPI(title="DevelopAid Development Investment Model", version=VERSION)
 # Нативное меню Telegram объявляется один раз — как VERSION. Список ставили
 # два места: движок при настройке вебхука и обёртка на старте, побеждал
 # последний — и /vritep из меню пропадал, хотя команда работала.
+# Порядок — это путь работы, а не история появления команд. Меню Telegram
+# плоское, заголовков групп в нём нет, поэтому единственное, чем можно
+# объяснить человеку устройство бота, — очерёдность и одинаковая форма подписей.
+# Пять способов задать проект стояли вперемешку с Платоном и служебным, а
+# «ТЭП по кадастровым номерам» и «Посчитать ВРИ и ТЭП» ничем не отличались на
+# вид, хотя это разные входы. Служебное — в конце: там его ищут.
+#
+# Группы (для чтения, в самом меню их не видно):
+#   начало · пять входов в ТЭП · модель · отдельные расчёты · Платон · служебное
 TELEGRAM_BOT_COMMANDS = [
     {"command": "start", "description": "Главное меню"},
-    {"command": "cadastre", "description": "ТЭП по кадастровым номерам"},
-    {"command": "address", "description": "Найти участок по адресу"},
-    {"command": "tep", "description": "Собрать ТЭП без кадастра"},
-    {"command": "vritep", "description": "Посчитать ВРИ и ТЭП"},
+
+    {"command": "cadastre", "description": "ТЭП по кадастровому номеру"},
+    {"command": "address", "description": "ТЭП по адресу участка"},
+    {"command": "vritep", "description": "ТЭП и плата за смену ВРИ"},
+    {"command": "tep", "description": "ТЭП вопросами, без кадастра"},
+    {"command": "template", "description": "Excel-шаблон ТЭП — заполнить и прислать"},
+
     {"command": "model", "description": "Открыть модель DevelopAid"},
-    {"command": "platon", "description": "Спросить Платона Сергеевича"},
-    {"command": "comment", "description": "Комментарий Платона к ТЭП"},
-    {"command": "template", "description": "Скачать Excel-шаблон ТЭП"},
+
+    {"command": "platon", "description": "Вопрос Платону Сергеевичу"},
+    {"command": "comment", "description": "Платон о текущем ТЭП"},
+
     {"command": "help", "description": "Все возможности бота"},
+    {"command": "cancel", "description": "Прервать диалог и начать заново"},
     {"command": "status", "description": "Статус и версия"},
 ]
+# Служебный хвост: расширения дописывают свои команды перед ним, а не в самый
+# конец — иначе рабочий инструмент оказывается ниже «Статуса и версии».
+TELEGRAM_SERVICE_COMMANDS = ("help", "cancel", "status")
 
 PRESET_DIR = Path(__file__).resolve().parent / "presets"
 MANUAL_TEP_TEMPLATE_FILENAME = "DevelopAid_Шаблон_ТЭП.xlsx"
