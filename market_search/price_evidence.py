@@ -37,7 +37,40 @@ _INVENTORY_RE = re.compile(
     r"|\b(?:квартир|лотов|предложений)\s*[:—-]?\s*(\d{1,4})\b",
     flags=re.I,
 )
-_SECONDARY_RE = re.compile(r"\bвторичн(?:ая|ое|ый|ого|ые|ых)\b|\bперепродаж[аи]\b", flags=re.I)
+_SECONDARY_RE = re.compile(r"\bвторичн[а-я]*\b|\bвторичк[а-я]*\b|\bперепродаж[а-я]*\b|\bпереуступк[а-я]*\b", flags=re.I)
+# У сданного дома остатки застройщика продаются объявлениями и попадают под
+# метку «вторичный рынок». Для элитных Хамовников это и есть цена предложения:
+# Хамовники 12, Саввинская 27, Brodsky — все сданы, и запрет на вторичку отрезал
+# нас ровно от того места, где их цена лежит.
+_DEVELOPER_STOCK_RE = re.compile(
+    r"\bот\s+застройщика\b|\bот\s+девелопера\b|\bостатки\s+застройщика\b"
+    r"|\bпоследние\s+лоты\b|\bпрямые\s+продажи\b",
+    flags=re.I,
+)
+_PRIVATE_RESALE_RE = re.compile(
+    r"\bсобственник\b|\bот\s+собственника\b|\bчастно(?:е|го)\s+лиц|\bагентств[оа]\b"
+    r"|\bпереуступк[аи]\s+от\s+физ",
+    flags=re.I,
+)
+
+MARKET_PRIMARY = "primary"
+MARKET_DEVELOPER_STOCK = "developer_stock"
+MARKET_RESALE = "resale"
+
+
+def offer_market(text: str) -> str:
+    """Чей это лот: застройщика или частника.
+
+    Различать обязательно. Запретить всё, где встретилось слово «вторичный», —
+    значит выбросить цену сданных элитных домов целиком; разрешить всё — значит
+    смешать первичный рынок с перепродажей.
+    """
+    value = str(text or "")
+    if not _SECONDARY_RE.search(value):
+        return MARKET_PRIMARY
+    if _DEVELOPER_STOCK_RE.search(value) and not _PRIVATE_RESALE_RE.search(value):
+        return MARKET_DEVELOPER_STOCK
+    return MARKET_RESALE
 _DATE_RE = re.compile(
     r"\b(\d{1,2})\s+(январ|феврал|март|апрел|ма[йя]|июн|июл|август|сентябр|октябр|ноябр|декабр)[а-я]*\s+(\d{4})",
     flags=re.I,
@@ -61,9 +94,14 @@ class PriceObservation:
     method: str
     match: str
     observed_at: str | None
+    market: str = MARKET_PRIMARY
 
     @property
     def quality(self) -> str:
+        if self.market == MARKET_DEVELOPER_STOCK:
+            # Остатки в сданном доме — законная цена предложения, но лотов мало
+            # и выбор смещён, поэтому качество ниже котировки первичного рынка.
+            return "low"
         if self.method == "derived_total_div_area":
             # Цена метра, посчитанная из цены лота и его площади, зависит от
             # того, какой именно лот попал в сниппет. Это ориентир, не котировка.
@@ -79,6 +117,7 @@ class PriceObservation:
             "match": self.match,
             "observed_at": self.observed_at,
             "quality": self.quality,
+            "market": self.market,
         }
 
 
@@ -181,8 +220,9 @@ class VerifiedPriceEnricher:
                 if _PRICE_M2_RE.search(text):
                     rejected.append({"url": doc.url, "reason": "entity_match_not_proven"})
                 continue
-            if _SECONDARY_RE.search(text):
-                rejected.append({"url": doc.url, "reason": "secondary_market"})
+            market = offer_market(text)
+            if market == MARKET_RESALE:
+                rejected.append({"url": doc.url, "reason": "private_resale"})
                 continue
 
             source = MarketPriceEnricher._source_name(doc)
@@ -197,6 +237,7 @@ class VerifiedPriceEnricher:
                         method=method,
                         match=match,
                         observed_at=when,
+                        market=market,
                     )
                 )
             if inventory is None:
@@ -293,6 +334,7 @@ class VerifiedPriceEnricher:
             "observed_at": dates[-1] if dates else None,
             "retrieved_at": self.today.isoformat(),
             "quality": best,
+            "markets": sorted({item.market for item in observations}),
             "observations": [item.to_dict() for item in observations[:20]],
             "note": "Цены предложения с карточек проекта; не цены сделок",
         }

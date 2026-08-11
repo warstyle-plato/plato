@@ -17,7 +17,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from .candidates_v6 import extract_candidates
+from .candidates_v6 import extract_candidates, registry_candidate
 from .documents import classify_document
 from .entities import ProjectEntity, merge_geographic_duplicates, resolve_entities
 from .geo_resolution import RESOLVED, ProjectGeoResolver, address_signature
@@ -25,6 +25,7 @@ from .geocoder import GeoPoint
 from .http import RemoteServiceError
 from .price_evidence import VerifiedPriceEnricher
 from .recommendation import market_recommendation
+from .registry import ProjectRegistry
 from .segments import SegmentResolver, detect_district, districts_match, segments_comparable
 from .service import MarketDiscoveryService as LegacyMarketDiscoveryService, haversine_km
 from .yandex_search import official_cards_from_docs
@@ -50,6 +51,11 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
     def __init__(self, data_dir: Path):
         super().__init__(data_dir)
         self.verified_prices = VerifiedPriceEnricher(self.search)
+        # Справочника может не быть — тогда конвейер работает как прежде, только
+        # без якоря. Пустой реестр не ошибка, а отсутствие выгрузки.
+        self.registry = ProjectRegistry.load(
+            ProjectRegistry.bundled_directory(), Path(data_dir) / "registry"
+        )
 
     def _geocode_project(self, candidate: dict[str, Any], locality: str):
         raise NotImplementedError(
@@ -135,6 +141,13 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                 docs.append(doc)
 
         candidates = extract_candidates(docs)
+        # Проекты района из справочника подмешиваются к найденным поиском: то,
+        # что числится в реестре, существует наверняка, и угадывать его имя не
+        # нужно. Сущности сольются по ключу, если поиск их уже принёс.
+        registry_seeded = [
+            registry_candidate(project) for project in self.registry.by_district(subject_district)
+        ]
+        candidates = candidates + registry_seeded
         entities = resolve_entities(candidates)
 
         budget = min(max(limit * 4, 20), 40)
@@ -181,6 +194,17 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                 continue
 
             rows.append(self._row(entity, geo, distance))
+
+        # Справочник — источник истины о девелопере, районе и темпе продаж.
+        for row in rows:
+            known = self.registry.find(row["name"])
+            if known is None:
+                row["sales"] = {"units_per_month": None, "quality": "unknown"}
+                continue
+            row["developer"] = row.get("developer") or known.developer
+            row["district"] = known.district or row.get("district")
+            row["sales"] = known.velocity()
+            row["in_registry"] = True
 
         # Класс дознаётся отдельно у тех, кому его не назвали каталожные
         # сниппеты: иначе жёсткий отбор выкидывает соседей в шестистах метрах.
@@ -276,6 +300,8 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                 "search_errors": search_errors[:5],
                 "raw_search_documents": len(docs),
                 "documents_by_kind": self._documents_by_kind(docs),
+                "registry_projects": len(self.registry),
+                "registry_seeded": len(registry_seeded),
                 "candidates_extracted": len(candidates),
                 "project_names_extracted": len(entities),
                 "entities_resolved": len(entities),
@@ -331,7 +357,9 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
 
         kept: list[dict[str, Any]] = []
         for row in rows:
-            row_district = detect_district(
+            # Район справочника надёжнее строки геокодера и не зависит от того,
+            # печатает её провайдер или нет.
+            row_district = row.get("district") or detect_district(
                 str((row.get("coordinates") or {}).get("display_name") or "")
             )
             row["district"] = row_district

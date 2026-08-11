@@ -98,6 +98,16 @@ _NEW_PRICE = """    const price=item.market_price||{};
     }else{
       priceBlock='<div class="md-meta"><span class="md-warn">'+mdEsc(price.reason||'Проверенной цены нет')+'</span></div>';
     }
+    const sales=item.sales||{};
+    if(sales.units_per_month!=null){
+      priceBlock+='<div class="md-marketline">Продажи: '+mdEsc(sales.units_per_month)+' ДДУ за '+
+        mdEsc(sales.observed_at||'месяц')+
+        (sales.change_pct!=null?' ('+mdEsc(sales.change_pct)+'% к предыдущему)':'')+
+        ' · '+mdEsc(sales.source||'реестр')+'</div>';
+    }
+    if(Array.isArray(price.markets)&&price.markets.indexOf('developer_stock')>=0){
+      priceBlock+='<div class="md-marketline">Это остатки застройщика в сданном доме, а не первичные продажи</div>';
+    }
     priceBlock+=(inventory.units!=null)?
       '<div class="md-marketline">Экспозиция: '+mdEsc(inventory.units)+' лот. · '+mdEsc(inventory.source||'источник не указан')+
         ' · качество '+mdEsc(inventory.quality||'—')+'</div>':

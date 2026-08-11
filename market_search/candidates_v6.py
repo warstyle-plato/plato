@@ -182,6 +182,35 @@ def _accept(name: str) -> str | None:
     return display or None
 
 
+REGISTRY = "registry"
+
+
+def registry_candidate(project) -> Candidate:
+    """Проект справочника как кандидат.
+
+    Документа за ним нет — есть внешний реестр, и этого достаточно: всё, что в
+    нём числится, заведомо существует. Уверенность выше любой извлечённой из
+    текста, потому что угадывать здесь нечего.
+    """
+    return Candidate(
+        raw_name=project.name,
+        canonical_name=clean_display_name(project.name),
+        key=canonical_key(project.name),
+        source_url="",
+        source_domain=str(project.source or "реестр продаж"),
+        source_title=project.name,
+        source_snippet="",
+        source_kind=REGISTRY,
+        site="registry",
+        external_id=None,
+        search_rank=1,
+        extraction_evidence="project_registry",
+        extraction_confidence=0.99,
+        developer=project.developer,
+        address_attributable=False,
+    )
+
+
 def extract_candidates(docs: list[SearchDoc]) -> list[Candidate]:
     result: list[Candidate] = []
     for doc in docs:

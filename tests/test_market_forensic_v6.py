@@ -432,7 +432,7 @@ def test_inventory_is_unknown_rather_than_invented() -> None:
     }
 
 
-def test_secondary_market_page_never_prices_a_primary_project() -> None:
+def test_private_resale_page_never_prices_a_primary_project() -> None:
     entity = resolve_entities(
         extract_candidates(
             [doc("Мод — квартиры", "https://www.cian.ru/zhiloy-kompleks-mod-7007007/", "Квартиры в продаже")]
@@ -441,12 +441,12 @@ def test_secondary_market_page_never_prices_a_primary_project() -> None:
     resale = doc(
         "Мод — купить квартиру",
         "https://www.cian.ru/zhiloy-kompleks-mod-7007007/",
-        "Вторичный рынок, 700 000 ₽/м²",
+        "Вторичный рынок от собственника, 700 000 ₽/м²",
     )
     enricher = VerifiedPriceEnricher(FakeSearch(default=[resale]), today=date(2026, 8, 7))
     result = enricher.collect(entity, "Москва")
     assert result["price"]["available"] is False
-    assert any(item["reason"] == "secondary_market" for item in result["rejected_observations"])
+    assert any(item["reason"] == "private_resale" for item in result["rejected_observations"])
 
 
 def test_million_plus_price_is_not_silently_divided_by_ten() -> None:
@@ -1465,3 +1465,172 @@ def test_official_average_is_not_shown_as_an_asking_price() -> None:
     assert "official_domrf_fallback" in core.PAGE
     assert "Официальная средняя ЕИСЖС" in core.PAGE
     assert "в ориентир не идёт" in core.PAGE
+
+
+# --- класс 13: справочник как якорь и остатки застройщика ---------------------
+
+
+def test_registry_anchors_district_developer_and_sales_velocity(tmp_path: Path) -> None:
+    """Справочник знает то, что конвейер добывал из прозы, — и знает наверняка."""
+    import json
+
+    from market_search.registry import ProjectRegistry
+
+    directory = tmp_path / "registry"
+    directory.mkdir()
+    (directory / "2026-07.json").write_text(
+        json.dumps(
+            {
+                "source": "Продажи новостроек Москвы, июль 2026",
+                "projects": [
+                    {
+                        "name": "Фрунзенский",
+                        "developer": "Sminex",
+                        "okrug": "ЦАО",
+                        "district": "Хамовники",
+                        "sales": {"2026-06": 1, "2026-07": 3},
+                    },
+                    {
+                        "name": "Дом Дау",
+                        "developer": "Сумма Элементов",
+                        "okrug": "ЦАО",
+                        "district": "Пресненский",
+                        "sales": {"2026-06": 4, "2026-07": 4},
+                    },
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    registry = ProjectRegistry.load(directory)
+    assert len(registry) == 2
+    assert [item.name for item in registry.by_district("Хамовники")] == ["Фрунзенский"]
+
+    # Полная вывеска находит короткую запись справочника.
+    found = registry.find("Клубный квартал Фрунзенский")
+    assert found is not None and found.developer == "Sminex"
+
+    velocity = found.velocity()
+    assert velocity["units_per_month"] == 3
+    assert velocity["previous_units_per_month"] == 1
+    assert velocity["change_pct"] == 200.0
+    assert velocity["quality"] == "registry"
+
+
+def test_missing_registry_is_not_an_error(tmp_path: Path) -> None:
+    from market_search.registry import ProjectRegistry
+
+    registry = ProjectRegistry.load(tmp_path / "нет-такого-каталога")
+    assert registry.available is False
+    assert registry.by_district("Хамовники") == []
+    assert registry.find("Хамовники 12") is None
+
+
+def test_sales_report_rows_are_parsed_by_okrug_anchor() -> None:
+    """Нумерация в отчёте рвётся, колонки не выровнены — якорем служит округ."""
+    from market_search.registry import parse_sales_report
+
+    lines = [
+        "№", "Проект", "Девелопер / Застройщик", "Округ", "Район", "июн.26", "июл.26", "Изм.",
+        "1", "Лучи", "ЛСР", "ЗАО", "Солнцево", "112", "177", "58,0%",
+        "2", "С5", "MR Group", "САО", "Аэропорт", "старт", "141",
+    ]
+    rows = parse_sales_report(lines, months=["2026-06", "2026-07"], source="отчёт")
+    assert [row["name"] for row in rows] == ["Лучи", "С5"]
+    assert rows[0]["developer"] == "ЛСР"
+    assert rows[0]["district"] == "Солнцево"
+    assert rows[0]["sales"] == {"2026-06": 112, "2026-07": 177}
+    # «старт» — не ноль продаж, а отсутствие данных за месяц.
+    assert rows[1]["sales"] == {"2026-07": 141}
+
+
+def test_developer_stock_in_a_completed_building_is_a_valid_asking_price() -> None:
+    """Хамовники 12, Саввинская 27, Brodsky сданы — их цена лежит в объявлениях."""
+    from market_search.price_evidence import offer_market
+
+    assert offer_market("Квартиры от застройщика, 3 300 000 ₽/м²") == "primary"
+    assert offer_market("Вторичный рынок, последние лоты от застройщика") == "developer_stock"
+    assert offer_market("Вторичный рынок. Квартира от собственника") == "resale"
+    assert offer_market("Продажа от агентства, вторичка") == "resale"
+
+    entity = resolve_entities(
+        extract_candidates(
+            [
+                doc(
+                    "Саввинская 27 — квартиры",
+                    "https://www.novostroy.ru/buildings/savvinskaya-27/",
+                    "Дом сдан",
+                )
+            ]
+        )
+    )[0]
+    page = doc(
+        "Саввинская 27 — квартиры",
+        "https://www.novostroy.ru/buildings/savvinskaya-27/",
+        "Вторичный рынок, последние лоты от застройщика. от 2 256 990 ₽ за м²",
+    )
+    result = VerifiedPriceEnricher(FakeSearch(default=[page]), today=date(2026, 8, 11)).collect(
+        entity, "Москва"
+    )
+    assert result["price"]["verified"] is True
+    assert result["price"]["price_per_sqm"] == 2_256_990
+    assert result["price"]["markets"] == ["developer_stock"]
+    assert result["price"]["quality"] == "low"
+
+
+def test_bundled_registry_ships_with_the_code() -> None:
+    """Каталог данных в контейнере перекрывается томом — справочник едет с кодом."""
+    from market_search.registry import ProjectRegistry
+
+    registry = ProjectRegistry.load(ProjectRegistry.bundled_directory())
+    assert registry.available, "встроенная выгрузка должна быть в пакете"
+    assert len(registry) > 100
+    khamovniki = registry.by_district("Хамовники")
+    assert khamovniki, "в справочнике должны быть проекты Хамовников"
+    assert all(item.developer for item in khamovniki)
+    # Отчёт про ДДУ, поэтому сданных домов в нём нет — это не дефект справочника,
+    # а его граница: их приносит поиск.
+    assert registry.find("Хамовники 12") is None
+
+
+def test_registry_service_uses_it_as_a_discovery_anchor(tmp_path: Path, monkeypatch) -> None:
+    service = ServiceV6(tmp_path)
+    assert service.registry.available
+
+    card = doc(
+        'Жилой комплекс «Дом XXII» — ЕИСЖС',
+        "https://xn--80az8a.xn--d1aqf.xn--p1ai/lk/na-dom/2020202",
+        "Москва, Погодинская улица, 22. Элитный жилой комплекс",
+    )
+
+    class OnlyCards:
+        def search(self, query: str, *, groups_on_page: int = 10):
+            return [card] if "Дом XXII" in query or "Дом ХХII" in query else []
+
+    monkeypatch.setattr(service, "search", OnlyCards())
+    monkeypatch.setattr(service.verified_prices, "search", OnlyCards())
+    monkeypatch.setattr(
+        service,
+        "geocoder",
+        FakeGeocoder(
+            {
+                "Саввинская набережная, 25": point(
+                    55.7333, 37.5638, "Саввинская набережная, 25, район Хамовники, Москва"
+                ),
+                "Погодинская улица, 22": point(
+                    55.7288, 37.5652, "Погодинская улица, 22, район Хамовники, Москва"
+                ),
+            }
+        ),
+    )
+    result = service.discover(
+        address=SUBJECT, latitude=None, longitude=None, radius_km=3.0, limit=10
+    )
+    assert result["diagnostics"]["registry_seeded"] >= 5, "район должен подмешаться из справочника"
+    names = [row["name"] for row in result["projects"]]
+    assert "Дом XXII" in names
+    row = next(item for item in result["projects"] if item["name"] == "Дом XXII")
+    assert row["developer"] == "Донстрой"
+    assert row["district"] == "Хамовники"
+    assert row["sales"]["quality"] == "registry"
