@@ -21548,7 +21548,7 @@ details.cadastral-box>summary::marker{color:#888}
           <h3>Участок</h3>
           <p>Кадастровый номер, адрес или координаты «широта, долгота». Несколько номеров — через запятую, точку с запятой или с новой строки; повторы удаляются, за один запрос до 30 участков.</p>
           <div class="cadastral-entry">
-            <textarea id="cadastralNumbers" placeholder="77:02:0016009:1934, 77:02:0016009:1935&#10;или: 50:12:0100131:497&#10;или: Московская область, г. Мытищи, ул. Мира, 1"></textarea>
+            <textarea id="cadastralNumbers" oninput="dropStaleLandPreview()" placeholder="77:02:0016009:1934, 77:02:0016009:1935&#10;или: 50:12:0100131:497&#10;или: Московская область, г. Мытищи, ул. Мира, 1"></textarea>
             <button id="cadastralAnalyzeButton" class="btn dark" onclick="obtainTep()">Получить ТЭП</button>
           </div>
           <div class="import-actions" style="margin-top:8px">
@@ -22526,6 +22526,7 @@ async function obtainTep(){
  const status=document.getElementById('cadastralStatus');
  const raw=(field&&field.value||'').trim();
  if(!raw){status.innerHTML='<span class="import-error">Введите кадастровый номер или адрес.</span>';return}
+ dropStaleLandPreview();
  const numbers=raw.split(/[\n,;]+/).map(x=>x.trim()).filter(Boolean);
  const looksCadastral=numbers.length>0&&numbers.every(x=>/^\d{2}:\d{2}:\d{6,8}:\d+$/.test(x));
  const regionOnly=looksCadastral&&numbers.every(x=>x.startsWith('50:'));
@@ -22752,6 +22753,27 @@ function landDate(value){
  return iso?`${iso[3]}.${iso[2]}.${iso[1]}`:(text||'—');
 }
 
+// Снимок ЕГРН относится к тому запросу, по которому получен. Прежде блок жил
+// сам по себе: расчёт ТЭП по кадастровому номеру идёт через /cadastral/analyze
+// и ЕГРН не трогает, поэтому карточка предыдущего участка оставалась на экране
+// рядом с новым ТЭП. На одном экране выходили два участка сразу — «ТЭП посчитан:
+// 2,0844 га» и «Суммарная площадь 0,9820 га», оба достоверные с виду.
+function landQueryKey(text){
+ return String(text||'').toLowerCase().replace(/\s+/g,' ').trim();
+}
+function landSnapshotFits(){
+ const field=document.getElementById('cadastralNumbers');
+ if(!landLookup||!field)return false;
+ return landQueryKey(landLookup.query)===landQueryKey(field.value);
+}
+function hideLandPreview(){
+ const preview=document.getElementById('landPreview');
+ if(preview)preview.style.display='none';
+}
+function dropStaleLandPreview(){
+ if(!landSnapshotFits())hideLandPreview();
+}
+
 async function lookupLand(options){
  const field=document.getElementById('cadastralNumbers');
  const button=document.getElementById('cadastralAnalyzeButton');
@@ -22760,6 +22782,7 @@ async function lookupLand(options){
  if(!raw){status.innerHTML='<span class="import-error">Введите кадастровый номер, адрес или координаты.</span>';return}
  button.disabled=true;button.textContent='Ищу…';
  status.textContent='Запрашиваю сведения ЕГРН в НСПД…';
+ hideLandPreview();
  try{
   const response=await fetch('/land/lookup',{
    method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:raw,limit:30})
@@ -24200,7 +24223,14 @@ function syncTep(rerender=true){
  tep.clinic.total_area=socialBuild?Number(inputs.social_clinic_gba_sqm||0):0;tep.clinic.transfer=tep.clinic.total_area;tep.clinic.units=socialBuild?Number(inputs.clinic_capacity||0):0;
  // ГлавАПУ has priority over any old/stale underground-parking TEP values.
  repairParkingFromGlavapu();
- if(rerender)renderTep();else updateTepTotals();
+ // Без перерисовки обновлялась только строка итогов, а ячейки продуктов
+ // оставались с прежними числами: правка машино-мест на «Вводных» доходила до
+ // таблицы ТЭП лишь со следующим полным рендером — то есть после расчёта. Не
+ // перерисовывать нужно ровно в одном случае: когда человек печатает в самой
+ // таблице и потеряет фокус. Тогда и не перерисовываем, в остальных — сразу.
+ const editingTep=typeof tepBody!=='undefined'&&tepBody
+  &&tepBody.contains(document.activeElement);
+ if(rerender||!editingTep)renderTep();else updateTepTotals();
 }
 function addMonthsJS(iso,months){
  const d=new Date(iso+'T12:00:00');
