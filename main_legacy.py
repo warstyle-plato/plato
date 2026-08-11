@@ -6331,6 +6331,15 @@ def _telegram_handle_glavapu_document(chat_id: int, data: bytes, filename: str) 
     except Exception:
         return False
     normalized = parsed.get("normalized") or {}
+    # Разбор не отказывается от чужой книги: он ищет свои подписи, ничего не
+    # находит и возвращает набор из одних None. Дальше файл шёл как «распознан»,
+    # и человек получал сводку из нулей — «территория 0,0000 га, квартиры 0 м²»
+    # — вместо ответа, что это не тот формат. Считаем по числам: из 61 ключа
+    # непустым в чужом файле остаётся один, и тот не вычитан, а подставлен
+    # разбором по умолчанию (suggested_social_mode).
+    if not any(isinstance(value, (int, float)) and not isinstance(value, bool) and value
+               for value in normalized.values()):
+        return False
     mappings = parsed.get("mappings") or {}
     session = {
         "project_name": "",
@@ -7126,14 +7135,21 @@ def _telegram_process_update(update: dict[str, Any]) -> None:
     try:
         _telegram_handle_update(update)
     except Exception as exc:
-        _TELEGRAM_RUNTIME["last_error"] = str(exc)
+        # Причина доносится в чат вместе с местом: «попробуйте через минуту»
+        # не лечит ничего, если через минуту сломается то же самое, а логи
+        # хостинга недоступны. Здесь это работало наоборот всех прочих веток —
+        # верхний перехват оставлял себе всё, что до него долетело.
+        where = _error_location(exc)
+        _TELEGRAM_RUNTIME["last_error"] = where
         message = update.get("message") if isinstance(update, dict) else None
         chat_id = ((message or {}).get("chat") or {}).get("id") if isinstance(message, dict) else None
         if chat_id:
             try:
                 _telegram_send_message(
                     int(chat_id),
-                    "<b>Не удалось завершить запрос.</b> Попробуйте ещё раз через минуту.",
+                    "<b>Не удалось завершить запрос.</b>\n"
+                    f"<i>{html.escape(where[:300])}</i>\n\n"
+                    "Если повторится — пришлите эту строку: в ней файл, строка и функция.",
                 )
             except Exception:
                 pass
