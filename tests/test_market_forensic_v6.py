@@ -1416,3 +1416,52 @@ def test_derived_price_is_marked_low_quality() -> None:
     assert result["price"]["verified"] is True
     assert result["price"]["quality"] == "low"
     assert result["price"]["observations"][0]["method"] == "derived_total_div_area"
+
+
+def test_cyrillic_and_latin_spelling_of_the_same_house_is_one_project() -> None:
+    """«Бродский» и «Brodsky» показывались двумя карточками в одном переулке."""
+    from market_search.normalize import same_project
+
+    assert same_project("Бродский", "Brodsky")
+    assert same_project("Тверской", "Tverskoy")
+    assert same_project("Савелий", "Saveliy")
+    # Свести всё подряд нельзя: разные бренды и очереди остаются разными.
+    assert not same_project("Мод", "Модерн")
+    assert not same_project("Петровский парк", "Петровский парк II")
+
+    docs = [
+        doc(
+            'Жилой комплекс «Бродский» — ЕИСЖС',
+            "https://xn--80az8a.xn--d1aqf.xn--p1ai/lk/na-dom/4004004",
+            "Москва, 1-й Тружеников пер., 16",
+            rank=1,
+        ),
+        doc(
+            "Brodsky — купить квартиру",
+            "https://www.cian.ru/zhiloy-kompleks-brodsky-6001001/",
+            "Москва, 1-й Тружеников переулок, 17",
+            rank=2,
+        ),
+    ]
+    entities = resolve_entities(extract_candidates(docs))
+    assert len(entities) == 1, [item.canonical_name for item in entities]
+
+
+def test_official_average_is_not_shown_as_an_asking_price() -> None:
+    """«201 429 ₽/м² цена предложения» в Хамовниках — подпись была неправдой."""
+    from market_search.ui_v6 import install as install_ui
+
+    class FakeCore:
+        PAGE = (
+            "<html><head></head><body>"
+            '<input id="apartment_price_th" type="number" value="500">'
+            "<button class=\"tab\" data-tab=\"report\" onclick=\"openTab('report',this)\">Отчёт</button>"
+            '<div id="report" class="panel"></div>'
+            "</body></html>"
+        )
+
+    core = FakeCore()
+    install_ui(core)
+    assert "official_domrf_fallback" in core.PAGE
+    assert "Официальная средняя ЕИСЖС" in core.PAGE
+    assert "в ориентир не идёт" in core.PAGE

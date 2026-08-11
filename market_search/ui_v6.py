@@ -76,7 +76,8 @@ _NEW_PRICE = """    const price=item.market_price||{};
     const inventory=item.inventory||{};
     let priceBlock='';
     let priceSources='';
-    if(price.available&&price.verified){
+    const official=price.basis==='official_domrf_fallback';
+    if(price.available&&price.verified&&!official){
       priceBlock='<div class="md-price"><strong>'+mdRubM2(price.price_per_sqm)+'</strong>'+
         '<span>цена предложения с карточки проекта · качество '+mdEsc(price.quality||'—')+'</span></div>';
       if(price.price_per_sqm_min&&price.price_per_sqm_max&&price.price_per_sqm_min!==price.price_per_sqm_max){
@@ -87,6 +88,13 @@ _NEW_PRICE = """    const price=item.market_price||{};
       const who=Array.isArray(price.sources)?price.sources.join(', '):'';
       if(who||when)priceBlock+='<div class="md-marketline">Источник: '+mdEsc(who||'—')+(when?' · наблюдение '+mdEsc(when):'')+'</div>';
       if(price.rejected_count)priceBlock+='<div class="md-marketline">Отброшено наблюдений без доказанной привязки: '+mdEsc(price.rejected_count)+'</div>';
+    }else if(official){
+      // Официальная средняя ЕИСЖС — среднее по зарегистрированным сделкам, оно
+      // отстаёт от рынка и в ориентир не идёт. Крупной цифрой её показывать
+      // нельзя: подпись «цена предложения» на ней была прямой неправдой.
+      priceBlock='<div class="md-meta"><span class="md-warn">Цена предложения не найдена</span></div>'+
+        '<div class="md-marketline">Официальная средняя ЕИСЖС: '+mdRubM2(price.price_per_sqm)+
+        ' — это среднее по зарегистрированным сделкам, в ориентир не идёт</div>';
     }else{
       priceBlock='<div class="md-meta"><span class="md-warn">'+mdEsc(price.reason||'Проверенной цены нет')+'</span></div>';
     }

@@ -223,7 +223,12 @@ def _fold(value: str) -> str:
     folded = re.sub(r"[^a-z0-9]+", "", folded)
     folded = re.sub(r"(.)\1+", r"\1", folded)
     folded = folded.replace("ck", "k").replace("ph", "f").replace("z", "s")
+    # «й» и «ый» латиница пишет то через i, то через y: «Бродский» и «Brodsky» —
+    # одна вывеска, но по буквам они расходились на последнем знаке, и дом
+    # показывался в выдаче дважды. y и i здесь один звук, сводим к одному знаку.
+    folded = folded.replace("y", "i")
     folded = re.sub(r"(?<=.)e$", "", folded)
+    folded = re.sub(r"(.)\1+", r"\1", folded)
     return folded
 
 
