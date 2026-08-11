@@ -1545,6 +1545,61 @@ def test_sales_report_rows_are_parsed_by_okrug_anchor() -> None:
     assert rows[1]["sales"] == {"2026-07": 141}
 
 
+def _pdf_with(cmap: str, content: str) -> bytes:
+    import zlib
+
+    def stream(text: str) -> bytes:
+        return b"stream\n" + zlib.compress(text.encode("latin-1")) + b"\nendstream\n"
+
+    return b"%PDF-1.4\n" + stream(cmap) + stream(content) + b"%%EOF\n"
+
+
+def test_glyph_without_a_letter_is_visible_not_dropped() -> None:
+    """Пропуск неопознанного глифа неотличим от исправного разбора.
+
+    В июльском отчёте карта ToUnicode не знала «ё», и «Мнёвники» молча стали
+    «Мнвниками»: справочник выглядел целым, а имя больше ни с чем не совпадало.
+    """
+    from market_search.registry_import import UNKNOWN_GLYPH, pdf_lines, unresolved_glyphs
+
+    raw = _pdf_with(
+        "beginbfchar\n<0001> <041C>\n<0002> <043D>\n<0003> <0432>\n"
+        "<0004> <0438>\n<0005> <043A>\nendbfchar\n",
+        "BT [<00010002031800030002000400050004>] TJ ET\n",
+    )
+    assert pdf_lines(raw) == [f"Мн{UNKNOWN_GLYPH}вники"]
+    assert unresolved_glyphs(raw) == {"0318": f"Мн{UNKNOWN_GLYPH}вники"}
+
+    # Букву можно назвать руками, когда её не знает и шрифт.
+    assert pdf_lines(raw, glyphs={"0318": "ё"}) == ["Мнёвники"]
+    assert unresolved_glyphs(raw, glyphs={"0318": "ё"}) == {}
+
+
+def test_font_glyph_map_is_not_taken_on_faith() -> None:
+    """Карта шрифта годится, только пока код в потоке — это номер глифа."""
+    from market_search.registry_import import _font_glyph_map
+
+    raw = _pdf_with("beginbfchar\n<0001> <041C>\nendbfchar\n", "BT [<0001>] TJ ET\n")
+    # Шрифта в файле нет — второй карты тоже нет, поведение прежнее.
+    assert _font_glyph_map(raw, {"0001": "М"}) == {}
+
+
+def test_bundled_registry_kept_every_letter() -> None:
+    """Выгрузка, уезжающая с кодом, не должна нести следов потерянных букв."""
+    import json
+
+    from market_search.registry import ProjectRegistry
+    from market_search.registry_import import UNKNOWN_GLYPH
+
+    path = ProjectRegistry.bundled_directory() / "moscow-2026-07.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    rows = payload["projects"]
+    assert rows, "базовая выгрузка справочника пуста"
+    assert not [row for row in rows if UNKNOWN_GLYPH in json.dumps(row, ensure_ascii=False)]
+    # «ё» встречается в московских названиях; её отсутствие целиком — признак потери.
+    assert any("ё" in row["name"] for row in rows)
+
+
 def test_developer_stock_in_a_completed_building_is_a_valid_asking_price() -> None:
     """Хамовники 12, Саввинская 27, Brodsky сданы — их цена лежит в объявлениях."""
     from market_search.price_evidence import offer_market
