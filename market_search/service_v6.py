@@ -272,6 +272,7 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
             row["evidence"] = self._evidence_label(row)
 
         self._reject_price_outliers(rows)
+        self._reject_prices_far_from_official(rows, locality)
 
         rows.sort(
             key=lambda item: (
@@ -566,6 +567,102 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
     # Во сколько раз цена проекта может отличаться от медианы соседей того же
     # класса и района, оставаясь его ценой.
     _PEER_SPREAD = 3.0
+    # Насколько цена предложения может уйти от официальной средней ЕИСЖС по
+    # карточке того же проекта. Вверх — далеко: средняя считается по сделкам,
+    # зарегистрированным в том числе на старте продаж, и отстаёт от текущего
+    # прайса кратно. Вниз — почти никуда: предложение ниже уже случившихся
+    # сделок означало бы обвал рынка вдвое.
+    _OFFICIAL_SPREAD_HIGH = 6.0
+    _OFFICIAL_SPREAD_LOW = 2.0
+
+    @staticmethod
+    def _offer_priced(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Строки с ценой предложения — без официальных средних.
+
+        Смешивать их нельзя. Официальная средняя ЕИСЖС — среднее по
+        зарегистрированным сделкам, она отстаёт от прайса в разы, и в ориентир
+        по аналогам не идёт именно поэтому. На Гродненской улице медиана
+        «соседей» набралась из двух таких средних, 143 493 и 404 524, и убила
+        верную цену Кунцево 496 311 ₽/м² как невозможную.
+        """
+        return [
+            row
+            for row in rows
+            if row.get("price_verified")
+            and (row.get("market_price") or {}).get("basis") != "official_domrf_fallback"
+        ]
+
+    def _reject_prices_far_from_official(
+        self, rows: list[dict[str, Any]], locality: str
+    ) -> None:
+        """Проверить цену по официальной средней самого проекта.
+
+        Нужно там, где сравнивать не с кем: на улице Мишина цен в выборке было
+        две, «Клубный дом Юннаты» 4 566 681 ₽/м² и «Симфония 34» 431 753, и
+        по двум числам, расходящимся в десять раз, большинством не решить,
+        какое ложное. Якорь берётся вне выборки — из карточки ЕИСЖС этого же
+        проекта, привязка которой уже доказана адресом и названием.
+
+        Запрос стоит обращения к поиску, поэтому делается только на короткой
+        выборке: там, где соседей хватает, решение принимает проверка по ним.
+        """
+        priced = self._offer_priced(rows)
+        if len(priced) >= 3:
+            return
+        for row in priced:
+            cards = row.get("official_cards") or []
+            if not cards or not row.get("name"):
+                continue
+            try:
+                official = self.official_prices.project_price(row["name"], locality, cards)
+            except RemoteServiceError:
+                continue
+            anchor = official.get("price_per_sqm") if official.get("available") else None
+            if not anchor:
+                continue
+            value = int(row["market_price"]["price_per_sqm"])
+            if (
+                value <= anchor * self._OFFICIAL_SPREAD_HIGH
+                and value >= anchor / self._OFFICIAL_SPREAD_LOW
+            ):
+                row["market_price"]["official"] = official
+                continue
+            self._drop_price(
+                row,
+                value,
+                reason=(
+                    f"{value:,} ₽/м² против официальной средней ЕИСЖС {int(anchor):,} ₽/м² "
+                    "по карточке этого же проекта — это не его цена"
+                ).replace(",", " "),
+                marker="price_far_from_official_average",
+                peer=int(anchor),
+            )
+
+    @staticmethod
+    def _drop_price(
+        row: dict[str, Any], value: int, *, reason: str, marker: str, peer: int
+    ) -> None:
+        """Снять цену, оставив её видимой в отбракованных."""
+        price = row.get("market_price") or {}
+        row["rejected_price_observations"] = [
+            *row.get("rejected_price_observations", []),
+            {
+                "url": (price.get("observations") or [{}])[0].get("url", ""),
+                "reason": marker,
+                "price_per_sqm": value,
+                "peer_median": peer,
+            },
+        ]
+        row["market_price"] = {
+            "available": False,
+            "verified": False,
+            "basis": "rejected_outlier",
+            "reason": reason,
+            "rejected_count": 1,
+        }
+        row["price_verified"] = False
+        row["eligible_analogue"] = False
+        row["evidence"] = MarketDiscoveryService._evidence_label(row)
 
     @staticmethod
     def _reject_price_outliers(rows: list[dict[str, Any]]) -> None:
@@ -582,7 +679,7 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         проекта, иначе он подпирает собственную оценку. Меньше трёх цен — сравнивать
         не с чем, и тогда не трогаем ничего.
         """
-        priced = [row for row in rows if row.get("price_verified")]
+        priced = MarketDiscoveryService._offer_priced(rows)
         if len(priced) < 3:
             return
         values = [int(row["market_price"]["price_per_sqm"]) for row in priced]
@@ -594,29 +691,16 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
             ratio = value / peer if value > peer else peer / value
             if ratio <= MarketDiscoveryService._PEER_SPREAD:
                 continue
-            price = row["market_price"]
-            row["rejected_price_observations"] = [
-                *row.get("rejected_price_observations", []),
-                {
-                    "url": (price.get("observations") or [{}])[0].get("url", ""),
-                    "reason": "price_far_from_peers",
-                    "price_per_sqm": value,
-                    "peer_median": int(round(peer)),
-                },
-            ]
-            row["market_price"] = {
-                "available": False,
-                "verified": False,
-                "basis": "rejected_outlier",
-                "reason": (
+            MarketDiscoveryService._drop_price(
+                row,
+                value,
+                reason=(
                     f"{value:,} ₽/м² против {int(round(peer)):,} ₽/м² у соседей "
                     "того же класса и района — это не цена этого проекта"
                 ).replace(",", " "),
-                "rejected_count": 1,
-            }
-            row["price_verified"] = False
-            row["eligible_analogue"] = False
-            row["evidence"] = MarketDiscoveryService._evidence_label(row)
+                marker="price_far_from_peers",
+                peer=int(round(peer)),
+            )
 
     @staticmethod
     def _evidence_label(row: dict[str, Any]) -> str:

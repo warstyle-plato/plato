@@ -1586,6 +1586,107 @@ def test_price_impossible_next_to_peers_is_dropped() -> None:
     assert dropped["rejected_price_observations"][0]["reason"] == "price_far_from_peers"
 
 
+def test_developer_page_is_not_an_official_project_card() -> None:
+    """Реестр застройщиков на том же хосте и тоже оканчивается числом.
+
+    На Гродненской улице «Свои» подтвердились страницей компании
+    /единый-реестр-застройщиков/застройщик/16114 и получили адрес и класс.
+    """
+    from market_search.yandex_search import official_cards_from_docs
+
+    developer = doc(
+        "Свои — застройщик",
+        "https://наш.дом.рф/сервисы/единый-реестр-застройщиков/застройщик/16114",
+        "Единый реестр застройщиков",
+    )
+    house = doc(
+        "ЖК Кунцево — объект",
+        "https://наш.дом.рф/сервисы/каталог-новостроек/объект/128341",
+        "Можайское шоссе, 2",
+    )
+    cards = official_cards_from_docs([developer, house])
+    assert [card["object_id"] for card in cards] == [128341]
+
+
+def test_official_average_is_not_a_peer_price() -> None:
+    """Средняя ЕИСЖС отстаёт от прайса и соседом по цене быть не может.
+
+    Живая выдача по Гродненской улице: у МАНИФЕСТа и Дома на Барвихинской
+    цены предложения нет, показана официальная средняя 143 493 и 404 524 ₽/м².
+    Медиана «соседей» набралась из них и убила верную цену Кунцево 496 311.
+    """
+    from market_search.service_v6 import MarketDiscoveryService
+
+    def official(name: str, value: int) -> dict:
+        return {
+            "name": name,
+            "price_verified": True,
+            "eligible_analogue": True,
+            "market_price": {
+                "verified": True,
+                "basis": "official_domrf_fallback",
+                "price_per_sqm": value,
+            },
+        }
+
+    rows = [
+        official("МАНИФЕСТ", 143_493),
+        official("Дом на Барвихинской", 404_524),
+        {
+            "name": "Кунцево",
+            "price_verified": True,
+            "eligible_analogue": True,
+            "market_price": {
+                "verified": True,
+                "basis": "verified_project_page_asking",
+                "price_per_sqm": 496_311,
+                "observations": [{"url": "https://example.test/kuncevo"}],
+            },
+        },
+    ]
+    MarketDiscoveryService._reject_price_outliers(rows)
+
+    kept = [item["name"] for item in rows if item["price_verified"]]
+    assert "Кунцево" in kept, "цена предложения снята сравнением с официальной средней"
+
+
+def test_lone_price_is_checked_against_its_own_official_card() -> None:
+    """Двух цен для голосования мало — якорь берётся из карточки самого проекта.
+
+    На улице Мишина «Клубный дом Юннаты» получил 4 566 681 ₽/м² при
+    бизнес-классе, а второй ценой в выборке была «Симфония 34» с 431 753.
+    """
+    from market_search.service_v6 import MarketDiscoveryService
+
+    class FakeOfficial:
+        def project_price(self, name, locality, cards):
+            return {"available": True, "price_per_sqm": 452_000}
+
+    service = MarketDiscoveryService.__new__(MarketDiscoveryService)
+    service.official_prices = FakeOfficial()
+
+    rows = [
+        {
+            "name": name,
+            "price_verified": True,
+            "eligible_analogue": True,
+            "official_cards": [{"url": "https://наш.дом.рф/card"}],
+            "market_price": {
+                "verified": True,
+                "basis": "verified_project_page_asking",
+                "price_per_sqm": value,
+                "observations": [{"url": f"https://example.test/{value}"}],
+            },
+        }
+        for name, value in (("Клубный дом Юннаты", 4_566_681), ("Симфония 34", 431_753))
+    ]
+    service._reject_prices_far_from_official(rows, "Москва")
+
+    assert rows[0]["price_verified"] is False
+    assert "официальной средней ЕИСЖС" in rows[0]["market_price"]["reason"]
+    assert rows[1]["price_verified"] is True
+
+
 def test_small_sample_keeps_its_prices() -> None:
     """Две цены — не выборка: сравнивать не с чем, и трогать их нельзя."""
     from market_search.service_v6 import MarketDiscoveryService

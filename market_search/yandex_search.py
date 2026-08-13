@@ -16,6 +16,11 @@ from .http import RemoteServiceError, fresh, load_json, request_bytes, save_json
 
 
 _OFFICIAL_HOST = "xn--80az8a.xn--d1aqf.xn--p1ai"
+# Страницы наш.дом.рф, которые описывают не дом: компанию-застройщика и её
+# реестровую запись. Отсеиваем перечислением известного, а не разрешением
+# известного: список разделов у портала свой и меняется, а ошибочно закрытый
+# раздел отнял бы подтверждение у настоящих проектов.
+_DEVELOPER_CARD_RE = re.compile(r"/(?:застройщик|девелопер|developer)/\d", re.I)
 _SEARCH_ENDPOINT = "https://searchapi.api.cloud.yandex.net/v2/web/search"
 _GENERIC_TITLES = {
     "новостройки",
@@ -331,6 +336,14 @@ def official_cards_from_docs(docs: list[SearchDoc]) -> list[dict[str, Any]]:
         except (ValueError, UnicodeError):
             continue
         if host != _OFFICIAL_HOST:
+            continue
+        # Реестр застройщиков живёт на том же хосте и тоже оканчивается числом:
+        # /единый-реестр-застройщиков/застройщик/16114 — это компания, а не дом.
+        # На Гродненской улице такая страница подтвердила «Свои» как проект и
+        # выдала ему адрес и класс. Опознаём по пути: номер девелопера и номер
+        # объекта живут в одном числовом пространстве, по идентификатору их не
+        # различить.
+        if _DEVELOPER_CARD_RE.search(path):
             continue
 
         object_match = re.search(r"/(\d{4,12})(?:/)?$", path)
