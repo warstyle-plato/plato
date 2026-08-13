@@ -1586,6 +1586,39 @@ def test_price_impossible_next_to_peers_is_dropped() -> None:
     assert dropped["rejected_price_observations"][0]["reason"] == "price_far_from_peers"
 
 
+def test_official_average_is_not_counted_as_a_verified_price() -> None:
+    """Счётчик обязан считать то же, что идёт в ориентир.
+
+    На Гродненской улице в шапке стояло «Проверенная цена: 3 / 4» при трёх
+    карточках со строкой «цена предложения не найдена» и официальной средней
+    ЕИСЖС под ней.
+    """
+    from market_search.service_v6 import MarketDiscoveryService
+
+    rows = [
+        {
+            "name": "МАНИФЕСТ",
+            "price_verified": True,
+            "eligible_analogue": True,
+            "market_price": {"verified": True, "basis": "official_domrf_fallback"},
+        },
+        {
+            "name": "Кунцево",
+            "price_verified": True,
+            "eligible_analogue": True,
+            "market_price": {"verified": True, "basis": "official_domrf_fallback"},
+        },
+        {
+            "name": "ДОМ XXII",
+            "price_verified": True,
+            "eligible_analogue": True,
+            "market_price": {"verified": True, "basis": "verified_project_page_asking"},
+        },
+    ]
+    counted = [row for row in MarketDiscoveryService._offer_priced(rows) if row["eligible_analogue"]]
+    assert [row["name"] for row in counted] == ["ДОМ XXII"]
+
+
 def test_developer_page_is_not_an_official_project_card() -> None:
     """Реестр застройщиков на том же хосте и тоже оканчивается числом.
 

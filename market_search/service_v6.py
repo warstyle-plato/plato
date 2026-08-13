@@ -289,7 +289,16 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
             )
 
         price_summary = market_recommendation(rows)
-        priced = sum(1 for row in rows if row.get("eligible_analogue"))
+        # Считается то же, что идёт в ориентир. Официальная средняя ЕИСЖС в него
+        # не идёт, поэтому и «проверенной ценой» она быть не может: на
+        # Гродненской улице счётчик показывал 3 из 4 при трёх карточках со
+        # строкой «цена предложения не найдена» — и рядом со своим же
+        # заголовком «ни одно ценовое наблюдение не привязано доказанно».
+        priced = sum(
+            1
+            for row in self._offer_priced(rows)
+            if row.get("eligible_analogue")
+        )
         confirmed = sum(1 for row in rows if row.get("confirmed"))
 
         return {
