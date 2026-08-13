@@ -49,10 +49,35 @@ def workbook(**overrides):
     return openpyxl.load_workbook(io.BytesIO(content), data_only=False)
 
 
-@pytest.mark.parametrize("months", [0, 1, 6, 18, 24])
+@pytest.mark.parametrize("months", [1, 6, 18, 24])
 def test_the_permit_period_reaches_the_workbook(months):
-    """Ровно то число, что задал человек, — включая ноль."""
+    """Ровно то число, что задал человек."""
     assert workbook(ird_months=months)["Вводные"]["E88"].value == months
+
+
+def test_the_permit_period_has_a_floor_of_one_month():
+    """Ноль модель не считает: на нулевом периоде у книги и движка расходятся
+    сами базы для накладных и налога — до 3,0 млрд ₽ по CAPEX. Минимум в один
+    месяц — решение владельца (13.08.2026)."""
+    assert core.IRD_MONTHS_MIN == 1
+    assert workbook(ird_months=0)["Вводные"]["E88"].value == 1
+
+
+def test_raising_the_period_is_said_out_loud():
+    """Молча поднимать введённое число нельзя — это ровно то, за что мы чиним
+    подмену нуля умолчанием."""
+    result = core.calculate(core.CalcRequest(
+        inputs={**BASE, "ird_months": 0}, tep=core.TEP_DEFAULT, rates=[]))
+    note = result["notes"].get("ird_months") or ""
+    assert "минимального" in note and "1 мес" in note
+    quiet = core.calculate(core.CalcRequest(
+        inputs={**BASE, "ird_months": 6}, tep=core.TEP_DEFAULT, rates=[]))
+    assert "ird_months" not in quiet["notes"]
+
+
+def test_the_field_says_the_minimum():
+    """Человек должен узнать о минимуме до расчёта, а не после."""
+    assert "минимум 1" in core.PAGE
 
 
 @pytest.mark.parametrize("key,cell,divisor", [
