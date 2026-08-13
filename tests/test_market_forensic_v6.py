@@ -1545,6 +1545,64 @@ def test_sales_report_rows_are_parsed_by_okrug_anchor() -> None:
     assert rows[1]["sales"] == {"2026-07": 141}
 
 
+def test_price_impossible_next_to_peers_is_dropped() -> None:
+    """Диапазон на всю Москву пропускает то, что видно рядом с соседями.
+
+    Живая выдача по Саввинской набережной: четыре элитных соседа по 1,85–3,56
+    млн ₽/м² и два числа порядком ниже — River House 158 850 и Фрунзенский
+    175 000. Оба внутри допустимого 80 тыс — 5 млн, и оба занижали ориентир.
+    """
+    from market_search.service_v6 import MarketDiscoveryService
+
+    def row(name: str, value: int) -> dict:
+        return {
+            "name": name,
+            "price_verified": True,
+            "eligible_analogue": True,
+            "geo_status": "resolved",
+            "market_price": {
+                "available": True,
+                "verified": True,
+                "price_per_sqm": value,
+                "observations": [{"url": f"https://example.test/{value}"}],
+            },
+        }
+
+    rows = [
+        row("ДОМ XXII", 2_795_312),
+        row("River House", 158_850),
+        row("Клубный дом Саввинская 17", 2_558_320),
+        row("Коллекция Лужники", 3_561_935),
+        row("Фрунзенский", 175_000),
+        row("Allegoria", 1_852_459),
+    ]
+    MarketDiscoveryService._reject_price_outliers(rows)
+
+    kept = {item["name"] for item in rows if item["price_verified"]}
+    assert kept == {"ДОМ XXII", "Клубный дом Саввинская 17", "Коллекция Лужники", "Allegoria"}
+    dropped = [item for item in rows if item["name"] == "River House"][0]
+    assert dropped["eligible_analogue"] is False
+    assert dropped["market_price"]["basis"] == "rejected_outlier"
+    assert dropped["rejected_price_observations"][0]["reason"] == "price_far_from_peers"
+
+
+def test_small_sample_keeps_its_prices() -> None:
+    """Две цены — не выборка: сравнивать не с чем, и трогать их нельзя."""
+    from market_search.service_v6 import MarketDiscoveryService
+
+    rows = [
+        {
+            "name": name,
+            "price_verified": True,
+            "eligible_analogue": True,
+            "market_price": {"verified": True, "price_per_sqm": value, "observations": []},
+        }
+        for name, value in (("A", 200_000), ("B", 3_000_000))
+    ]
+    MarketDiscoveryService._reject_price_outliers(rows)
+    assert all(item["price_verified"] for item in rows)
+
+
 def test_page_with_prices_of_many_lots_gives_no_price() -> None:
     """Страница — не сниппет: медиана по всем её числам не принадлежит никому.
 

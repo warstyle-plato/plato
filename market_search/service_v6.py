@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import re
+import statistics
 from pathlib import Path
 from typing import Any
 
@@ -269,6 +270,8 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                 row["price_verified"] and row.get("geo_status") == RESOLVED
             )
             row["evidence"] = self._evidence_label(row)
+
+        self._reject_price_outliers(rows)
 
         rows.sort(
             key=lambda item: (
@@ -559,6 +562,61 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                 entity.canonical_name, address, card, locality=locality
             )
         ]
+
+    # Во сколько раз цена проекта может отличаться от медианы соседей того же
+    # класса и района, оставаясь его ценой.
+    _PEER_SPREAD = 3.0
+
+    @staticmethod
+    def _reject_price_outliers(rows: list[dict[str, Any]]) -> None:
+        """Снять цену, невозможную рядом с соседями по классу и району.
+
+        Диапазон правдоподобия 80 тыс — 5 млн ₽/м² задан на всю Москву и потому
+        пропускает то, что видно с одного взгляда: на Саввинской набережной
+        River House получил 158 850 ₽/м², а Фрунзенский 175 000 — при соседях
+        по 2,5–3,5 млн. Элитные Хамовники столько не стоят, и ориентир по
+        аналогам эти два числа занижали.
+
+        Мерой служит сама выборка: после отбора по сопоставимости в ней уже
+        только один класс и один район. Медиана считается без самого проверяемого
+        проекта, иначе он подпирает собственную оценку. Меньше трёх цен — сравнивать
+        не с чем, и тогда не трогаем ничего.
+        """
+        priced = [row for row in rows if row.get("price_verified")]
+        if len(priced) < 3:
+            return
+        values = [int(row["market_price"]["price_per_sqm"]) for row in priced]
+        for index, (row, value) in enumerate(zip(priced, values)):
+            others = [other for position, other in enumerate(values) if position != index]
+            peer = statistics.median(others)
+            if not peer:
+                continue
+            ratio = value / peer if value > peer else peer / value
+            if ratio <= MarketDiscoveryService._PEER_SPREAD:
+                continue
+            price = row["market_price"]
+            row["rejected_price_observations"] = [
+                *row.get("rejected_price_observations", []),
+                {
+                    "url": (price.get("observations") or [{}])[0].get("url", ""),
+                    "reason": "price_far_from_peers",
+                    "price_per_sqm": value,
+                    "peer_median": int(round(peer)),
+                },
+            ]
+            row["market_price"] = {
+                "available": False,
+                "verified": False,
+                "basis": "rejected_outlier",
+                "reason": (
+                    f"{value:,} ₽/м² против {int(round(peer)):,} ₽/м² у соседей "
+                    "того же класса и района — это не цена этого проекта"
+                ).replace(",", " "),
+                "rejected_count": 1,
+            }
+            row["price_verified"] = False
+            row["eligible_analogue"] = False
+            row["evidence"] = MarketDiscoveryService._evidence_label(row)
 
     @staticmethod
     def _evidence_label(row: dict[str, Any]) -> str:

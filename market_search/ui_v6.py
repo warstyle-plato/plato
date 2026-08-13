@@ -87,9 +87,12 @@ _NEW_PRICE = """    const price=item.market_price||{};
       const when=price.observed_at||price.retrieved_at;
       const who=Array.isArray(price.sources)?price.sources.join(', '):'';
       if(who||when)priceBlock+='<div class="md-marketline">Источник: '+mdEsc(who||'—')+(when?' · наблюдение '+mdEsc(when):'')+'</div>';
-      if(Array.isArray(price.observations)&&price.observations.length&&
-         String(price.observations[0].method||'').indexOf('_from_page')>=0){
-        priceBlock+='<div class="md-marketline">Снято со страницы проекта: обычно это «от N ₽/м²», нижняя граница прайса</div>';
+      const method=Array.isArray(price.observations)&&price.observations.length?
+        String(price.observations[0].method||''):'';
+      if(method==='entry_price_from_page'){
+        priceBlock+='<div class="md-marketline">Со страницы проекта: «от N ₽/м²», нижняя граница прайса</div>';
+      }else if(method.indexOf('_from_page')>=0){
+        priceBlock+='<div class="md-marketline">Со страницы проекта: середина названных цен, цена входа не указана</div>';
       }
       if(price.rejected_count)priceBlock+='<div class="md-marketline">Отброшено наблюдений без доказанной привязки: '+mdEsc(price.rejected_count)+'</div>';
     }else if(official){
