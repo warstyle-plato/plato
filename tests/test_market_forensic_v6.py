@@ -1545,6 +1545,36 @@ def test_sales_report_rows_are_parsed_by_okrug_anchor() -> None:
     assert rows[1]["sales"] == {"2026-07": 141}
 
 
+def test_page_with_prices_of_many_lots_gives_no_price() -> None:
+    """Страница — не сниппет: медиана по всем её числам не принадлежит никому.
+
+    На Гродненской у «Кунцево» вышло 1 473 851 ₽/м² при пяти наблюдениях от
+    251 212 до 1 586 948. Разброс в шесть раз внутри одного проекта невозможен —
+    это перечень чужих лотов, а не прайс.
+    """
+    from market_search.price_evidence import VerifiedPriceEnricher
+
+    catalogue = (
+        "Кунцево. Квартира 45 м² — 251 212 ₽/м². Пентхаус — 1 586 948 ₽/м². "
+        "Соседний лот 980 000 ₽ за м²."
+    )
+    assert VerifiedPriceEnricher._page_price(catalogue) == (None, "page_lists_unrelated_prices")
+
+    # «от N ₽/м²» — цена входа, названная о проекте целиком, и она главнее.
+    with_entry = "ЖК Кунцево: цены от 251 212 ₽/м². Пентхаус — 1 586 948 ₽/м²."
+    assert VerifiedPriceEnricher._page_price(with_entry) == (251_212, "entry_price_from_page")
+
+    # Согласованный прайс одного проекта проходит.
+    consistent = "Студии 420 000 ₽/м², двухкомнатные 480 000 ₽/м²."
+    value, method = VerifiedPriceEnricher._page_price(consistent)
+    assert method == "median_from_page" and 420_000 <= value <= 480_000
+
+    assert VerifiedPriceEnricher._page_price("Никаких цен здесь нет") == (
+        None,
+        "page_without_price",
+    )
+
+
 def _pdf_with(cmap: str, content: str) -> bytes:
     import zlib
 

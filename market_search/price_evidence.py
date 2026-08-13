@@ -259,7 +259,7 @@ class VerifiedPriceEnricher:
         if not observations and self.pages is not None:
             # Сниппет цены не дал — открываем страницу. Только ту, что уже
             # доказана принадлежащей проекту: искать цену «где-нибудь» нельзя.
-            observations = self._prices_from_pages(entity, docs)
+            observations = self._prices_from_pages(entity, docs, rejected)
 
         observations = self._dedupe(observations)
         price = self._summarize(observations, queries, errors, rejected)
@@ -269,7 +269,18 @@ class VerifiedPriceEnricher:
             "rejected_observations": rejected[:10],
         }
 
-    def _prices_from_pages(self, entity, docs: list[SearchDoc]) -> list[PriceObservation]:
+    def _prices_from_pages(
+        self, entity, docs: list[SearchDoc], rejected: list[dict[str, Any]]
+    ) -> list[PriceObservation]:
+        """Одна страница — не больше одной цены.
+
+        Сниппет говорит о проекте одним-двумя числами, страница — десятками:
+        лоты, соседние корпуса, а на сайте агентства и вовсе чужие проекты.
+        Правило сниппета «взять все числа и посчитать медиану» на странице
+        даёт число, не принадлежащее никому: на Гродненской у «Кунцево»
+        вышло 1 473 851 ₽/м² при пяти наблюдениях от 251 212 до 1 586 948 —
+        разброс в шесть раз, невозможный внутри одного проекта.
+        """
         out: list[PriceObservation] = []
         for doc in docs:
             if not fetchable(doc.url):
@@ -291,22 +302,73 @@ class VerifiedPriceEnricher:
                 continue
             source = MarketPriceEnricher._source_name(doc)
             when = observed_date(page.text)
-            for value, method in self._priced(page.text):
-                out.append(
-                    PriceObservation(
-                        price_per_sqm=value,
-                        source=source,
-                        url=doc.url,
-                        title=page.title or doc.title,
-                        method=f"{method}_from_page",
-                        match=match,
-                        observed_at=when,
-                        market=market,
-                    )
+            value, method = self._page_price(page.text)
+            if value is None:
+                rejected.append({"url": doc.url, "reason": method})
+                continue
+            out.append(
+                PriceObservation(
+                    price_per_sqm=value,
+                    source=source,
+                    url=doc.url,
+                    title=page.title or doc.title,
+                    method=method,
+                    match=match,
+                    observed_at=when,
+                    market=market,
                 )
-            if out:
-                break
+            )
+            break
         return out
+
+    # Во сколько раз цены метра на одной странице могут разойтись, оставаясь
+    # ценами одного проекта. Пентхаус дороже студии, но не втрое.
+    _PAGE_SPREAD = 2.5
+
+    @staticmethod
+    def _page_price(text: str) -> tuple[int, str] | tuple[None, str]:
+        """Цена проекта со страницы — или отказ с причиной.
+
+        Порядок предпочтения не случаен. «от N ₽/м²» — это цена входа, которую
+        страница называет о проекте целиком; всё остальное на ней относится к
+        отдельным лотам. Если такой формулировки нет, годится середина — но
+        только когда числа страницы вообще похожи на один прайс.
+        """
+        entries: list[tuple[int, bool]] = []
+        seen: set[tuple[int, int]] = set()
+        for pattern in (_PRICE_M2_RE, _PRICE_M2_REVERSED_RE):
+            for found in pattern.finditer(text):
+                span = found.span("value")
+                if span in seen:
+                    continue
+                seen.add(span)
+                value = MarketPriceEnricher._price_m2_match_to_int(found)
+                if not _MIN_PRICE <= value <= _MAX_PRICE:
+                    continue
+                prefix = text[max(0, found.start() - 12) : found.start()].lower()
+                entries.append((value, bool(re.search(r"\bот\s*$", prefix))))
+
+        entry_prices = sorted({value for value, is_entry in entries if is_entry})
+        if entry_prices:
+            return entry_prices[0], "entry_price_from_page"
+
+        values = sorted({value for value, _ in entries})
+        if not values:
+            derived = [
+                value
+                for value in MarketPriceEnricher._derived_prices_from_area_and_total(text)
+                if _MIN_PRICE <= value <= _MAX_PRICE
+            ]
+            values = sorted(set(derived))
+            if not values:
+                return None, "page_without_price"
+            method = "derived_total_div_area_from_page"
+        else:
+            method = "median_from_page"
+
+        if values[-1] > values[0] * VerifiedPriceEnricher._PAGE_SPREAD:
+            return None, "page_lists_unrelated_prices"
+        return int(round(statistics.median(values))), method
 
     @staticmethod
     def _prices(text: str) -> list[int]:
