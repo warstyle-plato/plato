@@ -179,11 +179,18 @@ jobs:
 
       - uses: docker/setup-buildx-action@v3
 
+      # provenance и sbom выключены не для скорости. С ними buildx публикует не
+      # образ, а OCI-индекс: сам образ плюс манифест аттестации. Yandex Registry
+      # такой индекс не принимает, и выглядит это обманчиво — слои и манифест
+      # образа уходят с «done», а следом «Cannot read manifest data», когда
+      # публикуется индекс. Один тег, одна платформа, обычный манифест Docker.
       - name: Собрать и опубликовать готовый образ
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
+          provenance: false
+          sbom: false
           build-args: |
             INSTALL_BROWSER=0
             APP_COMMIT=${{ steps.meta.outputs.sha }}
