@@ -305,6 +305,66 @@ def test_the_prototype_fixtures_are_available_for_development(client, monkeypatc
     assert response.json()["prototype"] is True
 
 
+# --- участок становится проектом ----------------------------------------------
+
+def test_the_found_parcel_becomes_a_project(client, monkeypatch):
+    """«Поиск ТЭП» отдаёт не только карточку, но и вводные проекта.
+
+    Прежде участок был тупиком: посчитали ТЭП и плату за ВРИ — а чтобы
+    получить экономику, всё приходилось вводить заново.
+    """
+    data = (Path(__file__).resolve().parent.parent
+            / "presets" / "Мишина_ТЭП.xlsx").read_bytes()
+    monkeypatch.setattr(core, "vri_tep_quick", lambda region, query, **kw: {
+        "card": "<b>карточка</b>", "file": data, "filename": "Мишина_ТЭП.xlsx"})
+
+    payload = client.post("/api/v2/tep-search",
+                          json={"region": "msk", "query": "77:09:0004014:13"}).json()
+
+    assert payload.get("project_error") is None, payload.get("project_error")
+    project = payload["project"]
+    # Значения принёс разбор движка, а не собственный перенос ТЭП.
+    assert project["inputs"]["land_rights_cost_mln"] == pytest.approx(1267.539)
+    assert project["inputs"]["vri_required"] is True
+    assert project["tep"]["apartments"]["saleable"] == pytest.approx(13920)
+    assert project["inputs"]["site_area_ha"] == pytest.approx(0.651)
+    # Экономику за участок никто не додумывает.
+    assert project["inputs"]["apartment_price_th"] == \
+        core.DEFAULT_INPUTS["apartment_price_th"]
+
+    result = client.post("/api/v2/calculate", json={
+        "inputs": project["inputs"], "tep": project["tep"],
+        "rates": [], "phasing": {}, "sensitivity": False}).json()
+    assert result["kpi"]["revenue"] > 0, "участок не посчитался движком"
+
+
+def test_the_transfer_from_glavapu_has_one_place():
+    """Предустановка и найденный участок доезжают одним путём.
+
+    Два переноса ТЭП в вводные — это два набора умолчаний и два места, где
+    поле молча теряется.
+    """
+    import developaid_v2_demo as demo_module
+    import developaid_v2_form as form_module
+
+    assert hasattr(form_module, "inputs_from_glavapu")
+    source = Path(demo_module.__file__).read_text(encoding="utf-8")
+    assert "inputs_from_glavapu" in source
+    assert "_glavapu_import" not in source, "перенос ГлавАПУ продублирован в демо"
+
+
+def test_the_page_can_turn_a_parcel_into_a_project():
+    html = (Path(__file__).resolve().parent.parent
+            / "frontend_v2" / "index.html").read_text(encoding="utf-8")
+    script = (Path(__file__).resolve().parent.parent
+              / "frontend_v2" / "app.js").read_text(encoding="utf-8")
+
+    assert 'id="tepSearchApply"' in html
+    assert "applyTepSearchProject" in script
+    # Расчёт идёт тем же production-маршрутом, что и правка формы.
+    assert "calculateProject(" in script
+
+
 # --- Платон ------------------------------------------------------------------
 
 def test_the_agent_scenarios_come_from_the_engine(client):

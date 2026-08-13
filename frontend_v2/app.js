@@ -919,7 +919,14 @@ async function runTepSearch() {
     };
     attach(download, payload.file_b64, payload.filename);
     attach($('#tepSearchTemplate'), payload.template_b64, payload.template_filename);
-    status.textContent = 'Готово. Оба файла читаются импортом DevelopAid: шаблон можно поправить и загрузить обратно.';
+    // Участок становится проектом: ТЭП и плата за ВРИ переносятся в вводные,
+    // экономика остаётся умолчаниями движка и правится в форме.
+    tepSearch.project = payload.project || null;
+    $('#tepSearchApply').hidden = !payload.project;
+    status.textContent = payload.project
+      ? 'Готово. Можно посчитать проект по этому участку — ТЭП и плата за ВРИ '
+        + 'переедут в вводные, цены и себестоимость останутся умолчаниями.'
+      : 'Готово. Оба файла читаются импортом DevelopAid: шаблон можно поправить и загрузить обратно.';
   } catch (error) {
     status.textContent = String(error.message || error);
   } finally {
@@ -927,8 +934,43 @@ async function runTepSearch() {
   }
 }
 
+/* Участок → проект. Вводные принесены разбором движка; всё, чего в файле
+   участка нет, осталось умолчаниями, и человек правит их в форме. */
+async function applyTepSearchProject() {
+  if (!tepSearch.project) return;
+  const status = $('#tepSearchStatus');
+  status.textContent = 'Считаю проект по этому участку…';
+  form.draft = {
+    inputs: tepSearch.project.inputs,
+    tep: tepSearch.project.tep,
+    phasing: { ...(form.defaults ? form.defaults.phasing : {}) },
+  };
+  if (form.blocks.length) renderStep();
+  const numbers = tepSearch.project.cadastral_numbers || [];
+  try {
+    await calculateProject({
+      inputs: form.draft.inputs,
+      tep: form.draft.tep,
+      rates: [],
+      phasing: form.draft.phasing,
+      project_name: numbers[0] || 'Участок',
+      region: tepSearch.region === 'mo' ? 'Московская область' : 'Москва',
+      cadastral_numbers: numbers,
+      source_label: 'Поиск ТЭП · расчёт движка по участку',
+      scenario: 'base',
+      sensitivity: true,
+    });
+    status.textContent = 'Проект посчитан. Цены и себестоимость — умолчания движка: '
+      + 'проверьте их в разделе «Вводные».';
+    setView('summary');
+  } catch (error) {
+    status.textContent = String(error.message || error);
+  }
+}
+
 function bindTepSearch() {
   if (!$('#tepSearchButton')) return;
+  if ($('#tepSearchApply')) $('#tepSearchApply').addEventListener('click', applyTepSearchProject);
   $$('.region-chip').forEach((chip) => {
     chip.addEventListener('click', () => setTepSearchRegion(chip.dataset.region));
   });
