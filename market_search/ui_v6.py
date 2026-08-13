@@ -49,6 +49,41 @@ _NEW_CHIP = (
     "+' ('+mdEsc(payload.query.segment_source||'')+')':'')"
 )
 
+# Второй ориентир — по официальным средним ЕИСЖС. Он появляется только там, где
+# цены предложения не нашлось ни у одного аналога, и обязан выглядеть иначе:
+# основание у него другое, и подпись это называет прямо. Кнопка своя, чтобы
+# нельзя было применить не то, что прочитал.
+_OLD_SUMMARY_CHIP = (
+    "if(summary&&summary.price_per_sqm)chips.push('Ориентир по аналогам: '"
+    "+mdRubM2(summary.price_per_sqm)+' · '+mdEsc(summary.analogue_count)+' аналог.');"
+)
+_NEW_SUMMARY_CHIP = (
+    "if(summary&&summary.price_per_sqm)chips.push('Ориентир по аналогам: '"
+    "+mdRubM2(summary.price_per_sqm)+' · '+mdEsc(summary.analogue_count)+' аналог.');"
+    "const officialSummary=(!summary&&payload.official_price_summary)?payload.official_price_summary:null;"
+    "if(officialSummary&&officialSummary.price_per_sqm)chips.push("
+    "'Ориентир по сделкам ЕИСЖС: '+mdRubM2(officialSummary.price_per_sqm)+' · '"
+    "+mdEsc(officialSummary.analogue_count)+' аналог. · цен предложения не найдено');"
+)
+
+_OLD_APPLY = (
+    "  document.getElementById('mdApply').innerHTML=(summary&&summary.price_per_sqm)?\n"
+    "    '<button type=\"button\" onclick=\"applyMarketPriceToModel('+Number(summary.price_per_sqm)"
+    "+')\">Применить '+mdRubM2(summary.price_per_sqm)+' в модель</button>"
+    "<span class=\"md-apply-note\">Запишет ориентир в «Цена квартир», тыс. ₽/м², "
+    "и пересчитает модель.</span>':'';"
+)
+_NEW_APPLY = (
+    "  const applyFrom=summary||officialSummary;\n"
+    "  document.getElementById('mdApply').innerHTML=(applyFrom&&applyFrom.price_per_sqm)?\n"
+    "    '<button type=\"button\" onclick=\"applyMarketPriceToModel('+Number(applyFrom.price_per_sqm)"
+    "+')\">Применить '+mdRubM2(applyFrom.price_per_sqm)+' в модель</button>"
+    "<span class=\"md-apply-note\">'+(summary?"
+    "'Запишет ориентир по ценам предложения в «Цена квартир», тыс. ₽/м², и пересчитает модель.':"
+    "'Цен предложения не найдено. Это среднее по зарегистрированным сделкам ЕИСЖС — "
+    "оно отстаёт от рынка, проверьте перед применением.')+'</span>':'';"
+)
+
 _OLD_CONFIRMATION = (
     "const confirmation=item.confirmed?'<span class=\"md-ok\">Подтверждён Наш.Дом.РФ</span>':"
     "'<span class=\"md-warn\">Не подтверждён — в расчёт цены не идёт</span>';"
@@ -179,6 +214,8 @@ def install(core: Any) -> None:
         (_OLD_HINT, _NEW_HINT),
         (_OLD_STATUS, _NEW_STATUS),
         (_OLD_CHIP, _NEW_CHIP),
+        (_OLD_SUMMARY_CHIP, _NEW_SUMMARY_CHIP),
+        (_OLD_APPLY, _NEW_APPLY),
         (_OLD_CONFIRMATION, _NEW_CONFIRMATION),
         (_OLD_GEO, _NEW_GEO),
     ):

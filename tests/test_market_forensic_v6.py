@@ -1586,6 +1586,45 @@ def test_price_impossible_next_to_peers_is_dropped() -> None:
     assert dropped["rejected_price_observations"][0]["reason"] == "price_far_from_peers"
 
 
+def test_official_benchmark_is_a_separate_number() -> None:
+    """Второй ориентир считается, но никогда не смешивается с первым.
+
+    На Гродненской улице цен предложения нет ни у одного из четырёх проектов, а
+    официальные средние ЕИСЖС известны у всех. Без второго ориентира выдача
+    остаётся вовсе без числа. Решение владельца от 13.08.2026.
+    """
+    from market_search.recommendation import market_recommendation, official_recommendation
+
+    def row(name: str, value: int, basis: str, distance: float) -> dict:
+        return {
+            "name": name,
+            "within_radius": True,
+            "geo_status": "resolved",
+            "price_verified": True,
+            "confirmed": True,
+            "distance_km": distance,
+            "market_price": {"available": True, "price_per_sqm": value, "basis": basis},
+        }
+
+    official_only = [
+        row("МАНИФЕСТ", 143_493, "official_domrf_fallback", 0.47),
+        row("Кунцево", 496_311, "official_domrf_fallback", 0.473),
+        row("Дом на Барвихинской", 404_524, "official_domrf_fallback", 2.893),
+    ]
+    assert market_recommendation(official_only) is None
+    official = official_recommendation(official_only)
+    assert official is not None
+    assert official["basis"] == "official_domrf_average"
+    assert official["analogue_count"] == 3
+
+    # Там, где цена предложения есть, второй ориентир её не разбавляет.
+    mixed = [*official_only, row("ДОМ XXII", 2_795_312, "verified_project_page_asking", 0.2)]
+    asking = market_recommendation(mixed)
+    assert asking is not None
+    assert asking["basis"] == "asking"
+    assert asking["projects"] == ["ДОМ XXII"]
+
+
 def test_official_average_is_not_counted_as_a_verified_price() -> None:
     """Счётчик обязан считать то же, что идёт в ориентир.
 

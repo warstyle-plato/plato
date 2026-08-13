@@ -26,7 +26,7 @@ from .geocoder import GeoPoint
 from .http import RemoteServiceError
 from .page_price import PageFetcher
 from .price_evidence import VerifiedPriceEnricher
-from .recommendation import market_recommendation
+from .recommendation import market_recommendation, official_recommendation
 from .registry import ProjectRegistry
 from .segments import SegmentResolver, detect_district, districts_match, segments_comparable
 from .service import MarketDiscoveryService as LegacyMarketDiscoveryService, haversine_km
@@ -289,6 +289,10 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
             )
 
         price_summary = market_recommendation(rows)
+        # Запасной ориентир считается только при пустом основном: две базы рядом
+        # соблазняют сравнить их между собой, а сравнивать нечего — предложение и
+        # зарегистрированная сделка расходятся закономерно, а не ошибочно.
+        official_summary = None if price_summary else official_recommendation(rows)
         # Считается то же, что идёт в ориентир. Официальная средняя ЕИСЖС в него
         # не идёт, поэтому и «проверенной ценой» она быть не может: на
         # Гродненской улице счётчик показывал 3 из 4 при трёх карточках со
@@ -327,6 +331,7 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
             "quarantine": quarantine,
             "quarantine_count": len(quarantine),
             "price_summary": price_summary,
+            "official_price_summary": official_summary,
             "warning": self._warning(rows, quarantine, price_summary, search_errors),
             "diagnostics": {
                 "search_queries": queries,

@@ -34,6 +34,17 @@ def _trim_outliers(values: list[int]) -> list[int]:
     return trimmed or values[:]
 
 
+_ASKING_NOTE = (
+    "Текущий ориентир по первичному рынку. Официальное подтверждение повышает вес, "
+    "но не является условием попадания в выборку."
+)
+_OFFICIAL_NOTE = (
+    "Ориентир по официальным средним ЕИСЖС. Это зарегистрированные сделки, а не "
+    "предложение: число отстаёт от рынка и считается только тогда, когда цены "
+    "предложения не нашлось ни у одного аналога."
+)
+
+
 def market_recommendation(projects: list[dict[str, Any]]) -> dict[str, Any] | None:
     """Build a current market benchmark from geographically valid primary-market analogues.
 
@@ -46,6 +57,38 @@ def market_recommendation(projects: list[dict[str, Any]]) -> dict[str, Any] | No
     здесь означает «не доказано», потому что неподтверждённое наблюдение в
     медиане неотличимо от подтверждённого и портит ориентир молча.
     """
+    return _benchmark(
+        projects,
+        official=False,
+        method="robust_distance_weighted_primary_market",
+        note=_ASKING_NOTE,
+    )
+
+
+def official_recommendation(projects: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Второй ориентир — по официальным средним ЕИСЖС.
+
+    Нужен там, где цены предложения нет ни у одного аналога. На Гродненской
+    улице все четыре проекта подтверждены Наш.Дом.РФ и у всех известна средняя
+    по зарегистрированным сделкам, а сниппеты цены за метр не назвали ни разу:
+    бизнес-класс в Можайском районе пишут ценой лота, а ЦИАН и Домклик страницу
+    роботу не отдают. Без этого числа выдача остаётся вовсе без ориентира.
+
+    Смешивать его с ориентиром по предложению нельзя ни при каких условиях: это
+    разные основания, и одно число из двух баз читается как третье, которого нет.
+    Решение владельца от 13.08.2026 — считать, но отдельной строкой.
+    """
+    return _benchmark(
+        projects,
+        official=True,
+        method="registered_deals_official_average",
+        note=_OFFICIAL_NOTE,
+    )
+
+
+def _benchmark(
+    projects: list[dict[str, Any]], *, official: bool, method: str, note: str
+) -> dict[str, Any] | None:
     rows: list[dict[str, Any]] = []
     for project in projects:
         if not project.get("within_radius"):
@@ -61,7 +104,8 @@ def market_recommendation(projects: list[dict[str, Any]]) -> dict[str, Any] | No
         # оно отстаёт от рынка предложения. Привязка к проекту у неё доказана,
         # поэтому показывать её честно, но подменять ею текущий ориентир нельзя:
         # «доказано, чьё это число» и «годится как основание» — разные вопросы.
-        if price.get("basis") == "official_domrf_fallback":
+        # Поэтому две базы считаются раздельно и никогда не сходятся в одну медиану.
+        if (price.get("basis") == "official_domrf_fallback") is not official:
             continue
         value = int(price["price_per_sqm"])
         if value <= 0:
@@ -123,7 +167,8 @@ def market_recommendation(projects: list[dict[str, Any]]) -> dict[str, Any] | No
         "analogue_count": len(filtered),
         "raw_analogue_count": len(rows),
         "confidence": round(confidence_score, 2),
-        "method": "robust_distance_weighted_primary_market",
+        "method": method,
+        "basis": "official_domrf_average" if official else "asking",
         "projects": [row["name"] for row in filtered],
-        "note": "Текущий ориентир по первичному рынку. Официальное подтверждение повышает вес, но не является условием попадания в выборку.",
+        "note": note,
     }
