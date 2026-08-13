@@ -5,6 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#07111f">
   <title>DevelopAid 2.0</title>
+  <link rel="manifest" href="/v2/manifest.webmanifest">
+  <link rel="icon" type="image/png" sizes="192x192" href="/v2/assets/icons/icon-192.png">
+  <link rel="apple-touch-icon" href="/v2/assets/icons/icon-192.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="DevelopAid">
+  <meta name="mobile-web-app-capable" content="yes">
   <link rel="stylesheet" href="/v2/assets/styles.css">
 </head>
 <body>
@@ -26,6 +33,7 @@
 
       <nav class="main-nav" aria-label="Разделы проекта">
         <button class="nav-item is-active" data-view="summary"><span>◫</span>Обзор</button>
+        <button class="nav-item" data-view="inputs"><span>✎</span>Вводные</button>
         <button class="nav-item" data-view="tepsearch"><span>⌕</span>Поиск ТЭП</button>
         <button class="nav-item" data-view="tep"><span>⌂</span>ТЭП и ВРИ</button>
         <button class="nav-item" data-view="finance"><span>⌁</span>Финансирование</button>
@@ -36,7 +44,7 @@
 
       <div class="sidebar-note">
         <strong>DevelopAid 2.0</strong>
-        <span>Изолированный прототип. Действующая модель и формулы не изменены.</span>
+        <span>Все цифры считает действующий движок DevelopAid. Формулы движка, Excel и PDF не изменены.</span>
       </div>
     </aside>
 
@@ -48,14 +56,17 @@
           <p id="projectSubtitle"></p>
         </div>
         <div class="topbar-actions">
-          <span id="prototypeBadge" class="prototype-badge">Контрольный прототип</span>
+          <span id="engineBadge" class="prototype-badge">Движок</span>
           <button class="icon-button" type="button" aria-label="Уведомления">●</button>
           <button class="avatar" type="button" aria-label="Профиль">VS</button>
         </div>
       </header>
 
+      <div id="resultMeta" class="result-meta" aria-label="Происхождение расчёта"></div>
+
       <div class="mobile-tabs" aria-label="Разделы проекта">
         <button class="is-active" data-view="summary">Обзор</button>
+        <button data-view="inputs">Вводные</button>
         <button data-view="tepsearch">Поиск</button>
         <button data-view="tep">ТЭП</button>
         <button data-view="finance">Финансы</button>
@@ -102,6 +113,26 @@
           <article class="panel">
             <div class="panel-heading"><div><span class="eyebrow">Фокус управления</span><h2>Ключевые риски</h2></div><button class="text-button" data-view-target="platon">Спросить Платона</button></div>
             <div id="riskList" class="risk-list"></div>
+          </article>
+        </div>
+      </section>
+
+      <section id="view-inputs" class="view">
+        <div class="section-heading">
+          <div><span class="eyebrow">Ввод проекта по блокам</span><h2 id="inputBlockTitle">Вводные</h2></div>
+          <span id="inputProgress" class="source-label"></span>
+        </div>
+        <div class="input-layout">
+          <nav id="inputSteps" class="input-steps" aria-label="Блоки вводных"></nav>
+          <article class="panel input-panel">
+            <p id="inputHint" class="input-hint"></p>
+            <div id="inputBlock" class="input-fields"></div>
+            <div class="input-actions">
+              <button id="inputPrev" class="text-button" type="button">← Назад</button>
+              <button id="inputNext" class="text-button" type="button">Далее →</button>
+              <button id="inputCalc" class="search-button" type="button">Посчитать движком</button>
+            </div>
+            <div id="inputStatus" class="tep-search-status">Значения подставлены из текущего расчёта. Правьте любой блок и считайте — пересчитает движок.</div>
           </article>
         </div>
       </section>
