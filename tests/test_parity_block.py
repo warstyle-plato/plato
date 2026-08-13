@@ -29,7 +29,14 @@ core = wrapper.core
 
 
 def _scenario():
+    # Сценарий должен сходиться: лист ПРОВЕРКИ роняет вердикт в «СБОЙ» не только
+    # за расхождение с движком, но и за непогашенный остаток долга и за LLCR ниже
+    # ковенанта. Прежде проект сходился на самих умолчаниях, но после сверки
+    # удельных ставок с банковским бюджетом комфорт по 350 тыс ₽/м² уходит в минус
+    # и оставляет 907 млн долга — вердикт падал бы на экономике, а не на паритете,
+    # ради которого тест написан.
     inputs = dict(core.DEFAULT_INPUTS)
+    inputs.update(apartment_price_th=650, commercial_price_th=650, parking_price_th=5000)
     tep = {key: dict(value) for key, value in core.TEP_DEFAULT.items()}
     return inputs, tep
 

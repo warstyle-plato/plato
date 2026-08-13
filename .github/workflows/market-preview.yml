@@ -1,0 +1,211 @@
+# Рыночный preview: PR сам гоняет тесты, а образ собирается только из workflow_dispatch
+# на main. Это принципиально: привязка OIDC в Yandex Cloud разрешает ref=refs/heads/main.
+# Автоматического SSH-deploy здесь нет: второй этап CI/CD проекта пока не настроен.
+name: Market preview
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+    paths:
+      - "market_search/**"
+      - "main_registry.py"
+      - "market-preview-acceptance.py"
+      - "tests/test_market_*.py"
+      - "tests/fixtures/market_golden_*.json"
+      - "deploy-market-preview.sh"
+      - ".github/workflows/market-preview.yml"
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: "Ветка рыночного preview"
+        required: true
+        default: "agent/market-search-v5"
+        type: string
+
+concurrency:
+  group: market-preview
+  cancel-in-progress: true
+
+env:
+  IMAGE_NAME: developaid
+  OIDC_AUDIENCE: https://github.com/warstyle-plato
+
+jobs:
+  test:
+    name: Проверка рыночного модуля
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Переключиться на preview-ветку
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          SOURCE_REF: ${{ inputs.source_ref }}
+        run: |
+          set -euo pipefail
+          case "$SOURCE_REF" in
+            agent/market-*) ;;
+            *) echo "Разрешены только ветки agent/market-*" >&2; exit 1 ;;
+          esac
+          git fetch --no-tags --depth=1 origin "$SOURCE_REF"
+          git checkout --detach FETCH_HEAD
+          echo "Preview ref: $SOURCE_REF"
+          git rev-parse --short=7 HEAD
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - name: Зависимости
+        run: python -m pip install -r requirements-dev.txt
+      # Модуль рынка живёт только в preview-ветках; в main лежит один этот workflow.
+      # Поэтому на PR в main проверять нечего, и красный крест там ничего не значил:
+      # он висел и на посторонних PR, задевших main_registry.py.
+      - name: Есть ли в ветке модуль рынка
+        id: present
+        run: |
+          if [ -d market_search ]; then
+            echo "value=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=no" >> "$GITHUB_OUTPUT"
+            echo "В этой ветке модуля рынка нет — проверять нечего."
+          fi
+      - name: Синтаксис и unit-тесты
+        if: steps.present.outputs.value == 'yes'
+        run: |
+          python -m py_compile market_search/*.py market_search/providers/*.py main_registry.py market-preview-acceptance.py
+          # Перечислять файлы нельзя: YAML берётся из main, а код — из preview-ветки.
+          # Каждый раз, когда набор тестов в ветке менялся, main патчили под неё.
+          python -m pytest tests/test_market_*.py -q
+      - name: Интеграция с основным entrypoint
+        if: steps.present.outputs.value == 'yes'
+        run: |
+          python - <<'PY'
+          import main_registry
+          paths = {getattr(route, "path", None) for route in main_registry.app.routes}
+          assert "/market/discovery" in paths
+          assert 'data-tab="marketDiscovery"' in main_registry.core.PAGE
+          # Проверяем, что модуль установлен и это тот же объект, а не какая у него
+          # версия: пин на имя модуля ломал сборку каждой следующей ветки.
+          service = main_registry.market_search
+          assert service is main_registry.app.state.market_discovery_service, service
+          assert service.__class__.__module__.startswith("market_search.service"), service.__class__
+          PY
+
+  build:
+    name: Сборка preview-образа
+    runs-on: ubuntu-latest
+    needs: [test]
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      sha: ${{ steps.meta.outputs.sha }}
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Переключиться на preview-ветку
+        env:
+          SOURCE_REF: ${{ inputs.source_ref }}
+        run: |
+          set -euo pipefail
+          case "$SOURCE_REF" in
+            agent/market-*) ;;
+            *) echo "Разрешены только ветки agent/market-*" >&2; exit 1 ;;
+          esac
+          git fetch --no-tags --depth=1 origin "$SOURCE_REF"
+          git checkout --detach FETCH_HEAD
+          echo "Preview ref: $SOURCE_REF"
+          git rev-parse --short=7 HEAD
+
+      - name: Имя и тег preview
+        id: meta
+        run: |
+          sha=$(git rev-parse --short=7 HEAD)
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "tag=market-$sha" >> "$GITHUB_OUTPUT"
+          echo "image=cr.yandex/${{ vars.YC_REGISTRY_ID }}/${IMAGE_NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: OIDC-токен GitHub
+        run: |
+          set -euo pipefail
+          curl -sS --fail -G "${ACTIONS_ID_TOKEN_REQUEST_URL}" \
+            -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            --data-urlencode "audience=${OIDC_AUDIENCE}" \
+            -o "${RUNNER_TEMP}/oidc.json"
+          python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["value"])' \
+            "${RUNNER_TEMP}/oidc.json" > "${RUNNER_TEMP}/oidc.jwt"
+          echo "::add-mask::$(cat "${RUNNER_TEMP}/oidc.jwt")"
+          python3 - "${RUNNER_TEMP}/oidc.jwt" <<'PY'
+          import base64, json, sys
+          token = open(sys.argv[1]).read().strip()
+          payload = token.split(".")[1]
+          payload += "=" * (-len(payload) % 4)
+          claims = json.loads(base64.urlsafe_b64decode(payload))
+          for key in ("sub", "aud", "repository", "ref"):
+              print(f"{key}: {claims.get(key)!r}")
+          PY
+
+      - name: Обмен на IAM-токен Яндекса
+        id: iam
+        run: |
+          set -euo pipefail
+          code=$(curl -sS -o "${RUNNER_TEMP}/iam.json" -w '%{http_code}' \
+            -X POST https://auth.yandex.cloud/oauth/token \
+            --data-urlencode "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
+            --data-urlencode "requested_token_type=urn:ietf:params:oauth:token-type:access_token" \
+            --data-urlencode "audience=${{ vars.YC_SERVICE_ACCOUNT_ID }}" \
+            --data-urlencode "subject_token@${RUNNER_TEMP}/oidc.jwt" \
+            --data-urlencode "subject_token_type=urn:ietf:params:oauth:token-type:id_token")
+          if [ "$code" != "200" ]; then
+            echo "Обмен отвергнут, код ${code}." >&2
+            python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print({k: d.get(k) for k in ("error","error_description")}, file=sys.stderr)' \
+              "${RUNNER_TEMP}/iam.json" 2>/dev/null || cat "${RUNNER_TEMP}/iam.json" >&2
+            rm -f "${RUNNER_TEMP}/oidc.jwt" "${RUNNER_TEMP}/iam.json"
+            exit 1
+          fi
+          token=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["access_token"])' "${RUNNER_TEMP}/iam.json")
+          echo "::add-mask::${token}"
+          echo "token=${token}" >> "$GITHUB_OUTPUT"
+          rm -f "${RUNNER_TEMP}/oidc.jwt" "${RUNNER_TEMP}/iam.json"
+
+      - name: Вход в Yandex Registry
+        run: |
+          printf '%s' '${{ steps.iam.outputs.token }}' \
+            | docker login --username iam --password-stdin cr.yandex
+
+      - uses: docker/setup-buildx-action@v3
+
+      # provenance и sbom выключены не для скорости. С ними buildx публикует не
+      # образ, а OCI-индекс: сам образ плюс манифест аттестации. Yandex Registry
+      # такой индекс не принимает, и выглядит это обманчиво — слои и манифест
+      # образа уходят с «done», а следом «Cannot read manifest data», когда
+      # публикуется индекс. Один тег, одна платформа, обычный манифест Docker.
+      - name: Собрать и опубликовать готовый образ
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          provenance: false
+          sbom: false
+          build-args: |
+            INSTALL_BROWSER=0
+            APP_COMMIT=${{ steps.meta.outputs.sha }}
+          tags: ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}
+          cache-from: type=gha,scope=market-preview
+          cache-to: type=gha,mode=max,scope=market-preview
+
+  ready:
+    name: Preview-образ готов
+    runs-on: ubuntu-latest
+    needs: [build]
+    if: needs.build.result == 'success'
+    steps:
+      - name: Что запускать на ВМ
+        run: |
+          echo "Готов образ ${{ needs.build.outputs.tag }} для ветки ${{ inputs.source_ref }}."
+          echo "Автоматический SSH-deploy отключён: CORE_HOST/SSH второй этап CI/CD не настроен."
+          echo "Запускать на ВМ через deploy-market-preview.sh из preview-ветки."

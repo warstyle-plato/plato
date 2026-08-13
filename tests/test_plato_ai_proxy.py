@@ -45,7 +45,7 @@ def http_error(code: int, detail: str):
 def test_call_goes_direct_when_no_proxy_configured(monkeypatch):
     seen = {}
     monkeypatch.setattr(main, "_PLATO_AI_URL", "")
-    monkeypatch.setattr(main, "_openai_direct_request", lambda p: seen.setdefault("direct", p))
+    monkeypatch.setattr(main, "_openai_direct_request", lambda p, budget_seconds=None: seen.setdefault("direct", p))
     main._openai_responses_request(PAYLOAD)
     assert seen == {"direct": PAYLOAD}
 
@@ -54,7 +54,7 @@ def test_call_goes_through_the_proxy_when_configured(monkeypatch):
     seen = {}
     monkeypatch.setattr(main, "_PLATO_AI_URL", "https://bot.example/internal/plato/chat")
     monkeypatch.setattr(main, "_PLATO_AI_PROXY_SECRET", "s3cret-ascii")
-    monkeypatch.setattr(main, "_openai_proxy_request", lambda p: seen.setdefault("proxy", p))
+    monkeypatch.setattr(main, "_openai_proxy_request", lambda p, budget_seconds=None: seen.setdefault("proxy", p))
     main._openai_responses_request(PAYLOAD)
     assert seen == {"proxy": PAYLOAD}
 
@@ -95,7 +95,7 @@ def test_an_address_without_a_secret_is_refused_not_rerouted(monkeypatch):
 def test_the_route_is_logged_without_secrets(monkeypatch, caplog):
     monkeypatch.setattr(main, "_PLATO_AI_URL", "https://bot.example/internal/plato/chat")
     monkeypatch.setattr(main, "_PLATO_AI_PROXY_SECRET", "s3cret-ascii")
-    monkeypatch.setattr(main, "_openai_proxy_request", lambda p: {})
+    monkeypatch.setattr(main, "_openai_proxy_request", lambda p, budget_seconds=None: {})
 
     with caplog.at_level("INFO", logger="developaid.platon"):
         main._openai_responses_request(PAYLOAD)
@@ -108,7 +108,7 @@ def test_the_route_is_logged_without_secrets(monkeypatch, caplog):
 
 def test_the_local_route_is_logged_too(monkeypatch, caplog):
     monkeypatch.setattr(main, "_PLATO_AI_URL", "")
-    monkeypatch.setattr(main, "_openai_direct_request", lambda p: {})
+    monkeypatch.setattr(main, "_openai_direct_request", lambda p, budget_seconds=None: {})
 
     with caplog.at_level("INFO", logger="developaid.platon"):
         main._openai_responses_request(PAYLOAD)
@@ -150,8 +150,66 @@ def test_proxy_sends_the_secret_in_a_header(monkeypatch):
     assert captured["headers"]["X-plato-secret"] == "s3cret-ascii"
     # Ключ OpenAI не должен покидать сервис, где он задан.
     assert not any("authorization" in name.lower() for name in captured["headers"])
-    assert captured["body"] == {"payload": PAYLOAD}
-    assert captured["timeout"] == 120.0
+    assert captured["body"]["payload"] == PAYLOAD
+    # Билет — согласие забрать ответ опросом: с ним сервис модели не держит
+    # соединение под вызов, который длиннее любого чужого таймаута.
+    assert main._TRACE_ID_RE.fullmatch(captured["body"]["ticket"])
+    # Первая попытка ждёт окно пробуждения, а не полный таймаут: спящий Render
+    # в него всё равно не уложится, а живой отвечает быстрее.
+    assert captured["timeout"] == pytest.approx(main._PLATO_WAKE_TIMEOUT_SECONDS)
+
+
+def test_a_timeout_is_retried_instead_of_becoming_a_504(monkeypatch):
+    """Первый запрос будит уснувший Render и честно не получает ответа —
+    раньше человек видел «Ошибка AI (504)» на вопрос, который проходил со
+    второй попытки. Теперь таймаут повторяется, и ответ доезжает."""
+    import socket
+    attempts = []
+
+    class Response:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return json.dumps({"output": [{"text": "ок"}]}).encode()
+
+    def fake_urlopen(request, timeout=None):
+        attempts.append(timeout)
+        if len(attempts) == 1:
+            raise socket.timeout("timed out")
+        return Response()
+
+    monkeypatch.setattr(main, "_PLATO_AI_URL", "https://bot.example/internal/plato/chat")
+    monkeypatch.setattr(main, "_PLATO_AI_PROXY_SECRET", "s3cret")
+    monkeypatch.setattr(main.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(main.urllib.request, "urlopen", fake_urlopen)
+
+    answer = main._openai_proxy_request(PAYLOAD)
+    assert answer == {"output": [{"text": "ок"}]}
+    assert len(attempts) == 2, "таймаут обязан повторяться"
+    assert attempts[0] < attempts[1], "первая попытка — короткое окно пробуждения"
+    # Вторая попытка получает остаток общего бюджета, а не полный срок заново:
+    # 45 + 240 + 240 — это 525 с там, где обещано 240, и окно успевало сдаться
+    # раньше, чем ядро переставало ждать.
+    # (Здесь сон подменён, поэтому остаток почти равен полному сроку; в жизни
+    # он меньше на всё, что уже потрачено.)
+    assert attempts[1] <= main._PLATO_AI_TIMEOUT_SECONDS
+
+
+def test_only_a_full_run_of_timeouts_becomes_a_504(monkeypatch):
+    """Когда сервис молчит все попытки — это честная 504 с числом попыток."""
+    import socket
+
+    def always_timeout(request, timeout=None):
+        raise socket.timeout("timed out")
+
+    monkeypatch.setattr(main, "_PLATO_AI_URL", "https://bot.example/internal/plato/chat")
+    monkeypatch.setattr(main, "_PLATO_AI_PROXY_SECRET", "s3cret")
+    monkeypatch.setattr(main.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(main.urllib.request, "urlopen", always_timeout)
+
+    with pytest.raises(HTTPException) as exc:
+        main._openai_proxy_request(PAYLOAD)
+    assert exc.value.status_code == 504
+    assert "попытки" in str(exc.value.detail)
 
 
 # --- служебный эндпоинт ------------------------------------------------------
@@ -173,7 +231,7 @@ def test_internal_endpoint_refuses_when_no_secret_is_set(monkeypatch):
 
 def test_internal_endpoint_forwards_to_openai(monkeypatch):
     monkeypatch.setenv("PLATO_AI_PROXY_SECRET", "s3cret-ascii")
-    monkeypatch.setattr(main, "_openai_direct_request", lambda p: {"echo": p})
+    monkeypatch.setattr(main, "_openai_direct_request", lambda p, budget_seconds=None: {"echo": p})
     response = client.post("/internal/plato/chat",
                            json={"payload": PAYLOAD},
                            headers={"X-Plato-Secret": "s3cret-ascii"})
@@ -384,3 +442,60 @@ def test_the_missing_piece_is_named(monkeypatch):
 
     monkeypatch.delenv("PLATO_AI_URL", raising=False)
     assert "PLATO_AI_URL" in _wrapper._agent_unready_reason()
+
+
+# --- пинг против засыпания сервиса модели ------------------------------------
+
+def test_keepalive_pings_health_not_the_model(monkeypatch):
+    """Будим сервис health-запросом: сам /internal/plato/chat вызывает модель
+    и стоит токенов, а инстансу для пробуждения довольно любого обращения."""
+    monkeypatch.setattr(main, "_PLATO_AI_URL",
+                        "https://developaid.onrender.com/internal/plato/chat")
+    assert main._plato_keepalive_url() == "https://developaid.onrender.com/health"
+
+
+def test_keepalive_stays_quiet_where_the_service_is_local(monkeypatch):
+    """На самом Render адрес прокси пуст — там будить некого, и поток
+    не поднимается: инстанс всё равно уснёт вместе с ним."""
+    monkeypatch.setattr(main, "_PLATO_AI_URL", "")
+    assert main._plato_keepalive_url() == ""
+    started = []
+    monkeypatch.setattr(main.threading, "Thread",
+                        lambda *a, **k: started.append(k) or _NoThread())
+    main._start_plato_keepalive()
+    assert started == [], "на сервере с локальной моделью пинг не нужен"
+
+
+class _NoThread:
+    def start(self):  # pragma: no cover - защита от случайного запуска
+        raise AssertionError("поток не должен подниматься")
+
+
+def test_agent_status_shows_the_keepalive(monkeypatch):
+    monkeypatch.setattr(main, "_PLATO_AI_URL",
+                        "https://developaid.onrender.com/internal/plato/chat")
+    status = main.agent_status()["keepalive"]
+    assert status["url"].endswith("/health")
+    assert status["every_minutes"] > 0
+    # Поля отклика есть всегда: «Платон опять засыпает» должно быть чем объяснить.
+    assert "last_ok" in status and "last_error" in status
+
+
+def test_a_failed_ping_names_the_reason_not_the_class(monkeypatch):
+    """«URLError» не отличает «имя не разрешается» от «сеть не пускает» и от
+    «сертификат не сошёлся», а лечится это тремя разными способами. Один разбор
+    на этом уже стоил дня переписки."""
+    import urllib.error
+
+    monkeypatch.setattr(main, "_PLATO_AI_URL",
+                        "https://developaid.onrender.com/internal/plato/chat")
+    monkeypatch.setattr(main, "_PLATO_KEEPALIVE_MINUTES", 0.0001)
+    monkeypatch.setattr(main.time, "sleep", lambda _s: (_ for _ in ()).throw(SystemExit))
+
+    def refuse(request, timeout=None):
+        raise urllib.error.URLError(OSError(-2, "Name or service not known"))
+
+    monkeypatch.setattr(main.urllib.request, "urlopen", refuse)
+    with pytest.raises(SystemExit):
+        main._plato_keepalive_loop()
+    assert "Name or service not known" in main._PLATO_KEEPALIVE["last_error"]

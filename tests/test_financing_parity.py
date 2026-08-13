@@ -119,3 +119,23 @@ def test_the_key_rate_curve_matches_the_engine():
         engine = core.rate_lookup(rates, month, "base")
         value = float(evaluator.cell("Ставки", f"{get_column_letter(col)}5") or 0)
         assert value == pytest.approx(engine, abs=5e-5), str(month)
+
+
+def test_the_fee_defaults_follow_the_credit_agreements():
+    """Дефолты комиссий взяты из НКЛ Сбера, а не из воздуха.
+
+    Плата за пользование лимитом в договорах — 0,7% годовых (400F00BVX003,
+    400F00BVX004) и 1% (400B00VF5MF, 400B01FM8MF); модель держит нижнюю
+    границу 0,7%, прежние 0,5% занижали комиссии в полтора раза. Плата за
+    резервирование — 0,1% от максимального лимита (400B01FM8MF); прежние
+    0,5% завышали её впятеро. Спред к ключевой в договорах 3,3–4,75 п.п.,
+    модельные 4,5 остаются консервативной серединой и не трогаются.
+    """
+    assert core.DEFAULT_INPUTS["limit_fee_pct"] == pytest.approx(0.7)
+    assert core.DEFAULT_INPUTS["reservation_fee_pct"] == pytest.approx(0.1)
+    assert 3.3 <= core.DEFAULT_INPUTS["pf_spread_pp"] <= 4.75
+    # Копии умолчаний на странице больше нет — она подставляется из движка,
+    # и проверять надо подстановку, а не совпадение двух списков.
+    assert core.INPUT_DEFAULT_PLACEHOLDER not in core.PAGE
+    assert '"limit_fee_pct": 0.7' in core.PAGE
+    assert '"reservation_fee_pct": 0.1' in core.PAGE

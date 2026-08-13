@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import re
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -53,10 +54,13 @@ def test_the_page_goes_server_side_in_telegram_and_on_failure():
     flow = re.search(r"async function obtainCadastralTep\(.*?\n\}", core.PAGE, re.S)
     assert flow, "obtainCadastralTep не найдена на странице"
     body = flow.group(0)
-    telegram_branch = body.find("window.Telegram&&window.Telegram.WebApp")
+    telegram_branch = body.find("isTelegramWebApp()")
     automation = body.find("Открываю штатный расчёт ГлавАПУ")
     assert 0 < telegram_branch < automation, \
         "Telegram обязан уходить в серверный расчёт до запуска iframe"
+    # Признак телеграма — параметры, которыми бот открыл окно. Проверка по
+    # initData была всегда ложной: SDK Telegram на странице не подключён.
+    assert "initData" not in body
     assert "await obtainServerTep(cadastralAnalysis,status,runId)" in body, \
         "падение автоматизации должно докатываться серверными формулами"
     assert "function obtainServerTep" in core.PAGE
@@ -68,6 +72,22 @@ def test_the_page_goes_server_side_in_telegram_and_on_failure():
 # информацию, а сайт верную?» — нет: каждый успешный сбор штатного
 # калькулятора на сайте сверяется с серверными формулами, и расхождение
 # кричит в предупреждениях импорта, в /status и в ответах серверного пути.
+
+def _await_drift(timeout: float = 60.0) -> None:
+    """Сверка ушла в фон: она стоит целого серверного расчёта, и держать в ней
+    человека, который ждёт свой ТЭП, незачем. Тест дожидается её явно."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not core._GLAVAPU_FORMULA_DRIFT.get("running"):
+            return
+        time.sleep(0.05)
+    raise AssertionError("фоновая сверка формул не завершилась")
+
+
+def _rearm_drift() -> None:
+    """Сверка идёт не чаще раза в час — в тесте интервал сбрасывается."""
+    core._GLAVAPU_FORMULA_DRIFT.update(checked_at=0.0, running=False)
+
 
 def _mock_analysis(monkeypatch):
     monkeypatch.setattr(core, "analyze_cadastral_territory", lambda req: {
@@ -92,13 +112,19 @@ def _calculator_rows(monkeypatch) -> list[dict]:
 
 def test_a_matching_calculator_clears_the_drift_flag(monkeypatch):
     _mock_analysis(monkeypatch)
+    rows = _calculator_rows(monkeypatch)
     core._GLAVAPU_FORMULA_DRIFT.update(items=["старый дрейф"], found_at="x")
-    result = core.import_cadastral_tep(core.CadastralTepRequest(
-        rows=_calculator_rows(monkeypatch),
-        cadastral_analysis={"recognized": ["77:09:0004014:13"]}))
+    _rearm_drift()
+    core.import_cadastral_tep(core.CadastralTepRequest(
+        rows=rows, cadastral_analysis={"recognized": ["77:09:0004014:13"]}))
+    _await_drift()
     assert core._GLAVAPU_FORMULA_DRIFT["items"] == [], \
         "совпавший сбор обязан снимать флаг дрейфа"
-    assert not any("разошлись" in w for w in result["warnings"])
+    _mock_analysis(monkeypatch)
+    _rearm_drift()
+    again = core.import_cadastral_tep(core.CadastralTepRequest(
+        rows=rows, cadastral_analysis={"recognized": ["77:09:0004014:13"]}))
+    assert not any("разошлись" in w for w in again["warnings"])
 
 
 def test_a_changed_methodology_screams_everywhere(monkeypatch):
@@ -107,12 +133,21 @@ def test_a_changed_methodology_screams_everywhere(monkeypatch):
     for row in rows:
         if row["code"] == "44":
             row["value"] = "2 000,000"  # ГлавАПУ «поменял» методику платы
+    core._GLAVAPU_FORMULA_DRIFT.update(items=[], found_at="", numbers=[])
+    _rearm_drift()
+    core.import_cadastral_tep(core.CadastralTepRequest(
+        rows=rows, cadastral_analysis={"recognized": ["77:09:0004014:13"]}))
+    _await_drift()
+    assert core._GLAVAPU_FORMULA_DRIFT["items"], "флаг дрейфа не взведён"
+
+    # Предупреждение доносится со следующего расчёта — сверка стоит целого
+    # серверного расчёта, и держать в ней человека незачем.
+    _mock_analysis(monkeypatch)
+    _rearm_drift()
     result = core.import_cadastral_tep(core.CadastralTepRequest(
         rows=rows, cadastral_analysis={"recognized": ["77:09:0004014:13"]}))
-
     assert any("разошлись" in w for w in result["warnings"]), \
         "расхождение обязано попасть в предупреждения импорта"
-    assert core._GLAVAPU_FORMULA_DRIFT["items"], "флаг дрейфа не взведён"
     assert "Дрейф формул ГлавАПУ" in core._TELEGRAM_RUNTIME.get("last_error", "")
 
     # Серверный путь и карточка бота предупреждают, пока дрейф не снят.
@@ -157,3 +192,30 @@ def test_the_mini_app_url_busts_the_webview_cache(monkeypatch):
     url = core._telegram_web_app_url(42, [])
     assert f"v={core.VERSION}" in url, \
         "URL мини-приложения обязан включать версию для сброса кэша WebView"
+
+
+def test_the_two_tep_sources_are_labelled_apart():
+    """Штатный калькулятор и серверные формулы помечались одинаково —
+    «ГлавАПУ», — и два отчёта с разными числами выглядели одинаково
+    достоверно: отличить их можно было только по имени файла выгрузки.
+    На двух компьютерах это дало соцплатёж 185,1 и 220,3 млн ₽ без
+    единого признака, какой расчёт откуда."""
+    page = core.PAGE
+    assert "function tepSourceLabel(" in page
+    assert "ГлавАПУ · серверный расчёт DevelopAid" in page
+    assert "ГлавАПУ · штатный калькулятор" in page
+    # Старая безусловная метка не должна вернуться ни в одну из точек сборки.
+    assert "source_label:manual?'Ручной шаблон DevelopAid':'ГлавАПУ'" not in page
+
+
+def test_the_fallback_answer_says_it_is_a_fallback():
+    """Утром здесь проверялась дата зашитых ставок компенсации. Ставок больше
+    нет — компенсация считается формулой с УПКС квартала, а расчёт по нашим
+    формулам стал запасным путём при недоступном калькуляторе. Предупреждение
+    обязано говорить именно это: приоритет у штатного калькулятора."""
+    import inspect
+    source = inspect.getsource(core.cadastral_tep_server)
+    assert "серверными формулами" in source
+    assert "приоритет" in source
+    # След последнего сбоя запуска калькулятора едет в то же предупреждение.
+    assert "_GLAVAPU_HEADLESS" in source

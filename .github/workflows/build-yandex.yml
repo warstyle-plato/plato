@@ -1,0 +1,168 @@
+name: Сборка образа в Yandex Container Registry
+
+# Первый этап CI/CD: образ собирается здесь и ложится в реестр. Машины в этой
+# цепочке нет вовсе — ни SSH, ни остановки контейнера. Прод продолжает жить на
+# том, что на нём сейчас.
+#
+# Почему не на самой машине: с неё закрыты *.onrender.com и api.telegram.org, а
+# pypi.org рвёт соединение и на рукопожатии («SSL: UNEXPECTED_EOF_WHILE_READING»),
+# и на чтении («Read timed out»). Зеркала лечат симптом — сборке нужен открытый
+# интернет, которого у машины нет. Реестр же стоит в том же ru-central1, что и
+# ядро, и между ними блокировать нечего.
+#
+# Постоянных ключей Яндекса в репозитории нет. GitHub предъявляет свой
+# короткоживущий OIDC-токен, Яндекс меняет его на IAM-токен сервисного аккаунта
+# на время одного запуска. Ключа, который можно потерять, не существует.
+
+on:
+  push:
+    branches: [main]
+    # Правка workflow или документации приложение не меняет, а сборку с
+    # Chromium и полным набором тестов запускает на двадцать минут. Условие
+    # перенесено из прежнего deploy-yandex.yml — оно там появилось не зря.
+    paths-ignore:
+      - ".github/**"
+      - "docs/**"
+  workflow_dispatch:
+
+concurrency:
+  # Две сборки одного коммита разом переписали бы тег prod вразнобой.
+  group: build-yandex
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  IMAGE: developaid
+  # Тот же audience объявлен в федерации; расходятся они — обмен отвергается
+  # молча, поэтому значение задано один раз и здесь.
+  OIDC_AUDIENCE: https://github.com/warstyle-plato
+
+jobs:
+  test:
+    name: Тесты
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Зависимости
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+      # Штатная команда проекта, та же, что гоняется руками: около
+      # девятнадцати минут на ~1266 тестов. Сокращать её нельзя — набор и
+      # написан затем, чтобы ловить то, что глазами не видно.
+      - name: Полный набор
+        run: python3 -m pytest tests -q
+
+  build:
+    name: Сборка и публикация
+    needs: [test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Имя образа
+        id: meta
+        run: |
+          echo "image=cr.yandex/${{ vars.YC_REGISTRY_ID }}/${IMAGE}" >> "$GITHUB_OUTPUT"
+          version=$(grep -m1 '^VERSION = ' main_legacy.py | cut -d'"' -f2)
+          [ -n "$version" ] || { echo "VERSION не найдена в main_legacy.py" >&2; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Коммит ${GITHUB_SHA}, версия ${version}"
+
+      - name: OIDC-токен GitHub
+        run: |
+          set -euo pipefail
+          curl -sS --fail -G "${ACTIONS_ID_TOKEN_REQUEST_URL}" \
+            -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            --data-urlencode "audience=${OIDC_AUDIENCE}" \
+            -o "${RUNNER_TEMP}/oidc.json"
+          python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["value"])' \
+            "${RUNNER_TEMP}/oidc.json" > "${RUNNER_TEMP}/oidc.jwt"
+          # Токен предъявляет права репозитория — маскируем, чтобы он не всплыл
+          # в журнале ни через echo, ни через чужую ошибку.
+          echo "::add-mask::$(cat "${RUNNER_TEMP}/oidc.jwt")"
+          # В журнал уходят только безопасные claims: по ним сверяется привязка
+          # федерации, если обмен вдруг отвергнут.
+          python3 - "${RUNNER_TEMP}/oidc.jwt" <<'PY'
+          import base64, json, sys
+          token = open(sys.argv[1]).read().strip()
+          payload = token.split(".")[1]
+          payload += "=" * (-len(payload) % 4)
+          claims = json.loads(base64.urlsafe_b64decode(payload))
+          for key in ("sub", "aud", "repository", "ref"):
+              print(f"{key}: {claims.get(key)!r}")
+          PY
+
+      - name: Обмен на IAM-токен Яндекса
+        id: iam
+        run: |
+          set -euo pipefail
+          code=$(curl -sS -o "${RUNNER_TEMP}/iam.json" -w '%{http_code}' \
+            -X POST https://auth.yandex.cloud/oauth/token \
+            --data-urlencode "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
+            --data-urlencode "requested_token_type=urn:ietf:params:oauth:token-type:access_token" \
+            --data-urlencode "audience=${{ vars.YC_SERVICE_ACCOUNT_ID }}" \
+            --data-urlencode "subject_token@${RUNNER_TEMP}/oidc.jwt" \
+            --data-urlencode "subject_token_type=urn:ietf:params:oauth:token-type:id_token")
+          if [ "$code" != "200" ]; then
+            echo "Обмен отвергнут, код ${code}." >&2
+            # Тело отказа токена не содержит — только причину.
+            python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print({k: d.get(k) for k in ("error","error_description")}, file=sys.stderr)' \
+              "${RUNNER_TEMP}/iam.json" 2>/dev/null || cat "${RUNNER_TEMP}/iam.json" >&2
+            echo "Сверьте sub из предыдущего шага с привязкой федерации в Яндексе." >&2
+            rm -f "${RUNNER_TEMP}/oidc.jwt" "${RUNNER_TEMP}/iam.json"
+            exit 1
+          fi
+          token=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["access_token"])' "${RUNNER_TEMP}/iam.json")
+          echo "::add-mask::${token}"
+          echo "token=${token}" >> "$GITHUB_OUTPUT"
+          rm -f "${RUNNER_TEMP}/oidc.jwt" "${RUNNER_TEMP}/iam.json"
+          echo "IAM-токен получен."
+
+      - name: Вход в реестр
+        run: |
+          printf '%s' '${{ steps.iam.outputs.token }}' \
+            | docker login --username iam --password-stdin cr.yandex
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Сборка и публикация
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          # Браузер остаётся в образе: без него расчёт ВРИ уходит на копию
+          # методики, которая отстаёт от города. Ускорять CI за счёт того,
+          # чем считают, нельзя.
+          build-args: |
+            APP_COMMIT=${{ github.sha }}
+          # Тег по коммиту — то, чем адресуется конкретный образ; prod —
+          # указатель на то, что должно крутиться. Одного latest мало: по нему
+          # ни откатиться, ни понять, что подняли.
+          tags: |
+            ${{ steps.meta.outputs.image }}:${{ github.sha }}
+            ${{ steps.meta.outputs.image }}:prod
+          # Без кэша каждая сборка ставит Chromium заново.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Что уехало
+        run: |
+          echo "Образ:   ${{ steps.meta.outputs.image }}"
+          echo "Коммит:  ${GITHUB_SHA}"
+          echo "Версия:  ${{ steps.meta.outputs.version }}"
+          echo "Digest:  ${{ steps.push.outputs.digest }}"
+          echo "Теги:    ${GITHUB_SHA}, prod"

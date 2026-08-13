@@ -304,7 +304,10 @@ def test_the_verdict_names_the_top_factor_and_the_runners_up(single):
 
 
 def test_the_verdict_flags_a_broken_llcr_target():
-    inputs, tep = project(apartment_price_th=620)
+    # Цена поднята вслед за умолчаниями: после сверки удельных ставок с
+    # банковским бюджетом стройка подорожала, и прежние 620 больше не дают
+    # проекту дотянуть до цели, с которой тест начинается (1,164 против 1,20).
+    inputs, tep = project(apartment_price_th=680)
     report = core.run_sensitivity(inputs, tep, [], {}, metric="llcr")
     text = " ".join(report["verdict"])
 
@@ -313,7 +316,10 @@ def test_the_verdict_flags_a_broken_llcr_target():
 
 
 def test_the_verdict_flags_a_negative_npv():
-    inputs, tep = project(apartment_price_th=560)
+    # Проект должен стоять чуть выше нуля, чтобы отклонение фактора уводило его
+    # в минус. На прежних 560 после подорожания стройки он уже убыточен в базе,
+    # и вердикт говорил бы не о риске, а о состоявшемся убытке.
+    inputs, tep = project(apartment_price_th=600)
     report = core.run_sensitivity(inputs, tep, [], {}, metric="npv_mln")
 
     assert any("в минус" in line for line in report["verdict"])

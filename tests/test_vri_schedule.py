@@ -498,7 +498,11 @@ def test_vri_group_is_still_a_field_group():
 def test_tab_and_report_render_from_one_place():
     page = main.PAGE
     # Обе таблицы наполняются общими помощниками, поэтому расходиться не могут.
-    assert "function vriTotalsRows(t)" in page
+    # Плата на метр считается от итогов расчёта, поэтому помощник берёт и
+    # сводку: сама сумма ни о чём не говорит без площади, которую на ней строят.
+    assert "function vriTotalsRows(t,summary)" in page
+    assert page.count("vriTotalsRows(t,(lastResult||{}).summary)") == 2, \
+        "обе поверхности обязаны наполняться одинаково"
     assert "function vriScheduleRows(rows)" in page
     for element in ("vriTabTotals", "vriTabSchedule", "vriTotalsTable", "vriScheduleTable"):
         assert f'id="{element}"' in page

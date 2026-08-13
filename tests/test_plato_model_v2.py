@@ -44,14 +44,23 @@ from openpyxl.utils import get_column_letter  # noqa: E402
 KOPECK = 1e-3
 
 
+# Сверка книги с движком должна идти на прибыльном проекте: у убыточного налог
+# равен нулю, и проверки вроде «ставка налога двигает LLCR» перестают что-либо
+# проверять, оставаясь зелёными. Прежде прибыль давали сами умолчания, но после
+# сверки удельных ставок с банковским бюджетом комфорт по 350 тыс ₽/м² на них не
+# сходится — поэтому сценарий задаётся здесь явно, а не достаётся по случайности.
+BOOK_INPUTS = {**core.DEFAULT_INPUTS, "apartment_price_th": 650,
+               "commercial_price_th": 650, "parking_price_th": 5000}
+
+
 @pytest.fixture(scope="module")
 def book():
     data, meta = core.build_plato_model_v2(
-        dict(core.DEFAULT_INPUTS), dict(core.TEP_DEFAULT), [], project_name="Проверка",
+        dict(BOOK_INPUTS), dict(core.TEP_DEFAULT), [], project_name="Проверка",
     )
     workbook = openpyxl.load_workbook(io.BytesIO(data))
     engine = core.calculate(core.CalcRequest(
-        inputs=dict(core.DEFAULT_INPUTS), tep=dict(core.TEP_DEFAULT), rates=[],
+        inputs=dict(BOOK_INPUTS), tep=dict(core.TEP_DEFAULT), rates=[],
     ))
     return workbook, Evaluator(workbook), engine, meta
 
@@ -207,7 +216,13 @@ def test_changing_a_spread_moves_the_report(book):
     fresh["Вводные"][f"B{line}"] = fresh["Вводные"][f"B{line}"].value + 0.02
 
     after = Evaluator(fresh).cell("ОТЧЁТ", f"B{row}")
-    assert after > was + 100, f"плюс 2 п.п. к спреду ПФ не сдвинули проценты: {was} → {after}"
+    # Порог относительный, а не «плюс 100»: спред входит только в базовую ставку,
+    # и чем выше покрытие эскроу, тем меньше её вес в средневзвешенной. На хорошо
+    # покрытом проекте два пункта спреда двигают проценты меньше чем на процент —
+    # абсолютный порог мерил бы не проходимость вводной, а покрытие. Полпроцента
+    # взяты вдвое ниже наблюдаемых 0,995%: порог вплотную к факту уже подвёл, а
+    # численный шум здесь на семь порядков меньше.
+    assert after > was * 1.005, f"плюс 2 п.п. к спреду ПФ не сдвинули проценты: {was} → {after}"
 
 
 def test_the_rate_sheet_feeds_the_credit_sheet(book):

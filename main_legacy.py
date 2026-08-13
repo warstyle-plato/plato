@@ -14,6 +14,7 @@ import http.client
 import json
 import logging
 import os
+import queue
 import threading
 import time
 import math
@@ -42,30 +43,62 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.18.0"
+VERSION = "0.17.68"
+# Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
+# на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
+# выкаченный образ от собранного часом раньше. Значение запекается сборкой
+# (ARG APP_COMMIT), запуску его задавать неоткуда — вне контейнера пусто.
+COMMIT = (os.getenv("APP_COMMIT") or "").strip()[:40]
 USER_AGENT = f"DevelopAid-Development-Model/{VERSION}"
 # Плейсхолдер для страницы: PAGE — raw-строка с JS, и `.format` в ней применять
 # нельзя, там свои фигурные скобки.
 VERSION_PLACEHOLDER = "__DEVELOPAID_VERSION__"
+# Список полей и умолчания жили на странице отдельной копией. Поле,
+# добавленное в движок, на странице не появлялось: движок его считал,
+# а нарисовать было некому. Теперь копия одна, подставляется на импорте.
+FIELD_GROUPS_PLACEHOLDER = "__DEVELOPAID_FIELD_GROUPS__"
+INPUT_DEFAULT_PLACEHOLDER = "__DEVELOPAID_INPUT_DEFAULT__"
 
 app = FastAPI(title="DevelopAid Development Investment Model", version=VERSION)
 
 # Нативное меню Telegram объявляется один раз — как VERSION. Список ставили
 # два места: движок при настройке вебхука и обёртка на старте, побеждал
 # последний — и /vritep из меню пропадал, хотя команда работала.
+# Меню — шесть решений, а не тринадцать команд. Список Telegram плоский, и
+# тринадцать строк в нём читались простынёй, где всё одинаково важно: пять
+# входов в ТЭП вперемешку с Платоном и служебным, «ТЭП по кадастровым номерам»
+# и «Посчитать ВРИ и ТЭП» на вид неразличимы.
+#
+# Вложенности в меню нет, но есть второй уровень — inline-кнопки. Пункт меню =
+# решение, второй уровень = уточнение: «Расчёт модели» спрашивает, откуда взять
+# ТЭП, «Расчёт ВРИ и ТЭП» — где участок. Способ выбирается там, где видно, что
+# это выбор одного и того же, а не четыре разные функции подряд.
+#
+# Остальные команды работают по-прежнему и названы в помощи: команда вне меню,
+# о которой негде узнать, просто спрятана.
 TELEGRAM_BOT_COMMANDS = [
-    {"command": "start", "description": "Главное меню"},
-    {"command": "cadastre", "description": "ТЭП по кадастровым номерам"},
-    {"command": "address", "description": "Найти участок по адресу"},
-    {"command": "tep", "description": "Собрать ТЭП без кадастра"},
-    {"command": "vritep", "description": "Посчитать ВРИ и ТЭП"},
-    {"command": "model", "description": "Открыть модель DevelopAid"},
-    {"command": "platon", "description": "Спросить Платона Сергеевича"},
-    {"command": "comment", "description": "Комментарий Платона к ТЭП"},
+    {"command": "calc", "description": "Расчёт модели"},
+    {"command": "model", "description": "Открыть готовую модель"},
+    {"command": "vritep", "description": "Расчёт ВРИ и ТЭП"},
+    {"command": "platon", "description": "Платон Сергеевич — ИИ-аналитик проекта"},
+    {"command": "help", "description": "Помощь · все команды"},
+]
+# Команды вне меню. Список нужен помощи и проверке: он держит их видимыми для
+# человека и не даёт молча потерять разбор.
+TELEGRAM_EXTRA_COMMANDS = [
+    {"command": "start", "description": "Приветствие и все кнопки сразу"},
+    {"command": "tep", "description": "Расчёт модели: свои вводные"},
+    {"command": "address", "description": "Расчёт модели: по адресу"},
+    {"command": "cadastre", "description": "Расчёт модели: по кадастровому номеру"},
     {"command": "template", "description": "Скачать Excel-шаблон ТЭП"},
-    {"command": "help", "description": "Все возможности бота"},
+    {"command": "comment", "description": "Платон о текущем ТЭП"},
+    {"command": "cancel", "description": "Прервать диалог и начать заново"},
     {"command": "status", "description": "Статус и версия"},
 ]
+# Куда расширения вставляют свои пункты. Прежде они дописывали в конец, и
+# расчёт льготы МПТ оказывался последним — ниже помощи. Якорем задано место:
+# среди расчётов, перед Платоном.
+TELEGRAM_MENU_EXTENSION_ANCHOR = "platon"
 
 PRESET_DIR = Path(__file__).resolve().parent / "presets"
 MANUAL_TEP_TEMPLATE_FILENAME = "DevelopAid_Шаблон_ТЭП.xlsx"
@@ -118,8 +151,23 @@ PROJECT_CLASS_PRESETS = {
 }
 RATE_CURVE = []
 TEP_DEFAULT = {'apartments': {'label': 'Квартиры', 'gns': 130716.66012842482, 'total_area': 117647.0588235294, 'useful': 80000, 'saleable': 80000, 'transfer': 0, 'units': 1361.815754339119}, 'ground_commercial': {'label': 'Коммерция 1 эт.', 'gns': 9664.049734985854, 'total_area': 8695.652173913044, 'useful': 7826.08695652174, 'saleable': 7826.08695652174, 'transfer': 0, 'units': 0}, 'standalone_retail': {'label': 'Коммерция ОСЗ', 'gns': 0, 'total_area': 0, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 0}, 'offices': {'label': 'Офисы', 'gns': 0, 'total_area': 0, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 0}, 'above_parking': {'label': 'Наземный паркинг', 'gns': 0, 'total_area': 0, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 0}, 'underground_parking': {'label': 'Подземный паркинг', 'gns': 38763, 'total_area': 38763, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 1107.5142857142857}, 'storage': {'label': 'Кладовки', 'gns': 0, 'total_area': 0, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 0}, 'kindergarten': {'label': 'ДОУ', 'gns': 0, 'total_area': 3000, 'useful': 0, 'saleable': 0, 'transfer': 3000, 'units': 250}, 'school': {'label': 'СОШ', 'gns': 0, 'total_area': 0, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 0}, 'clinic': {'label': 'Поликлиника', 'gns': 0, 'total_area': 0, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 0}}
-FIELD_GROUPS = [['Сделка и сроки', [['purchase_price_mln', 'Стоимость покупки / цена входа', 'млн ₽', 'number'], ['land_rights_cost_mln', 'Оформление земельных правоотношений / смена ВРИ', 'млн ₽', 'number'], ['project_start', 'Начало проекта', 'дата', 'date'], ['ird_months', 'Срок ИРД до РнС', 'мес.', 'number'], ['construction_months', 'Срок строительства', 'мес.', 'number'], ['sales_lag_months', 'Лаг старта продаж после РнС', 'мес.', 'number'], ['bridge_repay_lag_months', 'Лаг погашения БРИДЖ после РнС', 'мес.', 'number'], ['residual_sales_months', 'Остаточные продажи после РВЭ', 'мес.', 'number']]], ['Смена ВРИ и земельные права', [['vri_required', 'Требуется изменение ВРИ', 'Да / Нет', 'checkbox'], ['vri_region', 'Регион', 'регион', 'select', [['msk', 'Москва'], ['mo', 'Московская область']]], ['land_right', 'Право на участок', 'право', 'select', [['ownership', 'Собственность'], ['lease', 'Аренда']]], ['vri_obligation_date_mode', 'Дата обязательства', 'режим', 'select', [['before_rns_1m', 'За месяц до РнС — экспертная оценка'], ['at_rns', 'В дату РнС'], ['before_rns_3m', 'За три месяца до РнС'], ['after_purchase', 'Через N мес. после покупки'], ['manual', 'Задана вручную']]], ['vri_months_after_purchase', 'Месяцев после покупки', 'мес.', 'number'], ['vri_obligation_date', 'Дата возникновения обязательства', 'точная дата по документу; пусто — экспертная оценка', 'date'], ['vri_payment_mode', 'Порядок оплаты', 'режим', 'select', [['lump', 'Единовременно'], ['installment', 'Рассрочка']]], ['vri_installment_years', 'Срок рассрочки', 'лет (Москва: 1, 3, 6)', 'number'], ['vri_periodicity_months', 'Периодичность платежей', 'мес.; в Москве всегда квартал', 'select', [['1', 'Ежемесячно'], ['3', 'Ежеквартально'], ['6', 'Раз в полгода'], ['12', 'Раз в год']]], ['vri_initial_pct', 'Первый взнос по рассрочке', '% от суммы', 'number'], ['vri_schedule_mode', 'График платежей', 'режим', 'select', [['auto', 'Автоматический'], ['manual', 'Ручной']]], ['vri_interest_enabled', 'Проценты на остаток', 'режим', 'select', [['', 'По региону'], ['1', 'Начисляются'], ['0', 'Не начисляются']]], ['vri_interest_spread_pp', 'Спред к ключевой ставке по рассрочке', 'п.п.', 'number'], ['vri_early_repay_after_pf', 'Досрочное погашение остатка после открытия ПФ', 'Да / Нет', 'checkbox'], ['vri_pf_open_date', 'Дата открытия ПФ', 'дата (пусто — РнС)', 'date'], ['vri_in_bank_budget', 'ВРИ включена в банковский бюджет', 'Да / Нет', 'checkbox'], ['vri_financing_mode', 'Источники оплаты', 'режим', 'select', [['auto', 'Как весь проект'], ['shares', 'Заданные доли']]], ['vri_share_bridge_pct', 'Доля БРИДЖ', '%', 'number'], ['vri_share_pf_pct', 'Доля ПФ', '%', 'number'], ['vri_share_equity_pct', 'Доля собственного капитала', '%', 'number'], ['vri_relief_mode', 'Льгота по плате', 'режим', 'select', [['none', 'Нет'], ['percent', 'Доля от суммы'], ['amount', 'Фиксированная сумма']]], ['vri_relief_pct', 'Льгота — доля от суммы', '%', 'number'], ['vri_relief_mln', 'Льгота — сумма', 'млн ₽', 'number'], ['vri_security_cost_mln', 'Расходы на обеспечение обязательства', 'млн ₽', 'number']]], ['Продажи', [['apartment_price_th', 'Стартовая цена квартир', 'тыс. ₽/м²', 'number'], ['commercial_price_th', 'Стартовая цена коммерции 1 этажа', 'тыс. ₽/м²', 'number'], ['parking_price_th', 'Цена подземного машино-места', 'тыс. ₽/шт.', 'number'], ['storage_price_th', 'Цена кладовой', 'тыс. ₽/шт.', 'number'], ['share_before_rve_pct', 'Доля продаж до РВЭ', '%', 'number'], ['pace_adjustment_pct', 'Корректировка темпа', '%', 'number'], ['inflation_after_rve_pct', 'Инфляция после РВЭ', '% год', 'number'], ['seasonal_reduction_pct', 'Сезонное снижение темпа', '%', 'number'], ['growth_stage1_pct', 'Рост цены — этап 1', '%', 'number'], ['growth_stage2_pct', 'Рост цены — этап 2', '%', 'number'], ['growth_stage3_pct', 'Рост цены — этап 3', '%', 'number'], ['growth_stage4_pct', 'Рост цены — этап 4', '%', 'number'], ['monthly_growth_pre_pct', 'Ежемесячный рост цены до РВЭ', '%/мес.', 'number'], ['monthly_growth_post_pct', 'Ежемесячный рост цены после РВЭ', '%/мес.', 'number']]], ['Строительство', [['ird_th_per_sqm', 'ИРД и согласования', 'тыс. ₽/м² ГНС', 'number'], ['design_p_th_per_sqm', 'Проектирование стадии П', 'тыс. ₽/м² ГНС', 'number'], ['design_rd_th_per_sqm', 'Проектирование стадии РД', 'тыс. ₽/м² ГНС', 'number'], ['preparation_th_per_sqm', 'Подготовительные работы', 'тыс. ₽/м² ГНС', 'number'], ['main_above_th_per_sqm', 'Основное строительство — наземная часть', 'тыс. ₽/м² ГНС', 'number'], ['main_under_th_per_sqm', 'Основное строительство — подземная часть', 'тыс. ₽/м² ГНС', 'number'], ['utilities_th_per_sqm', 'Наружные инженерные сети', 'тыс. ₽/м² ГНС', 'number'], ['landscaping_th_per_sqm', 'Благоустройство', 'тыс. ₽/м² ГНС', 'number'], ['commissioning_th_per_sqm', 'Сдача и ввод', 'тыс. ₽/м² ГНС', 'number'], ['site_maintenance_th_per_sqm', 'Содержание стройплощадки', 'тыс. ₽/м² ГНС', 'number'], ['gc_fee_pct', 'Вознаграждение генподрядчика', '% СМР', 'number'], ['author_supervision_pct', 'Авторский надзор', '% от П + РД', 'number'], ['project_management_pct', 'Управление проектом — зарплаты и накладные', '% прямых затрат', 'number'], ['technical_supervision_pct', 'Технический заказчик / стройконтроль (технадзор)', '% СМР', 'number'], ['reserve_pct', 'Резерв', '%', 'number']]], ['Коммерческие расходы и налоги', [['marketing_pct', 'Маркетинг', '% выручки', 'number'], ['selling_pct', 'Расходы на продажи', '% выручки', 'number'], ['profit_tax_pct', 'Налог на прибыль', '%', 'number'], ['vat_pct', 'НДС', '%', 'number']]], ['Финансирование', [['bridge_spread_pp', 'Спред БРИДЖ', 'п.п.', 'number'], ['bridge_cap_spread_pp', 'Спред капитализации БРИДЖ', 'п.п.', 'number'], ['pf_spread_pp', 'Спред ПФ', 'п.п.', 'number'], ['pf_special_pct', 'Ставка ПФ при покрытии эскроу 1×', '%', 'number'], ['limit_fee_pct', 'Плата за лимит', '%', 'number'], ['reservation_fee_pct', 'Плата за резервирование', '%', 'number'], ['discount_rate_pct', 'Ставка дисконтирования', '%', 'number'], ['bridge_interest_mode', 'Проценты БРИДЖ при рефинансировании', 'режим', 'finance_select']]], ['Социальная нагрузка', [['social_mode', 'Форма исполнения', 'режим', 'select'], ['social_comp_date', 'Дата денежной компенсации', 'дата', 'date'], ['social_compensation_mln', 'Социальный платеж / компенсация по ГлавАПУ', 'млн ₽', 'number'], ['kindergarten_places', 'ДОУ — количество мест', 'мест', 'number'], ['kindergarten_cost_mln_per_place', 'ДОУ — себестоимость места', 'млн ₽/место', 'number'], ['kindergarten_start', 'ДОУ — начало строительства', 'дата', 'date'], ['kindergarten_months', 'ДОУ — срок строительства', 'мес.', 'number'], ['school_places', 'СОШ — количество мест', 'мест', 'number'], ['school_cost_mln_per_place', 'СОШ — себестоимость места', 'млн ₽/место', 'number'], ['school_start', 'СОШ — начало строительства', 'дата', 'date'], ['school_months', 'СОШ — срок строительства', 'мес.', 'number'], ['clinic_capacity', 'Поликлиника — мощность', 'пос./смену', 'number'], ['clinic_cost_mln_per_unit', 'Поликлиника — себестоимость мощности', 'млн ₽/(пос./смену)', 'number'], ['clinic_start', 'Поликлиника — начало строительства', 'дата', 'date'], ['clinic_months', 'Поликлиника — срок строительства', 'мес.', 'number'], ['social_dou_gba_sqm', 'ДОУ — общая площадь', 'м²', 'number'], ['social_dou_norm_sqm', 'ДОУ — норматив площади на место', 'м²/место', 'number'], ['social_school_gba_sqm', 'СОШ — общая площадь', 'м²', 'number'], ['social_school_norm_sqm', 'СОШ — норматив площади на место', 'м²/место', 'number'], ['social_clinic_gba_sqm', 'Поликлиника — общая площадь', 'м²', 'number'], ['social_clinic_norm_sqm', 'Поликлиника — норматив площади', 'м²/ед.', 'number']]], ['МФОЦ / офисы', [['offices_enabled', 'Объект включен', 'Да / Нет', 'checkbox'], ['offices_gba_sqm', 'Общая площадь (GBA)', 'м²', 'number'], ['offices_saleable_sqm', 'Продаваемая площадь', 'м²', 'number'], ['offices_start', 'Начало строительства', 'дата', 'date'], ['offices_months', 'Срок строительства', 'мес.', 'number'], ['offices_cost_th_per_sqm', 'Себестоимость строительства', 'тыс. ₽/м² GBA', 'number'], ['offices_sales_start', 'Старт продаж', 'дата', 'date'], ['offices_price_th_per_sqm', 'Стартовая цена', 'тыс. ₽/м²', 'number'], ['offices_share_before_rve_pct', 'Доля продаж до РВЭ', '%', 'number'], ['offices_residual_months', 'Остаточные продажи после РВЭ', 'мес.', 'number'], ['offices_growth_pre_pct', 'Рост цены до РВЭ', '%/мес.', 'number'], ['offices_growth_post_pct', 'Рост цены после РВЭ', '%/мес.', 'number']]], ['ТЦ / коммерция ОСЗ', [['retail_enabled', 'Объект включен', 'Да / Нет', 'checkbox'], ['retail_gba_sqm', 'Общая площадь (GBA)', 'м²', 'number'], ['retail_saleable_sqm', 'Продаваемая площадь', 'м²', 'number'], ['retail_start', 'Начало строительства', 'дата', 'date'], ['retail_months', 'Срок строительства', 'мес.', 'number'], ['retail_cost_th_per_sqm', 'Себестоимость строительства', 'тыс. ₽/м² GBA', 'number'], ['retail_sales_start', 'Старт продаж', 'дата', 'date'], ['retail_price_th_per_sqm', 'Стартовая цена', 'тыс. ₽/м²', 'number'], ['retail_share_before_rve_pct', 'Доля продаж до РВЭ', '%', 'number'], ['retail_residual_months', 'Остаточные продажи после РВЭ', 'мес.', 'number'], ['retail_growth_pre_pct', 'Рост цены до РВЭ', '%/мес.', 'number'], ['retail_growth_post_pct', 'Рост цены после РВЭ', '%/мес.', 'number']]], ['Наземный паркинг', [['above_parking_enabled', 'Объект включен', 'Да / Нет', 'checkbox'], ['above_parking_spaces', 'Количество машино-мест', 'шт.', 'number'], ['above_parking_cost_mln_per_space', 'Себестоимость одного места', 'млн ₽/место', 'number'], ['above_parking_start', 'Начало строительства', 'дата', 'date'], ['above_parking_months', 'Срок строительства', 'мес.', 'number'], ['above_parking_sales_start', 'Старт продаж', 'дата', 'date'], ['above_parking_price_mln_per_space', 'Стартовая цена места', 'млн ₽/место', 'number'], ['above_parking_share_before_rve_pct', 'Доля продаж до РВЭ', '%', 'number'], ['above_parking_residual_months', 'Остаточные продажи после РВЭ', 'мес.', 'number'], ['above_parking_growth_pre_pct', 'Рост цены до РВЭ', '%/мес.', 'number'], ['above_parking_growth_post_pct', 'Рост цены после РВЭ', '%/мес.', 'number'], ['above_parking_area_per_space_sqm', 'Площадь на 1 место для ТЭП', 'м²/место', 'number']]]]
-DEFAULT_INPUTS = {'project_class': 'comfort', 'purchase_price_mln': 0, 'construction_months': 24, 'apartment_price_th': 350, 'commercial_price_th': 350, 'parking_price_th': 1500, 'storage_price_th': 1000, 'share_before_rve_pct': 85, 'pace_adjustment_pct': 25, 'inflation_after_rve_pct': 3, 'seasonal_reduction_pct': -15, 'growth_stage1_pct': 0, 'growth_stage2_pct': 0, 'growth_stage3_pct': 0, 'growth_stage4_pct': 0, 'ird_th_per_sqm': 1, 'design_p_th_per_sqm': 2.5, 'design_rd_th_per_sqm': 2.5, 'preparation_th_per_sqm': 1, 'main_above_th_per_sqm': 110, 'utilities_th_per_sqm': 7.5, 'landscaping_th_per_sqm': 5, 'commissioning_th_per_sqm': 1, 'site_maintenance_th_per_sqm': 1, 'gc_fee_pct': 7, 'reserve_pct': 5, 'project_management_pct': 5, 'technical_supervision_pct': 5, 'author_supervision_pct': 0, 'marketing_pct': 3, 'selling_pct': 4, 'profit_tax_pct': 25, 'vat_pct': 22, 'bridge_spread_pp': 6, 'bridge_cap_spread_pp': 6, 'pf_spread_pp': 4.5, 'pf_special_pct': 4.5, 'limit_fee_pct': 0.5, 'reservation_fee_pct': 0.5, 'discount_rate_pct': 20, 'monthly_growth_pre_pct': 1.5, 'monthly_growth_post_pct': 0.25, 'ird_months': 18, 'sales_lag_months': 0, 'bridge_repay_lag_months': 0, 'residual_sales_months': 6, 'social_comp_date': '2028-06-01', 'social_compensation_mln': 0, 'kindergarten_places': 250, 'kindergarten_cost_mln_per_place': 2.75, 'kindergarten_start': '2028-06-01', 'kindergarten_months': 24, 'school_places': 0, 'school_cost_mln_per_place': 3, 'school_start': '2028-06-01', 'school_months': 30, 'clinic_capacity': 0, 'clinic_cost_mln_per_unit': 3, 'clinic_start': '2028-06-01', 'clinic_months': 24, 'offices_gba_sqm': 10000, 'offices_saleable_sqm': 6000, 'offices_start': '2028-07-01', 'offices_months': 24, 'offices_cost_th_per_sqm': 200, 'offices_sales_start': '2028-07-01', 'offices_price_th_per_sqm': 500, 'offices_share_before_rve_pct': 85, 'offices_residual_months': 6, 'offices_growth_pre_pct': 1.5, 'offices_growth_post_pct': 0.25, 'retail_gba_sqm': 10000, 'retail_saleable_sqm': 6000, 'retail_start': '2028-07-01', 'retail_months': 24, 'retail_cost_th_per_sqm': 200, 'retail_sales_start': '2028-07-01', 'retail_price_th_per_sqm': 500, 'retail_share_before_rve_pct': 85, 'retail_residual_months': 6, 'retail_growth_pre_pct': 1.5, 'retail_growth_post_pct': 0.25, 'above_parking_spaces': 550, 'above_parking_cost_mln_per_space': 1, 'above_parking_start': '2028-07-01', 'above_parking_months': 18, 'above_parking_sales_start': '2028-07-01', 'above_parking_price_mln_per_space': 2, 'above_parking_share_before_rve_pct': 85, 'above_parking_residual_months': 6, 'above_parking_growth_pre_pct': 0.75, 'above_parking_growth_post_pct': 0.2, 'social_dou_gba_sqm': 3000, 'social_school_gba_sqm': 0, 'social_clinic_gba_sqm': 0, 'project_start': '2027-01-01', 'main_under_th_per_sqm': 110, 'social_mode': 'Строительство', 'social_dou_norm_sqm': 12, 'social_school_norm_sqm': 13, 'social_clinic_norm_sqm': 15, 'offices_enabled': False, 'retail_enabled': False, 'above_parking_enabled': False, 'above_parking_area_per_space_sqm': 25, 'rate_scenario': 'base', 'land_rights_cost_mln': 2864.291514155844, 'bridge_interest_mode': 'Капитализация в ПФ', 'rate_start_pct': 14.0, 'rate_start_date': '2026-07-24', 'rate_target_high_pct': 11.0, 'rate_target_base_pct': 9.0, 'rate_target_low_pct': 7.0, 'rate_normalization_months': 24, 'rate_curve_shape': 2.0, 'vri_required': True, 'vri_region': 'msk', 'land_right': 'ownership', 'vri_obligation_date': '', 'vri_payment_mode': 'lump', 'vri_installment_years': 3, 'vri_periodicity_months': 3, 'vri_schedule_mode': 'auto', 'vri_interest_enabled': '', 'vri_interest_spread_pp': 3.0, 'vri_early_repay_after_pf': False, 'vri_pf_open_date': '', 'vri_in_bank_budget': True, 'vri_financing_mode': 'auto', 'vri_share_bridge_pct': 0.0, 'vri_share_pf_pct': 0.0, 'vri_share_equity_pct': 0.0, 'vri_security_cost_mln': 0.0, 'vri_relief_mode': 'none', 'vri_relief_pct': 0.0, 'vri_relief_mln': 0.0, 'vri_obligation_date_mode': 'before_rns_1m', 'vri_months_after_purchase': 12, 'vri_initial_pct': 0.0}
+FIELD_GROUPS = [['Сделка и сроки', [['purchase_price_mln', 'Стоимость покупки / цена входа', 'млн ₽', 'number'], ['land_rights_cost_mln', 'Оформление земельных правоотношений / смена ВРИ', 'млн ₽', 'number'], ['project_start', 'Начало проекта', 'дата', 'date'], ['ird_months', 'Срок ИРД до РнС', 'мес.', 'number'], ['construction_months', 'Срок строительства', 'мес.', 'number'], ['sales_lag_months', 'Лаг старта продаж после РнС', 'мес.', 'number'], ['bridge_repay_lag_months', 'Лаг погашения БРИДЖ после РнС', 'мес.', 'number'], ['residual_sales_months', 'Остаточные продажи после РВЭ', 'мес.', 'number']]], ['Смена ВРИ и земельные права', [['vri_required', 'Требуется изменение ВРИ', 'Да / Нет', 'checkbox'], ['vri_region', 'Регион', 'регион', 'select', [['msk', 'Москва'], ['mo', 'Московская область']]], ['land_right', 'Право на участок', 'право', 'select', [['ownership', 'Собственность'], ['lease', 'Аренда']]], ['vri_obligation_date_mode', 'Дата обязательства', 'режим', 'select', [['before_rns_1m', 'За месяц до РнС — экспертная оценка'], ['at_rns', 'В дату РнС'], ['before_rns_3m', 'За три месяца до РнС'], ['after_purchase', 'Через N мес. после покупки'], ['manual', 'Задана вручную']]], ['vri_months_after_purchase', 'Месяцев после покупки', 'мес.', 'number'], ['vri_obligation_date', 'Дата возникновения обязательства', 'точная дата по документу; пусто — экспертная оценка', 'date'], ['vri_payment_mode', 'Порядок оплаты', 'режим', 'select', [['lump', 'Единовременно'], ['installment', 'Рассрочка']]], ['vri_installment_years', 'Срок рассрочки', 'лет (Москва: 1, 3, 6)', 'number'], ['vri_periodicity_months', 'Периодичность платежей', 'мес.; в Москве всегда квартал', 'select', [['1', 'Ежемесячно'], ['3', 'Ежеквартально'], ['6', 'Раз в полгода'], ['12', 'Раз в год']]], ['vri_initial_pct', 'Первый взнос по рассрочке', '% от суммы', 'number'], ['vri_schedule_mode', 'График платежей', 'режим', 'select', [['auto', 'Автоматический'], ['manual', 'Ручной']]], ['vri_interest_enabled', 'Проценты на остаток', 'режим', 'select', [['', 'По региону'], ['1', 'Начисляются'], ['0', 'Не начисляются']]], ['vri_interest_spread_pp', 'Спред к ключевой ставке по рассрочке', 'п.п.', 'number'], ['vri_early_repay_after_pf', 'Досрочное погашение остатка после открытия ПФ', 'Да / Нет', 'checkbox'], ['vri_pf_open_date', 'Дата открытия ПФ', 'дата (пусто — РнС)', 'date'], ['vri_in_bank_budget', 'ВРИ включена в банковский бюджет', 'Да / Нет', 'checkbox'], ['vri_financing_mode', 'Источники оплаты', 'режим', 'select', [['auto', 'Как весь проект'], ['shares', 'Заданные доли']]], ['vri_share_bridge_pct', 'Доля БРИДЖ', '%', 'number'], ['vri_share_pf_pct', 'Доля ПФ', '%', 'number'], ['vri_share_equity_pct', 'Доля собственного капитала', '%', 'number'], ['vri_relief_mode', 'Льгота по плате', 'режим', 'select', [['none', 'Нет'], ['percent', 'Доля от суммы'], ['amount', 'Фиксированная сумма']]], ['vri_relief_pct', 'Льгота — доля от суммы', '%', 'number'], ['vri_relief_mln', 'Льгота — сумма', 'млн ₽', 'number'], ['vri_security_cost_mln', 'Расходы на обеспечение обязательства', 'млн ₽', 'number']]], ['Продажи', [['apartment_price_th', 'Стартовая цена квартир', 'тыс. ₽/м²', 'number'], ['commercial_price_th', 'Стартовая цена коммерции 1 этажа', 'тыс. ₽/м²', 'number'], ['parking_price_th', 'Цена подземного машино-места', 'тыс. ₽/шт.', 'number'], ['storage_price_th', 'Цена кладовой', 'тыс. ₽/шт.', 'number'], ['share_before_rve_pct', 'Доля продаж до РВЭ', '%', 'number'], ['pace_adjustment_pct', 'Корректировка темпа', '%', 'number'], ['inflation_after_rve_pct', 'Инфляция после РВЭ', '% год', 'number'], ['seasonal_reduction_pct', 'Сезонное снижение темпа', '%', 'number'], ['growth_stage1_pct', 'Рост цены — этап 1', '%', 'number'], ['growth_stage2_pct', 'Рост цены — этап 2', '%', 'number'], ['growth_stage3_pct', 'Рост цены — этап 3', '%', 'number'], ['growth_stage4_pct', 'Рост цены — этап 4', '%', 'number'], ['monthly_growth_pre_pct', 'Ежемесячный рост цены до РВЭ', '%/мес.', 'number'], ['monthly_growth_post_pct', 'Ежемесячный рост цены после РВЭ', '%/мес.', 'number']]], ['Строительство', [['ird_th_per_sqm', 'ИРД и согласования', 'тыс. ₽/м² ГНС', 'number'], ['design_p_th_per_sqm', 'Проектирование стадии П', 'тыс. ₽/м² ГНС', 'number'], ['design_rd_th_per_sqm', 'Проектирование стадии РД', 'тыс. ₽/м² ГНС', 'number'], ['preparation_th_per_sqm', 'Подготовительные работы', 'тыс. ₽/м² ГНС', 'number'], ['main_above_th_per_sqm', 'Основное строительство — наземная часть', 'тыс. ₽/м² ГНС', 'number'], ['main_under_th_per_sqm', 'Основное строительство — подземная часть', 'тыс. ₽/м² ГНС', 'number'], ['utilities_th_per_sqm', 'Наружные инженерные сети', 'тыс. ₽/м² ГНС', 'number'], ['landscaping_th_per_sqm', 'Благоустройство', 'тыс. ₽/м² ГНС', 'number'], ['commissioning_th_per_sqm', 'Сдача и ввод', 'тыс. ₽/м² ГНС', 'number'], ['site_maintenance_th_per_sqm', 'Содержание стройплощадки', 'тыс. ₽/м² ГНС', 'number'], ['gc_fee_pct', 'Вознаграждение генподрядчика', '% СМР', 'number'], ['author_supervision_pct', 'Авторский надзор', '% от П + РД', 'number'], ['project_management_pct', 'Управление проектом — зарплаты и накладные', '% прямых затрат', 'number'], ['technical_supervision_pct', 'Технический заказчик / стройконтроль (технадзор)', '% СМР', 'number'], ['reserve_pct', 'Резерв', '%', 'number']]], ['Коммерческие расходы и налоги', [['marketing_pct', 'Маркетинг', '% выручки', 'number'], ['selling_pct', 'Расходы на продажи', '% выручки', 'number'], ['profit_tax_pct', 'Налог на прибыль', '%', 'number'], ['vat_pct', 'НДС', '%', 'number']]], ['Финансирование', [['pre_pf_own_funds_mln', 'Собственные средства до открытия ПФ', 'млн ₽; тратятся раньше БРИДЖа и процентов не несут', 'number'], ['bridge_spread_pp', 'Спред БРИДЖ', 'п.п.', 'number'], ['bridge_cap_spread_pp', 'Спред капитализации БРИДЖ', 'п.п.', 'number'], ['pf_spread_pp', 'Спред ПФ', 'п.п.', 'number'], ['pf_special_pct', 'Ставка ПФ при покрытии эскроу 1×', '%', 'number'], ['limit_fee_pct', 'Плата за лимит', '%', 'number'], ['reservation_fee_pct', 'Плата за резервирование', '%', 'number'], ['discount_rate_pct', 'Ставка дисконтирования', '%', 'number'], ['bridge_interest_mode', 'Проценты БРИДЖ при рефинансировании', 'режим', 'finance_select']]], ['Социальная нагрузка', [['social_mode', 'Форма исполнения', 'режим', 'select'], ['social_comp_date', 'Дата денежной компенсации', 'дата', 'date'], ['social_compensation_mln', 'Социальный платеж / компенсация по ГлавАПУ', 'млн ₽', 'number'], ['kindergarten_places', 'ДОУ — количество мест', 'мест', 'number'], ['kindergarten_cost_mln_per_place', 'ДОУ — себестоимость места', 'млн ₽/место', 'number'], ['kindergarten_start', 'ДОУ — начало строительства', 'дата', 'date'], ['kindergarten_months', 'ДОУ — срок строительства', 'мес.', 'number'], ['school_places', 'СОШ — количество мест', 'мест', 'number'], ['school_cost_mln_per_place', 'СОШ — себестоимость места', 'млн ₽/место', 'number'], ['school_start', 'СОШ — начало строительства', 'дата', 'date'], ['school_months', 'СОШ — срок строительства', 'мес.', 'number'], ['clinic_capacity', 'Поликлиника — мощность', 'пос./смену', 'number'], ['clinic_cost_mln_per_unit', 'Поликлиника — себестоимость мощности', 'млн ₽/(пос./смену)', 'number'], ['clinic_start', 'Поликлиника — начало строительства', 'дата', 'date'], ['clinic_months', 'Поликлиника — срок строительства', 'мес.', 'number'], ['social_dou_gba_sqm', 'ДОУ — общая площадь', 'м²', 'number'], ['social_dou_norm_sqm', 'ДОУ — норматив площади на место', 'м²/место', 'number'], ['social_school_gba_sqm', 'СОШ — общая площадь', 'м²', 'number'], ['social_school_norm_sqm', 'СОШ — норматив площади на место', 'м²/место', 'number'], ['social_clinic_gba_sqm', 'Поликлиника — общая площадь', 'м²', 'number'], ['social_clinic_norm_sqm', 'Поликлиника — норматив площади', 'м²/ед.', 'number']]], ['МФОЦ / офисы', [['offices_enabled', 'Объект включен', 'Да / Нет', 'checkbox'], ['offices_gba_sqm', 'Общая площадь (GBA)', 'м²', 'number'], ['offices_saleable_sqm', 'Продаваемая площадь', 'м²', 'number'], ['offices_start', 'Начало строительства', 'дата', 'date'], ['offices_months', 'Срок строительства', 'мес.', 'number'], ['offices_cost_th_per_sqm', 'Себестоимость строительства', 'тыс. ₽/м² GBA', 'number'], ['offices_sales_start', 'Старт продаж', 'дата', 'date'], ['offices_price_th_per_sqm', 'Стартовая цена', 'тыс. ₽/м²', 'number'], ['offices_share_before_rve_pct', 'Доля продаж до РВЭ', '%', 'number'], ['offices_residual_months', 'Остаточные продажи после РВЭ', 'мес.', 'number'], ['offices_growth_pre_pct', 'Рост цены до РВЭ', '%/мес.', 'number'], ['offices_growth_post_pct', 'Рост цены после РВЭ', '%/мес.', 'number']]], ['ТЦ / коммерция ОСЗ', [['retail_enabled', 'Объект включен', 'Да / Нет', 'checkbox'], ['retail_gba_sqm', 'Общая площадь (GBA)', 'м²', 'number'], ['retail_saleable_sqm', 'Продаваемая площадь', 'м²', 'number'], ['retail_start', 'Начало строительства', 'дата', 'date'], ['retail_months', 'Срок строительства', 'мес.', 'number'], ['retail_cost_th_per_sqm', 'Себестоимость строительства', 'тыс. ₽/м² GBA', 'number'], ['retail_sales_start', 'Старт продаж', 'дата', 'date'], ['retail_price_th_per_sqm', 'Стартовая цена', 'тыс. ₽/м²', 'number'], ['retail_share_before_rve_pct', 'Доля продаж до РВЭ', '%', 'number'], ['retail_residual_months', 'Остаточные продажи после РВЭ', 'мес.', 'number'], ['retail_growth_pre_pct', 'Рост цены до РВЭ', '%/мес.', 'number'], ['retail_growth_post_pct', 'Рост цены после РВЭ', '%/мес.', 'number']]], ['Подземный паркинг', [['underground_parking_disabled', 'Отказ от подземного паркинга', 'Да / Нет; места переносятся в наземный', 'checkbox'], ['underground_manual_spaces', 'Машино-места — решение проекта', 'шт.; из расчёта ТЭП — меняйте, площадь пересчитается', 'number'], ['underground_manual_gns_sqm', 'Площадь подземной парковки', 'м²; пересчитывается из мест и обратно', 'number'], ['underground_area_per_space_sqm', 'Норматив площади на машино-место', 'м²/место, гросс: рампы, проезды и техпомещения включены', 'number']]], ['Наземный паркинг', [['above_parking_enabled', 'Объект включен', 'Да / Нет', 'checkbox'], ['above_parking_spaces', 'Количество машино-мест', 'шт.', 'number'], ['above_parking_cost_mln_per_space', 'Себестоимость одного места', 'млн ₽/место', 'number'], ['above_parking_start', 'Начало строительства', 'дата', 'date'], ['above_parking_months', 'Срок строительства', 'мес.', 'number'], ['above_parking_sales_start', 'Старт продаж', 'дата', 'date'], ['above_parking_price_mln_per_space', 'Стартовая цена места', 'млн ₽/место', 'number'], ['above_parking_share_before_rve_pct', 'Доля продаж до РВЭ', '%', 'number'], ['above_parking_residual_months', 'Остаточные продажи после РВЭ', 'мес.', 'number'], ['above_parking_growth_pre_pct', 'Рост цены до РВЭ', '%/мес.', 'number'], ['above_parking_growth_post_pct', 'Рост цены после РВЭ', '%/мес.', 'number'], ['above_parking_area_per_space_sqm', 'Площадь на 1 место для ТЭП', 'м²/место', 'number']]]]
+# Удельные умолчания сверены с банковским бюджетом собственного проекта
+# (Гродненская, 18; ГНС наземной 19 341,14 м², подземная 3 733,2 м², лимит Сбера
+# по главам). Проценты сошлись — генподряд 7%, коммерческие 7% от выручки,
+# служба заказчика 10,8% против наших 10%. А всё, что задано в тыс ₽/м², было
+# занижено в 1,4–2,8 раза: подготовка 1 против 2,76, наружные сети 7,5 против
+# 10,24, благоустройство 5 против 11,54, содержание площадки 1 против 4,69.
+# Проектирование в книге идёт одной строкой (291,8 млн = 15,09 тыс ₽/м², вместе
+# с изысканиями, экспертизой и авторским надзором), поэтому разбивка П/РД внутри
+# неё — наша: 6,0 + 8,5 плюс авторский надзор 3% от П + РД. Само число — замер.
+# Доля продаж до РВЭ оставлена на 85% — решение владельца (10.08.2026). По книге
+# она ниже (71% по квартирам, 69% по машино-местам, 73% по кладовым), но параметр
+# не из той группы, что удельные ставки: он задаёт покрытие эскроу, покрытие
+# задаёт ставку ПФ, и на 71% проект по умолчаниям перестаёт гасить долг.
+# Ставки классов (PROJECT_CLASS_PRESETS) проверку прошли и не менялись: старт
+# квартир 644,94 против пресета 650, машино-место 5 000 против 5 000.
+DEFAULT_INPUTS = {'project_class': 'comfort', 'purchase_price_mln': 0, 'construction_months': 24, 'apartment_price_th': 350, 'commercial_price_th': 350, 'parking_price_th': 1500, 'storage_price_th': 1000, 'share_before_rve_pct': 85, 'pace_adjustment_pct': 25, 'inflation_after_rve_pct': 3, 'seasonal_reduction_pct': -15, 'growth_stage1_pct': 0, 'growth_stage2_pct': 0, 'growth_stage3_pct': 0, 'growth_stage4_pct': 0, 'ird_th_per_sqm': 1, 'design_p_th_per_sqm': 6.0, 'design_rd_th_per_sqm': 8.5, 'preparation_th_per_sqm': 2.75, 'main_above_th_per_sqm': 110, 'utilities_th_per_sqm': 10.25, 'landscaping_th_per_sqm': 11.5, 'commissioning_th_per_sqm': 1, 'site_maintenance_th_per_sqm': 4.7, 'gc_fee_pct': 7, 'reserve_pct': 5, 'project_management_pct': 5, 'technical_supervision_pct': 5, 'author_supervision_pct': 3, 'marketing_pct': 4.5, 'selling_pct': 2.5, 'profit_tax_pct': 25, 'vat_pct': 22, 'pre_pf_own_funds_mln': 0.0, 'bridge_spread_pp': 6, 'bridge_cap_spread_pp': 6, 'pf_spread_pp': 4.5, 'pf_special_pct': 4.5, 'limit_fee_pct': 0.7, 'reservation_fee_pct': 0.1, 'discount_rate_pct': 20, 'monthly_growth_pre_pct': 1.5, 'monthly_growth_post_pct': 0.25, 'ird_months': 18, 'sales_lag_months': 0, 'bridge_repay_lag_months': 0, 'residual_sales_months': 6, 'social_comp_date': '2028-06-01', 'social_compensation_mln': 0, 'kindergarten_places': 250, 'kindergarten_cost_mln_per_place': 2.75, 'kindergarten_start': '2028-06-01', 'kindergarten_months': 24, 'school_places': 0, 'school_cost_mln_per_place': 3, 'school_start': '2028-06-01', 'school_months': 30, 'clinic_capacity': 0, 'clinic_cost_mln_per_unit': 3, 'clinic_start': '2028-06-01', 'clinic_months': 24, 'offices_gba_sqm': 10000, 'offices_saleable_sqm': 6000, 'offices_start': '2028-07-01', 'offices_months': 24, 'offices_cost_th_per_sqm': 200, 'offices_sales_start': '2028-07-01', 'offices_price_th_per_sqm': 500, 'offices_share_before_rve_pct': 85, 'offices_residual_months': 6, 'offices_growth_pre_pct': 1.5, 'offices_growth_post_pct': 0.25, 'retail_gba_sqm': 10000, 'retail_saleable_sqm': 6000, 'retail_start': '2028-07-01', 'retail_months': 24, 'retail_cost_th_per_sqm': 200, 'retail_sales_start': '2028-07-01', 'retail_price_th_per_sqm': 500, 'retail_share_before_rve_pct': 85, 'retail_residual_months': 6, 'retail_growth_pre_pct': 1.5, 'retail_growth_post_pct': 0.25, 'above_parking_spaces': 550, 'above_parking_cost_mln_per_space': 1, 'above_parking_start': '2028-07-01', 'above_parking_months': 18, 'above_parking_sales_start': '2028-07-01', 'above_parking_price_mln_per_space': 2, 'above_parking_share_before_rve_pct': 85, 'above_parking_residual_months': 6, 'above_parking_growth_pre_pct': 0.75, 'above_parking_growth_post_pct': 0.2, 'social_dou_gba_sqm': 3000, 'social_school_gba_sqm': 0, 'social_clinic_gba_sqm': 0, 'project_start': '2027-01-01', 'main_under_th_per_sqm': 110, 'social_mode': 'Строительство', 'social_dou_norm_sqm': 12, 'social_school_norm_sqm': 13, 'social_clinic_norm_sqm': 15, 'offices_enabled': False, 'retail_enabled': False, 'above_parking_enabled': False, 'above_parking_area_per_space_sqm': 25, 'underground_area_per_space_sqm': 35, 'underground_manual_gns_sqm': 0, 'underground_manual_spaces': 0, 'underground_parking_disabled': False, 'rate_scenario': 'base', 'land_rights_cost_mln': 2864.291514155844, 'bridge_interest_mode': 'Капитализация в ПФ', 'rate_start_pct': 14.0, 'rate_start_date': '2026-07-24', 'rate_target_high_pct': 11.0, 'rate_target_base_pct': 9.0, 'rate_target_low_pct': 7.0, 'rate_normalization_months': 24, 'rate_curve_shape': 2.0, 'vri_required': True, 'vri_region': 'msk', 'land_right': 'ownership', 'vri_obligation_date': '', 'vri_payment_mode': 'lump', 'vri_installment_years': 3, 'vri_periodicity_months': 3, 'vri_schedule_mode': 'auto', 'vri_interest_enabled': '', 'vri_interest_spread_pp': 3.0, 'vri_early_repay_after_pf': False, 'vri_pf_open_date': '', 'vri_in_bank_budget': True, 'vri_financing_mode': 'auto', 'vri_share_bridge_pct': 0.0, 'vri_share_pf_pct': 0.0, 'vri_share_equity_pct': 0.0, 'vri_security_cost_mln': 0.0, 'vri_relief_mode': 'none', 'vri_relief_pct': 0.0, 'vri_relief_mln': 0.0, 'vri_obligation_date_mode': 'before_rns_1m', 'vri_months_after_purchase': 12, 'vri_initial_pct': 0.0}
 EXCEL_CONTROL = {'llcr': 1.103956112148479, 'bridge_principal_mln': 1345.8299811734776, 'bridge_interest_mln': 61.01315248705002, 'pf_draw_mln': 30011.506226781967, 'pf_interest_and_fees_mln': 2112.072941531574, 'all_interest_and_fees_mln': 2173.086094018624}
 LOGO_B64 = "UklGRkQfAABXRUJQVlA4IDgfAADw2wCdASqQBuUAPlEokUWjoqIRSg08OAUEtLd8Bm4LvaDeIgcn+HIR46WTKOC9Gf3bth/t39s/cD+2f9vudfMn65+z/7efaphb7M9Sn499p/2X9k/bT8mfyH/Ld5/AC/Hf53/ifyd/sXDHbh5gXtt9X/0n91/Jr6QZmv2VqA/mrxmFADyk/5j/vf3j/R/uv7cfo7/x/5n4C/5d/av+p+d/xbf/T23fsX//fdI/Wv/7j2GpthKGKJYCQF5ahiiWAkBPyYnEwOOJtbMD3CrKVFRd5NbWIYaD3m8cTa2kPbwEA2ZIe2KHKWIIE2to5AZYje8C8tQxRLASAvLUHstWEuOJtbMD261fzzZbHpWhDo3zy3qM7adn8ZOAqL8P9jJ2ug8cTazQDJWcBohiiIlFKCriw2C+iJWGGK9zJX+FpEjPgFtvxhf13uougBg79kMh7zeOJtbSI/e0EJjCwrW1T7Bt+utZEjPn7YxBgd6IlgCh8vUCUJCqAKuLDX+PGlk61LALEP/ElHQQJwFjK+ar+/4DUg+frZhm11TNbzbuHqu2DSg+4mO21TcKKY/oWX9M2TOpzHy6PEokY8ixc62NB7zcQ2NTW0iRhwGrg28Hu3AuOuDS67jwdnUqJq/w5sdZn1pEjQOOJs2PmiwTj8BrMfZhDU8dTt9yG2intwWlmgb3ebxxM+HxvLrPINjWRqy/4pjv+yqr2BL+vqsg94HHExxnjiQUXuDCNqJuN9gWGr+CgBiGwHTDn8iRoHG2+IZ0HvN4Ik4fiPPgBRTHZ3xzB1ZpjhI+Nt5uISr0zXpyuwk+RI0DjXeQnrNjaAUcjBPK9MB8qDurYmjBvA8qdKWxoPebw1+cl8W0iRntiEsqxXSjIDRCLBh9iShbSJGJGmz7JKT0raro0S9cRK01zag2+2kSNA4a5vLrSJGFq+zMcUwa3S2GduE26clmMurtnPP1WiqA4i2UJaxEaBxxMmlO4G3tnbTfyXKXCTMhRmBKIDR0w/tXtEQhI7ktA44m1nkGN5dZ44mR9AmKeuq+9f/5EjQOOHkPkes5VV8hUmsCtCqB67sCbW0iRjyLFzrYzH7v+aok0P2TudrIifI5tAzvuwEtEeodmw2H01njibOeBa4rXTuR5hwMhE+UYk7cUDDzQCy2eWBGJP3xSz62NB7qrpXoQTa2jbvS4LeTCRgkaBxxNo2GbzCozrgJGsqPVM8KN7SJGgcbb4hnQe5Zpa2D84v3kJvv4niMTpgHw35kCB2gIyIJaRy6tpEgE/kWwikGzQDOtzNW6+4e4y8vu4CP3ETTJfbpeix5JXW+A3YSfIkY8vftCCbW0brBd8JM6NMrzd73BqfIkaBwVmOdV2VFfFSp8qZjESc93m8cTazxiUsZ1dLJcRN8qybxK4IRoHGxJysLm58MW96AM8Aa929U0ig2sg0EKMtKY4sbyqXfTZCJIC2hqCZ5iF/PNvQQ6tDwud3azxxM4qxDOg95vGu+sSEKoFtUVsWWHF+25vHE2ssT4kzccRYeLJZHOCjfikYiTnu83jibWeMSljJMGLto1CgAQmV0u7XyJGgcFY4KaYD3XcqMhd4ii8crXDlA25WN7YwlA77zDdB7zeNewBXP7Vm70vUGIz8o1tIfmbZfx4CbW0da9umgofaaWuM0Qu37DpFSqVd0oV082VZ6RfG4n/9CYF3R/vxH3v/XIAo3LQcZ6d5oaOPQD6/5vHE2tlpVrxqvNYGb8SHg9atk+1uTw/3ontpEjQOCg6skDBKd3eKPr9gG6Urgcferb2AXxnwCM0eJGbxxNnAJIx2HjkcfOcEwZ2DbCKfIdZFU0RlAPXZJJp8zwE2tpEtgH+wwvDkvmeYo3c1dcGrBUZbr/N2mPJKuaDa5JHMBtTL2TLDOyOYc2FIQkzW0iRoHHE2tpEjQOOJtbt4jQOOJtbSJGgccTa2kSNA5Bsa2kSNA44m1tIkaBxxNraeUaBxxNraRICm+tAolgJAXlqGKJYCQF5ahiiWAkBeWoYolgJAXlqGKJYCQF5ahiiWAkBeWoYolgJAXlqGKJYCQF5ahiiWAkBeWoYolgJAXlqGKJYCQF5ahihlETI1suTEShbSJGgccTa2kSNA44m1tIkaBxxNraRI0DjibW0iRoHHE2tpEjQOOJtbSJGgccTa2kSMkum9NLdU4VcWGwX0RLASAvLUMUSwEgLy1DFEsBIC8tQxRLASAvLUMUSwEgLy1DFEsBIC8tQxRLASAvLUMUSwEgLy1DFEsBIC8tQxRLASAvLUMUSwB/zXeRlaCbW0iRoHHE2tpEjQOOJtbSJGgccTa2kSNA44m1tIkaBxxNraRI0DjibW0iRoHHE2tpEjQONcAAP78nPZ1QxDwjw8Ry/mKg/5QcLH1Y1qOWumDn7BujG+vuKMLdeg9UPp8dtXEOVKJ6xYGecPAsjHypoSNzSDJCmntzcd3dkjmsK1JJ8N4dfrcIUOyU+Gluoh7O6iTQvDYQJ5WX/mftkPc7pWw0jE9jo5JYLwf8xZeH20EkujDFdLY5PVoXprKqj/g1vr3VCrnbfxeWxXH/rBmmxh8LZ6I40bsXBjmyh+mkKmkh9lvjsZDVBGr0EXA9Xe8zlAr5L4p6xDyt5CC/GJiukyUs6fKXiPKI7nwTActLsx9SH3exHVY22RZw4MWtn4Q1k/Vh98yOWgJMmp0r+EBb/Y3zhW4phZaifyQv2xFuIsXHou7s0BZm1VHvler2UYI2efL/wdxgYLBg7yEDYdepdMaIj50n32I69S/zdWVSXtd9t7COM7pOIMKQLwjgH2NUYXUSDX3J94/lyc/uo2P8TH8GtyBaoWU3BHPIQKWyQxB3uuOQowDAZTF8Ooai7Mllj/fNUET4MzWxiwMcR551J4G2h6P5frfSzrX5mRcjFF9W+2LoBfuf3FL0c9WpSaFmDKrWYIM4JByJJk9MsJotWoSyLi8Fu8tnGs7qjEZKwMNAQirfjS6b1Xtm+xhVGBP9N0qbqB2/3HhvpMpt9fmhIbdtTFoQQDl4Se+weBtSmtUCF+01wshJVthNJr/BLCKOEvDLzkG9hGXdvD00QRVuL2V+x+DMNlnAAHljqhlucxOKN8DPQbJsy4MyKOhLBcEuM/2ZOCenwaOZ2kC1TKKzGNP+RXpIxaZWK6XSQL5vccKuKp/iX4Efeyydm0gWDYDOyblA67hDe8LsUsVIpakj3aXpu0lnscnyCxBTvslmPMdQHpvrxfspj3HEu3xzPUgW9yMLt7EL5IeTUu9STiIyvucoKq/y9B3MvRbPDedabHVYbCJmdeJ2i9UTLPRKvlPzcF8yzZ7zpGOPr0yvTz/y6tUYbmiZdrT7YNY13mgYmCP/LbsiiI957uaE9LzkO7xC+C5Zt0UaTVouo+/+d+Mf5Rrjb6BWmEi5lAfunZK5gbxjQaPMqRgMXWMo0VKVvtnXERxhk8dlXn0Zs+EY4wpp5i8S8G1SgFKVwoWO3NBE4lYZ9MEVMf7+6hnP2aTB7U1QQrDErAgdLp1Qi5QN4H6+hESLBOcAMdphWsH0JP5Y/pCrAzarcPQqhSE7gdUvr9nd/dM4TxQZZ9OCAiMuVSRsyDU5b4LawH719opJTVRVoDV3+mFWeKHtENhmgBCeSuZwtAuNOAg5sgnypCdLC1yZ5ZnwfRk376qbzLi4/m5NhAOuiFxPN4R/nLoL0obdKDGvVQBwcnw9ltLd3f6OLMFHvMrYDE+w+lX1acm+0zZdGNmFVYEadQl+SYdzEe7IyPlt91SmmXgD3kgFlQAs9TdeT/wh5XJX1eLD/ADlYdobNbil7dVRIV0R9DwPv7wymKGW2NlRF/GJlmUYs+fACm65WB1bL6d6KsBYFhL1zacVQ+vZ1vvWqpmug3oYCMC+TIsBkhaUntBLLOqyMayZUc/Gbw54OmXZs5sqQ4jDIGDc7rJXRrajL044M/7mp94y5R3c2QxgaZLXOonGfJnPQs2xEmUrfIkf3NRf/5SM4TDqeswCSvnoU7cLXJ1kbI88jZmle+4Wh8GdJ3Ij92joRodfl7e+nP/ZKM1QMhcCYkEuE/bMPx3sJdyBB4zTF9bvZsfbDQ0fR4v5G63yR733Q/t0EjWA9xwG6IWMo/bGYi81hTrdA/ienItm7mV+gaVRwVNEFhxvYANqtxL0IvS+RiXNGk/akp9uMNkCfFij0Apc6qST8xEW3GoecJUXh4+4EQct2RI9LRLk7psZJ8uYzd4Q3+4d+eBrCLDgxbMNK1Q9nZkd9Acje2t5WFO5yuwsYQ6TDgfd7+eH2jYXzrEi48tjcMNwtLOvP672EDSTjMKzyqdmkW9fkKIEFY++mQf8zxz81EFdMwiZIDpbKeVMgetnF7+wAzsxYBnZafrBLAfTnI2XRV9VkUNDFGcZt7/1+eTZNgKgm5qC+c/gQDIxbrs+lnuCfCYQBWrR/VUi0r2OUG8lAfyMjXA3F/bGEr0sMiHfniPwxQrpTiR7a5r9jHNH0ydj5HiyphEgp9UISgCl2khWEkKrLyX5uD6XCDzFcuADknKLtEkr+Bvs5DoZnk8kid6vNXK4zQyvomJnoRlXYXY9jYsxHlnA9LUjHeGjgoHkRtAvozajP/uHYSRvA8K69KWU9lQEvLESTPDD4TJ1IDZ1KdoU3EZ5NauZzxi2KUb40QNkJvkDKFjw/S8zbVew8xXJO+kxtU2Y4aTmiRTMUg7xooeW6VBurvYxr04mCxVVzxKyHFhn4ZRYARog9vC2hON7ELzBdiIRwoq7ohrD4k+0sUi7CxdYO0AF2nYgfzEP4guT2KinYp5If1DKmfbnnwkpsRxK/n2CknjUwm791zb6qMCHH5Okh8kORCcZHJT22oqobH7ZQj3ywiLxh7NWfFESQEuGUs9uftenSE2MFiwJAccgdkaEVhGW+f1qgmFBohziaIjfZccpF2PzapYVcRlGjdD89nyyAkKa0kbaEPEaG63va1NqohfB0Ijz1vUadEZKoF0Z7XlKMWARifMA5BwGZ2Gi+EXppeAcxYvCHAbXVzdlQxw9j2C1JOZptepkRP0n2wxPcrHuus/C9Ek7NR8NxTeGV4eecIIhmk+Q0+9OGfKdMRQpCSKURZ91cFiEOi26jhhRo1sn4JbK/CNKeMuSxOHSUDFSCVjD+rl4dB2BsnjX4+0D9wqtW6hyHC5e/KK8JurCqU1HY//lM7yovFPss3Czeq6RDLU5N5G8sWtTR1SmlBtb4ZswxmfXgPh1XvQKR8IXlF0pyQGBeky7qCqAYOH7rGzyuVEWwbIGqhkSb9Rhfl28akoW0xUlqOtriOa5N+ejADL5ORrVv0FJNxURnBzb6OUEy9o65LpaF+cFWV1AWyhooaE6H/F6WrgWZVK4FaH5VG016fBWjNRMlia+IyO471X9TS2BIctVwj60pNdHQ+plibpX3aGJwo8J2oOq8c0/fbPUdL5tQyfAB13yk3iTI995udExSmrq2lhHVz/4oaXhHDIKVCBE68KHTQH+T3MhcjXrSyLlTN5ahrM3fT9XQZezYlSm8bB8KvTeSpjf9cQR1kb3g6kYFSkbCQUkOuzIELANUbXDcTHYCvpJQKrDMtD3mH6tqtEFgHUpYq06O18AO6uhfpLV+mRPxJMDSwv9L2AxYfzDH6nOEw7BuIT303QwXPItS2KQ6MsdqTWNixH6QoKueWyzjlmuyFiezfJDDduSgQpKaAmOcAWmZbdY43x2llqRxmUcXVcAdakTUFfvoXnPzEO+vAm5iwIPY99neW2776tCDNpoAaS/JW1j/DvtvcIwECFBpB6MeWzB/nDoUfP5u8tDMZtAB5TCoAMSZH522i+DtakTgXgqE5pShi0+BFAhopjtPan+PIlOAWrqGeWLRGnVPzY/DCxlVZBFbN9m2yX63uD4XPILqDU9Nr7oz2dEIlAbj8ljQ3IHhAqfgqfN7++G99S8t56U4uOarjQyw/brl0yo2y6A5363xCoFNgWt84bHBQeLgAU8fBH1TovVYyyyqj/mIkhQb+jOtgXxQ5rfZG2kYoQIjKqbIw3qeCGpWZf3o77lw9dd9CGy6dmyofMhbPh7mOQdlRZZ03g2TF+09rfkT2qAz9C9tvvMa15I0/2uAj/tU3pm8XA/NJif/eEigp/03+5onvT4S0y9P8EVY0InmVVew+8/3iZJdg+VHpDcd3wNCmGdtlokb2UhZG4O2NHOoQvraLeruujhKbuZxXgRZXEcN72JZaLRwFK50ZEDD2iIowZ0FSYR/mC7ZCOdA9pr81057hwL/yH6KZZTKzUO+hQIAZIxRJEz25PnRCR94grNzO3K6oKMbI6lV45NYoTI63/wtc7G6HkmqhxyYxRQgikm77cN7cELvH+D5cH+MIlb218tHu96W0e/WwaZBIffTdECIQHIiqf2I0HXAGLs9H13/26YzFHA+pVIIPxAw48WrgoB8wfVIFkE8ZHVkxaXOtNEGpjS26pKCogl6mDWTj0gc12Uuk4wxLhkifbVLZK290VIOtRQundIJyT0UzBxQKztOWl9QCPogRg0xA47aaraODmAXhqFqIrjg0n16h9AuvP+QB1pEQTOHBCXeL+Y7uZTyMXjLz5xkkSlySKXrKRMMA03GKAppLr97zPGCbzIC6vmeNvKGn+ik7oNmgdVM/UHBTsIUJr5UFVz7ZoXZ+nEgQOKeEWuFDy3RNgONmja9WGLUiHTJk91r+2OH+xjHS/jkKBxqps6ncJv6FCnhfZNnZDVA/RdSw0TQaH11TBXUDwJtvm1QREIRhtgzled2NvZl736QfL2JdhXOKUjxlig0GQ174mCzamBEXidUgZAZtHx/8exVfVwoWt+IFctD0LTNpQhio/3Cm5Grg1tvBMKPyBatZPjM/pIYiNula9KnQDXseNfC53Pghug999kdrR0XzLuEIj3nS3BzpLU6cCqhULp55jJ7AUP4Cn6MkPuOo1jfNPWWEIuJgNqVC1YE47VNI4lk/PVc04IAHtx0Srxn9NtyxOI3MYaGzI9FGh+nheqTYtua/9//PJYgbjmUTM0VyNCXwkK9VEY7d5XQImcfQG2jAxiXyqzXX4KAikGcaNKJTLfDZw3xWGproTtkQS5uwuZYAOZygDEBayMjhdUN9VQCKi2QAWo5leOi0JzucAdHEK9jga1tFDemGH6Vnz9dVYcurgySKjXcpJp6XveuAbJ65YeVd/SqyZpOs6kWh//NAq14BMmDnnRcFXFG4ITR9C1kO9HLyx7theLUAmARj8jN8TrU2yJwgVoFA/cFqh3ugCqZArEIaNWCJEdX+RP2cC1ySCemrXfs+1FF6hHUaLMKRLrYDpLWygjIH7klkryieeb7gS28Nl3o1ockbUYr/CN5c5wySF/Qg4Ad2fDvuNTXjTF9thqoEu5kSawdiM98pTEcR4+uB+dzJ9cU9Ut09Yd+ccsI59jsBvWMV6xczlOm16lok2hhhJo5AGZZB/mbNgZoqsBS9pv9dDqg3UZkj+knY+9w02N+txnnX7JxvzA3xwZ4IeUU0l0xtlgOfId6jsMyjnaP8Ihkb/mWgwHbgZYQQZK/oDiMZLlNuU3OLjLmocdIX5pvpHoDH1x/oP3opBrzsvQ61MurPQwK84/eqCXsPXthFwrYjH/NnaGNpjlv6UHH8BPXF2wlw5mNo8HKsnoxWa/8Jdei75Nl7/EGVF5ljRzIh72jt/DvXb85PLvsEAOFmTsNE0OwY9ZBq0wpUWV9Nx5T5sUb7B6nZbOVJi9H1ZziVfjQCJRmkJFdJeZeMWq5xR4sSOUly9tIteAPHvV7kBiCQCXEY9HDOErIuFMS3D8XEWcAqY5wCsW7bT9AHGfZmAMeAg3kBC5t1crk5JLTKof2eYAHtZtebpHiy+cZmiDN3CiyRv+P1przggbcEqcayGa5m9cxqZbIBdOJ1L+yQbVCG3hGoMeB6HxKbEqVIWGFCQXxWdO7vZQ+8dccOLH+sUfPNmi/YSFhRv3LwFu/k89rOgQyVyJbdXDwsue9eW2fkv7ghjBJczQoBNM2K8fR9pVfPQSW9/enMwRzPJe0WKwO1LcbfveRDBuPcn9yBcZCZuTnmyVNOse6YyxNaqrm31joTh0+uJhIXv7I6uAj3dMfYkyrsDdDMPk+0yEW9z37MbHFU+wdk5AMnOHl06dj3eXbAG/AoED9/OlJzMKDjjhyDslHueiaZod634H9/PhD/+6vyuFTvgp3OSxLeKGgJgXPdrPUWmpLsHpEV0djL/JK1LrAf7DmtHxwZgmXMgnGis2SjW+RuE9iXmW/h2KNC1NmBoHo+y/g1hQGDQ6fxTJEDkdfQlQGsfFIQ4aM66F0qx+WYu56EXXjVSnLRLqaryZTHfViLiHMR4s83HRZDVyA/13h6y1J0CjIIeTyD0PISJhjS0pFn9wK3HgvUkNrHjBrqkPT+R7uTvUcYLAtOhQpdhdgUjII+XZ1XkNh2IMPvJjfjGnMBZjXWE/Lys7/WddP4uB9+Q/c3BhxQ1tZmLsOlekKC+SZ7rb4RGnNuwAYvRrXxufEL4hW+aRzb2isj5Yh23lnTod12ZP+dhgdO5G/eINXWNiKovtRdZZx5O3t/r6AevjBJDSl7P6vvvuqPajF9P2u6RpPsOU4XzXetvvaqm3/PfKtFiGEBhpA4TmT6PcLLHwHPQ3047497R3AAQHTggFSmtRWjLbTg6dREOtucQHLw+rWpAu0emVjy2ZV796UuILRjnPzA4JMl6xKNhQ6+B3AlfL6E576ZwZ3UdT5JtmupNFwwXkFnf8VUuz76t+AUuCQEF2XzMPdAgELFckKRWuMAf+DwmJekyOyk0ugQwlTk44VVUIWC+VRNSYvHOv4XvkBDdu2wTkVNMBY1BUAwCdCmlLxS190XGB5yvtlnZt+Sek+ozM0AHZNixYPU6ajENDgzcE3DTV22gsi1ErzinieIFC3f5qXHxMg+G1ip9FSkJgGtEtrOVORS9OEJYcl6nyyPcawWQwd2RHc4qNsR0RREIi7pwAT7mKBuvwHIOevYpSUYCrL/cUgdynUbWquIwoqjd/DoetQhJhQ10v4HMdbFvu0/jJlf6aMtVAtT9rqhfHahJlZyMUu+8pCP6RBppRmvunfqyPmUEUhrXHapPUZ34galUxSiWCEdLJQ50y5yBY5m2aHNcEbp8zLcxvW118eMNSLHM6jJCvagwAE50VHLXhcSh9wh/TAluBBAcKH0L//RpUrcGJG4xmg1IKQG6cVuvPH5E9OUBTDYquH39a3VDB08960i5A1QC9pHkJAb9CjdbHW5FzduFgDEeaWcCplUhEeYFE2k7TMKryj7Up1BSKsD+nHroIKISBJdlT1ULmgiNfDAY/LQ7rMSs5H5K3BKC1nTS5+iEyVaFYjmuNgcWG9dCYbwe9nAgz7xk8xtpdzt8SJdeTt82QNgUZhzYChkKwoE/COq8eYNt/+fLYoDCWpdF8U3zqW+Wia5ZCnDTG2ZaFK6XA9aNmQVAEXGpzIjkPmCswC8KTpztzl8/2zsztepjoVNg+6Z+yd4H2Mn7WlfjlP9A3LecnFRIHBNVP0NvOhz+m5gFZKf5lHt0Uck4SQcFY8pC8S6+RjqlgWtMIoUORm0U3vsT+A/5noFaY+l9ZMtNFkyD882iBgvPUKsWXAxfBEksBvxjfyd73B2I03PdsuoZUD+3pd9YtnN3trlzOGotuXgWw2U31axl5Iu+wiJFnYzFQgmwPmQEmAdbhQJ2cusoksnAG/mbN3UNq1UqSUZehHtGjIkHKBdPtSCZCmdXCMhhYX/mgozOt7vEOj2IIum76lDKXrO0YNfGT9B1flW7/EVW9B+vwri7FasmJlPYzqQ/I4VVtq7gsN+p5GCvMXlstg2uOkY+7f06IQRCHfAg8/qdxtl1oLux/HuV8swzyw4j1HTFT5W+NY934gnHVqIWFpGegHMbdSQgZj6iuRV9/MbKe3fQMfYIemG3iQ4I4bbqUicCeoi5zQr8EWgdK47xJIePK0NmXHqHJgk/rukdABlkHzYcTA8Cu2lqSFIy4WB1/mZs4ZgoTZcRJXtyg5YMaeByPKictFIzjfmRnK16BKPh3w+bRfj1AvfrF4l0fqv9wVS2a2XFrNbN0sbQ7y6ldDWdtVERQXYh3wkdalAukWtaQJFffdkUN1xSBwPFxYl4mquk5TO/ACvwTH4evOljf11t7GIV+VvFgNxmUu16SgVgZHs0SIPYlt/X3HyHcHr/VSgBjnBI32teiCQH4FyKgiAQIVpKxGE9+SCIxg++ZvYyyU5WWUgFy8zdjZOr73ThjTdOrqcK6TDdWMy1yKxffSP0lB+kV4/54QaqFS5g2qtisVDP+lPdA6emQN9D6rHAJve4wTHzBrblihhnphljnpRjbsOjxVlPZ2GIZ4AcRwGFfIeE895LErej1TZKcqCghZf9QYB7Og4J++EWqPoRBx/EDHRS8AeXKlVaWaTwPwyEcDLpOUJn7ivHvYnjIZaFdI4hgSkMbcNJwRgwv42nRkoists3+ZWtEcHYWuNUMStDYpDWC+u71ksb/8X2V6MpSge+XFpHmd9v6frcAAAAAFETvYvcKLo1PvKQ5m/HAkWaf+mGTX1fsAAAhOy4XkDy5/n4As6AAAAB2C6vaalqblgH0Z5sJPLhvL2MkuqwAAIDch6aogZ/3+AAAAAAAAA="
 
@@ -172,6 +220,11 @@ class CadastralAnalysisRequest(BaseModel):
     # Идентификатор запуска со страницы: по нему в журнале сшиваются старт,
     # ответ и применение одного клика «Получить ТЭП».
     request_id: str = ""
+    # Территория, уже собранная страницей перед этим запросом. Серверный расчёт
+    # ТЭП спрашивал её у ГлавАПУ второй раз за тот же клик — лишний внешний
+    # запрос в цепочке, которая и без него небыстрая. Присланная территория
+    # принимается, только если это территория запрошенных участков.
+    cadastral_analysis: dict[str, Any] | None = None
 
 
 class CadastralTepRequest(BaseModel):
@@ -508,6 +561,12 @@ def parse_glavapu_xlsx(data: bytes, filename: str = "") -> dict[str, Any]:
         "cadastral_quarter": _find_parameter(params_rows, "Кадастровый квартал"),
         "rent_coefficient": _ru_number(_find_parameter(params_rows, "Коэффициент аренды")),
         "mpt_coefficient": _find_parameter(params_rows, "Коэффициент МПТ"),
+        # Базовая стоимость МКД — третий множитель платы за ВРИ. Город
+        # индексирует её поквартально, и расхождение платы между двумя
+        # расчётами одного участка обычно сидит именно здесь. Параметра нет
+        # в выгрузке штатного калькулятора — тогда остаётся None и отчёт
+        # просто молчит об основании.
+        "vri_base_cost_rub": _ru_number(_find_parameter(params_rows, "Базовая стоимость МКД")),
     }
 
     # Derived underground parking for the financial TEP.
@@ -684,7 +743,13 @@ def parse_glavapu_xlsx(data: bytes, filename: str = "") -> dict[str, Any]:
         item("Кадастровый квартал", "cadastral_quarter", "", "Справочно / ГлавАПУ"),
     ]
 
-    warnings = [
+    # Справка о том, как читается файл, печаталась в одном списке с
+    # предупреждениями и всегда — шесть абзацев на каждый импорт. Настоящее
+    # «ВНИМАНИЕ: продаваемая площадь не прочитана» приписывалось следом и
+    # тонуло в них: предупреждение, которое видно всегда, не видно никогда.
+    # Теперь справка отдельно и по требованию, предупреждения — только когда
+    # есть о чём предупреждать.
+    notes = [
         "Числа нормализованы по русскому формату: пробел/неразрывный пробел — разделитель тысяч, запятая — десятичный разделитель.",
         "Показатели в тыс. кв. м автоматически приведены к м²; денежные суммы автоматически нормализуются в млн ₽ с учётом исходной единицы (тыс./млн/млрд).",
         "Подземный паркинг: стандартно постоянные + гостевые; в DevelopAid preset может отдельно добавляться парковка МФК из строк 60/61. Приобъектные и кратковременные места исключаются.",
@@ -692,6 +757,7 @@ def parse_glavapu_xlsx(data: bytes, filename: str = "") -> dict[str, Any]:
         "Для коммерции 1 этажа строка 11 используется как продаваемая площадь, а 9.1.2 — как общая площадь: это устраняет прежнее завышение saleable.",
         "Если строки 57/58 заполнены, объект 8.1 трактуется как МФК/офисы, а не как отдельный retail — двойной учёт исключается.",
     ]
+    warnings: list[str] = []
 
     # Непрочитанная строка молча превращалась в ноль: жилая застройка входила
     # в расчёт с полной себестоимостью от ГНС и нулевой выручкой, и проект
@@ -727,6 +793,7 @@ def parse_glavapu_xlsx(data: bytes, filename: str = "") -> dict[str, Any]:
         "recognized": recognized,
         "mappings": {"inputs": input_mapping, "tep": tep_mapping},
         "warnings": warnings,
+        "notes": notes,
     }
 
 
@@ -1412,6 +1479,11 @@ def analyze_cadastral_territory(req: CadastralAnalysisRequest) -> dict[str, Any]
             # Базовая стоимость МКД по кварталу — основание платы за смену
             # ВРИ: без неё плата не считается и честно остаётся нулём.
             "base_cost_zh_high": cad_quarter.get("base_cost_zh_high"),
+            # УПКС квартала — второе слагаемое компенсации за соцобъекты:
+            # в неё входит стоимость земли под объектом, а она у каждого
+            # квартала своя. Пока поле не читалось, ставки были зашиты
+            # константами с одного участка и на других занижали платёж.
+            "upks_zh_high": cad_quarter.get("upks_zh_high"),
         },
         "calculator_url": calculator_url,
         "warnings": warnings,
@@ -3634,7 +3706,8 @@ def _manual_tep_filled_template(project_name: str, region_label: str,
 def vri_tep_quick(region: str, query: str,
                  site_area_ha: float | None = None,
                  district: str | None = None,
-                 density_sqm_per_ha: float | None = None) -> dict[str, Any]:
+                 density_sqm_per_ha: float | None = None,
+                 analysis: dict[str, Any] | None = None) -> dict[str, Any]:
     """Кнопка бота «Посчитать ВРИ и ТЭП»: карточка + файл формата ГлавАПУ.
 
     МО считается полностью (РНГП, УПКС, Кд); Москва — по формулам
@@ -3814,8 +3887,12 @@ def vri_tep_quick(region: str, query: str,
                     status_code=400,
                     detail="По этому адресу участок в ЕГРН не нашёлся. "
                            "Пришлите кадастровый номер или уточните адрес.")
-        analysis = analyze_cadastral_territory(CadastralAnalysisRequest(
-            cadastral_numbers=numbers))
+        # Территорию мог принести вызывающий: страница спрашивает её перед
+        # расчётом, и второй поход к ГлавАПУ за тот же клик — это лишние
+        # секунды на ровном месте. Именно они и складывались в «очень долго».
+        if not isinstance(analysis, dict) or not (analysis.get("coefficients") or {}):
+            analysis = analyze_cadastral_territory(CadastralAnalysisRequest(
+                cadastral_numbers=numbers))
         territory = analysis.get("territory") or {}
         coeff = analysis.get("coefficients") or {}
         area = float(territory.get("area_ha") or site_area_ha or 0)
@@ -3840,9 +3917,28 @@ def vri_tep_quick(region: str, query: str,
         # Компенсация за соцобъекты — ставки из выгрузки калькулятора от
         # 01.08.2026 (188,414/19, 294,540/38 и 97,714/9): город индексирует их
         # поквартально, выгрузка от 21.07 несла ставки на ~11% ниже.
-        comp_dou = dou * 9.916526
-        comp_school = school * 7.751053
-        comp_clinic = clinic * 10.857111
+        # Компенсация за соцобъекты — формулой калькулятора (функция ap):
+        # коэфф × (УУПСС на место × места / 1000 + площадь ЗУ × УПКС квартала).
+        # Прежде ставки были зашиты тремя константами, снятыми с одного
+        # участка, — и на любом другом квартале платёж уезжал вместе с его
+        # УПКС: на 77:01 это дало 185,1 млн против 220,3 у калькулятора.
+        # Обратный счёт по трём прежним ставкам дал один и тот же УПКС
+        # 98 973 ₽/м² и нормативы земли 35 / 19 / 30 м² на место — формула
+        # восстановлена по трём независимым точкам.
+        upks = _land_float(coeff.get("upks_zh_high")) or 0.0
+        def _social_comp(places: float, uupss_th: float, zu_sqm: float,
+                         factor: float, legacy_rate: float) -> float:
+            if places <= 0:
+                return 0.0
+            if upks <= 0:
+                # УПКС не пришёл: без земли платёж вышел бы почти вдвое ниже.
+                # Прежние ставки сняты при УПКС 98 973 ₽/м² — это хотя бы
+                # порядок, а не половина суммы.
+                return places * legacy_rate
+            return factor * (uupss_th * places / 1000.0 + places * zu_sqm * upks / 1e6)
+        comp_dou = _social_comp(dou, 4799.71, 35.0, 1.2, 9.916526)
+        comp_school = _social_comp(school, 4578.69, 19.0, 1.2, 7.751053)
+        comp_clinic = _social_comp(clinic, 7887.92, 30.0, 1.0, 10.857111)
         jobs = math.ceil(commerce_gns / 36.0) if commerce_gns > 0 else 0
         # Машино-места — формулы из кода калькулятора ГлавАПУ (genplan_assets,
         # функции Rf/zf/Bf/Vf): постоянные — площадь квартир × 0,257/33 × К1,
@@ -3996,7 +4092,14 @@ def vri_tep_quick(region: str, query: str,
                f"{fmt(mm['guest'], 0)}) · приобъектные {fmt(mm['onsite'], 0)}\n"
                if mm else "")
             + (f"• <b>плата за смену ВРИ — {fmt(vri_msk, 1)} млн ₽</b> "
-               "(собственность, без льгот и МАИП)\n" if vri_msk else "")
+               "(собственность, без льгот и МАИП)\n"
+               # Основание платы — тремя числами: расхождение с расчётом на
+               # сайте раньше приходилось раскапывать перепиской, хотя вся
+               # разница всегда в одном из этих трёх множителей.
+               f"  <i>основание: СПП {fmt(spp, 0)} м² × коэфф. аренды "
+               f"{coeff.get('rent') or '—'} × базовая стоимость "
+               f"{fmt(_land_float(coeff.get('base_cost_zh_high')) or 0, 0)} ₽/м²"
+               f" × 1,8964</i>\n" if vri_msk else "")
             + f"• К1 рельсовый — {coeff.get('rail') or '—'} · аренда — "
               f"{coeff.get('rent') or '—'}\n"
             + ("<i>Льготы по ВРИ (МПТ, передача жилья городу), аренда и МАИП "
@@ -4658,6 +4761,447 @@ def _build_model_xlsx(sheets: list[dict[str, Any]]) -> bytes:
 # всплывёт в тот же день — в предупреждениях импорта, в /status и в ответах
 # серверного пути, — а не будет молча жить в Telegram. Память процесса: после
 # перезапуска флаг снимается до следующего сбора на сайте.
+# Дата, на которую сняты зашитые ставки компенсации за соцобъекты. Город
+# индексирует их поквартально: 04.08.2026 штатный калькулятор дал по одному
+# участку 220,3 млн ₽ против серверных 185,1 — отставание в 19%. Дата едет в
+# предупреждение серверного ответа, чтобы отставание было видно сразу, а не
+# всплывало при сравнении расчётов с двух компьютеров.
+_GLAVAPU_COMPENSATION_RATES_DATE = "01.08.2026"
+
+# --- штатный калькулятор ГлавАПУ на сервере ---------------------------------
+# Копировать методику ГлавАПУ оказалось тупиком: плата за ВРИ разошлась на
+# 1,75%, компенсация — на 19%, и оба раза расхождение находил человек на
+# скриншотах, а не мы. Ставки индексируются, коэффициенты меняются, и наш
+# пересказ отстаёт на неизвестный срок. Поэтому расчёт делает сам калькулятор,
+# запущенный браузером без экрана: та же последовательность, что отрабатывает
+# скрытый iframe на сайте. Наши формулы остаются фолбэком — если ГлавАПУ
+# недоступен или сломалась автоматизация, отчёт честно говорит, что расчёт
+# запасной, вместо тихой выдачи устаревшей методики.
+_GLAVAPU_HEADLESS_ENABLED = _env_str("GLAVAPU_HEADLESS", "").strip().lower() in ("1", "true", "yes", "on")
+_GLAVAPU_HEADLESS_TIMEOUT_MS = int(max(20.0, _env_float("GLAVAPU_HEADLESS_TIMEOUT_SECONDS", 90.0)) * 1000)
+_GLAVAPU_HEADLESS: dict[str, Any] = {"last_ok": "", "last_error": "", "runs": 0,
+                                     "fallbacks": 0, "waits": 0, "last_ms": {}}
+# Браузер запускается по одному на машину: ядро — 2 vCPU и 4 ГБ, воркеров два,
+# и каждый Chromium берёт 300–400 МБ. Два одновременных расчёта клали бы не
+# только ТЭП, а весь контейнер по нехватке памяти. Второй запрос ждёт очереди
+# — секунды ожидания дешевле перезапуска бота.
+_GLAVAPU_HEADLESS_SLOTS = max(1, int(_env_float("GLAVAPU_HEADLESS_PARALLEL", 1)))
+_GLAVAPU_HEADLESS_LOCK = threading.Semaphore(_GLAVAPU_HEADLESS_SLOTS)
+_GLAVAPU_HEADLESS_QUEUE_SECONDS = max(5.0, _env_float("GLAVAPU_HEADLESS_QUEUE_SECONDS", 120.0))
+# Предохранитель. Пока штатный калькулятор недоступен — нет Chromium в образе,
+# закрыт выход к genplan.tech, сменилась вёрстка — каждый расчёт честно ждал
+# полный таймаут и только потом уходил на формулы. Человек платил полторы
+# минуты за ответ, который был известен заранее. После сбоя браузер не трогаем
+# несколько минут: формулы отвечают сразу, а причина видна в /status.
+_GLAVAPU_HEADLESS_COOLDOWN_SECONDS = max(0.0, _env_float("GLAVAPU_HEADLESS_COOLDOWN_SECONDS", 300.0))
+_GLAVAPU_HEADLESS_BLOCKED_UNTIL = {"at": 0.0}
+
+
+def _glavapu_headless_available() -> bool:
+    """Стоит ли вообще пытаться поднимать браузер."""
+    if not _GLAVAPU_HEADLESS_ENABLED:
+        return False
+    return time.monotonic() >= _GLAVAPU_HEADLESS_BLOCKED_UNTIL["at"]
+
+
+def _glavapu_headless_failed() -> None:
+    if _GLAVAPU_HEADLESS_COOLDOWN_SECONDS > 0:
+        _GLAVAPU_HEADLESS_BLOCKED_UNTIL["at"] = (
+            time.monotonic() + _GLAVAPU_HEADLESS_COOLDOWN_SECONDS)
+
+# Браузер живёт между расчётами. Холодный запуск Chromium и первая загрузка
+# страницы калькулятора со всеми её ассетами стоили большую часть минуты, и
+# платились они каждый раз заново. Тёплый браузер отдаёт ассеты из своего кэша,
+# а платится за это памятью — поэтому после простоя он закрывается сам.
+#
+# Синхронный Playwright привязан к потоку, в котором создан, поэтому браузером
+# владеет один выделенный поток, а расчёты приходят к нему очередью. Заодно это
+# и есть ограничение «один Chromium на машину»: второго потока не бывает.
+# Ноль (умолчание) — браузер живёт, пока живёт процесс. Таймер простоя экономил
+# 300–400 МБ, но платил холодным стартом за каждый расчёт: боты не работают
+# непрерывно, и пятнадцати минут между двумя участками хватает, чтобы Chromium
+# успел закрыться. Кому память дороже секунд — ставит секунды.
+_GLAVAPU_HEADLESS_IDLE_SECONDS = max(0.0, _env_float("GLAVAPU_HEADLESS_IDLE_SECONDS", 0.0))
+_GLAVAPU_HEADLESS_POLL_MS = int(max(50.0, _env_float("GLAVAPU_HEADLESS_POLL_MS", 200.0)))
+_GLAVAPU_HEADLESS_JOBS: "queue.Queue[tuple[list[str], float, dict[str, Any], threading.Event]]" = queue.Queue()
+_GLAVAPU_BROWSER_LOCK = threading.Lock()
+_GLAVAPU_BROWSER_THREAD: threading.Thread | None = None
+# --disable-dev-shm-usage: в контейнере /dev/shm мал, и Chromium на тяжёлой
+# странице падает молча, вместо того чтобы честно отработать.
+_GLAVAPU_HEADLESS_ARGS = [
+    "--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu",
+    "--disable-extensions", "--disable-background-networking",
+    "--disable-features=Translate,BackForwardCache", "--mute-audio", "--no-first-run",
+]
+# Картинки, шрифты и счётчики к таблице ТЭП отношения не имеют, а тянутся
+# дольше самого расчёта. Всё, что участвует в счёте, — запросы к API ГлавАПУ.
+_GLAVAPU_BLOCKED_TYPES = {"image", "font", "media"}
+_GLAVAPU_BLOCKED_HOSTS = ("mc.yandex.", "metrika", "google-analytics.com",
+                          "googletagmanager.com", "top-fwz1.mail.ru",
+                          "doubleclick.net", "vk.com/rtrg")
+
+# Обучающий тур genplan.tech (react-joyride) висит поверх интерфейса с
+# затемнением и перехватывает клики: Playwright честно повторял попытку 168 раз
+# и уходил в таймаут. В браузере человека тур закрыт однажды и больше не
+# появляется, а свежий Chromium на сервере видит его каждый раз.
+#
+# Сначала пробуем закрыть штатно — кнопкой пропуска: она пишет в хранилище, что
+# тур пройден, и он не возвращается. Если кнопки нет, снимаем оверлей из DOM.
+_GLAVAPU_DISMISS_TOUR_JS = """() => {
+  let closed = 0;
+  const buttons = document.querySelectorAll(
+    '[data-action="skip"], [data-action="close"], [aria-label="Close"],'
+    + ' .react-joyride__tooltip button');
+  for (const button of buttons) {
+    const label = String(button.textContent || '').trim().toLowerCase();
+    const action = String(button.getAttribute('data-action') || '');
+    if (action === 'skip' || action === 'close'
+        || /пропустить|закрыть|skip|close|понятно/.test(label)) {
+      button.click();
+      closed += 1;
+      break;
+    }
+  }
+  // Узлы не удаляем: React считает портал своим и при следующем обновлении
+  // обращается к нему. Удаление роняло всё приложение — калькулятор показывал
+  // экран «Перезагрузить страницу», и расчёт упирался в отсутствие полей.
+  // Стиль тур гасит так же надёжно, а чужой DOM остаётся нетронутым.
+  let hidden = 0;
+  if (!document.getElementById('plato-tour-off')) {
+    const style = document.createElement('style');
+    style.id = 'plato-tour-off';
+    style.textContent = '#react-joyride-portal, .react-joyride__overlay,'
+      + ' .react-joyride__spotlight, .react-joyride__tooltip'
+      + ' { display: none !important; pointer-events: none !important; }';
+    document.head.appendChild(style);
+    hidden = 1;
+  }
+  return {closed, hidden};
+}"""
+
+# Поле кадастровых номеров ищется по нескольким признакам. Один жёсткий
+# селектор на чужой странице — это обещание, что вёрстка genplan.tech никогда
+# не изменится; она изменилась, и `#id-cad-numbers-text-field` перестал
+# находиться, а расчёт девяносто секунд ждал элемент, которого нет.
+_GLAVAPU_NUMBER_FIELD_SELECTORS = (
+    "#id-cad-numbers-text-field",
+    "[id*='cad-numbers']",
+    "textarea[placeholder*='адастр']",
+    "input[placeholder*='адастр']",
+    "[aria-label*='адастр']",
+    ".MuiDialog-root textarea, .MuiDialog-root input[type='text']",
+)
+
+# Что вообще есть на странице в момент срыва: без этого следующая правка
+# селектора — это ещё один круг переписки со скриншотами.
+#
+# Видимость считается по прямоугольнику, а не по offsetParent: у всего, что
+# лежит внутри position:fixed — а диалоги MUI именно такие, — offsetParent
+# равен null, и поле в открытом диалоге не попало бы в список вовсе. Первая
+# версия этой диагностики честно сообщила «полей нет» там, где они могли быть.
+_GLAVAPU_VISIBLE_FIELDS_JS = """() => {
+  const shown = el => {
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  };
+  const fields = Array.from(document.querySelectorAll('input, textarea'))
+    .slice(0, 15)
+    .map(el => [el.tagName.toLowerCase(), el.id || '-',
+                el.getAttribute('placeholder') || el.getAttribute('aria-label') || '-',
+                shown(el) ? 'виден' : 'скрыт'].join(':'));
+  const buttons = Array.from(document.querySelectorAll('button, [role="button"]'))
+    .filter(shown)
+    .slice(0, 15)
+    .map(el => String(el.textContent || '').trim().slice(0, 24) || '·');
+  return {
+    url: String(location.href).slice(0, 120),
+    fields: fields.length ? fields : ['нет'],
+    buttons: buttons.length ? buttons : ['нет'],
+  };
+}"""
+
+_GLAVAPU_READ_ROWS_JS = """() => {
+  const table = document.querySelector('table[aria-label="calc table"]');
+  if (!table) return [];
+  return Array.from(table.querySelectorAll('tbody tr')).map(row => {
+    const cells = Array.from(row.children).map(c => String(c.textContent || '').replace(/\s+/g, ' ').trim());
+    if (cells.length < 4) return null;
+    const raw = cells[0];
+    const code = /^\d+(?:[.,]\d+)*$/.test(raw) ? raw.replace(/,/g, '.') : '';
+    return {code, name: cells[1], unit: cells[2], value: cells[3]};
+  }).filter(r => r && r.name && r.value);
+}"""
+
+
+def _glavapu_block_junk(route: Any) -> None:
+    """Отсекает то, что к расчёту отношения не имеет."""
+    request = route.request
+    junk = (request.resource_type in _GLAVAPU_BLOCKED_TYPES
+            or any(host in request.url for host in _GLAVAPU_BLOCKED_HOSTS))
+    try:
+        route.abort() if junk else route.continue_()
+    except Exception:  # страница уже ушла — нечего продолжать
+        pass
+
+
+def _glavapu_drive_page(page: Any, numbers: list[str], area_ha: float,
+                        timings: dict[str, int]) -> list[dict[str, Any]]:
+    """Шаги браузерной автоматизации — те же, что отрабатывает скрытый iframe
+    на сайте: «Участок» → кадастровые номера → «Отправить» → «Перейти к
+    расчётам» → чтение таблицы. Готовность таблицы определяется так же, как на
+    странице: есть коды 60 и 54 и не меньше шестидесяти строк — иначе рискуем
+    снять её недосчитанной.
+
+    Страница переиспользуется между расчётами, поэтому хранилище прошлого
+    прогона стирается: восстановленный оттуда чужой участок дал бы правдоподобно
+    выглядящий чужой ТЭП. Сама таблица переживает переход не может — переход
+    пересобирает DOM.
+    """
+    step = time.monotonic()
+
+    def mark(name: str) -> None:
+        nonlocal step
+        now = time.monotonic()
+        timings[name] = int((now - step) * 1000)
+        step = now
+
+    def recover_if_crashed() -> None:
+        """Калькулятор мог упасть и показать экран «Перезагрузить страницу».
+
+        Своя кнопка перезагрузки у него есть — нажимаем её и даём приложению
+        собраться заново, вместо того чтобы искать поля на экране ошибки.
+        """
+        try:
+            button = page.get_by_role("button", name="Перезагрузить страницу").first
+            if button.is_visible(timeout=1500):
+                button.click(timeout=5000)
+                page.wait_for_timeout(2500)
+                timings["reloaded"] = timings.get("reloaded", 0) + 1
+        except Exception:
+            pass
+
+    def open_parcel_dialog() -> None:
+        """Открывает панель ввода участка.
+
+        «Участок» может оказаться и кнопкой, и вкладкой, и пунктом меню —
+        роль button находит не всё. Промах здесь виден не сразу: клик проходит
+        вхолостую, а падает уже поиск поля, и причина выглядит чужой.
+        """
+        attempts = (
+            lambda: page.get_by_role("button", name="Участок").first,
+            lambda: page.get_by_role("tab", name="Участок").first,
+            lambda: page.get_by_text("Участок", exact=True).first,
+        )
+        for index, attempt in enumerate(attempts):
+            try:
+                attempt().click(timeout=7000)
+                timings["parcel_click"] = index
+                return
+            except Exception:
+                continue
+        raise TimeoutError("кнопка «Участок» не нажалась ни одним способом")
+
+    def fill_numbers(text: str) -> None:
+        """Вводит кадастровые номера, чем бы ни было поле в текущей вёрстке."""
+        for selector in _GLAVAPU_NUMBER_FIELD_SELECTORS:
+            try:
+                field = page.locator(selector).first
+                field.wait_for(state="visible", timeout=5000)
+                field.fill(text)
+                timings["field"] = _GLAVAPU_NUMBER_FIELD_SELECTORS.index(selector)
+                return
+            except Exception:
+                continue
+        try:
+            seen = page.evaluate(_GLAVAPU_VISIBLE_FIELDS_JS) or {}
+        except Exception:
+            seen = {}
+        raise TimeoutError(
+            "поле кадастровых номеров не найдено. Поля: "
+            + ("; ".join(str(x) for x in (seen.get("fields") or ["?"]))[:220])
+            + ". Кнопки: "
+            + ("; ".join(str(x) for x in (seen.get("buttons") or ["?"]))[:220])
+            + f". Адрес: {seen.get('url') or '?'}")
+
+    def dismiss_tour() -> None:
+        """Снимает обучающий тур, если он перехватывает клики."""
+        try:
+            result = page.evaluate(_GLAVAPU_DISMISS_TOUR_JS) or {}
+        except Exception:
+            return
+        if result.get("closed") or result.get("hidden"):
+            timings["tour"] = timings.get("tour", 0) + 1
+
+    try:
+        if "genplan.tech" in str(page.url or ""):
+            page.evaluate("() => { try { localStorage.clear(); sessionStorage.clear(); }"
+                          " catch (e) {} }")
+    except Exception:
+        pass
+    url = ("https://genplan.tech/calc/?terrArea=" + urllib.parse.quote(f"{area_ha:.4f}")
+           + "&restrictArea=0&plato=" + str(int(time.time() * 1000)))
+    page.goto(url, wait_until="domcontentloaded")
+    mark("load")
+    if not numbers:
+        dismiss_tour()  # прогрев заодно гасит тур: он пишется в хранилище
+        return []  # страница загружена, ассеты в кэше браузера
+    # Тур показывается по шагам и всплывает на каждом новом экране, поэтому
+    # снимается перед каждым кликом, а не однажды.
+    recover_if_crashed()
+    dismiss_tour()
+    open_parcel_dialog()
+    dismiss_tour()
+    fill_numbers(", ".join(numbers))
+    page.get_by_role("button", name="Отправить").click()
+    dismiss_tour()
+    page.get_by_role("button", name="Перейти к расчётам").click()
+    mark("parcel")
+    deadline = time.monotonic() + _GLAVAPU_HEADLESS_TIMEOUT_MS / 1000.0
+    while True:
+        rows = page.evaluate(_GLAVAPU_READ_ROWS_JS) or []
+        codes = {str(r.get("code") or "") for r in rows}
+        if "60" in codes and "54" in codes and len(rows) >= 60:
+            mark("table")
+            return rows
+        if time.monotonic() > deadline:
+            raise TimeoutError(
+                f"калькулятор не отдал таблицу за {_GLAVAPU_HEADLESS_TIMEOUT_MS // 1000} с "
+                f"(строк {len(rows)})")
+        page.wait_for_timeout(_GLAVAPU_HEADLESS_POLL_MS)
+
+
+def _glavapu_browser_worker() -> None:
+    """Единственный поток, владеющий браузером.
+
+    Синхронный Playwright нельзя дёргать из чужого потока, а воркеров у нас
+    два, и запросы приходят из пула FastAPI. Поэтому браузер держит один поток,
+    расчёты приходят к нему очередью, и он же закрывает Chromium после простоя:
+    держать 300–400 МБ ради расчёта, которого может не быть до вечера, дорого.
+    """
+    global _GLAVAPU_BROWSER_THREAD
+    from playwright.sync_api import sync_playwright
+
+    browser = page = None
+    try:
+        with sync_playwright() as playwright:
+            while True:
+                try:
+                    job = _GLAVAPU_HEADLESS_JOBS.get(
+                        timeout=_GLAVAPU_HEADLESS_IDLE_SECONDS or None)
+                except queue.Empty:
+                    with _GLAVAPU_BROWSER_LOCK:
+                        if _GLAVAPU_HEADLESS_JOBS.empty():
+                            _GLAVAPU_BROWSER_THREAD = None
+                            return
+                    continue
+                numbers, area_ha, holder, done = job
+                timings: dict[str, int] = {}
+                try:
+                    if browser is None or not browser.is_connected():
+                        started = time.monotonic()
+                        browser = playwright.chromium.launch(
+                            headless=True, args=_GLAVAPU_HEADLESS_ARGS)
+                        page = None
+                        timings["launch"] = int((time.monotonic() - started) * 1000)
+                    if page is None or page.is_closed():
+                        page = browser.new_page()
+                        page.set_default_timeout(_GLAVAPU_HEADLESS_TIMEOUT_MS)
+                        page.route("**/*", _glavapu_block_junk)
+                    holder["rows"] = _glavapu_drive_page(page, numbers, area_ha, timings)
+                except Exception as exc:
+                    holder["error"] = exc
+                    # Упавший прогон мог оставить страницу в неизвестном
+                    # состоянии, а тихо считать на ней дальше — это чужой ТЭП
+                    # под своим именем. Рвём браузер: следующий начнёт с нуля.
+                    try:
+                        if browser is not None:
+                            browser.close()
+                    except Exception:
+                        pass
+                    browser = page = None
+                finally:
+                    holder["timings"] = timings
+                    done.set()
+    finally:
+        with _GLAVAPU_BROWSER_LOCK:
+            if _GLAVAPU_BROWSER_THREAD is threading.current_thread():
+                _GLAVAPU_BROWSER_THREAD = None
+        try:
+            if browser is not None:
+                browser.close()
+        except Exception:
+            pass
+        # Поток умер — ждущие расчёты обязаны узнать об этом сейчас, а не по
+        # таймауту через три минуты: их место на серверных формулах.
+        while True:
+            try:
+                _, _, holder, done = _GLAVAPU_HEADLESS_JOBS.get_nowait()
+            except queue.Empty:
+                break
+            holder.setdefault("error", RuntimeError("поток браузера остановлен"))
+            done.set()
+
+
+def _glavapu_warm_up() -> None:
+    """Поднимает браузер и прогревает страницу калькулятора заранее.
+
+    Иначе первый расчёт после выкатки платит и за старт Chromium, и за полную
+    загрузку ассетов ГлавАПУ — а первый расчёт всегда чей-то.
+    """
+    try:
+        _glavapu_headless_rows([], 0.0)
+        logging.info("glavapu warm-up done: браузер готов")
+    except Exception as exc:
+        # Нет Chromium, нет выхода к genplan.tech — расчёт не должен узнавать
+        # об этом ценой полутора минут ожидания на первом же участке.
+        _GLAVAPU_HEADLESS["last_error"] = (
+            f"{datetime.now().isoformat(timespec='seconds')}: прогрев — {_error_location(exc)}")
+        _glavapu_headless_failed()
+        logging.warning("glavapu warm-up failed: %s", exc)
+
+
+def _glavapu_headless_rows(numbers: list[str], area_ha: float) -> list[dict[str, Any]]:
+    """Таблица ТЭП, снятая с настоящего калькулятора ГлавАПУ.
+
+    Расчёт уходит потоку-владельцу браузера и ждёт его ответа. Ожидание в
+    очереди конечно: не дождался — уходим на серверные формулы, а не висим.
+    """
+    global _GLAVAPU_BROWSER_THREAD
+
+    # Проверяется здесь, а не в потоке: без Playwright в образе поток умрёт
+    # молча, и расчёт вместо мгновенного отката на формулы ждал бы ответа
+    # три минуты.
+    from playwright.sync_api import sync_playwright  # noqa: F401
+
+    if not _GLAVAPU_HEADLESS_LOCK.acquire(timeout=_GLAVAPU_HEADLESS_QUEUE_SECONDS):
+        _GLAVAPU_HEADLESS["waits"] += 1
+        raise TimeoutError(
+            f"браузер занят дольше {int(_GLAVAPU_HEADLESS_QUEUE_SECONDS)} с "
+            "— расчёт уходит на серверные формулы")
+    started = time.monotonic()
+    try:
+        holder: dict[str, Any] = {}
+        done = threading.Event()
+        with _GLAVAPU_BROWSER_LOCK:
+            if _GLAVAPU_BROWSER_THREAD is None or not _GLAVAPU_BROWSER_THREAD.is_alive():
+                _GLAVAPU_BROWSER_THREAD = threading.Thread(
+                    target=_glavapu_browser_worker, name="glavapu-browser", daemon=True)
+                _GLAVAPU_BROWSER_THREAD.start()
+            _GLAVAPU_HEADLESS_JOBS.put((list(numbers), float(area_ha), holder, done))
+        if not done.wait(_GLAVAPU_HEADLESS_TIMEOUT_MS / 1000.0 + 60.0):
+            raise TimeoutError("поток браузера не ответил — расчёт уходит на формулы")
+        timings = dict(holder.get("timings") or {})
+        timings["total"] = int((time.monotonic() - started) * 1000)
+        _GLAVAPU_HEADLESS["last_ms"] = timings
+        logging.info("glavapu headless timings: %s", timings)
+        if holder.get("error") is not None:
+            raise holder["error"]
+        return holder.get("rows") or []
+    finally:
+        _GLAVAPU_HEADLESS_LOCK.release()
+
+
+
 _GLAVAPU_DRIFT_CHECKS = [
     ("4", "население", 3.0, "abs"),
     ("10", "площадь квартир", 0.01, "rel"),
@@ -4671,7 +5215,54 @@ _GLAVAPU_DRIFT_CHECKS = [
     ("55", "компенсация школа", 0.01, "rel"),
     ("56", "компенсация поликлиника", 0.01, "rel"),
 ]
-_GLAVAPU_FORMULA_DRIFT: dict[str, Any] = {"items": []}
+_GLAVAPU_FORMULA_DRIFT: dict[str, Any] = {"items": [], "checked_at": 0.0, "running": False}
+# Сверка формул со штатным калькулятором стоит целого серверного расчёта: она
+# заново спрашивает территорию у ГлавАПУ и собирает книгу ТЭП, чтобы сравнить
+# одиннадцать чисел. Держать в этом человека, который ждёт свой ТЭП, незачем —
+# дрейф методики появляется не чаще раза в квартал, а не раза в клик.
+_GLAVAPU_DRIFT_INTERVAL_SECONDS = max(60.0, _env_float("GLAVAPU_DRIFT_INTERVAL_SECONDS", 3600.0))
+_GLAVAPU_DRIFT_LOCK = threading.Lock()
+
+
+def _glavapu_drift_in_background(rows: list[list[Any]], numbers: list[str]) -> None:
+    """Ставит сверку формул в фон, но не чаще раза в интервал.
+
+    Ошибка, ушедшая только в лог, — ошибка, которой нет, поэтому результат
+    по-прежнему кричит в /status и в предупреждениях расчёта. Но кричать он
+    может и со следующего расчёта: дрейф методики — это про квартал, а не про
+    секунды ожидания.
+    """
+    if not numbers:
+        return
+    with _GLAVAPU_DRIFT_LOCK:
+        if _GLAVAPU_FORMULA_DRIFT.get("running"):
+            return
+        last = float(_GLAVAPU_FORMULA_DRIFT.get("checked_at") or 0.0)
+        if last and time.monotonic() - last < _GLAVAPU_DRIFT_INTERVAL_SECONDS:
+            return
+        _GLAVAPU_FORMULA_DRIFT["running"] = True
+
+    def worker() -> None:
+        try:
+            drift = _glavapu_formula_drift(rows, numbers)
+        except Exception as exc:
+            logging.warning("glavapu drift check failed: %s", exc)
+            drift = []
+        else:
+            if drift:
+                _GLAVAPU_FORMULA_DRIFT.update(
+                    items=drift, found_at=datetime.now(timezone.utc).isoformat(),
+                    numbers=[str(n) for n in numbers])
+                _TELEGRAM_RUNTIME["last_error"] = "Дрейф формул ГлавАПУ: " + "; ".join(drift[:4])
+            elif _GLAVAPU_FORMULA_DRIFT.get("items"):
+                # Формулы снова сходятся — снять флаг, чтобы Telegram не пугал зря.
+                _GLAVAPU_FORMULA_DRIFT.update(items=[], found_at="", numbers=[])
+        finally:
+            with _GLAVAPU_DRIFT_LOCK:
+                _GLAVAPU_FORMULA_DRIFT["checked_at"] = time.monotonic()
+                _GLAVAPU_FORMULA_DRIFT["running"] = False
+
+    threading.Thread(target=worker, name="glavapu-drift", daemon=True).start()
 
 
 def _glavapu_formula_drift(rows: list[list[Any]], numbers: list[str]) -> list[str]:
@@ -4704,6 +5295,111 @@ def _glavapu_formula_drift(rows: list[list[Any]], numbers: list[str]) -> list[st
     return drift
 
 
+# Один участок считают по многу раз подряд: поменяли цену — пересчитали,
+# поменяли нарезку — пересчитали, и каждый раз заново поднимался браузер и
+# заново считал ГлавАПУ. ТЭП участка за это время не меняется — меняются наши
+# вводные. Ставки город индексирует поквартально, поэтому шесть часов памяти
+# безопасны, а ждать минуту ради того же ответа — нет.
+_GLAVAPU_TEP_CACHE_SECONDS = max(0.0, _env_float("GLAVAPU_TEP_CACHE_SECONDS", 21600.0))
+# Запасной ответ помнится минутами, а не часами. Шесть часов — срок для расчёта
+# штатного калькулятора: ТЭП участка за это время не меняется. Ответ формул —
+# это «калькулятор был недоступен в ту секунду», и держать его наравне со
+# штатным значит месяцами отдавать запасной расчёт после одного срыва: браузер
+# уже починен, предохранитель снят через пять минут, а кэш всё ещё отвечает
+# формулами.
+_GLAVAPU_TEP_FALLBACK_CACHE_SECONDS = max(0.0, _env_float("GLAVAPU_TEP_FALLBACK_CACHE_SECONDS", 300.0))
+_GLAVAPU_TEP_CACHE: dict[tuple[str, ...], tuple[float, dict[str, Any], bool]] = {}
+_GLAVAPU_TEP_CACHE_LOCK = threading.Lock()
+_GLAVAPU_TEP_CACHE_HITS = {"hits": 0}
+
+
+def _glavapu_tep_cached(numbers: list[str],
+                        want_calculator: bool = False) -> dict[str, Any] | None:
+    """Запомненный ТЭП участка.
+
+    `want_calculator` — «браузер сейчас на ходу»: тогда запасной ответ из памяти
+    не отдаётся, иначе один срыв калькулятора обрекал участок на формулы до
+    конца дня.
+    """
+    if _GLAVAPU_TEP_CACHE_SECONDS <= 0:
+        return None
+    key = tuple(sorted(str(x).strip() for x in numbers))
+    with _GLAVAPU_TEP_CACHE_LOCK:
+        item = _GLAVAPU_TEP_CACHE.get(key)
+        if not item:
+            return None
+        stored_at, payload, is_fallback = item
+        if is_fallback and want_calculator:
+            return None
+        limit = (_GLAVAPU_TEP_FALLBACK_CACHE_SECONDS if is_fallback
+                 else _GLAVAPU_TEP_CACHE_SECONDS)
+        if limit <= 0 or time.monotonic() - stored_at > limit:
+            _GLAVAPU_TEP_CACHE.pop(key, None)
+            return None
+        _GLAVAPU_TEP_CACHE_HITS["hits"] += 1
+    return copy.deepcopy(payload)
+
+
+def _glavapu_tep_store(numbers: list[str], payload: dict[str, Any],
+                       is_fallback: bool = False) -> None:
+    if _GLAVAPU_TEP_CACHE_SECONDS <= 0 or not numbers:
+        return
+    key = tuple(sorted(str(x).strip() for x in numbers))
+    with _GLAVAPU_TEP_CACHE_LOCK:
+        if len(_GLAVAPU_TEP_CACHE) >= 64:
+            oldest = min(_GLAVAPU_TEP_CACHE, key=lambda k: _GLAVAPU_TEP_CACHE[k][0])
+            _GLAVAPU_TEP_CACHE.pop(oldest, None)
+        _GLAVAPU_TEP_CACHE[key] = (time.monotonic(), copy.deepcopy(payload), is_fallback)
+
+
+def _glavapu_headless_state() -> dict[str, Any]:
+    """Почему расчёт идёт формулами — в самом ответе, а не только в логе.
+
+    Браузер живёт на ядре, и с телефона его состояние никак не увидеть.
+    «Ошибка, ушедшая только в лог, — это ошибка, которой нет»: причина отката
+    должна доезжать до человека вместе с расчётом.
+    """
+    try:
+        host = socket.gethostname()
+    except Exception:
+        host = "?"
+    where = (f"пересылает на ядро, отвечает {host}"
+             if _core_api_url("/cadastral/tep-server") else f"считает сам, {host}")
+    if not _GLAVAPU_HEADLESS_ENABLED:
+        return {"state": "выключен", "where": where,
+                "hint": ("Штатный калькулятор запускает ядро. Нужны GLAVAPU_HEADLESS=1 "
+                         "в .env ядра и образ с Chromium (docker compose build).")
+                if where == "ядро" else
+                ("Расчёт остался на Render — ядро не ответило или его адрес не задан. "
+                 "Браузер живёт только на ядре.")}
+    blocked = max(0, int(_GLAVAPU_HEADLESS_BLOCKED_UNTIL["at"] - time.monotonic()))
+    if blocked:
+        return {"state": "предохранитель", "where": where, "blocked_for": blocked,
+                "last_error": str(_GLAVAPU_HEADLESS.get("last_error") or ""),
+                "hint": "Браузер сорвался; следующая попытка через "
+                        f"{blocked} с. Причина — в last_error."}
+    return {"state": "готов", "where": where}
+
+
+def _cadastral_analysis_for(numbers: list[str],
+                            supplied: dict[str, Any] | None) -> dict[str, Any]:
+    """Территория запрошенных участков — присланная страницей или своя.
+
+    Страница собирает территорию перед расчётом ТЭП и держит её в руках; тот же
+    вопрос ГлавАПУ второй раз за один клик стоил внешнего запроса на ровном
+    месте. Принимается присланная территория только тех участков, что запрошены:
+    иначе ТЭП посчитался бы по чужим коэффициентам, выглядя безупречно.
+    """
+    if isinstance(supplied, dict):
+        recognized = {str(x).strip() for x in (supplied.get("recognized") or [])}
+        coefficients = supplied.get("coefficients") or {}
+        area = float((supplied.get("territory") or {}).get("area_ha") or 0.0)
+        if recognized == {str(x).strip() for x in numbers} and coefficients and area > 0:
+            return supplied
+    return analyze_cadastral_territory(
+        CadastralAnalysisRequest(cadastral_numbers=numbers))
+
+
 @app.post("/cadastral/tep-server")
 def cadastral_tep_server(req: CadastralAnalysisRequest) -> dict[str, Any]:
     """ТЭП по формулам ГлавАПУ, посчитанный сервером.
@@ -4714,20 +5410,112 @@ def cadastral_tep_server(req: CadastralAnalysisRequest) -> dict[str, Any]:
     сходятся с контрольными выгрузками до единицы, поэтому серверный расчёт —
     равноценная замена, а не суррогат."""
     numbers = _parse_cadastral_numbers(req.cadastral_numbers)
-    logging.info("tep-server rid=%s numbers=%s", req.request_id or "-",
-                 ", ".join(numbers))
-    quick = vri_tep_quick("msk", ", ".join(numbers))
+    request_started = time.monotonic()
+    logging.info("tep-server rid=%s numbers=%s analysis=%s headless=%s",
+                 req.request_id or "-", ", ".join(numbers),
+                 "прислана" if req.cadastral_analysis else "нет",
+                 "готов" if _glavapu_headless_available() else "недоступен")
+
+    # Расчёт уходит на ядро — тем же путём, что и анализ территории. Браузер
+    # для штатного калькулятора живёт там: на ядре свой образ, четыре гигабайта
+    # и нет засыпания, а Render к тому же не наш Dockerfile. На самом ядре
+    # адрес пуст, и пересылать некуда — там считаем.
+    if _core_api_url("/cadastral/tep-server"):
+        try:
+            forwarded = _core_post(
+                _core_api_url("/cadastral/tep-server"),
+                _core_forward_payload(req),
+                _MO_CALC_TIMEOUT_SECONDS,
+            )
+            logging.info("tep-server rid=%s ядро ответило за %.1f с",
+                         req.request_id or "-", time.monotonic() - request_started)
+            return forwarded
+        except Exception as exc:
+            # Ядро не ответило — считаем здесь формулами, как раньше.
+            logging.warning("tep-server core forward failed: %s", exc)
+
+    # Сначала — настоящий калькулятор. Формулы остаются фолбэком: копия
+    # методики отстаёт от города на неизвестный срок, и это уже дважды
+    # находил человек на скриншотах, а не мы.
+    # Тот же участок, посчитанный настоящим калькулятором час назад, — это тот
+    # же ТЭП. Браузер поднимать незачем.
+    if _glavapu_headless_available() and numbers:
+        # Браузер на ходу — запасной ответ из памяти не годится: он отвечал бы
+        # за калькулятор, который снова работает.
+        cached = _glavapu_tep_cached(numbers, want_calculator=True)
+        if cached is not None:
+            logging.info("tep-server rid=%s из кэша", req.request_id or "-")
+            return cached
+
+    if _glavapu_headless_available() and numbers:
+        try:
+            started = time.monotonic()
+            analysis = _cadastral_analysis_for(numbers, req.cadastral_analysis)
+            area = float((analysis.get("territory") or {}).get("area_ha") or 0.0)
+            rows = _glavapu_headless_rows(numbers, area)
+            imported = import_cadastral_tep(CadastralTepRequest(
+                rows=rows, cadastral_analysis=analysis))
+            _GLAVAPU_HEADLESS["runs"] += 1
+            _GLAVAPU_HEADLESS["last_ok"] = datetime.now().isoformat(timespec="seconds")
+            _GLAVAPU_HEADLESS["last_error"] = ""
+            _GLAVAPU_HEADLESS_BLOCKED_UNTIL["at"] = 0.0
+            imported.setdefault("source", {}).update({
+                "format": "Штатный калькулятор ГлавАПУ — серверный запуск",
+                "cadastral_numbers": numbers,
+                "calculated_at": date.today().isoformat(),
+                "headless": {"state": "готов", "where": "ядро"},
+            })
+            logging.info("tep-server rid=%s готов за %.1f с",
+                         req.request_id or "-", time.monotonic() - started)
+            _glavapu_tep_store(numbers, imported)
+            return imported
+        except Exception as exc:
+            _GLAVAPU_HEADLESS["fallbacks"] += 1
+            # Первая строка сообщения Playwright называет виновника прямо:
+            # «<div id="react-joyride-portal"> intercepts pointer events» —
+            # без неё причина срыва читалась только из логов контейнера.
+            _reason = str(exc).strip().splitlines()
+            _GLAVAPU_HEADLESS["last_error"] = (
+                f"{datetime.now().isoformat(timespec='seconds')}: {_error_location(exc)}"
+                + (f" — {_reason[0][:200]}" if _reason else ""))
+            _glavapu_headless_failed()
+            logging.warning("glavapu headless failed, falling back for %ds: %s",
+                            int(_GLAVAPU_HEADLESS_COOLDOWN_SECONDS), exc)
+
+    # Формулы тоже помнятся: пока штатный калькулятор недоступен, повторный
+    # расчёт того же участка не должен снова ходить к ГлавАПУ за территорией.
+    cached_formulas = _glavapu_tep_cached(numbers) if numbers else None
+    if cached_formulas is not None:
+        logging.info("tep-server rid=%s формулы из кэша", req.request_id or "-")
+        return cached_formulas
+
+    # Территория для формул: присланная страницей идёт без сети вовсе. Если её
+    # нет и спросить не у кого — не роняем расчёт, формулы спросят сами.
+    formulas_analysis = None
+    if numbers:
+        try:
+            formulas_analysis = _cadastral_analysis_for(numbers, req.cadastral_analysis)
+        except Exception as exc:
+            logging.info("tep-server: территорию для формул взять не удалось: %s", exc)
+    quick = vri_tep_quick("msk", ", ".join(numbers), analysis=formulas_analysis)
     result = parse_glavapu_xlsx(quick["file"], quick["filename"])
     result["source"].update({
         "format": "Формулы калькулятора ГлавАПУ — серверный расчёт DevelopAid",
         "cadastral_numbers": numbers,
         "calculated_at": date.today().isoformat(),
     })
+    headless_state = _glavapu_headless_state()
+    result["source"]["headless"] = headless_state
     result["warnings"].insert(
         0,
-        "ТЭП посчитан серверными формулами ГлавАПУ: браузерный калькулятор "
-        "недоступен. Формулы сняты с его кода и сходятся с контрольными "
-        "выгрузками до единицы.",
+        "ТЭП посчитан серверными формулами ГлавАПУ: штатный калькулятор "
+        f"недоступен ({headless_state['state']}, {headless_state['where']}). "
+        + str(headless_state.get("hint") or "")
+        + " Формулы сняты с его кода и сходятся с контрольными выгрузками до "
+        "единицы, но методику город меняет — расчёт штатного калькулятора имеет "
+        "приоритет."
+        + (f" Последняя ошибка запуска: {_GLAVAPU_HEADLESS['last_error']}."
+           if _GLAVAPU_HEADLESS.get("last_error") else ""),
     )
     if _GLAVAPU_FORMULA_DRIFT["items"]:
         result["warnings"].insert(
@@ -4736,6 +5524,10 @@ def cadastral_tep_server(req: CadastralAnalysisRequest) -> dict[str, Any]:
             "(" + "; ".join(_GLAVAPU_FORMULA_DRIFT["items"][:4]) + "). "
             "Методика ГлавАПУ могла измениться — сверьте расчёт на сайте.",
         )
+    if numbers:
+        _glavapu_tep_store(numbers, result, is_fallback=True)
+    logging.info("tep-server rid=%s формулы за %.1f с", req.request_id or "-",
+                 time.monotonic() - request_started)
     return result
 
 
@@ -4779,7 +5571,7 @@ def import_cadastral_tep(req: CadastralTepRequest) -> dict[str, Any]:
         "calculated_at": date.today().isoformat(),
         "calculator_url": analysis.get("calculator_url") or "https://genplan.tech/calc/",
     })
-    result["warnings"].insert(
+    result.setdefault("notes", []).insert(
         0,
         "Показатели автоматически считаны из готовой таблицы genplan.tech.",
     )
@@ -4787,24 +5579,15 @@ def import_cadastral_tep(req: CadastralTepRequest) -> dict[str, Any]:
     # формул: разошлись — значит, ГлавАПУ поменял методику, и путь Telegram
     # начал бы врать. Ошибка, ушедшая только в лог, — ошибка, которой нет,
     # поэтому расхождение кричит здесь, в /status и в серверных ответах.
-    try:
-        drift = _glavapu_formula_drift(table_rows, [str(n) for n in numbers])
-    except Exception:
-        drift = []
-    if drift:
-        _GLAVAPU_FORMULA_DRIFT.update(
-            items=drift, found_at=datetime.now(timezone.utc).isoformat(),
-            numbers=[str(n) for n in numbers])
-        _TELEGRAM_RUNTIME["last_error"] = "Дрейф формул ГлавАПУ: " + "; ".join(drift[:4])
+    _glavapu_drift_in_background(table_rows, [str(n) for n in numbers])
+    if _GLAVAPU_FORMULA_DRIFT.get("items"):
         result["warnings"].insert(
             0,
             "ВНИМАНИЕ: серверные формулы DevelopAid разошлись со штатным "
-            "калькулятором (" + "; ".join(drift[:4]) + "). Методика ГлавАПУ "
-            "могла измениться — расчёты Telegram и кнопки бота требуют сверки.",
+            "калькулятором (" + "; ".join(_GLAVAPU_FORMULA_DRIFT["items"][:4]) + "). "
+            "Методика ГлавАПУ могла измениться — расчёты Telegram и кнопки бота "
+            "требуют сверки.",
         )
-    elif _GLAVAPU_FORMULA_DRIFT["items"]:
-        # Формулы снова сходятся — снять флаг, чтобы Telegram не пугал зря.
-        _GLAVAPU_FORMULA_DRIFT.update(items=[], found_at="", numbers=[])
     return result
 
 
@@ -5506,6 +6289,27 @@ def _telegram_handle_dialog_text(chat_id: int, text: str) -> bool:
     return False
 
 
+def _telegram_calc_menu(chat_id: int) -> None:
+    """Второй уровень «Расчёта модели»: четыре способа взять ТЭП.
+
+    В плоском списке команд они стояли четырьмя похожими строками, и выбирать
+    приходилось между функциями, которые на вид не отличались. Расчёт при этом
+    один и тот же — разное только то, откуда берутся исходные данные, и здесь
+    это видно.
+    """
+    _telegram_send_message(
+        chat_id,
+        "<b>Расчёт модели</b>\n"
+        "Откуда взять ТЭП проекта?",
+        reply_markup={"inline_keyboard": [
+            [{"text": "Свои вводные, без кадастра", "callback_data": "flow_cad_no"}],
+            [{"text": "По адресу участка", "callback_data": "flow_address"}],
+            [{"text": "По кадастровому номеру", "callback_data": "flow_cad_yes"}],
+            [{"text": "Скачать Excel-шаблон ТЭП", "callback_data": "tep_template"}],
+        ]},
+    )
+
+
 def _telegram_start_message(chat_id: int, user_id: int) -> None:
     if not _telegram_user_allowed(user_id):
         _telegram_send_message(
@@ -5570,6 +6374,15 @@ def _telegram_handle_glavapu_document(chat_id: int, data: bytes, filename: str) 
     except Exception:
         return False
     normalized = parsed.get("normalized") or {}
+    # Разбор не отказывается от чужой книги: он ищет свои подписи, ничего не
+    # находит и возвращает набор из одних None. Дальше файл шёл как «распознан»,
+    # и человек получал сводку из нулей — «территория 0,0000 га, квартиры 0 м²»
+    # — вместо ответа, что это не тот формат. Считаем по числам: из 61 ключа
+    # непустым в чужом файле остаётся один, и тот не вычитан, а подставлен
+    # разбором по умолчанию (suggested_social_mode).
+    if not any(isinstance(value, (int, float)) and not isinstance(value, bool) and value
+               for value in normalized.values()):
+        return False
     mappings = parsed.get("mappings") or {}
     session = {
         "project_name": "",
@@ -6172,6 +6985,9 @@ def _telegram_handle_message(message: dict[str, Any]) -> None:
     if command == "/template":
         _telegram_send_template(chat_id)
         return
+    if command == "/calc":
+        _telegram_calc_menu(chat_id)
+        return
     if command == "/cadastre":
         _telegram_dialog_callback(chat_id, user_id, "flow_cad_yes")
         return
@@ -6331,6 +7147,32 @@ def telegram_status() -> dict[str, Any]:
         "allowed_users_count": len(allowed),
         "configured_at": _TELEGRAM_RUNTIME.get("configured_at") or "",
         "last_error": _TELEGRAM_RUNTIME.get("last_error") or "",
+        # Кто считает ТЭП: настоящий калькулятор или наш пересказ методики.
+        # Без этого «бот опять посчитал не то» проверяется только скриншотами.
+        "glavapu_headless": {
+            "enabled": _GLAVAPU_HEADLESS_ENABLED,
+            "runs": _GLAVAPU_HEADLESS.get("runs", 0),
+            "fallbacks": _GLAVAPU_HEADLESS.get("fallbacks", 0),
+            # Сколько раз расчёт не дождался свободного браузера: если растёт,
+            # машине мало памяти под параллельные запуски.
+            "queue_timeouts": _GLAVAPU_HEADLESS.get("waits", 0),
+            "parallel_slots": _GLAVAPU_HEADLESS_SLOTS,
+            # Секунды расчёта по шагам: «считает минуту» — это диагноз, а не
+            # жалоба, только когда видно, какой шаг эту минуту берёт.
+            "last_ms": dict(_GLAVAPU_HEADLESS.get("last_ms") or {}),
+            # Повторный расчёт того же участка обязан быть мгновенным: если
+            # попаданий нет, значит браузер поднимается там, где не должен.
+            "cache_hits": _GLAVAPU_TEP_CACHE_HITS["hits"],
+            "cache_size": len(_GLAVAPU_TEP_CACHE),
+            # Пока предохранитель взведён, расчёт идёт формулами сразу, а не
+            # после полутора минут ожидания. Причина — в last_error.
+            "blocked_for_seconds": max(0, int(_GLAVAPU_HEADLESS_BLOCKED_UNTIL["at"]
+                                              - time.monotonic())),
+            "browser_warm": bool(_GLAVAPU_BROWSER_THREAD
+                                 and _GLAVAPU_BROWSER_THREAD.is_alive()),
+            "last_ok": _GLAVAPU_HEADLESS.get("last_ok", ""),
+            "last_error": _GLAVAPU_HEADLESS.get("last_error", ""),
+        },
         "version": VERSION,
     }
 
@@ -6339,14 +7181,21 @@ def _telegram_process_update(update: dict[str, Any]) -> None:
     try:
         _telegram_handle_update(update)
     except Exception as exc:
-        _TELEGRAM_RUNTIME["last_error"] = str(exc)
+        # Причина доносится в чат вместе с местом: «попробуйте через минуту»
+        # не лечит ничего, если через минуту сломается то же самое, а логи
+        # хостинга недоступны. Здесь это работало наоборот всех прочих веток —
+        # верхний перехват оставлял себе всё, что до него долетело.
+        where = _error_location(exc)
+        _TELEGRAM_RUNTIME["last_error"] = where
         message = update.get("message") if isinstance(update, dict) else None
         chat_id = ((message or {}).get("chat") or {}).get("id") if isinstance(message, dict) else None
         if chat_id:
             try:
                 _telegram_send_message(
                     int(chat_id),
-                    "<b>Не удалось завершить запрос.</b> Попробуйте ещё раз через минуту.",
+                    "<b>Не удалось завершить запрос.</b>\n"
+                    f"<i>{html.escape(where[:300])}</i>\n\n"
+                    "Если повторится — пришлите эту строку: в ней файл, строка и функция.",
                 )
             except Exception:
                 pass
@@ -6443,6 +7292,29 @@ def _pdf_pct(value: Any) -> str:
         return "—"
 
 
+def _pdf_entry_cost_rows(result: dict[str, Any],
+                         expense_structure: list[dict[str, Any]]) -> list[list[str]]:
+    """Цена входа и плата за ВРИ — из расчёта, а не из формы.
+
+    Форма не знает ни о льготе, ни о доле очереди. При стопроцентной льготе
+    отчёт печатал полную плату за смену ВРИ как расход, которого в модели нет:
+    ключевая экономика не сходилась с собственной структурой расходов ниже, и
+    оба числа выглядели достоверно.
+    """
+    purchase = 0.0
+    for group in expense_structure or []:
+        if str(group.get("label")) == "Цена приобретения":
+            purchase = float(group.get("value") or 0)
+            break
+    paid = float((result.get("capex") or {}).get("land_rights") or 0)
+    relief = float(((result.get("vri") or {}).get("totals") or {}).get("relief") or 0)
+    return [
+        ["Цена приобретения", _pdf_money(purchase)],
+        ["Смена ВРИ / земельные права",
+         _pdf_money(paid) + (f" (льгота {_pdf_money(relief)})" if relief > 0 else "")],
+    ]
+
+
 def _purchase_feasibility(
     purchase_price_mln: Any,
     net_profit_mln: Any,
@@ -6506,6 +7378,51 @@ def _purchase_feasibility(
         "title": "Предварительно целесообразна",
         "text": "При текущей цене покупки проект формирует положительную чистую прибыль; долговое финансирование не создаёт ограничений по LLCR.",
     }
+
+
+class _PdfSection:
+    """Метка секции в потоке отчёта.
+
+    Разделы собирались в том порядке, в каком их удобно было считать, и отчёт
+    читался не как разбор проекта, а как история правок: удельные расходы
+    стройки стояли на первой странице до ТЭП, вводные — после выводов и
+    чувствительности, а графики продаж жили в блоке финансирования. Порядок
+    вычислений менять нельзя (одно опирается на другое), поэтому разделы
+    помечаются здесь, а собираются в читаемом порядке при сборке документа.
+    """
+
+    __slots__ = ("name",)
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+
+def _pdf_ordered_story(story: list[Any], order: list[tuple[str, bool]],
+                       page_break: Any) -> list[Any]:
+    """Поток отчёта, пересобранный по секциям.
+
+    До первой метки идёт шапка — она остаётся на месте. Разрыв страницы
+    ставится перед секцией, только если в ней что-то есть: пустая секция не
+    имеет права оставлять за собой пустую страницу.
+    """
+    head: list[Any] = []
+    sections: dict[str, list[Any]] = {}
+    current: str | None = None
+    for item in story:
+        if isinstance(item, _PdfSection):
+            current = item.name
+            sections.setdefault(current, [])
+            continue
+        (sections[current] if current is not None else head).append(item)
+    out = list(head)
+    for name, breaks_page in order:
+        block = sections.get(name) or []
+        if not block:
+            continue
+        if breaks_page and out:
+            out.append(page_break())
+        out.extend(block)
+    return out
 
 
 def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
@@ -6738,10 +7655,12 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
             ))
         return drawing
 
-    def sales_bar_chart(rows: list[dict[str, Any]], height: float = 108) -> Drawing | None:
+    def sales_bar_chart(rows: list[dict[str, Any]], height: float = 108,
+                        key: str = "sales", factor: float = 1 / 1_000_000_000,
+                        unit_label: str = "млрд ₽/мес.", digits: int = 1) -> Drawing | None:
         if not rows:
             return None
-        values = [max(0.0, float(row.get("sales", 0.0) or 0.0) / 1_000_000_000) for row in rows]
+        values = [max(0.0, float(row.get(key, 0.0) or 0.0) * factor) for row in rows]
         maximum = max(values or [0.0])
         if maximum <= 0:
             return None
@@ -6755,7 +7674,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
             y = bottom + plot_h * value / maximum
             drawing.add(Line(left, y, width - right, y, strokeColor=colors.HexColor("#E5E5E5"), strokeWidth=0.5))
             drawing.add(String(
-                left - 5, y - 2, _pdf_num(value, 1), fontName=regular,
+                left - 5, y - 2, _pdf_num(value, digits), fontName=regular,
                 fontSize=6.5, textAnchor="end", fillColor=colors.HexColor("#777777"),
             ))
         slot = plot_w / max(len(rows), 1)
@@ -6769,7 +7688,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
                 fillColor=colors.HexColor("#202020"), strokeColor=None,
             ))
         drawing.add(String(
-            width - right, height - 8, "млрд ₽/мес.", fontName=regular,
+            width - right, height - 8, unit_label, fontName=regular,
             fontSize=6.5, textAnchor="end", fillColor=colors.HexColor("#777777"),
         ))
         for index in sorted(set([0, len(rows) // 2, len(rows) - 1])):
@@ -6917,10 +7836,18 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
                  f"{_calculation_fingerprint(inputs, payload.get('tep'), payload.get('phasing'))}"
                  f" · DevelopAid {VERSION}"])
     if cads: meta.append(["Кадастровые номера",", ".join(str(x) for x in cads)])
-    story += [Spacer(1,4*mm),table(meta,[45*mm,125*mm],header=False),Spacer(1,5*mm),P("Ключевая экономика",h2)]
+    parity_problems = [str(item) for item in (payload.get("parity_problems") or [])]
+    story += [Spacer(1,4*mm),table(meta,[45*mm,125*mm],header=False),Spacer(1,5*mm)]
+    if parity_problems:
+        story.append(P(
+            "<b>Расчёт в окне разошёлся с расчётом на сервере.</b> В отчёт взяты "
+            "числа сервера: " + "; ".join(parity_problems[:4])
+            + ". Чаще всего это старая страница в браузере — обновите её.",
+            ParagraphStyle("parity", parent=small, fontSize=8.0,
+                           textColor=colors.HexColor("#A35D00"))))
+    story.append(_PdfSection("summary"));story.append(P("Ключевая экономика",h2))
     kpis=[
-        ["Цена приобретения",_pdf_money(float(inputs.get('purchase_price_mln') or 0)*1_000_000)],
-        ["Смена ВРИ / земельные права",_pdf_money(float(inputs.get('land_rights_cost_mln') or 0)*1_000_000)],
+        *_pdf_entry_cost_rows(result, expense_structure),
         ["Выручка",_pdf_money(summary.get('revenue'))],["Расходы всего",_pdf_money(summary.get('total_expenses'))],["EBITDA",_pdf_money(summary.get('ebitda'))],["Чистая прибыль",_pdf_money(summary.get('net_profit'))],["Маржинальность",_pdf_pct(summary.get('margin'))],["LLCR",_pdf_num(summary.get('llcr'),2)+"x"],["Расчётный БРИДЖ",_pdf_money(financing.get('calculated_bridge'))],["Фактический пик БРИДЖ",_pdf_money(financing.get('actual_bridge'))],["Пиковая (непокрытая эскроу) задолженность ПФ",_pdf_money(financing.get('pf_uncovered_peak'))],["Проценты и комиссии",_pdf_money(financing.get('interest_and_fees'))],
     ]
     # Остаток ПФ на конец проекта — это несостоявшееся погашение, а не деталь
@@ -6929,33 +7856,76 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     if _ending_pf>500_000:
         kpis.append(["Непогашенный долг ПФ на конец проекта",_pdf_money(_ending_pf)])
     story.append(table([["Показатель","Значение"]]+kpis,[112*mm,58*mm]))
-    # Удельные расходы стройки — на первой странице, рядом с ключевой
-    # экономикой: по ним читается себестоимость, и именно их просили видеть
-    # в отчёте, не раскапывая структуру расходов по группам.
+    story.append(_PdfSection("vri"))
+    # Основание платы за ВРИ — тремя множителями формулы ГлавАПУ. Расхождение
+    # платы между двумя расчётами одного участка всегда сидит в одном из них
+    # (чаще в базовой стоимости — город индексирует её поквартально), и без
+    # расшифровки его приходилось искать перепиской со скриншотами.
+    _vri_src = (inputs.get("_glavapu_import") or {}).get("normalized") or {}
+    _vri_spp = float(_vri_src.get("spp_total_sqm") or 0)
+    _vri_rent = _vri_src.get("rent_coefficient")
+    _vri_base = _vri_src.get("vri_base_cost_rub")
+    if _vri_spp > 0 and _vri_rent and _vri_base:
+        story.append(P(
+            f"Плата за смену ВРИ — по формуле ГлавАПУ: СПП {_pdf_num(_vri_spp, 0)} м²"
+            f" × коэффициент аренды {_pdf_num(_vri_rent, 4)}"
+            f" × базовая стоимость {_pdf_num(_vri_base, 0)} ₽/м² × 1,8964."
+            " Базовую стоимость город индексирует поквартально — расчёты разных"
+            " дат по одному участку могут отличаться на величину индексации.",
+            small))
+    story.append(_PdfSection("summary"))
+    # Удельная экономика проекта была только в книге и на странице, а в отчёте
+    # её не было вовсе: решение принимают по рублю на метр, а не по миллиардам.
+    # Обе базы обязаны стоять рядом — на ГНС считают стройку, на продаваемую
+    # сравнивают с ценой продажи, и подмена одной другой ошибается вдвое.
+    unit_economics = report.get("unit_economics") or []
+    if unit_economics:
+        ue_rows = [["Показатель", "Всего", "тыс ₽/м² ГНС", "тыс ₽/м² продаваемой"]]
+        for item in unit_economics:
+            ue_rows.append([
+                str(item.get("label") or "—"),
+                _pdf_money(item.get("total")),
+                _pdf_num(item.get("per_gns_th"), 1),
+                _pdf_num(item.get("per_saleable_th"), 1),
+            ])
+        story.append(KeepTogether([
+            P("Удельная экономика проекта", h2),
+            table(ue_rows, [62*mm, 40*mm, 34*mm, 34*mm], font_size=7.6),
+            P(f"База ГНС — {_pdf_num(summary.get('project_gns_sqm'), 0)} м² всего проекта; "
+              f"база продаваемой — {_pdf_num(summary.get('monetizable_saleable_sqm'), 0)} м² "
+              "монетизируемой площади (паркинг и кладовые продаются штуками и в неё "
+              "не входят).", small),
+        ]))
+    story.append(_PdfSection("expenses_detail"))
+    # Удельные расходы стройки — детализация структуры расходов, а не свод:
+    # по ним читается себестоимость, но читать её раньше ТЭП бессмысленно.
     construction_costs = report.get("construction_costs") or []
     if construction_costs:
         # «ГНС проекта» в заголовке обязателен: без него 23 тыс ₽/м² подземной
         # части читались как ставка на подземный метр (она — 190, во вводных).
-        cc_rows = [["Статья", "млн ₽", "тыс ₽/м² ГНС проекта"]]
+        cc_rows = [["Статья", "млн ₽", "тыс ₽/м² ГНС проекта", "тыс ₽/м² продаваемой"]]
         for item in construction_costs:
             cc_rows.append([
                 str(item.get("label") or "—"),
                 _pdf_num(float(item.get("value") or 0) / 1e6, 1),
                 _pdf_num(item.get("per_gns_th"), 2),
+                _pdf_num(item.get("per_saleable_th"), 2),
             ])
         cc_total = sum(float(item.get("value") or 0) for item in construction_costs)
         cc_gns = float(summary.get("project_gns_sqm") or 0)
+        cc_saleable = float(summary.get("monetizable_saleable_sqm") or 0)
         cc_rows.append([
             "Итого строительство",
             _pdf_num(cc_total / 1e6, 1),
             _pdf_num(cc_total / cc_gns / 1000 if cc_gns else 0, 2),
+            _pdf_num(cc_total / cc_saleable / 1000 if cc_saleable else 0, 2),
         ])
         story.append(KeepTogether([
             P("Удельные расходы строительства", h2),
-            table(cc_rows, [100*mm, 35*mm, 35*mm], font_size=7.6),
-            P("Удельные значения — на м² ГНС всего проекта. Внутренние инженерные "
-              "сети входят в СМР соответствующей части.", small),
+            table(cc_rows, [70*mm, 30*mm, 35*mm, 35*mm], font_size=7.6),
+            P("Внутренние инженерные сети входят в СМР соответствующей части.", small),
         ]))
+    story.append(_PdfSection("summary"))
     purchase_assessment = _purchase_feasibility(
         inputs.get("purchase_price_mln"),
         float(summary.get("net_profit") or 0) / 1_000_000,
@@ -6972,7 +7942,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
             ["Основание", purchase_assessment["text"]],
         ], [45*mm, 125*mm], header=False, font_size=8.0),
     ]))
-    story.append(P("ТЭП",h2))
+    story.append(_PdfSection("tep"));story.append(P("ТЭП",h2))
     tep_rows=[["Продукт","ГНС, м²","Продаваемая, м²","Кол-во"]]
     for row in tep_report.get('rows') or []:
         if not any(float(row.get(k) or 0) for k in ('gns','saleable','units')): continue
@@ -6986,7 +7956,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     # а из чего они сложились, увидеть было негде.
     comparison = result.get("comparison") or []
     if len(comparison) > 1:
-        story.append(PageBreak());story.append(P("Очереди проекта",h2))
+        story.append(_PdfSection("phases"));story.append(P("Очереди проекта",h2))
         phase_cfg = {str(item.get("name") or ""): item for item in
                      ((payload.get("phasing") or {}).get("phases") or [])}
         params=[["Очередь","Сдвиг старта, мес.","Строительство, мес.","Инфляция затрат","Индексация цены"]]
@@ -7044,7 +8014,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
             value=sum(float(i.get("apartment_price_th") or 0)
                       *float(i.get("apartment_saleable_sqm") or 0) for i in comparison)
             return _pdf_num(value/area,1) if area else "—"
-        units=[["Очередь","Выручка на м² прод.","в т.ч. квартиры","Выручка на м² ГНС","Расходы на м² прод.","Расходы на м² ГНС","Прибыль на м² прод."]]
+        units=[["Очередь","Выручка на м² прод.","в т.ч. квартиры","Выручка на м² ГНС","Расходы на м² прод.","Расходы на м² ГНС","Прибыль на м² прод.","Прибыль на м² ГНС"]]
         for item in comparison:
             units.append([
                 str(item.get("name") or "—"),
@@ -7053,13 +8023,14 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
                 _pdf_num(item.get("revenue_per_gns_th"),1),
                 _pdf_num(item.get("expenses_per_saleable_th"),1),_pdf_num(item.get("expenses_per_gns_th"),1),
                 _pdf_num(item.get("net_profit_per_saleable_th"),1),
+                _pdf_num(item.get("net_profit_per_gns_th"),1),
             ])
         units.append([
             "Итого",ratio("revenue","saleable_sqm"),apartments_total(),ratio("revenue","gns_sqm"),
             ratio("total_expenses","saleable_sqm"),ratio("total_expenses","gns_sqm"),
-            ratio("net_profit","saleable_sqm"),
+            ratio("net_profit","saleable_sqm"),ratio("net_profit","gns_sqm"),
         ])
-        story.append(table(units,[20*mm,26*mm,24*mm,25*mm,26*mm,25*mm,24*mm],font_size=6.8))
+        story.append(table(units,[18*mm,23*mm,21*mm,22*mm,23*mm,22*mm,21*mm,20*mm],font_size=6.6))
         story.append(P("Значения удельных показателей — в тыс. ₽ за м². «Выручка на м² прод.» включает штучные продукты (паркинг, кладовые); «в т.ч. квартиры» — только квартиры на м² их продаваемой площади, эта же строка есть в Excel-книге. Итоговая строка считается как отношение сумм, а не как среднее по очередям.",small))
 
     # Раздел появляется только если чувствительность считали на вкладке.
@@ -7070,7 +8041,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         base = sensitivity.get("base") or {}
         digits = int(base.get("digits") or 2)
         rows = list(sensitivity["items"])[:14]
-        story.append(PageBreak())
+        story.append(_PdfSection("sensitivity"))
         story.append(P("Чувствительность проекта",h2))
         story.append(P(
             f"Показатель: {base.get('label') or ''} · база "
@@ -7094,30 +8065,68 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         for line in (sensitivity.get("verdict") or []):
             story.append(P(str(line), small))
 
-    story.append(PageBreak());story.append(P("Цены и основные предпосылки",h2))
+    story.append(_PdfSection("premises"));story.append(P("Цены и основные предпосылки",h2))
     premise_rows=[["Параметр","Значение"],["Стартовая цена квартир",_pdf_num(inputs.get('apartment_price_th'),0)+" тыс. ₽/м²"],["Стартовая цена коммерции",_pdf_num(inputs.get('commercial_price_th'),0)+" тыс. ₽/м²"],["Цена подземного машино-места",_pdf_num(inputs.get('parking_price_th'),0)+" тыс. ₽/шт."],["СМР наземной части",_pdf_num(inputs.get('main_above_th_per_sqm'),0)+" тыс. ₽/м² ГНС"],["СМР подземной части",_pdf_num(inputs.get('main_under_th_per_sqm'),0)+" тыс. ₽/м² ГНС"],["Наружные инженерные сети",_pdf_num(inputs.get('utilities_th_per_sqm'),1)+" тыс. ₽/м² ГНС"],["Доля продаж до РВЭ",_pdf_num(inputs.get('share_before_rve_pct'),1)+"%"],["Налог на прибыль",_pdf_num(inputs.get('profit_tax_pct'),1)+"%"]]
     story.append(table(premise_rows,[105*mm,65*mm]))
-    story.append(P("Структура расходов",h2))
+    story.append(_PdfSection("expenses"));story.append(P("Структура расходов",h2))
     expense_chart=expense_bar_chart(expense_structure)
     if expense_chart:
         story.extend([expense_chart,Spacer(1,2*mm)])
-    expense_rows=[["Статья","Сумма","Доля"]]
+    # Рубль на метр — в обеих базах, как во всех удельных отчёта: именно по
+    # этим статьям спорят с подрядчиком и с банком, а в долях процента спор
+    # не ведут.
+    expense_rows=[["Статья","Сумма","Доля","тыс ₽/м² ГНС","тыс ₽/м² продаваемой"]]
     total_expense=sum(float(item.get('value') or 0) for item in expense_structure) or float(summary.get('total_expenses') or 0)
+    _exp_gns=float(summary.get('project_gns_sqm') or 0)
+    _exp_saleable=float(summary.get('monetizable_saleable_sqm') or 0)
     for item in expense_structure:
         value=float(item.get('value') or 0)
         if value<=0: continue
-        expense_rows.append([item.get('label') or '—',_pdf_money(value),(_pdf_num(value/total_expense*100,1)+'%') if total_expense else '—'])
-    story.append(table(expense_rows,[98*mm,45*mm,27*mm]))
-    story.append(P("Продажи и продукты",h2))
-    product_rows=[["Продукт","Объём","Стартовая цена","Средняя цена","Выручка"]]
+        # Удельные берутся из расчёта, без запасного счёта на месте. Запасной
+        # счёт здесь уже стоил дорого: свод по очередям приходил без удельных,
+        # печать досчитывала их сама и выглядела безупречно, а страница
+        # показывала нули во всех строках. Одна поверхность прикрывала ошибку
+        # другой, и найти её удалось только глазами.
+        expense_rows.append([item.get('label') or '—',_pdf_money(value),
+                             (_pdf_num(value/total_expense*100,1)+'%') if total_expense else '—',
+                             _pdf_num(item.get('per_gns_th') or 0,1),
+                             _pdf_num(item.get('per_saleable_th') or 0,1)])
+    expense_rows.append(["Итого расходы",_pdf_money(total_expense),"100,0%" if total_expense else "—",
+                         _pdf_num(total_expense/_exp_gns/1000 if _exp_gns else 0,1),
+                         _pdf_num(total_expense/_exp_saleable/1000 if _exp_saleable else 0,1)])
+    story.append(table(expense_rows,[62*mm,32*mm,20*mm,28*mm,28*mm],font_size=7.4))
+    story.append(_PdfSection("income"));story.append(P("Продажи и продукты",h2))
+    product_rows=[["Продукт","Объём","Темп до РВЭ","Стартовая цена","Средняя цена","Выручка"]]
     for item in products:
         quantity=float(item.get('quantity') or 0);revenue=float(item.get('revenue') or 0)
         if quantity<=0 and revenue<=0: continue
         unit=item.get('unit') or ''
-        product_rows.append([item.get('label') or '—',_pdf_num(quantity,0)+(' '+unit if unit else ''),_pdf_num(item.get('start_price_th'),0)+" тыс. ₽",_pdf_num(item.get('avg_price_th'),0)+" тыс. ₽",_pdf_money(revenue)])
-    story.append(table(product_rows,[55*mm,28*mm,30*mm,30*mm,32*mm],font_size=7.4))
-    story.append(PageBreak());story.append(P("Финансирование и динамика проекта",h2))
-    finance_rows=[["Показатель","Значение"],["Расчётный БРИДЖ",_pdf_money(financing.get('calculated_bridge'))],["Пиковый фактический БРИДЖ (тело долга)",_pdf_money(financing.get('actual_bridge'))],["Пик БРИДЖ с капитализацией процентов (справочно)",_pdf_money(financing.get('bridge_peak_capitalized') or financing.get('actual_bridge'))],["Пиковая (непокрытая эскроу) задолженность ПФ",_pdf_money(financing.get('pf_uncovered_peak'))],["Лимит ПФ",_pdf_money(financing.get('pf_limit'))],["Текущая ключевая ставка",_pdf_pct(financing.get('current_key_rate'))],["Спред БРИДЖ",_pdf_pct(financing.get('bridge_spread'))],["Ставка БРИДЖ на текущей ключевой",_pdf_pct(financing.get('current_bridge_rate'))],["Средняя ключевая за период БРИДЖ",_pdf_pct(financing.get('avg_bridge_key_rate'))],["Средневзвешенная ставка БРИДЖ за период",_pdf_pct(financing.get('avg_bridge_rate'))],["Средняя фактическая ставка ПФ",_pdf_pct(financing.get('avg_pf_effective_rate'))],["Проценты и комиссии",_pdf_money(financing.get('interest_and_fees'))],["Непогашенный долг ПФ на конец проекта",_pdf_money(financing.get('ending_pf'))],["LLCR",_pdf_num(summary.get('llcr'),2)+"x"]]
+        pace=item.get('pace_pre')
+        product_rows.append([item.get('label') or '—',_pdf_num(quantity,0)+(' '+unit if unit else ''),
+                             (_pdf_num(pace,0)+' '+unit+'/мес') if pace else '—',
+                             _pdf_num(item.get('start_price_th'),0)+" тыс. ₽",_pdf_num(item.get('avg_price_th'),0)+" тыс. ₽",_pdf_money(revenue)])
+    story.append(table(product_rows,[45*mm,26*mm,28*mm,26*mm,26*mm,29*mm],font_size=7.4))
+    # Квартиры продаются штуками. «40 квартир в месяц» проверяется отделом
+    # продаж и рынком, «2 400 м² в месяц» — нет, а в отчёте был только метр.
+    apartment_sales = report.get("apartment_sales") or {}
+    if float(apartment_sales.get("units_total") or 0) > 0:
+        story.append(KeepTogether([
+            P("Темп продаж квартир", h2),
+            table([
+                ["Показатель", "Значение"],
+                ["Квартир в проекте", _pdf_num(apartment_sales.get("units_total"), 0) + " шт."],
+                ["Средняя площадь квартиры", _pdf_num(apartment_sales.get("avg_unit_sqm"), 1) + " м²"],
+                ["Средняя цена квартиры", _pdf_money(float(apartment_sales.get("avg_unit_price_mln") or 0) * 1e6)],
+                ["Темп до РВЭ", _pdf_num(apartment_sales.get("pace_pre_rve_units"), 1) + " кв./мес."],
+                ["Средний темп за весь период продаж", _pdf_num(apartment_sales.get("pace_units"), 1) + " кв./мес."],
+                ["Пиковый месяц", _pdf_num(apartment_sales.get("peak_units"), 1) + " кв."],
+                ["Длительность продаж", _pdf_num(apartment_sales.get("months"), 0) + " мес."],
+            ], [112*mm, 58*mm], font_size=7.6),
+            P("Штуки пересчитаны из помесячных продаж по средней площади квартиры "
+              "из ТЭП: изменится нарезка — изменится и темп.", small),
+        ]))
+    story.append(_PdfSection("financing"));story.append(P("Финансирование и динамика проекта",h2))
+    finance_rows=[["Показатель","Значение"],["Расчётный БРИДЖ",_pdf_money(financing.get('calculated_bridge'))],["Пиковый фактический БРИДЖ (тело долга)",_pdf_money(financing.get('actual_bridge'))],["Собственные средства до ПФ",_pdf_money(financing.get('own_funds'))],["Пик БРИДЖ с капитализацией процентов (справочно)",_pdf_money(financing.get('bridge_peak_capitalized') or financing.get('actual_bridge'))],["Пиковая (непокрытая эскроу) задолженность ПФ",_pdf_money(financing.get('pf_uncovered_peak'))],["Лимит ПФ",_pdf_money(financing.get('pf_limit'))],["Текущая ключевая ставка",_pdf_pct(financing.get('current_key_rate'))],["Спред БРИДЖ",_pdf_pct(financing.get('bridge_spread'))],["Ставка БРИДЖ на текущей ключевой",_pdf_pct(financing.get('current_bridge_rate'))],["Средняя ключевая за период БРИДЖ",_pdf_pct(financing.get('avg_bridge_key_rate'))],["Средневзвешенная ставка БРИДЖ за период",_pdf_pct(financing.get('avg_bridge_rate'))],["Средняя фактическая ставка ПФ",_pdf_pct(financing.get('avg_pf_effective_rate'))],["Проценты и комиссии",_pdf_money(financing.get('interest_and_fees'))],["Непогашенный долг ПФ на конец проекта",_pdf_money(financing.get('ending_pf'))],["LLCR",_pdf_num(summary.get('llcr'),2)+"x"]]
     story.append(table(finance_rows,[112*mm,58*mm],font_size=7.6))
 
     # Restore the bridge-purpose disclosure that exists in the web report.
@@ -7156,6 +8165,31 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         table(bridge_rows, [98*mm, 45*mm, 27*mm], font_size=8.0),
     ]))
 
+    # Фактический пик — по статьям, оплаченным к его месяцу. Без этой таблицы
+    # разница между лимитом методики и реальной потребностью («остальное
+    # вашими») читалась только глазами по структуре расходов.
+    actual_structure = list(financing.get("actual_bridge_structure") or [])
+    if actual_structure:
+        actual_peak = float(financing.get("actual_bridge") or 0)
+        actual_rows = [["Статья", "Оплачено к пику", "Доля"]]
+        for item in actual_structure:
+            value = float(item.get("value") or 0)
+            actual_rows.append([
+                str(item.get("label") or "—"), _pdf_money(value),
+                _pdf_num(float(item.get("share") or 0) * 100, 1) + "%",
+            ])
+        actual_rows.append(["ПИК БРИДЖА", _pdf_money(actual_peak),
+                            "100,0%" if actual_peak else "—"])
+        month = str(financing.get("actual_bridge_month") or "")
+        story.append(KeepTogether([
+            P("Структура фактического БРИДЖА"
+              + (f" · {'.'.join(reversed(month.split('-')))}" if month else ""), h2),
+            table(actual_rows, [98*mm, 45*mm, 27*mm], font_size=8.0),
+            P("Оплачено к месяцу пика. До открытия ПФ у проекта нет ни выручки, ни ПФ, "
+              "поэтому остаток БРИДЖа равен оплаченному; разница с расчётным лимитом — "
+              "расходы, под которые лимит не даётся.", small),
+        ]))
+
     timeline_rows=list((result.get("finance") or {}).get("rows") or [])
     debt_chart=line_chart(
         timeline_rows,
@@ -7183,10 +8217,20 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     if rate_chart:
         story.append(KeepTogether([P("Ставки финансирования",h2),rate_chart]))
 
+    story.append(_PdfSection("income"))
     pace_chart=sales_bar_chart(timeline_rows,height=104)
     if pace_chart:
         story.append(KeepTogether([P("Месячный темп продаж",h2),pace_chart]))
 
+    # Тот же темп в штуках квартир: денежный график прячет и рост цены, и
+    # изменение нарезки — по нему не видно, сколько квартир уходит в месяц.
+    apartment_pace_rows = (report.get("apartment_sales") or {}).get("rows") or []
+    units_chart=sales_bar_chart(apartment_pace_rows,height=104,key="units",
+                                factor=1.0,unit_label="квартир/мес.",digits=0)
+    if units_chart:
+        story.append(KeepTogether([P("Месячный темп продаж квартир, шт.",h2),units_chart]))
+
+    story.append(_PdfSection("calendar"))
     events=calendar_data.get('events') or []
     if events:
         gantt_pages=gantt_drawings(events)
@@ -7196,10 +8240,21 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
             story.append(gantt)
         story.append(Spacer(1,2*mm))
         story.append(P("Полосы построены по фактическим датам модели; ромбами отмечены ключевые вехи. При включённой очередности этапы каждой очереди показаны отдельными строками.",small))
+    story.append(_PdfSection("footer"))
     story.extend([Spacer(1,4*mm),P("Отчёт сформирован автоматически DevelopAid на основании текущих вводных модели. Перед инвестиционным решением требуется проверка исходных данных, юридических предпосылок и условий кредитования.",small)])
 
     def footer(canvas,doc_obj):
         canvas.saveState();canvas.setFont(regular,7);canvas.setFillColor(colors.HexColor('#777777'));canvas.drawString(14*mm,8*mm,'DevelopAid · Девелоперская инвестиционная модель');canvas.drawRightString(A4[0]-14*mm,8*mm,f'Стр. {doc_obj.page}');canvas.restoreState()
+    # Разбор проекта, а не история правок: что за участок → что на нём выходит
+    # → на чём считали → сколько стоит → сколько приносит → чем финансируется
+    # → чем рискуем → когда.
+    story = _pdf_ordered_story(story, [
+        ("tep", False), ("vri", False), ("summary", False),
+        ("phases", True), ("premises", True),
+        ("expenses", False), ("expenses_detail", False),
+        ("income", True), ("financing", True), ("sensitivity", True),
+        ("calendar", False), ("footer", False),
+    ], PageBreak)
     doc.build(story,onFirstPage=footer,onLaterPages=footer)
     return buf.getvalue()
 
@@ -7461,6 +8516,20 @@ def _model_sheet_revenue(result: dict[str, Any]) -> dict[str, Any]:
                 _cell_num(item.get("per_gns_th")),
                 _cell_num(item.get("per_saleable_th")),
             ])
+    # Темп в штуках — та же цифра, что в отчёте: квартиры продаются штуками,
+    # и отдел продаж считает планы в них, а не в метрах.
+    apartment_sales = report.get("apartment_sales") or {}
+    if float(apartment_sales.get("units_total") or 0) > 0:
+        rows.extend([
+            [], [_cell_text("Темп продаж квартир", _XLSX_STYLE_BOLD)],
+            _header_row(["Показатель", "Значение"]),
+            [_cell_text("Квартир в проекте, шт."), _cell_num(apartment_sales.get("units_total"), _XLSX_STYLE_INT)],
+            [_cell_text("Средняя площадь квартиры, м²"), _cell_num(apartment_sales.get("avg_unit_sqm"))],
+            [_cell_text("Средняя цена квартиры, млн ₽"), _cell_num(apartment_sales.get("avg_unit_price_mln"))],
+            [_cell_text("Темп до РВЭ, кв./мес."), _cell_num(apartment_sales.get("pace_pre_rve_units"))],
+            [_cell_text("Средний темп за период продаж, кв./мес."), _cell_num(apartment_sales.get("pace_units"))],
+            [_cell_text("Пиковый месяц, кв."), _cell_num(apartment_sales.get("peak_units"))],
+        ])
     return {"name": "Выручка", "rows": rows, "widths": [34, 14, 16, 20, 20, 18], "freeze": "A4", "split_y": 3}
 
 
@@ -8015,10 +9084,11 @@ def _model_sheet_phase_comparison(bundle: dict[str, Any]) -> dict[str, Any]:
         "Очередь", "Продаваемая площадь, м²", "Общая площадь ГНС, м²",
         "Выручка, млн ₽",
         "Цена реализации, тыс ₽/м² продаваемой", "Цена реализации, тыс ₽/м² ГНС",
-        "CAPEX, млн ₽", "CAPEX, тыс ₽/м² ГНС",
+        "CAPEX, млн ₽",
+        "CAPEX, тыс ₽/м² продаваемой", "CAPEX, тыс ₽/м² ГНС",
         "Полные расходы, млн ₽",
         "Полные расходы, тыс ₽/м² продаваемой", "Полные расходы, тыс ₽/м² ГНС",
-        "Чистая прибыль, тыс ₽/м² продаваемой",
+        "Чистая прибыль, тыс ₽/м² продаваемой", "Чистая прибыль, тыс ₽/м² ГНС",
         "Общие расходы (касса), млн ₽", "Общие расходы (аллокация), млн ₽",
         "Пик БРИДЖ, млн ₽", "Пик ПФ, млн ₽", "LLCR",
         "Чистая прибыль, млн ₽", "Прибыль с аллокацией, млн ₽", "Маржинальность",
@@ -8044,11 +9114,13 @@ def _model_sheet_phase_comparison(bundle: dict[str, Any]) -> dict[str, Any]:
             _cell_num(item.get("revenue_per_saleable_th")),
             _cell_num(item.get("revenue_per_gns_th")),
             _cell_mln(item.get("capex")),
+            _cell_num(item.get("capex_per_saleable_th")),
             _cell_num(item.get("capex_per_gns_th")),
             _cell_mln(item.get("total_expenses")),
             _cell_num(item.get("expenses_per_saleable_th")),
             _cell_num(item.get("expenses_per_gns_th")),
             _cell_num(item.get("net_profit_per_saleable_th")),
+            _cell_num(item.get("net_profit_per_gns_th")),
             _cell_mln(item.get("cash_shared_cost")),
             _cell_mln(item.get("allocated_shared_cost")),
             _cell_mln(item.get("peak_bridge")),
@@ -8065,20 +9137,35 @@ def _model_sheet_phase_comparison(bundle: dict[str, Any]) -> dict[str, Any]:
     last_data_row = len(rows)
     if comparison:
         total_row: list[_XlsxCell] = [_cell_text("Итого", _XLSX_STYLE_BOLD)]
-        area_columns = {1: "saleable_sqm", 2: "gns_sqm"}
+        # Колонки — по заголовку, а не по номеру: номера разъезжаются каждый
+        # раз, когда в таблицу добавляется показатель, и итоговая строка молча
+        # начинает суммировать чужой столбец. Графики этот урок уже усвоили.
+        area_columns = {
+            header.index("Продаваемая площадь, м²"): "saleable_sqm",
+            header.index("Общая площадь ГНС, м²"): "gns_sqm",
+        }
         money_columns = {
-            3: "revenue", 6: "capex", 8: "total_expenses", 12: "cash_shared_cost",
-            13: "allocated_shared_cost", 17: "net_profit", 18: "allocated_net_profit",
-            20: "social_cost",
+            header.index("Выручка, млн ₽"): "revenue",
+            header.index("CAPEX, млн ₽"): "capex",
+            header.index("Полные расходы, млн ₽"): "total_expenses",
+            header.index("Общие расходы (касса), млн ₽"): "cash_shared_cost",
+            header.index("Общие расходы (аллокация), млн ₽"): "allocated_shared_cost",
+            header.index("Чистая прибыль, млн ₽"): "net_profit",
+            header.index("Прибыль с аллокацией, млн ₽"): "allocated_net_profit",
+            header.index("Социальная нагрузка, млн ₽"): "social_cost",
         }
         # Удельные показатели складывать нельзя: сумма рублей на метр по очередям
         # ничего не значит. В итоге считаем отношение сводных величин — это и есть
         # показатель по проекту целиком.
         ratio_columns = {
-            4: ("revenue", "saleable_sqm"), 5: ("revenue", "gns_sqm"),
-            7: ("capex", "gns_sqm"),
-            9: ("total_expenses", "saleable_sqm"), 10: ("total_expenses", "gns_sqm"),
-            11: ("net_profit", "saleable_sqm"),
+            header.index("Цена реализации, тыс ₽/м² продаваемой"): ("revenue", "saleable_sqm"),
+            header.index("Цена реализации, тыс ₽/м² ГНС"): ("revenue", "gns_sqm"),
+            header.index("CAPEX, тыс ₽/м² продаваемой"): ("capex", "saleable_sqm"),
+            header.index("CAPEX, тыс ₽/м² ГНС"): ("capex", "gns_sqm"),
+            header.index("Полные расходы, тыс ₽/м² продаваемой"): ("total_expenses", "saleable_sqm"),
+            header.index("Полные расходы, тыс ₽/м² ГНС"): ("total_expenses", "gns_sqm"),
+            header.index("Чистая прибыль, тыс ₽/м² продаваемой"): ("net_profit", "saleable_sqm"),
+            header.index("Чистая прибыль, тыс ₽/м² ГНС"): ("net_profit", "gns_sqm"),
         }
 
         def column_total(key: str) -> float:
@@ -8762,6 +9849,12 @@ def build_project_workbook(
     put("B70", number=seasonal, label="seasonal_reduction_pct (май–август)")
     put("B31", text=str(x.get("bridge_interest_mode") or "Капитализация в ПФ"),
         label="bridge_interest_mode")
+    # Форма исполнения соцнагрузки: книге она нужна не для расходов (те
+    # приходят суммой в B17), а для базы комиссии выдачи БРИДЖа. Движок берёт
+    # в расчётный лимит только денежную компенсацию, стройку — нет, а B17
+    # несёт обе, и без признака комиссия считалась и со стройки.
+    put("B37", text=str(x.get("social_mode") or "Строительство"),
+        label="social_mode")
 
     # Социалка строительством: в книге v4 один канал соцнагрузки —
     # компенсация (B17). Без свёртки стоимость строительства садов, школ и
@@ -11891,6 +12984,30 @@ async def report_pdf(request: Request) -> Response:
     payload=await request.json()
     if not isinstance(payload,dict) or not isinstance(payload.get("result"),dict):
         raise HTTPException(status_code=400,detail="Нет данных расчёта для PDF")
+    # Один расчёт на обе поверхности. Правило применили к боту и забыли про
+    # сайт: бот пересчитывал модель на сервере, а здесь отчёт строился по
+    # результату из браузера. Пока вкладка свежая, разницы нет; стоит ей
+    # устареть — сайт печатает своё, бот своё, и оба выглядят достоверно.
+    if isinstance(payload.get("inputs"), dict) and payload.get("tep"):
+        try:
+            from starlette.concurrency import run_in_threadpool
+            bundle = await run_in_threadpool(
+                _run_authoritative_model,
+                payload.get("inputs") or {}, payload.get("tep") or {},
+                payload.get("rates") or [], payload.get("phasing") or {})
+            server_result = bundle["consolidated"]
+            problems = _parity_mismatch(
+                {**server_result, "inputs": payload.get("inputs") or {}},
+                {**(payload.get("result") or {}), "inputs": payload.get("inputs") or {}},
+            )
+            payload = {**payload, "result": server_result}
+            if problems:
+                # В чат тут писать некому — расхождение печатается в самом
+                # отчёте: молча подменить числа нельзя, человек увидит в PDF
+                # не то, что было на экране, и не поймёт почему.
+                payload["parity_problems"] = problems
+        except Exception as exc:
+            logging.warning("report pdf recalculation failed: %s", exc)
     # Торнадо в PDF с сайта: страница шлёт чувствительность, только если её
     # считали в окне, а бот дообогащал отчёт сам — и его PDF выходил «лучше»
     # при тех же вводных. Считает движок; пул потоков — чтобы десятки
@@ -13519,7 +14636,16 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
     if str(x.get("social_mode")) == "Денежная компенсация":
         calculated_bridge_limit += op["capex_amounts"]["social"]
 
+    # Часть первоначального финансирования может идти не из банка: собственные
+    # деньги, заём учредителя, перехваченный чужой долг. Эти средства тратятся
+    # раньше БРИДЖа, процентов не несут и не возвращаются — это вклад, а не
+    # кредит. Прежде модель считала весь разрыв до ПФ банковским, и проект с
+    # собственным входом выглядел дороже, чем он есть.
+    own_funds_total = max(0.0, n(x, "pre_pf_own_funds_mln") * 1_000_000)
+
     def run(pf_limit: float | None) -> dict:
+        own_funds_left = own_funds_total
+        own_funds_used = 0.0
         bridge_balance = 0.0
         bridge_interest_payable = 0.0
         pf_balance = 0.0
@@ -13551,6 +14677,7 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
             special_rate = n(x, "pf_special_pct") / 100
 
             bridge_draw = bridge_repayment = bridge_interest = bridge_cap = 0.0
+            own_draw = 0.0
             pf_draw = pf_repayment = pf_interest = pf_cap = limit_fee = 0.0
             interest_payment = 0.0
             escrow_release = 0.0
@@ -13560,7 +14687,12 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
 
             # BРИДЖ finances project cash needs before RnS.
             if month < permit:
-                bridge_draw = max(project_costs, 0.0)
+                need = max(project_costs, 0.0)
+                # Свои деньги идут первыми: банк добирает остаток.
+                own_draw = min(own_funds_left, need)
+                own_funds_left -= own_draw
+                own_funds_used += own_draw
+                bridge_draw = need - own_draw
                 bridge_balance += bridge_draw
                 bridge_draw_total += bridge_draw
                 if bridge_balance > 0:
@@ -13653,6 +14785,7 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
                 "key_rate": key_rate,
                 "bridge_rate": bridge_rate,
                 "bridge_draw": bridge_draw,
+                "own_funds_draw": own_draw,
                 # Погашение тела БРИДЖа рефинансированием строка не отдавала, а
                 # поток на собственный капитал его спрашивал: получал ноль и
                 # считал выборку ПФ на РнС чистым притоком. Тело заходило дважды —
@@ -13684,6 +14817,8 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
             "bridge_capitalization": bridge_cap_total,
             "transferred_bridge_interest": transferred_bridge_interest,
             "peak_bridge": max((r["bridge_balance"] for r in rows), default=0.0),
+            "own_funds_used": own_funds_used,
+            "own_funds_available": own_funds_total,
             "avg_bridge_rate": weighted_bridge_num / weighted_bridge_den if weighted_bridge_den else 0.0,
             "avg_bridge_key_rate": weighted_bridge_key_num / weighted_bridge_den if weighted_bridge_den else 0.0,
             "current_key_rate": n(x, "rate_start_pct", 14.0) / 100,
@@ -13892,15 +15027,45 @@ def calculate(req: CalcRequest) -> dict:
 
     # ГлавАПУ is the authoritative source for required underground parking.
     # Repair stale browser/localStorage TEP values before every calculation.
+    # Заданная руками площадь — исключение и главнее импорта: норматив 35 м²
+    # на место описывает потребность, а реальный подземный этаж диктуют пятно
+    # застройки, рампы и техпомещения. Пока поле пустое, защита от устаревших
+    # значений работает как раньше.
+    # Ведущее — количество мест: девелопер решает, сколько машино-мест ему
+    # нужно, а ГлавАПУ даёт лишь норматив обеспеченности (минимум). Нужно
+    # больше — строится ещё подземный этаж, и площадь растёт пропорционально:
+    # 50 мест это 1 750 м², а не 980 от норматива. Норматив 35 м² — гросс,
+    # рампы, проезды и техпомещения уже внутри. Площадь можно задать и прямо,
+    # когда она известна из проекта.
+    manual_spaces = n(x, "underground_manual_spaces")
+    manual_underground = n(x, "underground_manual_gns_sqm")
+    area_per_space = n(x, "underground_area_per_space_sqm", 35.0) or 35.0
     imported = (x.get("_glavapu_import") or {}).get("normalized", {})
-    if imported:
+    if b(x, "underground_parking_disabled") and "underground_parking" in t:
+        # Подземного паркинга нет вовсе: в области нормативную потребность
+        # закрывают наземным гаражом, и он дешевле. Ноль в поле мест значит
+        # «по нормативу», поэтому отказ выражается отдельным признаком —
+        # иначе импорт ГлавАПУ восстановил бы паркинг при первом пересчёте.
+        for field in ("units", "gns", "total_area", "useful", "saleable", "transfer"):
+            t["underground_parking"][field] = 0.0
+    elif (manual_spaces > 0 or manual_underground > 0) and "underground_parking" in t:
+        spaces = (manual_spaces if manual_spaces > 0
+                  else round(manual_underground / area_per_space))
+        area = manual_underground if manual_underground > 0 else spaces * area_per_space
+        t["underground_parking"]["units"] = spaces
+        t["underground_parking"]["gns"] = area
+        t["underground_parking"]["total_area"] = area
+        t["underground_parking"]["useful"] = 0.0
+        t["underground_parking"]["saleable"] = 0.0
+        t["underground_parking"]["transfer"] = 0.0
+    elif imported:
         permanent = n(imported, "parking_permanent")
         guest = n(imported, "parking_guest")
         underground_spaces = permanent + guest
         if underground_spaces > 0 and "underground_parking" in t:
             t["underground_parking"]["units"] = underground_spaces
-            t["underground_parking"]["gns"] = underground_spaces * 35.0
-            t["underground_parking"]["total_area"] = underground_spaces * 35.0
+            t["underground_parking"]["gns"] = underground_spaces * area_per_space
+            t["underground_parking"]["total_area"] = underground_spaces * area_per_space
             t["underground_parking"]["useful"] = 0.0
             t["underground_parking"]["saleable"] = 0.0
             t["underground_parking"]["transfer"] = 0.0
@@ -14042,7 +15207,36 @@ def calculate(req: CalcRequest) -> dict:
             "label": cc_label,
             "value": cc_value,
             "per_gns_th": per_sqm_th(cc_value, project_gns_sqm),
+            # На продаваемую — та база, в которой считают цену: стройка на м²
+            # ГНС и стройка на м² продаж различаются в полтора-два раза, и
+            # сравнивать с ценой продажи можно только вторую.
+            "per_saleable_th": per_sqm_th(cc_value, monetizable_saleable_sqm),
         })
+
+    # Темп продаж квартир в штуках. В метрах он есть везде, но продаются
+    # квартиры штуками: «40 квартир в месяц» проверяется отделом продаж и
+    # рынком, а «2 400 м² в месяц» — нет. Пересчёт идёт через среднюю площадь
+    # квартиры из ТЭП, поэтому меняется вместе с ней.
+    apartment_units_total = n(t.get("apartments", {}), "units")
+    avg_apartment_sqm = (apartment_saleable_sqm / apartment_units_total
+                         if apartment_units_total else 0.0)
+    apartment_sales: dict[str, Any] = {}
+    apartment_quantity = op.get("quantity_product_schedules", {}).get("apartments") or {}
+    if avg_apartment_sqm > 0 and apartment_quantity:
+        monthly = [(month, sqm / avg_apartment_sqm)
+                   for month, sqm in sorted(apartment_quantity.items()) if sqm > 0]
+        before_rve = [units for month, units in monthly if month <= op["rve"]]
+        apartment_sales = {
+            "units_total": apartment_units_total,
+            "avg_unit_sqm": avg_apartment_sqm,
+            "avg_unit_price_mln": (avg_apartment_sqm * avg_apartment_price / 1000
+                                   if avg_apartment_price else 0.0),
+            "pace_pre_rve_units": sum(before_rve) / len(before_rve) if before_rve else 0.0,
+            "pace_units": sum(u for _, u in monthly) / len(monthly) if monthly else 0.0,
+            "peak_units": max((u for _, u in monthly), default=0.0),
+            "months": len(monthly),
+            "rows": [{"month": month.isoformat(), "units": units} for month, units in monthly],
+        }
 
     # Expense structure: categories are mutually exclusive and sum to total expenses.
     purchase_value = n(x, "purchase_price_mln") * 1_000_000
@@ -14090,6 +15284,10 @@ def calculate(req: CalcRequest) -> dict:
             "label": label,
             "value": value,
             "share": value / expense_base if expense_base else 0.0,
+            # Удельные — обе базы, как везде в отчёте. Именно по этим статьям
+            # спорят с подрядчиком и с банком, а в рублях на метр их не было.
+            "per_gns_th": per_sqm_th(value, project_gns_sqm),
+            "per_saleable_th": per_sqm_th(value, monetizable_saleable_sqm),
         })
     expense_structure.sort(key=lambda item: item["value"], reverse=True)
 
@@ -14249,6 +15447,12 @@ def calculate(req: CalcRequest) -> dict:
     calendar_start = min(d(e["start"]) for e in calendar_events)
     calendar_end = max(d(e["end"]) for e in calendar_events)
 
+    # Фактический пик БРИДЖа расшифровывается по статьям: расчётный лимит имеет
+    # разбивку по целям, а пик — не имел, и разница между ними («остальное
+    # вашими») читалась только глазами по структуре расходов.
+    monthly_detail = _monthly_detail(op, timeline, row_by_month)
+    bridge_peak_month = _bridge_peak_month(fin["rows"])
+
     return {
         "dates": {
             "project_start": op["project_start"].isoformat(),
@@ -14293,10 +15497,18 @@ def calculate(req: CalcRequest) -> dict:
             "monetizable_saleable_sqm": monetizable_saleable_sqm,
             "apartment_saleable_sqm": apartment_saleable_sqm,
             "average_apartment_price_th": avg_apartment_price,
+            # Каждый удельный показатель — в двух базах. Одна база без второй
+            # уже стоила разбирательств: 23 тыс ₽/м² подземной части читались
+            # как ставка за подземный метр, а она 190.
             "full_cost_per_saleable_th": full_cost_per_saleable,
+            "full_cost_per_gns_th": per_sqm_th(full_project_cost, project_gns_sqm),
             "construction_cost_per_gns_th": construction_cost_per_gns,
+            "construction_cost_per_saleable_th": per_sqm_th(
+                construction_capex, monetizable_saleable_sqm),
             "ebitda_per_saleable_th": ebitda_per_saleable,
+            "ebitda_per_gns_th": per_sqm_th(ebitda, project_gns_sqm),
             "net_profit_per_saleable_th": net_profit_per_saleable,
+            "net_profit_per_gns_th": per_sqm_th(net_profit, project_gns_sqm),
             "project_gns_sqm": project_gns_sqm,
             "total_expenses": total_expenses,
             "social_payment": op["capex_amounts"].get("social", 0.0),
@@ -14327,6 +15539,7 @@ def calculate(req: CalcRequest) -> dict:
             "products": products_report,
             "unit_economics": unit_economics,
             "construction_costs": construction_costs,
+            "apartment_sales": apartment_sales,
             "expense_structure": expense_structure,
             "calendar": {
                 "start": calendar_start.isoformat(),
@@ -14336,6 +15549,12 @@ def calculate(req: CalcRequest) -> dict:
             "financing": {
                 "calculated_bridge": fin["calculated_bridge_limit"],
                 "actual_bridge": fin["peak_bridge"],
+                "actual_bridge_month": bridge_peak_month,
+                "own_funds": fin.get("own_funds_used", 0.0),
+                "own_funds_available": fin.get("own_funds_available", 0.0),
+                "actual_bridge_structure": _bridge_actual_structure(
+                    [monthly_detail], bridge_peak_month, fin["peak_bridge"],
+                    _own_funds_by(fin["rows"], bridge_peak_month)),
                 "pf_peak": fin["peak_pf"],
                 "pf_uncovered_peak": fin.get("peak_uncovered_pf", 0.0),
                 "pf_limit": fin["pf_limit"],
@@ -14370,7 +15589,7 @@ def calculate(req: CalcRequest) -> dict:
         },
         # Помесячная детализация финмодели: статьи расходов, продукты продаж и
         # физические объёмы по месяцам. Суммы сходятся с итогами выше.
-        "monthly": _monthly_detail(op, timeline, row_by_month),
+        "monthly": monthly_detail,
         "excel_control": EXCEL_CONTROL,
         "notes": {
             "llcr": "LLCR рассчитан по структуре действующего листа LLCR: поступления минус операционные/инвестиционные расходы плюс ПФ, делённые на ПФ и стоимость долга.",
@@ -14471,9 +15690,82 @@ def _monthly_detail(
     }
 
 
+def _bridge_peak_month(rows: list[dict[str, Any]]) -> str:
+    peak = max(rows, key=lambda row: float(row.get("bridge_balance") or 0.0), default=None)
+    if not peak or float(peak.get("bridge_balance") or 0.0) <= 0:
+        return ""
+    month = peak.get("month")
+    return month.isoformat() if hasattr(month, "isoformat") else str(month)
+
+
+def _own_funds_by(rows: list[dict[str, Any]], month: str) -> float:
+    """Сколько собственных средств вложено к этому месяцу включительно."""
+    if not month:
+        return 0.0
+    total = 0.0
+    for row in rows:
+        row_month = row.get("month")
+        iso = row_month.isoformat() if hasattr(row_month, "isoformat") else str(row_month)
+        if iso <= month:
+            total += float(row.get("own_funds_draw") or 0.0)
+    return total
+
+
+def _bridge_actual_structure(monthlies: list[dict[str, Any]], peak_month: str,
+                             peak_value: float, own_funds: float = 0.0) -> list[dict[str, Any]]:
+    """Что оплачено к месяцу пика БРИДЖа — по статьям.
+
+    Расчётный лимит расшифрован по четырём целям методики, а фактический пик —
+    ничем; разница между ними разбиралась перепиской, хотя это и есть то, что
+    банк называет «остальное вашими». До открытия ПФ у проекта нет ни выручки,
+    ни ПФ, поэтому остаток БРИДЖа в месяц пика равен всему, что к этому месяцу
+    оплачено. Если сходится не до конца — расхождение показывается строкой, а не
+    прячется в округление.
+    """
+    if not peak_month:
+        return []
+    totals: dict[str, float] = defaultdict(float)
+    for monthly in monthlies:
+        months = [str(month) for month in (monthly.get("months") or [])]
+        upto = [index for index, month in enumerate(months) if month <= peak_month]
+        for cost in monthly.get("costs") or []:
+            values = cost.get("values") or []
+            totals[str(cost.get("label") or "—")] += sum(
+                float(values[index] or 0.0) for index in upto if index < len(values))
+    rows = [{"label": label, "value": value}
+            for label, value in totals.items() if value > 1_000_000]
+    rows.sort(key=lambda item: -item["value"])
+    # Часть оплаченного закрыта не банком: собственные средства уменьшают долг,
+    # а не расходы, поэтому они стоят отдельной строкой со знаком минус — иначе
+    # сумма статей перестала бы сходиться с пиком.
+    if own_funds > 1_000_000:
+        rows.append({"label": "Оплачено собственными средствами", "value": -own_funds})
+    paid = sum(item["value"] for item in rows)
+    residual = float(peak_value or 0.0) - paid
+    if abs(residual) > max(float(peak_value or 0.0) * 0.01, 1_000_000):
+        rows.append({
+            "label": "Покрыто выручкой и ПФ" if residual < 0 else "Проценты и капитализация",
+            "value": residual,
+        })
+    base = float(peak_value or 0.0) or paid
+    for item in rows:
+        item["share"] = item["value"] / base if base else 0.0
+    return rows
+
+
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "version": VERSION}
+    # Выкатка сверяет ответ с тем коммитом, который выпускала: без этого
+    # «поднялось» означает лишь «что-то поднялось». Данные тоже проверяются —
+    # каталог примонтирован томом, и потерять его молча дороже всего.
+    data_dir = Path(os.getenv("DEVELOPAID_DATA_DIR") or "data")
+    return {
+        "status": "ok",
+        "version": VERSION,
+        "commit": COMMIT,
+        "data_dir": str(data_dir),
+        "data_writable": os.access(data_dir, os.W_OK) if data_dir.exists() else False,
+    }
 
 
 @app.get("/defaults")
@@ -14695,7 +15987,7 @@ def _aggregate_finance(results: list[dict[str, Any]]) -> dict[str, Any]:
     month_map: dict[str, dict[str, float]] = {}
     additive = (
         "bridge_draw", "bridge_repayment", "bridge_interest", "bridge_capitalization",
-        "bridge_balance", "pf_draw", "pf_repayment", "pf_interest",
+        "bridge_balance", "own_funds_draw", "pf_draw", "pf_repayment", "pf_interest",
         "pf_interest_capitalization", "pf_balance", "escrow", "limit_fee",
         "interest_payment", "profit_tax", "taxable_margin",
         "financing_tax_deduction", "taxable_profit_cumulative",
@@ -14749,6 +16041,8 @@ def _aggregate_finance(results: list[dict[str, Any]]) -> dict[str, Any]:
         "rows": rows,
         "calculated_bridge_limit": sum(f["calculated_bridge_limit"] for f in fs),
         "bridge_draw_total": sum(f["bridge_draw_total"] for f in fs),
+        "own_funds_used": sum(f.get("own_funds_used", 0.0) for f in fs),
+        "own_funds_available": sum(f.get("own_funds_available", 0.0) for f in fs),
         "peak_bridge": peak_bridge,
         "avg_bridge_rate": (
             sum(f["avg_bridge_rate"] * max(f["peak_bridge"], 0.0) for f in fs) / bridge_weight
@@ -14827,6 +16121,7 @@ def _consolidate_phase_results(
 ) -> dict[str, Any]:
     results = [item["result"] for item in phase_items]
     finance = _aggregate_finance(results)
+    consolidated_bridge_month = _bridge_peak_month(finance["rows"])
 
     tep_map: dict[str, dict[str, Any]] = {}
     for result in results:
@@ -14901,9 +16196,41 @@ def _consolidate_phase_results(
             construction_map[item["label"]] = (
                 construction_map.get(item["label"], 0.0) + float(item["value"] or 0.0))
     construction_costs = [
-        {"label": label, "value": value, "per_gns_th": per_th(value, project_gns)}
+        {"label": label, "value": value, "per_gns_th": per_th(value, project_gns),
+         "per_saleable_th": per_th(value, saleable)}
         for label, value in construction_map.items() if value > 0
     ]
+
+    # Темп продаж квартир в штуках складывается по месяцам всех очередей:
+    # в один месяц могут продаваться квартиры двух очередей сразу, и отдел
+    # продаж видит их одной цифрой, а не двумя.
+    apartment_units_by_month: dict[str, float] = defaultdict(float)
+    apartment_units_total = 0.0
+    apartment_area_total = 0.0
+    for result in results:
+        phase_sales_apartments = (result["report"].get("apartment_sales") or {})
+        apartment_units_total += float(phase_sales_apartments.get("units_total") or 0.0)
+        apartment_area_total += (float(phase_sales_apartments.get("units_total") or 0.0)
+                                 * float(phase_sales_apartments.get("avg_unit_sqm") or 0.0))
+        for row in phase_sales_apartments.get("rows") or []:
+            apartment_units_by_month[str(row["month"])] += float(row["units"] or 0.0)
+    apartment_sales: dict[str, Any] = {}
+    if apartment_units_by_month:
+        monthly = sorted(apartment_units_by_month.items())
+        last_rve = max(d(r["dates"]["rve"]) for r in results)
+        before_rve = [units for month, units in monthly if d(month) <= last_rve]
+        apartment_sales = {
+            "units_total": apartment_units_total,
+            "avg_unit_sqm": (apartment_area_total / apartment_units_total
+                             if apartment_units_total else 0.0),
+            "avg_unit_price_mln": (apartment_area_total / apartment_units_total
+                                   * avg_apt_price / 1000 if apartment_units_total else 0.0),
+            "pace_pre_rve_units": sum(before_rve) / len(before_rve) if before_rve else 0.0,
+            "pace_units": sum(u for _, u in monthly) / len(monthly),
+            "peak_units": max(u for _, u in monthly),
+            "months": len(monthly),
+            "rows": [{"month": month, "units": units} for month, units in monthly],
+        }
 
     expense_map: dict[str, float] = defaultdict(float)
     for result in results:
@@ -14911,7 +16238,17 @@ def _consolidate_phase_results(
             expense_map[item["label"]] += float(item["value"] or 0.0)
     expense_base = sum(expense_map.values())
     expense_structure = [
-        {"label": label, "value": value, "share": value / expense_base if expense_base else 0.0}
+        {
+            "label": label,
+            "value": value,
+            "share": value / expense_base if expense_base else 0.0,
+            # Удельные складывать нельзя — их пересчитывают от сводных площадей.
+            # Пока их тут не было, свод по всему проекту показывал нули во всех
+            # строках, а итоговая строка считалась отдельно и стояла живая:
+            # таблица выглядела сломанной ровно там, где по ней и спорят.
+            "per_gns_th": value / project_gns / 1000 if project_gns else 0.0,
+            "per_saleable_th": value / saleable / 1000 if saleable else 0.0,
+        }
         for label, value in expense_map.items() if value > 0
     ]
     expense_structure.sort(key=lambda x: x["value"], reverse=True)
@@ -15030,9 +16367,13 @@ def _consolidate_phase_results(
             "apartment_saleable_sqm": apartment_saleable,
             "average_apartment_price_th": avg_apt_price,
             "full_cost_per_saleable_th": per_th(full_cost, saleable),
+            "full_cost_per_gns_th": per_th(full_cost, project_gns),
             "construction_cost_per_gns_th": per_th(construction_capex, core_gns),
+            "construction_cost_per_saleable_th": per_th(construction_capex, saleable),
             "ebitda_per_saleable_th": per_th(ebitda, saleable),
+            "ebitda_per_gns_th": per_th(ebitda, project_gns),
             "net_profit_per_saleable_th": per_th(net_profit, saleable),
+            "net_profit_per_gns_th": per_th(net_profit, project_gns),
             "project_gns_sqm": project_gns, "total_expenses": full_cost,
             "social_payment": sum(r["summary"]["social_payment"] for r in results),
             "social_payment_mode": str(master_inputs.get("social_mode", "")),
@@ -15050,11 +16391,21 @@ def _consolidate_phase_results(
             "phase_products": phase_sales,
             "unit_economics": unit_economics,
             "construction_costs": construction_costs,
+            "apartment_sales": apartment_sales,
             "expense_structure": expense_structure,
             "calendar": {"start": cal_start.isoformat(), "end": cal_end.isoformat(), "events": events},
             "financing": {
                 "calculated_bridge": finance["calculated_bridge_limit"],
                 "actual_bridge": finance["peak_bridge"],
+                # Пик свода — общий месяц, а не сумма пиков очередей, поэтому и
+                # расшифровка собирается на этот общий месяц по всем очередям.
+                "actual_bridge_month": consolidated_bridge_month,
+                "own_funds": finance.get("own_funds_used", 0.0),
+                "own_funds_available": finance.get("own_funds_available", 0.0),
+                "actual_bridge_structure": _bridge_actual_structure(
+                    [result.get("monthly") or {} for result in results],
+                    consolidated_bridge_month, finance["peak_bridge"],
+                    _own_funds_by(finance["rows"], consolidated_bridge_month)),
                 "pf_peak": finance["peak_pf"],
                 "pf_uncovered_peak": finance["peak_uncovered_pf"],
                 "pf_limit": finance["pf_limit"],
@@ -15250,6 +16601,9 @@ def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
         "preparation": default_weights,
         "utilities": default_weights,
         "social_compensation": [100.0] + [0.0]*(count-1),
+        # Свои деньги вкладывают на входе, поэтому по умолчанию они целиком в
+        # первой очереди. Иное распределение задаётся shared_cash.own_funds.
+        "own_funds": [100.0] + [0.0]*(count-1),
     }
     cash_weights = {
         key: _normalized_phase_weights(shared_cash.get(key), count, cash_defaults[key])
@@ -15343,6 +16697,10 @@ def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
 
         p_inputs["purchase_price_mln"] = shared_base_mln["purchase"]*cash_weights["purchase"][idx]/100
         p_inputs["land_rights_cost_mln"] = shared_base_mln["land_rights"]*cash_weights["land_rights"][idx]/100
+        # Свои средства — один котёл на проект: без деления каждая очередь
+        # получила бы всю сумму, и проект «финансировал» бы себя вчетверо.
+        p_inputs["pre_pf_own_funds_mln"] = (
+            n(x_master, "pre_pf_own_funds_mln") * cash_weights["own_funds"][idx] / 100)
         # ВРИ — обязательство всего проекта, а не отдельной очереди. Рассрочка
         # (в Москве до шести лет) идёт по общему календарю: даты платежей у всех
         # очередей одни и те же, различается только доля. Поэтому дату
@@ -15491,9 +16849,11 @@ def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
             "revenue_per_saleable_th":per_th(result["summary"]["revenue"], p_saleable),
             "revenue_per_gns_th":per_th(result["summary"]["revenue"], p_gns),
             "capex_per_gns_th":per_th(result["summary"]["capex"], p_gns),
+            "capex_per_saleable_th":per_th(result["summary"]["capex"], p_saleable),
             "expenses_per_saleable_th":per_th(p_expenses, p_saleable),
             "expenses_per_gns_th":per_th(p_expenses, p_gns),
             "net_profit_per_saleable_th":per_th(result["summary"]["net_profit"], p_saleable),
+            "net_profit_per_gns_th":per_th(result["summary"]["net_profit"], p_gns),
             "revenue":result["summary"]["revenue"],"capex":result["summary"]["capex"],
             "cash_shared_cost":cash_shared,"allocated_shared_cost":allocated_shared,
             "peak_bridge":result["finance"]["peak_bridge"],"peak_pf":result["finance"]["peak_pf"],
@@ -15615,6 +16975,26 @@ _DevelopAid_METHODOLOGY = [
         "rule": "Для импортированной логики ГлавАПУ подземный паркинг формируется из постоянных + гостевых мест, площадь принимается 35 м²/место; места присоединённых объектов и кратковременной остановки не дублировать.",
     },
     {
+        "id": "SOCIAL_IS_AN_OBLIGATION",
+        "topic": "social",
+        "rule": "Социальная нагрузка — обязательство по градостроительной документации, а не параметр оптимизации. В Москве обнулить её нельзя: строить не дадут. Допустимые решения — форма исполнения (строительство против денежной компенсации), уточнение мощностей по нормативу и сроки в пределах обязательств. Сценарий «социалка = 0» показывает предел чувствительности, а не путь оздоровления.",
+    },
+    {
+        "id": "VRI_RELIEF",
+        "topic": "social",
+        "rule": "Земельно-правовую нагрузку в Москве снижают законно двумя способами: льготой по плате за смену ВРИ (её получают через места приложения труда — поля «Льгота — доля от суммы» и «Льгота — сумма») и рассрочкой платежа (1, 3 или 6 лет, платежи квартальные). Рассрочка меняет не сумму, а её распределение: первые платежи приходятся на дату обязательства, до открытия ПФ их несёт БРИДЖ, поэтому эффект на LLCR считается моделью. Саму плату девелопер не выбирает — её считает город по формуле.",
+    },
+    {
+        "id": "PARKING_2118PP",
+        "topic": "tep",
+        "rule": "Постановление Правительства Москвы № 2118-ПП (подписано 05.08.2026, краткое изложение — перед применением к проекту сверить с текстом документа): расчёт машино-мест на стадии ГЗК ведётся по общей площади квартир, на стадии АГР — по количеству квартир с учётом их площади. Нормативы обеспеченности постоянными местами: 0,8 места на квартиру до 70 м², 1,2 — от 70 до 100 м², 1,6 — свыше 100 м², а также для индивидуальных и блокированных домов. Нормы 945-ПП в новой редакции применяются независимо от ПЗЗ; противоречащие нормы ПЗЗ не действуют. Переходные положения: требования не распространяются на объекты, у которых на 05.08.2026 уже есть разрешения, положительные заключения экспертизы или утверждённые АГР.",
+    },
+    {
+        "id": "PARKING_2118PP_ECONOMY",
+        "topic": "expenses",
+        "rule": "Рост нормативной обеспеченности машино-местами увеличивает подземную часть, а с ней СМР подземной части и полную себестоимость на продаваемый метр. В модели это проверяется полями «Машино-места — решение проекта» и «Площадь подземной парковки»: пара согласована, ввод одного пересчитывает другое по нормативу площади. Пока калькулятор ГлавАПУ не обновлён под новые нормативы, он отдаёт прежнюю потребность — новое число вводится вручную.",
+    },
+    {
         "id": "SOCIAL",
         "topic": "social",
         "rule": "При режиме «Строительство» социальные объекты учитывать как дискретные объекты с привязкой к очереди и графику; при компенсации — как денежный платёж. Не учитывать один и тот же объём дважды.",
@@ -15698,6 +17078,8 @@ _AGENT_INSTRUCTIONS = """
 2. Для многоочередного проекта при банковской рекомендации предпочитай scope=weakest_phase, если пользователь явно не просит только сводный проект.
 2a. Если хотя бы одна очередь ниже 1,20x, не ограничивайся констатацией. Сначала вызови diagnose_project_logic, затем phase_recovery_options. Построй причинный вывод: хватает ли слабой очереди ТЭП/выручки относительно CAPEX, ранних общепроектных затрат, Bridge и социалки; затем ранжируй реальные варианты оздоровления.
 2b. Различай реальное улучшение проекта и косметическую перекладку. Покупку/ВРИ нельзя просто перенести в другую очередь ради красивого LLCR. Социалку и сети можно предлагать переносить только как сценарий при фактической реализуемости по графику/обязательствам.
+2f. Социальная нагрузка и плата за смену ВРИ — обязательства, а не параметры оптимизации. В Москве обнулить социалку нельзя: строить не дадут. Не подавай «социалка = 0» или «плата за ВРИ = 0» как способ оздоровления, даже если инструмент такой сценарий посчитал; если считаешь для оценки чувствительности, называй это пределом, а не решением, и повторяй оговорку инструмента.
+2g. Законные рычаги земельно-правовой нагрузки в Москве: льгота по плате за смену ВРИ (её получают через места приложения труда) — поля vri_relief_pct / vri_relief_mln; рассрочка платежа — vri_installment_years, vri_initial_pct (Москва: 1, 3 или 6 лет, платежи квартальные). Рассрочка меняет не сумму, а её распределение во времени: первые платежи до открытия ПФ несёт БРИДЖ, поэтому эффект на LLCR считай моделью, а не на глаз. Форма исполнения социалки (строительство против денежной компенсации) — тоже решение, но это не обнуление.
 2c. Различай годовую инфляцию стартовой цены между очередями и месячный рост цены внутри каждой очереди. Не индексируй О2/О3 месячным ростом за период до их старта продаж.
 2d. Класс проекта задаёт базовые цены/затраты; сценарий — относительный стресс или апсайд ±10% поверх выбранного класса.
 2e. Управление проектом 5% и технический заказчик/стройконтроль 5% — разные статьи с разным экономическим смыслом.
@@ -15806,10 +17188,12 @@ def _phase_comparison_for_agent(bundle: dict[str, Any]) -> list[dict[str, Any]]:
             "revenue_per_gns_th": round(float(item.get("revenue_per_gns_th", 0) or 0), 2),
             "capex_mln": round(float(item.get("capex", 0) or 0) / 1e6, 2),
             "capex_per_gns_th": round(float(item.get("capex_per_gns_th", 0) or 0), 2),
+            "capex_per_saleable_th": round(float(item.get("capex_per_saleable_th", 0) or 0), 2),
             "total_expenses_mln": round(float(item.get("total_expenses", 0) or 0) / 1e6, 2),
             "expenses_per_saleable_th": round(float(item.get("expenses_per_saleable_th", 0) or 0), 2),
             "expenses_per_gns_th": round(float(item.get("expenses_per_gns_th", 0) or 0), 2),
             "net_profit_per_saleable_th": round(float(item.get("net_profit_per_saleable_th", 0) or 0), 2),
+            "net_profit_per_gns_th": round(float(item.get("net_profit_per_gns_th", 0) or 0), 2),
             "cash_shared_cost_mln": round(float(item.get("cash_shared_cost", 0) or 0) / 1e6, 2),
             "allocated_shared_cost_mln": round(float(item.get("allocated_shared_cost", 0) or 0) / 1e6, 2),
             "peak_bridge_mln": round(float(item.get("peak_bridge", 0) or 0) / 1e6, 2),
@@ -15839,7 +17223,9 @@ def _result_snapshot(result: dict[str, Any]) -> dict[str, Any]:
         "peak_pf_mln": round(float(f.get("peak_pf", 0) or 0) / 1e6, 2),
         "pf_draw_total_mln": round(float(f.get("pf_draw_total", 0) or 0) / 1e6, 2),
         "full_cost_per_saleable_th_per_sqm": round(float(s.get("full_cost_per_saleable_th", 0) or 0), 2),
+        "full_cost_per_gns_th_per_sqm": round(float(s.get("full_cost_per_gns_th", 0) or 0), 2),
         "construction_cost_per_gns_th_per_sqm": round(float(s.get("construction_cost_per_gns_th", 0) or 0), 2),
+        "construction_cost_per_saleable_th_per_sqm": round(float(s.get("construction_cost_per_saleable_th", 0) or 0), 2),
         "average_apartment_price_th_per_sqm": round(float(s.get("average_apartment_price_th", 0) or 0), 2),
     }
 
@@ -16407,7 +17793,9 @@ def _tool_explain_metric(
     if metric == "unit_cost":
         base.update({
             "construction_cost_per_gns_th_per_sqm": round(float(s.get("construction_cost_per_gns_th", 0) or 0), 2),
+            "construction_cost_per_saleable_th_per_sqm": round(float(s.get("construction_cost_per_saleable_th", 0) or 0), 2),
             "full_cost_per_saleable_th_per_sqm": round(float(s.get("full_cost_per_saleable_th", 0) or 0), 2),
+            "full_cost_per_gns_th_per_sqm": round(float(s.get("full_cost_per_gns_th", 0) or 0), 2),
             "project_gns_sqm": round(float(s.get("project_gns_sqm", 0) or 0), 2),
             "monetizable_saleable_sqm": round(float(s.get("monetizable_saleable_sqm", 0) or 0), 2),
             "expense_structure": [
@@ -16415,6 +17803,8 @@ def _tool_explain_metric(
                     "label": i.get("label"),
                     "value_mln": round(float(i.get("value", 0) or 0) / 1e6, 2),
                     "share_pct": round(float(i.get("share", 0) or 0) * 100, 2),
+                    "per_gns_th_per_sqm": round(float(i.get("per_gns_th", 0) or 0), 2),
+                    "per_saleable_th_per_sqm": round(float(i.get("per_saleable_th", 0) or 0), 2),
                 }
                 for i in (report.get("expense_structure") or [])
             ],
@@ -16602,8 +17992,52 @@ _GOAL_VARIABLES = {
 }
 
 
+# Земельно-правовые рычаги Москвы. Обнулить социальную нагрузку нельзя —
+# строить не дадут, — а вот льгота по плате за смену ВРИ (её получают через
+# места приложения труда) и рассрочка платежа законны и работают. Пока этих
+# переменных у агента не было, единственным рычагом такого масштаба оставалась
+# `social_compensation_mln`, и совет «обнулить социалку» был продиктован не
+# пониманием, а набором инструментов.
+# Величины, которые задаёт не девелопер, а обязательство. Крутить их как
+# «что если» можно — предлагать как способ оздоровления нельзя: социальную
+# нагрузку в Москве не обнуляют, строить не дадут. Оговорка возвращается самим
+# инструментом, потому что правило «упоминай предупреждения инструмента» агент
+# соблюдает, а помнить инструкцию под конец длинного разбора — не обязан.
+_AGENT_REGULATED_VARIABLES = {
+    "social_compensation_mln": (
+        "Социальная нагрузка — обязательство по градостроительной документации, "
+        "а не параметр оптимизации: обнулять её нельзя. Законные пути — форма "
+        "исполнения (строительство против компенсации), уточнение мощностей по "
+        "нормативу и сроки в пределах обязательств."),
+    "land_rights_cost_mln": (
+        "Плата за смену ВРИ считается городом по формуле и не выбирается "
+        "девелопером. Снижают её льготой (в Москве — через места приложения "
+        "труда, поле «Льгота по плате») и рассрочкой платежа, а не уменьшением "
+        "самой платы."),
+    "parking_price_th": "",
+}
+
+
+def _regulated_notes(variables: list[str]) -> list[str]:
+    """Оговорки к сценариям, трогающим нормативные величины."""
+    notes: list[str] = []
+    for variable in variables:
+        note = _AGENT_REGULATED_VARIABLES.get(variable)
+        if note and note not in notes:
+            notes.append(note)
+    return notes
+
+
+_VRI_RELIEF_VARIABLES = {
+    "vri_relief_pct": "Льгота по плате за смену ВРИ, % от суммы (МПТ и иные основания)",
+    "vri_relief_mln": "Льгота по плате за смену ВРИ, млн ₽",
+    "vri_installment_years": "Срок рассрочки платы за ВРИ, лет (Москва: 1, 3, 6)",
+    "vri_initial_pct": "Первый взнос по рассрочке ВРИ, % от суммы",
+}
+
 _PATCH_VARIABLES = {
     **_GOAL_VARIABLES,
+    **_VRI_RELIEF_VARIABLES,
     "main_above_th_per_sqm": "Основное строительство — наземная часть, тыс. ₽/м² ГНС",
     "main_under_th_per_sqm": "Основное строительство — подземная часть, тыс. ₽/м² ГНС",
     "storage_price_th": "Цена кладовой, тыс. ₽/шт.",
@@ -16628,6 +18062,15 @@ def _apply_patch_value(inputs: dict[str, Any], variable: str, value: float) -> N
         _apply_variable(inputs, variable, value)
     elif variable in _PATCH_VARIABLES:
         inputs[variable] = value
+        # Режим — следствие заданного числа, а не отдельное решение: льгота в
+        # процентах без режима «доля от суммы» осталась бы нулём, а срок
+        # рассрочки без режима «рассрочка» — единовременным платежом.
+        if variable == "vri_relief_pct" and value > 0:
+            inputs["vri_relief_mode"] = "percent"
+        elif variable == "vri_relief_mln" and value > 0:
+            inputs["vri_relief_mode"] = "amount"
+        elif variable in ("vri_installment_years", "vri_initial_pct") and value > 0:
+            inputs["vri_payment_mode"] = "installment"
 
 
 def _get_variable_value(inputs: dict[str, Any], variable: str) -> float:
@@ -16819,6 +18262,7 @@ def _tool_goal_seek(
         "available": True,
         "variable": variable,
         "variable_label": _GOAL_VARIABLES[variable],
+        "regulatory_notes": _regulated_notes([variable]),
         "target_metric": target_metric,
         "target_value": target_value,
         "constraint": constraint,
@@ -16874,6 +18318,8 @@ def _tool_simulate_change(
     if not applied:
         return {"available": False, "reason": "Нет допустимых изменений для моделирования."}
 
+    regulated = _regulated_notes([item["variable"] for item in applied])
+
     scenario_bundle = _run_authoritative_model(x, req.tep, req.rates, req.phasing)
     resolved_scope = scope if not (scope == "weakest_phase" and bundle.get("mode") != "phased") else "consolidated"
     base_label, base_result = _scope_result(bundle, resolved_scope, req.selected_view)
@@ -16886,7 +18332,8 @@ def _tool_simulate_change(
         "revenue_mln", "capex_mln", "commercial_costs_mln", "financing_cost_mln",
         "profit_tax_mln", "net_profit_mln", "margin_pct", "llcr_x", "npv_mln",
         "peak_bridge_mln", "peak_pf_mln", "full_cost_per_saleable_th_per_sqm",
-        "construction_cost_per_gns_th_per_sqm",
+        "full_cost_per_gns_th_per_sqm", "construction_cost_per_gns_th_per_sqm",
+        "construction_cost_per_saleable_th_per_sqm",
     ):
         bv, nv = b.get(key), nres.get(key)
         if isinstance(bv, (int, float)) and isinstance(nv, (int, float)):
@@ -16897,6 +18344,7 @@ def _tool_simulate_change(
         "scope": resolved_scope,
         "scope_label": new_label,
         "changes": applied,
+        "regulatory_notes": regulated,
         "current": b,
         "scenario": nres,
         "delta": delta,
@@ -17015,7 +18463,8 @@ def _tool_prepare_model_patch(
     for key in (
         "revenue_mln", "capex_mln", "financing_cost_mln", "net_profit_mln",
         "margin_pct", "llcr_x", "npv_mln", "peak_bridge_mln", "peak_pf_mln",
-        "full_cost_per_saleable_th_per_sqm", "construction_cost_per_gns_th_per_sqm",
+        "full_cost_per_saleable_th_per_sqm", "full_cost_per_gns_th_per_sqm",
+        "construction_cost_per_gns_th_per_sqm", "construction_cost_per_saleable_th_per_sqm",
     ):
         bv, nv = base_snap.get(key), new_snap.get(key)
         if isinstance(bv, (int, float)) and isinstance(nv, (int, float)):
@@ -18018,7 +19467,35 @@ def _extract_openai_text(data: dict[str, Any]) -> str:
 # разрывать этот цикл нельзя.
 _PLATO_AI_URL = _env_str("PLATO_AI_URL", "").strip()
 _PLATO_AI_PROXY_SECRET = _env_str("PLATO_AI_PROXY_SECRET", "").strip()
-_PLATO_AI_TIMEOUT_SECONDS = max(30.0, _env_float("PLATO_AI_TIMEOUT_SECONDS", 120.0))
+# Свободный вопрос вроде «при каких параметрах проект станет рентабельным»
+# гоняет goal_seek и simulate_change по нескольку раз, каждый — полный пересчёт
+# модели. В сто двадцать секунд это не укладывалось, а соединение до окна всё
+# равно рвётся раньше и результат забирается опросом — значит ждать модель
+# дольше ничего не стоит.
+_PLATO_AI_TIMEOUT_SECONDS = max(30.0, _env_float("PLATO_AI_TIMEOUT_SECONDS", 240.0))
+# Окно первой попытки — на пробуждение Render после простоя: он засыпает и
+# первый запрос уходит в тишину. Живой сервис отвечает быстрее, а долгие
+# ответы дожидаются на повторе с полным таймаутом.
+_PLATO_WAKE_TIMEOUT_SECONDS = max(15.0, _env_float("PLATO_AI_WAKE_TIMEOUT_SECONDS", 45.0))
+# Пинг, чтобы сервис модели не засыпал: Render гасит бесплатный инстанс после
+# ~15 минут тишины, и первый живой вопрос платит за пробуждение. Ноль — выключить.
+_PLATO_KEEPALIVE_MINUTES = max(0.0, _env_float("PLATO_AI_KEEPALIVE_MINUTES", 10.0))
+# Сколько сервер держит соединение, прежде чем отдать работу опросу. Быстрый
+# ответ приходит тем же запросом — лишнего похода за ним не будет; всё, что
+# длиннее, забирается по номеру запуска. Двадцать секунд — с запасом ниже
+# любого чужого предела: ни nginx, ни Render, ни мобильная сеть на таком сроке
+# соединение не рвут.
+_PLATO_CHAT_HANDOFF_SECONDS = max(1.0, _env_float("PLATO_CHAT_HANDOFF_SECONDS", 20.0))
+_PLATO_PROXY_HANDOFF_SECONDS = max(1.0, _env_float("PLATO_AI_HANDOFF_SECONDS", 20.0))
+_PLATO_PROXY_POLL_SECONDS = max(0.2, _env_float("PLATO_AI_POLL_SECONDS", 2.0))
+_PLATO_PROXY_POLL_TIMEOUT = max(5.0, _env_float("PLATO_AI_POLL_TIMEOUT_SECONDS", 30.0))
+# Сколько ждёт тот, кому соединение держать не перед кем — бот в своём потоке.
+_PLATO_AGENT_WAIT_SECONDS = max(60.0, _env_float("PLATO_AGENT_WAIT_SECONDS", 900.0))
+# Сколько всего отпущено разговору с моделью. Восемь раундов, каждый со своим
+# сроком в четыре минуты, дают полчаса — столько не ждёт никто, и ответа за
+# этим всё равно нет. Кончился бюджет — собираем ответ из посчитанного.
+_PLATO_AGENT_BUDGET_SECONDS = max(60.0, _env_float("PLATO_AGENT_BUDGET_SECONDS", 420.0))
+_PLATO_KEEPALIVE: dict[str, Any] = {"enabled": False, "last_ok": "", "last_error": ""}
 _PLATON_LOG = logging.getLogger("developaid.platon")
 
 # Между Яндексом и Render TLS-соединение изредка обрывается на чтении ответа:
@@ -18046,8 +19523,13 @@ def _plato_transport_failure(exc: Exception) -> bool:
     return any(marker in str(reason or exc).lower() for marker in _PLATO_TRANSPORT_MARKERS)
 
 
-def _openai_direct_request(payload: dict[str, Any]) -> dict[str, Any]:
-    """Прямой вызов OpenAI. Ключ нужен только здесь."""
+def _openai_direct_request(payload: dict[str, Any],
+                           budget_seconds: float | None = None) -> dict[str, Any]:
+    """Прямой вызов OpenAI. Ключ нужен только здесь.
+
+    Срок задаётся снаружи ради самопроверки: ей нужен короткий ответ «дошло или
+    нет», а не полный срок тяжёлого вопроса.
+    """
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
     if not api_key:
         # Сюда попадают двумя путями, и лечатся они по-разному: на Render не
@@ -18072,7 +19554,8 @@ def _openai_direct_request(payload: dict[str, Any]) -> dict[str, Any]:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=_PLATO_AI_TIMEOUT_SECONDS) as response:
+        with urllib.request.urlopen(
+                request, timeout=budget_seconds or _PLATO_AI_TIMEOUT_SECONDS) as response:
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         try:
@@ -18085,7 +19568,80 @@ def _openai_direct_request(payload: dict[str, Any]) -> dict[str, Any]:
         raise HTTPException(status_code=502, detail=f"Не удалось обратиться к OpenAI API: {str(exc)[:500]}")
 
 
-def _openai_proxy_request(payload: dict[str, Any]) -> dict[str, Any]:
+def _plato_proxy_result_url(ticket: str) -> str:
+    """Адрес выдачи ответа по билету — сосед `/chat` на том же сервисе."""
+    if not _PLATO_AI_URL or not ticket:
+        return ""
+    try:
+        parts = urllib.parse.urlsplit(_PLATO_AI_URL)
+        if not parts.scheme or not parts.netloc:
+            return ""
+        base = parts.path[: -len("/chat")] if parts.path.endswith("/chat") else parts.path
+        return urllib.parse.urlunsplit(
+            (parts.scheme, parts.netloc, base.rstrip("/") + "/result/" + ticket, "", ""))
+    except Exception:
+        return ""
+
+
+def _plato_proxy_await(ticket: str, headers: dict[str, str], deadline: float) -> dict[str, Any]:
+    """Забирает ответ сервиса модели по билету — короткими запросами.
+
+    Длинного соединения между машинами больше нет вообще: сервис модели принял
+    работу и считает её у себя, а мы спрашиваем результат по секундам. Рвать
+    тут нечему — ни у прокси, ни у мобильной сети нет повода закрыть запрос,
+    который живёт две секунды.
+    """
+    url = _plato_proxy_result_url(ticket)
+    if not url:
+        raise HTTPException(
+            status_code=502,
+            detail="Сервис модели принял работу, но адрес выдачи ответа собрать не удалось.")
+    poll_headers = {key: value for key, value in headers.items() if key != "Content-Type"}
+    broken = ""
+    started = time.monotonic()
+    announced = 0.0
+    while time.monotonic() < deadline:
+        time.sleep(_PLATO_PROXY_POLL_SECONDS)
+        waited = time.monotonic() - started
+        # Ожидание с секундомером: «сервис модели считает 70 с» — это работа,
+        # «жду ответ» без числа — это неизвестно что.
+        _plato_trace_stage("ai_wait", f"Сервис модели считает · {int(waited)} с")
+        if waited - announced >= 30:
+            announced = waited
+            _PLATON_LOG.info("Platon proxy waiting on ticket %s, %.0fs", ticket, waited)
+        try:
+            request = urllib.request.Request(url, headers=poll_headers, method="GET")
+            with urllib.request.urlopen(request, timeout=_PLATO_PROXY_POLL_TIMEOUT) as response:
+                data = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Сервис модели не отдал ответ по билету: код {exc.code}.") from exc
+        except Exception as exc:
+            # Сорванный опрос работу не отменяет: она идёт на той стороне.
+            broken = f"{type(exc).__name__}: {str(exc)[:200]}"
+            continue
+        if data.get("pending"):
+            continue
+        if data.get("error"):
+            raise HTTPException(status_code=int(data.get("status") or 502),
+                                detail=str(data["error"])[:700])
+        answer = data.get("answer")
+        if isinstance(answer, dict):
+            return answer
+        raise HTTPException(status_code=502,
+                            detail="Сервис модели вернул пустой ответ по билету.")
+    raise HTTPException(
+        status_code=504,
+        detail=(
+            f"Платон Сергеевич не ответил за {int(_PLATO_AI_TIMEOUT_SECONDS)} с."
+            + (f" Опрос срывался: {broken}." if broken else "")
+        ),
+    )
+
+
+def _openai_proxy_request(payload: dict[str, Any],
+                          budget_seconds: float | None = None) -> dict[str, Any]:
     """Тот же вызов, но руками другого сервиса — там, где лежит ключ."""
     headers = {
         "Content-Type": "application/json",
@@ -18110,21 +19666,55 @@ def _openai_proxy_request(payload: dict[str, Any]) -> dict[str, Any]:
     # keep-alive рвётся на чтении ответа, и клиент получает TLS EOF там, где на
     # той стороне запрос уже отработал с кодом 200.
     headers["Connection"] = "close"
-    body = json.dumps({"payload": payload}, ensure_ascii=False).encode("utf-8")
+    # Билет — один на весь вызов, а не на попытку: повтор после обрыва должен
+    # подобрать уже начатую работу, а не заказать её второй раз.
+    ticket = os.urandom(6).hex()
+    body = json.dumps({"payload": payload, "ticket": ticket}, ensure_ascii=False).encode("utf-8")
+    budget = float(budget_seconds or _PLATO_AI_TIMEOUT_SECONDS)
+    deadline = time.monotonic() + budget
 
     last_transport: Exception | None = None
+    timed_out = False
     for attempt in range(1, _PLATO_PROXY_ATTEMPTS + 1):
         # Новый Request на каждую попытку: прежний тянет за собой то же
         # соединение, на котором и оборвалось.
         request = urllib.request.Request(_PLATO_AI_URL, data=body, headers=headers, method="POST")
+        # Первая попытка ждёт меньше: спящий Render всё равно не ответит, а
+        # человек не должен сидеть перед пустым окном полный таймаут, чтобы
+        # только потом начался повтор. Живой сервис в это окно укладывается —
+        # долгие ответы дожидаются на второй попытке с полным сроком.
+        attempt_timeout = (min(_PLATO_WAKE_TIMEOUT_SECONDS, budget)
+                           if attempt == 1 and _PLATO_PROXY_ATTEMPTS > 1
+                           else budget)
+        # Срок задуман на весь вызов модели, а тратился на каждую попытку:
+        # 45 + 240 + 240 — это 525 с там, где обещано 240, и окно успевало
+        # сдаться раньше, чем ядро переставало ждать. Остаток бюджета режет
+        # каждую следующую попытку.
+        left = deadline - time.monotonic()
+        if left <= 0.05:
+            timed_out = True
+            break
+        attempt_timeout = min(attempt_timeout, left)
+        # Номер попытки виден человеку. Вторая попытка означает ровно одно:
+        # сервис модели не ответил за окно пробуждения — и это первое, что надо
+        # знать при разборе «Платон завис», не заглядывая в лог.
+        _plato_trace_stage(
+            "ai_ask",
+            "Спрашиваю сервис модели"
+            + (f" (попытка {attempt} из {_PLATO_PROXY_ATTEMPTS})" if attempt > 1 else ""))
         try:
-            with urllib.request.urlopen(request, timeout=_PLATO_AI_TIMEOUT_SECONDS) as response:
+            with urllib.request.urlopen(request, timeout=attempt_timeout) as response:
                 raw = response.read()
             if not raw:
                 raise http.client.IncompleteRead(b"")
             answer = json.loads(raw.decode("utf-8"))
             if attempt > 1:
                 _PLATON_LOG.info("Platon proxy attempt %d/%d succeeded", attempt, _PLATO_PROXY_ATTEMPTS)
+            if isinstance(answer, dict) and answer.get("pending"):
+                # Сервис модели принял работу и соединение не держит. Дальше —
+                # опрос по билету: длинного запроса между машинами не остаётся.
+                _PLATON_LOG.info("Platon proxy job accepted, ticket %s", ticket)
+                return _plato_proxy_await(ticket, headers, deadline)
             return answer
         except urllib.error.HTTPError as exc:
             # Ответ приложения — не транспортный сбой: повторять нечего.
@@ -18149,14 +19739,20 @@ def _openai_proxy_request(payload: dict[str, Any]) -> dict[str, Any]:
             delay = _PLATO_PROXY_BACKOFF[attempt - 1]
             _PLATON_LOG.info("Platon proxy retry in %ds", delay)
             time.sleep(delay)
-        except socket.timeout as exc:
-            raise HTTPException(
-                status_code=504,
-                detail=(
-                    f"Платон Сергеевич не ответил за {int(_PLATO_AI_TIMEOUT_SECONDS)} с. "
-                    "Повторите вопрос — обычно это перезапуск сервиса после простоя."
-                ),
-            ) from exc
+        except (socket.timeout, TimeoutError) as exc:
+            # Таймаут — тоже повод повторить, а не сдаваться. Render засыпает
+            # после простоя, и первый запрос уходит на его пробуждение: он
+            # честно не отвечает, зато следующий попадает в живой сервис.
+            # Прежде первая же тишина отдавалась как окончательная 504, и
+            # человек видел «Ошибка AI (504)» на вопрос, который сработал бы
+            # со второй попытки.
+            last_transport = exc
+            timed_out = True
+            _PLATON_LOG.info("Platon proxy attempt %d/%d timed out after %ds",
+                             attempt, _PLATO_PROXY_ATTEMPTS, int(attempt_timeout))
+            if attempt >= _PLATO_PROXY_ATTEMPTS:
+                break
+            time.sleep(_PLATO_PROXY_BACKOFF[attempt - 1])
         except json.JSONDecodeError as exc:
             # Тело пришло рваным: 200 без разобранного JSON успехом не считаем.
             last_transport = exc
@@ -18166,6 +19762,15 @@ def _openai_proxy_request(payload: dict[str, Any]) -> dict[str, Any]:
                 break
             time.sleep(_PLATO_PROXY_BACKOFF[attempt - 1])
 
+    if timed_out:
+        raise HTTPException(
+            status_code=504,
+            detail=(
+                f"Платон Сергеевич не ответил за {int(_PLATO_AI_TIMEOUT_SECONDS)} с "
+                f"({_PLATO_PROXY_ATTEMPTS} попытки). Обычно это пробуждение сервиса "
+                "после простоя — повторите вопрос через минуту."
+            ),
+        ) from last_transport
     raise HTTPException(
         status_code=502,
         detail=(
@@ -18175,14 +19780,94 @@ def _openai_proxy_request(payload: dict[str, Any]) -> dict[str, Any]:
     ) from last_transport
 
 
+def _plato_keepalive_url() -> str:
+    """Адрес пробуждения — /health на хосте сервиса модели.
+
+    Пингуем именно health, а не сам /internal/plato/chat: тот вызывает модель
+    и стоит токенов, а разбудить инстанс достаточно любым запросом.
+    """
+    if not _PLATO_AI_URL:
+        return ""
+    try:
+        parts = urllib.parse.urlsplit(_PLATO_AI_URL)
+        if not parts.scheme or not parts.netloc:
+            return ""
+        return urllib.parse.urlunsplit((parts.scheme, parts.netloc, "/health", "", ""))
+    except Exception:
+        return ""
+
+
+def _plato_keepalive_loop() -> None:
+    url = _plato_keepalive_url()
+    if not url:
+        return
+    interval = _PLATO_KEEPALIVE_MINUTES * 60.0
+    _PLATO_KEEPALIVE["enabled"] = True
+    while True:
+        try:
+            request = urllib.request.Request(
+                url, headers={"User-Agent": USER_AGENT}, method="GET")
+            with urllib.request.urlopen(request, timeout=30) as response:
+                response.read(2048)
+            _PLATO_KEEPALIVE["last_ok"] = datetime.now().isoformat(timespec="seconds")
+            _PLATO_KEEPALIVE["last_error"] = ""
+        except Exception as exc:
+            # Пинг — удобство, а не работа: молчаливо переживаем любой сбой,
+            # но оставляем след, чтобы «Платон опять засыпает» было чем
+            # объяснить, не заходя на хостинг.
+            # Причина целиком, а не одно имя класса: «URLError» не отличает
+            # «имя не разрешается» от «сеть не пускает» и от «сертификат не
+            # сошёлся», а лечится это тремя разными способами. Один разбор на
+            # этом уже стоил дня переписки.
+            reason = getattr(exc, "reason", None)
+            _PLATO_KEEPALIVE["last_error"] = (
+                f"{datetime.now().isoformat(timespec='seconds')}: "
+                f"{type(exc).__name__}: {str(reason or exc)[:200]}")
+            _PLATON_LOG.info("Platon keepalive failed: %s: %s",
+                             type(exc).__name__, str(reason or exc)[:200])
+        time.sleep(interval)
+
+
+@app.on_event("startup")
+def _start_plato_keepalive() -> None:
+    """Будим сервис модели только оттуда, где он внешний.
+
+    На самом Render PLATO_AI_URL пуст — там пинговать некого и незачем:
+    инстанс, который сам себя пингует, всё равно уснёт вместе с потоком.
+    """
+    # В обратной схеме пинговать некого: до сервиса модели с этой машины не
+    # дойти, ради этого схему и развернули. Строка «пинг не проходит» там была
+    # бы вечной и ничего не значила.
+    if _PLATO_AI_URL and _PLATO_KEEPALIVE_MINUTES > 0 and not _PLATO_PULL_ENABLED:
+        threading.Thread(target=_plato_keepalive_loop, daemon=True).start()
+
+
+@app.on_event("startup")
+def _start_glavapu_warm_up() -> None:
+    """Браузер греется сразу после старта, а не на первом расчёте.
+
+    Прогрев идёт в фоне и в отдельном потоке: контейнер обязан подняться и
+    начать отвечать, даже если ГлавАПУ в этот момент недоступен.
+    """
+    if _GLAVAPU_HEADLESS_ENABLED:
+        threading.Thread(target=_glavapu_warm_up, name="glavapu-warm-up",
+                         daemon=True).start()
+
+
 def _plato_route() -> str:
-    """Куда уйдёт вызов модели: «render_proxy» или «local_openai».
+    """Куда уйдёт вызов модели: «render_pull», «render_proxy» или «local_openai».
 
     Решает адрес прокси, а не наличие ключа. На Яндексе ключа нет и быть не
     должно: если адрес задан, вызов обязан уйти на Render — молчаливый откат к
     api.openai.com увёл бы запрос туда, куда с этой машины ходить нельзя.
+
+    «render_pull» — то же самое, но наоборот: ядро не зовёт сервис модели, а
+    кладёт задание и ждёт, пока его заберут. Так работает там, где исходящее
+    соединение до сервиса не устанавливается вовсе.
     """
-    return "render_proxy" if _PLATO_AI_URL else "local_openai"
+    if _PLATO_AI_URL:
+        return "render_pull" if _PLATO_PULL_ENABLED else "render_proxy"
+    return "local_openai"
 
 
 def _agent_reasoning_effort(model: str) -> str | None:
@@ -18206,12 +19891,13 @@ def _agent_reasoning_effort(model: str) -> str | None:
     return None
 
 
-def _openai_responses_request(payload: dict[str, Any]) -> dict[str, Any]:
+def _openai_responses_request(payload: dict[str, Any],
+                              budget_seconds: float | None = None) -> dict[str, Any]:
     route = _plato_route()
     # Маршрут — первое, что спрашивают при разборе «Платон молчит». В сообщении
     # только имя маршрута: ни адреса, ни секрета, ни ключа.
     _PLATON_LOG.info("Platon route: %s", route)
-    if route == "render_proxy":
+    if route in ("render_proxy", "render_pull"):
         if not _PLATO_AI_PROXY_SECRET:
             # Отступать некуда: с заданным адресом прокси прямой вызов OpenAI
             # запрещён, поэтому это отказ, а не переключение маршрута.
@@ -18222,21 +19908,308 @@ def _openai_responses_request(payload: dict[str, Any]) -> dict[str, Any]:
                     "PLATO_AI_PROXY_SECRET. Без секрета Render отклонит служебный вызов."
                 ),
             )
-        return _openai_proxy_request(payload)
-    return _openai_direct_request(payload)
+        if route == "render_pull":
+            return _openai_pull_request(payload, budget_seconds)
+        return _openai_proxy_request(payload, budget_seconds)
+    return _openai_direct_request(payload, budget_seconds)
 
 
 class PlatoAiProxyRequest(BaseModel):
     payload: dict[str, Any] = {}
+    # Билет присылает клиент, который готов забрать ответ опросом. Старый
+    # клиент его не шлёт — и получает ответ тем же запросом, как раньше.
+    ticket: str = ""
 
 
-@app.post("/internal/plato/chat")
-def internal_plato_chat(req: PlatoAiProxyRequest, request: Request) -> dict[str, Any]:
-    """Служебный вызов OpenAI для сервера, где ключа нет. Наружу не публикуется.
+_PLATO_PROXY_JOBS: dict[str, threading.Event] = {}
+_PLATO_PROXY_JOBS_LOCK = threading.Lock()
 
-    Браузер сюда не ходит: он обращается только к своему серверу, поэтому нет
-    ни CORS, ни зависимости от VPN, ни раскрытия внутреннего адреса.
+
+def _plato_proxy_stored(stored: dict[str, Any]) -> dict[str, Any]:
+    if stored.get("error"):
+        raise HTTPException(status_code=int(stored.get("status") or 502),
+                            detail=str(stored["error"])[:700])
+    answer = stored.get("answer")
+    if isinstance(answer, dict):
+        return answer
+    raise HTTPException(status_code=502, detail="Пустой ответ модели.")
+
+
+def _plato_proxy_job(ticket: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Работа по билету: считаем у себя, соединение не держим.
+
+    Один вызов reasoning-модели с инструментами занимает больше, чем держит
+    соединение любое промежуточное звено. Раньше это ломалось молча: на той
+    стороне работа доходила до конца, а клиент получал разорванный запрос и
+    начинал всё заново — и так по кругу, пока человек не переставал ждать.
     """
+    stored = _plato_answer_get("proxy" + ticket)
+    if stored is not None:
+        return _plato_proxy_stored(stored)
+
+    with _PLATO_PROXY_JOBS_LOCK:
+        done = _PLATO_PROXY_JOBS.get(ticket)
+        fresh = done is None
+        if fresh:
+            done = _PLATO_PROXY_JOBS[ticket] = threading.Event()
+
+    if fresh:
+        def worker() -> None:
+            try:
+                _plato_answer_put("proxy" + ticket, {"answer": _openai_direct_request(payload)})
+            except HTTPException as exc:
+                _plato_answer_put("proxy" + ticket,
+                                  {"error": str(exc.detail)[:700], "status": exc.status_code})
+            except Exception as exc:
+                _plato_answer_put("proxy" + ticket,
+                                  {"error": f"{type(exc).__name__}: {str(exc)[:600]}", "status": 502})
+            finally:
+                # Ответ на диске раньше, чем снят признак работы: повтор с тем
+                # же билетом обязан найти либо работу, либо результат — но не
+                # пустоту, из которой закажет второй вызов модели.
+                done.set()
+                with _PLATO_PROXY_JOBS_LOCK:
+                    _PLATO_PROXY_JOBS.pop(ticket, None)
+
+        threading.Thread(target=worker, name="plato-proxy-" + ticket, daemon=True).start()
+
+    if done.wait(_PLATO_PROXY_HANDOFF_SECONDS):
+        stored = _plato_answer_get("proxy" + ticket)
+        if stored is not None:
+            return _plato_proxy_stored(stored)
+    return {"pending": True, "ticket": ticket}
+
+
+@app.get("/internal/plato/result/{ticket}")
+def internal_plato_result(ticket: str, request: Request) -> dict[str, Any]:
+    """Выдача ответа по билету. Тот же секрет, что и у самого вызова."""
+    _plato_internal_guard(request)
+    if not _TRACE_ID_RE.fullmatch(str(ticket or "").strip().lower()):
+        raise HTTPException(status_code=400, detail="Неверный билет.")
+    stored = _plato_answer_get("proxy" + str(ticket).strip().lower())
+    if stored is None:
+        return {"pending": True}
+    return {"pending": False, **stored}
+
+
+# --- Обратное направление: работу забирает сервис модели ---------------------
+# Из российского дата-центра до Render не дойти: TCP до его адресов не
+# устанавливается вовсе — при том, что сам Cloudflare, за которым Render стоит,
+# доступен. Ни сроками, ни адресом, ни группой безопасности это не лечится.
+# Поэтому направление разворачивается: ядро кладёт задание у себя, а сервис
+# модели — которому наружу ходить не мешает никто, он и до OpenAI, и до Telegram
+# дозванивается — забирает его коротким опросом и приносит ответ обратно.
+#
+# Очередь живёт на диске: воркеров два, и задание, положенное одним, обязан
+# видеть другой. Забрать задание может только один — файл переименовывается, и
+# проигравший получает его отсутствие, а не вторую копию работы.
+
+_PLATO_PULL_ENABLED = _env_str("PLATO_AI_PULL", "").strip().lower() in {
+    "1", "on", "yes", "true", "да"}
+_PLATO_PULL_URL = _env_str("PLATO_PULL_URL", "").strip().rstrip("/")
+_PLATO_QUEUE_WAIT_SECONDS = max(5.0, _env_float("PLATO_QUEUE_WAIT_SECONDS", 25.0))
+_PLATO_QUEUE_POLL_SECONDS = 0.4
+
+
+def _plato_job_path(job_id: str, suffix: str = "json") -> Path:
+    return _PLATO_STAGE_DIR / f"job_{job_id}.{suffix}"
+
+
+def _plato_job_claim() -> dict[str, Any]:
+    """Старейшее задание, забранное насовсем.
+
+    Переименование — единственная операция, которая на общем диске атомарна:
+    два опроса не могут забрать одно задание, и работа не будет сделана дважды.
+    """
+    try:
+        paths = sorted(_PLATO_STAGE_DIR.glob("job_*.json"))
+    except OSError:
+        return {}
+    for path in paths:
+        taken = path.with_suffix(".taken")
+        try:
+            path.rename(taken)
+        except OSError:
+            continue  # забрал сосед
+        try:
+            data = json.loads(taken.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            taken.unlink(missing_ok=True)
+            continue
+        return {"job_id": path.stem[len("job_"):], "payload": data.get("payload") or {}}
+    return {}
+
+
+def _openai_pull_request(payload: dict[str, Any],
+                         budget_seconds: float | None = None) -> dict[str, Any]:
+    """Кладёт задание в очередь и ждёт, пока сервис модели вернёт ответ."""
+    job_id = os.urandom(6).hex()
+    deadline = time.monotonic() + float(budget_seconds or _PLATO_AI_TIMEOUT_SECONDS)
+    try:
+        _PLATO_STAGE_DIR.mkdir(parents=True, exist_ok=True)
+        _plato_job_path(job_id).write_text(
+            json.dumps({"at": time.time(), "payload": payload}, ensure_ascii=False),
+            encoding="utf-8")
+    except OSError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Не удалось поставить задание в очередь: {type(exc).__name__}") from exc
+
+    _plato_trace_stage("ai_queue", "Задание передано сервису модели")
+    waited = 0.0
+    while time.monotonic() < deadline:
+        time.sleep(_PLATO_QUEUE_POLL_SECONDS)
+        waited += _PLATO_QUEUE_POLL_SECONDS
+        stored = _plato_answer_get("pull" + job_id)
+        if stored is not None:
+            _PLATON_LOG.info("Platon pull job %s answered in %.1fs", job_id, waited)
+            return _plato_proxy_stored(stored)
+        _plato_trace_stage("ai_queue", f"Сервис модели считает · {int(waited)} с")
+
+    _plato_job_path(job_id).unlink(missing_ok=True)
+    _plato_job_path(job_id, "taken").unlink(missing_ok=True)
+    _PLATON_LOG.info("Platon pull job %s expired after %.0fs", job_id, waited)
+    raise HTTPException(
+        status_code=504,
+        detail=(f"Сервис модели не забрал задание за {int(waited)} с. "
+                "Проверьте, запущен ли на нём разбор очереди (PLATO_PULL_URL)."))
+
+
+def _plato_queue_guard(request: Request) -> None:
+    """Очередь открыта только по общему секрету и только когда она включена."""
+    if not _PLATO_PULL_ENABLED:
+        raise HTTPException(
+            status_code=503,
+            detail="Очередь заданий выключена: задайте PLATO_AI_PULL=1 на этом сервере.")
+    expected = _env_str("PLATO_AI_PROXY_SECRET", "").strip()
+    if not expected:
+        raise HTTPException(
+            status_code=503,
+            detail="PLATO_AI_PROXY_SECRET не задан: очередь заданий выключена.")
+    supplied = str(request.headers.get("X-Plato-Secret") or "")
+    if not hmac.compare_digest(supplied, expected):
+        raise HTTPException(status_code=403, detail="Неверный секрет служебного вызова.")
+
+
+class PlatoJobResult(BaseModel):
+    answer: dict[str, Any] | None = None
+    error: str = ""
+    status: int = 502
+
+
+@app.get("/internal/plato/queue")
+def internal_plato_queue(request: Request, wait: float = 0.0) -> dict[str, Any]:
+    """Очередное задание для сервиса модели.
+
+    Запрос ждёт появления задания до `wait` секунд: без ожидания сервис модели
+    либо частил бы опросом, либо отвечал бы с задержкой в целый интервал.
+    """
+    _plato_queue_guard(request)
+    limit = min(max(0.0, float(wait or 0.0)), _PLATO_QUEUE_WAIT_SECONDS)
+    deadline = time.monotonic() + limit
+    while True:
+        job = _plato_job_claim()
+        if job:
+            _PLATON_LOG.info("Platon pull job %s taken", job.get("job_id"))
+            return job
+        if time.monotonic() >= deadline:
+            return {}
+        time.sleep(_PLATO_QUEUE_POLL_SECONDS)
+
+
+@app.post("/internal/plato/queue/{job_id}")
+def internal_plato_queue_result(job_id: str, req: PlatoJobResult,
+                                request: Request) -> dict[str, Any]:
+    """Ответ на задание. Неудача кладётся так же, как успех: ждать нечего."""
+    _plato_queue_guard(request)
+    job_id = str(job_id or "").strip().lower()
+    if not _TRACE_ID_RE.fullmatch(job_id):
+        raise HTTPException(status_code=400, detail="Неверный номер задания.")
+    if isinstance(req.answer, dict) and req.answer:
+        _plato_answer_put("pull" + job_id, {"answer": req.answer})
+    else:
+        _plato_answer_put("pull" + job_id, {
+            "error": str(req.error or "Сервис модели вернул пустой ответ.")[:700],
+            "status": int(req.status or 502)})
+    _plato_job_path(job_id, "taken").unlink(missing_ok=True)
+    return {"stored": True}
+
+
+def _plato_pull_once(base: str, headers: dict[str, str]) -> bool:
+    """Один круг: забрать задание, посчитать, вернуть ответ.
+
+    Возвращает True, если задание было. Ошибка модели возвращается тем же путём,
+    что и ответ: молчание оставило бы ядро ждать до конца срока впустую.
+    """
+    try:
+        request = urllib.request.Request(
+            f"{base}/internal/plato/queue?wait={int(_PLATO_QUEUE_WAIT_SECONDS)}",
+            headers=headers, method="GET")
+        with urllib.request.urlopen(
+                request, timeout=_PLATO_QUEUE_WAIT_SECONDS + 15) as response:
+            job = json.loads(response.read().decode("utf-8") or "{}")
+    except Exception as exc:
+        _PLATON_LOG.info("Platon pull: очередь недоступна: %s", type(exc).__name__)
+        time.sleep(5.0)
+        return False
+
+    job_id = str((job or {}).get("job_id") or "")
+    if not job_id:
+        return False
+
+    started = time.monotonic()
+    try:
+        body: dict[str, Any] = {"answer": _openai_direct_request(job.get("payload") or {})}
+    except HTTPException as exc:
+        body = {"error": str(exc.detail)[:700], "status": exc.status_code}
+    except Exception as exc:
+        body = {"error": f"{type(exc).__name__}: {str(exc)[:600]}", "status": 502}
+
+    data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+    post_headers = {**headers, "Content-Type": "application/json"}
+    for attempt in (1, 2, 3):
+        try:
+            request = urllib.request.Request(
+                f"{base}/internal/plato/queue/{job_id}", data=data,
+                headers=post_headers, method="POST")
+            with urllib.request.urlopen(request, timeout=30) as response:
+                response.read(256)
+            _PLATON_LOG.info("Platon pull job %s done in %.1fs", job_id,
+                             time.monotonic() - started)
+            return True
+        except Exception as exc:
+            _PLATON_LOG.info("Platon pull: ответ по заданию %s не доставлен (%d/3): %s",
+                             job_id, attempt, type(exc).__name__)
+            time.sleep(2.0 * attempt)
+    return True
+
+
+def _plato_pull_worker() -> None:
+    base = _PLATO_PULL_URL
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": USER_AGENT,
+        "X-Plato-Secret": _PLATO_AI_PROXY_SECRET,
+        "Connection": "close",
+    }
+    _PLATON_LOG.info("Platon pull worker started for %s", base)
+    while True:
+        try:
+            _plato_pull_once(base, headers)
+        except Exception as exc:  # поток обязан пережить любую неожиданность
+            _PLATON_LOG.info("Platon pull worker error: %s", type(exc).__name__)
+            time.sleep(5.0)
+
+
+@app.on_event("startup")
+def _start_plato_pull_worker() -> None:
+    """Очередь разбирает тот, у кого есть ключ и нет своего прокси, — Render."""
+    if _PLATO_PULL_URL and not _PLATO_AI_URL and os.getenv("OPENAI_API_KEY", "").strip():
+        threading.Thread(target=_plato_pull_worker, name="plato-pull", daemon=True).start()
+
+
+def _plato_internal_guard(request: Request) -> None:
+    """Служебный путь обслуживает только тот, у кого нет своего прокси."""
     # Секрет задан на обеих машинах — он общий, — поэтому одного секрета мало,
     # чтобы отличить Render от ядра. Отличает адрес прокси: он задан только у
     # клиента. Без этой проверки вызов этого пути на ядре ушёл бы прямо на
@@ -18258,9 +20231,24 @@ def internal_plato_chat(req: PlatoAiProxyRequest, request: Request) -> dict[str,
     supplied = str(request.headers.get("X-Plato-Secret") or "")
     if not hmac.compare_digest(supplied, expected):
         raise HTTPException(status_code=403, detail="Неверный секрет служебного вызова.")
+
+
+@app.post("/internal/plato/chat")
+def internal_plato_chat(req: PlatoAiProxyRequest, request: Request) -> dict[str, Any]:
+    """Служебный вызов OpenAI для сервера, где ключа нет. Наружу не публикуется.
+
+    Браузер сюда не ходит: он обращается только к своему серверу, поэтому нет
+    ни CORS, ни зависимости от VPN, ни раскрытия внутреннего адреса.
+    """
+    _plato_internal_guard(request)
     payload = req.payload if isinstance(req.payload, dict) else {}
     if not payload:
         raise HTTPException(status_code=400, detail="Пустой запрос к модели.")
+    ticket = str(req.ticket or "").strip().lower()
+    if ticket and _TRACE_ID_RE.fullmatch(ticket):
+        return _plato_proxy_job(ticket, payload)
+    # Клиент без билета забрать ответ опросом не умеет — держим соединение,
+    # как держали: ломать старую машину выкаткой новой мы не вправе.
     return _openai_direct_request(payload)
 
 
@@ -18310,9 +20298,23 @@ def _call_openai_tool_agent(
     tool_cache: dict[str, dict[str, Any]] = {}
     final_ready_seen = False
     effort = _agent_reasoning_effort(model)
+    # Номер запуска — в поток: вызов модели лежит на три этажа ниже и стадию
+    # оттуда писать больше нечем.
+    _PLATO_TRACE_LOCAL.trace_id = trace_id
+    conversation_started = time.monotonic()
     for _round in range(_AGENT_MAX_TOOL_ROUNDS):
+        spent = time.monotonic() - conversation_started
+        if spent > _PLATO_AGENT_BUDGET_SECONDS:
+            # Восемь раундов по несколько минут — это полчаса, которых нет ни у
+            # кого. Дальше не спрашиваем, а собираем ответ из посчитанного:
+            # оборванный разговор человеку бесполезен, неполный — нет.
+            _PLATON_LOG.info("Platon [%s] budget spent after %d rounds (%.0fs), synthesising",
+                             trace_id, _round, spent)
+            _plato_trace_write(trace_id, "synthesis", "Собираю ответ из посчитанного")
+            break
         _plato_trace_write(trace_id, f"llm_{_round + 1}",
                            "Платон Сергеевич думает" + (f" · шаг {_round + 1}" if _round else ""))
+        round_started = time.monotonic()
         payload = {
             "model": model,
             "instructions": _AGENT_INSTRUCTIONS,
@@ -18328,6 +20330,10 @@ def _call_openai_tool_agent(
         if effort:
             payload["reasoning"] = {"effort": effort}
         response = _openai_responses_request(payload)
+        # Время раунда — то, чего не хватало при разборе «Платон завис»: по
+        # логу видно, ушли минуты в модель или в цепочку до неё.
+        _PLATON_LOG.info("Platon [%s] round %d took %.1fs",
+                         trace_id, _round + 1, time.monotonic() - round_started)
         output = response.get("output") or []
         input_items.extend(output)
 
@@ -18400,6 +20406,7 @@ def _call_openai_tool_agent(
         "max_output_tokens": 2600,
         "store": False,
     }
+    _plato_trace_write(trace_id, "synthesis", "Собираю окончательный ответ")
     try:
         final_response = _openai_responses_request(synthesis_payload)
         answer = _extract_openai_text(final_response)
@@ -18435,7 +20442,18 @@ def _call_openai_tool_agent(
                 "forced_synthesis": True,
             }
 
-    raise HTTPException(status_code=502, detail="Не удалось сформировать итоговый ответ по выполненным расчётам.")
+    # Сюда доходят, когда модель молчала весь разговор. Молча отдавать 502
+    # нельзя: человеку нужно знать, где ушло время — иначе «завис» неотличимо
+    # от «думает».
+    spent_total = time.monotonic() - conversation_started
+    raise HTTPException(
+        status_code=502,
+        detail=(
+            "Не удалось сформировать итоговый ответ по выполненным расчётам: "
+            f"модель молчала {int(spent_total)} с, инструментов выполнено "
+            f"{len(tools_used)}. Расчётная модель работает — повторите вопрос."
+        ),
+    )
 
 
 # --- Ускорение Платона -----------------------------------------------------
@@ -18453,6 +20471,7 @@ _PLATO_STAGE_DIR = Path(__file__).resolve().parent / "data" / "platon_state" / "
 _PLATO_TRACE_TTL = 3600
 _PLATO_ANSWER_TTL = 600
 _TRACE_ID_RE = re.compile(r"^[0-9a-f]{8,32}$")
+_PLATO_TRACE_LOCAL = threading.local()
 
 
 def _plato_stage_path(kind: str, key: str) -> Path:
@@ -18473,12 +20492,25 @@ def _plato_trace_write(trace_id: str, stage: str, label: str) -> None:
         pass  # стадия — удобство; ронять из-за неё ответ нельзя
 
 
+def _plato_trace_stage(stage: str, label: str) -> None:
+    """Стадия текущего запроса — оттуда, где номер запуска не передавали.
+
+    Вызов модели лежит на три этажа ниже разбора вопроса, и тащить номер
+    параметром через каждый — значит трогать всё, что зовёт OpenAI. Работа
+    каждого запроса и так идёт в своём потоке, поэтому номер живёт в потоке.
+    """
+    trace_id = getattr(_PLATO_TRACE_LOCAL, "trace_id", "") or ""
+    if trace_id:
+        _plato_trace_write(trace_id, stage, label)
+
+
 def _plato_stage_cleanup() -> None:
     try:
         cutoff = time.time() - _PLATO_TRACE_TTL
-        for path in _PLATO_STAGE_DIR.glob("*.json"):
-            if path.stat().st_mtime < cutoff:
-                path.unlink(missing_ok=True)
+        for pattern in ("*.json", "*.taken"):
+            for path in _PLATO_STAGE_DIR.glob(pattern):
+                if path.stat().st_mtime < cutoff:
+                    path.unlink(missing_ok=True)
     except OSError:
         pass
 
@@ -18533,6 +20565,195 @@ def _plato_answer_put(key: str, payload: dict[str, Any]) -> None:
         )
     except (OSError, TypeError, ValueError):
         pass
+
+
+# --- Кто пользуется и о чём спрашивает --------------------------------------
+# Пользователей считали по ощущениям, а вопросы читали через плечо. Ни того, ни
+# другого не хватает, чтобы решать, что делать дальше: непонятно, растёт ли
+# аудитория, и непонятно, о чём её спрашивают чаще всего.
+#
+# Журнал — построчный файл на день. Строка пишется одним `write` в режиме
+# добавления: воркеров два, и перезаписывать общий файл им нельзя. Хранится
+# полгода, чистится при записи. Выключается переменной, потому что журнал
+# пользовательских текстов — это данные людей, и решение хранить их принимает
+# владелец, а не код.
+
+_USAGE_DIR = Path(_env_str("DEVELOPAID_USAGE_DIR", "").strip()
+                  or (Path(__file__).resolve().parent / "data" / "usage"))
+_USAGE_KEEP_DAYS = max(1, int(_env_float("DEVELOPAID_USAGE_KEEP_DAYS", 180.0)))
+_USAGE_TEXT_LIMIT = 500
+_USAGE_LOCK = threading.Lock()
+_USAGE_SWEPT: dict[str, str] = {}
+
+
+def _usage_enabled() -> bool:
+    return _env_str("DEVELOPAID_USAGE_JOURNAL", "on").strip().lower() not in {
+        "off", "0", "no", "false", "выкл"}
+
+
+def _usage_day(at: float) -> str:
+    return datetime.fromtimestamp(at, tz=timezone.utc).strftime("%Y-%m-%d")
+
+
+def _usage_path(day: str) -> Path:
+    return _USAGE_DIR / f"events-{day}.jsonl"
+
+
+def _usage_sweep(today: str) -> None:
+    """Старое удаляется раз в день, а не на каждой записи."""
+    if _USAGE_SWEPT.get("day") == today:
+        return
+    _USAGE_SWEPT["day"] = today
+    try:
+        cutoff = (datetime.now(tz=timezone.utc)
+                  - timedelta(days=_USAGE_KEEP_DAYS)).strftime("%Y-%m-%d")
+        for path in _USAGE_DIR.glob("events-*.jsonl"):
+            if path.stem[len("events-"):] < cutoff:
+                path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def usage_track(kind: str, *, surface: str = "bot", chat_id: int = 0, user_id: int = 0,
+                name: str = "", text: str = "", **extra: Any) -> None:
+    """Одно событие в журнал. Молча — учёт не имеет права ронять ответ."""
+    if not _usage_enabled():
+        return
+    at = time.time()
+    record = {
+        "at": round(at, 3),
+        "surface": surface,
+        "kind": kind,
+        "chat": int(chat_id or 0),
+        "user": int(user_id or 0),
+        "name": str(name or "")[:80],
+        "text": str(text or "").strip()[:_USAGE_TEXT_LIMIT],
+    }
+    record.update({key: value for key, value in extra.items() if value not in (None, "")})
+    day = _usage_day(at)
+    try:
+        with _USAGE_LOCK:
+            _USAGE_DIR.mkdir(parents=True, exist_ok=True)
+            _usage_sweep(day)
+            with _usage_path(day).open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except (OSError, TypeError, ValueError):
+        pass
+
+
+def usage_events(days: int = 30) -> list[dict[str, Any]]:
+    """События за последние N суток, по возрастанию времени."""
+    events: list[dict[str, Any]] = []
+    now = datetime.now(tz=timezone.utc)
+    for back in range(max(1, int(days))):
+        path = _usage_path((now - timedelta(days=back)).strftime("%Y-%m-%d"))
+        if not path.is_file():
+            continue
+        try:
+            for line in path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    continue  # оборванная строка не отменяет остальной день
+                if isinstance(record, dict):
+                    events.append(record)
+        except OSError:
+            continue
+    events.sort(key=lambda item: float(item.get("at") or 0))
+    return events
+
+
+def usage_summary(days: int = 30) -> dict[str, Any]:
+    """Свод: сколько людей, сколько новых, что нажимают, о чём спрашивают.
+
+    Читается весь журнал, а не окно свода: «новый» — это тот, кого раньше не
+    было вообще, а не тот, кого не было последний месяц. По окну в тридцать дней
+    вернувшийся через полгода человек считался новым. Команда ручная, файлов за
+    полгода меньше двух сотен — цена чтения того стоит.
+    """
+    events = usage_events(max(days, _USAGE_KEEP_DAYS))
+    now = time.time()
+
+    def users_since(seconds: float) -> set[int]:
+        return {int(e.get("user") or 0) for e in events
+                if e.get("surface") == "bot" and float(e.get("at") or 0) >= now - seconds
+                and int(e.get("user") or 0)}
+
+    window = [e for e in events if float(e.get("at") or 0) >= now - days * 86400]
+    seen_before: dict[int, float] = {}
+    for event in events:
+        user = int(event.get("user") or 0)
+        if user and user not in seen_before:
+            seen_before[user] = float(event.get("at") or 0)
+
+    commands: dict[str, int] = {}
+    buttons: dict[str, int] = {}
+    questions: list[dict[str, Any]] = []
+    for event in window:
+        kind = str(event.get("kind") or "")
+        text = str(event.get("text") or "")
+        if kind == "command":
+            key = text.split(maxsplit=1)[0].split("@", 1)[0].lower()
+            commands[key] = commands.get(key, 0) + 1
+        elif kind == "button":
+            buttons[text] = buttons.get(text, 0) + 1
+        elif kind == "question":
+            questions.append(event)
+
+    return {
+        "days": int(days),
+        "users_today": len(users_since(86400)),
+        "users_7d": len(users_since(7 * 86400)),
+        "users_30d": len(users_since(30 * 86400)),
+        "users_window": len({int(e.get("user") or 0) for e in window
+                             if e.get("surface") == "bot" and int(e.get("user") or 0)}),
+        "new_users_window": len([user for user, first in seen_before.items()
+                                 if first >= now - days * 86400]),
+        "events_window": len(window),
+        "questions_bot": len([q for q in questions if q.get("surface") == "bot"]),
+        "questions_site": len([q for q in questions if q.get("surface") == "site"]),
+        "top_commands": sorted(commands.items(), key=lambda kv: -kv[1])[:8],
+        "top_buttons": sorted(buttons.items(), key=lambda kv: -kv[1])[:8],
+        "last_questions": questions[-15:],
+        "enabled": _usage_enabled(),
+        "keep_days": _USAGE_KEEP_DAYS,
+        "dir": str(_USAGE_DIR),
+    }
+
+
+def usage_csv(days: int = 30) -> bytes:
+    """Выгрузка для разбора вопросов не глазами.
+
+    Точка с запятой и BOM — чтобы Excel открыл кириллицу и не склеил колонки.
+    """
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, delimiter=";")
+    writer.writerow(["время (UTC)", "поверхность", "событие", "chat_id", "user_id",
+                     "кто", "текст"])
+    for event in usage_events(days):
+        writer.writerow([
+            datetime.fromtimestamp(float(event.get("at") or 0),
+                                   tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+            event.get("surface", ""), event.get("kind", ""),
+            event.get("chat", ""), event.get("user", ""),
+            event.get("name", ""), str(event.get("text") or "").replace("\n", " "),
+        ])
+    return ("﻿" + buffer.getvalue()).encode("utf-8")
+
+
+def usage_admin_ids() -> set[int]:
+    """Кому показывать статистику. Пусто — значит никому: список чужих вопросов
+    не та вещь, которую отдают по умолчанию."""
+    raw = _env_str("DEVELOPAID_ADMIN_IDS", "")
+    ids: set[int] = set()
+    for piece in re.split(r"[,\s;]+", raw or ""):
+        piece = piece.strip()
+        if piece.lstrip("-").isdigit():
+            ids.add(int(piece))
+    return ids
 
 
 # --- локальные сценарии кнопок ---------------------------------------------
@@ -18762,6 +20983,22 @@ def agent_status() -> dict[str, Any]:
         # «Platon route» с чужой машины нечем.
         "route": _plato_route(),
         "proxy_configured": bool(_PLATO_AI_URL and _PLATO_AI_PROXY_SECRET),
+        # Обратная схема: ядро не зовёт сервис модели, а ждёт, пока заберут.
+        "pull_queue": {
+            "enabled": _PLATO_PULL_ENABLED,
+            "waiting_jobs": len(list(_PLATO_STAGE_DIR.glob("job_*.json")))
+                            if _PLATO_STAGE_DIR.exists() else 0,
+            "worker_here": bool(_PLATO_PULL_URL and not _PLATO_AI_URL),
+        },
+        # Пинг против засыпания сервиса модели: видно, живёт ли он и когда
+        # последний раз отзывался, — иначе «Ошибка AI (504)» объяснять нечем.
+        "keepalive": {
+            "enabled": bool(_PLATO_KEEPALIVE["enabled"]),
+            "every_minutes": _PLATO_KEEPALIVE_MINUTES if _PLATO_AI_URL else 0.0,
+            "url": _plato_keepalive_url(),
+            "last_ok": _PLATO_KEEPALIVE["last_ok"],
+            "last_error": _PLATO_KEEPALIVE["last_error"],
+        },
         "model": os.getenv("OPENAI_AGENT_MODEL", "gpt-5.6"),
         "reasoning_effort": _agent_reasoning_effort(
             os.getenv("OPENAI_AGENT_MODEL", "gpt-5.6").strip() or "gpt-5.6") or "default",
@@ -18773,8 +21010,15 @@ def agent_status() -> dict[str, Any]:
     }
 
 
-@app.post("/agent/chat")
-def agent_chat(req: AgentChatRequest, request: Request) -> dict[str, Any]:
+def _plato_chat_launch(
+    req: AgentChatRequest, request: Request,
+) -> tuple[str, threading.Event, dict[str, Any]]:
+    """Проверки, кэш и запуск работы фоном.
+
+    Возвращает номер запуска, признак завершения и общий с работой словарь
+    результата. Ждать завершения — дело зовущего: у окна на это двадцать
+    секунд, у бота столько, сколько нужно.
+    """
     _agent_rate_limit(request)
     message = str(req.message or "").strip()
     if not message:
@@ -18794,38 +21038,230 @@ def agent_chat(req: AgentChatRequest, request: Request) -> dict[str, Any]:
     # Кэш смотрится до пересчёта модели: повторный вопрос по тем же вводным
     # не должен стоить ни пересчёта, ни похода в модель.
     cache_key = _plato_answer_key(req, scenario)
+    outcome: dict[str, Any] = {}
+    done = threading.Event()
     cached = _plato_answer_get(cache_key)
     if cached is not None:
         _plato_trace_write(trace_id, "done", "Ответ найден в кэше")
         _PLATON_LOG.info("Platon [%s] cache hit (%.2fs)", trace_id, time.monotonic() - started)
-        return {**cached, "cached": True, "trace_id": trace_id}
+        outcome["result"] = cached
+        outcome["cached"] = True
+        done.set()
+        return trace_id, done, outcome
 
-    _plato_trace_write(trace_id, "model", "Пересчитываю модель DevelopAid")
-    bundle = _run_authoritative_model(req.inputs, req.tep, req.rates, req.phasing)
+    def _remember_failure(exc: Exception) -> None:
+        """Неудача тоже кладётся под номер запуска.
 
-    if scenario:
-        stage_label, handler = _AGENT_LOCAL_SCENARIOS[scenario]
-        _plato_trace_write(trace_id, "local", f"Считаю движком: {stage_label.lower()}")
-        answer = handler(req, bundle)
-        result = {
-            "answer": answer,
-            "model": "developaid-engine",
-            "source": "local",
-            "response_id": None,
-            "tools_used": [{"name": scenario, "arguments": {}}],
-            "proposals": [],
-        }
-        _PLATON_LOG.info("Platon [%s] local scenario %s (%.2fs)",
-                         trace_id, scenario, time.monotonic() - started)
-    else:
-        result = _call_openai_tool_agent(req, bundle, trace_id=trace_id)
-        _PLATON_LOG.info("Platon [%s] llm answer, %d tool calls (%.2fs)",
-                         trace_id, len(result.get("tools_used") or []),
-                         time.monotonic() - started)
+        Иначе окно, потерявшее соединение, опрашивает результат до самого конца
+        и не узнаёт, что работа давно упала: «забираю готовый ответ» висит
+        пять минут вместо честной причины.
+        """
+        detail = getattr(exc, "detail", None) or str(exc)
+        _plato_answer_put("run" + trace_id, {
+            "answer": "", "error": str(detail)[:500],
+            "model": "", "source": "error", "response_id": None,
+            "tools_used": [], "proposals": [],
+        })
 
-    _plato_answer_put(cache_key, result)
-    _plato_trace_write(trace_id, "done", "Готово")
-    return {**result, "cached": False, "trace_id": trace_id}
+    def _work() -> dict[str, Any]:
+        _plato_trace_write(trace_id, "model", "Пересчитываю модель DevelopAid")
+        bundle = _run_authoritative_model(req.inputs, req.tep, req.rates, req.phasing)
+
+        if scenario:
+            stage_label, handler = _AGENT_LOCAL_SCENARIOS[scenario]
+            _plato_trace_write(trace_id, "local", f"Считаю движком: {stage_label.lower()}")
+            result = {
+                "answer": handler(req, bundle),
+                "model": "developaid-engine",
+                "source": "local",
+                "response_id": None,
+                "tools_used": [{"name": scenario, "arguments": {}}],
+                "proposals": [],
+            }
+            _PLATON_LOG.info("Platon [%s] local scenario %s (%.2fs)",
+                             trace_id, scenario, time.monotonic() - started)
+        else:
+            result = _call_openai_tool_agent(req, bundle, trace_id=trace_id)
+            _PLATON_LOG.info("Platon [%s] llm answer, %d tool calls (%.2fs)",
+                             trace_id, len(result.get("tools_used") or []),
+                             time.monotonic() - started)
+
+        _plato_answer_put(cache_key, result)
+        # Ответ кладётся ещё и под номер запуска: соединение до окна короче
+        # работы, и забирают его отдельным запросом. На диск — потому что
+        # воркеров два, и опрос попадёт в другой.
+        _plato_answer_put("run" + trace_id, result)
+        _plato_trace_write(trace_id, "done", "Готово")
+        _PLATON_LOG.info(
+            "Platon [%s] done route=%s model=%s kind=%s %.2fs",
+            trace_id, _plato_route(), result.get("model") or "-",
+            "scenario:" + scenario if scenario else "free", time.monotonic() - started)
+        return result
+
+    def _worker() -> None:
+        try:
+            outcome["result"] = _work()
+        except Exception as exc:
+            _remember_failure(exc)
+            _plato_trace_write(trace_id, "done", "Не получилось")
+            outcome["error"] = exc
+        finally:
+            done.set()
+
+    # Работа идёт фоном, а не внутри запроса. Прежде запрос держали до конца, и
+    # это упиралось в чужие сроки на всём пути: nginx рвёт на шестидесяти
+    # секундах, мобильный Safari на своём, Render — на своём. Тяжёлый вопрос
+    # гоняет модель с инструментами по нескольку раундов и не укладывается ни в
+    # один из них: работа доходила до конца, а человек видел «Load failed» или
+    # вечное «думает». Теперь длительность работы не упирается ни в чей таймаут.
+    threading.Thread(target=_worker, name="platon-" + trace_id, daemon=True).start()
+    return trace_id, done, outcome
+
+
+def _plato_chat_result(trace_id: str, outcome: dict[str, Any]) -> dict[str, Any]:
+    if outcome.get("error") is not None:
+        raise outcome["error"]
+    return {**outcome["result"], "cached": bool(outcome.get("cached")), "trace_id": trace_id}
+
+
+_PLATO_SELFTEST = {"at": 0.0, "result": None}
+_PLATO_SELFTEST_INTERVAL = 20.0
+_PLATO_SELFTEST_BUDGET = max(15.0, _env_float("PLATO_SELFTEST_SECONDS", 60.0))
+
+
+@app.get("/agent/selftest")
+def agent_selftest(request: Request) -> dict[str, Any]:
+    """Проходит цепочку до модели и называет, где она встала.
+
+    «Платон не отвечает» разбиралось скриншотами и логом закрытого хостинга, а
+    вопрос всегда один: доходит ли вызов до модели и сколько это занимает.
+    Проверка идёт тем же маршрутом, что и настоящий вопрос, — с тем же секретом,
+    билетом и опросом, — но коротким сроком и запросом на один токен: она
+    отвечает «дошло или нет», а не решает задачу.
+    """
+    _agent_rate_limit(request)
+    now = time.monotonic()
+    if _PLATO_SELFTEST["result"] and now - float(_PLATO_SELFTEST["at"]) < _PLATO_SELFTEST_INTERVAL:
+        # Проверка стоит токенов: частым обновлением страницы её не гоняют.
+        return {**_PLATO_SELFTEST["result"], "cached": True}
+
+    model = os.getenv("OPENAI_AGENT_MODEL", "gpt-5.6").strip() or "gpt-5.6"
+    started = time.monotonic()
+    outcome: dict[str, Any] = {
+        "route": _plato_route(),
+        "model": model,
+        "budget_seconds": int(_PLATO_SELFTEST_BUDGET),
+        "keepalive": {
+            "last_ok": _PLATO_KEEPALIVE["last_ok"],
+            "last_error": _PLATO_KEEPALIVE["last_error"],
+            "url": _plato_keepalive_url(),
+        },
+    }
+    try:
+        response = _openai_responses_request({
+            "model": model,
+            "instructions": "Ответь одним словом: ок.",
+            "input": [{"role": "user", "content": "ок?"}],
+            "max_output_tokens": 16,
+            "store": False,
+        }, budget_seconds=_PLATO_SELFTEST_BUDGET)
+        outcome.update(ok=True, seconds=round(time.monotonic() - started, 1),
+                       response_id=str(response.get("id") or ""))
+    except HTTPException as exc:
+        outcome.update(ok=False, seconds=round(time.monotonic() - started, 1),
+                       status=exc.status_code, error=str(exc.detail)[:500])
+    except Exception as exc:
+        outcome.update(ok=False, seconds=round(time.monotonic() - started, 1),
+                       status=502, error=f"{type(exc).__name__}: {str(exc)[:400]}")
+    outcome["verdict"] = _plato_selftest_verdict(outcome)
+    _PLATO_SELFTEST.update(at=time.monotonic(), result=outcome)
+    _PLATON_LOG.info("Platon selftest route=%s ok=%s %.1fs %s",
+                     outcome["route"], outcome.get("ok"), outcome.get("seconds", 0),
+                     outcome.get("error", ""))
+    return {**outcome, "cached": False}
+
+
+def _plato_selftest_verdict(outcome: dict[str, Any]) -> str:
+    """Человеческий вывод: что делать с этим результатом.
+
+    Голый код ошибки требует знать устройство цепочки; здесь оно уже известно,
+    и незачем заставлять человека вспоминать, чья это сторона.
+    """
+    if outcome.get("ok"):
+        # Маршрутов три, и «через этот сервер» верно только для одного. В
+        # обратной схеме ответ тоже приходит с Render — просто он сам за ним
+        # пришёл, и называть это «своим сервером» значит путать.
+        where = {
+            "render_proxy": "через Render",
+            "render_pull": "через Render, по очереди заданий",
+        }.get(outcome["route"], "на этом сервере")
+        return f"Цепочка работает: ответ за {outcome.get('seconds')} с {where}."
+    error = str(outcome.get("error") or "")
+    if outcome["route"] == "render_pull":
+        if "не забрал задание" in error or outcome.get("status") == 504:
+            return ("Сервис модели не забирает задания из очереди. Проверьте, что на нём "
+                    "задан PLATO_PULL_URL и он перезапущен: ключ и модель ни при чём.")
+        return "Задание забрали, но ответ вернулся ошибкой — текст в поле error."
+    if outcome["route"] == "render_proxy":
+        if "не ответил за" in error or outcome.get("status") == 504:
+            return ("Сервис модели на Render не отвечает этому серверу. Ключ и модель "
+                    "ни при чём: до них вызов не доходит. Проверьте, поднят ли сервис "
+                    "и та ли версия на нём выкачена.")
+        if outcome.get("status") == 403:
+            return "PLATO_AI_PROXY_SECRET на двух машинах разный."
+        if outcome.get("status") == 503:
+            return "Маршрут задан не полностью: смотрите текст ошибки."
+        return "Вызов до Render дошёл, но вернулся ошибкой — текст в поле error."
+    if "OPENAI_API_KEY" in error:
+        return "Ключ OpenAI на этом сервере не задан."
+    return "Вызов модели с этого сервера не прошёл — текст в поле error."
+
+
+@app.post("/agent/chat")
+def agent_chat(req: AgentChatRequest, request: Request) -> dict[str, Any]:
+    """Вопрос Платону. Соединение держится ровно до передачи работы опросу."""
+    # Учёт здесь, а не в общей части: бот идёт тем же путём, но его вопросы уже
+    # записаны в журнал как сообщения — иначе каждый считался бы дважды.
+    usage_track("question", surface="site", text=str(req.message or ""),
+                scenario=str(req.scenario or ""))
+    trace_id, done, outcome = _plato_chat_launch(req, request)
+    if not done.wait(_PLATO_CHAT_HANDOFF_SECONDS):
+        _PLATON_LOG.info("Platon [%s] handed off to polling after %ds",
+                         trace_id, int(_PLATO_CHAT_HANDOFF_SECONDS))
+        return {"pending": True, "trace_id": trace_id}
+    return _plato_chat_result(trace_id, outcome)
+
+
+def plato_answer(req: AgentChatRequest, request: Request) -> dict[str, Any]:
+    """Тот же вопрос, но для того, кому соединение держать не перед кем.
+
+    Бот живёт в этом же процессе и ждёт ответ в своём потоке: отдавать ему
+    «работа принята» бессмысленно — забирать результат ему неоткуда, и человек
+    в телеграме получил бы вместо ответа пустоту.
+    """
+    trace_id, done, outcome = _plato_chat_launch(req, request)
+    if not done.wait(_PLATO_AGENT_WAIT_SECONDS):
+        raise HTTPException(
+            status_code=504,
+            detail=(f"Платон Сергеевич не ответил за {int(_PLATO_AGENT_WAIT_SECONDS)} с. "
+                    "Повторите вопрос."))
+    return _plato_chat_result(trace_id, outcome)
+
+
+@app.get("/agent/result/{trace_id}")
+def agent_result(trace_id: str) -> dict[str, Any]:
+    """Готовый ответ по номеру запуска.
+
+    Нужен, когда соединение с окном оборвалось: работа на сервере при этом
+    доходит до конца, и терять её из-за таймаута промежуточного звена
+    неправильно — человек уже подождал.
+    """
+    if not _TRACE_ID_RE.fullmatch(str(trace_id or "").strip().lower()):
+        raise HTTPException(status_code=400, detail="Неверный идентификатор запроса.")
+    stored = _plato_answer_get("run" + str(trace_id).strip().lower())
+    if stored is None:
+        return {"pending": True}
+    return {**stored, "cached": False, "pending": False, "trace_id": trace_id}
 
 
 @app.get("/current-key-rate")
@@ -18899,6 +21335,14 @@ tfoot th{border-top:2px solid #111;color:#111;background:#fff}
 .chart svg{width:100%;height:100%}.legend{display:flex;gap:18px;font-size:11px;color:#666;margin-top:8px}.legend i{display:inline-block;width:18px;height:3px;background:#111;vertical-align:middle;margin-right:5px}.legend i.gray{background:#999}
 .monthly th{position:sticky;top:0;z-index:2}.monthly td{white-space:nowrap}.monthly .money{font-variant-numeric:tabular-nums}
 .toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:13px}
+/* Оглавление отчёта: он длинный, и до календаря доезжали прокруткой. */
+.report-toc{position:sticky;top:0;z-index:5;background:#fff;border-bottom:1px solid var(--line);
+  padding:10px 0;margin-bottom:16px;display:flex;gap:6px;overflow-x:auto;white-space:nowrap}
+.report-toc a{font-size:12px;font-weight:650;color:#555;text-decoration:none;padding:6px 11px;border:1px solid var(--line)}
+.report-toc a:hover{color:#111;border-color:#111}
+.report-section{scroll-margin-top:56px;margin-bottom:6px}
+.report-section-title{font-size:11px;text-transform:uppercase;letter-spacing:.14em;color:#111;
+  font-weight:750;margin:22px 0 12px;padding-bottom:7px;border-bottom:2px solid #111}
 .import-card{border-top:8px solid #000}
 .expense-bars{display:grid;gap:11px;margin-top:8px}
 .expense-row{display:grid;grid-template-columns:minmax(180px,1.25fr) minmax(220px,3fr) 70px 120px;gap:10px;align-items:center;font-size:12px}
@@ -18940,7 +21384,11 @@ details.cadastral-box>summary::marker{color:#888}
 .land-grid small{display:block;color:#777;font-size:10px;text-transform:uppercase;letter-spacing:.06em}
 .land-grid b{display:block;margin-top:3px;font-weight:600;line-height:1.35}
 .land-links{margin-top:9px;font-size:11px}
-.mo-box{border-left:4px solid #111}
+.mo-box{border-left:4px solid #111;margin-top:12px}
+/* Запасной путь: виден, но не спорит за внимание с главным. */
+.import-fallback{margin-top:14px;border-top:1px solid #e2e2e0;padding-top:10px}
+.import-fallback>summary{font-size:12px;color:#777;cursor:pointer;padding:2px 0}
+.import-fallback[open]>summary{color:#111;margin-bottom:4px}
 .mo-params{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px 14px;margin-top:12px}
 .mo-params .field label{font-size:11px}
 .mo-params input[readonly]{background:#eeeeec;color:#444}
@@ -19162,7 +21610,7 @@ details.cadastral-box>summary::marker{color:#888}
           <h3>Участок</h3>
           <p>Кадастровый номер, адрес или координаты «широта, долгота». Несколько номеров — через запятую, точку с запятой или с новой строки; повторы удаляются, за один запрос до 30 участков.</p>
           <div class="cadastral-entry">
-            <textarea id="cadastralNumbers" placeholder="77:02:0016009:1934, 77:02:0016009:1935&#10;или: 50:12:0100131:497&#10;или: Московская область, г. Мытищи, ул. Мира, 1"></textarea>
+            <textarea id="cadastralNumbers" oninput="dropStaleLandPreview()" placeholder="77:02:0016009:1934, 77:02:0016009:1935&#10;или: 50:12:0100131:497&#10;или: Московская область, г. Мытищи, ул. Мира, 1"></textarea>
             <button id="cadastralAnalyzeButton" class="btn dark" onclick="obtainTep()">Получить ТЭП</button>
           </div>
           <div class="import-actions" style="margin-top:8px">
@@ -19188,19 +21636,10 @@ details.cadastral-box>summary::marker{color:#888}
           </div>
           <iframe id="genplanAutomationFrame" class="genplan-automation-frame" title="Автоматический расчёт ТЭП ГлавАПУ" aria-hidden="true"></iframe>
         </div>
-        <details class="cadastral-box mo-box" id="moParamsBox">
-          <summary>Параметры расчёта по Московской области</summary>
-          <p>Заполняются из справочников автоматически. Меняйте, только если знаете фактические значения по проекту — введённое всегда важнее справочного. <b>Правка любого параметра сразу пересчитывает результат</b> по тому же участку.</p>
-          <div class="mo-params">
-            <div class="field"><label>Плотность <span class="unit">м² на 1 га · то же поле, что на вкладке ТЭП</span></label><input type="number" id="moDensity" value="30000" step="500"></div>
-            <div class="field"><label>Площадь участка вручную <span class="unit">га, если участка нет в ЕГРН · то же поле, что на вкладке ТЭП</span></label><input type="number" id="moArea" value="" step="0.0001" placeholder="из ЕГРН"></div>
-            <div class="field"><label>Городской округ <span class="unit">для УПКС и Кср</span></label><select id="moDistrict"><option value="">определить по участку</option></select></div>
-            <div class="field"><label>Средняя цена м², Кср <span class="unit" id="moPriceUnit">₽/м² · из справочника</span></label><input type="number" id="moPrice" value="" step="1000" readonly><label class="mo-manual"><input type="checkbox" id="moPriceManual" onchange="toggleMoPrice()"> задать вручную</label></div>
-            <div class="field"><label>Коэффициент доходности Кд <span class="unit" id="moKdUnit">доля · из справочника</span></label><input type="number" id="moKd" value="" step="0.01" readonly><label class="mo-manual"><input type="checkbox" id="moKdManual" onchange="toggleMoKd()"> задать вручную</label></div>
-            <div class="field"><label>Средняя площадь квартиры <span class="unit">м²</span></label><input type="number" id="moFlat" value="58.75" step="0.25"></div>
-          </div>
-          <div class="mo-price-line"><span id="moPriceState">Справочники загружаются…</span></div>
-        </details>
+        <!-- Результат расчёта идёт сразу за сведениями ЕГРН. Прежде между
+             ними стояли параметры Подмосковья и загрузка готового файла, и
+             посчитанный ТЭП оказывался в самом низу карточки: человек нажимал
+             кнопку и не находил ответа там, где его ищут. -->
         <div id="moStatus" class="import-status" style="display:none"></div>
         <div id="moPreview" class="cadastral-preview" style="display:none">
             <div id="moSummary" class="import-summary"></div>
@@ -19210,19 +21649,6 @@ details.cadastral-box>summary::marker{color:#888}
             </div>
             <div id="moTables"></div>
             <div id="moWarnings" class="note warning"></div>
-        </div>
-        <div class="import-divider">Либо загрузить готовый ТЭП</div>
-        <div class="upload-line" style="align-items:center">
-          <select id="serverPresetSelect" style="min-width:260px">
-            <option value="">Предустановка с сервера…</option>
-          </select>
-          <button class="btn dark" onclick="loadServerPreset()">Загрузить предустановку</button>
-          <a id="serverPresetDownload" class="btn" href="#" style="display:none;text-decoration:none">Скачать Excel</a>
-        </div>
-        <div style="font-size:11px;color:#888;margin:7px 0 8px">или загрузить свой файл</div>
-        <div class="upload-line">
-          <input type="file" id="glavapuFile" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
-          <button class="btn dark" onclick="uploadGlavapu()">Разобрать файл</button>
         </div>
         <div id="glavapuStatus" class="import-status">Можно выбрать готовую предустановку Мишина / Мытищи с сервера или загрузить свой .xlsx ГлавАПУ.</div>
         <div id="glavapuPreview" class="import-preview" style="display:none">
@@ -19235,10 +21661,31 @@ details.cadastral-box>summary::marker{color:#888}
             <thead><tr><th>Показатель</th><th>Распознано</th><th>Ед.</th><th>Куда попадёт</th></tr></thead>
             <tbody id="glavapuRows"></tbody>
           </table></div>
-          <details><summary style="font-size:13px;padding:8px 0">Примечания к распознаванию</summary>
-            <div id="glavapuWarnings" class="note warning"></div>
+          <!-- Предупреждения показываются, только когда есть о чём. Справка о
+               том, как читается файл, уехала в «как это читается» ниже. -->
+          <div id="glavapuWarnings" class="note warning" style="display:none"></div>
+          <details id="glavapuNotesBox" style="display:none"><summary style="font-size:13px;padding:8px 0">Как читается файл</summary>
+            <div id="glavapuNotes" class="note"></div>
           </details>
         </div>
+        <!-- Загрузка готового файла — запасной путь для тех, у кого он уже на
+             руках, а не первый шаг. Свёрнута, чтобы не разрывать «ввёл участок
+             — получил ТЭП». -->
+        <details class="import-fallback">
+          <summary>Готовый ТЭП: предустановка или файл ГлавАПУ</summary>
+          <div class="upload-line" style="align-items:center;margin-top:10px">
+            <select id="serverPresetSelect" style="min-width:260px">
+              <option value="">Предустановка с сервера…</option>
+            </select>
+            <button class="btn dark" onclick="loadServerPreset()">Загрузить предустановку</button>
+            <a id="serverPresetDownload" class="btn" href="#" style="display:none;text-decoration:none">Скачать Excel</a>
+          </div>
+          <div style="font-size:11px;color:#888;margin:7px 0 8px">или загрузить свой файл</div>
+          <div class="upload-line">
+            <input type="file" id="glavapuFile" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
+            <button class="btn dark" onclick="uploadGlavapu()">Разобрать файл</button>
+          </div>
+        </details>
       </div>
       <div class="card">
         <div class="section-title">Вводные данные</div>
@@ -19271,6 +21718,23 @@ details.cadastral-box>summary::marker{color:#888}
           </div>
         </div>
         <div id="siteDensityWarn" class="note warning" style="display:none"></div>
+        <!-- Параметры Подмосковья стоят здесь, а не на «Вводных»: два поля из
+             шести — та же плотность и та же площадь участка, что выше, и рядом
+             видно, что правится одно и то же. На «Вводных» они разрывали путь
+             «ввёл участок — получил ТЭП». -->
+        <details class="cadastral-box mo-box" id="moParamsBox">
+          <summary>Параметры расчёта по Московской области</summary>
+          <p>Заполняются из справочников автоматически. Меняйте, только если знаете фактические значения по проекту — введённое всегда важнее справочного. <b>Правка любого параметра сразу пересчитывает результат</b> по тому же участку; результат показывается на вкладке «Вводные», под сведениями ЕГРН.</p>
+          <div class="mo-params">
+            <div class="field"><label>Плотность <span class="unit">м² на 1 га · то же поле, что выше</span></label><input type="number" id="moDensity" value="30000" step="500"></div>
+            <div class="field"><label>Площадь участка вручную <span class="unit">га, если участка нет в ЕГРН · то же поле, что выше</span></label><input type="number" id="moArea" value="" step="0.0001" placeholder="из ЕГРН"></div>
+            <div class="field"><label>Городской округ <span class="unit">для УПКС и Кср</span></label><select id="moDistrict"><option value="">определить по участку</option></select></div>
+            <div class="field"><label>Средняя цена м², Кср <span class="unit" id="moPriceUnit">₽/м² · из справочника</span></label><input type="number" id="moPrice" value="" step="1000" readonly><label class="mo-manual"><input type="checkbox" id="moPriceManual" onchange="toggleMoPrice()"> задать вручную</label></div>
+            <div class="field"><label>Коэффициент доходности Кд <span class="unit" id="moKdUnit">доля · из справочника</span></label><input type="number" id="moKd" value="" step="0.01" readonly><label class="mo-manual"><input type="checkbox" id="moKdManual" onchange="toggleMoKd()"> задать вручную</label></div>
+            <div class="field"><label>Средняя площадь квартиры <span class="unit">м²</span></label><input type="number" id="moFlat" value="58.75" step="0.25"></div>
+          </div>
+          <div class="mo-price-line"><span id="moPriceState">Справочники загружаются…</span></div>
+        </details>
         <div class="toolbar" style="margin-top:10px">
           <button class="btn" onclick="applyDensityToTep()">Рассчитать ТЭП от площади и плотности</button>
           <span style="color:#777;font-size:12px" id="siteApplyHint">Работает в любом регионе: площадь и плотность можно ввести вручную. Ручной ТЭП, кадастр и проект из калькулятора Подмосковья считаются нормативами РНГП: квартиры = площадь × плотность, социалка, паркинг и офисы — от населения. Москва с ГлавАПУ: квартиры и коммерция 1 этажа по методике DevelopAid (94% / 6% СПП).</span>
@@ -19525,37 +21989,14 @@ details.cadastral-box>summary::marker{color:#888}
         <div class="kpis report-kpis" id="reportKpi"></div>
       </div>
 
-      <div id="phaseReportControls" class="phase-report-nav no-print" style="display:none"></div>
+      <div class="report-toc no-print" id="reportToc"></div>
 
-      <div id="phaseComparisonCard" class="card phase-comparison-card">
-        <div class="section-title">Сравнение очередей</div>
-        <div class="scroll" style="max-height:none"><table class="metric-table">
-          <thead id="phaseComparisonHead"></thead>
-          <tbody id="phaseComparisonBody"></tbody>
-        </table></div>
-        <div class="note">Аналитическая прибыль после аллокации перераспределяет общепроектные расходы только для сравнения очередей. Сводный CF не меняется.</div>
-      </div>
-
-      <div class="report-3col">
-        <div class="card">
-          <div class="section-title">Экономика проекта</div>
-          <table class="metric-table metric-compact" id="economicsTable"></table>
-        </div>
-        <div class="card">
-          <div class="section-title">Ключевые параметры</div>
-          <table class="metric-table metric-compact" id="projectParamsTable"></table>
-        </div>
-        <div class="card">
-          <div class="section-title">Финансирование</div>
-          <table class="metric-table metric-compact" id="reportFinanceTable"></table>
-        </div>
-      </div>
-
+      <div class="report-section" id="rsSite">
+        <div class="report-section-title">Участок и продукт</div>
       <div class="card">
-        <div class="section-title">Налоговая база по реализованным продуктам</div>
-        <table class="metric-table metric-compact" id="reportTaxTable"></table>
+        <div class="section-title">ТЭП</div>
+        <div class="scroll" style="max-height:none"><table id="reportTep"></table></div>
       </div>
-
       <div class="card" id="vriCard" style="display:none">
         <div class="report-title">
           <div>
@@ -19575,27 +22016,24 @@ details.cadastral-box>summary::marker{color:#888}
         </div>
         <div id="vriWarnings" class="note" style="display:none"></div>
       </div>
-
       <div class="card">
-        <div class="report-title">
-          <div>
-            <div class="section-title">Структура расходов</div>
-            <h2>Из чего складываются полные расходы проекта</h2>
-          </div>
-          <small>Сумма и доля каждой категории от 100% расходов</small>
-        </div>
-        <div class="report-2col">
-          <div id="expenseStructureChart" class="expense-bars"></div>
-          <div class="scroll" style="max-height:none">
-            <table class="metric-table metric-compact">
-              <thead><tr><th>Категория</th><th>Сумма</th><th>Доля</th></tr></thead>
-              <tbody id="expenseStructureTable"></tbody>
-              <tfoot><tr><th>Итого расходов</th><th id="expenseTotal"></th><th>100%</th></tr></tfoot>
-            </table>
-          </div>
-        </div>
+        <div class="section-title">Социальная нагрузка</div>
+        <table class="metric-table metric-compact" id="socialTable"></table>
+      </div>
       </div>
 
+      <div class="report-section" id="rsSummary">
+        <div class="report-section-title">Итог</div>
+      <div class="report-2col">
+        <div class="card">
+          <div class="section-title">Экономика проекта</div>
+          <table class="metric-table metric-compact" id="economicsTable"></table>
+        </div>
+        <div class="card">
+          <div class="section-title">Ключевые параметры</div>
+          <table class="metric-table metric-compact" id="projectParamsTable"></table>
+        </div>
+      </div>
       <div class="card">
         <div class="section-title">Удельная экономика</div>
         <div style="font-size:11px;color:#777;margin:-5px 0 10px">
@@ -19608,23 +22046,56 @@ details.cadastral-box>summary::marker{color:#888}
           </table>
         </div>
       </div>
-
-      <div class="report-2col">
-        <div class="card">
-          <div class="section-title">Структура выручки</div>
-          <table id="revenueTable"></table>
-        </div>
-        <div class="card">
-          <div class="section-title">Структура затрат</div>
-          <table id="capexTable"></table>
-        </div>
       </div>
 
+      <div class="report-section" id="rsPhases">
+        <div class="report-section-title">Очереди проекта</div>
+      <div id="phaseReportControls" class="phase-report-nav no-print" style="display:none"></div>
+      <div id="phaseComparisonCard" class="card phase-comparison-card">
+        <div class="section-title">Сравнение очередей</div>
+        <div class="scroll" style="max-height:none"><table class="metric-table">
+          <thead id="phaseComparisonHead"></thead>
+          <tbody id="phaseComparisonBody"></tbody>
+        </table></div>
+        <div class="note">Аналитическая прибыль после аллокации перераспределяет общепроектные расходы только для сравнения очередей. Сводный CF не меняется.</div>
+      </div>
+      </div>
+
+      <div class="report-section" id="rsExpenses">
+        <div class="report-section-title">Расходы</div>
       <div class="card">
-        <div class="section-title">ТЭП</div>
-        <div class="scroll" style="max-height:none"><table id="reportTep"></table></div>
+        <div class="report-title">
+          <div>
+            <div class="section-title">Структура расходов</div>
+            <h2>Из чего складываются полные расходы проекта</h2>
+          </div>
+          <small>Сумма и доля каждой категории от 100% расходов</small>
+        </div>
+        <div class="report-2col">
+          <div id="expenseStructureChart" class="expense-bars"></div>
+          <div class="scroll" style="max-height:none">
+            <table class="metric-table metric-compact">
+              <thead><tr><th>Категория</th><th>Сумма</th><th>Доля</th><th>тыс ₽/м² ГНС</th><th>тыс ₽/м² прод.</th></tr></thead>
+              <tbody id="expenseStructureTable"></tbody>
+              <tfoot><tr><th>Итого расходов</th><th id="expenseTotal"></th><th>100%</th><th id="expenseTotalGns"></th><th id="expenseTotalSaleable"></th></tr></tfoot>
+            </table>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="section-title">Структура затрат по статьям</div>
+        <table><thead><tr><th>Статья</th><th>Сумма</th><th>тыс ₽/м² ГНС</th><th>тыс ₽/м² прод.</th></tr></thead>
+        <tbody id="capexTable"></tbody></table>
+      </div>
       </div>
 
+      <div class="report-section" id="rsIncome">
+        <div class="report-section-title">Доходы</div>
+      <div class="card">
+        <div class="section-title">Структура выручки</div>
+        <table><thead><tr><th>Продукт</th><th>Выручка</th><th>тыс ₽/м² ГНС</th><th>тыс ₽/м² прод.</th></tr></thead>
+        <tbody id="revenueTable"></tbody></table>
+      </div>
       <div class="card">
         <div class="section-title">Темпы и цены продаж</div>
         <div class="scroll" style="max-height:none">
@@ -19633,22 +22104,54 @@ details.cadastral-box>summary::marker{color:#888}
             <tbody id="salesReportTable"></tbody>
           </table>
         </div>
+        <!-- Квартиры продаются штуками: план отдела продаж и рыночная проверка
+             живут в них, а таблица выше говорит только метрами. -->
+        <table class="metric-table metric-compact" id="apartmentPaceTable"></table>
+      </div>
+      <div class="card">
+        <div class="section-title">Налоговая база по реализованным продуктам</div>
+        <table class="metric-table metric-compact" id="reportTaxTable"></table>
+      </div>
       </div>
 
+      <div class="report-section" id="rsFinance">
+        <div class="report-section-title">Финансирование</div>
       <div class="report-2col">
         <div class="card">
-          <div class="section-title">Социальная нагрузка</div>
-          <table class="metric-table metric-compact" id="socialTable"></table>
-          <div class="bridge-purpose-block">
-            <div class="section-title">Структура расчётного БРИДЖа</div>
-            <table class="metric-table metric-compact bridge-purpose-table" id="bridgePurposeTable"></table>
-            <div class="bridge-purpose-note">Смена ВРИ / земельные права, проценты и комиссии в расчётный лимит БРИДЖа не входят.</div>
-          </div>
+          <div class="section-title">Финансирование</div>
+          <table class="metric-table metric-compact" id="reportFinanceTable"></table>
         </div>
         <div class="card">
           <div class="section-title">Ставки и долговая нагрузка</div>
           <table class="metric-table metric-compact" id="ratesDebtTable"></table>
         </div>
+      </div>
+      <div class="card">
+        <div class="section-title">Структура расчётного БРИДЖа</div>
+        <table class="metric-table metric-compact bridge-purpose-table" id="bridgePurposeTable"></table>
+        <div class="bridge-purpose-note">Смена ВРИ / земельные права, проценты и комиссии в расчётный лимит БРИДЖа не входят.</div>
+        <!-- Расчётный лимит расшифрован по целям методики, а фактический пик не
+             был расшифрован ничем — и разница между ними, то самое «остальное
+             вашими», разбиралась перепиской. -->
+        <div class="section-title" style="margin-top:20px">Структура фактического БРИДЖа<span id="bridgeActualMonth"></span></div>
+        <table class="metric-table metric-compact bridge-purpose-table" id="bridgeActualTable"></table>
+        <div class="bridge-purpose-note" id="bridgeActualNote"></div>
+      </div>
+      </div>
+
+      <div class="report-section" id="rsSensitivity">
+        <div class="report-section-title">Чувствительность</div>
+      <div class="card">
+        <div id="reportSensitivity"></div>
+      </div>
+      </div>
+
+      <div class="report-section" id="rsCalendar">
+        <div class="report-section-title">Календарный план</div>
+      <div class="card">
+        <div class="dates" id="reportCalendarDates"></div>
+        <div id="reportCalendarGantt" class="gantt"></div>
+      </div>
       </div>
 
       <div class="note warning">LLCR, NPV и IRR в веб-модели являются расчётными показателями текущего движка. До полного отказа от Excel кредитный CF и доходность должны быть окончательно сверены помесячно с эталонной моделью.</div>
@@ -19687,8 +22190,8 @@ const PROJECT_CLASS_PRESETS={
 };
 const RATE_DEFAULT=[]
 const TEP_DEFAULT={"apartments": {"label": "Квартиры", "gns": 130716.66012842482, "total_area": 117647.0588235294, "useful": 80000, "saleable": 80000, "transfer": 0, "units": 1361.815754339119}, "ground_commercial": {"label": "Коммерция 1 эт.", "gns": 9664.049734985854, "total_area": 8695.652173913044, "useful": 7826.08695652174, "saleable": 7826.08695652174, "transfer": 0, "units": 0}, "standalone_retail": {"label": "Коммерция ОСЗ", "gns": 0, "total_area": 0, "useful": 0, "saleable": 0, "transfer": 0, "units": 0}, "offices": {"label": "Офисы", "gns": 0, "total_area": 0, "useful": 0, "saleable": 0, "transfer": 0, "units": 0}, "above_parking": {"label": "Наземный паркинг", "gns": 0, "total_area": 0, "useful": 0, "saleable": 0, "transfer": 0, "units": 0}, "underground_parking": {"label": "Подземный паркинг", "gns": 38763, "total_area": 38763, "useful": 0, "saleable": 0, "transfer": 0, "units": 1107.5142857142857}, "storage": {"label": "Кладовки", "gns": 0, "total_area": 0, "useful": 0, "saleable": 0, "transfer": 0, "units": 0}, "kindergarten": {"label": "ДОУ", "gns": 0, "total_area": 3000, "useful": 0, "saleable": 0, "transfer": 3000, "units": 250}, "school": {"label": "СОШ", "gns": 0, "total_area": 0, "useful": 0, "saleable": 0, "transfer": 0, "units": 0}, "clinic": {"label": "Поликлиника", "gns": 0, "total_area": 0, "useful": 0, "saleable": 0, "transfer": 0, "units": 0}};
-const FIELD_GROUPS=[["Сделка и сроки", [["purchase_price_mln", "Стоимость покупки / цена входа", "млн ₽", "number"], ["land_rights_cost_mln", "Оформление земельных правоотношений / смена ВРИ", "млн ₽", "number"], ["project_start", "Начало проекта", "дата", "date"], ["ird_months", "Срок ИРД до РнС", "мес.", "number"], ["construction_months", "Срок строительства", "мес.", "number"], ["sales_lag_months", "Лаг старта продаж после РнС", "мес.", "number"], ["bridge_repay_lag_months", "Лаг погашения БРИДЖ после РнС", "мес.", "number"], ["residual_sales_months", "Остаточные продажи после РВЭ", "мес.", "number"]]], ["Смена ВРИ и земельные права", [["vri_required", "Требуется изменение ВРИ", "Да / Нет", "checkbox"], ["vri_region", "Регион", "регион", "select", [["msk", "Москва"], ["mo", "Московская область"]]], ["land_right", "Право на участок", "право", "select", [["ownership", "Собственность"], ["lease", "Аренда"]]], ["vri_obligation_date_mode", "Дата обязательства", "режим", "select", [["before_rns_1m", "За месяц до РнС — экспертная оценка"], ["at_rns", "В дату РнС"], ["before_rns_3m", "За три месяца до РнС"], ["after_purchase", "Через N мес. после покупки"], ["manual", "Задана вручную"]]], ["vri_months_after_purchase", "Месяцев после покупки", "мес.", "number"], ["vri_obligation_date", "Дата возникновения обязательства", "точная дата по документу; пусто — экспертная оценка", "date"], ["vri_payment_mode", "Порядок оплаты", "режим", "select", [["lump", "Единовременно"], ["installment", "Рассрочка"]]], ["vri_installment_years", "Срок рассрочки", "лет (Москва: 1, 3, 6)", "number"], ["vri_periodicity_months", "Периодичность платежей", "мес.; в Москве всегда квартал", "select", [["1", "Ежемесячно"], ["3", "Ежеквартально"], ["6", "Раз в полгода"], ["12", "Раз в год"]]], ["vri_initial_pct", "Первый взнос по рассрочке", "% от суммы", "number"], ["vri_schedule_mode", "График платежей", "режим", "select", [["auto", "Автоматический"], ["manual", "Ручной"]]], ["vri_interest_enabled", "Проценты на остаток", "режим", "select", [["", "По региону"], ["1", "Начисляются"], ["0", "Не начисляются"]]], ["vri_interest_spread_pp", "Спред к ключевой ставке по рассрочке", "п.п.", "number"], ["vri_early_repay_after_pf", "Досрочное погашение остатка после открытия ПФ", "Да / Нет", "checkbox"], ["vri_pf_open_date", "Дата открытия ПФ", "дата (пусто — РнС)", "date"], ["vri_in_bank_budget", "ВРИ включена в банковский бюджет", "Да / Нет", "checkbox"], ["vri_financing_mode", "Источники оплаты", "режим", "select", [["auto", "Как весь проект"], ["shares", "Заданные доли"]]], ["vri_share_bridge_pct", "Доля БРИДЖ", "%", "number"], ["vri_share_pf_pct", "Доля ПФ", "%", "number"], ["vri_share_equity_pct", "Доля собственного капитала", "%", "number"], ["vri_relief_mode", "Льгота по плате", "режим", "select", [["none", "Нет"], ["percent", "Доля от суммы"], ["amount", "Фиксированная сумма"]]], ["vri_relief_pct", "Льгота — доля от суммы", "%", "number"], ["vri_relief_mln", "Льгота — сумма", "млн ₽", "number"], ["vri_security_cost_mln", "Расходы на обеспечение обязательства", "млн ₽", "number"]]], ["Продажи", [["apartment_price_th", "Стартовая цена квартир", "тыс. ₽/м²", "number"], ["commercial_price_th", "Стартовая цена коммерции 1 этажа", "тыс. ₽/м²", "number"], ["parking_price_th", "Цена подземного машино-места", "тыс. ₽/шт.", "number"], ["storage_price_th", "Цена кладовой", "тыс. ₽/шт.", "number"], ["share_before_rve_pct", "Доля продаж до РВЭ", "%", "number"], ["pace_adjustment_pct", "Корректировка темпа", "%", "number"], ["inflation_after_rve_pct", "Инфляция после РВЭ", "% год", "number"], ["seasonal_reduction_pct", "Сезонное снижение темпа", "%", "number"], ["growth_stage1_pct", "Рост цены — этап 1", "%", "number"], ["growth_stage2_pct", "Рост цены — этап 2", "%", "number"], ["growth_stage3_pct", "Рост цены — этап 3", "%", "number"], ["growth_stage4_pct", "Рост цены — этап 4", "%", "number"], ["monthly_growth_pre_pct", "Ежемесячный рост цены до РВЭ", "%/мес.", "number"], ["monthly_growth_post_pct", "Ежемесячный рост цены после РВЭ", "%/мес.", "number"]]], ["Строительство", [["ird_th_per_sqm", "ИРД и согласования", "тыс. ₽/м² ГНС", "number"], ["design_p_th_per_sqm", "Проектирование стадии П", "тыс. ₽/м² ГНС", "number"], ["design_rd_th_per_sqm", "Проектирование стадии РД", "тыс. ₽/м² ГНС", "number"], ["preparation_th_per_sqm", "Подготовительные работы", "тыс. ₽/м² ГНС", "number"], ["main_above_th_per_sqm", "Основное строительство — наземная часть", "тыс. ₽/м² ГНС", "number"], ["main_under_th_per_sqm", "Основное строительство — подземная часть", "тыс. ₽/м² ГНС", "number"], ["utilities_th_per_sqm", "Наружные инженерные сети", "тыс. ₽/м² ГНС", "number"], ["landscaping_th_per_sqm", "Благоустройство", "тыс. ₽/м² ГНС", "number"], ["commissioning_th_per_sqm", "Сдача и ввод", "тыс. ₽/м² ГНС", "number"], ["site_maintenance_th_per_sqm", "Содержание стройплощадки", "тыс. ₽/м² ГНС", "number"], ["gc_fee_pct", "Вознаграждение генподрядчика", "% СМР", "number"], ["author_supervision_pct", "Авторский надзор", "% от П + РД", "number"], ["project_management_pct", "Управление проектом — зарплаты и накладные", "% прямых затрат", "number"], ["technical_supervision_pct", "Технический заказчик / стройконтроль (технадзор)", "% СМР", "number"], ["reserve_pct", "Резерв", "%", "number"]]], ["Коммерческие расходы и налоги", [["marketing_pct", "Маркетинг", "% выручки", "number"], ["selling_pct", "Расходы на продажи", "% выручки", "number"], ["profit_tax_pct", "Налог на прибыль", "%", "number"], ["vat_pct", "НДС", "%", "number"]]], ["Финансирование", [["bridge_spread_pp", "Спред БРИДЖ", "п.п.", "number"], ["bridge_cap_spread_pp", "Спред капитализации БРИДЖ", "п.п.", "number"], ["pf_spread_pp", "Спред ПФ", "п.п.", "number"], ["pf_special_pct", "Ставка ПФ при покрытии эскроу 1×", "%", "number"], ["limit_fee_pct", "Плата за лимит", "%", "number"], ["reservation_fee_pct", "Плата за резервирование", "%", "number"], ["discount_rate_pct", "Ставка дисконтирования", "%", "number"], ["bridge_interest_mode", "Проценты БРИДЖ при рефинансировании", "режим", "finance_select"]]], ["Социальная нагрузка", [["social_mode", "Форма исполнения", "режим", "select"], ["social_comp_date", "Дата денежной компенсации", "дата", "date"], ["social_compensation_mln", "Социальный платеж / компенсация по ГлавАПУ", "млн ₽", "number"], ["kindergarten_places", "ДОУ — количество мест", "мест", "number"], ["kindergarten_cost_mln_per_place", "ДОУ — себестоимость места", "млн ₽/место", "number"], ["kindergarten_start", "ДОУ — начало строительства", "дата", "date"], ["kindergarten_months", "ДОУ — срок строительства", "мес.", "number"], ["school_places", "СОШ — количество мест", "мест", "number"], ["school_cost_mln_per_place", "СОШ — себестоимость места", "млн ₽/место", "number"], ["school_start", "СОШ — начало строительства", "дата", "date"], ["school_months", "СОШ — срок строительства", "мес.", "number"], ["clinic_capacity", "Поликлиника — мощность", "пос./смену", "number"], ["clinic_cost_mln_per_unit", "Поликлиника — себестоимость мощности", "млн ₽/(пос./смену)", "number"], ["clinic_start", "Поликлиника — начало строительства", "дата", "date"], ["clinic_months", "Поликлиника — срок строительства", "мес.", "number"], ["social_dou_gba_sqm", "ДОУ — общая площадь", "м²", "number"], ["social_dou_norm_sqm", "ДОУ — норматив площади на место", "м²/место", "number"], ["social_school_gba_sqm", "СОШ — общая площадь", "м²", "number"], ["social_school_norm_sqm", "СОШ — норматив площади на место", "м²/место", "number"], ["social_clinic_gba_sqm", "Поликлиника — общая площадь", "м²", "number"], ["social_clinic_norm_sqm", "Поликлиника — норматив площади", "м²/ед.", "number"]]], ["МФОЦ / офисы", [["offices_enabled", "Объект включен", "Да / Нет", "checkbox"], ["offices_gba_sqm", "Общая площадь (GBA)", "м²", "number"], ["offices_saleable_sqm", "Продаваемая площадь", "м²", "number"], ["offices_start", "Начало строительства", "дата", "date"], ["offices_months", "Срок строительства", "мес.", "number"], ["offices_cost_th_per_sqm", "Себестоимость строительства", "тыс. ₽/м² GBA", "number"], ["offices_sales_start", "Старт продаж", "дата", "date"], ["offices_price_th_per_sqm", "Стартовая цена", "тыс. ₽/м²", "number"], ["offices_share_before_rve_pct", "Доля продаж до РВЭ", "%", "number"], ["offices_residual_months", "Остаточные продажи после РВЭ", "мес.", "number"], ["offices_growth_pre_pct", "Рост цены до РВЭ", "%/мес.", "number"], ["offices_growth_post_pct", "Рост цены после РВЭ", "%/мес.", "number"]]], ["ТЦ / коммерция ОСЗ", [["retail_enabled", "Объект включен", "Да / Нет", "checkbox"], ["retail_gba_sqm", "Общая площадь (GBA)", "м²", "number"], ["retail_saleable_sqm", "Продаваемая площадь", "м²", "number"], ["retail_start", "Начало строительства", "дата", "date"], ["retail_months", "Срок строительства", "мес.", "number"], ["retail_cost_th_per_sqm", "Себестоимость строительства", "тыс. ₽/м² GBA", "number"], ["retail_sales_start", "Старт продаж", "дата", "date"], ["retail_price_th_per_sqm", "Стартовая цена", "тыс. ₽/м²", "number"], ["retail_share_before_rve_pct", "Доля продаж до РВЭ", "%", "number"], ["retail_residual_months", "Остаточные продажи после РВЭ", "мес.", "number"], ["retail_growth_pre_pct", "Рост цены до РВЭ", "%/мес.", "number"], ["retail_growth_post_pct", "Рост цены после РВЭ", "%/мес.", "number"]]], ["Наземный паркинг", [["above_parking_enabled", "Объект включен", "Да / Нет", "checkbox"], ["above_parking_spaces", "Количество машино-мест", "шт.", "number"], ["above_parking_cost_mln_per_space", "Себестоимость одного места", "млн ₽/место", "number"], ["above_parking_start", "Начало строительства", "дата", "date"], ["above_parking_months", "Срок строительства", "мес.", "number"], ["above_parking_sales_start", "Старт продаж", "дата", "date"], ["above_parking_price_mln_per_space", "Стартовая цена места", "млн ₽/место", "number"], ["above_parking_share_before_rve_pct", "Доля продаж до РВЭ", "%", "number"], ["above_parking_residual_months", "Остаточные продажи после РВЭ", "мес.", "number"], ["above_parking_growth_pre_pct", "Рост цены до РВЭ", "%/мес.", "number"], ["above_parking_growth_post_pct", "Рост цены после РВЭ", "%/мес.", "number"], ["above_parking_area_per_space_sqm", "Площадь на 1 место для ТЭП", "м²/место", "number"]]]];
-const INPUT_DEFAULT={"project_class": "comfort", "purchase_price_mln": 0, "construction_months": 24, "apartment_price_th": 350, "commercial_price_th": 350, "parking_price_th": 1500, "storage_price_th": 1000, "share_before_rve_pct": 85, "pace_adjustment_pct": 25, "inflation_after_rve_pct": 3, "seasonal_reduction_pct": -15, "growth_stage1_pct": 0, "growth_stage2_pct": 0, "growth_stage3_pct": 0, "growth_stage4_pct": 0, "ird_th_per_sqm": 1, "design_p_th_per_sqm": 2.5, "design_rd_th_per_sqm": 2.5, "preparation_th_per_sqm": 1, "main_above_th_per_sqm": 110, "utilities_th_per_sqm": 7.5, "landscaping_th_per_sqm": 5, "commissioning_th_per_sqm": 1, "site_maintenance_th_per_sqm": 1, "gc_fee_pct": 7, "reserve_pct": 5, "project_management_pct": 5, "technical_supervision_pct": 5, "author_supervision_pct": 0, "marketing_pct": 3, "selling_pct": 4, "profit_tax_pct": 25, "vat_pct": 22, "bridge_spread_pp": 6, "bridge_cap_spread_pp": 6, "pf_spread_pp": 4.5, "pf_special_pct": 4.5, "limit_fee_pct": 0.5, "reservation_fee_pct": 0.5, "discount_rate_pct": 20, "monthly_growth_pre_pct": 1.5, "monthly_growth_post_pct": 0.25, "ird_months": 18, "sales_lag_months": 0, "bridge_repay_lag_months": 0, "residual_sales_months": 6, "social_comp_date": "2028-06-01", "social_compensation_mln": 0, "kindergarten_places": 250, "kindergarten_cost_mln_per_place": 2.75, "kindergarten_start": "2028-06-01", "kindergarten_months": 24, "school_places": 0, "school_cost_mln_per_place": 3, "school_start": "2028-06-01", "school_months": 30, "clinic_capacity": 0, "clinic_cost_mln_per_unit": 3, "clinic_start": "2028-06-01", "clinic_months": 24, "offices_gba_sqm": 10000, "offices_saleable_sqm": 6000, "offices_start": "2028-07-01", "offices_months": 24, "offices_cost_th_per_sqm": 200, "offices_sales_start": "2028-07-01", "offices_price_th_per_sqm": 500, "offices_share_before_rve_pct": 85, "offices_residual_months": 6, "offices_growth_pre_pct": 1.5, "offices_growth_post_pct": 0.25, "retail_gba_sqm": 10000, "retail_saleable_sqm": 6000, "retail_start": "2028-07-01", "retail_months": 24, "retail_cost_th_per_sqm": 200, "retail_sales_start": "2028-07-01", "retail_price_th_per_sqm": 500, "retail_share_before_rve_pct": 85, "retail_residual_months": 6, "retail_growth_pre_pct": 1.5, "retail_growth_post_pct": 0.25, "above_parking_spaces": 550, "above_parking_cost_mln_per_space": 1, "above_parking_start": "2028-07-01", "above_parking_months": 18, "above_parking_sales_start": "2028-07-01", "above_parking_price_mln_per_space": 2, "above_parking_share_before_rve_pct": 85, "above_parking_residual_months": 6, "above_parking_growth_pre_pct": 0.75, "above_parking_growth_post_pct": 0.2, "social_dou_gba_sqm": 3000, "social_school_gba_sqm": 0, "social_clinic_gba_sqm": 0, "project_start": "2027-01-01", "main_under_th_per_sqm": 110, "social_mode": "Строительство", "social_dou_norm_sqm": 12, "social_school_norm_sqm": 13, "social_clinic_norm_sqm": 15, "offices_enabled": false, "retail_enabled": false, "above_parking_enabled": false, "above_parking_area_per_space_sqm": 25, "rate_scenario": "base", "land_rights_cost_mln": 2864.291514155844, "bridge_interest_mode": "Капитализация в ПФ", "rate_start_pct": 14.0, "rate_start_date": "2026-07-24", "rate_target_high_pct": 11, "rate_target_base_pct": 9, "rate_target_low_pct": 7, "rate_normalization_months": 24, "rate_curve_shape": 2, "vri_required": true, "vri_region": "msk", "land_right": "ownership", "vri_obligation_date": "", "vri_payment_mode": "lump", "vri_installment_years": 3, "vri_periodicity_months": 3, "vri_schedule_mode": "auto", "vri_interest_enabled": "", "vri_interest_spread_pp": 3.0, "vri_early_repay_after_pf": false, "vri_pf_open_date": "", "vri_in_bank_budget": true, "vri_financing_mode": "auto", "vri_share_bridge_pct": 0.0, "vri_share_pf_pct": 0.0, "vri_share_equity_pct": 0.0, "vri_security_cost_mln": 0.0, "vri_relief_mode": "none", "vri_relief_pct": 0.0, "vri_relief_mln": 0.0, "vri_obligation_date_mode": "before_rns_1m", "vri_months_after_purchase": 12, "vri_initial_pct": 0.0};
+const FIELD_GROUPS=__DEVELOPAID_FIELD_GROUPS__;
+const INPUT_DEFAULT=__DEVELOPAID_INPUT_DEFAULT__;
 
 function phaseWeightPreset(count){
  const p={1:[100],2:[55,45],3:[40,32,28],4:[32,26,22,20],5:[28,22,19,16,15]};
@@ -19722,6 +22225,16 @@ const telegramSession=TELEGRAM_HASH_PARAMS.get('telegram_session')||'';
 const telegramCad=TELEGRAM_HASH_PARAMS.get('cad')||'';
 const telegramMode=TELEGRAM_HASH_PARAMS.get('mode')||'calc';
 let telegramResultSent=false;
+function isTelegramWebApp(){
+ // SDK Telegram на странице не подключён, и window.Telegram здесь не бывает:
+ // мини-приложение открывается обычной ссылкой с параметрами сессии в хеше.
+ // Проверка «есть initData» была поэтому всегда ложной, и WebView каждый раз
+ // уходил в скрытый iframe ГлавАПУ — тот его не тянет, ждал по минуте на шаг
+ // и падал на серверные формулы. Отсюда и «две минуты», и «штатный расчёт не
+ // открывается». Признак телеграма — параметры, которыми бот открыл окно.
+ if(telegramSession||telegramCad)return true;
+ try{return !!(window.Telegram&&window.Telegram.WebApp&&String(window.Telegram.WebApp.initData||'').length)}catch(e){return false}
+}
 let telegramCalcOverrides={};
 const money=v=>(Number(v||0)/1e9).toLocaleString('ru-RU',{minimumFractionDigits:0,maximumFractionDigits:2})+' млрд ₽';
 const socialMoney=v=>{
@@ -19743,6 +22256,9 @@ function openTab(id,btn){
  document.querySelectorAll('.panel').forEach(x=>x.classList.remove('active'));document.getElementById(id).classList.add('active');
  document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
  (btn||document.querySelector(`[data-tab="${id}"]`)).classList.add('active');
+ // Оглавление собирается заново при открытии: расчёт мог пройти при закрытой
+ // вкладке — а он почти всегда так и проходит.
+ if(id==='report'&&typeof renderReportToc==='function')renderReportToc();
 }
 function calculateAndOpen(id){
  // В Telegram расчёт — это законченное действие: человек пришёл за цифрами в
@@ -19853,15 +22369,81 @@ async function sendAgentMessage(scenario){
  const stagePoll=setInterval(async()=>{try{const r=await fetch('/agent/trace/'+traceId);const t=await r.json();if(t&&t.label&&t.stage!=='done')thinking.textContent=t.label+'…'}catch(e){}},1200);
  try{
   await syncInputsForAgent();
-  const response=await fetch('/agent/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message,scenario:scenario||'',trace_id:traceId,inputs,tep,rates,phasing,history:aiHistory.slice(-8),selected_view:reportView||'all'})});
-  let data={};try{data=await response.json()}catch(e){}
-  thinking.remove();if(!response.ok)throw new Error(data.detail||`Ошибка AI (${response.status})`);
+  let data={},response=null;
+  try{
+   response=await fetch('/agent/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message,scenario:scenario||'',trace_id:traceId,inputs,tep,rates,phasing,history:aiHistory.slice(-8),selected_view:reportView||'all'})});
+   try{data=await response.json()}catch(e){}
+   if(response.ok&&data&&data.pending){
+    // Сервер не держит соединение: работа принята и идёт, ответ ждёт под
+    // номером запуска. Так длительность работы перестаёт упираться в чужие
+    // сроки — nginx, Render и мобильная сеть рвали её на полпути.
+    data=await awaitAgentResult(traceId,thinking,true);
+    response={ok:!!data.answer,status:200};
+   }
+  }catch(networkError){
+   // «Load failed» — не ответ сервера, а обрыв соединения: один длинный
+   // запрос не переживает ни nginx, ни мобильную сеть, а работа на сервере
+   // при этом доходит до конца. Забираем готовый ответ коротким запросом.
+   data=await awaitAgentResult(traceId,thinking);
+   response={ok:!!data.answer,status:504};
+  }
+  if(response&&!response.ok&&(response.status===502||response.status===504)){
+   const late=await awaitAgentResult(traceId,thinking);
+   if(late&&late.answer){data=late;response={ok:true,status:200}}
+   // Сохранённая причина отказа лучше общего текста: прежде она здесь
+   // терялась, и человек читал «временно не получил ответ» вместо неё.
+   else if(late&&late.detail&&!data.detail)data={detail:late.detail};
+  }
+  thinking.remove();
+  if(!response.ok)throw new Error(data.detail||AI_UNAVAILABLE);
   const answer=String(data.answer||'Ответ не получен.');
   appendAiMessage('assistant',answer+(data.cached?'\n\n*Ответ из кэша: тот же вопрос по тем же вводным за последние 10 минут.*':''));
   if(Array.isArray(data.proposals)&&data.proposals.length)appendAiProposals(data.proposals);aiHistory.push({role:'assistant',content:answer});aiHistory=aiHistory.slice(-10);
  }catch(e){thinking.remove();appendAiMessage('assistant',String(e.message||e),'error')}
  finally{clearInterval(stagePoll);aiBusy=false;aiSendBtn.disabled=false;aiInput.focus()}
 }
+const AI_UNAVAILABLE='Платон Сергеевич временно не получил ответ от AI-сервиса. Расчётная модель продолжает работать. Повторите вопрос через несколько секунд.';
+
+async function awaitAgentResult(traceId,thinking,accepted){
+ // Ответ ждёт на сервере под номером запуска. Опрос короткий и частый: его
+ // не рвёт ни прокси, ни спящий мобильный интернет.
+ let deadline=Date.now()+300000;const hardStop=Date.now()+900000;let seenStage='';
+ const startedAt=Date.now();let lastStage='';
+ while(Date.now()<deadline){
+  await new Promise(r=>setTimeout(r,2000));
+  try{
+   const r=await fetch('/agent/result/'+traceId);
+   if(r.ok){
+    const x=await r.json();
+    if(x&&!x.pending&&x.answer)return x;
+    // Работа упала — причина лежит там же, под номером запуска.
+    if(x&&!x.pending&&x.error)return {detail:String(x.error)};
+   }
+  }catch(e){}
+  let stage='';
+  try{const t=await(await fetch('/agent/trace/'+traceId)).json();if(t&&t.label&&t.stage!=='done')stage=t.label}catch(e){}
+  // Пока движок отчитывается о новом шаге, работа идёт, а не висит: сдаваться
+  // по часам, когда на той стороне что-то происходит, — терять посчитанное.
+  if(stage)lastStage=stage;
+  if(stage&&stage!==seenStage){seenStage=stage;deadline=Math.min(hardStop,Date.now()+180000)}
+  // Пока ждём, показываем стадию: «долго» должно отличаться от «зависло».
+  if(thinking){
+   // Принятая работа и оборванное соединение — разные вещи, и человеку врать
+   // ни в ту, ни в другую сторону нельзя.
+   const tail=accepted?' (работа идёт, жду ответ)':' (соединение оборвалось, жду ответ)';
+   thinking.textContent=stage?stage+'…'+tail
+                            :(accepted?'Работа принята, жду ответ…':'Соединение оборвалось, забираю готовый ответ…');
+  }
+ }
+ // Сдаваясь, окно называет причину. Общий текст «временно не получил ответ»
+ // одинаков и когда молчит AI-сервис, и когда стоит очередь у сервиса модели,
+ // и когда работа давно упала, — по нему разобрать нечего.
+ const waited=Math.round((Date.now()-startedAt)/1000);
+ return {detail:'Ответ не пришёл за '+Math.floor(waited/60)+' мин '+(waited%60)+' с.'
+   +(lastStage?' Последняя стадия: '+lastStage+'.':'')
+   +' '+AI_UNAVAILABLE};
+}
+
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&document.getElementById('aiDrawer')?.classList.contains('open'))toggleAgent(false);if((e.ctrlKey||e.metaKey)&&e.key==='Enter'&&document.getElementById('aiDrawer')?.classList.contains('open'))sendAgentMessage()});
 
 
@@ -20006,6 +22588,7 @@ async function obtainTep(){
  const status=document.getElementById('cadastralStatus');
  const raw=(field&&field.value||'').trim();
  if(!raw){status.innerHTML='<span class="import-error">Введите кадастровый номер или адрес.</span>';return}
+ dropStaleLandPreview();
  const numbers=raw.split(/[\n,;]+/).map(x=>x.trim()).filter(Boolean);
  const looksCadastral=numbers.length>0&&numbers.every(x=>/^\d{2}:\d{2}:\d{6,8}:\d+$/.test(x));
  const regionOnly=looksCadastral&&numbers.every(x=>x.startsWith('50:'));
@@ -20046,20 +22629,31 @@ async function obtainTep(){
 let tepRunSequence=0;
 function tepRunLog(runId,stage,detail){
  try{
-  const client=(window.Telegram&&window.Telegram.WebApp&&String(window.Telegram.WebApp.initData||'').length)?'telegram':'site';
+  const client=isTelegramWebApp()?'telegram':'site';
   console.log('[tep#'+runId+' '+client+'] '+stage+(detail?' · '+detail:''));
  }catch(e){}
 }
 
+function tepSourceLabel(manual){
+ // Штатный калькулятор и серверные формулы помечались одинаково — «ГлавАПУ»,
+ // и два отчёта с разными числами выглядели одинаково достоверно. Различие
+ // видно только по имени файла выгрузки, чего человек знать не обязан.
+ if(manual)return 'Ручной шаблон DevelopAid';
+ const fmt=String(((glavapuImport||{}).source||{}).format||'');
+ return /серверн/i.test(fmt)?'ГлавАПУ · серверный расчёт DevelopAid'
+                            :'ГлавАПУ · штатный калькулятор';
+}
 async function obtainServerTep(analysis,status,runId){
  // Формулы калькулятора, посчитанные сервером: равноценная замена
  // браузерной автоматизации, а не суррогат — сходятся до единицы.
- status.textContent='Считаю ТЭП формулами ГлавАПУ на сервере…';
+ status.textContent='Считаю ТЭП на сервере…';
  tepRunLog(runId,'серверный расчёт: запрос');
  const response=await fetch('/cadastral/tep-server',{
   method:'POST',headers:{'Content-Type':'application/json'},
+  // Территория уже собрана — отдаём её серверу, чтобы он не спрашивал ГлавАПУ
+  // второй раз за один клик: этот запрос стоит секунд, а расчёт и так не быстр.
   body:JSON.stringify({cadastral_numbers:(analysis.recognized||analysis.requested||[]).join(', '),
-   request_id:'tep-'+runId})
+   request_id:'tep-'+runId,cadastral_analysis:analysis})
  });
  const payload=await response.json();
  if(!response.ok)throw new Error(payload.detail||'Серверный расчёт ТЭП не получился');
@@ -20068,9 +22662,16 @@ async function obtainServerTep(analysis,status,runId){
  inputs._cadastral_analysis=structuredClone(analysis);
  renderGlavapuPreview(payload);
  const areaText=Number((analysis.territory||{}).area_ha||0).toLocaleString('ru-RU',{minimumFractionDigits:4,maximumFractionDigits:4});
- status.innerHTML='<span class="import-ok">ТЭП посчитан формулами ГлавАПУ: '+areaText+
-  ' га.</span> Проверьте значения ниже и нажмите «Применить к Вводным и ТЭП».';
- glavapuStatus.innerHTML='<span class="import-ok">ТЭП посчитан формулами ГлавАПУ на сервере.</span> Проверьте значения перед применением.';
+ // Кто посчитал — штатный калькулятор или наши формулы, и если формулы, то
+ // почему. Браузер живёт на ядре, и с телефона его состояние иначе не увидеть.
+ const hl=((payload.source||{}).headless)||{};
+ const byCalculator=/Штатный калькулятор/i.test(String((payload.source||{}).format||''));
+ const why=byCalculator?'':' <span style="color:#8a4b08">Штатный калькулятор недоступен ('+
+   escapeHtml(hl.state||'нет данных')+', '+escapeHtml(hl.where||'—')+').'+
+   (hl.hint?' '+escapeHtml(hl.hint):'')+'</span>';
+ status.innerHTML='<span class="import-ok">ТЭП посчитан '+(byCalculator?'штатным калькулятором ГлавАПУ':'формулами ГлавАПУ')+': '+areaText+
+  ' га.</span>'+why+' Проверьте значения ниже и нажмите «Применить к Вводным и ТЭП».';
+ glavapuStatus.innerHTML='<span class="import-ok">ТЭП посчитан '+(byCalculator?'штатным калькулятором ГлавАПУ':'формулами ГлавАПУ')+' на сервере.</span>'+why+' Проверьте значения перед применением.';
  tepRunLog(runId,'серверный расчёт: получен', areaText+' га');
  return payload;
 }
@@ -20111,7 +22712,7 @@ async function obtainCadastralTep(preAnalysis){
 
    // Telegram WebView не тянет автоматизацию скрытого iframe: сайт собирал
    // ТЭП, мини-приложение падало по таймауту. Здесь сразу серверный расчёт.
-   if(window.Telegram&&window.Telegram.WebApp&&String(window.Telegram.WebApp.initData||'').length){
+   if(isTelegramWebApp()){
      return await obtainServerTep(analysis,status,runId);
    }
 
@@ -20214,6 +22815,27 @@ function landDate(value){
  return iso?`${iso[3]}.${iso[2]}.${iso[1]}`:(text||'—');
 }
 
+// Снимок ЕГРН относится к тому запросу, по которому получен. Прежде блок жил
+// сам по себе: расчёт ТЭП по кадастровому номеру идёт через /cadastral/analyze
+// и ЕГРН не трогает, поэтому карточка предыдущего участка оставалась на экране
+// рядом с новым ТЭП. На одном экране выходили два участка сразу — «ТЭП посчитан:
+// 2,0844 га» и «Суммарная площадь 0,9820 га», оба достоверные с виду.
+function landQueryKey(text){
+ return String(text||'').toLowerCase().replace(/\s+/g,' ').trim();
+}
+function landSnapshotFits(){
+ const field=document.getElementById('cadastralNumbers');
+ if(!landLookup||!field)return false;
+ return landQueryKey(landLookup.query)===landQueryKey(field.value);
+}
+function hideLandPreview(){
+ const preview=document.getElementById('landPreview');
+ if(preview)preview.style.display='none';
+}
+function dropStaleLandPreview(){
+ if(!landSnapshotFits())hideLandPreview();
+}
+
 async function lookupLand(options){
  const field=document.getElementById('cadastralNumbers');
  const button=document.getElementById('cadastralAnalyzeButton');
@@ -20222,6 +22844,7 @@ async function lookupLand(options){
  if(!raw){status.innerHTML='<span class="import-error">Введите кадастровый номер, адрес или координаты.</span>';return}
  button.disabled=true;button.textContent='Ищу…';
  status.textContent='Запрашиваю сведения ЕГРН в НСПД…';
+ hideLandPreview();
  try{
   const response=await fetch('/land/lookup',{
    method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:raw,limit:30})
@@ -20741,7 +23364,18 @@ function renderGlavapuPreview(data){
  glavapuRows.innerHTML=(data.recognized||[]).map(x=>`<tr>
    <td>${x.label}</td><td>${x.display}</td><td>${x.unit||''}</td><td>${x.target}</td>
  </tr>`).join('');
- glavapuWarnings.innerHTML=(data.warnings||[]).map(x=>'• '+x).join('<br>');
+ // Предупреждение, которое видно всегда, не видно никогда: шесть абзацев
+ // справки печатались на каждый импорт, и «продаваемая площадь не прочитана»
+ // терялось между ними. Теперь блок появляется, только когда есть что сказать.
+ const gw=(data.warnings||[]).filter(x=>String(x||'').trim());
+ glavapuWarnings.innerHTML=gw.map(x=>'• '+x).join('<br>');
+ glavapuWarnings.style.display=gw.length?'block':'none';
+ const gn=(data.notes||[]).filter(x=>String(x||'').trim());
+ const notesBox=document.getElementById('glavapuNotesBox');
+ if(notesBox){
+   document.getElementById('glavapuNotes').innerHTML=gn.map(x=>'• '+x).join('<br>');
+   notesBox.style.display=gn.length?'block':'none';
+ }
  glavapuPreview.style.display='block';
 }
 
@@ -20849,7 +23483,7 @@ async function sendTelegramResult(){
  const payload={
    cadastral_numbers:cads,
    project_name:manual?String(manualMeta.project_name||''):'',
-   source_label:manual?'Ручной шаблон DevelopAid':'ГлавАПУ',
+   source_label:tepSourceLabel(manual),
     purchase_price_mln:Number(inputs.purchase_price_mln||0),
     // Источник проекта важнее сохранённого значения: в inputs могла остаться
     // площадь прошлого расчёта, и она перебивала площадь текущего участка.
@@ -21002,6 +23636,11 @@ async function applyGlavapu(){
 
  // Rebuild social TEP after generic mappings, then enforce parking rule.
  syncTep(false);
+ // Другой участок — другой паркинг: пара полей перезаполняется его расчётом,
+ // иначе в них остались бы места и метры предыдущего проекта.
+ inputs.underground_manual_spaces=0;
+ inputs.underground_manual_gns_sqm=0;
+ fillUndergroundFromTep();
  repairParkingFromGlavapu();
 
  // Server presets may include an expert project configuration in addition to source TEP.
@@ -21048,9 +23687,37 @@ function getGlavapuUnderground(){
  return {permanent,guest,mfc,spaces,gns:residentialArea+mfcArea};
 }
 
+function undergroundAreaPerSpace(){
+ return Number(inputs.underground_area_per_space_sqm||0)||35;
+}
+
 function repairParkingFromGlavapu(){
+ if(!tep.underground_parking)return false;
+ // Отказ от подземного паркинга: в области потребность закрывают наземным
+ // гаражом. Ноль в поле мест значит «по нормативу», поэтому отказ — отдельный
+ // признак, иначе импорт ГлавАПУ вернул бы паркинг при первом пересчёте.
+ if(inputs.underground_parking_disabled){
+  ['units','gns','total_area','useful','saleable','transfer'].forEach(f=>{tep.underground_parking[f]=0});
+  return true;
+ }
+ // Заданная руками площадь главнее импорта: норматив описывает потребность,
+ // а реальный подземный этаж диктуют пятно застройки, рампы и техпомещения.
+ // Пустое поле оставляет прежнюю починку устаревших значений.
+ const manualSpaces=Number(inputs.underground_manual_spaces||0);
+ const manualArea=Number(inputs.underground_manual_gns_sqm||0);
+ if(manualSpaces>0||manualArea>0){
+  const per=undergroundAreaPerSpace();
+  const spaces=manualSpaces>0?manualSpaces:Math.round(manualArea/per);
+  tep.underground_parking.units=spaces;
+  tep.underground_parking.gns=manualSpaces>0?spaces*per:manualArea;
+  tep.underground_parking.total_area=tep.underground_parking.gns;
+  tep.underground_parking.useful=0;
+  tep.underground_parking.saleable=0;
+  tep.underground_parking.transfer=0;
+  return true;
+ }
  const p=getGlavapuUnderground();
- if(!p||!tep.underground_parking)return false;
+ if(!p)return false;
  tep.underground_parking.units=p.spaces;
  tep.underground_parking.gns=p.gns;
  tep.underground_parking.total_area=p.gns;
@@ -21058,6 +23725,59 @@ function repairParkingFromGlavapu(){
  tep.underground_parking.saleable=0;
  tep.underground_parking.transfer=0;
  return true;
+}
+
+function syncUndergroundPair(changed){
+ // Места и площадь — одна величина в двух видах, а не два независимых поля.
+ // Раньше в них могли одновременно стоять 50 мест и 3 000 м² при нормативе
+ // 35: пара расходилась, и было непонятно, что из этого считает модель.
+ // Ведущее — количество мест: норматив меняют, когда меняется представление
+ // о рампах и проездах, а не о числе машин.
+ const per=undergroundAreaPerSpace();
+ if(per<=0)return;
+ if(changed==='underground_manual_gns_sqm'){
+  const area=Number(inputs.underground_manual_gns_sqm||0);
+  inputs.underground_manual_spaces=area>0?Math.round(area/per):0;
+ }else{
+  const spaces=Number(inputs.underground_manual_spaces||0);
+  inputs.underground_manual_gns_sqm=spaces>0?Math.round(spaces*per):0;
+ }
+ ['underground_manual_spaces','underground_manual_gns_sqm'].forEach(id=>{
+  const el=document.getElementById('f_'+id);
+  if(el)el.value=inputs[id];
+ });
+}
+
+function fillUndergroundFromTep(){
+ // Поля показывают расчёт участка, а не пустоту со значением «возьми
+ // норматив»: человек пришёл править числа, которые видит, и ноль в поле
+ // читался как «паркинга нет». Новый импорт ГлавАПУ перезаписывает пару.
+ if(inputs.underground_parking_disabled)return false;
+ if(Number(inputs.underground_manual_spaces||0)>0||Number(inputs.underground_manual_gns_sqm||0)>0)return false;
+ const p=getGlavapuUnderground();
+ if(!p||!(p.spaces>0))return false;
+ const per=undergroundAreaPerSpace();
+ inputs.underground_manual_spaces=Math.round(p.spaces);
+ inputs.underground_manual_gns_sqm=Math.round(p.gns||p.spaces*per);
+ return true;
+}
+
+function undergroundShortfallNote(){
+ // Места ГлавАПУ — норматив обеспеченности, а не пожелание: если ручная
+ // площадь вмещает меньше, это расхождение с требованиями, и человек должен
+ // видеть его сразу, а не узнавать на согласовании.
+ const manualSpaces=Number(inputs.underground_manual_spaces||0);
+ const manualArea=Number(inputs.underground_manual_gns_sqm||0);
+ const off=!!inputs.underground_parking_disabled;
+ if(!off&&manualSpaces<=0&&manualArea<=0)return '';
+ const required=getGlavapuUnderground();
+ if(!required)return '';
+ // При отказе норматив закрывает наземный паркинг — его места идут в зачёт.
+ const above=inputs.above_parking_enabled?Number(inputs.above_parking_spaces||0):0;
+ const fact=(off?0:(manualSpaces>0?manualSpaces:Math.round(manualArea/undergroundAreaPerSpace())))+(off?above:0);
+ if(fact>=required.spaces)return '';
+ return 'В проекте '+fact+' м/м, норматив обеспеченности ГлавАПУ — '+required.spaces+
+        ' м/м: не хватает '+(required.spaces-fact)+'.';
 }
 
 
@@ -21164,14 +23884,24 @@ function renderInputs(){
       el.disabled=true;
       el.title='Москва: платежи ежеквартально — установлено нормативно';
      }
-     el.onchange=()=>{inputs[id]=type==='checkbox'?el.checked:(type==='number'&&!Array.isArray(f[4])?Number(el.value):el.value);if(id==='social_mode')inputs._social_mode_user_set=true;if(id==='vri_region'){renderInputs();return calculate()}if(['apartment_price_th','commercial_price_th','parking_price_th','main_above_th_per_sqm','main_under_th_per_sqm'].includes(id)){inputs.project_class='custom';syncProjectClassSelector()}if(['offices_enabled','retail_enabled','above_parking_enabled','social_mode','kindergarten_places','school_places','clinic_capacity','social_dou_gba_sqm','social_school_gba_sqm','social_clinic_gba_sqm','above_parking_spaces','above_parking_area_per_space_sqm'].includes(id)){const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();if(filled)renderInputs();syncTep(false)}calculate()};
+     el.onchange=()=>{inputs[id]=type==='checkbox'?el.checked:(type==='number'&&!Array.isArray(f[4])?Number(el.value):el.value);if(id==='social_mode')inputs._social_mode_user_set=true;if(id==='vri_region'){renderInputs();return calculate()}if(['apartment_price_th','commercial_price_th','parking_price_th','main_above_th_per_sqm','main_under_th_per_sqm'].includes(id)){inputs.project_class='custom';syncProjectClassSelector()}if(['underground_manual_spaces','underground_manual_gns_sqm','underground_area_per_space_sqm'].includes(id)){syncUndergroundPair(id);syncTep(false)}if(['offices_enabled','retail_enabled','above_parking_enabled','social_mode','kindergarten_places','school_places','clinic_capacity','social_dou_gba_sqm','social_school_gba_sqm','social_clinic_gba_sqm','above_parking_spaces','above_parking_area_per_space_sqm'].includes(id)){const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();if(filled)renderInputs();syncTep(false)}calculate()};
      wrap.appendChild(el);grid.appendChild(wrap);
    });det.appendChild(grid);(ownTab?vriBox:box).appendChild(det);
  });
  rateScenario.value=inputs.rate_scenario||'base';
 }
 
-function vriTotalsRows(t){
+function vriTotalsRows(t,summary){
+ // Плата за ВРИ на метр — то, чем участки сравнивают между собой: сама сумма
+ // ни о чём не говорит без площади, которую на ней построят.
+ const perMetre=(()=>{
+  const s=summary||{};
+  const gns=Number(s.project_gns_sqm||0),saleable=Number(s.monetizable_saleable_sqm||0);
+  const value=Number(t.amount||0);
+  if(!(value>0)||!(gns>0))return '';
+  const per=(area)=>area>0?num2(value/area/1000)+' тыс ₽/м²':'—';
+  return row('Плата на метр',per(gns)+' ГНС · '+per(saleable)+' прод.');
+ })();
  return ((Number(t.relief||0)>0)?row('Обязательство до льготы',money(t.gross))+row('Льгота',money(t.relief)):'')+
    row('Сумма обязательства',money(t.amount))+
    row('Основной долг',money(t.principal))+
@@ -21182,7 +23912,7 @@ function vriTotalsRows(t){
    row('Профинансировано БРИДЖем',money(t.bridge))+
    row('Профинансировано ПФ',money(t.pf))+
    row('Профинансировано капиталом',money(t.equity))+
-   row('Денежный поток по ВРИ, всего',money(t.cash));
+   row('Денежный поток по ВРИ, всего',money(t.cash))+perMetre;
 }
 
 function vriScheduleRows(rows){
@@ -21217,7 +23947,7 @@ function renderVri(vri){
      const basis=(vri.settings&&vri.settings.obligation_basis)||'';
      document.getElementById('vriMode').textContent=
        (REGION[vri.region]||vri.region||'')+' · '+(MODE[vri.payment_mode]||vri.payment_mode||'')+(basis?' · '+basis:'');
-     document.getElementById('vriTotalsTable').innerHTML=vriTotalsRows(t);
+     document.getElementById('vriTotalsTable').innerHTML=vriTotalsRows(t,(lastResult||{}).summary);
      document.getElementById('vriScheduleTable').innerHTML=vriScheduleRows(vri.rows);
      const warn=document.getElementById('vriWarnings');
      warn.style.display=list.length?'':'none';
@@ -21232,7 +23962,7 @@ function renderVri(vri){
  tab.style.display=enabled?'':'none';
  if(empty)empty.style.display=enabled?'none':'';
  if(!enabled)return;
- document.getElementById('vriTabTotals').innerHTML=vriTotalsRows(t);
+ document.getElementById('vriTabTotals').innerHTML=vriTotalsRows(t,(lastResult||{}).summary);
  document.getElementById('vriTabSchedule').innerHTML=vriScheduleRows(vri.rows);
  const tabWarn=document.getElementById('vriTabWarnings');
  tabWarn.style.display=list.length?'':'none';
@@ -21267,12 +23997,25 @@ function renderTep(){
  Object.entries(tep).forEach(([key,row])=>{
    const tr=document.createElement('tr');
    let label=row.label;
-   if(key==='underground_parking'&&importedParking){
+   if(key==='underground_parking'&&inputs.underground_parking_disabled){
+     const shortfall=undergroundShortfallNote();
+     label+=` <span style="display:block;font-size:10px;color:#777;margin-top:3px">Подземного паркинга нет — потребность закрывает наземный. Включить обратно: раздел «Подземный паркинг».</span>`;
+     if(shortfall)label+=` <span style="display:block;font-size:10px;color:#a33;margin-top:2px">${shortfall}</span>`;
+   }
+   else if(key==='underground_parking'&&(Number(inputs.underground_manual_spaces||0)>0||Number(inputs.underground_manual_gns_sqm||0)>0)){
+     const per=undergroundAreaPerSpace();
+     const spaces=Number(tep.underground_parking.units||0);
+     const area=Number(tep.underground_parking.gns||0);
+     const shortfall=undergroundShortfallNote();
+     label+=` <span style="display:block;font-size:10px;color:#777;margin-top:3px">Задано проектом: ${num(spaces)} м/м × ${num(per)} м²/место (гросс) = ${num(area)} м². Менять — в разделе «Подземный паркинг».</span>`;
+     if(shortfall)label+=` <span style="display:block;font-size:10px;color:#a33;margin-top:2px">${shortfall}</span>`;
+   }
+   else if(key==='underground_parking'&&importedParking){
      label+=` <span style="display:block;font-size:10px;color:#777;margin-top:3px">Источник: ${num(importedParking.permanent)} жилых постоянных + ${num(importedParking.guest)} гостевых${importedParking.mfc?` + ${num(importedParking.mfc)} МФК`:''} = ${num(importedParking.spaces)} м/м</span>`;
    }
    let html=`<td>${label}</td>`;
    ['gns','total_area','useful','saleable','transfer','units'].forEach(col=>{
-     const locked=key==='underground_parking'&&importedParking&&['gns','total_area','useful','saleable','transfer','units'].includes(col);
+     const locked=key==='underground_parking'&&(importedParking||inputs.underground_parking_disabled||Number(inputs.underground_manual_spaces||0)>0||Number(inputs.underground_manual_gns_sqm||0)>0)&&['gns','total_area','useful','saleable','transfer','units'].includes(col);
      html+=`<td><input type="number" step="0.1" value="${inputDisplay(row[col])}" ${locked?'readonly style="background:#f3f3f1;color:#555"':''} onchange="tep['${key}']['${col}']=Number(this.value);updateTepTotals();calculate()"></td>`;
    });tr.innerHTML=html;body.appendChild(tr);
  });updateTepTotals();
@@ -21533,7 +24276,7 @@ function applyRequiredSocialProgramFromGlavapu(){
 
 function syncTep(rerender=true){
  const socialBuild=inputs.social_mode==='Строительство';
- tep.underground_parking.gns=Number(tep.underground_parking.units||0)*35;tep.underground_parking.total_area=tep.underground_parking.gns;
+ if(inputs.underground_parking_disabled||Number(inputs.underground_manual_spaces||0)>0||Number(inputs.underground_manual_gns_sqm||0)>0){repairParkingFromGlavapu()}else{tep.underground_parking.gns=Number(tep.underground_parking.units||0)*undergroundAreaPerSpace()}tep.underground_parking.total_area=tep.underground_parking.gns;
  tep.offices.gns=inputs.offices_enabled?Number(inputs.offices_gba_sqm||0):0;tep.offices.total_area=tep.offices.gns;tep.offices.saleable=inputs.offices_enabled?Number(inputs.offices_saleable_sqm||0):0;tep.offices.useful=tep.offices.saleable;
  tep.standalone_retail.gns=inputs.retail_enabled?Number(inputs.retail_gba_sqm||0):0;tep.standalone_retail.total_area=tep.standalone_retail.gns;tep.standalone_retail.saleable=inputs.retail_enabled?Number(inputs.retail_saleable_sqm||0):0;tep.standalone_retail.useful=tep.standalone_retail.saleable;
  tep.above_parking.units=inputs.above_parking_enabled?Number(inputs.above_parking_spaces||0):0;tep.above_parking.gns=tep.above_parking.units*Number(inputs.above_parking_area_per_space_sqm||25);tep.above_parking.total_area=tep.above_parking.gns;
@@ -21542,7 +24285,14 @@ function syncTep(rerender=true){
  tep.clinic.total_area=socialBuild?Number(inputs.social_clinic_gba_sqm||0):0;tep.clinic.transfer=tep.clinic.total_area;tep.clinic.units=socialBuild?Number(inputs.clinic_capacity||0):0;
  // ГлавАПУ has priority over any old/stale underground-parking TEP values.
  repairParkingFromGlavapu();
- if(rerender)renderTep();else updateTepTotals();
+ // Без перерисовки обновлялась только строка итогов, а ячейки продуктов
+ // оставались с прежними числами: правка машино-мест на «Вводных» доходила до
+ // таблицы ТЭП лишь со следующим полным рендером — то есть после расчёта. Не
+ // перерисовывать нужно ровно в одном случае: когда человек печатает в самой
+ // таблице и потеряет фокус. Тогда и не перерисовываем, в остальных — сразу.
+ const editingTep=typeof tepBody!=='undefined'&&tepBody
+  &&tepBody.contains(document.activeElement);
+ if(rerender||!editingTep)renderTep();else updateTepTotals();
 }
 function addMonthsJS(iso,months){
  const d=new Date(iso+'T12:00:00');
@@ -21905,26 +24655,40 @@ function renderResult(){
   row('NPV',money(r.summary.npv))+
   row('IRR equity',irrFmt(r.summary.irr_equity));
 
+ // Числа карточки — из результата, а не из формы. Форма не знает ни о льготе,
+ // ни о доле очереди: при стопроцентной льготе строка показывала полную плату
+ // за ВРИ, которой проект не платит, а в разрезе очереди — цену покупки и плату
+ // всего проекта рядом с расходами одной очереди. Соседние строки давно берутся
+ // из расчёта, и эти две выбивались из общего правила.
+ const expenseGroup=label=>{
+  const found=(r.report.expense_structure||[]).find(g=>g.label===label);
+  return found?Number(found.value||0):0;
+ };
+ const vriRelief=Number(((r.vri||{}).totals||{}).relief||0);
  projectParamsTable.innerHTML=
   (r.summary.phase_count?row('Очередность',r.summary.phase_count+' очереди'):'')+
   row('Класс проекта',inputs.project_class&&PROJECT_CLASS_PRESETS[inputs.project_class]?PROJECT_CLASS_PRESETS[inputs.project_class].label:'Пользовательский')+
   row('Сценарий',scenarioSelect.options[scenarioSelect.selectedIndex].text)+
   row('Доходы к базовому сценарию',Number(r.summary.scenario_revenue_multiplier||1).toLocaleString('ru-RU',{minimumFractionDigits:2,maximumFractionDigits:2})+'x')+
   row('Расходы к базовому сценарию',Number(r.summary.scenario_cost_multiplier||1).toLocaleString('ru-RU',{minimumFractionDigits:2,maximumFractionDigits:2})+'x')+
-  row('Стоимость покупки',money(Number(inputs.purchase_price_mln||0)*1e6))+
-  row('Стоимость смены ВРИ / права',money(Number(inputs.land_rights_cost_mln||0)*1e6))+
+  row('Стоимость покупки',money(expenseGroup('Цена приобретения')))+
+  row('Стоимость смены ВРИ / права',money(Number(r.capex.land_rights||0))
+   +(vriRelief>0?' <span style="color:#777;font-weight:400">льгота '+money(vriRelief)+'</span>':''))+
   row(r.summary.social_payment_mode==='Строительство'?'Строительство соцобъектов':'Социальная компенсация',socialMoney(r.summary.social_payment))+
   row('Проектирование П и РД',money((r.capex.design_p||0)+(r.capex.design_rd||0)))+
   row('Продаваемая площадь',num(r.summary.monetizable_saleable_sqm)+' м²')+
   row('Средняя цена квартир',th(r.summary.average_apartment_price_th))+
-  row('Полная себестоимость',th(r.summary.full_cost_per_saleable_th)+'/м²')+
-  row('Строительная себестоимость',th(r.summary.construction_cost_per_gns_th)+'/м² ГНС')+
-  row('EBITDA на продаваемый м²',th(r.summary.ebitda_per_saleable_th)+'/м²')+
-  row('Чистая прибыль на продаваемый м²',th(r.summary.net_profit_per_saleable_th)+'/м²');
+  // Каждый удельный — в обеих базах: одна без второй читается как другая.
+  row('Полная себестоимость',th(r.summary.full_cost_per_saleable_th)+'/м² прод. · '+th(r.summary.full_cost_per_gns_th)+'/м² ГНС')+
+  row('Строительная себестоимость',th(r.summary.construction_cost_per_saleable_th)+'/м² прод. · '+th(r.summary.construction_cost_per_gns_th)+'/м² ГНС')+
+  row('EBITDA на метр',th(r.summary.ebitda_per_saleable_th)+'/м² прод. · '+th(r.summary.ebitda_per_gns_th)+'/м² ГНС')+
+  row('Чистая прибыль на метр',th(r.summary.net_profit_per_saleable_th)+'/м² прод. · '+th(r.summary.net_profit_per_gns_th)+'/м² ГНС');
 
  reportFinanceTable.innerHTML=
   row('Расчётный БРИДЖ',money(r.report.financing.calculated_bridge))+
   row('Фактический / пиковый БРИДЖ',money(r.report.financing.actual_bridge))+
+  // Не из банка: собственные деньги, заём учредителя, перехваченный чужой долг.
+  (Number(r.report.financing.own_funds||0)>0.5?row('Собственные средства до ПФ',money(r.report.financing.own_funds)+' <span style="color:#777;font-weight:400">без процентов</span>'):'')+
   row('Лимит ПФ',money(r.report.financing.pf_limit))+
   row('Пиковый ПФ',money(r.report.financing.pf_peak))+
   (r.report.financing.peak_total_debt!=null?row('Максимальный совокупный долг',money(r.report.financing.peak_total_debt)):'')+
@@ -21952,6 +24716,7 @@ function renderResult(){
     row(`СОШ — ${num(program.school_places||0)} мест`,money(Number(construction.school_mln||0)*1e6))+
     row(`Поликлиника — ${num(program.clinic_capacity||0)} пос./смену`,money(Number(construction.clinic_mln||0)*1e6))+
     `<tr><th>Стоимость строительства / всего</th><th>${socialMoney(r.summary.social_payment)}</th></tr>`+
+    socialPerMetre(r)+
     `<tr><td colspan="2" style="color:#777;font-size:11px">Справочно: компенсация по ГлавАПУ — ${money((Number(compensation.kindergarten_mln||0)+Number(compensation.school_mln||0)+Number(compensation.clinic_mln||0))*1e6)}</td></tr>`;
  }else{
    socialTable.innerHTML=
@@ -21959,7 +24724,8 @@ function renderResult(){
     row('ДОО — компенсация',money(Number(compensation.kindergarten_mln||0)*1e6))+
     row('СОШ — компенсация',money(Number(compensation.school_mln||0)*1e6))+
     row('Поликлиника — компенсация',money(Number(compensation.clinic_mln||0)*1e6))+
-    `<tr><th>Компенсация / всего</th><th>${socialMoney(r.summary.social_payment)}</th></tr>`;
+    `<tr><th>Компенсация / всего</th><th>${socialMoney(r.summary.social_payment)}</th></tr>`+
+    socialPerMetre(r);
  }
 
  const bridgeTotal=Number(r.report.financing.calculated_bridge||0);
@@ -21979,6 +24745,27 @@ function renderResult(){
    `<thead><tr><th>Цель</th><th>Сумма</th><th>Доля</th></tr></thead>`+
    `<tbody>${bridgeUses.map(x=>`<tr><td>${x[0]}</td><td>${money(x[1])}</td><td>${bridgeShare(x[1])}</td></tr>`).join('')}</tbody>`+
    `<tfoot><tr><th>Итого БРИДЖ</th><th>${money(bridgeTotal)}</th><th>${bridgeTotal>0?'100,0%':'—'}</th></tr></tfoot>`;
+
+ // Фактический пик — по статьям, оплаченным к месяцу пика. Лимит методики и
+ // реальная потребность расходятся всегда, и разница — это то, что банк
+ // называет «остальное вашими»; до сих пор её приходилось считать глазами.
+ const bridgeActual=(r.report.financing.actual_bridge_structure||[]);
+ const bridgeActualTotal=Number(r.report.financing.actual_bridge||0);
+ const bridgeActualEl=document.getElementById('bridgeActualTable');
+ if(bridgeActualEl){
+  bridgeActualEl.innerHTML=bridgeActual.length?
+   (`<thead><tr><th>Статья</th><th>Оплачено к пику</th><th>Доля</th></tr></thead>`
+    +`<tbody>${bridgeActual.map(x=>`<tr><td>${escapeHtml(x.label)}</td><td>${money(x.value)}</td><td>${(Number(x.share||0)*100).toLocaleString('ru-RU',{minimumFractionDigits:1,maximumFractionDigits:1})}%</td></tr>`).join('')}</tbody>`
+    +`<tfoot><tr><th>Пик БРИДЖа</th><th>${money(bridgeActualTotal)}</th><th>${bridgeActualTotal>0?'100,0%':'—'}</th></tr></tfoot>`)
+   :'';
+  const monthEl=document.getElementById('bridgeActualMonth');
+  const when=String(r.report.financing.actual_bridge_month||'');
+  if(monthEl)monthEl.textContent=when?' · '+dateRu(when):'';
+  const noteEl=document.getElementById('bridgeActualNote');
+  if(noteEl)noteEl.textContent=bridgeActual.length
+   ?'Оплачено к месяцу пика. До открытия ПФ у проекта нет ни выручки, ни ПФ, поэтому остаток БРИДЖа равен оплаченному. Разница с расчётным лимитом — расходы, под которые лимит не даётся.'
+   :'БРИДЖ не привлекался.';
+ }
 
  unitEconomicsTable.innerHTML=(r.report.unit_economics||[]).map(x=>`<tr>
   <td>${x.label}</td>
@@ -22000,8 +24787,16 @@ function renderResult(){
    <td>${x.label}</td>
    <td>${money(x.value)}</td>
    <td>${(Number(x.share||0)*100).toLocaleString('ru-RU',{minimumFractionDigits:1,maximumFractionDigits:1})}%</td>
+   <td>${num2(x.per_gns_th)}</td>
+   <td>${num2(x.per_saleable_th)}</td>
  </tr>`).join('');
- expenseTotal.textContent=money(r.summary.total_expenses||expenseRows.reduce((s,x)=>s+Number(x.value||0),0));
+ {
+  const expenseSum=Number(r.summary.total_expenses||0)||expenseRows.reduce((s,x)=>s+Number(x.value||0),0);
+  const eGns=Number(r.summary.project_gns_sqm||0),eSaleable=Number(r.summary.monetizable_saleable_sqm||0);
+  expenseTotal.textContent=money(expenseSum);
+  document.getElementById('expenseTotalGns').textContent=num2(eGns?expenseSum/eGns/1000:0);
+  document.getElementById('expenseTotalSaleable').textContent=num2(eSaleable?expenseSum/eSaleable/1000:0);
+ }
 
  ratesDebtTable.innerHTML=
   row('Сценарий ключевой ставки',rateScenarioLabel(inputs.rate_scenario))+
@@ -22044,6 +24839,19 @@ function renderResult(){
    </tr>`).join('');
  }
 
+ {
+  const ap=r.report.apartment_sales||{};
+  const paceEl=document.getElementById('apartmentPaceTable');
+  if(paceEl)paceEl.innerHTML=Number(ap.units_total||0)>0?
+   row('Квартир в проекте',num(ap.units_total)+' шт.')+
+   row('Средняя площадь квартиры',num2(ap.avg_unit_sqm)+' м²')+
+   row('Средняя цена квартиры',money(Number(ap.avg_unit_price_mln||0)*1e6))+
+   row('Темп продаж до РВЭ',num2(ap.pace_pre_rve_units)+' кв./мес.')+
+   row('Средний темп за период продаж',num2(ap.pace_units)+' кв./мес.')+
+   row('Пиковый месяц',num2(ap.peak_units)+' кв.')
+   :'';
+ }
+
  calendarDateBoxes.innerHTML=[
   ['Начало',r.dates.project_start],
   ['РнС',r.dates.permit],
@@ -22053,10 +24861,38 @@ function renderResult(){
  renderGantt('calendarGantt',r.report.calendar);
  calendarRange.textContent=dateRu(r.report.calendar.start)+' — '+dateRu(r.report.calendar.end);
 
+ // Календарь и чувствительность жили только на своих вкладках и в PDF: человек
+ // смотрел отчёт на экране, печатал его и видел два незнакомых раздела. Отчёт
+ // обязан быть тем же документом, что уходит в печать.
+ {
+  const dates=document.getElementById('reportCalendarDates');
+  if(dates)dates.innerHTML=[
+   ['Начало',r.dates.project_start],['РнС',r.dates.permit],
+   ['Старт продаж',r.dates.sales_start],['РВЭ',r.dates.rve]
+  ].map(x=>`<div class="datebox">${x[0]}<b>${dateRu(x[1])}</b></div>`).join('');
+  renderGantt('reportCalendarGantt',r.report.calendar);
+  renderReportSensitivity();
+  renderReportToc();
+ }
+
  const revNames={apartments:'Квартиры',ground_commercial:'Коммерция 1 этажа',underground_parking:'Подземный паркинг',storage:'Кладовки',offices:'Офисы',standalone_retail:'Коммерция ОСЗ',above_parking:'Наземный паркинг'};
- revenueTable.innerHTML=Object.entries(r.revenue).filter(([key])=>key!=='total').map(([key,v])=>row(revNames[key]||key,money(v))).join('')+`<tr><th>Итого</th><th>${money(r.revenue.total)}</th></tr>`;
+ {
+  // Рубль на метр в обеих базах: сумма сама по себе не сравнивается ни с
+  // рынком, ни с себестоимостью.
+  const rGns=Number(r.summary.project_gns_sqm||0),rSaleable=Number(r.summary.monetizable_saleable_sqm||0);
+  const perTh=(v,area)=>area>0?num2(Number(v||0)/area/1000):'—';
+  revenueTable.innerHTML=Object.entries(r.revenue).filter(([key])=>key!=='total')
+   .map(([key,v])=>`<tr><td>${revNames[key]||key}</td><td>${money(v)}</td><td>${perTh(v,rGns)}</td><td>${perTh(v,rSaleable)}</td></tr>`).join('')
+   +`<tr><th>Итого</th><th>${money(r.revenue.total)}</th><th>${perTh(r.revenue.total,rGns)}</th><th>${perTh(r.revenue.total,rSaleable)}</th></tr>`;
+ }
  const capNames={land_rights:'Земля / смена ВРИ',vri_security:'Обеспечение обязательства по ВРИ',vri_interest:'Проценты по рассрочке ВРИ',ird:'ИРД',design_p:'Проект П',design_rd:'Проект РД',author_supervision:'Авторский надзор',technical_supervision:'Технический заказчик / стройконтроль',project_management:'Управление проектом',preparation:'Подготовительные работы',main_above:'Основное строительство — наземная часть',main_under:'Основное строительство — подземная часть',utilities:'Наружные сети',landscaping:'Благоустройство',commissioning:'Сдача и ввод',site_maintenance:'Содержание стройплощадки',social:'Социальный платеж / соцобъекты',offices:'Офисы',standalone_retail:'Коммерция ОСЗ',above_parking:'Наземный паркинг',gc_fee:'Генподрядчик',reserve:'Резерв'};
- capexTable.innerHTML=Object.entries(r.capex).filter(([key])=>key!=='total').map(([key,v])=>row(capNames[key]||key,money(v))).join('')+`<tr><th>Итого</th><th>${money(r.capex.total)}</th></tr>`;
+ {
+  const cGns=Number(r.summary.project_gns_sqm||0),cSaleable=Number(r.summary.monetizable_saleable_sqm||0);
+  const perTh=(v,area)=>area>0?num2(Number(v||0)/area/1000):'—';
+  capexTable.innerHTML=Object.entries(r.capex).filter(([key])=>key!=='total')
+   .map(([key,v])=>`<tr><td>${capNames[key]||key}</td><td>${money(v)}</td><td>${perTh(v,cGns)}</td><td>${perTh(v,cSaleable)}</td></tr>`).join('')
+   +`<tr><th>Итого</th><th>${money(r.capex.total)}</th><th>${perTh(r.capex.total,cGns)}</th><th>${perTh(r.capex.total,cSaleable)}</th></tr>`;
+ }
  reportTep.innerHTML=
   `<thead><tr><th>Продукт</th><th>ГНС, м²</th><th>Продаваемая площадь, м²</th><th>Количество, шт.</th></tr></thead>`+
   `<tbody>`+
@@ -22064,6 +24900,61 @@ function renderResult(){
   `</tbody><tfoot><tr><th>Итого</th><th>${num(r.tep.total.gns)}</th><th>${num(r.tep.total.saleable)}</th><th>${num(r.tep.total.units)}</th></tr></tfoot>`;
 }
 
+
+const REPORT_SECTIONS=[
+ ['rsSite','Участок'],['rsSummary','Итог'],['rsPhases','Очереди'],
+ ['rsExpenses','Расходы'],['rsIncome','Доходы'],['rsFinance','Финансирование'],
+ ['rsSensitivity','Чувствительность'],['rsCalendar','Календарь'],
+];
+
+function socialPerMetre(r){
+ // Социальная нагрузка на метр читается как цена входа в проект и сравнивается
+ // между площадками; в миллиардах такое сравнение не делают.
+ const gns=Number(r.summary.project_gns_sqm||0),saleable=Number(r.summary.monetizable_saleable_sqm||0);
+ const value=Number(r.summary.social_payment||0);
+ if(!(value>0)||!(gns>0))return '';
+ const per=(area)=>area>0?num2(value/area/1000)+' тыс ₽/м²':'—';
+ return row('Нагрузка на метр',per(gns)+' ГНС · '+per(saleable)+' прод.');
+}
+
+function renderReportSensitivity(){
+ const box=document.getElementById('reportSensitivity');
+ if(!box)return;
+ if(!sensitivityReport||!(sensitivityReport.items||[]).length){
+  box.innerHTML='<div class="section-title">Чувствительность</div>'
+   +'<div style="font-size:12px;color:#777;margin-bottom:10px">Не рассчитана. '
+   +'В PDF она досчитывается сама, поэтому печатный отчёт будет полнее экранного.</div>'
+   +'<button class="btn no-print" onclick="openTab(\'sensitivity\',null);renderSensitivityForm()">Открыть расчёт чувствительности</button>';
+  return;
+ }
+ const base=sensitivityReport.base;
+ box.innerHTML='<div class="section-title">Чувствительность · '+escapeHtml(base.label)+'</div>'
+  +'<div style="font-size:12px;color:#777;margin-bottom:10px">'+escapeHtml(base.scope_label||'')+' · база '
+  +sensFormat(base.value,base.digits)+' '+escapeHtml(base.unit||'')+'</div>'
+  +'<div id="reportTornado"></div>'
+  +(sensitivityReport.verdict||[]).map(line=>`<div class="note">${escapeHtml(String(line))}</div>`).join('');
+ renderTornado(sensitivityReport,'reportTornado');
+}
+
+function renderReportToc(){
+ // Ссылка, ведущая в пустоту, хуже её отсутствия: очередей у одноочередного
+ // проекта нет, чувствительности — пока её не посчитали.
+ //
+ // Но «раздел есть» — это не «раздел виден сейчас». Меню строится сразу после
+ // расчёта, а вкладка отчёта в этот момент закрыта: у скрытой панели
+ // display:none, и на вопрос о видимости все её разделы отвечали «меня нет».
+ // Меню отфильтровывало себя до пустоты каждый раз. Смотрим на содержимое:
+ // скрытый своим стилем раздел и раздел без карточек — мимо, остальные — в меню.
+ const toc=document.getElementById('reportToc');
+ if(!toc)return;
+ const shown=el=>{try{return getComputedStyle(el).display!=='none'}catch(e){return true}};
+ toc.innerHTML=REPORT_SECTIONS.filter(([id])=>{
+  const node=document.getElementById(id);
+  if(!node||!shown(node))return false;
+  return Array.from(node.children).some(child=>!child.classList.contains('report-section-title')
+   &&shown(child)&&child.textContent.trim().length>0);
+ }).map(([id,label])=>`<a href="#${id}" onclick="event.preventDefault();document.getElementById('${id}').scrollIntoView({behavior:'smooth',block:'start'})">${label}</a>`).join('');
+}
 
 function renderGantt(targetId,calendar){
  const target=document.getElementById(targetId);if(!target||!calendar){return}
@@ -22292,8 +25183,11 @@ function renderSensitivityReport(report){
 
 // Диаграмма своя, на SVG: тащить графическую библиотеку ради одного графика
 // незачем, а печать и PDF со сторонним холстом работают хуже.
-function renderTornado(report){
- const box=document.getElementById('sensitivityChart');
+function renderTornado(report,targetId){
+ // Торнадо рисуется и на вкладке чувствительности, и в отчёте: одна картинка
+ // на две поверхности, чтобы экран и печать показывали одно.
+ const box=document.getElementById(targetId||'sensitivityChart');
+ if(!box)return;
  const items=report.items.slice(0,14);
  if(!items.length){box.innerHTML='';return}
  const base=report.base.value, digits=report.base.digits;
@@ -22332,7 +25226,7 @@ function currentPdfReportPayload(cads=[]){
  const glavapuMeta=inputs._glavapu_import||null;
  const manualMeta=inputs._manual_tep_import||null;
  const source=(glavapuMeta&&glavapuMeta.source)||(manualMeta&&manualMeta.source)||{};
- return {result:lastResult,inputs:inputs,tep:tep,rates:rates,phasing:phasing,scenario:scenarioSelect.value||'base',cadastral_numbers:cads.length?cads:((cadastralAnalysis&&cadastralAnalysis.recognized)||source.cadastral_numbers||[]),project_name:(manualMeta&&manualMeta.project_name)||'',source_label:manualMeta?'Ручной шаблон DevelopAid':'ГлавАПУ',
+ return {result:lastResult,inputs:inputs,tep:tep,rates:rates,phasing:phasing,scenario:scenarioSelect.value||'base',cadastral_numbers:cads.length?cads:((cadastralAnalysis&&cadastralAnalysis.recognized)||source.cadastral_numbers||[]),project_name:(manualMeta&&manualMeta.project_name)||'',source_label:tepSourceLabel(!!manualMeta),
    // Чувствительность попадает в отчёт только если её считали: гнать полсотни
    // расчётов внутри сборки PDF ради раздела, который никто не просил, незачем.
    sensitivity:sensitivityReport};
@@ -22415,6 +25309,10 @@ function loadLocal(){try{const x=JSON.parse(localStorage.getItem('plato_v04'));i
  }
  if(inputs.author_supervision_pct==null)inputs.author_supervision_pct=0;
  delete inputs.author_supervision_mln;
+ // Проект, сохранённый до этой версии, несёт нули в паре «места ↔ площадь»:
+ // нуль означал «взять норматив ГлавАПУ», а поля должны показывать расчёт
+ // участка, который человек и правит.
+ fillUndergroundFromTep();
 }}catch(e){}}
 function resetAll(){
  localStorage.removeItem('plato_v04');
@@ -22697,6 +25595,10 @@ initializeApp();
 # Подстановка разовая, на импорте: страница отдаётся на каждый запрос, а версия
 # за время работы процесса не меняется.
 PAGE = PAGE.replace(VERSION_PLACEHOLDER, VERSION)
+PAGE = PAGE.replace(FIELD_GROUPS_PLACEHOLDER,
+                    json.dumps(FIELD_GROUPS, ensure_ascii=False))
+PAGE = PAGE.replace(INPUT_DEFAULT_PLACEHOLDER,
+                    json.dumps(DEFAULT_INPUTS, ensure_ascii=False))
 
 
 @app.get("/", response_class=HTMLResponse)

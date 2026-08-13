@@ -19,8 +19,31 @@ import main as _wrapper  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
+def empty_glavapu_tep_cache():
+    """ТЭП участка кэшируется на шесть часов — в жизни это ускорение, в тестах
+    чужой ответ: один тест кладёт результат по номеру, следующий проверяет
+    поведение при сбое и получает вчерашний успех."""
+    _wrapper.core._GLAVAPU_TEP_CACHE.clear()
+    # Предохранитель после сбоя держит браузер закрытым пять минут — в жизни
+    # это спасает от полутора минут ожидания на каждом расчёте, в тестах
+    # сбой одного проверяющего сценария молча отключал бы браузер соседям.
+    _wrapper.core._GLAVAPU_HEADLESS_BLOCKED_UNTIL["at"] = 0.0
+    yield
+    _wrapper.core._GLAVAPU_TEP_CACHE.clear()
+    _wrapper.core._GLAVAPU_HEADLESS_BLOCKED_UNTIL["at"] = 0.0
+
+
+@pytest.fixture(autouse=True)
 def isolated_platon_state(tmp_path, monkeypatch):
     monkeypatch.setattr(_wrapper, "_STATE_DIR", tmp_path / "platon_state")
+    # Кэш ответов агента и стадии запросов тоже живут на диске — иначе ответ,
+    # положенный одним тестом, приходит другому вместо похода в модель, и тест
+    # «свободный вопрос доходит до модели» падает через раз.
+    monkeypatch.setattr(_wrapper.core, "_PLATO_STAGE_DIR", tmp_path / "agent_state")
+    # Журнал обращений тоже на диске: без изоляции тесты писали бы в рабочий
+    # каталог, а свод одного теста считал бы события соседнего.
+    monkeypatch.setattr(_wrapper.core, "_USAGE_DIR", tmp_path / "usage")
+    _wrapper.core._USAGE_SWEPT.clear()
     for name in ("_PLATON_CONTEXT_BY_SESSION", "_PLATON_LAST_SESSION",
                  "_PLATON_TEP_CONTEXT", "_PLATON_MODE", "_PLATON_HISTORY",
                  "_PLATON_PENDING", "_PLATON_LAST_URL"):

@@ -94,9 +94,15 @@ def test_phase_parameters_are_filled_in():
 
 
 def test_unit_metrics_are_shown(phased_text):
-    assert "Удельные показатели по очередям" in phased_text
-    assert "Выручка на м" in phased_text
-    assert "Расходы на м" in phased_text
+    """Каждый удельный показатель — в двух базах: на ГНС и на продаваемую.
+    Заголовки колонок переносятся по словам, поэтому ищем их в тексте со
+    склеенными переводами строк, а не в вёрстке."""
+    flat = " ".join(phased_text.split())
+    assert "Удельные показатели по очередям" in flat
+    for column in ("Выручка на м² прод.", "Выручка на м² ГНС",
+                   "Расходы на м² прод.", "Расходы на м² ГНС",
+                   "Прибыль на м² прод.", "Прибыль на м² ГНС"):
+        assert column in flat, column
 
 
 def test_the_totals_row_is_a_ratio_not_an_average(phased_text):
