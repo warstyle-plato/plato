@@ -10737,7 +10737,8 @@ def _plato_fill_land_sheet(
                 put(row, value, name)
 
     # Условия рассрочки ВРИ: доля к оплате после льготы, спред и окно платежей.
-    permit = add_months(d(inputs.get("project_start", "2027-01-01")), int(n(inputs, "ird_months", 18)))
+    permit = add_months(d(inputs.get("project_start", "2027-01-01")),
+                        max(IRD_MONTHS_MIN, int(n(inputs, "ird_months", 18))))
     gross = n(inputs, "land_rights_cost_mln") * 1_000_000
     relief, net = vri_relief(inputs, gross)
     schedule = build_vri_schedule(inputs, net, permit)
@@ -14218,7 +14219,10 @@ def build_vri_schedule(
 
 def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None = None) -> dict:
     project_start = d(x.get("project_start", "2027-01-01"))
-    permit = add_months(project_start, int(n(x, "ird_months", 18)))
+    # Минимум применяется здесь, а не только при разносе расходов: РнС в день
+    # старта — это и есть тот нулевой период, на котором книга и движок
+    # расходятся целиком.
+    permit = add_months(project_start, max(IRD_MONTHS_MIN, int(n(x, "ird_months", 18))))
     sales_start = add_months(permit, int(n(x, "sales_lag_months", 0)))
     rve = add_months(permit, int(n(x, "construction_months", 24)))
     residual = int(n(x, "residual_sales_months", 6))
@@ -15423,7 +15427,8 @@ def calculate(req: CalcRequest) -> dict:
 
     add_event("Сделка / начало проекта", op["project_start"], group="Ключевые вехи", kind="milestone")
     add_event("ИРД и согласования", op["project_start"], op["permit"], group="Подготовка")
-    design_start = add_months(op["permit"], -min(6, max(1, int(n(x, "ird_months", 18)))))
+    design_start = add_months(op["permit"],
+                              -min(6, max(IRD_MONTHS_MIN, int(n(x, "ird_months", 18)))))
     add_event("Проектирование П и РД", design_start, op["permit"], group="Подготовка")
     bridge_end = add_months(op["permit"], int(n(x, "bridge_repay_lag_months", 0)))
     add_event("БРИДЖ", op["project_start"], bridge_end, group="Финансирование")
@@ -15608,12 +15613,6 @@ def calculate(req: CalcRequest) -> dict:
         "monthly": monthly_detail,
         "excel_control": EXCEL_CONTROL,
         "notes": {
-            **({"ird_months": (
-                f"Срок ИРД поднят до минимального: {IRD_MONTHS_MIN} мес. "
-                "Короче модель не считает — на нулевом периоде книга и расчёт "
-                "расходятся по накладным и налогу. Если согласования и "
-                "проектирование уже оплачены, обнулите их ставки, а не срок."
-            )} if n(x, "ird_months", 18) < IRD_MONTHS_MIN else {}),
             "llcr": "LLCR рассчитан по структуре действующего листа LLCR: поступления минус операционные/инвестиционные расходы плюс ПФ, делённые на ПФ и стоимость долга.",
             "finance": "Помесячная логика БРИДЖ/ПФ/эскроу перенесена в код. До окончательной замены Excel требуется контрольная сверка нескольких сценариев по месяцам.",
             "tax": "Налог на прибыль начисляется накопительно не ранее РВЭ: маржа реализованных основных продуктов и отдельных объектов КРТ минус выплаченные проценты и комиссии.",

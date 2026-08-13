@@ -63,21 +63,14 @@ def test_the_permit_period_has_a_floor_of_one_month():
     assert workbook(ird_months=0)["Вводные"]["E88"].value == 1
 
 
-def test_raising_the_period_is_said_out_loud():
-    """Молча поднимать введённое число нельзя — это ровно то, за что мы чиним
-    подмену нуля умолчанием."""
+def test_the_field_says_the_minimum():
+    """Ограничение объясняется у поля, до ввода. Заметки в расчёте нет —
+    решение владельца (13.08.2026): предупреждать после того, как человек уже
+    посчитал, поздно и шумно."""
+    assert "минимум 1" in core.PAGE
     result = core.calculate(core.CalcRequest(
         inputs={**BASE, "ird_months": 0}, tep=core.TEP_DEFAULT, rates=[]))
-    note = result["notes"].get("ird_months") or ""
-    assert "минимального" in note and "1 мес" in note
-    quiet = core.calculate(core.CalcRequest(
-        inputs={**BASE, "ird_months": 6}, tep=core.TEP_DEFAULT, rates=[]))
-    assert "ird_months" not in quiet["notes"]
-
-
-def test_the_field_says_the_minimum():
-    """Человек должен узнать о минимуме до расчёта, а не после."""
-    assert "минимум 1" in core.PAGE
+    assert "ird_months" not in result["notes"]
 
 
 @pytest.mark.parametrize("key,cell,divisor", [
