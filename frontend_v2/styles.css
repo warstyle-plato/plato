@@ -386,3 +386,17 @@ body::before {
   .input-row { grid-template-columns: 1fr 120px; }
   .input-row small { grid-column: 2; text-align: right; margin-top: -6px; }
 }
+
+/* Платон: живой разговор вместо макета. */
+.chat-input { display: flex; gap: 8px; align-items: center; }
+.chat-input input { flex: 1; padding: 10px 14px; border: 1px solid rgba(255, 255, 255, .12); border-radius: 99px; background: rgba(8, 18, 32, .7); color: #e2f0ff; font-size: 13px; }
+.chat-input input:focus { outline: none; border-color: rgba(47, 140, 255, .6); }
+.chat-input input:disabled { opacity: .45; }
+.chat-input button { border: 0; border-radius: 50%; width: 38px; height: 38px; background: #2f8cff; color: #041121; font-size: 15px; cursor: pointer; }
+.chat-input button[disabled] { opacity: .4; cursor: default; }
+.chat-body { overflow-y: auto; max-height: 58vh; }
+.message p { margin: 0 0 6px; }
+.message p:last-child { margin-bottom: 0; }
+.message ul { margin: 4px 0 6px; padding-left: 18px; }
+.message li { margin-bottom: 3px; }
+.message code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; background: rgba(255, 255, 255, .07); padding: 1px 5px; border-radius: 5px; }

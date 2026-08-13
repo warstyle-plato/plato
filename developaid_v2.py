@@ -196,6 +196,22 @@ def install(app: FastAPI) -> None:
         """Блоки формы вводных и умолчания — из справочников движка."""
         return JSONResponse(form.form_description(_core()), headers=_NO_STORE)
 
+    @app.get("/api/v2/agent/scenarios")
+    def developaid_v2_agent_scenarios() -> JSONResponse:
+        """Кнопки Платона — список движка, а не копия в скрипте.
+
+        Эти сценарии движок считает сам, без обращения к модели: ответ приходит
+        за доли секунды и не зависит ни от ключа, ни от связи с сервисом.
+        Сам разговор идёт напрямую в `/agent/chat` — своего маршрута для него
+        у 2.0 нет, иначе появилась бы вторая точка входа к одному агенту.
+        """
+        core = _core()
+        return JSONResponse(
+            [{"key": key, "label": label}
+             for key, (label, _) in core._AGENT_LOCAL_SCENARIOS.items()],
+            headers=_NO_STORE,
+        )
+
     @app.get("/api/v2/projects")
     def developaid_v2_projects() -> JSONResponse:
         """Каталог демонстрационных вводных. Показателей здесь нет."""

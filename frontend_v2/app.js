@@ -391,14 +391,189 @@ function renderTornado() {
   }).join('');
 }
 
+// --- Платон: настоящий агент движка ----------------------------------------
+// Разговор идёт напрямую в /agent/chat — тот же маршрут, что у действующей
+// страницы; своего у 2.0 нет, иначе к одному агенту вело бы два входа.
+// Соединение сервер держит недолго и отдаёт «принято»: длинный запрос не
+// переживает ни прокси, ни мобильную сеть, поэтому ответ забирается опросом
+// по номеру запуска.
+
+const platon = { scenarios: [], history: [], busy: false };
+
+function platonTraceId() {
+  return Array.from(crypto.getRandomValues(new Uint8Array(6)))
+    .map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+/* Ответ приходит Markdown-ом. Разметка минимальная и по экранированному
+   тексту: показывать сырые звёздочки нельзя, вставлять чужой HTML — тем более. */
+function renderMarkdown(text) {
+  const escaped = escapeHtml(text);
+  const lines = escaped.split('\n');
+  const html = [];
+  let list = false;
+  lines.forEach((line) => {
+    const item = line.match(/^\s*[-*]\s+(.*)$/);
+    if (item) {
+      if (!list) { html.push('<ul>'); list = true; }
+      html.push(`<li>${item[1]}</li>`);
+      return;
+    }
+    if (list) { html.push('</ul>'); list = false; }
+    if (!line.trim()) return;
+    const heading = line.match(/^\s*(#{1,4})\s+(.*)$/);
+    html.push(heading ? `<strong>${heading[2]}</strong>` : `<p>${line}</p>`);
+  });
+  if (list) html.push('</ul>');
+  return html.join('')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/`([^`]+)`/g, '<code>$1</code>');
+}
+
+function platonMessage(role, html) {
+  const node = document.createElement('div');
+  node.className = `message ${role === 'user' ? 'user-message' : 'assistant-message'}`;
+  node.innerHTML = html;
+  $('#platonLog').appendChild(node);
+  $('#platonLog').scrollTop = $('#platonLog').scrollHeight;
+  return node;
+}
+
+async function platonAwaitResult(traceId, thinking) {
+  const hardStop = Date.now() + 900000;
+  let deadline = Date.now() + 300000;
+  let seenStage = '';
+  while (Date.now() < deadline && Date.now() < hardStop) {
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    try {
+      const response = await fetch(`/agent/result/${traceId}`, { cache: 'no-store' });
+      if (response.ok) {
+        const data = await response.json();
+        if (data && !data.pending && data.answer) return data;
+        if (data && !data.pending && data.error) return { detail: String(data.error) };
+      }
+    } catch (error) { /* обрыв опроса — не конец работы, пробуем снова */ }
+    let stage = '';
+    try {
+      const trace = await (await fetch(`/agent/trace/${traceId}`, { cache: 'no-store' })).json();
+      if (trace && trace.label && trace.stage !== 'done') stage = trace.label;
+    } catch (error) { /* стадия необязательна */ }
+    // Пока движок отчитывается о новом шаге, работа идёт, а не висит.
+    if (stage && stage !== seenStage) {
+      seenStage = stage;
+      deadline = Math.min(hardStop, Date.now() + 180000);
+    }
+    if (thinking) {
+      thinking.textContent = stage ? `${stage}… (работа идёт, жду ответ)` : 'Работа принята, жду ответ…';
+    }
+  }
+  return { detail: 'Ответ не пришёл за отведённое время.' };
+}
+
+async function askPlaton(message, scenario) {
+  if (platon.busy || !state.result) return;
+  const request = state.result.request || {};
+  platon.busy = true;
+  $('#platonSend').disabled = true;
+  platonMessage('user', escapeHtml(message));
+  const thinking = platonMessage('assistant', 'Думаю…');
+  const traceId = platonTraceId();
+  let data = null;
+  try {
+    const response = await fetch('/agent/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      cache: 'no-store',
+      body: JSON.stringify({
+        message,
+        scenario: scenario || '',
+        trace_id: traceId,
+        inputs: request.inputs || {},
+        tep: request.tep || {},
+        rates: request.rates || [],
+        phasing: request.phasing || {},
+        history: platon.history.slice(-8),
+        selected_view: 'all',
+      }),
+    });
+    data = await response.json().catch(() => null);
+    // Сервер передал работу опросу: ответ ждёт под номером запуска.
+    if (response.ok && data && data.pending) data = await platonAwaitResult(traceId, thinking);
+    else if (!response.ok && !(data && data.answer)) {
+      const late = await platonAwaitResult(traceId, thinking);
+      data = late.answer ? late : (data || late);
+    }
+  } catch (error) {
+    // «Load failed» — обрыв соединения, а не отказ: работа на сервере идёт.
+    data = await platonAwaitResult(traceId, thinking);
+  }
+  if (data && data.answer) {
+    thinking.innerHTML = renderMarkdown(data.answer);
+    platon.history.push({ role: 'user', content: message },
+                        { role: 'assistant', content: data.answer });
+  } else {
+    thinking.innerHTML = `<em>${escapeHtml((data && (data.detail || data.error))
+      || 'Платон не ответил.')}</em>`;
+  }
+  platon.busy = false;
+  $('#platonSend').disabled = false;
+}
+
+function renderPlatonScenarios() {
+  $('#platonScenarios').innerHTML = platon.scenarios.map((item) => `
+    <button type="button" data-scenario="${escapeHtml(item.key)}">${escapeHtml(item.label)}</button>`).join('');
+  $$('#platonScenarios button').forEach((button) => {
+    button.addEventListener('click', () => askPlaton(button.textContent, button.dataset.scenario));
+  });
+}
+
+async function initPlaton() {
+  $('#platonForm').addEventListener('submit', (event) => {
+    event.preventDefault();
+    const value = $('#platonInput').value.trim();
+    if (!value) return;
+    $('#platonInput').value = '';
+    askPlaton(value, '');
+  });
+  try {
+    platon.scenarios = await (await fetch('/api/v2/agent/scenarios', { cache: 'no-store' })).json();
+    renderPlatonScenarios();
+  } catch (error) {
+    $('#platonScenarios').innerHTML = '<span class="empty-state">Список разборов не получен.</span>';
+  }
+  try {
+    const status = await (await fetch('/agent/status', { cache: 'no-store' })).json();
+    // Кнопки считает движок и без модели; свободный вопрос — нет. Разница
+    // должна быть видна до того, как человек напишет вопрос и не получит ответ.
+    $('#platonStatus').textContent = status.enabled
+      ? `Свободный вопрос уходит модели · думает через ${status.thinks_via}`
+      : 'Модель не настроена: кнопки выше работают — их считает движок, свободный вопрос ответа не получит.';
+    $('#platonInput').disabled = !status.enabled;
+  } catch (error) {
+    $('#platonStatus').textContent = '';
+  }
+}
+
 function renderPlaton() {
   const result = state.result;
-  const verdict = result.verdict || {};
-  const lines = [
-    `${verdict.title || 'Вывод не сформирован'}. ${verdict.text || ''}`,
-    ...(result.warnings || []),
-  ];
-  $('#platonAnswer').textContent = lines.join(' ');
+  const project = result.project || {};
+  const scope = project.name || (project.cadastral_numbers || []).join(', ') || 'проект';
+  $('#platonContext').textContent =
+    `${scope} · расчёт ${String(result.calculation_id).slice(0, 12)}`;
+  // Разговор ведётся о конкретном расчёте: сменился он — прежние ответы
+  // относятся к другим числам, и держать их в контексте нельзя.
+  if (platon.lastCalculation !== result.calculation_id) {
+    platon.lastCalculation = result.calculation_id;
+    platon.history = [];
+    const log = $('#platonLog');
+    if (log) {
+      log.innerHTML = '';
+      const verdict = result.verdict || {};
+      platonMessage('assistant', renderMarkdown(
+        `**${verdict.title || 'Расчёт получен'}.** ${verdict.text || ''}`
+        + (result.warnings || []).map((text) => `\n- ${text}`).join('')));
+    }
+  }
 }
 
 function renderResult(result) {
@@ -780,6 +955,7 @@ async function init() {
   const slug = state.projects.some((project) => project.slug === requested) ? requested : fallback;
   await loadProject(slug);
   await initForm();
+  await initPlaton();
   $('#loading').classList.add('is-hidden');
 }
 

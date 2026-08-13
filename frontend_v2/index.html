@@ -204,25 +204,18 @@
           <article class="panel platon-card">
             <span class="platon-orbit">✦</span>
             <span class="eyebrow">Платон Сергеевич Федоскин</span>
-            <h2>Что проверить в этом проекте?</h2>
-            <p>Платон получит текущий расчёт, разберёт экономику и предложит изменения. В прототипе действия показаны как будущий интерфейс и ничего не меняют в модели.</p>
-            <div class="prompt-grid">
-              <button>Найти слабую очередь</button>
-              <button>Довести LLCR до 1,20</button>
-              <button>Снизить потребность в БРИДЖе</button>
-              <button>Проверить цену покупки</button>
-              <button>Построить стресс-сценарий</button>
-              <button>Объяснить риски ТЭП</button>
-            </div>
+            <h2>Разбор текущего расчёта</h2>
+            <p>Платон получает вводные этого расчёта и разбирает экономику. Числа считает движок, а не модель: кнопки ниже — расчёты движка, они отвечают сразу и не зависят от связи с сервисом модели.</p>
+            <div id="platonScenarios" class="prompt-grid"></div>
+            <p id="platonStatus" class="input-hint"></p>
           </article>
           <article class="panel chat-preview">
-            <div class="chat-header"><span class="avatar platon-avatar">ПС</span><div><strong>Платон</strong><small>Контекст проекта загружен</small></div></div>
-            <div class="chat-body">
-              <div class="message assistant-message">Вижу расчёт. Сначала проверю LLCR, пик БРИДЖа и экономику очередей.</div>
-              <div class="message user-message">Какая главная проблема проекта?</div>
-              <div id="platonAnswer" class="message assistant-message"></div>
-            </div>
-            <div class="chat-input"><span>Задайте вопрос по проекту…</span><button>➤</button></div>
+            <div class="chat-header"><span class="avatar platon-avatar">ПС</span><div><strong>Платон</strong><small id="platonContext">Контекст проекта загружен</small></div></div>
+            <div id="platonLog" class="chat-body"></div>
+            <form id="platonForm" class="chat-input">
+              <input id="platonInput" type="text" autocomplete="off" placeholder="Задайте вопрос по проекту…">
+              <button id="platonSend" type="submit" aria-label="Отправить">➤</button>
+            </form>
           </article>
         </div>
       </section>
