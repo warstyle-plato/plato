@@ -305,6 +305,42 @@ def test_the_prototype_fixtures_are_available_for_development(client, monkeypatc
     assert response.json()["prototype"] is True
 
 
+# --- Платон ------------------------------------------------------------------
+
+def test_the_agent_scenarios_come_from_the_engine(client):
+    """Кнопки разбора — список движка, а не копия в скрипте."""
+    scenarios = client.get("/api/v2/agent/scenarios").json()
+
+    assert [item["key"] for item in scenarios] == list(core._AGENT_LOCAL_SCENARIOS)
+    assert [item["label"] for item in scenarios] == \
+        [label for label, _ in core._AGENT_LOCAL_SCENARIOS.values()]
+    assert scenarios, "список разборов пуст"
+
+
+def test_the_agent_has_one_entrance(client):
+    """У 2.0 нет своего маршрута разговора: он идёт в тот же /agent/chat.
+
+    Второй вход к одному агенту — это вторая история, второй учёт обращений
+    и второй набор правил, из которых он отвечает.
+    """
+    script = (Path(__file__).resolve().parent.parent
+              / "frontend_v2" / "app.js").read_text(encoding="utf-8")
+
+    assert "'/agent/chat'" in script
+    assert "/agent/result/" in script, "ответ забирается опросом по номеру запуска"
+    assert "/api/v2/agent/chat" not in script, "у 2.0 появился свой вход к агенту"
+
+
+def test_the_agent_answer_is_asked_about_the_shown_calculation():
+    """Вопрос уходит с вводными показанного расчёта, а не с чужими."""
+    script = (Path(__file__).resolve().parent.parent
+              / "frontend_v2" / "app.js").read_text(encoding="utf-8")
+
+    assert "state.result.request" in script
+    # Сменился расчёт — прежние ответы относятся к другим числам.
+    assert "platon.history = []" in script
+
+
 # --- установка на экран -------------------------------------------------------
 
 def test_the_manifest_makes_the_app_installable(client):
