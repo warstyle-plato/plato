@@ -108,6 +108,47 @@ def _phasing_block(core: Any) -> dict[str, Any]:
     }
 
 
+def inputs_from_glavapu(
+    core: Any,
+    parsed: dict[str, Any],
+    extra_inputs: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Разбор ГлавАПУ → вводные и ТЭП проекта.
+
+    Своего переноса здесь нет: значения берутся из карты `mappings`, которую
+    строит сам разбор движка. Тем же путём предустановку применяет
+    Telegram-поток — `inputs = mappings["inputs"]`, `tep = mappings["tep"]`.
+
+    Всё, чего в файле нет — цены, себестоимость, сроки, — остаётся
+    умолчаниями движка: додумывать экономику за участок нельзя.
+    """
+    mappings = parsed.get("mappings") or {}
+    normalized = parsed.get("normalized") or {}
+
+    inputs: dict[str, Any] = copy.deepcopy(core.DEFAULT_INPUTS)
+    inputs.update(mappings.get("inputs") or {})
+    inputs["site_area_ha"] = normalized.get("site_area_ha") or 0
+    suggested = normalized.get("suggested_social_mode")
+    if suggested:
+        inputs["social_mode"] = suggested
+    inputs.update(extra_inputs or {})
+    # Импорт едет с вводными: без него движок не увидит ни требуемого
+    # паркинга, ни нормативной социальной потребности.
+    inputs["_glavapu_import"] = {
+        "source": parsed.get("source") or {},
+        "normalized": normalized,
+        "recognized": parsed.get("recognized") or [],
+        "warnings": parsed.get("warnings") or [],
+        "mappings": mappings,
+    }
+
+    tep: dict[str, Any] = copy.deepcopy(core.TEP_DEFAULT)
+    for key, row in (mappings.get("tep") or {}).items():
+        tep[key] = {**(tep.get(key) or {}), **row}
+
+    return {"inputs": inputs, "tep": tep}
+
+
 def form_description(core: Any) -> dict[str, Any]:
     """Блоки формы и умолчания движка одним ответом."""
     blocks: list[dict[str, Any]] = [_tep_block(core)]

@@ -28,6 +28,8 @@ from __future__ import annotations
 import copy
 from typing import Any
 
+import developaid_v2_form as form
+
 # Сценарии демонстрации. Значения — конфигурация проекта из предустановки
 # мини-приложения, не результаты расчёта.
 DEMO_SCENARIOS: dict[str, dict[str, Any]] = {
@@ -118,32 +120,15 @@ def scenario_payload(core: Any, slug: str) -> dict[str, Any]:
     meta = core.SERVER_TEP_PRESETS[scenario["preset_id"]]
     path = core.PRESET_DIR / meta["filename"]
     parsed = core.parse_glavapu_xlsx(path.read_bytes(), meta["filename"])
-    mappings = parsed.get("mappings") or {}
-    normalized = parsed.get("normalized") or {}
 
-    inputs: dict[str, Any] = copy.deepcopy(core.DEFAULT_INPUTS)
-    inputs.update(mappings.get("inputs") or {})
-    inputs["site_area_ha"] = normalized.get("site_area_ha") or 0
-    suggested = normalized.get("suggested_social_mode")
-    if suggested:
-        inputs["social_mode"] = suggested
-    inputs.update(scenario.get("inputs") or {})
-    # Импорт ГлавАПУ едет с вводными: без него движок не увидит ни требуемого
-    # паркинга, ни нормативной социальной потребности.
-    inputs["_glavapu_import"] = {
-        "source": {**(parsed.get("source") or {}),
-                   "preset_id": scenario["preset_id"],
-                   "preset_name": meta["name"],
-                   "server_preset": True},
-        "normalized": normalized,
-        "recognized": parsed.get("recognized") or [],
-        "warnings": parsed.get("warnings") or [],
-        "mappings": mappings,
-    }
-
-    tep: dict[str, Any] = copy.deepcopy(core.TEP_DEFAULT)
-    for key, row in (mappings.get("tep") or {}).items():
-        tep[key] = {**(tep.get(key) or {}), **row}
+    # Перенос из разбора в вводные — общий с «Поиском ТЭП»: он один и живёт
+    # в developaid_v2_form, чтобы предустановка и участок доезжали одинаково.
+    parsed["source"] = {**(parsed.get("source") or {}),
+                        "preset_id": scenario["preset_id"],
+                        "preset_name": meta["name"],
+                        "server_preset": True}
+    project = form.inputs_from_glavapu(core, parsed, scenario.get("inputs") or {})
+    inputs, tep = project["inputs"], project["tep"]
 
     return {
         "inputs": inputs,

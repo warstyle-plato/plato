@@ -299,6 +299,21 @@ def install(app: FastAPI) -> None:
             "filename": result["filename"],
             "file_b64": base64.b64encode(result["file"]).decode("ascii"),
         }
+        # Участок должен становиться проектом, а не только карточкой с файлом.
+        # Файл, который движок только что собрал, — формата ГлавАПУ, и разбирает
+        # его он сам: своего переноса ТЭП в вводные здесь нет. Экономику за
+        # участок никто не додумывает — цены, себестоимость и сроки остаются
+        # умолчаниями движка, их правят в форме.
+        try:
+            parsed = core.parse_glavapu_xlsx(result["file"], result["filename"])
+            payload["project"] = form.inputs_from_glavapu(
+                core, parsed,
+                {"vri_region": region} if region in {"msk", "mo"} else None)
+            payload["project"]["cadastral_numbers"] = list(
+                (parsed.get("source") or {}).get("cadastral_numbers") or [])
+        except Exception as exc:
+            # Карточка и файлы всё равно нужны: без переноса они остаются.
+            payload["project_error"] = core._error_location(exc)[:300]
         if result.get("template_file"):
             payload["template_filename"] = result["template_filename"]
             payload["template_b64"] = base64.b64encode(
