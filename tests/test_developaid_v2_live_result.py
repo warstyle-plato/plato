@@ -24,6 +24,7 @@ from __future__ import annotations
 import ast
 import copy
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -336,6 +337,93 @@ def test_the_found_parcel_becomes_a_project(client, monkeypatch):
         "inputs": project["inputs"], "tep": project["tep"],
         "rates": [], "phasing": {}, "sensitivity": False}).json()
     assert result["kpi"]["revenue"] > 0, "участок не посчитался движком"
+
+
+def test_the_transfer_matches_the_engine_page(tmp_path):
+    """Перенос участка в вводные совпадает с настоящим applyGlavapu страницы.
+
+    Одна площадка обязана давать одни вводные на обеих поверхностях. Пока
+    перенос начинался с умолчаний движка, а не с обнуления полей участка,
+    у площадки без офисов оставались офисы 10 000 м²: сегодня они молчали
+    (галочка снята), а стоило её поставить — выручка вырастала на 3,7 млрд ₽,
+    и только в 2.0. Тест гоняет настоящий код страницы через node.
+    """
+    import json
+    import shutil
+    import subprocess
+
+    import developaid_v2_form as form_module
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node недоступен")
+
+    data = (Path(__file__).resolve().parent.parent
+            / "presets" / "Мишина_ТЭП.xlsx").read_bytes()
+    parsed = core.parse_glavapu_xlsx(data, "Мишина_ТЭП.xlsx")
+    mine = form_module.inputs_from_glavapu(core, json.loads(json.dumps(parsed)))
+
+    keys = re.search(r"(const TERRITORY_INPUT_KEYS=.*?)\nfunction resetTerritoryData",
+                     core.PAGE, re.S)
+    body = re.search(r"(function resetTerritoryData\(.*?)\nfunction getGlavapuUnderground",
+                     core.PAGE, re.S)
+    assert keys and body, "функции применения ГлавАПУ не найдены на странице"
+    stubs = (
+        "const document={getElementById:()=>({style:{},innerHTML:''})};\n"
+        "const glavapuStatus={innerHTML:''};\n"
+        "let phasing=null;let cadastralAnalysis=null;let moResult=null;\n"
+        "function makeDefaultPhasing(){return {enabled:false,phase_count:1}}\n"
+        "function applyRequiredSocialProgramFromGlavapu(){}\nfunction syncTep(){}\n"
+        "function repairParkingFromGlavapu(){}\n"
+        "function applyServerPresetProjectConfig(){return ''}\n"
+        "function applyTelegramCalcOverrides(){}\nfunction renderInputs(){}\n"
+        "function renderTep(){}\nfunction renderPhasing(){}\n"
+        "function renderGlavapuPreview(){}\nfunction fillUndergroundFromTep(){}\n"
+        "function getGlavapuUnderground(){return null}\n"
+        "async function calculate(){}\nasync function sendTelegramResult(){}\n"
+        f"let inputs={json.dumps(core.DEFAULT_INPUTS)};\n"
+        f"let tep={json.dumps(core.TEP_DEFAULT)};\nlet glavapuImport=null;\n")
+    script = (f"const payload={json.dumps(parsed, ensure_ascii=False, default=str)};\n"
+              + stubs + keys.group(1) + "\n" + body.group(1)
+              + "\n(async()=>{glavapuImport=payload;await applyGlavapu();"
+                "console.log(JSON.stringify({inputs,tep}));})()")
+    done = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=120)
+    assert done.returncode == 0, done.stderr[:600]
+    page = json.loads(done.stdout)
+
+    for key in sorted(set(page["inputs"]) | set(mine["inputs"])):
+        if key.startswith("_"):
+            continue
+        theirs, ours = page["inputs"].get(key), mine["inputs"].get(key)
+        if isinstance(theirs, (int, float)) and isinstance(ours, (int, float)):
+            assert float(theirs) == pytest.approx(float(ours)), key
+        else:
+            assert theirs == ours, key
+    for row in set(page["tep"]) | set(mine["tep"]):
+        for field in ("gns", "total_area", "useful", "saleable", "transfer", "units"):
+            theirs = float((page["tep"].get(row) or {}).get(field, 0) or 0)
+            ours = float((mine["tep"].get(row) or {}).get(field, 0) or 0)
+            assert theirs == pytest.approx(ours), f"{row}.{field}"
+
+
+def test_the_parcel_does_not_carry_objects_it_has_no_data_for():
+    """У площадки без офисов не должно быть офисов — даже выключенных."""
+    import json
+
+    import developaid_v2_form as form_module
+
+    data = (Path(__file__).resolve().parent.parent
+            / "presets" / "Мишина_ТЭП.xlsx").read_bytes()
+    parsed = core.parse_glavapu_xlsx(data, "Мишина_ТЭП.xlsx")
+    inputs = form_module.inputs_from_glavapu(
+        core, json.loads(json.dumps(parsed)))["inputs"]
+
+    for key in ("offices_gba_sqm", "offices_saleable_sqm", "retail_gba_sqm",
+                "retail_saleable_sqm", "above_parking_spaces"):
+        assert not inputs[key], f"{key} остался умолчанием движка: {inputs[key]}"
+    assert inputs["offices_enabled"] is False
+    assert inputs["retail_enabled"] is False
+    assert inputs["above_parking_enabled"] is False
 
 
 def test_the_transfer_from_glavapu_has_one_place():

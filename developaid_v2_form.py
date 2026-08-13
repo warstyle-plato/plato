@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import copy
+import re
 from typing import Any
 
 # Варианты двух выпадающих списков, у которых их нет в FIELD_GROUPS: страница
@@ -108,6 +109,20 @@ def _phasing_block(core: Any) -> dict[str, Any]:
     }
 
 
+def territory_input_keys(core: Any) -> list[str]:
+    """Поля, принадлежащие участку, — списком со страницы движка.
+
+    Страница держит его в `TERRITORY_INPUT_KEYS` и обнуляет эти поля при каждом
+    импорте: они относятся к участку, а не к предпосылкам аналитика. Список
+    читается оттуда, а не копируется: третья копия разъедется молча, а цена
+    предыдущего проекта, оставшаяся во вводных, в глаза не бросается.
+    """
+    match = re.search(r"const TERRITORY_INPUT_KEYS=\[(.*?)\];", core.PAGE, re.S)
+    if not match:
+        raise RuntimeError("на странице движка не найден TERRITORY_INPUT_KEYS")
+    return re.findall(r"'([^']+)'", match.group(1))
+
+
 def inputs_from_glavapu(
     core: Any,
     parsed: dict[str, Any],
@@ -119,15 +134,33 @@ def inputs_from_glavapu(
     строит сам разбор движка. Тем же путём предустановку применяет
     Telegram-поток — `inputs = mappings["inputs"]`, `tep = mappings["tep"]`.
 
-    Всё, чего в файле нет — цены, себестоимость, сроки, — остаётся
+    Порядок повторяет страницу: сначала обнуляется всё, что принадлежит
+    участку, потом накладывается принесённое файлом. Иначе поле, которого в
+    файле нет, остаётся умолчанием движка и выглядит как данные участка —
+    так офисы площадью 10 000 м² появлялись у площадки, где их нет, и стоило
+    включить их галочкой, как выручка вырастала на 3,7 млрд ₽.
+
+    Всё, чего файл не касается — цены, себестоимость, сроки, — остаётся
     умолчаниями движка: додумывать экономику за участок нельзя.
     """
     mappings = parsed.get("mappings") or {}
     normalized = parsed.get("normalized") or {}
 
     inputs: dict[str, Any] = copy.deepcopy(core.DEFAULT_INPUTS)
+    for key in territory_input_keys(core):
+        if key in inputs:
+            inputs[key] = 0
+    # Отдельные объекты КРТ выключаются вместе с их площадями: включённым
+    # объект делает файл, а не память о прошлом проекте.
+    inputs["offices_enabled"] = False
+    inputs["retail_enabled"] = False
+    inputs["above_parking_enabled"] = False
     inputs.update(mappings.get("inputs") or {})
     inputs["site_area_ha"] = normalized.get("site_area_ha") or 0
+    # Плотность приезжает тем же файлом и не должна оставаться справочной:
+    # страница её обнуляет, чтобы она выводилась из площади и ТЭП участка.
+    if float(normalized.get("density_spp_th_sqm_ha") or 0) > 0:
+        inputs["site_density_sqm_per_ha"] = 0
     suggested = normalized.get("suggested_social_mode")
     if suggested:
         inputs["social_mode"] = suggested
@@ -142,7 +175,13 @@ def inputs_from_glavapu(
         "mappings": mappings,
     }
 
+    # ТЭП тоже принадлежит участку целиком: строка, которой файл не касается,
+    # обязана быть нулевой, а не нести площади из умолчаний движка.
     tep: dict[str, Any] = copy.deepcopy(core.TEP_DEFAULT)
+    for row in tep.values():
+        for field in ("gns", "total_area", "useful", "saleable", "transfer", "units"):
+            if field in row:
+                row[field] = 0
     for key, row in (mappings.get("tep") or {}).items():
         tep[key] = {**(tep.get(key) or {}), **row}
 
