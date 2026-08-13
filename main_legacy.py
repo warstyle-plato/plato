@@ -23352,9 +23352,35 @@ async function loadServerPreset(){
 async function uploadGlavapu(){
  const file=document.getElementById('glavapuFile').files[0];
  if(!file){glavapuStatus.innerHTML='<span class="import-error">Выберите Excel-файл.</span>';return}
- if(!file.name.toLowerCase().endsWith('.xlsx')){glavapuStatus.innerHTML='<span class="import-error">Нужен файл .xlsx калькулятора ГлавАПУ.</span>';return}
+ if(!file.name.toLowerCase().endsWith('.xlsx')){glavapuStatus.innerHTML='<span class="import-error">Нужен файл .xlsx: шаблон ТЭП DevelopAid или выгрузка калькулятора ГлавАПУ.</span>';return}
  glavapuStatus.textContent='Разбираю '+file.name+'…';
  glavapuPreview.style.display='none';
+ const bytes=await file.arrayBuffer();
+ // Свой шаблон пробуем первым. Прежде страница знала один формат — файл
+ // ГлавАПУ — и заполненный шаблон DevelopAid уходил туда же: разбор не
+ // отказывался, не находил ни одного своего показателя и возвращал пустоту.
+ // Человек видел «Файл распознан» и таблицу прочерков. Бот этот шаблон
+ // принимает, и помощь обещает, что его можно прислать, — на сайте обещание
+ // не работало.
+ try{
+   const manual=await fetch('/import/manual-tep?filename='+encodeURIComponent(file.name),{
+     method:'POST',
+     headers:{'Content-Type':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'},
+     body:bytes.slice(0)
+   });
+   if(manual.ok){
+     const parsed=await manual.json();
+     if(parsed&&parsed.tep){
+       await applyTelegramManualTep(parsed,{silent:true});
+       const name=String(parsed.project_name||'').trim();
+       glavapuStatus.innerHTML='<span class="import-ok">Шаблон ТЭП DevelopAid применён.</span>'
+         +(name?' Проект: <b>'+escapeHtml(name)+'</b>.':'')
+         +' Площади и продукты перенесены во вкладку ТЭП.';
+       calculate();
+       return;
+     }
+   }
+ }catch(e){/* не наш шаблон — пробуем формат ГлавАПУ */}
  try{
    const response=await fetch('/import/glavapu?filename='+encodeURIComponent(file.name),{
      method:'POST',
@@ -23363,6 +23389,12 @@ async function uploadGlavapu(){
    });
    const payload=await response.json();
    if(!response.ok)throw new Error(payload.detail||'Ошибка импорта');
+   // Пустой разбор — не успех. Ни одного числа значит «формат не наш», а не
+   // «в файле нули»: сводка из прочерков читается как распознанный файл.
+   const found=Object.values(payload.normalized||{}).filter(
+     v=>typeof v==='number'&&isFinite(v)&&v!==0).length;
+   if(!found)throw new Error('Формат файла не распознан: это ни шаблон ТЭП DevelopAid, '
+     +'ни выгрузка калькулятора ГлавАПУ. Скачайте шаблон кнопкой ниже и заполните его.');
    glavapuImport=payload;
    renderGlavapuPreview(payload);
    glavapuStatus.innerHTML='<span class="import-ok">Файл распознан. Проверьте значения перед применением.</span>';
