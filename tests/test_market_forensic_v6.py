@@ -1586,6 +1586,49 @@ def test_price_impossible_next_to_peers_is_dropped() -> None:
     assert dropped["rejected_price_observations"][0]["reason"] == "price_far_from_peers"
 
 
+def test_full_signage_and_its_short_form_are_one_entity() -> None:
+    """«Кутузов Сити» и «Клубный проект Кутузов Сити» — один проект.
+
+    Слияние сущностей спрашивало только похожесть строк, а она вхождения не
+    видит: по буквам эти два имени далеко, и на Гродненской улице оба доехали
+    до выдачи отдельными карточками.
+    """
+    entities = resolve_entities(
+        extract_candidates(
+            [
+                doc(
+                    "Кутузов Сити — купить квартиру",
+                    "https://www.novostroy.ru/buildings/kutuzov-city/",
+                    "Гродненская улица, вл18",
+                ),
+                doc(
+                    "Клубный проект Кутузов Сити — цены",
+                    "https://www.cian.ru/zhiloy-kompleks-klubnyy-proekt-kutuzov-siti-12345/",
+                    "Гродненская улица, вл. 18",
+                ),
+            ]
+        )
+    )
+    assert len(entities) == 1, [item.canonical_name for item in entities]
+    assert entities[0].canonical_name == "Клубный проект Кутузов Сити"
+
+
+def test_project_at_the_subject_address_is_the_subject() -> None:
+    """Стройка на самом участке — не аналог, как бы она ни называлась.
+
+    На Гродненской, 18 объект оценки нашёл сам себя дважды: «Кутузов Сити» и
+    «Клубный проект Кутузов Сити», оба в нуле километров, оба по вл18. Проверка
+    по имени такое не ловит — вывеска адреса не содержит.
+    """
+    from market_search.geo_resolution import address_signature
+
+    subject = address_signature("Москва, Гродненская 18")
+    assert subject == "гродненская#18"
+    assert address_signature("Москва, Гродненская улица, вл18") == subject
+    assert address_signature("Москва, улица Гродненская, вл. 18") == subject
+    assert address_signature("Москва, Верейская улица, вл12") != subject
+
+
 def test_official_benchmark_is_a_separate_number() -> None:
     """Второй ориентир считается, но никогда не смешивается с первым.
 

@@ -197,6 +197,22 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                 quarantine.append(self._quarantined(entity, geo.status, geo.reason))
                 continue
 
+            # Совпал адрес — значит это стройка на самом участке, а не сосед.
+            # Имя тут ни при чём: на Гродненской, 18 объект оценки нашёл сам
+            # себя дважды, «Кутузов Сити» и «Клубный проект Кутузов Сити», оба
+            # в нуле километров. Проверка по имени такое не ловит — вывеска
+            # адреса не содержит, поэтому адрес сверяется после разрешения.
+            if subject_signature and address_signature(geo.address) == subject_signature:
+                quarantine.append(
+                    self._quarantined(
+                        entity,
+                        "subject_itself",
+                        f"Адрес проекта {geo.address} — это сам объект оценки",
+                        distance_km=0.0,
+                    )
+                )
+                continue
+
             distance = round(
                 haversine_km(
                     subject.latitude, subject.longitude, geo.point.latitude, geo.point.longitude

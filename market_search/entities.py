@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .candidates_v6 import Candidate
-from .normalize import canonical_key, name_similarity, same_project
+from .normalize import canonical_key, labels_match, name_similarity, same_project
 from .segments import dominant_segment, segment_votes
 
 
@@ -106,7 +106,14 @@ def _best_label(left: str, right: str) -> str:
     длиннее «Хамовники 12», но проект продаётся под арабской записью, и именно её
     ждёт golden acceptance.
     """
-    if canonical_key(left) != canonical_key(right):
+    left_key, right_key = canonical_key(left), canonical_key(right)
+    if left_key != right_key:
+        # Ключи разошлись, но одно имя лежит внутри другого — значит слились
+        # вывеска и её сокращение. Тогда работает то же правило, что и при
+        # равных ключах: показываем полную форму, под которой проект продаётся.
+        # Без этого выбор зависел от порядка поступления документов.
+        if left_key and right_key and (left_key in right_key or right_key in left_key):
+            return right if len(right_key) > len(left_key) else left
         return left
     left_roman, right_roman = _ends_with_roman(left), _ends_with_roman(right)
     if left_roman != right_roman:
@@ -205,7 +212,13 @@ def _merge_similar_labels(entities: list[ProjectEntity]) -> list[ProjectEntity]:
         for existing in result:
             if _same_site_conflict(existing, entity):
                 continue
-            if not same_project(existing.canonical_name, entity.canonical_name):
+            # Не `same_project`, а `labels_match`: похожесть строк не видит
+            # вхождения. «Кутузов Сити» и «Клубный проект Кутузов Сити» — один
+            # проект по одному адресу, но по буквам они далеко, и на Гродненской
+            # улице оба доехали до выдачи. Правило тождества в модуле одно, и
+            # это оно: `labels_match` спрашивает `same_project` первым и добавляет
+            # к нему вхождение короткого имени в длинное.
+            if not labels_match(existing.canonical_name, [entity.canonical_name]):
                 continue
             target = existing
             break
