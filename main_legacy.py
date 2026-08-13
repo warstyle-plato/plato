@@ -14399,6 +14399,17 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
 
     # Author supervision is modeled as a percentage of design P + RD.
     # No arbitrary fixed-million hardcode is used.
+    # Нулевой срок ИРД — «разрешение уже есть, строим сразу»: согласования,
+    # проектирование и подготовка сделаны и оплачены до входа в проект,
+    # решение владельца (13.08.2026). Обнулять надо здесь, до наценок:
+    # авторский надзор, управление, технадзор и резерв считаются процентом от
+    # этих сумм, и обнуление после них оставляло 3,0 млрд ₽ в накладных —
+    # CAPEX сходился, а EBITDA расходилась.
+    if int(n(x, "ird_months", 18)) <= 0:
+        for _article in ("ird", "design_p", "design_rd", "preparation"):
+            amounts[_article] = 0.0
+        design_base = 0.0
+
     amounts["author_supervision"] = design_base * n(x, "author_supervision_pct", 0.0) / 100
 
     # Project management is a separate developer overhead:
