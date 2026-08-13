@@ -9838,11 +9838,11 @@ def build_project_workbook(
     start_serial = _v4_excel_serial(x.get("project_start")) or _v4_excel_serial("2027-01-01")
     put("B8", number=start_serial, label="project_start")
     put("B36", number=start_serial, label="price_cost_base_date")
-    put("B33", number=float(x.get("rate_start_pct") or 14) / 100.0, label="rate_start_pct")
-    put("B35", number=float(x.get("rate_normalization_months") or 24), label="rate_normalization_months")
-    put("E8", number=float(x.get("rate_target_base_pct") or 9) / 100.0, label="rate_target_base_pct")
-    put("F8", number=float(x.get("rate_target_low_pct") or 7) / 100.0, label="rate_target_low_pct")
-    put("G8", number=float(x.get("rate_target_high_pct") or 11) / 100.0, label="rate_target_high_pct")
+    put("B33", number=n(x, "rate_start_pct", 14.0) / 100.0, label="rate_start_pct")
+    put("B35", number=n(x, "rate_normalization_months", 24.0), label="rate_normalization_months")
+    put("E8", number=n(x, "rate_target_base_pct", 9.0) / 100.0, label="rate_target_base_pct")
+    put("F8", number=n(x, "rate_target_low_pct", 7.0) / 100.0, label="rate_target_low_pct")
+    put("G8", number=n(x, "rate_target_high_pct", 11.0) / 100.0, label="rate_target_high_pct")
     # Сезонность: в движке одно значение на январь и май–август.
     seasonal = float(x.get("seasonal_reduction_pct") or 0) / 100.0
     put("B67", number=seasonal, label="seasonal_reduction_pct (январь)")
@@ -10264,11 +10264,18 @@ def build_project_workbook(
         put(f"D{row}", number=start_serial if not active else
             (_v4_excel_serial(add_months(str(x.get("project_start") or "2027-01-01"), int(offset)))
              or start_serial), label=f"старт очереди {index + 1}")
-        put(f"E{row}", number=float(x.get("ird_months") or 18), label=f"ИРД очереди {index + 1}")
-        put(f"F{row}", number=float(phase.get("construction_months")
-                                    or x.get("construction_months") or 24),
+        # Ноль здесь осмыслен: «разрешение уже есть, строим сразу». Прежде стояло
+        # `x.get("ird_months") or 18`, а ноль в Python ложен — и в книгу уезжали
+        # восемнадцать месяцев. Движок считал РнС в день старта и БРИДЖ не брал
+        # вовсе, книга считала его полтора года: 1,28 млрд тела и 190 млн
+        # процентов, которых в проекте нет. Читаем через n(): она подменяет
+        # только None и пустую строку.
+        put(f"E{row}", number=n(x, "ird_months", 18.0), label=f"ИРД очереди {index + 1}")
+        months = phase.get("construction_months")
+        put(f"F{row}", number=(float(months) if months not in (None, "")
+                               else n(x, "construction_months", 24.0)),
             label=f"стройка очереди {index + 1}")
-        put(f"G{row}", number=float(x.get("sales_lag_months") or 0), label=f"лаг очереди {index + 1}")
+        put(f"G{row}", number=n(x, "sales_lag_months", 0.0), label=f"лаг очереди {index + 1}")
         put(f"P{row}", number=shared["purchase"][index] if active else 0.0, label="доля покупки")
         put(f"Q{row}", number=shared["land_rights"][index] if active else 0.0, label="доля ВРИ")
         put(f"R{row}", number=(
