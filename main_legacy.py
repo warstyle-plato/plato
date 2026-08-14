@@ -43,7 +43,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.77"
+VERSION = "0.17.78"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -20804,6 +20804,215 @@ def usage_admin_ids() -> set[int]:
     return ids
 
 
+# ---------------------------------------------------------------------------
+# Хранилище проектов
+#
+# Проект живёт в браузере: `localStorage` держит один-единственный набор, и
+# второй участок затирает первый. Смотреть площадки подряд можно, вернуться к
+# позавчерашней — нет.
+#
+# Хранится не всё подряд, а то, что явно сохранили: просмотр площадки — это
+# черновик, и складывать каждый пересчёт значит завести свалку вместо полки.
+#
+# Место хранения — ядро на Яндексе, а не Render. Две причины, и обе жёсткие:
+# диск Render живёт до следующей выкатки, а привязанные к человеку данные
+# россиян по 152-ФЗ (ст. 18.1) обязаны лежать в России. Поэтому Render свои
+# запросы пересылает на ядро и у себя не хранит ничего.
+#
+# Пока это личный инструмент: доступ только у администратора. Общее хранилище
+# потребует регистрации, согласия и политики обработки — отдельный разговор.
+# ---------------------------------------------------------------------------
+
+_PROJECTS_DIR = Path(_env_str("DEVELOPAID_PROJECTS_DIR", "").strip()
+                     or (Path(__file__).resolve().parent / "data" / "projects"))
+_PROJECTS_LIMIT = max(1, int(_env_float("DEVELOPAID_PROJECTS_LIMIT", 200.0)))
+_PROJECT_PAYLOAD_LIMIT = 4 * 1024 * 1024
+
+
+def _projects_remote_url(path: str) -> str:
+    """Адрес ядра, если мы не ядро. Пусто — храним у себя."""
+    return _core_api_url(path) if _MO_CALC_API_URL else ""
+
+
+def _project_owner(session: str = "", key: str = "") -> int:
+    """Кто сохраняет. Опознаём двумя способами, оба сводятся к «это владелец».
+
+    Мини-приложение приходит с подписанной Telegram-сессией — из неё берётся
+    chat_id. Сайт, открытый просто по адресу, сессии не имеет вовсе, поэтому
+    для него есть ключ в переменной окружения; не задан — способ выключён, а
+    не открыт всем.
+    """
+    admins = usage_admin_ids()
+    if not admins:
+        raise HTTPException(
+            status_code=503,
+            detail="Хранилище проектов не настроено: задайте DEVELOPAID_ADMIN_IDS.")
+    if session:
+        chat_id = int(_telegram_verify_session(session).get("chat_id") or 0)
+        if chat_id in admins:
+            return chat_id
+        raise HTTPException(status_code=403, detail="Хранилище проектов доступно администратору.")
+    secret = _env_str("DEVELOPAID_ADMIN_KEY", "").strip()
+    # Сравниваем байтами: `compare_digest` отказывается работать со строками,
+    # где есть не-ASCII, а ключ владелец задаёт какой захочет.
+    if secret and key and hmac.compare_digest(str(key).encode("utf-8"), secret.encode("utf-8")):
+        return sorted(admins)[0]
+    raise HTTPException(
+        status_code=403,
+        detail=("Откройте мини-приложение из бота либо задайте DEVELOPAID_ADMIN_KEY "
+                "и введите ключ — иначе сервер не знает, чей это проект."))
+
+
+def _project_dir(owner: int) -> Path:
+    return _PROJECTS_DIR / str(int(owner))
+
+
+def _project_path(owner: int, project_id: str) -> Path:
+    # Имя файла приходит снаружи: всё, кроме нашего же алфавита, — отказ, иначе
+    # «../../» уводит запись за пределы каталога владельца.
+    if not re.fullmatch(r"[0-9a-f]{12}", str(project_id or "")):
+        raise HTTPException(status_code=400, detail="Неверный идентификатор проекта")
+    return _project_dir(owner) / f"{project_id}.json"
+
+
+def _project_card(record: dict[str, Any]) -> dict[str, Any]:
+    """Строка списка: имя, время и несколько чисел, чтобы узнать проект не открывая."""
+    summary = record.get("summary") or {}
+    return {
+        "id": record.get("id"),
+        "name": record.get("name"),
+        "saved_at": record.get("saved_at"),
+        "version": record.get("version"),
+        "cadastral": record.get("cadastral") or [],
+        "summary": {key: summary.get(key) for key in
+                    ("revenue_mln", "net_profit_mln", "llcr", "purchase_price_mln")},
+    }
+
+
+def project_save(owner: int, name: str, payload: dict[str, Any],
+                 summary: dict[str, Any] | None = None,
+                 cadastral: list[str] | None = None,
+                 project_id: str = "") -> dict[str, Any]:
+    body = json.dumps(payload or {}, ensure_ascii=False)
+    if len(body.encode("utf-8")) > _PROJECT_PAYLOAD_LIMIT:
+        raise HTTPException(status_code=413, detail="Проект слишком велик для хранилища")
+    directory = _project_dir(owner)
+    directory.mkdir(parents=True, exist_ok=True)
+    existing = sorted(directory.glob("*.json"))
+    if not project_id and len(existing) >= _PROJECTS_LIMIT:
+        raise HTTPException(
+            status_code=507,
+            detail=f"В хранилище уже {len(existing)} проектов — удалите ненужные.")
+    record = {
+        "id": project_id or hashlib.sha256(
+            f"{owner}:{time.time()}:{name}".encode("utf-8")).hexdigest()[:12],
+        "owner": int(owner),
+        "name": str(name or "Без названия").strip()[:120] or "Без названия",
+        # До миллисекунд: два сохранения подряд попадали в одну секунду, и
+        # список сортировался как придётся.
+        "saved_at": datetime.now(tz=timezone.utc).isoformat(timespec="milliseconds"),
+        "version": VERSION,
+        "cadastral": [str(item)[:40] for item in (cadastral or [])][:20],
+        "summary": summary or {},
+        "payload": payload or {},
+    }
+    path = _project_path(owner, record["id"])
+    # Запись через временный файл: воркеров два, и оборванная запись оставила
+    # бы битый JSON вместо проекта.
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+    temporary.replace(path)
+    return _project_card(record)
+
+
+def project_list(owner: int) -> list[dict[str, Any]]:
+    directory = _project_dir(owner)
+    cards: list[dict[str, Any]] = []
+    for path in directory.glob("*.json") if directory.is_dir() else []:
+        try:
+            cards.append(_project_card(json.loads(path.read_text(encoding="utf-8"))))
+        except Exception:
+            continue  # битый файл не должен прятать остальные
+    cards.sort(key=lambda item: str(item.get("saved_at") or ""), reverse=True)
+    return cards
+
+
+def project_open(owner: int, project_id: str) -> dict[str, Any]:
+    path = _project_path(owner, project_id)
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Проект не найден")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def project_delete(owner: int, project_id: str) -> dict[str, Any]:
+    path = _project_path(owner, project_id)
+    if path.is_file():
+        path.unlink()
+    return {"deleted": project_id}
+
+
+class ProjectRequest(BaseModel):
+    session: str = ""
+    key: str = ""
+    id: str = ""
+    name: str = ""
+    payload: dict[str, Any] = {}
+    summary: dict[str, Any] = {}
+    cadastral: list[str] = []
+
+
+def _projects_forward(path: str, req: ProjectRequest) -> dict[str, Any] | None:
+    """Render ничего не хранит: его дело — донести запрос до ядра."""
+    url = _projects_remote_url(path)
+    if not url:
+        return None
+    return _core_post(url, req.model_dump(), 30.0)
+
+
+@app.get("/projects/status")
+def projects_status() -> dict[str, Any]:
+    """Есть ли смысл показывать кнопки: настроено ли хранилище и чем входить."""
+    return {
+        "configured": bool(usage_admin_ids()),
+        "accepts_key": bool(_env_str("DEVELOPAID_ADMIN_KEY", "").strip()),
+        "remote": bool(_projects_remote_url("/projects/list")),
+        "limit": _PROJECTS_LIMIT,
+    }
+
+
+@app.post("/projects/save")
+def projects_save(req: ProjectRequest) -> dict[str, Any]:
+    forwarded = _projects_forward("/projects/save", req)
+    if forwarded is not None:
+        return forwarded
+    owner = _project_owner(req.session, req.key)
+    return project_save(owner, req.name, req.payload, req.summary, req.cadastral, req.id)
+
+
+@app.post("/projects/list")
+def projects_list(req: ProjectRequest) -> dict[str, Any]:
+    forwarded = _projects_forward("/projects/list", req)
+    if forwarded is not None:
+        return forwarded
+    return {"projects": project_list(_project_owner(req.session, req.key))}
+
+
+@app.post("/projects/open")
+def projects_open(req: ProjectRequest) -> dict[str, Any]:
+    forwarded = _projects_forward("/projects/open", req)
+    if forwarded is not None:
+        return forwarded
+    return project_open(_project_owner(req.session, req.key), req.id)
+
+
+@app.post("/projects/delete")
+def projects_delete(req: ProjectRequest) -> dict[str, Any]:
+    forwarded = _projects_forward("/projects/delete", req)
+    if forwarded is not None:
+        return forwarded
+    return project_delete(_project_owner(req.session, req.key), req.id)
+
+
 # --- локальные сценарии кнопок ---------------------------------------------
 
 def _agent_num(value: Any, digits: int = 1) -> str:
@@ -21615,6 +21824,9 @@ details.cadastral-box>summary::marker{color:#888}
       </div>
       <button class="btn ai-open-btn" onclick="toggleAgent(true)"><span id="aiStatusDot" class="ai-dot"></span><span class="ai-label">Платон Сергеевич</span></button>
       <button class="btn" onclick="saveLocal()">Сохранить</button>
+      <!-- Кнопки хранилища появляются только там, где оно настроено и есть чем
+           опознать владельца: иначе это кнопка, которая всегда отказывает. -->
+      <button class="btn" id="projectsButton" style="display:none" onclick="openProjects()">Мои проекты</button>
       <button class="btn" onclick="resetAll()">Сбросить</button>
       <button class="btn dark" onclick="calculateAndOpen('report')">Пересчитать модель</button>
     </div>
@@ -22209,6 +22421,25 @@ details.cadastral-box>summary::marker{color:#888}
 
       <div class="note warning">LLCR, NPV и IRR в веб-модели являются расчётными показателями текущего движка. До полного отказа от Excel кредитный CF и доходность должны быть окончательно сверены помесячно с эталонной моделью.</div>
     </div>
+  </div>
+</div>
+
+<!-- Хранилище проектов: список того, что сохранили явно. -->
+<div id="projectsDialog" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);
+     z-index:80;align-items:center;justify-content:center;padding:20px" onclick="if(event.target===this)closeProjects()">
+  <div style="background:#fff;max-width:900px;width:100%;max-height:80vh;overflow:auto;padding:22px 24px">
+    <div style="display:flex;align-items:center;gap:14px;margin-bottom:12px">
+      <h2 style="margin:0;font-size:17px">Мои проекты</h2>
+      <button class="btn dark" onclick="saveProjectToServer()">Сохранить текущий</button>
+      <button class="btn" style="margin-left:auto" onclick="closeProjects()">Закрыть</button>
+    </div>
+    <div style="font-size:11px;color:#777;margin-bottom:10px">
+      Хранится на ядре в России. Сохраняется только то, что вы сохранили сами.
+    </div>
+    <div class="scroll"><table>
+      <thead><tr><th>Проект</th><th>Выручка</th><th>Чистая прибыль</th><th>LLCR</th><th></th></tr></thead>
+      <tbody id="projectsBody"></tbody>
+    </table></div>
   </div>
 </div>
 
@@ -25428,6 +25659,109 @@ function loadLocal(){try{const x=JSON.parse(localStorage.getItem('plato_v04'));i
  // участка, который человек и правит.
  fillUndergroundFromTep();
 }}catch(e){}}
+
+// --- хранилище проектов на сервере -------------------------------------------
+// В браузере живёт ровно один проект: следующий участок затирает предыдущий.
+// Сюда складывается то, что сохранили явно, — просмотр площадки остаётся
+// черновиком. Данные лежат на ядре в России, Render их только пересылает.
+
+let projectsAdminKey=localStorage.getItem('plato_projects_key')||'';
+
+async function projectsCall(path,body){
+ const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},
+  body:JSON.stringify(Object.assign({session:telegramSession,key:projectsAdminKey},body||{}))});
+ const data=await response.json().catch(()=>({}));
+ if(!response.ok)throw new Error(data.detail||'Хранилище недоступно');
+ return data;
+}
+
+async function initProjects(){
+ try{
+  const status=await (await fetch('/projects/status')).json();
+  // Ключ спрашиваем только там, где сессии нет: в мини-приложении она есть.
+  if(!status.configured||(!telegramSession&&!status.accepts_key))return;
+  document.getElementById('projectsButton').style.display='';
+ }catch(e){}
+}
+
+function projectSummaryForStore(){
+ const s=(lastResult&&lastResult.summary)||{};
+ return {revenue_mln:Number(s.revenue||0)/1e6,net_profit_mln:Number(s.net_profit||0)/1e6,
+         llcr:Number(s.llcr||0),purchase_price_mln:Number(inputs.purchase_price_mln||0)};
+}
+
+function projectCadastral(){
+ const source=(cadastralAnalysis&&cadastralAnalysis.cadastral_numbers)
+  ||(moResult&&moResult.cadastral_numbers)||[];
+ return Array.isArray(source)?source.slice(0,20):[];
+}
+
+async function saveProjectToServer(){
+ const manualMeta=inputs._manual_tep_import||null;
+ const suggested=(manualMeta&&manualMeta.project_name)||projectCadastral()[0]||'Проект';
+ const name=prompt('Название проекта в хранилище',suggested);
+ if(name===null)return;
+ try{
+  await projectsCall('/projects/save',{name,
+   payload:{inputs,tep,phasing,scenario:scenarioSelect.value||'base'},
+   summary:projectSummaryForStore(),cadastral:projectCadastral()});
+  alert('Проект сохранён на сервере');
+  openProjects();
+ }catch(e){alert(String(e.message||e))}
+}
+
+async function openProjects(){
+ // Ключ спрашиваем один раз и держим в браузере: это вход, а не пароль к
+ // каждому действию.
+ if(!telegramSession&&!projectsAdminKey){
+  const key=prompt('Ключ администратора (DEVELOPAID_ADMIN_KEY)');
+  if(!key)return;
+  projectsAdminKey=key;localStorage.setItem('plato_projects_key',key);
+ }
+ let data;
+ try{data=await projectsCall('/projects/list',{})}
+ catch(e){alert(String(e.message||e));return}
+ const rows=(data.projects||[]).map(p=>{
+  const s=p.summary||{};
+  return `<tr><td><b>${escapeHtml(p.name||'')}</b><br><small>${escapeHtml(String(p.saved_at||'').replace('T',' ').replace('+00:00',' UTC'))}`
+   +`${p.cadastral&&p.cadastral.length?' · '+escapeHtml(p.cadastral.join(', ')):''}</small></td>`
+   +`<td>${s.revenue_mln?money(s.revenue_mln*1e6):'—'}</td>`
+   +`<td>${s.net_profit_mln?money(s.net_profit_mln*1e6):'—'}</td>`
+   +`<td>${s.llcr?mult(s.llcr):'—'}</td>`
+   +`<td><button class="btn" onclick="loadProject('${p.id}')">Открыть</button> `
+   +`<button class="btn" onclick="deleteProject('${p.id}')">Удалить</button></td></tr>`;
+ }).join('');
+ projectsBody.innerHTML=rows||'<tr><td colspan="5">Пока ничего не сохранено.</td></tr>';
+ projectsDialog.style.display='flex';
+}
+
+function closeProjects(){projectsDialog.style.display='none'}
+
+async function loadProject(id){
+ let record;
+ try{record=await projectsCall('/projects/open',{id})}
+ catch(e){alert(String(e.message||e));return}
+ const data=record.payload||{};
+ // Как и локальная загрузка: сохранённое накладывается на умолчания, а не
+ // подменяет их — иначе поле, добавленное позже, исчезнет.
+ inputs=Object.assign(structuredClone(INPUT_DEFAULT),data.inputs||{});
+ tep=structuredClone(TEP_DEFAULT);
+ Object.entries(data.tep||{}).forEach(([key,values])=>{
+  if(values&&typeof values==='object')tep[key]=Object.assign(tep[key]||{},values);
+ });
+ phasing=data.phasing||makeDefaultPhasing(1);
+ scenarioSelect.value=data.scenario||'base';
+ renderInputs();renderTep();renderPhasing();persistLocalSilently();
+ closeProjects();
+ calculateAndOpen('report');
+}
+
+async function deleteProject(id){
+ if(!confirm('Удалить проект из хранилища?'))return;
+ try{await projectsCall('/projects/delete',{id});openProjects()}
+ catch(e){alert(String(e.message||e))}
+}
+
 function resetAll(){
  localStorage.removeItem('plato_v04');
  inputs=structuredClone(INPUT_DEFAULT);
@@ -25453,6 +25787,7 @@ function resetAll(){
 }
 
 loadLocal();
+initProjects();
 {
  const sc=SCENARIOS[scenarioSelect.value]||SCENARIOS.base;
  // Old saved projects did not have the new transparent scenario multipliers.
