@@ -272,7 +272,9 @@ def test_a_given_amount_is_taken():
             item["social_burden_cash_rub"] = 1149230000.0
     result = preview(preset=data)
     assert result["inputs"]["social_compensation_mln"] == pytest.approx(1149.23)
-    assert result["inputs"]["social_mode"] == "Денежная компенсация"
+    # Школа и садик в этом пресете строятся, поэтому режим совмещённый:
+    # «Денежная компенсация» отменила бы стройку целиком.
+    assert result["inputs"]["social_mode"] == core.SOCIAL_MODE_BOTH
 
 
 # --- происхождение чисел --------------------------------------------------------

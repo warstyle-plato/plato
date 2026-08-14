@@ -1,0 +1,306 @@
+{
+ "schema_version": "developaid.project_preset.v4",
+ "project": {
+  "name": "Румянцево",
+  "region": "Москва",
+  "status": "DD / acquisition underwriting",
+  "currency": "RUB",
+  "cadastral": "77:17:0110504:18151–18171",
+  "site_area_ha": 14.87
+ },
+ "source_priority": [
+  "ГПЗУ (последняя действующая редакция)",
+  "утверждённый ППТ и последующие изменения",
+  "соглашения/ДС по ВРИ и МПТ",
+  "договоры ТП и справка по оплатам"
+ ],
+ "planning": {
+  "ppt_gfa_total_m2": 402000,
+  "ppt_residential_development_m2": 236630,
+  "ppt_nonresidential_development_m2": 165370,
+  "underground": {
+   "levels": 2,
+   "spaces": 1510,
+   "area_m2": 52850,
+   "origin": "assumption",
+   "note": "АГК в разработке; площадь считается по потребности в местах"
+  },
+  "objects": [
+   {
+    "id": "VGK1",
+    "name": "ВГК-1",
+    "in_deal_perimeter": true,
+    "gfa_m2": 119670,
+    "residential_part_m2": 112250,
+    "embedded_nonresidential_m2": 7420,
+    "max_height_m": 110,
+    "building_type": "highrise_residential",
+    "cost_settings": {
+     "base_rate_source": "service_default_residential",
+     "hard_cost_multiplier": 1.12,
+     "multiplier_status": "underwriting_assumption",
+     "recommended_range": [
+      1.1,
+      1.15
+     ],
+     "underground_gba_m2": "TBD",
+     "underground_cost_separate": true,
+     "special_capex_rub": 0
+    }
+   },
+   {
+    "id": "VGK2",
+    "name": "ВГК-2",
+    "in_deal_perimeter": true,
+    "gfa_m2": 116960,
+    "residential_part_m2": 109750,
+    "embedded_nonresidential_m2": 7210,
+    "max_height_m": 110,
+    "building_type": "highrise_residential",
+    "cost_settings": {
+     "base_rate_source": "service_default_residential",
+     "hard_cost_multiplier": 1.15,
+     "multiplier_status": "underwriting_assumption",
+     "recommended_range": [
+      1.15,
+      1.2
+     ],
+     "underground_gba_m2": "TBD",
+     "underground_cost_separate": true,
+     "special_requirements": [
+      {
+       "type": "civil_defense_shelter",
+       "capacity_people": 2780,
+       "incremental_capex_rub": "TBD",
+       "cost_treatment": "separate_add_on_not_inside_highrise_multiplier",
+       "note": "убежище размещается в подземном паркинге: площади не добавляет, удорожает метр"
+      }
+     ]
+    }
+   },
+   {
+    "id": "EDU",
+    "name": "Единый образовательный объект (СОШ + ДОО)",
+    "in_deal_perimeter": true,
+    "gfa_m2": 14030,
+    "max_height_m": 25,
+    "capacity": {
+     "total_places": 530,
+     "school_places": 350,
+     "preschool_places": 180
+    },
+    "cost_classification": "mandatory_social_construction",
+    "construction_capex_in_project": true
+   },
+   {
+    "id": "RUGBY",
+    "name": "Стадион регби — денежная социальная нагрузка",
+    "in_deal_perimeter": false,
+    "gfa_m2": 5540,
+    "max_height_m": 50,
+    "cost_classification": "social_burden_cash",
+    "construction_capex_in_project": false,
+    "tp_in_project": false,
+    "social_burden_cash_rub": 1149230000.0,
+    "note": "ЗУ передан АНО «Регби Инвест». Соглашение о финансировании 1,2 млрд до 02.2027, оплачено 50,77 млн"
+   },
+   {
+    "id": "LOS",
+    "name": "ЛОС",
+    "in_deal_perimeter": true,
+    "gfa_m2": 1390,
+    "max_height_m": 10
+   },
+   {
+    "id": "RP_KNS",
+    "name": "РП/КНС",
+    "in_deal_perimeter": true,
+    "gfa_m2": 100,
+    "max_height_m": 10
+   },
+   {
+    "id": "BUSINESS_125",
+    "name": "Административно-деловое здание",
+    "in_deal_perimeter": true,
+    "gfa_m2": 125160,
+    "max_height_m": 100,
+    "note": "на часть ТЭП (СПП ГНС 57 192, полезная 38 804) заключено соглашение МПТ до 23.10.2028"
+   },
+   {
+    "id": "BUSINESS_19",
+    "name": "Гараж",
+    "in_deal_perimeter": true,
+    "gfa_m2": 19150,
+    "max_height_m": 40,
+    "note": "отдельно стоящий многоуровневый паркинг, закрывает часть потребности в местах"
+   }
+  ]
+ },
+ "mpt": {
+  "torpedo": {
+   "name": "Спортивный комплекс им. Э.А. Стрельцова (Торпедо)",
+   "in_deal_perimeter": false,
+   "capex_in_deal": 0,
+   "tp_in_deal": false,
+   "built_and_funded_by": "продавец",
+   "benefit_to_project": "льгота по ВРИ",
+   "minimum_area_m2": 36530,
+   "minimum_investment_rub": 3450829259.99,
+   "max_vri_benefit_rub": 3450828368.0
+  }
+ },
+ "vri": {
+  "original_principal_rub": 3757736839.15,
+  "mpt_benefit_rub": 3450828368.0,
+  "residual_principal_rub": 306908471.15,
+  "planned_interest_on_residual_rub": 51023533.33,
+  "total_cash_out_residual_rub": 357932004.48,
+  "confirmed_payments": [
+   {
+    "date": "2026-06-25",
+    "amount_rub": 91010165.85,
+    "purpose": "Оплата по соглашению о рассрочке ВРИ за 4 кв. 2025, 1–2 кв. 2026"
+   }
+  ],
+  "remaining_cash_out_after_confirmed_payment_rub": 266921838.63
+ },
+ "tp": {
+  "as_of": "2026-08-03",
+  "contracts_total_rub": 919629772.42,
+  "paid_rub": 694536064.04,
+  "planned_payments_rub": 225093708.38,
+  "planned_payments_project_perimeter_rub": 208288944.27,
+  "excluded_rugby_tp_rub": 16804764.11,
+  "planned_payments": [
+   {
+    "date": "2026-12-30",
+    "object": "ДОО",
+    "resource": "теплоснабжение",
+    "amount_rub": 12723170.62,
+    "include_in_project_tp_cash_need": true
+   },
+   {
+    "date": "2027-04-15",
+    "object": "весь проект",
+    "resource": "водоснабжение",
+    "amount_rub": 341907.77,
+    "include_in_project_tp_cash_need": true
+   },
+   {
+    "date": "2027-04-15",
+    "object": "весь проект",
+    "resource": "водоотведение",
+    "amount_rub": 23613289.83,
+    "include_in_project_tp_cash_need": true
+   },
+   {
+    "date": "2027-12-30",
+    "object": "АДЦ-1",
+    "resource": "теплоснабжение",
+    "amount_rub": 41004181.78,
+    "include_in_project_tp_cash_need": true
+   },
+   {
+    "date": "2027-12-30",
+    "object": "Стадион регби",
+    "resource": "теплоснабжение",
+    "amount_rub": 16804764.11,
+    "include_in_project_tp_cash_need": false
+   },
+   {
+    "date": "2028-09-30",
+    "object": "ВГК-1",
+    "resource": "теплоснабжение",
+    "amount_rub": 64608026.95,
+    "include_in_project_tp_cash_need": true
+   },
+   {
+    "date": "2029-03-31",
+    "object": "ВГК-2",
+    "resource": "теплоснабжение",
+    "amount_rub": 65998367.32,
+    "include_in_project_tp_cash_need": true
+   }
+  ],
+  "open_items": [
+   "АДЦ-2: тепловая нагрузка 9,499 Гкал/ч без договора и стоимости",
+   "Электроснабжение: договор на 10 000 кВт, сумма объектовых нагрузок выше"
+  ]
+ },
+ "economics": {
+  "apartment_price_th": 350,
+  "commercial_price_th": 350,
+  "parking_price_th": 2000,
+  "above_parking_price_mln_per_space": 2.0,
+  "offices_price_th_per_sqm": 500,
+  "main_above_th_per_sqm": 190,
+  "main_under_th_per_sqm": 120,
+  "ird_months": 12,
+  "construction_months": 36,
+  "share_before_rve_pct": 85,
+  "origins": {
+   "apartment_price_th": "source",
+   "commercial_price_th": "source",
+   "parking_price_th": "source",
+   "main_above_th_per_sqm": "source",
+   "main_under_th_per_sqm": "source"
+  }
+ },
+ "phasing": {
+  "enabled": true,
+  "phase_gap_months": 24,
+  "phases": [
+   {
+    "name": "ВГК-1",
+    "start_offset_months": 0,
+    "construction_months": 36
+   },
+   {
+    "name": "ВГК-2",
+    "start_offset_months": 24,
+    "construction_months": 36
+   }
+  ],
+  "note": "очередь = один жилой корпус: 166 500 м² квартир одной очередью требуют 65 продаж в месяц"
+ },
+ "import_rules": {
+  "do_not_merge_entities": [
+   "Стадион регби Румянцево",
+   "СК им. Э.А. Стрельцова (Торпедо)"
+  ],
+  "exclude_from_deal_capex": [
+   "Стадион регби",
+   "СК им. Э.А. Стрельцова (Торпедо)"
+  ],
+  "exclude_from_project_tp": [
+   "Стадион регби",
+   "СК им. Э.А. Стрельцова (Торпедо)"
+  ],
+  "include_in_mandatory_social_construction": [
+   "Единый образовательный объект (СОШ + ДОО)"
+  ],
+  "social_burden_cash": [
+   "Стадион регби"
+  ],
+  "unknown_values": "TBD",
+  "no_silent_inference": true
+ },
+ "open_items": [
+  "Цена офисов АДЦ — предпосылка 500 тыс ₽/м², документом не подтверждена",
+  "Льгота МПТ по остатку ТЭП АДЦ ориентировочно 7 млрд ₽ — в расчёте не учтена",
+  "Подземные площади ВГК-1 и ВГК-2 — АГК в разработке",
+  "Удорожание метра под убежищем ГО не заложено",
+  "Поликлиника 53 пос./смену — компенсация уплачена, в модели не отражена"
+ ],
+ "validation_controls": {
+  "ppt_gfa_total_m2": 402000,
+  "apartments_saleable_m2": 166500.0,
+  "offices_saleable_m2": 84858.48,
+  "underground_spaces": 1510,
+  "above_parking_spaces": 766,
+  "rugby_social_burden_cash_rub": 1149230000.0,
+  "torpedo_capex_in_project": 0,
+  "tp_project_perimeter_planned_payments_rub": 208288944.27,
+  "vri_remaining_cash_out_rub": 266921838.63
+ }
+}

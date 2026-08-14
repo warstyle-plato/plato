@@ -32,9 +32,18 @@ SCHEMA_VERSIONS = {
     "developaid.project_preset.v1",
     "developaid.project_preset.v2",
     "developaid.project_preset.v3",
+    # v4 добавляет то, без чего проект не считался: цены, себестоимость,
+    # сроки и очереди. До неё пресет нёс только документы — планировку и
+    # обязательства, — а экономику приходилось вводить руками, и «загрузить
+    # проект одним файлом» кончалось на полпути.
+    "developaid.project_preset.v4",
 }
 
 TBD = "TBD"
+
+# Форма исполнения соцнагрузки, где обе формы разом. Имя должно совпадать с
+# движком: расходится — режим молча не сработает.
+SOCIAL_MODE_BOTH = "Строительство и компенсация"
 
 # Коэффициенты перехода к продаваемой площади. Первые два — методика ГлавАПУ,
 # та же, что в расчёте ТЭП по кадастровому номеру. Третий — решение владельца
@@ -247,9 +256,16 @@ def map_inputs(data: dict[str, Any], tep: dict[str, Any]) -> tuple[dict[str, Any
         else:
             cash_burden += amount
     if cash_burden:
-        inputs["social_mode"] = "Денежная компенсация"
+        # Проект может и строить, и платить: школа с садиком строятся, а за
+        # спортивный объект платят деньгами. Режим «Денежная компенсация» тут
+        # отменил бы стройку целиком — расход добавился бы, а прибыль выросла.
+        builds = any(float(tep.get(key, {}).get("units") or 0) > 0
+                     for key in ("school", "kindergarten", "clinic"))
+        inputs["social_mode"] = SOCIAL_MODE_BOTH if builds else "Денежная компенсация"
         inputs["social_compensation_mln"] = cash_burden
-        notes.append(Field(cash_burden, "source", "денежная социальная нагрузка"))
+        notes.append(Field(cash_burden, "source",
+                           "денежная социальная нагрузка"
+                           + (" — вместе со стройкой соцобъектов" if builds else "")))
     due = str((data.get("social_infrastructure") or {}).get("rugby_stadium", {}).get("due_date")
               or "").strip() if isinstance(data.get("social_infrastructure"), dict) else ""
     if due:
@@ -329,6 +345,9 @@ def reference_blocks(data: dict[str, Any]) -> list[dict[str, Any]]:
 def open_items(data: dict[str, Any]) -> list[str]:
     """Всё, что пресет сам объявил незакрытым, плюс наши TBD."""
     items: list[str] = []
+    # Верхнеуровневые — то, что автор пресета знает про проект целиком: чего
+    # не хватает, что не подтверждено документом, что посчитано на глазок.
+    items.extend(str(x) for x in (data.get("open_items") or []))
     tp = data.get("tp") if isinstance(data.get("tp"), dict) else {}
     items.extend(str(x) for x in (tp.get("open_items") or []))
     settings = data.get("construction_cost_settings")
@@ -368,11 +387,97 @@ def cost_multipliers(data: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
+def map_economics(data: dict[str, Any]) -> tuple[dict[str, Any], list[Field]]:
+    """Цены, себестоимость и сроки — то, чего в документах нет.
+
+    ППТ и соглашения говорят про площади и обязательства; сколько метр стоит
+    и за сколько продаётся — предпосылки аналитика. Поэтому они приходят
+    отдельным разделом и помечаются иначе: не «из документа», а «предпосылка»,
+    и каждая несёт, откуда взялась.
+    """
+    economics = data.get("economics")
+    if not isinstance(economics, dict):
+        return {}, []
+    inputs: dict[str, Any] = {}
+    notes: list[Field] = []
+    known = {
+        "apartment_price_th": "цена квартир",
+        "commercial_price_th": "цена коммерции 1 этажа",
+        "parking_price_th": "цена машино-места",
+        "storage_price_th": "цена кладовой",
+        "offices_price_th_per_sqm": "цена офисов",
+        "above_parking_price_mln_per_space": "цена места в гараже",
+        "main_above_th_per_sqm": "СМР наземной части",
+        "main_under_th_per_sqm": "СМР подземной части",
+        "offices_cost_th_per_sqm": "себестоимость офисов",
+        "ird_months": "срок ИРД",
+        "construction_months": "срок строительства",
+        "share_before_rve_pct": "доля продаж до РВЭ",
+        "project_start": "начало проекта",
+        "social_comp_date": "дата денежной соцнагрузки",
+    }
+    for key, label in known.items():
+        raw = economics.get(key)
+        if raw is None or raw == TBD:
+            if key in economics:
+                notes.append(Field(TBD, "tbd", f"{label} — не задана в пресете"))
+            continue
+        value = raw if key in ("project_start", "social_comp_date") else _number(raw)
+        if value is None:
+            continue
+        inputs[key] = value
+        origin = str((economics.get("origins") or {}).get(key) or "assumption")
+        notes.append(Field(value, origin if origin in ("source", "assumption") else "assumption",
+                           f"{label} — {value}"
+                           + (" (предпосылка, не из документа)" if origin != "source" else "")))
+    return inputs, notes
+
+
+def map_phasing(data: dict[str, Any]) -> tuple[dict[str, Any], list[Field]]:
+    """Очереди: сколько, чем и с каким шагом.
+
+    Очередь — не удобство финансирования, а ёмкость спроса: 166 500 м² квартир
+    одной очередью требуют 65 продаж в месяц три с половиной года подряд, и
+    столько рынок не берёт.
+    """
+    phasing = data.get("phasing")
+    if not isinstance(phasing, dict) or not phasing.get("enabled"):
+        return {}, []
+    phases = [item for item in (phasing.get("phases") or []) if isinstance(item, dict)]
+    if len(phases) < 2:
+        return {}, []
+    gap = int(_number(phasing.get("phase_gap_months")) or 12)
+    out = {
+        "enabled": True, "mode": "phased", "user_enabled": True,
+        "phase_count": min(4, len(phases)), "phase_gap_months": gap,
+        "phases": [{
+            "name": str(item.get("name") or f"О{index + 1}"),
+            "start_offset_months": int(_number(item.get("start_offset_months"))
+                                       or index * gap),
+            "construction_months": int(_number(item.get("construction_months")) or 24),
+        } for index, item in enumerate(phases[:4])],
+    }
+    shared = phasing.get("shared_cash")
+    if isinstance(shared, dict):
+        out["shared_cash"] = shared
+    notes = [Field(len(out["phases"]), "assumption",
+                   "очереди: " + ", ".join(
+                       f"{item['name']} через {item['start_offset_months']} мес., "
+                       f"стройка {item['construction_months']} мес."
+                       for item in out["phases"]))]
+    return out, notes
+
+
 def build_preview(data: dict[str, Any]) -> dict[str, Any]:
     """Что получится, если применить. Ничего не меняет."""
     preset = parse_preset(data)
     tep, tep_notes = map_tep(preset)
     inputs, input_notes = map_inputs(preset, tep)
+    economics, economics_notes = map_economics(preset)
+    # Предпосылки поверх документов, а не вместо: цена метра документом не
+    # задаётся, но и площадь из ППТ ею не перебивается.
+    inputs.update(economics)
+    phasing, phasing_notes = map_phasing(preset)
     project = preset.get("project") if isinstance(preset.get("project"), dict) else {}
     return {
         "schema_version": preset.get("schema_version"),
@@ -380,7 +485,9 @@ def build_preview(data: dict[str, Any]) -> dict[str, Any]:
         "region": str(project.get("region") or ""),
         "tep": tep,
         "inputs": inputs,
-        "notes": [field.as_dict() for field in (*tep_notes, *input_notes)],
+        "phasing": phasing,
+        "notes": [field.as_dict() for field in
+                  (*tep_notes, *input_notes, *economics_notes, *phasing_notes)],
         "reference": reference_blocks(preset),
         "open_items": open_items(preset),
         "multipliers": cost_multipliers(preset),

@@ -170,3 +170,40 @@ def test_the_page_takes_the_modes_from_the_engine():
     движок считал, книга предлагала, а выбрать было нельзя."""
     assert "__DEVELOPAID_SOCIAL_MODES__" not in core.PAGE
     assert "Строительство и компенсация" in core.PAGE
+
+
+# --- очереди --------------------------------------------------------------------
+
+def test_the_phased_project_keeps_both_forms():
+    """В фазовом расчёте реестр соцобъектов собирался только для режима
+    «Строительство»: у совмещённого он оставался пустым, стройка исчезала, а
+    денежная часть не расходилась по очередям вовсе — на Румянцеве это 1,15
+    млрд ₽ мимо."""
+    phasing = {"enabled": True, "mode": "phased", "phase_count": 2, "user_enabled": True,
+               "phase_gap_months": 24,
+               "phases": [{"name": "О1", "start_offset_months": 0, "construction_months": 36},
+                          {"name": "О2", "start_offset_months": 24, "construction_months": 36}]}
+    bundle = core.calculate_phased(core.PhasedCalcRequest(
+        inputs={**BASE, "social_mode": core.SOCIAL_MODE_BOTH},
+        tep=core.TEP_DEFAULT, rates=[], phasing=phasing))
+    total = bundle["consolidated"]["summary"]["social_payment"] / 1_000_000
+    # Стройка индексируется к старту своей очереди, поэтому сумма выше простой:
+    # проверяем, что обе формы на месте, а не точное число.
+    assert total > 1149.23 + 1500.0
+    modes = {phase["result"]["summary"].get("social_payment_mode") for phase in bundle["phases"]}
+    assert core.SOCIAL_MODE_BOTH in modes
+
+
+def test_the_cash_part_is_not_multiplied_by_phases():
+    """Один котёл на проект: без кассовых долей каждая очередь заплатила бы
+    полную сумму."""
+    phasing = {"enabled": True, "mode": "phased", "phase_count": 2, "user_enabled": True,
+               "phase_gap_months": 24,
+               "phases": [{"name": "О1", "start_offset_months": 0, "construction_months": 36},
+                          {"name": "О2", "start_offset_months": 24, "construction_months": 36}]}
+    bundle = core.calculate_phased(core.PhasedCalcRequest(
+        inputs={**BASE, "social_mode": core.SOCIAL_MODE_BOTH, "kindergarten_places": 0,
+                "school_places": 0, "clinic_capacity": 0},
+        tep=core.TEP_DEFAULT, rates=[], phasing=phasing))
+    total = bundle["consolidated"]["summary"]["social_payment"] / 1_000_000
+    assert total == pytest.approx(1149.23, rel=1e-6)

@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.84"
+VERSION = "0.17.85"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -15734,7 +15734,7 @@ def calculate(req: CalcRequest) -> dict:
                 op["capex_amounts"].get("social", 0.0)
                 - (
                     sum(op.get("social_construction_breakdown", {}).values())
-                    if str(x.get("social_mode", "")) == "Строительство"
+                    if str(x.get("social_mode", "")) in ("Строительство", SOCIAL_MODE_BOTH)
                     else op.get("imported_social_compensation", 0.0)
                 )
             ) < 1.0,
@@ -16851,7 +16851,10 @@ def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
     # список читают несколько мест, и каждое падало бы на своём .get.
     social_objects = [copy.deepcopy(obj) for obj in (phasing.get("social_objects") or [])
                       if isinstance(obj, dict)]
-    if str(x_master.get("social_mode")) == "Строительство" and not social_objects:
+    # Совмещённый режим тоже строит: без него реестр объектов оставался пустым,
+    # стройка школы и садика в очередях исчезала, и соцнагрузка выходила нулевой.
+    if (str(x_master.get("social_mode")) in ("Строительство", SOCIAL_MODE_BOTH)
+            and not social_objects):
         # Реестр объектов пуст — собираем его из вводных, чтобы нагрузка не потерялась.
         for typ, key in (("kindergarten", "kindergarten_places"), ("school", "school_places"),
                          ("clinic", "clinic_capacity")):
@@ -16873,7 +16876,7 @@ def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
 
     # Total social construction cost for analytical allocation.
     total_social_construction = 0.0
-    if str(x_master.get("social_mode")) == "Строительство":
+    if str(x_master.get("social_mode")) in ("Строительство", SOCIAL_MODE_BOTH):
         for obj in social_objects:
             capacity = float(obj.get("capacity", 0.0) or 0.0)
             typ = str(obj.get("type"))
@@ -16955,6 +16958,21 @@ def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
                 }}
         else:
             p_inputs["social_mode"] = "Строительство"
+            # Совмещённый режим: стройка расходится по очередям своими
+            # объектами, а денежная часть — кассовыми долями, как обычная
+            # компенсация. Без этого очередь получала только стройку, и 1,15
+            # млрд по спортивному объекту исчезали из фазового расчёта.
+            if str(x_master.get("social_mode")) == SOCIAL_MODE_BOTH:
+                cash_share = cash_weights["social_compensation"][idx] / 100
+                cash_part = n(x_master, "social_compensation_mln") * cash_share
+                if cash_part > 0:
+                    p_inputs["social_mode"] = SOCIAL_MODE_BOTH
+                    p_inputs["social_compensation_mln"] = cash_part
+                    shifted = d(_shift_iso(x_master.get("social_comp_date"), offset))
+                    p_inputs["social_comp_date"] = max(
+                        shifted, d(p_inputs["project_start"])).isoformat()
+                else:
+                    p_inputs["social_compensation_mln"] = 0.0
             p_inputs["kindergarten_cost_mln_per_place"] = n(x_master,"kindergarten_cost_mln_per_place")*cost_inflation_factor
             p_inputs["school_cost_mln_per_place"] = n(x_master,"school_cost_mln_per_place")*cost_inflation_factor
             p_inputs["clinic_cost_mln_per_unit"] = n(x_master,"clinic_cost_mln_per_unit")*cost_inflation_factor
@@ -17576,7 +17594,7 @@ def _sensitivity_applicable(
         if not (phasing.get("enabled") and int(phasing.get("phase_count") or 1) > 1):
             return "очерёдность выключена"
         return ""
-    if needs == "social_payment" and str(inputs.get("social_mode") or "") == "Строительство":
+    if needs == "social_payment" and str(inputs.get("social_mode") or "") == "Строительство":  # noqa: E501
         return "социальные объекты строятся, а не компенсируются деньгами"
     product = spec.get("product")
     if product:
@@ -18829,7 +18847,7 @@ def _tool_find_anomalies(
         req_dou = float(imported.get("required_kindergarten_places", 0) or 0)
         req_school = float(imported.get("required_school_places", 0) or 0)
         req_clinic = float(imported.get("required_clinic_capacity", 0) or 0)
-        if str(req.inputs.get("social_mode", "")) == "Строительство":
+        if str(req.inputs.get("social_mode", "")) in ("Строительство", SOCIAL_MODE_BOTH):
             prog = s.get("social_program") or {}
             actual = {
                 "kindergarten": float(prog.get("kindergarten_places", 0) or 0),
