@@ -359,3 +359,57 @@ def test_applying_lays_over_the_defaults():
     body = body[:body.index("// --- хранилище проектов")]
     assert "structuredClone(INPUT_DEFAULT)" in body
     assert "structuredClone(TEP_DEFAULT)" in body
+
+
+# --- две нагрузки сразу модель пока не считает ----------------------------------
+
+def test_cash_burden_does_not_cancel_mandatory_construction():
+    """`social_mode` — переключатель «или/или»: денежная компенсация отменяет
+    стройку соцобъектов целиком. У Румянцева школа и ДОО строятся, а за стадион
+    платят деньгами, и переключение режима отняло бы стройку из расходов —
+    EBITDA росла от добавленного расхода на 0,46 млрд ₽."""
+    body = {"preset": preset(), "mode": "apply", "inputs": {}, "tep": {},
+            "filled": {"social_compensation_mln": 1149.23}}
+    data = client.post("/api/project-presets/import", json=body).json()
+    assert data["applied_inputs"].get("social_mode") != "Денежная компенсация"
+    assert "social_compensation_mln" not in data["applied_inputs"]
+    assert data["applied_inputs"]["school_places"] == 350
+
+
+def test_the_uncounted_burden_is_declared():
+    """Не учли — скажи об этом: молча пропавший миллиард хуже отказа."""
+    body = {"preset": preset(), "mode": "preview", "inputs": {}, "tep": {},
+            "filled": {"social_compensation_mln": 1149.23}}
+    items = " ".join(client.post("/api/project-presets/import", json=body).json()["open_items"])
+    assert "1,149.23" in items or "1 149" in items or "1149" in items
+    assert "не вошла" in items
+
+
+def test_without_construction_the_cash_burden_is_counted():
+    """Когда строить нечего, компенсация — единственная форма нагрузки."""
+    data = preset()
+    data["planning"]["objects"] = [item for item in data["planning"]["objects"]
+                                   if item["id"] != "EDU"]
+    body = {"preset": data, "mode": "apply", "inputs": {}, "tep": {},
+            "filled": {"social_compensation_mln": 1149.23}}
+    applied = client.post("/api/project-presets/import", json=body).json()["applied_inputs"]
+    assert applied["social_compensation_mln"] == pytest.approx(1149.23)
+    assert applied["social_mode"] == "Денежная компенсация"
+
+
+def test_a_filled_value_reaches_the_inputs():
+    body = {"preset": preset(), "mode": "apply", "inputs": {}, "tep": {},
+            "filled": {"purchase_price_mln": 4300}}
+    applied = client.post("/api/project-presets/import", json=body).json()["applied_inputs"]
+    assert applied["purchase_price_mln"] == 4300
+
+
+def test_the_screen_offers_a_field_for_unknown_values():
+    """Править JSON ради одного числа — способ его туда и не внести."""
+    assert 'id="fill_' in core.PAGE
+    assert "presetFilledValues()" in core.PAGE
+
+
+def test_the_projects_key_can_be_changed_without_the_console():
+    assert "changeProjectsKey()" in core.PAGE
+    assert "Сменить ключ" in core.PAGE

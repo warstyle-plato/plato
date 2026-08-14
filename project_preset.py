@@ -78,15 +78,21 @@ class Field:
     полученная умножением на коэффициент, — а решения по ним принимают разные.
     """
 
-    __slots__ = ("value", "origin", "note")
+    __slots__ = ("value", "origin", "note", "input_key", "input_unit")
 
     def __init__(self, value: Any, origin: str, note: str = "") -> None:
         self.value = value
         self.origin = origin  # source | derived | assumption | tbd
         self.note = note
+        # Незакрытое значение можно ввести прямо на экране проверки: документ
+        # чаще есть, просто в файл его ещё не внесли, а править JSON руками
+        # ради одного числа — способ его туда и не внести.
+        self.input_key = ""
+        self.input_unit = ""
 
     def as_dict(self) -> dict[str, Any]:
-        return {"value": self.value, "origin": self.origin, "note": self.note}
+        return {"value": self.value, "origin": self.origin, "note": self.note,
+                "input_key": self.input_key, "input_unit": self.input_unit}
 
 
 def parse_preset(data: dict[str, Any]) -> dict[str, Any]:
@@ -221,14 +227,25 @@ def map_inputs(data: dict[str, Any], tep: dict[str, Any]) -> tuple[dict[str, Any
             continue
         amount = _mln(item.get("social_burden_cash_rub"))
         if amount is None:
-            notes.append(Field(TBD, "tbd",
-                               f"{item.get('name')} — денежная соцнагрузка не задана в пресете"))
+            # Незакрытое поле дожидается числа на экране проверки, а не в
+            # тексте файла: документ обычно есть, просто его ещё не внесли.
+            field = Field(TBD, "tbd",
+                          f"{item.get('name')} — денежная соцнагрузка не задана в пресете")
+            field.note += ". Введите сумму, если обязательство известно"
+            notes.append(field)
+            notes[-1].input_key = "social_compensation_mln"
+            notes[-1].input_unit = "млн ₽"
         else:
             cash_burden += amount
     if cash_burden:
         inputs["social_mode"] = "Денежная компенсация"
         inputs["social_compensation_mln"] = cash_burden
         notes.append(Field(cash_burden, "source", "денежная социальная нагрузка"))
+    due = str((data.get("social_infrastructure") or {}).get("rugby_stadium", {}).get("due_date")
+              or "").strip() if isinstance(data.get("social_infrastructure"), dict) else ""
+    if due:
+        inputs["social_comp_date"] = due
+        notes.append(Field(due, "source", f"срок денежной соцнагрузки — {due}"))
 
     tp = data.get("tp") if isinstance(data.get("tp"), dict) else {}
     tp_rub = _number(tp.get("planned_payments_project_perimeter_rub"))

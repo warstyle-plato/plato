@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.80"
+VERSION = "0.17.81"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -1334,6 +1334,9 @@ class ProjectPresetRequest(BaseModel):
     mode: str = "preview"
     inputs: dict[str, Any] = {}
     tep: dict[str, dict[str, Any]] = {}
+    # Числа, введённые человеком на экране проверки взамен TBD. Приходят
+    # отдельно от пресета: файл — документ, а это дополнение к нему.
+    filled: dict[str, Any] = {}
 
 
 def _preset_diff(current: dict[str, Any], incoming: dict[str, Any],
@@ -1367,6 +1370,32 @@ def import_project_preset(req: ProjectPresetRequest) -> dict[str, Any]:
     """
     try:
         preview = project_preset.build_preview(req.preset)
+        filled = {key: value for key, value in (req.filled or {}).items()
+                  if value not in (None, "")}
+        if filled:
+            preview["inputs"].update(filled)
+            # `social_mode` — переключатель «или/или»: денежная компенсация
+            # отменяет стройку соцобъектов целиком. У проекта, который и строит
+            # школу, и платит за стадион, это отняло бы стройку из расходов —
+            # EBITDA росла от добавленного расхода. Пока модель не умеет
+            # считать обе нагрузки разом, режим не трогаем, а сумму показываем
+            # отдельно, чтобы она не выглядела учтённой.
+            builds_social = any(float(preview["inputs"].get(key) or 0) > 0
+                                for key in ("school_places", "kindergarten_places",
+                                            "clinic_capacity"))
+            if "social_compensation_mln" in filled and builds_social:
+                preview["inputs"].pop("social_compensation_mln", None)
+                preview["open_items"].append(
+                    f"Денежная нагрузка {filled['social_compensation_mln']:,.2f} млн ₽ "
+                    "в расчёт не вошла: проект строит соцобъекты, а модель считает "
+                    "либо стройку, либо компенсацию.")
+            elif "social_compensation_mln" in filled:
+                preview["inputs"].setdefault("social_mode", "Денежная компенсация")
+            preview["notes"].append({
+                "value": "", "origin": "source", "input_key": "", "input_unit": "",
+                "note": "введено вручную на экране проверки: "
+                        + ", ".join(sorted(filled)),
+            })
     except project_preset.PresetError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
@@ -22554,6 +22583,9 @@ details.cadastral-box>summary::marker{color:#888}
     <div style="display:flex;align-items:center;gap:14px;margin-bottom:12px">
       <h2 style="margin:0;font-size:17px">Мои проекты</h2>
       <button class="btn dark" onclick="saveProjectToServer()">Сохранить текущий</button>
+      <!-- Смена ключа без консоли браузера: ключ меняют, когда он засветился,
+           и требовать для этого localStorage.removeItem — значит не менять. -->
+      <button class="btn" onclick="changeProjectsKey()">Сменить ключ</button>
       <button class="btn" style="margin-left:auto" onclick="closeProjects()">Закрыть</button>
     </div>
     <div style="font-size:11px;color:#777;margin-bottom:10px">
@@ -25828,8 +25860,12 @@ function renderPresetPreview(data){
   +' · изменений: вводные '+data.diff.inputs.length+', ТЭП '+data.diff.tep.length;
  const tbd=(data.notes||[]).filter(n=>n.origin==='tbd');
  presetErrors.style.display=tbd.length?'':'none';
+ // У незакрытого поля с известным адресом — поле ввода: документ обычно есть,
+ // просто в файл его не внесли, а править JSON ради одного числа никто не станет.
  presetErrors.innerHTML=tbd.length?'<b>Осталось не определённым:</b><br>'
-  +tbd.map(n=>escapeHtml(n.note)).join('<br>'):'';
+  +tbd.map(n=>escapeHtml(n.note)
+    +(n.input_key?` <input type="number" step="0.01" style="width:150px" `
+      +`id="fill_${n.input_key}" placeholder="${escapeHtml(n.input_unit||'')}">`:'')).join('<br>'):'';
  const block=(title,html)=>html?`<h3 style="font-size:13px;margin:16px 0 6px">${title}</h3>${html}`:'';
  const table=rows=>rows?`<div class="scroll"><table><thead><tr><th>Показатель</th><th>Было</th><th>Станет</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`:'';
  presetBody.innerHTML=
@@ -25852,13 +25888,22 @@ function renderPresetPreview(data){
 
 function closePreset(){presetDialog.style.display='none';presetPreview=null}
 
+function presetFilledValues(){
+ const filled={};
+ document.querySelectorAll('#presetErrors input[id^="fill_"]').forEach(el=>{
+  const value=Number(el.value);
+  if(el.value!==''&&isFinite(value))filled[el.id.slice('fill_'.length)]=value;
+ });
+ return filled;
+}
+
 async function applyPreset(){
  if(!presetPreview)return;
  let data;
  try{
   const response=await fetch('/api/project-presets/import',{
    method:'POST',headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({preset:presetPreview,mode:'apply',inputs,tep})});
+   body:JSON.stringify({preset:presetPreview,mode:'apply',inputs,tep,filled:presetFilledValues()})});
   data=await response.json();
   if(!response.ok)throw new Error(data.detail||'Пресет не применён');
  }catch(e){alert(String(e.message||e));return}
@@ -25950,6 +25995,15 @@ async function openProjects(){
 }
 
 function closeProjects(){projectsDialog.style.display='none'}
+
+function changeProjectsKey(){
+ const key=prompt('Ключ администратора', projectsAdminKey||'');
+ if(key===null)return;
+ projectsAdminKey=key.trim();
+ if(projectsAdminKey)localStorage.setItem('plato_projects_key',projectsAdminKey);
+ else localStorage.removeItem('plato_projects_key');
+ openProjects();
+}
 
 async function loadProject(id){
  let record;
