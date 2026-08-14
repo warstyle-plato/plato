@@ -161,10 +161,15 @@ def map_tep(data: dict[str, Any]) -> tuple[dict[str, Any], list[Field]]:
     apartments = residential_gns * SALEABLE_RATIO_APARTMENTS
     commercial = commercial_gns * SALEABLE_RATIO_COMMERCIAL
     offices = office_gns * SALEABLE_RATIO_OFFICES
+    # Потребность в машино-местах — у жилья и у офисов своя, и отдельно
+    # стоящий гараж её закрывает: под землю уходит только остаток. Прежде
+    # подземный паркинг считался от одних квартир, офисные места не
+    # учитывались вовсе, а гараж стоял рядом продуктом и ничего не убавлял.
     permanent = math.ceil(apartments * PARKING_PER_SQM * PARKING_RATE)
     guest = math.ceil(permanent * PARKING_GUEST_SHARE)
-    underground = permanent + guest
+    office_spaces = math.ceil(offices / OFFICE_SQM_PER_SPACE) if offices else 0
     above = math.ceil(garage_gns / ABOVE_AREA_PER_SPACE) if garage_gns else 0
+    underground = max(0, permanent + guest + office_spaces - above)
 
     tep = {
         "apartments": {"gns": residential_gns, "saleable": apartments,
@@ -190,12 +195,16 @@ def map_tep(data: dict[str, Any]) -> tuple[dict[str, Any], list[Field]]:
         Field(offices, "derived",
               f"офисы — {office_gns:,.0f} м² × {SALEABLE_RATIO_OFFICES} (полезная по соглашению МПТ)"),
         Field(underground, "derived",
-              f"подземный паркинг — {permanent} постоянных + {guest} гостевых, "
-              f"{underground * UNDERGROUND_AREA_PER_SPACE:,.0f} м²"),
+              f"подземный паркинг — потребность {permanent + guest + office_spaces} мест "
+              f"({permanent} постоянных + {guest} гостевых жилья"
+              + (f" + {office_spaces} офисных" if office_spaces else "")
+              + (f") минус гараж {above}" if above else ")")
+              + f" = {underground}, {underground * UNDERGROUND_AREA_PER_SPACE:,.0f} м²"),
     ])
     if above:
         notes.append(Field(above, "derived",
-                           f"наземный гараж — {garage_gns:,.0f} м² ÷ {ABOVE_AREA_PER_SPACE:.0f} м²/место"))
+                           f"наземный гараж — {garage_gns:,.0f} м² ÷ {ABOVE_AREA_PER_SPACE:.0f} м²/место, "
+                           "закрывает часть потребности"))
     return tep, notes
 
 

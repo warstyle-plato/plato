@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.82"
+VERSION = "0.17.83"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -63,6 +63,10 @@ VERSION_PLACEHOLDER = "__DEVELOPAID_VERSION__"
 # а нарисовать было некому. Теперь копия одна, подставляется на импорте.
 FIELD_GROUPS_PLACEHOLDER = "__DEVELOPAID_FIELD_GROUPS__"
 INPUT_DEFAULT_PLACEHOLDER = "__DEVELOPAID_INPUT_DEFAULT__"
+# Формы исполнения соцнагрузки страница держала своей копией, и третий режим
+# в неё не попал: движок его считал, книга предлагала, а на странице выбрать
+# было нельзя. Та же болезнь, что с полями и умолчаниями, — лечится так же.
+SOCIAL_MODES_PLACEHOLDER = "__DEVELOPAID_SOCIAL_MODES__"
 
 app = FastAPI(title="DevelopAid Development Investment Model", version=VERSION)
 
@@ -24386,7 +24390,7 @@ function renderInputs(){
      }
      let el;
      if(Array.isArray(f[4])){el=document.createElement('select');f[4].forEach(pair=>{let o=document.createElement('option');o.value=pair[0];o.textContent=pair[1];el.appendChild(o)})}
-     else if(type==='select'){el=document.createElement('select');['Строительство','Денежная компенсация'].forEach(v=>{let o=document.createElement('option');o.value=v;o.textContent=v;el.appendChild(o)})}
+     else if(type==='select'){el=document.createElement('select');__DEVELOPAID_SOCIAL_MODES__.forEach(v=>{let o=document.createElement('option');o.value=v;o.textContent=v;el.appendChild(o)})}
      else if(type==='finance_select'){el=document.createElement('select');['Капитализация в ПФ','Выплата при рефинансировании'].forEach(v=>{let o=document.createElement('option');o.value=v;o.textContent=v;el.appendChild(o)})}
      else {el=document.createElement('input');el.type=type==='checkbox'?'checkbox':type;if(type==='number')el.step='any'}
      el.id='f_'+id;
@@ -25267,7 +25271,8 @@ function renderResult(){
  }
 
  const bridgeTotal=Number(r.report.financing.calculated_bridge||0);
- const bridgeSocial=socialMode==='Денежная компенсация'?Number(r.capex.social||0):0;
+ const bridgeSocial=socialMode==='Денежная компенсация'?Number(r.capex.social||0)
+   :(socialMode==='Строительство и компенсация'?Number(inputs.social_compensation_mln||0)*1e6:0);
  const bridgeDesignP=Number(r.capex.design_p||0);
  const bridgeDesignRd=Number(r.capex.design_rd||0);
  const bridgePurchase=Math.max(0,bridgeTotal-bridgeSocial-bridgeDesignP-bridgeDesignRd);
@@ -26354,6 +26359,9 @@ PAGE = PAGE.replace(FIELD_GROUPS_PLACEHOLDER,
                     json.dumps(FIELD_GROUPS, ensure_ascii=False))
 PAGE = PAGE.replace(INPUT_DEFAULT_PLACEHOLDER,
                     json.dumps(DEFAULT_INPUTS, ensure_ascii=False))
+PAGE = PAGE.replace(SOCIAL_MODES_PLACEHOLDER,
+                    json.dumps([item[0] for item in _M2_EXTRA_OPTIONS["social_mode"]],
+                               ensure_ascii=False))
 
 
 @app.get("/", response_class=HTMLResponse)

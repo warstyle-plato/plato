@@ -146,3 +146,27 @@ def test_the_book_formula_knows_the_third_mode():
     formula = str(workbook(core.SOCIAL_MODE_BOTH)["CF_1"]["F57"].value)
     assert "Строительство и компенсация" in formula
     assert "$B$56" in formula
+
+
+# --- порядок листов -------------------------------------------------------------
+
+def test_the_book_opens_on_the_result():
+    """Книгу открывают ради отчёта, а он лежал пятнадцатым листом — после
+    четырёх CF, КРЕДИТОВ и КОНСОЛИДАТОРА. Порядок листов ничего не ломает:
+    формулы ссылаются по именам, а не по позиции."""
+    names = workbook("Строительство").sheetnames
+    assert names[:3] == ["Вводные", "ОТЧЕТ", "Дашборд"]
+
+
+def test_no_sheet_was_lost_in_the_reorder():
+    names = workbook("Строительство").sheetnames
+    assert len(names) == len(set(names)) == 19
+    for required in ("ПРОВЕРКИ", "CF_1", "CF_4", "КРЕДИТЫ", "ОБЪЕКТЫ"):
+        assert required in names
+
+
+def test_the_page_takes_the_modes_from_the_engine():
+    """Список форм жил на странице копией, и третий режим в неё не попал:
+    движок считал, книга предлагала, а выбрать было нельзя."""
+    assert "__DEVELOPAID_SOCIAL_MODES__" not in core.PAGE
+    assert "Строительство и компенсация" in core.PAGE

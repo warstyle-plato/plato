@@ -163,12 +163,31 @@ def test_the_garage_becomes_above_ground_parking_not_offices():
     assert tep["offices"]["gns"] == pytest.approx(125160.0)
 
 
-def test_the_underground_parking_is_calculated_from_the_apartments():
+def test_the_underground_parking_covers_what_the_garage_does_not():
+    """Потребность считают жильё и офисы вместе, а отдельно стоящий гараж её
+    закрывает: под землю уходит остаток. Прежде подземный паркинг считался от
+    одних квартир — офисные места не учитывались вовсе, а гараж стоял рядом
+    продуктом и ничего не убавлял."""
     tep = preview()["tep"]
     permanent = math.ceil(166500 / 33.0 * 0.257)
-    assert tep["underground_parking"]["units"] == permanent + math.ceil(permanent * 0.1)
+    residential = permanent + math.ceil(permanent * 0.1)
+    offices = math.ceil(125160 * 0.678 / 100.0)
+    garage = math.ceil(19150 / 25)
+    assert tep["above_parking"]["units"] == garage
+    assert tep["underground_parking"]["units"] == residential + offices - garage
     assert tep["underground_parking"]["gns"] == pytest.approx(
         tep["underground_parking"]["units"] * 35.0)
+
+
+def test_a_large_garage_leaves_no_underground_need():
+    """Если наземных мест хватает на всё, подземного паркинга нет — а не
+    отрицательное число мест."""
+    data = preset()
+    for item in data["planning"]["objects"]:
+        if item["id"] == "BUSINESS_19":
+            item["gfa_m2"] = 200000
+    tep = preview(preset=data)["tep"]
+    assert tep["underground_parking"]["units"] == 0
 
 
 def test_the_education_object_splits_into_school_and_preschool():
