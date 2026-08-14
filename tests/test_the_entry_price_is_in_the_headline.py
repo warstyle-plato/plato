@@ -60,21 +60,37 @@ def test_it_stands_after_the_result_figures():
 
 # --- долг в шапке одним показателем --------------------------------------------
 
-def test_the_headline_shows_one_debt_figure():
-    """Два БРИДЖа рядом читались как расхождение, а не как лимит банка и
-    фактическая потребность; пиковая непокрытая задолженность — величина для
-    разговора с банком. Решение владельца (14.08.2026): в шапке долг — LLCR."""
+def test_the_headline_shows_one_bridge_not_two():
+    """Решение владельца (14.08.2026): два БРИДЖа рядом читались как
+    расхождение, а не как лимит банка и фактическая потребность. Остался один
+    — фактический пик, он отвечает на вопрос «сколько денег нужно»."""
     block = kpi_block()
-    for gone in ("Расчётный БРИДЖ", "Фактический БРИДЖ",
-                 "Пиковая (непокрытая эскроу) задолженность ПФ"):
+    assert "Пиковый БРИДЖ" in block
+    for gone in ("Расчётный БРИДЖ", "Пиковая (непокрытая эскроу) задолженность ПФ"):
         assert gone not in block, f"«{gone}» вернулась в шапку"
-    assert "LLCR (расчётный)" in block
+
+
+def test_the_entry_is_shown_with_what_pays_for_it():
+    """Цена входа без источников оплаты — половина картины: на Вест Гарден
+    3,20 млрд из 4,35 внесены своими деньгами."""
+    block = kpi_block()
+    assert "Собственные средства до ПФ" in block
+    assert block.index("Цена приобретения") < block.index("Собственные средства до ПФ")
+    assert block.index("Собственные средства до ПФ") < block.index("Пиковый БРИДЖ")
 
 
 def test_the_headline_stays_short():
-    """Седьмая плитка — повод спросить, показатель ли это общей оценки."""
+    """Десятая плитка — повод спросить, показатель ли это общей оценки."""
     assert kpi_block().count("money(") + kpi_block().count("pct(") \
-        + kpi_block().count("mult(") == 7
+        + kpi_block().count("mult(") == 9
+
+
+def test_the_own_funds_come_from_the_calculation():
+    """Форма знает внесённую сумму, но не знает израсходованную: своих денег
+    может хватить не на всё, и в шапке должно стоять потраченное."""
+    block = kpi_block()
+    assert "r.report.financing.own_funds" in block
+    assert "pre_pf_own_funds_mln" not in block
 
 
 def test_nothing_was_lost_only_moved():
