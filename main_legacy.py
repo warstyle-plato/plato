@@ -38,12 +38,17 @@ from fastapi import BackgroundTasks, FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse, FileResponse, Response
 from pydantic import BaseModel
 
+# Перевод документов проекта (ГПЗУ, ППТ, соглашения ВРИ и МПТ, справки по
+# техприсоединению) в продукты и деньги модели живёт отдельным модулем: он о
+# документах, движок — об экономике, и смешивать их незачем.
+import project_preset
+
 # Единственное место, где живёт номер версии. Копий было четырнадцать —
 # тринадцать литералов здесь и своя в обёртке, — и полтора десятка выпусков их
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.79"
+VERSION = "0.17.80"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -1320,6 +1325,83 @@ def download_manual_tep_template():
             "Content-Disposition": f"attachment; filename=DevelopAid_TEP_template.xlsx; filename*=UTF-8''{encoded_name}",
         },
     )
+
+
+class ProjectPresetRequest(BaseModel):
+    """Пресет и то, что уже открыто в проекте, — чтобы показать разницу."""
+
+    preset: dict[str, Any]
+    mode: str = "preview"
+    inputs: dict[str, Any] = {}
+    tep: dict[str, dict[str, Any]] = {}
+
+
+def _preset_diff(current: dict[str, Any], incoming: dict[str, Any],
+                 labels: dict[str, str] | None = None) -> list[dict[str, Any]]:
+    """Что именно изменится. Без этого «Применить» — прыжок в темноте."""
+    rows: list[dict[str, Any]] = []
+    for key, new_value in incoming.items():
+        old_value = current.get(key)
+        if isinstance(new_value, (int, float)) and isinstance(old_value, (int, float)):
+            if abs(float(new_value) - float(old_value)) < 1e-6:
+                continue
+        elif old_value == new_value:
+            continue
+        rows.append({
+            "key": key,
+            "label": (labels or {}).get(key, key),
+            "was": old_value,
+            "becomes": new_value,
+            "action": "заменится" if old_value not in (None, "", 0, 0.0) else "заполнится",
+        })
+    return rows
+
+
+@app.post("/api/project-presets/import")
+def import_project_preset(req: ProjectPresetRequest) -> dict[str, Any]:
+    """Пресет проекта: сначала показать, потом применять.
+
+    Режим `preview` ничего не меняет — он отвечает на вопрос «что будет».
+    Режим `apply` возвращает готовые вводные и ТЭП, которые страница ставит
+    себе; сам расчёт по-прежнему делает движок, а не импорт.
+    """
+    try:
+        preview = project_preset.build_preview(req.preset)
+    except project_preset.PresetError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Пресет не разобран: {exc}") from exc
+
+    labels = {name: title for group in FIELD_GROUPS for name, title, *_ in group[1]}
+    tep_labels = {key: str(value.get("label") or key) for key, value in TEP_DEFAULT.items()}
+    tep_current = req.tep or {}
+    tep_rows: list[dict[str, Any]] = []
+    for key, values in preview["tep"].items():
+        current = tep_current.get(key) or {}
+        for field, new_value in values.items():
+            old_value = float(current.get(field) or 0.0)
+            if abs(float(new_value or 0.0) - old_value) < 1e-6:
+                continue
+            tep_rows.append({
+                "key": f"{key}.{field}", "label": f"{tep_labels.get(key, key)} · {field}",
+                "was": old_value, "becomes": new_value,
+                "action": "заменится" if old_value else "заполнится",
+            })
+
+    preview["diff"] = {
+        "inputs": _preset_diff(req.inputs or {}, preview["inputs"], labels),
+        "tep": tep_rows,
+    }
+    if req.mode == "apply":
+        # Пресет дополняет проект, а не заменяет его: поля, которых он не
+        # касается, остаются как были — правило «импорт не ломает ручной ввод».
+        preview["applied_inputs"] = {**(req.inputs or {}), **preview["inputs"]}
+        applied_tep = {key: dict(value) for key, value in (req.tep or {}).items()}
+        for key, values in preview["tep"].items():
+            applied_tep.setdefault(key, {})
+            applied_tep[key].update(values)
+        preview["applied_tep"] = applied_tep
+    return preview
 
 
 @app.post("/import/manual-tep")
@@ -21966,6 +22048,14 @@ details.cadastral-box>summary::marker{color:#888}
             <button class="btn dark" onclick="uploadGlavapu()">Разобрать файл</button>
             <a class="btn" href="/templates/tep" download style="text-decoration:none">Скачать шаблон ТЭП</a>
           </div>
+          <!-- Пресет проекта — это уже собранные ГПЗУ, ППТ, соглашения ВРИ и
+               МПТ и справки по техприсоединению. Он заполняет проект целиком,
+               поэтому и стоит отдельной строкой от разбора одной книги. -->
+          <div style="font-size:11px;color:#888;margin:12px 0 8px">или пресет проекта .json — ТЭП, ВРИ, МПТ и техприсоединение разом</div>
+          <div class="upload-line">
+            <input type="file" id="presetFile" accept=".json,application/json">
+            <button class="btn dark" onclick="uploadPreset()">Импорт проекта / пресета</button>
+          </div>
         </details>
       </div>
       <div class="card">
@@ -22437,6 +22527,23 @@ details.cadastral-box>summary::marker{color:#888}
 
       <div class="note warning">LLCR, NPV и IRR в веб-модели являются расчётными показателями текущего движка. До полного отказа от Excel кредитный CF и доходность должны быть окончательно сверены помесячно с эталонной моделью.</div>
     </div>
+  </div>
+</div>
+
+<!-- Импорт пресета: сначала показать, что произойдёт, и только потом менять
+     проект. Экран проверки — не вежливость, а единственное место, где видно
+     разницу между «пришло из документа» и «посчитано коэффициентом». -->
+<div id="presetDialog" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);
+     z-index:80;align-items:center;justify-content:center;padding:20px" onclick="if(event.target===this)closePreset()">
+  <div style="background:#fff;max-width:1000px;width:100%;max-height:86vh;overflow:auto;padding:22px 24px">
+    <div style="display:flex;align-items:center;gap:14px;margin-bottom:6px">
+      <h2 style="margin:0;font-size:17px" id="presetTitle">Импорт пресета</h2>
+      <button class="btn dark" id="presetApplyButton" onclick="applyPreset()">Применить</button>
+      <button class="btn" style="margin-left:auto" onclick="closePreset()">Отмена</button>
+    </div>
+    <div id="presetSummary" style="font-size:12px;color:#666;margin-bottom:12px"></div>
+    <div id="presetErrors" class="note warning" style="display:none"></div>
+    <div id="presetBody"></div>
   </div>
 </div>
 
@@ -25675,6 +25782,97 @@ function loadLocal(){try{const x=JSON.parse(localStorage.getItem('plato_v04'));i
  // участка, который человек и правит.
  fillUndergroundFromTep();
 }}catch(e){}}
+
+// --- импорт пресета проекта ---------------------------------------------------
+// Пресет заполняет проект целиком, поэтому применяется в два шага: сначала
+// экран проверки, потом «Применить». Молча заменить ТЭП и деньги нельзя —
+// человек должен увидеть, что именно поменяется и откуда взялось каждое число.
+
+let presetPreview=null;
+
+async function uploadPreset(){
+ const file=document.getElementById('presetFile').files[0];
+ if(!file){alert('Выберите файл .json с пресетом проекта');return}
+ let parsed;
+ try{parsed=JSON.parse(await file.text())}
+ catch(e){alert('Файл не читается как JSON: '+String(e.message||e));return}
+ let data;
+ try{
+  const response=await fetch('/api/project-presets/import',{
+   method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({preset:parsed,mode:'preview',inputs,tep})});
+  data=await response.json();
+  if(!response.ok)throw new Error(data.detail||'Пресет не разобран');
+ }catch(e){alert(String(e.message||e));return}
+ presetPreview=parsed;
+ renderPresetPreview(data);
+}
+
+function presetRows(rows){
+ return rows.map(r=>`<tr><td>${escapeHtml(String(r.label))}</td>`
+  +`<td>${r.was==null||r.was===''?'—':escapeHtml(fmtPresetValue(r.was))}</td>`
+  +`<td><b>${escapeHtml(fmtPresetValue(r.becomes))}</b></td>`
+  +`<td><small>${escapeHtml(r.action)}</small></td></tr>`).join('');
+}
+
+function fmtPresetValue(v){
+ if(typeof v==='boolean')return v?'да':'нет';
+ if(typeof v==='number')return Math.abs(v)>=1000?num(v):String(Math.round(v*1000)/1000);
+ return String(v);
+}
+
+function renderPresetPreview(data){
+ const origins={source:'из документа',derived:'рассчитано',assumption:'предпосылка',tbd:'не определено'};
+ presetTitle.textContent='Импорт: '+(data.project_name||'проект');
+ presetSummary.textContent=(data.region?data.region+' · ':'')+'схема '+data.schema_version
+  +' · изменений: вводные '+data.diff.inputs.length+', ТЭП '+data.diff.tep.length;
+ const tbd=(data.notes||[]).filter(n=>n.origin==='tbd');
+ presetErrors.style.display=tbd.length?'':'none';
+ presetErrors.innerHTML=tbd.length?'<b>Осталось не определённым:</b><br>'
+  +tbd.map(n=>escapeHtml(n.note)).join('<br>'):'';
+ const block=(title,html)=>html?`<h3 style="font-size:13px;margin:16px 0 6px">${title}</h3>${html}`:'';
+ const table=rows=>rows?`<div class="scroll"><table><thead><tr><th>Показатель</th><th>Было</th><th>Станет</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`:'';
+ presetBody.innerHTML=
+  block('ТЭП', table(presetRows(data.diff.tep)))
+  +block('Вводные — ВРИ, соцнагрузка, сети', table(presetRows(data.diff.inputs)))
+  +block('Откуда числа', '<div class="scroll"><table><tbody>'
+    +(data.notes||[]).map(n=>`<tr><td style="width:130px"><small>${origins[n.origin]||n.origin}</small></td>`
+      +`<td>${escapeHtml(n.note)}</td></tr>`).join('')+'</tbody></table></div>')
+  +block('Вне периметра сделки', (data.reference||[]).map(b=>
+    `<div class="note"><b>${escapeHtml(b.title)}</b><br>`
+    +b.rows.map(r=>`${escapeHtml(String(r[0]))}: <b>${escapeHtml(fmtPresetValue(r[1]))}</b>`).join('<br>')
+    +'</div>').join(''))
+  +block('Множители себестоимости', (data.multipliers||[]).length?'<div class="scroll"><table><tbody>'
+    +data.multipliers.map(m=>`<tr><td>${escapeHtml(m.object)}</td><td><b>×${m.multiplier}</b></td>`
+      +`<td><small>${escapeHtml(m.status)}</small></td></tr>`).join('')+'</tbody></table></div>':'')
+  +block('Открытые вопросы', (data.open_items||[]).length?'<ul style="font-size:12px;color:#666">'
+    +data.open_items.map(x=>`<li>${escapeHtml(String(x))}</li>`).join('')+'</ul>':'');
+ presetDialog.style.display='flex';
+}
+
+function closePreset(){presetDialog.style.display='none';presetPreview=null}
+
+async function applyPreset(){
+ if(!presetPreview)return;
+ let data;
+ try{
+  const response=await fetch('/api/project-presets/import',{
+   method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({preset:presetPreview,mode:'apply',inputs,tep})});
+  data=await response.json();
+  if(!response.ok)throw new Error(data.detail||'Пресет не применён');
+ }catch(e){alert(String(e.message||e));return}
+ // Как и всюду: приходящее накладывается на умолчания, а не заменяет их.
+ inputs=Object.assign(structuredClone(INPUT_DEFAULT),data.applied_inputs||{});
+ tep=structuredClone(TEP_DEFAULT);
+ Object.entries(data.applied_tep||{}).forEach(([key,values])=>{
+  if(values&&typeof values==='object')tep[key]=Object.assign(tep[key]||{},values);
+ });
+ if(data.project_name)inputs._manual_tep_import={project_name:data.project_name};
+ renderInputs();renderTep();persistLocalSilently();
+ closePreset();
+ calculateAndOpen('report');
+}
 
 // --- хранилище проектов на сервере -------------------------------------------
 // В браузере живёт ровно один проект: следующий участок затирает предыдущий.
