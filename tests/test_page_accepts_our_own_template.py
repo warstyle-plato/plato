@@ -139,6 +139,84 @@ def test_the_template_parser_reads_the_whole_file():
     assert parsed["tep"]["underground_parking"]["units"] == 266
 
 
+# --- шаблон скачивается там же, где загружается ---------------------------------
+
+def test_the_page_offers_the_template_for_download():
+    """Отказ обещал «кнопку ниже», а её на странице не было ни одной: шаблон
+    выдавал только бот командой `/template`, и человек с сайта узнать об этом
+    ниоткуда не мог."""
+    assert 'href="/templates/tep"' in core.PAGE
+
+
+def test_the_download_stands_next_to_the_upload():
+    """Скачать и загрузить — один шаг, и разнесённые по странице они не
+    складываются в него."""
+    upload = core.PAGE.index('id="glavapuFile"')
+    link = core.PAGE.index('href="/templates/tep"')
+    assert 0 < link - upload < 400, "ссылка на шаблон далеко от поля загрузки"
+
+
+def test_the_refusal_does_not_promise_a_button_that_is_not_there():
+    body = upload_source()
+    assert "кнопкой ниже" not in body
+
+
+# --- пустой свой шаблон не выдаётся за чужой ------------------------------------
+
+def test_an_empty_template_keeps_its_own_reason():
+    """Владелец загрузил наш же пустой шаблон и прочитал, что файл не наш:
+    разбор шаблона отказал, страница молча пошла в ГлавАПУ и объявила формат
+    неопознанным. Причина была известна на первом шаге."""
+    body = upload_source()
+    assert "X-DevelopAid-Template" in body
+    assert "Заполните жёлтые ячейки" in body
+
+
+def test_the_server_marks_whose_file_it_was():
+    """Признак нужен странице, чтобы решить, пробовать ли второй формат."""
+    import io
+
+    from fastapi import HTTPException
+
+    openpyxl = pytest.importorskip("openpyxl")
+    book = openpyxl.Workbook()
+    sheet = book.active
+    sheet.title = "ТЭП DevelopAid"
+    sheet["A4"], sheet["B4"] = "Версия шаблона", core.MANUAL_TEP_TEMPLATE_VERSION
+    buffer = io.BytesIO()
+    book.save(buffer)
+
+    with pytest.raises(ValueError) as ours:
+        core.parse_manual_tep_xlsx(buffer.getvalue(), "наш.xlsx")
+    assert not isinstance(ours.value, core.ManualTepFormatError), \
+        "опознанная версия — уже наш файл, а не чужой формат"
+
+
+def test_a_file_without_our_sheet_is_a_foreign_format():
+    """Только это и даёт право пробовать разбор ГлавАПУ."""
+    import io
+
+    openpyxl = pytest.importorskip("openpyxl")
+    book = openpyxl.Workbook()
+    book.active.title = "Лист1"
+    buffer = io.BytesIO()
+    book.save(buffer)
+    with pytest.raises(core.ManualTepFormatError):
+        core.parse_manual_tep_xlsx(buffer.getvalue(), "чужая.xlsx")
+
+
+def test_the_untouched_template_says_what_is_missing():
+    """Тот самый файл, что владелец скачал у бота и загрузил не заполнив."""
+    import base64
+
+    blank = base64.b64decode(
+        core.MANUAL_TEP_TEMPLATE_B64_PATH.read_text(encoding="ascii").strip(), validate=True)
+    with pytest.raises(ValueError) as exc:
+        core.parse_manual_tep_xlsx(blank, core.MANUAL_TEP_TEMPLATE_FILENAME)
+    assert not isinstance(exc.value, core.ManualTepFormatError)
+    assert "ГНС" in str(exc.value)
+
+
 def test_a_foreign_workbook_is_refused_by_the_template_parser():
     """Отказ разбора шаблона — то, что переводит файл на путь ГлавАПУ."""
     import io

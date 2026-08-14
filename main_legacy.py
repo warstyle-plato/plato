@@ -43,7 +43,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.73"
+VERSION = "0.17.74"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -818,6 +818,16 @@ def _manual_tep_number(value: Any, field: str) -> float:
     return float(number)
 
 
+class ManualTepFormatError(ValueError):
+    """Файл вообще не наш: нет листа или версия чужая.
+
+    Отличается от остальных отказов разбора тем, что даёт повод пробовать
+    другой формат. Всё, что после опознанной версии, — это уже наш шаблон,
+    заполненный не так, и его причину надо показывать, а не подменять
+    «формат не распознан» после второй неудачной попытки.
+    """
+
+
 def parse_manual_tep_xlsx(data: bytes, filename: str = "") -> dict[str, Any]:
     tables = _xlsx_read_tables(data)
     sheet_name = next(
@@ -837,11 +847,11 @@ def parse_manual_tep_xlsx(data: bytes, filename: str = "") -> dict[str, Any]:
             None,
         )
     if not sheet_name:
-        raise ValueError("Не найден лист «ТЭП DevelopAid». Скачайте актуальный шаблон у бота.")
+        raise ManualTepFormatError("Не найден лист «ТЭП DevelopAid». Скачайте актуальный шаблон у бота.")
     rows = tables[sheet_name]
     version = str(_find_parameter(rows, "Версия шаблона") or "").strip()
     if version != MANUAL_TEP_TEMPLATE_VERSION:
-        raise ValueError("Версия шаблона не распознана. Скачайте актуальный файл командой /template.")
+        raise ManualTepFormatError("Версия шаблона не распознана. Скачайте актуальный файл командой /template.")
 
     header_index = next(
         (
@@ -1321,8 +1331,15 @@ async def import_manual_tep(request: Request, filename: str = "") -> dict[str, A
         raise HTTPException(status_code=413, detail="Файл слишком большой. Лимит 5 МБ.")
     try:
         return parse_manual_tep_xlsx(data, filename)
+    except ManualTepFormatError as exc:
+        # Чужой файл: страница вправе попробовать его как выгрузку ГлавАПУ.
+        raise HTTPException(status_code=400, detail=str(exc),
+                            headers={"X-DevelopAid-Template": "no"}) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        # Наш шаблон, заполненный не так. Причина известна — вторая попытка
+        # только заменит её на неверный диагноз «формат не распознан».
+        raise HTTPException(status_code=400, detail=str(exc),
+                            headers={"X-DevelopAid-Template": "yes"}) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Не удалось разобрать ручной ТЭП: {exc}") from exc
 
@@ -21693,7 +21710,7 @@ details.cadastral-box>summary::marker{color:#888}
              руках, а не первый шаг. Свёрнута, чтобы не разрывать «ввёл участок
              — получил ТЭП». -->
         <details class="import-fallback">
-          <summary>Готовый ТЭП: предустановка или файл ГлавАПУ</summary>
+          <summary>Готовый ТЭП: предустановка, шаблон DevelopAid или файл ГлавАПУ</summary>
           <div class="upload-line" style="align-items:center;margin-top:10px">
             <select id="serverPresetSelect" style="min-width:260px">
               <option value="">Предустановка с сервера…</option>
@@ -21701,10 +21718,15 @@ details.cadastral-box>summary::marker{color:#888}
             <button class="btn dark" onclick="loadServerPreset()">Загрузить предустановку</button>
             <a id="serverPresetDownload" class="btn" href="#" style="display:none;text-decoration:none">Скачать Excel</a>
           </div>
-          <div style="font-size:11px;color:#888;margin:7px 0 8px">или загрузить свой файл</div>
+          <div style="font-size:11px;color:#888;margin:7px 0 8px">или загрузить свой файл — шаблон ТЭП DevelopAid либо выгрузку калькулятора ГлавАПУ</div>
+          <!-- Шаблон скачивается отсюда же, где загружается. Отказ разбора
+               обещал кнопку «ниже», а её на странице не было вовсе: шаблон
+               выдавал только бот командой /template, и человек с сайта узнать
+               об этом ниоткуда не мог. -->
           <div class="upload-line">
             <input type="file" id="glavapuFile" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
             <button class="btn dark" onclick="uploadGlavapu()">Разобрать файл</button>
+            <a class="btn" href="/templates/tep" download style="text-decoration:none">Скачать шаблон ТЭП</a>
           </div>
         </details>
       </div>
@@ -23362,6 +23384,11 @@ async function uploadGlavapu(){
  // Человек видел «Файл распознан» и таблицу прочерков. Бот этот шаблон
  // принимает, и помощь обещает, что его можно прислать, — на сайте обещание
  // не работало.
+ // Отказ по нашему шаблону несёт причину: пустой файл — это «заполните
+ // жёлтые ячейки», а не «формат не распознан». Прежде любая неудача уводила
+ // в разбор ГлавАПУ, и владелец, загрузив наш же пустой шаблон, читал, что
+ // файл не наш.
+ let templateError='';
  try{
    const manual=await fetch('/import/manual-tep?filename='+encodeURIComponent(file.name),{
      method:'POST',
@@ -23379,8 +23406,16 @@ async function uploadGlavapu(){
        calculate();
        return;
      }
+   }else if(manual.headers.get('X-DevelopAid-Template')==='yes'){
+     const payload=await manual.json().catch(()=>({}));
+     templateError=String(payload.detail||'').trim()||'Шаблон ТЭП DevelopAid заполнен не полностью.';
    }
  }catch(e){/* не наш шаблон — пробуем формат ГлавАПУ */}
+ if(templateError){
+   glavapuStatus.innerHTML='<span class="import-error">Это шаблон ТЭП DevelopAid, но он не заполнен: '
+     +escapeHtml(templateError)+' Заполните жёлтые ячейки и загрузите файл снова.</span>';
+   return;
+ }
  try{
    const response=await fetch('/import/glavapu?filename='+encodeURIComponent(file.name),{
      method:'POST',
@@ -23394,7 +23429,7 @@ async function uploadGlavapu(){
    const found=Object.values(payload.normalized||{}).filter(
      v=>typeof v==='number'&&isFinite(v)&&v!==0).length;
    if(!found)throw new Error('Формат файла не распознан: это ни шаблон ТЭП DevelopAid, '
-     +'ни выгрузка калькулятора ГлавАПУ. Скачайте шаблон кнопкой ниже и заполните его.');
+     +'ни выгрузка калькулятора ГлавАПУ. <a href="/templates/tep" download>Скачайте шаблон</a> и заполните его.');
    glavapuImport=payload;
    renderGlavapuPreview(payload);
    glavapuStatus.innerHTML='<span class="import-ok">Файл распознан. Проверьте значения перед применением.</span>';
