@@ -158,6 +158,14 @@ jobs:
           # Без кэша каждая сборка ставит Chromium заново.
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          # Yandex Container Registry не принимает образ с аттестациями:
+          # buildx публикует их отдельными манифестами внутри OCI image index,
+          # и реестр отвечает «Cannot read manifest data». Сборка при этом
+          # проходит целиком, включая тесты, и падает на самом push — со
+          # стороны это выглядит как «CI зелёный, а на машине старая версия».
+          # Так в реестре и застряла 0.17.67 при выкаченной 0.17.78.
+          provenance: false
+          sbom: false
 
       - name: Что уехало
         run: |
