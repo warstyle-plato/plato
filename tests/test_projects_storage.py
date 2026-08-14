@@ -227,3 +227,48 @@ def test_the_page_sends_both_ways_of_identifying():
 def test_the_dialog_says_where_the_data_lives():
     """Человек должен знать, что уезжает на сервер и куда именно."""
     assert "Хранится на ядре в России" in core.PAGE
+
+
+# --- из тупика есть выход -------------------------------------------------------
+
+def test_a_wrong_key_can_be_retyped():
+    """Неверный ключ запирал дверь снаружи: список не открывался, а кнопка
+    «Сменить ключ» жила внутри него. Единственным выходом оставалась консоль
+    браузера, которой на телефоне нет."""
+    body = core.PAGE[core.PAGE.index("async function openProjects("):]
+    body = body[:body.index("function closeProjects(")]
+    assert body.count("prompt(") >= 2, "после отказа ключ не спрашивается заново"
+    assert "Введите ключ ещё раз" in body
+
+
+def test_the_key_can_be_changed_from_the_list():
+    assert "changeProjectsKey()" in core.PAGE
+    assert "Сменить ключ" in core.PAGE
+
+
+# --- пресеты проектов на сервере ------------------------------------------------
+
+def test_the_server_lists_project_presets(storage):
+    """Пресет проекта — не предустановка ТЭП: та несёт книгу с площадями,
+    этот весь проект с деньгами, сроками и очередями."""
+    data = storage.get("/api/project-presets").json()
+    names = {item["id"]: item for item in data["presets"]}
+    assert "Румянцево" in names
+    assert names["Румянцево"]["schema_version"].startswith("developaid.project_preset")
+
+
+def test_a_preset_can_be_read_by_id(storage):
+    data = storage.get("/api/project-presets/Румянцево").json()
+    assert data["project"]["name"] == "Румянцево"
+    assert data["planning"]["ppt_gfa_total_m2"] == 402000
+
+
+@pytest.mark.parametrize("bad", ["../main_legacy", "..%2Fmain", ".hidden"])
+def test_the_preset_id_cannot_leave_the_folder(storage, bad):
+    assert storage.get(f"/api/project-presets/{bad}").status_code in (400, 404)
+
+
+def test_the_page_offers_the_server_presets():
+    assert 'id="projectPresetSelect"' in core.PAGE
+    assert "loadServerProjectPreset()" in core.PAGE
+    assert "fillProjectPresets()" in core.PAGE

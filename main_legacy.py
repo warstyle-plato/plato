@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.86"
+VERSION = "0.17.87"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -1367,6 +1367,42 @@ def _preset_diff(current: dict[str, Any], incoming: dict[str, Any],
             "action": "заменится" if old_value not in (None, "", 0, 0.0) else "заполнится",
         })
     return rows
+
+
+@app.get("/api/project-presets")
+def list_project_presets() -> dict[str, Any]:
+    """Пресеты проектов, лежащие на сервере.
+
+    Пресет проекта — не то же, что предустановка ТЭП: тот несёт книгу с
+    площадями, этот — весь проект, включая деньги, сроки и очереди. Список
+    отдельный по той же причине, по какой они не смешиваются при загрузке.
+    """
+    items: list[dict[str, Any]] = []
+    for path in sorted(PRESET_DIR.glob("*.json")) if PRESET_DIR.is_dir() else []:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue  # битый файл не должен прятать остальные
+        project = data.get("project") if isinstance(data.get("project"), dict) else {}
+        items.append({
+            "id": path.stem,
+            "name": str(project.get("name") or path.stem),
+            "region": str(project.get("region") or ""),
+            "schema_version": str(data.get("schema_version") or ""),
+        })
+    return {"presets": items}
+
+
+@app.get("/api/project-presets/{preset_id}")
+def read_project_preset(preset_id: str) -> dict[str, Any]:
+    # Имя приходит снаружи: разделители пути в нём означали бы чтение чужих
+    # файлов, а не выбор пресета.
+    if "/" in preset_id or "\\" in preset_id or preset_id.startswith("."):
+        raise HTTPException(status_code=400, detail="Неверный идентификатор пресета")
+    path = PRESET_DIR / f"{preset_id}.json"
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Пресет не найден")
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 @app.post("/api/project-presets/import")
@@ -22245,7 +22281,13 @@ details.cadastral-box>summary::marker{color:#888}
                МПТ и справки по техприсоединению. Он заполняет проект целиком,
                поэтому и стоит отдельной строкой от разбора одной книги. -->
           <div style="font-size:11px;color:#888;margin:12px 0 8px">или пресет проекта .json — ТЭП, ВРИ, МПТ и техприсоединение разом</div>
-          <div class="upload-line">
+          <div class="upload-line" style="align-items:center">
+            <select id="projectPresetSelect" style="min-width:220px">
+              <option value="">Пресет проекта с сервера…</option>
+            </select>
+            <button class="btn dark" onclick="loadServerProjectPreset()">Загрузить пресет</button>
+          </div>
+          <div class="upload-line" style="margin-top:8px">
             <input type="file" id="presetFile" accept=".json,application/json">
             <button class="btn dark" onclick="uploadPreset()">Импорт проекта / пресета</button>
           </div>
@@ -25987,12 +26029,35 @@ function loadLocal(){try{const x=JSON.parse(localStorage.getItem('plato_v04'));i
 
 let presetPreview=null;
 
-async function uploadPreset(){
- const file=document.getElementById('presetFile').files[0];
- if(!file){alert('Выберите файл .json с пресетом проекта');return}
+async function fillProjectPresets(){
+ // Пресеты проектов лежат на сервере рядом с предустановками ТЭП, но это
+ // разные вещи: та несёт книгу с площадями, этот — весь проект с деньгами,
+ // сроками и очередями. Поэтому и списка два.
+ try{
+  const data=await (await fetch('/api/project-presets')).json();
+  const select=document.getElementById('projectPresetSelect');
+  (data.presets||[]).forEach(p=>{
+   const option=document.createElement('option');
+   option.value=p.id;
+   option.textContent=p.name+(p.region?' · '+p.region:'');
+   select.appendChild(option);
+  });
+ }catch(e){}
+}
+
+async function loadServerProjectPreset(){
+ const id=document.getElementById('projectPresetSelect').value;
+ if(!id){alert('Выберите пресет проекта из списка');return}
  let parsed;
- try{parsed=JSON.parse(await file.text())}
- catch(e){alert('Файл не читается как JSON: '+String(e.message||e));return}
+ try{
+  const response=await fetch('/api/project-presets/'+encodeURIComponent(id));
+  parsed=await response.json();
+  if(!response.ok)throw new Error(parsed.detail||'Пресет не загружен');
+ }catch(e){alert(String(e.message||e));return}
+ await previewPreset(parsed);
+}
+
+async function previewPreset(parsed){
  let data;
  try{
   const response=await fetch('/api/project-presets/import',{
@@ -26003,6 +26068,15 @@ async function uploadPreset(){
  }catch(e){alert(String(e.message||e));return}
  presetPreview=parsed;
  renderPresetPreview(data);
+}
+
+async function uploadPreset(){
+ const file=document.getElementById('presetFile').files[0];
+ if(!file){alert('Выберите файл .json с пресетом проекта');return}
+ let parsed;
+ try{parsed=JSON.parse(await file.text())}
+ catch(e){alert('Файл не читается как JSON: '+String(e.message||e));return}
+ await previewPreset(parsed);
 }
 
 function presetRows(rows){
@@ -26140,11 +26214,24 @@ async function openProjects(){
  if(!telegramSession&&!projectsAdminKey){
   const key=prompt('Ключ администратора (DEVELOPAID_ADMIN_KEY)');
   if(!key)return;
-  projectsAdminKey=key;localStorage.setItem('plato_projects_key',key);
+  projectsAdminKey=key.trim();localStorage.setItem('plato_projects_key',projectsAdminKey);
  }
  let data;
  try{data=await projectsCall('/projects/list',{})}
- catch(e){alert(String(e.message||e));return}
+ catch(e){
+  // Неверный ключ запирал дверь снаружи: список не открывался, а кнопка
+  // «Сменить ключ» жила внутри него. Спрашиваем прямо здесь, иначе
+  // единственный выход — консоль браузера, которой на телефоне нет.
+  if(!telegramSession){
+   const again=prompt(String(e.message||e)+'\n\nВведите ключ ещё раз:',projectsAdminKey||'');
+   if(again===null)return;
+   projectsAdminKey=again.trim();
+   if(projectsAdminKey)localStorage.setItem('plato_projects_key',projectsAdminKey);
+   else localStorage.removeItem('plato_projects_key');
+   try{data=await projectsCall('/projects/list',{})}
+   catch(e2){alert(String(e2.message||e2));return}
+  }else{alert(String(e.message||e));return}
+ }
  const rows=(data.projects||[]).map(p=>{
   const s=p.summary||{};
   return `<tr><td><b>${escapeHtml(p.name||'')}</b><br><small>${escapeHtml(String(p.saved_at||'').replace('T',' ').replace('+00:00',' UTC'))}`
@@ -26221,6 +26308,7 @@ function resetAll(){
 
 loadLocal();
 initProjects();
+fillProjectPresets();
 {
  const sc=SCENARIOS[scenarioSelect.value]||SCENARIOS.base;
  // Old saved projects did not have the new transparent scenario multipliers.
