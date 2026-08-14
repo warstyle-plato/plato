@@ -362,12 +362,21 @@ def test_the_page_offers_the_import():
 
 
 def test_the_page_asks_before_applying():
-    """Экран проверки — единственное место, где видно, что заменится."""
+    """Экран проверки — единственное место, где видно, что заменится.
+
+    Разбор вынесен в `previewPreset`: пресет приходит и файлом, и с сервера, а
+    спрашивать надо в обоих случаях. Тест смотрит на общий путь, а не на одну
+    из двух дверей — иначе вторая обошла бы проверку молча."""
     assert 'id="presetDialog"' in core.PAGE
     assert "applyPreset()" in core.PAGE
-    body = core.PAGE[core.PAGE.index("async function uploadPreset("):]
+    body = core.PAGE[core.PAGE.index("async function previewPreset("):]
     body = body[:body.index("function presetRows(")]
     assert "mode:'preview'" in body.replace(" ", "")
+    # Обе двери ведут через тот же разбор.
+    for door in ("async function uploadPreset(", "async function loadServerProjectPreset("):
+        opened = core.PAGE[core.PAGE.index(door):]
+        opened = opened[:opened.index("\n}\n")]
+        assert "previewPreset(" in opened, door
 
 
 def test_the_screen_separates_documents_from_calculations():

@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.88"
+VERSION = "0.17.89"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -22040,6 +22040,7 @@ details.cadastral-box>summary::marker{color:#888}
 .bridge-purpose-table th:nth-child(n+2),.bridge-purpose-table td:nth-child(n+2){text-align:right;white-space:nowrap}
 .bridge-purpose-note{margin-top:9px;color:#777;font-size:10px;line-height:1.45}
 .kpi .sub{font-size:10px;color:#999;margin-top:3px}
+.cell-sub{font-size:10px;color:#888;margin-top:2px}
 @media(max-width:1100px){.report-3col,.report-2col{grid-template-columns:1fr}.report-kpis{grid-template-columns:1fr 1fr}}
 @media(max-width:1000px){
  .brandbar,.header,.tabs,.content{padding-left:18px;padding-right:18px}.grid,.finance-grid{grid-template-columns:1fr}
@@ -22095,6 +22096,9 @@ details.cadastral-box>summary::marker{color:#888}
   body.print-report .expense-row{grid-template-columns:1.3fr 2.8fr 55px 95px!important;font-size:7pt!important;gap:5px!important}
   body.print-report .expense-track{height:9px!important}
   body.print-report .note{font-size:7pt!important}
+  /* Высоту график берёт от своей ширины — на печатной полосе это те же 38 мм,
+     что в PDF. Разорванный между страницами график не читается. */
+  body.print-report .chart{break-inside:avoid}
   body.print-report .warning{display:none!important}
 }
 
@@ -22715,6 +22719,10 @@ details.cadastral-box>summary::marker{color:#888}
         <!-- Квартиры продаются штуками: план отдела продаж и рыночная проверка
              живут в них, а таблица выше говорит только метрами. -->
         <table class="metric-table metric-compact" id="apartmentPaceTable"></table>
+        <!-- Тот же темп помесячно. График был только в PDF: человек смотрел
+             отчёт на экране, печатал его и видел незнакомый раздел. Средний
+             темп прячет и разгон, и сезонный провал, и обрыв после РВЭ. -->
+        <div id="apartmentPaceChart" class="chart" style="height:auto"></div>
       </div>
       <div class="card">
         <div class="section-title">Налоговая база по реализованным продуктам</div>
@@ -25311,6 +25319,10 @@ function renderResult(){
 
  const reportKpis=[
   ['Выручка',money(r.summary.revenue)],
+  // Вторая половина уравнения. В PDF ключевая экономика идёт «Выручка →
+  // Расходы всего → EBITDA», на экране расходов не было вовсе — и EBITDA
+  // появлялась из ниоткуда, сравнить её было не с чем.
+  ['Расходы всего',money(r.summary.total_expenses)],
   ['EBITDA',money(r.summary.ebitda)],
   ['Чистая прибыль',money(r.summary.net_profit)],
   ['Маржинальность',pct(r.summary.margin)],
@@ -25595,10 +25607,16 @@ function renderResult(){
    }).join('');
  }else{
    salesReportHead.innerHTML='<tr><th>Продукт</th><th>Объём</th><th>Темп до РВЭ</th><th>Продажи до РВЭ</th><th>Стартовая цена</th><th>Средняя цена</th><th>Выручка</th><th>Старт продаж</th><th>Финиш продаж</th></tr>';
+   // Квартиры продаются штуками: «40 квартир в месяц» проверяется отделом
+   // продаж и рынком, «2 400 м² в месяц» — нет. Метры остаются главными,
+   // штуки идут второй строкой там же, а не абзацем ниже.
+   const ap=r.report.apartment_sales||{};
+   const inUnits=p=>p.key==='apartments'&&Number(ap.units_total||0)>0;
+   const sub=text=>`<div class="cell-sub">${text}</div>`;
    salesReportTable.innerHTML=(r.report.products||[]).map(p=>`<tr>
     <td>${p.label}</td>
-    <td>${num(p.quantity)} ${p.unit}</td>
-    <td>${num(p.pace_pre)} ${p.unit}/мес</td>
+    <td>${num(p.quantity)} ${p.unit}${inUnits(p)?sub(num(Math.round(ap.units_total))+' шт.'):''}</td>
+    <td>${num(p.pace_pre)} ${p.unit}/мес${inUnits(p)?sub(num2(ap.pace_pre_rve_units)+' кв./мес.'):''}</td>
     <td>${pct(p.share_before_rve)}</td>
     <td>${th(p.start_price_th)}</td>
     <td>${th(p.avg_price_th)}</td>
@@ -25612,13 +25630,14 @@ function renderResult(){
   const ap=r.report.apartment_sales||{};
   const paceEl=document.getElementById('apartmentPaceTable');
   if(paceEl)paceEl.innerHTML=Number(ap.units_total||0)>0?
-   row('Квартир в проекте',num(ap.units_total)+' шт.')+
+   row('Квартир в проекте',num(Math.round(ap.units_total))+' шт.')+
    row('Средняя площадь квартиры',num2(ap.avg_unit_sqm)+' м²')+
    row('Средняя цена квартиры',money(Number(ap.avg_unit_price_mln||0)*1e6))+
    row('Темп продаж до РВЭ',num2(ap.pace_pre_rve_units)+' кв./мес.')+
    row('Средний темп за период продаж',num2(ap.pace_units)+' кв./мес.')+
    row('Пиковый месяц',num2(ap.peak_units)+' кв.')
    :'';
+  renderApartmentPaceChart(ap);
  }
 
  calendarDateBoxes.innerHTML=[
@@ -25806,6 +25825,41 @@ function renderGantt(targetId,calendar){
    // Preserve the old type legend unchanged for a single-phase project.
    if(typeLegend)typeLegend.style.display=phaseNames.length>1?'none':'flex';
  }
+}
+
+// Месячный темп продаж квартир в штуках. Форма повторяет график из PDF —
+// столбцы, четыре линии сетки, подписи месяцев по краям и в середине: экран и
+// печать обязаны показывать одно и то же, иначе печать выглядит другим отчётом.
+function renderApartmentPaceChart(sales){
+ const target=document.getElementById('apartmentPaceChart');if(!target)return;
+ const rows=(sales&&sales.rows)||[];
+ const values=rows.map(x=>Math.max(0,Number(x.units||0)));
+ const peak=Math.max(...values,0);
+ // Пустой график с рамкой хуже отсутствующего: он обещает данные, которых нет.
+ if(!rows.length||peak<=0){target.innerHTML='';target.style.display='none';return}
+ target.style.display='';
+ // Пропорции те же, что у графика в PDF (500×104): при фиксированной высоте
+ // контейнера широкий график вписывался с полями в треть ширины.
+ const W=1000,H=210,pL=50,pR=16,pT=20,pB=28;
+ const top=peak*1.08,plotW=W-pL-pR,plotH=H-pT-pB;
+ const slot=plotW/rows.length,bw=Math.max(1,slot*0.72);
+ const y=v=>pT+plotH-plotH*v/top;
+ let grid='';
+ for(let tick=0;tick<=3;tick++){
+  const value=top*tick/3;
+  grid+=`<line x1="${pL}" y1="${y(value)}" x2="${W-pR}" y2="${y(value)}" stroke="#e5e5e5"/>`
+      +`<text x="${pL-6}" y="${y(value)+4}" font-size="11" fill="#777" text-anchor="end">${num(value)}</text>`;
+ }
+ const bars=values.map((v,i)=>v<=0?'':
+   `<rect x="${pL+i*slot+(slot-bw)/2}" y="${y(v)}" width="${bw}" height="${plotH*v/top}" fill="#202020"/>`).join('');
+ const monthRu=iso=>{const [yy,mm]=String(iso||'').slice(0,7).split('-');return mm+'.'+yy};
+ const marks=[...new Set([0,Math.floor(rows.length/2),rows.length-1])].map(i=>
+   `<text x="${pL+(i+0.5)*slot}" y="${H-8}" font-size="11" fill="#777" text-anchor="middle">${monthRu(rows[i].month)}</text>`).join('');
+ target.innerHTML=`<svg viewBox="0 0 ${W} ${H}" style="height:auto;display:block">
+  ${grid}${bars}
+  <text x="${W-pR}" y="${pT-5}" font-size="11" fill="#777" text-anchor="end">квартир/мес.</text>
+  ${marks}
+ </svg>`;
 }
 
 function renderFinanceChart(rows){
