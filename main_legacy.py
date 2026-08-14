@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.85"
+VERSION = "0.17.86"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -2593,6 +2593,110 @@ _MO_UPKS_SOURCE = {
         "заменяются после утверждения следующего тура."
     ),
 }
+
+# ---------------------------------------------------------------------------
+# Свежесть справочников
+#
+# Справочники устаревают тихо, и это худший вид устаревания: расчёт идёт,
+# числа выглядят как обычно, а под ними прошлогодний тариф. Ни ошибки, ни
+# предупреждения — просто другая цифра, и заметить её можно только сверкой с
+# первоисточником, до которой обычно не доходит.
+#
+# Поэтому у каждого справочника объявлен его срок жизни: квартал, год или
+# четыре года кадастровой оценки. Раз в день сводка администраторам говорит,
+# что пора обновить, — до того, как по устаревшему тарифу примут решение.
+# ---------------------------------------------------------------------------
+
+
+def _quarter_of(moment: date) -> str:
+    return f"{moment.year}-Q{(moment.month - 1) // 3 + 1}"
+
+
+def _quarter_shift(quarter: str, steps: int) -> str:
+    try:
+        year, index = quarter.split("-Q")
+        total = int(year) * 4 + int(index) - 1 + steps
+        return f"{total // 4}-Q{total % 4 + 1}"
+    except Exception:
+        return quarter
+
+
+def reference_freshness(today: date | None = None) -> list[dict[str, Any]]:
+    """Что пора обновить и когда это стало пора.
+
+    Возвращает по строке на справочник: что это, чем он живёт сейчас, до
+    какого момента годен и просрочен ли. Проверка не лезет в интернет — она
+    сравнивает объявленный срок с календарём, а обновление всё равно делает
+    человек, который принесёт документ.
+    """
+    now = today or date.today()
+    quarter = _quarter_of(now)
+    rows: list[dict[str, Any]] = []
+
+    def row(key: str, title: str, current: str, valid_until: str, source: str,
+            stale: bool, hint: str) -> None:
+        rows.append({"key": key, "title": title, "current": current,
+                     "valid_until": valid_until, "source": source,
+                     "stale": bool(stale), "hint": hint})
+
+    # Рыночные цены Подмосковья — распоряжение Комитета по ценам и тарифам,
+    # выходит на полугодие или квартал; период записан в самом справочнике.
+    market = _mo_market_price_table()
+    period = str(market.get("period") or "")
+    year_match = re.search(r"(20\d\d)", period)
+    market_year = int(year_match.group(1)) if year_match else now.year
+    market_stale = market_year < now.year or (
+        market_year == now.year and "IV" in period and now.month == 12)
+    row("mo_market_price", "Рыночные цены Подмосковья (расчёт платы за ВРИ)",
+        period or "не указан", f"{market_year} год", str(market.get("document") or ""),
+        market_stale,
+        "Распоряжение Комитета по ценам и тарифам МО — обновляется на новый период")
+
+    # УПКС Подмосковья — государственная кадастровая оценка, раз в четыре года.
+    for kind, label in (("land", "УПКС земли"), ("oks", "УПКС ОКС")):
+        block = _MO_UPKS_SOURCE.get(kind) or {}
+        applied = str(block.get("applied_from") or "")
+        next_applied = str(block.get("next_applied_from") or "")
+        try:
+            next_date = datetime.strptime(next_applied, "%d.%m.%Y").date()
+        except ValueError:
+            next_date = None
+        row(f"mo_upks_{kind}", f"{label} Подмосковья (кадастровая оценка)",
+            f"применяется с {applied}", next_applied or "—",
+            str(block.get("report") or ""),
+            bool(next_date and now >= next_date),
+            "Новый тур оценки утверждается раз в четыре года")
+
+    # Кзатр льготы МПТ Москвы — индексируется поквартально к декабрю 2025.
+    try:
+        import mpt_calculator
+
+        indexed_from = str(mpt_calculator.KZATR_INDEXATION_FROM_QUARTER)
+        row("mpt_kzatr", "Кзатр льготы МПТ Москвы",
+            f"{mpt_calculator.KZATR_BASE} тыс ₽/м² с "
+            f"{mpt_calculator.KZATR_BASE_FROM.isoformat()}",
+            f"квартал {indexed_from}",
+            "Приказ ДИиПП Москвы от 10.03.2026",
+            quarter > _quarter_shift(indexed_from, 0),
+            "С указанного квартала значение корректируется индексом Росстата "
+            "к декабрю 2025 года — подставьте фактический индекс")
+    except Exception:
+        pass
+
+    return rows
+
+
+def stale_references(today: date | None = None) -> list[dict[str, Any]]:
+    return [item for item in reference_freshness(today) if item["stale"]]
+
+
+@app.get("/reference/freshness")
+def reference_freshness_endpoint() -> dict[str, Any]:
+    rows = reference_freshness()
+    return {"checked_at": date.today().isoformat(),
+            "stale": [item["key"] for item in rows if item["stale"]],
+            "references": rows}
+
 
 # Названия одного и того же округа в разных документах.
 _MO_DISTRICT_SYNONYMS = {
