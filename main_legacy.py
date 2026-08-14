@@ -43,7 +43,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.78"
+VERSION = "0.17.79"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -9869,6 +9869,22 @@ def build_project_workbook(
     start_serial = _v4_excel_serial(x.get("project_start")) or _v4_excel_serial("2027-01-01")
     put("B8", number=start_serial, label="project_start")
     put("B36", number=start_serial, label="price_cost_base_date")
+    # Конец горизонта движка: он не выводится из РВЭ, а тянется за последним
+    # денежным потоком — стройка садика заканчивается позже РВЭ + 12 месяцев и
+    # растягивает расчёт. Книга знала только календарную часть правила и
+    # переставала начислять проценты ПФ там, где долг ещё жив: три месяца и
+    # 8,8 млн ₽ мимо на садике 250 мест. Формула берёт максимум из своей
+    # границы и этой даты — правка сроков прямо в Excel по-прежнему двигает
+    # границу вслед за РВЭ.
+    try:
+        _horizon = build_operating_model(
+            {**DEFAULT_INPUTS, **{k: v for k, v in (inputs or {}).items()
+                                  if not str(k).startswith("_")}},
+            tep or {}, rates or [])["end"]
+        put("B71", number=_v4_excel_serial(_horizon.isoformat()) or 0.0,
+            label="engine_horizon_end")
+    except Exception:
+        put("B71", number=0.0, label="engine_horizon_end")
     put("B33", number=n(x, "rate_start_pct", 14.0) / 100.0, label="rate_start_pct")
     put("B35", number=n(x, "rate_normalization_months", 24.0), label="rate_normalization_months")
     put("E8", number=n(x, "rate_target_base_pct", 9.0) / 100.0, label="rate_target_base_pct")
