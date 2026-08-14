@@ -1,0 +1,711 @@
+/* Слой перестройки /ia.
+ *
+ * Страница остаётся той же: тот же движок, те же поля, тот же путь расчёта.
+ * Слой двигает уже существующие узлы и сокращает тексты — это перестановка
+ * информационной архитектуры, а не вторая реализация страницы.
+ *
+ * Два правила, из которых собран весь файл.
+ *
+ * 1. Селектор живёт парой с диагностикой. Слой держится на чужой разметке;
+ *    если узел переименуют, шаг обязан сказать об этом на экране. Молчаливое
+ *    «не сработало» на preview неотличимо от «так и задумано».
+ * 2. Поведение не переписывается. Переключение раздела кликает настоящую
+ *    кнопку вкладки, а не повторяет её onclick: у вкладок есть побочные
+ *    действия (renderPhasing, renderSensitivityForm), и вторая их копия
+ *    разошлась бы с первой в первый же день.
+ */
+(function () {
+  'use strict';
+
+  var missing = [];
+  var SECTIONS = [
+    { id: 'project', label: 'Проект', tabs: ['iaSite', 'tep', 'vri'] },
+    { id: 'economics', label: 'Экономика', tabs: ['inputs'] },
+    { id: 'finance', label: 'Финансирование', tabs: ['rates', 'finance'] },
+    { id: 'plan', label: 'План и риски', tabs: ['phasing', 'calendar', 'sensitivity'] },
+    { id: 'result', label: 'Результат', tabs: ['report'] }
+  ];
+  var SUB_LABEL = {
+    iaSite: 'Участок', tep: 'ТЭП', vri: 'ВРИ', inputs: 'Вводные',
+    rates: 'Ключевая ставка', finance: 'Финансирование',
+    phasing: 'Очередность', calendar: 'Календарь', sensitivity: 'Чувствительность',
+    report: 'Отчёт'
+  };
+  var TARGET_LLCR = 1.2;
+
+  function need(selector, what) {
+    var el = document.querySelector(selector);
+    if (!el) missing.push(what + ' — ' + selector);
+    return el;
+  }
+
+  function step(name, fn) {
+    try {
+      fn();
+    } catch (error) {
+      missing.push(name + ' — ' + (error && error.message ? error.message : error));
+    }
+  }
+
+  /* Замена текста объявляет, что именно она рассчитывала найти: строка в
+     разметке может уехать, и тогда на экране останется прежняя формулировка,
+     а понять это со стороны нельзя. */
+  function retext(selector, from, to) {
+    var el = document.querySelector(selector);
+    if (!el) { missing.push('текст «' + from + '» — ' + selector); return; }
+    if (el.textContent.trim().indexOf(from) !== 0) {
+      missing.push('текст «' + from + '» изменился — ' + selector + ': «' + el.textContent.trim().slice(0, 60) + '»');
+      return;
+    }
+    el.textContent = to;
+  }
+
+  /* Данные страницы объявлены через let/const: свойствами window они не
+     становятся и видны только по имени. Через window.lastResult слой читал бы
+     undefined — и карточка решения вечно показывала бы «расчёт не выполнен».
+     Форматтеры money/mult/pct — тоже const, поэтому берутся так же. */
+  function pageResult() { return typeof lastResult === 'undefined' ? null : lastResult; }
+  function pageInputs() { return typeof inputs === 'undefined' ? {} : inputs; }
+  function pageTep() { return typeof tep === 'undefined' ? {} : tep; }
+  function pageRates() { return typeof rates === 'undefined' ? [] : rates; }
+  function pagePhasing() { return typeof phasing === 'undefined' ? {} : phasing; }
+
+  var fmtMoney = function (v) { return typeof money === 'function' ? money(v) : String(v); };
+  var fmtMult = function (v) { return typeof mult === 'function' ? mult(v) : String(v); };
+  var fmtPct = function (v) { return typeof pct === 'function' ? pct(v) : String(v); };
+
+  /* Цены в подборе приходят в млн ₽ — так их держит и вводная
+     purchase_price_mln. Слой их не переводит: перевод единиц — это уже вторая
+     реализация экономики, а разница цен приезжает из движка полем change_abs. */
+  function mlnLabel(value) {
+    if (value == null || isNaN(value)) return '—';
+    return Number(value).toLocaleString('ru-RU', { maximumFractionDigits: 1 }) + ' млн ₽';
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Шапка                                                               */
+  /* ------------------------------------------------------------------ */
+
+  function rebuildHeader() {
+    var sub = need('.title p', 'подзаголовок шапки');
+    if (sub) {
+      var version = (sub.textContent.match(/v[\d.]+/) || [''])[0];
+      sub.innerHTML = '';
+      sub.appendChild(document.createTextNode(
+        'Оценка экономики девелоперского проекта по адресу или кадастровому номеру'));
+      if (version) {
+        var badge = document.createElement('span');
+        badge.className = 'ia-ver';
+        badge.textContent = version;
+        sub.appendChild(badge);
+      }
+    }
+
+    var actions = need('.actions', 'кнопки шапки');
+    if (!actions) return;
+
+    // Состояние расчёта занимает левый край шапки: инструкция «после ручного
+    // изменения нажмите Пересчитать» жила в постоянном абзаце, хотя это
+    // состояние, а не правило.
+    var state = document.createElement('div');
+    state.className = 'ia-state';
+    state.id = 'iaState';
+    state.innerHTML = '<span class="ia-dot-state"></span><span id="iaStateText">Расчёт актуален</span>';
+    actions.parentNode.insertBefore(state, actions);
+
+    // Платон — плавающей кнопкой. Он объясняет результат, а не вводит данные,
+    // и в ряду с «Сохранить» и «Сбросить» читался как равный им по важности.
+    var ai = document.querySelector('.ai-open-btn');
+    if (!ai) missing.push('кнопка Платона — .ai-open-btn');
+    else {
+      ai.classList.add('ia-fab');
+      ai.classList.remove('btn');
+      document.body.appendChild(ai);
+    }
+
+    // Класс и сценарий уезжают в «Экономику»: их спрашивали раньше, чем
+    // человек ввёл участок.
+    var setup = document.createElement('div');
+    setup.className = 'ia-setup';
+    document.querySelectorAll('.actions .scenario').forEach(function (node) { setup.appendChild(node); });
+
+    var note = document.querySelector('.header-note');
+    if (!note) missing.push('абзац о классе и сценарии — .header-note');
+    else {
+      var box = document.createElement('details');
+      box.className = 'ia-method';
+      box.innerHTML = '<summary>Как считаются класс и сценарий</summary>';
+      note.parentNode.removeChild(note);
+      box.appendChild(note);
+      setup.appendChild(box);
+    }
+
+    var host = document.querySelector('#inputs .card');
+    if (!host) missing.push('карточка вводных — #inputs .card');
+    else {
+      var card = document.createElement('div');
+      card.className = 'card';
+      card.innerHTML = '<div class="section-title">Класс проекта и сценарий</div>';
+      card.appendChild(setup);
+      host.parentNode.insertBefore(card, host);
+    }
+
+    // «Сбросить» — необратимое действие в одном ряду с «Сохранить».
+    var reset = Array.prototype.filter.call(actions.querySelectorAll('button'), function (b) {
+      return b.textContent.trim() === 'Сбросить';
+    })[0];
+    if (!reset) missing.push('кнопка «Сбросить» в шапке');
+    else {
+      var more = document.createElement('div');
+      more.className = 'ia-more';
+      more.innerHTML = '<button class="btn" type="button" aria-label="Ещё">⋯</button><div class="ia-more-menu"></div>';
+      var toggle = more.querySelector('.btn');
+      toggle.onclick = function (event) { event.stopPropagation(); more.classList.toggle('open'); };
+      document.addEventListener('click', function () { more.classList.remove('open'); });
+      reset.parentNode.removeChild(reset);
+      reset.className = '';
+      reset.textContent = 'Сбросить проект';
+      reset.setAttribute('data-ia-confirm', '1');
+      more.querySelector('.ia-more-menu').appendChild(reset);
+      var recalc = actions.querySelector('.btn.dark');
+      if (recalc) actions.insertBefore(more, recalc);
+      else actions.appendChild(more);
+    }
+  }
+
+  /* Сброс подтверждается: он стирает весь проект, а стоял кнопкой рядом с
+     «Сохранить». Обёртка ставится на onclick, чтобы не переписывать resetAll. */
+  function guardReset() {
+    var reset = document.querySelector('[data-ia-confirm]');
+    if (!reset) return;
+    var original = reset.onclick;
+    reset.onclick = function (event) {
+      if (!window.confirm('Сбросить проект? Введённые вводные, ТЭП и импорт будут потеряны.')) return;
+      if (original) return original.call(this, event);
+    };
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Первый экран: участок отдельной панелью                             */
+  /* ------------------------------------------------------------------ */
+
+  function splitSite() {
+    var inputs = need('#inputs', 'панель вводных');
+    var card = need('#inputs .import-card', 'карточка автозагрузки');
+    if (!inputs || !card) return;
+
+    var panel = document.createElement('div');
+    panel.id = 'iaSite';
+    panel.className = 'panel';
+    inputs.parentNode.insertBefore(panel, inputs);
+    panel.appendChild(card);
+
+    // openTab ищет кнопку по data-tab: без неё разметка активной вкладки
+    // выпадет ровно на новой панели.
+    var tabs = document.querySelector('.tabs');
+    if (!tabs) { missing.push('строка вкладок — .tabs'); return; }
+    var button = document.createElement('button');
+    button.className = 'tab';
+    button.setAttribute('data-tab', 'iaSite');
+    button.textContent = 'Участок';
+    button.onclick = function () { window.openTab('iaSite', button); };
+    tabs.insertBefore(button, tabs.firstChild);
+
+    retext('#iaSite .import-head h2', 'Кадастровый номер или адрес',
+      'Введите адрес или кадастровый номер');
+    var lead = document.querySelector('#iaSite .import-head p');
+    if (!lead) missing.push('пояснение автозагрузки — #iaSite .import-head p');
+    else {
+      lead.textContent = 'DevelopAid сам получит сведения ЕГРН и рассчитает нормативные ТЭП: '
+        + 'для Москвы — по методике ГлавАПУ, для Московской области — по РНГП. '
+        + 'Перед применением значения показываются для проверки.';
+    }
+    retext('#iaSite .import-fallback summary',
+      'Готовый ТЭП: предустановка, шаблон DevelopAid или файл ГлавАПУ',
+      'Другие способы ввода: предустановка, шаблон DevelopAid, файл ГлавАПУ, пресет проекта');
+
+    addExampleButton();
+
+    // Подсказка про предустановки и .xlsx висела отдельной строкой над
+    // свёрнутым блоком и повторяла его же заголовок. Сам элемент нужен: в него
+    // пишут ход загрузки и ошибки — очищается только начальный текст.
+    var status = document.getElementById('glavapuStatus');
+    if (!status) missing.push('строка состояния загрузки — #glavapuStatus');
+    else if (status.textContent.indexOf('Можно выбрать готовую предустановку') !== 0) {
+      missing.push('строка состояния загрузки изменилась — #glavapuStatus');
+    } else status.textContent = '';
+  }
+
+  /* Холодному пользователю нужен один клик, а не выбор из четырёх способов
+     загрузки. Пресеты на сервере уже есть — не было кнопки. */
+  function addExampleButton() {
+    var actions = document.querySelector('#iaSite .import-actions');
+    if (!actions) { missing.push('кнопки автозагрузки — #iaSite .import-actions'); return; }
+    var button = document.createElement('button');
+    button.className = 'btn ia-example';
+    button.type = 'button';
+    button.textContent = 'Открыть пример';
+    button.onclick = function () {
+      var status = document.getElementById('cadastralStatus');
+      var input = document.getElementById('presetFile');
+      if (!input || typeof window.uploadPreset !== 'function') {
+        if (status) status.textContent = 'Импорт пресета на странице не найден.';
+        return;
+      }
+      if (status) status.textContent = 'Открываю пример проекта…';
+      // Файл кладётся в тот же ввод, которым пользуется человек, и дальше
+      // работает штатный uploadPreset: свой путь импорта разошёлся бы с
+      // общим в первый же день, а экран проверки перед применением — не
+      // вежливость, а место, где видно, что именно меняется.
+      fetch('/ia/example.json').then(function (response) {
+        if (!response.ok) throw new Error('пример не отдан, код ' + response.status);
+        return response.text();
+      }).then(function (text) {
+        var transfer = new DataTransfer();
+        transfer.items.add(new File([text], 'Пример.json', { type: 'application/json' }));
+        input.files = transfer.files;
+        if (status) status.textContent = '';
+        return window.uploadPreset();
+      }).catch(function (error) {
+        if (status) status.textContent = 'Пример не открылся: ' + (error && error.message ? error.message : error);
+      });
+    };
+    actions.appendChild(button);
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Пять разделов вместо девяти вкладок                                  */
+  /* ------------------------------------------------------------------ */
+
+  var navButtons = {};
+  var currentSection = null;
+
+  function sectionOf(tabId) {
+    for (var i = 0; i < SECTIONS.length; i++) {
+      if (SECTIONS[i].tabs.indexOf(tabId) >= 0) return SECTIONS[i];
+    }
+    return null;
+  }
+
+  function tabButton(tabId) {
+    return document.querySelector('.tabs [data-tab="' + tabId + '"]');
+  }
+
+  function buildNav() {
+    var tabs = need('.tabs', 'строка вкладок');
+    if (!tabs) return;
+    document.body.classList.add('ia-on');
+
+    SECTIONS.forEach(function (section) {
+      section.tabs.forEach(function (tabId) {
+        if (!tabButton(tabId)) missing.push('вкладка «' + (SUB_LABEL[tabId] || tabId) + '» — [data-tab="' + tabId + '"]');
+      });
+    });
+
+    var nav = document.createElement('div');
+    nav.className = 'ia-nav';
+    var sub = document.createElement('div');
+    sub.className = 'ia-sub';
+    sub.id = 'iaSub';
+
+    SECTIONS.forEach(function (section) {
+      var button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = section.label;
+      button.onclick = function () { openSection(section.id); };
+      navButtons[section.id] = button;
+      nav.appendChild(button);
+    });
+
+    tabs.parentNode.insertBefore(nav, tabs);
+    tabs.parentNode.insertBefore(sub, tabs.nextSibling);
+  }
+
+  function openSection(id, keepTab) {
+    var section = SECTIONS.filter(function (s) { return s.id === id; })[0];
+    if (!section) return;
+    var target = keepTab && section.tabs.indexOf(keepTab) >= 0 ? keepTab : section.tabs[0];
+    var button = tabButton(target);
+    if (button) button.click();
+    syncNav(target);
+  }
+
+  function syncNav(activeTab) {
+    var section = sectionOf(activeTab);
+    if (!section) return;
+    currentSection = section.id;
+    Object.keys(navButtons).forEach(function (key) {
+      navButtons[key].classList.toggle('active', key === section.id);
+    });
+    var sub = document.getElementById('iaSub');
+    if (!sub) return;
+    sub.innerHTML = '';
+    if (section.tabs.length < 2) return;
+    section.tabs.forEach(function (tabId) {
+      var button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = SUB_LABEL[tabId] || tabId;
+      button.className = tabId === activeTab ? 'active' : '';
+      button.onclick = function () {
+        var original = tabButton(tabId);
+        if (original) original.click();
+      };
+      sub.appendChild(button);
+    });
+  }
+
+  /* openTab зовут и мимо навигации — calculateAndOpen('report') после каждого
+     пересчёта. Без обёртки раздел в шапке остался бы на прежнем. */
+  function wrapOpenTab() {
+    var original = window.openTab;
+    if (typeof original !== 'function') { missing.push('функция openTab не найдена'); return; }
+    window.openTab = function (id, btn) {
+      var out = original.apply(this, arguments);
+      try {
+        syncNav(id);
+        if (id === 'report') ensureGoalSeek();
+      } catch (error) { /* навигация не должна ронять расчёт */ }
+      return out;
+    };
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Состояние расчёта                                                    */
+  /* ------------------------------------------------------------------ */
+
+  var dirty = 0;
+  var running = 0;
+
+  /* Страница пересчитывает модель сама, как только поле подтверждено
+     (onchange у каждого поля вызывает calculate). Инструкция в шапке —
+     «после ручного изменения нажмите Пересчитать модель» — этому противоречила
+     прямо. Поэтому здесь не правило, а состояние: правится → считается →
+     актуально. */
+  function renderState() {
+    var box = document.getElementById('iaState');
+    var text = document.getElementById('iaStateText');
+    if (!box || !text) return;
+    box.classList.toggle('dirty', dirty > 0 && !running);
+    if (running) text.textContent = 'Считаю…';
+    else if (dirty > 0) {
+      text.textContent = 'Есть ' + dirty + ' ' + plural(dirty, ['изменение', 'изменения', 'изменений'])
+        + ' вне расчёта — пересчитать';
+    } else text.textContent = 'Расчёт актуален';
+  }
+
+  function plural(n, forms) {
+    var mod100 = n % 100, mod10 = n % 10;
+    if (mod100 > 4 && mod100 < 21) return forms[2];
+    if (mod10 === 1) return forms[0];
+    if (mod10 > 1 && mod10 < 5) return forms[1];
+    return forms[2];
+  }
+
+  function watchChanges() {
+    document.addEventListener('input', onEdit, true);
+    document.addEventListener('change', onEdit, true);
+    var original = window.calculate;
+    if (typeof original !== 'function') { missing.push('функция calculate не найдена'); return; }
+    window.calculate = function () {
+      running += 1;
+      renderState();
+      var out = original.apply(this, arguments);
+      if (out && typeof out.then === 'function') {
+        out.then(function () { dirty = 0; }, function () { }).then(function () {
+          running -= 1;
+          renderState();
+        });
+      } else { running -= 1; renderState(); }
+      return out;
+    };
+  }
+
+  function onEdit(event) {
+    var target = event.target;
+    if (!target || !target.closest) return;
+    if (!target.closest('.content')) return;
+    if (target.closest('.ai-drawer')) return;
+    dirty += 1;
+    renderState();
+    goalSeekStale = true;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Карточка инвестиционного решения                                     */
+  /* ------------------------------------------------------------------ */
+
+  var goalSeek = null;
+  var goalSeekStale = true;
+  var goalSeekBusy = false;
+  var goalSeekAbort = null;
+
+  function buildVerdict() {
+    var report = need('#report', 'панель отчёта');
+    var hero = need('#report .report-hero', 'шапка отчёта');
+    if (!report || !hero) return;
+    var card = document.createElement('div');
+    card.className = 'ia-verdict';
+    card.id = 'iaVerdict';
+    card.innerHTML = '<div class="section-title">Инвестиционное решение</div>'
+      + '<h2 id="iaVerdictTitle">Расчёт не выполнен</h2>'
+      + '<p class="ia-verdict-lead" id="iaVerdictLead">Нажмите «Пересчитать модель».</p>'
+      + '<div class="ia-verdict-grid" id="iaVerdictGrid"></div>'
+      + '<div class="ia-stamp" id="iaVerdictStamp"></div>';
+    report.insertBefore(card, hero);
+  }
+
+  function renderVerdict() {
+    var card = document.getElementById('iaVerdict');
+    var result = pageResult();
+    if (!card || !result || !result.summary) return;
+
+    var llcr = result.summary.llcr;
+    var title = document.getElementById('iaVerdictTitle');
+    card.classList.remove('pass', 'edge', 'fail');
+    if (llcr == null) {
+      title.textContent = 'LLCR не рассчитан';
+    } else if (llcr >= TARGET_LLCR) {
+      card.classList.add('pass'); title.textContent = 'Экономика проходит';
+    } else if (llcr >= 1.05) {
+      card.classList.add('edge'); title.textContent = 'Экономика на границе';
+    } else {
+      card.classList.add('fail'); title.textContent = 'Экономика не проходит';
+    }
+
+    document.getElementById('iaVerdictLead').textContent =
+      'Чистая прибыль ' + fmtMoney(result.summary.net_profit)
+      + ' · маржинальность ' + fmtPct(result.summary.margin)
+      + ' · IRR ' + (result.summary.irr_equity == null ? 'N/A' : fmtPct(result.summary.irr_equity))
+      + ' · порог банка LLCR ' + TARGET_LLCR.toFixed(2).replace('.', ',') + 'x.';
+
+    var found = goalSeek && goalSeek.available && goalSeek.solution ? goalSeek.solution : null;
+    var price = found ? goalSeek.current.variable : Number(pageInputs().purchase_price_mln || 0);
+    var solution = found ? found.variable : null;
+    var cells = [
+      { label: 'LLCR (расчётный)', value: fmtMult(llcr), note: 'Ориентир банка — 1,20x.' },
+      { label: 'Цена входа', value: mlnLabel(price), note: 'Текущая цена приобретения.' },
+      found
+        ? { label: 'Максимум цены входа', value: mlnLabel(solution), note: 'При LLCR не ниже 1,20x' + (goalSeek.scope_label ? ' · ' + goalSeek.scope_label : '') + '.' }
+        : { label: 'Максимум цены входа', value: ceilingText(), note: ceilingNote(), wait: true },
+      found
+        ? { label: 'Запас к цене', value: mlnLabel(found.change_abs), note: found.change_abs >= 0 ? 'Цена ниже потолка.' : 'Цена выше потолка — покупка не проходит по LLCR.' }
+        : { label: 'Запас к цене', value: '—', note: refused() ? 'Порог не достигается ни при какой цене — дело не в цене входа.' : 'Считается после подбора максимума.', wait: true }
+    ];
+
+    document.getElementById('iaVerdictGrid').innerHTML = cells.map(function (cell) {
+      return '<div class="ia-verdict-cell' + (cell.wait ? ' wait' : '') + '"><span>' + cell.label + '</span><b>'
+        + cell.value + '</b><small>' + cell.note + '</small></div>';
+    }).join('');
+
+    var stamp = document.getElementById('iaVerdictStamp');
+    if (goalSeek && goalSeek.available === false) {
+      stamp.textContent = 'Подбор выполнен движком DevelopAid ' + (goalSeek.engine_version || '')
+        + ': ' + (goalSeek.reason || 'причина не указана');
+    } else if (goalSeek && goalSeek.engine_version) {
+      stamp.textContent = 'Подбор выполнен полным пересчётом модели DevelopAid ' + goalSeek.engine_version
+        + ' · ' + goalSeek.computed_at + ' UTC. Текущая модель не изменена.'
+        + (goalSeek.threshold_beyond_bound ? ' Порог упёрся в границу поиска — предел может лежать дальше.' : '');
+    } else {
+      stamp.textContent = '';
+    }
+  }
+
+  /* Отказ подбора — это ответ, а не пустая клетка: цена, «допустимая» у
+     проекта, который порог не проходит ни при каких вводных, выглядела бы на
+     экране ровно так же, как посчитанная. */
+  function refused() { return !!(goalSeek && goalSeek.available === false); }
+  function ceilingText() {
+    if (goalSeekBusy) return 'считается…';
+    if (refused()) return 'не достигается';
+    return 'откройте раздел';
+  }
+  function ceilingNote() {
+    if (refused()) return 'LLCR 1,20x не достигается даже при нулевой цене входа.';
+    return 'Подбор параметра движком при LLCR 1,20x.';
+  }
+
+  /* Подбор — это многократный полный пересчёт модели, поэтому он не идёт
+     вместе с расчётом: карточка показывается сразу, максимум приезжает
+     отдельным запросом и только там, где на него смотрят. */
+  function ensureGoalSeek() {
+    if (!pageResult() || goalSeekBusy) return;
+    if (goalSeek && !goalSeekStale) return;
+    if (goalSeekAbort) goalSeekAbort.abort();
+    goalSeekAbort = new AbortController();
+    goalSeekBusy = true;
+    renderVerdict();
+    fetch('/ia/goal-seek', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: goalSeekAbort.signal,
+      body: JSON.stringify({
+        inputs: pageInputs(), tep: pageTep(),
+        rates: pageRates(), phasing: pagePhasing(),
+        variable: 'purchase_price_mln', target_llcr: TARGET_LLCR
+      })
+    }).then(function (response) { return response.json(); })
+      .then(function (data) { goalSeek = data; goalSeekStale = false; })
+      .catch(function (error) {
+        if (error && error.name === 'AbortError') return;
+        goalSeek = { available: false, reason: String(error && error.message || error) };
+      })
+      .then(function () { goalSeekBusy = false; renderVerdict(); });
+  }
+
+  function wrapRenderResult() {
+    var original = window.renderResult;
+    if (typeof original !== 'function') { missing.push('функция renderResult не найдена'); return; }
+    window.renderResult = function () {
+      var out = original.apply(this, arguments);
+      try {
+        goalSeekStale = true;
+        renderVerdict();
+        relabelBridge();
+        if (currentSection === 'result') ensureGoalSeek();
+      } catch (error) { /* отчёт важнее карточки */ }
+      return out;
+    };
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Тексты                                                              */
+  /* ------------------------------------------------------------------ */
+
+  /* Потребность и лимит — две разные величины с одним именем «БРИДЖ». Плата за
+     ВРИ в потребность входит, а в расчётный лимит банка нет, и на странице это
+     читалось как противоречие. Разница между ними — то, что банк не
+     финансирует; сейчас движок выдаёт БРИДЖем всю потребность. */
+  var bridgeChecked = false;
+
+  function relabelBridge() {
+    var done = 0;
+    document.querySelectorAll('#reportKpi .kpi span').forEach(function (node) {
+      if (node.textContent.trim() === 'Пиковый БРИДЖ') {
+        node.textContent = 'Потребность в БРИДЖе (пик)'; done += 1;
+      }
+    });
+    // Подписи таблицы приходят из row() ячейками td, а не заголовками: на th
+    // переименование молча не срабатывало, и на экране оставался прежний
+    // «Расчётный лимит» — ровно та потеря, ради которой заведена плашка.
+    document.querySelectorAll('#bridgeTable td').forEach(function (node) {
+      var text = node.textContent.trim();
+      if (text === 'Пиковый остаток') { node.textContent = 'Пиковая потребность в БРИДЖе'; done += 1; }
+      if (text === 'Расчётный лимит') { node.textContent = 'Расчётный лимит банка'; done += 1; }
+    });
+    if (!bridgeChecked && pageResult() && done < 3) {
+      bridgeChecked = true;
+      missing.push('термины БРИДЖа переименованы частично (' + done + ' из 3) — проверьте #reportKpi и #bridgeTable');
+      report();
+    }
+    if (done >= 3) bridgeChecked = true;
+    explainBridge();
+  }
+
+  /* Потребность и лимит — две величины, которые страница называла одинаково.
+     Плата за ВРИ входит в первую и не входит во вторую, и на экране это
+     читалось как противоречие. Пояснение — текст, не расчёт. */
+  function explainBridge() {
+    var table = document.getElementById('bridgeTable');
+    if (!table || document.getElementById('iaBridgeNote')) return;
+    var note = document.createElement('div');
+    note.id = 'iaBridgeNote';
+    note.className = 'note';
+    note.style.margin = '10px 0 0';
+    note.style.fontSize = '11px';
+    note.textContent = 'Потребность — сколько денег нужно до открытия ПФ; плата за смену ВРИ в неё входит. '
+      + 'Расчётный лимит — то, что банк считает своим бюджетом БРИДЖа: цена входа, П, РД и денежная '
+      + 'соцкомпенсация. Разницу между ними банк не финансирует.';
+    table.parentNode.appendChild(note);
+  }
+
+  /* Инструкция «после ручного изменения нажмите Пересчитать» описывала не то,
+     что страница делает: каждое подтверждённое поле пересчитывает модель само.
+     Правило, которого нет, дороже отсутствующего: человек ждёт кнопки. */
+  var STALE_RULE = 'После ручного изменения вводных нажмите <b>«Пересчитать модель»</b>.';
+
+  function dropStaleRule() {
+    var note = document.querySelector('.header-note');
+    if (!note) { missing.push('абзац о классе и сценарии — .header-note'); return; }
+    if (note.innerHTML.indexOf(STALE_RULE) < 0) {
+      missing.push('инструкция о ручном пересчёте изменилась — .header-note');
+      return;
+    }
+    note.innerHTML = note.innerHTML.replace(STALE_RULE, '');
+  }
+
+  function trimTexts() {
+    dropStaleRule();
+    retext('#rates .card h2', 'Автоматическая кривая нормализации', 'Прогноз ключевой ставки');
+    retext('#sensitivity .report-title h2', 'Что решает судьбу проекта', 'Чувствительность');
+    retext('#phasing .card h2', 'Разбиение мастер-проекта на очереди', 'Очередность проекта');
+    retext('#report #vriCard h2', 'Обязательство, график погашения и источники оплаты',
+      'ВРИ: сумма и график платежей');
+
+    var moNote = document.querySelector('#moParamsBox p b');
+    if (!moNote) missing.push('оговорка о пересчёте МО — #moParamsBox p b');
+    else if (moNote.textContent.indexOf('Правка любого параметра') !== 0) {
+      missing.push('оговорка о пересчёте МО изменилась: «' + moNote.textContent.slice(0, 50) + '»');
+    } else {
+      // Здесь пересчитывается ТЭП участка, а не экономика. Одно слово
+      // «результат» на две разные величины читалось как противоречие с
+      // «после ручного изменения нажмите Пересчитать модель».
+      moNote.textContent = 'Правка любого параметра сразу пересчитывает ТЭП участка';
+    }
+
+    // Предупреждение о расчётном LLCR стояло трижды. Остаётся одно — рядом с
+    // самим числом; повторённое трижды, оно не читается нигде.
+    var kept = document.querySelector('#finance .llcr-label');
+    if (!kept) missing.push('оговорка рядом с LLCR — #finance .llcr-label');
+    var dropped = 0;
+    document.querySelectorAll('#finance .note.warning, #report > .note.warning').forEach(function (node) {
+      if (node.textContent.indexOf('LLCR') >= 0) { node.style.display = 'none'; dropped += 1; }
+    });
+    if (dropped < 2) missing.push('дублей предупреждения о LLCR найдено ' + dropped + ', ожидалось 2');
+  }
+
+  /* ------------------------------------------------------------------ */
+
+  function ribbon() {
+    var shell = document.querySelector('.shell');
+    if (!shell) { missing.push('корень страницы — .shell'); return; }
+    var bar = document.createElement('div');
+    bar.className = 'ia-ribbon';
+    bar.innerHTML = '<span>Тестовый адрес · новая архитектура</span>'
+      + '<span class="ia-ribbon-note">Тот же движок и те же вводные. Рабочая страница — <a href="/">/</a></span>';
+    shell.insertBefore(bar, shell.firstChild);
+  }
+
+  function report() {
+    if (!missing.length) return;
+    var shell = document.querySelector('.shell') || document.body;
+    var box = document.createElement('div');
+    box.className = 'ia-missing';
+    box.innerHTML = '<b>Слой перестройки не нашёл ' + missing.length + ' узл'
+      + plural(missing.length, ['а', 'а', 'ов']) + ' страницы — эти изменения не применились:</b><ul>'
+      + missing.map(function (item) { return '<li>' + item + '</li>'; }).join('') + '</ul>';
+    var header = shell.querySelector('.header');
+    if (header && header.nextSibling) shell.insertBefore(box, header.nextSibling);
+    else shell.appendChild(box);
+  }
+
+  function boot() {
+    step('лента preview', ribbon);
+    step('шапка', rebuildHeader);
+    step('подтверждение сброса', guardReset);
+    step('панель участка', splitSite);
+    step('навигация', buildNav);
+    step('перехват openTab', wrapOpenTab);
+    step('карточка решения', buildVerdict);
+    step('перехват renderResult', wrapRenderResult);
+    step('состояние расчёта', watchChanges);
+    step('тексты', trimTexts);
+    step('термины БРИДЖа', relabelBridge);
+    openSection('project', 'iaSite');
+    renderState();
+    renderVerdict();
+    report();
+  }
+
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
+  else boot();
+})();

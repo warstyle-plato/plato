@@ -1,0 +1,114 @@
+/* Слой перестройки /ia. Цвета, шрифты и рамки — те же, что на странице:
+   меняется порядок и объём текста, а не оформление. Правило из разбора: сначала
+   переставить блоки и сократить тексты, и только потом, если понадобится,
+   трогать вид. Правка текста откатывается построчно, редизайн 4600 строк — нет. */
+
+.ia-ribbon{
+  background:#141414;color:#fff;font-size:11px;letter-spacing:.06em;text-transform:uppercase;
+  padding:6px 34px;display:flex;gap:14px;align-items:center;font-weight:700;
+}
+.ia-ribbon a{color:#fff}
+.ia-ribbon .ia-ribbon-note{font-weight:400;text-transform:none;letter-spacing:0;color:#c9c9c9}
+
+/* Непопадание селектора обязано быть видно на экране: слой держится на чужой
+   разметке, и «тихо не сработало» здесь неотличимо от «так и задумано». */
+.ia-missing{
+  margin:0 34px 12px;padding:11px 14px;border:1px solid #b42318;background:#fff4f2;
+  font-size:12px;line-height:1.5;color:#7a1c12;
+}
+.ia-missing b{display:block;margin-bottom:4px}
+.ia-missing ul{margin:6px 0 0;padding-left:18px}
+
+/* --- шапка ------------------------------------------------------------- */
+.ia-on .title h1{font-size:24px}
+.ia-on .title p{margin-top:6px}
+.ia-ver{color:#9a9a9a;font-size:11px;margin-left:8px;white-space:nowrap}
+.ia-on .header{align-items:center;padding-bottom:14px}
+.ia-on .actions{gap:8px}
+
+.ia-state{font-size:12px;color:#555;display:flex;align-items:center;gap:7px;white-space:nowrap}
+.ia-state .ia-dot-state{width:8px;height:8px;border-radius:50%;background:#166534;display:inline-block}
+.ia-state.dirty .ia-dot-state{background:#8a4b08}
+.ia-state.dirty{color:#8a4b08;font-weight:600}
+
+.ia-more{position:relative}
+.ia-more-menu{
+  position:absolute;right:0;top:calc(100% + 6px);background:#fff;border:1px solid #cfcfcf;
+  min-width:190px;z-index:60;display:none;padding:4px;
+}
+.ia-more.open .ia-more-menu{display:block}
+.ia-more-menu button{display:block;width:100%;text-align:left;border:0;background:none;padding:9px 11px;font-size:13px;cursor:pointer}
+.ia-more-menu button:hover{background:#f5f5f3}
+
+/* Платон — плавающей кнопкой: он объясняет результат, а не является разделом
+   ввода. В шапке он стоял вровень с «Сохранить» и «Сбросить». */
+.ia-fab{
+  position:fixed;right:22px;bottom:22px;z-index:70;border:1px solid #111;background:#070707;color:#fff;
+  padding:12px 16px;font-weight:700;font-size:13px;cursor:pointer;display:flex;align-items:center;gap:8px;
+  box-shadow:0 6px 20px rgba(0,0,0,.22);
+}
+.ia-fab:hover{opacity:.88}
+
+/* --- навигация: пять разделов вместо девяти вкладок -------------------- */
+.ia-on .tabs{display:none}
+.ia-nav{
+  padding:0 34px;border-bottom:1px solid var(--line);display:flex;gap:30px;overflow:auto;background:#fff;
+}
+.ia-nav button{
+  border:0;background:none;padding:15px 0 12px;font-size:15px;font-weight:700;color:#777;
+  white-space:nowrap;border-bottom:3px solid transparent;cursor:pointer;
+}
+.ia-nav button.active{color:#000;border-color:#000}
+.ia-sub{padding:10px 34px 0;display:flex;gap:8px;flex-wrap:wrap;background:#fff}
+.ia-sub:empty{display:none}
+.ia-sub button{
+  border:1px solid #d5d5d5;background:#fff;padding:6px 12px;font-size:12px;font-weight:600;
+  color:#555;cursor:pointer;border-radius:999px;
+}
+.ia-sub button.active{background:#111;border-color:#111;color:#fff}
+
+/* --- первый экран ------------------------------------------------------ */
+/* Поле участка — первое действие на странице, а не третий экран. */
+.ia-on #iaSite .import-card{margin-bottom:0}
+.ia-on .import-head p{font-size:13px;line-height:1.5}
+.ia-on .import-fallback summary{font-size:13px;font-weight:600;color:#555}
+
+.ia-example{margin-left:8px}
+
+/* Методика уходит под раскрытие: она нужна один раз, а место занимала всегда. */
+.ia-method{border:1px solid #e2e2e2;background:#fafaf8;padding:0 13px;margin-top:12px}
+.ia-method summary{font-size:12px;font-weight:600;color:#555;padding:10px 0}
+.ia-method .header-note{margin:0 0 11px;border:0;background:none;padding:0}
+
+.ia-setup{display:flex;gap:22px;align-items:flex-start;flex-wrap:wrap}
+.ia-setup .scenario{font-size:13px}
+
+/* --- карточка решения -------------------------------------------------- */
+.ia-verdict{border:1px solid #111;border-top:6px solid #111;padding:20px 22px;margin-bottom:18px;background:#fff}
+.ia-verdict.pass{border-top-color:var(--positive)}
+.ia-verdict.edge{border-top-color:var(--warn)}
+.ia-verdict.fail{border-top-color:var(--negative)}
+.ia-verdict h2{margin:0 0 4px;font-size:21px}
+.ia-verdict.pass h2{color:var(--positive)}
+.ia-verdict.edge h2{color:var(--warn)}
+.ia-verdict.fail h2{color:var(--negative)}
+.ia-verdict .ia-verdict-lead{margin:0 0 16px;font-size:13px;color:#555}
+.ia-verdict-grid{display:grid;grid-template-columns:repeat(4,minmax(150px,1fr));gap:1px;background:var(--line);border:1px solid var(--line)}
+.ia-verdict-cell{background:#fff;padding:14px 15px;min-height:84px}
+.ia-verdict-cell span{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#777;display:block}
+.ia-verdict-cell b{display:block;font-size:21px;margin-top:8px;font-weight:620}
+.ia-verdict-cell small{display:block;margin-top:5px;font-size:11px;color:#888;line-height:1.4}
+.ia-verdict-cell.wait b{color:#999;font-weight:400;font-size:15px}
+.ia-stamp{margin-top:12px;font-size:11px;color:#8a8a8a;line-height:1.5}
+
+@media(max-width:1100px){.ia-verdict-grid{grid-template-columns:1fr 1fr}}
+@media(max-width:700px){
+  .ia-ribbon,.ia-nav,.ia-sub{padding-left:16px;padding-right:16px}
+  .ia-missing{margin-left:16px;margin-right:16px}
+  .ia-verdict-grid{grid-template-columns:1fr}
+  .ia-nav{gap:18px}
+  .ia-nav button{font-size:14px}
+  .ia-fab{right:14px;bottom:14px;padding:11px 14px}
+}
+
+@media print{.ia-ribbon,.ia-nav,.ia-sub,.ia-fab,.ia-missing{display:none}}
