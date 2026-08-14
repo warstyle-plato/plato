@@ -43,7 +43,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.74"
+VERSION = "0.17.75"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -24637,13 +24637,24 @@ function renderPhaseReportControls(){
 function renderResult(){
  if(!lastResult)return;const r=lastResult,f=r.finance;
 
+ // Числа берутся из результата, а не из формы: форма не знает ни о льготе по
+ // ВРИ, ни о доле очереди. Объявление стоит выше плиток, потому что цена
+ // приобретения нужна уже им.
+ const expenseGroup=label=>{
+  const found=(r.report.expense_structure||[]).find(g=>g.label===label);
+  return found?Number(found.value||0):0;
+ };
+
  const reportKpis=[
   ['Выручка',money(r.summary.revenue)],
   ['EBITDA',money(r.summary.ebitda)],
   ['Чистая прибыль',money(r.summary.net_profit)],
   ['Маржинальность',pct(r.summary.margin)],
   ['NPV @'+Number(inputs.discount_rate_pct||20).toLocaleString('ru-RU')+'%',money(r.summary.npv)],
-  
+  // Цена входа стояла только в «Параметрах проекта» ниже и в PDF первой
+  // строкой ключевой экономики: экран и отчёт расходились по составу, а
+  // главное число сделки в шапку не попадало вовсе.
+  ['Цена приобретения',money(expenseGroup('Цена приобретения'))],
   ['LLCR (расчётный)',mult(r.summary.llcr)],
   ['Расчётный БРИДЖ',money(r.report.financing.calculated_bridge)],
   ['Фактический БРИДЖ',money(r.report.financing.actual_bridge)],
@@ -24747,11 +24758,8 @@ function renderResult(){
  // ни о доле очереди: при стопроцентной льготе строка показывала полную плату
  // за ВРИ, которой проект не платит, а в разрезе очереди — цену покупки и плату
  // всего проекта рядом с расходами одной очереди. Соседние строки давно берутся
- // из расчёта, и эти две выбивались из общего правила.
- const expenseGroup=label=>{
-  const found=(r.report.expense_structure||[]).find(g=>g.label===label);
-  return found?Number(found.value||0):0;
- };
+ // из расчёта, и эти две выбивались из общего правила. Сам `expenseGroup`
+ // объявлен в начале функции — тем же значением живёт плитка цены входа.
  const vriRelief=Number(((r.vri||{}).totals||{}).relief||0);
  projectParamsTable.innerHTML=
   (r.summary.phase_count?row('Очередность',r.summary.phase_count+' очереди'):'')+
