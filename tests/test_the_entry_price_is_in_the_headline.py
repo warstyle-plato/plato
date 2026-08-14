@@ -46,8 +46,8 @@ def test_the_entry_price_has_a_tile():
     assert "'Цена приобретения'" in kpi_block()
 
 
-def test_it_opens_the_financing_half():
-    """Вход и то, чем он финансируется, читаются вместе."""
+def test_it_stands_before_the_llcr():
+    """Вход и то, как обслуживается взятый под него долг, читаются вместе."""
     block = kpi_block()
     assert block.index("Цена приобретения") < block.index("LLCR (расчётный)")
 
@@ -56,6 +56,43 @@ def test_it_stands_after_the_result_figures():
     """Выручка, EBITDA и прибыль — итог; цена входа не вклинивается между ними."""
     block = kpi_block()
     assert block.index("Маржинальность") < block.index("Цена приобретения")
+
+
+# --- долг в шапке одним показателем --------------------------------------------
+
+def test_the_headline_shows_one_debt_figure():
+    """Два БРИДЖа рядом читались как расхождение, а не как лимит банка и
+    фактическая потребность; пиковая непокрытая задолженность — величина для
+    разговора с банком. Решение владельца (14.08.2026): в шапке долг — LLCR."""
+    block = kpi_block()
+    for gone in ("Расчётный БРИДЖ", "Фактический БРИДЖ",
+                 "Пиковая (непокрытая эскроу) задолженность ПФ"):
+        assert gone not in block, f"«{gone}» вернулась в шапку"
+    assert "LLCR (расчётный)" in block
+
+
+def test_the_headline_stays_short():
+    """Седьмая плитка — повод спросить, показатель ли это общей оценки."""
+    assert kpi_block().count("money(") + kpi_block().count("pct(") \
+        + kpi_block().count("mult(") == 7
+
+
+def test_nothing_was_lost_only_moved():
+    """Убрать из шапки — не то же, что убрать со страницы."""
+    body = render_source()
+    finance = body[body.index("reportFinanceTable.innerHTML="):]
+    finance = finance[:finance.index("const sb=")]
+    for moved in ("Расчётный БРИДЖ", "Фактический / пиковый БРИДЖ",
+                  "Пиковая (непокрытая эскроу) задолженность ПФ"):
+        assert moved in finance, f"«{moved}» пропала и из таблицы финансирования"
+
+
+def test_the_report_still_prints_the_debt_figures():
+    """PDF — отдельная поверхность, и состав шапки страницы её не меняет."""
+    source = (ROOT / "main_legacy.py").read_text(encoding="utf-8")
+    for kept in ("Расчётный БРИДЖ", "Фактический пик БРИДЖ",
+                 "Пиковая (непокрытая эскроу) задолженность ПФ"):
+        assert f'["{kept}"' in source, kept
 
 
 # --- число одно на все поверхности ---------------------------------------------

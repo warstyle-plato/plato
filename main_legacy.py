@@ -24655,10 +24655,12 @@ function renderResult(){
   // строкой ключевой экономики: экран и отчёт расходились по составу, а
   // главное число сделки в шапку не попадало вовсе.
   ['Цена приобретения',money(expenseGroup('Цена приобретения'))],
-  ['LLCR (расчётный)',mult(r.summary.llcr)],
-  ['Расчётный БРИДЖ',money(r.report.financing.calculated_bridge)],
-  ['Фактический БРИДЖ',money(r.report.financing.actual_bridge)],
-  ['Пиковая (непокрытая эскроу) задолженность ПФ',money(r.report.financing.pf_uncovered_peak)]
+  // Долг в шапке — одним LLCR. Два БРИДЖа рядом читаются как расхождение, а
+  // не как лимит банка и фактическая потребность, а пиковая непокрытая
+  // задолженность — величина для разговора с банком, а не для общей оценки
+  // проекта. Все три остались в таблице «Финансирование» ниже, где стоят
+  // среди ставок и лимитов и потому объясняют себя сами.
+  ['LLCR (расчётный)',mult(r.summary.llcr)]
  ];
  reportKpi.innerHTML=reportKpis.map(x=>`<div class="kpi"><span>${x[0]}</span><b>${x[1]}</b></div>`).join('');
 
@@ -24787,6 +24789,9 @@ function renderResult(){
   (Number(r.report.financing.own_funds||0)>0.5?row('Собственные средства до ПФ',money(r.report.financing.own_funds)+' <span style="color:#777;font-weight:400">без процентов</span>'):'')+
   row('Лимит ПФ',money(r.report.financing.pf_limit))+
   row('Пиковый ПФ',money(r.report.financing.pf_peak))+
+  // Ушла из плиток шапки: для общей оценки проекта величина неочевидная, а
+  // здесь, среди лимитов и ставок, читается тем, чем является.
+  row('Пиковая (непокрытая эскроу) задолженность ПФ',money(r.report.financing.pf_uncovered_peak))+
   (r.report.financing.peak_total_debt!=null?row('Максимальный совокупный долг',money(r.report.financing.peak_total_debt)):'')+
   row('Текущая ключевая ставка',pct(r.report.financing.current_key_rate))+
   row('Спред БРИДЖ',pct(r.report.financing.bridge_spread))+
