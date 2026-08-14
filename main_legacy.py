@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.81"
+VERSION = "0.17.82"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -115,6 +115,11 @@ MANUAL_TEP_TEMPLATE_B64_PATH = Path(__file__).resolve().parent / "templates" / "
 # налогу на коротких сроках (72,7 млн при месяце, 1,4 млн при годе), но
 # убирает край, на котором модель разъезжается целиком.
 IRD_MONTHS_MIN = 1
+
+# Третья форма исполнения соцнагрузки: школу и садик проект строит сам, а за
+# спортивный объект платит деньгами. Прежде режимы исключали друг друга —
+# компенсация отменяла стройку, и добавленный расход поднимал EBITDA.
+SOCIAL_MODE_BOTH = "Строительство и компенсация"
 
 MANUAL_TEP_TEMPLATE_VERSION = "DevelopAid_TEP_2"
 SERVER_TEP_PRESETS = {
@@ -1383,14 +1388,9 @@ def import_project_preset(req: ProjectPresetRequest) -> dict[str, Any]:
             builds_social = any(float(preview["inputs"].get(key) or 0) > 0
                                 for key in ("school_places", "kindergarten_places",
                                             "clinic_capacity"))
-            if "social_compensation_mln" in filled and builds_social:
-                preview["inputs"].pop("social_compensation_mln", None)
-                preview["open_items"].append(
-                    f"Денежная нагрузка {filled['social_compensation_mln']:,.2f} млн ₽ "
-                    "в расчёт не вошла: проект строит соцобъекты, а модель считает "
-                    "либо стройку, либо компенсацию.")
-            elif "social_compensation_mln" in filled:
-                preview["inputs"].setdefault("social_mode", "Денежная компенсация")
+            if "social_compensation_mln" in filled:
+                preview["inputs"]["social_mode"] = (
+                    SOCIAL_MODE_BOTH if builds_social else "Денежная компенсация")
             preview["notes"].append({
                 "value": "", "origin": "source", "input_key": "", "input_unit": "",
                 "note": "введено вручную на экране проверки: "
@@ -10027,7 +10027,7 @@ def build_project_workbook(
     social_monthly_by_phase: list[list[float]] | None = None
     social_breakdown = {typ: {"places": 0.0, "cost": 0.0, "phases": set()}
                         for typ in ("kindergarten", "school", "clinic")}
-    social_is_construction = str(x.get("social_mode") or "") == "Строительство"
+    social_is_construction = str(x.get("social_mode") or "") in ("Строительство", SOCIAL_MODE_BOTH)
     if social_is_construction:
         social_count = max(1, min(4, int(p.get("phase_count") or 1) if p.get("enabled") else 1))
         social_phases = list(p.get("phases") or [])
@@ -10073,7 +10073,15 @@ def build_project_workbook(
             # обеих сумм задваивало социалку на ГлавАПУ-проекте с компенсацией
             # в вводных: 774 млн в книге против 166 у движка, минус 648 млн
             # EBITDA и плюс 11% к пику БРИДЖа.
-            put("B17", number=social_build, label="социалка строительством")
+            # В совмещённом режиме проект и строит, и платит: в книге канал
+            # соцнагрузки один, поэтому в B17 идёт сумма обеих форм, а
+            # денежная часть дублируется в B56 — из неё считается база
+            # комиссии выдачи БРИДЖа, куда стройка не входит.
+            cash_part = (n(x, "social_compensation_mln")
+                         if str(x.get("social_mode")) == SOCIAL_MODE_BOTH else 0.0)
+            put("B17", number=social_build + cash_part,
+                label="социалка строительством" + (" и компенсацией" if cash_part else ""))
+            put("B56", number=cash_part, label="денежная часть соцнагрузки")
             # Кассовые доли R — по очередям объектов: «всё в первую» верно
             # для денежной компенсации, а стройка платится там, где стоит
             # объект. Доля 100% в О1 перегружала её ПФ на миллиарды и
@@ -10161,6 +10169,17 @@ def build_project_workbook(
                     column = first_col + month_index
                     if 0 <= column < 120:
                         social_monthly_by_phase[min(phase_index, 3)][column] += cost / span_months
+            # Денежная часть совмещённого режима — одним платежом в свою дату,
+            # а не размазанная по графику стройки: это разные обязательства с
+            # разными сроками, и движок платит их порознь.
+            if str(x.get("social_mode")) == SOCIAL_MODE_BOTH:
+                cash_mln = n(x, "social_compensation_mln")
+                comp_date = str(x.get("social_comp_date") or "")[:10]
+                if cash_mln > 0 and comp_date:
+                    column = months_between(date.fromisoformat(project_start_iso),
+                                            date.fromisoformat(comp_date))
+                    if 0 <= column < 120:
+                        social_monthly_by_phase[0][column] += cash_mln
 
     # --- расшифровка соцнагрузки: ОТЧЕТ (E31:H37) и ТЭП (38–44) -----------
     # «Где в Excel расходы на садик и школы?» — раньше нигде: B17 приезжал
@@ -11658,7 +11677,8 @@ _M2_EXTRA_OPTIONS: dict[str, list[list[str]]] = {
     "bridge_interest_mode": [["Капитализация в ПФ", "Капитализация в ПФ"],
                              ["Выплата при рефинансировании", "Выплата при рефинансировании"]],
     "social_mode": [["Строительство", "Строительство"],
-                    ["Денежная компенсация", "Денежная компенсация"]],
+                    ["Денежная компенсация", "Денежная компенсация"],
+                    [SOCIAL_MODE_BOTH, SOCIAL_MODE_BOTH]],
 }
 
 # Прогноз ключевой ставки: на странице он в своём блоке, а не в FIELD_GROUPS.
@@ -13907,7 +13927,8 @@ def effective_social_program(x: dict) -> dict[str, float]:
     def choose(input_key: str, required_key: str) -> float:
         explicit = n(x, input_key)
         required = n(imported, required_key)
-        if str(x.get("social_mode", "Строительство")) == "Строительство" and explicit <= 0 and required > 0:
+        if (str(x.get("social_mode", "Строительство")) in ("Строительство", SOCIAL_MODE_BOTH)
+                and explicit <= 0 and required > 0):
             return required
         return explicit
 
@@ -14545,8 +14566,15 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
     }
     social_construction_total = sum(social_construction_breakdown.values())
     imported_social_compensation = n(x, "social_compensation_mln") * 1_000_000
-    if str(x.get("social_mode", "Строительство")) == "Денежная компенсация":
+    social_mode = str(x.get("social_mode", "Строительство"))
+    if social_mode == "Денежная компенсация":
         social_total = imported_social_compensation if imported_social_compensation > 0 else social_construction_total
+    elif social_mode == SOCIAL_MODE_BOTH:
+        # Обе формы разом. Редкий, но реальный случай: школу и садик проект
+        # строит сам, а за спортивный объект платит деньгами. Прежде режимы
+        # исключали друг друга, и денежная нагрузка либо отменяла стройку,
+        # либо молча не считалась вовсе — на Румянцеве это 1,15 млрд ₽.
+        social_total = social_construction_total + imported_social_compensation
     else:
         social_total = social_construction_total
     amounts["social"] = social_total
@@ -14703,7 +14731,8 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
         spread_article("project_management", amounts["project_management"],
                        project_start, max(1, months_between(project_start, rve)))
 
-    if str(x.get("social_mode", "Строительство")) == "Строительство":
+    social_mode_now = str(x.get("social_mode", "Строительство"))
+    if social_mode_now in ("Строительство", SOCIAL_MODE_BOTH):
         if social_program["kindergarten_places"]:
             spread_article("social", social_construction_breakdown["kindergarten"],
                            d(x["kindergarten_start"]), int(n(x, "kindergarten_months", 24)))
@@ -14713,6 +14742,10 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
         if social_program["clinic_capacity"]:
             spread_article("social", social_construction_breakdown["clinic"],
                            d(x["clinic_start"]), int(n(x, "clinic_months", 24)))
+        # Каждая стройка идёт своим графиком, а денежная часть — одним
+        # платежом в свою дату: это разные обязательства с разными сроками.
+        if social_mode_now == SOCIAL_MODE_BOTH and imported_social_compensation > 0:
+            add_capex("social", d(x["social_comp_date"]), imported_social_compensation)
     else:
         add_capex("social", d(x["social_comp_date"]), social_total)
 
@@ -14809,6 +14842,11 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
     )
     if str(x.get("social_mode")) == "Денежная компенсация":
         calculated_bridge_limit += op["capex_amounts"]["social"]
+    elif str(x.get("social_mode")) == SOCIAL_MODE_BOTH:
+        # В лимит БРИДЖа входит только денежная часть: стройку соцобъектов
+        # банк финансирует проектным финансированием после РнС, и включать её
+        # в БРИДЖ значило бы просить лимит дважды.
+        calculated_bridge_limit += n(x, "social_compensation_mln") * 1_000_000
 
     # Часть первоначального финансирования может идти не из банка: собственные
     # деньги, заём учредителя, перехваченный чужой долг. Эти средства тратятся

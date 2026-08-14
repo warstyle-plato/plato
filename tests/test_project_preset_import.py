@@ -364,25 +364,16 @@ def test_applying_lays_over_the_defaults():
 # --- две нагрузки сразу модель пока не считает ----------------------------------
 
 def test_cash_burden_does_not_cancel_mandatory_construction():
-    """`social_mode` — переключатель «или/или»: денежная компенсация отменяет
-    стройку соцобъектов целиком. У Румянцева школа и ДОО строятся, а за стадион
-    платят деньгами, и переключение режима отняло бы стройку из расходов —
-    EBITDA росла от добавленного расхода на 0,46 млрд ₽."""
+    """Прежде `social_mode` был переключателем «или/или»: денежная компенсация
+    отменяла стройку соцобъектов целиком, и добавленный расход поднимал EBITDA
+    на 0,46 млрд ₽. У Румянцева школа и ДОО строятся, а за стадион платят
+    деньгами — для этого и появился третий режим (решение владельца)."""
     body = {"preset": preset(), "mode": "apply", "inputs": {}, "tep": {},
             "filled": {"social_compensation_mln": 1149.23}}
-    data = client.post("/api/project-presets/import", json=body).json()
-    assert data["applied_inputs"].get("social_mode") != "Денежная компенсация"
-    assert "social_compensation_mln" not in data["applied_inputs"]
-    assert data["applied_inputs"]["school_places"] == 350
-
-
-def test_the_uncounted_burden_is_declared():
-    """Не учли — скажи об этом: молча пропавший миллиард хуже отказа."""
-    body = {"preset": preset(), "mode": "preview", "inputs": {}, "tep": {},
-            "filled": {"social_compensation_mln": 1149.23}}
-    items = " ".join(client.post("/api/project-presets/import", json=body).json()["open_items"])
-    assert "1,149.23" in items or "1 149" in items or "1149" in items
-    assert "не вошла" in items
+    applied = client.post("/api/project-presets/import", json=body).json()["applied_inputs"]
+    assert applied["social_mode"] == core.SOCIAL_MODE_BOTH
+    assert applied["social_compensation_mln"] == pytest.approx(1149.23)
+    assert applied["school_places"] == 350
 
 
 def test_without_construction_the_cash_burden_is_counted():
