@@ -16,12 +16,14 @@ import copy
 import re
 from typing import Any
 
-# Варианты двух выпадающих списков, у которых их нет в FIELD_GROUPS: страница
-# подставляет их сама (`select` без вариантов — режим социалки,
-# `finance_select` — проценты БРИДЖ). Копия сверяется с PAGE тестом
-# `test_the_select_options_match_the_page`; разъехаться молча она не может.
-SOCIAL_MODE_OPTIONS = ["Строительство", "Денежная компенсация"]
-BRIDGE_INTEREST_OPTIONS = ["Капитализация в ПФ", "Выплата при рефинансировании"]
+# Варианты двух выпадающих списков, у которых их нет в FIELD_GROUPS: режим
+# соцнагрузки и проценты БРИДЖ. Копий больше нет — оба списка берутся из
+# движка, оттуда же их берут страница и книга. Копия здесь была третьей, и
+# третья форма соцнагрузки в неё не попала: движок считал, книга предлагала,
+# а прототип 2.0 предлагал два варианта из трёх.
+def select_options(core: Any, key: str) -> list[str]:
+    """Варианты списка — из движка, у которого их берут страница и книга."""
+    return [str(pair[0]) for pair in core._M2_EXTRA_OPTIONS[key]]
 
 # Продукты, которые делятся между очередями. Ключи — те же, что понимает
 # `calculate_phased`; подписи берутся из ТЭП движка.
@@ -57,7 +59,7 @@ DEFAULT_PHASING: dict[str, Any] = {
 }
 
 
-def _field(item: list[Any]) -> dict[str, Any]:
+def _field(item: list[Any], core: Any) -> dict[str, Any]:
     """Поле формы ровно так, как его описывает движок."""
     key, label, unit, kind = str(item[0]), str(item[1]), str(item[2]), str(item[3])
     options: list[dict[str, str]] = []
@@ -65,9 +67,11 @@ def _field(item: list[Any]) -> dict[str, Any]:
         options = [{"value": str(pair[0]), "label": str(pair[1])} for pair in item[4]]
     elif kind == "select":
         # `select` без вариантов в справочнике — режим социальной нагрузки.
-        options = [{"value": value, "label": value} for value in SOCIAL_MODE_OPTIONS]
+        options = [{"value": value, "label": value}
+                   for value in select_options(core, "social_mode")]
     elif kind == "finance_select":
-        options = [{"value": value, "label": value} for value in BRIDGE_INTEREST_OPTIONS]
+        options = [{"value": value, "label": value}
+                   for value in select_options(core, "bridge_interest_mode")]
         kind = "select"
     return {"key": key, "label": label, "unit": unit, "type": kind, "options": options}
 
@@ -104,7 +108,7 @@ def _phasing_block(core: Any) -> dict[str, Any]:
         "hint": "Выключено — проект считается одной очередью. Веса задают, какая "
                 "доля каждого продукта приходится на очередь; сумма приводится "
                 "движком к 100%.",
-        "fields": [_field(list(item)) for item in _PHASING_FIELDS],
+        "fields": [_field(list(item), core) for item in _PHASING_FIELDS],
         "products": [{"key": key, "label": labels[key]} for key in PHASE_PRODUCT_KEYS],
     }
 
@@ -196,7 +200,7 @@ def form_description(core: Any) -> dict[str, Any]:
             "key": f"group{index}",
             "title": str(title),
             "kind": "inputs",
-            "fields": [_field(list(item)) for item in fields],
+            "fields": [_field(list(item), core) for item in fields],
         })
     blocks.append(_phasing_block(core))
     return {

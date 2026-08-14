@@ -574,7 +574,9 @@ def test_the_form_comes_from_the_engine_dictionary(client):
 
 
 def test_the_select_options_match_the_page():
-    """Варианты двух списков продублированы из PAGE — расхождение ловится тут."""
+    """Оба списка идут из движка: копия в форме 2.0 была третьей, и третья
+    форма соцнагрузки в неё не попала — движок считал, книга предлагала, а
+    прототип показывал два варианта из трёх."""
     import re
 
     import developaid_v2_form as form
@@ -582,10 +584,11 @@ def test_the_select_options_match_the_page():
     page_select = re.search(r"type==='select'\)\{[^}]*?\[([^\]]+)\]\.forEach", core.PAGE)
     page_finance = re.search(r"type==='finance_select'\)\{[^}]*?\[([^\]]+)\]\.forEach", core.PAGE)
     assert page_select and page_finance, "списки вариантов не найдены на странице"
-    extract = lambda text: re.findall(r"'([^']+)'", text)  # noqa: E731
+    extract = lambda text: re.findall(r"[\'\"]([^\'\"]+)[\'\"]", text)  # noqa: E731
 
-    assert extract(page_select.group(1)) == form.SOCIAL_MODE_OPTIONS
-    assert extract(page_finance.group(1)) == form.BRIDGE_INTEREST_OPTIONS
+    assert extract(page_select.group(1)) == form.select_options(core, "social_mode")
+    assert extract(page_finance.group(1)) == form.select_options(core, "bridge_interest_mode")
+    assert core.SOCIAL_MODE_BOTH in form.select_options(core, "social_mode")
 
 
 def test_the_form_does_not_lose_a_field(client):
