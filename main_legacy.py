@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.87"
+VERSION = "0.17.88"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -21888,6 +21888,8 @@ PAGE = r"""<!doctype html>
 .card h2,.card h3{margin:0 0 14px}.section-title{font-size:11px;text-transform:uppercase;letter-spacing:.12em;color:#777;margin-bottom:10px;font-weight:750}
 details{border-top:1px solid #e5e5e5;padding:4px 0}details:first-child{border-top:0}
 summary{padding:11px 0;font-size:14px;font-weight:700;cursor:pointer}
+.group-peek{font-weight:400;color:#888;font-size:12px;margin-left:8px}
+details[open]>summary>.group-peek{display:none}
 .fields{display:grid;grid-template-columns:1fr 1fr;gap:10px 14px;padding:0 0 15px}
 .field label{font-size:12px;color:#555;display:block;margin-bottom:4px}.unit{color:#aaa;font-size:10px}
 input,select{width:100%;border:1px solid #cfcfcf;background:#fff;border-radius:0;padding:9px 10px;font-size:14px;color:#111}
@@ -24537,13 +24539,73 @@ function applyTelegramCalcOverrides(){
 
 const VRI_GROUP_NAME='Смена ВРИ и земельные права';
 
+// Свёрнутая группа не должна быть закрытой дверью без таблички: в заголовке
+// показываются два-три числа, по которым видно, надо ли туда заходить.
+// Список короткий и явный — «первые два поля группы» дали бы шум там, где
+// первым стоит служебное поле.
+const GROUP_PEEK={
+ 'Продажи':['apartment_price_th','share_before_rve_pct'],
+ 'Строительство':['main_above_th_per_sqm','main_under_th_per_sqm'],
+ 'Коммерческие расходы и налоги':['marketing_pct','profit_tax_pct'],
+ 'Финансирование':['pf_spread_pp','pre_pf_own_funds_mln'],
+ 'Социальная нагрузка':['social_mode'],
+ 'МФОЦ / офисы':['offices_enabled','offices_gba_sqm'],
+ 'ТЦ / коммерция ОСЗ':['retail_enabled','retail_gba_sqm'],
+ 'Подземный паркинг':['underground_manual_spaces'],
+ 'Наземный паркинг':['above_parking_enabled','above_parking_spaces']
+};
+
+function groupPeek(name,fields){
+ const out=[];
+ for(const id of (GROUP_PEEK[name]||[])){
+  const f=fields.find(x=>x[0]===id);if(!f)continue;
+  const [,,unit,type]=f;
+  const v=(id in inputs)?inputs[id]:INPUT_DEFAULT[id];
+  // Выключенный объект — исчерпывающая сводка: его площади ни о чём не говорят.
+  if(type==='checkbox'){if(!v)return 'выключен';continue}
+  if(v===''||v===null||v===undefined)continue;
+  if(type==='number'){
+   const n=Number(v);
+   // Ноль в заголовке — это «не задано», а не сведение: показывать нечего.
+   if(!Number.isFinite(n)||n===0)continue;
+   out.push({text:num(n),unit:String(unit).split(';')[0].trim()});
+  }else out.push({text:String(v),unit:''});
+ }
+ // Одинаковая единица у соседей печатается один раз: «110 · 120 тыс. ₽/м² ГНС».
+ return out.map((part,i)=>{
+  const next=out[i+1];
+  return next&&next.unit===part.unit?part.text:(part.text+(part.unit?' '+part.unit:''));
+ }).join(' · ');
+}
+
+// Табличка обязана поспевать за полем: правка внутри группы не всегда
+// перерисовывает список, а устаревшее число в заголовке хуже пустого.
+function refreshGroupPeeks(){
+ document.querySelectorAll('details[data-group]').forEach(det=>{
+  const grp=FIELD_GROUPS.find(g=>g[0]===det.dataset.group);if(!grp)return;
+  const sum=det.querySelector('summary');if(!sum)return;
+  const text=groupPeek(grp[0],grp[1]);
+  let hint=sum.querySelector('.group-peek');
+  if(!text){if(hint)hint.remove();return}
+  if(!hint){hint=document.createElement('span');hint.className='group-peek';sum.appendChild(hint)}
+  hint.textContent=text;
+ });
+}
+
 function renderInputs(){
  const box=document.getElementById('inputGroups');box.innerHTML='';
  const vriBox=document.getElementById('vriInputGroups');if(vriBox)vriBox.innerHTML='';
  FIELD_GROUPS.forEach((grp,idx)=>{
    const ownTab=grp[0]===VRI_GROUP_NAME&&vriBox;
-   const det=document.createElement('details');if(idx<3||ownTab)det.open=true;
-   const sum=document.createElement('summary');sum.textContent=grp[0];det.appendChild(sum);
+   // Открыта только первая группа. Одиннадцать развёрнутых групп — это
+   // экран, на котором не видно, с чего начинать: человек листает поля
+   // вместо того, чтобы ввести цену и сроки и посмотреть результат.
+   const det=document.createElement('details');if(idx===0||ownTab)det.open=true;
+   det.dataset.group=grp[0];
+   const sum=document.createElement('summary');sum.textContent=grp[0];
+   const peek=groupPeek(grp[0],grp[1]);
+   if(peek){const hint=document.createElement('span');hint.className='group-peek';hint.textContent=peek;sum.appendChild(hint)}
+   det.appendChild(sum);
    const grid=document.createElement('div');grid.className='fields';
    grp[1].forEach(f=>{
      const [id,label,unit,type]=f;const wrap=document.createElement('div');wrap.className='field';
@@ -24574,7 +24636,7 @@ function renderInputs(){
       el.disabled=true;
       el.title='Москва: платежи ежеквартально — установлено нормативно';
      }
-     el.onchange=()=>{inputs[id]=type==='checkbox'?el.checked:(type==='number'&&!Array.isArray(f[4])?Number(el.value):el.value);if(id==='social_mode')inputs._social_mode_user_set=true;if(id==='vri_region'){renderInputs();return calculate()}if(['apartment_price_th','commercial_price_th','parking_price_th','main_above_th_per_sqm','main_under_th_per_sqm'].includes(id)){inputs.project_class='custom';syncProjectClassSelector()}if(['underground_manual_spaces','underground_manual_gns_sqm','underground_area_per_space_sqm'].includes(id)){syncUndergroundPair(id);syncTep(false)}if(['offices_enabled','retail_enabled','above_parking_enabled','social_mode','kindergarten_places','school_places','clinic_capacity','social_dou_gba_sqm','social_school_gba_sqm','social_clinic_gba_sqm','above_parking_spaces','above_parking_area_per_space_sqm'].includes(id)){const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();if(filled)renderInputs();syncTep(false)}calculate()};
+     el.onchange=()=>{inputs[id]=type==='checkbox'?el.checked:(type==='number'&&!Array.isArray(f[4])?Number(el.value):el.value);if(id==='social_mode')inputs._social_mode_user_set=true;if(id==='vri_region'){renderInputs();return calculate()}if(['apartment_price_th','commercial_price_th','parking_price_th','main_above_th_per_sqm','main_under_th_per_sqm'].includes(id)){inputs.project_class='custom';syncProjectClassSelector()}if(['underground_manual_spaces','underground_manual_gns_sqm','underground_area_per_space_sqm'].includes(id)){syncUndergroundPair(id);syncTep(false)}if(['offices_enabled','retail_enabled','above_parking_enabled','social_mode','kindergarten_places','school_places','clinic_capacity','social_dou_gba_sqm','social_school_gba_sqm','social_clinic_gba_sqm','above_parking_spaces','above_parking_area_per_space_sqm'].includes(id)){const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();if(filled)renderInputs();syncTep(false)}refreshGroupPeeks();calculate()};
      wrap.appendChild(el);grid.appendChild(wrap);
    });det.appendChild(grid);(ownTab?vriBox:box).appendChild(det);
  });
