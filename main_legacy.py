@@ -43,7 +43,7 @@ from pydantic import BaseModel
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.75"
+VERSION = "0.17.76"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -9585,6 +9585,12 @@ _V4_INPUT_CELLS: dict[str, str] = {
     "residual_sales_months": "B69",
     "vri_periodicity_months": "B78", "vri_interest_spread_pp": "B81",
     "vri_relief_mln": "B82", "vri_security_cost_mln": "B83",
+    # Свои деньги до ПФ. Поля не было в карте, и книга считала весь разрыв до
+    # РнС банковским: пик БРИДЖа расходился ровно на внесённую сумму (3,2 млрд
+    # на Вест Гарден), а следом проценты, налог, прибыль и LLCR. Место у поля
+    # не в блоке финансирования только потому, что там нет ни одной пустой
+    # строки, а вставлять строку в шаблон нельзя — поедут все ссылки.
+    "pre_pf_own_funds_mln": "B85",
     "site_area_ha": "K7",
     "offices_gba_sqm": "K23", "offices_saleable_sqm": "K24",
     "offices_start": "K27", "offices_months": "K28",
@@ -10267,7 +10273,7 @@ def build_project_workbook(
             p, max(1, min(5, enabled_phases)))[0],
         count)
     shared = {key: _v4_shared_weights(p, key, count, enabled_phases)
-              for key in ("purchase", "land_rights", "social_compensation")}
+              for key in ("purchase", "land_rights", "social_compensation", "own_funds")}
     # Индексация очередей — готовыми множителями к сдвигу старта, как в
     # движке: О1 ×1, О2 ×1,08, О3 ×1,166 при 8% в год. Годовая инфляция в
     # AE/AF здесь не пишется: книга ведёт её от даты базы цен до старта
@@ -10303,6 +10309,10 @@ def build_project_workbook(
             label=f"стройка очереди {index + 1}")
         put(f"G{row}", number=n(x, "sales_lag_months", 0.0), label=f"лаг очереди {index + 1}")
         put(f"P{row}", number=shared["purchase"][index] if active else 0.0, label="доля покупки")
+        # Свои деньги — один котёл на проект: без деления каждая очередь взяла
+        # бы всю сумму. Умолчание движка то же, что у покупки, — всё в первой.
+        put(f"AI{row}", number=shared["own_funds"][index] if active else 0.0,
+            label="доля собственных средств")
         put(f"Q{row}", number=shared["land_rights"][index] if active else 0.0, label="доля ВРИ")
         put(f"R{row}", number=(
             (social_cash_by_phase[index] if index < len(social_cash_by_phase) else 0.0)
