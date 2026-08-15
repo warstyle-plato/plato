@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.93"
+VERSION = "0.17.94"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -23351,7 +23351,11 @@ async function obtainTep(){
   // Адрес или координаты: территорию ГлавАПУ по ним не собрать, идём через ЕГРН.
   status.textContent='Ищу участок по адресу…';
   const found=await lookupLand({quiet:true});
-  const resolved=(found||[]).map(x=>x.cadastral_number).filter(Boolean);
+  // Поиск сорвался — причина уже написана в строке состояния, и закрашивать
+  // её «участок не найден» нельзя: человек пойдёт искать ошибку в кадастре,
+  // которой там нет. Так выключенный VPN выглядел как отсутствующий участок.
+  if(found===null)return;
+  const resolved=found.map(x=>x.cadastral_number).filter(Boolean);
   if(!resolved.length){
    status.innerHTML='<span class="import-error">По этому запросу участок не найден. Введите кадастровый номер.</span>';return;
   }
@@ -23618,8 +23622,12 @@ async function lookupLand(options){
   }
   return (data.results||[]).filter(x=>x&&x.found);
  }catch(e){
-  status.innerHTML='<span class="import-error">'+escapeHtml(String(e.message||e))+'</span>';
-  return [];
+  // Сорванный запрос — не «участок не найден». Возвращаем null, а не пустой
+  // список: вызывающий обязан отличить «спросили, и там пусто» от «спросить
+  // не удалось», иначе он закрасит настоящую причину своим диагнозом.
+  status.innerHTML='<span class="import-error">'+escapeHtml(String(e.message||e))
+   +'</span> Проверьте связь с сервером и повторите.';
+  return null;
  }finally{
   button.disabled=false;button.textContent='Получить ТЭП';
  }
