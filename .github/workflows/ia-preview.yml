@@ -175,8 +175,12 @@ jobs:
           push: true
           provenance: false
           sbom: false
+          # Браузер в preview обязателен: без него ТЭП московских участков
+          # считается запасными формулами, и стенд расходится с боевой ровно
+          # там, где его сравнивают (паркинг 91 место против 178 у настоящего
+          # калькулятора ГлавАПУ). Сборка дольше — зато числа те же.
           build-args: |
-            INSTALL_BROWSER=0
+            INSTALL_BROWSER=1
             APP_COMMIT=${{ steps.meta.outputs.sha }}
           tags: ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}
           cache-from: type=gha,scope=ia-preview
