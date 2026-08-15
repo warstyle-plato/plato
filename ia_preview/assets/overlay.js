@@ -87,6 +87,10 @@
      Форматтеры money/mult/pct — тоже const, поэтому берутся так же. */
   function pageResult() { return typeof lastResult === 'undefined' ? null : lastResult; }
   function pageGlavapu() { return typeof glavapuImport === 'undefined' ? null : glavapuImport; }
+  function pendingGlavapu() {
+    var box = document.getElementById('glavapuPreview');
+    return !!(box && box.style.display !== 'none' && typeof window.applyGlavapu === 'function');
+  }
   function pageInputs() { return typeof inputs === 'undefined' ? {} : inputs; }
   function pageTep() { return typeof tep === 'undefined' ? {} : tep; }
   function pageRates() { return typeof rates === 'undefined' ? [] : rates; }
@@ -280,6 +284,16 @@
         + 'для Москвы — по методике ГлавАПУ, для Московской области — по РНГП. '
         + 'Перед применением значения показываются для проверки.';
     }
+    var recognized = document.querySelector('#glavapuPreview .scroll');
+    if (!recognized) missing.push('таблица распознанного — #glavapuPreview .scroll');
+    else {
+      var provenance = document.createElement('details');
+      provenance.innerHTML = '<summary style="font-size:13px;padding:8px 0">'
+        + 'Что распознано — построчно, с происхождением каждого числа</summary>';
+      recognized.parentNode.insertBefore(provenance, recognized);
+      provenance.appendChild(recognized);
+    }
+
     retext('#iaSite .import-fallback summary',
       'Готовый ТЭП: предустановка, шаблон DevelopAid или файл ГлавАПУ',
       'Другие способы ввода: предустановка, шаблон DevelopAid, файл ГлавАПУ, пресет проекта');
@@ -444,8 +458,15 @@
       forward.className = 'ia-next';
       forward.textContent = 'Далее: ' + (SUB_LABEL[nextTab] || nextTab) + ' →';
       forward.onclick = function () {
-        var button = tabButton(nextTab);
-        if (button) button.click();
+        var go = function () { var b = tabButton(nextTab); if (b) b.click(); };
+        // Уход с «Участка» вперёд — это принятие данных: загруженный файл
+        // применяется сам, отдельное «Применить» не требуется (замечание
+        // владельца). Кнопка «Применить» остаётся для тех, кто хочет
+        // применить и остаться на месте.
+        if (activeTab === 'iaSite' && pendingGlavapu()) {
+          forward.disabled = true;
+          Promise.resolve(window.applyGlavapu()).then(go, go);
+        } else go();
       };
       sub.appendChild(forward);
     }
@@ -793,6 +814,7 @@
 
     // Пояснение стоит у самого блока Подмосковья, а не в начале карточки:
     // блок внизу, и подсказка сверху его не объясняла — замечание владельца.
+    var moscowLoaded = !!pageGlavapu();
     var moBox = document.getElementById('moParamsBox');
     if (moBox) {
       var moNote = document.getElementById('iaMoNote');
@@ -803,9 +825,13 @@
         moNote.style.margin = '10px 0 6px';
         moBox.parentNode.insertBefore(moNote, moBox);
       }
-      if (pageGlavapu()) {
-        moNote.textContent = 'Для вашего участка этот блок не нужен: он в Москве, ТЭП пришёл из ГлавАПУ. '
-          + 'Параметры ниже используются только для участков Московской области.';
+      // Московскому участку параметры Подмосковья не нужны вовсе — блок
+      // скрывается, а не подписывается: подпись «не нужен» сбивает так же
+      // (замечание владельца).
+      moBox.style.display = moscowLoaded ? 'none' : '';
+      moNote.style.display = moscowLoaded ? 'none' : '';
+      if (moscowLoaded) {
+        moNote.textContent = '';
       } else if (mo) {
         var moDistrict = mo.territory && mo.territory.district ? mo.territory.district : 'округ не определён';
         moNote.textContent = 'Ваш участок — Московская область (' + moDistrict + '). Плотность и цены взяты '
@@ -822,6 +848,20 @@
     }
 
     // Той же логикой — подпись у кнопки расчёта от площади и плотности.
+    var calcButton = document.querySelector('#tep [onclick="applyDensityToTep()"]');
+    var calcBar = calcButton ? calcButton.closest('.toolbar') : null;
+    if (!calcBar) {
+      if (!tepAnnotated) { tepAnnotated = true; missing.push('кнопка расчёта от плотности — #tep [onclick="applyDensityToTep()"]'); report(); }
+    } else if (!document.getElementById('iaManualCalc')) {
+      var manualWrap = document.createElement('details');
+      manualWrap.id = 'iaManualCalc';
+      manualWrap.innerHTML = '<summary style="font-size:13px;padding:8px 0">'
+        + 'Пересчитать ТЭП вручную — от площади и плотности</summary>';
+      calcBar.parentNode.insertBefore(manualWrap, calcBar);
+      manualWrap.appendChild(calcBar);
+      manualWrap.open = !moscowLoaded;
+    }
+
     var hint = document.getElementById('siteApplyHint');
     if (hint) {
       if (pageGlavapu()) {
