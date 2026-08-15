@@ -76,12 +76,31 @@ docker rm -f "$NAME" >/dev/null 2>&1 || true
 
 # Вебхук телеграма preview не забирает: два процесса на один вебхук — это
 # случайный выбор, кому достанется сообщение. Preview показывает страницу.
+# Внутри контейнера приложение слушает 8000 — порт зашит в CMD Dockerfile
+# (uvicorn --port 8000), переменная APP_PORT на него не влияет. Первый вариант
+# скрипта пробрасывал 8080, и проверка честно отвечала «код 000»: снаружи
+# стучались в порт, на котором внутри никто не слушал.
 docker run -d --name "$NAME" --restart unless-stopped \
-  -p "127.0.0.1:${PORT}:8080" \
+  -p "127.0.0.1:${PORT}:8000" \
   --env-file .env \
   -e TELEGRAM_WEBHOOK_ENABLED=0 \
-  -e APP_PORT=8080 \
   "$IMAGE" >/dev/null
 
-sleep 4
-check
+# Загрузка движка — это 26 тысяч строк и два воркера: четырёх секунд мало.
+# Ждём до 60, как run.sh; не поднялось — показываем журнал, а не молчим.
+printf 'Ожидание готовности'
+i=0
+while [ $i -lt 60 ]; do
+  if curl -fsS "http://127.0.0.1:${PORT}/health" >/dev/null 2>&1; then
+    echo
+    check
+    exit 0
+  fi
+  printf '.'
+  i=$((i + 1))
+  sleep 1
+done
+echo
+echo "Не поднялось за 60 секунд. Журнал контейнера:"
+docker logs --tail=40 "$NAME"
+exit 1
