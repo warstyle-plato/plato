@@ -66,6 +66,9 @@ body{margin:0;background:#f2f2ef;color:var(--ink)}
 .gdone{display:inline-flex;align-items:center;gap:8px;margin-top:14px;font-size:13px;font-weight:700;cursor:pointer}
 .gdone input{transform:scale(1.2)}
 
+.gfoot{display:flex;gap:18px;flex-wrap:wrap;font-size:11px;color:#888;border-top:1px solid var(--line);padding-top:14px}
+.gfoot a{color:#888}
+
 @media(max-width:960px){
   .gbody{grid-template-columns:1fr}
   .gnav{position:static;max-height:none;border-right:0;border-bottom:1px solid var(--line);padding:14px 20px}

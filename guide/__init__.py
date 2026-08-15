@@ -14,6 +14,9 @@
 
 Маршруты:
 - `GET /guide`, `/guide/`         — страница руководства;
+- `GET /consent`                  — согласие на обработку персональных данных
+                                    (оператор — ИП Ситников В. Ю., по решению
+                                    владельца 15.08.2026);
 - `GET /guide/assets/guide.css`   — стили;
 - `GET /guide/assets/guide.js`    — вкладки, шаги, навигация, поиск.
 """
@@ -82,6 +85,12 @@ def install(app, core) -> None:
     @app.get("/guide/", response_class=HTMLResponse, include_in_schema=False)
     def guide_page() -> HTMLResponse:
         return HTMLResponse(page, headers=_HEADERS)
+
+    consent = Path(__file__).resolve().parent.joinpath("consent.html").read_text(encoding="utf-8")
+
+    @app.get("/consent", response_class=HTMLResponse, include_in_schema=False)
+    def consent_page() -> HTMLResponse:
+        return HTMLResponse(consent, headers=_HEADERS)
 
     @app.get("/guide/assets/guide.css", include_in_schema=False)
     def guide_css() -> Response:
