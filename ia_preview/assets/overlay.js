@@ -864,34 +864,22 @@
     }
 
     // Той же логикой — подпись у кнопки расчёта от площади и плотности.
+    // Кнопка «Рассчитать ТЭП от площади и плотности» стоит открыто, сразу
+    // под полями площади и плотности. Сворачивание её в отдельную строку
+    // разлучало поле с его кнопкой: человек вводил плотность и ждал, а
+    // применение лежало свёрнутым ниже (владелец ввёл 25 000 и сидел ждал).
+    // Кому и зачем кнопка — говорит подпись рядом с ней, по состоянию.
     var calcButton = document.querySelector('#tep [onclick="applyDensityToTep()"]');
-    var calcBar = calcButton ? calcButton.closest('.toolbar') : null;
-    if (!calcBar) {
-      if (!tepAnnotated) { tepAnnotated = true; missing.push('кнопка расчёта от плотности — #tep [onclick="applyDensityToTep()"]'); report(); }
-    } else {
-      var manualWrap = document.getElementById('iaManualCalc');
-      if (!manualWrap) {
-        manualWrap = document.createElement('details');
-        manualWrap.id = 'iaManualCalc';
-        manualWrap.innerHTML = '<summary style="font-size:13px;padding:8px 0"></summary>';
-        calcBar.parentNode.insertBefore(manualWrap, calcBar);
-        manualWrap.appendChild(calcBar);
-        manualWrap.open = !moscowLoaded;
-      }
-      // Для московского участка это сценарный инструмент, а не ошибка:
-      // «что, если посадка другая» — пересчитать ТЭП от своей плотности.
-      // Подпись говорит это прямо, вместе с ценой (замена данных ГлавАПУ)
-      // и путём назад (повторно «Получить ТЭП» на шаге «Участок»).
-      // Базовая посадка — из поля страницы, не копией: цифра, разъехавшаяся
-      // с полем, хуже отсутствующей.
-      var densityField = document.getElementById('moDensity');
-      var baseDensity = Number((densityField && densityField.getAttribute('value')) || 30000)
-        .toLocaleString('ru-RU');
-      manualWrap.querySelector('summary').textContent = moscowLoaded
-        ? 'Что если посадка другая? Пересчитать ТЭП от своей плотности'
-        : (mo
-          ? 'Пересчитать ТЭП — по нормативам РНГП МО, посадка по умолчанию ' + baseDensity + ' м² на га'
-          : 'Рассчитать ТЭП вручную — площадь × плотность (по умолчанию ' + baseDensity + ' м² на га)');
+    if (!calcButton && !tepAnnotated) {
+      tepAnnotated = true;
+      missing.push('кнопка расчёта от плотности — #tep [onclick="applyDensityToTep()"]');
+      report();
+    }
+    var staleWrap = document.getElementById('iaManualCalc');
+    if (staleWrap) {
+      var bar = staleWrap.querySelector('.toolbar');
+      if (bar) staleWrap.parentNode.insertBefore(bar, staleWrap);
+      staleWrap.remove();
     }
 
     var hint = document.getElementById('siteApplyHint');
