@@ -21,6 +21,7 @@
 - `GET  /ia/assets/overlay.css`  — стили слоя;
 - `GET  /ia/assets/overlay.js`   — сам слой;
 - `GET  /ia/example.json`        — пресет проекта под кнопкой «Открыть пример»;
+- `GET  /ia/suggest?q=…`         — подсказки адресов по мере ввода (DaData);
 - `POST /ia/goal-seek`           — максимальная цена входа при целевом LLCR.
 
 Экономику `/ia/goal-seek` не считает: он зовёт `_tool_goal_seek` движка — ту
@@ -32,6 +33,7 @@
 from __future__ import annotations
 
 import datetime as _dt
+import os
 from pathlib import Path
 from typing import Any
 
@@ -119,6 +121,27 @@ def install(app, core) -> None:
             raise HTTPException(status_code=404, detail=f"Нет файла примера: {_EXAMPLE_PRESET}")
         return Response(path.read_text(encoding="utf-8"),
                         media_type="application/json; charset=utf-8", headers=_NO_STORE)
+
+    @app.get("/ia/suggest", include_in_schema=False)
+    async def ia_suggest(q: str = "") -> dict[str, Any]:
+        """Подсказки адресов по мере ввода — тем же DaData, что и адресный
+        поиск движка (`_geocode_dadata`): вторая реализация геокодера была бы
+        копией. Без ключа честно отвечает «выключено», а не пустым списком —
+        иначе отсутствие ключа неотличимо от «ничего не нашлось»."""
+        if not os.getenv("DADATA_API_KEY"):
+            return {"available": False,
+                    "reason": "Не задан DADATA_API_KEY — подсказки адресов выключены.",
+                    "items": []}
+        query = q.strip()
+        if len(query) < 3:
+            return {"available": True, "items": []}
+        try:
+            items = await run_in_threadpool(core._geocode_dadata, query, 8)
+        except HTTPException as exc:
+            # Сорвавшийся геокодер — пустой список с причиной, а не 5xx:
+            # подсказка не имеет права ломать ввод.
+            return {"available": True, "items": [], "reason": str(exc.detail)}
+        return {"available": True, "items": items}
 
     @app.post("/ia/goal-seek")
     async def ia_goal_seek(request: GoalSeekRequest) -> dict[str, Any]:

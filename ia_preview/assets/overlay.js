@@ -374,6 +374,65 @@
     actions.appendChild(button);
   }
 
+  /* Подсказки адресов по мере ввода — как на обычных сайтах (замечание
+     владельца). Работают только при заданном DADATA_API_KEY на сервере:
+     без ключа сервер отвечает «выключено», и слой не рисует ничего. Клик по
+     строке подставляет кадастровый номер (или адрес) и сразу запускает
+     «Получить ТЭП». */
+  function wireSuggest() {
+    var field = document.getElementById('cadastralNumbers');
+    if (!field) { missing.push('поле участка — #cadastralNumbers'); return; }
+    fetch('/ia/suggest?q=').then(function (r) { return r.json(); }).then(function (probe) {
+      if (!probe || !probe.available) return;
+      var box = document.createElement('div');
+      box.className = 'ia-suggest';
+      field.parentNode.style.position = 'relative';
+      field.parentNode.appendChild(box);
+      var timer = null, lastQuery = '';
+      var hide = function () { box.style.display = 'none'; };
+      field.addEventListener('input', function () {
+        var query = field.value.trim();
+        if (timer) clearTimeout(timer);
+        if (query.length < 3 || /\d{2}:\d{2}:\d{6,8}/.test(query)) { hide(); return; }
+        timer = setTimeout(function () {
+          lastQuery = query;
+          fetch('/ia/suggest?q=' + encodeURIComponent(query))
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+              if (field.value.trim() !== lastQuery) return;
+              var items = (data && data.items) || [];
+              if (!items.length) { hide(); return; }
+              box.innerHTML = '';
+              items.forEach(function (item) {
+                var row = document.createElement('button');
+                row.type = 'button';
+                var label = document.createElement('span');
+                label.textContent = item.label || '';
+                row.appendChild(label);
+                if (item.cadastral_number) {
+                  var cad = document.createElement('small');
+                  cad.textContent = item.cadastral_number;
+                  row.appendChild(cad);
+                }
+                row.onclick = function () {
+                  field.value = item.cadastral_number || item.label || '';
+                  hide();
+                  if (typeof window.obtainTep === 'function') window.obtainTep();
+                };
+                box.appendChild(row);
+              });
+              box.style.display = 'block';
+            })
+            .catch(hide);
+        }, 300);
+      });
+      document.addEventListener('click', function (event) {
+        if (event.target !== field && !box.contains(event.target)) hide();
+      });
+      field.addEventListener('keydown', function (event) { if (event.key === 'Escape') hide(); });
+    }).catch(function () { });
+  }
+
   /* ------------------------------------------------------------------ */
   /* Пять разделов вместо девяти вкладок                                  */
   /* ------------------------------------------------------------------ */
@@ -1076,6 +1135,7 @@
     step('сброс чистит импорт', wrapReset);
     step('подтверждение сброса', guardReset);
     step('панель участка', splitSite);
+    step('подсказки адресов', wireSuggest);
     step('навигация', buildNav);
     step('перехват openTab', wrapOpenTab);
     step('карточка решения', buildVerdict);
