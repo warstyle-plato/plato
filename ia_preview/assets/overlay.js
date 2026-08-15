@@ -143,6 +143,22 @@
       ai.classList.add('ia-fab');
       ai.classList.remove('btn');
       document.body.appendChild(ai);
+      // «Платон Сергеевич» в углу читался как подпись автора, а не как
+      // помощник, — никто не понимал, что там спрятан AI. Подпись говорит,
+      // что это и зачем, и не прячется на телефоне.
+      var label = ai.querySelector('.ai-label');
+      if (!label) missing.push('подпись кнопки Платона — .ai-open-btn .ai-label');
+      else label.textContent = 'Платон · AI-помощник';
+      var bubble = document.createElement('div');
+      bubble.className = 'ia-fab-hint';
+      bubble.id = 'iaFabHint';
+      bubble.innerHTML = 'Это AI-помощник по модели: разложит LLCR, найдёт потолок цены, '
+        + 'проверит аномалии. Числа считает движок, а не языковая модель.'
+        + '<button type="button" aria-label="Понятно">×</button>';
+      document.body.appendChild(bubble);
+      var hide = function () { bubble.remove(); };
+      bubble.querySelector('button').onclick = hide;
+      ai.addEventListener('click', hide);
     }
 
     // Класс и сценарий уезжают в «Экономику»: их спрашивали раньше, чем
@@ -579,8 +595,20 @@
       + '<h2 id="iaVerdictTitle">Расчёт не выполнен</h2>'
       + '<p class="ia-verdict-lead" id="iaVerdictLead">Нажмите «Пересчитать модель».</p>'
       + '<div class="ia-verdict-grid" id="iaVerdictGrid"></div>'
-      + '<div class="ia-stamp" id="iaVerdictStamp"></div>';
+      + '<div class="ia-stamp" id="iaVerdictStamp"></div>'
+      + '<button type="button" class="btn ia-ask" id="iaAskPlaton">Спросить Платона: почему такой вердикт?</button>';
     report.insertBefore(card, hero);
+    var ask = card.querySelector('#iaAskPlaton');
+    ask.onclick = function () {
+      var hint = document.getElementById('iaFabHint');
+      if (hint) hint.remove();
+      var input = document.getElementById('aiInput');
+      if (input && !input.value) {
+        input.value = 'Объясни текущее инвестиционное решение: что двигает LLCR, '
+          + 'какие два-три параметра важнее всего и что бы ты проверил в первую очередь?';
+      }
+      if (typeof window.toggleAgent === 'function') window.toggleAgent(true);
+    };
   }
 
   function renderVerdict() {

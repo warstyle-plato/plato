@@ -48,6 +48,17 @@
   box-shadow:0 6px 20px rgba(0,0,0,.22);
 }
 .ia-fab:hover{opacity:.88}
+/* Подпись не прячется и на телефоне: точка без слов — это не помощник. */
+.ia-fab .ai-label{display:inline!important}
+.ia-fab-hint{
+  position:fixed;right:22px;bottom:74px;z-index:69;max-width:280px;background:#fff;border:1px solid #111;
+  padding:12px 34px 12px 14px;font-size:12px;line-height:1.5;color:#333;box-shadow:0 6px 20px rgba(0,0,0,.18);
+}
+.ia-fab-hint button{
+  position:absolute;top:4px;right:6px;border:0;background:none;font-size:16px;cursor:pointer;color:#888;
+}
+.ia-ask{margin-top:14px}
+@media(max-width:700px){.ia-fab-hint{right:14px;bottom:66px;max-width:75vw}}
 
 /* --- навигация: пять разделов вместо девяти вкладок -------------------- */
 .ia-on .tabs{display:none}
