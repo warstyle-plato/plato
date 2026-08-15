@@ -555,6 +555,30 @@
      «после ручного изменения нажмите Пересчитать модель» — этому противоречила
      прямо. Поэтому здесь не правило, а состояние: правится → считается →
      актуально. */
+  /* Плашка расчёта по центру экрана: статус в шапке мелкий и вне поля
+     зрения — человек не видел, что модель считает и что уже посчитала
+     (замечание владельца). */
+  var toastTimer = null;
+
+  function showToast(message, sticky) {
+    var toast = document.getElementById('iaToast');
+    if (!toast) {
+      toast = document.createElement('div');
+      toast.id = 'iaToast';
+      toast.className = 'ia-toast';
+      document.body.appendChild(toast);
+    }
+    if (toastTimer) { clearTimeout(toastTimer); toastTimer = null; }
+    toast.textContent = message;
+    toast.classList.add('show');
+    if (!sticky) toastTimer = setTimeout(function () { toast.classList.remove('show'); }, 1600);
+  }
+
+  function hideToast() {
+    var toast = document.getElementById('iaToast');
+    if (toast) toast.classList.remove('show');
+  }
+
   function renderState() {
     var box = document.getElementById('iaState');
     var text = document.getElementById('iaStateText');
@@ -587,13 +611,15 @@
     window.calculate = function () {
       running += 1;
       renderState();
+      showToast('Пересчитываю модель…', true);
       var out = original.apply(this, arguments);
       if (out && typeof out.then === 'function') {
         out.then(function () { dirty = 0; }, function () { }).then(function () {
           running -= 1;
           renderState();
+          if (!running) showToast('✓ Расчёт обновлён');
         });
-      } else { running -= 1; renderState(); }
+      } else { running -= 1; renderState(); hideToast(); }
       return out;
     };
   }
@@ -1024,6 +1050,15 @@
     else shell.appendChild(box);
   }
 
+  /* Все группы вводных открыты сразу: свёрнутая группа читается как
+     «здесь ничего нет», и человек не видел данных раздела, пока не дошёл
+     до него руками (решение владельца). Отчёт не трогается. */
+  function openAllGroups() {
+    var groups = document.querySelectorAll('#inputGroups details');
+    if (!groups.length) { missing.push('группы вводных — #inputGroups details'); return; }
+    groups.forEach(function (group) { group.open = true; });
+  }
+
   function boot() {
     step('лента preview', ribbon);
     step('шапка', rebuildHeader);
@@ -1034,6 +1069,7 @@
     step('карточка решения', buildVerdict);
     step('перехват renderResult', wrapRenderResult);
     step('состояние расчёта', watchChanges);
+    step('группы вводных', openAllGroups);
     step('тексты', trimTexts);
     step('подсказки ТЭП', annotateTep);
     step('термины БРИДЖа', relabelBridge);

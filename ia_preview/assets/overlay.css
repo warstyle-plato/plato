@@ -136,4 +136,11 @@
 .ia-on #moParamsBox{border:1px solid #e5e5e3;background:none;padding:2px 12px}
 .ia-on #moParamsBox>summary{font-size:13px;font-weight:600;color:#555;padding:8px 0}
 
-@media print{.ia-ribbon,.ia-nav,.ia-sub,.ia-fab,.ia-missing{display:none}}
+.ia-toast{
+  position:fixed;top:14px;left:50%;transform:translate(-50%,-30px);z-index:90;
+  background:#070707;color:#fff;padding:10px 20px;font-size:13px;font-weight:700;
+  opacity:0;pointer-events:none;transition:opacity .2s,transform .2s;box-shadow:0 6px 20px rgba(0,0,0,.25);
+}
+.ia-toast.show{opacity:1;transform:translate(-50%,0)}
+
+@media print{.ia-ribbon,.ia-nav,.ia-sub,.ia-fab,.ia-missing,.ia-toast{display:none}}
