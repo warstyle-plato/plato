@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.94"
+VERSION = "0.17.95"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -235,6 +235,11 @@ class AgentChatRequest(BaseModel):
     # Идентификатор запроса генерирует страница: он нужен ей раньше ответа,
     # чтобы опрашивать стадию, пока запрос идёт.
     trace_id: str = ""
+    # Кто спрашивает: подписанная телеграм-сессия (мини-приложение или вход
+    # через бота) либо ключ администратора. Платон стоит денег на каждый
+    # вопрос, поэтому с сайта он доступен после входа.
+    session: str = ""
+    access_key: str = ""
 
 
 class CadastralAnalysisRequest(BaseModel):
@@ -7283,6 +7288,24 @@ def _telegram_handle_message(message: dict[str, Any]) -> None:
     text = str(message.get("text") or "").strip()
     command = text.split(maxsplit=1)[0].split("@", 1)[0].lower() if text.startswith("/") else ""
     if command in {"/start", "/help", "/menu"}:
+        # «/start login_<код>» — подтверждение входа на сайт: человек пришёл
+        # по ссылке со страницы, код связывается с его chat_id, и страница
+        # забирает сессию. Отвечаем по делу и не разворачиваем меню.
+        start_payload = text.split(maxsplit=1)[1].strip() if " " in text else ""
+        if command == "/start" and start_payload.startswith("login_"):
+            try:
+                _web_login_confirm(start_payload[len("login_"):], chat_id)
+                _telegram_send_message(
+                    chat_id,
+                    "<b>Вход на сайт подтверждён.</b> Вернитесь во вкладку браузера — "
+                    "она подхватит вход сама в течение пары секунд.")
+            except HTTPException as exc:
+                _telegram_send_message(
+                    chat_id, "<b>Вход не подтверждён.</b>\n" + html.escape(str(exc.detail)))
+            except Exception as exc:
+                _telegram_send_message(
+                    chat_id, "<b>Вход не подтверждён.</b>\n" + html.escape(str(exc)))
+            return
         _telegram_start_message(chat_id, user_id)
         return
     if command == "/status":
@@ -13356,6 +13379,10 @@ async def report_pdf(request: Request) -> Response:
     payload=await request.json()
     if not isinstance(payload,dict) or not isinstance(payload.get("result"),dict):
         raise HTTPException(status_code=400,detail="Нет данных расчёта для PDF")
+    # PDF пересчитывает модель на сервере — это не бесплатно, и отчёт уносят
+    # с собой: с сайта он доступен после входа через Telegram (мягкий гейт).
+    _require_web_access(str(payload.get("session") or ""),
+                        str(payload.get("access_key") or ""), "PDF-отчёт")
     # Один расчёт на обе поверхности. Правило применили к боту и забыли про
     # сайт: бот пересчитывал модель на сервере, а здесь отчёт строился по
     # результату из браузера. Пока вкладка свежая, разницы нет; стоит ей
@@ -21205,8 +21232,11 @@ def usage_admin_ids() -> set[int]:
 # россиян по 152-ФЗ (ст. 18.1) обязаны лежать в России. Поэтому Render свои
 # запросы пересылает на ядро и у себя не хранит ничего.
 #
-# Пока это личный инструмент: доступ только у администратора. Общее хранилище
-# потребует регистрации, согласия и политики обработки — отдельный разговор.
+# С 15.08.2026 (решение владельца) хранилище общее: владельца опознаёт
+# подписанная телеграм-сессия — мини-приложения или входа через бота, — и
+# каждый chat_id живёт в своём каталоге со своим лимитом. Регистрации нет:
+# личность и так выдаёт бот. Данные лежат на ядре в России; текст согласия
+# на обработку — на владельце проекта.
 # ---------------------------------------------------------------------------
 
 _PROJECTS_DIR = Path(_env_str("DEVELOPAID_PROJECTS_DIR", "").strip()
@@ -21223,21 +21253,21 @@ def _projects_remote_url(path: str) -> str:
 def _project_owner(session: str = "", key: str = "") -> int:
     """Кто сохраняет. Опознаём двумя способами, оба сводятся к «это владелец».
 
-    Мини-приложение приходит с подписанной Telegram-сессией — из неё берётся
-    chat_id. Сайт, открытый просто по адресу, сессии не имеет вовсе, поэтому
-    для него есть ключ в переменной окружения; не задан — способ выключён, а
-    не открыт всем.
+    Подписанная Telegram-сессия — из мини-приложения или входа через бота —
+    несёт chat_id: каждый пользователь бота хранит свои проекты в своём
+    каталоге (решение владельца, 15.08.2026). Ключ администратора остаётся
+    входом без телеграма; не задан — способ выключён, а не открыт всем.
     """
+    if session:
+        chat_id = int(_telegram_verify_session(session).get("chat_id") or 0)
+        if chat_id:
+            return chat_id
+        raise HTTPException(status_code=403, detail="В сессии нет владельца — войдите заново.")
     admins = usage_admin_ids()
     if not admins:
         raise HTTPException(
             status_code=503,
             detail="Хранилище проектов не настроено: задайте DEVELOPAID_ADMIN_IDS.")
-    if session:
-        chat_id = int(_telegram_verify_session(session).get("chat_id") or 0)
-        if chat_id in admins:
-            return chat_id
-        raise HTTPException(status_code=403, detail="Хранилище проектов доступно администратору.")
     secret = _env_str("DEVELOPAID_ADMIN_KEY", "").strip()
     # Сравниваем байтами: `compare_digest` отказывается работать со строками,
     # где есть не-ASCII, а ключ владелец задаёт какой захочет.
@@ -21245,8 +21275,9 @@ def _project_owner(session: str = "", key: str = "") -> int:
         return sorted(admins)[0]
     raise HTTPException(
         status_code=403,
-        detail=("Откройте мини-приложение из бота либо задайте DEVELOPAID_ADMIN_KEY "
-                "и введите ключ — иначе сервер не знает, чей это проект."))
+        detail=("Войдите через Telegram (кнопка в «Мои проекты») либо задайте "
+                "DEVELOPAID_ADMIN_KEY и введите ключ — иначе сервер не знает, "
+                "чей это проект."))
 
 
 def _project_dir(owner: int) -> Path:
@@ -21359,8 +21390,11 @@ def _projects_forward(path: str, req: ProjectRequest) -> dict[str, Any] | None:
 def projects_status() -> dict[str, Any]:
     """Есть ли смысл показывать кнопки: настроено ли хранилище и чем входить."""
     return {
-        "configured": bool(usage_admin_ids()),
+        # Хранилище настроено, когда есть чем опознать владельца: подписью
+        # сессии (токен бота) или списком администраторов под ключ.
+        "configured": bool(_telegram_token()) or bool(usage_admin_ids()),
         "accepts_key": bool(_env_str("DEVELOPAID_ADMIN_KEY", "").strip()),
+        "accepts_login": bool(_telegram_token()) and bool(_web_login_bot_username()),
         "remote": bool(_projects_remote_url("/projects/list")),
         "limit": _PROJECTS_LIMIT,
     }
@@ -21397,6 +21431,198 @@ def projects_delete(req: ProjectRequest) -> dict[str, Any]:
     if forwarded is not None:
         return forwarded
     return project_delete(_project_owner(req.session, req.key), req.id)
+
+
+# ---------------------------------------------------------------------------
+# Вход на сайт через телеграм-бота (решение владельца, 15.08.2026).
+#
+# Личность пользователя уже есть у бота — chat_id: на ней держатся проекты,
+# сессии мини-приложения и журнал обращений. Сайт получает ту же личность без
+# второй регистрации: страница просит одноразовый код, человек жмёт Start в
+# боте по ссылке t.me/<бот>?start=login_<код>, бот подтверждает код, страница
+# коротким опросом забирает подписанную сессию — ту же, что у мини-приложения,
+# поэтому и проверка одна (`_telegram_verify_session`).
+#
+# Коды живут на ядре, как и проекты: бот на Render доносит подтверждение
+# внутренним вызовом с подписью токеном бота, страница забирает сессию через
+# пересылку — тем же путём, что /projects/*. Код одноразовый и короткоживущий,
+# сессия входа длинная. Вход мягкий: смотреть и считать можно без него, за
+# входом — сохранение проектов, Платон и PDF (они стоят денег или хранят
+# данные). Без TELEGRAM_BOT_TOKEN весь механизм честно выключен: проверять
+# подпись нечем, и порядок остаётся прежним.
+# ---------------------------------------------------------------------------
+
+_WEB_LOGIN_TTL_SECONDS = 300
+_WEB_LOGIN_SESSION_SECONDS = 30 * 86400
+
+
+def _web_login_dir() -> Path:
+    directory = _PROJECTS_DIR.parent / "web_login"
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
+
+
+def _web_login_path(code: str) -> Path:
+    # Код приходит снаружи: всё, кроме нашего алфавита, — отказ, иначе «../»
+    # уводит запись за пределы каталога (то же правило, что у проектов).
+    if not re.fullmatch(r"[0-9a-f]{12}", str(code or "")):
+        raise HTTPException(status_code=400, detail="Неверный код входа.")
+    return _web_login_dir() / f"{code}.json"
+
+
+def _web_login_sign(code: str, chat_id: int) -> str:
+    """Подпись внутреннего подтверждения: бот на Render и ядро делят токен."""
+    token = _telegram_token()
+    if not token:
+        raise HTTPException(
+            status_code=503,
+            detail="TELEGRAM_BOT_TOKEN не задан — вход через бота недоступен.")
+    raw = f"web-login:{code}:{int(chat_id)}".encode("utf-8")
+    digest = hmac.new(token.encode("utf-8"), raw, hashlib.sha256).digest()[:20]
+    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+
+
+def _web_login_bot_username() -> str:
+    # Ядро до api.telegram.org не достаёт (направление закрыто), getMe там не
+    # проходит — имя бота задаётся переменной. На Render его знает getMe.
+    return (str(_TELEGRAM_RUNTIME.get("username") or "")
+            or _env_str("TELEGRAM_BOT_USERNAME", "").strip())
+
+
+class WebLoginClaimRequest(BaseModel):
+    code: str = ""
+
+
+class WebLoginConfirmRequest(BaseModel):
+    code: str = ""
+    chat_id: int = 0
+    sign: str = ""
+
+
+@app.post("/auth/telegram/start")
+def web_login_start() -> dict[str, Any]:
+    """Одноразовый код входа и ссылка на бота."""
+    if not _telegram_token():
+        raise HTTPException(
+            status_code=503,
+            detail="Вход через Telegram не настроен на этом сервере.")
+    remote = _projects_remote_url("/auth/telegram/start")
+    if remote:
+        data = _core_post(remote, {}, 30.0)
+    else:
+        code = hashlib.sha256(os.urandom(32)).hexdigest()[:12]
+        path = _web_login_path(code)
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(json.dumps({"created": time.time()}), encoding="utf-8")
+        temporary.replace(path)
+        data = {"code": code}
+    username = _web_login_bot_username()
+    if not username:
+        raise HTTPException(
+            status_code=503,
+            detail="Имя бота неизвестно: задайте TELEGRAM_BOT_USERNAME.")
+    return {
+        "code": data["code"],
+        "link": f"https://t.me/{username}?start=login_{data['code']}",
+        "ttl_seconds": _WEB_LOGIN_TTL_SECONDS,
+    }
+
+
+def _web_login_record(code: str) -> tuple[Path, dict[str, Any]]:
+    path = _web_login_path(code)
+    if not path.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail="Код входа не найден или истёк — запросите вход на сайте заново.")
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        record = {}
+    if time.time() - float(record.get("created") or 0) > _WEB_LOGIN_TTL_SECONDS:
+        path.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=410,
+            detail="Код входа истёк — запросите вход на сайте заново.")
+    return path, record
+
+
+def _web_login_confirm(code: str, chat_id: int) -> dict[str, Any]:
+    """Связывает код с chat_id. Зовётся ботом — локально или через ядро."""
+    remote = _projects_remote_url("/auth/telegram/confirm")
+    if remote:
+        return _core_post(
+            remote,
+            {"code": code, "chat_id": int(chat_id),
+             "sign": _web_login_sign(code, chat_id)},
+            30.0)
+    path, record = _web_login_record(code)
+    record["chat_id"] = int(chat_id)
+    record["confirmed"] = time.time()
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(record), encoding="utf-8")
+    temporary.replace(path)
+    return {"ok": True}
+
+
+@app.post("/auth/telegram/confirm")
+def web_login_confirm(req: WebLoginConfirmRequest) -> dict[str, Any]:
+    """Внутренний приём подтверждения от бота: подпись — токеном бота."""
+    expected = _web_login_sign(req.code, req.chat_id)
+    # Байтами: `compare_digest` отказывается от строк с не-ASCII, а снаружи
+    # может прийти что угодно.
+    if not hmac.compare_digest(str(req.sign or "").encode("utf-8"),
+                               expected.encode("utf-8")):
+        raise HTTPException(status_code=403, detail="Подпись подтверждения не сошлась.")
+    if not int(req.chat_id or 0):
+        raise HTTPException(status_code=400, detail="Пустой chat_id.")
+    return _web_login_confirm(req.code, int(req.chat_id))
+
+
+@app.post("/auth/telegram/claim")
+def web_login_claim(req: WebLoginClaimRequest) -> dict[str, Any]:
+    """Страница забирает сессию по коду. Код сгорает при выдаче."""
+    remote = _projects_remote_url("/auth/telegram/claim")
+    if remote:
+        return _core_post(remote, {"code": req.code}, 30.0)
+    path, record = _web_login_record(req.code)
+    chat_id = int(record.get("chat_id") or 0)
+    if not chat_id:
+        return {"ready": False}
+    path.unlink(missing_ok=True)
+    session = _telegram_session(chat_id, [], lifetime_seconds=_WEB_LOGIN_SESSION_SECONDS)
+    return {"ready": True, "session": session, "chat_id": chat_id}
+
+
+def _web_identity_chat_id(session: str) -> int:
+    """chat_id из сессии входа; 0 — сессии нет или подпись не сошлась."""
+    if not str(session or "").strip():
+        return 0
+    try:
+        return int(_telegram_verify_session(session).get("chat_id") or 0)
+    except HTTPException:
+        return 0
+
+
+def _web_access_allowed(session: str, key: str) -> bool:
+    """Пропуск к платным поверхностям: сессия входа или ключ администратора."""
+    if _web_identity_chat_id(session):
+        return True
+    secret = _env_str("DEVELOPAID_ADMIN_KEY", "").strip()
+    return bool(secret and key
+                and hmac.compare_digest(str(key).encode("utf-8"), secret.encode("utf-8")))
+
+
+def _require_web_access(session: str, key: str, what: str) -> None:
+    # Без токена бота проверять подпись нечем — механизм честно выключен, и
+    # поведение остаётся прежним (открытым), а не запертым для всех.
+    if not _telegram_token():
+        return
+    if _web_access_allowed(session, key):
+        return
+    raise HTTPException(
+        status_code=401,
+        detail=(f"{what} — после входа через Telegram. Нажмите «Войти через "
+                "Telegram», подтвердите вход в боте и повторите."))
 
 
 # --- локальные сценарии кнопок ---------------------------------------------
@@ -21863,6 +22089,10 @@ def _plato_selftest_verdict(outcome: dict[str, Any]) -> str:
 @app.post("/agent/chat")
 def agent_chat(req: AgentChatRequest, request: Request) -> dict[str, Any]:
     """Вопрос Платону. Соединение держится ровно до передачи работы опросу."""
+    # Каждый вопрос — платный вызов модели, поэтому с сайта Платон доступен
+    # после входа через Telegram (мягкий гейт: расчёт остаётся открытым).
+    # Бот и /ia/goal-seek сюда не приходят — они зовут функции напрямую.
+    _require_web_access(req.session, req.access_key, "Платон отвечает")
     # Учёт здесь, а не в общей части: бот идёт тем же путём, но его вопросы уже
     # записаны в журнал как сообщения — иначе каждый считался бы дважды.
     usage_track("question", surface="site", text=str(req.message or ""),
@@ -22969,6 +23199,43 @@ function isTelegramWebApp(){
  try{return !!(window.Telegram&&window.Telegram.WebApp&&String(window.Telegram.WebApp.initData||'').length)}catch(e){return false}
 }
 let telegramCalcOverrides={};
+// Вход на сайт через бота: подписанная сессия входа живёт в браузере и несёт
+// ту же личность (chat_id), что сессия мини-приложения. Она подставляется
+// всюду, где нужен владелец: проекты, Платон, PDF. Телеграм-сессия из хеша
+// главнее: внутри мини-приложения вход не нужен.
+const WEB_SESSION_KEY='developaid_web_session';
+function webSession(){try{return localStorage.getItem(WEB_SESSION_KEY)||''}catch(e){return ''}}
+function activeSession(){return telegramSession||webSession()}
+let webLoginBusy=false;
+async function loginViaTelegram(statusEl){
+ if(webLoginBusy)return;
+ webLoginBusy=true;
+ const say=t=>{if(statusEl)statusEl.textContent=t};
+ try{
+  const r=await fetch('/auth/telegram/start',{method:'POST'});
+  const d=await r.json().catch(()=>({}));
+  if(!r.ok)throw new Error(d.detail||'Вход через Telegram недоступен');
+  // Вкладка бота открывается сразу по клику — иначе браузер сочтёт окно
+  // всплывающим. Дальше страница ждёт подтверждения коротким опросом.
+  window.open(d.link,'_blank');
+  say('Подтвердите вход в Telegram и вернитесь на эту вкладку…');
+  const until=Date.now()+2*60*1000;
+  while(Date.now()<until){
+   await new Promise(res=>setTimeout(res,2500));
+   const cr=await fetch('/auth/telegram/claim',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:d.code})});
+   const cd=await cr.json().catch(()=>({}));
+   if(cr.ok&&cd.ready&&cd.session){
+    try{localStorage.setItem(WEB_SESSION_KEY,cd.session)}catch(e){}
+    say('Вход выполнен.');
+    location.reload();
+    return;
+   }
+   if(!cr.ok)throw new Error(cd.detail||'Код входа не принят');
+  }
+  throw new Error('Время ожидания вышло — попробуйте войти ещё раз.');
+ }catch(e){say(String(e.message||e))}
+ finally{webLoginBusy=false}
+}
 const money=v=>(Number(v||0)/1e9).toLocaleString('ru-RU',{minimumFractionDigits:0,maximumFractionDigits:2})+' млрд ₽';
 const socialMoney=v=>{
  const x=Number(v||0);
@@ -23104,7 +23371,7 @@ async function sendAgentMessage(scenario){
   await syncInputsForAgent();
   let data={},response=null;
   try{
-   response=await fetch('/agent/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message,scenario:scenario||'',trace_id:traceId,inputs,tep,rates,phasing,history:aiHistory.slice(-8),selected_view:reportView||'all'})});
+   response=await fetch('/agent/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message,scenario:scenario||'',trace_id:traceId,inputs,tep,rates,phasing,history:aiHistory.slice(-8),selected_view:reportView||'all',session:activeSession(),access_key:projectsAdminKey||''})});
    try{data=await response.json()}catch(e){}
    if(response.ok&&data&&data.pending){
     // Сервер не держит соединение: работа принята и идёт, ответ ждёт под
@@ -23128,6 +23395,13 @@ async function sendAgentMessage(scenario){
    else if(late&&late.detail&&!data.detail)data={detail:late.detail};
   }
   thinking.remove();
+  if(response&&response.status===401){
+   // Мягкий гейт: вопрос требует входа — кнопка прямо в чате, а не совет
+   // искать её где-то в другом окне.
+   appendAiMessage('assistant',String(data.detail||'Платон доступен после входа через Telegram.'),'error');
+   appendAiLoginButton();
+   return;
+  }
   if(!response.ok)throw new Error(data.detail||AI_UNAVAILABLE);
   const answer=String(data.answer||'Ответ не получен.');
   appendAiMessage('assistant',answer+(data.cached?'\n\n*Ответ из кэша: тот же вопрос по тем же вводным за последние 10 минут.*':''));
@@ -23136,6 +23410,21 @@ async function sendAgentMessage(scenario){
  finally{clearInterval(stagePoll);aiBusy=false;aiSendBtn.disabled=false;aiInput.focus()}
 }
 const AI_UNAVAILABLE='Платон Сергеевич временно не получил ответ от AI-сервиса. Расчётная модель продолжает работать. Повторите вопрос через несколько секунд.';
+
+function appendAiLoginButton(){
+ const wrap=document.createElement('div');
+ wrap.style.cssText='margin:8px 0';
+ const btn=document.createElement('button');
+ btn.className='btn dark';
+ btn.textContent='Войти через Telegram';
+ const status=document.createElement('div');
+ status.style.cssText='font-size:12px;color:#777;margin-top:6px';
+ btn.onclick=()=>loginViaTelegram(status);
+ wrap.appendChild(btn);
+ wrap.appendChild(status);
+ aiMessages.appendChild(wrap);
+ aiMessages.scrollTop=aiMessages.scrollHeight;
+}
 
 async function awaitAgentResult(traceId,thinking,accepted){
  // Ответ ждёт на сервере под номером запуска. Опрос короткий и частый: его
@@ -26161,7 +26450,8 @@ function currentPdfReportPayload(cads=[]){
 
 async function exportReportPdf(){
  await calculate();
- const response=await fetch('/report/pdf',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(currentPdfReportPayload())});
+ const response=await fetch('/report/pdf',{method:'POST',headers:{'Content-Type':'application/json'},
+  body:JSON.stringify(Object.assign({session:activeSession(),access_key:projectsAdminKey||''},currentPdfReportPayload()))});
  if(!response.ok){let detail='Не удалось сформировать PDF';try{const x=await response.json();detail=x.detail||detail}catch(e){}alert(detail);return;}
  const blob=await response.blob();const disposition=response.headers.get('Content-Disposition')||'';const utf=disposition.match(/filename\*=UTF-8''([^;]+)/i);const filename=utf?decodeURIComponent(utf[1]):`DevelopAid_Отчет_${new Date().toISOString().slice(0,10)}.pdf`;const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=filename;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1500);
 }
@@ -26389,7 +26679,7 @@ let projectsAdminKey=localStorage.getItem('plato_projects_key')||'';
 
 async function projectsCall(path,body){
  const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},
-  body:JSON.stringify(Object.assign({session:telegramSession,key:projectsAdminKey},body||{}))});
+  body:JSON.stringify(Object.assign({session:activeSession(),key:projectsAdminKey},body||{}))});
  const data=await response.json().catch(()=>({}));
  if(!response.ok)throw new Error(data.detail||'Хранилище недоступно');
  return data;
@@ -26399,13 +26689,18 @@ async function projectsCall(path,body){
 // ключа не требуют. Прежде она появлялась только при настроенном хранилище —
 // вместе с ним пропали бы и примеры, а они витрина, а не чужие данные.
 let projectsStorageReady=false;
+let projectsAcceptsKey=false;
+let projectsAcceptsLogin=false;
 
 async function initProjects(){
  document.getElementById('projectsButton').style.display='';
  try{
   const status=await (await fetch('/projects/status')).json();
-  // Ключ спрашиваем только там, где сессии нет: в мини-приложении она есть.
-  projectsStorageReady=!!status.configured&&(!!telegramSession||!!status.accepts_key);
+  projectsAcceptsKey=!!status.accepts_key;
+  projectsAcceptsLogin=!!status.accepts_login;
+  // Хранилище показывается, когда есть чем войти: сессия (мини-приложение
+  // или вход через бота), сам вход через бота или ключ администратора.
+  projectsStorageReady=!!status.configured&&(!!activeSession()||projectsAcceptsLogin||projectsAcceptsKey);
  }catch(e){projectsStorageReady=false}
  const actions=document.getElementById('projectsStorageActions');
  if(actions)actions.style.display=projectsStorageReady?'inline-flex':'none';
@@ -26437,6 +26732,62 @@ async function saveProjectToServer(){
  }catch(e){alert(String(e.message||e))}
 }
 
+function renderProjectsLogin(){
+ // Панель входа живёт рядом с таблицей, не затирая её: после входа таблица
+ // нужна той же самой.
+ const stored=document.getElementById('projectsStored');
+ if(!stored)return;
+ let box=document.getElementById('projectsLoginBox');
+ if(!box){
+  box=document.createElement('div');
+  box.id='projectsLoginBox';
+  box.style.cssText='border:1px solid var(--line);padding:16px;margin-bottom:14px';
+  const note=document.createElement('div');
+  note.style.cssText='font-size:12px;color:#555;margin-bottom:10px';
+  note.textContent='Проекты хранятся на сервере в России и привязаны к вашему Telegram. '
+   +'Войдите через бота — и сохраняйте расчёты с любого устройства. '
+   +'После входа станут доступны Платон и PDF-отчёт.';
+  box.appendChild(note);
+  const login=document.createElement('button');
+  login.className='btn dark';
+  login.textContent='Войти через Telegram';
+  const status=document.createElement('div');
+  status.style.cssText='font-size:12px;color:#777;margin-top:10px';
+  login.onclick=()=>loginViaTelegram(status);
+  if(!projectsAcceptsLogin)login.style.display='none';
+  box.appendChild(login);
+  if(projectsAcceptsKey){
+   const keyBtn=document.createElement('button');
+   keyBtn.className='btn';
+   keyBtn.style.marginLeft='10px';
+   keyBtn.textContent='У меня ключ администратора';
+   keyBtn.onclick=enterProjectsKey;
+   box.appendChild(keyBtn);
+  }
+  box.appendChild(status);
+  stored.insertBefore(box,stored.firstChild);
+ }
+ box.style.display='';
+ const scroll=stored.querySelector('.scroll');
+ if(scroll)scroll.style.display='none';
+}
+
+function hideProjectsLogin(){
+ const box=document.getElementById('projectsLoginBox');
+ if(box)box.style.display='none';
+ const stored=document.getElementById('projectsStored');
+ const scroll=stored&&stored.querySelector('.scroll');
+ if(scroll)scroll.style.display='';
+}
+
+function enterProjectsKey(){
+ const key=prompt('Ключ администратора (DEVELOPAID_ADMIN_KEY)');
+ if(!key)return;
+ projectsAdminKey=key.trim();
+ localStorage.setItem('plato_projects_key',projectsAdminKey);
+ openProjects();
+}
+
 async function openProjects(){
  // Окно открывается сразу: примеры в нём есть всегда, и держать человека
  // перед запросом ключа ради витрины незачем. Список сохранённых
@@ -26448,20 +26799,20 @@ async function openProjects(){
   return;
  }
  if(stored)stored.style.display='';
- // Ключ спрашиваем один раз и держим в браузере: это вход, а не пароль к
- // каждому действию.
- if(!telegramSession&&!projectsAdminKey){
-  const key=prompt('Ключ администратора (DEVELOPAID_ADMIN_KEY)');
-  if(!key)return;
-  projectsAdminKey=key.trim();localStorage.setItem('plato_projects_key',projectsAdminKey);
+ // Входа нет — предлагаем его, а не запираем дверь: кнопка «Войти через
+ // Telegram» и, где настроен, ключ администратора.
+ if(!activeSession()&&!projectsAdminKey){
+  renderProjectsLogin();
+  return;
  }
+ hideProjectsLogin();
  let data;
  try{data=await projectsCall('/projects/list',{})}
  catch(e){
   // Неверный ключ запирал дверь снаружи: список не открывался, а кнопка
   // «Сменить ключ» жила внутри него. Спрашиваем прямо здесь, иначе
   // единственный выход — консоль браузера, которой на телефоне нет.
-  if(!telegramSession){
+  if(!activeSession()){
    const again=prompt(String(e.message||e)+'\n\nВведите ключ ещё раз:',projectsAdminKey||'');
    if(again===null)return;
    projectsAdminKey=again.trim();
