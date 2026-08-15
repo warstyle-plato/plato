@@ -1,0 +1,80 @@
+/* Руководство /guide — те же дизайн-токены, что у страницы модели. */
+:root{
+  --black:#080808;--ink:#171717;--muted:#727272;--line:#dedede;--soft:#f5f5f3;
+  --paper:#ffffff;--warn:#8a4b08;
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;
+}
+*{box-sizing:border-box}
+body{margin:0;background:#f2f2ef;color:var(--ink)}
+.gshell{max-width:1280px;margin:0 auto;background:var(--paper);min-height:100vh}
+
+.gtop{display:flex;align-items:center;gap:16px;padding:16px 28px;border-bottom:8px solid #050505;flex-wrap:wrap}
+.gbrand{font-size:24px;font-weight:800;letter-spacing:.28em}
+.gtitle{font-size:15px;font-weight:620}
+.gver{color:var(--muted);font-weight:400;font-size:12px;margin-left:6px}
+.gback{margin-left:auto;text-decoration:none}
+
+.gbtn{display:inline-block;border:1px solid #111;background:#fff;padding:9px 13px;color:#111;font-weight:700;cursor:pointer;font-size:13px;text-decoration:none}
+.gbtn.dark{background:#070707;color:#fff}
+.gbtn:hover{opacity:.8}
+
+.gbody{display:grid;grid-template-columns:250px 1fr;gap:0}
+.gnav{border-right:1px solid var(--line);padding:20px 18px;position:sticky;top:0;align-self:start;max-height:100vh;overflow:auto}
+.gnav input[type=search]{width:100%;border:1px solid #cfcfcf;padding:8px 10px;font-size:13px;border-radius:0}
+.gnav input[type=search]:focus{outline:2px solid #111;outline-offset:-1px}
+.gprogress{height:4px;background:#eee;margin:12px 0}
+#gprogressBar{height:100%;width:0;background:#070707;transition:width .3s}
+.gnav nav a{display:block;padding:9px 10px;color:#555;text-decoration:none;font-size:13px;font-weight:620;border-left:3px solid transparent}
+.gnav nav a:hover{color:#000;background:var(--soft)}
+.gnav nav a.active{color:#000;border-left-color:#000;background:var(--soft)}
+.gnav nav a.gmiss{display:none}
+
+.gmain{padding:28px 34px 60px;min-width:0}
+.gsection{margin-bottom:44px;scroll-margin-top:16px}
+.gsection h1{font-size:24px;margin:0 0 18px;font-weight:640}
+.gsection h2{font-size:19px;margin:0 0 14px;font-weight:640;padding-top:8px;border-top:1px solid #111}
+.gsection h3{font-size:14px;margin:22px 0 10px;text-transform:uppercase;letter-spacing:.08em;color:#555}
+.gsection p,.gsection li{font-size:14px;line-height:1.6}
+.glead{font-size:15px}
+.gnote{border:1px solid var(--line);background:#fafaf8;padding:11px 14px;font-size:12px;color:#555}
+.gwarn{border:1px solid #e8c98a;background:#fff7e8;padding:11px 14px;font-size:12px;color:var(--warn)}
+.gverdict{font-size:16px}
+.ui{white-space:nowrap}
+
+.gcards{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:16px 0}
+.gcard{border:1px solid var(--line);padding:18px}
+.gcard-title{font-size:11px;text-transform:uppercase;letter-spacing:.12em;color:#777;font-weight:750;margin-bottom:10px}
+
+.gscroll{overflow-x:auto}
+.gtable{width:100%;border-collapse:collapse;font-size:13px;margin:10px 0}
+.gtable th,.gtable td{padding:9px 10px;border-bottom:1px solid #e2e2e2;text-align:left;vertical-align:top}
+.gtable th{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:#777}
+.gtable .gl{color:#555;width:40%}
+
+.gtabs{display:flex;gap:6px;flex-wrap:wrap;border-bottom:1px solid var(--line);padding-bottom:0;margin-bottom:16px}
+.gtabs [role=tab]{border:0;background:none;padding:11px 10px 9px;font-size:13px;font-weight:620;color:#777;cursor:pointer;border-bottom:3px solid transparent;white-space:nowrap}
+.gtabs [role=tab][aria-selected=true]{color:#000;border-bottom-color:#000}
+
+.gstepper{border:1px solid var(--line);padding:18px}
+.gstep-progress{height:4px;background:#eee;margin-bottom:14px}
+#gstepBar{height:100%;width:0;background:#070707;transition:width .3s}
+.gstep-nav{display:flex;align-items:center;gap:14px;margin-bottom:8px}
+#gstepLabel{font-size:12px;color:#777;font-weight:700}
+.gstep h3{margin:12px 0 12px;text-transform:none;letter-spacing:0;font-size:16px;color:#111}
+.gstep-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.gstep-grid>div{border:1px solid var(--line);padding:12px;font-size:13px;line-height:1.55}
+.gdone{display:inline-flex;align-items:center;gap:8px;margin-top:14px;font-size:13px;font-weight:700;cursor:pointer}
+.gdone input{transform:scale(1.2)}
+
+@media(max-width:960px){
+  .gbody{grid-template-columns:1fr}
+  .gnav{position:static;max-height:none;border-right:0;border-bottom:1px solid var(--line);padding:14px 20px}
+  .gnav nav{display:flex;flex-wrap:wrap;gap:2px}
+  .gnav nav a{border-left:0;border-bottom:3px solid transparent;padding:7px 8px}
+  .gnav nav a.active{border-bottom-color:#000;background:none}
+  .gmain{padding:20px 20px 48px}
+  .gcards{grid-template-columns:1fr}
+  .gstep-grid{grid-template-columns:1fr}
+  .gtop{padding:14px 20px}
+  .gback{width:100%;text-align:center;margin-left:0}
+}

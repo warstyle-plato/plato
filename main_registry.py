@@ -2,6 +2,7 @@
 
 import main as _base
 from developaid_v2 import install as install_v2
+from guide import install as install_guide
 from ia_preview import install as install_ia_preview
 from mpt_bot_menu import install as install_mpt_bot_menu
 from mpt_extension import install as install_mpt
@@ -15,3 +16,5 @@ registry = install(_base)
 install_v2(app)
 # Тестовый адрес новой информационной архитектуры: та же PAGE, другой порядок.
 install_ia_preview(app, core)
+# Руководство пользователя — обычная страница приложения на /guide.
+install_guide(app, core)
