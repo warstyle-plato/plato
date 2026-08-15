@@ -15,7 +15,10 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-os.environ.setdefault("TELEGRAM_BOT_TOKEN", "test-token")
+# Токен ставит фикстура через monkeypatch — на уровне модуля его ставить
+# нельзя: pytest импортирует все файлы при сборе, значение прилипает ко всему
+# процессу, и гейт входа (Платон/PDF — за телеграм-входом) включается для
+# чужих тестов: 29 падений полного прогона при зелёных файлах поодиночке.
 
 import main as wrapper  # noqa: E402
 
