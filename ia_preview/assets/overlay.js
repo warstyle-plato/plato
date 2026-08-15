@@ -383,6 +383,10 @@
   var suggestBox = null;
   var suggestField = null;
   var originalObtainTep = null;
+  // Текст, который человек набрал сам, — до подмены подсказкой. Бот находит
+  // «Мишина 46» именно по нему: в НСПД уходит строка как есть. Это запасной
+  // ключ поиска на случай, когда нормализованная форма DaData не распознана.
+  var lastTypedQuery = '';
 
   function hideSuggest() { if (suggestBox) suggestBox.style.display = 'none'; }
 
@@ -390,7 +394,8 @@
     if (!suggestBox || !items.length) { hideSuggest(); return false; }
     suggestBox.innerHTML = '';
     // Участки с кадастром помечены: клик по ним срабатывает всегда, а дом
-    // без кадастра зависит от точки НСПД, которая сейчас отвечает пусто.
+    // без кадастра идёт через текстовый поиск НСПД (обе формы адреса —
+    // resolveHouse) с фолбэком на координаты.
     var hasCad = items.some(function (i) { return i.cadastral_number; });
     if (hasCad) {
       var note = document.createElement('div');
@@ -420,15 +425,8 @@
           hideSuggest();
           if (typeof window.obtainTep === 'function') window.obtainTep();
         } else if (houseLevel) {
-          // Координаты здесь не работают: точечный поиск НСПД со стенда пуст
-          // даже там, где участок точно есть (Мишина 46 — проверено
-          // владельцем). Полный адрес дома идёт серверной цепочкой напрямую:
-          // она достаёт участок через кадастр соседней подсказки. Обход
-          // обёртки обязателен, иначе адрес снова откроет список — петля.
-          suggestField.value = item.label || '';
           hideSuggest();
-          if (originalObtainTep) originalObtainTep();
-          else if (typeof window.obtainTep === 'function') window.obtainTep();
+          resolveHouse(item.label || '');
         } else {
           suggestField.value = (item.label || '') + ', ';
           suggestField.focus();
@@ -448,6 +446,84 @@
       .catch(function () { return []; });
   }
 
+  /* Клик по дому без кадастра решается проверкой, а не верой в подсказку.
+     Бот находит «Мишина 46», потому что в НСПД уходит строка, набранная
+     человеком; нормализованную форму DaData («г Москва, ул Мишина, д 46»)
+     тот же текстовый поиск понимает хуже. Поэтому обе формы проверяются тем
+     же запросом /land/lookup, что и штатная цепочка (удачный ответ ложится в
+     серверный кэш — повторный запрос цепочки бесплатен). Сработала
+     подсказка — идём ей; сработал только набранный текст — идём им и говорим
+     об этом вслух; не нашлось ничего — штатная цепочка доведёт до координат
+     дома и своих предупреждений. */
+  function probeLookup(query) {
+    return fetch('/land/lookup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query: query, limit: 30 })
+    }).then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (data) { return data ? Number(data.found_count || 0) > 0 : null; })
+      // Сеть упала — проверка не судья: null значит «не знаю», не «нет».
+      .catch(function () { return null; });
+  }
+
+  /* Чистая функция решения: по итогам двух проверок выбирает строку поиска
+     и текст предупреждения. Вынесена из resolveHouse, чтобы тест гонял её
+     через node без DOM. byLabel/byTyped: true — нашлось, false — пусто,
+     null — проверка недоступна. */
+  function houseQueryDecision(label, typed, byLabel, byTyped) {
+    if (byLabel !== false || !typed || typed === label) return { query: label, note: '' };
+    if (byTyped) {
+      return {
+        query: typed,
+        note: 'Подсказку «' + label + '» поиск НСПД не распознал — участок найден по '
+          + 'введённому вами тексту «' + typed + '», как ищет бот. '
+          + 'Проверьте адрес в карточке участка.'
+      };
+    }
+    return {
+      query: label,
+      note: 'Ни подсказка, ни введённый текст поиском НСПД не нашлись — '
+        + 'участок ищется по координатам дома.'
+    };
+  }
+
+  function suggestNote(text) {
+    var note = document.getElementById('iaSuggestNote');
+    if (!note) {
+      if (!text || !suggestField || !suggestField.parentNode) return;
+      note = document.createElement('div');
+      note.id = 'iaSuggestNote';
+      note.className = 'ia-suggest-note';
+      suggestField.parentNode.appendChild(note);
+    }
+    note.textContent = text || '';
+    note.style.display = text ? 'block' : 'none';
+  }
+
+  function runObtainTep(value) {
+    suggestField.value = value;
+    // Обход обёртки обязателен, иначе адрес снова откроет список — петля.
+    if (originalObtainTep) originalObtainTep();
+    else if (typeof window.obtainTep === 'function') window.obtainTep();
+  }
+
+  function resolveHouse(label) {
+    var typed = lastTypedQuery;
+    suggestNote('');
+    var status = document.getElementById('cadastralStatus');
+    if (status) status.textContent = 'Проверяю адрес в НСПД…';
+    probeLookup(label).then(function (byLabel) {
+      // Вторая проверка нужна, только когда первая ответила пустотой,
+      // а пробовать есть что; решение всё равно принимает houseQueryDecision.
+      var needTyped = byLabel === false && typed && typed !== label;
+      (needTyped ? probeLookup(typed) : Promise.resolve(null)).then(function (byTyped) {
+        var decision = houseQueryDecision(label, typed, byLabel, byTyped);
+        suggestNote(decision.note);
+        runObtainTep(decision.query);
+      });
+    });
+  }
+
   function wireSuggest() {
     suggestField = document.getElementById('cadastralNumbers');
     if (!suggestField) { missing.push('поле участка — #cadastralNumbers'); return; }
@@ -463,6 +539,7 @@
         var query = suggestField.value.trim();
         if (timer) clearTimeout(timer);
         if (query.length < 3 || /\d{2}:\d{2}:\d{6,8}/.test(query)) { hideSuggest(); return; }
+        lastTypedQuery = query;
         timer = setTimeout(function () {
           lastQuery = query;
           fetchSuggest(query).then(function (items) {
@@ -494,6 +571,7 @@
         var cadastralLike = /\d{2}:\d{2}:\d{6,8}:\d+/.test(raw);
         var pointLike = /^-?\d{1,3}[.,]\d+\s*,\s*-?\d{1,3}[.,]\d+$/.test(raw);
         if (raw && suggestReady && !cadastralLike && !pointLike) {
+          lastTypedQuery = raw;
           var items = await fetchSuggest(raw);
           if (items.length && renderSuggestItems(items)) {
             var status = document.getElementById('cadastralStatus');
