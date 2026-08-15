@@ -1694,6 +1694,9 @@ def _env_float(name: str, default: float) -> float:
 _NSPD_BASE_URL = (_env_str("NSPD_BASE_URL", "https://nspd.gov.ru")).rstrip("/")
 _NSPD_TIMEOUT_SECONDS = _env_float("NSPD_TIMEOUT_SECONDS", 25.0)
 _NSPD_LAND_THEMATIC_ID = 1
+# Слой «Земельные участки из ЕГРН» на карте НСПД. Точечный поиск идёт через
+# WMS GetFeatureInfo этого слоя — тем же запросом, что клик по карте на сайте.
+_NSPD_LANDS_LAYER_ID = 36048
 _NOMINATIM_BASE_URL = (_env_str("NOMINATIM_BASE_URL", "https://nominatim.openstreetmap.org")).rstrip("/")
 _LAND_LOOKUP_USER_AGENT = USER_AGENT
 _LAND_LOOKUP_MAX_RESULTS = int(_env_float("LAND_LOOKUP_MAX_RESULTS", 30))
@@ -2141,21 +2144,55 @@ def _nspd_search_features(query: str) -> list[dict[str, Any]]:
 
 
 def _nspd_point_features(lat: float, lng: float) -> list[dict[str, Any]]:
-    """Участки в точке: сначала поиск по координатам, затем пространственный запрос."""
+    """Участки в точке: сначала поиск по координатам, затем WMS-запрос слоя ЗУ.
+
+    Текстовый поиск «lat lng» и прежний GET /api/geoportal/v1/intersects на
+    точках отвечают пустотой даже там, где участок точно есть. Рабочий путь —
+    тот, которым сама карта НСПД отвечает на клик: WMS GetFeatureInfo слоя
+    «Земельные участки из ЕГРН» по пикселю тайла (сверено с pynspd 1.1.13).
+    """
     try:
         features = _nspd_search_features(f"{lat} {lng}")
     except HTTPException:
         features = []
     if features:
         return features
-    merc_x = lng * 20037508.34 / 180.0
-    merc_y = math.log(math.tan((90.0 + lat) * math.pi / 360.0)) / (math.pi / 180.0)
-    merc_y = merc_y * 20037508.34 / 180.0
-    geom = json.dumps({"type": "Point", "coordinates": [merc_x, merc_y]}, ensure_ascii=False)
-    params = urllib.parse.urlencode({"typeIntersect": "lands", "geom": geom})
+    # Тайл web-меркатора, в который попадает точка; zoom 24 — максимум точности.
+    zoom = 24
+    tiles = 1 << zoom
+    tile_size = 512
+    lat_rad = math.radians(lat)
+    xtile = int((lng + 180.0) / 360.0 * tiles)
+    ytile = int((1.0 - math.asinh(math.tan(lat_rad)) / math.pi) / 2.0 * tiles)
+    west = xtile / tiles * 360.0 - 180.0
+    east = (xtile + 1) / tiles * 360.0 - 180.0
+    north = math.degrees(math.atan(math.sinh(math.pi * (1.0 - 2.0 * ytile / tiles))))
+    south = math.degrees(math.atan(math.sinh(math.pi * (1.0 - 2.0 * (ytile + 1) / tiles))))
+    i = int((lng - west) / (east - west) * tile_size)
+    j = int((lat - south) / (north - south) * tile_size)
+    params = urllib.parse.urlencode({
+        "REQUEST": "GetFeatureInfo",
+        "SERVICE": "WMS",
+        "VERSION": "1.3.0",
+        "INFO_FORMAT": "application/json",
+        "FORMAT": "image/png",
+        "STYLES": "",
+        "TRANSPARENT": "true",
+        "QUERY_LAYERS": _NSPD_LANDS_LAYER_ID,
+        "LAYERS": _NSPD_LANDS_LAYER_ID,
+        "WIDTH": tile_size,
+        "HEIGHT": tile_size,
+        "I": i,
+        # Пиксели WMS отсчитываются от верхнего края, интерполяция — от южного.
+        "J": tile_size - j,
+        "CRS": "EPSG:4326",
+        "BBOX": f"{west},{south},{east},{north}",
+        # Без FEATURE_COUNT сервис отдаёт один объект даже на границе участков.
+        "FEATURE_COUNT": "10",
+    })
     try:
         payload = _land_fetch_json(
-            f"{_NSPD_BASE_URL}/api/geoportal/v1/intersects?{params}",
+            f"{_NSPD_BASE_URL}/api/aeggis/v3/{_NSPD_LANDS_LAYER_ID}/wms?{params}",
             service="Сервис НСПД",
         )
     except HTTPException:
