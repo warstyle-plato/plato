@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.90"
+VERSION = "0.17.91"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -17042,6 +17042,18 @@ def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
             if key in p_tep:
                 p_tep[key] = copy.deepcopy(split_row)
 
+        # Поделённую строку паркинга нельзя отдавать движку вместе с общим
+        # решением по машино-местам: атомарный расчёт считает поле «решение
+        # проекта» главнее ТЭП и в каждой очереди перетирал долю полным итогом.
+        # На Мытищах 2 723 места превращались в 8 169 — ровно втрое, — и то же
+        # самое происходило с подземной ГНС. Доля очереди объявляется здесь и
+        # тем же полем, иначе движок посчитает по своему.
+        if not b(p_inputs, "underground_parking_disabled"):
+            parking_row = p_tep.get("underground_parking") or {}
+            if n(x_master, "underground_manual_spaces") > 0 or n(x_master, "underground_manual_gns_sqm") > 0:
+                p_inputs["underground_manual_spaces"] = n(parking_row, "units")
+                p_inputs["underground_manual_gns_sqm"] = n(parking_row, "gns")
+
         # Cost inflation belongs to the queue wrapper, not to the atomic engine.
         cost_inflation_factor = _phase_cost_inflation_factor(phasing, offset)
         for cost_key in _PHASE_INFLATABLE_INPUTS:
@@ -17090,6 +17102,16 @@ def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
             phase_start_date = d(p_inputs["project_start"])
             p_inputs["social_comp_date"] = max(shifted_comp_date, phase_start_date).isoformat()
             p_inputs["kindergarten_places"] = p_inputs["school_places"] = p_inputs["clinic_capacity"] = 0
+            # Места обнулялись, а строки ТЭП соцобъектов оставались в каждой
+            # очереди целиком: свод показывал ДОУ и СОШ трижды, и ГНС проекта
+            # росла на 29 тыс. м² из воздуха. Денег это не стоило — соцобъекты
+            # в этом режиме не строятся, — но по ГНС считаются все удельные
+            # показатели. Объект остаётся в первой очереди, чтобы свод сходился
+            # с исходным ТЭП, как у офисов и наземного паркинга.
+            if idx > 0:
+                for social_key in ("kindergarten", "school", "clinic"):
+                    if social_key in p_tep:
+                        p_tep[social_key] = _zero_tep_row(p_tep[social_key])
             if master_import:
                 p_inputs["_glavapu_import"] = {"normalized": {
                     "social_compensation_kindergarten_mln": n(master_import,"social_compensation_kindergarten_mln")*sw,
