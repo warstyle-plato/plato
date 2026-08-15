@@ -377,76 +377,116 @@
   /* Подсказки адресов по мере ввода — как на обычных сайтах (замечание
      владельца). Работают только при заданном DADATA_API_KEY на сервере:
      без ключа сервер отвечает «выключено», и слой не рисует ничего. Клик по
-     строке подставляет кадастровый номер (или адрес) и сразу запускает
-     «Получить ТЭП». */
+     дому запускает расчёт (кадастром или координатами), клик по городу или
+     улице уточняет запрос. */
+  var suggestReady = false;
+  var suggestBox = null;
+  var suggestField = null;
+
+  function hideSuggest() { if (suggestBox) suggestBox.style.display = 'none'; }
+
+  function renderSuggestItems(items) {
+    if (!suggestBox || !items.length) { hideSuggest(); return false; }
+    suggestBox.innerHTML = '';
+    items.forEach(function (item) {
+      var row = document.createElement('button');
+      row.type = 'button';
+      var label = document.createElement('span');
+      label.textContent = item.label || '';
+      row.appendChild(label);
+      if (item.cadastral_number) {
+        var cad = document.createElement('small');
+        cad.textContent = item.cadastral_number;
+        row.appendChild(cad);
+      }
+      row.onclick = function () {
+        // Дом — запускаем расчёт: кадастром, а без него координатами дома.
+        // Город или улица — только уточняем запрос: клик по «Мытищи»
+        // вставлял координаты центра, и точечный поиск собирал 20 случайных
+        // участков вокруг.
+        var houseLevel = /,\s*(д|уч|вл|двлд)[\s.]/.test(item.label || '');
+        if (item.cadastral_number) {
+          suggestField.value = item.cadastral_number;
+          hideSuggest();
+          if (typeof window.obtainTep === 'function') window.obtainTep();
+        } else if (houseLevel && item.lat && item.lng) {
+          suggestField.value = item.lat + ', ' + item.lng;
+          hideSuggest();
+          if (typeof window.obtainTep === 'function') window.obtainTep();
+        } else {
+          suggestField.value = (item.label || '') + ', ';
+          suggestField.focus();
+          suggestField.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+      };
+      suggestBox.appendChild(row);
+    });
+    suggestBox.style.display = 'block';
+    return true;
+  }
+
+  function fetchSuggest(query) {
+    return fetch('/ia/suggest?q=' + encodeURIComponent(query))
+      .then(function (r) { return r.json(); })
+      .then(function (data) { return (data && data.items) || []; })
+      .catch(function () { return []; });
+  }
+
   function wireSuggest() {
-    var field = document.getElementById('cadastralNumbers');
-    if (!field) { missing.push('поле участка — #cadastralNumbers'); return; }
+    suggestField = document.getElementById('cadastralNumbers');
+    if (!suggestField) { missing.push('поле участка — #cadastralNumbers'); return; }
     fetch('/ia/suggest?q=').then(function (r) { return r.json(); }).then(function (probe) {
       if (!probe || !probe.available) return;
-      var box = document.createElement('div');
-      box.className = 'ia-suggest';
-      field.parentNode.style.position = 'relative';
-      field.parentNode.appendChild(box);
+      suggestReady = true;
+      suggestBox = document.createElement('div');
+      suggestBox.className = 'ia-suggest';
+      suggestField.parentNode.style.position = 'relative';
+      suggestField.parentNode.appendChild(suggestBox);
       var timer = null, lastQuery = '';
-      var hide = function () { box.style.display = 'none'; };
-      field.addEventListener('input', function () {
-        var query = field.value.trim();
+      suggestField.addEventListener('input', function () {
+        var query = suggestField.value.trim();
         if (timer) clearTimeout(timer);
-        if (query.length < 3 || /\d{2}:\d{2}:\d{6,8}/.test(query)) { hide(); return; }
+        if (query.length < 3 || /\d{2}:\d{2}:\d{6,8}/.test(query)) { hideSuggest(); return; }
         timer = setTimeout(function () {
           lastQuery = query;
-          fetch('/ia/suggest?q=' + encodeURIComponent(query))
-            .then(function (r) { return r.json(); })
-            .then(function (data) {
-              if (field.value.trim() !== lastQuery) return;
-              var items = (data && data.items) || [];
-              if (!items.length) { hide(); return; }
-              box.innerHTML = '';
-              items.forEach(function (item) {
-                var row = document.createElement('button');
-                row.type = 'button';
-                var label = document.createElement('span');
-                label.textContent = item.label || '';
-                row.appendChild(label);
-                if (item.cadastral_number) {
-                  var cad = document.createElement('small');
-                  cad.textContent = item.cadastral_number;
-                  row.appendChild(cad);
-                }
-                row.onclick = function () {
-                  // Дом — запускаем расчёт: кадастром, а без него координатами
-                  // (точка находит участок под домом, текст адреса — нет).
-                  // Город или улица — только уточняем запрос: клик по «Мытищи»
-                  // вставлял координаты центра города, и точечный поиск
-                  // мгновенно собирал 20 случайных участков вокруг.
-                  var houseLevel = /,\s*д[\s.]/.test(item.label || '');
-                  if (item.cadastral_number) {
-                    field.value = item.cadastral_number;
-                    hide();
-                    if (typeof window.obtainTep === 'function') window.obtainTep();
-                  } else if (houseLevel && item.lat && item.lng) {
-                    field.value = item.lat + ', ' + item.lng;
-                    hide();
-                    if (typeof window.obtainTep === 'function') window.obtainTep();
-                  } else {
-                    field.value = (item.label || '') + ', ';
-                    field.focus();
-                    field.dispatchEvent(new Event('input', { bubbles: true }));
-                  }
-                };
-                box.appendChild(row);
-              });
-              box.style.display = 'block';
-            })
-            .catch(hide);
+          fetchSuggest(query).then(function (items) {
+            if (suggestField.value.trim() !== lastQuery) return;
+            renderSuggestItems(items);
+          });
         }, 300);
       });
       document.addEventListener('click', function (event) {
-        if (event.target !== field && !box.contains(event.target)) hide();
+        if (event.target !== suggestField && suggestBox && !suggestBox.contains(event.target)) hideSuggest();
       });
-      field.addEventListener('keydown', function (event) { if (event.key === 'Escape') hide(); });
+      suggestField.addEventListener('keydown', function (event) { if (event.key === 'Escape') hideSuggest(); });
     }).catch(function () { });
+  }
+
+  /* «Получить ТЭП» со свободным текстом сначала даёт выбор. Путь свободного
+     текста в движке жадный: геокодер возвращает кандидатов «Мишина 46» по
+     всей стране, каждый превращается в участок, и в поле ссыпались кадастры
+     Москвы, Калининграда и Татарстана разом (скриншот владельца). Выбор из
+     списка — вместо молчаливого сбора участков всех регионов. */
+  function wrapObtainTep() {
+    var original = window.obtainTep;
+    if (typeof original !== 'function') { missing.push('функция obtainTep не найдена'); return; }
+    window.obtainTep = async function () {
+      try {
+        var field = document.getElementById('cadastralNumbers');
+        var raw = (field && field.value || '').trim();
+        var cadastralLike = /\d{2}:\d{2}:\d{6,8}:\d+/.test(raw);
+        var pointLike = /^-?\d{1,3}[.,]\d+\s*,\s*-?\d{1,3}[.,]\d+$/.test(raw);
+        if (raw && suggestReady && !cadastralLike && !pointLike) {
+          var items = await fetchSuggest(raw);
+          if (items.length && renderSuggestItems(items)) {
+            var status = document.getElementById('cadastralStatus');
+            if (status) status.textContent = 'Уточните адрес — выберите вариант из списка под полем.';
+            return null;
+          }
+        }
+      } catch (error) { /* выбор не важнее запуска */ }
+      return original.apply(this, arguments);
+    };
   }
 
   /* ------------------------------------------------------------------ */
@@ -1179,6 +1219,7 @@
     step('подтверждение сброса', guardReset);
     step('панель участка', splitSite);
     step('подсказки адресов', wireSuggest);
+    step('свободный текст даёт выбор', wrapObtainTep);
     step('причины пустого поиска', wrapLandLookup);
     step('навигация', buildNav);
     step('перехват openTab', wrapOpenTab);
