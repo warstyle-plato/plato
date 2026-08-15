@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.89"
+VERSION = "0.17.90"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -22243,7 +22243,7 @@ details.cadastral-box>summary::marker{color:#888}
             <div id="moTables"></div>
             <div id="moWarnings" class="note warning"></div>
         </div>
-        <div id="glavapuStatus" class="import-status">Можно выбрать готовую предустановку Мишина / Мытищи с сервера или загрузить свой .xlsx ГлавАПУ.</div>
+        <div id="glavapuStatus" class="import-status">Введите кадастровый номер выше — ТЭП посчитается сам. Готовые примеры — в «Мои проекты», свой файл ГлавАПУ — ниже.</div>
         <div id="glavapuPreview" class="import-preview" style="display:none">
           <div id="glavapuSummary" class="import-summary"></div>
           <div class="import-actions">
@@ -22265,15 +22265,14 @@ details.cadastral-box>summary::marker{color:#888}
              руках, а не первый шаг. Свёрнута, чтобы не разрывать «ввёл участок
              — получил ТЭП». -->
         <details class="import-fallback">
-          <summary>Готовый ТЭП: предустановка, шаблон DevelopAid или файл ГлавАПУ</summary>
-          <div class="upload-line" style="align-items:center;margin-top:10px">
-            <select id="serverPresetSelect" style="min-width:260px">
-              <option value="">Предустановка с сервера…</option>
-            </select>
-            <button class="btn dark" onclick="loadServerPreset()">Загрузить предустановку</button>
-            <a id="serverPresetDownload" class="btn" href="#" style="display:none;text-decoration:none">Скачать Excel</a>
+          <summary>Свой файл: шаблон ТЭП DevelopAid, выгрузка ГлавАПУ или пресет проекта</summary>
+          <!-- Готовые примеры уехали в «Мои проекты»: и они, и сохранённые
+               проекты — это «взять готовое и посмотреть», а здесь разбирают
+               принесённый файл. Решение владельца (15.08.2026). -->
+          <div id="presetsMovedHint" style="font-size:11px;color:#888;margin:10px 0 8px">
+            Готовые примеры — Мишина, Мытищи, Румянцево — переехали в «Мои проекты» наверху страницы.
           </div>
-          <div style="font-size:11px;color:#888;margin:7px 0 8px">или загрузить свой файл — шаблон ТЭП DevelopAid либо выгрузку калькулятора ГлавАПУ</div>
+          <div style="font-size:11px;color:#888;margin:7px 0 8px">шаблон ТЭП DevelopAid либо выгрузка калькулятора ГлавАПУ</div>
           <!-- Шаблон скачивается отсюда же, где загружается. Отказ разбора
                обещал кнопку «ниже», а её на странице не было вовсе: шаблон
                выдавал только бот командой /template, и человек с сайта узнать
@@ -22287,12 +22286,6 @@ details.cadastral-box>summary::marker{color:#888}
                МПТ и справки по техприсоединению. Он заполняет проект целиком,
                поэтому и стоит отдельной строкой от разбора одной книги. -->
           <div style="font-size:11px;color:#888;margin:12px 0 8px">или пресет проекта .json — ТЭП, ВРИ, МПТ и техприсоединение разом</div>
-          <div class="upload-line" style="align-items:center">
-            <select id="projectPresetSelect" style="min-width:220px">
-              <option value="">Пресет проекта с сервера…</option>
-            </select>
-            <button class="btn dark" onclick="loadServerProjectPreset()">Загрузить пресет</button>
-          </div>
           <div class="upload-line" style="margin-top:8px">
             <input type="file" id="presetFile" accept=".json,application/json">
             <button class="btn dark" onclick="uploadPreset()">Импорт проекта / пресета</button>
@@ -22798,19 +22791,45 @@ details.cadastral-box>summary::marker{color:#888}
   <div style="background:#fff;max-width:900px;width:100%;max-height:80vh;overflow:auto;padding:22px 24px">
     <div style="display:flex;align-items:center;gap:14px;margin-bottom:12px">
       <h2 style="margin:0;font-size:17px">Мои проекты</h2>
-      <button class="btn dark" onclick="saveProjectToServer()">Сохранить текущий</button>
-      <!-- Смена ключа без консоли браузера: ключ меняют, когда он засветился,
+      <!-- Кнопки хранилища — только там, где оно есть: примеры открываются и
+           без него, а «Сохранить», которое всегда откажет, хуже отсутствия.
+           Смена ключа без консоли браузера: ключ меняют, когда он засветился,
            и требовать для этого localStorage.removeItem — значит не менять. -->
-      <button class="btn" onclick="changeProjectsKey()">Сменить ключ</button>
+      <span id="projectsStorageActions" style="display:none;gap:14px">
+        <button class="btn dark" onclick="saveProjectToServer()">Сохранить текущий</button>
+        <button class="btn" onclick="changeProjectsKey()">Сменить ключ</button>
+      </span>
       <button class="btn" style="margin-left:auto" onclick="closeProjects()">Закрыть</button>
     </div>
-    <div style="font-size:11px;color:#777;margin-bottom:10px">
-      Хранится на ядре в России. Сохраняется только то, что вы сохранили сами.
+    <!-- Готовые примеры стоят рядом с сохранёнными: и то и другое — «открыть
+         готовое», и искать их во «Вводных» среди разбора файлов было незачем.
+         Ключа они не требуют: это витрина, а не чужие данные. -->
+    <div id="projectsExamples" style="border:1px solid var(--line);padding:14px;margin-bottom:14px">
+      <div class="section-title" style="margin-bottom:8px">Готовые примеры</div>
+      <div class="upload-line" style="align-items:center">
+        <select id="serverPresetSelect" style="min-width:240px">
+          <option value="">Предустановка ТЭП…</option>
+        </select>
+        <button class="btn dark" onclick="loadServerPreset()">Открыть</button>
+        <a id="serverPresetDownload" class="btn" href="#" style="display:none;text-decoration:none">Скачать Excel</a>
+      </div>
+      <div style="font-size:11px;color:#888;margin:9px 0 8px">или пресет проекта целиком — ТЭП, ВРИ, МПТ и техприсоединение разом</div>
+      <div class="upload-line" style="align-items:center">
+        <select id="projectPresetSelect" style="min-width:240px">
+          <option value="">Пресет проекта…</option>
+        </select>
+        <button class="btn dark" onclick="loadServerProjectPreset()">Открыть</button>
+      </div>
     </div>
-    <div class="scroll"><table>
-      <thead><tr><th>Проект</th><th>Выручка</th><th>Чистая прибыль</th><th>LLCR</th><th></th></tr></thead>
-      <tbody id="projectsBody"></tbody>
-    </table></div>
+    <div id="projectsStored">
+      <div style="font-size:11px;color:#777;margin-bottom:10px">
+        Хранится на ядре в России. Сохраняется только то, что вы сохранили сами.
+      </div>
+      <div class="scroll"><table>
+        <thead><tr><th>Проект</th><th>Выручка</th><th>Чистая прибыль</th><th>LLCR</th><th></th></tr></thead>
+        <tbody id="projectsBody"></tbody>
+      </table></div>
+    </div>
   </div>
 </div>
 
@@ -23939,7 +23958,7 @@ async function loadPresetCatalog(){
    if(!response.ok)throw new Error(data.detail||'Не удалось получить предустановки');
    const select=document.getElementById('serverPresetSelect');
    if(!select)return;
-   select.innerHTML='<option value="">Предустановка с сервера…</option>'+
+   select.innerHTML='<option value="">Предустановка ТЭП…</option>'+
      (data.presets||[]).filter(p=>p.available).map(p=>
        `<option value="${p.id}" data-download="${p.download_url}" title="${p.description||''}">${p.name}</option>`
      ).join('');
@@ -23961,10 +23980,12 @@ async function loadPresetCatalog(){
 async function loadServerPreset(){
  const select=document.getElementById('serverPresetSelect');
  const id=select&&select.value;
- if(!id){
-   glavapuStatus.innerHTML='<span class="import-error">Выберите предустановку: Мишина или Мытищи.</span>';
-   return;
- }
+ // Отказ печатался во «Вводных», а список теперь в окне «Мои проекты»:
+ // сообщение уходило на страницу, которой человек не видит.
+ if(!id){alert('Выберите предустановку из списка.');return}
+ // Ход разбора и результат печатаются во «Вводных» — окно закрываем и
+ // показываем ту вкладку, где всё это появится.
+ closeProjects();openTab('inputs');
  const label=select.options[select.selectedIndex].textContent;
  glavapuStatus.textContent='Загружаю предустановку «'+label+'» с сервера…';
  glavapuPreview.style.display='none';
@@ -26164,6 +26185,8 @@ async function fillProjectPresets(){
 async function loadServerProjectPreset(){
  const id=document.getElementById('projectPresetSelect').value;
  if(!id){alert('Выберите пресет проекта из списка');return}
+ // Экран проверки пресета — своё окно: два окна друг на друге не читаются.
+ closeProjects();
  let parsed;
  try{
   const response=await fetch('/api/project-presets/'+encodeURIComponent(id));
@@ -26289,13 +26312,20 @@ async function projectsCall(path,body){
  return data;
 }
 
+// Кнопка «Мои проекты» видна всегда: за ней живут готовые примеры, которые
+// ключа не требуют. Прежде она появлялась только при настроенном хранилище —
+// вместе с ним пропали бы и примеры, а они витрина, а не чужие данные.
+let projectsStorageReady=false;
+
 async function initProjects(){
+ document.getElementById('projectsButton').style.display='';
  try{
   const status=await (await fetch('/projects/status')).json();
   // Ключ спрашиваем только там, где сессии нет: в мини-приложении она есть.
-  if(!status.configured||(!telegramSession&&!status.accepts_key))return;
-  document.getElementById('projectsButton').style.display='';
- }catch(e){}
+  projectsStorageReady=!!status.configured&&(!!telegramSession||!!status.accepts_key);
+ }catch(e){projectsStorageReady=false}
+ const actions=document.getElementById('projectsStorageActions');
+ if(actions)actions.style.display=projectsStorageReady?'inline-flex':'none';
 }
 
 function projectSummaryForStore(){
@@ -26325,6 +26355,16 @@ async function saveProjectToServer(){
 }
 
 async function openProjects(){
+ // Окно открывается сразу: примеры в нём есть всегда, и держать человека
+ // перед запросом ключа ради витрины незачем. Список сохранённых
+ // подгружается следом и только там, где хранилище настроено.
+ projectsDialog.style.display='flex';
+ const stored=document.getElementById('projectsStored');
+ if(!projectsStorageReady){
+  if(stored)stored.style.display='none';
+  return;
+ }
+ if(stored)stored.style.display='';
  // Ключ спрашиваем один раз и держим в браузере: это вход, а не пароль к
  // каждому действию.
  if(!telegramSession&&!projectsAdminKey){
@@ -26359,7 +26399,6 @@ async function openProjects(){
    +`<button class="btn" onclick="deleteProject('${p.id}')">Удалить</button></td></tr>`;
  }).join('');
  projectsBody.innerHTML=rows||'<tr><td colspan="5">Пока ничего не сохранено.</td></tr>';
- projectsDialog.style.display='flex';
 }
 
 function closeProjects(){projectsDialog.style.display='none'}
