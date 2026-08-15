@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.92"
+VERSION = "0.17.93"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -1776,6 +1776,13 @@ _NSPD_FIELD_ALIASES: dict[str, tuple[str, ...]] = {
         "registration_date", "reg_date",
     ),
     "quarter": ("quarter_cad_number", "cadastral_quarter", "quarter"),
+    # Участок под зданием: в карточке ОКС портал иногда несёт номер своего
+    # земельного участка. Когда несёт — это самый короткий путь от адреса к
+    # участку, короче любого пространственного запроса.
+    "land_parcel": (
+        "land_cad_number", "land_cadastral_number", "cad_num_land",
+        "parent_cad_number", "parent_cadastral_number", "landCadNum",
+    ),
     "ownership": ("ownership_type", "right_type", "form_of_ownership"),
     "region": ("subject_rf", "subject", "region"),
     "purpose": ("purpose", "assignation_name", "build_record_type_value", "object_type"),
@@ -2104,6 +2111,7 @@ def _normalize_nspd_feature(feature: dict[str, Any]) -> dict[str, Any]:
         "status": _land_text(_nspd_value(options, "status")),
         "registration_date": _land_text(_nspd_value(options, "registration_date")),
         "quarter": _land_text(_nspd_value(options, "quarter")) or parts["quarter"],
+        "land_parcel": _land_text(_nspd_value(options, "land_parcel")),
         "ownership": _land_text(_nspd_value(options, "ownership")),
         "region": region,
         "purpose": _land_text(_nspd_value(options, "purpose")),
@@ -2443,10 +2451,48 @@ def land_lookup(req: LandLookupRequest) -> dict[str, Any]:
             )
             for kind, count in hidden_here.items():
                 hidden[kind] = hidden.get(kind, 0) + count
+            # По городскому адресу портал отдаёт дом и его квартиры, а участка
+            # среди них нет: всё скрывалось фильтром, и человек видел «ничего не
+            # найдено» при двух десятках найденных объектов. Найденное — само по
+            # себе дорога к участку, и выбрасывать его, чтобы начать заново с
+            # внешнего геокодера, незачем.
+            neighbours: list[dict[str, Any]] = []
+            if not results and features:
+                neighbours, _ = _land_lookup_features_to_results(features, limit, only_land=False)
+                # Короткий путь: карточка ОКС иногда несёт номер своего участка.
+                parcels_by_card: list[str] = []
+                for item in neighbours:
+                    number = _land_text(item.get("land_parcel"))
+                    if number and number not in parcels_by_card:
+                        parcels_by_card.append(number)
+                if parcels_by_card:
+                    results = [item for item in _land_lookup_by_numbers(parcels_by_card[:limit])
+                               if item.get("found")]
+                # Иначе — участок под найденным домом, по его собственным
+                # координатам: они точнее любого геокодера, дом уже найден.
+                if not results:
+                    for item in neighbours:
+                        center = item.get("center") or {}
+                        if not center.get("lat"):
+                            continue
+                        under, hidden_under = _land_lookup_features_to_results(
+                            _nspd_point_features(center["lat"], center["lng"]), limit,
+                            only_land=True,
+                        )
+                        for kind, count in hidden_under.items():
+                            hidden[kind] = hidden.get(kind, 0) + count
+                        if under:
+                            for found_item in under:
+                                found_item["matched_address"] = item.get("address", "")
+                                found_item["found_under"] = item.get("cadastral_number", "")
+                            results = under
+                            break
             if not results:
                 candidates, geocoder_warnings = _geocode_address(query, 3)
                 warnings.extend(geocoder_warnings)
-                if not candidates:
+                # «Адрес не распознан» рядом с двумя десятками найденных по
+                # нему объектов — противоречие: не распознан не адрес, а участок.
+                if not candidates and not neighbours:
                     warnings.append(
                         "Адрес не распознан. Уточните формулировку или введите кадастровый номер."
                     )
@@ -2471,6 +2517,18 @@ def land_lookup(req: LandLookupRequest) -> dict[str, Any]:
                     warnings.append(
                         "Адрес найден, но участок ЕГРН в этой точке не определён — "
                         "проверьте объект на публичной карте."
+                    )
+                # Участок не дался ни одним путём — но объекты по адресу есть.
+                # «Ничего не найдено» при двух десятках найденных объектов —
+                # неправда, из которой не видно следующего шага. Отдаём их и
+                # называем вещи своими именами.
+                if not results and neighbours:
+                    results = neighbours[:limit]
+                    hidden = {}
+                    warnings.append(
+                        "Земельный участок по этому адресу ЕГРН не отдал. Показаны найденные "
+                        "объекты — дом и помещения: посмотрите участок под нужным на публичной "
+                        "карте и введите его кадастровый номер."
                     )
 
     hidden_total = sum(hidden.values())
