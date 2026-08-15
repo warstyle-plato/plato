@@ -31,20 +31,21 @@
   /* Структура владельца: три раздела, шаги внутри. «Проект» — что строим:
      участок, ТЭП, очередность. «Экономика» — на каких условиях: вводные по
      стройке, продажам и сделке, ВРИ, процентная ставка. «Результат» — что
-     вышло: отчёт, финансирование, календарь, чувствительность. Кнопка «Далее»
-     ведёт по шагам насквозь; вперёд перескочить нельзя, назад — свободно.
-     «Пересчитать модель» и «Открыть пример» открывают отчёт и потому
-     разблокируют путь целиком. */
+     вышло. Кнопка «Далее» ведёт по шагам как проводник, но ничего не заперто:
+     «просто посмотреть» можно всё и сразу — замечание владельца. */
   var SECTIONS = [
     { id: 'project', label: 'Проект', tabs: ['iaSite', 'tep', 'phasing'] },
     { id: 'economics', label: 'Экономика', tabs: ['inputs', 'vri', 'rates'] },
-    { id: 'result', label: 'Результат', tabs: ['report', 'finance', 'calendar', 'sensitivity'] }
+    { id: 'result', label: 'Результат', tabs: ['report', 'sensitivity'] }
   ];
+  /* Финансирование и календарь отдельными вкладками были дублями: в отчёте
+     оба живут разделами с оглавлением (rsFinance, rsCalendar) — «зачем блок
+     финансирование там? он такой же в отчёте». Панели остаются в разметке и
+     наполняются расчётом, но навигация ведёт в отчёт. Чувствительность — не
+     дубль, а инструмент: там задают параметр и запускают анализ. */
+  var RETIRED_TABS = ['finance', 'calendar'];
   var PATH = [];
   SECTIONS.forEach(function (section) { section.tabs.forEach(function (t) { PATH.push(t); }); });
-  var unlockedStep = 0;
-
-  function sectionIndex(section) { return SECTIONS.indexOf(section); }
   var SUB_LABEL = {
     iaSite: 'Участок', tep: 'ТЭП', vri: 'ВРИ', inputs: 'Вводные',
     rates: 'Ключевая ставка', finance: 'Финансирование',
@@ -247,6 +248,22 @@
 
     addExampleButton();
 
+    // Человеку без кадастра и адреса некуда было идти — путь «собрать ТЭП
+    // вручную» существовал, но о нём знали только по подсказке на другой
+    // вкладке. Теперь он назван кнопкой там, где человек упёрся.
+    var actions = document.querySelector('#iaSite .import-actions');
+    if (actions) {
+      var manual = document.createElement('button');
+      manual.className = 'btn';
+      manual.type = 'button';
+      manual.textContent = 'Нет кадастра — собрать ТЭП вручную';
+      manual.onclick = function () {
+        var button = tabButton('tep');
+        if (button) button.click();
+      };
+      actions.appendChild(manual);
+    }
+
     // Подсказка про предустановки и .xlsx висела отдельной строкой над
     // свёрнутым блоком и повторяла его же заголовок. Сам элемент нужен: в него
     // пишут ход загрузки и ошибки — очищается только начальный текст.
@@ -345,8 +362,6 @@
   function openSection(id, keepTab) {
     var section = SECTIONS.filter(function (s) { return s.id === id; })[0];
     if (!section) return;
-    // Клик по будущему шагу молча не работает: вперёд ведёт только «Далее».
-    if (sectionIndex(section) > unlockedStep) return;
     var target = keepTab && section.tabs.indexOf(keepTab) >= 0 ? keepTab : section.tabs[0];
     var button = tabButton(target);
     if (button) button.click();
@@ -359,10 +374,6 @@
     currentSection = section.id;
     Object.keys(navButtons).forEach(function (key) {
       navButtons[key].classList.toggle('active', key === section.id);
-    });
-    var index = sectionIndex(section);
-    Object.keys(navButtons).forEach(function (key, i) {
-      navButtons[key].classList.toggle('locked', i > unlockedStep);
     });
     var sub = document.getElementById('iaSub');
     if (!sub) return;
@@ -383,14 +394,11 @@
     var pos = PATH.indexOf(activeTab);
     var nextTab = pos >= 0 ? PATH[pos + 1] : null;
     if (nextTab) {
-      var nextSection = sectionOf(nextTab);
       var forward = document.createElement('button');
       forward.type = 'button';
       forward.className = 'ia-next';
       forward.textContent = 'Далее: ' + (SUB_LABEL[nextTab] || nextTab) + ' →';
       forward.onclick = function () {
-        var ni = sectionIndex(nextSection);
-        if (unlockedStep < ni) unlockedStep = ni;
         var button = tabButton(nextTab);
         if (button) button.click();
       };
@@ -406,10 +414,6 @@
     window.openTab = function (id, btn) {
       var out = original.apply(this, arguments);
       try {
-        // Программные переходы — «Пересчитать модель», пример, телеграм —
-        // выражают намерение пользователя и разблокируют путь до себя.
-        var section = sectionOf(id);
-        if (section && sectionIndex(section) > unlockedStep) unlockedStep = sectionIndex(section);
         syncNav(id);
         if (id === 'tep') annotateTep();
         if (id === 'report') ensureGoalSeek();

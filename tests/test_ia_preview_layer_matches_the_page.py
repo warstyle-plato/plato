@@ -111,18 +111,41 @@ def _sections() -> list[dict]:
     return json.loads(raw.replace("'", '"'))
 
 
-def test_the_five_sections_carry_all_nine_tabs():
-    """Перегруппировка не имеет права потерять вкладку.
+def _retired() -> list[str]:
+    match = re.search(r"var RETIRED_TABS = (\[[^\]]*\]);", _OVERLAY)
+    return json.loads(match.group(1).replace("'", '"')) if match else []
 
-    Панель без раздела перестаёт открываться вовсе: её поля остаются в
+
+def test_the_sections_account_for_every_tab():
+    """Перегруппировка не имеет права молча потерять вкладку.
+
+    Каждая вкладка страницы либо входит в раздел, либо объявлена снятой
+    (`RETIRED_TABS`) — дублем отчёта, с причиной в комментарии рядом. Панель,
+    выпавшая без объявления, перестаёт открываться вовсе: её поля остаются в
     разметке, доезжают до расчёта и не видны никому.
     """
     page_tabs = re.findall(r'<button class="tab[^"]*" data-tab="([^"]+)"', PAGE)
     covered = [tab for section in _sections() for tab in section["tabs"]]
-    assert sorted(set(covered) - {"iaSite"}) == sorted(page_tabs), (
-        f"разделы покрывают {sorted(set(covered))}, на странице {sorted(page_tabs)}"
+    retired = _retired()
+    assert not set(covered) & set(retired), "вкладка и в разделе, и снята одновременно"
+    assert sorted((set(covered) | set(retired)) - {"iaSite"}) == sorted(page_tabs), (
+        f"разделы+снятые дают {sorted(set(covered) | set(retired))}, на странице {sorted(page_tabs)}"
     )
     assert len(covered) == len(set(covered)), "вкладка попала в два раздела сразу"
+
+
+def test_every_retired_tab_lives_inside_the_report():
+    """Снять вкладку можно только дублю: содержимое обязано жить в отчёте.
+
+    «Финансирование» и «Календарь» сняты потому, что в отчёте они разделы
+    (rsFinance, rsCalendar). Если раздел из отчёта исчезнет, вкладку надо
+    вернуть — иначе содержимое потеряно совсем.
+    """
+    homes = {"finance": "rsFinance", "calendar": "rsCalendar"}
+    for tab in _retired():
+        home = homes.get(tab)
+        assert home, f"снятой вкладке {tab} не назначен раздел отчёта"
+        assert f'id="{home}"' in PAGE, f"вкладка {tab} снята, а раздела {home} в отчёте нет"
 
 
 def test_every_tab_has_a_readable_name_in_its_section():
