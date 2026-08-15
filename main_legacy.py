@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.96"
+VERSION = "0.17.97"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -2014,6 +2014,45 @@ def _geometry_center(geometry: Any) -> dict[str, Any] | None:
     }
 
 
+def _geometry_contours_merc(geometry: Any) -> list[list[list[float]]]:
+    """Внешние кольца границ участка в метрах веб-меркатора — для миниатюры.
+
+    НСПД отдаёт геометрию то в градусах (текстовый поиск, CRS=EPSG:4326), то
+    в веб-меркаторе (WMS-точка); признак — величины координат, как в
+    `_geometry_center`. Меркатор для SVG удобен как плоскость: на размере
+    участка искажения формы нет. Внутренние кольца (дыры) миниатюре не нужны.
+    """
+    if not isinstance(geometry, dict):
+        return []
+    gtype = geometry.get("type")
+    coords = geometry.get("coordinates")
+    if gtype == "Polygon":
+        polygons = [coords]
+    elif gtype == "MultiPolygon":
+        polygons = coords if isinstance(coords, list) else []
+    else:
+        return []
+    rings: list[list[list[float]]] = []
+    for polygon in polygons:
+        if not (isinstance(polygon, list) and polygon and isinstance(polygon[0], list)):
+            continue
+        ring: list[list[float]] = []
+        for point in polygon[0]:
+            if not (isinstance(point, (list, tuple)) and len(point) >= 2):
+                continue
+            x, y = float(point[0]), float(point[1])
+            if abs(x) <= 180.0 and abs(y) <= 90.0:
+                merc_x = x * 20037508.34 / 180.0
+                merc_y = math.log(math.tan((90.0 + y) * math.pi / 360.0)) / (math.pi / 180.0)
+                merc_y = merc_y * 20037508.34 / 180.0
+                ring.append([round(merc_x, 2), round(merc_y, 2)])
+            else:
+                ring.append([round(x, 2), round(y, 2)])
+        if len(ring) >= 4:
+            rings.append(ring)
+    return rings
+
+
 def _nspd_features(payload: Any) -> list[dict[str, Any]]:
     for container in (payload.get("data") if isinstance(payload, dict) else None, payload):
         if isinstance(container, dict):
@@ -2118,6 +2157,9 @@ def _normalize_nspd_feature(feature: dict[str, Any]) -> dict[str, Any]:
         "floors": _land_text(_nspd_value(options, "floors")),
         "year_built": _land_text(_nspd_value(options, "year_built")),
         "center": {"lat": center["lat"], "lng": center["lng"]} if center else None,
+        # Границы для миниатюры на странице: контур рисуется своим SVG, без
+        # внешних карт — работает и в телеграм-WebView, и при лежащей НСПД.
+        "contour_merc": _geometry_contours_merc(feature.get("geometry")),
         "map_url": _nspd_map_url(center, cadastral_number),
         "category_name": _land_text(properties.get("categoryName")),
         "source": "НСПД / ЕГРН",
@@ -22325,6 +22367,9 @@ details.cadastral-box>summary::marker{color:#888}
 .land-grid small{display:block;color:#777;font-size:10px;text-transform:uppercase;letter-spacing:.06em}
 .land-grid b{display:block;margin-top:3px;font-weight:600;line-height:1.35}
 .land-links{margin-top:9px;font-size:11px}
+.land-contour{margin-top:10px}
+.land-contour svg{display:block;width:100%;max-height:170px;border:1px solid #e5e5e3;background:#fff}
+.land-contour small{display:block;margin-top:4px;color:#999;font-size:10px}
 .mo-box{border-left:4px solid #111;margin-top:12px}
 /* Запасной путь: виден, но не спорит за внимание с главным. */
 .import-fallback{margin-top:14px;border-top:1px solid #e2e2e0;padding-top:10px}
@@ -23967,6 +24012,35 @@ async function lookupLand(options){
  }
 }
 
+function landContourSvg(item){
+ // Миниатюра границ: свой SVG по кольцам из ЕГРН, без внешних карт — работает
+ // и в телеграм-WebView, и при недоступной НСПД. Координаты — веб-меркатор:
+ // для формы участка это плоскость, но метр в нём растянут на 1/cos(широты),
+ // поэтому подпись ширины пересчитывается через широту центра.
+ const rings=item.contour_merc;
+ if(!Array.isArray(rings)||!rings.length)return '';
+ let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
+ rings.forEach(ring=>(ring||[]).forEach(p=>{
+  if(!Array.isArray(p)||p.length<2)return;
+  minX=Math.min(minX,p[0]);maxX=Math.max(maxX,p[0]);
+  minY=Math.min(minY,p[1]);maxY=Math.max(maxY,p[1]);
+ }));
+ if(!(maxX>minX)||!(maxY>minY))return '';
+ const spanX=maxX-minX,spanY=maxY-minY;
+ const pad=Math.max(spanX,spanY)*0.06;
+ const w=spanX+pad*2,h=spanY+pad*2;
+ const paths=rings.map(ring=>'M'+ring
+  .filter(p=>Array.isArray(p)&&p.length>=2)
+  .map(p=>((p[0]-minX+pad)).toFixed(1)+' '+((maxY-p[1]+pad)).toFixed(1))
+  .join(' L ')+' Z').join(' ');
+ const cosLat=item.center&&item.center.lat?Math.cos(item.center.lat*Math.PI/180):0;
+ const widthM=cosLat?Math.round(spanX*cosLat):0;
+ const scaleNote=widthM?` · ~${widthM.toLocaleString('ru-RU')} м по ширине`:'';
+ return `<div class="land-contour"><svg viewBox="0 0 ${w.toFixed(1)} ${h.toFixed(1)}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Границы участка по ЕГРН">`+
+  `<path d="${paths}" fill="#f5f5f3" stroke="#111" stroke-width="${(Math.max(w,h)/120).toFixed(2)}" fill-rule="evenodd" vector-effect="non-scaling-stroke"/></svg>`+
+  `<small>Границы по сведениям ЕГРН${scaleNote}</small></div>`;
+}
+
 function landCardHtml(item){
  const mapLink=item.map_url
   ?`<div class="land-links"><a href="${escapeHtml(item.map_url)}" target="_blank" rel="noopener">Открыть на публичной карте НСПД</a></div>`
@@ -23995,7 +24069,7 @@ function landCardHtml(item){
  if(item.matched_address)rows.push(['Адрес по геокодеру',item.matched_address+(item.geocoder?' · '+item.geocoder:'')]);
  return `<div class="land-item"><header><h4>${escapeHtml(item.cadastral_number||'—')}</h4>`+
   `<span class="land-kind">${escapeHtml(item.kind_label||'')}${item.cadastral_value_date?' · оценка от '+escapeHtml(landDate(item.cadastral_value_date)):''}</span></header>`+
-  `<div class="land-grid">${rows.map(r=>`<div><small>${escapeHtml(r[0])}</small><b>${escapeHtml(r[1])}</b></div>`).join('')}</div>${mapLink}</div>`;
+  `<div class="land-grid">${rows.map(r=>`<div><small>${escapeHtml(r[0])}</small><b>${escapeHtml(r[1])}</b></div>`).join('')}</div>${landContourSvg(item)}${mapLink}</div>`;
 }
 
 function renderLandLookup(data){
