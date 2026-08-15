@@ -18,12 +18,16 @@
   'use strict';
 
   var missing = [];
+  /* «План и риски» из первоначального разбора не пережил первого взгляда
+     владельца: очередность — это устройство проекта, а не риск. Разделы
+     названы тем, что внутри: очередность и календарь — сроки, чувствительность
+     — анализ результата, и живёт рядом с отчётом. */
   var SECTIONS = [
     { id: 'project', label: 'Проект', tabs: ['iaSite', 'tep', 'vri'] },
     { id: 'economics', label: 'Экономика', tabs: ['inputs'] },
     { id: 'finance', label: 'Финансирование', tabs: ['rates', 'finance'] },
-    { id: 'plan', label: 'План и риски', tabs: ['phasing', 'calendar', 'sensitivity'] },
-    { id: 'result', label: 'Результат', tabs: ['report'] }
+    { id: 'timing', label: 'Очередность и календарь', tabs: ['phasing', 'calendar'] },
+    { id: 'result', label: 'Результат', tabs: ['report', 'sensitivity'] }
   ];
   var SUB_LABEL = {
     iaSite: 'Участок', tep: 'ТЭП', vri: 'ВРИ', inputs: 'Вводные',
