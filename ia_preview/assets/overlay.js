@@ -231,6 +231,31 @@
     }
   }
 
+  /* resetAll страницы забывает применённый файл ГлавАПУ: превью с
+     соцплатежом остаётся на экране, переменная импорта — в памяти, пересчёт
+     не запускается, и страница выглядит несброшенной (владелец нажал сброс и
+     спросил, почему всё осталось). Баг живёт и на проде — здесь закрыт
+     обёрткой, в main уйдёт отдельной правкой. */
+  function wrapReset() {
+    var original = window.resetAll;
+    if (typeof original !== 'function') { missing.push('функция resetAll не найдена'); return; }
+    window.resetAll = function () {
+      var out = original.apply(this, arguments);
+      try {
+        if (typeof glavapuImport !== 'undefined') glavapuImport = null;
+        var preview = document.getElementById('glavapuPreview');
+        if (preview) preview.style.display = 'none';
+        var status = document.getElementById('glavapuStatus');
+        if (status) status.textContent = 'Введите кадастровый номер выше — ТЭП посчитается сам.';
+        dirty = 0;
+        window.calculate();
+        annotateTep();
+        openSection('project', 'iaSite');
+      } catch (error) { /* сброс важнее косметики */ }
+      return out;
+    };
+  }
+
   /* Сброс подтверждается: он стирает весь проект, а стоял кнопкой рядом с
      «Сохранить». Обёртка ставится на onclick, чтобы не переписывать resetAll. */
   function guardReset() {
@@ -1048,6 +1073,7 @@
   function boot() {
     step('лента preview', ribbon);
     step('шапка', rebuildHeader);
+    step('сброс чистит импорт', wrapReset);
     step('подтверждение сброса', guardReset);
     step('панель участка', splitSite);
     step('навигация', buildNav);
