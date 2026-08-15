@@ -415,9 +415,25 @@
                   row.appendChild(cad);
                 }
                 row.onclick = function () {
-                  field.value = item.cadastral_number || item.label || '';
-                  hide();
-                  if (typeof window.obtainTep === 'function') window.obtainTep();
+                  // Дом — запускаем расчёт: кадастром, а без него координатами
+                  // (точка находит участок под домом, текст адреса — нет).
+                  // Город или улица — только уточняем запрос: клик по «Мытищи»
+                  // вставлял координаты центра города, и точечный поиск
+                  // мгновенно собирал 20 случайных участков вокруг.
+                  var houseLevel = /,\s*д[\s.]/.test(item.label || '');
+                  if (item.cadastral_number) {
+                    field.value = item.cadastral_number;
+                    hide();
+                    if (typeof window.obtainTep === 'function') window.obtainTep();
+                  } else if (houseLevel && item.lat && item.lng) {
+                    field.value = item.lat + ', ' + item.lng;
+                    hide();
+                    if (typeof window.obtainTep === 'function') window.obtainTep();
+                  } else {
+                    field.value = (item.label || '') + ', ';
+                    field.focus();
+                    field.dispatchEvent(new Event('input', { bubbles: true }));
+                  }
                 };
                 box.appendChild(row);
               });
@@ -550,6 +566,30 @@
     }
     hintBox.textContent = hintInfo ? hintInfo.hint : '';
     hintBox.style.display = hintInfo ? '' : 'none';
+  }
+
+  /* Пустой результат поиска называет причины: какие геокодеры пропущены
+     и почему («0 из 0» без объяснения не диагностируется — владелец
+     трижды присылал скриншоты вместо одного предупреждения). */
+  function wrapLandLookup() {
+    var original = window.lookupLand;
+    if (typeof original !== 'function') { missing.push('функция lookupLand не найдена'); return; }
+    window.lookupLand = async function () {
+      var out = await original.apply(this, arguments);
+      try {
+        if ((!out || !out.length) && typeof landLookup !== 'undefined' && landLookup
+            && (landLookup.warnings || []).length) {
+          var status = document.getElementById('cadastralStatus');
+          if (status) {
+            var box = document.createElement('div');
+            box.style.cssText = 'font-size:11px;color:#8a4b08;margin-top:6px';
+            box.textContent = 'Почему не нашлось: ' + landLookup.warnings.join(' · ');
+            status.appendChild(box);
+          }
+        }
+      } catch (error) { /* диагностика не важнее поиска */ }
+      return out;
+    };
   }
 
   /* ------------------------------------------------------------------ */
@@ -713,6 +753,9 @@
     if (!target || !target.closest) return;
     if (!target.closest('.content')) return;
     if (target.closest('.ai-drawer')) return;
+    // Поле поиска участка и блок загрузки — не вводные модели: каждая буква
+    // адреса накручивала «есть 136 изменений» (наблюдение владельца).
+    if (target.closest('.import-card')) return;
     dirty += 1;
     renderState();
     goalSeekStale = true;
@@ -1136,6 +1179,7 @@
     step('подтверждение сброса', guardReset);
     step('панель участка', splitSite);
     step('подсказки адресов', wireSuggest);
+    step('причины пустого поиска', wrapLandLookup);
     step('навигация', buildNav);
     step('перехват openTab', wrapOpenTab);
     step('карточка решения', buildVerdict);
