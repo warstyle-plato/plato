@@ -23422,6 +23422,7 @@ async function obtainCadastralTep(preAnalysis){
  button.disabled=true;button.textContent='Получаю ТЭП…';
  document.getElementById('cadastralPreview').style.display='none';
  document.getElementById('glavapuPreview').style.display='none';
+ dropMoPreview();
  try{
    status.textContent='1 из 4 · Формирую территорию по кадастровым номерам…';
    let analysis=preAnalysis;
@@ -23679,6 +23680,28 @@ function renderStoredLand(){
 
 let moResult=null,moLastQuery='';
 
+// Подпись-приглашение из разметки: к ней возвращается строка ГлавАПУ, когда
+// карточка снимается с экрана (расчёт МО, сброс проекта).
+const GLAVAPU_STATUS_DEFAULT=document.getElementById('glavapuStatus').textContent;
+
+// Смена территории снимает карточку другой методики. Расчёт МО оставлял на
+// экране карточку ГлавАПУ прошлого запроса: под свежим итогом Подмосковья
+// висел чужой московский участок, а его «Применить к Вводным и ТЭП» унёс бы
+// в модель старый ТЭП. В обратную сторону — то же с блоком МО. Данные
+// чистятся вместе с карточкой: карточка без кнопки безопасна, только когда
+// ей нечего применять.
+function dropGlavapuPreview(){
+ glavapuImport=null;
+ const preview=document.getElementById('glavapuPreview');if(preview)preview.style.display='none';
+ const cadPreview=document.getElementById('cadastralPreview');if(cadPreview)cadPreview.style.display='none';
+ const status=document.getElementById('glavapuStatus');if(status)status.textContent=GLAVAPU_STATUS_DEFAULT;
+}
+function dropMoPreview(){
+ moResult=null;
+ const preview=document.getElementById('moPreview');if(preview)preview.style.display='none';
+ const status=document.getElementById('moStatus');if(status)status.style.display='none';
+}
+
 let moDistrictPrices={},moKdDocument='';
 
 async function loadMoReference(){
@@ -23826,6 +23849,7 @@ async function calculateMo(queryText){
   status.innerHTML='<span class="import-error">Введите кадастровый номер, адрес или площадь участка в гектарах.</span>';return;
  }
  button.disabled=true;button.textContent='Считаю…';
+ dropGlavapuPreview();
  status.textContent='Участок в Московской области · считаю нормативы РНГП МО, УПКС и плату за ВРИ…';
  try{
   const response=await fetch('/mo/calculate',{
@@ -26509,12 +26533,14 @@ function resetAll(){
  inputs.scenario_cost_multiplier=1;
  renderInputs();renderTep();renderStoredGlavapu();renderScenarioNote();syncProjectClassSelector();
  const cadField=document.getElementById('cadastralNumbers');if(cadField)cadField.value='';
- const cadPreview=document.getElementById('cadastralPreview');if(cadPreview)cadPreview.style.display='none';
  const cadStatus=document.getElementById('cadastralStatus');if(cadStatus)cadStatus.textContent='На внешний сервер передаются только кадастровые номера; финансовая модель не передаётся.';
  const landField=document.getElementById('landQuery');if(landField)landField.value='';
  const landPreview=document.getElementById('landPreview');if(landPreview)landPreview.style.display='none';
  const moQuery=document.getElementById('moQuery');if(moQuery)moQuery.value='';
- const moPreview=document.getElementById('moPreview');if(moPreview)moPreview.style.display='none';
+ // Сброс снимает и карточки импорта с их данными: прежде glavapuImport
+ // переживал сброс, и «чистый» проект применял ТЭП удалённого участка.
+ dropGlavapuPreview();
+ dropMoPreview();
  const landStatus=document.getElementById('landStatus');if(landStatus)landStatus.textContent='На внешний сервис передаётся только строка поиска; финансовая модель не передаётся.';
  syncRateControlsFromInputs();generateRateCurve();renderRates();
  refreshCurrentKeyRate(true);
