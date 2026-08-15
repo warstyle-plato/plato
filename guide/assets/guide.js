@@ -98,6 +98,40 @@
     });
   }
 
+  /* Лайтбокс: скриншот открывается крупнее по клику; закрытие — кнопкой,
+     кликом по фону и клавишей Escape. */
+  var lightbox = null;
+  function closeLightbox() {
+    if (lightbox) { lightbox.remove(); lightbox = null; }
+  }
+  function openLightbox(img) {
+    closeLightbox();
+    lightbox = document.createElement('div');
+    lightbox.className = 'glightbox';
+    lightbox.setAttribute('role', 'dialog');
+    lightbox.setAttribute('aria-label', img.alt || 'Скриншот крупнее');
+    var big = document.createElement('img');
+    big.src = img.src;
+    big.alt = img.alt || '';
+    var close = document.createElement('button');
+    close.type = 'button';
+    close.textContent = '×';
+    close.setAttribute('aria-label', 'Закрыть');
+    close.onclick = closeLightbox;
+    lightbox.onclick = function (event) { if (event.target === lightbox) closeLightbox(); };
+    lightbox.appendChild(big);
+    lightbox.appendChild(close);
+    document.body.appendChild(lightbox);
+    close.focus();
+  }
+  document.addEventListener('click', function (event) {
+    var img = event.target.closest && event.target.closest('.gshot img');
+    if (img) openLightbox(img);
+  });
+  document.addEventListener('keydown', function (event) {
+    if (event.key === 'Escape') closeLightbox();
+  });
+
   /* Поиск: фильтрует пункты навигации по тексту их разделов. */
   var search = document.getElementById('gsearch');
   if (search) {
