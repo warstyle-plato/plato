@@ -108,3 +108,44 @@ def test_the_card_includes_the_contour():
     card = main.PAGE[main.PAGE.index("function landCardHtml"):]
     card = card[:card.index("function renderLandLookup")]
     assert "landContourSvg(item)" in card, "карточка не зовёт отрисовку контура"
+
+
+def _territory_harness() -> str:
+    match = re.search(r"(function landTerritorySvg\(found\)\{.*?\n\})\n\nfunction landContourSvg",
+                      main.PAGE, re.S)
+    assert match, "landTerritorySvg не найдена на странице"
+    return "const escapeHtml=s=>String(s);\n" + match.group(1)
+
+
+def run_territory(found: list) -> str:
+    if not NODE:
+        pytest.skip("node недоступен")
+    script = _territory_harness() + f"""
+console.log(JSON.stringify(landTerritorySvg({json.dumps(found, ensure_ascii=False)})));
+"""
+    result = subprocess.run([NODE, "-e", script], capture_output=True, text=True, check=True)
+    return json.loads(result.stdout)
+
+
+def test_several_parcels_share_one_scale():
+    """Территория из нескольких участков рисуется одной посадкой."""
+    second = [[p[0] + 120, p[1]] for p in MERC_RING]
+    svg = run_territory([
+        {"cadastral_number": "50:12:0080205:123", "contour_merc": [MERC_RING]},
+        {"cadastral_number": "50:12:0080205:124", "contour_merc": [second]},
+    ])
+    assert svg.count("<path") == 2, "участки слились или потерялись"
+    assert "<title>50:12:0080205:124</title>" in svg
+    assert "Территория из 2 участков" in svg
+
+
+def test_a_single_parcel_needs_no_territory_view():
+    """Один участок — миниатюра в карточке, общая посадка не дублирует её."""
+    assert run_territory([{"cadastral_number": "x", "contour_merc": [MERC_RING]}]) == ""
+    assert run_territory([]) == ""
+
+
+def test_the_list_renders_the_territory_first():
+    body = main.PAGE[main.PAGE.index("function renderLandLookup"):]
+    body = body[:body.index("function useLandForTep")]
+    assert "landTerritorySvg(found)+" in body, "список карточек не начинается с посадки"

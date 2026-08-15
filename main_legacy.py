@@ -22370,6 +22370,9 @@ details.cadastral-box>summary::marker{color:#888}
 .land-contour{margin-top:10px}
 .land-contour svg{display:block;width:100%;max-height:170px;border:1px solid #e5e5e3;background:#fff}
 .land-contour small{display:block;margin-top:4px;color:#999;font-size:10px}
+.land-territory{margin:0 0 12px}
+.land-territory svg{max-height:240px}
+.land-territory path:hover{fill:#e8e8e4}
 .mo-box{border-left:4px solid #111;margin-top:12px}
 /* Запасной путь: виден, но не спорит за внимание с главным. */
 .import-fallback{margin-top:14px;border-top:1px solid #e2e2e0;padding-top:10px}
@@ -24012,6 +24015,33 @@ async function lookupLand(options){
  }
 }
 
+function landTerritorySvg(found){
+ // Несколько участков — общая посадка: все контуры в одном масштабе, как они
+ // стоят друг относительно друга. По одному участку хватает миниатюры в его
+ // карточке. Наведение на контур показывает кадастровый номер.
+ const items=(found||[]).filter(x=>Array.isArray(x.contour_merc)&&x.contour_merc.length);
+ if(items.length<2)return '';
+ let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
+ items.forEach(item=>item.contour_merc.forEach(ring=>(ring||[]).forEach(p=>{
+  if(!Array.isArray(p)||p.length<2)return;
+  minX=Math.min(minX,p[0]);maxX=Math.max(maxX,p[0]);
+  minY=Math.min(minY,p[1]);maxY=Math.max(maxY,p[1]);
+ })));
+ if(!(maxX>minX)||!(maxY>minY))return '';
+ const spanX=maxX-minX,spanY=maxY-minY;
+ const pad=Math.max(spanX,spanY)*0.05;
+ const w=spanX+pad*2,h=spanY+pad*2;
+ const paths=items.map(item=>{
+  const d=item.contour_merc.map(ring=>'M'+ring
+   .filter(p=>Array.isArray(p)&&p.length>=2)
+   .map(p=>((p[0]-minX+pad)).toFixed(1)+' '+((maxY-p[1]+pad)).toFixed(1))
+   .join(' L ')+' Z').join(' ');
+  return `<path d="${d}" fill="#f5f5f3" stroke="#111" stroke-width="${(Math.max(w,h)/160).toFixed(2)}" fill-rule="evenodd" vector-effect="non-scaling-stroke"><title>${escapeHtml(item.cadastral_number||'')}</title></path>`;
+ }).join('');
+ return `<div class="land-contour land-territory"><svg viewBox="0 0 ${w.toFixed(1)} ${h.toFixed(1)}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Взаимное расположение участков">${paths}</svg>`+
+  `<small>Территория из ${items.length} участков в одном масштабе · наведите на контур — увидите номер</small></div>`;
+}
+
 function landContourSvg(item){
  // Миниатюра границ: свой SVG по кольцам из ЕГРН, без внешних карт — работает
  // и в телеграм-WebView, и при недоступной НСПД. Координаты — веб-меркатор:
@@ -24086,7 +24116,7 @@ function renderLandLookup(data){
   ['Субъект РФ',regions.join(' · ')||'—']
  ].map(x=>`<div><small>${escapeHtml(x[0])}</small><b>${escapeHtml(x[1])}</b></div>`).join('');
  document.getElementById('landCards').innerHTML=results.length
-  ?results.map(landCardHtml).join('')
+  ?landTerritorySvg(found)+results.map(landCardHtml).join('')
   :'<div style="padding:10px;color:#777">Ничего не найдено.</div>';
  document.getElementById('landWarnings').innerHTML=(data.warnings||[]).map(x=>'• '+escapeHtml(x)).join('<br>');
  document.getElementById('landPreview').style.display='block';
