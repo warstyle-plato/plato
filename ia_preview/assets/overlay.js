@@ -1278,12 +1278,15 @@
   /* ------------------------------------------------------------------ */
 
   function ribbon() {
+    // Лента «тестовый адрес» — примета стенда. На корне новая архитектура и
+    // есть рабочая страница: баннер там был бы ложью.
+    if (location.pathname.indexOf('/ia') !== 0) return;
     var shell = document.querySelector('.shell');
     if (!shell) { missing.push('корень страницы — .shell'); return; }
     var bar = document.createElement('div');
     bar.className = 'ia-ribbon';
     bar.innerHTML = '<span>Тестовый адрес · новая архитектура</span>'
-      + '<span class="ia-ribbon-note">Тот же движок и те же вводные. Рабочая страница — <a href="/">/</a></span>'
+      + '<span class="ia-ribbon-note">Тот же движок и те же вводные. Прежний интерфейс — <a href="/classic">/classic</a></span>'
       + '<span class="ia-ribbon-note" id="iaBuild" style="margin-left:auto"></span>';
     shell.insertBefore(bar, shell.firstChild);
     // Номер сборки — в ленту: «какая версия на стенде» уже дважды
@@ -1330,6 +1333,13 @@
     report();
   }
 
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
-  else boot();
+  // Телеграм опознаётся по параметрам запуска — telegram_session или cad в
+  // хеше: telegram-web-app.js на странице не подключён, window.Telegram там
+  // не существует. Поток мини-приложения со слоем не проверялся, поэтому в
+  // WebView слой не включается вовсе: телеграм получает страницу как есть.
+  var telegramLaunch = /[#&](telegram_session|cad)=/.test(location.hash);
+  if (!telegramLaunch) {
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
+    else boot();
+  }
 })();

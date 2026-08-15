@@ -15,9 +15,17 @@
 чужой разметки, поэтому каждый шаг обязан объявлять, что ему нужно, и
 непопадание видно на экране, а не в консоли.
 
+С 15.08.2026 (решение владельца) новая архитектура — основной интерфейс:
+корень отдаёт ту же страницу со слоем, прежний вид остаётся на `/classic`.
+Телеграм-поток со слоем не проверялся, поэтому в WebView слой выключает себя
+сам — по параметрам запуска в хеше (`telegram_session` / `cad`), как и
+положено опознавать телеграм на этой странице.
+
 Маршруты:
 
-- `GET  /ia`, `/ia/`             — `core.PAGE` со слоем перестройки;
+- `GET  /`                       — `core.PAGE` со слоем перестройки (основной);
+- `GET  /classic`                — `core.PAGE` как есть, прежний интерфейс;
+- `GET  /ia`, `/ia/`             — тот же слой на стендовом адресе (с лентой);
 - `GET  /ia/assets/overlay.css`  — стили слоя;
 - `GET  /ia/assets/overlay.js`   — сам слой;
 - `GET  /ia/example.json`        — пресет проекта под кнопкой «Открыть пример»;
@@ -93,6 +101,36 @@ def install(app, core) -> None:
         raise RuntimeError("В PAGE нет </body> — слой перестройки некуда поставить")
 
     preview_page = page.replace("</body>", f"{_INJECTION}</body>", 1)
+
+    # Заголовки корня — те же, что у прежнего index движка: страница живёт в
+    # браузере без кеша, иначе «деплой не приехал» и «слой сломан» неотличимы.
+    page_headers = {
+        "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+        "Pragma": "no-cache",
+        "Expires": "0",
+        "X-DevelopAid-Version": core.VERSION,
+    }
+
+    # Новая архитектура — основной интерфейс (решение владельца, 15.08.2026):
+    # корень движка снимается с маршрутов, его страница остаётся на /classic.
+    # В телеграме слой выключает себя сам по параметрам запуска в хеше.
+    from fastapi.routing import APIRoute
+
+    app.router.routes = [
+        route for route in app.router.routes
+        if not (isinstance(route, APIRoute)
+                and route.path == "/"
+                and "GET" in (route.methods or set()))
+    ]
+
+    @app.get("/", response_class=HTMLResponse, include_in_schema=False)
+    def ia_root() -> HTMLResponse:
+        return HTMLResponse(preview_page,
+                            headers={**page_headers, "X-DevelopAid-Surface": "ia-main"})
+
+    @app.get("/classic", response_class=HTMLResponse, include_in_schema=False)
+    def classic_page() -> HTMLResponse:
+        return HTMLResponse(page, headers=page_headers)
 
     @app.get("/ia", response_class=HTMLResponse, include_in_schema=False)
     @app.get("/ia/", response_class=HTMLResponse, include_in_schema=False)

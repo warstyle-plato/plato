@@ -1,13 +1,16 @@
-"""Тестовый адрес /ia отдаёт ту же страницу, а не её копию.
+"""Новая архитектура отдаёт ту же страницу, а не её копию.
 
 Форк `PAGE` был бы вторым источником поведения: список полей, умолчания и
 весь путь «участок → ТЭП → расчёт» пришлось бы держать в двух местах, и
-первое же расхождение выглядело бы как работающий макет. Поэтому `/ia` — это
-та же самая строка движка плюс два файла слоя, и здесь закреплено ровно это:
+первое же расхождение выглядело бы как работающий макет. С 15.08.2026 слой —
+основной интерфейс на корне (решение владельца); закреплено здесь:
 
-- `/` не меняется ни на байт от установки preview;
-- `/ia` — это `/` плюс подключение слоя и ничего больше;
-- страница и слой не кешируются: закешированный preview неотличим от
+- `PAGE` движка не меняется ни на байт от установки модуля;
+- `/` и `/ia` — это `PAGE` плюс подключение слоя и ничего больше;
+- `/classic` — `PAGE` как есть, прежний интерфейс;
+- в телеграме слой выключает себя сам: поток мини-приложения со слоем не
+  проверялся, и WebView получает страницу как есть;
+- страница и слой не кешируются: закешированный слой неотличим от
   невыкаченного;
 - модуль ничего не считает — арифметики в нём нет, максимум цены входа
   считает движок;
@@ -51,14 +54,14 @@ def client() -> TestClient:
     return TestClient(app)
 
 
-def test_the_working_page_is_untouched(client: TestClient):
-    """Установка preview не должна менять рабочую страницу."""
+def test_the_engine_page_is_untouched(client: TestClient):
+    """Установка модуля не должна менять саму строку PAGE."""
     assert core.PAGE == wrapper.core.PAGE
     assert "/ia/assets/overlay.js" not in core.PAGE
 
 
-def test_the_preview_is_the_page_plus_the_layer(client: TestClient):
-    """Отличие от рабочей страницы — ровно подключение слоя."""
+def test_the_root_is_the_page_plus_the_layer(client: TestClient):
+    """Корень и /ia — ровно PAGE плюс подключение слоя, прежний вид — /classic."""
     page = client.get("/ia").text
     assert page.count("<html") == core.PAGE.count("<html")
     without_layer = (
@@ -67,12 +70,35 @@ def test_the_preview_is_the_page_plus_the_layer(client: TestClient):
     )
     assert without_layer == core.PAGE
     assert client.get("/ia/").text == page
+    assert client.get("/").text == page, "корень отдаёт не тот же слой, что /ia"
+    assert client.get("/classic").text == core.PAGE, "/classic — не прежняя страница"
+
+
+def test_the_root_headers_carry_version_and_surface(client: TestClient):
+    """Выкатка корня различима: версия в заголовке, поверхность помечена."""
+    response = client.get("/")
+    assert response.headers.get("X-DevelopAid-Version") == core.VERSION
+    assert response.headers.get("X-DevelopAid-Surface") == "ia-main"
+    assert client.get("/classic").headers.get("X-DevelopAid-Version") == core.VERSION
+
+
+def test_the_layer_stays_out_of_telegram():
+    """Поток мини-приложения со слоем не проверялся — слой обязан выключаться.
+
+    Телеграм опознаётся по параметрам запуска в хеше (telegram_session / cad):
+    telegram-web-app.js на странице не подключён, window.Telegram не бывает.
+    """
+    source = _OVERLAY.read_text(encoding="utf-8")
+    assert "telegram_session|cad" in source, "в слое нет опознания телеграма"
+    guard = source.index("telegram_session|cad")
+    assert "boot()" in source[guard:], "опознание телеграма стоит после запуска слоя"
 
 
 def test_nothing_on_the_preview_is_cached(client: TestClient):
-    """Preview правится и смотрится в один заход."""
-    for path in ("/ia", "/ia/assets/overlay.css", "/ia/assets/overlay.js"):
-        assert "no-store" in client.get(path).headers.get("cache-control", ""), path
+    """Страница правится и смотрится в один заход."""
+    for path in ("/", "/classic", "/ia", "/ia/assets/overlay.css", "/ia/assets/overlay.js"):
+        cache = client.get(path).headers.get("cache-control", "")
+        assert "no-store" in cache or "no-cache" in cache, path
 
 
 def test_the_layer_is_valid_javascript():
