@@ -82,16 +82,21 @@ def test_the_root_headers_carry_version_and_surface(client: TestClient):
     assert client.get("/classic").headers.get("X-DevelopAid-Version") == core.VERSION
 
 
-def test_the_layer_stays_out_of_telegram():
-    """Поток мини-приложения со слоем не проверялся — слой обязан выключаться.
+def test_the_layer_rides_along_in_telegram():
+    """Слой работает и в телеграме, но WebView помечен и FAB поднят.
 
-    Телеграм опознаётся по параметрам запуска в хеше (telegram_session / cad):
-    telegram-web-app.js на странице не подключён, window.Telegram не бывает.
+    Проверено живым прогоном (15.08.2026): cad-путь доходит до отправки
+    результата в чат, режим правки шлёт обновление. Телеграм опознаётся по
+    параметрам запуска в хеше (telegram_session / cad) — telegram-web-app.js
+    на странице не подключён, window.Telegram не бывает. Особенность WebView:
+    внизу прибита кнопка «Обновить расчёт в Telegram», и без подъёма FAB
+    Платона ложился ровно на неё (боксы пересекались в первом прогоне).
     """
     source = _OVERLAY.read_text(encoding="utf-8")
     assert "telegram_session|cad" in source, "в слое нет опознания телеграма"
-    guard = source.index("telegram_session|cad")
-    assert "boot()" in source[guard:], "опознание телеграма стоит после запуска слоя"
+    assert "ia-telegram" in source, "телеграм-запуск не помечается классом"
+    css = (_ROOT / "ia_preview" / "assets" / "overlay.css").read_text(encoding="utf-8")
+    assert ".ia-telegram .ia-fab" in css, "FAB не поднимается над кнопкой отправки"
 
 
 def test_nothing_on_the_preview_is_cached(client: TestClient):

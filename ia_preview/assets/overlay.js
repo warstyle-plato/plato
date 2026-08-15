@@ -1335,11 +1335,13 @@
 
   // Телеграм опознаётся по параметрам запуска — telegram_session или cad в
   // хеше: telegram-web-app.js на странице не подключён, window.Telegram там
-  // не существует. Поток мини-приложения со слоем не проверялся, поэтому в
-  // WebView слой не включается вовсе: телеграм получает страницу как есть.
-  var telegramLaunch = /[#&](telegram_session|cad)=/.test(location.hash);
-  if (!telegramLaunch) {
-    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
-    else boot();
+  // не существует. Слой работает и в телеграме — проверено живым прогоном
+  // (15.08.2026): cad-путь доходит до отправки результата в чат, режим
+  // правки живёт. Особенность WebView одна: внизу прибита кнопка «Обновить
+  // расчёт в Telegram», и класс ia-telegram поднимает FAB Платона над ней.
+  if (/[#&](telegram_session|cad)=/.test(location.hash)) {
+    document.documentElement.classList.add('ia-telegram');
   }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
+  else boot();
 })();

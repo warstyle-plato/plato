@@ -50,6 +50,14 @@
 }
 .ia-ask{margin-top:14px}
 @media(max-width:700px){.ia-fab-hint{right:14px;bottom:66px;max-width:75vw}}
+/* В телеграме внизу прибита кнопка «Обновить расчёт в Telegram» (fixed во
+   всю ширину): FAB и подсказка поднимаются, иначе перекрывают её. */
+.ia-telegram .ia-fab{bottom:84px}
+.ia-telegram .ia-fab-hint{bottom:136px}
+@media(max-width:700px){
+  .ia-telegram .ia-fab{bottom:80px}
+  .ia-telegram .ia-fab-hint{bottom:128px}
+}
 
 /* --- навигация: пять разделов вместо девяти вкладок -------------------- */
 .ia-on .tabs{display:none}
