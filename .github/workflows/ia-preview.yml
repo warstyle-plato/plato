@@ -1,0 +1,195 @@
+# Preview новой информационной архитектуры: та же схема, что у рыночного
+# модуля. PR сам гоняет тесты, образ собирается только из workflow_dispatch на
+# main — привязка OIDC в Yandex Cloud разрешает ref=refs/heads/main.
+# Автоматического SSH-deploy здесь нет: второй этап CI/CD проекта не настроен,
+# образ поднимается на ВМ через deploy-ia-preview.sh.
+name: IA preview
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+    paths:
+      - "ia_preview/**"
+      - "main_registry.py"
+      - "tests/test_ia_preview_*.py"
+      - "deploy-ia-preview.sh"
+      - ".github/workflows/ia-preview.yml"
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: "Ветка preview информационной архитектуры"
+        required: true
+        default: "claude/developaid-ia-redesign-oc9zwy"
+        type: string
+
+concurrency:
+  group: ia-preview
+  cancel-in-progress: true
+
+env:
+  IMAGE_NAME: developaid
+  OIDC_AUDIENCE: https://github.com/warstyle-plato
+
+jobs:
+  test:
+    name: Проверка слоя перестройки
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Переключиться на preview-ветку
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          SOURCE_REF: ${{ inputs.source_ref }}
+        run: |
+          set -euo pipefail
+          case "$SOURCE_REF" in
+            claude/developaid-ia-*|agent/ia-*) ;;
+            *) echo "Разрешены только ветки claude/developaid-ia-* и agent/ia-*" >&2; exit 1 ;;
+          esac
+          git fetch --no-tags --depth=1 origin "$SOURCE_REF"
+          git checkout --detach FETCH_HEAD
+          echo "Preview ref: $SOURCE_REF"
+          git rev-parse --short=7 HEAD
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - name: Зависимости
+        run: python -m pip install -r requirements-dev.txt
+      # Модуль может жить только в preview-ветке: в main тогда лежит один этот
+      # workflow, и проверять на посторонних PR нечего. Красный крест, который
+      # ничего не значит, хуже отсутствующей проверки.
+      - name: Есть ли в ветке слой перестройки
+        id: present
+        run: |
+          if [ -d ia_preview ]; then
+            echo "value=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=no" >> "$GITHUB_OUTPUT"
+            echo "В этой ветке слоя перестройки нет — проверять нечего."
+          fi
+      - name: Синтаксис и тесты
+        if: steps.present.outputs.value == 'yes'
+        run: |
+          python -m py_compile ia_preview/*.py main_registry.py
+          node --check ia_preview/assets/overlay.js
+          # Маска, а не перечисление файлов: YAML берётся из main, а код — из
+          # preview-ветки, и список тестов в ней меняется.
+          python -m pytest tests/test_ia_preview_*.py -q
+      - name: Интеграция с основным entrypoint
+        if: steps.present.outputs.value == 'yes'
+        run: |
+          python - <<'PY'
+          import main_registry
+          paths = {getattr(route, "path", None) for route in main_registry.app.routes}
+          assert "/ia" in paths and "/ia/goal-seek" in paths, sorted(p for p in paths if p and p.startswith("/ia"))
+          # Главное свойство preview: рабочая страница не меняется ни на байт.
+          assert "/ia/assets/overlay.js" not in main_registry.core.PAGE
+          PY
+
+  build:
+    name: Сборка preview-образа
+    runs-on: ubuntu-latest
+    needs: [test]
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      sha: ${{ steps.meta.outputs.sha }}
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Переключиться на preview-ветку
+        env:
+          SOURCE_REF: ${{ inputs.source_ref }}
+        run: |
+          set -euo pipefail
+          case "$SOURCE_REF" in
+            claude/developaid-ia-*|agent/ia-*) ;;
+            *) echo "Разрешены только ветки claude/developaid-ia-* и agent/ia-*" >&2; exit 1 ;;
+          esac
+          git fetch --no-tags --depth=1 origin "$SOURCE_REF"
+          git checkout --detach FETCH_HEAD
+          git rev-parse --short=7 HEAD
+
+      - name: Имя и тег preview
+        id: meta
+        run: |
+          sha=$(git rev-parse --short=7 HEAD)
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "tag=ia-$sha" >> "$GITHUB_OUTPUT"
+          echo "image=cr.yandex/${{ vars.YC_REGISTRY_ID }}/${IMAGE_NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: OIDC-токен GitHub
+        run: |
+          set -euo pipefail
+          curl -sS --fail -G "${ACTIONS_ID_TOKEN_REQUEST_URL}" \
+            -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            --data-urlencode "audience=${OIDC_AUDIENCE}" \
+            -o "${RUNNER_TEMP}/oidc.json"
+          python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["value"])' \
+            "${RUNNER_TEMP}/oidc.json" > "${RUNNER_TEMP}/oidc.jwt"
+          echo "::add-mask::$(cat "${RUNNER_TEMP}/oidc.jwt")"
+
+      - name: Обмен на IAM-токен Яндекса
+        id: iam
+        run: |
+          set -euo pipefail
+          code=$(curl -sS -o "${RUNNER_TEMP}/iam.json" -w '%{http_code}' \
+            -X POST https://auth.yandex.cloud/oauth/token \
+            --data-urlencode "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
+            --data-urlencode "requested_token_type=urn:ietf:params:oauth:token-type:access_token" \
+            --data-urlencode "audience=${{ vars.YC_SERVICE_ACCOUNT_ID }}" \
+            --data-urlencode "subject_token@${RUNNER_TEMP}/oidc.jwt" \
+            --data-urlencode "subject_token_type=urn:ietf:params:oauth:token-type:id_token")
+          if [ "$code" != "200" ]; then
+            echo "Обмен отвергнут, код ${code}." >&2
+            cat "${RUNNER_TEMP}/iam.json" >&2
+            rm -f "${RUNNER_TEMP}/oidc.jwt" "${RUNNER_TEMP}/iam.json"
+            exit 1
+          fi
+          token=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["access_token"])' "${RUNNER_TEMP}/iam.json")
+          echo "::add-mask::${token}"
+          echo "token=${token}" >> "$GITHUB_OUTPUT"
+          rm -f "${RUNNER_TEMP}/oidc.jwt" "${RUNNER_TEMP}/iam.json"
+
+      - name: Вход в Yandex Registry
+        run: |
+          printf '%s' '${{ steps.iam.outputs.token }}' \
+            | docker login --username iam --password-stdin cr.yandex
+
+      - uses: docker/setup-buildx-action@v3
+
+      # provenance и sbom выключены не для скорости: с ними buildx публикует
+      # OCI-индекс, а Yandex Registry его не принимает. Один тег, одна
+      # платформа, обычный манифест Docker.
+      - name: Собрать и опубликовать образ
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          provenance: false
+          sbom: false
+          build-args: |
+            INSTALL_BROWSER=0
+            APP_COMMIT=${{ steps.meta.outputs.sha }}
+          tags: ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}
+          cache-from: type=gha,scope=ia-preview
+          cache-to: type=gha,mode=max,scope=ia-preview
+
+  ready:
+    name: Preview-образ готов
+    runs-on: ubuntu-latest
+    needs: [build]
+    if: needs.build.result == 'success'
+    steps:
+      - name: Что запускать на ВМ
+        run: |
+          echo "Готов образ ${{ needs.build.outputs.tag }} для ветки ${{ inputs.source_ref }}."
+          echo "На ВМ: sh deploy-ia-preview.sh ${{ needs.build.outputs.sha }}"
+          echo "Смотреть на http://<ядро>:18081/ia — рабочая страница на 8080 не трогается."
