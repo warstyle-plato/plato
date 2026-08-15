@@ -415,7 +415,12 @@
                   row.appendChild(cad);
                 }
                 row.onclick = function () {
-                  field.value = item.cadastral_number || item.label || '';
+                  // Лучший ввод — кадастр; без него — координаты дома:
+                  // точечный поиск НСПД находит участок под домом, а текст
+                  // адреса НСПД чаще всего не находит («0 из 0» у владельца).
+                  if (item.cadastral_number) field.value = item.cadastral_number;
+                  else if (item.lat && item.lng) field.value = item.lat + ', ' + item.lng;
+                  else field.value = item.label || '';
                   hide();
                   if (typeof window.obtainTep === 'function') window.obtainTep();
                 };
