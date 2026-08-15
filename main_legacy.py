@@ -22293,6 +22293,7 @@ input,select{width:100%;border:1px solid #cfcfcf;background:#fff;border-radius:0
 input:focus,select:focus{outline:2px solid #111;outline-offset:-1px}
 input[type=checkbox]{width:auto;transform:scale(1.15);margin:8px}
 .btn{border:1px solid #111;background:#fff;padding:9px 13px;color:#111;font-weight:700;cursor:pointer}
+a.btn{text-decoration:none;font-size:13.3333px;display:inline-block;line-height:normal;box-sizing:border-box}
 .btn.dark{background:#070707;color:#fff}.btn:hover{opacity:.8}.scenario select{width:auto;min-width:145px}
 .kpis{display:grid;grid-template-columns:repeat(4,minmax(150px,1fr));border-top:1px solid #111;border-left:1px solid var(--line)}
 .kpi{padding:17px;border-right:1px solid var(--line);border-bottom:1px solid var(--line);min-height:92px}
@@ -22559,12 +22560,12 @@ details.cadastral-box>summary::marker{color:#888}
         </div>
       </div>
       <button class="btn ai-open-btn" onclick="toggleAgent(true)"><span id="aiStatusDot" class="ai-dot"></span><span class="ai-label">Платон Сергеевич</span></button>
-      <a class="btn" href="/guide" style="text-decoration:none">Руководство</a>
       <button class="btn" onclick="saveLocal()">Сохранить</button>
       <!-- Кнопки хранилища появляются только там, где оно настроено и есть чем
            опознать владельца: иначе это кнопка, которая всегда отказывает. -->
       <button class="btn" id="projectsButton" style="display:none" onclick="openProjects()">Мои проекты</button>
       <button class="btn" onclick="resetAll()">Сбросить</button>
+      <a class="btn" href="/guide">Руководство</a>
       <button class="btn dark" onclick="calculateAndOpen('report')">Пересчитать модель</button>
     </div>
   </div>
