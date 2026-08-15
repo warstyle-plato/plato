@@ -1050,15 +1050,6 @@
     else shell.appendChild(box);
   }
 
-  /* Все группы вводных открыты сразу: свёрнутая группа читается как
-     «здесь ничего нет», и человек не видел данных раздела, пока не дошёл
-     до него руками (решение владельца). Отчёт не трогается. */
-  function openAllGroups() {
-    var groups = document.querySelectorAll('#inputGroups details');
-    if (!groups.length) { missing.push('группы вводных — #inputGroups details'); return; }
-    groups.forEach(function (group) { group.open = true; });
-  }
-
   function boot() {
     step('лента preview', ribbon);
     step('шапка', rebuildHeader);
@@ -1069,7 +1060,6 @@
     step('карточка решения', buildVerdict);
     step('перехват renderResult', wrapRenderResult);
     step('состояние расчёта', watchChanges);
-    step('группы вводных', openAllGroups);
     step('тексты', trimTexts);
     step('подсказки ТЭП', annotateTep);
     step('термины БРИДЖа', relabelBridge);
