@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.95"
+VERSION = "0.17.96"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -17533,6 +17533,7 @@ _AGENT_INSTRUCTIONS = """
 - Пользователь просит реально поменять вводные или ты сформировал конкретную рекомендуемую конфигурацию → сначала рассчитай, затем prepare_model_patch.
 - «Есть ли ошибки / аномалии / что не сходится?» → find_anomalies.
 - Методологический вопрос → get_methodology; если вопрос связан с текущим проектом, дополнительно используй расчётный инструмент.
+- Вопрос «как сделать», «с чего начать», «где кнопка» → get_user_guide; отвечай шагами из руководства и давай ссылку на раздел вида /guide#inputs. Не выдумывай кнопки: называй только те, что есть в руководстве.
 
 Особые правила:
 1. LLCR 1,20x — целевой ориентир пользователя для DevelopAid, не называй его универсальным нормативом всех банков.
@@ -19161,6 +19162,45 @@ def _tool_get_methodology(topic: str) -> dict[str, Any]:
     return {"topic": topic, "rules": rules}
 
 
+_GUIDE_PAGE_PATH = Path(__file__).resolve().parent / "guide" / "page.html"
+
+
+def _tool_get_user_guide(section: str) -> dict[str, Any]:
+    """Руководство пользователя /guide текстом — для «как сделать» и «где кнопка».
+
+    Источник — тот же файл, что отдаёт страница /guide: у Платона нет своей
+    копии руководства, поэтому ей негде устареть. Читается лениво при вызове.
+    """
+    try:
+        html_text = _GUIDE_PAGE_PATH.read_text(encoding="utf-8")
+    except OSError:
+        return {"available": False, "reason": "Файл руководства не найден на сервере."}
+    html_text = html_text.replace("__DEVELOPAID_VERSION__", VERSION)
+    # Таблицы классов и сценариев подставляются движком на страницу; Платону
+    # эти числа доступны точнее — из самих пресетов.
+    html_text = html_text.replace("__GUIDE_CLASS_ROWS__", "")
+    html_text = html_text.replace("__GUIDE_SCENARIO_ROWS__", "")
+    found = re.findall(r'<section id="([a-z-]+)"[^>]*>(.*?)</section>', html_text, re.S)
+
+    def _plain(chunk: str) -> str:
+        text = re.sub(r"<[^>]+>", " ", chunk)
+        text = html.unescape(text)
+        return re.sub(r"\s+", " ", text).strip()
+
+    sections = [{"id": sid, "url": f"/guide#{sid}", "text": _plain(body)} for sid, body in found]
+    if section != "all":
+        sections = [item for item in sections if item["id"] == section]
+        if not sections:
+            return {"available": False, "reason": f"В руководстве нет раздела «{section}»."}
+    return {
+        "available": True,
+        "section": section,
+        "sections": sections,
+        "class_presets": PROJECT_CLASS_PRESETS,
+        "note": "Отсылая пользователя к руководству, давай ссылку вида /guide#раздел.",
+    }
+
+
 
 
 def _clone_agent_req_with_inputs(req: AgentChatRequest, inputs: dict[str, Any]) -> Any:
@@ -19858,6 +19898,29 @@ _AGENT_TOOLS = [
         },
         "strict": True,
     },
+    {
+        "type": "function",
+        "name": "get_user_guide",
+        "description": (
+            "Руководство пользователя по интерфейсу DevelopAid: как ввести участок, "
+            "пять способов ввода данных, шаги первого расчёта, где кнопки PDF и Excel, "
+            "что проверять. Используй для вопросов «как сделать», «с чего начать», "
+            "«где найти» — и давай ссылку на раздел вида /guide#inputs."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "section": {
+                    "type": "string",
+                    "enum": ["start", "inputs", "example", "first-run",
+                             "project", "economics", "result", "export", "all"],
+                }
+            },
+            "required": ["section"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
 ]
 
 
@@ -19905,6 +19968,8 @@ def _execute_agent_tool(
         return _tool_phase_recovery_options(req, bundle, float(args.get("target_llcr", 1.20) or 1.20))
     if name == "get_methodology":
         return _tool_get_methodology(args["topic"])
+    if name == "get_user_guide":
+        return _tool_get_user_guide(args["section"])
     return {"error": f"Unknown tool: {name}"}
 
 
@@ -21835,6 +21900,7 @@ _AGENT_TOOL_LABELS = {
     "diagnose_project_logic": "диагностика логики проекта",
     "phase_recovery_options": "варианты оздоровления очереди",
     "get_methodology": "справка по методике",
+    "get_user_guide": "читает руководство пользователя",
 }
 
 
@@ -22445,6 +22511,7 @@ details.cadastral-box>summary::marker{color:#888}
         </div>
       </div>
       <button class="btn ai-open-btn" onclick="toggleAgent(true)"><span id="aiStatusDot" class="ai-dot"></span><span class="ai-label">Платон Сергеевич</span></button>
+      <a class="btn" href="/guide" style="text-decoration:none">Руководство</a>
       <button class="btn" onclick="saveLocal()">Сохранить</button>
       <!-- Кнопки хранилища появляются только там, где оно настроено и есть чем
            опознать владельца: иначе это кнопка, которая всегда отказывает. -->
@@ -23143,6 +23210,12 @@ details.cadastral-box>summary::marker{color:#888}
     <div class="ai-compose-row"><small>Ориентир диагностики: LLCR 1,20x. Методика конкретного банка может отличаться.</small><button id="aiSendBtn" class="btn dark" onclick="sendAgentMessage()">Отправить</button></div>
   </div>
 </aside>
+
+<footer style="max-width:1540px;margin:0 auto;padding:14px 34px;font-size:11px;color:#888;display:flex;gap:18px;flex-wrap:wrap">
+  <span>© ИП Ситников В.Ю.</span>
+  <a href="/consent" style="color:#888">Согласие на обработку персональных данных</a>
+  <a href="/guide" style="color:#888">Руководство</a>
+</footer>
 
 <script>
 const SCENARIOS={"conservative":{"scenario_revenue_multiplier":0.9,"scenario_cost_multiplier":1.1},"base":{"scenario_revenue_multiplier":1.0,"scenario_cost_multiplier":1.0},"optimistic":{"scenario_revenue_multiplier":1.1,"scenario_cost_multiplier":0.9}};
@@ -26744,9 +26817,12 @@ function renderProjectsLogin(){
   box.style.cssText='border:1px solid var(--line);padding:16px;margin-bottom:14px';
   const note=document.createElement('div');
   note.style.cssText='font-size:12px;color:#555;margin-bottom:10px';
-  note.textContent='Проекты хранятся на сервере в России и привязаны к вашему Telegram. '
+  // Текст статический, innerHTML — только ради ссылки на согласие: вход и
+  // есть момент, когда данные начинают собираться.
+  note.innerHTML='Проекты хранятся на сервере в России и привязаны к вашему Telegram. '
    +'Войдите через бота — и сохраняйте расчёты с любого устройства. '
-   +'После входа станут доступны Платон и PDF-отчёт.';
+   +'После входа станут доступны Платон и PDF-отчёт. Входя, вы соглашаетесь с '
+   +'<a href="/consent" target="_blank" rel="noopener">обработкой персональных данных</a>.';
   box.appendChild(note);
   const login=document.createElement('button');
   login.className='btn dark';
