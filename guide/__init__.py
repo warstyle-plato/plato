@@ -23,6 +23,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from fastapi import HTTPException
@@ -99,6 +100,16 @@ def install(app, core) -> None:
     @app.get("/guide/assets/guide.js", include_in_schema=False)
     def guide_js() -> Response:
         return _asset("guide.js", "application/javascript; charset=utf-8")
+
+    @app.get("/guide/assets/screens/{name}", include_in_schema=False)
+    def guide_screen(name: str) -> Response:
+        # Имя приходит снаружи: всё, кроме нашего алфавита, — отказ.
+        if not re.fullmatch(r"[a-z0-9-]+\.webp", str(name or "")):
+            raise HTTPException(status_code=404, detail="Нет такого изображения.")
+        path = _ASSETS.joinpath("screens", name)
+        if not path.exists():
+            raise HTTPException(status_code=404, detail=f"Нет изображения: {name}")
+        return Response(path.read_bytes(), media_type="image/webp", headers=_HEADERS)
 
 
 def _asset(name: str, media_type: str) -> Response:

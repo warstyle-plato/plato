@@ -156,6 +156,48 @@ def test_platon_reads_the_same_guide():
         "def _execute_agent_tool", 1)[1][:4000], "инструмент не диспетчеризуется"
 
 
+def test_queues_explain_manual_distribution(page: str):
+    """Очередность — не только сроки: распределение объектов задаётся вручную."""
+    for phrase in ("социальная нагрузка", "дополнительные объекты по обязательствам",
+                   "распределение по очередям вручную"):
+        assert phrase in page.lower() or phrase in page, f"в руководстве нет «{phrase}»"
+    assert "денежный поток" in page and "консолидац" in page
+    assert "не угадывает" in page, "не сказано, что распределение система не угадывает"
+    assert "Размер участка сам по себе не главный критерий" in page
+
+
+def test_screenshots_exist_and_are_wired(client: TestClient, page: str):
+    """Каждый скриншот: файл на месте, отдаётся маршрутом, alt и lazy заданы."""
+    sources = re.findall(r'<img src="(/guide/assets/screens/[a-z0-9-]+\.webp)"', page)
+    assert len(sources) >= 9, f"скриншотов меньше девяти: {len(sources)}"
+    screens_dir = _ROOT / "guide" / "assets" / "screens"
+    for src in sources:
+        name = src.rsplit("/", 1)[1]
+        assert (screens_dir / name).is_file(), f"нет файла {name}"
+        response = client.get(src)
+        assert response.status_code == 200, f"маршрут не отдаёт {src}"
+        assert response.headers.get("content-type") == "image/webp"
+        assert response.content[:4] == b"RIFF", f"{name} — не webp"
+    figures = re.findall(r'<figure class="gshot">(.*?)</figure>', page, re.S)
+    assert len(figures) == len(sources)
+    for figure in figures:
+        assert 'alt="' in figure and 'alt=""' not in figure, "пустой alt"
+        assert 'loading="lazy"' in figure and 'decoding="async"' in figure
+        assert "<b>Где:</b>" in figure and "<b>Нажать:</b>" in figure and "<b>Проверить:</b>" in figure
+    assert client.get("/guide/assets/screens/../secret.webp").status_code in (404, 400)
+
+
+def test_the_lightbox_is_wired():
+    """Клик открывает крупнее; закрытие — кнопкой, фоном и Escape."""
+    source = _GUIDE_JS.read_text(encoding="utf-8")
+    assert ".gshot img" in source, "клик по скриншоту никуда не ведёт"
+    assert "closeLightbox" in source
+    assert "'Escape'" in source
+    assert "event.target === lightbox" in source, "клик по фону не закрывает"
+    css = (_ROOT / "guide" / "assets" / "guide.css").read_text(encoding="utf-8")
+    assert ".glightbox" in css
+
+
 def test_tabs_are_accessible(page: str):
     assert 'role="tablist"' in page
     assert page.count('role="tab"') == 5, "способов ввода — пять"
