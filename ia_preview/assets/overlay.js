@@ -218,26 +218,16 @@
       host.parentNode.insertBefore(card, host);
     }
 
-    // «Сбросить» — необратимое действие в одном ряду с «Сохранить».
+    // «Сбросить» остаётся открытой кнопкой: защита от случайного клика — это
+    // подтверждение, а меню «⋯» из одного пункта было глупостью — клик
+    // отнимало, а защиты не добавляло (замечание владельца).
     var reset = Array.prototype.filter.call(actions.querySelectorAll('button'), function (b) {
       return b.textContent.trim() === 'Сбросить';
     })[0];
     if (!reset) missing.push('кнопка «Сбросить» в шапке');
     else {
-      var more = document.createElement('div');
-      more.className = 'ia-more';
-      more.innerHTML = '<button class="btn" type="button" aria-label="Ещё">⋯</button><div class="ia-more-menu"></div>';
-      var toggle = more.querySelector('.btn');
-      toggle.onclick = function (event) { event.stopPropagation(); more.classList.toggle('open'); };
-      document.addEventListener('click', function () { more.classList.remove('open'); });
-      reset.parentNode.removeChild(reset);
-      reset.className = '';
       reset.textContent = 'Сбросить проект';
       reset.setAttribute('data-ia-confirm', '1');
-      more.querySelector('.ia-more-menu').appendChild(reset);
-      var recalc = actions.querySelector('.btn.dark');
-      if (recalc) actions.insertBefore(more, recalc);
-      else actions.appendChild(more);
     }
   }
 
