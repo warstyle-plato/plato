@@ -137,6 +137,10 @@ def install(app, core) -> None:
             return {"available": True, "items": []}
         try:
             items = await run_in_threadpool(core._geocode_dadata, query, 8)
+            # Варианты с кадастровым номером — наверх: они единственные, что
+            # срабатывают гарантированно. У дома без кадастра в базе DaData
+            # остаётся точка НСПД, а она сейчас возвращает пусто.
+            items = sorted(items, key=lambda item: 0 if item.get("cadastral_number") else 1)
         except HTTPException as exc:
             # Сорвавшийся геокодер — пустой список с причиной, а не 5xx:
             # подсказка не имеет права ломать ввод.

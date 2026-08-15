@@ -389,6 +389,15 @@
   function renderSuggestItems(items) {
     if (!suggestBox || !items.length) { hideSuggest(); return false; }
     suggestBox.innerHTML = '';
+    // Участки с кадастром помечены: клик по ним срабатывает всегда, а дом
+    // без кадастра зависит от точки НСПД, которая сейчас отвечает пусто.
+    var hasCad = items.some(function (i) { return i.cadastral_number; });
+    if (hasCad) {
+      var note = document.createElement('div');
+      note.style.cssText = 'padding:7px 12px;font-size:10px;color:#777;border-bottom:1px solid #eee';
+      note.textContent = 'Надёжнее всего варианты с кадастровым номером — они помечены номером под адресом.';
+      suggestBox.appendChild(note);
+    }
     items.forEach(function (item) {
       var row = document.createElement('button');
       row.type = 'button';
