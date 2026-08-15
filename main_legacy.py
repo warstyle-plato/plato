@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.94"
+VERSION = "0.17.95"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -23371,7 +23371,7 @@ async function obtainTep(){
   });
   const data=await response.json();
   if(response.ok&&(data.recognized||[]).length)analysis=data;else failure=data.detail||'территория не сформирована';
- }catch(e){failure=String(e.message||e)}
+ }catch(e){failure=String(e.message||e)+CONNECTION_HINT}
 
  const insideMoscow=!!((analysis||{}).territory||{}).inside_moscow;
  if(insideMoscow)return obtainCadastralTep(analysis);
@@ -23626,7 +23626,7 @@ async function lookupLand(options){
   // список: вызывающий обязан отличить «спросили, и там пусто» от «спросить
   // не удалось», иначе он закрасит настоящую причину своим диагнозом.
   status.innerHTML='<span class="import-error">'+escapeHtml(String(e.message||e))
-   +'</span> Проверьте связь с сервером и повторите.';
+   +'</span>'+CONNECTION_HINT;
   return null;
  }finally{
   button.disabled=false;button.textContent='Получить ТЭП';
@@ -24653,6 +24653,13 @@ function applyTelegramCalcOverrides(){
   else{inputs[k]=String(o[k]);}
  });
 }
+
+// Запрос к своему серверу сорвался. Самая частая причина — включённый VPN:
+// сведения ЕГРН запрашиваются с российского адреса, и с зарубежного выхода
+// запрос до ядра не доходит. Раньше это выглядело как «участок не найден», и
+// человек шёл проверять кадастровый номер, в котором ошибки не было.
+const CONNECTION_HINT=' Не удалось связаться с сервером. Если включён VPN — '
+ +'отключите его и повторите: сведения ЕГРН запрашиваются с российского адреса.';
 
 const VRI_GROUP_NAME='Смена ВРИ и земельные права';
 

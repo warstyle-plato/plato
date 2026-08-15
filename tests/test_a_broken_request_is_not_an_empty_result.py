@@ -47,6 +47,7 @@ def page_function(name: str) -> str:
 
 
 DOM = """
+const CONNECTION_HINT=' Не удалось связаться с сервером. Если включён VPN — отключите его и повторите: сведения ЕГРН запрашиваются с российского адреса.';
 const nodes={cadastralNumbers:{value:'Одинцово, Маковского 28'},
              cadastralAnalyzeButton:{disabled:false,textContent:''},
              cadastralStatus:{innerHTML:'',textContent:''}};
@@ -117,4 +118,25 @@ def test_the_caller_keeps_the_real_reason():
 def test_the_message_about_connection_is_actionable():
     """«Load failed» само по себе человеку ничего не говорит."""
     got = run("const fetch=async()=>{throw new Error('Load failed')};")
-    assert "связь с сервером" in got["status"].lower()
+    assert "связаться с сервером" in got["status"].lower()
+
+
+def test_the_message_names_the_vpn():
+    """Самая частая причина названа прямо: с зарубежного выхода запрос до ядра
+    не доходит, а выглядело это как отсутствующий участок."""
+    got = run("const fetch=async()=>{throw new Error('Load failed')};")
+    assert "vpn" in got["status"].lower()
+    assert "отключите" in got["status"].lower()
+
+
+def test_the_hint_is_declared_once():
+    """Подсказка одна на страницу: две копии разойдутся при первой же правке."""
+    assert core.PAGE.count("const CONNECTION_HINT=") == 1
+    assert core.PAGE.count("CONNECTION_HINT") >= 3
+
+
+def test_the_territory_step_says_it_too():
+    """Территория собирается своим запросом — он рвётся тем же VPN."""
+    body = core.PAGE[core.PAGE.index("async function obtainTep("):]
+    body = body[:body.index("let tepRunSequence")]
+    assert "CONNECTION_HINT" in body
