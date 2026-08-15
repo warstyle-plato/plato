@@ -1021,8 +1021,15 @@
     var bar = document.createElement('div');
     bar.className = 'ia-ribbon';
     bar.innerHTML = '<span>Тестовый адрес · новая архитектура</span>'
-      + '<span class="ia-ribbon-note">Тот же движок и те же вводные. Рабочая страница — <a href="/">/</a></span>';
+      + '<span class="ia-ribbon-note">Тот же движок и те же вводные. Рабочая страница — <a href="/">/</a></span>'
+      + '<span class="ia-ribbon-note" id="iaBuild" style="margin-left:auto"></span>';
     shell.insertBefore(bar, shell.firstChild);
+    // Номер сборки — в ленту: «какая версия на стенде» уже дважды
+    // разбиралась перепиской и скриншотами, а /health знал ответ всё время.
+    fetch('/health').then(function (r) { return r.json(); }).then(function (h) {
+      var el = document.getElementById('iaBuild');
+      if (el && h && h.commit) el.textContent = 'сборка ' + String(h.commit).slice(0, 7);
+    }).catch(function () { });
   }
 
   function report() {
