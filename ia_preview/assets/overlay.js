@@ -46,6 +46,10 @@
   var RETIRED_TABS = ['finance', 'calendar'];
   var PATH = [];
   SECTIONS.forEach(function (section) { section.tabs.forEach(function (t) { PATH.push(t); }); });
+  // Путь ведёт к ответу и на ответе заканчивается: «Далее» после отчёта
+  // предлагал чувствительность как следующий шаг, хотя это инструмент по
+  // желанию, а не стадия (замечание владельца).
+  PATH = PATH.slice(0, PATH.indexOf('report') + 1);
   var SUB_LABEL = {
     iaSite: 'Участок', tep: 'ТЭП', vri: 'ВРИ', inputs: 'Вводные',
     rates: 'Ключевая ставка', finance: 'Финансирование',
