@@ -28,15 +28,20 @@
      вводные, поэтому в «Экономике»; вкладка финансирования — таблицы БРИДЖа,
      ПФ и LLCR, то есть результат. «Пересчитать модель» и «Открыть пример»
      открывают отчёт и потому разблокируют путь целиком. */
-  /* Очередность — тоже настройка проекта, поэтому вкладкой в «Экономике»
-     (замечание владельца); календарь — картинка посчитанных сроков, то есть
-     результат. Шага четыре: ввод → ввод → ввод → результат. */
+  /* Структура владельца: три раздела, шаги внутри. «Проект» — что строим:
+     участок, ТЭП, очередность. «Экономика» — на каких условиях: вводные по
+     стройке, продажам и сделке, ВРИ, процентная ставка. «Результат» — что
+     вышло: отчёт, финансирование, календарь, чувствительность. Кнопка «Далее»
+     ведёт по шагам насквозь; вперёд перескочить нельзя, назад — свободно.
+     «Пересчитать модель» и «Открыть пример» открывают отчёт и потому
+     разблокируют путь целиком. */
   var SECTIONS = [
-    { id: 'site', label: '1 · Участок', tabs: ['iaSite'] },
-    { id: 'tep', label: '2 · ТЭП', tabs: ['tep'] },
-    { id: 'economics', label: '3 · Экономика', tabs: ['inputs', 'vri', 'phasing', 'rates'] },
-    { id: 'result', label: '4 · Результат', tabs: ['report', 'finance', 'calendar', 'sensitivity'] }
+    { id: 'project', label: 'Проект', tabs: ['iaSite', 'tep', 'phasing'] },
+    { id: 'economics', label: 'Экономика', tabs: ['inputs', 'vri', 'rates'] },
+    { id: 'result', label: 'Результат', tabs: ['report', 'finance', 'calendar', 'sensitivity'] }
   ];
+  var PATH = [];
+  SECTIONS.forEach(function (section) { section.tabs.forEach(function (t) { PATH.push(t); }); });
   var unlockedStep = 0;
 
   function sectionIndex(section) { return SECTIONS.indexOf(section); }
@@ -375,15 +380,19 @@
         sub.appendChild(button);
       });
     }
-    var next = SECTIONS[index + 1];
-    if (next) {
+    var pos = PATH.indexOf(activeTab);
+    var nextTab = pos >= 0 ? PATH[pos + 1] : null;
+    if (nextTab) {
+      var nextSection = sectionOf(nextTab);
       var forward = document.createElement('button');
       forward.type = 'button';
       forward.className = 'ia-next';
-      forward.textContent = 'Далее: ' + next.label + ' →';
+      forward.textContent = 'Далее: ' + (SUB_LABEL[nextTab] || nextTab) + ' →';
       forward.onclick = function () {
-        if (unlockedStep < index + 1) unlockedStep = index + 1;
-        openSection(next.id);
+        var ni = sectionIndex(nextSection);
+        if (unlockedStep < ni) unlockedStep = ni;
+        var button = tabButton(nextTab);
+        if (button) button.click();
       };
       sub.appendChild(forward);
     }
@@ -797,7 +806,7 @@
     step('тексты', trimTexts);
     step('подсказки ТЭП', annotateTep);
     step('термины БРИДЖа', relabelBridge);
-    openSection('site', 'iaSite');
+    openSection('project', 'iaSite');
     renderState();
     renderVerdict();
     report();
