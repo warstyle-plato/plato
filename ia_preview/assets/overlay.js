@@ -655,6 +655,51 @@
         + 'площади и плотности» — или вернитесь на шаг 1 и укажите кадастровый номер, тогда ТЭП посчитается сам.';
     }
 
+    // Пояснение стоит у самого блока Подмосковья, а не в начале карточки:
+    // блок внизу, и подсказка сверху его не объясняла — замечание владельца.
+    var moBox = document.getElementById('moParamsBox');
+    if (moBox) {
+      var moNote = document.getElementById('iaMoNote');
+      if (!moNote) {
+        moNote = document.createElement('div');
+        moNote.id = 'iaMoNote';
+        moNote.className = 'note';
+        moNote.style.margin = '10px 0 6px';
+        moBox.parentNode.insertBefore(moNote, moBox);
+      }
+      if (pageGlavapu()) {
+        moNote.textContent = 'Для вашего участка этот блок не нужен: он в Москве, ТЭП пришёл из ГлавАПУ. '
+          + 'Параметры ниже используются только для участков Московской области.';
+      } else if (mo) {
+        var moDistrict = mo.territory && mo.territory.district ? mo.territory.district : 'округ не определён';
+        moNote.textContent = 'Ваш участок — Московская область (' + moDistrict + '). Плотность и цены взяты '
+          + 'из справочников, посадка по умолчанию — 30 000 м² на га. Откройте блок, если хотите поменять '
+          + 'вручную: правка сразу пересчитает ТЭП участка.';
+      } else {
+        moNote.textContent = 'Этот блок нужен в двух случаях: участок в Московской области (плотность и цены '
+          + 'подставятся из справочников) или ручной расчёт без участка — тогда площадь и плотность вводятся здесь.';
+      }
+    } else if (!tepAnnotated) {
+      tepAnnotated = true;
+      missing.push('блок параметров МО — #moParamsBox');
+      report();
+    }
+
+    // Той же логикой — подпись у кнопки расчёта от площади и плотности.
+    var hint = document.getElementById('siteApplyHint');
+    if (hint) {
+      if (pageGlavapu()) {
+        hint.textContent = 'Для этого участка не нужна: ТЭП уже загружен из ГлавАПУ. Жмите, только если '
+          + 'хотите пересчитать ТЭП от своей площади и плотности — загруженное будет заменено.';
+      } else if (mo) {
+        hint.textContent = 'Нажмите после правки плотности или площади — ТЭП пересчитается по нормативам '
+          + 'РНГП: квартиры = площадь × плотность, социалка и паркинг — от населения.';
+      } else {
+        hint.textContent = 'Введите площадь и плотность выше и нажмите: квартиры = площадь × плотность, '
+          + 'социалка и паркинг — от населения. Работает в любом регионе.';
+      }
+    }
+
     var sync = document.querySelector('#tep [onclick="syncTep()"]');
     if (sync && !document.getElementById('iaSyncNote')) {
       var note = document.createElement('div');
