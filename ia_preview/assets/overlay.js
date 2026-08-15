@@ -175,6 +175,28 @@
       box.innerHTML = '<summary>Как считаются класс и сценарий</summary>';
       note.parentNode.removeChild(note);
       box.appendChild(note);
+      // Цифры классов — из PROJECT_CLASS_PRESETS страницы, не копией:
+      // пояснение без конкретных чисел не объясняло ничего (замечание
+      // владельца), а вторая копия чисел разъехалась бы с первой.
+      if (typeof PROJECT_CLASS_PRESETS !== 'undefined') {
+        var fmtN = function (v) { return Number(v).toLocaleString('ru-RU'); };
+        var rows = Object.keys(PROJECT_CLASS_PRESETS).map(function (key) {
+          var c = PROJECT_CLASS_PRESETS[key];
+          return '<tr><td>' + c.label + '</td><td>' + fmtN(c.apartment_price_th) + ' / '
+            + fmtN(c.commercial_price_th) + '</td><td>' + fmtN(c.parking_price_th) + '</td><td>'
+            + fmtN(c.main_above_th_per_sqm) + ' / ' + fmtN(c.main_under_th_per_sqm) + '</td></tr>';
+        }).join('');
+        var table = document.createElement('div');
+        table.innerHTML = '<table class="ia-class-table"><thead><tr><th>Класс</th>'
+          + '<th>Квартиры / коммерция, тыс ₽/м²</th><th>Машино-место, тыс ₽</th>'
+          + '<th>Себестоимость назем. / подзем., тыс ₽/м²</th></tr></thead><tbody>' + rows + '</tbody></table>'
+          + '<div style="font-size:11px;color:#777;margin:6px 0 10px">Сценарий применяется поверх: '
+          + 'Базовый — цены 100%, затраты 100% · Консервативный — цены −10%, затраты +10% · '
+          + 'Оптимистичный — цены +10%, затраты −10%.</div>';
+        box.appendChild(table);
+      } else {
+        missing.push('таблица классов — PROJECT_CLASS_PRESETS не найдены');
+      }
       setup.appendChild(box);
     }
 

@@ -107,6 +107,9 @@
 .ia-method{border:1px solid #e2e2e2;background:#fafaf8;padding:0 13px;margin-top:12px}
 .ia-method summary{font-size:12px;font-weight:600;color:#555;padding:10px 0}
 .ia-method .header-note{margin:0 0 11px;border:0;background:none;padding:0}
+.ia-class-table{border-collapse:collapse;margin:4px 0 8px;font-size:12px}
+.ia-class-table th,.ia-class-table td{border:1px solid #ddd;padding:6px 10px;text-align:left}
+.ia-class-table th{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:#777}
 
 .ia-setup{display:flex;gap:22px;align-items:flex-start;flex-wrap:wrap}
 .ia-setup .scenario{font-size:13px}
