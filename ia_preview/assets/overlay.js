@@ -852,14 +852,24 @@
     var calcBar = calcButton ? calcButton.closest('.toolbar') : null;
     if (!calcBar) {
       if (!tepAnnotated) { tepAnnotated = true; missing.push('кнопка расчёта от плотности — #tep [onclick="applyDensityToTep()"]'); report(); }
-    } else if (!document.getElementById('iaManualCalc')) {
-      var manualWrap = document.createElement('details');
-      manualWrap.id = 'iaManualCalc';
-      manualWrap.innerHTML = '<summary style="font-size:13px;padding:8px 0">'
-        + 'Пересчитать ТЭП вручную — от площади и плотности</summary>';
-      calcBar.parentNode.insertBefore(manualWrap, calcBar);
-      manualWrap.appendChild(calcBar);
-      manualWrap.open = !moscowLoaded;
+    } else {
+      var manualWrap = document.getElementById('iaManualCalc');
+      if (!manualWrap) {
+        manualWrap = document.createElement('details');
+        manualWrap.id = 'iaManualCalc';
+        manualWrap.innerHTML = '<summary style="font-size:13px;padding:8px 0"></summary>';
+        calcBar.parentNode.insertBefore(manualWrap, calcBar);
+        manualWrap.appendChild(calcBar);
+        manualWrap.open = !moscowLoaded;
+      }
+      // Заголовок говорит, кому блок нужен, а не только когда не нужен:
+      // «от площади и плотности» не отвечал на вопрос «это про Подмосковье?»
+      // (замечание владельца).
+      manualWrap.querySelector('summary').textContent = moscowLoaded
+        ? 'Ручной пересчёт ТЭП — этому участку не нужен: данные из ГлавАПУ'
+        : (mo
+          ? 'Пересчитать ТЭП от площади и плотности — по нормативам РНГП Московской области'
+          : 'Рассчитать ТЭП вручную — от площади и плотности, без участка');
     }
 
     var hint = document.getElementById('siteApplyHint');
