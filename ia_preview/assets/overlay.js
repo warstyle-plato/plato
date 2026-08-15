@@ -22,13 +22,24 @@
      владельца: очередность — это устройство проекта, а не риск. Разделы
      названы тем, что внутри: очередность и календарь — сроки, чувствительность
      — анализ результата, и живёт рядом с отчётом. */
+  /* Разделы — это шаги, и человека ведут по ним (решение владельца):
+     вперёд — кнопкой «Далее», назад — свободно, перескочить нельзя.
+     Деление: слева вводишь, справа смотришь. ВРИ и кривая ключевой ставки —
+     вводные, поэтому в «Экономике»; вкладка финансирования — таблицы БРИДЖа,
+     ПФ и LLCR, то есть результат. «Пересчитать модель» и «Открыть пример»
+     открывают отчёт и потому разблокируют путь целиком. */
+  /* Очередность — тоже настройка проекта, поэтому вкладкой в «Экономике»
+     (замечание владельца); календарь — картинка посчитанных сроков, то есть
+     результат. Шага четыре: ввод → ввод → ввод → результат. */
   var SECTIONS = [
-    { id: 'project', label: 'Проект', tabs: ['iaSite', 'tep', 'vri'] },
-    { id: 'economics', label: 'Экономика', tabs: ['inputs'] },
-    { id: 'finance', label: 'Финансирование', tabs: ['rates', 'finance'] },
-    { id: 'timing', label: 'Очередность и календарь', tabs: ['phasing', 'calendar'] },
-    { id: 'result', label: 'Результат', tabs: ['report', 'sensitivity'] }
+    { id: 'site', label: '1 · Участок', tabs: ['iaSite'] },
+    { id: 'tep', label: '2 · ТЭП', tabs: ['tep'] },
+    { id: 'economics', label: '3 · Экономика', tabs: ['inputs', 'vri', 'phasing', 'rates'] },
+    { id: 'result', label: '4 · Результат', tabs: ['report', 'finance', 'calendar', 'sensitivity'] }
   ];
+  var unlockedStep = 0;
+
+  function sectionIndex(section) { return SECTIONS.indexOf(section); }
   var SUB_LABEL = {
     iaSite: 'Участок', tep: 'ТЭП', vri: 'ВРИ', inputs: 'Вводные',
     rates: 'Ключевая ставка', finance: 'Финансирование',
@@ -69,6 +80,7 @@
      undefined — и карточка решения вечно показывала бы «расчёт не выполнен».
      Форматтеры money/mult/pct — тоже const, поэтому берутся так же. */
   function pageResult() { return typeof lastResult === 'undefined' ? null : lastResult; }
+  function pageGlavapu() { return typeof glavapuImport === 'undefined' ? null : glavapuImport; }
   function pageInputs() { return typeof inputs === 'undefined' ? {} : inputs; }
   function pageTep() { return typeof tep === 'undefined' ? {} : tep; }
   function pageRates() { return typeof rates === 'undefined' ? [] : rates; }
@@ -328,6 +340,8 @@
   function openSection(id, keepTab) {
     var section = SECTIONS.filter(function (s) { return s.id === id; })[0];
     if (!section) return;
+    // Клик по будущему шагу молча не работает: вперёд ведёт только «Далее».
+    if (sectionIndex(section) > unlockedStep) return;
     var target = keepTab && section.tabs.indexOf(keepTab) >= 0 ? keepTab : section.tabs[0];
     var button = tabButton(target);
     if (button) button.click();
@@ -341,21 +355,38 @@
     Object.keys(navButtons).forEach(function (key) {
       navButtons[key].classList.toggle('active', key === section.id);
     });
+    var index = sectionIndex(section);
+    Object.keys(navButtons).forEach(function (key, i) {
+      navButtons[key].classList.toggle('locked', i > unlockedStep);
+    });
     var sub = document.getElementById('iaSub');
     if (!sub) return;
     sub.innerHTML = '';
-    if (section.tabs.length < 2) return;
-    section.tabs.forEach(function (tabId) {
-      var button = document.createElement('button');
-      button.type = 'button';
-      button.textContent = SUB_LABEL[tabId] || tabId;
-      button.className = tabId === activeTab ? 'active' : '';
-      button.onclick = function () {
-        var original = tabButton(tabId);
-        if (original) original.click();
+    if (section.tabs.length > 1) {
+      section.tabs.forEach(function (tabId) {
+        var button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = SUB_LABEL[tabId] || tabId;
+        button.className = tabId === activeTab ? 'active' : '';
+        button.onclick = function () {
+          var original = tabButton(tabId);
+          if (original) original.click();
+        };
+        sub.appendChild(button);
+      });
+    }
+    var next = SECTIONS[index + 1];
+    if (next) {
+      var forward = document.createElement('button');
+      forward.type = 'button';
+      forward.className = 'ia-next';
+      forward.textContent = 'Далее: ' + next.label + ' →';
+      forward.onclick = function () {
+        if (unlockedStep < index + 1) unlockedStep = index + 1;
+        openSection(next.id);
       };
-      sub.appendChild(button);
-    });
+      sub.appendChild(forward);
+    }
   }
 
   /* openTab зовут и мимо навигации — calculateAndOpen('report') после каждого
@@ -366,7 +397,12 @@
     window.openTab = function (id, btn) {
       var out = original.apply(this, arguments);
       try {
+        // Программные переходы — «Пересчитать модель», пример, телеграм —
+        // выражают намерение пользователя и разблокируют путь до себя.
+        var section = sectionOf(id);
+        if (section && sectionIndex(section) > unlockedStep) unlockedStep = sectionIndex(section);
         syncNav(id);
+        if (id === 'tep') annotateTep();
         if (id === 'report') ensureGoalSeek();
       } catch (error) { /* навигация не должна ронять расчёт */ }
       return out;
@@ -572,6 +608,62 @@
   }
 
   /* ------------------------------------------------------------------ */
+  /* Подсказки на вкладке ТЭП                                            */
+  /* ------------------------------------------------------------------ */
+
+  /* Кнопки «Рассчитать ТЭП от площади и плотности» и «Обновить производные
+     ТЭП» висели без объяснения, когда ими пользоваться, — замечание владельца.
+     Подсказка знает состояние: загружен ГлавАПУ, посчитано Подмосковье или
+     участка нет вовсе — и говорит про текущий случай, а не про все сразу. */
+  var tepAnnotated = false;
+
+  function annotateTep() {
+    var card = document.querySelector('#tep .card');
+    if (!card) {
+      if (!tepAnnotated) { tepAnnotated = true; missing.push('карточка ТЭП — #tep .card'); report(); }
+      return;
+    }
+    var intro = document.getElementById('iaTepIntro');
+    if (!intro) {
+      intro = document.createElement('div');
+      intro.id = 'iaTepIntro';
+      intro.className = 'note';
+      intro.style.margin = '0 0 14px';
+      card.insertBefore(intro, card.children[1] || null);
+    }
+    var mo = (pageInputs() || {})._mo_calc;
+    if (pageGlavapu()) {
+      intro.textContent = 'ТЭП загружен из ГлавАПУ по участку с шага 1 — числа можно править прямо в '
+        + 'таблице ниже. Подземный паркинг производный: постоянные + гостевые места × 35 м².';
+    } else if (mo) {
+      var district = mo.territory && mo.territory.district ? ' (' + mo.territory.district + ')' : '';
+      var density = Number(mo.density_sqm_per_ha || 30000).toLocaleString('ru-RU');
+      intro.textContent = 'Участок в Московской области' + district + ': ТЭП посчитан по нормативам РНГП, '
+        + 'посадка ' + density + ' м² на га. Поменять плотность или площадь можно в «Параметрах расчёта '
+        + 'по Московской области» ниже — затем нажмите «Рассчитать ТЭП от площади и плотности».';
+    } else {
+      intro.textContent = 'Участок не вводился. Задайте площадь и плотность и нажмите «Рассчитать ТЭП от '
+        + 'площади и плотности» — или вернитесь на шаг 1 и укажите кадастровый номер, тогда ТЭП посчитается сам.';
+    }
+
+    var sync = document.querySelector('#tep [onclick="syncTep()"]');
+    if (sync && !document.getElementById('iaSyncNote')) {
+      var note = document.createElement('div');
+      note.id = 'iaSyncNote';
+      note.className = 'note';
+      note.style.margin = '12px 0 6px';
+      note.textContent = 'Офисы, ТЦ, паркинги и соцобъекты в таблице — производные от вводных шага 3 '
+        + '«Экономика»: площади, места, галочки «объект включён». Поменяли что-то там — нажмите кнопку '
+        + 'ниже, и эти строки пересчитаются. Квартиры и коммерцию первого этажа кнопка не трогает.';
+      sync.closest('.toolbar').parentNode.insertBefore(note, sync.closest('.toolbar'));
+    } else if (!sync && !tepAnnotated) {
+      tepAnnotated = true;
+      missing.push('кнопка производных ТЭП — #tep [onclick="syncTep()"]');
+      report();
+    }
+  }
+
+  /* ------------------------------------------------------------------ */
   /* Тексты                                                              */
   /* ------------------------------------------------------------------ */
 
@@ -703,8 +795,9 @@
     step('перехват renderResult', wrapRenderResult);
     step('состояние расчёта', watchChanges);
     step('тексты', trimTexts);
+    step('подсказки ТЭП', annotateTep);
     step('термины БРИДЖа', relabelBridge);
-    openSection('project', 'iaSite');
+    openSection('site', 'iaSite');
     renderState();
     renderVerdict();
     report();
