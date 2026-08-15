@@ -382,6 +382,7 @@
   var suggestReady = false;
   var suggestBox = null;
   var suggestField = null;
+  var originalObtainTep = null;
 
   function hideSuggest() { if (suggestBox) suggestBox.style.display = 'none'; }
 
@@ -409,10 +410,16 @@
           suggestField.value = item.cadastral_number;
           hideSuggest();
           if (typeof window.obtainTep === 'function') window.obtainTep();
-        } else if (houseLevel && item.lat && item.lng) {
-          suggestField.value = item.lat + ', ' + item.lng;
+        } else if (houseLevel) {
+          // Координаты здесь не работают: точечный поиск НСПД со стенда пуст
+          // даже там, где участок точно есть (Мишина 46 — проверено
+          // владельцем). Полный адрес дома идёт серверной цепочкой напрямую:
+          // она достаёт участок через кадастр соседней подсказки. Обход
+          // обёртки обязателен, иначе адрес снова откроет список — петля.
+          suggestField.value = item.label || '';
           hideSuggest();
-          if (typeof window.obtainTep === 'function') window.obtainTep();
+          if (originalObtainTep) originalObtainTep();
+          else if (typeof window.obtainTep === 'function') window.obtainTep();
         } else {
           suggestField.value = (item.label || '') + ', ';
           suggestField.focus();
@@ -470,6 +477,7 @@
   function wrapObtainTep() {
     var original = window.obtainTep;
     if (typeof original !== 'function') { missing.push('функция obtainTep не найдена'); return; }
+    originalObtainTep = original;
     window.obtainTep = async function () {
       try {
         var field = document.getElementById('cadastralNumbers');
