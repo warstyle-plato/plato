@@ -66,7 +66,7 @@
   padding:0 34px;border-bottom:1px solid var(--line);display:flex;gap:30px;overflow:auto;background:#fff;
 }
 .ia-nav button{
-  border:0;background:none;padding:15px 0 12px;font-size:15px;font-weight:700;color:#777;
+  border:0;background:none;padding:15px 0 12px;font-size:15px;font-weight:700;color:#333;
   white-space:nowrap;border-bottom:3px solid transparent;cursor:pointer;
 }
 .ia-nav button.active{color:#000;border-color:#000}
@@ -141,5 +141,8 @@
   .ia-nav button{font-size:14px}
   .ia-fab{right:14px;bottom:14px;padding:11px 14px}
 }
+
+.ia-on #moParamsBox{border:1px solid #e5e5e3;background:none;padding:2px 12px}
+.ia-on #moParamsBox>summary{font-size:13px;font-weight:600;color:#555;padding:8px 0}
 
 @media print{.ia-ribbon,.ia-nav,.ia-sub,.ia-fab,.ia-missing{display:none}}
