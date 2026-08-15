@@ -663,6 +663,19 @@ def _state_health(chat_id: int) -> str:
     return "диск доступен, сохранено: " + (", ".join(parts) if parts else "только ссылка на сессию")
 
 
+def _stale_reference_line() -> str:
+    """Строка о справочниках, которым пора на обновление. Пусто — всё свежее."""
+    try:
+        stale = core.stale_references()
+    except Exception:
+        return ""
+    if not stale:
+        return ""
+    return ("\n<b>Пора обновить справочники:</b>\n"
+            + "\n".join(f"• {html.escape(item['title'])} — {html.escape(item['current'])}"
+                        for item in stale))
+
+
 def _status_message(chat_id: int, user_id: int) -> None:
     configured = bool(core._TELEGRAM_RUNTIME.get("configured"))
     _, context = _resolve_context(chat_id)
@@ -680,6 +693,10 @@ def _status_message(chat_id: int, user_id: int) -> None:
         f"Версия: {_RUNTIME_VERSION}\n"
         f"Платон: {platon_state}\n"
         f"Память расчётов: {_state_health(chat_id)}"
+        # Справочник устаревает тихо: расчёт идёт, числа выглядят как обычно,
+        # а под ними прошлогодний тариф. Напоминание тут потому, что /status
+        # смотрят, когда что-то проверяют.
+        + _stale_reference_line()
         # Сборка PDF и Excel-модели идёт в фоне отправки карточки, и её отказ
         # виден только здесь. Без этой строки «модель не пришла» неотличимо
         # от «модель не собралась».
@@ -1135,6 +1152,9 @@ def _stats_message(chat_id: int, user_id: int, argument: str) -> None:
             where = "сайт" if event.get("surface") == "site" else "бот"
             lines.append(f"• <i>{when} · {html.escape(who)} · {where}</i>\n"
                          f"{html.escape(str(event.get('text') or '')[:180])}")
+    reminder = _stale_reference_line()
+    if reminder:
+        lines.append(reminder)
     lines.append("")
     lines.append(f"<i>Хранится {s['keep_days']} дн. Выгрузка: <code>/stats csv</code>, "
                  f"период: <code>/stats 7</code>.</i>")

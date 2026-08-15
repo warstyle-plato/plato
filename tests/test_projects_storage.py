@@ -203,10 +203,29 @@ def test_status_tells_the_page_whether_to_show_the_button(storage):
 
 # --- страница -------------------------------------------------------------------
 
-def test_the_button_is_hidden_until_the_page_asks():
-    """Кнопка, которая всегда отказывает, хуже её отсутствия."""
-    assert 'id="projectsButton" style="display:none"' in core.PAGE
+def test_the_button_opens_even_without_storage():
+    """Кнопка появляется всегда: за ней живут готовые примеры, которым ключ не
+    нужен. Прежде она пряталась вместе с хранилищем — и примеры спрятались бы
+    с ней, а это витрина, а не чужие данные."""
+    assert "document.getElementById('projectsButton').style.display='';" in core.PAGE
     assert "initProjects()" in core.PAGE
+
+
+def test_the_storage_buttons_hide_when_there_is_no_storage():
+    """«Сохранить», которое всегда откажет, хуже отсутствия."""
+    assert 'id="projectsStorageActions" style="display:none;' in core.PAGE
+    body = core.PAGE[core.PAGE.index("async function initProjects("):]
+    body = body[:body.index("function projectSummaryForStore(")]
+    assert "projectsStorageReady?'inline-flex':'none'" in body
+
+
+def test_the_examples_do_not_wait_for_a_key():
+    """Витрина открывается сразу: держать человека перед запросом ключа ради
+    готового примера незачем."""
+    body = core.PAGE[core.PAGE.index("async function openProjects("):]
+    body = body[:body.index("function closeProjects(")]
+    assert body.index("projectsDialog.style.display='flex'") < body.index("prompt(")
+    assert "if(!projectsStorageReady)" in body.replace(" ", "")
 
 
 def test_the_page_loads_a_project_over_the_defaults():
@@ -227,3 +246,79 @@ def test_the_page_sends_both_ways_of_identifying():
 def test_the_dialog_says_where_the_data_lives():
     """Человек должен знать, что уезжает на сервер и куда именно."""
     assert "Хранится на ядре в России" in core.PAGE
+
+
+# --- из тупика есть выход -------------------------------------------------------
+
+def test_a_wrong_key_can_be_retyped():
+    """Неверный ключ запирал дверь снаружи: список не открывался, а кнопка
+    «Сменить ключ» жила внутри него. Единственным выходом оставалась консоль
+    браузера, которой на телефоне нет."""
+    body = core.PAGE[core.PAGE.index("async function openProjects("):]
+    body = body[:body.index("function closeProjects(")]
+    assert body.count("prompt(") >= 2, "после отказа ключ не спрашивается заново"
+    assert "Введите ключ ещё раз" in body
+
+
+def test_the_key_can_be_changed_from_the_list():
+    assert "changeProjectsKey()" in core.PAGE
+    assert "Сменить ключ" in core.PAGE
+
+
+# --- пресеты проектов на сервере ------------------------------------------------
+
+def test_the_server_lists_project_presets(storage):
+    """Пресет проекта — не предустановка ТЭП: та несёт книгу с площадями,
+    этот весь проект с деньгами, сроками и очередями."""
+    data = storage.get("/api/project-presets").json()
+    names = {item["id"]: item for item in data["presets"]}
+    assert "Румянцево" in names
+    assert names["Румянцево"]["schema_version"].startswith("developaid.project_preset")
+
+
+def test_a_preset_can_be_read_by_id(storage):
+    data = storage.get("/api/project-presets/Румянцево").json()
+    assert data["project"]["name"] == "Румянцево"
+    assert data["planning"]["ppt_gfa_total_m2"] == 402000
+
+
+@pytest.mark.parametrize("bad", ["../main_legacy", "..%2Fmain", ".hidden"])
+def test_the_preset_id_cannot_leave_the_folder(storage, bad):
+    assert storage.get(f"/api/project-presets/{bad}").status_code in (400, 404)
+
+
+def test_the_page_offers_the_server_presets():
+    assert 'id="projectPresetSelect"' in core.PAGE
+    assert "loadServerProjectPreset()" in core.PAGE
+    assert "fillProjectPresets()" in core.PAGE
+
+
+# --- готовые примеры стоят рядом с сохранёнными ---------------------------------
+
+def test_the_examples_live_in_the_projects_dialog():
+    """Решение владельца (15.08.2026): Мишина и Мытищи искали во «Вводных»
+    среди разбора файлов, хотя открыть готовое — это «Мои проекты»."""
+    dialog = core.PAGE[core.PAGE.index('id="projectsDialog"'):]
+    dialog = dialog[:dialog.index('id="aiOverlay"')]
+    assert 'id="serverPresetSelect"' in dialog
+    assert 'id="projectPresetSelect"' in dialog
+    assert "Готовые примеры" in dialog
+
+
+def test_the_inputs_tab_points_to_the_new_place():
+    """Молча переехавшая кнопка — потерянная кнопка."""
+    assert 'id="presetsMovedHint"' in core.PAGE
+    hint = core.PAGE[core.PAGE.index('id="presetsMovedHint"'):]
+    hint = hint[:hint.index("</div>")]
+    assert "Мои проекты" in hint and "Мишина" in hint
+
+
+def test_opening_an_example_closes_the_window_it_came_from():
+    """Ход разбора печатается во «Вводных»: оставить окно открытым — писать в
+    страницу, которой человек не видит."""
+    for name in ("loadServerPreset", "loadServerProjectPreset"):
+        body = core.PAGE[core.PAGE.index(f"async function {name}("):]
+        body = body[:body.index("\n}\n")]
+        assert "closeProjects()" in body, name
+    opener = core.PAGE[core.PAGE.index("async function loadServerPreset("):]
+    assert "openTab('inputs')" in opener[:opener.index("\n}\n")]

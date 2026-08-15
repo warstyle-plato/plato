@@ -66,7 +66,9 @@ def test_the_upload_is_a_fallback_not_the_first_step():
     fallback = fallback[:fallback.index("</details>")]
     assert "<summary>" in fallback
     assert 'id="glavapuFile"' in fallback
-    assert 'id="serverPresetSelect"' in fallback
+    assert 'id="presetFile"' in fallback
+    # Готовые примеры уехали в «Мои проекты» — здесь разбирают принесённый файл.
+    assert 'id="serverPresetSelect"' not in fallback
 
 
 def test_the_status_line_is_not_hidden_with_the_upload():

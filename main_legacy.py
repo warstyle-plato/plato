@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.85"
+VERSION = "0.17.90"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -1369,6 +1369,42 @@ def _preset_diff(current: dict[str, Any], incoming: dict[str, Any],
     return rows
 
 
+@app.get("/api/project-presets")
+def list_project_presets() -> dict[str, Any]:
+    """Пресеты проектов, лежащие на сервере.
+
+    Пресет проекта — не то же, что предустановка ТЭП: тот несёт книгу с
+    площадями, этот — весь проект, включая деньги, сроки и очереди. Список
+    отдельный по той же причине, по какой они не смешиваются при загрузке.
+    """
+    items: list[dict[str, Any]] = []
+    for path in sorted(PRESET_DIR.glob("*.json")) if PRESET_DIR.is_dir() else []:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue  # битый файл не должен прятать остальные
+        project = data.get("project") if isinstance(data.get("project"), dict) else {}
+        items.append({
+            "id": path.stem,
+            "name": str(project.get("name") or path.stem),
+            "region": str(project.get("region") or ""),
+            "schema_version": str(data.get("schema_version") or ""),
+        })
+    return {"presets": items}
+
+
+@app.get("/api/project-presets/{preset_id}")
+def read_project_preset(preset_id: str) -> dict[str, Any]:
+    # Имя приходит снаружи: разделители пути в нём означали бы чтение чужих
+    # файлов, а не выбор пресета.
+    if "/" in preset_id or "\\" in preset_id or preset_id.startswith("."):
+        raise HTTPException(status_code=400, detail="Неверный идентификатор пресета")
+    path = PRESET_DIR / f"{preset_id}.json"
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Пресет не найден")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
 @app.post("/api/project-presets/import")
 def import_project_preset(req: ProjectPresetRequest) -> dict[str, Any]:
     """Пресет проекта: сначала показать, потом применять.
@@ -2593,6 +2629,110 @@ _MO_UPKS_SOURCE = {
         "заменяются после утверждения следующего тура."
     ),
 }
+
+# ---------------------------------------------------------------------------
+# Свежесть справочников
+#
+# Справочники устаревают тихо, и это худший вид устаревания: расчёт идёт,
+# числа выглядят как обычно, а под ними прошлогодний тариф. Ни ошибки, ни
+# предупреждения — просто другая цифра, и заметить её можно только сверкой с
+# первоисточником, до которой обычно не доходит.
+#
+# Поэтому у каждого справочника объявлен его срок жизни: квартал, год или
+# четыре года кадастровой оценки. Раз в день сводка администраторам говорит,
+# что пора обновить, — до того, как по устаревшему тарифу примут решение.
+# ---------------------------------------------------------------------------
+
+
+def _quarter_of(moment: date) -> str:
+    return f"{moment.year}-Q{(moment.month - 1) // 3 + 1}"
+
+
+def _quarter_shift(quarter: str, steps: int) -> str:
+    try:
+        year, index = quarter.split("-Q")
+        total = int(year) * 4 + int(index) - 1 + steps
+        return f"{total // 4}-Q{total % 4 + 1}"
+    except Exception:
+        return quarter
+
+
+def reference_freshness(today: date | None = None) -> list[dict[str, Any]]:
+    """Что пора обновить и когда это стало пора.
+
+    Возвращает по строке на справочник: что это, чем он живёт сейчас, до
+    какого момента годен и просрочен ли. Проверка не лезет в интернет — она
+    сравнивает объявленный срок с календарём, а обновление всё равно делает
+    человек, который принесёт документ.
+    """
+    now = today or date.today()
+    quarter = _quarter_of(now)
+    rows: list[dict[str, Any]] = []
+
+    def row(key: str, title: str, current: str, valid_until: str, source: str,
+            stale: bool, hint: str) -> None:
+        rows.append({"key": key, "title": title, "current": current,
+                     "valid_until": valid_until, "source": source,
+                     "stale": bool(stale), "hint": hint})
+
+    # Рыночные цены Подмосковья — распоряжение Комитета по ценам и тарифам,
+    # выходит на полугодие или квартал; период записан в самом справочнике.
+    market = _mo_market_price_table()
+    period = str(market.get("period") or "")
+    year_match = re.search(r"(20\d\d)", period)
+    market_year = int(year_match.group(1)) if year_match else now.year
+    market_stale = market_year < now.year or (
+        market_year == now.year and "IV" in period and now.month == 12)
+    row("mo_market_price", "Рыночные цены Подмосковья (расчёт платы за ВРИ)",
+        period or "не указан", f"{market_year} год", str(market.get("document") or ""),
+        market_stale,
+        "Распоряжение Комитета по ценам и тарифам МО — обновляется на новый период")
+
+    # УПКС Подмосковья — государственная кадастровая оценка, раз в четыре года.
+    for kind, label in (("land", "УПКС земли"), ("oks", "УПКС ОКС")):
+        block = _MO_UPKS_SOURCE.get(kind) or {}
+        applied = str(block.get("applied_from") or "")
+        next_applied = str(block.get("next_applied_from") or "")
+        try:
+            next_date = datetime.strptime(next_applied, "%d.%m.%Y").date()
+        except ValueError:
+            next_date = None
+        row(f"mo_upks_{kind}", f"{label} Подмосковья (кадастровая оценка)",
+            f"применяется с {applied}", next_applied or "—",
+            str(block.get("report") or ""),
+            bool(next_date and now >= next_date),
+            "Новый тур оценки утверждается раз в четыре года")
+
+    # Кзатр льготы МПТ Москвы — индексируется поквартально к декабрю 2025.
+    try:
+        import mpt_calculator
+
+        indexed_from = str(mpt_calculator.KZATR_INDEXATION_FROM_QUARTER)
+        row("mpt_kzatr", "Кзатр льготы МПТ Москвы",
+            f"{mpt_calculator.KZATR_BASE} тыс ₽/м² с "
+            f"{mpt_calculator.KZATR_BASE_FROM.isoformat()}",
+            f"квартал {indexed_from}",
+            "Приказ ДИиПП Москвы от 10.03.2026",
+            quarter > _quarter_shift(indexed_from, 0),
+            "С указанного квартала значение корректируется индексом Росстата "
+            "к декабрю 2025 года — подставьте фактический индекс")
+    except Exception:
+        pass
+
+    return rows
+
+
+def stale_references(today: date | None = None) -> list[dict[str, Any]]:
+    return [item for item in reference_freshness(today) if item["stale"]]
+
+
+@app.get("/reference/freshness")
+def reference_freshness_endpoint() -> dict[str, Any]:
+    rows = reference_freshness()
+    return {"checked_at": date.today().isoformat(),
+            "stale": [item["key"] for item in rows if item["stale"]],
+            "references": rows}
+
 
 # Названия одного и того же округа в разных документах.
 _MO_DISTRICT_SYNONYMS = {
@@ -21748,6 +21888,8 @@ PAGE = r"""<!doctype html>
 .card h2,.card h3{margin:0 0 14px}.section-title{font-size:11px;text-transform:uppercase;letter-spacing:.12em;color:#777;margin-bottom:10px;font-weight:750}
 details{border-top:1px solid #e5e5e5;padding:4px 0}details:first-child{border-top:0}
 summary{padding:11px 0;font-size:14px;font-weight:700;cursor:pointer}
+.group-peek{font-weight:400;color:#888;font-size:12px;margin-left:8px}
+details[open]>summary>.group-peek{display:none}
 .fields{display:grid;grid-template-columns:1fr 1fr;gap:10px 14px;padding:0 0 15px}
 .field label{font-size:12px;color:#555;display:block;margin-bottom:4px}.unit{color:#aaa;font-size:10px}
 input,select{width:100%;border:1px solid #cfcfcf;background:#fff;border-radius:0;padding:9px 10px;font-size:14px;color:#111}
@@ -21898,6 +22040,7 @@ details.cadastral-box>summary::marker{color:#888}
 .bridge-purpose-table th:nth-child(n+2),.bridge-purpose-table td:nth-child(n+2){text-align:right;white-space:nowrap}
 .bridge-purpose-note{margin-top:9px;color:#777;font-size:10px;line-height:1.45}
 .kpi .sub{font-size:10px;color:#999;margin-top:3px}
+.cell-sub{font-size:10px;color:#888;margin-top:2px}
 @media(max-width:1100px){.report-3col,.report-2col{grid-template-columns:1fr}.report-kpis{grid-template-columns:1fr 1fr}}
 @media(max-width:1000px){
  .brandbar,.header,.tabs,.content{padding-left:18px;padding-right:18px}.grid,.finance-grid{grid-template-columns:1fr}
@@ -21953,6 +22096,9 @@ details.cadastral-box>summary::marker{color:#888}
   body.print-report .expense-row{grid-template-columns:1.3fr 2.8fr 55px 95px!important;font-size:7pt!important;gap:5px!important}
   body.print-report .expense-track{height:9px!important}
   body.print-report .note{font-size:7pt!important}
+  /* Высоту график берёт от своей ширины — на печатной полосе это те же 38 мм,
+     что в PDF. Разорванный между страницами график не читается. */
+  body.print-report .chart{break-inside:avoid}
   body.print-report .warning{display:none!important}
 }
 
@@ -22097,7 +22243,7 @@ details.cadastral-box>summary::marker{color:#888}
             <div id="moTables"></div>
             <div id="moWarnings" class="note warning"></div>
         </div>
-        <div id="glavapuStatus" class="import-status">Можно выбрать готовую предустановку Мишина / Мытищи с сервера или загрузить свой .xlsx ГлавАПУ.</div>
+        <div id="glavapuStatus" class="import-status">Введите кадастровый номер выше — ТЭП посчитается сам. Готовые примеры — в «Мои проекты», свой файл ГлавАПУ — ниже.</div>
         <div id="glavapuPreview" class="import-preview" style="display:none">
           <div id="glavapuSummary" class="import-summary"></div>
           <div class="import-actions">
@@ -22119,15 +22265,14 @@ details.cadastral-box>summary::marker{color:#888}
              руках, а не первый шаг. Свёрнута, чтобы не разрывать «ввёл участок
              — получил ТЭП». -->
         <details class="import-fallback">
-          <summary>Готовый ТЭП: предустановка, шаблон DevelopAid или файл ГлавАПУ</summary>
-          <div class="upload-line" style="align-items:center;margin-top:10px">
-            <select id="serverPresetSelect" style="min-width:260px">
-              <option value="">Предустановка с сервера…</option>
-            </select>
-            <button class="btn dark" onclick="loadServerPreset()">Загрузить предустановку</button>
-            <a id="serverPresetDownload" class="btn" href="#" style="display:none;text-decoration:none">Скачать Excel</a>
+          <summary>Свой файл: шаблон ТЭП DevelopAid, выгрузка ГлавАПУ или пресет проекта</summary>
+          <!-- Готовые примеры уехали в «Мои проекты»: и они, и сохранённые
+               проекты — это «взять готовое и посмотреть», а здесь разбирают
+               принесённый файл. Решение владельца (15.08.2026). -->
+          <div id="presetsMovedHint" style="font-size:11px;color:#888;margin:10px 0 8px">
+            Готовые примеры — Мишина, Мытищи, Румянцево — переехали в «Мои проекты» наверху страницы.
           </div>
-          <div style="font-size:11px;color:#888;margin:7px 0 8px">или загрузить свой файл — шаблон ТЭП DevelopAid либо выгрузку калькулятора ГлавАПУ</div>
+          <div style="font-size:11px;color:#888;margin:7px 0 8px">шаблон ТЭП DevelopAid либо выгрузка калькулятора ГлавАПУ</div>
           <!-- Шаблон скачивается отсюда же, где загружается. Отказ разбора
                обещал кнопку «ниже», а её на странице не было вовсе: шаблон
                выдавал только бот командой /template, и человек с сайта узнать
@@ -22141,7 +22286,7 @@ details.cadastral-box>summary::marker{color:#888}
                МПТ и справки по техприсоединению. Он заполняет проект целиком,
                поэтому и стоит отдельной строкой от разбора одной книги. -->
           <div style="font-size:11px;color:#888;margin:12px 0 8px">или пресет проекта .json — ТЭП, ВРИ, МПТ и техприсоединение разом</div>
-          <div class="upload-line">
+          <div class="upload-line" style="margin-top:8px">
             <input type="file" id="presetFile" accept=".json,application/json">
             <button class="btn dark" onclick="uploadPreset()">Импорт проекта / пресета</button>
           </div>
@@ -22567,6 +22712,10 @@ details.cadastral-box>summary::marker{color:#888}
         <!-- Квартиры продаются штуками: план отдела продаж и рыночная проверка
              живут в них, а таблица выше говорит только метрами. -->
         <table class="metric-table metric-compact" id="apartmentPaceTable"></table>
+        <!-- Тот же темп помесячно. График был только в PDF: человек смотрел
+             отчёт на экране, печатал его и видел незнакомый раздел. Средний
+             темп прячет и разгон, и сезонный провал, и обрыв после РВЭ. -->
+        <div id="apartmentPaceChart" class="chart" style="height:auto"></div>
       </div>
       <div class="card">
         <div class="section-title">Налоговая база по реализованным продуктам</div>
@@ -22642,19 +22791,45 @@ details.cadastral-box>summary::marker{color:#888}
   <div style="background:#fff;max-width:900px;width:100%;max-height:80vh;overflow:auto;padding:22px 24px">
     <div style="display:flex;align-items:center;gap:14px;margin-bottom:12px">
       <h2 style="margin:0;font-size:17px">Мои проекты</h2>
-      <button class="btn dark" onclick="saveProjectToServer()">Сохранить текущий</button>
-      <!-- Смена ключа без консоли браузера: ключ меняют, когда он засветился,
+      <!-- Кнопки хранилища — только там, где оно есть: примеры открываются и
+           без него, а «Сохранить», которое всегда откажет, хуже отсутствия.
+           Смена ключа без консоли браузера: ключ меняют, когда он засветился,
            и требовать для этого localStorage.removeItem — значит не менять. -->
-      <button class="btn" onclick="changeProjectsKey()">Сменить ключ</button>
+      <span id="projectsStorageActions" style="display:none;gap:14px">
+        <button class="btn dark" onclick="saveProjectToServer()">Сохранить текущий</button>
+        <button class="btn" onclick="changeProjectsKey()">Сменить ключ</button>
+      </span>
       <button class="btn" style="margin-left:auto" onclick="closeProjects()">Закрыть</button>
     </div>
-    <div style="font-size:11px;color:#777;margin-bottom:10px">
-      Хранится на ядре в России. Сохраняется только то, что вы сохранили сами.
+    <!-- Готовые примеры стоят рядом с сохранёнными: и то и другое — «открыть
+         готовое», и искать их во «Вводных» среди разбора файлов было незачем.
+         Ключа они не требуют: это витрина, а не чужие данные. -->
+    <div id="projectsExamples" style="border:1px solid var(--line);padding:14px;margin-bottom:14px">
+      <div class="section-title" style="margin-bottom:8px">Готовые примеры</div>
+      <div class="upload-line" style="align-items:center">
+        <select id="serverPresetSelect" style="min-width:240px">
+          <option value="">Предустановка ТЭП…</option>
+        </select>
+        <button class="btn dark" onclick="loadServerPreset()">Открыть</button>
+        <a id="serverPresetDownload" class="btn" href="#" style="display:none;text-decoration:none">Скачать Excel</a>
+      </div>
+      <div style="font-size:11px;color:#888;margin:9px 0 8px">или пресет проекта целиком — ТЭП, ВРИ, МПТ и техприсоединение разом</div>
+      <div class="upload-line" style="align-items:center">
+        <select id="projectPresetSelect" style="min-width:240px">
+          <option value="">Пресет проекта…</option>
+        </select>
+        <button class="btn dark" onclick="loadServerProjectPreset()">Открыть</button>
+      </div>
     </div>
-    <div class="scroll"><table>
-      <thead><tr><th>Проект</th><th>Выручка</th><th>Чистая прибыль</th><th>LLCR</th><th></th></tr></thead>
-      <tbody id="projectsBody"></tbody>
-    </table></div>
+    <div id="projectsStored">
+      <div style="font-size:11px;color:#777;margin-bottom:10px">
+        Хранится на ядре в России. Сохраняется только то, что вы сохранили сами.
+      </div>
+      <div class="scroll"><table>
+        <thead><tr><th>Проект</th><th>Выручка</th><th>Чистая прибыль</th><th>LLCR</th><th></th></tr></thead>
+        <tbody id="projectsBody"></tbody>
+      </table></div>
+    </div>
   </div>
 </div>
 
@@ -23783,7 +23958,7 @@ async function loadPresetCatalog(){
    if(!response.ok)throw new Error(data.detail||'Не удалось получить предустановки');
    const select=document.getElementById('serverPresetSelect');
    if(!select)return;
-   select.innerHTML='<option value="">Предустановка с сервера…</option>'+
+   select.innerHTML='<option value="">Предустановка ТЭП…</option>'+
      (data.presets||[]).filter(p=>p.available).map(p=>
        `<option value="${p.id}" data-download="${p.download_url}" title="${p.description||''}">${p.name}</option>`
      ).join('');
@@ -23805,10 +23980,12 @@ async function loadPresetCatalog(){
 async function loadServerPreset(){
  const select=document.getElementById('serverPresetSelect');
  const id=select&&select.value;
- if(!id){
-   glavapuStatus.innerHTML='<span class="import-error">Выберите предустановку: Мишина или Мытищи.</span>';
-   return;
- }
+ // Отказ печатался во «Вводных», а список теперь в окне «Мои проекты»:
+ // сообщение уходило на страницу, которой человек не видит.
+ if(!id){alert('Выберите предустановку из списка.');return}
+ // Ход разбора и результат печатаются во «Вводных» — окно закрываем и
+ // показываем ту вкладку, где всё это появится.
+ closeProjects();openTab('inputs');
  const label=select.options[select.selectedIndex].textContent;
  glavapuStatus.textContent='Загружаю предустановку «'+label+'» с сервера…';
  glavapuPreview.style.display='none';
@@ -24391,13 +24568,73 @@ function applyTelegramCalcOverrides(){
 
 const VRI_GROUP_NAME='Смена ВРИ и земельные права';
 
+// Свёрнутая группа не должна быть закрытой дверью без таблички: в заголовке
+// показываются два-три числа, по которым видно, надо ли туда заходить.
+// Список короткий и явный — «первые два поля группы» дали бы шум там, где
+// первым стоит служебное поле.
+const GROUP_PEEK={
+ 'Продажи':['apartment_price_th','share_before_rve_pct'],
+ 'Строительство':['main_above_th_per_sqm','main_under_th_per_sqm'],
+ 'Коммерческие расходы и налоги':['marketing_pct','profit_tax_pct'],
+ 'Финансирование':['pf_spread_pp','pre_pf_own_funds_mln'],
+ 'Социальная нагрузка':['social_mode'],
+ 'МФОЦ / офисы':['offices_enabled','offices_gba_sqm'],
+ 'ТЦ / коммерция ОСЗ':['retail_enabled','retail_gba_sqm'],
+ 'Подземный паркинг':['underground_manual_spaces'],
+ 'Наземный паркинг':['above_parking_enabled','above_parking_spaces']
+};
+
+function groupPeek(name,fields){
+ const out=[];
+ for(const id of (GROUP_PEEK[name]||[])){
+  const f=fields.find(x=>x[0]===id);if(!f)continue;
+  const [,,unit,type]=f;
+  const v=(id in inputs)?inputs[id]:INPUT_DEFAULT[id];
+  // Выключенный объект — исчерпывающая сводка: его площади ни о чём не говорят.
+  if(type==='checkbox'){if(!v)return 'выключен';continue}
+  if(v===''||v===null||v===undefined)continue;
+  if(type==='number'){
+   const n=Number(v);
+   // Ноль в заголовке — это «не задано», а не сведение: показывать нечего.
+   if(!Number.isFinite(n)||n===0)continue;
+   out.push({text:num(n),unit:String(unit).split(';')[0].trim()});
+  }else out.push({text:String(v),unit:''});
+ }
+ // Одинаковая единица у соседей печатается один раз: «110 · 120 тыс. ₽/м² ГНС».
+ return out.map((part,i)=>{
+  const next=out[i+1];
+  return next&&next.unit===part.unit?part.text:(part.text+(part.unit?' '+part.unit:''));
+ }).join(' · ');
+}
+
+// Табличка обязана поспевать за полем: правка внутри группы не всегда
+// перерисовывает список, а устаревшее число в заголовке хуже пустого.
+function refreshGroupPeeks(){
+ document.querySelectorAll('details[data-group]').forEach(det=>{
+  const grp=FIELD_GROUPS.find(g=>g[0]===det.dataset.group);if(!grp)return;
+  const sum=det.querySelector('summary');if(!sum)return;
+  const text=groupPeek(grp[0],grp[1]);
+  let hint=sum.querySelector('.group-peek');
+  if(!text){if(hint)hint.remove();return}
+  if(!hint){hint=document.createElement('span');hint.className='group-peek';sum.appendChild(hint)}
+  hint.textContent=text;
+ });
+}
+
 function renderInputs(){
  const box=document.getElementById('inputGroups');box.innerHTML='';
  const vriBox=document.getElementById('vriInputGroups');if(vriBox)vriBox.innerHTML='';
  FIELD_GROUPS.forEach((grp,idx)=>{
    const ownTab=grp[0]===VRI_GROUP_NAME&&vriBox;
-   const det=document.createElement('details');if(idx<3||ownTab)det.open=true;
-   const sum=document.createElement('summary');sum.textContent=grp[0];det.appendChild(sum);
+   // Открыта только первая группа. Одиннадцать развёрнутых групп — это
+   // экран, на котором не видно, с чего начинать: человек листает поля
+   // вместо того, чтобы ввести цену и сроки и посмотреть результат.
+   const det=document.createElement('details');if(idx===0||ownTab)det.open=true;
+   det.dataset.group=grp[0];
+   const sum=document.createElement('summary');sum.textContent=grp[0];
+   const peek=groupPeek(grp[0],grp[1]);
+   if(peek){const hint=document.createElement('span');hint.className='group-peek';hint.textContent=peek;sum.appendChild(hint)}
+   det.appendChild(sum);
    const grid=document.createElement('div');grid.className='fields';
    grp[1].forEach(f=>{
      const [id,label,unit,type]=f;const wrap=document.createElement('div');wrap.className='field';
@@ -24428,7 +24665,7 @@ function renderInputs(){
       el.disabled=true;
       el.title='Москва: платежи ежеквартально — установлено нормативно';
      }
-     el.onchange=()=>{inputs[id]=type==='checkbox'?el.checked:(type==='number'&&!Array.isArray(f[4])?Number(el.value):el.value);if(id==='social_mode')inputs._social_mode_user_set=true;if(id==='vri_region'){renderInputs();return calculate()}if(['apartment_price_th','commercial_price_th','parking_price_th','main_above_th_per_sqm','main_under_th_per_sqm'].includes(id)){inputs.project_class='custom';syncProjectClassSelector()}if(['underground_manual_spaces','underground_manual_gns_sqm','underground_area_per_space_sqm'].includes(id)){syncUndergroundPair(id);syncTep(false)}if(['offices_enabled','retail_enabled','above_parking_enabled','social_mode','kindergarten_places','school_places','clinic_capacity','social_dou_gba_sqm','social_school_gba_sqm','social_clinic_gba_sqm','above_parking_spaces','above_parking_area_per_space_sqm'].includes(id)){const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();if(filled)renderInputs();syncTep(false)}calculate()};
+     el.onchange=()=>{inputs[id]=type==='checkbox'?el.checked:(type==='number'&&!Array.isArray(f[4])?Number(el.value):el.value);if(id==='social_mode')inputs._social_mode_user_set=true;if(id==='vri_region'){renderInputs();return calculate()}if(['apartment_price_th','commercial_price_th','parking_price_th','main_above_th_per_sqm','main_under_th_per_sqm'].includes(id)){inputs.project_class='custom';syncProjectClassSelector()}if(['underground_manual_spaces','underground_manual_gns_sqm','underground_area_per_space_sqm'].includes(id)){syncUndergroundPair(id);syncTep(false)}if(['offices_enabled','retail_enabled','above_parking_enabled','social_mode','kindergarten_places','school_places','clinic_capacity','social_dou_gba_sqm','social_school_gba_sqm','social_clinic_gba_sqm','above_parking_spaces','above_parking_area_per_space_sqm'].includes(id)){const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();if(filled)renderInputs();syncTep(false)}refreshGroupPeeks();calculate()};
      wrap.appendChild(el);grid.appendChild(wrap);
    });det.appendChild(grid);(ownTab?vriBox:box).appendChild(det);
  });
@@ -25103,6 +25340,10 @@ function renderResult(){
 
  const reportKpis=[
   ['Выручка',money(r.summary.revenue)],
+  // Вторая половина уравнения. В PDF ключевая экономика идёт «Выручка →
+  // Расходы всего → EBITDA», на экране расходов не было вовсе — и EBITDA
+  // появлялась из ниоткуда, сравнить её было не с чем.
+  ['Расходы всего',money(r.summary.total_expenses)],
   ['EBITDA',money(r.summary.ebitda)],
   ['Чистая прибыль',money(r.summary.net_profit)],
   ['Маржинальность',pct(r.summary.margin)],
@@ -25387,10 +25628,16 @@ function renderResult(){
    }).join('');
  }else{
    salesReportHead.innerHTML='<tr><th>Продукт</th><th>Объём</th><th>Темп до РВЭ</th><th>Продажи до РВЭ</th><th>Стартовая цена</th><th>Средняя цена</th><th>Выручка</th><th>Старт продаж</th><th>Финиш продаж</th></tr>';
+   // Квартиры продаются штуками: «40 квартир в месяц» проверяется отделом
+   // продаж и рынком, «2 400 м² в месяц» — нет. Метры остаются главными,
+   // штуки идут второй строкой там же, а не абзацем ниже.
+   const ap=r.report.apartment_sales||{};
+   const inUnits=p=>p.key==='apartments'&&Number(ap.units_total||0)>0;
+   const sub=text=>`<div class="cell-sub">${text}</div>`;
    salesReportTable.innerHTML=(r.report.products||[]).map(p=>`<tr>
     <td>${p.label}</td>
-    <td>${num(p.quantity)} ${p.unit}</td>
-    <td>${num(p.pace_pre)} ${p.unit}/мес</td>
+    <td>${num(p.quantity)} ${p.unit}${inUnits(p)?sub(num(Math.round(ap.units_total))+' шт.'):''}</td>
+    <td>${num(p.pace_pre)} ${p.unit}/мес${inUnits(p)?sub(num2(ap.pace_pre_rve_units)+' кв./мес.'):''}</td>
     <td>${pct(p.share_before_rve)}</td>
     <td>${th(p.start_price_th)}</td>
     <td>${th(p.avg_price_th)}</td>
@@ -25404,13 +25651,14 @@ function renderResult(){
   const ap=r.report.apartment_sales||{};
   const paceEl=document.getElementById('apartmentPaceTable');
   if(paceEl)paceEl.innerHTML=Number(ap.units_total||0)>0?
-   row('Квартир в проекте',num(ap.units_total)+' шт.')+
+   row('Квартир в проекте',num(Math.round(ap.units_total))+' шт.')+
    row('Средняя площадь квартиры',num2(ap.avg_unit_sqm)+' м²')+
    row('Средняя цена квартиры',money(Number(ap.avg_unit_price_mln||0)*1e6))+
    row('Темп продаж до РВЭ',num2(ap.pace_pre_rve_units)+' кв./мес.')+
    row('Средний темп за период продаж',num2(ap.pace_units)+' кв./мес.')+
    row('Пиковый месяц',num2(ap.peak_units)+' кв.')
    :'';
+  renderApartmentPaceChart(ap);
  }
 
  calendarDateBoxes.innerHTML=[
@@ -25598,6 +25846,41 @@ function renderGantt(targetId,calendar){
    // Preserve the old type legend unchanged for a single-phase project.
    if(typeLegend)typeLegend.style.display=phaseNames.length>1?'none':'flex';
  }
+}
+
+// Месячный темп продаж квартир в штуках. Форма повторяет график из PDF —
+// столбцы, четыре линии сетки, подписи месяцев по краям и в середине: экран и
+// печать обязаны показывать одно и то же, иначе печать выглядит другим отчётом.
+function renderApartmentPaceChart(sales){
+ const target=document.getElementById('apartmentPaceChart');if(!target)return;
+ const rows=(sales&&sales.rows)||[];
+ const values=rows.map(x=>Math.max(0,Number(x.units||0)));
+ const peak=Math.max(...values,0);
+ // Пустой график с рамкой хуже отсутствующего: он обещает данные, которых нет.
+ if(!rows.length||peak<=0){target.innerHTML='';target.style.display='none';return}
+ target.style.display='';
+ // Пропорции те же, что у графика в PDF (500×104): при фиксированной высоте
+ // контейнера широкий график вписывался с полями в треть ширины.
+ const W=1000,H=210,pL=50,pR=16,pT=20,pB=28;
+ const top=peak*1.08,plotW=W-pL-pR,plotH=H-pT-pB;
+ const slot=plotW/rows.length,bw=Math.max(1,slot*0.72);
+ const y=v=>pT+plotH-plotH*v/top;
+ let grid='';
+ for(let tick=0;tick<=3;tick++){
+  const value=top*tick/3;
+  grid+=`<line x1="${pL}" y1="${y(value)}" x2="${W-pR}" y2="${y(value)}" stroke="#e5e5e5"/>`
+      +`<text x="${pL-6}" y="${y(value)+4}" font-size="11" fill="#777" text-anchor="end">${num(value)}</text>`;
+ }
+ const bars=values.map((v,i)=>v<=0?'':
+   `<rect x="${pL+i*slot+(slot-bw)/2}" y="${y(v)}" width="${bw}" height="${plotH*v/top}" fill="#202020"/>`).join('');
+ const monthRu=iso=>{const [yy,mm]=String(iso||'').slice(0,7).split('-');return mm+'.'+yy};
+ const marks=[...new Set([0,Math.floor(rows.length/2),rows.length-1])].map(i=>
+   `<text x="${pL+(i+0.5)*slot}" y="${H-8}" font-size="11" fill="#777" text-anchor="middle">${monthRu(rows[i].month)}</text>`).join('');
+ target.innerHTML=`<svg viewBox="0 0 ${W} ${H}" style="height:auto;display:block">
+  ${grid}${bars}
+  <text x="${W-pR}" y="${pT-5}" font-size="11" fill="#777" text-anchor="end">квартир/мес.</text>
+  ${marks}
+ </svg>`;
 }
 
 function renderFinanceChart(rows){
@@ -25883,12 +26166,37 @@ function loadLocal(){try{const x=JSON.parse(localStorage.getItem('plato_v04'));i
 
 let presetPreview=null;
 
-async function uploadPreset(){
- const file=document.getElementById('presetFile').files[0];
- if(!file){alert('Выберите файл .json с пресетом проекта');return}
+async function fillProjectPresets(){
+ // Пресеты проектов лежат на сервере рядом с предустановками ТЭП, но это
+ // разные вещи: та несёт книгу с площадями, этот — весь проект с деньгами,
+ // сроками и очередями. Поэтому и списка два.
+ try{
+  const data=await (await fetch('/api/project-presets')).json();
+  const select=document.getElementById('projectPresetSelect');
+  (data.presets||[]).forEach(p=>{
+   const option=document.createElement('option');
+   option.value=p.id;
+   option.textContent=p.name+(p.region?' · '+p.region:'');
+   select.appendChild(option);
+  });
+ }catch(e){}
+}
+
+async function loadServerProjectPreset(){
+ const id=document.getElementById('projectPresetSelect').value;
+ if(!id){alert('Выберите пресет проекта из списка');return}
+ // Экран проверки пресета — своё окно: два окна друг на друге не читаются.
+ closeProjects();
  let parsed;
- try{parsed=JSON.parse(await file.text())}
- catch(e){alert('Файл не читается как JSON: '+String(e.message||e));return}
+ try{
+  const response=await fetch('/api/project-presets/'+encodeURIComponent(id));
+  parsed=await response.json();
+  if(!response.ok)throw new Error(parsed.detail||'Пресет не загружен');
+ }catch(e){alert(String(e.message||e));return}
+ await previewPreset(parsed);
+}
+
+async function previewPreset(parsed){
  let data;
  try{
   const response=await fetch('/api/project-presets/import',{
@@ -25899,6 +26207,15 @@ async function uploadPreset(){
  }catch(e){alert(String(e.message||e));return}
  presetPreview=parsed;
  renderPresetPreview(data);
+}
+
+async function uploadPreset(){
+ const file=document.getElementById('presetFile').files[0];
+ if(!file){alert('Выберите файл .json с пресетом проекта');return}
+ let parsed;
+ try{parsed=JSON.parse(await file.text())}
+ catch(e){alert('Файл не читается как JSON: '+String(e.message||e));return}
+ await previewPreset(parsed);
 }
 
 function presetRows(rows){
@@ -25995,13 +26312,20 @@ async function projectsCall(path,body){
  return data;
 }
 
+// Кнопка «Мои проекты» видна всегда: за ней живут готовые примеры, которые
+// ключа не требуют. Прежде она появлялась только при настроенном хранилище —
+// вместе с ним пропали бы и примеры, а они витрина, а не чужие данные.
+let projectsStorageReady=false;
+
 async function initProjects(){
+ document.getElementById('projectsButton').style.display='';
  try{
   const status=await (await fetch('/projects/status')).json();
   // Ключ спрашиваем только там, где сессии нет: в мини-приложении она есть.
-  if(!status.configured||(!telegramSession&&!status.accepts_key))return;
-  document.getElementById('projectsButton').style.display='';
- }catch(e){}
+  projectsStorageReady=!!status.configured&&(!!telegramSession||!!status.accepts_key);
+ }catch(e){projectsStorageReady=false}
+ const actions=document.getElementById('projectsStorageActions');
+ if(actions)actions.style.display=projectsStorageReady?'inline-flex':'none';
 }
 
 function projectSummaryForStore(){
@@ -26031,16 +26355,39 @@ async function saveProjectToServer(){
 }
 
 async function openProjects(){
+ // Окно открывается сразу: примеры в нём есть всегда, и держать человека
+ // перед запросом ключа ради витрины незачем. Список сохранённых
+ // подгружается следом и только там, где хранилище настроено.
+ projectsDialog.style.display='flex';
+ const stored=document.getElementById('projectsStored');
+ if(!projectsStorageReady){
+  if(stored)stored.style.display='none';
+  return;
+ }
+ if(stored)stored.style.display='';
  // Ключ спрашиваем один раз и держим в браузере: это вход, а не пароль к
  // каждому действию.
  if(!telegramSession&&!projectsAdminKey){
   const key=prompt('Ключ администратора (DEVELOPAID_ADMIN_KEY)');
   if(!key)return;
-  projectsAdminKey=key;localStorage.setItem('plato_projects_key',key);
+  projectsAdminKey=key.trim();localStorage.setItem('plato_projects_key',projectsAdminKey);
  }
  let data;
  try{data=await projectsCall('/projects/list',{})}
- catch(e){alert(String(e.message||e));return}
+ catch(e){
+  // Неверный ключ запирал дверь снаружи: список не открывался, а кнопка
+  // «Сменить ключ» жила внутри него. Спрашиваем прямо здесь, иначе
+  // единственный выход — консоль браузера, которой на телефоне нет.
+  if(!telegramSession){
+   const again=prompt(String(e.message||e)+'\n\nВведите ключ ещё раз:',projectsAdminKey||'');
+   if(again===null)return;
+   projectsAdminKey=again.trim();
+   if(projectsAdminKey)localStorage.setItem('plato_projects_key',projectsAdminKey);
+   else localStorage.removeItem('plato_projects_key');
+   try{data=await projectsCall('/projects/list',{})}
+   catch(e2){alert(String(e2.message||e2));return}
+  }else{alert(String(e.message||e));return}
+ }
  const rows=(data.projects||[]).map(p=>{
   const s=p.summary||{};
   return `<tr><td><b>${escapeHtml(p.name||'')}</b><br><small>${escapeHtml(String(p.saved_at||'').replace('T',' ').replace('+00:00',' UTC'))}`
@@ -26052,7 +26399,6 @@ async function openProjects(){
    +`<button class="btn" onclick="deleteProject('${p.id}')">Удалить</button></td></tr>`;
  }).join('');
  projectsBody.innerHTML=rows||'<tr><td colspan="5">Пока ничего не сохранено.</td></tr>';
- projectsDialog.style.display='flex';
 }
 
 function closeProjects(){projectsDialog.style.display='none'}
@@ -26117,6 +26463,7 @@ function resetAll(){
 
 loadLocal();
 initProjects();
+fillProjectPresets();
 {
  const sc=SCENARIOS[scenarioSelect.value]||SCENARIOS.base;
  // Old saved projects did not have the new transparent scenario multipliers.
