@@ -383,6 +383,13 @@
         var button = document.createElement('button');
         button.type = 'button';
         button.textContent = SUB_LABEL[tabId] || tabId;
+        var info = STEP_INFO[tabId] && STEP_INFO[tabId]();
+        if (info && info.mark) {
+          var mark = document.createElement('span');
+          mark.className = 'ia-mark ' + info.mark;
+          mark.textContent = { ok: '✓', warn: '!', need: 'обязательно', opt: 'по желанию' }[info.mark] || '';
+          button.appendChild(mark);
+        }
         button.className = tabId === activeTab ? 'active' : '';
         button.onclick = function () {
           var original = tabButton(tabId);
@@ -404,7 +411,76 @@
       };
       sub.appendChild(forward);
     }
+    var hintInfo = STEP_INFO[activeTab] && STEP_INFO[activeTab]();
+    var hintBox = document.getElementById('iaStepHint');
+    if (!hintBox) {
+      hintBox = document.createElement('div');
+      hintBox.id = 'iaStepHint';
+      hintBox.className = 'ia-step-hint';
+      sub.parentNode.insertBefore(hintBox, sub.nextSibling);
+    }
+    hintBox.textContent = hintInfo ? hintInfo.hint : '';
+    hintBox.style.display = hintInfo ? '' : 'none';
   }
+
+  /* ------------------------------------------------------------------ */
+  /* Обязательность шагов                                                 */
+  /* ------------------------------------------------------------------ */
+
+  /* «Обязательно» — это не список, а состояние: движок считает с
+     умолчаниями почти всё, поэтому обязательно ровно то, что при пропуске
+     даёт достоверную неправду. Участок/ТЭП — иначе считаются умолчания
+     80 000 м² чужого проекта; цена входа — иначе LLCR посчитан для
+     бесплатного участка. Остальное честно помечено «по желанию». */
+  function tepTotalGns() {
+    var t = pageTep(), sum = 0;
+    Object.keys(t || {}).forEach(function (key) { sum += Number((t[key] || {}).gns || 0); });
+    return sum;
+  }
+
+  var STEP_INFO = {
+    iaSite: function () {
+      if (pageGlavapu() || (pageInputs() || {})._mo_calc) {
+        return { mark: 'ok', hint: 'Участок получен, ТЭП рассчитан. Дальше — проверить его на следующем шаге.' };
+      }
+      return { mark: 'need', hint: 'Обязательный шаг. Введите кадастровый номер или адрес — DevelopAid сам получит ЕГРН и посчитает ТЭП. Нет кадастра — соберите ТЭП вручную на следующем шаге.' };
+    },
+    tep: function () {
+      if (tepTotalGns() > 0) {
+        return { mark: 'ok', hint: 'ТЭП заполнен — проверьте цифры, вручную здесь меняют только фактические значения по проекту.' };
+      }
+      return { mark: 'need', hint: 'Обязательный шаг: без площадей нечего считать. Введите площадь и плотность и нажмите «Рассчитать ТЭП от площади и плотности».' };
+    },
+    phasing: function () {
+      var ph = pagePhasing();
+      if (ph && ph.enabled && Number(ph.phase_count || 1) > 1) {
+        return { mark: 'ok', hint: 'Проект разбит на очереди — сроки, инфляция и цены считаются по каждой.' };
+      }
+      return { mark: 'opt', hint: 'По желанию: нужен, только если проект строится очередями. Пропустите — посчитается одной очередью.' };
+    },
+    inputs: function () {
+      if (Number((pageInputs() || {}).purchase_price_mln || 0) > 0) {
+        return { mark: 'ok', hint: 'Цена входа задана. Проверьте класс, цены продаж и себестоимость — умолчания здесь заданы классом проекта.' };
+      }
+      return { mark: 'warn', hint: 'Обязательное поле не заполнено: цена входа (стоимость покупки) — 0. Без неё LLCR и решение считаются как для бесплатного участка.' };
+    },
+    vri: function () {
+      var i = pageInputs() || {};
+      if (!i.vri_required || !Number(i.land_rights_cost_mln || 0)) {
+        return { mark: 'opt', hint: 'По желанию: нужен, только если участку требуется смена ВРИ. Плата 0 — шаг можно пропустить.' };
+      }
+      return { mark: 'ok', hint: 'Смена ВРИ включена: плата посчитана, проверьте сумму, график и источники оплаты.' };
+    },
+    rates: function () {
+      return { mark: 'opt', hint: 'По желанию: прогноз ключевой ставки уже задан умолчанием. Меняйте, если ваш взгляд на ставку другой — кривая пересчитает проценты БРИДЖа и ПФ.' };
+    },
+    report: function () {
+      return { mark: null, hint: 'Итог: карточка решения сверху, детали — по оглавлению ниже. Любое поле можно вернуться и поменять — расчёт обновится.' };
+    },
+    sensitivity: function () {
+      return { mark: 'opt', hint: 'По желанию: покажет, какие параметры сильнее всего двигают результат, и посчитает ваш сценарий.' };
+    }
+  };
 
   /* openTab зовут и мимо навигации — calculateAndOpen('report') после каждого
      пересчёта. Без обёртки раздел в шапке остался бы на прежнем. */
@@ -536,7 +612,9 @@
     var solution = found ? found.variable : null;
     var cells = [
       { label: 'LLCR (расчётный)', value: fmtMult(llcr), note: 'Ориентир банка — 1,20x.' },
-      { label: 'Цена входа', value: mlnLabel(price), note: 'Текущая цена приобретения.' },
+      price > 0
+        ? { label: 'Цена входа', value: mlnLabel(price), note: 'Текущая цена приобретения.' }
+        : { label: 'Цена входа', value: 'не задана', note: 'Заполните «Стоимость покупки» в Экономике — сейчас всё посчитано как для бесплатного участка.', wait: true },
       found
         ? { label: 'Максимум цены входа', value: mlnLabel(solution), note: 'При LLCR не ниже 1,20x' + (goalSeek.scope_label ? ' · ' + goalSeek.scope_label : '') + '.' }
         : { label: 'Максимум цены входа', value: ceilingText(), note: ceilingNote(), wait: true },
@@ -614,6 +692,10 @@
         goalSeekStale = true;
         renderVerdict();
         relabelBridge();
+        if (currentSection) {
+          var active = document.querySelector('.tabs .tab.active');
+          if (active) syncNav(active.getAttribute('data-tab'));
+        }
         if (currentSection === 'result') ensureGoalSeek();
       } catch (error) { /* отчёт важнее карточки */ }
       return out;

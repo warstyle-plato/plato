@@ -65,6 +65,17 @@
 }
 .ia-next:hover{opacity:.85}
 .ia-sub{align-items:center}
+.ia-mark{margin-left:7px;font-size:10px;font-weight:600}
+.ia-sub button .ia-mark.ok{color:#166534}
+.ia-sub button.active .ia-mark.ok{color:#9fd6ae}
+.ia-mark.opt{color:#999;font-weight:400}
+.ia-sub button.active .ia-mark.opt{color:#cfcfcf}
+.ia-mark.need{color:#8a4b08;font-weight:600}
+.ia-sub button.active .ia-mark.need{color:#ecc394}
+.ia-mark.warn{color:#b42318}
+.ia-sub button.active .ia-mark.warn{color:#ffb4a8}
+.ia-step-hint{padding:9px 34px 0;font-size:12px;color:#666;background:#fff;line-height:1.5}
+@media(max-width:700px){.ia-step-hint{padding-left:16px;padding-right:16px}}
 .ia-sub{padding:10px 34px 0;display:flex;gap:8px;flex-wrap:wrap;background:#fff}
 .ia-sub:empty{display:none}
 .ia-sub button{
