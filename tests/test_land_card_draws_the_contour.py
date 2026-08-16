@@ -93,10 +93,11 @@ def test_the_page_draws_the_polygon():
     assert svg.startswith('<div class="land-contour"><div class="land-contour-stage"')
     assert '<path d="M' in svg and svg.count(" L ") >= 4
     assert "Границы по сведениям ЕГРН" in svg
-    # Подложка карты просится тем же bbox, что и контур, и молча исчезает
-    # по onerror — подложка украшение, а не данные.
+    # Подложка карты просится тем же bbox, что и контур; при отказе карта
+    # снимает себя и честно правит подпись — обещать подложку, которой нет,
+    # подпись не имеет права.
     assert '<img class="land-contour-map" src="/land/map-image?bbox=' in svg
-    assert 'onerror="this.remove()"' in svg
+    assert 'onerror="landMapLost(this)"' in svg
     # Меркаторные 100 м на широте Мытищ — около 56 настоящих метров.
     width = re.search(r"~(\d+)", svg)
     assert width and 50 <= int(width.group(1)) <= 60, svg
@@ -106,6 +107,16 @@ def test_an_empty_geometry_draws_nothing():
     assert run_svg({"contour_merc": []}) == ""
     assert run_svg({}) == ""
     assert run_svg({"contour_merc": [[[1, 2]]]}) == ""
+
+
+def test_a_lost_map_fixes_the_caption():
+    """landMapLost снимает картинку и переписывает подпись про подложку."""
+    match = re.search(r"(function landMapLost\(img\)\{.*?\n\})", main.PAGE, re.S)
+    assert match, "landMapLost не найдена на странице"
+    body = match.group(1)
+    assert "img.remove()" in body
+    assert "карта НСПД не ответила" in body
+    assert "подложка — публичная карта НСПД" in body, "замена ищет не ту подпись"
 
 
 def test_the_card_includes_the_contour():

@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.18.4"
+VERSION = "0.18.5"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -24330,6 +24330,19 @@ async function lookupLand(options){
  }
 }
 
+// Карта не ответила — подпись не имеет права обещать подложку, которой нет:
+// прежде img молча снимал себя, а под контуром оставалось «подложка —
+// публичная карта НСПД», и отличить «НСПД молчит» от «карта не завезена»
+// было нельзя (скриншоты владельца, 16.08.2026).
+function landMapLost(img){
+ try{
+  const box=img.closest('.land-contour');
+  img.remove();
+  const cap=box&&box.querySelector('small');
+  if(cap)cap.textContent=cap.textContent.replace('подложка — публичная карта НСПД','карта НСПД не ответила — чистый контур');
+ }catch(e){}
+}
+
 function landTerritorySvg(found){
  // Несколько участков — общая посадка: все контуры в одном масштабе, как они
  // стоят друг относительно друга. По одному участку хватает миниатюры в его
@@ -24355,7 +24368,7 @@ function landTerritorySvg(found){
  }).join('');
  const mapSrc=`/land/map-image?bbox=${(minX-pad).toFixed(1)},${(minY-pad).toFixed(1)},${(maxX+pad).toFixed(1)},${(maxY+pad).toFixed(1)}`;
  return `<div class="land-contour land-territory"><div class="land-contour-stage" style="aspect-ratio:${w.toFixed(1)} / ${h.toFixed(1)}">`+
-  `<img class="land-contour-map" src="${mapSrc}" alt="" loading="lazy" decoding="async" onerror="this.remove()">`+
+  `<img class="land-contour-map" src="${mapSrc}" alt="" loading="lazy" decoding="async" onerror="landMapLost(this)">`+
   `<svg viewBox="0 0 ${w.toFixed(1)} ${h.toFixed(1)}" preserveAspectRatio="none" role="img" aria-label="Взаимное расположение участков">${paths}</svg></div>`+
   `<small>Территория из ${items.length} участков в одном масштабе · подложка — публичная карта НСПД · наведите на контур — увидите номер</small></div>`;
 }
@@ -24389,7 +24402,7 @@ function landContourSvg(item){
  // остаётся чистый контур: подложка — украшение, а не данные.
  const mapSrc=`/land/map-image?bbox=${(minX-pad).toFixed(1)},${(minY-pad).toFixed(1)},${(maxX+pad).toFixed(1)},${(maxY+pad).toFixed(1)}`;
  return `<div class="land-contour"><div class="land-contour-stage" style="aspect-ratio:${w.toFixed(1)} / ${h.toFixed(1)}">`+
-  `<img class="land-contour-map" src="${mapSrc}" alt="" loading="lazy" decoding="async" onerror="this.remove()">`+
+  `<img class="land-contour-map" src="${mapSrc}" alt="" loading="lazy" decoding="async" onerror="landMapLost(this)">`+
   `<svg viewBox="0 0 ${w.toFixed(1)} ${h.toFixed(1)}" preserveAspectRatio="none" role="img" aria-label="Границы участка по ЕГРН">`+
   `<path d="${paths}" fill="rgba(245,245,243,.35)" stroke="#111" stroke-width="${(Math.max(w,h)/120).toFixed(2)}" fill-rule="evenodd" vector-effect="non-scaling-stroke"/></svg></div>`+
   `<small>Границы по сведениям ЕГРН · подложка — публичная карта НСПД${scaleNote}</small></div>`;
