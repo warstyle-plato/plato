@@ -165,6 +165,30 @@ def test_the_second_export_confirms_the_methodology(monkeypatch):
         "плата разошлась с эталонной выгрузкой больше чем на 0,1%"
 
 
+def test_the_third_point_pins_the_mixed_clinic_norm(monkeypatch):
+    """Третья точка — 77:03:0006003:98 (население 970, дрейф от 16.08.2026).
+
+    Смешанная поликлиника — свой норматив 19 пос./смену на тысячу, а не сумма
+    взрослой и детской: город дал 19 при наших частях 13+7, и компенсация
+    разошлась ровно в 20/19 (190,814 против 200,857 — плашка дрейфа). На
+    населении 377 и 422 суммы совпадали со смешанной случайно."""
+    monkeypatch.setattr(core, "analyze_cadastral_territory", lambda req: {
+        "territory": {"area_ha": 1.4968, "district": "Головинский",
+                      "cadastral_quarter": "77:03:0006003"},
+        "coefficients": {"rail": 0.75, "business_outside_ttc": 0.5,
+                         "rent": 0.1281, "base_cost_zh_high": 229036.29},
+    })
+    result = core.vri_tep_quick("msk", "77:03:0006003:98")
+    import io
+    import openpyxl
+    sheet = openpyxl.load_workbook(io.BytesIO(result["file"]))["ТЭП"]
+    labels = {str(sheet.cell(row=r, column=1).value): r for r in range(2, 92)}
+    cell = lambda code: sheet.cell(row=labels[code], column=4).value
+    assert cell("4") == "970"
+    assert cell("32") == "19", "смешанная поликлиника — норматив 19/1000, не сумма 13+7"
+    assert [cell(c) for c in ("33", "34")] == ["13", "7"]
+
+
 def test_a_missing_coefficient_keeps_the_parking_honest(monkeypatch):
     """Без К1/К2 и базовой стоимости квартала ни машино-места, ни плата за
     ВРИ не выдумываются — нули и честная отсылка в мини-приложение."""
