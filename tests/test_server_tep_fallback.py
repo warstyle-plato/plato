@@ -41,11 +41,11 @@ def test_the_server_endpoint_returns_a_full_glavapu_import(monkeypatch):
     assert normalized["site_area_ha"] == pytest.approx(0.651)
     assert normalized["apartment_area_sqm"] == pytest.approx(13921.6, rel=0.001)
     mapped = result["mappings"]["inputs"]
-    assert mapped["land_rights_cost_mln"] == pytest.approx(1267.734, abs=0.001)
+    assert mapped["land_rights_cost_mln"] == pytest.approx(1289.919, abs=0.001)
     assert mapped["social_compensation_mln"] == pytest.approx(580.668, abs=0.01)
     assert result["mappings"]["tep"]["apartments"]["saleable"] == \
         pytest.approx(13921.6, rel=0.001)
-    assert normalized["parking_permanent"] == pytest.approx(82)
+    assert normalized["parking_permanent"] == pytest.approx(161)
 
 
 def test_the_page_goes_server_side_in_telegram_and_on_failure():

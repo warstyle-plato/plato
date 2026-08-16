@@ -238,9 +238,11 @@ def test_the_page_loads_a_project_over_the_defaults():
 
 
 def test_the_page_sends_both_ways_of_identifying():
+    # Сессия — активная: телеграм-сессия мини-приложения или сессия входа
+    # через бота; ключ администратора остаётся вторым способом.
     body = core.PAGE[core.PAGE.index("async function projectsCall("):]
     body = body[:body.index("async function initProjects(")]
-    assert "session:telegramSession" in body and "key:projectsAdminKey" in body
+    assert "session:activeSession()" in body and "key:projectsAdminKey" in body
 
 
 def test_the_dialog_says_where_the_data_lives():
@@ -253,11 +255,16 @@ def test_the_dialog_says_where_the_data_lives():
 def test_a_wrong_key_can_be_retyped():
     """Неверный ключ запирал дверь снаружи: список не открывался, а кнопка
     «Сменить ключ» жила внутри него. Единственным выходом оставалась консоль
-    браузера, которой на телефоне нет."""
+    браузера, которой на телефоне нет. Первый ввод ключа теперь живёт в
+    enterProjectsKey (за кнопкой рядом со входом через Telegram), повторный
+    после отказа — по-прежнему прямо в openProjects."""
     body = core.PAGE[core.PAGE.index("async function openProjects("):]
     body = body[:body.index("function closeProjects(")]
-    assert body.count("prompt(") >= 2, "после отказа ключ не спрашивается заново"
+    assert body.count("prompt(") >= 1, "после отказа ключ не спрашивается заново"
     assert "Введите ключ ещё раз" in body
+    entry = core.PAGE[core.PAGE.index("function enterProjectsKey("):]
+    entry = entry[:entry.index("async function openProjects(")]
+    assert "prompt(" in entry, "первому вводу ключа негде случиться"
 
 
 def test_the_key_can_be_changed_from_the_list():

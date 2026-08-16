@@ -283,6 +283,41 @@ def test_out_of_range_coordinates_rejected(monkeypatch):
     assert exc.value.status_code == 400
 
 
+def test_point_fallback_is_wms_get_feature_info(monkeypatch):
+    """Точечный запрос — WMS GetFeatureInfo слоя ЗУ, а не мёртвый intersects.
+
+    Текстовый поиск «lat lng» и GET /intersects на точках отвечают пустотой;
+    рабочий путь — запрос, которым карта НСПД отвечает на клик. Тест пинует
+    маршрут, слой и попадание точки в BBOX/пиксель тайла.
+    """
+    lat, lng = 55.802, 37.573  # Мишина, 46 — участок 77:09:0004014:13 есть
+    seen: list[str] = []
+
+    def fetch(url, *, service, **kwargs):
+        seen.append(url)
+        return {"type": "FeatureCollection", "features": [MYTISHCHI_FEATURE]}
+
+    monkeypatch.setattr(main, "_nspd_search_features", lambda query: [])
+    monkeypatch.setattr(main, "_land_fetch_json", fetch)
+    features = main._nspd_point_features(lat, lng)
+    assert features == [MYTISHCHI_FEATURE]
+    assert len(seen) == 1
+    url = seen[0]
+    assert f"/api/aeggis/v3/{main._NSPD_LANDS_LAYER_ID}/wms?" in url
+    import urllib.parse as _up
+
+    params = dict(_up.parse_qsl(_up.urlsplit(url).query))
+    assert params["REQUEST"] == "GetFeatureInfo"
+    assert params["INFO_FORMAT"] == "application/json"
+    assert params["QUERY_LAYERS"] == str(main._NSPD_LANDS_LAYER_ID)
+    west, south, east, north = (float(x) for x in params["BBOX"].split(","))
+    assert west <= lng <= east and south <= lat <= north
+    size = int(params["WIDTH"])
+    assert params["WIDTH"] == params["HEIGHT"]
+    assert 0 <= int(params["I"]) <= size and 0 <= int(params["J"]) <= size
+    assert params["FEATURE_COUNT"] != "1"
+
+
 # --- валидация и кеш --------------------------------------------------------
 
 def test_empty_query_rejected():

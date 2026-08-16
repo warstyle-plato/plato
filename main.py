@@ -676,6 +676,34 @@ def _stale_reference_line() -> str:
                         for item in stale))
 
 
+def _glavapu_status_line() -> str:
+    """Состояние связки со штатным калькулятором ГлавАПУ — с предупреждением.
+
+    Сбой связки (предохранитель, выключенный headless, недоступное ядро) до
+    этой строки был виден только в предупреждении карточки ТЭП: расчёт уходил
+    на формулы, владелец узнавал об этом из расхождения с сайтом. /status
+    смотрят, когда что-то проверяют, — здесь сбой и должен кричать.
+    """
+    try:
+        state = core.glavapu_health()
+    except Exception as exc:
+        return f"\n⚠️ ГлавАПУ: состояние не проверить ({html.escape(str(exc)[:120])})"
+    label = str(state.get("state") or "?")
+    where = str(state.get("where") or "")
+    counters = ""
+    if state.get("runs") or state.get("fallbacks"):
+        counters = (f" · запусков {int(state.get('runs') or 0)}, "
+                    f"фолбэков {int(state.get('fallbacks') or 0)}")
+    if label == "готов":
+        return f"\nГлавАПУ: штатный калькулятор готов ({html.escape(where)}){counters}"
+    detail = " ".join(filter(None, [
+        str(state.get("hint") or ""),
+        f"Ошибка: {state.get('last_error')}" if state.get("last_error") else "",
+    ]))
+    return (f"\n⚠️ <b>ГлавАПУ: {html.escape(label)}</b> — ТЭП считается запасными "
+            f"формулами. {html.escape(detail[:300])}{counters}")
+
+
 def _status_message(chat_id: int, user_id: int) -> None:
     configured = bool(core._TELEGRAM_RUNTIME.get("configured"))
     _, context = _resolve_context(chat_id)
@@ -693,6 +721,7 @@ def _status_message(chat_id: int, user_id: int) -> None:
         f"Версия: {_RUNTIME_VERSION}\n"
         f"Платон: {platon_state}\n"
         f"Память расчётов: {_state_health(chat_id)}"
+        + _glavapu_status_line()
         # Справочник устаревает тихо: расчёт идёт, числа выглядят как обычно,
         # а под ними прошлогодний тариф. Напоминание тут потому, что /status
         # смотрят, когда что-то проверяют.

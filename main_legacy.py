@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.96"
+VERSION = "0.18.9"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -235,6 +235,11 @@ class AgentChatRequest(BaseModel):
     # Идентификатор запроса генерирует страница: он нужен ей раньше ответа,
     # чтобы опрашивать стадию, пока запрос идёт.
     trace_id: str = ""
+    # Кто спрашивает: подписанная телеграм-сессия (мини-приложение или вход
+    # через бота) либо ключ администратора. Платон стоит денег на каждый
+    # вопрос, поэтому с сайта он доступен после входа.
+    session: str = ""
+    access_key: str = ""
 
 
 class CadastralAnalysisRequest(BaseModel):
@@ -1220,7 +1225,10 @@ def build_freeform_tep(text: str, raw_values: dict[str, Any] | None = None) -> d
 
     parking_explicit = optional_number("parking_spaces")
     if parking_explicit is None:
-        permanent = int(math.ceil((apartment_saleable / 33.0) * 0.257))
+        # Методика города с августа 2026: одно постоянное место на 90 м² НП
+        # жилых зданий (сверено по двум выгрузкам штатного калькулятора от
+        # 16.08.2026); здесь К1 принят 1,0 — локация ещё не известна.
+        permanent = int(math.ceil(apartment_gns * 0.9 / 90.0))
         parking_spaces = permanent + int(math.ceil(permanent / 10.0))
         calculated.append("паркинг рассчитан как постоянные места плюс 10% гостевых")
         assumptions.append("коэффициент доступности рельсового каркаса К1 принят 1,0; после указания локации паркинг следует уточнить")
@@ -1694,6 +1702,9 @@ def _env_float(name: str, default: float) -> float:
 _NSPD_BASE_URL = (_env_str("NSPD_BASE_URL", "https://nspd.gov.ru")).rstrip("/")
 _NSPD_TIMEOUT_SECONDS = _env_float("NSPD_TIMEOUT_SECONDS", 25.0)
 _NSPD_LAND_THEMATIC_ID = 1
+# Слой «Земельные участки из ЕГРН» на карте НСПД. Точечный поиск идёт через
+# WMS GetFeatureInfo этого слоя — тем же запросом, что клик по карте на сайте.
+_NSPD_LANDS_LAYER_ID = 36048
 _NOMINATIM_BASE_URL = (_env_str("NOMINATIM_BASE_URL", "https://nominatim.openstreetmap.org")).rstrip("/")
 _LAND_LOOKUP_USER_AGENT = USER_AGENT
 _LAND_LOOKUP_MAX_RESULTS = int(_env_float("LAND_LOOKUP_MAX_RESULTS", 30))
@@ -2013,6 +2024,45 @@ def _geometry_center(geometry: Any) -> dict[str, Any] | None:
     }
 
 
+def _geometry_contours_merc(geometry: Any) -> list[list[list[float]]]:
+    """Внешние кольца границ участка в метрах веб-меркатора — для миниатюры.
+
+    НСПД отдаёт геометрию то в градусах (текстовый поиск, CRS=EPSG:4326), то
+    в веб-меркаторе (WMS-точка); признак — величины координат, как в
+    `_geometry_center`. Меркатор для SVG удобен как плоскость: на размере
+    участка искажения формы нет. Внутренние кольца (дыры) миниатюре не нужны.
+    """
+    if not isinstance(geometry, dict):
+        return []
+    gtype = geometry.get("type")
+    coords = geometry.get("coordinates")
+    if gtype == "Polygon":
+        polygons = [coords]
+    elif gtype == "MultiPolygon":
+        polygons = coords if isinstance(coords, list) else []
+    else:
+        return []
+    rings: list[list[list[float]]] = []
+    for polygon in polygons:
+        if not (isinstance(polygon, list) and polygon and isinstance(polygon[0], list)):
+            continue
+        ring: list[list[float]] = []
+        for point in polygon[0]:
+            if not (isinstance(point, (list, tuple)) and len(point) >= 2):
+                continue
+            x, y = float(point[0]), float(point[1])
+            if abs(x) <= 180.0 and abs(y) <= 90.0:
+                merc_x = x * 20037508.34 / 180.0
+                merc_y = math.log(math.tan((90.0 + y) * math.pi / 360.0)) / (math.pi / 180.0)
+                merc_y = merc_y * 20037508.34 / 180.0
+                ring.append([round(merc_x, 2), round(merc_y, 2)])
+            else:
+                ring.append([round(x, 2), round(y, 2)])
+        if len(ring) >= 4:
+            rings.append(ring)
+    return rings
+
+
 def _nspd_features(payload: Any) -> list[dict[str, Any]]:
     for container in (payload.get("data") if isinstance(payload, dict) else None, payload):
         if isinstance(container, dict):
@@ -2118,6 +2168,9 @@ def _normalize_nspd_feature(feature: dict[str, Any]) -> dict[str, Any]:
         "floors": _land_text(_nspd_value(options, "floors")),
         "year_built": _land_text(_nspd_value(options, "year_built")),
         "center": {"lat": center["lat"], "lng": center["lng"]} if center else None,
+        # Границы для миниатюры на странице: контур рисуется своим SVG, без
+        # внешних карт — работает и в телеграм-WebView, и при лежащей НСПД.
+        "contour_merc": _geometry_contours_merc(feature.get("geometry")),
         "map_url": _nspd_map_url(center, cadastral_number),
         "category_name": _land_text(properties.get("categoryName")),
         "source": "НСПД / ЕГРН",
@@ -2149,26 +2202,279 @@ def _nspd_search_features(query: str) -> list[dict[str, Any]]:
 
 
 def _nspd_point_features(lat: float, lng: float) -> list[dict[str, Any]]:
-    """Участки в точке: сначала поиск по координатам, затем пространственный запрос."""
+    """Участки в точке: сначала поиск по координатам, затем WMS-запрос слоя ЗУ.
+
+    Текстовый поиск «lat lng» и прежний GET /api/geoportal/v1/intersects на
+    точках отвечают пустотой даже там, где участок точно есть. Рабочий путь —
+    тот, которым сама карта НСПД отвечает на клик: WMS GetFeatureInfo слоя
+    «Земельные участки из ЕГРН» по пикселю тайла (сверено с pynspd 1.1.13).
+    """
     try:
         features = _nspd_search_features(f"{lat} {lng}")
     except HTTPException:
         features = []
     if features:
         return features
-    merc_x = lng * 20037508.34 / 180.0
-    merc_y = math.log(math.tan((90.0 + lat) * math.pi / 360.0)) / (math.pi / 180.0)
-    merc_y = merc_y * 20037508.34 / 180.0
-    geom = json.dumps({"type": "Point", "coordinates": [merc_x, merc_y]}, ensure_ascii=False)
-    params = urllib.parse.urlencode({"typeIntersect": "lands", "geom": geom})
+    # Тайл web-меркатора, в который попадает точка; zoom 24 — максимум точности.
+    zoom = 24
+    tiles = 1 << zoom
+    tile_size = 512
+    lat_rad = math.radians(lat)
+    xtile = int((lng + 180.0) / 360.0 * tiles)
+    ytile = int((1.0 - math.asinh(math.tan(lat_rad)) / math.pi) / 2.0 * tiles)
+    west = xtile / tiles * 360.0 - 180.0
+    east = (xtile + 1) / tiles * 360.0 - 180.0
+    north = math.degrees(math.atan(math.sinh(math.pi * (1.0 - 2.0 * ytile / tiles))))
+    south = math.degrees(math.atan(math.sinh(math.pi * (1.0 - 2.0 * (ytile + 1) / tiles))))
+    i = int((lng - west) / (east - west) * tile_size)
+    j = int((lat - south) / (north - south) * tile_size)
+    params = urllib.parse.urlencode({
+        "REQUEST": "GetFeatureInfo",
+        "SERVICE": "WMS",
+        "VERSION": "1.3.0",
+        "INFO_FORMAT": "application/json",
+        "FORMAT": "image/png",
+        "STYLES": "",
+        "TRANSPARENT": "true",
+        "QUERY_LAYERS": _NSPD_LANDS_LAYER_ID,
+        "LAYERS": _NSPD_LANDS_LAYER_ID,
+        "WIDTH": tile_size,
+        "HEIGHT": tile_size,
+        "I": i,
+        # Пиксели WMS отсчитываются от верхнего края, интерполяция — от южного.
+        "J": tile_size - j,
+        "CRS": "EPSG:4326",
+        "BBOX": f"{west},{south},{east},{north}",
+        # Без FEATURE_COUNT сервис отдаёт один объект даже на границе участков.
+        "FEATURE_COUNT": "10",
+    })
     try:
         payload = _land_fetch_json(
-            f"{_NSPD_BASE_URL}/api/geoportal/v1/intersects?{params}",
+            f"{_NSPD_BASE_URL}/api/aeggis/v3/{_NSPD_LANDS_LAYER_ID}/wms?{params}",
             service="Сервис НСПД",
         )
     except HTTPException:
         return []
     return _nspd_features(payload)
+
+
+# Подложка карты под контуром участка: WMS GetMap того же слоя ЗУ, которым
+# работает точечный поиск. Кэш маленький и с TTL — карта не меняется от
+# запроса к запросу, а НСПД не любит частых обращений.
+_NSPD_MAP_CACHE: dict[str, tuple[float, bytes]] = {}
+_NSPD_MAP_CACHE_TTL_SECONDS = 6 * 3600
+_NSPD_MAP_CACHE_LIMIT = 64
+
+
+@app.get("/land/map-probe", include_in_schema=False)
+def land_map_probe(bbox: str = "") -> dict[str, Any]:
+    """Диагностика формата WMS GetMap НСПД: кандидаты перебираются с ядра.
+
+    Подложка отвечала 404, а проверить формат с телефона нельзя — WAF НСПД
+    отдаёт Forbidden на прямые запросы без браузерной сессии карты. Ядро же
+    НСПД пускает (точечный поиск живёт), поэтому кандидаты перебираются
+    отсюда: версии пути v3/v4 и системы координат 3857/4326 в обоих порядках
+    осей. Ответ говорит, какой формат отдал PNG, — по нему чинится
+    /land/map-image. Только диагностика: ничего не кэширует и не меняет.
+    """
+    remote = _core_api_url("/land/map-probe")
+    if remote:
+        try:
+            with urllib.request.urlopen(
+                    urllib.request.Request(
+                        remote + "?" + urllib.parse.urlencode({"bbox": bbox}),
+                        headers={"Accept": "application/json"}),
+                    timeout=90) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Ядро недоступно: {exc}")
+    try:
+        parts = [float(x) for x in str(bbox or "").split(",")]
+    except ValueError:
+        parts = []
+    if len(parts) != 4:
+        # Мишина 77:09:0004014:13 — участок, на котором 404 и был пойман.
+        parts = [4181302.0, 7518174.0, 4181542.0, 7518414.0]
+    min_x, min_y, max_x, max_y = parts
+    south_lat, west_lng = _mercator_to_wgs84(min_x, min_y)
+    north_lat, east_lng = _mercator_to_wgs84(max_x, max_y)
+
+    def wms_url(api_version: str, crs: str, bbox_value: str) -> str:
+        return (f"{_NSPD_BASE_URL}/api/aeggis/{api_version}/{_NSPD_LANDS_LAYER_ID}/wms?"
+                + urllib.parse.urlencode({
+                    "SERVICE": "WMS", "REQUEST": "GetMap", "VERSION": "1.3.0",
+                    "FORMAT": "image/png", "STYLES": "", "TRANSPARENT": "true",
+                    "LAYERS": _NSPD_LANDS_LAYER_ID, "WIDTH": 512, "HEIGHT": 512,
+                    "CRS": crs, "BBOX": bbox_value,
+                }))
+
+    candidates = {
+        "v3_3857_merc": wms_url("v3", "EPSG:3857", f"{min_x},{min_y},{max_x},{max_y}"),
+        "v4_3857_merc": wms_url("v4", "EPSG:3857", f"{min_x},{min_y},{max_x},{max_y}"),
+        # WMS 1.3.0 для EPSG:4326 требует порядок осей lat,lon; текущий
+        # /land/map-image шлёт lon,lat — оба варианта в переборе.
+        "v3_4326_latlon": wms_url("v3", "EPSG:4326",
+                                  f"{south_lat},{west_lng},{north_lat},{east_lng}"),
+        "v3_4326_lonlat": wms_url("v3", "EPSG:4326",
+                                  f"{west_lng},{south_lat},{east_lng},{north_lat}"),
+    }
+    request_headers = {
+        "Accept": "image/png,image/*;q=0.9,*/*;q=0.5",
+        "User-Agent": _LAND_LOOKUP_USER_AGENT,
+    }
+    request_headers.update(_NSPD_BROWSER_HEADERS)
+    results: dict[str, Any] = {}
+    for name, url in candidates.items():
+        request = urllib.request.Request(url, headers=request_headers)
+        context = ssl._create_unverified_context() if _nspd_tls_insecure else None
+        try:
+            try:
+                with urllib.request.urlopen(request, timeout=20, context=context) as response:
+                    raw = response.read(200_000)
+            except urllib.error.URLError as exc:
+                if not isinstance(getattr(exc, "reason", None), ssl.SSLError):
+                    raise
+                with urllib.request.urlopen(
+                        request, timeout=20,
+                        context=ssl._create_unverified_context()) as response:
+                    raw = response.read(200_000)
+            results[name] = {
+                "ok": raw[:4] == b"\x89PNG", "bytes": len(raw),
+                "head": "PNG" if raw[:4] == b"\x89PNG"
+                        else raw[:60].decode("latin-1", "replace"),
+            }
+        except urllib.error.HTTPError as exc:
+            results[name] = {"ok": False, "http": exc.code}
+        except Exception as exc:
+            results[name] = {"ok": False, "error": str(exc)[:160]}
+    return {"bbox_merc": parts, "probe": results}
+
+
+def _nspd_wms_map_png(west: float, south: float, east: float, north: float,
+                      width: int, height: int) -> bytes:
+    """Картинка слоя «Земельные участки из ЕГРН» под меркаторный bbox.
+
+    Формат сверен пробой /land/map-probe на проде (16.08.2026): НСПД отдаёт
+    PNG только на EPSG:3857 с меркаторным bbox, EPSG:4326 в обоих порядках
+    осей отвечает 404. Прозрачность true — как в пробе; фон выравнивает
+    land_map_image.
+    """
+    params = urllib.parse.urlencode({
+        "REQUEST": "GetMap",
+        "SERVICE": "WMS",
+        "VERSION": "1.3.0",
+        "FORMAT": "image/png",
+        "STYLES": "",
+        "TRANSPARENT": "true",
+        "LAYERS": _NSPD_LANDS_LAYER_ID,
+        "WIDTH": int(width),
+        "HEIGHT": int(height),
+        "CRS": "EPSG:3857",
+        "BBOX": f"{west},{south},{east},{north}",
+    })
+    request_headers = {
+        "Accept": "image/png,image/*;q=0.9,*/*;q=0.5",
+        "Accept-Language": "ru-RU,ru;q=0.9",
+        "User-Agent": _LAND_LOOKUP_USER_AGENT,
+    }
+    request_headers.update(_NSPD_BROWSER_HEADERS)
+    external_request = urllib.request.Request(
+        f"{_NSPD_BASE_URL}/api/aeggis/v3/{_NSPD_LANDS_LAYER_ID}/wms?{params}",
+        headers=request_headers,
+    )
+    # Тот же TLS-фолбэк, что у поиска (_land_fetch_json): сертификат НСПД —
+    # российский УЦ, и без повтора без проверки карта падала с
+    # CERTIFICATE_VERIFY_FAILED. Флаг — на процесс, а воркеров два: читать его
+    # мало, надо уметь взводить и здесь, иначе карта живёт только в том
+    # воркере, где до неё уже искали участок (скриншот владельца, 16.08.2026).
+    global _nspd_tls_insecure
+    context = ssl._create_unverified_context() if _nspd_tls_insecure else None
+    try:
+        with urllib.request.urlopen(
+                external_request, timeout=_NSPD_TIMEOUT_SECONDS, context=context) as response:
+            raw = response.read(4 * 1024 * 1024)
+    except urllib.error.URLError as exc:
+        if not (
+            _NSPD_TLS_FALLBACK
+            and not _nspd_tls_insecure
+            and isinstance(getattr(exc, "reason", None), ssl.SSLError)
+        ):
+            raise
+        _nspd_tls_insecure = True
+        with urllib.request.urlopen(
+                external_request, timeout=_NSPD_TIMEOUT_SECONDS,
+                context=ssl._create_unverified_context()) as response:
+            raw = response.read(4 * 1024 * 1024)
+    if not raw.startswith(b"\x89PNG"):
+        raise ValueError("НСПД ответила не картинкой")
+    return raw
+
+
+@app.get("/land/map-image", include_in_schema=False)
+def land_map_image(bbox: str = "") -> Response:
+    """Подложка кадастровой карты под меркаторный bbox контура.
+
+    Страница передаёт ровно тот bbox (с полем), в котором рисует SVG-контур,
+    а НСПД принимает его тем же меркатором (EPSG:3857, сверено пробой) —
+    подложка и контур совпадают пиксель в пиксель без пересчётов. Любой
+    сбой — 502, и страница просто остаётся с чистым контуром: подложка —
+    украшение, а не данные.
+    """
+    remote = _core_api_url("/land/map-image")
+    if remote:
+        # Как /land/lookup: Render до НСПД не ходит — пересылает на ядро.
+        try:
+            with urllib.request.urlopen(
+                    urllib.request.Request(
+                        remote + "?" + urllib.parse.urlencode({"bbox": bbox}),
+                        headers={"Accept": "image/png"}),
+                    timeout=_NSPD_TIMEOUT_SECONDS) as response:
+                raw = response.read(4 * 1024 * 1024)
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Подложка карты недоступна: {exc}")
+        return Response(raw, media_type="image/png",
+                        headers={"Cache-Control": "public, max-age=3600"})
+    try:
+        parts = [float(x) for x in str(bbox or "").split(",")]
+    except ValueError:
+        parts = []
+    if len(parts) != 4:
+        raise HTTPException(status_code=400, detail="bbox: minX,minY,maxX,maxY в метрах веб-меркатора.")
+    min_x, min_y, max_x, max_y = parts
+    span_x, span_y = max_x - min_x, max_y - min_y
+    if not (0 < span_x <= 20000 and 0 < span_y <= 20000):
+        # Больше 20 км — это уже не карточка участка, а карта страны.
+        raise HTTPException(status_code=400, detail="bbox вне разумного размера участка.")
+    # Ширина до 640 px; высота — из меркаторных пропорций bbox, чтобы
+    # совпасть с SVG-контуром страницы.
+    width = 640
+    height = max(64, min(1280, int(round(width * span_y / span_x))))
+    cache_key = f"{round(min_x)}:{round(min_y)}:{round(max_x)}:{round(max_y)}"
+    cached = _NSPD_MAP_CACHE.get(cache_key)
+    if cached and time.time() - cached[0] < _NSPD_MAP_CACHE_TTL_SECONDS:
+        return Response(cached[1], media_type="image/png",
+                        headers={"Cache-Control": "public, max-age=3600"})
+    try:
+        raw = _nspd_wms_map_png(min_x, min_y, max_x, max_y, width, height)
+        # НСПД отвечает прозрачным PNG (проба), а прозрачность дальше опасна:
+        # фото бота при конвертации в RGB получило бы чёрный фон. Плоское
+        # светлое основание кладётся один раз здесь.
+        from PIL import Image
+        layer = Image.open(io.BytesIO(raw)).convert("RGBA")
+        base = Image.new("RGBA", layer.size, (245, 245, 243, 255))
+        base.alpha_composite(layer)
+        buffer = io.BytesIO()
+        base.convert("RGB").save(buffer, format="PNG")
+        raw = buffer.getvalue()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Подложка карты недоступна: {exc}")
+    if len(_NSPD_MAP_CACHE) >= _NSPD_MAP_CACHE_LIMIT:
+        _NSPD_MAP_CACHE.pop(next(iter(_NSPD_MAP_CACHE)), None)
+    _NSPD_MAP_CACHE[cache_key] = (time.time(), raw)
+    return Response(raw, media_type="image/png",
+                    headers={"Cache-Control": "public, max-age=3600"})
 
 
 def _geocode_yandex(address: str, limit: int) -> list[dict[str, Any]]:
@@ -4248,9 +4554,18 @@ def vri_tep_quick(region: str, query: str,
         units = round(population / 2.1) if population else 0
         dou = round(population * 44 / 1000)
         school = math.ceil(population * 90 / 1000) if population else 0
-        clinic_adult = math.ceil(population * 13.3 / 1000) if population else 0
+        # Взрослая поликлиника — 13,2 пос./смену на тысячу, не 13,3: три
+        # выгрузки (население 377, 422 и 1224 → 5, 6 и 17) сходятся только на
+        # 13,2 с округлением вверх; 13,3 на населении 377 давала 6 против 5
+        # у штатного калькулятора — и через мощность завышала компенсацию.
+        clinic_adult = math.ceil(population * 13.2 / 1000) if population else 0
         clinic_child = math.ceil(population * 6.5 / 1000) if population else 0
-        clinic = clinic_adult + clinic_child
+        # Смешанная поликлиника — свой норматив 19 пос./смену на тысячу, а не
+        # сумма взрослой и детской: на населении 970 город даёт 19 при наших
+        # частях 13+7 (дрейф компенсации 190,814 против 200,857, третья точка
+        # 16.08.2026); на населении 377 и 422 суммы совпадали со смешанной
+        # случайно (8 = 5+3, 9 = 6+3). Компенсация считается от смешанной.
+        clinic = math.ceil(population * 19.0 / 1000) if population else 0
         per_k = lambda norm, digits: math.ceil(population * norm / 1000 * 10 ** digits) / 10 ** digits
         # Компенсация за соцобъекты — ставки из выгрузки калькулятора от
         # 01.08.2026 (188,414/19, 294,540/38 и 97,714/9): город индексирует их
@@ -4278,13 +4593,16 @@ def vri_tep_quick(region: str, query: str,
         comp_school = _social_comp(school, 4578.69, 19.0, 1.2, 7.751053)
         comp_clinic = _social_comp(clinic, 7887.92, 30.0, 1.0, 10.857111)
         jobs = math.ceil(commerce_gns / 36.0) if commerce_gns > 0 else 0
-        # Машино-места — формулы из кода калькулятора ГлавАПУ (genplan_assets,
-        # функции Rf/zf/Bf/Vf): постоянные — площадь квартир × 0,257/33 × К1,
-        # гостевые — десятая часть постоянных, приобъектные встроенных
-        # помещений — НП/90 × К1 × К2, кратковременные — квартиры/22 100 и
-        # НП/450 с кэпом 4; округление всюду вверх. К2 берётся «вне ТТК» —
-        # признак попадания внутрь ТТК анализ не отдаёт. Обе контрольные
-        # выгрузки (население 422 и 1224) сходятся до единицы.
+        # Машино-места. Постоянные — методика города с августа 2026: одно
+        # место на 90 м² НП жилых зданий (те же 100 м² их СПП) × К1. Прежняя
+        # строка калькулятора — площадь квартир × 0,257/33 × К1 — на свежих
+        # выгрузках давала 73 и 82 места против 144 и 161 у штатного расчёта;
+        # новая сверена по двум выгрузкам от 16.08.2026 (население 377 и 422),
+        # обе сходятся до единицы. Остальные виды без изменений: гостевые —
+        # десятая часть постоянных, приобъектные встроенных помещений —
+        # НП/90 × К1 × К2, кратковременные — квартиры/22 100 и НП/450 с кэпом
+        # 4; округление всюду вверх. К2 берётся «вне ТТК» — признак попадания
+        # внутрь ТТК анализ не отдаёт.
         k1 = _land_float(coeff.get("rail")) or 0.0
         k2 = _land_float(coeff.get("business_outside_ttc")) or 0.0
         commerce_np = commerce_gns * 0.9
@@ -4298,10 +4616,13 @@ def vri_tep_quick(region: str, query: str,
         base_cost = _land_float(coeff.get("base_cost_zh_high")) or 0.0
         vri_msk = 0.0
         if rent_coeff > 0 and base_cost > 0 and spp > 0:
-            vri_msk = round(1.8964 * spp * rent_coeff * base_cost / 1.00001 / 1e6, 3)
+            # Базовая стоимость из анализа индексируется городом поквартально —
+            # множитель у константы _GLAVAPU_VRI_BASE_INDEXATION вместе с датой.
+            vri_msk = round(1.8964 * spp * rent_coeff * base_cost
+                            * _GLAVAPU_VRI_BASE_INDEXATION / 1.00001 / 1e6, 3)
         mm = None
         if k1 > 0 and k2 > 0 and apartments > 0:
-            mm_permanent = math.ceil(apartments * 0.257 / 33.0 * k1)
+            mm_permanent = math.ceil(apartments_gns * 0.9 / 90.0 * k1)
             mm_guest = math.ceil(mm_permanent / 10.0)
             mm_onsite = math.ceil(commerce_np / 90.0 * k1 * k2)
             mm = {
@@ -5106,6 +5427,15 @@ def _build_model_xlsx(sheets: list[dict[str, Any]]) -> bytes:
 # всплывало при сравнении расчётов с двух компьютеров.
 _GLAVAPU_COMPENSATION_RATES_DATE = "01.08.2026"
 
+# Квартальная индексация базовой стоимости ВРИ. Выгрузки штатного калькулятора
+# от 16.08.2026 на двух кварталах (77:07:0008006 и 77:09:0004014) разошлись с
+# формулой ровно на +1,7495%: город применяет индекс к базовой стоимости, а
+# анализ территории отдаёт её прежней. Следующий квартал сдвинет индекс — при
+# расхождении платы на одинаковый процент при совпадающей базе первым
+# подозреваемым идёт эта константа, а не формула.
+_GLAVAPU_VRI_BASE_INDEXATION = 1.0175
+_GLAVAPU_VRI_BASE_INDEXATION_DATE = "16.08.2026"
+
 # --- штатный калькулятор ГлавАПУ на сервере ---------------------------------
 # Копировать методику ГлавАПУ оказалось тупиком: плата за ВРИ разошлась на
 # 1,75%, компенсация — на 19%, и оба раза расхождение находил человек на
@@ -5719,6 +6049,30 @@ def _glavapu_headless_state() -> dict[str, Any]:
     return {"state": "готов", "where": where}
 
 
+@app.get("/glavapu/health")
+def glavapu_health() -> dict[str, Any]:
+    """Состояние штатного калькулятора ГлавАПУ — для /status бота.
+
+    Браузер живёт на ядре, а /status спрашивают у бота на Render: без этого
+    маршрута сбой связки с ГлавАПУ виден только в предупреждении карточки ТЭП,
+    которое легко пролистать. Если задан адрес ядра — спрашиваем его, иначе
+    отвечаем о себе; счётчики показывают, чем закончились прошлые расчёты.
+    """
+    url = _core_api_url("/glavapu/health")
+    if url:
+        try:
+            request = urllib.request.Request(url, headers={"Accept": "application/json"})
+            with urllib.request.urlopen(request, timeout=10) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except Exception as exc:
+            return {"state": "ядро недоступно", "where": "Render",
+                    "hint": f"Ядро не ответило на запрос состояния: {exc}"}
+    state = dict(_glavapu_headless_state())
+    state.update({key: _GLAVAPU_HEADLESS.get(key)
+                  for key in ("last_ok", "last_error", "runs", "fallbacks")})
+    return state
+
+
 def _cadastral_analysis_for(numbers: list[str],
                             supplied: dict[str, Any] | None) -> dict[str, Any]:
     """Территория запрошенных участков — присланная страницей или своя.
@@ -6211,6 +6565,137 @@ def _telegram_send_document_bytes(
     if not result.get("ok"):
         raise RuntimeError("Telegram API sendDocument: " + str(result.get("description") or "неизвестная ошибка"))
     return result.get("result")
+
+
+def _telegram_send_photo_bytes(
+    chat_id: int,
+    content: bytes,
+    filename: str,
+    caption: str = "",
+) -> Any:
+    """sendPhoto тем же multipart, что и документы: фото видно в чате сразу."""
+    token = _telegram_token()
+    if not token:
+        raise RuntimeError("TELEGRAM_BOT_TOKEN не задан")
+    boundary = "----DevelopAidBoundary" + hashlib.sha256(os.urandom(16)).hexdigest()[:20]
+    body = io.BytesIO()
+
+    def field(name: str, value: str) -> None:
+        body.write(f"--{boundary}\r\n".encode())
+        body.write(f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode())
+        body.write(str(value).encode("utf-8"))
+        body.write(b"\r\n")
+
+    field("chat_id", str(int(chat_id)))
+    if caption:
+        field("caption", caption)
+        field("parse_mode", "HTML")
+    body.write(f"--{boundary}\r\n".encode())
+    body.write(
+        f'Content-Disposition: form-data; name="photo"; filename="{filename}"\r\n'.encode("utf-8")
+    )
+    body.write(b"Content-Type: image/png\r\n\r\n")
+    body.write(content)
+    body.write(b"\r\n")
+    body.write(f"--{boundary}--\r\n".encode())
+    request = urllib.request.Request(
+        f"https://api.telegram.org/bot{token}/sendPhoto",
+        data=body.getvalue(),
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            result = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")[:500]
+        raise RuntimeError(f"Telegram API sendPhoto: HTTP {exc.code}: {detail}") from exc
+    if not result.get("ok"):
+        raise RuntimeError("Telegram API sendPhoto: " + str(result.get("description") or "неизвестная ошибка"))
+    return result.get("result")
+
+
+def _telegram_territory_photo(chat_id: int, numbers: list[str]) -> bool:
+    """Картинка территории в чат: контуры ЕГРН поверх подложки НСПД.
+
+    Та же картинка, что на сайте в карточке участка, — в боте её не было вовсе
+    (замечание владельца, 16.08.2026). Контуры приходят из /land/lookup
+    (`contour_merc`), подложка — из /land/map-image; оба маршрута на Render
+    пересылают на ядро сами. Любой сбой — просто нет фото: картинка украшение,
+    расчёт от неё не зависит, поэтому наружу не роняется ничего.
+    """
+    try:
+        data = land_lookup(LandLookupRequest(
+            query=", ".join(numbers), limit=max(10, len(numbers))))
+        found = [item for item in (data.get("results") or [])
+                 if item.get("found") and item.get("contour_merc")]
+        rings = [ring for item in found for ring in item["contour_merc"]
+                 if isinstance(ring, list) and len(ring) >= 3]
+        points = [p for ring in rings for p in ring
+                  if isinstance(p, (list, tuple)) and len(p) >= 2]
+        if not points:
+            return False
+        min_x = min(p[0] for p in points); max_x = max(p[0] for p in points)
+        min_y = min(p[1] for p in points); max_y = max(p[1] for p in points)
+        span = max(max_x - min_x, max_y - min_y, 1.0)
+        pad = max(span * 0.08, 25.0)
+        b_min_x, b_min_y = min_x - pad, min_y - pad
+        b_max_x, b_max_y = max_x + pad, max_y + pad
+        from PIL import Image, ImageDraw
+        try:
+            response = land_map_image(
+                bbox=f"{b_min_x:.1f},{b_min_y:.1f},{b_max_x:.1f},{b_max_y:.1f}")
+            backdrop = Image.open(io.BytesIO(bytes(response.body))).convert("RGBA")
+        except Exception:
+            # Голый контур на белом фоне в чате — шум, а не информация
+            # (владелец, 16.08.2026). Нет карты — нет фото; расчёту это не
+            # мешает, а на сайте карточка участка и без карты в контексте.
+            return False
+        w, h = backdrop.size
+        overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        overlay_draw = ImageDraw.Draw(overlay)
+        pixel_rings = []
+        for ring in rings:
+            px = [((p[0] - b_min_x) / (b_max_x - b_min_x) * w,
+                   (b_max_y - p[1]) / (b_max_y - b_min_y) * h)
+                  for p in ring if isinstance(p, (list, tuple)) and len(p) >= 2]
+            if len(px) < 3:
+                continue
+            pixel_rings.append(px)
+            # Полупрозрачная заливка — как на сайте: участок видно пятном, а
+            # карта под ним остаётся читаемой.
+            overlay_draw.polygon(px, fill=(245, 245, 243, 90))
+        if not pixel_rings:
+            return False
+        image = Image.alpha_composite(backdrop, overlay).convert("RGB")
+        draw = ImageDraw.Draw(image)
+        for px in pixel_rings:
+            closed = px + [px[0]]
+            # Белая подкладка под тёмной линией: граница читается на пёстрой карте.
+            draw.line(closed, fill=(255, 255, 255), width=7, joint="curve")
+            draw.line(closed, fill=(180, 35, 24), width=3, joint="curve")
+        out = io.BytesIO()
+        image.save(out, format="PNG")
+        listed = ", ".join(str(item.get("cadastral_number") or "") for item in found[:5])
+        count = len(found)
+        caption = (
+            f"Контур участка {listed} · границы ЕГРН" if count == 1
+            else f"Территория из {count} участков: {listed} · границы ЕГРН")
+        caption += " · подложка — публичная карта НСПД"
+        _telegram_send_photo_bytes(chat_id, out.getvalue(), "territory.png", caption)
+        return True
+    except Exception as exc:
+        logging.info("Фото территории пропущено: %s", exc)
+        return False
+
+
+def _telegram_territory_photo_async(chat_id: int, numbers: list[str]) -> None:
+    """Фото уходит фоном: сбор контуров и подложки ходит в НСПД и не должен
+    держать ответ вебхука — правило «тяжёлое не считается внутри запроса»."""
+    threading.Thread(
+        target=_telegram_territory_photo, args=(chat_id, list(numbers)),
+        name="territory-photo", daemon=True,
+    ).start()
 
 
 def _telegram_send_template(chat_id: int) -> Any:
@@ -6970,7 +7455,9 @@ def _telegram_send_cad_calculate_button(chat_id: int, dialog: dict[str, Any]) ->
         f"• нежильё — {_telegram_number(overrides['commercial_price_th'], 0)} тыс. ₽/м²\n"
         f"• машино-место — {_telegram_number(overrides['parking_price_th'] / 1000, 2)} млн ₽\n"
         f"• СМР — {_telegram_number(overrides['smr_th_per_sqm'], 0)} тыс. ₽/м² ГНС\n\n"
-        "СМР: общестрой + благоустройство + резервы; наружные инженерные сети — отдельно.\n\n"
+        "СМР: общестрой + благоустройство + резервы; наружные инженерные сети — отдельно.\n"
+        "Остальные предпосылки — умолчания DevelopAid текущей версии: прежние правки "
+        "в мини-приложении на экспресс-расчёт не переносятся.\n\n"
         "После подтверждения DevelopAid получит ТЭП ГлавАПУ и рассчитает проект.",
         reply_markup={"inline_keyboard": [
             [{"text": "Рассчитать проект", "web_app": {"url": url}}],
@@ -7129,6 +7616,8 @@ def _telegram_handle_mo_numbers(chat_id: int, numbers: list[str], query: str = "
         f"Основание: {html.escape(str(vri.get('payment_basis') or '—'))}",
     )
     _telegram_send_message(chat_id, _telegram_mo_sources_message(mo))
+    # Картинка территории — как на сайте: контуры ЕГРН поверх карты НСПД.
+    _telegram_territory_photo_async(chat_id, numbers)
     _telegram_send_tep_review(chat_id, _telegram_mo_parsed(mo), dialog_mode=False)
 
 
@@ -7288,6 +7777,8 @@ def _telegram_handle_cadastral_numbers(chat_id: int, numbers: list[str], query: 
         f"Кадастровый квартал: <b>{html.escape(str(territory.get('cadastral_quarter') or '—'))}</b>\n\n"
         "Кадастровый расчёт ТЭП остаётся прежним. Перед расчётом выберите класс — он задаст базовые цены и СМР.",
     )
+    # Картинка территории — как на сайте: контуры ЕГРН поверх карты НСПД.
+    _telegram_territory_photo_async(chat_id, recognized)
     _telegram_cad_class_menu(chat_id, dialog)
 
 
@@ -7304,6 +7795,24 @@ def _telegram_handle_message(message: dict[str, Any]) -> None:
     text = str(message.get("text") or "").strip()
     command = text.split(maxsplit=1)[0].split("@", 1)[0].lower() if text.startswith("/") else ""
     if command in {"/start", "/help", "/menu"}:
+        # «/start login_<код>» — подтверждение входа на сайт: человек пришёл
+        # по ссылке со страницы, код связывается с его chat_id, и страница
+        # забирает сессию. Отвечаем по делу и не разворачиваем меню.
+        start_payload = text.split(maxsplit=1)[1].strip() if " " in text else ""
+        if command == "/start" and start_payload.startswith("login_"):
+            try:
+                _web_login_confirm(start_payload[len("login_"):], chat_id)
+                _telegram_send_message(
+                    chat_id,
+                    "<b>Вход на сайт подтверждён.</b> Вернитесь во вкладку браузера — "
+                    "она подхватит вход сама в течение пары секунд.")
+            except HTTPException as exc:
+                _telegram_send_message(
+                    chat_id, "<b>Вход не подтверждён.</b>\n" + html.escape(str(exc.detail)))
+            except Exception as exc:
+                _telegram_send_message(
+                    chat_id, "<b>Вход не подтверждён.</b>\n" + html.escape(str(exc)))
+            return
         _telegram_start_message(chat_id, user_id)
         return
     if command == "/status":
@@ -13377,6 +13886,10 @@ async def report_pdf(request: Request) -> Response:
     payload=await request.json()
     if not isinstance(payload,dict) or not isinstance(payload.get("result"),dict):
         raise HTTPException(status_code=400,detail="Нет данных расчёта для PDF")
+    # PDF пересчитывает модель на сервере — это не бесплатно, и отчёт уносят
+    # с собой: с сайта он доступен после входа через Telegram (мягкий гейт).
+    _require_web_access(str(payload.get("session") or ""),
+                        str(payload.get("access_key") or ""), "PDF-отчёт")
     # Один расчёт на обе поверхности. Правило применили к боту и забыли про
     # сайт: бот пересчитывал модель на сервере, а здесь отчёт строился по
     # результату из браузера. Пока вкладка свежая, разницы нет; стоит ей
@@ -15392,9 +15905,16 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
         # База берётся от итога CAPEX, а не суммированием словаря статей: в нём
         # живут теневые ключи вроде land_rights_gross, и слепая сумма задваивала
         # плату за ВРИ — книга и движок расходились ровно на неё.
-        vat_free_articles = ("purchase", "land_rights", "vri_interest", "vri_security")
-        vat_bearing_costs = total_capex + commercial_costs - sum(
-            op["capex_amounts"].get(article, 0.0) for article in vat_free_articles
+        # Исключаем по вводным, а не по словарю статей: покупка в него не
+        # попадает вовсе (уходит прямо в месячный CAPEX), а плата за ВРИ лежит
+        # там дважды — вместе с теневым land_rights_gross. Книга вычитает те же
+        # две ячейки, B15 и B16, поэтому обе поверхности сходятся.
+        vat_bearing_costs = (
+            total_capex + commercial_costs
+            - n(x, "purchase_price_mln") * 1_000_000
+            - n(x, "land_rights_cost_mln") * 1_000_000
+            - op["capex_amounts"].get("vri_interest", 0.0)
+            - op["capex_amounts"].get("vri_security", 0.0)
         )
         deductible_share = taxable_revenue / total_revenue if total_revenue else 0.0
         vat_input_deductible = vat_bearing_costs * gross_to_tax * deductible_share
@@ -17590,6 +18110,7 @@ _AGENT_INSTRUCTIONS = """
 - Пользователь просит реально поменять вводные или ты сформировал конкретную рекомендуемую конфигурацию → сначала рассчитай, затем prepare_model_patch.
 - «Есть ли ошибки / аномалии / что не сходится?» → find_anomalies.
 - Методологический вопрос → get_methodology; если вопрос связан с текущим проектом, дополнительно используй расчётный инструмент.
+- Вопрос «как сделать», «с чего начать», «где кнопка» → get_user_guide; отвечай шагами из руководства и давай ссылку на раздел вида /guide#inputs. Не выдумывай кнопки: называй только те, что есть в руководстве.
 
 Особые правила:
 1. LLCR 1,20x — целевой ориентир пользователя для DevelopAid, не называй его универсальным нормативом всех банков.
@@ -19218,6 +19739,45 @@ def _tool_get_methodology(topic: str) -> dict[str, Any]:
     return {"topic": topic, "rules": rules}
 
 
+_GUIDE_PAGE_PATH = Path(__file__).resolve().parent / "guide" / "page.html"
+
+
+def _tool_get_user_guide(section: str) -> dict[str, Any]:
+    """Руководство пользователя /guide текстом — для «как сделать» и «где кнопка».
+
+    Источник — тот же файл, что отдаёт страница /guide: у Платона нет своей
+    копии руководства, поэтому ей негде устареть. Читается лениво при вызове.
+    """
+    try:
+        html_text = _GUIDE_PAGE_PATH.read_text(encoding="utf-8")
+    except OSError:
+        return {"available": False, "reason": "Файл руководства не найден на сервере."}
+    html_text = html_text.replace("__DEVELOPAID_VERSION__", VERSION)
+    # Таблицы классов и сценариев подставляются движком на страницу; Платону
+    # эти числа доступны точнее — из самих пресетов.
+    html_text = html_text.replace("__GUIDE_CLASS_ROWS__", "")
+    html_text = html_text.replace("__GUIDE_SCENARIO_ROWS__", "")
+    found = re.findall(r'<section id="([a-z-]+)"[^>]*>(.*?)</section>', html_text, re.S)
+
+    def _plain(chunk: str) -> str:
+        text = re.sub(r"<[^>]+>", " ", chunk)
+        text = html.unescape(text)
+        return re.sub(r"\s+", " ", text).strip()
+
+    sections = [{"id": sid, "url": f"/guide#{sid}", "text": _plain(body)} for sid, body in found]
+    if section != "all":
+        sections = [item for item in sections if item["id"] == section]
+        if not sections:
+            return {"available": False, "reason": f"В руководстве нет раздела «{section}»."}
+    return {
+        "available": True,
+        "section": section,
+        "sections": sections,
+        "class_presets": PROJECT_CLASS_PRESETS,
+        "note": "Отсылая пользователя к руководству, давай ссылку вида /guide#раздел.",
+    }
+
+
 
 
 def _clone_agent_req_with_inputs(req: AgentChatRequest, inputs: dict[str, Any]) -> Any:
@@ -19915,6 +20475,29 @@ _AGENT_TOOLS = [
         },
         "strict": True,
     },
+    {
+        "type": "function",
+        "name": "get_user_guide",
+        "description": (
+            "Руководство пользователя по интерфейсу DevelopAid: как ввести участок, "
+            "пять способов ввода данных, шаги первого расчёта, где кнопки PDF и Excel, "
+            "что проверять. Используй для вопросов «как сделать», «с чего начать», "
+            "«где найти» — и давай ссылку на раздел вида /guide#inputs."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "section": {
+                    "type": "string",
+                    "enum": ["start", "inputs", "example", "first-run",
+                             "project", "economics", "result", "export", "all"],
+                }
+            },
+            "required": ["section"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
 ]
 
 
@@ -19962,6 +20545,8 @@ def _execute_agent_tool(
         return _tool_phase_recovery_options(req, bundle, float(args.get("target_llcr", 1.20) or 1.20))
     if name == "get_methodology":
         return _tool_get_methodology(args["topic"])
+    if name == "get_user_guide":
+        return _tool_get_user_guide(args["section"])
     return {"error": f"Unknown tool: {name}"}
 
 
@@ -21289,8 +21874,11 @@ def usage_admin_ids() -> set[int]:
 # россиян по 152-ФЗ (ст. 18.1) обязаны лежать в России. Поэтому Render свои
 # запросы пересылает на ядро и у себя не хранит ничего.
 #
-# Пока это личный инструмент: доступ только у администратора. Общее хранилище
-# потребует регистрации, согласия и политики обработки — отдельный разговор.
+# С 15.08.2026 (решение владельца) хранилище общее: владельца опознаёт
+# подписанная телеграм-сессия — мини-приложения или входа через бота, — и
+# каждый chat_id живёт в своём каталоге со своим лимитом. Регистрации нет:
+# личность и так выдаёт бот. Данные лежат на ядре в России; текст согласия
+# на обработку — на владельце проекта.
 # ---------------------------------------------------------------------------
 
 _PROJECTS_DIR = Path(_env_str("DEVELOPAID_PROJECTS_DIR", "").strip()
@@ -21307,21 +21895,21 @@ def _projects_remote_url(path: str) -> str:
 def _project_owner(session: str = "", key: str = "") -> int:
     """Кто сохраняет. Опознаём двумя способами, оба сводятся к «это владелец».
 
-    Мини-приложение приходит с подписанной Telegram-сессией — из неё берётся
-    chat_id. Сайт, открытый просто по адресу, сессии не имеет вовсе, поэтому
-    для него есть ключ в переменной окружения; не задан — способ выключён, а
-    не открыт всем.
+    Подписанная Telegram-сессия — из мини-приложения или входа через бота —
+    несёт chat_id: каждый пользователь бота хранит свои проекты в своём
+    каталоге (решение владельца, 15.08.2026). Ключ администратора остаётся
+    входом без телеграма; не задан — способ выключён, а не открыт всем.
     """
+    if session:
+        chat_id = int(_telegram_verify_session(session).get("chat_id") or 0)
+        if chat_id:
+            return chat_id
+        raise HTTPException(status_code=403, detail="В сессии нет владельца — войдите заново.")
     admins = usage_admin_ids()
     if not admins:
         raise HTTPException(
             status_code=503,
             detail="Хранилище проектов не настроено: задайте DEVELOPAID_ADMIN_IDS.")
-    if session:
-        chat_id = int(_telegram_verify_session(session).get("chat_id") or 0)
-        if chat_id in admins:
-            return chat_id
-        raise HTTPException(status_code=403, detail="Хранилище проектов доступно администратору.")
     secret = _env_str("DEVELOPAID_ADMIN_KEY", "").strip()
     # Сравниваем байтами: `compare_digest` отказывается работать со строками,
     # где есть не-ASCII, а ключ владелец задаёт какой захочет.
@@ -21329,8 +21917,9 @@ def _project_owner(session: str = "", key: str = "") -> int:
         return sorted(admins)[0]
     raise HTTPException(
         status_code=403,
-        detail=("Откройте мини-приложение из бота либо задайте DEVELOPAID_ADMIN_KEY "
-                "и введите ключ — иначе сервер не знает, чей это проект."))
+        detail=("Войдите через Telegram (кнопка в «Мои проекты») либо задайте "
+                "DEVELOPAID_ADMIN_KEY и введите ключ — иначе сервер не знает, "
+                "чей это проект."))
 
 
 def _project_dir(owner: int) -> Path:
@@ -21443,8 +22032,11 @@ def _projects_forward(path: str, req: ProjectRequest) -> dict[str, Any] | None:
 def projects_status() -> dict[str, Any]:
     """Есть ли смысл показывать кнопки: настроено ли хранилище и чем входить."""
     return {
-        "configured": bool(usage_admin_ids()),
+        # Хранилище настроено, когда есть чем опознать владельца: подписью
+        # сессии (токен бота) или списком администраторов под ключ.
+        "configured": bool(_telegram_token()) or bool(usage_admin_ids()),
         "accepts_key": bool(_env_str("DEVELOPAID_ADMIN_KEY", "").strip()),
+        "accepts_login": bool(_telegram_token()) and bool(_web_login_bot_username()),
         "remote": bool(_projects_remote_url("/projects/list")),
         "limit": _PROJECTS_LIMIT,
     }
@@ -21481,6 +22073,198 @@ def projects_delete(req: ProjectRequest) -> dict[str, Any]:
     if forwarded is not None:
         return forwarded
     return project_delete(_project_owner(req.session, req.key), req.id)
+
+
+# ---------------------------------------------------------------------------
+# Вход на сайт через телеграм-бота (решение владельца, 15.08.2026).
+#
+# Личность пользователя уже есть у бота — chat_id: на ней держатся проекты,
+# сессии мини-приложения и журнал обращений. Сайт получает ту же личность без
+# второй регистрации: страница просит одноразовый код, человек жмёт Start в
+# боте по ссылке t.me/<бот>?start=login_<код>, бот подтверждает код, страница
+# коротким опросом забирает подписанную сессию — ту же, что у мини-приложения,
+# поэтому и проверка одна (`_telegram_verify_session`).
+#
+# Коды живут на ядре, как и проекты: бот на Render доносит подтверждение
+# внутренним вызовом с подписью токеном бота, страница забирает сессию через
+# пересылку — тем же путём, что /projects/*. Код одноразовый и короткоживущий,
+# сессия входа длинная. Вход мягкий: смотреть и считать можно без него, за
+# входом — сохранение проектов, Платон и PDF (они стоят денег или хранят
+# данные). Без TELEGRAM_BOT_TOKEN весь механизм честно выключен: проверять
+# подпись нечем, и порядок остаётся прежним.
+# ---------------------------------------------------------------------------
+
+_WEB_LOGIN_TTL_SECONDS = 300
+_WEB_LOGIN_SESSION_SECONDS = 30 * 86400
+
+
+def _web_login_dir() -> Path:
+    directory = _PROJECTS_DIR.parent / "web_login"
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
+
+
+def _web_login_path(code: str) -> Path:
+    # Код приходит снаружи: всё, кроме нашего алфавита, — отказ, иначе «../»
+    # уводит запись за пределы каталога (то же правило, что у проектов).
+    if not re.fullmatch(r"[0-9a-f]{12}", str(code or "")):
+        raise HTTPException(status_code=400, detail="Неверный код входа.")
+    return _web_login_dir() / f"{code}.json"
+
+
+def _web_login_sign(code: str, chat_id: int) -> str:
+    """Подпись внутреннего подтверждения: бот на Render и ядро делят токен."""
+    token = _telegram_token()
+    if not token:
+        raise HTTPException(
+            status_code=503,
+            detail="TELEGRAM_BOT_TOKEN не задан — вход через бота недоступен.")
+    raw = f"web-login:{code}:{int(chat_id)}".encode("utf-8")
+    digest = hmac.new(token.encode("utf-8"), raw, hashlib.sha256).digest()[:20]
+    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+
+
+def _web_login_bot_username() -> str:
+    # Ядро до api.telegram.org не достаёт (направление закрыто), getMe там не
+    # проходит — имя бота задаётся переменной. На Render его знает getMe.
+    return (str(_TELEGRAM_RUNTIME.get("username") or "")
+            or _env_str("TELEGRAM_BOT_USERNAME", "").strip())
+
+
+class WebLoginClaimRequest(BaseModel):
+    code: str = ""
+
+
+class WebLoginConfirmRequest(BaseModel):
+    code: str = ""
+    chat_id: int = 0
+    sign: str = ""
+
+
+@app.post("/auth/telegram/start")
+def web_login_start() -> dict[str, Any]:
+    """Одноразовый код входа и ссылка на бота."""
+    if not _telegram_token():
+        raise HTTPException(
+            status_code=503,
+            detail="Вход через Telegram не настроен на этом сервере.")
+    remote = _projects_remote_url("/auth/telegram/start")
+    if remote:
+        data = _core_post(remote, {}, 30.0)
+    else:
+        code = hashlib.sha256(os.urandom(32)).hexdigest()[:12]
+        path = _web_login_path(code)
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(json.dumps({"created": time.time()}), encoding="utf-8")
+        temporary.replace(path)
+        data = {"code": code}
+    username = _web_login_bot_username()
+    if not username:
+        raise HTTPException(
+            status_code=503,
+            detail="Имя бота неизвестно: задайте TELEGRAM_BOT_USERNAME.")
+    return {
+        "code": data["code"],
+        "link": f"https://t.me/{username}?start=login_{data['code']}",
+        "ttl_seconds": _WEB_LOGIN_TTL_SECONDS,
+    }
+
+
+def _web_login_record(code: str) -> tuple[Path, dict[str, Any]]:
+    path = _web_login_path(code)
+    if not path.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail="Код входа не найден или истёк — запросите вход на сайте заново.")
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        record = {}
+    if time.time() - float(record.get("created") or 0) > _WEB_LOGIN_TTL_SECONDS:
+        path.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=410,
+            detail="Код входа истёк — запросите вход на сайте заново.")
+    return path, record
+
+
+def _web_login_confirm(code: str, chat_id: int) -> dict[str, Any]:
+    """Связывает код с chat_id. Зовётся ботом — локально или через ядро."""
+    remote = _projects_remote_url("/auth/telegram/confirm")
+    if remote:
+        return _core_post(
+            remote,
+            {"code": code, "chat_id": int(chat_id),
+             "sign": _web_login_sign(code, chat_id)},
+            30.0)
+    path, record = _web_login_record(code)
+    record["chat_id"] = int(chat_id)
+    record["confirmed"] = time.time()
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(record), encoding="utf-8")
+    temporary.replace(path)
+    return {"ok": True}
+
+
+@app.post("/auth/telegram/confirm")
+def web_login_confirm(req: WebLoginConfirmRequest) -> dict[str, Any]:
+    """Внутренний приём подтверждения от бота: подпись — токеном бота."""
+    expected = _web_login_sign(req.code, req.chat_id)
+    # Байтами: `compare_digest` отказывается от строк с не-ASCII, а снаружи
+    # может прийти что угодно.
+    if not hmac.compare_digest(str(req.sign or "").encode("utf-8"),
+                               expected.encode("utf-8")):
+        raise HTTPException(status_code=403, detail="Подпись подтверждения не сошлась.")
+    if not int(req.chat_id or 0):
+        raise HTTPException(status_code=400, detail="Пустой chat_id.")
+    return _web_login_confirm(req.code, int(req.chat_id))
+
+
+@app.post("/auth/telegram/claim")
+def web_login_claim(req: WebLoginClaimRequest) -> dict[str, Any]:
+    """Страница забирает сессию по коду. Код сгорает при выдаче."""
+    remote = _projects_remote_url("/auth/telegram/claim")
+    if remote:
+        return _core_post(remote, {"code": req.code}, 30.0)
+    path, record = _web_login_record(req.code)
+    chat_id = int(record.get("chat_id") or 0)
+    if not chat_id:
+        return {"ready": False}
+    path.unlink(missing_ok=True)
+    session = _telegram_session(chat_id, [], lifetime_seconds=_WEB_LOGIN_SESSION_SECONDS)
+    return {"ready": True, "session": session, "chat_id": chat_id}
+
+
+def _web_identity_chat_id(session: str) -> int:
+    """chat_id из сессии входа; 0 — сессии нет или подпись не сошлась."""
+    if not str(session or "").strip():
+        return 0
+    try:
+        return int(_telegram_verify_session(session).get("chat_id") or 0)
+    except HTTPException:
+        return 0
+
+
+def _web_access_allowed(session: str, key: str) -> bool:
+    """Пропуск к платным поверхностям: сессия входа или ключ администратора."""
+    if _web_identity_chat_id(session):
+        return True
+    secret = _env_str("DEVELOPAID_ADMIN_KEY", "").strip()
+    return bool(secret and key
+                and hmac.compare_digest(str(key).encode("utf-8"), secret.encode("utf-8")))
+
+
+def _require_web_access(session: str, key: str, what: str) -> None:
+    # Без токена бота проверять подпись нечем — механизм честно выключен, и
+    # поведение остаётся прежним (открытым), а не запертым для всех.
+    if not _telegram_token():
+        return
+    if _web_access_allowed(session, key):
+        return
+    raise HTTPException(
+        status_code=401,
+        detail=(f"{what} — после входа через Telegram. Нажмите «Войти через "
+                "Telegram», подтвердите вход в боте и повторите."))
 
 
 # --- локальные сценарии кнопок ---------------------------------------------
@@ -21693,6 +22477,7 @@ _AGENT_TOOL_LABELS = {
     "diagnose_project_logic": "диагностика логики проекта",
     "phase_recovery_options": "варианты оздоровления очереди",
     "get_methodology": "справка по методике",
+    "get_user_guide": "читает руководство пользователя",
 }
 
 
@@ -21947,6 +22732,10 @@ def _plato_selftest_verdict(outcome: dict[str, Any]) -> str:
 @app.post("/agent/chat")
 def agent_chat(req: AgentChatRequest, request: Request) -> dict[str, Any]:
     """Вопрос Платону. Соединение держится ровно до передачи работы опросу."""
+    # Каждый вопрос — платный вызов модели, поэтому с сайта Платон доступен
+    # после входа через Telegram (мягкий гейт: расчёт остаётся открытым).
+    # Бот и /ia/goal-seek сюда не приходят — они зовут функции напрямую.
+    _require_web_access(req.session, req.access_key, "Платон отвечает")
     # Учёт здесь, а не в общей части: бот идёт тем же путём, но его вопросы уже
     # записаны в журнал как сообщения — иначе каждый считался бы дважды.
     usage_track("question", surface="site", text=str(req.message or ""),
@@ -22039,6 +22828,7 @@ input,select{width:100%;border:1px solid #cfcfcf;background:#fff;border-radius:0
 input:focus,select:focus{outline:2px solid #111;outline-offset:-1px}
 input[type=checkbox]{width:auto;transform:scale(1.15);margin:8px}
 .btn{border:1px solid #111;background:#fff;padding:9px 13px;color:#111;font-weight:700;cursor:pointer}
+a.btn{text-decoration:none;font-size:13.3333px;display:inline-block;line-height:normal;box-sizing:border-box}
 .btn.dark{background:#070707;color:#fff}.btn:hover{opacity:.8}.scenario select{width:auto;min-width:145px}
 .kpis{display:grid;grid-template-columns:repeat(4,minmax(150px,1fr));border-top:1px solid #111;border-left:1px solid var(--line)}
 .kpi{padding:17px;border-right:1px solid var(--line);border-bottom:1px solid var(--line);min-height:92px}
@@ -22113,6 +22903,14 @@ details.cadastral-box>summary::marker{color:#888}
 .land-grid small{display:block;color:#777;font-size:10px;text-transform:uppercase;letter-spacing:.06em}
 .land-grid b{display:block;margin-top:3px;font-weight:600;line-height:1.35}
 .land-links{margin-top:9px;font-size:11px}
+.land-contour{margin-top:10px}
+.land-contour-stage{position:relative;width:100%;max-height:240px;border:1px solid #e5e5e3;background:#fff;overflow:hidden}
+.land-contour-map{position:absolute;inset:0;width:100%;height:100%;display:block}
+.land-contour svg{position:relative;display:block;width:100%;height:100%}
+.land-contour small{display:block;margin-top:4px;color:#999;font-size:10px}
+.land-territory{margin:0 0 12px}
+.land-territory svg{max-height:240px}
+.land-territory path:hover{fill:#e8e8e4}
 .mo-box{border-left:4px solid #111;margin-top:12px}
 /* Запасной путь: виден, но не спорит за внимание с главным. */
 .import-fallback{margin-top:14px;border-top:1px solid #e2e2e0;padding-top:10px}
@@ -22299,11 +23097,11 @@ details.cadastral-box>summary::marker{color:#888}
         </div>
       </div>
       <button class="btn ai-open-btn" onclick="toggleAgent(true)"><span id="aiStatusDot" class="ai-dot"></span><span class="ai-label">Платон Сергеевич</span></button>
-      <button class="btn" onclick="saveLocal()">Сохранить</button>
       <!-- Кнопки хранилища появляются только там, где оно настроено и есть чем
            опознать владельца: иначе это кнопка, которая всегда отказывает. -->
       <button class="btn" id="projectsButton" style="display:none" onclick="openProjects()">Мои проекты</button>
       <button class="btn" onclick="resetAll()">Сбросить</button>
+      <a class="btn" href="/guide">Руководство</a>
       <button class="btn dark" onclick="calculateAndOpen('report')">Пересчитать модель</button>
     </div>
   </div>
@@ -22998,6 +23796,12 @@ details.cadastral-box>summary::marker{color:#888}
   </div>
 </aside>
 
+<footer style="max-width:1540px;margin:0 auto;padding:14px 34px;font-size:11px;color:#888;display:flex;gap:18px;flex-wrap:wrap">
+  <span>© ИП Ситников В.Ю.</span>
+  <a href="/consent" style="color:#888">Согласие на обработку персональных данных</a>
+  <a href="/guide" style="color:#888">Руководство</a>
+</footer>
+
 <script>
 const SCENARIOS={"conservative":{"scenario_revenue_multiplier":0.9,"scenario_cost_multiplier":1.1},"base":{"scenario_revenue_multiplier":1.0,"scenario_cost_multiplier":1.0},"optimistic":{"scenario_revenue_multiplier":1.1,"scenario_cost_multiplier":0.9}};
 const PROJECT_CLASS_PRESETS={
@@ -23053,6 +23857,43 @@ function isTelegramWebApp(){
  try{return !!(window.Telegram&&window.Telegram.WebApp&&String(window.Telegram.WebApp.initData||'').length)}catch(e){return false}
 }
 let telegramCalcOverrides={};
+// Вход на сайт через бота: подписанная сессия входа живёт в браузере и несёт
+// ту же личность (chat_id), что сессия мини-приложения. Она подставляется
+// всюду, где нужен владелец: проекты, Платон, PDF. Телеграм-сессия из хеша
+// главнее: внутри мини-приложения вход не нужен.
+const WEB_SESSION_KEY='developaid_web_session';
+function webSession(){try{return localStorage.getItem(WEB_SESSION_KEY)||''}catch(e){return ''}}
+function activeSession(){return telegramSession||webSession()}
+let webLoginBusy=false;
+async function loginViaTelegram(statusEl){
+ if(webLoginBusy)return;
+ webLoginBusy=true;
+ const say=t=>{if(statusEl)statusEl.textContent=t};
+ try{
+  const r=await fetch('/auth/telegram/start',{method:'POST'});
+  const d=await r.json().catch(()=>({}));
+  if(!r.ok)throw new Error(d.detail||'Вход через Telegram недоступен');
+  // Вкладка бота открывается сразу по клику — иначе браузер сочтёт окно
+  // всплывающим. Дальше страница ждёт подтверждения коротким опросом.
+  window.open(d.link,'_blank');
+  say('Подтвердите вход в Telegram и вернитесь на эту вкладку…');
+  const until=Date.now()+2*60*1000;
+  while(Date.now()<until){
+   await new Promise(res=>setTimeout(res,2500));
+   const cr=await fetch('/auth/telegram/claim',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:d.code})});
+   const cd=await cr.json().catch(()=>({}));
+   if(cr.ok&&cd.ready&&cd.session){
+    try{localStorage.setItem(WEB_SESSION_KEY,cd.session)}catch(e){}
+    say('Вход выполнен.');
+    location.reload();
+    return;
+   }
+   if(!cr.ok)throw new Error(cd.detail||'Код входа не принят');
+  }
+  throw new Error('Время ожидания вышло — попробуйте войти ещё раз.');
+ }catch(e){say(String(e.message||e))}
+ finally{webLoginBusy=false}
+}
 const money=v=>(Number(v||0)/1e9).toLocaleString('ru-RU',{minimumFractionDigits:0,maximumFractionDigits:2})+' млрд ₽';
 const socialMoney=v=>{
  const x=Number(v||0);
@@ -23188,7 +24029,7 @@ async function sendAgentMessage(scenario){
   await syncInputsForAgent();
   let data={},response=null;
   try{
-   response=await fetch('/agent/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message,scenario:scenario||'',trace_id:traceId,inputs,tep,rates,phasing,history:aiHistory.slice(-8),selected_view:reportView||'all'})});
+   response=await fetch('/agent/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message,scenario:scenario||'',trace_id:traceId,inputs,tep,rates,phasing,history:aiHistory.slice(-8),selected_view:reportView||'all',session:activeSession(),access_key:projectsAdminKey||''})});
    try{data=await response.json()}catch(e){}
    if(response.ok&&data&&data.pending){
     // Сервер не держит соединение: работа принята и идёт, ответ ждёт под
@@ -23212,6 +24053,13 @@ async function sendAgentMessage(scenario){
    else if(late&&late.detail&&!data.detail)data={detail:late.detail};
   }
   thinking.remove();
+  if(response&&response.status===401){
+   // Мягкий гейт: вопрос требует входа — кнопка прямо в чате, а не совет
+   // искать её где-то в другом окне.
+   appendAiMessage('assistant',String(data.detail||'Платон доступен после входа через Telegram.'),'error');
+   appendAiLoginButton();
+   return;
+  }
   if(!response.ok)throw new Error(data.detail||AI_UNAVAILABLE);
   const answer=String(data.answer||'Ответ не получен.');
   appendAiMessage('assistant',answer+(data.cached?'\n\n*Ответ из кэша: тот же вопрос по тем же вводным за последние 10 минут.*':''));
@@ -23220,6 +24068,21 @@ async function sendAgentMessage(scenario){
  finally{clearInterval(stagePoll);aiBusy=false;aiSendBtn.disabled=false;aiInput.focus()}
 }
 const AI_UNAVAILABLE='Платон Сергеевич временно не получил ответ от AI-сервиса. Расчётная модель продолжает работать. Повторите вопрос через несколько секунд.';
+
+function appendAiLoginButton(){
+ const wrap=document.createElement('div');
+ wrap.style.cssText='margin:8px 0';
+ const btn=document.createElement('button');
+ btn.className='btn dark';
+ btn.textContent='Войти через Telegram';
+ const status=document.createElement('div');
+ status.style.cssText='font-size:12px;color:#777;margin-top:6px';
+ btn.onclick=()=>loginViaTelegram(status);
+ wrap.appendChild(btn);
+ wrap.appendChild(status);
+ aiMessages.appendChild(wrap);
+ aiMessages.scrollTop=aiMessages.scrollHeight;
+}
 
 async function awaitAgentResult(traceId,thinking,accepted){
  // Ответ ждёт на сервере под номером запуска. Опрос короткий и частый: его
@@ -23482,6 +24345,7 @@ async function obtainServerTep(analysis,status,runId){
  glavapuImport=payload;
  inputs._cadastral_analysis=structuredClone(analysis);
  renderGlavapuPreview(payload);
+ drawLandPreviewQuiet();
  const areaText=Number((analysis.territory||{}).area_ha||0).toLocaleString('ru-RU',{minimumFractionDigits:4,maximumFractionDigits:4});
  // Кто посчитал — штатный калькулятор или наши формулы, и если формулы, то
  // почему. Браузер живёт на ядре, и с телефона его состояние иначе не увидеть.
@@ -23510,6 +24374,7 @@ async function obtainCadastralTep(preAnalysis){
  button.disabled=true;button.textContent='Получаю ТЭП…';
  document.getElementById('cadastralPreview').style.display='none';
  document.getElementById('glavapuPreview').style.display='none';
+ dropMoPreview();
  try{
    status.textContent='1 из 4 · Формирую территорию по кадастровым номерам…';
    let analysis=preAnalysis;
@@ -23575,6 +24440,7 @@ async function obtainCadastralTep(preAnalysis){
    glavapuImport=payload;
    inputs._cadastral_analysis=structuredClone(analysis);
    renderGlavapuPreview(payload);
+   drawLandPreviewQuiet();
    const areaText=Number((analysis.territory||{}).area_ha||0).toLocaleString('ru-RU',{minimumFractionDigits:4,maximumFractionDigits:4});
    status.innerHTML='<span class="import-ok">ТЭП получены из ГлавАПУ: '+areaText+' га.</span> Проверьте значения ниже и нажмите «Применить к Вводным и ТЭП».';
    glavapuStatus.innerHTML='<span class="import-ok">Расчёт ГлавАПУ получен автоматически по кадастровым номерам.</span> Проверьте значения перед применением.';
@@ -23616,6 +24482,25 @@ function renderCadastralPreview(data){
 }
 
 let landLookup=null;
+
+// Карточка участка с контуром и картой — при любом пути получения ТЭП, а не
+// только при поиске по адресу: кадастровый «Получить ТЭП» оставлял человека
+// без картинки участка (замечание владельца, 16.08.2026). Тихо: статусы и
+// кнопки принадлежат основному потоку, карточка — украшение и не имеет права
+// ничего ронять; повторный запрос дешёвый — сведения лежат в серверном кэше.
+async function drawLandPreviewQuiet(query){
+ try{
+  const raw=String(query!=null?query:((document.getElementById('cadastralNumbers')||{}).value||'')).trim();
+  if(!/\d{2}:\d{2}:\d{6,8}:\d+/.test(raw))return;
+  const response=await fetch('/land/lookup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:raw,limit:30})});
+  if(!response.ok)return;
+  const data=await response.json();
+  if(!Number(data.found_count||0))return;
+  landLookup=data;
+  inputs._land_lookup=structuredClone(data);
+  renderLandLookup(data);
+ }catch(e){/* контур — украшение, не данные */}
+}
 
 function landNum(value,digits){
  if(value==null||value==='')return '—';
@@ -23696,6 +24581,84 @@ async function lookupLand(options){
  }
 }
 
+// Карта не ответила — подпись не имеет права обещать подложку, которой нет:
+// прежде img молча снимал себя, а под контуром оставалось «подложка —
+// публичная карта НСПД», и отличить «НСПД молчит» от «карта не завезена»
+// было нельзя (скриншоты владельца, 16.08.2026).
+function landMapLost(img){
+ try{
+  const box=img.closest('.land-contour');
+  img.remove();
+  const cap=box&&box.querySelector('small');
+  if(cap)cap.textContent=cap.textContent.replace('подложка — публичная карта НСПД','карта НСПД не ответила — чистый контур');
+ }catch(e){}
+}
+
+function landTerritorySvg(found){
+ // Несколько участков — общая посадка: все контуры в одном масштабе, как они
+ // стоят друг относительно друга. По одному участку хватает миниатюры в его
+ // карточке. Наведение на контур показывает кадастровый номер.
+ const items=(found||[]).filter(x=>Array.isArray(x.contour_merc)&&x.contour_merc.length);
+ if(items.length<2)return '';
+ let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
+ items.forEach(item=>item.contour_merc.forEach(ring=>(ring||[]).forEach(p=>{
+  if(!Array.isArray(p)||p.length<2)return;
+  minX=Math.min(minX,p[0]);maxX=Math.max(maxX,p[0]);
+  minY=Math.min(minY,p[1]);maxY=Math.max(maxY,p[1]);
+ })));
+ if(!(maxX>minX)||!(maxY>minY))return '';
+ const spanX=maxX-minX,spanY=maxY-minY;
+ const pad=Math.max(spanX,spanY)*0.05;
+ const w=spanX+pad*2,h=spanY+pad*2;
+ const paths=items.map(item=>{
+  const d=item.contour_merc.map(ring=>'M'+ring
+   .filter(p=>Array.isArray(p)&&p.length>=2)
+   .map(p=>((p[0]-minX+pad)).toFixed(1)+' '+((maxY-p[1]+pad)).toFixed(1))
+   .join(' L ')+' Z').join(' ');
+  return `<path d="${d}" fill="rgba(245,245,243,.35)" stroke="#111" stroke-width="2" fill-rule="evenodd" vector-effect="non-scaling-stroke"><title>${escapeHtml(item.cadastral_number||'')}</title></path>`;
+ }).join('');
+ const mapSrc=`/land/map-image?bbox=${(minX-pad).toFixed(1)},${(minY-pad).toFixed(1)},${(maxX+pad).toFixed(1)},${(maxY+pad).toFixed(1)}`;
+ return `<div class="land-contour land-territory"><div class="land-contour-stage" style="aspect-ratio:${w.toFixed(1)} / ${h.toFixed(1)}">`+
+  `<img class="land-contour-map" src="${mapSrc}" alt="" loading="lazy" decoding="async" onerror="landMapLost(this)">`+
+  `<svg viewBox="0 0 ${w.toFixed(1)} ${h.toFixed(1)}" preserveAspectRatio="none" role="img" aria-label="Взаимное расположение участков">${paths}</svg></div>`+
+  `<small>Территория из ${items.length} участков в одном масштабе · подложка — публичная карта НСПД · наведите на контур — увидите номер</small></div>`;
+}
+
+function landContourSvg(item){
+ // Миниатюра границ: свой SVG по кольцам из ЕГРН, без внешних карт — работает
+ // и в телеграм-WebView, и при недоступной НСПД. Координаты — веб-меркатор:
+ // для формы участка это плоскость, но метр в нём растянут на 1/cos(широты),
+ // поэтому подпись ширины пересчитывается через широту центра.
+ const rings=item.contour_merc;
+ if(!Array.isArray(rings)||!rings.length)return '';
+ let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
+ rings.forEach(ring=>(ring||[]).forEach(p=>{
+  if(!Array.isArray(p)||p.length<2)return;
+  minX=Math.min(minX,p[0]);maxX=Math.max(maxX,p[0]);
+  minY=Math.min(minY,p[1]);maxY=Math.max(maxY,p[1]);
+ }));
+ if(!(maxX>minX)||!(maxY>minY))return '';
+ const spanX=maxX-minX,spanY=maxY-minY;
+ const pad=Math.max(spanX,spanY)*0.06;
+ const w=spanX+pad*2,h=spanY+pad*2;
+ const paths=rings.map(ring=>'M'+ring
+  .filter(p=>Array.isArray(p)&&p.length>=2)
+  .map(p=>((p[0]-minX+pad)).toFixed(1)+' '+((maxY-p[1]+pad)).toFixed(1))
+  .join(' L ')+' Z').join(' ');
+ const cosLat=item.center&&item.center.lat?Math.cos(item.center.lat*Math.PI/180):0;
+ const widthM=cosLat?Math.round(spanX*cosLat):0;
+ const scaleNote=widthM?` · ~${widthM.toLocaleString('ru-RU')} м по ширине`:'';
+ // Подложка — кадастровая карта НСПД под тем же bbox: соседи и кварталы
+ // дают контекст «где это». Не загрузилась — картинка молча исчезает, и
+ // остаётся чистый контур: подложка — украшение, а не данные.
+ const mapSrc=`/land/map-image?bbox=${(minX-pad).toFixed(1)},${(minY-pad).toFixed(1)},${(maxX+pad).toFixed(1)},${(maxY+pad).toFixed(1)}`;
+ return `<div class="land-contour"><div class="land-contour-stage" style="aspect-ratio:${w.toFixed(1)} / ${h.toFixed(1)}">`+
+  `<img class="land-contour-map" src="${mapSrc}" alt="" loading="lazy" decoding="async" onerror="landMapLost(this)">`+
+  `<svg viewBox="0 0 ${w.toFixed(1)} ${h.toFixed(1)}" preserveAspectRatio="none" role="img" aria-label="Границы участка по ЕГРН">`+
+  `<path d="${paths}" fill="rgba(245,245,243,.35)" stroke="#111" stroke-width="2.5" fill-rule="evenodd" vector-effect="non-scaling-stroke"/></svg></div>`+
+  `<small>Границы по сведениям ЕГРН · подложка — публичная карта НСПД${scaleNote}</small></div>`;
+}
+
 function landCardHtml(item){
  const mapLink=item.map_url
   ?`<div class="land-links"><a href="${escapeHtml(item.map_url)}" target="_blank" rel="noopener">Открыть на публичной карте НСПД</a></div>`
@@ -23724,7 +24687,7 @@ function landCardHtml(item){
  if(item.matched_address)rows.push(['Адрес по геокодеру',item.matched_address+(item.geocoder?' · '+item.geocoder:'')]);
  return `<div class="land-item"><header><h4>${escapeHtml(item.cadastral_number||'—')}</h4>`+
   `<span class="land-kind">${escapeHtml(item.kind_label||'')}${item.cadastral_value_date?' · оценка от '+escapeHtml(landDate(item.cadastral_value_date)):''}</span></header>`+
-  `<div class="land-grid">${rows.map(r=>`<div><small>${escapeHtml(r[0])}</small><b>${escapeHtml(r[1])}</b></div>`).join('')}</div>${mapLink}</div>`;
+  `<div class="land-grid">${rows.map(r=>`<div><small>${escapeHtml(r[0])}</small><b>${escapeHtml(r[1])}</b></div>`).join('')}</div>${landContourSvg(item)}${mapLink}</div>`;
 }
 
 function renderLandLookup(data){
@@ -23741,7 +24704,7 @@ function renderLandLookup(data){
   ['Субъект РФ',regions.join(' · ')||'—']
  ].map(x=>`<div><small>${escapeHtml(x[0])}</small><b>${escapeHtml(x[1])}</b></div>`).join('');
  document.getElementById('landCards').innerHTML=results.length
-  ?results.map(landCardHtml).join('')
+  ?landTerritorySvg(found)+results.map(landCardHtml).join('')
   :'<div style="padding:10px;color:#777">Ничего не найдено.</div>';
  document.getElementById('landWarnings').innerHTML=(data.warnings||[]).map(x=>'• '+escapeHtml(x)).join('<br>');
  document.getElementById('landPreview').style.display='block';
@@ -23770,6 +24733,28 @@ function renderStoredLand(){
 }
 
 let moResult=null,moLastQuery='';
+
+// Подпись-приглашение из разметки: к ней возвращается строка ГлавАПУ, когда
+// карточка снимается с экрана (расчёт МО, сброс проекта).
+const GLAVAPU_STATUS_DEFAULT=document.getElementById('glavapuStatus').textContent;
+
+// Смена территории снимает карточку другой методики. Расчёт МО оставлял на
+// экране карточку ГлавАПУ прошлого запроса: под свежим итогом Подмосковья
+// висел чужой московский участок, а его «Применить к Вводным и ТЭП» унёс бы
+// в модель старый ТЭП. В обратную сторону — то же с блоком МО. Данные
+// чистятся вместе с карточкой: карточка без кнопки безопасна, только когда
+// ей нечего применять.
+function dropGlavapuPreview(){
+ glavapuImport=null;
+ const preview=document.getElementById('glavapuPreview');if(preview)preview.style.display='none';
+ const cadPreview=document.getElementById('cadastralPreview');if(cadPreview)cadPreview.style.display='none';
+ const status=document.getElementById('glavapuStatus');if(status)status.textContent=GLAVAPU_STATUS_DEFAULT;
+}
+function dropMoPreview(){
+ moResult=null;
+ const preview=document.getElementById('moPreview');if(preview)preview.style.display='none';
+ const status=document.getElementById('moStatus');if(status)status.style.display='none';
+}
 
 let moDistrictPrices={},moKdDocument='';
 
@@ -23918,6 +24903,7 @@ async function calculateMo(queryText){
   status.innerHTML='<span class="import-error">Введите кадастровый номер, адрес или площадь участка в гектарах.</span>';return;
  }
  button.disabled=true;button.textContent='Считаю…';
+ dropGlavapuPreview();
  status.textContent='Участок в Московской области · считаю нормативы РНГП МО, УПКС и плату за ВРИ…';
  try{
   const response=await fetch('/mo/calculate',{
@@ -23940,6 +24926,7 @@ async function calculateMo(queryText){
   moResult=data;
   moLastQuery=query;
   renderMo(data);
+  drawLandPreviewQuiet(query);
   syncMoParams(data);
   if(moStatus)moStatus.style.display='none';
   const parcels=((data.vri||{}).parcels||[]).length;
@@ -25433,8 +26420,8 @@ async function calculate(){
  }
  repairParkingFromGlavapu();renderResult();renderPhaseReportControls();
  if(document.getElementById('tep')&&document.getElementById('tep').classList.contains('active'))renderTep();
- // Состояние сохраняется каждым пересчётом, а не только кнопкой «Сохранить»
- // и телеграм-потоком: применённая предустановка не переживала перезагрузку —
+ // Состояние сохраняется каждым пересчётом, а не отдельной кнопкой и
+ // телеграм-потоком: применённая предустановка не переживала перезагрузку —
  // вводные молча возвращались к умолчаниям (ВРИ 2 864,29, покупка 0), и
  // выглядело это как «предустановка не проедается в расчёт».
  persistLocalSilently();
@@ -26236,7 +27223,8 @@ function currentPdfReportPayload(cads=[]){
 
 async function exportReportPdf(){
  await calculate();
- const response=await fetch('/report/pdf',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(currentPdfReportPayload())});
+ const response=await fetch('/report/pdf',{method:'POST',headers:{'Content-Type':'application/json'},
+  body:JSON.stringify(Object.assign({session:activeSession(),access_key:projectsAdminKey||''},currentPdfReportPayload()))});
  if(!response.ok){let detail='Не удалось сформировать PDF';try{const x=await response.json();detail=x.detail||detail}catch(e){}alert(detail);return;}
  const blob=await response.blob();const disposition=response.headers.get('Content-Disposition')||'';const utf=disposition.match(/filename\*=UTF-8''([^;]+)/i);const filename=utf?decodeURIComponent(utf[1]):`DevelopAid_Отчет_${new Date().toISOString().slice(0,10)}.pdf`;const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=filename;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1500);
 }
@@ -26284,8 +27272,11 @@ async function exportModelArchive(){
  }
 }
 
+// Кнопки «Сохранить» нет: каждый пересчёт и так пишет состояние в localStorage
+// этого браузера — ручная копия того же самого создавала ложное ощущение
+// надёжного сохранения (владелец, 16.08.2026). Настоящее сохранение, которое
+// переживает смену устройства, — «Мои проекты».
 function persistLocalSilently(){localStorage.setItem('plato_v04',JSON.stringify({inputs,tep,phasing,scenario:scenarioSelect.value}))}
-function saveLocal(){persistLocalSilently();alert('Сохранено в этом браузере')}
 function loadLocal(){try{const x=JSON.parse(localStorage.getItem('plato_v04'));if(x){
  // Сохранённое состояние накладывается на умолчания, а не подменяет их целиком.
  // Иначе поле, добавленное после сохранения, в браузере просто отсутствует:
@@ -26464,7 +27455,7 @@ let projectsAdminKey=localStorage.getItem('plato_projects_key')||'';
 
 async function projectsCall(path,body){
  const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},
-  body:JSON.stringify(Object.assign({session:telegramSession,key:projectsAdminKey},body||{}))});
+  body:JSON.stringify(Object.assign({session:activeSession(),key:projectsAdminKey},body||{}))});
  const data=await response.json().catch(()=>({}));
  if(!response.ok)throw new Error(data.detail||'Хранилище недоступно');
  return data;
@@ -26474,13 +27465,18 @@ async function projectsCall(path,body){
 // ключа не требуют. Прежде она появлялась только при настроенном хранилище —
 // вместе с ним пропали бы и примеры, а они витрина, а не чужие данные.
 let projectsStorageReady=false;
+let projectsAcceptsKey=false;
+let projectsAcceptsLogin=false;
 
 async function initProjects(){
  document.getElementById('projectsButton').style.display='';
  try{
   const status=await (await fetch('/projects/status')).json();
-  // Ключ спрашиваем только там, где сессии нет: в мини-приложении она есть.
-  projectsStorageReady=!!status.configured&&(!!telegramSession||!!status.accepts_key);
+  projectsAcceptsKey=!!status.accepts_key;
+  projectsAcceptsLogin=!!status.accepts_login;
+  // Хранилище показывается, когда есть чем войти: сессия (мини-приложение
+  // или вход через бота), сам вход через бота или ключ администратора.
+  projectsStorageReady=!!status.configured&&(!!activeSession()||projectsAcceptsLogin||projectsAcceptsKey);
  }catch(e){projectsStorageReady=false}
  const actions=document.getElementById('projectsStorageActions');
  if(actions)actions.style.display=projectsStorageReady?'inline-flex':'none';
@@ -26512,6 +27508,65 @@ async function saveProjectToServer(){
  }catch(e){alert(String(e.message||e))}
 }
 
+function renderProjectsLogin(){
+ // Панель входа живёт рядом с таблицей, не затирая её: после входа таблица
+ // нужна той же самой.
+ const stored=document.getElementById('projectsStored');
+ if(!stored)return;
+ let box=document.getElementById('projectsLoginBox');
+ if(!box){
+  box=document.createElement('div');
+  box.id='projectsLoginBox';
+  box.style.cssText='border:1px solid var(--line);padding:16px;margin-bottom:14px';
+  const note=document.createElement('div');
+  note.style.cssText='font-size:12px;color:#555;margin-bottom:10px';
+  // Текст статический, innerHTML — только ради ссылки на согласие: вход и
+  // есть момент, когда данные начинают собираться.
+  note.innerHTML='Проекты хранятся на сервере в России и привязаны к вашему Telegram. '
+   +'Войдите через бота — и сохраняйте расчёты с любого устройства. '
+   +'После входа станут доступны Платон и PDF-отчёт. Входя, вы соглашаетесь с '
+   +'<a href="/consent" target="_blank" rel="noopener">обработкой персональных данных</a>.';
+  box.appendChild(note);
+  const login=document.createElement('button');
+  login.className='btn dark';
+  login.textContent='Войти через Telegram';
+  const status=document.createElement('div');
+  status.style.cssText='font-size:12px;color:#777;margin-top:10px';
+  login.onclick=()=>loginViaTelegram(status);
+  if(!projectsAcceptsLogin)login.style.display='none';
+  box.appendChild(login);
+  if(projectsAcceptsKey){
+   const keyBtn=document.createElement('button');
+   keyBtn.className='btn';
+   keyBtn.style.marginLeft='10px';
+   keyBtn.textContent='У меня ключ администратора';
+   keyBtn.onclick=enterProjectsKey;
+   box.appendChild(keyBtn);
+  }
+  box.appendChild(status);
+  stored.insertBefore(box,stored.firstChild);
+ }
+ box.style.display='';
+ const scroll=stored.querySelector('.scroll');
+ if(scroll)scroll.style.display='none';
+}
+
+function hideProjectsLogin(){
+ const box=document.getElementById('projectsLoginBox');
+ if(box)box.style.display='none';
+ const stored=document.getElementById('projectsStored');
+ const scroll=stored&&stored.querySelector('.scroll');
+ if(scroll)scroll.style.display='';
+}
+
+function enterProjectsKey(){
+ const key=prompt('Ключ администратора (DEVELOPAID_ADMIN_KEY)');
+ if(!key)return;
+ projectsAdminKey=key.trim();
+ localStorage.setItem('plato_projects_key',projectsAdminKey);
+ openProjects();
+}
+
 async function openProjects(){
  // Окно открывается сразу: примеры в нём есть всегда, и держать человека
  // перед запросом ключа ради витрины незачем. Список сохранённых
@@ -26523,20 +27578,20 @@ async function openProjects(){
   return;
  }
  if(stored)stored.style.display='';
- // Ключ спрашиваем один раз и держим в браузере: это вход, а не пароль к
- // каждому действию.
- if(!telegramSession&&!projectsAdminKey){
-  const key=prompt('Ключ администратора (DEVELOPAID_ADMIN_KEY)');
-  if(!key)return;
-  projectsAdminKey=key.trim();localStorage.setItem('plato_projects_key',projectsAdminKey);
+ // Входа нет — предлагаем его, а не запираем дверь: кнопка «Войти через
+ // Telegram» и, где настроен, ключ администратора.
+ if(!activeSession()&&!projectsAdminKey){
+  renderProjectsLogin();
+  return;
  }
+ hideProjectsLogin();
  let data;
  try{data=await projectsCall('/projects/list',{})}
  catch(e){
   // Неверный ключ запирал дверь снаружи: список не открывался, а кнопка
   // «Сменить ключ» жила внутри него. Спрашиваем прямо здесь, иначе
   // единственный выход — консоль браузера, которой на телефоне нет.
-  if(!telegramSession){
+  if(!activeSession()){
    const again=prompt(String(e.message||e)+'\n\nВведите ключ ещё раз:',projectsAdminKey||'');
    if(again===null)return;
    projectsAdminKey=again.trim();
@@ -26608,12 +27663,14 @@ function resetAll(){
  inputs.scenario_cost_multiplier=1;
  renderInputs();renderTep();renderStoredGlavapu();renderScenarioNote();syncProjectClassSelector();
  const cadField=document.getElementById('cadastralNumbers');if(cadField)cadField.value='';
- const cadPreview=document.getElementById('cadastralPreview');if(cadPreview)cadPreview.style.display='none';
  const cadStatus=document.getElementById('cadastralStatus');if(cadStatus)cadStatus.textContent='На внешний сервер передаются только кадастровые номера; финансовая модель не передаётся.';
  const landField=document.getElementById('landQuery');if(landField)landField.value='';
  const landPreview=document.getElementById('landPreview');if(landPreview)landPreview.style.display='none';
  const moQuery=document.getElementById('moQuery');if(moQuery)moQuery.value='';
- const moPreview=document.getElementById('moPreview');if(moPreview)moPreview.style.display='none';
+ // Сброс снимает и карточки импорта с их данными: прежде glavapuImport
+ // переживал сброс, и «чистый» проект применял ТЭП удалённого участка.
+ dropGlavapuPreview();
+ dropMoPreview();
  const landStatus=document.getElementById('landStatus');if(landStatus)landStatus.textContent='На внешний сервис передаётся только строка поиска; финансовая модель не передаётся.';
  syncRateControlsFromInputs();generateRateCurve();renderRates();
  refreshCurrentKeyRate(true);
@@ -26822,6 +27879,14 @@ async function initializeTelegramLaunch(){
  if(telegramCad){
   const field=document.getElementById('cadastralNumbers');
   if(!field)return;
+  // Экспресс-расчёт из чата обещает ровно «класс + цены + СМР», остальное —
+  // умолчания движка. Сохранённый в WebView проект сюда не допускается:
+  // браузер бота однажды запомнил старую структуру расходов (сети 7,5 вместо
+  // 10,25, проектирование 5 вместо 14,5) и два миллиарда собственных средств
+  // чужого эксперимента — и каждый «адрес + класс» из бота молча считался с
+  // ними, расходясь с сайтом на одинаковых вводных. Правки после расчёта
+  // живут в режиме редактирования — он открывает проект своей карточки.
+  resetAll();
   field.value=telegramCad;
   openTab('inputs');
   const status=document.getElementById('cadastralStatus');
@@ -26847,7 +27912,13 @@ async function initializeTelegramLaunch(){
   }
   return;
  }
- if(sessionData.manual_tep)await applyTelegramManualTep(sessionData.manual_tep);
+ if(sessionData.manual_tep){
+  // Присланный в чат ТЭП — тоже экспресс-расчёт: финансовые предпосылки в нём
+  // задаёт бот, всё незаданное — умолчания движка, а не остатки прежнего
+  // проекта из WebView.
+  resetAll();
+  await applyTelegramManualTep(sessionData.manual_tep);
+ }
 }
 async function initializeApp(){
  repairParkingFromGlavapu();

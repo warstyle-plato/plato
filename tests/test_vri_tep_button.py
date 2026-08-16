@@ -53,10 +53,11 @@ def test_the_mo_branch_counts_vri_and_returns_a_readable_file():
 
 def test_the_msk_branch_reproduces_the_calculator_export(monkeypatch):
     """Московская ветка воспроизводит настоящую выгрузку калькулятора ГлавАПУ
-    (эталон — файл по 77:09:0004014:13, население 422): четыре листа, итоги в
-    строках секций, спорт/торговля/озеленение по нормативам на тысячу жителей
-    с округлением вверх, компенсация по городским ставкам. Первый вариант был
-    двухлистовым и отдавал только площади."""
+    (эталон — файл по 77:09:0004014:13 от 16.08.2026, население 422): четыре
+    листа, итоги в строках секций, спорт/торговля/озеленение по нормативам на
+    тысячу жителей с округлением вверх, компенсация по городским ставкам,
+    паркинг по методике августа 2026 (одно место на 90 м² НП жилых × К1),
+    плата за ВРИ с квартальной индексацией базовой стоимости."""
     monkeypatch.setattr(core, "analyze_cadastral_territory", lambda req: {
         "territory": {"area_ha": 0.651, "district": "Савеловский",
                       "cadastral_quarter": "77:09:0004014"},
@@ -67,10 +68,10 @@ def test_the_msk_branch_reproduces_the_calculator_export(monkeypatch):
     assert "Москва" in result["card"]
     assert "мини-приложении" in result["card"]
     assert "580,7 млн ₽" in result["card"]
-    assert "паркинг — 91 м/м" in result["card"]
-    # Формула Df.calcOwn на площади 0,651 га (СПП 22 785 против 22 782 в
-    # эталоне из-за округления площади): 1 267,7 млн ₽.
-    assert "плата за смену ВРИ — 1 267,7 млн ₽" in result["card"]
+    assert "паркинг — 178 м/м" in result["card"]
+    # Формула Df.calcOwn с индексацией базовой на площади 0,651 га (СПП
+    # 22 785 против 22 782 в эталоне из-за округления площади): 1 289,9 млн ₽.
+    assert "плата за смену ВРИ — 1 289,9 млн ₽" in result["card"]
     import io
     import openpyxl
     book = openpyxl.load_workbook(io.BytesIO(result["file"]))
@@ -101,21 +102,23 @@ def test_the_msk_branch_reproduces_the_calculator_export(monkeypatch):
     comp_row = next(r for r in range(2, 92)
                     if "компенсации за социальные" in str(sheet.cell(row=r, column=2).value or ""))
     assert sheet.cell(row=comp_row, column=4).value == "580,668"
-    # Машино-места — формулы из кода калькулятора (Rf/zf/Bf/Vf): эталонная
-    # выгрузка по этому участку даёт 82+9+6 и 1+3 кратковременных.
+    # Машино-места — методика августа 2026: эталонная выгрузка от 16.08.2026
+    # по этому участку даёт 161+17+6 и 1+3 кратковременных.
     assert [cell(c) for c in ("42", "42.1", "42.2", "42.3", "43")] == \
-        ["97", "82", "9", "6", "4"]
+        ["184", "161", "17", "6", "4"]
     mm_sheet = book["Машино-места"]
     assert [mm_sheet.cell(row=2, column=c).value for c in range(4, 9)] == \
-        ["92", "0", "82", "9", "1"]
+        ["179", "0", "161", "17", "1"]
     assert [mm_sheet.cell(row=3, column=c).value for c in range(4, 9)] == \
         ["9", "6", "0", "0", "3"]
-    # Плата за смену ВРИ — формула Df.calcOwn из кода калькулятора:
-    # 1,8964 × СПП × 0,1281 × 229 036,29 / 1,00001. Эталон по точной площади
-    # 0,65091 га даёт 1 267,545; здесь площадь округлена до 0,651.
-    expected_vri = round(1.8964 * 0.651 * 35000 * 0.1281 * 229036.29 / 1.00001 / 1e6, 3)
+    # Плата за смену ВРИ — формула Df.calcOwn с квартальной индексацией
+    # базовой: 1,8964 × СПП × 0,1281 × 229 036,29 × 1,0175 / 1,00001. Эталон
+    # от 16.08.2026 по точной площади 0,65091 га даёт 1 289,735; здесь
+    # площадь округлена до 0,651.
+    expected_vri = round(1.8964 * 0.651 * 35000 * 0.1281 * 229036.29
+                         * core._GLAVAPU_VRI_BASE_INDEXATION / 1.00001 / 1e6, 3)
     expected_text = f"{expected_vri:,.3f}".replace(",", " ").replace(".", ",")
-    assert cell("44") == expected_text == "1 267,734"
+    assert cell("44") == expected_text == "1 289,919"
     vri_row = next(r for r in range(2, 92)
                    if "стоимости смены ВРИ" in str(sheet.cell(row=r, column=2).value or ""))
     assert sheet.cell(row=vri_row, column=4).value == expected_text
@@ -126,9 +129,64 @@ def test_the_msk_branch_reproduces_the_calculator_export(monkeypatch):
     assert normalized["site_area_ha"] == pytest.approx(0.651)
     assert normalized["social_compensation_total_mln"] == pytest.approx(580.668, abs=0.01)
     assert normalized["suggested_social_mode"] == "Денежная компенсация"
-    assert normalized["parking_permanent"] == pytest.approx(82)
-    assert normalized["parking_guest"] == pytest.approx(9)
-    assert normalized["change_vri_mln"] == pytest.approx(1267.734, abs=0.001)
+    assert normalized["parking_permanent"] == pytest.approx(161)
+    assert normalized["parking_guest"] == pytest.approx(17)
+    assert normalized["change_vri_mln"] == pytest.approx(1289.919, abs=0.001)
+
+
+def test_the_second_export_confirms_the_methodology(monkeypatch):
+    """Вторая точка — Гродненская 77:07:0008006:3 (население 377, выгрузка от
+    16.08.2026). Формула, выведенная по одному участку, — подгонка: здесь та же
+    методика обязана сойтись на другом квартале, с другими К2, арендой и
+    базовой стоимостью. Эталон: постоянные 144, гостевые 15, приобъектные 7,
+    ДОО 17, школа 34, поликлиника 5+3, плата за ВРИ 851,315 млн ₽ (у нас
+    851,602 — расхождение 0,03% от округления площади до 0,581 га)."""
+    monkeypatch.setattr(core, "analyze_cadastral_territory", lambda req: {
+        "territory": {"area_ha": 0.581, "district": "Можайский",
+                      "cadastral_quarter": "77:07:0008006"},
+        "coefficients": {"rail": 0.75, "business_outside_ttc": 0.7,
+                         "rent": 0.1161, "base_cost_zh_high": 186939.25},
+    })
+    result = core.vri_tep_quick("msk", "77:07:0008006:3")
+    import io
+    import openpyxl
+    sheet = openpyxl.load_workbook(io.BytesIO(result["file"]))["ТЭП"]
+    labels = {str(sheet.cell(row=r, column=1).value): r for r in range(2, 92)}
+    cell = lambda code: sheet.cell(row=labels[code], column=4).value
+    assert cell("4") == "377"
+    assert [cell(c) for c in ("30", "31", "32", "33", "34")] == \
+        ["17", "34", "8", "5", "3"], "поликлиника: 13,3 на этом населении дала бы 6 взрослых"
+    assert [cell(c) for c in ("42", "42.1", "42.2", "42.3")] == \
+        ["166", "144", "15", "7"]
+    normalized = core.parse_glavapu_xlsx(result["file"], result["filename"])["normalized"]
+    assert normalized["parking_permanent"] == pytest.approx(144)
+    assert normalized["change_vri_mln"] == pytest.approx(851.602, abs=0.001)
+    assert abs(normalized["change_vri_mln"] / 851.315 - 1) < 0.001, \
+        "плата разошлась с эталонной выгрузкой больше чем на 0,1%"
+
+
+def test_the_third_point_pins_the_mixed_clinic_norm(monkeypatch):
+    """Третья точка — 77:03:0006003:98 (население 970, дрейф от 16.08.2026).
+
+    Смешанная поликлиника — свой норматив 19 пос./смену на тысячу, а не сумма
+    взрослой и детской: город дал 19 при наших частях 13+7, и компенсация
+    разошлась ровно в 20/19 (190,814 против 200,857 — плашка дрейфа). На
+    населении 377 и 422 суммы совпадали со смешанной случайно."""
+    monkeypatch.setattr(core, "analyze_cadastral_territory", lambda req: {
+        "territory": {"area_ha": 1.4968, "district": "Головинский",
+                      "cadastral_quarter": "77:03:0006003"},
+        "coefficients": {"rail": 0.75, "business_outside_ttc": 0.5,
+                         "rent": 0.1281, "base_cost_zh_high": 229036.29},
+    })
+    result = core.vri_tep_quick("msk", "77:03:0006003:98")
+    import io
+    import openpyxl
+    sheet = openpyxl.load_workbook(io.BytesIO(result["file"]))["ТЭП"]
+    labels = {str(sheet.cell(row=r, column=1).value): r for r in range(2, 92)}
+    cell = lambda code: sheet.cell(row=labels[code], column=4).value
+    assert cell("4") == "970"
+    assert cell("32") == "19", "смешанная поликлиника — норматив 19/1000, не сумма 13+7"
+    assert [cell(c) for c in ("33", "34")] == ["13", "7"]
 
 
 def test_a_missing_coefficient_keeps_the_parking_honest(monkeypatch):
@@ -156,7 +214,7 @@ def test_both_branches_attach_the_filled_developaid_template(monkeypatch):
     assert parsed["inputs"]["social_compensation_mln"] == pytest.approx(580.668, abs=0.01)
     assert parsed["inputs"]["social_mode"] == "Денежная компенсация"
     assert parsed["tep"]["apartments"]["saleable"] == pytest.approx(13921.6, rel=0.001)
-    assert parsed["tep"]["underground_parking"]["units"] == pytest.approx(91)
+    assert parsed["tep"]["underground_parking"]["units"] == pytest.approx(178)
 
     mo = core.vri_tep_quick("mo", "", site_area_ha=22.423,
                             district="Городской округ Мытищи",
