@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.102"
+VERSION = "0.17.103"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -6367,6 +6367,129 @@ def _telegram_send_document_bytes(
     return result.get("result")
 
 
+def _telegram_send_photo_bytes(
+    chat_id: int,
+    content: bytes,
+    filename: str,
+    caption: str = "",
+) -> Any:
+    """sendPhoto тем же multipart, что и документы: фото видно в чате сразу."""
+    token = _telegram_token()
+    if not token:
+        raise RuntimeError("TELEGRAM_BOT_TOKEN не задан")
+    boundary = "----DevelopAidBoundary" + hashlib.sha256(os.urandom(16)).hexdigest()[:20]
+    body = io.BytesIO()
+
+    def field(name: str, value: str) -> None:
+        body.write(f"--{boundary}\r\n".encode())
+        body.write(f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode())
+        body.write(str(value).encode("utf-8"))
+        body.write(b"\r\n")
+
+    field("chat_id", str(int(chat_id)))
+    if caption:
+        field("caption", caption)
+        field("parse_mode", "HTML")
+    body.write(f"--{boundary}\r\n".encode())
+    body.write(
+        f'Content-Disposition: form-data; name="photo"; filename="{filename}"\r\n'.encode("utf-8")
+    )
+    body.write(b"Content-Type: image/png\r\n\r\n")
+    body.write(content)
+    body.write(b"\r\n")
+    body.write(f"--{boundary}--\r\n".encode())
+    request = urllib.request.Request(
+        f"https://api.telegram.org/bot{token}/sendPhoto",
+        data=body.getvalue(),
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            result = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")[:500]
+        raise RuntimeError(f"Telegram API sendPhoto: HTTP {exc.code}: {detail}") from exc
+    if not result.get("ok"):
+        raise RuntimeError("Telegram API sendPhoto: " + str(result.get("description") or "неизвестная ошибка"))
+    return result.get("result")
+
+
+def _telegram_territory_photo(chat_id: int, numbers: list[str]) -> bool:
+    """Картинка территории в чат: контуры ЕГРН поверх подложки НСПД.
+
+    Та же картинка, что на сайте в карточке участка, — в боте её не было вовсе
+    (замечание владельца, 16.08.2026). Контуры приходят из /land/lookup
+    (`contour_merc`), подложка — из /land/map-image; оба маршрута на Render
+    пересылают на ядро сами. Любой сбой — просто нет фото: картинка украшение,
+    расчёт от неё не зависит, поэтому наружу не роняется ничего.
+    """
+    try:
+        data = land_lookup(LandLookupRequest(
+            query=", ".join(numbers), limit=max(10, len(numbers))))
+        found = [item for item in (data.get("results") or [])
+                 if item.get("found") and item.get("contour_merc")]
+        rings = [ring for item in found for ring in item["contour_merc"]
+                 if isinstance(ring, list) and len(ring) >= 3]
+        points = [p for ring in rings for p in ring
+                  if isinstance(p, (list, tuple)) and len(p) >= 2]
+        if not points:
+            return False
+        min_x = min(p[0] for p in points); max_x = max(p[0] for p in points)
+        min_y = min(p[1] for p in points); max_y = max(p[1] for p in points)
+        span = max(max_x - min_x, max_y - min_y, 1.0)
+        pad = max(span * 0.08, 25.0)
+        b_min_x, b_min_y = min_x - pad, min_y - pad
+        b_max_x, b_max_y = max_x + pad, max_y + pad
+        width = 640
+        height = max(64, min(1280, int(round(
+            width * (b_max_y - b_min_y) / (b_max_x - b_min_x)))))
+        from PIL import Image, ImageDraw
+        backdrop = None
+        try:
+            response = land_map_image(
+                bbox=f"{b_min_x:.1f},{b_min_y:.1f},{b_max_x:.1f},{b_max_y:.1f}")
+            backdrop = Image.open(io.BytesIO(bytes(response.body))).convert("RGB")
+        except Exception:
+            backdrop = None  # без карты остаётся чистый контур — как на сайте
+        image = backdrop or Image.new("RGB", (width, height), (245, 245, 243))
+        w, h = image.size
+        draw = ImageDraw.Draw(image)
+        for ring in rings:
+            px = [((p[0] - b_min_x) / (b_max_x - b_min_x) * w,
+                   (b_max_y - p[1]) / (b_max_y - b_min_y) * h)
+                  for p in ring if isinstance(p, (list, tuple)) and len(p) >= 2]
+            if len(px) < 3:
+                continue
+            closed = px + [px[0]]
+            # Белая подкладка под тёмной линией: граница читается и на пёстрой
+            # карте, и на пустом фоне.
+            draw.line(closed, fill=(255, 255, 255), width=7, joint="curve")
+            draw.line(closed, fill=(180, 35, 24), width=3, joint="curve")
+        out = io.BytesIO()
+        image.save(out, format="PNG")
+        listed = ", ".join(str(item.get("cadastral_number") or "") for item in found[:5])
+        count = len(found)
+        caption = (
+            f"Контур участка {listed} · границы ЕГРН" if count == 1
+            else f"Территория из {count} участков: {listed} · границы ЕГРН")
+        caption += " · подложка — публичная карта НСПД" if backdrop else " · карта НСПД недоступна, показан чистый контур"
+        _telegram_send_photo_bytes(chat_id, out.getvalue(), "territory.png", caption)
+        return True
+    except Exception as exc:
+        logging.info("Фото территории пропущено: %s", exc)
+        return False
+
+
+def _telegram_territory_photo_async(chat_id: int, numbers: list[str]) -> None:
+    """Фото уходит фоном: сбор контуров и подложки ходит в НСПД и не должен
+    держать ответ вебхука — правило «тяжёлое не считается внутри запроса»."""
+    threading.Thread(
+        target=_telegram_territory_photo, args=(chat_id, list(numbers)),
+        name="territory-photo", daemon=True,
+    ).start()
+
+
 def _telegram_send_template(chat_id: int) -> Any:
     try:
         encoded = MANUAL_TEP_TEMPLATE_B64_PATH.read_text(encoding="ascii").strip()
@@ -7285,6 +7408,8 @@ def _telegram_handle_mo_numbers(chat_id: int, numbers: list[str], query: str = "
         f"Основание: {html.escape(str(vri.get('payment_basis') or '—'))}",
     )
     _telegram_send_message(chat_id, _telegram_mo_sources_message(mo))
+    # Картинка территории — как на сайте: контуры ЕГРН поверх карты НСПД.
+    _telegram_territory_photo_async(chat_id, numbers)
     _telegram_send_tep_review(chat_id, _telegram_mo_parsed(mo), dialog_mode=False)
 
 
@@ -7444,6 +7569,8 @@ def _telegram_handle_cadastral_numbers(chat_id: int, numbers: list[str], query: 
         f"Кадастровый квартал: <b>{html.escape(str(territory.get('cadastral_quarter') or '—'))}</b>\n\n"
         "Кадастровый расчёт ТЭП остаётся прежним. Перед расчётом выберите класс — он задаст базовые цены и СМР.",
     )
+    # Картинка территории — как на сайте: контуры ЕГРН поверх карты НСПД.
+    _telegram_territory_photo_async(chat_id, recognized)
     _telegram_cad_class_menu(chat_id, dialog)
 
 
