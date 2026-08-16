@@ -90,9 +90,13 @@ console.log(JSON.stringify(landContourSvg({json.dumps(item, ensure_ascii=False)}
 
 def test_the_page_draws_the_polygon():
     svg = run_svg({"contour_merc": [MERC_RING], "center": {"lat": 55.9105, "lng": 37.7365}})
-    assert svg.startswith('<div class="land-contour"><svg viewBox="0 0 ')
+    assert svg.startswith('<div class="land-contour"><div class="land-contour-stage"')
     assert '<path d="M' in svg and svg.count(" L ") >= 4
     assert "Границы по сведениям ЕГРН" in svg
+    # Подложка карты просится тем же bbox, что и контур, и молча исчезает
+    # по onerror — подложка украшение, а не данные.
+    assert '<img class="land-contour-map" src="/land/map-image?bbox=' in svg
+    assert 'onerror="this.remove()"' in svg
     # Меркаторные 100 м на широте Мытищ — около 56 настоящих метров.
     width = re.search(r"~(\d+)", svg)
     assert width and 50 <= int(width.group(1)) <= 60, svg
@@ -137,6 +141,7 @@ def test_several_parcels_share_one_scale():
     assert svg.count("<path") == 2, "участки слились или потерялись"
     assert "<title>50:12:0080205:124</title>" in svg
     assert "Территория из 2 участков" in svg
+    assert '<img class="land-contour-map"' in svg
 
 
 def test_a_single_parcel_needs_no_territory_view():
@@ -149,3 +154,42 @@ def test_the_list_renders_the_territory_first():
     body = main.PAGE[main.PAGE.index("function renderLandLookup"):]
     body = body[:body.index("function useLandForTep")]
     assert "landTerritorySvg(found)+" in body, "список карточек не начинается с посадки"
+
+
+def test_the_map_backdrop_endpoint_speaks_wms(monkeypatch):
+    """Подложка: bbox проверяется, градусы считаются как в центре, кэшируется."""
+    from fastapi.testclient import TestClient
+    client = TestClient(main.app)
+    calls = []
+
+    def fake_png(west, south, east, north, width, height):
+        calls.append((west, south, east, north, width, height))
+        return b"\x89PNG\r\n\x1a\n" + b"x" * 32
+
+    monkeypatch.setattr(main, "_nspd_wms_map_png", fake_png)
+    main._NSPD_MAP_CACHE.clear()
+    assert client.get("/land/map-image", params={"bbox": "мусор"}).status_code == 400
+    assert client.get("/land/map-image", params={"bbox": "0,0,99999999,1"}).status_code == 400
+    bbox = "4199990,7549990,4200110,7550110"
+    ok = client.get("/land/map-image", params={"bbox": bbox})
+    assert ok.status_code == 200 and ok.headers["content-type"] == "image/png"
+    assert ok.content.startswith(b"\x89PNG")
+    west, south, east, north, width, height = calls[0]
+    assert west < east and south < north
+    assert 50 < south < 60, "широта Мытищ потерялась при переводе из меркатора"
+    # Повтор — из кэша, без второго похода в НСПД.
+    client.get("/land/map-image", params={"bbox": bbox})
+    assert len(calls) == 1
+
+
+def test_a_dead_nspd_leaves_the_plain_contour(monkeypatch):
+    from fastapi.testclient import TestClient
+    client = TestClient(main.app)
+
+    def broken(*args):
+        raise ValueError("НСПД молчит")
+
+    monkeypatch.setattr(main, "_nspd_wms_map_png", broken)
+    main._NSPD_MAP_CACHE.clear()
+    response = client.get("/land/map-image", params={"bbox": "4199990,7549990,4200110,7550110"})
+    assert response.status_code == 502

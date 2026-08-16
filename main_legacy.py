@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.97"
+VERSION = "0.17.98"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -2245,6 +2245,110 @@ def _nspd_point_features(lat: float, lng: float) -> list[dict[str, Any]]:
     except HTTPException:
         return []
     return _nspd_features(payload)
+
+
+# Подложка карты под контуром участка: WMS GetMap того же слоя ЗУ, которым
+# работает точечный поиск. Кэш маленький и с TTL — карта не меняется от
+# запроса к запросу, а НСПД не любит частых обращений.
+_NSPD_MAP_CACHE: dict[str, tuple[float, bytes]] = {}
+_NSPD_MAP_CACHE_TTL_SECONDS = 6 * 3600
+_NSPD_MAP_CACHE_LIMIT = 64
+
+
+def _nspd_wms_map_png(west: float, south: float, east: float, north: float,
+                      width: int, height: int) -> bytes:
+    """Картинка слоя «Земельные участки из ЕГРН» под градусный bbox."""
+    params = urllib.parse.urlencode({
+        "REQUEST": "GetMap",
+        "SERVICE": "WMS",
+        "VERSION": "1.3.0",
+        "FORMAT": "image/png",
+        "STYLES": "",
+        "TRANSPARENT": "false",
+        "LAYERS": _NSPD_LANDS_LAYER_ID,
+        "WIDTH": int(width),
+        "HEIGHT": int(height),
+        "CRS": "EPSG:4326",
+        "BBOX": f"{west},{south},{east},{north}",
+    })
+    request_headers = {
+        "Accept": "image/png,image/*;q=0.9,*/*;q=0.5",
+        "Accept-Language": "ru-RU,ru;q=0.9",
+        "User-Agent": _LAND_LOOKUP_USER_AGENT,
+    }
+    request_headers.update(_NSPD_BROWSER_HEADERS)
+    external_request = urllib.request.Request(
+        f"{_NSPD_BASE_URL}/api/aeggis/v3/{_NSPD_LANDS_LAYER_ID}/wms?{params}",
+        headers=request_headers,
+    )
+    context = ssl._create_unverified_context() if _nspd_tls_insecure else None
+    with urllib.request.urlopen(
+            external_request, timeout=_NSPD_TIMEOUT_SECONDS, context=context) as response:
+        raw = response.read(4 * 1024 * 1024)
+    if not raw.startswith(b"\x89PNG"):
+        raise ValueError("НСПД ответила не картинкой")
+    return raw
+
+
+@app.get("/land/map-image", include_in_schema=False)
+def land_map_image(bbox: str = "") -> Response:
+    """Подложка кадастровой карты под меркаторный bbox контура.
+
+    Страница передаёт ровно тот bbox (с полем), в котором рисует SVG-контур,
+    поэтому подложка и контур совпадают пиксель в пиксель. Пиксели считаются
+    так, чтобы плоская картинка EPSG:4326 локально совпала с меркатором:
+    высота растянута на 1/cos(широты). Любой сбой — 502, и страница просто
+    остаётся с чистым контуром: подложка — украшение, а не данные.
+    """
+    remote = _core_api_url("/land/map-image")
+    if remote:
+        # Как /land/lookup: Render до НСПД не ходит — пересылает на ядро.
+        try:
+            with urllib.request.urlopen(
+                    urllib.request.Request(
+                        remote + "?" + urllib.parse.urlencode({"bbox": bbox}),
+                        headers={"Accept": "image/png"}),
+                    timeout=_NSPD_TIMEOUT_SECONDS) as response:
+                raw = response.read(4 * 1024 * 1024)
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Подложка карты недоступна: {exc}")
+        return Response(raw, media_type="image/png",
+                        headers={"Cache-Control": "public, max-age=3600"})
+    try:
+        parts = [float(x) for x in str(bbox or "").split(",")]
+    except ValueError:
+        parts = []
+    if len(parts) != 4:
+        raise HTTPException(status_code=400, detail="bbox: minX,minY,maxX,maxY в метрах веб-меркатора.")
+    min_x, min_y, max_x, max_y = parts
+    span_x, span_y = max_x - min_x, max_y - min_y
+    if not (0 < span_x <= 20000 and 0 < span_y <= 20000):
+        # Больше 20 км — это уже не карточка участка, а карта страны.
+        raise HTTPException(status_code=400, detail="bbox вне разумного размера участка.")
+    south_lat, west_lng = _mercator_to_wgs84(min_x, min_y)
+    north_lat, east_lng = _mercator_to_wgs84(max_x, max_y)
+    cos_lat = math.cos(math.radians((south_lat + north_lat) / 2.0)) or 1.0
+    # Ширина до 640 px; высота — из меркаторных пропорций bbox, чтобы
+    # совпасть с SVG-контуром страницы.
+    width = 640
+    height = max(64, min(1280, int(round(width * span_y / span_x))))
+    lat_span_needed = (east_lng - west_lng) * (height / width) * cos_lat
+    lat_mid = (south_lat + north_lat) / 2.0
+    south, north = lat_mid - lat_span_needed / 2.0, lat_mid + lat_span_needed / 2.0
+    cache_key = f"{round(min_x)}:{round(min_y)}:{round(max_x)}:{round(max_y)}"
+    cached = _NSPD_MAP_CACHE.get(cache_key)
+    if cached and time.time() - cached[0] < _NSPD_MAP_CACHE_TTL_SECONDS:
+        return Response(cached[1], media_type="image/png",
+                        headers={"Cache-Control": "public, max-age=3600"})
+    try:
+        raw = _nspd_wms_map_png(west_lng, south, east_lng, north, width, height)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Подложка карты недоступна: {exc}")
+    if len(_NSPD_MAP_CACHE) >= _NSPD_MAP_CACHE_LIMIT:
+        _NSPD_MAP_CACHE.pop(next(iter(_NSPD_MAP_CACHE)), None)
+    _NSPD_MAP_CACHE[cache_key] = (time.time(), raw)
+    return Response(raw, media_type="image/png",
+                    headers={"Cache-Control": "public, max-age=3600"})
 
 
 def _geocode_yandex(address: str, limit: int) -> list[dict[str, Any]]:
@@ -22369,7 +22473,9 @@ details.cadastral-box>summary::marker{color:#888}
 .land-grid b{display:block;margin-top:3px;font-weight:600;line-height:1.35}
 .land-links{margin-top:9px;font-size:11px}
 .land-contour{margin-top:10px}
-.land-contour svg{display:block;width:100%;max-height:170px;border:1px solid #e5e5e3;background:#fff}
+.land-contour-stage{position:relative;width:100%;max-height:240px;border:1px solid #e5e5e3;background:#fff;overflow:hidden}
+.land-contour-map{position:absolute;inset:0;width:100%;height:100%;display:block}
+.land-contour svg{position:relative;display:block;width:100%;height:100%}
 .land-contour small{display:block;margin-top:4px;color:#999;font-size:10px}
 .land-territory{margin:0 0 12px}
 .land-territory svg{max-height:240px}
@@ -24037,10 +24143,13 @@ function landTerritorySvg(found){
    .filter(p=>Array.isArray(p)&&p.length>=2)
    .map(p=>((p[0]-minX+pad)).toFixed(1)+' '+((maxY-p[1]+pad)).toFixed(1))
    .join(' L ')+' Z').join(' ');
-  return `<path d="${d}" fill="#f5f5f3" stroke="#111" stroke-width="${(Math.max(w,h)/160).toFixed(2)}" fill-rule="evenodd" vector-effect="non-scaling-stroke"><title>${escapeHtml(item.cadastral_number||'')}</title></path>`;
+  return `<path d="${d}" fill="rgba(245,245,243,.35)" stroke="#111" stroke-width="${(Math.max(w,h)/160).toFixed(2)}" fill-rule="evenodd" vector-effect="non-scaling-stroke"><title>${escapeHtml(item.cadastral_number||'')}</title></path>`;
  }).join('');
- return `<div class="land-contour land-territory"><svg viewBox="0 0 ${w.toFixed(1)} ${h.toFixed(1)}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Взаимное расположение участков">${paths}</svg>`+
-  `<small>Территория из ${items.length} участков в одном масштабе · наведите на контур — увидите номер</small></div>`;
+ const mapSrc=`/land/map-image?bbox=${(minX-pad).toFixed(1)},${(minY-pad).toFixed(1)},${(maxX+pad).toFixed(1)},${(maxY+pad).toFixed(1)}`;
+ return `<div class="land-contour land-territory"><div class="land-contour-stage" style="aspect-ratio:${w.toFixed(1)} / ${h.toFixed(1)}">`+
+  `<img class="land-contour-map" src="${mapSrc}" alt="" loading="lazy" decoding="async" onerror="this.remove()">`+
+  `<svg viewBox="0 0 ${w.toFixed(1)} ${h.toFixed(1)}" preserveAspectRatio="none" role="img" aria-label="Взаимное расположение участков">${paths}</svg></div>`+
+  `<small>Территория из ${items.length} участков в одном масштабе · подложка — публичная карта НСПД · наведите на контур — увидите номер</small></div>`;
 }
 
 function landContourSvg(item){
@@ -24067,9 +24176,15 @@ function landContourSvg(item){
  const cosLat=item.center&&item.center.lat?Math.cos(item.center.lat*Math.PI/180):0;
  const widthM=cosLat?Math.round(spanX*cosLat):0;
  const scaleNote=widthM?` · ~${widthM.toLocaleString('ru-RU')} м по ширине`:'';
- return `<div class="land-contour"><svg viewBox="0 0 ${w.toFixed(1)} ${h.toFixed(1)}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Границы участка по ЕГРН">`+
-  `<path d="${paths}" fill="#f5f5f3" stroke="#111" stroke-width="${(Math.max(w,h)/120).toFixed(2)}" fill-rule="evenodd" vector-effect="non-scaling-stroke"/></svg>`+
-  `<small>Границы по сведениям ЕГРН${scaleNote}</small></div>`;
+ // Подложка — кадастровая карта НСПД под тем же bbox: соседи и кварталы
+ // дают контекст «где это». Не загрузилась — картинка молча исчезает, и
+ // остаётся чистый контур: подложка — украшение, а не данные.
+ const mapSrc=`/land/map-image?bbox=${(minX-pad).toFixed(1)},${(minY-pad).toFixed(1)},${(maxX+pad).toFixed(1)},${(maxY+pad).toFixed(1)}`;
+ return `<div class="land-contour"><div class="land-contour-stage" style="aspect-ratio:${w.toFixed(1)} / ${h.toFixed(1)}">`+
+  `<img class="land-contour-map" src="${mapSrc}" alt="" loading="lazy" decoding="async" onerror="this.remove()">`+
+  `<svg viewBox="0 0 ${w.toFixed(1)} ${h.toFixed(1)}" preserveAspectRatio="none" role="img" aria-label="Границы участка по ЕГРН">`+
+  `<path d="${paths}" fill="rgba(245,245,243,.35)" stroke="#111" stroke-width="${(Math.max(w,h)/120).toFixed(2)}" fill-rule="evenodd" vector-effect="non-scaling-stroke"/></svg></div>`+
+  `<small>Границы по сведениям ЕГРН · подложка — публичная карта НСПД${scaleNote}</small></div>`;
 }
 
 function landCardHtml(item){
