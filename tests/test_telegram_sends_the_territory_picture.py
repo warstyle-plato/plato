@@ -7,8 +7,8 @@
 
 - контуры берутся из /land/lookup (contour_merc), подложка — из
   /land/map-image; оба на Render пересылают на ядро сами;
-- мёртвая карта не отменяет фото: чистый контур на ровном фоне, и подпись
-  честно говорит, что карты нет;
+- без карты фото не отправляется вовсе: голый контур на белом фоне в чате —
+  шум, а не информация (владелец, 16.08.2026, скриншот);
 - нет контуров — нет фото, и ничего не падает: картинка украшение;
 - сбор ходит в НСПД, поэтому уходит фоном, не держа ответ вебхука.
 
@@ -80,16 +80,16 @@ def test_the_photo_carries_contours_over_the_map(photo, monkeypatch):
     assert "подложка — публичная карта НСПД" in sent["caption"]
 
 
-def test_a_dead_map_still_ships_the_plain_contour(photo, monkeypatch):
+def test_a_dead_map_means_no_photo_at_all(photo, monkeypatch):
+    """Голый контур на белом фоне в чате не нужен — лучше ничего."""
     monkeypatch.setattr(core, "land_lookup", lambda req: _lookup_payload())
 
     def broken(bbox):
         raise HTTPException(status_code=502, detail="НСПД молчит")
 
     monkeypatch.setattr(core, "land_map_image", broken)
-    assert core._telegram_territory_photo(CHAT_ID, ["77:07:0008006:3"])
-    assert "карта НСПД недоступна" in photo[-1]["caption"]
-    assert photo[-1]["content"][:4] == b"\x89PNG"
+    assert core._telegram_territory_photo(CHAT_ID, ["77:07:0008006:3"]) is False
+    assert photo == []
 
 
 def test_no_contours_means_no_photo_and_no_crash(photo, monkeypatch):
