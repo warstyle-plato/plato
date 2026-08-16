@@ -52,9 +52,12 @@ SALEABLE_RATIO_APARTMENTS = 0.75
 SALEABLE_RATIO_COMMERCIAL = 0.90
 SALEABLE_RATIO_OFFICES = 0.678
 
-# Паркинг: постоянные места на квартиры, плюс десятая часть гостевых.
-PARKING_PER_SQM = 1.0 / 33.0
-PARKING_RATE = 0.257
+# Паркинг: методика города с августа 2026 — одно постоянное место на 90 м²
+# НП жилых зданий (НП — 90% ГНС), то есть на 100 м² жилой ГНС; гостевые —
+# десятая часть. Сверено по двум выгрузкам штатного калькулятора ГлавАПУ от
+# 16.08.2026; коэффициент рельсового каркаса К1 здесь принят 1,0 — пресет
+# локационных коэффициентов не несёт.
+PARKING_GNS_PER_SPACE = 100.0
 PARKING_GUEST_SHARE = 0.10
 UNDERGROUND_AREA_PER_SPACE = 35.0
 ABOVE_AREA_PER_SPACE = 25.0
@@ -174,7 +177,7 @@ def map_tep(data: dict[str, Any]) -> tuple[dict[str, Any], list[Field]]:
     # стоящий гараж её закрывает: под землю уходит только остаток. Прежде
     # подземный паркинг считался от одних квартир, офисные места не
     # учитывались вовсе, а гараж стоял рядом продуктом и ничего не убавлял.
-    permanent = math.ceil(apartments * PARKING_PER_SQM * PARKING_RATE)
+    permanent = math.ceil(residential_gns / PARKING_GNS_PER_SPACE)
     guest = math.ceil(permanent * PARKING_GUEST_SHARE)
     office_spaces = math.ceil(offices / OFFICE_SQM_PER_SPACE) if offices else 0
     above = math.ceil(garage_gns / ABOVE_AREA_PER_SPACE) if garage_gns else 0

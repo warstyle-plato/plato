@@ -169,7 +169,7 @@ def test_the_underground_parking_covers_what_the_garage_does_not():
     одних квартир — офисные места не учитывались вовсе, а гараж стоял рядом
     продуктом и ничего не убавлял."""
     tep = preview()["tep"]
-    permanent = math.ceil(166500 / 33.0 * 0.257)
+    permanent = math.ceil(166500 / 0.75 / 100.0)
     residential = permanent + math.ceil(permanent * 0.1)
     offices = math.ceil(125160 * 0.678 / 100.0)
     garage = math.ceil(19150 / 25)
