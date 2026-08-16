@@ -91,9 +91,30 @@
      Форматтеры money/mult/pct — тоже const, поэтому берутся так же. */
   function pageResult() { return typeof lastResult === 'undefined' ? null : lastResult; }
   function pageGlavapu() { return typeof glavapuImport === 'undefined' ? null : glavapuImport; }
+  function pageMoResult() { return typeof moResult === 'undefined' ? null : moResult; }
+  /* Карточка с кнопкой «Применить» на экране — ещё не решение: применение
+     перерисовывает ту же карточку, поэтому видимость ни о чём не говорит.
+     Применённый импорт держит mappings той же ссылкой (applyGlavapu и
+     renderStoredGlavapu), применённый расчёт МО — territory (applyMo);
+     несовпадение ссылок и значит «получено, но в модель не попало». */
   function pendingGlavapu() {
-    var box = document.getElementById('glavapuPreview');
-    return !!(box && box.style.display !== 'none' && typeof window.applyGlavapu === 'function');
+    var incoming = pageGlavapu();
+    if (!incoming || typeof window.applyGlavapu !== 'function') return false;
+    var m = incoming.mappings || {};
+    if (!Object.keys(m.inputs || {}).length && !Object.keys(m.tep || {}).length) return false;
+    var applied = (pageInputs() || {})._glavapu_import;
+    return !applied || applied.mappings !== incoming.mappings;
+  }
+  function pendingMo() {
+    var incoming = pageMoResult();
+    if (!incoming || typeof window.applyMo !== 'function') return false;
+    var applied = (pageInputs() || {})._mo_calc;
+    if (!applied) return true;
+    if (incoming.territory) return applied.territory !== incoming.territory;
+    return String(applied.query || '') !== String(incoming.query || '');
+  }
+  function pendingImport() {
+    return pendingGlavapu() ? 'glavapu' : (pendingMo() ? 'mo' : null);
   }
   function pageInputs() { return typeof inputs === 'undefined' ? {} : inputs; }
   function pageTep() { return typeof tep === 'undefined' ? {} : tep; }
@@ -687,6 +708,9 @@
         if (activeTab === 'iaSite' && pendingGlavapu()) {
           forward.disabled = true;
           Promise.resolve(window.applyGlavapu()).then(go, go);
+        } else if (activeTab === 'iaSite' && pendingMo()) {
+          forward.disabled = true;
+          Promise.resolve(window.applyMo()).then(go, go);
         } else go();
       };
       sub.appendChild(forward);
@@ -701,6 +725,52 @@
     }
     hintBox.textContent = hintInfo ? hintInfo.hint : '';
     hintBox.style.display = hintInfo ? '' : 'none';
+    renderPendingWarn(activeTab);
+  }
+
+  /* Поиск выполнен, «Применить к Вводным и ТЭП» не нажато — а человек уже
+     ушёл вводить экономику. Модель в этот момент считает по прежним ТЭП, и
+     на других вкладках этого не видно никак: владелец так досчитал проект на
+     чужих, не обнулённых ТЭП (16.08.2026). Плашка ходит по вкладкам за
+     человеком, пока расчёт не применён или карточка не сброшена; на самом
+     «Участке» её нет — там карточка с кнопкой и так перед глазами. */
+  function renderPendingWarn(activeTab) {
+    var kind = pendingImport();
+    var box = document.getElementById('iaPendingWarn');
+    if (!kind || activeTab === 'iaSite') { if (box) box.remove(); return; }
+    var hintBox = document.getElementById('iaStepHint');
+    if (!hintBox || !hintBox.parentNode) return;
+    if (!box) {
+      box = document.createElement('div');
+      box.id = 'iaPendingWarn';
+      box.className = 'ia-pending';
+    }
+    hintBox.parentNode.insertBefore(box, hintBox.nextSibling);
+    box.innerHTML = '';
+    var text = document.createElement('b');
+    text.textContent = 'Найденный расчёт участка не применён — модель считает по прежним ТЭП.';
+    box.appendChild(text);
+    var apply = document.createElement('button');
+    apply.type = 'button';
+    apply.textContent = 'Применить к Вводным и ТЭП';
+    apply.onclick = function () {
+      apply.disabled = true;
+      var run = kind === 'glavapu' ? window.applyGlavapu : window.applyMo;
+      Promise.resolve(run()).then(
+        function () { syncNav(activeTab); },
+        function () { apply.disabled = false; }
+      );
+    };
+    box.appendChild(apply);
+    var drop = document.createElement('button');
+    drop.type = 'button';
+    drop.textContent = 'Сбросить карточку';
+    drop.onclick = function () {
+      var clear = kind === 'glavapu' ? window.dropGlavapuPreview : window.dropMoPreview;
+      if (typeof clear === 'function') clear();
+      syncNav(activeTab);
+    };
+    box.appendChild(drop);
   }
 
   /* Пустой результат поиска называет причины: какие геокодеры пропущены
@@ -744,12 +814,18 @@
 
   var STEP_INFO = {
     iaSite: function () {
+      if (pendingImport()) {
+        return { mark: 'warn', hint: 'Поиск выполнен, но расчёт не применён: нажмите «Применить к Вводным и ТЭП» — или сбросьте карточку. Пока в модели прежние ТЭП.' };
+      }
       if (pageGlavapu() || (pageInputs() || {})._mo_calc) {
         return { mark: 'ok', hint: 'Участок получен, ТЭП рассчитан. Дальше — проверить его на следующем шаге.' };
       }
       return { mark: 'need', hint: 'Введите кадастровый номер или адрес — ТЭП посчитается сам. Нет кадастра — соберите ТЭП вручную на следующем шаге.' };
     },
     tep: function () {
+      if (pendingImport()) {
+        return { mark: 'warn', hint: 'Найденный расчёт участка не применён — здесь показан прежний ТЭП. Вернитесь в «Участок» и нажмите «Применить к Вводным и ТЭП» или сбросьте карточку.' };
+      }
       if (tepTotalGns() > 0) {
         return { mark: 'ok', hint: 'ТЭП заполнен — проверьте цифры, вручную здесь меняют только фактические значения по проекту.' };
       }
