@@ -265,6 +265,47 @@ def test_the_stroke_is_screen_pixels_not_metres():
     assert 'stroke-width="2.5"' in single
 
 
+def test_the_map_probe_tries_every_candidate_format(monkeypatch):
+    """Диагностика формата WMS: четыре кандидата (v3/v4 × 3857/4326-порядки),
+    ответ говорит, кто отдал PNG. С телефона формат не проверить — WAF НСПД
+    отдаёт Forbidden, поэтому перебор живёт на ядре."""
+    from fastapi.testclient import TestClient
+
+    asked: list[str] = []
+    png = b"\x89PNG\r\n\x1a\n" + b"x" * 10
+
+    class _Response:
+        def __init__(self, body: bytes):
+            self.body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self, limit):
+            return self.body
+
+    def fake_urlopen(request, timeout=0, context=None):
+        asked.append(request.full_url)
+        if "EPSG%3A3857" in request.full_url and "/v3/" in request.full_url:
+            return _Response(png)
+        import urllib.error
+        raise urllib.error.HTTPError(request.full_url, 404, "Not Found", None, None)
+
+    monkeypatch.setattr(main.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(main, "_nspd_tls_insecure", True)
+    client = TestClient(main.app)
+    payload = client.get("/land/map-probe").json()
+    probe = payload["probe"]
+    assert set(probe) == {"v3_3857_merc", "v4_3857_merc", "v3_4326_latlon", "v3_4326_lonlat"}
+    assert probe["v3_3857_merc"] == {"ok": True, "bytes": len(png), "head": "PNG"}
+    assert probe["v4_3857_merc"] == {"ok": False, "http": 404}
+    lat_lon = [url for url in asked if "v3" in url and "EPSG%3A4326" in url]
+    assert len(lat_lon) == 2, "оба порядка осей 4326 должны пробоваться"
+
+
 def test_a_dead_nspd_leaves_the_plain_contour(monkeypatch):
     from fastapi.testclient import TestClient
     client = TestClient(main.app)
