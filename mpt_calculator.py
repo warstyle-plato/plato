@@ -76,6 +76,40 @@ KZATR_TRANSITION = (
 )
 
 
+# Обобщённые индексы изменения стоимости строительства к декабрю 2025 года —
+# строка «Строительство» из распоряжения ДЭПР города Москвы № ДПРР-18-26 от
+# 29.07.2026 (утверждает индексы за январь–июль 2026). Для квартала берётся
+# индекс за последний месяц предыдущего квартала, как велит приказ ДИиПП:
+# 2026-Q2 — март (1,0072), 2026-Q3 — июнь (1,0229). Квартал, которого здесь
+# нет, честно остаётся без числа — /status напомнит принести следующее
+# распоряжение, а не промолчит со старым Кзатр.
+KZATR_INDICES_TO_DEC2025: dict[str, float] = {
+    "2026-Q2": 1.0072,
+    "2026-Q3": 1.0229,
+}
+KZATR_INDICES_SOURCE = (
+    "распоряжение ДЭПР Москвы № ДПРР-18-26 от 29.07.2026, строка «Строительство», "
+    "индексы к декабрю 2025 года"
+)
+
+
+def kzatr_for_quarter(quarter: str) -> float | None:
+    """Кзатр квартала: база приказа × индекс к декабрю 2025 года.
+
+    До начала индексации — база как есть; для квартала без утверждённого
+    индекса — None: старое число выглядело бы как посчитанное.
+    """
+    key = str(quarter or "")
+    if not key:
+        return None
+    if not quarter_is_indexed(key):
+        return KZATR_BASE
+    index = KZATR_INDICES_TO_DEC2025.get(key)
+    if index is None:
+        return None
+    return round(KZATR_BASE * index, 5)
+
+
 def quarter_of(day: date) -> str:
     return f"{day.year}-Q{(day.month - 1) // 3 + 1}"
 
@@ -559,6 +593,17 @@ def calculate_mpt_benefit(data: MptInput, *, today: date | None = None) -> MptRe
 
 
 def metadata() -> dict[str, Any]:
+    today_quarter = quarter_of(date.today())
+    current_kzatr = kzatr_for_quarter(today_quarter)
+    source = KZATR_SOURCE
+    if quarter_is_indexed(today_quarter):
+        if current_kzatr is not None:
+            source = (f"{KZATR_SOURCE}. Квартал {today_quarter}: "
+                      f"{current_kzatr} = {KZATR_BASE} × "
+                      f"{KZATR_INDICES_TO_DEC2025[today_quarter]} ({KZATR_INDICES_SOURCE})")
+        else:
+            source = (f"{KZATR_SOURCE}. Для квартала {today_quarter} индекс ещё "
+                      f"не принесён — подставлено значение базы, требуется сверка")
     return {
         "categories": [{"value": key, "label": label, "column": CATEGORY_COLUMN[key]}
                        for key, label in CATEGORY_LABELS.items()],
@@ -569,10 +614,15 @@ def metadata() -> dict[str, Any]:
         "minimum_area_sqm": MIN_AREA_SQM,
         "mixed_use_minimum_sqm": MIXED_USE_MIN_AREA_SQM,
         "hotel_rooms_min_share": HOTEL_ROOMS_MIN_SHARE,
-        "kzatr_default": KZATR_DEFAULT,
+        "kzatr_default": current_kzatr if current_kzatr is not None else KZATR_DEFAULT,
+        # Квартал, которому дефолт соответствует: страница подставляет его в
+        # поле квартала, и расчёт не ругается «значение не сверено» зря.
+        "kzatr_default_quarter": today_quarter if current_kzatr is not None else "",
+        "kzatr_indices_to_dec2025": KZATR_INDICES_TO_DEC2025,
+        "kzatr_indices_source": KZATR_INDICES_SOURCE,
         "kzatr_base": KZATR_BASE,
         "kzatr_base_from": KZATR_BASE_FROM.isoformat(),
-        "kzatr_source": KZATR_SOURCE,
+        "kzatr_source": source,
         "kzatr_indexation_from_quarter": KZATR_INDEXATION_FROM_QUARTER,
         "kzatr_index_base_to": KZATR_INDEX_BASE_TO,
         "kzatr_transition": KZATR_TRANSITION,

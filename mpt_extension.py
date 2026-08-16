@@ -309,12 +309,14 @@ _MPT_FRAGMENT = r'''
     const r=await fetch('/api/mpt/meta',{credentials:'same-origin'});
     if(!r.ok) throw new Error('Не удалось загрузить нормативный справочник МПТ');
     meta=await r.json();
-    // Кзатр пересматривается с первого числа каждого квартала, поэтому поле
-    // квартала остаётся пустым: расчёт тогда прямо говорит, что значение не
-    // сверено. Подставлять сюда текущий квартал нельзя — зашитое число
-    // выглядело бы действующим.
+    // Кзатр пересматривается поквартально. Дефолт приходит с сервера уже
+    // посчитанным по утверждённому индексу; квартал подставляется только
+    // когда дефолт ему действительно соответствует (kzatr_default_quarter) —
+    // иначе поле квартала остаётся пустым, и расчёт честно говорит, что
+    // значение не сверено.
     if(meta.current_quarter) q('mpt-kzatr-quarter').placeholder='сейчас '+meta.current_quarter;
     if(meta.kzatr_default) q('mpt-kzatr').value=meta.kzatr_default;
+    if(meta.kzatr_default_quarter) q('mpt-kzatr-quarter').value=meta.kzatr_default_quarter;
     if(meta.kzatr_source) q('mpt-kzatr-note').textContent=meta.kzatr_source;
     q('mpt-category').innerHTML=(meta.categories||[]).map(x=>`<option value="${x.value}">${x.label}</option>`).join('');
     q('mpt-district').innerHTML='<option value="">— выберите район —</option>'+(meta.districts||[]).map(x=>`<option value="${x}">${x}</option>`).join('');
