@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.99"
+VERSION = "0.17.100"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -7100,7 +7100,9 @@ def _telegram_send_cad_calculate_button(chat_id: int, dialog: dict[str, Any]) ->
         f"• нежильё — {_telegram_number(overrides['commercial_price_th'], 0)} тыс. ₽/м²\n"
         f"• машино-место — {_telegram_number(overrides['parking_price_th'] / 1000, 2)} млн ₽\n"
         f"• СМР — {_telegram_number(overrides['smr_th_per_sqm'], 0)} тыс. ₽/м² ГНС\n\n"
-        "СМР: общестрой + благоустройство + резервы; наружные инженерные сети — отдельно.\n\n"
+        "СМР: общестрой + благоустройство + резервы; наружные инженерные сети — отдельно.\n"
+        "Остальные предпосылки — умолчания DevelopAid текущей версии: прежние правки "
+        "в мини-приложении на экспресс-расчёт не переносятся.\n\n"
         "После подтверждения DevelopAid получит ТЭП ГлавАПУ и рассчитает проект.",
         reply_markup={"inline_keyboard": [
             [{"text": "Рассчитать проект", "web_app": {"url": url}}],
@@ -27396,6 +27398,14 @@ async function initializeTelegramLaunch(){
  if(telegramCad){
   const field=document.getElementById('cadastralNumbers');
   if(!field)return;
+  // Экспресс-расчёт из чата обещает ровно «класс + цены + СМР», остальное —
+  // умолчания движка. Сохранённый в WebView проект сюда не допускается:
+  // браузер бота однажды запомнил старую структуру расходов (сети 7,5 вместо
+  // 10,25, проектирование 5 вместо 14,5) и два миллиарда собственных средств
+  // чужого эксперимента — и каждый «адрес + класс» из бота молча считался с
+  // ними, расходясь с сайтом на одинаковых вводных. Правки после расчёта
+  // живут в режиме редактирования — он открывает проект своей карточки.
+  resetAll();
   field.value=telegramCad;
   openTab('inputs');
   const status=document.getElementById('cadastralStatus');
@@ -27421,7 +27431,13 @@ async function initializeTelegramLaunch(){
   }
   return;
  }
- if(sessionData.manual_tep)await applyTelegramManualTep(sessionData.manual_tep);
+ if(sessionData.manual_tep){
+  // Присланный в чат ТЭП — тоже экспресс-расчёт: финансовые предпосылки в нём
+  // задаёт бот, всё незаданное — умолчания движка, а не остатки прежнего
+  // проекта из WebView.
+  resetAll();
+  await applyTelegramManualTep(sessionData.manual_tep);
+ }
 }
 async function initializeApp(){
  repairParkingFromGlavapu();
