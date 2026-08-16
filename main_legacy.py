@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.18.9"
+VERSION = "0.18.10"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -1787,6 +1787,13 @@ _NSPD_FIELD_ALIASES: dict[str, tuple[str, ...]] = {
         "registration_date", "reg_date",
     ),
     "quarter": ("quarter_cad_number", "cadastral_quarter", "quarter"),
+    # Участок под зданием: в карточке ОКС портал иногда несёт номер своего
+    # земельного участка. Когда несёт — это самый короткий путь от адреса к
+    # участку, короче любого пространственного запроса.
+    "land_parcel": (
+        "land_cad_number", "land_cadastral_number", "cad_num_land",
+        "parent_cad_number", "parent_cadastral_number", "landCadNum",
+    ),
     "ownership": ("ownership_type", "right_type", "form_of_ownership"),
     "region": ("subject_rf", "subject", "region"),
     "purpose": ("purpose", "assignation_name", "build_record_type_value", "object_type"),
@@ -2154,6 +2161,7 @@ def _normalize_nspd_feature(feature: dict[str, Any]) -> dict[str, Any]:
         "status": _land_text(_nspd_value(options, "status")),
         "registration_date": _land_text(_nspd_value(options, "registration_date")),
         "quarter": _land_text(_nspd_value(options, "quarter")) or parts["quarter"],
+        "land_parcel": _land_text(_nspd_value(options, "land_parcel")),
         "ownership": _land_text(_nspd_value(options, "ownership")),
         "region": region,
         "purpose": _land_text(_nspd_value(options, "purpose")),
@@ -2749,10 +2757,48 @@ def land_lookup(req: LandLookupRequest) -> dict[str, Any]:
             )
             for kind, count in hidden_here.items():
                 hidden[kind] = hidden.get(kind, 0) + count
+            # По городскому адресу портал отдаёт дом и его квартиры, а участка
+            # среди них нет: всё скрывалось фильтром, и человек видел «ничего не
+            # найдено» при двух десятках найденных объектов. Найденное — само по
+            # себе дорога к участку, и выбрасывать его, чтобы начать заново с
+            # внешнего геокодера, незачем.
+            neighbours: list[dict[str, Any]] = []
+            if not results and features:
+                neighbours, _ = _land_lookup_features_to_results(features, limit, only_land=False)
+                # Короткий путь: карточка ОКС иногда несёт номер своего участка.
+                parcels_by_card: list[str] = []
+                for item in neighbours:
+                    number = _land_text(item.get("land_parcel"))
+                    if number and number not in parcels_by_card:
+                        parcels_by_card.append(number)
+                if parcels_by_card:
+                    results = [item for item in _land_lookup_by_numbers(parcels_by_card[:limit])
+                               if item.get("found")]
+                # Иначе — участок под найденным домом, по его собственным
+                # координатам: они точнее любого геокодера, дом уже найден.
+                if not results:
+                    for item in neighbours:
+                        center = item.get("center") or {}
+                        if not center.get("lat"):
+                            continue
+                        under, hidden_under = _land_lookup_features_to_results(
+                            _nspd_point_features(center["lat"], center["lng"]), limit,
+                            only_land=True,
+                        )
+                        for kind, count in hidden_under.items():
+                            hidden[kind] = hidden.get(kind, 0) + count
+                        if under:
+                            for found_item in under:
+                                found_item["matched_address"] = item.get("address", "")
+                                found_item["found_under"] = item.get("cadastral_number", "")
+                            results = under
+                            break
             if not results:
                 candidates, geocoder_warnings = _geocode_address(query, 3)
                 warnings.extend(geocoder_warnings)
-                if not candidates:
+                # «Адрес не распознан» рядом с двумя десятками найденных по
+                # нему объектов — противоречие: не распознан не адрес, а участок.
+                if not candidates and not neighbours:
                     warnings.append(
                         "Адрес не распознан. Уточните формулировку или введите кадастровый номер."
                     )
@@ -2777,6 +2823,18 @@ def land_lookup(req: LandLookupRequest) -> dict[str, Any]:
                     warnings.append(
                         "Адрес найден, но участок ЕГРН в этой точке не определён — "
                         "проверьте объект на публичной карте."
+                    )
+                # Участок не дался ни одним путём — но объекты по адресу есть.
+                # «Ничего не найдено» при двух десятках найденных объектов —
+                # неправда, из которой не видно следующего шага. Отдаём их и
+                # называем вещи своими именами.
+                if not results and neighbours:
+                    results = neighbours[:limit]
+                    hidden = {}
+                    warnings.append(
+                        "Земельный участок по этому адресу ЕГРН не отдал. Показаны найденные "
+                        "объекты — дом и помещения: посмотрите участок под нужным на публичной "
+                        "карте и введите его кадастровый номер."
                     )
 
     hidden_total = sum(hidden.values())
@@ -9127,6 +9185,7 @@ _MODEL_SUMMARY_ROWS: list[tuple[str, str, str]] = [
     ("financing_cost", "Стоимость финансирования", "mln"),
     ("profit_before_tax", "Прибыль до налога", "mln"),
     ("profit_tax", "Налог на прибыль", "mln"),
+    ("vat", "НДС", "mln"),
     ("net_profit", "Чистая прибыль", "mln"),
     ("margin", "Маржинальность", "pct"),
     ("llcr", "LLCR", "num"),
@@ -9362,6 +9421,7 @@ def _model_sheet_costs(result: dict[str, Any]) -> dict[str, Any]:
         [_cell_text("Коммерческие расходы"), _cell_mln(result.get("commercial_costs"))],
         [_cell_text("Стоимость финансирования"), _cell_mln((result.get("summary") or {}).get("financing_cost"))],
         [_cell_text("Налог на прибыль"), _cell_mln((result.get("summary") or {}).get("profit_tax"))],
+        [_cell_text("НДС"), _cell_mln((result.get("summary") or {}).get("vat"))],
     ])
     structure = (result.get("report") or {}).get("expense_structure") or []
     charts: list[dict[str, Any]] = []
@@ -12360,9 +12420,11 @@ _M2_RATE_SCENARIOS = [["high", "Консервативный"], ["base", "Баз
 # Поля страницы, до расчёта не доходящие: движок их не читает, они уезжают
 # только в шаблон ПЛАТО. В книге они помечены — иначе аналитик правит этап
 # роста цены, ничего не происходит, и виноватой оказывается книга.
+# «vat_pct» ушла отсюда 16.08.2026: НДС теперь считается, и пометка «не
+# участвует» на «Вводных» стала бы такой же обманкой, какой была сама ставка.
 _M2_TEMPLATE_ONLY_INPUTS = frozenset({
     "inflation_after_rve_pct", "growth_stage1_pct", "growth_stage2_pct",
-    "growth_stage3_pct", "growth_stage4_pct", "vat_pct",
+    "growth_stage3_pct", "growth_stage4_pct",
 })
 
 # Из базы резерва движок исключает цену входа и стоимость рассрочки ВРИ:
@@ -12403,7 +12465,7 @@ _M2_COST_ARTICLES: list[tuple[str, str, bool]] = [
 # Показатели листа «ОТЧЁТ» — порядок строк, на него ссылается тест.
 _M2_REPORT_KEYS = [
     "revenue", "capex", "operating", "ebitda", "financing_cost",
-    "profit_before_tax", "profit_tax", "net_profit",
+    "profit_before_tax", "profit_tax", "vat", "net_profit",
     "peak_bridge", "pf_draw_total", "peak_pf", "avg_pf_rate", "llcr",
 ]
 
@@ -13335,13 +13397,20 @@ def build_plato_model_v2(
     # --- НАЛОГИ ------------------------------------------------------------
     tax = _MonthGrid(sheets["tax"], months, styles, title="НАЛОГ НА ПРИБЫЛЬ · млн ₽")
     tax.layout("margin", "adjust", "deduction", "margin_cum", "deduction_cum",
-               "base", "tax", "tax_cum")
+               "base", "tax", "tax_cum", "vat")
     tax.values("margin", "Маржа реализованных продуктов",
                [float(item.get("taxable_margin") or 0.0) / 1e6 for item in rows], money)
     adjust = [0.0] * len(rows)
     if rows:
         adjust[-1] = float(finance.get("financing_tax_reconciliation") or 0.0) / 1e6
     tax.values("adjust", "Корректировка вычетов (сверка)", adjust, money)
+    # НДС — денежный расход проекта: без него книга показывала прибыль выше
+    # расчёта ровно на его величину, и обе цифры выглядели достоверно.
+    vat_schedule = {d(month): value for month, value in
+                    (finance.get("vat_schedule") or {}).items()}
+    tax.values("vat", "НДС к уплате",
+               [round(vat_schedule.get(d(item["month"]), 0.0) / 1e6, 6) for item in rows],
+               money)
     tax.formula("deduction", "Вычет по финансированию (выплачено)",
                 lambda i: (f"={credit.outside('interest_payment', i)}"
                            f"+{credit.outside('fees', i)}+{tax.at('adjust', i)}"), money)
@@ -13363,7 +13432,7 @@ def build_plato_model_v2(
     flow = _MonthGrid(sheets["cf"], months, styles, title="ДВИЖЕНИЕ ДЕНЕЖНЫХ СРЕДСТВ · млн ₽")
     flow.layout(
         ("section", "Операционная деятельность"), "revenue", "capex", "operating", "tax",
-        "interest", "project", "project_cum",
+        "vat", "interest", "project", "project_cum",
         ("section", "Финансовая деятельность"), "bridge_draw", "bridge_repay",
         "pf_draw", "pf_repay", "financing",
         ("section", "Поток на собственный капитал"), "cash_in", "equity", "equity_cum")
@@ -13372,6 +13441,7 @@ def build_plato_model_v2(
     flow.formula("operating", "Маркетинг, продажи и содержание",
                  lambda i: f"=-{costs.outside('operating', i)}", money)
     flow.formula("tax", "Налог на прибыль", lambda i: f"=-{tax.outside('tax', i)}", money)
+    flow.formula("vat", "НДС", lambda i: f"=-{tax.outside('vat', i)}", money)
     flow.formula("interest", "Проценты и комиссии выплаченные",
                  lambda i: f"=-{credit.outside('interest_payment', i)}-{credit.outside('fees', i)}", money)
     # Проектный поток — как его считает движок: до финансирования тела долга,
@@ -13414,12 +13484,13 @@ def build_plato_model_v2(
         ("Маркетинг, продажи и содержание", f"=-SUM({costs.span('operating')})", money),
         ("CAPEX", f"=-SUM({costs.span('capex')})", money),
         ("Налог на прибыль", f"=-SUM({tax.span('tax')})", money),
+        ("НДС", f"=-SUM({tax.span('vat')})", money),
         ("Выборка ПФ", f"=SUM({credit.span('pf_draw')})", money),
-        ("ЧИСЛИТЕЛЬ", "=SUM(B4:B8)", money),
-        ("Выборка ПФ", "=B8", money),
+        ("ЧИСЛИТЕЛЬ", "=SUM(B4:B9)", money),
+        ("Выборка ПФ", "=B9", money),
         ("Проценты и комиссии", f"=SUM({credit.span('cost')})", money),
-        ("ЗНАМЕНАТЕЛЬ", "=B10+B11", money),
-        ("LLCR", "=IFERROR(B9/B12,0)", ratio),
+        ("ЗНАМЕНАТЕЛЬ", "=B11+B12", money),
+        ("LLCR", "=IFERROR(B10/B13,0)", ratio),
     ]
     for offset, (label, formula, fmt) in enumerate(llcr_rows):
         line = 4 + offset
@@ -13492,8 +13563,10 @@ def build_plato_model_v2(
          float(summary.get("profit_before_tax") or 0.0) / 1e6),
         ("profit_tax", "Налог на прибыль", f"=SUM({tax.span('tax')})", money,
          float(summary.get("profit_tax") or 0.0) / 1e6),
+        ("vat", "НДС", f"=SUM({tax.span('vat')})", money,
+         float(finance.get("vat") or 0.0) / 1e6),
         ("net_profit", "Чистая прибыль",
-         f"={own('profit_before_tax')}-{own('profit_tax')}", money,
+         f"={own('profit_before_tax')}-{own('profit_tax')}-{own('vat')}", money,
          float(summary.get("net_profit") or 0.0) / 1e6),
         ("peak_bridge", "Пик БРИДЖ", f"=MAX({credit.span('bridge_balance')})", money,
          float(finance.get("peak_bridge") or 0.0) / 1e6),
@@ -13505,7 +13578,7 @@ def build_plato_model_v2(
          f"=IFERROR(SUMPRODUCT({credit.span('pf_gross')},{credit.span('pf_rate')})"
          f"/SUM({credit.span('pf_gross')}),0)", percent,
          float(finance.get("avg_pf_rate") or 0.0)),
-        ("llcr", "LLCR", f"={_M2_SHEETS['llcr']}!$B$13", ratio,
+        ("llcr", "LLCR", f"={_M2_SHEETS['llcr']}!$B$14", ratio,
          float(summary.get("llcr") or 0.0)),
     ]
     for key, label, formula, fmt, expected in report_rows:
@@ -15820,13 +15893,74 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
     if abs(financing_reconciliation) > 0.01:
         financing_deductions[end] += financing_reconciliation
 
+    # НДС. Жильё по ДДУ освобождено (пп. 23.1 п. 3 ст. 149 НК), нежилое —
+    # облагается: ПСН, офисы, паркинг и кладовые. Решение владельца
+    # (15.08.2026), методика снята с книги внешней модели: там ставка 22%,
+    # отдельная статья БДДС и «Начало уплаты НДС» ровно в дату РВЭ.
+    #
+    # Затраты в модели заданы с НДС, поэтому входящий налог уже сидит в них.
+    # К вычету идёт не весь: при освобождённых операциях доля, приходящаяся на
+    # них, остаётся в себестоимости (п. 4 ст. 170 НК). Отсюда частая ошибка
+    # «стройка 10 млрд — вернут 1,8»: возвращают только долю нежилого.
+    vat_rate = max(0.0, n(x, "vat_pct", 22)) / 100
+    vat_taxable_products = tuple(
+        key for key in (*core_products, *krt_products) if key != "apartments"
+    )
+    vat_schedule: dict[date, float] = {}
+    vat_charged = vat_input_deductible = 0.0
+    if vat_rate > 0:
+        gross_to_tax = vat_rate / (1 + vat_rate)
+        taxable_revenue = sum(
+            sum(revenue_schedules.get(key, {}).values()) for key in vat_taxable_products
+        )
+        # Начисление — по передаче объекта, а не по признанию выручки: до
+        # раскрытия эскроу оплаты застройщику нет, и база возникает актом
+        # после ввода (ст. 167 НК). Всё, что продано до РВЭ, начисляется в РВЭ.
+        # Начисление целиком в дату РВЭ: так устроена внешняя модель, с
+        # которой сверялись («Начало уплаты НДС» = РВЭ), и так книга считает
+        # тем же одним выражением. Хвост остаточных продаж платится на
+        # несколько месяцев раньше срока — в запас, а не в оптимизм.
+        charged_by_month: dict[date, float] = {rve: taxable_revenue * gross_to_tax}
+        vat_charged = sum(charged_by_month.values())
+        # Входящий НДС — со строительных и коммерческих затрат. Покупка
+        # участка, плата за ВРИ и проценты по кредитам НДС не облагаются,
+        # поэтому в базу вычета не входят.
+        # База берётся от итога CAPEX, а не суммированием словаря статей: в нём
+        # живут теневые ключи вроде land_rights_gross, и слепая сумма задваивала
+        # плату за ВРИ — книга и движок расходились ровно на неё.
+        # Исключаем по вводным, а не по словарю статей: покупка в него не
+        # попадает вовсе (уходит прямо в месячный CAPEX), а плата за ВРИ лежит
+        # там дважды — вместе с теневым land_rights_gross. Книга вычитает те же
+        # две ячейки, B15 и B16, поэтому обе поверхности сходятся.
+        vat_bearing_costs = (
+            total_capex + commercial_costs
+            - n(x, "purchase_price_mln") * 1_000_000
+            - n(x, "land_rights_cost_mln") * 1_000_000
+            - op["capex_amounts"].get("vri_interest", 0.0)
+            - op["capex_amounts"].get("vri_security", 0.0)
+        )
+        deductible_share = taxable_revenue / total_revenue if total_revenue else 0.0
+        vat_input_deductible = vat_bearing_costs * gross_to_tax * deductible_share
+        # Вычет накапливается по ходу стройки, начисление приходит после ввода —
+        # значит к моменту передачи он уже есть, и живыми деньгами уходит
+        # только разница.
+        due = max(vat_charged - vat_input_deductible, 0.0)
+        if due > 0:
+            vat_schedule[rve] = due
+    vat = sum(vat_schedule.values())
+    # Из базы налога на прибыль уходит НДС к уплате, а не начисленный:
+    # выручка признаётся без налога (минус начисленный), а затраты — без
+    # входящего в части, принятой к вычету (плюс вычет). В сумме это ровно
+    # чистый НДС. Вычитать начисленный значило бы дважды учесть вычет.
+    vat_charged_by_month = dict(vat_schedule)
+
     tax_rate = n(x, "profit_tax_pct", 25) / 100
     cumulative_margin = cumulative_financing = tax_paid = 0.0
     profit_tax_schedule: dict[date, float] = {}
     tax_rows = []
     row_by_month = {d(row["month"]): row for row in result["rows"]}
     for month in months:
-        margin_month = tax_margin_by_month.get(month, 0.0)
+        margin_month = tax_margin_by_month.get(month, 0.0) - vat_charged_by_month.get(month, 0.0)
         financing_month = financing_deductions.get(month, 0.0)
         cumulative_margin += margin_month
         cumulative_financing += financing_month
@@ -15850,10 +15984,11 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
         })
     profit_tax = sum(profit_tax_schedule.values())
 
+
     # LLCR methodology mirrors the current workbook presentation:
     # numerator = project receipts - operating/tax - investment + PF inflow.
     # denominator = PF principal + interest/commissions, excluding duplicated transferred bridge interest.
-    llcr_numerator = total_revenue - commercial_costs - profit_tax - total_capex + result["pf_draw_total"]
+    llcr_numerator = total_revenue - commercial_costs - profit_tax - vat - total_capex + result["pf_draw_total"]
 
     # To reproduce Excel's correction concept, create a "reported" total where transferred bridge interest
     # appears in both bridge and PF buckets, then subtract it once.
@@ -15866,6 +16001,10 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
     result.update({
         "financing_cost": financing_cost,
         "profit_tax": profit_tax,
+        "vat": vat,
+        "vat_charged": vat_charged,
+        "vat_input_deductible": vat_input_deductible,
+        "vat_schedule": {month.isoformat(): value for month, value in vat_schedule.items()},
         "profit_tax_schedule": {
             month.isoformat(): value for month, value in profit_tax_schedule.items()
         },
@@ -15971,7 +16110,7 @@ def calculate(req: CalcRequest) -> dict:
     total_revenue = fin["total_revenue"]
     total_capex = fin["total_capex"]
     after_finance_pre_tax = fin["profit_before_tax"]
-    net_profit = after_finance_pre_tax - fin["profit_tax"]
+    net_profit = after_finance_pre_tax - fin["profit_tax"] - fin.get("vat", 0.0)
 
     # Report-level project metrics.
     monetizable_saleable_sqm = sum(
@@ -15986,7 +16125,7 @@ def calculate(req: CalcRequest) -> dict:
         "main_above", "main_under", "utilities", "landscaping",
         "commissioning", "site_maintenance", "gc_fee", "reserve"
     ))
-    full_project_cost = total_capex + fin["commercial_costs"] + fin["financing_cost"] + fin["profit_tax"]
+    full_project_cost = total_capex + fin["commercial_costs"] + fin["financing_cost"] + fin["profit_tax"] + fin.get("vat", 0.0)
     avg_apartment_price = (
         op["revenue_by_product"].get("apartments", 0.0) / apartment_saleable_sqm / 1000
         if apartment_saleable_sqm else 0.0
@@ -15999,7 +16138,7 @@ def calculate(req: CalcRequest) -> dict:
 
     # Unit economics by total GNS and monetizable saleable area.
     project_gns_sqm = sum(n(row, "gns") for row in t.values())
-    total_expenses = total_capex + fin["commercial_costs"] + fin["financing_cost"] + fin["profit_tax"]
+    total_expenses = total_capex + fin["commercial_costs"] + fin["financing_cost"] + fin["profit_tax"] + fin.get("vat", 0.0)
 
     def per_sqm_th(value: float, area: float) -> float:
         return value / area / 1000 if area else 0.0
@@ -16040,6 +16179,14 @@ def calculate(req: CalcRequest) -> dict:
             "total": fin["profit_tax"],
             "per_gns_th": per_sqm_th(fin["profit_tax"], project_gns_sqm),
             "per_saleable_th": per_sqm_th(fin["profit_tax"], monetizable_saleable_sqm),
+        },
+        {
+            # НДС — в тех же двух базах, что и всё остальное: одна база без
+            # второй уже читалась как другой показатель.
+            "label": "НДС",
+            "total": fin.get("vat", 0.0),
+            "per_gns_th": per_sqm_th(fin.get("vat", 0.0), project_gns_sqm),
+            "per_saleable_th": per_sqm_th(fin.get("vat", 0.0), monetizable_saleable_sqm),
         },
         {
             "label": "Полные расходы",
@@ -16151,6 +16298,10 @@ def calculate(req: CalcRequest) -> dict:
         ("Маркетинг и продажи", fin["commercial_costs"]),
         ("Проценты и комиссии", fin["financing_cost"]),
         ("Налог на прибыль", fin["profit_tax"]),
+        # НДС виден отдельной строкой: он не налог на прибыль и не
+        # стройка, и прятать его внутри «налогов» значит скрыть от
+        # человека статью, которая растёт вместе с долей нежилого.
+        ("НДС", fin.get("vat", 0.0)),
     ]
     expense_structure = []
     expense_base = sum(value for _, value in expense_groups)
@@ -16363,6 +16514,10 @@ def calculate(req: CalcRequest) -> dict:
             "financing_cost": fin["financing_cost"],
             "profit_before_tax": after_finance_pre_tax,
             "profit_tax": fin["profit_tax"],
+            # НДС живёт в summary рядом с налогом на прибыль, а не только в
+            # finance: поверхности читают сводку, и без этого ключа налог,
+            # уменьшающий чистую прибыль на миллиард, нигде не показывался.
+            "vat": fin.get("vat", 0.0),
             "net_profit": net_profit,
             "margin": net_profit / total_revenue if total_revenue else 0.0,
             "llcr": fin["llcr"],
@@ -16974,6 +17129,9 @@ def _aggregate_finance(results: list[dict[str, Any]]) -> dict[str, Any]:
         "total_capex": sum(f["total_capex"] for f in fs),
         "commercial_costs": sum(f["commercial_costs"] for f in fs),
         "profit_tax": sum(f["profit_tax"] for f in fs),
+        "vat": sum(f.get("vat", 0.0) for f in fs),
+        "vat_charged": sum(f.get("vat_charged", 0.0) for f in fs),
+        "vat_input_deductible": sum(f.get("vat_input_deductible", 0.0) for f in fs),
         "tax_margin_by_product": {
             key: sum(float((f.get("tax_margin_by_product") or {}).get(key, 0.0) or 0.0) for f in fs)
             for key in ("core", "offices", "standalone_retail", "above_parking")
@@ -17028,7 +17186,11 @@ def _consolidate_phase_results(
     saleable = sum(r["summary"]["monetizable_saleable_sqm"] for r in results)
     apartment_saleable = sum(r["summary"]["apartment_saleable_sqm"] for r in results)
     project_gns = sum(r["summary"]["project_gns_sqm"] for r in results)
-    full_cost = total_capex + commercial_costs + finance["financing_cost"] + finance["profit_tax"]
+    # НДС — такой же денежный расход проекта, как налог на прибыль: без него
+    # строки структуры расходов не сходятся с итоговой строкой, и обе
+    # выглядят достоверно.
+    full_cost = (total_capex + commercial_costs + finance["financing_cost"]
+                 + finance["profit_tax"] + finance.get("vat", 0.0))
     avg_apt_price = revenue.get("apartments", 0.0) / apartment_saleable / 1000 if apartment_saleable else 0.0
 
     construction_keys = (
@@ -17058,6 +17220,7 @@ def _consolidate_phase_results(
         ("Маркетинг и продажи", commercial_costs), ("EBITDA", ebitda),
         ("Проценты и комиссии", finance["financing_cost"]),
         ("Налог на прибыль", finance["profit_tax"]),
+        ("НДС", finance.get("vat", 0.0)),
         ("Полные расходы", full_cost), ("Чистая прибыль", net_profit),
     ):
         unit_economics.append({
@@ -17232,7 +17395,8 @@ def _consolidate_phase_results(
             "commercial_costs": commercial_costs, "ebitda": ebitda,
             "financing_cost": finance["financing_cost"],
             "profit_before_tax": finance["profit_before_tax"],
-            "profit_tax": finance["profit_tax"], "net_profit": net_profit,
+            "profit_tax": finance["profit_tax"], "vat": finance.get("vat", 0.0),
+            "net_profit": net_profit,
             "margin": net_profit / total_revenue if total_revenue else 0.0,
             "llcr": finance["llcr"],
             "ending_pf": finance.get("ending_pf", 0.0),
@@ -20998,6 +21162,45 @@ def _plato_job_path(job_id: str, suffix: str = "json") -> Path:
     return _PLATO_STAGE_DIR / f"job_{job_id}.{suffix}"
 
 
+def _plato_puller_seen_touch() -> None:
+    """Отметка «сервис модели приходил за заданием».
+
+    Ядро знает про Render ровно одно: приходил он за очередью или нет. Без этой
+    отметки срыв объяснялся догадкой — «проверьте, запущен ли разбор очереди», —
+    и одинаково выглядели три разных случая: разбор не запущен вовсе, Render
+    заснул, разбор жив, но задание не берёт. Отметка на диске, а не в памяти:
+    воркеров два, и опрос попадёт в другой.
+    """
+    try:
+        _PLATO_STAGE_DIR.mkdir(parents=True, exist_ok=True)
+        (_PLATO_STAGE_DIR / "puller.seen").write_text(str(time.time()), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _plato_puller_seen_ago() -> float | None:
+    """Сколько секунд назад приходил сервис модели. None — не приходил ни разу."""
+    try:
+        return max(0.0, time.time() - float(
+            (_PLATO_STAGE_DIR / "puller.seen").read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        return None
+
+
+def _plato_puller_diagnosis() -> str:
+    """Причина словами — по факту, а не по догадке."""
+    ago = _plato_puller_seen_ago()
+    if ago is None:
+        return ("Сервис модели ни разу не приходил за заданием: разбор очереди на нём "
+                "не запущен. На Render нужны PLATO_PULL_URL и OPENAI_API_KEY, "
+                "а PLATO_AI_URL должен быть пуст.")
+    if ago > 120:
+        return (f"За очередью он последний раз приходил {int(ago // 60)} мин назад и "
+                "сейчас молчит: скорее всего, заснул или перезапускается.")
+    return (f"За очередью он приходил {int(ago)} с назад, но задание не забрал — "
+            "связь есть, дело в самом разборе.")
+
+
 def _plato_job_claim() -> dict[str, Any]:
     """Старейшее задание, забранное насовсем.
 
@@ -21055,7 +21258,7 @@ def _openai_pull_request(payload: dict[str, Any],
     raise HTTPException(
         status_code=504,
         detail=(f"Сервис модели не забрал задание за {int(waited)} с. "
-                "Проверьте, запущен ли на нём разбор очереди (PLATO_PULL_URL)."))
+                + _plato_puller_diagnosis()))
 
 
 def _plato_queue_guard(request: Request) -> None:
@@ -21088,6 +21291,7 @@ def internal_plato_queue(request: Request, wait: float = 0.0) -> dict[str, Any]:
     либо частил бы опросом, либо отвечал бы с задержкой в целый интервал.
     """
     _plato_queue_guard(request)
+    _plato_puller_seen_touch()
     limit = min(max(0.0, float(wait or 0.0)), _PLATO_QUEUE_WAIT_SECONDS)
     deadline = time.monotonic() + limit
     while True:
@@ -22381,6 +22585,10 @@ def agent_status() -> dict[str, Any]:
             "waiting_jobs": len(list(_PLATO_STAGE_DIR.glob("job_*.json")))
                             if _PLATO_STAGE_DIR.exists() else 0,
             "worker_here": bool(_PLATO_PULL_URL and not _PLATO_AI_URL),
+            # Сколько назад за очередью приходил сервис модели: единственный
+            # факт, отличающий «разбор не запущен» от «Render заснул».
+            "puller_seen_ago_seconds": _plato_puller_seen_ago(),
+            "diagnosis": _plato_puller_diagnosis() if _PLATO_PULL_ENABLED else "",
         },
         # Пинг против засыпания сервиса модели: видно, живёт ли он и когда
         # последний раз отзывался, — иначе «Ошибка AI (504)» объяснять нечем.
@@ -24157,7 +24365,11 @@ async function obtainTep(){
   // Адрес или координаты: территорию ГлавАПУ по ним не собрать, идём через ЕГРН.
   status.textContent='Ищу участок по адресу…';
   const found=await lookupLand({quiet:true});
-  const resolved=(found||[]).map(x=>x.cadastral_number).filter(Boolean);
+  // Поиск сорвался — причина уже написана в строке состояния, и закрашивать
+  // её «участок не найден» нельзя: человек пойдёт искать ошибку в кадастре,
+  // которой там нет. Так выключенный VPN выглядел как отсутствующий участок.
+  if(found===null)return;
+  const resolved=found.map(x=>x.cadastral_number).filter(Boolean);
   if(!resolved.length){
    status.innerHTML='<span class="import-error">По этому запросу участок не найден. Введите кадастровый номер.</span>';return;
   }
@@ -24173,7 +24385,7 @@ async function obtainTep(){
   });
   const data=await response.json();
   if(response.ok&&(data.recognized||[]).length)analysis=data;else failure=data.detail||'территория не сформирована';
- }catch(e){failure=String(e.message||e)}
+ }catch(e){failure=String(e.message||e)+CONNECTION_HINT}
 
  const insideMoscow=!!((analysis||{}).territory||{}).inside_moscow;
  if(insideMoscow)return obtainCadastralTep(analysis);
@@ -24446,8 +24658,12 @@ async function lookupLand(options){
   }
   return (data.results||[]).filter(x=>x&&x.found);
  }catch(e){
-  status.innerHTML='<span class="import-error">'+escapeHtml(String(e.message||e))+'</span>';
-  return [];
+  // Сорванный запрос — не «участок не найден». Возвращаем null, а не пустой
+  // список: вызывающий обязан отличить «спросили, и там пусто» от «спросить
+  // не удалось», иначе он закрасит настоящую причину своим диагнозом.
+  status.innerHTML='<span class="import-error">'+escapeHtml(String(e.message||e))
+   +'</span>'+CONNECTION_HINT;
+  return null;
  }finally{
   button.disabled=false;button.textContent='Получить ТЭП';
  }
@@ -25576,6 +25792,13 @@ function applyTelegramCalcOverrides(){
  });
 }
 
+// Запрос к своему серверу сорвался. Самая частая причина — включённый VPN:
+// сведения ЕГРН запрашиваются с российского адреса, и с зарубежного выхода
+// запрос до ядра не доходит. Раньше это выглядело как «участок не найден», и
+// человек шёл проверять кадастровый номер, в котором ошибки не было.
+const CONNECTION_HINT=' Не удалось связаться с сервером. Если включён VPN — '
+ +'отключите его и повторите: сведения ЕГРН запрашиваются с российского адреса.';
+
 const VRI_GROUP_NAME='Смена ВРИ и земельные права';
 
 // Свёрнутая группа не должна быть закрытой дверью без таблички: в заголовке
@@ -26426,6 +26649,9 @@ function renderResult(){
   row('Поступления проекта',money(f.total_revenue))+
   row('Коммерческие расходы',`(${money(f.commercial_costs)})`)+
   row('Налог на прибыль',`(${money(f.profit_tax)})`)+
+  // НДС — денежный расход, движок вычитает его из числителя. Без строки
+  // столбец не сходился к итогу, и покрытие выглядело необъяснимо ниже.
+  row('НДС',`(${money(f.vat||0)})`)+
   row('Инвестиционные расходы',`(${money(f.total_capex)})`)+
   row('Поступление ПФ',money(f.pf_draw_total))+
   `<tr><th>Числитель LLCR</th><th>${money(f.llcr_numerator)}</th></tr>`+
@@ -26443,7 +26669,13 @@ function renderResult(){
   row('Маржа наземного паркинга',money(taxMargins.above_parking||0))+
   row('Вычет: проценты и банковские комиссии',`(${money(f.financing_tax_deductions||f.financing_cost||0)})`)+
   `<tr><th>Итоговая прибыль до налога</th><th>${money(f.profit_before_tax)}</th></tr>`+
-  `<tr><th>Налог на прибыль</th><th>${money(f.profit_tax)}</th></tr>`;
+  // НДС из базы налога на прибыль движок вычитает помесячно: он не доход, а
+  // транзит в бюджет. Показываем его отдельной строкой рядом с налогом —
+  // раньше платёж на миллиард не был виден в отчёте вовсе.
+  row('Вычет из базы: НДС к уплате',`(${money(f.vat||0)})`)+
+  `<tr><th>Налог на прибыль</th><th>${money(f.profit_tax)}</th></tr>`+
+  `<tr><th>НДС к уплате</th><th>${money(f.vat||0)}</th></tr>`+
+  `<tr><th>Итого налоги</th><th>${money((f.profit_tax||0)+(f.vat||0))}</th></tr>`;
  taxTable.innerHTML=taxMarkup;
  reportTaxTable.innerHTML=taxMarkup;
 
@@ -26461,6 +26693,9 @@ function renderResult(){
   row('Проценты и комиссии',`(${money(r.summary.financing_cost)})`)+
   `<tr><th>Прибыль до налога</th><th>${money(r.summary.profit_before_tax)}</th></tr>`+
   row('Налог на прибыль',`(${money(r.summary.profit_tax)})`)+
+  // Без этой строки экономика не сходилась: прибыль до налога минус налог
+  // давала не чистую прибыль, и разницу человеку было негде найти.
+  row('НДС',`(${money(r.summary.vat||0)})`)+
   `<tr><th>Чистая прибыль</th><th>${money(r.summary.net_profit)}</th></tr>`+
   row('Маржинальность',pct(r.summary.margin))+
   row('NPV',money(r.summary.npv))+

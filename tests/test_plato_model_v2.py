@@ -193,9 +193,11 @@ def test_the_llcr_sheet_shows_its_own_arithmetic(book):
     """LLCR — не одно число в отчёте, а числитель, знаменатель и их состав."""
     _, evaluator, engine, _ = book
 
-    numerator = evaluator.cell("LLCR", "B9")
-    denominator = evaluator.cell("LLCR", "B12")
-    llcr = evaluator.cell("LLCR", "B13")
+    # Строки сдвинулись на одну: между налогом на прибыль и выборкой ПФ встал
+    # НДС — он такой же денежный расход и обязан уходить из числителя.
+    numerator = evaluator.cell("LLCR", "B10")
+    denominator = evaluator.cell("LLCR", "B13")
+    llcr = evaluator.cell("LLCR", "B14")
 
     assert close(numerator, engine["finance"]["llcr_numerator"] / 1e6)
     assert close(denominator, engine["finance"]["llcr_denominator"] / 1e6)
@@ -257,7 +259,9 @@ DRIVER_ROWS = {
     "СТАВКИ": (),
     "ЭСКРОУ": (),
     "КРЕДИТОВАНИЕ": (),
-    "НАЛОГИ": ("margin", "adjust"),
+    # «vat» — такой же сценарный ряд, как маржа: НДС считает движок, книга
+    # его получает значениями и тратит деньгами.
+    "НАЛОГИ": ("margin", "adjust", "vat"),
     "CF": (),
 }
 GRID_OF = {"ПРОДАЖИ": "sales", "СЕБЕСТОИМОСТЬ": "costs", "СТАВКИ": "rates",
