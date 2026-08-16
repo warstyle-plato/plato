@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.18.6"
+VERSION = "0.18.7"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -2256,6 +2256,90 @@ def _nspd_point_features(lat: float, lng: float) -> list[dict[str, Any]]:
 _NSPD_MAP_CACHE: dict[str, tuple[float, bytes]] = {}
 _NSPD_MAP_CACHE_TTL_SECONDS = 6 * 3600
 _NSPD_MAP_CACHE_LIMIT = 64
+
+
+@app.get("/land/map-probe", include_in_schema=False)
+def land_map_probe(bbox: str = "") -> dict[str, Any]:
+    """Диагностика формата WMS GetMap НСПД: кандидаты перебираются с ядра.
+
+    Подложка отвечала 404, а проверить формат с телефона нельзя — WAF НСПД
+    отдаёт Forbidden на прямые запросы без браузерной сессии карты. Ядро же
+    НСПД пускает (точечный поиск живёт), поэтому кандидаты перебираются
+    отсюда: версии пути v3/v4 и системы координат 3857/4326 в обоих порядках
+    осей. Ответ говорит, какой формат отдал PNG, — по нему чинится
+    /land/map-image. Только диагностика: ничего не кэширует и не меняет.
+    """
+    remote = _core_api_url("/land/map-probe")
+    if remote:
+        try:
+            with urllib.request.urlopen(
+                    urllib.request.Request(
+                        remote + "?" + urllib.parse.urlencode({"bbox": bbox}),
+                        headers={"Accept": "application/json"}),
+                    timeout=90) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Ядро недоступно: {exc}")
+    try:
+        parts = [float(x) for x in str(bbox or "").split(",")]
+    except ValueError:
+        parts = []
+    if len(parts) != 4:
+        # Мишина 77:09:0004014:13 — участок, на котором 404 и был пойман.
+        parts = [4181302.0, 7518174.0, 4181542.0, 7518414.0]
+    min_x, min_y, max_x, max_y = parts
+    south_lat, west_lng = _mercator_to_wgs84(min_x, min_y)
+    north_lat, east_lng = _mercator_to_wgs84(max_x, max_y)
+
+    def wms_url(api_version: str, crs: str, bbox_value: str) -> str:
+        return (f"{_NSPD_BASE_URL}/api/aeggis/{api_version}/{_NSPD_LANDS_LAYER_ID}/wms?"
+                + urllib.parse.urlencode({
+                    "SERVICE": "WMS", "REQUEST": "GetMap", "VERSION": "1.3.0",
+                    "FORMAT": "image/png", "STYLES": "", "TRANSPARENT": "true",
+                    "LAYERS": _NSPD_LANDS_LAYER_ID, "WIDTH": 512, "HEIGHT": 512,
+                    "CRS": crs, "BBOX": bbox_value,
+                }))
+
+    candidates = {
+        "v3_3857_merc": wms_url("v3", "EPSG:3857", f"{min_x},{min_y},{max_x},{max_y}"),
+        "v4_3857_merc": wms_url("v4", "EPSG:3857", f"{min_x},{min_y},{max_x},{max_y}"),
+        # WMS 1.3.0 для EPSG:4326 требует порядок осей lat,lon; текущий
+        # /land/map-image шлёт lon,lat — оба варианта в переборе.
+        "v3_4326_latlon": wms_url("v3", "EPSG:4326",
+                                  f"{south_lat},{west_lng},{north_lat},{east_lng}"),
+        "v3_4326_lonlat": wms_url("v3", "EPSG:4326",
+                                  f"{west_lng},{south_lat},{east_lng},{north_lat}"),
+    }
+    request_headers = {
+        "Accept": "image/png,image/*;q=0.9,*/*;q=0.5",
+        "User-Agent": _LAND_LOOKUP_USER_AGENT,
+    }
+    request_headers.update(_NSPD_BROWSER_HEADERS)
+    results: dict[str, Any] = {}
+    for name, url in candidates.items():
+        request = urllib.request.Request(url, headers=request_headers)
+        context = ssl._create_unverified_context() if _nspd_tls_insecure else None
+        try:
+            try:
+                with urllib.request.urlopen(request, timeout=20, context=context) as response:
+                    raw = response.read(200_000)
+            except urllib.error.URLError as exc:
+                if not isinstance(getattr(exc, "reason", None), ssl.SSLError):
+                    raise
+                with urllib.request.urlopen(
+                        request, timeout=20,
+                        context=ssl._create_unverified_context()) as response:
+                    raw = response.read(200_000)
+            results[name] = {
+                "ok": raw[:4] == b"\x89PNG", "bytes": len(raw),
+                "head": "PNG" if raw[:4] == b"\x89PNG"
+                        else raw[:60].decode("latin-1", "replace"),
+            }
+        except urllib.error.HTTPError as exc:
+            results[name] = {"ok": False, "http": exc.code}
+        except Exception as exc:
+            results[name] = {"ok": False, "error": str(exc)[:160]}
+    return {"bbox_merc": parts, "probe": results}
 
 
 def _nspd_wms_map_png(west: float, south: float, east: float, north: float,
