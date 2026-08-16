@@ -15357,13 +15357,67 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
     if abs(financing_reconciliation) > 0.01:
         financing_deductions[end] += financing_reconciliation
 
+    # НДС. Жильё по ДДУ освобождено (пп. 23.1 п. 3 ст. 149 НК), нежилое —
+    # облагается: ПСН, офисы, паркинг и кладовые. Решение владельца
+    # (15.08.2026), методика снята с книги внешней модели: там ставка 22%,
+    # отдельная статья БДДС и «Начало уплаты НДС» ровно в дату РВЭ.
+    #
+    # Затраты в модели заданы с НДС, поэтому входящий налог уже сидит в них.
+    # К вычету идёт не весь: при освобождённых операциях доля, приходящаяся на
+    # них, остаётся в себестоимости (п. 4 ст. 170 НК). Отсюда частая ошибка
+    # «стройка 10 млрд — вернут 1,8»: возвращают только долю нежилого.
+    vat_rate = max(0.0, n(x, "vat_pct", 22)) / 100
+    vat_taxable_products = tuple(
+        key for key in (*core_products, *krt_products) if key != "apartments"
+    )
+    vat_schedule: dict[date, float] = {}
+    vat_charged = vat_input_deductible = 0.0
+    if vat_rate > 0:
+        gross_to_tax = vat_rate / (1 + vat_rate)
+        taxable_revenue = sum(
+            sum(revenue_schedules.get(key, {}).values()) for key in vat_taxable_products
+        )
+        # Начисление — по передаче объекта, а не по признанию выручки: до
+        # раскрытия эскроу оплаты застройщику нет, и база возникает актом
+        # после ввода (ст. 167 НК). Всё, что продано до РВЭ, начисляется в РВЭ.
+        charged_by_month: dict[date, float] = defaultdict(float)
+        for key in vat_taxable_products:
+            for month, value in revenue_schedules.get(key, {}).items():
+                charged_by_month[max(month, rve)] += value * gross_to_tax
+        vat_charged = sum(charged_by_month.values())
+        # Входящий НДС — со строительных и коммерческих затрат. Покупка
+        # участка, плата за ВРИ и проценты по кредитам НДС не облагаются,
+        # поэтому в базу вычета не входят.
+        vat_free_articles = ("purchase", "land_rights", "vri_interest", "vri_security")
+        vat_bearing_costs = sum(
+            value for article, value in op["capex_amounts"].items()
+            if article not in vat_free_articles
+        ) + commercial_costs
+        deductible_share = taxable_revenue / total_revenue if total_revenue else 0.0
+        vat_input_deductible = vat_bearing_costs * gross_to_tax * deductible_share
+        # Вычет накапливается по ходу стройки, начисление приходит после ввода —
+        # значит к моменту передачи он уже есть, и живыми деньгами уходит
+        # только разница.
+        paid = 0.0
+        for month in months:
+            charged_cumulative = sum(
+                value for when, value in charged_by_month.items() if when <= month
+            )
+            due = max(charged_cumulative - vat_input_deductible, 0.0)
+            payment = max(due - paid, 0.0)
+            if payment > 0:
+                vat_schedule[month] = payment
+                paid += payment
+    vat = sum(vat_schedule.values())
+    vat_charged_by_month = charged_by_month if vat_rate > 0 else {}
+
     tax_rate = n(x, "profit_tax_pct", 25) / 100
     cumulative_margin = cumulative_financing = tax_paid = 0.0
     profit_tax_schedule: dict[date, float] = {}
     tax_rows = []
     row_by_month = {d(row["month"]): row for row in result["rows"]}
     for month in months:
-        margin_month = tax_margin_by_month.get(month, 0.0)
+        margin_month = tax_margin_by_month.get(month, 0.0) - vat_charged_by_month.get(month, 0.0)
         financing_month = financing_deductions.get(month, 0.0)
         cumulative_margin += margin_month
         cumulative_financing += financing_month
@@ -15387,10 +15441,11 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
         })
     profit_tax = sum(profit_tax_schedule.values())
 
+
     # LLCR methodology mirrors the current workbook presentation:
     # numerator = project receipts - operating/tax - investment + PF inflow.
     # denominator = PF principal + interest/commissions, excluding duplicated transferred bridge interest.
-    llcr_numerator = total_revenue - commercial_costs - profit_tax - total_capex + result["pf_draw_total"]
+    llcr_numerator = total_revenue - commercial_costs - profit_tax - vat - total_capex + result["pf_draw_total"]
 
     # To reproduce Excel's correction concept, create a "reported" total where transferred bridge interest
     # appears in both bridge and PF buckets, then subtract it once.
@@ -15403,6 +15458,10 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
     result.update({
         "financing_cost": financing_cost,
         "profit_tax": profit_tax,
+        "vat": vat,
+        "vat_charged": vat_charged,
+        "vat_input_deductible": vat_input_deductible,
+        "vat_schedule": {month.isoformat(): value for month, value in vat_schedule.items()},
         "profit_tax_schedule": {
             month.isoformat(): value for month, value in profit_tax_schedule.items()
         },
@@ -15508,7 +15567,7 @@ def calculate(req: CalcRequest) -> dict:
     total_revenue = fin["total_revenue"]
     total_capex = fin["total_capex"]
     after_finance_pre_tax = fin["profit_before_tax"]
-    net_profit = after_finance_pre_tax - fin["profit_tax"]
+    net_profit = after_finance_pre_tax - fin["profit_tax"] - fin.get("vat", 0.0)
 
     # Report-level project metrics.
     monetizable_saleable_sqm = sum(
@@ -15523,7 +15582,7 @@ def calculate(req: CalcRequest) -> dict:
         "main_above", "main_under", "utilities", "landscaping",
         "commissioning", "site_maintenance", "gc_fee", "reserve"
     ))
-    full_project_cost = total_capex + fin["commercial_costs"] + fin["financing_cost"] + fin["profit_tax"]
+    full_project_cost = total_capex + fin["commercial_costs"] + fin["financing_cost"] + fin["profit_tax"] + fin.get("vat", 0.0)
     avg_apartment_price = (
         op["revenue_by_product"].get("apartments", 0.0) / apartment_saleable_sqm / 1000
         if apartment_saleable_sqm else 0.0
@@ -15536,7 +15595,7 @@ def calculate(req: CalcRequest) -> dict:
 
     # Unit economics by total GNS and monetizable saleable area.
     project_gns_sqm = sum(n(row, "gns") for row in t.values())
-    total_expenses = total_capex + fin["commercial_costs"] + fin["financing_cost"] + fin["profit_tax"]
+    total_expenses = total_capex + fin["commercial_costs"] + fin["financing_cost"] + fin["profit_tax"] + fin.get("vat", 0.0)
 
     def per_sqm_th(value: float, area: float) -> float:
         return value / area / 1000 if area else 0.0
@@ -15688,6 +15747,10 @@ def calculate(req: CalcRequest) -> dict:
         ("Маркетинг и продажи", fin["commercial_costs"]),
         ("Проценты и комиссии", fin["financing_cost"]),
         ("Налог на прибыль", fin["profit_tax"]),
+        # НДС виден отдельной строкой: он не налог на прибыль и не
+        # стройка, и прятать его внутри «налогов» значит скрыть от
+        # человека статью, которая растёт вместе с долей нежилого.
+        ("НДС", fin.get("vat", 0.0)),
     ]
     expense_structure = []
     expense_base = sum(value for _, value in expense_groups)
