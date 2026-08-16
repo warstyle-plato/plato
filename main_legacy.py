@@ -16025,6 +16025,28 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
     return result
 
 
+def _underground_spaces_before_refusal(
+        x: dict, t: dict, area_per_space: float) -> float:
+    """Сколько машино-мест теряет проект, отказываясь от подземного паркинга.
+
+    Порядок тот же, что и у обычного расчёта подземной части: решение проекта
+    главнее импорта, площадь читается через норматив, ТЭП — последний источник.
+    Считать надо до обнуления строки: после него переносить уже нечего.
+    """
+    manual_spaces = n(x, "underground_manual_spaces")
+    if manual_spaces > 0:
+        return round(manual_spaces)
+    manual_area = n(x, "underground_manual_gns_sqm")
+    if manual_area > 0 and area_per_space > 0:
+        return round(manual_area / area_per_space)
+    imported = (x.get("_glavapu_import") or {}).get("normalized", {})
+    if imported:
+        spaces = n(imported, "parking_permanent") + n(imported, "parking_guest")
+        if spaces > 0:
+            return round(spaces)
+    return round(n((t or {}).get("underground_parking") or {}, "units"))
+
+
 def calculate(req: CalcRequest) -> dict:
     x = req.inputs
     t = req.tep
@@ -16062,8 +16084,23 @@ def calculate(req: CalcRequest) -> dict:
         # закрывают наземным гаражом, и он дешевле. Ноль в поле мест значит
         # «по нормативу», поэтому отказ выражается отдельным признаком —
         # иначе импорт ГлавАПУ восстановил бы паркинг при первом пересчёте.
+        #
+        # Места переезжают в наземный, как и обещает подпись признака. Полтора
+        # десятка выпусков она обещала перенос, а признак только обнулял
+        # подземный: на Мытищах 2 723 места исчезали вместе с 95 305 м², и
+        # проект оставался вовсе без парковки — выручка падала на 16,8 млрд,
+        # LLCR подскакивал до 1,62x, и всё это выглядело улучшением экономики.
+        # Переносится решение проекта целиком (решение владельца, 16.08.2026),
+        # а не норматив обеспеченности: сколько мест девелопер спроектировал,
+        # столько и строится, просто на земле.
+        moved_spaces = _underground_spaces_before_refusal(x, t, area_per_space)
         for field in ("units", "gns", "total_area", "useful", "saleable", "transfer"):
             t["underground_parking"][field] = 0.0
+        # Включённый руками наземный паркинг — уже принятое решение, и перенос
+        # его не трогает: иначе своё число мест затиралось бы при каждом счёте.
+        if moved_spaces > 0 and not b(x, "above_parking_enabled"):
+            x["above_parking_enabled"] = True
+            x["above_parking_spaces"] = moved_spaces
     elif (manual_spaces > 0 or manual_underground > 0) and "underground_parking" in t:
         spaces = (manual_spaces if manual_spaces > 0
                   else round(manual_underground / area_per_space))
