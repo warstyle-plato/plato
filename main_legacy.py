@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.18.7"
+VERSION = "0.18.8"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -2344,18 +2344,24 @@ def land_map_probe(bbox: str = "") -> dict[str, Any]:
 
 def _nspd_wms_map_png(west: float, south: float, east: float, north: float,
                       width: int, height: int) -> bytes:
-    """Картинка слоя «Земельные участки из ЕГРН» под градусный bbox."""
+    """Картинка слоя «Земельные участки из ЕГРН» под меркаторный bbox.
+
+    Формат сверен пробой /land/map-probe на проде (16.08.2026): НСПД отдаёт
+    PNG только на EPSG:3857 с меркаторным bbox, EPSG:4326 в обоих порядках
+    осей отвечает 404. Прозрачность true — как в пробе; фон выравнивает
+    land_map_image.
+    """
     params = urllib.parse.urlencode({
         "REQUEST": "GetMap",
         "SERVICE": "WMS",
         "VERSION": "1.3.0",
         "FORMAT": "image/png",
         "STYLES": "",
-        "TRANSPARENT": "false",
+        "TRANSPARENT": "true",
         "LAYERS": _NSPD_LANDS_LAYER_ID,
         "WIDTH": int(width),
         "HEIGHT": int(height),
-        "CRS": "EPSG:4326",
+        "CRS": "EPSG:3857",
         "BBOX": f"{west},{south},{east},{north}",
     })
     request_headers = {
@@ -2401,10 +2407,10 @@ def land_map_image(bbox: str = "") -> Response:
     """Подложка кадастровой карты под меркаторный bbox контура.
 
     Страница передаёт ровно тот bbox (с полем), в котором рисует SVG-контур,
-    поэтому подложка и контур совпадают пиксель в пиксель. Пиксели считаются
-    так, чтобы плоская картинка EPSG:4326 локально совпала с меркатором:
-    высота растянута на 1/cos(широты). Любой сбой — 502, и страница просто
-    остаётся с чистым контуром: подложка — украшение, а не данные.
+    а НСПД принимает его тем же меркатором (EPSG:3857, сверено пробой) —
+    подложка и контур совпадают пиксель в пиксель без пересчётов. Любой
+    сбой — 502, и страница просто остаётся с чистым контуром: подложка —
+    украшение, а не данные.
     """
     remote = _core_api_url("/land/map-image")
     if remote:
@@ -2431,23 +2437,29 @@ def land_map_image(bbox: str = "") -> Response:
     if not (0 < span_x <= 20000 and 0 < span_y <= 20000):
         # Больше 20 км — это уже не карточка участка, а карта страны.
         raise HTTPException(status_code=400, detail="bbox вне разумного размера участка.")
-    south_lat, west_lng = _mercator_to_wgs84(min_x, min_y)
-    north_lat, east_lng = _mercator_to_wgs84(max_x, max_y)
-    cos_lat = math.cos(math.radians((south_lat + north_lat) / 2.0)) or 1.0
     # Ширина до 640 px; высота — из меркаторных пропорций bbox, чтобы
     # совпасть с SVG-контуром страницы.
     width = 640
     height = max(64, min(1280, int(round(width * span_y / span_x))))
-    lat_span_needed = (east_lng - west_lng) * (height / width) * cos_lat
-    lat_mid = (south_lat + north_lat) / 2.0
-    south, north = lat_mid - lat_span_needed / 2.0, lat_mid + lat_span_needed / 2.0
     cache_key = f"{round(min_x)}:{round(min_y)}:{round(max_x)}:{round(max_y)}"
     cached = _NSPD_MAP_CACHE.get(cache_key)
     if cached and time.time() - cached[0] < _NSPD_MAP_CACHE_TTL_SECONDS:
         return Response(cached[1], media_type="image/png",
                         headers={"Cache-Control": "public, max-age=3600"})
     try:
-        raw = _nspd_wms_map_png(west_lng, south, east_lng, north, width, height)
+        raw = _nspd_wms_map_png(min_x, min_y, max_x, max_y, width, height)
+        # НСПД отвечает прозрачным PNG (проба), а прозрачность дальше опасна:
+        # фото бота при конвертации в RGB получило бы чёрный фон. Плоское
+        # светлое основание кладётся один раз здесь.
+        from PIL import Image
+        layer = Image.open(io.BytesIO(raw)).convert("RGBA")
+        base = Image.new("RGBA", layer.size, (245, 245, 243, 255))
+        base.alpha_composite(layer)
+        buffer = io.BytesIO()
+        base.convert("RGB").save(buffer, format="PNG")
+        raw = buffer.getvalue()
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Подложка карты недоступна: {exc}")
     if len(_NSPD_MAP_CACHE) >= _NSPD_MAP_CACHE_LIMIT:
