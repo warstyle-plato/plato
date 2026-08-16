@@ -80,11 +80,17 @@ def test_the_market_prices_expire_with_the_year():
 
 
 def test_the_kzatr_asks_for_the_quarterly_index():
-    """Приказ от 10.03.2026 ввёл поквартальную корректировку с 2026-Q2:
-    дальше значение обязано подставляться индексом, а не жить константой."""
+    """Приказ от 10.03.2026 ввёл поквартальную корректировку с 2026-Q2.
+
+    Пока индекс квартала утверждён распоряжением ДЭПР (Q3-2026 принесён
+    16.08.2026, ДПРР-18-26), напоминание молчит и показывает посчитанный
+    Кзатр; квартал без индекса — просит следующее распоряжение."""
     rows = {row["key"]: row for row in core.reference_freshness(date(2026, 8, 14))}
-    assert rows["mpt_kzatr"]["stale"] is True
-    assert "индекс" in rows["mpt_kzatr"]["hint"].lower()
+    assert rows["mpt_kzatr"]["stale"] is False, "индекс Q3 принесён — молчать"
+    assert "170.03746" in rows["mpt_kzatr"]["current"]
+    stale = {row["key"]: row for row in core.reference_freshness(date(2026, 10, 5))}
+    assert stale["mpt_kzatr"]["stale"] is True
+    assert "индекс" in stale["mpt_kzatr"]["hint"].lower()
 
 
 # --- напоминание доходит --------------------------------------------------------
@@ -101,7 +107,16 @@ def test_the_endpoint_lists_what_is_stale():
 def test_the_reminder_reaches_the_owner():
     """Напоминание, которое видно только в логе, — это напоминание, которого
     нет: строка уходит в `/status` и в суточную сводку администраторам."""
-    line = wrapper._stale_reference_line()
+    # Сегодняшняя полка может быть целиком свежей (16.08.2026 — так и есть),
+    # поэтому строка проверяется на дате с заведомо просроченным Кзатр.
+    monkey_rows = wrapper.core.stale_references(date(2026, 10, 5))
+    assert monkey_rows, "на 05.10.2026 Кзатр обязан быть просрочен"
+    real = wrapper.core.stale_references
+    wrapper.core.stale_references = lambda *a, **kw: monkey_rows
+    try:
+        line = wrapper._stale_reference_line()
+    finally:
+        wrapper.core.stale_references = real
     assert "Пора обновить справочники" in line
     source = (ROOT / "main.py").read_text(encoding="utf-8")
     assert source.count("_stale_reference_line()") >= 3  # объявление + два места

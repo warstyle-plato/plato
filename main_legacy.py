@@ -3067,19 +3067,27 @@ def reference_freshness(today: date | None = None) -> list[dict[str, Any]]:
             bool(next_date and now >= next_date),
             "Новый тур оценки утверждается раз в четыре года")
 
-    # Кзатр льготы МПТ Москвы — индексируется поквартально к декабрю 2025.
+    # Кзатр льготы МПТ Москвы — база приказа × утверждённый индекс ДЭПР к
+    # декабрю 2025. Пока индекс текущего квартала принесён (распоряжение
+    # ДЭПР), напоминание молчит; сменился квартал без индекса — загорается.
     try:
         import mpt_calculator
 
-        indexed_from = str(mpt_calculator.KZATR_INDEXATION_FROM_QUARTER)
+        current_kzatr = mpt_calculator.kzatr_for_quarter(quarter)
+        known_quarters = sorted(mpt_calculator.KZATR_INDICES_TO_DEC2025)
+        latest_known = (known_quarters[-1] if known_quarters
+                        else mpt_calculator.KZATR_INDEXATION_FROM_QUARTER)
         row("mpt_kzatr", "Кзатр льготы МПТ Москвы",
-            f"{mpt_calculator.KZATR_BASE} тыс ₽/м² с "
-            f"{mpt_calculator.KZATR_BASE_FROM.isoformat()}",
-            f"квартал {indexed_from}",
-            "Приказ ДИиПП Москвы от 10.03.2026",
-            quarter > _quarter_shift(indexed_from, 0),
-            "С указанного квартала значение корректируется индексом Росстата "
-            "к декабрю 2025 года — подставьте фактический индекс")
+            (f"{current_kzatr} тыс ₽/м² на {quarter}" if current_kzatr is not None
+             else f"{mpt_calculator.KZATR_BASE} тыс ₽/м² с "
+                  f"{mpt_calculator.KZATR_BASE_FROM.isoformat()} — индекс "
+                  f"{quarter} не принесён"),
+            f"квартал {_quarter_shift(latest_known, 1)}",
+            "Приказ ДИиПП от 10.03.2026 · " + mpt_calculator.KZATR_INDICES_SOURCE,
+            current_kzatr is None and mpt_calculator.quarter_is_indexed(quarter),
+            "Индекс нового квартала утверждается распоряжением ДЭПР "
+            "(обобщённый индекс стоимости строительства за последний месяц "
+            "предыдущего квартала к декабрю 2025) — принести распоряжение")
     except Exception:
         pass
 
