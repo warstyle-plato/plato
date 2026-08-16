@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.18.9"
+VERSION = "0.18.10"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -9177,6 +9177,7 @@ _MODEL_SUMMARY_ROWS: list[tuple[str, str, str]] = [
     ("financing_cost", "Стоимость финансирования", "mln"),
     ("profit_before_tax", "Прибыль до налога", "mln"),
     ("profit_tax", "Налог на прибыль", "mln"),
+    ("vat", "НДС", "mln"),
     ("net_profit", "Чистая прибыль", "mln"),
     ("margin", "Маржинальность", "pct"),
     ("llcr", "LLCR", "num"),
@@ -9412,6 +9413,7 @@ def _model_sheet_costs(result: dict[str, Any]) -> dict[str, Any]:
         [_cell_text("Коммерческие расходы"), _cell_mln(result.get("commercial_costs"))],
         [_cell_text("Стоимость финансирования"), _cell_mln((result.get("summary") or {}).get("financing_cost"))],
         [_cell_text("Налог на прибыль"), _cell_mln((result.get("summary") or {}).get("profit_tax"))],
+        [_cell_text("НДС"), _cell_mln((result.get("summary") or {}).get("vat"))],
     ])
     structure = (result.get("report") or {}).get("expense_structure") or []
     charts: list[dict[str, Any]] = []
@@ -16171,6 +16173,14 @@ def calculate(req: CalcRequest) -> dict:
             "per_saleable_th": per_sqm_th(fin["profit_tax"], monetizable_saleable_sqm),
         },
         {
+            # НДС — в тех же двух базах, что и всё остальное: одна база без
+            # второй уже читалась как другой показатель.
+            "label": "НДС",
+            "total": fin.get("vat", 0.0),
+            "per_gns_th": per_sqm_th(fin.get("vat", 0.0), project_gns_sqm),
+            "per_saleable_th": per_sqm_th(fin.get("vat", 0.0), monetizable_saleable_sqm),
+        },
+        {
             "label": "Полные расходы",
             "total": total_expenses,
             "per_gns_th": per_sqm_th(total_expenses, project_gns_sqm),
@@ -16496,6 +16506,10 @@ def calculate(req: CalcRequest) -> dict:
             "financing_cost": fin["financing_cost"],
             "profit_before_tax": after_finance_pre_tax,
             "profit_tax": fin["profit_tax"],
+            # НДС живёт в summary рядом с налогом на прибыль, а не только в
+            # finance: поверхности читают сводку, и без этого ключа налог,
+            # уменьшающий чистую прибыль на миллиард, нигде не показывался.
+            "vat": fin.get("vat", 0.0),
             "net_profit": net_profit,
             "margin": net_profit / total_revenue if total_revenue else 0.0,
             "llcr": fin["llcr"],
@@ -17198,6 +17212,7 @@ def _consolidate_phase_results(
         ("Маркетинг и продажи", commercial_costs), ("EBITDA", ebitda),
         ("Проценты и комиссии", finance["financing_cost"]),
         ("Налог на прибыль", finance["profit_tax"]),
+        ("НДС", finance.get("vat", 0.0)),
         ("Полные расходы", full_cost), ("Чистая прибыль", net_profit),
     ):
         unit_economics.append({
@@ -17372,7 +17387,8 @@ def _consolidate_phase_results(
             "commercial_costs": commercial_costs, "ebitda": ebitda,
             "financing_cost": finance["financing_cost"],
             "profit_before_tax": finance["profit_before_tax"],
-            "profit_tax": finance["profit_tax"], "net_profit": net_profit,
+            "profit_tax": finance["profit_tax"], "vat": finance.get("vat", 0.0),
+            "net_profit": net_profit,
             "margin": net_profit / total_revenue if total_revenue else 0.0,
             "llcr": finance["llcr"],
             "ending_pf": finance.get("ending_pf", 0.0),
@@ -21138,6 +21154,45 @@ def _plato_job_path(job_id: str, suffix: str = "json") -> Path:
     return _PLATO_STAGE_DIR / f"job_{job_id}.{suffix}"
 
 
+def _plato_puller_seen_touch() -> None:
+    """Отметка «сервис модели приходил за заданием».
+
+    Ядро знает про Render ровно одно: приходил он за очередью или нет. Без этой
+    отметки срыв объяснялся догадкой — «проверьте, запущен ли разбор очереди», —
+    и одинаково выглядели три разных случая: разбор не запущен вовсе, Render
+    заснул, разбор жив, но задание не берёт. Отметка на диске, а не в памяти:
+    воркеров два, и опрос попадёт в другой.
+    """
+    try:
+        _PLATO_STAGE_DIR.mkdir(parents=True, exist_ok=True)
+        (_PLATO_STAGE_DIR / "puller.seen").write_text(str(time.time()), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _plato_puller_seen_ago() -> float | None:
+    """Сколько секунд назад приходил сервис модели. None — не приходил ни разу."""
+    try:
+        return max(0.0, time.time() - float(
+            (_PLATO_STAGE_DIR / "puller.seen").read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        return None
+
+
+def _plato_puller_diagnosis() -> str:
+    """Причина словами — по факту, а не по догадке."""
+    ago = _plato_puller_seen_ago()
+    if ago is None:
+        return ("Сервис модели ни разу не приходил за заданием: разбор очереди на нём "
+                "не запущен. На Render нужны PLATO_PULL_URL и OPENAI_API_KEY, "
+                "а PLATO_AI_URL должен быть пуст.")
+    if ago > 120:
+        return (f"За очередью он последний раз приходил {int(ago // 60)} мин назад и "
+                "сейчас молчит: скорее всего, заснул или перезапускается.")
+    return (f"За очередью он приходил {int(ago)} с назад, но задание не забрал — "
+            "связь есть, дело в самом разборе.")
+
+
 def _plato_job_claim() -> dict[str, Any]:
     """Старейшее задание, забранное насовсем.
 
@@ -21195,7 +21250,7 @@ def _openai_pull_request(payload: dict[str, Any],
     raise HTTPException(
         status_code=504,
         detail=(f"Сервис модели не забрал задание за {int(waited)} с. "
-                "Проверьте, запущен ли на нём разбор очереди (PLATO_PULL_URL)."))
+                + _plato_puller_diagnosis()))
 
 
 def _plato_queue_guard(request: Request) -> None:
@@ -21228,6 +21283,7 @@ def internal_plato_queue(request: Request, wait: float = 0.0) -> dict[str, Any]:
     либо частил бы опросом, либо отвечал бы с задержкой в целый интервал.
     """
     _plato_queue_guard(request)
+    _plato_puller_seen_touch()
     limit = min(max(0.0, float(wait or 0.0)), _PLATO_QUEUE_WAIT_SECONDS)
     deadline = time.monotonic() + limit
     while True:
@@ -22521,6 +22577,10 @@ def agent_status() -> dict[str, Any]:
             "waiting_jobs": len(list(_PLATO_STAGE_DIR.glob("job_*.json")))
                             if _PLATO_STAGE_DIR.exists() else 0,
             "worker_here": bool(_PLATO_PULL_URL and not _PLATO_AI_URL),
+            # Сколько назад за очередью приходил сервис модели: единственный
+            # факт, отличающий «разбор не запущен» от «Render заснул».
+            "puller_seen_ago_seconds": _plato_puller_seen_ago(),
+            "diagnosis": _plato_puller_diagnosis() if _PLATO_PULL_ENABLED else "",
         },
         # Пинг против засыпания сервиса модели: видно, живёт ли он и когда
         # последний раз отзывался, — иначе «Ошибка AI (504)» объяснять нечем.
@@ -26581,6 +26641,9 @@ function renderResult(){
   row('Поступления проекта',money(f.total_revenue))+
   row('Коммерческие расходы',`(${money(f.commercial_costs)})`)+
   row('Налог на прибыль',`(${money(f.profit_tax)})`)+
+  // НДС — денежный расход, движок вычитает его из числителя. Без строки
+  // столбец не сходился к итогу, и покрытие выглядело необъяснимо ниже.
+  row('НДС',`(${money(f.vat||0)})`)+
   row('Инвестиционные расходы',`(${money(f.total_capex)})`)+
   row('Поступление ПФ',money(f.pf_draw_total))+
   `<tr><th>Числитель LLCR</th><th>${money(f.llcr_numerator)}</th></tr>`+
@@ -26598,7 +26661,13 @@ function renderResult(){
   row('Маржа наземного паркинга',money(taxMargins.above_parking||0))+
   row('Вычет: проценты и банковские комиссии',`(${money(f.financing_tax_deductions||f.financing_cost||0)})`)+
   `<tr><th>Итоговая прибыль до налога</th><th>${money(f.profit_before_tax)}</th></tr>`+
-  `<tr><th>Налог на прибыль</th><th>${money(f.profit_tax)}</th></tr>`;
+  // НДС из базы налога на прибыль движок вычитает помесячно: он не доход, а
+  // транзит в бюджет. Показываем его отдельной строкой рядом с налогом —
+  // раньше платёж на миллиард не был виден в отчёте вовсе.
+  row('Вычет из базы: НДС к уплате',`(${money(f.vat||0)})`)+
+  `<tr><th>Налог на прибыль</th><th>${money(f.profit_tax)}</th></tr>`+
+  `<tr><th>НДС к уплате</th><th>${money(f.vat||0)}</th></tr>`+
+  `<tr><th>Итого налоги</th><th>${money((f.profit_tax||0)+(f.vat||0))}</th></tr>`;
  taxTable.innerHTML=taxMarkup;
  reportTaxTable.innerHTML=taxMarkup;
 
@@ -26616,6 +26685,9 @@ function renderResult(){
   row('Проценты и комиссии',`(${money(r.summary.financing_cost)})`)+
   `<tr><th>Прибыль до налога</th><th>${money(r.summary.profit_before_tax)}</th></tr>`+
   row('Налог на прибыль',`(${money(r.summary.profit_tax)})`)+
+  // Без этой строки экономика не сходилась: прибыль до налога минус налог
+  // давала не чистую прибыль, и разницу человеку было негде найти.
+  row('НДС',`(${money(r.summary.vat||0)})`)+
   `<tr><th>Чистая прибыль</th><th>${money(r.summary.net_profit)}</th></tr>`+
   row('Маржинальность',pct(r.summary.margin))+
   row('NPV',money(r.summary.npv))+
