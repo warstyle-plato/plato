@@ -12410,9 +12410,11 @@ _M2_RATE_SCENARIOS = [["high", "Консервативный"], ["base", "Баз
 # Поля страницы, до расчёта не доходящие: движок их не читает, они уезжают
 # только в шаблон ПЛАТО. В книге они помечены — иначе аналитик правит этап
 # роста цены, ничего не происходит, и виноватой оказывается книга.
+# «vat_pct» ушла отсюда 16.08.2026: НДС теперь считается, и пометка «не
+# участвует» на «Вводных» стала бы такой же обманкой, какой была сама ставка.
 _M2_TEMPLATE_ONLY_INPUTS = frozenset({
     "inflation_after_rve_pct", "growth_stage1_pct", "growth_stage2_pct",
-    "growth_stage3_pct", "growth_stage4_pct", "vat_pct",
+    "growth_stage3_pct", "growth_stage4_pct",
 })
 
 # Из базы резерва движок исключает цену входа и стоимость рассрочки ВРИ:
@@ -12453,7 +12455,7 @@ _M2_COST_ARTICLES: list[tuple[str, str, bool]] = [
 # Показатели листа «ОТЧЁТ» — порядок строк, на него ссылается тест.
 _M2_REPORT_KEYS = [
     "revenue", "capex", "operating", "ebitda", "financing_cost",
-    "profit_before_tax", "profit_tax", "net_profit",
+    "profit_before_tax", "profit_tax", "vat", "net_profit",
     "peak_bridge", "pf_draw_total", "peak_pf", "avg_pf_rate", "llcr",
 ]
 
@@ -13385,13 +13387,20 @@ def build_plato_model_v2(
     # --- НАЛОГИ ------------------------------------------------------------
     tax = _MonthGrid(sheets["tax"], months, styles, title="НАЛОГ НА ПРИБЫЛЬ · млн ₽")
     tax.layout("margin", "adjust", "deduction", "margin_cum", "deduction_cum",
-               "base", "tax", "tax_cum")
+               "base", "tax", "tax_cum", "vat")
     tax.values("margin", "Маржа реализованных продуктов",
                [float(item.get("taxable_margin") or 0.0) / 1e6 for item in rows], money)
     adjust = [0.0] * len(rows)
     if rows:
         adjust[-1] = float(finance.get("financing_tax_reconciliation") or 0.0) / 1e6
     tax.values("adjust", "Корректировка вычетов (сверка)", adjust, money)
+    # НДС — денежный расход проекта: без него книга показывала прибыль выше
+    # расчёта ровно на его величину, и обе цифры выглядели достоверно.
+    vat_schedule = {d(month): value for month, value in
+                    (finance.get("vat_schedule") or {}).items()}
+    tax.values("vat", "НДС к уплате",
+               [round(vat_schedule.get(d(item["month"]), 0.0) / 1e6, 6) for item in rows],
+               money)
     tax.formula("deduction", "Вычет по финансированию (выплачено)",
                 lambda i: (f"={credit.outside('interest_payment', i)}"
                            f"+{credit.outside('fees', i)}+{tax.at('adjust', i)}"), money)
@@ -13413,7 +13422,7 @@ def build_plato_model_v2(
     flow = _MonthGrid(sheets["cf"], months, styles, title="ДВИЖЕНИЕ ДЕНЕЖНЫХ СРЕДСТВ · млн ₽")
     flow.layout(
         ("section", "Операционная деятельность"), "revenue", "capex", "operating", "tax",
-        "interest", "project", "project_cum",
+        "vat", "interest", "project", "project_cum",
         ("section", "Финансовая деятельность"), "bridge_draw", "bridge_repay",
         "pf_draw", "pf_repay", "financing",
         ("section", "Поток на собственный капитал"), "cash_in", "equity", "equity_cum")
@@ -13422,6 +13431,7 @@ def build_plato_model_v2(
     flow.formula("operating", "Маркетинг, продажи и содержание",
                  lambda i: f"=-{costs.outside('operating', i)}", money)
     flow.formula("tax", "Налог на прибыль", lambda i: f"=-{tax.outside('tax', i)}", money)
+    flow.formula("vat", "НДС", lambda i: f"=-{tax.outside('vat', i)}", money)
     flow.formula("interest", "Проценты и комиссии выплаченные",
                  lambda i: f"=-{credit.outside('interest_payment', i)}-{credit.outside('fees', i)}", money)
     # Проектный поток — как его считает движок: до финансирования тела долга,
@@ -13464,12 +13474,13 @@ def build_plato_model_v2(
         ("Маркетинг, продажи и содержание", f"=-SUM({costs.span('operating')})", money),
         ("CAPEX", f"=-SUM({costs.span('capex')})", money),
         ("Налог на прибыль", f"=-SUM({tax.span('tax')})", money),
+        ("НДС", f"=-SUM({tax.span('vat')})", money),
         ("Выборка ПФ", f"=SUM({credit.span('pf_draw')})", money),
-        ("ЧИСЛИТЕЛЬ", "=SUM(B4:B8)", money),
-        ("Выборка ПФ", "=B8", money),
+        ("ЧИСЛИТЕЛЬ", "=SUM(B4:B9)", money),
+        ("Выборка ПФ", "=B9", money),
         ("Проценты и комиссии", f"=SUM({credit.span('cost')})", money),
-        ("ЗНАМЕНАТЕЛЬ", "=B10+B11", money),
-        ("LLCR", "=IFERROR(B9/B12,0)", ratio),
+        ("ЗНАМЕНАТЕЛЬ", "=B11+B12", money),
+        ("LLCR", "=IFERROR(B10/B13,0)", ratio),
     ]
     for offset, (label, formula, fmt) in enumerate(llcr_rows):
         line = 4 + offset
@@ -13542,8 +13553,10 @@ def build_plato_model_v2(
          float(summary.get("profit_before_tax") or 0.0) / 1e6),
         ("profit_tax", "Налог на прибыль", f"=SUM({tax.span('tax')})", money,
          float(summary.get("profit_tax") or 0.0) / 1e6),
+        ("vat", "НДС", f"=SUM({tax.span('vat')})", money,
+         float(finance.get("vat") or 0.0) / 1e6),
         ("net_profit", "Чистая прибыль",
-         f"={own('profit_before_tax')}-{own('profit_tax')}", money,
+         f"={own('profit_before_tax')}-{own('profit_tax')}-{own('vat')}", money,
          float(summary.get("net_profit") or 0.0) / 1e6),
         ("peak_bridge", "Пик БРИДЖ", f"=MAX({credit.span('bridge_balance')})", money,
          float(finance.get("peak_bridge") or 0.0) / 1e6),
@@ -13555,7 +13568,7 @@ def build_plato_model_v2(
          f"=IFERROR(SUMPRODUCT({credit.span('pf_gross')},{credit.span('pf_rate')})"
          f"/SUM({credit.span('pf_gross')}),0)", percent,
          float(finance.get("avg_pf_rate") or 0.0)),
-        ("llcr", "LLCR", f"={_M2_SHEETS['llcr']}!$B$13", ratio,
+        ("llcr", "LLCR", f"={_M2_SHEETS['llcr']}!$B$14", ratio,
          float(summary.get("llcr") or 0.0)),
     ]
     for key, label, formula, fmt, expected in report_rows:
@@ -17094,6 +17107,9 @@ def _aggregate_finance(results: list[dict[str, Any]]) -> dict[str, Any]:
         "total_capex": sum(f["total_capex"] for f in fs),
         "commercial_costs": sum(f["commercial_costs"] for f in fs),
         "profit_tax": sum(f["profit_tax"] for f in fs),
+        "vat": sum(f.get("vat", 0.0) for f in fs),
+        "vat_charged": sum(f.get("vat_charged", 0.0) for f in fs),
+        "vat_input_deductible": sum(f.get("vat_input_deductible", 0.0) for f in fs),
         "tax_margin_by_product": {
             key: sum(float((f.get("tax_margin_by_product") or {}).get(key, 0.0) or 0.0) for f in fs)
             for key in ("core", "offices", "standalone_retail", "above_parking")
@@ -17148,7 +17164,11 @@ def _consolidate_phase_results(
     saleable = sum(r["summary"]["monetizable_saleable_sqm"] for r in results)
     apartment_saleable = sum(r["summary"]["apartment_saleable_sqm"] for r in results)
     project_gns = sum(r["summary"]["project_gns_sqm"] for r in results)
-    full_cost = total_capex + commercial_costs + finance["financing_cost"] + finance["profit_tax"]
+    # НДС — такой же денежный расход проекта, как налог на прибыль: без него
+    # строки структуры расходов не сходятся с итоговой строкой, и обе
+    # выглядят достоверно.
+    full_cost = (total_capex + commercial_costs + finance["financing_cost"]
+                 + finance["profit_tax"] + finance.get("vat", 0.0))
     avg_apt_price = revenue.get("apartments", 0.0) / apartment_saleable / 1000 if apartment_saleable else 0.0
 
     construction_keys = (
