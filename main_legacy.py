@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.18.2"
+VERSION = "0.18.3"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -22849,7 +22849,6 @@ details.cadastral-box>summary::marker{color:#888}
         </div>
       </div>
       <button class="btn ai-open-btn" onclick="toggleAgent(true)"><span id="aiStatusDot" class="ai-dot"></span><span class="ai-label">Платон Сергеевич</span></button>
-      <button class="btn" onclick="saveLocal()">Сохранить</button>
       <!-- Кнопки хранилища появляются только там, где оно настроено и есть чем
            опознать владельца: иначе это кнопка, которая всегда отказывает. -->
       <button class="btn" id="projectsButton" style="display:none" onclick="openProjects()">Мои проекты</button>
@@ -26123,8 +26122,8 @@ async function calculate(){
  }
  repairParkingFromGlavapu();renderResult();renderPhaseReportControls();
  if(document.getElementById('tep')&&document.getElementById('tep').classList.contains('active'))renderTep();
- // Состояние сохраняется каждым пересчётом, а не только кнопкой «Сохранить»
- // и телеграм-потоком: применённая предустановка не переживала перезагрузку —
+ // Состояние сохраняется каждым пересчётом, а не отдельной кнопкой и
+ // телеграм-потоком: применённая предустановка не переживала перезагрузку —
  // вводные молча возвращались к умолчаниям (ВРИ 2 864,29, покупка 0), и
  // выглядело это как «предустановка не проедается в расчёт».
  persistLocalSilently();
@@ -26975,8 +26974,11 @@ async function exportModelArchive(){
  }
 }
 
+// Кнопки «Сохранить» нет: каждый пересчёт и так пишет состояние в localStorage
+// этого браузера — ручная копия того же самого создавала ложное ощущение
+// надёжного сохранения (владелец, 16.08.2026). Настоящее сохранение, которое
+// переживает смену устройства, — «Мои проекты».
 function persistLocalSilently(){localStorage.setItem('plato_v04',JSON.stringify({inputs,tep,phasing,scenario:scenarioSelect.value}))}
-function saveLocal(){persistLocalSilently();alert('Сохранено в этом браузере')}
 function loadLocal(){try{const x=JSON.parse(localStorage.getItem('plato_v04'));if(x){
  // Сохранённое состояние накладывается на умолчания, а не подменяет их целиком.
  // Иначе поле, добавленное после сохранения, в браузере просто отсутствует:
