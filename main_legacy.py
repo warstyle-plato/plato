@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.101"
+VERSION = "0.17.102"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -5847,6 +5847,30 @@ def _glavapu_headless_state() -> dict[str, Any]:
                 "hint": "Браузер сорвался; следующая попытка через "
                         f"{blocked} с. Причина — в last_error."}
     return {"state": "готов", "where": where}
+
+
+@app.get("/glavapu/health")
+def glavapu_health() -> dict[str, Any]:
+    """Состояние штатного калькулятора ГлавАПУ — для /status бота.
+
+    Браузер живёт на ядре, а /status спрашивают у бота на Render: без этого
+    маршрута сбой связки с ГлавАПУ виден только в предупреждении карточки ТЭП,
+    которое легко пролистать. Если задан адрес ядра — спрашиваем его, иначе
+    отвечаем о себе; счётчики показывают, чем закончились прошлые расчёты.
+    """
+    url = _core_api_url("/glavapu/health")
+    if url:
+        try:
+            request = urllib.request.Request(url, headers={"Accept": "application/json"})
+            with urllib.request.urlopen(request, timeout=10) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except Exception as exc:
+            return {"state": "ядро недоступно", "where": "Render",
+                    "hint": f"Ядро не ответило на запрос состояния: {exc}"}
+    state = dict(_glavapu_headless_state())
+    state.update({key: _GLAVAPU_HEADLESS.get(key)
+                  for key in ("last_ok", "last_error", "runs", "fallbacks")})
+    return state
 
 
 def _cadastral_analysis_for(numbers: list[str],
