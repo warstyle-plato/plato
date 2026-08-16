@@ -482,18 +482,51 @@
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ query: query, limit: 30 })
     }).then(function (r) { return r.ok ? r.json() : null; })
-      .then(function (data) { return data ? Number(data.found_count || 0) > 0 : null; })
+      .then(function (data) {
+        if (!data) return null;
+        return (data.results || []).filter(function (x) {
+          return x && x.found && x.kind === 'land' && x.cadastral_number;
+        }).map(function (x) { return String(x.cadastral_number); });
+      })
       // Сеть упала — проверка не судья: null значит «не знаю», не «нет».
       .catch(function () { return null; });
   }
 
   /* Чистая функция решения: по итогам двух проверок выбирает строку поиска
      и текст предупреждения. Вынесена из resolveHouse, чтобы тест гонял её
-     через node без DOM. byLabel/byTyped: true — нашлось, false — пусто,
-     null — проверка недоступна. */
+     через node без DOM. byLabel/byTyped — массив найденных кадастровых
+     номеров, null — проверка недоступна. Сравниваются составы, а не
+     «нашлось/пусто»: по Гродненской бот (сырая строка) видел два участка,
+     сайт (нормализованная подсказка) — один, и оба ответа выглядели
+     достоверно. */
   function houseQueryDecision(label, typed, byLabel, byTyped) {
-    if (byLabel !== false || !typed || typed === label) return { query: label, note: '' };
-    if (byTyped) {
+    var labelSet = Array.isArray(byLabel) ? byLabel : null;
+    var typedSet = Array.isArray(byTyped) ? byTyped : null;
+    if (labelSet === null || !typed || typed === label) return { query: label, note: '' };
+    if (labelSet.length) {
+      /* Подсказка нашлась, но набранный текст может видеть ту же территорию
+         шире: НСПД по сырой строке возвращает все участки адреса. Расширение
+         принимается только внутри кадастровых кварталов подсказки — жадному
+         геокодеру, собирающему «Мишина 46» по всей стране, сюда хода нет. */
+      if (typedSet && typedSet.length > labelSet.length) {
+        var quarter = function (num) { return String(num).split(':').slice(0, 3).join(':'); };
+        var quarters = {};
+        labelSet.forEach(function (num) { quarters[quarter(num)] = true; });
+        var coversLabel = labelSet.every(function (num) { return typedSet.indexOf(num) >= 0; });
+        var staysHome = typedSet.every(function (num) { return quarters[quarter(num)]; });
+        if (coversLabel && staysHome) {
+          return {
+            query: typed,
+            note: 'По введённому тексту «' + typed + '» НСПД видит эту территорию шире: '
+              + 'участков ' + typedSet.length + ', по подсказке «' + label + '» — '
+              + labelSet.length + '. Считаю по введённому тексту, как ищет бот; '
+              + 'лишние участки можно убрать из поля и повторить «Получить ТЭП».'
+          };
+        }
+      }
+      return { query: label, note: '' };
+    }
+    if (typedSet && typedSet.length) {
       return {
         query: typed,
         note: 'Подсказку «' + label + '» поиск НСПД не распознал — участок найден по '
@@ -533,15 +566,16 @@
     suggestNote('');
     var status = document.getElementById('cadastralStatus');
     if (status) status.textContent = 'Проверяю адрес в НСПД…';
-    probeLookup(label).then(function (byLabel) {
-      // Вторая проверка нужна, только когда первая ответила пустотой,
-      // а пробовать есть что; решение всё равно принимает houseQueryDecision.
-      var needTyped = byLabel === false && typed && typed !== label;
-      (needTyped ? probeLookup(typed) : Promise.resolve(null)).then(function (byTyped) {
-        var decision = houseQueryDecision(label, typed, byLabel, byTyped);
-        suggestNote(decision.note);
-        runObtainTep(decision.query);
-      });
+    // Обе формы проверяются всегда и параллельно: сравнение составов требует
+    // обоих ответов, а ждать их по очереди — плата в полную цепочку геокодера.
+    var needTyped = typed && typed !== label;
+    Promise.all([
+      probeLookup(label),
+      needTyped ? probeLookup(typed) : Promise.resolve(null)
+    ]).then(function (probes) {
+      var decision = houseQueryDecision(label, typed, probes[0], probes[1]);
+      suggestNote(decision.note);
+      runObtainTep(decision.query);
     });
   }
 
