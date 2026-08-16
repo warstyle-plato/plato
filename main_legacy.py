@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.18.5"
+VERSION = "0.18.6"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -2284,10 +2284,29 @@ def _nspd_wms_map_png(west: float, south: float, east: float, north: float,
         f"{_NSPD_BASE_URL}/api/aeggis/v3/{_NSPD_LANDS_LAYER_ID}/wms?{params}",
         headers=request_headers,
     )
+    # Тот же TLS-фолбэк, что у поиска (_land_fetch_json): сертификат НСПД —
+    # российский УЦ, и без повтора без проверки карта падала с
+    # CERTIFICATE_VERIFY_FAILED. Флаг — на процесс, а воркеров два: читать его
+    # мало, надо уметь взводить и здесь, иначе карта живёт только в том
+    # воркере, где до неё уже искали участок (скриншот владельца, 16.08.2026).
+    global _nspd_tls_insecure
     context = ssl._create_unverified_context() if _nspd_tls_insecure else None
-    with urllib.request.urlopen(
-            external_request, timeout=_NSPD_TIMEOUT_SECONDS, context=context) as response:
-        raw = response.read(4 * 1024 * 1024)
+    try:
+        with urllib.request.urlopen(
+                external_request, timeout=_NSPD_TIMEOUT_SECONDS, context=context) as response:
+            raw = response.read(4 * 1024 * 1024)
+    except urllib.error.URLError as exc:
+        if not (
+            _NSPD_TLS_FALLBACK
+            and not _nspd_tls_insecure
+            and isinstance(getattr(exc, "reason", None), ssl.SSLError)
+        ):
+            raise
+        _nspd_tls_insecure = True
+        with urllib.request.urlopen(
+                external_request, timeout=_NSPD_TIMEOUT_SECONDS,
+                context=ssl._create_unverified_context()) as response:
+            raw = response.read(4 * 1024 * 1024)
     if not raw.startswith(b"\x89PNG"):
         raise ValueError("НСПД ответила не картинкой")
     return raw
@@ -24364,7 +24383,7 @@ function landTerritorySvg(found){
    .filter(p=>Array.isArray(p)&&p.length>=2)
    .map(p=>((p[0]-minX+pad)).toFixed(1)+' '+((maxY-p[1]+pad)).toFixed(1))
    .join(' L ')+' Z').join(' ');
-  return `<path d="${d}" fill="rgba(245,245,243,.35)" stroke="#111" stroke-width="${(Math.max(w,h)/160).toFixed(2)}" fill-rule="evenodd" vector-effect="non-scaling-stroke"><title>${escapeHtml(item.cadastral_number||'')}</title></path>`;
+  return `<path d="${d}" fill="rgba(245,245,243,.35)" stroke="#111" stroke-width="2" fill-rule="evenodd" vector-effect="non-scaling-stroke"><title>${escapeHtml(item.cadastral_number||'')}</title></path>`;
  }).join('');
  const mapSrc=`/land/map-image?bbox=${(minX-pad).toFixed(1)},${(minY-pad).toFixed(1)},${(maxX+pad).toFixed(1)},${(maxY+pad).toFixed(1)}`;
  return `<div class="land-contour land-territory"><div class="land-contour-stage" style="aspect-ratio:${w.toFixed(1)} / ${h.toFixed(1)}">`+
@@ -24404,7 +24423,7 @@ function landContourSvg(item){
  return `<div class="land-contour"><div class="land-contour-stage" style="aspect-ratio:${w.toFixed(1)} / ${h.toFixed(1)}">`+
   `<img class="land-contour-map" src="${mapSrc}" alt="" loading="lazy" decoding="async" onerror="landMapLost(this)">`+
   `<svg viewBox="0 0 ${w.toFixed(1)} ${h.toFixed(1)}" preserveAspectRatio="none" role="img" aria-label="Границы участка по ЕГРН">`+
-  `<path d="${paths}" fill="rgba(245,245,243,.35)" stroke="#111" stroke-width="${(Math.max(w,h)/120).toFixed(2)}" fill-rule="evenodd" vector-effect="non-scaling-stroke"/></svg></div>`+
+  `<path d="${paths}" fill="rgba(245,245,243,.35)" stroke="#111" stroke-width="2.5" fill-rule="evenodd" vector-effect="non-scaling-stroke"/></svg></div>`+
   `<small>Границы по сведениям ЕГРН · подложка — публичная карта НСПД${scaleNote}</small></div>`;
 }
 
