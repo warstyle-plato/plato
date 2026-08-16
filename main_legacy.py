@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.95"
+VERSION = "0.17.96"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -15380,36 +15380,36 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
         # Начисление — по передаче объекта, а не по признанию выручки: до
         # раскрытия эскроу оплаты застройщику нет, и база возникает актом
         # после ввода (ст. 167 НК). Всё, что продано до РВЭ, начисляется в РВЭ.
-        charged_by_month: dict[date, float] = defaultdict(float)
-        for key in vat_taxable_products:
-            for month, value in revenue_schedules.get(key, {}).items():
-                charged_by_month[max(month, rve)] += value * gross_to_tax
+        # Начисление целиком в дату РВЭ: так устроена внешняя модель, с
+        # которой сверялись («Начало уплаты НДС» = РВЭ), и так книга считает
+        # тем же одним выражением. Хвост остаточных продаж платится на
+        # несколько месяцев раньше срока — в запас, а не в оптимизм.
+        charged_by_month: dict[date, float] = {rve: taxable_revenue * gross_to_tax}
         vat_charged = sum(charged_by_month.values())
         # Входящий НДС — со строительных и коммерческих затрат. Покупка
         # участка, плата за ВРИ и проценты по кредитам НДС не облагаются,
         # поэтому в базу вычета не входят.
+        # База берётся от итога CAPEX, а не суммированием словаря статей: в нём
+        # живут теневые ключи вроде land_rights_gross, и слепая сумма задваивала
+        # плату за ВРИ — книга и движок расходились ровно на неё.
         vat_free_articles = ("purchase", "land_rights", "vri_interest", "vri_security")
-        vat_bearing_costs = sum(
-            value for article, value in op["capex_amounts"].items()
-            if article not in vat_free_articles
-        ) + commercial_costs
+        vat_bearing_costs = total_capex + commercial_costs - sum(
+            op["capex_amounts"].get(article, 0.0) for article in vat_free_articles
+        )
         deductible_share = taxable_revenue / total_revenue if total_revenue else 0.0
         vat_input_deductible = vat_bearing_costs * gross_to_tax * deductible_share
         # Вычет накапливается по ходу стройки, начисление приходит после ввода —
         # значит к моменту передачи он уже есть, и живыми деньгами уходит
         # только разница.
-        paid = 0.0
-        for month in months:
-            charged_cumulative = sum(
-                value for when, value in charged_by_month.items() if when <= month
-            )
-            due = max(charged_cumulative - vat_input_deductible, 0.0)
-            payment = max(due - paid, 0.0)
-            if payment > 0:
-                vat_schedule[month] = payment
-                paid += payment
+        due = max(vat_charged - vat_input_deductible, 0.0)
+        if due > 0:
+            vat_schedule[rve] = due
     vat = sum(vat_schedule.values())
-    vat_charged_by_month = charged_by_month if vat_rate > 0 else {}
+    # Из базы налога на прибыль уходит НДС к уплате, а не начисленный:
+    # выручка признаётся без налога (минус начисленный), а затраты — без
+    # входящего в части, принятой к вычету (плюс вычет). В сумме это ровно
+    # чистый НДС. Вычитать начисленный значило бы дважды учесть вычет.
+    vat_charged_by_month = dict(vat_schedule)
 
     tax_rate = n(x, "profit_tax_pct", 25) / 100
     cumulative_margin = cumulative_financing = tax_paid = 0.0
