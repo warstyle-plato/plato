@@ -214,6 +214,57 @@ def test_the_map_backdrop_endpoint_speaks_wms(monkeypatch):
     assert len(calls) == 1
 
 
+def test_the_map_retries_without_tls_verification_like_the_lookup(monkeypatch):
+    """Сертификат НСПД — российский УЦ: карта повторяет запрос без проверки.
+
+    Поиск участков этот фолбэк имел, а карта только читала флаг — и в воркере,
+    где ещё не искали, падала с CERTIFICATE_VERIFY_FAILED (скриншот владельца,
+    16.08.2026). Флаг взводится и картой, и только по правилу NSPD_TLS_FALLBACK.
+    """
+    import ssl as ssl_module
+    import urllib.error
+
+    calls = []
+    png = b"\x89PNG\r\n\x1a\n" + b"x" * 16
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self, limit):
+            return png
+
+    def fake_urlopen(request, timeout=0, context=None):
+        calls.append(context)
+        if context is None:
+            raise urllib.error.URLError(ssl_module.SSLError("self-signed certificate"))
+        return _Response()
+
+    monkeypatch.setattr(main.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(main, "_nspd_tls_insecure", False)
+    assert main._nspd_wms_map_png(37.5, 55.7, 37.6, 55.8, 640, 640) == png
+    assert calls[0] is None and calls[1] is not None, "повтор не отключил проверку"
+    assert main._nspd_tls_insecure, "флаг не взведён — следующий воркер упадёт снова"
+
+
+def test_the_stroke_is_screen_pixels_not_metres():
+    """non-scaling-stroke мерит толщину в пикселях экрана: ширина, посчитанная
+    от размаха территории в метрах, на 22 участках Мытищ давала кляксы."""
+    big = [[4200000.0, 7550000.0], [4202000.0, 7550000.0],
+           [4202000.0, 7552000.0], [4200000.0, 7552000.0], [4200000.0, 7550000.0]]
+    second = [[p[0] + 2500, p[1]] for p in big]
+    svg = run_territory([
+        {"cadastral_number": "a", "contour_merc": [big]},
+        {"cadastral_number": "b", "contour_merc": [second]},
+    ])
+    assert 'stroke-width="2"' in svg, "толщина уехала от константы в пиксели-метры"
+    single = run_svg({"contour_merc": [big], "center": {"lat": 55.9, "lng": 37.7}})
+    assert 'stroke-width="2.5"' in single
+
+
 def test_a_dead_nspd_leaves_the_plain_contour(monkeypatch):
     from fastapi.testclient import TestClient
     client = TestClient(main.app)
