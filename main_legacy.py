@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.18.3"
+VERSION = "0.18.4"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -4387,7 +4387,12 @@ def vri_tep_quick(region: str, query: str,
         # у штатного калькулятора — и через мощность завышала компенсацию.
         clinic_adult = math.ceil(population * 13.2 / 1000) if population else 0
         clinic_child = math.ceil(population * 6.5 / 1000) if population else 0
-        clinic = clinic_adult + clinic_child
+        # Смешанная поликлиника — свой норматив 19 пос./смену на тысячу, а не
+        # сумма взрослой и детской: на населении 970 город даёт 19 при наших
+        # частях 13+7 (дрейф компенсации 190,814 против 200,857, третья точка
+        # 16.08.2026); на населении 377 и 422 суммы совпадали со смешанной
+        # случайно (8 = 5+3, 9 = 6+3). Компенсация считается от смешанной.
+        clinic = math.ceil(population * 19.0 / 1000) if population else 0
         per_k = lambda norm, digits: math.ceil(population * norm / 1000 * 10 ** digits) / 10 ** digits
         # Компенсация за соцобъекты — ставки из выгрузки калькулятора от
         # 01.08.2026 (188,414/19, 294,540/38 и 97,714/9): город индексирует их
@@ -24093,6 +24098,7 @@ async function obtainServerTep(analysis,status,runId){
  glavapuImport=payload;
  inputs._cadastral_analysis=structuredClone(analysis);
  renderGlavapuPreview(payload);
+ drawLandPreviewQuiet();
  const areaText=Number((analysis.territory||{}).area_ha||0).toLocaleString('ru-RU',{minimumFractionDigits:4,maximumFractionDigits:4});
  // Кто посчитал — штатный калькулятор или наши формулы, и если формулы, то
  // почему. Браузер живёт на ядре, и с телефона его состояние иначе не увидеть.
@@ -24187,6 +24193,7 @@ async function obtainCadastralTep(preAnalysis){
    glavapuImport=payload;
    inputs._cadastral_analysis=structuredClone(analysis);
    renderGlavapuPreview(payload);
+   drawLandPreviewQuiet();
    const areaText=Number((analysis.territory||{}).area_ha||0).toLocaleString('ru-RU',{minimumFractionDigits:4,maximumFractionDigits:4});
    status.innerHTML='<span class="import-ok">ТЭП получены из ГлавАПУ: '+areaText+' га.</span> Проверьте значения ниже и нажмите «Применить к Вводным и ТЭП».';
    glavapuStatus.innerHTML='<span class="import-ok">Расчёт ГлавАПУ получен автоматически по кадастровым номерам.</span> Проверьте значения перед применением.';
@@ -24228,6 +24235,25 @@ function renderCadastralPreview(data){
 }
 
 let landLookup=null;
+
+// Карточка участка с контуром и картой — при любом пути получения ТЭП, а не
+// только при поиске по адресу: кадастровый «Получить ТЭП» оставлял человека
+// без картинки участка (замечание владельца, 16.08.2026). Тихо: статусы и
+// кнопки принадлежат основному потоку, карточка — украшение и не имеет права
+// ничего ронять; повторный запрос дешёвый — сведения лежат в серверном кэше.
+async function drawLandPreviewQuiet(query){
+ try{
+  const raw=String(query!=null?query:((document.getElementById('cadastralNumbers')||{}).value||'')).trim();
+  if(!/\d{2}:\d{2}:\d{6,8}:\d+/.test(raw))return;
+  const response=await fetch('/land/lookup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:raw,limit:30})});
+  if(!response.ok)return;
+  const data=await response.json();
+  if(!Number(data.found_count||0))return;
+  landLookup=data;
+  inputs._land_lookup=structuredClone(data);
+  renderLandLookup(data);
+ }catch(e){/* контур — украшение, не данные */}
+}
 
 function landNum(value,digits){
  if(value==null||value==='')return '—';
@@ -24636,6 +24662,7 @@ async function calculateMo(queryText){
   moResult=data;
   moLastQuery=query;
   renderMo(data);
+  drawLandPreviewQuiet(query);
   syncMoParams(data);
   if(moStatus)moStatus.style.display='none';
   const parcels=((data.vri||{}).parcels||[]).length;

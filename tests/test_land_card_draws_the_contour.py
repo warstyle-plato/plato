@@ -150,6 +150,27 @@ def test_a_single_parcel_needs_no_territory_view():
     assert run_territory([]) == ""
 
 
+def test_every_tep_path_draws_the_land_card():
+    """Карточка участка рисуется при любом пути получения ТЭП, а не только
+    при поиске по адресу: кадастровый «Получить ТЭП» оставлял человека без
+    картинки участка (замечание владельца, 16.08.2026)."""
+    helper = main.PAGE[main.PAGE.index("async function drawLandPreviewQuiet"):]
+    helper = helper[:helper.index("\nfunction landNum")]
+    assert "'/land/lookup'" in helper
+    assert "renderLandLookup(data)" in helper
+    for owned in ("cadastralStatus", "cadastralAnalyzeButton"):
+        assert owned not in helper, f"тихая карточка трогает чужое: {owned}"
+    server_path = main.PAGE[main.PAGE.index("async function obtainServerTep"):]
+    server_path = server_path[:server_path.index("async function obtainCadastralTep")]
+    assert "drawLandPreviewQuiet()" in server_path
+    iframe_path = main.PAGE[main.PAGE.index("async function obtainCadastralTep"):]
+    iframe_path = iframe_path[:iframe_path.index("function renderCadastralPreview")]
+    assert "drawLandPreviewQuiet()" in iframe_path
+    mo_path = main.PAGE[main.PAGE.index("async function calculateMo"):]
+    mo_path = mo_path[:mo_path.index("async function applyMo")]
+    assert "drawLandPreviewQuiet(query)" in mo_path
+
+
 def test_the_list_renders_the_territory_first():
     body = main.PAGE[main.PAGE.index("function renderLandLookup"):]
     body = body[:body.index("function useLandForTep")]
