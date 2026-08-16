@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.17.103"
+VERSION = "0.17.104"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -6441,29 +6441,37 @@ def _telegram_territory_photo(chat_id: int, numbers: list[str]) -> bool:
         pad = max(span * 0.08, 25.0)
         b_min_x, b_min_y = min_x - pad, min_y - pad
         b_max_x, b_max_y = max_x + pad, max_y + pad
-        width = 640
-        height = max(64, min(1280, int(round(
-            width * (b_max_y - b_min_y) / (b_max_x - b_min_x)))))
         from PIL import Image, ImageDraw
-        backdrop = None
         try:
             response = land_map_image(
                 bbox=f"{b_min_x:.1f},{b_min_y:.1f},{b_max_x:.1f},{b_max_y:.1f}")
-            backdrop = Image.open(io.BytesIO(bytes(response.body))).convert("RGB")
+            backdrop = Image.open(io.BytesIO(bytes(response.body))).convert("RGBA")
         except Exception:
-            backdrop = None  # без карты остаётся чистый контур — как на сайте
-        image = backdrop or Image.new("RGB", (width, height), (245, 245, 243))
-        w, h = image.size
-        draw = ImageDraw.Draw(image)
+            # Голый контур на белом фоне в чате — шум, а не информация
+            # (владелец, 16.08.2026). Нет карты — нет фото; расчёту это не
+            # мешает, а на сайте карточка участка и без карты в контексте.
+            return False
+        w, h = backdrop.size
+        overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        overlay_draw = ImageDraw.Draw(overlay)
+        pixel_rings = []
         for ring in rings:
             px = [((p[0] - b_min_x) / (b_max_x - b_min_x) * w,
                    (b_max_y - p[1]) / (b_max_y - b_min_y) * h)
                   for p in ring if isinstance(p, (list, tuple)) and len(p) >= 2]
             if len(px) < 3:
                 continue
+            pixel_rings.append(px)
+            # Полупрозрачная заливка — как на сайте: участок видно пятном, а
+            # карта под ним остаётся читаемой.
+            overlay_draw.polygon(px, fill=(245, 245, 243, 90))
+        if not pixel_rings:
+            return False
+        image = Image.alpha_composite(backdrop, overlay).convert("RGB")
+        draw = ImageDraw.Draw(image)
+        for px in pixel_rings:
             closed = px + [px[0]]
-            # Белая подкладка под тёмной линией: граница читается и на пёстрой
-            # карте, и на пустом фоне.
+            # Белая подкладка под тёмной линией: граница читается на пёстрой карте.
             draw.line(closed, fill=(255, 255, 255), width=7, joint="curve")
             draw.line(closed, fill=(180, 35, 24), width=3, joint="curve")
         out = io.BytesIO()
@@ -6473,7 +6481,7 @@ def _telegram_territory_photo(chat_id: int, numbers: list[str]) -> bool:
         caption = (
             f"Контур участка {listed} · границы ЕГРН" if count == 1
             else f"Территория из {count} участков: {listed} · границы ЕГРН")
-        caption += " · подложка — публичная карта НСПД" if backdrop else " · карта НСПД недоступна, показан чистый контур"
+        caption += " · подложка — публичная карта НСПД"
         _telegram_send_photo_bytes(chat_id, out.getvalue(), "territory.png", caption)
         return True
     except Exception as exc:
