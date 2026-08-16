@@ -189,14 +189,21 @@ def test_the_list_renders_the_territory_first():
 
 
 def test_the_map_backdrop_endpoint_speaks_wms(monkeypatch):
-    """Подложка: bbox проверяется, градусы считаются как в центре, кэшируется."""
+    """Подложка: bbox проверяется, уходит в НСПД тем же меркатором
+    (EPSG:3857 — единственный формат, который НСПД приняла пробой),
+    прозрачность выравнивается на светлый фон, ответ кэшируется."""
+    import io as io_module
+
     from fastapi.testclient import TestClient
+    from PIL import Image
     client = TestClient(main.app)
     calls = []
 
     def fake_png(west, south, east, north, width, height):
         calls.append((west, south, east, north, width, height))
-        return b"\x89PNG\r\n\x1a\n" + b"x" * 32
+        buffer = io_module.BytesIO()
+        Image.new("RGBA", (width, height), (0, 0, 0, 0)).save(buffer, format="PNG")
+        return buffer.getvalue()
 
     monkeypatch.setattr(main, "_nspd_wms_map_png", fake_png)
     main._NSPD_MAP_CACHE.clear()
@@ -207,8 +214,13 @@ def test_the_map_backdrop_endpoint_speaks_wms(monkeypatch):
     assert ok.status_code == 200 and ok.headers["content-type"] == "image/png"
     assert ok.content.startswith(b"\x89PNG")
     west, south, east, north, width, height = calls[0]
-    assert west < east and south < north
-    assert 50 < south < 60, "широта Мытищ потерялась при переводе из меркатора"
+    # Меркатор уходит в НСПД без пересчёта в градусы — пиксель в пиксель с SVG.
+    assert (west, south, east, north) == (4199990.0, 7549990.0, 4200110.0, 7550110.0)
+    assert width == 640 and height == 640, "квадратный bbox обязан дать квадратную картинку"
+    # Прозрачный слой НСПД выровнен на светлый фон: фото бота при конвертации
+    # в RGB иначе получило бы чёрный.
+    image = Image.open(io_module.BytesIO(ok.content)).convert("RGB")
+    assert image.getpixel((5, 5)) == (245, 245, 243)
     # Повтор — из кэша, без второго похода в НСПД.
     client.get("/land/map-image", params={"bbox": bbox})
     assert len(calls) == 1
