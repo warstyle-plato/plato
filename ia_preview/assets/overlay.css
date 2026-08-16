@@ -86,6 +86,20 @@
 .ia-sub button.active .ia-mark.warn{color:#ffb4a8}
 .ia-step-hint{padding:9px 34px 0;font-size:12px;color:#666;background:#fff;line-height:1.5}
 @media(max-width:700px){.ia-step-hint{padding-left:16px;padding-right:16px}}
+/* Неприменённый расчёт участка: плашка ходит за человеком по вкладкам. */
+.ia-pending{
+  margin:10px 34px 0;padding:10px 14px;border:1px solid #b42318;background:#fff4f2;
+  font-size:12px;line-height:1.5;color:#7a1c12;display:flex;gap:10px;align-items:center;flex-wrap:wrap;
+}
+.ia-pending b{font-weight:600}
+.ia-pending button{
+  border:1px solid #b42318;background:#fff;color:#7a1c12;padding:5px 12px;font-size:12px;
+  font-weight:600;cursor:pointer;border-radius:999px;
+}
+.ia-pending button:first-of-type{background:#b42318;border-color:#b42318;color:#fff}
+.ia-pending button:disabled{opacity:.55;cursor:default}
+@media(max-width:700px){.ia-pending{margin-left:16px;margin-right:16px}}
+@media print{.ia-pending{display:none}}
 .ia-sub{padding:10px 34px 0;display:flex;gap:8px;flex-wrap:wrap;background:#fff}
 .ia-sub:empty{display:none}
 .ia-sub button{
