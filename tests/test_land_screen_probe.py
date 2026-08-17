@@ -79,8 +79,9 @@ def test_empty_layers_falls_back_to_the_candidate_registry(monkeypatch):
     assert result["point"]["lat"] == pytest.approx(55.751244)
     assert {layer for layer, _ in seen} == set(core._NSPD_SCREEN_LAYER_CANDIDATES.values())
     assert all(version == "v4" for _, version in seen), "дефолт версии пути — v4"
-    assert result["layers"]["parcels_egrn"]["features"] == 0
-    assert "keys" not in result["layers"]["parcels_egrn"]
+    a_key = next(iter(core._NSPD_SCREEN_LAYER_CANDIDATES))
+    assert result["layers"][a_key]["features"] == 0
+    assert "keys" not in result["layers"][a_key]
 
 
 def test_probe_forwards_to_core_when_configured(monkeypatch):
