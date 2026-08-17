@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.18.25"
+VERSION = "0.18.26"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -2404,6 +2404,14 @@ def _nspd_getfeatureinfo(lat: float, lng: float, layer_id: int,
         "FEATURE_COUNT": "10",
     })
     version = api_version if api_version in {"v3", "v4"} else "v3"
+    # Referer под конкретный слой: WAF НСПД отдал Forbidden на тематические
+    # слои, пока мы слали общий `thematic=PKK` (кадастровая карта). В браузере
+    # у этих запросов Referer вида `map?thematic=Default…&active_layers=<слой>`
+    # (заголовки сняты владельцем 17.08.2026) — повторяем его дословно.
+    layer_headers = {
+        "Referer": (f"{_NSPD_BASE_URL}/map?thematic=Default&zoom=17"
+                    f"&baselayerid=235&active_layers={layer_id}"),
+    }
     # Предохранитель: НСПД придушивает за частые запросы (17.08.2026 — серия
     # 400 по всем слоям). Скрининг — не главная функция, а вот поиск участка
     # у пользователей живёт на той же НСПД: разведка не имеет права довести
@@ -2418,7 +2426,7 @@ def _nspd_getfeatureinfo(lat: float, lng: float, layer_id: int,
     try:
         payload = _land_fetch_json(
             f"{_NSPD_BASE_URL}/api/aeggis/{version}/{layer_id}/wms?{params}",
-            service="Сервис НСПД",
+            service="Сервис НСПД", headers=layer_headers,
         )
     except HTTPException:
         _nspd_screen_failures += 1
