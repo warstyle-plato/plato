@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.18.18"
+VERSION = "0.18.19"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -2489,6 +2489,71 @@ def land_screen_probe(lat: float = 0.0, lng: float = 0.0, layers: str = "",
             }
         results[name] = entry
     return {"point": {"lat": lat, "lng": lng}, "layers": results}
+
+
+@app.get("/land/layer-sweep", include_in_schema=False)
+def land_layer_sweep(lat: float = 0.0, lng: float = 0.0, cad: str = "",
+                     start: int = 37570, end: int = 37600) -> dict[str, Any]:
+    """Перебор номеров слоёв НСПД по точке: какой номер — какой слой.
+
+    Каталога слоёв НСПД не публикует, а ловить каждый номер в браузере — долго
+    (17 слоёв на карте). Но ответ слоя самоописателен: `categoryName` называет
+    слой словами. Поэтому номера ищутся перебором с ядра по точке, где
+    ограничения заведомо есть, и возвращаются только ответившие — с именем и
+    образцом типа. Это разовая разведка, не рабочий путь: найденные номера
+    заводятся в реестр и дальше опрашиваются адресно.
+
+    Диапазон ограничен 200 номерами за вызов — чтобы не молотить НСПД.
+    """
+    remote = _core_api_url("/land/layer-sweep")
+    if remote:
+        query = urllib.parse.urlencode(
+            {"lat": lat, "lng": lng, "cad": cad, "start": start, "end": end})
+        try:
+            with urllib.request.urlopen(
+                    urllib.request.Request(
+                        remote + "?" + query, headers={"Accept": "application/json"}),
+                    timeout=300) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Ядро недоступно: {exc}")
+
+    number = _land_text(cad).strip()
+    if number:
+        for feature in _nspd_search_features(number):
+            center = _geometry_center(feature.get("geometry"))
+            if center:
+                lat, lng = center["lat"], center["lng"]
+                break
+    if not lat and not lng:
+        raise HTTPException(status_code=400, detail="Нужна точка: cad или lat/lng.")
+    span = int(end) - int(start) + 1
+    if span < 1 or span > 200:
+        raise HTTPException(status_code=400, detail="Диапазон — до 200 номеров за вызов.")
+
+    def probe(layer_id: int) -> tuple[int, dict[str, Any] | None]:
+        try:
+            payload = _nspd_getfeatureinfo(lat, lng, layer_id, "v3")
+        except Exception:
+            return layer_id, None
+        features = _nspd_features(payload)
+        if not features:
+            return layer_id, None
+        options = _nspd_options(features[0])
+        return layer_id, {
+            "features": len(features),
+            "categoryName": _land_text(options.get("categoryName")),
+            "type_zone": _land_text(options.get("type_zone")),
+            "label": _land_text(options.get("label")),
+        }
+
+    found: dict[str, Any] = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=_LAND_LOOKUP_WORKERS) as pool:
+        for layer_id, entry in pool.map(probe, range(int(start), int(end) + 1)):
+            if entry:
+                found[str(layer_id)] = entry
+    return {"point": {"lat": lat, "lng": lng},
+            "range": [int(start), int(end)], "found": found}
 
 
 # Подслои ЗОУИТ на геопортале НСПД (культурного наследия, энергетики/связи/

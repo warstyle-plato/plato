@@ -135,3 +135,36 @@ def test_probe_forwards_to_core_when_configured(monkeypatch):
     assert captured["url"].startswith("https://core.example/land/screen-probe?")
     assert "layers=terr%3D100" in captured["url"]
     assert "ver=v3" in captured["url"], "версия пути обязана доехать до ядра"
+
+
+def test_the_sweep_reports_only_answering_layers(monkeypatch):
+    """Перебор номеров: возвращаются только ответившие слои, с их именем.
+
+    Каталога слоёв НСПД не публикует, а ответ самоописателен (`categoryName`),
+    поэтому номера ищутся перебором с ядра. Диапазон ограничен, чтобы не
+    молотить портал.
+    """
+    monkeypatch.setattr(core, "_core_api_url", lambda path: "")
+
+    def fake(lat, lng, layer_id, api_version="v3"):
+        if layer_id == 37581:
+            return {"features": [_land_feature(
+                categoryName="Зоны с особыми условиями использования территории",
+                type_zone="Приаэродромная территория", label="50:00-6.3453")]}
+        if layer_id == 37579:
+            raise core.HTTPException(status_code=400, detail="капризный слой")
+        return {"features": []}
+
+    monkeypatch.setattr(core, "_nspd_getfeatureinfo", fake)
+    result = core.land_layer_sweep(lat=55.6, lng=37.2, start=37577, end=37581)
+
+    assert list(result["found"]) == ["37581"], "молчащие и сбойные слои в улов не идут"
+    assert result["found"]["37581"]["type_zone"] == "Приаэродромная территория"
+    assert result["range"] == [37577, 37581]
+
+
+def test_the_sweep_refuses_a_huge_range(monkeypatch):
+    monkeypatch.setattr(core, "_core_api_url", lambda path: "")
+    with pytest.raises(core.HTTPException) as exc:
+        core.land_layer_sweep(lat=55.6, lng=37.2, start=1, end=5000)
+    assert exc.value.status_code == 400
