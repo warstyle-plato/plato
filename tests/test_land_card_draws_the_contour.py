@@ -161,6 +161,24 @@ def test_a_single_parcel_needs_no_territory_view():
     assert run_territory([]) == ""
 
 
+def test_the_territory_keeps_its_proportions():
+    """max-width привязывает высоту к истинному аспекту: без него сцена с
+    max-height и width:100% сплющивалась по высоте (замечание владельца,
+    17.08.2026 — «высота маленькая, непропорционально»)."""
+    second = [[p[0] + 120, p[1]] for p in MERC_RING]  # шире, чем выше
+    svg = run_territory([
+        {"cadastral_number": "a", "contour_merc": [MERC_RING]},
+        {"cadastral_number": "b", "contour_merc": [second]},
+    ])
+    aspect = re.search(r"aspect-ratio:([\d.]+) / ([\d.]+)", svg)
+    max_w = re.search(r"max-width:(\d+)px", svg)
+    assert aspect and max_w, "у сцены нет аспекта и max-width"
+    w, h = float(aspect.group(1)), float(aspect.group(2))
+    # Ширина, при которой высота ровно 240px, — 240·w/h. Тогда потолок высоты
+    # не искажает форму: и подложка, и контур сохраняют пропорции.
+    assert int(max_w.group(1)) == round(240 * w / h)
+
+
 def test_every_tep_path_draws_the_land_card():
     """Карточка участка рисуется при любом пути получения ТЭП, а не только
     при поиске по адресу: кадастровый «Получить ТЭП» оставлял человека без

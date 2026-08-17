@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.18.12"
+VERSION = "0.18.13"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -24894,7 +24894,12 @@ function landTerritorySvg(found){
   return `<path d="${d}" fill="rgba(245,245,243,.35)" stroke="#111" stroke-width="2" fill-rule="evenodd" vector-effect="non-scaling-stroke"><title>${escapeHtml(item.cadastral_number||'')}</title></path>`;
  }).join('');
  const mapSrc=`/land/map-image?bbox=${(minX-pad).toFixed(1)},${(minY-pad).toFixed(1)},${(maxX+pad).toFixed(1)},${(maxY+pad).toFixed(1)}`;
- return `<div class="land-contour land-territory"><div class="land-contour-stage" style="aspect-ratio:${w.toFixed(1)} / ${h.toFixed(1)}">`+
+ // max-width держит высоту на истинном аспекте: при 100% ширины и max-height
+ // сцена сплющивалась (preserveAspectRatio="none" тянул и подложку, и контур
+ // по ширине — «высота маленькая», замечание владельца 17.08.2026). Ширина,
+ // при которой высота ровно 240px, — 240·w/h; выше не поднимется, форма верна.
+ const stage=`aspect-ratio:${w.toFixed(1)} / ${h.toFixed(1)};max-width:${Math.round(240*w/h)}px`;
+ return `<div class="land-contour land-territory"><div class="land-contour-stage" style="${stage}">`+
   `<img class="land-contour-map" src="${mapSrc}" alt="" loading="lazy" decoding="async" onerror="landMapLost(this)">`+
   `<svg viewBox="0 0 ${w.toFixed(1)} ${h.toFixed(1)}" preserveAspectRatio="none" role="img" aria-label="Взаимное расположение участков">${paths}</svg></div>`+
   `<small>Территория из ${items.length} участков в одном масштабе · подложка — публичная карта НСПД · наведите на контур — увидите номер</small></div>`;
@@ -24928,7 +24933,9 @@ function landContourSvg(item){
  // дают контекст «где это». Не загрузилась — картинка молча исчезает, и
  // остаётся чистый контур: подложка — украшение, а не данные.
  const mapSrc=`/land/map-image?bbox=${(minX-pad).toFixed(1)},${(minY-pad).toFixed(1)},${(maxX+pad).toFixed(1)},${(maxY+pad).toFixed(1)}`;
- return `<div class="land-contour"><div class="land-contour-stage" style="aspect-ratio:${w.toFixed(1)} / ${h.toFixed(1)}">`+
+ // max-width — высота на истинном аспекте, а не сплющена потолком (см. landTerritorySvg).
+ const stage=`aspect-ratio:${w.toFixed(1)} / ${h.toFixed(1)};max-width:${Math.round(240*w/h)}px`;
+ return `<div class="land-contour"><div class="land-contour-stage" style="${stage}">`+
   `<img class="land-contour-map" src="${mapSrc}" alt="" loading="lazy" decoding="async" onerror="landMapLost(this)">`+
   `<svg viewBox="0 0 ${w.toFixed(1)} ${h.toFixed(1)}" preserveAspectRatio="none" role="img" aria-label="Границы участка по ЕГРН">`+
   `<path d="${paths}" fill="rgba(245,245,243,.35)" stroke="#111" stroke-width="2.5" fill-rule="evenodd" vector-effect="non-scaling-stroke"/></svg></div>`+
