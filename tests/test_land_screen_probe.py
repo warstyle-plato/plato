@@ -219,3 +219,20 @@ def test_a_good_answer_resets_the_counter(monkeypatch):
     monkeypatch.setattr(core, "_land_fetch_json", lambda url, **k: {"features": []})
     core._nspd_getfeatureinfo(55.6, 37.2, 37581, "v3")
     assert core._nspd_screen_failures == 0, "удачный ответ обнуляет счёт отказов"
+
+
+def test_the_probe_can_clear_its_own_pause(monkeypatch):
+    """Диагностике нужно снимать собственный предохранитель: иначе одна проба
+    закрывает следующую на 15 минут, и вместо ответа НСПД видно только паузу
+    (17.08.2026 — все слои отдавали 503 нашего же предохранителя)."""
+    monkeypatch.setattr(core, "_core_api_url", lambda path: "")
+    monkeypatch.setattr(core, "_nspd_screen_blocked_until", core.time.time() + 900)
+    monkeypatch.setattr(core, "_nspd_screen_failures", 5)
+    monkeypatch.setattr(core, "_nspd_getfeatureinfo", lambda *a, **k: {"features": []})
+
+    paused = core.land_screen_probe(lat=55.6, lng=37.2, layers="z=37581")
+    assert paused["screen_paused_seconds"] > 0, "пауза обязана быть видна в ответе"
+
+    cleared = core.land_screen_probe(lat=55.6, lng=37.2, layers="z=37581", reset=1)
+    assert cleared["screen_paused_seconds"] == 0
+    assert core._nspd_screen_failures == 0
