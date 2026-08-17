@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.18.29"
+VERSION = "0.18.30"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -2639,6 +2639,26 @@ def land_layer_sweep(lat: float = 0.0, lng: float = 0.0, cad: str = "",
 # со всеми атрибутами (тип, реестровый номер, ограничение, документ).
 _NSPD_ZOUIT_LAYERS: tuple[int, ...] = (37577, 37578, 37579, 37580, 37581)
 
+# Полный набор слоёв скрининга. Имён здесь НЕТ — и не нужно: слой называет себя
+# сам (`categoryName`, `type_zone`), поэтому что именно нашлось, известно из
+# ответа. Это снимает всю ручную разведку «какой номер чему соответствует»:
+# каталог id снят с консоли карты 18.08.2026 (приложение печатает свой реестр),
+# а смысл приходит в момент запроса. Неверный номер отвечает Internal Server
+# Error и просто пропускается.
+_NSPD_SCREEN_LAYERS: tuple[int, ...] = _NSPD_ZOUIT_LAYERS + (
+    875815, 875817, 875819, 875824, 875831, 875832, 875835, 875838, 875840,
+    875845, 875846, 875847, 875848, 875865, 875866, 875874, 875882, 879243,
+)
+
+# Что в скрининг не идёт, даже если ответило: административная и справочная
+# «обвязка» публичной кадастровой карты. Отбор по имени слоя, а не по номеру, —
+# номера меняются, названия говорят сами за себя.
+_LAND_SCREEN_NOISE: tuple[str, ...] = (
+    "субъекты российской федерации", "муниципальные образования",
+    "населённые пункты", "населенные пункты", "кадастровое деление",
+    "кадастровые районы", "кадастровые кварталы", "охотничьи угодья",
+)
+
 # Пауза между запросами разведки слоёв. Очередь без пауз НСПД срезает целиком.
 _NSPD_SWEEP_PAUSE_SECONDS = _env_float("NSPD_SWEEP_PAUSE", 0.4)
 
@@ -2686,6 +2706,52 @@ def _land_screen_classify(finding: dict[str, Any]) -> dict[str, Any]:
             return {**finding, "flag_class": flag_class, "impact": impact}
     return {**finding, "flag_class": "info",
             "impact": "ограничение неизвестного типа — требует проверки вручную"}
+
+
+def _land_screen_findings(lat: float, lng: float) -> list[dict[str, Any]]:
+    """Все ограничения НСПД в точке — по всему набору слоёв, с классификацией.
+
+    Имена слоёв заранее не нужны: что нашлось, говорит сам ответ
+    (`categoryName`, `type_zone`). Административная обвязка ПКК (субъекты,
+    муниципалитеты, населённые пункты, кадастровое деление, охотугодья)
+    отсеивается по имени — это контекст, а не ограничение. Дубли по реестровому
+    номеру убираются, сбойный слой пропускается. Пустой список — ограничений
+    в точке не обнаружено (не «их нет вовсе»: НСПД видит внесённые в ЕГРН).
+    """
+    findings: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for layer_id in _NSPD_SCREEN_LAYERS:
+        try:
+            payload = _nspd_getfeatureinfo(lat, lng, layer_id, "v3")
+        except Exception:
+            continue
+        for feature in _nspd_features(payload):
+            options = _nspd_options(feature)
+            title = " ".join([
+                _land_text(options.get("categoryName")),
+                _land_text(options.get("type_zone")),
+            ]).lower()
+            if any(noise in title for noise in _LAND_SCREEN_NOISE):
+                continue
+            reg_number = _land_text(options.get("reg_numb_border") or options.get("descr"))
+            key = reg_number or _land_text(options.get("interactionId"))
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            findings.append(_land_screen_classify({
+                "type_zone": _land_text(options.get("type_zone")),
+                "category": _land_text(options.get("categoryName")),
+                "name": (_land_text(options.get("name_by_doc"))
+                         or _land_text(options.get("type_zone"))
+                         or _land_text(options.get("categoryName"))),
+                "reg_number": reg_number,
+                "restriction": _land_text(options.get("content_restrict_encumbrances")),
+                "document": _land_text(options.get("legal_act_document_name")),
+                "document_number": _land_text(options.get("legal_act_document_number")),
+                "document_date": _land_text(options.get("legal_act_document_date")),
+                "layer_id": layer_id,
+            }))
+    return findings
 
 
 def _land_zouit_findings(lat: float, lng: float) -> list[dict[str, Any]]:
