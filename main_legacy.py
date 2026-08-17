@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.18.22"
+VERSION = "0.18.23"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -2404,10 +2404,30 @@ def _nspd_getfeatureinfo(lat: float, lng: float, layer_id: int,
         "FEATURE_COUNT": "10",
     })
     version = api_version if api_version in {"v3", "v4"} else "v3"
-    return _land_fetch_json(
-        f"{_NSPD_BASE_URL}/api/aeggis/{version}/{layer_id}/wms?{params}",
-        service="Сервис НСПД",
-    )
+    # Предохранитель: НСПД придушивает за частые запросы (17.08.2026 — серия
+    # 400 по всем слоям). Скрининг — не главная функция, а вот поиск участка
+    # у пользователей живёт на той же НСПД: разведка не имеет права довести
+    # портал до жёсткой блокировки. Серия отказов закрывает скрининг на паузу,
+    # поиск ЕГРН при этом продолжает работать своим путём.
+    global _nspd_screen_failures, _nspd_screen_blocked_until
+    if time.time() < _nspd_screen_blocked_until:
+        left = int(_nspd_screen_blocked_until - time.time())
+        raise HTTPException(
+            status_code=503,
+            detail=f"Скрининг на паузе: НСПД ограничила запросы, осталось {left} с.")
+    try:
+        payload = _land_fetch_json(
+            f"{_NSPD_BASE_URL}/api/aeggis/{version}/{layer_id}/wms?{params}",
+            service="Сервис НСПД",
+        )
+    except HTTPException:
+        _nspd_screen_failures += 1
+        if _nspd_screen_failures >= _NSPD_SCREEN_FAILURES_LIMIT:
+            _nspd_screen_blocked_until = time.time() + _NSPD_SCREEN_COOLDOWN_SECONDS
+            _nspd_screen_failures = 0
+        raise
+    _nspd_screen_failures = 0
+    return payload
 
 
 @app.get("/land/screen-probe", include_in_schema=False)
@@ -2585,6 +2605,13 @@ _NSPD_ZOUIT_LAYERS: tuple[int, ...] = (37577, 37578, 37579, 37580, 37581)
 
 # Пауза между запросами разведки слоёв. Очередь без пауз НСПД срезает целиком.
 _NSPD_SWEEP_PAUSE_SECONDS = _env_float("NSPD_SWEEP_PAUSE", 0.4)
+
+# Предохранитель скрининга: столько отказов подряд — и запросы слоёв встают на
+# паузу. Бережёт не скрининг, а поиск участка: он живёт на той же НСПД.
+_NSPD_SCREEN_FAILURES_LIMIT = int(_env_float("NSPD_SCREEN_FAILURES_LIMIT", 5))
+_NSPD_SCREEN_COOLDOWN_SECONDS = _env_float("NSPD_SCREEN_COOLDOWN", 900.0)
+_nspd_screen_failures = 0
+_nspd_screen_blocked_until = 0.0
 
 
 # Классы флагов скрининга. `killer` — жильё в такой зоне запрещено, дальше

@@ -173,3 +173,45 @@ def test_the_sweep_refuses_a_huge_range(monkeypatch):
     with pytest.raises(core.HTTPException) as exc:
         core.land_layer_sweep(lat=55.6, lng=37.2, start=1, end=500)
     assert exc.value.status_code == 400
+
+
+def test_a_run_of_refusals_pauses_the_screening(monkeypatch):
+    """Предохранитель: серия отказов НСПД останавливает запросы слоёв.
+
+    Бережёт не скрининг, а поиск участка — он живёт на той же НСПД, и
+    разведка не имеет права довести портал до жёсткой блокировки
+    (17.08.2026: серия 400 по всем слоям после дня проб).
+    """
+    monkeypatch.setattr(core, "_nspd_screen_failures", 0)
+    monkeypatch.setattr(core, "_nspd_screen_blocked_until", 0.0)
+    monkeypatch.setattr(core, "_NSPD_SCREEN_FAILURES_LIMIT", 3)
+    monkeypatch.setattr(core, "_NSPD_SCREEN_COOLDOWN_SECONDS", 900.0)
+
+    asked: list[int] = []
+
+    def refusing(url, **kwargs):
+        asked.append(1)
+        raise core.HTTPException(status_code=400, detail="НСПД отбила")
+
+    monkeypatch.setattr(core, "_land_fetch_json", refusing)
+
+    for _ in range(3):
+        with pytest.raises(core.HTTPException):
+            core._nspd_getfeatureinfo(55.6, 37.2, 37581, "v3")
+    assert len(asked) == 3
+
+    # Предохранитель взведён: следующий запрос до сети уже не доходит.
+    with pytest.raises(core.HTTPException) as exc:
+        core._nspd_getfeatureinfo(55.6, 37.2, 37581, "v3")
+    assert exc.value.status_code == 503
+    assert "паузе" in exc.value.detail
+    assert len(asked) == 3, "после срабатывания НСПД больше не тревожим"
+
+
+def test_a_good_answer_resets_the_counter(monkeypatch):
+    monkeypatch.setattr(core, "_nspd_screen_failures", 2)
+    monkeypatch.setattr(core, "_nspd_screen_blocked_until", 0.0)
+    monkeypatch.setattr(core, "_NSPD_SCREEN_FAILURES_LIMIT", 3)
+    monkeypatch.setattr(core, "_land_fetch_json", lambda url, **k: {"features": []})
+    core._nspd_getfeatureinfo(55.6, 37.2, 37581, "v3")
+    assert core._nspd_screen_failures == 0, "удачный ответ обнуляет счёт отказов"
