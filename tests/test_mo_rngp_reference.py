@@ -224,3 +224,27 @@ def test_a_year_without_a_check_turns_the_reminder_on():
     much_later = verified.replace(year=verified.year + 2)
     rows = {item["key"]: item for item in core.reference_freshness(much_later)}
     assert rows["mo_rngp"]["stale"] is True
+
+
+# --- две записи одного источника не должны разойтись -------------------------------
+
+def test_the_machine_rules_agree_with_the_written_source_pack():
+    """Source pack лежит в двух видах: человеческий `data/normatives/mo/*.md`
+    и машинный `mo_rngp_reference`. Это не копия ради копии — читают их разные
+    (человек и движок), — но числа в них одни, и разойтись они могут молча.
+
+    Заведено после того, как две сессии независимо собрали один и тот же пакет
+    по 774-ПП. Тогда сошлось; сторож нужен на следующий раз."""
+    pack = (ROOT / "data" / "normatives" / "mo" / "pp_774_2026-07-02.md")
+    if not pack.exists():
+        pytest.skip("source pack не найден")
+    text = pack.read_text(encoding="utf-8")
+    assert ref.PP_774["official_publication"].split("/")[-1] in text
+    assert ref.PP_774["in_force_since"].replace("2026-07-03", "03.07.2026") in text
+    # Ключевые числа действующей редакции п. 5.12.
+    assert "356" in text
+    assert "30 автомобилей" in text
+    assert "40%" in text and "60%" in text
+    assert "800" in text and "1200" in text
+    assert str(int(ref.PARKING_SHARE_IN_QUARTER["value"] * 100)) + "%" in text
+    assert str(ref.PARKING_TEMPORARY_RATE["value"]).rstrip("0").rstrip(".") in text
