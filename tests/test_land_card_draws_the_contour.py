@@ -161,6 +161,24 @@ def test_a_single_parcel_needs_no_territory_view():
     assert run_territory([]) == ""
 
 
+def test_the_territory_keeps_its_proportions():
+    """max-width привязывает высоту к истинному аспекту: без него сцена с
+    max-height и width:100% сплющивалась по высоте (замечание владельца,
+    17.08.2026 — «высота маленькая, непропорционально»)."""
+    second = [[p[0] + 120, p[1]] for p in MERC_RING]  # шире, чем выше
+    svg = run_territory([
+        {"cadastral_number": "a", "contour_merc": [MERC_RING]},
+        {"cadastral_number": "b", "contour_merc": [second]},
+    ])
+    aspect = re.search(r"aspect-ratio:([\d.]+) / ([\d.]+)", svg)
+    max_w = re.search(r"max-width:(\d+)px", svg)
+    assert aspect and max_w, "у сцены нет аспекта и max-width"
+    w, h = float(aspect.group(1)), float(aspect.group(2))
+    # Ширина, при которой высота ровно 240px, — 240·w/h. Тогда потолок высоты
+    # не искажает форму: и подложка, и контур сохраняют пропорции.
+    assert int(max_w.group(1)) == round(240 * w / h)
+
+
 def test_every_tep_path_draws_the_land_card():
     """Карточка участка рисуется при любом пути получения ТЭП, а не только
     при поиске по адресу: кадастровый «Получить ТЭП» оставлял человека без
@@ -186,6 +204,46 @@ def test_the_list_renders_the_territory_first():
     body = main.PAGE[main.PAGE.index("function renderLandLookup"):]
     body = body[:body.index("function useLandForTep")]
     assert "landTerritorySvg(found)+" in body, "список карточек не начинается с посадки"
+
+
+def test_many_parcels_drop_the_per_card_map():
+    """Несколько участков — общий вид один на всех, карточки без своих мини-карт:
+    иначе на 30 участков вышло бы 30 повторов той же подложки (замечание
+    владельца, 17.08.2026). Один участок — миниатюра в карточке остаётся."""
+    body = main.PAGE[main.PAGE.index("function renderLandLookup"):]
+    body = body[:body.index("function useLandForTep")]
+    assert "found.length<2" in body, "нет признака единственного участка"
+    assert "landCardHtml(x,single)" in body, "карточки не получают признак общего вида"
+
+    if not NODE:
+        pytest.skip("node недоступен")
+    contour = re.search(r"(function landContourSvg\(item\)\{.*?\n\})\n\nfunction landCardHtml",
+                        main.PAGE, re.S)
+    card = re.search(r"(function landCardHtml\(item,showContour\)\{.*?\n\})\n\nfunction renderLandLookup",
+                     main.PAGE, re.S)
+    assert contour and card, "не найдены landContourSvg / landCardHtml"
+    harness = (
+        "const escapeHtml=s=>String(s==null?'':s);\n"
+        "const landNum=(v,d)=>String(v);\n"
+        "const landCoords=c=>'x';\n"
+        "const landDate=v=>String(v);\n"
+        + contour.group(1) + "\n" + card.group(1) + "\n"
+    )
+    item = {"found": True, "cadastral_number": "50:12:0080205:1",
+            "contour_merc": [MERC_RING], "center": {"lat": 55.7, "lng": 37.6}}
+    script = harness + f"""
+const item={json.dumps(item, ensure_ascii=False)};
+console.log(JSON.stringify({{
+  on: landCardHtml(item, true).includes('land-contour'),
+  off: landCardHtml(item, false).includes('land-contour'),
+  fallback: landCardHtml(item).includes('land-contour'),
+}}));
+"""
+    result = subprocess.run([NODE, "-e", script], capture_output=True, text=True, check=True)
+    got = json.loads(result.stdout)
+    assert got["on"] is True, "одиночная карточка потеряла миниатюру"
+    assert got["off"] is False, "карточка в наборе всё ещё рисует свою карту"
+    assert got["fallback"] is True, "без флага карточка обязана рисовать контур"
 
 
 def test_the_map_backdrop_endpoint_speaks_wms(monkeypatch):
@@ -329,3 +387,44 @@ def test_a_dead_nspd_leaves_the_plain_contour(monkeypatch):
     main._NSPD_MAP_CACHE.clear()
     response = client.get("/land/map-image", params={"bbox": "4199990,7549990,4200110,7550110"})
     assert response.status_code == 502
+
+
+def test_overlay_probe_draws_the_contour_on_the_backdrop(monkeypatch):
+    """Диагностика совмещения: контур рисуется на растре НСПД той же формулой,
+    что SVG страницы, — ответ говорит, в данных сдвиг или в отрисовке. Живой
+    НСПД закрыт для песочницы, поэтому проверяется композиция, а не сеть."""
+    from fastapi.testclient import TestClient
+    from PIL import Image
+
+    client = TestClient(main.app)
+    monkeypatch.setattr(main, "_core_api_url", lambda path: "")
+
+    # Пустой номер — 400, а не попытка сходить в НСПД.
+    assert client.get("/land/overlay-probe").status_code == 400
+
+    ring = [[4181302.0, 7518174.0], [4181542.0, 7518174.0],
+            [4181542.0, 7518414.0], [4181302.0, 7518414.0], [4181302.0, 7518174.0]]
+    monkeypatch.setattr(main, "_nspd_search_features", lambda q: [
+        {"properties": {"options": {"cad_num": "77:09:0004014:13"}},
+         "geometry": {"type": "Polygon", "coordinates": [ring]}}])
+
+    captured: dict[str, float] = {}
+
+    def fake_png(west, south, east, north, width, height):
+        captured.update(west=west, south=south, east=east, north=north)
+        buffer = __import__("io").BytesIO()
+        Image.new("RGBA", (int(width), int(height)), (0, 0, 0, 0)).save(buffer, format="PNG")
+        return buffer.getvalue()
+
+    monkeypatch.setattr(main, "_nspd_wms_map_png", fake_png)
+    response = client.get("/land/overlay-probe", params={"cad": "77:09:0004014:13"})
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/png"
+    # bbox подложки = контур ± pad (6% большей стороны) — тот же, что у карточки.
+    assert captured["west"] == pytest.approx(4181302.0 - 240 * 0.06)
+    assert captured["north"] == pytest.approx(7518414.0 + 240 * 0.06)
+    # Синяя линия контура действительно легла на картинку.
+    image = Image.open(__import__("io").BytesIO(response.content)).convert("RGB")
+    pixels = image.tobytes()
+    assert any(pixels[i + 2] > 180 and pixels[i] < 80
+               for i in range(0, len(pixels), 3)), "контур не нарисован"

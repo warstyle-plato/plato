@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.18.10"
+VERSION = "0.18.13"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -1705,6 +1705,23 @@ _NSPD_LAND_THEMATIC_ID = 1
 # Слой «Земельные участки из ЕГРН» на карте НСПД. Точечный поиск идёт через
 # WMS GetFeatureInfo этого слоя — тем же запросом, что клик по карте на сайте.
 _NSPD_LANDS_LAYER_ID = 36048
+
+# Слои НСПД для градостроительного скрининга. Номера — КАНДИДАТЫ: их
+# подтверждает только живая проба GetFeatureInfo с ядра (land_screen_probe),
+# а не зашитый контракт — урок «22,5/25/35»: правдоподобный номер ещё не тот
+# номер. Подтверждён пока один — 36048 (ЗУ ЕГРН, на нём живёт точечный поиск),
+# он же служит самопроверкой механизма пробы. Остальные — из дерева слоёв
+# геопортала НСПД (ЗОУИТ, терр. зоны, красные линии) и архитектурных кандидатов
+# 37577–37581; какой номер какому слою отвечает и какие атрибуты несёт, скажет
+# проба. Список задаётся параметром ?layers=, дефолт — эти кандидаты.
+_NSPD_SCREEN_LAYER_CANDIDATES: dict[str, int] = {
+    "parcels_egrn": 36048,
+    "cand_37577": 37577,
+    "cand_37578": 37578,
+    "cand_37579": 37579,
+    "cand_37580": 37580,
+    "cand_37581": 37581,
+}
 _NOMINATIM_BASE_URL = (_env_str("NOMINATIM_BASE_URL", "https://nominatim.openstreetmap.org")).rstrip("/")
 _LAND_LOOKUP_USER_AGENT = USER_AGENT
 _LAND_LOOKUP_MAX_RESULTS = int(_env_float("LAND_LOOKUP_MAX_RESULTS", 30))
@@ -2350,6 +2367,106 @@ def land_map_probe(bbox: str = "") -> dict[str, Any]:
     return {"bbox_merc": parts, "probe": results}
 
 
+def _nspd_getfeatureinfo(lat: float, lng: float, layer_id: int) -> Any:
+    """WMS GetFeatureInfo произвольного слоя НСПД в точке — как клик по карте.
+
+    Тот же запрос, что `_nspd_point_features` шлёт на слой ЗУ (36048), но с
+    любым номером слоя: так проверяется, какие слои скрининга (ЗОУИТ, терр.
+    зоны, красные линии) отвечают в точке и какие атрибуты несут. Тайл
+    web-меркатора zoom 24, пиксель точки, INFO_FORMAT=application/json.
+    Бросает HTTPException — обработку оставляем вызывающему.
+    """
+    zoom = 24
+    tiles = 1 << zoom
+    tile_size = 512
+    lat_rad = math.radians(lat)
+    xtile = int((lng + 180.0) / 360.0 * tiles)
+    ytile = int((1.0 - math.asinh(math.tan(lat_rad)) / math.pi) / 2.0 * tiles)
+    west = xtile / tiles * 360.0 - 180.0
+    east = (xtile + 1) / tiles * 360.0 - 180.0
+    north = math.degrees(math.atan(math.sinh(math.pi * (1.0 - 2.0 * ytile / tiles))))
+    south = math.degrees(math.atan(math.sinh(math.pi * (1.0 - 2.0 * (ytile + 1) / tiles))))
+    i = int((lng - west) / (east - west) * tile_size)
+    j = int((lat - south) / (north - south) * tile_size)
+    params = urllib.parse.urlencode({
+        "REQUEST": "GetFeatureInfo", "SERVICE": "WMS", "VERSION": "1.3.0",
+        "INFO_FORMAT": "application/json", "FORMAT": "image/png", "STYLES": "",
+        "TRANSPARENT": "true", "QUERY_LAYERS": layer_id, "LAYERS": layer_id,
+        "WIDTH": tile_size, "HEIGHT": tile_size, "I": i, "J": tile_size - j,
+        "CRS": "EPSG:4326", "BBOX": f"{west},{south},{east},{north}",
+        "FEATURE_COUNT": "10",
+    })
+    return _land_fetch_json(
+        f"{_NSPD_BASE_URL}/api/aeggis/v3/{layer_id}/wms?{params}",
+        service="Сервис НСПД",
+    )
+
+
+@app.get("/land/screen-probe", include_in_schema=False)
+def land_screen_probe(lat: float = 0.0, lng: float = 0.0, layers: str = "") -> dict[str, Any]:
+    """Диагностика слоёв НСПД для скрининга: что отвечает GetFeatureInfo в точке.
+
+    Первый тест архитектуры скрининга (docs/land_screening_architecture.md):
+    несёт ли слой «Территориальные зоны» параметры застройки атрибутами или
+    только индекс зоны, какие номера слоёв ЗОУИТ реальны. С телефона и Render
+    НСПД закрыт WAF — перебор идёт с ядра, поэтому запрос форвардится туда, как
+    /land/map-probe. Только диагностика: не кэширует, ничего не меняет.
+
+    Параметры: lat/lng — точка (по умолчанию центр Москвы); layers — список
+    «имя=номер» через запятую (по умолчанию `_NSPD_SCREEN_LAYER_CANDIDATES`).
+    Ответ по каждому слою: http/число объектов/ключи и образец properties
+    первого объекта — по ним видно, какой номер какому слою отвечает.
+    """
+    remote = _core_api_url("/land/screen-probe")
+    if remote:
+        query = urllib.parse.urlencode({"lat": lat, "lng": lng, "layers": layers})
+        try:
+            with urllib.request.urlopen(
+                    urllib.request.Request(
+                        remote + "?" + query, headers={"Accept": "application/json"}),
+                    timeout=120) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Ядро недоступно: {exc}")
+
+    if not lat and not lng:
+        lat, lng = 55.751244, 37.618423  # центр Москвы — точка по умолчанию
+    layer_map: dict[str, int] = {}
+    for token in (layers or "").split(","):
+        token = token.strip()
+        if not token:
+            continue
+        name, _, number = token.partition("=")
+        try:
+            layer_map[name.strip() or number.strip()] = int(number.strip())
+        except ValueError:
+            continue
+    if not layer_map:
+        layer_map = dict(_NSPD_SCREEN_LAYER_CANDIDATES)
+
+    results: dict[str, Any] = {}
+    for name, layer_id in layer_map.items():
+        try:
+            payload = _nspd_getfeatureinfo(lat, lng, layer_id)
+        except HTTPException as exc:
+            results[name] = {"layer_id": layer_id, "http": exc.status_code}
+            continue
+        except Exception as exc:
+            results[name] = {"layer_id": layer_id, "error": str(exc)[:160]}
+            continue
+        features = _nspd_features(payload)
+        entry: dict[str, Any] = {"layer_id": layer_id, "features": len(features)}
+        if features:
+            options = _nspd_options(features[0])
+            entry["keys"] = sorted(options.keys())
+            entry["sample"] = {
+                key: (str(value)[:120] if value is not None else None)
+                for key, value in list(options.items())[:20]
+            }
+        results[name] = entry
+    return {"point": {"lat": lat, "lng": lng}, "layers": results}
+
+
 def _nspd_wms_map_png(west: float, south: float, east: float, north: float,
                       width: int, height: int) -> bytes:
     """Картинка слоя «Земельные участки из ЕГРН» под меркаторный bbox.
@@ -2475,6 +2592,77 @@ def land_map_image(bbox: str = "") -> Response:
     _NSPD_MAP_CACHE[cache_key] = (time.time(), raw)
     return Response(raw, media_type="image/png",
                     headers={"Cache-Control": "public, max-age=3600"})
+
+
+@app.get("/land/overlay-probe", include_in_schema=False)
+def land_overlay_probe(cad: str = "") -> Response:
+    """Диагностика совмещения контура и подложки по кадастровому номеру.
+
+    Рисует контур участка на растре НСПД ТОЙ ЖЕ bbox→пиксель математикой, что
+    SVG карточки. Ляжет контур на границы подложки — сдвиг был в восприятии
+    или обобщении растра, наш контур точнее; уедет и здесь — сдвиг в данных, и
+    виден его знак. Отделяет браузер от данных: сервер рисует по той же
+    формуле, что страница, поэтому расхождение с браузером указало бы на CSS.
+    С Render НСПД закрыт WAF — форвард на ядро. Только диагностика, не кэширует.
+    """
+    remote = _core_api_url("/land/overlay-probe")
+    if remote:
+        try:
+            with urllib.request.urlopen(
+                    urllib.request.Request(
+                        remote + "?" + urllib.parse.urlencode({"cad": cad}),
+                        headers={"Accept": "image/png"}),
+                    timeout=_NSPD_TIMEOUT_SECONDS + 15) as response:
+                raw = response.read(4 * 1024 * 1024)
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Ядро недоступно: {exc}")
+        return Response(raw, media_type="image/png", headers={"Cache-Control": "no-store"})
+
+    number = _land_text(cad).strip()
+    if not number:
+        raise HTTPException(status_code=400, detail="cad: кадастровый номер участка.")
+    features = _nspd_search_features(number)
+    geometry = None
+    for feature in features:
+        options = _nspd_options(feature)
+        if _land_text(_nspd_value(options, "cadastral_number")) == number:
+            geometry = feature.get("geometry")
+            break
+    if geometry is None and features:
+        geometry = features[0].get("geometry")
+    rings = _geometry_contours_merc(geometry) if geometry else []
+    if not rings:
+        raise HTTPException(status_code=404, detail="Контур участка не получен из ЕГРН.")
+
+    xs = [p[0] for ring in rings for p in ring]
+    ys = [p[1] for ring in rings for p in ring]
+    min_x, max_x, min_y, max_y = min(xs), max(xs), min(ys), max(ys)
+    span_x, span_y = max_x - min_x, max_y - min_y
+    if not (span_x > 0 and span_y > 0):
+        raise HTTPException(status_code=404, detail="Вырожденный контур участка.")
+    # Тот же pad и аспект, что landContourSvg + land_map_image: pixel-в-pixel.
+    pad = max(span_x, span_y) * 0.06
+    w, h = span_x + 2 * pad, span_y + 2 * pad
+    width = 640
+    height = max(64, min(1280, int(round(width * h / w))))
+
+    from PIL import Image, ImageDraw
+    raw = _nspd_wms_map_png(min_x - pad, min_y - pad, max_x + pad, max_y + pad, width, height)
+    layer = Image.open(io.BytesIO(raw)).convert("RGBA")
+    base = Image.new("RGBA", layer.size, (245, 245, 243, 255))
+    base.alpha_composite(layer)
+    draw = ImageDraw.Draw(base)
+    for ring in rings:
+        # Отображение точки в пиксель совпадает с SVG страницы:
+        # x=(X-(minX-pad))/w, y=((maxY+pad)-Y)/h — та же формула, что в path.
+        pts = [((p[0] - (min_x - pad)) / w * width,
+                ((max_y + pad) - p[1]) / h * height) for p in ring]
+        if len(pts) >= 2:
+            draw.line(pts + [pts[0]], fill=(0, 90, 255, 255), width=3)
+    buffer = io.BytesIO()
+    base.convert("RGB").save(buffer, format="PNG")
+    return Response(buffer.getvalue(), media_type="image/png",
+                    headers={"Cache-Control": "no-store"})
 
 
 def _geocode_yandex(address: str, limit: int) -> list[dict[str, Any]]:
@@ -24727,7 +24915,12 @@ function landTerritorySvg(found){
   return `<path d="${d}" fill="rgba(245,245,243,.35)" stroke="#111" stroke-width="2" fill-rule="evenodd" vector-effect="non-scaling-stroke"><title>${escapeHtml(item.cadastral_number||'')}</title></path>`;
  }).join('');
  const mapSrc=`/land/map-image?bbox=${(minX-pad).toFixed(1)},${(minY-pad).toFixed(1)},${(maxX+pad).toFixed(1)},${(maxY+pad).toFixed(1)}`;
- return `<div class="land-contour land-territory"><div class="land-contour-stage" style="aspect-ratio:${w.toFixed(1)} / ${h.toFixed(1)}">`+
+ // max-width держит высоту на истинном аспекте: при 100% ширины и max-height
+ // сцена сплющивалась (preserveAspectRatio="none" тянул и подложку, и контур
+ // по ширине — «высота маленькая», замечание владельца 17.08.2026). Ширина,
+ // при которой высота ровно 240px, — 240·w/h; выше не поднимется, форма верна.
+ const stage=`aspect-ratio:${w.toFixed(1)} / ${h.toFixed(1)};max-width:${Math.round(240*w/h)}px`;
+ return `<div class="land-contour land-territory"><div class="land-contour-stage" style="${stage}">`+
   `<img class="land-contour-map" src="${mapSrc}" alt="" loading="lazy" decoding="async" onerror="landMapLost(this)">`+
   `<svg viewBox="0 0 ${w.toFixed(1)} ${h.toFixed(1)}" preserveAspectRatio="none" role="img" aria-label="Взаимное расположение участков">${paths}</svg></div>`+
   `<small>Территория из ${items.length} участков в одном масштабе · подложка — публичная карта НСПД · наведите на контур — увидите номер</small></div>`;
@@ -24761,14 +24954,21 @@ function landContourSvg(item){
  // дают контекст «где это». Не загрузилась — картинка молча исчезает, и
  // остаётся чистый контур: подложка — украшение, а не данные.
  const mapSrc=`/land/map-image?bbox=${(minX-pad).toFixed(1)},${(minY-pad).toFixed(1)},${(maxX+pad).toFixed(1)},${(maxY+pad).toFixed(1)}`;
- return `<div class="land-contour"><div class="land-contour-stage" style="aspect-ratio:${w.toFixed(1)} / ${h.toFixed(1)}">`+
+ // max-width — высота на истинном аспекте, а не сплющена потолком (см. landTerritorySvg).
+ const stage=`aspect-ratio:${w.toFixed(1)} / ${h.toFixed(1)};max-width:${Math.round(240*w/h)}px`;
+ return `<div class="land-contour"><div class="land-contour-stage" style="${stage}">`+
   `<img class="land-contour-map" src="${mapSrc}" alt="" loading="lazy" decoding="async" onerror="landMapLost(this)">`+
   `<svg viewBox="0 0 ${w.toFixed(1)} ${h.toFixed(1)}" preserveAspectRatio="none" role="img" aria-label="Границы участка по ЕГРН">`+
   `<path d="${paths}" fill="rgba(245,245,243,.35)" stroke="#111" stroke-width="2.5" fill-rule="evenodd" vector-effect="non-scaling-stroke"/></svg></div>`+
   `<small>Границы по сведениям ЕГРН · подложка — публичная карта НСПД${scaleNote}</small></div>`;
 }
 
-function landCardHtml(item){
+function landCardHtml(item,showContour){
+ // showContour=false у карточки, когда участков несколько: общий вид территории
+ // (landTerritorySvg) уже показывает все контуры в одном масштабе, и мини-карта
+ // в каждой карточке была бы 30 повторов одного и того же — нужен общий рисунок,
+ // а не тридцать (замечание владельца, 17.08.2026). Одиночный участок — со своей.
+ if(showContour===undefined)showContour=true;
  const mapLink=item.map_url
   ?`<div class="land-links"><a href="${escapeHtml(item.map_url)}" target="_blank" rel="noopener">Открыть на публичной карте НСПД</a></div>`
   :'';
@@ -24796,7 +24996,7 @@ function landCardHtml(item){
  if(item.matched_address)rows.push(['Адрес по геокодеру',item.matched_address+(item.geocoder?' · '+item.geocoder:'')]);
  return `<div class="land-item"><header><h4>${escapeHtml(item.cadastral_number||'—')}</h4>`+
   `<span class="land-kind">${escapeHtml(item.kind_label||'')}${item.cadastral_value_date?' · оценка от '+escapeHtml(landDate(item.cadastral_value_date)):''}</span></header>`+
-  `<div class="land-grid">${rows.map(r=>`<div><small>${escapeHtml(r[0])}</small><b>${escapeHtml(r[1])}</b></div>`).join('')}</div>${landContourSvg(item)}${mapLink}</div>`;
+  `<div class="land-grid">${rows.map(r=>`<div><small>${escapeHtml(r[0])}</small><b>${escapeHtml(r[1])}</b></div>`).join('')}</div>${showContour?landContourSvg(item):''}${mapLink}</div>`;
 }
 
 function renderLandLookup(data){
@@ -24812,8 +25012,11 @@ function renderLandLookup(data){
   ['Кадастровая стоимость',totalValue?landNum(totalValue,1)+' млн ₽':'—'],
   ['Субъект РФ',regions.join(' · ')||'—']
  ].map(x=>`<div><small>${escapeHtml(x[0])}</small><b>${escapeHtml(x[1])}</b></div>`).join('');
+ // Несколько участков — общий вид территории один на всех, карточки без своих
+// мини-карт: иначе на 30 участков вышло бы 30 повторов той же подложки.
+ const single=found.length<2;
  document.getElementById('landCards').innerHTML=results.length
-  ?landTerritorySvg(found)+results.map(landCardHtml).join('')
+  ?landTerritorySvg(found)+results.map(x=>landCardHtml(x,single)).join('')
   :'<div style="padding:10px;color:#777">Ничего не найдено.</div>';
  document.getElementById('landWarnings').innerHTML=(data.warnings||[]).map(x=>'• '+escapeHtml(x)).join('<br>');
  document.getElementById('landPreview').style.display='block';
