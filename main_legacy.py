@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.18.23"
+VERSION = "0.18.24"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -2493,7 +2493,10 @@ def land_screen_probe(lat: float = 0.0, lng: float = 0.0, layers: str = "",
         try:
             payload = _nspd_getfeatureinfo(lat, lng, layer_id, ver)
         except HTTPException as exc:
-            results[name] = {"layer_id": layer_id, "http": exc.status_code}
+            # Текст обязателен: _land_fetch_json сводит любой 4xx НСПД к нашему
+            # 400, и подлинная причина (403 WAF, 429 лимит) видна только в нём.
+            results[name] = {"layer_id": layer_id, "http": exc.status_code,
+                             "detail": str(getattr(exc, "detail", ""))[:200]}
             continue
         except Exception as exc:
             results[name] = {"layer_id": layer_id, "error": str(exc)[:160]}
@@ -2559,7 +2562,8 @@ def land_layer_sweep(lat: float = 0.0, lng: float = 0.0, cad: str = "",
         try:
             payload = _nspd_getfeatureinfo(lat, lng, layer_id, "v3")
         except HTTPException as exc:
-            return layer_id, None, f"http {exc.status_code}"
+            reason = str(getattr(exc, "detail", ""))[:120] or f"http {exc.status_code}"
+            return layer_id, None, reason
         except Exception as exc:
             return layer_id, None, type(exc).__name__
         features = _nspd_features(payload)
