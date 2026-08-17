@@ -24864,7 +24864,12 @@ function landContourSvg(item){
   `<small>Границы по сведениям ЕГРН · подложка — публичная карта НСПД${scaleNote}</small></div>`;
 }
 
-function landCardHtml(item){
+function landCardHtml(item,showContour){
+ // showContour=false у карточки, когда участков несколько: общий вид территории
+ // (landTerritorySvg) уже показывает все контуры в одном масштабе, и мини-карта
+ // в каждой карточке была бы 30 повторов одного и того же — нужен общий рисунок,
+ // а не тридцать (замечание владельца, 17.08.2026). Одиночный участок — со своей.
+ if(showContour===undefined)showContour=true;
  const mapLink=item.map_url
   ?`<div class="land-links"><a href="${escapeHtml(item.map_url)}" target="_blank" rel="noopener">Открыть на публичной карте НСПД</a></div>`
   :'';
@@ -24892,7 +24897,7 @@ function landCardHtml(item){
  if(item.matched_address)rows.push(['Адрес по геокодеру',item.matched_address+(item.geocoder?' · '+item.geocoder:'')]);
  return `<div class="land-item"><header><h4>${escapeHtml(item.cadastral_number||'—')}</h4>`+
   `<span class="land-kind">${escapeHtml(item.kind_label||'')}${item.cadastral_value_date?' · оценка от '+escapeHtml(landDate(item.cadastral_value_date)):''}</span></header>`+
-  `<div class="land-grid">${rows.map(r=>`<div><small>${escapeHtml(r[0])}</small><b>${escapeHtml(r[1])}</b></div>`).join('')}</div>${landContourSvg(item)}${mapLink}</div>`;
+  `<div class="land-grid">${rows.map(r=>`<div><small>${escapeHtml(r[0])}</small><b>${escapeHtml(r[1])}</b></div>`).join('')}</div>${showContour?landContourSvg(item):''}${mapLink}</div>`;
 }
 
 function renderLandLookup(data){
@@ -24908,8 +24913,11 @@ function renderLandLookup(data){
   ['Кадастровая стоимость',totalValue?landNum(totalValue,1)+' млн ₽':'—'],
   ['Субъект РФ',regions.join(' · ')||'—']
  ].map(x=>`<div><small>${escapeHtml(x[0])}</small><b>${escapeHtml(x[1])}</b></div>`).join('');
+ // Несколько участков — общий вид территории один на всех, карточки без своих
+// мини-карт: иначе на 30 участков вышло бы 30 повторов той же подложки.
+ const single=found.length<2;
  document.getElementById('landCards').innerHTML=results.length
-  ?landTerritorySvg(found)+results.map(landCardHtml).join('')
+  ?landTerritorySvg(found)+results.map(x=>landCardHtml(x,single)).join('')
   :'<div style="padding:10px;color:#777">Ничего не найдено.</div>';
  document.getElementById('landWarnings').innerHTML=(data.warnings||[]).map(x=>'• '+escapeHtml(x)).join('<br>');
  document.getElementById('landPreview').style.display='block';

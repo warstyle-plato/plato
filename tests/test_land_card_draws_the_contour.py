@@ -188,6 +188,46 @@ def test_the_list_renders_the_territory_first():
     assert "landTerritorySvg(found)+" in body, "список карточек не начинается с посадки"
 
 
+def test_many_parcels_drop_the_per_card_map():
+    """Несколько участков — общий вид один на всех, карточки без своих мини-карт:
+    иначе на 30 участков вышло бы 30 повторов той же подложки (замечание
+    владельца, 17.08.2026). Один участок — миниатюра в карточке остаётся."""
+    body = main.PAGE[main.PAGE.index("function renderLandLookup"):]
+    body = body[:body.index("function useLandForTep")]
+    assert "found.length<2" in body, "нет признака единственного участка"
+    assert "landCardHtml(x,single)" in body, "карточки не получают признак общего вида"
+
+    if not NODE:
+        pytest.skip("node недоступен")
+    contour = re.search(r"(function landContourSvg\(item\)\{.*?\n\})\n\nfunction landCardHtml",
+                        main.PAGE, re.S)
+    card = re.search(r"(function landCardHtml\(item,showContour\)\{.*?\n\})\n\nfunction renderLandLookup",
+                     main.PAGE, re.S)
+    assert contour and card, "не найдены landContourSvg / landCardHtml"
+    harness = (
+        "const escapeHtml=s=>String(s==null?'':s);\n"
+        "const landNum=(v,d)=>String(v);\n"
+        "const landCoords=c=>'x';\n"
+        "const landDate=v=>String(v);\n"
+        + contour.group(1) + "\n" + card.group(1) + "\n"
+    )
+    item = {"found": True, "cadastral_number": "50:12:0080205:1",
+            "contour_merc": [MERC_RING], "center": {"lat": 55.7, "lng": 37.6}}
+    script = harness + f"""
+const item={json.dumps(item, ensure_ascii=False)};
+console.log(JSON.stringify({{
+  on: landCardHtml(item, true).includes('land-contour'),
+  off: landCardHtml(item, false).includes('land-contour'),
+  fallback: landCardHtml(item).includes('land-contour'),
+}}));
+"""
+    result = subprocess.run([NODE, "-e", script], capture_output=True, text=True, check=True)
+    got = json.loads(result.stdout)
+    assert got["on"] is True, "одиночная карточка потеряла миниатюру"
+    assert got["off"] is False, "карточка в наборе всё ещё рисует свою карту"
+    assert got["fallback"] is True, "без флага карточка обязана рисовать контур"
+
+
 def test_the_map_backdrop_endpoint_speaks_wms(monkeypatch):
     """Подложка: bbox проверяется, уходит в НСПД тем же меркатором
     (EPSG:3857 — единственный формат, который НСПД приняла пробой),
