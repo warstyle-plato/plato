@@ -31,16 +31,16 @@ import mo_rngp_reference as ref  # noqa: E402
 
 # --- норма без происхождения не норма ---------------------------------------------
 
-@pytest.mark.parametrize("rule", ref.ALL_RULES, ids=lambda r: r["key"])
+@pytest.mark.parametrize("rule", ref.ALL_RULES, ids=lambda r: r["rule_id"])
 def test_every_rule_carries_its_source(rule):
     """Цитата, документ, пункт, редакция и официальная публикация — обязательны."""
-    for field in ("key", "unit", "rule_type", "conditions", "document", "point",
-                  "effective_revision", "official_publication", "quote", "status"):
-        assert field in rule, f"{rule.get('key')}: нет поля {field}"
-    assert rule["quote"].strip(), rule["key"]
-    assert rule["official_publication"].startswith("http"), rule["key"]
+    for field in ("rule_id", "territory", "unit", "rule_type", "conditions", "document", "point_table",
+                  "effective_from", "official_source", "quote", "status"):
+        assert field in rule, f"{rule.get('rule_id')}: нет поля {field}"
+    assert rule["quote"].strip(), rule["rule_id"]
+    assert rule["official_source"].startswith("http"), rule["rule_id"]
     assert rule["status"] in ("CONFIRMED_PRIMARY", "CONFIRMED_EXAMPLE",
-                              "CONFIRMED_SECONDARY"), rule["key"]
+                              "CONFIRMED_SECONDARY"), rule["rule_id"]
 
 
 def test_the_holes_are_not_pretending_to_be_rules():
@@ -178,7 +178,7 @@ def test_the_reductions_do_not_claim_to_be_cumulative():
     for rule in (ref.PARKING_REDUCTION_STATION_WALK,
                  ref.PARKING_REDUCTION_TRANSIT_TO_STATION,
                  ref.PARKING_REDUCTION_COOPERATIVE):
-        assert rule["cumulative_with_others"] == "UNKNOWN", rule["key"]
+        assert rule["cumulative_with_others"] == "UNKNOWN", rule["rule_id"]
 
 
 def test_the_flat_norm_declares_its_narrow_scope():
@@ -195,9 +195,9 @@ def test_the_flat_norm_declares_its_narrow_scope():
 
 def test_the_status_names_the_revision_and_the_check_date():
     state = ref.reference_status()
-    assert state["effective_revision"] == "02.07.2026"
+    assert state["effective_from"] == "02.07.2026"
     assert state["in_force_since"] == "2026-07-03"
-    assert state["official_publication"].startswith("http")
+    assert state["official_source"].startswith("http")
     date.fromisoformat(state["verified_at"])
     assert state["rules_unresolved"] == len(ref.UNRESOLVED)
 
@@ -239,7 +239,7 @@ def test_the_machine_rules_agree_with_the_written_source_pack():
     if not pack.exists():
         pytest.skip("source pack не найден")
     text = pack.read_text(encoding="utf-8")
-    assert ref.PP_774["official_publication"].split("/")[-1] in text
+    assert ref.PP_774["official_source"].split("/")[-1] in text
     assert ref.PP_774["in_force_since"].replace("2026-07-03", "03.07.2026") in text
     # Ключевые числа действующей редакции п. 5.12.
     assert "356" in text

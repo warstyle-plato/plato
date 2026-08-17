@@ -52,9 +52,9 @@ PP_774 = {
     "document": "Постановление Правительства Московской области от 02.07.2026 № 774-ПП",
     "changes": "Нормативы градостроительного проектирования Московской области "
                "(ПП МО от 17.08.2015 № 713/30)",
-    "effective_revision": "02.07.2026",
+    "effective_from": "02.07.2026",
     "in_force_since": "2026-07-03",
-    "official_publication": "http://publication.pravo.gov.ru/document/5000202607030006",
+    "official_source": "http://publication.pravo.gov.ru/document/5000202607030006",
 }
 
 # Единицы, которые здесь встречаются. Заведены явно, потому что путаница между
@@ -83,16 +83,17 @@ def _rule(**fields: Any) -> dict[str, Any]:
 # --- ПАРКОВКИ: потребность (п. 5.12 в редакции 774-ПП) ---------------------------
 
 PARKING_PERMANENT_RATE = _rule(
-    key="parking_permanent_rate",
+    rule_id="parking_permanent_rate",
+    territory="MO",
     value=0.90 * 356,                      # 320,4 автомобиля на 1000 человек
     unit=UNIT_CARS_PER_1000,
     rule_type="MANDATORY_CALCULATION_RULE",
     area_basis=BASIS_NONE,
     conditions="обычная жилая застройка; расчётное население",
     document=PP_774["document"],
-    point="п. 5.12 Нормативов",
-    effective_revision=PP_774["effective_revision"],
-    official_publication=PP_774["official_publication"],
+    point_table="п. 5.12 Нормативов",
+    effective_from=PP_774["effective_from"],
+    official_source=PP_774["official_source"],
     quote="Потребность расчетного населения в местах для постоянного хранения "
           "индивидуального автомобильного транспорта составляет 90% от уровня "
           "автомобилизации – 356 автомобилей на 1000 человек расчетного населения",
@@ -100,16 +101,17 @@ PARKING_PERMANENT_RATE = _rule(
 )
 
 PARKING_PERMANENT_RATE_LOW_RISE_CLUSTER = _rule(
-    key="parking_permanent_rate_low_rise_cluster",
+    rule_id="parking_permanent_rate_low_rise_cluster",
+    territory="MO",
     value=1.00 * 356,
     unit=UNIT_CARS_PER_1000,
     rule_type="MANDATORY_CALCULATION_RULE",
     area_basis=BASIS_NONE,
     conditions="малоэтажная жилая застройка в кластерах МЖС",
     document=PP_774["document"],
-    point="п. 5.12 Нормативов",
-    effective_revision=PP_774["effective_revision"],
-    official_publication=PP_774["official_publication"],
+    point_table="п. 5.12 Нормативов",
+    effective_from=PP_774["effective_from"],
+    official_source=PP_774["official_source"],
     quote="потребность расчетного населения для малоэтажной жилой застройки в "
           "кластерах МЖС в местах для постоянного хранения индивидуального "
           "автомобильного транспорта составляет 100% от уровня автомобилизации "
@@ -118,7 +120,8 @@ PARKING_PERMANENT_RATE_LOW_RISE_CLUSTER = _rule(
 )
 
 PARKING_TEMPORARY_RATE = _rule(
-    key="parking_temporary_rate",
+    rule_id="parking_temporary_rate",
+    territory="MO",
     value=30.0,
     unit=UNIT_CARS_PER_1000,
     rule_type="MANDATORY_MINIMUM",
@@ -126,9 +129,9 @@ PARKING_TEMPORARY_RATE = _rule(
     conditions="временное хранение легковых автомобилей; размещение в границах "
                "жилого района",
     document=PP_774["document"],
-    point="п. 5.12 Нормативов",
-    effective_revision=PP_774["effective_revision"],
-    official_publication=PP_774["official_publication"],
+    point_table="п. 5.12 Нормативов",
+    effective_from=PP_774["effective_from"],
+    official_source=PP_774["official_source"],
     quote="Потребность расчетного населения в местах для временного хранения "
           "легковых автомобилей следует предусматривать из расчета не менее – "
           "30 автомобилей на 1000 человек расчетного населения",
@@ -142,16 +145,17 @@ PARKING_TEMPORARY_RATE = _rule(
 # границах жилого района.
 
 PARKING_SHARE_IN_QUARTER = _rule(
-    key="parking_share_in_quarter",
+    rule_id="parking_share_in_quarter",
+    territory="MO",
     value=0.40,
     unit=UNIT_SHARE,
     rule_type="MANDATORY_MINIMUM",
     area_basis=BASIS_NONE,
     conditions="доля мест постоянного хранения в границах квартала",
     document=PP_774["document"],
-    point="п. 5.12 Нормативов",
-    effective_revision=PP_774["effective_revision"],
-    official_publication=PP_774["official_publication"],
+    point_table="п. 5.12 Нормативов",
+    effective_from=PP_774["effective_from"],
+    official_source=PP_774["official_source"],
     quote="Распределение обеспеченности расчетного населения местами для "
           "постоянного хранения индивидуального автомобильного транспорта: "
           "в границах квартала – не менее 40%",
@@ -159,7 +163,8 @@ PARKING_SHARE_IN_QUARTER = _rule(
 )
 
 PARKING_SHARE_IN_DISTRICT = _rule(
-    key="parking_share_in_district",
+    rule_id="parking_share_in_district",
+    territory="MO",
     value=0.60,
     unit=UNIT_SHARE,
     rule_type="MANDATORY_CALCULATION_RULE",
@@ -168,9 +173,9 @@ PARKING_SHARE_IN_DISTRICT = _rule(
                "прилегающих производственных территориях, при соблюдении "
                "дальности пешеходной доступности",
     document=PP_774["document"],
-    point="п. 5.12 Нормативов",
-    effective_revision=PP_774["effective_revision"],
-    official_publication=PP_774["official_publication"],
+    point_table="п. 5.12 Нормативов",
+    effective_from=PP_774["effective_from"],
+    official_source=PP_774["official_source"],
     quote="в границах жилого района на селитебных территориях и на прилегающих "
           "производственных территориях – 60% при условии обеспечения для "
           "расчетного населения дальности пешеходной доступности мест для "
@@ -180,7 +185,8 @@ PARKING_SHARE_IN_DISTRICT = _rule(
 )
 
 PARKING_WALK_DISTANCE = _rule(
-    key="parking_walk_distance",
+    rule_id="parking_walk_distance",
+    territory="MO",
     value=800.0,
     value_reconstruction=1200.0,
     unit=UNIT_METERS,
@@ -189,24 +195,25 @@ PARKING_WALK_DISTANCE = _rule(
     conditions="дальность пешеходной доступности; в районах (территориях) "
                "реконструкции — 1200 м",
     document=PP_774["document"],
-    point="п. 5.12 Нормативов",
-    effective_revision=PP_774["effective_revision"],
-    official_publication=PP_774["official_publication"],
+    point_table="п. 5.12 Нормативов",
+    effective_from=PP_774["effective_from"],
+    official_source=PP_774["official_source"],
     quote="не более 800 м, а в районах (территориях) реконструкции – не более 1200 м",
     status="CONFIRMED_PRIMARY",
 )
 
 PARKING_SHORTAGE_GOES_UNDERGROUND_OR_MULTILEVEL = _rule(
-    key="parking_shortage_goes_multilevel",
+    rule_id="parking_shortage_goes_multilevel",
+    territory="MO",
     value=None,
     unit=None,
     rule_type="MANDATORY_RULE",
     area_basis=BASIS_NONE,
     conditions="недостаточность территории квартала",
     document=PP_774["document"],
-    point="п. 5.12 Нормативов",
-    effective_revision=PP_774["effective_revision"],
-    official_publication=PP_774["official_publication"],
+    point_table="п. 5.12 Нормативов",
+    effective_from=PP_774["effective_from"],
+    official_source=PP_774["official_source"],
     quote="В случае недостаточности территории квартала размещение автомобилей "
           "жителей необходимо предусматривать в многоэтажных подземных и (или) "
           "наземных гаражах.",
@@ -214,16 +221,17 @@ PARKING_SHORTAGE_GOES_UNDERGROUND_OR_MULTILEVEL = _rule(
 )
 
 DEPENDENT_SPACES_NOT_ALLOWED = _rule(
-    key="dependent_spaces_not_allowed",
+    rule_id="dependent_spaces_not_allowed",
+    territory="MO",
     value=None,
     unit=None,
     rule_type="MANDATORY_PROHIBITION",
     area_basis=BASIS_NONE,
     conditions="зависимые места хранения (одно за другим)",
     document=PP_774["document"],
-    point="п. 5.12 Нормативов",
-    effective_revision=PP_774["effective_revision"],
-    official_publication=PP_774["official_publication"],
+    point_table="п. 5.12 Нормативов",
+    effective_from=PP_774["effective_from"],
+    official_source=PP_774["official_source"],
     quote="Не допускается обеспечение нормативной потребности планируемой "
           "застройки в местах хранения индивидуального автомобильного транспорта "
           "и приобъектных стоянках за счет зависимых мест хранения автотранспорта.",
@@ -238,7 +246,8 @@ DEPENDENT_SPACES_NOT_ALLOWED = _rule(
 # до выяснения складывать нельзя.
 
 PARKING_REDUCTION_STATION_WALK = _rule(
-    key="parking_reduction_station_walk",
+    rule_id="parking_reduction_station_walk",
+    territory="MO",
     value=0.15,
     unit=UNIT_SHARE,
     rule_type="ALLOWED_REDUCTION",
@@ -246,9 +255,9 @@ PARKING_REDUCTION_STATION_WALK = _rule(
     conditions="пешеходные коммуникации до входа на станцию ж/д, метро или "
                "скоростного трамвая не более 800 м (реконструкция — 1200 м)",
     document=PP_774["document"],
-    point="п. 5.12 Нормативов",
-    effective_revision=PP_774["effective_revision"],
-    official_publication=PP_774["official_publication"],
+    point_table="п. 5.12 Нормативов",
+    effective_from=PP_774["effective_from"],
+    official_source=PP_774["official_source"],
     quote="на 15% при наличии/обустройстве пешеходных коммуникаций … при "
           "пешеходной доступности от жилого дома до ближайшего входа на станцию – "
           "не более 800 м, а в районах (территориях) реконструкции – не более 1200 м",
@@ -257,7 +266,8 @@ PARKING_REDUCTION_STATION_WALK = _rule(
 )
 
 PARKING_REDUCTION_TRANSIT_TO_STATION = _rule(
-    key="parking_reduction_transit_to_station",
+    rule_id="parking_reduction_transit_to_station",
+    territory="MO",
     value=0.10,
     unit=UNIT_SHARE,
     rule_type="ALLOWED_REDUCTION",
@@ -266,9 +276,9 @@ PARKING_REDUCTION_TRANSIT_TO_STATION = _rule(
                "дома; время в пути до станции не более 10 минут, расстояние не "
                "более 5 км",
     document=PP_774["document"],
-    point="п. 5.12 Нормативов",
-    effective_revision=PP_774["effective_revision"],
-    official_publication=PP_774["official_publication"],
+    point_table="п. 5.12 Нормативов",
+    effective_from=PP_774["effective_from"],
+    official_source=PP_774["official_source"],
     quote="на 10 % - при наличии остановок наземного пассажирского транспорта в "
           "пешеходной доступности не более 500 метров от жилого дома, при этом "
           "время в пути от остановки до указанных станций на наземном "
@@ -279,7 +289,8 @@ PARKING_REDUCTION_TRANSIT_TO_STATION = _rule(
 )
 
 PARKING_REDUCTION_COOPERATIVE = _rule(
-    key="parking_reduction_cooperative",
+    rule_id="parking_reduction_cooperative",
+    territory="MO",
     value=0.15,
     unit=UNIT_SHARE,
     rule_type="ALLOWED_REDUCTION",
@@ -287,9 +298,9 @@ PARKING_REDUCTION_COOPERATIVE = _rule(
     conditions="кооперированная стоянка, обслуживающая группы объектов разного "
                "назначения; снижение за счёт сдвига часов пик",
     document=PP_774["document"],
-    point="п. 5.12 Нормативов",
-    effective_revision=PP_774["effective_revision"],
-    official_publication=PP_774["official_publication"],
+    point_table="п. 5.12 Нормативов",
+    effective_from=PP_774["effective_from"],
+    official_source=PP_774["official_source"],
     quote="допускается снижать суммарное требуемое количество машино-мест без "
           "снижения обеспеченности ими за счет сдвига часов пик при "
           "функционировании обслуживаемых парковками объектов не более чем на 15%",
@@ -300,7 +311,8 @@ PARKING_REDUCTION_COOPERATIVE = _rule(
 # --- ПАРКОВКИ: габариты и площадь --------------------------------------------------
 
 PARKING_STALL_MIN_SIZE = _rule(
-    key="parking_stall_min_size",
+    rule_id="parking_stall_min_size",
+    territory="MO",
     value=(5.3, 2.5),
     unit="м × м",
     rule_type="MANDATORY_MINIMUM",
@@ -308,9 +320,9 @@ PARKING_STALL_MIN_SIZE = _rule(
     conditions="машино-место; для инвалида на кресле-коляске 6,0 × 3,6 м; вдоль "
                "проезжей части длина 6,8 м",
     document=PP_774["document"],
-    point="п. 5.12 Нормативов",
-    effective_revision=PP_774["effective_revision"],
-    official_publication=PP_774["official_publication"],
+    point_table="п. 5.12 Нормативов",
+    effective_from=PP_774["effective_from"],
+    official_source=PP_774["official_source"],
     quote="Минимально допустимые размеры машино-места составляют 5,3 х 2,5 м.",
     status="CONFIRMED_PRIMARY",
 )
@@ -322,7 +334,8 @@ PARKING_STALL_MIN_SIZE = _rule(
 # нет. Поэтому здесь зафиксирована только та область, которую видно в самом
 # постановлении, а общая — отдельной дырой G3a.
 PARKING_FLAT_AREA_PER_SPACE_CLUSTER = _rule(
-    key="parking_flat_area_per_space_cluster",
+    rule_id="parking_flat_area_per_space_cluster",
+    territory="MO",
     value=22.5,
     unit=UNIT_SQM_PER_SPACE,
     rule_type="MANDATORY_CALCULATION_RULE",
@@ -330,9 +343,9 @@ PARKING_FLAT_AREA_PER_SPACE_CLUSTER = _rule(
     conditions="площадки временного хранения автомобилей для расчётного "
                "населения кластеров ИЖС и МЖС",
     document=PP_774["document"],
-    point="п. 5.12 Нормативов",
-    effective_revision=PP_774["effective_revision"],
-    official_publication=PP_774["official_publication"],
+    point_table="п. 5.12 Нормативов",
+    effective_from=PP_774["effective_from"],
+    official_source=PP_774["official_source"],
     quote="При этом площадь территории для размещения одного автомобиля "
           "принимается из расчета 22,5 кв. м.",
     scope_warning="В первичном тексте это правило стоит в абзаце про кластеры "
@@ -344,7 +357,8 @@ PARKING_FLAT_AREA_PER_SPACE_CLUSTER = _rule(
 # --- ПРИОБЪЕКТНЫЕ СТОЯНКИ ----------------------------------------------------------
 
 PARKING_SCHOOL_DROPOFF = _rule(
-    key="parking_school_dropoff",
+    rule_id="parking_school_dropoff",
+    territory="MO",
     value={"до 1100 учащихся": {"на 100 учащихся": 1, "на 100 работающих": 7},
            "1100 и более учащихся": {"на 100 учащихся": 1, "на 100 работающих": 5}},
     unit="машино-мест",
@@ -353,16 +367,17 @@ PARKING_SCHOOL_DROPOFF = _rule(
     conditions="кратковременная остановка автотранспорта родителей и работников; "
                "пешеходная доступность не более 200 м от территории учреждения",
     document=PP_774["document"],
-    point="п. 5.12 Нормативов, таблица",
-    effective_revision=PP_774["effective_revision"],
-    official_publication=PP_774["official_publication"],
+    point_table="п. 5.12 Нормативов, таблица",
+    effective_from=PP_774["effective_from"],
+    official_source=PP_774["official_source"],
     quote="до 1100 учащихся — 1 м/м на 100 учащихся и 7 м/м на 100 работающих; "
           "1100 и более учащихся — 1 м/м на 100 учащихся и 5 м/м на 100 работающих",
     status="CONFIRMED_PRIMARY",
 )
 
 PARKING_DOO_DROPOFF = _rule(
-    key="parking_doo_dropoff",
+    rule_id="parking_doo_dropoff",
+    territory="MO",
     value={"до 330 мест": {"всего": 5},
            "свыше 330 мест": {"на 100 мест": 1, "на 100 сотрудников": 10}},
     unit="машино-мест",
@@ -370,9 +385,9 @@ PARKING_DOO_DROPOFF = _rule(
     area_basis=BASIS_NONE,
     conditions="кратковременная остановка; пешеходная доступность не более 200 м",
     document=PP_774["document"],
-    point="п. 5.12 Нормативов, таблица",
-    effective_revision=PP_774["effective_revision"],
-    official_publication=PP_774["official_publication"],
+    point_table="п. 5.12 Нормативов, таблица",
+    effective_from=PP_774["effective_from"],
+    official_source=PP_774["official_source"],
     quote="до 330 мест — 5 м/м; свыше 330 мест — 1 м/м на 100 мест и 10 м/м "
           "на 100 сотрудников",
     status="CONFIRMED_PRIMARY",
@@ -380,7 +395,8 @@ PARKING_DOO_DROPOFF = _rule(
 
 # Прямо про наши ПСН и коммерцию первых этажей: одно место на 50 м² общей площади.
 PARKING_NONRESIDENTIAL_GROUND_FLOOR = _rule(
-    key="parking_nonresidential_ground_floor",
+    rule_id="parking_nonresidential_ground_floor",
+    territory="MO",
     value=50.0,
     unit="м² общей площади на 1 машино-место",
     rule_type="MANDATORY_CALCULATION_RULE",
@@ -390,9 +406,9 @@ PARKING_NONRESIDENTIAL_GROUND_FLOOR = _rule(
                "независимо от функции; кроме ДОО и поликлиник. Помещения с "
                "определённой функцией — по приложению № 10",
     document=PP_774["document"],
-    point="п. 5.12 Нормативов",
-    effective_revision=PP_774["effective_revision"],
-    official_publication=PP_774["official_publication"],
+    point_table="п. 5.12 Нормативов",
+    effective_from=PP_774["effective_from"],
+    official_source=PP_774["official_source"],
     quote="для встроенно-пристроенных нежилых помещений на первых этажах жилой "
           "застройки и многоуровневых паркингов в уровне первого этажа "
           "независимо от функции (за исключением дошкольных образовательных "
@@ -411,7 +427,8 @@ PARKING_NONRESIDENTIAL_GROUND_FLOOR = _rule(
 # Второе: этажность уже внутри значений. 5+ этажей дают 10 м² на место — это
 # итог, а не «10 на этаж». Делить на этажность второй раз неверно.
 PARKING_AREA_BY_GARAGE_TYPE = _rule(
-    key="parking_area_by_garage_type",
+    rule_id="parking_area_by_garage_type",
+    territory="MO",
     value={
         "надземный 1 этаж обвалованный": (30.0, BASIS_LAND_PLOT),
         "надземный 2 этажа": (20.0, BASIS_LAND_PLOT),
@@ -437,9 +454,9 @@ PARKING_AREA_BY_GARAGE_TYPE = _rule(
     document="ПП МО от 17.08.2015 № 713/30, приложение № 9 (введено ПП МО от "
              "22.12.2020 № 996/41; открытая стоянка корректировалась № 1003/34); "
              "774-ПП приложение № 9 не меняет",
-    point="приложение № 9 к Нормативам",
-    effective_revision=PP_774["effective_revision"],
-    official_publication="https://mosoblpravo.ru/postanovlenie/2020/12/22/n-996-41/",
+    point_table="приложение № 9 к Нормативам",
+    effective_from=PP_774["effective_from"],
+    official_source="https://mosoblpravo.ru/postanovlenie/2020/12/22/n-996-41/",
     quote="определяется на основании рекомендованных показателей в соответствии "
           "с приложением N 9",
     hard_fail_allowed=False,
@@ -449,7 +466,8 @@ PARKING_AREA_BY_GARAGE_TYPE = _rule(
 )
 
 PARKING_OPEN_AREA_PER_SPACE = _rule(
-    key="parking_open_area_per_space",
+    rule_id="parking_open_area_per_space",
+    territory="MO",
     value=22.5,
     unit=UNIT_SQM_PER_SPACE,
     rule_type="MANDATORY_CALCULATION_RULE",
@@ -457,9 +475,9 @@ PARKING_OPEN_AREA_PER_SPACE = _rule(
     conditions="открытые автостоянки; в отличие от приложения № 9 эта величина "
                "стоит в самом пункте и рекомендательной не названа",
     document="ПП МО от 17.08.2015 № 713/30, п. 5.11, консолидированный текст",
-    point="п. 5.11 Нормативов",
-    effective_revision=PP_774["effective_revision"],
-    official_publication=PP_774["official_publication"],
+    point_table="п. 5.11 Нормативов",
+    effective_from=PP_774["effective_from"],
+    official_source=PP_774["official_source"],
     quote="Площадь территории для размещения одного автомобиля на открытых "
           "автостоянках принимается 22,5 кв. м",
     hard_fail_allowed=True,
@@ -475,7 +493,8 @@ PARKING_OPEN_AREA_PER_SPACE = _rule(
 # собирались вводить сами, уже существует.
 
 LAND_SMIN_FORMULA = _rule(
-    key="land_smin_formula",
+    rule_id="land_smin_formula",
+    territory="MO",
     value="S_min = К_уд × расчётное население",
     unit=None,
     rule_type="MANDATORY_CALCULATION_RULE",
@@ -483,9 +502,9 @@ LAND_SMIN_FORMULA = _rule(
     conditions="для целей межевания; К_уд — сумма строк таблицы № 13 Нормативов "
                "по типу устойчивой системы расселения и численности населения",
     document=PP_774["document"],
-    point="приложение 7, пример 4, пункт 1",
-    effective_revision=PP_774["effective_revision"],
-    official_publication=PP_774["official_publication"],
+    point_table="приложение 7, пример 4, пункт 1",
+    effective_from=PP_774["effective_from"],
+    official_source=PP_774["official_source"],
     quote="определяем минимально необходимую площадь территории для жилого дома "
           "и / или комплекса жилых домов по формуле: S min = К уд. х расчетное "
           "население",
@@ -502,7 +521,8 @@ LAND_SMIN_FORMULA = _rule(
 # УСР действуют свои таблицы (п. 5.5 отправляет к таблицам № 7–32) — их у нас
 # нет, и подставлять эту вместо них нельзя.
 LAND_TABLE_13 = _rule(
-    key="land_table_13",
+    rule_id="land_table_13",
+    territory="MO",
     value={
         # назначение: (квартал ≤3, 4–5, 6–7, жилрайон ≤3, 4–5, 6–7, нас. пункт)
         "1. Хранение индивидуального автотранспорта": (3.12, 2.58, 2.30, 4.34, 3.81, 3.54, 0.47),
@@ -534,9 +554,9 @@ LAND_TABLE_13 = _rule(
     document="ПП МО от 17.08.2015 № 713/30, консолидированный текст; значения "
              "столбца «квартал 6–7 эт.» подтверждены официальным примером в "
              "приложении 7 (в редакции 774-ПП)",
-    point="таблица № 13 Нормативов",
-    effective_revision=PP_774["effective_revision"],
-    official_publication=PP_774["official_publication"],
+    point_table="таблица № 13 Нормативов",
+    effective_from=PP_774["effective_from"],
+    official_source=PP_774["official_source"],
     quote="К уд. = 2,3 + 0,25 + 1,02 + 0,30 + 0,13 + 15,5 = 19,50 (кв. м/человека)",
     double_count_warning="Строка 1 — это земля под хранение автотранспорта, и "
                          "она уже внутри К_уд. Прибавлять к S_min отдельно "
@@ -572,7 +592,8 @@ def kud_for_quarter(storeys: str) -> float:
 # в тексте поправки нет — она в неизменённой части Нормативов, поэтому статус
 # «воспроизведено из примера», а сам делитель остаётся дырой G13.
 LAND_POPULATION_PER_FLAT_AREA = _rule(
-    key="land_population_per_flat_area",
+    rule_id="land_population_per_flat_area",
+    territory="MO",
     value=28.0,
     unit=UNIT_SQM_PER_FLAT_SQM,
     rule_type="MANDATORY_CALCULATION_RULE",
@@ -581,9 +602,9 @@ LAND_POPULATION_PER_FLAT_AREA = _rule(
                "КВАРТИР, а не ГНС и не СПП",
     document="ПП МО от 17.08.2015 № 713/30, п. 5.3, консолидированный текст; "
              "подтверждено официальным примером в приложении 7 (774-ПП)",
-    point="п. 5.3 Нормативов",
-    effective_revision=PP_774["effective_revision"],
-    official_publication=PP_774["official_publication"],
+    point_table="п. 5.3 Нормативов",
+    effective_from=PP_774["effective_from"],
+    official_source=PP_774["official_source"],
     quote="расчетное население многоквартирной жилой застройки определяется как "
           "сумма площадей квартир, деленная на 28 кв. м/чел.",
     cross_check="Пример 774-ПП: 54 640 м² квартир → 1 953 человека, то есть 27,98 "
@@ -607,7 +628,7 @@ LAND_SMIN_OFFICIAL_EXAMPLE = {
     ],
     "document": PP_774["document"],
     "point": "приложение 7, пример 4, пункт 1",
-    "official_publication": PP_774["official_publication"],
+    "official_source": PP_774["official_source"],
 }
 
 
@@ -706,10 +727,10 @@ def reference_status() -> dict[str, Any]:
     unresolved = sorted(UNRESOLVED)
     return {
         "document": PP_774["changes"],
-        "effective_revision": PP_774["effective_revision"],
+        "effective_from": PP_774["effective_from"],
         "in_force_since": PP_774["in_force_since"],
         "amended_by": PP_774["document"],
-        "official_publication": PP_774["official_publication"],
+        "official_source": PP_774["official_source"],
         "verified_at": VERIFIED_AT,
         "verified_from": VERIFIED_FROM,
         "rules_confirmed": sum(1 for rule in ALL_RULES
@@ -722,7 +743,7 @@ def reference_status() -> dict[str, Any]:
 def status_line() -> str:
     """Одна строка для сводки бота."""
     state = reference_status()
-    return (f"РНГП МО: ред. {state['effective_revision']} "
+    return (f"РНГП МО: ред. {state['effective_from']} "
             f"(в силе с {state['in_force_since']}), сверено {state['verified_at']} "
             f"по {state['verified_from']}; подтверждено правил "
             f"{state['rules_confirmed']}, открытых дыр {state['rules_unresolved']}")

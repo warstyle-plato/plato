@@ -157,4 +157,4 @@ def test_the_numbers_come_from_the_reference():
     source = (ROOT / "mo_land_capacity.py").read_text(encoding="utf-8")
     for magic in ("19.5", "28.0", "320.4", "22.5", "356"):
         assert magic not in source, f"норма {magic} зашита вместо чтения справочника"
-    assert ref.LAND_TABLE_13["point"] == cap.land_capacity(1000)["source"]["point"]
+    assert ref.LAND_TABLE_13["point_table"] == cap.land_capacity(1000)["source"]["point_table"]

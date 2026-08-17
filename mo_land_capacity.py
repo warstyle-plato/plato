@@ -142,8 +142,8 @@ def land_capacity(
         "warnings": warnings,
         "source": {
             "document": ref.LAND_TABLE_13["document"],
-            "point": ref.LAND_TABLE_13["point"],
-            "effective_revision": ref.LAND_TABLE_13["effective_revision"],
-            "official_publication": ref.LAND_TABLE_13["official_publication"],
+            "point_table": ref.LAND_TABLE_13["point_table"],
+            "effective_from": ref.LAND_TABLE_13["effective_from"],
+            "official_source": ref.LAND_TABLE_13["official_source"],
         },
     }

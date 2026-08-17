@@ -3102,10 +3102,10 @@ def reference_freshness(today: date | None = None) -> list[dict[str, Any]]:
         state = mo_rngp_reference.reference_status()
         verified = datetime.strptime(state["verified_at"], "%Y-%m-%d").date()
         row("mo_rngp", "РНГП Московской области (нормативы ТЭП и парковок)",
-            f"редакция {state['effective_revision']}, сверено "
+            f"редакция {state['effective_from']}, сверено "
             f"{state['verified_at']}, открытых дыр {state['rules_unresolved']}",
             (verified.replace(year=verified.year + 1)).isoformat(),
-            state["amended_by"] + " · " + state["official_publication"],
+            state["amended_by"] + " · " + state["official_source"],
             (now - verified).days > 365,
             "Норматив меняется несколько раз в год — перечитать действующую "
             "редакцию на publication.pravo.gov.ru и обновить mo_rngp_reference")
