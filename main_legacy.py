@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.18.31"
+VERSION = "0.18.32"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -2751,7 +2751,46 @@ def _land_screen_findings(lat: float, lng: float) -> list[dict[str, Any]]:
                 "document_date": _land_text(options.get("legal_act_document_date")),
                 "layer_id": layer_id,
             }))
-    return findings
+    return _land_group_findings(findings)
+
+
+def _land_group_findings(findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Одно ограничение — одна строка, даже если реестровых записей несколько.
+
+    Приаэродромная территория приходит подзонами: на участке под Внуково их
+    оказалось четыре, и в блоке было четыре почти одинаковых строки про один и
+    тот же приказ (боевая проверка 18.08.2026). Человеку важно ограничение, а
+    не число записей о нём: группируем по типу зоны и документу, реестровые
+    номера собираем списком — они остаются в отчёте полностью.
+    """
+    grouped: dict[tuple[str, str], dict[str, Any]] = {}
+    order: list[tuple[str, str]] = []
+    for finding in findings:
+        key = (_land_text(finding.get("type_zone")).lower(),
+               _land_text(finding.get("document_number")).lower())
+        if not key[0] and not key[1]:
+            key = (_land_text(finding.get("name")).lower(), "")
+        current = grouped.get(key)
+        if current is None:
+            entry = dict(finding)
+            entry["reg_numbers"] = [n for n in [finding.get("reg_number")] if n]
+            grouped[key] = entry
+            order.append(key)
+            continue
+        number = _land_text(finding.get("reg_number"))
+        if number and number not in current["reg_numbers"]:
+            current["reg_numbers"].append(number)
+    result: list[dict[str, Any]] = []
+    for key in order:
+        entry = grouped[key]
+        numbers = entry.get("reg_numbers") or []
+        if len(numbers) > 1:
+            # Имя подзоны теряет смысл, когда подзон несколько: называем зону.
+            entry["name"] = _land_text(entry.get("type_zone")) or entry["name"]
+            entry["zones_count"] = len(numbers)
+        entry["reg_number"] = numbers[0] if numbers else entry.get("reg_number")
+        result.append(entry)
+    return result
 
 
 # Готовая оценка участка живёт шесть часов: ограничения меняются реже, а
@@ -25293,8 +25332,9 @@ function renderLandScreening(data){
  const single=found.length<2;
  const item=f=>`<li><span class="flag ${f.flag_class}">${screeningFlagLabel(f.flag_class)}</span> `+
    `<b>${escapeHtml(f.name||f.type_zone||f.category||'ограничение')}</b>`+
+   `${f.zones_count>1?' <span class="meta">('+f.zones_count+' подзоны)</span>':''}`+
    `<div class="meta">${escapeHtml(f.impact||'')}`+
-   `${f.reg_number?' · реестровый № '+escapeHtml(f.reg_number):''}`+
+   `${f.reg_number?' · реестров'+((f.reg_numbers&&f.reg_numbers.length>1)?'ые №№ '+escapeHtml(f.reg_numbers.join(', ')):'ый № '+escapeHtml(f.reg_number)):''}`+
    `${f.document_number?' · '+escapeHtml(f.document||'документ')+' № '+escapeHtml(f.document_number):''}`+
    `${f.document_date?' от '+escapeHtml(f.document_date):''}</div></li>`;
  let body='';
