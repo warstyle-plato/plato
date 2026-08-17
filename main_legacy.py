@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.18.17"
+VERSION = "0.18.18"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -2489,6 +2489,52 @@ def land_screen_probe(lat: float = 0.0, lng: float = 0.0, layers: str = "",
             }
         results[name] = entry
     return {"point": {"lat": lat, "lng": lng}, "layers": results}
+
+
+# Подслои ЗОУИТ на геопортале НСПД (культурного наследия, энергетики/связи/
+# транспорта, природных территорий, охраняемых объектов, иные). Опрашиваются
+# через GetFeatureInfo на v3 — сверено пробой 17.08.2026 по участку
+# 50:20:0070312:8320: слой 37581 вернул приаэродромную территорию Внуково
+# со всеми атрибутами (тип, реестровый номер, ограничение, документ).
+_NSPD_ZOUIT_LAYERS: tuple[int, ...] = (37577, 37578, 37579, 37580, 37581)
+
+
+def _land_zouit_findings(lat: float, lng: float) -> list[dict[str, Any]]:
+    """Пересекающие точку ЗОУИТ из НСПД — структурировано, для скрининга.
+
+    По каждому подслою ЗОУИТ шлёт GetFeatureInfo (v3) и собирает находки:
+    тип зоны, наименование по документу, реестровый номер границы, текст
+    ограничения и реквизиты устанавливающего документа. Дубли (один и тот же
+    реестровый номер приходит из нескольких подслоёв) отбрасываются. Слой,
+    ответивший ошибкой, пропускается — одна недоступная ветка не рушит скрининг.
+    Возвращает список; пусто — ограничений в точке не обнаружено (не «нет
+    ЗОУИТ вообще»: НСПД видит только внесённые в ЕГРН).
+    """
+    findings: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for layer_id in _NSPD_ZOUIT_LAYERS:
+        try:
+            payload = _nspd_getfeatureinfo(lat, lng, layer_id, "v3")
+        except Exception:
+            continue
+        for feature in _nspd_features(payload):
+            options = _nspd_options(feature)
+            reg_number = _land_text(options.get("reg_numb_border") or options.get("descr"))
+            key = reg_number or _land_text(options.get("interactionId"))
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            findings.append({
+                "type_zone": _land_text(options.get("type_zone")),
+                "name": _land_text(options.get("name_by_doc")) or _land_text(options.get("type_zone")),
+                "reg_number": reg_number,
+                "restriction": _land_text(options.get("content_restrict_encumbrances")),
+                "document": _land_text(options.get("legal_act_document_name")),
+                "document_number": _land_text(options.get("legal_act_document_number")),
+                "document_date": _land_text(options.get("legal_act_document_date")),
+                "layer_id": layer_id,
+            })
+    return findings
 
 
 def _nspd_wms_map_png(west: float, south: float, east: float, north: float,
