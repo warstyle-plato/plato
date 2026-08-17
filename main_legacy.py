@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.18.26"
+VERSION = "0.18.27"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -2428,11 +2428,16 @@ def _nspd_getfeatureinfo(lat: float, lng: float, layer_id: int,
             f"{_NSPD_BASE_URL}/api/aeggis/{version}/{layer_id}/wms?{params}",
             service="Сервис НСПД", headers=layer_headers,
         )
-    except HTTPException:
-        _nspd_screen_failures += 1
-        if _nspd_screen_failures >= _NSPD_SCREEN_FAILURES_LIMIT:
-            _nspd_screen_blocked_until = time.time() + _NSPD_SCREEN_COOLDOWN_SECONDS
-            _nspd_screen_failures = 0
+    except HTTPException as exc:
+        # Предохранитель взводит только отказ портала (Forbidden). Несуществующий
+        # номер слоя НСПД отдаёт как Internal Server Error — это нормальный ответ
+        # «такого слоя нет», и при разведке их много: считая их отказами,
+        # предохранитель убивал перебор после пятого номера (17.08.2026).
+        if "forbidden" in str(getattr(exc, "detail", "")).lower():
+            _nspd_screen_failures += 1
+            if _nspd_screen_failures >= _NSPD_SCREEN_FAILURES_LIMIT:
+                _nspd_screen_blocked_until = time.time() + _NSPD_SCREEN_COOLDOWN_SECONDS
+                _nspd_screen_failures = 0
         raise
     _nspd_screen_failures = 0
     return payload
@@ -2582,6 +2587,9 @@ def land_layer_sweep(lat: float = 0.0, lng: float = 0.0, cad: str = "",
             payload = _nspd_getfeatureinfo(lat, lng, layer_id, "v3")
         except HTTPException as exc:
             reason = str(getattr(exc, "detail", ""))[:120] or f"http {exc.status_code}"
+            # Цифры выкидываем: в причине бывает обратный отсчёт («осталось 899 с»),
+            # и тогда каждая строка уникальна, а свод превращается в простыню.
+            reason = re.sub(r"\d+", "N", reason)
             return layer_id, None, reason
         except Exception as exc:
             return layer_id, None, type(exc).__name__
