@@ -3091,6 +3091,27 @@ def reference_freshness(today: date | None = None) -> list[dict[str, Any]]:
     except Exception:
         pass
 
+    # РНГП Московской области. Норматив правят несколько раз в год — за 2026-й
+    # трижды, — а справочник об этом молчит: числа выглядят одинаково свежими
+    # что через неделю после поправки, что через год. Строка объявляет, по
+    # какой редакции мы живём и когда её последний раз читали глазами; сама
+    # редакция и цитаты лежат в mo_rngp_reference.
+    try:
+        import mo_rngp_reference
+
+        state = mo_rngp_reference.reference_status()
+        verified = datetime.strptime(state["verified_at"], "%Y-%m-%d").date()
+        row("mo_rngp", "РНГП Московской области (нормативы ТЭП и парковок)",
+            f"редакция {state['effective_revision']}, сверено "
+            f"{state['verified_at']}, открытых дыр {state['rules_unresolved']}",
+            (verified.replace(year=verified.year + 1)).isoformat(),
+            state["amended_by"] + " · " + state["official_publication"],
+            (now - verified).days > 365,
+            "Норматив меняется несколько раз в год — перечитать действующую "
+            "редакцию на publication.pravo.gov.ru и обновить mo_rngp_reference")
+    except Exception:
+        pass
+
     return rows
 
 
