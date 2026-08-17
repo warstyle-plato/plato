@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.18.13"
+VERSION = "0.18.14"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -1709,18 +1709,15 @@ _NSPD_LANDS_LAYER_ID = 36048
 # Слои НСПД для градостроительного скрининга. Номера — КАНДИДАТЫ: их
 # подтверждает только живая проба GetFeatureInfo с ядра (land_screen_probe),
 # а не зашитый контракт — урок «22,5/25/35»: правдоподобный номер ещё не тот
-# номер. Подтверждён пока один — 36048 (ЗУ ЕГРН, на нём живёт точечный поиск),
-# он же служит самопроверкой механизма пробы. Остальные — из дерева слоёв
-# геопортала НСПД (ЗОУИТ, терр. зоны, красные линии) и архитектурных кандидатов
-# 37577–37581; какой номер какому слою отвечает и какие атрибуты несёт, скажет
-# проба. Список задаётся параметром ?layers=, дефолт — эти кандидаты.
+# номер. Архитектурные догадки 37577–37581 проба сети 17.08.2026 опровергла:
+# на них 0 объектов, потому что (а) тематические слои живут на пути v4, а не
+# v3, и (б) реальные номера шестизначные — терр. зоны шли на
+# `/api/aeggis/v4/875838/wms`. 36048 (ЗУ ЕГРН, на нём точечный поиск) — на v3.
+# Список задаётся параметром ?layers=имя=номер&ver=v4; дефолт — подтверждённые
+# пробой. 875838 — тематический слой геопортала (что именно — уточняется).
 _NSPD_SCREEN_LAYER_CANDIDATES: dict[str, int] = {
     "parcels_egrn": 36048,
-    "cand_37577": 37577,
-    "cand_37578": 37578,
-    "cand_37579": 37579,
-    "cand_37580": 37580,
-    "cand_37581": 37581,
+    "layer_875838": 875838,
 }
 _NOMINATIM_BASE_URL = (_env_str("NOMINATIM_BASE_URL", "https://nominatim.openstreetmap.org")).rstrip("/")
 _LAND_LOOKUP_USER_AGENT = USER_AGENT
@@ -2367,14 +2364,18 @@ def land_map_probe(bbox: str = "") -> dict[str, Any]:
     return {"bbox_merc": parts, "probe": results}
 
 
-def _nspd_getfeatureinfo(lat: float, lng: float, layer_id: int) -> Any:
+def _nspd_getfeatureinfo(lat: float, lng: float, layer_id: int,
+                         api_version: str = "v3") -> Any:
     """WMS GetFeatureInfo произвольного слоя НСПД в точке — как клик по карте.
 
     Тот же запрос, что `_nspd_point_features` шлёт на слой ЗУ (36048), но с
     любым номером слоя: так проверяется, какие слои скрининга (ЗОУИТ, терр.
     зоны, красные линии) отвечают в точке и какие атрибуты несут. Тайл
     web-меркатора zoom 24, пиксель точки, INFO_FORMAT=application/json.
-    Бросает HTTPException — обработку оставляем вызывающему.
+    Версия пути важна: участки ЕГРН живут на v3, а тематические слои
+    геопортала — на v4 (сверено пробой сети 17.08.2026: терр. зоны шли на
+    `/api/aeggis/v4/875838/wms`). Бросает HTTPException — обработку оставляем
+    вызывающему.
     """
     zoom = 24
     tiles = 1 << zoom
@@ -2396,14 +2397,16 @@ def _nspd_getfeatureinfo(lat: float, lng: float, layer_id: int) -> Any:
         "CRS": "EPSG:4326", "BBOX": f"{west},{south},{east},{north}",
         "FEATURE_COUNT": "10",
     })
+    version = api_version if api_version in {"v3", "v4"} else "v3"
     return _land_fetch_json(
-        f"{_NSPD_BASE_URL}/api/aeggis/v3/{layer_id}/wms?{params}",
+        f"{_NSPD_BASE_URL}/api/aeggis/{version}/{layer_id}/wms?{params}",
         service="Сервис НСПД",
     )
 
 
 @app.get("/land/screen-probe", include_in_schema=False)
-def land_screen_probe(lat: float = 0.0, lng: float = 0.0, layers: str = "") -> dict[str, Any]:
+def land_screen_probe(lat: float = 0.0, lng: float = 0.0, layers: str = "",
+                      ver: str = "v4") -> dict[str, Any]:
     """Диагностика слоёв НСПД для скрининга: что отвечает GetFeatureInfo в точке.
 
     Первый тест архитектуры скрининга (docs/land_screening_architecture.md):
@@ -2413,13 +2416,15 @@ def land_screen_probe(lat: float = 0.0, lng: float = 0.0, layers: str = "") -> d
     /land/map-probe. Только диагностика: не кэширует, ничего не меняет.
 
     Параметры: lat/lng — точка (по умолчанию центр Москвы); layers — список
-    «имя=номер» через запятую (по умолчанию `_NSPD_SCREEN_LAYER_CANDIDATES`).
-    Ответ по каждому слою: http/число объектов/ключи и образец properties
-    первого объекта — по ним видно, какой номер какому слою отвечает.
+    «имя=номер» через запятую (по умолчанию `_NSPD_SCREEN_LAYER_CANDIDATES`);
+    ver — версия пути aeggis: тематические слои геопортала на `v4` (дефолт),
+    участки ЕГРН на `v3` (проба сети 17.08.2026). Ответ по каждому слою:
+    http/число объектов/ключи и образец properties первого объекта — по ним
+    видно, какой номер какому слою отвечает.
     """
     remote = _core_api_url("/land/screen-probe")
     if remote:
-        query = urllib.parse.urlencode({"lat": lat, "lng": lng, "layers": layers})
+        query = urllib.parse.urlencode({"lat": lat, "lng": lng, "layers": layers, "ver": ver})
         try:
             with urllib.request.urlopen(
                     urllib.request.Request(
@@ -2447,7 +2452,7 @@ def land_screen_probe(lat: float = 0.0, lng: float = 0.0, layers: str = "") -> d
     results: dict[str, Any] = {}
     for name, layer_id in layer_map.items():
         try:
-            payload = _nspd_getfeatureinfo(lat, lng, layer_id)
+            payload = _nspd_getfeatureinfo(lat, lng, layer_id, ver)
         except HTTPException as exc:
             results[name] = {"layer_id": layer_id, "http": exc.status_code}
             continue
