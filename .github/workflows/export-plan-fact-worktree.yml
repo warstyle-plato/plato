@@ -1,0 +1,25 @@
+name: Export plan-fact worktree
+
+on:
+  push:
+    branches:
+      - chatgpt/plan-fact-rss-grodno
+  workflow_dispatch:
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Package relevant worktree
+        run: |
+          mkdir -p export/templates export/tests
+          cp main.py main_legacy.py project_preset.py requirements.txt export/
+          cp templates/DevelopAid_model_v4.xlsx export/templates/
+          cp tests/test_model_export.py tests/test_project_workbook.py tests/xlsx_eval.py export/tests/
+          tar -czf plan-fact-worktree.tar.gz -C export .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plan-fact-worktree
+          path: plan-fact-worktree.tar.gz
+          retention-days: 1
