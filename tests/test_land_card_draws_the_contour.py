@@ -369,3 +369,44 @@ def test_a_dead_nspd_leaves_the_plain_contour(monkeypatch):
     main._NSPD_MAP_CACHE.clear()
     response = client.get("/land/map-image", params={"bbox": "4199990,7549990,4200110,7550110"})
     assert response.status_code == 502
+
+
+def test_overlay_probe_draws_the_contour_on_the_backdrop(monkeypatch):
+    """Диагностика совмещения: контур рисуется на растре НСПД той же формулой,
+    что SVG страницы, — ответ говорит, в данных сдвиг или в отрисовке. Живой
+    НСПД закрыт для песочницы, поэтому проверяется композиция, а не сеть."""
+    from fastapi.testclient import TestClient
+    from PIL import Image
+
+    client = TestClient(main.app)
+    monkeypatch.setattr(main, "_core_api_url", lambda path: "")
+
+    # Пустой номер — 400, а не попытка сходить в НСПД.
+    assert client.get("/land/overlay-probe").status_code == 400
+
+    ring = [[4181302.0, 7518174.0], [4181542.0, 7518174.0],
+            [4181542.0, 7518414.0], [4181302.0, 7518414.0], [4181302.0, 7518174.0]]
+    monkeypatch.setattr(main, "_nspd_search_features", lambda q: [
+        {"properties": {"options": {"cad_num": "77:09:0004014:13"}},
+         "geometry": {"type": "Polygon", "coordinates": [ring]}}])
+
+    captured: dict[str, float] = {}
+
+    def fake_png(west, south, east, north, width, height):
+        captured.update(west=west, south=south, east=east, north=north)
+        buffer = __import__("io").BytesIO()
+        Image.new("RGBA", (int(width), int(height)), (0, 0, 0, 0)).save(buffer, format="PNG")
+        return buffer.getvalue()
+
+    monkeypatch.setattr(main, "_nspd_wms_map_png", fake_png)
+    response = client.get("/land/overlay-probe", params={"cad": "77:09:0004014:13"})
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/png"
+    # bbox подложки = контур ± pad (6% большей стороны) — тот же, что у карточки.
+    assert captured["west"] == pytest.approx(4181302.0 - 240 * 0.06)
+    assert captured["north"] == pytest.approx(7518414.0 + 240 * 0.06)
+    # Синяя линия контура действительно легла на картинку.
+    image = Image.open(__import__("io").BytesIO(response.content)).convert("RGB")
+    pixels = image.tobytes()
+    assert any(pixels[i + 2] > 180 and pixels[i] < 80
+               for i in range(0, len(pixels), 3)), "контур не нарисован"

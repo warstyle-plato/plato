@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.18.11"
+VERSION = "0.18.12"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -2592,6 +2592,77 @@ def land_map_image(bbox: str = "") -> Response:
     _NSPD_MAP_CACHE[cache_key] = (time.time(), raw)
     return Response(raw, media_type="image/png",
                     headers={"Cache-Control": "public, max-age=3600"})
+
+
+@app.get("/land/overlay-probe", include_in_schema=False)
+def land_overlay_probe(cad: str = "") -> Response:
+    """Диагностика совмещения контура и подложки по кадастровому номеру.
+
+    Рисует контур участка на растре НСПД ТОЙ ЖЕ bbox→пиксель математикой, что
+    SVG карточки. Ляжет контур на границы подложки — сдвиг был в восприятии
+    или обобщении растра, наш контур точнее; уедет и здесь — сдвиг в данных, и
+    виден его знак. Отделяет браузер от данных: сервер рисует по той же
+    формуле, что страница, поэтому расхождение с браузером указало бы на CSS.
+    С Render НСПД закрыт WAF — форвард на ядро. Только диагностика, не кэширует.
+    """
+    remote = _core_api_url("/land/overlay-probe")
+    if remote:
+        try:
+            with urllib.request.urlopen(
+                    urllib.request.Request(
+                        remote + "?" + urllib.parse.urlencode({"cad": cad}),
+                        headers={"Accept": "image/png"}),
+                    timeout=_NSPD_TIMEOUT_SECONDS + 15) as response:
+                raw = response.read(4 * 1024 * 1024)
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Ядро недоступно: {exc}")
+        return Response(raw, media_type="image/png", headers={"Cache-Control": "no-store"})
+
+    number = _land_text(cad).strip()
+    if not number:
+        raise HTTPException(status_code=400, detail="cad: кадастровый номер участка.")
+    features = _nspd_search_features(number)
+    geometry = None
+    for feature in features:
+        options = _nspd_options(feature)
+        if _land_text(_nspd_value(options, "cadastral_number")) == number:
+            geometry = feature.get("geometry")
+            break
+    if geometry is None and features:
+        geometry = features[0].get("geometry")
+    rings = _geometry_contours_merc(geometry) if geometry else []
+    if not rings:
+        raise HTTPException(status_code=404, detail="Контур участка не получен из ЕГРН.")
+
+    xs = [p[0] for ring in rings for p in ring]
+    ys = [p[1] for ring in rings for p in ring]
+    min_x, max_x, min_y, max_y = min(xs), max(xs), min(ys), max(ys)
+    span_x, span_y = max_x - min_x, max_y - min_y
+    if not (span_x > 0 and span_y > 0):
+        raise HTTPException(status_code=404, detail="Вырожденный контур участка.")
+    # Тот же pad и аспект, что landContourSvg + land_map_image: pixel-в-pixel.
+    pad = max(span_x, span_y) * 0.06
+    w, h = span_x + 2 * pad, span_y + 2 * pad
+    width = 640
+    height = max(64, min(1280, int(round(width * h / w))))
+
+    from PIL import Image, ImageDraw
+    raw = _nspd_wms_map_png(min_x - pad, min_y - pad, max_x + pad, max_y + pad, width, height)
+    layer = Image.open(io.BytesIO(raw)).convert("RGBA")
+    base = Image.new("RGBA", layer.size, (245, 245, 243, 255))
+    base.alpha_composite(layer)
+    draw = ImageDraw.Draw(base)
+    for ring in rings:
+        # Отображение точки в пиксель совпадает с SVG страницы:
+        # x=(X-(minX-pad))/w, y=((maxY+pad)-Y)/h — та же формула, что в path.
+        pts = [((p[0] - (min_x - pad)) / w * width,
+                ((max_y + pad) - p[1]) / h * height) for p in ring]
+        if len(pts) >= 2:
+            draw.line(pts + [pts[0]], fill=(0, 90, 255, 255), width=3)
+    buffer = io.BytesIO()
+    base.convert("RGB").save(buffer, format="PNG")
+    return Response(buffer.getvalue(), media_type="image/png",
+                    headers={"Cache-Control": "no-store"})
 
 
 def _geocode_yandex(address: str, limit: int) -> list[dict[str, Any]]:
