@@ -7162,7 +7162,34 @@ def _telegram_calc_menu(chat_id: int) -> None:
     )
 
 
-def _telegram_start_message(chat_id: int, user_id: int) -> None:
+_INVITE_SOURCE_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
+
+
+def _telegram_invite_source(payload: str) -> str:
+    """Метка приглашения из «/start <метка>».
+
+    Payload приходит снаружи, поэтому в журнал попадает только то, что похоже
+    на метку: буквы, цифры, дефис и подчёркивание. Подтверждение входа на сайт
+    (`login_…`) меткой не считается — это другой сценарий.
+    """
+    value = str(payload or "").strip()
+    if not value or value.startswith("login_"):
+        return ""
+    return value if _INVITE_SOURCE_RE.match(value) else ""
+
+
+def _telegram_sender_name(message: dict[str, Any]) -> str:
+    """Имя для журнала: как человек подписан в Telegram."""
+    sender = (message or {}).get("from") or {}
+    parts = [str(sender.get("first_name") or ""), str(sender.get("last_name") or "")]
+    name = " ".join(part for part in parts if part).strip()
+    login = str(sender.get("username") or "").strip()
+    if login:
+        name = f"{name} @{login}".strip()
+    return name
+
+
+def _telegram_start_message(chat_id: int, user_id: int, source: str = "") -> None:
     if not _telegram_user_allowed(user_id):
         _telegram_send_message(
             chat_id,
@@ -7172,7 +7199,12 @@ def _telegram_start_message(chat_id: int, user_id: int) -> None:
         )
         return
     _telegram_dialog_clear(chat_id)
-    button = {"inline_keyboard": [
+    # Пришедшему по приглашению первой идёт кнопка сайта: он ещё не знает ни
+    # адреса, ни того, что тут есть. Читать список сценариев бота он не станет —
+    # ему нужно увидеть расчёт, а не меню.
+    invited = [[{"text": "Открыть DevelopAid — полный расчёт",
+                 "web_app": {"url": _telegram_web_app_url(chat_id, [])}}]] if source else []
+    button = {"inline_keyboard": invited + [
         [{"text": "Расчёт по кадастровым номерам", "callback_data": "flow_cad_yes"}],
         [{"text": "Поиск участка по адресу", "callback_data": "flow_address"}],
         [{"text": "Собрать ТЭП без кадастра", "callback_data": "flow_cad_no"}],
@@ -7184,7 +7216,10 @@ def _telegram_start_message(chat_id: int, user_id: int) -> None:
     ]}
     _telegram_send_message(
         chat_id,
-        "<b>Добро пожаловать в DevelopAid</b>\n\n"
+        ("<b>Спасибо, что зашли посмотреть.</b> Это рабочая версия, и нам важно, "
+         "что в ней не сходится с вашей практикой — кнопка выше открывает расчёт, "
+         "войти отдельно не нужно.\n\n" if source else "")
+        + "<b>Добро пожаловать в DevelopAid</b>\n\n"
         "Если на переговорах в «Кофемании» нужно за пять минут отфильтровать 50–60 земельных участков, "
         "на встрече — на пальцах объяснить региональному девелоперу, почему трёхлетний БРИДЖ не позволяет "
         "купить проект по 100 тысяч рублей за метр, или вы просто решили немного оптимизировать расходы "
@@ -7842,7 +7877,16 @@ def _telegram_handle_message(message: dict[str, Any]) -> None:
                 _telegram_send_message(
                     chat_id, "<b>Вход не подтверждён.</b>\n" + html.escape(str(exc)))
             return
-        _telegram_start_message(chat_id, user_id)
+        # «/start <метка>» — переход по приглашению: ссылку кладут в канал, и
+        # адрес сайта человек заранее не знает. Метка приезжает в payload, и с
+        # первого нажатия известно, кто пришёл и откуда: chat_id, имя, источник.
+        # Иначе от публикации на пятьсот человек остаётся только счётчик заходов
+        # без единого имени, а спросить потом некого.
+        source = _telegram_invite_source(start_payload)
+        if source:
+            usage_track("invite", surface="bot", chat_id=chat_id, user_id=user_id,
+                        name=_telegram_sender_name(message), source=source)
+        _telegram_start_message(chat_id, user_id, source=source)
         return
     if command == "/status":
         status = "подключён" if _TELEGRAM_RUNTIME.get("configured") else "запускается"
