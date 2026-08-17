@@ -25761,7 +25761,11 @@ async function lookupLand(options){
   // была лишним шагом, и забытая, она молча теряла сведения при закрытии.
   inputs._land_lookup=structuredClone(data);
   renderLandLookup(data);
-  loadLandScreening(raw);
+  // Скрининг — довесок к карточке, а не ответ на запрос. Его сбой не имеет
+  // права утащить весь поиск в ветку ошибки: сведения ЕГРН уже получены, и
+  // сказать про них «не удалось» значит соврать про то, что удалось. Свою
+  // неудачу скрининг показывает в своём блоке.
+  try{loadLandScreening(raw)}catch(e){}
   const found=Number(data.found_count||0);
   if(!(options&&options.quiet)){
    status.innerHTML=found
