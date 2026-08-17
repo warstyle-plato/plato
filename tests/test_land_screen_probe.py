@@ -195,7 +195,9 @@ def test_a_run_of_refusals_pauses_the_screening(monkeypatch):
 
     def refusing(url, **kwargs):
         asked.append(1)
-        raise core.HTTPException(status_code=400, detail="НСПД отбила")
+        # Взводит только отказ портала: «нет такого слоя» (Internal Server Error)
+        # предохранителем не считается — при разведке таких ответов много.
+        raise core.HTTPException(status_code=400, detail="Сервис НСПД: Forbidden")
 
     monkeypatch.setattr(core, "_land_fetch_json", refusing)
 
@@ -256,3 +258,20 @@ def test_the_layer_request_carries_its_own_referer(monkeypatch):
     referer = captured["headers"].get("Referer", "")
     assert "active_layers=37581" in referer, "Referer обязан называть запрашиваемый слой"
     assert "thematic=Default" in referer
+
+
+def test_a_missing_layer_does_not_trip_the_breaker(monkeypatch):
+    """Несуществующий номер НСПД отдаёт Internal Server Error — это «слоя нет»,
+    а не отказ портала. Считая их отказами, предохранитель убивал разведку
+    после пятого номера (17.08.2026)."""
+    monkeypatch.setattr(core, "_nspd_screen_failures", 0)
+    monkeypatch.setattr(core, "_nspd_screen_blocked_until", 0.0)
+    monkeypatch.setattr(core, "_NSPD_SCREEN_FAILURES_LIMIT", 3)
+    monkeypatch.setattr(core, "_land_fetch_json", lambda url, **k: (_ for _ in ()).throw(
+        core.HTTPException(status_code=502, detail="Сервис НСПД: Internal Server Error")))
+
+    for _ in range(6):
+        with pytest.raises(core.HTTPException):
+            core._nspd_getfeatureinfo(55.6, 37.2, 39999, "v3")
+    assert core._nspd_screen_blocked_until == 0.0, "пустые номера не ставят паузу"
+    assert core._nspd_screen_failures == 0
