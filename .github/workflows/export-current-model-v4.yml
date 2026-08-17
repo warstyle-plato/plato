@@ -1,0 +1,21 @@
+name: Export current DevelopAid model v4
+
+on:
+  push:
+    branches:
+      - chatgpt/export-current-model-v4
+  workflow_dispatch:
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Upload current workbook
+        uses: actions/upload-artifact@v4
+        with:
+          name: developaid-model-v4-current
+          path: templates/DevelopAid_model_v4.xlsx
+          if-no-files-found: error
+          retention-days: 1
