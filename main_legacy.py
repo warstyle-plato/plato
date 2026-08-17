@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.18.32"
+VERSION = "0.18.33"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -2763,32 +2763,48 @@ def _land_group_findings(findings: list[dict[str, Any]]) -> list[dict[str, Any]]
     не число записей о нём: группируем по типу зоны и документу, реестровые
     номера собираем списком — они остаются в отчёте полностью.
     """
-    grouped: dict[tuple[str, str], dict[str, Any]] = {}
-    order: list[tuple[str, str]] = []
+    grouped: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
     for finding in findings:
-        key = (_land_text(finding.get("type_zone")).lower(),
-               _land_text(finding.get("document_number")).lower())
-        if not key[0] and not key[1]:
-            key = (_land_text(finding.get("name")).lower(), "")
+        # Группируем по типу зоны, а не по документу: на боевом участке вышло
+        # три десятка записей «Зона с особыми условиями …» с разными приказами,
+        # и блок превратился в стену (18.08.2026). Человеку нужен вид
+        # ограничения; приказы и реестровые номера остаются внутри строки.
+        key = (_land_text(finding.get("type_zone")).lower()
+               or _land_text(finding.get("category")).lower()
+               or _land_text(finding.get("name")).lower())
         current = grouped.get(key)
         if current is None:
             entry = dict(finding)
             entry["reg_numbers"] = [n for n in [finding.get("reg_number")] if n]
+            entry["documents"] = [d for d in [_land_text(finding.get("document_number"))] if d]
             grouped[key] = entry
             order.append(key)
             continue
         number = _land_text(finding.get("reg_number"))
         if number and number not in current["reg_numbers"]:
             current["reg_numbers"].append(number)
+        document = _land_text(finding.get("document_number"))
+        if document and document not in current["documents"]:
+            current["documents"].append(document)
     result: list[dict[str, Any]] = []
     for key in order:
         entry = grouped[key]
         numbers = entry.get("reg_numbers") or []
         if len(numbers) > 1:
-            # Имя подзоны теряет смысл, когда подзон несколько: называем зону.
-            entry["name"] = _land_text(entry.get("type_zone")) or entry["name"]
+            # Имя одной записи теряет смысл, когда их несколько: называем зону.
+            entry["name"] = (_land_text(entry.get("type_zone"))
+                             or _land_text(entry.get("category")) or entry["name"])
             entry["zones_count"] = len(numbers)
+            # Список номеров у трёх десятков записей нечитаем: показываем первые.
+            entry["reg_numbers"] = numbers[:3]
+            entry["reg_numbers_more"] = max(0, len(numbers) - 3)
         entry["reg_number"] = numbers[0] if numbers else entry.get("reg_number")
+        documents = entry.get("documents") or []
+        if len(documents) > 1:
+            entry["document"] = "оснований"
+            entry["document_number"] = f"{len(documents)} документов"
+            entry["document_date"] = ""
         result.append(entry)
     return result
 
@@ -25334,14 +25350,22 @@ function renderLandScreening(data){
    `<b>${escapeHtml(f.name||f.type_zone||f.category||'ограничение')}</b>`+
    `${f.zones_count>1?' <span class="meta">('+f.zones_count+' подзоны)</span>':''}`+
    `<div class="meta">${escapeHtml(f.impact||'')}`+
-   `${f.reg_number?' · реестров'+((f.reg_numbers&&f.reg_numbers.length>1)?'ые №№ '+escapeHtml(f.reg_numbers.join(', ')):'ый № '+escapeHtml(f.reg_number)):''}`+
+   `${f.reg_number?' · реестров'+((f.reg_numbers&&f.reg_numbers.length>1)?'ые №№ '+escapeHtml(f.reg_numbers.join(', '))+(f.reg_numbers_more>0?' и ещё '+f.reg_numbers_more:''):'ый № '+escapeHtml(f.reg_number)):''}`+
    `${f.document_number?' · '+escapeHtml(f.document||'документ')+' № '+escapeHtml(f.document_number):''}`+
    `${f.document_date?' от '+escapeHtml(f.document_date):''}</div></li>`;
+ // Больше шести строк брокер не читает, а на плотном участке их бывает
+ // три десятка: показываем главные, остальные — счётчиком (18.08.2026).
+ const LIMIT=6;
+ const list=flags=>{
+  const head=flags.slice(0,LIMIT).map(item).join('');
+  const rest=flags.length-LIMIT;
+  return `<ul>${head}${rest>0?`<li class="meta">и ещё ${rest} ограничени${rest===1?'е':(rest<5?'я':'й')} — в отчёте перечислены полностью</li>`:''}</ul>`;
+ };
  let body='';
  if(single){
   const p=found[0];
   const flags=(p&&p.findings)||[];
-  body=flags.length?`<ul>${flags.map(item).join('')}</ul>`
+  body=flags.length?list(flags)
    :'<ul><li>В НСПД ограничений на участок не обнаружено.</li></ul>';
  }else{
   body=found.map(p=>{
@@ -25349,7 +25373,7 @@ function renderLandScreening(data){
    const head=`<div class="parcel">${escapeHtml(p.cadastral_number)}`+
     `${p.area_ha!=null?' · '+landNum(p.area_ha,4)+' га':''}`+
     ` · ${flags.filter(f=>f.flag_class==='killer').length?'есть запрет':(flags.length?flags.length+' ограничени'+(flags.length===1?'е':'й'):'чисто')}</div>`;
-   return head+(flags.length?`<ul>${flags.map(item).join('')}</ul>`:'');
+   return head+(flags.length?list(flags):'');
   }).join('');
  }
  const missed=data.parcels.filter(p=>!p.found).length;

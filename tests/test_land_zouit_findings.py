@@ -181,3 +181,27 @@ def test_one_restriction_is_one_line_even_with_many_records(monkeypatch):
     assert aero["name"] == "Приаэродромная территория", "имя одной подзоны сбивает"
     gas = next(f for f in found if "газопровод" in f["name"])
     assert gas.get("zones_count") is None and gas["reg_number"] == "50:00-6.9"
+
+
+def test_many_records_of_one_kind_collapse_to_one_line(monkeypatch):
+    """Три десятка записей «Зона с особыми условиями …» с разными приказами
+    складывались в стену (боевая проверка 18.08.2026). Группируем по виду
+    ограничения; приказы и номера остаются внутри строки."""
+    def record(i):
+        return {"properties": {"options": {
+            "type_zone": "Охранная зона инженерных коммуникаций",
+            "name_by_doc": f"Запись {i}", "reg_numb_border": f"77:00-6.{i}",
+            "legal_act_document_number": f"ПП-{i}"}}}
+
+    monkeypatch.setattr(core, "_nspd_getfeatureinfo",
+                        lambda lat, lng, layer_id, api_version="v3":
+                        {"features": [record(i) for i in range(1, 8)]} if layer_id == 37577
+                        else {"features": []})
+
+    found = core._land_screen_findings(55.6, 37.2)
+    assert len(found) == 1, "один вид ограничения — одна строка"
+    entry = found[0]
+    assert entry["name"] == "Охранная зона инженерных коммуникаций"
+    assert entry["zones_count"] == 7
+    assert len(entry["reg_numbers"]) == 3 and entry["reg_numbers_more"] == 4
+    assert entry["document_number"] == "7 документов", "перечислять семь приказов нечитаемо"

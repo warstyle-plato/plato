@@ -167,3 +167,18 @@ def test_the_block_is_wired_to_the_card():
     body = core.PAGE[core.PAGE.index("async function lookupLand"):]
     body = body[:body.index("function renderStoredLand")]
     assert "loadLandScreening(raw)" in body, "оценка не запускается после поиска участка"
+
+
+def test_a_dense_parcel_does_not_become_a_wall():
+    """На плотном участке ограничений бывает три десятка, и блок превращался в
+    стену (боевая проверка 18.08.2026). Показываем шесть, остальные — счётчиком;
+    полный перечень остаётся в отчёте."""
+    flags = [{"flag_class": "killer", "name": f"Ограничение {i}", "impact": "нельзя",
+              "reg_number": f"77:00-6.{i}"} for i in range(1, 13)]
+    cls, html = _render({
+        "verdict": {"status": "CRITICAL", "headline": "Найдены ограничения", "disclaimer": ""},
+        "parcels": [{"found": True, "cadastral_number": "77:01:1:1", "findings": flags}],
+    })
+    assert html.count('class="flag') == 6, "показываем только главные строки"
+    assert "и ещё 6 ограничений" in html
+    assert "в отчёте перечислены полностью" in html
