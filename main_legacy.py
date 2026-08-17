@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.18.24"
+VERSION = "0.18.25"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -2432,7 +2432,7 @@ def _nspd_getfeatureinfo(lat: float, lng: float, layer_id: int,
 
 @app.get("/land/screen-probe", include_in_schema=False)
 def land_screen_probe(lat: float = 0.0, lng: float = 0.0, layers: str = "",
-                      ver: str = "v3", cad: str = "") -> dict[str, Any]:
+                      ver: str = "v3", cad: str = "", reset: int = 0) -> dict[str, Any]:
     """Диагностика слоёв НСПД для скрининга: что отвечает GetFeatureInfo в точке.
 
     Первый тест архитектуры скрининга (docs/land_screening_architecture.md):
@@ -2453,7 +2453,8 @@ def land_screen_probe(lat: float = 0.0, lng: float = 0.0, layers: str = "",
     remote = _core_api_url("/land/screen-probe")
     if remote:
         query = urllib.parse.urlencode(
-            {"lat": lat, "lng": lng, "layers": layers, "ver": ver, "cad": cad})
+            {"lat": lat, "lng": lng, "layers": layers, "ver": ver, "cad": cad,
+             "reset": reset})
         try:
             with urllib.request.urlopen(
                     urllib.request.Request(
@@ -2462,6 +2463,14 @@ def land_screen_probe(lat: float = 0.0, lng: float = 0.0, layers: str = "",
                 return json.loads(response.read().decode("utf-8"))
         except Exception as exc:
             raise HTTPException(status_code=502, detail=f"Ядро недоступно: {exc}")
+
+    global _nspd_screen_failures, _nspd_screen_blocked_until
+    if reset:
+        # Диагностике нужно снимать собственную паузу: иначе одна проба
+        # закрывает следующую на 15 минут, и вместо ответа НСПД видно только
+        # свой предохранитель (17.08.2026). Боевой путь этим не пользуется.
+        _nspd_screen_failures = 0
+        _nspd_screen_blocked_until = 0.0
 
     number = _land_text(cad).strip()
     if number:
@@ -2511,7 +2520,9 @@ def land_screen_probe(lat: float = 0.0, lng: float = 0.0, layers: str = "",
                 for key, value in list(options.items())[:20]
             }
         results[name] = entry
-    return {"point": {"lat": lat, "lng": lng}, "layers": results}
+    paused = max(0, int(_nspd_screen_blocked_until - time.time()))
+    return {"point": {"lat": lat, "lng": lng},
+            "screen_paused_seconds": paused, "layers": results}
 
 
 @app.get("/land/layer-sweep", include_in_schema=False)
