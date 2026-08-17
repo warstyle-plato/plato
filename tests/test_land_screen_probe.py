@@ -57,8 +57,12 @@ def test_local_probe_reports_attributes_per_layer(monkeypatch):
     assert parcels["features"] == 1
     assert "cadastral_number" in parcels["keys"]
     assert parcels["sample"]["area_sqm"] == "1200.0"
-    # Недоступный слой не роняет пробу — приходит своим http-кодом.
-    assert result["layers"]["terr"] == {"layer_id": 99999, "http": 404}
+    # Недоступный слой не роняет пробу — приходит своим http-кодом И текстом:
+    # _land_fetch_json сводит любой 4xx НСПД к 400, и подлинная причина
+    # (403 WAF, 429 лимит) читается только из текста (17.08.2026).
+    assert result["layers"]["terr"]["layer_id"] == 99999
+    assert result["layers"]["terr"]["http"] == 404
+    assert result["layers"]["terr"]["detail"] == "нет слоя"
     assert calls == [36048, 99999]
 
 
@@ -164,7 +168,7 @@ def test_the_sweep_reports_only_answering_layers(monkeypatch):
     assert result["range"] == [37577, 37581]
     # Отказы обязаны быть видны: пустой улов при отбитых запросах читался бы
     # как «ограничений нет» — а это неверный вывод (пустая разведка 17.08.2026).
-    assert result["failures"] == {"http 400": 1}
+    assert result["failures"] == {"капризный слой": 1}, "причина отказа — текстом"
     assert result["stats"] == {"probed": 5, "answered": 1, "empty": 3, "failed": 1}
 
 
