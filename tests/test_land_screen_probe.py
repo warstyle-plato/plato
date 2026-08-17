@@ -95,10 +95,10 @@ def test_empty_layers_falls_back_to_the_candidate_registry(monkeypatch):
     result = core.land_screen_probe()
 
     # Дефолтная точка — центр Москвы, дефолтные слои — кандидаты реестра,
-    # версия пути — v4 (тематические слои геопортала).
+    # версия пути — v3 (GetFeatureInfo; v4 на GetFeatureInfo отвечает 502).
     assert result["point"]["lat"] == pytest.approx(55.751244)
     assert {layer for layer, _ in seen} == set(core._NSPD_SCREEN_LAYER_CANDIDATES.values())
-    assert all(version == "v4" for _, version in seen), "дефолт версии пути — v4"
+    assert all(version == "v3" for _, version in seen), "GetFeatureInfo идёт на v3"
     a_key = next(iter(core._NSPD_SCREEN_LAYER_CANDIDATES))
     assert result["layers"][a_key]["features"] == 0
     assert "keys" not in result["layers"][a_key]
@@ -134,4 +134,4 @@ def test_probe_forwards_to_core_when_configured(monkeypatch):
     assert result == {"point": {"lat": 1.0, "lng": 2.0}, "layers": {}}
     assert captured["url"].startswith("https://core.example/land/screen-probe?")
     assert "layers=terr%3D100" in captured["url"]
-    assert "ver=v4" in captured["url"], "версия пути обязана доехать до ядра"
+    assert "ver=v3" in captured["url"], "версия пути обязана доехать до ядра"
