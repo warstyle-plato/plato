@@ -149,3 +149,35 @@ def test_every_screening_layer_is_probed(monkeypatch):
     core._land_screen_findings(55.75, 37.62)
     assert seen == list(core._NSPD_SCREEN_LAYERS)
     assert set(core._NSPD_ZOUIT_LAYERS) <= set(core._NSPD_SCREEN_LAYERS)
+
+
+def test_one_restriction_is_one_line_even_with_many_records(monkeypatch):
+    """Приаэродромная приходит подзонами: под Внуково их оказалось четыре, и в
+    блоке было четыре почти одинаковых строки про один приказ (боевая проверка
+    18.08.2026). Группируем по зоне и документу, номера собираем списком."""
+    def zone(name, number):
+        return {"properties": {"options": {
+            "type_zone": "Приаэродромная территория", "name_by_doc": name,
+            "reg_numb_border": number, "legal_act_document_number": "394-П",
+            "legal_act_document_name": "Приказ", "legal_act_document_date": "17.04.2020"}}}
+
+    pages = {
+        37577: [zone("Третья подзона", "50:00-6.3453")],
+        37578: [zone("Пятая подзона", "50:00-6.3458")],
+        37579: [zone("Шестая подзона", "50:00-6.2069")],
+        37580: [{"properties": {"options": {
+            "type_zone": "Охранная зона газопровода", "reg_numb_border": "50:00-6.9",
+            "legal_act_document_number": "12"}}}],
+    }
+    monkeypatch.setattr(core, "_nspd_getfeatureinfo",
+                        lambda lat, lng, layer_id, api_version="v3":
+                        {"features": pages.get(layer_id, [])})
+
+    found = core._land_screen_findings(55.6, 37.2)
+    assert len(found) == 2, "одно ограничение — одна строка, разные — раздельно"
+    aero = next(f for f in found if "риаэродром" in f["name"])
+    assert aero["zones_count"] == 3
+    assert aero["reg_numbers"] == ["50:00-6.3453", "50:00-6.3458", "50:00-6.2069"]
+    assert aero["name"] == "Приаэродромная территория", "имя одной подзоны сбивает"
+    gas = next(f for f in found if "газопровод" in f["name"])
+    assert gas.get("zones_count") is None and gas["reg_number"] == "50:00-6.9"
