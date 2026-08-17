@@ -67,6 +67,29 @@ INPUT_DEFAULT_PLACEHOLDER = "__DEVELOPAID_INPUT_DEFAULT__"
 # в неё не попал: движок его считал, книга предлагала, а на странице выбрать
 # было нельзя. Та же болезнь, что с полями и умолчаниями, — лечится так же.
 SOCIAL_MODES_PLACEHOLDER = "__DEVELOPAID_SOCIAL_MODES__"
+# Анкета обратной связи. Разделы объявлены здесь и подставляются на страницу
+# тем же способом: список, живущий в двух местах, разойдётся при первой правке,
+# а свод начнёт считать средние по разделам, которых уже нет.
+FEEDBACK_FORM_PLACEHOLDER = "__DEVELOPAID_FEEDBACK_FORM__"
+
+# Оценки просим по разделам, а не «интерфейс вообще»: из общей четвёрки не
+# следует, что чинить. Ключ уходит в журнал и в свод, подпись — на страницу.
+FEEDBACK_BLOCKS: list[list[str]] = [
+    ["site", "Участок и ТЭП", "поиск, кадастр, нормативный расчёт"],
+    ["inputs", "Вводные", "понятность полей, хватает ли их"],
+    ["economics", "Отчёт: экономика", "выручка, расходы, прибыль"],
+    ["finance", "Отчёт: финансирование", "БРИДЖ, ПФ, LLCR"],
+    ["verdict", "Выводы и карточка решения", "вердикт, цена входа"],
+    ["export", "PDF и выгрузка модели", ""],
+    ["platon", "Платон Сергеевич", ""],
+    ["ui", "Интерфейс в целом", ""],
+    ["clarity", "Интуитивная простота", "не пришлось ли гадать"],
+]
+
+# Профиль — два поля списком. Печатать ничего не нужно: анкету заполняют между
+# делом, и каждое поле ввода стоит доли ответивших.
+FEEDBACK_ROLES = ["Брокер", "Девелопер", "Банк", "Оценщик", "Другое"]
+FEEDBACK_REGIONS = ["Москва", "Московская область", "Регионы", "Всё вместе"]
 
 app = FastAPI(title="DevelopAid Development Investment Model", version=VERSION)
 
@@ -22976,6 +22999,66 @@ class WebLoginConfirmRequest(BaseModel):
     sign: str = ""
 
 
+class FeedbackRequest(BaseModel):
+    role: str = ""
+    region: str = ""
+    ratings: dict[str, Any] = {}
+    problems: dict[str, Any] = {}
+    impression: str = ""
+    mistakes: str = ""
+    projects: list[str] = []
+    session: str = ""
+    source: str = ""
+
+
+def _feedback_clean(req: FeedbackRequest) -> dict[str, Any]:
+    """Разбор анкеты: наружу выходит только то, о чём спрашивали.
+
+    Поля приходят из браузера, то есть могут быть любыми. Профиль сверяется со
+    списком, оценки — целые от одного до пяти, всё остальное режется по длине.
+    Пустая оценка — это «не пользовался», и она не единица: непользовавшийся,
+    засчитанный единицей, портит средние сильнее, чем отсутствие ответа.
+    """
+    blocks = {block[0] for block in FEEDBACK_BLOCKS}
+    ratings: dict[str, int] = {}
+    for key, value in (req.ratings or {}).items():
+        if str(key) not in blocks:
+            continue
+        try:
+            score = int(value)
+        except (TypeError, ValueError):
+            continue
+        if 1 <= score <= 5:
+            ratings[str(key)] = score
+    problems = {str(key): str(value).strip()[:_USAGE_TEXT_LIMIT]
+                for key, value in (req.problems or {}).items()
+                if str(key) in blocks and str(value or "").strip()}
+    return {
+        "role": req.role if req.role in FEEDBACK_ROLES else "",
+        "region": req.region if req.region in FEEDBACK_REGIONS else "",
+        "ratings": ratings,
+        "problems": problems,
+        "impression": str(req.impression or "").strip()[:_USAGE_TEXT_LIMIT],
+        "mistakes": str(req.mistakes or "").strip()[:_USAGE_TEXT_LIMIT],
+        "projects": [str(name).strip()[:80] for name in (req.projects or [])[:20]
+                     if str(name or "").strip()],
+        "source": _telegram_invite_source(req.source),
+    }
+
+
+@app.post("/feedback")
+def feedback_submit(req: FeedbackRequest) -> dict[str, Any]:
+    """Анкета обратной связи. Вход не требуется: гейт мягкий, а мнение того,
+    кто не вошёл, нужно не меньше — он и бросил, скорее всего, раньше."""
+    data = _feedback_clean(req)
+    if not (data["ratings"] or data["impression"] or data["mistakes"]):
+        raise HTTPException(status_code=400, detail="Анкета пустая.")
+    usage_track("survey", surface="site",
+                chat_id=_web_identity_chat_id(req.session),
+                text=data["impression"], **data)
+    return {"ok": True}
+
+
 @app.post("/auth/telegram/start")
 def web_login_start() -> dict[str, Any]:
     """Одноразовый код входа и ссылка на бота."""
@@ -24655,7 +24738,31 @@ details.cadastral-box>summary::marker{color:#888}
   <span>© ИП Ситников В.Ю.</span>
   <a href="/consent" style="color:#888">Согласие на обработку персональных данных</a>
   <a href="/guide" style="color:#888">Руководство</a>
+  <!-- Анкета всплывает сама один раз; ссылка нужна тем, кто отложил её или
+       захотел дописать позже — иначе второго шанса у человека нет. -->
+  <a href="#" style="color:#888" onclick="openFeedback('footer');return false">Оценить DevelopAid</a>
 </footer>
+
+<!-- Анкета обратной связи. Всплывает один раз, когда человек и посчитал, и
+     почитал: раньше оценивать нечего, а «при выходе» на телефоне срабатывает
+     через раз и ловит уже уходящего. -->
+<div id="feedbackDialog" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);
+     z-index:90;align-items:center;justify-content:center;padding:20px"
+     onclick="if(event.target===this)closeFeedback('backdrop')">
+  <div style="background:#fff;max-width:760px;width:100%;max-height:86vh;overflow:auto;padding:22px 24px">
+    <h2 style="margin:0 0 6px;font-size:17px">Что скажете?</h2>
+    <div style="font-size:12px;color:#666;margin-bottom:16px">
+      Это рабочая версия. Нам важнее всего то, что в ней не сходится с вашей
+      практикой. Одна минута, ничего обязательного.
+    </div>
+    <div id="feedbackBody"></div>
+    <div id="feedbackStatus" style="font-size:12px;color:#777;margin-top:12px"></div>
+    <div style="display:flex;gap:10px;margin-top:16px">
+      <button class="btn dark" onclick="sendFeedback()">Отправить</button>
+      <button class="btn" onclick="closeFeedback('later')">Позже</button>
+    </div>
+  </div>
+</div>
 
 <script>
 const SCENARIOS={"conservative":{"scenario_revenue_multiplier":0.9,"scenario_cost_multiplier":1.1},"base":{"scenario_revenue_multiplier":1.0,"scenario_cost_multiplier":1.0},"optimistic":{"scenario_revenue_multiplier":1.1,"scenario_cost_multiplier":0.9}};
@@ -24668,6 +24775,167 @@ const RATE_DEFAULT=[]
 const TEP_DEFAULT={"apartments": {"label": "Квартиры", "gns": 130716.66012842482, "total_area": 117647.0588235294, "useful": 80000, "saleable": 80000, "transfer": 0, "units": 1361.815754339119}, "ground_commercial": {"label": "Коммерция 1 эт.", "gns": 9664.049734985854, "total_area": 8695.652173913044, "useful": 7826.08695652174, "saleable": 7826.08695652174, "transfer": 0, "units": 0}, "standalone_retail": {"label": "Коммерция ОСЗ", "gns": 0, "total_area": 0, "useful": 0, "saleable": 0, "transfer": 0, "units": 0}, "offices": {"label": "Офисы", "gns": 0, "total_area": 0, "useful": 0, "saleable": 0, "transfer": 0, "units": 0}, "above_parking": {"label": "Наземный паркинг", "gns": 0, "total_area": 0, "useful": 0, "saleable": 0, "transfer": 0, "units": 0}, "underground_parking": {"label": "Подземный паркинг", "gns": 38763, "total_area": 38763, "useful": 0, "saleable": 0, "transfer": 0, "units": 1107.5142857142857}, "storage": {"label": "Кладовки", "gns": 0, "total_area": 0, "useful": 0, "saleable": 0, "transfer": 0, "units": 0}, "kindergarten": {"label": "ДОУ", "gns": 0, "total_area": 3000, "useful": 0, "saleable": 0, "transfer": 3000, "units": 250}, "school": {"label": "СОШ", "gns": 0, "total_area": 0, "useful": 0, "saleable": 0, "transfer": 0, "units": 0}, "clinic": {"label": "Поликлиника", "gns": 0, "total_area": 0, "useful": 0, "saleable": 0, "transfer": 0, "units": 0}};
 const FIELD_GROUPS=__DEVELOPAID_FIELD_GROUPS__;
 const INPUT_DEFAULT=__DEVELOPAID_INPUT_DEFAULT__;
+const FEEDBACK_FORM=__DEVELOPAID_FEEDBACK_FORM__;
+
+// --- анкета обратной связи -------------------------------------------------
+// Правило всплытия одно: человек и посчитал, и почитал. Первое отсекает тех,
+// кто не дошёл, второе — тех, кто мазнул взглядом; и у тех и у других мнения
+// нет, а тройки они поставят.
+const FEEDBACK_READ_SECONDS=60;
+let feedbackShown=false, feedbackCalcs=0, feedbackReportSeconds=0, feedbackReportTimer=null;
+
+function feedbackState(){
+ try{return JSON.parse(localStorage.getItem('plato_feedback')||'{}')}catch(e){return {}}
+}
+function feedbackRemember(patch){
+ try{localStorage.setItem('plato_feedback',JSON.stringify({...feedbackState(),...patch}))}catch(e){}
+}
+
+// Отчёт открыт — считаем секунды. Вкладка спрятана — останавливаем: минута в
+// свёрнутом окне не значит, что человек читал.
+function feedbackWatchReport(open){
+ if(feedbackReportTimer){clearInterval(feedbackReportTimer);feedbackReportTimer=null}
+ if(!open)return;
+ feedbackReportTimer=setInterval(()=>{
+  if(document.hidden)return;
+  feedbackReportSeconds+=1;
+  feedbackMaybeAsk();
+ },1000);
+}
+
+function feedbackMaybeAsk(){
+ if(feedbackShown)return;
+ if(feedbackCalcs<1||feedbackReportSeconds<FEEDBACK_READ_SECONDS)return;
+ const state=feedbackState();
+ if(state.done)return;
+ // «Позже» — один повтор через сутки, дальше не трогаем. Настойчивость сверх
+ // этого не приносит ответов, а раздражение приносит.
+ if(state.later&&(state.asked||0)>=2)return;
+ if(state.later&&Date.now()-state.later<86400000)return;
+ openFeedback('auto');
+}
+
+function feedbackProjects(){
+ // Свободное поле без контекста остаётся пустым. Подставляем то, что человек
+ // в этой сессии реально считал, — тогда он пишет «в проекте таком-то неверно
+ // вот это», а не смотрит в пустоту.
+ const names=[];
+ try{
+  const cad=(document.getElementById('cadastralNumbers')||{}).value||'';
+  if(cad.trim())names.push(cad.trim().split(/\n/)[0].slice(0,80));
+ }catch(e){}
+ try{if(typeof lastResult!=='undefined'&&lastResult&&lastResult.project_name)names.push(String(lastResult.project_name))}catch(e){}
+ return [...new Set(names)].slice(0,20);
+}
+
+function renderFeedbackForm(){
+ const state=feedbackState();
+ const pick=(name,options,current)=>
+  `<div style="margin-bottom:14px"><div style="font-size:12px;color:#666;margin-bottom:6px">${name}</div>`
+  +`<div style="display:flex;gap:8px;flex-wrap:wrap">`
+  +options.map(o=>`<button type="button" class="btn fb-pick" data-group="${name}" data-value="${escapeHtml(o)}"
+      style="${o===current?'background:#111;color:#fff':''}">${escapeHtml(o)}</button>`).join('')
+  +`</div></div>`;
+ const rows=FEEDBACK_FORM.blocks.map(b=>{
+  const hint=b[2]?` <span style="color:#999">${escapeHtml(b[2])}</span>`:'';
+  return `<tr><td style="padding:6px 10px 6px 0;font-size:13px">${escapeHtml(b[1])}${hint}</td>`
+   +`<td style="white-space:nowrap">`
+   +[1,2,3,4,5].map(n=>`<button type="button" class="btn fb-score" data-block="${b[0]}" data-score="${n}"
+       style="min-width:34px;padding:4px 8px">${n}</button>`).join('')
+   +`<button type="button" class="btn fb-score" data-block="${b[0]}" data-score="0"
+       style="padding:4px 8px;color:#888">не смотрел</button></td></tr>`
+   +`<tr><td colspan="2" style="padding:0 0 8px"><input class="fb-problem" data-block="${b[0]}"
+       placeholder="Что не так с разделом «${escapeHtml(b[1])}»?"
+       style="display:none;width:100%;padding:6px 8px;font-size:13px"></td></tr>`;
+ }).join('');
+ const projects=feedbackProjects();
+ document.getElementById('feedbackBody').innerHTML=
+  pick('Кто вы',FEEDBACK_FORM.roles,state.role||'')
+  +pick('С чем работаете',FEEDBACK_FORM.regions,state.region||'')
+  +`<table style="width:100%;border-collapse:collapse;margin-bottom:14px">${rows}</table>`
+  +`<div style="font-size:12px;color:#666;margin-bottom:6px">Общие впечатления</div>`
+  +`<textarea id="fbImpression" rows="2" style="width:100%;padding:6px 8px;font-size:13px"></textarea>`
+  +`<div style="font-size:12px;color:#666;margin:12px 0 6px">Что не сошлось на ваших проектах`
+  +(projects.length?` <span style="color:#999">(${escapeHtml(projects.join(', '))})</span>`:'')+`</div>`
+  +`<textarea id="fbMistakes" rows="3" style="width:100%;padding:6px 8px;font-size:13px"
+      placeholder="Здесь важнее всего конкретика: какой показатель и почему считается не так."></textarea>`;
+ // Балл ниже четырёх сам открывает строку «что не так»: довольного не трогаем,
+ // а недовольного спрашиваем там, где он уже недоволен.
+ document.querySelectorAll('#feedbackBody .fb-score').forEach(btn=>{
+  btn.onclick=()=>{
+   const block=btn.dataset.block, score=Number(btn.dataset.score);
+   document.querySelectorAll(`#feedbackBody .fb-score[data-block="${block}"]`).forEach(other=>{
+    other.style.background='';other.style.color=other.dataset.score==='0'?'#888':'';
+   });
+   btn.style.background='#111';btn.style.color='#fff';
+   const problem=document.querySelector(`#feedbackBody .fb-problem[data-block="${block}"]`);
+   if(problem)problem.style.display=(score>0&&score<4)?'':'none';
+  };
+ });
+ document.querySelectorAll('#feedbackBody .fb-pick').forEach(btn=>{
+  btn.onclick=()=>{
+   document.querySelectorAll(`#feedbackBody .fb-pick[data-group="${btn.dataset.group}"]`)
+    .forEach(other=>{other.style.background='';other.style.color=''});
+   btn.style.background='#111';btn.style.color='#fff';
+  };
+ });
+}
+
+function openFeedback(how){
+ feedbackShown=true;
+ renderFeedbackForm();
+ document.getElementById('feedbackStatus').textContent='';
+ document.getElementById('feedbackDialog').style.display='flex';
+ feedbackRemember({asked:(feedbackState().asked||0)+1,how:how||''});
+}
+
+function closeFeedback(why){
+ document.getElementById('feedbackDialog').style.display='none';
+ if(why==='later'||why==='backdrop')feedbackRemember({later:Date.now()});
+ feedbackShown=false;
+}
+
+function feedbackPicked(group){
+ const btn=[...document.querySelectorAll(`#feedbackBody .fb-pick[data-group="${group}"]`)]
+  .find(b=>b.style.background);
+ return btn?btn.dataset.value:'';
+}
+
+async function sendFeedback(){
+ const ratings={},problems={};
+ document.querySelectorAll('#feedbackBody .fb-score').forEach(btn=>{
+  if(!btn.style.background)return;
+  const score=Number(btn.dataset.score);
+  if(score>0)ratings[btn.dataset.block]=score;
+ });
+ document.querySelectorAll('#feedbackBody .fb-problem').forEach(input=>{
+  if(input.value.trim())problems[input.dataset.block]=input.value.trim();
+ });
+ const payload={
+  role:feedbackPicked('Кто вы'),region:feedbackPicked('С чем работаете'),
+  ratings,problems,
+  impression:(document.getElementById('fbImpression')||{}).value||'',
+  mistakes:(document.getElementById('fbMistakes')||{}).value||'',
+  projects:feedbackProjects(),
+  session:(typeof telegramSession!=='undefined'&&telegramSession)?telegramSession:'',
+  source:new URLSearchParams(location.search).get('ref')||''
+ };
+ const status=document.getElementById('feedbackStatus');
+ if(!Object.keys(ratings).length&&!payload.impression.trim()&&!payload.mistakes.trim()){
+  status.textContent='Поставьте хотя бы одну оценку или напишите пару слов.';return;
+ }
+ status.textContent='Отправляю…';
+ try{
+  const r=await fetch('/feedback',{method:'POST',headers:{'Content-Type':'application/json'},
+                                   body:JSON.stringify(payload)});
+  if(!r.ok)throw new Error((await r.json().catch(()=>({}))).detail||'не отправилось');
+  feedbackRemember({done:Date.now(),role:payload.role,region:payload.region});
+  status.textContent='Спасибо. Это правда помогает.';
+  setTimeout(()=>closeFeedback('sent'),1200);
+ }catch(e){
+  status.textContent='Не отправилось: '+String(e.message||e)+CONNECTION_HINT;
+ }
+}
 
 function phaseWeightPreset(count){
  const p={1:[100],2:[55,45],3:[40,32,28],4:[32,26,22,20],5:[28,22,19,16,15]};
@@ -24772,6 +25040,10 @@ function openTab(id,btn){
  // Оглавление собирается заново при открытии: расчёт мог пройти при закрытой
  // вкладке — а он почти всегда так и проходит.
  if(id==='report'&&typeof renderReportToc==='function')renderReportToc();
+ // Секунды на отчёте — половина правила всплытия анкеты. Уход с вкладки
+ // счётчик останавливает: минута, набранная урывками, тоже считается чтением,
+ // а вот минута в другой вкладке — нет.
+ if(typeof feedbackWatchReport==='function')feedbackWatchReport(id==='report');
 }
 function calculateAndOpen(id){
  // В Telegram расчёт — это законченное действие: человек пришёл за цифрами в
@@ -27418,6 +27690,7 @@ function renderPhaseReportControls(){
 }
 function renderResult(){
  if(!lastResult)return;const r=lastResult,f=r.finance;
+ if(typeof feedbackCalcs!=='undefined'){feedbackCalcs+=1;feedbackMaybeAsk()}
 
  // Числа берутся из результата, а не из формы: форма не знает ни о льготе по
  // ВРИ, ни о доле очереди. Объявление стоит выше плиток, потому что цена
@@ -28909,6 +29182,9 @@ PAGE = PAGE.replace(FIELD_GROUPS_PLACEHOLDER,
                     json.dumps(FIELD_GROUPS, ensure_ascii=False))
 PAGE = PAGE.replace(INPUT_DEFAULT_PLACEHOLDER,
                     json.dumps(DEFAULT_INPUTS, ensure_ascii=False))
+PAGE = PAGE.replace(FEEDBACK_FORM_PLACEHOLDER, json.dumps(
+    {"blocks": FEEDBACK_BLOCKS, "roles": FEEDBACK_ROLES, "regions": FEEDBACK_REGIONS},
+    ensure_ascii=False))
 PAGE = PAGE.replace(SOCIAL_MODES_PLACEHOLDER,
                     json.dumps([item[0] for item in _M2_EXTRA_OPTIONS["social_mode"]],
                                ensure_ascii=False))
