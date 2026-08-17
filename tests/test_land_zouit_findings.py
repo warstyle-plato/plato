@@ -77,3 +77,34 @@ def test_the_same_border_from_two_sublayers_is_one_finding(monkeypatch):
 def test_no_restrictions_gives_an_empty_list(monkeypatch):
     monkeypatch.setattr(core, "_nspd_getfeatureinfo", lambda *a, **k: {"features": []})
     assert core._land_zouit_findings(55.75, 37.62) == []
+
+
+def test_the_flag_class_follows_the_zone_type():
+    """Класс флага — по типу зоны словами, а не по номеру слоя: номера
+    подслоёв меняются, тип приходит в ответе."""
+    cases = {
+        "Приаэродромная территория": ("economic", "высот"),
+        "Санитарно-защитная зона предприятия": ("killer", "СЗЗ"),
+        "Особо охраняемая природная территория": ("killer", "ООПТ"),
+        "Лесничество": ("killer", "лесного фонда"),
+        "Водоохранная зона реки": ("economic", "водоохранной"),
+        "Охранная зона газопровода": ("economic", "пятно"),
+    }
+    for zone, (expected_class, expected_words) in cases.items():
+        got = core._land_screen_classify({"type_zone": zone, "name": zone})
+        assert got["flag_class"] == expected_class, zone
+        assert expected_words.lower() in got["impact"].lower(), zone
+
+
+def test_an_unknown_zone_is_flagged_honestly():
+    """Неопознанный тип — info с пометкой «проверить вручную», а не молчаливое
+    «ничего страшного»: неизвестное ограничение не равно его отсутствию."""
+    got = core._land_screen_classify({"type_zone": "Зона неведомая", "name": ""})
+    assert got["flag_class"] == "info"
+    assert "вручную" in got["impact"]
+
+
+def test_classification_keeps_the_original_fields():
+    got = core._land_screen_classify(dict(_VNUKOVO["properties"]["options"]))
+    assert got["reg_numb_border"] == "50:00-6.3453"
+    assert got["flag_class"] == "economic"
