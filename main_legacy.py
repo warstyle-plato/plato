@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.18.10"
+VERSION = "0.18.33"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -1705,6 +1705,30 @@ _NSPD_LAND_THEMATIC_ID = 1
 # Слой «Земельные участки из ЕГРН» на карте НСПД. Точечный поиск идёт через
 # WMS GetFeatureInfo этого слоя — тем же запросом, что клик по карте на сайте.
 _NSPD_LANDS_LAYER_ID = 36048
+
+# Слои НСПД для градостроительного скрининга. Номера сверены пробой сети
+# геопортала НСПД (17.08.2026): при включённых «ЗОУИТ объектов культурного
+# наследия» и «Территориальные зоны» карта дёргала `/api/aeggis/v4/37577/wms`
+# и `/api/aeggis/v4/875838/wms` — но это **GetMap** (тайлы), путь v4. А
+# **GetFeatureInfo** (опрос атрибутов, чем и живёт скрининг) работает на **v3**:
+# v4 на GetFeatureInfo отвечает 502, v3 — 200 (пусто там, где объекта нет).
+# Первый пустой ответ v3 по 37577–81 был не «номер не тот», а «на московской
+# автостоянке ЗОУИТ нет»; клик по участку в МО показал реальные ЗОУИТ. Имена
+# ниже — по совпадению включённого слоя и запроса; финально подтвердит проба
+# GetFeatureInfo по содержимому properties. 36048 (ЗУ ЕГРН) — тоже v3.
+_NSPD_SCREEN_LAYER_CANDIDATES: dict[str, int] = {
+    # Снято с карты НСПД включением слоя и чтением его wms-запроса (17.08.2026):
+    # «Красные линии» → /api/aeggis/v4/879243/wms. GetMap идёт на v4, опрос
+    # атрибутов — на v3, как у остальных.
+    "red_lines_879243": 879243,
+    "oopt_875845": 875845,
+    "zouit_okn_37577": 37577,
+    "zouit_37578": 37578,
+    "zouit_37579": 37579,
+    "zouit_37580": 37580,
+    "zouit_37581": 37581,
+    "terr_zones_875838": 875838,
+}
 _NOMINATIM_BASE_URL = (_env_str("NOMINATIM_BASE_URL", "https://nominatim.openstreetmap.org")).rstrip("/")
 _LAND_LOOKUP_USER_AGENT = USER_AGENT
 _LAND_LOOKUP_MAX_RESULTS = int(_env_float("LAND_LOOKUP_MAX_RESULTS", 30))
@@ -2350,6 +2374,597 @@ def land_map_probe(bbox: str = "") -> dict[str, Any]:
     return {"bbox_merc": parts, "probe": results}
 
 
+def _nspd_getfeatureinfo(lat: float, lng: float, layer_id: int,
+                         api_version: str = "v3") -> Any:
+    """WMS GetFeatureInfo произвольного слоя НСПД в точке — как клик по карте.
+
+    Тот же запрос, что `_nspd_point_features` шлёт на слой ЗУ (36048), но с
+    любым номером слоя: так проверяется, какие слои скрининга (ЗОУИТ, терр.
+    зоны, красные линии) отвечают в точке и какие атрибуты несут. Тайл
+    web-меркатора zoom 24, пиксель точки, INFO_FORMAT=application/json.
+    Версия пути: **GetFeatureInfo живёт на v3** — проба 17.08.2026 показала,
+    что v4 на GetFeatureInfo отвечает 502, тогда как v3 отдаёт 200 (пусто там,
+    где объекта нет). На v4 карта дёргает только GetMap (тайлы) — разные
+    операции, разные версии. Бросает HTTPException — обработку оставляем
+    вызывающему.
+    """
+    zoom = 24
+    tiles = 1 << zoom
+    tile_size = 512
+    lat_rad = math.radians(lat)
+    xtile = int((lng + 180.0) / 360.0 * tiles)
+    ytile = int((1.0 - math.asinh(math.tan(lat_rad)) / math.pi) / 2.0 * tiles)
+    west = xtile / tiles * 360.0 - 180.0
+    east = (xtile + 1) / tiles * 360.0 - 180.0
+    north = math.degrees(math.atan(math.sinh(math.pi * (1.0 - 2.0 * ytile / tiles))))
+    south = math.degrees(math.atan(math.sinh(math.pi * (1.0 - 2.0 * (ytile + 1) / tiles))))
+    i = int((lng - west) / (east - west) * tile_size)
+    j = int((lat - south) / (north - south) * tile_size)
+    params = urllib.parse.urlencode({
+        "REQUEST": "GetFeatureInfo", "SERVICE": "WMS", "VERSION": "1.3.0",
+        "INFO_FORMAT": "application/json", "FORMAT": "image/png", "STYLES": "",
+        "TRANSPARENT": "true", "QUERY_LAYERS": layer_id, "LAYERS": layer_id,
+        "WIDTH": tile_size, "HEIGHT": tile_size, "I": i, "J": tile_size - j,
+        "CRS": "EPSG:4326", "BBOX": f"{west},{south},{east},{north}",
+        "FEATURE_COUNT": "10",
+    })
+    version = api_version if api_version in {"v3", "v4"} else "v3"
+    # Referer под конкретный слой: WAF НСПД отдал Forbidden на тематические
+    # слои, пока мы слали общий `thematic=PKK` (кадастровая карта). В браузере
+    # у этих запросов Referer вида `map?thematic=Default…&active_layers=<слой>`
+    # (заголовки сняты владельцем 17.08.2026) — повторяем его дословно.
+    layer_headers = {
+        "Referer": (f"{_NSPD_BASE_URL}/map?thematic=Default&zoom=17"
+                    f"&baselayerid=235&active_layers={layer_id}"),
+    }
+    # Предохранитель: НСПД придушивает за частые запросы (17.08.2026 — серия
+    # 400 по всем слоям). Скрининг — не главная функция, а вот поиск участка
+    # у пользователей живёт на той же НСПД: разведка не имеет права довести
+    # портал до жёсткой блокировки. Серия отказов закрывает скрининг на паузу,
+    # поиск ЕГРН при этом продолжает работать своим путём.
+    global _nspd_screen_failures, _nspd_screen_blocked_until
+    if time.time() < _nspd_screen_blocked_until:
+        left = int(_nspd_screen_blocked_until - time.time())
+        raise HTTPException(
+            status_code=503,
+            detail=f"Скрининг на паузе: НСПД ограничила запросы, осталось {left} с.")
+    try:
+        payload = _land_fetch_json(
+            f"{_NSPD_BASE_URL}/api/aeggis/{version}/{layer_id}/wms?{params}",
+            service="Сервис НСПД", headers=layer_headers,
+        )
+    except HTTPException as exc:
+        # Предохранитель взводит только отказ портала (Forbidden). Несуществующий
+        # номер слоя НСПД отдаёт как Internal Server Error — это нормальный ответ
+        # «такого слоя нет», и при разведке их много: считая их отказами,
+        # предохранитель убивал перебор после пятого номера (17.08.2026).
+        if "forbidden" in str(getattr(exc, "detail", "")).lower():
+            _nspd_screen_failures += 1
+            if _nspd_screen_failures >= _NSPD_SCREEN_FAILURES_LIMIT:
+                _nspd_screen_blocked_until = time.time() + _NSPD_SCREEN_COOLDOWN_SECONDS
+                _nspd_screen_failures = 0
+        raise
+    _nspd_screen_failures = 0
+    return payload
+
+
+@app.get("/land/screen-probe", include_in_schema=False)
+def land_screen_probe(lat: float = 0.0, lng: float = 0.0, layers: str = "",
+                      ver: str = "v3", cad: str = "", reset: int = 0) -> dict[str, Any]:
+    """Диагностика слоёв НСПД для скрининга: что отвечает GetFeatureInfo в точке.
+
+    Первый тест архитектуры скрининга (docs/land_screening_architecture.md):
+    несёт ли слой «Территориальные зоны» параметры застройки атрибутами или
+    только индекс зоны, какие номера слоёв ЗОУИТ реальны. С телефона и Render
+    НСПД закрыт WAF — перебор идёт с ядра, поэтому запрос форвардится туда, как
+    /land/map-probe. Только диагностика: не кэширует, ничего не меняет.
+
+    Параметры: lat/lng — точка (по умолчанию центр Москвы); cad — кадастровый
+    номер: если задан, точка берётся из центра участка (удобно бить по знакомому
+    участку с ЗОУИТ); layers — список «имя=номер» через запятую (по умолчанию
+    `_NSPD_SCREEN_LAYER_CANDIDATES`); ver — версия пути aeggis для
+    GetFeatureInfo: `v3` (дефолт; v4 на GetFeatureInfo отвечает 502 — v4 только
+    для GetMap-тайлов, проба 17.08.2026). Ответ по каждому слою: http/число
+    объектов/ключи и образец properties первого объекта — по ним видно, какой
+    номер какому слою отвечает.
+    """
+    remote = _core_api_url("/land/screen-probe")
+    if remote:
+        query = urllib.parse.urlencode(
+            {"lat": lat, "lng": lng, "layers": layers, "ver": ver, "cad": cad,
+             "reset": reset})
+        try:
+            with urllib.request.urlopen(
+                    urllib.request.Request(
+                        remote + "?" + query, headers={"Accept": "application/json"}),
+                    timeout=120) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Ядро недоступно: {exc}")
+
+    global _nspd_screen_failures, _nspd_screen_blocked_until
+    if reset:
+        # Диагностике нужно снимать собственную паузу: иначе одна проба
+        # закрывает следующую на 15 минут, и вместо ответа НСПД видно только
+        # свой предохранитель (17.08.2026). Боевой путь этим не пользуется.
+        _nspd_screen_failures = 0
+        _nspd_screen_blocked_until = 0.0
+
+    number = _land_text(cad).strip()
+    if number:
+        # Кадастр → центр участка: бить по знакомому участку удобнее, чем по
+        # координатам. Тот же путь, что overlay-probe: поиск → геометрия → центр.
+        for feature in _nspd_search_features(number):
+            center = _geometry_center(feature.get("geometry"))
+            if center:
+                lat, lng = center["lat"], center["lng"]
+                break
+
+    if not lat and not lng:
+        lat, lng = 55.751244, 37.618423  # центр Москвы — точка по умолчанию
+    layer_map: dict[str, int] = {}
+    for token in (layers or "").split(","):
+        token = token.strip()
+        if not token:
+            continue
+        name, _, number = token.partition("=")
+        try:
+            layer_map[name.strip() or number.strip()] = int(number.strip())
+        except ValueError:
+            continue
+    if not layer_map:
+        layer_map = dict(_NSPD_SCREEN_LAYER_CANDIDATES)
+
+    results: dict[str, Any] = {}
+    for name, layer_id in layer_map.items():
+        try:
+            payload = _nspd_getfeatureinfo(lat, lng, layer_id, ver)
+        except HTTPException as exc:
+            # Текст обязателен: _land_fetch_json сводит любой 4xx НСПД к нашему
+            # 400, и подлинная причина (403 WAF, 429 лимит) видна только в нём.
+            results[name] = {"layer_id": layer_id, "http": exc.status_code,
+                             "detail": str(getattr(exc, "detail", ""))[:200]}
+            continue
+        except Exception as exc:
+            results[name] = {"layer_id": layer_id, "error": str(exc)[:160]}
+            continue
+        features = _nspd_features(payload)
+        entry: dict[str, Any] = {"layer_id": layer_id, "features": len(features)}
+        if features:
+            options = _nspd_options(features[0])
+            entry["keys"] = sorted(options.keys())
+            entry["sample"] = {
+                key: (str(value)[:120] if value is not None else None)
+                for key, value in list(options.items())[:20]
+            }
+        results[name] = entry
+    paused = max(0, int(_nspd_screen_blocked_until - time.time()))
+    return {"point": {"lat": lat, "lng": lng},
+            "screen_paused_seconds": paused, "layers": results}
+
+
+@app.get("/land/layer-sweep", include_in_schema=False)
+def land_layer_sweep(lat: float = 0.0, lng: float = 0.0, cad: str = "",
+                     start: int = 37570, end: int = 37600) -> dict[str, Any]:
+    """Перебор номеров слоёв НСПД по точке: какой номер — какой слой.
+
+    Каталога слоёв НСПД не публикует, а ловить каждый номер в браузере — долго
+    (17 слоёв на карте). Но ответ слоя самоописателен: `categoryName` называет
+    слой словами. Поэтому номера ищутся перебором с ядра по точке, где
+    ограничения заведомо есть, и возвращаются только ответившие — с именем и
+    образцом типа. Это разовая разведка, не рабочий путь: найденные номера
+    заводятся в реестр и дальше опрашиваются адресно.
+
+    Диапазон ограничен 200 номерами за вызов — чтобы не молотить НСПД.
+    """
+    remote = _core_api_url("/land/layer-sweep")
+    if remote:
+        query = urllib.parse.urlencode(
+            {"lat": lat, "lng": lng, "cad": cad, "start": start, "end": end})
+        try:
+            with urllib.request.urlopen(
+                    urllib.request.Request(
+                        remote + "?" + query, headers={"Accept": "application/json"}),
+                    timeout=300) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Ядро недоступно: {exc}")
+
+    number = _land_text(cad).strip()
+    if number:
+        for feature in _nspd_search_features(number):
+            center = _geometry_center(feature.get("geometry"))
+            if center:
+                lat, lng = center["lat"], center["lng"]
+                break
+    if not lat and not lng:
+        raise HTTPException(status_code=400, detail="Нужна точка: cad или lat/lng.")
+    span = int(end) - int(start) + 1
+    # 60 номеров — предел, который укладывается в срок соединения: перебор в
+    # 200 номеров с паузой рвал ответ («Empty reply from server», 17.08.2026),
+    # а оборванный вызов выглядит как пустой улов.
+    if span < 1 or span > 60:
+        raise HTTPException(status_code=400, detail="Диапазон — до 60 номеров за вызов.")
+
+    def probe(layer_id: int) -> tuple[int, dict[str, Any] | None, str]:
+        """→ (номер, находка или None, причина отказа или '')."""
+        try:
+            payload = _nspd_getfeatureinfo(lat, lng, layer_id, "v3")
+        except HTTPException as exc:
+            reason = str(getattr(exc, "detail", ""))[:120] or f"http {exc.status_code}"
+            # Цифры выкидываем: в причине бывает обратный отсчёт («осталось 899 с»),
+            # и тогда каждая строка уникальна, а свод превращается в простыню.
+            reason = re.sub(r"\d+", "N", reason)
+            return layer_id, None, reason
+        except Exception as exc:
+            return layer_id, None, type(exc).__name__
+        features = _nspd_features(payload)
+        if not features:
+            return layer_id, None, ""
+        options = _nspd_options(features[0])
+        return layer_id, {
+            "features": len(features),
+            "categoryName": _land_text(options.get("categoryName")),
+            "type_zone": _land_text(options.get("type_zone")),
+            "label": _land_text(options.get("label")),
+        }, ""
+
+    found: dict[str, Any] = {}
+    empty = 0
+    failures: dict[str, int] = {}
+    # Перебор идёт в один поток с паузой: 200 запросов очередью НСПД срезает,
+    # и тогда «ничего не найдено» — на деле «всё отбито» (пустой улов на точке,
+    # где ЗОУИТ заведомо есть, 17.08.2026). Отказы считаются и возвращаются:
+    # молчащий перебор неотличим от честной пустоты, а это уже неверный вывод.
+    for layer_id in range(int(start), int(end) + 1):
+        _, entry, failure = probe(layer_id)
+        if entry:
+            found[str(layer_id)] = entry
+        elif failure:
+            failures[failure] = failures.get(failure, 0) + 1
+        else:
+            empty += 1
+        time.sleep(_NSPD_SWEEP_PAUSE_SECONDS)
+    return {"point": {"lat": lat, "lng": lng},
+            "range": [int(start), int(end)],
+            "stats": {"probed": span, "answered": len(found),
+                      "empty": empty, "failed": sum(failures.values())},
+            "failures": failures, "found": found}
+
+
+# Подслои ЗОУИТ на геопортале НСПД (культурного наследия, энергетики/связи/
+# транспорта, природных территорий, охраняемых объектов, иные). Опрашиваются
+# через GetFeatureInfo на v3 — сверено пробой 17.08.2026 по участку
+# 50:20:0070312:8320: слой 37581 вернул приаэродромную территорию Внуково
+# со всеми атрибутами (тип, реестровый номер, ограничение, документ).
+_NSPD_ZOUIT_LAYERS: tuple[int, ...] = (37577, 37578, 37579, 37580, 37581)
+
+# Полный набор слоёв скрининга. Имён здесь НЕТ — и не нужно: слой называет себя
+# сам (`categoryName`, `type_zone`), поэтому что именно нашлось, известно из
+# ответа. Это снимает всю ручную разведку «какой номер чему соответствует»:
+# каталог id снят с консоли карты 18.08.2026 (приложение печатает свой реестр),
+# а смысл приходит в момент запроса. Неверный номер отвечает Internal Server
+# Error и просто пропускается.
+_NSPD_SCREEN_LAYERS: tuple[int, ...] = _NSPD_ZOUIT_LAYERS + (
+    875815, 875817, 875819, 875824, 875831, 875832, 875835, 875838, 875840,
+    875845, 875846, 875847, 875848, 875865, 875866, 875874, 875882, 879243,
+)
+
+# Что в скрининг не идёт, даже если ответило: административная и справочная
+# «обвязка» публичной кадастровой карты. Отбор по имени слоя, а не по номеру, —
+# номера меняются, названия говорят сами за себя.
+_LAND_SCREEN_NOISE: tuple[str, ...] = (
+    "субъекты российской федерации", "муниципальные образования",
+    "населённые пункты", "населенные пункты", "кадастровое деление",
+    "кадастровые районы", "кадастровые кварталы", "охотничьи угодья",
+)
+
+# Пауза между запросами разведки слоёв. Очередь без пауз НСПД срезает целиком.
+_NSPD_SWEEP_PAUSE_SECONDS = _env_float("NSPD_SWEEP_PAUSE", 0.4)
+
+# Предохранитель скрининга: столько отказов подряд — и запросы слоёв встают на
+# паузу. Бережёт не скрининг, а поиск участка: он живёт на той же НСПД.
+_NSPD_SCREEN_FAILURES_LIMIT = int(_env_float("NSPD_SCREEN_FAILURES_LIMIT", 5))
+_NSPD_SCREEN_COOLDOWN_SECONDS = _env_float("NSPD_SCREEN_COOLDOWN", 900.0)
+_nspd_screen_failures = 0
+_nspd_screen_blocked_until = 0.0
+
+
+# Классы флагов скрининга. `killer` — жильё в такой зоне запрещено, дальше
+# считать экономику бессмысленно; `economic` — режет пятно или высоту, то есть
+# бьёт по выручке; `info` — знать полезно, решения не меняет. Классифицируем
+# по типу зоны словами, а не по номеру слоя: тип приходит в ответе, а номера
+# у подслоёв меняются. Неопознанный тип — `info` с честной пометкой, а не
+# молчаливое «ничего страшного»: неизвестное ограничение не равно отсутствию.
+_LAND_SCREEN_CLASSES: tuple[tuple[str, tuple[str, ...], str], ...] = (
+    ("killer", ("санитарно-защитн", "сзз"),
+     "жилая застройка в СЗЗ запрещена"),
+    ("killer", ("особо охраняем", "оопт", "заповедн", "заказник"),
+     "застройка ООПТ запрещена"),
+    ("killer", ("леснич", "лесопарк", "лесной фонд"),
+     "земли лесного фонда — застройка запрещена"),
+    ("economic", ("приаэродромн",),
+     "ограничение высоты — влияет на этажность и выручку"),
+    ("economic", ("культурног наследия", "культурного наследия", "окн", "объекта культурн"),
+     "ограничения по высоте и облику"),
+    ("economic", ("красн", "линии градостроительного регулирования"),
+     "территория общего пользования не застраивается"),
+    ("economic", ("водоохранн", "прибрежн", "береговая", "водного объекта"),
+     "ограничения в водоохранной зоне"),
+    ("economic", ("охранная зона", "охранн"),
+     "в охранной зоне строить нельзя — режет пятно"),
+)
+
+
+def _land_screen_classify(finding: dict[str, Any]) -> dict[str, Any]:
+    """Класс флага и его последствие по типу зоны — словами, не по номеру слоя."""
+    haystack = " ".join([
+        _land_text(finding.get("type_zone")), _land_text(finding.get("name")),
+    ]).lower()
+    for flag_class, needles, impact in _LAND_SCREEN_CLASSES:
+        if any(needle in haystack for needle in needles):
+            return {**finding, "flag_class": flag_class, "impact": impact}
+    return {**finding, "flag_class": "info",
+            "impact": "ограничение неизвестного типа — требует проверки вручную"}
+
+
+def _land_screen_findings(lat: float, lng: float) -> list[dict[str, Any]]:
+    """Все ограничения НСПД в точке — по всему набору слоёв, с классификацией.
+
+    Имена слоёв заранее не нужны: что нашлось, говорит сам ответ
+    (`categoryName`, `type_zone`). Административная обвязка ПКК (субъекты,
+    муниципалитеты, населённые пункты, кадастровое деление, охотугодья)
+    отсеивается по имени — это контекст, а не ограничение. Дубли по реестровому
+    номеру убираются, сбойный слой пропускается. Пустой список — ограничений
+    в точке не обнаружено (не «их нет вовсе»: НСПД видит внесённые в ЕГРН).
+    """
+    findings: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for layer_id in _NSPD_SCREEN_LAYERS:
+        try:
+            payload = _nspd_getfeatureinfo(lat, lng, layer_id, "v3")
+        except Exception:
+            continue
+        for feature in _nspd_features(payload):
+            options = _nspd_options(feature)
+            title = " ".join([
+                _land_text(options.get("categoryName")),
+                _land_text(options.get("type_zone")),
+            ]).lower()
+            if any(noise in title for noise in _LAND_SCREEN_NOISE):
+                continue
+            reg_number = _land_text(options.get("reg_numb_border") or options.get("descr"))
+            key = reg_number or _land_text(options.get("interactionId"))
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            findings.append(_land_screen_classify({
+                "type_zone": _land_text(options.get("type_zone")),
+                "category": _land_text(options.get("categoryName")),
+                "name": (_land_text(options.get("name_by_doc"))
+                         or _land_text(options.get("type_zone"))
+                         or _land_text(options.get("categoryName"))),
+                "reg_number": reg_number,
+                "restriction": _land_text(options.get("content_restrict_encumbrances")),
+                "document": _land_text(options.get("legal_act_document_name")),
+                "document_number": _land_text(options.get("legal_act_document_number")),
+                "document_date": _land_text(options.get("legal_act_document_date")),
+                "layer_id": layer_id,
+            }))
+    return _land_group_findings(findings)
+
+
+def _land_group_findings(findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Одно ограничение — одна строка, даже если реестровых записей несколько.
+
+    Приаэродромная территория приходит подзонами: на участке под Внуково их
+    оказалось четыре, и в блоке было четыре почти одинаковых строки про один и
+    тот же приказ (боевая проверка 18.08.2026). Человеку важно ограничение, а
+    не число записей о нём: группируем по типу зоны и документу, реестровые
+    номера собираем списком — они остаются в отчёте полностью.
+    """
+    grouped: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for finding in findings:
+        # Группируем по типу зоны, а не по документу: на боевом участке вышло
+        # три десятка записей «Зона с особыми условиями …» с разными приказами,
+        # и блок превратился в стену (18.08.2026). Человеку нужен вид
+        # ограничения; приказы и реестровые номера остаются внутри строки.
+        key = (_land_text(finding.get("type_zone")).lower()
+               or _land_text(finding.get("category")).lower()
+               or _land_text(finding.get("name")).lower())
+        current = grouped.get(key)
+        if current is None:
+            entry = dict(finding)
+            entry["reg_numbers"] = [n for n in [finding.get("reg_number")] if n]
+            entry["documents"] = [d for d in [_land_text(finding.get("document_number"))] if d]
+            grouped[key] = entry
+            order.append(key)
+            continue
+        number = _land_text(finding.get("reg_number"))
+        if number and number not in current["reg_numbers"]:
+            current["reg_numbers"].append(number)
+        document = _land_text(finding.get("document_number"))
+        if document and document not in current["documents"]:
+            current["documents"].append(document)
+    result: list[dict[str, Any]] = []
+    for key in order:
+        entry = grouped[key]
+        numbers = entry.get("reg_numbers") or []
+        if len(numbers) > 1:
+            # Имя одной записи теряет смысл, когда их несколько: называем зону.
+            entry["name"] = (_land_text(entry.get("type_zone"))
+                             or _land_text(entry.get("category")) or entry["name"])
+            entry["zones_count"] = len(numbers)
+            # Список номеров у трёх десятков записей нечитаем: показываем первые.
+            entry["reg_numbers"] = numbers[:3]
+            entry["reg_numbers_more"] = max(0, len(numbers) - 3)
+        entry["reg_number"] = numbers[0] if numbers else entry.get("reg_number")
+        documents = entry.get("documents") or []
+        if len(documents) > 1:
+            entry["document"] = "оснований"
+            entry["document_number"] = f"{len(documents)} документов"
+            entry["document_date"] = ""
+        result.append(entry)
+    return result
+
+
+# Готовая оценка участка живёт шесть часов: ограничения меняются реже, а
+# каждый скрининг — это два десятка запросов к НСПД.
+_LAND_SCREENING_CACHE: dict[str, tuple[float, Any]] = {}
+_LAND_SCREENING_TTL_SECONDS = _env_float("LAND_SCREENING_TTL", 21600.0)
+
+# Порядок вывода флагов: сперва то, что запрещает жильё, потом то, что режет
+# экономику, потом справочное. Внутри класса — как пришло от НСПД.
+_LAND_SCREEN_ORDER = {"killer": 0, "economic": 1, "info": 2}
+
+
+def _land_screening_verdict(findings: list[dict[str, Any]]) -> dict[str, Any]:
+    """Свод по находкам. Никакого «участок подходит» — только факты и их вес.
+
+    Запрещено выдавать разрешительный вывод (решение владельца, архитектура,
+    раздел 8): максимум — «критических ограничений не обнаружено», и то с
+    оговоркой, что видно лишь внесённое в ЕГРН.
+    """
+    killers = [f for f in findings if f.get("flag_class") == "killer"]
+    economic = [f for f in findings if f.get("flag_class") == "economic"]
+    if killers:
+        status, headline = "CRITICAL", "Найдены ограничения, запрещающие жилую застройку"
+    elif economic:
+        status, headline = "WARNING", "Есть ограничения, влияющие на посадку и экономику"
+    else:
+        status, headline = "NO_CRITICAL_FLAGS", "Критических ограничений не обнаружено"
+    return {
+        "status": status,
+        "headline": headline,
+        "killer_count": len(killers),
+        "economic_count": len(economic),
+        "total": len(findings),
+        "disclaimer": ("Проверены ограничения, внесённые в ЕГРН и опубликованные "
+                       "в НСПД. Отсутствие записи не доказывает отсутствия "
+                       "ограничения: сервитуты, ГПЗУ и часть красных линий в "
+                       "реестре не отражаются."),
+    }
+
+
+@app.get("/land/screening", include_in_schema=False)
+def land_screening(cad: str = "") -> dict[str, Any]:
+    """Оценка участка до финмодели: что мешает строить, по кадастровому номеру.
+
+    Самостоятельная ценность продукта: человек вводит номер и сразу видит
+    ограничения — ЗОУИТ, ООПТ, красные линии, тип территориальной зоны — с
+    реестровым номером и документом-основанием, без всякого расчёта экономики.
+    Один участок — коротко, несколько — свод плюс разбивка (решение владельца).
+    Числа и факты даёт НСПД, вывод не разрешительный.
+    """
+    remote = _core_api_url("/land/screening")
+    if remote:
+        try:
+            with urllib.request.urlopen(
+                    urllib.request.Request(
+                        remote + "?" + urllib.parse.urlencode({"cad": cad}),
+                        headers={"Accept": "application/json"}),
+                    timeout=180) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Ядро недоступно: {exc}")
+
+    numbers = [n for n in re.split(r"[\s,;]+", _land_text(cad)) if n.strip()]
+    numbers = [n for n in numbers if re.match(r"^\d{2}:\d{2}:\d{6,8}:\d+$", n)]
+    if not numbers:
+        raise HTTPException(status_code=400, detail="cad: кадастровый номер участка.")
+    numbers = numbers[:10]
+
+    parcels: list[dict[str, Any]] = []
+    for number in numbers:
+        cached = _LAND_SCREENING_CACHE.get(number)
+        if cached and time.time() - cached[0] < _LAND_SCREENING_TTL_SECONDS:
+            parcels.append(cached[1])
+            continue
+        try:
+            features = _nspd_search_features(number)
+        except Exception:
+            features = []
+        matched = None
+        for feature in features:
+            options = _nspd_options(feature)
+            if _land_text(_nspd_value(options, "cadastral_number")) == number:
+                matched = feature
+                break
+        matched = matched or (features[0] if features else None)
+        if matched is None:
+            parcels.append({"cadastral_number": number, "found": False,
+                            "note": "Сведения ЕГРН по номеру не получены."})
+            continue
+        options = _nspd_options(matched)
+        center = _geometry_center(matched.get("geometry")) or {}
+        findings: list[dict[str, Any]] = []
+        if center:
+            findings = _land_screen_findings(center["lat"], center["lng"])
+            findings.sort(key=lambda f: _LAND_SCREEN_ORDER.get(f.get("flag_class"), 3))
+        area = _land_float(_nspd_value(options, "area_sqm"))
+        parcel = {
+            "cadastral_number": number,
+            "found": True,
+            "address": _land_text(_nspd_value(options, "address")),
+            "area_sqm": area,
+            "area_ha": round(area / 10000.0, 4) if area else None,
+            "category": _land_text(_nspd_value(options, "category")),
+            "permitted_use": _land_text(_nspd_value(options, "permitted_use")),
+            "center": center or None,
+            "findings": findings,
+            "verdict": _land_screening_verdict(findings),
+        }
+        _LAND_SCREENING_CACHE[number] = (time.time(), parcel)
+        parcels.append(parcel)
+
+    everything = [f for p in parcels for f in p.get("findings", [])]
+    return {
+        "parcels": parcels,
+        "single": len(parcels) == 1,
+        "verdict": _land_screening_verdict(everything),
+        "calculated_at": datetime.now().strftime("%d.%m.%Y %H:%M"),
+    }
+
+
+def _land_zouit_findings(lat: float, lng: float) -> list[dict[str, Any]]:
+    """Пересекающие точку ЗОУИТ из НСПД — структурировано, для скрининга.
+
+    По каждому подслою ЗОУИТ шлёт GetFeatureInfo (v3) и собирает находки:
+    тип зоны, наименование по документу, реестровый номер границы, текст
+    ограничения и реквизиты устанавливающего документа. Дубли (один и тот же
+    реестровый номер приходит из нескольких подслоёв) отбрасываются. Слой,
+    ответивший ошибкой, пропускается — одна недоступная ветка не рушит скрининг.
+    Возвращает список; пусто — ограничений в точке не обнаружено (не «нет
+    ЗОУИТ вообще»: НСПД видит только внесённые в ЕГРН).
+    """
+    findings: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for layer_id in _NSPD_ZOUIT_LAYERS:
+        try:
+            payload = _nspd_getfeatureinfo(lat, lng, layer_id, "v3")
+        except Exception:
+            continue
+        for feature in _nspd_features(payload):
+            options = _nspd_options(feature)
+            reg_number = _land_text(options.get("reg_numb_border") or options.get("descr"))
+            key = reg_number or _land_text(options.get("interactionId"))
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            findings.append({
+                "type_zone": _land_text(options.get("type_zone")),
+                "name": _land_text(options.get("name_by_doc")) or _land_text(options.get("type_zone")),
+                "reg_number": reg_number,
+                "restriction": _land_text(options.get("content_restrict_encumbrances")),
+                "document": _land_text(options.get("legal_act_document_name")),
+                "document_number": _land_text(options.get("legal_act_document_number")),
+                "document_date": _land_text(options.get("legal_act_document_date")),
+                "layer_id": layer_id,
+            })
+    return findings
+
+
 def _nspd_wms_map_png(west: float, south: float, east: float, north: float,
                       width: int, height: int) -> bytes:
     """Картинка слоя «Земельные участки из ЕГРН» под меркаторный bbox.
@@ -2475,6 +3090,77 @@ def land_map_image(bbox: str = "") -> Response:
     _NSPD_MAP_CACHE[cache_key] = (time.time(), raw)
     return Response(raw, media_type="image/png",
                     headers={"Cache-Control": "public, max-age=3600"})
+
+
+@app.get("/land/overlay-probe", include_in_schema=False)
+def land_overlay_probe(cad: str = "") -> Response:
+    """Диагностика совмещения контура и подложки по кадастровому номеру.
+
+    Рисует контур участка на растре НСПД ТОЙ ЖЕ bbox→пиксель математикой, что
+    SVG карточки. Ляжет контур на границы подложки — сдвиг был в восприятии
+    или обобщении растра, наш контур точнее; уедет и здесь — сдвиг в данных, и
+    виден его знак. Отделяет браузер от данных: сервер рисует по той же
+    формуле, что страница, поэтому расхождение с браузером указало бы на CSS.
+    С Render НСПД закрыт WAF — форвард на ядро. Только диагностика, не кэширует.
+    """
+    remote = _core_api_url("/land/overlay-probe")
+    if remote:
+        try:
+            with urllib.request.urlopen(
+                    urllib.request.Request(
+                        remote + "?" + urllib.parse.urlencode({"cad": cad}),
+                        headers={"Accept": "image/png"}),
+                    timeout=_NSPD_TIMEOUT_SECONDS + 15) as response:
+                raw = response.read(4 * 1024 * 1024)
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Ядро недоступно: {exc}")
+        return Response(raw, media_type="image/png", headers={"Cache-Control": "no-store"})
+
+    number = _land_text(cad).strip()
+    if not number:
+        raise HTTPException(status_code=400, detail="cad: кадастровый номер участка.")
+    features = _nspd_search_features(number)
+    geometry = None
+    for feature in features:
+        options = _nspd_options(feature)
+        if _land_text(_nspd_value(options, "cadastral_number")) == number:
+            geometry = feature.get("geometry")
+            break
+    if geometry is None and features:
+        geometry = features[0].get("geometry")
+    rings = _geometry_contours_merc(geometry) if geometry else []
+    if not rings:
+        raise HTTPException(status_code=404, detail="Контур участка не получен из ЕГРН.")
+
+    xs = [p[0] for ring in rings for p in ring]
+    ys = [p[1] for ring in rings for p in ring]
+    min_x, max_x, min_y, max_y = min(xs), max(xs), min(ys), max(ys)
+    span_x, span_y = max_x - min_x, max_y - min_y
+    if not (span_x > 0 and span_y > 0):
+        raise HTTPException(status_code=404, detail="Вырожденный контур участка.")
+    # Тот же pad и аспект, что landContourSvg + land_map_image: pixel-в-pixel.
+    pad = max(span_x, span_y) * 0.06
+    w, h = span_x + 2 * pad, span_y + 2 * pad
+    width = 640
+    height = max(64, min(1280, int(round(width * h / w))))
+
+    from PIL import Image, ImageDraw
+    raw = _nspd_wms_map_png(min_x - pad, min_y - pad, max_x + pad, max_y + pad, width, height)
+    layer = Image.open(io.BytesIO(raw)).convert("RGBA")
+    base = Image.new("RGBA", layer.size, (245, 245, 243, 255))
+    base.alpha_composite(layer)
+    draw = ImageDraw.Draw(base)
+    for ring in rings:
+        # Отображение точки в пиксель совпадает с SVG страницы:
+        # x=(X-(minX-pad))/w, y=((maxY+pad)-Y)/h — та же формула, что в path.
+        pts = [((p[0] - (min_x - pad)) / w * width,
+                ((max_y + pad) - p[1]) / h * height) for p in ring]
+        if len(pts) >= 2:
+            draw.line(pts + [pts[0]], fill=(0, 90, 255, 255), width=3)
+    buffer = io.BytesIO()
+    base.convert("RGB").save(buffer, format="PNG")
+    return Response(buffer.getvalue(), media_type="image/png",
+                    headers={"Cache-Control": "no-store"})
 
 
 def _geocode_yandex(address: str, limit: int) -> list[dict[str, Any]]:
@@ -23056,6 +23742,21 @@ details.cadastral-box>summary::marker{color:#888}
 .land-grid small{display:block;color:#777;font-size:10px;text-transform:uppercase;letter-spacing:.06em}
 .land-grid b{display:block;margin-top:3px;font-weight:600;line-height:1.35}
 .land-links{margin-top:9px;font-size:11px}
+.land-screening{margin:10px 0;border:1px solid #e5e5e3;border-radius:8px;overflow:hidden}
+.land-screening header{padding:10px 12px;font-weight:600;font-size:13px;color:#fff}
+.land-screening.critical header{background:#b3261e}
+.land-screening.warning header{background:#a05a00}
+.land-screening.clean header{background:#2f6b3a}
+.land-screening ul{margin:0;padding:8px 12px;list-style:none}
+.land-screening li{padding:7px 0;border-bottom:1px solid #f0f0ee;font-size:12px}
+.land-screening li:last-child{border-bottom:none}
+.land-screening .flag{display:inline-block;min-width:78px;font-weight:600}
+.land-screening .flag.killer{color:#b3261e}
+.land-screening .flag.economic{color:#a05a00}
+.land-screening .flag.info{color:#777}
+.land-screening .meta{color:#777;font-size:11px;margin-top:2px}
+.land-screening .parcel{font-weight:600;font-size:12px;padding:8px 12px 0}
+.land-screening footer{padding:8px 12px;color:#8a8a86;font-size:10px;background:#fafaf8}
 .land-contour{margin-top:10px}
 .land-contour-stage{position:relative;width:100%;max-height:240px;border:1px solid #e5e5e3;background:#fff;overflow:hidden}
 .land-contour-map{position:absolute;inset:0;width:100%;height:100%;display:block}
@@ -23307,6 +24008,7 @@ details.cadastral-box>summary::marker{color:#888}
           <div id="cadastralStatus" class="import-status">На внешние сервисы уходят только кадастровые номера или строка поиска; финансовая модель не передаётся.</div>
           <div id="landPreview" class="cadastral-preview" style="display:none">
             <div id="landSummary" class="import-summary"></div>
+            <div id="landScreening" class="land-screening" style="display:none"></div>
             <div id="landCards" class="land-results"></div>
             <div id="landWarnings" class="note warning"></div>
             <div class="import-actions">
@@ -24652,7 +25354,79 @@ async function drawLandPreviewQuiet(query){
   landLookup=data;
   inputs._land_lookup=structuredClone(data);
   renderLandLookup(data);
+  loadLandScreening(raw);
  }catch(e){/* контур — украшение, не данные */}
+}
+
+// Оценка участка до финмодели: что мешает строить. Самостоятельная ценность —
+// человек вводит кадастр и сразу видит ограничения с документом-основанием,
+// не запуская расчёт экономики. Один участок — коротко, несколько — свод плюс
+// разбивка (решение владельца). Блок тихий: своя ошибка его прячет, но ничего
+// не роняет, потому что расчёт от него не зависит.
+async function loadLandScreening(query){
+ const box=document.getElementById('landScreening');
+ if(!box)return;
+ const raw=String(query!=null?query:((document.getElementById('cadastralNumbers')||{}).value||'')).trim();
+ if(!/\d{2}:\d{2}:\d{6,8}:\d+/.test(raw)){box.style.display='none';return}
+ box.style.display='block';
+ box.className='land-screening';
+ box.innerHTML='<header>Оценка участка — запрашиваю ограничения…</header>';
+ try{
+  const response=await fetch('/land/screening?cad='+encodeURIComponent(raw));
+  if(!response.ok)throw new Error('нет ответа');
+  const data=await response.json();
+  renderLandScreening(data);
+ }catch(e){box.style.display='none'}
+}
+
+function screeningFlagLabel(cls){
+ return cls==='killer'?'СТОП':(cls==='economic'?'ВЛИЯЕТ':'справка');
+}
+
+function renderLandScreening(data){
+ const box=document.getElementById('landScreening');
+ if(!box||!data||!data.parcels)return;
+ const v=data.verdict||{};
+ const tone=v.status==='CRITICAL'?'critical':(v.status==='WARNING'?'warning':'clean');
+ const found=data.parcels.filter(p=>p.found);
+ const single=found.length<2;
+ const item=f=>`<li><span class="flag ${f.flag_class}">${screeningFlagLabel(f.flag_class)}</span> `+
+   `<b>${escapeHtml(f.name||f.type_zone||f.category||'ограничение')}</b>`+
+   `${f.zones_count>1?' <span class="meta">('+f.zones_count+' подзоны)</span>':''}`+
+   `<div class="meta">${escapeHtml(f.impact||'')}`+
+   `${f.reg_number?' · реестров'+((f.reg_numbers&&f.reg_numbers.length>1)?'ые №№ '+escapeHtml(f.reg_numbers.join(', '))+(f.reg_numbers_more>0?' и ещё '+f.reg_numbers_more:''):'ый № '+escapeHtml(f.reg_number)):''}`+
+   `${f.document_number?' · '+escapeHtml(f.document||'документ')+' № '+escapeHtml(f.document_number):''}`+
+   `${f.document_date?' от '+escapeHtml(f.document_date):''}</div></li>`;
+ // Больше шести строк брокер не читает, а на плотном участке их бывает
+ // три десятка: показываем главные, остальные — счётчиком (18.08.2026).
+ const LIMIT=6;
+ const list=flags=>{
+  const head=flags.slice(0,LIMIT).map(item).join('');
+  const rest=flags.length-LIMIT;
+  return `<ul>${head}${rest>0?`<li class="meta">и ещё ${rest} ограничени${rest===1?'е':(rest<5?'я':'й')} — в отчёте перечислены полностью</li>`:''}</ul>`;
+ };
+ let body='';
+ if(single){
+  const p=found[0];
+  const flags=(p&&p.findings)||[];
+  body=flags.length?list(flags)
+   :'<ul><li>В НСПД ограничений на участок не обнаружено.</li></ul>';
+ }else{
+  body=found.map(p=>{
+   const flags=p.findings||[];
+   const head=`<div class="parcel">${escapeHtml(p.cadastral_number)}`+
+    `${p.area_ha!=null?' · '+landNum(p.area_ha,4)+' га':''}`+
+    ` · ${flags.filter(f=>f.flag_class==='killer').length?'есть запрет':(flags.length?flags.length+' ограничени'+(flags.length===1?'е':'й'):'чисто')}</div>`;
+   return head+(flags.length?list(flags):'');
+  }).join('');
+ }
+ const missed=data.parcels.filter(p=>!p.found).length;
+ box.className='land-screening '+tone;
+ box.innerHTML=`<header>${escapeHtml(v.headline||'Оценка участка')}`+
+  `${found.length>1?' · участков: '+found.length:''}`+
+  `${missed?' · без сведений ЕГРН: '+missed:''}</header>`+
+  body+
+  `<footer>${escapeHtml(v.disclaimer||'')} Проверено ${escapeHtml(data.calculated_at||'')}.</footer>`;
 }
 
 function landNum(value,digits){
@@ -24715,6 +25489,7 @@ async function lookupLand(options){
   // была лишним шагом, и забытая, она молча теряла сведения при закрытии.
   inputs._land_lookup=structuredClone(data);
   renderLandLookup(data);
+  loadLandScreening(raw);
   const found=Number(data.found_count||0);
   if(!(options&&options.quiet)){
    status.innerHTML=found
@@ -24771,7 +25546,12 @@ function landTerritorySvg(found){
   return `<path d="${d}" fill="rgba(245,245,243,.35)" stroke="#111" stroke-width="2" fill-rule="evenodd" vector-effect="non-scaling-stroke"><title>${escapeHtml(item.cadastral_number||'')}</title></path>`;
  }).join('');
  const mapSrc=`/land/map-image?bbox=${(minX-pad).toFixed(1)},${(minY-pad).toFixed(1)},${(maxX+pad).toFixed(1)},${(maxY+pad).toFixed(1)}`;
- return `<div class="land-contour land-territory"><div class="land-contour-stage" style="aspect-ratio:${w.toFixed(1)} / ${h.toFixed(1)}">`+
+ // max-width держит высоту на истинном аспекте: при 100% ширины и max-height
+ // сцена сплющивалась (preserveAspectRatio="none" тянул и подложку, и контур
+ // по ширине — «высота маленькая», замечание владельца 17.08.2026). Ширина,
+ // при которой высота ровно 240px, — 240·w/h; выше не поднимется, форма верна.
+ const stage=`aspect-ratio:${w.toFixed(1)} / ${h.toFixed(1)};max-width:${Math.round(240*w/h)}px`;
+ return `<div class="land-contour land-territory"><div class="land-contour-stage" style="${stage}">`+
   `<img class="land-contour-map" src="${mapSrc}" alt="" loading="lazy" decoding="async" onerror="landMapLost(this)">`+
   `<svg viewBox="0 0 ${w.toFixed(1)} ${h.toFixed(1)}" preserveAspectRatio="none" role="img" aria-label="Взаимное расположение участков">${paths}</svg></div>`+
   `<small>Территория из ${items.length} участков в одном масштабе · подложка — публичная карта НСПД · наведите на контур — увидите номер</small></div>`;
@@ -24805,14 +25585,21 @@ function landContourSvg(item){
  // дают контекст «где это». Не загрузилась — картинка молча исчезает, и
  // остаётся чистый контур: подложка — украшение, а не данные.
  const mapSrc=`/land/map-image?bbox=${(minX-pad).toFixed(1)},${(minY-pad).toFixed(1)},${(maxX+pad).toFixed(1)},${(maxY+pad).toFixed(1)}`;
- return `<div class="land-contour"><div class="land-contour-stage" style="aspect-ratio:${w.toFixed(1)} / ${h.toFixed(1)}">`+
+ // max-width — высота на истинном аспекте, а не сплющена потолком (см. landTerritorySvg).
+ const stage=`aspect-ratio:${w.toFixed(1)} / ${h.toFixed(1)};max-width:${Math.round(240*w/h)}px`;
+ return `<div class="land-contour"><div class="land-contour-stage" style="${stage}">`+
   `<img class="land-contour-map" src="${mapSrc}" alt="" loading="lazy" decoding="async" onerror="landMapLost(this)">`+
   `<svg viewBox="0 0 ${w.toFixed(1)} ${h.toFixed(1)}" preserveAspectRatio="none" role="img" aria-label="Границы участка по ЕГРН">`+
   `<path d="${paths}" fill="rgba(245,245,243,.35)" stroke="#111" stroke-width="2.5" fill-rule="evenodd" vector-effect="non-scaling-stroke"/></svg></div>`+
   `<small>Границы по сведениям ЕГРН · подложка — публичная карта НСПД${scaleNote}</small></div>`;
 }
 
-function landCardHtml(item){
+function landCardHtml(item,showContour){
+ // showContour=false у карточки, когда участков несколько: общий вид территории
+ // (landTerritorySvg) уже показывает все контуры в одном масштабе, и мини-карта
+ // в каждой карточке была бы 30 повторов одного и того же — нужен общий рисунок,
+ // а не тридцать (замечание владельца, 17.08.2026). Одиночный участок — со своей.
+ if(showContour===undefined)showContour=true;
  const mapLink=item.map_url
   ?`<div class="land-links"><a href="${escapeHtml(item.map_url)}" target="_blank" rel="noopener">Открыть на публичной карте НСПД</a></div>`
   :'';
@@ -24840,7 +25627,7 @@ function landCardHtml(item){
  if(item.matched_address)rows.push(['Адрес по геокодеру',item.matched_address+(item.geocoder?' · '+item.geocoder:'')]);
  return `<div class="land-item"><header><h4>${escapeHtml(item.cadastral_number||'—')}</h4>`+
   `<span class="land-kind">${escapeHtml(item.kind_label||'')}${item.cadastral_value_date?' · оценка от '+escapeHtml(landDate(item.cadastral_value_date)):''}</span></header>`+
-  `<div class="land-grid">${rows.map(r=>`<div><small>${escapeHtml(r[0])}</small><b>${escapeHtml(r[1])}</b></div>`).join('')}</div>${landContourSvg(item)}${mapLink}</div>`;
+  `<div class="land-grid">${rows.map(r=>`<div><small>${escapeHtml(r[0])}</small><b>${escapeHtml(r[1])}</b></div>`).join('')}</div>${showContour?landContourSvg(item):''}${mapLink}</div>`;
 }
 
 function renderLandLookup(data){
@@ -24856,8 +25643,11 @@ function renderLandLookup(data){
   ['Кадастровая стоимость',totalValue?landNum(totalValue,1)+' млн ₽':'—'],
   ['Субъект РФ',regions.join(' · ')||'—']
  ].map(x=>`<div><small>${escapeHtml(x[0])}</small><b>${escapeHtml(x[1])}</b></div>`).join('');
+ // Несколько участков — общий вид территории один на всех, карточки без своих
+// мини-карт: иначе на 30 участков вышло бы 30 повторов той же подложки.
+ const single=found.length<2;
  document.getElementById('landCards').innerHTML=results.length
-  ?landTerritorySvg(found)+results.map(landCardHtml).join('')
+  ?landTerritorySvg(found)+results.map(x=>landCardHtml(x,single)).join('')
   :'<div style="padding:10px;color:#777">Ничего не найдено.</div>';
  document.getElementById('landWarnings').innerHTML=(data.warnings||[]).map(x=>'• '+escapeHtml(x)).join('<br>');
  document.getElementById('landPreview').style.display='block';
@@ -24881,6 +25671,7 @@ function renderStoredLand(){
  const field=document.getElementById('cadastralNumbers');
  if(field)field.value=stored.query||'';
  renderLandLookup(landLookup);
+ loadLandScreening(stored.query||'');
  const status=document.getElementById('cadastralStatus');
  if(status)status.innerHTML='<span class="import-ok">Показаны сведения об участке, сохранённые в проекте.</span>';
 }
