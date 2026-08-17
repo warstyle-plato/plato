@@ -171,5 +171,5 @@ def test_the_sweep_reports_only_answering_layers(monkeypatch):
 def test_the_sweep_refuses_a_huge_range(monkeypatch):
     monkeypatch.setattr(core, "_core_api_url", lambda path: "")
     with pytest.raises(core.HTTPException) as exc:
-        core.land_layer_sweep(lat=55.6, lng=37.2, start=1, end=5000)
+        core.land_layer_sweep(lat=55.6, lng=37.2, start=1, end=500)
     assert exc.value.status_code == 400
