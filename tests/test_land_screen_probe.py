@@ -40,7 +40,7 @@ def test_local_probe_reports_attributes_per_layer(monkeypatch):
 
     calls: list[int] = []
 
-    def fake_getfeatureinfo(lat, lng, layer_id):
+    def fake_getfeatureinfo(lat, lng, layer_id, api_version="v3"):
         calls.append(layer_id)
         if layer_id == 36048:
             return {"features": [_land_feature(
@@ -64,19 +64,21 @@ def test_local_probe_reports_attributes_per_layer(monkeypatch):
 
 def test_empty_layers_falls_back_to_the_candidate_registry(monkeypatch):
     monkeypatch.setattr(core, "_core_api_url", lambda path: "")
-    seen: list[int] = []
+    seen: list[tuple[int, str]] = []
 
-    def fake_getfeatureinfo(lat, lng, layer_id):
-        seen.append(layer_id)
+    def fake_getfeatureinfo(lat, lng, layer_id, api_version="v3"):
+        seen.append((layer_id, api_version))
         return {"features": []}
 
     monkeypatch.setattr(core, "_nspd_getfeatureinfo", fake_getfeatureinfo)
 
     result = core.land_screen_probe()
 
-    # Дефолтная точка — центр Москвы, дефолтные слои — кандидаты реестра.
+    # Дефолтная точка — центр Москвы, дефолтные слои — кандидаты реестра,
+    # версия пути — v4 (тематические слои геопортала).
     assert result["point"]["lat"] == pytest.approx(55.751244)
-    assert set(seen) == set(core._NSPD_SCREEN_LAYER_CANDIDATES.values())
+    assert {layer for layer, _ in seen} == set(core._NSPD_SCREEN_LAYER_CANDIDATES.values())
+    assert all(version == "v4" for _, version in seen), "дефолт версии пути — v4"
     assert result["layers"]["parcels_egrn"]["features"] == 0
     assert "keys" not in result["layers"]["parcels_egrn"]
 
@@ -111,3 +113,4 @@ def test_probe_forwards_to_core_when_configured(monkeypatch):
     assert result == {"point": {"lat": 1.0, "lng": 2.0}, "layers": {}}
     assert captured["url"].startswith("https://core.example/land/screen-probe?")
     assert "layers=terr%3D100" in captured["url"]
+    assert "ver=v4" in captured["url"], "версия пути обязана доехать до ядра"
