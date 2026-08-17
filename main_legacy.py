@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.18.19"
+VERSION = "0.18.20"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -2531,29 +2531,46 @@ def land_layer_sweep(lat: float = 0.0, lng: float = 0.0, cad: str = "",
     if span < 1 or span > 200:
         raise HTTPException(status_code=400, detail="Диапазон — до 200 номеров за вызов.")
 
-    def probe(layer_id: int) -> tuple[int, dict[str, Any] | None]:
+    def probe(layer_id: int) -> tuple[int, dict[str, Any] | None, str]:
+        """→ (номер, находка или None, причина отказа или '')."""
         try:
             payload = _nspd_getfeatureinfo(lat, lng, layer_id, "v3")
-        except Exception:
-            return layer_id, None
+        except HTTPException as exc:
+            return layer_id, None, f"http {exc.status_code}"
+        except Exception as exc:
+            return layer_id, None, type(exc).__name__
         features = _nspd_features(payload)
         if not features:
-            return layer_id, None
+            return layer_id, None, ""
         options = _nspd_options(features[0])
         return layer_id, {
             "features": len(features),
             "categoryName": _land_text(options.get("categoryName")),
             "type_zone": _land_text(options.get("type_zone")),
             "label": _land_text(options.get("label")),
-        }
+        }, ""
 
     found: dict[str, Any] = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=_LAND_LOOKUP_WORKERS) as pool:
-        for layer_id, entry in pool.map(probe, range(int(start), int(end) + 1)):
-            if entry:
-                found[str(layer_id)] = entry
+    empty = 0
+    failures: dict[str, int] = {}
+    # Перебор идёт в один поток с паузой: 200 запросов очередью НСПД срезает,
+    # и тогда «ничего не найдено» — на деле «всё отбито» (пустой улов на точке,
+    # где ЗОУИТ заведомо есть, 17.08.2026). Отказы считаются и возвращаются:
+    # молчащий перебор неотличим от честной пустоты, а это уже неверный вывод.
+    for layer_id in range(int(start), int(end) + 1):
+        _, entry, failure = probe(layer_id)
+        if entry:
+            found[str(layer_id)] = entry
+        elif failure:
+            failures[failure] = failures.get(failure, 0) + 1
+        else:
+            empty += 1
+        time.sleep(_NSPD_SWEEP_PAUSE_SECONDS)
     return {"point": {"lat": lat, "lng": lng},
-            "range": [int(start), int(end)], "found": found}
+            "range": [int(start), int(end)],
+            "stats": {"probed": span, "answered": len(found),
+                      "empty": empty, "failed": sum(failures.values())},
+            "failures": failures, "found": found}
 
 
 # Подслои ЗОУИТ на геопортале НСПД (культурного наследия, энергетики/связи/
@@ -2562,6 +2579,9 @@ def land_layer_sweep(lat: float = 0.0, lng: float = 0.0, cad: str = "",
 # 50:20:0070312:8320: слой 37581 вернул приаэродромную территорию Внуково
 # со всеми атрибутами (тип, реестровый номер, ограничение, документ).
 _NSPD_ZOUIT_LAYERS: tuple[int, ...] = (37577, 37578, 37579, 37580, 37581)
+
+# Пауза между запросами разведки слоёв. Очередь без пауз НСПД срезает целиком.
+_NSPD_SWEEP_PAUSE_SECONDS = _env_float("NSPD_SWEEP_PAUSE", 0.4)
 
 
 def _land_zouit_findings(lat: float, lng: float) -> list[dict[str, Any]]:

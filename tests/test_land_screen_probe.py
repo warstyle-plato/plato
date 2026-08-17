@@ -156,11 +156,16 @@ def test_the_sweep_reports_only_answering_layers(monkeypatch):
         return {"features": []}
 
     monkeypatch.setattr(core, "_nspd_getfeatureinfo", fake)
+    monkeypatch.setattr(core, "_NSPD_SWEEP_PAUSE_SECONDS", 0)
     result = core.land_layer_sweep(lat=55.6, lng=37.2, start=37577, end=37581)
 
     assert list(result["found"]) == ["37581"], "молчащие и сбойные слои в улов не идут"
     assert result["found"]["37581"]["type_zone"] == "Приаэродромная территория"
     assert result["range"] == [37577, 37581]
+    # Отказы обязаны быть видны: пустой улов при отбитых запросах читался бы
+    # как «ограничений нет» — а это неверный вывод (пустая разведка 17.08.2026).
+    assert result["failures"] == {"http 400": 1}
+    assert result["stats"] == {"probed": 5, "answered": 1, "empty": 3, "failed": 1}
 
 
 def test_the_sweep_refuses_a_huge_range(monkeypatch):
