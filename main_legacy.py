@@ -1705,6 +1705,23 @@ _NSPD_LAND_THEMATIC_ID = 1
 # Слой «Земельные участки из ЕГРН» на карте НСПД. Точечный поиск идёт через
 # WMS GetFeatureInfo этого слоя — тем же запросом, что клик по карте на сайте.
 _NSPD_LANDS_LAYER_ID = 36048
+
+# Слои НСПД для градостроительного скрининга. Номера — КАНДИДАТЫ: их
+# подтверждает только живая проба GetFeatureInfo с ядра (land_screen_probe),
+# а не зашитый контракт — урок «22,5/25/35»: правдоподобный номер ещё не тот
+# номер. Подтверждён пока один — 36048 (ЗУ ЕГРН, на нём живёт точечный поиск),
+# он же служит самопроверкой механизма пробы. Остальные — из дерева слоёв
+# геопортала НСПД (ЗОУИТ, терр. зоны, красные линии) и архитектурных кандидатов
+# 37577–37581; какой номер какому слою отвечает и какие атрибуты несёт, скажет
+# проба. Список задаётся параметром ?layers=, дефолт — эти кандидаты.
+_NSPD_SCREEN_LAYER_CANDIDATES: dict[str, int] = {
+    "parcels_egrn": 36048,
+    "cand_37577": 37577,
+    "cand_37578": 37578,
+    "cand_37579": 37579,
+    "cand_37580": 37580,
+    "cand_37581": 37581,
+}
 _NOMINATIM_BASE_URL = (_env_str("NOMINATIM_BASE_URL", "https://nominatim.openstreetmap.org")).rstrip("/")
 _LAND_LOOKUP_USER_AGENT = USER_AGENT
 _LAND_LOOKUP_MAX_RESULTS = int(_env_float("LAND_LOOKUP_MAX_RESULTS", 30))
@@ -2348,6 +2365,106 @@ def land_map_probe(bbox: str = "") -> dict[str, Any]:
         except Exception as exc:
             results[name] = {"ok": False, "error": str(exc)[:160]}
     return {"bbox_merc": parts, "probe": results}
+
+
+def _nspd_getfeatureinfo(lat: float, lng: float, layer_id: int) -> Any:
+    """WMS GetFeatureInfo произвольного слоя НСПД в точке — как клик по карте.
+
+    Тот же запрос, что `_nspd_point_features` шлёт на слой ЗУ (36048), но с
+    любым номером слоя: так проверяется, какие слои скрининга (ЗОУИТ, терр.
+    зоны, красные линии) отвечают в точке и какие атрибуты несут. Тайл
+    web-меркатора zoom 24, пиксель точки, INFO_FORMAT=application/json.
+    Бросает HTTPException — обработку оставляем вызывающему.
+    """
+    zoom = 24
+    tiles = 1 << zoom
+    tile_size = 512
+    lat_rad = math.radians(lat)
+    xtile = int((lng + 180.0) / 360.0 * tiles)
+    ytile = int((1.0 - math.asinh(math.tan(lat_rad)) / math.pi) / 2.0 * tiles)
+    west = xtile / tiles * 360.0 - 180.0
+    east = (xtile + 1) / tiles * 360.0 - 180.0
+    north = math.degrees(math.atan(math.sinh(math.pi * (1.0 - 2.0 * ytile / tiles))))
+    south = math.degrees(math.atan(math.sinh(math.pi * (1.0 - 2.0 * (ytile + 1) / tiles))))
+    i = int((lng - west) / (east - west) * tile_size)
+    j = int((lat - south) / (north - south) * tile_size)
+    params = urllib.parse.urlencode({
+        "REQUEST": "GetFeatureInfo", "SERVICE": "WMS", "VERSION": "1.3.0",
+        "INFO_FORMAT": "application/json", "FORMAT": "image/png", "STYLES": "",
+        "TRANSPARENT": "true", "QUERY_LAYERS": layer_id, "LAYERS": layer_id,
+        "WIDTH": tile_size, "HEIGHT": tile_size, "I": i, "J": tile_size - j,
+        "CRS": "EPSG:4326", "BBOX": f"{west},{south},{east},{north}",
+        "FEATURE_COUNT": "10",
+    })
+    return _land_fetch_json(
+        f"{_NSPD_BASE_URL}/api/aeggis/v3/{layer_id}/wms?{params}",
+        service="Сервис НСПД",
+    )
+
+
+@app.get("/land/screen-probe", include_in_schema=False)
+def land_screen_probe(lat: float = 0.0, lng: float = 0.0, layers: str = "") -> dict[str, Any]:
+    """Диагностика слоёв НСПД для скрининга: что отвечает GetFeatureInfo в точке.
+
+    Первый тест архитектуры скрининга (docs/land_screening_architecture.md):
+    несёт ли слой «Территориальные зоны» параметры застройки атрибутами или
+    только индекс зоны, какие номера слоёв ЗОУИТ реальны. С телефона и Render
+    НСПД закрыт WAF — перебор идёт с ядра, поэтому запрос форвардится туда, как
+    /land/map-probe. Только диагностика: не кэширует, ничего не меняет.
+
+    Параметры: lat/lng — точка (по умолчанию центр Москвы); layers — список
+    «имя=номер» через запятую (по умолчанию `_NSPD_SCREEN_LAYER_CANDIDATES`).
+    Ответ по каждому слою: http/число объектов/ключи и образец properties
+    первого объекта — по ним видно, какой номер какому слою отвечает.
+    """
+    remote = _core_api_url("/land/screen-probe")
+    if remote:
+        query = urllib.parse.urlencode({"lat": lat, "lng": lng, "layers": layers})
+        try:
+            with urllib.request.urlopen(
+                    urllib.request.Request(
+                        remote + "?" + query, headers={"Accept": "application/json"}),
+                    timeout=120) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Ядро недоступно: {exc}")
+
+    if not lat and not lng:
+        lat, lng = 55.751244, 37.618423  # центр Москвы — точка по умолчанию
+    layer_map: dict[str, int] = {}
+    for token in (layers or "").split(","):
+        token = token.strip()
+        if not token:
+            continue
+        name, _, number = token.partition("=")
+        try:
+            layer_map[name.strip() or number.strip()] = int(number.strip())
+        except ValueError:
+            continue
+    if not layer_map:
+        layer_map = dict(_NSPD_SCREEN_LAYER_CANDIDATES)
+
+    results: dict[str, Any] = {}
+    for name, layer_id in layer_map.items():
+        try:
+            payload = _nspd_getfeatureinfo(lat, lng, layer_id)
+        except HTTPException as exc:
+            results[name] = {"layer_id": layer_id, "http": exc.status_code}
+            continue
+        except Exception as exc:
+            results[name] = {"layer_id": layer_id, "error": str(exc)[:160]}
+            continue
+        features = _nspd_features(payload)
+        entry: dict[str, Any] = {"layer_id": layer_id, "features": len(features)}
+        if features:
+            options = _nspd_options(features[0])
+            entry["keys"] = sorted(options.keys())
+            entry["sample"] = {
+                key: (str(value)[:120] if value is not None else None)
+                for key, value in list(options.items())[:20]
+            }
+        results[name] = entry
+    return {"point": {"lat": lat, "lng": lng}, "layers": results}
 
 
 def _nspd_wms_map_png(west: float, south: float, east: float, north: float,
