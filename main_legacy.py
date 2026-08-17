@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.18.30"
+VERSION = "0.18.31"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -2752,6 +2752,124 @@ def _land_screen_findings(lat: float, lng: float) -> list[dict[str, Any]]:
                 "layer_id": layer_id,
             }))
     return findings
+
+
+# Готовая оценка участка живёт шесть часов: ограничения меняются реже, а
+# каждый скрининг — это два десятка запросов к НСПД.
+_LAND_SCREENING_CACHE: dict[str, tuple[float, Any]] = {}
+_LAND_SCREENING_TTL_SECONDS = _env_float("LAND_SCREENING_TTL", 21600.0)
+
+# Порядок вывода флагов: сперва то, что запрещает жильё, потом то, что режет
+# экономику, потом справочное. Внутри класса — как пришло от НСПД.
+_LAND_SCREEN_ORDER = {"killer": 0, "economic": 1, "info": 2}
+
+
+def _land_screening_verdict(findings: list[dict[str, Any]]) -> dict[str, Any]:
+    """Свод по находкам. Никакого «участок подходит» — только факты и их вес.
+
+    Запрещено выдавать разрешительный вывод (решение владельца, архитектура,
+    раздел 8): максимум — «критических ограничений не обнаружено», и то с
+    оговоркой, что видно лишь внесённое в ЕГРН.
+    """
+    killers = [f for f in findings if f.get("flag_class") == "killer"]
+    economic = [f for f in findings if f.get("flag_class") == "economic"]
+    if killers:
+        status, headline = "CRITICAL", "Найдены ограничения, запрещающие жилую застройку"
+    elif economic:
+        status, headline = "WARNING", "Есть ограничения, влияющие на посадку и экономику"
+    else:
+        status, headline = "NO_CRITICAL_FLAGS", "Критических ограничений не обнаружено"
+    return {
+        "status": status,
+        "headline": headline,
+        "killer_count": len(killers),
+        "economic_count": len(economic),
+        "total": len(findings),
+        "disclaimer": ("Проверены ограничения, внесённые в ЕГРН и опубликованные "
+                       "в НСПД. Отсутствие записи не доказывает отсутствия "
+                       "ограничения: сервитуты, ГПЗУ и часть красных линий в "
+                       "реестре не отражаются."),
+    }
+
+
+@app.get("/land/screening", include_in_schema=False)
+def land_screening(cad: str = "") -> dict[str, Any]:
+    """Оценка участка до финмодели: что мешает строить, по кадастровому номеру.
+
+    Самостоятельная ценность продукта: человек вводит номер и сразу видит
+    ограничения — ЗОУИТ, ООПТ, красные линии, тип территориальной зоны — с
+    реестровым номером и документом-основанием, без всякого расчёта экономики.
+    Один участок — коротко, несколько — свод плюс разбивка (решение владельца).
+    Числа и факты даёт НСПД, вывод не разрешительный.
+    """
+    remote = _core_api_url("/land/screening")
+    if remote:
+        try:
+            with urllib.request.urlopen(
+                    urllib.request.Request(
+                        remote + "?" + urllib.parse.urlencode({"cad": cad}),
+                        headers={"Accept": "application/json"}),
+                    timeout=180) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Ядро недоступно: {exc}")
+
+    numbers = [n for n in re.split(r"[\s,;]+", _land_text(cad)) if n.strip()]
+    numbers = [n for n in numbers if re.match(r"^\d{2}:\d{2}:\d{6,8}:\d+$", n)]
+    if not numbers:
+        raise HTTPException(status_code=400, detail="cad: кадастровый номер участка.")
+    numbers = numbers[:10]
+
+    parcels: list[dict[str, Any]] = []
+    for number in numbers:
+        cached = _LAND_SCREENING_CACHE.get(number)
+        if cached and time.time() - cached[0] < _LAND_SCREENING_TTL_SECONDS:
+            parcels.append(cached[1])
+            continue
+        try:
+            features = _nspd_search_features(number)
+        except Exception:
+            features = []
+        matched = None
+        for feature in features:
+            options = _nspd_options(feature)
+            if _land_text(_nspd_value(options, "cadastral_number")) == number:
+                matched = feature
+                break
+        matched = matched or (features[0] if features else None)
+        if matched is None:
+            parcels.append({"cadastral_number": number, "found": False,
+                            "note": "Сведения ЕГРН по номеру не получены."})
+            continue
+        options = _nspd_options(matched)
+        center = _geometry_center(matched.get("geometry")) or {}
+        findings: list[dict[str, Any]] = []
+        if center:
+            findings = _land_screen_findings(center["lat"], center["lng"])
+            findings.sort(key=lambda f: _LAND_SCREEN_ORDER.get(f.get("flag_class"), 3))
+        area = _land_float(_nspd_value(options, "area_sqm"))
+        parcel = {
+            "cadastral_number": number,
+            "found": True,
+            "address": _land_text(_nspd_value(options, "address")),
+            "area_sqm": area,
+            "area_ha": round(area / 10000.0, 4) if area else None,
+            "category": _land_text(_nspd_value(options, "category")),
+            "permitted_use": _land_text(_nspd_value(options, "permitted_use")),
+            "center": center or None,
+            "findings": findings,
+            "verdict": _land_screening_verdict(findings),
+        }
+        _LAND_SCREENING_CACHE[number] = (time.time(), parcel)
+        parcels.append(parcel)
+
+    everything = [f for p in parcels for f in p.get("findings", [])]
+    return {
+        "parcels": parcels,
+        "single": len(parcels) == 1,
+        "verdict": _land_screening_verdict(everything),
+        "calculated_at": datetime.now().strftime("%d.%m.%Y %H:%M"),
+    }
 
 
 def _land_zouit_findings(lat: float, lng: float) -> list[dict[str, Any]]:
@@ -23504,6 +23622,21 @@ details.cadastral-box>summary::marker{color:#888}
 .land-grid small{display:block;color:#777;font-size:10px;text-transform:uppercase;letter-spacing:.06em}
 .land-grid b{display:block;margin-top:3px;font-weight:600;line-height:1.35}
 .land-links{margin-top:9px;font-size:11px}
+.land-screening{margin:10px 0;border:1px solid #e5e5e3;border-radius:8px;overflow:hidden}
+.land-screening header{padding:10px 12px;font-weight:600;font-size:13px;color:#fff}
+.land-screening.critical header{background:#b3261e}
+.land-screening.warning header{background:#a05a00}
+.land-screening.clean header{background:#2f6b3a}
+.land-screening ul{margin:0;padding:8px 12px;list-style:none}
+.land-screening li{padding:7px 0;border-bottom:1px solid #f0f0ee;font-size:12px}
+.land-screening li:last-child{border-bottom:none}
+.land-screening .flag{display:inline-block;min-width:78px;font-weight:600}
+.land-screening .flag.killer{color:#b3261e}
+.land-screening .flag.economic{color:#a05a00}
+.land-screening .flag.info{color:#777}
+.land-screening .meta{color:#777;font-size:11px;margin-top:2px}
+.land-screening .parcel{font-weight:600;font-size:12px;padding:8px 12px 0}
+.land-screening footer{padding:8px 12px;color:#8a8a86;font-size:10px;background:#fafaf8}
 .land-contour{margin-top:10px}
 .land-contour-stage{position:relative;width:100%;max-height:240px;border:1px solid #e5e5e3;background:#fff;overflow:hidden}
 .land-contour-map{position:absolute;inset:0;width:100%;height:100%;display:block}
@@ -23755,6 +23888,7 @@ details.cadastral-box>summary::marker{color:#888}
           <div id="cadastralStatus" class="import-status">На внешние сервисы уходят только кадастровые номера или строка поиска; финансовая модель не передаётся.</div>
           <div id="landPreview" class="cadastral-preview" style="display:none">
             <div id="landSummary" class="import-summary"></div>
+            <div id="landScreening" class="land-screening" style="display:none"></div>
             <div id="landCards" class="land-results"></div>
             <div id="landWarnings" class="note warning"></div>
             <div class="import-actions">
@@ -25100,7 +25234,70 @@ async function drawLandPreviewQuiet(query){
   landLookup=data;
   inputs._land_lookup=structuredClone(data);
   renderLandLookup(data);
+  loadLandScreening(raw);
  }catch(e){/* контур — украшение, не данные */}
+}
+
+// Оценка участка до финмодели: что мешает строить. Самостоятельная ценность —
+// человек вводит кадастр и сразу видит ограничения с документом-основанием,
+// не запуская расчёт экономики. Один участок — коротко, несколько — свод плюс
+// разбивка (решение владельца). Блок тихий: своя ошибка его прячет, но ничего
+// не роняет, потому что расчёт от него не зависит.
+async function loadLandScreening(query){
+ const box=document.getElementById('landScreening');
+ if(!box)return;
+ const raw=String(query!=null?query:((document.getElementById('cadastralNumbers')||{}).value||'')).trim();
+ if(!/\d{2}:\d{2}:\d{6,8}:\d+/.test(raw)){box.style.display='none';return}
+ box.style.display='block';
+ box.className='land-screening';
+ box.innerHTML='<header>Оценка участка — запрашиваю ограничения…</header>';
+ try{
+  const response=await fetch('/land/screening?cad='+encodeURIComponent(raw));
+  if(!response.ok)throw new Error('нет ответа');
+  const data=await response.json();
+  renderLandScreening(data);
+ }catch(e){box.style.display='none'}
+}
+
+function screeningFlagLabel(cls){
+ return cls==='killer'?'СТОП':(cls==='economic'?'ВЛИЯЕТ':'справка');
+}
+
+function renderLandScreening(data){
+ const box=document.getElementById('landScreening');
+ if(!box||!data||!data.parcels)return;
+ const v=data.verdict||{};
+ const tone=v.status==='CRITICAL'?'critical':(v.status==='WARNING'?'warning':'clean');
+ const found=data.parcels.filter(p=>p.found);
+ const single=found.length<2;
+ const item=f=>`<li><span class="flag ${f.flag_class}">${screeningFlagLabel(f.flag_class)}</span> `+
+   `<b>${escapeHtml(f.name||f.type_zone||f.category||'ограничение')}</b>`+
+   `<div class="meta">${escapeHtml(f.impact||'')}`+
+   `${f.reg_number?' · реестровый № '+escapeHtml(f.reg_number):''}`+
+   `${f.document_number?' · '+escapeHtml(f.document||'документ')+' № '+escapeHtml(f.document_number):''}`+
+   `${f.document_date?' от '+escapeHtml(f.document_date):''}</div></li>`;
+ let body='';
+ if(single){
+  const p=found[0];
+  const flags=(p&&p.findings)||[];
+  body=flags.length?`<ul>${flags.map(item).join('')}</ul>`
+   :'<ul><li>В НСПД ограничений на участок не обнаружено.</li></ul>';
+ }else{
+  body=found.map(p=>{
+   const flags=p.findings||[];
+   const head=`<div class="parcel">${escapeHtml(p.cadastral_number)}`+
+    `${p.area_ha!=null?' · '+landNum(p.area_ha,4)+' га':''}`+
+    ` · ${flags.filter(f=>f.flag_class==='killer').length?'есть запрет':(flags.length?flags.length+' ограничени'+(flags.length===1?'е':'й'):'чисто')}</div>`;
+   return head+(flags.length?`<ul>${flags.map(item).join('')}</ul>`:'');
+  }).join('');
+ }
+ const missed=data.parcels.filter(p=>!p.found).length;
+ box.className='land-screening '+tone;
+ box.innerHTML=`<header>${escapeHtml(v.headline||'Оценка участка')}`+
+  `${found.length>1?' · участков: '+found.length:''}`+
+  `${missed?' · без сведений ЕГРН: '+missed:''}</header>`+
+  body+
+  `<footer>${escapeHtml(v.disclaimer||'')} Проверено ${escapeHtml(data.calculated_at||'')}.</footer>`;
 }
 
 function landNum(value,digits){
@@ -25163,6 +25360,7 @@ async function lookupLand(options){
   // была лишним шагом, и забытая, она молча теряла сведения при закрытии.
   inputs._land_lookup=structuredClone(data);
   renderLandLookup(data);
+  loadLandScreening(raw);
   const found=Number(data.found_count||0);
   if(!(options&&options.quiet)){
    status.innerHTML=found
@@ -25344,6 +25542,7 @@ function renderStoredLand(){
  const field=document.getElementById('cadastralNumbers');
  if(field)field.value=stored.query||'';
  renderLandLookup(landLookup);
+ loadLandScreening(stored.query||'');
  const status=document.getElementById('cadastralStatus');
  if(status)status.innerHTML='<span class="import-ok">Показаны сведения об участке, сохранённые в проекте.</span>';
 }
