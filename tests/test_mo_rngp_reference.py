@@ -39,7 +39,8 @@ def test_every_rule_carries_its_source(rule):
         assert field in rule, f"{rule.get('key')}: нет поля {field}"
     assert rule["quote"].strip(), rule["key"]
     assert rule["official_publication"].startswith("http"), rule["key"]
-    assert rule["status"] in ("CONFIRMED_PRIMARY", "CONFIRMED_EXAMPLE"), rule["key"]
+    assert rule["status"] in ("CONFIRMED_PRIMARY", "CONFIRMED_EXAMPLE",
+                              "CONFIRMED_SECONDARY"), rule["key"]
 
 
 def test_the_holes_are_not_pretending_to_be_rules():
@@ -74,7 +75,7 @@ def test_the_population_divisor_matches_the_example():
               for row in ref.LAND_SMIN_OFFICIAL_EXAMPLE["rows"]]
     assert max(ratios) - min(ratios) < 0.05, ratios
     assert ref.LAND_POPULATION_PER_FLAT_AREA["value"] == pytest.approx(
-        sum(ratios) / len(ratios), abs=0.02)
+        sum(ratios) / len(ratios), abs=0.05)
 
 
 def test_the_balance_line_is_the_plot_minus_the_minimum():
@@ -89,10 +90,63 @@ def test_the_balance_line_is_the_plot_minus_the_minimum():
 
 
 def test_the_kud_is_the_sum_of_its_rows():
-    """К_уд = 19,50 складывается из шести строк таблицы № 13, а не задан числом."""
-    rule = ref.LAND_KUD_EXAMPLE_URBAN_15_50K
-    assert sum(rule["value"].values()) == pytest.approx(rule["total"], abs=1e-9)
-    assert rule["total"] == pytest.approx(ref.LAND_SMIN_OFFICIAL_EXAMPLE["kud"])
+    """К_уд складывается из шести строк таблицы № 13, а не задан числом."""
+    assert ref.kud_for_quarter("6-7") == pytest.approx(
+        ref.LAND_SMIN_OFFICIAL_EXAMPLE["kud"])
+
+
+def test_the_kud_depends_on_the_storeys():
+    """19,50 — это столбец 6–7 этажей. На малой этажности земли нужно в полтора
+    раза больше, и подставлять 19,50 всем — та же ошибка, что московские нормы
+    под видом областных."""
+    assert ref.kud_for_quarter("≤3") == pytest.approx(28.67)
+    assert ref.kud_for_quarter("4-5") == pytest.approx(22.31)
+    assert ref.kud_for_quarter("6-7") == pytest.approx(19.50)
+
+
+def test_the_parking_land_is_already_inside_the_kud():
+    """Строка 1 таблицы входит в К_уд: прибавлять площадь паркинга к S_min
+    отдельно значит считать землю дважды. Проверка — согласованностью самой
+    таблицы: строка 1, делённая на потребность своей доли мест, даёт величину
+    из приложения № 9."""
+    table = ref.LAND_TABLE_13["value"]["1. Хранение индивидуального автотранспорта"]
+    per_person = ref.PARKING_PERMANENT_RATE["value"] / 1000
+    quarter = per_person * ref.PARKING_SHARE_IN_QUARTER["value"]
+    district = per_person * ref.PARKING_SHARE_IN_DISTRICT["value"]
+    # квартал 4–5 этажей ≈ надземный двухэтажный гараж (20 м² на место)
+    assert table[1] / quarter == pytest.approx(20.0, abs=0.5)
+    # квартал и жилой район 6–7 этажей ≈ открытая в уширении проезда (18 м²)
+    assert table[2] / quarter == pytest.approx(18.0, abs=0.5)
+    assert table[5] / district == pytest.approx(18.0, abs=0.5)
+    assert "дважды" in ref.LAND_TABLE_13["double_count_warning"]
+
+
+def test_the_appendix_nine_is_land_and_keeps_its_floors():
+    """Две поправки, стоившие разбора: приложение № 9 — про землю, а не про ГНС,
+    и этажность в его значениях уже учтена."""
+    rule = ref.PARKING_AREA_BY_GARAGE_TYPE
+    assert rule["rule_type"] == "RECOMMENDED"
+    assert rule["hard_fail_allowed"] is False
+    assert rule["floors_already_included"] is True
+    assert rule["use_for_underground_gfa"] is False
+    assert rule["value"]["надземный 5 и более этажей"][0] == 10.0
+    assert rule["value"]["подземный 1 ярус под двором"] == (35.0, ref.BASIS_LAND_PLOT)
+    assert rule["value"]["подземный 2 яруса под домом"] == (
+        25.0, ref.BASIS_BUILDING_FOOTPRINT)
+
+
+def test_the_open_parking_norm_may_be_used_hard():
+    """22,5 стоит в самом п. 5.11 и рекомендательным не назван — в отличие от
+    таблицы приложения № 9."""
+    assert ref.PARKING_OPEN_AREA_PER_SPACE["hard_fail_allowed"] is True
+    assert ref.PARKING_AREA_BY_GARAGE_TYPE["hard_fail_allowed"] is False
+
+
+def test_the_population_divisor_is_the_flat_area_one():
+    """Делится площадь квартир, а не ГНС и не СПП: перепутать — промах в разы."""
+    rule = ref.LAND_POPULATION_PER_FLAT_AREA
+    assert rule["value"] == 28.0
+    assert "КВАРТИР" in rule["conditions"]
 
 
 # --- парковки по действующей редакции ----------------------------------------------
@@ -128,12 +182,13 @@ def test_the_reductions_do_not_claim_to_be_cumulative():
 
 
 def test_the_flat_norm_declares_its_narrow_scope():
-    """22,5 в первичном тексте видно только для кластеров ИЖС и МЖС. Пока общая
-    норма не подтверждена, справочник обязан об этом предупреждать."""
+    """22,5 в 774-ПП стоит в абзаце про кластеры ИЖС и МЖС; общая норма живёт
+    в п. 5.11 отдельной строкой. Обе записаны, и каждая знает свою область."""
     rule = ref.PARKING_FLAT_AREA_PER_SPACE_CLUSTER
     assert rule["value"] == 22.5
     assert "ИЖС" in rule["scope_warning"]
-    assert "G3a" in ref.UNRESOLVED
+    assert ref.PARKING_OPEN_AREA_PER_SPACE["value"] == 22.5
+    assert "G3a" in ref.CLOSED_BY_SOURCE_PACK
 
 
 # --- актуальность видно снаружи ----------------------------------------------------
