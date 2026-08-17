@@ -62,6 +62,26 @@ def test_local_probe_reports_attributes_per_layer(monkeypatch):
     assert calls == [36048, 99999]
 
 
+def test_a_cadastral_number_sets_the_point_to_the_parcel_centre(monkeypatch):
+    """cad резолвится в центр участка — бить по знакомому участку с ЗОУИТ
+    удобнее, чем по координатам (тот же путь, что overlay-probe)."""
+    monkeypatch.setattr(core, "_core_api_url", lambda path: "")
+    monkeypatch.setattr(core, "_nspd_search_features", lambda q: [
+        {"geometry": {"type": "Polygon", "coordinates": [
+            [[37.4, 55.7], [37.5, 55.7], [37.5, 55.8], [37.4, 55.8], [37.4, 55.7]]]}}])
+    seen_points: list[tuple[float, float]] = []
+
+    def fake_getfeatureinfo(lat, lng, layer_id, api_version="v3"):
+        seen_points.append((lat, lng))
+        return {"features": []}
+
+    monkeypatch.setattr(core, "_nspd_getfeatureinfo", fake_getfeatureinfo)
+    result = core.land_screen_probe(cad="50:20:0070312:8321", layers="z=37577")
+
+    assert result["point"] == {"lat": pytest.approx(55.75), "lng": pytest.approx(37.45)}
+    assert seen_points == [(pytest.approx(55.75), pytest.approx(37.45))]
+
+
 def test_empty_layers_falls_back_to_the_candidate_registry(monkeypatch):
     monkeypatch.setattr(core, "_core_api_url", lambda path: "")
     seen: list[tuple[int, str]] = []

@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.18.15"
+VERSION = "0.18.16"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -2410,7 +2410,7 @@ def _nspd_getfeatureinfo(lat: float, lng: float, layer_id: int,
 
 @app.get("/land/screen-probe", include_in_schema=False)
 def land_screen_probe(lat: float = 0.0, lng: float = 0.0, layers: str = "",
-                      ver: str = "v4") -> dict[str, Any]:
+                      ver: str = "v4", cad: str = "") -> dict[str, Any]:
     """Диагностика слоёв НСПД для скрининга: что отвечает GetFeatureInfo в точке.
 
     Первый тест архитектуры скрининга (docs/land_screening_architecture.md):
@@ -2419,16 +2419,18 @@ def land_screen_probe(lat: float = 0.0, lng: float = 0.0, layers: str = "",
     НСПД закрыт WAF — перебор идёт с ядра, поэтому запрос форвардится туда, как
     /land/map-probe. Только диагностика: не кэширует, ничего не меняет.
 
-    Параметры: lat/lng — точка (по умолчанию центр Москвы); layers — список
-    «имя=номер» через запятую (по умолчанию `_NSPD_SCREEN_LAYER_CANDIDATES`);
-    ver — версия пути aeggis: тематические слои геопортала на `v4` (дефолт),
-    участки ЕГРН на `v3` (проба сети 17.08.2026). Ответ по каждому слою:
-    http/число объектов/ключи и образец properties первого объекта — по ним
-    видно, какой номер какому слою отвечает.
+    Параметры: lat/lng — точка (по умолчанию центр Москвы); cad — кадастровый
+    номер: если задан, точка берётся из центра участка (удобно бить по знакомому
+    участку с ЗОУИТ); layers — список «имя=номер» через запятую (по умолчанию
+    `_NSPD_SCREEN_LAYER_CANDIDATES`); ver — версия пути aeggis: тематические слои
+    геопортала на `v4` (дефолт), участки ЕГРН на `v3` (проба сети 17.08.2026).
+    Ответ по каждому слою: http/число объектов/ключи и образец properties
+    первого объекта — по ним видно, какой номер какому слою отвечает.
     """
     remote = _core_api_url("/land/screen-probe")
     if remote:
-        query = urllib.parse.urlencode({"lat": lat, "lng": lng, "layers": layers, "ver": ver})
+        query = urllib.parse.urlencode(
+            {"lat": lat, "lng": lng, "layers": layers, "ver": ver, "cad": cad})
         try:
             with urllib.request.urlopen(
                     urllib.request.Request(
@@ -2437,6 +2439,16 @@ def land_screen_probe(lat: float = 0.0, lng: float = 0.0, layers: str = "",
                 return json.loads(response.read().decode("utf-8"))
         except Exception as exc:
             raise HTTPException(status_code=502, detail=f"Ядро недоступно: {exc}")
+
+    number = _land_text(cad).strip()
+    if number:
+        # Кадастр → центр участка: бить по знакомому участку удобнее, чем по
+        # координатам. Тот же путь, что overlay-probe: поиск → геометрия → центр.
+        for feature in _nspd_search_features(number):
+            center = _geometry_center(feature.get("geometry"))
+            if center:
+                lat, lng = center["lat"], center["lng"]
+                break
 
     if not lat and not lng:
         lat, lng = 55.751244, 37.618423  # центр Москвы — точка по умолчанию
