@@ -236,3 +236,23 @@ def test_the_probe_can_clear_its_own_pause(monkeypatch):
     cleared = core.land_screen_probe(lat=55.6, lng=37.2, layers="z=37581", reset=1)
     assert cleared["screen_paused_seconds"] == 0
     assert core._nspd_screen_failures == 0
+
+
+def test_the_layer_request_carries_its_own_referer(monkeypatch):
+    """WAF НСПД отдавал Forbidden на тематические слои с общим Referer
+    `thematic=PKK`. В браузере у таких запросов Referer называет сам слой
+    (`active_layers=<номер>`) — повторяем дословно (17.08.2026)."""
+    captured: dict[str, object] = {}
+
+    def fake_fetch(url, *, service, headers=None, **kw):
+        captured["url"] = url
+        captured["headers"] = headers or {}
+        return {"features": []}
+
+    monkeypatch.setattr(core, "_land_fetch_json", fake_fetch)
+    monkeypatch.setattr(core, "_nspd_screen_blocked_until", 0.0)
+    core._nspd_getfeatureinfo(55.6, 37.2, 37581, "v3")
+
+    referer = captured["headers"].get("Referer", "")
+    assert "active_layers=37581" in referer, "Referer обязан называть запрашиваемый слой"
+    assert "thematic=Default" in referer
