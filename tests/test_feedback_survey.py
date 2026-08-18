@@ -56,13 +56,11 @@ def test_only_the_asked_fields_survive():
     clean = core._feedback_clean(core.FeedbackRequest(
         role="Брокер", region="Марс",
         ratings={"site": 5, "inputs": "2", "platon": 9, "выдумка": 4, "ui": None},
-        problems={"inputs": "  непонятно, что такое ГНС  ", "выдумка": "x"},
         impression="полезно", mistakes="цена входа не так", projects=["Маковского 28", ""],
         source="brokers"))
     assert clean["role"] == "Брокер"
     assert clean["region"] == ""              # такого региона в списке нет
     assert clean["ratings"] == {"site": 5, "inputs": 2}
-    assert clean["problems"] == {"inputs": "непонятно, что такое ГНС"}
     assert clean["projects"] == ["Маковского 28"]
     assert clean["source"] == "brokers"
 
@@ -193,10 +191,16 @@ def test_two_refusals_end_it():
 
 # --- низкий балл спрашивает, высокий молчит -----------------------------------------
 
-def test_a_low_score_opens_the_question():
-    body = core.PAGE[core.PAGE.index("function renderFeedbackForm("):]
+def test_a_low_score_names_the_block_in_the_single_field():
+    """Строк под каждым разделом больше нет — решение владельца (17.08.2026):
+    баллы люди ставят охотно, а пишут один раз и в конце, если есть что
+    сказать. Чтобы это «что сказать» не превратилось в «всё нормально»,
+    низкая оценка сама называет раздел в подписи поля. Кликов не прибавляется."""
+    body = core.PAGE[core.PAGE.index("function feedbackRetitle("):]
     body = body[:body.index("function openFeedback(")]
     assert "score>0&&score<4" in body.replace(" ", "")
+    assert "Вы низко оценили" in body
+    assert "fb-problem" not in core.PAGE, "строки под разделами должны быть убраны"
 
 
 def test_the_footer_keeps_a_way_back():

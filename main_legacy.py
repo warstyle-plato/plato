@@ -24843,22 +24843,17 @@ function renderFeedbackForm(){
    +[1,2,3,4,5].map(n=>`<button type="button" class="btn fb-score" data-block="${b[0]}" data-score="${n}"
        style="min-width:34px;padding:4px 8px">${n}</button>`).join('')
    +`<button type="button" class="btn fb-score" data-block="${b[0]}" data-score="0"
-       style="padding:4px 8px;color:#888">не смотрел</button></td></tr>`
-   +`<tr><td colspan="2" style="padding:0 0 8px"><input class="fb-problem" data-block="${b[0]}"
-       placeholder="Что не так с разделом «${escapeHtml(b[1])}»?"
-       style="display:none;width:100%;padding:6px 8px;font-size:13px"></td></tr>`;
+       style="padding:4px 8px;color:#888">не смотрел</button></td></tr>`;
  }).join('');
  const projects=feedbackProjects();
  document.getElementById('feedbackBody').innerHTML=
   pick('Кто вы',FEEDBACK_FORM.roles,state.role||'')
   +pick('С чем работаете',FEEDBACK_FORM.regions,state.region||'')
   +`<table style="width:100%;border-collapse:collapse;margin-bottom:14px">${rows}</table>`
-  +`<div style="font-size:12px;color:#666;margin-bottom:6px">Общие впечатления</div>`
-  +`<textarea id="fbImpression" rows="2" style="width:100%;padding:6px 8px;font-size:13px"></textarea>`
-  +`<div style="font-size:12px;color:#666;margin:12px 0 6px">Что не сошлось на ваших проектах`
-  +(projects.length?` <span style="color:#999">(${escapeHtml(projects.join(', '))})</span>`:'')+`</div>`
+  +`<div id="fbTextLabel" style="font-size:12px;color:#666;margin-bottom:6px">Если есть что сказать`
+  +(projects.length?` — о проекте ${escapeHtml(projects.join(', '))}`:'')+`</div>`
   +`<textarea id="fbMistakes" rows="3" style="width:100%;padding:6px 8px;font-size:13px"
-      placeholder="Здесь важнее всего конкретика: какой показатель и почему считается не так."></textarea>`;
+      placeholder="Не обязательно. Важнее всего — что посчиталось не так, как в вашей практике."></textarea>`;
  // Балл ниже четырёх сам открывает строку «что не так»: довольного не трогаем,
  // а недовольного спрашиваем там, где он уже недоволен.
  document.querySelectorAll('#feedbackBody .fb-score').forEach(btn=>{
@@ -24868,8 +24863,10 @@ function renderFeedbackForm(){
     other.style.background='';other.style.color=other.dataset.score==='0'?'#888':'';
    });
    btn.style.background='#111';btn.style.color='#fff';
-   const problem=document.querySelector(`#feedbackBody .fb-problem[data-block="${block}"]`);
-   if(problem)problem.style.display=(score>0&&score<4)?'':'none';
+   // Низкая оценка сама называет раздел в подписи общего поля. Отдельная
+   // строка под каждым разделом была лишним трудом: люди охотно ставят баллы,
+   // а пишут один раз и в конце — если есть что сказать.
+   feedbackRetitle();
   };
  });
  document.querySelectorAll('#feedbackBody .fb-pick').forEach(btn=>{
@@ -24879,6 +24876,23 @@ function renderFeedbackForm(){
    btn.style.background='#111';btn.style.color='#fff';
   };
  });
+}
+
+function feedbackRetitle(){
+ const label=document.getElementById('fbTextLabel');
+ if(!label)return;
+ const weak=[];
+ document.querySelectorAll('#feedbackBody .fb-score').forEach(btn=>{
+  if(!btn.style.background)return;
+  const score=Number(btn.dataset.score);
+  if(score>0&&score<4){
+   const block=FEEDBACK_FORM.blocks.find(b=>b[0]===btn.dataset.block);
+   if(block)weak.push(block[1]);
+  }
+ });
+ label.textContent=weak.length
+  ?'Вы низко оценили: '+weak.join(', ')+'. Что там не так?'
+  :'Если есть что сказать';
 }
 
 function openFeedback(how){
@@ -24908,20 +24922,17 @@ async function sendFeedback(){
   const score=Number(btn.dataset.score);
   if(score>0)ratings[btn.dataset.block]=score;
  });
- document.querySelectorAll('#feedbackBody .fb-problem').forEach(input=>{
-  if(input.value.trim())problems[input.dataset.block]=input.value.trim();
- });
  const payload={
   role:feedbackPicked('Кто вы'),region:feedbackPicked('С чем работаете'),
   ratings,problems,
-  impression:(document.getElementById('fbImpression')||{}).value||'',
+  impression:'',
   mistakes:(document.getElementById('fbMistakes')||{}).value||'',
   projects:feedbackProjects(),
   session:(typeof telegramSession!=='undefined'&&telegramSession)?telegramSession:'',
   source:new URLSearchParams(location.search).get('ref')||''
  };
  const status=document.getElementById('feedbackStatus');
- if(!Object.keys(ratings).length&&!payload.impression.trim()&&!payload.mistakes.trim()){
+ if(!Object.keys(ratings).length&&!payload.mistakes.trim()){
   status.textContent='Поставьте хотя бы одну оценку или напишите пару слов.';return;
  }
  status.textContent='Отправляю…';
