@@ -20,6 +20,7 @@ import time
 import math
 import io
 import re
+import shutil
 import ssl
 import zipfile
 import xml.etree.ElementTree as ET
@@ -48,7 +49,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.18.56"
+VERSION = "0.18.57"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -18006,12 +18007,26 @@ def health() -> dict:
     # «поднялось» означает лишь «что-то поднялось». Данные тоже проверяются —
     # каталог примонтирован томом, и потерять его молча дороже всего.
     data_dir = Path(os.getenv("DEVELOPAID_DATA_DIR") or "data")
+    # Свободное место — не украшение ответа: 18.08.2026 диск кончился молча,
+    # выкатка упала на распаковке образа, а вход через бота стал отвечать
+    # ошибкой без объяснения, потому что коды входа пишутся файлами. Заполненный
+    # диск виден в /health раньше, чем в поведении.
+    free_mb: float | None = None
+    try:
+        usage = shutil.disk_usage(data_dir if data_dir.exists() else Path("."))
+        free_mb = round(usage.free / (1024 * 1024))
+    except Exception:
+        free_mb = None
     return {
         "status": "ok",
         "version": VERSION,
         "commit": COMMIT,
         "data_dir": str(data_dir),
         "data_writable": os.access(data_dir, os.W_OK) if data_dir.exists() else False,
+        "disk_free_mb": free_mb,
+        # Порог не абстрактный: образ выкатки весит два-три гигабайта, и ниже
+        # этого следующая выкатка не пройдёт.
+        "disk_low": (free_mb is not None and free_mb < 3072),
     }
 
 
