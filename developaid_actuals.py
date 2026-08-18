@@ -630,13 +630,37 @@ def overlay(op: dict[str, Any], actuals: dict[str, Any]) -> dict[str, Any]:
         record("capex", plan_capex, blended)
         updated["capex_by_article"] = _split_by_article(
             op.get("capex_by_article") or {}, plan_capex, blended, cut, notes)
+
+    # Факт, уже разнесённый по статьям (карта «код БДДС → статья движка»), —
+    # это лучше, чем доли плана: каждая статья складывается из своих платежей.
+    # Итог тогда выводится из статей, а не считается вторым способом: два
+    # способа на одно число рано или поздно разойдутся.
+    if "capex_by_article" in actuals:
+        planned_articles = {a: dict(s) for a, s in (op.get("capex_by_article") or {}).items()}
+        facts = {a: _months(s) for a, s in (actuals["capex_by_article"] or {}).items()}
+        merged: dict[str, dict[datetime.date, float]] = {}
+        for article in sorted(set(planned_articles) | set(facts)):
+            merged[article] = _blend(
+                planned_articles.get(article, {}), facts.get(article, {}),
+                cut, f"CAPEX:{article}", notes)
+        updated["capex_by_article"] = merged
+        combined: dict[datetime.date, float] = {}
+        for series in merged.values():
+            for month, value in series.items():
+                combined[month] = combined.get(month, 0.0) + value
+        plan_capex = dict(op.get("capex") or {})
+        updated["capex"] = combined
+        record("capex", plan_capex, combined)
+        blended = combined
+
+    if "capex" in actuals or "capex_by_article" in actuals:
         # Долговой CAPEX — тот же расход за вычетом доли ВРИ, которую закрывает
         # капитал. Пересобираем из нового CAPEX, а не масштабируем отдельно:
         # иначе связь между ними разъедется на второй же правке.
         equity = _months(op.get("vri_equity") or {})
         updated["debt_capex"] = {
             month: max(0.0, value - equity.get(month, 0.0))
-            for month, value in blended.items()
+            for month, value in updated["capex"].items()
         }
 
     # --- коммерческие расходы ---------------------------------------------
@@ -803,14 +827,21 @@ _BDDS_TO_ARTICLE: tuple[tuple[str, str], ...] = (
     ("3", "financing"),
 )
 
-# Код, для которого статьи движка нет и придумывать её нельзя: «Строительство
-# ЖК (внешний генподряд)» идёт одной суммой, не разделённой на наземную и
-# подземную части, а модель считает их по разным удельным ставкам. Разносить
-# такое долями — значит подменить факт расчётом и не сказать об этом.
-_BDDS_UNRESOLVED: dict[str, str] = {
-    "2.2.2.1": "Строительство ЖК (внешний генподряд) — одной суммой, "
-               "без деления на наземную и подземную части",
+# Коды, которые приходят одной суммой на две статьи. «Строительство ЖК
+# (внешний генподряд)» не разделено на наземную и подземную части, а модель
+# считает их по разным удельным ставкам. Делится по ГНС — решение владельца,
+# 18.08.2026.
+#
+# Пропорция приходит снаружи, из ТЭП проекта, и не выводится здесь: доля,
+# посчитанная модулем разбора выгрузок, была бы второй реализацией ТЭП. Не дали
+# пропорцию — код остаётся неразнесённым и называет причину, а не делится
+# пополам «чтобы сошлось».
+_BDDS_GNS_SPLIT: dict[str, tuple[str, str]] = {
+    "2.2.2.1": ("main_above", "main_under"),
 }
+
+# Коды, для которых статьи движка нет и придумывать её нельзя.
+_BDDS_UNRESOLVED: dict[str, str] = {}
 
 # Статьи, которых в модели нет как CAPEX: они уходят в свои разделы расчёта.
 _NON_CAPEX_ARTICLES = frozenset({"selling", "marketing", "tax", "financing"})
@@ -828,6 +859,9 @@ def article_for(bdds_code: Any) -> tuple[str | None, str]:
     for prefix, reason in sorted(_BDDS_UNRESOLVED.items(), key=lambda i: -len(i[0])):
         if code == prefix or code.startswith(prefix + "."):
             return None, reason
+    if _gns_split_for(code):
+        return None, (f"код {code} делится по ГНС между наземной и подземной "
+                      "частями — нужна пропорция из ТЭП")
     best: tuple[int, str | None] = (-1, None)
     for prefix, article in _BDDS_TO_ARTICLE:
         if code == prefix or code.startswith(prefix + "."):
@@ -838,7 +872,31 @@ def article_for(bdds_code: Any) -> tuple[str | None, str]:
     return best[1], ""
 
 
-def articles_from_register(register: dict[str, Any]) -> dict[str, Any]:
+def _gns_split_for(code: str) -> tuple[str, str] | None:
+    """Пара статей, между которыми код делится по ГНС, если он такой."""
+    best: tuple[int, tuple[str, str] | None] = (-1, None)
+    for prefix, pair in _BDDS_GNS_SPLIT.items():
+        if code == prefix or code.startswith(prefix + "."):
+            if len(prefix) > best[0]:
+                best = (len(prefix), pair)
+    return best[1]
+
+
+def _gns_shares(gns: dict[str, Any] | None) -> tuple[float, float] | None:
+    """Доли наземной и подземной частей по ГНС. Нулевой итог — не пропорция."""
+    if not gns:
+        return None
+    above = max(0.0, float(gns.get("above") or 0.0))
+    under = max(0.0, float(gns.get("under") or 0.0))
+    total = above + under
+    if total <= 0:
+        return None
+    return above / total, under / total
+
+
+def articles_from_register(
+    register: dict[str, Any], gns: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Разнести фактические платежи реестра по статьям движка.
 
     Возвращает помесячные ряды по статьям — те же, что строит движок, — и
@@ -848,22 +906,36 @@ def articles_from_register(register: dict[str, Any]) -> dict[str, Any]:
     capex: dict[str, dict[datetime.date, float]] = {}
     other: dict[str, dict[datetime.date, float]] = {}
     unresolved: dict[str, float] = {}
+    shares = _gns_shares(gns)
+
+    def put(article: str, month: datetime.date, amount: float) -> None:
+        target = other if article in _NON_CAPEX_ARTICLES else capex
+        target.setdefault(article, {})
+        target[article][month] = target[article].get(month, 0.0) + amount
+
     for item in register["rows"]:
         amount = item["paid_amount"]
         if not amount:
             continue
-        article, reason = article_for(item["bdds_code"])
-        if article is None:
-            unresolved[reason] = unresolved.get(reason, 0.0) + amount
-            continue
+        code = str(item["bdds_code"] or "").strip().rstrip(".")
         month = item["paid_date"]
         if month is None:
             unresolved["платёж без даты"] = unresolved.get("платёж без даты", 0.0) + amount
             continue
         month = month.replace(day=1)
-        target = other if article in _NON_CAPEX_ARTICLES else capex
-        target.setdefault(article, {})
-        target[article][month] = target[article].get(month, 0.0) + amount
+
+        split = _gns_split_for(code)
+        if split and shares:
+            above_article, under_article = split
+            put(above_article, month, amount * shares[0])
+            put(under_article, month, amount * shares[1])
+            continue
+
+        article, reason = article_for(code)
+        if article is None:
+            unresolved[reason] = unresolved.get(reason, 0.0) + amount
+            continue
+        put(article, month, amount)
 
     mapped = sum(sum(s.values()) for s in capex.values()) + \
         sum(sum(s.values()) for s in other.values())

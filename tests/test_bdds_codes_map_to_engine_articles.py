@@ -68,17 +68,58 @@ def test_the_longest_prefix_wins():
     assert actuals.article_for("2.2.2.8.3")[0] == "main_above"
 
 
-def test_an_unsplittable_code_is_refused_not_guessed():
-    """Внешний генподряд идёт одной суммой — разносить его долями нельзя.
+def test_a_code_split_by_gns_needs_the_proportion():
+    """Внешний генподряд делится по ГНС — но только когда есть чем делить.
 
-    Модель считает наземную и подземную части по разным удельным ставкам.
-    Разложить общую сумму генподряда между ними значит подменить факт
-    расчётом и не сказать об этом.
+    Пропорция приходит из ТЭП проекта и здесь не выводится: доля, посчитанная
+    модулем разбора выгрузок, была бы второй реализацией ТЭП. Без пропорции
+    код остаётся неразнесённым и называет причину, а не делится пополам
+    «чтобы сошлось».
     """
     article, reason = actuals.article_for("2.2.2.1.1")
-
     assert article is None
-    assert "генподряд" in reason
+    assert "ГНС" in reason
+
+    register = {
+        "rows": [{"bdds_code": "2.2.2.1.1", "paid_amount": 1000e6,
+                  "paid_date": datetime.date(2025, 5, 1)}],
+        "paid": 1000e6,
+    }
+    without = actuals.articles_from_register(register)
+    assert without["mapped"] == 0.0
+    assert any("ГНС" in reason for reason in without["unresolved"])
+
+
+def test_a_code_split_by_gns_follows_the_proportion():
+    """Дано ГНС — сумма делится по нему, решение владельца 18.08.2026."""
+    register = {
+        "rows": [{"bdds_code": "2.2.2.1.1", "paid_amount": 1000e6,
+                  "paid_date": datetime.date(2025, 5, 1)}],
+        "paid": 1000e6,
+    }
+
+    result = actuals.articles_from_register(
+        register, gns={"above": 7500.0, "under": 2500.0})
+    capex = result["capex_by_article"]
+
+    assert capex["main_above"][datetime.date(2025, 5, 1)] == pytest.approx(750e6)
+    assert capex["main_under"][datetime.date(2025, 5, 1)] == pytest.approx(250e6)
+    assert result["mapped"] == pytest.approx(1000e6)
+    assert not result["unresolved"]
+
+
+def test_a_zero_proportion_is_not_a_proportion():
+    """Нулевой ГНС — это «неизвестно», а не «всё в наземную часть»."""
+    register = {
+        "rows": [{"bdds_code": "2.2.2.1.1", "paid_amount": 500e6,
+                  "paid_date": datetime.date(2025, 5, 1)}],
+        "paid": 500e6,
+    }
+
+    result = actuals.articles_from_register(register, gns={"above": 0, "under": 0})
+
+    assert result["mapped"] == 0.0
+    assert sum(result["unresolved"].values()) == pytest.approx(500e6)
 
 
 def test_an_unknown_code_names_itself():
@@ -136,7 +177,7 @@ def test_money_that_found_no_article_is_named_with_its_reason():
 
     assert result["mapped"] == 0.0
     assert sum(result["unresolved"].values()) == pytest.approx(407e6)
-    assert any("генподряд" in reason for reason in result["unresolved"])
+    assert any("ГНС" in reason for reason in result["unresolved"])
     assert result["unresolved"]["платёж без даты"] == pytest.approx(100e6)
 
 

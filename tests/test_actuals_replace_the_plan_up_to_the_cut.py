@@ -183,3 +183,53 @@ def test_a_plain_calculation_is_untouched():
 
     assert plain["actuals"] == {}
     assert plain["summary"]["revenue"] > 0
+
+
+def test_a_factual_article_split_replaces_the_proportional_one(plan):
+    """Разнесённый по статьям факт лучше долей плана — и оговорка снимается.
+
+    Пока факт приходил одной суммой, статьи до среза показывали структуру
+    плана, и это приходилось объявлять. С картой «код БДДС → статья движка»
+    каждая статья складывается из своих платежей, и приближения больше нет.
+    """
+    months = sorted(plan["capex"])
+    cut = months[8]
+    fact = {
+        article: {months[index]: sum(series.values()) * 0.5 / 8 for index in range(8)}
+        for article, series in plan["capex_by_article"].items()
+        if sum(series.values()) > 0
+    }
+
+    result = actuals.overlay(plan, {"cut": cut, "capex_by_article": fact})
+    updated = result["op"]
+
+    # Итог выводится из статей, а не считается вторым способом.
+    assert sum(sum(s.values()) for s in updated["capex_by_article"].values()) == \
+        pytest.approx(sum(updated["capex"].values()))
+    assert sum(updated["capex"].values()) == pytest.approx(sum(plan["capex"].values()))
+    # Каждая статья держит свой итог.
+    for article, series in plan["capex_by_article"].items():
+        if sum(series.values()) > 0:
+            assert sum(updated["capex_by_article"][article].values()) == \
+                pytest.approx(sum(series.values()))
+    # Оговорки про доли плана здесь быть не должно.
+    assert not any("долями плана" in note for note in result["report"]["notes"])
+
+
+def test_an_article_paid_but_never_planned_shows_as_an_overrun(plan):
+    """Расход, которого в плане не было, — перерасход, а не тихая прибавка."""
+    months = sorted(plan["capex"])
+    cut = months[8]
+    unplanned = next(
+        (a for a, s in plan["capex_by_article"].items() if sum(s.values()) == 0),
+        None)
+    if unplanned is None:
+        pytest.skip("в плане нет статьи с нулевой суммой")
+
+    result = actuals.overlay(plan, {
+        "cut": cut, "capex_by_article": {unplanned: {months[0]: 250e6}}})
+
+    assert sum(result["op"]["capex_by_article"][unplanned].values()) == \
+        pytest.approx(250e6)
+    assert any(unplanned in note and "перерасход" in note
+               for note in result["report"]["notes"])
