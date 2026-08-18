@@ -201,9 +201,14 @@ def stock_block(subject: dict[str, Any], peers: list[dict[str, Any]], city: Mosc
 
 def lot_size_block(subject: dict[str, Any], peers: list[dict[str, Any]], city: MoscowMarket) -> MetricBlock:
     block = MetricBlock(BLOCK_LOT, BLOCK_TITLES[BLOCK_LOT])
+    # Средний проданный лот приходит либо готовым от источника, либо считается
+    # из проданных метров и штук: делить их можно, потому что оба числа
+    # посчитаны по одному периоду.
     sold_units = subject.get("sold_units")
     sold_area = subject.get("sold_area")
-    average = round(sold_area / sold_units, 1) if sold_units and sold_area else None
+    average = subject.get("sold_lot_avg")
+    if average is None and sold_units and sold_area:
+        average = round(sold_area / sold_units, 1)
     project_average = subject.get("lot_area_avg")
     if average is None and project_average is None:
         block.notes.append("Размер лота по проекту неизвестен")

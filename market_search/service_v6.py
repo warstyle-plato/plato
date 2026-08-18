@@ -25,6 +25,7 @@ from .geo_resolution import RESOLVED, ProjectGeoResolver, address_signature
 from .geocoder import GeoPoint
 from .http import RemoteServiceError
 from .market_reference import MoscowMarket
+from .metrics import build_blocks
 from .page_price import PageFetcher
 from .price_hint import price_hint
 from .pulse import PulseClient
@@ -525,6 +526,108 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
             cadastre=self.cadastre_lookup,
             find_project=self.pulse.find_project if self.pulse.available else None,
         )
+
+    def build_report(
+        self,
+        query: str,
+        *,
+        codes: list[str] | None = None,
+        radius_km: float = 3.0,
+        peers_limit: int = 12,
+    ) -> dict[str, Any]:
+        """Конструктор: объект, сопоставимые соседи и выбранные разделы.
+
+        Соседи ограничены числом нарочно: каждый стоит двух обращений к
+        источнику, и отчёт по сорока пяти проектам собирался бы минуту. Берутся
+        ближние — те, кто дальше, влияют на медиану слабее, а на ожидание
+        сильнее. Сколько отброшено, написано в ответе.
+        """
+        subject = self.resolve_subject(query)
+        if not self.pulse.available:
+            raise RemoteServiceError(
+                "Источник рыночных данных выключен: не заданы PULSE_LOGIN и PULSE_PASSWORD"
+            )
+
+        classes = self.pulse.segments()
+        near = self.pulse.near(subject.latitude, subject.longitude, radius_km)
+
+        own = None
+        if subject.project_id is None:
+            # Площадка может совпасть с известным проектом — тогда отчёт о нём,
+            # а не о безымянной точке. Ноль километров это и означает.
+            for distance, project in near:
+                if distance <= 0.05:
+                    subject.project_id = project.complex_id
+                    subject.project_name = project.name
+                    subject.segment = classes.get(project.complex_id)
+                    break
+        if subject.project_id is not None:
+            own = {
+                "name": subject.project_name,
+                "segment": subject.segment or classes.get(subject.project_id),
+                **self.pulse.metrics(subject.project_id),
+                **self.pulse.project_totals(subject.project_id),
+                **self.pulse.remaining(subject.project_id),
+            }
+
+        segment = (own or {}).get("segment") or subject.segment
+        if not segment:
+            votes: dict[str, int] = {}
+            for _, project in near[:20]:
+                found = classes.get(project.complex_id)
+                if found:
+                    votes[found] = votes.get(found, 0) + 1
+            segment = max(votes, key=lambda key: votes[key]) if votes else None
+
+        comparable = [
+            (distance, project)
+            for distance, project in near
+            if project.complex_id != subject.project_id
+            and segments_comparable(segment, classes.get(project.complex_id))
+        ]
+        # Прайс старше полугода — это не цена рынка, а след того, что проект
+        # давно распродан: у сданных домов он бывает 2020 года. Такой сосед
+        # тянет медиану вниз и делает отчёт достоверным на вид.
+        fresh_since = _fresh_price_since(self.verified_prices.today)
+        peers: list[dict[str, Any]] = []
+        stale = 0
+        for distance, project in comparable:
+            if len(peers) >= peers_limit:
+                break
+            metrics = self.pulse.metrics(project.complex_id)
+            observed = str(metrics.get("observed_at") or "")
+            if not metrics.get("price_per_sqm") or observed < fresh_since:
+                stale += 1
+                continue
+            peers.append(
+                {
+                    "name": project.name,
+                    "developer": project.developer,
+                    "distance_km": distance,
+                    "segment": classes.get(project.complex_id),
+                    **metrics,
+                }
+            )
+
+        subject_metrics = own or {"name": subject.project_name or query, "segment": segment}
+        blocks = build_blocks(subject_metrics, peers, self.city, codes)
+        return {
+            "subject": {**subject.to_dict(), "segment": segment, "metrics": subject_metrics},
+            "blocks": blocks,
+            "peers": peers,
+            "comparison": {
+                "radius_km": radius_km,
+                "segment": segment,
+                "found": len(near),
+                "comparable": len(comparable),
+                "used": len(peers),
+                "stale_price": stale,
+                "fresh_since": fresh_since,
+                "dropped": max(len(comparable) - len(peers) - stale, 0),
+            },
+            "city": {"source": self.city.source, "observed_at": self.city.observed_at},
+            "retrieved_at": self.verified_prices.today.isoformat(),
+        }
 
     def price_hint(
         self,

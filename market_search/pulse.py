@@ -215,12 +215,14 @@ class PulseClient:
         base: str | None = None,
         timeout: float = 30.0,
         ttl_seconds: int = 86_400,
+        detail_ttl_seconds: int = 43_200,
     ):
         self.base = (base or os.getenv("PULSE_BASE_URL") or PULSE_BASE).rstrip("/")
         self.login = login if login is not None else os.getenv("PULSE_LOGIN", "")
         self.password = password if password is not None else os.getenv("PULSE_PASSWORD", "")
         self.timeout = timeout
         self.ttl_seconds = ttl_seconds
+        self.detail_ttl_seconds = detail_ttl_seconds
         self.dir = Path(data_dir)
         self.dir.mkdir(parents=True, exist_ok=True)
         self.errors: list[str] = []
@@ -527,9 +529,100 @@ class PulseClient:
 
     # --- данные проекта --------------------------------------------------------
 
+    def _cached(self, name: str, complex_id: int, build) -> Any:
+        """Ответ по проекту на диске: отчёт спрашивает одно и то же по кругу.
+
+        Двадцать соседей — это сорок обращений к сервису; без кэша сборка
+        отчёта ждала бы минуту, а повторная — столько же. Срок короче суток:
+        прайс меняется чаще, чем справочник проектов.
+        """
+        path = self.dir / "cache" / f"{name}-{int(complex_id)}.json"
+        if fresh(path, self.detail_ttl_seconds):
+            cached = load_json(path)
+            if cached is not None:
+                return cached.get("value") if isinstance(cached, dict) else cached
+        value = build()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        save_json(path, {"value": value})
+        return value
+
+    def metrics(self, complex_id: int) -> dict[str, Any]:
+        """Всё, что нужно блокам отчёта, одним словарём.
+
+        Поглощение в метрах источник считает сам (`avg_sale_speed_living_area`),
+        а средний проданный лот выводится из него и темпа в штуках: делить
+        метры на штуки корректно, потому что оба числа посчитаны по одному и
+        тому же периоду.
+        """
+        price = self.price(complex_id) or {}
+        sales = self.sales(complex_id) or {}
+        units = sales.get("units_per_month")
+        area = sales.get("area_per_month")
+        return {
+            "complex_id": int(complex_id),
+            "price_per_sqm": price.get("price_per_sqm"),
+            "price_per_sqm_min": price.get("price_per_sqm_min"),
+            "price_per_sqm_max": price.get("price_per_sqm_max"),
+            "lot_count": price.get("lot_count"),
+            "observed_at": price.get("observed_at"),
+            "units_per_month": units,
+            "units_per_month_3m": sales.get("units_per_month_3m"),
+            "area_per_month": area,
+            "sales_end_forecast": sales.get("sales_end_forecast"),
+            "known_sales_for": sales.get("known_sales_for"),
+            "sold_lot_avg": round(area / units, 1) if area and units else None,
+        }
+
+    def project_totals(self, complex_id: int) -> dict[str, Any]:
+        """ТЭП проекта: сколько всего жилья и какого размера лоты."""
+        data = self._cached(
+            "table",
+            complex_id,
+            lambda: self._post_json("/api/app/complex/table/", {"complex_id": int(complex_id)}),
+        )
+        if not isinstance(data, dict):
+            return {}
+        return {
+            "living_units": _as_int(data.get("living_count")),
+            "living_area": data.get("living_area"),
+            "buildings": _as_int(data.get("buildings_count")),
+            "lot_area_avg": (
+                round(float(data["living_lot_area_avg"]), 1)
+                if data.get("living_lot_area_avg")
+                else None
+            ),
+        }
+
+    def remaining(self, complex_id: int) -> dict[str, Any]:
+        """Непроданный остаток по корпусам, сложенный в проект."""
+        columns = ["building", "living_remaining_predict", "living_remaining_area_predict"]
+        data = self._cached(
+            "remaining",
+            complex_id,
+            lambda: self._post_json(
+                "/api/app/complex/buildings_summary_table/",
+                {"complex_id": int(complex_id), "columns": columns},
+            ),
+        )
+        rows = (data or {}).get("rows") if isinstance(data, dict) else None
+        if not rows:
+            return {}
+        units = sum(int(row.get("living_remaining_predict") or 0) for row in rows)
+        area = sum(float(row.get("living_remaining_area_predict") or 0) for row in rows)
+        return {
+            "remaining_units": units or None,
+            "remaining_area": round(area) or None,
+        }
+
     def price(self, complex_id: int) -> dict[str, Any] | None:
         """Цена прайс-листа: средняя, границы, число лотов и дата среза."""
-        data = self._post_json("/api/app/complex/price_stats/", {"complex_id": int(complex_id)})
+        data = self._cached(
+            "price",
+            complex_id,
+            lambda: self._post_json(
+                "/api/app/complex/price_stats/", {"complex_id": int(complex_id)}
+            ),
+        )
         current = (data or {}).get("current_price") if isinstance(data, dict) else None
         if not isinstance(current, dict) or not current.get("flat_sqm_price"):
             return None
@@ -546,7 +639,11 @@ class PulseClient:
 
     def sales(self, complex_id: int) -> dict[str, Any] | None:
         """Темп продаж и прогноз их окончания."""
-        data = self._post_json("/api/app/complex/sales/", {"complex_id": int(complex_id)})
+        data = self._cached(
+            "sales",
+            complex_id,
+            lambda: self._post_json("/api/app/complex/sales/", {"complex_id": int(complex_id)}),
+        )
         if not isinstance(data, dict):
             return None
         speed = data.get("avg_sale_speed_living")
