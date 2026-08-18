@@ -205,3 +205,26 @@ def test_many_records_of_one_kind_collapse_to_one_line(monkeypatch):
     assert entry["zones_count"] == 7
     assert len(entry["reg_numbers"]) == 3 and entry["reg_numbers_more"] == 4
     assert entry["document_number"] == "7 документов", "перечислять семь приказов нечитаемо"
+
+
+def test_the_whole_catalogue_is_asked_not_a_selection(monkeypatch):
+    """«Чтобы все слои были»: опрашивается весь снятый каталог, а не выборка —
+    иначе теряется слой, о котором мы не подумали (лес, вода, ОКН). Лишнее
+    отсекается по имени, несуществующее отвечает ошибкой и пропускается."""
+    asked: list[int] = []
+    monkeypatch.setattr(core, "_nspd_getfeatureinfo",
+                        lambda lat, lng, layer_id, api_version="v3":
+                        (asked.append(layer_id), {"features": []})[1])
+    core._land_screen_findings(55.75, 37.62)
+
+    assert len(asked) >= 60, "каталог урезан — слой может потеряться"
+    for known in (879243, 875845, 875838):  # красные линии, ООПТ, терр. зоны
+        assert known in asked
+    assert set(core._NSPD_ZOUIT_LAYERS) <= set(asked)
+    assert 36048 not in asked, "сам участок берётся из карточки, а не из скрининга"
+
+
+def test_administrative_layers_never_become_flags():
+    for junk in ("ПКК. Земельные участки", "Тепловая карта", "Границы субъектов",
+                 "Комплексы объектов", "Единицы кадастрового деления"):
+        assert any(n in junk.lower() for n in core._LAND_SCREEN_NOISE), junk
