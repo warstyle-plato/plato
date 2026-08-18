@@ -535,6 +535,7 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         codes: list[str] | None = None,
         radius_km: float = 3.0,
         peers_limit: int = 12,
+        segment_override: str | None = None,
     ) -> dict[str, Any]:
         """Конструктор: объект, сопоставимые соседи и выбранные разделы.
 
@@ -578,6 +579,14 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         # полем: без него отчёт по пустырю неотличим от отчёта по проекту.
         segment = (own or {}).get("segment") or subject.segment
         segment_source = "pulse" if segment else None
+        source_segment: str | None = None
+        if segment_override:
+            # Класс по умолчанию ставит «Пульс» — решение владельца от
+            # 18.08.2026. Ручной выбор в кабинете его не отменяет: он
+            # называется отдельным источником и виден в отчёте строкой, иначе
+            # два мнения об одном классе разошлись бы незаметно.
+            source_segment, segment = segment, segment_override
+            segment_source = "manual"
         if not segment:
             votes: dict[str, int] = {}
             for _, project in near[:20]:
@@ -600,12 +609,20 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         fresh_since = _fresh_price_since(self.verified_prices.today)
         peers: list[dict[str, Any]] = []
         stale = 0
+        priceless = 0
         for distance, project in comparable:
             if len(peers) >= peers_limit:
                 break
             metrics = self.pulse.metrics(project.complex_id)
             observed = str(metrics.get("observed_at") or "")
-            if not metrics.get("price_per_sqm") or observed < fresh_since:
+            # «Цены нет» и «цена устарела» — разные ответы. В Мытищах источник
+            # знает проекты и их координаты, но чисел по ним у подписки нет
+            # вовсе, а счётчик показывал «прайс устарел» и уводил искать
+            # несуществующий старый прайс.
+            if not metrics.get("price_per_sqm"):
+                priceless += 1
+                continue
+            if observed < fresh_since:
                 stale += 1
                 continue
             peers.append(
@@ -629,13 +646,20 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
 
         subject_metrics = own or {"name": subject.project_name or query, "segment": segment}
         subject_series = history.get(subject.project_id) or []
-        blocks = build_blocks(subject_metrics, peers, self.city, codes)
+        # Свод собран по одному отчёту, «Москва старая». Вне его покрытия
+        # городская база не подставляется вовсе: медианы чужого города,
+        # выданные молча, выглядят исправным сравнением.
+        where = " ".join(filter(None, [subject.address, (own or {}).get("address"), subject.query]))
+        city_scope = self.city.scope(where)
+        reference = self.city if city_scope["covered"] else MoscowMarket({})
+        blocks = build_blocks(subject_metrics, peers, reference, codes)
         notes = build_notes(blocks, subject_series)
         return {
             "subject": {
                 **subject.to_dict(),
                 "segment": segment,
                 "segment_source": segment_source,
+                "segment_by_source": source_segment,
                 "metrics": subject_metrics,
             },
             "blocks": blocks,
@@ -650,10 +674,15 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                 "comparable": len(comparable),
                 "used": len(peers),
                 "stale_price": stale,
+                "no_price": priceless,
                 "fresh_since": fresh_since,
-                "dropped": max(len(comparable) - len(peers) - stale, 0),
+                "dropped": max(len(comparable) - len(peers) - stale - priceless, 0),
             },
-            "city": {"source": self.city.source, "observed_at": self.city.observed_at},
+            "city": {
+                "source": self.city.source,
+                "observed_at": self.city.observed_at,
+                "scope": city_scope,
+            },
             "retrieved_at": self.verified_prices.today.isoformat(),
         }
 

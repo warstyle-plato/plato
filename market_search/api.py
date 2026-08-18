@@ -66,6 +66,9 @@ class ReportRequest(BaseModel):
     codes: list[str] | None = None
     radius_km: float = Field(default=3.0, ge=0.25, le=10.0)
     peers_limit: int = Field(default=12, ge=1, le=40)
+    # Пусто — класс берётся у «Пульса». Ручной выбор не отменяет решения от
+    # 18.08.2026, а называется в отчёте отдельным источником.
+    segment: str | None = None
 
     @model_validator(mode="after")
     def query_is_not_blank(self) -> "ReportRequest":
@@ -159,6 +162,7 @@ def install(app: FastAPI) -> MarketDiscoveryService:
                 codes=req.codes,
                 radius_km=req.radius_km,
                 peers_limit=req.peers_limit,
+                segment_override=req.segment,
             )
         except SubjectNotFound as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc

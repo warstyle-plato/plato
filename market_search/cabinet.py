@@ -161,6 +161,12 @@ label.sec i{display:block;font-style:normal;color:var(--dim);font-size:12px;marg
 button.go{margin-top:16px;padding:10px 20px;border:0;border-radius:8px;background:var(--blue);color:#fff;
 font-size:15px;cursor:pointer}
 button.go[disabled]{opacity:.55;cursor:default}
+button.go.alt{background:#fff;color:var(--blue);border:1px solid var(--blue);margin-left:8px}
+#hintout{margin-top:12px}
+#hintout .box{background:#f2f7fc;border-left:3px solid var(--blue);padding:10px 12px;border-radius:0 7px 7px 0}
+#hintout b{font-size:19px;font-variant-numeric:tabular-nums}
+.scope{background:#fff8f0;border-left:3px solid var(--rust);padding:8px 12px;font-size:13px;
+border-radius:0 6px 6px 0;margin-top:10px;color:#5a3a1c}
 table{width:100%;border-collapse:collapse;font-size:14px}
 th,td{text-align:left;padding:7px 9px;border-bottom:1px solid var(--line);white-space:nowrap}
 th{color:var(--dim);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.03em}
@@ -221,10 +227,20 @@ border-radius:9px;box-shadow:0 6px 22px rgba(20,35,60,.13);max-height:320px;over
           <option>12</option><option selected>20</option><option>30</option>
         </select>
       </div>
+      <div>
+        <label class="f">Класс</label>
+        <select id="segment">
+          <option value="">как у «Пульса»</option>
+          <option>Стандарт/Эконом</option><option>Комфорт</option><option>Бизнес</option>
+          <option>Премиум</option><option>Элит/De Luxe</option>
+        </select>
+      </div>
     </div>
     <div class="secs">__SECTIONS__</div>
     <button class="go" id="go">Собрать отчёт</button>
+    <button class="go alt" id="hint">Ориентир цены</button>
     <span id="state" class="muted" style="margin-left:12px"></span>
+    <div id="hintout"></div>
   </div>
   <div id="out"></div>
 </main>
@@ -401,7 +417,7 @@ async function build(){
   $('#out').innerHTML='';
   try{
     const r=await fetch('/market/report',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({query,codes,radius_km:Number($('#radius').value),peers_limit:Number($('#limit').value)})});
+      body:JSON.stringify({query,codes,radius_km:Number($('#radius').value),peers_limit:Number($('#limit').value),segment:$('#segment').value||null})});
     const d=await r.json();
     if(!r.ok){$('#out').innerHTML=`<div class="card err">${esc(d.detail||'Не получилось')}</div>`;return}
     render(d);
@@ -414,15 +430,18 @@ function render(d){
   const s=d.subject||{}, c=d.comparison||{}, peers=d.peers||[];
   const m=s.metrics||{};
   const src={cadastre:'по кадастровому номеру',coordinates:'по координатам',project:'по названию проекта',address:'по адресу'}[s.source]||s.source;
-  const cls=s.segment?esc(s.segment)+(s.segment_source==='neighbours'?' <span class="muted">(класс не у источника — сложен по соседям)</span>':''):'<span class="muted">не определён</span>';
+  const srcNote={neighbours:' <span class="muted">(класс не у источника — сложен по соседям)</span>',
+    manual:' <span class="self">(выбран вручную'+(s.segment_by_source?', «Пульс» относит к «'+esc(s.segment_by_source)+'»':'')+')</span>'}[s.segment_source]||'';
+  const cls=s.segment?esc(s.segment)+srcNote:'<span class="muted">не определён</span>';
   let html=`<div class="card"><h2>${esc(s.project_name||s.address||s.query)}</h2>
     <div class="muted" style="font-size:13px">Опознан ${esc(src)} · класс: ${cls} · данные на ${esc(d.retrieved_at)}</div>
     <div class="kv" style="margin-top:12px">
       <div><b>${num(c.found)}</b><span>проектов в ${c.radius_km} км</span></div>
       <div><b>${num(c.comparable)}</b><span>сопоставимы по классу</span></div>
       <div><b>${num(c.used)}</b><span>взято в выборку</span></div>
-      <div><b>${num(c.stale_price)}</b><span>отброшены: прайс старше ${esc(c.fresh_since)}</span></div>
-    </div></div>`;
+      <div><b>${num(c.stale_price)}</b><span>прайс старше ${esc(c.fresh_since)}</span></div>
+      <div><b>${num(c.no_price)}</b><span>цены нет вовсе</span></div>
+    </div>`+((((d.city||{}).scope||{}).covered===false)?`<div class="scope">${esc(d.city.scope.reason)}</div>`:'')+`</div>`;
 
   const priceBlock=(d.blocks||[]).find(b=>b.code==='price');
   if(priceBlock) html+=`<div class="card"><h2>Цены соседей сегодня</h2>${priceChart(peers,{...m,name:s.project_name||'объект'},(priceBlock.peers||{}).median)}</div>`;
@@ -450,6 +469,29 @@ function render(d){
   $('#out').innerHTML=html;
 }
 $('#go').addEventListener('click',build);
+
+// Ориентир цены — то же число, что кнопка «Рекомендация DevelopAid» у поля
+// цены в основном сервисе. Здесь он нужен для площадки без проекта: по адресу
+// или кадастру понять, из какой цены исходить для будущего ЖК.
+$('#hint').addEventListener('click',async function(){
+  const where=$('#q').value.trim();
+  if(!where){$('#state').textContent='Укажите объект.';return}
+  $('#hint').disabled=true; $('#hintout').innerHTML='<span class="muted">Считаю ориентир…</span>';
+  try{
+    const r=await fetch('/market/price-hint',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({address:where,segment:$('#segment').value||null})});
+    const d=await r.json();
+    if(!r.ok||d.available===false){
+      $('#hintout').innerHTML=`<div class="box">${esc(d.reason||d.detail||'Ориентир не рассчитан.')}</div>`;
+      return;
+    }
+    const basis={peers:'по соседям рядом',okrug:'по округу',city:'по классу в Москве'}[d.basis]||d.basis||'';
+    $('#hintout').innerHTML=`<div class="box"><b>${num(d.price_th_per_sqm)} тыс ₽/м²</b>`
+      +` <span class="muted">— ориентир ${esc(basis)}; наблюдений ${d.sample||'—'}`
+      +(d.observed_at?`, данные на ${esc(d.observed_at)}`:'')+`</span></div>`;
+  }catch(e){$('#hintout').innerHTML=`<div class="box">${esc(e.message||e)}</div>`}
+  finally{$('#hint').disabled=false}
+});
 
 // Подсказки по названию ЖК. Кадастровый номер и координаты подсказывать нечем
 // и незачем — они однозначны, и список под ними только мешал бы.

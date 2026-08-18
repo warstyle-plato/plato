@@ -510,3 +510,24 @@ def test_suggestions_are_behind_the_cabinet_key(tmp_path, monkeypatch) -> None:
     # Источника нет — пустой список и названная причина, а не молчание.
     assert answer.json()["items"] == []
     assert "PULSE_LOGIN" in answer.json()["reason"]
+
+
+def test_city_base_is_not_borrowed_for_another_city() -> None:
+    """Свод — «Москва старая». Для Мытищ его медианы не значат ничего.
+
+    `snapshot()` смотрит только на класс и отдал бы московские квартили
+    молча: отчёт по подмосковному проекту выглядел бы исправным и сравнивал
+    бы его не с тем рынком. Новая Москва — тот же случай: слово «Москва» в
+    адресе есть, а в отчёт она не входит.
+    """
+    city = MoscowMarket.bundled()
+
+    assert city.covers("Москва, ЗАО, район Можайский, ул. Гродненская, вл. 18")
+    assert not city.covers("МО, Мытищи, Летная ул.")
+    assert not city.covers("Москва, ТАО, поселение Роговское, п. Рогово")
+    assert not city.covers("")
+
+    scope = city.scope("МО, Мытищи, Летная ул.")
+    assert scope["covered"] is False
+    assert "Москва старая" in scope["reason"]
+    assert city.scope("Москва, Саввинская набережная, 25")["covered"] is True

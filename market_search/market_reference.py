@@ -88,6 +88,43 @@ class MoscowMarket:
     def source(self) -> str | None:
         return self.payload.get("source")
 
+    COVERAGE_LABEL = "Москва старая"
+    # Новая Москва в отчёт «Москва старая» не входит, хотя адрес там начинается
+    # тем же словом. Признаки её округов перечислены явно, потому что «Москва»
+    # в строке — не доказательство попадания в свод.
+    _OUTSIDE = ("тао", "нао", "поселение", "новомосковск", "троицк", "зеленоград")
+
+    def covers(self, address: str | None) -> bool:
+        """Лежит ли объект внутри свода.
+
+        Свод собран по одному отчёту — «Москва старая». Для Мытищ, Химок и
+        Новой Москвы его медианы не значат ничего, а `snapshot()` смотрит
+        только на класс и отдал бы их молча: отчёт по подмосковному проекту
+        сравнивал бы его с московскими квартилями и выглядел бы исправным.
+        """
+        text = str(address or "").casefold()
+        if not text:
+            return False
+        if "москва" not in text and "москв" not in text:
+            return False
+        return not any(mark in text for mark in self._OUTSIDE)
+
+    def scope(self, address: str | None) -> dict[str, Any]:
+        """Что сказать про сравнение с городом на этом адресе."""
+        if not self.available:
+            return {"covered": False, "label": self.COVERAGE_LABEL,
+                    "reason": "Свод рынка не загружен"}
+        if self.covers(address):
+            return {"covered": True, "label": self.COVERAGE_LABEL, "reason": None}
+        return {
+            "covered": False,
+            "label": self.COVERAGE_LABEL,
+            "reason": (
+                f"Свод собран по отчёту «{self.COVERAGE_LABEL}»; для этого адреса "
+                "сравнение с городом не строится — соседи и класс считаются как обычно"
+            ),
+        }
+
     def segments(self) -> list[str]:
         return sorted(self.payload.get("current") or {})
 
