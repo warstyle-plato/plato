@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from market_search.market_reference import MoscowMarket
 from market_search.metrics import (
     BLOCK_LOT,
@@ -322,3 +324,62 @@ def test_constructor_names_where_the_class_came_from(tmp_path) -> None:
     blank = service.build_report("55.72600, 37.44700", codes=[BLOCK_PRICE])
     assert blank["subject"]["segment_source"] == "neighbours"
     assert blank["comparison"]["segment_source"] == "neighbours"
+
+
+def test_report_route_answers_and_refuses_with_a_reason(tmp_path, monkeypatch) -> None:
+    """Конструктор должен быть достижим снаружи, иначе стенд его не показывает.
+
+    До этого маршрута у модуля были только `/market/discovery` (сниппетный путь,
+    который мы списываем) и `/market/price-hint`. Отчёт собирался лишь из кода,
+    и приёмка поневоле мерила старый конвейер.
+    """
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from market_search.api import install
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    app = FastAPI()
+    service = install(app)
+
+    segments = {5924: "Бизнес", 5549: "Премиум"}
+    metrics = {
+        5924: {"price_per_sqm": 708_109, "observed_at": "2026-08-18", "units_per_month": 4.6},
+        5549: {"price_per_sqm": 780_032, "observed_at": "2026-08-18", "units_per_month": 20.1},
+    }
+    projects = [
+        {"complex_id": 5924, "name": "Кутузов Сити", "developer": "—",
+         "latitude": 55.71584, "longitude": 37.43303},
+        {"complex_id": 5549, "name": "Родина Парк", "developer": "—",
+         "latitude": 55.72100, "longitude": 37.43900},
+    ]
+    service.pulse = _fake_pulse(segments, metrics, projects)
+    client = TestClient(app)
+
+    answer = client.post(
+        "/market/report",
+        json={"query": "55.71584, 37.43303", "codes": ["price"], "peers_limit": 5},
+    )
+    assert answer.status_code == 200, answer.text
+    body = answer.json()
+    assert body["subject"]["segment_source"] == "pulse"
+    assert [peer["name"] for peer in body["peers"]] == ["Родина Парк"]
+    assert [block["code"] for block in body["blocks"]] == ["price"]
+
+    # Опечатка в списке разделов — отказ с причиной, а не пустой отчёт.
+    typo = client.post("/market/report", json={"query": "55.71584, 37.43303", "codes": ["цена"]})
+    assert typo.status_code == 422
+    assert "цена" in typo.json()["detail"]
+
+    # Кадастровый номер опознан, но справочника нет — это ответ человеку, а не
+    # поломка сервиса, и потому 422, а не 500.
+    service.cadastre_lookup = None
+    refusal = client.post("/market/report", json={"query": "77:07:0013005:1042"})
+    assert refusal.status_code == 422
+    assert "ЕГРН" in refusal.json()["detail"]
+
+    # Источник выключен — 502: чинить нечего, нужны доступы.
+    service.pulse = SimpleNamespace(available=False, find_project=lambda q: None)
+    off = client.post("/market/report", json={"query": "55.71584, 37.43303"})
+    assert off.status_code == 502
+    assert "PULSE_LOGIN" in off.json()["detail"]

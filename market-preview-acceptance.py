@@ -50,6 +50,45 @@ GOLDEN = {
 }
 
 
+# Приёмка конструктора отчёта. Это не второй набор проверок для того же
+# конвейера: `/market/discovery` — сниппетный путь, который мы списываем, а
+# `/market/report` собирает отчёт из «Пульса». Мерить надо тот, который строим.
+#
+# Якоря — не пожелания, а проверенный состав источника по этим точкам. Каждый
+# выбран так, чтобы падение было содержательным:
+#
+# * Саввинская 27 и ХАМОВНИКИ XII — те самые обязательные аналоги, которых
+#   сниппетный путь не находит вовсе;
+# * Родина Парк у Гродненской и Verdi у Мишиной — премиум рядом с бизнесом,
+#   то есть правило соседнего класса. Пока лестница не понимала меток
+#   «Пульса», они выпадали молча, и выборка выглядела полной.
+REPORT_GOLDEN = {
+    "Саввинская 25": {
+        "query": "Москва, Саввинская набережная, 25",
+        "radius_km": 3,
+        # Соседей берём больше умолчания: в трёх километрах их семь десятков, и
+        # при лимите 12 обязательный аналог в километре просто не доезжает.
+        "peers_limit": 25,
+        "mandatory": ["Саввинская 27", "ХАМОВНИКИ XII"],
+        "min_peers_with_price": 5,
+    },
+    "Мишина 46": {
+        "query": "Москва, улица Мишина, 46",
+        "radius_km": 3,
+        "peers_limit": 20,
+        "mandatory": ["Петровский парк II", "Verdi"],
+        "min_peers_with_price": 5,
+    },
+    "Гродненская 18": {
+        "query": "Москва, Гродненская улица, 18",
+        "radius_km": 3,
+        "peers_limit": 20,
+        "mandatory": ["Верейская 41", "Родина Парк"],
+        "min_peers_with_price": 5,
+    },
+}
+
+
 def normalize(value: str) -> str:
     table = str.maketrans({"ё": "е", "Ё": "Е", "«": "", "»": "", '"': "", "'": ""})
     return "".join(ch for ch in value.translate(table).lower() if ch.isalnum())
@@ -89,8 +128,8 @@ def get_json(url: str, timeout: int = 30) -> dict:
     return data
 
 
-def post_json(base_url: str, payload: dict) -> dict:
-    url = base_url.rstrip("/") + "/market/discovery"
+def post_json(base_url: str, payload: dict, path: str = "/market/discovery") -> dict:
+    url = base_url.rstrip("/") + path
     request = urllib.request.Request(
         url,
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
@@ -280,6 +319,54 @@ def validate_case(name: str, spec: dict, data: dict) -> bool:
     return ok
 
 
+def validate_report(name: str, spec: dict, data: dict) -> bool:
+    """Проверить отчёт конструктора: объект опознан, соседи набраны, якоря на месте."""
+    print(f"\n=== {name} — конструктор отчёта ===")
+    subject = data.get("subject") or {}
+    comparison = data.get("comparison") or {}
+    peers = data.get("peers") or []
+    priced = [row for row in peers if row.get("price_per_sqm")]
+
+    print(
+        f"Объект: {subject.get('project_name') or subject.get('address') or subject.get('query')}"
+        f" | опознан: {subject.get('source')}"
+        f" | класс: {subject.get('segment') or '—'} ({subject.get('segment_source') or 'нет'})"
+    )
+    print(
+        f"В радиусе {comparison.get('radius_km')} км: {comparison.get('found')}; "
+        f"сопоставимых: {comparison.get('comparable')}; взято: {comparison.get('used')}; "
+        f"прайс устарел у {comparison.get('stale_price')} (свежесть с {comparison.get('fresh_since')})"
+    )
+    for row in peers[:15]:
+        price = f"{row['price_per_sqm']:,} ₽/м²".replace(",", " ") if row.get("price_per_sqm") else "цены нет"
+        print(
+            f"- {row.get('name')} | {row.get('distance_km')} км | {row.get('segment') or '—'} | {price}"
+        )
+
+    ok = True
+    if not subject.get("segment"):
+        print("FAIL: класс объекта не определён — сравнивать не с чем")
+        ok = False
+    for wanted in spec.get("mandatory", []):
+        if not any(equivalent(wanted, str(row.get("name") or "")) for row in peers):
+            print(f"FAIL: обязательный сосед не попал в выборку: {wanted}")
+            ok = False
+    if len(priced) < spec.get("min_peers_with_price", 0):
+        print(
+            f"FAIL: соседей с ценой {len(priced)}, нужно не меньше "
+            f"{spec['min_peers_with_price']} — медиана по такой выборке ничего не значит"
+        )
+        ok = False
+
+    # Разделы отчёта: пустой раздел допустим, молчащий — нет.
+    for block in data.get("blocks") or []:
+        state = "есть" if block.get("subject") else "нет данных"
+        print(f"  раздел «{block.get('title')}»: {state}; замечаний {len(block.get('notes') or [])}")
+
+    print("PASS" if ok else "FAIL")
+    return ok
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Live acceptance test for DevelopAid market preview")
     parser.add_argument("--base-url", default="http://127.0.0.1:8081")
@@ -287,6 +374,12 @@ def main() -> int:
         "--only", choices=["savvinskaya", "mishina", "grodnenskaya", "all"], default="all"
     )
     parser.add_argument("--expect-commit", default="")
+    parser.add_argument(
+        "--pipeline",
+        choices=["discovery", "report", "both"],
+        default="both",
+        help="discovery — сниппетный путь (списывается); report — конструктор на «Пульсе»",
+    )
     args = parser.parse_args()
 
     try:
@@ -312,19 +405,49 @@ def main() -> int:
         selected = [("Гродненская 18", GOLDEN["Гродненская 18"])]
 
     overall = True
-    for name, spec in selected:
-        payload = {
-            "address": spec["address"],
-            "radius_km": spec["radius_km"],
-            "limit": spec["limit"],
-        }
-        try:
-            data = post_json(args.base_url, payload)
-        except Exception as exc:
-            print(f"\n=== {name} ===\nFAIL: {exc}", file=sys.stderr)
-            overall = False
-            continue
-        overall = validate_case(name, spec, data) and overall
+    if args.pipeline in ("discovery", "both"):
+        for name, spec in selected:
+            payload = {
+                "address": spec["address"],
+                "radius_km": spec["radius_km"],
+                "limit": spec["limit"],
+            }
+            try:
+                data = post_json(args.base_url, payload)
+            except Exception as exc:
+                print(f"\n=== {name} ===\nFAIL: {exc}", file=sys.stderr)
+                overall = False
+                continue
+            overall = validate_case(name, spec, data) and overall
+
+    if args.pipeline in ("report", "both"):
+        for name, _ in selected:
+            spec = REPORT_GOLDEN.get(name)
+            if not spec:
+                continue
+            payload = {
+                "query": spec["query"],
+                "radius_km": spec["radius_km"],
+                "peers_limit": spec["peers_limit"],
+            }
+            try:
+                data = post_json(args.base_url, payload, path="/market/report")
+            except Exception as exc:
+                # Выключенный источник — не провал проверки, а отсутствие
+                # доступов на стенде. Сказать это надо словами, иначе красный
+                # прогон уведёт искать ошибку в коде.
+                message = str(exc)
+                if "PULSE_LOGIN" in message or "источник рыночных данных выключен" in message.lower():
+                    print(
+                        f"\n=== {name} — конструктор отчёта ===\n"
+                        f"ПРОПУЩЕНО: {message}",
+                        file=sys.stderr,
+                    )
+                    continue
+                print(f"\n=== {name} — конструктор отчёта ===\nFAIL: {message}", file=sys.stderr)
+                overall = False
+                continue
+            overall = validate_report(name, spec, data) and overall
 
     print("\nИТОГ: " + ("PASS" if overall else "FAIL"))
     return 0 if overall else 1

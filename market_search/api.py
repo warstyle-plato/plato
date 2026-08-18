@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field, model_validator
 from .geocoder import GeocodingError
 from .http import RemoteServiceError
 from .service_v6 import MarketDiscoveryService
+from .subject import SubjectNotFound
 
 
 class MarketDiscoveryRequest(BaseModel):
@@ -49,6 +50,26 @@ class PriceHintRequest(BaseModel):
         return self
 
 
+class ReportRequest(BaseModel):
+    """Конструктор отчёта: объект и набор разделов.
+
+    Ввод один — тот же, что в поле «Участок» основного сервиса: кадастровый
+    номер, координаты, название проекта или адрес. Второго разбора для рынка
+    не заводим, иначе один и тот же ввод даст в двух местах разные точки.
+    """
+
+    query: str
+    codes: list[str] | None = None
+    radius_km: float = Field(default=3.0, ge=0.25, le=10.0)
+    peers_limit: int = Field(default=12, ge=1, le=40)
+
+    @model_validator(mode="after")
+    def query_is_not_blank(self) -> "ReportRequest":
+        if not str(self.query or "").strip():
+            raise ValueError("Нужен кадастровый номер, адрес, координаты или название проекта")
+        return self
+
+
 def install(app: FastAPI) -> MarketDiscoveryService:
     if getattr(app.state, "market_discovery_installed", False):
         return app.state.market_discovery_service
@@ -69,6 +90,31 @@ def install(app: FastAPI) -> MarketDiscoveryService:
                 segment=req.segment,
                 radius_km=req.radius_km,
             )
+        except GeocodingError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except RemoteServiceError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    @app.post("/market/report")
+    async def market_report(req: ReportRequest) -> dict[str, Any]:
+        """Отчёт по объекту: соседи из «Пульса» и выбранные разделы.
+
+        Ошибки разделены нарочно. Не опознан объект — 422, это ответ человеку,
+        а не поломка. Неизвестный код раздела — тоже 422: опечатка в списке не
+        должна выглядеть как «раздел ничего не показал». Источник недоступен —
+        502, потому что чинить нечего, надо ждать или включить доступы.
+        """
+        try:
+            return service.build_report(
+                req.query,
+                codes=req.codes,
+                radius_km=req.radius_km,
+                peers_limit=req.peers_limit,
+            )
+        except SubjectNotFound as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         except GeocodingError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except RemoteServiceError as exc:
