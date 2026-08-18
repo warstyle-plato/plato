@@ -182,3 +182,46 @@ def test_the_status_tells_the_page_whether_the_bot_is_offered(monkeypatch):
     monkeypatch.setenv("TELEGRAM_BOT_USERNAME", "developaid_test_bot")
     assert client.get("/projects/status").json()["accepts_login"] is True
 
+
+# --- вход с телефона, когда на компьютере нет Telegram ----------------------------
+
+def test_the_qr_carries_the_same_link():
+    """На десктопе без приложения ссылка t.me открывает «поставьте Telegram»,
+    и вход упирается в тупик (замечание владельца, 18.08.2026). QR переносит
+    тот же код на телефон — новых прав он не даёт."""
+    data = start_login()
+    answer = client.get("/auth/telegram/qr", params={"code": data["code"]})
+    assert answer.status_code == 200
+    assert answer.headers["content-type"].startswith("image/svg+xml")
+    assert answer.content.startswith(b"<?xml") and b"<svg" in answer.content
+    assert answer.headers["cache-control"] == "no-store", "код одноразовый — не кэшируем"
+
+
+def test_a_junk_code_gets_no_picture():
+    """Код приходит снаружи: рисуем только то, что похоже на код, иначе QR
+    станет способом закодировать чужую ссылку нашим адресом."""
+    for bad in ("", "../../etc", "javascript:alert(1)", "https://example.com"):
+        assert client.get("/auth/telegram/qr", params={"code": bad}).status_code == 400
+
+
+def test_without_a_bot_name_there_is_nothing_to_encode(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_USERNAME", "")
+    monkeypatch.setattr(main, "_TELEGRAM_RUNTIME", dict(main._TELEGRAM_RUNTIME, username=""))
+    answer = client.get("/auth/telegram/qr", params={"code": "abc123"})
+    assert answer.status_code == 503
+    assert "TELEGRAM_BOT_USERNAME" in answer.json()["detail"]
+
+
+def test_the_page_shows_the_qr_and_survives_its_absence():
+    body = main.PAGE[main.PAGE.index("async function loginViaTelegram("):]
+    body = body[:body.index("const money=")]
+    assert "/auth/telegram/qr?code=" in body
+    assert "Наведите камеру телефона" in body
+    assert "onerror=" in body, "образ без библиотеки не должен оставлять битую картинку"
+    assert "Открыть бота" in body, "ссылка остаётся, даже если QR не отдался"
+
+
+def test_the_library_is_declared():
+    requirements = (Path(main.__file__).resolve().parent / "requirements.txt").read_text(encoding="utf-8")
+    assert "segno" in requirements, "образ соберётся без QR, а маршрут ответит 503"
+

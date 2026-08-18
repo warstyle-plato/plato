@@ -152,7 +152,12 @@ def run_js(script: str) -> dict:
     stub = """
 const store={};
 const localStorage={getItem:k=>store[k]||null,setItem:(k,v)=>{store[k]=v}};
-const document={hidden:false};
+// Окно знакомства ищется по id: в заготовке его нет, и getElementById обязан
+// это уметь сказать, а не падать.
+let profileDialogOpen=false;
+const document={hidden:false,
+  getElementById:id=>id==='profileDialog'
+    ? {style:{display:profileDialogOpen?'flex':'none'}} : null};
 let feedbackOpened=null;
 function openFeedback(how){feedbackOpened=how}
 """
@@ -309,3 +314,25 @@ def test_the_site_steps_reach_the_journal(monkeypatch):
     # Личность обязана ехать вместе с шагом: без неё воронка обрывается на
     # первой ступени — «сколько из перешедших дошли до расчёта» ответа не имеет.
     assert "chat_id" in kinds["calc"], "расчёт пишется без личности"
+
+
+def test_the_survey_waits_for_the_acquaintance_to_close():
+    """Знакомство и оценка целятся в один момент — открытый результат. Два окна
+    друг на друге не читаются, и человек закрывает оба не глядя."""
+    body = core.PAGE[core.PAGE.index("function feedbackMaybeAsk(){"):]
+    body = body[:body.index("function feedbackProjects(")]
+    assert "profileDialog" in body
+    assert body.index("profileDialog") < body.index("feedbackCalcs<1"), (
+        "проверка окна знакомства идёт раньше счётчиков"
+    )
+
+
+def test_the_survey_holds_while_the_acquaintance_is_open():
+    """Проверяем поведением, а не текстом: при открытом знакомстве оценка молчит."""
+    quiet = run_js("profileDialogOpen=true;feedbackCalcs=3;feedbackReportSeconds=600;"
+                   "feedbackMaybeAsk();")
+    assert quiet["opened"] is None
+    later = run_js("profileDialogOpen=false;feedbackCalcs=3;feedbackReportSeconds=600;"
+                   "feedbackMaybeAsk();")
+    assert later["opened"] == "auto"
+
