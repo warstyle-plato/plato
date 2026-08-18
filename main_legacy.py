@@ -24140,6 +24140,24 @@ details.cadastral-box>summary::marker{color:#888}
 .ai-overlay{position:fixed;inset:0;background:rgba(0,0,0,.18);z-index:999;display:none}.ai-overlay.open{display:block}
 @media(max-width:700px){.ai-drawer{width:100vw}.ai-open-btn .ai-label{display:none}}
 @media(max-width:700px){.cadastral-entry{grid-template-columns:1fr}.import-summary{grid-template-columns:1fr 1fr}}
+
+/* Анкета. Двадцать три подпункта в двух колонках на телефоне превращаются в
+   лапшу: подпись ломается на три строки, баллы жмутся к правому краю. На узком
+   экране строка раскладывается вертикально — подпись сверху, баллы под ней во
+   всю ширину. Брокеры открывают ссылку из канала с телефона, и это основной
+   вид формы, а не запасной. */
+.fb-item{padding:5px 10px 5px 0;font-size:13px;vertical-align:middle}
+.fb-scores{white-space:nowrap;text-align:right;vertical-align:middle}
+.fb-score{min-width:32px;padding:3px 7px;margin-left:4px}
+.fb-skip{color:#888}
+@media (max-width:640px){
+  .fb-row{display:block;padding:8px 0;border-bottom:1px solid var(--line,#eee)}
+  .fb-item,.fb-scores{display:block;width:100%;padding:0;text-align:left;white-space:normal}
+  .fb-item{margin-bottom:6px}
+  .fb-scores{display:flex;gap:6px}
+  .fb-score{flex:1;margin-left:0;min-width:0;padding:8px 0}
+  .fb-skip{flex:0 0 auto;padding:8px 12px}
+}
 </style>
 </head>
 <body>
@@ -24974,12 +24992,12 @@ function renderFeedbackForm(){
  const groups=FEEDBACK_FORM.groups.map(g=>{
   const rows=g[2].map(item=>{
    const hint=item[2]?` <span style="color:#999">${escapeHtml(item[2])}</span>`:'';
-   return `<tr><td style="padding:5px 10px 5px 0;font-size:13px">${escapeHtml(item[1])}${hint}</td>`
-    +`<td style="white-space:nowrap;text-align:right">`
+   return `<tr class="fb-row"><td class="fb-item">${escapeHtml(item[1])}${hint}</td>`
+    +`<td class="fb-scores">`
     +[1,2,3,4,5].map(n=>`<button type="button" class="btn fb-score" data-group="${g[0]}"
-        data-item="${item[0]}" data-score="${n}" style="min-width:32px;padding:3px 7px">${n}</button>`).join('')
-    +`<button type="button" class="btn fb-score" data-group="${g[0]}" data-item="${item[0]}"
-        data-score="0" style="padding:3px 7px;color:#888">—</button></td></tr>`;
+        data-item="${item[0]}" data-score="${n}">${n}</button>`).join('')
+    +`<button type="button" class="btn fb-score fb-skip" data-group="${g[0]}"
+        data-item="${item[0]}" data-score="0">—</button></td></tr>`;
   }).join('');
   return `<div style="margin-bottom:18px">`
    +`<div style="font-weight:600;font-size:14px;margin-bottom:6px">${escapeHtml(g[1])}</div>`
