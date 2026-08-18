@@ -170,6 +170,18 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
 color:#5a3a1c;border-radius:0 6px 6px 0}
 .err{background:#fdecea;border-left:3px solid #B3261E;padding:10px 12px;border-radius:0 6px 6px 0;color:#7a1d16}
 h2{font-size:15px;margin:0 0 10px}
+h3{font-size:13px;margin:16px 0 8px;color:var(--dim);font-weight:600}
+.say{border-left:3px solid var(--blue);background:#f2f7fc;padding:10px 12px;border-radius:0 7px 7px 0;
+margin:12px 0;font-size:14px}
+.say.good{border-color:#1f7a4d;background:#f1f8f4}
+.say.watch{border-color:#C4581B;background:#fff8f0}
+.say.bad{border-color:#B3261E;background:#fdecea}
+.say b{margin-right:4px}
+.verdict h2{font-size:17px}
+.verdict.good{border-left:4px solid #1f7a4d}
+.verdict.watch{border-left:4px solid #C4581B}
+.verdict.bad{border-left:4px solid #B3261E}
+tr.ownrow td{background:#fff5ee;font-weight:600}
 .kv{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px}
 .kv div{background:#f8fafc;border-radius:9px;padding:9px 11px}
 .kv b{display:block;font-size:17px;font-variant-numeric:tabular-nums}
@@ -248,7 +260,71 @@ function priceChart(peers, subject, median){
   return '<div class="wrap">'+svg+'</svg></div>';
 }
 
-function blockCard(b){
+// Линии динамики: свой проект толстой рыжей, соседи тонкими синими, подписи
+// справа у последней точки. Медиана рынка по месяцам — пунктиром: без неё
+// видно, что цена росла, но не видно, росла ли она быстрее рынка.
+function trendChart(series){
+  const rows=series.filter(s=>s.points&&s.points.length>1);
+  if(rows.length<1) return '<div class="muted">Истории цен по этой выборке нет.</div>';
+  const months=[...new Set(rows.flatMap(s=>s.points.map(p=>p.month)))].sort();
+  if(months.length<2) return '<div class="muted">Истории цен по этой выборке нет.</div>';
+  const at=(s,m)=>{const p=s.points.find(p=>p.month===m);return p?p.value:null};
+  const med=months.map(m=>{
+    const v=rows.map(s=>at(s,m)).filter(x=>x!==null).sort((a,b)=>a-b);
+    return v.length?(v.length%2?v[(v.length-1)/2]:(v[v.length/2-1]+v[v.length/2])/2):null;
+  });
+  const all=rows.flatMap(s=>s.points.map(p=>p.value));
+  const lo=Math.min(...all)*0.97, hi=Math.max(...all)*1.03;
+  // Высота считается от числа линий: подписи справа стоят столбиком, и при
+  // пятнадцати соседях фиксированная высота обрезала нижние.
+  const W=620,L=64,R=176,T=14,B=30;
+  const H=Math.max(260, rows.length*13+T+B+14);
+  const x=i=>L+i*(W-L-R)/(months.length-1);
+  const y=v=>T+(H-T-B)*(1-(v-lo)/(hi-lo));
+  const path=s=>months.map((m,i)=>{const v=at(s,m);return v===null?null:`${i?'L':'M'}${x(i).toFixed(1)} ${y(v).toFixed(1)}`})
+    .filter(Boolean).join(' ');
+  let svg=`<svg viewBox="0 0 ${W} ${H}" width="100%" role="img">`;
+  [0,0.5,1].forEach(f=>{const v=lo+(hi-lo)*f;
+    svg+=`<line x1="${L}" y1="${y(v)}" x2="${W-R}" y2="${y(v)}" stroke="#e6ecf2"/>`
+       +`<text x="${L-6}" y="${y(v)+4}" text-anchor="end" font-size="10" fill="#8798a8">${num(v)}</text>`;});
+  months.forEach((m,i)=>{ if(i%Math.ceil(months.length/6)) return;
+    svg+=`<text x="${x(i)}" y="${H-10}" text-anchor="middle" font-size="10" fill="#8798a8">${m.slice(2)}</text>`;});
+  const mp=months.map((m,i)=>med[i]===null?null:`${i?'L':'M'}${x(i).toFixed(1)} ${y(med[i]).toFixed(1)}`).filter(Boolean).join(' ');
+  svg+=`<path d="${mp}" fill="none" stroke="#16202b" stroke-width="1.2" stroke-dasharray="5 4"/>`;
+  const ends=[];
+  rows.forEach(s=>{
+    svg+=`<path d="${path(s)}" fill="none" stroke="${s.own?'#C4581B':'#9dc2e6'}" stroke-width="${s.own?2.6:1.3}"/>`;
+    for(let i=months.length-1;i>=0;i--){const v=at(s,months[i]); if(v!==null){ends.push({y:y(v),v,n:s.name,own:s.own});break}}
+  });
+  ends.sort((a,b)=>a.y-b.y);
+  // Раскладка подписей в два прохода. Первый расталкивает их вниз от точки
+  // линии, второй — возвращает столбик в поле графика снизу вверх. Одного
+  // прохода мало: нижние подписи уезжали за край и проект пропадал из виду.
+  const my=y(med[med.length-1]);
+  const stack=[];
+  let prev=-99;
+  ends.forEach(e=>{const yy=Math.max(e.y,prev+11);prev=yy;stack.push(yy)});
+  stack.push(Math.max(my,prev+11));
+  let floor=H-6;
+  for(let i=stack.length-1;i>=0;i--){stack[i]=Math.min(stack[i],floor);floor=stack[i]-11}
+  ends.forEach((e,i)=>{
+    svg+=`<text x="${W-R+8}" y="${stack[i]+3}" font-size="10.5" fill="${e.own?'#C4581B':'#5b6b7d'}"`
+       +`${e.own?' font-weight="600"':''}>${esc(e.n.length>19?e.n.slice(0,18)+'…':e.n)} ${num(e.v)}</text>`;});
+  svg+=`<text x="${W-R+8}" y="${stack[stack.length-1]+3}" font-size="10.5" fill="#16202b">`
+     +`медиана ${num(med[med.length-1])}</text>`;
+  return '<div class="wrap">'+svg+'</svg></div>';
+}
+
+function compareTable(rows, cols){
+  return '<div class="wrap"><table><tr>'+cols.map(c=>`<th${c.num?' class="num"':''}>${c.t}</th>`).join('')+'</tr>'
+    +rows.map(r=>'<tr'+(r.__own?' class="ownrow"':'')+'>'
+      +cols.map(c=>`<td${c.num?' class="num"':''}>${c.f(r)}</td>`).join('')+'</tr>').join('')
+    +'</table></div>';
+}
+
+const TONE={good:'✅',watch:'⚠️',bad:'⛔',flat:'•'};
+
+function blockCard(b,ctx){
   const s=b.subject||{}, p=b.peers||{}, c=b.city||{};
   const cell=(v,l)=>`<div><b>${v}</b><span>${l}</span></div>`;
   let kv='';
@@ -281,7 +357,39 @@ function blockCard(b){
   }
   const notes=(b.notes||[]).map(n=>`<div class="note">${esc(n)}</div>`).join('');
   const empty=Object.keys(s).length?'':'<div class="muted">Данных по проекту нет — сравнивать нечего.</div>';
-  return `<div class="card"><h2>${esc(b.title)}</h2>${empty}<div class="kv">${kv}</div>${notes}</div>`;
+  const say=(ctx.analysis&&ctx.analysis.blocks&&ctx.analysis.blocks[b.code])||null;
+  const verdict=say&&say.text?`<div class="say ${say.tone}"><b>${TONE[say.tone]||'•'} Разбор</b> ${esc(say.text)}</div>`:'';
+  const chart=b.code==='price'?trendChart(ctx.series):'';
+  const table=sectionTable(b.code,ctx);
+  return `<div class="card"><h2>${esc(b.title)}</h2>${empty}<div class="kv">${kv}</div>`
+    +verdict+notes+(chart?`<h3>Динамика цены, ₽/м²</h3>${chart}`:'')+(table?`<h3>Сравнение</h3>${table}`:'')+`</div>`;
+}
+
+// Таблица под каждым разделом — та же выборка, но показанная колонками этого
+// раздела: в разделе о темпе не нужны метры лота, а в разделе о лоте не нужен
+// остаток. Своя строка выделена: без неё сравнение приходится держать в уме.
+function sectionTable(code,ctx){
+  const rows=[{...(ctx.subjectMetrics||{}), name:ctx.subjectName, segment:ctx.subjectSegment,
+               distance_km:0, __own:true}, ...(ctx.peers||[])];
+  const base=[{t:'Проект',f:r=>esc(r.name)+(r.__own?' <span class="self">— объект</span>':'')},
+              {t:'км',num:1,f:r=>r.__own?'—':num(r.distance_km,2)},
+              {t:'Класс',f:r=>esc(r.segment||'—')}];
+  const cols={
+    price:[...base,{t:'₽/м²',num:1,f:r=>num(r.price_per_sqm)},
+           {t:'мин',num:1,f:r=>num(r.price_per_sqm_min)},{t:'макс',num:1,f:r=>num(r.price_per_sqm_max)},
+           {t:'Прайс от',f:r=>esc(r.observed_at||'—')}],
+    pace:[...base,{t:'ДДУ/мес',num:1,f:r=>num(r.units_per_month,1)},
+          {t:'за 3 мес',num:1,f:r=>num(r.units_per_month_3m,1)},
+          {t:'Конец продаж',f:r=>esc(r.sales_end_forecast||'—')}],
+    stock:[...base,{t:'Лотов в продаже',num:1,f:r=>num(r.lot_count)},
+           {t:'Остаток',num:1,f:r=>num(r.remaining_units)},
+           {t:'Всего',num:1,f:r=>num(r.living_units)}],
+    lot_size:[...base,{t:'Продано, м²',num:1,f:r=>num(r.sold_lot_avg,1)},
+              {t:'Средний в проекте',num:1,f:r=>num(r.lot_area_avg,1)}],
+    absorption:[...base,{t:'м²/мес',num:1,f:r=>num(r.area_per_month)},
+                {t:'ДДУ/мес',num:1,f:r=>num(r.units_per_month,1)}],
+  }[code];
+  return cols?compareTable(rows,cols):'';
 }
 
 async function build(){
@@ -317,9 +425,18 @@ function render(d){
     </div></div>`;
 
   const priceBlock=(d.blocks||[]).find(b=>b.code==='price');
-  if(priceBlock) html+=`<div class="card"><h2>Цены соседей</h2>${priceChart(peers,{...m,name:s.project_name||'объект'},(priceBlock.peers||{}).median)}</div>`;
+  if(priceBlock) html+=`<div class="card"><h2>Цены соседей сегодня</h2>${priceChart(peers,{...m,name:s.project_name||'объект'},(priceBlock.peers||{}).median)}</div>`;
 
-  html+=(d.blocks||[]).map(blockCard).join('');
+  const ctx={
+    analysis:d.analysis, peers:peers, subjectMetrics:m,
+    subjectName:s.project_name||s.address||s.query, subjectSegment:s.segment,
+    series:[{name:s.project_name||'объект',own:true,points:d.price_series||[]}]
+      .concat(peers.map(p=>({name:p.name,own:false,points:p.price_series||[]})))
+  };
+  const ov=(d.analysis||{}).overall;
+  if(ov) html+=`<div class="card verdict ${ov.tone}"><h2>${TONE[ov.tone]||''} ${esc(ov.headline)}</h2>`
+    +`<div>${esc(ov.text)}</div></div>`;
+  html+=(d.blocks||[]).map(b=>blockCard(b,ctx)).join('');
 
   html+=`<div class="card"><h2>Соседи в выборке</h2><div class="wrap"><table>
     <tr><th>Проект</th><th>Застройщик</th><th class="num">км</th><th>Класс</th>

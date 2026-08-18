@@ -520,6 +520,58 @@ class PulseClient:
                     }
         return None
 
+    def price_history(self, complex_ids: list[int], months: int = 12) -> dict[int, list[dict[str, Any]]]:
+        """Помесячная цена метра по каждому проекту.
+
+        Один запрос на весь набор: источник умеет отдавать сразу несколько
+        проектов, и опрашивать их поштучно значило бы ждать по разу на соседа.
+
+        Ответ сжат тем же LZ, что и поиск. Пустой список — не ошибка: у нового
+        проекта истории может не быть вовсе, и это надо показать, а не скрыть.
+        """
+        ids = [int(value) for value in complex_ids if value]
+        if not ids:
+            return {}
+        payload = {
+            "ids": ids,
+            "opts": {
+                "result_value": "sqm_price",
+                "object_type": "living",
+                "rooms": None,
+                # Источник сам добавляет запас к окну, поэтому просим ровно то,
+                # что нужно показать, и режем лишнее уже у себя.
+                "only_last_months": int(months),
+                "area_min": None,
+                "area_max": None,
+            },
+        }
+        try:
+            raw = self._post_json("/api/compare/price-dynamic-chart/", payload)
+        except (urllib.error.URLError, OSError, ValueError) as exc:
+            self.errors.append(f"история цен {ids[:3]}…: {exc}")
+            return {}
+        if isinstance(raw, str):
+            decoded = lz_decompress_base64(raw)
+            try:
+                raw = json.loads(decoded) if decoded else None
+            except ValueError:
+                raw = None
+        if not isinstance(raw, list):
+            return {}
+        series: dict[int, list[dict[str, Any]]] = {}
+        for row in raw:
+            if not isinstance(row, dict) or row.get("id") is None:
+                continue
+            points = []
+            for point in row.get("values") or []:
+                month = str(point.get("month") or "")[:7]
+                value = point.get("value")
+                if month and value:
+                    points.append({"month": month, "value": int(value)})
+            points.sort(key=lambda item: item["month"])
+            series[int(row["id"])] = points[-months:]
+        return series
+
     def suggest(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
         """Подсказки по названию и адресу — из своего справочника, не по сети.
 

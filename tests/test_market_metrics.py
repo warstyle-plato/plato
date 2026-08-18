@@ -279,6 +279,7 @@ def _fake_pulse(segments, metrics, projects):
         metrics=lambda cid: metrics.get(cid, {}),
         project_totals=lambda cid: {},
         find_project=lambda query: None,
+        price_history=lambda ids, months=12: {},
         remaining=lambda cid: {},
     )
 

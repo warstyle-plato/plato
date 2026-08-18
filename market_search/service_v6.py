@@ -26,6 +26,7 @@ from .geocoder import GeoPoint
 from .http import RemoteServiceError
 from .market_reference import MoscowMarket
 from .metrics import build_blocks
+from .verdict import build_notes
 from .page_price import PageFetcher
 from .price_hint import price_hint
 from .pulse import PulseClient
@@ -617,8 +618,19 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                 }
             )
 
+        # История цены — одним запросом на весь набор: источник умеет отдавать
+        # сразу несколько проектов, а поштучный опрос стоил бы ожидания на
+        # каждого соседа.
+        history = self.pulse.price_history(
+            [subject.project_id] + [row["complex_id"] for row in peers if row.get("complex_id")]
+        )
+        for row in peers:
+            row["price_series"] = history.get(row.get("complex_id")) or []
+
         subject_metrics = own or {"name": subject.project_name or query, "segment": segment}
+        subject_series = history.get(subject.project_id) or []
         blocks = build_blocks(subject_metrics, peers, self.city, codes)
+        notes = build_notes(blocks, subject_series)
         return {
             "subject": {
                 **subject.to_dict(),
@@ -627,6 +639,8 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                 "metrics": subject_metrics,
             },
             "blocks": blocks,
+            "analysis": notes,
+            "price_series": subject_series,
             "peers": peers,
             "comparison": {
                 "radius_km": radius_km,
