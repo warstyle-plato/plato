@@ -253,3 +253,72 @@ def test_mixed_class_sample_shows_its_own_class_separately() -> None:
     # Выборка одного класса лишней строки не заводит: сравнивать не с чем.
     plain = [row for row in mixed if row["segment"] == "Бизнес"]
     assert "same_class" not in price_block(SUBJECT, plain, MoscowMarket.bundled()).peers
+
+
+def _fake_pulse(segments, metrics, projects):
+    """Источник без сети: те же вызовы, что у PulseClient, но на словаре."""
+    import math
+    from types import SimpleNamespace
+
+    def near(lat, lon, radius_km):
+        out = []
+        for row in projects:
+            dy = (row["latitude"] - lat) * 111.0
+            dx = (row["longitude"] - lon) * 111.0 * math.cos(math.radians(lat))
+            distance = math.hypot(dx, dy)
+            if distance <= radius_km:
+                out.append((round(distance, 3), SimpleNamespace(**row)))
+        return sorted(out, key=lambda item: item[0])
+
+    return SimpleNamespace(
+        available=True,
+        segments=lambda: segments,
+        near=near,
+        metrics=lambda cid: metrics.get(cid, {}),
+        project_totals=lambda cid: {},
+        find_project=lambda query: None,
+        remaining=lambda cid: {},
+    )
+
+
+def test_constructor_names_where_the_class_came_from(tmp_path) -> None:
+    """Класс ставит «Пульс» (решение владельца 18.08.2026), но у пустыря его нет.
+
+    Метка источника и догадка по окружению в ответе выглядят одинаково, и
+    отличить их можно только полем: без него отчёт по голому участку не
+    отличается от отчёта по проекту.
+    """
+    from market_search.service_v6 import MarketDiscoveryService
+
+    service = MarketDiscoveryService(tmp_path)
+    segments = {5924: "Бизнес", 5549: "Премиум", 5737: "Премиум"}
+    metrics = {
+        5924: {"price_per_sqm": 708_109, "observed_at": "2026-08-18", "units_per_month": 4.6},
+        5549: {"price_per_sqm": 780_032, "observed_at": "2026-08-18", "units_per_month": 20.1},
+        5737: {"price_per_sqm": 1_254_077, "observed_at": "2026-08-18", "units_per_month": 3.5},
+    }
+    projects = [
+        {"complex_id": 5924, "name": "Кутузов Сити", "developer": "—",
+         "latitude": 55.71584, "longitude": 37.43303},
+        {"complex_id": 5549, "name": "Родина Парк", "developer": "—",
+         "latitude": 55.72100, "longitude": 37.43900},
+        {"complex_id": 5737, "name": "Спрингс", "developer": "—",
+         "latitude": 55.73200, "longitude": 37.45500},
+    ]
+    service.pulse = _fake_pulse(segments, metrics, projects)
+
+    # Точка совпала с проектом — класс у источника, и он же в отчёте.
+    report = service.build_report("55.71584, 37.43303", codes=[BLOCK_PRICE])
+    assert report["subject"]["segment"] == "Бизнес"
+    assert report["subject"]["segment_source"] == "pulse"
+
+    # Премиальный сосед входит в выборку соседним классом, оставаясь премиумом:
+    # несогласие с меткой выражается правилом уровня, а не подменой класса.
+    assert {peer["name"] for peer in report["peers"]} == {"Родина Парк", "Спрингс"}
+    assert {peer["segment"] for peer in report["peers"]} == {"Премиум"}
+
+    # Голый участок в стороне от проектов — класса в источнике нет, и это
+    # сказано вслух, а не выдано за метку «Пульса».
+    blank = service.build_report("55.72600, 37.44700", codes=[BLOCK_PRICE])
+    assert blank["subject"]["segment_source"] == "neighbours"
+    assert blank["comparison"]["segment_source"] == "neighbours"

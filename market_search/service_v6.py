@@ -570,7 +570,13 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                 **self.pulse.remaining(subject.project_id),
             }
 
+        # Класс ставит «Пульс» — решение владельца от 18.08.2026, ручной подмены
+        # в конструкторе нет. Но у голого участка проекта в источнике нет, и
+        # тогда класс приходится брать у окружения. Догадка и метка источника в
+        # ответе выглядят одинаково, поэтому происхождение называется отдельным
+        # полем: без него отчёт по пустырю неотличим от отчёта по проекту.
         segment = (own or {}).get("segment") or subject.segment
+        segment_source = "pulse" if segment else None
         if not segment:
             votes: dict[str, int] = {}
             for _, project in near[:20]:
@@ -578,6 +584,8 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                 if found:
                     votes[found] = votes.get(found, 0) + 1
             segment = max(votes, key=lambda key: votes[key]) if votes else None
+            if segment:
+                segment_source = "neighbours"
 
         comparable = [
             (distance, project)
@@ -612,12 +620,18 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         subject_metrics = own or {"name": subject.project_name or query, "segment": segment}
         blocks = build_blocks(subject_metrics, peers, self.city, codes)
         return {
-            "subject": {**subject.to_dict(), "segment": segment, "metrics": subject_metrics},
+            "subject": {
+                **subject.to_dict(),
+                "segment": segment,
+                "segment_source": segment_source,
+                "metrics": subject_metrics,
+            },
             "blocks": blocks,
             "peers": peers,
             "comparison": {
                 "radius_km": radius_km,
                 "segment": segment,
+                "segment_source": segment_source,
                 "found": len(near),
                 "comparable": len(comparable),
                 "used": len(peers),
