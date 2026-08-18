@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.18.51"
+VERSION = "0.18.52"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -23659,6 +23659,34 @@ def feedback_submit(req: FeedbackRequest) -> dict[str, Any]:
     return {"ok": True}
 
 
+@app.get("/auth/telegram/qr", include_in_schema=False)
+def web_login_qr(code: str = "") -> Response:
+    """QR со ссылкой входа: подтвердить с телефона, когда на компьютере нет
+    Telegram.
+
+    На десктопе без приложения ссылка `t.me/…` открывает страницу «поставьте
+    Telegram», и вход упирается в тупик (замечание владельца, 18.08.2026).
+    Код тот же самый и живёт те же минуты — QR не даёт новых прав, он лишь
+    переносит ссылку на другой экран.
+    """
+    if not re.fullmatch(r"[0-9a-f]{6,64}", str(code or "")):
+        raise HTTPException(status_code=400, detail="Код входа не похож на код.")
+    username = _web_login_bot_username()
+    if not username:
+        raise HTTPException(status_code=503, detail="Имя бота неизвестно: задайте TELEGRAM_BOT_USERNAME.")
+    try:
+        import segno
+    except Exception:
+        # Образ собран без библиотеки — это не повод ронять вход: страница
+        # покажет ссылку, а QR спрячет.
+        raise HTTPException(status_code=503, detail="QR на этом сервере не собран.")
+    buffer = io.BytesIO()
+    segno.make(f"https://t.me/{username}?start=login_{code}", error="m").save(
+        buffer, kind="svg", scale=4, border=2, dark="#111111")
+    return Response(buffer.getvalue(), media_type="image/svg+xml",
+                    headers={"Cache-Control": "no-store"})
+
+
 @app.post("/auth/telegram/start")
 def web_login_start() -> dict[str, Any]:
     """Одноразовый код входа и ссылка на бота."""
@@ -24453,6 +24481,9 @@ details.cadastral-box>summary::marker{color:#888}
 .calc-locked h3{margin:0 0 8px;font-size:15px}
 .calc-locked p{margin:0 0 10px;font-size:13px;color:#555;max-width:640px}
 .calc-locked .calc-locked-why{font-size:11px;color:#888}
+.login-qr{display:flex;gap:12px;align-items:center;margin-top:12px}
+.login-qr img{width:132px;height:132px;border:1px solid #e5e5e3;background:#fff}
+.login-qr span{font-size:11px;color:#777;max-width:260px}
 .prof-l{display:block;font-size:12px;color:#555;margin-top:10px}
 .prof-i{display:block;width:100%;margin-top:4px;padding:8px 10px;border:1px solid #cfcfcf;font-size:13px}
 .prof-i:focus{outline:2px solid #111;outline-offset:-1px}
@@ -25720,7 +25751,15 @@ async function loginViaTelegram(statusEl){
   if(statusEl){
    statusEl.innerHTML=(opened?'Подтвердите вход в Telegram и вернитесь на эту вкладку. '
                              :'Браузер не дал открыть окно бота — откройте по ссылке. ')+
-    '<a href="'+encodeURI(d.link)+'" target="_blank" rel="noopener">Открыть бота</a>';
+    '<a href="'+encodeURI(d.link)+'" target="_blank" rel="noopener">Открыть бота</a>'+
+    // На компьютере без Telegram ссылка открывает страницу «поставьте
+    // приложение» — тупик. QR переносит тот же код на телефон; если сервер
+    // его не отдал, картинка убирается, а ссылка остаётся.
+    '<div class="login-qr"><img alt="QR со ссылкой входа" '+
+    'src="/auth/telegram/qr?code='+encodeURIComponent(d.code)+'" '+
+    'onerror="this.parentNode.style.display=\'none\'">'+
+    '<span>Нет Telegram на этом компьютере? Наведите камеру телефона — '+
+    'код тот же и действует те же минуты.</span></div>';
   }
   const until=Date.now()+2*60*1000;
   while(Date.now()<until){
