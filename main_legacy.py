@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.18.46"
+VERSION = "0.18.47"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -8008,14 +8008,18 @@ def _telegram_start_message(chat_id: int, user_id: int, source: str = "") -> Non
     # ему нужно увидеть расчёт, а не меню.
     invited = [[{"text": "Открыть DevelopAid — полный расчёт",
                  "web_app": {"url": _telegram_web_app_url(chat_id, [])}}]] if source else []
+    # Приветствие говорит теми же словами, что список команд слева внизу:
+    # те же решения и в том же порядке (решение владельца, 18.08.2026). Прежде
+    # здесь стояли восемь конкретных входов, а в списке команд — шесть решений,
+    # и один продукт объяснялся двумя разными словарями. Способ («по кадастру,
+    # по адресу, без кадастра, шаблон») спрашивается вторым уровнем — тем же
+    # `_telegram_calc_menu`, что и у команды /calc.
     button = {"inline_keyboard": invited + [
-        [{"text": "Расчёт по кадастровым номерам", "callback_data": "flow_cad_yes"}],
-        [{"text": "Поиск участка по адресу", "callback_data": "flow_address"}],
-        [{"text": "Собрать ТЭП без кадастра", "callback_data": "flow_cad_no"}],
-        [{"text": "Посчитать ВРИ и ТЭП", "callback_data": "vritep_start"}],
-        [{"text": "Спросить Платона Сергеевича", "callback_data": "ask_platon"}],
-        [{"text": "Скачать Excel-шаблон ТЭП", "callback_data": "tep_template"}],
-        [{"text": "Открыть мини-приложение DevelopAid", "web_app": {"url": _telegram_web_app_url(chat_id, [])}}],
+        [{"text": "Расчёт модели", "callback_data": "calc_menu"}],
+        [{"text": "Открыть готовую модель", "web_app": {"url": _telegram_web_app_url(chat_id, [])}}],
+        [{"text": "Расчёт ВРИ и ТЭП", "callback_data": "vritep_start"}],
+        # Сюда расширение вставляет «Льгота МПТ» — перед помощью, как в списке команд.
+        [{"text": "Платон Сергеевич", "callback_data": "ask_platon"}],
         [{"text": "Что умеет DevelopAid", "callback_data": "show_help"}],
     ]}
     _telegram_send_message(
@@ -8785,6 +8789,11 @@ def _telegram_handle_update(update: dict[str, Any]) -> None:
             return
         if data == "tep_template":
             _telegram_send_template(chat_id)
+            return
+        if data == "calc_menu":
+            # Второй уровень «Расчёта модели» — тот же, что у команды /calc:
+            # выбор способа живёт в одном месте, а не в двух похожих меню.
+            _telegram_calc_menu(chat_id)
             return
         if data == "show_help":
             _telegram_send_message(

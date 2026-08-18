@@ -544,20 +544,22 @@ def _vritep_handle_text(chat_id: int, text: str) -> bool:
 
 
 def _help_markup(chat_id: int) -> dict[str, Any]:
+    # Те же решения и в том же порядке, что в приветствии и в списке команд:
+    # три меню на один продукт говорили тремя словарями (решение владельца,
+    # 18.08.2026). «Прокомментировать ТЭП» — второй уровень Платона, а не
+    # отдельное решение, и живёт в его меню.
     rows: list[list[dict[str, Any]]] = [
-        [{"text": "Расчёт по кадастровым номерам", "callback_data": "flow_cad_yes"}],
-        [{"text": "Собрать ТЭП без кадастра", "callback_data": "flow_cad_no"}],
-        [{"text": "Посчитать ВРИ и ТЭП", "callback_data": "vritep_start"}],
-        [{"text": "Прокомментировать ТЭП", "callback_data": "platon_tep"}],
-        [{"text": "Спросить Платона", "callback_data": "ask_platon"}],
+        [{"text": "Расчёт модели", "callback_data": "calc_menu"}],
     ]
     try:
         rows.append([{
-            "text": "Открыть мини-приложение DevelopAid",
+            "text": "Открыть готовую модель",
             "web_app": {"url": core._telegram_web_app_url(chat_id, [])},
         }])
     except Exception:
         pass
+    rows.append([{"text": "Расчёт ВРИ и ТЭП", "callback_data": "vritep_start"}])
+    rows.append([{"text": "Платон Сергеевич", "callback_data": "ask_platon"}])
     return {"inline_keyboard": rows}
 
 
