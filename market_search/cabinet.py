@@ -1,0 +1,342 @@
+"""Внутренний кабинет: конструктор отчёта о рынке.
+
+Раздел закрыт ключом, потому что показывает чужие лицензионные числа. Ключ
+общий для сотрудников — как админский доступ, отдельной учётки на человека нет:
+её пришлось бы где-то хранить и однажды потерять.
+
+Три правила, из которых собран вход:
+
+* **Пустой ключ выключает кабинет, а не открывает его.** Так же устроен список
+  получателей статистики: не задан — значит никому. Раздел, открывшийся всем
+  из-за незаполненной переменной, — худший исход из возможных.
+* **Сравнение постоянного времени.** `hmac.compare_digest`, как у секрета
+  Платона и у вебхука: обычное `==` сравнивает посимвольно и выдаёт длину
+  совпавшего префикса временем ответа.
+* **Ключ не возвращается наружу ничем** — ни в ошибке, ни в теле страницы. В
+  куке лежит он же, `HttpOnly`, чтобы его не достал чужой скрипт со страницы.
+"""
+
+from __future__ import annotations
+
+import hmac
+import os
+from typing import Any
+
+from fastapi import HTTPException, Request, Response
+
+
+COOKIE_NAME = "market_cabinet"
+HEADER_NAME = "X-Market-Key"
+ENV_NAME = "MARKET_CABINET_KEY"
+
+
+def cabinet_key() -> str:
+    return str(os.getenv(ENV_NAME) or "").strip()
+
+
+def key_problem() -> str:
+    """Почему настроенный ключ непригоден. Пусто — пригоден.
+
+    Кириллица в ключе — не мелочь: заголовок HTTP её не несёт, и вход по
+    `X-Market-Key` падал бы на кодировке, а по куке работал. Отказ вышел бы
+    загадочным. Ту же проверку движок делает для `PLATO_AI_PROXY_SECRET`.
+    """
+    key = cabinet_key()
+    if not key:
+        return ""
+    try:
+        key.encode("ascii")
+    except UnicodeEncodeError:
+        return (
+            f"{ENV_NAME} содержит не-ASCII символы: заголовок HTTP их не передаёт. "
+            "Ключ должен состоять из латиницы, цифр и знаков препинания."
+        )
+    return ""
+
+
+def key_accepted(supplied: str) -> bool:
+    """Ключ верен? Пустой настроенный ключ не принимает ничего."""
+    expected = cabinet_key()
+    if not expected or not supplied:
+        return False
+    return hmac.compare_digest(str(supplied), expected)
+
+
+def authorised(request: Request) -> bool:
+    for supplied in (request.headers.get(HEADER_NAME), request.cookies.get(COOKIE_NAME)):
+        if supplied and key_accepted(supplied):
+            return True
+    return False
+
+
+def require_cabinet(request: Request) -> None:
+    """Пропустить или отказать. Причина отказа называется: она разная."""
+    problem = key_problem()
+    if problem:
+        raise HTTPException(status_code=503, detail=problem)
+    if not cabinet_key():
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"Кабинет выключен: не задан {ENV_NAME}. Это не сбой — раздел "
+                "показывает лицензионные данные и без ключа не открывается."
+            ),
+        )
+    if not authorised(request):
+        raise HTTPException(status_code=401, detail="Нужен ключ доступа к кабинету")
+
+
+def set_cookie(response: Response, key: str) -> None:
+    response.set_cookie(
+        COOKIE_NAME,
+        key,
+        httponly=True,
+        samesite="lax",
+        max_age=30 * 24 * 3600,
+        path="/",
+    )
+
+
+SECTIONS: list[tuple[str, str, str]] = [
+    ("price", "Цена метра", "прайс проекта против соседей и против Москвы своего класса"),
+    ("pace", "Темп продаж", "ДДУ в месяц, во сколько раз быстрее или медленнее соседей"),
+    ("stock", "Остаток и экспозиция", "сколько осталось, сколько выставлено, на сколько месяцев"),
+    ("lot_size", "Размер лота", "средний проданный лот против среднего лота в проекте"),
+    ("absorption", "Поглощение в метрах", "метры в месяц — темп, свободный от квартирографии"),
+]
+
+
+def _sections_markup() -> str:
+    rows = []
+    for code, title, hint in SECTIONS:
+        rows.append(
+            f'<label class="sec"><input type="checkbox" name="code" value="{code}" checked>'
+            f'<span><b>{title}</b><i>{hint}</i></span></label>'
+        )
+    return "".join(rows)
+
+
+LOGIN_PAGE = """<!doctype html><meta charset="utf-8">
+<title>Кабинет аналитики</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+body{margin:0;font:15px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;background:#f4f6f9;color:#16202b;
+display:flex;min-height:100vh;align-items:center;justify-content:center}
+form{background:#fff;padding:28px;border-radius:14px;box-shadow:0 2px 18px rgba(20,35,60,.10);width:320px}
+h1{font-size:18px;margin:0 0 6px}p{margin:0 0 18px;color:#5b6b7d;font-size:13px}
+input{width:100%;padding:10px 12px;border:1px solid #ccd6e0;border-radius:8px;font-size:15px;box-sizing:border-box}
+button{margin-top:12px;width:100%;padding:10px;border:0;border-radius:8px;background:#1367AE;color:#fff;
+font-size:15px;cursor:pointer}
+.err{color:#B3261E;font-size:13px;margin-top:10px}
+</style>
+<form method="post" action="/cabinet/login">
+<h1>Кабинет аналитики</h1>
+<p>Раздел внутренний: данные лицензионные и наружу не идут.</p>
+<input type="password" name="key" placeholder="Ключ доступа" autofocus autocomplete="current-password">
+<button type="submit">Войти</button>
+__ERROR__
+</form>"""
+
+
+CABINET_PAGE = """<!doctype html><meta charset="utf-8">
+<title>Конструктор отчёта о рынке</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+:root{--ink:#16202b;--dim:#5b6b7d;--line:#dde5ed;--blue:#1367AE;--rust:#C4581B;--bg:#f4f6f9}
+*{box-sizing:border-box}
+body{margin:0;font:15px/1.55 -apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--ink)}
+header{background:#fff;border-bottom:1px solid var(--line);padding:14px 22px}
+h1{font-size:17px;margin:0}
+.sub{color:var(--dim);font-size:13px;margin-top:2px}
+main{max-width:1080px;margin:0 auto;padding:22px}
+.card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:18px;margin-bottom:18px}
+label.f{display:block;font-size:13px;color:var(--dim);margin-bottom:4px}
+input[type=text],select{padding:9px 11px;border:1px solid #ccd6e0;border-radius:8px;font-size:15px;width:100%}
+.row{display:flex;gap:14px;flex-wrap:wrap}
+.row>div{flex:1 1 220px}
+.secs{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:8px;margin-top:14px}
+label.sec{display:flex;gap:8px;align-items:flex-start;background:#f8fafc;border:1px solid var(--line);
+border-radius:9px;padding:9px 11px;cursor:pointer}
+label.sec i{display:block;font-style:normal;color:var(--dim);font-size:12px;margin-top:2px}
+button.go{margin-top:16px;padding:10px 20px;border:0;border-radius:8px;background:var(--blue);color:#fff;
+font-size:15px;cursor:pointer}
+button.go[disabled]{opacity:.55;cursor:default}
+table{width:100%;border-collapse:collapse;font-size:14px}
+th,td{text-align:left;padding:7px 9px;border-bottom:1px solid var(--line);white-space:nowrap}
+th{color:var(--dim);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.03em}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+.wrap{overflow-x:auto}
+.note{background:#fff8f0;border-left:3px solid var(--rust);padding:8px 12px;font-size:13px;margin:8px 0;
+color:#5a3a1c;border-radius:0 6px 6px 0}
+.err{background:#fdecea;border-left:3px solid #B3261E;padding:10px 12px;border-radius:0 6px 6px 0;color:#7a1d16}
+h2{font-size:15px;margin:0 0 10px}
+.kv{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px}
+.kv div{background:#f8fafc;border-radius:9px;padding:9px 11px}
+.kv b{display:block;font-size:17px;font-variant-numeric:tabular-nums}
+.kv span{color:var(--dim);font-size:12px}
+.self{color:var(--rust);font-weight:600}
+.muted{color:var(--dim)}
+</style>
+<header>
+  <h1>Конструктор отчёта о рынке</h1>
+  <div class="sub">Внутренний раздел. Числа лицензионные — наружу не публикуются.</div>
+</header>
+<main>
+  <div class="card">
+    <div class="row">
+      <div style="flex:2 1 380px">
+        <label class="f">Объект: кадастровый номер, адрес, координаты или название проекта</label>
+        <input type="text" id="q" placeholder="77:07:0013005:1042 · Гродненская 18 · Кутузов Сити">
+      </div>
+      <div>
+        <label class="f">Радиус</label>
+        <select id="radius">
+          <option value="1">1 км</option><option value="2">2 км</option>
+          <option value="3" selected>3 км</option><option value="5">5 км</option>
+        </select>
+      </div>
+      <div>
+        <label class="f">Соседей не больше</label>
+        <select id="limit">
+          <option>12</option><option selected>20</option><option>30</option>
+        </select>
+      </div>
+    </div>
+    <div class="secs">__SECTIONS__</div>
+    <button class="go" id="go">Собрать отчёт</button>
+    <span id="state" class="muted" style="margin-left:12px"></span>
+  </div>
+  <div id="out"></div>
+</main>
+<script>
+const $=s=>document.querySelector(s);
+const num=(v,d=0)=>v===null||v===undefined?'—':Number(v).toLocaleString('ru-RU',{minimumFractionDigits:d,maximumFractionDigits:d});
+const pct=v=>v===null||v===undefined?'—':(v>0?'+':'')+num(v,1)+' %';
+const esc=s=>String(s===null||s===undefined?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+// Столбики цен: сам проект выделен цветом, медиана — линией. Рисуется своим
+// SVG, потому что страница отдаётся из движка и внешних библиотек тянуть
+// неоткуда, а график из чисел, которые уже пришли, честнее пересчитанного.
+function priceChart(peers, subject, median){
+  const rows=peers.filter(p=>p.price_per_sqm).map(p=>({n:p.name,v:p.price_per_sqm,self:false}));
+  if(subject && subject.price_per_sqm) rows.push({n:subject.name||'объект',v:subject.price_per_sqm,self:true});
+  if(rows.length<2) return '';
+  rows.sort((a,b)=>a.v-b.v);
+  const max=Math.max(...rows.map(r=>r.v)), H=26, W=560, pad=210;
+  const h=rows.length*H+26;
+  let svg=`<svg viewBox="0 0 ${W+pad} ${h}" width="100%" role="img">`;
+  rows.forEach((r,i)=>{
+    const w=Math.max(2,Math.round(r.v/max*W)), y=i*H+4;
+    svg+=`<text x="${pad-8}" y="${y+13}" text-anchor="end" font-size="12" fill="${r.self?'#C4581B':'#16202b'}"`
+       +`${r.self?' font-weight="600"':''}>${esc(r.n.length>28?r.n.slice(0,27)+'…':r.n)}</text>`
+       +`<rect x="${pad}" y="${y+2}" width="${w}" height="15" rx="3" fill="${r.self?'#C4581B':'#4E9BDE'}"/>`
+       +`<text x="${pad+w+6}" y="${y+14}" font-size="11" fill="#5b6b7d">${num(r.v)}</text>`;
+  });
+  if(median){
+    const x=pad+Math.round(median/max*W);
+    svg+=`<line x1="${x}" y1="0" x2="${x}" y2="${rows.length*H+2}" stroke="#16202b" stroke-dasharray="4 3" stroke-width="1"/>`
+       +`<text x="${x+4}" y="${rows.length*H+18}" font-size="11" fill="#16202b">медиана ${num(median)}</text>`;
+  }
+  return '<div class="wrap">'+svg+'</svg></div>';
+}
+
+function blockCard(b){
+  const s=b.subject||{}, p=b.peers||{}, c=b.city||{};
+  const cell=(v,l)=>`<div><b>${v}</b><span>${l}</span></div>`;
+  let kv='';
+  if(b.code==='price'){
+    kv=cell(num(s.price_per_sqm)+' ₽/м²','прайс проекта')
+      +cell(num(p.median)+' ₽/м²','медиана соседей ('+(p.count||0)+')')
+      +cell(pct(p.vs_median_pct),'к соседям')
+      +(p.same_class?cell(num(p.same_class.median)+' ₽/м²','медиана своего класса ('+p.same_class.count+')'):'')
+      +(c.median?cell(num(c.median)+' ₽/м²','медиана класса в Москве'):'')
+      +(c.band?cell({above_p75:'выше верхнего квартиля',interquartile:'внутри квартилей',below_p25:'ниже нижнего квартиля'}[c.band]||c.band,'место в городе'):'');
+  } else if(b.code==='pace'){
+    kv=cell(num(s.units_per_month,1),'ДДУ в месяц')
+      +cell(num(p.median,1),'медиана соседей')
+      +cell(s.units_per_month&&p.peer_median_over_subject?p.peer_median_over_subject+'×':'—','соседи быстрее во столько раз')
+      +(s.sales_end_forecast?cell(s.sales_end_forecast,'прогноз окончания продаж'):'');
+  } else if(b.code==='stock'){
+    kv=cell(num(s.remaining_units),'остаток, лотов')
+      +cell(num(s.exposure_lots),'в экспозиции')
+      +cell(s.months_to_sell?num(s.months_to_sell,1):'—','месяцев по текущему темпу')
+      +(s.exposure_share_pct?cell(num(s.exposure_share_pct,1)+' %','экспозиция от объёма'):'');
+  } else if(b.code==='lot_size'){
+    kv=cell(num(s.sold_lot_avg,1)+' м²','средний проданный лот')
+      +cell(num(s.project_lot_avg,1)+' м²','средний лот проекта')
+      +cell(pct(s.gap_pct),'разрыв')
+      +(p.median?cell(num(p.median,1)+' м²','медиана соседей'):'');
+  } else {
+    kv=cell(num(s.area_per_month),'м² в месяц')
+      +cell(num(p.median),'медиана соседей')
+      +cell(pct(p.vs_median_pct),'к соседям');
+  }
+  const notes=(b.notes||[]).map(n=>`<div class="note">${esc(n)}</div>`).join('');
+  const empty=Object.keys(s).length?'':'<div class="muted">Данных по проекту нет — сравнивать нечего.</div>';
+  return `<div class="card"><h2>${esc(b.title)}</h2>${empty}<div class="kv">${kv}</div>${notes}</div>`;
+}
+
+async function build(){
+  const codes=[...document.querySelectorAll('input[name=code]:checked')].map(i=>i.value);
+  const query=$('#q').value.trim();
+  if(!query){$('#state').textContent='Укажите объект.';return}
+  if(!codes.length){$('#state').textContent='Выберите хотя бы один раздел.';return}
+  $('#go').disabled=true; $('#state').textContent='Считаю… на холодной точке это до минуты.';
+  $('#out').innerHTML='';
+  try{
+    const r=await fetch('/market/report',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({query,codes,radius_km:Number($('#radius').value),peers_limit:Number($('#limit').value)})});
+    const d=await r.json();
+    if(!r.ok){$('#out').innerHTML=`<div class="card err">${esc(d.detail||'Не получилось')}</div>`;return}
+    render(d);
+  }catch(e){
+    $('#out').innerHTML=`<div class="card err">${esc(e.message||e)}</div>`;
+  }finally{$('#go').disabled=false;$('#state').textContent='';}
+}
+
+function render(d){
+  const s=d.subject||{}, c=d.comparison||{}, peers=d.peers||[];
+  const m=s.metrics||{};
+  const src={cadastre:'по кадастровому номеру',coordinates:'по координатам',project:'по названию проекта',address:'по адресу'}[s.source]||s.source;
+  const cls=s.segment?esc(s.segment)+(s.segment_source==='neighbours'?' <span class="muted">(класс не у источника — сложен по соседям)</span>':''):'<span class="muted">не определён</span>';
+  let html=`<div class="card"><h2>${esc(s.project_name||s.address||s.query)}</h2>
+    <div class="muted" style="font-size:13px">Опознан ${esc(src)} · класс: ${cls} · данные на ${esc(d.retrieved_at)}</div>
+    <div class="kv" style="margin-top:12px">
+      <div><b>${num(c.found)}</b><span>проектов в ${c.radius_km} км</span></div>
+      <div><b>${num(c.comparable)}</b><span>сопоставимы по классу</span></div>
+      <div><b>${num(c.used)}</b><span>взято в выборку</span></div>
+      <div><b>${num(c.stale_price)}</b><span>отброшены: прайс старше ${esc(c.fresh_since)}</span></div>
+    </div></div>`;
+
+  const priceBlock=(d.blocks||[]).find(b=>b.code==='price');
+  if(priceBlock) html+=`<div class="card"><h2>Цены соседей</h2>${priceChart(peers,{...m,name:s.project_name||'объект'},(priceBlock.peers||{}).median)}</div>`;
+
+  html+=(d.blocks||[]).map(blockCard).join('');
+
+  html+=`<div class="card"><h2>Соседи в выборке</h2><div class="wrap"><table>
+    <tr><th>Проект</th><th>Застройщик</th><th class="num">км</th><th>Класс</th>
+    <th class="num">₽/м²</th><th class="num">ДДУ/мес</th><th class="num">м²/мес</th><th class="num">Лотов</th><th>Прайс от</th></tr>`
+    +peers.map(p=>`<tr><td>${esc(p.name)}</td><td class="muted">${esc(p.developer||'—')}</td>
+      <td class="num">${num(p.distance_km,2)}</td><td>${esc(p.segment||'—')}</td>
+      <td class="num">${num(p.price_per_sqm)}</td><td class="num">${num(p.units_per_month,1)}</td>
+      <td class="num">${num(p.area_per_month)}</td><td class="num">${num(p.lot_count)}</td>
+      <td class="muted">${esc(p.observed_at||'—')}</td></tr>`).join('')
+    +`</table></div></div>`;
+  $('#out').innerHTML=html;
+}
+$('#go').addEventListener('click',build);
+$('#q').addEventListener('keydown',e=>{if(e.key==='Enter')build()});
+</script>"""
+
+
+def cabinet_page() -> str:
+    return CABINET_PAGE.replace("__SECTIONS__", _sections_markup())
+
+
+def login_page(error: str = "") -> str:
+    markup = f'<div class="err">{error}</div>' if error else ""
+    return LOGIN_PAGE.replace("__ERROR__", markup)
+
+
+def diagnostics() -> dict[str, Any]:
+    return {"cabinet_key_set": bool(cabinet_key())}

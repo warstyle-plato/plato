@@ -4,9 +4,13 @@ import os
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from urllib.parse import parse_qs
+
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel, Field, model_validator
 
+from . import cabinet as cabinet_module
 from .geocoder import GeocodingError
 from .http import RemoteServiceError
 from .service_v6 import MarketDiscoveryService
@@ -95,15 +99,52 @@ def install(app: FastAPI) -> MarketDiscoveryService:
         except RemoteServiceError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
+    @app.get("/cabinet", response_class=HTMLResponse)
+    async def cabinet_home(request: Request) -> HTMLResponse:
+        """Кабинет. Без ключа — форма входа, а не отказ: сюда приходит человек."""
+        problem = cabinet_module.key_problem()
+        if problem:
+            return HTMLResponse(cabinet_module.login_page(problem), status_code=503)
+        if not cabinet_module.cabinet_key():
+            return HTMLResponse(
+                cabinet_module.login_page(
+                    f"Кабинет выключен: не задан {cabinet_module.ENV_NAME}."
+                ),
+                status_code=503,
+            )
+        if not cabinet_module.authorised(request):
+            return HTMLResponse(cabinet_module.login_page(), status_code=401)
+        return HTMLResponse(cabinet_module.cabinet_page())
+
+    @app.post("/cabinet/login")
+    async def cabinet_login(request: Request) -> Any:
+        # Тело разбираем руками: `Form(...)` в Starlette тянет python-multipart,
+        # и ставить зависимость в образ ради одного поля не стоит.
+        raw = (await request.body()).decode("utf-8", errors="replace")
+        key = (parse_qs(raw).get("key") or [""])[0]
+        if not cabinet_module.key_accepted(key):
+            # Задержки и счётчиков здесь нет нарочно: ключ один, и подбор его
+            # по сети упирается в длину, а не в скорость ответа. Что именно не
+            # так — не уточняем.
+            return HTMLResponse(cabinet_module.login_page("Ключ не подошёл."), status_code=401)
+        response = RedirectResponse("/cabinet", status_code=303)
+        cabinet_module.set_cookie(response, key)
+        return response
+
     @app.post("/market/report")
-    async def market_report(req: ReportRequest) -> dict[str, Any]:
+    async def market_report(request: Request, req: ReportRequest) -> dict[str, Any]:
         """Отчёт по объекту: соседи из «Пульса» и выбранные разделы.
 
         Ошибки разделены нарочно. Не опознан объект — 422, это ответ человеку,
         а не поломка. Неизвестный код раздела — тоже 422: опечатка в списке не
         должна выглядеть как «раздел ничего не показал». Источник недоступен —
         502, потому что чинить нечего, надо ждать или включить доступы.
+
+        Маршрут закрыт ключом кабинета: он отдаёт список чужих проектов с
+        ценами. Кнопка ориентира цены (`/market/price-hint`) остаётся открытой
+        — она отдаёт одно число без источников, и это разные вещи.
         """
+        cabinet_module.require_cabinet(request)
         try:
             return service.build_report(
                 req.query,

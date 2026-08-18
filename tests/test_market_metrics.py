@@ -339,6 +339,7 @@ def test_report_route_answers_and_refuses_with_a_reason(tmp_path, monkeypatch) -
     from market_search.api import install
 
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("MARKET_CABINET_KEY", "stand-key-2026")
     app = FastAPI()
     service = install(app)
 
@@ -354,7 +355,7 @@ def test_report_route_answers_and_refuses_with_a_reason(tmp_path, monkeypatch) -
          "latitude": 55.72100, "longitude": 37.43900},
     ]
     service.pulse = _fake_pulse(segments, metrics, projects)
-    client = TestClient(app)
+    client = TestClient(app, headers={"X-Market-Key": "stand-key-2026"})
 
     answer = client.post(
         "/market/report",
@@ -383,3 +384,74 @@ def test_report_route_answers_and_refuses_with_a_reason(tmp_path, monkeypatch) -
     off = client.post("/market/report", json={"query": "55.71584, 37.43303"})
     assert off.status_code == 502
     assert "PULSE_LOGIN" in off.json()["detail"]
+
+
+def test_cabinet_is_closed_by_default_and_opens_only_by_key(tmp_path, monkeypatch) -> None:
+    """Незаданный ключ выключает кабинет, а не открывает его.
+
+    Так же устроен список получателей статистики: пусто — значит никому.
+    Раздел, открывшийся всем из-за незаполненной переменной, — худший исход,
+    потому что выглядит работающим.
+    """
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from market_search.api import install
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("MARKET_CABINET_KEY", raising=False)
+    app = FastAPI()
+    install(app)
+    client = TestClient(app)
+
+    closed = client.get("/cabinet")
+    assert closed.status_code == 503
+    assert "MARKET_CABINET_KEY" in closed.text
+    assert client.post("/market/report", json={"query": "Кутузов Сити"}).status_code == 503
+
+    monkeypatch.setenv("MARKET_CABINET_KEY", "stand-key-2026")
+    assert client.get("/cabinet").status_code == 401
+    assert client.post("/market/report", json={"query": "Кутузов Сити"}).status_code == 401
+
+    # Неверный ключ не пускает и не подсказывает, чем именно он неверен.
+    denied = client.post("/cabinet/login", content="key=wrong",
+                         headers={"Content-Type": "application/x-www-form-urlencoded"})
+    assert denied.status_code == 401
+    assert "stand-key-2026" not in denied.text
+
+    entered = client.post("/cabinet/login", content="key=stand-key-2026",
+                          headers={"Content-Type": "application/x-www-form-urlencoded"},
+                          follow_redirects=False)
+    assert entered.status_code == 303
+    assert client.get("/cabinet").status_code == 200
+    assert "Конструктор отчёта" in client.get("/cabinet").text
+
+    # Кириллический ключ заголовком не передаётся — это должно быть сказано,
+    # а не проявляться загадочным отказом на одном из двух путей входа.
+    monkeypatch.setenv("MARKET_CABINET_KEY", "ключ")
+    broken = TestClient(app).get("/cabinet")
+    assert broken.status_code == 503
+    assert "не-ASCII" in broken.text
+
+
+def test_price_hint_stays_open_when_the_cabinet_is_closed(tmp_path, monkeypatch) -> None:
+    """Кнопка ориентира — не кабинет: одно число без источников, она открыта.
+
+    Закрыть её вместе с конструктором значило бы сломать основной сервис ради
+    границы, которую она и так соблюдает.
+    """
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from market_search.api import install
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("MARKET_CABINET_KEY", raising=False)
+    app = FastAPI()
+    service = install(app)
+    service.pulse = SimpleNamespace(available=False, find_project=lambda q: None)
+    client = TestClient(app)
+
+    answer = client.post("/market/price-hint", json={"latitude": 55.7158, "longitude": 37.4330})
+    assert answer.status_code != 401
+    assert answer.status_code != 503
