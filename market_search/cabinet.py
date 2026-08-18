@@ -176,6 +176,12 @@ h2{font-size:15px;margin:0 0 10px}
 .kv span{color:var(--dim);font-size:12px}
 .self{color:var(--rust);font-weight:600}
 .muted{color:var(--dim)}
+#sug{position:absolute;z-index:30;left:0;right:0;top:100%;background:#fff;border:1px solid var(--line);
+border-radius:9px;box-shadow:0 6px 22px rgba(20,35,60,.13);max-height:320px;overflow:auto;display:none}
+#sug div{padding:8px 11px;cursor:pointer;font-size:14px;border-bottom:1px solid #f0f4f8}
+#sug div:last-child{border-bottom:0}
+#sug div:hover,#sug div.on{background:#eef4fa}
+#sug small{display:block;color:var(--dim);font-size:12px}
 </style>
 <header>
   <h1>Конструктор отчёта о рынке</h1>
@@ -184,9 +190,11 @@ h2{font-size:15px;margin:0 0 10px}
 <main>
   <div class="card">
     <div class="row">
-      <div style="flex:2 1 380px">
+      <div style="flex:2 1 380px;position:relative">
         <label class="f">Объект: кадастровый номер, адрес, координаты или название проекта</label>
-        <input type="text" id="q" placeholder="77:07:0013005:1042 · Гродненская 18 · Кутузов Сити">
+        <input type="text" id="q" autocomplete="off"
+               placeholder="77:07:0013005:1042 · Гродненская 18 · Кутузов Сити">
+        <div id="sug"></div>
       </div>
       <div>
         <label class="f">Радиус</label>
@@ -325,7 +333,48 @@ function render(d){
   $('#out').innerHTML=html;
 }
 $('#go').addEventListener('click',build);
-$('#q').addEventListener('keydown',e=>{if(e.key==='Enter')build()});
+
+// Подсказки по названию ЖК. Кадастровый номер и координаты подсказывать нечем
+// и незачем — они однозначны, и список под ними только мешал бы.
+const sug=$('#sug'); let items=[], cur=-1, timer=null;
+const looksLikeName=t=>t.length>=2 && !/^\s*[\d.,;:\s-]+$/.test(t);
+function closeSug(){sug.style.display='none';items=[];cur=-1}
+function paint(){
+  if(!items.length){closeSug();return}
+  sug.innerHTML=items.map((it,i)=>
+    `<div data-i="${i}"${i===cur?' class="on"':''}>${esc(it.name)}`
+    +`<small>${esc([it.segment,it.developer,it.address].filter(Boolean).join(' · '))}</small></div>`).join('');
+  sug.style.display='block';
+}
+function choose(i){
+  if(!items[i])return;
+  $('#q').value=items[i].name; closeSug(); build();
+}
+sug.addEventListener('mousedown',e=>{
+  const row=e.target.closest('div[data-i]'); if(row){e.preventDefault();choose(+row.dataset.i)}
+});
+$('#q').addEventListener('input',()=>{
+  const text=$('#q').value.trim();
+  clearTimeout(timer);
+  if(!looksLikeName(text)){closeSug();return}
+  timer=setTimeout(async()=>{
+    try{
+      const r=await fetch('/market/projects/suggest?q='+encodeURIComponent(text));
+      if(!r.ok){closeSug();return}
+      items=(await r.json()).items||[]; cur=-1; paint();
+    }catch(e){closeSug()}
+  },180);
+});
+$('#q').addEventListener('keydown',e=>{
+  const open=sug.style.display==='block';
+  if(open&&e.key==='ArrowDown'){cur=Math.min(cur+1,items.length-1);paint();e.preventDefault();return}
+  if(open&&e.key==='ArrowUp'){cur=Math.max(cur-1,0);paint();e.preventDefault();return}
+  if(e.key==='Escape'){closeSug();return}
+  if(e.key==='Enter'){
+    if(open&&cur>=0){choose(cur)}else{closeSug();build()}
+  }
+});
+document.addEventListener('click',e=>{if(!e.target.closest('#sug')&&e.target!==$('#q'))closeSug()});
 </script>"""
 
 

@@ -131,6 +131,14 @@ def install(app: FastAPI) -> MarketDiscoveryService:
         cabinet_module.set_cookie(response, key)
         return response
 
+    @app.get("/market/projects/suggest")
+    async def market_projects_suggest(request: Request, q: str = "") -> dict[str, Any]:
+        """Подсказки по названию ЖК. Закрыты ключом: это перечень чужой базы."""
+        cabinet_module.require_cabinet(request)
+        if not service.pulse.available:
+            return {"items": [], "reason": "Источник выключен: не заданы PULSE_LOGIN и PULSE_PASSWORD"}
+        return {"items": service.pulse.suggest(q)}
+
     @app.post("/market/report")
     async def market_report(request: Request, req: ReportRequest) -> dict[str, Any]:
         """Отчёт по объекту: соседи из «Пульса» и выбранные разделы.

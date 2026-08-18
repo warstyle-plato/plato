@@ -520,6 +520,47 @@ class PulseClient:
                     }
         return None
 
+    def suggest(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
+        """Подсказки по названию и адресу — из своего справочника, не по сети.
+
+        Полный список проектов уже лежит рядом, поэтому подсказка не стоит ни
+        запроса, ни ожидания: обращение к источнику на каждую букву заметно
+        замедлило бы ввод и ничего не добавило.
+
+        Порядок сортировки — не украшение. Совпадение с начала имени вернее
+        совпадения в середине, а имя вернее адреса: человек, набравший «кутуз»,
+        ищет «Кутузов Сити», а не десяток домов на Кутузовском проспекте.
+        """
+        text = " ".join(str(query or "").split()).casefold()
+        if len(text) < 2:
+            return []
+        classes = self.segments()
+        scored: list[tuple[int, int, dict[str, Any]]] = []
+        for project in self.projects():
+            name = (project.name or "").casefold()
+            address = (project.address or "").casefold()
+            if name.startswith(text):
+                rank = 0
+            elif text in name:
+                rank = 1
+            elif text in address:
+                rank = 2
+            else:
+                continue
+            scored.append((
+                rank,
+                len(project.name or ""),
+                {
+                    "complex_id": project.complex_id,
+                    "name": project.name,
+                    "developer": project.developer,
+                    "address": project.address,
+                    "segment": classes.get(project.complex_id),
+                },
+            ))
+        scored.sort(key=lambda item: (item[0], item[1]))
+        return [row for _, _, row in scored[:limit]]
+
     def project(self, complex_id: int) -> PulseProject | None:
         """Проект справочника по идентификатору."""
         for item in self.projects():

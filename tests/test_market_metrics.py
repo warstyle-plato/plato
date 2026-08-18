@@ -455,3 +455,57 @@ def test_price_hint_stays_open_when_the_cabinet_is_closed(tmp_path, monkeypatch)
     answer = client.post("/market/price-hint", json={"latitude": 55.7158, "longitude": 37.4330})
     assert answer.status_code != 401
     assert answer.status_code != 503
+
+
+def test_suggestions_rank_the_name_above_the_address(tmp_path) -> None:
+    """Набравший «кутуз» ищет «Кутузов Сити», а не дома на Кутузовском проспекте.
+
+    Подсказка берётся из своего справочника, не по сети: обращение к источнику
+    на каждую букву замедлило бы ввод и ничего бы не добавило.
+    """
+    import json
+
+    from market_search.pulse import PulseClient
+
+    rows = [
+        {"complex_id": 1, "name": "Кутузов Сити", "developer": "PLATO",
+         "latitude": 55.7, "longitude": 37.4, "address": "ул. Гродненская, вл. 18"},
+        {"complex_id": 2, "name": "Кутузовский XII", "developer": "Capital Group",
+         "latitude": 55.7, "longitude": 37.5, "address": "Кутузовский проспект, вл. 12"},
+        {"complex_id": 3, "name": "Левел Кутузовский", "developer": "Level",
+         "latitude": 55.7, "longitude": 37.5, "address": "Гришина ул., вл. 16"},
+        {"complex_id": 4, "name": "Событие", "developer": "Донстрой",
+         "latitude": 55.6, "longitude": 37.4, "address": "Кутузовский проспект, вл. 99"},
+    ]
+    (tmp_path / "projects.json").write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
+    (tmp_path / "segments.json").write_text(json.dumps({"1": "Бизнес"}), encoding="utf-8")
+
+    client = PulseClient(tmp_path, login="x", password="y")
+    names = [row["name"] for row in client.suggest("кутуз")]
+
+    # Сначала совпавшие с начала имени — короткое имя выше длинного, потом
+    # совпадение внутри имени, и только затем найденные по адресу.
+    assert names == ["Кутузов Сити", "Кутузовский XII", "Левел Кутузовский", "Событие"]
+    assert client.suggest("к") == []
+    assert client.suggest("кутуз")[0]["segment"] == "Бизнес"
+
+
+def test_suggestions_are_behind_the_cabinet_key(tmp_path, monkeypatch) -> None:
+    """Список чужой базы — это тоже лицензионные данные, ключ обязателен."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from market_search.api import install
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("MARKET_CABINET_KEY", "stand-key-2026")
+    app = FastAPI()
+    install(app)
+
+    assert TestClient(app).get("/market/projects/suggest?q=кутуз").status_code == 401
+    opened = TestClient(app, headers={"X-Market-Key": "stand-key-2026"})
+    answer = opened.get("/market/projects/suggest?q=кутуз")
+    assert answer.status_code == 200
+    # Источника нет — пустой список и названная причина, а не молчание.
+    assert answer.json()["items"] == []
+    assert "PULSE_LOGIN" in answer.json()["reason"]
