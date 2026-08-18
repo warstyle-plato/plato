@@ -331,6 +331,70 @@ function trendChart(series){
   return '<div class="wrap">'+svg+'</svg></div>';
 }
 
+
+// Продажи по месяцам: свой проект столбиками, медиана соседей пунктиром.
+// Столбики, а не линия: продажи — это счёт событий за месяц, а не уровень,
+// и линия между двумя месяцами рисует переход, которого не было.
+function salesChart(rows){
+  const own=rows.find(r=>r.own);
+  if(!own||!own.points.length) return '<div class="muted">Истории продаж по этому проекту в отчёте нет — он покрывает «Москву старую».</div>';
+  const months=[...new Set(rows.flatMap(r=>r.points.map(p=>p.month)))].sort();
+  const at=(r,m,k)=>{const p=r.points.find(p=>p.month===m);return p?p[k]:null};
+  const med=months.map(m=>{
+    const v=rows.filter(r=>!r.own).map(r=>at(r,m,'sold')).filter(x=>x!==null).sort((a,b)=>a-b);
+    return v.length?(v.length%2?v[(v.length-1)/2]:(v[v.length/2-1]+v[v.length/2])/2):null;
+  });
+  const vals=months.map(m=>at(own,m,'sold')).filter(v=>v!==null).concat(med.filter(v=>v!==null));
+  const hi=Math.max(...vals,1)*1.15;
+  const W=620,H=210,L=44,R=110,T=12,B=28;
+  const bw=Math.max(4,(W-L-R)/months.length*0.62);
+  const x=i=>L+(i+0.5)*(W-L-R)/months.length;
+  const y=v=>T+(H-T-B)*(1-v/hi);
+  let svg=`<svg viewBox="0 0 ${W} ${H}" width="100%" role="img">`;
+  [0,0.5,1].forEach(f=>{const v=hi*f;
+    svg+=`<line x1="${L}" y1="${y(v)}" x2="${W-R}" y2="${y(v)}" stroke="#e6ecf2"/>`
+       +`<text x="${L-6}" y="${y(v)+4}" text-anchor="end" font-size="10" fill="#8798a8">${num(v)}</text>`;});
+  months.forEach((m,i)=>{
+    const v=at(own,m,'sold');
+    if(v!==null) svg+=`<rect x="${x(i)-bw/2}" y="${y(v)}" width="${bw}" height="${Math.max(1,H-B-y(v))}" rx="2" fill="#C4581B"/>`;
+    if(i%Math.ceil(months.length/6)===0)
+      svg+=`<text x="${x(i)}" y="${H-9}" text-anchor="middle" font-size="10" fill="#8798a8">${m.slice(2)}</text>`;
+  });
+  const mp=months.map((m,i)=>med[i]===null?null:`${i?'L':'M'}${x(i).toFixed(1)} ${y(med[i]).toFixed(1)}`).filter(Boolean).join(' ');
+  if(mp) svg+=`<path d="${mp}" fill="none" stroke="#16202b" stroke-width="1.3" stroke-dasharray="5 4"/>`;
+  const lastOwn=[...months].reverse().find(m=>at(own,m,'sold')!==null);
+  svg+=`<text x="${W-R+8}" y="${y(at(own,lastOwn,'sold'))+4}" font-size="10.5" fill="#C4581B" font-weight="600">проект ${num(at(own,lastOwn,'sold'))}</text>`;
+  const lastMed=[...med].reverse().find(v=>v!==null);
+  if(lastMed!==undefined&&lastMed!==null)
+    svg+=`<text x="${W-R+8}" y="${y(lastMed)+4}" font-size="10.5" fill="#16202b">медиана ${num(lastMed,1)}</text>`;
+  return '<div class="wrap">'+svg+'</svg></div>';
+}
+
+// Остаток: линия одного проекта. Медиану соседей здесь не рисуем — остаток
+// зависит от объёма проекта, и середина между столотником и тысячником не
+// значит ничего.
+function remainChart(rows){
+  const own=rows.find(r=>r.own);
+  const pts=(own?own.points:[]).filter(p=>p.rem!==null&&p.rem!==undefined);
+  if(pts.length<2) return '';
+  const W=620,H=170,L=52,R=96,T=12,B=26;
+  const hi=Math.max(...pts.map(p=>p.rem))*1.08, lo=Math.min(...pts.map(p=>p.rem))*0.9;
+  const x=i=>L+i*(W-L-R)/(pts.length-1);
+  const y=v=>T+(H-T-B)*(1-(v-lo)/(hi-lo||1));
+  let svg=`<svg viewBox="0 0 ${W} ${H}" width="100%" role="img">`;
+  [0,1].forEach(f=>{const v=lo+(hi-lo)*f;
+    svg+=`<line x1="${L}" y1="${y(v)}" x2="${W-R}" y2="${y(v)}" stroke="#e6ecf2"/>`
+       +`<text x="${L-6}" y="${y(v)+4}" text-anchor="end" font-size="10" fill="#8798a8">${num(v)}</text>`;});
+  svg+=`<path d="${pts.map((p,i)=>`${i?'L':'M'}${x(i).toFixed(1)} ${y(p.rem).toFixed(1)}`).join(' ')}" fill="none" stroke="#1367AE" stroke-width="2.2"/>`;
+  pts.forEach((p,i)=>{ if(i%Math.ceil(pts.length/6)===0)
+    svg+=`<text x="${x(i)}" y="${H-8}" text-anchor="middle" font-size="10" fill="#8798a8">${p.month.slice(2)}</text>`;});
+  const last=pts[pts.length-1], first=pts[0];
+  const perMonth=(first.rem-last.rem)/(pts.length-1);
+  svg+=`<text x="${W-R+8}" y="${y(last.rem)+4}" font-size="10.5" fill="#1367AE" font-weight="600">${num(last.rem)} лотов</text>`;
+  svg+=`<text x="${W-R+8}" y="${y(last.rem)+18}" font-size="10" fill="#8798a8">−${num(perMonth,1)}/мес</text>`;
+  return '<div class="wrap">'+svg+'</svg></div>';
+}
+
 function compareTable(rows, cols){
   return '<div class="wrap"><table><tr>'+cols.map(c=>`<th${c.num?' class="num"':''}>${c.t}</th>`).join('')+'</tr>'
     +rows.map(r=>'<tr'+(r.__own?' class="ownrow"':'')+'>'
@@ -375,10 +439,13 @@ function blockCard(b,ctx){
   const empty=Object.keys(s).length?'':'<div class="muted">Данных по проекту нет — сравнивать нечего.</div>';
   const say=(ctx.analysis&&ctx.analysis.blocks&&ctx.analysis.blocks[b.code])||null;
   const verdict=say&&say.text?`<div class="say ${say.tone}"><b>${TONE[say.tone]||'•'} Разбор</b> ${esc(say.text)}</div>`:'';
-  const chart=b.code==='price'?trendChart(ctx.series):'';
+  const chart=b.code==='price'?trendChart(ctx.series)
+    :b.code==='pace'?salesChart(ctx.sales)
+    :b.code==='stock'?remainChart(ctx.sales):'';
+  const chartTitle={price:'Динамика цены, ₽/м²',pace:'Продажи по месяцам, ДДУ',stock:'Остаток по месяцам, лотов'}[b.code]||'Динамика';
   const table=sectionTable(b.code,ctx);
   return `<div class="card"><h2>${esc(b.title)}</h2>${empty}<div class="kv">${kv}</div>`
-    +verdict+notes+(chart?`<h3>Динамика цены, ₽/м²</h3>${chart}`:'')+(table?`<h3>Сравнение</h3>${table}`:'')+`</div>`;
+    +verdict+notes+(chart?`<h3>${chartTitle}</h3>${chart}`:'')+(table?`<h3>Сравнение</h3>${table}`:'')+`</div>`;
 }
 
 // Таблица под каждым разделом — та же выборка, но показанная колонками этого
@@ -450,7 +517,9 @@ function render(d){
     analysis:d.analysis, peers:peers, subjectMetrics:m,
     subjectName:s.project_name||s.address||s.query, subjectSegment:s.segment,
     series:[{name:s.project_name||'объект',own:true,points:d.price_series||[]}]
-      .concat(peers.map(p=>({name:p.name,own:false,points:p.price_series||[]})))
+      .concat(peers.map(p=>({name:p.name,own:false,points:p.price_series||[]}))),
+    sales:[{name:s.project_name||'объект',own:true,points:d.sales_series||[]}]
+      .concat(peers.map(p=>({name:p.name,own:false,points:p.sales_series||[]})))
   };
   const ov=(d.analysis||{}).overall;
   if(ov) html+=`<div class="card verdict ${ov.tone}"><h2>${TONE[ov.tone]||''} ${esc(ov.headline)}</h2>`

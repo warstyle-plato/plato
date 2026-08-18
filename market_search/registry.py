@@ -134,7 +134,16 @@ class ProjectRegistry:
                 payload = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 continue
-            for row in payload.get("projects") or []:
+            rows = payload.get("projects")
+            # В каталоге лежат и чужие выгрузки — например помесячные ряды
+            # продаж, где `projects` это словарь по идентификатору. Справочник
+            # берёт только свою форму: без этой проверки он падал на первом же
+            # соседнем файле, и с ним падал весь модуль.
+            if not isinstance(rows, list):
+                continue
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
                 item = RegistryProject(
                     name=str(row.get("name") or "").strip(),
                     developer=(row.get("developer") or None),

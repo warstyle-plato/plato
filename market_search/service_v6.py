@@ -24,6 +24,7 @@ from .entities import ProjectEntity, merge_geographic_duplicates, resolve_entiti
 from .geo_resolution import RESOLVED, ProjectGeoResolver, address_signature
 from .geocoder import GeoPoint
 from .http import RemoteServiceError
+from .dynamics import SalesDynamics
 from .market_reference import MoscowMarket
 from .metrics import build_blocks
 from .verdict import build_notes
@@ -83,6 +84,9 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         # модуль работает как прежде.
         self.pulse = PulseClient(Path(data_dir) / "pulse")
         self.city = MoscowMarket.bundled()
+        # История продаж и остатка: живой источник её не отдаёт, она вынута из
+        # помесячного отчёта и едет с кодом.
+        self.dynamics = SalesDynamics.bundled()
         # Разбор кадастрового номера живёт в движке: там НСПД, там же его
         # используют ТЭП и анализ территории. Второй такой путь заводить нельзя,
         # иначе один и тот же номер даст в двух местах разные точки.
@@ -643,9 +647,11 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         )
         for row in peers:
             row["price_series"] = history.get(row.get("complex_id")) or []
+            row["sales_series"] = self.dynamics.series(row.get("complex_id"))
 
         subject_metrics = own or {"name": subject.project_name or query, "segment": segment}
         subject_series = history.get(subject.project_id) or []
+        subject_sales = self.dynamics.series(subject.project_id)
         # Свод собран по одному отчёту, «Москва старая». Вне его покрытия
         # городская база не подставляется вовсе: медианы чужого города,
         # выданные молча, выглядят исправным сравнением.
@@ -665,6 +671,12 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
             "blocks": blocks,
             "analysis": notes,
             "price_series": subject_series,
+            "sales_series": subject_sales,
+            "dynamics": {
+                "source": self.dynamics.source,
+                "last_month": self.dynamics.last_month,
+                "covered": self.dynamics.coverage(subject.project_id),
+            },
             "peers": peers,
             "comparison": {
                 "radius_km": radius_km,
