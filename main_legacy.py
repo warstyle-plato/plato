@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.18.49"
+VERSION = "0.18.50"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -23104,6 +23104,10 @@ def project_list(owner: int) -> list[dict[str, Any]]:
     directory = _project_dir(owner)
     cards: list[dict[str, Any]] = []
     for path in directory.glob("*.json") if directory.is_dir() else []:
+        # Анкета переехала в свой каталог, но у тех, кто заполнил её раньше,
+        # файл ещё лежит здесь: список проектов о нём знать не должен.
+        if path.name == "profile.json":
+            continue
         try:
             cards.append(_project_card(json.loads(path.read_text(encoding="utf-8"))))
         except Exception:
@@ -23230,6 +23234,15 @@ class ProfileRequest(BaseModel):
 
 
 def _profile_path(owner: int) -> Path:
+    # Анкета лежит рядом с проектами, но не среди них: список читает из
+    # каталога владельца все *.json, и знакомство показывалось строкой в «Моих
+    # проектах» — с именем человека, прочерками и кнопкой «Удалить» (боевая
+    # проверка владельца, 18.08.2026).
+    return _PROJECTS_DIR.parent / "profiles" / f"{int(owner)}.json"
+
+
+def _profile_legacy_path(owner: int) -> Path:
+    """Где анкета лежала до переезда. Читаем, пока не переписана."""
     return _project_dir(owner) / "profile.json"
 
 
@@ -23241,13 +23254,24 @@ def _profile_text(value: Any) -> str:
 
 
 def profile_read(owner: int) -> dict[str, Any]:
+    for path in (_profile_path(owner), _profile_legacy_path(owner)):
+        if not path.is_file():
+            continue
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+    return {}
+
+
+def _profile_store(owner: int, record: dict[str, Any]) -> None:
+    """Пишет анкету на новое место и убирает её со старого."""
     path = _profile_path(owner)
-    if not path.is_file():
-        return {}
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+    temporary.replace(path)
+    _profile_legacy_path(owner).unlink(missing_ok=True)
 
 
 def profile_complete(record: dict[str, Any]) -> bool:
@@ -23280,11 +23304,7 @@ def profile_write(owner: int, req: ProfileRequest) -> dict[str, Any]:
         "created": previous.get("created") or datetime.now().isoformat(timespec="seconds"),
         "updated": datetime.now().isoformat(timespec="seconds"),
     }
-    directory = _project_dir(owner)
-    directory.mkdir(parents=True, exist_ok=True)
-    temporary = _profile_path(owner).with_suffix(".tmp")
-    temporary.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
-    temporary.replace(_profile_path(owner))
+    _profile_store(owner, record)
     return {"saved": True, "profile": record, "first_time": not bool(previous)}
 
 
@@ -23298,11 +23318,7 @@ def _profile_remember_telegram_name(owner: int, name: str) -> None:
         return
     record["telegram_name"] = name
     record.setdefault("chat_id", int(owner))
-    directory = _project_dir(owner)
-    directory.mkdir(parents=True, exist_ok=True)
-    temporary = _profile_path(owner).with_suffix(".tmp")
-    temporary.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
-    temporary.replace(_profile_path(owner))
+    _profile_store(owner, record)
 
 
 def _profile_forward(path: str, req: ProfileRequest) -> dict[str, Any] | None:

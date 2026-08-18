@@ -46,7 +46,10 @@ def _request(**fields):
 def test_the_profile_belongs_to_the_session_owner(storage):
     saved = core.profile_save(_request(role="директор", contact="+7 900 000-00-00"))
     assert saved["saved"] is True and saved["first_time"] is True
-    assert (storage / "projects" / "4242" / "profile.json").is_file()
+    # Анкета лежит рядом с проектами, но не среди них: иначе она попадает в
+    # список «Мои проекты».
+    assert (storage / "profiles" / "4242.json").is_file()
+    assert not (storage / "projects" / "4242" / "profile.json").exists()
 
     got = core.profile_get(core.ProfileRequest(session="s"))
     assert got["complete"] is True
@@ -272,4 +275,38 @@ def test_the_delivery_runs_next_to_the_digest():
     loop = wrapper_src[wrapper_src.index("def _usage_digest_loop("):]
     loop = loop[:loop.index("def _deliver_profile_announcements(")]
     assert "_deliver_profile_announcements()" in loop
+
+
+# --- анкета не проект ------------------------------------------------------------
+
+def test_the_profile_is_not_listed_as_a_project(storage, monkeypatch):
+    """Анкета лежала в каталоге владельца, а список читает оттуда все *.json —
+    и знакомство показывалось строкой в «Моих проектах»: имя человека,
+    прочерки вместо чисел и кнопка «Удалить» (боевая проверка, 18.08.2026)."""
+    monkeypatch.setattr(core, "_projects_forward", lambda path, req: None)
+    core.profile_save(_request())
+    core.projects_save(core.ProjectRequest(session="s", name="Вест Гарден",
+                                           payload={"inputs": {}}))
+
+    names = [card["name"] for card in core.project_list(4242)]
+    assert names == ["Вест Гарден"], names
+    assert not (core._project_dir(4242) / "profile.json").exists(), "анкета переехала"
+    assert core._profile_path(4242).is_file()
+
+
+def test_an_old_profile_still_opens_and_moves_on_save(storage, monkeypatch):
+    """У тех, кто заполнил анкету до переезда, файл лежит на прежнем месте:
+    читаем оттуда, а при первом сохранении переносим и убираем."""
+    legacy = core._profile_legacy_path(4242)
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    legacy.write_text('{"name": "Старое", "company": "Прежняя", "source": "Поиск"}',
+                      encoding="utf-8")
+
+    assert core.profile_read(4242)["company"] == "Прежняя"
+    assert core.profile_complete(core.profile_read(4242)) is True
+    assert core.project_list(4242) == [], "старая анкета в списке проектов не нужна"
+
+    core.profile_save(_request())
+    assert not legacy.exists(), "после сохранения старый файл убран"
+    assert core.profile_read(4242)["company"] == "DevelopAid"
 
