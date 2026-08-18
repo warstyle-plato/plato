@@ -173,3 +173,56 @@ def test_price_hint_prefers_neighbours_then_okrug_then_city() -> None:
     hint = price_hint(peers=[], segment=None, fresh_since="2026-06-01")
     assert hint["available"] is False
     assert "не рассчитан" in hint["reason"]
+
+
+def test_subject_is_recognised_from_the_same_input_as_the_main_service() -> None:
+    """Ввод тот же, что в поле «Участок»: номер, координаты, название, адрес."""
+    import pytest
+
+    from market_search.subject import (
+        SOURCE_CADASTRE,
+        SOURCE_COORDS,
+        SOURCE_PROJECT,
+        Subject,
+        SubjectNotFound,
+        resolve_subject,
+    )
+
+    parcels = {
+        "77:07:0013005:1042": {
+            "center": {"lat": 55.71584, "lng": 37.43303},
+            "address": "г Москва, ул Гродненская, вл 18",
+        }
+    }
+    projects = {
+        "кутузов сити": {
+            "complex_id": 5924, "name": "Кутузов Сити", "segment": "Бизнес",
+            "latitude": 55.71584, "longitude": 37.43303, "address": "ул. Гродненская, вл. 18",
+        }
+    }
+
+    found = resolve_subject("77:07:0013005:1042", cadastre=parcels.get)
+    assert found.source == SOURCE_CADASTRE
+    assert found.cadastre == "77:07:0013005:1042"
+    assert found.address.endswith("вл 18")
+
+    found = resolve_subject("55.71584, 37.43303")
+    assert found.source == SOURCE_COORDS
+    assert (found.latitude, found.longitude) == (55.71584, 37.43303)
+
+    found = resolve_subject("Кутузов Сити", find_project=lambda q: projects.get(q.lower()))
+    assert found.source == SOURCE_PROJECT
+    assert found.project_id == 5924 and found.segment == "Бизнес"
+
+    # Номер опознан, но участка нет — это ответ, а не повод искать строку
+    # номера геокодером: тот поставит точку куда угодно, и отчёт выйдет
+    # достоверным на вид и не о том месте.
+    with pytest.raises(SubjectNotFound, match="не найден в ЕГРН"):
+        resolve_subject("77:07:0000000:1", cadastre=lambda n: None,
+                        geocode=lambda t: Subject(0, 0, "x", t))
+
+    with pytest.raises(SubjectNotFound, match="справочник ЕГРН недоступен"):
+        resolve_subject("77:07:0013005:1042")
+
+    with pytest.raises(SubjectNotFound, match="Пусто"):
+        resolve_subject("   ")

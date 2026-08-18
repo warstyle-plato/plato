@@ -474,6 +474,57 @@ class PulseClient:
             save_json(path, {str(k): v for k, v in out.items()})
         return out
 
+    def find_project(self, query: str) -> dict[str, Any] | None:
+        """Проект по строке: название или застройщик.
+
+        Поиск сервиса отдаёт обычный JSON, без сжатия, и возвращает
+        идентификатор — с ним из справочника берутся координаты и адрес.
+        """
+        text = " ".join(str(query or "").split())
+        if len(text) < 3:
+            return None
+        payload = urllib.parse.urlencode({"query": text, "only_owned": "false"}).encode("utf-8")
+        csrf = self._cookie("csrftoken")
+        if not csrf and not self.sign_in():
+            return None
+        try:
+            body = self._open(
+                "/api/searchbyquery/",
+                data=payload,
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "X-CSRFToken": self._cookie("csrftoken") or "",
+                    "Referer": f"{self.base}{_MAP_PATH}",
+                },
+            )
+            found = json.loads(body.decode("utf-8", errors="ignore"))
+        except (urllib.error.URLError, OSError, ValueError) as exc:
+            self.errors.append(f"поиск «{text}»: {exc}")
+            return None
+        if not isinstance(found, dict):
+            return None
+        # Совпадения приходят раздельно: по названию и по застройщику. Проект
+        # надёжнее имени компании, поэтому имя спрашивается первым.
+        for key in ("name", "developer"):
+            for row in found.get(key) or []:
+                if not isinstance(row, dict) or row.get("id") is None:
+                    continue
+                project = self.project(int(row["id"]))
+                if project:
+                    return {
+                        **project.to_dict(),
+                        "segment": self.segments().get(project.complex_id),
+                        "matched_by": key,
+                    }
+        return None
+
+    def project(self, complex_id: int) -> PulseProject | None:
+        """Проект справочника по идентификатору."""
+        for item in self.projects():
+            if item.complex_id == int(complex_id):
+                return item
+        return None
+
     # --- данные проекта --------------------------------------------------------
 
     def price(self, complex_id: int) -> dict[str, Any] | None:

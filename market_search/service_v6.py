@@ -31,6 +31,7 @@ from .pulse import PulseClient
 from .price_evidence import VerifiedPriceEnricher
 from .recommendation import market_recommendation, official_recommendation
 from .registry import ProjectRegistry
+from .subject import Subject, resolve_subject
 from .segments import SegmentResolver, detect_district, districts_match, segments_comparable
 from .service import MarketDiscoveryService as LegacyMarketDiscoveryService, haversine_km
 from .yandex_search import official_cards_from_docs
@@ -80,6 +81,10 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         # модуль работает как прежде.
         self.pulse = PulseClient(Path(data_dir) / "pulse")
         self.city = MoscowMarket.bundled()
+        # Разбор кадастрового номера живёт в движке: там НСПД, там же его
+        # используют ТЭП и анализ территории. Второй такой путь заводить нельзя,
+        # иначе один и тот же номер даст в двух местах разные точки.
+        self.cadastre_lookup: Any = None
 
     def _geocode_project(self, candidate: dict[str, Any], locality: str):
         raise NotImplementedError(
@@ -511,6 +516,15 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         r"\b(Центральный|Северный|Северо-Восточный|Восточный|Юго-Восточный|Южный|"
         r"Юго-Западный|Западный|Северо-Западный|Зеленоградский|Троицкий|Новомосковский)\b"
     )
+
+    def resolve_subject(self, query: str) -> Subject:
+        """Опознать объект отчёта тем же вводом, что и в основном сервисе."""
+        return resolve_subject(
+            query,
+            geocode=self.geocoder.geocode,
+            cadastre=self.cadastre_lookup,
+            find_project=self.pulse.find_project if self.pulse.available else None,
+        )
 
     def price_hint(
         self,
