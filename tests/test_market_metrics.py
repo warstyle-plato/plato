@@ -226,3 +226,30 @@ def test_subject_is_recognised_from_the_same_input_as_the_main_service() -> None
 
     with pytest.raises(SubjectNotFound, match="Пусто"):
         resolve_subject("   ")
+
+
+def test_mixed_class_sample_shows_its_own_class_separately() -> None:
+    """Соседний класс в выборке — решение владельца, но не повод прятать разброс.
+
+    У Кутузов Сити соседи по лестнице — комфорт и премиум, и общая медиана
+    получается серединой между тремя разными товарами. Она остаётся, но рядом
+    обязана стоять медиана своего класса, иначе отчёт выдаёт мушу за уровень
+    рынка.
+    """
+    mixed = [
+        {"name": "Петра Алексеева 10", "segment": "Комфорт", "price_per_sqm": 268_800},
+        {"name": "Верейская 41", "segment": "Бизнес", "price_per_sqm": 506_666},
+        {"name": "СЕТ", "segment": "Бизнес", "price_per_sqm": 540_715},
+        {"name": "Родина Парк", "segment": "Премиум", "price_per_sqm": 780_032},
+        {"name": "Спрингс", "segment": "Премиум", "price_per_sqm": 1_254_077},
+    ]
+    block = price_block(SUBJECT, mixed, MoscowMarket.bundled())
+    assert block.peers["count"] == 5
+    assert block.peers["median"] == 540_715
+    assert block.peers["same_class"]["count"] == 2
+    assert block.peers["same_class"]["median"] == 523_690.5
+    assert any("своего класса" in note for note in block.notes)
+
+    # Выборка одного класса лишней строки не заводит: сравнивать не с чем.
+    plain = [row for row in mixed if row["segment"] == "Бизнес"]
+    assert "same_class" not in price_block(SUBJECT, plain, MoscowMarket.bundled()).peers

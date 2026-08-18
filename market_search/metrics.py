@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from .market_reference import MoscowMarket
+from .segments import normalize_segment
 
 
 BLOCK_PRICE = "price"
@@ -87,6 +88,38 @@ def _peer_stats(rows: list[dict[str, Any]], key: str) -> dict[str, Any]:
     }
 
 
+def _add_same_class(
+    block: MetricBlock,
+    subject: dict[str, Any],
+    peers: list[dict[str, Any]],
+    price: float,
+) -> None:
+    """Медиана по своему классу — рядом с общей, когда выборка смешанная.
+
+    Соседний класс берётся в выборку по решению владельца от 10.08.2026, и на
+    элитном конце это верно: элитный и премиум конкурируют за одного покупателя.
+    Но у бизнес-класса соседи — комфорт и премиум, и в Можайском районе это
+    разброс от 268 до 1254 тыс ₽/м²: медиана такой выборки — не уровень рынка,
+    а середина между тремя разными товарами. Отдельная медиана своего класса
+    показывает, из чего сложилась общая, вместо того чтобы прятать это в одно
+    число.
+    """
+    own = normalize_segment(subject.get("segment"))
+    if not own:
+        return
+    same = [row for row in peers if normalize_segment(row.get("segment")) == own]
+    if not same or len(same) == len(peers):
+        return
+    exact = _peer_stats(same, "price_per_sqm")
+    if not exact["count"]:
+        return
+    block.peers["same_class"] = {**exact, "vs_median_pct": _ratio(price, exact["median"])}
+    block.notes.append(
+        f"В выборку входят соседние классы; только своего класса «{own}» — "
+        f"{exact['count']} из {len(peers)}, их медиана {exact['median']:,.0f} ₽/м²".replace(",", " ")
+    )
+
+
 def price_block(subject: dict[str, Any], peers: list[dict[str, Any]], city: MoscowMarket) -> MetricBlock:
     block = MetricBlock(BLOCK_PRICE, BLOCK_TITLES[BLOCK_PRICE])
     price = subject.get("price_per_sqm")
@@ -103,6 +136,7 @@ def price_block(subject: dict[str, Any], peers: list[dict[str, Any]], city: Mosc
     stats = _peer_stats(peers, "price_per_sqm")
     if stats["count"]:
         block.peers = {**stats, "vs_median_pct": _ratio(price, stats["median"])}
+        _add_same_class(block, subject, peers, price)
     else:
         block.notes.append("Ни у одного сопоставимого соседа нет действующего прайса")
 

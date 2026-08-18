@@ -1299,6 +1299,35 @@ def test_adjacent_classes_are_comparable_but_distant_ones_are_not() -> None:
     assert not segments_comparable("элитный", None)
 
 
+def test_class_labels_of_the_source_reach_the_ladder() -> None:
+    """Лестница обязана понимать метки «Пульса», а не только строчную прозу.
+
+    Прежний тест брал уровни в той же форме, в какой они объявлены в модуле, и
+    потому не мог поймать ошибку: `_LADDER.index("Бизнес")` бросал ValueError,
+    отказ выглядел как «классы несопоставимы», и правило о соседнем уровне не
+    работало ни разу там, где метки приходят из источника. Живой случай —
+    Кутузов Сити (Бизнес) и Родина Парк (Премиум) в 690 метрах, одного района.
+    """
+    from market_search.segments import normalize_segment, segments_comparable
+
+    assert normalize_segment("Бизнес") == "бизнес"
+    assert normalize_segment("Элит/De Luxe") == "элитный"
+    assert normalize_segment("Стандарт/Эконом") == "эконом"
+    assert normalize_segment("Премиум") == "премиум"
+    assert normalize_segment("Комфорт") == "комфорт"
+
+    assert segments_comparable("Бизнес", "Премиум")
+    assert segments_comparable("Премиум", "Элит/De Luxe")
+    assert segments_comparable("Бизнес", "комфорт")
+    assert not segments_comparable("Бизнес", "Элит/De Luxe")
+    assert not segments_comparable("Бизнес", "Стандарт/Эконом")
+
+    # Неизвестная метка — не ступень лестницы. Догадка здесь опаснее отказа:
+    # она поставила бы проект в чужой класс молча.
+    assert normalize_segment("Клубный формат") is None
+    assert not segments_comparable("Бизнес", "Клубный формат")
+
+
 def test_premium_neighbour_returns_to_the_elite_comparable_set(tmp_path: Path) -> None:
     """Savvin River Residence — премиум в 748 метрах при ориентире «элитный»."""
     service = ServiceV6(tmp_path)

@@ -96,6 +96,51 @@ def detect_district(value: str) -> str | None:
 # выборки, будучи прямым соседом.
 _LADDER = (ELITE, PREMIUM, BUSINESS, COMFORT, ECONOMY)
 
+# Метка класса приходит из двух разных миров. Со страницы — прозой, и её
+# разбирает `detect_segment`, нарочно строгий: голое «бизнес» в тексте значит
+# что угодно. Из «Пульса» — значением фильтра: «Бизнес», «Элит/De Luxe»,
+# «Стандарт/Эконом». Это перечисление, а не проза, и читать его надо картой.
+#
+# Пока карты не было, лестница получала метку как есть, `_LADDER.index("Бизнес")`
+# бросал ValueError, и вызывающий код читал отказ как «классы несопоставимы».
+# Правило о соседнем уровне при этом молчало везде, где метки берутся из
+# «Пульса»: у Кутузов Сити (Бизнес) из выборки выпадал Родина Парк — премиум в
+# 690 метрах, в том же Можайском районе, по 780 тыс ₽/м² против его 708 тыс.
+# Выпадал не по решению, а по регистру первой буквы, и отчёт этого не показывал.
+_LABELS = {
+    "эконом": ECONOMY,
+    "стандарт": ECONOMY,
+    "стандартэконом": ECONOMY,
+    "экономкласс": ECONOMY,
+    "комфорт": COMFORT,
+    "комфортплюс": COMFORT,
+    "комфорткласс": COMFORT,
+    "бизнес": BUSINESS,
+    "бизнескласс": BUSINESS,
+    "премиум": PREMIUM,
+    "премиумкласс": PREMIUM,
+    "элит": ELITE,
+    "элитный": ELITE,
+    "элитdeluxe": ELITE,
+    "deluxe": ELITE,
+    "делюкс": ELITE,
+}
+
+
+def normalize_segment(value: str | None) -> str | None:
+    """Привести метку класса к уровню лестницы.
+
+    Сначала точная карта меток, потом разбор прозы. Не опознали — None, а не
+    догадка: неизвестный уровень должен вести к «сравнить не с чем», а не к
+    случайной ступени.
+    """
+    if not value:
+        return None
+    known = _LABELS.get(_fold(value))
+    if known:
+        return known
+    return detect_segment(value)
+
 
 def segments_comparable(left: str | None, right: str | None) -> bool:
     """Сопоставимы ли классы: тот же уровень или соседний."""
@@ -103,10 +148,12 @@ def segments_comparable(left: str | None, right: str | None) -> bool:
         return False
     if left == right:
         return True
-    try:
-        return abs(_LADDER.index(left) - _LADDER.index(right)) == 1
-    except ValueError:
+    first, second = normalize_segment(left), normalize_segment(right)
+    if not first or not second:
         return False
+    if first == second:
+        return True
+    return abs(_LADDER.index(first) - _LADDER.index(second)) == 1
 
 
 def districts_match(left: str | None, right: str | None) -> bool:
