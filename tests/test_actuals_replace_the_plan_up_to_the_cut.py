@@ -260,3 +260,66 @@ def test_an_article_paid_but_never_planned_shows_as_an_overrun(plan):
         pytest.approx(250e6)
     assert any(unplanned in note and "перерасход" in note
                for note in result["report"]["notes"])
+
+
+def test_financing_before_the_cut_is_taken_not_computed(plan):
+    """Проценты и остатки до среза уже случились — считать их заново незачем.
+
+    Движок выводил их из долга, ставки и покрытия. На действующем проекте это
+    спор с банковской выпиской: долг известен, эскроу известно, проценты
+    начислены.
+    """
+    months = sorted(plan["capex"])
+    cut = months[8]
+    result = actuals.overlay(plan, {
+        "cut": cut,
+        "financing": {
+            "pf_balance": {months[7]: 4768.8e6},
+            "escrow": {months[7]: 1342.0e6},
+            "bridge_balance": {months[7]: 0.0},
+            "interest": {months[7]: 952.5e6},
+        },
+    })
+    carried = result["op"]["financing_fact"]
+
+    assert carried["cut"] == cut
+    assert carried["pf_balance"][months[7]] == pytest.approx(4768.8e6)
+    assert result["report"]["financing"]["escrow"] == pytest.approx(1342.0e6)
+    assert result["report"]["financing"]["interest_paid"] == pytest.approx(952.5e6)
+
+
+def test_the_engine_starts_from_the_carried_balances(plan):
+    """С месяца среза расчёт идёт от фактических остатков, а не с нуля."""
+    months = sorted(plan["capex"])
+    cut = months[8]
+    seeded = engine.calculate(engine.CalcRequest(
+        inputs=dict(engine.DEFAULT_INPUTS),
+        tep=copy.deepcopy(engine.TEP_DEFAULT), rates=[],
+        actuals={"cut": cut.isoformat(), "financing": {
+            "pf_balance": {months[7].isoformat(): 3000e6},
+            "escrow": {months[7].isoformat(): 900e6},
+            "interest": {months[7].isoformat(): 400e6},
+        }}))
+    plain = engine.calculate(engine.CalcRequest(
+        inputs=dict(engine.DEFAULT_INPUTS),
+        tep=copy.deepcopy(engine.TEP_DEFAULT), rates=[]))
+
+    # Начисленные до среза проценты попадают в итог, а не теряются.
+    assert seeded["finance"]["pf_interest"] != plain["finance"]["pf_interest"]
+    assert seeded["finance"]["peak_pf"] > 0
+
+
+def test_a_balance_missing_for_a_month_is_not_a_repayment(plan):
+    """Месяц без остатка в выгрузке — «не менялся», а не «долг погашен».
+
+    Обнулить его значило бы погасить кредит выгрузкой.
+    """
+    months = sorted(plan["capex"])
+    cut = months[8]
+    result = actuals.overlay(plan, {
+        "cut": cut,
+        "financing": {"pf_balance": {months[2]: 2000e6}, "escrow": {}},
+    })
+
+    assert any("остаток держится последним известным" in note
+               for note in result["report"]["notes"])

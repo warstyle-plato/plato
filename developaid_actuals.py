@@ -800,6 +800,36 @@ def overlay(op: dict[str, Any], actuals: dict[str, Any]) -> dict[str, Any]:
             for product, series in updated["revenue_product_schedules"].items()
         }
 
+    # Финансирование до среза — факт. Ряды кладутся в модель как есть: движок
+    # берёт с них остатки и не начисляет ничего до среза, а с месяца среза
+    # считает от них вперёд.
+    if "financing" in actuals:
+        finance = actuals["financing"] or {}
+        updated["financing_fact"] = {
+            "cut": cut,
+            "escrow": _months(finance.get("escrow") or {}),
+            "pf_balance": _months(finance.get("pf_balance") or {}),
+            "bridge_balance": _months(finance.get("bridge_balance") or {}),
+            "interest": _months(finance.get("interest") or {}),
+        }
+        carried = updated["financing_fact"]
+        last = max((max(series) for series in
+                    (carried["pf_balance"], carried["escrow"]) if series),
+                   default=None)
+        if last is not None and last < _add_month(cut, -1):
+            notes.append(
+                f"финансирование: факт остатков идёт по {last:%Y-%m}, а срез "
+                f"стоит на {cut:%Y-%m} — за {(cut.year - last.year) * 12 + cut.month - last.month - 1}"
+                " мес. остаток держится последним известным")
+        report["financing"] = {
+            "pf_balance": max((v for m, v in carried["pf_balance"].items()
+                               if m < cut), default=0.0),
+            "escrow": max((v for m, v in carried["escrow"].items() if m < cut),
+                          default=0.0),
+            "interest_paid": sum(v for m, v in carried["interest"].items()
+                                 if m < cut),
+        }
+
     return {"op": updated, "report": report}
 
 
@@ -1674,3 +1704,77 @@ def monitor(
         }
 
     return {"cut": cut_month, "money": money, "schedule": schedule, "sales": sold}
+
+
+# ---------------------------------------------------------------------------
+# Фактическое финансирование из листа «КРЕДИТЫ» книги.
+#
+# До среза всё берётся фактом — это правило, а финансирование было последним,
+# что ему не подчинялось: проценты и остатки движок выводил из долга, ставки и
+# покрытия, хотя они уже случились и заплачены. Считать их заново значит
+# спорить с банковской выпиской.
+#
+# Остатки идут помесячно из книги, уплаченные проценты — из реестра платежей по
+# кодам БДДС 3.1.4.x. Два источника здесь не спорят: книга даёт остаток, реестр
+# — движение денег, и это разные величины.
+# ---------------------------------------------------------------------------
+
+_CREDITS_SHEET = "КРЕДИТЫ"
+_CREDITS_HEADER_ROW = 3
+_CREDITS_ROWS = {
+    "escrow": 54,          # Счета эскроу (нараст)
+    "pf_drawn": 55,        # Проектное финансирование (нараст)
+    "pf_draw": 61,         # Получение кредита ПФ (ОД)
+    "pf_repayment": 62,    # Погашение кредита ПФ (ОД)
+    "bridge_draw": 33,     # Получение кредита БРИДЖ (ОД)
+    "bridge_repayment": 36,
+    # Начисленные проценты, а не уплаченные. До раскрытия эскроу проценты по ПФ
+    # капитализируются: кассой уходит малая часть, и подставить «выплату
+    # процентов» вместо начисления значит занизить стоимость денег в разы. На
+    # Гродненской это 174,8 млн уплаченных против начисленных за тот же срок.
+    "pf_interest_accrued": 67,
+    "pf_interest_capitalized": 68,
+    "pf_limit_fee": 69,
+    "bridge_interest_accrued": 42,
+}
+
+
+def read_credits(path: str | Path) -> dict[str, Any]:
+    """Помесячные ряды листа «КРЕДИТЫ»: эскроу, выборка и погашение долга."""
+    months: list[tuple[int, datetime.date]] = []
+    series: dict[str, dict[datetime.date, float]] = {name: {} for name in _CREDITS_ROWS}
+    wanted = {row: name for name, row in _CREDITS_ROWS.items()}
+    for index, row in enumerate(_sheet(path, _CREDITS_SHEET), 1):
+        if index == _CREDITS_HEADER_ROW:
+            months = [(position, value.date().replace(day=1))
+                      for position, value in enumerate(row)
+                      if isinstance(value, datetime.datetime)]
+            continue
+        name = wanted.get(index)
+        if not name or not months:
+            continue
+        for position, month in months:
+            amount = _money(row[position] if position < len(row) else None)
+            if amount:
+                series[name][month] = amount
+    # Остаток долга — выборка минус погашение нарастающим итогом. В книге
+    # строка 55 накопительная, но погашение в неё не заходит, и брать её за
+    # остаток нельзя: после раскрытия эскроу долг падает, а строка нет.
+    balance: dict[datetime.date, float] = {}
+    running = 0.0
+    for month in sorted({*series["pf_draw"], *series["pf_repayment"]}):
+        running += series["pf_draw"].get(month, 0.0)
+        running += series["pf_repayment"].get(month, 0.0)   # погашение отрицательное
+        balance[month] = max(0.0, running)
+    bridge: dict[datetime.date, float] = {}
+    running = 0.0
+    for month in sorted({*series["bridge_draw"], *series["bridge_repayment"]}):
+        running += series["bridge_draw"].get(month, 0.0)
+        running += series["bridge_repayment"].get(month, 0.0)
+        bridge[month] = max(0.0, running)
+    return {
+        **series,
+        "pf_balance": balance,
+        "bridge_balance": bridge,
+        "months": [month for _, month in months],
+    }

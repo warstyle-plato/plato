@@ -16438,6 +16438,18 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
     # ставка, и она совпадает с книгой формула в формулу.
     pf_rate_steps = _pf_special_steps(x)
 
+    # Финансирование до среза — факт, а не расчёт. Остатки долга и эскроу
+    # приходят из книги, уплаченные проценты — из реестра платежей. Это то же
+    # правило, что для CAPEX и продаж, и финансирование было последним, что ему
+    # не подчинялось: движок выводил проценты из долга, ставки и покрытия, хотя
+    # они уже начислены и заплачены. Считать их заново значит спорить с
+    # банковской выпиской.
+    #
+    # Месяцы до среза берут остатки из факта и не начисляют ничего; с месяца
+    # среза расчёт идёт как обычно, но стартует не с нуля, а с этих остатков.
+    financing_fact = op.get("financing_fact") or {}
+    fact_cut = financing_fact.get("cut")
+
     def run(pf_limit: float | None, cap: float | None = None) -> dict:
         own_funds_left = own_funds_total
         own_funds_used = 0.0
@@ -16478,6 +16490,33 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
             pf_draw = pf_repayment = pf_interest = pf_cap = limit_fee = 0.0
             interest_payment = 0.0
             escrow_release = 0.0
+
+            if fact_cut and month < fact_cut:
+                # Остаток, которого в факте нет, — это «не менялся», а не ноль:
+                # выгрузка кончается раньше среза, и обнулить долг значило бы
+                # погасить его выгрузкой.
+                pf_balance = financing_fact.get("pf_balance", {}).get(month, pf_balance)
+                bridge_balance = financing_fact.get(
+                    "bridge_balance", {}).get(month, bridge_balance)
+                escrow = financing_fact.get("escrow", {}).get(month, escrow)
+                pf_interest = financing_fact.get("interest", {}).get(month, 0.0)
+                pf_interest_total += pf_interest
+                coverage = escrow / pf_balance if pf_balance > 0 else 0.0
+                pf_rate = 0.0
+                rows.append({
+                    "month": month.isoformat(), "sales": sales,
+                    "project_costs": project_costs, "key_rate": key_rate,
+                    "bridge_rate": bridge_rate, "bridge_draw": 0.0,
+                    "own_funds_draw": 0.0, "bridge_repayment": 0.0,
+                    "bridge_balance": bridge_balance, "bridge_interest": 0.0,
+                    "bridge_capitalization": 0.0, "pf_draw": 0.0,
+                    "pf_repayment": 0.0, "pf_balance": pf_balance,
+                    "escrow": escrow, "escrow_release": 0.0,
+                    "coverage": coverage, "pf_rate": pf_rate,
+                    "pf_interest": pf_interest, "pf_interest_capitalization": 0.0,
+                    "limit_fee": 0.0, "interest_payment": pf_interest,
+                })
+                continue
 
             if month < rve:
                 escrow += sales
