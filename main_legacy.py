@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.18.37"
+VERSION = "0.18.38"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -24961,8 +24961,8 @@ details.cadastral-box>summary::marker{color:#888}
 <footer style="max-width:1540px;margin:0 auto;padding:14px 34px;font-size:11px;color:#888;display:flex;gap:18px;flex-wrap:wrap">
   <span>© ИП Ситников В.Ю.</span>
   <a href="/consent" style="color:#888">Согласие на обработку персональных данных</a>
-  <a href="https://d-a.ru/upload/%D0%9F%D0%9E%D0%9B%D0%98%D0%A2%D0%98%D0%9A%D0%90%20%D0%9A%D0%9E%D0%9D%D0%A4%D0%98%D0%94%D0%95%D0%9D%D0%A6%D0%98%D0%90%D0%9B%D0%AC%D0%9D%D0%9E%D0%A1%D0%A2%D0%98.pdf" target="_blank" rel="noopener" style="color:#888">Политика конфиденциальности</a>
-  <a href="https://d-a.ru/upload/%D0%A1%D0%BE%D0%B3%D0%BB%D0%B0%D1%81%D0%B8%D0%B5_%D0%BD%D0%B0_%D0%BF%D0%BE%D0%BB%D1%83%D1%87%D0%B5%D0%BD%D0%B8%D0%B5_%D1%80%D0%B5%D0%BA%D0%BB%D0%B0%D0%BC%D0%BD%D0%BE_%D0%B8%D0%BD%D1%84%D0%BE%D1%80%D0%BC%D0%B0%D1%86%D0%B8%D0%BE%D0%BD%D0%BD%D1%8B%D1%85_%D0%BC%D0%B0%D1%82%D0%B5%D1%80%D0%B8%D0%B0%D0%BB%D0%BE%D0%B2.pdf" target="_blank" rel="noopener" style="color:#888">Согласие на рекламно-информационные материалы</a>
+  <a href="/privacy" style="color:#888">Политика конфиденциальности</a>
+  <a href="/ads-consent" style="color:#888">Согласие на рекламные материалы</a>
   <a href="/guide" style="color:#888">Руководство</a>
   <!-- Анкета всплывает сама один раз; ссылка нужна тем, кто отложил её или
        захотел дописать позже — иначе второго шанса у человека нет. -->

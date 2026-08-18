@@ -15,6 +15,8 @@
 Маршруты:
 - `GET /guide`, `/guide/`         — страница руководства;
 - `GET /consent`                  — согласие на обработку персональных данных
+- `GET /privacy`                  — политика конфиденциальности
+- `GET /ads-consent`              — согласие на рекламно-информационные материалы
                                     (оператор — ИП Ситников В. Ю., по решению
                                     владельца 15.08.2026);
 - `GET /guide/assets/guide.css`   — стили;
@@ -92,6 +94,20 @@ def install(app, core) -> None:
     @app.get("/consent", response_class=HTMLResponse, include_in_schema=False)
     def consent_page() -> HTMLResponse:
         return HTMLResponse(consent, headers=_HEADERS)
+
+    # Документы ИП живут своими страницами, а не ссылками на чужой сайт:
+    # ссылаться на политику другого лица нельзя — это его текст и его
+    # обязательства (замечание владельца, 18.08.2026).
+    privacy = Path(__file__).resolve().parent.joinpath("privacy.html").read_text(encoding="utf-8")
+    ads_consent = Path(__file__).resolve().parent.joinpath("ads_consent.html").read_text(encoding="utf-8")
+
+    @app.get("/privacy", response_class=HTMLResponse, include_in_schema=False)
+    def privacy_page() -> HTMLResponse:
+        return HTMLResponse(privacy, headers=_HEADERS)
+
+    @app.get("/ads-consent", response_class=HTMLResponse, include_in_schema=False)
+    def ads_consent_page() -> HTMLResponse:
+        return HTMLResponse(ads_consent, headers=_HEADERS)
 
     @app.get("/guide/assets/guide.css", include_in_schema=False)
     def guide_css() -> Response:
