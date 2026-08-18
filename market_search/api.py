@@ -32,6 +32,23 @@ class MarketDiscoveryRequest(BaseModel):
         return self
 
 
+class PriceHintRequest(BaseModel):
+    """Ориентир для поля «Цена квартир»: нужна только точка и, если известен, класс."""
+
+    address: str | None = None
+    latitude: float | None = Field(default=None, ge=-90, le=90)
+    longitude: float | None = Field(default=None, ge=-180, le=180)
+    segment: str | None = None
+    radius_km: float = Field(default=2.5, ge=0.5, le=5.0)
+
+    @model_validator(mode="after")
+    def address_or_coordinates(self) -> "PriceHintRequest":
+        have_coords = self.latitude is not None and self.longitude is not None
+        if not have_coords and not str(self.address or "").strip():
+            raise ValueError("Нужен адрес, кадастровый номер или координаты")
+        return self
+
+
 def install(app: FastAPI) -> MarketDiscoveryService:
     if getattr(app.state, "market_discovery_installed", False):
         return app.state.market_discovery_service
@@ -40,6 +57,22 @@ def install(app: FastAPI) -> MarketDiscoveryService:
     service = MarketDiscoveryService(data_dir)
     app.state.market_discovery_installed = True
     app.state.market_discovery_service = service
+
+    @app.post("/market/price-hint")
+    async def market_price_hint(req: PriceHintRequest) -> dict[str, Any]:
+        """Одно число для поля модели. Список проектов сюда не отдаётся."""
+        try:
+            return service.price_hint(
+                address=req.address,
+                latitude=req.latitude,
+                longitude=req.longitude,
+                segment=req.segment,
+                radius_km=req.radius_km,
+            )
+        except GeocodingError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except RemoteServiceError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     @app.post("/market/discovery")
     async def market_discovery(req: MarketDiscoveryRequest) -> dict[str, Any]:

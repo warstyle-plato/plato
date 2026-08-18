@@ -223,6 +223,75 @@ def install(core: Any) -> None:
             raise RuntimeError(f"Панель рынка изменилась, подстановка не найдена: {old[:60]}")
         page = page.replace(old, new)
 
+    # Кнопка у поля «Цена квартир». Отдельно от панели рынка: там аналитика,
+    # которую читают, здесь — одно число, когда своей цифры ещё нет. Наружу
+    # уходят только значение, дата и число наблюдений; перечень проектов
+    # остаётся в панели, где его можно проверить.
+    hint_script = """<script id="market-v6-price-hint">
+(function(){
+  function locationHint(){
+    const cad=document.getElementById('cadastralNumbers');
+    const raw=cad?String(cad.value||'').split(/[\\n;]/)[0].trim():'';
+    if(raw)return raw;
+    const md=document.getElementById('mdAddress');
+    return md?String(md.value||'').trim():'';
+  }
+  function init(){
+    if(document.getElementById('daHintBtn'))return;
+    if(typeof mdApartmentPriceInput!=='function')return;
+    const input=mdApartmentPriceInput();
+    if(!input)return;
+    const wrap=document.createElement('div');
+    wrap.id='daHintWrap';
+    wrap.style.cssText='display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:6px';
+    const btn=document.createElement('button');
+    btn.type='button'; btn.id='daHintBtn'; btn.className='btn';
+    btn.textContent='Рекомендация DevelopAid';
+    btn.style.cssText='font-size:12px;padding:4px 10px';
+    const note=document.createElement('span');
+    note.id='daHintNote';
+    note.style.cssText='font-size:12px;color:#667;line-height:1.35';
+    wrap.appendChild(btn); wrap.appendChild(note);
+    input.insertAdjacentElement('afterend',wrap);
+    btn.addEventListener('click',async function(){
+      const where=locationHint();
+      if(!where){note.textContent='Укажите участок — кадастровый номер или адрес.';return}
+      btn.disabled=true; note.textContent='Считаю…';
+      try{
+        const response=await fetch('/market/price-hint',{method:'POST',
+          headers:{'Content-Type':'application/json'},body:JSON.stringify({address:where})});
+        const payload=await response.json();
+        if(!response.ok||!payload||payload.available===false){
+          note.textContent=(payload&&(payload.reason||payload.detail))||'Ориентир не рассчитан.';
+          return;
+        }
+        mdSetNativeValue(input,String(payload.price_th_per_sqm));
+        try{if(typeof calculate==='function')calculate()}catch(e){console.error(e)}
+        const when=payload.observed_at?String(payload.observed_at).split('-').reverse().join('.'):'';
+        const parts=[payload.price_th_per_sqm+' тыс ₽/м²'];
+        if(payload.sample)parts.push('наблюдений '+payload.sample);
+        if(when)parts.push(when);
+        // Основание называем только когда оно слабее соседей: «по классу в
+        // Москве» и «по соседям рядом» — числа разной силы, и молчать об этом
+        // нельзя. Для соседей достаточно даты и объёма выборки.
+        if(payload.basis&&payload.basis!=='peers'&&payload.basis_title)parts.push(payload.basis_title);
+        note.textContent='Подставлено: '+parts.join(' · ');
+      }catch(error){
+        note.textContent='Не удалось получить ориентир: '+String((error&&error.message)||error);
+      }finally{btn.disabled=false}
+    });
+  }
+  if(document.readyState!=='loading')init();else document.addEventListener('DOMContentLoaded',init);
+  // Вводные рисуются скриптом, поэтому поля может ещё не быть в момент загрузки.
+  let tries=0;
+  const timer=setInterval(function(){init();if(++tries>20||document.getElementById('daHintBtn'))clearInterval(timer)},700);
+})();
+</script>"""
+    if "</body>" in page:
+        page = page.replace("</body>", hint_script + "</body>", 1)
+    else:
+        page = page + hint_script
+
     extra_style = (
         '<style id="market-v6-style">'
         "#marketDiscovery .md-summary .md-chip:nth-child(2){display:none}"

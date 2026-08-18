@@ -24,13 +24,30 @@ from .entities import ProjectEntity, merge_geographic_duplicates, resolve_entiti
 from .geo_resolution import RESOLVED, ProjectGeoResolver, address_signature
 from .geocoder import GeoPoint
 from .http import RemoteServiceError
+from .market_reference import MoscowMarket
 from .page_price import PageFetcher
+from .price_hint import price_hint
+from .pulse import PulseClient
 from .price_evidence import VerifiedPriceEnricher
 from .recommendation import market_recommendation, official_recommendation
 from .registry import ProjectRegistry
 from .segments import SegmentResolver, detect_district, districts_match, segments_comparable
 from .service import MarketDiscoveryService as LegacyMarketDiscoveryService, haversine_km
 from .yandex_search import official_cards_from_docs
+
+
+def _fresh_price_since(today) -> str:
+    """С какой даты прайс считается действующим.
+
+    Полгода — не догадка: на живом стенде прайсы делятся на свежие, где дата
+    этого месяца, и мёртвые, где 2020–2023 год у сданных домов. Промежутка
+    между ними почти нет.
+    """
+    year, month = today.year, today.month - 6
+    while month <= 0:
+        month += 12
+        year -= 1
+    return f"{year:04d}-{month:02d}-01"
 
 
 def _count_by_status(rows: list[dict[str, Any]]) -> dict[str, int]:
@@ -59,6 +76,10 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         self.registry = ProjectRegistry.load(
             ProjectRegistry.bundled_directory(), Path(data_dir) / "registry"
         )
+        # Платный источник и городской свод. Нет доступов — оба выключены, и
+        # модуль работает как прежде.
+        self.pulse = PulseClient(Path(data_dir) / "pulse")
+        self.city = MoscowMarket.bundled()
 
     def _geocode_project(self, candidate: dict[str, Any], locality: str):
         raise NotImplementedError(
@@ -483,6 +504,71 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                 precision="exact",
             )
         return self.geocoder.geocode(address or "")
+
+    # Округ в своде записан коротким именем: «Западный», «Центральный».
+    # Геокодер пишет его полностью, поэтому берём первое слово.
+    _OKRUG_RE = re.compile(
+        r"\b(Центральный|Северный|Северо-Восточный|Восточный|Юго-Восточный|Южный|"
+        r"Юго-Западный|Западный|Северо-Западный|Зеленоградский|Троицкий|Новомосковский)\b"
+    )
+
+    def price_hint(
+        self,
+        *,
+        address: str | None,
+        latitude: float | None = None,
+        longitude: float | None = None,
+        segment: str | None = None,
+        radius_km: float = 2.5,
+        budget: int = 20,
+    ) -> dict[str, Any]:
+        """Ориентир цены для поля модели: одно число, без списка проектов.
+
+        Это не отчёт. Отчёт объясняет и показывает, на чём построен; здесь
+        нужно подставить цифру в «Цена квартир», когда своей ещё нет. Наружу
+        уходит значение, дата и число наблюдений — перечень проектов остаётся
+        в аналитике, где его можно проверить.
+        """
+        subject = self._subject_point(address, latitude, longitude)
+        okrug_match = self._OKRUG_RE.search(subject.display_name or "")
+        okrug = okrug_match.group(1) if okrug_match else None
+
+        peers: list[dict[str, Any]] = []
+        if self.pulse.available:
+            classes = self.pulse.segments()
+            near = self.pulse.near(subject.latitude, subject.longitude, radius_km)
+            for _, project in near[:budget]:
+                price = self.pulse.price(project.complex_id)
+                if not price:
+                    continue
+                peers.append(
+                    {
+                        "price_per_sqm": price["price_per_sqm"],
+                        "observed_at": price.get("observed_at"),
+                        "segment": classes.get(project.complex_id),
+                    }
+                )
+            if segment is None:
+                votes: dict[str, int] = {}
+                for _, project in near[:budget]:
+                    found = classes.get(project.complex_id)
+                    if found:
+                        votes[found] = votes.get(found, 0) + 1
+                segment = max(votes, key=lambda key: votes[key]) if votes else None
+
+        hint = price_hint(
+            peers=peers,
+            segment=segment,
+            okrug=okrug,
+            city=self.city,
+            fresh_since=_fresh_price_since(self.verified_prices.today),
+        )
+        hint["location"] = {
+            "display_name": subject.display_name,
+            "okrug": okrug,
+            "radius_km": radius_km,
+        }
+        return hint
 
     @staticmethod
     def _row(entity: ProjectEntity, geo, distance: float) -> dict[str, Any]:

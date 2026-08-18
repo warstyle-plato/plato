@@ -144,3 +144,32 @@ def test_empty_reference_is_not_a_failure() -> None:
     block = price_block(SUBJECT, PEERS, city)
     assert block.peers["count"] == 6
     assert block.city == {}
+
+
+def test_price_hint_prefers_neighbours_then_okrug_then_city() -> None:
+    """Порядок оснований важен: чем шире база, тем меньше она знает о месте."""
+    from market_search.price_hint import BASIS_CITY, BASIS_OKRUG, BASIS_PEERS, price_hint
+
+    near = [
+        {"price_per_sqm": 506_666, "observed_at": "2026-08-17", "segment": "Бизнес"},
+        {"price_per_sqm": 540_482, "observed_at": "2026-08-17", "segment": "Бизнес"},
+        {"price_per_sqm": 515_823, "observed_at": "2026-08-18", "segment": "Бизнес"},
+    ]
+    hint = price_hint(peers=near, segment="Бизнес", okrug="Западный", fresh_since="2026-06-01")
+    assert hint["basis"] == BASIS_PEERS
+    assert hint["price_per_sqm"] == 515_823
+    assert hint["sample"] == 3
+
+    # Двух соседей мало — это не медиана, а пара случайных чисел.
+    hint = price_hint(peers=near[:2], segment="Бизнес", okrug="Западный", fresh_since="2026-06-01")
+    assert hint["basis"] in (BASIS_OKRUG, BASIS_CITY)
+
+    # Устаревший прайс в выборку не идёт: у сданных домов он бывает 2020 года.
+    stale = [{**row, "observed_at": "2022-05-18"} for row in near]
+    hint = price_hint(peers=stale, segment="Бизнес", fresh_since="2026-06-01")
+    assert hint["basis"] == BASIS_CITY
+
+    # Класса нет и соседей нет — молча подставлять городскую медиану нельзя.
+    hint = price_hint(peers=[], segment=None, fresh_since="2026-06-01")
+    assert hint["available"] is False
+    assert "не рассчитан" in hint["reason"]
