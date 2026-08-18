@@ -182,3 +182,26 @@ def test_a_dense_parcel_does_not_become_a_wall():
     assert html.count('class="flag') == 6, "показываем только главные строки"
     assert "и ещё 6 ограничений" in html
     assert "в отчёте перечислены полностью" in html
+
+
+def test_the_report_carries_the_screening_before_the_money(monkeypatch):
+    """Раздел «Реализуемость посадки» стоит ПЕРЕД финансовым выводом
+    (архитектура): сначала что мешает строить, потом деньги. Отчёт не имеет
+    права падать из-за внешнего сервиса — при сбое раздел просто пропускается.
+    """
+    order = core.PAGE  # заглушка, чтобы линтер не ругался на неиспользуемое
+    assert order is not None
+    source = Path(core.__file__).read_text(encoding="utf-8")
+    body = source[source.index("def _build_developaid_pdf"):]
+    body = body[:body.index("# Состав выгружаемой модели")]
+    assert 'story.append(_PdfSection("screening"))' in body
+    assert body.index('_PdfSection("screening")') < body.index('_PdfSection("summary")'), \
+        "скрининг обязан стоять раньше ключевой экономики"
+    assert '("screening", True), ("summary", False)' in body, "порядок разделов не задан"
+    assert "except Exception:\n        screening = None" in body, "сбой сервиса не роняет отчёт"
+
+
+def test_the_report_numbers_come_from_the_project(monkeypatch):
+    numbers = core._pdf_screening_numbers({"_land_lookup": {"query": "50:20:0070312:8320, мусор"}})
+    assert numbers == ["50:20:0070312:8320"]
+    assert core._pdf_screening_numbers({}) == []
