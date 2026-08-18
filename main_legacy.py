@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.18.42"
+VERSION = "0.18.44"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -23005,11 +23005,24 @@ def _project_owner(session: str = "", key: str = "") -> int:
     # где есть не-ASCII, а ключ владелец задаёт какой захочет.
     if secret and key and hmac.compare_digest(str(key).encode("utf-8"), secret.encode("utf-8")):
         return sorted(admins)[0]
+    # Пустой `DEVELOPAID_ADMIN_KEY` отказывал теми же словами, что неверный
+    # ключ: человек вводил его снова и снова, а принимать было нечему
+    # (замечание владельца, 18.08.2026). Причины разные — и ответы разные.
+    if not secret:
+        raise HTTPException(
+            status_code=403,
+            detail=("Ключи на этом сервере не принимаются: DEVELOPAID_ADMIN_KEY "
+                    "не задан. Войдите через Telegram — кнопка в «Личном кабинете»."))
+    if not key:
+        raise HTTPException(
+            status_code=403,
+            detail=("Войдите через Telegram (кнопка в «Личном кабинете») либо "
+                    "введите ключ администратора — иначе сервер не знает, чей "
+                    "это проект."))
     raise HTTPException(
         status_code=403,
-        detail=("Войдите через Telegram (кнопка в «Мои проекты») либо задайте "
-                "DEVELOPAID_ADMIN_KEY и введите ключ — иначе сервер не знает, "
-                "чей это проект."))
+        detail=("Ключ администратора не подошёл. Проверьте его или войдите "
+                "через Telegram — кнопка в «Личном кабинете»."))
 
 
 def _project_dir(owner: int) -> Path:
@@ -24485,7 +24498,7 @@ details.cadastral-box>summary::marker{color:#888}
       <button class="btn ai-open-btn" onclick="toggleAgent(true)"><span id="aiStatusDot" class="ai-dot"></span><span class="ai-label">Платон Сергеевич</span></button>
       <!-- Кнопки хранилища появляются только там, где оно настроено и есть чем
            опознать владельца: иначе это кнопка, которая всегда отказывает. -->
-      <button class="btn" id="projectsButton" style="display:none" onclick="openProjects()">Мои проекты</button>
+      <button class="btn" id="projectsButton" style="display:none" onclick="openProjects()">Личный кабинет</button>
       <button class="btn" onclick="resetAll()">Сбросить</button>
       <a class="btn" href="/guide">Руководство</a>
       <button class="btn dark" onclick="calculateAndOpen('report')">Пересчитать модель</button>
@@ -24571,7 +24584,7 @@ details.cadastral-box>summary::marker{color:#888}
             <div id="moTables"></div>
             <div id="moWarnings" class="note warning"></div>
         </div>
-        <div id="glavapuStatus" class="import-status">Введите кадастровый номер выше — ТЭП посчитается сам. Готовые примеры — в «Мои проекты», свой файл ГлавАПУ — ниже.</div>
+        <div id="glavapuStatus" class="import-status">Введите кадастровый номер выше — ТЭП посчитается сам. Готовые примеры — в «Личном кабинете», свой файл ГлавАПУ — ниже.</div>
         <div id="glavapuPreview" class="import-preview" style="display:none">
           <div id="glavapuSummary" class="import-summary"></div>
           <div class="import-actions">
@@ -24594,11 +24607,11 @@ details.cadastral-box>summary::marker{color:#888}
              — получил ТЭП». -->
         <details class="import-fallback">
           <summary>Свой файл: шаблон ТЭП DevelopAid, выгрузка ГлавАПУ или пресет проекта</summary>
-          <!-- Готовые примеры уехали в «Мои проекты»: и они, и сохранённые
+          <!-- Готовые примеры уехали в «Личный кабинет»: и они, и сохранённые
                проекты — это «взять готовое и посмотреть», а здесь разбирают
                принесённый файл. Решение владельца (15.08.2026). -->
           <div id="presetsMovedHint" style="font-size:11px;color:#888;margin:10px 0 8px">
-            Готовые примеры — Мишина, Мытищи, Румянцево — переехали в «Мои проекты» наверху страницы.
+            Готовые примеры — Мишина, Мытищи, Румянцево — переехали в «Личный кабинет» наверху страницы.
           </div>
           <div style="font-size:11px;color:#888;margin:7px 0 8px">шаблон ТЭП DevelopAid либо выгрузка калькулятора ГлавАПУ</div>
           <!-- Шаблон скачивается отсюда же, где загружается. Отказ разбора
@@ -25118,7 +25131,7 @@ details.cadastral-box>summary::marker{color:#888}
      z-index:80;align-items:center;justify-content:center;padding:20px" onclick="if(event.target===this)closeProjects()">
   <div style="background:#fff;max-width:900px;width:100%;max-height:80vh;overflow:auto;padding:22px 24px">
     <div style="display:flex;align-items:center;gap:14px;margin-bottom:12px">
-      <h2 style="margin:0;font-size:17px">Мои проекты</h2>
+      <h2 style="margin:0;font-size:17px">Личный кабинет</h2>
       <!-- Кнопки хранилища — только там, где оно есть: примеры открываются и
            без него, а «Сохранить», которое всегда откажет, хуже отсутствия.
            Смена ключа без консоли браузера: ключ меняют, когда он засветился,
@@ -25149,7 +25162,12 @@ details.cadastral-box>summary::marker{color:#888}
         <button class="btn dark" onclick="loadServerProjectPreset()">Открыть</button>
       </div>
     </div>
+    <!-- Кто вошёл и чем выйти. Прежде выход был только через консоль браузера:
+         сессия лежит в localStorage, а кнопки не было (замечание владельца,
+         18.08.2026). -->
+    <div id="accountBox" style="display:none;border:1px solid var(--line);padding:12px 14px;margin-bottom:14px"></div>
     <div id="projectsStored">
+      <div class="section-title" style="margin-bottom:8px">Мои проекты</div>
       <div style="font-size:11px;color:#777;margin-bottom:10px">
         Хранится на ядре в России. Сохраняется только то, что вы сохранили сами.
       </div>
@@ -25579,6 +25597,7 @@ async function saveProfile(){
   if(!r.ok)throw new Error(d.detail||'Анкета не сохранена');
   profileState={complete:true,profile:d.profile||{},sources:profileState.sources};
   closeProfile();
+  renderAccountBox();
  }catch(e){say(String(e.message||e))}
 }
 
@@ -26974,7 +26993,7 @@ async function loadPresetCatalog(){
 async function loadServerPreset(){
  const select=document.getElementById('serverPresetSelect');
  const id=select&&select.value;
- // Отказ печатался во «Вводных», а список теперь в окне «Мои проекты»:
+ // Отказ печатался во «Вводных», а список теперь в личном кабинете:
  // сообщение уходило на страницу, которой человек не видит.
  if(!id){alert('Выберите предустановку из списка.');return}
  // Ход разбора и результат печатаются во «Вводных» — окно закрываем и
@@ -29175,7 +29194,7 @@ async function exportModelArchive(){
 // Кнопки «Сохранить» нет: каждый пересчёт и так пишет состояние в localStorage
 // этого браузера — ручная копия того же самого создавала ложное ощущение
 // надёжного сохранения (владелец, 16.08.2026). Настоящее сохранение, которое
-// переживает смену устройства, — «Мои проекты».
+// переживает смену устройства, — «Личный кабинет».
 function persistLocalSilently(){localStorage.setItem('plato_v04',JSON.stringify({inputs,tep,phasing,scenario:scenarioSelect.value}))}
 function loadLocal(){try{const x=JSON.parse(localStorage.getItem('plato_v04'));if(x){
  // Сохранённое состояние накладывается на умолчания, а не подменяет их целиком.
@@ -29361,7 +29380,7 @@ async function projectsCall(path,body){
  return data;
 }
 
-// Кнопка «Мои проекты» видна всегда: за ней живут готовые примеры, которые
+// Кнопка «Личный кабинет» видна всегда: за ней живут готовые примеры, которые
 // ключа не требуют. Прежде она появлялась только при настроенном хранилище —
 // вместе с ним пропали бы и примеры, а они витрина, а не чужие данные.
 let projectsStorageReady=false;
@@ -29413,7 +29432,7 @@ async function saveProjectToServer(){
  }
 }
 
-function renderProjectsLogin(){
+function renderProjectsLogin(reason){
  // Панель входа живёт рядом с таблицей, не затирая её: после входа таблица
  // нужна той же самой.
  const stored=document.getElementById('projectsStored');
@@ -29452,6 +29471,13 @@ function renderProjectsLogin(){
   stored.insertBefore(box,stored.firstChild);
  }
  box.style.display='';
+ // Причина показывается в самой панели: «сервер не знает, чей это проект» в
+ // окне запроса ключа человек читал уже после того, как ключ ввёл.
+ const status=box.querySelector('div:last-child');
+ if(status)status.textContent=reason?String(reason):'';
+ if(!projectsAcceptsLogin&&!projectsAcceptsKey&&status){
+  status.textContent='Вход на этом сервере не настроен: нет ни имени бота, ни ключа администратора.';
+ }
  const scroll=stored.querySelector('.scroll');
  if(scroll)scroll.style.display='none';
 }
@@ -29472,11 +29498,54 @@ function enterProjectsKey(){
  openProjects();
 }
 
+// Кто вошёл и чем выйти. Сессия входа живёт в localStorage браузера; пока
+// кнопки не было, выйти можно было только через консоль — на телефоне никак.
+function renderAccountBox(){
+ const box=document.getElementById('accountBox');
+ if(!box)return;
+ // В мини-приложении сессия приходит из хеша от бота: выходить там некуда и
+ // не из чего — окно и так открыто конкретным человеком.
+ if(telegramSession){box.style.display='none';return}
+ const web=webSession();
+ if(!web&&!projectsAdminKey){box.style.display='none';return}
+ const profile=(profileState&&profileState.profile)||{};
+ const title=web
+  ?(profile.name?escapeHtml(profile.name):'Вход через Telegram подтверждён')
+  :'Вход по ключу администратора';
+ const details=[];
+ if(web&&profile.company)details.push(escapeHtml(profile.company));
+ if(web&&profile.role)details.push(escapeHtml(profile.role));
+ if(web&&profile.telegram_name)details.push('Telegram: '+escapeHtml(profile.telegram_name));
+ box.style.display='';
+ box.innerHTML='<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">'+
+  '<div><b>'+title+'</b>'+
+  (details.length?'<div style="font-size:11px;color:#777;margin-top:2px">'+details.join(' · ')+'</div>':'')+
+  (web&&!(profileState&&profileState.complete)
+    ?'<div style="font-size:11px;color:#a05a00;margin-top:2px">Знакомство не заполнено — проекты не сохранятся.</div>':'')+
+  '</div>'+
+  '<span style="margin-left:auto;display:flex;gap:10px">'+
+  (web?'<button class="btn" onclick="openProfile()">Знакомство</button>':'')+
+  '<button class="btn" onclick="logoutFromSite()">Выход</button>'+
+  '</span></div>';
+}
+
+function logoutFromSite(){
+ if(!confirm('Выйти из личного кабинета на этом устройстве?'))return;
+ try{localStorage.removeItem(WEB_SESSION_KEY)}catch(e){}
+ // Ключ администратора — тоже вход, и он тоже лежит в браузере: оставить его
+ // после «Выхода» значит не выйти.
+ try{localStorage.removeItem('plato_projects_key')}catch(e){}
+ projectsAdminKey='';
+ profileState={complete:false,profile:{},sources:profileState.sources};
+ location.reload();
+}
+
 async function openProjects(){
  // Окно открывается сразу: примеры в нём есть всегда, и держать человека
  // перед запросом ключа ради витрины незачем. Список сохранённых
  // подгружается следом и только там, где хранилище настроено.
  projectsDialog.style.display='flex';
+ renderAccountBox();
  const stored=document.getElementById('projectsStored');
  if(!projectsStorageReady){
   if(stored)stored.style.display='none';
@@ -29493,18 +29562,18 @@ async function openProjects(){
  let data;
  try{data=await projectsCall('/projects/list',{})}
  catch(e){
-  // Неверный ключ запирал дверь снаружи: список не открывался, а кнопка
-  // «Сменить ключ» жила внутри него. Спрашиваем прямо здесь, иначе
-  // единственный выход — консоль браузера, которой на телефоне нет.
+  // Ключ, который сервер не принял, спрашивался снова и снова: человек сидел
+  // в окне ввода, а выход — вход через Telegram — был за его пределами
+  // (замечание владельца, 18.08.2026). Непринятый ключ забываем и показываем
+  // оба входа сразу, с причиной отказа рядом.
   if(!activeSession()){
-   const again=prompt(String(e.message||e)+'\n\nВведите ключ ещё раз:',projectsAdminKey||'');
-   if(again===null)return;
-   projectsAdminKey=again.trim();
-   if(projectsAdminKey)localStorage.setItem('plato_projects_key',projectsAdminKey);
-   else localStorage.removeItem('plato_projects_key');
-   try{data=await projectsCall('/projects/list',{})}
-   catch(e2){alert(String(e2.message||e2));return}
-  }else{alert(String(e.message||e));return}
+   projectsAdminKey='';
+   try{localStorage.removeItem('plato_projects_key')}catch(e2){}
+   renderAccountBox();
+   renderProjectsLogin(String(e.message||e));
+   return;
+  }
+  alert(String(e.message||e));return;
  }
  const rows=(data.projects||[]).map(p=>{
   const s=p.summary||{};

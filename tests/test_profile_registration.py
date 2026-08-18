@@ -173,3 +173,37 @@ def test_the_owner_with_his_own_key_is_not_asked_to_introduce_himself(storage, m
     request = core.ProjectRequest(key="kluch", name="Проект", payload={"inputs": {}})
     assert core.projects_save(request).get("id")
 
+
+def test_the_account_has_a_way_out():
+    """Выйти можно было только через консоль браузера: сессия лежит в
+    localStorage, а кнопки не было (замечание владельца, 18.08.2026)."""
+    page = core.PAGE
+    body = page[page.index("function logoutFromSite()"):]
+    body = body[:body.index("\n}\n")]
+    assert "localStorage.removeItem(WEB_SESSION_KEY)" in body
+    assert "plato_projects_key" in body, "ключ администратора — тоже вход"
+    assert "location.reload()" in body
+
+
+def test_the_account_strip_says_who_came_in():
+    page = core.PAGE
+    body = page[page.index("function renderAccountBox()"):page.index("function logoutFromSite()")]
+    assert "telegramSession" in body, "в мини-приложении выходить некуда"
+    assert "profileState" in body and "logoutFromSite()" in body
+    assert "Вход по ключу администратора" in body
+    assert "Знакомство не заполнено" in body, "незаполненная анкета видна сразу"
+    assert 'id="accountBox"' in page
+    assert "renderAccountBox();" in page[page.index("async function openProjects("):
+                                          page.index("function closeProjects(")]
+
+
+def test_the_section_is_called_the_personal_account():
+    """Раздел назван «Личный кабинет», проекты — раздел внутри него."""
+    page = core.PAGE
+    button = page[page.index('id="projectsButton"'):]
+    assert "Личный кабинет" in button[:200]
+    dialog = page[page.index('id="projectsDialog"'):]
+    dialog = dialog[:dialog.index('id="aiOverlay"')]
+    assert "<h2 style=\"margin:0;font-size:17px\">Личный кабинет</h2>" in dialog
+    assert "Мои проекты" in dialog, "проекты остаются разделом внутри кабинета"
+
