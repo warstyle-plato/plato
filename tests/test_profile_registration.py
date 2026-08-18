@@ -155,7 +155,7 @@ def test_the_page_asks_once_and_prefills():
     body = page[page.index("// --- Знакомство"):page.index("const money=v=>")]
     assert "p.name||p.telegram_name" in body, "имя из Telegram подставляется подсказкой"
     assert "/profile/save" in body and "/profile/get" in body
-    assert "loadProfile(true);" in page, "у вошедшего без анкеты знакомство открывается само"
+    assert "loadProfile(false);" in page, "на каждой перезагрузке анкета не всплывает"
     assert "Заполните знакомство" in page, "428 при сохранении открывает анкету, а не пугает кодом"
     assert 'href="/consent"' in page and 'href="/privacy"' in page
 
@@ -309,4 +309,20 @@ def test_an_old_profile_still_opens_and_moves_on_save(storage, monkeypatch):
     core.profile_save(_request())
     assert not legacy.exists(), "после сохранения старый файл убран"
     assert core.profile_read(4242)["company"] == "DevelopAid"
+
+
+def test_the_profile_is_asked_on_the_result_tab():
+    """Спрашиваем там, где человек уже видит, за чем пришёл, — на выходе к
+    результату, а не при сохранении проекта (решение владельца, 18.08.2026).
+    Сервер при сохранении по-прежнему просит анкету: это гарантия, а не место,
+    где спрашивают."""
+    page = core.PAGE
+    tab = page[page.index("function openTab(id,btn){"):page.index("function askProfileOnResult()")]
+    assert "if(id==='report')askProfileOnResult();" in tab
+
+    body = page[page.index("function askProfileOnResult()"):]
+    body = body[:body.index("\n}\n") + 2]
+    assert "activeSession()" in body, "без входа спрашивать некого"
+    assert "profileAskedOnResult" in body, "один раз за сеанс, а не на каждый клик"
+    assert "loadProfile(false).then" in body, "состояние могло не приехать — спрашиваем сервер"
 
