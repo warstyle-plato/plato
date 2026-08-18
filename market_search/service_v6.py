@@ -571,7 +571,7 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                     subject.project_id = project.complex_id
                     subject.project_name = project.name
                     subject.segment = classes.get(project.complex_id)
-                    subject_address = subject_address or project.address
+                    subject_address = subject_address or getattr(project, "address", None)
                     break
         if subject.project_id is not None and not subject_address:
             known = self.pulse.project(subject.project_id)

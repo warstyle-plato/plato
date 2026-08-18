@@ -302,11 +302,14 @@ def test_constructor_names_where_the_class_came_from(tmp_path) -> None:
     }
     projects = [
         {"complex_id": 5924, "name": "Кутузов Сити", "developer": "—",
-         "latitude": 55.71584, "longitude": 37.43303},
+         "latitude": 55.71584, "longitude": 37.43303,
+         "address": "Москва, ЗАО, район Можайский, ул. Гродненская, вл. 18"},
         {"complex_id": 5549, "name": "Родина Парк", "developer": "—",
-         "latitude": 55.72100, "longitude": 37.43900},
+         "latitude": 55.72100, "longitude": 37.43900,
+         "address": "Москва, ЗАО, район Можайский, ул. Верейская, вл. 12"},
         {"complex_id": 5737, "name": "Спрингс", "developer": "—",
-         "latitude": 55.73200, "longitude": 37.45500},
+         "latitude": 55.73200, "longitude": 37.45500,
+         "address": "Москва, ЗАО, р-н Фили-Давыдково, ул. Малая Филёвская, вл. 46"},
     ]
     service.pulse = _fake_pulse(segments, metrics, projects)
 
@@ -351,9 +354,11 @@ def test_report_route_answers_and_refuses_with_a_reason(tmp_path, monkeypatch) -
     }
     projects = [
         {"complex_id": 5924, "name": "Кутузов Сити", "developer": "—",
-         "latitude": 55.71584, "longitude": 37.43303},
+         "latitude": 55.71584, "longitude": 37.43303,
+         "address": "Москва, ЗАО, район Можайский, ул. Гродненская, вл. 18"},
         {"complex_id": 5549, "name": "Родина Парк", "developer": "—",
-         "latitude": 55.72100, "longitude": 37.43900},
+         "latitude": 55.72100, "longitude": 37.43900,
+         "address": "Москва, ЗАО, район Можайский, ул. Верейская, вл. 12"},
     ]
     service.pulse = _fake_pulse(segments, metrics, projects)
     client = TestClient(app, headers={"X-Market-Key": "stand-key-2026"})
