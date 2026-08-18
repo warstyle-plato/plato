@@ -454,6 +454,67 @@ function remainChart(rows){
   return '<div class="wrap">'+svg+'</svg></div>';
 }
 
+
+// Карта рынка: цена против поглощения, размер кружка — экспозиция.
+// Одна картинка отвечает на вопрос, который таблицей не читается: дорогие
+// продаются быстро или стоят. Свой проект рыжий, остальные по классу.
+const CLASS_COLOR={'Стандарт/Эконом':'#8fb8d8','Комфорт':'#7fb3a6','Бизнес':'#4E9BDE',
+  'Премиум':'#8a6fc4','Элит/De Luxe':'#c46f9b'};
+function bubbleChart(rows){
+  const pts=rows.filter(r=>r.price_per_sqm&&r.area_per_month);
+  if(pts.length<3) return '<div class="muted">Для карты рынка нужно хотя бы три проекта с ценой и продажами.</div>';
+  const W=680,H=380,L=64,R=16,T=16,B=44;
+  const xs=pts.map(p=>p.area_per_month), ys=pts.map(p=>p.price_per_sqm);
+  const xhi=Math.max(...xs)*1.12, yhi=Math.max(...ys)*1.08, ylo=Math.min(...ys)*0.92;
+  const lots=pts.map(p=>p.lot_count||1), lhi=Math.max(...lots);
+  const x=v=>L+(W-L-R)*(v/xhi);
+  const y=v=>T+(H-T-B)*(1-(v-ylo)/(yhi-ylo||1));
+  const r=v=>4+18*Math.sqrt((v||1)/lhi);
+  let svg=`<svg viewBox="0 0 ${W} ${H}" width="100%" role="img">`;
+  [0,0.25,0.5,0.75,1].forEach(f=>{const v=ylo+(yhi-ylo)*f;
+    svg+=`<line x1="${L}" y1="${y(v)}" x2="${W-R}" y2="${y(v)}" stroke="#eef2f6"/>`
+       +`<text x="${L-6}" y="${y(v)+4}" text-anchor="end" font-size="10" fill="#8798a8">${num(v)}</text>`;});
+  [0,0.25,0.5,0.75,1].forEach(f=>{const v=xhi*f;
+    svg+=`<text x="${x(v)}" y="${H-24}" text-anchor="middle" font-size="10" fill="#8798a8">${num(v)}</text>`;});
+  // Медианы обеих осей — крест, делящий поле на четверти: дорого-быстро,
+  // дорого-медленно, дёшево-быстро, дёшево-медленно.
+  const mid=a=>{const v=[...a].sort((p,q)=>p-q);return v.length%2?v[(v.length-1)/2]:(v[v.length/2-1]+v[v.length/2])/2};
+  const mx=mid(xs), my=mid(ys);
+  svg+=`<line x1="${x(mx)}" y1="${T}" x2="${x(mx)}" y2="${H-B}" stroke="#c9d6e2" stroke-dasharray="4 4"/>`
+     +`<line x1="${L}" y1="${y(my)}" x2="${W-R}" y2="${y(my)}" stroke="#c9d6e2" stroke-dasharray="4 4"/>`;
+  pts.sort((a,b)=>(b.lot_count||0)-(a.lot_count||0)).forEach(p=>{
+    const c=p.__own?'#C4581B':(CLASS_COLOR[p.segment]||'#9dc2e6');
+    svg+=`<circle cx="${x(p.area_per_month).toFixed(1)}" cy="${y(p.price_per_sqm).toFixed(1)}"`
+       +` r="${r(p.lot_count).toFixed(1)}" fill="${c}" fill-opacity="${p.__own?0.9:0.42}"`
+       +` stroke="${c}" stroke-width="${p.__own?2:1}"><title>${esc(p.name)}: ${num(p.price_per_sqm)} ₽/м²,`
+       +` ${num(p.area_per_month)} м²/мес, ${num(p.lot_count)} лотов</title></circle>`;
+  });
+  // Подписываем только тех, кого стоит узнать в лицо: свой проект и крайние
+  // по каждой оси. Подписать все — значит не подписать ни одного.
+  const marks=new Set();
+  const own=pts.find(p=>p.__own); if(own) marks.add(own);
+  [...pts].sort((a,b)=>b.price_per_sqm-a.price_per_sqm)[0]&&marks.add([...pts].sort((a,b)=>b.price_per_sqm-a.price_per_sqm)[0]);
+  [...pts].sort((a,b)=>b.area_per_month-a.area_per_month)[0]&&marks.add([...pts].sort((a,b)=>b.area_per_month-a.area_per_month)[0]);
+  [...pts].sort((a,b)=>a.price_per_sqm-b.price_per_sqm)[0]&&marks.add([...pts].sort((a,b)=>a.price_per_sqm-b.price_per_sqm)[0]);
+  marks.forEach(p=>{
+    const px=x(p.area_per_month), py=y(p.price_per_sqm)-r(p.lot_count)-5;
+    svg+=`<text x="${px.toFixed(1)}" y="${py.toFixed(1)}" text-anchor="middle" font-size="10.5"`
+       +` fill="${p.__own?'#C4581B':'#5b6b7d'}"${p.__own?' font-weight="600"':''}>`
+       +`${esc(p.name.length>20?p.name.slice(0,19)+'…':p.name)}</text>`;
+  });
+  svg+=`<text x="${(L+W-R)/2}" y="${H-6}" text-anchor="middle" font-size="10.5" fill="#5b6b7d">поглощение, м² в месяц</text>`
+     +`<text x="14" y="${(T+H-B)/2}" text-anchor="middle" font-size="10.5" fill="#5b6b7d"`
+     +` transform="rotate(-90 14 ${(T+H-B)/2})">цена, ₽/м²</text>`;
+  const legend=Object.entries(CLASS_COLOR).filter(([k])=>pts.some(p=>p.segment===k));
+  let lx=L;
+  legend.forEach(([k,c])=>{
+    svg+=`<circle cx="${lx+5}" cy="${T-4}" r="5" fill="${c}" fill-opacity="0.42" stroke="${c}"/>`
+       +`<text x="${lx+14}" y="${T-1}" font-size="10" fill="#5b6b7d">${esc(k)}</text>`;
+    lx+=18+k.length*5.6;
+  });
+  return '<div class="wrap">'+svg+'</svg></div>';
+}
+
 function compareTable(rows, cols){
   return '<div class="wrap"><table><tr>'+cols.map(c=>`<th${c.num?' class="num"':''}>${c.t}</th>`).join('')+'</tr>'
     +rows.map(r=>'<tr'+(r.__own?' class="ownrow"':'')+'>'
@@ -573,7 +634,14 @@ async function askPlato(){
   try{
     const r=await fetch('/agent/chat',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({message,inputs:{},tep:{},trace_id:trace})});
-    let d=await r.json();
+    // Ответ бывает не JSON — например HTML страницы ошибки. Разбирать его
+    // вслепую значит показать человеку «The string did not match the expected
+    // pattern» вместо причины.
+    const raw=await r.text();
+    let d;
+    try{ d=JSON.parse(raw) }
+    catch(_){ $('#askout').innerHTML=`<div class="err">Платон ответил не по-русски и не по-JSON`
+      +` (код ${r.status}): ${esc(raw.slice(0,200))}</div>`; return }
     if(!r.ok){$('#askout').innerHTML=`<div class="err">${esc(d.detail||'Платон не ответил')}</div>`;return}
     // Быстрый ответ приходит тем же запросом; за долгим ходим по номеру.
     let text=d.reply||d.answer||d.text||'';
@@ -770,6 +838,12 @@ function render(d){
       <div><b>${num(c.stale_price)}</b><span>прайс старше ${esc(c.fresh_since)}</span></div>
       <div><b>${num(c.no_price)}</b><span>цены нет вовсе</span></div>
     </div>`+((((d.city||{}).scope||{}).covered===false)?`<div class="scope">${esc(d.city.scope.reason)}</div>`:'')+`</div>`;
+
+  const market=[{...m, name:s.project_name||'объект', segment:s.segment, __own:true}, ...peers];
+  html+=`<div class="card"><h2>Карта рынка: цена против скорости продаж</h2>`
+    +bubbleChart(market)
+    +`<div class="muted" style="font-size:12.5px;margin-top:8px">Размер кружка — лотов в экспозиции.`
+    +` Пунктир — медианы по обеим осям: справа сверху дорогие и быстрые, слева сверху дорогие и стоящие.</div></div>`;
 
   const priceBlock=(d.blocks||[]).find(b=>b.code==='price');
   if(priceBlock) html+=`<div class="card"><h2>Цены соседей сегодня</h2>${priceChart(peers,{...m,name:s.project_name||'объект'},(priceBlock.peers||{}).median)}</div>`;
