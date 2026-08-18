@@ -1,4 +1,4 @@
-"""Меню бота — шесть решений, а не тринадцать команд.
+"""Меню бота — решения, а не тринадцать команд.
 
 Список Telegram плоский: заголовков групп в нём нет, и тринадцать строк
 читались простынёй, где всё одинаково важно. Пять входов в ТЭП стояли
@@ -14,6 +14,11 @@
 
 Остальные команды работают по-прежнему, но команда вне меню, о которой негде
 узнать, просто спрятана — поэтому помощь обязана называть каждую.
+
+Число пунктов здесь не закреплено — закреплён их состав и порядок. Пункт
+добавляется осознанно: `market` встал потому, что «оценить рынок конкурентов»
+— решение того же порядка, что «посчитать ВРИ и ТЭП», а не уточнение внутри
+расчёта.
 
 Запуск: python3 -m pytest tests -q
 """
@@ -42,35 +47,49 @@ EXTRA_NAMES = [str(item["command"]) for item in EXTRA]
 
 def sources() -> str:
     """Все модули, которые разбирают команды: движок, обёртка, расширения."""
-    files = ["main_legacy.py", "main.py", "mpt_extension.py", "telegram_user_registry.py"]
+    files = ["main_legacy.py", "main.py", "mpt_extension.py", "telegram_user_registry.py",
+             "market_search/bot.py"]
     return "\n".join((ROOT / name).read_text(encoding="utf-8") for name in files)
 
 
 # --- шесть решений -------------------------------------------------------------
 
-def test_the_menu_holds_six_decisions():
-    """Седьмой пункт — повод спросить, решение ли это или ещё одна команда."""
-    assert NAMES == ["calc", "model", "vritep", "mpt", "platon", "help"], NAMES
+def test_the_menu_holds_the_decisions_we_agreed_on():
+    """Новый пункт — повод спросить, решение ли это или ещё одна команда.
+
+    `market` признан решением: «оценить рынок конкурентов» человек делает до
+    экономики и отдельно от неё, как и «посчитать ВРИ и ТЭП».
+    """
+    assert NAMES == ["calc", "model", "vritep", "mpt", "market", "platon", "help"], NAMES
 
 
 def test_the_calculations_stand_together():
-    """ВРИ с ТЭП и льгота МПТ — оба расчёта, между ними ничего не вклинивается."""
-    assert NAMES.index("mpt") == NAMES.index("vritep") + 1
+    """ВРИ с ТЭП, льгота МПТ и рынок — расчёты, между ними ничего не вклинивается."""
+    block = NAMES[NAMES.index("vritep"):NAMES.index("vritep") + 3]
+    assert block == ["vritep", "mpt", "market"], NAMES
 
 
 def test_a_calculation_is_not_below_the_help():
     """`/mpt` дописывался расширением в конец — оказывался последним пунктом."""
-    assert NAMES.index("mpt") < NAMES.index("help")
+    for name in ("mpt", "market"):
+        assert NAMES.index(name) < NAMES.index("help"), name
 
 
 def test_the_help_closes_the_list():
     assert NAMES[-1] == "help"
 
 
-def test_the_extension_lands_on_the_anchor_not_at_the_end():
-    """Место расширения задаёт движок якорем, а не порядок установки."""
-    assert core.TELEGRAM_MENU_EXTENSION_ANCHOR in NAMES
-    assert NAMES.index("mpt") == NAMES.index(core.TELEGRAM_MENU_EXTENSION_ANCHOR) - 1
+def test_every_extension_lands_on_the_anchor_not_at_the_end():
+    """Место расширения задаёт движок якорем, а не порядок установки.
+
+    Пунктов расширений уже два, и привязывать каждый к своему номеру значит
+    править тест при каждом следующем. Проверяется правило: оба стоят между
+    расчётами движка и якорем, в порядке установки.
+    """
+    anchor = core.TELEGRAM_MENU_EXTENSION_ANCHOR
+    assert anchor in NAMES
+    for name in ("mpt", "market"):
+        assert NAMES.index("vritep") < NAMES.index(name) < NAMES.index(anchor), name
 
 
 def test_the_extension_does_not_duplicate_its_command():
