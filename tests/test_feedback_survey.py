@@ -55,12 +55,15 @@ def test_only_the_asked_fields_survive():
     спрашивали: профиль сверяется со списком, оценки — целые от одного до пяти."""
     clean = core._feedback_clean(core.FeedbackRequest(
         role="Брокер", region="Марс",
-        ratings={"site": 5, "inputs": "2", "platon": 9, "выдумка": 4, "ui": None},
+        ratings={"site_tep": 5, "inputs_clarity": "2", "platon_useful": 9,
+                 "выдумка": 4, "general_ui": None},
+        problems={"excel": "  формулы читаются  ", "выдумка": "x"},
         impression="полезно", mistakes="цена входа не так", projects=["Маковского 28", ""],
         source="brokers"))
     assert clean["role"] == "Брокер"
     assert clean["region"] == ""              # такого региона в списке нет
-    assert clean["ratings"] == {"site": 5, "inputs": 2}
+    assert clean["ratings"] == {"site_tep": 5, "inputs_clarity": 2}
+    assert clean["problems"] == {"excel": "формулы читаются"}
     assert clean["projects"] == ["Маковского 28"]
     assert clean["source"] == "brokers"
 
@@ -68,7 +71,8 @@ def test_only_the_asked_fields_survive():
 def test_an_empty_rating_is_not_a_one():
     """«Не смотрел» — это отсутствие ответа, а не единица. Непользовавшийся,
     засчитанный единицей, портит средние сильнее, чем пропуск."""
-    clean = core._feedback_clean(core.FeedbackRequest(ratings={"site": 0, "ui": 6}))
+    clean = core._feedback_clean(core.FeedbackRequest(
+        ratings={"site_tep": 0, "general_ui": 6}))
     assert clean["ratings"] == {}
 
 
@@ -115,15 +119,28 @@ def test_the_survey_needs_no_login():
 def test_the_form_is_substituted_not_copied():
     assert core.FEEDBACK_FORM_PLACEHOLDER not in core.PAGE
     assert "const FEEDBACK_FORM=" in core.PAGE
-    for key, _label, _hint in core.FEEDBACK_BLOCKS:
+    for key in core.FEEDBACK_ITEMS:
         assert f'"{key}"' in core.PAGE
 
 
-def test_every_block_has_a_key_and_a_label():
-    keys = [block[0] for block in core.FEEDBACK_BLOCKS]
-    assert len(keys) == len(set(keys)), "ключи разделов должны быть разными"
-    for block in core.FEEDBACK_BLOCKS:
-        assert len(block) == 3 and block[0] and block[1]
+def test_every_group_and_item_has_a_key_and_a_label():
+    groups = [group[0] for group in core.FEEDBACK_GROUPS]
+    assert len(groups) == len(set(groups)), "ключи разделов должны быть разными"
+    items = [item[0] for group in core.FEEDBACK_GROUPS for item in group[2]]
+    assert len(items) == len(set(items)), "ключи подпунктов должны быть разными"
+    for group in core.FEEDBACK_GROUPS:
+        assert len(group) == 3 and group[0] and group[1] and group[2]
+        for item in group[2]:
+            assert len(item) == 3 and item[0] and item[1]
+
+
+def test_the_report_is_rated_by_criteria_not_by_one_score():
+    """«Красиво» ничего не значит. Отчёт, PDF и книга оцениваются по критериям,
+    и три из них добавлены не для полноты списка: доверие к цифрам, готовность
+    показать банку и правильность расчёта — то, ради чего всё и делается."""
+    assert "report_trust" in core.FEEDBACK_ITEMS
+    assert "pdf_shareable" in core.FEEDBACK_ITEMS
+    assert "excel_correct" in core.FEEDBACK_ITEMS
 
 
 # --- правило всплытия ---------------------------------------------------------------
@@ -191,7 +208,7 @@ def test_two_refusals_end_it():
 
 # --- низкий балл спрашивает, высокий молчит -----------------------------------------
 
-def test_a_low_score_names_the_block_in_the_single_field():
+def test_a_low_score_names_the_item_in_its_group_comment():
     """Строк под каждым разделом больше нет — решение владельца (17.08.2026):
     баллы люди ставят охотно, а пишут один раз и в конце, если есть что
     сказать. Чтобы это «что сказать» не превратилось в «всё нормально»,
@@ -200,7 +217,7 @@ def test_a_low_score_names_the_block_in_the_single_field():
     body = body[:body.index("function openFeedback(")]
     assert "score>0&&score<4" in body.replace(" ", "")
     assert "Вы низко оценили" in body
-    assert "fb-problem" not in core.PAGE, "строки под разделами должны быть убраны"
+    assert "note.placeholder" in body, "подпись комментария должна меняться"
 
 
 def test_the_footer_keeps_a_way_back():

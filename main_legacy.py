@@ -72,19 +72,57 @@ SOCIAL_MODES_PLACEHOLDER = "__DEVELOPAID_SOCIAL_MODES__"
 # а свод начнёт считать средние по разделам, которых уже нет.
 FEEDBACK_FORM_PLACEHOLDER = "__DEVELOPAID_FEEDBACK_FORM__"
 
-# Оценки просим по разделам, а не «интерфейс вообще»: из общей четвёрки не
-# следует, что чинить. Ключ уходит в журнал и в свод, подпись — на страницу.
-FEEDBACK_BLOCKS: list[list[str]] = [
-    ["site", "Участок и ТЭП", "поиск, кадастр, нормативный расчёт"],
-    ["inputs", "Вводные", "понятность полей, хватает ли их"],
-    ["economics", "Отчёт: экономика", "выручка, расходы, прибыль"],
-    ["finance", "Отчёт: финансирование", "БРИДЖ, ПФ, LLCR"],
-    ["verdict", "Выводы и карточка решения", "вердикт, цена входа"],
-    ["export", "PDF и выгрузка модели", ""],
-    ["platon", "Платон Сергеевич", ""],
-    ["ui", "Интерфейс в целом", ""],
-    ["clarity", "Интуитивная простота", "не пришлось ли гадать"],
+# Анкета: разделы с подпунктами и комментарием к каждому (структура владельца,
+# 17.08.2026). Плоский список из девяти строк не годился: «Участок» — это и
+# ввод адреса, и расчёт ТЭП, и очерёдность, и низкая оценка разделу не говорит,
+# что из этого чинить. Отчёт, PDF и книга оцениваются по критериям, а не одним
+# баллом: «красиво» ничего не значит, а «отправил бы банку» значит всё.
+FEEDBACK_GROUPS: list[list[Any]] = [
+    ["site", "Участок", [
+        ["site_address", "Ввод адреса и кадастра", ""],
+        ["site_egrn", "Сведения ЕГРН и карта", ""],
+        ["site_tep", "Расчёт ТЭП", ""],
+        ["site_tep_edit", "Редактирование ТЭП", ""],
+        ["site_phasing", "Очерёдность", ""],
+    ]],
+    ["inputs", "Вводные", [
+        ["inputs_presets", "Предустановки и класс проекта", ""],
+        ["inputs_coverage", "Набор параметров", "хватает ли их"],
+        ["inputs_scenarios", "Сценарии", ""],
+        ["inputs_clarity", "Понятность полей", ""],
+    ]],
+    ["report", "Отчёт на экране", [
+        ["report_completeness", "Полнота информации", ""],
+        ["report_metrics", "Набор метрик", ""],
+        ["report_clarity", "Простота восприятия", ""],
+        # Метрики могут быть полными, восприятие простым, а человек результату
+        # всё равно не верит. Это надо знать раньше всего остального.
+        ["report_trust", "Доверие к цифрам", ""],
+    ]],
+    ["pdf", "PDF-отчёт", [
+        ["pdf_completeness", "Полнота", ""],
+        ["pdf_clarity", "Простота восприятия", ""],
+        ["pdf_shareable", "Готовность показать банку или партнёру", ""],
+    ]],
+    ["excel", "Excel-модель", [
+        # Первой строкой: книгу отдают живой ради того, чтобы её проверили.
+        ["excel_correct", "Правильность расчёта", ""],
+        ["excel_formulas", "Прозрачность формул", ""],
+        ["excel_edit", "Удобство правки", ""],
+    ]],
+    ["platon", "Платон Сергеевич", [
+        ["platon_useful", "Польза ответов", ""],
+        ["platon_clarity", "Понятность", ""],
+    ]],
+    ["general", "Общее", [
+        ["general_ui", "Интерфейс", ""],
+        ["general_obvious", "Понятно без объяснений", ""],
+    ]],
 ]
+
+# Плоский список подпунктов — по нему сверяются пришедшие оценки.
+FEEDBACK_ITEMS: dict[str, str] = {
+    item[0]: item[1] for group in FEEDBACK_GROUPS for item in group[2]}
 
 # Профиль — два поля списком. Печатать ничего не нужно: анкету заполняют между
 # делом, и каждое поле ввода стоит доли ответивших.
@@ -23019,10 +23057,10 @@ def _feedback_clean(req: FeedbackRequest) -> dict[str, Any]:
     Пустая оценка — это «не пользовался», и она не единица: непользовавшийся,
     засчитанный единицей, портит средние сильнее, чем отсутствие ответа.
     """
-    blocks = {block[0] for block in FEEDBACK_BLOCKS}
+    groups = {group[0] for group in FEEDBACK_GROUPS}
     ratings: dict[str, int] = {}
     for key, value in (req.ratings or {}).items():
-        if str(key) not in blocks:
+        if str(key) not in FEEDBACK_ITEMS:
             continue
         try:
             score = int(value)
@@ -23030,9 +23068,12 @@ def _feedback_clean(req: FeedbackRequest) -> dict[str, Any]:
             continue
         if 1 <= score <= 5:
             ratings[str(key)] = score
+    # Комментарий — один на раздел: девять полей ввода это работа, за которую
+    # никто не подписывался, а один на раздел человек пишет там, где ему есть
+    # что сказать.
     problems = {str(key): str(value).strip()[:_USAGE_TEXT_LIMIT]
                 for key, value in (req.problems or {}).items()
-                if str(key) in blocks and str(value or "").strip()}
+                if str(key) in groups and str(value or "").strip()}
     return {
         "role": req.role if req.role in FEEDBACK_ROLES else "",
         "region": req.region if req.region in FEEDBACK_REGIONS else "",
@@ -24836,36 +24877,41 @@ function renderFeedbackForm(){
   +options.map(o=>`<button type="button" class="btn fb-pick" data-group="${name}" data-value="${escapeHtml(o)}"
       style="${o===current?'background:#111;color:#fff':''}">${escapeHtml(o)}</button>`).join('')
   +`</div></div>`;
- const rows=FEEDBACK_FORM.blocks.map(b=>{
-  const hint=b[2]?` <span style="color:#999">${escapeHtml(b[2])}</span>`:'';
-  return `<tr><td style="padding:6px 10px 6px 0;font-size:13px">${escapeHtml(b[1])}${hint}</td>`
-   +`<td style="white-space:nowrap">`
-   +[1,2,3,4,5].map(n=>`<button type="button" class="btn fb-score" data-block="${b[0]}" data-score="${n}"
-       style="min-width:34px;padding:4px 8px">${n}</button>`).join('')
-   +`<button type="button" class="btn fb-score" data-block="${b[0]}" data-score="0"
-       style="padding:4px 8px;color:#888">не смотрел</button></td></tr>`;
+ // Раздел — заголовок, строки с баллами и одно поле комментария. Разделы, до
+ // которых человек не дошёл, он закрывает одним «не смотрел» на строку, а не
+ // ищет, что бы поставить.
+ const groups=FEEDBACK_FORM.groups.map(g=>{
+  const rows=g[2].map(item=>{
+   const hint=item[2]?` <span style="color:#999">${escapeHtml(item[2])}</span>`:'';
+   return `<tr><td style="padding:5px 10px 5px 0;font-size:13px">${escapeHtml(item[1])}${hint}</td>`
+    +`<td style="white-space:nowrap;text-align:right">`
+    +[1,2,3,4,5].map(n=>`<button type="button" class="btn fb-score" data-group="${g[0]}"
+        data-item="${item[0]}" data-score="${n}" style="min-width:32px;padding:3px 7px">${n}</button>`).join('')
+    +`<button type="button" class="btn fb-score" data-group="${g[0]}" data-item="${item[0]}"
+        data-score="0" style="padding:3px 7px;color:#888">—</button></td></tr>`;
+  }).join('');
+  return `<div style="margin-bottom:18px">`
+   +`<div style="font-weight:600;font-size:14px;margin-bottom:6px">${escapeHtml(g[1])}</div>`
+   +`<table style="width:100%;border-collapse:collapse">${rows}</table>`
+   +`<textarea class="fb-note" data-group="${g[0]}" rows="2"
+       placeholder="Комментарий к разделу «${escapeHtml(g[1])}» — не обязательно"
+       style="width:100%;margin-top:6px;padding:6px 8px;font-size:13px"></textarea>`
+   +`</div>`;
  }).join('');
  const projects=feedbackProjects();
  document.getElementById('feedbackBody').innerHTML=
   pick('Кто вы',FEEDBACK_FORM.roles,state.role||'')
   +pick('С чем работаете',FEEDBACK_FORM.regions,state.region||'')
-  +`<table style="width:100%;border-collapse:collapse;margin-bottom:14px">${rows}</table>`
-  +`<div id="fbTextLabel" style="font-size:12px;color:#666;margin-bottom:6px">Если есть что сказать`
-  +(projects.length?` — о проекте ${escapeHtml(projects.join(', '))}`:'')+`</div>`
-  +`<textarea id="fbMistakes" rows="3" style="width:100%;padding:6px 8px;font-size:13px"
-      placeholder="Не обязательно. Важнее всего — что посчиталось не так, как в вашей практике."></textarea>`;
- // Балл ниже четырёх сам открывает строку «что не так»: довольного не трогаем,
- // а недовольного спрашиваем там, где он уже недоволен.
+  +(projects.length?`<div style="font-size:12px;color:#999;margin-bottom:12px">Вы считали: `
+     +escapeHtml(projects.join(', '))+`</div>`:'')
+  +groups;
  document.querySelectorAll('#feedbackBody .fb-score').forEach(btn=>{
   btn.onclick=()=>{
-   const block=btn.dataset.block, score=Number(btn.dataset.score);
-   document.querySelectorAll(`#feedbackBody .fb-score[data-block="${block}"]`).forEach(other=>{
+   const item=btn.dataset.item;
+   document.querySelectorAll(`#feedbackBody .fb-score[data-item="${item}"]`).forEach(other=>{
     other.style.background='';other.style.color=other.dataset.score==='0'?'#888':'';
    });
    btn.style.background='#111';btn.style.color='#fff';
-   // Низкая оценка сама называет раздел в подписи общего поля. Отдельная
-   // строка под каждым разделом была лишним трудом: люди охотно ставят баллы,
-   // а пишут один раз и в конце — если есть что сказать.
    feedbackRetitle();
   };
  });
@@ -24879,20 +24925,26 @@ function renderFeedbackForm(){
 }
 
 function feedbackRetitle(){
- const label=document.getElementById('fbTextLabel');
- if(!label)return;
- const weak=[];
+ // Низкая оценка сама называет подпункт в подписи комментария своего раздела:
+ // «комментарий, если есть что сказать» собирает «всё нормально», а названный
+ // подпункт — то, ради чего анкета и затевалась.
+ const weak={};
  document.querySelectorAll('#feedbackBody .fb-score').forEach(btn=>{
   if(!btn.style.background)return;
   const score=Number(btn.dataset.score);
   if(score>0&&score<4){
-   const block=FEEDBACK_FORM.blocks.find(b=>b[0]===btn.dataset.block);
-   if(block)weak.push(block[1]);
+   const group=FEEDBACK_FORM.groups.find(g=>g[0]===btn.dataset.group);
+   const item=group&&group[2].find(x=>x[0]===btn.dataset.item);
+   if(item){(weak[btn.dataset.group]=weak[btn.dataset.group]||[]).push(item[1])}
   }
  });
- label.textContent=weak.length
-  ?'Вы низко оценили: '+weak.join(', ')+'. Что там не так?'
-  :'Если есть что сказать';
+ document.querySelectorAll('#feedbackBody .fb-note').forEach(note=>{
+  const group=FEEDBACK_FORM.groups.find(g=>g[0]===note.dataset.group);
+  const low=weak[note.dataset.group];
+  note.placeholder=low
+   ?'Вы низко оценили: '+low.join(', ')+'. Что там не так?'
+   :'Комментарий к разделу «'+(group?group[1]:'')+'» — не обязательно';
+ });
 }
 
 function openFeedback(how){
@@ -24920,19 +24972,21 @@ async function sendFeedback(){
  document.querySelectorAll('#feedbackBody .fb-score').forEach(btn=>{
   if(!btn.style.background)return;
   const score=Number(btn.dataset.score);
-  if(score>0)ratings[btn.dataset.block]=score;
+  if(score>0)ratings[btn.dataset.item]=score;
+ });
+ document.querySelectorAll('#feedbackBody .fb-note').forEach(note=>{
+  if(note.value.trim())problems[note.dataset.group]=note.value.trim();
  });
  const payload={
   role:feedbackPicked('Кто вы'),region:feedbackPicked('С чем работаете'),
   ratings,problems,
-  impression:'',
-  mistakes:(document.getElementById('fbMistakes')||{}).value||'',
+  impression:'', mistakes:'',
   projects:feedbackProjects(),
   session:(typeof telegramSession!=='undefined'&&telegramSession)?telegramSession:'',
   source:new URLSearchParams(location.search).get('ref')||''
  };
  const status=document.getElementById('feedbackStatus');
- if(!Object.keys(ratings).length&&!payload.mistakes.trim()){
+ if(!Object.keys(ratings).length&&!Object.keys(problems).length){
   status.textContent='Поставьте хотя бы одну оценку или напишите пару слов.';return;
  }
  status.textContent='Отправляю…';
@@ -29198,7 +29252,7 @@ PAGE = PAGE.replace(FIELD_GROUPS_PLACEHOLDER,
 PAGE = PAGE.replace(INPUT_DEFAULT_PLACEHOLDER,
                     json.dumps(DEFAULT_INPUTS, ensure_ascii=False))
 PAGE = PAGE.replace(FEEDBACK_FORM_PLACEHOLDER, json.dumps(
-    {"blocks": FEEDBACK_BLOCKS, "roles": FEEDBACK_ROLES, "regions": FEEDBACK_REGIONS},
+    {"groups": FEEDBACK_GROUPS, "roles": FEEDBACK_ROLES, "regions": FEEDBACK_REGIONS},
     ensure_ascii=False))
 PAGE = PAGE.replace(SOCIAL_MODES_PLACEHOLDER,
                     json.dumps([item[0] for item in _M2_EXTRA_OPTIONS["social_mode"]],
