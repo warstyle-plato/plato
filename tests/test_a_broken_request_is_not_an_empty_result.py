@@ -57,6 +57,8 @@ let landLookup=null;let inputs={};
 function renderLandLookup(){}
 function hideLandPreview(){}
 function structuredClone(x){return JSON.parse(JSON.stringify(x))}
+// Сессия входа едет вместе с запросом — только для учёта, на поиск не влияет.
+function activeSession(){return ''}
 """
 
 
