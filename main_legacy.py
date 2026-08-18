@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.18.40"
+VERSION = "0.18.41"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -2918,16 +2918,26 @@ _LAND_SCREENING_TTL_SECONDS = _env_float("LAND_SCREENING_TTL", 21600.0)
 _LAND_SCREEN_ORDER = {"killer": 0, "economic": 1, "info": 2}
 
 
-def _land_screening_verdict(findings: list[dict[str, Any]]) -> dict[str, Any]:
+def _land_screening_verdict(findings: list[dict[str, Any]],
+                            probed: bool = True) -> dict[str, Any]:
     """Свод по находкам. Никакого «участок подходит» — только факты и их вес.
 
     Запрещено выдавать разрешительный вывод (решение владельца, архитектура,
     раздел 8): максимум — «критических ограничений не обнаружено», и то с
     оговоркой, что видно лишь внесённое в ЕГРН.
+
+    `probed` — спрашивали ли вообще НСПД. Без сведений ЕГРН у участка нет
+    границ, спрашивать не о чем, и пустой список находок значит «не проверяли»,
+    а не «чисто». Прежде эти два случая были неотличимы: на запросе, где не
+    нашёлся ни один из трёх номеров, экран показывал зелёное «критических
+    ограничений не обнаружено» — разрешающий вывод на пустоте (18.08.2026).
     """
     killers = [f for f in findings if f.get("flag_class") == "killer"]
     economic = [f for f in findings if f.get("flag_class") == "economic"]
-    if killers:
+    if not probed:
+        status = "NOT_SCREENED"
+        headline = "Скрининг не выполнен: сведений ЕГРН по участку нет"
+    elif killers:
         status, headline = "CRITICAL", "Найдены ограничения, запрещающие жилую застройку"
     elif economic:
         status, headline = "WARNING", "Есть ограничения, влияющие на посадку и экономику"
@@ -2939,10 +2949,14 @@ def _land_screening_verdict(findings: list[dict[str, Any]]) -> dict[str, Any]:
         "killer_count": len(killers),
         "economic_count": len(economic),
         "total": len(findings),
-        "disclaimer": ("Проверены ограничения, внесённые в ЕГРН и опубликованные "
-                       "в НСПД. Отсутствие записи не доказывает отсутствия "
-                       "ограничения: сервитуты, ГПЗУ и часть красных линий в "
-                       "реестре не отражаются."),
+        "probed": bool(probed),
+        "disclaimer": (("Проверены ограничения, внесённые в ЕГРН и опубликованные "
+                        "в НСПД. Отсутствие записи не доказывает отсутствия "
+                        "ограничения: сервитуты, ГПЗУ и часть красных линий в "
+                        "реестре не отражаются.") if probed else
+                       ("Границы участка не получены, поэтому НСПД об ограничениях "
+                        "не спрашивали. Проверьте кадастровый номер или запросите "
+                        "выписку ЕГРН.")),
     }
 
 
@@ -3012,16 +3026,17 @@ def land_screening(cad: str = "") -> dict[str, Any]:
             "permitted_use": _land_text(_nspd_value(options, "permitted_use")),
             "center": center or None,
             "findings": findings,
-            "verdict": _land_screening_verdict(findings),
+            "verdict": _land_screening_verdict(findings, probed=bool(center)),
         }
         _LAND_SCREENING_CACHE[number] = (time.time(), parcel)
         parcels.append(parcel)
 
     everything = [f for p in parcels for f in p.get("findings", [])]
+    probed = any(p.get("found") and p.get("center") for p in parcels)
     return {
         "parcels": parcels,
         "single": len(parcels) == 1,
-        "verdict": _land_screening_verdict(everything),
+        "verdict": _land_screening_verdict(everything, probed=probed),
         "calculated_at": datetime.now().strftime("%d.%m.%Y %H:%M"),
     }
 
@@ -9590,6 +9605,9 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
                              str(finding.get("impact", "")), basis or "—"])
         if len(rows) > 1:
             story.append(table(rows, [70*mm, 60*mm, 40*mm]))
+        elif verdict.get("status") == "NOT_SCREENED":
+            # Та же честность, что и на экране: не спрашивали — значит не знаем.
+            story.append(P("Ограничения не проверялись: по номеру нет сведений ЕГРН.", small))
         else:
             story.append(P("В НСПД ограничений на участок не обнаружено.", small))
         story.append(P(verdict.get("disclaimer", ""), small))
@@ -24051,6 +24069,11 @@ details.cadastral-box>summary::marker{color:#888}
 .land-screening.critical header{background:#b3261e}
 .land-screening.warning header{background:#a05a00}
 .land-screening.clean header{background:#2f6b3a}
+.land-screening.unknown header{background:#6b6b66}
+.land-screening.working header{background:#3a3a38}
+.land-screening .progress{height:3px;background:#ececea}
+.land-screening .progress i{display:block;height:100%;background:#3a3a38;transition:width .25s}
+.land-screening .step{padding:6px 12px;font-size:12px;border-bottom:1px solid #f0f0ee;color:#555}
 .land-screening ul{margin:0;padding:8px 12px;list-style:none}
 .land-screening li{padding:7px 0;border-bottom:1px solid #f0f0ee;font-size:12px}
 .land-screening li:last-child{border-bottom:none}
@@ -25874,6 +25897,7 @@ function renderCadastralPreview(data){
 }
 
 let landLookup=null;
+let landScreeningRun=0;
 
 // Карточка участка с контуром и картой — при любом пути получения ТЭП, а не
 // только при поиске по адресу: кадастровый «Получить ТЭП» оставлял человека
@@ -25904,16 +25928,69 @@ async function loadLandScreening(query){
  const box=document.getElementById('landScreening');
  if(!box)return;
  const raw=String(query!=null?query:((document.getElementById('cadastralNumbers')||{}).value||'')).trim();
- if(!/\d{2}:\d{2}:\d{6,8}:\d+/.test(raw)){box.style.display='none';return}
+ const numbers=(raw.match(/\d{2}:\d{2}:\d{6,8}:\d+/g)||[]).slice(0,10);
+ if(!numbers.length){box.style.display='none';return}
+ const run=++landScreeningRun;
+ const started=Date.now();
+ const finished=[];
  box.style.display='block';
- box.className='land-screening';
- box.innerHTML='<header>Оценка участка — запрашиваю ограничения…</header>';
+ const paint=()=>{
+  if(run!==landScreeningRun)return;
+  const state=screeningWorkingHtml(numbers,finished,Math.round((Date.now()-started)/1000));
+  box.className=state.cls;box.innerHTML=state.html;
+ };
+ paint();
+ const ticker=setInterval(paint,500);
  try{
-  const response=await fetch('/land/screening?cad='+encodeURIComponent(raw));
-  if(!response.ok)throw new Error('нет ответа');
-  const data=await response.json();
-  renderLandScreening(data);
+  // Участки опрашиваются поодиночке: так видно ход работы, а не пустой экран.
+  // Стоит это столько же — сервер и в одном запросе идёт по номерам подряд,
+  // а посчитанное кладётся в кэш, поэтому сводный запрос ниже уже дешёвый.
+  for(const number of numbers){
+   let parcel=null;
+   try{
+    const one=await fetch('/land/screening?cad='+encodeURIComponent(number));
+    if(run!==landScreeningRun)return;
+    if(one.ok){const data=await one.json();parcel=(data.parcels||[])[0]||null}
+   }catch(e){/* участок мог не ответить — ход показываем всё равно */}
+   finished.push({number:number,parcel:parcel});
+   paint();
+  }
+  // Свод считает движок, а не страница: даже когда участок один, вердикт
+  // приходит с сервера.
+  const response=await fetch('/land/screening?cad='+encodeURIComponent(numbers.join(',')));
+  if(run!==landScreeningRun)return;
+  if(!response.ok){box.style.display='none';return}
+  renderLandScreening(await response.json());
  }catch(e){box.style.display='none'}
+ finally{clearInterval(ticker)}
+}
+
+// Плашка ожидания. Прежде она была невидимой: класс тона не ставился, а текст
+// в шапке белый — на белом фоне ничего не читалось, и ограничения появлялись
+// внезапно, без признака работы (замечание владельца, 18.08.2026). Теперь
+// видно, что идёт, сколько прошло и что уже проверено.
+function screeningWorkingHtml(numbers,finished,seconds){
+ const total=numbers.length;
+ const done=finished.length;
+ const current=Math.min(done+1,total);
+ const head='Проверяю градостроительные ограничения'+
+  (total>1?' — участок '+current+' из '+total:'')+' · '+seconds+' с';
+ const steps=finished.map(item=>{
+  const parcel=item.parcel;
+  let mark='сведений ЕГРН нет';
+  if(parcel&&parcel.found){
+   const flags=parcel.findings||[];
+   const killers=flags.filter(f=>f.flag_class==='killer').length;
+   mark=killers?'есть запрет':(flags.length?flags.length+' ограничени'+(flags.length===1?'е':(flags.length<5?'я':'й')):'ограничений не найдено');
+  }
+  return '<div class="step">'+escapeHtml(item.number)+' — '+mark+'</div>';
+ }).join('');
+ return {cls:'land-screening working',
+  html:'<header>'+escapeHtml(head)+'</header>'+
+   '<div class="progress"><i style="width:'+Math.round(100*done/total)+'%"></i></div>'+
+   steps+
+   '<footer>Опрашиваются слои НСПД: ЗОУИТ, ООПТ, лесничества, красные линии, '+
+   'территориальные зоны. Обычно от десяти секунд до минуты.</footer>'};
 }
 
 function screeningFlagLabel(cls){
@@ -25924,7 +26001,7 @@ function renderLandScreening(data){
  const box=document.getElementById('landScreening');
  if(!box||!data||!data.parcels)return;
  const v=data.verdict||{};
- const tone=v.status==='CRITICAL'?'critical':(v.status==='WARNING'?'warning':'clean');
+ const tone=v.status==='CRITICAL'?'critical':(v.status==='WARNING'?'warning':(v.status==='NOT_SCREENED'?'unknown':'clean'));
  const found=data.parcels.filter(p=>p.found);
  const single=found.length<2;
  const item=f=>`<li><span class="flag ${f.flag_class}">${screeningFlagLabel(f.flag_class)}</span> `+
@@ -25943,7 +26020,11 @@ function renderLandScreening(data){
   return `<ul>${head}${rest>0?`<li class="meta">и ещё ${rest} ограничени${rest===1?'е':(rest<5?'я':'й')} — в отчёте перечислены полностью</li>`:''}</ul>`;
  };
  let body='';
- if(single){
+ // Пустой список находок и непроверенный участок выглядели одинаково зелёными.
+ if(v.status==='NOT_SCREENED'){
+  body='<ul><li>Ограничения не проверялись: по номеру нет сведений ЕГРН, '+
+   'а без границ участка спрашивать НСПД не о чем.</li></ul>';
+ }else if(single){
   const p=found[0];
   const flags=(p&&p.findings)||[];
   body=flags.length?list(flags)
