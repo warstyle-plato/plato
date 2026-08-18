@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.18.50"
+VERSION = "0.18.51"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -1445,13 +1445,14 @@ def _preset_diff(current: dict[str, Any], incoming: dict[str, Any],
 
 
 @app.get("/api/project-presets")
-def list_project_presets() -> dict[str, Any]:
+def list_project_presets(session: str = "", key: str = "") -> dict[str, Any]:
     """Пресеты проектов, лежащие на сервере.
 
     Пресет проекта — не то же, что предустановка ТЭП: тот несёт книгу с
     площадями, этот — весь проект, включая деньги, сроки и очереди. Список
     отдельный по той же причине, по какой они не смешиваются при загрузке.
     """
+    _require_admin(session, key, "Пресеты проектов")
     items: list[dict[str, Any]] = []
     for path in sorted(PRESET_DIR.glob("*.json")) if PRESET_DIR.is_dir() else []:
         try:
@@ -1469,7 +1470,8 @@ def list_project_presets() -> dict[str, Any]:
 
 
 @app.get("/api/project-presets/{preset_id}")
-def read_project_preset(preset_id: str) -> dict[str, Any]:
+def read_project_preset(preset_id: str, session: str = "", key: str = "") -> dict[str, Any]:
+    _require_admin(session, key, "Пресеты проектов")
     # Имя приходит снаружи: разделители пути в нём означали бы чтение чужих
     # файлов, а не выбор пресета.
     if "/" in preset_id or "\\" in preset_id or preset_id.startswith("."):
@@ -15206,8 +15208,34 @@ def _server_preset_meta(preset_id: str) -> dict[str, Any]:
     return {**meta, "id": preset_id, "path": path}
 
 
+def _is_admin_request(session: str = "", key: str = "") -> bool:
+    """Владелец сервиса: свой chat_id в списке или ключ администратора."""
+    secret = _env_str("DEVELOPAID_ADMIN_KEY", "").strip()
+    if secret and key and hmac.compare_digest(str(key).encode("utf-8"),
+                                              secret.encode("utf-8")):
+        return True
+    chat_id = _web_identity_chat_id(str(session or ""))
+    return bool(chat_id) and chat_id in usage_admin_ids()
+
+
+def _require_admin(session: str, key: str, what: str) -> None:
+    """Готовые примеры и пресеты — витрина владельца, а не посторонних.
+
+    В них лежат настоящие проекты с ценами, сроками и экономикой (решение
+    владельца, 18.08.2026): показывать их каждому, кто открыл сайт, нельзя.
+    Механизм честно выключен там, где владельца опознать нечем — иначе на
+    машине без настроек примеры пропали бы у всех, включая самого владельца.
+    """
+    if not usage_admin_ids() and not _env_str("DEVELOPAID_ADMIN_KEY", "").strip():
+        return
+    if _is_admin_request(session, key):
+        return
+    raise HTTPException(status_code=403, detail=f"{what} — только для владельца сервиса.")
+
+
 @app.get("/presets")
-def list_server_presets() -> dict[str, Any]:
+def list_server_presets(session: str = "", key: str = "") -> dict[str, Any]:
+    _require_admin(session, key, "Готовые примеры")
     items = []
     for preset_id, meta in SERVER_TEP_PRESETS.items():
         path = PRESET_DIR / meta["filename"]
@@ -15223,7 +15251,8 @@ def list_server_presets() -> dict[str, Any]:
 
 
 @app.get("/presets/{preset_id}")
-def get_server_preset(preset_id: str) -> dict[str, Any]:
+def get_server_preset(preset_id: str, session: str = "", key: str = "") -> dict[str, Any]:
+    _require_admin(session, key, "Готовые примеры")
     meta = _server_preset_meta(preset_id)
     try:
         payload = parse_glavapu_xlsx(meta["path"].read_bytes(), meta["filename"])
@@ -15240,7 +15269,8 @@ def get_server_preset(preset_id: str) -> dict[str, Any]:
 
 
 @app.get("/presets/{preset_id}/download")
-def download_server_preset(preset_id: str):
+def download_server_preset(preset_id: str, session: str = "", key: str = ""):
+    _require_admin(session, key, "Файл предустановки")
     meta = _server_preset_meta(preset_id)
     return FileResponse(
         path=str(meta["path"]),
@@ -27088,10 +27118,25 @@ function renderStoredCadastral(){
  cadastralStatus.innerHTML='<span class="import-ok">Показана территория, сохранённая в проекте.</span>';
 }
 
+// Готовые примеры — витрина владельца: в них настоящие проекты с ценами и
+// сроками, и посторонним их не показывают (решение владельца, 18.08.2026).
+// Сервер отказывает не своему, страница на отказ убирает блок целиком, а не
+// оставляет пустой список без объяснения.
+function presetsQuery(){
+ return '?session='+encodeURIComponent(activeSession())+
+        '&key='+encodeURIComponent(projectsAdminKey||'');
+}
+
+function hidePresetsBlock(){
+ const box=document.getElementById('projectsExamples');
+ if(box)box.style.display='none';
+}
+
 async function loadPresetCatalog(){
  try{
-   const response=await fetch('/presets');
+   const response=await fetch('/presets'+presetsQuery());
    const data=await response.json();
+   if(response.status===403){hidePresetsBlock();return}
    if(!response.ok)throw new Error(data.detail||'Не удалось получить предустановки');
    const select=document.getElementById('serverPresetSelect');
    if(!select)return;
@@ -27103,7 +27148,7 @@ async function loadPresetCatalog(){
      const opt=select.options[select.selectedIndex];
      const link=document.getElementById('serverPresetDownload');
      if(select.value){
-       link.href=opt.dataset.download||('#');
+       link.href=(opt.dataset.download||'#')+presetsQuery();
        link.style.display='inline-flex';
      }else{
        link.style.display='none';
@@ -27127,7 +27172,7 @@ async function loadServerPreset(){
  glavapuStatus.textContent='Загружаю предустановку «'+label+'» с сервера…';
  glavapuPreview.style.display='none';
  try{
-   const response=await fetch('/presets/'+encodeURIComponent(id));
+   const response=await fetch('/presets/'+encodeURIComponent(id)+presetsQuery());
    const payload=await response.json();
    if(!response.ok)throw new Error(payload.detail||'Ошибка загрузки предустановки');
    glavapuImport=payload;
@@ -29402,7 +29447,9 @@ async function fillProjectPresets(){
  // разные вещи: та несёт книгу с площадями, этот — весь проект с деньгами,
  // сроками и очередями. Поэтому и списка два.
  try{
-  const data=await (await fetch('/api/project-presets')).json();
+  const answer=await fetch('/api/project-presets'+presetsQuery());
+  if(answer.status===403){hidePresetsBlock();return}
+  const data=await answer.json();
   const select=document.getElementById('projectPresetSelect');
   (data.presets||[]).forEach(p=>{
    const option=document.createElement('option');
@@ -29420,7 +29467,7 @@ async function loadServerProjectPreset(){
  closeProjects();
  let parsed;
  try{
-  const response=await fetch('/api/project-presets/'+encodeURIComponent(id));
+  const response=await fetch('/api/project-presets/'+encodeURIComponent(id)+presetsQuery());
   parsed=await response.json();
   if(!response.ok)throw new Error(parsed.detail||'Пресет не загружен');
  }catch(e){alert(String(e.message||e));return}

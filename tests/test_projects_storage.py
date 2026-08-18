@@ -300,21 +300,24 @@ def test_the_key_can_be_changed_from_the_list():
 def test_the_server_lists_project_presets(storage):
     """Пресет проекта — не предустановка ТЭП: та несёт книгу с площадями,
     этот весь проект с деньгами, сроками и очередями."""
-    data = storage.get("/api/project-presets").json()
+    # Примеры — витрина владельца (18.08.2026): запрос несёт ключ, иначе 403.
+    data = storage.get("/api/project-presets", params={"key": KEY}).json()
     names = {item["id"]: item for item in data["presets"]}
     assert "Румянцево" in names
     assert names["Румянцево"]["schema_version"].startswith("developaid.project_preset")
 
 
 def test_a_preset_can_be_read_by_id(storage):
-    data = storage.get("/api/project-presets/Румянцево").json()
+    data = storage.get("/api/project-presets/Румянцево", params={"key": KEY}).json()
     assert data["project"]["name"] == "Румянцево"
     assert data["planning"]["ppt_gfa_total_m2"] == 402000
 
 
 @pytest.mark.parametrize("bad", ["../main_legacy", "..%2Fmain", ".hidden"])
 def test_the_preset_id_cannot_leave_the_folder(storage, bad):
-    assert storage.get(f"/api/project-presets/{bad}").status_code in (400, 404)
+    # Ключ передаём нарочно: проверяем разбор имени, а не гейт владельца.
+    assert storage.get(f"/api/project-presets/{bad}",
+                       params={"key": KEY}).status_code in (400, 404)
 
 
 def test_the_page_offers_the_server_presets():
