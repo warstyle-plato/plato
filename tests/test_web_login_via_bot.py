@@ -161,3 +161,24 @@ def test_the_link_leads_to_the_bot_with_the_code():
     assert data["link"].startswith("https://t.me/developaid_test_bot?start=login_")
     assert data["code"] in data["link"]
 
+
+def test_a_missing_bot_name_is_said_out_loud():
+    """Кнопка входа прячется, когда сервер бота не предлагает, и человек
+    оставался перед панелью «войдите через бота» без самой кнопки — с одним
+    только ключом администратора (замечание владельца, 18.08.2026)."""
+    panel = main.PAGE[main.PAGE.index("function renderProjectsLogin("):]
+    panel = panel[:panel.index("function hideProjectsLogin(")]
+    assert "TELEGRAM_BOT_USERNAME" in panel, "причина названа именем переменной"
+    assert "Пока доступен только ключ администратора" in panel
+
+
+def test_the_status_tells_the_page_whether_the_bot_is_offered(monkeypatch):
+    """Признак берётся с сервера: имя бота на ядре задаётся переменной, потому
+    что getMe туда не проходит."""
+    monkeypatch.setenv("TELEGRAM_BOT_USERNAME", "")
+    monkeypatch.setattr(main, "_TELEGRAM_RUNTIME", dict(main._TELEGRAM_RUNTIME, username=""))
+    assert client.get("/projects/status").json()["accepts_login"] is False
+
+    monkeypatch.setenv("TELEGRAM_BOT_USERNAME", "developaid_test_bot")
+    assert client.get("/projects/status").json()["accepts_login"] is True
+
