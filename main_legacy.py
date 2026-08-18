@@ -26841,6 +26841,9 @@ async function sendTelegramResult(){
 // нового участка они обязаны обнулиться целиком. Иначе от прошлого проекта
 // остаётся то, чего в новом нет вовсе, — так 833 кладовые чужого ТЭП дали
 // миллиард выручки, а карточка показывала площадь и округ прежнего расчёта.
+// Поля участка, обнулённые последним импортом: их называет плашка «Участок
+// применён». Пустой список — нечего было обнулять.
+let territoryCleared=[];
 const TERRITORY_INPUT_KEYS=[
  // Цена сделки относится к участку, а не к предпосылкам аналитика: при вводе
  // нового кадастра она обязана обнуляться. Иначе второй расчёт подряд считался
@@ -26857,6 +26860,25 @@ const TERRITORY_MARKERS=['_glavapu_import','_manual_tep_import','_mo_calc','_cad
 
 // Предпосылки аналитика — цены, себестоимость, ставки, сроки, налоги — это не
 // данные участка, и сбрасывать их при смене территории нельзя.
+// Подписи обнулённых полей — человеческие: ключ `purchase_price_mln` в плашке
+// не значит ничего, а «цена входа» значит всё.
+const TERRITORY_CLEARED_LABELS={
+ purchase_price_mln:'цена входа', land_rights_cost_mln:'плата за смену ВРИ',
+ social_compensation_mln:'социальная компенсация', site_area_ha:'площадь участка',
+ site_density_sqm_per_ha:'плотность', kindergarten_places:'места в ДОУ',
+ school_places:'места в школе', clinic_capacity:'мощность поликлиники',
+ social_dou_gba_sqm:'площадь ДОУ', social_school_gba_sqm:'площадь школы',
+ social_clinic_gba_sqm:'площадь поликлиники', offices_gba_sqm:'площадь офисов',
+ offices_saleable_sqm:'продаваемая офисов', retail_gba_sqm:'площадь ТЦ',
+ retail_saleable_sqm:'продаваемая ТЦ', above_parking_spaces:'наземные машино-места',
+};
+function territoryClearedNote(){
+ if(!territoryCleared.length)return '';
+ const names=territoryCleared.map(k=>TERRITORY_CLEARED_LABELS[k]||k);
+ return ' <b>Обнулено вместе с участком: '+names.join(', ')
+  +'.</b> Эти значения относятся к площадке, а не к вашим предпосылкам — введите заново.';
+}
+
 function resetTerritoryData(options){
  // Очерёдность — решение пользователя, а не свойство территории. При тихом
  // пересчёте параметров Подмосковья участок тот же, и сбрасывать её нельзя.
@@ -26866,7 +26888,16 @@ function resetTerritoryData(options){
    if(field in tep[key])tep[key][field]=0;
   });
  });
- TERRITORY_INPUT_KEYS.forEach(key=>{if(key in inputs)inputs[key]=0});
+ // Что именно обнулили — запоминаем и показываем. Цена входа принадлежит
+ // участку и обязана сбрасываться, но человек об этом не предупреждён:
+ // импортировал участок, не заметил ноль, посчитал — и получил LLCR 1,08
+ // вместо 1,02. Молчаливое обнуление врёт не меньше молчаливого переезда.
+ territoryCleared=[];
+ TERRITORY_INPUT_KEYS.forEach(key=>{
+  if(!(key in inputs))return;
+  if(Number(inputs[key])>0)territoryCleared.push(key);
+  inputs[key]=0;
+ });
  TERRITORY_MARKERS.forEach(key=>{delete inputs[key]});
  inputs.offices_enabled=false;
  inputs.retail_enabled=false;
@@ -26958,7 +26989,7 @@ async function applyGlavapu(){
  const socialNote=inputs.social_mode==='Строительство'
   ? 'Соцрежим: строительство; расчётные мощности ГлавАПУ используются при нулевых фактических объектах.'
   : 'Соцрежим: денежная компенсация.';
- glavapuStatus.innerHTML='<span class="import-ok">Данные ТЭП применены. Денежные единицы приведены к млн ₽. '+socialNote+' Подземный паркинг собран из жилого блока и, при наличии, отдельного блока МФК.'+(presetNote?' <b>'+presetNote+'</b>':'')+'</span>';
+ glavapuStatus.innerHTML='<span class="import-ok">Данные ТЭП применены. Денежные единицы приведены к млн ₽. '+socialNote+' Подземный паркинг собран из жилого блока и, при наличии, отдельного блока МФК.'+(presetNote?' <b>'+presetNote+'</b>':'')+territoryClearedNote()+'</span>';
  await calculate();
  await sendTelegramResult();
 }
