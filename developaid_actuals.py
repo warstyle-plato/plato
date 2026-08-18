@@ -655,6 +655,46 @@ def overlay(op: dict[str, Any], actuals: dict[str, Any]) -> dict[str, Any]:
         updated["capex_by_article"] = _split_by_article(
             op.get("capex_by_article") or {}, plan_capex, blended, cut, notes)
 
+    # Бюджет вместо норматива. На действующем проекте расходную часть считать
+    # незачем — она посчитана и утверждена, и удельные ставки движка ей заведомо
+    # проигрывают: на Гродненской норматив даёт 176,1 тыс ₽/м² ГНС против 302,7
+    # фактических, а ПИР и технадзор, наоборот, вдвое-втрое дороже норматива.
+    #
+    # Бюджет задаёт сумму, движок — календарь: форма кривой освоения остаётся
+    # его, потому что про сроки он знает, а смета их не несёт. Статья, которой в
+    # бюджете нет, остаётся нормативной: отсутствие строки — это «не знаем», а
+    # не «ноль».
+    if "capex_budget" in actuals:
+        planned = {a: dict(s) for a, s in (op.get("capex_by_article") or {}).items()}
+        overall = dict(op.get("capex") or {})
+        overall_total = sum(overall.values())
+        rescaled: dict[str, dict[datetime.date, float]] = {}
+        for article, series in planned.items():
+            rescaled[article] = dict(series)
+        for article, amount in (actuals["capex_budget"] or {}).items():
+            shape = planned.get(article) or {}
+            shape_total = sum(shape.values())
+            if shape_total > 0:
+                factor = amount / shape_total
+                rescaled[article] = {m: v * factor for m, v in shape.items()}
+            elif overall_total > 0:
+                rescaled[article] = {m: v * amount / overall_total
+                                     for m, v in overall.items()}
+                notes.append(
+                    f"бюджет {article}: {amount / 1e6:,.1f} млн ₽ разложен по общей "
+                    "кривой освоения — своей у статьи в плане нет")
+            else:
+                notes.append(
+                    f"бюджет {article}: {amount / 1e6:,.1f} млн ₽ разложить не по "
+                    "чему — плановой кривой нет вовсе")
+        updated["capex_by_article"] = rescaled
+        combined_budget: dict[datetime.date, float] = {}
+        for series in rescaled.values():
+            for month, value in series.items():
+                combined_budget[month] = combined_budget.get(month, 0.0) + value
+        updated["capex"] = combined_budget
+        op = {**op, "capex_by_article": rescaled, "capex": combined_budget}
+
     # Факт, уже разнесённый по статьям (карта «код БДДС → статья движка»), —
     # это лучше, чем доли плана: каждая статья складывается из своих платежей.
     # Итог тогда выводится из статей, а не считается вторым способом: два
@@ -1191,10 +1231,17 @@ def payments_by_article(
     unresolved: dict[str, float] = {}
     matched: dict[str, float] = {}
 
+    observed: dict[str, dict[str, float]] = {}
+    current_code = {"value": ""}
+
     def put(article: str, month: datetime.date, amount: float) -> None:
         target = other if article in _NON_CAPEX_ARTICLES else capex
         target.setdefault(article, {})
         target[article][month] = target[article].get(month, 0.0) + amount
+        code = current_code["value"]
+        if code:
+            observed.setdefault(code, {})
+            observed[code][article] = observed[code].get(article, 0.0) + amount
 
     def place(code: str, month: datetime.date, amount: float, how: str) -> bool:
         split = _gns_split_for(code)
@@ -1218,6 +1265,7 @@ def payments_by_article(
             unresolved["платёж без даты"] = unresolved.get("платёж без даты", 0.0) + amount
             continue
         month = month.replace(day=1)
+        current_code["value"] = item["estimate_code"]
 
         pair = _party_key(item["contractor"], item["contract"])
         attempts = (
@@ -1253,6 +1301,11 @@ def payments_by_article(
         "matched": matched,
         "mapped": sum(matched.values()),
         "total": payments["total"],
+        # Как деньги одного кода РСС легли по нашим статьям на самом деле.
+        # Этим потом делится смета того же кода: пропорция взята из факта, а не
+        # выдумана.
+        "observed_by_estimate_code": {
+            code: dict(shares) for code, shares in observed.items()},
     }
 
 
@@ -1385,4 +1438,70 @@ def read_sales(path: str | Path) -> dict[str, Any]:
         "fact_revenue": revenue,
         "average_price": revenue / sold if sold else 0.0,
         "last_fact": max((item["month"] for item in fact), default=None),
+    }
+
+
+# Коды РСС, которых нет в перекодировке БДДС, потому что по ним не платят
+# подрядчикам: резервы существуют в смете и исчезают при заключении договоров.
+# В карту БДДС им попасть неоткуда, а в смете они есть и в бюджет обязаны войти.
+_ESTIMATE_ONLY_CODES: dict[str, str] = {
+    "2.8": "reserve",   # резерв на непредвиденные расходы
+    "2.9": "reserve",   # резерв на инфляционное удорожание
+}
+
+
+def budget_by_article(
+    estimate: dict[str, Any],
+    observed: dict[str, dict[str, float]] | None = None,
+    crosswalk: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Смета РСС, разложенная по статьям движка.
+
+    На действующем проекте расходную часть считать незачем — она посчитана и
+    утверждена. Смета приходит по кодам РСС, а код сваливает разное в одну
+    строку, поэтому доли берутся из уже сшитого факта по тому же коду: как
+    деньги этого кода легли на самом деле, так делится и его смета.
+
+    Где факта ещё нет, годится перекодировка — но только если код ведёт к одной
+    статье. Что не разложилось, называется суммой и причиной: смета, размазанная
+    наугад, на экране неотличима от разложенной верно.
+
+    Суммируются только листья дерева: строки-главы РСС уже агрегаты, и сложить
+    их с подстроками значит посчитать смету дважды.
+    """
+    observed = observed or {}
+    by_code_articles = (crosswalk or {}).get("articles_by_estimate_code") or {}
+    budget: dict[str, float] = {}
+    unresolved: dict[str, float] = {}
+    for row in estimate["rows"]:
+        if not row.get("is_leaf"):
+            continue
+        amount = float(row.get("estimate") or 0.0)
+        if amount <= 0:
+            continue
+        code = row["code"]
+        shares = observed.get(code) or {}
+        total = sum(shares.values())
+        if total > 0:
+            for article, value in shares.items():
+                budget[article] = budget.get(article, 0.0) + amount * value / total
+            continue
+        if code in _ESTIMATE_ONLY_CODES:
+            article = _ESTIMATE_ONLY_CODES[code]
+            budget[article] = budget.get(article, 0.0) + amount
+            continue
+        articles = by_code_articles.get(code) or set()
+        if len(articles) == 1:
+            article = next(iter(articles))
+            budget[article] = budget.get(article, 0.0) + amount
+            continue
+        reason = (f"код РСС {code} ведёт к нескольким статьям, а факта по нему нет"
+                  if articles else f"коду РСС {code} не сопоставлена статья")
+        unresolved[reason] = unresolved.get(reason, 0.0) + amount
+    return {
+        "budget": budget,
+        "unresolved": unresolved,
+        "mapped": sum(budget.values()),
+        "total": sum(float(r.get("estimate") or 0.0)
+                     for r in estimate["rows"] if r.get("is_leaf")),
     }
