@@ -11595,6 +11595,15 @@ def build_project_workbook(
     start_serial = _v4_excel_serial(x.get("project_start")) or _v4_excel_serial("2027-01-01")
     put("B8", number=start_serial, label="project_start")
     put("B36", number=start_serial, label="price_cost_base_date")
+    # Дата платежа денежной компенсации. Ячейка подписана ключом движка, но в
+    # карту записи не входила — и книга жила на формуле шаблона «за месяц до
+    # РнС», а введённую дату не видела вовсе. Пока умолчание совпадало с этим
+    # месяцем, стороны сходились случайно. Методика теперь одна на обе
+    # (social_cash_payment_date), поэтому дата приходит числом.
+    _book_permit = add_months(str(x.get("project_start") or "2027-01-01")[:10],
+                              int(max(float(IRD_MONTHS_MIN), n(x, "ird_months", 18.0))))
+    put("B18", number=_v4_excel_serial(social_cash_payment_date(x, _book_permit)),
+        label="social_comp_date")
     # Конец горизонта движка: он не выводится из РВЭ, а тянется за последним
     # денежным потоком — стройка садика заканчивается позже РВЭ + 12 месяцев и
     # растягивает расчёт. Книга знала только календарную часть правила и
@@ -11789,10 +11798,12 @@ def build_project_workbook(
             # разными сроками, и движок платит их порознь.
             if str(x.get("social_mode")) == SOCIAL_MODE_BOTH:
                 cash_mln = n(x, "social_compensation_mln")
-                comp_date = str(x.get("social_comp_date") or "")[:10]
-                if cash_mln > 0 and comp_date:
-                    column = months_between(date.fromisoformat(project_start_iso),
-                                            date.fromisoformat(comp_date))
+                # Дата — движковой методикой: платёж не выходит за бридж-период.
+                comp_date = social_cash_payment_date(
+                    x, add_months(project_start_iso,
+                                  int(max(float(IRD_MONTHS_MIN), n(x, "ird_months", 18.0)))))
+                if cash_mln > 0:
+                    column = months_between(date.fromisoformat(project_start_iso), comp_date)
                     if 0 <= column < 120:
                         social_monthly_by_phase[0][column] += cash_mln
 
@@ -15262,6 +15273,36 @@ def month_range(start: date, end: date) -> list[date]:
 
 
 
+def social_cash_payment_date(x: dict[str, Any], permit: date) -> date:
+    """Когда платится денежная компенсация за соцобъекты.
+
+    Компенсация — условие получения РнС, и банк держит её в лимите БРИДЖа
+    наравне с покупкой и проектированием. Значит она платится в период
+    доступности БРИДЖа: после РнС линия уже рефинансирована в ПФ, и платить
+    ею нечего. Решение владельца, 18.08.2026: «верно как банк».
+
+    Прежде движок платил строго в заданную дату, а книга — за месяц до РнС
+    своей формулой (`Вводные!B18`), в дату из вводных не заглядывая вовсе:
+    поля не было в карте записи. Пока дата умолчания совпадала с «месяцем до
+    РнС», обе стороны сходились случайно; стоило срокам проекта разъехаться с
+    ней — и пик БРИДЖа расходился ровно на сумму компенсации (4712,5 млн в
+    книге против 4132,8 у движка), а следом стоимость финансирования и прибыль.
+
+    Дату из вводных функция уважает, пока та укладывается в бридж-период:
+    компенсацию платят и раньше — при подписании договора о развитии, задолго
+    до разрешения.
+    """
+    deadline = add_months(permit, -1)
+    raw = str(x.get("social_comp_date") or "").strip()
+    if not raw:
+        return deadline
+    try:
+        wanted = d(raw)
+    except ValueError:
+        return deadline
+    return min(wanted, deadline)
+
+
 def generate_rate_curve(
     start_date: date,
     start_rate_pct: float,
@@ -16373,6 +16414,7 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
                        project_start, max(1, months_between(project_start, rve)))
 
     social_mode_now = str(x.get("social_mode", "Строительство"))
+    social_cash_date = social_cash_payment_date(x, permit)
     if social_mode_now in ("Строительство", SOCIAL_MODE_BOTH):
         if social_program["kindergarten_places"]:
             spread_article("social", social_construction_breakdown["kindergarten"],
@@ -16386,9 +16428,9 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
         # Каждая стройка идёт своим графиком, а денежная часть — одним
         # платежом в свою дату: это разные обязательства с разными сроками.
         if social_mode_now == SOCIAL_MODE_BOTH and imported_social_compensation > 0:
-            add_capex("social", d(x["social_comp_date"]), imported_social_compensation)
+            add_capex("social", social_cash_date, imported_social_compensation)
     else:
-        add_capex("social", d(x["social_comp_date"]), social_total)
+        add_capex("social", social_cash_date, social_total)
 
     if amounts["offices"]:
         spread_article("offices", amounts["offices"], d(x["offices_start"]), int(n(x, "offices_months", 24)))
@@ -16460,6 +16502,7 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
         "core_under_gns": core_under_gns,
         "social_program": social_program,
         "social_construction_breakdown": social_construction_breakdown,
+        "social_cash_date": social_cash_date,
         "imported_social_compensation": imported_social_compensation,
         "vri": vri,
         "vri_equity": dict(vri_equity_by_month),
@@ -17391,6 +17434,10 @@ def calculate(req: CalcRequest) -> dict:
             "permit": op["permit"].isoformat(),
             "sales_start": op["sales_start"].isoformat(),
             "rve": op["rve"].isoformat(),
+            # Дата платежа компенсации — не всегда та, что введена: банк держит
+            # её в лимите БРИДЖа, поэтому платёж не выходит за бридж-период.
+            # Без этой строки перенос было бы видно только по пику долга.
+            "social_cash": op["social_cash_date"].isoformat(),
         },
         "tep": {
             "rows": tep_rows,
