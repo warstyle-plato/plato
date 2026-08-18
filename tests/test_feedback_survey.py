@@ -304,4 +304,8 @@ def test_the_site_steps_reach_the_journal(monkeypatch):
     inputs = dict(core.DEFAULT_INPUTS)
     client.post("/calculate", json={"inputs": inputs,
                                     "tep": _copy.deepcopy(core.TEP_DEFAULT), "rates": []})
-    assert ("calc", {"surface": "site"}) in written
+    kinds = {kind: payload for kind, payload in written}
+    assert "calc" in kinds
+    # Личность обязана ехать вместе с шагом: без неё воронка обрывается на
+    # первой ступени — «сколько из перешедших дошли до расчёта» ответа не имеет.
+    assert "chat_id" in kinds["calc"], "расчёт пишется без личности"

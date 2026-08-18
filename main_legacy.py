@@ -259,6 +259,10 @@ class CalcRequest(BaseModel):
     inputs: dict[str, Any]
     tep: dict[str, dict[str, Any]]
     rates: list[dict[str, Any]] = []
+    # Сессия входа — только для учёта. В расчёт не входит и на результат не
+    # влияет: без неё «сколько из перешедших дошли до расчёта» ответа не имеет,
+    # а это главный вопрос теста.
+    session: str = ""
 
 
 class PhasedCalcRequest(BaseModel):
@@ -3430,12 +3434,15 @@ class LandLookupRequest(BaseModel):
     include_premises: bool = False
     query: str = ""
     limit: int = 30
+    # Только для учёта: кто искал участок. На поиск не влияет.
+    session: str = ""
 
 
 @app.post("/land/lookup")
 def land_lookup(req: LandLookupRequest) -> dict[str, Any]:
     """Сведения ЕГРН по кадастровому номеру, адресу или координатам — по всей России."""
-    usage_track("land", surface="site", text=str(getattr(req, "query", "") or "")[:120])
+    usage_track("land", surface="site", text=str(getattr(req, "query", "") or "")[:120],
+                chat_id=_web_identity_chat_id(str(getattr(req, "session", "") or "")))
     # Интерфейс модели открыт браузером у этого же сервера и зовёт этот метод
     # относительной ссылкой. Если до НСПД отсюда не достучаться, отвечать надо
     # не ошибкой, а запросом к серверу, который достучаться может.
@@ -23879,7 +23886,8 @@ def calculate_api(req: CalcRequest) -> dict:
     # Учёт шагов с сайта: без него от публикации на пятьсот человек остаётся
     # число заходов, а где люди останавливаются — неизвестно. Пишем на сервере,
     # а не на странице: браузер закрывают на полуслове, и событие теряется.
-    usage_track("calc", surface="site")
+    usage_track("calc", surface="site",
+                chat_id=_web_identity_chat_id(str(getattr(req, "session", "") or "")))
     return calculate(req)
 
 
@@ -25130,7 +25138,7 @@ async function sendFeedback(){
   ratings,problems,
   impression:'', mistakes:'',
   projects:feedbackProjects(),
-  session:(typeof telegramSession!=='undefined'&&telegramSession)?telegramSession:'',
+  session:(typeof activeSession==='function')?activeSession():'',
   source:new URLSearchParams(location.search).get('ref')||''
  };
  const status=document.getElementById('feedbackStatus');
@@ -25832,7 +25840,7 @@ async function drawLandPreviewQuiet(query){
  try{
   const raw=String(query!=null?query:((document.getElementById('cadastralNumbers')||{}).value||'')).trim();
   if(!/\d{2}:\d{2}:\d{6,8}:\d+/.test(raw))return;
-  const response=await fetch('/land/lookup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:raw,limit:30})});
+  const response=await fetch('/land/lookup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:raw,limit:30,session:activeSession()})});
   if(!response.ok)return;
   const data=await response.json();
   if(!Number(data.found_count||0))return;
@@ -25965,7 +25973,7 @@ async function lookupLand(options){
  hideLandPreview();
  try{
   const response=await fetch('/land/lookup',{
-   method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:raw,limit:30})
+   method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:raw,limit:30,session:activeSession()})
   });
   const data=await response.json();
   if(!response.ok)throw new Error(data.detail||'Не удалось получить сведения ЕГРН');
@@ -27845,7 +27853,7 @@ async function calculate(){
    const response=await fetch('/calculate-phased',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({inputs,tep,rates,phasing})});
    phaseBundle=await response.json();lastResult=phaseBundle.consolidated;
  }else{
-   const response=await fetch('/calculate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({inputs,tep,rates})});
+   const response=await fetch('/calculate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({inputs,tep,rates,session:activeSession()})});
    lastResult=await response.json();phaseBundle=null;
    if(lastResult&&lastResult.tep&&Array.isArray(lastResult.tep.rows)){
     lastResult.tep.rows.forEach(r=>{if(!tep[r.key])return;['gns','total_area','useful','saleable','transfer','units'].forEach(k=>{if(r[k]!=null)tep[r.key][k]=Number(r[k])})})
