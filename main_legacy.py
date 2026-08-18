@@ -259,6 +259,10 @@ class CalcRequest(BaseModel):
     inputs: dict[str, Any]
     tep: dict[str, dict[str, Any]]
     rates: list[dict[str, Any]] = []
+    # Сессия входа — только для учёта. В расчёт не входит и на результат не
+    # влияет: без неё «сколько из перешедших дошли до расчёта» ответа не имеет,
+    # а это главный вопрос теста.
+    session: str = ""
 
 
 class PhasedCalcRequest(BaseModel):
@@ -3479,12 +3483,15 @@ class LandLookupRequest(BaseModel):
     include_premises: bool = False
     query: str = ""
     limit: int = 30
+    # Только для учёта: кто искал участок. На поиск не влияет.
+    session: str = ""
 
 
 @app.post("/land/lookup")
 def land_lookup(req: LandLookupRequest) -> dict[str, Any]:
     """Сведения ЕГРН по кадастровому номеру, адресу или координатам — по всей России."""
-    usage_track("land", surface="site", text=str(getattr(req, "query", "") or "")[:120])
+    usage_track("land", surface="site", text=str(getattr(req, "query", "") or "")[:120],
+                chat_id=_web_identity_chat_id(str(getattr(req, "session", "") or "")))
     # Интерфейс модели открыт браузером у этого же сервера и зовёт этот метод
     # относительной ссылкой. Если до НСПД отсюда не достучаться, отвечать надо
     # не ошибкой, а запросом к серверу, который достучаться может.
@@ -12035,7 +12042,14 @@ def build_project_workbook(
             f"очередей {enabled_phases}, а листов CF в книге четыре: объёмы и доли "
             "5-й и последующих слиты в четвёртую очередь"
         )
-    phases = list(p.get("phases") or [])
+    # Выключенная очерёдность сроков не задаёт. Конфигурация переживает свой
+    # выключатель — она остаётся в сохранённом проекте и с экрана не видна, —
+    # а книга читала `phases[0]` не глядя на признак. На 77:09:0004014:13 это
+    # подменяло срок строительства 36 месяцев на 24 из давно выключенной
+    # очереди: движок при выключенной в обёртку очередей не заходит вовсе
+    # (`calculate_phased` сразу зовёт `calculate`), и от одной цифры разъезжались
+    # РВЭ, горизонт, кривая CAPEX, пик ПФ и LLCR — восемь строк паритета.
+    phases = list(p.get("phases") or []) if p.get("enabled") else []
     # ТЭП очередей — канонической аллокацией движка (_phase_tep_product_rows):
     # книга получает готовые числа и не может разойтись с расчётом ни в долях,
     # ни в округлении штучных продуктов.
@@ -23932,7 +23946,8 @@ def calculate_api(req: CalcRequest) -> dict:
     # Учёт шагов с сайта: без него от публикации на пятьсот человек остаётся
     # число заходов, а где люди останавливаются — неизвестно. Пишем на сервере,
     # а не на странице: браузер закрывают на полуслове, и событие теряется.
-    usage_track("calc", surface="site")
+    usage_track("calc", surface="site",
+                chat_id=_web_identity_chat_id(str(getattr(req, "session", "") or "")))
     return calculate(req)
 
 
@@ -25190,7 +25205,7 @@ async function sendFeedback(){
   ratings,problems,
   impression:'', mistakes:'',
   projects:feedbackProjects(),
-  session:(typeof telegramSession!=='undefined'&&telegramSession)?telegramSession:'',
+  session:(typeof activeSession==='function')?activeSession():'',
   source:new URLSearchParams(location.search).get('ref')||''
  };
  const status=document.getElementById('feedbackStatus');
@@ -25893,7 +25908,7 @@ async function drawLandPreviewQuiet(query){
  try{
   const raw=String(query!=null?query:((document.getElementById('cadastralNumbers')||{}).value||'')).trim();
   if(!/\d{2}:\d{2}:\d{6,8}:\d+/.test(raw))return;
-  const response=await fetch('/land/lookup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:raw,limit:30})});
+  const response=await fetch('/land/lookup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:raw,limit:30,session:activeSession()})});
   if(!response.ok)return;
   const data=await response.json();
   if(!Number(data.found_count||0))return;
@@ -26083,7 +26098,7 @@ async function lookupLand(options){
  hideLandPreview();
  try{
   const response=await fetch('/land/lookup',{
-   method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:raw,limit:30})
+   method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:raw,limit:30,session:activeSession()})
   });
   const data=await response.json();
   if(!response.ok)throw new Error(data.detail||'Не удалось получить сведения ЕГРН');
@@ -26951,6 +26966,9 @@ async function sendTelegramResult(){
 // нового участка они обязаны обнулиться целиком. Иначе от прошлого проекта
 // остаётся то, чего в новом нет вовсе, — так 833 кладовые чужого ТЭП дали
 // миллиард выручки, а карточка показывала площадь и округ прежнего расчёта.
+// Поля участка, обнулённые последним импортом: их называет плашка «Участок
+// применён». Пустой список — нечего было обнулять.
+let territoryCleared=[];
 const TERRITORY_INPUT_KEYS=[
  // Цена сделки относится к участку, а не к предпосылкам аналитика: при вводе
  // нового кадастра она обязана обнуляться. Иначе второй расчёт подряд считался
@@ -26967,6 +26985,25 @@ const TERRITORY_MARKERS=['_glavapu_import','_manual_tep_import','_mo_calc','_cad
 
 // Предпосылки аналитика — цены, себестоимость, ставки, сроки, налоги — это не
 // данные участка, и сбрасывать их при смене территории нельзя.
+// Подписи обнулённых полей — человеческие: ключ `purchase_price_mln` в плашке
+// не значит ничего, а «цена входа» значит всё.
+const TERRITORY_CLEARED_LABELS={
+ purchase_price_mln:'цена входа', land_rights_cost_mln:'плата за смену ВРИ',
+ social_compensation_mln:'социальная компенсация', site_area_ha:'площадь участка',
+ site_density_sqm_per_ha:'плотность', kindergarten_places:'места в ДОУ',
+ school_places:'места в школе', clinic_capacity:'мощность поликлиники',
+ social_dou_gba_sqm:'площадь ДОУ', social_school_gba_sqm:'площадь школы',
+ social_clinic_gba_sqm:'площадь поликлиники', offices_gba_sqm:'площадь офисов',
+ offices_saleable_sqm:'продаваемая офисов', retail_gba_sqm:'площадь ТЦ',
+ retail_saleable_sqm:'продаваемая ТЦ', above_parking_spaces:'наземные машино-места',
+};
+function territoryClearedNote(){
+ if(!territoryCleared.length)return '';
+ const names=territoryCleared.map(k=>TERRITORY_CLEARED_LABELS[k]||k);
+ return ' <b>Обнулено вместе с участком: '+names.join(', ')
+  +'.</b> Эти значения относятся к площадке, а не к вашим предпосылкам — введите заново.';
+}
+
 function resetTerritoryData(options){
  // Очерёдность — решение пользователя, а не свойство территории. При тихом
  // пересчёте параметров Подмосковья участок тот же, и сбрасывать её нельзя.
@@ -26976,7 +27013,16 @@ function resetTerritoryData(options){
    if(field in tep[key])tep[key][field]=0;
   });
  });
- TERRITORY_INPUT_KEYS.forEach(key=>{if(key in inputs)inputs[key]=0});
+ // Что именно обнулили — запоминаем и показываем. Цена входа принадлежит
+ // участку и обязана сбрасываться, но человек об этом не предупреждён:
+ // импортировал участок, не заметил ноль, посчитал — и получил LLCR 1,08
+ // вместо 1,02. Молчаливое обнуление врёт не меньше молчаливого переезда.
+ territoryCleared=[];
+ TERRITORY_INPUT_KEYS.forEach(key=>{
+  if(!(key in inputs))return;
+  if(Number(inputs[key])>0)territoryCleared.push(key);
+  inputs[key]=0;
+ });
  TERRITORY_MARKERS.forEach(key=>{delete inputs[key]});
  inputs.offices_enabled=false;
  inputs.retail_enabled=false;
@@ -27068,7 +27114,7 @@ async function applyGlavapu(){
  const socialNote=inputs.social_mode==='Строительство'
   ? 'Соцрежим: строительство; расчётные мощности ГлавАПУ используются при нулевых фактических объектах.'
   : 'Соцрежим: денежная компенсация.';
- glavapuStatus.innerHTML='<span class="import-ok">Данные ТЭП применены. Денежные единицы приведены к млн ₽. '+socialNote+' Подземный паркинг собран из жилого блока и, при наличии, отдельного блока МФК.'+(presetNote?' <b>'+presetNote+'</b>':'')+'</span>';
+ glavapuStatus.innerHTML='<span class="import-ok">Данные ТЭП применены. Денежные единицы приведены к млн ₽. '+socialNote+' Подземный паркинг собран из жилого блока и, при наличии, отдельного блока МФК.'+(presetNote?' <b>'+presetNote+'</b>':'')+territoryClearedNote()+'</span>';
  await calculate();
  await sendTelegramResult();
 }
@@ -27963,7 +28009,7 @@ async function calculate(){
    const response=await fetch('/calculate-phased',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({inputs,tep,rates,phasing})});
    phaseBundle=await response.json();lastResult=phaseBundle.consolidated;
  }else{
-   const response=await fetch('/calculate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({inputs,tep,rates})});
+   const response=await fetch('/calculate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({inputs,tep,rates,session:activeSession()})});
    lastResult=await response.json();phaseBundle=null;
    if(lastResult&&lastResult.tep&&Array.isArray(lastResult.tep.rows)){
     lastResult.tep.rows.forEach(r=>{if(!tep[r.key])return;['gns','total_area','useful','saleable','transfer','units'].forEach(k=>{if(r[k]!=null)tep[r.key][k]=Number(r[k])})})
