@@ -98,3 +98,29 @@ def test_the_consent_states_one_term_not_two():
     assert "Согласие действует до достижения целей обработки или до его отзыва" in body
     assert "неограниченным" not in body
 
+
+def test_the_pages_wear_the_real_emblem():
+    """Эмблема одна на все поверхности. На руководстве и документах вместо неё
+    стояло набранное вразрядку слово «ПЛАТО» — своя, придуманная (замечание
+    владельца, 18.08.2026). Логотип берётся из шапки `PAGE`, копии нет."""
+    import guide
+
+    logo = guide.brand_logo(core)
+    assert logo[:4] == b"RIFF" and logo[8:12] == b"WEBP", "эмблема не вынулась из PAGE"
+    assert len(logo) > 4000
+
+    for name, text in _document_pages().items():
+        head = text[text.index('<header class="gtop"'):text.index("</header>")]
+        assert 'src="/guide/assets/logo.webp"' in head, f"{name}: эмблемы нет"
+        assert ">ПЛАТО<" not in head, f"{name}: слово вместо эмблемы"
+
+
+def test_the_emblem_is_served():
+    import main_registry
+    from fastapi.testclient import TestClient
+
+    response = TestClient(main_registry.app).get("/guide/assets/logo.webp")
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/webp"
+    assert response.content[:4] == b"RIFF"
+

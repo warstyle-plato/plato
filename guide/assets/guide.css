@@ -9,7 +9,7 @@ body{margin:0;background:#f2f2ef;color:var(--ink)}
 .gshell{max-width:1280px;margin:0 auto;background:var(--paper);min-height:100vh}
 
 .gtop{display:flex;align-items:center;gap:16px;padding:16px 28px;border-bottom:8px solid #050505;flex-wrap:wrap}
-.gbrand{font-size:24px;font-weight:800;letter-spacing:.28em}
+.gbrand{display:block;height:30px;width:auto}
 .gtitle{font-size:15px;font-weight:620}
 .gver{color:var(--muted);font-weight:400;font-size:12px;margin-left:6px}
 .gback{margin-left:auto;text-decoration:none}

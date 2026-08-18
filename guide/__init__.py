@@ -19,12 +19,15 @@
 - `GET /ads-consent`              — согласие на рекламно-информационные материалы
                                     (оператор — ИП Ситников В. Ю., по решению
                                     владельца 15.08.2026);
+- `GET /guide/assets/logo.webp`   — эмблема, вынутая из `PAGE` (одна на все
+                                    поверхности, своей копии нет);
 - `GET /guide/assets/guide.css`   — стили;
 - `GET /guide/assets/guide.js`    — вкладки, шаги, навигация, поиск.
 """
 
 from __future__ import annotations
 
+import base64
 import re
 from pathlib import Path
 
@@ -38,6 +41,20 @@ _HEADERS = {
     "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
     "X-DevelopAid-Surface": "guide",
 }
+
+
+# Эмблема лежит картинкой в `PAGE` (data:URI в шапке). Страницы документов
+# берут её оттуда же и показывают ту же самую: набранное вразрядку слово в
+# рамке — не эмблема, а её подделка, и на руководстве с согласием она уже
+# стояла (замечание владельца, 18.08.2026). Копии base64 не заводим — правило
+# то же, что с `VERSION`: копию негде обновлять, потому что копии нет.
+_LOGO_IN_PAGE = re.compile(r'class="brandbar"><img src="data:image/webp;base64,([A-Za-z0-9+/=]+)"')
+
+
+def brand_logo(core) -> bytes:
+    """Байты эмблемы из `PAGE`. Пусто — значит шапка страницы изменилась."""
+    found = _LOGO_IN_PAGE.search(core.PAGE)
+    return base64.b64decode(found.group(1)) if found else b""
 
 
 def _fmt(value) -> str:
@@ -108,6 +125,14 @@ def install(app, core) -> None:
     @app.get("/ads-consent", response_class=HTMLResponse, include_in_schema=False)
     def ads_consent_page() -> HTMLResponse:
         return HTMLResponse(ads_consent, headers=_HEADERS)
+
+    logo = brand_logo(core)
+
+    @app.get("/guide/assets/logo.webp", include_in_schema=False)
+    def guide_logo() -> Response:
+        if not logo:
+            raise HTTPException(status_code=404, detail="Эмблема не найдена в шапке страницы.")
+        return Response(logo, media_type="image/webp", headers=_HEADERS)
 
     @app.get("/guide/assets/guide.css", include_in_schema=False)
     def guide_css() -> Response:
