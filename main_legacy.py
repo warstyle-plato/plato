@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.18.47"
+VERSION = "0.18.48"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -259,10 +259,10 @@ class CalcRequest(BaseModel):
     inputs: dict[str, Any]
     tep: dict[str, dict[str, Any]]
     rates: list[dict[str, Any]] = []
-    # Сессия входа — только для учёта. В расчёт не входит и на результат не
-    # влияет: без неё «сколько из перешедших дошли до расчёта» ответа не имеет,
-    # а это главный вопрос теста.
+    # Сессия входа: ею же считается учёт и открывается расчёт экономики
+    # (решение владельца, 18.08.2026 — «счёт виден, вывод за входом»).
     session: str = ""
+    access_key: str = ""
 
 
 class PhasedCalcRequest(BaseModel):
@@ -270,6 +270,8 @@ class PhasedCalcRequest(BaseModel):
     tep: dict[str, dict[str, Any]]
     rates: list[dict[str, Any]] = []
     phasing: dict[str, Any] = {}
+    session: str = ""
+    access_key: str = ""
 
 
 class SensitivityRequest(BaseModel):
@@ -18898,6 +18900,8 @@ def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
 
 @app.post("/calculate-phased")
 def calculate_phased_api(req: PhasedCalcRequest) -> dict[str, Any]:
+    # Очерёдность — тот же расчёт экономики, и та же граница входа.
+    _require_web_access(req.session, req.access_key, "Расчёт экономики")
     return calculate_phased(req)
 
 
@@ -23151,6 +23155,9 @@ def projects_status() -> dict[str, Any]:
         "accepts_login": bool(_telegram_token()) and bool(_web_login_bot_username()),
         "remote": bool(_projects_remote_url("/projects/list")),
         "limit": _PROJECTS_LIMIT,
+        # Расчёт экономики за входом. Без токена бота гейт выключен — страница
+        # не должна запирать дверь, которую сервер не запирает.
+        "calc_requires_login": bool(_telegram_token()),
     }
 
 
@@ -24149,6 +24156,11 @@ def current_key_rate() -> dict[str, Any]:
 
 @app.post("/calculate")
 def calculate_api(req: CalcRequest) -> dict:
+    # Экономика — за входом через бота: участок, ТЭП и ограничения открыты и
+    # показывают, что мы умеем, а вывод о деньгах уже принадлежит конкретному
+    # человеку (решение владельца, 18.08.2026). Без токена бота гейт честно
+    # выключен — проверять подпись нечем.
+    _require_web_access(req.session, req.access_key, "Расчёт экономики")
     # Учёт шагов с сайта: без него от публикации на пятьсот человек остаётся
     # число заходов, а где люди останавливаются — неизвестно. Пишем на сервере,
     # а не на странице: браузер закрывают на полуслове, и событие теряется.
@@ -24277,6 +24289,10 @@ details.cadastral-box>summary::marker{color:#888}
 .land-screening.clean header{background:#2f6b3a}
 .land-screening.unknown header{background:#6b6b66}
 .land-screening.working header{background:#3a3a38}
+.calc-locked{border:1px solid #e5e5e3;padding:22px 24px;margin:12px 0;background:#fafaf8}
+.calc-locked h3{margin:0 0 8px;font-size:15px}
+.calc-locked p{margin:0 0 10px;font-size:13px;color:#555;max-width:640px}
+.calc-locked .calc-locked-why{font-size:11px;color:#888}
 .prof-l{display:block;font-size:12px;color:#555;margin-top:10px}
 .prof-i{display:block;width:100%;margin-top:4px;padding:8px 10px;border:1px solid #cfcfcf;font-size:13px}
 .prof-i:focus{outline:2px solid #111;outline-offset:-1px}
@@ -24933,6 +24949,9 @@ details.cadastral-box>summary::marker{color:#888}
     </div>
 
     <div id="report" class="panel">
+      <!-- Экономика за входом: плашка стоит первой в отчёте, чтобы человек
+           видел причину там, где ждал числа (решение владельца, 18.08.2026). -->
+      <div id="calcLocked" class="calc-locked" style="display:none"></div>
       <div class="card report-hero">
         <div class="report-title">
           <div><div class="section-title">Управленческий отчёт</div><h2>Экономика и ключевые показатели проекта</h2></div>
@@ -28321,6 +28340,37 @@ function renderRates(){
  renderRateCurveChart();
 }
 
+// Расчёт экономики за входом. Признак приходит с сервера: без токена бота гейт
+// выключен, и страница не имеет права запирать дверь, которую сервер не запер.
+let calcRequiresLogin=false;
+
+function calcNeedsLogin(){
+ return calcRequiresLogin&&!activeSession()&&!projectsAdminKey;
+}
+
+async function calcRefusal(response){
+ try{const data=await response.json();return String(data.detail||'')}catch(e){return ''}
+}
+
+function renderCalcLocked(reason){
+ lastResult=null;phaseBundle=null;
+ const box=document.getElementById('calcLocked');
+ if(!box)return;
+ box.style.display='';
+ box.innerHTML='<h3>Экономика проекта — после входа через Telegram</h3>'+
+  '<p>'+escapeHtml(reason||'Участок, ТЭП и градостроительные ограничения считаются без входа — '+
+   'они на вкладках «Участок» и «ТЭП». Экономика, вердикт, LLCR, отчёт и выгрузки '+
+   'принадлежат конкретному человеку, поэтому за ними нужен вход.')+'</p>'+
+  '<p class="calc-locked-why">Вход занимает несколько секунд: подтверждение в боте, '+
+  'без пароля и без второй регистрации.</p>'+
+  '<button class="btn dark" onclick="openLogin()">Войти через Telegram</button>';
+}
+
+function hideCalcLocked(){
+ const box=document.getElementById('calcLocked');
+ if(box)box.style.display='none';
+}
+
 async function calculate(){
  document.querySelectorAll('[id^=f_]').forEach(el=>{const id=el.id.slice(2);inputs[id]=el.type==='checkbox'?el.checked:(el.type==='number'?Number(el.value):el.value)});
  if(document.getElementById('rateScenario'))inputs.rate_scenario=rateScenario.value||'base';
@@ -28336,11 +28386,18 @@ async function calculate(){
  repairParkingFromGlavapu();
  normalizeSocialObjectDates();
  reportView='all';
+ // Экономика — за входом через бота: участок, ТЭП и ограничения открыты, а
+ // вывод о деньгах уже принадлежит конкретному человеку (решение владельца,
+ // 18.08.2026). Спрашиваем здесь, а не ловим 401 на каждом изменении поля:
+ // расчёт зовётся при правке любой вводной.
+ if(calcNeedsLogin()){renderCalcLocked();return null}
  if(phasing&&phasing.enabled&&Number(phasing.phase_count||1)>1){
-   const response=await fetch('/calculate-phased',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({inputs,tep,rates,phasing})});
+   const response=await fetch('/calculate-phased',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({inputs,tep,rates,phasing,session:activeSession(),access_key:projectsAdminKey})});
+   if(!response.ok){renderCalcLocked(await calcRefusal(response));return null}
    phaseBundle=await response.json();lastResult=phaseBundle.consolidated;
  }else{
-   const response=await fetch('/calculate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({inputs,tep,rates,session:activeSession()})});
+   const response=await fetch('/calculate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({inputs,tep,rates,session:activeSession(),access_key:projectsAdminKey})});
+   if(!response.ok){renderCalcLocked(await calcRefusal(response));return null}
    lastResult=await response.json();phaseBundle=null;
    if(lastResult&&lastResult.tep&&Array.isArray(lastResult.tep.rows)){
     lastResult.tep.rows.forEach(r=>{if(!tep[r.key])return;['gns','total_area','useful','saleable','transfer','units'].forEach(k=>{if(r[k]!=null)tep[r.key][k]=Number(r[k])})})
@@ -28402,6 +28459,7 @@ function renderPhaseReportControls(){
 }
 function renderResult(){
  if(!lastResult)return;const r=lastResult,f=r.finance;
+ hideCalcLocked();
  if(typeof feedbackCalcs!=='undefined'){feedbackCalcs+=1;feedbackMaybeAsk()}
 
  // Числа берутся из результата, а не из формы: форма не знает ни о льготе по
@@ -29415,6 +29473,7 @@ async function initProjects(){
   const status=await (await fetch('/projects/status')).json();
   projectsAcceptsKey=!!status.accepts_key;
   projectsAcceptsLogin=!!status.accepts_login;
+  calcRequiresLogin=!!status.calc_requires_login;
   // Хранилище показывается, когда есть чем войти: сессия (мини-приложение
   // или вход через бота), сам вход через бота или ключ администратора.
   projectsStorageReady=!!status.configured&&(!!activeSession()||projectsAcceptsLogin||projectsAcceptsKey);
