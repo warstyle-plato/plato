@@ -140,3 +140,19 @@ def test_the_territory_step_says_it_too():
     body = core.PAGE[core.PAGE.index("async function obtainTep("):]
     body = body[:body.index("let tepRunSequence")]
     assert "CONNECTION_HINT" in body
+
+
+def test_a_broken_screening_does_not_break_the_lookup():
+    """Скрининг участка — довесок к карточке, а не ответ на запрос.
+
+    Он появился позже и вызывался прямо в теле поиска. Любой его сбой уводил
+    весь запрос в ветку ошибки: сведения ЕГРН уже получены и разобраны, а
+    человеку писали «не удалось получить сведения ЕГРН» — и следом подсказку
+    про VPN, которая тут ни при чём. То же семейство ошибок, что и весь этот
+    файл: причина видна, но не та."""
+    got = run("const fetch=async()=>({ok:true,json:async()=>"
+              "({results:[{found:true,cadastral_number:'50:20:0010203:15'}],found_count:1})});"
+              "function loadLandScreening(){throw new Error('скрининг упал')}")
+    assert got["returned"] is not None, "сбой скрининга утащил весь поиск"
+    assert [item["cadastral_number"] for item in got["returned"]] == ["50:20:0010203:15"]
+    assert "скрининг упал" not in got["status"]
