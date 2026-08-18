@@ -317,7 +317,11 @@ def test_the_inputs_tab_points_to_the_new_place():
     assert 'id="presetsMovedHint"' in core.PAGE
     hint = core.PAGE[core.PAGE.index('id="presetsMovedHint"'):]
     hint = hint[:hint.index("</div>")]
-    assert "Мои проекты" in hint and "Мишина" in hint
+    # Раздел переименован в «Личный кабинет» (решение владельца, 18.08.2026):
+    # подсказка обязана называть то место, которое человек увидит на кнопке.
+    assert "Личный кабинет" in hint and "Мишина" in hint
+    button = core.PAGE[core.PAGE.index('id="projectsButton"'):]
+    assert "Личный кабинет" in button[:200], "подсказка и кнопка обязаны совпадать"
 
 
 def test_opening_an_example_closes_the_window_it_came_from():
