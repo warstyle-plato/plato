@@ -3435,6 +3435,7 @@ class LandLookupRequest(BaseModel):
 @app.post("/land/lookup")
 def land_lookup(req: LandLookupRequest) -> dict[str, Any]:
     """Сведения ЕГРН по кадастровому номеру, адресу или координатам — по всей России."""
+    usage_track("land", surface="site", text=str(getattr(req, "query", "") or "")[:120])
     # Интерфейс модели открыт браузером у этого же сервера и зовёт этот метод
     # относительной ссылкой. Если до НСПД отсюда не достучаться, отвечать надо
     # не ошибкой, а запросом к серверу, который достучаться может.
@@ -14725,6 +14726,8 @@ async def report_pdf(request: Request) -> Response:
     # с собой: с сайта он доступен после входа через Telegram (мягкий гейт).
     _require_web_access(str(payload.get("session") or ""),
                         str(payload.get("access_key") or ""), "PDF-отчёт")
+    usage_track("pdf", surface="site",
+                chat_id=_web_identity_chat_id(str(payload.get("session") or "")))
     # Один расчёт на обе поверхности. Правило применили к боту и забыли про
     # сайт: бот пересчитывал модель на сервере, а здесь отчёт строился по
     # результату из браузера. Пока вкладка свежая, разницы нет; стоит ей
@@ -22723,6 +22726,90 @@ def usage_summary(days: int = 30) -> dict[str, Any]:
     }
 
 
+def survey_summary(days: int = 30) -> dict[str, Any]:
+    """Свод теста: откуда пришли, докуда дошли, как оценили, что написали.
+
+    Воронка считается по людям, а не по событиям: один человек, посчитавший
+    десять проектов, — это один дошедший, а не десять. Средние оценки —
+    по подпунктам и по разделам, и рядом всегда число ответов: среднее по
+    двум ответам выглядит так же солидно, как по двадцати, и вводит в
+    заблуждение сильнее всего.
+
+    Свободные тексты не сворачиваются ни во что: их читают целиком. Ради них
+    анкета и затевалась.
+    """
+    events = usage_events(max(days, _USAGE_KEEP_DAYS))
+    now = time.time()
+    window = [e for e in events if float(e.get("at") or 0) >= now - days * 86400]
+
+    # Метка источника приезжает один раз, при нажатии Start. Дальше события
+    # приходят без неё, поэтому источник восстанавливается по chat_id.
+    source_by_chat: dict[int, str] = {}
+    for event in events:
+        if str(event.get("kind")) == "invite":
+            chat = int(event.get("chat") or 0)
+            if chat:
+                source_by_chat[chat] = str(event.get("source") or "")
+
+    def people(kind: str) -> set[int]:
+        return {int(e.get("chat") or 0) for e in window
+                if str(e.get("kind")) == kind and int(e.get("chat") or 0)}
+
+    invited = people("invite")
+    funnel = {
+        "перешли по ссылке": len(invited),
+        "искали участок": len(people("land")),
+        "посчитали": len(people("calc")),
+        "выгрузили PDF": len(people("pdf")),
+        "ответили на анкету": len(people("survey")),
+    }
+    by_source: dict[str, int] = {}
+    for chat in invited:
+        key = source_by_chat.get(chat) or "без метки"
+        by_source[key] = by_source.get(key, 0) + 1
+
+    surveys = [e for e in window if str(e.get("kind")) == "survey"]
+    scores: dict[str, list[int]] = {}
+    for survey in surveys:
+        for key, value in (survey.get("ratings") or {}).items():
+            if key in FEEDBACK_ITEMS:
+                scores.setdefault(key, []).append(int(value))
+
+    def average(values: list[int]) -> float:
+        return round(sum(values) / len(values), 2) if values else 0.0
+
+    items = [{"key": key, "label": FEEDBACK_ITEMS[key],
+              "avg": average(values), "count": len(values)}
+             for key, values in scores.items()]
+    items.sort(key=lambda row: (row["avg"], -row["count"]))
+
+    groups = []
+    for group_key, title, members in FEEDBACK_GROUPS:
+        collected = [score for item in members for score in scores.get(item[0], [])]
+        groups.append({"key": group_key, "label": title,
+                       "avg": average(collected), "count": len(collected)})
+
+    notes: list[dict[str, Any]] = []
+    for survey in surveys:
+        for group_key, text in (survey.get("problems") or {}).items():
+            title = next((g[1] for g in FEEDBACK_GROUPS if g[0] == group_key), group_key)
+            notes.append({"at": survey.get("at"), "chat": survey.get("chat"),
+                          "role": survey.get("role", ""), "group": title, "text": text})
+
+    return {
+        "days": int(days),
+        "funnel": funnel,
+        "by_source": sorted(by_source.items(), key=lambda kv: -kv[1]),
+        "answers": len(surveys),
+        "roles": sorted({str(s.get("role") or "—") for s in surveys}),
+        # Слабейшие подпункты идут первыми: свод читают, чтобы понять, что чинить.
+        "weakest": items[:8],
+        "strongest": list(reversed(items[-5:])),
+        "groups": groups,
+        "notes": notes,
+    }
+
+
 def usage_csv(days: int = 30) -> bytes:
     """Выгрузка для разбора вопросов не глазами.
 
@@ -23750,6 +23837,10 @@ def current_key_rate() -> dict[str, Any]:
 
 @app.post("/calculate")
 def calculate_api(req: CalcRequest) -> dict:
+    # Учёт шагов с сайта: без него от публикации на пятьсот человек остаётся
+    # число заходов, а где люди останавливаются — неизвестно. Пишем на сервере,
+    # а не на странице: браузер закрывают на полуслове, и событие теряется.
+    usage_track("calc", surface="site")
     return calculate(req)
 
 

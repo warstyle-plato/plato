@@ -229,3 +229,79 @@ def test_the_report_timer_stops_on_a_hidden_tab():
     """Минута в свёрнутом окне — не чтение."""
     body = page_function("feedbackWatchReport")
     assert "document.hidden" in body
+
+
+# --- свод: откуда пришли, докуда дошли, как оценили --------------------------------
+
+def test_the_funnel_counts_people_not_events(monkeypatch):
+    """Один человек, посчитавший десять проектов, — это один дошедший, а не
+    десять. Иначе воронка показывает бодрую картину там, где ходил один."""
+    now = __import__("time").time()
+    events = [
+        {"at": now, "kind": "invite", "chat": 1, "source": "brokers"},
+        {"at": now, "kind": "invite", "chat": 2, "source": "brokers"},
+        {"at": now, "kind": "calc", "chat": 1}, {"at": now, "kind": "calc", "chat": 1},
+        {"at": now, "kind": "calc", "chat": 1},
+    ]
+    monkeypatch.setattr(core, "usage_events", lambda days: events)
+    data = core.survey_summary(30)
+    assert data["funnel"]["перешли по ссылке"] == 2
+    assert data["funnel"]["посчитали"] == 1
+    assert data["funnel"]["выгрузили PDF"] == 0
+    assert data["by_source"] == [("brokers", 2)]
+
+
+def test_the_source_is_restored_by_chat(monkeypatch):
+    """Метка приезжает один раз, при нажатии Start. Дальше события приходят без
+    неё, и связать их можно только по chat_id."""
+    now = __import__("time").time()
+    monkeypatch.setattr(core, "usage_events", lambda days: [
+        {"at": now - 86400, "kind": "invite", "chat": 7, "source": "brokers"},
+        {"at": now, "kind": "invite", "chat": 8},
+    ])
+    data = core.survey_summary(30)
+    assert dict(data["by_source"]) == {"brokers": 1, "без метки": 1}
+
+
+def test_the_average_always_carries_its_count(monkeypatch):
+    """Среднее по двум ответам выглядит так же солидно, как по двадцати, и
+    вводит в заблуждение сильнее всего."""
+    now = __import__("time").time()
+    monkeypatch.setattr(core, "usage_events", lambda days: [
+        {"at": now, "kind": "survey", "chat": 1, "role": "Брокер",
+         "ratings": {"excel_correct": 2, "report_trust": 5},
+         "problems": {"excel": "формулы не читаются"}},
+    ])
+    data = core.survey_summary(30)
+    weakest = data["weakest"][0]
+    assert weakest["key"] == "excel_correct" and weakest["avg"] == 2.0
+    assert weakest["count"] == 1
+    assert all("count" in group for group in data["groups"])
+
+
+def test_the_free_texts_are_not_folded(monkeypatch):
+    """Ради них анкета и затевалась: их читают целиком, а не считают."""
+    now = __import__("time").time()
+    monkeypatch.setattr(core, "usage_events", lambda days: [
+        {"at": now, "kind": "survey", "chat": 1, "role": "Девелопер",
+         "ratings": {}, "problems": {"site": "адрес ищется, а ТЭП нет"}},
+    ])
+    notes = core.survey_summary(30)["notes"]
+    assert notes and notes[0]["text"] == "адрес ищется, а ТЭП нет"
+    assert notes[0]["group"] == "Участок"
+
+
+def test_the_site_steps_reach_the_journal(monkeypatch):
+    """Шаги пишутся на сервере, а не на странице: браузер закрывают на
+    полуслове, и событие со страницы теряется вместе с ним."""
+    import copy as _copy
+
+    from fastapi.testclient import TestClient
+
+    written: list[tuple] = []
+    monkeypatch.setattr(core, "usage_track", lambda kind, **kw: written.append((kind, kw)))
+    client = TestClient(core.app)
+    inputs = dict(core.DEFAULT_INPUTS)
+    client.post("/calculate", json={"inputs": inputs,
+                                    "tep": _copy.deepcopy(core.TEP_DEFAULT), "rates": []})
+    assert ("calc", {"surface": "site"}) in written
