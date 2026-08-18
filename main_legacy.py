@@ -20,6 +20,7 @@ import time
 import math
 import io
 import re
+import shutil
 import ssl
 import zipfile
 import xml.etree.ElementTree as ET
@@ -48,7 +49,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.18.55"
+VERSION = "0.18.57"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -18006,12 +18007,26 @@ def health() -> dict:
     # «поднялось» означает лишь «что-то поднялось». Данные тоже проверяются —
     # каталог примонтирован томом, и потерять его молча дороже всего.
     data_dir = Path(os.getenv("DEVELOPAID_DATA_DIR") or "data")
+    # Свободное место — не украшение ответа: 18.08.2026 диск кончился молча,
+    # выкатка упала на распаковке образа, а вход через бота стал отвечать
+    # ошибкой без объяснения, потому что коды входа пишутся файлами. Заполненный
+    # диск виден в /health раньше, чем в поведении.
+    free_mb: float | None = None
+    try:
+        usage = shutil.disk_usage(data_dir if data_dir.exists() else Path("."))
+        free_mb = round(usage.free / (1024 * 1024))
+    except Exception:
+        free_mb = None
     return {
         "status": "ok",
         "version": VERSION,
         "commit": COMMIT,
         "data_dir": str(data_dir),
         "data_writable": os.access(data_dir, os.W_OK) if data_dir.exists() else False,
+        "disk_free_mb": free_mb,
+        # Порог не абстрактный: образ выкатки весит два-три гигабайта, и ниже
+        # этого следующая выкатка не пройдёт.
+        "disk_low": (free_mb is not None and free_mb < 3072),
     }
 
 
@@ -26565,6 +26580,10 @@ async function obtainCadastralTep(preAnalysis){
  document.getElementById('cadastralPreview').style.display='none';
  document.getElementById('glavapuPreview').style.display='none';
  dropMoPreview();
+ // Шаг записывается перед каждым куском: браузер сообщает о своих отказах
+ // своими словами, и без шага «The string did not match the expected pattern»
+ // не говорит ни что сломалось, ни где.
+ let tepStep='сведения по кадастровым номерам';
  try{
    status.textContent='1 из 4 · Формирую территорию по кадастровым номерам…';
    let analysis=preAnalysis;
@@ -26583,6 +26602,7 @@ async function obtainCadastralTep(preAnalysis){
     const cadArea=Number(((analysis||{}).territory||{}).area_ha||0);
     if(cadArea>0&&!inputs._site_area_user_set&&!inputs._glavapu_import)inputs.site_area_ha=cadArea;
    }
+   tepStep='карточка территории';
    field.value=(analysis.requested||[]).join(', ');
    renderCadastralPreview(analysis);
 
@@ -26592,6 +26612,7 @@ async function obtainCadastralTep(preAnalysis){
      return await obtainServerTep(analysis,status,runId);
    }
 
+   tepStep='штатный калькулятор ГлавАПУ';
    status.textContent='2 из 4 · Открываю штатный расчёт ГлавАПУ…';
    const area=Number((analysis.territory||{}).area_ha||0).toFixed(4);
    frame.src='/calc/?terrArea='+encodeURIComponent(area)+'&restrictArea=0&plato='+Date.now();
@@ -26613,6 +26634,7 @@ async function obtainCadastralTep(preAnalysis){
    });
    proceedButton.click();
 
+   tepStep='чтение таблицы ГлавАПУ';
    status.textContent='3 из 4 · Считываю готовую таблицу ТЭП ГлавАПУ…';
    const rows=await waitForGenplan(()=>{
      const extracted=readGenplanRows(frame.contentDocument);
@@ -26626,6 +26648,7 @@ async function obtainCadastralTep(preAnalysis){
    if(!tepResponse.ok)throw new Error(payload.detail||'Не удалось перенести ТЭП в DevelopAid');
    if(runId!==tepRunSequence){tepRunLog(runId,'ответ устаревшего запуска отброшен');return null}
 
+   tepStep='перенос ТЭП в модель';
    status.textContent='4 из 4 · Подготавливаю сверку перед применением…';
    glavapuImport=payload;
    inputs._cadastral_analysis=structuredClone(analysis);
@@ -26645,12 +26668,26 @@ async function obtainCadastralTep(preAnalysis){
    if(cadastralAnalysis){
      try{return await obtainServerTep(cadastralAnalysis,status,runId)}catch(e2){}
    }
-   status.innerHTML='<span class="import-error">'+escapeHtml(String(e.message||e))+'</span>';
+   status.innerHTML='<span class="import-error">'
+     +escapeHtml(stepFailure(tepStep||'расчёт ТЭП', e))+'</span>';
    return null;
  }finally{
    button.disabled=false;button.textContent='Получить ТЭП';
    frame.src='about:blank';
  }
+}
+
+// Браузер сообщает о своих отказах своими словами: «The string did not match
+// the expected pattern» — это Safari, и по одной этой строке не понять ни что
+// сломалось, ни где (боевая проверка владельца, 18.08.2026). К сообщению
+// добавляем род ошибки и шаг, на котором она случилась: тот же принцип, что у
+// `_error_location` на сервере — ошибка без места это ошибка, которой нет.
+function stepFailure(step, error){
+ const name=String((error&&error.name)||'').trim();
+ const text=String((error&&error.message)||error||'').trim()||'ошибка без описания';
+ const known=/^[А-Яа-яЁё]/.test(text);      // наши сообщения уже по-русски
+ const tail=known?'':' · сообщение браузера';
+ return text+' — шаг: '+step+(name?' · '+name:'')+tail;
 }
 
 function renderCadastralPreview(data){
