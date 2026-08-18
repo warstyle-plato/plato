@@ -47,7 +47,8 @@ _PARCEL = {
 def _screening(monkeypatch, findings):
     monkeypatch.setattr(core, "_core_api_url", lambda path: "")
     monkeypatch.setattr(core, "_nspd_search_features", lambda q: [_PARCEL])
-    monkeypatch.setattr(core, "_land_screen_findings", lambda lat, lng: list(findings))
+    monkeypatch.setattr(core, "_land_screen_findings",
+                        lambda lat, lng, geometry=None: list(findings))
     core._LAND_SCREENING_CACHE.clear()
     return core.land_screening(cad="50:20:0070312:8320")
 
@@ -241,7 +242,7 @@ def test_a_parcel_without_egrn_is_not_declared_clean(monkeypatch):
     monkeypatch.setattr(core, "_core_api_url", lambda path: "")
     monkeypatch.setattr(core, "_nspd_search_features", lambda q: [])
     monkeypatch.setattr(core, "_land_screen_findings",
-                        lambda lat, lng: pytest.fail("без границ НСПД не спрашивают"))
+                        lambda *a, **k: pytest.fail("без границ НСПД не спрашивают"))
     core._LAND_SCREENING_CACHE.clear()
     result = core.land_screening(cad="77:02:0021018:3577, 77:02:0021018:7")
 
