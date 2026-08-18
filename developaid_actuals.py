@@ -515,3 +515,215 @@ if __name__ == "__main__":  # pragma: no cover
         print("использование: python3 developaid_actuals.py РСС.xlsx финмодель.xlsx")
         raise SystemExit(2)
     print(_report(sys.argv[1], sys.argv[2]))
+
+
+# ---------------------------------------------------------------------------
+# Наложение факта на план.
+#
+# Движок разворачивает весь проект от даты старта: график продаж, освоение
+# CAPEX, выборку долга. Для действующего проекта прошлое выдумывать не надо —
+# оно случилось. Наложение подменяет ряды до даты среза фактическими, а
+# плановый хвост перенормирует на остаток.
+#
+# Два правила, из которых всё следует.
+#
+# **Итог не меняется от того, что часть его уже случилась.** Если подменить
+# прошлое фактом и оставить будущее как было, проект посчитается дважды: разом
+# и по факту, и по плану. Поэтому хвост масштабируется так, чтобы факт плюс
+# хвост давали прежний итог. Форма хвоста при этом сохраняется — движок про
+# сроки знает больше, чем мы про их пересмотр.
+#
+# **Остаток, которому некуда лечь, не исчезает.** Если планового хвоста нет
+# вовсе, а остаток есть, деньги молча растворились бы в перенормировке. Такой
+# остаток кладётся в месяц среза и объявляется в отчёте: лучше спорная дата,
+# чем пропавшая сумма.
+# ---------------------------------------------------------------------------
+
+
+def _as_month(value: Any) -> datetime.date | None:
+    """Ключ месяца к виду движка: первое число, тип `date`."""
+    if isinstance(value, datetime.datetime):
+        return value.date().replace(day=1)
+    if isinstance(value, datetime.date):
+        return value.replace(day=1)
+    if isinstance(value, str):
+        match = re.match(r"(\d{4})-(\d{2})", value.strip())
+        if match:
+            return datetime.date(int(match.group(1)), int(match.group(2)), 1)
+    return None
+
+
+def _months(series: dict[Any, float]) -> dict[datetime.date, float]:
+    out: dict[datetime.date, float] = {}
+    for key, value in (series or {}).items():
+        month = _as_month(key)
+        if month is None:
+            continue
+        out[month] = out.get(month, 0.0) + float(value or 0.0)
+    return out
+
+
+def _blend(
+    plan: dict[datetime.date, float],
+    fact: dict[datetime.date, float],
+    cut: datetime.date,
+    label: str,
+    notes: list[str],
+) -> dict[datetime.date, float]:
+    """Факт до среза, перенормированный на остаток план после."""
+    planned_total = sum(plan.values())
+    fact_total = sum(value for month, value in fact.items() if month < cut)
+    tail = {month: value for month, value in plan.items() if month >= cut}
+    tail_total = sum(tail.values())
+    remainder = planned_total - fact_total
+
+    blended = {month: value for month, value in fact.items() if month < cut}
+    if remainder <= 0:
+        if remainder < -0.005 * max(abs(planned_total), 1.0):
+            notes.append(
+                f"{label}: факт до среза {fact_total / 1e6:,.1f} млн ₽ превысил план "
+                f"{planned_total / 1e6:,.1f} — остаток обнулён, перерасход "
+                f"{-remainder / 1e6:,.1f} млн ₽")
+        return blended
+    if tail_total > 0:
+        factor = remainder / tail_total
+        for month, value in tail.items():
+            blended[month] = blended.get(month, 0.0) + value * factor
+    else:
+        blended[cut] = blended.get(cut, 0.0) + remainder
+        notes.append(
+            f"{label}: планового хвоста после среза нет, остаток "
+            f"{remainder / 1e6:,.1f} млн ₽ отнесён на месяц среза")
+    return blended
+
+
+def overlay(op: dict[str, Any], actuals: dict[str, Any]) -> dict[str, Any]:
+    """Подменить ряды операционной модели фактом до даты среза.
+
+    `actuals` несёт `cut` — первый месяц прогноза — и ряды факта: `capex`,
+    `operating`, `revenue` и `quantity` по продуктам. Чего нет, то остаётся
+    плановым: отсутствующий ряд — это «не знаем», а не «было ноль».
+
+    Возвращает новую модель и отчёт о наложении; сам `op` не меняется.
+    """
+    cut = _as_month(actuals.get("cut"))
+    if cut is None:
+        raise ValueError("не задана дата среза (`cut`)")
+
+    notes: list[str] = []
+    report: dict[str, Any] = {"cut": cut.isoformat(), "series": {}, "notes": notes}
+    updated = dict(op)
+
+    def record(label: str, plan: dict, blended: dict) -> None:
+        report["series"][label] = {
+            "plan": sum(plan.values()),
+            "fact": sum(v for m, v in blended.items() if m < cut),
+            "forecast": sum(v for m, v in blended.items() if m >= cut),
+        }
+
+    # --- CAPEX -------------------------------------------------------------
+    if "capex" in actuals:
+        plan_capex = dict(op.get("capex") or {})
+        fact_capex = _months(actuals["capex"])
+        blended = _blend(plan_capex, fact_capex, cut, "CAPEX", notes)
+        updated["capex"] = blended
+        record("capex", plan_capex, blended)
+        updated["capex_by_article"] = _split_by_article(
+            op.get("capex_by_article") or {}, plan_capex, blended, cut, notes)
+        # Долговой CAPEX — тот же расход за вычетом доли ВРИ, которую закрывает
+        # капитал. Пересобираем из нового CAPEX, а не масштабируем отдельно:
+        # иначе связь между ними разъедется на второй же правке.
+        equity = _months(op.get("vri_equity") or {})
+        updated["debt_capex"] = {
+            month: max(0.0, value - equity.get(month, 0.0))
+            for month, value in blended.items()
+        }
+
+    # --- коммерческие расходы ---------------------------------------------
+    if "operating" in actuals:
+        plan_operating = dict(op.get("operating") or {})
+        blended = _blend(plan_operating, _months(actuals["operating"]), cut,
+                         "Коммерческие расходы", notes)
+        updated["operating"] = blended
+        record("operating", plan_operating, blended)
+
+    # --- продажи -----------------------------------------------------------
+    for field, source in (("revenue_product_schedules", "revenue"),
+                          ("quantity_product_schedules", "quantity")):
+        if source not in actuals:
+            continue
+        planned = {key: dict(value) for key, value in (op.get(field) or {}).items()}
+        facts = actuals[source] or {}
+        for product, fact_series in facts.items():
+            plan_series = planned.get(product, {})
+            planned[product] = _blend(plan_series, _months(fact_series), cut,
+                                      f"{source}:{product}", notes)
+            record(f"{source}:{product}", plan_series, planned[product])
+        updated[field] = planned
+
+    if "revenue" in actuals:
+        # Свод выручки должен идти из тех же рядов, иначе итог и детализация
+        # разойдутся — обе достоверные на вид.
+        combined: dict[datetime.date, float] = {}
+        for series in updated["revenue_product_schedules"].values():
+            for month, value in series.items():
+                combined[month] = combined.get(month, 0.0) + value
+        updated["revenue"] = combined
+        updated["revenue_by_product"] = {
+            product: sum(series.values())
+            for product, series in updated["revenue_product_schedules"].items()
+        }
+
+    return {"op": updated, "report": report}
+
+
+def _split_by_article(
+    planned_articles: dict[str, dict[datetime.date, float]],
+    plan_capex: dict[datetime.date, float],
+    blended: dict[datetime.date, float],
+    cut: datetime.date,
+    notes: list[str],
+) -> dict[str, dict[datetime.date, float]]:
+    """Разнести новый CAPEX по статьям, сохранив согласие с итогом.
+
+    Факт приходит по кодам РСС, а не по статьям движка, поэтому до среза
+    разнос делается долями плана — того же месяца, а при его отсутствии
+    общими долями проекта. Это приближение, и оно объявляется: детализация по
+    статьям до среза показывает структуру плана, а не структуру факта. Молча
+    оставить старые ряды нельзя — тогда сумма по статьям разойдётся с итогом,
+    и обе цифры будут выглядеть достоверно.
+    """
+    if not planned_articles:
+        return {}
+    overall_total = sum(sum(series.values()) for series in planned_articles.values())
+    if overall_total <= 0:
+        return {article: dict(series) for article, series in planned_articles.items()}
+    overall_share = {
+        article: sum(series.values()) / overall_total
+        for article, series in planned_articles.items()
+    }
+
+    result: dict[str, dict[datetime.date, float]] = {a: {} for a in planned_articles}
+    approximated = False
+    for month, amount in blended.items():
+        if month >= cut:
+            planned_month = plan_capex.get(month, 0.0)
+            shares = (
+                {a: s.get(month, 0.0) / planned_month for a, s in planned_articles.items()}
+                if planned_month > 0 else overall_share
+            )
+        else:
+            approximated = True
+            planned_month = plan_capex.get(month, 0.0)
+            shares = (
+                {a: s.get(month, 0.0) / planned_month for a, s in planned_articles.items()}
+                if planned_month > 0 else overall_share
+            )
+        for article, share in shares.items():
+            if share:
+                result[article][month] = result[article].get(month, 0.0) + amount * share
+    if approximated:
+        notes.append(
+            "структура CAPEX по статьям до среза разнесена долями плана: факт "
+            "приходит по кодам РСС, соответствия статьям движка пока нет")
+    return result

@@ -38,6 +38,11 @@ from fastapi import BackgroundTasks, FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse, FileResponse, Response
 from pydantic import BaseModel
 
+# Факт действующего проекта — РСС, реестр договоров, помесячные ряды — и
+# наложение этого факта на плановую модель. Отдельным модулем по той же
+# причине: он о выгрузках и их разборе, движок — об экономике.
+import developaid_actuals
+
 # Перевод документов проекта (ГПЗУ, ППТ, соглашения ВРИ и МПТ, справки по
 # техприсоединению) в продукты и деньги модели живёт отдельным модулем: он о
 # документах, движок — об экономике, и смешивать их незачем.
@@ -221,6 +226,11 @@ class CalcRequest(BaseModel):
     inputs: dict[str, Any]
     tep: dict[str, dict[str, Any]]
     rates: list[dict[str, Any]] = []
+    # Факт действующего проекта: дата среза и помесячные ряды до неё. Пусто —
+    # проект считается с нуля, как считался всегда. Задано — ряды до среза
+    # подменяются фактическими, а плановый хвост перенормируется на остаток
+    # (`developaid_actuals.overlay`).
+    actuals: dict[str, Any] = {}
 
 
 class PhasedCalcRequest(BaseModel):
@@ -16902,6 +16912,14 @@ def calculate(req: CalcRequest) -> dict:
             t["underground_parking"]["transfer"] = 0.0
 
     op = build_operating_model(x, t, rates)
+    # Прошлое действующего проекта не выдумывается — оно случилось. Наложение
+    # стоит здесь, между построением модели и финансированием: подменённые ряды
+    # доходят до долга, налогов и LLCR сами, и второй реализации не возникает.
+    actuals_report: dict[str, Any] = {}
+    if getattr(req, "actuals", None):
+        overlaid = developaid_actuals.overlay(op, req.actuals)
+        op = overlaid["op"]
+        actuals_report = overlaid["report"]
     fin = simulate_financing(x, t, rates, op)
 
     tep_rows = []
@@ -17319,6 +17337,11 @@ def calculate(req: CalcRequest) -> dict:
                   **{key: value for key, value in op["capex_amounts"].items()
                      if key not in ("land_rights_gross", "land_rights_relief")}},
         "vri": op["vri"],
+        # Отчёт о наложении факта. Пустой словарь на обычном расчёте, а на
+        # действующем проекте — что подменено, чем и с какими оговорками.
+        # Наружу он идёт потому, что наложение меняет числа: приближение,
+        # видное только в коде, неотличимо от точного расчёта.
+        "actuals": actuals_report,
         "commercial_costs": fin["commercial_costs"],
         "finance": fin,
         "summary": {
