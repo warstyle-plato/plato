@@ -657,6 +657,14 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         for row in peers:
             row["price_series"] = history.get(row.get("complex_id")) or []
             row["sales_series"] = self.dynamics.series(row.get("complex_id"))
+            # Остаток у соседа не спрашиваем поштучно — это ещё один запрос на
+            # каждого. Он есть в помесячном отчёте: берётся последняя точка и
+            # помечается своим источником, потому что она месячной давности.
+            last = next((p for p in reversed(row["sales_series"]) if p.get("rem") is not None), None)
+            if last and row.get("remaining_units") is None:
+                row["remaining_units"] = last["rem"]
+                row["remaining_as_of"] = last["month"]
+                row["remaining_source"] = "отчёт за месяц"
 
         subject_metrics = own or {"name": subject.project_name or query, "segment": segment}
         subject_series = history.get(subject.project_id) or []

@@ -198,6 +198,8 @@ resize:vertical;margin-top:8px}
 .chips button{background:#f2f7fc;border:1px solid #cfe0f0;color:var(--blue);border-radius:16px;
 padding:5px 12px;font-size:13px;cursor:pointer}
 .chips button:hover{background:#e6f0f9}
+.chips.views{margin-bottom:10px}
+.chips.views button.on{background:var(--blue);border-color:var(--blue);color:#fff}
 .plato{background:#f8fafc;border-left:3px solid var(--ink);padding:12px 14px;border-radius:0 8px 8px 0;
 margin-top:12px;white-space:normal}
 #askout{margin-top:10px}
@@ -460,51 +462,76 @@ function remainChart(rows){
 // продаются быстро или стоят. Свой проект рыжий, остальные по классу.
 const CLASS_COLOR={'Стандарт/Эконом':'#8fb8d8','Комфорт':'#7fb3a6','Бизнес':'#4E9BDE',
   'Премиум':'#8a6fc4','Элит/De Luxe':'#c46f9b'};
-function bubbleChart(rows){
-  const pts=rows.filter(r=>r.price_per_sqm&&r.area_per_month);
-  if(pts.length<3) return '<div class="muted">Для карты рынка нужно хотя бы три проекта с ценой и продажами.</div>';
+// Оси карты переключаются: один и тот же набор проектов отвечает на разные
+// вопросы. Цена против скорости — про перегрев; цена против размера лота — про
+// продукт; темп против остатка — про то, кто успеет распродаться.
+const AXES={
+  area_per_month:{label:'поглощение, м² в месяц',digits:0},
+  units_per_month:{label:'темп, ДДУ в месяц',digits:1},
+  price_per_sqm:{label:'цена, ₽/м²',digits:0},
+  sold_lot_avg:{label:'средний проданный лот, м²',digits:1},
+  lot_count:{label:'лотов в экспозиции',digits:0},
+  remaining_units:{label:'остаток, лотов',digits:0},
+  distance_km:{label:'расстояние, км',digits:2},
+};
+const VIEWS=[
+  {id:'speed', name:'Цена и скорость', x:'area_per_month', y:'price_per_sqm', size:'lot_count'},
+  {id:'pace',  name:'Цена и темп',     x:'units_per_month', y:'price_per_sqm', size:'lot_count'},
+  {id:'lot',   name:'Цена и размер лота', x:'sold_lot_avg', y:'price_per_sqm', size:'lot_count'},
+  {id:'stock', name:'Темп и остаток',  x:'units_per_month', y:'remaining_units', size:'lot_count'},
+  {id:'near',  name:'Цена и удалённость', x:'distance_km', y:'price_per_sqm', size:'lot_count'},
+];
+let bubbleView='speed';
+
+function bubbleChart(rows, view){
+  const V=view||VIEWS[0];
+  const XK=V.x, YK=V.y, SK=V.size;
+  const pts=rows.filter(r=>r[YK]!==null&&r[YK]!==undefined&&r[XK]!==null&&r[XK]!==undefined);
+  if(pts.length<3) return `<div class="muted">Для этой пары осей нужно хотя бы три проекта с данными;`
+    +` сейчас их ${pts.length}.</div>`;
   const W=680,H=380,L=64,R=16,T=16,B=44;
-  const xs=pts.map(p=>p.area_per_month), ys=pts.map(p=>p.price_per_sqm);
+  const xs=pts.map(p=>p[XK]), ys=pts.map(p=>p[YK]);
   const xhi=Math.max(...xs)*1.12, yhi=Math.max(...ys)*1.08, ylo=Math.min(...ys)*0.92;
-  const lots=pts.map(p=>p.lot_count||1), lhi=Math.max(...lots);
+  const xd=AXES[XK].digits, yd=AXES[YK].digits;
+  const lots=pts.map(p=>p[SK]||1), lhi=Math.max(...lots);
   const x=v=>L+(W-L-R)*(v/xhi);
   const y=v=>T+(H-T-B)*(1-(v-ylo)/(yhi-ylo||1));
   const r=v=>4+18*Math.sqrt((v||1)/lhi);
   let svg=`<svg viewBox="0 0 ${W} ${H}" width="100%" role="img">`;
   [0,0.25,0.5,0.75,1].forEach(f=>{const v=ylo+(yhi-ylo)*f;
     svg+=`<line x1="${L}" y1="${y(v)}" x2="${W-R}" y2="${y(v)}" stroke="#eef2f6"/>`
-       +`<text x="${L-6}" y="${y(v)+4}" text-anchor="end" font-size="10" fill="#8798a8">${num(v)}</text>`;});
+       +`<text x="${L-6}" y="${y(v)+4}" text-anchor="end" font-size="10" fill="#8798a8">${num(v,yd)}</text>`;});
   [0,0.25,0.5,0.75,1].forEach(f=>{const v=xhi*f;
-    svg+=`<text x="${x(v)}" y="${H-24}" text-anchor="middle" font-size="10" fill="#8798a8">${num(v)}</text>`;});
+    svg+=`<text x="${x(v)}" y="${H-24}" text-anchor="middle" font-size="10" fill="#8798a8">${num(v,xd)}</text>`;});
   // Медианы обеих осей — крест, делящий поле на четверти: дорого-быстро,
   // дорого-медленно, дёшево-быстро, дёшево-медленно.
   const mid=a=>{const v=[...a].sort((p,q)=>p-q);return v.length%2?v[(v.length-1)/2]:(v[v.length/2-1]+v[v.length/2])/2};
   const mx=mid(xs), my=mid(ys);
   svg+=`<line x1="${x(mx)}" y1="${T}" x2="${x(mx)}" y2="${H-B}" stroke="#c9d6e2" stroke-dasharray="4 4"/>`
      +`<line x1="${L}" y1="${y(my)}" x2="${W-R}" y2="${y(my)}" stroke="#c9d6e2" stroke-dasharray="4 4"/>`;
-  pts.sort((a,b)=>(b.lot_count||0)-(a.lot_count||0)).forEach(p=>{
+  pts.sort((a,b)=>(b[SK]||0)-(a[SK]||0)).forEach(p=>{
     const c=p.__own?'#C4581B':(CLASS_COLOR[p.segment]||'#9dc2e6');
-    svg+=`<circle cx="${x(p.area_per_month).toFixed(1)}" cy="${y(p.price_per_sqm).toFixed(1)}"`
-       +` r="${r(p.lot_count).toFixed(1)}" fill="${c}" fill-opacity="${p.__own?0.9:0.42}"`
-       +` stroke="${c}" stroke-width="${p.__own?2:1}"><title>${esc(p.name)}: ${num(p.price_per_sqm)} ₽/м²,`
-       +` ${num(p.area_per_month)} м²/мес, ${num(p.lot_count)} лотов</title></circle>`;
+    svg+=`<circle cx="${x(p[XK]).toFixed(1)}" cy="${y(p[YK]).toFixed(1)}"`
+       +` r="${r(p[SK]).toFixed(1)}" fill="${c}" fill-opacity="${p.__own?0.9:0.42}"`
+       +` stroke="${c}" stroke-width="${p.__own?2:1}"><title>${esc(p.name)}: `
+       +`${AXES[YK].label} ${num(p[YK],yd)}; ${AXES[XK].label} ${num(p[XK],xd)}; `
+       +`${AXES[SK].label} ${num(p[SK])}</title></circle>`;
   });
   // Подписываем только тех, кого стоит узнать в лицо: свой проект и крайние
   // по каждой оси. Подписать все — значит не подписать ни одного.
   const marks=new Set();
   const own=pts.find(p=>p.__own); if(own) marks.add(own);
-  [...pts].sort((a,b)=>b.price_per_sqm-a.price_per_sqm)[0]&&marks.add([...pts].sort((a,b)=>b.price_per_sqm-a.price_per_sqm)[0]);
-  [...pts].sort((a,b)=>b.area_per_month-a.area_per_month)[0]&&marks.add([...pts].sort((a,b)=>b.area_per_month-a.area_per_month)[0]);
-  [...pts].sort((a,b)=>a.price_per_sqm-b.price_per_sqm)[0]&&marks.add([...pts].sort((a,b)=>a.price_per_sqm-b.price_per_sqm)[0]);
+  const edge=(key,dir)=>[...pts].sort((a,b)=>dir*(b[key]-a[key]))[0];
+  [edge(YK,1),edge(YK,-1),edge(XK,1),edge(XK,-1)].forEach(p=>{if(p)marks.add(p)});
   marks.forEach(p=>{
-    const px=x(p.area_per_month), py=y(p.price_per_sqm)-r(p.lot_count)-5;
+    const px=x(p[XK]), py=y(p[YK])-r(p[SK])-5;
     svg+=`<text x="${px.toFixed(1)}" y="${py.toFixed(1)}" text-anchor="middle" font-size="10.5"`
        +` fill="${p.__own?'#C4581B':'#5b6b7d'}"${p.__own?' font-weight="600"':''}>`
        +`${esc(p.name.length>20?p.name.slice(0,19)+'…':p.name)}</text>`;
   });
-  svg+=`<text x="${(L+W-R)/2}" y="${H-6}" text-anchor="middle" font-size="10.5" fill="#5b6b7d">поглощение, м² в месяц</text>`
+  svg+=`<text x="${(L+W-R)/2}" y="${H-6}" text-anchor="middle" font-size="10.5" fill="#5b6b7d">${esc(AXES[XK].label)}</text>`
      +`<text x="14" y="${(T+H-B)/2}" text-anchor="middle" font-size="10.5" fill="#5b6b7d"`
-     +` transform="rotate(-90 14 ${(T+H-B)/2})">цена, ₽/м²</text>`;
+     +` transform="rotate(-90 14 ${(T+H-B)/2})">${esc(AXES[YK].label)}</text>`;
   const legend=Object.entries(CLASS_COLOR).filter(([k])=>pts.some(p=>p.segment===k));
   let lx=L;
   legend.forEach(([k,c])=>{
@@ -840,10 +867,12 @@ function render(d){
     </div>`+((((d.city||{}).scope||{}).covered===false)?`<div class="scope">${esc(d.city.scope.reason)}</div>`:'')+`</div>`;
 
   const market=[{...m, name:s.project_name||'объект', segment:s.segment, __own:true}, ...peers];
-  html+=`<div class="card"><h2>Карта рынка: цена против скорости продаж</h2>`
-    +bubbleChart(market)
+  html+=`<div class="card"><h2>Карта рынка</h2>`
+    +`<div class="chips views">`+VIEWS.map(v=>`<button type="button" data-view="${v.id}"`
+      +`${v.id===bubbleView?' class="on"':''}>${esc(v.name)}</button>`).join('')+`</div>`
+    +`<div id="bubble">`+bubbleChart(market, VIEWS.find(v=>v.id===bubbleView))+`</div>`
     +`<div class="muted" style="font-size:12.5px;margin-top:8px">Размер кружка — лотов в экспозиции.`
-    +` Пунктир — медианы по обеим осям: справа сверху дорогие и быстрые, слева сверху дорогие и стоящие.</div></div>`;
+    +` Пунктир — медианы по обеим осям.</div></div>`;
 
   const priceBlock=(d.blocks||[]).find(b=>b.code==='price');
   if(priceBlock) html+=`<div class="card"><h2>Цены соседей сегодня</h2>${priceChart(peers,{...m,name:s.project_name||'объект'},(priceBlock.peers||{}).median)}</div>`;
@@ -880,6 +909,11 @@ function render(d){
       <td class="muted">${esc(p.observed_at||'—')}</td></tr>`).join('')
     +`</table></div></div>`;
   $('#out').innerHTML=html;
+  document.querySelectorAll('.views button').forEach(btn=>btn.addEventListener('click',()=>{
+    bubbleView=btn.dataset.view;
+    document.querySelectorAll('.views button').forEach(b2=>b2.classList.toggle('on',b2===btn));
+    $('#bubble').innerHTML=bubbleChart(market, VIEWS.find(v=>v.id===bubbleView));
+  }));
   $('#askcard').style.display='block';
   $('#pdf').style.display='inline-block';
   wireCards();

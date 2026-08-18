@@ -582,8 +582,10 @@ def test_every_element_the_script_asks_for_exists_in_the_markup() -> None:
     from market_search.cabinet import cabinet_page
 
     page = cabinet_page()
-    markup = page.split("<script>")[0]
-    present = set(re.findall(r'id="([a-zA-Z0-9_-]+)"', markup))
+    # Объявление ищется по всей странице, а не только в статической разметке:
+    # часть узлов скрипт создаёт сам из шаблонов. Проверка ловит другое — имя,
+    # которого нет нигде: опечатку и забытую вёрстку.
+    present = set(re.findall(r'id="([a-zA-Z0-9_-]+)"', page))
     asked = set(re.findall(r"\$\('#([a-zA-Z0-9_-]+)'\)", page))
     assert asked, "скрипт не обращается ни к одному элементу — проверка бесполезна"
     assert not (asked - present), f"скрипт зовёт то, чего нет в разметке: {sorted(asked - present)}"
