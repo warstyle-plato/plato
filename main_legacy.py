@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.18.43"
+VERSION = "0.18.44"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -23005,11 +23005,24 @@ def _project_owner(session: str = "", key: str = "") -> int:
     # где есть не-ASCII, а ключ владелец задаёт какой захочет.
     if secret and key and hmac.compare_digest(str(key).encode("utf-8"), secret.encode("utf-8")):
         return sorted(admins)[0]
+    # Пустой `DEVELOPAID_ADMIN_KEY` отказывал теми же словами, что неверный
+    # ключ: человек вводил его снова и снова, а принимать было нечему
+    # (замечание владельца, 18.08.2026). Причины разные — и ответы разные.
+    if not secret:
+        raise HTTPException(
+            status_code=403,
+            detail=("Ключи на этом сервере не принимаются: DEVELOPAID_ADMIN_KEY "
+                    "не задан. Войдите через Telegram — кнопка в «Личном кабинете»."))
+    if not key:
+        raise HTTPException(
+            status_code=403,
+            detail=("Войдите через Telegram (кнопка в «Личном кабинете») либо "
+                    "введите ключ администратора — иначе сервер не знает, чей "
+                    "это проект."))
     raise HTTPException(
         status_code=403,
-        detail=("Войдите через Telegram (кнопка в «Личном кабинете») либо задайте "
-                "DEVELOPAID_ADMIN_KEY и введите ключ — иначе сервер не знает, "
-                "чей это проект."))
+        detail=("Ключ администратора не подошёл. Проверьте его или войдите "
+                "через Telegram — кнопка в «Личном кабинете»."))
 
 
 def _project_dir(owner: int) -> Path:
@@ -29419,7 +29432,7 @@ async function saveProjectToServer(){
  }
 }
 
-function renderProjectsLogin(){
+function renderProjectsLogin(reason){
  // Панель входа живёт рядом с таблицей, не затирая её: после входа таблица
  // нужна той же самой.
  const stored=document.getElementById('projectsStored');
@@ -29458,6 +29471,13 @@ function renderProjectsLogin(){
   stored.insertBefore(box,stored.firstChild);
  }
  box.style.display='';
+ // Причина показывается в самой панели: «сервер не знает, чей это проект» в
+ // окне запроса ключа человек читал уже после того, как ключ ввёл.
+ const status=box.querySelector('div:last-child');
+ if(status)status.textContent=reason?String(reason):'';
+ if(!projectsAcceptsLogin&&!projectsAcceptsKey&&status){
+  status.textContent='Вход на этом сервере не настроен: нет ни имени бота, ни ключа администратора.';
+ }
  const scroll=stored.querySelector('.scroll');
  if(scroll)scroll.style.display='none';
 }
@@ -29542,18 +29562,18 @@ async function openProjects(){
  let data;
  try{data=await projectsCall('/projects/list',{})}
  catch(e){
-  // Неверный ключ запирал дверь снаружи: список не открывался, а кнопка
-  // «Сменить ключ» жила внутри него. Спрашиваем прямо здесь, иначе
-  // единственный выход — консоль браузера, которой на телефоне нет.
+  // Ключ, который сервер не принял, спрашивался снова и снова: человек сидел
+  // в окне ввода, а выход — вход через Telegram — был за его пределами
+  // (замечание владельца, 18.08.2026). Непринятый ключ забываем и показываем
+  // оба входа сразу, с причиной отказа рядом.
   if(!activeSession()){
-   const again=prompt(String(e.message||e)+'\n\nВведите ключ ещё раз:',projectsAdminKey||'');
-   if(again===null)return;
-   projectsAdminKey=again.trim();
-   if(projectsAdminKey)localStorage.setItem('plato_projects_key',projectsAdminKey);
-   else localStorage.removeItem('plato_projects_key');
-   try{data=await projectsCall('/projects/list',{})}
-   catch(e2){alert(String(e2.message||e2));return}
-  }else{alert(String(e.message||e));return}
+   projectsAdminKey='';
+   try{localStorage.removeItem('plato_projects_key')}catch(e2){}
+   renderAccountBox();
+   renderProjectsLogin(String(e.message||e));
+   return;
+  }
+  alert(String(e.message||e));return;
  }
  const rows=(data.projects||[]).map(p=>{
   const s=p.summary||{};
