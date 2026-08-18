@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.18.41"
+VERSION = "0.18.42"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -8669,7 +8669,8 @@ def _telegram_handle_message(message: dict[str, Any]) -> None:
         start_payload = text.split(maxsplit=1)[1].strip() if " " in text else ""
         if command == "/start" and start_payload.startswith("login_"):
             try:
-                _web_login_confirm(start_payload[len("login_"):], chat_id)
+                _web_login_confirm(start_payload[len("login_"):], chat_id,
+                                   _telegram_sender_name(message))
                 _telegram_send_message(
                     chat_id,
                     "<b>Вход на сайт подтверждён.</b> Вернитесь во вкладку браузера — "
@@ -23137,6 +23138,14 @@ def projects_save(req: ProjectRequest) -> dict[str, Any]:
     if forwarded is not None:
         return forwarded
     owner = _project_owner(req.session, req.key)
+    # Знакомство спрашивают там, где человек оставляет у нас работу, а не на
+    # каждом запросе: расчёт открыт, а сохранённый проект уже чей-то. Спрашивают
+    # у вошедшего через Telegram; админский ключ — это сам владелец, ему
+    # представляться некому.
+    if req.session and not profile_complete(profile_read(owner)):
+        raise HTTPException(
+            status_code=428,
+            detail="Заполните знакомство: имя, компания и откуда узнали о нас.")
     return project_save(owner, req.name, req.payload, req.summary, req.cadastral, req.id)
 
 
@@ -23162,6 +23171,173 @@ def projects_delete(req: ProjectRequest) -> dict[str, Any]:
     if forwarded is not None:
         return forwarded
     return project_delete(_project_owner(req.session, req.key), req.id)
+
+
+# ---------------------------------------------------------------------------
+# Знакомство: кто зашёл, как зовут, из какой компании и откуда узнал о нас
+# (решение владельца, 18.08.2026).
+#
+# Личность подтверждает Telegram — вход уже доказывает, что за экраном живой
+# аккаунт, и даёт chat_id. Анкета добавляет то, что подтвердить нечем и незачем
+# делать вид, что подтверждено: имя, компанию, источник. Хранится рядом с
+# проектами, тем же владельцем и в том же общем хранилище на ядре.
+
+_PROFILE_FIELD_LIMIT = 200
+_PROFILE_SOURCES = (
+    "Телеграм-канал", "Рекомендация коллеги", "Поиск в интернете",
+    "Конференция или мероприятие", "Соцсети", "Другое",
+)
+
+
+class ProfileRequest(BaseModel):
+    session: str = ""
+    key: str = ""
+    name: str = ""
+    company: str = ""
+    role: str = ""
+    source: str = ""
+    contact: str = ""
+    consent: bool = False
+
+
+def _profile_path(owner: int) -> Path:
+    return _project_dir(owner) / "profile.json"
+
+
+def _profile_text(value: Any) -> str:
+    # Поле приходит снаружи: режем по длине и убираем перевод строки, чтобы
+    # анкета не превращалась в способ прислать нам страницу текста.
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    return text[:_PROFILE_FIELD_LIMIT]
+
+
+def profile_read(owner: int) -> dict[str, Any]:
+    path = _profile_path(owner)
+    if not path.is_file():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def profile_complete(record: dict[str, Any]) -> bool:
+    """Заполненной анкета считается, когда есть имя, компания и источник."""
+    return all(_profile_text(record.get(key)) for key in ("name", "company", "source"))
+
+
+def profile_write(owner: int, req: ProfileRequest) -> dict[str, Any]:
+    name, company = _profile_text(req.name), _profile_text(req.company)
+    source = _profile_text(req.source)
+    if not name or not company or not source:
+        raise HTTPException(
+            status_code=400,
+            detail="Заполните имя, компанию и откуда узнали о нас.")
+    if not bool(req.consent):
+        raise HTTPException(
+            status_code=400,
+            detail="Без согласия на обработку персональных данных анкету принять нельзя.")
+    previous = profile_read(owner)
+    record = {
+        "chat_id": int(owner),
+        "name": name,
+        "company": company,
+        "role": _profile_text(req.role),
+        "source": source,
+        "contact": _profile_text(req.contact),
+        "telegram_name": _profile_text(previous.get("telegram_name")),
+        "consent": True,
+        "consent_at": previous.get("consent_at") or datetime.now().isoformat(timespec="seconds"),
+        "created": previous.get("created") or datetime.now().isoformat(timespec="seconds"),
+        "updated": datetime.now().isoformat(timespec="seconds"),
+    }
+    directory = _project_dir(owner)
+    directory.mkdir(parents=True, exist_ok=True)
+    temporary = _profile_path(owner).with_suffix(".tmp")
+    temporary.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+    temporary.replace(_profile_path(owner))
+    return {"saved": True, "profile": record, "first_time": not bool(previous)}
+
+
+def _profile_remember_telegram_name(owner: int, name: str) -> None:
+    """Имя из Telegram — подсказка для анкеты, а не сама анкета."""
+    name = _profile_text(name)
+    if not name or not owner:
+        return
+    record = profile_read(owner)
+    if _profile_text(record.get("telegram_name")) == name:
+        return
+    record["telegram_name"] = name
+    record.setdefault("chat_id", int(owner))
+    directory = _project_dir(owner)
+    directory.mkdir(parents=True, exist_ok=True)
+    temporary = _profile_path(owner).with_suffix(".tmp")
+    temporary.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+    temporary.replace(_profile_path(owner))
+
+
+def _profile_forward(path: str, req: ProfileRequest) -> dict[str, Any] | None:
+    url = _projects_remote_url(path)
+    if not url:
+        return None
+    return _core_post(url, req.model_dump(), 30.0)
+
+
+@app.post("/profile/get")
+def profile_get(req: ProfileRequest) -> dict[str, Any]:
+    """Анкета владельца сессии: заполнена ли и чем подставить поля."""
+    forwarded = _profile_forward("/profile/get", req)
+    if forwarded is not None:
+        return forwarded
+    owner = _project_owner(req.session, req.key)
+    record = profile_read(owner)
+    return {
+        "chat_id": owner,
+        "complete": profile_complete(record),
+        "profile": record,
+        "sources": list(_PROFILE_SOURCES),
+    }
+
+
+@app.post("/profile/save")
+def profile_save(req: ProfileRequest) -> dict[str, Any]:
+    forwarded = _profile_forward("/profile/save", req)
+    if forwarded is not None:
+        # Ядро до api.telegram.org не достаёт, поэтому о новом знакомстве
+        # владельцу сообщает тот хост, у которого есть Telegram.
+        if forwarded.get("first_time"):
+            _profile_announce(forwarded.get("profile") or {})
+        return forwarded
+    saved = profile_write(_project_owner(req.session, req.key), req)
+    if saved.get("first_time"):
+        _profile_announce(saved.get("profile") or {})
+    return saved
+
+
+def _profile_announce(record: dict[str, Any]) -> None:
+    """Новое знакомство — в чат владельцу. Молча, если сообщить нечем."""
+    admins = usage_admin_ids()
+    if not admins or not _telegram_token() or not _telegram_webhook_enabled():
+        return
+    lines = [
+        "<b>Новая регистрация</b>",
+        f"Имя: {html.escape(str(record.get('name') or '—'))}",
+        f"Компания: {html.escape(str(record.get('company') or '—'))}",
+    ]
+    if record.get("role"):
+        lines.append(f"Роль: {html.escape(str(record['role']))}")
+    lines.append(f"Узнал(а) о нас: {html.escape(str(record.get('source') or '—'))}")
+    if record.get("contact"):
+        lines.append(f"Контакт: {html.escape(str(record['contact']))}")
+    if record.get("telegram_name"):
+        lines.append(f"Telegram: {html.escape(str(record['telegram_name']))}")
+    lines.append(f"chat_id: <code>{int(record.get('chat_id') or 0)}</code>")
+    for admin in sorted(admins):
+        try:
+            _telegram_send_message(admin, "\n".join(lines))
+        except Exception:
+            # Уведомление — не часть регистрации: анкета уже сохранена.
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -23228,6 +23404,7 @@ class WebLoginConfirmRequest(BaseModel):
     code: str = ""
     chat_id: int = 0
     sign: str = ""
+    name: str = ""
 
 
 class FeedbackRequest(BaseModel):
@@ -23340,18 +23517,23 @@ def _web_login_record(code: str) -> tuple[Path, dict[str, Any]]:
     return path, record
 
 
-def _web_login_confirm(code: str, chat_id: int) -> dict[str, Any]:
-    """Связывает код с chat_id. Зовётся ботом — локально или через ядро."""
+def _web_login_confirm(code: str, chat_id: int, name: str = "") -> dict[str, Any]:
+    """Связывает код с chat_id. Зовётся ботом — локально или через ядро.
+
+    Имя из Telegram передаётся тем же запросом: анкета знакомства подставляет
+    его в поле, чтобы человек правил, а не набирал.
+    """
     remote = _projects_remote_url("/auth/telegram/confirm")
     if remote:
         return _core_post(
             remote,
-            {"code": code, "chat_id": int(chat_id),
+            {"code": code, "chat_id": int(chat_id), "name": str(name or ""),
              "sign": _web_login_sign(code, chat_id)},
             30.0)
     path, record = _web_login_record(code)
     record["chat_id"] = int(chat_id)
     record["confirmed"] = time.time()
+    _profile_remember_telegram_name(int(chat_id), name)
     temporary = path.with_suffix(".tmp")
     temporary.write_text(json.dumps(record), encoding="utf-8")
     temporary.replace(path)
@@ -23369,7 +23551,7 @@ def web_login_confirm(req: WebLoginConfirmRequest) -> dict[str, Any]:
         raise HTTPException(status_code=403, detail="Подпись подтверждения не сошлась.")
     if not int(req.chat_id or 0):
         raise HTTPException(status_code=400, detail="Пустой chat_id.")
-    return _web_login_confirm(req.code, int(req.chat_id))
+    return _web_login_confirm(req.code, int(req.chat_id), req.name)
 
 
 @app.post("/auth/telegram/claim")
@@ -23384,7 +23566,9 @@ def web_login_claim(req: WebLoginClaimRequest) -> dict[str, Any]:
         return {"ready": False}
     path.unlink(missing_ok=True)
     session = _telegram_session(chat_id, [], lifetime_seconds=_WEB_LOGIN_SESSION_SECONDS)
-    return {"ready": True, "session": session, "chat_id": chat_id}
+    profile = profile_read(chat_id)
+    return {"ready": True, "session": session, "chat_id": chat_id,
+            "profile_complete": profile_complete(profile), "profile": profile}
 
 
 def _web_identity_chat_id(session: str) -> int:
@@ -24071,6 +24255,9 @@ details.cadastral-box>summary::marker{color:#888}
 .land-screening.clean header{background:#2f6b3a}
 .land-screening.unknown header{background:#6b6b66}
 .land-screening.working header{background:#3a3a38}
+.prof-l{display:block;font-size:12px;color:#555;margin-top:10px}
+.prof-i{display:block;width:100%;margin-top:4px;padding:8px 10px;border:1px solid #cfcfcf;font-size:13px}
+.prof-i:focus{outline:2px solid #111;outline-offset:-1px}
 .land-screening .progress{height:3px;background:#ececea}
 .land-screening .progress i{display:block;height:100%;background:#3a3a38;transition:width .25s}
 .land-screening .step{padding:6px 12px;font-size:12px;border-bottom:1px solid #f0f0ee;color:#555}
@@ -25010,6 +25197,36 @@ details.cadastral-box>summary::marker{color:#888}
 <!-- Анкета обратной связи. Всплывает один раз, когда человек и посчитал, и
      почитал: раньше оценивать нечего, а «при выходе» на телефоне срабатывает
      через раз и ловит уже уходящего. -->
+<!-- Знакомство. Личность подтверждает Telegram, а имя, компанию и источник
+     подтвердить нечем — они со слов человека, и делать вид, что проверены,
+     нельзя. Спрашиваем один раз после входа (решение владельца, 18.08.2026). -->
+<div id="profileDialog" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);
+     z-index:95;align-items:center;justify-content:center;padding:20px">
+  <div style="background:#fff;max-width:560px;width:100%;max-height:86vh;overflow:auto;padding:22px 24px">
+    <h2 style="margin:0 0 6px;font-size:17px">Знакомство</h2>
+    <div style="font-size:12px;color:#666;margin-bottom:16px">
+      Вход подтверждён через Telegram. Осталось назвать себя — иначе мы видим
+      только номер аккаунта. Минута, и больше не спросим.
+    </div>
+    <label class="prof-l">Имя и фамилия<input id="profName" class="prof-i" maxlength="200" placeholder="Как к вам обращаться"></label>
+    <label class="prof-l">Компания<input id="profCompany" class="prof-i" maxlength="200" placeholder="Где работаете"></label>
+    <label class="prof-l">Роль <span style="color:#999">— не обязательно</span><input id="profRole" class="prof-i" maxlength="200" placeholder="Например: директор по развитию"></label>
+    <label class="prof-l">Откуда узнали о нас<select id="profSource" class="prof-i"></select></label>
+    <label class="prof-l">Телефон или почта <span style="color:#999">— не обязательно</span><input id="profContact" class="prof-i" maxlength="200" placeholder="Чтобы связаться, если понадобится"></label>
+    <label style="display:flex;gap:8px;align-items:flex-start;font-size:12px;color:#555;margin-top:12px">
+      <input type="checkbox" id="profConsent" style="margin-top:2px">
+      <span>Согласен(на) на обработку персональных данных —
+        <a href="/consent" target="_blank">согласие</a> и
+        <a href="/privacy" target="_blank">политика</a>.</span>
+    </label>
+    <div id="profileStatus" style="font-size:12px;color:#777;margin-top:12px"></div>
+    <div style="display:flex;gap:10px;margin-top:16px">
+      <button class="btn dark" onclick="saveProfile()">Сохранить</button>
+      <button class="btn" onclick="closeProfile()">Позже</button>
+    </div>
+  </div>
+</div>
+
 <div id="feedbackDialog" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);
      z-index:90;align-items:center;justify-content:center;padding:20px"
      onclick="if(event.target===this)closeFeedback('backdrop')">
@@ -25296,7 +25513,11 @@ async function loginViaTelegram(statusEl){
    if(cr.ok&&cd.ready&&cd.session){
     try{localStorage.setItem(WEB_SESSION_KEY,cd.session)}catch(e){}
     say('Вход выполнен.');
-    location.reload();
+    // Знакомство спрашивается тут же, пока человек за экраном: после
+    // перезагрузки он уже занят своим делом.
+    if(cd.profile_complete){location.reload();return}
+    profileState={complete:false,profile:cd.profile||{},sources:profileState.sources};
+    openProfile();
     return;
    }
    if(!cr.ok)throw new Error(cd.detail||'Код входа не принят');
@@ -25305,6 +25526,75 @@ async function loginViaTelegram(statusEl){
  }catch(e){say(String(e.message||e))}
  finally{webLoginBusy=false}
 }
+// --- Знакомство -------------------------------------------------------------
+// Спрашиваем один раз: после входа, а также при первом сохранении проекта —
+// сервер туда же и не пускает (428), потому что сохранённый проект уже чей-то.
+let profileState={complete:false,profile:{},sources:[]};
+
+function profileSources(){
+ return profileState.sources&&profileState.sources.length?profileState.sources
+  :['Телеграм-канал','Рекомендация коллеги','Поиск в интернете','Конференция или мероприятие','Соцсети','Другое'];
+}
+
+function openProfile(){
+ const p=profileState.profile||{};
+ const set=(id,value)=>{const el=document.getElementById(id);if(el)el.value=value||''};
+ // Имя из Telegram — подсказка: человек правит, а не набирает.
+ set('profName',p.name||p.telegram_name||'');
+ set('profCompany',p.company);set('profRole',p.role);set('profContact',p.contact);
+ const select=document.getElementById('profSource');
+ if(select){
+  select.innerHTML='<option value="">— выберите —</option>'+
+   profileSources().map(s=>`<option${s===p.source?' selected':''}>${escapeHtml(s)}</option>`).join('');
+ }
+ const consent=document.getElementById('profConsent');
+ if(consent)consent.checked=!!p.consent;
+ const status=document.getElementById('profileStatus');
+ if(status)status.textContent='';
+ const dialog=document.getElementById('profileDialog');
+ if(dialog)dialog.style.display='flex';
+}
+
+function closeProfile(){
+ const dialog=document.getElementById('profileDialog');
+ if(dialog)dialog.style.display='none';
+}
+
+async function saveProfile(){
+ const value=id=>String((document.getElementById(id)||{}).value||'').trim();
+ const status=document.getElementById('profileStatus');
+ const say=t=>{if(status)status.textContent=t};
+ if(!value('profName')||!value('profCompany')||!value('profSource')){
+  say('Имя, компания и «откуда узнали» — обязательные.');return;
+ }
+ if(!(document.getElementById('profConsent')||{}).checked){
+  say('Без согласия на обработку данных анкету принять нельзя.');return;
+ }
+ say('Сохраняю…');
+ try{
+  const r=await fetch('/profile/save',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({session:activeSession(),name:value('profName'),company:value('profCompany'),
+    role:value('profRole'),source:value('profSource'),contact:value('profContact'),consent:true})});
+  const d=await r.json().catch(()=>({}));
+  if(!r.ok)throw new Error(d.detail||'Анкета не сохранена');
+  profileState={complete:true,profile:d.profile||{},sources:profileState.sources};
+  closeProfile();
+ }catch(e){say(String(e.message||e))}
+}
+
+async function loadProfile(openIfEmpty){
+ if(!activeSession())return profileState;
+ try{
+  const r=await fetch('/profile/get',{method:'POST',headers:{'Content-Type':'application/json'},
+                                      body:JSON.stringify({session:activeSession()})});
+  if(!r.ok)return profileState;
+  const d=await r.json();
+  profileState={complete:!!d.complete,profile:d.profile||{},sources:d.sources||[]};
+ }catch(e){return profileState}
+ if(openIfEmpty&&!profileState.complete)openProfile();
+ return profileState;
+}
+
 const money=v=>(Number(v||0)/1e9).toLocaleString('ru-RU',{minimumFractionDigits:0,maximumFractionDigits:2})+' млрд ₽';
 const socialMoney=v=>{
  const x=Number(v||0);
@@ -29115,7 +29405,12 @@ async function saveProjectToServer(){
    summary:projectSummaryForStore(),cadastral:projectCadastral()});
   alert('Проект сохранён на сервере');
   openProjects();
- }catch(e){alert(String(e.message||e))}
+ }catch(e){
+  // 428 от сервера — не отказ, а вопрос «кто вы»: открываем знакомство,
+  // а не пугаем человека кодом ошибки.
+  if(String(e.message||e).indexOf('Заполните знакомство')>=0){openProfile();return}
+  alert(String(e.message||e));
+ }
 }
 
 function renderProjectsLogin(){
@@ -29288,6 +29583,9 @@ function resetAll(){
 
 loadLocal();
 initProjects();
+// Кто зашёл, спрашивается один раз: у вошедшего без анкеты открывается
+// знакомство, у остальных ничего не происходит.
+loadProfile(true);
 fillProjectPresets();
 {
  const sc=SCENARIOS[scenarioSelect.value]||SCENARIOS.base;
