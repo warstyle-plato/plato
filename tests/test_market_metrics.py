@@ -1,0 +1,146 @@
+"""Блоки метрик и свод рынка Москвы.
+
+Числа взяты с живого стенда по Кутузов Сити и его соседям: так тест заодно
+показывает, что именно блок должен уметь сказать.
+"""
+
+from __future__ import annotations
+
+from market_search.market_reference import MoscowMarket
+from market_search.metrics import (
+    BLOCK_LOT,
+    BLOCK_PACE,
+    BLOCK_PRICE,
+    BLOCK_STOCK,
+    build_blocks,
+    lot_size_block,
+    pace_block,
+    price_block,
+    stock_block,
+)
+
+
+SUBJECT = {
+    "name": "Кутузов Сити",
+    "segment": "Бизнес",
+    "price_per_sqm": 708_109,
+    "price_per_sqm_min": 551_355,
+    "price_per_sqm_max": 868_765,
+    "observed_at": "2026-08-18",
+    "lot_count": 56,
+    "living_units": 220,
+    "remaining_units": 165,
+    "remaining_area": 10_534,
+    "units_per_month": 4.6,
+    "units_per_month_3m": 4.7,
+    "sales_end_forecast": "2031-02-01",
+    "sold_units": 27,
+    "sold_area": 1448,
+    "lot_area_avg": 61.0,
+    "area_per_month": 207,
+}
+
+PEERS = [
+    {"name": "Стеллар Сити", "price_per_sqm": 388_461, "units_per_month": 22.8, "lot_count": 311,
+     "sold_lot_avg": 46.6, "area_per_month": 752},
+    {"name": "Верейская 41", "price_per_sqm": 506_666, "units_per_month": 12.2, "lot_count": 115,
+     "sold_lot_avg": 42.4, "area_per_month": 139},
+    {"name": "Веер", "price_per_sqm": 515_823, "units_per_month": 34.4, "lot_count": 1092,
+     "sold_lot_avg": 53.0, "area_per_month": 1485},
+    {"name": "СЕТ", "price_per_sqm": 540_482, "units_per_month": 37.2, "lot_count": 746,
+     "sold_lot_avg": 51.1, "area_per_month": 1249},
+    {"name": "Нексус от Аквилон", "price_per_sqm": 563_767, "units_per_month": 7.8, "lot_count": 164,
+     "sold_lot_avg": 52.6, "area_per_month": 458},
+    {"name": "ИНДИВО", "price_per_sqm": 599_558, "units_per_month": 20.2, "lot_count": 57,
+     "sold_lot_avg": 62.3, "area_per_month": 792},
+]
+
+
+def test_moscow_reference_ships_with_the_code() -> None:
+    """Свод уезжает вместе с кодом: книга на 168 МБ в рантайме не нужна."""
+    city = MoscowMarket.bundled()
+    assert city.available
+    assert city.observed_at == "2026-07"
+    snapshot = city.snapshot("Бизнес")
+    assert snapshot is not None
+    assert snapshot.projects > 50
+    assert 400_000 < snapshot.price_median < 900_000
+
+
+def test_price_block_places_the_project_against_neighbours_and_the_city() -> None:
+    """Один вопрос — три основания: сам проект, соседи, город."""
+    block = price_block(SUBJECT, PEERS, MoscowMarket.bundled())
+    assert block.subject["price_per_sqm"] == 708_109
+    assert block.subject["basis"] == "прайс-лист, не сделка"
+
+    assert block.peers["count"] == 6
+    assert block.peers["median"] == 528_152.5
+    assert block.peers["vs_median_pct"] == 34.1
+
+    # Против города квартили честнее медианы: «выше верхнего квартиля» сразу
+    # говорит, что проект вне основной массы, а «выше медианы» — нет.
+    assert block.city["band"] == "above_p75"
+    assert block.city["p75"] < 708_109
+
+
+def test_pace_block_says_how_many_times_slower() -> None:
+    block = pace_block(SUBJECT, PEERS, MoscowMarket.bundled())
+    assert block.subject["units_per_month"] == 4.6
+    assert block.peers["median"] == 21.5
+    assert block.peers["peer_median_over_subject"] == 4.7
+    assert block.city["sold_median"] is not None
+    assert any("ДДУ" in note for note in block.notes)
+
+
+def test_stock_block_counts_months_and_share_of_supply() -> None:
+    block = stock_block(SUBJECT, PEERS, MoscowMarket.bundled())
+    assert block.subject["exposure_share_pct"] == 25.5
+    assert block.subject["months_to_sell"] == 35.9
+    assert block.peers["exposure_total"] == 2485
+    assert block.peers["subject_share_pct"] == 2.2
+
+
+def test_lot_block_notices_that_small_lots_are_the_ones_selling() -> None:
+    """Средний проданный лот 53,6 при среднем по проекту 61 — это факт о спросе."""
+    block = lot_size_block(SUBJECT, PEERS, MoscowMarket.bundled())
+    assert block.subject["sold_lot_avg"] == 53.6
+    assert block.subject["project_lot_avg"] == 61.0
+    assert block.subject["gap_pct"] == -12.1
+    assert any("меньше средней" in note for note in block.notes)
+
+
+def test_missing_data_is_named_not_zeroed() -> None:
+    """Пустая база — не ноль в отчёте, а сказанное вслух «нечем сравнить»."""
+    blank = {"name": "Без данных", "segment": "Бизнес"}
+    block = price_block(blank, [], MoscowMarket.bundled())
+    assert block.usable is False
+    assert block.subject == {}
+    assert block.notes and "нет действующего прайса" in block.notes[0]
+
+    priced = price_block(SUBJECT, [], MoscowMarket.bundled())
+    assert priced.peers == {}
+    assert any("Ни у одного сопоставимого соседа" in note for note in priced.notes)
+
+
+def test_unknown_section_is_refused_loudly() -> None:
+    """Опечатка в списке разделов не должна выглядеть как пустой раздел."""
+    import pytest
+
+    with pytest.raises(ValueError, match="цена-метра"):
+        build_blocks(SUBJECT, PEERS, MoscowMarket.bundled(), codes=[BLOCK_PRICE, "цена-метра"])
+
+
+def test_constructor_returns_only_requested_sections() -> None:
+    codes = [BLOCK_PACE, BLOCK_STOCK, BLOCK_LOT]
+    blocks = build_blocks(SUBJECT, PEERS, MoscowMarket.bundled(), codes=codes)
+    assert [b["code"] for b in blocks] == codes
+    assert all(b["title"] for b in blocks)
+
+
+def test_empty_reference_is_not_a_failure() -> None:
+    """Нет свода — блок считает то, что может, и говорит, чего не хватило."""
+    city = MoscowMarket({})
+    assert city.available is False
+    block = price_block(SUBJECT, PEERS, city)
+    assert block.peers["count"] == 6
+    assert block.city == {}
