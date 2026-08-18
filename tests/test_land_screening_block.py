@@ -205,3 +205,29 @@ def test_the_report_numbers_come_from_the_project(monkeypatch):
     numbers = core._pdf_screening_numbers({"_land_lookup": {"query": "50:20:0070312:8320, мусор"}})
     assert numbers == ["50:20:0070312:8320"]
     assert core._pdf_screening_numbers({}) == []
+
+
+def test_the_report_headline_is_not_raw_markup():
+    """P() экранирует HTML, поэтому <b> печатался буквально: «<b>Критических
+    ограничений не обнаружено</b>» в боевом отчёте (18.08.2026). Жирный —
+    стилем, а не тегом."""
+    source = Path(core.__file__).read_text(encoding="utf-8")
+    body = source[source.index('story.append(_PdfSection("screening"))'):]
+    body = body[:body.index('story.append(_PdfSection("summary"))')]
+    assert "<b>" not in body, "разметка в тексте будет напечатана буквально"
+    assert 'fontName=bold' in body, "заголовок должен быть жирным стилем"
+
+
+def test_reference_layers_are_not_shown_as_restrictions():
+    """«Здания», «Кадастровые округа», «Машино-места» попали в отчёт как
+    «ограничение неизвестного типа» (боевой отчёт 18.08.2026) — это справочные
+    слои публичной карты."""
+    for junk in ("ПКК. Здания", "Кадастровые округа", "Сооружения",
+                 "Машино-места", "Объекты незавершённого строительства"):
+        assert any(n in junk.lower() for n in core._LAND_SCREEN_NOISE), junk
+
+
+def test_the_territorial_zone_reads_as_a_useful_note():
+    got = core._land_screen_classify({"type_zone": "", "name": "ПКК. Территориальные зоны"})
+    assert got["flag_class"] == "info"
+    assert "ВРИ" in got["impact"], "зона по ПЗЗ — самая нужная справка, а не «неизвестный тип»"
