@@ -1505,3 +1505,172 @@ def budget_by_article(
         "total": sum(float(r.get("estimate") or 0.0)
                      for r in estimate["rows"] if r.get("is_leaf")),
     }
+
+
+# ---------------------------------------------------------------------------
+# Производственная программа РСС и ответ «отстаём или нет».
+#
+# В РСС от 08.07.2026 справа от сметы стоит шахматка: по каждому коду сколько
+# работ планируется принять в июле, августе, сентябре и так далее. Это и есть
+# график, с которым сравнивается выполнение.
+#
+# Год в шапке не написан — только «июль», «август». Поэтому первый месяц
+# программы задаётся вызовом: вывести его из имени файла значило бы гадать, а
+# ошибка на год не заметна ни в одной сумме.
+# ---------------------------------------------------------------------------
+
+_PROGRAMME_MONTHS = (
+    "январь", "февраль", "март", "апрель", "май", "июнь",
+    "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь",
+)
+_PROGRAMME_HEADER_ROW = 9
+_PROGRAMME_CODE_COLUMN = 0
+
+
+def _add_month(month: datetime.date, shift: int) -> datetime.date:
+    total = month.year * 12 + (month.month - 1) + shift
+    return datetime.date(total // 12, total % 12 + 1, 1)
+
+
+def read_programme(path: str | Path, start: Any) -> dict[str, Any]:
+    """Производственная программа РСС: план приёмки работ по кодам и месяцам.
+
+    `start` — первый месяц программы. Он приходит снаружи, потому что в шапке
+    стоит «июль» без года, и додумывать год нельзя: ошибка на двенадцать
+    месяцев не видна ни в одной сумме.
+    """
+    first = _as_month(start)
+    if first is None:
+        raise ValueError("не задан первый месяц программы (`start`)")
+    columns: list[tuple[int, datetime.date]] = []
+    by_code: dict[str, dict[datetime.date, float]] = {}
+    order: list[dict[str, Any]] = []
+    for index, row in enumerate(_sheet(path, _ESTIMATE_SHEET), 1):
+        if index == _PROGRAMME_HEADER_ROW:
+            names = [(position, _normalized(value))
+                     for position, value in enumerate(row)]
+            found = [position for position, name in names
+                     if name in _PROGRAMME_MONTHS]
+            columns = [(position, _add_month(first, offset))
+                       for offset, position in enumerate(sorted(found))]
+            continue
+        if not columns:
+            continue
+        code = _code(row[_PROGRAMME_CODE_COLUMN]
+                     if _PROGRAMME_CODE_COLUMN < len(row) else None)
+        if not code:
+            continue
+        series = {}
+        for position, month in columns:
+            amount = _money(row[position] if position < len(row) else None)
+            if amount:
+                series[month] = amount
+        order.append({"code": code, "depth": code.count(".") + 1})
+        if series:
+            by_code[code] = series
+    # Лист несёт и главы, и их подстроки. Сложить всё подряд — посчитать
+    # программу дважды: код «2» уже содержит 2.2 и 2.3. Дерево строится тем же
+    # правилом, что в смете, — по порядку строк и глубине кода.
+    _link_parents(order)
+    leaves = {row["code"] for row in order if row["is_leaf"]}
+    months = [month for _, month in columns]
+    return {
+        "by_code": by_code,
+        "leaves": leaves,
+        "months": months,
+        "first": months[0] if months else None,
+        "last": months[-1] if months else None,
+        "total": sum(sum(series.values()) for code, series in by_code.items()
+                     if code in leaves),
+    }
+
+
+def monitor(
+    estimate: dict[str, Any],
+    payments: dict[str, Any],
+    works: dict[str, Any],
+    contracts: dict[str, Any],
+    cut: Any,
+    programme: dict[str, Any] | None = None,
+    sales: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Недельный срез: где проект по деньгам, по объёмам и по графику.
+
+    Считается из одного набора выгрузок, поэтому обновляется их заменой — в
+    этом весь смысл: раз в неделю кладутся свежие РСС и книга, и картина
+    пересобирается сама, без ручной сверки.
+
+    Отставание меряется по производственной программе: сколько работ должно
+    было быть принято к срезу и сколько принято на самом деле. Программа
+    начинается там, где кончается факт, поэтому в первую неделю сравнивать
+    нечего — и это говорится прямо, а не показывается нулём.
+    """
+    cut_month = _as_month(cut)
+    if cut_month is None:
+        raise ValueError("не задана дата среза (`cut`)")
+
+    paid = sum(item["amount"] for item in payments["rows"]
+               if item["date"] and item["date"] < cut_month)
+    accepted = sum(item["amount"] for item in works["rows"]
+                   if item["construction"] and item["date"]
+                   and item["date"] < cut_month)
+    budget = float((estimate.get("total") or {}).get("estimate") or 0.0)
+
+    money = {
+        "budget": budget,
+        "contracted": contracts["amount"],
+        "paid": paid,
+        "advances": contracts["advances"],
+        "outstanding": contracts["outstanding"],
+        "accepted": accepted,
+        # Оплачено больше принятого — это авансы, выданные вперёд. Деньги из
+        # кассы вышли и проценты по ним идут, а работы ещё не приняты.
+        "paid_ahead": max(0.0, paid - accepted),
+        "left_to_budget": max(0.0, budget - paid),
+    }
+
+    schedule: dict[str, Any] = {"comparable": False}
+    if programme and programme.get("months"):
+        due_months = [m for m in programme["months"] if m < cut_month]
+        leaves = programme.get("leaves") or set(programme["by_code"])
+        due = sum(series.get(month, 0.0)
+                  for code, series in programme["by_code"].items()
+                  if code in leaves for month in due_months)
+        done = sum(item["amount"] for item in works["rows"]
+                   if item["construction"] and item["date"]
+                   and programme["months"][0] <= item["date"] < cut_month)
+        if due_months:
+            schedule = {
+                "comparable": True,
+                "from": programme["months"][0],
+                "months_due": len(due_months),
+                "due": due,
+                "done": done,
+                "gap": done - due,
+                "ratio": done / due if due else 0.0,
+            }
+        else:
+            schedule["reason"] = (
+                f"программа начинается {programme['months'][0]:%Y-%m}, "
+                f"а срез стоит на {cut_month:%Y-%m} — сравнивать ещё нечего")
+
+    sold: dict[str, Any] = {}
+    if sales:
+        fact = [row for row in sales["rows"]
+                if row["fact"] and row["month"] < cut_month]
+        plan = [row for row in sales["rows"]
+                if not row["fact"] and row["month"] < cut_month]
+        sold = {
+            "area": sum(row["area"] for row in fact),
+            "units": sum(row["units"] for row in fact),
+            "revenue": sum(row["revenue"] for row in fact),
+            "average_price": (sum(row["revenue"] for row in fact)
+                              / sum(row["area"] for row in fact)
+                              if sum(row["area"] for row in fact) else 0.0),
+            "last_fact": max((row["month"] for row in fact), default=None),
+            # Месяцы до среза, где факта нет, а план есть: выгрузка продаж
+            # отстаёт от среза, и это не «не продавали».
+            "months_without_fact": len(plan),
+        }
+
+    return {"cut": cut_month, "money": money, "schedule": schedule, "sales": sold}
