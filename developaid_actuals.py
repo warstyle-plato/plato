@@ -709,6 +709,44 @@ def overlay(op: dict[str, Any], actuals: dict[str, Any]) -> dict[str, Any]:
             record(f"{source}:{product}", plan_series, planned[product])
         updated[field] = planned
 
+    # Выручка не сохраняет свой итог, в отличие от CAPEX. У расходов инвариант —
+    # бюджет: сколько бы ни было потрачено до среза, проект стоит столько, во
+    # сколько его оценили. У продаж инвариант — метры: проданное дёшево нельзя
+    # продать ещё раз. Поэтому объём перенормируется на остаток (метров всего
+    # столько, сколько в ТЭП), а выручка хвоста считается заново — плановой
+    # ценой на новый объём. Иначе факт продаж по 657 тыс ₽/м² не двигает итог
+    # вовсе: он просто отбирает выручку у будущих месяцев, и модель делает вид,
+    # что недополученное вернётся.
+    if "quantity" in actuals and "revenue" in actuals:
+        plan_quantity = {a: dict(s) for a, s in (op.get("quantity_product_schedules") or {}).items()}
+        plan_revenue = {a: dict(s) for a, s in (op.get("revenue_product_schedules") or {}).items()}
+        rebuilt = {product: dict(series)
+                   for product, series in updated["revenue_product_schedules"].items()}
+        for product, quantity in updated["quantity_product_schedules"].items():
+            if product not in (actuals["quantity"] or {}):
+                continue
+            fact_revenue = _months((actuals["revenue"] or {}).get(product) or {})
+            series = {month: value for month, value in fact_revenue.items() if month < cut}
+            planned_q = plan_quantity.get(product, {})
+            planned_r = plan_revenue.get(product, {})
+            for month, volume in quantity.items():
+                if month < cut:
+                    continue
+                planned_volume = planned_q.get(month, 0.0)
+                price = (planned_r.get(month, 0.0) / planned_volume
+                         if planned_volume else 0.0)
+                if price:
+                    series[month] = series.get(month, 0.0) + volume * price
+            rebuilt[product] = series
+            before = sum(plan_revenue.get(product, {}).values())
+            after = sum(series.values())
+            if abs(after - before) > 0.005 * max(abs(before), 1.0):
+                notes.append(
+                    f"выручка {product}: план {before / 1e6:,.1f} → "
+                    f"{after / 1e6:,.1f} млн ₽ — факт продаж по своей цене, "
+                    "хвост по плановой")
+        updated["revenue_product_schedules"] = rebuilt
+
     if "revenue" in actuals:
         # Свод выручки должен идти из тех же рядов, иначе итог и детализация
         # разойдутся — обе достоверные на вид.
@@ -1294,3 +1332,57 @@ def works_by_article(
     return payments_by_article(
         {"rows": rows, "total": sum(item["amount"] for item in rows)},
         register, gns=gns, crosswalk=crosswalk)
+
+
+# Лист «План продаж» финансовой модели: помесячный объём и средняя цена, с
+# меткой ФАКТ до среза и планом после. Цену модель выводит формулой из
+# стартовой и темпа роста, а на действующем проекте она известна — договоры
+# подписаны. Брать её расчётом, имея факт, значит спорить с реальностью.
+_SALES_SHEET = "План продаж"
+_SALES_FIRST_ROW = 22
+_SALES_COLUMNS = {
+    "period": 1,
+    "mark": 2,
+    "units": 5,
+    "area": 6,
+    "cumulative": 7,
+    "price": 8,
+}
+_SALES_FACT_MARK = "факт"
+
+
+def read_sales(path: str | Path) -> dict[str, Any]:
+    """Помесячные продажи: объём, средняя цена и метка «факт»/«план»."""
+    rows: list[dict[str, Any]] = []
+    for index, row in enumerate(_sheet(path, _SALES_SHEET), 1):
+        if index < _SALES_FIRST_ROW:
+            continue
+
+        def cell(field: str) -> Any:
+            position = _SALES_COLUMNS[field]
+            return row[position] if position < len(row) else None
+
+        month = _as_month(cell("period"))
+        if month is None:
+            continue
+        area = _money(cell("area"))
+        price = _money(cell("price"))
+        rows.append({
+            "month": month,
+            "fact": _SALES_FACT_MARK in _normalized(cell("mark")),
+            "units": _money(cell("units")),
+            "area": area,
+            "price": price,
+            "revenue": area * price,
+        })
+    fact = [item for item in rows if item["fact"]]
+    sold = sum(item["area"] for item in fact)
+    revenue = sum(item["revenue"] for item in fact)
+    return {
+        "rows": rows,
+        "fact_area": sold,
+        "fact_units": sum(item["units"] for item in fact),
+        "fact_revenue": revenue,
+        "average_price": revenue / sold if sold else 0.0,
+        "last_fact": max((item["month"] for item in fact), default=None),
+    }
