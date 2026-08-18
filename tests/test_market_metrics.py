@@ -567,3 +567,23 @@ def test_cabinet_script_is_valid_javascript() -> None:
             path = handle.name
         done = subprocess.run([node, "--check", path], capture_output=True, text=True)
         assert done.returncode == 0, f"скрипт {index}: {done.stderr[:400]}"
+
+
+def test_every_element_the_script_asks_for_exists_in_the_markup() -> None:
+    """`$('#чего-нет')` возвращает null, и страница падает целиком.
+
+    Одна забытая разметка — и не работает ничего: ни отчёт, ни подсказки, ни
+    кнопки, потому что исключение обрывает установку всех обработчиков разом.
+    В браузере это выглядит как «кабинет не реагирует», а в тестах на данные не
+    видно вовсе.
+    """
+    import re
+
+    from market_search.cabinet import cabinet_page
+
+    page = cabinet_page()
+    markup = page.split("<script>")[0]
+    present = set(re.findall(r'id="([a-zA-Z0-9_-]+)"', markup))
+    asked = set(re.findall(r"\$\('#([a-zA-Z0-9_-]+)'\)", page))
+    assert asked, "скрипт не обращается ни к одному элементу — проверка бесполезна"
+    assert not (asked - present), f"скрипт зовёт то, чего нет в разметке: {sorted(asked - present)}"

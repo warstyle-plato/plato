@@ -14,6 +14,7 @@ from . import cabinet as cabinet_module
 from .geocoder import GeocodingError
 from .http import RemoteServiceError
 from .service_v6 import MarketDiscoveryService
+from .plan import PlanNotFound, parse_plan
 from .subject import SubjectNotFound
 
 
@@ -141,6 +142,25 @@ def install(app: FastAPI) -> MarketDiscoveryService:
         if not service.pulse.available:
             return {"items": [], "reason": "Источник выключен: не заданы PULSE_LOGIN и PULSE_PASSWORD"}
         return {"items": service.pulse.suggest(q)}
+
+    @app.post("/cabinet/plan")
+    async def cabinet_plan(request: Request) -> dict[str, Any]:
+        """План продаж из книги ПЛАТО: сырые байты файла в теле запроса.
+
+        Без multipart нарочно: `Form`/`UploadFile` в Starlette тянут
+        python-multipart, а книга приходит одна и целиком — тело запроса и
+        есть файл.
+        """
+        cabinet_module.require_cabinet(request)
+        data = await request.body()
+        if not data:
+            raise HTTPException(status_code=422, detail="Пустой файл")
+        if len(data) > 60 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="Книга больше 60 МБ — это не финмодель")
+        try:
+            return parse_plan(data)
+        except PlanNotFound as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @app.post("/market/report")
     async def market_report(request: Request, req: ReportRequest) -> dict[str, Any]:

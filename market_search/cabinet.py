@@ -163,6 +163,10 @@ font-size:15px;cursor:pointer}
 button.go[disabled]{opacity:.55;cursor:default}
 button.go.alt{background:#fff;color:var(--blue);border:1px solid var(--blue);margin-left:8px}
 #hintout{margin-top:12px}
+.upload{display:inline-block;margin-left:8px;padding:10px 16px;border:1px dashed #ccd6e0;border-radius:8px;
+font-size:14px;color:var(--dim);cursor:pointer}
+.upload input{display:none}
+.upload:hover{border-color:var(--blue);color:var(--blue)}
 #hintout .box{background:#f2f7fc;border-left:3px solid var(--blue);padding:10px 12px;border-radius:0 7px 7px 0}
 #hintout b{font-size:19px;font-variant-numeric:tabular-nums}
 .scope{background:#fff8f0;border-left:3px solid var(--rust);padding:8px 12px;font-size:13px;
@@ -273,6 +277,8 @@ border-radius:9px;box-shadow:0 6px 22px rgba(20,35,60,.13);max-height:320px;over
     <button class="go" id="go">Собрать отчёт</button>
     <button class="go alt" id="hint">Ориентир цены</button>
     <button class="go alt" id="pdf" style="display:none">Сохранить PDF</button>
+    <label class="upload">Загрузить финмодель ПЛАТО<input type="file" id="plan" accept=".xlsx,.xlsm"></label>
+    <span id="planstate" class="muted"></span>
     <span id="state" class="muted" style="margin-left:12px"></span>
     <div id="hintout"></div>
   </div>
@@ -637,6 +643,99 @@ function wireCards(){
   });
 }
 
+
+let planData=null;
+
+// План против факта и рынка. Факт книги и факт «Пульса» — разные числа, и это
+// нормально: банк считает ДДУ по дате регистрации, книга по дате сделки, между
+// ними недели. Поэтому они показываются рядом, а не вместо друг друга.
+function planChart(rows, market){
+  const own=(market||[]).find(r=>r.own);
+  const src=new Map((own?own.points:[]).map(p=>[p.month,p.sold]));
+  const months=rows.map(r=>r.month);
+  const from=months.findIndex(m=>m>='2025-01');
+  const view=rows.slice(from<0?0:from);
+  if(view.length<2) return '';
+  const vals=view.flatMap(r=>[r.plan_units,r.fact_units,src.get(r.month)]).filter(v=>v!==null&&v!==undefined);
+  const hi=Math.max(...vals,1)*1.15;
+  const W=680,H=250,L=44,R=132,T=12,B=30;
+  const bw=Math.max(3,(W-L-R)/view.length*0.5);
+  const x=i=>L+(i+0.5)*(W-L-R)/view.length;
+  const y=v=>T+(H-T-B)*(1-v/hi);
+  let svg=`<svg viewBox="0 0 ${W} ${H}" width="100%" role="img">`;
+  [0,0.5,1].forEach(f=>{const v=hi*f;
+    svg+=`<line x1="${L}" y1="${y(v)}" x2="${W-R}" y2="${y(v)}" stroke="#e6ecf2"/>`
+       +`<text x="${L-6}" y="${y(v)+4}" text-anchor="end" font-size="10" fill="#8798a8">${num(v)}</text>`;});
+  view.forEach((r,i)=>{
+    const f=r.fact_units;
+    if(f!==null&&f!==undefined) svg+=`<rect x="${x(i)-bw/2}" y="${y(f)}" width="${bw}" height="${Math.max(1,H-B-y(f))}" rx="2" fill="#C4581B"/>`;
+    const s2=src.get(r.month);
+    if(s2!==null&&s2!==undefined) svg+=`<rect x="${x(i)+bw/2+1}" y="${y(s2)}" width="${bw}" height="${Math.max(1,H-B-y(s2))}" rx="2" fill="#9dc2e6"/>`;
+    if(i%Math.ceil(view.length/8)===0)
+      svg+=`<text x="${x(i)}" y="${H-9}" text-anchor="middle" font-size="10" fill="#8798a8">${r.month.slice(2)}</text>`;
+  });
+  const pp=view.map((r,i)=>r.plan_units===null||r.plan_units===undefined?null:`${x(i).toFixed(1)},${y(r.plan_units).toFixed(1)}`).filter(Boolean);
+  if(pp.length>1) svg+=`<path d="M${pp.join(' L')}" fill="none" stroke="#1f7a4d" stroke-width="2.2"/>`;
+  svg+=`<text x="${W-R+8}" y="${T+14}" font-size="10.5" fill="#C4581B" font-weight="600">факт по книге</text>`
+     +`<text x="${W-R+8}" y="${T+30}" font-size="10.5" fill="#5b6b7d">ДДУ по «Пульсу»</text>`
+     +`<text x="${W-R+8}" y="${T+46}" font-size="10.5" fill="#1f7a4d" font-weight="600">план</text>`;
+  return '<div class="wrap">'+svg+'</svg></div>';
+}
+
+function comparePlan(plan, market){
+  const own=(market||[]).find(r=>r.own);
+  const src=new Map((own?own.points:[]).map(p=>[p.month,p.sold]));
+  const months=[...new Set((plan.months||[]).map(m=>m.month).concat([...src.keys()]))].sort();
+  const by=new Map((plan.months||[]).map(m=>[m.month,m]));
+  const rows=months.map(m=>{
+    const o=by.get(m)||{};
+    return {month:m, kind:o.kind||null,
+      plan_units:o.kind==='plan'?o.units:null, fact_units:o.kind==='fact'?o.units:null,
+      plan_price:o.price??null};
+  });
+  const done=rows.filter(r=>r.fact_units!==null&&r.fact_units!==undefined);
+  const ahead=rows.filter(r=>r.plan_units!==null&&r.plan_units!==undefined);
+  return {rows, fact_months:done.length, plan_months:ahead.length,
+    fact_total:done.reduce((a,r)=>a+(r.fact_units||0),0),
+    plan_total:ahead.reduce((a,r)=>a+(r.plan_units||0),0)};
+}
+
+function planVerdict(cmp, market){
+  const own=(market||[]).find(r=>r.own);
+  const src=new Map((own?own.points:[]).map(p=>[p.month,p.sold]));
+  // Сравниваем только там, где план и факт встретились в одном месяце.
+  const both=cmp.rows.filter(r=>r.plan_units!==null&&r.plan_units!==undefined&&src.has(r.month));
+  const lines=[`Факт по книге: ${num(cmp.fact_total,1)} лотов за ${cmp.fact_months} мес.`
+    +` План на будущее: ${num(cmp.plan_total,1)} лотов за ${cmp.plan_months} мес.`];
+  const factPace=cmp.fact_months?cmp.fact_total/cmp.fact_months:null;
+  const planPace=cmp.plan_months?cmp.plan_total/cmp.plan_months:null;
+  let tone='flat';
+  if(factPace&&planPace){
+    const k=planPace/factPace;
+    lines.push(`Средний темп: факт ${num(factPace,1)} в месяц, план ${num(planPace,1)}.`);
+    if(k>1.25){tone='bad';lines.push(`План требует ускориться в ${num(k,1)} раза против того, как проект продаётся сейчас.`);}
+    else if(k<0.8){tone='good';lines.push('План скромнее фактического темпа — запас есть.');}
+    else {tone='good';lines.push('План примерно на уровне достигнутого темпа.');}
+  }
+  if(both.length){
+    const miss=both.filter(r=>src.get(r.month)<r.plan_units).length;
+    if(miss) lines.push(`В ${miss} из ${both.length} уже прошедших плановых месяцев регистраций меньше плана.`);
+  }
+  return {tone, text: lines.join(' ')};
+}
+
+async function loadPlan(file){
+  $('#planstate').textContent='Читаю книгу…';
+  try{
+    const r=await fetch('/cabinet/plan',{method:'POST',body:file});
+    const d=await r.json();
+    if(!r.ok){$('#planstate').textContent=d.detail||'Книга не разобрана';planData=null;return}
+    planData=d;
+    $('#planstate').textContent=`План загружен: ${d.project||'проект'} · факт по ${d.fact_until||'—'} · план с ${d.plan_from||'—'}`;
+    if(lastReport) render(lastReport);
+  }catch(e){$('#planstate').textContent=String(e.message||e);planData=null}
+}
+
 async function build(){
   const codes=[...document.querySelectorAll('input[name=code]:checked')].map(i=>i.value);
   const query=$('#q').value.trim();
@@ -687,6 +786,15 @@ function render(d){
   if(ov) html+=`<div class="card verdict ${ov.tone}"><h2>${TONE[ov.tone]||''} ${esc(ov.headline)}</h2>`
     +`<div>${esc(ov.text)}</div></div>`;
   html+=(d.blocks||[]).map(b=>blockCard(b,ctx)).join('');
+  if(planData&&planData.months){
+    const cmp=comparePlan(planData, ctx.sales);
+    const pv=planVerdict(cmp, ctx.sales);
+    html+=`<div class="card"><h2>План продаж против факта и рынка</h2>`
+      +`<div class="say ${pv.tone}"><b>${TONE[pv.tone]||'•'} Разбор</b> ${esc(pv.text)}</div>`
+      +planChart(cmp.rows, ctx.sales)
+      +`<div class="muted" style="font-size:12.5px;margin-top:8px">Факт книги и ДДУ «Пульса» расходятся`
+      +` на срок регистрации: книга считает по дате сделки, источник — по дате регистрации.</div></div>`;
+  }
 
   html+=`<div class="card"><h2>Соседи в выборке</h2><div class="wrap"><table>
     <tr><th>Проект</th><th>Застройщик</th><th class="num">км</th><th>Класс</th>
@@ -707,6 +815,7 @@ $('#askbtn').addEventListener('click',askPlato);
 // PDF — печатью самой страницы. Второй вёрстки не заводим: она разошлась бы с
 // первой, и мы получили бы два достоверных на вид отчёта с разными числами.
 $('#pdf').addEventListener('click',()=>window.print());
+$('#plan').addEventListener('change',e=>{if(e.target.files[0])loadPlan(e.target.files[0])});
 document.querySelectorAll('.chips button').forEach(b=>b.addEventListener('click',()=>{
   $('#ask').value=b.dataset.q; askPlato();
 }));
