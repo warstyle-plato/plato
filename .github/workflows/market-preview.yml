@@ -59,27 +59,17 @@ jobs:
           cache-dependency-path: requirements-dev.txt
       - name: Зависимости
         run: python -m pip install -r requirements-dev.txt
-      # Модуль рынка живёт только в preview-ветках; в main лежит один этот workflow.
-      # Поэтому на PR в main проверять нечего, и красный крест там ничего не значил:
-      # он висел и на посторонних PR, задевших main_registry.py.
-      - name: Есть ли в ветке модуль рынка
-        id: present
-        run: |
-          if [ -d market_search ]; then
-            echo "value=yes" >> "$GITHUB_OUTPUT"
-          else
-            echo "value=no" >> "$GITHUB_OUTPUT"
-            echo "В этой ветке модуля рынка нет — проверять нечего."
-          fi
+      # Проверка «есть ли в ветке модуль рынка» здесь стояла, пока market_search
+      # жил только в preview-ветках, а в main лежал один этот workflow. Модуль
+      # выкачен, и условие стало вечно истинным: пропуск теперь означал бы, что
+      # каталог пропал, — а это ровно то, о чём надо кричать, а не молчать.
       - name: Синтаксис и unit-тесты
-        if: steps.present.outputs.value == 'yes'
         run: |
           python -m py_compile market_search/*.py market_search/providers/*.py main_registry.py market-preview-acceptance.py
           # Перечислять файлы нельзя: YAML берётся из main, а код — из preview-ветки.
           # Каждый раз, когда набор тестов в ветке менялся, main патчили под неё.
           python -m pytest tests/test_market_*.py -q
       - name: Интеграция с основным entrypoint
-        if: steps.present.outputs.value == 'yes'
         run: |
           python - <<'PY'
           import main_registry

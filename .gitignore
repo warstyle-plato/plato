@@ -11,3 +11,5 @@ data/telegram_users.sqlite3
 data/usage/
 # Коды входа через бота: одноразовые, живут в томе data/, как и проекты.
 data/web_login/
+# Кэш поиска и геокодирования модуля рынка — рантайм, живёт в томе data/.
+data/market/

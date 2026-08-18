@@ -1,0 +1,2188 @@
+"""Регрессия на классы ошибок, найденные forensic-ревизией живого preview.
+
+Каждый тест назван по классу ошибки и воспроизводит её на тех же строках, что
+пришли со стенда. Проверяется поведение конвейера, а не пересказ намерения:
+где нужен поиск или геокодер, подставляется двойник, а не пропускается шаг.
+"""
+
+from __future__ import annotations
+
+from datetime import date
+from pathlib import Path
+
+import pytest
+
+from market_search import documents
+from market_search.candidates_v6 import extract_candidates
+from market_search.entities import merge_geographic_duplicates, resolve_entities
+from market_search.geo_resolution import (
+    RESOLVED,
+    UNRESOLVED,
+    ProjectGeoResolver,
+    address_signature,
+    extract_address,
+    precision_is_usable,
+)
+from market_search.geocoder import GeoPoint, GeocodingError
+from market_search.normalize import canonical_key, looks_like_project_name, name_similarity
+from market_search.price_evidence import VerifiedPriceEnricher
+from market_search.recommendation import market_recommendation
+from market_search.service import MarketDiscoveryService as LegacyService
+from market_search.service_v6 import MarketDiscoveryService as ServiceV6
+from market_search.yandex_search import SearchDoc
+
+
+SUBJECT = "Москва, Саввинская набережная, 25"
+
+
+def doc(title: str, url: str, snippet: str = "", rank: int = 1, domain: str | None = None) -> SearchDoc:
+    from urllib.parse import urlsplit
+
+    return SearchDoc(
+        title=title,
+        url=url,
+        domain=(domain if domain is not None else (urlsplit(url).hostname or "")),
+        snippet=snippet,
+        rank=rank,
+    )
+
+
+class FakeSearch:
+    """Поисковый клиент, отвечающий заранее заданной выдачей."""
+
+    def __init__(self, responses: dict[str, list[SearchDoc]] | None = None, default: list[SearchDoc] | None = None):
+        self.responses = responses or {}
+        self.default = default or []
+        self.queries: list[str] = []
+
+    def search(self, query: str, *, groups_on_page: int = 10) -> list[SearchDoc]:
+        self.queries.append(query)
+        for needle, docs in self.responses.items():
+            if needle in query:
+                return docs
+        return self.default
+
+
+class FakeGeocoder:
+    def __init__(self, table: dict[str, GeoPoint]):
+        self.table = table
+        self.queries: list[str] = []
+
+    def geocode(self, query: str) -> GeoPoint:
+        self.queries.append(query)
+        for needle, point in self.table.items():
+            if needle.lower() in query.lower():
+                return point
+        raise GeocodingError(f"нет данных: {query}")
+
+
+def point(lat: float, lon: float, name: str, precision: str = "exact") -> GeoPoint:
+    return GeoPoint(latitude=lat, longitude=lon, display_name=name, provider="yandex", precision=precision)
+
+
+# --- класс 1: проза из сниппета становилась жилым комплексом -----------------
+
+
+def test_editorial_prose_never_becomes_a_project() -> None:
+    """«Москвы. Рейтинг застройщиков Дубая. Адрес офиса» — реальный кандидат v5."""
+    docs = [
+        doc(
+            "Клубные дома Москвы — рейтинг застройщиков",
+            "https://example.ru/stati/klubnye-doma",
+            "Мы строим клубный дом в центре Москвы. Рейтинг застройщиков Дубая. Адрес офиса, приходите.",
+        ),
+    ]
+    assert extract_candidates(docs) == []
+
+
+def test_prose_fragment_is_rejected_by_name_grammar() -> None:
+    assert not looks_like_project_name("в центре Москвы. Рейтинг застройщиков Дубая. Адрес офиса")
+    assert not looks_like_project_name("Рейтинг застройщиков Дубая")
+    assert not looks_like_project_name("Саввинская набережная, 27")
+    assert looks_like_project_name("Хамовники 12")
+    assert looks_like_project_name("Клубный квартал Фрунзенский")
+
+
+def test_article_and_listing_documents_produce_no_entity() -> None:
+    docs = [
+        doc(
+            "ЖК Тургенев — обзор проекта",
+            "https://www.cian.ru/stati/zhk-turgenev-obzor/",
+            "Жилой комплекс Тургенев в Москве от застройщика",
+        ),
+        doc(
+            "Купить квартиру 58 м² в ЖК Мод",
+            "https://realty.yandex.ru/offer/1234567/",
+            "Продаётся квартира в жилом комплексе Мод",
+        ),
+    ]
+    assert extract_candidates(docs) == []
+
+
+# --- класс 2: маркетинговый хвост в названии ---------------------------------
+
+
+def test_marketing_tail_does_not_split_one_project_in_two() -> None:
+    """v5 давал «Cult (Культ» и «Cult (Культ) - купить квартиру» одним документом."""
+    docs = [
+        doc(
+            "ЖК Cult (Культ) - купить квартиру, цены от застройщика",
+            "https://www.cian.ru/zhiloy-kompleks-cult-1234567/",
+            "Квартиры в продаже от застройщика",
+        )
+    ]
+    candidates = extract_candidates(docs)
+    assert [item.canonical_name for item in candidates] == ["Cult (Культ)"]
+
+
+def test_ascii_hyphen_terminates_the_title_name() -> None:
+    docs = [
+        doc(
+            "ЖК Тургенев - купить квартиру, официальный сайт",
+            "https://www.cian.ru/zhiloy-kompleks-turgenev-9991111/",
+            "Квартиры от застройщика в Москве",
+        )
+    ]
+    assert [item.canonical_name for item in extract_candidates(docs)] == ["Тургенев"]
+
+
+# --- класс 3: дубли одного ЖК ------------------------------------------------
+
+
+def test_latin_and_cyrillic_spellings_are_one_entity() -> None:
+    docs = [
+        doc(
+            "Savvin River Residence — квартиры от застройщика",
+            "https://www.cian.ru/zhiloy-kompleks-savvin-river-residence-4001001/",
+            "Клубный дом на Саввинской набережной",
+            rank=1,
+        ),
+        doc(
+            "Саввин Ривер Резиденс - купить квартиру",
+            "https://realty.yandex.ru/moskva/kupit/novostrojka/savvin-river-2002002/",
+            "Квартиры в продаже",
+            rank=2,
+        ),
+    ]
+    entities = resolve_entities(extract_candidates(docs))
+    assert len(entities) == 1
+    assert name_similarity("Savvin River Residence", "Саввин Ривер Резиденс") >= 0.88
+
+
+def test_external_id_merges_differing_titles() -> None:
+    docs = [
+        doc(
+            "ДОМ XXII — квартиры от застройщика",
+            "https://www.cian.ru/zhiloy-kompleks-dom-xxii-4463213/",
+            "Строится на Погодинской улице",
+            rank=1,
+        ),
+        doc(
+            "Дом 22 в Хамовниках",
+            "https://www.cian.ru/zhiloy-kompleks-dom-22-4463213/",
+            "Элитный жилой комплекс",
+            rank=2,
+        ),
+    ]
+    entities = resolve_entities(extract_candidates(docs))
+    assert len(entities) == 1
+    assert canonical_key("ДОМ XXII") == canonical_key("Дом 22")
+
+
+def test_geographic_duplicates_collapse_after_geocoding() -> None:
+    rows = [
+        {"name": "Savvin River Residence", "coordinates": {"latitude": 55.7305, "longitude": 37.5620}},
+        {"name": "Саввин Ривер Резиденс", "coordinates": {"latitude": 55.7306, "longitude": 37.5621}},
+        {"name": "Хамовники 12", "coordinates": {"latitude": 55.7350, "longitude": 37.5700}},
+    ]
+    merged = merge_geographic_duplicates(rows)
+    assert len(merged) == 2
+    assert "Саввин Ривер Резиденс" in merged[0]["merged_from"]
+
+
+# --- класс 4: наследование subject-адреса и мнимые 0 км ----------------------
+
+
+def test_subject_address_echo_is_not_inherited_by_a_candidate() -> None:
+    """Главный дефект v5: сниппет повторяет адрес запроса, кандидат встаёт в 0 км."""
+    subject_snippet = (
+        "Новостройки рядом с адресом Москва, Саввинская набережная, 25 — подборка ЖК Мод"
+    )
+    # Регрессия на прежнее поведение: старый разбор действительно возвращал subject.
+    assert LegacyService._address_hint(subject_snippet) == "Москва, Саввинская набережная, 25"
+
+    entities = resolve_entities(
+        extract_candidates(
+            [
+                doc(
+                    "ЖК Мод — купить квартиру",
+                    "https://www.cian.ru/zhiloy-kompleks-mod-7007007/",
+                    subject_snippet,
+                )
+            ]
+        )
+    )
+    assert len(entities) == 1
+
+    resolver = ProjectGeoResolver(
+        FakeGeocoder({"Саввинская набережная, 25": point(55.7333, 37.5638, "Москва, Саввинская набережная, 25")}),
+        FakeSearch(),
+        locality="Москва",
+        subject_signature=address_signature(SUBJECT),
+        locality_matches=LegacyService._locality_matches,
+    )
+    resolution = resolver.resolve(entities[0])
+    assert resolution.status == UNRESOLVED
+    assert resolution.point is None
+    assert "эхо" in (resolution.reason or "")
+
+
+def test_address_signature_ignores_street_type_and_city() -> None:
+    assert address_signature("Москва, Саввинская наб., 25") == address_signature(
+        "Саввинская набережная, д. 25"
+    )
+    assert address_signature("Москва, Саввинская набережная, 25") != address_signature(
+        "Москва, Саввинская набережная, 27"
+    )
+
+
+def test_catalog_snippet_address_is_not_attributed_to_its_children() -> None:
+    """Каталог перечисляет проекты; адрес из его сниппета ничей."""
+    catalog = doc(
+        "Новостройки (ЖК) в Хамовниках",
+        "https://www.cian.ru/novostroyki-hamovniki/",
+        'ЖК «Хамовники 12», ЖК «Мод», ЖК «Тургенев». Офис продаж: Москва, Саввинская набережная, 25',
+    )
+    candidates = extract_candidates([catalog])
+    assert {item.canonical_name for item in candidates} == {"Хамовники 12", "Мод", "Тургенев"}
+    assert all(item.address_attributable is False for item in candidates)
+
+    resolver = ProjectGeoResolver(
+        FakeGeocoder({"Саввинская набережная": point(55.7333, 37.5638, "Москва, Саввинская набережная, 25")}),
+        FakeSearch(),
+        locality="Москва",
+        subject_signature=address_signature(SUBJECT),
+        locality_matches=LegacyService._locality_matches,
+    )
+    for entity in resolve_entities(candidates):
+        assert resolver.resolve(entity).status == UNRESOLVED
+
+
+def test_city_centroid_precision_is_rejected() -> None:
+    """Геокодер, не знающий бренд, возвращает центр Москвы — это не адрес проекта."""
+    assert not precision_is_usable(point(55.7558, 37.6173, "Москва", precision="other"))
+    assert not precision_is_usable(
+        GeoPoint(55.7558, 37.6173, "Москва", provider="nominatim", precision="city")
+    )
+    assert precision_is_usable(point(55.7333, 37.5638, "Москва, Саввинская набережная, 27", "exact"))
+
+    entity = resolve_entities(
+        extract_candidates(
+            [doc("ЖК Мод — квартиры", "https://www.cian.ru/zhiloy-kompleks-mod-7007007/", "Квартиры в продаже")]
+        )
+    )[0]
+    resolver = ProjectGeoResolver(
+        FakeGeocoder({"Москва": point(55.7558, 37.6173, "Москва", precision="other")}),
+        FakeSearch(),
+        locality="Москва",
+        subject_signature=address_signature(SUBJECT),
+        locality_matches=LegacyService._locality_matches,
+    )
+    assert resolver.resolve(entity).status == UNRESOLVED
+
+
+def test_own_project_address_resolves_and_gives_a_real_distance() -> None:
+    entity = resolve_entities(
+        extract_candidates(
+            [
+                doc(
+                    "Саввинская 27 — квартиры от застройщика",
+                    "https://www.novostroy.ru/buildings/savvinskaya-27/",
+                    "Делюкс-проект Level Group, Москва, Саввинская набережная, 27",
+                )
+            ]
+        )
+    )[0]
+    resolver = ProjectGeoResolver(
+        FakeGeocoder({"Саввинская набережная, 27": point(55.7352, 37.5651, "Москва, Саввинская набережная, 27")}),
+        FakeSearch(),
+        locality="Москва",
+        subject_signature=address_signature(SUBJECT),
+        locality_matches=LegacyService._locality_matches,
+    )
+    resolution = resolver.resolve(entity)
+    assert resolution.status == RESOLVED
+    assert resolution.address == "Москва, Саввинская набережная, 27"
+    assert resolution.address_source == "project_page_snippet"
+
+
+def test_extract_address_adds_locality_when_snippet_omits_it() -> None:
+    assert extract_address("Проект расположен: Погодинская улица, вл. 22/3", "Москва") == (
+        "Москва, Погодинская улица, вл. 22/3"
+    )
+
+
+def test_ordinal_prefix_stays_in_the_street_name() -> None:
+    """«1-й переулок Тружеников» без порядкового номера — другой переулок."""
+    assert extract_address("Клубный дом, Москва, 1-й переулок Тружеников, 12А", "Москва") == (
+        "Москва, 1-й переулок Тружеников, 12А"
+    )
+
+
+def test_targeted_address_search_is_bounded() -> None:
+    """Два вызова Search API на сущность без потолка растягивают запрос на сотни."""
+    search = FakeSearch(default=[])
+    resolver = ProjectGeoResolver(
+        FakeGeocoder({}),
+        search,
+        locality="Москва",
+        subject_signature=address_signature(SUBJECT),
+        locality_matches=LegacyService._locality_matches,
+        search_budget=2,
+    )
+    entities = resolve_entities(
+        extract_candidates(
+            [
+                doc(
+                    "Новостройки (ЖК) в Хамовниках",
+                    "https://www.cian.ru/novostroyki-hamovniki/",
+                    'ЖК «Мод», ЖК «Тургенев», ЖК «Cult», ЖК «Лаврушинский», ЖК «Титул»',
+                )
+            ]
+        )
+    )
+    assert len(entities) >= 5
+    for entity in entities:
+        assert resolver.resolve(entity).status == UNRESOLVED
+    # Потолок выражен в бюджете, а не в числе: форм запроса на сущность три.
+    assert len(search.queries) <= 2 * 3, search.queries
+
+
+# --- класс 5: цена, не принадлежащая проекту ---------------------------------
+
+
+def test_price_from_a_district_catalog_is_rejected() -> None:
+    entity = resolve_entities(
+        extract_candidates(
+            [
+                doc(
+                    "Хамовники 12 — квартиры от застройщика",
+                    "https://www.cian.ru/zhiloy-kompleks-hamovniki-12-3186893/",
+                    "Клубный дом COLDY",
+                )
+            ]
+        )
+    )[0]
+    catalog = doc(
+        "Новостройки Хамовников — цены",
+        "https://www.cian.ru/novostroyki-hamovniki/",
+        "Хамовники 12 от 3 306 021 ₽/м², Мод от 900 000 ₽/м², Тургенев от 800 000 ₽/м²",
+    )
+    enricher = VerifiedPriceEnricher(FakeSearch(default=[catalog]), today=date(2026, 8, 7))
+    result = enricher.collect(entity, "Москва")
+    assert result["price"]["available"] is False
+    assert result["price"]["verified"] is False
+    assert result["rejected_observations"][0]["reason"] == "entity_match_not_proven"
+
+
+def test_price_from_the_matching_project_page_is_accepted_with_provenance() -> None:
+    entity = resolve_entities(
+        extract_candidates(
+            [
+                doc(
+                    "Хамовники 12 — квартиры от застройщика",
+                    "https://www.cian.ru/zhiloy-kompleks-hamovniki-12-3186893/",
+                    "Клубный дом COLDY",
+                )
+            ]
+        )
+    )[0]
+    project_page = doc(
+        "Хамовники 12 — купить квартиру",
+        "https://realty.yandex.ru/moskva/kupit/novostrojka/hamovniki-12-3186893/",
+        "Цена 3 306 021 ₽/м². В продаже 3 квартиры. Обновлено 28 февраля 2026",
+    )
+    enricher = VerifiedPriceEnricher(FakeSearch(default=[project_page]), today=date(2026, 8, 7))
+    result = enricher.collect(entity, "Москва")
+    price = result["price"]
+    assert price["verified"] is True
+    assert price["price_per_sqm"] == 3_306_021
+    assert price["sample_count"] >= 1
+    assert price["quality"] in {"high", "medium"}
+    assert price["observed_at"] == "2026-02-28"
+    assert price["retrieved_at"] == "2026-08-07"
+    assert result["inventory"]["units"] == 3
+    assert result["inventory"]["source"] == "Яндекс Недвижимость"
+
+
+def test_inventory_is_unknown_rather_than_invented() -> None:
+    entity = resolve_entities(
+        extract_candidates(
+            [doc("Мод — квартиры", "https://www.cian.ru/zhiloy-kompleks-mod-7007007/", "Квартиры в продаже")]
+        )
+    )[0]
+    enricher = VerifiedPriceEnricher(FakeSearch(default=[]), today=date(2026, 8, 7))
+    inventory = enricher.collect(entity, "Москва")["inventory"]
+    assert inventory == {
+        "units": None,
+        "source": None,
+        "observed_at": None,
+        "quality": "unknown",
+        "note": "Экспозиция не извлекается достоверно из поискового индекса",
+    }
+
+
+def test_private_resale_page_never_prices_a_primary_project() -> None:
+    entity = resolve_entities(
+        extract_candidates(
+            [doc("Мод — квартиры", "https://www.cian.ru/zhiloy-kompleks-mod-7007007/", "Квартиры в продаже")]
+        )
+    )[0]
+    resale = doc(
+        "Мод — купить квартиру",
+        "https://www.cian.ru/zhiloy-kompleks-mod-7007007/",
+        "Вторичный рынок от собственника, 700 000 ₽/м²",
+    )
+    enricher = VerifiedPriceEnricher(FakeSearch(default=[resale]), today=date(2026, 8, 7))
+    result = enricher.collect(entity, "Москва")
+    assert result["price"]["available"] is False
+    assert any(item["reason"] == "private_resale" for item in result["rejected_observations"])
+
+
+def test_million_plus_price_is_not_silently_divided_by_ten() -> None:
+    """Прежний шаблон читал «3 306 021 ₽/м²» как 306 021 — и это проходило проверку диапазона."""
+    values = VerifiedPriceEnricher._prices("Цена 3 306 021 ₽/м², от 2 256 990 ₽/м²")
+    assert values == [3_306_021, 2_256_990]
+    assert VerifiedPriceEnricher._prices("598 500 ₽/м²") == [598_500]
+    assert VerifiedPriceEnricher._prices("598,5 тыс. ₽/м²") == [598_500]
+
+
+# --- класс 6: рекомендация по недоказанным наблюдениям ------------------------
+
+
+def test_recommendation_ignores_unverified_and_geo_unresolved_rows() -> None:
+    projects = [
+        {
+            "name": "верный",
+            "within_radius": True,
+            "geo_status": "resolved",
+            "price_verified": True,
+            "distance_km": 0.5,
+            "confirmed": False,
+            "market_source_count": 2,
+            "market_price": {"available": True, "price_per_sqm": 1_000_000},
+        },
+        {
+            "name": "цена без доказательства",
+            "within_radius": True,
+            "geo_status": "resolved",
+            "price_verified": False,
+            "distance_km": 0.4,
+            "confirmed": False,
+            "market_source_count": 1,
+            "market_price": {"available": True, "price_per_sqm": 4_000_000},
+        },
+        {
+            "name": "география не подтверждена",
+            "within_radius": True,
+            "geo_status": "geo_unresolved",
+            "price_verified": True,
+            "distance_km": 0.0,
+            "confirmed": False,
+            "market_source_count": 1,
+            "market_price": {"available": True, "price_per_sqm": 4_500_000},
+        },
+    ]
+    result = market_recommendation(projects)
+    assert result is not None
+    assert result["projects"] == ["верный"]
+    assert result["price_per_sqm"] == 1_000_000
+
+
+# --- класс 7: чужая география ------------------------------------------------
+
+
+def test_khabarovsk_project_is_not_confirmed_for_moscow() -> None:
+    card = {"title": "СВОЙ", "snippet": "СВОЙ, Хабаровск, Хабаровский край"}
+    assert not LegacyService._official_card_matches("СВОЙ", None, card, locality="Москва")
+
+
+def test_other_city_name_is_rejected_by_name_grammar() -> None:
+    assert not looks_like_project_name("Новостройки Хабаровска")
+    assert not looks_like_project_name("СВОЙ Хабаровск")
+
+
+def test_grodnenskaya_control_keeps_khabarovsk_out_of_the_moscow_set() -> None:
+    """Контроль 3: «СВОЙ» из Хабаровска не должен становиться московским аналогом."""
+    docs = [
+        doc(
+            "ЖК СВОЙ — купить квартиру",
+            "https://www.cian.ru/zhiloy-kompleks-svoy-8008008/",
+            "Жилой комплекс СВОЙ, Хабаровск, Хабаровский край. Квартиры от застройщика",
+        )
+    ]
+    entities = resolve_entities(extract_candidates(docs))
+    resolver = ProjectGeoResolver(
+        FakeGeocoder({"Хабаровск": GeoPoint(48.4802, 135.0719, "Хабаровск, Хабаровский край", "yandex", "exact")}),
+        FakeSearch(),
+        locality="Москва",
+        subject_signature=address_signature("Москва, Гродненская улица, 18"),
+        locality_matches=LegacyService._locality_matches,
+    )
+    for entity in entities:
+        assert resolver.resolve(entity).status == UNRESOLVED
+
+
+# --- контроль 2: Мишина, 46 ---------------------------------------------------
+
+
+def test_mishina_control_keeps_phases_apart_and_drops_the_office_building() -> None:
+    """«Петровский парк II» — не то же самое, что «Петровский парк», а БЦ — не аналог."""
+    docs = [
+        doc(
+            "Петровский парк II — квартиры от застройщика",
+            "https://www.cian.ru/zhiloy-kompleks-petrovskiy-park-ii-5005005/",
+            "Строящийся жилой комплекс, Москва, улица Мишина, 42",
+            rank=1,
+        ),
+        doc(
+            "Петровский парк — купить квартиру",
+            "https://www.cian.ru/zhiloy-kompleks-petrovskiy-park-4004004/",
+            "Москва, Петровско-Разумовская аллея, 2. Квартиры от застройщика",
+            rank=2,
+        ),
+        doc(
+            "Бизнес-центр Савёловский Сити — офисы",
+            "https://example.ru/proekty/savelovsky-city",
+            "Офисный комплекс рядом с улицей Мишина",
+            rank=3,
+        ),
+    ]
+    entities = resolve_entities(extract_candidates(docs))
+    names = {entity.canonical_name for entity in entities}
+    assert names == {"Петровский парк II", "Петровский парк"}
+    assert phase_apart("Петровский парк", "Петровский парк II")
+
+
+def phase_apart(left: str, right: str) -> bool:
+    from market_search.normalize import phase_number
+
+    return phase_number(left) != phase_number(right)
+
+
+# --- сквозной прогон конвейера ------------------------------------------------
+
+
+@pytest.fixture()
+def service(tmp_path: Path) -> ServiceV6:
+    return ServiceV6(tmp_path)
+
+
+def test_pipeline_keeps_valid_analogues_and_quarantines_the_rest(service: ServiceV6, monkeypatch) -> None:
+    discovery = [
+        doc(
+            "Хамовники 12 — квартиры в клубном доме",
+            "https://www.cian.ru/zhiloy-kompleks-hamovniki-12-3186893/",
+            "Клубный дом COLDY, Москва, 1-й переулок Тружеников, 12А. Цена 3 306 021 ₽/м²",
+            rank=1,
+        ),
+        doc(
+            "Саввинская 27 — квартиры от застройщика",
+            "https://www.novostroy.ru/buildings/savvinskaya-27/",
+            "Level Group, Москва, Саввинская набережная, 27. Цена 3 200 000 ₽/м²",
+            rank=2,
+        ),
+        doc(
+            "Клубные дома Москвы — рейтинг застройщиков",
+            "https://example.ru/stati/klubnye-doma",
+            "Клубный дом в центре Москвы. Рейтинг застройщиков Дубая. Адрес офиса.",
+            rank=3,
+        ),
+        doc(
+            "ЖК Мод — купить квартиру",
+            "https://www.cian.ru/zhiloy-kompleks-mod-7007007/",
+            "Новостройки рядом с адресом Москва, Саввинская набережная, 25",
+            rank=4,
+        ),
+    ]
+    search = FakeSearch(default=discovery)
+    monkeypatch.setattr(service, "search", search)
+    monkeypatch.setattr(service.verified_prices, "search", search)
+    monkeypatch.setattr(
+        service,
+        "geocoder",
+        FakeGeocoder(
+            {
+                "Тружеников, 12А": point(55.7360, 37.5730, "Москва, 1-й переулок Тружеников, 12А"),
+                "Саввинская набережная, 27": point(55.7352, 37.5651, "Москва, Саввинская набережная, 27"),
+                "Саввинская набережная, 25": point(55.7333, 37.5638, "Москва, Саввинская набережная, 25"),
+            }
+        ),
+    )
+
+    result = service.discover(
+        address=SUBJECT, latitude=55.7333, longitude=37.5638, radius_km=3.0, limit=10
+    )
+
+    names = [row["name"] for row in result["projects"]]
+    assert "Хамовники 12" in names
+    assert "Саввинская 27" in names
+    assert not any("Рейтинг" in name for name in names)
+    assert "Мод" not in names, "проект без собственного адреса не должен вставать в 0 км"
+    assert all(row["distance_km"] > 0 for row in result["projects"])
+    assert result["source"]["mode"] == "forensic_entity_pipeline_v6"
+    assert result["quarantine_count"] >= 1
+    assert any(item["status"] == "geo_unresolved" for item in result["quarantine"])
+    assert result["diagnostics"]["documents_by_kind"].get("article") == 1
+
+
+def test_pipeline_never_reads_the_golden_fixture(service: ServiceV6, monkeypatch) -> None:
+    search = FakeSearch(default=[])
+    monkeypatch.setattr(service, "search", search)
+    monkeypatch.setattr(service.verified_prices, "search", search)
+    monkeypatch.setattr(service, "geocoder", FakeGeocoder({}))
+    result = service.discover(
+        address=SUBJECT, latitude=55.7333, longitude=37.5638, radius_km=3.0, limit=10
+    )
+    assert result["projects"] == []
+    assert result["price_summary"] is None
+    assert "Хамовники" not in repr(result)
+
+
+def test_ui_renders_the_v6_price_shape_instead_of_silently_showing_nothing() -> None:
+    """Панель читала price.asking / price.official — в v6 их нет."""
+    from market_search.ui_v6 import install as install_ui
+
+    class FakeCore:
+        PAGE = (
+            "<html><head></head><body>"
+            '<input id="apartment_price_th" type="number" value="500">'
+            "<button class=\"tab\" data-tab=\"report\" onclick=\"openTab('report',this)\">Отчёт</button>"
+            '<div id="report" class="panel"></div>'
+            "</body></html>"
+        )
+
+    core = FakeCore()
+    install_ui(core)
+    page = core.PAGE
+    assert "price.asking" not in page
+    assert "officialPrice" not in page
+    assert "Адрес проекта не разрешён" in page
+    assert "Экспозиция: неизвестна" in page
+    assert "в карантине: " in page
+    assert "Не подтверждён — в расчёт цены не идёт" not in page
+
+
+def _acceptance_module():
+    import importlib.util
+
+    path = Path(__file__).resolve().parent.parent / "market-preview-acceptance.py"
+    spec = importlib.util.spec_from_file_location("market_preview_acceptance", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_acceptance_contract_matches_what_the_service_actually_returns(
+    service: ServiceV6, monkeypatch
+) -> None:
+    """Приёмка и движок не должны разъезжаться по имени контракта.
+
+    Прежде строка режима жила в двух местах, и обновление одного из них
+    превращало исправный стенд в «старый market API»."""
+    acceptance = _acceptance_module()
+    search = FakeSearch(default=[])
+    monkeypatch.setattr(service, "search", search)
+    monkeypatch.setattr(service.verified_prices, "search", search)
+    monkeypatch.setattr(service, "geocoder", FakeGeocoder({}))
+    result = service.discover(
+        address=SUBJECT, latitude=55.7333, longitude=37.5638, radius_km=3.0, limit=10
+    )
+    assert result["source"]["mode"] == acceptance.EXPECTED_MODE
+    ok, error = acceptance.validate_contract(result)
+    assert ok, error
+    assert acceptance.validate_data_quality(result["projects"]) == []
+    assert "Гродненская 18" in acceptance.GOLDEN
+
+
+def test_acceptance_data_quality_catches_the_live_preview_garbage() -> None:
+    acceptance = _acceptance_module()
+    problems = acceptance.validate_data_quality(
+        [
+            {
+                "name": "Сидней Сити (Sidney City)",
+                "distance_km": 0.0,
+                "geo_status": "resolved",
+                "address": None,
+                "market_price": {"available": True, "verified": False, "price_per_sqm": 900_000},
+                "inventory": {"units": 12, "source": None},
+            },
+            {"name": "Savvin River Residence", "distance_km": 0.4, "address": "Москва, Саввинская наб., 15"},
+            {"name": "саввин ривер резиденс", "distance_km": 0.4, "address": "Москва, Саввинская наб., 15"},
+        ]
+    )
+    joined = " | ".join(problems)
+    assert "0 км" in joined
+    assert "нет собственного адреса" in joined
+    assert "без доказанной привязки" in joined
+    assert "экспозиция без источника" in joined
+    assert "дубль" in joined
+
+
+def test_document_classification_covers_the_live_aggregators() -> None:
+    cases = {
+        "https://www.cian.ru/zhiloy-kompleks-dom-xxii-4463213/": (documents.PROJECT_PAGE, "cian:4463213"),
+        "https://zhk-frunzenskaya-naberezhnaya-i.cian.ru/": (
+            documents.PROJECT_PAGE,
+            "cian:zhk:frunzenskaya-naberezhnaya",
+        ),
+        "https://www.cian.ru/novostroyki-hamovniki/": (documents.CATALOG, None),
+        "https://www.cian.ru/stati/rejting-zastrojshchikov/": (documents.ARTICLE, None),
+        "https://realty.yandex.ru/moskva/kupit/novostrojka/hamovniki-12-3186893/": (
+            documents.PROJECT_PAGE,
+            "yandex:3186893",
+        ),
+        "https://realty.yandex.ru/offer/1234567/": (documents.LISTING, None),
+        "https://www.novostroy.ru/buildings/savvinskaya-27/": (
+            documents.PROJECT_PAGE,
+            "novostroy:savvinskaya-27",
+        ),
+        "https://xn--80az8a.xn--d1aqf.xn--p1ai/lk/na-dom/2079406": (documents.OFFICIAL_CARD, "domrf:2079406"),
+    }
+    for url, (kind, external) in cases.items():
+        ref = documents.classify_document(url)
+        assert ref.kind == kind, url
+        assert ref.external_id == external, url
+
+
+# --- класс 8: находки живого стенда 08.08 (2 проекта, 0 цен) ------------------
+
+
+def test_duplicated_parenthetical_no_longer_breaks_self_match() -> None:
+    """«Клубный дом «Саввинская 17» (Саввинская 17)» не узнавал собственную карточку."""
+    from market_search.normalize import drop_duplicate_parenthetical, labels_match, search_name
+
+    raw = "Клубный дом «Саввинская 17» (Саввинская 17)"
+    assert drop_duplicate_parenthetical(raw) == "Клубный дом «Саввинская 17»"
+    assert canonical_key(raw) == canonical_key("Саввинская 17")
+    assert labels_match("Клубный дом «Саввинская 17»", [raw])
+    # Двуязычная вывеска — не задвоение, её трогать нельзя.
+    assert drop_duplicate_parenthetical("Сидней Сити (Sidney City)") == "Сидней Сити (Sidney City)"
+    # В запрос уходит имя без кавычек: точная фраза с «» не находит ничего.
+    assert search_name(raw) == "Клубный дом Саввинская 17"
+
+
+def test_project_page_price_survives_a_duplicated_entity_label() -> None:
+    entity = resolve_entities(
+        extract_candidates(
+            [
+                doc(
+                    "Клубный дом «Саввинская 17» (Саввинская 17) — купить квартиру",
+                    "https://realty.yandex.ru/moskva/kupit/novostrojka/savvinskaya-17-1234567/",
+                    "Квартиры от застройщика",
+                )
+            ]
+        )
+    )[0]
+    page = doc(
+        "Саввинская 17 — цены и планировки",
+        "https://www.cian.ru/zhiloy-kompleks-savvinskaya-17-7654321/",
+        "от 2 256 990 ₽ за м². В продаже 22 квартиры",
+    )
+    result = VerifiedPriceEnricher(FakeSearch(default=[page]), today=date(2026, 8, 8)).collect(
+        entity, "Москва"
+    )
+    assert result["price"]["verified"] is True
+    assert result["price"]["price_per_sqm"] == 2_256_990
+    assert result["inventory"]["units"] == 22
+
+
+def test_price_is_read_in_every_common_russian_form() -> None:
+    """Раньше из пяти ходовых форм читалась одна — «₽/м²»."""
+    cases = {
+        "3 306 021 ₽/м²": 3_306_021,
+        "от 2 256 990 ₽ за м²": 2_256_990,
+        "1 200 000 руб. за кв. м": 1_200_000,
+        "от 598,5 тыс. ₽ за м²": 598_500,
+        "цена за м²: 900 000 ₽": 900_000,
+    }
+    for text, expected in cases.items():
+        assert VerifiedPriceEnricher._prices(text) == [expected], text
+    # Элитная Москва котируется в миллионах за метр — это тоже цена метра.
+    assert VerifiedPriceEnricher._prices("от 1,5 млн ₽ за м²") == [1_500_000]
+    # Цена лота с площадью рядом даёт производную цену метра, помеченную как
+    # таковую: она зависит от того, какой лот попал в сниппет.
+    assert VerifiedPriceEnricher._priced("120 м² за 50 000 000 ₽") == [
+        (416_667, "derived_total_div_area")
+    ]
+    # Цена лота без площади не даёт ничего.
+    assert VerifiedPriceEnricher._prices("5 000 000 ₽ за квартиру") == []
+
+
+def test_catalog_list_yields_each_project_separately() -> None:
+    """Каталог перечисляет проекты списком; кавычек в сниппете обычно нет."""
+    catalog = doc(
+        "Новостройки (ЖК) в Хамовниках — купить квартиру",
+        "https://www.cian.ru/novostroyki-hamovniki/",
+        "ЖК Хамовники 12 · ДОМ XXII · Клубный квартал Фрунзенский · Саввинская 27",
+    )
+    names = {item.canonical_name for item in extract_candidates([catalog])}
+    assert {"Хамовники 12", "ДОМ XXII", "Саввинская 27"} <= names
+    assert any("Фрунзенский" in name for name in names)
+    # Ни одно имя не склеило соседей списка.
+    assert not any("·" in name for name in names)
+    assert all(
+        item.address_attributable is False for item in extract_candidates([catalog])
+    ), "каталожный кандидат адреса не наследует"
+
+
+def test_catalog_advertising_line_yields_nothing() -> None:
+    noise = doc(
+        "Новостройки Москвы",
+        "https://www.cian.ru/novostroyki-moskva/",
+        "Рейтинг застройщиков · Ипотека от 5% · Скидки до 20% · Консультация бесплатно",
+    )
+    assert extract_candidates([noise]) == []
+
+
+def test_ui_shows_why_candidates_were_dropped() -> None:
+    from market_search.ui_v6 import install as install_ui
+
+    class FakeCore:
+        PAGE = (
+            "<html><head></head><body>"
+            '<input id="apartment_price_th" type="number" value="500">'
+            "<button class=\"tab\" data-tab=\"report\" onclick=\"openTab('report',this)\">Отчёт</button>"
+            '<div id="report" class="panel"></div>'
+            "</body></html>"
+        )
+
+    core = FakeCore()
+    install_ui(core)
+    assert "mdQuarantine(payload)" in core.PAGE
+    assert "адрес проекта не подтверждён" in core.PAGE
+    assert "найдены, но в расчёт не взяты" in core.PAGE
+
+
+# --- класс 9: адрес не находился ни у кого (стенд 08.08, 21 в карантине) ------
+
+
+def test_developer_site_is_accepted_as_address_evidence() -> None:
+    """Официальный сайт застройщика — лучший источник адреса, а его отвергали."""
+    entities = resolve_entities(
+        extract_candidates(
+            [
+                doc(
+                    "Новостройки (ЖК) в Хамовниках",
+                    "https://www.cian.ru/novostroyki-hamovniki/",
+                    "Дом Дау · West Garden · Хедлайнер",
+                )
+            ]
+        )
+    )
+    entity = next(item for item in entities if item.canonical_name == "Дом Дау")
+    developer_page = doc(
+        "Дом Дау — официальный сайт застройщика",
+        "https://domdau.example/projects/dom-dau/",
+        "Небоскрёб в Москва-Сити. Адрес: Москва, Пресненская набережная, 14",
+    )
+    resolver = ProjectGeoResolver(
+        FakeGeocoder({"Пресненская набережная, 14": point(55.7473, 37.5378, "Москва, Пресненская набережная, 14")}),
+        FakeSearch(default=[developer_page]),
+        locality="Москва",
+        subject_signature=address_signature(SUBJECT),
+        locality_matches=LegacyService._locality_matches,
+    )
+    resolution = resolver.resolve(entity)
+    assert resolution.status == RESOLVED
+    assert resolution.address == "Москва, Пресненская набережная, 14"
+    assert resolution.address_source == "targeted_address_search"
+
+
+def test_catalog_and_article_still_never_give_an_address() -> None:
+    entity = resolve_entities(
+        extract_candidates(
+            [doc("Новостройки Хамовников", "https://www.cian.ru/novostroyki-hamovniki/", "Дом Дау · Мод")]
+        )
+    )[0]
+    wrong = [
+        doc(
+            "Дом Дау — обзор проекта",
+            "https://example.ru/stati/dom-dau/",
+            "Адрес: Москва, Тверская улица, 1",
+        ),
+        doc(
+            "Новостройки Пресни",
+            "https://www.cian.ru/novostroyki-presnya/",
+            "Дом Дау, Москва, Пресненская набережная, 14",
+        ),
+    ]
+    resolver = ProjectGeoResolver(
+        FakeGeocoder({"Тверская": point(55.7601, 37.6100, "Москва, Тверская улица, 1")}),
+        FakeSearch(default=wrong),
+        locality="Москва",
+        subject_signature=address_signature(SUBJECT),
+        locality_matches=LegacyService._locality_matches,
+    )
+    assert resolver.resolve(entity).status == UNRESOLVED
+
+
+def test_geocoder_resolves_a_known_brand_only_at_house_precision() -> None:
+    """Бренд, который геокодер знает домом, — законная последняя попытка."""
+    entity = resolve_entities(
+        extract_candidates(
+            [doc("Новостройки Хамовников", "https://www.cian.ru/novostroyki-hamovniki/", "West Garden · Мод")]
+        )
+    )[0]
+
+    exact = ProjectGeoResolver(
+        FakeGeocoder({"West Garden": point(55.7015, 37.5158, "Москва, улица Лобачевского, 122", "exact")}),
+        FakeSearch(default=[]),
+        locality="Москва",
+        subject_signature=address_signature(SUBJECT),
+        locality_matches=LegacyService._locality_matches,
+    ).resolve(entity)
+    assert exact.status == RESOLVED
+    assert exact.address_source == "geocoder_brand_exact"
+
+    coarse = ProjectGeoResolver(
+        FakeGeocoder({"West Garden": point(55.7558, 37.6173, "Москва", "street")}),
+        FakeSearch(default=[]),
+        locality="Москва",
+        subject_signature=address_signature(SUBJECT),
+        locality_matches=LegacyService._locality_matches,
+    ).resolve(entity)
+    assert coarse.status == UNRESOLVED, "уровень улицы — не адрес проекта"
+
+
+def test_catalog_list_junk_is_dropped_before_it_eats_the_budget() -> None:
+    """«2 корпуса», «Донстрой», «Мичуринский проспект» — из живого карантина."""
+    catalog = doc(
+        "Новостройки Москвы",
+        "https://www.cian.ru/novostroyki-moskva/",
+        "Дом Дау · 2 корпуса · Донстрой · Мичуринский проспект · Ход строительства · West Garden",
+    )
+    names = {item.canonical_name for item in extract_candidates([catalog])}
+    assert "Дом Дау" in names
+    assert "West Garden" in names
+    for junk in ("2 корпуса", "Донстрой", "Мичуринский проспект", "Ход строительства"):
+        assert junk not in names, junk
+
+
+def test_project_pages_get_the_parsing_budget_before_catalog_leads() -> None:
+    """Наводка из списка не должна съедать целевые поиски у настоящей карточки."""
+    docs = [
+        doc(
+            "Новостройки Хамовников",
+            "https://www.cian.ru/novostroyki-hamovniki/",
+            "Альфа · Бета · Гамма · Дельта",
+            rank=1,
+        ),
+        doc(
+            "Хамовники 12 — квартиры",
+            "https://realty.yandex.ru/moskva/kupit/novostrojka/hamovniki-12-3186893/",
+            "Клубный дом",
+            rank=9,
+        ),
+    ]
+    entities = resolve_entities(extract_candidates(docs))
+    ordered = sorted(
+        entities,
+        key=lambda item: (not item.project_pages, -item.extraction_confidence, item.search_rank),
+    )
+    assert ordered[0].canonical_name == "Хамовники 12"
+
+
+def test_developer_own_page_is_a_price_source_when_the_entity_matches() -> None:
+    """Собственная цена застройщика — самая авторитетная, её нельзя игнорировать."""
+    entity = resolve_entities(
+        extract_candidates(
+            [doc("Новостройки Москвы", "https://www.cian.ru/novostroyki-moskva/", "Дом Дау · Мод")]
+        )
+    )[0]
+    own = doc(
+        "Дом Дау — официальный сайт застройщика",
+        "https://domdau.example/projects/dom-dau/",
+        "Квартиры от 1 250 000 ₽ за м². Москва, Пресненская набережная, 14",
+    )
+    result = VerifiedPriceEnricher(FakeSearch(default=[own]), today=date(2026, 8, 8)).collect(
+        entity, "Москва"
+    )
+    assert result["price"]["verified"] is True
+    assert result["price"]["price_per_sqm"] == 1_250_000
+
+    # Чужой проект на том же сайте цену не отдаёт.
+    other = resolve_entities(
+        extract_candidates(
+            [doc("Новостройки Москвы", "https://www.cian.ru/novostroyki-moskva/", "Мод · Тургенев")]
+        )
+    )[0]
+    rejected = VerifiedPriceEnricher(FakeSearch(default=[own]), today=date(2026, 8, 8)).collect(
+        other, "Москва"
+    )
+    assert rejected["price"]["available"] is False
+
+
+# --- класс 10: стенд 08.08 после починки адресов ------------------------------
+
+
+def test_official_eiszhs_card_supplies_the_address() -> None:
+    """Карточка ЕИСЖС несёт строительный адрес — надёжнее любого агрегатора."""
+    entity = next(
+        item
+        for item in resolve_entities(
+            extract_candidates(
+                [doc("Новостройки Хамовников", "https://www.cian.ru/novostroyki-hamovniki/", "Хамовники 12 · Мод")]
+            )
+        )
+        if item.canonical_name == "Хамовники 12"
+    )
+    card = doc(
+        "Жилой комплекс Хамовники 12 — ЕИСЖС",
+        "https://xn--80az8a.xn--d1aqf.xn--p1ai/lk/na-dom/2079406",
+        "Москва, 1-й переулок Тружеников, 12А. Застройщик COLDY",
+    )
+    resolver = ProjectGeoResolver(
+        FakeGeocoder({"Тружеников, 12А": point(55.7360, 37.5730, "Москва, 1-й переулок Тружеников, 12А")}),
+        FakeSearch(responses={"наш.дом.рф": [card]}, default=[]),
+        locality="Москва",
+        subject_signature=address_signature(SUBJECT),
+        locality_matches=LegacyService._locality_matches,
+    )
+    resolution = resolver.resolve(entity)
+    assert resolution.status == RESOLVED
+    assert resolution.address_source == "official_eiszhs_card"
+    assert resolution.address == "Москва, 1-й переулок Тружеников, 12А"
+
+
+def test_official_card_of_another_project_is_not_borrowed() -> None:
+    entity = next(
+        item
+        for item in resolve_entities(
+            extract_candidates(
+                [doc("Новостройки Хамовников", "https://www.cian.ru/novostroyki-hamovniki/", "Хамовники 12 · Мод")]
+            )
+        )
+        if item.canonical_name == "Хамовники 12"
+    )
+    foreign = doc(
+        "Жилой комплекс Прайм Парк — ЕИСЖС",
+        "https://xn--80az8a.xn--d1aqf.xn--p1ai/lk/na-dom/1111111",
+        "Москва, Ленинградский проспект, 37",
+    )
+    resolver = ProjectGeoResolver(
+        FakeGeocoder({"Ленинградский": point(55.7900, 37.5300, "Москва, Ленинградский проспект, 37")}),
+        FakeSearch(responses={"наш.дом.рф": [foreign]}, default=[]),
+        locality="Москва",
+        subject_signature=address_signature(SUBJECT),
+        locality_matches=LegacyService._locality_matches,
+    )
+    assert resolver.resolve(entity).status == UNRESOLVED
+
+
+def test_street_and_company_names_never_reach_the_geocoder() -> None:
+    """«Мичуринский проспект», «Донстрой», «УК АСК ГРУПП» получали координаты."""
+    catalog = doc(
+        "Новостройки Москвы",
+        "https://www.cian.ru/novostroyki-moskva/",
+        "ЖК Мичуринский проспект · ЖК Донстрой · УК АСК ГРУПП · 2 корпуса · ЖК Дом Дау",
+    )
+    names = {item.canonical_name for item in extract_candidates([catalog])}
+    assert "Дом Дау" in names
+    for junk in ("Мичуринский проспект", "Донстрой", "УК АСК ГРУПП", "2 корпуса"):
+        assert junk not in names, junk
+
+
+def test_price_queries_are_not_quoted() -> None:
+    """Точная фраза внутри site: почти всегда даёт пустую выдачу."""
+    entity = resolve_entities(
+        extract_candidates(
+            [
+                doc(
+                    "Клубный дом «Саввинская 17» — купить квартиру",
+                    "https://realty.yandex.ru/moskva/kupit/novostrojka/savvinskaya-17-1234567/",
+                    "Квартиры от застройщика",
+                )
+            ]
+        )
+    )[0]
+    search = FakeSearch(default=[])
+    VerifiedPriceEnricher(search, today=date(2026, 8, 8)).collect(entity, "Москва")
+    assert search.queries, "запросы должны быть"
+    assert not any('"' in query for query in search.queries), search.queries
+    assert any("цена за м²" in query for query in search.queries), search.queries
+
+
+# --- класс 11: сопоставимость, а не только география --------------------------
+
+
+def test_class_alone_would_not_have_excluded_the_skyscraper() -> None:
+    """Дом Дау тоже элитный — класс его не отсекает, отсекает пара с районом."""
+    from market_search.segments import detect_district, detect_segment, districts_match
+
+    assert detect_segment("Дом Дау — элитный небоскрёб в Москва-Сити") == "элитный"
+    assert detect_segment("Хамовники 12 — элитный клубный дом") == "элитный"
+    assert not districts_match(
+        detect_district("Москва, район Хамовники, Саввинская набережная, 25"),
+        detect_district("Москва, Пресненский район, 1-й Красногвардейский проезд, 14"),
+    )
+
+
+def test_deluxe_and_elite_are_one_tier() -> None:
+    """Саввинская 27 — делюкс, Хамовники 12 — элитный; это прямые конкуренты."""
+    from market_search.segments import detect_segment
+
+    assert detect_segment("Делюкс-проект Level Group") == detect_segment("Элитный клубный дом")
+
+
+def test_marketing_adjective_alone_is_not_a_class() -> None:
+    from market_search.segments import detect_segment
+
+    assert detect_segment("Премиальный жилой комплекс у реки") is None
+
+
+def test_pipeline_drops_a_neighbouring_district_project(tmp_path: Path, monkeypatch) -> None:
+    service = ServiceV6(tmp_path)
+    discovery = [
+        doc(
+            "Хамовники 12 — квартиры",
+            "https://realty.yandex.ru/moskva/kupit/novostrojka/hamovniki-12-3186893/",
+            "Элитный клубный дом. Москва, 1-й переулок Тружеников, 12А. 3 306 021 ₽ за м²",
+            rank=1,
+        ),
+        doc(
+            "Дом Дау — квартиры",
+            "https://realty.yandex.ru/moskva/kupit/novostrojka/dom-dau-7777777/",
+            "Элитный небоскрёб. Москва, 1-й Красногвардейский проезд, 14. 1 500 000 ₽ за м²",
+            rank=2,
+        ),
+    ]
+    search = FakeSearch(default=discovery)
+    monkeypatch.setattr(service, "search", search)
+    monkeypatch.setattr(service.verified_prices, "search", search)
+    monkeypatch.setattr(
+        service,
+        "geocoder",
+        FakeGeocoder(
+            {
+                "Саввинская набережная, 25": point(
+                    55.7333, 37.5638, "Саввинская набережная, 25, район Хамовники, Москва"
+                ),
+                "Тружеников, 12А": point(
+                    55.7360, 37.5730, "1-й переулок Тружеников, 12А, район Хамовники, Москва"
+                ),
+                "Красногвардейский проезд, 14": point(
+                    55.7480, 37.5390, "1-й Красногвардейский проезд, 14, Пресненский район, Москва"
+                ),
+            }
+        ),
+    )
+    result = service.discover(address=SUBJECT, latitude=None, longitude=None, radius_km=3.0, limit=10)
+
+    names = [row["name"] for row in result["projects"]]
+    assert "Хамовники 12" in names
+    assert "Дом Дау" not in names, "Пресненский район — не аналог Хамовников"
+    dropped = {item["name"]: item for item in result["quarantine"]}
+    assert dropped["Дом Дау"]["status"] == "district_mismatch"
+    assert "Пресненский" in dropped["Дом Дау"]["reason"]
+    assert result["query"]["subject_district"] == "Хамовники"
+
+
+def test_official_average_is_shown_but_never_sets_the_benchmark() -> None:
+    """Средняя ЕИСЖС отражает сделки и отстаёт: показывать можно, считать нельзя."""
+    rows = [
+        {
+            "name": "рынок",
+            "within_radius": True,
+            "geo_status": "resolved",
+            "price_verified": True,
+            "distance_km": 0.5,
+            "confirmed": True,
+            "market_source_count": 1,
+            "market_price": {
+                "available": True,
+                "basis": "verified_project_page_asking",
+                "price_per_sqm": 3_000_000,
+            },
+        },
+        {
+            "name": "официальная средняя",
+            "within_radius": True,
+            "geo_status": "resolved",
+            "price_verified": True,
+            "distance_km": 0.4,
+            "confirmed": True,
+            "market_source_count": 1,
+            "market_price": {
+                "available": True,
+                "basis": "official_domrf_fallback",
+                "price_per_sqm": 919_717,
+            },
+        },
+    ]
+    result = market_recommendation(rows)
+    assert result is not None
+    assert result["projects"] == ["рынок"]
+    assert result["price_per_sqm"] == 3_000_000
+
+
+def test_class_filter_stays_off_when_almost_nothing_has_a_class(tmp_path: Path) -> None:
+    """Отбор по одному наблюдению выкосил бы выдачу целиком."""
+    service = ServiceV6(tmp_path)
+    rows = [
+        {"name": "с классом", "segment": "элитный", "distance_km": 0.5, "coordinates": {}},
+        {"name": "без класса", "segment": None, "distance_km": 0.6, "coordinates": {}},
+    ]
+    quarantine: list[dict] = []
+    kept, info = service._apply_comparability(
+        rows, quarantine, subject_district="Хамовники", requested=None
+    )
+    assert info["class_filter_active"] is False
+    assert len(kept) == 2
+    assert quarantine == []
+
+
+def test_class_is_looked_up_for_projects_the_catalog_did_not_label() -> None:
+    """«Японский дом» в 630 метрах вылетал со статусом «класс не определён»."""
+    from market_search.segments import SegmentResolver
+
+    entity = next(
+        item
+        for item in resolve_entities(
+            extract_candidates(
+                [doc("Новостройки Хамовников", "https://www.cian.ru/novostroyki-hamovniki/", "Японский дом · Мод")]
+            )
+        )
+        if item.canonical_name == "Японский дом"
+    )
+    assert entity.segment is None, "каталог класс не назвал"
+
+    found = doc(
+        "Японский дом — квартиры от застройщика",
+        "https://www.cian.ru/zhiloy-kompleks-yaponskiy-dom-5150001/",
+        "Элитный клубный дом в Хамовниках",
+    )
+    assert SegmentResolver(FakeSearch(default=[found]), locality="Москва").resolve(entity) == "элитный"
+
+    # Класс соседа своим не становится.
+    foreign = doc(
+        "Прайм Парк — премиум-класс",
+        "https://www.cian.ru/zhiloy-kompleks-prime-park-9990001/",
+        "Премиум-класс на Ленинградском проспекте",
+    )
+    assert SegmentResolver(FakeSearch(default=[foreign]), locality="Москва").resolve(entity) is None
+
+
+def test_completion_dates_and_prose_are_not_projects() -> None:
+    """«2 квартал 2026 года», «Прямо напротив», «…по соседству» — из живого карантина."""
+    catalog = doc(
+        "Новостройки Хамовников",
+        "https://www.cian.ru/novostroyki-hamovniki/",
+        "Японский дом · 2 квартал 2026 года · Прямо напротив · Новодевичий монастырь, по соседству · Феникс-Парк",
+    )
+    names = {item.canonical_name for item in extract_candidates([catalog])}
+    assert {"Японский дом", "Феникс-Парк"} <= names
+    for junk in ("2 квартал 2026 года", "Прямо напротив", "Новодевичий монастырь, по соседству"):
+        assert junk not in names, junk
+
+
+def test_adjacent_classes_are_comparable_but_distant_ones_are_not() -> None:
+    """Решение владельца: элитный и премиум конкурируют, бизнес — уже нет."""
+    from market_search.segments import segments_comparable
+
+    assert segments_comparable("элитный", "элитный")
+    assert segments_comparable("элитный", "премиум")
+    assert segments_comparable("премиум", "бизнес")
+    assert not segments_comparable("элитный", "бизнес")
+    assert not segments_comparable("элитный", "комфорт")
+    assert not segments_comparable("элитный", None)
+
+
+def test_premium_neighbour_returns_to_the_elite_comparable_set(tmp_path: Path) -> None:
+    """Savvin River Residence — премиум в 748 метрах при ориентире «элитный»."""
+    service = ServiceV6(tmp_path)
+    rows = [
+        {"name": "Хамовники 12", "segment": "элитный", "distance_km": 0.65, "coordinates": {}},
+        {"name": "ДОМ XXII", "segment": "элитный", "distance_km": 0.51, "coordinates": {}},
+        {"name": "Savvin River Residence", "segment": "премиум", "distance_km": 0.748, "coordinates": {}},
+        {"name": "бизнес-сосед", "segment": "бизнес", "distance_km": 0.8, "coordinates": {}},
+    ]
+    quarantine: list[dict] = []
+    kept, info = service._apply_comparability(
+        rows, quarantine, subject_district=None, requested=None
+    )
+    assert info["reference_segment"] == "элитный"
+    names = {row["name"] for row in kept}
+    assert "Savvin River Residence" in names
+    assert "бизнес-сосед" not in names
+    assert quarantine[0]["status"] == "class_mismatch"
+
+
+def test_quarantine_list_is_never_silently_truncated() -> None:
+    """Обрезка на двадцати позициях прятала проект и выглядела как его отсутствие."""
+    from market_search.ui_v6 import install as install_ui
+
+    class FakeCore:
+        PAGE = (
+            "<html><head></head><body>"
+            '<input id="apartment_price_th" type="number" value="500">'
+            "<button class=\"tab\" data-tab=\"report\" onclick=\"openTab('report',this)\">Отчёт</button>"
+            '<div id="report" class="panel"></div>'
+            "</body></html>"
+        )
+
+    core = FakeCore()
+    install_ui(core)
+    assert "rows.slice(0,20)" not in core.PAGE
+    assert "rows.map(item=>" in core.PAGE
+    assert "byStatus" in core.PAGE
+
+
+# --- класс 12: реестр ЕИСЖС как источник поиска -------------------------------
+
+
+def test_official_registry_card_creates_a_candidate_with_its_address() -> None:
+    """Хамовники 12 не попадали в кандидаты вовсе — их не приносила ни одна выдача."""
+    card = doc(
+        'Жилой комплекс «Хамовники 12» — проектная декларация',
+        "https://xn--80az8a.xn--d1aqf.xn--p1ai/lk/na-dom/2079406",
+        "Москва, 1-й переулок Тружеников, 12А. Застройщик COLDY. Срок ввода 2026",
+    )
+    candidates = extract_candidates([card])
+    assert [item.canonical_name for item in candidates] == ["Хамовники 12"]
+    assert candidates[0].address_attributable is True
+    assert candidates[0].extraction_confidence >= 0.85
+
+    entity = resolve_entities(candidates)[0]
+    resolver = ProjectGeoResolver(
+        FakeGeocoder({"Тружеников, 12А": point(55.7360, 37.5730, "1-й переулок Тружеников, 12А, район Хамовники, Москва")}),
+        FakeSearch(default=[]),
+        locality="Москва",
+        subject_signature=address_signature(SUBJECT),
+        locality_matches=LegacyService._locality_matches,
+    )
+    resolution = resolver.resolve(entity)
+    assert resolution.status == RESOLVED
+    assert resolution.address == "Москва, 1-й переулок Тружеников, 12А"
+
+
+def test_registry_card_without_a_project_name_creates_nothing() -> None:
+    """Заголовок карточки часто начинается с «Дом 1» — это не название проекта."""
+    card = doc(
+        "Дом 1 — объект строительства",
+        "https://xn--80az8a.xn--d1aqf.xn--p1ai/lk/na-dom/3333333",
+        "Москва, Ленинский проспект, 5",
+    )
+    assert extract_candidates([card]) == []
+
+
+def test_discovery_asks_the_registry_for_the_district() -> None:
+    queries = ServiceV6._discovery_queries(SUBJECT, "Москва", "Хамовники район")
+    assert any("site:наш.дом.рф" in query and "Хамовники" in query for query in queries), queries
+
+
+def test_elite_prices_quoted_in_millions_per_metre_are_read() -> None:
+    """На стенде цена была ровно у одного проекта из пяти: «млн» шаблон не знал."""
+    from market_search.official_price import OfficialPriceEnricher
+
+    assert VerifiedPriceEnricher._prices("от 1,5 млн ₽ за м²") == [1_500_000]
+    assert VerifiedPriceEnricher._prices("цена 3,3 млн руб./м²") == [3_300_000]
+    assert VerifiedPriceEnricher._prices("от 850 тыс. ₽ за м²") == [850_000]
+    # Официальная средняя читается тем же словарём чисел, а не своей копией.
+    assert OfficialPriceEnricher._extract_prices("Средняя цена за 1 м²: 1,2 млн ₽") == [1_200_000]
+
+
+def test_derived_price_is_marked_low_quality() -> None:
+    entity = resolve_entities(
+        extract_candidates(
+            [
+                doc(
+                    "Brodsky — купить квартиру",
+                    "https://www.cian.ru/zhiloy-kompleks-brodsky-6001001/",
+                    "Клубный дом",
+                )
+            ]
+        )
+    )[0]
+    page = doc(
+        "Brodsky — квартиры",
+        "https://www.cian.ru/zhiloy-kompleks-brodsky-6001001/",
+        "Квартира 120 м² — 250 млн ₽",
+    )
+    result = VerifiedPriceEnricher(FakeSearch(default=[page]), today=date(2026, 8, 10)).collect(
+        entity, "Москва"
+    )
+    assert result["price"]["verified"] is True
+    assert result["price"]["quality"] == "low"
+    assert result["price"]["observations"][0]["method"] == "derived_total_div_area"
+
+
+def test_cyrillic_and_latin_spelling_of_the_same_house_is_one_project() -> None:
+    """«Бродский» и «Brodsky» показывались двумя карточками в одном переулке."""
+    from market_search.normalize import same_project
+
+    assert same_project("Бродский", "Brodsky")
+    assert same_project("Тверской", "Tverskoy")
+    assert same_project("Савелий", "Saveliy")
+    # Свести всё подряд нельзя: разные бренды и очереди остаются разными.
+    assert not same_project("Мод", "Модерн")
+    assert not same_project("Петровский парк", "Петровский парк II")
+
+    docs = [
+        doc(
+            'Жилой комплекс «Бродский» — ЕИСЖС',
+            "https://xn--80az8a.xn--d1aqf.xn--p1ai/lk/na-dom/4004004",
+            "Москва, 1-й Тружеников пер., 16",
+            rank=1,
+        ),
+        doc(
+            "Brodsky — купить квартиру",
+            "https://www.cian.ru/zhiloy-kompleks-brodsky-6001001/",
+            "Москва, 1-й Тружеников переулок, 17",
+            rank=2,
+        ),
+    ]
+    entities = resolve_entities(extract_candidates(docs))
+    assert len(entities) == 1, [item.canonical_name for item in entities]
+
+
+def test_official_average_is_not_shown_as_an_asking_price() -> None:
+    """«201 429 ₽/м² цена предложения» в Хамовниках — подпись была неправдой."""
+    from market_search.ui_v6 import install as install_ui
+
+    class FakeCore:
+        PAGE = (
+            "<html><head></head><body>"
+            '<input id="apartment_price_th" type="number" value="500">'
+            "<button class=\"tab\" data-tab=\"report\" onclick=\"openTab('report',this)\">Отчёт</button>"
+            '<div id="report" class="panel"></div>'
+            "</body></html>"
+        )
+
+    core = FakeCore()
+    install_ui(core)
+    assert "official_domrf_fallback" in core.PAGE
+    assert "Официальная средняя ЕИСЖС" in core.PAGE
+    assert "в ориентир не идёт" in core.PAGE
+
+
+# --- класс 13: справочник как якорь и остатки застройщика ---------------------
+
+
+def test_registry_anchors_district_developer_and_sales_velocity(tmp_path: Path) -> None:
+    """Справочник знает то, что конвейер добывал из прозы, — и знает наверняка."""
+    import json
+
+    from market_search.registry import ProjectRegistry
+
+    directory = tmp_path / "registry"
+    directory.mkdir()
+    (directory / "2026-07.json").write_text(
+        json.dumps(
+            {
+                "source": "Продажи новостроек Москвы, июль 2026",
+                "projects": [
+                    {
+                        "name": "Фрунзенский",
+                        "developer": "Sminex",
+                        "okrug": "ЦАО",
+                        "district": "Хамовники",
+                        "sales": {"2026-06": 1, "2026-07": 3},
+                    },
+                    {
+                        "name": "Дом Дау",
+                        "developer": "Сумма Элементов",
+                        "okrug": "ЦАО",
+                        "district": "Пресненский",
+                        "sales": {"2026-06": 4, "2026-07": 4},
+                    },
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    registry = ProjectRegistry.load(directory)
+    assert len(registry) == 2
+    assert [item.name for item in registry.by_district("Хамовники")] == ["Фрунзенский"]
+
+    # Полная вывеска находит короткую запись справочника.
+    found = registry.find("Клубный квартал Фрунзенский")
+    assert found is not None and found.developer == "Sminex"
+
+    velocity = found.velocity()
+    assert velocity["units_per_month"] == 3
+    assert velocity["previous_units_per_month"] == 1
+    assert velocity["change_pct"] == 200.0
+    assert velocity["quality"] == "registry"
+
+
+def test_missing_registry_is_not_an_error(tmp_path: Path) -> None:
+    from market_search.registry import ProjectRegistry
+
+    registry = ProjectRegistry.load(tmp_path / "нет-такого-каталога")
+    assert registry.available is False
+    assert registry.by_district("Хамовники") == []
+    assert registry.find("Хамовники 12") is None
+
+
+def test_sales_report_rows_are_parsed_by_okrug_anchor() -> None:
+    """Нумерация в отчёте рвётся, колонки не выровнены — якорем служит округ."""
+    from market_search.registry import parse_sales_report
+
+    lines = [
+        "№", "Проект", "Девелопер / Застройщик", "Округ", "Район", "июн.26", "июл.26", "Изм.",
+        "1", "Лучи", "ЛСР", "ЗАО", "Солнцево", "112", "177", "58,0%",
+        "2", "С5", "MR Group", "САО", "Аэропорт", "старт", "141",
+    ]
+    rows = parse_sales_report(lines, months=["2026-06", "2026-07"], source="отчёт")
+    assert [row["name"] for row in rows] == ["Лучи", "С5"]
+    assert rows[0]["developer"] == "ЛСР"
+    assert rows[0]["district"] == "Солнцево"
+    assert rows[0]["sales"] == {"2026-06": 112, "2026-07": 177}
+    # «старт» — не ноль продаж, а отсутствие данных за месяц.
+    assert rows[1]["sales"] == {"2026-07": 141}
+
+
+def test_price_impossible_next_to_peers_is_dropped() -> None:
+    """Диапазон на всю Москву пропускает то, что видно рядом с соседями.
+
+    Живая выдача по Саввинской набережной: четыре элитных соседа по 1,85–3,56
+    млн ₽/м² и два числа порядком ниже — River House 158 850 и Фрунзенский
+    175 000. Оба внутри допустимого 80 тыс — 5 млн, и оба занижали ориентир.
+    """
+    from market_search.service_v6 import MarketDiscoveryService
+
+    def row(name: str, value: int) -> dict:
+        return {
+            "name": name,
+            "price_verified": True,
+            "eligible_analogue": True,
+            "geo_status": "resolved",
+            "market_price": {
+                "available": True,
+                "verified": True,
+                "price_per_sqm": value,
+                "observations": [{"url": f"https://example.test/{value}"}],
+            },
+        }
+
+    rows = [
+        row("ДОМ XXII", 2_795_312),
+        row("River House", 158_850),
+        row("Клубный дом Саввинская 17", 2_558_320),
+        row("Коллекция Лужники", 3_561_935),
+        row("Фрунзенский", 175_000),
+        row("Allegoria", 1_852_459),
+    ]
+    MarketDiscoveryService._reject_price_outliers(rows)
+
+    kept = {item["name"] for item in rows if item["price_verified"]}
+    assert kept == {"ДОМ XXII", "Клубный дом Саввинская 17", "Коллекция Лужники", "Allegoria"}
+    dropped = [item for item in rows if item["name"] == "River House"][0]
+    assert dropped["eligible_analogue"] is False
+    assert dropped["market_price"]["basis"] == "rejected_outlier"
+    assert dropped["rejected_price_observations"][0]["reason"] == "price_far_from_peers"
+
+
+def test_full_signage_and_its_short_form_are_one_entity() -> None:
+    """«Кутузов Сити» и «Клубный проект Кутузов Сити» — один проект.
+
+    Слияние сущностей спрашивало только похожесть строк, а она вхождения не
+    видит: по буквам эти два имени далеко, и на Гродненской улице оба доехали
+    до выдачи отдельными карточками.
+    """
+    entities = resolve_entities(
+        extract_candidates(
+            [
+                doc(
+                    "Кутузов Сити — купить квартиру",
+                    "https://www.novostroy.ru/buildings/kutuzov-city/",
+                    "Гродненская улица, вл18",
+                ),
+                doc(
+                    "Клубный проект Кутузов Сити — цены",
+                    "https://www.cian.ru/zhiloy-kompleks-klubnyy-proekt-kutuzov-siti-12345/",
+                    "Гродненская улица, вл. 18",
+                ),
+            ]
+        )
+    )
+    assert len(entities) == 1, [item.canonical_name for item in entities]
+    assert entities[0].canonical_name == "Клубный проект Кутузов Сити"
+
+
+def test_project_at_the_subject_address_is_the_subject() -> None:
+    """Стройка на самом участке — не аналог, как бы она ни называлась.
+
+    На Гродненской, 18 объект оценки нашёл сам себя дважды: «Кутузов Сити» и
+    «Клубный проект Кутузов Сити», оба в нуле километров, оба по вл18. Проверка
+    по имени такое не ловит — вывеска адреса не содержит.
+    """
+    from market_search.geo_resolution import address_signature
+
+    subject = address_signature("Москва, Гродненская 18")
+    assert subject == "гродненская#18"
+    assert address_signature("Москва, Гродненская улица, вл18") == subject
+    assert address_signature("Москва, улица Гродненская, вл. 18") == subject
+    assert address_signature("Москва, Верейская улица, вл12") != subject
+
+
+def test_official_benchmark_is_a_separate_number() -> None:
+    """Второй ориентир считается, но никогда не смешивается с первым.
+
+    На Гродненской улице цен предложения нет ни у одного из четырёх проектов, а
+    официальные средние ЕИСЖС известны у всех. Без второго ориентира выдача
+    остаётся вовсе без числа. Решение владельца от 13.08.2026.
+    """
+    from market_search.recommendation import market_recommendation, official_recommendation
+
+    def row(name: str, value: int, basis: str, distance: float) -> dict:
+        return {
+            "name": name,
+            "within_radius": True,
+            "geo_status": "resolved",
+            "price_verified": True,
+            "confirmed": True,
+            "distance_km": distance,
+            "market_price": {"available": True, "price_per_sqm": value, "basis": basis},
+        }
+
+    official_only = [
+        row("МАНИФЕСТ", 143_493, "official_domrf_fallback", 0.47),
+        row("Кунцево", 496_311, "official_domrf_fallback", 0.473),
+        row("Дом на Барвихинской", 404_524, "official_domrf_fallback", 2.893),
+    ]
+    assert market_recommendation(official_only) is None
+    official = official_recommendation(official_only)
+    assert official is not None
+    assert official["basis"] == "official_domrf_average"
+    assert official["analogue_count"] == 3
+
+    # Там, где цена предложения есть, второй ориентир её не разбавляет.
+    mixed = [*official_only, row("ДОМ XXII", 2_795_312, "verified_project_page_asking", 0.2)]
+    asking = market_recommendation(mixed)
+    assert asking is not None
+    assert asking["basis"] == "asking"
+    assert asking["projects"] == ["ДОМ XXII"]
+
+
+def test_official_average_is_not_counted_as_a_verified_price() -> None:
+    """Счётчик обязан считать то же, что идёт в ориентир.
+
+    На Гродненской улице в шапке стояло «Проверенная цена: 3 / 4» при трёх
+    карточках со строкой «цена предложения не найдена» и официальной средней
+    ЕИСЖС под ней.
+    """
+    from market_search.service_v6 import MarketDiscoveryService
+
+    rows = [
+        {
+            "name": "МАНИФЕСТ",
+            "price_verified": True,
+            "eligible_analogue": True,
+            "market_price": {"verified": True, "basis": "official_domrf_fallback"},
+        },
+        {
+            "name": "Кунцево",
+            "price_verified": True,
+            "eligible_analogue": True,
+            "market_price": {"verified": True, "basis": "official_domrf_fallback"},
+        },
+        {
+            "name": "ДОМ XXII",
+            "price_verified": True,
+            "eligible_analogue": True,
+            "market_price": {"verified": True, "basis": "verified_project_page_asking"},
+        },
+    ]
+    counted = [row for row in MarketDiscoveryService._offer_priced(rows) if row["eligible_analogue"]]
+    assert [row["name"] for row in counted] == ["ДОМ XXII"]
+
+
+def test_developer_page_is_not_an_official_project_card() -> None:
+    """Реестр застройщиков на том же хосте и тоже оканчивается числом.
+
+    На Гродненской улице «Свои» подтвердились страницей компании
+    /единый-реестр-застройщиков/застройщик/16114 и получили адрес и класс.
+    """
+    from market_search.yandex_search import official_cards_from_docs
+
+    developer = doc(
+        "Свои — застройщик",
+        "https://наш.дом.рф/сервисы/единый-реестр-застройщиков/застройщик/16114",
+        "Единый реестр застройщиков",
+    )
+    house = doc(
+        "ЖК Кунцево — объект",
+        "https://наш.дом.рф/сервисы/каталог-новостроек/объект/128341",
+        "Можайское шоссе, 2",
+    )
+    cards = official_cards_from_docs([developer, house])
+    assert [card["object_id"] for card in cards] == [128341]
+
+
+def test_official_average_is_not_a_peer_price() -> None:
+    """Средняя ЕИСЖС отстаёт от прайса и соседом по цене быть не может.
+
+    Живая выдача по Гродненской улице: у МАНИФЕСТа и Дома на Барвихинской
+    цены предложения нет, показана официальная средняя 143 493 и 404 524 ₽/м².
+    Медиана «соседей» набралась из них и убила верную цену Кунцево 496 311.
+    """
+    from market_search.service_v6 import MarketDiscoveryService
+
+    def official(name: str, value: int) -> dict:
+        return {
+            "name": name,
+            "price_verified": True,
+            "eligible_analogue": True,
+            "market_price": {
+                "verified": True,
+                "basis": "official_domrf_fallback",
+                "price_per_sqm": value,
+            },
+        }
+
+    rows = [
+        official("МАНИФЕСТ", 143_493),
+        official("Дом на Барвихинской", 404_524),
+        {
+            "name": "Кунцево",
+            "price_verified": True,
+            "eligible_analogue": True,
+            "market_price": {
+                "verified": True,
+                "basis": "verified_project_page_asking",
+                "price_per_sqm": 496_311,
+                "observations": [{"url": "https://example.test/kuncevo"}],
+            },
+        },
+    ]
+    MarketDiscoveryService._reject_price_outliers(rows)
+
+    kept = [item["name"] for item in rows if item["price_verified"]]
+    assert "Кунцево" in kept, "цена предложения снята сравнением с официальной средней"
+
+
+def test_lone_price_is_checked_against_its_own_official_card() -> None:
+    """Двух цен для голосования мало — якорь берётся из карточки самого проекта.
+
+    На улице Мишина «Клубный дом Юннаты» получил 4 566 681 ₽/м² при
+    бизнес-классе, а второй ценой в выборке была «Симфония 34» с 431 753.
+    """
+    from market_search.service_v6 import MarketDiscoveryService
+
+    class FakeOfficial:
+        def project_price(self, name, locality, cards):
+            return {"available": True, "price_per_sqm": 452_000}
+
+    service = MarketDiscoveryService.__new__(MarketDiscoveryService)
+    service.official_prices = FakeOfficial()
+
+    rows = [
+        {
+            "name": name,
+            "price_verified": True,
+            "eligible_analogue": True,
+            "official_cards": [{"url": "https://наш.дом.рф/card"}],
+            "market_price": {
+                "verified": True,
+                "basis": "verified_project_page_asking",
+                "price_per_sqm": value,
+                "observations": [{"url": f"https://example.test/{value}"}],
+            },
+        }
+        for name, value in (("Клубный дом Юннаты", 4_566_681), ("Симфония 34", 431_753))
+    ]
+    service._reject_prices_far_from_official(rows, "Москва")
+
+    assert rows[0]["price_verified"] is False
+    assert "официальной средней ЕИСЖС" in rows[0]["market_price"]["reason"]
+    assert rows[1]["price_verified"] is True
+
+
+def test_small_sample_keeps_its_prices() -> None:
+    """Две цены — не выборка: сравнивать не с чем, и трогать их нельзя."""
+    from market_search.service_v6 import MarketDiscoveryService
+
+    rows = [
+        {
+            "name": name,
+            "price_verified": True,
+            "eligible_analogue": True,
+            "market_price": {"verified": True, "price_per_sqm": value, "observations": []},
+        }
+        for name, value in (("A", 200_000), ("B", 3_000_000))
+    ]
+    MarketDiscoveryService._reject_price_outliers(rows)
+    assert all(item["price_verified"] for item in rows)
+
+
+def test_page_with_prices_of_many_lots_gives_no_price() -> None:
+    """Страница — не сниппет: медиана по всем её числам не принадлежит никому.
+
+    На Гродненской у «Кунцево» вышло 1 473 851 ₽/м² при пяти наблюдениях от
+    251 212 до 1 586 948. Разброс в шесть раз внутри одного проекта невозможен —
+    это перечень чужих лотов, а не прайс.
+    """
+    from market_search.price_evidence import VerifiedPriceEnricher
+
+    catalogue = (
+        "Кунцево. Квартира 45 м² — 251 212 ₽/м². Пентхаус — 1 586 948 ₽/м². "
+        "Соседний лот 980 000 ₽ за м²."
+    )
+    assert VerifiedPriceEnricher._page_price(catalogue) == (None, "page_lists_unrelated_prices")
+
+    # «от N ₽/м²» — цена входа, названная о проекте целиком, и она главнее.
+    with_entry = "ЖК Кунцево: цены от 251 212 ₽/м². Пентхаус — 1 586 948 ₽/м²."
+    assert VerifiedPriceEnricher._page_price(with_entry) == (251_212, "entry_price_from_page")
+
+    # Согласованный прайс одного проекта проходит.
+    consistent = "Студии 420 000 ₽/м², двухкомнатные 480 000 ₽/м²."
+    value, method = VerifiedPriceEnricher._page_price(consistent)
+    assert method == "median_from_page" and 420_000 <= value <= 480_000
+
+    assert VerifiedPriceEnricher._page_price("Никаких цен здесь нет") == (
+        None,
+        "page_without_price",
+    )
+
+
+def _pdf_with(cmap: str, content: str) -> bytes:
+    import zlib
+
+    def stream(text: str) -> bytes:
+        return b"stream\n" + zlib.compress(text.encode("latin-1")) + b"\nendstream\n"
+
+    return b"%PDF-1.4\n" + stream(cmap) + stream(content) + b"%%EOF\n"
+
+
+def test_glyph_without_a_letter_is_visible_not_dropped() -> None:
+    """Пропуск неопознанного глифа неотличим от исправного разбора.
+
+    В июльском отчёте карта ToUnicode не знала «ё», и «Мнёвники» молча стали
+    «Мнвниками»: справочник выглядел целым, а имя больше ни с чем не совпадало.
+    """
+    from market_search.registry_import import UNKNOWN_GLYPH, pdf_lines, unresolved_glyphs
+
+    raw = _pdf_with(
+        "beginbfchar\n<0001> <041C>\n<0002> <043D>\n<0003> <0432>\n"
+        "<0004> <0438>\n<0005> <043A>\nendbfchar\n",
+        "BT [<00010002031800030002000400050004>] TJ ET\n",
+    )
+    assert pdf_lines(raw) == [f"Мн{UNKNOWN_GLYPH}вники"]
+    assert unresolved_glyphs(raw) == {"0318": f"Мн{UNKNOWN_GLYPH}вники"}
+
+    # Букву можно назвать руками, когда её не знает и шрифт.
+    assert pdf_lines(raw, glyphs={"0318": "ё"}) == ["Мнёвники"]
+    assert unresolved_glyphs(raw, glyphs={"0318": "ё"}) == {}
+
+
+def test_font_glyph_map_is_not_taken_on_faith() -> None:
+    """Карта шрифта годится, только пока код в потоке — это номер глифа."""
+    from market_search.registry_import import _font_glyph_map
+
+    raw = _pdf_with("beginbfchar\n<0001> <041C>\nendbfchar\n", "BT [<0001>] TJ ET\n")
+    # Шрифта в файле нет — второй карты тоже нет, поведение прежнее.
+    assert _font_glyph_map(raw, {"0001": "М"}) == {}
+
+
+def test_bundled_registry_kept_every_letter() -> None:
+    """Выгрузка, уезжающая с кодом, не должна нести следов потерянных букв."""
+    import json
+
+    from market_search.registry import ProjectRegistry
+    from market_search.registry_import import UNKNOWN_GLYPH
+
+    path = ProjectRegistry.bundled_directory() / "moscow-2026-07.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    rows = payload["projects"]
+    assert rows, "базовая выгрузка справочника пуста"
+    assert not [row for row in rows if UNKNOWN_GLYPH in json.dumps(row, ensure_ascii=False)]
+    # «ё» встречается в московских названиях; её отсутствие целиком — признак потери.
+    assert any("ё" in row["name"] for row in rows)
+
+
+def test_developer_stock_in_a_completed_building_is_a_valid_asking_price() -> None:
+    """Хамовники 12, Саввинская 27, Brodsky сданы — их цена лежит в объявлениях."""
+    from market_search.price_evidence import offer_market
+
+    assert offer_market("Квартиры от застройщика, 3 300 000 ₽/м²") == "primary"
+    assert offer_market("Вторичный рынок, последние лоты от застройщика") == "developer_stock"
+    assert offer_market("Вторичный рынок. Квартира от собственника") == "resale"
+    assert offer_market("Продажа от агентства, вторичка") == "resale"
+
+    entity = resolve_entities(
+        extract_candidates(
+            [
+                doc(
+                    "Саввинская 27 — квартиры",
+                    "https://www.novostroy.ru/buildings/savvinskaya-27/",
+                    "Дом сдан",
+                )
+            ]
+        )
+    )[0]
+    page = doc(
+        "Саввинская 27 — квартиры",
+        "https://www.novostroy.ru/buildings/savvinskaya-27/",
+        "Вторичный рынок, последние лоты от застройщика. от 2 256 990 ₽ за м²",
+    )
+    result = VerifiedPriceEnricher(FakeSearch(default=[page]), today=date(2026, 8, 11)).collect(
+        entity, "Москва"
+    )
+    assert result["price"]["verified"] is True
+    assert result["price"]["price_per_sqm"] == 2_256_990
+    assert result["price"]["markets"] == ["developer_stock"]
+    assert result["price"]["quality"] == "low"
+
+
+def test_bundled_registry_ships_with_the_code() -> None:
+    """Каталог данных в контейнере перекрывается томом — справочник едет с кодом."""
+    from market_search.registry import ProjectRegistry
+
+    registry = ProjectRegistry.load(ProjectRegistry.bundled_directory())
+    assert registry.available, "встроенная выгрузка должна быть в пакете"
+    assert len(registry) > 100
+    khamovniki = registry.by_district("Хамовники")
+    assert khamovniki, "в справочнике должны быть проекты Хамовников"
+    assert all(item.developer for item in khamovniki)
+    # Отчёт про ДДУ, поэтому сданных домов в нём нет — это не дефект справочника,
+    # а его граница: их приносит поиск.
+    assert registry.find("Хамовники 12") is None
+
+
+def test_registry_service_uses_it_as_a_discovery_anchor(tmp_path: Path, monkeypatch) -> None:
+    service = ServiceV6(tmp_path)
+    assert service.registry.available
+
+    card = doc(
+        'Жилой комплекс «Дом XXII» — ЕИСЖС',
+        "https://xn--80az8a.xn--d1aqf.xn--p1ai/lk/na-dom/2020202",
+        "Москва, Погодинская улица, 22. Элитный жилой комплекс",
+    )
+
+    class OnlyCards:
+        def search(self, query: str, *, groups_on_page: int = 10):
+            return [card] if "Дом XXII" in query or "Дом ХХII" in query else []
+
+    monkeypatch.setattr(service, "search", OnlyCards())
+    monkeypatch.setattr(service.verified_prices, "search", OnlyCards())
+    monkeypatch.setattr(
+        service,
+        "geocoder",
+        FakeGeocoder(
+            {
+                "Саввинская набережная, 25": point(
+                    55.7333, 37.5638, "Саввинская набережная, 25, район Хамовники, Москва"
+                ),
+                "Погодинская улица, 22": point(
+                    55.7288, 37.5652, "Погодинская улица, 22, район Хамовники, Москва"
+                ),
+            }
+        ),
+    )
+    result = service.discover(
+        address=SUBJECT, latitude=None, longitude=None, radius_km=3.0, limit=10
+    )
+    assert result["diagnostics"]["registry_seeded"] >= 5, "район должен подмешаться из справочника"
+    names = [row["name"] for row in result["projects"]]
+    assert "Дом XXII" in names
+    row = next(item for item in result["projects"] if item["name"] == "Дом XXII")
+    assert row["developer"] == "Донстрой"
+    assert row["district"] == "Хамовники"
+    assert row["sales"]["quality"] == "registry"
+
+
+# --- класс 14: цена со страницы, когда сниппет её не дал ----------------------
+
+
+def test_aggregators_that_block_robots_are_never_fetched() -> None:
+    """Открывать ЦИАН и Яндекс бесполезно: цена там рисуется скриптом."""
+    from market_search.page_price import fetchable
+
+    assert not fetchable("https://www.cian.ru/zhiloy-kompleks-brodsky-6001001/")
+    assert not fetchable("https://realty.yandex.ru/moskva/kupit/novostrojka/x-1/")
+    assert not fetchable("https://domclick.ru/complex/x-1/")
+    assert fetchable("https://www.novostroy.ru/buildings/savvinskaya-27/")
+    assert fetchable("https://brodsky.example/projects/brodsky/")
+
+
+def test_page_fetcher_is_bounded_cached_and_silent_on_failure(tmp_path: Path) -> None:
+    """Худший исход дозагрузки обязан совпадать с прежним поведением."""
+    from market_search import page_price
+    from market_search.http import RemoteServiceError
+    from market_search.page_price import PageFetcher
+
+    calls: list[str] = []
+    original = page_price.request_bytes
+
+    def fake_request(url, **kwargs):
+        calls.append(url)
+        return "<html><head><title>Brodsky</title></head><body>от 1,5 млн ₽ за м²</body></html>".encode(
+            "utf-8"
+        )
+
+    fetcher = PageFetcher(tmp_path / "pages", budget=1)
+    page_price.request_bytes = fake_request
+    try:
+        first = fetcher.get("https://brodsky.example/projects/brodsky/")
+        assert first is not None and first.title == "Brodsky"
+        # Второй раз берётся из кэша, обращения к сети нет.
+        again = fetcher.get("https://brodsky.example/projects/brodsky/")
+        assert again is not None and len(calls) == 1
+        # Потолок исчерпан — молча ничего, а не исключение.
+        assert fetcher.get("https://other.example/projects/x/") is None
+        assert any("потолок" in item["reason"] for item in fetcher.skipped)
+
+        def failing(url, **kwargs):
+            raise RemoteServiceError("403 Forbidden")
+
+        page_price.request_bytes = failing
+        broken = PageFetcher(tmp_path / "pages2", budget=3)
+        assert broken.get("https://blocked.example/x/") is None
+        assert broken.diagnostics()["pages_fetched"] == 0
+    finally:
+        page_price.request_bytes = original
+
+
+def test_price_is_taken_from_the_page_when_the_snippet_had_none(tmp_path: Path) -> None:
+    from market_search import page_price
+    from market_search.page_price import PageFetcher
+
+    entity = resolve_entities(
+        extract_candidates(
+            [
+                doc(
+                    "Саввинская 27 — квартиры",
+                    "https://www.novostroy.ru/buildings/savvinskaya-27/",
+                    "Дом сдан. Level Group",
+                )
+            ]
+        )
+    )[0]
+    silent = doc(
+        "Саввинская 27 — квартиры",
+        "https://www.novostroy.ru/buildings/savvinskaya-27/",
+        "Клубный дом на Саввинской набережной",  # цены в сниппете нет
+    )
+
+    original = page_price.request_bytes
+    page_price.request_bytes = lambda url, **kwargs: (
+        "<html><head><title>Саввинская 27 — купить квартиру</title></head>"
+        "<body><div>Квартиры от застройщика от 2 256 990 ₽ за м²</div></body></html>"
+    ).encode("utf-8")
+    try:
+        enricher = VerifiedPriceEnricher(
+            FakeSearch(default=[silent]),
+            today=date(2026, 8, 11),
+            pages=PageFetcher(tmp_path / "pages", budget=5),
+        )
+        result = enricher.collect(entity, "Москва")
+    finally:
+        page_price.request_bytes = original
+
+    price = result["price"]
+    assert price["verified"] is True
+    assert price["price_per_sqm"] == 2_256_990
+    # Со страницы обычно снимается «от N» — нижняя граница, а не средняя.
+    assert price["quality"] == "low"
+    assert price["observations"][0]["method"].endswith("_from_page")
+
+
+def test_page_of_another_project_does_not_donate_its_price(tmp_path: Path) -> None:
+    from market_search import page_price
+    from market_search.page_price import PageFetcher
+
+    entity = resolve_entities(
+        extract_candidates(
+            [
+                doc(
+                    "Саввинская 27 — квартиры",
+                    "https://www.novostroy.ru/buildings/savvinskaya-27/",
+                    "Дом сдан",
+                )
+            ]
+        )
+    )[0]
+    original = page_price.request_bytes
+    page_price.request_bytes = lambda url, **kwargs: (
+        "<html><head><title>Прайм Парк — купить квартиру</title></head>"
+        "<body>от 900 000 ₽ за м²</body></html>"
+    ).encode("utf-8")
+    try:
+        enricher = VerifiedPriceEnricher(
+            FakeSearch(
+                default=[
+                    doc(
+                        "Саввинская 27",
+                        "https://www.novostroy.ru/buildings/savvinskaya-27/",
+                        "Клубный дом",
+                    )
+                ]
+            ),
+            today=date(2026, 8, 11),
+            pages=PageFetcher(tmp_path / "pages", budget=5),
+        )
+        result = enricher.collect(entity, "Москва")
+    finally:
+        page_price.request_bytes = original
+    assert result["price"]["available"] is False
+
+
+# --- класс 15: находки Мишина, 46 ---------------------------------------------
+
+
+def test_a_price_is_not_a_project_name() -> None:
+    """«979 640 ₽» доехало до карантина как жилой комплекс."""
+    assert not looks_like_project_name("979 640 ₽")
+    assert not looks_like_project_name("3,5 млн ₽")
+    assert not looks_like_project_name("от 250 000 руб")
+    assert looks_like_project_name("Петровский парк II")
+    assert looks_like_project_name("Мишина 46")
+
+
+def test_business_park_is_commercial_like_a_business_centre() -> None:
+    from market_search.candidates_v6 import document_is_residential
+
+    assert not document_is_residential(
+        doc("БИЗНЕС ПАРК САВЕЛОВСКИЙ", "https://example.ru/p/1", "Офисы и коворкинги")
+    )
+    assert not document_is_residential(
+        doc("Технопарк Мичуринский", "https://example.ru/p/2", "Аренда офисов")
+    )
+
+
+def test_the_subject_site_is_not_its_own_comparable(tmp_path: Path) -> None:
+    """На Мишина, 46 каталог назвал адрес участка, и он стал кандидатом."""
+    service = ServiceV6(tmp_path)
+    entity = resolve_entities(
+        extract_candidates(
+            [
+                doc(
+                    "Новостройки Савёловского района",
+                    "https://www.cian.ru/novostroyki-savelovskiy/",
+                    "Мишина 46 · Петровский парк II",
+                )
+            ]
+        )
+    )
+    subject_row = next(item for item in entity if item.canonical_name == "Мишина 46")
+    other = next(item for item in entity if item.canonical_name != "Мишина 46")
+    assert service._is_subject_itself(subject_row, "Москва, ул. Мишина, 46", "")
+    assert not service._is_subject_itself(other, "Москва, ул. Мишина, 46", "")
+
+
+def test_developer_names_are_rejected_by_the_registry_not_by_guesswork() -> None:
+    """«Гранель» ни на что не оканчивается — списком суффиксов её не поймать."""
+    from market_search.registry import ProjectRegistry
+
+    registry = ProjectRegistry.load(ProjectRegistry.bundled_directory())
+    assert registry.is_developer_name("Гранель")
+    assert registry.is_developer_name("Донстрой")
+    assert registry.is_developer_name("Sminex")
+    # Проекты застройщиками не считаются.
+    assert not registry.is_developer_name("Лучи")
+    assert not registry.is_developer_name("Дом XXII")
+    assert not registry.is_developer_name("Хамовники 12")
