@@ -11,7 +11,16 @@ ROOT=${DEVELOPAID_ROOT:-$HOME/plato}
 ENV_FILE="$ROOT/.env"
 DATA_DIR="$ROOT/data/market-preview"
 PORT=${MARKET_PREVIEW_PORT:-8081}
-CHECK_PORT=${MARKET_PREVIEW_CHECK_PORT:-18081}
+# Проверочный порт по умолчанию не задан числом нарочно. Раньше здесь стояло
+# 18081 — постоянный адрес соседнего стенда `developaid-ia-preview`
+# (`deploy-ia-preview.sh`, PORT=18081). Проба падала на «port is already
+# allocated», и это читалось как мусор от прошлой выкладки: чужой рабочий
+# контейнер сняли командой «расчистить порт». На машине живут несколько
+# превью разом, поэтому свободный порт выбирается на месте, а занятый
+# называет своего владельца — снимать чужое нельзя.
+CHECK_PORT=${MARKET_PREVIEW_CHECK_PORT:-}
+CHECK_PORT_FROM=18090
+CHECK_PORT_TO=18109
 STAGING_NAME=developaid-market-preview-staging
 FINAL_NAME="developaid-market-preview-${EXPECT_COMMIT:-$(date +%s)}-$(date +%s)"
 
@@ -23,6 +32,34 @@ YC_REGISTRY_ID=${YC_REGISTRY_ID:-$(grep -E '^YC_REGISTRY_ID=' "$ENV_FILE" 2>/dev
 IMAGE="cr.yandex/${YC_REGISTRY_ID}/developaid:${TAG}"
 
 say() { printf '%s  %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1"; }
+
+# Кто держит порт: имя контейнера, «процесс на хосте» или ничего.
+port_owner() {
+  probe=$1
+  name=$(docker ps --filter "publish=${probe}" --format '{{.Names}}' 2>/dev/null | head -1)
+  if [ -n "$name" ]; then
+    echo "$name"
+    return 0
+  fi
+  if command -v ss >/dev/null 2>&1 &&
+     ss -ltn 2>/dev/null | awk '{print $4}' | grep -qE "[:.]${probe}\$"; then
+    echo "процесс на хосте"
+    return 0
+  fi
+  return 1
+}
+
+pick_check_port() {
+  probe=$CHECK_PORT_FROM
+  while [ "$probe" -le "$CHECK_PORT_TO" ]; do
+    if ! port_owner "$probe" >/dev/null 2>&1; then
+      echo "$probe"
+      return 0
+    fi
+    probe=$((probe + 1))
+  done
+  return 1
+}
 
 registry_login() {
   token=$(curl -sf -H 'Metadata-Flavor: Google' \
@@ -94,6 +131,23 @@ restore_old() {
     docker start "$OLD_ID" >/dev/null 2>&1 || true
   fi
 }
+
+# Порт пробы выясняется до остановки прежнего стенда: иначе занятый порт
+# валит выкладку уже после того, как рабочий стенд снят.
+if [ -n "$CHECK_PORT" ]; then
+  if owner=$(port_owner "$CHECK_PORT"); then
+    echo "Проверочный порт ${CHECK_PORT} занят: ${owner}." >&2
+    echo "Это чужой стенд, а не мусор прошлой выкладки — снимать его нельзя." >&2
+    echo "Задайте свободный: MARKET_PREVIEW_CHECK_PORT=<порт> $0 $TAG ${EXPECT_COMMIT}" >&2
+    exit 1
+  fi
+else
+  CHECK_PORT=$(pick_check_port) || {
+    echo "Свободного проверочного порта в ${CHECK_PORT_FROM}–${CHECK_PORT_TO} нет." >&2
+    echo "Занятые: $(docker ps --format '{{.Names}} {{.Ports}}' | tr '\n' ';')" >&2
+    exit 1
+  }
+fi
 
 say "Скачивание ${IMAGE}."
 registry_login
