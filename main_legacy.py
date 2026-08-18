@@ -72,19 +72,57 @@ SOCIAL_MODES_PLACEHOLDER = "__DEVELOPAID_SOCIAL_MODES__"
 # а свод начнёт считать средние по разделам, которых уже нет.
 FEEDBACK_FORM_PLACEHOLDER = "__DEVELOPAID_FEEDBACK_FORM__"
 
-# Оценки просим по разделам, а не «интерфейс вообще»: из общей четвёрки не
-# следует, что чинить. Ключ уходит в журнал и в свод, подпись — на страницу.
-FEEDBACK_BLOCKS: list[list[str]] = [
-    ["site", "Участок и ТЭП", "поиск, кадастр, нормативный расчёт"],
-    ["inputs", "Вводные", "понятность полей, хватает ли их"],
-    ["economics", "Отчёт: экономика", "выручка, расходы, прибыль"],
-    ["finance", "Отчёт: финансирование", "БРИДЖ, ПФ, LLCR"],
-    ["verdict", "Выводы и карточка решения", "вердикт, цена входа"],
-    ["export", "PDF и выгрузка модели", ""],
-    ["platon", "Платон Сергеевич", ""],
-    ["ui", "Интерфейс в целом", ""],
-    ["clarity", "Интуитивная простота", "не пришлось ли гадать"],
+# Анкета: разделы с подпунктами и комментарием к каждому (структура владельца,
+# 17.08.2026). Плоский список из девяти строк не годился: «Участок» — это и
+# ввод адреса, и расчёт ТЭП, и очерёдность, и низкая оценка разделу не говорит,
+# что из этого чинить. Отчёт, PDF и книга оцениваются по критериям, а не одним
+# баллом: «красиво» ничего не значит, а «отправил бы банку» значит всё.
+FEEDBACK_GROUPS: list[list[Any]] = [
+    ["site", "Участок", [
+        ["site_address", "Ввод адреса и кадастра", ""],
+        ["site_egrn", "Сведения ЕГРН и карта", ""],
+        ["site_tep", "Расчёт ТЭП", ""],
+        ["site_tep_edit", "Редактирование ТЭП", ""],
+        ["site_phasing", "Очерёдность", ""],
+    ]],
+    ["inputs", "Вводные", [
+        ["inputs_presets", "Предустановки и класс проекта", ""],
+        ["inputs_coverage", "Набор параметров", "хватает ли их"],
+        ["inputs_scenarios", "Сценарии", ""],
+        ["inputs_clarity", "Понятность полей", ""],
+    ]],
+    ["report", "Отчёт на экране", [
+        ["report_completeness", "Полнота информации", ""],
+        ["report_metrics", "Набор метрик", ""],
+        ["report_clarity", "Простота восприятия", ""],
+        # Метрики могут быть полными, восприятие простым, а человек результату
+        # всё равно не верит. Это надо знать раньше всего остального.
+        ["report_trust", "Доверие к цифрам", ""],
+    ]],
+    ["pdf", "PDF-отчёт", [
+        ["pdf_completeness", "Полнота", ""],
+        ["pdf_clarity", "Простота восприятия", ""],
+        ["pdf_shareable", "Готовность показать банку или партнёру", ""],
+    ]],
+    ["excel", "Excel-модель", [
+        # Первой строкой: книгу отдают живой ради того, чтобы её проверили.
+        ["excel_correct", "Правильность расчёта", ""],
+        ["excel_formulas", "Прозрачность формул", ""],
+        ["excel_edit", "Удобство правки", ""],
+    ]],
+    ["platon", "Платон Сергеевич", [
+        ["platon_useful", "Польза ответов", ""],
+        ["platon_clarity", "Понятность", ""],
+    ]],
+    ["general", "Общее", [
+        ["general_ui", "Интерфейс", ""],
+        ["general_obvious", "Понятно без объяснений", ""],
+    ]],
 ]
+
+# Плоский список подпунктов — по нему сверяются пришедшие оценки.
+FEEDBACK_ITEMS: dict[str, str] = {
+    item[0]: item[1] for group in FEEDBACK_GROUPS for item in group[2]}
 
 # Профиль — два поля списком. Печатать ничего не нужно: анкету заполняют между
 # делом, и каждое поле ввода стоит доли ответивших.
@@ -3397,6 +3435,7 @@ class LandLookupRequest(BaseModel):
 @app.post("/land/lookup")
 def land_lookup(req: LandLookupRequest) -> dict[str, Any]:
     """Сведения ЕГРН по кадастровому номеру, адресу или координатам — по всей России."""
+    usage_track("land", surface="site", text=str(getattr(req, "query", "") or "")[:120])
     # Интерфейс модели открыт браузером у этого же сервера и зовёт этот метод
     # относительной ссылкой. Если до НСПД отсюда не достучаться, отвечать надо
     # не ошибкой, а запросом к серверу, который достучаться может.
@@ -14726,6 +14765,8 @@ async def report_pdf(request: Request) -> Response:
     # с собой: с сайта он доступен после входа через Telegram (мягкий гейт).
     _require_web_access(str(payload.get("session") or ""),
                         str(payload.get("access_key") or ""), "PDF-отчёт")
+    usage_track("pdf", surface="site",
+                chat_id=_web_identity_chat_id(str(payload.get("session") or "")))
     # Один расчёт на обе поверхности. Правило применили к боту и забыли про
     # сайт: бот пересчитывал модель на сервере, а здесь отчёт строился по
     # результату из браузера. Пока вкладка свежая, разницы нет; стоит ей
@@ -22724,6 +22765,90 @@ def usage_summary(days: int = 30) -> dict[str, Any]:
     }
 
 
+def survey_summary(days: int = 30) -> dict[str, Any]:
+    """Свод теста: откуда пришли, докуда дошли, как оценили, что написали.
+
+    Воронка считается по людям, а не по событиям: один человек, посчитавший
+    десять проектов, — это один дошедший, а не десять. Средние оценки —
+    по подпунктам и по разделам, и рядом всегда число ответов: среднее по
+    двум ответам выглядит так же солидно, как по двадцати, и вводит в
+    заблуждение сильнее всего.
+
+    Свободные тексты не сворачиваются ни во что: их читают целиком. Ради них
+    анкета и затевалась.
+    """
+    events = usage_events(max(days, _USAGE_KEEP_DAYS))
+    now = time.time()
+    window = [e for e in events if float(e.get("at") or 0) >= now - days * 86400]
+
+    # Метка источника приезжает один раз, при нажатии Start. Дальше события
+    # приходят без неё, поэтому источник восстанавливается по chat_id.
+    source_by_chat: dict[int, str] = {}
+    for event in events:
+        if str(event.get("kind")) == "invite":
+            chat = int(event.get("chat") or 0)
+            if chat:
+                source_by_chat[chat] = str(event.get("source") or "")
+
+    def people(kind: str) -> set[int]:
+        return {int(e.get("chat") or 0) for e in window
+                if str(e.get("kind")) == kind and int(e.get("chat") or 0)}
+
+    invited = people("invite")
+    funnel = {
+        "перешли по ссылке": len(invited),
+        "искали участок": len(people("land")),
+        "посчитали": len(people("calc")),
+        "выгрузили PDF": len(people("pdf")),
+        "ответили на анкету": len(people("survey")),
+    }
+    by_source: dict[str, int] = {}
+    for chat in invited:
+        key = source_by_chat.get(chat) or "без метки"
+        by_source[key] = by_source.get(key, 0) + 1
+
+    surveys = [e for e in window if str(e.get("kind")) == "survey"]
+    scores: dict[str, list[int]] = {}
+    for survey in surveys:
+        for key, value in (survey.get("ratings") or {}).items():
+            if key in FEEDBACK_ITEMS:
+                scores.setdefault(key, []).append(int(value))
+
+    def average(values: list[int]) -> float:
+        return round(sum(values) / len(values), 2) if values else 0.0
+
+    items = [{"key": key, "label": FEEDBACK_ITEMS[key],
+              "avg": average(values), "count": len(values)}
+             for key, values in scores.items()]
+    items.sort(key=lambda row: (row["avg"], -row["count"]))
+
+    groups = []
+    for group_key, title, members in FEEDBACK_GROUPS:
+        collected = [score for item in members for score in scores.get(item[0], [])]
+        groups.append({"key": group_key, "label": title,
+                       "avg": average(collected), "count": len(collected)})
+
+    notes: list[dict[str, Any]] = []
+    for survey in surveys:
+        for group_key, text in (survey.get("problems") or {}).items():
+            title = next((g[1] for g in FEEDBACK_GROUPS if g[0] == group_key), group_key)
+            notes.append({"at": survey.get("at"), "chat": survey.get("chat"),
+                          "role": survey.get("role", ""), "group": title, "text": text})
+
+    return {
+        "days": int(days),
+        "funnel": funnel,
+        "by_source": sorted(by_source.items(), key=lambda kv: -kv[1]),
+        "answers": len(surveys),
+        "roles": sorted({str(s.get("role") or "—") for s in surveys}),
+        # Слабейшие подпункты идут первыми: свод читают, чтобы понять, что чинить.
+        "weakest": items[:8],
+        "strongest": list(reversed(items[-5:])),
+        "groups": groups,
+        "notes": notes,
+    }
+
+
 def usage_csv(days: int = 30) -> bytes:
     """Выгрузка для разбора вопросов не глазами.
 
@@ -23058,10 +23183,10 @@ def _feedback_clean(req: FeedbackRequest) -> dict[str, Any]:
     Пустая оценка — это «не пользовался», и она не единица: непользовавшийся,
     засчитанный единицей, портит средние сильнее, чем отсутствие ответа.
     """
-    blocks = {block[0] for block in FEEDBACK_BLOCKS}
+    groups = {group[0] for group in FEEDBACK_GROUPS}
     ratings: dict[str, int] = {}
     for key, value in (req.ratings or {}).items():
-        if str(key) not in blocks:
+        if str(key) not in FEEDBACK_ITEMS:
             continue
         try:
             score = int(value)
@@ -23069,9 +23194,12 @@ def _feedback_clean(req: FeedbackRequest) -> dict[str, Any]:
             continue
         if 1 <= score <= 5:
             ratings[str(key)] = score
+    # Комментарий — один на раздел: девять полей ввода это работа, за которую
+    # никто не подписывался, а один на раздел человек пишет там, где ему есть
+    # что сказать.
     problems = {str(key): str(value).strip()[:_USAGE_TEXT_LIMIT]
                 for key, value in (req.problems or {}).items()
-                if str(key) in blocks and str(value or "").strip()}
+                if str(key) in groups and str(value or "").strip()}
     return {
         "role": req.role if req.role in FEEDBACK_ROLES else "",
         "region": req.region if req.region in FEEDBACK_REGIONS else "",
@@ -23748,6 +23876,10 @@ def current_key_rate() -> dict[str, Any]:
 
 @app.post("/calculate")
 def calculate_api(req: CalcRequest) -> dict:
+    # Учёт шагов с сайта: без него от публикации на пятьсот человек остаётся
+    # число заходов, а где люди останавливаются — неизвестно. Пишем на сервере,
+    # а не на странице: браузер закрывают на полуслове, и событие теряется.
+    usage_track("calc", surface="site")
     return calculate(req)
 
 
@@ -24047,6 +24179,24 @@ details.cadastral-box>summary::marker{color:#888}
 .ai-overlay{position:fixed;inset:0;background:rgba(0,0,0,.18);z-index:999;display:none}.ai-overlay.open{display:block}
 @media(max-width:700px){.ai-drawer{width:100vw}.ai-open-btn .ai-label{display:none}}
 @media(max-width:700px){.cadastral-entry{grid-template-columns:1fr}.import-summary{grid-template-columns:1fr 1fr}}
+
+/* Анкета. Двадцать три подпункта в двух колонках на телефоне превращаются в
+   лапшу: подпись ломается на три строки, баллы жмутся к правому краю. На узком
+   экране строка раскладывается вертикально — подпись сверху, баллы под ней во
+   всю ширину. Брокеры открывают ссылку из канала с телефона, и это основной
+   вид формы, а не запасной. */
+.fb-item{padding:5px 10px 5px 0;font-size:13px;vertical-align:middle}
+.fb-scores{white-space:nowrap;text-align:right;vertical-align:middle}
+.fb-score{min-width:32px;padding:3px 7px;margin-left:4px}
+.fb-skip{color:#888}
+@media (max-width:640px){
+  .fb-row{display:block;padding:8px 0;border-bottom:1px solid var(--line,#eee)}
+  .fb-item,.fb-scores{display:block;width:100%;padding:0;text-align:left;white-space:normal}
+  .fb-item{margin-bottom:6px}
+  .fb-scores{display:flex;gap:6px}
+  .fb-score{flex:1;margin-left:0;min-width:0;padding:8px 0}
+  .fb-skip{flex:0 0 auto;padding:8px 12px}
+}
 </style>
 </head>
 <body>
@@ -24875,40 +25025,42 @@ function renderFeedbackForm(){
   +options.map(o=>`<button type="button" class="btn fb-pick" data-group="${name}" data-value="${escapeHtml(o)}"
       style="${o===current?'background:#111;color:#fff':''}">${escapeHtml(o)}</button>`).join('')
   +`</div></div>`;
- const rows=FEEDBACK_FORM.blocks.map(b=>{
-  const hint=b[2]?` <span style="color:#999">${escapeHtml(b[2])}</span>`:'';
-  return `<tr><td style="padding:6px 10px 6px 0;font-size:13px">${escapeHtml(b[1])}${hint}</td>`
-   +`<td style="white-space:nowrap">`
-   +[1,2,3,4,5].map(n=>`<button type="button" class="btn fb-score" data-block="${b[0]}" data-score="${n}"
-       style="min-width:34px;padding:4px 8px">${n}</button>`).join('')
-   +`<button type="button" class="btn fb-score" data-block="${b[0]}" data-score="0"
-       style="padding:4px 8px;color:#888">не смотрел</button></td></tr>`
-   +`<tr><td colspan="2" style="padding:0 0 8px"><input class="fb-problem" data-block="${b[0]}"
-       placeholder="Что не так с разделом «${escapeHtml(b[1])}»?"
-       style="display:none;width:100%;padding:6px 8px;font-size:13px"></td></tr>`;
+ // Раздел — заголовок, строки с баллами и одно поле комментария. Разделы, до
+ // которых человек не дошёл, он закрывает одним «не смотрел» на строку, а не
+ // ищет, что бы поставить.
+ const groups=FEEDBACK_FORM.groups.map(g=>{
+  const rows=g[2].map(item=>{
+   const hint=item[2]?` <span style="color:#999">${escapeHtml(item[2])}</span>`:'';
+   return `<tr class="fb-row"><td class="fb-item">${escapeHtml(item[1])}${hint}</td>`
+    +`<td class="fb-scores">`
+    +[1,2,3,4,5].map(n=>`<button type="button" class="btn fb-score" data-group="${g[0]}"
+        data-item="${item[0]}" data-score="${n}">${n}</button>`).join('')
+    +`<button type="button" class="btn fb-score fb-skip" data-group="${g[0]}"
+        data-item="${item[0]}" data-score="0">—</button></td></tr>`;
+  }).join('');
+  return `<div style="margin-bottom:18px">`
+   +`<div style="font-weight:600;font-size:14px;margin-bottom:6px">${escapeHtml(g[1])}</div>`
+   +`<table style="width:100%;border-collapse:collapse">${rows}</table>`
+   +`<textarea class="fb-note" data-group="${g[0]}" rows="2"
+       placeholder="Комментарий к разделу «${escapeHtml(g[1])}» — не обязательно"
+       style="width:100%;margin-top:6px;padding:6px 8px;font-size:13px"></textarea>`
+   +`</div>`;
  }).join('');
  const projects=feedbackProjects();
  document.getElementById('feedbackBody').innerHTML=
   pick('Кто вы',FEEDBACK_FORM.roles,state.role||'')
   +pick('С чем работаете',FEEDBACK_FORM.regions,state.region||'')
-  +`<table style="width:100%;border-collapse:collapse;margin-bottom:14px">${rows}</table>`
-  +`<div style="font-size:12px;color:#666;margin-bottom:6px">Общие впечатления</div>`
-  +`<textarea id="fbImpression" rows="2" style="width:100%;padding:6px 8px;font-size:13px"></textarea>`
-  +`<div style="font-size:12px;color:#666;margin:12px 0 6px">Что не сошлось на ваших проектах`
-  +(projects.length?` <span style="color:#999">(${escapeHtml(projects.join(', '))})</span>`:'')+`</div>`
-  +`<textarea id="fbMistakes" rows="3" style="width:100%;padding:6px 8px;font-size:13px"
-      placeholder="Здесь важнее всего конкретика: какой показатель и почему считается не так."></textarea>`;
- // Балл ниже четырёх сам открывает строку «что не так»: довольного не трогаем,
- // а недовольного спрашиваем там, где он уже недоволен.
+  +(projects.length?`<div style="font-size:12px;color:#999;margin-bottom:12px">Вы считали: `
+     +escapeHtml(projects.join(', '))+`</div>`:'')
+  +groups;
  document.querySelectorAll('#feedbackBody .fb-score').forEach(btn=>{
   btn.onclick=()=>{
-   const block=btn.dataset.block, score=Number(btn.dataset.score);
-   document.querySelectorAll(`#feedbackBody .fb-score[data-block="${block}"]`).forEach(other=>{
+   const item=btn.dataset.item;
+   document.querySelectorAll(`#feedbackBody .fb-score[data-item="${item}"]`).forEach(other=>{
     other.style.background='';other.style.color=other.dataset.score==='0'?'#888':'';
    });
    btn.style.background='#111';btn.style.color='#fff';
-   const problem=document.querySelector(`#feedbackBody .fb-problem[data-block="${block}"]`);
-   if(problem)problem.style.display=(score>0&&score<4)?'':'none';
+   feedbackRetitle();
   };
  });
  document.querySelectorAll('#feedbackBody .fb-pick').forEach(btn=>{
@@ -24917,6 +25069,29 @@ function renderFeedbackForm(){
     .forEach(other=>{other.style.background='';other.style.color=''});
    btn.style.background='#111';btn.style.color='#fff';
   };
+ });
+}
+
+function feedbackRetitle(){
+ // Низкая оценка сама называет подпункт в подписи комментария своего раздела:
+ // «комментарий, если есть что сказать» собирает «всё нормально», а названный
+ // подпункт — то, ради чего анкета и затевалась.
+ const weak={};
+ document.querySelectorAll('#feedbackBody .fb-score').forEach(btn=>{
+  if(!btn.style.background)return;
+  const score=Number(btn.dataset.score);
+  if(score>0&&score<4){
+   const group=FEEDBACK_FORM.groups.find(g=>g[0]===btn.dataset.group);
+   const item=group&&group[2].find(x=>x[0]===btn.dataset.item);
+   if(item){(weak[btn.dataset.group]=weak[btn.dataset.group]||[]).push(item[1])}
+  }
+ });
+ document.querySelectorAll('#feedbackBody .fb-note').forEach(note=>{
+  const group=FEEDBACK_FORM.groups.find(g=>g[0]===note.dataset.group);
+  const low=weak[note.dataset.group];
+  note.placeholder=low
+   ?'Вы низко оценили: '+low.join(', ')+'. Что там не так?'
+   :'Комментарий к разделу «'+(group?group[1]:'')+'» — не обязательно';
  });
 }
 
@@ -24945,22 +25120,21 @@ async function sendFeedback(){
  document.querySelectorAll('#feedbackBody .fb-score').forEach(btn=>{
   if(!btn.style.background)return;
   const score=Number(btn.dataset.score);
-  if(score>0)ratings[btn.dataset.block]=score;
+  if(score>0)ratings[btn.dataset.item]=score;
  });
- document.querySelectorAll('#feedbackBody .fb-problem').forEach(input=>{
-  if(input.value.trim())problems[input.dataset.block]=input.value.trim();
+ document.querySelectorAll('#feedbackBody .fb-note').forEach(note=>{
+  if(note.value.trim())problems[note.dataset.group]=note.value.trim();
  });
  const payload={
   role:feedbackPicked('Кто вы'),region:feedbackPicked('С чем работаете'),
   ratings,problems,
-  impression:(document.getElementById('fbImpression')||{}).value||'',
-  mistakes:(document.getElementById('fbMistakes')||{}).value||'',
+  impression:'', mistakes:'',
   projects:feedbackProjects(),
   session:(typeof telegramSession!=='undefined'&&telegramSession)?telegramSession:'',
   source:new URLSearchParams(location.search).get('ref')||''
  };
  const status=document.getElementById('feedbackStatus');
- if(!Object.keys(ratings).length&&!payload.impression.trim()&&!payload.mistakes.trim()){
+ if(!Object.keys(ratings).length&&!Object.keys(problems).length){
   status.textContent='Поставьте хотя бы одну оценку или напишите пару слов.';return;
  }
  status.textContent='Отправляю…';
@@ -29226,7 +29400,7 @@ PAGE = PAGE.replace(FIELD_GROUPS_PLACEHOLDER,
 PAGE = PAGE.replace(INPUT_DEFAULT_PLACEHOLDER,
                     json.dumps(DEFAULT_INPUTS, ensure_ascii=False))
 PAGE = PAGE.replace(FEEDBACK_FORM_PLACEHOLDER, json.dumps(
-    {"blocks": FEEDBACK_BLOCKS, "roles": FEEDBACK_ROLES, "regions": FEEDBACK_REGIONS},
+    {"groups": FEEDBACK_GROUPS, "roles": FEEDBACK_ROLES, "regions": FEEDBACK_REGIONS},
     ensure_ascii=False))
 PAGE = PAGE.replace(SOCIAL_MODES_PLACEHOLDER,
                     json.dumps([item[0] for item in _M2_EXTRA_OPTIONS["social_mode"]],

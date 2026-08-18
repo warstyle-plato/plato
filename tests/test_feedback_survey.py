@@ -55,14 +55,15 @@ def test_only_the_asked_fields_survive():
     спрашивали: профиль сверяется со списком, оценки — целые от одного до пяти."""
     clean = core._feedback_clean(core.FeedbackRequest(
         role="Брокер", region="Марс",
-        ratings={"site": 5, "inputs": "2", "platon": 9, "выдумка": 4, "ui": None},
-        problems={"inputs": "  непонятно, что такое ГНС  ", "выдумка": "x"},
+        ratings={"site_tep": 5, "inputs_clarity": "2", "platon_useful": 9,
+                 "выдумка": 4, "general_ui": None},
+        problems={"excel": "  формулы читаются  ", "выдумка": "x"},
         impression="полезно", mistakes="цена входа не так", projects=["Маковского 28", ""],
         source="brokers"))
     assert clean["role"] == "Брокер"
     assert clean["region"] == ""              # такого региона в списке нет
-    assert clean["ratings"] == {"site": 5, "inputs": 2}
-    assert clean["problems"] == {"inputs": "непонятно, что такое ГНС"}
+    assert clean["ratings"] == {"site_tep": 5, "inputs_clarity": 2}
+    assert clean["problems"] == {"excel": "формулы читаются"}
     assert clean["projects"] == ["Маковского 28"]
     assert clean["source"] == "brokers"
 
@@ -70,7 +71,8 @@ def test_only_the_asked_fields_survive():
 def test_an_empty_rating_is_not_a_one():
     """«Не смотрел» — это отсутствие ответа, а не единица. Непользовавшийся,
     засчитанный единицей, портит средние сильнее, чем пропуск."""
-    clean = core._feedback_clean(core.FeedbackRequest(ratings={"site": 0, "ui": 6}))
+    clean = core._feedback_clean(core.FeedbackRequest(
+        ratings={"site_tep": 0, "general_ui": 6}))
     assert clean["ratings"] == {}
 
 
@@ -117,15 +119,28 @@ def test_the_survey_needs_no_login():
 def test_the_form_is_substituted_not_copied():
     assert core.FEEDBACK_FORM_PLACEHOLDER not in core.PAGE
     assert "const FEEDBACK_FORM=" in core.PAGE
-    for key, _label, _hint in core.FEEDBACK_BLOCKS:
+    for key in core.FEEDBACK_ITEMS:
         assert f'"{key}"' in core.PAGE
 
 
-def test_every_block_has_a_key_and_a_label():
-    keys = [block[0] for block in core.FEEDBACK_BLOCKS]
-    assert len(keys) == len(set(keys)), "ключи разделов должны быть разными"
-    for block in core.FEEDBACK_BLOCKS:
-        assert len(block) == 3 and block[0] and block[1]
+def test_every_group_and_item_has_a_key_and_a_label():
+    groups = [group[0] for group in core.FEEDBACK_GROUPS]
+    assert len(groups) == len(set(groups)), "ключи разделов должны быть разными"
+    items = [item[0] for group in core.FEEDBACK_GROUPS for item in group[2]]
+    assert len(items) == len(set(items)), "ключи подпунктов должны быть разными"
+    for group in core.FEEDBACK_GROUPS:
+        assert len(group) == 3 and group[0] and group[1] and group[2]
+        for item in group[2]:
+            assert len(item) == 3 and item[0] and item[1]
+
+
+def test_the_report_is_rated_by_criteria_not_by_one_score():
+    """«Красиво» ничего не значит. Отчёт, PDF и книга оцениваются по критериям,
+    и три из них добавлены не для полноты списка: доверие к цифрам, готовность
+    показать банку и правильность расчёта — то, ради чего всё и делается."""
+    assert "report_trust" in core.FEEDBACK_ITEMS
+    assert "pdf_shareable" in core.FEEDBACK_ITEMS
+    assert "excel_correct" in core.FEEDBACK_ITEMS
 
 
 # --- правило всплытия ---------------------------------------------------------------
@@ -193,10 +208,16 @@ def test_two_refusals_end_it():
 
 # --- низкий балл спрашивает, высокий молчит -----------------------------------------
 
-def test_a_low_score_opens_the_question():
-    body = core.PAGE[core.PAGE.index("function renderFeedbackForm("):]
+def test_a_low_score_names_the_item_in_its_group_comment():
+    """Строк под каждым разделом больше нет — решение владельца (17.08.2026):
+    баллы люди ставят охотно, а пишут один раз и в конце, если есть что
+    сказать. Чтобы это «что сказать» не превратилось в «всё нормально»,
+    низкая оценка сама называет раздел в подписи поля. Кликов не прибавляется."""
+    body = core.PAGE[core.PAGE.index("function feedbackRetitle("):]
     body = body[:body.index("function openFeedback(")]
     assert "score>0&&score<4" in body.replace(" ", "")
+    assert "Вы низко оценили" in body
+    assert "note.placeholder" in body, "подпись комментария должна меняться"
 
 
 def test_the_footer_keeps_a_way_back():
@@ -208,3 +229,79 @@ def test_the_report_timer_stops_on_a_hidden_tab():
     """Минута в свёрнутом окне — не чтение."""
     body = page_function("feedbackWatchReport")
     assert "document.hidden" in body
+
+
+# --- свод: откуда пришли, докуда дошли, как оценили --------------------------------
+
+def test_the_funnel_counts_people_not_events(monkeypatch):
+    """Один человек, посчитавший десять проектов, — это один дошедший, а не
+    десять. Иначе воронка показывает бодрую картину там, где ходил один."""
+    now = __import__("time").time()
+    events = [
+        {"at": now, "kind": "invite", "chat": 1, "source": "brokers"},
+        {"at": now, "kind": "invite", "chat": 2, "source": "brokers"},
+        {"at": now, "kind": "calc", "chat": 1}, {"at": now, "kind": "calc", "chat": 1},
+        {"at": now, "kind": "calc", "chat": 1},
+    ]
+    monkeypatch.setattr(core, "usage_events", lambda days: events)
+    data = core.survey_summary(30)
+    assert data["funnel"]["перешли по ссылке"] == 2
+    assert data["funnel"]["посчитали"] == 1
+    assert data["funnel"]["выгрузили PDF"] == 0
+    assert data["by_source"] == [("brokers", 2)]
+
+
+def test_the_source_is_restored_by_chat(monkeypatch):
+    """Метка приезжает один раз, при нажатии Start. Дальше события приходят без
+    неё, и связать их можно только по chat_id."""
+    now = __import__("time").time()
+    monkeypatch.setattr(core, "usage_events", lambda days: [
+        {"at": now - 86400, "kind": "invite", "chat": 7, "source": "brokers"},
+        {"at": now, "kind": "invite", "chat": 8},
+    ])
+    data = core.survey_summary(30)
+    assert dict(data["by_source"]) == {"brokers": 1, "без метки": 1}
+
+
+def test_the_average_always_carries_its_count(monkeypatch):
+    """Среднее по двум ответам выглядит так же солидно, как по двадцати, и
+    вводит в заблуждение сильнее всего."""
+    now = __import__("time").time()
+    monkeypatch.setattr(core, "usage_events", lambda days: [
+        {"at": now, "kind": "survey", "chat": 1, "role": "Брокер",
+         "ratings": {"excel_correct": 2, "report_trust": 5},
+         "problems": {"excel": "формулы не читаются"}},
+    ])
+    data = core.survey_summary(30)
+    weakest = data["weakest"][0]
+    assert weakest["key"] == "excel_correct" and weakest["avg"] == 2.0
+    assert weakest["count"] == 1
+    assert all("count" in group for group in data["groups"])
+
+
+def test_the_free_texts_are_not_folded(monkeypatch):
+    """Ради них анкета и затевалась: их читают целиком, а не считают."""
+    now = __import__("time").time()
+    monkeypatch.setattr(core, "usage_events", lambda days: [
+        {"at": now, "kind": "survey", "chat": 1, "role": "Девелопер",
+         "ratings": {}, "problems": {"site": "адрес ищется, а ТЭП нет"}},
+    ])
+    notes = core.survey_summary(30)["notes"]
+    assert notes and notes[0]["text"] == "адрес ищется, а ТЭП нет"
+    assert notes[0]["group"] == "Участок"
+
+
+def test_the_site_steps_reach_the_journal(monkeypatch):
+    """Шаги пишутся на сервере, а не на странице: браузер закрывают на
+    полуслове, и событие со страницы теряется вместе с ним."""
+    import copy as _copy
+
+    from fastapi.testclient import TestClient
+
+    written: list[tuple] = []
+    monkeypatch.setattr(core, "usage_track", lambda kind, **kw: written.append((kind, kw)))
+    client = TestClient(core.app)
+    inputs = dict(core.DEFAULT_INPUTS)
+    client.post("/calculate", json={"inputs": inputs,
+                                    "tep": _copy.deepcopy(core.TEP_DEFAULT), "rates": []})
+    assert ("calc", {"surface": "site"}) in written

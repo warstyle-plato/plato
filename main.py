@@ -1118,6 +1118,64 @@ def _sender_name(message: dict[str, Any]) -> str:
                                       str(sender.get("last_name") or "").strip()) if part)
 
 
+def _survey_message(chat_id: int, user_id: int, argument: str) -> None:
+    """Свод теста: откуда пришли, докуда дошли, как оценили, что написали.
+
+    Доступ — как у статистики: свободные тексты людей чужим не показываем.
+    """
+    admins = core.usage_admin_ids()
+    if not admins or user_id not in admins:
+        _send_message(chat_id, "<b>Свод закрыт.</b> "
+                      + (f"Задайте <code>DEVELOPAID_ADMIN_IDS</code>: ваш ID "
+                         f"<code>{user_id}</code>." if not admins
+                         else "Ваш Telegram ID не в списке администраторов."))
+        return
+    days = 30
+    for piece in (argument or "").split():
+        if piece.isdigit():
+            days = max(1, min(365, int(piece)))
+    data = core.survey_summary(days)
+
+    lines = [f"<b>Тест платформы за {days} дн.</b>", ""]
+    # Воронка целиком, включая нули: пустая строка «выгрузили PDF: 0» говорит
+    # больше, чем её отсутствие.
+    lines.append("<b>Воронка</b> (людей)")
+    for label, count in data["funnel"].items():
+        lines.append(f"• {html.escape(label)}: <b>{count}</b>")
+    if data["by_source"]:
+        lines.append("")
+        lines.append("<b>Откуда пришли:</b> " + " · ".join(
+            f"{html.escape(str(name))} {count}" for name, count in data["by_source"]))
+
+    lines.append("")
+    lines.append(f"<b>Анкет заполнено: {data['answers']}</b>")
+    if data["groups"] and any(g["count"] for g in data["groups"]):
+        lines.append("")
+        lines.append("<b>Средние по разделам</b>")
+        for group in data["groups"]:
+            if not group["count"]:
+                continue
+            lines.append(f"• {html.escape(group['label'])}: <b>{group['avg']}</b> "
+                         f"<i>({group['count']} оц.)</i>")
+    if data["weakest"]:
+        lines.append("")
+        lines.append("<b>Слабее всего</b>")
+        for item in data["weakest"]:
+            lines.append(f"• {html.escape(item['label'])}: <b>{item['avg']}</b> "
+                         f"<i>({item['count']})</i>")
+    if data["notes"]:
+        lines.append("")
+        lines.append("<b>Что написали</b>")
+        for note in data["notes"][-20:]:
+            who = html.escape(str(note.get("role") or "—"))
+            lines.append(f"• <i>{html.escape(str(note['group']))}</i> · {who}: "
+                         + html.escape(str(note["text"])[:400]))
+    else:
+        lines.append("")
+        lines.append("<i>Свободных комментариев пока нет.</i>")
+    _send_message(chat_id, "\n".join(lines))
+
+
 def _stats_message(chat_id: int, user_id: int, argument: str) -> None:
     """Кто пользуется ботом и о чём спрашивает.
 
@@ -1246,6 +1304,9 @@ def _handle_message(message: dict[str, Any]) -> None:
         return
     if command == "/help":
         _send_help(chat_id)
+        return
+    if command in {"/survey", "/анкета"}:
+        _survey_message(chat_id, user_id, text.split(maxsplit=1)[1] if " " in text else "")
         return
     if command in {"/stats", "/статистика"}:
         _stats_message(chat_id, user_id, text.split(maxsplit=1)[1] if " " in text else "")
