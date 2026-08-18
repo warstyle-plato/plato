@@ -6903,6 +6903,10 @@ def glavapu_health() -> dict[str, Any]:
     state = dict(_glavapu_headless_state())
     state.update({key: _GLAVAPU_HEADLESS.get(key)
                   for key in ("last_ok", "last_error", "runs", "fallbacks")})
+    # Сколько занял последний расчёт. «Считает минуту» — это диагноз, только
+    # когда цифра видна там же, где спрашивают о состоянии: до сих пор она
+    # лежала в /telegram/status, куда с телефона никто не ходит.
+    state["last_total_ms"] = int((_GLAVAPU_HEADLESS.get("last_ms") or {}).get("total") or 0)
     return state
 
 

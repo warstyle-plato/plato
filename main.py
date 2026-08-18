@@ -676,6 +676,24 @@ def _stale_reference_line() -> str:
                         for item in stale))
 
 
+def _gate_status_line() -> str:
+    """Кому открыт бот: всем или списку из TELEGRAM_ALLOWED_USER_IDS.
+
+    Перед раздачей ссылки в чат на пятьсот человек это первый вопрос, и до сих
+    пор ответ на него жил только в панели хостинга. Забытый в переменной
+    единственный ID превращает приглашение в «Доступ к DevelopAid пока не
+    открыт» для всех, кроме владельца, — и узнаётся это от них, а не от нас.
+    """
+    try:
+        allowed = core._telegram_allowed_user_ids()
+    except Exception as exc:
+        return f"\n⚠️ Доступ: список не прочитать ({html.escape(str(exc)[:120])})"
+    if not allowed:
+        return "\nДоступ: открыт всем — ссылку можно раздавать"
+    return (f"\n⚠️ <b>Доступ: только {len(allowed)} ID</b> из TELEGRAM_ALLOWED_USER_IDS — "
+            "остальным бот ответит отказом. Очистите переменную на Render, чтобы открыть всем.")
+
+
 def _glavapu_status_line() -> str:
     """Состояние связки со штатным калькулятором ГлавАПУ — с предупреждением.
 
@@ -694,8 +712,13 @@ def _glavapu_status_line() -> str:
     if state.get("runs") or state.get("fallbacks"):
         counters = (f" · запусков {int(state.get('runs') or 0)}, "
                     f"фолбэков {int(state.get('fallbacks') or 0)}")
+    # Время последнего расчёта: «две минуты» и «сорок секунд» — разные новости,
+    # а строка «готов» до сих пор выглядела одинаково в обоих случаях.
+    last_seconds = int(state.get("last_total_ms") or 0) // 1000
+    timing = f" · последний расчёт {last_seconds} с" if last_seconds else ""
     if label == "готов":
-        return f"\nГлавАПУ: штатный калькулятор готов ({html.escape(where)}){counters}"
+        return (f"\nГлавАПУ: штатный калькулятор готов ({html.escape(where)})"
+                f"{timing}{counters}")
     detail = " ".join(filter(None, [
         str(state.get("hint") or ""),
         f"Ошибка: {state.get('last_error')}" if state.get("last_error") else "",
@@ -721,6 +744,7 @@ def _status_message(chat_id: int, user_id: int) -> None:
         f"Версия: {_RUNTIME_VERSION}\n"
         f"Платон: {platon_state}\n"
         f"Память расчётов: {_state_health(chat_id)}"
+        + _gate_status_line()
         + _glavapu_status_line()
         # Справочник устаревает тихо: расчёт идёт, числа выглядят как обычно,
         # а под ними прошлогодний тариф. Напоминание тут потому, что /status
