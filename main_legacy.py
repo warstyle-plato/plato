@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.18.54"
+VERSION = "0.18.55"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -2802,7 +2802,159 @@ def _land_screen_classify(finding: dict[str, Any]) -> dict[str, Any]:
             "impact": "ограничение неизвестного типа — требует проверки вручную"}
 
 
-def _land_screen_findings(lat: float, lng: float) -> list[dict[str, Any]]:
+# ---------------------------------------------------------------------------
+# Наложение зон на участок: не «зона есть», а «сколько участка она съела».
+#
+# Скрининг спрашивает НСПД в одной точке — центре участка. Этого хватает на
+# вопрос «есть ли зона», но не на вопрос сделки: зона, срезающая угол, в центр
+# не попадает вовсе, а накрывшая центр выглядит одинаково и при пяти процентах,
+# и при ста (замечание владельца, 18.08.2026). Геометрия зоны приходит тем же
+# ответом GetFeatureInfo и до сих пор выбрасывалась — теперь она пересекается с
+# контуром участка.
+#
+# Считаем долю сеткой, а не аналитическим пересечением полигонов: клиппинг
+# вогнутых мультиполигонов с дырами — отдельная библиотека, которой в образе
+# нет, а доля с точностью процента отвечает на вопрос «часть или целиком».
+# Строки сетки обсчитываются построчно (пересечения рёбер с горизонталью), а
+# не точка за точкой: у приаэродромной зоны десятки тысяч вершин, и наивный
+# перебор занял бы минуты.
+
+_LAND_COVERAGE_GRID = 48
+
+
+def _geometry_polygons_mercator(geometry: Any) -> list[list[list[tuple[float, float]]]]:
+    """Полигоны геометрии в метрах веб-меркатора: [полигон][кольцо][точка].
+
+    НСПД отдаёт то меркатор, то WGS84 — различаем по величине, как это уже
+    делает `_geometry_center`. Первое кольцо полигона — внешнее, остальные
+    дыры; чётно-нечётное правило обрабатывает их само.
+    """
+    if not isinstance(geometry, dict):
+        return []
+    coordinates = geometry.get("coordinates")
+    kind = str(geometry.get("type") or "").lower()
+    if kind == "polygon":
+        raw = [coordinates]
+    elif kind == "multipolygon":
+        raw = list(coordinates or [])
+    else:
+        return []
+    polygons: list[list[list[tuple[float, float]]]] = []
+    for polygon in raw:
+        rings: list[list[tuple[float, float]]] = []
+        for ring in polygon or []:
+            points: list[tuple[float, float]] = []
+            for point in ring or []:
+                if not (isinstance(point, (list, tuple)) and len(point) >= 2):
+                    continue
+                x, y = float(point[0]), float(point[1])
+                if abs(x) <= 180.0 and abs(y) <= 90.0:
+                    merc_x = x * 20037508.34 / 180.0
+                    merc_y = math.log(math.tan((90.0 + y) * math.pi / 360.0)) / (math.pi / 180.0)
+                    points.append((merc_x, merc_y * 20037508.34 / 180.0))
+                else:
+                    points.append((x, y))
+            if len(points) >= 3:
+                rings.append(points)
+        if rings:
+            polygons.append(rings)
+    return polygons
+
+
+def _polygons_bbox(polygons: list[list[list[tuple[float, float]]]]) -> tuple[float, float, float, float] | None:
+    xs = [p[0] for polygon in polygons for ring in polygon for p in ring]
+    ys = [p[1] for polygon in polygons for ring in polygon for p in ring]
+    if not xs or not ys:
+        return None
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def _row_crossings(polygons: list[list[list[tuple[float, float]]]], y: float) -> list[float]:
+    """Абсциссы пересечений всех рёбер с горизонталью `y`, по возрастанию."""
+    crossings: list[float] = []
+    for polygon in polygons:
+        for ring in polygon:
+            previous = ring[-1]
+            for point in ring:
+                y1, y2 = previous[1], point[1]
+                # Строго один знак сравнения на конец ребра, иначе вершина,
+                # лежащая ровно на строке, считается дважды и переворачивает
+                # чётность на всю оставшуюся строку.
+                if (y1 > y) != (y2 > y):
+                    t = (y - y1) / (y2 - y1)
+                    crossings.append(previous[0] + t * (point[0] - previous[0]))
+                previous = point
+    crossings.sort()
+    return crossings
+
+
+def _inside_by_crossings(crossings: list[float], x: float) -> bool:
+    left = 0
+    for value in crossings:
+        if value > x:
+            break
+        left += 1
+    return left % 2 == 1
+
+
+def _land_coverage_shares(parcel: Any, zones: list[Any],
+                          counted: list[bool] | None = None,
+                          grid: int = _LAND_COVERAGE_GRID) -> dict[str, Any]:
+    """Доли участка под каждой зоной и доля, свободная от всех считаемых.
+
+    `shares` — по индексу зоны, 0..1; `None` там, где у зоны нет геометрии:
+    «не проверяли» и «ноль процентов» — разные ответы, и путать их нельзя.
+    `counted` отмечает зоны, которые режут строимое пятно (запреты и то, что
+    влияет на посадку); справочные слои вроде территориальных зон накрывают
+    участок целиком и свободного места не отнимают. Пустой ответ — считать
+    было не из чего.
+    """
+    parcel_polygons = _geometry_polygons_mercator(parcel)
+    bbox = _polygons_bbox(parcel_polygons)
+    if not parcel_polygons or not bbox:
+        return {}
+    zone_polygons = [_geometry_polygons_mercator(zone) for zone in zones]
+    counts = list(counted) if counted is not None else [True] * len(zone_polygons)
+    counts += [True] * (len(zone_polygons) - len(counts))
+    min_x, min_y, max_x, max_y = bbox
+    if max_x <= min_x or max_y <= min_y:
+        return {}
+    step_x = (max_x - min_x) / grid
+    step_y = (max_y - min_y) / grid
+    inside_total = 0
+    hits = [0] * len(zone_polygons)
+    free = 0
+    for row in range(grid):
+        y = min_y + (row + 0.5) * step_y
+        parcel_row = _row_crossings(parcel_polygons, y)
+        if not parcel_row:
+            continue
+        zone_rows = [_row_crossings(polygons, y) if polygons else [] for polygons in zone_polygons]
+        for column in range(grid):
+            x = min_x + (column + 0.5) * step_x
+            if not _inside_by_crossings(parcel_row, x):
+                continue
+            inside_total += 1
+            covered = False
+            for index, crossings in enumerate(zone_rows):
+                if crossings and _inside_by_crossings(crossings, x):
+                    hits[index] += 1
+                    if counts[index]:
+                        covered = True
+            if not covered:
+                free += 1
+    if not inside_total:
+        return {}
+    return {
+        "shares": [None if not polygons else hit / inside_total
+                   for hit, polygons in zip(hits, zone_polygons)],
+        "free": free / inside_total,
+        "samples": inside_total,
+    }
+
+
+def _land_screen_findings(lat: float, lng: float,
+                          parcel_geometry: Any = None) -> list[dict[str, Any]]:
     """Все ограничения НСПД в точке — по всему набору слоёв, с классификацией.
 
     Имена слоёв заранее не нужны: что нашлось, говорит сам ответ
@@ -2853,8 +3005,38 @@ def _land_screen_findings(lat: float, lng: float) -> list[dict[str, Any]]:
                 "document_number": _land_text(options.get("legal_act_document_number")),
                 "document_date": _land_text(options.get("legal_act_document_date")),
                 "layer_id": layer_id,
+                # Геометрия зоны приходит тем же ответом и до сих пор
+                # выбрасывалась. Она нужна ровно на один вопрос: зона съела
+                # угол участка или весь участок.
+                "geometry": feature.get("geometry") if isinstance(feature, dict) else None,
             }))
+    _land_apply_coverage(findings, parcel_geometry)
     return _land_group_findings(findings)
+
+
+def _land_apply_coverage(findings: list[dict[str, Any]], parcel_geometry: Any) -> None:
+    """Проставляет каждой находке долю участка под ней и общее свободное пятно.
+
+    Справочные слои (`info` — территориальные зоны и подобное) накрывают
+    участок целиком и строимого пятна не отнимают: в свободную долю они не
+    входят, хотя своя доля у них считается.
+    """
+    if not findings or not parcel_geometry:
+        return
+    coverage = _land_coverage_shares(
+        parcel_geometry,
+        [item.get("geometry") for item in findings],
+        counted=[item.get("flag_class") in {"killer", "economic"} for item in findings])
+    if not coverage:
+        return
+    for item, share in zip(findings, coverage.get("shares") or []):
+        item.pop("geometry", None)
+        if share is None:
+            continue
+        item["coverage_pct"] = round(share * 100.0, 1)
+    for item in findings:
+        item.pop("geometry", None)
+        item["free_pct"] = round(float(coverage.get("free") or 0.0) * 100.0, 1)
 
 
 def _land_group_findings(findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -2890,6 +3072,12 @@ def _land_group_findings(findings: list[dict[str, Any]]) -> list[dict[str, Any]]
         document = _land_text(finding.get("document_number"))
         if document and document not in current["documents"]:
             current["documents"].append(document)
+        # Доля участка у группы — наибольшая среди подзон: подзоны
+        # приаэродромной вложены друг в друга, и складывать их значило бы
+        # насчитать двести процентов на одном участке.
+        share = finding.get("coverage_pct")
+        if share is not None and share > (current.get("coverage_pct") or 0.0):
+            current["coverage_pct"] = share
     result: list[dict[str, Any]] = []
     for key in order:
         entry = grouped[key]
@@ -2947,9 +3135,14 @@ def _land_screening_verdict(findings: list[dict[str, Any]],
         status, headline = "WARNING", "Есть ограничения, влияющие на посадку и экономику"
     else:
         status, headline = "NO_CRITICAL_FLAGS", "Критических ограничений не обнаружено"
+    # Свободное пятно — общий ответ по участку, у всех находок он один и тот
+    # же; у нескольких участков берём худший: сводка не имеет права выглядеть
+    # лучше самого стеснённого из них.
+    free = [f.get("free_pct") for f in findings if f.get("free_pct") is not None]
     return {
         "status": status,
         "headline": headline,
+        "free_pct": min(free) if free else None,
         "killer_count": len(killers),
         "economic_count": len(economic),
         "total": len(findings),
@@ -3017,7 +3210,10 @@ def land_screening(cad: str = "") -> dict[str, Any]:
         center = _geometry_center(matched.get("geometry")) or {}
         findings: list[dict[str, Any]] = []
         if center:
-            findings = _land_screen_findings(center["lat"], center["lng"])
+            # Контур участка идёт в скрининг: зоны накладываются на него, и
+            # видно, съели они угол или весь участок.
+            findings = _land_screen_findings(center["lat"], center["lng"],
+                                             matched.get("geometry"))
             findings.sort(key=lambda f: _LAND_SCREEN_ORDER.get(f.get("flag_class"), 3))
         area = _land_float(_nspd_value(options, "area_sqm"))
         parcel = {
@@ -9615,8 +9811,11 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
                 basis = ", ".join(str(n) for n in numbers if n)
                 if finding.get("document_number"):
                     basis = (basis + " · " if basis else "") + str(finding["document_number"])
-                rows.append([f"{mark} · {finding.get('name','')}",
-                             str(finding.get("impact", "")), basis or "—"])
+                share = finding.get("coverage_pct")
+                impact = str(finding.get("impact", ""))
+                if share is not None:
+                    impact = f"{impact} · накрывает ~{_pdf_num(share, 0)}% участка".strip(" ·")
+                rows.append([f"{mark} · {finding.get('name','')}", impact, basis or "—"])
         if len(rows) > 1:
             story.append(table(rows, [70*mm, 60*mm, 40*mm]))
         elif verdict.get("status") == "NOT_SCREENED":
@@ -9624,6 +9823,11 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
             story.append(P("Ограничения не проверялись: по номеру нет сведений ЕГРН.", small))
         else:
             story.append(P("В НСПД ограничений на участок не обнаружено.", small))
+        if verdict.get("free_pct") is not None:
+            story.append(P(
+                f"Свободно от ограничений ~{_pdf_num(verdict['free_pct'], 0)}% площади участка "
+                "(оценка наложением границ зон на контур ЕГРН, точность порядка процента).",
+                small))
         story.append(P(verdict.get("disclaimer", ""), small))
         story.append(Spacer(1, 4*mm))
     story.append(_PdfSection("summary"));story.append(P("Ключевая экономика",h2))
@@ -24497,6 +24701,7 @@ details.cadastral-box>summary::marker{color:#888}
 .land-screening .flag.killer{color:#b3261e}
 .land-screening .flag.economic{color:#a05a00}
 .land-screening .flag.info{color:#777}
+.land-screening .share{font-size:11px;color:#555;background:#f0f0ee;padding:1px 5px;border-radius:3px}
 .land-screening .meta{color:#777;font-size:11px;margin-top:2px}
 .land-screening .parcel{font-weight:600;font-size:12px;padding:8px 12px 0}
 .land-screening footer{padding:8px 12px;color:#8a8a86;font-size:10px;background:#fafaf8}
@@ -26577,6 +26782,9 @@ function renderLandScreening(data){
  const item=f=>`<li><span class="flag ${f.flag_class}">${screeningFlagLabel(f.flag_class)}</span> `+
    `<b>${escapeHtml(f.name||f.type_zone||f.category||'ограничение')}</b>`+
    `${f.zones_count>1?' <span class="meta">('+f.zones_count+' подзоны)</span>':''}`+
+   // Доля участка под зоной — то, ради чего скрининг и затевался: «зона есть»
+   // одинаково выглядит и при срезанном угле, и при съеденном участке.
+   `${f.coverage_pct!=null?' <span class="share">'+landNum(f.coverage_pct,0)+'% участка</span>':''}`+
    `<div class="meta">${escapeHtml(f.impact||'')}`+
    `${f.reg_number?' · реестров'+((f.reg_numbers&&f.reg_numbers.length>1)?'ые №№ '+escapeHtml(f.reg_numbers.join(', '))+(f.reg_numbers_more>0?' и ещё '+f.reg_numbers_more:''):'ый № '+escapeHtml(f.reg_number)):''}`+
    `${f.document_number?' · '+escapeHtml(f.document||'документ')+' № '+escapeHtml(f.document_number):''}`+
@@ -26612,6 +26820,7 @@ function renderLandScreening(data){
  box.className='land-screening '+tone;
  box.innerHTML=`<header>${escapeHtml(v.headline||'Оценка участка')}`+
   `${found.length>1?' · участков: '+found.length:''}`+
+  `${v.free_pct!=null?' · свободно от ограничений ~'+landNum(v.free_pct,0)+'% площади':''}`+
   `${missed?' · без сведений ЕГРН: '+missed:''}</header>`+
   body+
   `<footer>${escapeHtml(v.disclaimer||'')} Проверено ${escapeHtml(data.calculated_at||'')}.</footer>`;
