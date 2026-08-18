@@ -135,6 +135,37 @@ PY
   return 1
 }
 
+# --- место на диске ---------------------------------------------------------
+# Каждая выкатка тянет новый образ на два-три гигабайта, а прежние остаются
+# навсегда. Пять сборок за день — и диск полон: 18.08.2026 выкатка упала на
+# «no space left on device», прод остался на позавчерашней версии, а вход через
+# бота начал отвечать ошибкой без объяснения — коды входа пишутся файлами.
+# Поэтому: перед скачиванием проверяем место, после успешной выкатки убираем
+# всё, кроме текущего образа и предыдущего (он нужен откату).
+
+free_mb() {
+  df -Pm / | awk 'NR==2 {print $4}'
+}
+
+trim_images() {
+  keep_now=$(docker inspect --format '{{.Image}}' "$NAME" 2>/dev/null || true)
+  keep_before=""
+  [ -f "$PREVIOUS" ] && keep_before=$(docker image inspect --format '{{.Id}}' \
+    "${REPO}:$(cat "$PREVIOUS")" 2>/dev/null || true)
+  removed=0
+  for image_id in $(docker images "$REPO" --format '{{.ID}}' | sort -u); do
+    full=$(docker image inspect --format '{{.Id}}' "$image_id" 2>/dev/null || true)
+    [ -n "$full" ] || continue
+    [ "$full" = "$keep_now" ] && continue
+    [ -n "$keep_before" ] && [ "$full" = "$keep_before" ] && continue
+    # Образ, на котором кто-то работает, docker не отдаст — и правильно сделает.
+    docker rmi "$image_id" >/dev/null 2>&1 && removed=$((removed + 1))
+  done
+  docker image prune -f >/dev/null 2>&1 || true
+  [ "$removed" -gt 0 ] && say "убрано старых образов: ${removed}, свободно $(free_mb) МБ"
+  return 0
+}
+
 current_image() {
   docker inspect --format '{{.Config.Image}}' "$NAME" 2>/dev/null || true
 }
@@ -144,7 +175,12 @@ start_container() {
   docker rm -f "$name" >/dev/null 2>&1 || true
   # Данные и секреты живут на машине и переживают любую выкатку: в образе их
   # нет и быть не должно.
+  # Журнал контейнера без предела съедает диск молча: docker пишет его в
+  # /var/lib/docker/containers и сам не чистит. Держим тридцать мегабайт на
+  # контейнер — этого хватает на разбор падения, а на восемнадцатигигабайтной
+  # машине не отнимает место у образов.
   docker run -d --name "$name" --restart always \
+    --log-opt max-size=10m --log-opt max-file=3 \
     -p "$publish" \
     --env-file "$ROOT/.env" \
     -v "$ROOT/data:/app/data" \
@@ -190,8 +226,19 @@ say "было: ${WAS:-контейнера нет}"
 
 registry_login
 
+# Меньше шести гигабайт — новый образ рядом со старым уже не ложится. Прибираем
+# до скачивания: провал на середине распаковки оставляет мусор, который потом
+# ищут руками.
+if [ "$(free_mb)" -lt 6144 ]; then
+  say "свободно $(free_mb) МБ — прибираю старые образы до скачивания"
+  trim_images
+fi
+
 say "скачивание ${IMAGE}"
-docker pull "$IMAGE" >/dev/null || { say "ПРОВАЛ: образ не скачался, прод не тронут"; exit 1; }
+docker pull "$IMAGE" >/dev/null || {
+  say "ПРОВАЛ: образ не скачался, прод не тронут (свободно $(free_mb) МБ)"
+  exit 1
+}
 
 # --- проверка на закрытом порту ---------------------------------------------
 # 127.0.0.1 — снаружи этот порт недоступен, проверяемая версия не видна
@@ -217,6 +264,9 @@ start_container "$NAME" "${APP_BIND}:${APP_PORT}:8000" "$IMAGE"
 
 if verdict=$(health_check "$APP_PORT" "$TAG" 2>&1); then
   say "готово: ${verdict}"
+  # Уборка после успеха, а не до: пока новый образ не доказал, что работает,
+  # старый — единственный путь назад.
+  trim_images
   say "начато ${STARTED}, закончено $(date '+%Y-%m-%d %H:%M:%S'), отката не было"
   exit 0
 fi
