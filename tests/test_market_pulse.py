@@ -140,6 +140,67 @@ def test_network_failure_is_silent(tmp_path: Path) -> None:
     assert client.diagnostics()["errors"], "отказ должен быть виден в диагностике"
 
 
+def test_lzstring_payload_is_unpacked_without_a_dependency() -> None:
+    """Карта отвечает сжатым LZ-string; библиотеку ради этого не тянем.
+
+    Образец снят с живого ответа `/api/search/`: первые байты того самого
+    FeatureCollection, который страница разжимает у себя в браузере.
+    """
+    from market_search.pulse import lz_decompress_base64
+
+    sample = "N4IgLgngDgpiBcIBiMCGYCuAnGBhA9gDaEwDGYAlvgHYgA0IAZmpjgM4IDaAugxQCYd4PAL5AAA="
+    assert lz_decompress_base64(sample) == '{"type":"FeatureCollection","features":[],"ids":[]}'
+    assert lz_decompress_base64("") == ""
+    assert lz_decompress_base64("не base64 вовсе") is None
+
+
+def test_segments_are_read_from_the_class_filter(tmp_path: Path) -> None:
+    """Класса нет ни в точке карты, ни в карточке — он существует фильтром.
+
+    Принадлежность выводится из того, что попало в выборку по каждому классу.
+    """
+    import json as jsonlib
+
+    from market_search.pulse import _CLASS_FILTERS
+
+    answers = {
+        "Бизнес": [5924],
+        "Премиум": [3372, 1695],
+        "Элит/De Luxe": [5504],
+        "Комфорт": [],
+        "Стандарт/Эконом": [],
+    }
+    asked: list[int] = []
+
+    def fake_open(path, data=None, headers=None):
+        payload = dict(pair.split("=", 1) for pair in data.decode().split("&"))
+        import urllib.parse
+
+        body = jsonlib.loads(urllib.parse.unquote_plus(payload["data"]))
+        code = body["classes_ppn_list"][0]
+        asked.append(code)
+        ids = answers[_CLASS_FILTERS[code]]
+        # Ответ отдаётся сжатым, но разжатие проверяется отдельным тестом:
+        # здесь подменяется уже разжатая ветка.
+        return jsonlib.dumps({"features": [{"id": i} for i in ids]}).encode("utf-8")
+
+    client = PulseClient(tmp_path, login="l", password="p")
+    client._open = fake_open  # type: ignore[assignment]
+    client._cookie = lambda name: "cookie"  # type: ignore[assignment]
+    import market_search.pulse as pulse_module
+
+    original = pulse_module.lz_decompress_base64
+    pulse_module.lz_decompress_base64 = lambda text: text
+    try:
+        segments = client.segments()
+    finally:
+        pulse_module.lz_decompress_base64 = original
+
+    assert sorted(asked) == [1, 2, 3, 4, 5], "спрашиваем каждый класс по разу"
+    assert segments == {5924: "Бизнес", 3372: "Премиум", 1695: "Премиум", 5504: "Элит/De Luxe"}
+    assert (tmp_path / "segments.json").exists(), "класс складывается на сутки"
+
+
 def test_balanced_json_survives_nested_braces() -> None:
     text = 'x = {"a": {"b": "}"}, "c": [1,2]}; tail'
     blob = _balanced_json(text, text.index("{"))

@@ -42,6 +42,21 @@ PULSE_BASE = "https://pulsprodaj.ru"
 
 _LOGIN_PATH = "/accounts/login/"
 _MAP_PATH = "/map/"
+_SEARCH_PATH = "/api/search/"
+
+# Класс проекта не лежит ни в точке карты, ни в карточке: он живёт фильтром.
+# Спрашиваем выборку по каждому классу и получаем принадлежность из того, что
+# в неё попало. Пять запросов в сутки против справочника, который пришлось бы
+# обновлять руками вместе с книгой.
+_CLASS_FILTERS = {
+    1: "Стандарт/Эконом",
+    2: "Комфорт",
+    3: "Бизнес",
+    4: "Премиум",
+    5: "Элит/De Luxe",
+}
+
+_LZ_KEY64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/="
 _CSRF_RE = re.compile(r"csrfmiddlewaretoken['\"]?\s+value=['\"]([^'\"]+)")
 _GEOJSON_MARK = '{"type":"FeatureCollection"'
 
@@ -111,6 +126,81 @@ def _balanced_json(text: str, start: int) -> str:
             if depth == 0:
                 return text[start : index + 1]
     raise ValueError("незакрытый JSON в странице карты")
+
+
+def lz_decompress_base64(text: str) -> str | None:
+    """Разжать ответ карты: он приходит сжатым LZ-string в base64.
+
+    Библиотеку для этого ставить незачем — алгоритм короткий и неизменный, а
+    лишняя зависимость в образе живёт дольше, чем причина, по которой её взяли.
+    """
+    if not text:
+        return "" if text == "" else None
+    lookup = {char: index for index, char in enumerate(_LZ_KEY64)}
+    try:
+        return _lz_decompress(len(text), 32, lambda i: lookup[text[i]])
+    except (KeyError, IndexError, ValueError):
+        return None
+
+
+def _lz_decompress(length: int, reset: int, get) -> str | None:
+    dictionary: dict[int, str | int] = {index: index for index in range(3)}
+    enlarge, size, bits_n = 4, 4, 3
+    out: list[str] = []
+    state = {"val": get(0), "pos": reset, "index": 1}
+
+    def read(count: int) -> int:
+        bits, power, maxpower = 0, 1, 1 << count
+        while power != maxpower:
+            resb = state["val"] & state["pos"]
+            state["pos"] >>= 1
+            if state["pos"] == 0:
+                state["pos"] = reset
+                state["val"] = get(state["index"])
+                state["index"] += 1
+            bits |= (1 if resb > 0 else 0) * power
+            power <<= 1
+        return bits
+
+    first = read(2)
+    if first == 2:
+        return ""
+    current = chr(read(8 if first == 0 else 16))
+    dictionary[3] = current
+    word = current
+    out.append(current)
+
+    while True:
+        if state["index"] > length:
+            return ""
+        code = read(bits_n)
+        if code in (0, 1):
+            dictionary[size] = chr(read(8 if code == 0 else 16))
+            size += 1
+            code = size - 1
+            enlarge -= 1
+        elif code == 2:
+            return "".join(out)
+
+        if enlarge == 0:
+            enlarge = 1 << bits_n
+            bits_n += 1
+
+        if code in dictionary:
+            entry = dictionary[code]
+        elif code == size:
+            entry = word + word[0]
+        else:
+            return None
+
+        out.append(str(entry))
+        dictionary[size] = word + str(entry)[0]
+        size += 1
+        enlarge -= 1
+        word = str(entry)
+        if enlarge == 0:
+            enlarge = 1 << bits_n
+            bits_n += 1
 
 
 class PulseClient:
@@ -332,6 +422,57 @@ class PulseClient:
             for item in self.projects()
         ]
         return sorted((row for row in found if row[0] <= radius_km), key=lambda row: row[0])
+
+    def segments(self, *, refresh: bool = False) -> dict[int, str]:
+        """Класс каждого проекта: идентификатор → «Бизнес», «Премиум»…
+
+        Спрашивается пять раз, по разу на класс, и складывается на сутки.
+        Класса нет ни в точке карты, ни в карточке проекта — он существует
+        только как фильтр, поэтому принадлежность выводится из выборки.
+        """
+        path = self.dir / "segments.json"
+        if not refresh and fresh(path, self.ttl_seconds):
+            cached = load_json(path)
+            if isinstance(cached, dict):
+                return {int(k): str(v) for k, v in cached.items()}
+
+        out: dict[int, str] = {}
+        for code, title in _CLASS_FILTERS.items():
+            payload = urllib.parse.urlencode(
+                {"data": json.dumps({"classes_ppn_list": [code]})}
+            ).encode("utf-8")
+            csrf = self._cookie("csrftoken")
+            if not csrf and not self.sign_in():
+                return {}
+            try:
+                body = self._open(
+                    _SEARCH_PATH,
+                    data=payload,
+                    headers={
+                        "Content-Type": "application/x-www-form-urlencoded",
+                        "X-CSRFToken": self._cookie("csrftoken") or "",
+                        "Referer": f"{self.base}{_MAP_PATH}",
+                    },
+                )
+            except (urllib.error.URLError, OSError) as exc:
+                self.errors.append(f"класс «{title}»: {exc}")
+                continue
+            raw = lz_decompress_base64(body.decode("utf-8", errors="ignore"))
+            if not raw:
+                self.errors.append(f"класс «{title}»: ответ не разжался")
+                continue
+            try:
+                collection = json.loads(raw)
+            except ValueError:
+                self.errors.append(f"класс «{title}»: ответ не разобрался")
+                continue
+            for feature in collection.get("features") or []:
+                if feature.get("id") is not None:
+                    out[int(feature["id"])] = title
+
+        if out:
+            save_json(path, {str(k): v for k, v in out.items()})
+        return out
 
     # --- данные проекта --------------------------------------------------------
 
