@@ -531,3 +531,34 @@ def test_city_base_is_not_borrowed_for_another_city() -> None:
     assert scope["covered"] is False
     assert "Москва старая" in scope["reason"]
     assert city.scope("Москва, Саввинская набережная, 25")["covered"] is True
+
+
+def test_cabinet_script_is_valid_javascript() -> None:
+    """Скрипт страницы проверяется настоящим node, а не на глаз.
+
+    `CABINET_PAGE` — строка Python, и `\\n`, написанный для JavaScript, при
+    обычных кавычках превращается в настоящий перенос ещё при импорте модуля:
+    строка обрывается, и вся страница перестаёт работать целиком. Ошибка не
+    видна ни в одном тесте на данные — она видна только в браузере.
+    """
+    import re
+    import shutil
+    import subprocess
+    import tempfile
+
+    import pytest
+
+    from market_search.cabinet import cabinet_page
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node недоступен")
+
+    scripts = re.findall(r"<script[^>]*>(.*?)</script>", cabinet_page(), re.S)
+    assert scripts, "на странице кабинета нет скрипта"
+    for index, source in enumerate(scripts):
+        with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False, encoding="utf-8") as handle:
+            handle.write(source)
+            path = handle.name
+        done = subprocess.run([node, "--check", path], capture_output=True, text=True)
+        assert done.returncode == 0, f"скрипт {index}: {done.stderr[:400]}"
