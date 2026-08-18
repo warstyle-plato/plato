@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.18.48"
+VERSION = "0.18.49"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -23343,11 +23343,78 @@ def profile_save(req: ProfileRequest) -> dict[str, Any]:
     return saved
 
 
+def _profile_pending_path() -> Path:
+    return _PROJECTS_DIR.parent / "profile_announcements.jsonl"
+
+
+def _profile_remember_announcement(record: dict[str, Any]) -> None:
+    """Кладёт знакомство в очередь для того, у кого есть Telegram.
+
+    Анкета сохраняется на ядре, а до api.telegram.org достаёт только Render —
+    сообщение «новая регистрация» иначе не ушло бы никуда. Ядро складывает
+    знакомство на диск, Render забирает его тем же путём, каким пересылает
+    проекты (18.08.2026).
+    """
+    try:
+        path = _profile_pending_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception:
+        # Очередь — доставка, а не регистрация: анкета уже сохранена.
+        pass
+
+
+def _profile_take_announcements() -> list[dict[str, Any]]:
+    """Забирает накопленные знакомства. Забрать может только один: файл
+    переименовывается, и второй читатель получает его отсутствие."""
+    path = _profile_pending_path()
+    taken = path.with_suffix(".taken")
+    try:
+        path.replace(taken)
+    except Exception:
+        return []
+    records: list[dict[str, Any]] = []
+    try:
+        for line in taken.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                records.append(json.loads(line))
+            except Exception:
+                continue
+    finally:
+        taken.unlink(missing_ok=True)
+    return records
+
+
+@app.post("/internal/profile/announcements")
+def profile_announcements(req: WebLoginConfirmRequest) -> dict[str, Any]:
+    """Знакомства, которые ещё некому было объявить. Только для своего хоста.
+
+    Подпись — тем же токеном бота, что и подтверждение входа: секрет общий у
+    ядра и Render, а посторонний его не знает. Отдаём разом и удаляем: это
+    доставка, а не хранилище.
+    """
+    expected = _web_login_sign("profile-announcements", int(req.chat_id or 0))
+    if not hmac.compare_digest(str(req.sign or "").encode("utf-8"),
+                               expected.encode("utf-8")):
+        raise HTTPException(status_code=403, detail="Подпись не сошлась.")
+    return {"announcements": _profile_take_announcements()}
+
+
 def _profile_announce(record: dict[str, Any]) -> None:
     """Новое знакомство — в чат владельцу. Молча, если сообщить нечем."""
     admins = usage_admin_ids()
     if not admins or not _telegram_token() or not _telegram_webhook_enabled():
+        # Telegram здесь недоступен — знакомство ждёт того, у кого он есть.
+        _profile_remember_announcement(record)
         return
+    _telegram_send_profile_card(record, admins)
+
+
+def _telegram_send_profile_card(record: dict[str, Any], admins: set[int]) -> None:
     lines = [
         "<b>Новая регистрация</b>",
         f"Имя: {html.escape(str(record.get('name') or '—'))}",
