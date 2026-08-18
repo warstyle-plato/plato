@@ -98,13 +98,40 @@ def test_a_remainder_with_nowhere_to_go_is_not_lost(plan):
     """
     months = sorted(plan["capex"])
     cut = months[-1] + datetime.timedelta(days=40)  # срез за горизонтом плана
-    fact = {months[0]: 100e6}
+    # Факт покрывает весь горизонт: иначе непокрытые месяцы останутся планом,
+    # и это будет проверка другого правила.
+    fact = {month: 100e6 for month in months}
 
     result = actuals.overlay(plan, {"cut": cut, "capex": fact})
     blended = result["op"]["capex"]
 
     assert sum(blended.values()) == pytest.approx(sum(plan["capex"].values()))
     assert any("остаток" in note for note in result["report"]["notes"])
+
+
+def test_a_fact_that_stops_early_leaves_the_plan_in_place(plan):
+    """Месяц, до которого факт не дотянулся, — это «не знаем», а не «ноль».
+
+    Выгрузки обрываются в разное время: на Гродненской оплаты идут до 04.2026,
+    акты КС — до 06.2026, продажи — до 03.2026, а срез по РСС стоит на
+    01.07.2026. Прочитать непокрытые месяцы нулём значит объявить, что три
+    месяца ничего не платили и не продавали, и дальше уедут эскроу, покрытие,
+    ставка ПФ и LLCR — все правдоподобно.
+    """
+    months = sorted(plan["capex"])
+    cut = months[8]
+    fact = {month: 120e6 for month in months[:5]}   # факт обрывается на 5 мес.
+
+    result = actuals.overlay(plan, {"cut": cut, "capex": fact})
+    blended = result["op"]["capex"]
+
+    assert blended[months[0]] == pytest.approx(120e6)
+    # Месяцы 6–8 факт не покрыл: там остался план, а не ноль.
+    for index in (5, 6, 7):
+        assert blended[months[index]] == pytest.approx(plan["capex"][months[index]])
+    assert sum(blended.values()) == pytest.approx(sum(plan["capex"].values()))
+    assert any("вне покрытия оставлен план" in note
+               for note in result["report"]["notes"])
 
 
 def test_spending_more_than_planned_is_reported_as_an_overrun(plan):

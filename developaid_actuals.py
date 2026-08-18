@@ -572,12 +572,30 @@ def _blend(
 ) -> dict[datetime.date, float]:
     """Факт до среза, перенормированный на остаток план после."""
     planned_total = sum(plan.values())
-    fact_total = sum(value for month, value in fact.items() if month < cut)
+    blended = {month: value for month, value in fact.items() if month < cut}
+
+    # Ряд фактом покрыт не до самого среза: выгрузки обрываются в разное время.
+    # На Гродненской оплаты идут до 04.2026, акты КС — до 06.2026, продажи — до
+    # 03.2026, а срез по РСС стоит на 01.07.2026. Месяц, до которого факт не
+    # дотянулся, — это «не знаем», а не «было ноль»: прочитать его нулём значит
+    # объявить, что три месяца ничего не платили и ничего не продали, и дальше
+    # уедут эскроу, покрытие, ставка ПФ и LLCR — все правдоподобно.
+    observed = sorted(blended)
+    if observed:
+        first, last = observed[0], observed[-1]
+        carried = {month: value for month, value in plan.items()
+                   if month < cut and not (first <= month <= last)}
+        if carried:
+            blended.update(carried)
+            notes.append(
+                f"{label}: факт покрывает {first:%Y-%m}…{last:%Y-%m}, а срез стоит "
+                f"на {cut:%Y-%m} — за {len(carried)} мес. вне покрытия оставлен план "
+                f"({sum(carried.values()) / 1e6:,.1f} млн ₽)")
+
+    fact_total = sum(blended.values())
     tail = {month: value for month, value in plan.items() if month >= cut}
     tail_total = sum(tail.values())
     remainder = planned_total - fact_total
-
-    blended = {month: value for month, value in fact.items() if month < cut}
     if remainder <= 0:
         if remainder < -0.005 * max(abs(planned_total), 1.0):
             notes.append(
