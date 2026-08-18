@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.18.53"
+VERSION = "0.18.54"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -25528,6 +25528,11 @@ function feedbackWatchReport(open){
 
 function feedbackMaybeAsk(){
  if(feedbackShown)return;
+ // Знакомство и оценка целятся в один момент — открытый результат. Два окна
+ // друг на друге не читаются, и человек закрывает оба не глядя: пока висит
+ // знакомство, оценку не спрашиваем — она вернётся на следующей минуте чтения.
+ const profile=document.getElementById('profileDialog');
+ if(profile&&profile.style.display==='flex')return;
  if(feedbackCalcs<1||feedbackReportSeconds<FEEDBACK_READ_SECONDS)return;
  const state=feedbackState();
  if(state.done)return;
