@@ -62,3 +62,65 @@ def test_the_pages_are_served():
         response = client.get(path)
         assert response.status_code == 200, path
         assert title in response.text, path
+
+
+def _document_pages() -> dict[str, str]:
+    root = Path(core.__file__).resolve().parent / "guide"
+    return {name: (root / name).read_text(encoding="utf-8")
+            for name in ("page.html", "consent.html", "privacy.html", "ads_consent.html")}
+
+
+def test_every_document_page_carries_the_same_footer():
+    """Подвал жил только на главной: со страницы «Руководство» и «Согласие»
+    остальные документы были недостижимы, а на самих документах подвала не было
+    вовсе (замечание владельца, 18.08.2026)."""
+    for name, text in _document_pages().items():
+        footer = text[text.index('<footer class="gfoot"'):text.index("</footer>")]
+        for link in ('href="/consent"', 'href="/privacy"',
+                     'href="/ads-consent"', 'href="/guide"'):
+            assert link in footer, f"{name}: нет ссылки {link}"
+        assert "© ИП" in footer, name
+
+
+def test_the_consent_does_not_bundle_advertising():
+    """Согласие на обработку не разрешает рассылки: реклама — отдельное
+    согласие по ст. 18 ФЗ-38, и склеивать их нельзя."""
+    text = _document_pages()["consent.html"]
+    body = text[text.index("<main"):text.index('<footer class="gfoot"')]
+    assert "информационных рассылок" not in body, "рекламное согласие вшито в обработку ПД"
+    assert 'href="/privacy"' in body, "порядок обработки — в политике, на неё ссылаемся"
+
+
+def test_the_consent_states_one_term_not_two():
+    """Прежний текст обещал сразу и «неограниченный срок», и «в течение периода
+    хранения» — два разных срока в одном документе."""
+    body = _document_pages()["consent.html"]
+    assert "Согласие действует до достижения целей обработки или до его отзыва" in body
+    assert "неограниченным" not in body
+
+
+def test_the_pages_wear_the_real_emblem():
+    """Эмблема одна на все поверхности. На руководстве и документах вместо неё
+    стояло набранное вразрядку слово «ПЛАТО» — своя, придуманная (замечание
+    владельца, 18.08.2026). Логотип берётся из шапки `PAGE`, копии нет."""
+    import guide
+
+    logo = guide.brand_logo(core)
+    assert logo[:4] == b"RIFF" and logo[8:12] == b"WEBP", "эмблема не вынулась из PAGE"
+    assert len(logo) > 4000
+
+    for name, text in _document_pages().items():
+        head = text[text.index('<header class="gtop"'):text.index("</header>")]
+        assert 'src="/guide/assets/logo.webp"' in head, f"{name}: эмблемы нет"
+        assert ">ПЛАТО<" not in head, f"{name}: слово вместо эмблемы"
+
+
+def test_the_emblem_is_served():
+    import main_registry
+    from fastapi.testclient import TestClient
+
+    response = TestClient(main_registry.app).get("/guide/assets/logo.webp")
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/webp"
+    assert response.content[:4] == b"RIFF"
+

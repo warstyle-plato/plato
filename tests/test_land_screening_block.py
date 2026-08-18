@@ -231,3 +231,99 @@ def test_the_territorial_zone_reads_as_a_useful_note():
     got = core._land_screen_classify({"type_zone": "", "name": "ПКК. Территориальные зоны"})
     assert got["flag_class"] == "info"
     assert "ВРИ" in got["impact"], "зона по ПЗЗ — самая нужная справка, а не «неизвестный тип»"
+
+
+def test_a_parcel_without_egrn_is_not_declared_clean(monkeypatch):
+    """Зелёная плашка на пустоте. На запросе, где не нашёлся ни один номер,
+    экран показывал «Критических ограничений не обнаружено» — разрешающий вывод
+    без единого запроса к НСПД: без границ участка спрашивать было нечего
+    (боевая проверка владельца, 18.08.2026)."""
+    monkeypatch.setattr(core, "_core_api_url", lambda path: "")
+    monkeypatch.setattr(core, "_nspd_search_features", lambda q: [])
+    monkeypatch.setattr(core, "_land_screen_findings",
+                        lambda lat, lng: pytest.fail("без границ НСПД не спрашивают"))
+    core._LAND_SCREENING_CACHE.clear()
+    result = core.land_screening(cad="77:02:0021018:3577, 77:02:0021018:7")
+
+    verdict = result["verdict"]
+    assert verdict["status"] == "NOT_SCREENED"
+    assert "не обнаружено" not in verdict["headline"], "нечего было обнаруживать"
+    assert verdict["probed"] is False
+    assert "не спрашивали" in verdict["disclaimer"]
+
+
+def test_a_found_parcel_is_screened_as_before(monkeypatch):
+    result = _screening(monkeypatch, [])
+    assert result["verdict"]["status"] == "NO_CRITICAL_FLAGS"
+    assert result["verdict"]["probed"] is True
+
+
+def test_the_unscreened_plate_is_not_green():
+    cls, html = _render({
+        "verdict": {"status": "NOT_SCREENED",
+                    "headline": "Скрининг не выполнен: сведений ЕГРН по участку нет",
+                    "disclaimer": "Границы участка не получены."},
+        "parcels": [{"found": False, "cadastral_number": "77:02:0021018:7"}],
+    })
+    assert cls == "land-screening unknown", "серая плашка, не зелёная"
+    assert "не проверялись" in html
+    assert "не обнаружено" not in html
+
+
+def _working(numbers, finished, seconds) -> tuple[str, str]:
+    """Настоящая функция ожидания из PAGE, прогнанная через node."""
+    if not NODE:
+        pytest.skip("node недоступен")
+    match = re.search(r"(function screeningWorkingHtml\(numbers,finished,seconds\)\{.*?\n\})\n",
+                      core.PAGE, re.S)
+    assert match, "плашка ожидания не найдена на странице"
+    script = ("const escapeHtml=s=>String(s==null?'':s);\n" + match.group(1) + "\n"
+              + f"console.log(JSON.stringify(screeningWorkingHtml("
+                f"{json.dumps(numbers)},{json.dumps(finished, ensure_ascii=False)},{seconds})));")
+    out = subprocess.run([NODE, "-e", script], capture_output=True, text=True, check=True)
+    got = json.loads(out.stdout)
+    return got["cls"], got["html"]
+
+
+def test_the_waiting_plate_is_visible_at_all():
+    """Плашка ожидания была невидимой: класс тона не ставился, а текст шапки
+    белый — на белом фоне ничего не читалось, и ограничения появлялись внезапно
+    (замечание владельца, 18.08.2026)."""
+    cls, html = _working(["77:02:0021018:7"], [], 3)
+    assert "working" in cls, "без тона шапка белым по белому"
+    assert "Проверяю градостроительные ограничения" in html
+    assert "3 с" in html, "сколько идёт — видно"
+    assert "ЗОУИТ" in html, "видно, что именно проверяется"
+
+    css = core.PAGE[core.PAGE.index(".land-screening{"):core.PAGE.index(".land-screening ul{")]
+    assert ".land-screening.working header{background:" in css
+
+
+def test_the_progress_moves_with_the_parcels():
+    numbers = ["50:20:1:1", "50:20:1:2", "50:20:1:3"]
+    _, first = _working(numbers, [], 1)
+    assert "участок 1 из 3" in first and 'width:0%' in first
+
+    _, second = _working(numbers, [
+        {"number": "50:20:1:1", "parcel": {"found": True, "findings": [
+            {"flag_class": "killer"}, {"flag_class": "economic"}]}},
+    ], 12)
+    assert "участок 2 из 3" in second
+    assert "width:33%" in second
+    assert "50:20:1:1 — есть запрет" in second, "результат участка виден сразу, а не в конце"
+
+    _, third = _working(numbers, [
+        {"number": "50:20:1:1", "parcel": {"found": True, "findings": []}},
+        {"number": "50:20:1:2", "parcel": {"found": False}},
+    ], 20)
+    assert "50:20:1:1 — ограничений не найдено" in third
+    assert "50:20:1:2 — сведений ЕГРН нет" in third
+
+
+def test_the_screening_asks_parcel_by_parcel():
+    body = core.PAGE[core.PAGE.index("async function loadLandScreening"):]
+    body = body[:body.index("function screeningWorkingHtml")]
+    assert "for(const number of numbers)" in body, "без поштучных запросов хода не видно"
+    assert "numbers.join(',')" in body, "свод считает движок, а не страница"
+    assert "landScreeningRun" in body, "поздний ответ не должен перерисовывать новый участок"
+

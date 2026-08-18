@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.18.40"
+VERSION = "0.18.44"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -2918,16 +2918,26 @@ _LAND_SCREENING_TTL_SECONDS = _env_float("LAND_SCREENING_TTL", 21600.0)
 _LAND_SCREEN_ORDER = {"killer": 0, "economic": 1, "info": 2}
 
 
-def _land_screening_verdict(findings: list[dict[str, Any]]) -> dict[str, Any]:
+def _land_screening_verdict(findings: list[dict[str, Any]],
+                            probed: bool = True) -> dict[str, Any]:
     """Свод по находкам. Никакого «участок подходит» — только факты и их вес.
 
     Запрещено выдавать разрешительный вывод (решение владельца, архитектура,
     раздел 8): максимум — «критических ограничений не обнаружено», и то с
     оговоркой, что видно лишь внесённое в ЕГРН.
+
+    `probed` — спрашивали ли вообще НСПД. Без сведений ЕГРН у участка нет
+    границ, спрашивать не о чем, и пустой список находок значит «не проверяли»,
+    а не «чисто». Прежде эти два случая были неотличимы: на запросе, где не
+    нашёлся ни один из трёх номеров, экран показывал зелёное «критических
+    ограничений не обнаружено» — разрешающий вывод на пустоте (18.08.2026).
     """
     killers = [f for f in findings if f.get("flag_class") == "killer"]
     economic = [f for f in findings if f.get("flag_class") == "economic"]
-    if killers:
+    if not probed:
+        status = "NOT_SCREENED"
+        headline = "Скрининг не выполнен: сведений ЕГРН по участку нет"
+    elif killers:
         status, headline = "CRITICAL", "Найдены ограничения, запрещающие жилую застройку"
     elif economic:
         status, headline = "WARNING", "Есть ограничения, влияющие на посадку и экономику"
@@ -2939,10 +2949,14 @@ def _land_screening_verdict(findings: list[dict[str, Any]]) -> dict[str, Any]:
         "killer_count": len(killers),
         "economic_count": len(economic),
         "total": len(findings),
-        "disclaimer": ("Проверены ограничения, внесённые в ЕГРН и опубликованные "
-                       "в НСПД. Отсутствие записи не доказывает отсутствия "
-                       "ограничения: сервитуты, ГПЗУ и часть красных линий в "
-                       "реестре не отражаются."),
+        "probed": bool(probed),
+        "disclaimer": (("Проверены ограничения, внесённые в ЕГРН и опубликованные "
+                        "в НСПД. Отсутствие записи не доказывает отсутствия "
+                        "ограничения: сервитуты, ГПЗУ и часть красных линий в "
+                        "реестре не отражаются.") if probed else
+                       ("Границы участка не получены, поэтому НСПД об ограничениях "
+                        "не спрашивали. Проверьте кадастровый номер или запросите "
+                        "выписку ЕГРН.")),
     }
 
 
@@ -3012,16 +3026,17 @@ def land_screening(cad: str = "") -> dict[str, Any]:
             "permitted_use": _land_text(_nspd_value(options, "permitted_use")),
             "center": center or None,
             "findings": findings,
-            "verdict": _land_screening_verdict(findings),
+            "verdict": _land_screening_verdict(findings, probed=bool(center)),
         }
         _LAND_SCREENING_CACHE[number] = (time.time(), parcel)
         parcels.append(parcel)
 
     everything = [f for p in parcels for f in p.get("findings", [])]
+    probed = any(p.get("found") and p.get("center") for p in parcels)
     return {
         "parcels": parcels,
         "single": len(parcels) == 1,
-        "verdict": _land_screening_verdict(everything),
+        "verdict": _land_screening_verdict(everything, probed=probed),
         "calculated_at": datetime.now().strftime("%d.%m.%Y %H:%M"),
     }
 
@@ -8654,7 +8669,8 @@ def _telegram_handle_message(message: dict[str, Any]) -> None:
         start_payload = text.split(maxsplit=1)[1].strip() if " " in text else ""
         if command == "/start" and start_payload.startswith("login_"):
             try:
-                _web_login_confirm(start_payload[len("login_"):], chat_id)
+                _web_login_confirm(start_payload[len("login_"):], chat_id,
+                                   _telegram_sender_name(message))
                 _telegram_send_message(
                     chat_id,
                     "<b>Вход на сайт подтверждён.</b> Вернитесь во вкладку браузера — "
@@ -9590,6 +9606,9 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
                              str(finding.get("impact", "")), basis or "—"])
         if len(rows) > 1:
             story.append(table(rows, [70*mm, 60*mm, 40*mm]))
+        elif verdict.get("status") == "NOT_SCREENED":
+            # Та же честность, что и на экране: не спрашивали — значит не знаем.
+            story.append(P("Ограничения не проверялись: по номеру нет сведений ЕГРН.", small))
         else:
             story.append(P("В НСПД ограничений на участок не обнаружено.", small))
         story.append(P(verdict.get("disclaimer", ""), small))
@@ -23033,11 +23052,24 @@ def _project_owner(session: str = "", key: str = "") -> int:
     # где есть не-ASCII, а ключ владелец задаёт какой захочет.
     if secret and key and hmac.compare_digest(str(key).encode("utf-8"), secret.encode("utf-8")):
         return sorted(admins)[0]
+    # Пустой `DEVELOPAID_ADMIN_KEY` отказывал теми же словами, что неверный
+    # ключ: человек вводил его снова и снова, а принимать было нечему
+    # (замечание владельца, 18.08.2026). Причины разные — и ответы разные.
+    if not secret:
+        raise HTTPException(
+            status_code=403,
+            detail=("Ключи на этом сервере не принимаются: DEVELOPAID_ADMIN_KEY "
+                    "не задан. Войдите через Telegram — кнопка в «Личном кабинете»."))
+    if not key:
+        raise HTTPException(
+            status_code=403,
+            detail=("Войдите через Telegram (кнопка в «Личном кабинете») либо "
+                    "введите ключ администратора — иначе сервер не знает, чей "
+                    "это проект."))
     raise HTTPException(
         status_code=403,
-        detail=("Войдите через Telegram (кнопка в «Мои проекты») либо задайте "
-                "DEVELOPAID_ADMIN_KEY и введите ключ — иначе сервер не знает, "
-                "чей это проект."))
+        detail=("Ключ администратора не подошёл. Проверьте его или войдите "
+                "через Telegram — кнопка в «Личном кабинете»."))
 
 
 def _project_dir(owner: int) -> Path:
@@ -23166,6 +23198,14 @@ def projects_save(req: ProjectRequest) -> dict[str, Any]:
     if forwarded is not None:
         return forwarded
     owner = _project_owner(req.session, req.key)
+    # Знакомство спрашивают там, где человек оставляет у нас работу, а не на
+    # каждом запросе: расчёт открыт, а сохранённый проект уже чей-то. Спрашивают
+    # у вошедшего через Telegram; админский ключ — это сам владелец, ему
+    # представляться некому.
+    if req.session and not profile_complete(profile_read(owner)):
+        raise HTTPException(
+            status_code=428,
+            detail="Заполните знакомство: имя, компания и откуда узнали о нас.")
     return project_save(owner, req.name, req.payload, req.summary, req.cadastral, req.id)
 
 
@@ -23191,6 +23231,173 @@ def projects_delete(req: ProjectRequest) -> dict[str, Any]:
     if forwarded is not None:
         return forwarded
     return project_delete(_project_owner(req.session, req.key), req.id)
+
+
+# ---------------------------------------------------------------------------
+# Знакомство: кто зашёл, как зовут, из какой компании и откуда узнал о нас
+# (решение владельца, 18.08.2026).
+#
+# Личность подтверждает Telegram — вход уже доказывает, что за экраном живой
+# аккаунт, и даёт chat_id. Анкета добавляет то, что подтвердить нечем и незачем
+# делать вид, что подтверждено: имя, компанию, источник. Хранится рядом с
+# проектами, тем же владельцем и в том же общем хранилище на ядре.
+
+_PROFILE_FIELD_LIMIT = 200
+_PROFILE_SOURCES = (
+    "Телеграм-канал", "Рекомендация коллеги", "Поиск в интернете",
+    "Конференция или мероприятие", "Соцсети", "Другое",
+)
+
+
+class ProfileRequest(BaseModel):
+    session: str = ""
+    key: str = ""
+    name: str = ""
+    company: str = ""
+    role: str = ""
+    source: str = ""
+    contact: str = ""
+    consent: bool = False
+
+
+def _profile_path(owner: int) -> Path:
+    return _project_dir(owner) / "profile.json"
+
+
+def _profile_text(value: Any) -> str:
+    # Поле приходит снаружи: режем по длине и убираем перевод строки, чтобы
+    # анкета не превращалась в способ прислать нам страницу текста.
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    return text[:_PROFILE_FIELD_LIMIT]
+
+
+def profile_read(owner: int) -> dict[str, Any]:
+    path = _profile_path(owner)
+    if not path.is_file():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def profile_complete(record: dict[str, Any]) -> bool:
+    """Заполненной анкета считается, когда есть имя, компания и источник."""
+    return all(_profile_text(record.get(key)) for key in ("name", "company", "source"))
+
+
+def profile_write(owner: int, req: ProfileRequest) -> dict[str, Any]:
+    name, company = _profile_text(req.name), _profile_text(req.company)
+    source = _profile_text(req.source)
+    if not name or not company or not source:
+        raise HTTPException(
+            status_code=400,
+            detail="Заполните имя, компанию и откуда узнали о нас.")
+    if not bool(req.consent):
+        raise HTTPException(
+            status_code=400,
+            detail="Без согласия на обработку персональных данных анкету принять нельзя.")
+    previous = profile_read(owner)
+    record = {
+        "chat_id": int(owner),
+        "name": name,
+        "company": company,
+        "role": _profile_text(req.role),
+        "source": source,
+        "contact": _profile_text(req.contact),
+        "telegram_name": _profile_text(previous.get("telegram_name")),
+        "consent": True,
+        "consent_at": previous.get("consent_at") or datetime.now().isoformat(timespec="seconds"),
+        "created": previous.get("created") or datetime.now().isoformat(timespec="seconds"),
+        "updated": datetime.now().isoformat(timespec="seconds"),
+    }
+    directory = _project_dir(owner)
+    directory.mkdir(parents=True, exist_ok=True)
+    temporary = _profile_path(owner).with_suffix(".tmp")
+    temporary.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+    temporary.replace(_profile_path(owner))
+    return {"saved": True, "profile": record, "first_time": not bool(previous)}
+
+
+def _profile_remember_telegram_name(owner: int, name: str) -> None:
+    """Имя из Telegram — подсказка для анкеты, а не сама анкета."""
+    name = _profile_text(name)
+    if not name or not owner:
+        return
+    record = profile_read(owner)
+    if _profile_text(record.get("telegram_name")) == name:
+        return
+    record["telegram_name"] = name
+    record.setdefault("chat_id", int(owner))
+    directory = _project_dir(owner)
+    directory.mkdir(parents=True, exist_ok=True)
+    temporary = _profile_path(owner).with_suffix(".tmp")
+    temporary.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+    temporary.replace(_profile_path(owner))
+
+
+def _profile_forward(path: str, req: ProfileRequest) -> dict[str, Any] | None:
+    url = _projects_remote_url(path)
+    if not url:
+        return None
+    return _core_post(url, req.model_dump(), 30.0)
+
+
+@app.post("/profile/get")
+def profile_get(req: ProfileRequest) -> dict[str, Any]:
+    """Анкета владельца сессии: заполнена ли и чем подставить поля."""
+    forwarded = _profile_forward("/profile/get", req)
+    if forwarded is not None:
+        return forwarded
+    owner = _project_owner(req.session, req.key)
+    record = profile_read(owner)
+    return {
+        "chat_id": owner,
+        "complete": profile_complete(record),
+        "profile": record,
+        "sources": list(_PROFILE_SOURCES),
+    }
+
+
+@app.post("/profile/save")
+def profile_save(req: ProfileRequest) -> dict[str, Any]:
+    forwarded = _profile_forward("/profile/save", req)
+    if forwarded is not None:
+        # Ядро до api.telegram.org не достаёт, поэтому о новом знакомстве
+        # владельцу сообщает тот хост, у которого есть Telegram.
+        if forwarded.get("first_time"):
+            _profile_announce(forwarded.get("profile") or {})
+        return forwarded
+    saved = profile_write(_project_owner(req.session, req.key), req)
+    if saved.get("first_time"):
+        _profile_announce(saved.get("profile") or {})
+    return saved
+
+
+def _profile_announce(record: dict[str, Any]) -> None:
+    """Новое знакомство — в чат владельцу. Молча, если сообщить нечем."""
+    admins = usage_admin_ids()
+    if not admins or not _telegram_token() or not _telegram_webhook_enabled():
+        return
+    lines = [
+        "<b>Новая регистрация</b>",
+        f"Имя: {html.escape(str(record.get('name') or '—'))}",
+        f"Компания: {html.escape(str(record.get('company') or '—'))}",
+    ]
+    if record.get("role"):
+        lines.append(f"Роль: {html.escape(str(record['role']))}")
+    lines.append(f"Узнал(а) о нас: {html.escape(str(record.get('source') or '—'))}")
+    if record.get("contact"):
+        lines.append(f"Контакт: {html.escape(str(record['contact']))}")
+    if record.get("telegram_name"):
+        lines.append(f"Telegram: {html.escape(str(record['telegram_name']))}")
+    lines.append(f"chat_id: <code>{int(record.get('chat_id') or 0)}</code>")
+    for admin in sorted(admins):
+        try:
+            _telegram_send_message(admin, "\n".join(lines))
+        except Exception:
+            # Уведомление — не часть регистрации: анкета уже сохранена.
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -23257,6 +23464,7 @@ class WebLoginConfirmRequest(BaseModel):
     code: str = ""
     chat_id: int = 0
     sign: str = ""
+    name: str = ""
 
 
 class FeedbackRequest(BaseModel):
@@ -23369,18 +23577,23 @@ def _web_login_record(code: str) -> tuple[Path, dict[str, Any]]:
     return path, record
 
 
-def _web_login_confirm(code: str, chat_id: int) -> dict[str, Any]:
-    """Связывает код с chat_id. Зовётся ботом — локально или через ядро."""
+def _web_login_confirm(code: str, chat_id: int, name: str = "") -> dict[str, Any]:
+    """Связывает код с chat_id. Зовётся ботом — локально или через ядро.
+
+    Имя из Telegram передаётся тем же запросом: анкета знакомства подставляет
+    его в поле, чтобы человек правил, а не набирал.
+    """
     remote = _projects_remote_url("/auth/telegram/confirm")
     if remote:
         return _core_post(
             remote,
-            {"code": code, "chat_id": int(chat_id),
+            {"code": code, "chat_id": int(chat_id), "name": str(name or ""),
              "sign": _web_login_sign(code, chat_id)},
             30.0)
     path, record = _web_login_record(code)
     record["chat_id"] = int(chat_id)
     record["confirmed"] = time.time()
+    _profile_remember_telegram_name(int(chat_id), name)
     temporary = path.with_suffix(".tmp")
     temporary.write_text(json.dumps(record), encoding="utf-8")
     temporary.replace(path)
@@ -23398,7 +23611,7 @@ def web_login_confirm(req: WebLoginConfirmRequest) -> dict[str, Any]:
         raise HTTPException(status_code=403, detail="Подпись подтверждения не сошлась.")
     if not int(req.chat_id or 0):
         raise HTTPException(status_code=400, detail="Пустой chat_id.")
-    return _web_login_confirm(req.code, int(req.chat_id))
+    return _web_login_confirm(req.code, int(req.chat_id), req.name)
 
 
 @app.post("/auth/telegram/claim")
@@ -23413,7 +23626,9 @@ def web_login_claim(req: WebLoginClaimRequest) -> dict[str, Any]:
         return {"ready": False}
     path.unlink(missing_ok=True)
     session = _telegram_session(chat_id, [], lifetime_seconds=_WEB_LOGIN_SESSION_SECONDS)
-    return {"ready": True, "session": session, "chat_id": chat_id}
+    profile = profile_read(chat_id)
+    return {"ready": True, "session": session, "chat_id": chat_id,
+            "profile_complete": profile_complete(profile), "profile": profile}
 
 
 def _web_identity_chat_id(session: str) -> int:
@@ -24098,6 +24313,14 @@ details.cadastral-box>summary::marker{color:#888}
 .land-screening.critical header{background:#b3261e}
 .land-screening.warning header{background:#a05a00}
 .land-screening.clean header{background:#2f6b3a}
+.land-screening.unknown header{background:#6b6b66}
+.land-screening.working header{background:#3a3a38}
+.prof-l{display:block;font-size:12px;color:#555;margin-top:10px}
+.prof-i{display:block;width:100%;margin-top:4px;padding:8px 10px;border:1px solid #cfcfcf;font-size:13px}
+.prof-i:focus{outline:2px solid #111;outline-offset:-1px}
+.land-screening .progress{height:3px;background:#ececea}
+.land-screening .progress i{display:block;height:100%;background:#3a3a38;transition:width .25s}
+.land-screening .step{padding:6px 12px;font-size:12px;border-bottom:1px solid #f0f0ee;color:#555}
 .land-screening ul{margin:0;padding:8px 12px;list-style:none}
 .land-screening li{padding:7px 0;border-bottom:1px solid #f0f0ee;font-size:12px}
 .land-screening li:last-child{border-bottom:none}
@@ -24322,7 +24545,7 @@ details.cadastral-box>summary::marker{color:#888}
       <button class="btn ai-open-btn" onclick="toggleAgent(true)"><span id="aiStatusDot" class="ai-dot"></span><span class="ai-label">Платон Сергеевич</span></button>
       <!-- Кнопки хранилища появляются только там, где оно настроено и есть чем
            опознать владельца: иначе это кнопка, которая всегда отказывает. -->
-      <button class="btn" id="projectsButton" style="display:none" onclick="openProjects()">Мои проекты</button>
+      <button class="btn" id="projectsButton" style="display:none" onclick="openProjects()">Личный кабинет</button>
       <button class="btn" onclick="resetAll()">Сбросить</button>
       <a class="btn" href="/guide">Руководство</a>
       <button class="btn dark" onclick="calculateAndOpen('report')">Пересчитать модель</button>
@@ -24408,7 +24631,7 @@ details.cadastral-box>summary::marker{color:#888}
             <div id="moTables"></div>
             <div id="moWarnings" class="note warning"></div>
         </div>
-        <div id="glavapuStatus" class="import-status">Введите кадастровый номер выше — ТЭП посчитается сам. Готовые примеры — в «Мои проекты», свой файл ГлавАПУ — ниже.</div>
+        <div id="glavapuStatus" class="import-status">Введите кадастровый номер выше — ТЭП посчитается сам. Готовые примеры — в «Личном кабинете», свой файл ГлавАПУ — ниже.</div>
         <div id="glavapuPreview" class="import-preview" style="display:none">
           <div id="glavapuSummary" class="import-summary"></div>
           <div class="import-actions">
@@ -24431,11 +24654,11 @@ details.cadastral-box>summary::marker{color:#888}
              — получил ТЭП». -->
         <details class="import-fallback">
           <summary>Свой файл: шаблон ТЭП DevelopAid, выгрузка ГлавАПУ или пресет проекта</summary>
-          <!-- Готовые примеры уехали в «Мои проекты»: и они, и сохранённые
+          <!-- Готовые примеры уехали в «Личный кабинет»: и они, и сохранённые
                проекты — это «взять готовое и посмотреть», а здесь разбирают
                принесённый файл. Решение владельца (15.08.2026). -->
           <div id="presetsMovedHint" style="font-size:11px;color:#888;margin:10px 0 8px">
-            Готовые примеры — Мишина, Мытищи, Румянцево — переехали в «Мои проекты» наверху страницы.
+            Готовые примеры — Мишина, Мытищи, Румянцево — переехали в «Личный кабинет» наверху страницы.
           </div>
           <div style="font-size:11px;color:#888;margin:7px 0 8px">шаблон ТЭП DevelopAid либо выгрузка калькулятора ГлавАПУ</div>
           <!-- Шаблон скачивается отсюда же, где загружается. Отказ разбора
@@ -24955,7 +25178,7 @@ details.cadastral-box>summary::marker{color:#888}
      z-index:80;align-items:center;justify-content:center;padding:20px" onclick="if(event.target===this)closeProjects()">
   <div style="background:#fff;max-width:900px;width:100%;max-height:80vh;overflow:auto;padding:22px 24px">
     <div style="display:flex;align-items:center;gap:14px;margin-bottom:12px">
-      <h2 style="margin:0;font-size:17px">Мои проекты</h2>
+      <h2 style="margin:0;font-size:17px">Личный кабинет</h2>
       <!-- Кнопки хранилища — только там, где оно есть: примеры открываются и
            без него, а «Сохранить», которое всегда откажет, хуже отсутствия.
            Смена ключа без консоли браузера: ключ меняют, когда он засветился,
@@ -24986,7 +25209,12 @@ details.cadastral-box>summary::marker{color:#888}
         <button class="btn dark" onclick="loadServerProjectPreset()">Открыть</button>
       </div>
     </div>
+    <!-- Кто вошёл и чем выйти. Прежде выход был только через консоль браузера:
+         сессия лежит в localStorage, а кнопки не было (замечание владельца,
+         18.08.2026). -->
+    <div id="accountBox" style="display:none;border:1px solid var(--line);padding:12px 14px;margin-bottom:14px"></div>
     <div id="projectsStored">
+      <div class="section-title" style="margin-bottom:8px">Мои проекты</div>
       <div style="font-size:11px;color:#777;margin-bottom:10px">
         Хранится на ядре в России. Сохраняется только то, что вы сохранили сами.
       </div>
@@ -25034,6 +25262,36 @@ details.cadastral-box>summary::marker{color:#888}
 <!-- Анкета обратной связи. Всплывает один раз, когда человек и посчитал, и
      почитал: раньше оценивать нечего, а «при выходе» на телефоне срабатывает
      через раз и ловит уже уходящего. -->
+<!-- Знакомство. Личность подтверждает Telegram, а имя, компанию и источник
+     подтвердить нечем — они со слов человека, и делать вид, что проверены,
+     нельзя. Спрашиваем один раз после входа (решение владельца, 18.08.2026). -->
+<div id="profileDialog" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);
+     z-index:95;align-items:center;justify-content:center;padding:20px">
+  <div style="background:#fff;max-width:560px;width:100%;max-height:86vh;overflow:auto;padding:22px 24px">
+    <h2 style="margin:0 0 6px;font-size:17px">Знакомство</h2>
+    <div style="font-size:12px;color:#666;margin-bottom:16px">
+      Вход подтверждён через Telegram. Осталось назвать себя — иначе мы видим
+      только номер аккаунта. Минута, и больше не спросим.
+    </div>
+    <label class="prof-l">Имя и фамилия<input id="profName" class="prof-i" maxlength="200" placeholder="Как к вам обращаться"></label>
+    <label class="prof-l">Компания<input id="profCompany" class="prof-i" maxlength="200" placeholder="Где работаете"></label>
+    <label class="prof-l">Роль <span style="color:#999">— не обязательно</span><input id="profRole" class="prof-i" maxlength="200" placeholder="Например: директор по развитию"></label>
+    <label class="prof-l">Откуда узнали о нас<select id="profSource" class="prof-i"></select></label>
+    <label class="prof-l">Телефон или почта <span style="color:#999">— не обязательно</span><input id="profContact" class="prof-i" maxlength="200" placeholder="Чтобы связаться, если понадобится"></label>
+    <label style="display:flex;gap:8px;align-items:flex-start;font-size:12px;color:#555;margin-top:12px">
+      <input type="checkbox" id="profConsent" style="margin-top:2px">
+      <span>Согласен(на) на обработку персональных данных —
+        <a href="/consent" target="_blank">согласие</a> и
+        <a href="/privacy" target="_blank">политика</a>.</span>
+    </label>
+    <div id="profileStatus" style="font-size:12px;color:#777;margin-top:12px"></div>
+    <div style="display:flex;gap:10px;margin-top:16px">
+      <button class="btn dark" onclick="saveProfile()">Сохранить</button>
+      <button class="btn" onclick="closeProfile()">Позже</button>
+    </div>
+  </div>
+</div>
+
 <div id="feedbackDialog" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);
      z-index:90;align-items:center;justify-content:center;padding:20px"
      onclick="if(event.target===this)closeFeedback('backdrop')">
@@ -25320,7 +25578,11 @@ async function loginViaTelegram(statusEl){
    if(cr.ok&&cd.ready&&cd.session){
     try{localStorage.setItem(WEB_SESSION_KEY,cd.session)}catch(e){}
     say('Вход выполнен.');
-    location.reload();
+    // Знакомство спрашивается тут же, пока человек за экраном: после
+    // перезагрузки он уже занят своим делом.
+    if(cd.profile_complete){location.reload();return}
+    profileState={complete:false,profile:cd.profile||{},sources:profileState.sources};
+    openProfile();
     return;
    }
    if(!cr.ok)throw new Error(cd.detail||'Код входа не принят');
@@ -25329,6 +25591,76 @@ async function loginViaTelegram(statusEl){
  }catch(e){say(String(e.message||e))}
  finally{webLoginBusy=false}
 }
+// --- Знакомство -------------------------------------------------------------
+// Спрашиваем один раз: после входа, а также при первом сохранении проекта —
+// сервер туда же и не пускает (428), потому что сохранённый проект уже чей-то.
+let profileState={complete:false,profile:{},sources:[]};
+
+function profileSources(){
+ return profileState.sources&&profileState.sources.length?profileState.sources
+  :['Телеграм-канал','Рекомендация коллеги','Поиск в интернете','Конференция или мероприятие','Соцсети','Другое'];
+}
+
+function openProfile(){
+ const p=profileState.profile||{};
+ const set=(id,value)=>{const el=document.getElementById(id);if(el)el.value=value||''};
+ // Имя из Telegram — подсказка: человек правит, а не набирает.
+ set('profName',p.name||p.telegram_name||'');
+ set('profCompany',p.company);set('profRole',p.role);set('profContact',p.contact);
+ const select=document.getElementById('profSource');
+ if(select){
+  select.innerHTML='<option value="">— выберите —</option>'+
+   profileSources().map(s=>`<option${s===p.source?' selected':''}>${escapeHtml(s)}</option>`).join('');
+ }
+ const consent=document.getElementById('profConsent');
+ if(consent)consent.checked=!!p.consent;
+ const status=document.getElementById('profileStatus');
+ if(status)status.textContent='';
+ const dialog=document.getElementById('profileDialog');
+ if(dialog)dialog.style.display='flex';
+}
+
+function closeProfile(){
+ const dialog=document.getElementById('profileDialog');
+ if(dialog)dialog.style.display='none';
+}
+
+async function saveProfile(){
+ const value=id=>String((document.getElementById(id)||{}).value||'').trim();
+ const status=document.getElementById('profileStatus');
+ const say=t=>{if(status)status.textContent=t};
+ if(!value('profName')||!value('profCompany')||!value('profSource')){
+  say('Имя, компания и «откуда узнали» — обязательные.');return;
+ }
+ if(!(document.getElementById('profConsent')||{}).checked){
+  say('Без согласия на обработку данных анкету принять нельзя.');return;
+ }
+ say('Сохраняю…');
+ try{
+  const r=await fetch('/profile/save',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({session:activeSession(),name:value('profName'),company:value('profCompany'),
+    role:value('profRole'),source:value('profSource'),contact:value('profContact'),consent:true})});
+  const d=await r.json().catch(()=>({}));
+  if(!r.ok)throw new Error(d.detail||'Анкета не сохранена');
+  profileState={complete:true,profile:d.profile||{},sources:profileState.sources};
+  closeProfile();
+  renderAccountBox();
+ }catch(e){say(String(e.message||e))}
+}
+
+async function loadProfile(openIfEmpty){
+ if(!activeSession())return profileState;
+ try{
+  const r=await fetch('/profile/get',{method:'POST',headers:{'Content-Type':'application/json'},
+                                      body:JSON.stringify({session:activeSession()})});
+  if(!r.ok)return profileState;
+  const d=await r.json();
+  profileState={complete:!!d.complete,profile:d.profile||{},sources:d.sources||[]};
+ }catch(e){return profileState}
+ if(openIfEmpty&&!profileState.complete)openProfile();
+ return profileState;
+}
+
 const money=v=>(Number(v||0)/1e9).toLocaleString('ru-RU',{minimumFractionDigits:0,maximumFractionDigits:2})+' млрд ₽';
 const socialMoney=v=>{
  const x=Number(v||0);
@@ -25921,6 +26253,7 @@ function renderCadastralPreview(data){
 }
 
 let landLookup=null;
+let landScreeningRun=0;
 
 // Карточка участка с контуром и картой — при любом пути получения ТЭП, а не
 // только при поиске по адресу: кадастровый «Получить ТЭП» оставлял человека
@@ -25951,16 +26284,69 @@ async function loadLandScreening(query){
  const box=document.getElementById('landScreening');
  if(!box)return;
  const raw=String(query!=null?query:((document.getElementById('cadastralNumbers')||{}).value||'')).trim();
- if(!/\d{2}:\d{2}:\d{6,8}:\d+/.test(raw)){box.style.display='none';return}
+ const numbers=(raw.match(/\d{2}:\d{2}:\d{6,8}:\d+/g)||[]).slice(0,10);
+ if(!numbers.length){box.style.display='none';return}
+ const run=++landScreeningRun;
+ const started=Date.now();
+ const finished=[];
  box.style.display='block';
- box.className='land-screening';
- box.innerHTML='<header>Оценка участка — запрашиваю ограничения…</header>';
+ const paint=()=>{
+  if(run!==landScreeningRun)return;
+  const state=screeningWorkingHtml(numbers,finished,Math.round((Date.now()-started)/1000));
+  box.className=state.cls;box.innerHTML=state.html;
+ };
+ paint();
+ const ticker=setInterval(paint,500);
  try{
-  const response=await fetch('/land/screening?cad='+encodeURIComponent(raw));
-  if(!response.ok)throw new Error('нет ответа');
-  const data=await response.json();
-  renderLandScreening(data);
+  // Участки опрашиваются поодиночке: так видно ход работы, а не пустой экран.
+  // Стоит это столько же — сервер и в одном запросе идёт по номерам подряд,
+  // а посчитанное кладётся в кэш, поэтому сводный запрос ниже уже дешёвый.
+  for(const number of numbers){
+   let parcel=null;
+   try{
+    const one=await fetch('/land/screening?cad='+encodeURIComponent(number));
+    if(run!==landScreeningRun)return;
+    if(one.ok){const data=await one.json();parcel=(data.parcels||[])[0]||null}
+   }catch(e){/* участок мог не ответить — ход показываем всё равно */}
+   finished.push({number:number,parcel:parcel});
+   paint();
+  }
+  // Свод считает движок, а не страница: даже когда участок один, вердикт
+  // приходит с сервера.
+  const response=await fetch('/land/screening?cad='+encodeURIComponent(numbers.join(',')));
+  if(run!==landScreeningRun)return;
+  if(!response.ok){box.style.display='none';return}
+  renderLandScreening(await response.json());
  }catch(e){box.style.display='none'}
+ finally{clearInterval(ticker)}
+}
+
+// Плашка ожидания. Прежде она была невидимой: класс тона не ставился, а текст
+// в шапке белый — на белом фоне ничего не читалось, и ограничения появлялись
+// внезапно, без признака работы (замечание владельца, 18.08.2026). Теперь
+// видно, что идёт, сколько прошло и что уже проверено.
+function screeningWorkingHtml(numbers,finished,seconds){
+ const total=numbers.length;
+ const done=finished.length;
+ const current=Math.min(done+1,total);
+ const head='Проверяю градостроительные ограничения'+
+  (total>1?' — участок '+current+' из '+total:'')+' · '+seconds+' с';
+ const steps=finished.map(item=>{
+  const parcel=item.parcel;
+  let mark='сведений ЕГРН нет';
+  if(parcel&&parcel.found){
+   const flags=parcel.findings||[];
+   const killers=flags.filter(f=>f.flag_class==='killer').length;
+   mark=killers?'есть запрет':(flags.length?flags.length+' ограничени'+(flags.length===1?'е':(flags.length<5?'я':'й')):'ограничений не найдено');
+  }
+  return '<div class="step">'+escapeHtml(item.number)+' — '+mark+'</div>';
+ }).join('');
+ return {cls:'land-screening working',
+  html:'<header>'+escapeHtml(head)+'</header>'+
+   '<div class="progress"><i style="width:'+Math.round(100*done/total)+'%"></i></div>'+
+   steps+
+   '<footer>Опрашиваются слои НСПД: ЗОУИТ, ООПТ, лесничества, красные линии, '+
+   'территориальные зоны. Обычно от десяти секунд до минуты.</footer>'};
 }
 
 function screeningFlagLabel(cls){
@@ -25971,7 +26357,7 @@ function renderLandScreening(data){
  const box=document.getElementById('landScreening');
  if(!box||!data||!data.parcels)return;
  const v=data.verdict||{};
- const tone=v.status==='CRITICAL'?'critical':(v.status==='WARNING'?'warning':'clean');
+ const tone=v.status==='CRITICAL'?'critical':(v.status==='WARNING'?'warning':(v.status==='NOT_SCREENED'?'unknown':'clean'));
  const found=data.parcels.filter(p=>p.found);
  const single=found.length<2;
  const item=f=>`<li><span class="flag ${f.flag_class}">${screeningFlagLabel(f.flag_class)}</span> `+
@@ -25990,7 +26376,11 @@ function renderLandScreening(data){
   return `<ul>${head}${rest>0?`<li class="meta">и ещё ${rest} ограничени${rest===1?'е':(rest<5?'я':'й')} — в отчёте перечислены полностью</li>`:''}</ul>`;
  };
  let body='';
- if(single){
+ // Пустой список находок и непроверенный участок выглядели одинаково зелёными.
+ if(v.status==='NOT_SCREENED'){
+  body='<ul><li>Ограничения не проверялись: по номеру нет сведений ЕГРН, '+
+   'а без границ участка спрашивать НСПД не о чем.</li></ul>';
+ }else if(single){
   const p=found[0];
   const flags=(p&&p.findings)||[];
   body=flags.length?list(flags)
@@ -26650,7 +27040,7 @@ async function loadPresetCatalog(){
 async function loadServerPreset(){
  const select=document.getElementById('serverPresetSelect');
  const id=select&&select.value;
- // Отказ печатался во «Вводных», а список теперь в окне «Мои проекты»:
+ // Отказ печатался во «Вводных», а список теперь в личном кабинете:
  // сообщение уходило на страницу, которой человек не видит.
  if(!id){alert('Выберите предустановку из списка.');return}
  // Ход разбора и результат печатаются во «Вводных» — окно закрываем и
@@ -28851,7 +29241,7 @@ async function exportModelArchive(){
 // Кнопки «Сохранить» нет: каждый пересчёт и так пишет состояние в localStorage
 // этого браузера — ручная копия того же самого создавала ложное ощущение
 // надёжного сохранения (владелец, 16.08.2026). Настоящее сохранение, которое
-// переживает смену устройства, — «Мои проекты».
+// переживает смену устройства, — «Личный кабинет».
 function persistLocalSilently(){localStorage.setItem('plato_v04',JSON.stringify({inputs,tep,phasing,scenario:scenarioSelect.value}))}
 function loadLocal(){try{const x=JSON.parse(localStorage.getItem('plato_v04'));if(x){
  // Сохранённое состояние накладывается на умолчания, а не подменяет их целиком.
@@ -29037,7 +29427,7 @@ async function projectsCall(path,body){
  return data;
 }
 
-// Кнопка «Мои проекты» видна всегда: за ней живут готовые примеры, которые
+// Кнопка «Личный кабинет» видна всегда: за ней живут готовые примеры, которые
 // ключа не требуют. Прежде она появлялась только при настроенном хранилище —
 // вместе с ним пропали бы и примеры, а они витрина, а не чужие данные.
 let projectsStorageReady=false;
@@ -29081,10 +29471,15 @@ async function saveProjectToServer(){
    summary:projectSummaryForStore(),cadastral:projectCadastral()});
   alert('Проект сохранён на сервере');
   openProjects();
- }catch(e){alert(String(e.message||e))}
+ }catch(e){
+  // 428 от сервера — не отказ, а вопрос «кто вы»: открываем знакомство,
+  // а не пугаем человека кодом ошибки.
+  if(String(e.message||e).indexOf('Заполните знакомство')>=0){openProfile();return}
+  alert(String(e.message||e));
+ }
 }
 
-function renderProjectsLogin(){
+function renderProjectsLogin(reason){
  // Панель входа живёт рядом с таблицей, не затирая её: после входа таблица
  // нужна той же самой.
  const stored=document.getElementById('projectsStored');
@@ -29123,6 +29518,13 @@ function renderProjectsLogin(){
   stored.insertBefore(box,stored.firstChild);
  }
  box.style.display='';
+ // Причина показывается в самой панели: «сервер не знает, чей это проект» в
+ // окне запроса ключа человек читал уже после того, как ключ ввёл.
+ const status=box.querySelector('div:last-child');
+ if(status)status.textContent=reason?String(reason):'';
+ if(!projectsAcceptsLogin&&!projectsAcceptsKey&&status){
+  status.textContent='Вход на этом сервере не настроен: нет ни имени бота, ни ключа администратора.';
+ }
  const scroll=stored.querySelector('.scroll');
  if(scroll)scroll.style.display='none';
 }
@@ -29143,11 +29545,54 @@ function enterProjectsKey(){
  openProjects();
 }
 
+// Кто вошёл и чем выйти. Сессия входа живёт в localStorage браузера; пока
+// кнопки не было, выйти можно было только через консоль — на телефоне никак.
+function renderAccountBox(){
+ const box=document.getElementById('accountBox');
+ if(!box)return;
+ // В мини-приложении сессия приходит из хеша от бота: выходить там некуда и
+ // не из чего — окно и так открыто конкретным человеком.
+ if(telegramSession){box.style.display='none';return}
+ const web=webSession();
+ if(!web&&!projectsAdminKey){box.style.display='none';return}
+ const profile=(profileState&&profileState.profile)||{};
+ const title=web
+  ?(profile.name?escapeHtml(profile.name):'Вход через Telegram подтверждён')
+  :'Вход по ключу администратора';
+ const details=[];
+ if(web&&profile.company)details.push(escapeHtml(profile.company));
+ if(web&&profile.role)details.push(escapeHtml(profile.role));
+ if(web&&profile.telegram_name)details.push('Telegram: '+escapeHtml(profile.telegram_name));
+ box.style.display='';
+ box.innerHTML='<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">'+
+  '<div><b>'+title+'</b>'+
+  (details.length?'<div style="font-size:11px;color:#777;margin-top:2px">'+details.join(' · ')+'</div>':'')+
+  (web&&!(profileState&&profileState.complete)
+    ?'<div style="font-size:11px;color:#a05a00;margin-top:2px">Знакомство не заполнено — проекты не сохранятся.</div>':'')+
+  '</div>'+
+  '<span style="margin-left:auto;display:flex;gap:10px">'+
+  (web?'<button class="btn" onclick="openProfile()">Знакомство</button>':'')+
+  '<button class="btn" onclick="logoutFromSite()">Выход</button>'+
+  '</span></div>';
+}
+
+function logoutFromSite(){
+ if(!confirm('Выйти из личного кабинета на этом устройстве?'))return;
+ try{localStorage.removeItem(WEB_SESSION_KEY)}catch(e){}
+ // Ключ администратора — тоже вход, и он тоже лежит в браузере: оставить его
+ // после «Выхода» значит не выйти.
+ try{localStorage.removeItem('plato_projects_key')}catch(e){}
+ projectsAdminKey='';
+ profileState={complete:false,profile:{},sources:profileState.sources};
+ location.reload();
+}
+
 async function openProjects(){
  // Окно открывается сразу: примеры в нём есть всегда, и держать человека
  // перед запросом ключа ради витрины незачем. Список сохранённых
  // подгружается следом и только там, где хранилище настроено.
  projectsDialog.style.display='flex';
+ renderAccountBox();
  const stored=document.getElementById('projectsStored');
  if(!projectsStorageReady){
   if(stored)stored.style.display='none';
@@ -29164,18 +29609,18 @@ async function openProjects(){
  let data;
  try{data=await projectsCall('/projects/list',{})}
  catch(e){
-  // Неверный ключ запирал дверь снаружи: список не открывался, а кнопка
-  // «Сменить ключ» жила внутри него. Спрашиваем прямо здесь, иначе
-  // единственный выход — консоль браузера, которой на телефоне нет.
+  // Ключ, который сервер не принял, спрашивался снова и снова: человек сидел
+  // в окне ввода, а выход — вход через Telegram — был за его пределами
+  // (замечание владельца, 18.08.2026). Непринятый ключ забываем и показываем
+  // оба входа сразу, с причиной отказа рядом.
   if(!activeSession()){
-   const again=prompt(String(e.message||e)+'\n\nВведите ключ ещё раз:',projectsAdminKey||'');
-   if(again===null)return;
-   projectsAdminKey=again.trim();
-   if(projectsAdminKey)localStorage.setItem('plato_projects_key',projectsAdminKey);
-   else localStorage.removeItem('plato_projects_key');
-   try{data=await projectsCall('/projects/list',{})}
-   catch(e2){alert(String(e2.message||e2));return}
-  }else{alert(String(e.message||e));return}
+   projectsAdminKey='';
+   try{localStorage.removeItem('plato_projects_key')}catch(e2){}
+   renderAccountBox();
+   renderProjectsLogin(String(e.message||e));
+   return;
+  }
+  alert(String(e.message||e));return;
  }
  const rows=(data.projects||[]).map(p=>{
   const s=p.summary||{};
@@ -29254,6 +29699,9 @@ function resetAll(){
 
 loadLocal();
 initProjects();
+// Кто зашёл, спрашивается один раз: у вошедшего без анкеты открывается
+// знакомство, у остальных ничего не происходит.
+loadProfile(true);
 fillProjectPresets();
 {
  const sc=SCENARIOS[scenarioSelect.value]||SCENARIOS.base;

@@ -224,7 +224,8 @@ def test_the_examples_do_not_wait_for_a_key():
     готового примера незачем."""
     body = core.PAGE[core.PAGE.index("async function openProjects("):]
     body = body[:body.index("function closeProjects(")]
-    assert body.index("projectsDialog.style.display='flex'") < body.index("prompt(")
+    assert body.index("projectsDialog.style.display='flex'") < body.index("projectsCall(")
+    assert "prompt(" not in body, "витрина не начинается с вопроса"
     assert "if(!projectsStorageReady)" in body.replace(" ", "")
 
 
@@ -252,19 +253,41 @@ def test_the_dialog_says_where_the_data_lives():
 
 # --- из тупика есть выход -------------------------------------------------------
 
-def test_a_wrong_key_can_be_retyped():
-    """Неверный ключ запирал дверь снаружи: список не открывался, а кнопка
-    «Сменить ключ» жила внутри него. Единственным выходом оставалась консоль
-    браузера, которой на телефоне нет. Первый ввод ключа теперь живёт в
-    enterProjectsKey (за кнопкой рядом со входом через Telegram), повторный
-    после отказа — по-прежнему прямо в openProjects."""
+def test_a_rejected_key_is_forgotten_not_asked_again():
+    """Ключ, который сервер не принял, спрашивался снова и снова: человек
+    оставался в окне ввода, а выход — вход через Telegram — был за его
+    пределами (замечание владельца, 18.08.2026). Теперь непринятый ключ
+    забывается, и показываются оба входа с причиной отказа рядом."""
     body = core.PAGE[core.PAGE.index("async function openProjects("):]
     body = body[:body.index("function closeProjects(")]
-    assert body.count("prompt(") >= 1, "после отказа ключ не спрашивается заново"
-    assert "Введите ключ ещё раз" in body
+    assert "prompt(" not in body, "по кругу ключ больше не спрашивается"
+    assert "projectsAdminKey=''" in body, "непринятый ключ не остаётся в браузере"
+    assert "localStorage.removeItem('plato_projects_key')" in body
+    assert "renderProjectsLogin(String(e.message||e))" in body, "причина отказа — на виду"
+
+    panel = core.PAGE[core.PAGE.index("function renderProjectsLogin("):]
+    panel = panel[:panel.index("function hideProjectsLogin(")]
+    assert "reason" in panel, "панель входа обязана показать, почему не пустили"
+    assert "Вход на этом сервере не настроен" in panel, (
+        "когда не принимают ни ключ, ни телеграм, так и надо сказать")
+
     entry = core.PAGE[core.PAGE.index("function enterProjectsKey("):]
-    entry = entry[:entry.index("async function openProjects(")]
+    entry = entry[:entry.index("// Кто вошёл и чем выйти")]
     assert "prompt(" in entry, "первому вводу ключа негде случиться"
+
+
+def test_an_absent_key_is_not_the_same_as_a_wrong_one(storage, monkeypatch):
+    """Пустой DEVELOPAID_ADMIN_KEY отказывал теми же словами, что неверный
+    ключ, — и человек вводил его снова и снова, хотя принимать было нечему."""
+    monkeypatch.delenv("DEVELOPAID_ADMIN_KEY", raising=False)
+    answer = save(storage, key="что угодно")
+    assert answer.status_code == 403
+    assert "не задан" in answer.json()["detail"]
+
+    monkeypatch.setenv("DEVELOPAID_ADMIN_KEY", KEY)
+    wrong = save(storage, key="не тот ключ")
+    assert wrong.status_code == 403
+    assert "не подошёл" in wrong.json()["detail"]
 
 
 def test_the_key_can_be_changed_from_the_list():
@@ -317,7 +340,11 @@ def test_the_inputs_tab_points_to_the_new_place():
     assert 'id="presetsMovedHint"' in core.PAGE
     hint = core.PAGE[core.PAGE.index('id="presetsMovedHint"'):]
     hint = hint[:hint.index("</div>")]
-    assert "Мои проекты" in hint and "Мишина" in hint
+    # Раздел переименован в «Личный кабинет» (решение владельца, 18.08.2026):
+    # подсказка обязана называть то место, которое человек увидит на кнопке.
+    assert "Личный кабинет" in hint and "Мишина" in hint
+    button = core.PAGE[core.PAGE.index('id="projectsButton"'):]
+    assert "Личный кабинет" in button[:200], "подсказка и кнопка обязаны совпадать"
 
 
 def test_opening_an_example_closes_the_window_it_came_from():
