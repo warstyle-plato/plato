@@ -1120,6 +1120,39 @@ def _sender_name(message: dict[str, Any]) -> str:
                                       str(sender.get("last_name") or "").strip()) if part)
 
 
+def _remote_summaries(days: int) -> dict | None:
+    """Свод с ядра: сайт живёт там, и анкеты, заполненные на сайте, лежат там же.
+
+    Журнал пишется на том хосте, который обслужил запрос. Бот на Render видел
+    только свою половину, и ответы людей с сайта не показывались никому
+    (18.08.2026). Подпись — общим токеном бота, как у подтверждения входа.
+    """
+    remote = core._projects_remote_url("/internal/usage/summary")
+    if not remote:
+        return None
+    try:
+        return core._core_post(remote, {
+            "days": int(days),
+            "sign": core._web_login_sign("usage-summary", int(days)),
+        }, 30.0)
+    except Exception:
+        # Свод — удобство: молчание лучше отказа вместо своей половины.
+        return None
+
+
+def _survey_block(data: dict, title: str) -> list[str]:
+    lines = [f"<b>{title}</b>", f"Анкет заполнено: <b>{data.get('answers', 0)}</b>"]
+    groups = [g for g in (data.get("groups") or []) if g.get("count")]
+    if groups:
+        lines.append("Средние по разделам: " + " · ".join(
+            f"{html.escape(str(g['label']))} {g['avg']}" for g in groups))
+    for note in (data.get("notes") or [])[-10:]:
+        who = html.escape(str(note.get("role") or "—"))
+        lines.append(f"• <i>{html.escape(str(note.get('group') or ''))}</i> · {who}: "
+                     + html.escape(str(note.get("text") or "")[:400]))
+    return lines
+
+
 def _survey_message(chat_id: int, user_id: int, argument: str) -> None:
     """Свод теста: откуда пришли, докуда дошли, как оценили, что написали.
 
@@ -1175,6 +1208,17 @@ def _survey_message(chat_id: int, user_id: int, argument: str) -> None:
     else:
         lines.append("")
         lines.append("<i>Свободных комментариев пока нет.</i>")
+    # Вторая половина ответов — на ядре: сайт обслуживает оно, и его журнал
+    # боту не виден. Показываем отдельным блоком, а не подмешиваем в средние:
+    # смешивать две выборки в одно число значит выдумывать третье.
+    remote = _remote_summaries(days)
+    remote_survey = (remote or {}).get("survey") or {}
+    if remote_survey.get("answers"):
+        lines.append("")
+        lines.extend(_survey_block(remote_survey, "Анкеты с сайта (ядро)"))
+    elif remote is None and core._projects_remote_url("/internal/usage/summary"):
+        lines.append("")
+        lines.append("<i>Свод с ядра не получен — показана только половина бота.</i>")
     _send_message(chat_id, "\n".join(lines))
 
 

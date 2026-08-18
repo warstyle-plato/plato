@@ -49,7 +49,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.18.57"
+VERSION = "0.18.58"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -23876,6 +23876,29 @@ def feedback_submit(req: FeedbackRequest) -> dict[str, Any]:
                 chat_id=_web_identity_chat_id(req.session),
                 text=data["impression"], **data)
     return {"ok": True}
+
+
+class InternalSummaryRequest(BaseModel):
+    days: int = 30
+    sign: str = ""
+
+
+@app.post("/internal/usage/summary")
+def internal_usage_summary(req: InternalSummaryRequest) -> dict[str, Any]:
+    """Свод учёта и анкет этого хоста — для того, у кого есть Telegram.
+
+    Журнал пишется там, где обслужен запрос: сайт живёт на ядре, бот на Render,
+    и `/survey` в боте видел только свою половину — анкеты, заполненные на
+    сайте, не показывались никому (18.08.2026). Подпись — общим токеном бота,
+    как у подтверждения входа: свод несёт свободные тексты людей и посторонним
+    не отдаётся.
+    """
+    days = max(1, min(365, int(req.days or 30)))
+    expected = _web_login_sign("usage-summary", days)
+    if not hmac.compare_digest(str(req.sign or "").encode("utf-8"),
+                               expected.encode("utf-8")):
+        raise HTTPException(status_code=403, detail="Подпись не сошлась.")
+    return {"usage": usage_summary(days), "survey": survey_summary(days)}
 
 
 @app.get("/auth/telegram/qr", include_in_schema=False)
