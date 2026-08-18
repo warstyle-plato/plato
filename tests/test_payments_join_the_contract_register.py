@@ -165,3 +165,50 @@ def test_the_source_of_funds_is_kept():
     ])
 
     assert payments["own_funds"] == pytest.approx(100e6)
+
+
+def test_acts_are_split_by_the_same_key_as_payments():
+    """У денег и объёмов разные шкалы, но статья определяется одинаково.
+
+    Аванс уходит раньше акта, удержание позже — поэтому ряды раздельные. А вот
+    статья у платежа и у акта по одному договору одна, и определять её двумя
+    способами значило бы завести второй источник на одно число.
+    """
+    register = _register([_row("СтройКо", "№12", "2.2.2.3.4", "2.2.1.4")])
+    works = {"rows": [
+        {"contractor": "СтройКо", "contract": "№12", "code": "2.2.1.4",
+         "amount": 80e6, "date": datetime.date(2026, 5, 20), "construction": True},
+        # Плата городу актом КС не является и в объёмы не идёт.
+        {"contractor": "УФК по г. Москве (ДГИ)", "contract": "", "code": "1.6",
+         "amount": 470e6, "date": datetime.date(2026, 5, 20), "construction": False},
+    ]}
+
+    result = actuals.works_by_article(works, register)
+
+    assert result["total"] == pytest.approx(80e6)
+    assert result["capex_by_article"]["main_under"][
+        datetime.date(2026, 5, 1)] == pytest.approx(80e6)
+
+
+def test_the_contract_register_carries_the_middle_level():
+    """Договор — уровень между сметой и платежом, и его надо читать целиком.
+
+    Законтрактовано, оплачено, авансы, остаток к оплате и выполнено: без этого
+    не видно, что оплачено авансом вперёд, а что уже отработано.
+    """
+    contracts = {
+        "rows": [
+            {"contractor": "А", "contract": "№1", "subject": "СМР",
+             "estimate_code": "2.2.1.4", "article_name": "Фундамент",
+             "amount": 300e6, "paid": 200e6, "advances": 120e6,
+             "outstanding": 100e6, "completed": 150e6},
+        ],
+    }
+    for key in ("amount", "paid", "advances", "outstanding", "completed"):
+        contracts[key] = sum(r[key] for r in contracts["rows"])
+
+    assert contracts["amount"] == pytest.approx(300e6)
+    assert contracts["outstanding"] == pytest.approx(
+        contracts["amount"] - contracts["paid"])
+    # Выполнено меньше оплаченного — часть денег ушла авансом.
+    assert contracts["completed"] < contracts["paid"]

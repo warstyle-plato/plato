@@ -108,6 +108,7 @@ _WORKS_COLUMNS = {
     "estimate_code": 6,
     "amount": 8,
     "contractor": 10,
+    "contract": 11,
 }
 
 # Строка «выполнено», у которой нет и не может быть акта КС: плата городу,
@@ -341,6 +342,7 @@ def read_completed_works(path: str | Path) -> dict[str, Any]:
             "code": _code(cell("estimate_code")),
             "document": str(cell("document") or "").strip(),
             "contractor": str(cell("contractor") or "").strip(),
+            "contract": str(cell("contract") or "").strip(),
             "object": str(cell("object") or "").strip(),
             "amount": amount,
             "date": _date(cell("number_and_date")) or _date(cell("period")),
@@ -1214,3 +1216,81 @@ def payments_by_article(
         "mapped": sum(matched.values()),
         "total": payments["total"],
     }
+
+
+# Реестр договоров РСС: по каждому договору законтрактовано, оплачено, авансы,
+# остаток к оплате и выполнено. Это контрактный план-факт — уровень между
+# сметой и платежом, которого не было ни в одном другом источнике.
+_CONTRACTS_SHEET = "Реестр договоров"
+_CONTRACTS_FIRST_ROW = 9
+_CONTRACTS_COLUMNS = {
+    "contractor": 1,
+    "contract": 2,
+    "subject": 4,
+    "estimate_code": 5,
+    "article_name": 6,
+    "amount": 7,
+    "paid": 8,
+    "advances": 9,
+    "outstanding": 10,
+    "completed": 11,
+}
+
+
+def read_contracts(path: str | Path) -> dict[str, Any]:
+    """Реестр договоров РСС: сколько заключено, оплачено и выполнено."""
+    rows: list[dict[str, Any]] = []
+    for index, row in enumerate(_sheet(path, _CONTRACTS_SHEET), 1):
+        if index < _CONTRACTS_FIRST_ROW:
+            continue
+
+        def cell(field: str) -> Any:
+            position = _CONTRACTS_COLUMNS[field]
+            return row[position] if position < len(row) else None
+
+        amount = _money(cell("amount"))
+        contractor = str(cell("contractor") or "").strip()
+        if not contractor and not amount:
+            continue
+        rows.append({
+            "contractor": contractor,
+            "contract": str(cell("contract") or "").strip(),
+            "subject": str(cell("subject") or "").strip(),
+            "estimate_code": _code(cell("estimate_code")),
+            "article_name": str(cell("article_name") or "").strip(),
+            "amount": amount,
+            "paid": _money(cell("paid")),
+            "advances": _money(cell("advances")),
+            "outstanding": _money(cell("outstanding")),
+            "completed": _money(cell("completed")),
+        })
+    return {
+        "rows": rows,
+        "amount": sum(item["amount"] for item in rows),
+        "paid": sum(item["paid"] for item in rows),
+        "advances": sum(item["advances"] for item in rows),
+        "outstanding": sum(item["outstanding"] for item in rows),
+        "completed": sum(item["completed"] for item in rows),
+    }
+
+
+def works_by_article(
+    works: dict[str, Any],
+    register: dict[str, Any],
+    gns: dict[str, Any] | None = None,
+    crosswalk: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Разнести принятые КС по статьям движка — тем же ключом, что и платежи.
+
+    Деньги и объёмы идут по раздельным шкалам: аванс уходит раньше акта, а
+    удержание позже. Но статья у них одна, и определяется она одинаково —
+    договором, суженным кодом РСС. Строки, которые актом КС не являются (плата
+    городу, комиссии банка, ФОТ), сюда не идут: они уже посчитаны деньгами.
+    """
+    rows = [{"contractor": item["contractor"], "contract": item.get("contract", ""),
+             "estimate_code": item["code"], "amount": item["amount"],
+             "date": item["date"]}
+            for item in works["rows"] if item["construction"]]
+    return payments_by_article(
+        {"rows": rows, "total": sum(item["amount"] for item in rows)},
+        register, gns=gns, crosswalk=crosswalk)
