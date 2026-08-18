@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.18.44"
+VERSION = "0.18.45"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -24499,6 +24499,11 @@ details.cadastral-box>summary::marker{color:#888}
       <!-- Кнопки хранилища появляются только там, где оно настроено и есть чем
            опознать владельца: иначе это кнопка, которая всегда отказывает. -->
       <button class="btn" id="projectsButton" style="display:none" onclick="openProjects()">Личный кабинет</button>
+      <!-- Вход жил внутри личного кабинета и показывался только тем, у кого нет
+           ни сессии, ни ключа: человек с непринятым ключом до него не доходил
+           вовсе (замечание владельца, 18.08.2026). Кнопка стоит в шапке, пока
+           никто не вошёл, и прячется после входа. -->
+      <button class="btn dark" id="loginButton" style="display:none" onclick="openLogin()">Войти через Telegram</button>
       <button class="btn" onclick="resetAll()">Сбросить</button>
       <a class="btn" href="/guide">Руководство</a>
       <button class="btn dark" onclick="calculateAndOpen('report')">Пересчитать модель</button>
@@ -25519,10 +25524,16 @@ async function loginViaTelegram(statusEl){
   const r=await fetch('/auth/telegram/start',{method:'POST'});
   const d=await r.json().catch(()=>({}));
   if(!r.ok)throw new Error(d.detail||'Вход через Telegram недоступен');
-  // Вкладка бота открывается сразу по клику — иначе браузер сочтёт окно
-  // всплывающим. Дальше страница ждёт подтверждения коротким опросом.
-  window.open(d.link,'_blank');
-  say('Подтвердите вход в Telegram и вернитесь на эту вкладку…');
+  // Окно бота открывается сразу, но после запроса к серверу браузер уже не
+  // считает его открытым по клику и часто глушит — Safari почти всегда. Ссылка
+  // показывается всегда: без неё человек стоит перед пустым ожиданием и не
+  // знает, что окно заблокировано (замечание владельца, 18.08.2026).
+  const opened=window.open(d.link,'_blank');
+  if(statusEl){
+   statusEl.innerHTML=(opened?'Подтвердите вход в Telegram и вернитесь на эту вкладку. '
+                             :'Браузер не дал открыть окно бота — откройте по ссылке. ')+
+    '<a href="'+encodeURI(d.link)+'" target="_blank" rel="noopener">Открыть бота</a>';
+  }
   const until=Date.now()+2*60*1000;
   while(Date.now()<until){
    await new Promise(res=>setTimeout(res,2500));
@@ -25535,6 +25546,8 @@ async function loginViaTelegram(statusEl){
     // перезагрузки он уже занят своим делом.
     if(cd.profile_complete){location.reload();return}
     profileState={complete:false,profile:cd.profile||{},sources:profileState.sources};
+    renderLoginButton();
+    renderAccountBox();
     openProfile();
     return;
    }
@@ -29399,6 +29412,20 @@ async function initProjects(){
  }catch(e){projectsStorageReady=false}
  const actions=document.getElementById('projectsStorageActions');
  if(actions)actions.style.display=projectsStorageReady?'inline-flex':'none';
+ renderLoginButton();
+}
+
+function renderLoginButton(){
+ const button=document.getElementById('loginButton');
+ if(!button)return;
+ // В мини-приложении вход уже есть — он и открыл окно.
+ const needed=projectsAcceptsLogin&&!telegramSession&&!webSession()&&!projectsAdminKey;
+ button.style.display=needed?'':'none';
+}
+
+function openLogin(){
+ openProjects();
+ renderProjectsLogin();
 }
 
 function projectSummaryForStore(){
@@ -29537,6 +29564,7 @@ function logoutFromSite(){
  try{localStorage.removeItem('plato_projects_key')}catch(e){}
  projectsAdminKey='';
  profileState={complete:false,profile:{},sources:profileState.sources};
+ renderLoginButton();
  location.reload();
 }
 

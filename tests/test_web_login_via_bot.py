@@ -126,3 +126,38 @@ def test_the_page_wires_the_login_in():
     assert "renderProjectsLogin();" in page
     assert "appendAiLoginButton();" in page
     assert "start_payload.startswith(\"login_\")" in Path(main.__file__).read_text(encoding="utf-8")
+
+
+def test_the_login_is_visible_without_opening_anything():
+    """Вход жил внутри личного кабинета и показывался только тем, у кого нет ни
+    сессии, ни ключа: человек с непринятым ключом до него не доходил вовсе
+    (замечание владельца, 18.08.2026). Кнопка стоит в шапке."""
+    page = main.PAGE
+    assert 'id="loginButton"' in page
+    button = page[page.index('id="loginButton"'):]
+    assert "Войти через Telegram" in button[:200]
+    assert 'onclick="openLogin()"' in button[:200]
+
+    body = page[page.index("function renderLoginButton()"):page.index("function openLogin()")]
+    assert "projectsAcceptsLogin" in body, "нет бота — нечего и предлагать"
+    assert "telegramSession" in body and "webSession()" in body
+    assert "projectsAdminKey" in body
+
+
+def test_the_bot_link_survives_a_blocked_popup():
+    """Окно бота открывается после запроса к серверу, и браузер часто считает
+    его непрошеным — Safari почти всегда. Тогда человек стоял перед пустым
+    ожиданием: ссылки на бота на экране не было."""
+    body = main.PAGE[main.PAGE.index("async function loginViaTelegram("):]
+    body = body[:body.index("const money=")]
+    assert "const opened=window.open(d.link" in body
+    assert "Открыть бота" in body, "ссылка показывается всегда"
+    assert "Браузер не дал открыть окно бота" in body
+    assert "encodeURI(d.link)" in body
+
+
+def test_the_link_leads_to_the_bot_with_the_code():
+    data = start_login()
+    assert data["link"].startswith("https://t.me/developaid_test_bot?start=login_")
+    assert data["code"] in data["link"]
+
