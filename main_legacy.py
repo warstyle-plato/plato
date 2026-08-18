@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.18.33"
+VERSION = "0.18.34"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -9026,6 +9026,14 @@ class _PdfSection:
         self.name = name
 
 
+def _pdf_screening_numbers(inputs: dict[str, Any]) -> list[str]:
+    """Кадастровые номера проекта для раздела реализуемости посадки."""
+    snapshot = inputs.get("_land_lookup") or {}
+    raw = _land_text(snapshot.get("query")) or _land_text(inputs.get("cadastral_numbers"))
+    numbers = [n for n in re.split(r"[\s,;]+", raw) if n]
+    return [n for n in numbers if re.match(r"^\d{2}:\d{2}:\d{6,8}:\d+$", n)][:10]
+
+
 def _pdf_ordered_story(story: list[Any], order: list[tuple[str, bool]],
                        page_break: Any) -> list[Any]:
     """Поток отчёта, пересобранный по секциям.
@@ -9474,6 +9482,37 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
             + ". Чаще всего это старая страница в браузере — обновите её.",
             ParagraphStyle("parity", parent=small, fontSize=8.0,
                            textColor=colors.HexColor("#A35D00"))))
+    # Реализуемость посадки идёт ПЕРЕД финансовым выводом (архитектура,
+    # раздел «Места в интерфейсе»): сначала что мешает строить, потом деньги.
+    # Отчёт не имеет права падать из-за внешнего сервиса — раздел пропускается.
+    try:
+        screening_numbers = _pdf_screening_numbers(inputs)
+        screening = land_screening(cad=",".join(screening_numbers)) if screening_numbers else None
+    except Exception:
+        screening = None
+    if screening:
+        verdict = screening.get("verdict") or {}
+        story.append(_PdfSection("screening"))
+        story.append(P("Реализуемость посадки", h2))
+        story.append(P(f"<b>{verdict.get('headline','')}</b>", small))
+        rows = [["Ограничение", "Влияние", "Основание"]]
+        for parcel in screening.get("parcels") or []:
+            for finding in parcel.get("findings") or []:
+                mark = {"killer": "СТОП", "economic": "ВЛИЯЕТ"}.get(
+                    finding.get("flag_class"), "справка")
+                numbers = finding.get("reg_numbers") or (
+                    [finding.get("reg_number")] if finding.get("reg_number") else [])
+                basis = ", ".join(str(n) for n in numbers if n)
+                if finding.get("document_number"):
+                    basis = (basis + " · " if basis else "") + str(finding["document_number"])
+                rows.append([f"{mark} · {finding.get('name','')}",
+                             str(finding.get("impact", "")), basis or "—"])
+        if len(rows) > 1:
+            story.append(table(rows, [70*mm, 60*mm, 40*mm]))
+        else:
+            story.append(P("В НСПД ограничений на участок не обнаружено.", small))
+        story.append(P(verdict.get("disclaimer", ""), small))
+        story.append(Spacer(1, 4*mm))
     story.append(_PdfSection("summary"));story.append(P("Ключевая экономика",h2))
     kpis=[
         *_pdf_entry_cost_rows(result, expense_structure),
@@ -9878,7 +9917,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     # → на чём считали → сколько стоит → сколько приносит → чем финансируется
     # → чем рискуем → когда.
     story = _pdf_ordered_story(story, [
-        ("tep", False), ("vri", False), ("summary", False),
+        ("tep", False), ("vri", False), ("screening", True), ("summary", False),
         ("phases", True), ("premises", True),
         ("expenses", False), ("expenses_detail", False),
         ("income", True), ("financing", True), ("sensitivity", True),
