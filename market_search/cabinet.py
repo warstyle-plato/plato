@@ -233,12 +233,18 @@ line-height:1;color:var(--dim);cursor:pointer}
 .kv span{color:var(--dim);font-size:12px}
 .self{color:var(--rust);font-weight:600}
 .muted{color:var(--dim)}
-#sug{position:absolute;z-index:30;left:0;right:0;top:100%;background:#fff;border:1px solid var(--line);
+#addwrapdummy{}
+#sug,#addsug{position:absolute;z-index:30;left:0;right:0;top:100%;background:#fff;border:1px solid var(--line);
 border-radius:9px;box-shadow:0 6px 22px rgba(20,35,60,.13);max-height:320px;overflow:auto;display:none}
-#sug div{padding:8px 11px;cursor:pointer;font-size:14px;border-bottom:1px solid #f0f4f8}
-#sug div:last-child{border-bottom:0}
-#sug div:hover,#sug div.on{background:#eef4fa}
-#sug small{display:block;color:var(--dim);font-size:12px}
+#sug div,#addsug div{padding:8px 11px;cursor:pointer;font-size:14px;border-bottom:1px solid #f0f4f8}
+#sug div:last-child,#addsug div:last-child{border-bottom:0}
+#sug div:hover,#sug div.on,#addsug div:hover{background:#eef4fa}
+#sug small,#addsug small{display:block;color:var(--dim);font-size:12px}
+.addwrap{position:relative}
+.addwrap input{width:100%}
+tr.added td{background:#f1f8f4}
+ul.caveats{margin:6px 0 0;padding-left:20px;color:var(--dim);font-size:13.5px}
+ul.caveats li{margin:4px 0}
 </style>
 <header>
   <h1>Конструктор отчёта о рынке</h1>
@@ -542,6 +548,69 @@ function bubbleChart(rows, view){
   return '<div class="wrap">'+svg+'</svg></div>';
 }
 
+
+// Премия по месяцам. Разрыв бывает нажит собственным ростом цены, а бывает —
+// падением соседей; по одной сегодняшней цифре эти два случая неразличимы.
+function premiumChart(rows){
+  const pts=(rows||[]).filter(r=>r.premium_pct!==null&&r.premium_pct!==undefined);
+  if(pts.length<3) return '';
+  const W=640,H=200,L=52,R=96,T=14,B=28;
+  const vs=pts.map(p=>p.premium_pct);
+  const hi=Math.max(...vs,0)*1.15, lo=Math.min(...vs,0)*1.15;
+  const x=i=>L+i*(W-L-R)/(pts.length-1);
+  const y=v=>T+(H-T-B)*(1-(v-lo)/((hi-lo)||1));
+  let svg=`<svg viewBox="0 0 ${W} ${H}" width="100%" role="img">`;
+  [hi,(hi+lo)/2,lo].forEach(v=>{
+    svg+=`<line x1="${L}" y1="${y(v)}" x2="${W-R}" y2="${y(v)}" stroke="#eef2f6"/>`
+       +`<text x="${L-6}" y="${y(v)+4}" text-anchor="end" font-size="10" fill="#8798a8">${pct(v)}</text>`;});
+  svg+=`<line x1="${L}" y1="${y(0)}" x2="${W-R}" y2="${y(0)}" stroke="#16202b" stroke-width="1"/>`;
+  svg+=`<path d="${pts.map((p,i)=>`${i?'L':'M'}${x(i).toFixed(1)} ${y(p.premium_pct).toFixed(1)}`).join(' ')}"`
+     +` fill="none" stroke="#C4581B" stroke-width="2.4"/>`;
+  pts.forEach((p,i)=>{ if(i%Math.ceil(pts.length/6)===0)
+    svg+=`<text x="${x(i)}" y="${H-8}" text-anchor="middle" font-size="10" fill="#8798a8">${p.month.slice(2)}</text>`;});
+  const last=pts[pts.length-1], first=pts[0];
+  svg+=`<text x="${W-R+8}" y="${y(last.premium_pct)+4}" font-size="10.5" fill="#C4581B" font-weight="600">${pct(last.premium_pct)}</text>`;
+  svg+=`<text x="${W-R+8}" y="${y(last.premium_pct)+19}" font-size="10" fill="#8798a8">было ${pct(first.premium_pct)}</text>`;
+  return '<div class="wrap">'+svg+'</svg></div>';
+}
+
+function deepCard(d){
+  const a=d.analysis||{}, prem=a.premium_series||[], money=a.price_of_premium||{};
+  if(!prem.length && !Object.keys(money).length) return '';
+  const first=prem[0], last=prem[prem.length-1];
+  let story='';
+  if(first&&last){
+    const grew=last.premium_pct-first.premium_pct;
+    const ownUp=(last.own/first.own-1)*100, medUp=(last.median/first.median-1)*100;
+    story=`С ${first.month} премия к медиане соседей прошла путь ${pct(first.premium_pct)} → ${pct(last.premium_pct)}`
+      +` (${grew>0?'выросла':'сузилась'} на ${num(Math.abs(grew),1)} п.п.). За то же время наша цена`
+      +` ${ownUp>=0?'выросла':'упала'} на ${num(Math.abs(ownUp),1)} %, медиана соседей`
+      +` ${medUp>=0?'выросла':'упала'} на ${num(Math.abs(medUp),1)} % —`
+      +` ${Math.abs(ownUp)>Math.abs(medUp)?'разрыв нажит в основном нами':'разрыв нажит движением рынка, а не нашим прайсом'}.`;
+  }
+  const rows=[];
+  if(money.premium_per_sqm!==undefined)
+    rows.push(`<div><b>${num(money.premium_per_sqm)} ₽/м²</b><span>премия к медиане соседей</span></div>`);
+  if(money.premium_on_remainder!==undefined)
+    rows.push(`<div><b>${num(money.premium_on_remainder,1)} млн ₽</b><span>стоит премия на остатке ${num(money.remaining_area)} м²</span></div>`);
+  if(money.months_own_pace!==undefined)
+    rows.push(`<div><b>${num(money.months_own_pace,1)} мес</b><span>распродажа своим темпом</span></div>`);
+  if(money.months_peer_pace!==undefined)
+    rows.push(`<div><b>${num(money.months_peer_pace,1)} мес</b><span>темпом соседей</span></div>`);
+  if(money.months_lost!==undefined)
+    rows.push(`<div><b>${num(money.months_lost,1)} мес</b><span>разница в сроке</span></div>`);
+  const caveats=(a.caveats||[]).map(c=>`<li>${esc(c)}</li>`).join('');
+  return `<div class="card"><h2>Что стоит премия</h2>`
+    +(story?`<div class="say watch"><b>⚠️ Разбор</b> ${esc(story)}</div>`:'')
+    +(rows.length?`<div class="kv">${rows.join('')}</div>`:'')
+    +(prem.length?`<h3>Премия к медиане соседей по месяцам, %</h3>`+premiumChart(prem):'')
+    +`<div class="muted" style="font-size:12.5px;margin-top:10px">Обе величины условны: они показывают`
+    +` масштаб выбора, а не прогноз. Премия на остатке — выручка, которую она приносит,`
+    +` если её платят; срок — что будет, если продавать темпом соседей.</div>`
+    +(caveats?`<h3>Чего эти числа не говорят</h3><ul class="caveats">${caveats}</ul>`:'')
+    +`</div>`;
+}
+
 function compareTable(rows, cols){
   return '<div class="wrap"><table><tr>'+cols.map(c=>`<th${c.num?' class="num"':''}>${c.t}</th>`).join('')+'</tr>'
     +rows.map(r=>'<tr'+(r.__own?' class="ownrow"':'')+'>'
@@ -722,6 +791,37 @@ function projectCard(p){
   </div></div>`;
 }
 
+function wireAdd(){
+  const box=$('#addq'), list=$('#addsug');
+  if(!box) return;
+  let items=[], timer=null;
+  const close=()=>{list.style.display='none';items=[]};
+  box.addEventListener('input',()=>{
+    const text=box.value.trim();
+    clearTimeout(timer);
+    if(text.length<2){close();return}
+    timer=setTimeout(async()=>{
+      try{
+        const r=await fetch('/market/projects/suggest?q='+encodeURIComponent(text));
+        if(!r.ok){close();return}
+        items=(await r.json()).items||[];
+        list.innerHTML=items.map((it,i)=>`<div data-i="${i}">${esc(it.name)}`
+          +`<small>${esc([it.segment,it.developer,it.address].filter(Boolean).join(' · '))}</small></div>`).join('');
+        list.style.display=items.length?'block':'none';
+      }catch(e){close()}
+    },180);
+  });
+  list.addEventListener('mousedown',e=>{
+    const row=e.target.closest('div[data-i]');
+    if(!row) return;
+    e.preventDefault();
+    const item=items[Number(row.dataset.i)];
+    box.value=''; close();
+    if(item) addProject(item);
+  });
+  document.addEventListener('click',e=>{if(!e.target.closest('.addwrap'))close()});
+}
+
 function wireCards(){
   document.querySelectorAll('td.link[data-peer]').forEach(td=>{
     td.addEventListener('click',()=>{
@@ -831,6 +931,53 @@ async function loadPlan(file){
   }catch(e){$('#planstate').textContent=String(e.message||e);planData=null}
 }
 
+
+// Добавить в сравнение кого угодно из справочника. Рядом может не быть
+// аналога, а за три километра — быть; и наоборот, сосед по радиусу бывает не
+// аналогом, а просто соседом. Строка добавленного проекта устроена ровно так
+// же, как у найденного автоматически, иначе часть разделов её тихо пропустит.
+const added=new Map();
+
+async function addProject(item){
+  if(!lastReport){$('#addstate').textContent='Сначала соберите отчёт.';return}
+  if(added.has(item.complex_id)){$('#addstate').textContent='Этот проект уже в сравнении.';return}
+  $('#addstate').textContent='Добавляю ' + item.name + '…';
+  const s=lastReport.subject||{};
+  const q=new URLSearchParams();
+  if(s.latitude&&s.longitude){q.set('latitude',s.latitude);q.set('longitude',s.longitude)}
+  try{
+    const r=await fetch(`/market/project/${item.complex_id}?`+q.toString());
+    const d=await r.json();
+    if(!r.ok){$('#addstate').textContent=d.detail||'Не получилось';return}
+    added.set(item.complex_id,d);
+    lastReport.peers=[...(lastReport.peers||[]).filter(p=>p.complex_id!==d.complex_id), d]
+      .sort((a,b)=>(a.distance_km??99)-(b.distance_km??99));
+    // Разделы считаются заново: медианы, вердикт и таблицы должны учесть
+    // добавленного, иначе он окажется на графике, но не в выводах.
+    await rebuild();
+  }catch(e){$('#addstate').textContent=String(e.message||e)}
+}
+
+async function rebuild(){
+  const codes=[...document.querySelectorAll('input[name=code]:checked')].map(i=>i.value);
+  const s=lastReport.subject||{};
+  $('#addstate').textContent='Пересчитываю разделы…';
+  try{
+    const r=await fetch('/market/report',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({query:s.query,codes,radius_km:(lastReport.comparison||{}).radius_km||3,
+        peers_limit:Number($('#limit').value),segment:$('#segment').value||null})});
+    const d=await r.json();
+    if(r.ok){
+      const byId=new Map((d.peers||[]).map(p=>[p.complex_id,p]));
+      added.forEach((row,id)=>byId.set(id,row));
+      d.peers=[...byId.values()].sort((a,b)=>(a.distance_km??99)-(b.distance_km??99));
+      lastReport=d;
+    }
+  }catch(e){/* останемся на прежнем отчёте */}
+  render(lastReport);
+  $('#addstate').textContent=added.size?`Добавлено вручную: ${added.size}`:'';
+}
+
 async function build(){
   const codes=[...document.querySelectorAll('input[name=code]:checked')].map(i=>i.value);
   const query=$('#q').value.trim();
@@ -899,10 +1046,17 @@ function render(d){
       +` на срок регистрации: книга считает по дате сделки, источник — по дате регистрации.</div></div>`;
   }
 
-  html+=`<div class="card"><h2>Соседи в выборке</h2><div class="wrap"><table>
+  html+=deepCard(d);
+  html+=`<div class="card"><h2>Соседи в выборке</h2>
+    <div class="addwrap"><input type="text" id="addq" autocomplete="off"
+      placeholder="Добавить в сравнение любой проект из справочника — начните вводить название">
+      <div id="addsug"></div></div>
+    <div id="addstate" class="muted" style="font-size:12.5px;margin:6px 0 10px"></div>
+    <div class="wrap"><table>
     <tr><th>Проект</th><th>Застройщик</th><th class="num">км</th><th>Класс</th>
     <th class="num">₽/м²</th><th class="num">ДДУ/мес</th><th class="num">м²/мес</th><th class="num">Лотов</th><th>Прайс от</th></tr>`
-    +peers.map((p,i)=>`<tr><td class="link" data-peer="${i}">${esc(p.name)}</td><td class="muted">${esc(p.developer||'—')}</td>
+    +peers.map((p,i)=>`<tr${p.added_by_hand?' class="added"':''}><td class="link" data-peer="${i}">`
+      +`${esc(p.name)}${p.added_by_hand?' <span class="muted">+</span>':''}</td><td class="muted">${esc(p.developer||'—')}</td>
       <td class="num">${num(p.distance_km,2)}</td><td>${esc(p.segment||'—')}</td>
       <td class="num">${num(p.price_per_sqm)}</td><td class="num">${num(p.units_per_month,1)}</td>
       <td class="num">${num(p.area_per_month)}</td><td class="num">${num(p.lot_count)}</td>
@@ -917,6 +1071,7 @@ function render(d){
   $('#askcard').style.display='block';
   $('#pdf').style.display='inline-block';
   wireCards();
+  wireAdd();
 }
 $('#go').addEventListener('click',build);
 $('#askbtn').addEventListener('click',askPlato);

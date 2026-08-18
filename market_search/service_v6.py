@@ -27,7 +27,7 @@ from .http import RemoteServiceError
 from .dynamics import SalesDynamics
 from .market_reference import MoscowMarket
 from .metrics import build_blocks
-from .verdict import build_notes
+from .verdict import build_notes, premium_series, price_of_premium
 from .page_price import PageFetcher
 from .price_hint import price_hint
 from .pulse import PulseClient
@@ -532,6 +532,39 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
             find_project=self.pulse.find_project if self.pulse.available else None,
         )
 
+    def peer_row(
+        self, complex_id: int, *, latitude: float | None = None, longitude: float | None = None
+    ) -> dict[str, Any]:
+        """Проект в той же форме, в какой он попадает в отчёт соседом.
+
+        Форма именно та же нарочно: строка, добавленная руками, должна вести
+        себя в таблицах и на графиках как любая другая, иначе половина
+        разделов её тихо пропустит.
+        """
+        project = self.pulse.project(int(complex_id))
+        if project is None:
+            raise LookupError(f"Проект {complex_id} не найден в справочнике источника")
+        row: dict[str, Any] = {
+            "name": project.name,
+            "developer": project.developer,
+            "address": project.address,
+            "segment": self.pulse.segments().get(project.complex_id),
+            "latitude": project.latitude,
+            "longitude": project.longitude,
+            "added_by_hand": True,
+            **self.pulse.metrics(project.complex_id),
+            **self.pulse.project_totals(project.complex_id),
+            **self.pulse.remaining(project.complex_id),
+        }
+        if latitude is not None and longitude is not None:
+            row["distance_km"] = round(
+                haversine_km(latitude, longitude, project.latitude, project.longitude), 3
+            )
+        history = self.pulse.price_history([project.complex_id])
+        row["price_series"] = history.get(project.complex_id) or []
+        row["sales_series"] = self.dynamics.series(project.complex_id)
+        return row
+
     def build_report(
         self,
         query: str,
@@ -677,6 +710,8 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         reference = self.city if city_scope["covered"] else MoscowMarket({})
         blocks = build_blocks(subject_metrics, peers, reference, codes)
         notes = build_notes(blocks, subject_series)
+        notes["premium_series"] = premium_series(subject_series, peers)
+        notes["price_of_premium"] = price_of_premium(subject_metrics, peers)
         return {
             "subject": {
                 **subject.to_dict(),

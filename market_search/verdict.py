@@ -317,6 +317,86 @@ def overall(blocks: list[dict[str, Any]], notes: dict[str, dict[str, Any]]) -> d
     return verdict
 
 
+def _median(values: list[float]) -> float | None:
+    clean = sorted(v for v in values if v is not None)
+    if not clean:
+        return None
+    middle = len(clean) // 2
+    return clean[middle] if len(clean) % 2 else (clean[middle - 1] + clean[middle]) / 2
+
+
+def premium_series(subject_series, peers) -> list[dict[str, Any]]:
+    """Премия к медиане соседей по месяцам.
+
+    Отдельный ряд, а не одно число: разрыв бывает нажит собственным ростом
+    цены, а бывает — падением соседей, и по одной сегодняшней цифре эти два
+    случая неразличимы. Ряд отвечает на вопрос «мы дорожали или они дешевели».
+    """
+    own = {row["month"]: row["value"] for row in subject_series or [] if row.get("value")}
+    if not own:
+        return []
+    months = sorted(own)
+    out = []
+    for month in months:
+        values = []
+        for peer in peers or []:
+            for point in peer.get("price_series") or []:
+                if point.get("month") == month and point.get("value"):
+                    values.append(point["value"])
+        median = _median(values)
+        if not median:
+            continue
+        out.append({
+            "month": month,
+            "own": own[month],
+            "median": int(round(median)),
+            "premium_pct": round((own[month] / median - 1) * 100, 1),
+            "peers": len(values),
+        })
+    return out
+
+
+def price_of_premium(subject: dict[str, Any], peers: list[dict[str, Any]]) -> dict[str, Any]:
+    """Во что премия обходится: в деньгах остатка и в сроке распродажи.
+
+    Считается прямо: остаток метров, умноженный на разницу цен, — это выручка,
+    которую премия приносит, если её платят. Срок — что будет, если продавать
+    темпом соседей. Оба числа условные и названы условными: они показывают
+    масштаб выбора, а не прогноз.
+    """
+    price = subject.get("price_per_sqm")
+    area = subject.get("remaining_area")
+    pace = subject.get("units_per_month")
+    remaining = subject.get("remaining_units")
+    peer_price = _median([p.get("price_per_sqm") for p in peers or []])
+    peer_pace = _median([p.get("units_per_month") for p in peers or []])
+    out: dict[str, Any] = {}
+    if price and peer_price and area:
+        out["premium_per_sqm"] = int(round(price - peer_price))
+        out["premium_on_remainder"] = round((price - peer_price) * area / 1e6, 1)
+        out["remaining_area"] = area
+    if remaining and pace:
+        out["months_own_pace"] = round(remaining / pace, 1)
+    if remaining and peer_pace:
+        out["months_peer_pace"] = round(remaining / peer_pace, 1)
+    if out.get("months_own_pace") and out.get("months_peer_pace"):
+        out["months_lost"] = round(out["months_own_pace"] - out["months_peer_pace"], 1)
+    return out
+
+
+CAVEATS = [
+    "Цена — прайс-лист, а не сделка: реальные договоры проходят со скидкой, "
+    "и её размер у каждого свой.",
+    "Темп считается по зарегистрированным ДДУ и отстаёт от брони на срок регистрации.",
+    "Класс ставит источник. Он маркетинговый, а не нормативный: соседний уровень "
+    "у одного проекта и у другого может значить разное.",
+    "Сравнение идёт по действующим прайсам. Проект, распроданный год назад, "
+    "в выборку не входит, и рынок из-за этого выглядит дороже, чем был.",
+    "Радиус — геометрия, а не рынок: река, железная дорога и шоссе делят районы "
+    "сильнее, чем километры.",
+]
+
+
 def build_notes(blocks: list[dict[str, Any]], series: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """Разбор по каждому разделу плюс общий вывод."""
     notes: dict[str, dict[str, Any]] = {}
@@ -328,4 +408,4 @@ def build_notes(blocks: list[dict[str, Any]], series: list[dict[str, Any]] | Non
         notes[str(code)] = (
             builder(block, series) if code == "price" else builder(block)  # type: ignore[call-arg]
         )
-    return {"blocks": notes, "overall": overall(blocks, notes)}
+    return {"blocks": notes, "overall": overall(blocks, notes), "caveats": list(CAVEATS)}

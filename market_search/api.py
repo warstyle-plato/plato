@@ -143,6 +143,24 @@ def install(app: FastAPI) -> MarketDiscoveryService:
             return {"items": [], "reason": "Источник выключен: не заданы PULSE_LOGIN и PULSE_PASSWORD"}
         return {"items": service.pulse.suggest(q)}
 
+    @app.get("/market/project/{complex_id}")
+    async def market_project(
+        request: Request, complex_id: int, latitude: float | None = None, longitude: float | None = None
+    ) -> dict[str, Any]:
+        """Один проект в той же форме, что и сосед в отчёте.
+
+        Нужен, чтобы добавить в сравнение кого угодно из справочника: рядом
+        может не быть аналога, а за три километра — быть. Расстояние считается
+        от точки объекта, если она передана; иначе его просто нет.
+        """
+        cabinet_module.require_cabinet(request)
+        if not service.pulse.available:
+            raise HTTPException(status_code=502, detail="Источник выключен")
+        try:
+            return service.peer_row(complex_id, latitude=latitude, longitude=longitude)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
     @app.post("/cabinet/plan")
     async def cabinet_plan(request: Request) -> dict[str, Any]:
         """План продаж из книги ПЛАТО: сырые байты файла в теле запроса.
