@@ -92,7 +92,10 @@ def test_without_an_invite_the_menu_is_unchanged(monkeypatch):
 
     core._telegram_start_message(1, 1)
     keyboard = sent[-1]["reply_markup"]["inline_keyboard"]
-    assert keyboard[0][0].get("callback_data") == "flow_cad_yes"
+    # Первым идёт «Расчёт модели»: приветствие говорит теми же словами, что
+    # список команд (решение владельца, 18.08.2026), а способ расчёта
+    # спрашивается вторым уровнем.
+    assert keyboard[0][0].get("callback_data") == "calc_menu"
     assert "Спасибо, что зашли" not in sent[-1]["text"]
     assert sent[-1]["text"].startswith("<b>Добро пожаловать")
 

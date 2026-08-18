@@ -47,6 +47,15 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Нужен предыдущий коммит main: версию сравниваем с ним.
+          fetch-depth: 2
+      # Две параллельные сессии взяли номер от одного и того же main и обе
+      # написали 0.18.45 — разные правки, одна версия, и заметить это можно
+      # было только по выкатке (18.08.2026). Общей памяти у сессий нет, общий
+      # у них репозиторий: пусть он и проверяет.
+      - name: Версия строго растёт
+        run: python3 scripts/check_version_grows.py
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"

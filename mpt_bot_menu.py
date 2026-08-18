@@ -69,10 +69,19 @@ def _help_with_mpt(base: Any, chat_id: int, markup: Any) -> Any:
         # configured Telegram token. The existing help menu must still work.
         return markup
     updated = copy.deepcopy(markup)
-    updated["inline_keyboard"].append([{
-        "text": _MENU_TEXT,
-        "web_app": {"url": url},
-    }])
+    entry = [{"text": _MENU_TEXT, "web_app": {"url": url}}]
+    # Дописать в конец значит поставить расчёт ниже помощи — то же правило, что
+    # у списка команд: расчёт встаёт среди расчётов, перед «Что умеет».
+    rows_out = updated["inline_keyboard"]
+    position = next(
+        (index for index, row in enumerate(rows_out)
+         if isinstance(row, list) and any(
+             isinstance(button, dict)
+             and str(button.get("callback_data") or "") == "show_help"
+             for button in row)),
+        len(rows_out),
+    )
+    rows_out.insert(position, entry)
     return updated
 
 

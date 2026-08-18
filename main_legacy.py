@@ -48,7 +48,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.18.45"
+VERSION = "0.18.51"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -259,10 +259,10 @@ class CalcRequest(BaseModel):
     inputs: dict[str, Any]
     tep: dict[str, dict[str, Any]]
     rates: list[dict[str, Any]] = []
-    # Сессия входа — только для учёта. В расчёт не входит и на результат не
-    # влияет: без неё «сколько из перешедших дошли до расчёта» ответа не имеет,
-    # а это главный вопрос теста.
+    # Сессия входа: ею же считается учёт и открывается расчёт экономики
+    # (решение владельца, 18.08.2026 — «счёт виден, вывод за входом»).
     session: str = ""
+    access_key: str = ""
 
 
 class PhasedCalcRequest(BaseModel):
@@ -270,6 +270,8 @@ class PhasedCalcRequest(BaseModel):
     tep: dict[str, dict[str, Any]]
     rates: list[dict[str, Any]] = []
     phasing: dict[str, Any] = {}
+    session: str = ""
+    access_key: str = ""
 
 
 class SensitivityRequest(BaseModel):
@@ -1443,13 +1445,14 @@ def _preset_diff(current: dict[str, Any], incoming: dict[str, Any],
 
 
 @app.get("/api/project-presets")
-def list_project_presets() -> dict[str, Any]:
+def list_project_presets(session: str = "", key: str = "") -> dict[str, Any]:
     """Пресеты проектов, лежащие на сервере.
 
     Пресет проекта — не то же, что предустановка ТЭП: тот несёт книгу с
     площадями, этот — весь проект, включая деньги, сроки и очереди. Список
     отдельный по той же причине, по какой они не смешиваются при загрузке.
     """
+    _require_admin(session, key, "Пресеты проектов")
     items: list[dict[str, Any]] = []
     for path in sorted(PRESET_DIR.glob("*.json")) if PRESET_DIR.is_dir() else []:
         try:
@@ -1467,7 +1470,8 @@ def list_project_presets() -> dict[str, Any]:
 
 
 @app.get("/api/project-presets/{preset_id}")
-def read_project_preset(preset_id: str) -> dict[str, Any]:
+def read_project_preset(preset_id: str, session: str = "", key: str = "") -> dict[str, Any]:
+    _require_admin(session, key, "Пресеты проектов")
     # Имя приходит снаружи: разделители пути в нём означали бы чтение чужих
     # файлов, а не выбор пресета.
     if "/" in preset_id or "\\" in preset_id or preset_id.startswith("."):
@@ -8008,14 +8012,18 @@ def _telegram_start_message(chat_id: int, user_id: int, source: str = "") -> Non
     # ему нужно увидеть расчёт, а не меню.
     invited = [[{"text": "Открыть DevelopAid — полный расчёт",
                  "web_app": {"url": _telegram_web_app_url(chat_id, [])}}]] if source else []
+    # Приветствие говорит теми же словами, что список команд слева внизу:
+    # те же решения и в том же порядке (решение владельца, 18.08.2026). Прежде
+    # здесь стояли восемь конкретных входов, а в списке команд — шесть решений,
+    # и один продукт объяснялся двумя разными словарями. Способ («по кадастру,
+    # по адресу, без кадастра, шаблон») спрашивается вторым уровнем — тем же
+    # `_telegram_calc_menu`, что и у команды /calc.
     button = {"inline_keyboard": invited + [
-        [{"text": "Расчёт по кадастровым номерам", "callback_data": "flow_cad_yes"}],
-        [{"text": "Поиск участка по адресу", "callback_data": "flow_address"}],
-        [{"text": "Собрать ТЭП без кадастра", "callback_data": "flow_cad_no"}],
-        [{"text": "Посчитать ВРИ и ТЭП", "callback_data": "vritep_start"}],
-        [{"text": "Спросить Платона Сергеевича", "callback_data": "ask_platon"}],
-        [{"text": "Скачать Excel-шаблон ТЭП", "callback_data": "tep_template"}],
-        [{"text": "Открыть мини-приложение DevelopAid", "web_app": {"url": _telegram_web_app_url(chat_id, [])}}],
+        [{"text": "Расчёт модели", "callback_data": "calc_menu"}],
+        [{"text": "Открыть готовую модель", "web_app": {"url": _telegram_web_app_url(chat_id, [])}}],
+        [{"text": "Расчёт ВРИ и ТЭП", "callback_data": "vritep_start"}],
+        # Сюда расширение вставляет «Льгота МПТ» — перед помощью, как в списке команд.
+        [{"text": "Платон Сергеевич", "callback_data": "ask_platon"}],
         [{"text": "Что умеет DevelopAid", "callback_data": "show_help"}],
     ]}
     _telegram_send_message(
@@ -8785,6 +8793,11 @@ def _telegram_handle_update(update: dict[str, Any]) -> None:
             return
         if data == "tep_template":
             _telegram_send_template(chat_id)
+            return
+        if data == "calc_menu":
+            # Второй уровень «Расчёта модели» — тот же, что у команды /calc:
+            # выбор способа живёт в одном месте, а не в двух похожих меню.
+            _telegram_calc_menu(chat_id)
             return
         if data == "show_help":
             _telegram_send_message(
@@ -15206,8 +15219,34 @@ def _server_preset_meta(preset_id: str) -> dict[str, Any]:
     return {**meta, "id": preset_id, "path": path}
 
 
+def _is_admin_request(session: str = "", key: str = "") -> bool:
+    """Владелец сервиса: свой chat_id в списке или ключ администратора."""
+    secret = _env_str("DEVELOPAID_ADMIN_KEY", "").strip()
+    if secret and key and hmac.compare_digest(str(key).encode("utf-8"),
+                                              secret.encode("utf-8")):
+        return True
+    chat_id = _web_identity_chat_id(str(session or ""))
+    return bool(chat_id) and chat_id in usage_admin_ids()
+
+
+def _require_admin(session: str, key: str, what: str) -> None:
+    """Готовые примеры и пресеты — витрина владельца, а не посторонних.
+
+    В них лежат настоящие проекты с ценами, сроками и экономикой (решение
+    владельца, 18.08.2026): показывать их каждому, кто открыл сайт, нельзя.
+    Механизм честно выключен там, где владельца опознать нечем — иначе на
+    машине без настроек примеры пропали бы у всех, включая самого владельца.
+    """
+    if not usage_admin_ids() and not _env_str("DEVELOPAID_ADMIN_KEY", "").strip():
+        return
+    if _is_admin_request(session, key):
+        return
+    raise HTTPException(status_code=403, detail=f"{what} — только для владельца сервиса.")
+
+
 @app.get("/presets")
-def list_server_presets() -> dict[str, Any]:
+def list_server_presets(session: str = "", key: str = "") -> dict[str, Any]:
+    _require_admin(session, key, "Готовые примеры")
     items = []
     for preset_id, meta in SERVER_TEP_PRESETS.items():
         path = PRESET_DIR / meta["filename"]
@@ -15223,7 +15262,8 @@ def list_server_presets() -> dict[str, Any]:
 
 
 @app.get("/presets/{preset_id}")
-def get_server_preset(preset_id: str) -> dict[str, Any]:
+def get_server_preset(preset_id: str, session: str = "", key: str = "") -> dict[str, Any]:
+    _require_admin(session, key, "Готовые примеры")
     meta = _server_preset_meta(preset_id)
     try:
         payload = parse_glavapu_xlsx(meta["path"].read_bytes(), meta["filename"])
@@ -15240,7 +15280,8 @@ def get_server_preset(preset_id: str) -> dict[str, Any]:
 
 
 @app.get("/presets/{preset_id}/download")
-def download_server_preset(preset_id: str):
+def download_server_preset(preset_id: str, session: str = "", key: str = ""):
+    _require_admin(session, key, "Файл предустановки")
     meta = _server_preset_meta(preset_id)
     return FileResponse(
         path=str(meta["path"]),
@@ -18936,6 +18977,8 @@ def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
 
 @app.post("/calculate-phased")
 def calculate_phased_api(req: PhasedCalcRequest) -> dict[str, Any]:
+    # Очерёдность — тот же расчёт экономики, и та же граница входа.
+    _require_web_access(req.session, req.access_key, "Расчёт экономики")
     return calculate_phased(req)
 
 
@@ -23138,6 +23181,10 @@ def project_list(owner: int) -> list[dict[str, Any]]:
     directory = _project_dir(owner)
     cards: list[dict[str, Any]] = []
     for path in directory.glob("*.json") if directory.is_dir() else []:
+        # Анкета переехала в свой каталог, но у тех, кто заполнил её раньше,
+        # файл ещё лежит здесь: список проектов о нём знать не должен.
+        if path.name == "profile.json":
+            continue
         try:
             cards.append(_project_card(json.loads(path.read_text(encoding="utf-8"))))
         except Exception:
@@ -23189,6 +23236,9 @@ def projects_status() -> dict[str, Any]:
         "accepts_login": bool(_telegram_token()) and bool(_web_login_bot_username()),
         "remote": bool(_projects_remote_url("/projects/list")),
         "limit": _PROJECTS_LIMIT,
+        # Расчёт экономики за входом. Без токена бота гейт выключен — страница
+        # не должна запирать дверь, которую сервер не запирает.
+        "calc_requires_login": bool(_telegram_token()),
     }
 
 
@@ -23261,6 +23311,15 @@ class ProfileRequest(BaseModel):
 
 
 def _profile_path(owner: int) -> Path:
+    # Анкета лежит рядом с проектами, но не среди них: список читает из
+    # каталога владельца все *.json, и знакомство показывалось строкой в «Моих
+    # проектах» — с именем человека, прочерками и кнопкой «Удалить» (боевая
+    # проверка владельца, 18.08.2026).
+    return _PROJECTS_DIR.parent / "profiles" / f"{int(owner)}.json"
+
+
+def _profile_legacy_path(owner: int) -> Path:
+    """Где анкета лежала до переезда. Читаем, пока не переписана."""
     return _project_dir(owner) / "profile.json"
 
 
@@ -23272,13 +23331,24 @@ def _profile_text(value: Any) -> str:
 
 
 def profile_read(owner: int) -> dict[str, Any]:
+    for path in (_profile_path(owner), _profile_legacy_path(owner)):
+        if not path.is_file():
+            continue
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+    return {}
+
+
+def _profile_store(owner: int, record: dict[str, Any]) -> None:
+    """Пишет анкету на новое место и убирает её со старого."""
     path = _profile_path(owner)
-    if not path.is_file():
-        return {}
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+    temporary.replace(path)
+    _profile_legacy_path(owner).unlink(missing_ok=True)
 
 
 def profile_complete(record: dict[str, Any]) -> bool:
@@ -23311,11 +23381,7 @@ def profile_write(owner: int, req: ProfileRequest) -> dict[str, Any]:
         "created": previous.get("created") or datetime.now().isoformat(timespec="seconds"),
         "updated": datetime.now().isoformat(timespec="seconds"),
     }
-    directory = _project_dir(owner)
-    directory.mkdir(parents=True, exist_ok=True)
-    temporary = _profile_path(owner).with_suffix(".tmp")
-    temporary.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
-    temporary.replace(_profile_path(owner))
+    _profile_store(owner, record)
     return {"saved": True, "profile": record, "first_time": not bool(previous)}
 
 
@@ -23329,11 +23395,7 @@ def _profile_remember_telegram_name(owner: int, name: str) -> None:
         return
     record["telegram_name"] = name
     record.setdefault("chat_id", int(owner))
-    directory = _project_dir(owner)
-    directory.mkdir(parents=True, exist_ok=True)
-    temporary = _profile_path(owner).with_suffix(".tmp")
-    temporary.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
-    temporary.replace(_profile_path(owner))
+    _profile_store(owner, record)
 
 
 def _profile_forward(path: str, req: ProfileRequest) -> dict[str, Any] | None:
@@ -23374,11 +23436,78 @@ def profile_save(req: ProfileRequest) -> dict[str, Any]:
     return saved
 
 
+def _profile_pending_path() -> Path:
+    return _PROJECTS_DIR.parent / "profile_announcements.jsonl"
+
+
+def _profile_remember_announcement(record: dict[str, Any]) -> None:
+    """Кладёт знакомство в очередь для того, у кого есть Telegram.
+
+    Анкета сохраняется на ядре, а до api.telegram.org достаёт только Render —
+    сообщение «новая регистрация» иначе не ушло бы никуда. Ядро складывает
+    знакомство на диск, Render забирает его тем же путём, каким пересылает
+    проекты (18.08.2026).
+    """
+    try:
+        path = _profile_pending_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception:
+        # Очередь — доставка, а не регистрация: анкета уже сохранена.
+        pass
+
+
+def _profile_take_announcements() -> list[dict[str, Any]]:
+    """Забирает накопленные знакомства. Забрать может только один: файл
+    переименовывается, и второй читатель получает его отсутствие."""
+    path = _profile_pending_path()
+    taken = path.with_suffix(".taken")
+    try:
+        path.replace(taken)
+    except Exception:
+        return []
+    records: list[dict[str, Any]] = []
+    try:
+        for line in taken.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                records.append(json.loads(line))
+            except Exception:
+                continue
+    finally:
+        taken.unlink(missing_ok=True)
+    return records
+
+
+@app.post("/internal/profile/announcements")
+def profile_announcements(req: WebLoginConfirmRequest) -> dict[str, Any]:
+    """Знакомства, которые ещё некому было объявить. Только для своего хоста.
+
+    Подпись — тем же токеном бота, что и подтверждение входа: секрет общий у
+    ядра и Render, а посторонний его не знает. Отдаём разом и удаляем: это
+    доставка, а не хранилище.
+    """
+    expected = _web_login_sign("profile-announcements", int(req.chat_id or 0))
+    if not hmac.compare_digest(str(req.sign or "").encode("utf-8"),
+                               expected.encode("utf-8")):
+        raise HTTPException(status_code=403, detail="Подпись не сошлась.")
+    return {"announcements": _profile_take_announcements()}
+
+
 def _profile_announce(record: dict[str, Any]) -> None:
     """Новое знакомство — в чат владельцу. Молча, если сообщить нечем."""
     admins = usage_admin_ids()
     if not admins or not _telegram_token() or not _telegram_webhook_enabled():
+        # Telegram здесь недоступен — знакомство ждёт того, у кого он есть.
+        _profile_remember_announcement(record)
         return
+    _telegram_send_profile_card(record, admins)
+
+
+def _telegram_send_profile_card(record: dict[str, Any], admins: set[int]) -> None:
     lines = [
         "<b>Новая регистрация</b>",
         f"Имя: {html.escape(str(record.get('name') or '—'))}",
@@ -24187,6 +24316,11 @@ def current_key_rate() -> dict[str, Any]:
 
 @app.post("/calculate")
 def calculate_api(req: CalcRequest) -> dict:
+    # Экономика — за входом через бота: участок, ТЭП и ограничения открыты и
+    # показывают, что мы умеем, а вывод о деньгах уже принадлежит конкретному
+    # человеку (решение владельца, 18.08.2026). Без токена бота гейт честно
+    # выключен — проверять подпись нечем.
+    _require_web_access(req.session, req.access_key, "Расчёт экономики")
     # Учёт шагов с сайта: без него от публикации на пятьсот человек остаётся
     # число заходов, а где люди останавливаются — неизвестно. Пишем на сервере,
     # а не на странице: браузер закрывают на полуслове, и событие теряется.
@@ -24315,6 +24449,10 @@ details.cadastral-box>summary::marker{color:#888}
 .land-screening.clean header{background:#2f6b3a}
 .land-screening.unknown header{background:#6b6b66}
 .land-screening.working header{background:#3a3a38}
+.calc-locked{border:1px solid #e5e5e3;padding:22px 24px;margin:12px 0;background:#fafaf8}
+.calc-locked h3{margin:0 0 8px;font-size:15px}
+.calc-locked p{margin:0 0 10px;font-size:13px;color:#555;max-width:640px}
+.calc-locked .calc-locked-why{font-size:11px;color:#888}
 .prof-l{display:block;font-size:12px;color:#555;margin-top:10px}
 .prof-i{display:block;width:100%;margin-top:4px;padding:8px 10px;border:1px solid #cfcfcf;font-size:13px}
 .prof-i:focus{outline:2px solid #111;outline-offset:-1px}
@@ -24546,6 +24684,11 @@ details.cadastral-box>summary::marker{color:#888}
       <!-- Кнопки хранилища появляются только там, где оно настроено и есть чем
            опознать владельца: иначе это кнопка, которая всегда отказывает. -->
       <button class="btn" id="projectsButton" style="display:none" onclick="openProjects()">Личный кабинет</button>
+      <!-- Вход жил внутри личного кабинета и показывался только тем, у кого нет
+           ни сессии, ни ключа: человек с непринятым ключом до него не доходил
+           вовсе (замечание владельца, 18.08.2026). Кнопка стоит в шапке, пока
+           никто не вошёл, и прячется после входа. -->
+      <button class="btn dark" id="loginButton" style="display:none" onclick="openLogin()">Войти через Telegram</button>
       <button class="btn" onclick="resetAll()">Сбросить</button>
       <a class="btn" href="/guide">Руководство</a>
       <button class="btn dark" onclick="calculateAndOpen('report')">Пересчитать модель</button>
@@ -24966,6 +25109,9 @@ details.cadastral-box>summary::marker{color:#888}
     </div>
 
     <div id="report" class="panel">
+      <!-- Экономика за входом: плашка стоит первой в отчёте, чтобы человек
+           видел причину там, где ждал числа (решение владельца, 18.08.2026). -->
+      <div id="calcLocked" class="calc-locked" style="display:none"></div>
       <div class="card report-hero">
         <div class="report-title">
           <div><div class="section-title">Управленческий отчёт</div><h2>Экономика и ключевые показатели проекта</h2></div>
@@ -25566,10 +25712,16 @@ async function loginViaTelegram(statusEl){
   const r=await fetch('/auth/telegram/start',{method:'POST'});
   const d=await r.json().catch(()=>({}));
   if(!r.ok)throw new Error(d.detail||'Вход через Telegram недоступен');
-  // Вкладка бота открывается сразу по клику — иначе браузер сочтёт окно
-  // всплывающим. Дальше страница ждёт подтверждения коротким опросом.
-  window.open(d.link,'_blank');
-  say('Подтвердите вход в Telegram и вернитесь на эту вкладку…');
+  // Окно бота открывается сразу, но после запроса к серверу браузер уже не
+  // считает его открытым по клику и часто глушит — Safari почти всегда. Ссылка
+  // показывается всегда: без неё человек стоит перед пустым ожиданием и не
+  // знает, что окно заблокировано (замечание владельца, 18.08.2026).
+  const opened=window.open(d.link,'_blank');
+  if(statusEl){
+   statusEl.innerHTML=(opened?'Подтвердите вход в Telegram и вернитесь на эту вкладку. '
+                             :'Браузер не дал открыть окно бота — откройте по ссылке. ')+
+    '<a href="'+encodeURI(d.link)+'" target="_blank" rel="noopener">Открыть бота</a>';
+  }
   const until=Date.now()+2*60*1000;
   while(Date.now()<until){
    await new Promise(res=>setTimeout(res,2500));
@@ -25582,6 +25734,8 @@ async function loginViaTelegram(statusEl){
     // перезагрузки он уже занят своим делом.
     if(cd.profile_complete){location.reload();return}
     profileState={complete:false,profile:cd.profile||{},sources:profileState.sources};
+    renderLoginButton();
+    renderAccountBox();
     openProfile();
     return;
    }
@@ -27011,10 +27165,25 @@ function renderStoredCadastral(){
  cadastralStatus.innerHTML='<span class="import-ok">Показана территория, сохранённая в проекте.</span>';
 }
 
+// Готовые примеры — витрина владельца: в них настоящие проекты с ценами и
+// сроками, и посторонним их не показывают (решение владельца, 18.08.2026).
+// Сервер отказывает не своему, страница на отказ убирает блок целиком, а не
+// оставляет пустой список без объяснения.
+function presetsQuery(){
+ return '?session='+encodeURIComponent(activeSession())+
+        '&key='+encodeURIComponent(projectsAdminKey||'');
+}
+
+function hidePresetsBlock(){
+ const box=document.getElementById('projectsExamples');
+ if(box)box.style.display='none';
+}
+
 async function loadPresetCatalog(){
  try{
-   const response=await fetch('/presets');
+   const response=await fetch('/presets'+presetsQuery());
    const data=await response.json();
+   if(response.status===403){hidePresetsBlock();return}
    if(!response.ok)throw new Error(data.detail||'Не удалось получить предустановки');
    const select=document.getElementById('serverPresetSelect');
    if(!select)return;
@@ -27026,7 +27195,7 @@ async function loadPresetCatalog(){
      const opt=select.options[select.selectedIndex];
      const link=document.getElementById('serverPresetDownload');
      if(select.value){
-       link.href=opt.dataset.download||('#');
+       link.href=(opt.dataset.download||'#')+presetsQuery();
        link.style.display='inline-flex';
      }else{
        link.style.display='none';
@@ -27050,7 +27219,7 @@ async function loadServerPreset(){
  glavapuStatus.textContent='Загружаю предустановку «'+label+'» с сервера…';
  glavapuPreview.style.display='none';
  try{
-   const response=await fetch('/presets/'+encodeURIComponent(id));
+   const response=await fetch('/presets/'+encodeURIComponent(id)+presetsQuery());
    const payload=await response.json();
    if(!response.ok)throw new Error(payload.detail||'Ошибка загрузки предустановки');
    glavapuImport=payload;
@@ -28346,6 +28515,37 @@ function renderRates(){
  renderRateCurveChart();
 }
 
+// Расчёт экономики за входом. Признак приходит с сервера: без токена бота гейт
+// выключен, и страница не имеет права запирать дверь, которую сервер не запер.
+let calcRequiresLogin=false;
+
+function calcNeedsLogin(){
+ return calcRequiresLogin&&!activeSession()&&!projectsAdminKey;
+}
+
+async function calcRefusal(response){
+ try{const data=await response.json();return String(data.detail||'')}catch(e){return ''}
+}
+
+function renderCalcLocked(reason){
+ lastResult=null;phaseBundle=null;
+ const box=document.getElementById('calcLocked');
+ if(!box)return;
+ box.style.display='';
+ box.innerHTML='<h3>Экономика проекта — после входа через Telegram</h3>'+
+  '<p>'+escapeHtml(reason||'Участок, ТЭП и градостроительные ограничения считаются без входа — '+
+   'они на вкладках «Участок» и «ТЭП». Экономика, вердикт, LLCR, отчёт и выгрузки '+
+   'принадлежат конкретному человеку, поэтому за ними нужен вход.')+'</p>'+
+  '<p class="calc-locked-why">Вход занимает несколько секунд: подтверждение в боте, '+
+  'без пароля и без второй регистрации.</p>'+
+  '<button class="btn dark" onclick="openLogin()">Войти через Telegram</button>';
+}
+
+function hideCalcLocked(){
+ const box=document.getElementById('calcLocked');
+ if(box)box.style.display='none';
+}
+
 async function calculate(){
  document.querySelectorAll('[id^=f_]').forEach(el=>{const id=el.id.slice(2);inputs[id]=el.type==='checkbox'?el.checked:(el.type==='number'?Number(el.value):el.value)});
  if(document.getElementById('rateScenario'))inputs.rate_scenario=rateScenario.value||'base';
@@ -28361,11 +28561,18 @@ async function calculate(){
  repairParkingFromGlavapu();
  normalizeSocialObjectDates();
  reportView='all';
+ // Экономика — за входом через бота: участок, ТЭП и ограничения открыты, а
+ // вывод о деньгах уже принадлежит конкретному человеку (решение владельца,
+ // 18.08.2026). Спрашиваем здесь, а не ловим 401 на каждом изменении поля:
+ // расчёт зовётся при правке любой вводной.
+ if(calcNeedsLogin()){renderCalcLocked();return null}
  if(phasing&&phasing.enabled&&Number(phasing.phase_count||1)>1){
-   const response=await fetch('/calculate-phased',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({inputs,tep,rates,phasing})});
+   const response=await fetch('/calculate-phased',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({inputs,tep,rates,phasing,session:activeSession(),access_key:projectsAdminKey})});
+   if(!response.ok){renderCalcLocked(await calcRefusal(response));return null}
    phaseBundle=await response.json();lastResult=phaseBundle.consolidated;
  }else{
-   const response=await fetch('/calculate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({inputs,tep,rates,session:activeSession()})});
+   const response=await fetch('/calculate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({inputs,tep,rates,session:activeSession(),access_key:projectsAdminKey})});
+   if(!response.ok){renderCalcLocked(await calcRefusal(response));return null}
    lastResult=await response.json();phaseBundle=null;
    if(lastResult&&lastResult.tep&&Array.isArray(lastResult.tep.rows)){
     lastResult.tep.rows.forEach(r=>{if(!tep[r.key])return;['gns','total_area','useful','saleable','transfer','units'].forEach(k=>{if(r[k]!=null)tep[r.key][k]=Number(r[k])})})
@@ -28427,6 +28634,7 @@ function renderPhaseReportControls(){
 }
 function renderResult(){
  if(!lastResult)return;const r=lastResult,f=r.finance;
+ hideCalcLocked();
  if(typeof feedbackCalcs!=='undefined'){feedbackCalcs+=1;feedbackMaybeAsk()}
 
  // Числа берутся из результата, а не из формы: форма не знает ни о льготе по
@@ -29286,7 +29494,9 @@ async function fillProjectPresets(){
  // разные вещи: та несёт книгу с площадями, этот — весь проект с деньгами,
  // сроками и очередями. Поэтому и списка два.
  try{
-  const data=await (await fetch('/api/project-presets')).json();
+  const answer=await fetch('/api/project-presets'+presetsQuery());
+  if(answer.status===403){hidePresetsBlock();return}
+  const data=await answer.json();
   const select=document.getElementById('projectPresetSelect');
   (data.presets||[]).forEach(p=>{
    const option=document.createElement('option');
@@ -29304,7 +29514,7 @@ async function loadServerProjectPreset(){
  closeProjects();
  let parsed;
  try{
-  const response=await fetch('/api/project-presets/'+encodeURIComponent(id));
+  const response=await fetch('/api/project-presets/'+encodeURIComponent(id)+presetsQuery());
   parsed=await response.json();
   if(!response.ok)throw new Error(parsed.detail||'Пресет не загружен');
  }catch(e){alert(String(e.message||e));return}
@@ -29440,12 +29650,27 @@ async function initProjects(){
   const status=await (await fetch('/projects/status')).json();
   projectsAcceptsKey=!!status.accepts_key;
   projectsAcceptsLogin=!!status.accepts_login;
+  calcRequiresLogin=!!status.calc_requires_login;
   // Хранилище показывается, когда есть чем войти: сессия (мини-приложение
   // или вход через бота), сам вход через бота или ключ администратора.
   projectsStorageReady=!!status.configured&&(!!activeSession()||projectsAcceptsLogin||projectsAcceptsKey);
  }catch(e){projectsStorageReady=false}
  const actions=document.getElementById('projectsStorageActions');
  if(actions)actions.style.display=projectsStorageReady?'inline-flex':'none';
+ renderLoginButton();
+}
+
+function renderLoginButton(){
+ const button=document.getElementById('loginButton');
+ if(!button)return;
+ // В мини-приложении вход уже есть — он и открыл окно.
+ const needed=projectsAcceptsLogin&&!telegramSession&&!webSession()&&!projectsAdminKey;
+ button.style.display=needed?'':'none';
+}
+
+function openLogin(){
+ openProjects();
+ renderProjectsLogin();
 }
 
 function projectSummaryForStore(){
@@ -29522,8 +29747,13 @@ function renderProjectsLogin(reason){
  // окне запроса ключа человек читал уже после того, как ключ ввёл.
  const status=box.querySelector('div:last-child');
  if(status)status.textContent=reason?String(reason):'';
- if(!projectsAcceptsLogin&&!projectsAcceptsKey&&status){
-  status.textContent='Вход на этом сервере не настроен: нет ни имени бота, ни ключа администратора.';
+ // Кнопка входа через бота прячется, когда сервер его не предлагает, и
+ // человек оставался перед панелью «войдите через бота» без самой кнопки
+ // (замечание владельца, 18.08.2026). Отсутствие входа объясняется вслух.
+ if(status&&!projectsAcceptsLogin){
+  status.textContent=projectsAcceptsKey
+   ?'Вход через бота на этом сервере не настроен: не задано имя бота (TELEGRAM_BOT_USERNAME). Пока доступен только ключ администратора.'
+   :'Вход на этом сервере не настроен: нет ни имени бота, ни ключа администратора.';
  }
  const scroll=stored.querySelector('.scroll');
  if(scroll)scroll.style.display='none';
@@ -29584,6 +29814,7 @@ function logoutFromSite(){
  try{localStorage.removeItem('plato_projects_key')}catch(e){}
  projectsAdminKey='';
  profileState={complete:false,profile:{},sources:profileState.sources};
+ renderLoginButton();
  location.reload();
 }
 

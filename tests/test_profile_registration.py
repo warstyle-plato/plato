@@ -46,7 +46,10 @@ def _request(**fields):
 def test_the_profile_belongs_to_the_session_owner(storage):
     saved = core.profile_save(_request(role="директор", contact="+7 900 000-00-00"))
     assert saved["saved"] is True and saved["first_time"] is True
-    assert (storage / "projects" / "4242" / "profile.json").is_file()
+    # Анкета лежит рядом с проектами, но не среди них: иначе она попадает в
+    # список «Мои проекты».
+    assert (storage / "profiles" / "4242.json").is_file()
+    assert not (storage / "projects" / "4242" / "profile.json").exists()
 
     got = core.profile_get(core.ProfileRequest(session="s"))
     assert got["complete"] is True
@@ -206,4 +209,104 @@ def test_the_section_is_called_the_personal_account():
     dialog = dialog[:dialog.index('id="aiOverlay"')]
     assert "<h2 style=\"margin:0;font-size:17px\">Личный кабинет</h2>" in dialog
     assert "Мои проекты" in dialog, "проекты остаются разделом внутри кабинета"
+
+
+# --- анкета на ядре, Telegram на Render ------------------------------------------
+
+def test_a_silent_host_queues_the_announcement_instead_of_losing_it(storage, monkeypatch):
+    """Анкета сохраняется на ядре, а до api.telegram.org достаёт только Render:
+    «новая регистрация» иначе не дошла бы ни до кого (18.08.2026)."""
+    monkeypatch.setattr(core, "usage_admin_ids", lambda: {777})
+    monkeypatch.setattr(core, "_telegram_token", lambda: "token")
+    monkeypatch.setattr(core, "_telegram_webhook_enabled", lambda: False)
+    core.profile_save(_request())
+
+    waiting = core._profile_take_announcements()
+    assert len(waiting) == 1
+    assert waiting[0]["company"] == "DevelopAid"
+    assert core._profile_take_announcements() == [], "забрать можно один раз"
+
+
+def test_the_host_with_telegram_takes_the_queue(storage, monkeypatch):
+    """Забирает тот, у кого есть Telegram, — и он же объявляет."""
+    import main as wrapper
+
+    monkeypatch.setattr(core, "usage_admin_ids", lambda: {777})
+    monkeypatch.setattr(core, "_telegram_token", lambda: "token")
+    monkeypatch.setattr(core, "_telegram_webhook_enabled", lambda: False)
+    core.profile_save(_request())
+
+    sent: list[tuple[int, str]] = []
+    monkeypatch.setattr(core, "_telegram_webhook_enabled", lambda: True)
+    monkeypatch.setattr(core, "_projects_remote_url", lambda path: "")
+    monkeypatch.setattr(core, "_telegram_send_message",
+                        lambda chat_id, text, **kw: sent.append((chat_id, text)))
+    wrapper._deliver_profile_announcements()
+
+    assert len(sent) == 1 and "Новая регистрация" in sent[0][1]
+    sent.clear()
+    wrapper._deliver_profile_announcements()
+    assert sent == [], "объявляем один раз, а не каждые пятнадцать минут"
+
+
+def test_the_queue_is_not_handed_out_without_the_signature(storage, monkeypatch):
+    """Очередь несёт имена и телефоны: отдаём только своему хосту, подпись —
+    общим токеном бота."""
+    monkeypatch.setattr(core, "usage_admin_ids", lambda: {777})
+    monkeypatch.setattr(core, "_telegram_token", lambda: "token")
+    monkeypatch.setattr(core, "_telegram_webhook_enabled", lambda: False)
+    core.profile_save(_request())
+
+    with pytest.raises(core.HTTPException) as exc:
+        core.profile_announcements(core.WebLoginConfirmRequest(
+            code="profile-announcements", chat_id=0, sign="не та подпись"))
+    assert exc.value.status_code == 403
+
+    good = core.profile_announcements(core.WebLoginConfirmRequest(
+        code="profile-announcements", chat_id=0,
+        sign=core._web_login_sign("profile-announcements", 0)))
+    assert len(good["announcements"]) == 1
+
+
+def test_the_delivery_runs_next_to_the_digest():
+    """Доставку вешаем на тот же поток, что сводку: отдельный поток, о котором
+    никто не помнит, тихо умирает вместе с первой ошибкой."""
+    wrapper_src = Path(_wrapper.__file__).read_text(encoding="utf-8")
+    loop = wrapper_src[wrapper_src.index("def _usage_digest_loop("):]
+    loop = loop[:loop.index("def _deliver_profile_announcements(")]
+    assert "_deliver_profile_announcements()" in loop
+
+
+# --- анкета не проект ------------------------------------------------------------
+
+def test_the_profile_is_not_listed_as_a_project(storage, monkeypatch):
+    """Анкета лежала в каталоге владельца, а список читает оттуда все *.json —
+    и знакомство показывалось строкой в «Моих проектах»: имя человека,
+    прочерки вместо чисел и кнопка «Удалить» (боевая проверка, 18.08.2026)."""
+    monkeypatch.setattr(core, "_projects_forward", lambda path, req: None)
+    core.profile_save(_request())
+    core.projects_save(core.ProjectRequest(session="s", name="Вест Гарден",
+                                           payload={"inputs": {}}))
+
+    names = [card["name"] for card in core.project_list(4242)]
+    assert names == ["Вест Гарден"], names
+    assert not (core._project_dir(4242) / "profile.json").exists(), "анкета переехала"
+    assert core._profile_path(4242).is_file()
+
+
+def test_an_old_profile_still_opens_and_moves_on_save(storage, monkeypatch):
+    """У тех, кто заполнил анкету до переезда, файл лежит на прежнем месте:
+    читаем оттуда, а при первом сохранении переносим и убираем."""
+    legacy = core._profile_legacy_path(4242)
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    legacy.write_text('{"name": "Старое", "company": "Прежняя", "source": "Поиск"}',
+                      encoding="utf-8")
+
+    assert core.profile_read(4242)["company"] == "Прежняя"
+    assert core.profile_complete(core.profile_read(4242)) is True
+    assert core.project_list(4242) == [], "старая анкета в списке проектов не нужна"
+
+    core.profile_save(_request())
+    assert not legacy.exists(), "после сохранения старый файл убран"
+    assert core.profile_read(4242)["company"] == "DevelopAid"
 
