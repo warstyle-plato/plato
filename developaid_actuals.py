@@ -290,6 +290,10 @@ def read_register(path: str | Path) -> dict[str, Any]:
             "bdds_code": str(cell("bdds_code") or "").strip(),
             "article": str(cell("article") or "").strip(),
             "counterparty": str(cell("counterparty") or "").strip(),
+            # Номер договора — вторая половина ключа сшивки с реестром
+            # платежей. Без него ключ вырождается в контрагента, а у крупного
+            # подрядчика договоров несколько и коды у них разные.
+            "contract": str(cell("contract") or "").strip(),
             "kind": str(cell("kind") or "").strip(),
             "object": str(cell("object") or "").strip(),
             "plan_or_fact": _normalized(cell("plan_or_fact")),
@@ -963,4 +967,250 @@ def articles_from_register(
         "unresolved": unresolved,
         "mapped": mapped,
         "total": register["paid"],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Реестр платежей РСС и сшивка его с реестром договоров.
+#
+# Оплаты есть в двух местах, и ни одно не годится в одиночку.
+#
+# Реестр платежей РСС полон: 2 251 платёж, 4 077,2 млн ₽, 32 месяца по июнь
+# 2026, ни одной строки без даты, плюс источник платежа — свои или заёмные. Но
+# он несёт только код ССР, а тот сваливает разное в один код: 2.6, 2.7, 1.8 и
+# 2.2.1.10 держат 941,1 млн ₽, которые по нашим статьям однозначно не ложатся.
+#
+# Реестр договоров финансовой модели несёт код БДДС и раскладывается без
+# остатка — но отстаёт на два месяца: 3 622,3 млн ₽ против 4 077,2. Ровно эта
+# разница и была «расхождением источников», которое мы искали в методике.
+#
+# Поэтому: суммы и даты — из реестра платежей, код БДДС — подтягивается по
+# договору из реестра договоров. По паре «контрагент + номер договора» сходится
+# 97,2% денег. Остальное добирается по коду ССР там, где он однозначен, а что
+# не добралось — уходит в отчёт с причиной.
+#
+# Соответствие «код ССР → статья» здесь не пишется руками: оно выводится из
+# того же реестра договоров, где обе кодировки стоят в одной строке. Вторая
+# рукописная карта разошлась бы с первой на первой же правке.
+# ---------------------------------------------------------------------------
+
+_CROSSWALK_SHEET = "статьи_БДДС"
+_CROSSWALK_FIRST_ROW = 3
+_CROSSWALK_COLUMNS = {"bdds": 6, "name": 7, "estimate_code": 8, "estimate_name": 9}
+
+
+def read_article_crosswalk(path: str | Path) -> dict[str, Any]:
+    """Лист «статьи_БДДС»: официальное соответствие кода БДДС коду РСС.
+
+    Выводить это соответствие из реестра договоров нельзя: там «Код банк»
+    местами разошёлся с листом. Фундаментная плита (БДДС 2.2.2.3.4) помечена в
+    реестре кодом РСС 2.2.2.1, хотя по листу это 2.2.1.4 — и код 2.2.2.1
+    начинает вести к двум разным статьям сразу, унося 284,6 млн ₽ в
+    «неоднозначное». Лист — источник, реестр — данные.
+    """
+    rows: list[dict[str, Any]] = []
+    for index, row in enumerate(_sheet(path, _CROSSWALK_SHEET), 1):
+        if index < _CROSSWALK_FIRST_ROW:
+            continue
+
+        def cell(field: str) -> Any:
+            position = _CROSSWALK_COLUMNS[field]
+            return row[position] if position < len(row) else None
+
+        bdds = str(cell("bdds") or "").strip()
+        if not bdds:
+            continue
+        rows.append({
+            "bdds_code": bdds,
+            "name": str(cell("name") or "").strip(),
+            "estimate_code": _code(cell("estimate_code")),
+            "estimate_name": str(cell("estimate_name") or "").strip(),
+        })
+    articles: dict[str, set[str]] = {}
+    for item in rows:
+        if not item["estimate_code"]:
+            continue
+        article, _ = article_for(item["bdds_code"])
+        if article:
+            articles.setdefault(item["estimate_code"], set()).add(article)
+    return {"rows": rows, "articles_by_estimate_code": articles}
+
+
+_PAYMENTS_SHEET = "Реестр платежей"
+_PAYMENTS_FIRST_ROW = 10
+_PAYMENTS_COLUMNS = {
+    "contractor": 1,
+    "contract": 2,
+    "contract_date": 3,
+    "object": 4,
+    "purpose": 5,
+    "estimate_code": 6,
+    "article_name": 7,
+    "date": 8,
+    "amount": 9,
+    "source": 10,
+    "counterparty": 11,
+}
+
+# Источник платежа: собственные средства процентов не несут (решение владельца
+# 06.08.2026), заёмные — несут. Различие важно для финансовой части, поэтому
+# оно читается, а не отбрасывается.
+_OWN_FUNDS_MARKER = "собствен"
+
+
+def _party_key(contractor: Any, contract: Any = None) -> str:
+    """Ключ сшивки: контрагент и номер договора без пунктуации и регистра."""
+    def clean(value: Any) -> str:
+        return re.sub(r"[^0-9a-zа-яё]", "", str(value or "").lower().replace("ё", "е"))
+
+    return clean(contractor) + ("|" + clean(contract) if contract is not None else "")
+
+
+def read_payments(path: str | Path) -> dict[str, Any]:
+    """Реестр платежей РСС: дата, сумма, код ССР, договор и источник средств."""
+    rows: list[dict[str, Any]] = []
+    for index, row in enumerate(_sheet(path, _PAYMENTS_SHEET), 1):
+        if index < _PAYMENTS_FIRST_ROW:
+            continue
+
+        def cell(field: str) -> Any:
+            position = _PAYMENTS_COLUMNS[field]
+            return row[position] if position < len(row) else None
+
+        amount = _money(cell("amount"))
+        if not amount:
+            continue
+        source = str(cell("source") or "").strip()
+        rows.append({
+            "contractor": str(cell("contractor") or "").strip(),
+            "contract": str(cell("contract") or "").strip(),
+            "object": str(cell("object") or "").strip(),
+            "purpose": str(cell("purpose") or "").strip(),
+            "estimate_code": _code(cell("estimate_code")),
+            "article_name": str(cell("article_name") or "").strip(),
+            "date": _date(cell("date")),
+            "amount": amount,
+            "source": source,
+            "own_funds": _OWN_FUNDS_MARKER in _normalized(source),
+        })
+    dated = [item for item in rows if item["date"]]
+    return {
+        "rows": rows,
+        "total": sum(item["amount"] for item in rows),
+        "undated": sum(item["amount"] for item in rows if not item["date"]),
+        "own_funds": sum(item["amount"] for item in rows if item["own_funds"]),
+        "first": min((item["date"] for item in dated), default=None),
+        "last": max((item["date"] for item in dated), default=None),
+    }
+
+
+def payments_by_article(
+    payments: dict[str, Any],
+    register: dict[str, Any],
+    gns: dict[str, Any] | None = None,
+    crosswalk: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Разнести платежи по статьям движка, подтянув код БДДС по договору.
+
+    Порядок попыток — от точного к приблизительному, и каждый шаг называется в
+    отчёте: пара «контрагент + договор», затем контрагент с единственным кодом,
+    затем код ССР там, где он даёт одну статью. Что не добралось — с причиной.
+    """
+    # Ключ сшивки — пара «контрагент + договор», но один договор нередко
+    # покрывает несколько статей, и тогда пары мало. Сужаем кодом ССР самого
+    # платежа: он в реестре платежей есть у каждой строки.
+    by_pair: dict[tuple[str, str], set[str]] = {}
+    by_pair_any: dict[str, set[str]] = {}
+    by_party: dict[str, set[str]] = {}
+    ssr_articles: dict[str, set[str]] = {}
+    for item in register["rows"]:
+        bdds = str(item["bdds_code"] or "").strip()
+        if not bdds:
+            continue
+        pair = _party_key(item["counterparty"], item.get("contract"))
+        by_pair.setdefault((pair, item["estimate_code"]), set()).add(bdds)
+        by_pair_any.setdefault(pair, set()).add(bdds)
+        by_party.setdefault(_party_key(item["counterparty"]), set()).add(bdds)
+    # Соответствие «код РСС → статья» берётся с листа «статьи_БДДС», а из
+    # реестра выводится только если листа не дали: в реестре «Код банк» местами
+    # расходится с листом, и сборный по ошибке код уносит деньги в
+    # «неоднозначное».
+    if crosswalk:
+        ssr_articles = {code: set(articles) for code, articles
+                        in crosswalk["articles_by_estimate_code"].items()}
+    else:
+        for item in register["rows"]:
+            bdds = str(item["bdds_code"] or "").strip()
+            article, _ = article_for(bdds) if bdds else (None, "")
+            if article and item["estimate_code"]:
+                ssr_articles.setdefault(item["estimate_code"], set()).add(article)
+
+    shares = _gns_shares(gns)
+    capex: dict[str, dict[datetime.date, float]] = {}
+    other: dict[str, dict[datetime.date, float]] = {}
+    unresolved: dict[str, float] = {}
+    matched: dict[str, float] = {}
+
+    def put(article: str, month: datetime.date, amount: float) -> None:
+        target = other if article in _NON_CAPEX_ARTICLES else capex
+        target.setdefault(article, {})
+        target[article][month] = target[article].get(month, 0.0) + amount
+
+    def place(code: str, month: datetime.date, amount: float, how: str) -> bool:
+        split = _gns_split_for(code)
+        if split:
+            if not shares:
+                return False
+            put(split[0], month, amount * shares[0])
+            put(split[1], month, amount * shares[1])
+            matched[how] = matched.get(how, 0.0) + amount
+            return True
+        article, _ = article_for(code)
+        if article is None:
+            return False
+        put(article, month, amount)
+        matched[how] = matched.get(how, 0.0) + amount
+        return True
+
+    for item in payments["rows"]:
+        amount, month = item["amount"], item["date"]
+        if month is None:
+            unresolved["платёж без даты"] = unresolved.get("платёж без даты", 0.0) + amount
+            continue
+        month = month.replace(day=1)
+
+        pair = _party_key(item["contractor"], item["contract"])
+        attempts = (
+            ("по договору и коду РСС", by_pair.get((pair, item["estimate_code"]), set())),
+            ("по договору", by_pair_any.get(pair, set())),
+            ("по контрагенту", by_party.get(_party_key(item["contractor"]), set())),
+        )
+        placed = False
+        for how, codes in attempts:
+            if len(codes) == 1 and place(next(iter(codes)), month, amount, how):
+                placed = True
+                break
+        if placed:
+            continue
+
+        # Договор не опознан — остаётся код ССР, и он годится только там, где
+        # ведёт к одной статье. Сборный код (2.6, 2.7, 1.8, 2.2.1.10) разносить
+        # долями нельзя: это уже не факт.
+        articles = ssr_articles.get(item["estimate_code"], set())
+        if len(articles) == 1:
+            put(next(iter(articles)), month, amount)
+            matched["по коду РСС"] = matched.get("по коду РСС", 0.0) + amount
+            continue
+        reason = (f"код РСС {item['estimate_code'] or '—'} ведёт к нескольким статьям"
+                  if articles else
+                  f"договор не опознан, код РСС {item['estimate_code'] or '—'} неизвестен")
+        unresolved[reason] = unresolved.get(reason, 0.0) + amount
+
+    return {
+        "capex_by_article": capex,
+        "other_by_article": other,
+        "unresolved": unresolved,
+        "matched": matched,
+        "mapped": sum(matched.values()),
+        "total": payments["total"],
     }
