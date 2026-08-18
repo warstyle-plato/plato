@@ -198,6 +198,23 @@ padding:5px 12px;font-size:13px;cursor:pointer}
 margin-top:12px;white-space:normal}
 #askout{margin-top:10px}
 td.link{color:var(--blue);cursor:pointer;text-decoration:underline dotted}
+@media print{
+  /* В печать уходит отчёт, а не орудия его сборки: форма, кнопки и поле
+     вопроса на бумаге бесполезны. Разделы не разрываются между страницами —
+     таблица, оторванная от своего графика, читается как чужая. */
+  body{background:#fff}
+  header{border:0;padding:0 0 8px}
+  main{max-width:none;padding:0}
+  #form, #askcard, .chips, button, #hintout, .cardwrap{display:none !important}
+  .card{break-inside:avoid;page-break-inside:avoid;border:0;border-top:1px solid #dde5ed;
+        border-radius:0;padding:14px 0;margin:0}
+  h2{break-after:avoid}
+  table{font-size:11px}
+  th,td{padding:4px 6px}
+  .say,.note,.scope{break-inside:avoid}
+  a[href]:after{content:''}
+}
+@page{margin:14mm 12mm}
 .cardwrap{position:fixed;inset:0;background:rgba(20,35,60,.45);display:flex;align-items:flex-start;
 justify-content:center;padding:40px 16px;overflow:auto;z-index:50}
 .cardbox{background:#fff;border-radius:14px;padding:22px;max-width:760px;width:100%;position:relative;
@@ -222,7 +239,7 @@ border-radius:9px;box-shadow:0 6px 22px rgba(20,35,60,.13);max-height:320px;over
   <div class="sub">Внутренний раздел. Числа лицензионные — наружу не публикуются.</div>
 </header>
 <main>
-  <div class="card">
+  <div class="card" id="form">
     <div class="row">
       <div style="flex:2 1 380px;position:relative">
         <label class="f">Объект: кадастровый номер, адрес, координаты или название проекта</label>
@@ -255,6 +272,7 @@ border-radius:9px;box-shadow:0 6px 22px rgba(20,35,60,.13);max-height:320px;over
     <div class="secs">__SECTIONS__</div>
     <button class="go" id="go">Собрать отчёт</button>
     <button class="go alt" id="hint">Ориентир цены</button>
+    <button class="go alt" id="pdf" style="display:none">Сохранить PDF</button>
     <span id="state" class="muted" style="margin-left:12px"></span>
     <div id="hintout"></div>
   </div>
@@ -681,10 +699,14 @@ function render(d){
     +`</table></div></div>`;
   $('#out').innerHTML=html;
   $('#askcard').style.display='block';
+  $('#pdf').style.display='inline-block';
   wireCards();
 }
 $('#go').addEventListener('click',build);
 $('#askbtn').addEventListener('click',askPlato);
+// PDF — печатью самой страницы. Второй вёрстки не заводим: она разошлась бы с
+// первой, и мы получили бы два достоверных на вид отчёта с разными числами.
+$('#pdf').addEventListener('click',()=>window.print());
 document.querySelectorAll('.chips button').forEach(b=>b.addEventListener('click',()=>{
   $('#ask').value=b.dataset.q; askPlato();
 }));

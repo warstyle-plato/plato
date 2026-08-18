@@ -558,6 +558,11 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         near = self.pulse.near(subject.latitude, subject.longitude, radius_km)
 
         own = None
+        # Адрес нужен не для показа, а чтобы понять, покрывает ли объект свод
+        # рынка. У ввода координатами и кадастром своего адреса может не быть —
+        # тогда берётся адрес совпавшего проекта. Без этого отчёт по Кутузов
+        # Сити, вызванный координатами, молча терял сравнение с городом.
+        subject_address = subject.address
         if subject.project_id is None:
             # Площадка может совпасть с известным проектом — тогда отчёт о нём,
             # а не о безымянной точке. Ноль километров это и означает.
@@ -566,7 +571,11 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                     subject.project_id = project.complex_id
                     subject.project_name = project.name
                     subject.segment = classes.get(project.complex_id)
+                    subject_address = subject_address or project.address
                     break
+        if subject.project_id is not None and not subject_address:
+            known = self.pulse.project(subject.project_id)
+            subject_address = getattr(known, "address", None)
         if subject.project_id is not None:
             own = {
                 "name": subject.project_name,
@@ -655,7 +664,7 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         # Свод собран по одному отчёту, «Москва старая». Вне его покрытия
         # городская база не подставляется вовсе: медианы чужого города,
         # выданные молча, выглядят исправным сравнением.
-        where = " ".join(filter(None, [subject.address, (own or {}).get("address"), subject.query]))
+        where = " ".join(filter(None, [subject_address, subject.query]))
         city_scope = self.city.scope(where)
         reference = self.city if city_scope["covered"] else MoscowMarket({})
         blocks = build_blocks(subject_metrics, peers, reference, codes)
