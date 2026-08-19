@@ -560,6 +560,7 @@ def _help_markup(chat_id: int) -> dict[str, Any]:
         pass
     rows.append([{"text": "Расчёт ВРИ и ТЭП", "callback_data": "vritep_start"}])
     rows.append([{"text": "Платон Сергеевич", "callback_data": "ask_platon"}])
+    rows.append([{"text": "Оценить DevelopAid", "callback_data": "fb_start"}])
     return {"inline_keyboard": rows}
 
 
@@ -1364,6 +1365,105 @@ def _deliver_profile_announcements() -> None:
         core._telegram_send_profile_card(record, admins)
 
 
+# --- анкета в боте -----------------------------------------------------------
+# На сайте анкета — двадцать пунктов с оценками; в чате столько никто не
+# заполнит. Поэтому форма другая, а данные те же: оценка ложится в тот же
+# журнал (`survey`) тем же ключом `general_overall`, комментарий по разделу — в
+# `problems`, свободный текст — в `impression`. Свод `/survey` и сводка
+# владельцу считают сайт и бота вместе, раздельно по поверхности.
+_FEEDBACK_STATE = "feedback"
+
+
+def _feedback_areas() -> list[tuple[str, str]]:
+    return [(str(group[0]), str(group[1])) for group in getattr(core, "FEEDBACK_GROUPS", [])]
+
+
+def _feedback_state(chat_id: int) -> dict[str, Any]:
+    return _state_read(f"{_FEEDBACK_STATE}:{chat_id}") or {}
+
+
+def _feedback_remember(chat_id: int, payload: dict[str, Any]) -> None:
+    _state_write(f"{_FEEDBACK_STATE}:{chat_id}", payload)
+
+
+def _feedback_forget(chat_id: int) -> None:
+    _state_write(f"{_FEEDBACK_STATE}:{chat_id}", {})
+
+
+def _feedback_start(chat_id: int) -> None:
+    _feedback_remember(chat_id, {"stage": "score"})
+    _send_message(
+        chat_id,
+        "<b>Оцените DevelopAid</b>\n"
+        "Одна оценка от 1 до 5 — этого достаточно. Дальше можно ничего не писать.",
+        reply_markup={"inline_keyboard": [
+            [{"text": str(score), "callback_data": f"fb_score_{score}"} for score in range(1, 6)],
+            [{"text": "Не сейчас", "callback_data": "fb_skip"}],
+        ]})
+
+
+def _feedback_score(chat_id: int, score: int) -> None:
+    state = {"stage": "area" if score <= 3 else "text", "score": score}
+    _feedback_remember(chat_id, state)
+    if score <= 3:
+        rows = [[{"text": title, "callback_data": f"fb_area_{key}"}]
+                for key, title in _feedback_areas()]
+        rows.append([{"text": "Скажу своими словами", "callback_data": "fb_area_"}])
+        _send_message(
+            chat_id,
+            f"Оценка {score} — спасибо. Что подвело? Выберите раздел или напишите словами.",
+            reply_markup={"inline_keyboard": rows})
+        return
+    _send_message(
+        chat_id,
+        f"Оценка {score} — спасибо. Если есть что улучшить, напишите одной строкой. "
+        "Не хотите — просто не отвечайте, оценка уже записана.")
+    _feedback_save(chat_id, "")
+
+
+def _feedback_area(chat_id: int, area: str) -> None:
+    state = _feedback_state(chat_id)
+    state["area"] = area
+    state["stage"] = "text"
+    _feedback_remember(chat_id, state)
+    title = dict(_feedback_areas()).get(area, "")
+    _send_message(chat_id, f"Напишите, что не так{' — ' + title.lower() if title else ''}. "
+                           "Одной строки достаточно.")
+
+
+def _feedback_save(chat_id: int, text: str) -> None:
+    """Кладёт анкету в общий журнал. Пустой текст — это тоже ответ: оценка."""
+    state = _feedback_state(chat_id)
+    score = int(state.get("score") or 0)
+    if not score and not text:
+        return
+    area = str(state.get("area") or "")
+    ratings = {"general_overall": score} if 1 <= score <= 5 else {}
+    problems = {area: text} if area and text else {}
+    core.usage_track("survey", surface="telegram", chat_id=chat_id,
+                     text=text, ratings=ratings, problems=problems,
+                     impression="" if problems else text,
+                     mistakes="", role="", region="", projects=[], source="")
+    if text:
+        _feedback_forget(chat_id)
+        _send_message(chat_id, "Записал, спасибо. Это доходит до владельца сервиса.")
+    else:
+        # Оценка записана, а текст ещё может прийти следующим сообщением:
+        # отметка не даёт записать её вторым разом.
+        state["stage"] = "text"
+        state["saved"] = True
+        _feedback_remember(chat_id, state)
+
+
+def _feedback_pending_text(chat_id: int, text: str) -> bool:
+    """Свободный текст после анкеты. Возвращает True, если он был её частью."""
+    state = _feedback_state(chat_id)
+    if str(state.get("stage") or "") != "text" or not text:
+        return False
+    _feedback_save(chat_id, text)
+    return True
+
+
 def _handle_message(message: dict[str, Any]) -> None:
     chat_id, user_id, text = _extract_message(message)
     if not chat_id:
@@ -1378,6 +1478,9 @@ def _handle_message(message: dict[str, Any]) -> None:
         return
     if command == "/help":
         _send_help(chat_id)
+        return
+    if command in {"/feedback", "/оценить"}:
+        _feedback_start(chat_id)
         return
     if command in {"/survey", "/анкета"}:
         _survey_message(chat_id, user_id, text.split(maxsplit=1)[1] if " " in text else "")
@@ -1396,6 +1499,10 @@ def _handle_message(message: dict[str, Any]) -> None:
         return
     if command in {"/vritep", "/vri", "/ври"}:
         _start_vritep(chat_id)
+        return
+    # Ответ на анкету идёт раньше разбора адресов и вопросов: «дорого и
+    # непонятно» — это комментарий, а не кадастровый номер.
+    if text and not command and _feedback_pending_text(chat_id, text):
         return
     if text and not command and _vritep_handle_text(chat_id, text):
         return
@@ -1431,6 +1538,21 @@ def _handle_update(update: dict[str, Any]) -> None:
                 _start_vritep(chat_id)
             else:
                 _vritep_ask_input(chat_id, "msk" if data == "vritep_msk" else "mo")
+            return
+        if data.startswith("fb_"):
+            _answer_callback(query)
+            if data == "fb_start":
+                _feedback_start(chat_id)
+            elif data == "fb_skip":
+                _feedback_forget(chat_id)
+                _send_message(chat_id, "Хорошо, спрошу в другой раз.")
+            elif data.startswith("fb_score_"):
+                try:
+                    _feedback_score(chat_id, int(data.rsplit("_", 1)[1]))
+                except ValueError:
+                    pass
+            elif data.startswith("fb_area_"):
+                _feedback_area(chat_id, data[len("fb_area_"):])
             return
         if data in {"ask_platon", "platon_tep", "platon_stop", "platon_discard",
                     "platon_apply", "show_help", "send_model"}:

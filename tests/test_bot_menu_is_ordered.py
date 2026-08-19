@@ -50,7 +50,7 @@ def sources() -> str:
 
 def test_the_menu_holds_six_decisions():
     """Седьмой пункт — повод спросить, решение ли это или ещё одна команда."""
-    assert NAMES == ["calc", "model", "vritep", "mpt", "platon", "help"], NAMES
+    assert NAMES == ["calc", "model", "vritep", "mpt", "platon", "feedback", "help"], NAMES
 
 
 def test_the_calculations_stand_together():
