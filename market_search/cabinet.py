@@ -208,6 +208,12 @@ padding:5px 12px;font-size:13px;cursor:pointer}
 .plato{background:#f8fafc;border-left:3px solid var(--ink);padding:12px 14px;border-radius:0 8px 8px 0;
 margin-top:12px;white-space:normal}
 #askout{margin-top:10px}
+/* Портрет — тот же файл, что в окне Платона на главной, ссылкой по адресу.
+   Второй копии в base64 здесь нет по той же причине, что и копии версии:
+   копию негде обновлять. В печать не идёт — на бумаге вопросов не задают. */
+.plato-hero{display:flex;gap:14px;align-items:center;margin-bottom:10px}
+.plato-hero img{border-radius:10px;flex:none}
+.plato-say{font-size:14.5px;color:var(--ink);font-style:italic;margin-bottom:4px}
 td.link{color:var(--blue);cursor:pointer;text-decoration:underline dotted}
 .cardwrap{position:fixed;inset:0;background:rgba(20,35,60,.45);display:flex;align-items:flex-start;
 justify-content:center;padding:40px 16px;overflow:auto;z-index:50}
@@ -288,7 +294,7 @@ g.bub.on circle{fill-opacity:.75}
   main{max-width:none;padding:0}
   #form, #askcard, .chips, button, #hintout, .cardwrap{display:none !important}
   #bubble{display:none}
-  .whoshow,#tip{display:none !important}
+  .whoshow,#tip,.plato-hero{display:none !important}
   .printviews{display:block}
   /* Ни наведённая, ни тапнутая подпись на бумагу не идёт: на печати нет ни
      того ни другого, а один случайно оставшийся ярлык читался бы как
@@ -358,8 +364,14 @@ g.bub.on circle{fill-opacity:.75}
 <div id="tip" role="status"></div>
   <div class="card" id="askcard" style="display:none">
     <h2>Спросить Платона Сергеевича</h2>
-    <div class="muted" style="font-size:13px;margin-bottom:8px">
-      Он видит числа этого отчёта и объясняет их. Считает движок — модель не пересчитывает.
+    <div class="plato-hero">
+      <img src="/assets/platon-hero.webp" alt="" width="96" height="110" loading="lazy">
+      <div>
+        <div class="plato-say">«Хорошие дома начинаются с правильных вопросов»</div>
+        <div class="muted" style="font-size:13px">
+          Он видит числа этого отчёта и объясняет их. Считает движок — модель не пересчитывает.
+        </div>
+      </div>
     </div>
     <div class="chips">
       <button type="button" data-q="Что здесь главное и что делать с ценой?">Что делать с ценой?</button>

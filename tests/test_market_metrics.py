@@ -1493,7 +1493,7 @@ def test_the_neighbours_to_show_are_picked_in_one_place() -> None:
     # Перерисовка без запроса к серверу.
     assert "if(box.checked) onChart.add(id); else onChart.delete(id);\n      render(lastReport);" in CABINET_PAGE
     # В печать список выбора не идёт.
-    assert "  .whoshow,#tip{display:none !important}" in CABINET_PAGE
+    assert "  .whoshow,#tip,.plato-hero{display:none !important}" in CABINET_PAGE
 
 
 def test_only_the_subject_is_labelled_on_screen() -> None:
@@ -1992,3 +1992,36 @@ def test_the_chart_tooltip_is_ours_not_the_browser_one() -> None:
     assert "['pointermove','pointerdown'].forEach(kind=>{" in CABINET_PAGE
     # Прокрутка и уход указателя её гасят: иначе повисает над страницей.
     assert "window.addEventListener('scroll',hideTip" in CABINET_PAGE
+
+
+def test_platon_has_the_same_face_in_the_cabinet(tmp_path, monkeypatch) -> None:
+    """У Платона появилось лицо на главной — в кабинете его не было.
+
+    Портрет берётся тем же адресом, что и в окне Платона: своей копии в
+    base64 кабинет не заводит — копию негде обновлять, как и копию версии.
+    Место ему у карточки вопроса, а не в подвале: там видно, к кому
+    обращаешься, и реплика стоит над полем, куда вопрос и вводят.
+    """
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from market_search.api import install
+    from market_search.cabinet import CABINET_PAGE
+
+    assert '<img src="/assets/platon-hero.webp"' in CABINET_PAGE
+    assert "Хорошие дома начинаются с правильных вопросов" in CABINET_PAGE
+    # Ни байта картинки внутри страницы: только ссылка.
+    assert "data:image" not in CABINET_PAGE
+    # На бумаге вопросов не задают.
+    assert ".plato-hero{display:none !important}" in CABINET_PAGE.replace(
+        ".whoshow,#tip,.plato-hero{display:none !important}",
+        ".plato-hero{display:none !important}",
+    )
+
+    # И адрес живой: файл лежит рядом с кодом и отдаётся движком.
+    import main_legacy
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    answer = TestClient(main_legacy.app).get("/assets/platon-hero.webp")
+    assert answer.status_code == 200
+    assert answer.headers["content-type"].startswith("image/")
