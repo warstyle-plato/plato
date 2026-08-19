@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -68,10 +69,31 @@ def test_the_controls_from_the_file_hold(applied):
 
 def test_the_social_burden_takes_both_forms(applied):
     data, _ = applied
+    controls = json.loads(PRESET_PATH.read_text(encoding="utf-8"))["validation_controls"]
     assert data["applied_inputs"]["social_mode"] == core.SOCIAL_MODE_BOTH
-    assert data["applied_inputs"]["social_compensation_mln"] == pytest.approx(1149.23)
+    # Денежная часть — остаток обязательства по регби из ДС №7 от 03.06.2026:
+    # лимит 1,2 млрд минус 72,6 млн, уже стоящие в графике. Число берётся из
+    # контроля пресета, а не переписывается здесь при каждом новом ДС.
+    assert data["applied_inputs"]["social_compensation_mln"] == pytest.approx(
+        controls["rugby_social_burden_remaining_rub"] / 1e6)
     assert data["applied_inputs"]["school_places"] == 350
     assert data["applied_inputs"]["kindergarten_places"] == 180
+
+
+def test_the_preset_carries_every_cadastral_number():
+    """Кадастры — часть проекта, а не подпись под ним.
+
+    Диапазон «77:17:0110504:18151–18171» одной строкой участок не ищет: НСПД
+    знает номера, а не тире между ними. В пресете лежит развёрнутый список из
+    двадцати одного номера, и его длина объявлена контролем.
+    """
+    preset = json.loads(PRESET_PATH.read_text(encoding="utf-8"))
+    numbers = preset["project"]["cadastral_numbers"]
+    assert len(numbers) == preset["validation_controls"]["cadastral_numbers_count"]
+    assert len(set(numbers)) == len(numbers), "повторы в списке кадастровых номеров"
+    assert all(re.match(r"^\d{2}:\d{2}:\d{6,8}:\d+$", number) for number in numbers)
+    # Тот же список, но строкой — его вставляют в поле участка.
+    assert preset["project"]["cadastral_numbers_input"].count(":") == 3 * len(numbers)
 
 
 def test_the_phasing_comes_from_the_file(applied):
@@ -117,3 +139,37 @@ def test_the_open_questions_are_visible(applied):
     items = " ".join(applied[0]["open_items"])
     assert "офис" in items.lower()
     assert "7 млрд" in items or "льгот" in items.lower()
+
+
+def test_the_parcel_arrives_with_the_project():
+    """Пресет поднимает проект целиком — значит, и участок.
+
+    Двадцать один номер лежал в файле и не доезжал никуда: загрузчик их не
+    читал вовсе. Проект вставал с экономикой и очередями, а карточка участка и
+    градостроительные ограничения оставались пустыми — при том, что номера в
+    файле есть. Теперь номера уходят в поле участка, и следом идёт та же
+    выгрузка ЕГРН, что при ручном вводе; ТЭП при этом не трогается — он пришёл
+    из пресета, и штатный расчёт ГлавАПУ его бы перебил.
+    """
+    preset = json.loads(PRESET_PATH.read_text(encoding="utf-8"))
+    numbers = core.project_preset.cadastral_numbers(preset)
+    assert len(numbers) == 21
+
+    body = core.PAGE[core.PAGE.index("async function applyPreset"):]
+    body = body[:body.index("// --- хранилище проектов")]
+    assert "data.cadastral_numbers" in body, "номера пресета не доезжают до страницы"
+    assert "drawLandPreviewQuiet" in body, "участок не запрашивается после импорта"
+    assert "obtainTep" not in body, "импорт пресета не имеет права перезапускать ТЭП"
+
+
+def test_a_dash_range_is_not_read_as_a_number():
+    """«77:17:0110504:18151–18171» — сокращение человека, а не кадастровый номер."""
+    numbers = core.project_preset.cadastral_numbers(
+        {"project": {"cadastral": "77:17:0110504:18151–18171"}})
+    assert numbers == [], "диапазон нельзя раскрывать самим: участков может не быть"
+
+    mixed = core.project_preset.cadastral_numbers({
+        "project": {"cadastral_numbers": ["77:17:0110504:18151", "77:17:0110504:18151"]},
+        "land": {"cadastral_numbers_csv": "77:17:0110504:18152"},
+    })
+    assert mixed == ["77:17:0110504:18151", "77:17:0110504:18152"], "повторы убираются, порядок держится"

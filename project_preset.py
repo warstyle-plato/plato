@@ -26,6 +26,7 @@
 from __future__ import annotations
 
 import math
+import re
 from typing import Any
 
 SCHEMA_VERSIONS = {
@@ -436,6 +437,45 @@ def map_economics(data: dict[str, Any]) -> tuple[dict[str, Any], list[Field]]:
     return inputs, notes
 
 
+CADASTRAL_RE = re.compile(r"(?<!\d)(\d{2}:\d{2}:\d{6,8}:\d+)(?!\d)")
+
+
+def cadastral_numbers(preset: dict[str, Any]) -> list[str]:
+    """Кадастровые номера проекта — списком, без домысливания диапазона.
+
+    Запись «77:17:0110504:18151–18171» — сокращение человека, а не номер:
+    НСПД знает номера, а не тире между ними, и раскрывать диапазон самим
+    значит выдумать двадцать участков, которых, может быть, уже нет. Берём
+    только то, что перечислено явно: сначала список, потом строка через
+    запятую. Пресет несёт их и в `project`, и в `land` — читаем оба, порядок
+    сохраняем, повторы убираем.
+    """
+    found: list[str] = []
+    seen: set[str] = set()
+    sources: list[Any] = []
+    for section in ("project", "land"):
+        block = preset.get(section)
+        if not isinstance(block, dict):
+            continue
+        sources.extend([
+            block.get("cadastral_numbers"),
+            block.get("cadastral_numbers_input"),
+            block.get("cadastral_numbers_csv"),
+        ])
+    for source in sources:
+        if isinstance(source, list):
+            text = " ".join(str(item) for item in source)
+        elif isinstance(source, str):
+            text = source
+        else:
+            continue
+        for number in CADASTRAL_RE.findall(text):
+            if number not in seen:
+                seen.add(number)
+                found.append(number)
+    return found
+
+
 def map_phasing(data: dict[str, Any]) -> tuple[dict[str, Any], list[Field]]:
     """Очереди: сколько, чем и с каким шагом.
 
@@ -482,10 +522,16 @@ def build_preview(data: dict[str, Any]) -> dict[str, Any]:
     inputs.update(economics)
     phasing, phasing_notes = map_phasing(preset)
     project = preset.get("project") if isinstance(preset.get("project"), dict) else {}
+    cadastres = cadastral_numbers(preset)
     return {
         "schema_version": preset.get("schema_version"),
         "project_name": str(project.get("name") or ""),
         "region": str(project.get("region") or ""),
+        "address": str(project.get("address") or ""),
+        # Участок — часть проекта: без номеров пресет поднимает экономику, а
+        # карточка участка и градостроительные ограничения остаются пустыми,
+        # хотя номера в файле есть.
+        "cadastral_numbers": cadastres,
         "tep": tep,
         "inputs": inputs,
         "phasing": phasing,

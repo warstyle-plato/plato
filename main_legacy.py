@@ -49,7 +49,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.18.91"
+VERSION = "0.18.92"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -4522,11 +4522,15 @@ def mo_social_program(apartments_sqm: float, norms: dict[str, float] | None = No
     public_premises_sqm = sum(value for _, value in public_premises)
 
     # Рабочие места, создаваемые социальными и коммерческими объектами.
+    # Торговля создаёт место на каждые 15 м² ГБА — тем же числом считается и
+    # обратная задача: сколько торговли нужно, чтобы закрыть дефицит мест.
+    # Число одно и живёт в одном месте, иначе две ветки разойдутся молча.
+    retail_sqm_per_job = 15.0
     jobs_rows = [
         ("Дошкольная образовательная организация", round(kindergarten_places * 0.2)),
         ("Общеобразовательная организация", _mo_ceil(school_places * 0.15)),
         ("Поликлиника", _mo_ceil(clinic_capacity * 0.3)),
-        ("Торговые объекты", round(retail_gba / 15.0)),
+        ("Торговые объекты", round(retail_gba / retail_sqm_per_job)),
         ("Бытовое обслуживание", _mo_ceil(service_jobs)),
         ("Общественное питание", round(catering_seats / 6.0)),
         ("Досуговый центр", _mo_ceil(club_gba / 60.0) if club_gba else 0),
@@ -4581,6 +4585,13 @@ def mo_social_program(apartments_sqm: float, norms: dict[str, float] | None = No
             "from_objects": jobs_from_objects,
             "deficit": round(jobs_deficit, 2),
             "rows": [{"label": label, "jobs": int(value)} for label, value in jobs_rows],
+            # Дефицит мест — это будущий объект, а не строка справки: человеку
+            # решать, офис это или торговля, но знать о нём он должен на ТЭП,
+            # а не когда посадка уже сложилась (замечание владельца, 19.08.2026).
+            "office_sqm": round(office_sqm, 2),
+            "retail_sqm": round(jobs_deficit * retail_sqm_per_job, 2),
+            "office_sqm_per_job": n["office_sqm_per_job"],
+            "retail_sqm_per_job": retail_sqm_per_job,
         },
         "budget_compensation": {
             "hospital_beds": round(per_1000 * n["hospital_beds_per_1000"], 3),
@@ -5281,6 +5292,21 @@ def mo_calculate(req: MoCalculateRequest) -> dict[str, Any]:
 
     norms = _mo_norms(req.norms if isinstance(req.norms, dict) else None)
     social = mo_social_program(apartments_sqm, norms)
+    # Дефицит рабочих мест доносится наравне с прочими обязательствами: он
+    # означает будущий объект — офис или торговлю, — а объект стоит денег и
+    # места на площадке. В таблицах он был строкой справки и читался как
+    # «к сведению» (замечание владельца, 19.08.2026).
+    jobs_gap = float((social.get("jobs") or {}).get("deficit") or 0)
+    if jobs_gap > 0:
+        gap_office = float((social.get("jobs") or {}).get("office_sqm") or 0)
+        gap_retail = float((social.get("jobs") or {}).get("retail_sqm") or 0)
+        spaced = lambda value: f"{value:,.0f}".replace(",", "\u00a0")
+        warnings.append(
+            f"РНГП МО требует {spaced(_mo_ceil(jobs_gap))} рабочих мест сверх тех, что дают "
+            f"нормативные соцобъекты и торговля. Их создаёт отдельный объект: офисы около "
+            f"{spaced(gap_office)} м² ГНС либо торговля около {spaced(gap_retail)} м². "
+            f"В ТЭП он не включён — включите его во вводных, если берёте на себя."
+        )
 
     district = _land_text(req.district)
     district_source = "запрос" if district else ""
@@ -27706,6 +27732,20 @@ function syncMoParams(data){
  if(area&&t.site_area_ha)area.placeholder=landNum(t.site_area_ha,4)+' га из ЕГРН';
 }
 
+// Дефицит рабочих мест — это будущий объект, а не строка справки. РНГП МО
+// требует 0,5 рабочего места на жителя; соцобъекты, нормативная торговля,
+// общепит и быт часть закрывают, остаток закрывать девелоперу — офисом или
+// дополнительной торговлей. Раньше на экране стояли «офисы под рабочие места
+// N м²» без слова «нужно», и это читалось как справка (замечание владельца,
+// 19.08.2026).
+function jobsGapText(jobs){
+ const gap=Number((jobs||{}).deficit||0);
+ if(gap<=0)return 'дефицита нет: нормативные объекты закрывают потребность';
+ const office=Number(jobs.office_sqm||0),retail=Number(jobs.retail_sqm||0);
+ return 'офисы ≈ '+landNum(office,0)+' м² ГНС или торговля ≈ '+landNum(retail,0)+
+  ' м² — или их сочетание на '+landNum(gap,0)+' мест';
+}
+
 function moTable(title,rows){
  return `<div class="mo-table"><h4>${escapeHtml(title)}</h4><table><tbody>${
   rows.map(r=>`<tr><td>${escapeHtml(r[0])}</td><td>${escapeHtml(r[1])}</td></tr>`).join('')
@@ -27736,8 +27776,9 @@ function renderMo(data){
   ['Паркинг временного хранения',landNum(s.parking.temporary_spaces,0)+' м/м'],
   ['Озеленение',landNum(s.green.quarter_sqm,0)+' м² · общего пользования '+landNum(s.green.public_sqm,0)+' м²'],
   ['Нежилые помещения общественные',landNum(s.public_premises_sqm,0)+' м²'],
-  ['Офисы под рабочие места',landNum(s.office_sqm,0)+' м²'],
-  ['Рабочие места',landNum(s.jobs.required,0)+' требуется · '+landNum(s.jobs.from_objects,0)+' дают объекты'],
+  ['Рабочие места',landNum(s.jobs.required,0)+' требуется · '+landNum(s.jobs.from_objects,0)+
+    ' дают нормативные объекты · дефицит '+landNum(s.jobs.deficit,0)],
+  ['Чем закрыть дефицит',jobsGapText(s.jobs)],
   ['Компенсация в бюджет','стационар '+landNum(s.budget_compensation.hospital_beds,1)+' коек · скорая '+landNum(s.budget_compensation.ambulance_cars,2)+' маш. · депо '+landNum(s.budget_compensation.fire_cars,2)+' маш.'],
   ['СПП ГНС',landNum(s.gns_sqm,0)+' м²']
  ]));
@@ -30228,7 +30269,8 @@ function renderPresetPreview(data){
  const origins={source:'из документа',derived:'рассчитано',assumption:'предпосылка',tbd:'не определено'};
  presetTitle.textContent='Импорт: '+(data.project_name||'проект');
  presetSummary.textContent=(data.region?data.region+' · ':'')+'схема '+data.schema_version
-  +' · изменений: вводные '+data.diff.inputs.length+', ТЭП '+data.diff.tep.length;
+  +' · изменений: вводные '+data.diff.inputs.length+', ТЭП '+data.diff.tep.length
+  +((data.cadastral_numbers||[]).length?' · участков: '+data.cadastral_numbers.length:'');
  const tbd=(data.notes||[]).filter(n=>n.origin==='tbd');
  presetErrors.style.display=tbd.length?'':'none';
  // У незакрытого поля с известным адресом — поле ввода: документ обычно есть,
@@ -30287,6 +30329,17 @@ async function applyPreset(){
  if(data.project_name)inputs._manual_tep_import={project_name:data.project_name};
  renderInputs();renderTep();persistLocalSilently();
  closePreset();
+ // Участок приезжает вместе с проектом: номера в поле, а следом та же
+ // выгрузка ЕГРН и скрининг, что при ручном вводе. ТЭП при этом не трогаем —
+ // он пришёл из пресета, и штатный расчёт ГлавАПУ его бы перебил.
+ const cadastres=data.cadastral_numbers||[];
+ if(cadastres.length){
+  const field=document.getElementById('cadastralNumbers');
+  if(field){
+   field.value=cadastres.join(', ');
+   drawLandPreviewQuiet(field.value);
+  }
+ }
  calculateAndOpen('report');
 }
 
