@@ -207,3 +207,56 @@ def test_the_cash_part_is_not_multiplied_by_phases():
         tep=core.TEP_DEFAULT, rates=[], phasing=phasing))
     total = bundle["consolidated"]["summary"]["social_payment"] / 1_000_000
     assert total == pytest.approx(1149.23, rel=1e-6)
+
+
+# --- отчёт называет режим своим именем -----------------------------------------
+
+def test_the_report_does_not_call_the_third_mode_a_cash_payment():
+    """В отчёте стоял «Денежная компенсация» при выбранном совмещённом режиме.
+
+    Ветки было две — «Строительство» и всё остальное, — и третий режим уезжал
+    во вторую: заголовок врал, разбивка по объектам стояла нулями (импорт
+    ГлавАПУ по объектам компенсацию не всегда даёт), а итог нёс и стройку тоже.
+    Владелец увидел три нуля против 2,7 млрд ₽ итога (19.08.2026).
+    """
+    block = core.PAGE[core.PAGE.index("const socialMode=r.summary.social_payment_mode"):]
+    block = block[:block.index("const bridgeTotal")]
+    assert "socialMode==='Строительство и компенсация'" in block, "третий режим не разобран"
+    built = block[block.index("socialMode==='Строительство и компенсация'"):]
+    built = built[:built.index("else if(socialMode==='Строительство')")]
+    assert "row('Режим','Строительство и компенсация')" in built
+    assert "Стоимость строительства" in built and "Денежная компенсация" in built
+    assert "Социальная нагрузка / всего" in built
+
+
+def test_the_cash_part_is_what_is_left_of_the_total():
+    """Денежная часть считается вычитанием, а не берётся из вводных.
+
+    Итог таблицы обязан сходиться с моделью при любом источнике компенсации —
+    импорт ГлавАПУ, ручной ввод, пресет.
+    """
+    both = result(core.SOCIAL_MODE_BOTH)["summary"]
+    parts = both["social_payment_breakdown"]["construction"]
+    built = sum(float(value or 0) for value in parts.values()) * 1e6
+    assert both["social_payment"] - built == pytest.approx(1149.23 * 1e6, rel=1e-9)
+
+    block = core.PAGE[core.PAGE.index("const socialBuilt="):]
+    block = block[:block.index("const bridgeTotal")]
+    assert "r.summary.social_payment||0)-socialBuilt" in block.replace(" ", "")
+
+
+def test_the_self_check_knows_all_three_modes():
+    """Самопроверка сравнивала CAPEX со стройкой и при совмещённом режиме.
+
+    В CAPEX там лежит и денежная часть, поэтому проверка падала всегда, а отчёт
+    2.0 писал «социалка расходится с выбранным режимом» на исправном расчёте.
+    """
+    for mode in ("Строительство", "Денежная компенсация", core.SOCIAL_MODE_BOTH):
+        assert result(mode)["summary"]["social_in_capex_check"] is True, mode
+
+
+def test_the_pdf_splits_the_bridge_like_the_site():
+    """PDF не знал третьего режима: денежная часть уезжала в «приобретение»."""
+    source = __import__("inspect").getsource(core._build_developaid_pdf)
+    assert "SOCIAL_MODE_BOTH" in source, "PDF не разбирает совмещённый режим"
+    assert "social_payment_breakdown" in source

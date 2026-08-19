@@ -10341,11 +10341,21 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     # VRI is deliberately absent: it is funded directly by PF at RnS/permit.
     bridge_total = float(financing.get("calculated_bridge") or 0.0)
     capex_data = result.get("capex") or {}
-    bridge_social = (
-        float(capex_data.get("social") or 0.0)
-        if str(summary.get("social_payment_mode") or "") == "Денежная компенсация"
-        else 0.0
+    # Режим «строительство и компенсация» PDF не знал: денежная часть падала
+    # в ноль и молча уезжала в «приобретение проекта», а сайт в той же строке
+    # показывал её отдельно. Два достоверных на вид отчёта с разными числами —
+    # ровно то, что правило «поверхности считают одинаково» запрещает.
+    social_mode_now = str(summary.get("social_payment_mode") or "")
+    social_construction = sum(
+        float(value or 0.0) * 1_000_000
+        for value in ((summary.get("social_payment_breakdown") or {}).get("construction") or {}).values()
     )
+    if social_mode_now == "Денежная компенсация":
+        bridge_social = float(capex_data.get("social") or 0.0)
+    elif social_mode_now == SOCIAL_MODE_BOTH:
+        bridge_social = max(0.0, float(summary.get("social_payment") or 0.0) - social_construction)
+    else:
+        bridge_social = 0.0
     bridge_design_p = float(capex_data.get("design_p") or 0.0)
     bridge_design_rd = float(capex_data.get("design_rd") or 0.0)
     bridge_purchase = max(
@@ -17983,10 +17993,17 @@ def calculate(req: CalcRequest) -> dict:
             "total_expenses": total_expenses,
             "social_payment": op["capex_amounts"].get("social", 0.0),
             "social_payment_mode": str(x.get("social_mode", "")),
+            # Режимов три, а проверка знала два: при «строительстве и
+            # компенсации» в CAPEX лежит и стройка, и денежная часть, а
+            # ожидание считалось по одной стройке — самопроверка всегда
+            # падала, и отчёт 2.0 писал «социалка расходится с режимом» на
+            # исправном расчёте (замечание владельца, 19.08.2026).
             "social_in_capex_check": abs(
                 op["capex_amounts"].get("social", 0.0)
                 - (
                     sum(op.get("social_construction_breakdown", {}).values())
+                    + (op.get("imported_social_compensation", 0.0)
+                       if str(x.get("social_mode", "")) == SOCIAL_MODE_BOTH else 0.0)
                     if str(x.get("social_mode", "")) in ("Строительство", SOCIAL_MODE_BOTH)
                     else op.get("imported_social_compensation", 0.0)
                 )
@@ -29538,7 +29555,33 @@ function renderResult(){
  const construction=sb.construction||{};
  const compensation=sb.compensation||{};
  const program=r.summary.social_program||{};
- if(socialMode==='Строительство'){
+ // Денежная часть при совмещённом режиме — то, что осталось от общего
+ // платежа за вычетом строек. Считается вычитанием, а не берётся из вводных:
+ // так итог таблицы сходится с моделью при любом источнике компенсации.
+ const socialBuilt=Number(construction.kindergarten_mln||0)+Number(construction.school_mln||0)
+   +Number(construction.clinic_mln||0);
+ const socialCash=Math.max(0,Number(r.summary.social_payment||0)-socialBuilt*1e6);
+ if(socialMode==='Строительство и компенсация'){
+   // Третьего режима у таблицы не было: строки шли по ветке «денежная
+   // компенсация», разбивка по объектам стояла нулями, а итог нёс и стройку
+   // тоже — три нуля против 2,7 млрд (замечание владельца, 19.08.2026).
+   socialTable.innerHTML=
+    row('Режим','Строительство и компенсация')+
+    row(`ДОО — ${num(program.kindergarten_places||0)} мест`,money(Number(construction.kindergarten_mln||0)*1e6))+
+    row(`СОШ — ${num(program.school_places||0)} мест`,money(Number(construction.school_mln||0)*1e6))+
+    row(`Поликлиника — ${num(program.clinic_capacity||0)} пос./смену`,money(Number(construction.clinic_mln||0)*1e6))+
+    row('Стоимость строительства',money(socialBuilt*1e6))+
+    row('Денежная компенсация',money(socialCash))+
+    `<tr><th>Социальная нагрузка / всего</th><th>${socialMoney(r.summary.social_payment)}</th></tr>`+
+    socialPerMetre(r)+
+    ((Number(compensation.kindergarten_mln||0)+Number(compensation.school_mln||0)
+      +Number(compensation.clinic_mln||0))>0
+      ? `<tr><td colspan="2" style="color:#777;font-size:11px">Справочно, разбивка компенсации по ГлавАПУ: `
+        +`ДОО ${money(Number(compensation.kindergarten_mln||0)*1e6)}, `
+        +`СОШ ${money(Number(compensation.school_mln||0)*1e6)}, `
+        +`поликлиника ${money(Number(compensation.clinic_mln||0)*1e6)}</td></tr>`
+      : '');
+ }else if(socialMode==='Строительство'){
    socialTable.innerHTML=
     row('Режим','Строительство')+
     row(`ДОО — ${num(program.kindergarten_places||0)} мест`,money(Number(construction.kindergarten_mln||0)*1e6))+
@@ -29559,7 +29602,7 @@ function renderResult(){
 
  const bridgeTotal=Number(r.report.financing.calculated_bridge||0);
  const bridgeSocial=socialMode==='Денежная компенсация'?Number(r.capex.social||0)
-   :(socialMode==='Строительство и компенсация'?Number(inputs.social_compensation_mln||0)*1e6:0);
+   :(socialMode==='Строительство и компенсация'?socialCash:0);
  const bridgeDesignP=Number(r.capex.design_p||0);
  const bridgeDesignRd=Number(r.capex.design_rd||0);
  const bridgePurchase=Math.max(0,bridgeTotal-bridgeSocial-bridgeDesignP-bridgeDesignRd);
