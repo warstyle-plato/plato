@@ -208,3 +208,33 @@ def test_the_note_is_one_line_not_a_wall():
     visible = body[body.index("box.innerHTML="):body.index("<details")]
     assert len(visible) < 260, "видимая часть подписи снова разрослась"
     assert "не перебивается" in visible, "главное правило должно остаться на виду"
+
+
+def test_the_button_says_why_it_did_nothing():
+    """«Нажал по пропорциям — ничего не появилось» (владелец, 19.08.2026).
+
+    Две причины, и обе не видны на глаз: строка пустая — считать не из чего;
+    объект выключен во вводных — строка обнуляется при каждом пересчёте, и любое
+    число в ней исчезает. Кнопка, которая молча ничего не делает, читается как
+    сломанная.
+    """
+    body = core.PAGE[core.PAGE.index("function refillTepRow"):]
+    body = body[:body.index("const tepRefillNote")]
+    assert "Нечего пересчитывать" in body
+    assert "Объект выключен во вводных" in body
+    assert "TEP_ROW_SWITCH" in body
+
+    switches = core.PAGE[core.PAGE.index("const TEP_ROW_SWITCH="):]
+    switches = switches[:switches.index("}")]
+    assert "offices_enabled" in switches and "retail_enabled" in switches
+
+    table = core.PAGE[core.PAGE.index("function renderTep(){"):]
+    table = table[:table.index("function updateTepTotals")]
+    assert "tepRefillNote[key]||tepRowComplaint(key,row)" in table
+
+
+def test_the_disclosure_says_what_it_hides():
+    """«Какие доли» само по себе не объясняет, что там внутри."""
+    body = core.PAGE[core.PAGE.index("function renderTepRatioNote"):]
+    body = body[:body.index("const TEP_ROW_SWITCH")]
+    assert "показать доли, по которым считается" in body
