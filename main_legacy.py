@@ -49,7 +49,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.18.59"
+VERSION = "0.18.60"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -2954,6 +2954,36 @@ def _land_coverage_shares(parcel: Any, zones: list[Any],
     }
 
 
+# Контуры зон для рисунка: полные кольца весят сотни килобайт, а на картинке
+# размером с почтовую марку различима сотня точек. Отдаём только те кольца,
+# что задевают окрестность участка, и прореживаем их до разумного числа вершин
+# — рисунок отвечает на вопрос «где именно накрывает», а не заменяет карту.
+_LAND_ZONE_RING_POINTS = 240
+
+
+def _land_zone_outline(geometry: Any, bbox: tuple[float, float, float, float],
+                       limit: int = _LAND_ZONE_RING_POINTS) -> list[list[list[float]]]:
+    min_x, min_y, max_x, max_y = bbox
+    pad_x = (max_x - min_x) * 1.5 + 50.0
+    pad_y = (max_y - min_y) * 1.5 + 50.0
+    west, south = min_x - pad_x, min_y - pad_y
+    east, north = max_x + pad_x, max_y + pad_y
+    out: list[list[list[float]]] = []
+    for polygon in _geometry_polygons_mercator(geometry):
+        for ring in polygon:
+            xs = [p[0] for p in ring]
+            ys = [p[1] for p in ring]
+            # Кольцо, не задевающее окрестность, на рисунке не видно вовсе.
+            if max(xs) < west or min(xs) > east or max(ys) < south or min(ys) > north:
+                continue
+            step = max(1, len(ring) // limit)
+            thinned = ring[::step]
+            if thinned[0] != ring[-1]:
+                thinned.append(ring[0])
+            out.append([[round(x, 1), round(y, 1)] for x, y in thinned])
+    return out
+
+
 def _land_screen_findings(lat: float, lng: float,
                           parcel_geometry: Any = None) -> list[dict[str, Any]]:
     """Все ограничения НСПД в точке — по всему набору слоёв, с классификацией.
@@ -3030,11 +3060,17 @@ def _land_apply_coverage(findings: list[dict[str, Any]], parcel_geometry: Any) -
         counted=[item.get("flag_class") in {"killer", "economic"} for item in findings])
     if not coverage:
         return
+    # Очертания для рисунка снимаются здесь же, пока геометрия под рукой:
+    # второй раз просить её у НСПД значило бы платить за то же самое дважды.
+    bbox = _polygons_bbox(_geometry_polygons_mercator(parcel_geometry))
     for item, share in zip(findings, coverage.get("shares") or []):
-        item.pop("geometry", None)
-        if share is None:
-            continue
-        item["coverage_pct"] = round(share * 100.0, 1)
+        geometry = item.pop("geometry", None)
+        if share is not None:
+            item["coverage_pct"] = round(share * 100.0, 1)
+        if bbox and share:
+            outline = _land_zone_outline(geometry, bbox)
+            if outline:
+                item["outline_merc"] = outline
     for item in findings:
         item.pop("geometry", None)
         item["free_pct"] = round(float(coverage.get("free") or 0.0) * 100.0, 1)
@@ -3079,6 +3115,10 @@ def _land_group_findings(findings: list[dict[str, Any]]) -> list[dict[str, Any]]
         share = finding.get("coverage_pct")
         if share is not None and share > (current.get("coverage_pct") or 0.0):
             current["coverage_pct"] = share
+        # Рисунок показывает все подзоны разом: одна из них — не ограничение,
+        # а его кусок.
+        if finding.get("outline_merc"):
+            current.setdefault("outline_merc", []).extend(finding["outline_merc"])
     result: list[dict[str, Any]] = []
     for key in order:
         entry = grouped[key]
@@ -3217,9 +3257,12 @@ def land_screening(cad: str = "") -> dict[str, Any]:
                                              matched.get("geometry"))
             findings.sort(key=lambda f: _LAND_SCREEN_ORDER.get(f.get("flag_class"), 3))
         area = _land_float(_nspd_value(options, "area_sqm"))
+        contour = _geometry_contours_merc(matched.get("geometry"))
         parcel = {
             "cadastral_number": number,
             "found": True,
+            # Рисунок пятна: контур участка и очертания зон в одной плоскости.
+            "contour_merc": contour,
             "address": _land_text(_nspd_value(options, "address")),
             "area_sqm": area,
             "area_ha": round(area / 10000.0, 4) if area else None,
@@ -24740,6 +24783,13 @@ details.cadastral-box>summary::marker{color:#888}
 .land-screening .flag.economic{color:#a05a00}
 .land-screening .flag.info{color:#777}
 .land-screening .share{font-size:11px;color:#555;background:#f0f0ee;padding:1px 5px;border-radius:3px}
+.land-spot{padding:10px 12px;border-top:1px solid #f0f0ee}
+.land-spot-stage{position:relative;width:100%;max-height:260px;border:1px solid #e5e5e3;background:#fff}
+.land-spot svg{display:block;width:100%;height:100%}
+.spot-legend{display:flex;gap:12px;flex-wrap:wrap;margin-top:6px}
+.spot-key{font-size:11px;color:#555;display:inline-flex;align-items:center;gap:5px}
+.spot-key i{width:10px;height:10px;display:inline-block;opacity:.55}
+.land-spot small{display:block;margin-top:5px;color:#999;font-size:10px}
 .land-screening .meta{color:#777;font-size:11px;margin-top:2px}
 .land-screening .parcel{font-weight:600;font-size:12px;padding:8px 12px 0}
 .land-screening footer{padding:8px 12px;color:#8a8a86;font-size:10px;background:#fafaf8}
@@ -26828,6 +26878,55 @@ function screeningWorkingHtml(numbers,finished,seconds){
    'территориальные зоны. Обычно от десяти секунд до минуты.</footer>'};
 }
 
+// Пятно застройки: контур участка и зоны поверх него, в одной плоскости.
+// «Зона накрывает 71%» — число; где именно она лежит, число не говорит, а
+// решение принимают по месту: угол или середина, вдоль улицы или поперёк
+// (замечание владельца, 18.08.2026). Рисуем сами, тем же меркатором, что и
+// миниатюра участка: внешних карт тут нет, работает и в WebView.
+function screeningSpotSvg(parcel){
+ const rings=(parcel&&parcel.contour_merc)||[];
+ if(!Array.isArray(rings)||!rings.length)return '';
+ const zones=(parcel.findings||[]).filter(f=>Array.isArray(f.outline_merc)&&f.outline_merc.length);
+ if(!zones.length)return '';
+ let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
+ rings.forEach(ring=>(ring||[]).forEach(p=>{
+  if(!Array.isArray(p)||p.length<2)return;
+  minX=Math.min(minX,p[0]);maxX=Math.max(maxX,p[0]);
+  minY=Math.min(minY,p[1]);maxY=Math.max(maxY,p[1]);
+ }));
+ if(!(maxX>minX)||!(maxY>minY))return '';
+ const spanX=maxX-minX,spanY=maxY-minY;
+ const pad=Math.max(spanX,spanY)*0.12;
+ const w=spanX+pad*2,h=spanY+pad*2;
+ const toPath=list=>(list||[]).map(ring=>'M'+(ring||[])
+   .filter(p=>Array.isArray(p)&&p.length>=2)
+   .map(p=>((p[0]-minX+pad)).toFixed(1)+' '+((maxY-p[1]+pad)).toFixed(1))
+   .join(' L ')+' Z').join(' ');
+ const paint={killer:'#b3261e',economic:'#a05a00',info:'#777'};
+ // Зоны рисуются под контуром: границы участка должны оставаться читаемыми,
+ // иначе непонятно, что чем накрыто.
+ const layers=zones.map(zone=>{
+  const colour=paint[zone.flag_class]||'#777';
+  return `<path d="${toPath(zone.outline_merc)}" fill="${colour}" fill-opacity="0.22" `+
+   `stroke="${colour}" stroke-width="1.5" stroke-opacity="0.75" vector-effect="non-scaling-stroke"/>`;
+ }).join('');
+ const legend=zones.map(zone=>{
+  const colour=paint[zone.flag_class]||'#777';
+  return `<span class="spot-key"><i style="background:${colour}"></i>`+
+   `${escapeHtml(zone.name||zone.type_zone||'зона')}`+
+   `${zone.coverage_pct!=null?' · '+landNum(zone.coverage_pct,0)+'%':''}</span>`;
+ }).join('');
+ return `<div class="land-spot"><div class="land-spot-stage" `+
+  `style="aspect-ratio:${w.toFixed(1)} / ${h.toFixed(1)};max-width:${Math.round(260*w/h)}px">`+
+  `<svg viewBox="0 0 ${w.toFixed(1)} ${h.toFixed(1)}" preserveAspectRatio="none" role="img" `+
+  `aria-label="Участок и накрывающие его зоны">${layers}`+
+  `<path d="${toPath(rings)}" fill="none" stroke="#111" stroke-width="2.5" `+
+  `fill-rule="evenodd" vector-effect="non-scaling-stroke"/></svg></div>`+
+  `<div class="spot-legend">${legend}</div>`+
+  `<small>Границы участка — ЕГРН, зоны — НСПД. Наложение приблизительное: `+
+  `оценка по сетке, точность порядка процента.</small></div>`;
+}
+
 function screeningFlagLabel(cls){
  return cls==='killer'?'СТОП':(cls==='economic'?'ВЛИЯЕТ':'справка');
 }
@@ -26859,6 +26958,7 @@ function renderLandScreening(data){
  };
  let body='';
  // Пустой список находок и непроверенный участок выглядели одинаково зелёными.
+ const spot=single&&found[0]?screeningSpotSvg(found[0]):'';
  if(v.status==='NOT_SCREENED'){
   body='<ul><li>Ограничения не проверялись: по номеру нет сведений ЕГРН, '+
    'а без границ участка спрашивать НСПД не о чем.</li></ul>';
@@ -26882,7 +26982,7 @@ function renderLandScreening(data){
   `${found.length>1?' · участков: '+found.length:''}`+
   `${v.free_pct!=null?' · свободно от ограничений ~'+landNum(v.free_pct,0)+'% площади':''}`+
   `${missed?' · без сведений ЕГРН: '+missed:''}</header>`+
-  body+
+  body+spot+
   `<footer>${escapeHtml(v.disclaimer||'')} Проверено ${escapeHtml(data.calculated_at||'')}.</footer>`;
 }
 

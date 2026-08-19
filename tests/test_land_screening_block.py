@@ -95,8 +95,13 @@ def test_a_junk_number_is_refused(monkeypatch):
 
 
 def _page_harness() -> str:
+    # Рисунок пятна вызывается из renderLandScreening — заготовка обязана его
+    # знать, иначе тест падает на отсутствии функции, а не на поведении.
+    spot = re.search(r"(function screeningSpotSvg\(parcel\)\{.*?\n\})\n\nfunction screeningFlagLabel",
+                     core.PAGE, re.S)
     match = re.search(r"(function screeningFlagLabel\(cls\)\{.*?\n\})\n\nfunction renderLandScreening",
                       core.PAGE, re.S)
+    assert spot, "функция рисунка пятна не найдена на странице"
     render = re.search(r"(function renderLandScreening\(data\)\{.*?\n\})\n\nfunction landNum",
                        core.PAGE, re.S)
     assert match and render, "функции блока оценки не найдены на странице"
@@ -104,7 +109,7 @@ def _page_harness() -> str:
             "const landNum=(v,d)=>String(v);\n"
             "const box={className:'',innerHTML:'',style:{}};\n"
             "const document={getElementById:()=>box};\n"
-            + match.group(1) + "\n" + render.group(1) + "\n")
+            + spot.group(1) + "\n" + match.group(1) + "\n" + render.group(1) + "\n")
 
 
 def _render(payload) -> tuple[str, str]:
