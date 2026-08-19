@@ -251,8 +251,14 @@ def install(core: Any) -> None:
 PRICE_HINT_SCRIPT = """<script id="market-v6-price-hint">
 (function(){
   function locationHint(){
+    // Участков в поле бывает несколько, и разделяют их не только переносом и
+    // точкой с запятой — чаще всего запятой. Без неё весь список уезжал в
+    // ориентир одной строкой, а оттуда в геокодер: Nominatim отвечал на пять
+    // кадастровых номеров подряд «400 Bad Request», и кнопка ломалась ровно
+    // на том вводе, ради которого её сделали. Берём первый участок: ориентир
+    // — одно число об одном месте, а площадка у этих номеров общая.
     const cad=document.getElementById('cadastralNumbers');
-    const raw=cad?String(cad.value||'').split(/[\\n;]/)[0].trim():'';
+    const raw=cad?String(cad.value||'').split(/[\\n;,]/)[0].trim():'';
     if(raw)return raw;
     const md=document.getElementById('mdAddress');
     return md?String(md.value||'').trim():'';

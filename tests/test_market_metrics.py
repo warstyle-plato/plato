@@ -277,6 +277,12 @@ def _fake_pulse(segments, metrics, projects):
         segments=lambda: segments,
         near=near,
         metrics=lambda cid: metrics.get(cid, {}),
+        # Ориентир цены спрашивает прайс отдельным вызовом, отчёт — метриками.
+        price=lambda cid: (
+            {"price_per_sqm": metrics[cid]["price_per_sqm"],
+             "observed_at": metrics[cid].get("observed_at")}
+            if metrics.get(cid, {}).get("price_per_sqm") else None
+        ),
         project_totals=lambda cid: {},
         find_project=lambda query: None,
         price_history=lambda ids, months=12: {},
@@ -1088,3 +1094,49 @@ def test_print_rules_are_declared_last() -> None:
     # И само правило на месте.
     assert ".printviews{display:block}" in tail
     assert style.index(".printviews{display:none}") < print_at
+
+
+def test_the_hint_reads_a_cadastral_number_the_same_way_the_report_does(tmp_path) -> None:
+    """Кнопка ломалась ровно на том вводе, ради которого её сделали.
+
+    У ориентира был свой разбор ввода — только адресный. Кадастровый номер
+    уходил в геокодер строкой, а с поля «Участок» приходит не один номер, а
+    весь список через запятую: Nominatim отвечал на него «400 Bad Request».
+    Правило разбора должно быть одно на приложение, иначе один и тот же ввод
+    даёт в двух местах разные точки.
+    """
+    from market_search.service_v6 import MarketDiscoveryService
+
+    service = MarketDiscoveryService(tmp_path)
+    segments = {i: "Бизнес" for i in (1, 2, 3)}
+    metrics = {
+        1: {"price_per_sqm": 500_000, "observed_at": "2026-08-18", "units_per_month": 5.0},
+        2: {"price_per_sqm": 520_000, "observed_at": "2026-08-18", "units_per_month": 6.0},
+        3: {"price_per_sqm": 560_000, "observed_at": "2026-08-18", "units_per_month": 4.0},
+    }
+    projects = [
+        {"complex_id": i, "name": f"Сосед {i}", "developer": "—",
+         "latitude": 55.7300 + i / 1000, "longitude": 37.4400,
+         "address": "Москва, ЗАО, район Можайский, дом"}
+        for i in (1, 2, 3)
+    ]
+    service.pulse = _fake_pulse(segments, metrics, projects)
+
+    # Геокодер обязан остаться нетронутым: номер разбирается через ЕГРН.
+    def refuse(*args, **kwargs):
+        raise AssertionError("кадастровый номер ушёл в геокодер")
+
+    service.geocoder.geocode = refuse  # type: ignore[assignment]
+    service.cadastre_lookup = lambda number: {
+        "center": {"lat": 55.7305, "lng": 37.4400},
+        "address": "Москва, ЗАО, район Можайский, ул. Гродненская, вл. 18",
+    }
+
+    # Ровно то, что шлёт кнопка: весь список участков одной строкой.
+    hint = service.price_hint(
+        address="77:09:0004014:1018, 77:09:0004014:1015, 77:09:0004014:1024"
+    )
+
+    assert hint["available"] is True
+    assert hint["basis"] == "peers"
+    assert "Гродненская" in hint["location"]["display_name"]

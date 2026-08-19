@@ -797,14 +797,28 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         уходит значение, дата и число наблюдений — перечень проектов остаётся
         в аналитике, где его можно проверить.
         """
-        subject = self._subject_point(address, latitude, longitude)
-        okrug_match = self._OKRUG_RE.search(subject.display_name or "")
+        # Ввод разбирается тем же правилом, что и объект отчёта. Здесь стоял
+        # свой разбор — только адресный, — и кадастровый номер уходил в
+        # геокодер строкой. С поля «Участок» приходит не один номер, а весь
+        # список через запятую, и Nominatim отвечал на него 400 Bad Request:
+        # кнопка ломалась ровно на том вводе, ради которого её сделали.
+        # Одно правило на приложение — иначе один ввод даёт в двух местах
+        # разные точки, и это уже было с версией и со списком полей.
+        if latitude is not None and longitude is not None:
+            point = self._subject_point(address, latitude, longitude)
+            where = point.display_name or (address or "")
+            subject_latitude, subject_longitude = point.latitude, point.longitude
+        else:
+            found = self.resolve_subject(str(address or ""))
+            where = found.address or found.query
+            subject_latitude, subject_longitude = found.latitude, found.longitude
+        okrug_match = self._OKRUG_RE.search(where or "")
         okrug = okrug_match.group(1) if okrug_match else None
 
         peers: list[dict[str, Any]] = []
         if self.pulse.available:
             classes = self.pulse.segments()
-            near = self.pulse.near(subject.latitude, subject.longitude, radius_km)
+            near = self.pulse.near(subject_latitude, subject_longitude, radius_km)
             for _, project in near[:budget]:
                 price = self.pulse.price(project.complex_id)
                 if not price:
@@ -828,7 +842,7 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         # для Мытищ кнопка отвечала «по классу в Москве» и выдавала московскую
         # медиану за ориентир подмосковного участка — число выглядело ответом,
         # а было ответом про другой город.
-        scope = self.city.scope(subject.display_name)
+        scope = self.city.scope(where)
         hint = price_hint(
             peers=peers,
             segment=segment,
@@ -842,7 +856,7 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                 f"Свод рынка собран по отчёту «{scope['label']}» и для этого адреса не применяется"
             )
         hint["location"] = {
-            "display_name": subject.display_name,
+            "display_name": where,
             "okrug": okrug,
             "radius_km": radius_km,
             "city_reference": scope["covered"],
