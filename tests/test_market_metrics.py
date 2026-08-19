@@ -1509,7 +1509,10 @@ def test_only_the_subject_is_labelled_on_screen() -> None:
     assert "svg text.edge{opacity:0}" in CABINET_PAGE
     assert "  svg text.edge{opacity:1}" in CABINET_PAGE
     assert "if(own) svg+=label(own,'mine');" in CABINET_PAGE
-    assert "edges.forEach(p=>{svg+=label(p,'edge')});" in CABINET_PAGE
+    assert "edges.forEach(p=>{if(!marks.includes(p))svg+=label(p,'edge')});" in CABINET_PAGE
+    # Отмеченные на графиках подписаны и на карте — их отметили, чтобы за
+    # ними следить, и наводить на них каждый раз человек не просил.
+    assert "marks.forEach(p=>{svg+=label(p,'mine')});" in CABINET_PAGE
 
 
 def test_the_site_verdict_shows_the_whole_product_line(tmp_path) -> None:
@@ -2008,3 +2011,21 @@ def test_the_cabinet_does_not_wear_a_squeezed_portrait() -> None:
     # Ни чужого кропа, ни копии в base64.
     assert "platon-hero" not in CABINET_PAGE
     assert "data:image" not in CABINET_PAGE
+
+def test_the_map_marks_the_picked_by_outline_not_by_colour() -> None:
+    """Карта была единственным графиком, где отметка не работала вовсе.
+
+    Пометить отмеченных цветом палитры нельзя: цвет кружка занят классом, и
+    один канал получил бы два смысла — карта перестала бы читаться. Метка
+    другая: тёмный контур и постоянная подпись. Шума это не добавляет, а
+    убавляет — у глаза появляется опора.
+    """
+    from market_search.cabinet import CABINET_PAGE
+
+    assert "__picked:onChart.has(String(p.complex_id))" in CABINET_PAGE
+    bubble = CABINET_PAGE[CABINET_PAGE.index("function bubbleChart"):]
+    bubble = bubble[: bubble.index("function premiumChart")]
+    assert "const marked=p.__picked&&!p.__own;" in bubble
+    # Цвет заливки остаётся классовым, меняется только обводка и плотность.
+    assert "stroke=\"${marked?'#16202b':c}\"" in bubble
+    assert "fill=\"${c}\"" in bubble

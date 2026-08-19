@@ -809,10 +809,16 @@ function bubbleChart(rows, view){
     const c=p.__own?'#C4581B':(CLASS_COLOR[p.segment]||'#9dc2e6');
     const px=x(p[XK]), py=y(p[YK]), rr=r(p[SK]);
     const left=px>W*0.72;
+    // Отмеченный на графиках помечается и здесь — но обводкой, а не цветом:
+    // цвет кружка уже занят классом, и раскрасить отмеченных палитрой
+    // графиков значило бы дать одному каналу два смысла. Тёмный контур и
+    // постоянная подпись шума не добавляют: у глаза появляется опора.
+    const marked=p.__picked&&!p.__own;
     svg+=`<g class="bub">`
        +`<circle cx="${px.toFixed(1)}" cy="${py.toFixed(1)}"`
-       +` r="${rr.toFixed(1)}" fill="${c}" fill-opacity="${p.__own?0.9:0.42}"`
-       +` stroke="${c}" stroke-width="${p.__own?2:1}" data-tip="${esc(p.name)}&#10;`
+       +` r="${rr.toFixed(1)}" fill="${c}" fill-opacity="${p.__own?0.9:(marked?0.7:0.42)}"`
+       +` stroke="${marked?'#16202b':c}" stroke-width="${p.__own?2:(marked?2:1)}"`
+       +` data-tip="${esc(p.name)}&#10;`
        +`${esc(AXES[YK].label)}: ${num(p[YK],yd)}&#10;${esc(AXES[XK].label)}: ${num(p[XK],xd)}&#10;`
        +`${esc(AXES[SK].label)}: ${num(p[SK])}"></circle>`
        +`<text class="hov" x="${(px+(left?-rr-6:rr+6)).toFixed(1)}" y="${(py+4).toFixed(1)}"`
@@ -829,6 +835,9 @@ function bubbleChart(rows, view){
   const edge=(key,dir)=>[...pts].sort((a,b)=>dir*(b[key]-a[key]))[0];
   const edges=new Set();
   [edge(YK,1),edge(YK,-1),edge(XK,1),edge(XK,-1)].forEach(p=>{if(p&&!p.__own)edges.add(p)});
+  // Отмеченные подписаны всегда: их отметили, чтобы за ними следить, и
+  // наводить на них каждый раз — работа, которой человек не просил.
+  const marks=pts.filter(p=>p.__picked&&!p.__own);
   const label=(p,cls)=>{
     const px=x(p[XK]), py=y(p[YK])-r(p[SK])-5;
     return `<text class="${cls}" x="${px.toFixed(1)}" y="${py.toFixed(1)}" text-anchor="middle"`
@@ -836,7 +845,8 @@ function bubbleChart(rows, view){
       +`${esc(p.name.length>20?p.name.slice(0,19)+'…':p.name)}</text>`;
   };
   if(own) svg+=label(own,'mine');
-  edges.forEach(p=>{svg+=label(p,'edge')});
+  marks.forEach(p=>{svg+=label(p,'mine')});
+  edges.forEach(p=>{if(!marks.includes(p))svg+=label(p,'edge')});
   svg+=`<text x="${(L+W-R)/2}" y="${H-6}" text-anchor="middle" font-size="10.5" fill="#5b6b7d">${esc(AXES[XK].label)}</text>`
      +`<text x="14" y="${(T+H-B)/2}" text-anchor="middle" font-size="10.5" fill="#5b6b7d"`
      +` transform="rotate(-90 14 ${(T+H-B)/2})">${esc(AXES[YK].label)}</text>`;
@@ -1490,7 +1500,8 @@ function render(d){
     +mix
     +`</div>`;
 
-  const market=[{...m, name:s.project_name||'объект', segment:s.segment, __own:true}, ...peers];
+  const market=[{...m, name:s.project_name||'объект', segment:s.segment, __own:true},
+    ...peers.map(p=>({...p, __picked:onChart.has(String(p.complex_id))}))];
   html+=`<div class="card"><h2>Карта рынка</h2>`
     +`<div class="chips views">`+VIEWS.map(v=>`<button type="button" data-view="${v.id}"`
       +`${v.id===bubbleView?' class="on"':''}>${esc(v.name)}</button>`).join('')+`</div>`
