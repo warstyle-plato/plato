@@ -862,6 +862,98 @@ function bubbleChart(rows, view){
 }
 
 
+// Где соседи стоят на самом деле.
+//
+// «Карта рынка» выше — метафора: там оси, а не стороны света. Расстояние в
+// километрах в таблице отвечает «далеко ли», но молчит о том, «с какой
+// стороны», а сторона бывает всем ответом: восемьсот метров через реку — это
+// другой берег и другой рынок, а пять проектов, кучно стоящих на одной улице,
+// и пять, рассыпанных вокруг, дают одну и ту же медиану при совершенно разной
+// конкуренции.
+//
+// Тайлов нет намеренно. Кадастровая подложка движка (`/land/map-image`) верна
+// на двухстах метрах карточки участка; на десяти километрах тот же слой ЕГРН
+// даёт клубок границ без улиц, реки и названий — шум, который не помогает
+// сориентироваться. Улицы пришлось бы брать у внешнего сервиса, то есть
+// завести второй путь наружу там, где у движка своего нет, и посадить кабинет
+// на чужую доступность ради украшения. Схема отвечает на тот же вопрос своими
+// силами и печатается.
+const COMPASS=['на север','на северо-восток','на восток','на юго-восток',
+               'на юг','на юго-запад','на запад','на северо-запад'];
+function mapChart(rows, subject){
+  const lat0=subject&&subject.latitude, lon0=subject&&subject.longitude;
+  const pts=(rows||[]).filter(p=>!p.__own&&p.latitude!=null&&p.longitude!=null);
+  if(lat0==null||lon0==null||pts.length<2) return '';
+  // Плоскость вместо сферы: на пяти километрах ошибка проекции меньше
+  // толщины точки, а меркатор пришлось бы объяснять читателю.
+  const k=Math.cos(lat0*Math.PI/180);
+  const east=p=>(p.longitude-lon0)*111.32*k, north=p=>(p.latitude-lat0)*110.57;
+  const away=p=>Math.hypot(east(p),north(p));
+  const far=Math.max(...pts.map(away),0.3);
+  // Шаг колец выбирается так, чтобы их было два-три: кольцо — это линейка, а
+  // линейка из десяти делений на схеме уже сетка.
+  const step=[0.25,0.5,1,2,5,10].find(v=>far/v<=3.5)||20;
+  const rings=Math.max(1,Math.ceil(far/step));
+  const W=680,H=440,cx=W/2,cy=H/2,RAD=Math.min(W,H)/2-30;
+  const s=RAD/(rings*step);
+  const X=p=>cx+east(p)*s, Y=p=>cy-north(p)*s;
+  const dir=p=>COMPASS[Math.round(((Math.atan2(east(p),north(p))*180/Math.PI+360)%360)/45)%8];
+  const short=name=>name.length>20?name.slice(0,19)+'…':name;
+  let svg=`<svg viewBox="0 0 ${W} ${H}" width="100%" role="img">`;
+  for(let i=1;i<=rings;i++){
+    const rr=RAD*i/rings;
+    svg+=`<circle cx="${cx}" cy="${cy}" r="${rr.toFixed(1)}" fill="none" stroke="#e6ecf2"/>`
+       +`<text x="${(cx+rr-4).toFixed(1)}" y="${cy-5}" text-anchor="end" font-size="10"`
+       +` fill="#a7b6c4">${num(i*step,step<1?2:0)} км</text>`;
+  }
+  svg+=`<line x1="${cx}" y1="${cy-RAD}" x2="${cx}" y2="${cy+RAD}" stroke="#eef2f6"/>`
+     +`<line x1="${cx-RAD}" y1="${cy}" x2="${cx+RAD}" y2="${cy}" stroke="#eef2f6"/>`
+     +`<text x="${cx}" y="${cy-RAD-8}" text-anchor="middle" font-size="11" fill="#8798a8">С</text>`
+     +`<text x="${cx}" y="${cy+RAD+16}" text-anchor="middle" font-size="11" fill="#8798a8">Ю</text>`
+     +`<text x="${cx+RAD+8}" y="${cy+4}" font-size="11" fill="#8798a8">В</text>`
+     +`<text x="${cx-RAD-8}" y="${cy+4}" text-anchor="end" font-size="11" fill="#8798a8">З</text>`;
+  // На бумаге наведения нет, и схема без подписей становится анонимной. Правило
+  // подписи здесь своё и объяснимое — ближайшие: на карте «крайний по оси» из
+  // пузырьков смысла не имеет, а ближайший сосед и есть первый конкурент.
+  const closest=new Set([...pts].sort((a,b)=>away(a)-away(b)).slice(0,6));
+  // Дальние рисуются первыми, ближние поверх: в плотном центре сверху должен
+  // оказаться тот, кто ближе, а не тот, кто раньше попался в списке.
+  [...pts].sort((a,b)=>away(b)-away(a)).forEach(p=>{
+    const c=CLASS_COLOR[p.segment]||'#9dc2e6';
+    const px=X(p), py=Y(p), marked=!!p.__picked, left=px>W*0.66;
+    svg+=`<g class="bub">`
+       +`<circle cx="${px.toFixed(1)}" cy="${py.toFixed(1)}" r="${marked?7:5.5}" fill="${c}"`
+       +` fill-opacity="${marked?0.85:0.5}" stroke="${marked?'#16202b':c}"`
+       +` stroke-width="${marked?2:1}"`
+       +` data-tip="${esc(p.name)}&#10;${num(away(p),2)} км ${esc(dir(p))}&#10;`
+       +`${p.price_per_sqm?num(p.price_per_sqm)+' ₽/м²':'действующей цены нет'}`
+       +`&#10;${esc(p.segment||'класс не указан')}`
+       +`${p.address?'&#10;'+esc(p.address):''}"></circle>`
+       +`<text class="hov" x="${(px+(left?-9:9)).toFixed(1)}" y="${(py+4).toFixed(1)}"`
+       +` text-anchor="${left?'end':'start'}" font-size="11" fill="#16202b" paint-order="stroke"`
+       +` stroke="#fff" stroke-width="3.5">${esc(p.name)}</text>`
+       +(marked||closest.has(p)
+          ?`<text class="${marked?'mine':'edge'}" x="${px.toFixed(1)}" y="${(py-10).toFixed(1)}"`
+           +` text-anchor="middle" font-size="10.5" fill="#5b6b7d">${esc(short(p.name))}</text>`
+          :'')
+       +`</g>`;
+  });
+  const ownName=(subject&&(subject.project_name||subject.address))||'объект оценки';
+  svg+=`<circle cx="${cx}" cy="${cy}" r="8" fill="#C4581B" fill-opacity="0.9" stroke="#fff"`
+     +` stroke-width="2" data-tip="${esc(ownName)}&#10;центр выборки"></circle>`
+     +`<text x="${cx}" y="${cy-15}" text-anchor="middle" font-size="10.5" font-weight="600"`
+     +` fill="#C4581B">${esc(short(ownName))}</text>`;
+  const legend=Object.entries(CLASS_COLOR).filter(([key])=>pts.some(p=>p.segment===key));
+  let lx=14;
+  legend.forEach(([key,colour])=>{
+    svg+=`<circle cx="${lx+5}" cy="14" r="5" fill="${colour}" fill-opacity="0.5" stroke="${colour}"/>`
+       +`<text x="${lx+14}" y="17" font-size="10" fill="#5b6b7d">${esc(key)}</text>`;
+    lx+=18+key.length*5.6;
+  });
+  return '<div class="wrap">'+svg+'</svg></div>';
+}
+
+
 // Премия по месяцам. Разрыв бывает нажит собственным ростом цены, а бывает —
 // падением соседей; по одной сегодняшней цифре эти два случая неразличимы.
 function premiumChart(rows){
@@ -1503,6 +1595,25 @@ function render(d){
 
   const market=[{...m, name:s.project_name||'объект', segment:s.segment, __own:true},
     ...peers.map(p=>({...p, __picked:onChart.has(String(p.complex_id))}))];
+  // География — до осей: сначала «где это всё стоит», потом «как соотносится».
+  const geoSvg=mapChart(market, s);
+  if(geoSvg){
+    // Сосед без координат в схему не попадает, и молчать об этом нельзя:
+    // отсутствие точки читается как отсутствие соседа. Пустой результат — не
+    // «чисто», и здесь ровно тот же случай.
+    const noGeo=peers.filter(p=>p.latitude==null||p.longitude==null).length;
+    html+=`<div class="card"><h2>Где соседи</h2>`+geoSvg
+      +`<div class="muted" style="font-size:12.5px;margin-top:8px">Схема, а не карта:`
+      +` север сверху, кольца — расстояние по прямой от объекта, цвет — класс.`
+      +` По прямой, а не по дороге: через реку или пути восемьсот метров бывают`
+      +` тремя километрами. Улиц, воды и границ районов здесь нет — их негде взять,`
+      +` не заводя отдельный внешний источник. Имя проекта — наведением или касанием;`
+      +` в печать уходят ближайшие шесть и отмеченные.`
+      +(noGeo?` Координат нет у ${noGeo} из ${peers.length} соседей выборки — на схеме`
+        +` их нет, в расчётах они участвуют наравне.`:'')
+      +`</div></div>`;
+  }
+
   html+=`<div class="card"><h2>Карта рынка</h2>`
     +`<div class="chips views">`+VIEWS.map(v=>`<button type="button" data-view="${v.id}"`
       +`${v.id===bubbleView?' class="on"':''}>${esc(v.name)}</button>`).join('')+`</div>`

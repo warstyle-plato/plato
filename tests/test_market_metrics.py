@@ -2028,3 +2028,140 @@ def test_the_cabinet_footer_carries_the_banner(tmp_path, monkeypatch) -> None:
     assert answer.headers["content-type"].startswith("image/")
     # Вес: страницу открывают с телефона, и мегабайты тут ни к чему.
     assert len(answer.content) < 200_000
+
+def test_the_map_puts_neighbours_where_they_actually_stand(tmp_path) -> None:
+    """Схема соседей: стороны света настоящие, а не «примерно вправо».
+
+    Таблица говорит «1,2 км» и молчит о том, с какой стороны, — а сторона
+    бывает всем ответом: восемьсот метров через реку это другой берег.
+    Проверяется геометрия настоящей функции в node: сосед к северу обязан
+    оказаться выше объекта, сосед к востоку — правее, и оба на своём удалении.
+    """
+    import json
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if not node:
+        import pytest
+
+        pytest.skip("node не установлен")
+
+    from market_search.cabinet import CABINET_PAGE
+
+    # Срез берётся от розы ветров: она объявлена рядом с функцией и нужна ей.
+    start = CABINET_PAGE.index("const COMPASS=")
+    end = CABINET_PAGE.index("\n}", CABINET_PAGE.index("return '<div class=\"wrap\">'+svg", start)) + 2
+    source = CABINET_PAGE[start:end]
+
+    harness = """
+const num=(v,d=0)=>v===null||v===undefined?'—':Number(v).toFixed(d);
+const esc=s=>String(s===null||s===undefined?'':s);
+const CLASS_COLOR={'Бизнес':'#1367AE','Премиум':'#8E44AD'};
+"""
+    driver = """
+const subject={latitude:55.7300, longitude:37.5600, project_name:'Площадка'};
+// Ровно на север, ровно на восток, ровно на юг — по километру от объекта.
+const rows=[
+  {__own:true, name:'Площадка'},
+  {name:'Северный', segment:'Бизнес', price_per_sqm:700000,
+   latitude:55.7300+1/110.57, longitude:37.5600},
+  {name:'Восточный', segment:'Бизнес', price_per_sqm:800000,
+   latitude:55.7300, longitude:37.5600+1/(111.32*Math.cos(55.73*Math.PI/180))},
+  {name:'Южный', segment:'Премиум', __picked:true,
+   latitude:55.7300-2/110.57, longitude:37.5600},
+  {name:'Без координат', segment:'Бизнес'},
+];
+const html=mapChart(rows, subject);
+const circles=[...html.matchAll(/<circle cx="([\\d.]+)" cy="([\\d.]+)" r="([\\d.]+)"[^>]*?(?:data-tip="([^"]*)")?><\\/circle>/g)]
+  .map(m=>({x:Number(m[1]), y:Number(m[2]), r:Number(m[3]), tip:m[4]||''}));
+const always=[...html.matchAll(/<text class="mine"[^>]*>([^<]*)<\\/text>/g)].map(m=>m[1]);
+const printed=[...html.matchAll(/<text class="edge"[^>]*>([^<]*)<\\/text>/g)].map(m=>m[1]);
+console.log(JSON.stringify({html, circles, always, printed}));
+"""
+    path = tmp_path / "map.js"
+    path.write_text(harness + source + driver, encoding="utf-8")
+    run = subprocess.run([node, str(path)], capture_output=True, text=True, timeout=30)
+    assert run.returncode == 0, run.stderr
+    result = json.loads(run.stdout.strip().splitlines()[-1])
+
+    named = {row["tip"].split("&#10;")[0]: row for row in result["circles"] if row["tip"]}
+    assert {"Северный", "Восточный", "Южный", "Площадка"} <= set(named)
+    own = named["Площадка"]
+    # Север — вверх (y меньше), восток — вправо (x больше), юг — вниз.
+    assert named["Северный"]["y"] < own["y"] - 20
+    assert abs(named["Северный"]["x"] - own["x"]) < 0.5
+    assert named["Восточный"]["x"] > own["x"] + 20
+    assert abs(named["Восточный"]["y"] - own["y"]) < 0.5
+    assert named["Южный"]["y"] > own["y"] + 20
+    # Вдвое дальше — вдвое дальше и на схеме, а не «где-то ниже».
+    assert abs((named["Южный"]["y"] - own["y"]) - 2 * (own["y"] - named["Северный"]["y"])) < 1
+
+    # Сторона света названа словом: «км» без стороны — это уже есть в таблице.
+    assert "на север" in named["Северный"]["tip"]
+    assert "на восток" in named["Восточный"]["tip"]
+    assert "на юг" in named["Южный"]["tip"]
+    # Соседа без цены схема не выдумывает и не прячет.
+    assert "действующей цены нет" in named["Южный"]["tip"]
+
+    # Отмеченный подписан всегда, ближайшие — только на бумаге.
+    assert "Южный" in result["always"]
+    assert "Северный" in result["printed"] and "Восточный" in result["printed"]
+    # Сосед без координат на схему не попадает — и не притворяется, что попал.
+    assert "Без координат" not in result["html"]
+
+
+def test_the_map_says_out_loud_who_is_missing_from_it() -> None:
+    """Соседа без координат на схеме нет, и об этом сказано в самой карточке.
+
+    Отсутствие точки читается как отсутствие соседа: пустой результат — не
+    «чисто». Схема рисуется до «Карты рынка» — сначала «где это стоит», потом
+    «как соотносится».
+    """
+    from market_search.cabinet import CABINET_PAGE
+
+    assert "Координат нет у ${noGeo} из ${peers.length} соседей выборки" in CABINET_PAGE
+    assert CABINET_PAGE.index("<h2>Где соседи</h2>") < CABINET_PAGE.index("<h2>Карта рынка</h2>")
+    # Тайлов не берём: чужой источник ради украшения — это второй путь наружу.
+    # Подложка движка упомянута в комментарии как отвергнутый вариант, а вот
+    # запроса за ней нет — ни картинкой, ни фоном.
+    assert "/land/map-image?" not in CABINET_PAGE
+    assert "<image" not in CABINET_PAGE
+    # Схема печатается: `#bubble` в печати гасится, а она лежит не в нём.
+    assert "#bubble{display:none}" in CABINET_PAGE
+
+
+def test_a_neighbour_from_the_source_keeps_its_coordinates(tmp_path) -> None:
+    """Сосед, добавленный руками, знал, где стоит, а пришедший из источника — нет.
+
+    `peer_row` клал в строку широту и долготу с самого начала, а основной
+    отбор их отбрасывал: строки выглядели одинаково и вели себя по-разному.
+    Схеме «Где соседи» без координат рисовать нечего.
+    """
+    from market_search.metrics import BLOCK_PRICE
+    from market_search.service_v6 import MarketDiscoveryService
+
+    service = MarketDiscoveryService(tmp_path)
+    segments = {1: "Бизнес", 2: "Бизнес", 3: "Бизнес"}
+    metrics = {
+        1: {"price_per_sqm": 708_109, "observed_at": "2026-08-18", "units_per_month": 4.6},
+        2: {"price_per_sqm": 640_000, "observed_at": "2026-08-18", "units_per_month": 5.0},
+        3: {"price_per_sqm": 690_000, "observed_at": "2026-08-18", "units_per_month": 3.0},
+    }
+    projects = [
+        {"complex_id": i, "name": f"Сосед {i}", "developer": "—",
+         "latitude": 55.7158 + (i - 1) / 3000, "longitude": 37.4330,
+         "address": f"Москва, дом {i}"}
+        for i in (1, 2, 3)
+    ]
+    service.pulse = _fake_pulse(segments, metrics, projects)
+
+    report = service.build_report("55.71580, 37.43300", codes=[BLOCK_PRICE])
+    peers = report["peers"]
+    assert peers, "соседи не нашлись — проверять нечего"
+    for row in peers:
+        assert row.get("latitude") is not None, f"{row['name']} без широты"
+        assert row.get("longitude") is not None, f"{row['name']} без долготы"
+        assert row.get("address"), f"{row['name']} без адреса"
+    # Точка объекта тоже уезжает на страницу — схеме нужен центр.
+    assert report["subject"]["latitude"] and report["subject"]["longitude"]
