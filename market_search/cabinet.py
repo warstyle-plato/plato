@@ -205,27 +205,6 @@ padding:5px 12px;font-size:13px;cursor:pointer}
 margin-top:12px;white-space:normal}
 #askout{margin-top:10px}
 td.link{color:var(--blue);cursor:pointer;text-decoration:underline dotted}
-@media print{
-  /* В печать уходит отчёт, а не орудия его сборки: форма, кнопки и поле
-     вопроса на бумаге бесполезны. Разделы не разрываются между страницами —
-     таблица, оторванная от своего графика, читается как чужая. */
-  body{background:#fff}
-  header{border:0;padding:0 0 8px}
-  main{max-width:none;padding:0}
-  #form, #askcard, .chips, button, #hintout, .cardwrap{display:none !important}
-  #bubble{display:none}
-  .printviews{display:block}
-  g.bub text.hov{opacity:0}
-  g.ln text.hov{opacity:0}
-  .card{break-inside:avoid;page-break-inside:avoid;border:0;border-top:1px solid #dde5ed;
-        border-radius:0;padding:14px 0;margin:0}
-  h2{break-after:avoid}
-  table{font-size:11px}
-  th,td{padding:4px 6px}
-  .say,.note,.scope{break-inside:avoid}
-  a[href]:after{content:''}
-}
-@page{margin:14mm 12mm}
 .cardwrap{position:fixed;inset:0;background:rgba(20,35,60,.45);display:flex;align-items:flex-start;
 justify-content:center;padding:40px 16px;overflow:auto;z-index:50}
 .cardbox{background:#fff;border-radius:14px;padding:22px;max-width:760px;width:100%;position:relative;
@@ -267,6 +246,31 @@ g.ln:hover circle{fill:#1367AE}
    переключателя нет, и оставшиеся четыре карты иначе не попали бы никуда. */
 .printviews{display:none}
 .printviews h3{margin:14px 0 4px}
+/* Печать объявляется последней: правила экрана и печати одной силы, и та,
+   что стоит ниже, побеждает. Пока блок стоял выше, `.printviews{display:none}`
+   гасил карты рынка обратно, а `#bubble{display:none}` (id — сильнее) убирал
+   и открытую. В PDF не попадала ни одна: разом сработали обе половины. */
+@media print{
+  /* В печать уходит отчёт, а не орудия его сборки: форма, кнопки и поле
+     вопроса на бумаге бесполезны. Разделы не разрываются между страницами —
+     таблица, оторванная от своего графика, читается как чужая. */
+  body{background:#fff}
+  header{border:0;padding:0 0 8px}
+  main{max-width:none;padding:0}
+  #form, #askcard, .chips, button, #hintout, .cardwrap{display:none !important}
+  #bubble{display:none}
+  .printviews{display:block}
+  g.bub text.hov{opacity:0}
+  g.ln text.hov{opacity:0}
+  .card{break-inside:avoid;page-break-inside:avoid;border:0;border-top:1px solid #dde5ed;
+        border-radius:0;padding:14px 0;margin:0}
+  h2{break-after:avoid}
+  table{font-size:11px}
+  th,td{padding:4px 6px}
+  .say,.note,.scope{break-inside:avoid}
+  a[href]:after{content:''}
+}
+@page{margin:14mm 12mm}
 </style>
 <header>
   <h1>Конструктор отчёта о рынке</h1>

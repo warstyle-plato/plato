@@ -1064,3 +1064,27 @@ def test_adding_a_project_sits_with_the_sample_not_in_the_tail() -> None:
     assert add < body.index("<h2>Карта рынка</h2>"), "поле должно стоять до графиков"
     # И оно ровно одно: две копии расходятся состоянием.
     assert body.count('id="addq"') == 1
+
+
+def test_print_rules_are_declared_last() -> None:
+    """В PDF не попала ни одна карта рынка — из-за порядка правил.
+
+    Правила экрана и печати одной силы, и побеждает та, что стоит ниже.
+    `@media print` стоял выше `.printviews{display:none}`, поэтому карты
+    оставались скрытыми; а `#bubble{display:none}` — селектор по id, он
+    сильнее, — убирал заодно и открытую. Сработали обе половины разом.
+
+    Порядок и проверяется: печать объявляется последней, иначе следующее
+    правило экрана снова тихо перебьёт её.
+    """
+    from market_search.cabinet import CABINET_PAGE
+
+    style = CABINET_PAGE[: CABINET_PAGE.index("</style>", CABINET_PAGE.index("@media print"))]
+    print_at = style.index("@media print")
+    tail = style[print_at:]
+    # После блока печати — только он сам и @page, никаких правил экрана.
+    after = tail[tail.index("}\n@page") + 1 :]
+    assert after.strip() in ("@page{margin:14mm 12mm}", "")
+    # И само правило на месте.
+    assert ".printviews{display:block}" in tail
+    assert style.index(".printviews{display:none}") < print_at
