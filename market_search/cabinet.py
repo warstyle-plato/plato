@@ -188,6 +188,7 @@ margin:12px 0;font-size:14px}
 .say.bad{border-color:#B3261E;background:#fdecea}
 .say b{margin-right:4px}
 .verdict h2{font-size:17px}
+.verdict .pos{margin-top:12px;padding-top:12px;border-top:1px solid var(--line);color:var(--ink)}
 .verdict.good{border-left:4px solid #1f7a4d}
 .verdict.watch{border-left:4px solid #C4581B}
 .verdict.bad{border-left:4px solid #B3261E}
@@ -1032,9 +1033,11 @@ function render(d){
     sales:[{name:s.project_name||'объект',own:true,points:d.sales_series||[]}]
       .concat(peers.map(p=>({name:p.name,own:false,points:p.sales_series||[]})))
   };
-  const ov=(d.analysis||{}).overall;
+  const ov=(d.analysis||{}).overall, pos=(d.analysis||{}).positioning;
   if(ov) html+=`<div class="card verdict ${ov.tone}"><h2>${TONE[ov.tone]||''} ${esc(ov.headline)}</h2>`
-    +`<div>${esc(ov.text)}</div></div>`;
+    +`<div>${esc(ov.text)}</div>`
+    +(pos?`<div class="pos"><b>Куда попадает проект.</b> ${esc(pos.text)}</div>`:'')
+    +`</div>`;
   html+=(d.blocks||[]).map(b=>blockCard(b,ctx)).join('');
   if(planData&&planData.months){
     const cmp=comparePlan(planData, ctx.sales);

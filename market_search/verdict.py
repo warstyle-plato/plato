@@ -384,6 +384,119 @@ def price_of_premium(subject: dict[str, Any], peers: list[dict[str, Any]]) -> di
     return out
 
 
+def shelf(price: float | None, city) -> dict[str, Any] | None:
+    """В диапазоне какого класса лежит цена проекта.
+
+    Метка класса и цена — разные вещи. Покупатель ищет фильтром: ставит
+    «бизнес» и видит список, где наш проект крайний по цене, а рядом — те же
+    метры дешевле. Что цена при этом попадает в премиальный диапазон, он не
+    знает: в премиальную витрину проект не показывается.
+    """
+    if not price or not getattr(city, "available", False):
+        return None
+    inside, nearest, gap, bands = [], None, None, []
+    for name in city.segments():
+        snapshot = city.snapshot(name)
+        if not snapshot or not snapshot.price_median:
+            continue
+        low, high = snapshot.price_p25, snapshot.price_p75
+        bands.append({"segment": name, "p25": low, "p75": high, "median": snapshot.price_median})
+        if low and high and low <= price <= high:
+            inside.append({"segment": name, "p25": low, "p75": high, "median": snapshot.price_median})
+        distance = abs(price - snapshot.price_median)
+        if gap is None or distance < gap:
+            gap, nearest = distance, {"segment": name, "median": snapshot.price_median}
+    # Между полками: дороже верхнего квартиля одного класса и дешевле нижнего
+    # квартиля следующего. Это не мелочь, а самое неудобное место на рынке —
+    # в своей витрине проект крайний, в соседнюю он не попадает.
+    between = None
+    ordered = sorted((b for b in bands if b["p25"] and b["p75"]), key=lambda b: b["median"])
+    for lower, upper in zip(ordered, ordered[1:]):
+        if lower["p75"] < price < upper["p25"]:
+            between = {"below": lower, "above": upper}
+            break
+    return {"inside": inside, "nearest": nearest, "between": between}
+
+
+def positioning(subject: dict[str, Any], peers: list[dict[str, Any]], city) -> dict[str, Any] | None:
+    """Главный вывод: попадает ли проект в свою полку.
+
+    Считается по двум вещам, которые видит покупатель: место в ряду цен своего
+    класса и объём предложения дешевле. Всё остальное — подробности.
+    """
+    price = subject.get("price_per_sqm")
+    label = subject.get("segment")
+    if not price:
+        return None
+    priced = [p for p in peers or [] if p.get("price_per_sqm")]
+    same = [p for p in priced if p.get("segment") == label]
+    cheaper = [p for p in same if p["price_per_sqm"] < price] or [p for p in priced if p["price_per_sqm"] < price]
+    pool = same or priced
+    lots_cheaper = int(sum(p.get("lot_count") or 0 for p in cheaper))
+
+    where = shelf(price, city)
+    lines: list[str] = []
+    tone = TONE_FLAT
+
+    if pool:
+        total = len(pool) + 1  # соседи плюс мы: витрина, которую видит покупатель
+        rank = total - len(cheaper)
+        lines.append(
+            f"В своей витрине из {total} проектов наш "
+            + ("самый дорогой" if rank == 1 else f"{rank}-й по цене")
+            + f" — дешевле него {len(cheaper)}."
+        )
+    if where and where.get("between"):
+        low, high = where["between"]["below"], where["between"]["above"]
+        lines.append(
+            f"Цена {_num(price)} ₽/м² попала между полками: выше верхнего квартиля класса "
+            f"«{low['segment']}» ({_num(low['p75'])} ₽/м²) и ниже нижнего квартиля класса "
+            f"«{high['segment']}» ({_num(high['p25'])} ₽/м²)."
+        )
+        lines.append(
+            f"Это самое неудобное место на рынке. Покупатель ищет фильтром: в витрине "
+            f"«{low['segment']}» наш проект крайний по цене, и рядом те же метры дешевле; "
+            f"в витрину «{high['segment']}», где такая цена обычна, он не показывается — "
+            "по метке он туда не проходит."
+        )
+        tone = TONE_BAD
+    elif where and where["inside"]:
+        names = [row["segment"] for row in where["inside"]]
+        if label and label not in names:
+            band = where["inside"][0]
+            lines.append(
+                f"Метка класса — «{label}», но цена {_num(price)} ₽/м² лежит в диапазоне "
+                f"«{band['segment']}» по Москве ({_num(band['p25'])}–{_num(band['p75'])} ₽/м²)."
+            )
+            lines.append(
+                f"Покупатель ищет фильтром: ставит «{label}» и видит наш проект крайним по цене, "
+                f"а рядом те же метры дешевле. В витрину «{band['segment']}», где эта цена обычна, "
+                "проект не показывается."
+            )
+            tone = TONE_BAD
+    elif where and where["nearest"] and label and where["nearest"]["segment"] != label:
+        lines.append(
+            f"Метка класса — «{label}», а по цене проект ближе всего к медиане класса "
+            f"«{where['nearest']['segment']}» ({_num(where['nearest']['median'])} ₽/м²)."
+        )
+        tone = TONE_WATCH
+    if lots_cheaper:
+        lines.append(
+            f"Выбор у покупателя не из трёх домов: только у соседей дешевле нас "
+            f"{_num(lots_cheaper)} лотов в экспозиции."
+        )
+    if not lines:
+        return None
+    return {
+        "tone": tone,
+        "text": " ".join(lines),
+        "cheaper_projects": len(cheaper),
+        "pool": len(pool),
+        "lots_cheaper": lots_cheaper,
+        "shelf": where,
+    }
+
+
 CAVEATS = [
     "Цена — прайс-лист, а не сделка: реальные договоры проходят со скидкой, "
     "и её размер у каждого свой.",

@@ -27,7 +27,7 @@ from .http import RemoteServiceError
 from .dynamics import SalesDynamics
 from .market_reference import MoscowMarket
 from .metrics import build_blocks
-from .verdict import build_notes, premium_series, price_of_premium
+from .verdict import build_notes, positioning, premium_series, price_of_premium
 from .page_price import PageFetcher
 from .price_hint import price_hint
 from .pulse import PulseClient
@@ -712,6 +712,7 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         notes = build_notes(blocks, subject_series)
         notes["premium_series"] = premium_series(subject_series, peers)
         notes["price_of_premium"] = price_of_premium(subject_metrics, peers)
+        notes["positioning"] = positioning(subject_metrics, peers, reference)
         return {
             "subject": {
                 **subject.to_dict(),
