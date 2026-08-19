@@ -216,6 +216,7 @@ td.link{color:var(--blue);cursor:pointer;text-decoration:underline dotted}
   #bubble{display:none}
   .printviews{display:block}
   g.bub text.hov{opacity:0}
+  g.ln text.hov{opacity:0}
   .card{break-inside:avoid;page-break-inside:avoid;border:0;border-top:1px solid #dde5ed;
         border-radius:0;padding:14px 0;margin:0}
   h2{break-after:avoid}
@@ -255,6 +256,13 @@ ul.caveats li{margin:4px 0}
 g.bub text.hov{opacity:0;pointer-events:none}
 g.bub:hover text.hov{opacity:1}
 g.bub:hover circle{fill-opacity:.75}
+/* Линия соседа — фон рынка, пока на неё не навели. Пятнадцать линий
+   пятнадцатью цветами не различаются: девятый цвет неотличим от одного из
+   первых восьми. Поэтому имя показывается по наведению, а не всем сразу. */
+g.ln text.hov{opacity:0;pointer-events:none}
+g.ln:hover text.hov{opacity:1}
+g.ln:hover path{stroke:#1367AE;stroke-width:2.4}
+g.ln:hover circle{fill:#1367AE}
 /* Печать берёт все пары осей, а не ту, что открыта на экране: на бумаге
    переключателя нет, и оставшиеся четыре карты иначе не попали бы никуда. */
 .printviews{display:none}
@@ -389,35 +397,52 @@ function trendChart(series){
   const single=rows.length<2;
   const mp=months.map((m,i)=>med[i]===null?null:`${i?'L':'M'}${x(i).toFixed(1)} ${y(med[i]).toFixed(1)}`).filter(Boolean).join(' ');
   if(!single) svg+=`<path d="${mp}" fill="none" stroke="#16202b" stroke-width="1.2" stroke-dasharray="5 4"/>`;
+  // Пятнадцать линий пятнадцатью цветами не различаются никак: девятый цвет
+  // неотличим от одного из первых восьми, а подписи ко всем концам сразу дают
+  // клубок выносок — так и вышло с первой попыткой. Поэтому здесь не «каждой
+  // линии по имени», а выделение: свой проект рыжий, медиана пунктиром, соседи
+  // — серый фон рынка. Имя соседа берётся наведением, а все числа целиком
+  // лежат в таблице под графиком.
   const ends=[];
   rows.forEach(s=>{
-    svg+=`<path d="${path(s)}" fill="none" stroke="${s.own?'#C4581B':'#9dc2e6'}" stroke-width="${s.own?2.6:1.3}">`
-       +`<title>${esc(s.name)}</title></path>`;
-    for(let i=months.length-1;i>=0;i--){const v=at(s,months[i]); if(v!==null){ends.push({y:y(v),v,n:s.name,own:s.own,ex:x(i)});break}}
+    let ex=null, ey=null, ev=null;
+    for(let i=months.length-1;i>=0;i--){const v=at(s,months[i]); if(v!==null){ex=x(i);ey=y(v);ev=v;break}}
+    if(s.own){
+      svg+=`<path d="${path(s)}" fill="none" stroke="#C4581B" stroke-width="2.6"/>`;
+      if(ex!==null) ends.push({y:ey,v:ev,n:s.name,own:true,ex:ex});
+      return;
+    }
+    // Сосед: линия серая, имя — в группе рядом с концом, показывается стилем.
+    svg+=`<g class="ln"><path d="${path(s)}" fill="none" stroke="#c3d3e2" stroke-width="1.3"/>`
+       +(ex===null?'':`<circle cx="${ex.toFixed(1)}" cy="${ey.toFixed(1)}" r="2.4" fill="#c3d3e2"/>`
+         +`<text class="hov" x="${(ex-6).toFixed(1)}" y="${(ey-6).toFixed(1)}" text-anchor="end"`
+         +` font-size="11" fill="#16202b" paint-order="stroke" stroke="#fff" stroke-width="3.5">`
+         +`${esc(s.name)} · ${num(ev)}</text>`)
+       +`</g>`;
+    if(ex!==null) ends.push({y:ey,v:ev,n:s.name,own:false,ex:ex});
   });
+  // Постоянных подписей ровно столько, чтобы читался масштаб: свой проект,
+  // верхний и нижний края выборки, медиана. Остальные — по наведению.
   ends.sort((a,b)=>a.y-b.y);
-  // Раскладка подписей в два прохода. Первый расталкивает их вниз от точки
-  // линии, второй — возвращает столбик в поле графика снизу вверх. Одного
-  // прохода мало: нижние подписи уезжали за край и проект пропадал из виду.
+  const marked=[];
+  const push=e=>{if(e&&!marked.includes(e))marked.push(e)};
+  push(ends[0]); push(ends[ends.length-1]); push(ends.find(e=>e.own));
+  marked.sort((a,b)=>a.y-b.y);
   const my=y(med[med.length-1]);
   const stack=[];
   let prev=-99;
-  ends.forEach(e=>{const yy=Math.max(e.y,prev+11);prev=yy;stack.push(yy)});
-  stack.push(Math.max(my,prev+11));
+  marked.forEach(e=>{const yy=Math.max(e.y,prev+12);prev=yy;stack.push(yy)});
+  stack.push(Math.max(my,prev+12));
   let floor=H-6;
-  for(let i=stack.length-1;i>=0;i--){stack[i]=Math.min(stack[i],floor);floor=stack[i]-11}
-  // Выноска от конца линии к её подписи. Без неё столбик подписей стоит
-  // отдельно от пучка линий, и какая чья — не прочесть: расталкивание уводит
-  // подпись от своей точки тем дальше, чем гуще пучок.
-  ends.forEach((e,i)=>{
-    const ly=stack[i], c=e.own?'#C4581B':'#c4d7e8';
-    svg+=`<polyline points="${e.ex.toFixed(1)},${e.y.toFixed(1)} ${(W-R-6).toFixed(1)},${ly.toFixed(1)} `
-       +`${(W-R+5).toFixed(1)},${ly.toFixed(1)}" fill="none" stroke="${c}" stroke-width="${e.own?1.4:0.8}"/>`
-       +`<circle cx="${e.ex.toFixed(1)}" cy="${e.y.toFixed(1)}" r="${e.own?3:2}" fill="${e.own?'#C4581B':'#9dc2e6'}"/>`;
+  for(let i=stack.length-1;i>=0;i--){stack[i]=Math.min(stack[i],floor);floor=stack[i]-12}
+  marked.forEach((e,i)=>{
+    const c=e.own?'#C4581B':'#8798a8';
+    svg+=`<polyline points="${e.ex.toFixed(1)},${e.y.toFixed(1)} ${(W-R-6).toFixed(1)},${stack[i].toFixed(1)} `
+       +`${(W-R+5).toFixed(1)},${stack[i].toFixed(1)}" fill="none" stroke="${c}" stroke-width="${e.own?1.4:0.7}"/>`
+       +`<circle cx="${e.ex.toFixed(1)}" cy="${e.y.toFixed(1)}" r="${e.own?3.2:2.4}" fill="${c}"/>`
+       +`<text x="${W-R+8}" y="${stack[i]+3}" font-size="10.5" fill="${e.own?'#C4581B':'#5b6b7d'}"`
+       +`${e.own?' font-weight="600"':''}>${esc(e.n.length>19?e.n.slice(0,18)+'…':e.n)} ${num(e.v)}</text>`;
   });
-  ends.forEach((e,i)=>{
-    svg+=`<text x="${W-R+8}" y="${stack[i]+3}" font-size="10.5" fill="${e.own?'#C4581B':'#5b6b7d'}"`
-       +`${e.own?' font-weight="600"':''}>${esc(e.n.length>19?e.n.slice(0,18)+'…':e.n)} ${num(e.v)}</text>`;});
   if(!single) svg+=`<text x="${W-R+8}" y="${stack[stack.length-1]+3}" font-size="10.5" fill="#16202b">`
      +`медиана ${num(med[med.length-1])}</text>`;
   return '<div class="wrap">'+svg+'</svg></div>';
@@ -1107,7 +1132,15 @@ function render(d){
       <div><b>${num(c.used)}</b><span>взято в выборку</span></div>
       <div><b>${num(c.stale_price)}</b><span>прайс старше ${esc(c.fresh_since)}</span></div>
       <div><b>${num(c.no_price)}</b><span>цены нет вовсе</span></div>
-    </div>`+((((d.city||{}).scope||{}).covered===false)?`<div class="scope">${esc(d.city.scope.reason)}</div>`:'')+`</div>`;
+    </div>`+((((d.city||{}).scope||{}).covered===false)?`<div class="scope">${esc(d.city.scope.reason)}</div>`:'')
+    // Добавление проекта стояло в самом низу, под всем отчётом, — и его там
+    // не находили. Оно меняет выборку целиком: медианы, вердикт и каждый
+    // раздел, поэтому и место ему рядом с составом выборки, а не в хвосте.
+    +`<div class="addwrap" style="margin-top:12px"><input type="text" id="addq" autocomplete="off"
+      placeholder="Добавить в сравнение любой проект из справочника — начните вводить название">
+      <div id="addsug"></div></div>
+    <div id="addstate" class="muted" style="font-size:12.5px;margin-top:6px"></div>`
+    +`</div>`;
 
   // Вывод — первым, до графиков. Он стоял четвёртой карточкой, под картой
   // рынка и ценами соседей, то есть ниже сгиба: человек открывал отчёт и
@@ -1152,10 +1185,6 @@ function render(d){
 
   html+=deepCard(d);
   html+=`<div class="card"><h2>Соседи в выборке</h2>
-    <div class="addwrap"><input type="text" id="addq" autocomplete="off"
-      placeholder="Добавить в сравнение любой проект из справочника — начните вводить название">
-      <div id="addsug"></div></div>
-    <div id="addstate" class="muted" style="font-size:12.5px;margin:6px 0 10px"></div>
     <div class="wrap"><table>
     <tr><th>Проект</th><th>Застройщик</th><th class="num">км</th><th>Класс</th>
     <th class="num">₽/м²</th><th class="num">ДДУ/мес</th><th class="num">м²/мес</th><th class="num">Лотов</th><th>Прайс от</th></tr>`

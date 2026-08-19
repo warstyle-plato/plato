@@ -1025,3 +1025,42 @@ def test_the_object_field_asks_both_sources_at_once() -> None:
     assert "Promise.all([" in CABINET_PAGE
     # Пусто с обеих сторон — причина на экране, а не молчание.
     assert "[names.reason,places.reason].filter(Boolean)" in CABINET_PAGE
+
+
+def test_fifteen_lines_are_not_fifteen_colours() -> None:
+    """Пятнадцать линий пятнадцатью цветами не различаются никак.
+
+    Девятый категориальный цвет неотличим от одного из первых восьми, а
+    подписи ко всем концам сразу дают клубок выносок — первая попытка так и
+    выглядела. Форма здесь другая: выделение. Свой проект рыжий, медиана
+    пунктиром, соседи — серый фон рынка; имя соседа берётся наведением, все
+    числа целиком лежат в таблице под графиком.
+    """
+    from market_search.cabinet import CABINET_PAGE
+
+    trend = CABINET_PAGE[CABINET_PAGE.index("function trendChart"):]
+    trend = trend[: trend.index("function salesChart")]
+
+    # Постоянных подписей ровно четыре: край сверху, край снизу, свой проект,
+    # медиана. Не «по подписи на линию».
+    assert "push(ends[0]); push(ends[ends.length-1]); push(ends.find(e=>e.own));" in trend
+    assert 'class="ln"' in trend
+    assert "g.ln:hover text.hov{opacity:1}" in CABINET_PAGE
+    # Соседи одного цвета — это решение, а не недосмотр: второго цвета для
+    # них в схеме нет.
+    assert trend.count('stroke="#c3d3e2"') == 1
+
+
+def test_adding_a_project_sits_with_the_sample_not_in_the_tail() -> None:
+    """Поле добавления стояло под всем отчётом, и его там не находили.
+
+    Оно меняет выборку целиком — медианы, вердикт и каждый раздел, — поэтому
+    место ему рядом с составом выборки, в шапке, а не в хвосте.
+    """
+    from market_search.cabinet import CABINET_PAGE
+
+    body = CABINET_PAGE[CABINET_PAGE.index("function render(d)"):]
+    add = body.index('id="addq"')
+    assert add < body.index("<h2>Карта рынка</h2>"), "поле должно стоять до графиков"
+    # И оно ровно одно: две копии расходятся состоянием.
+    assert body.count('id="addq"') == 1
