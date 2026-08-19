@@ -161,7 +161,11 @@ def install(app: FastAPI) -> MarketDiscoveryService:
         оба выглядели как пустой выпадающий список.
         """
         cabinet_module.require_cabinet(request)
-        items = service.pulse.suggest(q)
+        # В поток, а не на цикле событий: разбор справочника — это чтение и
+        # перебор мегабайтного файла, а подсказка приходит на каждую вторую
+        # букву. Пока это считалось прямо здесь, оба воркера стояли, и наружу
+        # выходил «502» от nginx.
+        items = await run_in_threadpool(service.pulse.suggest, q)
         if items:
             return {"items": items}
         if len(" ".join(str(q or "").split())) < 2:
@@ -169,13 +173,17 @@ def install(app: FastAPI) -> MarketDiscoveryService:
         # Причину выбирает состояние справочника, а не наличие доступов. Пока
         # список загружен, пустой ответ значит «такого проекта в нём нет» — и
         # доступы тут ни при чём, даже когда их не задали.
-        if service.pulse.projects():
+        loaded = await run_in_threadpool(lambda: bool(service.pulse.projects(fetch=False)))
+        if loaded:
             return {"items": [], "reason": f"В справочнике нет проектов по запросу «{q}»."}
         if not service.pulse.available:
             return {"items": [], "reason": "Источник выключен: не заданы PULSE_LOGIN и PULSE_PASSWORD"}
         return {
             "items": [],
-            "reason": "Справочник проектов пуст: кэш не наполнен, а источник не ответил.",
+            "reason": (
+                "Справочник проектов ещё не загружен. Соберите любой отчёт — он его наполнит: "
+                "по нажатию клавиши за ним не ходим, страница карты весит мегабайты."
+            ),
         }
 
     @app.get("/market/pulse/fields")

@@ -345,12 +345,27 @@ class PulseClient:
 
     # --- справочник проектов ---------------------------------------------------
 
-    def projects(self, *, refresh: bool = False) -> list[PulseProject]:
-        """Все проекты с координатами. Страница карты несёт их одним GeoJSON."""
+    def projects(self, *, refresh: bool = False, fetch: bool = True) -> list[PulseProject]:
+        """Все проекты с координатами. Страница карты несёт их одним GeoJSON.
+
+        `fetch=False` — только то, что уже лежит рядом, без обращения к сети.
+        Это для путей, которые ходят по нажатию клавиши: страница карты весит
+        мегабайты, и когда кэш протухал, первая же подсказка тянула её целиком.
+        Ответ не успевал прийти, и вместо списка человек видел «502» — притом
+        что от подсказки требовался список, который и так лежал на диске
+        часом раньше.
+        """
         if self._projects is not None and not refresh:
             return self._projects
         path = self.dir / "projects.json"
         cached = load_json(path) if (fresh(path, self.ttl_seconds) and not refresh) else None
+        if not isinstance(cached, list) and not fetch:
+            # Протухший кэш для подсказки лучше пустоты: список проектов за
+            # вчера отличается от сегодняшнего на единицы, а ждать нельзя.
+            stale = load_json(path)
+            cached = stale if isinstance(stale, list) else None
+            if cached is None:
+                return []
         if not isinstance(cached, list):
             cached = self._fetch_projects()
             if cached is None:
@@ -472,18 +487,24 @@ class PulseClient:
             self.errors.append(f"класс «{title}»: ответ не разобрался")
             return None
 
-    def segments(self, *, refresh: bool = False) -> dict[int, str]:
+    def segments(self, *, refresh: bool = False, fetch: bool = True) -> dict[int, str]:
         """Класс каждого проекта: идентификатор → «Бизнес», «Премиум»…
 
         Спрашивается пять раз, по разу на класс, и складывается на сутки.
         Класса нет ни в точке карты, ни в карточке проекта — он существует
         только как фильтр, поэтому принадлежность выводится из выборки.
+
+        `fetch=False` — только кэш, без пяти запросов: у путей, которые ходят
+        по нажатию клавиши, времени на это нет.
         """
         path = self.dir / "segments.json"
         if not refresh and fresh(path, self.ttl_seconds):
             cached = load_json(path)
             if isinstance(cached, dict):
                 return {int(k): str(v) for k, v in cached.items()}
+        if not fetch:
+            stale = load_json(path)
+            return {int(k): str(v) for k, v in stale.items()} if isinstance(stale, dict) else {}
 
         out: dict[int, str] = {}
         for code, title in _CLASS_FILTERS.items():
@@ -608,9 +629,11 @@ class PulseClient:
         text = " ".join(str(query or "").split()).casefold()
         if len(text) < 2:
             return []
-        classes = self.segments()
+        # Ни справочник, ни классы здесь по сети не запрашиваются: подсказка
+        # ходит на каждую вторую букву, а обе выгрузки тяжёлые.
+        classes = self.segments(fetch=False)
         scored: list[tuple[int, int, dict[str, Any]]] = []
-        for project in self.projects():
+        for project in self.projects(fetch=False):
             name = (project.name or "").casefold()
             address = (project.address or "").casefold()
             if name.startswith(text):

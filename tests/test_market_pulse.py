@@ -242,3 +242,43 @@ def test_the_probe_names_what_the_answer_carries_and_what_we_drop(tmp_path: Path
     # Без доступов проба не выдумывает пустой ответ, а говорит, что выключена.
     off = PulseClient(tmp_path / "off", login="", password="")
     assert off.probe_fields()["available"] is False
+
+
+def test_suggestions_never_go_to_the_network(tmp_path: Path) -> None:
+    """«Подсказки не пришли: 502» на живом стенде.
+
+    Подсказка ходит на каждую вторую букву, а справочник за ней — на страницу
+    карты, которая весит мегабайты. Пока кэш свежий, этого не видно; стоит ему
+    протухнуть, и первое же нажатие тянет её целиком, ответ не успевает, и
+    nginx отдаёт 502 — притом что нужный список лежал на диске часом раньше.
+    """
+    import json
+
+    client = PulseClient(tmp_path, login="l", password="p")
+    (tmp_path / "projects.json").write_text(
+        json.dumps([{"complex_id": 7, "name": "Крылатская 33", "developer": "—",
+                     "latitude": 55.75, "longitude": 37.41, "address": "Крылатская ул."}],
+                   ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (tmp_path / "segments.json").write_text(json.dumps({"7": "Бизнес"}), encoding="utf-8")
+    # Кэш нарочно объявлен протухшим: именно в этот момент всё и ломалось.
+    client.ttl_seconds = 0
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("подсказка полезла в сеть")
+
+    client._open = forbidden  # type: ignore[assignment]
+    client._fetch_projects = forbidden  # type: ignore[assignment]
+
+    found = client.suggest("крыла")
+    assert [row["name"] for row in found] == ["Крылатская 33"]
+    # Протухший класс тоже берётся с диска: без него сосед в списке безымянный.
+    assert found[0]["segment"] == "Бизнес"
+
+    # А путь отчёта за сетью ходить по-прежнему обязан — иначе справочник
+    # никогда не обновится.
+    fresh_client = PulseClient(tmp_path / "other", login="l", password="p")
+    fresh_client._fetch_projects = lambda: []  # type: ignore[assignment]
+    assert fresh_client.projects() == []
+    assert fresh_client.projects(fetch=False) == []
