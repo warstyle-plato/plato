@@ -600,7 +600,8 @@ function deepCard(d){
     rows.push(`<div><b>${num(money.months_peer_pace,1)} мес</b><span>темпом соседей</span></div>`);
   if(money.months_lost!==undefined)
     rows.push(`<div><b>${num(money.months_lost,1)} мес</b><span>разница в сроке</span></div>`);
-  const caveats=(a.caveats||[]).map(c=>`<li>${esc(c)}</li>`).join('');
+  // Оговорки печатает итоговая карточка — она есть всегда, а эта появляется
+  // только при премии. Раньше они жили здесь и вместе с ней исчезали.
   return `<div class="card"><h2>Что стоит премия</h2>`
     +(story?`<div class="say watch"><b>⚠️ Разбор</b> ${esc(story)}</div>`:'')
     +(rows.length?`<div class="kv">${rows.join('')}</div>`:'')
@@ -608,7 +609,6 @@ function deepCard(d){
     +`<div class="muted" style="font-size:12.5px;margin-top:10px">Обе величины условны: они показывают`
     +` масштаб выбора, а не прогноз. Премия на остатке — выручка, которую она приносит,`
     +` если её платят; срок — что будет, если продавать темпом соседей.</div>`
-    +(caveats?`<h3>Чего эти числа не говорят</h3><ul class="caveats">${caveats}</ul>`:'')
     +`</div>`;
 }
 
@@ -620,6 +620,29 @@ function compareTable(rows, cols){
 }
 
 const TONE={good:'✅',watch:'⚠️',bad:'⛔',flat:'•'};
+
+// Итог в конце — не повтор верхней карточки, а её основание: те два числа, по
+// которым вывод сложился, третье для срока, и оговорки. Отчёт заканчивался
+// таблицей соседей, то есть данными; дочитавший до низа оставался без ответа.
+function finalCard(d){
+  const a=d.analysis||{}, ov=a.overall, notes=a.blocks||{};
+  if(!ov) return '';
+  const gap=(notes.price||{}).gap_pct, ratio=(notes.pace||{}).ratio,
+        months=(notes.stock||{}).months_to_sell;
+  const rows=[];
+  if(gap!==null&&gap!==undefined)
+    rows.push(`<div><b>${gap>0?'+':''}${num(gap,1)}%</b><span>цена к своему классу</span></div>`);
+  if(ratio!==null&&ratio!==undefined)
+    rows.push(`<div><b>${num(ratio,2)}×</b><span>темп против соседей</span></div>`);
+  if(months!==null&&months!==undefined)
+    rows.push(`<div><b>${num(months,1)}</b><span>месяцев на остаток</span></div>`);
+  const caveats=(a.caveats||[]).map(c=>`<li>${esc(c)}</li>`).join('');
+  return `<div class="card verdict ${ov.tone}"><h2>${TONE[ov.tone]||''} Итог: ${esc(ov.headline)}</h2>`
+    +`<div>${esc(ov.text)}</div>`
+    +(rows.length?`<div class="kv" style="margin-top:12px">${rows.join('')}</div>`:'')
+    +(caveats?`<h3>Чего эти числа не говорят</h3><ul class="caveats">${caveats}</ul>`:'')
+    +`</div>`;
+}
 
 function blockCard(b,ctx){
   const s=b.subject||{}, p=b.peers||{}, c=b.city||{};
@@ -803,14 +826,27 @@ function wireAdd(){
     clearTimeout(timer);
     if(text.length<2){close();return}
     timer=setTimeout(async()=>{
+      // Пустой список молчать не должен: «источник выключен», «в справочнике
+      // такого нет» и «сеть не ответила» выглядели одинаково — никак.
       try{
         const r=await fetch('/market/projects/suggest?q='+encodeURIComponent(text));
-        if(!r.ok){close();return}
-        items=(await r.json()).items||[];
+        if(!r.ok){
+          let why='Подсказки не пришли: '+r.status;
+          try{const e=await r.json(); if(e.detail) why=e.detail}catch(_){}
+          close(); $('#addstate').textContent=why; return;
+        }
+        const data=await r.json();
+        items=data.items||[];
+        if(!items.length){
+          close();
+          $('#addstate').textContent=data.reason||'Ничего не нашлось.';
+          return;
+        }
+        $('#addstate').textContent='';
         list.innerHTML=items.map((it,i)=>`<div data-i="${i}">${esc(it.name)}`
           +`<small>${esc([it.segment,it.developer,it.address].filter(Boolean).join(' · '))}</small></div>`).join('');
-        list.style.display=items.length?'block':'none';
-      }catch(e){close()}
+        list.style.display='block';
+      }catch(e){close(); $('#addstate').textContent='Подсказки не пришли: '+(e.message||e)}
     },180);
   });
   list.addEventListener('mousedown',e=>{
@@ -1015,6 +1051,15 @@ function render(d){
       <div><b>${num(c.no_price)}</b><span>цены нет вовсе</span></div>
     </div>`+((((d.city||{}).scope||{}).covered===false)?`<div class="scope">${esc(d.city.scope.reason)}</div>`:'')+`</div>`;
 
+  // Вывод — первым, до графиков. Он стоял четвёртой карточкой, под картой
+  // рынка и ценами соседей, то есть ниже сгиба: человек открывал отчёт и
+  // видел два больших графика вместо ответа на свой вопрос.
+  const ov=(d.analysis||{}).overall, pos=(d.analysis||{}).positioning;
+  if(ov) html+=`<div class="card verdict ${ov.tone}"><h2>${TONE[ov.tone]||''} ${esc(ov.headline)}</h2>`
+    +`<div>${esc(ov.text)}</div>`
+    +(pos?`<div class="pos"><b>Куда попадает проект.</b> ${esc(pos.text)}</div>`:'')
+    +`</div>`;
+
   const market=[{...m, name:s.project_name||'объект', segment:s.segment, __own:true}, ...peers];
   html+=`<div class="card"><h2>Карта рынка</h2>`
     +`<div class="chips views">`+VIEWS.map(v=>`<button type="button" data-view="${v.id}"`
@@ -1034,11 +1079,6 @@ function render(d){
     sales:[{name:s.project_name||'объект',own:true,points:d.sales_series||[]}]
       .concat(peers.map(p=>({name:p.name,own:false,points:p.sales_series||[]})))
   };
-  const ov=(d.analysis||{}).overall, pos=(d.analysis||{}).positioning;
-  if(ov) html+=`<div class="card verdict ${ov.tone}"><h2>${TONE[ov.tone]||''} ${esc(ov.headline)}</h2>`
-    +`<div>${esc(ov.text)}</div>`
-    +(pos?`<div class="pos"><b>Куда попадает проект.</b> ${esc(pos.text)}</div>`:'')
-    +`</div>`;
   html+=(d.blocks||[]).map(b=>blockCard(b,ctx)).join('');
   if(planData&&planData.months){
     const cmp=comparePlan(planData, ctx.sales);
@@ -1066,6 +1106,7 @@ function render(d){
       <td class="num">${num(p.area_per_month)}</td><td class="num">${num(p.lot_count)}</td>
       <td class="muted">${esc(p.observed_at||'—')}</td></tr>`).join('')
     +`</table></div></div>`;
+  html+=finalCard(d);
   $('#out').innerHTML=html;
   document.querySelectorAll('.views button').forEach(btn=>btn.addEventListener('click',()=>{
     bubbleView=btn.dataset.view;

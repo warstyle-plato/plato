@@ -640,3 +640,71 @@ def test_price_hint_does_not_borrow_the_moscow_median_outside_moscow(tmp_path, m
     refused = price_hint(peers=[], segment="Комфорт", okrug=None, city=MoscowMarket({}),
                          fresh_since="2026-02-01")
     assert refused["available"] is False
+
+
+def test_suggestions_work_from_a_warm_cache_without_credentials(tmp_path, monkeypatch) -> None:
+    """Справочник лежит файлом рядом — доступы нужны только на его обновление.
+
+    Маршрут гасил подсказки признаком `available` ещё до того, как справочник
+    спрашивали: на стенде с тёплым кэшем и без `PULSE_LOGIN` поле молчало.
+    Молчало одинаково для «источник выключен» и «такого проекта нет», а
+    отличить их человеку было нечем — оба выглядели как пустой список.
+    """
+    import json
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from market_search.api import install
+
+    cache = tmp_path / "market" / "pulse"
+    cache.mkdir(parents=True)
+    (cache / "projects.json").write_text(
+        json.dumps(
+            [{"complex_id": 1, "name": "Кутузов Сити", "developer": "PLATO",
+              "latitude": 55.7, "longitude": 37.4, "address": "ул. Гродненская, вл. 18"}],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("MARKET_CABINET_KEY", "stand-key-2026")
+    monkeypatch.delenv("PULSE_LOGIN", raising=False)
+    monkeypatch.delenv("PULSE_PASSWORD", raising=False)
+    app = FastAPI()
+    install(app)
+    opened = TestClient(app, headers={"X-Market-Key": "stand-key-2026"})
+
+    found = opened.get("/market/projects/suggest?q=кутуз").json()
+    assert [item["name"] for item in found["items"]] == ["Кутузов Сити"]
+
+    # А пустой ответ по-прежнему объясняется, а не молчит.
+    empty = opened.get("/market/projects/suggest?q=такогонет").json()
+    assert empty["items"] == []
+    assert "такогонет" in empty["reason"]
+    assert "две буквы" in opened.get("/market/projects/suggest?q=к").json()["reason"]
+
+
+def test_the_report_opens_with_the_verdict_and_closes_with_the_bottom_line() -> None:
+    """Вывод — первым и последним, а не четвёртой карточкой посреди графиков.
+
+    Он стоял под картой рынка и ценами соседей, то есть ниже сгиба: человек
+    открывал отчёт и видел два больших графика вместо ответа. А заканчивался
+    отчёт таблицей соседей — данными, без итога.
+    """
+    from market_search.cabinet import CABINET_PAGE
+
+    body = CABINET_PAGE[CABINET_PAGE.index("function render(d)"):]
+    verdict = body.index("Куда попадает проект")
+    market_map = body.index("<h2>Карта рынка</h2>")
+    assert verdict < market_map, "вывод обязан стоять до карты рынка"
+
+    # Итоговая карточка приклеивается последней, уже после таблицы соседей.
+    peers_table = body.index("<h2>Соседи в выборке</h2>")
+    final = body.index("html+=finalCard(d);")
+    assert peers_table < final < body.index("$('#out').innerHTML=html;")
+
+    # Оговорки печатаются один раз — в итоге, а не в карточке премии, которой
+    # может не быть вовсе.
+    assert CABINET_PAGE.count("<h3>Чего эти числа не говорят</h3>") == 1

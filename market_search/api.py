@@ -137,11 +137,32 @@ def install(app: FastAPI) -> MarketDiscoveryService:
 
     @app.get("/market/projects/suggest")
     async def market_projects_suggest(request: Request, q: str = "") -> dict[str, Any]:
-        """Подсказки по названию ЖК. Закрыты ключом: это перечень чужой базы."""
+        """Подсказки по названию ЖК. Закрыты ключом: это перечень чужой базы.
+
+        Пустой ответ всегда объясняется. Раньше подсказки гасились признаком
+        `available` до того, как справочник вообще спрашивали: доступы нужны
+        только на обновление кэша, а сам список лежит файлом рядом и годится
+        без входа. На стенде с тёплым кэшем и без доступов поле молчало, и
+        отличить «источник выключен» от «такого проекта нет» было нельзя —
+        оба выглядели как пустой выпадающий список.
+        """
         cabinet_module.require_cabinet(request)
+        items = service.pulse.suggest(q)
+        if items:
+            return {"items": items}
+        if len(" ".join(str(q or "").split())) < 2:
+            return {"items": [], "reason": "Введите хотя бы две буквы."}
+        # Причину выбирает состояние справочника, а не наличие доступов. Пока
+        # список загружен, пустой ответ значит «такого проекта в нём нет» — и
+        # доступы тут ни при чём, даже когда их не задали.
+        if service.pulse.projects():
+            return {"items": [], "reason": f"В справочнике нет проектов по запросу «{q}»."}
         if not service.pulse.available:
             return {"items": [], "reason": "Источник выключен: не заданы PULSE_LOGIN и PULSE_PASSWORD"}
-        return {"items": service.pulse.suggest(q)}
+        return {
+            "items": [],
+            "reason": "Справочник проектов пуст: кэш не наполнен, а источник не ответил.",
+        }
 
     @app.get("/market/project/{complex_id}")
     async def market_project(
