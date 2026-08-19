@@ -1140,3 +1140,66 @@ def test_the_hint_reads_a_cadastral_number_the_same_way_the_report_does(tmp_path
     assert hint["available"] is True
     assert hint["basis"] == "peers"
     assert "Гродненская" in hint["location"]["display_name"]
+
+
+def test_the_report_geocodes_the_object_with_the_engine_chain(tmp_path) -> None:
+    """«Москва, Саввинская наб, д 25» — Nominatim такого адреса не знает.
+
+    Свой геокодер модуля рынка умеет Яндекс и Nominatim, а ключа Яндекса на
+    ядре нет — значит на деле один Nominatim, и кабинет отвечал «место не
+    найдено» на адрес, который основной сервис разбирает без запинки. Крючок
+    отдаёт разбор движковой цепочке: Яндекс, DaData, Nominatim подряд.
+    """
+    from market_search.geocoder import GeoPoint
+    from market_search.service_v6 import MarketDiscoveryService
+
+    service = MarketDiscoveryService(tmp_path)
+
+    def own_geocoder_must_not_be_used(query):
+        raise AssertionError("объект ушёл в собственный геокодер модуля")
+
+    service.geocoder.geocode = own_geocoder_must_not_be_used  # type: ignore[assignment]
+    service.geocode_address = lambda query: GeoPoint(
+        latitude=55.73445, longitude=37.56574,
+        display_name="г Москва, Саввинская наб, д 25", provider="dadata",
+    )
+
+    subject = service.resolve_subject("г Москва, Саввинская наб, д 25")
+    assert subject.source == "address"
+    assert subject.latitude == 55.73445
+    assert "Саввинская" in (subject.address or "")
+
+
+def test_the_engine_geocoder_adapter_speaks_the_market_dialect() -> None:
+    """Переходник между движком и модулем — место, где легко потерять отказ.
+
+    Движок отвечает списком и списком предупреждений; пустой список — это не
+    точка (0, 0) и не молчание, а отказ с причиной.
+    """
+    import main_registry
+    from market_search.geocoder import GeocodingError
+
+    calls: list[tuple[str, int]] = []
+
+    def engine(query, limit):
+        calls.append((query, limit))
+        if "нет такого" in query:
+            return [], ["DaData: ничего", "Nominatim: ничего"]
+        return ([{"lat": 55.7, "lng": 37.5, "label": "г Москва, дом", "provider": "dadata"}], [])
+
+    original = main_registry.core._geocode_address
+    main_registry.core._geocode_address = engine
+    try:
+        point = main_registry._geocode_for_market("Москва, дом")
+        assert (point.latitude, point.longitude) == (55.7, 37.5)
+        assert point.provider == "dadata"
+        assert calls == [("Москва, дом", 1)]
+
+        import pytest
+
+        with pytest.raises(GeocodingError) as refusal:
+            main_registry._geocode_for_market("нет такого адреса")
+        # Причина отказа доносится, а не заменяется общим «не найдено».
+        assert "DaData: ничего" in str(refusal.value)
+    finally:
+        main_registry.core._geocode_address = original

@@ -98,6 +98,12 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         # Свой геокодер здесь не заводится: две реализации разошлись бы на
         # нормализации, и одна строка приводила бы к разным точкам.
         self.address_suggest: Any = None
+        # Геокодер объекта отчёта — тоже движковый, когда он есть. Свой знает
+        # Яндекс и Nominatim, движковый — ещё и DaData, и цепочку из трёх
+        # источников подряд. «Москва, Саввинская наб, д 25» Nominatim не
+        # находит вовсе, и отчёт по живому адресу упирался в «место не
+        # найдено», хотя в основном сервисе тот же адрес разбирается.
+        self.geocode_address: Any = None
 
     def _geocode_project(self, candidate: dict[str, Any], locality: str):
         raise NotImplementedError(
@@ -534,7 +540,7 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         """Опознать объект отчёта тем же вводом, что и в основном сервисе."""
         return resolve_subject(
             query,
-            geocode=self.geocoder.geocode,
+            geocode=self.geocode_address or self.geocoder.geocode,
             cadastre=self.cadastre_lookup,
             find_project=self.pulse.find_project if self.pulse.available else None,
         )

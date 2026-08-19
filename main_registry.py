@@ -78,6 +78,34 @@ def _address_suggest(query: str, limit: int):
 
 
 market_search.address_suggest = _address_suggest
+
+
+def _geocode_for_market(query: str):
+    """Адрес объекта отчёта — движковой цепочкой: Яндекс, DaData, Nominatim.
+
+    Свой геокодер у модуля рынка знает только Яндекс и Nominatim, а ключа
+    Яндекса на ядре нет — значит на деле один Nominatim. «Москва, Саввинская
+    наб, д 25» он не находит вовсе, и кабинет отвечал «место не найдено» на
+    адрес, который основной сервис разбирает без запинки.
+
+    Третий случай одной и той же ошибки за день: своё правило там, где уже
+    есть общее. Первым был разбор ввода у кнопки цены, вторым — подсказки.
+    """
+    from market_search.geocoder import GeocodingError, GeoPoint
+
+    found, warnings = core._geocode_address(query, 1)
+    if not found:
+        raise GeocodingError("; ".join(warnings) or f"Адрес «{query}» не найден")
+    row = found[0]
+    return GeoPoint(
+        latitude=float(row["lat"]),
+        longitude=float(row["lng"]),
+        display_name=str(row.get("label") or query),
+        provider=str(row.get("provider") or "движок"),
+    )
+
+
+market_search.geocode_address = _geocode_for_market
 install_v2(app)
 # Тестовый адрес новой информационной архитектуры: та же PAGE, другой порядок.
 install_ia_preview(app, core)
