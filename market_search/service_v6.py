@@ -798,17 +798,28 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                         votes[found] = votes.get(found, 0) + 1
                 segment = max(votes, key=lambda key: votes[key]) if votes else None
 
+        # Городская база подставляется только внутри своего покрытия. Иначе
+        # для Мытищ кнопка отвечала «по классу в Москве» и выдавала московскую
+        # медиану за ориентир подмосковного участка — число выглядело ответом,
+        # а было ответом про другой город.
+        scope = self.city.scope(subject.display_name)
         hint = price_hint(
             peers=peers,
             segment=segment,
             okrug=okrug,
-            city=self.city,
+            city=self.city if scope["covered"] else MoscowMarket({}),
             fresh_since=_fresh_price_since(self.verified_prices.today),
         )
+        if not scope["covered"] and not hint.get("available"):
+            hint["reason"] = (
+                f"{hint.get('reason') or 'Ориентир не рассчитан'}. "
+                f"Свод рынка собран по отчёту «{scope['label']}» и для этого адреса не применяется"
+            )
         hint["location"] = {
             "display_name": subject.display_name,
             "okrug": okrug,
             "radius_km": radius_km,
+            "city_reference": scope["covered"],
         }
         return hint
 

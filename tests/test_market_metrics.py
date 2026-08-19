@@ -615,3 +615,28 @@ def test_market_tab_can_be_switched_off_without_losing_the_button(monkeypatch) -
     # но модуль могут поставить дважды.
     install_price_hint(only_button)
     assert only_button.PAGE.count('id="market-v6-price-hint"') == 1
+
+
+def test_price_hint_does_not_borrow_the_moscow_median_outside_moscow(tmp_path, monkeypatch) -> None:
+    """Кнопка ориентира молча отвечала московской медианой на подмосковный адрес.
+
+    Основания идут по убыванию силы: соседи, округ, город. Последнее — свод
+    «Москва старая», и за его пределами оно означает не «шире», а «про другой
+    город». На Мытищах кнопка выдавала 437 400 ₽/м² «по классу в Москве» и
+    выглядела ответом.
+    """
+    from market_search.market_reference import MoscowMarket
+    from market_search.price_hint import price_hint
+
+    city = MoscowMarket.bundled()
+    assert city.scope("Лётная улица, Мытищи, Московская область")["covered"] is False
+
+    # С городской базой ориентир нашёлся бы — и был бы московским.
+    borrowed = price_hint(peers=[], segment="Комфорт", okrug=None, city=city, fresh_since="2026-02-01")
+    assert borrowed["available"] is True
+    assert borrowed["basis"] == "city"
+
+    # Без неё — честный отказ.
+    refused = price_hint(peers=[], segment="Комфорт", okrug=None, city=MoscowMarket({}),
+                         fresh_since="2026-02-01")
+    assert refused["available"] is False
