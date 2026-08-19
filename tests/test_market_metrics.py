@@ -2110,6 +2110,38 @@ console.log(JSON.stringify({html, circles, always, printed}));
     # Сосед без координат на схему не попадает — и не притворяется, что попал.
     assert "Без координат" not in result["html"]
 
+    # Точки и растр обязаны быть в одной проекции. Подложку режет сервер по
+    # bbox из этой же ссылки; если страница расставляет точки хоть немного
+    # иначе, проект уезжает на соседнюю улицу — и по картинке это неотличимо
+    # от правды, потому что улица настоящая и дом на ней стоит.
+    import math
+    import re as _re
+
+    box = _re.search(r"/land/basemap\?bbox=(-?[\d.]+),(-?[\d.]+),(-?[\d.]+),(-?[\d.]+)",
+                     result["html"])
+    assert box, "карта не запрашивает подложку"
+    min_x, min_y, max_x, max_y = (float(box.group(i)) for i in (1, 2, 3, 4))
+    merc = 20037508.342789244
+    view = _re.search(r'viewBox="0 0 (\d+) (\d+)"', result["html"])
+    frame_w, frame_h = int(view.group(1)), int(view.group(2))
+    # Растр приходит под bbox без полей, поэтому доля bbox — это доля картинки.
+    assert abs((max_x - min_x) / (max_y - min_y) - frame_w / frame_h) < 0.01
+
+    def where(latitude: float, longitude: float) -> tuple[float, float]:
+        x = longitude * merc / 180
+        y = math.log(math.tan((90 + latitude) * math.pi / 360)) * merc / math.pi
+        return ((x - min_x) / (max_x - min_x) * frame_w,
+                (max_y - y) / (max_y - min_y) * frame_h)
+
+    for name, latitude, longitude in [
+        ("Северный", 55.7300 + 1 / 110.57, 37.5600),
+        ("Восточный", 55.7300, 37.5600 + 1 / (111.32 * math.cos(55.73 * math.pi / 180))),
+        ("Южный", 55.7300 - 2 / 110.57, 37.5600),
+    ]:
+        want_x, want_y = where(latitude, longitude)
+        assert abs(named[name]["x"] - want_x) < 0.6, f"{name}: не туда по долготе"
+        assert abs(named[name]["y"] - want_y) < 0.6, f"{name}: не туда по широте"
+
 
 def test_the_map_says_out_loud_who_is_missing_from_it() -> None:
     """Соседа без координат на схеме нет, и об этом сказано в самой карточке.
@@ -2122,12 +2154,23 @@ def test_the_map_says_out_loud_who_is_missing_from_it() -> None:
 
     assert "Координат нет у ${noGeo} из ${peers.length} соседей выборки" in CABINET_PAGE
     assert CABINET_PAGE.index("<h2>Где соседи</h2>") < CABINET_PAGE.index("<h2>Карта рынка</h2>")
-    # Тайлов не берём: чужой источник ради украшения — это второй путь наружу.
-    # Подложка движка упомянута в комментарии как отвергнутый вариант, а вот
-    # запроса за ней нет — ни картинкой, ни фоном.
-    assert "/land/map-image?" not in CABINET_PAGE
-    assert "<image" not in CABINET_PAGE
-    # Схема печатается: `#bubble` в печати гасится, а она лежит не в нём.
+    # Подложку склеивает движок и отдаёт одной картинкой. Наружу за тайлами
+    # браузер не ходит: чужой хост в разметке — это уже второй путь наружу,
+    # мимо пересылки на ядро, и на Render он просто не откроется.
+    assert "/land/basemap?bbox=" in CABINET_PAGE
+    assert "tile.openstreetmap.org" not in CABINET_PAGE
+    assert "http://" not in CABINET_PAGE.split("function mapChart")[1].split("\n}")[0]
+    # Источник карты назван на самой картинке — уедет вместе с ней в печать.
+    assert "© OpenStreetMap" in CABINET_PAGE
+    # Отказ подложки виден словами. Карта пустого места и карта, которая не
+    # пришла, выглядят одинаково, а значат противоположное.
+    assert 'onerror="mapLost(this)"' in CABINET_PAGE
+    assert ".geomap.lost img{display:none}" in CABINET_PAGE
+    assert ".geomap.lost .maplost{display:block}" in CABINET_PAGE
+    # Высота держится рамкой, а не картинкой: иначе страница прыгает, пока
+    # подложка едет.
+    assert "aspect-ratio:680 / 460" in CABINET_PAGE
+    # Карта печатается: `#bubble` в печати гасится, а она лежит не в нём.
     assert "#bubble{display:none}" in CABINET_PAGE
 
 
@@ -2165,3 +2208,86 @@ def test_a_neighbour_from_the_source_keeps_its_coordinates(tmp_path) -> None:
         assert row.get("address"), f"{row['name']} без адреса"
     # Точка объекта тоже уезжает на страницу — схеме нужен центр.
     assert report["subject"]["latitude"] and report["subject"]["longitude"]
+
+
+def test_the_basemap_route_stitches_tiles_into_one_picture(monkeypatch) -> None:
+    """Подложка карты рынка: улицы, склеенные на сервере, а не в браузере.
+
+    Страница расставляет точки в меркаторном bbox и получает растр ровно под
+    ним — совмещать нечего, проекция одна. Проверяется вся дорога: выбор
+    масштаба, склейка, обрезка под bbox и то, что запрошенный размер приходит
+    именно таким; иначе точки легли бы на соседние улицы, и понять это по
+    картинке было бы нельзя.
+    """
+    import io
+
+    from fastapi.testclient import TestClient
+    from PIL import Image
+
+    import main_legacy
+
+    asked: list[str] = []
+
+    def fake_tile(zoom: int, x: int, y: int) -> bytes:
+        asked.append(f"{zoom}/{x}/{y}")
+        buffer = io.BytesIO()
+        Image.new("RGB", (256, 256), (10, 20, 30)).save(buffer, format="PNG")
+        return buffer.getvalue()
+
+    monkeypatch.setattr(main_legacy, "_osm_tile", fake_tile)
+    monkeypatch.setattr(main_legacy, "_BASEMAP_CACHE", {})
+    monkeypatch.setattr(main_legacy, "_core_api_url", lambda path: "")
+
+    # Саввинская набережная, примерно пять километров вокруг.
+    centre_x, centre_y = 4_178_000.0, 7_509_000.0
+    half = 9_000.0
+    bbox = f"{centre_x - half},{centre_y - half},{centre_x + half},{centre_y + half}"
+    client = TestClient(main_legacy.app)
+    answer = client.get("/land/basemap", params={"bbox": bbox, "width": 800})
+    assert answer.status_code == 200, answer.text
+    assert answer.headers["content-type"] == "image/png"
+    picture = Image.open(io.BytesIO(answer.content))
+    assert picture.width == 800
+    # Квадратный bbox — квадратная картинка: растяжение увело бы точки.
+    assert abs(picture.height - 800) <= 1
+    assert asked, "ни одного тайла не запросили"
+    # Бюджет соблюдён: чужой сервис не платит сотней запросов за одну карту.
+    assert len(asked) <= main_legacy._BASEMAP_TILE_BUDGET
+    zooms = {int(key.split("/")[0]) for key in asked}
+    assert len(zooms) == 1, "склейка из разных масштабов — это уже не карта"
+
+    # Второй раз тайлы не запрашиваются: карта улиц за секунду не меняется.
+    before = len(asked)
+    assert client.get("/land/basemap", params={"bbox": bbox, "width": 800}).status_code == 200
+    assert len(asked) == before, "кэш подложки не работает"
+
+
+def test_a_broken_basemap_answers_with_an_error_not_a_blank_map(monkeypatch) -> None:
+    """Не пришли тайлы — 502 и причина, а не серый прямоугольник.
+
+    Пустая картинка на месте карты неотличима от карты пустого места: точек
+    нет, улиц нет, и читается это как «вокруг ничего». Отказ обязан быть
+    отказом — страница на нём оставляет кольца и точки, они считаются не по
+    подложке.
+    """
+    from fastapi.testclient import TestClient
+
+    import main_legacy
+
+    def dead_tile(zoom: int, x: int, y: int) -> bytes:
+        raise OSError("tile server unreachable")
+
+    monkeypatch.setattr(main_legacy, "_osm_tile", dead_tile)
+    monkeypatch.setattr(main_legacy, "_BASEMAP_CACHE", {})
+    monkeypatch.setattr(main_legacy, "_core_api_url", lambda path: "")
+
+    client = TestClient(main_legacy.app)
+    answer = client.get("/land/basemap", params={"bbox": "4170000,7500000,4186000,7516000"})
+    assert answer.status_code == 502
+    assert "недоступна" in answer.json()["detail"]
+
+    # Мусор на входе — 400, а не попытка скачать полмира.
+    assert client.get("/land/basemap", params={"bbox": "туда-сюда"}).status_code == 400
+    assert client.get(
+        "/land/basemap", params={"bbox": "0,0,9000000,9000000"}
+    ).status_code == 400

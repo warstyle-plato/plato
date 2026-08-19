@@ -49,7 +49,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.19.9"
+VERSION = "0.19.10"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -2518,6 +2518,27 @@ _NSPD_MAP_CACHE: dict[str, tuple[float, bytes]] = {}
 _NSPD_MAP_CACHE_TTL_SECONDS = 6 * 3600
 _NSPD_MAP_CACHE_LIMIT = 64
 
+# Обычная карта с улицами — под рыночную выборку, а не под карточку участка.
+#
+# Кадастровый слой НСПД верен на двухстах метрах участка: он рисует границы
+# ЕГРН и ничего больше. На пяти километрах выборки соседей от него пользы нет —
+# клубок границ без улиц, реки и названий, то есть шум без ориентира. Улицы,
+# вода и подписи районов есть только у настоящей карты, поэтому подложка
+# берётся тайлами OSM и склеивается **на сервере**: браузер получает одну
+# картинку, ходить наружу ему не приходится, и в печать эта картинка уходит
+# целиком. Адрес вынесен в переменную: свой тайловый сервер подставляется
+# одной строкой, без правки кода.
+_OSM_TILE_URL = _env_str("OSM_TILE_URL", "https://tile.openstreetmap.org/{z}/{x}/{y}.png")
+_OSM_TILE_CACHE: dict[str, tuple[float, bytes]] = {}
+_OSM_TILE_CACHE_TTL_SECONDS = 7 * 24 * 3600
+_OSM_TILE_CACHE_LIMIT = 512
+_BASEMAP_CACHE: dict[str, tuple[float, bytes]] = {}
+_BASEMAP_CACHE_TTL_SECONDS = 24 * 3600
+_BASEMAP_CACHE_LIMIT = 32
+# Больше сорока тайлов на картинку — это уже не карта района, а выкачивание
+# чужого сервиса: при перегрузе берётся масштаб крупнее, а не сотня запросов.
+_BASEMAP_TILE_BUDGET = 40
+
 
 @app.get("/land/map-probe", include_in_schema=False)
 def land_map_probe(bbox: str = "") -> dict[str, Any]:
@@ -3653,6 +3674,160 @@ def land_map_image(bbox: str = "") -> Response:
     _NSPD_MAP_CACHE[cache_key] = (time.time(), raw)
     return Response(raw, media_type="image/png",
                     headers={"Cache-Control": "public, max-age=3600"})
+
+
+def _basemap_zoom(min_x: float, max_x: float, min_y: float, max_y: float, width: int) -> int:
+    """Масштаб тайлов под ширину картинки — и под бюджет запросов.
+
+    Сначала берётся тот масштаб, при котором тайл ложится пиксель в пиксель:
+    крупнее — мыло, мельче — лишние запросы. Потом масштаб понижается, пока
+    склейка не влезет в бюджет: чужой сервис не должен платить за нашу карту
+    сотней обращений.
+    """
+    world = 2 * 20037508.342789244
+    span_x = max(max_x - min_x, 1.0)
+    zoom = int(round(math.log2(world / 256.0 / (span_x / max(width, 1)))))
+    zoom = max(1, min(18, zoom))
+    while zoom > 1:
+        scale = world / (256.0 * (1 << zoom))
+        tiles = (math.ceil(span_x / scale / 256.0) + 1) * (
+            math.ceil(max(max_y - min_y, 1.0) / scale / 256.0) + 1
+        )
+        if tiles <= _BASEMAP_TILE_BUDGET:
+            break
+        zoom -= 1
+    return zoom
+
+
+def _osm_tile(zoom: int, x: int, y: int) -> bytes:
+    """Один тайл, с кэшем на неделю: карта улиц за неделю не меняется."""
+    key = f"{zoom}/{x}/{y}"
+    cached = _OSM_TILE_CACHE.get(key)
+    if cached and time.time() - cached[0] < _OSM_TILE_CACHE_TTL_SECONDS:
+        return cached[1]
+    url = _OSM_TILE_URL.format(z=zoom, x=x, y=y)
+    request = urllib.request.Request(url, headers={
+        # Тайловый сервис требует, чтобы клиент назывался: обезличенный запрос
+        # он вправе отклонить, и правильно делает.
+        "User-Agent": _LAND_LOOKUP_USER_AGENT,
+        "Accept": "image/png,image/*;q=0.9",
+    })
+    with urllib.request.urlopen(request, timeout=_NSPD_TIMEOUT_SECONDS) as response:
+        raw = response.read(1024 * 1024)
+    if len(_OSM_TILE_CACHE) >= _OSM_TILE_CACHE_LIMIT:
+        _OSM_TILE_CACHE.pop(next(iter(_OSM_TILE_CACHE)), None)
+    _OSM_TILE_CACHE[key] = (time.time(), raw)
+    return raw
+
+
+def _basemap_png(min_x: float, min_y: float, max_x: float, max_y: float, width: int) -> bytes:
+    """Склеенная карта улиц под меркаторный bbox.
+
+    Тайлы приходят кусками, а странице нужна одна картинка под тот же bbox, в
+    котором она рисует точки: иначе совмещать пришлось бы в браузере, и любое
+    расхождение округлений уводило бы проект на соседнюю улицу.
+    """
+    from PIL import Image
+
+    zoom = _basemap_zoom(min_x, max_x, min_y, max_y, width)
+    world = 2 * 20037508.342789244
+    origin = -20037508.342789244
+    scale = world / (256.0 * (1 << zoom))  # метров на пиксель
+    # Пиксель всей карты мира: y растёт вниз, поэтому север — это минус.
+    def px(x: float) -> float:
+        return (x - origin) / scale
+
+    def py(y: float) -> float:
+        return (-y - origin) / scale
+
+    left, right = px(min_x), px(max_x)
+    top, bottom = py(max_y), py(min_y)
+    x0, x1 = int(math.floor(left / 256)), int(math.floor((right - 1e-6) / 256))
+    y0, y1 = int(math.floor(top / 256)), int(math.floor((bottom - 1e-6) / 256))
+    limit = 1 << zoom
+    canvas = Image.new("RGB", ((x1 - x0 + 1) * 256, (y1 - y0 + 1) * 256), (238, 238, 233))
+    got = 0
+    for tx in range(x0, x1 + 1):
+        for ty in range(y0, y1 + 1):
+            if not (0 <= ty < limit):
+                continue
+            try:
+                raw = _osm_tile(zoom, tx % limit, ty)
+                tile = Image.open(io.BytesIO(raw)).convert("RGB")
+            except Exception:
+                # Один не пришедший тайл — дырка в карте, а не отказ от карты.
+                continue
+            canvas.paste(tile, ((tx - x0) * 256, (ty - y0) * 256))
+            got += 1
+    if not got:
+        raise RuntimeError("ни один тайл не получен")
+    crop = canvas.crop((
+        int(round(left - x0 * 256)), int(round(top - y0 * 256)),
+        int(round(right - x0 * 256)), int(round(bottom - y0 * 256)),
+    ))
+    # Выше натурального размера не растягиваем: тайл отдал столько пикселей,
+    # сколько отдал, и растянутая вдвое подпись улицы читается хуже мелкой.
+    # Ширину картинки на экране держит рамка, а не растр.
+    width = min(width, crop.width)
+    height = max(32, int(round(width * crop.height / max(crop.width, 1))))
+    crop = crop.resize((width, height), Image.LANCZOS)
+    buffer = io.BytesIO()
+    crop.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+@app.get("/land/basemap", include_in_schema=False)
+def land_basemap(bbox: str = "", width: int = 1024) -> Response:
+    """Карта улиц под меркаторный bbox — одной картинкой.
+
+    Тот же договор, что у /land/map-image: страница передаёт bbox, в котором
+    сама рисует, и получает растр ровно под него. Отличается слой — не границы
+    ЕГРН, а улицы, вода и названия: на пяти километрах рыночной выборки нужны
+    они, а кадастровый слой даёт клубок без ориентиров.
+
+    Любой сбой — 502, и карта на странице заменяется схемой с кольцами
+    расстояний. Подложка — то, на чём рисуют, а не то, что считают: без неё
+    ответ остаётся верным, просто читается хуже.
+    """
+    remote = _core_api_url("/land/basemap")
+    if remote:
+        # Как /land/map-image: на Render внешние карты не ходят, пересылаем.
+        try:
+            with urllib.request.urlopen(
+                    urllib.request.Request(
+                        remote + "?" + urllib.parse.urlencode({"bbox": bbox, "width": width}),
+                        headers={"Accept": "image/png"}),
+                    timeout=_NSPD_TIMEOUT_SECONDS) as response:
+                raw = response.read(8 * 1024 * 1024)
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Карта недоступна: {exc}")
+        return Response(raw, media_type="image/png",
+                        headers={"Cache-Control": "public, max-age=86400"})
+    try:
+        parts = [float(value) for value in str(bbox or "").split(",")]
+    except ValueError:
+        parts = []
+    if len(parts) != 4:
+        raise HTTPException(status_code=400, detail="bbox: minX,minY,maxX,maxY в метрах веб-меркатора.")
+    min_x, min_y, max_x, max_y = parts
+    span_x, span_y = max_x - min_x, max_y - min_y
+    if not (0 < span_x <= 200000 and 0 < span_y <= 200000):
+        raise HTTPException(status_code=400, detail="bbox вне разумного размера выборки.")
+    width = max(256, min(1536, int(width)))
+    cache_key = f"{round(min_x)}:{round(min_y)}:{round(max_x)}:{round(max_y)}:{width}"
+    cached = _BASEMAP_CACHE.get(cache_key)
+    if cached and time.time() - cached[0] < _BASEMAP_CACHE_TTL_SECONDS:
+        return Response(cached[1], media_type="image/png",
+                        headers={"Cache-Control": "public, max-age=86400"})
+    try:
+        raw = _basemap_png(min_x, min_y, max_x, max_y, width)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Карта недоступна: {exc}")
+    if len(_BASEMAP_CACHE) >= _BASEMAP_CACHE_LIMIT:
+        _BASEMAP_CACHE.pop(next(iter(_BASEMAP_CACHE)), None)
+    _BASEMAP_CACHE[cache_key] = (time.time(), raw)
+    return Response(raw, media_type="image/png",
+                    headers={"Cache-Control": "public, max-age=86400"})
 
 
 @app.get("/land/overlay-probe", include_in_schema=False)
