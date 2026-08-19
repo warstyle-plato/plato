@@ -227,8 +227,13 @@ border-radius:9px;box-shadow:0 6px 22px rgba(20,35,60,.13);max-height:320px;over
 #sug div:last-child,#addsug div:last-child{border-bottom:0}
 #sug div:hover,#sug div.on,#addsug div:hover{background:#eef4fa}
 #sug small,#addsug small{display:block;color:var(--dim);font-size:12px}
-td.pick,th.pick{width:56px;text-align:center}
-td.pick input{cursor:pointer}
+/* Кто показан на графиках — один список на весь отчёт, в его шапке. */
+.whoshow{margin-top:12px;font-size:13px;line-height:2}
+.whoshow b{font-weight:600;margin-right:6px}
+.whoshow .chip{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--line);
+border-radius:20px;padding:3px 10px;margin:0 6px 6px 0;cursor:pointer;background:#fff}
+.whoshow .chip:has(input:checked){border-color:var(--blue);color:var(--blue)}
+.whoshow .chip.off{opacity:.45;cursor:default}
 
 .cityref{display:block;margin:10px 0 2px;font-size:13.5px}
 .cityref .muted{font-size:12.5px}
@@ -277,7 +282,7 @@ g.bub.on circle{fill-opacity:.75}
   main{max-width:none;padding:0}
   #form, #askcard, .chips, button, #hintout, .cardwrap{display:none !important}
   #bubble{display:none}
-  td.pick,th.pick{display:none}
+  .whoshow{display:none}
   .printviews{display:block}
   /* Ни наведённая, ни тапнутая подпись на бумагу не идёт: на печати нет ни
      того ни другого, а один случайно оставшийся ярлык читался бы как
@@ -542,34 +547,42 @@ function salesChart(rows, key, unit, digits){
     const v=rows.filter(r=>!r.own).map(r=>at(r,m,key)).filter(x=>x!==null).sort((a,b)=>a-b);
     return v.length?(v.length%2?v[(v.length-1)/2]:(v[v.length/2-1]+v[v.length/2])/2):null;
   });
-  const vals=months.map(m=>at(own,m,key)).filter(v=>v!==null).concat(med.filter(v=>v!==null));
+  // Шкала считается вместе с отмеченными: у соседа числа бывают вдесятеро
+  // больше, и его столбик ушёл бы за поле, а свой прижался бы ко дну.
+  const vals=months.map(m=>at(own,m,key)).filter(v=>v!==null)
+    .concat(med.filter(v=>v!==null))
+    .concat(rows.filter(r=>!r.own&&r.shown).flatMap(r=>months.map(m=>at(r,m,key)).filter(v=>v!==null)));
   const hi=Math.max(...vals,1)*1.15;
   const W=620,H=210,L=44,R=110,T=12,B=28;
-  const bw=Math.max(4,(W-L-R)/months.length*0.62);
+  // Отмеченные соседи — такими же столбиками рядом, а не линиями поверх.
+  // Линия поверх столбиков читалась как другая величина: одинаковые числа
+  // надо показывать одинаковой формой.
+  const picked=rows.filter(r=>!r.own&&r.shown);
+  const slot=(W-L-R)/months.length;
+  const group=slot*0.72;
+  const bw=Math.max(3,group/(1+picked.length));
   const x=i=>L+(i+0.5)*(W-L-R)/months.length;
   const y=v=>T+(H-T-B)*(1-v/hi);
   let svg=`<svg viewBox="0 0 ${W} ${H}" width="100%" role="img">`;
   [0,0.5,1].forEach(f=>{const v=hi*f;
     svg+=`<line x1="${L}" y1="${y(v)}" x2="${W-R}" y2="${y(v)}" stroke="#e6ecf2"/>`
        +`<text x="${L-6}" y="${y(v)+4}" text-anchor="end" font-size="10" fill="#8798a8">${num(v)}</text>`;});
+  const series=[{row:own,colour:'#C4581B'}]
+    .concat(picked.map(r=>({row:r,colour:pickedColour(picked,r)})));
   months.forEach((m,i)=>{
-    const v=at(own,m,key);
-    if(v!==null) svg+=`<rect x="${x(i)-bw/2}" y="${y(v)}" width="${bw}" height="${Math.max(1,H-B-y(v))}" rx="2" fill="#C4581B"/>`;
+    series.forEach((one,k)=>{
+      const v=at(one.row,m,key);
+      if(v===null)return;
+      const left=x(i)-group/2+k*bw;
+      svg+=`<rect x="${left.toFixed(1)}" y="${y(v)}" width="${bw.toFixed(1)}"`
+        +` height="${Math.max(1,H-B-y(v)).toFixed(1)}" rx="2" fill="${one.colour}">`
+        +`<title>${esc(one.row.name)} · ${m} · ${num(v,digits)} ${unit}</title></rect>`;
+    });
     if(i%Math.ceil(months.length/6)===0)
       svg+=`<text x="${x(i)}" y="${H-9}" text-anchor="middle" font-size="10" fill="#8798a8">${m.slice(2)}</text>`;
   });
   const mp=months.map((m,i)=>med[i]===null?null:`${i?'L':'M'}${x(i).toFixed(1)} ${y(med[i]).toFixed(1)}`).filter(Boolean).join(' ');
   if(mp) svg+=`<path d="${mp}" fill="none" stroke="#16202b" stroke-width="1.3" stroke-dasharray="5 4"/>`;
-  // Отмеченные галочкой соседи — линиями поверх своих столбиков. Столбики
-  // остаются у своего проекта: сравнивают с ним, а не всех со всеми.
-  const picked=rows.filter(r=>!r.own&&r.shown);
-  const line=r=>months.map((m,i)=>{const v=at(r,m,key);
-    return v===null?null:`${i?'L':'M'}${x(i).toFixed(1)} ${y(v).toFixed(1)}`}).filter(Boolean).join(' ');
-  picked.forEach(r=>{
-    const d=line(r);
-    if(d) svg+=`<path d="${d}" fill="none" stroke="${pickedColour(picked,r)}" stroke-width="1.8">`
-      +`<title>${esc(r.name)}</title></path>`;
-  });
   const lastOwn=[...months].reverse().find(m=>at(own,m,key)!==null);
   if(lastOwn===undefined) return '<div class="muted">Помесячных чисел по этому проекту в отчёте нет.</div>';
   // Подпись — имя и значение через разделитель. Было слово «проект» и число
@@ -925,31 +938,19 @@ function sectionTable(code,ctx){
                attr:(r,i)=>r.__own?'':` class="link" data-peer="${i-1}"`},
               {t:'км',num:1,f:r=>r.__own?'—':num(r.distance_km,2)},
               {t:'Класс',f:r=>esc(r.segment||'—')}];
-  // Галочка стоит в таблице под самим графиком: смотрят на кривые и тут же
-  // отмечают, чью показать. Она есть в каждом разделе с графиком, а выбор
-  // общий — отмеченный в одном узнаётся тем же цветом в остальных. Ряд у
-  // разделов разный, поэтому и проверка доступности разная: у цены своя
-  // история, у прочих — помесячный отчёт.
-  const need=code==='price'
-    ? {key:'price_series', why:'истории цены нет'}
-    : {key:'sales_series', why:'помесячных чисел нет'};
-  const pick={t:'График',cls:'pick',
-    f:r=>r.__own?'':`<input type="checkbox" data-chart="${esc(r.complex_id)}"`
-      +`${onChart.has(String(r.complex_id))?' checked':''}`
-      +`${(r[need.key]||[]).length>1?'':` disabled title="${need.why}"`}>`};
   const cols={
-    price:[pick,...base,{t:'₽/м²',num:1,f:r=>num(r.price_per_sqm)},
+    price:[...base,{t:'₽/м²',num:1,f:r=>num(r.price_per_sqm)},
            {t:'мин',num:1,f:r=>num(r.price_per_sqm_min)},{t:'макс',num:1,f:r=>num(r.price_per_sqm_max)},
            {t:'Прайс от',f:r=>esc(r.observed_at||'—')}],
-    pace:[pick,...base,{t:'ДДУ/мес',num:1,f:r=>num(r.units_per_month,1)},
+    pace:[...base,{t:'ДДУ/мес',num:1,f:r=>num(r.units_per_month,1)},
           {t:'за 3 мес',num:1,f:r=>num(r.units_per_month_3m,1)},
           {t:'Конец продаж',f:r=>esc(r.sales_end_forecast||'—')}],
-    stock:[pick,...base,{t:'Лотов в продаже',num:1,f:r=>num(r.lot_count)},
+    stock:[...base,{t:'Лотов в продаже',num:1,f:r=>num(r.lot_count)},
            {t:'Остаток',num:1,f:r=>num(r.remaining_units)},
            {t:'Всего',num:1,f:r=>num(r.living_units)}],
-    lot_size:[pick,...base,{t:'Продано, м²',num:1,f:r=>num(r.sold_lot_avg,1)},
+    lot_size:[...base,{t:'Продано, м²',num:1,f:r=>num(r.sold_lot_avg,1)},
               {t:'Средний в проекте',num:1,f:r=>num(r.lot_area_avg,1)}],
-    absorption:[pick,...base,{t:'м²/мес',num:1,f:r=>num(r.area_per_month)},
+    absorption:[...base,{t:'м²/мес',num:1,f:r=>num(r.area_per_month)},
                 {t:'ДДУ/мес',num:1,f:r=>num(r.units_per_month,1)}],
   }[code];
   if(!cols) return '';
@@ -1354,6 +1355,19 @@ function render(d){
     // Добавление проекта стояло в самом низу, под всем отчётом, — и его там
     // не находили. Оно меняет выборку целиком: медианы, вердикт и каждый
     // раздел, поэтому и место ему рядом с составом выборки, а не в хвосте.
+    // Выбор соседей для графиков — один на весь отчёт и стоит в шапке.
+    // Колонки с галочками жили в каждой таблице, но выбор всё равно общий:
+    // отметив в одном разделе, человек видел галочку появившейся во всех
+    // остальных и вправе был счесть это ошибкой. Одно поведение — одно место.
+    +(peers.length?`<div class="whoshow"><b>Показать на графиках:</b> `
+      +peers.map(p=>{
+        const has=(p.price_series||[]).length>1||(p.sales_series||[]).length>1;
+        return `<label class="chip${has?'':' off'}"${has?'':' title="помесячных чисел по нему нет"'}>`
+          +`<input type="checkbox" data-chart="${esc(p.complex_id)}"`
+          +`${onChart.has(String(p.complex_id))?' checked':''}${has?'':' disabled'}>`
+          +`${esc(p.name)}</label>`;
+      }).join('')
+      +`</div>`:'')
     +`<div class="addwrap" style="margin-top:12px"><input type="text" id="addq" autocomplete="off"
       placeholder="Добавить в сравнение любой проект из справочника — начните вводить название">
       <div id="addsug"></div></div>

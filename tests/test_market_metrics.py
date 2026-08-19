@@ -1472,36 +1472,28 @@ def test_a_bare_site_gets_a_verdict_about_what_to_build(tmp_path) -> None:
     assert report["analysis"]["overall"] == site
 
 
-def test_a_neighbour_curve_returns_to_the_chart_by_a_tick() -> None:
-    """Полоса скрыла отдельные кривые — галочка возвращает нужную.
+def test_the_neighbours_to_show_are_picked_in_one_place() -> None:
+    """Галочки стояли в каждой таблице, а выбор всё равно общий.
 
-    Полоса отвечает на «где я относительно рынка», но иногда надо посмотреть
-    на конкретного соседа рядом со своей линией, не уходя в его карточку.
-    Отчёт при этом не пересобирается: это вопрос вида, а не расчёта.
+    Отметив соседа в разделе о цене, человек видел галочку появившейся во
+    всех остальных и вправе был счесть это ошибкой. Одно поведение — одно
+    место: список соседей в шапке отчёта, и отмечают только там.
     """
     from market_search.cabinet import CABINET_PAGE
 
     assert "const onChart=new Set();" in CABINET_PAGE
-    assert 'data-chart="${esc(r.complex_id)}"' in CABINET_PAGE
-    # Признак отмеченности доезжает и до цены, и до помесячных рядов.
-    assert CABINET_PAGE.count("shown:onChart.has(String(p.complex_id))") == 2
-    # Сосед без своего ряда отмечен быть не может — рисовать нечего.
-    assert "why:'истории цены нет'" in CABINET_PAGE
-    # Перерисовка без запроса к серверу.
-    assert "if(box.checked) onChart.add(id); else onChart.delete(id);\n      render(lastReport);" in CABINET_PAGE
-    # Галочка стоит в таблице под самим графиком, а не в общем списке внизу:
-    # смотрят на кривые и тут же отмечают, чью показать.
+    assert 'class="whoshow"' in CABINET_PAGE
+    assert "<b>Показать на графиках:</b>" in CABINET_PAGE
+    # Колонок с галочками в таблицах разделов больше нет.
     section = CABINET_PAGE[CABINET_PAGE.index("function sectionTable"):]
     section = section[: section.index("if(!cols) return")]
-    # Галочка есть у каждого раздела с графиком, а не только у цены.
-    for code in ("price", "pace", "lot_size", "absorption", "stock"):
-        assert f"{code}:[pick,...base," in section, code
-    # Доступность считается по своему ряду: у цены история цены, у прочих —
-    # помесячный отчёт.
-    assert "code==='price'" in section
-    assert "{key:'sales_series', why:'помесячных чисел нет'}" in section
-    # В печать колонка не идёт.
-    assert "  td.pick,th.pick{display:none}" in CABINET_PAGE
+    assert "pick" not in section
+    # Сосед без помесячных чисел отметиться не может, и причина названа.
+    assert 'title="помесячных чисел по нему нет"' in CABINET_PAGE
+    # Перерисовка без запроса к серверу.
+    assert "if(box.checked) onChart.add(id); else onChart.delete(id);\n      render(lastReport);" in CABINET_PAGE
+    # В печать список выбора не идёт.
+    assert "  .whoshow{display:none}" in CABINET_PAGE
 
 
 def test_only_the_subject_is_labelled_on_screen() -> None:
@@ -1862,8 +1854,12 @@ def test_picked_peers_are_drawn_on_every_chart_not_only_price() -> None:
 
     sales = CABINET_PAGE[CABINET_PAGE.index("function salesChart"):]
     sales = sales[: sales.index("function lotChart")]
+    # Одинаковые числа — одинаковой формой: сосед рисуется таким же столбиком
+    # рядом, а не линией поверх.
     assert "const picked=rows.filter(r=>!r.own&&r.shown);" in sales
-    assert "pickedColour(picked,r)" in sales
+    assert "const bw=Math.max(3,group/(1+picked.length));" in sales
+    assert "const series=[{row:own,colour:'#C4581B'}]" in sales
+    assert "<path" not in sales.split("const series=")[1].split("months.forEach")[1][:400]
 
     remain = CABINET_PAGE[CABINET_PAGE.index("function remainChart"):]
     remain = remain[: remain.index("\n}")]
