@@ -49,7 +49,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.18.99"
+VERSION = "0.19.5"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -28909,21 +28909,23 @@ function renderTep(){
 // Пропорции печатаются рядом с таблицей: подставленное число, происхождение
 // которого не видно, неотличимо от введённого человеком.
 function renderTepRatioNote(){
+ // Раньше здесь лежала строка на семь экранных строк с долями всех продуктов —
+ // на телефоне это стена текста, которую никто не читает (замечание владельца,
+ // 19.08.2026). Короткая фраза объясняет правило, подробности — под раскрытием,
+ // а конкретные доли человек видит там, где они работают: в кнопке строки.
  const box=document.getElementById('tepRatioNote');
  if(!box)return;
  const label=key=>((TEP_DEFAULT[key]||{}).label)||key;
- box.textContent='Пустые площади достраиваются пропорциями: '+
-  Object.keys(TEP_RATIOS).map(key=>{
-   const r=TEP_RATIOS[key];
-   const ofTotal=r.total_of_gns?r.saleable_of_gns/r.total_of_gns:0;
-   return label(key)+' — общая '+Math.round(r.total_of_gns*100)+'% ГНС, продаваемая '+
-    Math.round(r.saleable_of_gns*1000)/10+'% ГНС ('+Math.round(ofTotal*1000)/10+'% общей, '+r.source+')';
-  }).join('; ')+'. Введённое вами и пришедшее из ГлавАПУ пропорцией не перебивается.';
+ const rows=Object.keys(TEP_RATIOS).map(key=>{
+  const r=TEP_RATIOS[key];
+  return '<div>'+escapeHtml(label(key))+' — общая '+landNum(r.total_of_gns*100,0)+
+   '% ГНС, продаваемая '+landNum(r.saleable_of_gns*100,1)+'% ГНС · '+escapeHtml(r.source)+'</div>';
+ }).join('');
+ box.innerHTML='Пустые площади достраиваются пропорциями; введённое вами не перебивается. '+
+  '<details style="display:inline"><summary style="display:inline;cursor:pointer">какие доли</summary>'+
+  '<div style="margin-top:4px">'+rows+'</div></details>';
 }
 
-// Площади продукта связаны: продаваемая не бывает больше общей, общая — больше
-// ГНС. Введённое руками мы не правим, но и молчать не имеем права: числа,
-// противоречащие друг другу, дальше едут в выручку и себестоимость.
 function tepRowComplaint(key,row){
  const gns=Number(row.gns||0),total=Number(row.total_area||0),sale=Number(row.saleable||0);
  if(total>gns+1&&gns>0)return 'общая площадь больше ГНС — так не бывает, проверьте строку';

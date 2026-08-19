@@ -194,3 +194,17 @@ def test_the_row_can_be_refilled_on_demand():
     table = table[:table.index("function updateTepTotals")]
     assert "refillTepRow(" in table, "кнопки нет в строке таблицы"
     assert "tepRowComplaint(key,row)" in table, "предупреждение не выводится"
+
+
+def test_the_note_is_one_line_not_a_wall():
+    """На телефоне подпись занимала семь строк — её никто не читал.
+
+    Правило остаётся на виду одной фразой, доли — под раскрытием: они нужны
+    тому, кто спросил, а не всем и сразу.
+    """
+    body = core.PAGE[core.PAGE.index("function renderTepRatioNote"):]
+    body = body[:body.index("function tepRowComplaint")]
+    assert "<details" in body, "подробности должны быть свёрнуты"
+    visible = body[body.index("box.innerHTML="):body.index("<details")]
+    assert len(visible) < 260, "видимая часть подписи снова разрослась"
+    assert "не перебивается" in visible, "главное правило должно остаться на виду"
