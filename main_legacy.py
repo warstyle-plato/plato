@@ -20988,7 +20988,18 @@ def _plato_chat_launch(
 
     def _work() -> dict[str, Any]:
         _plato_trace_write(trace_id, "model", "Пересчитываю модель DevelopAid")
-        bundle = _run_authoritative_model(req.inputs, req.tep, req.rates, req.phasing)
+        try:
+            bundle = _run_authoritative_model(req.inputs, req.tep, req.rates, req.phasing)
+        except KeyError as exc:
+            # Неполные вводные — ответ человеку, а не пятисотка. Модель строится
+            # по всему набору полей, и отсутствие одного роняло вызов с голым
+            # `KeyError` в лог: снаружи это выглядело поломкой сервиса, а не
+            # нехваткой данных. Поле называется — иначе искать его негде.
+            raise HTTPException(
+                status_code=422,
+                detail=(f"Не хватает вводных для расчёта модели: нет поля {exc}. "
+                        "Передайте полный набор вводных или умолчания движка."),
+            ) from exc
 
         if scenario:
             stage_label, handler = _AGENT_LOCAL_SCENARIOS[scenario]
