@@ -1627,3 +1627,47 @@ def test_a_chart_label_does_not_read_as_a_project_number() -> None:
     assert "'проект'" not in sales.replace("(own.name||'проект')", "")
     assert "${ownName} · ${num(at(own,lastOwn,'sold'))} ДДУ" in sales
     assert "медиана · ${num(lastMed,1)} ДДУ" in sales
+
+
+def test_a_manual_class_reaches_the_sections_not_only_the_sample(tmp_path) -> None:
+    """В шапке «Премиум (выбран вручную)», строкой ниже «своего класса бизнес».
+
+    Выбранный класс менял отбор соседей, но до самого проекта не доезжал:
+    `own["segment"]` оставался меткой «Пульса». Разделы продолжали считать
+    своим классом прежний и сравнивали проект с медианой класса, из которого
+    его только что вывели, — и с городской медианой того же прежнего класса.
+    """
+    from market_search.metrics import BLOCK_PRICE
+    from market_search.service_v6 import MarketDiscoveryService
+
+    service = MarketDiscoveryService(tmp_path)
+    segments = {1: "Бизнес", 2: "Премиум", 3: "Премиум", 4: "Бизнес"}
+    metrics = {
+        1: {"price_per_sqm": 708_109, "observed_at": "2026-08-18", "units_per_month": 4.6},
+        2: {"price_per_sqm": 900_000, "observed_at": "2026-08-18", "units_per_month": 3.0},
+        3: {"price_per_sqm": 950_000, "observed_at": "2026-08-18", "units_per_month": 2.0},
+        4: {"price_per_sqm": 520_000, "observed_at": "2026-08-18", "units_per_month": 9.0},
+    }
+    projects = [
+        {"complex_id": i, "name": f"Сосед {i}", "developer": "—",
+         "latitude": 55.7158 + (i - 1) / 3000, "longitude": 37.4330,
+         "address": "Москва, ЗАО, район Можайский, дом"}
+        for i in (1, 2, 3, 4)
+    ]
+    service.pulse = _fake_pulse(segments, metrics, projects)
+
+    plain = service.build_report("55.71580, 37.43300", codes=[BLOCK_PRICE])
+    assert plain["subject"]["metrics"]["segment"] == "Бизнес"
+
+    picked = service.build_report(
+        "55.71580, 37.43300", codes=[BLOCK_PRICE], segment_override="Премиум"
+    )
+    # Метка источника сохраняется отдельно — решение владельца от 18.08.2026.
+    assert picked["subject"]["segment"] == "Премиум"
+    assert picked["subject"]["segment_source"] == "manual"
+    assert picked["subject"]["segment_by_source"] == "Бизнес"
+    # А считают разделы уже по выбранному классу.
+    assert picked["subject"]["metrics"]["segment"] == "Премиум"
+    same = picked["blocks"][0]["peers"]["same_class"]
+    assert same["count"] == 2, "«своим классом» обязаны стать премиальные соседи"
+    assert same["median"] == 925_000

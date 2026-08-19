@@ -655,6 +655,15 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
             # два мнения об одном классе разошлись бы незаметно.
             source_segment, segment = segment, segment_override
             segment_source = "manual"
+            # Выбранный класс должен доехать и до самого проекта, а не только
+            # до отбора соседей. Прежде он менял выборку, но `own["segment"]`
+            # оставался меткой «Пульса»: разделы продолжали считать «своим
+            # классом» прежний и сравнивали проект с медианой класса, из
+            # которого его только что вывели. На экране это выглядело так —
+            # в шапке «Премиум (выбран вручную)», а строкой ниже «только
+            # своего класса „бизнес“».
+            if own is not None:
+                own["segment"] = segment
         if not segment:
             votes: dict[str, int] = {}
             for _, project in near[:20]:
