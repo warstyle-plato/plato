@@ -40,6 +40,30 @@ PREMIUM_SHIFT_PP = 5.0
 
 GENITIVE = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля",
             "августа", "сентября", "октября", "ноября", "декабря"]
+# «С январе по июле» — так выходит, если на все случаи держать одну форму.
+# Предлоги требуют разных падежей: «в январе», но «с января по июль».
+NOMINATIVE = ["январь", "февраль", "март", "апрель", "май", "июнь", "июль",
+              "август", "сентябрь", "октябрь", "ноябрь", "декабрь"]
+
+
+def _month_from(month: str) -> str:
+    """Месяц после «с»: родительный."""
+    return _month_form(month, GENITIVE)
+
+
+def _month_to(month: str) -> str:
+    """Месяц после «по»: винительный, совпадающий с именительным."""
+    return _month_form(month, NOMINATIVE)
+
+
+def _month_form(month: str, forms: list[str]) -> str:
+    parts = str(month or "").split("-")
+    if len(parts) < 2:
+        return str(month or "")
+    try:
+        return forms[int(parts[1]) - 1]
+    except (ValueError, IndexError):
+        return str(month or "")
 
 
 def _day(iso: str | None) -> str:
@@ -402,3 +426,277 @@ def findings(
         _horizon_finding(subject),
     ]
     return [row for row in built if row]
+
+
+def _ceiling(peers: list[dict[str, Any]]) -> tuple[float | None, float | None]:
+    """Цена, выше которой в этом радиусе темпа уже нет.
+
+    Не теория, а наблюдение по выборке: самый дорогой из тех, кто продаёт
+    быстрее медианы. Выше этой отметки быстрых нет ни одного — значит, там
+    проходит граница, за которой покупатель здешнего радиуса не идёт.
+    """
+    rows = [row for row in peers or []
+            if row.get("price_per_sqm") and row.get("units_per_month")]
+    if len(rows) < 4:
+        return None, None
+    paces = sorted(row["units_per_month"] for row in rows)
+    middle = len(paces) // 2
+    median = paces[middle] if len(paces) % 2 else (paces[middle - 1] + paces[middle]) / 2
+    quick = [row for row in rows if row["units_per_month"] >= median]
+    if not quick:
+        return None, median
+    return max(row["price_per_sqm"] for row in quick), median
+
+
+def _essay_project(subject, peers, segment, premium, cost) -> list[dict[str, Any]]:
+    """Разбор действующего проекта: цена, темп, разрыв, цена премии."""
+    out: list[dict[str, Any]] = []
+    price = subject.get("price_per_sqm")
+    same = _same_class(peers, segment)
+    label = _title(normalize_segment(segment) or segment)
+    if price and same:
+        values = sorted(row["price_per_sqm"] for row in same)
+        low, high = values[0], values[-1]
+        middle = len(values) // 2
+        median = values[middle] if len(values) % 2 else (values[middle - 1] + values[middle]) / 2
+        above_top = round((price / high - 1) * 100, 1) if high else None
+        above_mid = round((price / median - 1) * 100, 1) if median else None
+        higher = [row for row in _priced(peers)
+                  if normalize_segment(row.get("segment")) != normalize_segment(segment)
+                  and row["price_per_sqm"] > price]
+        higher.sort(key=lambda row: row.get("distance_km") or 99)
+        first = [
+            f"{_amount(len(same), 'сосед', 'соседа', 'соседей')} класса «{label}» "
+            f"с действующим прайсом укладываются в коридор от {_num(low)} до {_num(high)} ₽/м², "
+            f"медиана {_num(median)}. Проект просит {_num(price)}"
+            + (f" — на {_num(above_top, 1)} % выше верхней границы коридора" if above_top and above_top > 0 else "")
+            + (f" и на {_num(above_mid, 1)} % выше медианы." if above_mid and above_mid > 0
+               else ".")
+        ]
+        if higher:
+            near = ", ".join(
+                f"{row['name']} в {_num(row.get('distance_km'), 2)} км — {_num(row['price_per_sqm'])}"
+                for row in higher[:2]
+            )
+            first.append(
+                f"Ближайшее по цене окружение у проекта уже не «{label}»: {near}. "
+                f"По прайсу он стоит между двумя классами, не принадлежа целиком ни одному."
+            )
+        first.append(
+            "Само по себе это не ошибка позиционирования: премию к массовому уровню класса "
+            "берут сознательно, и продукт её может нести. Вопрос не в том, обоснована ли "
+            "премия, а в том, платит ли её рынок. На это отвечает темп."
+        )
+        headline = (
+            f"Формально «{label}», по цене — выше своего класса"
+            if above_top and above_top > 0 else f"Цена внутри коридора класса «{label}»"
+        )
+        out.append({"code": "position", "headline": headline, "paragraphs": first})
+
+    pace = subject.get("units_per_month")
+    ceiling, median_pace = _ceiling(peers)
+    if pace and median_pace:
+        ratio = round(median_pace / pace, 1) if pace else None
+        slow = ratio and ratio >= PACE_GAP_RATIO
+        second = [
+            f"{_amount(pace, 'квартира', 'квартиры', 'квартир', 1)} в месяц против медианы "
+            f"{_num(median_pace, 1)} по выборке"
+            + (f" — медленнее в {_num(ratio, 1)} раза." if slow else ".")
+        ]
+        three = subject.get("units_per_month_3m")
+        if three:
+            second[0] += (
+                f" За последние три месяца — {_num(three, 1)}: "
+                + ("уровень устойчивый, а не провал одного месяца."
+                   if abs(three - pace) / pace < 0.3 else "месяц на месяц не приходится.")
+            )
+        if ceiling and price and ceiling < price:
+            second.append(
+                f"Внутри выборки видна закономерность: быстрее медианы не продаёт никто "
+                f"дороже {_num(ceiling)} ₽/м². Граница, за которой темп в этом радиусе "
+                f"заметно падает, проходит примерно там; проект стоит на "
+                f"{_num(round((price / ceiling - 1) * 100, 1), 1)} % выше неё."
+            )
+        second.append(
+            "Оговорка, без которой сравнение было бы нечестным: проекты выборки находятся на "
+            "разных стадиях, и у только что стартовавших темп ниже по естественным причинам. "
+            "Сравнивать корректно тех, кто продаёт не первый месяц."
+        )
+        out.append({
+            "code": "pace",
+            "headline": "Темп продаж премию не подтверждает" if slow
+                        else "Темп продаж премию выдерживает",
+            "paragraphs": second,
+        })
+
+    points = [row for row in premium or [] if row.get("premium_pct") is not None]
+    if len(points) >= 3:
+        first_point, last_point = points[0], points[-1]
+        own_change = _change_pct(points, "own")
+        median_change = _change_pct(points, "median")
+        third = [
+            f"С {_month_from(first_point['month'])} по {_month_to(last_point['month'])} прайс "
+            f"проекта изменился на {_pct(own_change)} — с {_num(first_point['own'])} "
+            f"до {_num(last_point['own'])}. За те же месяцы медиана выборки "
+            f"{_drop(median_change)}: с {_num(first_point['median'])} "
+            f"до {_num(last_point['median'])}. Премия к классу прошла путь "
+            f"с {_num(first_point['premium_pct'], 1)} % до {_num(last_point['premium_pct'], 1)} %."
+        ]
+        if own_change is not None and median_change is not None and abs(own_change) < 3 \
+                and median_change < -3:
+            third[0] += " Разрыв создал не наш прайс, а движение рынка вниз."
+        movers = []
+        for row in peers or []:
+            change = _change_pct(row.get("price_series") or [], "value")
+            if change is not None:
+                movers.append((change, row.get("name") or "—"))
+        movers.sort()
+        if movers:
+            down = [item for item in movers if item[0] <= -5][:3]
+            up = [item for item in movers if item[0] >= 5][-2:]
+            said = []
+            if down:
+                said.append("снижались " + ", ".join(
+                    f"{name} на {_num(abs(change), 1)} %" for change, name in down))
+            if up:
+                said.append("дорожали " + ", ".join(
+                    f"{name} на {_num(change, 1)} %" for change, name in up))
+            if said:
+                third.append(
+                    "Двигались не все одинаково: " + "; ".join(said) + ". "
+                    "Спрос в районе есть — вопрос, в каком продукте он его находит."
+                )
+        out.append({
+            "code": "drift",
+            "headline": "Разрыв растёт, и не потому, что мы дорожаем"
+                        if (own_change or 0) < 3 and (median_change or 0) < 0
+                        else "Как двигались мы и как двигался рынок",
+            "paragraphs": third,
+        })
+
+    if (cost or {}).get("trade"):
+        out.append({
+            "code": "cost",
+            "headline": "Во что обходится премия",
+            "paragraphs": [cost["trade"]],
+        })
+    return out
+
+
+def _essay_site(subject, peers, comparison, site, hint) -> list[dict[str, Any]]:
+    """Разбор площадки: что здесь строят, почём, как быстро уходит и чего ждать.
+
+    У голого участка нет ни прайса, ни темпа, и разбор действующего проекта не
+    складывается: сравнивать нечего. Но решение принимают именно здесь — что
+    строить и почём, — и соседи отвечают на оба вопроса.
+    """
+    out: list[dict[str, Any]] = []
+    level = (site or {}).get("segment")
+    if not level:
+        return out
+    label = _title(level)
+    rows = [row for row in peers or []
+            if normalize_segment(row.get("segment")) == normalize_segment(level)]
+    lots = [row["sold_lot_avg"] for row in rows if row.get("sold_lot_avg")]
+    first = [
+        f"Вокруг участка {_amount(len(rows), 'проект', 'проекта', 'проектов')} класса «{label}» "
+        f"из {_num(len(peers or []))} в выборке — это и есть здешний продукт. "
+        f"Класс выбран по числу проектов, а не по деньгам: один дорогой сосед не делает "
+        f"место дорогим."
+    ]
+    if lots:
+        lots.sort()
+        middle = len(lots) // 2
+        lot = lots[middle] if len(lots) % 2 else (lots[middle - 1] + lots[middle]) / 2
+        first.append(
+            f"Уходит лот около {_num(lot, 1)} м² — на него и считать квартирографию. "
+            f"Продукт, заметно крупнее или мельче здешнего, продаётся другому покупателю, "
+            f"и темп соседей к нему уже не относится."
+        )
+    out.append({"code": "product", "headline": f"Здесь покупают «{label}»",
+                "paragraphs": first})
+
+    price = (site or {}).get("price_per_sqm")
+    if price:
+        values = sorted(row["price_per_sqm"] for row in rows if row.get("price_per_sqm"))
+        second = [
+            f"Действующие прайсы этого класса дают медиану {_num(price)} ₽/м²"
+            + (f" при коридоре от {_num(values[0])} до {_num(values[-1])} ₽/м²."
+               if values else ".")
+        ]
+        entry = (hint or {}).get("entry_per_sqm")
+        if entry:
+            second.append(
+                f"Это уровень рынка, а не цена старта. Медиана самых дешёвых лотов соседей — "
+                f"{_num(entry)} ₽/м², то есть на {_num(abs(round((1 - entry / price) * 100, 1)), 1)} % "
+                f"ниже: с такой цены покупателя заводят, а средняя набирается по ходу продаж. "
+                f"Новому проекту сравнимо именно это число."
+            )
+        out.append({"code": "price", "headline": "Почём здесь продают",
+                    "paragraphs": second})
+
+    speed = (site or {}).get("units_per_month")
+    stock = [row for row in peers or [] if row.get("lot_count")]
+    third = []
+    if speed:
+        third.append(
+            f"Медиана темпа у соседей этого класса — "
+            f"{_amount(speed, 'квартира', 'квартиры', 'квартир', 1)} в месяц. "
+            f"Сто квартир при таком темпе уходят за "
+            f"{_amount(round(100 / speed), 'месяц', 'месяца', 'месяцев')} — "
+            f"это и есть срок экспозиции, который надо закладывать в модель, а не желаемый."
+        )
+    if stock:
+        total = sum(int(row["lot_count"]) for row in stock)
+        third.append(
+            f"В экспозиции у соседей {_amount(total, 'лот', 'лота', 'лотов')}. "
+            f"Выходить придётся не на пустое место: покупатель этого радиуса выбирает "
+            f"из уже выставленного, и новый корпус встаёт в этот же ряд."
+        )
+    if third:
+        out.append({"code": "speed", "headline": "С какой скоростью это уходит",
+                    "paragraphs": third})
+
+    found = (comparison or {}).get("found") or 0
+    no_price = (comparison or {}).get("no_price") or 0
+    stale = (comparison or {}).get("stale_price") or 0
+    if found and (no_price or stale):
+        alive = max(found - no_price - stale, 0)
+        out.append({
+            "code": "risk",
+            "headline": "Чего эти числа не обещают",
+            "paragraphs": [
+                f"Из {_amount(found, 'проекта', 'проектов', 'проектов')} в радиусе живых — "
+                f"около {_num(alive)}: у остальных прайс мёртвый или его нет вовсе, и это не "
+                f"пробел в данных, а сданные и распроданные дома. Цены здесь — прайс-листы, "
+                f"а не сделки, и договоры проходят со скидкой, размер которой у каждого свой.",
+                "Соседи показывают, что рынок берёт сегодня, и не показывают, что он возьмёт "
+                "к вводу нового дома. Между решением о покупке участка и первой продажей "
+                "проходят годы, и этот разрыв ни одна выборка сегодняшних прайсов не "
+                "закрывает — его закрывает решение владельца.",
+            ],
+        })
+    return out
+
+
+def analysis(
+    subject: dict[str, Any],
+    peers: list[dict[str, Any]],
+    comparison: dict[str, Any],
+    *,
+    segment: str | None,
+    premium: list[dict[str, Any]] | None = None,
+    cost: dict[str, Any] | None = None,
+    site: dict[str, Any] | None = None,
+    hint: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """«Разбор» — те же числа, но связанные между собой.
+
+    Это не рекомендация к действию: решение о цене принимает владелец проекта,
+    а здесь описано, из чего оно складывается. Два случая — действующий проект
+    и площадка — разбираются по-разному, потому что и вопрос у них разный:
+    у первого «платит ли рынок нашу цену», у второго «что здесь строить».
+    """
+    if subject.get("price_per_sqm"):
+        return _essay_project(subject, peers, segment, premium, cost)
+    return _essay_site(subject, peers, comparison, site, hint)

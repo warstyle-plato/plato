@@ -27,7 +27,7 @@ from .http import RemoteServiceError
 from .dynamics import SalesDynamics
 from .market_reference import MoscowMarket
 from .metrics import build_blocks
-from .narrative import findings
+from .narrative import analysis, findings
 from .verdict import (
     build_notes,
     positioning,
@@ -868,6 +868,10 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                 site["mix"] = site_mix(peers)
                 notes["site"] = site
                 notes["overall"] = site
+        # «Разбор» — те же числа, но связанные между собой, и в конце отчёта:
+        # это не рекомендация к действию, а описание того, из чего складывается
+        # решение. Собирается после ориентира цены — площадке он нужен, чтобы
+        # отличить уровень рынка от цены старта.
         # Ориентир цены для площадки без своего прайса считается по той же
         # выборке, что и отчёт. Кнопка ходила своим путём — радиус 2,5 км и
         # двадцать ближайших, — и на участке в Новогирееве отвечала «по классу
@@ -912,6 +916,23 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                 hint["entry_gap_pct"] = round(
                     100 * (entry - hint["price_per_sqm"]) / hint["price_per_sqm"], 1
                 )
+        # «Разбор» собирается последним: площадке для него нужен ориентир цены,
+        # чтобы отличить уровень рынка от цены старта, а он считается выше.
+        notes["analysis"] = analysis(
+            subject_metrics,
+            peers,
+            {
+                "found": len(near),
+                "no_price": priceless,
+                "stale_price": stale,
+                "fresh_since": fresh_since,
+            },
+            segment=segment,
+            premium=notes.get("premium_series"),
+            cost=notes.get("price_of_premium"),
+            site=notes.get("site"),
+            hint=hint,
+        )
         return {
             "price_hint": hint,
             "subject": {

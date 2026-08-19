@@ -2556,7 +2556,9 @@ def _kutuzov() -> tuple[dict, list[dict], dict, list[dict]]:
         {"name": "Стеллар Сити", "segment": "Бизнес", "price_per_sqm": 388_461,
          "units_per_month": 24.0, "lot_count": 311, "distance_km": 2.90, "price_series": []},
         {"name": "Родина Парк", "segment": "Премиум", "price_per_sqm": 780_032,
-         "units_per_month": 13.0, "lot_count": 105, "distance_km": 0.69, "price_series": []},
+         "units_per_month": 13.0, "lot_count": 105, "distance_km": 0.69,
+         "price_series": [{"month": "2026-01", "value": 683_000},
+                          {"month": "2026-07", "value": 765_000}]},
     ]
     comparison = {"found": 45, "comparable": 12, "used": 10, "stale_price": 17,
                   "no_price": 13, "fresh_since": "2026-06-01"}
@@ -2664,3 +2666,97 @@ def test_the_findings_reach_both_surfaces() -> None:
     assert CABINET_PAGE.index("Что из этого следует") < CABINET_PAGE.index("<h2>Где соседи</h2>")
     # На бумаге выводы в одну колонку: две рвали бы предложение пополам.
     assert ".findings{grid-template-columns:1fr;gap:10px}" in CABINET_PAGE
+
+
+def test_the_report_ends_with_an_argued_analysis_for_a_live_project() -> None:
+    """«Разбор» — те же числа, но связанные между собой.
+
+    Выводы отвечают «и что?» коротко; разбор показывает ход рассуждения: цена
+    выше коридора — премия берётся сознательно — платит ли её рынок — отвечает
+    темп. Без этой связки читатель получает пять верных чисел и никакого
+    основания для решения.
+    """
+    from market_search.narrative import analysis
+
+    subject, peers, comparison, premium = _kutuzov()
+    for row in peers:
+        row.setdefault("sold_lot_avg", 50.0)
+    cost = {"trade": "Отказ от премии — это минус 1 985,0 млн ₽ на остатке."}
+    parts = analysis(subject, peers, comparison, segment="Бизнес",
+                     premium=premium, cost=cost)
+    by_code = {row["code"]: row for row in parts}
+    assert ["position", "pace", "drift", "cost"] == [row["code"] for row in parts]
+
+    position = " ".join(by_code["position"]["paragraphs"])
+    assert "коридор от 388 461 до 599 558 ₽/м²" in position
+    assert "18,1 % выше верхней границы коридора" in position
+    assert "Родина Парк" in position
+    # Ход рассуждения назван вслух, иначе разбор — набор абзацев.
+    assert "платит ли её рынок" in position and "отвечает темп" in position
+
+    pace = " ".join(by_code["pace"]["paragraphs"])
+    # Граница выведена из выборки, а не названа из головы.
+    assert "быстрее медианы не продаёт никто дороже 540 482 ₽/м²" in pace
+    # И честная оговорка: стадии у проектов разные.
+    assert "разных стадиях" in pace
+
+    drift = " ".join(by_code["drift"]["paragraphs"])
+    assert "С января по июль" in drift, "падежи после «с» и «по» разные"
+    assert "Разрыв создал не наш прайс, а движение рынка вниз." in drift
+    assert "дорожали Родина Парк на 12,0 %" in drift
+
+
+def test_a_site_gets_a_verdict_about_prospects_not_an_empty_page() -> None:
+    """У площадки нет ни прайса, ни темпа — и разбор проекта не складывается.
+
+    Но решение принимают именно здесь: что строить и почём. Соседи отвечают на
+    оба вопроса, и разбор для площадки строится по ним — с отдельным вопросом,
+    которого у действующего проекта нет: чего эти числа не обещают.
+    """
+    from market_search.narrative import analysis
+
+    _, peers, comparison, _ = _kutuzov()
+    for row in peers:
+        row.setdefault("sold_lot_avg", 50.0)
+    site = {"segment": "бизнес", "price_per_sqm": 528_152, "units_per_month": 21.5}
+    hint = {"entry_per_sqm": 455_000, "price_per_sqm": 528_152}
+    parts = analysis({}, peers, comparison, segment="Бизнес", site=site, hint=hint)
+    by_code = {row["code"]: row for row in parts}
+    assert ["product", "price", "speed", "risk"] == [row["code"] for row in parts]
+
+    product = " ".join(by_code["product"]["paragraphs"])
+    assert "класс выбран по числу проектов" in product.lower()
+    assert "квартирографию" in product
+
+    price = " ".join(by_code["price"]["paragraphs"])
+    # Уровень рынка и цена старта — разные числа, и это сказано прямо.
+    assert "Это уровень рынка, а не цена старта." in price
+    assert "455 000 ₽/м²" in price
+    assert "₽/м²." in price, "коридор без единицы читается как другое число"
+
+    speed = " ".join(by_code["speed"]["paragraphs"])
+    assert "уходят за" in speed
+    assert "срок экспозиции" in speed
+
+    risk = " ".join(by_code["risk"]["paragraphs"])
+    # Главная честная оговорка площадки: сегодняшний рынок — не рынок к вводу.
+    assert "не показывают, что он возьмёт к вводу" in risk
+
+    # Разбор без данных не пишется вовсе.
+    assert analysis({}, [], {}, segment=None) == []
+
+
+def test_the_analysis_reaches_the_page_and_starts_a_new_printed_sheet() -> None:
+    """Разбор читают подряд, а не выхватывают глазами.
+
+    Половина его, подшитая к хвосту графика, читается как подпись к графику,
+    поэтому на бумаге он начинается с новой страницы.
+    """
+    from market_search.cabinet import CABINET_PAGE
+
+    assert "(d.analysis||{}).analysis" in CABINET_PAGE
+    assert '<div class="card essay"><h2>Разбор</h2>' in CABINET_PAGE
+    assert "решение принимает владелец проекта" in CABINET_PAGE
+    assert ".essay{break-before:page;page-break-before:always}" in CABINET_PAGE
+    # Разбор идёт последним разделом, после всех графиков и таблиц.
+    assert CABINET_PAGE.index("<h2>Разбор</h2>") > CABINET_PAGE.index("<h2>Соседи в выборке</h2>")

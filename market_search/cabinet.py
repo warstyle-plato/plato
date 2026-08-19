@@ -272,6 +272,13 @@ g.bub:hover circle{fill-opacity:.75}
    имена проектов у кружков и линий были недостижимы вовсе. Касание ставит
    группе класс — те же правила, что у наведения, только по тапу. */
 g.bub.on text.hov{opacity:1}
+/* Разбор — единственное место отчёта, которое читают подряд, а не выхватывают
+   глазами. Поэтому колонка узкая: строка длиной во весь экран на третьей
+   странице теряется. */
+.essay{max-width:none}
+.essay .lede{color:var(--dim);font-size:13.5px;margin:0 0 14px;max-width:36em}
+.essay h3{font-size:16px;margin:18px 0 6px;max-width:36em}
+.essay p{margin:0 0 10px;max-width:36em;line-height:1.6}
 /* Выводы: две колонки на экране, чтобы пять штук читались одним взглядом, и
    одна на бумаге — там колонка узкая, а строки длинные. Полоска тоном слева:
    тот же язык, что у вердиктов разделов. */
@@ -351,6 +358,11 @@ g.bub.on circle{fill-opacity:.75}
      выделение, которого никто не делал. Класс сильнее, поэтому назван явно. */
   g.bub text.hov,g.bub.on text.hov{opacity:0}
   svg text.edge{opacity:1}
+  /* Разбор начинается с новой страницы: он читается подряд, и половина его,
+     подшитая к хвосту графика, читается как подпись к графику. */
+  .essay{break-before:page;page-break-before:always}
+  .essay h3{break-after:avoid;font-size:12pt;margin:14pt 0 4pt}
+  .essay p{font-size:10.5pt;line-height:1.5;max-width:none}
   /* На бумаге колонка узкая, а выводы — связный текст: две колонки рвали бы
      предложение пополам. */
   .findings{grid-template-columns:1fr;gap:10px}
@@ -1832,6 +1844,16 @@ function render(d){
       <td class="num">${num(p.area_per_month)}</td><td class="num">${num(p.lot_count)}</td>
       <td class="muted">${esc(p.observed_at||'—')}</td></tr>`).join('')
     +`</table></div></div>`;
+  // «Разбор» — в конце: те же числа, но связанные между собой. Он читается
+  // после того, как человек увидел графики, и не заменяет их, а объясняет.
+  const essay=(d.analysis||{}).analysis||[];
+  if(essay.length) html+=`<div class="card essay"><h2>Разбор</h2>`
+    +`<p class="lede">Ниже те же цифры, но связанные между собой. Это не рекомендация`
+    +` к действию: решение принимает владелец проекта, а здесь описано, из чего оно`
+    +` складывается.</p>`
+    +essay.map(part=>`<h3>${esc(part.headline)}</h3>`
+      +(part.paragraphs||[]).map(text=>`<p>${esc(text)}</p>`).join('')).join('')
+    +`</div>`;
   html+=finalCard(d);
   $('#out').innerHTML=html;
   document.querySelectorAll('.views button').forEach(btn=>btn.addEventListener('click',()=>{
