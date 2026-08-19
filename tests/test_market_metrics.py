@@ -1710,3 +1710,53 @@ def test_a_dash_in_the_table_is_explained_not_left_hanging() -> None:
 
     assert "Это число источник знает про" in CABINET_PAGE
     assert "прочерк — не ноль, а отсутствие данных" in CABINET_PAGE
+
+
+def test_priced_peers_are_not_crowded_out_by_priceless_ones(tmp_path) -> None:
+    """На графике цен стало семь столбиков при двадцати строках в таблице.
+
+    Соседи без действующей цены остаются в выборке — они нужны разделам о
+    продукте. Но лимит они делили с ценовыми, и ближайшие двадцать
+    сопоставимых оказывались наполовину бесценовыми: проекты с прайсом чуть
+    дальше в выборку уже не попадали, лимит кончался раньше. Правка
+    задумывалась как добавление, а вышла заменой.
+    """
+    from market_search.metrics import BLOCK_PRICE
+    from market_search.service_v6 import MarketDiscoveryService
+
+    service = MarketDiscoveryService(tmp_path)
+    # Три ближайших соседа без цены, два подальше — с ценой.
+    segments = {i: "Бизнес" for i in range(1, 6)}
+    metrics = {
+        1: {"units_per_month": 5.0},
+        2: {"units_per_month": 6.0},
+        3: {"units_per_month": 7.0},
+        4: {"price_per_sqm": 500_000, "observed_at": "2026-08-18", "units_per_month": 8.0},
+        5: {"price_per_sqm": 600_000, "observed_at": "2026-08-18", "units_per_month": 9.0},
+    }
+    projects = [
+        {"complex_id": i, "name": f"Сосед {i}", "developer": "—",
+         "latitude": 55.7300 + i / 500, "longitude": 37.4400,
+         "address": "Москва, ЗАО, район Можайский, дом"}
+        for i in range(1, 6)
+    ]
+    service.pulse = _fake_pulse(segments, metrics, projects)
+
+    # Лимит — два соседа. Ближайшие два бесценовые; будь корзина общей, на
+    # графике цен не осталось бы ни одного столбика.
+    report = service.build_report("55.73100, 37.44000", codes=[BLOCK_PRICE], peers_limit=2)
+    priced = [row["name"] for row in report["peers"] if row.get("price_per_sqm")]
+    assert priced == ["Сосед 4", "Сосед 5"], "ценовые обязаны набраться до лимита"
+    # И бесценовые тоже взяты — своим счётом, сверх ценовых.
+    assert len([r for r in report["peers"] if not r.get("price_per_sqm")]) == 2
+    # Порядок в выборке — по расстоянию, как и был.
+    distances = [row["distance_km"] for row in report["peers"]]
+    assert distances == sorted(distances)
+
+
+def test_the_price_chart_says_how_many_bars_it_could_draw() -> None:
+    """График из семи столбиков при двадцати строках читается как потеря."""
+    from market_search.cabinet import CABINET_PAGE
+
+    assert "Столбик есть у ${withPrice} из ${peers.length} соседей выборки" in CABINET_PAGE
+    assert "В разделах о темпе, лоте" in CABINET_PAGE

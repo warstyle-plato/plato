@@ -1363,7 +1363,19 @@ function render(d){
     +` в печать уходят все пары осей.</div></div>`;
 
   const priceBlock=(d.blocks||[]).find(b=>b.code==='price');
-  if(priceBlock) html+=`<div class="card"><h2>Цены соседей сегодня</h2>${priceChart(peers,{...m,name:s.project_name||'объект'},(priceBlock.peers||{}).median)}</div>`;
+  if(priceBlock){
+    // Столбик рисуется только там, где есть действующая цена. Сколько
+    // соседей выборки в него не попало — сказано тут же: иначе график из
+    // семи столбиков при двадцати строках в таблице читается как потеря.
+    const withPrice=peers.filter(p=>p.price_per_sqm).length;
+    html+=`<div class="card"><h2>Цены соседей сегодня</h2>`
+      +priceChart(peers,{...m,name:s.project_name||'объект'},(priceBlock.peers||{}).median)
+      +(withPrice<peers.length?`<div class="muted" style="font-size:12.5px;margin-top:6px">`
+        +`Столбик есть у ${withPrice} из ${peers.length} соседей выборки — у остальных`
+        +` действующего прайса нет, и в цене они не участвуют. В разделах о темпе, лоте`
+        +` и метрах они считаются наравне.</div>`:'')
+      +`</div>`;
+  }
 
   const ctx={
     analysis:d.analysis, peers:peers, subjectMetrics:m,

@@ -684,11 +684,23 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         # давно распродан: у сданных домов он бывает 2020 года. Такой сосед
         # тянет медиану вниз и делает отчёт достоверным на вид.
         fresh_since = _fresh_price_since(self.verified_prices.today)
-        peers: list[dict[str, Any]] = []
+        # Ограничение считается по двум корзинам, а не по одной общей.
+        #
+        # Соседи без действующей цены нужны разделам о продукте, и с недавних
+        # пор они в выборке остаются. Но лимит они делили с ценовыми, и
+        # ближайшие двадцать сопоставимых оказывались наполовину бесценовыми:
+        # на графике цен вместо двадцати столбиков стало семь, а проекты с
+        # прайсом в полутора километрах в выборку уже не попадали — лимит
+        # кончался раньше. Правка задумывалась как добавление, а вышла заменой.
+        #
+        # Теперь ценовых берётся столько же, сколько бралось раньше, а
+        # бесценовые добираются сверх них, отдельным счётом.
+        priced_peers: list[dict[str, Any]] = []
+        other_peers: list[dict[str, Any]] = []
         stale = 0
         priceless = 0
         for distance, project in comparable:
-            if len(peers) >= peers_limit:
+            if len(priced_peers) >= peers_limit and len(other_peers) >= peers_limit:
                 break
             metrics = self.pulse.metrics(project.complex_id)
             observed = str(metrics.get("observed_at") or "")
@@ -715,16 +727,27 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                 **metrics,
             }
             if not metrics.get("price_per_sqm"):
-                priceless += 1
                 row["price_status"] = "нет"
             elif observed < fresh_since:
-                stale += 1
                 row["price_status"] = "устарела"
                 row["stale_price_per_sqm"] = row.pop("price_per_sqm")
                 row["stale_observed_at"] = row.get("observed_at")
                 row.pop("price_per_sqm_min", None)
                 row.pop("price_per_sqm_max", None)
-            peers.append(row)
+            if row.get("price_per_sqm"):
+                if len(priced_peers) < peers_limit:
+                    priced_peers.append(row)
+            elif len(other_peers) < peers_limit:
+                other_peers.append(row)
+                if row["price_status"] == "нет":
+                    priceless += 1
+                else:
+                    stale += 1
+
+        peers = sorted(
+            priced_peers + other_peers,
+            key=lambda row: row.get("distance_km") if row.get("distance_km") is not None else 99,
+        )
 
         # История цены — одним запросом на весь набор: источник умеет отдавать
         # сразу несколько проектов, а поштучный опрос стоил бы ожидания на
