@@ -587,6 +587,7 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         peers_limit: int = 12,
         segment_override: str | None = None,
         extra_peers: list[dict[str, Any]] | None = None,
+        city_reference: bool = True,
     ) -> dict[str, Any]:
         """Конструктор: объект, сопоставимые соседи и выбранные разделы.
 
@@ -679,21 +680,35 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
             # знает проекты и их координаты, но чисел по ним у подписки нет
             # вовсе, а счётчик показывал «прайс устарел» и уводил искать
             # несуществующий старый прайс.
+            # Цена — не единственное, чем полезен сосед. Прежде проект без
+            # действующего прайса выбрасывался из отчёта целиком, и на площадке
+            # у Алексея Дикого из семнадцати сопоставимых в выборку попадал
+            # один: у семи прайс был старше полугода, у девяти его не было
+            # вовсе. Между тем темп продаж, остаток и размер лота у них есть, а
+            # для голого участка вопрос «что здесь строить» стоит раньше
+            # вопроса «почём»: продаваемый лот и скорость видны и без прайса.
+            #
+            # Поэтому сосед остаётся в выборке, а из расчёта уходит только его
+            # цена — и уходит явно, отдельным полем со своей датой, чтобы
+            # медиана её не подхватила, а человек мог на неё взглянуть.
+            row = {
+                "name": project.name,
+                "developer": project.developer,
+                "distance_km": distance,
+                "segment": classes.get(project.complex_id),
+                **metrics,
+            }
             if not metrics.get("price_per_sqm"):
                 priceless += 1
-                continue
-            if observed < fresh_since:
+                row["price_status"] = "нет"
+            elif observed < fresh_since:
                 stale += 1
-                continue
-            peers.append(
-                {
-                    "name": project.name,
-                    "developer": project.developer,
-                    "distance_km": distance,
-                    "segment": classes.get(project.complex_id),
-                    **metrics,
-                }
-            )
+                row["price_status"] = "устарела"
+                row["stale_price_per_sqm"] = row.pop("price_per_sqm")
+                row["stale_observed_at"] = row.get("observed_at")
+                row.pop("price_per_sqm_min", None)
+                row.pop("price_per_sqm_max", None)
+            peers.append(row)
 
         # История цены — одним запросом на весь набор: источник умеет отдавать
         # сразу несколько проектов, а поштучный опрос стоил бы ожидания на
@@ -759,7 +774,10 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         # выданные молча, выглядят исправным сравнением.
         where = " ".join(filter(None, [subject_address, subject.query]))
         city_scope = self.city.scope(where)
-        reference = self.city if city_scope["covered"] else MoscowMarket({})
+        # Сравнение с городом можно выключить. Для площадки без своего проекта
+        # медиана класса по всей Москве отвечает не на тот вопрос: решают
+        # соседи в трёх километрах, а город только шумит рядом с ними.
+        reference = self.city if (city_scope["covered"] and city_reference) else MoscowMarket({})
         blocks = build_blocks(subject_metrics, peers, reference, codes)
         notes = build_notes(blocks, subject_series)
         notes["premium_series"] = premium_series(subject_series, peers)
@@ -823,6 +841,7 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                 "dropped": max(len(comparable) - len(peers) - stale - priceless, 0),
             },
             "city": {
+                "asked": bool(city_reference),
                 "source": self.city.source,
                 "observed_at": self.city.observed_at,
                 "scope": city_scope,

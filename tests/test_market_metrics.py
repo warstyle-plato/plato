@@ -1344,3 +1344,84 @@ def test_the_page_sends_hand_added_peers_to_the_server() -> None:
     # И видно в таблице, что сосед вписан руками.
     assert 'tr.byhand td:first-child:after{content:" · вручную"' in CABINET_PAGE
     assert "поставлено вручную" in CABINET_PAGE
+
+
+def test_a_neighbour_without_a_fresh_price_stays_in_the_sample(tmp_path) -> None:
+    """Из семнадцати сопоставимых в выборку попадал один.
+
+    У площадки на Алексея Дикого у семи соседей прайс был старше полугода, у
+    девяти его не было вовсе — и все шестнадцать выбрасывались из отчёта
+    целиком. Между тем темп продаж, остаток и размер лота у них есть, а для
+    голого участка вопрос «что здесь строить» стоит раньше вопроса «почём».
+
+    Цена такого соседа в расчёт не идёт и лежит отдельным полем со своей
+    датой: медиана её не подхватит, а посмотреть на неё можно.
+    """
+    from market_search.metrics import BLOCK_PACE, BLOCK_PRICE
+    from market_search.service_v6 import MarketDiscoveryService
+
+    service = MarketDiscoveryService(tmp_path)
+    segments = {i: "Бизнес" for i in (1, 2, 3)}
+    metrics = {
+        1: {"price_per_sqm": 500_000, "observed_at": "2026-08-18", "units_per_month": 5.0},
+        # Прайс позапрошлогодний — цена мёртвая, а темп живой.
+        2: {"price_per_sqm": 300_000, "observed_at": "2024-01-10", "units_per_month": 12.0},
+        # Цены нет вовсе, но темп источник знает.
+        3: {"units_per_month": 9.0},
+    }
+    projects = [
+        {"complex_id": i, "name": f"Сосед {i}", "developer": "—",
+         "latitude": 55.7300 + i / 1000, "longitude": 37.4400,
+         "address": "Москва, ЗАО, район Можайский, дом"}
+        for i in (1, 2, 3)
+    ]
+    service.pulse = _fake_pulse(segments, metrics, projects)
+
+    report = service.build_report("55.73100, 37.44000", codes=[BLOCK_PRICE, BLOCK_PACE])
+    names = {row["name"] for row in report["peers"]}
+    assert names == {"Сосед 2", "Сосед 3"}, "сосед без свежей цены обязан остаться"
+
+    stale = next(row for row in report["peers"] if row["name"] == "Сосед 2")
+    assert "price_per_sqm" not in stale, "мёртвая цена не должна попасть в расчёт"
+    assert stale["stale_price_per_sqm"] == 300_000
+    assert stale["price_status"] == "устарела"
+    assert next(r for r in report["peers"] if r["name"] == "Сосед 3")["price_status"] == "нет"
+
+    # В разделе о цене их нет — сравнивать нечем; в разделе о темпе они есть.
+    pace = next(b for b in report["blocks"] if b["code"] == BLOCK_PACE)
+    assert pace["peers"]["median"] == 10.5
+
+
+def test_the_city_comparison_can_be_switched_off(tmp_path) -> None:
+    """«Зачем мне сравнение с Москвой в целом?» — вопрос владельца, и верный.
+
+    Для площадки без своего проекта медиана класса по всей Москве отвечает не
+    на тот вопрос: решают соседи в трёх километрах, а город рядом с ними
+    только шумит.
+    """
+    from market_search.metrics import BLOCK_PRICE
+    from market_search.service_v6 import MarketDiscoveryService
+
+    service = MarketDiscoveryService(tmp_path)
+    segments = {i: "Бизнес" for i in (1, 2)}
+    metrics = {
+        1: {"price_per_sqm": 500_000, "observed_at": "2026-08-18", "units_per_month": 5.0},
+        2: {"price_per_sqm": 520_000, "observed_at": "2026-08-18", "units_per_month": 6.0},
+    }
+    projects = [
+        {"complex_id": i, "name": f"Сосед {i}", "developer": "—",
+         "latitude": 55.7300 + i / 1000, "longitude": 37.4400,
+         "address": "Москва, ЗАО, район Можайский, дом"}
+        for i in (1, 2)
+    ]
+    service.pulse = _fake_pulse(segments, metrics, projects)
+
+    with_city = service.build_report("55.73100, 37.44000", codes=[BLOCK_PRICE])
+    assert with_city["blocks"][0]["city"]
+    assert with_city["city"]["asked"] is True
+
+    without = service.build_report("55.73100, 37.44000", codes=[BLOCK_PRICE], city_reference=False)
+    assert without["blocks"][0]["city"] == {}
+    assert without["city"]["asked"] is False
+    # Соседи при этом считаются как обычно: выключается город, а не сравнение.
+    assert without["blocks"][0]["peers"]["count"] == with_city["blocks"][0]["peers"]["count"]

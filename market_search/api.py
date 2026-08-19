@@ -77,6 +77,9 @@ class ReportRequest(BaseModel):
     # на странице: иначе добавленный проект виден на графике, но на медианы и
     # вывод не влияет — отчёт, где сосед есть и не считается.
     extra_peers: list[dict[str, Any]] | None = Field(default=None, max_length=40)
+    # Сравнение с городом. Для площадки без своего проекта медиана класса по
+    # всей Москве отвечает не на тот вопрос — решают соседи в трёх километрах.
+    city_reference: bool = True
 
     @model_validator(mode="after")
     def query_is_not_blank(self) -> "ReportRequest":
@@ -320,6 +323,7 @@ def install(app: FastAPI) -> MarketDiscoveryService:
                 peers_limit=req.peers_limit,
                 segment_override=req.segment,
                 extra_peers=req.extra_peers,
+                city_reference=req.city_reference,
             )
         except SubjectNotFound as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc

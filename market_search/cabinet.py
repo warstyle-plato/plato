@@ -223,6 +223,8 @@ border-radius:9px;box-shadow:0 6px 22px rgba(20,35,60,.13);max-height:320px;over
 #sug div:last-child,#addsug div:last-child{border-bottom:0}
 #sug div:hover,#sug div.on,#addsug div:hover{background:#eef4fa}
 #sug small,#addsug small{display:block;color:var(--dim);font-size:12px}
+.cityref{display:block;margin:10px 0 2px;font-size:13.5px}
+.cityref .muted{font-size:12.5px}
 .addwrap{position:relative}
 .addwrap input{width:100%}
 .handadd{margin-top:10px}
@@ -317,6 +319,9 @@ g.bub.on circle{fill-opacity:.75}
       </div>
     </div>
     <div class="secs">__SECTIONS__</div>
+    <label class="cityref"><input type="checkbox" id="cityref" checked>
+      Сравнивать с Москвой своего класса
+      <span class="muted">— для площадки без проекта городская медиана шумит рядом с соседями</span></label>
     <button class="go" id="go">Собрать отчёт</button>
     <button class="go alt" id="hint">Ориентир цены</button>
     <button class="go alt" id="pdf" style="display:none">Сохранить PDF</button>
@@ -1147,7 +1152,7 @@ async function rebuild(){
     const r=await fetch('/market/report',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({query:s.query,codes,radius_km:(lastReport.comparison||{}).radius_km||3,
         peers_limit:Number($('#limit').value),segment:$('#segment').value||null,
-        extra_peers:[...added.values()]})});
+        city_reference:$('#cityref').checked,extra_peers:[...added.values()]})});
     const d=await r.json();
     if(r.ok) lastReport=d;
   }catch(e){/* останемся на прежнем отчёте */}
@@ -1180,7 +1185,8 @@ async function build(){
   const timer=setInterval(tick,1000);
   try{
     const r=await fetch('/market/report',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({query,codes,radius_km:Number($('#radius').value),peers_limit:Number($('#limit').value),segment:$('#segment').value||null})});
+      body:JSON.stringify({query,codes,radius_km:Number($('#radius').value),peers_limit:Number($('#limit').value),segment:$('#segment').value||null,
+        city_reference:$('#cityref').checked})});
     const d=await r.json();
     if(!r.ok){$('#out').innerHTML=`<div class="card err">${esc(d.detail||'Не получилось')}</div>`;return}
     lastReport=d; render(d);
@@ -1281,7 +1287,10 @@ function render(d){
     +peers.map((p,i)=>`<tr${p.added_by_hand?' class="added byhand"':''}><td class="link" data-peer="${i}">`
       +`${esc(p.name)}${p.added_by_hand?' <span class="muted">+</span>':''}</td><td class="muted">${esc(p.developer||'—')}</td>
       <td class="num">${num(p.distance_km,2)}</td><td>${esc(p.segment||'—')}</td>
-      <td class="num">${num(p.price_per_sqm)}</td><td class="num">${num(p.units_per_month,1)}</td>
+      <td class="num">${p.price_per_sqm?num(p.price_per_sqm)
+        :`<span class="muted" title="в расчёт не идёт">${p.price_status==='устарела'
+          ?num(p.stale_price_per_sqm)+' · '+esc(p.stale_observed_at||'')
+          :'цены нет'}</span>`}</td><td class="num">${num(p.units_per_month,1)}</td>
       <td class="num">${num(p.area_per_month)}</td><td class="num">${num(p.lot_count)}</td>
       <td class="muted">${esc(p.observed_at||'—')}</td></tr>`).join('')
     +`</table></div></div>`;
