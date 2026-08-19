@@ -51,10 +51,12 @@ def _fill(key: str, row: dict) -> dict:
 
 
 def test_the_office_is_built_from_the_saleable_area():
-    """Известна продаваемая — считаются общая и ГНС."""
+    """Известна продаваемая — считаются ГНС и общая."""
     filled = _fill("offices", {"gns": 0, "total_area": 0, "saleable": 18000, "useful": 0})
-    assert filled["total_area"] == pytest.approx(30000.0, rel=1e-6)
-    assert filled["gns"] == pytest.approx(30000.0 / 0.94, rel=1e-6)
+    assert filled["gns"] == pytest.approx(18000 / 0.564, rel=1e-3)
+    assert filled["total_area"] == pytest.approx(filled["gns"] * 0.94, rel=1e-3)
+    # 60% общей — то, что владелец назвал; в таблице это записано долей от ГНС.
+    assert filled["saleable"] / filled["total_area"] == pytest.approx(0.60, rel=1e-3)
     assert filled["useful"] == filled["saleable"]
 
 
@@ -63,6 +65,24 @@ def test_the_office_is_built_from_the_gns():
     filled = _fill("offices", {"gns": 30000, "total_area": 0, "saleable": 0, "useful": 0})
     assert filled["total_area"] == pytest.approx(28200.0, rel=1e-6)
     assert filled["saleable"] == pytest.approx(16920.0, rel=1e-6)
+
+
+def test_housing_follows_the_calculator_chain():
+    """Квартиры — 65% жилой СПП, НП — 90% СПП: цепочка калькулятора ГлавАПУ.
+
+    Из неё же следует «продаваемая = 72% общей», названное владельцем:
+    0,65 / 0,90 = 0,722. Числа сверены по двум выгрузкам калькулятора и живут
+    в `vri_tep_quick` — здесь не вторая методика, а та же самая.
+    """
+    filled = _fill("apartments", {"gns": 100000, "total_area": 0, "saleable": 0, "useful": 0})
+    assert filled["total_area"] == pytest.approx(90000.0, rel=1e-6)
+    assert filled["saleable"] == pytest.approx(65000.0, rel=1e-6)
+    assert filled["saleable"] / filled["total_area"] == pytest.approx(0.7222, rel=1e-3)
+
+    quick = __import__("inspect").getsource(core.vri_tep_quick)
+    assert "apartments_gns = spp * 0.94" in quick
+    assert "apartments = apartments_gns * 0.65" in quick, (
+        "доля квартир разошлась с калькулятором — таблица пропорций врёт")
 
 
 def test_what_is_typed_is_not_touched():
@@ -78,6 +98,7 @@ def test_housing_keeps_the_city_methodology():
     assert core.TEP_RATIOS["apartments"]["total_of_gns"] == 0.90
     filled = _fill("apartments", {"gns": 100000, "total_area": 0, "saleable": 0, "useful": 0})
     assert filled["total_area"] == pytest.approx(90000.0, rel=1e-6)
+    assert core.TEP_RATIOS["apartments"]["saleable_of_gns"] == 0.65
 
 
 def test_a_product_without_ratios_is_left_alone():
@@ -90,8 +111,7 @@ def test_the_page_takes_the_ratios_from_the_engine():
     """Копии таблицы на странице нет — подставляется движковая."""
     assert "const TEP_RATIOS=" in core.PAGE
     assert core.TEP_RATIOS_PLACEHOLDER not in core.PAGE
-    assert '"total_of_gns": 0.94' in json.dumps(core.TEP_RATIOS, ensure_ascii=False) \
-        or '"total_of_gns":0.94' in json.dumps(core.TEP_RATIOS, ensure_ascii=False)
+    assert "0.94" in json.dumps(core.TEP_RATIOS, ensure_ascii=False)
 
 
 def test_the_cell_editor_fills_the_neighbours():

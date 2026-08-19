@@ -239,17 +239,27 @@ RATE_CURVE = []
 # считаются по ним. Импорт ГлавАПУ и ручной шаблон ими не перебиваются —
 # документ сильнее пропорции.
 #
-# Жильё и встроенная коммерция — методика ГлавАПУ: НП = 90% ГНС, и на ней же
-# откалиброван городской норматив паркинга (место на 90 м² НП), поэтому число
-# здесь не «наше удобное», а часть чужой методики.
+# Жильё и встроенная коммерция — цепочка калькулятора ГлавАПУ, восстановленная
+# по двум его выгрузкам (население 422 и 1224, обе сходятся до последней цифры)
+# и живущая в `vri_tep_quick`: СПП делится 94/6 между жильём и встроенной
+# коммерцией, НП — 90% СПП, квартиры — 65% жилой СПП. Отсюда и продаваемая к
+# общей: 0,65 / 0,90 = 72,2%. Доля НП здесь не «наша удобная» — на ней стоит
+# городской норматив паркинга (место на 90 м² НП).
 #
-# Офисы и ТЦ город так не считает — там доли приняты владельцем (19.08.2026):
-# общая 94% ГНС (толщина стен), продаваемая 60% общей.
+# Два разных 94% путать нельзя: у ГлавАПУ 94% — доля жилья в СПП проекта, а не
+# отношение общей площади к ГНС.
+#
+# Офисы и ТЦ город так не считает — доли приняты владельцем (19.08.2026):
+# общая 94% ГНС (толщина стен), продаваемая 60% общей, то есть 56,4% ГНС.
 TEP_RATIOS: dict[str, dict[str, float]] = {
-    "apartments": {"total_of_gns": 0.90, "saleable_of_total": 0.75, "source": "ГлавАПУ"},
-    "ground_commercial": {"total_of_gns": 0.90, "saleable_of_total": 0.90, "source": "ГлавАПУ"},
-    "offices": {"total_of_gns": 0.94, "saleable_of_total": 0.60, "source": "принято владельцем"},
-    "standalone_retail": {"total_of_gns": 0.94, "saleable_of_total": 0.60, "source": "принято владельцем"},
+    "apartments": {"total_of_gns": 0.90, "saleable_of_gns": 0.65,
+                   "source": "ГлавАПУ, две выгрузки"},
+    "ground_commercial": {"total_of_gns": 0.90, "saleable_of_gns": 0.90,
+                          "source": "ГлавАПУ, две выгрузки"},
+    "offices": {"total_of_gns": 0.94, "saleable_of_gns": 0.564,
+                "source": "принято владельцем"},
+    "standalone_retail": {"total_of_gns": 0.94, "saleable_of_gns": 0.564,
+                          "source": "принято владельцем"},
 }
 TEP_RATIOS_PLACEHOLDER = "__DEVELOPAID_TEP_RATIOS__"
 
@@ -28845,8 +28855,9 @@ function renderTepRatioNote(){
  box.textContent='Пустые площади достраиваются пропорциями: '+
   Object.keys(TEP_RATIOS).map(key=>{
    const r=TEP_RATIOS[key];
+   const ofTotal=r.total_of_gns?r.saleable_of_gns/r.total_of_gns:0;
    return label(key)+' — общая '+Math.round(r.total_of_gns*100)+'% ГНС, продаваемая '+
-    Math.round(r.saleable_of_total*100)+'% общей ('+r.source+')';
+    Math.round(r.saleable_of_gns*1000)/10+'% ГНС ('+Math.round(ofTotal*1000)/10+'% общей, '+r.source+')';
   }).join('; ')+'. Введённое вами и пришедшее из ГлавАПУ пропорцией не перебивается.';
 }
 
@@ -29130,10 +29141,13 @@ function tepFillByRatios(key,row){
  if(!r)return {...row};
  const out={...row};
  let gns=Number(out.gns||0),total=Number(out.total_area||0),sale=Number(out.saleable||0);
- if(!total&&gns)total=gns*r.total_of_gns;
- if(!total&&sale)total=sale/r.saleable_of_total;
+ // Обе доли считаются от ГНС — так они заданы у калькулятора; «продаваемая от
+ // общей» это их частное, и хранить его отдельно значило бы завести второе
+ // число для одной величины.
  if(!gns&&total)gns=total/r.total_of_gns;
- if(!sale&&total)sale=total*r.saleable_of_total;
+ if(!gns&&sale)gns=sale/r.saleable_of_gns;
+ if(!total&&gns)total=gns*r.total_of_gns;
+ if(!sale&&gns)sale=gns*r.saleable_of_gns;
  const round=value=>Math.round(Number(value||0)*10)/10;
  out.gns=round(gns);out.total_area=round(total);out.saleable=round(sale);
  // Полезная площадь у этих продуктов равна продаваемой: разводить их незачем,
