@@ -49,7 +49,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.18.93"
+VERSION = "0.18.94"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -28483,6 +28483,23 @@ function repairParkingFromGlavapu(){
  return true;
 }
 
+// Кладовые лежат на том же подземном этаже, что и гараж: их площадь входит в
+// подземную ГНС, а не прибавляется к ней. Иначе один этаж считается дважды —
+// и в ГНС проекта, и в себестоимости подземной части (замечание владельца,
+// 19.08.2026). Вычитание идёт только из посчитанной площади: если человек
+// вписал площадь гаража руками, это его число, и трогать его нельзя.
+function underlayStorageInParking(){
+ const storage=Number((tep.storage||{}).gns||0);
+ const parking=tep.underground_parking;
+ if(!parking||storage<=0)return 0;
+ const envelope=Number(parking.gns||0);
+ if(envelope<=0)return 0;
+ const left=Math.max(0,envelope-storage);
+ parking.gns=Math.round(left*10)/10;
+ parking.total_area=parking.gns;
+ return Math.min(storage,envelope);
+}
+
 function syncUndergroundPair(changed){
  // Места и площадь — одна величина в двух видах, а не два независимых поля.
  // Раньше в них могли одновременно стоять 50 мест и 3 000 м² при нормативе
@@ -28833,6 +28850,9 @@ function renderTep(){
      label+=` <span style="display:block;font-size:10px;color:#777;margin-top:3px">Задано проектом: ${num(spaces)} м/м × ${num(per)} м²/место (гросс) = ${num(area)} м². Менять — в разделе «Подземный паркинг».</span>`;
      if(shortfall)label+=` <span style="display:block;font-size:10px;color:#a33;margin-top:2px">${shortfall}</span>`;
    }
+   if(key==='underground_parking'&&storageInsideParking>0){
+     label+=` <span style="display:block;font-size:10px;color:#777;margin-top:3px">Кладовые ${num(storageInsideParking)} м² лежат на этом же этаже: их площадь вычтена из гаража, а не добавлена к подземной ГНС.</span>`;
+   }
    else if(key==='underground_parking'&&importedParking){
      label+=` <span style="display:block;font-size:10px;color:#777;margin-top:3px">Источник: ${num(importedParking.permanent)} жилых постоянных + ${num(importedParking.guest)} гостевых${importedParking.mfc?` + ${num(importedParking.mfc)} МФК`:''} = ${num(importedParking.spaces)} м/м</span>`;
    }
@@ -28871,8 +28891,11 @@ function tepCellChanged(key,col,value){
  calculate();
 }
 
+// Сколько кладовых уже сидит внутри подземного этажа — для подписи в таблице.
+let storageInsideParking=0;
+
 function updateTepTotals(){
- repairParkingFromGlavapu();
+ if(repairParkingFromGlavapu())storageInsideParking=underlayStorageInParking();
  const sums={gns:0,total_area:0,useful:0,saleable:0,transfer:0,units:0};
  Object.values(tep).forEach(r=>Object.keys(sums).forEach(k=>sums[k]+=Number(r[k]||0)));
  tg.textContent=num(sums.gns);ta.textContent=num(sums.total_area);tu.textContent=num(sums.useful);ts.textContent=num(sums.saleable);tt.textContent=num(sums.transfer);tn.textContent=num(sums.units);
@@ -29193,7 +29216,7 @@ function syncTep(rerender=true){
  tep.school.total_area=socialBuild?Number(inputs.social_school_gba_sqm||0):0;tep.school.transfer=tep.school.total_area;tep.school.units=socialBuild?Number(inputs.school_places||0):0;
  tep.clinic.total_area=socialBuild?Number(inputs.social_clinic_gba_sqm||0):0;tep.clinic.transfer=tep.clinic.total_area;tep.clinic.units=socialBuild?Number(inputs.clinic_capacity||0):0;
  // ГлавАПУ has priority over any old/stale underground-parking TEP values.
- repairParkingFromGlavapu();
+ if(repairParkingFromGlavapu())storageInsideParking=underlayStorageInParking();
  // Без перерисовки обновлялась только строка итогов, а ячейки продуктов
  // оставались с прежними числами: правка машино-мест на «Вводных» доходила до
  // таблицы ТЭП лишь со следующим полным рендером — то есть после расчёта. Не
