@@ -333,3 +333,34 @@ def test_the_screening_asks_parcel_by_parcel():
     assert "numbers.join(',')" in body, "свод считает движок, а не страница"
     assert "landScreeningRun" in body, "поздний ответ не должен перерисовывать новый участок"
 
+
+def test_the_screening_does_not_wait_for_the_picture():
+    """Ограничения не зависят от карточки участка: на 22 участках контур не
+    нарисовался, и скрининг не показался вовсе (замечание владельца,
+    19.08.2026). Карточка — украшение, скрининг — ответ на вопрос сделки."""
+    body = core.PAGE[core.PAGE.index("async function drawLandPreviewQuiet("):]
+    body = body[:body.index("\n}\n")]
+    assert body.index("loadLandScreening(raw)") < body.index("if(!response.ok)return"), (
+        "скрининг запускается до проверок, от которых он не зависит")
+
+
+def test_a_cut_list_says_so(monkeypatch):
+    """Больше десяти участков — шесть сотен запросов к НСПД. Режем, но вслух:
+    молчаливое усечение читается как «проверено всё»."""
+    monkeypatch.setattr(core, "_core_api_url", lambda path: "")
+    monkeypatch.setattr(core, "_nspd_search_features", lambda q: [])
+    core._LAND_SCREENING_CACHE.clear()
+    numbers = ", ".join(f"50:12:0101031:{n}" for n in range(1, 23))
+    answer = core.land_screening(cad=numbers)
+    assert answer["requested_count"] == 22
+    assert answer["checked_count"] == 10
+
+    cls, html = _render({
+        "requested_count": 22, "checked_count": 10,
+        "verdict": {"status": "WARNING", "headline": "Есть ограничения", "disclaimer": ""},
+        "parcels": [{"found": True, "cadastral_number": "50:12:0101031:1", "findings": [
+            {"flag_class": "economic", "name": "Охранная зона", "impact": "режет"}]},
+            {"found": True, "cadastral_number": "50:12:0101031:2", "findings": []}],
+    })
+    assert "проверено 10 из 22" in html
+

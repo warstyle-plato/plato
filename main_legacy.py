@@ -49,7 +49,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.18.60"
+VERSION = "0.18.61"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -3224,6 +3224,9 @@ def land_screening(cad: str = "") -> dict[str, Any]:
     numbers = [n for n in numbers if re.match(r"^\d{2}:\d{2}:\d{6,8}:\d+$", n)]
     if not numbers:
         raise HTTPException(status_code=400, detail="cad: кадастровый номер участка.")
+    # Больше десяти участков за один скрининг — это шесть сотен запросов к
+    # НСПД: режем, но вслух. Молчаливое усечение читается как «проверено всё».
+    requested = len(numbers)
     numbers = numbers[:10]
 
     parcels: list[dict[str, Any]] = []
@@ -3279,6 +3282,8 @@ def land_screening(cad: str = "") -> dict[str, Any]:
     probed = any(p.get("found") and p.get("center") for p in parcels)
     return {
         "parcels": parcels,
+        "requested_count": requested,
+        "checked_count": len(numbers),
         "single": len(parcels) == 1,
         "verdict": _land_screening_verdict(everything, probed=probed),
         "calculated_at": datetime.now().strftime("%d.%m.%Y %H:%M"),
@@ -26794,13 +26799,17 @@ async function drawLandPreviewQuiet(query){
   const raw=String(query!=null?query:((document.getElementById('cadastralNumbers')||{}).value||'')).trim();
   if(!/\d{2}:\d{2}:\d{6,8}:\d+/.test(raw))return;
   const response=await fetch('/land/lookup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:raw,limit:30,session:activeSession()})});
+  // Ограничения не зависят от картинки: карточка — украшение, а скрининг —
+  // ответ на вопрос «можно ли тут строить». Раньше он запускался только после
+  // удачного контура, и на 22 участках не показывался вовсе (замечание
+  // владельца, 19.08.2026).
+  loadLandScreening(raw);
   if(!response.ok)return;
   const data=await response.json();
   if(!Number(data.found_count||0))return;
   landLookup=data;
   inputs._land_lookup=structuredClone(data);
   renderLandLookup(data);
-  loadLandScreening(raw);
  }catch(e){/* контур — украшение, не данные */}
 }
 
@@ -26980,6 +26989,7 @@ function renderLandScreening(data){
  box.className='land-screening '+tone;
  box.innerHTML=`<header>${escapeHtml(v.headline||'Оценка участка')}`+
   `${found.length>1?' · участков: '+found.length:''}`+
+  `${data.requested_count>data.checked_count?' · проверено '+data.checked_count+' из '+data.requested_count:''}`+
   `${v.free_pct!=null?' · свободно от ограничений ~'+landNum(v.free_pct,0)+'% площади':''}`+
   `${missed?' · без сведений ЕГРН: '+missed:''}</header>`+
   body+spot+
