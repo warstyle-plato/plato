@@ -208,12 +208,9 @@ padding:5px 12px;font-size:13px;cursor:pointer}
 .plato{background:#f8fafc;border-left:3px solid var(--ink);padding:12px 14px;border-radius:0 8px 8px 0;
 margin-top:12px;white-space:normal}
 #askout{margin-top:10px}
-/* Баннер — в подвале и во всю ширину: он широкий, ему нужна ширина, и цитата
-   с подписью в нём уже нарисованы. Кроп из окна Платона на главной сюда не
-   годится: он сделан под плашку большого сайта, а в карточке 96 пикселей
-   разваливается. В карточке вопроса осталась одна реплика текстом. */
-.plato-hero{margin-bottom:10px}
-.plato-say{font-size:14.5px;color:var(--ink);font-style:italic;margin-bottom:4px}
+/* Баннер — в подвале и во всю ширину: он широкий, ему нужна ширина. Реплика
+   в нём нарисована, поэтому текстом её рядом нет: одна и та же фраза дважды
+   на экране читается как недосмотр, каковым и была. */
 .plato-footer{margin:26px 0 8px;line-height:0}
 .plato-footer img{width:100%;height:auto;border-radius:14px;display:block}
 td.link{color:var(--blue);cursor:pointer;text-decoration:underline dotted}
@@ -368,11 +365,8 @@ g.bub.on circle{fill-opacity:.75}
 <div id="tip" role="status"></div>
   <div class="card" id="askcard" style="display:none">
     <h2>Спросить Платона Сергеевича</h2>
-    <div class="plato-hero">
-      <div class="plato-say">«Хорошие дома начинаются с правильных вопросов»</div>
-      <div class="muted" style="font-size:13px">
-        Он видит числа этого отчёта и объясняет их. Считает движок — модель не пересчитывает.
-      </div>
+    <div class="muted" style="font-size:13px;margin-bottom:8px">
+      Он видит числа этого отчёта и объясняет их. Считает движок — модель не пересчитывает.
     </div>
     <div class="chips">
       <button type="button" data-q="Что здесь главное и что делать с ценой?">Что делать с ценой?</button>

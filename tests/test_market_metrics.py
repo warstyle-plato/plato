@@ -2012,6 +2012,8 @@ def test_the_cabinet_footer_carries_the_banner(tmp_path, monkeypatch) -> None:
 
     assert '<img src="/assets/platon-quote.webp"' in CABINET_PAGE
     assert "data:image" not in CABINET_PAGE
+    # Реплика нарисована в баннере — второй раз текстом её на экране нет.
+    assert CABINET_PAGE.count("Хорошие дома начинаются с правильных вопросов") == 1
     assert ".plato-footer img{width:100%" in CABINET_PAGE
     # У картинки есть подпись для тех, кто её не видит.
     assert 'alt="Платон Сергеевич Федоскин' in CABINET_PAGE
