@@ -49,7 +49,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.18.64"
+VERSION = "0.18.65"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -3256,6 +3256,8 @@ _LAND_SCREENING_TTL_SECONDS = _env_float("LAND_SCREENING_TTL", 21600.0)
 # к НСПД: на площадке из двадцати двух половина — нарезка по три сотки
 # (решение владельца, 19.08.2026). Порог в сотках, ноль — проверять всё.
 _LAND_SCREENING_MIN_AREA_SQM = _env_float("LAND_SCREENING_MIN_AREA_SQM", 1000.0)
+# Пауза перед повтором запроса в НСПД: сервис отвечает не на каждый запрос.
+_LAND_RETRY_PAUSE_SECONDS = _env_float("LAND_RETRY_PAUSE_SECONDS", 0.6)
 
 # Порядок вывода флагов: сперва то, что запрещает жильё, потом то, что режет
 # экономику, потом справочное. Внутри класса — как пришло от НСПД.
@@ -3355,8 +3357,22 @@ def land_screening(cad: str = "", min_area_sqm: float | None = None) -> dict[str
             continue
         try:
             features = _nspd_search_features(number)
-        except Exception:
+            probe_error = ""
+        except Exception as exc:
             features = []
+            probe_error = _land_text(getattr(exc, "detail", "") or str(exc)) or "запрос не прошёл"
+        # НСПД отвечает не на каждый запрос: на площадке из двадцати двух
+        # номеров сведения пришли по десяти, и двенадцать участков выглядели
+        # несуществующими (замечание владельца, 19.08.2026). Один повтор
+        # возвращает большую часть — молчаливая потеря участка дороже запроса.
+        if not features:
+            time.sleep(_LAND_RETRY_PAUSE_SECONDS)
+            try:
+                features = _nspd_search_features(number)
+                if features:
+                    probe_error = ""
+            except Exception as exc:
+                probe_error = probe_error or _land_text(getattr(exc, "detail", "") or str(exc))
         matched = None
         for feature in features:
             options = _nspd_options(feature)
@@ -3365,8 +3381,13 @@ def land_screening(cad: str = "", min_area_sqm: float | None = None) -> dict[str
                 break
         matched = matched or (features[0] if features else None)
         if matched is None:
+            # Сорванный запрос и пустой ответ — разные вещи: первое говорит о
+            # нас, второе об участке. Складывать их в одну строку значит
+            # выдавать недоступность НСПД за отсутствие сведений.
             parcels.append({"cadastral_number": number, "found": False,
-                            "note": "Сведения ЕГРН по номеру не получены."})
+                            "probe_failed": bool(probe_error),
+                            "note": (f"Запрос в НСПД не прошёл: {probe_error}" if probe_error
+                                     else "Сведения ЕГРН по номеру не получены.")})
             continue
         options = _nspd_options(matched)
         center = _geometry_center(matched.get("geometry")) or {}
@@ -27097,7 +27118,20 @@ function renderLandScreening(data){
  const v=data.verdict||{};
  const tone=v.status==='CRITICAL'?'critical':(v.status==='WARNING'?'warning':(v.status==='NOT_SCREENED'?'unknown':'clean'));
  const found=data.parcels.filter(p=>p.found);
- const single=found.length<2;
+ // Один участок — короткая карточка; несколько — разбивка. Считаем по
+ // запрошенным, а не по найденным: из двадцати двух номеров сведения ЕГРН
+ // пришли по десяти, и разбивка молча превращалась в карточку одного участка.
+ const single=data.parcels.length<2;
+ // Почему участок не проверен, если не проверен. «Чисто» на непроверенном —
+ // тот же разрешительный вывод на пустоте, что и зелёный экран без запросов.
+ const skipReason=p=>{
+  if(p.probe_failed)return 'запрос в НСПД не прошёл — не проверялся';
+  if(!p.found)return 'нет сведений ЕГРН — не проверялся';
+  if(p.too_small)return 'меньше '+landNum((data.min_area_sqm||0)/100,0)+' соток — не проверялся';
+  if(p.verdict&&p.verdict.probed===false)return 'не проверялся';
+  return '';
+ };
+ const screened=data.parcels.filter(p=>!skipReason(p)).length;
  const item=f=>`<li><span class="flag ${f.flag_class}">${screeningFlagLabel(f.flag_class)}</span> `+
    `<b>${escapeHtml(f.name||f.type_zone||f.category||'ограничение')}</b>`+
    `${f.zones_count>1?' <span class="meta">('+f.zones_count+' подзоны)</span>':''}`+
@@ -27119,31 +27153,60 @@ function renderLandScreening(data){
  let body='';
  // Пустой список находок и непроверенный участок выглядели одинаково зелёными.
  const spot=single&&found[0]?screeningSpotSvg(found[0]):'';
- if(v.status==='NOT_SCREENED'){
-  body='<ul><li>Ограничения не проверялись: по номеру нет сведений ЕГРН, '+
-   'а без границ участка спрашивать НСПД не о чем.</li></ul>';
+ // Причина пропуска у трёх случаев разная, а строка была одна — про
+ // отсутствующие сведения ЕГРН. Мелкий участок и неответивший НСПД получали
+ // чужой диагноз.
+ const skipWhy=p=>{
+  if(!p)return 'по номеру нет сведений ЕГРН';
+  if(p.probe_failed)return 'НСПД не ответил на запрос по этому номеру';
+  if(!p.found)return 'по номеру нет сведений ЕГРН';
+  if(p.too_small)return 'участок мельче '+landNum((data.min_area_sqm||0)/100,0)+' соток';
+  return 'участок не проверялся';
+ };
+ if(v.status==='NOT_SCREENED'&&single){
+  const why=skipWhy(data.parcels[0]);
+  const tail=(data.parcels[0]&&data.parcels[0].too_small)
+   ?'. Порог снимается в запросе, если участок всё же нужен'
+   :', а без границ участка спрашивать НСПД не о чем';
+  body='<ul><li>Ограничения не проверялись: '+escapeHtml(why)+escapeHtml(tail)+'.</li></ul>';
  }else if(single){
   const p=found[0];
   const flags=(p&&p.findings)||[];
   body=flags.length?list(flags)
    :'<ul><li>В НСПД ограничений на участок не обнаружено.</li></ul>';
  }else{
-  body=found.map(p=>{
+  // Перечисляются все запрошенные участки, а не только найденные: человек
+  // ввёл двадцать два номера и вправе увидеть двадцать две строки. Пропущенный
+  // участок, которого нет в списке, читается как проверенный и чистый.
+  body=data.parcels.map(p=>{
    const flags=p.findings||[];
+   const skipped=skipReason(p);
    const head=`<div class="parcel">${escapeHtml(p.cadastral_number)}`+
     `${p.area_ha!=null?' · '+landNum(p.area_ha,4)+' га':''}`+
-    ` · ${flags.filter(f=>f.flag_class==='killer').length?'есть запрет':(flags.length?flags.length+' ограничени'+(flags.length===1?'е':'й'):'чисто')}</div>`;
-   return head+(flags.length?list(flags):'');
+    ` · ${skipped?escapeHtml(skipped):(flags.filter(f=>f.flag_class==='killer').length?'есть запрет':(flags.length?flags.length+' ограничени'+(flags.length===1?'е':'й'):'чисто'))}</div>`;
+   return head+(!skipped&&flags.length?list(flags):'');
   }).join('');
  }
- const missed=data.parcels.filter(p=>!p.found).length;
+ const missed=data.parcels.filter(p=>!p.found&&!p.probe_failed).length;
+ // Недоступность НСПД — не ответ об участке: у неё своя строка, иначе
+ // сорванные запросы читаются как «таких участков нет».
+ const unreached=data.parcels.filter(p=>p.probe_failed).length;
+ // Сумма должна сходиться с тем, что ввёл человек: проверено + мелкие + без
+ // сведений ЕГРН + не поместившиеся = запрошено. Иначе «участков: 10» на
+ // двадцати двух введённых выглядит потерей участков (замечание владельца,
+ // 19.08.2026).
+ const asked=data.requested_count||data.parcels.length;
+ const cut=Math.max(0,(data.requested_count||0)-(data.checked_count||0));
  box.className='land-screening '+tone;
  box.innerHTML=`<header>${escapeHtml(v.headline||'Оценка участка')}`+
-  `${found.length>1?' · участков: '+found.length:''}`+
-  `${data.requested_count>data.checked_count?' · проверено '+data.checked_count+' из '+data.requested_count:''}`+
+  `${asked>1?' · участков: '+asked:''}`+
+  `${asked>1?' · проверено: '+screened:''}`+
   `${data.small_count?' · мелких пропущено: '+data.small_count:''}`+
-  `${v.free_pct!=null?' · свободно от ограничений ~'+landNum(v.free_pct,0)+'% площади':''}`+
-  `${missed?' · без сведений ЕГРН: '+missed:''}</header>`+
+  `${missed?' · без сведений ЕГРН: '+missed:''}`+
+  `${unreached?' · НСПД не ответил: '+unreached:''}`+
+  `${cut?' · не поместилось в запрос: '+cut:''}`+
+  `${v.free_pct!=null?' · свободно от ограничений ~'+landNum(v.free_pct,0)+'% площади'+
+    (screened<asked?' (по проверенным)':''):''}</header>`+
   body+spot+
   `<footer>${escapeHtml(v.disclaimer||'')}`+
   `${data.small_count?' Участки мельче '+landNum((data.min_area_sqm||0)/100,0)+' соток не проверялись: '+
