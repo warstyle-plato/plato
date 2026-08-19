@@ -329,7 +329,9 @@ def test_the_progress_moves_with_the_parcels():
 def test_the_screening_asks_parcel_by_parcel():
     body = core.PAGE[core.PAGE.index("async function loadLandScreening"):]
     body = body[:body.index("function screeningWorkingHtml")]
-    assert "for(const number of numbers)" in body, "без поштучных запросов хода не видно"
+    assert "const queue=numbers.slice()" in body, "без поштучных запросов хода не видно"
+    assert "Promise.all([worker(),worker()])" in body, (
+        "по двое разом: двадцать два участка по очереди — это две минуты")
     assert "numbers.join(',')" in body, "свод считает движок, а не страница"
     assert "landScreeningRun" in body, "поздний ответ не должен перерисовывать новый участок"
 
@@ -350,10 +352,10 @@ def test_a_cut_list_says_so(monkeypatch):
     monkeypatch.setattr(core, "_core_api_url", lambda path: "")
     monkeypatch.setattr(core, "_nspd_search_features", lambda q: [])
     core._LAND_SCREENING_CACHE.clear()
-    numbers = ", ".join(f"50:12:0101031:{n}" for n in range(1, 23))
+    numbers = ", ".join(f"50:12:0101031:{n}" for n in range(1, 41))
     answer = core.land_screening(cad=numbers)
-    assert answer["requested_count"] == 22
-    assert answer["checked_count"] == 10
+    assert answer["requested_count"] == 40
+    assert answer["checked_count"] == 30, "предел тот же, что у поиска участков"
 
     cls, html = _render({
         "requested_count": 22, "checked_count": 10,
@@ -363,4 +365,26 @@ def test_a_cut_list_says_so(monkeypatch):
             {"found": True, "cadastral_number": "50:12:0101031:2", "findings": []}],
     })
     assert "проверено 10 из 22" in html
+
+
+def test_the_waiting_plate_estimates_what_is_left():
+    """«41 с» без «осталось» читается как «зависло» (замечание владельца,
+    19.08.2026). Оценка берётся из уже пройденного, а не выдумывается."""
+    numbers = [f"50:12:0100131:{n}" for n in range(1, 23)]
+    finished = [{"number": numbers[i], "parcel": {"found": True, "findings": []}}
+                for i in range(4)]
+    _, html = _working(numbers, finished, 20)
+    assert "участок 5 из 22" in html
+    assert "осталось примерно 90 с" in html, html
+
+    # Ни один участок ещё не прошёл — оценивать нечем, и мы не выдумываем.
+    _, first = _working(numbers, [], 3)
+    assert "осталось" not in first
+
+
+def test_the_waiting_plate_says_how_much_work_it_is():
+    numbers = [f"50:12:0100131:{n}" for n in range(1, 23)]
+    _, html = _working(numbers, [], 2)
+    assert "шесть десятков слоёв" in html
+    assert "22 раз" in html
 

@@ -49,7 +49,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.18.61"
+VERSION = "0.18.62"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -3224,10 +3224,12 @@ def land_screening(cad: str = "") -> dict[str, Any]:
     numbers = [n for n in numbers if re.match(r"^\d{2}:\d{2}:\d{6,8}:\d+$", n)]
     if not numbers:
         raise HTTPException(status_code=400, detail="cad: кадастровый номер участка.")
-    # Больше десяти участков за один скрининг — это шесть сотен запросов к
-    # НСПД: режем, но вслух. Молчаливое усечение читается как «проверено всё».
+    # Предел тот же, что у поиска участков: тридцать. Десяти не хватало —
+    # площадка из двадцати двух участков проверялась наполовину (замечание
+    # владельца, 19.08.2026). Усечение всё равно называется вслух: молчаливое
+    # читается как «проверено всё».
     requested = len(numbers)
-    numbers = numbers[:10]
+    numbers = numbers[:30]
 
     parcels: list[dict[str, Any]] = []
     for number in numbers:
@@ -26839,7 +26841,10 @@ async function loadLandScreening(query){
   // Участки опрашиваются поодиночке: так видно ход работы, а не пустой экран.
   // Стоит это столько же — сервер и в одном запросе идёт по номерам подряд,
   // а посчитанное кладётся в кэш, поэтому сводный запрос ниже уже дешёвый.
-  for(const number of numbers){
+  // По двое разом: двадцать два участка по очереди — это две минуты, а
+  // больше двух одновременно НСПД начинает отвечать отказами (у нас на этот
+  // случай предохранитель, но лучше до него не доводить).
+  const ask=async number=>{
    let parcel=null;
    try{
     const one=await fetch('/land/screening?cad='+encodeURIComponent(number));
@@ -26848,7 +26853,16 @@ async function loadLandScreening(query){
    }catch(e){/* участок мог не ответить — ход показываем всё равно */}
    finished.push({number:number,parcel:parcel});
    paint();
-  }
+  };
+  const queue=numbers.slice();
+  const worker=async()=>{
+   while(queue.length){
+    if(run!==landScreeningRun)return;
+    await ask(queue.shift());
+   }
+  };
+  await Promise.all([worker(),worker()]);
+  if(run!==landScreeningRun)return;
   // Свод считает движок, а не страница: даже когда участок один, вердикт
   // приходит с сервера.
   const response=await fetch('/land/screening?cad='+encodeURIComponent(numbers.join(',')));
@@ -26867,8 +26881,13 @@ function screeningWorkingHtml(numbers,finished,seconds){
  const total=numbers.length;
  const done=finished.length;
  const current=Math.min(done+1,total);
+ // Оценка остатка по уже пройденному: «41 с» без «осталось» читается как
+ // «зависло» (замечание владельца, 19.08.2026). Пока не прошёл ни один
+ // участок, оценивать нечем — и мы не выдумываем.
+ const left=done&&done<total?Math.round(seconds/done*(total-done)):0;
  const head='Проверяю градостроительные ограничения'+
-  (total>1?' — участок '+current+' из '+total:'')+' · '+seconds+' с';
+  (total>1?' — участок '+current+' из '+total:'')+' · '+seconds+' с'+
+  (left?' · осталось примерно '+left+' с':'');
  const steps=finished.map(item=>{
   const parcel=item.parcel;
   let mark='сведений ЕГРН нет';
@@ -26884,7 +26903,9 @@ function screeningWorkingHtml(numbers,finished,seconds){
    '<div class="progress"><i style="width:'+Math.round(100*done/total)+'%"></i></div>'+
    steps+
    '<footer>Опрашиваются слои НСПД: ЗОУИТ, ООПТ, лесничества, красные линии, '+
-   'территориальные зоны. Обычно от десяти секунд до минуты.</footer>'};
+   'территориальные зоны — по шесть десятков слоёв на участок'+
+   (total>1?', и так '+total+' раза'.replace('раза', total<5?'раза':'раз'):'')+
+   '. Обычно две-три секунды на участок.</footer>'};
 }
 
 // Пятно застройки: контур участка и зоны поверх него, в одной плоскости.
