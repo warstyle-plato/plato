@@ -213,6 +213,9 @@ td.link{color:var(--blue);cursor:pointer;text-decoration:underline dotted}
   header{border:0;padding:0 0 8px}
   main{max-width:none;padding:0}
   #form, #askcard, .chips, button, #hintout, .cardwrap{display:none !important}
+  #bubble{display:none}
+  .printviews{display:block}
+  g.bub text.hov{opacity:0}
   .card{break-inside:avoid;page-break-inside:avoid;border:0;border-top:1px solid #dde5ed;
         border-radius:0;padding:14px 0;margin:0}
   h2{break-after:avoid}
@@ -246,6 +249,16 @@ border-radius:9px;box-shadow:0 6px 22px rgba(20,35,60,.13);max-height:320px;over
 tr.added td{background:#f1f8f4}
 ul.caveats{margin:6px 0 0;padding-left:20px;color:var(--dim);font-size:13.5px}
 ul.caveats li{margin:4px 0}
+/* Имя кружка — по наведению. Стилем, а не скриптом: подсказка браузера ждёт
+   секунду, а здесь имя нужно сразу, иначе кружок читается как точка без
+   проекта. Наведённый кружок поднимается над соседями. */
+g.bub text.hov{opacity:0;pointer-events:none}
+g.bub:hover text.hov{opacity:1}
+g.bub:hover circle{fill-opacity:.75}
+/* Печать берёт все пары осей, а не ту, что открыта на экране: на бумаге
+   переключателя нет, и оставшиеся четыре карты иначе не попали бы никуда. */
+.printviews{display:none}
+.printviews h3{margin:14px 0 4px}
 </style>
 <header>
   <h1>Конструктор отчёта о рынке</h1>
@@ -376,8 +389,9 @@ function trendChart(series){
   if(!single) svg+=`<path d="${mp}" fill="none" stroke="#16202b" stroke-width="1.2" stroke-dasharray="5 4"/>`;
   const ends=[];
   rows.forEach(s=>{
-    svg+=`<path d="${path(s)}" fill="none" stroke="${s.own?'#C4581B':'#9dc2e6'}" stroke-width="${s.own?2.6:1.3}"/>`;
-    for(let i=months.length-1;i>=0;i--){const v=at(s,months[i]); if(v!==null){ends.push({y:y(v),v,n:s.name,own:s.own});break}}
+    svg+=`<path d="${path(s)}" fill="none" stroke="${s.own?'#C4581B':'#9dc2e6'}" stroke-width="${s.own?2.6:1.3}">`
+       +`<title>${esc(s.name)}</title></path>`;
+    for(let i=months.length-1;i>=0;i--){const v=at(s,months[i]); if(v!==null){ends.push({y:y(v),v,n:s.name,own:s.own,ex:x(i)});break}}
   });
   ends.sort((a,b)=>a.y-b.y);
   // Раскладка подписей в два прохода. Первый расталкивает их вниз от точки
@@ -390,6 +404,15 @@ function trendChart(series){
   stack.push(Math.max(my,prev+11));
   let floor=H-6;
   for(let i=stack.length-1;i>=0;i--){stack[i]=Math.min(stack[i],floor);floor=stack[i]-11}
+  // Выноска от конца линии к её подписи. Без неё столбик подписей стоит
+  // отдельно от пучка линий, и какая чья — не прочесть: расталкивание уводит
+  // подпись от своей точки тем дальше, чем гуще пучок.
+  ends.forEach((e,i)=>{
+    const ly=stack[i], c=e.own?'#C4581B':'#c4d7e8';
+    svg+=`<polyline points="${e.ex.toFixed(1)},${e.y.toFixed(1)} ${(W-R-6).toFixed(1)},${ly.toFixed(1)} `
+       +`${(W-R+5).toFixed(1)},${ly.toFixed(1)}" fill="none" stroke="${c}" stroke-width="${e.own?1.4:0.8}"/>`
+       +`<circle cx="${e.ex.toFixed(1)}" cy="${e.y.toFixed(1)}" r="${e.own?3:2}" fill="${e.own?'#C4581B':'#9dc2e6'}"/>`;
+  });
   ends.forEach((e,i)=>{
     svg+=`<text x="${W-R+8}" y="${stack[i]+3}" font-size="10.5" fill="${e.own?'#C4581B':'#5b6b7d'}"`
        +`${e.own?' font-weight="600"':''}>${esc(e.n.length>19?e.n.slice(0,18)+'…':e.n)} ${num(e.v)}</text>`;});
@@ -516,13 +539,23 @@ function bubbleChart(rows, view){
   const mx=mid(xs), my=mid(ys);
   svg+=`<line x1="${x(mx)}" y1="${T}" x2="${x(mx)}" y2="${H-B}" stroke="#c9d6e2" stroke-dasharray="4 4"/>`
      +`<line x1="${L}" y1="${y(my)}" x2="${W-R}" y2="${y(my)}" stroke="#c9d6e2" stroke-dasharray="4 4"/>`;
+  // Каждый кружок носит своё имя, но показывает его при наведении: подписать
+  // все разом — значит не подписать ни одного, а без подписи вовсе кружок
+  // остаётся точкой без проекта. Подпись рисуется тут же, рядом с кружком, и
+  // гасится стилем — так она появляется мгновенно, не через паузу подсказки.
   pts.sort((a,b)=>(b[SK]||0)-(a[SK]||0)).forEach(p=>{
     const c=p.__own?'#C4581B':(CLASS_COLOR[p.segment]||'#9dc2e6');
-    svg+=`<circle cx="${x(p[XK]).toFixed(1)}" cy="${y(p[YK]).toFixed(1)}"`
-       +` r="${r(p[SK]).toFixed(1)}" fill="${c}" fill-opacity="${p.__own?0.9:0.42}"`
+    const px=x(p[XK]), py=y(p[YK]), rr=r(p[SK]);
+    const left=px>W*0.72;
+    svg+=`<g class="bub">`
+       +`<circle cx="${px.toFixed(1)}" cy="${py.toFixed(1)}"`
+       +` r="${rr.toFixed(1)}" fill="${c}" fill-opacity="${p.__own?0.9:0.42}"`
        +` stroke="${c}" stroke-width="${p.__own?2:1}"><title>${esc(p.name)}: `
        +`${AXES[YK].label} ${num(p[YK],yd)}; ${AXES[XK].label} ${num(p[XK],xd)}; `
-       +`${AXES[SK].label} ${num(p[SK])}</title></circle>`;
+       +`${AXES[SK].label} ${num(p[SK])}</title></circle>`
+       +`<text class="hov" x="${(px+(left?-rr-6:rr+6)).toFixed(1)}" y="${(py+4).toFixed(1)}"`
+       +` text-anchor="${left?'end':'start'}" font-size="11" fill="#16202b" paint-order="stroke"`
+       +` stroke="#fff" stroke-width="3.5">${esc(p.name)} · ${num(p[YK],yd)}</text></g>`;
   });
   // Подписываем только тех, кого стоит узнать в лицо: свой проект и крайние
   // по каждой оси. Подписать все — значит не подписать ни одного.
@@ -612,10 +645,14 @@ function deepCard(d){
     +`</div>`;
 }
 
+// `attr` даёт колонке дописать свои атрибуты в ячейку — этим имя проекта
+// становится ссылкой на карточку. Карточка открывалась только из таблицы
+// «Соседи в выборке» внизу; в таблицах разделов, где на соседа как раз и
+// смотрят, то же имя было мёртвым текстом.
 function compareTable(rows, cols){
   return '<div class="wrap"><table><tr>'+cols.map(c=>`<th${c.num?' class="num"':''}>${c.t}</th>`).join('')+'</tr>'
-    +rows.map(r=>'<tr'+(r.__own?' class="ownrow"':'')+'>'
-      +cols.map(c=>`<td${c.num?' class="num"':''}>${c.f(r)}</td>`).join('')+'</tr>').join('')
+    +rows.map((r,i)=>'<tr'+(r.__own?' class="ownrow"':'')+'>'
+      +cols.map(c=>`<td${c.num?' class="num"':''}${c.attr?c.attr(r,i):''}>${c.f(r,i)}</td>`).join('')+'</tr>').join('')
     +'</table></div>';
 }
 
@@ -694,7 +731,10 @@ function blockCard(b,ctx){
 function sectionTable(code,ctx){
   const rows=[{...(ctx.subjectMetrics||{}), name:ctx.subjectName, segment:ctx.subjectSegment,
                distance_km:0, __own:true}, ...(ctx.peers||[])];
-  const base=[{t:'Проект',f:r=>esc(r.name)+(r.__own?' <span class="self">— объект</span>':'')},
+  // Первая строка — объект, дальше соседи по порядку, поэтому индекс соседа
+  // в `ctx.peers` на единицу меньше номера строки.
+  const base=[{t:'Проект',f:r=>esc(r.name)+(r.__own?' <span class="self">— объект</span>':''),
+               attr:(r,i)=>r.__own?'':` class="link" data-peer="${i-1}"`},
               {t:'км',num:1,f:r=>r.__own?'—':num(r.distance_km,2)},
               {t:'Класс',f:r=>esc(r.segment||'—')}];
   const cols={
@@ -1021,8 +1061,24 @@ async function build(){
   const query=$('#q').value.trim();
   if(!query){$('#state').textContent='Укажите объект.';return}
   if(!codes.length){$('#state').textContent='Выберите хотя бы один раздел.';return}
-  $('#go').disabled=true; $('#state').textContent='Считаю… на холодной точке это до минуты.';
+  $('#go').disabled=true;
   $('#out').innerHTML='';
+  // Ожидание без признака работы читается как внезапность: страница молчала
+  // полминуты, а потом разом выкладывала отчёт. Сервер отвечает одним
+  // запросом и о своих шагах не сообщает, поэтому ход показывается тем, что
+  // есть на руках: секундами и порядком, в котором эти шаги идут.
+  const started=Date.now();
+  const STAGES=[[0,'Ищу объект по вводу'],[3,'Беру проекты вокруг из справочника'],
+                [8,'Спрашиваю прайсы и темпы у «Пульса»'],[20,'Считаю медианы и разделы'],
+                [35,'Ещё считаю — на холодной точке это до минуты']];
+  const tick=()=>{
+    const sec=Math.round((Date.now()-started)/1000);
+    let say=STAGES[0][1];
+    STAGES.forEach(([at,text])=>{if(sec>=at) say=text});
+    $('#state').textContent=`${say}… ${sec} с`;
+  };
+  tick();
+  const timer=setInterval(tick,1000);
   try{
     const r=await fetch('/market/report',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({query,codes,radius_km:Number($('#radius').value),peers_limit:Number($('#limit').value),segment:$('#segment').value||null})});
@@ -1031,7 +1087,7 @@ async function build(){
     lastReport=d; render(d);
   }catch(e){
     $('#out').innerHTML=`<div class="card err">${esc(e.message||e)}</div>`;
-  }finally{$('#go').disabled=false;$('#state').textContent='';}
+  }finally{clearInterval(timer);$('#go').disabled=false;$('#state').textContent='';}
 }
 
 function render(d){
@@ -1065,8 +1121,10 @@ function render(d){
     +`<div class="chips views">`+VIEWS.map(v=>`<button type="button" data-view="${v.id}"`
       +`${v.id===bubbleView?' class="on"':''}>${esc(v.name)}</button>`).join('')+`</div>`
     +`<div id="bubble">`+bubbleChart(market, VIEWS.find(v=>v.id===bubbleView))+`</div>`
+    +`<div class="printviews">`+VIEWS.map(v=>`<h3>${esc(v.name)}</h3>`+bubbleChart(market,v)).join('')+`</div>`
     +`<div class="muted" style="font-size:12.5px;margin-top:8px">Размер кружка — лотов в экспозиции.`
-    +` Пунктир — медианы по обеим осям.</div></div>`;
+    +` Пунктир — медианы по обеим осям. Имя проекта — наведением на кружок;`
+    +` в печать уходят все пары осей.</div></div>`;
 
   const priceBlock=(d.blocks||[]).find(b=>b.code==='price');
   if(priceBlock) html+=`<div class="card"><h2>Цены соседей сегодня</h2>${priceChart(peers,{...m,name:s.project_name||'объект'},(priceBlock.peers||{}).median)}</div>`;
@@ -1131,9 +1189,23 @@ document.querySelectorAll('.chips button').forEach(b=>b.addEventListener('click'
 // Ориентир цены — то же число, что кнопка «Рекомендация DevelopAid» у поля
 // цены в основном сервисе. Здесь он нужен для площадки без проекта: по адресу
 // или кадастру понять, из какой цены исходить для будущего ЖК.
+function showHint(d,extra){
+  const basis={peers:'по соседям рядом',okrug:'по округу',city:'по классу в Москве'}[d.basis]||d.basis||'';
+  $('#hintout').innerHTML=`<div class="box"><b>${num(d.price_th_per_sqm)} тыс ₽/м²</b>`
+    +` <span class="muted">— ориентир ${esc(basis)}${esc(extra||'')}; наблюдений ${d.sample||'—'}`
+    +(d.observed_at?`, данные на ${esc(d.observed_at)}`:'')+`</span></div>`;
+}
+
 $('#hint').addEventListener('click',async function(){
   const where=$('#q').value.trim();
   if(!where){$('#state').textContent='Укажите объект.';return}
+  // Отчёт на экране — ориентир берётся из него: это те самые конкуренты,
+  // которых человек сейчас видит. Отдельный запрос ходит своим радиусом и на
+  // той же площадке отвечал городской медианой при пятнадцати соседях рядом.
+  if(lastReport && lastReport.price_hint && lastReport.price_hint.available){
+    showHint(lastReport.price_hint,' по выборке этого отчёта');
+    return;
+  }
   $('#hint').disabled=true; $('#hintout').innerHTML='<span class="muted">Считаю ориентир…</span>';
   try{
     const r=await fetch('/market/price-hint',{method:'POST',headers:{'Content-Type':'application/json'},
@@ -1143,10 +1215,7 @@ $('#hint').addEventListener('click',async function(){
       $('#hintout').innerHTML=`<div class="box">${esc(d.reason||d.detail||'Ориентир не рассчитан.')}</div>`;
       return;
     }
-    const basis={peers:'по соседям рядом',okrug:'по округу',city:'по классу в Москве'}[d.basis]||d.basis||'';
-    $('#hintout').innerHTML=`<div class="box"><b>${num(d.price_th_per_sqm)} тыс ₽/м²</b>`
-      +` <span class="muted">— ориентир ${esc(basis)}; наблюдений ${d.sample||'—'}`
-      +(d.observed_at?`, данные на ${esc(d.observed_at)}`:'')+`</span></div>`;
+    showHint(d,'');
   }catch(e){$('#hintout').innerHTML=`<div class="box">${esc(e.message||e)}</div>`}
   finally{$('#hint').disabled=false}
 });

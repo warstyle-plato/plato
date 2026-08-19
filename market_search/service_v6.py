@@ -716,7 +716,29 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         notes["premium_series"] = premium_series(subject_series, peers)
         notes["price_of_premium"] = price_of_premium(subject_metrics, peers)
         notes["positioning"] = positioning(subject_metrics, peers, reference)
+        # Ориентир цены для площадки без своего прайса считается по той же
+        # выборке, что и отчёт. Кнопка ходила своим путём — радиус 2,5 км и
+        # двадцать ближайших, — и на участке в Новогирееве отвечала «по классу
+        # в Москве» при пятнадцати сопоставимых соседях на экране: ориентир
+        # будущего проекта строился по городу, а конкуренты его стояли рядом.
+        # Правило одно и то же (`price_hint`), меняется только набор соседей.
+        okrug_match = self._OKRUG_RE.search(f"{subject_address or ''} {subject.query or ''}")
+        hint = price_hint(
+            peers=[
+                {
+                    "price_per_sqm": row.get("price_per_sqm"),
+                    "observed_at": row.get("observed_at"),
+                    "segment": row.get("segment"),
+                }
+                for row in peers
+            ],
+            segment=segment,
+            okrug=okrug_match.group(1) if okrug_match else None,
+            city=reference,
+            fresh_since=fresh_since,
+        )
         return {
+            "price_hint": hint,
             "subject": {
                 **subject.to_dict(),
                 "segment": segment,

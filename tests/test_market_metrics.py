@@ -708,3 +708,83 @@ def test_the_report_opens_with_the_verdict_and_closes_with_the_bottom_line() -> 
     # Оговорки печатаются один раз — в итоге, а не в карточке премии, которой
     # может не быть вовсе.
     assert CABINET_PAGE.count("<h3>Чего эти числа не говорят</h3>") == 1
+
+
+def test_the_hint_for_a_bare_site_stands_on_the_neighbours_of_its_own_report(tmp_path) -> None:
+    """Ориентир будущего проекта — по конкурентам рядом, а не по городу.
+
+    Кнопка ходила своим путём: радиус 2,5 км и двадцать ближайших. На участке
+    в Новогирееве при пятнадцати сопоставимых соседях в отчёте она отвечала
+    «по классу в Москве» — ориентир будущего проекта строился по городу, пока
+    его конкуренты стояли на экране рядом.
+    """
+    from market_search.service_v6 import MarketDiscoveryService
+
+    service = MarketDiscoveryService(tmp_path)
+    segments = {i: "Бизнес" for i in (1, 2, 3)}
+    metrics = {
+        1: {"price_per_sqm": 500_000, "observed_at": "2026-08-18", "units_per_month": 5.0},
+        2: {"price_per_sqm": 520_000, "observed_at": "2026-08-18", "units_per_month": 6.0},
+        3: {"price_per_sqm": 560_000, "observed_at": "2026-08-18", "units_per_month": 4.0},
+    }
+    projects = [
+        {"complex_id": 1, "name": "Первый", "developer": "—",
+         "latitude": 55.7300, "longitude": 37.4400, "address": "Москва, ЗАО, район Можайский, дом 1"},
+        {"complex_id": 2, "name": "Второй", "developer": "—",
+         "latitude": 55.7310, "longitude": 37.4410, "address": "Москва, ЗАО, район Можайский, дом 2"},
+        {"complex_id": 3, "name": "Третий", "developer": "—",
+         "latitude": 55.7320, "longitude": 37.4420, "address": "Москва, ЗАО, район Можайский, дом 3"},
+    ]
+    service.pulse = _fake_pulse(segments, metrics, projects)
+
+    report = service.build_report("55.73050, 37.44050", codes=[BLOCK_PRICE])
+    hint = report["price_hint"]
+
+    assert hint["available"] is True
+    # Основание — соседи, и это те же соседи, что в выборке отчёта.
+    assert hint["basis"] == "peers"
+    assert hint["sample"] == len(report["peers"])
+    assert hint["price_per_sqm"] == 520_000
+
+
+def test_a_neighbour_name_opens_its_card_from_every_table() -> None:
+    """Карточка соседа открывалась только из таблицы внизу.
+
+    В таблицах разделов, где на соседа как раз и смотрят, то же имя было
+    мёртвым текстом: чтобы посмотреть проект, приходилось искать его ещё раз
+    в списке под всем отчётом.
+    """
+    from market_search.cabinet import CABINET_PAGE
+
+    # Обработчик один — `td.link[data-peer]`; значит и таблица разделов обязана
+    # ставить эту пару, иначе имя в ней остаётся текстом.
+    assert "document.querySelectorAll('td.link[data-peer]')" in CABINET_PAGE
+    assert 'attr:(r,i)=>r.__own?\'\':` class="link" data-peer="${i-1}"`' in CABINET_PAGE
+    assert "c.attr?c.attr(r,i):''" in CABINET_PAGE
+
+
+def test_the_bubble_knows_its_name_and_the_print_takes_every_view() -> None:
+    """Кружок без подписи — точка без проекта, а в печати переключателя нет."""
+    from market_search.cabinet import CABINET_PAGE
+
+    # Имя показывается стилем по наведению: подсказка браузера ждёт секунду.
+    assert "g.bub:hover text.hov{opacity:1}" in CABINET_PAGE
+    assert '<text class="hov"' in CABINET_PAGE
+    # На бумагу уходят все пары осей, а открытая на экране — прячется, иначе
+    # она напечаталась бы дважды.
+    assert ".printviews{display:block}" in CABINET_PAGE
+    assert 'VIEWS.map(v=>`<h3>${esc(v.name)}</h3>`+bubbleChart(market,v))' in CABINET_PAGE
+
+
+def test_the_search_shows_what_it_is_doing_while_it_waits() -> None:
+    """Ожидание без признака работы читается как внезапность.
+
+    Страница молчала полминуты и разом выкладывала отчёт. Сервер о своих шагах
+    не сообщает, поэтому ход показывается тем, что есть: секундами и порядком
+    шагов.
+    """
+    from market_search.cabinet import CABINET_PAGE
+
+    assert "const timer=setInterval(tick,1000)" in CABINET_PAGE
+    assert "clearInterval(timer)" in CABINET_PAGE
+    assert "Спрашиваю прайсы и темпы у «Пульса»" in CABINET_PAGE
