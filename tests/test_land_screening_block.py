@@ -329,7 +329,133 @@ def test_the_progress_moves_with_the_parcels():
 def test_the_screening_asks_parcel_by_parcel():
     body = core.PAGE[core.PAGE.index("async function loadLandScreening"):]
     body = body[:body.index("function screeningWorkingHtml")]
-    assert "for(const number of numbers)" in body, "без поштучных запросов хода не видно"
+    assert "const queue=numbers.slice()" in body, "без поштучных запросов хода не видно"
+    assert "Promise.all([worker(),worker()])" in body, (
+        "по двое разом: двадцать два участка по очереди — это две минуты")
     assert "numbers.join(',')" in body, "свод считает движок, а не страница"
     assert "landScreeningRun" in body, "поздний ответ не должен перерисовывать новый участок"
+
+
+def test_the_screening_does_not_wait_for_the_picture():
+    """Ограничения не зависят от карточки участка: на 22 участках контур не
+    нарисовался, и скрининг не показался вовсе (замечание владельца,
+    19.08.2026). Карточка — украшение, скрининг — ответ на вопрос сделки."""
+    body = core.PAGE[core.PAGE.index("async function drawLandPreviewQuiet("):]
+    body = body[:body.index("\n}\n")]
+    assert body.index("loadLandScreening(raw)") < body.index("if(!response.ok)return"), (
+        "скрининг запускается до проверок, от которых он не зависит")
+
+
+def test_a_cut_list_says_so(monkeypatch):
+    """Больше десяти участков — шесть сотен запросов к НСПД. Режем, но вслух:
+    молчаливое усечение читается как «проверено всё»."""
+    monkeypatch.setattr(core, "_core_api_url", lambda path: "")
+    monkeypatch.setattr(core, "_nspd_search_features", lambda q: [])
+    core._LAND_SCREENING_CACHE.clear()
+    numbers = ", ".join(f"50:12:0101031:{n}" for n in range(1, 41))
+    answer = core.land_screening(cad=numbers)
+    assert answer["requested_count"] == 40
+    assert answer["checked_count"] == 30, "предел тот же, что у поиска участков"
+
+    cls, html = _render({
+        "requested_count": 22, "checked_count": 10,
+        "verdict": {"status": "WARNING", "headline": "Есть ограничения", "disclaimer": ""},
+        "parcels": [{"found": True, "cadastral_number": "50:12:0101031:1", "findings": [
+            {"flag_class": "economic", "name": "Охранная зона", "impact": "режет"}]},
+            {"found": True, "cadastral_number": "50:12:0101031:2", "findings": []}],
+    })
+    assert "проверено 10 из 22" in html
+
+
+def test_the_waiting_plate_estimates_what_is_left():
+    """«41 с» без «осталось» читается как «зависло» (замечание владельца,
+    19.08.2026). Оценка берётся из уже пройденного, а не выдумывается."""
+    numbers = [f"50:12:0100131:{n}" for n in range(1, 23)]
+    finished = [{"number": numbers[i], "parcel": {"found": True, "findings": []}}
+                for i in range(4)]
+    _, html = _working(numbers, finished, 20)
+    assert "участок 5 из 22" in html
+    assert "осталось примерно 90 с" in html, html
+
+    # Ни один участок ещё не прошёл — оценивать нечем, и мы не выдумываем.
+    _, first = _working(numbers, [], 3)
+    assert "осталось" not in first
+
+
+def test_the_waiting_plate_says_how_much_work_it_is():
+    numbers = [f"50:12:0100131:{n}" for n in range(1, 23)]
+    _, html = _working(numbers, [], 2)
+    assert "шесть десятков слоёв" in html
+    assert "22 раз" in html
+
+
+# --- мелкие участки не стоят шести десятков запросов ------------------------------
+
+def _parcel_of(area_sqm: float, number: str):
+    return {"properties": {"options": {"cad_num": number, "area": area_sqm}},
+            "geometry": {"type": "Polygon", "coordinates": [
+                [[37.20, 55.62], [37.21, 55.62], [37.21, 55.63], [37.20, 55.63], [37.20, 55.62]]]}}
+
+
+def test_a_small_parcel_is_not_screened(monkeypatch):
+    """Нарезка по три сотки посадку не определяет, а стоит те же шесть
+    десятков запросов к НСПД (решение владельца, 19.08.2026)."""
+    monkeypatch.setattr(core, "_core_api_url", lambda path: "")
+    monkeypatch.setattr(core, "_nspd_search_features",
+                        lambda q: [_parcel_of(300.0, "50:12:0100131:29")])
+    monkeypatch.setattr(core, "_land_screen_findings",
+                        lambda *a, **k: pytest.fail("мелкий участок не спрашивают"))
+    core._LAND_SCREENING_CACHE.clear()
+    answer = core.land_screening(cad="50:12:0100131:29")
+
+    parcel = answer["parcels"][0]
+    assert parcel["too_small"] is True
+    assert parcel["verdict"]["status"] == "NOT_SCREENED", "пропуск не выдаётся за проверку"
+    assert answer["small_count"] == 1
+    assert answer["min_area_sqm"] == 1000.0
+
+
+def test_a_big_parcel_is_screened_as_before(monkeypatch):
+    monkeypatch.setattr(core, "_core_api_url", lambda path: "")
+    monkeypatch.setattr(core, "_nspd_search_features",
+                        lambda q: [_parcel_of(21787.0, "50:20:0070312:8320")])
+    monkeypatch.setattr(core, "_land_screen_findings", lambda *a, **k: [])
+    core._LAND_SCREENING_CACHE.clear()
+    answer = core.land_screening(cad="50:20:0070312:8320")
+    assert answer["parcels"][0]["too_small"] is False
+    assert answer["small_count"] == 0
+
+
+def test_the_threshold_can_be_lifted(monkeypatch):
+    """Ноль — проверять всё: порог удобство, а не запрет."""
+    monkeypatch.setattr(core, "_core_api_url", lambda path: "")
+    monkeypatch.setattr(core, "_nspd_search_features",
+                        lambda q: [_parcel_of(300.0, "50:12:0100131:29")])
+    monkeypatch.setattr(core, "_land_screen_findings", lambda *a, **k: [])
+    core._LAND_SCREENING_CACHE.clear()
+    answer = core.land_screening(cad="50:12:0100131:29", min_area_sqm=0)
+    assert answer["parcels"][0]["too_small"] is False
+
+
+def test_the_block_says_what_was_skipped():
+    _, html = _render({
+        "requested_count": 22, "checked_count": 22, "small_count": 14,
+        "min_area_sqm": 1000.0,
+        "verdict": {"status": "WARNING", "headline": "Есть ограничения", "disclaimer": "Оговорка."},
+        "parcels": [{"found": True, "cadastral_number": "50:12:0100131:497", "findings": [
+            {"flag_class": "economic", "name": "Охранная зона", "impact": "режет"}]},
+            {"found": True, "cadastral_number": "50:12:0100131:29", "too_small": True,
+             "findings": []}],
+    })
+    assert "мелких пропущено: 14" in html
+    assert "мельче 10 соток не проверялись" in html
+    assert "посадку они не определяют" in html
+
+
+def test_the_progress_line_names_the_skip():
+    numbers = ["50:12:0100131:497", "50:12:0100131:29"]
+    _, html = _working(numbers, [
+        {"number": "50:12:0100131:29", "parcel": {"found": True, "too_small": True, "findings": []}},
+    ], 5)
+    assert "50:12:0100131:29 — меньше порога — не проверялся" in html
 
