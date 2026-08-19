@@ -1483,17 +1483,23 @@ def test_a_neighbour_curve_returns_to_the_chart_by_a_tick() -> None:
 
     assert "const onChart=new Set();" in CABINET_PAGE
     assert 'data-chart="${esc(r.complex_id)}"' in CABINET_PAGE
-    assert "shown:onChart.has(String(p.complex_id))" in CABINET_PAGE
-    # Сосед без истории цены отмечен быть не может — рисовать нечего.
-    assert "' disabled title=\"истории цены нет\"'" in CABINET_PAGE
+    # Признак отмеченности доезжает и до цены, и до помесячных рядов.
+    assert CABINET_PAGE.count("shown:onChart.has(String(p.complex_id))") == 2
+    # Сосед без своего ряда отмечен быть не может — рисовать нечего.
+    assert "why:'истории цены нет'" in CABINET_PAGE
     # Перерисовка без запроса к серверу.
     assert "if(box.checked) onChart.add(id); else onChart.delete(id);\n      render(lastReport);" in CABINET_PAGE
     # Галочка стоит в таблице под самим графиком, а не в общем списке внизу:
     # смотрят на кривые и тут же отмечают, чью показать.
     section = CABINET_PAGE[CABINET_PAGE.index("function sectionTable"):]
     section = section[: section.index("if(!cols) return")]
-    assert "price:[pick,...base," in section
-    assert "pace:[...base," in section, "галочка только у графика цены"
+    # Галочка есть у каждого раздела с графиком, а не только у цены.
+    for code in ("price", "pace", "lot_size", "absorption", "stock"):
+        assert f"{code}:[pick,...base," in section, code
+    # Доступность считается по своему ряду: у цены история цены, у прочих —
+    # помесячный отчёт.
+    assert "code==='price'" in section
+    assert "{key:'sales_series', why:'помесячных чисел нет'}" in section
     # В печать колонка не идёт.
     assert "  td.pick,th.pick{display:none}" in CABINET_PAGE
 
@@ -1839,3 +1845,28 @@ console.log(JSON.stringify(out));
     assert result["query"] == {"address": "Москва, Саввинская наб, д 25"}
     assert result["nothing"] is None
     assert result["address"] == {"address": "Московская область, г. Мытищи, ул. Мира, 1"}
+
+
+def test_picked_peers_are_drawn_on_every_chart_not_only_price() -> None:
+    """Галочка была одна — у цены, а вопросов пять.
+
+    ДДУ, метры, лот и остаток сравнивают ровно так же: своё против соседа.
+    Столбики остаются у своего проекта — сравнивают с ним, а не всех со
+    всеми, — а отмеченные ложатся поверх линиями. Цвет у проекта один на все
+    графики: отмеченный в одном разделе узнаётся в остальных.
+    """
+    from market_search.cabinet import CABINET_PAGE
+
+    assert "const PICKED=['#1367AE'" in CABINET_PAGE
+    assert "const pickedColour=(rows,row)=>PICKED[rows.indexOf(row)%PICKED.length];" in CABINET_PAGE
+
+    sales = CABINET_PAGE[CABINET_PAGE.index("function salesChart"):]
+    sales = sales[: sales.index("function lotChart")]
+    assert "const picked=rows.filter(r=>!r.own&&r.shown);" in sales
+    assert "pickedColour(picked,r)" in sales
+
+    remain = CABINET_PAGE[CABINET_PAGE.index("function remainChart"):]
+    remain = remain[: remain.index("\n}")]
+    assert "const picked=rows.filter(r=>!r.own&&r.shown);" in remain
+    # Шкала считается вместе с отмеченными, иначе линия соседа уходит за поле.
+    assert "picked.flatMap(r=>(r.points||[]).map(p=>p.rem)" in remain

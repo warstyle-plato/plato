@@ -475,7 +475,6 @@ function trendChart(series){
   // линиями, как раньше: полоса из одного-двух проектов ничего не говорит.
   // Отмеченные галочкой в таблице — поверх полосы, каждый своим цветом.
   // Их не больше горстки: галочек ставят две-три, чтобы сравнить с собой.
-  const PICKED=['#1367AE','#2E7D5B','#8E44AD','#B9770E','#0E7C86','#7D3C98'];
   const picked=peers.filter(s=>s.shown);
   picked.forEach((s,i)=>{
     const c=PICKED[i%PICKED.length];
@@ -561,6 +560,16 @@ function salesChart(rows, key, unit, digits){
   });
   const mp=months.map((m,i)=>med[i]===null?null:`${i?'L':'M'}${x(i).toFixed(1)} ${y(med[i]).toFixed(1)}`).filter(Boolean).join(' ');
   if(mp) svg+=`<path d="${mp}" fill="none" stroke="#16202b" stroke-width="1.3" stroke-dasharray="5 4"/>`;
+  // Отмеченные галочкой соседи — линиями поверх своих столбиков. Столбики
+  // остаются у своего проекта: сравнивают с ним, а не всех со всеми.
+  const picked=rows.filter(r=>!r.own&&r.shown);
+  const line=r=>months.map((m,i)=>{const v=at(r,m,key);
+    return v===null?null:`${i?'L':'M'}${x(i).toFixed(1)} ${y(v).toFixed(1)}`}).filter(Boolean).join(' ');
+  picked.forEach(r=>{
+    const d=line(r);
+    if(d) svg+=`<path d="${d}" fill="none" stroke="${pickedColour(picked,r)}" stroke-width="1.8">`
+      +`<title>${esc(r.name)}</title></path>`;
+  });
   const lastOwn=[...months].reverse().find(m=>at(own,m,key)!==null);
   if(lastOwn===undefined) return '<div class="muted">Помесячных чисел по этому проекту в отчёте нет.</div>';
   // Подпись — имя и значение через разделитель. Было слово «проект» и число
@@ -572,6 +581,13 @@ function salesChart(rows, key, unit, digits){
   const lastMed=rows.length<2?null:[...med].reverse().find(v=>v!==null);
   if(lastMed!==undefined&&lastMed!==null)
     svg+=`<text x="${W-R+8}" y="${y(lastMed)+4}" font-size="10.5" fill="#16202b">медиана · ${num(lastMed,digits||1)} ${unit}</text>`;
+  picked.forEach(r=>{
+    const m=[...months].reverse().find(mm=>at(r,mm,key)!==null);
+    if(m===undefined)return;
+    const v=at(r,m,key);
+    svg+=`<text x="${W-R+8}" y="${y(v)+4}" font-size="10" fill="${pickedColour(picked,r)}">`
+      +`${esc(r.name.length>16?r.name.slice(0,15)+'…':r.name)} · ${num(v,digits)}</text>`;
+  });
   return '<div class="wrap">'+svg+'</svg></div>';
 }
 
@@ -594,8 +610,13 @@ function remainChart(rows){
   const own=rows.find(r=>r.own);
   const pts=(own?own.points:[]).filter(p=>p.rem!==null&&p.rem!==undefined);
   if(pts.length<2) return '';
+  const picked=rows.filter(r=>!r.own&&r.shown);
   const W=620,H=170,L=52,R=96,T=12,B=26;
-  const hi=Math.max(...pts.map(p=>p.rem))*1.08, lo=Math.min(...pts.map(p=>p.rem))*0.9;
+  // Шкала считается вместе с отмеченными: у соседа остаток бывает вдесятеро
+  // больше, и его линия ушла бы за поле, а свой проект прижался бы ко дну.
+  const all=pts.map(p=>p.rem).concat(
+    picked.flatMap(r=>(r.points||[]).map(p=>p.rem).filter(v=>v!==null&&v!==undefined)));
+  const hi=Math.max(...all)*1.08, lo=Math.min(...all)*0.9;
   const x=i=>L+i*(W-L-R)/(pts.length-1);
   const y=v=>T+(H-T-B)*(1-(v-lo)/(hi-lo||1));
   let svg=`<svg viewBox="0 0 ${W} ${H}" width="100%" role="img">`;
@@ -609,6 +630,23 @@ function remainChart(rows){
   const perMonth=(first.rem-last.rem)/(pts.length-1);
   svg+=`<text x="${W-R+8}" y="${y(last.rem)+4}" font-size="10.5" fill="#1367AE" font-weight="600">${num(last.rem)} лотов</text>`;
   svg+=`<text x="${W-R+8}" y="${y(last.rem)+18}" font-size="10" fill="#8798a8">−${num(perMonth,1)}/мес</text>`;
+  // Месяцы у соседа свои: линия строится по общей сетке дат своего проекта,
+  // а точки, которых у него нет, пропускаются — рисовать их нулями значило бы
+  // показать распроданность там, где данных просто нет.
+  const months=pts.map(p=>p.month);
+  picked.forEach(r=>{
+    const at=m=>{const p=(r.points||[]).find(p=>p.month===m);
+      return p&&p.rem!==null&&p.rem!==undefined?p.rem:null};
+    const d=months.map((m,i)=>{const v=at(m);
+      return v===null?null:`${i?'L':'M'}${x(i).toFixed(1)} ${y(v).toFixed(1)}`}).filter(Boolean).join(' ');
+    if(!d)return;
+    const colour=pickedColour(picked,r);
+    svg+=`<path d="${d}" fill="none" stroke="${colour}" stroke-width="1.8"><title>${esc(r.name)}</title></path>`;
+    const lastMonth=[...months].reverse().find(m=>at(m)!==null);
+    if(lastMonth!==undefined)
+      svg+=`<text x="${W-R+8}" y="${y(at(lastMonth))+4}" font-size="10" fill="${colour}">`
+        +`${esc(r.name.length>16?r.name.slice(0,15)+'…':r.name)} · ${num(at(lastMonth))}</text>`;
+  });
   return '<div class="wrap">'+svg+'</svg></div>';
 }
 
@@ -643,6 +681,11 @@ let bubbleView='speed';
 // не уходя в его карточку, а рядом со своей линией. Галочка в таблице это и
 // делает; выбор переживает пересчёт разделов, потому что живёт здесь.
 const onChart=new Set();
+// Цвета отмеченных — одни на все графики: проект, отмеченный в одном разделе,
+// узнаётся тем же цветом в остальных. Их шесть, больше и не нужно: отмечают
+// две-три штуки, чтобы сравнить с собой.
+const PICKED=['#1367AE','#2E7D5B','#8E44AD','#B9770E','#0E7C86','#7D3C98'];
+const pickedColour=(rows,row)=>PICKED[rows.indexOf(row)%PICKED.length];
 
 function bubbleChart(rows, view){
   const V=view||VIEWS[0];
@@ -882,26 +925,31 @@ function sectionTable(code,ctx){
                attr:(r,i)=>r.__own?'':` class="link" data-peer="${i-1}"`},
               {t:'км',num:1,f:r=>r.__own?'—':num(r.distance_km,2)},
               {t:'Класс',f:r=>esc(r.segment||'—')}];
-  // Галочка стоит в таблице под самим графиком, а не в общем списке соседей
-  // внизу: смотрят на кривые и тут же отмечают, чью показать. Только в
-  // разделе цены — она и управляет графиком динамики цены.
+  // Галочка стоит в таблице под самим графиком: смотрят на кривые и тут же
+  // отмечают, чью показать. Она есть в каждом разделе с графиком, а выбор
+  // общий — отмеченный в одном узнаётся тем же цветом в остальных. Ряд у
+  // разделов разный, поэтому и проверка доступности разная: у цены своя
+  // история, у прочих — помесячный отчёт.
+  const need=code==='price'
+    ? {key:'price_series', why:'истории цены нет'}
+    : {key:'sales_series', why:'помесячных чисел нет'};
   const pick={t:'График',cls:'pick',
     f:r=>r.__own?'':`<input type="checkbox" data-chart="${esc(r.complex_id)}"`
       +`${onChart.has(String(r.complex_id))?' checked':''}`
-      +`${(r.price_series||[]).length>1?'':' disabled title="истории цены нет"'}>`};
+      +`${(r[need.key]||[]).length>1?'':` disabled title="${need.why}"`}>`};
   const cols={
     price:[pick,...base,{t:'₽/м²',num:1,f:r=>num(r.price_per_sqm)},
            {t:'мин',num:1,f:r=>num(r.price_per_sqm_min)},{t:'макс',num:1,f:r=>num(r.price_per_sqm_max)},
            {t:'Прайс от',f:r=>esc(r.observed_at||'—')}],
-    pace:[...base,{t:'ДДУ/мес',num:1,f:r=>num(r.units_per_month,1)},
+    pace:[pick,...base,{t:'ДДУ/мес',num:1,f:r=>num(r.units_per_month,1)},
           {t:'за 3 мес',num:1,f:r=>num(r.units_per_month_3m,1)},
           {t:'Конец продаж',f:r=>esc(r.sales_end_forecast||'—')}],
-    stock:[...base,{t:'Лотов в продаже',num:1,f:r=>num(r.lot_count)},
+    stock:[pick,...base,{t:'Лотов в продаже',num:1,f:r=>num(r.lot_count)},
            {t:'Остаток',num:1,f:r=>num(r.remaining_units)},
            {t:'Всего',num:1,f:r=>num(r.living_units)}],
-    lot_size:[...base,{t:'Продано, м²',num:1,f:r=>num(r.sold_lot_avg,1)},
+    lot_size:[pick,...base,{t:'Продано, м²',num:1,f:r=>num(r.sold_lot_avg,1)},
               {t:'Средний в проекте',num:1,f:r=>num(r.lot_area_avg,1)}],
-    absorption:[...base,{t:'м²/мес',num:1,f:r=>num(r.area_per_month)},
+    absorption:[pick,...base,{t:'м²/мес',num:1,f:r=>num(r.area_per_month)},
                 {t:'ДДУ/мес',num:1,f:r=>num(r.units_per_month,1)}],
   }[code];
   if(!cols) return '';
@@ -1384,7 +1432,8 @@ function render(d){
       .concat(peers.map(p=>({name:p.name,own:false,points:p.price_series||[],
                              shown:onChart.has(String(p.complex_id))}))),
     sales:[{name:s.project_name||'объект',own:true,points:d.sales_series||[]}]
-      .concat(peers.map(p=>({name:p.name,own:false,points:p.sales_series||[]})))
+      .concat(peers.map(p=>({name:p.name,own:false,points:p.sales_series||[],
+                             shown:onChart.has(String(p.complex_id))})))
   };
   html+=(d.blocks||[]).map(b=>blockCard(b,ctx)).join('');
   if(planData&&planData.months){
