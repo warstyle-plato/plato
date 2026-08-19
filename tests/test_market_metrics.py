@@ -2760,3 +2760,82 @@ def test_the_analysis_reaches_the_page_and_starts_a_new_printed_sheet() -> None:
     assert ".essay{break-before:page;page-break-before:always}" in CABINET_PAGE
     # Разбор идёт последним разделом, после всех графиков и таблиц.
     assert CABINET_PAGE.index("<h2>Разбор</h2>") > CABINET_PAGE.index("<h2>Соседи в выборке</h2>")
+
+
+def test_findings_and_analysis_travel_all_the_way_to_the_markup(tmp_path) -> None:
+    """Сквозной путь: расчёт → ответ → разметка страницы.
+
+    Части проверены порознь, а ломается стык: ключ, названный в движке одним
+    словом, а на странице другим, даёт пустой раздел и ни одной ошибки. Здесь
+    отчёт считается настоящим сервисом, отдаётся как отдаётся браузеру, и
+    разметка строится настоящим кодом страницы в node.
+    """
+    import json
+    import shutil
+    import subprocess
+
+    from market_search.metrics import BLOCK_PACE, BLOCK_PRICE
+    from market_search.service_v6 import MarketDiscoveryService
+
+    service = MarketDiscoveryService(tmp_path)
+    segments = {i: "Бизнес" for i in range(1, 7)}
+    segments[7] = "Премиум"
+    prices = {1: 708_109, 2: 599_558, 3: 563_767, 4: 540_482, 5: 515_823, 6: 388_461,
+              7: 780_032}
+    paces = {1: 4.6, 2: 5.7, 3: 7.8, 4: 37.2, 5: 34.4, 6: 24.0, 7: 13.0}
+    metrics = {
+        i: {"price_per_sqm": prices[i], "observed_at": "2026-08-18",
+            "units_per_month": paces[i], "units_per_month_3m": paces[i],
+            "lot_count": 50 + i * 10, "sold_lot_avg": 50.0}
+        for i in prices
+    }
+    projects = [
+        {"complex_id": i, "name": f"Сосед {i}", "developer": "—", "address": f"Москва, {i}",
+         "latitude": 55.7158 + (i - 1) / 2000, "longitude": 37.4330}
+        for i in prices
+    ]
+    service.pulse = _fake_pulse(segments, metrics, projects)
+
+    report = service.build_report("55.71580, 37.43300", codes=[BLOCK_PRICE, BLOCK_PACE])
+    # Ключ, под которым выводы приезжают на страницу, — часть договора.
+    assert report["analysis"]["findings"], "выводы не доехали до ответа"
+    assert report["analysis"]["analysis"], "разбор не доехал до ответа"
+
+    node = shutil.which("node")
+    if not node:
+        import pytest
+
+        pytest.skip("node не установлен")
+
+    from market_search.cabinet import CABINET_PAGE
+
+    # Настоящие куски страницы: как она достаёт выводы из ответа и как рисует.
+    start = CABINET_PAGE.index("  const found=(d.analysis||{}).findings||[];")
+    finish = CABINET_PAGE.index("  const market=[", start)
+    picks_findings = CABINET_PAGE[start:finish]
+    start = CABINET_PAGE.index("  const essay=(d.analysis||{}).analysis||[];")
+    finish = CABINET_PAGE.index("  html+=finalCard(d);", start)
+    picks_essay = CABINET_PAGE[start:finish]
+
+    driver = (
+        "const esc=s=>String(s===null||s===undefined?'':s);\n"
+        f"const d={json.dumps(report, ensure_ascii=False, default=str)};\n"
+        "let html='';\n" + picks_findings + picks_essay + "\nconsole.log(html);\n"
+    )
+    path = tmp_path / "surface.js"
+    path.write_text(driver, encoding="utf-8")
+    run = subprocess.run([node, str(path)], capture_output=True, text=True, timeout=30)
+    assert run.returncode == 0, run.stderr
+    markup = run.stdout
+
+    assert "<h2>Что из этого следует</h2>" in markup
+    assert "<h2>Разбор</h2>" in markup
+    for row in report["analysis"]["findings"]:
+        assert row["headline"] in markup, f"вывод «{row['headline']}» не нарисован"
+    for part in report["analysis"]["analysis"]:
+        assert part["headline"] in markup, f"раздел разбора «{part['headline']}» не нарисован"
+        for paragraph in part["paragraphs"]:
+            assert paragraph[:40] in markup
+    # PDF печатает эту же разметку, поэтому отдельной проверки бумаги не нужно:
+    # что нарисовано на экране, то и уходит в печать.
+    assert "708 109" in markup
