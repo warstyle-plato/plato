@@ -118,7 +118,8 @@ def test_the_cell_editor_fills_the_neighbours():
     """Правка одной ячейки достраивает соседние — иначе пропорции не видны."""
     handler = core.PAGE[core.PAGE.index("function tepCellChanged"):]
     handler = handler[:handler.index("function updateTepTotals")]
-    assert "tepFillByRatios(key,tep[key])" in handler
+    # Тройка считается от введённого числа, а не от прежнего состава строки.
+    assert "tepFillByRatios(key,base)" in handler
     assert "calculate()" in handler
 
 
@@ -262,3 +263,27 @@ def test_a_table_edit_reaches_the_inputs():
     handler = handler[:handler.index("function updateTepTotals")]
     assert "tepRowToInputs(key)" in handler
     assert "renderInputs()" in handler, "поле во вводных должно показать своё число"
+
+
+def test_the_row_follows_the_last_number_you_typed():
+    """«Ввожу ГНС — считает, ввожу продаваемую — ничего» (владелец, 19.08.2026).
+
+    Прежнее правило достраивало только пустые ячейки, поэтому на заполненной
+    строке ввод продаваемой не менял ничего. Теперь строка выводится из
+    последнего введённого числа, а руками введённое в этой же строке остаётся:
+    человек мог вписать факт по ГПЗУ, и подменять его выводом из соседней
+    ячейки нельзя.
+
+    Проверено на живой странице: ГНС 54 900 → общая 51 606, продаваемая
+    30 963,6; правка продаваемой на 20 000 в строке с числами из импорта даёт
+    ГНС 35 461 и общую 33 333,3.
+    """
+    body = core.PAGE[core.PAGE.index("function tepCellChanged"):]
+    body = body[:body.index("function updateTepTotals")]
+    assert "tepMarkTouched(key,col)" in body, "правка ячейки не помечается"
+    assert "base[col]=Number(value||0)" in body, "тройка должна считаться от введённого числа"
+    assert "if(field!==col&&touched[field])return" in body, "введённое руками обязано выживать"
+
+    refill = core.PAGE[core.PAGE.index("function refillTepRow"):]
+    refill = refill[:refill.index("const tepRefillNote")]
+    assert "tepTouched[key]={}" in refill, "кнопка переписывает строку — пометки снимаются"
