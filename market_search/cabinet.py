@@ -729,8 +729,8 @@ async function askPlato(){
   const message='Ниже готовый разбор рынка, посчитанный движком. Числа не пересчитывай — '
     +'объясни и ответь на вопрос по ним.\n\n'+reportDigest(lastReport)+'\n\nВопрос: '+q;
   try{
-    const r=await fetch('/agent/chat',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({message,inputs:{},tep:{},trace_id:trace})});
+    const r=await fetch('/cabinet/ask',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({message})});
     // Ответ бывает не JSON — например HTML страницы ошибки. Разбирать его
     // вслепую значит показать человеку «The string did not match the expected
     // pattern» вместо причины.
@@ -742,7 +742,8 @@ async function askPlato(){
     if(!r.ok){$('#askout').innerHTML=`<div class="err">${esc(d.detail||'Платон не ответил')}</div>`;return}
     // Быстрый ответ приходит тем же запросом; за долгим ходим по номеру.
     let text=d.reply||d.answer||d.text||'';
-    for(let i=0;!text&&i<120;i++){
+    // Опрос по номеру нужен только если движок вернул билет вместо ответа.
+    for(let i=0;!text&&d.trace_id&&i<120;i++){
       await new Promise(r=>setTimeout(r,2500));
       const p=await fetch('/agent/result/'+encodeURIComponent(d.trace_id||trace));
       if(!p.ok) continue;
@@ -751,7 +752,7 @@ async function askPlato(){
       text=pd.reply||pd.answer||pd.text||'';
     }
     $('#askout').innerHTML=text?`<div class="plato">${esc(text).replace(/\n/g,'<br>')}</div>`
-      :'<div class="err">Ответ не пришёл за пять минут.</div>';
+      :`<div class="err">${esc(d.error||'Ответ пустой — Платон ничего не сказал.')}</div>`;
   }catch(e){$('#askout').innerHTML=`<div class="err">${esc(e.message||e)}</div>`}
   finally{$('#askbtn').disabled=false}
 }

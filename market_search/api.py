@@ -161,6 +161,35 @@ def install(app: FastAPI) -> MarketDiscoveryService:
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+    @app.post("/cabinet/ask")
+    async def cabinet_ask(request: Request) -> dict[str, Any]:
+        """Вопрос Платону по числам отчёта.
+
+        Свой маршрут, а не прямой вызов `/agent/chat` со страницы: тому нужны
+        вводные проекта и ТЭП, и с пустыми он падает пятисоткой, пересчитывая
+        модель ни из чего. Здесь подставляются умолчания движка — Платону они
+        не мешают, потому что вопрос не о проекте, а о рынке.
+        """
+        cabinet_module.require_cabinet(request)
+        ask = getattr(service, "plato_ask", None)
+        if ask is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Платон недоступен: модуль рынка запущен без движка DevelopAid",
+            )
+        payload = await request.json()
+        message = str((payload or {}).get("message") or "").strip()
+        if not message:
+            raise HTTPException(status_code=422, detail="Пустой вопрос")
+        try:
+            return ask(message, request)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502, detail=f"Платон не ответил: {type(exc).__name__}: {exc}"
+            ) from exc
+
     @app.post("/cabinet/plan")
     async def cabinet_plan(request: Request) -> dict[str, Any]:
         """План продаж из книги ПЛАТО: сырые байты файла в теле запроса.

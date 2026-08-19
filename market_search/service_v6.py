@@ -91,6 +91,9 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         # используют ТЭП и анализ территории. Второй такой путь заводить нельзя,
         # иначе один и тот же номер даст в двух местах разные точки.
         self.cadastre_lookup: Any = None
+        # Платон живёт в движке; модуль рынка знает о нём только через этот
+        # крючок. Нет движка — нет и вопроса, и это говорится вслух.
+        self.plato_ask: Any = None
 
     def _geocode_project(self, candidate: dict[str, Any], locality: str):
         raise NotImplementedError(
