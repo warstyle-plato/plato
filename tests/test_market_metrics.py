@@ -788,3 +788,121 @@ def test_the_search_shows_what_it_is_doing_while_it_waits() -> None:
     assert "const timer=setInterval(tick,1000)" in CABINET_PAGE
     assert "clearInterval(timer)" in CABINET_PAGE
     assert "Спрашиваю прайсы и темпы у «Пульса»" in CABINET_PAGE
+
+
+def test_the_price_button_comes_back_after_the_inputs_are_redrawn(tmp_path) -> None:
+    """Кнопка пропадала ровно тогда, когда ей находилось применение.
+
+    Человек вводит участок, чтобы получить ориентир, вводные перерисовываются
+    целиком — и страница остаётся без кнопки. Вставка была разовой: попытки
+    кончались через четырнадцать секунд, а проверка «кнопка есть» смотрела на
+    id где угодно в документе, а не рядом с нынешним полем цены.
+
+    Тест гоняет настоящий скрипт из `PRICE_HINT_SCRIPT` в node на игрушечном
+    DOM: пересказ здесь бесполезен, ошибка была именно в поведении.
+    """
+    import json
+    import re
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if not node:
+        import pytest
+
+        pytest.skip("node не установлен")
+
+    from market_search.ui_v6 import PRICE_HINT_SCRIPT
+
+    script = re.sub(r"^<script[^>]*>|</script>$", "", PRICE_HINT_SCRIPT.strip())
+
+    harness = """
+class El {
+  constructor(tag){this.tag=tag;this.children=[];this.parentNode=null;this.style={};
+    this.id='';this.className='';this.textContent='';this.value='';}
+  set cssText(v){}
+  appendChild(c){c.parentNode=this;this.children.push(c);document.__index(c);return c}
+  removeChild(c){this.children=this.children.filter(x=>x!==c);c.parentNode=null;document.__reindex()}
+  insertAdjacentElement(where,node){
+    const p=this.parentNode, at=p.children.indexOf(this);
+    p.children.splice(where==='afterend'?at+1:at,0,node);
+    node.parentNode=p; document.__index(node); return node;
+  }
+  get nextElementSibling(){
+    const p=this.parentNode; if(!p) return null;
+    return p.children[p.children.indexOf(this)+1]||null;
+  }
+  addEventListener(){}
+}
+El.prototype.__defineSetter__('style',function(v){this._style=v});
+El.prototype.__defineGetter__('style',function(){return this._style||(this._style={})});
+
+const document={
+  readyState:'complete', _byId:{},
+  createElement:t=>new El(t),
+  getElementById(id){return this._byId[id]||null},
+  addEventListener(){},
+  __index(node){ if(node.id) document._byId[node.id]=node;
+    (node.children||[]).forEach(document.__index); },
+  __reindex(){ document._byId={}; document.__index(document.body); },
+};
+const body=new El('body'); body.id='body'; document.body=body;
+document.__index(body);
+
+let priceInput=new El('input'); priceInput.id='price'; body.appendChild(priceInput);
+function mdApartmentPriceInput(){return priceInput}
+function mdSetNativeValue(){}
+
+let observer=null;
+class MutationObserver{
+  constructor(fn){this.fn=fn}
+  observe(){observer=this}
+}
+const timers=[];
+function setInterval(fn){timers.push(fn);return timers.length}
+function clearInterval(){}
+function setTimeout(fn){fn();return 0}
+"""
+
+    driver = """
+const out={};
+out.after_load = !!document.getElementById('daHintWrap');
+out.next_to_input = priceInput.nextElementSibling===document.getElementById('daHintWrap');
+
+// Перерисовка вводных: старое поле выброшено, на его месте новое.
+body.removeChild(priceInput);
+priceInput = new El('input'); priceInput.id='price'; body.appendChild(priceInput);
+out.after_redraw_before_repair = !!(priceInput.nextElementSibling
+  && priceInput.nextElementSibling.id==='daHintWrap');
+
+// Наблюдатель за перерисовкой должен вернуть кнопку сам.
+if(observer) observer.fn();
+out.observer_restored = !!(priceInput.nextElementSibling
+  && priceInput.nextElementSibling.id==='daHintWrap');
+
+// И таймер-подстраховка умеет то же самое.
+body.removeChild(document.getElementById('daHintWrap'));
+timers.forEach(fn=>fn());
+out.timer_restored = !!(priceInput.nextElementSibling
+  && priceInput.nextElementSibling.id==='daHintWrap');
+
+// Кнопка ровно одна, а не столбик из копий после нескольких перерисовок.
+timers.forEach(fn=>fn()); if(observer) observer.fn();
+out.copies = body.children.filter(c=>c.id==='daHintWrap').length;
+console.log(JSON.stringify(out));
+"""
+
+    path = tmp_path / "hint.js"
+    path.write_text(harness + script + driver, encoding="utf-8")
+    run = subprocess.run([node, str(path)], capture_output=True, text=True, timeout=30)
+    assert run.returncode == 0, run.stderr
+    result = json.loads(run.stdout.strip().splitlines()[-1])
+
+    assert result["after_load"] is True
+    assert result["next_to_input"] is True
+    # Вот она, ошибка: после перерисовки кнопки у поля нет...
+    assert result["after_redraw_before_repair"] is False
+    # ...и вернуть её обязан наблюдатель, а не следующая перезагрузка страницы.
+    assert result["observer_restored"] is True
+    assert result["timer_restored"] is True
+    assert result["copies"] == 1

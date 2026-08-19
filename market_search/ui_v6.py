@@ -257,11 +257,25 @@ PRICE_HINT_SCRIPT = """<script id="market-v6-price-hint">
     const md=document.getElementById('mdAddress');
     return md?String(md.value||'').trim():'';
   }
+  // «Кнопка на месте» — это не «кнопка где-то есть». Проверялось наличие узла
+  // с нужным id, а вводные перерисовываются целиком: при импорте участка, при
+  // загрузке проекта, при смене пресета. Старое поле уходило вместе с кнопкой,
+  // новое оставалось без неё, и вернуть её было некому — вставка была разовой.
+  // Так кнопка пропадала ровно тогда, когда ей находилось применение: человек
+  // ввёл участок, чтобы получить ориентир, и получил страницу без кнопки.
+  function placed(){
+    if(typeof mdApartmentPriceInput!=='function')return false;
+    const input=mdApartmentPriceInput();
+    const wrap=document.getElementById('daHintWrap');
+    return !!(input&&wrap&&input.nextElementSibling===wrap);
+  }
   function init(){
-    if(document.getElementById('daHintBtn'))return;
+    if(placed())return;
     if(typeof mdApartmentPriceInput!=='function')return;
     const input=mdApartmentPriceInput();
     if(!input)return;
+    const stale=document.getElementById('daHintWrap');
+    if(stale&&stale.parentNode)stale.parentNode.removeChild(stale);
     const wrap=document.createElement('div');
     wrap.id='daHintWrap';
     wrap.style.cssText='display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:6px';
@@ -303,9 +317,18 @@ PRICE_HINT_SCRIPT = """<script id="market-v6-price-hint">
     });
   }
   if(document.readyState!=='loading')init();else document.addEventListener('DOMContentLoaded',init);
-  // Вводные рисуются скриптом, поэтому поля может ещё не быть в момент загрузки.
-  let tries=0;
-  const timer=setInterval(function(){init();if(++tries>20||document.getElementById('daHintBtn'))clearInterval(timer)},700);
+  // Вводные рисуются скриптом и перерисовываются потом, поэтому наблюдение не
+  // кончается: прежние двадцать попыток за четырнадцать секунд покрывали
+  // только первую отрисовку. Наблюдатель возвращает кнопку сразу, таймер —
+  // подстраховка на случай замены, которую наблюдатель не увидит.
+  if(typeof MutationObserver==='function'&&document.body){
+    let pending=null;
+    new MutationObserver(function(){
+      if(pending)return;
+      pending=setTimeout(function(){pending=null;init()},120);
+    }).observe(document.body,{childList:true,subtree:true});
+  }
+  setInterval(init,2000);
 })();
 </script>"""
 
