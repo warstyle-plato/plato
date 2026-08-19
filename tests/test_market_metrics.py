@@ -2012,6 +2012,8 @@ def test_the_cabinet_footer_carries_the_banner(tmp_path, monkeypatch) -> None:
 
     assert '<img src="/assets/platon-quote.webp"' in CABINET_PAGE
     assert "data:image" not in CABINET_PAGE
+    # Реплика нарисована в баннере — второй раз текстом её на экране нет.
+    assert CABINET_PAGE.count("Хорошие дома начинаются с правильных вопросов") == 1
     assert ".plato-footer img{width:100%" in CABINET_PAGE
     # У картинки есть подпись для тех, кто её не видит.
     assert 'alt="Платон Сергеевич Федоскин' in CABINET_PAGE
@@ -2026,3 +2028,266 @@ def test_the_cabinet_footer_carries_the_banner(tmp_path, monkeypatch) -> None:
     assert answer.headers["content-type"].startswith("image/")
     # Вес: страницу открывают с телефона, и мегабайты тут ни к чему.
     assert len(answer.content) < 200_000
+
+def test_the_map_puts_neighbours_where_they_actually_stand(tmp_path) -> None:
+    """Схема соседей: стороны света настоящие, а не «примерно вправо».
+
+    Таблица говорит «1,2 км» и молчит о том, с какой стороны, — а сторона
+    бывает всем ответом: восемьсот метров через реку это другой берег.
+    Проверяется геометрия настоящей функции в node: сосед к северу обязан
+    оказаться выше объекта, сосед к востоку — правее, и оба на своём удалении.
+    """
+    import json
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if not node:
+        import pytest
+
+        pytest.skip("node не установлен")
+
+    from market_search.cabinet import CABINET_PAGE
+
+    # Срез берётся от розы ветров: она объявлена рядом с функцией и нужна ей.
+    start = CABINET_PAGE.index("const COMPASS=")
+    end = CABINET_PAGE.index("\n}", CABINET_PAGE.index("return '<div class=\"wrap\">'+svg", start)) + 2
+    source = CABINET_PAGE[start:end]
+
+    harness = """
+const num=(v,d=0)=>v===null||v===undefined?'—':Number(v).toFixed(d);
+const esc=s=>String(s===null||s===undefined?'':s);
+const CLASS_COLOR={'Бизнес':'#1367AE','Премиум':'#8E44AD'};
+"""
+    driver = """
+const subject={latitude:55.7300, longitude:37.5600, project_name:'Площадка'};
+// Ровно на север, ровно на восток, ровно на юг — по километру от объекта.
+const rows=[
+  {__own:true, name:'Площадка'},
+  {name:'Северный', segment:'Бизнес', price_per_sqm:700000,
+   latitude:55.7300+1/110.57, longitude:37.5600},
+  {name:'Восточный', segment:'Бизнес', price_per_sqm:800000,
+   latitude:55.7300, longitude:37.5600+1/(111.32*Math.cos(55.73*Math.PI/180))},
+  {name:'Южный', segment:'Премиум', __picked:true,
+   latitude:55.7300-2/110.57, longitude:37.5600},
+  {name:'Без координат', segment:'Бизнес'},
+];
+const html=mapChart(rows, subject);
+const circles=[...html.matchAll(/<circle cx="([\\d.]+)" cy="([\\d.]+)" r="([\\d.]+)"[^>]*?(?:data-tip="([^"]*)")?><\\/circle>/g)]
+  .map(m=>({x:Number(m[1]), y:Number(m[2]), r:Number(m[3]), tip:m[4]||''}));
+const always=[...html.matchAll(/<text class="mine"[^>]*>([^<]*)<\\/text>/g)].map(m=>m[1]);
+const printed=[...html.matchAll(/<text class="edge"[^>]*>([^<]*)<\\/text>/g)].map(m=>m[1]);
+console.log(JSON.stringify({html, circles, always, printed}));
+"""
+    path = tmp_path / "map.js"
+    path.write_text(harness + source + driver, encoding="utf-8")
+    run = subprocess.run([node, str(path)], capture_output=True, text=True, timeout=30)
+    assert run.returncode == 0, run.stderr
+    result = json.loads(run.stdout.strip().splitlines()[-1])
+
+    named = {row["tip"].split("&#10;")[0]: row for row in result["circles"] if row["tip"]}
+    assert {"Северный", "Восточный", "Южный", "Площадка"} <= set(named)
+    own = named["Площадка"]
+    # Север — вверх (y меньше), восток — вправо (x больше), юг — вниз.
+    assert named["Северный"]["y"] < own["y"] - 20
+    assert abs(named["Северный"]["x"] - own["x"]) < 0.5
+    assert named["Восточный"]["x"] > own["x"] + 20
+    assert abs(named["Восточный"]["y"] - own["y"]) < 0.5
+    assert named["Южный"]["y"] > own["y"] + 20
+    # Вдвое дальше — вдвое дальше и на схеме, а не «где-то ниже».
+    assert abs((named["Южный"]["y"] - own["y"]) - 2 * (own["y"] - named["Северный"]["y"])) < 1
+
+    # Сторона света названа словом: «км» без стороны — это уже есть в таблице.
+    assert "на север" in named["Северный"]["tip"]
+    assert "на восток" in named["Восточный"]["tip"]
+    assert "на юг" in named["Южный"]["tip"]
+    # Соседа без цены схема не выдумывает и не прячет.
+    assert "действующей цены нет" in named["Южный"]["tip"]
+
+    # Отмеченный подписан всегда, ближайшие — только на бумаге.
+    assert "Южный" in result["always"]
+    assert "Северный" in result["printed"] and "Восточный" in result["printed"]
+    # Сосед без координат на схему не попадает — и не притворяется, что попал.
+    assert "Без координат" not in result["html"]
+
+    # Точки и растр обязаны быть в одной проекции. Подложку режет сервер по
+    # bbox из этой же ссылки; если страница расставляет точки хоть немного
+    # иначе, проект уезжает на соседнюю улицу — и по картинке это неотличимо
+    # от правды, потому что улица настоящая и дом на ней стоит.
+    import math
+    import re as _re
+
+    box = _re.search(r"/land/basemap\?bbox=(-?[\d.]+),(-?[\d.]+),(-?[\d.]+),(-?[\d.]+)",
+                     result["html"])
+    assert box, "карта не запрашивает подложку"
+    min_x, min_y, max_x, max_y = (float(box.group(i)) for i in (1, 2, 3, 4))
+    merc = 20037508.342789244
+    view = _re.search(r'viewBox="0 0 (\d+) (\d+)"', result["html"])
+    frame_w, frame_h = int(view.group(1)), int(view.group(2))
+    # Растр приходит под bbox без полей, поэтому доля bbox — это доля картинки.
+    assert abs((max_x - min_x) / (max_y - min_y) - frame_w / frame_h) < 0.01
+
+    def where(latitude: float, longitude: float) -> tuple[float, float]:
+        x = longitude * merc / 180
+        y = math.log(math.tan((90 + latitude) * math.pi / 360)) * merc / math.pi
+        return ((x - min_x) / (max_x - min_x) * frame_w,
+                (max_y - y) / (max_y - min_y) * frame_h)
+
+    for name, latitude, longitude in [
+        ("Северный", 55.7300 + 1 / 110.57, 37.5600),
+        ("Восточный", 55.7300, 37.5600 + 1 / (111.32 * math.cos(55.73 * math.pi / 180))),
+        ("Южный", 55.7300 - 2 / 110.57, 37.5600),
+    ]:
+        want_x, want_y = where(latitude, longitude)
+        assert abs(named[name]["x"] - want_x) < 0.6, f"{name}: не туда по долготе"
+        assert abs(named[name]["y"] - want_y) < 0.6, f"{name}: не туда по широте"
+
+
+def test_the_map_says_out_loud_who_is_missing_from_it() -> None:
+    """Соседа без координат на схеме нет, и об этом сказано в самой карточке.
+
+    Отсутствие точки читается как отсутствие соседа: пустой результат — не
+    «чисто». Схема рисуется до «Карты рынка» — сначала «где это стоит», потом
+    «как соотносится».
+    """
+    from market_search.cabinet import CABINET_PAGE
+
+    assert "Координат нет у ${noGeo} из ${peers.length} соседей выборки" in CABINET_PAGE
+    assert CABINET_PAGE.index("<h2>Где соседи</h2>") < CABINET_PAGE.index("<h2>Карта рынка</h2>")
+    # Подложку склеивает движок и отдаёт одной картинкой. Наружу за тайлами
+    # браузер не ходит: чужой хост в разметке — это уже второй путь наружу,
+    # мимо пересылки на ядро, и на Render он просто не откроется.
+    assert "/land/basemap?bbox=" in CABINET_PAGE
+    assert "tile.openstreetmap.org" not in CABINET_PAGE
+    assert "http://" not in CABINET_PAGE.split("function mapChart")[1].split("\n}")[0]
+    # Источник карты назван на самой картинке — уедет вместе с ней в печать.
+    assert "© OpenStreetMap" in CABINET_PAGE
+    # Отказ подложки виден словами. Карта пустого места и карта, которая не
+    # пришла, выглядят одинаково, а значат противоположное.
+    assert 'onerror="mapLost(this)"' in CABINET_PAGE
+    assert ".geomap.lost img{display:none}" in CABINET_PAGE
+    assert ".geomap.lost .maplost{display:block}" in CABINET_PAGE
+    # Высота держится рамкой, а не картинкой: иначе страница прыгает, пока
+    # подложка едет.
+    assert "aspect-ratio:680 / 460" in CABINET_PAGE
+    # Карта печатается: `#bubble` в печати гасится, а она лежит не в нём.
+    assert "#bubble{display:none}" in CABINET_PAGE
+
+
+def test_a_neighbour_from_the_source_keeps_its_coordinates(tmp_path) -> None:
+    """Сосед, добавленный руками, знал, где стоит, а пришедший из источника — нет.
+
+    `peer_row` клал в строку широту и долготу с самого начала, а основной
+    отбор их отбрасывал: строки выглядели одинаково и вели себя по-разному.
+    Схеме «Где соседи» без координат рисовать нечего.
+    """
+    from market_search.metrics import BLOCK_PRICE
+    from market_search.service_v6 import MarketDiscoveryService
+
+    service = MarketDiscoveryService(tmp_path)
+    segments = {1: "Бизнес", 2: "Бизнес", 3: "Бизнес"}
+    metrics = {
+        1: {"price_per_sqm": 708_109, "observed_at": "2026-08-18", "units_per_month": 4.6},
+        2: {"price_per_sqm": 640_000, "observed_at": "2026-08-18", "units_per_month": 5.0},
+        3: {"price_per_sqm": 690_000, "observed_at": "2026-08-18", "units_per_month": 3.0},
+    }
+    projects = [
+        {"complex_id": i, "name": f"Сосед {i}", "developer": "—",
+         "latitude": 55.7158 + (i - 1) / 3000, "longitude": 37.4330,
+         "address": f"Москва, дом {i}"}
+        for i in (1, 2, 3)
+    ]
+    service.pulse = _fake_pulse(segments, metrics, projects)
+
+    report = service.build_report("55.71580, 37.43300", codes=[BLOCK_PRICE])
+    peers = report["peers"]
+    assert peers, "соседи не нашлись — проверять нечего"
+    for row in peers:
+        assert row.get("latitude") is not None, f"{row['name']} без широты"
+        assert row.get("longitude") is not None, f"{row['name']} без долготы"
+        assert row.get("address"), f"{row['name']} без адреса"
+    # Точка объекта тоже уезжает на страницу — схеме нужен центр.
+    assert report["subject"]["latitude"] and report["subject"]["longitude"]
+
+
+def test_the_basemap_route_stitches_tiles_into_one_picture(monkeypatch) -> None:
+    """Подложка карты рынка: улицы, склеенные на сервере, а не в браузере.
+
+    Страница расставляет точки в меркаторном bbox и получает растр ровно под
+    ним — совмещать нечего, проекция одна. Проверяется вся дорога: выбор
+    масштаба, склейка, обрезка под bbox и то, что запрошенный размер приходит
+    именно таким; иначе точки легли бы на соседние улицы, и понять это по
+    картинке было бы нельзя.
+    """
+    import io
+
+    from fastapi.testclient import TestClient
+    from PIL import Image
+
+    import main_legacy
+
+    asked: list[str] = []
+
+    def fake_tile(zoom: int, x: int, y: int) -> bytes:
+        asked.append(f"{zoom}/{x}/{y}")
+        buffer = io.BytesIO()
+        Image.new("RGB", (256, 256), (10, 20, 30)).save(buffer, format="PNG")
+        return buffer.getvalue()
+
+    monkeypatch.setattr(main_legacy, "_osm_tile", fake_tile)
+    monkeypatch.setattr(main_legacy, "_BASEMAP_CACHE", {})
+    monkeypatch.setattr(main_legacy, "_core_api_url", lambda path: "")
+
+    # Саввинская набережная, примерно пять километров вокруг.
+    centre_x, centre_y = 4_178_000.0, 7_509_000.0
+    half = 9_000.0
+    bbox = f"{centre_x - half},{centre_y - half},{centre_x + half},{centre_y + half}"
+    client = TestClient(main_legacy.app)
+    answer = client.get("/land/basemap", params={"bbox": bbox, "width": 800})
+    assert answer.status_code == 200, answer.text
+    assert answer.headers["content-type"] == "image/png"
+    picture = Image.open(io.BytesIO(answer.content))
+    assert picture.width == 800
+    # Квадратный bbox — квадратная картинка: растяжение увело бы точки.
+    assert abs(picture.height - 800) <= 1
+    assert asked, "ни одного тайла не запросили"
+    # Бюджет соблюдён: чужой сервис не платит сотней запросов за одну карту.
+    assert len(asked) <= main_legacy._BASEMAP_TILE_BUDGET
+    zooms = {int(key.split("/")[0]) for key in asked}
+    assert len(zooms) == 1, "склейка из разных масштабов — это уже не карта"
+
+    # Второй раз тайлы не запрашиваются: карта улиц за секунду не меняется.
+    before = len(asked)
+    assert client.get("/land/basemap", params={"bbox": bbox, "width": 800}).status_code == 200
+    assert len(asked) == before, "кэш подложки не работает"
+
+
+def test_a_broken_basemap_answers_with_an_error_not_a_blank_map(monkeypatch) -> None:
+    """Не пришли тайлы — 502 и причина, а не серый прямоугольник.
+
+    Пустая картинка на месте карты неотличима от карты пустого места: точек
+    нет, улиц нет, и читается это как «вокруг ничего». Отказ обязан быть
+    отказом — страница на нём оставляет кольца и точки, они считаются не по
+    подложке.
+    """
+    from fastapi.testclient import TestClient
+
+    import main_legacy
+
+    def dead_tile(zoom: int, x: int, y: int) -> bytes:
+        raise OSError("tile server unreachable")
+
+    monkeypatch.setattr(main_legacy, "_osm_tile", dead_tile)
+    monkeypatch.setattr(main_legacy, "_BASEMAP_CACHE", {})
+    monkeypatch.setattr(main_legacy, "_core_api_url", lambda path: "")
+
+    client = TestClient(main_legacy.app)
+    answer = client.get("/land/basemap", params={"bbox": "4170000,7500000,4186000,7516000"})
+    assert answer.status_code == 502
+    assert "недоступна" in answer.json()["detail"]
+
+    # Мусор на входе — 400, а не попытка скачать полмира.
+    assert client.get("/land/basemap", params={"bbox": "туда-сюда"}).status_code == 400
+    assert client.get(
+        "/land/basemap", params={"bbox": "0,0,9000000,9000000"}
+    ).status_code == 400

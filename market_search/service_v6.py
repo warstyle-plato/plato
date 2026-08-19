@@ -724,6 +724,16 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                 "developer": project.developer,
                 "distance_km": distance,
                 "segment": classes.get(project.complex_id),
+                # Координаты и адрес — не украшение строки. Расстояние в
+                # километрах отвечает «далеко ли», но не отвечает «с какой
+                # стороны», а сторона бывает всем ответом: восемьсот метров
+                # через реку — это другой берег, другой район и другой рынок.
+                # У соседа, добавленного руками (`peer_row`), координаты были с
+                # самого начала, а у пришедшего из источника — терялись здесь:
+                # одна и та же на вид строка вела себя по-разному.
+                "address": project.address,
+                "latitude": project.latitude,
+                "longitude": project.longitude,
                 **metrics,
             }
             if not metrics.get("price_per_sqm"):

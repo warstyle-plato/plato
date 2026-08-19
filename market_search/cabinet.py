@@ -208,12 +208,9 @@ padding:5px 12px;font-size:13px;cursor:pointer}
 .plato{background:#f8fafc;border-left:3px solid var(--ink);padding:12px 14px;border-radius:0 8px 8px 0;
 margin-top:12px;white-space:normal}
 #askout{margin-top:10px}
-/* Баннер — в подвале и во всю ширину: он широкий, ему нужна ширина, и цитата
-   с подписью в нём уже нарисованы. Кроп из окна Платона на главной сюда не
-   годится: он сделан под плашку большого сайта, а в карточке 96 пикселей
-   разваливается. В карточке вопроса осталась одна реплика текстом. */
-.plato-hero{margin-bottom:10px}
-.plato-say{font-size:14.5px;color:var(--ink);font-style:italic;margin-bottom:4px}
+/* Баннер — в подвале и во всю ширину: он широкий, ему нужна ширина. Реплика
+   в нём нарисована, поэтому текстом её рядом нет: одна и та же фраза дважды
+   на экране читается как недосмотр, каковым и была. */
 .plato-footer{margin:26px 0 8px;line-height:0}
 .plato-footer img{width:100%;height:auto;border-radius:14px;display:block}
 td.link{color:var(--blue);cursor:pointer;text-decoration:underline dotted}
@@ -275,6 +272,15 @@ g.bub:hover circle{fill-opacity:.75}
    имена проектов у кружков и линий были недостижимы вовсе. Касание ставит
    группе класс — те же правила, что у наведения, только по тапу. */
 g.bub.on text.hov{opacity:1}
+/* Карта: растр под разметкой, обе тянутся на одну рамку. Аспект задан рамке,
+   а не картинке, — иначе до загрузки подложки страница прыгает на её высоту. */
+.geomap{position:relative;width:100%;aspect-ratio:680 / 460;background:#eeeee9;
+        border-radius:8px;overflow:hidden}
+.geomap img,.geomap svg{position:absolute;left:0;top:0;width:100%;height:100%;display:block}
+.geomap.lost img{display:none}
+.maplost{display:none;position:absolute;left:10px;bottom:8px;background:rgba(255,255,255,.92);
+         border-radius:6px;padding:4px 8px;font-size:12px;color:var(--dim)}
+.geomap.lost .maplost{display:block}
 /* Крайние по осям — только на бумаге: там наведения нет, и без подписей карта
    становится анонимной. На экране постоянная подпись одна, своего проекта. */
 svg text.edge{opacity:0}
@@ -368,11 +374,8 @@ g.bub.on circle{fill-opacity:.75}
 <div id="tip" role="status"></div>
   <div class="card" id="askcard" style="display:none">
     <h2>Спросить Платона Сергеевича</h2>
-    <div class="plato-hero">
-      <div class="plato-say">«Хорошие дома начинаются с правильных вопросов»</div>
-      <div class="muted" style="font-size:13px">
-        Он видит числа этого отчёта и объясняет их. Считает движок — модель не пересчитывает.
-      </div>
+    <div class="muted" style="font-size:13px;margin-bottom:8px">
+      Он видит числа этого отчёта и объясняет их. Считает движок — модель не пересчитывает.
     </div>
     <div class="chips">
       <button type="button" data-q="Что здесь главное и что делать с ценой?">Что делать с ценой?</button>
@@ -866,6 +869,132 @@ function bubbleChart(rows, view){
   });
   return '<div class="wrap">'+svg+'</svg></div>';
 }
+
+
+// Где соседи стоят на самом деле.
+//
+// «Карта рынка» выше — метафора: там оси, а не стороны света. Расстояние в
+// километрах в таблице отвечает «далеко ли», но молчит о том, «с какой
+// стороны», а сторона бывает всем ответом: восемьсот метров через реку — это
+// другой берег и другой рынок, а пять проектов, кучно стоящих на одной улице,
+// и пять, рассыпанных вокруг, дают одну и ту же медиану при совершенно разной
+// конкуренции.
+//
+// Карта настоящая, с улицами: подложку склеивает движок (`/land/basemap`) и
+// отдаёт одной картинкой под тот же меркаторный bbox, в котором страница
+// расставляет точки. Совмещать в браузере нечего — проекция одна на растр и на
+// разметку, иначе округления увели бы проект на соседнюю улицу.
+//
+// Кадастровый слой (`/land/map-image`) для этого не годится: он верен на
+// двухстах метрах карточки участка, а на пяти километрах выборки даёт клубок
+// границ ЕГРН без улиц, воды и названий.
+//
+// Кольца расстояний остаются поверх карты: они и линейка, и запас прочности —
+// если подложка не пришла, читается ровно та же схема, только без улиц.
+const COMPASS=['на север','на северо-восток','на восток','на юго-восток',
+               'на юг','на юго-запад','на запад','на северо-запад'];
+const MERC=20037508.342789244;
+const mercX=lon=>lon*MERC/180;
+const mercY=lat=>Math.log(Math.tan((90+lat)*Math.PI/360))*MERC/Math.PI;
+function mapChart(rows, subject){
+  const lat0=subject&&subject.latitude, lon0=subject&&subject.longitude;
+  const pts=(rows||[]).filter(p=>!p.__own&&p.latitude!=null&&p.longitude!=null);
+  if(lat0==null||lon0==null||pts.length<2) return '';
+  // Расстояния и стороны света — по земле, а не по меркатору: у меркатора
+  // километр к северу длиннее километра к востоку, и подпись «1,2 км» стала бы
+  // неправдой. Меркатор нужен только для того, чтобы точка легла на растр.
+  const k=Math.cos(lat0*Math.PI/180);
+  const east=p=>(p.longitude-lon0)*111.32*k, north=p=>(p.latitude-lat0)*110.57;
+  const away=p=>Math.hypot(east(p),north(p));
+  const far=Math.max(...pts.map(away),0.3);
+  // Шаг колец выбирается так, чтобы их было два-три: кольцо — это линейка, а
+  // линейка из десяти делений поверх карты уже сетка.
+  const step=[0.25,0.5,1,2,5,10].find(v=>far/v<=3.5)||20;
+  const rings=Math.max(1,Math.ceil(far/step));
+  const W=680,H=460,cx=W/2,cy=H/2;
+  const cxm=mercX(lon0), cym=mercY(lat0);
+  // Меркаторный метр короче земного во столько же раз, во сколько растянут сам
+  // меркатор: делением на косинус широты кольца в километрах ложатся на карту.
+  const reach=Math.max(rings*step, far*1.08)*1000/k;
+  let halfX=reach, halfY=reach;
+  if(halfX/halfY < W/H) halfX=halfY*W/H; else halfY=halfX*H/W;
+  const s=(W/2)/halfX;                       // пикселей на меркаторный метр
+  const X=p=>cx+(mercX(p.longitude)-cxm)*s, Y=p=>cy-(mercY(p.latitude)-cym)*s;
+  const dir=p=>COMPASS[Math.round(((Math.atan2(east(p),north(p))*180/Math.PI+360)%360)/45)%8];
+  const short=name=>name.length>20?name.slice(0,19)+'…':name;
+  const bbox=[cxm-halfX,cym-halfY,cxm+halfX,cym+halfY].map(v=>v.toFixed(0)).join(',');
+  let svg=`<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img"`
+    +` aria-label="Расположение сопоставимых проектов вокруг объекта">`
+     // Вуаль поверх растра: на насыщенной карте цветная точка теряется, а
+     // класс здесь читают именно по цвету.
+     +`<rect x="0" y="0" width="${W}" height="${H}" fill="#fff" opacity="0.42"/>`;
+  for(let i=1;i<=rings;i++){
+    const rr=i*step*1000/k*s;
+    if(rr>Math.min(W,H)/2) continue;
+    svg+=`<circle cx="${cx}" cy="${cy}" r="${rr.toFixed(1)}" fill="none" stroke="#16202b"`
+       +` stroke-opacity="0.16" stroke-dasharray="3 4"/>`
+       +`<text x="${(cx+rr-4).toFixed(1)}" y="${cy-5}" text-anchor="end" font-size="10"`
+       +` fill="#5b6b7d" paint-order="stroke" stroke="#fff" stroke-width="3">`
+       +`${num(i*step,step<1?2:0)} км</text>`;
+  }
+  svg+=`<text x="${cx}" y="16" text-anchor="middle" font-size="11" fill="#5b6b7d"`
+     +` paint-order="stroke" stroke="#fff" stroke-width="3">С ↑</text>`;
+  // На бумаге наведения нет, и схема без подписей становится анонимной. Правило
+  // подписи здесь своё и объяснимое — ближайшие: на карте «крайний по оси» из
+  // пузырьков смысла не имеет, а ближайший сосед и есть первый конкурент.
+  const closest=new Set([...pts].sort((a,b)=>away(a)-away(b)).slice(0,6));
+  // Дальние рисуются первыми, ближние поверх: в плотном центре сверху должен
+  // оказаться тот, кто ближе, а не тот, кто раньше попался в списке.
+  [...pts].sort((a,b)=>away(b)-away(a)).forEach(p=>{
+    const c=CLASS_COLOR[p.segment]||'#9dc2e6';
+    const px=X(p), py=Y(p), marked=!!p.__picked, left=px>W*0.66;
+    svg+=`<g class="bub">`
+       +`<circle cx="${px.toFixed(1)}" cy="${py.toFixed(1)}" r="${marked?7:5.5}" fill="${c}"`
+       +` fill-opacity="${marked?0.85:0.5}" stroke="${marked?'#16202b':c}"`
+       +` stroke-width="${marked?2:1}"`
+       +` data-tip="${esc(p.name)}&#10;${num(away(p),2)} км ${esc(dir(p))}&#10;`
+       +`${p.price_per_sqm?num(p.price_per_sqm)+' ₽/м²':'действующей цены нет'}`
+       +`&#10;${esc(p.segment||'класс не указан')}`
+       +`${p.address?'&#10;'+esc(p.address):''}"></circle>`
+       +`<text class="hov" x="${(px+(left?-9:9)).toFixed(1)}" y="${(py+4).toFixed(1)}"`
+       +` text-anchor="${left?'end':'start'}" font-size="11" fill="#16202b" paint-order="stroke"`
+       +` stroke="#fff" stroke-width="3.5">${esc(p.name)}</text>`
+       +(marked||closest.has(p)
+          ?`<text class="${marked?'mine':'edge'}" x="${px.toFixed(1)}" y="${(py-10).toFixed(1)}"`
+           +` text-anchor="middle" font-size="10.5" fill="#2b3a4a" paint-order="stroke"`
+           +` stroke="#fff" stroke-width="3">${esc(short(p.name))}</text>`
+          :'')
+       +`</g>`;
+  });
+  const ownName=(subject&&(subject.project_name||subject.address))||'объект оценки';
+  svg+=`<circle cx="${cx}" cy="${cy}" r="8" fill="#C4581B" fill-opacity="0.9" stroke="#fff"`
+     +` stroke-width="2" data-tip="${esc(ownName)}&#10;центр выборки"></circle>`
+     +`<text x="${cx}" y="${cy-15}" text-anchor="middle" font-size="10.5" font-weight="600"`
+     +` fill="#C4581B" paint-order="stroke" stroke="#fff" stroke-width="3.5">`
+     +`${esc(short(ownName))}</text>`;
+  const legend=Object.entries(CLASS_COLOR).filter(([key])=>pts.some(p=>p.segment===key));
+  let lx=10;
+  legend.forEach(([key,colour])=>{
+    svg+=`<circle cx="${lx+5}" cy="${H-10}" r="5" fill="${colour}" fill-opacity="0.6" stroke="${colour}"/>`
+       +`<text x="${lx+14}" y="${H-7}" font-size="10" fill="#2b3a4a" paint-order="stroke"`
+       +` stroke="#fff" stroke-width="3">${esc(key)}</text>`;
+    lx+=20+key.length*5.6;
+  });
+  // Указание источника карты обязательно: подложка чужая и открытая, но не
+  // ничья. Место — на самой картинке, чтобы уехать вместе с ней в печать.
+  svg+=`<text x="${W-6}" y="${H-7}" text-anchor="end" font-size="9.5" fill="#5b6b7d"`
+     +` paint-order="stroke" stroke="#fff" stroke-width="3">© OpenStreetMap</text>`;
+  // Растр — картинкой под разметкой, как в карточке участка у движка: у <img>
+  // есть onerror, и отказ подложки виден, а не выглядит пустым местом.
+  return `<div class="geomap"><img src="/land/basemap?bbox=${bbox}&amp;width=1360" alt=""`
+    +` loading="lazy" decoding="async" onerror="mapLost(this)">`+svg+`</svg>`
+    +`<div class="maplost">Подложка не загрузилась. Кольца и точки на месте:`
+    +` расстояния считаются не по ней.</div></div>`;
+}
+
+// Отказ подложки — сообщение, а не пустое место: карта пустого места и карта,
+// которая не пришла, выглядят одинаково, а значат противоположное.
+function mapLost(img){ const box=img.closest('.geomap'); if(box) box.classList.add('lost'); }
 
 
 // Премия по месяцам. Разрыв бывает нажит собственным ростом цены, а бывает —
@@ -1509,6 +1638,25 @@ function render(d){
 
   const market=[{...m, name:s.project_name||'объект', segment:s.segment, __own:true},
     ...peers.map(p=>({...p, __picked:onChart.has(String(p.complex_id))}))];
+  // География — до осей: сначала «где это всё стоит», потом «как соотносится».
+  const geoSvg=mapChart(market, s);
+  if(geoSvg){
+    // Сосед без координат в схему не попадает, и молчать об этом нельзя:
+    // отсутствие точки читается как отсутствие соседа. Пустой результат — не
+    // «чисто», и здесь ровно тот же случай.
+    const noGeo=peers.filter(p=>p.latitude==null||p.longitude==null).length;
+    html+=`<div class="card"><h2>Где соседи</h2>`+geoSvg
+      +`<div class="muted" style="font-size:12.5px;margin-top:8px">Кольца — расстояние`
+      +` от объекта по прямой, а не по дороге: через реку или пути восемьсот метров`
+      +` бывают тремя километрами. Цвет точки — класс, обводка — отмеченный на графиках.`
+      +` Имя проекта — наведением или касанием; в печать уходят ближайшие шесть`
+      +` и отмеченные. Подложка — OpenStreetMap; не пришла — остаются кольца`
+      +` и точки, они считаются не по ней.`
+      +(noGeo?` Координат нет у ${noGeo} из ${peers.length} соседей выборки — на карте`
+        +` их нет, в расчётах они участвуют наравне.`:'')
+      +`</div></div>`;
+  }
+
   html+=`<div class="card"><h2>Карта рынка</h2>`
     +`<div class="chips views">`+VIEWS.map(v=>`<button type="button" data-view="${v.id}"`
       +`${v.id===bubbleView?' class="on"':''}>${esc(v.name)}</button>`).join('')+`</div>`
