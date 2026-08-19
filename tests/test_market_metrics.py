@@ -2161,9 +2161,13 @@ def test_the_map_says_out_loud_who_is_missing_from_it() -> None:
     assert "tile.openstreetmap.org" not in CABINET_PAGE
     assert "http://" not in CABINET_PAGE.split("function mapChart")[1].split("\n}")[0]
     # Источник карты назван на самой картинке — уедет вместе с ней в печать.
+    # Второй раз, подписью под картой, он не объявляется: карта на экране, и
+    # рассказывать про её подложку читателю незачем.
     assert "© OpenStreetMap" in CABINET_PAGE
-    # Отказ подложки виден словами. Карта пустого места и карта, которая не
-    # пришла, выглядят одинаково, а значат противоположное.
+    assert CABINET_PAGE.count("OpenStreetMap") == 1
+    # Отказ подложки виден словами — но только когда он случился. Плашка
+    # живёт в разметке и показывается по классу, а не оговоркой в подписи,
+    # которую читают все и всегда.
     assert 'onerror="mapLost(this)"' in CABINET_PAGE
     assert ".geomap.lost img{display:none}" in CABINET_PAGE
     assert ".geomap.lost .maplost{display:block}" in CABINET_PAGE
