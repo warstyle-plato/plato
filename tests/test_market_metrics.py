@@ -956,3 +956,72 @@ def test_the_report_can_be_dropped_whole() -> None:
     # пустую страницу.
     assert "$('#pdf').style.display='none'" in reset
     assert "$('#reset').style.display='none'" in reset
+
+
+def test_the_object_field_suggests_addresses_too(tmp_path, monkeypatch) -> None:
+    """Кадастр под рукой не всегда, а место человек знает всегда.
+
+    Поле объекта умело только названия ЖК из справочника, и площадку без
+    проекта — тот самый случай, ради которого кабинет и открывают — искали
+    координатами. Геокодер здесь не свой: вызывается движковый через крючок,
+    иначе две реализации разошлись бы на нормализации и одна строка приводила
+    бы к разным точкам.
+    """
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from market_search.api import install
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("MARKET_CABINET_KEY", "stand-key-2026")
+    app = FastAPI()
+    service = install(app)
+
+    # Ключ обязателен и здесь: адреса ведут в тот же закрытый кабинет.
+    assert TestClient(app).get("/market/address/suggest?q=мишина").status_code == 401
+    opened = TestClient(app, headers={"X-Market-Key": "stand-key-2026"})
+
+    # Крючок не подключён — это сказано, а не выдано за «ничего не найдено».
+    silent = opened.get("/market/address/suggest?q=мишина 46").json()
+    assert silent["items"] == []
+    assert "не подключены" in silent["reason"]
+
+    asked: list[tuple[str, int]] = []
+
+    def fake_dadata(query, limit):
+        asked.append((query, limit))
+        return [{"lat": 55.79, "lng": 37.55, "label": "г Москва, ул Мишина, д 46",
+                 "cadastral_number": "77:09:0005008:1", "provider": "DaData"},
+                {"lat": 55.79, "lng": 37.55, "label": "без координат", "provider": "DaData"}]
+
+    service.address_suggest = fake_dadata
+    found = opened.get("/market/address/suggest?q=мишина 46").json()
+    assert asked == [("мишина 46", 6)]
+    assert found["items"][0]["label"] == "г Москва, ул Мишина, д 46"
+    assert found["items"][0]["cadastre"] == "77:09:0005008:1"
+
+    # Геокодер удалённый, и его падение — не наша пятисотка.
+    def angry(query, limit):
+        raise RuntimeError("DaData молчит")
+
+    service.address_suggest = angry
+    broken = opened.get("/market/address/suggest?q=мишина 46").json()
+    assert broken["items"] == []
+    assert "DaData молчит" in broken["reason"]
+
+    # Короткий ввод адресом не считается: две буквы дают пол-Москвы.
+    assert "три буквы" in opened.get("/market/address/suggest?q=ми").json()["reason"]
+
+
+def test_the_object_field_asks_both_sources_at_once() -> None:
+    """Название и адрес — равноправные способы назвать объект.
+
+    Спрашивать их по очереди значит заставить человека угадывать, каким из
+    двух поле сегодня умеет пользоваться.
+    """
+    from market_search.cabinet import CABINET_PAGE
+
+    assert "'/market/address/suggest?q='" in CABINET_PAGE
+    assert "Promise.all([" in CABINET_PAGE
+    # Пусто с обеих сторон — причина на экране, а не молчание.
+    assert "[names.reason,places.reason].filter(Boolean)" in CABINET_PAGE

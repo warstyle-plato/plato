@@ -63,6 +63,21 @@ def _plato_ask(message: str, request):
 
 market_search.cadastre_lookup = _cadastre_from_egrn
 market_search.plato_ask = _plato_ask
+def _address_suggest(query: str, limit: int):
+    """Адресные подсказки кабинета — тот же DaData, что у движка и ленты `/ia`.
+
+    Свой геокодер в модуле рынка не заводится: две реализации разошлись бы на
+    нормализации, и одна строка приводила бы к разным точкам.
+
+    Без ключа движок возвращает пустой список — и «ключа нет» стало бы
+    неотличимо от «адрес не найден». Отсутствие доступа называется вслух.
+    """
+    if not os.getenv("DADATA_API_KEY", "").strip():
+        raise RuntimeError("адресные подсказки выключены: не задан DADATA_API_KEY")
+    return core._geocode_dadata(query, limit)
+
+
+market_search.address_suggest = _address_suggest
 install_v2(app)
 # Тестовый адрес новой информационной архитектуры: та же PAGE, другой порядок.
 install_ia_preview(app, core)

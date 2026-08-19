@@ -94,6 +94,10 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         # Платон живёт в движке; модуль рынка знает о нём только через этот
         # крючок. Нет движка — нет и вопроса, и это говорится вслух.
         self.plato_ask: Any = None
+        # Адресные подсказки — тот же DaData, что у адресного поиска движка.
+        # Свой геокодер здесь не заводится: две реализации разошлись бы на
+        # нормализации, и одна строка приводила бы к разным точкам.
+        self.address_suggest: Any = None
 
     def _geocode_project(self, candidate: dict[str, Any], locality: str):
         raise NotImplementedError(

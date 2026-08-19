@@ -1237,8 +1237,14 @@ $('#hint').addEventListener('click',async function(){
   finally{$('#hint').disabled=false}
 });
 
-// Подсказки по названию ЖК. Кадастровый номер и координаты подсказывать нечем
-// и незачем — они однозначны, и список под ними только мешал бы.
+// Подсказки в поле объекта — из двух источников сразу: названия ЖК из
+// справочника «Пульса» и адреса из DaData. Кадастровый номер и координаты
+// подсказывать нечем и незачем — они однозначны.
+//
+// Адреса нужны потому, что кадастр под рукой не всегда, а место человек знает
+// всегда. Раньше поле умело только имена ЖК, и площадку без проекта — а это
+// как раз тот случай, ради которого кабинет и открывают, — приходилось искать
+// координатами.
 const sug=$('#sug'); let items=[], cur=-1, timer=null;
 const looksLikeName=t=>t.length>=2 && !/^\s*[\d.,;:\s-]+$/.test(t);
 function closeSug(){sug.style.display='none';items=[];cur=-1}
@@ -1246,7 +1252,8 @@ function paint(){
   if(!items.length){closeSug();return}
   sug.innerHTML=items.map((it,i)=>
     `<div data-i="${i}"${i===cur?' class="on"':''}>${esc(it.name)}`
-    +`<small>${esc([it.segment,it.developer,it.address].filter(Boolean).join(' · '))}</small></div>`).join('');
+    +`<small>${esc(it.kind==='address'?'адрес'
+        :[it.segment,it.developer,it.address].filter(Boolean).join(' · '))}</small></div>`).join('');
   sug.style.display='block';
 }
 function choose(i){
@@ -1261,11 +1268,28 @@ $('#q').addEventListener('input',()=>{
   clearTimeout(timer);
   if(!looksLikeName(text)){closeSug();return}
   timer=setTimeout(async()=>{
-    try{
-      const r=await fetch('/market/projects/suggest?q='+encodeURIComponent(text));
-      if(!r.ok){closeSug();return}
-      items=(await r.json()).items||[]; cur=-1; paint();
-    }catch(e){closeSug()}
+    // Оба источника спрашиваются разом, а не по очереди: адрес и название —
+    // равноправные способы назвать объект, и заставлять человека угадывать,
+    // каким из них поле сегодня умеет пользоваться, незачем.
+    const ask=async(url)=>{
+      try{const r=await fetch(url); if(!r.ok)return{items:[]}; return await r.json()}
+      catch(e){return {items:[],reason:String(e.message||e)}}
+    };
+    const [names,places]=await Promise.all([
+      ask('/market/projects/suggest?q='+encodeURIComponent(text)),
+      ask('/market/address/suggest?q='+encodeURIComponent(text)),
+    ]);
+    items=[
+      ...((names.items||[]).map(it=>({...it,kind:'project'}))),
+      ...((places.items||[]).map(it=>({name:it.label,kind:'address'}))),
+    ];
+    cur=-1; paint();
+    // Пусто с обеих сторон — сказать почему. Молчащий список одинаково значит
+    // «не нашлось», «источник выключен» и «сеть не ответила».
+    if(!items.length){
+      const why=[names.reason,places.reason].filter(Boolean).join(' ');
+      $('#state').textContent=why||'';
+    } else { $('#state').textContent=''; }
   },180);
 });
 $('#q').addEventListener('keydown',e=>{

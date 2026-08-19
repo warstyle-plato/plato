@@ -7,6 +7,7 @@ from typing import Any
 from urllib.parse import parse_qs
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel, Field, model_validator
 
@@ -163,6 +164,41 @@ def install(app: FastAPI) -> MarketDiscoveryService:
             "items": [],
             "reason": "Справочник проектов пуст: кэш не наполнен, а источник не ответил.",
         }
+
+    @app.get("/market/address/suggest")
+    async def market_address_suggest(request: Request, q: str = "") -> dict[str, Any]:
+        """Подсказки адресов — тем же DaData, что и адресный поиск движка.
+
+        Кабинет умел подсказывать только названия ЖК, а объект чаще ищут по
+        месту: кадастровый номер под рукой не всегда, а адрес — всегда. Свой
+        геокодер здесь не заводится, вызывается движковый через хук: вторая
+        реализация адресного поиска разошлась бы с первой на нормализации, и
+        одна и та же строка приводила бы к разным точкам.
+        """
+        cabinet_module.require_cabinet(request)
+        text = " ".join(str(q or "").split())
+        if len(text) < 3:
+            return {"items": [], "reason": "Введите хотя бы три буквы."}
+        finder = getattr(service, "address_suggest", None)
+        if not callable(finder):
+            return {"items": [], "reason": "Адресные подсказки на этом сервере не подключены."}
+        try:
+            found = await run_in_threadpool(finder, text, 6)
+        except Exception as exc:  # geocoder is remote; its failure is not ours
+            return {"items": [], "reason": f"Адресный поиск не ответил: {exc}"}
+        items = [
+            {
+                "label": row.get("label"),
+                "latitude": row.get("lat"),
+                "longitude": row.get("lng"),
+                "cadastre": row.get("cadastral_number") or None,
+            }
+            for row in (found or [])
+            if row.get("label")
+        ]
+        if not items:
+            return {"items": [], "reason": f"Адрес «{text}» не найден."}
+        return {"items": items}
 
     @app.get("/market/project/{complex_id}")
     async def market_project(
