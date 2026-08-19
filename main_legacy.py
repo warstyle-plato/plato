@@ -49,7 +49,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.18.62"
+VERSION = "0.18.63"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -3145,6 +3145,10 @@ def _land_group_findings(findings: list[dict[str, Any]]) -> list[dict[str, Any]]
 # каждый скрининг — это два десятка запросов к НСПД.
 _LAND_SCREENING_CACHE: dict[str, tuple[float, Any]] = {}
 _LAND_SCREENING_TTL_SECONDS = _env_float("LAND_SCREENING_TTL", 21600.0)
+# Мелкие участки посадку не определяют, а стоят те же шесть десятков запросов
+# к НСПД: на площадке из двадцати двух половина — нарезка по три сотки
+# (решение владельца, 19.08.2026). Порог в сотках, ноль — проверять всё.
+_LAND_SCREENING_MIN_AREA_SQM = _env_float("LAND_SCREENING_MIN_AREA_SQM", 1000.0)
 
 # Порядок вывода флагов: сперва то, что запрещает жильё, потом то, что режет
 # экономику, потом справочное. Внутри класса — как пришло от НСПД.
@@ -3199,7 +3203,7 @@ def _land_screening_verdict(findings: list[dict[str, Any]],
 
 
 @app.get("/land/screening", include_in_schema=False)
-def land_screening(cad: str = "") -> dict[str, Any]:
+def land_screening(cad: str = "", min_area_sqm: float | None = None) -> dict[str, Any]:
     """Оценка участка до финмодели: что мешает строить, по кадастровому номеру.
 
     Самостоятельная ценность продукта: человек вводит номер и сразу видит
@@ -3211,9 +3215,12 @@ def land_screening(cad: str = "") -> dict[str, Any]:
     remote = _core_api_url("/land/screening")
     if remote:
         try:
+            query = {"cad": cad}
+            if min_area_sqm is not None:
+                query["min_area_sqm"] = min_area_sqm
             with urllib.request.urlopen(
                     urllib.request.Request(
-                        remote + "?" + urllib.parse.urlencode({"cad": cad}),
+                        remote + "?" + urllib.parse.urlencode(query),
                         headers={"Accept": "application/json"}),
                     timeout=180) as response:
                 return json.loads(response.read().decode("utf-8"))
@@ -3230,6 +3237,8 @@ def land_screening(cad: str = "") -> dict[str, Any]:
     # читается как «проверено всё».
     requested = len(numbers)
     numbers = numbers[:30]
+    threshold = (_LAND_SCREENING_MIN_AREA_SQM if min_area_sqm is None
+                 else max(0.0, float(min_area_sqm)))
 
     parcels: list[dict[str, Any]] = []
     for number in numbers:
@@ -3255,7 +3264,12 @@ def land_screening(cad: str = "") -> dict[str, Any]:
         options = _nspd_options(matched)
         center = _geometry_center(matched.get("geometry")) or {}
         findings: list[dict[str, Any]] = []
-        if center:
+        # Мелкий участок в проверку не идёт: сведения ЕГРН по нему стоят один
+        # запрос, а скрининг — шестьдесят два, и посадку он всё равно не
+        # определяет. Пропуск не выдаётся за проверку: у участка стоит признак.
+        parcel_area = _land_float(_nspd_value(options, "area_sqm")) or 0.0
+        too_small = bool(threshold and parcel_area and parcel_area < threshold)
+        if center and not too_small:
             # Контур участка идёт в скрининг: зоны накладываются на него, и
             # видно, съели они угол или весь участок.
             findings = _land_screen_findings(center["lat"], center["lng"],
@@ -3275,7 +3289,9 @@ def land_screening(cad: str = "") -> dict[str, Any]:
             "permitted_use": _land_text(_nspd_value(options, "permitted_use")),
             "center": center or None,
             "findings": findings,
-            "verdict": _land_screening_verdict(findings, probed=bool(center)),
+            "too_small": too_small,
+            "verdict": _land_screening_verdict(findings,
+                                               probed=bool(center) and not too_small),
         }
         _LAND_SCREENING_CACHE[number] = (time.time(), parcel)
         parcels.append(parcel)
@@ -3286,6 +3302,8 @@ def land_screening(cad: str = "") -> dict[str, Any]:
         "parcels": parcels,
         "requested_count": requested,
         "checked_count": len(numbers),
+        "min_area_sqm": threshold,
+        "small_count": sum(1 for p in parcels if p.get("too_small")),
         "single": len(parcels) == 1,
         "verdict": _land_screening_verdict(everything, probed=probed),
         "calculated_at": datetime.now().strftime("%d.%m.%Y %H:%M"),
@@ -26891,7 +26909,9 @@ function screeningWorkingHtml(numbers,finished,seconds){
  const steps=finished.map(item=>{
   const parcel=item.parcel;
   let mark='сведений ЕГРН нет';
-  if(parcel&&parcel.found){
+  if(parcel&&parcel.too_small){
+   mark='меньше порога — не проверялся';
+  }else if(parcel&&parcel.found){
    const flags=parcel.findings||[];
    const killers=flags.filter(f=>f.flag_class==='killer').length;
    mark=killers?'есть запрет':(flags.length?flags.length+' ограничени'+(flags.length===1?'е':(flags.length<5?'я':'й')):'ограничений не найдено');
@@ -27011,10 +27031,14 @@ function renderLandScreening(data){
  box.innerHTML=`<header>${escapeHtml(v.headline||'Оценка участка')}`+
   `${found.length>1?' · участков: '+found.length:''}`+
   `${data.requested_count>data.checked_count?' · проверено '+data.checked_count+' из '+data.requested_count:''}`+
+  `${data.small_count?' · мелких пропущено: '+data.small_count:''}`+
   `${v.free_pct!=null?' · свободно от ограничений ~'+landNum(v.free_pct,0)+'% площади':''}`+
   `${missed?' · без сведений ЕГРН: '+missed:''}</header>`+
   body+spot+
-  `<footer>${escapeHtml(v.disclaimer||'')} Проверено ${escapeHtml(data.calculated_at||'')}.</footer>`;
+  `<footer>${escapeHtml(v.disclaimer||'')}`+
+  `${data.small_count?' Участки мельче '+landNum((data.min_area_sqm||0)/100,0)+' соток не проверялись: '+
+    'посадку они не определяют, а стоят столько же, сколько крупные.':''}`+
+  ` Проверено ${escapeHtml(data.calculated_at||'')}.</footer>`;
 }
 
 function landNum(value,digits){
