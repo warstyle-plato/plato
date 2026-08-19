@@ -49,7 +49,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.19.12"
+VERSION = "0.19.13"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -12276,6 +12276,25 @@ def build_project_workbook(
         if (key.endswith("_pct") or key.endswith("_pp")) and key not in _V4_NO_PCT_KEYS:
             number /= 100.0
         put(coord, number=number, label=key)
+
+    # Зачёт переданных муниципалитету площадей уменьшает плату так же, как
+    # льгота, и в книге ложится в ту же ячейку: строку в шаблон не вставить —
+    # поедут все ссылки, а формулы листов ВРИ и ОТЧЁТ вычитают именно B82.
+    # Разбивка «льгота отдельно, зачёт отдельно» остаётся в приложении и в
+    # отчёте; книге важно, чтобы плата к оплате совпадала с движком.
+    transfer_offset = 0.0
+    try:
+        transfer_offset = max(0.0, float(x.get("vri_transfer_offset_mln") or 0))
+    except Exception:
+        missing.append("vri_transfer_offset_mln: не число")
+    if transfer_offset > 0:
+        relief_value = 0.0
+        try:
+            relief_value = max(0.0, float(x.get("vri_relief_mln") or 0))
+        except Exception:
+            relief_value = 0.0
+        put(_V4_INPUT_CELLS["vri_relief_mln"], number=relief_value + transfer_offset,
+            label="vri_relief_mln + vri_transfer_offset_mln")
 
     for key, coord in _V4_BOOL_CELLS.items():
         put(coord, text="Да" if x.get(key) else "Нет", label=key)

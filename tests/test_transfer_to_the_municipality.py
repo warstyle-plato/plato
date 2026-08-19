@@ -82,3 +82,55 @@ def test_the_transferred_metres_leave_the_saleable_area():
     assert "не продаются" in body
     # У соцобъектов передаваемая — вся площадь объекта, правило туда не идёт.
     assert "TEP_RATIOS[key]" in body.split("col==='transfer'")[1][:120]
+
+
+def test_the_workbook_gets_the_offset_too():
+    """Книга должна платить столько же, сколько движок.
+
+    Строку в шаблон не вставить — поедут все ссылки, — а формулы листов ВРИ и
+    ОТЧЁТ вычитают из платы именно ячейку льготы. Поэтому зачёт ложится туда же
+    суммой: у книги и движка одна плата к оплате, и `audit_plato_workbook` их
+    сводит без расхождения.
+    """
+    import io
+
+    openpyxl = pytest.importorskip("openpyxl")
+    inputs = {**BASE, "vri_relief_mode": "amount", "vri_relief_mln": 200.0,
+              "vri_transfer_offset_mln": 300.0}
+    content, _, missing = core.build_project_workbook(
+        inputs, copy.deepcopy(core.TEP_DEFAULT), [], {}, project_name="Проверка")
+    assert not [item for item in missing if "vri" in item], missing
+    book = openpyxl.load_workbook(io.BytesIO(content))
+    assert book["Вводные"]["B82"].value == pytest.approx(500.0)
+
+    # Столько же остаётся к оплате в движке: 1 000 − 200 льготы − 300 зачёта.
+    _, net = core.vri_relief(inputs, 1000e6)
+    assert net == pytest.approx(500e6)
+
+
+def test_the_workbook_builds_on_the_reduced_saleable_area():
+    """Книга берёт продаваемую из ТЭП — значит переданное в неё не попадает.
+
+    Лист ТЭП книги v4 собирается формулами из «Вводных»: ГНС и продаваемая
+    приходят отдельными ячейками. Передали метры городу — продаваемая меньше,
+    ГНС на месте: строят столько же, продают меньше.
+    """
+    import io
+
+    openpyxl = pytest.importorskip("openpyxl")
+
+    def cells(tep):
+        content, _, _ = core.build_project_workbook(
+            {**BASE}, tep, [], {}, project_name="Проверка")
+        sheet = openpyxl.load_workbook(io.BytesIO(content))["Вводные"]
+        return sheet["W88"].value, sheet["Z88"].value
+
+    plain = copy.deepcopy(core.TEP_DEFAULT)
+    handed = copy.deepcopy(core.TEP_DEFAULT)
+    handed["apartments"]["saleable"] -= 10000
+    handed["apartments"]["transfer"] = 10000
+
+    gns_before, saleable_before = cells(plain)
+    gns_after, saleable_after = cells(handed)
+    assert gns_before == gns_after, "ГНС не меняется: метры строятся"
+    assert saleable_before - saleable_after == pytest.approx(10000)
