@@ -855,6 +855,29 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
             city=reference,
             fresh_since=fresh_since,
         )
+        # Медиана действующих прайсов — это уровень рынка сегодня, у проектов
+        # на разных стадиях: кто-то распродан наполовину и поднял цену, кто-то
+        # только вышел. Стартовой ценой она быть не может, и вопрос владельца
+        # об этом верный.
+        #
+        # Второй ориентир — медиана цен входа соседей: у каждого проекта это
+        # цена его самого дешёвого лота, то есть та, с которой покупателя
+        # заводят. Для нового проекта, у которого продукт ещё не готов и
+        # истории нет, сравнимо именно это число.
+        entry_prices = [
+            float(row["price_per_sqm_min"])
+            for row in peers
+            if row.get("price_per_sqm_min")
+        ]
+        if entry_prices:
+            entry = statistics.median(entry_prices)
+            hint["entry_per_sqm"] = int(round(entry))
+            hint["entry_th_per_sqm"] = round(entry / 1000, 1)
+            hint["entry_sample"] = len(entry_prices)
+            if hint.get("price_per_sqm"):
+                hint["entry_gap_pct"] = round(
+                    100 * (entry - hint["price_per_sqm"]) / hint["price_per_sqm"], 1
+                )
         return {
             "price_hint": hint,
             "subject": {

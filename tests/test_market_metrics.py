@@ -1472,30 +1472,28 @@ def test_a_bare_site_gets_a_verdict_about_what_to_build(tmp_path) -> None:
     assert report["analysis"]["overall"] == site
 
 
-def test_a_neighbour_curve_returns_to_the_chart_by_a_tick() -> None:
-    """Полоса скрыла отдельные кривые — галочка возвращает нужную.
+def test_the_neighbours_to_show_are_picked_in_one_place() -> None:
+    """Галочки стояли в каждой таблице, а выбор всё равно общий.
 
-    Полоса отвечает на «где я относительно рынка», но иногда надо посмотреть
-    на конкретного соседа рядом со своей линией, не уходя в его карточку.
-    Отчёт при этом не пересобирается: это вопрос вида, а не расчёта.
+    Отметив соседа в разделе о цене, человек видел галочку появившейся во
+    всех остальных и вправе был счесть это ошибкой. Одно поведение — одно
+    место: список соседей в шапке отчёта, и отмечают только там.
     """
     from market_search.cabinet import CABINET_PAGE
 
     assert "const onChart=new Set();" in CABINET_PAGE
-    assert 'data-chart="${esc(r.complex_id)}"' in CABINET_PAGE
-    assert "shown:onChart.has(String(p.complex_id))" in CABINET_PAGE
-    # Сосед без истории цены отмечен быть не может — рисовать нечего.
-    assert "' disabled title=\"истории цены нет\"'" in CABINET_PAGE
-    # Перерисовка без запроса к серверу.
-    assert "if(box.checked) onChart.add(id); else onChart.delete(id);\n      render(lastReport);" in CABINET_PAGE
-    # Галочка стоит в таблице под самим графиком, а не в общем списке внизу:
-    # смотрят на кривые и тут же отмечают, чью показать.
+    assert 'class="whoshow"' in CABINET_PAGE
+    assert "<b>Показать на графиках:</b>" in CABINET_PAGE
+    # Колонок с галочками в таблицах разделов больше нет.
     section = CABINET_PAGE[CABINET_PAGE.index("function sectionTable"):]
     section = section[: section.index("if(!cols) return")]
-    assert "price:[pick,...base," in section
-    assert "pace:[...base," in section, "галочка только у графика цены"
-    # В печать колонка не идёт.
-    assert "  td.pick,th.pick{display:none}" in CABINET_PAGE
+    assert "pick" not in section
+    # Сосед без помесячных чисел отметиться не может, и причина названа.
+    assert 'title="помесячных чисел по нему нет"' in CABINET_PAGE
+    # Перерисовка без запроса к серверу.
+    assert "if(box.checked) onChart.add(id); else onChart.delete(id);\n      render(lastReport);" in CABINET_PAGE
+    # В печать список выбора не идёт.
+    assert "  .whoshow{display:none}" in CABINET_PAGE
 
 
 def test_only_the_subject_is_labelled_on_screen() -> None:
@@ -1760,3 +1758,213 @@ def test_the_price_chart_says_how_many_bars_it_could_draw() -> None:
 
     assert "Столбик есть у ${withPrice} из ${peers.length} соседей выборки" in CABINET_PAGE
     assert "В разделах о темпе, лоте" in CABINET_PAGE
+
+
+def test_the_hint_finds_the_plot_of_a_loaded_project(tmp_path) -> None:
+    """«Ввёл участок, а кнопка пишет: укажите участок».
+
+    У загруженного проекта вводные восстановлены, ТЭП и плата за ВРИ
+    посчитаны, а текст в поле участка пустой — он не часть модели и с
+    проектом не сохраняется. Кнопка смотрела только в это поле и отвечала
+    «укажите участок» там, где участок известен и разобран.
+
+    Порядок источников — от точного к приблизительному: координаты
+    разобранного участка, потом запрос, которым его нашли, потом набранное.
+    """
+    import json
+    import re
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if not node:
+        import pytest
+
+        pytest.skip("node не установлен")
+
+    from market_search.ui_v6 import PRICE_HINT_SCRIPT
+
+    body = PRICE_HINT_SCRIPT[PRICE_HINT_SCRIPT.index("  const CADASTRE="):]
+    body = body[: body.index("\n  //")]
+
+    harness = """
+let fields={};
+const document={getElementById:id=>fields[id]||null};
+let landLookup=null;
+"""
+    driver = """
+const out={};
+// Загруженный проект: поле пустое, но участок разобран и знает координаты.
+fields={cadastralNumbers:{value:''}};
+landLookup={query:'77:07:0013005:1042', results:[
+  {found:false, center:null},
+  {found:true, center:{lat:55.71584, lng:37.43303}},
+]};
+out.loaded=locationHint();
+
+// Поле заполнено руками — берётся первый участок из списка.
+fields={cadastralNumbers:{value:'77:07:0013005:1042, 77:07:0013005:1043'}};
+landLookup=null;
+out.typed=locationHint();
+
+// Ни поля, ни координат — но запрос, которым участок нашли, остался.
+fields={cadastralNumbers:{value:''}};
+landLookup={query:'Москва, Саввинская наб, д 25', results:[{found:true, center:null}]};
+out.query=locationHint();
+
+// Пусто везде — это отказ, а не выдуманное место.
+fields={}; landLookup=null;
+out.nothing=locationHint();
+
+// Адрес, набранный руками в том же поле: этот формат прямо предложен в
+// подсказке поля, и запятая в нём часть адреса, а не разделитель.
+fields={cadastralNumbers:{value:'Московская область, г. Мытищи, ул. Мира, 1'}};
+landLookup=null;
+out.address=locationHint();
+console.log(JSON.stringify(out));
+"""
+    path = tmp_path / "hint-where.js"
+    path.write_text(harness + body + driver, encoding="utf-8")
+    run = subprocess.run([node, str(path)], capture_output=True, text=True, timeout=30)
+    assert run.returncode == 0, run.stderr
+    result = json.loads(run.stdout.strip().splitlines()[-1])
+
+    # Координаты однозначны и разбора не требуют — они первыми.
+    assert result["loaded"] == {"latitude": 55.71584, "longitude": 37.43303}
+    assert result["typed"] == {"address": "77:07:0013005:1042"}
+    # Адрес запятой не режется: она разделяет участки в списке номеров, а
+    # внутри адреса — часть его самого.
+    assert result["query"] == {"address": "Москва, Саввинская наб, д 25"}
+    assert result["nothing"] is None
+    assert result["address"] == {"address": "Московская область, г. Мытищи, ул. Мира, 1"}
+
+
+def test_picked_peers_are_drawn_on_every_chart_not_only_price() -> None:
+    """Галочка была одна — у цены, а вопросов пять.
+
+    ДДУ, метры, лот и остаток сравнивают ровно так же: своё против соседа.
+    Столбики остаются у своего проекта — сравнивают с ним, а не всех со
+    всеми, — а отмеченные ложатся поверх линиями. Цвет у проекта один на все
+    графики: отмеченный в одном разделе узнаётся в остальных.
+    """
+    from market_search.cabinet import CABINET_PAGE
+
+    assert "const PICKED=['#1367AE'" in CABINET_PAGE
+    assert "const pickedColour=(rows,row)=>PICKED[rows.indexOf(row)%PICKED.length];" in CABINET_PAGE
+
+    sales = CABINET_PAGE[CABINET_PAGE.index("function salesChart"):]
+    sales = sales[: sales.index("function lotChart")]
+    # Одинаковые числа — одинаковой формой: сосед рисуется таким же столбиком
+    # рядом, а не линией поверх.
+    assert "const picked=rows.filter(r=>!r.own&&r.shown);" in sales
+    assert "const bw=Math.max(3,group/(1+picked.length));" in sales
+    assert "const series=[{row:own,colour:'#C4581B'}]" in sales
+    assert "<path" not in sales.split("const series=")[1].split("months.forEach")[1][:400]
+
+    remain = CABINET_PAGE[CABINET_PAGE.index("function remainChart"):]
+    remain = remain[: remain.index("\n}")]
+    assert "const picked=rows.filter(r=>!r.own&&r.shown);" in remain
+    # Шкала считается вместе с отмеченными, иначе линия соседа уходит за поле.
+    assert "picked.flatMap(r=>(r.points||[]).map(p=>p.rem)" in remain
+
+
+def test_the_hint_separates_the_market_level_from_a_start_price(tmp_path) -> None:
+    """«Рекомендуемая цена — видимо средняя. Значит стартовой быть не может?»
+
+    Вопрос верный. Медиана действующих прайсов — уровень рынка сегодня, у
+    проектов на разных стадиях: кто-то распродан наполовину и поднял цену,
+    кто-то только вышел. Для старта продаж сравнима цена входа соседей —
+    медиана их самых дешёвых лотов, та, с которой заводят покупателя.
+    """
+    from market_search.metrics import BLOCK_PRICE
+    from market_search.service_v6 import MarketDiscoveryService
+
+    service = MarketDiscoveryService(tmp_path)
+    segments = {i: "Бизнес" for i in (1, 2, 3)}
+    metrics = {
+        1: {"price_per_sqm": 500_000, "price_per_sqm_min": 430_000,
+            "observed_at": "2026-08-18", "units_per_month": 5.0},
+        2: {"price_per_sqm": 520_000, "price_per_sqm_min": 450_000,
+            "observed_at": "2026-08-18", "units_per_month": 6.0},
+        3: {"price_per_sqm": 560_000, "price_per_sqm_min": 470_000,
+            "observed_at": "2026-08-18", "units_per_month": 4.0},
+    }
+    projects = [
+        {"complex_id": i, "name": f"Сосед {i}", "developer": "—",
+         "latitude": 55.7300 + i / 1000, "longitude": 37.4400,
+         "address": "Москва, ЗАО, район Можайский, дом"}
+        for i in (1, 2, 3)
+    ]
+    service.pulse = _fake_pulse(segments, metrics, projects)
+
+    hint = service.build_report("55.73050, 37.44050", codes=[BLOCK_PRICE])["price_hint"]
+
+    assert hint["price_per_sqm"] == 520_000, "уровень рынка — медиана действующих"
+    # Цена входа считается по самым дешёвым лотам соседей и ниже уровня рынка.
+    assert hint["entry_per_sqm"] == 450_000
+    assert hint["entry_sample"] == 3
+    assert hint["entry_gap_pct"] == -13.5
+
+
+def test_the_premium_names_the_trade_not_only_its_halves() -> None:
+    """«И по цене соседей? Не только темпом?» — выбор один, а не две половины.
+
+    Деньги премии и потерянный срок стояли порознь, и складывать их человек
+    должен был в уме. Отказ от премии — это одновременно минус её деньги и
+    минус её срок; названы вместе, и названо допущение: цена соседей не
+    покупает их темп сама по себе.
+    """
+    from market_search.verdict import price_of_premium
+
+    subject = {"price_per_sqm": 708_109, "remaining_area": 10_534,
+               "remaining_units": 165, "units_per_month": 4.6}
+    peers = [
+        {"price_per_sqm": 560_000, "units_per_month": 12.0},
+        {"price_per_sqm": 570_000, "units_per_month": 13.0},
+    ]
+    money = price_of_premium(subject, peers)
+
+    assert money["premium_on_remainder"] == 1_507.5
+    assert money["months_lost"] == 22.7
+    # Цена месяца — деньги премии, делённые на выигранный срок.
+    assert money["price_of_month"] == 66.4
+    assert "Отказ от премии" in money["trade"]
+    assert "не покупает их темп сама по себе" in money["trade"]
+
+
+def test_hovering_a_month_shows_its_numbers_on_every_chart() -> None:
+    """«При наведении на точку данные нельзя показывать?» — можно и нужно.
+
+    Полоса на всю высоту месяца, а не попадание в саму точку: столбик бывает
+    шириной три пикселя, а линия — полтора, и вопрос всё равно про месяц
+    целиком, а не про одну серию.
+    """
+    from market_search.cabinet import CABINET_PAGE
+
+    # Каждая функция режется по своей границе: блок, вставленный не в ту
+    # функцию, обязан быть виден тесту, а не спрятаться в соседней.
+    for name, ends, needle in (
+        ("trendChart", "function salesChart", "медиана соседей: ${num(b.p50)} ₽/м²"),
+        ("salesChart", "function lotChart", "${one.row.name}: ${num(v,digits)} ${unit}"),
+        ("remainChart", "// Премия по месяцам", "${own.name}: ${num(pts[i].rem)} лотов"),
+    ):
+        body = CABINET_PAGE[CABINET_PAGE.index("function " + name):]
+        body = body[: body.index(ends)]
+        assert needle in body, name
+        assert 'fill="transparent">' in body, name
+
+
+def test_right_hand_labels_do_not_overlap_on_the_bar_charts() -> None:
+    """«Кутузов Сити · 48,4» и «медиана · 79,5» легли друг на друга.
+
+    Подписи ставились каждая на своей высоте: стоило числам сойтись, и они
+    накрывали друг друга. Тот же двухпроходный расклад, что на графике цены,
+    — расталкивание вниз и возврат в поле снизу вверх.
+    """
+    from market_search.cabinet import CABINET_PAGE
+
+    sales = CABINET_PAGE[CABINET_PAGE.index("function salesChart"):]
+    sales = sales[: sales.index("function lotChart")]
+    assert "tags.sort((a,b)=>a.y-b.y);" in sales
+    assert "tags.forEach(t=>{t.at=Math.max(t.y,prev+12);prev=t.at});" in sales
+    assert "for(let i=tags.length-1;i>=0;i--){tags[i].at=Math.min(tags[i].at,floor);floor=tags[i].at-12}" in sales

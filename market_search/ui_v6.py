@@ -250,18 +250,46 @@ def install(core: Any) -> None:
 # установку значит выкатывать лишнее.
 PRICE_HINT_SCRIPT = """<script id="market-v6-price-hint">
 (function(){
+  // Где взять место. Поле участка — не единственный источник и не самый
+  // надёжный: у загруженного проекта вводные восстановлены, ТЭП и плата за
+  // ВРИ посчитаны, а текст в поле пустой — он не часть модели. Кнопка при
+  // этом отвечала «укажите участок», хотя участок известен и разобран.
+  //
+  // Порядок от точного к приблизительному: разобранный участок отдаёт
+  // координаты — они однозначны и разбора не требуют; дальше запрос, которым
+  // его нашли; и только потом то, что набрано в поле сейчас.
+  //
+  // Участков в поле бывает несколько, и разделяют их не только переносом и
+  // точкой с запятой — чаще всего запятой. Без неё весь список уезжал в
+  // геокодер одной строкой: «400 Bad Request» на пять номеров подряд.
+  // Запятая разделяет участки в списке номеров — и стоит внутри адреса.
+  // «Московская область, г. Мытищи, ул. Мира, 1» резалось до «Московская
+  // область», то есть до области целиком, а этот формат сам предложен в
+  // подсказке поля. Поэтому по запятой делим только список номеров.
+  const CADASTRE=/^\\s*\\d{2}:\\d{2}:\\d{6,7}:\\d{1,7}\\s*(?:[,;]|$)/;
+  function firstPlace(value){
+    const text=String(value||'');
+    const parts=CADASTRE.test(text)?text.split(/[\\n;,]/):text.split(/[\\n;]/);
+    return (parts[0]||'').trim();
+  }
   function locationHint(){
-    // Участков в поле бывает несколько, и разделяют их не только переносом и
-    // точкой с запятой — чаще всего запятой. Без неё весь список уезжал в
-    // ориентир одной строкой, а оттуда в геокодер: Nominatim отвечал на пять
-    // кадастровых номеров подряд «400 Bad Request», и кнопка ломалась ровно
-    // на том вводе, ради которого её сделали. Берём первый участок: ориентир
-    // — одно число об одном месте, а площадка у этих номеров общая.
+    const found=(typeof landLookup!=='undefined'&&landLookup&&landLookup.results)||[];
+    for(var i=0;i<found.length;i++){
+      var row=found[i], center=row&&row.found&&row.center;
+      if(center&&center.lat!==null&&center.lat!==undefined
+         &&center.lng!==null&&center.lng!==undefined){
+        return {latitude:Number(center.lat),longitude:Number(center.lng)};
+      }
+    }
     const cad=document.getElementById('cadastralNumbers');
-    const raw=cad?String(cad.value||'').split(/[\\n;,]/)[0].trim():'';
-    if(raw)return raw;
+    const typed=firstPlace(cad?cad.value:'');
+    if(typed)return {address:typed};
+    const query=(typeof landLookup!=='undefined'&&landLookup&&landLookup.query)||'';
+    const stored=firstPlace(query);
+    if(stored)return {address:stored};
     const md=document.getElementById('mdAddress');
-    return md?String(md.value||'').trim():'';
+    const panel=md?String(md.value||'').trim():'';
+    return panel?{address:panel}:null;
   }
   // «Кнопка на месте» — это не «кнопка где-то есть». Проверялось наличие узла
   // с нужным id, а вводные перерисовываются целиком: при импорте участка, при
@@ -300,7 +328,7 @@ PRICE_HINT_SCRIPT = """<script id="market-v6-price-hint">
       btn.disabled=true; note.textContent='Считаю…';
       try{
         const response=await fetch('/market/price-hint',{method:'POST',
-          headers:{'Content-Type':'application/json'},body:JSON.stringify({address:where})});
+          headers:{'Content-Type':'application/json'},body:JSON.stringify(where)});
         const payload=await response.json();
         if(!response.ok||!payload||payload.available===false){
           note.textContent=(payload&&(payload.reason||payload.detail))||'Ориентир не рассчитан.';

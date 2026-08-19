@@ -227,8 +227,13 @@ border-radius:9px;box-shadow:0 6px 22px rgba(20,35,60,.13);max-height:320px;over
 #sug div:last-child,#addsug div:last-child{border-bottom:0}
 #sug div:hover,#sug div.on,#addsug div:hover{background:#eef4fa}
 #sug small,#addsug small{display:block;color:var(--dim);font-size:12px}
-td.pick,th.pick{width:56px;text-align:center}
-td.pick input{cursor:pointer}
+/* Кто показан на графиках — один список на весь отчёт, в его шапке. */
+.whoshow{margin-top:12px;font-size:13px;line-height:2}
+.whoshow b{font-weight:600;margin-right:6px}
+.whoshow .chip{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--line);
+border-radius:20px;padding:3px 10px;margin:0 6px 6px 0;cursor:pointer;background:#fff}
+.whoshow .chip:has(input:checked){border-color:var(--blue);color:var(--blue)}
+.whoshow .chip.off{opacity:.45;cursor:default}
 
 .cityref{display:block;margin:10px 0 2px;font-size:13.5px}
 .cityref .muted{font-size:12.5px}
@@ -277,7 +282,7 @@ g.bub.on circle{fill-opacity:.75}
   main{max-width:none;padding:0}
   #form, #askcard, .chips, button, #hintout, .cardwrap{display:none !important}
   #bubble{display:none}
-  td.pick,th.pick{display:none}
+  .whoshow{display:none}
   .printviews{display:block}
   /* Ни наведённая, ни тапнутая подпись на бумагу не идёт: на печати нет ни
      того ни другого, а один случайно оставшийся ярлык читался бы как
@@ -475,7 +480,6 @@ function trendChart(series){
   // линиями, как раньше: полоса из одного-двух проектов ничего не говорит.
   // Отмеченные галочкой в таблице — поверх полосы, каждый своим цветом.
   // Их не больше горстки: галочек ставят две-три, чтобы сравнить с собой.
-  const PICKED=['#1367AE','#2E7D5B','#8E44AD','#B9770E','#0E7C86','#7D3C98'];
   const picked=peers.filter(s=>s.shown);
   picked.forEach((s,i)=>{
     const c=PICKED[i%PICKED.length];
@@ -517,6 +521,25 @@ function trendChart(series){
        +`<text x="${W-R+8}" y="${stack[i]+3}" font-size="10.5" fill="${e.colour||(e.own?'#C4581B':'#5b6b7d')}"`
        +`${e.own?' font-weight="600"':''}>${esc(e.n.length>19?e.n.slice(0,18)+'…':e.n)} · ${num(e.v)}</text>`;
   });
+  // Наведение на месяц: своя цена, границы полосы, медиана и отмеченные —
+  // все числа этого месяца разом. Полоса на всю высоту, потому что вопрос
+  // про месяц, а не про попадание в конкретную линию.
+  months.forEach((m,i)=>{
+    const b=band[i];
+    const lines=[m];
+    if(own){const v=at(own,m); if(v!==null)lines.push(`${own.name}: ${num(v)} ₽/м²`)}
+    picked.forEach(p=>{const v=at(p,m); if(v!==null)lines.push(`${p.name}: ${num(v)} ₽/м²`)});
+    if(b){
+      lines.push(`медиана соседей: ${num(b.p50)} ₽/м²`);
+      lines.push(`полоса: ${num(b.p25)} — ${num(b.p75)} ₽/м² (${b.n} проект.)`);
+    }
+    if(lines.length<2)return;
+    const half=(W-L-R)/Math.max(months.length-1,1)/2;
+    svg+=`<rect x="${Math.max(L,x(i)-half).toFixed(1)}" y="${T}"`
+      +` width="${Math.min(half*2,W-R-Math.max(L,x(i)-half)).toFixed(1)}"`
+      +` height="${(H-B-T).toFixed(1)}" fill="transparent">`
+      +`<title>${esc(lines.join('\n'))}</title></rect>`;
+  });
   const note=known.length>1
     ? `Плотная полоса — половина соседей (от нижнего квартиля до верхнего), бледная — весь разброс`
       +` выборки, пунктир — медиана рынка без вашего проекта. Полоса построена по ${last.n} проектам`
@@ -543,19 +566,37 @@ function salesChart(rows, key, unit, digits){
     const v=rows.filter(r=>!r.own).map(r=>at(r,m,key)).filter(x=>x!==null).sort((a,b)=>a-b);
     return v.length?(v.length%2?v[(v.length-1)/2]:(v[v.length/2-1]+v[v.length/2])/2):null;
   });
-  const vals=months.map(m=>at(own,m,key)).filter(v=>v!==null).concat(med.filter(v=>v!==null));
+  // Шкала считается вместе с отмеченными: у соседа числа бывают вдесятеро
+  // больше, и его столбик ушёл бы за поле, а свой прижался бы ко дну.
+  const vals=months.map(m=>at(own,m,key)).filter(v=>v!==null)
+    .concat(med.filter(v=>v!==null))
+    .concat(rows.filter(r=>!r.own&&r.shown).flatMap(r=>months.map(m=>at(r,m,key)).filter(v=>v!==null)));
   const hi=Math.max(...vals,1)*1.15;
   const W=620,H=210,L=44,R=110,T=12,B=28;
-  const bw=Math.max(4,(W-L-R)/months.length*0.62);
+  // Отмеченные соседи — такими же столбиками рядом, а не линиями поверх.
+  // Линия поверх столбиков читалась как другая величина: одинаковые числа
+  // надо показывать одинаковой формой.
+  const picked=rows.filter(r=>!r.own&&r.shown);
+  const slot=(W-L-R)/months.length;
+  const group=slot*0.72;
+  const bw=Math.max(3,group/(1+picked.length));
   const x=i=>L+(i+0.5)*(W-L-R)/months.length;
   const y=v=>T+(H-T-B)*(1-v/hi);
   let svg=`<svg viewBox="0 0 ${W} ${H}" width="100%" role="img">`;
   [0,0.5,1].forEach(f=>{const v=hi*f;
     svg+=`<line x1="${L}" y1="${y(v)}" x2="${W-R}" y2="${y(v)}" stroke="#e6ecf2"/>`
        +`<text x="${L-6}" y="${y(v)+4}" text-anchor="end" font-size="10" fill="#8798a8">${num(v)}</text>`;});
+  const series=[{row:own,colour:'#C4581B'}]
+    .concat(picked.map(r=>({row:r,colour:pickedColour(picked,r)})));
   months.forEach((m,i)=>{
-    const v=at(own,m,key);
-    if(v!==null) svg+=`<rect x="${x(i)-bw/2}" y="${y(v)}" width="${bw}" height="${Math.max(1,H-B-y(v))}" rx="2" fill="#C4581B"/>`;
+    series.forEach((one,k)=>{
+      const v=at(one.row,m,key);
+      if(v===null)return;
+      const left=x(i)-group/2+k*bw;
+      svg+=`<rect x="${left.toFixed(1)}" y="${y(v)}" width="${bw.toFixed(1)}"`
+        +` height="${Math.max(1,H-B-y(v)).toFixed(1)}" rx="2" fill="${one.colour}">`
+        +`<title>${esc(one.row.name)} · ${m} · ${num(v,digits)} ${unit}</title></rect>`;
+    });
     if(i%Math.ceil(months.length/6)===0)
       svg+=`<text x="${x(i)}" y="${H-9}" text-anchor="middle" font-size="10" fill="#8798a8">${m.slice(2)}</text>`;
   });
@@ -567,11 +608,45 @@ function salesChart(rows, key, unit, digits){
   // впритык: «проект 4» читалось как «проект номер четыре», а это четыре ДДУ
   // за последний месяц у проекта, у которого есть имя.
   const ownName=esc((own.name||'проект').slice(0,16));
-  svg+=`<text x="${W-R+8}" y="${y(at(own,lastOwn,key))+4}" font-size="10.5" fill="#C4581B" font-weight="600">`
-     +`${ownName} · ${num(at(own,lastOwn,key),digits)} ${unit}</text>`;
+  // Подписи справа расталкиваются, а не ставятся каждая на своей высоте:
+  // «Кутузов Сити · 48,4» и «медиана · 79,5» ложились друг на друга, стоило
+  // числам сойтись. Тот же двухпроходный расклад, что на графике цены.
+  const tags=[{y:y(at(own,lastOwn,key)),
+               text:`${ownName} · ${num(at(own,lastOwn,key),digits)} ${unit}`,
+               colour:'#C4581B', bold:true}];
   const lastMed=rows.length<2?null:[...med].reverse().find(v=>v!==null);
   if(lastMed!==undefined&&lastMed!==null)
-    svg+=`<text x="${W-R+8}" y="${y(lastMed)+4}" font-size="10.5" fill="#16202b">медиана · ${num(lastMed,digits||1)} ${unit}</text>`;
+    tags.push({y:y(lastMed),text:`медиана · ${num(lastMed,digits||1)} ${unit}`,colour:'#16202b'});
+  picked.forEach(r=>{
+    const m=[...months].reverse().find(mm=>at(r,mm,key)!==null);
+    if(m===undefined)return;
+    const v=at(r,m,key);
+    tags.push({y:y(v),colour:pickedColour(picked,r),
+               text:`${esc(r.name.length>16?r.name.slice(0,15)+'…':r.name)} · ${num(v,digits)} ${unit}`});
+  });
+  tags.sort((a,b)=>a.y-b.y);
+  let prev=-99;
+  tags.forEach(t=>{t.at=Math.max(t.y,prev+12);prev=t.at});
+  let floor=H-4;
+  for(let i=tags.length-1;i>=0;i--){tags[i].at=Math.min(tags[i].at,floor);floor=tags[i].at-12}
+  tags.forEach(t=>{
+    svg+=`<text x="${W-R+8}" y="${(t.at+4).toFixed(1)}" font-size="10.5" fill="${t.colour}"`
+      +`${t.bold?' font-weight="600"':''}>${t.text}</text>`;
+  });
+
+  // Наведение на месяц показывает все числа этого месяца разом. Прозрачная
+  // полоса на всю высоту, а не попадание в сам столбик: попасть в столбик
+  // шириной три пикселя нельзя, а вопрос всё равно про месяц целиком.
+  months.forEach((m,i)=>{
+    const lines=[m].concat(series.map(one=>{
+      const v=at(one.row,m,key);
+      return v===null?null:`${one.row.name}: ${num(v,digits)} ${unit}`;
+    }).filter(Boolean));
+    if(med[i]!==null&&med[i]!==undefined) lines.push(`медиана соседей: ${num(med[i],digits||1)} ${unit}`);
+    svg+=`<rect x="${(x(i)-slot/2).toFixed(1)}" y="${T}" width="${slot.toFixed(1)}"`
+      +` height="${(H-B-T).toFixed(1)}" fill="transparent">`
+      +`<title>${esc(lines.join('\n'))}</title></rect>`;
+  });
   return '<div class="wrap">'+svg+'</svg></div>';
 }
 
@@ -594,8 +669,13 @@ function remainChart(rows){
   const own=rows.find(r=>r.own);
   const pts=(own?own.points:[]).filter(p=>p.rem!==null&&p.rem!==undefined);
   if(pts.length<2) return '';
+  const picked=rows.filter(r=>!r.own&&r.shown);
   const W=620,H=170,L=52,R=96,T=12,B=26;
-  const hi=Math.max(...pts.map(p=>p.rem))*1.08, lo=Math.min(...pts.map(p=>p.rem))*0.9;
+  // Шкала считается вместе с отмеченными: у соседа остаток бывает вдесятеро
+  // больше, и его линия ушла бы за поле, а свой проект прижался бы ко дну.
+  const all=pts.map(p=>p.rem).concat(
+    picked.flatMap(r=>(r.points||[]).map(p=>p.rem).filter(v=>v!==null&&v!==undefined)));
+  const hi=Math.max(...all)*1.08, lo=Math.min(...all)*0.9;
   const x=i=>L+i*(W-L-R)/(pts.length-1);
   const y=v=>T+(H-T-B)*(1-(v-lo)/(hi-lo||1));
   let svg=`<svg viewBox="0 0 ${W} ${H}" width="100%" role="img">`;
@@ -609,6 +689,36 @@ function remainChart(rows){
   const perMonth=(first.rem-last.rem)/(pts.length-1);
   svg+=`<text x="${W-R+8}" y="${y(last.rem)+4}" font-size="10.5" fill="#1367AE" font-weight="600">${num(last.rem)} лотов</text>`;
   svg+=`<text x="${W-R+8}" y="${y(last.rem)+18}" font-size="10" fill="#8798a8">−${num(perMonth,1)}/мес</text>`;
+  // Месяцы у соседа свои: линия строится по общей сетке дат своего проекта,
+  // а точки, которых у него нет, пропускаются — рисовать их нулями значило бы
+  // показать распроданность там, где данных просто нет.
+  const months=pts.map(p=>p.month);
+  picked.forEach(r=>{
+    const at=m=>{const p=(r.points||[]).find(p=>p.month===m);
+      return p&&p.rem!==null&&p.rem!==undefined?p.rem:null};
+    const d=months.map((m,i)=>{const v=at(m);
+      return v===null?null:`${i?'L':'M'}${x(i).toFixed(1)} ${y(v).toFixed(1)}`}).filter(Boolean).join(' ');
+    if(!d)return;
+    const colour=pickedColour(picked,r);
+    svg+=`<path d="${d}" fill="none" stroke="${colour}" stroke-width="1.8"><title>${esc(r.name)}</title></path>`;
+    const lastMonth=[...months].reverse().find(m=>at(m)!==null);
+    if(lastMonth!==undefined)
+      svg+=`<text x="${W-R+8}" y="${y(at(lastMonth))+4}" font-size="10" fill="${colour}">`
+        +`${esc(r.name.length>16?r.name.slice(0,15)+'…':r.name)} · ${num(at(lastMonth))}</text>`;
+  });
+  const monthsOf=pts.map(p=>p.month);
+  monthsOf.forEach((m,i)=>{
+    const lines=[m,`${own.name}: ${num(pts[i].rem)} лотов`];
+    picked.forEach(r=>{
+      const p=(r.points||[]).find(p=>p.month===m);
+      if(p&&p.rem!==null&&p.rem!==undefined)lines.push(`${r.name}: ${num(p.rem)} лотов`);
+    });
+    const half=(W-L-R)/Math.max(pts.length-1,1)/2;
+    svg+=`<rect x="${Math.max(L,x(i)-half).toFixed(1)}" y="${T}"`
+      +` width="${Math.min(half*2,W-R-Math.max(L,x(i)-half)).toFixed(1)}"`
+      +` height="${(H-B-T).toFixed(1)}" fill="transparent">`
+      +`<title>${esc(lines.join('\n'))}</title></rect>`;
+  });
   return '<div class="wrap">'+svg+'</svg></div>';
 }
 
@@ -643,6 +753,11 @@ let bubbleView='speed';
 // не уходя в его карточку, а рядом со своей линией. Галочка в таблице это и
 // делает; выбор переживает пересчёт разделов, потому что живёт здесь.
 const onChart=new Set();
+// Цвета отмеченных — одни на все графики: проект, отмеченный в одном разделе,
+// узнаётся тем же цветом в остальных. Их шесть, больше и не нужно: отмечают
+// две-три штуки, чтобы сравнить с собой.
+const PICKED=['#1367AE','#2E7D5B','#8E44AD','#B9770E','#0E7C86','#7D3C98'];
+const pickedColour=(rows,row)=>PICKED[rows.indexOf(row)%PICKED.length];
 
 function bubbleChart(rows, view){
   const V=view||VIEWS[0];
@@ -775,6 +890,7 @@ function deepCard(d){
   return `<div class="card"><h2>Что стоит премия</h2>`
     +(story?`<div class="say watch"><b>⚠️ Разбор</b> ${esc(story)}</div>`:'')
     +(rows.length?`<div class="kv">${rows.join('')}</div>`:'')
+    +(money.trade?`<div class="say watch"><b>⚠️ Выбор</b> ${esc(money.trade)}</div>`:'')
     +(prem.length?`<h3>Премия к медиане соседей по месяцам, %</h3>`+premiumChart(prem):'')
     +`<div class="muted" style="font-size:12.5px;margin-top:10px">Обе величины условны: они показывают`
     +` масштаб выбора, а не прогноз. Премия на остатке — выручка, которую она приносит,`
@@ -882,15 +998,8 @@ function sectionTable(code,ctx){
                attr:(r,i)=>r.__own?'':` class="link" data-peer="${i-1}"`},
               {t:'км',num:1,f:r=>r.__own?'—':num(r.distance_km,2)},
               {t:'Класс',f:r=>esc(r.segment||'—')}];
-  // Галочка стоит в таблице под самим графиком, а не в общем списке соседей
-  // внизу: смотрят на кривые и тут же отмечают, чью показать. Только в
-  // разделе цены — она и управляет графиком динамики цены.
-  const pick={t:'График',cls:'pick',
-    f:r=>r.__own?'':`<input type="checkbox" data-chart="${esc(r.complex_id)}"`
-      +`${onChart.has(String(r.complex_id))?' checked':''}`
-      +`${(r.price_series||[]).length>1?'':' disabled title="истории цены нет"'}>`};
   const cols={
-    price:[pick,...base,{t:'₽/м²',num:1,f:r=>num(r.price_per_sqm)},
+    price:[...base,{t:'₽/м²',num:1,f:r=>num(r.price_per_sqm)},
            {t:'мин',num:1,f:r=>num(r.price_per_sqm_min)},{t:'макс',num:1,f:r=>num(r.price_per_sqm_max)},
            {t:'Прайс от',f:r=>esc(r.observed_at||'—')}],
     pace:[...base,{t:'ДДУ/мес',num:1,f:r=>num(r.units_per_month,1)},
@@ -1306,6 +1415,19 @@ function render(d){
     // Добавление проекта стояло в самом низу, под всем отчётом, — и его там
     // не находили. Оно меняет выборку целиком: медианы, вердикт и каждый
     // раздел, поэтому и место ему рядом с составом выборки, а не в хвосте.
+    // Выбор соседей для графиков — один на весь отчёт и стоит в шапке.
+    // Колонки с галочками жили в каждой таблице, но выбор всё равно общий:
+    // отметив в одном разделе, человек видел галочку появившейся во всех
+    // остальных и вправе был счесть это ошибкой. Одно поведение — одно место.
+    +(peers.length?`<div class="whoshow"><b>Показать на графиках:</b> `
+      +peers.map(p=>{
+        const has=(p.price_series||[]).length>1||(p.sales_series||[]).length>1;
+        return `<label class="chip${has?'':' off'}"${has?'':' title="помесячных чисел по нему нет"'}>`
+          +`<input type="checkbox" data-chart="${esc(p.complex_id)}"`
+          +`${onChart.has(String(p.complex_id))?' checked':''}${has?'':' disabled'}>`
+          +`${esc(p.name)}</label>`;
+      }).join('')
+      +`</div>`:'')
     +`<div class="addwrap" style="margin-top:12px"><input type="text" id="addq" autocomplete="off"
       placeholder="Добавить в сравнение любой проект из справочника — начните вводить название">
       <div id="addsug"></div></div>
@@ -1384,7 +1506,8 @@ function render(d){
       .concat(peers.map(p=>({name:p.name,own:false,points:p.price_series||[],
                              shown:onChart.has(String(p.complex_id))}))),
     sales:[{name:s.project_name||'объект',own:true,points:d.sales_series||[]}]
-      .concat(peers.map(p=>({name:p.name,own:false,points:p.sales_series||[]})))
+      .concat(peers.map(p=>({name:p.name,own:false,points:p.sales_series||[],
+                             shown:onChart.has(String(p.complex_id))})))
   };
   html+=(d.blocks||[]).map(b=>blockCard(b,ctx)).join('');
   if(planData&&planData.months){
@@ -1465,9 +1588,20 @@ document.querySelectorAll('.chips button').forEach(b=>b.addEventListener('click'
 // или кадастру понять, из какой цены исходить для будущего ЖК.
 function showHint(d,extra){
   const basis={peers:'по соседям рядом',okrug:'по округу',city:'по классу в Москве'}[d.basis]||d.basis||'';
+  // Два числа, а не одно. Медиана действующих прайсов — уровень рынка сегодня,
+  // у проектов на разных стадиях: кто-то распродан наполовину и поднял цену.
+  // Стартовой ценой она быть не может. Цена входа соседей — медиана их самых
+  // дешёвых лотов, то есть та, с которой заводят покупателя; для нового
+  // проекта сравнимо именно это.
   $('#hintout').innerHTML=`<div class="box"><b>${num(d.price_th_per_sqm)} тыс ₽/м²</b>`
-    +` <span class="muted">— ориентир ${esc(basis)}${esc(extra||'')}; наблюдений ${d.sample||'—'}`
-    +(d.observed_at?`, данные на ${esc(d.observed_at)}`:'')+`</span></div>`;
+    +` <span class="muted">— уровень рынка ${esc(basis)}${esc(extra||'')}; наблюдений ${d.sample||'—'}`
+    +(d.observed_at?`, данные на ${esc(d.observed_at)}`:'')+`</span>`
+    +(d.entry_th_per_sqm?`<div style="margin-top:6px"><b>${num(d.entry_th_per_sqm)} тыс ₽/м²</b>`
+      +` <span class="muted">— цена входа у соседей (медиана самых дешёвых лотов,`
+      +` ${d.entry_sample} проект.${d.entry_gap_pct?`, ${pct(d.entry_gap_pct)} к уровню рынка`:''}).`
+      +` Для старта продаж сравнимо это число: медиана действующих прайсов — уровень проектов`
+      +` на разных стадиях, среди них распроданные наполовину.</span></div>`:'')
+    +`</div>`;
 }
 
 $('#hint').addEventListener('click',async function(){

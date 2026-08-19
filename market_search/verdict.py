@@ -383,6 +383,26 @@ def price_of_premium(subject: dict[str, Any], peers: list[dict[str, Any]]) -> di
         out["months_peer_pace"] = round(remaining / peer_pace, 1)
     if out.get("months_own_pace") and out.get("months_peer_pace"):
         out["months_lost"] = round(out["months_own_pace"] - out["months_peer_pace"], 1)
+
+    # Вопрос владельца: а по цене соседей? Прежде здесь стояли две половины
+    # выбора порознь — деньги премии и потерянный срок, — а сам выбор человек
+    # складывал в уме. Между тем он один: отказаться от премии значит отдать
+    # её деньги и выиграть её же срок. Обе стороны названы вместе.
+    #
+    # Что здесь допущение и названо им: цена соседей не покупает темп соседей
+    # автоматически. Продукт, стадия и корпусность у всех разные, и снижение
+    # прайса — не гарантия ускорения, а условие сравнения.
+    if out.get("premium_on_remainder") and out.get("months_lost"):
+        out["price_of_month"] = round(
+            out["premium_on_remainder"] / out["months_lost"], 1
+        ) if out["months_lost"] else None
+        out["trade"] = (
+            f"Отказ от премии — это минус {_num(out['premium_on_remainder'], 1)} млн ₽ "
+            f"на остатке и минус {_num(out['months_lost'], 1)} месяца срока: "
+            f"{_num(out['price_of_month'], 1)} млн ₽ за каждый выигранный месяц. "
+            "Цена соседей не покупает их темп сама по себе — это условие сравнения, "
+            "а не обещание."
+        )
     return out
 
 
