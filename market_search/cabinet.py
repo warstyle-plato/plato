@@ -234,6 +234,12 @@ border-radius:9px;box-shadow:0 6px 22px rgba(20,35,60,.13);max-height:320px;over
 border-radius:20px;padding:3px 10px;margin:0 6px 6px 0;cursor:pointer;background:#fff}
 .whoshow .chip:has(input:checked){border-color:var(--blue);color:var(--blue)}
 .whoshow .chip.off{opacity:.45;cursor:default}
+/* Подсказка графиков — своя, а не встроенная в SVG. Встроенная показывается
+   один раз на элемент: пока указатель ходит внутри того же месяца, она
+   больше не появляется, и выглядит это как «показало один раз и всё». */
+#tip{position:fixed;z-index:60;display:none;pointer-events:none;max-width:280px;
+background:rgba(22,32,43,.94);color:#fff;border-radius:8px;padding:7px 10px;
+font-size:12.5px;line-height:1.45;white-space:pre-line;box-shadow:0 6px 20px rgba(20,35,60,.28)}
 
 .cityref{display:block;margin:10px 0 2px;font-size:13.5px}
 .cityref .muted{font-size:12.5px}
@@ -282,7 +288,7 @@ g.bub.on circle{fill-opacity:.75}
   main{max-width:none;padding:0}
   #form, #askcard, .chips, button, #hintout, .cardwrap{display:none !important}
   #bubble{display:none}
-  .whoshow{display:none}
+  .whoshow,#tip{display:none !important}
   .printviews{display:block}
   /* Ни наведённая, ни тапнутая подпись на бумагу не идёт: на печати нет ни
      того ни другого, а один случайно оставшийся ярлык читался бы как
@@ -349,6 +355,7 @@ g.bub.on circle{fill-opacity:.75}
     <div id="hintout"></div>
   </div>
   <div id="out"></div>
+<div id="tip" role="status"></div>
   <div class="card" id="askcard" style="display:none">
     <h2>Спросить Платона Сергеевича</h2>
     <div class="muted" style="font-size:13px;margin-bottom:8px">
@@ -483,11 +490,11 @@ function trendChart(series){
   const picked=peers.filter(s=>s.shown);
   picked.forEach((s,i)=>{
     const c=PICKED[i%PICKED.length];
-    svg+=`<path d="${path(s)}" fill="none" stroke="${c}" stroke-width="1.8"><title>${esc(s.name)}</title></path>`;
+    svg+=`<path d="${path(s)}" fill="none" stroke="${c}" stroke-width="1.8" data-tip="${esc(s.name)}"></path>`;
   });
   if(own) svg+=`<path d="${path(own)}" fill="none" stroke="#C4581B" stroke-width="2.6"/>`;
   else if(known.length<=1) peers.forEach(s=>{
-    svg+=`<path d="${path(s)}" fill="none" stroke="#9dc2e6" stroke-width="1.3"><title>${esc(s.name)}</title></path>`;
+    svg+=`<path d="${path(s)}" fill="none" stroke="#9dc2e6" stroke-width="1.3" data-tip="${esc(s.name)}"></path>`;
   });
 
   // Подписи справа: свой проект, медиана и края полосы. Больше и не нужно —
@@ -537,8 +544,8 @@ function trendChart(series){
     const half=(W-L-R)/Math.max(months.length-1,1)/2;
     svg+=`<rect x="${Math.max(L,x(i)-half).toFixed(1)}" y="${T}"`
       +` width="${Math.min(half*2,W-R-Math.max(L,x(i)-half)).toFixed(1)}"`
-      +` height="${(H-B-T).toFixed(1)}" fill="transparent">`
-      +`<title>${esc(lines.join('\n'))}</title></rect>`;
+      +` height="${(H-B-T).toFixed(1)}" fill="transparent"`
+      +` data-tip="${esc(lines.join('\n'))}"></rect>`;
   });
   const note=known.length>1
     ? `Плотная полоса — половина соседей (от нижнего квартиля до верхнего), бледная — весь разброс`
@@ -594,8 +601,8 @@ function salesChart(rows, key, unit, digits){
       if(v===null)return;
       const left=x(i)-group/2+k*bw;
       svg+=`<rect x="${left.toFixed(1)}" y="${y(v)}" width="${bw.toFixed(1)}"`
-        +` height="${Math.max(1,H-B-y(v)).toFixed(1)}" rx="2" fill="${one.colour}">`
-        +`<title>${esc(one.row.name)} · ${m} · ${num(v,digits)} ${unit}</title></rect>`;
+        +` height="${Math.max(1,H-B-y(v)).toFixed(1)}" rx="2" fill="${one.colour}"`
+        +` data-tip="${esc(one.row.name)} · ${m} · ${num(v,digits)} ${unit}"></rect>`;
     });
     if(i%Math.ceil(months.length/6)===0)
       svg+=`<text x="${x(i)}" y="${H-9}" text-anchor="middle" font-size="10" fill="#8798a8">${m.slice(2)}</text>`;
@@ -644,8 +651,8 @@ function salesChart(rows, key, unit, digits){
     }).filter(Boolean));
     if(med[i]!==null&&med[i]!==undefined) lines.push(`медиана соседей: ${num(med[i],digits||1)} ${unit}`);
     svg+=`<rect x="${(x(i)-slot/2).toFixed(1)}" y="${T}" width="${slot.toFixed(1)}"`
-      +` height="${(H-B-T).toFixed(1)}" fill="transparent">`
-      +`<title>${esc(lines.join('\n'))}</title></rect>`;
+      +` height="${(H-B-T).toFixed(1)}" fill="transparent"`
+      +` data-tip="${esc(lines.join('\n'))}"></rect>`;
   });
   return '<div class="wrap">'+svg+'</svg></div>';
 }
@@ -700,7 +707,7 @@ function remainChart(rows){
       return v===null?null:`${i?'L':'M'}${x(i).toFixed(1)} ${y(v).toFixed(1)}`}).filter(Boolean).join(' ');
     if(!d)return;
     const colour=pickedColour(picked,r);
-    svg+=`<path d="${d}" fill="none" stroke="${colour}" stroke-width="1.8"><title>${esc(r.name)}</title></path>`;
+    svg+=`<path d="${d}" fill="none" stroke="${colour}" stroke-width="1.8" data-tip="${esc(r.name)}"></path>`;
     const lastMonth=[...months].reverse().find(m=>at(m)!==null);
     if(lastMonth!==undefined)
       svg+=`<text x="${W-R+8}" y="${y(at(lastMonth))+4}" font-size="10" fill="${colour}">`
@@ -716,8 +723,8 @@ function remainChart(rows){
     const half=(W-L-R)/Math.max(pts.length-1,1)/2;
     svg+=`<rect x="${Math.max(L,x(i)-half).toFixed(1)}" y="${T}"`
       +` width="${Math.min(half*2,W-R-Math.max(L,x(i)-half)).toFixed(1)}"`
-      +` height="${(H-B-T).toFixed(1)}" fill="transparent">`
-      +`<title>${esc(lines.join('\n'))}</title></rect>`;
+      +` height="${(H-B-T).toFixed(1)}" fill="transparent"`
+      +` data-tip="${esc(lines.join('\n'))}"></rect>`;
   });
   return '<div class="wrap">'+svg+'</svg></div>';
 }
@@ -796,9 +803,9 @@ function bubbleChart(rows, view){
     svg+=`<g class="bub">`
        +`<circle cx="${px.toFixed(1)}" cy="${py.toFixed(1)}"`
        +` r="${rr.toFixed(1)}" fill="${c}" fill-opacity="${p.__own?0.9:0.42}"`
-       +` stroke="${c}" stroke-width="${p.__own?2:1}"><title>${esc(p.name)}: `
-       +`${AXES[YK].label} ${num(p[YK],yd)}; ${AXES[XK].label} ${num(p[XK],xd)}; `
-       +`${AXES[SK].label} ${num(p[SK])}</title></circle>`
+       +` stroke="${c}" stroke-width="${p.__own?2:1}" data-tip="${esc(p.name)}&#10;`
+       +`${esc(AXES[YK].label)}: ${num(p[YK],yd)}&#10;${esc(AXES[XK].label)}: ${num(p[XK],xd)}&#10;`
+       +`${esc(AXES[SK].label)}: ${num(p[SK])}"></circle>`
        +`<text class="hov" x="${(px+(left?-rr-6:rr+6)).toFixed(1)}" y="${(py+4).toFixed(1)}"`
        +` text-anchor="${left?'end':'start'}" font-size="11" fill="#16202b" paint-order="stroke"`
        +` stroke="#fff" stroke-width="3.5">${esc(p.name)} · ${num(p[YK],yd)}</text></g>`;
@@ -1559,6 +1566,31 @@ function render(d){
     });
   });
 }
+// Подсказка графиков. Своя, потому что встроенная в SVG показывается один
+// раз на элемент и внутри него больше не появляется — «показало и всё».
+// Слушатель один на документ: графики перерисовываются при каждом отчёте.
+const tip=$('#tip');
+function showTip(node,e){
+  tip.textContent=node.getAttribute('data-tip')||'';
+  tip.style.display='block';
+  const box=tip.getBoundingClientRect();
+  const x=Math.min(Math.max(8,e.clientX+14),window.innerWidth-box.width-8);
+  const y=Math.min(Math.max(8,e.clientY-box.height-12),window.innerHeight-box.height-8);
+  tip.style.left=x+'px';
+  tip.style.top=y+'px';
+}
+function hideTip(){tip.style.display='none'}
+['pointermove','pointerdown'].forEach(kind=>{
+  document.addEventListener(kind,e=>{
+    const node=(e.target&&typeof e.target.closest==='function')?e.target.closest('[data-tip]'):null;
+    if(node) showTip(node,e); else hideTip();
+  },{passive:true});
+});
+// Уход указателя за пределы окна и прокрутка гасят подсказку: иначе она
+// повисает над страницей и закрывает то, ради чего её открыли.
+document.addEventListener('pointerleave',hideTip);
+window.addEventListener('scroll',hideTip,{passive:true});
+
 $('#go').addEventListener('click',build);
 $('#askbtn').addEventListener('click',askPlato);
 // PDF — печатью самой страницы. Второй вёрстки не заводим: она разошлась бы с

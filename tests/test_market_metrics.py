@@ -1493,7 +1493,7 @@ def test_the_neighbours_to_show_are_picked_in_one_place() -> None:
     # Перерисовка без запроса к серверу.
     assert "if(box.checked) onChart.add(id); else onChart.delete(id);\n      render(lastReport);" in CABINET_PAGE
     # В печать список выбора не идёт.
-    assert "  .whoshow{display:none}" in CABINET_PAGE
+    assert "  .whoshow,#tip{display:none !important}" in CABINET_PAGE
 
 
 def test_only_the_subject_is_labelled_on_screen() -> None:
@@ -1951,7 +1951,8 @@ def test_hovering_a_month_shows_its_numbers_on_every_chart() -> None:
         body = CABINET_PAGE[CABINET_PAGE.index("function " + name):]
         body = body[: body.index(ends)]
         assert needle in body, name
-        assert 'fill="transparent">' in body, name
+        assert 'fill="transparent"' in body, name
+        assert "data-tip=" in body, name
 
 
 def test_right_hand_labels_do_not_overlap_on_the_bar_charts() -> None:
@@ -1968,3 +1969,26 @@ def test_right_hand_labels_do_not_overlap_on_the_bar_charts() -> None:
     assert "tags.sort((a,b)=>a.y-b.y);" in sales
     assert "tags.forEach(t=>{t.at=Math.max(t.y,prev+12);prev=t.at});" in sales
     assert "for(let i=tags.length-1;i>=0;i--){tags[i].at=Math.min(tags[i].at,floor);floor=tags[i].at-12}" in sales
+
+
+def test_the_chart_tooltip_is_ours_not_the_browser_one() -> None:
+    """«Показало данные один раз, и всё».
+
+    Встроенная подсказка SVG показывается один раз на элемент: пока указатель
+    ходит внутри того же месяца, она больше не появляется. Своя подсказка
+    следует за указателем и живёт слоем над страницей.
+    """
+    from market_search.cabinet import CABINET_PAGE
+
+    # В графиках не осталось встроенных подсказок — только свои.
+    charts = CABINET_PAGE[CABINET_PAGE.index("function priceChart"):]
+    charts = charts[: charts.index("function deepCard")]
+    assert "<title>" not in charts
+    assert charts.count("data-tip=") >= 6
+
+    assert 'id="tip"' in CABINET_PAGE
+    assert "white-space:pre-line" in CABINET_PAGE
+    # Палец тоже показывает подсказку, а не только мышь.
+    assert "['pointermove','pointerdown'].forEach(kind=>{" in CABINET_PAGE
+    # Прокрутка и уход указателя её гасят: иначе повисает над страницей.
+    assert "window.addEventListener('scroll',hideTip" in CABINET_PAGE
