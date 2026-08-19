@@ -239,8 +239,18 @@ g.bub:hover circle{fill-opacity:.75}
    первых восьми. Поэтому имя показывается по наведению, а не всем сразу. */
 g.ln text.hov{opacity:0;pointer-events:none}
 g.ln:hover text.hov{opacity:1}
-g.ln:hover path{stroke:#1367AE;stroke-width:2.4}
+g.ln:hover path.line{stroke:#1367AE;stroke-width:2.4}
 g.ln:hover circle{fill:#1367AE}
+/* Наведения на тач-экране не бывает, а кабинетом пользуются с телефона: там
+   имена проектов у кружков и линий были недостижимы вовсе. Касание ставит
+   группе класс — те же правила, что у наведения, только по тапу. */
+g.bub.on text.hov,g.ln.on text.hov{opacity:1}
+g.bub.on circle{fill-opacity:.75}
+g.ln.on path.line{stroke:#1367AE;stroke-width:2.4}
+g.ln.on circle{fill:#1367AE}
+/* Полоса попадания шире самой линии: пальцем в линию толщиной 1,3 пикселя не
+   попасть. Она прозрачна и не печатается. */
+g.ln path.hit{stroke:transparent;fill:none;stroke-width:14}
 /* Печать берёт все пары осей, а не ту, что открыта на экране: на бумаге
    переключателя нет, и оставшиеся четыре карты иначе не попали бы никуда. */
 .printviews{display:none}
@@ -259,8 +269,10 @@ g.ln:hover circle{fill:#1367AE}
   #form, #askcard, .chips, button, #hintout, .cardwrap{display:none !important}
   #bubble{display:none}
   .printviews{display:block}
-  g.bub text.hov{opacity:0}
-  g.ln text.hov{opacity:0}
+  /* Ни наведённая, ни тапнутая подпись на бумагу не идёт: на печати нет ни
+     того ни другого, а один случайно оставшийся ярлык читался бы как
+     выделение, которого никто не делал. Класс сильнее, поэтому назван явно. */
+  g.bub text.hov,g.ln text.hov,g.bub.on text.hov,g.ln.on text.hov{opacity:0}
   .card{break-inside:avoid;page-break-inside:avoid;border:0;border-top:1px solid #dde5ed;
         border-radius:0;padding:14px 0;margin:0}
   h2{break-after:avoid}
@@ -416,7 +428,8 @@ function trendChart(series){
       return;
     }
     // Сосед: линия серая, имя — в группе рядом с концом, показывается стилем.
-    svg+=`<g class="ln"><path d="${path(s)}" fill="none" stroke="#c3d3e2" stroke-width="1.3"/>`
+    svg+=`<g class="ln"><path class="hit" d="${path(s)}"/>`
+       +`<path class="line" d="${path(s)}" fill="none" stroke="#c3d3e2" stroke-width="1.3"/>`
        +(ex===null?'':`<circle cx="${ex.toFixed(1)}" cy="${ey.toFixed(1)}" r="2.4" fill="#c3d3e2"/>`
          +`<text class="hov" x="${(ex-6).toFixed(1)}" y="${(ey-6).toFixed(1)}" text-anchor="end"`
          +` font-size="11" fill="#16202b" paint-order="stroke" stroke="#fff" stroke-width="3.5">`
@@ -1296,6 +1309,28 @@ function choose(i){
   if(!items[i])return;
   $('#q').value=items[i].name; closeSug(); build();
 }
+// Имя проекта по касанию. На мышке работает наведение, на телефоне наведения
+// нет вовсе, и кружки с линиями оставались точками без имени. Слушатель один
+// на документ: графики перерисовываются при каждом отчёте и при смене осей, и
+// вешать обработчики заново на каждую отрисовку — это забыть их однажды.
+//
+// Тапнутая группа переносится в конец родителя: в SVG порядок узлов и есть
+// порядок слоёв, иначе подпись уезжает под соседние кружки.
+document.addEventListener('pointerdown',function(e){
+  const target=e.target;
+  if(!target||typeof target.closest!=='function')return;
+  const group=target.closest('g.bub, g.ln');
+  document.querySelectorAll('g.bub.on, g.ln.on').forEach(node=>{
+    if(node!==group)node.classList.remove('on');
+  });
+  if(!group)return;
+  // Повторное касание снимает подпись — иначе её нечем убрать, кроме как
+  // тапнуть мимо, а мимо на узком экране ещё надо попасть.
+  if(group.classList.contains('on')){group.classList.remove('on');return}
+  group.classList.add('on');
+  if(group.parentNode)group.parentNode.appendChild(group);
+});
+
 // Тот же довод, что и у списка добавления: палец шлёт `pointerdown`, мышь —
 // тоже, а `mousedown` на тач-экране приходит не всегда.
 sug.addEventListener('pointerdown',e=>{

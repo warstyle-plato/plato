@@ -1238,4 +1238,27 @@ def test_the_dropdowns_answer_a_finger_not_only_a_mouse() -> None:
     from market_search.cabinet import CABINET_PAGE
 
     assert "addEventListener('mousedown'" not in CABINET_PAGE
-    assert CABINET_PAGE.count("addEventListener('pointerdown'") == 2
+    # Оба списка — подсказки объекта и добавление проекта в сравнение.
+    assert "list.addEventListener('pointerdown'" in CABINET_PAGE
+    assert "sug.addEventListener('pointerdown'" in CABINET_PAGE
+
+
+def test_a_finger_can_reach_the_name_of_a_bubble_and_a_line() -> None:
+    """Наведения на тач-экране не бывает — имена были недостижимы с телефона.
+
+    Слушатель один на документ: графики перерисовываются при каждом отчёте и
+    при смене пары осей, и вешать обработчики заново на каждую отрисовку —
+    это забыть их однажды.
+    """
+    from market_search.cabinet import CABINET_PAGE
+
+    # Те же правила, что у наведения, только по классу от касания.
+    assert "g.bub.on text.hov,g.ln.on text.hov{opacity:1}" in CABINET_PAGE
+    assert "closest('g.bub, g.ln')" in CABINET_PAGE
+    # Повторное касание снимает подпись: тапнуть мимо на узком экране трудно.
+    assert "if(group.classList.contains('on')){group.classList.remove('on');return}" in CABINET_PAGE
+    # Порядок узлов в SVG — это порядок слоёв, иначе подпись уедет под соседей.
+    assert "group.parentNode.appendChild(group)" in CABINET_PAGE
+    # Пальцем в линию толщиной 1,3 пикселя не попасть — нужна широкая полоса.
+    assert 'g.ln path.hit{stroke:transparent;fill:none;stroke-width:14}' in CABINET_PAGE
+    assert '<path class="hit"' in CABINET_PAGE
