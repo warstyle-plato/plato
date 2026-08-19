@@ -49,7 +49,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.19.6"
+VERSION = "0.19.7"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -28970,6 +28970,8 @@ function refillTepRow(key){
  const filled=tepFillByRatios(key,base);
  ['gns','total_area','saleable','useful'].forEach(field=>{row[field]=filled[field]});
  tepRefillNote[key]='';
+ // Посчитанное возвращается во вводные — иначе `syncTep` вернёт прежнее.
+ if(tepRowToInputs(key))renderInputs();
  renderTep();
  calculate();
 }
@@ -28977,13 +28979,37 @@ function refillTepRow(key){
 // Ответ кнопки живёт до следующей перерисовки строки.
 const tepRefillNote={};
 
+// Строки офисов и ТЦ производные: их пересобирает `syncTep` из вводных, и
+// вписанное прямо в таблицу исчезало при первом же пересчёте — «в обратную
+// сторону не работает» (замечание владельца, 19.08.2026). Число надо не
+// защищать от пересчёта, а вернуть туда, откуда пересчёт его берёт.
+const TEP_ROW_INPUTS={offices:{gns:'offices_gba_sqm',saleable:'offices_saleable_sqm'},
+ standalone_retail:{gns:'retail_gba_sqm',saleable:'retail_saleable_sqm'}};
+
+function tepRowToInputs(key){
+ const map=TEP_ROW_INPUTS[key];
+ if(!map)return false;
+ inputs[map.gns]=Number(tep[key].gns||0);
+ inputs[map.saleable]=Number(tep[key].saleable||0);
+ const sw=TEP_ROW_SWITCH[key];
+ if(sw&&!inputs[sw[0]]&&Number(tep[key].gns||0)>0){
+  // Выключенный объект обнулит строку на первом же пересчёте. Числа сохранены,
+  // но включать объект за человека нельзя: это меняет экономику проекта.
+  tepRefillNote[key]='Площади сохранены во вводных, но объект выключен: включите «'+sw[1]+
+   ' → Объект включен», иначе строка обнулится при пересчёте.';
+ }
+ return true;
+}
+
 function tepCellChanged(key,col,value){
  tep[key][col]=Number(value||0);
  if(['gns','total_area','saleable'].includes(col)){
   const filled=tepFillByRatios(key,tep[key]);
   ['gns','total_area','saleable','useful'].forEach(field=>{tep[key][field]=filled[field]});
+  tepRowToInputs(key);
+  renderInputs();
   renderTep();
- }else updateTepTotals();
+ }else{tepRowToInputs(key);updateTepTotals()}
  calculate();
 }
 
