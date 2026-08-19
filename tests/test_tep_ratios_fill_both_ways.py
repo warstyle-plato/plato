@@ -238,3 +238,27 @@ def test_the_disclosure_says_what_it_hides():
     body = core.PAGE[core.PAGE.index("function renderTepRatioNote"):]
     body = body[:body.index("const TEP_ROW_SWITCH")]
     assert "показать доли, по которым считается" in body
+
+
+def test_a_table_edit_reaches_the_inputs():
+    """Строки офисов и ТЦ производные: вписанное в таблицу исчезало при пересчёте.
+
+    `syncTep` пересобирает их из вводных, поэтому число надо не защищать от
+    пересчёта, а вернуть туда, откуда пересчёт его берёт (замечание владельца,
+    19.08.2026).
+    """
+    body = core.PAGE[core.PAGE.index("function tepRowToInputs"):]
+    body = body[:body.index("function tepCellChanged")]
+    assert "inputs[map.gns]" in body and "inputs[map.saleable]" in body
+    assert "объект выключен" in body, "выключенный объект обнулит строку — об этом надо сказать"
+
+    mapping = core.PAGE[core.PAGE.index("const TEP_ROW_INPUTS="):]
+    mapping = mapping[:mapping.index("function tepRowToInputs")]
+    for field in ("offices_gba_sqm", "offices_saleable_sqm",
+                  "retail_gba_sqm", "retail_saleable_sqm"):
+        assert field in mapping, field
+
+    handler = core.PAGE[core.PAGE.index("function tepCellChanged"):]
+    handler = handler[:handler.index("function updateTepTotals")]
+    assert "tepRowToInputs(key)" in handler
+    assert "renderInputs()" in handler, "поле во вводных должно показать своё число"
