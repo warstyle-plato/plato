@@ -49,7 +49,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.18.65"
+VERSION = "0.18.76"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -24572,7 +24572,18 @@ def _plato_chat_launch(
 
     def _work() -> dict[str, Any]:
         _plato_trace_write(trace_id, "model", "Пересчитываю модель DevelopAid")
-        bundle = _run_authoritative_model(req.inputs, req.tep, req.rates, req.phasing)
+        try:
+            bundle = _run_authoritative_model(req.inputs, req.tep, req.rates, req.phasing)
+        except KeyError as exc:
+            # Неполные вводные — ответ человеку, а не пятисотка. Модель строится
+            # по всему набору полей, и отсутствие одного роняло вызов с голым
+            # `KeyError` в лог: снаружи это выглядело поломкой сервиса, а не
+            # нехваткой данных. Поле называется — иначе искать его негде.
+            raise HTTPException(
+                status_code=422,
+                detail=(f"Не хватает вводных для расчёта модели: нет поля {exc}. "
+                        "Передайте полный набор вводных или умолчания движка."),
+            ) from exc
 
         if scenario:
             stage_label, handler = _AGENT_LOCAL_SCENARIOS[scenario]

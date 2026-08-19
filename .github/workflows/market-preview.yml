@@ -80,6 +80,11 @@ jobs:
           python -m pytest tests/test_market_*.py -q
       - name: Интеграция с основным entrypoint
         if: steps.present.outputs.value == 'yes'
+        env:
+          # Вкладка «Рынок» по умолчанию выключена: отсутствующая переменная не
+          # должна читаться как согласие показать её в проде. Стенду превью она
+          # нужна, поэтому здесь включается явно.
+          MARKET_TAB_ENABLED: "1"
         run: |
           python - <<'PY'
           import main_registry

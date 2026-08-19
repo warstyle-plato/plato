@@ -1,0 +1,1371 @@
+"""Внутренний кабинет: конструктор отчёта о рынке.
+
+Раздел закрыт ключом, потому что показывает чужие лицензионные числа. Ключ
+общий для сотрудников — как админский доступ, отдельной учётки на человека нет:
+её пришлось бы где-то хранить и однажды потерять.
+
+Три правила, из которых собран вход:
+
+* **Пустой ключ выключает кабинет, а не открывает его.** Так же устроен список
+  получателей статистики: не задан — значит никому. Раздел, открывшийся всем
+  из-за незаполненной переменной, — худший исход из возможных.
+* **Сравнение постоянного времени.** `hmac.compare_digest`, как у секрета
+  Платона и у вебхука: обычное `==` сравнивает посимвольно и выдаёт длину
+  совпавшего префикса временем ответа.
+* **Ключ не возвращается наружу ничем** — ни в ошибке, ни в теле страницы. В
+  куке лежит он же, `HttpOnly`, чтобы его не достал чужой скрипт со страницы.
+"""
+
+from __future__ import annotations
+
+import hmac
+import os
+from typing import Any
+
+from fastapi import HTTPException, Request, Response
+
+
+COOKIE_NAME = "market_cabinet"
+HEADER_NAME = "X-Market-Key"
+ENV_NAME = "MARKET_CABINET_KEY"
+
+
+def cabinet_key() -> str:
+    return str(os.getenv(ENV_NAME) or "").strip()
+
+
+def key_problem() -> str:
+    """Почему настроенный ключ непригоден. Пусто — пригоден.
+
+    Кириллица в ключе — не мелочь: заголовок HTTP её не несёт, и вход по
+    `X-Market-Key` падал бы на кодировке, а по куке работал. Отказ вышел бы
+    загадочным. Ту же проверку движок делает для `PLATO_AI_PROXY_SECRET`.
+    """
+    key = cabinet_key()
+    if not key:
+        return ""
+    try:
+        key.encode("ascii")
+    except UnicodeEncodeError:
+        return (
+            f"{ENV_NAME} содержит не-ASCII символы: заголовок HTTP их не передаёт. "
+            "Ключ должен состоять из латиницы, цифр и знаков препинания."
+        )
+    return ""
+
+
+def key_accepted(supplied: str) -> bool:
+    """Ключ верен? Пустой настроенный ключ не принимает ничего."""
+    expected = cabinet_key()
+    if not expected or not supplied:
+        return False
+    return hmac.compare_digest(str(supplied), expected)
+
+
+def authorised(request: Request) -> bool:
+    for supplied in (request.headers.get(HEADER_NAME), request.cookies.get(COOKIE_NAME)):
+        if supplied and key_accepted(supplied):
+            return True
+    return False
+
+
+def require_cabinet(request: Request) -> None:
+    """Пропустить или отказать. Причина отказа называется: она разная."""
+    problem = key_problem()
+    if problem:
+        raise HTTPException(status_code=503, detail=problem)
+    if not cabinet_key():
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"Кабинет выключен: не задан {ENV_NAME}. Это не сбой — раздел "
+                "показывает лицензионные данные и без ключа не открывается."
+            ),
+        )
+    if not authorised(request):
+        raise HTTPException(status_code=401, detail="Нужен ключ доступа к кабинету")
+
+
+def set_cookie(response: Response, key: str) -> None:
+    response.set_cookie(
+        COOKIE_NAME,
+        key,
+        httponly=True,
+        samesite="lax",
+        max_age=30 * 24 * 3600,
+        path="/",
+    )
+
+
+SECTIONS: list[tuple[str, str, str]] = [
+    ("price", "Цена метра", "прайс проекта против соседей и против Москвы своего класса"),
+    ("pace", "Темп продаж", "ДДУ в месяц, во сколько раз быстрее или медленнее соседей"),
+    ("stock", "Остаток и экспозиция", "сколько осталось, сколько выставлено, на сколько месяцев"),
+    ("lot_size", "Размер лота", "средний проданный лот против среднего лота в проекте"),
+    ("absorption", "Поглощение в метрах", "метры в месяц — темп, свободный от квартирографии"),
+]
+
+
+def _sections_markup() -> str:
+    rows = []
+    for code, title, hint in SECTIONS:
+        rows.append(
+            f'<label class="sec"><input type="checkbox" name="code" value="{code}" checked>'
+            f'<span><b>{title}</b><i>{hint}</i></span></label>'
+        )
+    return "".join(rows)
+
+
+LOGIN_PAGE = """<!doctype html><meta charset="utf-8">
+<title>Кабинет аналитики</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+body{margin:0;font:15px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;background:#f4f6f9;color:#16202b;
+display:flex;min-height:100vh;align-items:center;justify-content:center}
+form{background:#fff;padding:28px;border-radius:14px;box-shadow:0 2px 18px rgba(20,35,60,.10);width:320px}
+h1{font-size:18px;margin:0 0 6px}p{margin:0 0 18px;color:#5b6b7d;font-size:13px}
+input{width:100%;padding:10px 12px;border:1px solid #ccd6e0;border-radius:8px;font-size:15px;box-sizing:border-box}
+button{margin-top:12px;width:100%;padding:10px;border:0;border-radius:8px;background:#1367AE;color:#fff;
+font-size:15px;cursor:pointer}
+.err{color:#B3261E;font-size:13px;margin-top:10px}
+</style>
+<form method="post" action="/cabinet/login">
+<h1>Кабинет аналитики</h1>
+<p>Раздел внутренний: данные лицензионные и наружу не идут.</p>
+<input type="password" name="key" placeholder="Ключ доступа" autofocus autocomplete="current-password">
+<button type="submit">Войти</button>
+__ERROR__
+</form>"""
+
+
+CABINET_PAGE = r"""<!doctype html><meta charset="utf-8">
+<title>Конструктор отчёта о рынке</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+:root{--ink:#16202b;--dim:#5b6b7d;--line:#dde5ed;--blue:#1367AE;--rust:#C4581B;--bg:#f4f6f9}
+*{box-sizing:border-box}
+body{margin:0;font:15px/1.55 -apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--ink)}
+header{background:#fff;border-bottom:1px solid var(--line);padding:14px 22px}
+h1{font-size:17px;margin:0}
+.sub{color:var(--dim);font-size:13px;margin-top:2px}
+main{max-width:1080px;margin:0 auto;padding:22px}
+.card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:18px;margin-bottom:18px}
+label.f{display:block;font-size:13px;color:var(--dim);margin-bottom:4px}
+input[type=text],select{padding:9px 11px;border:1px solid #ccd6e0;border-radius:8px;font-size:15px;width:100%}
+.row{display:flex;gap:14px;flex-wrap:wrap}
+.row>div{flex:1 1 220px}
+.secs{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:8px;margin-top:14px}
+label.sec{display:flex;gap:8px;align-items:flex-start;background:#f8fafc;border:1px solid var(--line);
+border-radius:9px;padding:9px 11px;cursor:pointer}
+label.sec i{display:block;font-style:normal;color:var(--dim);font-size:12px;margin-top:2px}
+button.go{margin-top:16px;padding:10px 20px;border:0;border-radius:8px;background:var(--blue);color:#fff;
+font-size:15px;cursor:pointer}
+button.go[disabled]{opacity:.55;cursor:default}
+button.go.alt{background:#fff;color:var(--blue);border:1px solid var(--blue);margin-left:8px}
+#hintout{margin-top:12px}
+.upload{display:inline-block;margin-left:8px;padding:10px 16px;border:1px dashed #ccd6e0;border-radius:8px;
+font-size:14px;color:var(--dim);cursor:pointer}
+.upload input{display:none}
+.upload:hover{border-color:var(--blue);color:var(--blue)}
+#hintout .box{background:#f2f7fc;border-left:3px solid var(--blue);padding:10px 12px;border-radius:0 7px 7px 0}
+#hintout b{font-size:19px;font-variant-numeric:tabular-nums}
+.scope{background:#fff8f0;border-left:3px solid var(--rust);padding:8px 12px;font-size:13px;
+border-radius:0 6px 6px 0;margin-top:10px;color:#5a3a1c}
+table{width:100%;border-collapse:collapse;font-size:14px}
+th,td{text-align:left;padding:7px 9px;border-bottom:1px solid var(--line);white-space:nowrap}
+th{color:var(--dim);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.03em}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+.wrap{overflow-x:auto}
+.note{background:#fff8f0;border-left:3px solid var(--rust);padding:8px 12px;font-size:13px;margin:8px 0;
+color:#5a3a1c;border-radius:0 6px 6px 0}
+.err{background:#fdecea;border-left:3px solid #B3261E;padding:10px 12px;border-radius:0 6px 6px 0;color:#7a1d16}
+h2{font-size:15px;margin:0 0 10px}
+h3{font-size:13px;margin:16px 0 8px;color:var(--dim);font-weight:600}
+.say{border-left:3px solid var(--blue);background:#f2f7fc;padding:10px 12px;border-radius:0 7px 7px 0;
+margin:12px 0;font-size:14px}
+.say.good{border-color:#1f7a4d;background:#f1f8f4}
+.say.watch{border-color:#C4581B;background:#fff8f0}
+.say.bad{border-color:#B3261E;background:#fdecea}
+.say b{margin-right:4px}
+.verdict h2{font-size:17px}
+.verdict .pos{margin-top:12px;padding-top:12px;border-top:1px solid var(--line);color:var(--ink)}
+.verdict.good{border-left:4px solid #1f7a4d}
+.verdict.watch{border-left:4px solid #C4581B}
+.verdict.bad{border-left:4px solid #B3261E}
+tr.ownrow td{background:#fff5ee;font-weight:600}
+textarea{width:100%;padding:10px 12px;border:1px solid #ccd6e0;border-radius:9px;font:15px/1.5 inherit;
+resize:vertical;margin-top:8px}
+.chips{display:flex;gap:8px;flex-wrap:wrap}
+.chips button{background:#f2f7fc;border:1px solid #cfe0f0;color:var(--blue);border-radius:16px;
+padding:5px 12px;font-size:13px;cursor:pointer}
+.chips button:hover{background:#e6f0f9}
+.chips.views{margin-bottom:10px}
+.chips.views button.on{background:var(--blue);border-color:var(--blue);color:#fff}
+.plato{background:#f8fafc;border-left:3px solid var(--ink);padding:12px 14px;border-radius:0 8px 8px 0;
+margin-top:12px;white-space:normal}
+#askout{margin-top:10px}
+td.link{color:var(--blue);cursor:pointer;text-decoration:underline dotted}
+.cardwrap{position:fixed;inset:0;background:rgba(20,35,60,.45);display:flex;align-items:flex-start;
+justify-content:center;padding:40px 16px;overflow:auto;z-index:50}
+.cardbox{background:#fff;border-radius:14px;padding:22px;max-width:760px;width:100%;position:relative;
+box-shadow:0 12px 40px rgba(20,35,60,.25)}
+.cardbox .close{position:absolute;right:14px;top:10px;border:0;background:none;font-size:26px;
+line-height:1;color:var(--dim);cursor:pointer}
+.kv{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px}
+.kv div{background:#f8fafc;border-radius:9px;padding:9px 11px}
+.kv b{display:block;font-size:17px;font-variant-numeric:tabular-nums}
+.kv span{color:var(--dim);font-size:12px}
+.self{color:var(--rust);font-weight:600}
+.muted{color:var(--dim)}
+#sug,#addsug{position:absolute;z-index:30;left:0;right:0;top:100%;background:#fff;border:1px solid var(--line);
+border-radius:9px;box-shadow:0 6px 22px rgba(20,35,60,.13);max-height:320px;overflow:auto;display:none}
+#sug div,#addsug div{padding:8px 11px;cursor:pointer;font-size:14px;border-bottom:1px solid #f0f4f8}
+#sug div:last-child,#addsug div:last-child{border-bottom:0}
+#sug div:hover,#sug div.on,#addsug div:hover{background:#eef4fa}
+#sug small,#addsug small{display:block;color:var(--dim);font-size:12px}
+.addwrap{position:relative}
+.addwrap input{width:100%}
+tr.added td{background:#f1f8f4}
+ul.caveats{margin:6px 0 0;padding-left:20px;color:var(--dim);font-size:13.5px}
+ul.caveats li{margin:4px 0}
+/* Имя кружка — по наведению. Стилем, а не скриптом: подсказка браузера ждёт
+   секунду, а здесь имя нужно сразу, иначе кружок читается как точка без
+   проекта. Наведённый кружок поднимается над соседями. */
+g.bub text.hov{opacity:0;pointer-events:none}
+g.bub:hover text.hov{opacity:1}
+g.bub:hover circle{fill-opacity:.75}
+/* Линия соседа — фон рынка, пока на неё не навели. Пятнадцать линий
+   пятнадцатью цветами не различаются: девятый цвет неотличим от одного из
+   первых восьми. Поэтому имя показывается по наведению, а не всем сразу. */
+g.ln text.hov{opacity:0;pointer-events:none}
+g.ln:hover text.hov{opacity:1}
+g.ln:hover path{stroke:#1367AE;stroke-width:2.4}
+g.ln:hover circle{fill:#1367AE}
+/* Печать берёт все пары осей, а не ту, что открыта на экране: на бумаге
+   переключателя нет, и оставшиеся четыре карты иначе не попали бы никуда. */
+.printviews{display:none}
+.printviews h3{margin:14px 0 4px}
+/* Печать объявляется последней: правила экрана и печати одной силы, и та,
+   что стоит ниже, побеждает. Пока блок стоял выше, `.printviews{display:none}`
+   гасил карты рынка обратно, а `#bubble{display:none}` (id — сильнее) убирал
+   и открытую. В PDF не попадала ни одна: разом сработали обе половины. */
+@media print{
+  /* В печать уходит отчёт, а не орудия его сборки: форма, кнопки и поле
+     вопроса на бумаге бесполезны. Разделы не разрываются между страницами —
+     таблица, оторванная от своего графика, читается как чужая. */
+  body{background:#fff}
+  header{border:0;padding:0 0 8px}
+  main{max-width:none;padding:0}
+  #form, #askcard, .chips, button, #hintout, .cardwrap{display:none !important}
+  #bubble{display:none}
+  .printviews{display:block}
+  g.bub text.hov{opacity:0}
+  g.ln text.hov{opacity:0}
+  .card{break-inside:avoid;page-break-inside:avoid;border:0;border-top:1px solid #dde5ed;
+        border-radius:0;padding:14px 0;margin:0}
+  h2{break-after:avoid}
+  table{font-size:11px}
+  th,td{padding:4px 6px}
+  .say,.note,.scope{break-inside:avoid}
+  a[href]:after{content:''}
+}
+@page{margin:14mm 12mm}
+</style>
+<header>
+  <h1>Конструктор отчёта о рынке</h1>
+  <div class="sub">Внутренний раздел. Числа лицензионные — наружу не публикуются.
+    · версия __DEVELOPAID_VERSION__</div>
+</header>
+<main>
+  <div class="card" id="form">
+    <div class="row">
+      <div style="flex:2 1 380px;position:relative">
+        <label class="f">Объект: кадастровый номер, адрес, координаты или название проекта</label>
+        <input type="text" id="q" autocomplete="off"
+               placeholder="77:07:0013005:1042 · Гродненская 18 · Кутузов Сити">
+        <div id="sug"></div>
+      </div>
+      <div>
+        <label class="f">Радиус</label>
+        <select id="radius">
+          <option value="1">1 км</option><option value="2">2 км</option>
+          <option value="3" selected>3 км</option><option value="5">5 км</option>
+        </select>
+      </div>
+      <div>
+        <label class="f">Соседей не больше</label>
+        <select id="limit">
+          <option>12</option><option selected>20</option><option>30</option>
+        </select>
+      </div>
+      <div>
+        <label class="f">Класс</label>
+        <select id="segment">
+          <option value="">как у «Пульса»</option>
+          <option>Стандарт/Эконом</option><option>Комфорт</option><option>Бизнес</option>
+          <option>Премиум</option><option>Элит/De Luxe</option>
+        </select>
+      </div>
+    </div>
+    <div class="secs">__SECTIONS__</div>
+    <button class="go" id="go">Собрать отчёт</button>
+    <button class="go alt" id="hint">Ориентир цены</button>
+    <button class="go alt" id="pdf" style="display:none">Сохранить PDF</button>
+    <button class="go alt" id="reset" style="display:none">Сбросить отчёт</button>
+    <label class="upload">Загрузить финмодель ПЛАТО<input type="file" id="plan" accept=".xlsx,.xlsm"></label>
+    <span id="planstate" class="muted"></span>
+    <span id="state" class="muted" style="margin-left:12px"></span>
+    <div id="hintout"></div>
+  </div>
+  <div id="out"></div>
+  <div class="card" id="askcard" style="display:none">
+    <h2>Спросить Платона Сергеевича</h2>
+    <div class="muted" style="font-size:13px;margin-bottom:8px">
+      Он видит числа этого отчёта и объясняет их. Считает движок — модель не пересчитывает.
+    </div>
+    <div class="chips">
+      <button type="button" data-q="Что здесь главное и что делать с ценой?">Что делать с ценой?</button>
+      <button type="button" data-q="Почему проект продаётся медленнее соседей? Разбери причины.">Почему медленно?</button>
+      <button type="button" data-q="Кто здесь ближайший конкурент и чем он опасен?">Кто конкурент?</button>
+      <button type="button" data-q="Какой прайс поставить, чтобы выйти на темп соседей?">Какой прайс ставить?</button>
+    </div>
+    <textarea id="ask" rows="3" placeholder="Например: обоснован ли прайс при таком темпе?"></textarea>
+    <button class="go" id="askbtn">Спросить</button>
+    <div id="askout"></div>
+  </div>
+</main>
+<script>
+const $=s=>document.querySelector(s);
+const num=(v,d=0)=>v===null||v===undefined?'—':Number(v).toLocaleString('ru-RU',{minimumFractionDigits:d,maximumFractionDigits:d});
+const pct=v=>v===null||v===undefined?'—':(v>0?'+':'')+num(v,1)+' %';
+const esc=s=>String(s===null||s===undefined?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+// Столбики цен: сам проект выделен цветом, медиана — линией. Рисуется своим
+// SVG, потому что страница отдаётся из движка и внешних библиотек тянуть
+// неоткуда, а график из чисел, которые уже пришли, честнее пересчитанного.
+function priceChart(peers, subject, median){
+  const rows=peers.filter(p=>p.price_per_sqm).map(p=>({n:p.name,v:p.price_per_sqm,self:false}));
+  if(subject && subject.price_per_sqm) rows.push({n:subject.name||'объект',v:subject.price_per_sqm,self:true});
+  if(rows.length<2) return '';
+  rows.sort((a,b)=>a.v-b.v);
+  const max=Math.max(...rows.map(r=>r.v)), H=26, W=560, pad=210;
+  const h=rows.length*H+26;
+  let svg=`<svg viewBox="0 0 ${W+pad} ${h}" width="100%" role="img">`;
+  rows.forEach((r,i)=>{
+    const w=Math.max(2,Math.round(r.v/max*W)), y=i*H+4;
+    svg+=`<text x="${pad-8}" y="${y+13}" text-anchor="end" font-size="12" fill="${r.self?'#C4581B':'#16202b'}"`
+       +`${r.self?' font-weight="600"':''}>${esc(r.n.length>28?r.n.slice(0,27)+'…':r.n)}</text>`
+       +`<rect x="${pad}" y="${y+2}" width="${w}" height="15" rx="3" fill="${r.self?'#C4581B':'#4E9BDE'}"/>`
+       +`<text x="${pad+w+6}" y="${y+14}" font-size="11" fill="#5b6b7d">${num(r.v)}</text>`;
+  });
+  if(median){
+    const x=pad+Math.round(median/max*W);
+    svg+=`<line x1="${x}" y1="0" x2="${x}" y2="${rows.length*H+2}" stroke="#16202b" stroke-dasharray="4 3" stroke-width="1"/>`
+       +`<text x="${x+4}" y="${rows.length*H+18}" font-size="11" fill="#16202b">медиана ${num(median)}</text>`;
+  }
+  return '<div class="wrap">'+svg+'</svg></div>';
+}
+
+// Линии динамики: свой проект толстой рыжей, соседи тонкими синими, подписи
+// справа у последней точки. Медиана рынка по месяцам — пунктиром: без неё
+// видно, что цена росла, но не видно, росла ли она быстрее рынка.
+function trendChart(series){
+  const rows=series.filter(s=>s.points&&s.points.length>1);
+  if(rows.length<1) return '<div class="muted">Истории цен по этой выборке нет.</div>';
+  const months=[...new Set(rows.flatMap(s=>s.points.map(p=>p.month)))].sort();
+  if(months.length<2) return '<div class="muted">Истории цен по этой выборке нет.</div>';
+  const at=(s,m)=>{const p=s.points.find(p=>p.month===m);return p?p.value:null};
+  const med=months.map(m=>{
+    const v=rows.map(s=>at(s,m)).filter(x=>x!==null).sort((a,b)=>a-b);
+    return v.length?(v.length%2?v[(v.length-1)/2]:(v[v.length/2-1]+v[v.length/2])/2):null;
+  });
+  const all=rows.flatMap(s=>s.points.map(p=>p.value));
+  const lo=Math.min(...all)*0.97, hi=Math.max(...all)*1.03;
+  // Высота считается от числа линий: подписи справа стоят столбиком, и при
+  // пятнадцати соседях фиксированная высота обрезала нижние.
+  const W=620,L=64,R=176,T=14,B=30;
+  const H=Math.max(260, rows.length*13+T+B+14);
+  const x=i=>L+i*(W-L-R)/(months.length-1);
+  const y=v=>T+(H-T-B)*(1-(v-lo)/(hi-lo));
+  const path=s=>months.map((m,i)=>{const v=at(s,m);return v===null?null:`${i?'L':'M'}${x(i).toFixed(1)} ${y(v).toFixed(1)}`})
+    .filter(Boolean).join(' ');
+  let svg=`<svg viewBox="0 0 ${W} ${H}" width="100%" role="img">`;
+  [0,0.5,1].forEach(f=>{const v=lo+(hi-lo)*f;
+    svg+=`<line x1="${L}" y1="${y(v)}" x2="${W-R}" y2="${y(v)}" stroke="#e6ecf2"/>`
+       +`<text x="${L-6}" y="${y(v)+4}" text-anchor="end" font-size="10" fill="#8798a8">${num(v)}</text>`;});
+  months.forEach((m,i)=>{ if(i%Math.ceil(months.length/6)) return;
+    svg+=`<text x="${x(i)}" y="${H-10}" text-anchor="middle" font-size="10" fill="#8798a8">${m.slice(2)}</text>`;});
+  // Медиана рисуется только когда сравнивать есть с чем: на одной линии она
+  // совпадает с ней самой и в карточке проекта выглядела бы вторым числом.
+  const single=rows.length<2;
+  const mp=months.map((m,i)=>med[i]===null?null:`${i?'L':'M'}${x(i).toFixed(1)} ${y(med[i]).toFixed(1)}`).filter(Boolean).join(' ');
+  if(!single) svg+=`<path d="${mp}" fill="none" stroke="#16202b" stroke-width="1.2" stroke-dasharray="5 4"/>`;
+  // Пятнадцать линий пятнадцатью цветами не различаются никак: девятый цвет
+  // неотличим от одного из первых восьми, а подписи ко всем концам сразу дают
+  // клубок выносок — так и вышло с первой попыткой. Поэтому здесь не «каждой
+  // линии по имени», а выделение: свой проект рыжий, медиана пунктиром, соседи
+  // — серый фон рынка. Имя соседа берётся наведением, а все числа целиком
+  // лежат в таблице под графиком.
+  const ends=[];
+  rows.forEach(s=>{
+    let ex=null, ey=null, ev=null;
+    for(let i=months.length-1;i>=0;i--){const v=at(s,months[i]); if(v!==null){ex=x(i);ey=y(v);ev=v;break}}
+    if(s.own){
+      svg+=`<path d="${path(s)}" fill="none" stroke="#C4581B" stroke-width="2.6"/>`;
+      if(ex!==null) ends.push({y:ey,v:ev,n:s.name,own:true,ex:ex});
+      return;
+    }
+    // Сосед: линия серая, имя — в группе рядом с концом, показывается стилем.
+    svg+=`<g class="ln"><path d="${path(s)}" fill="none" stroke="#c3d3e2" stroke-width="1.3"/>`
+       +(ex===null?'':`<circle cx="${ex.toFixed(1)}" cy="${ey.toFixed(1)}" r="2.4" fill="#c3d3e2"/>`
+         +`<text class="hov" x="${(ex-6).toFixed(1)}" y="${(ey-6).toFixed(1)}" text-anchor="end"`
+         +` font-size="11" fill="#16202b" paint-order="stroke" stroke="#fff" stroke-width="3.5">`
+         +`${esc(s.name)} · ${num(ev)}</text>`)
+       +`</g>`;
+    if(ex!==null) ends.push({y:ey,v:ev,n:s.name,own:false,ex:ex});
+  });
+  // Постоянных подписей ровно столько, чтобы читался масштаб: свой проект,
+  // верхний и нижний края выборки, медиана. Остальные — по наведению.
+  ends.sort((a,b)=>a.y-b.y);
+  const marked=[];
+  const push=e=>{if(e&&!marked.includes(e))marked.push(e)};
+  push(ends[0]); push(ends[ends.length-1]); push(ends.find(e=>e.own));
+  marked.sort((a,b)=>a.y-b.y);
+  const my=y(med[med.length-1]);
+  const stack=[];
+  let prev=-99;
+  marked.forEach(e=>{const yy=Math.max(e.y,prev+12);prev=yy;stack.push(yy)});
+  stack.push(Math.max(my,prev+12));
+  let floor=H-6;
+  for(let i=stack.length-1;i>=0;i--){stack[i]=Math.min(stack[i],floor);floor=stack[i]-12}
+  marked.forEach((e,i)=>{
+    const c=e.own?'#C4581B':'#8798a8';
+    svg+=`<polyline points="${e.ex.toFixed(1)},${e.y.toFixed(1)} ${(W-R-6).toFixed(1)},${stack[i].toFixed(1)} `
+       +`${(W-R+5).toFixed(1)},${stack[i].toFixed(1)}" fill="none" stroke="${c}" stroke-width="${e.own?1.4:0.7}"/>`
+       +`<circle cx="${e.ex.toFixed(1)}" cy="${e.y.toFixed(1)}" r="${e.own?3.2:2.4}" fill="${c}"/>`
+       +`<text x="${W-R+8}" y="${stack[i]+3}" font-size="10.5" fill="${e.own?'#C4581B':'#5b6b7d'}"`
+       +`${e.own?' font-weight="600"':''}>${esc(e.n.length>19?e.n.slice(0,18)+'…':e.n)} ${num(e.v)}</text>`;
+  });
+  if(!single) svg+=`<text x="${W-R+8}" y="${stack[stack.length-1]+3}" font-size="10.5" fill="#16202b">`
+     +`медиана ${num(med[med.length-1])}</text>`;
+  return '<div class="wrap">'+svg+'</svg></div>';
+}
+
+
+// Продажи по месяцам: свой проект столбиками, медиана соседей пунктиром.
+// Столбики, а не линия: продажи — это счёт событий за месяц, а не уровень,
+// и линия между двумя месяцами рисует переход, которого не было.
+function salesChart(rows){
+  const own=rows.find(r=>r.own);
+  if(!own||!own.points.length) return '<div class="muted">Истории продаж по этому проекту в отчёте нет — он покрывает «Москву старую».</div>';
+  const months=[...new Set(rows.flatMap(r=>r.points.map(p=>p.month)))].sort();
+  const at=(r,m,k)=>{const p=r.points.find(p=>p.month===m);return p?p[k]:null};
+  const med=months.map(m=>{
+    const v=rows.filter(r=>!r.own).map(r=>at(r,m,'sold')).filter(x=>x!==null).sort((a,b)=>a-b);
+    return v.length?(v.length%2?v[(v.length-1)/2]:(v[v.length/2-1]+v[v.length/2])/2):null;
+  });
+  const vals=months.map(m=>at(own,m,'sold')).filter(v=>v!==null).concat(med.filter(v=>v!==null));
+  const hi=Math.max(...vals,1)*1.15;
+  const W=620,H=210,L=44,R=110,T=12,B=28;
+  const bw=Math.max(4,(W-L-R)/months.length*0.62);
+  const x=i=>L+(i+0.5)*(W-L-R)/months.length;
+  const y=v=>T+(H-T-B)*(1-v/hi);
+  let svg=`<svg viewBox="0 0 ${W} ${H}" width="100%" role="img">`;
+  [0,0.5,1].forEach(f=>{const v=hi*f;
+    svg+=`<line x1="${L}" y1="${y(v)}" x2="${W-R}" y2="${y(v)}" stroke="#e6ecf2"/>`
+       +`<text x="${L-6}" y="${y(v)+4}" text-anchor="end" font-size="10" fill="#8798a8">${num(v)}</text>`;});
+  months.forEach((m,i)=>{
+    const v=at(own,m,'sold');
+    if(v!==null) svg+=`<rect x="${x(i)-bw/2}" y="${y(v)}" width="${bw}" height="${Math.max(1,H-B-y(v))}" rx="2" fill="#C4581B"/>`;
+    if(i%Math.ceil(months.length/6)===0)
+      svg+=`<text x="${x(i)}" y="${H-9}" text-anchor="middle" font-size="10" fill="#8798a8">${m.slice(2)}</text>`;
+  });
+  const mp=months.map((m,i)=>med[i]===null?null:`${i?'L':'M'}${x(i).toFixed(1)} ${y(med[i]).toFixed(1)}`).filter(Boolean).join(' ');
+  if(mp) svg+=`<path d="${mp}" fill="none" stroke="#16202b" stroke-width="1.3" stroke-dasharray="5 4"/>`;
+  const lastOwn=[...months].reverse().find(m=>at(own,m,'sold')!==null);
+  svg+=`<text x="${W-R+8}" y="${y(at(own,lastOwn,'sold'))+4}" font-size="10.5" fill="#C4581B" font-weight="600">`
+     +`${rows.length<2?esc(own.name.slice(0,14)):'проект'} ${num(at(own,lastOwn,'sold'))}</text>`;
+  const lastMed=rows.length<2?null:[...med].reverse().find(v=>v!==null);
+  if(lastMed!==undefined&&lastMed!==null)
+    svg+=`<text x="${W-R+8}" y="${y(lastMed)+4}" font-size="10.5" fill="#16202b">медиана ${num(lastMed,1)}</text>`;
+  return '<div class="wrap">'+svg+'</svg></div>';
+}
+
+// Остаток: линия одного проекта. Медиану соседей здесь не рисуем — остаток
+// зависит от объёма проекта, и середина между столотником и тысячником не
+// значит ничего.
+function remainChart(rows){
+  const own=rows.find(r=>r.own);
+  const pts=(own?own.points:[]).filter(p=>p.rem!==null&&p.rem!==undefined);
+  if(pts.length<2) return '';
+  const W=620,H=170,L=52,R=96,T=12,B=26;
+  const hi=Math.max(...pts.map(p=>p.rem))*1.08, lo=Math.min(...pts.map(p=>p.rem))*0.9;
+  const x=i=>L+i*(W-L-R)/(pts.length-1);
+  const y=v=>T+(H-T-B)*(1-(v-lo)/(hi-lo||1));
+  let svg=`<svg viewBox="0 0 ${W} ${H}" width="100%" role="img">`;
+  [0,1].forEach(f=>{const v=lo+(hi-lo)*f;
+    svg+=`<line x1="${L}" y1="${y(v)}" x2="${W-R}" y2="${y(v)}" stroke="#e6ecf2"/>`
+       +`<text x="${L-6}" y="${y(v)+4}" text-anchor="end" font-size="10" fill="#8798a8">${num(v)}</text>`;});
+  svg+=`<path d="${pts.map((p,i)=>`${i?'L':'M'}${x(i).toFixed(1)} ${y(p.rem).toFixed(1)}`).join(' ')}" fill="none" stroke="#1367AE" stroke-width="2.2"/>`;
+  pts.forEach((p,i)=>{ if(i%Math.ceil(pts.length/6)===0)
+    svg+=`<text x="${x(i)}" y="${H-8}" text-anchor="middle" font-size="10" fill="#8798a8">${p.month.slice(2)}</text>`;});
+  const last=pts[pts.length-1], first=pts[0];
+  const perMonth=(first.rem-last.rem)/(pts.length-1);
+  svg+=`<text x="${W-R+8}" y="${y(last.rem)+4}" font-size="10.5" fill="#1367AE" font-weight="600">${num(last.rem)} лотов</text>`;
+  svg+=`<text x="${W-R+8}" y="${y(last.rem)+18}" font-size="10" fill="#8798a8">−${num(perMonth,1)}/мес</text>`;
+  return '<div class="wrap">'+svg+'</svg></div>';
+}
+
+
+// Карта рынка: цена против поглощения, размер кружка — экспозиция.
+// Одна картинка отвечает на вопрос, который таблицей не читается: дорогие
+// продаются быстро или стоят. Свой проект рыжий, остальные по классу.
+const CLASS_COLOR={'Стандарт/Эконом':'#8fb8d8','Комфорт':'#7fb3a6','Бизнес':'#4E9BDE',
+  'Премиум':'#8a6fc4','Элит/De Luxe':'#c46f9b'};
+// Оси карты переключаются: один и тот же набор проектов отвечает на разные
+// вопросы. Цена против скорости — про перегрев; цена против размера лота — про
+// продукт; темп против остатка — про то, кто успеет распродаться.
+const AXES={
+  area_per_month:{label:'поглощение, м² в месяц',digits:0},
+  units_per_month:{label:'темп, ДДУ в месяц',digits:1},
+  price_per_sqm:{label:'цена, ₽/м²',digits:0},
+  sold_lot_avg:{label:'средний проданный лот, м²',digits:1},
+  lot_count:{label:'лотов в экспозиции',digits:0},
+  remaining_units:{label:'остаток, лотов',digits:0},
+  distance_km:{label:'расстояние, км',digits:2},
+};
+const VIEWS=[
+  {id:'speed', name:'Цена и скорость', x:'area_per_month', y:'price_per_sqm', size:'lot_count'},
+  {id:'pace',  name:'Цена и темп',     x:'units_per_month', y:'price_per_sqm', size:'lot_count'},
+  {id:'lot',   name:'Цена и размер лота', x:'sold_lot_avg', y:'price_per_sqm', size:'lot_count'},
+  {id:'stock', name:'Темп и остаток',  x:'units_per_month', y:'remaining_units', size:'lot_count'},
+  {id:'near',  name:'Цена и удалённость', x:'distance_km', y:'price_per_sqm', size:'lot_count'},
+];
+let bubbleView='speed';
+
+function bubbleChart(rows, view){
+  const V=view||VIEWS[0];
+  const XK=V.x, YK=V.y, SK=V.size;
+  const pts=rows.filter(r=>r[YK]!==null&&r[YK]!==undefined&&r[XK]!==null&&r[XK]!==undefined);
+  if(pts.length<3) return `<div class="muted">Для этой пары осей нужно хотя бы три проекта с данными;`
+    +` сейчас их ${pts.length}.</div>`;
+  const W=680,H=380,L=64,R=16,T=16,B=44;
+  const xs=pts.map(p=>p[XK]), ys=pts.map(p=>p[YK]);
+  const xhi=Math.max(...xs)*1.12, yhi=Math.max(...ys)*1.08, ylo=Math.min(...ys)*0.92;
+  const xd=AXES[XK].digits, yd=AXES[YK].digits;
+  const lots=pts.map(p=>p[SK]||1), lhi=Math.max(...lots);
+  const x=v=>L+(W-L-R)*(v/xhi);
+  const y=v=>T+(H-T-B)*(1-(v-ylo)/(yhi-ylo||1));
+  const r=v=>4+18*Math.sqrt((v||1)/lhi);
+  let svg=`<svg viewBox="0 0 ${W} ${H}" width="100%" role="img">`;
+  [0,0.25,0.5,0.75,1].forEach(f=>{const v=ylo+(yhi-ylo)*f;
+    svg+=`<line x1="${L}" y1="${y(v)}" x2="${W-R}" y2="${y(v)}" stroke="#eef2f6"/>`
+       +`<text x="${L-6}" y="${y(v)+4}" text-anchor="end" font-size="10" fill="#8798a8">${num(v,yd)}</text>`;});
+  [0,0.25,0.5,0.75,1].forEach(f=>{const v=xhi*f;
+    svg+=`<text x="${x(v)}" y="${H-24}" text-anchor="middle" font-size="10" fill="#8798a8">${num(v,xd)}</text>`;});
+  // Медианы обеих осей — крест, делящий поле на четверти: дорого-быстро,
+  // дорого-медленно, дёшево-быстро, дёшево-медленно.
+  const mid=a=>{const v=[...a].sort((p,q)=>p-q);return v.length%2?v[(v.length-1)/2]:(v[v.length/2-1]+v[v.length/2])/2};
+  const mx=mid(xs), my=mid(ys);
+  svg+=`<line x1="${x(mx)}" y1="${T}" x2="${x(mx)}" y2="${H-B}" stroke="#c9d6e2" stroke-dasharray="4 4"/>`
+     +`<line x1="${L}" y1="${y(my)}" x2="${W-R}" y2="${y(my)}" stroke="#c9d6e2" stroke-dasharray="4 4"/>`;
+  // Каждый кружок носит своё имя, но показывает его при наведении: подписать
+  // все разом — значит не подписать ни одного, а без подписи вовсе кружок
+  // остаётся точкой без проекта. Подпись рисуется тут же, рядом с кружком, и
+  // гасится стилем — так она появляется мгновенно, не через паузу подсказки.
+  pts.sort((a,b)=>(b[SK]||0)-(a[SK]||0)).forEach(p=>{
+    const c=p.__own?'#C4581B':(CLASS_COLOR[p.segment]||'#9dc2e6');
+    const px=x(p[XK]), py=y(p[YK]), rr=r(p[SK]);
+    const left=px>W*0.72;
+    svg+=`<g class="bub">`
+       +`<circle cx="${px.toFixed(1)}" cy="${py.toFixed(1)}"`
+       +` r="${rr.toFixed(1)}" fill="${c}" fill-opacity="${p.__own?0.9:0.42}"`
+       +` stroke="${c}" stroke-width="${p.__own?2:1}"><title>${esc(p.name)}: `
+       +`${AXES[YK].label} ${num(p[YK],yd)}; ${AXES[XK].label} ${num(p[XK],xd)}; `
+       +`${AXES[SK].label} ${num(p[SK])}</title></circle>`
+       +`<text class="hov" x="${(px+(left?-rr-6:rr+6)).toFixed(1)}" y="${(py+4).toFixed(1)}"`
+       +` text-anchor="${left?'end':'start'}" font-size="11" fill="#16202b" paint-order="stroke"`
+       +` stroke="#fff" stroke-width="3.5">${esc(p.name)} · ${num(p[YK],yd)}</text></g>`;
+  });
+  // Подписываем только тех, кого стоит узнать в лицо: свой проект и крайние
+  // по каждой оси. Подписать все — значит не подписать ни одного.
+  const marks=new Set();
+  const own=pts.find(p=>p.__own); if(own) marks.add(own);
+  const edge=(key,dir)=>[...pts].sort((a,b)=>dir*(b[key]-a[key]))[0];
+  [edge(YK,1),edge(YK,-1),edge(XK,1),edge(XK,-1)].forEach(p=>{if(p)marks.add(p)});
+  marks.forEach(p=>{
+    const px=x(p[XK]), py=y(p[YK])-r(p[SK])-5;
+    svg+=`<text x="${px.toFixed(1)}" y="${py.toFixed(1)}" text-anchor="middle" font-size="10.5"`
+       +` fill="${p.__own?'#C4581B':'#5b6b7d'}"${p.__own?' font-weight="600"':''}>`
+       +`${esc(p.name.length>20?p.name.slice(0,19)+'…':p.name)}</text>`;
+  });
+  svg+=`<text x="${(L+W-R)/2}" y="${H-6}" text-anchor="middle" font-size="10.5" fill="#5b6b7d">${esc(AXES[XK].label)}</text>`
+     +`<text x="14" y="${(T+H-B)/2}" text-anchor="middle" font-size="10.5" fill="#5b6b7d"`
+     +` transform="rotate(-90 14 ${(T+H-B)/2})">${esc(AXES[YK].label)}</text>`;
+  const legend=Object.entries(CLASS_COLOR).filter(([k])=>pts.some(p=>p.segment===k));
+  let lx=L;
+  legend.forEach(([k,c])=>{
+    svg+=`<circle cx="${lx+5}" cy="${T-4}" r="5" fill="${c}" fill-opacity="0.42" stroke="${c}"/>`
+       +`<text x="${lx+14}" y="${T-1}" font-size="10" fill="#5b6b7d">${esc(k)}</text>`;
+    lx+=18+k.length*5.6;
+  });
+  return '<div class="wrap">'+svg+'</svg></div>';
+}
+
+
+// Премия по месяцам. Разрыв бывает нажит собственным ростом цены, а бывает —
+// падением соседей; по одной сегодняшней цифре эти два случая неразличимы.
+function premiumChart(rows){
+  const pts=(rows||[]).filter(r=>r.premium_pct!==null&&r.premium_pct!==undefined);
+  if(pts.length<3) return '';
+  const W=640,H=200,L=52,R=96,T=14,B=28;
+  const vs=pts.map(p=>p.premium_pct);
+  const hi=Math.max(...vs,0)*1.15, lo=Math.min(...vs,0)*1.15;
+  const x=i=>L+i*(W-L-R)/(pts.length-1);
+  const y=v=>T+(H-T-B)*(1-(v-lo)/((hi-lo)||1));
+  let svg=`<svg viewBox="0 0 ${W} ${H}" width="100%" role="img">`;
+  [hi,(hi+lo)/2,lo].forEach(v=>{
+    svg+=`<line x1="${L}" y1="${y(v)}" x2="${W-R}" y2="${y(v)}" stroke="#eef2f6"/>`
+       +`<text x="${L-6}" y="${y(v)+4}" text-anchor="end" font-size="10" fill="#8798a8">${pct(v)}</text>`;});
+  svg+=`<line x1="${L}" y1="${y(0)}" x2="${W-R}" y2="${y(0)}" stroke="#16202b" stroke-width="1"/>`;
+  svg+=`<path d="${pts.map((p,i)=>`${i?'L':'M'}${x(i).toFixed(1)} ${y(p.premium_pct).toFixed(1)}`).join(' ')}"`
+     +` fill="none" stroke="#C4581B" stroke-width="2.4"/>`;
+  pts.forEach((p,i)=>{ if(i%Math.ceil(pts.length/6)===0)
+    svg+=`<text x="${x(i)}" y="${H-8}" text-anchor="middle" font-size="10" fill="#8798a8">${p.month.slice(2)}</text>`;});
+  const last=pts[pts.length-1], first=pts[0];
+  svg+=`<text x="${W-R+8}" y="${y(last.premium_pct)+4}" font-size="10.5" fill="#C4581B" font-weight="600">${pct(last.premium_pct)}</text>`;
+  svg+=`<text x="${W-R+8}" y="${y(last.premium_pct)+19}" font-size="10" fill="#8798a8">было ${pct(first.premium_pct)}</text>`;
+  return '<div class="wrap">'+svg+'</svg></div>';
+}
+
+function deepCard(d){
+  const a=d.analysis||{}, prem=a.premium_series||[], money=a.price_of_premium||{};
+  if(!prem.length && !Object.keys(money).length) return '';
+  const first=prem[0], last=prem[prem.length-1];
+  let story='';
+  if(first&&last){
+    const grew=last.premium_pct-first.premium_pct;
+    const ownUp=(last.own/first.own-1)*100, medUp=(last.median/first.median-1)*100;
+    story=`С ${first.month} премия к медиане соседей прошла путь ${pct(first.premium_pct)} → ${pct(last.premium_pct)}`
+      +` (${grew>0?'выросла':'сузилась'} на ${num(Math.abs(grew),1)} п.п.). За то же время наша цена`
+      +` ${ownUp>=0?'выросла':'упала'} на ${num(Math.abs(ownUp),1)} %, медиана соседей`
+      +` ${medUp>=0?'выросла':'упала'} на ${num(Math.abs(medUp),1)} % —`
+      +` ${Math.abs(ownUp)>Math.abs(medUp)?'разрыв нажит в основном нами':'разрыв нажит движением рынка, а не нашим прайсом'}.`;
+  }
+  const rows=[];
+  if(money.premium_per_sqm!==undefined)
+    rows.push(`<div><b>${num(money.premium_per_sqm)} ₽/м²</b><span>премия к медиане соседей</span></div>`);
+  if(money.premium_on_remainder!==undefined)
+    rows.push(`<div><b>${num(money.premium_on_remainder,1)} млн ₽</b><span>стоит премия на остатке ${num(money.remaining_area)} м²</span></div>`);
+  if(money.months_own_pace!==undefined)
+    rows.push(`<div><b>${num(money.months_own_pace,1)} мес</b><span>распродажа своим темпом</span></div>`);
+  if(money.months_peer_pace!==undefined)
+    rows.push(`<div><b>${num(money.months_peer_pace,1)} мес</b><span>темпом соседей</span></div>`);
+  if(money.months_lost!==undefined)
+    rows.push(`<div><b>${num(money.months_lost,1)} мес</b><span>разница в сроке</span></div>`);
+  // Оговорки печатает итоговая карточка — она есть всегда, а эта появляется
+  // только при премии. Раньше они жили здесь и вместе с ней исчезали.
+  return `<div class="card"><h2>Что стоит премия</h2>`
+    +(story?`<div class="say watch"><b>⚠️ Разбор</b> ${esc(story)}</div>`:'')
+    +(rows.length?`<div class="kv">${rows.join('')}</div>`:'')
+    +(prem.length?`<h3>Премия к медиане соседей по месяцам, %</h3>`+premiumChart(prem):'')
+    +`<div class="muted" style="font-size:12.5px;margin-top:10px">Обе величины условны: они показывают`
+    +` масштаб выбора, а не прогноз. Премия на остатке — выручка, которую она приносит,`
+    +` если её платят; срок — что будет, если продавать темпом соседей.</div>`
+    +`</div>`;
+}
+
+// `attr` даёт колонке дописать свои атрибуты в ячейку — этим имя проекта
+// становится ссылкой на карточку. Карточка открывалась только из таблицы
+// «Соседи в выборке» внизу; в таблицах разделов, где на соседа как раз и
+// смотрят, то же имя было мёртвым текстом.
+function compareTable(rows, cols){
+  return '<div class="wrap"><table><tr>'+cols.map(c=>`<th${c.num?' class="num"':''}>${c.t}</th>`).join('')+'</tr>'
+    +rows.map((r,i)=>'<tr'+(r.__own?' class="ownrow"':'')+'>'
+      +cols.map(c=>`<td${c.num?' class="num"':''}${c.attr?c.attr(r,i):''}>${c.f(r,i)}</td>`).join('')+'</tr>').join('')
+    +'</table></div>';
+}
+
+const TONE={good:'✅',watch:'⚠️',bad:'⛔',flat:'•'};
+
+// Итог в конце — не повтор верхней карточки, а её основание: те два числа, по
+// которым вывод сложился, третье для срока, и оговорки. Отчёт заканчивался
+// таблицей соседей, то есть данными; дочитавший до низа оставался без ответа.
+function finalCard(d){
+  const a=d.analysis||{}, ov=a.overall, notes=a.blocks||{};
+  if(!ov) return '';
+  const gap=(notes.price||{}).gap_pct, ratio=(notes.pace||{}).ratio,
+        months=(notes.stock||{}).months_to_sell;
+  const rows=[];
+  if(gap!==null&&gap!==undefined)
+    rows.push(`<div><b>${gap>0?'+':''}${num(gap,1)}%</b><span>цена к своему классу</span></div>`);
+  if(ratio!==null&&ratio!==undefined)
+    rows.push(`<div><b>${num(ratio,2)}×</b><span>темп против соседей</span></div>`);
+  if(months!==null&&months!==undefined)
+    rows.push(`<div><b>${num(months,1)}</b><span>месяцев на остаток</span></div>`);
+  const caveats=(a.caveats||[]).map(c=>`<li>${esc(c)}</li>`).join('');
+  return `<div class="card verdict ${ov.tone}"><h2>${TONE[ov.tone]||''} Итог: ${esc(ov.headline)}</h2>`
+    +`<div>${esc(ov.text)}</div>`
+    +(rows.length?`<div class="kv" style="margin-top:12px">${rows.join('')}</div>`:'')
+    +(caveats?`<h3>Чего эти числа не говорят</h3><ul class="caveats">${caveats}</ul>`:'')
+    +`</div>`;
+}
+
+function blockCard(b,ctx){
+  const s=b.subject||{}, p=b.peers||{}, c=b.city||{};
+  const cell=(v,l)=>`<div><b>${v}</b><span>${l}</span></div>`;
+  let kv='';
+  if(b.code==='price'){
+    kv=cell(num(s.price_per_sqm)+' ₽/м²','прайс проекта')
+      +cell(num(p.median)+' ₽/м²','медиана соседей ('+(p.count||0)+')')
+      +cell(pct(p.vs_median_pct),'к соседям')
+      +(p.same_class?cell(num(p.same_class.median)+' ₽/м²','медиана своего класса ('+p.same_class.count+')'):'')
+      +(c.median?cell(num(c.median)+' ₽/м²','медиана класса в Москве'):'')
+      +(c.band?cell({above_p75:'выше верхнего квартиля',interquartile:'внутри квартилей',below_p25:'ниже нижнего квартиля'}[c.band]||c.band,'место в городе'):'');
+  } else if(b.code==='pace'){
+    kv=cell(num(s.units_per_month,1),'ДДУ в месяц')
+      +cell(num(p.median,1),'медиана соседей')
+      +cell(s.units_per_month&&p.peer_median_over_subject?p.peer_median_over_subject+'×':'—','соседи быстрее во столько раз')
+      +(s.sales_end_forecast?cell(s.sales_end_forecast,'прогноз окончания продаж'):'');
+  } else if(b.code==='stock'){
+    kv=cell(num(s.remaining_units),'остаток, лотов')
+      +cell(num(s.exposure_lots),'в экспозиции')
+      +cell(s.months_to_sell?num(s.months_to_sell,1):'—','месяцев по текущему темпу')
+      +(s.exposure_share_pct?cell(num(s.exposure_share_pct,1)+' %','экспозиция от объёма'):'');
+  } else if(b.code==='lot_size'){
+    kv=cell(num(s.sold_lot_avg,1)+' м²','средний проданный лот')
+      +cell(num(s.project_lot_avg,1)+' м²','средний лот проекта')
+      +cell(pct(s.gap_pct),'разрыв')
+      +(p.median?cell(num(p.median,1)+' м²','медиана соседей'):'');
+  } else {
+    kv=cell(num(s.area_per_month),'м² в месяц')
+      +cell(num(p.median),'медиана соседей')
+      +cell(pct(p.vs_median_pct),'к соседям');
+  }
+  const notes=(b.notes||[]).map(n=>`<div class="note">${esc(n)}</div>`).join('');
+  const empty=Object.keys(s).length?'':'<div class="muted">Данных по проекту нет — сравнивать нечего.</div>';
+  const say=(ctx.analysis&&ctx.analysis.blocks&&ctx.analysis.blocks[b.code])||null;
+  const verdict=say&&say.text?`<div class="say ${say.tone}"><b>${TONE[say.tone]||'•'} Разбор</b> ${esc(say.text)}</div>`:'';
+  const chart=b.code==='price'?trendChart(ctx.series)
+    :b.code==='pace'?salesChart(ctx.sales)
+    :b.code==='stock'?remainChart(ctx.sales):'';
+  const chartTitle={price:'Динамика цены, ₽/м²',pace:'Продажи по месяцам, ДДУ',stock:'Остаток по месяцам, лотов'}[b.code]||'Динамика';
+  const table=sectionTable(b.code,ctx);
+  return `<div class="card"><h2>${esc(b.title)}</h2>${empty}<div class="kv">${kv}</div>`
+    +verdict+notes+(chart?`<h3>${chartTitle}</h3>${chart}`:'')+(table?`<h3>Сравнение</h3>${table}`:'')+`</div>`;
+}
+
+// Таблица под каждым разделом — та же выборка, но показанная колонками этого
+// раздела: в разделе о темпе не нужны метры лота, а в разделе о лоте не нужен
+// остаток. Своя строка выделена: без неё сравнение приходится держать в уме.
+function sectionTable(code,ctx){
+  const rows=[{...(ctx.subjectMetrics||{}), name:ctx.subjectName, segment:ctx.subjectSegment,
+               distance_km:0, __own:true}, ...(ctx.peers||[])];
+  // Первая строка — объект, дальше соседи по порядку, поэтому индекс соседа
+  // в `ctx.peers` на единицу меньше номера строки.
+  const base=[{t:'Проект',f:r=>esc(r.name)+(r.__own?' <span class="self">— объект</span>':''),
+               attr:(r,i)=>r.__own?'':` class="link" data-peer="${i-1}"`},
+              {t:'км',num:1,f:r=>r.__own?'—':num(r.distance_km,2)},
+              {t:'Класс',f:r=>esc(r.segment||'—')}];
+  const cols={
+    price:[...base,{t:'₽/м²',num:1,f:r=>num(r.price_per_sqm)},
+           {t:'мин',num:1,f:r=>num(r.price_per_sqm_min)},{t:'макс',num:1,f:r=>num(r.price_per_sqm_max)},
+           {t:'Прайс от',f:r=>esc(r.observed_at||'—')}],
+    pace:[...base,{t:'ДДУ/мес',num:1,f:r=>num(r.units_per_month,1)},
+          {t:'за 3 мес',num:1,f:r=>num(r.units_per_month_3m,1)},
+          {t:'Конец продаж',f:r=>esc(r.sales_end_forecast||'—')}],
+    stock:[...base,{t:'Лотов в продаже',num:1,f:r=>num(r.lot_count)},
+           {t:'Остаток',num:1,f:r=>num(r.remaining_units)},
+           {t:'Всего',num:1,f:r=>num(r.living_units)}],
+    lot_size:[...base,{t:'Продано, м²',num:1,f:r=>num(r.sold_lot_avg,1)},
+              {t:'Средний в проекте',num:1,f:r=>num(r.lot_area_avg,1)}],
+    absorption:[...base,{t:'м²/мес',num:1,f:r=>num(r.area_per_month)},
+                {t:'ДДУ/мес',num:1,f:r=>num(r.units_per_month,1)}],
+  }[code];
+  return cols?compareTable(rows,cols):'';
+}
+
+
+// Вопрос Платону Сергеевичу. Числа он не считает — их считает движок и кладёт
+// сюда готовыми; модель излагает и объясняет. Обратный порядок однажды даёт
+// правдоподобную и неверную медиану, которую нечем проверить.
+//
+// Зовём тот же маршрут, что и основной сервис: он принимает работу по билету и
+// отдаёт её опросом. Длинный ответ не держится соединением — на этом уже
+// обжигались, у каждого звена свой предел.
+function reportDigest(d){
+  if(!d) return '';
+  const s=d.subject||{}, c=d.comparison||{}, a=(d.analysis||{}).overall||{};
+  const lines=[`Объект: ${s.project_name||s.address||s.query}; класс ${s.segment||'—'}`
+    +` (источник класса: ${s.segment_source||'—'}); данные на ${d.retrieved_at}.`,
+    `В радиусе ${c.radius_km} км ${c.found} проектов, сопоставимых ${c.comparable}, в выборке ${c.used}.`];
+  if(a.headline) lines.push(`Вывод движка: ${a.headline}. ${a.text}`);
+  (d.blocks||[]).forEach(b=>{
+    const say=((d.analysis||{}).blocks||{})[b.code];
+    if(say&&say.text) lines.push(`${b.title}: ${say.text}`);
+  });
+  const peers=(d.peers||[]).slice(0,12).map(p=>
+    `${p.name} (${p.segment||'—'}, ${p.distance_km} км): ${p.price_per_sqm||'—'} ₽/м²,`
+    +` ${p.units_per_month??'—'} ДДУ/мес`).join('; ');
+  if(peers) lines.push('Соседи: '+peers+'.');
+  return lines.join('\n');
+}
+
+let lastReport=null;
+
+async function askPlato(){
+  const q=$('#ask').value.trim();
+  if(!q){$('#askout').innerHTML='<div class="muted">Напишите вопрос.</div>';return}
+  if(!lastReport){$('#askout').innerHTML='<div class="muted">Сначала соберите отчёт — Платону нужны числа.</div>';return}
+  const trace='cab'+Math.random().toString(36).slice(2,10);
+  $('#askbtn').disabled=true; $('#askout').innerHTML='<div class="muted">Платон Сергеевич думает…</div>';
+  const message='Ниже готовый разбор рынка, посчитанный движком. Числа не пересчитывай — '
+    +'объясни и ответь на вопрос по ним.\n\n'+reportDigest(lastReport)+'\n\nВопрос: '+q;
+  try{
+    const r=await fetch('/cabinet/ask',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({message})});
+    // Ответ бывает не JSON — например HTML страницы ошибки. Разбирать его
+    // вслепую значит показать человеку «The string did not match the expected
+    // pattern» вместо причины.
+    const raw=await r.text();
+    let d;
+    try{ d=JSON.parse(raw) }
+    catch(_){ $('#askout').innerHTML=`<div class="err">Платон ответил не по-русски и не по-JSON`
+      +` (код ${r.status}): ${esc(raw.slice(0,200))}</div>`; return }
+    if(!r.ok){$('#askout').innerHTML=`<div class="err">${esc(d.detail||'Платон не ответил')}</div>`;return}
+    // Быстрый ответ приходит тем же запросом; за долгим ходим по номеру.
+    let text=d.reply||d.answer||d.text||'';
+    // Опрос по номеру нужен только если движок вернул билет вместо ответа.
+    for(let i=0;!text&&d.trace_id&&i<120;i++){
+      await new Promise(r=>setTimeout(r,2500));
+      const p=await fetch('/agent/result/'+encodeURIComponent(d.trace_id||trace));
+      if(!p.ok) continue;
+      const pd=await p.json();
+      if(pd.status==='error'){text='Ошибка: '+(pd.detail||pd.error||'неизвестно');break}
+      text=pd.reply||pd.answer||pd.text||'';
+    }
+    $('#askout').innerHTML=text?`<div class="plato">${esc(text).replace(/\n/g,'<br>')}</div>`
+      :`<div class="err">${esc(d.error||'Ответ пустой — Платон ничего не сказал.')}</div>`;
+  }catch(e){$('#askout').innerHTML=`<div class="err">${esc(e.message||e)}</div>`}
+  finally{$('#askbtn').disabled=false}
+}
+
+
+// Карточка соседа. Открывается по клику на имя и рисуется из уже пришедших
+// чисел — второго запроса к источнику нет: всё, что показывает карточка, уже
+// лежит в отчёте, а лишний поход к «Пульсу» стоил бы секунд и ничего не
+// добавил.
+function projectCard(p){
+  const row=(l,v)=>v===null||v===undefined||v===''?'':`<div><b>${v}</b><span>${l}</span></div>`;
+  const sold=(p.sales_series||[]).filter(x=>x.sold!==null);
+  const trend=(p.price_series||[]);
+  const change=trend.length>1&&trend[0].value
+    ? ((trend[trend.length-1].value/trend[0].value-1)*100) : null;
+  return `<div class="cardwrap"><div class="cardbox">
+    <button class="close" id="cardclose">×</button>
+    <h2>${esc(p.name)}</h2>
+    <div class="muted" style="font-size:13px">${esc([p.developer,p.segment,
+      (p.distance_km!==undefined?p.distance_km+' км от объекта':'')].filter(Boolean).join(' · '))}</div>
+    <div class="kv" style="margin-top:12px">
+      ${row('прайс, ₽/м²', num(p.price_per_sqm))}
+      ${row('диапазон', p.price_per_sqm_min?num(p.price_per_sqm_min)+'–'+num(p.price_per_sqm_max):'')}
+      ${row('за год', change===null?'':pct(change))}
+      ${row('ДДУ в месяц', num(p.units_per_month,1))}
+      ${row('за 3 месяца', num(p.units_per_month_3m,1))}
+      ${row('м² в месяц', num(p.area_per_month))}
+      ${row('лотов в продаже', num(p.lot_count))}
+      ${row('средний проданный лот, м²', num(p.sold_lot_avg,1))}
+      ${row('прайс от', p.observed_at||'')}
+      ${row('конец продаж', p.sales_end_forecast||'')}
+    </div>
+    ${trend.length>1?`<h3>Цена по месяцам</h3>`
+      +trendChart([{name:p.name,own:true,points:trend}]):''}
+    ${sold.length>1?`<h3>Продажи по месяцам</h3>`
+      +salesChart([{name:p.name,own:true,points:sold}]):
+      '<div class="muted" style="margin-top:10px">Истории продаж по этому проекту в отчёте нет.</div>'}
+  </div></div>`;
+}
+
+function wireAdd(){
+  const box=$('#addq'), list=$('#addsug');
+  if(!box) return;
+  let items=[], timer=null;
+  const close=()=>{list.style.display='none';items=[]};
+  box.addEventListener('input',()=>{
+    const text=box.value.trim();
+    clearTimeout(timer);
+    if(text.length<2){close();return}
+    timer=setTimeout(async()=>{
+      // Пустой список молчать не должен: «источник выключен», «в справочнике
+      // такого нет» и «сеть не ответила» выглядели одинаково — никак.
+      try{
+        const r=await fetch('/market/projects/suggest?q='+encodeURIComponent(text));
+        if(!r.ok){
+          let why='Подсказки не пришли: '+r.status;
+          try{const e=await r.json(); if(e.detail) why=e.detail}catch(_){}
+          close(); $('#addstate').textContent=why; return;
+        }
+        const data=await r.json();
+        items=data.items||[];
+        if(!items.length){
+          close();
+          $('#addstate').textContent=data.reason||'Ничего не нашлось.';
+          return;
+        }
+        $('#addstate').textContent='';
+        list.innerHTML=items.map((it,i)=>`<div data-i="${i}">${esc(it.name)}`
+          +`<small>${esc([it.segment,it.developer,it.address].filter(Boolean).join(' · '))}</small></div>`).join('');
+        list.style.display='block';
+      }catch(e){close(); $('#addstate').textContent='Подсказки не пришли: '+(e.message||e)}
+    },180);
+  });
+  list.addEventListener('mousedown',e=>{
+    const row=e.target.closest('div[data-i]');
+    if(!row) return;
+    e.preventDefault();
+    const item=items[Number(row.dataset.i)];
+    box.value=''; close();
+    if(item) addProject(item);
+  });
+  document.addEventListener('click',e=>{if(!e.target.closest('.addwrap'))close()});
+}
+
+function wireCards(){
+  document.querySelectorAll('td.link[data-peer]').forEach(td=>{
+    td.addEventListener('click',()=>{
+      const p=(lastReport.peers||[])[Number(td.dataset.peer)];
+      if(!p) return;
+      const host=document.createElement('div');
+      host.innerHTML=projectCard(p);
+      document.body.appendChild(host);
+      const close=()=>host.remove();
+      host.querySelector('#cardclose').addEventListener('click',close);
+      host.querySelector('.cardwrap').addEventListener('click',e=>{if(e.target===host.querySelector('.cardwrap'))close()});
+      document.addEventListener('keydown',function esc2(e){if(e.key==='Escape'){close();document.removeEventListener('keydown',esc2)}});
+    });
+  });
+}
+
+
+let planData=null;
+
+// План против факта и рынка. Факт книги и факт «Пульса» — разные числа, и это
+// нормально: банк считает ДДУ по дате регистрации, книга по дате сделки, между
+// ними недели. Поэтому они показываются рядом, а не вместо друг друга.
+function planChart(rows, market){
+  const own=(market||[]).find(r=>r.own);
+  const src=new Map((own?own.points:[]).map(p=>[p.month,p.sold]));
+  const months=rows.map(r=>r.month);
+  const from=months.findIndex(m=>m>='2025-01');
+  const view=rows.slice(from<0?0:from);
+  if(view.length<2) return '';
+  const vals=view.flatMap(r=>[r.plan_units,r.fact_units,src.get(r.month)]).filter(v=>v!==null&&v!==undefined);
+  const hi=Math.max(...vals,1)*1.15;
+  const W=680,H=250,L=44,R=132,T=12,B=30;
+  const bw=Math.max(3,(W-L-R)/view.length*0.5);
+  const x=i=>L+(i+0.5)*(W-L-R)/view.length;
+  const y=v=>T+(H-T-B)*(1-v/hi);
+  let svg=`<svg viewBox="0 0 ${W} ${H}" width="100%" role="img">`;
+  [0,0.5,1].forEach(f=>{const v=hi*f;
+    svg+=`<line x1="${L}" y1="${y(v)}" x2="${W-R}" y2="${y(v)}" stroke="#e6ecf2"/>`
+       +`<text x="${L-6}" y="${y(v)+4}" text-anchor="end" font-size="10" fill="#8798a8">${num(v)}</text>`;});
+  view.forEach((r,i)=>{
+    const f=r.fact_units;
+    if(f!==null&&f!==undefined) svg+=`<rect x="${x(i)-bw/2}" y="${y(f)}" width="${bw}" height="${Math.max(1,H-B-y(f))}" rx="2" fill="#C4581B"/>`;
+    const s2=src.get(r.month);
+    if(s2!==null&&s2!==undefined) svg+=`<rect x="${x(i)+bw/2+1}" y="${y(s2)}" width="${bw}" height="${Math.max(1,H-B-y(s2))}" rx="2" fill="#9dc2e6"/>`;
+    if(i%Math.ceil(view.length/8)===0)
+      svg+=`<text x="${x(i)}" y="${H-9}" text-anchor="middle" font-size="10" fill="#8798a8">${r.month.slice(2)}</text>`;
+  });
+  const pp=view.map((r,i)=>r.plan_units===null||r.plan_units===undefined?null:`${x(i).toFixed(1)},${y(r.plan_units).toFixed(1)}`).filter(Boolean);
+  if(pp.length>1) svg+=`<path d="M${pp.join(' L')}" fill="none" stroke="#1f7a4d" stroke-width="2.2"/>`;
+  svg+=`<text x="${W-R+8}" y="${T+14}" font-size="10.5" fill="#C4581B" font-weight="600">факт по книге</text>`
+     +`<text x="${W-R+8}" y="${T+30}" font-size="10.5" fill="#5b6b7d">ДДУ по «Пульсу»</text>`
+     +`<text x="${W-R+8}" y="${T+46}" font-size="10.5" fill="#1f7a4d" font-weight="600">план</text>`;
+  return '<div class="wrap">'+svg+'</svg></div>';
+}
+
+function comparePlan(plan, market){
+  const own=(market||[]).find(r=>r.own);
+  const src=new Map((own?own.points:[]).map(p=>[p.month,p.sold]));
+  const months=[...new Set((plan.months||[]).map(m=>m.month).concat([...src.keys()]))].sort();
+  const by=new Map((plan.months||[]).map(m=>[m.month,m]));
+  const rows=months.map(m=>{
+    const o=by.get(m)||{};
+    return {month:m, kind:o.kind||null,
+      plan_units:o.kind==='plan'?o.units:null, fact_units:o.kind==='fact'?o.units:null,
+      plan_price:o.price??null};
+  });
+  const done=rows.filter(r=>r.fact_units!==null&&r.fact_units!==undefined);
+  const ahead=rows.filter(r=>r.plan_units!==null&&r.plan_units!==undefined);
+  return {rows, fact_months:done.length, plan_months:ahead.length,
+    fact_total:done.reduce((a,r)=>a+(r.fact_units||0),0),
+    plan_total:ahead.reduce((a,r)=>a+(r.plan_units||0),0)};
+}
+
+function planVerdict(cmp, market){
+  const own=(market||[]).find(r=>r.own);
+  const src=new Map((own?own.points:[]).map(p=>[p.month,p.sold]));
+  // Сравниваем только там, где план и факт встретились в одном месяце.
+  const both=cmp.rows.filter(r=>r.plan_units!==null&&r.plan_units!==undefined&&src.has(r.month));
+  const lines=[`Факт по книге: ${num(cmp.fact_total,1)} лотов за ${cmp.fact_months} мес.`
+    +` План на будущее: ${num(cmp.plan_total,1)} лотов за ${cmp.plan_months} мес.`];
+  const factPace=cmp.fact_months?cmp.fact_total/cmp.fact_months:null;
+  const planPace=cmp.plan_months?cmp.plan_total/cmp.plan_months:null;
+  let tone='flat';
+  if(factPace&&planPace){
+    const k=planPace/factPace;
+    lines.push(`Средний темп: факт ${num(factPace,1)} в месяц, план ${num(planPace,1)}.`);
+    if(k>1.25){tone='bad';lines.push(`План требует ускориться в ${num(k,1)} раза против того, как проект продаётся сейчас.`);}
+    else if(k<0.8){tone='good';lines.push('План скромнее фактического темпа — запас есть.');}
+    else {tone='good';lines.push('План примерно на уровне достигнутого темпа.');}
+  }
+  if(both.length){
+    const miss=both.filter(r=>src.get(r.month)<r.plan_units).length;
+    if(miss) lines.push(`В ${miss} из ${both.length} уже прошедших плановых месяцев регистраций меньше плана.`);
+  }
+  return {tone, text: lines.join(' ')};
+}
+
+async function loadPlan(file){
+  $('#planstate').textContent='Читаю книгу…';
+  try{
+    const r=await fetch('/cabinet/plan',{method:'POST',body:file});
+    const d=await r.json();
+    if(!r.ok){$('#planstate').textContent=d.detail||'Книга не разобрана';planData=null;return}
+    planData=d;
+    $('#planstate').textContent=`План загружен: ${d.project||'проект'} · факт по ${d.fact_until||'—'} · план с ${d.plan_from||'—'}`;
+    if(lastReport) render(lastReport);
+  }catch(e){$('#planstate').textContent=String(e.message||e);planData=null}
+}
+
+
+// Добавить в сравнение кого угодно из справочника. Рядом может не быть
+// аналога, а за три километра — быть; и наоборот, сосед по радиусу бывает не
+// аналогом, а просто соседом. Строка добавленного проекта устроена ровно так
+// же, как у найденного автоматически, иначе часть разделов её тихо пропустит.
+const added=new Map();
+
+async function addProject(item){
+  if(!lastReport){$('#addstate').textContent='Сначала соберите отчёт.';return}
+  if(added.has(item.complex_id)){$('#addstate').textContent='Этот проект уже в сравнении.';return}
+  $('#addstate').textContent='Добавляю ' + item.name + '…';
+  const s=lastReport.subject||{};
+  const q=new URLSearchParams();
+  if(s.latitude&&s.longitude){q.set('latitude',s.latitude);q.set('longitude',s.longitude)}
+  try{
+    const r=await fetch(`/market/project/${item.complex_id}?`+q.toString());
+    const d=await r.json();
+    if(!r.ok){$('#addstate').textContent=d.detail||'Не получилось';return}
+    added.set(item.complex_id,d);
+    lastReport.peers=[...(lastReport.peers||[]).filter(p=>p.complex_id!==d.complex_id), d]
+      .sort((a,b)=>(a.distance_km??99)-(b.distance_km??99));
+    // Разделы считаются заново: медианы, вердикт и таблицы должны учесть
+    // добавленного, иначе он окажется на графике, но не в выводах.
+    await rebuild();
+  }catch(e){$('#addstate').textContent=String(e.message||e)}
+}
+
+async function rebuild(){
+  const codes=[...document.querySelectorAll('input[name=code]:checked')].map(i=>i.value);
+  const s=lastReport.subject||{};
+  $('#addstate').textContent='Пересчитываю разделы…';
+  try{
+    const r=await fetch('/market/report',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({query:s.query,codes,radius_km:(lastReport.comparison||{}).radius_km||3,
+        peers_limit:Number($('#limit').value),segment:$('#segment').value||null})});
+    const d=await r.json();
+    if(r.ok){
+      const byId=new Map((d.peers||[]).map(p=>[p.complex_id,p]));
+      added.forEach((row,id)=>byId.set(id,row));
+      d.peers=[...byId.values()].sort((a,b)=>(a.distance_km??99)-(b.distance_km??99));
+      lastReport=d;
+    }
+  }catch(e){/* останемся на прежнем отчёте */}
+  render(lastReport);
+  $('#addstate').textContent=added.size?`Добавлено вручную: ${added.size}`:'';
+}
+
+async function build(){
+  const codes=[...document.querySelectorAll('input[name=code]:checked')].map(i=>i.value);
+  const query=$('#q').value.trim();
+  if(!query){$('#state').textContent='Укажите объект.';return}
+  if(!codes.length){$('#state').textContent='Выберите хотя бы один раздел.';return}
+  $('#go').disabled=true;
+  $('#out').innerHTML='';
+  // Ожидание без признака работы читается как внезапность: страница молчала
+  // полминуты, а потом разом выкладывала отчёт. Сервер отвечает одним
+  // запросом и о своих шагах не сообщает, поэтому ход показывается тем, что
+  // есть на руках: секундами и порядком, в котором эти шаги идут.
+  const started=Date.now();
+  const STAGES=[[0,'Ищу объект по вводу'],[3,'Беру проекты вокруг из справочника'],
+                [8,'Спрашиваю прайсы и темпы у «Пульса»'],[20,'Считаю медианы и разделы'],
+                [35,'Ещё считаю — на холодной точке это до минуты']];
+  const tick=()=>{
+    const sec=Math.round((Date.now()-started)/1000);
+    let say=STAGES[0][1];
+    STAGES.forEach(([at,text])=>{if(sec>=at) say=text});
+    $('#state').textContent=`${say}… ${sec} с`;
+  };
+  tick();
+  const timer=setInterval(tick,1000);
+  try{
+    const r=await fetch('/market/report',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({query,codes,radius_km:Number($('#radius').value),peers_limit:Number($('#limit').value),segment:$('#segment').value||null})});
+    const d=await r.json();
+    if(!r.ok){$('#out').innerHTML=`<div class="card err">${esc(d.detail||'Не получилось')}</div>`;return}
+    lastReport=d; render(d);
+  }catch(e){
+    $('#out').innerHTML=`<div class="card err">${esc(e.message||e)}</div>`;
+  }finally{clearInterval(timer);$('#go').disabled=false;$('#state').textContent='';}
+}
+
+function render(d){
+  const s=d.subject||{}, c=d.comparison||{}, peers=d.peers||[];
+  const m=s.metrics||{};
+  const src={cadastre:'по кадастровому номеру',coordinates:'по координатам',project:'по названию проекта',address:'по адресу'}[s.source]||s.source;
+  const srcNote={neighbours:' <span class="muted">(класс не у источника — сложен по соседям)</span>',
+    manual:' <span class="self">(выбран вручную'+(s.segment_by_source?', «Пульс» относит к «'+esc(s.segment_by_source)+'»':'')+')</span>'}[s.segment_source]||'';
+  const cls=s.segment?esc(s.segment)+srcNote:'<span class="muted">не определён</span>';
+  let html=`<div class="card"><h2>${esc(s.project_name||s.address||s.query)}</h2>
+    <div class="muted" style="font-size:13px">Опознан ${esc(src)} · класс: ${cls} · данные на ${esc(d.retrieved_at)}</div>
+    <div class="kv" style="margin-top:12px">
+      <div><b>${num(c.found)}</b><span>проектов в ${c.radius_km} км</span></div>
+      <div><b>${num(c.comparable)}</b><span>сопоставимы по классу</span></div>
+      <div><b>${num(c.used)}</b><span>взято в выборку</span></div>
+      <div><b>${num(c.stale_price)}</b><span>прайс старше ${esc(c.fresh_since)}</span></div>
+      <div><b>${num(c.no_price)}</b><span>цены нет вовсе</span></div>
+    </div>`+((((d.city||{}).scope||{}).covered===false)?`<div class="scope">${esc(d.city.scope.reason)}</div>`:'')
+    // Добавление проекта стояло в самом низу, под всем отчётом, — и его там
+    // не находили. Оно меняет выборку целиком: медианы, вердикт и каждый
+    // раздел, поэтому и место ему рядом с составом выборки, а не в хвосте.
+    +`<div class="addwrap" style="margin-top:12px"><input type="text" id="addq" autocomplete="off"
+      placeholder="Добавить в сравнение любой проект из справочника — начните вводить название">
+      <div id="addsug"></div></div>
+    <div id="addstate" class="muted" style="font-size:12.5px;margin-top:6px"></div>`
+    +`</div>`;
+
+  // Вывод — первым, до графиков. Он стоял четвёртой карточкой, под картой
+  // рынка и ценами соседей, то есть ниже сгиба: человек открывал отчёт и
+  // видел два больших графика вместо ответа на свой вопрос.
+  const ov=(d.analysis||{}).overall, pos=(d.analysis||{}).positioning;
+  if(ov) html+=`<div class="card verdict ${ov.tone}"><h2>${TONE[ov.tone]||''} ${esc(ov.headline)}</h2>`
+    +`<div>${esc(ov.text)}</div>`
+    +(pos?`<div class="pos"><b>Куда попадает проект.</b> ${esc(pos.text)}</div>`:'')
+    +`</div>`;
+
+  const market=[{...m, name:s.project_name||'объект', segment:s.segment, __own:true}, ...peers];
+  html+=`<div class="card"><h2>Карта рынка</h2>`
+    +`<div class="chips views">`+VIEWS.map(v=>`<button type="button" data-view="${v.id}"`
+      +`${v.id===bubbleView?' class="on"':''}>${esc(v.name)}</button>`).join('')+`</div>`
+    +`<div id="bubble">`+bubbleChart(market, VIEWS.find(v=>v.id===bubbleView))+`</div>`
+    +`<div class="printviews">`+VIEWS.map(v=>`<h3>${esc(v.name)}</h3>`+bubbleChart(market,v)).join('')+`</div>`
+    +`<div class="muted" style="font-size:12.5px;margin-top:8px">Размер кружка — лотов в экспозиции.`
+    +` Пунктир — медианы по обеим осям. Имя проекта — наведением на кружок;`
+    +` в печать уходят все пары осей.</div></div>`;
+
+  const priceBlock=(d.blocks||[]).find(b=>b.code==='price');
+  if(priceBlock) html+=`<div class="card"><h2>Цены соседей сегодня</h2>${priceChart(peers,{...m,name:s.project_name||'объект'},(priceBlock.peers||{}).median)}</div>`;
+
+  const ctx={
+    analysis:d.analysis, peers:peers, subjectMetrics:m,
+    subjectName:s.project_name||s.address||s.query, subjectSegment:s.segment,
+    series:[{name:s.project_name||'объект',own:true,points:d.price_series||[]}]
+      .concat(peers.map(p=>({name:p.name,own:false,points:p.price_series||[]}))),
+    sales:[{name:s.project_name||'объект',own:true,points:d.sales_series||[]}]
+      .concat(peers.map(p=>({name:p.name,own:false,points:p.sales_series||[]})))
+  };
+  html+=(d.blocks||[]).map(b=>blockCard(b,ctx)).join('');
+  if(planData&&planData.months){
+    const cmp=comparePlan(planData, ctx.sales);
+    const pv=planVerdict(cmp, ctx.sales);
+    html+=`<div class="card"><h2>План продаж против факта и рынка</h2>`
+      +`<div class="say ${pv.tone}"><b>${TONE[pv.tone]||'•'} Разбор</b> ${esc(pv.text)}</div>`
+      +planChart(cmp.rows, ctx.sales)
+      +`<div class="muted" style="font-size:12.5px;margin-top:8px">Факт книги и ДДУ «Пульса» расходятся`
+      +` на срок регистрации: книга считает по дате сделки, источник — по дате регистрации.</div></div>`;
+  }
+
+  html+=deepCard(d);
+  html+=`<div class="card"><h2>Соседи в выборке</h2>
+    <div class="wrap"><table>
+    <tr><th>Проект</th><th>Застройщик</th><th class="num">км</th><th>Класс</th>
+    <th class="num">₽/м²</th><th class="num">ДДУ/мес</th><th class="num">м²/мес</th><th class="num">Лотов</th><th>Прайс от</th></tr>`
+    +peers.map((p,i)=>`<tr${p.added_by_hand?' class="added"':''}><td class="link" data-peer="${i}">`
+      +`${esc(p.name)}${p.added_by_hand?' <span class="muted">+</span>':''}</td><td class="muted">${esc(p.developer||'—')}</td>
+      <td class="num">${num(p.distance_km,2)}</td><td>${esc(p.segment||'—')}</td>
+      <td class="num">${num(p.price_per_sqm)}</td><td class="num">${num(p.units_per_month,1)}</td>
+      <td class="num">${num(p.area_per_month)}</td><td class="num">${num(p.lot_count)}</td>
+      <td class="muted">${esc(p.observed_at||'—')}</td></tr>`).join('')
+    +`</table></div></div>`;
+  html+=finalCard(d);
+  $('#out').innerHTML=html;
+  document.querySelectorAll('.views button').forEach(btn=>btn.addEventListener('click',()=>{
+    bubbleView=btn.dataset.view;
+    document.querySelectorAll('.views button').forEach(b2=>b2.classList.toggle('on',b2===btn));
+    $('#bubble').innerHTML=bubbleChart(market, VIEWS.find(v=>v.id===bubbleView));
+  }));
+  $('#askcard').style.display='block';
+  $('#pdf').style.display='inline-block';
+  $('#reset').style.display='inline-block';
+  wireCards();
+  wireAdd();
+}
+$('#go').addEventListener('click',build);
+$('#askbtn').addEventListener('click',askPlato);
+// PDF — печатью самой страницы. Второй вёрстки не заводим: она разошлась бы с
+// первой, и мы получили бы два достоверных на вид отчёта с разными числами.
+$('#pdf').addEventListener('click',()=>window.print());
+
+// Сброс. Отчёт держит не только разметку: вручную добавленные проекты, книгу
+// ПЛАТО, ответ Платона и ориентир. Стереть один экран и оставить остальное —
+// значит собрать следующий отчёт с чужим хвостом: добавленный руками сосед
+// приехал бы в выборку другого объекта и выглядел бы там найденным.
+$('#reset').addEventListener('click',function(){
+  lastReport=null; planData=null; added.clear(); bubbleView='speed';
+  $('#out').innerHTML=''; $('#hintout').innerHTML='';
+  $('#planstate').textContent=''; $('#state').textContent='';
+  $('#plan').value=''; $('#ask').value=''; $('#askout').innerHTML='';
+  $('#askcard').style.display='none';
+  $('#pdf').style.display='none'; $('#reset').style.display='none';
+  $('#q').focus();
+});
+$('#plan').addEventListener('change',e=>{if(e.target.files[0])loadPlan(e.target.files[0])});
+document.querySelectorAll('.chips button').forEach(b=>b.addEventListener('click',()=>{
+  $('#ask').value=b.dataset.q; askPlato();
+}));
+
+// Ориентир цены — то же число, что кнопка «Рекомендация DevelopAid» у поля
+// цены в основном сервисе. Здесь он нужен для площадки без проекта: по адресу
+// или кадастру понять, из какой цены исходить для будущего ЖК.
+function showHint(d,extra){
+  const basis={peers:'по соседям рядом',okrug:'по округу',city:'по классу в Москве'}[d.basis]||d.basis||'';
+  $('#hintout').innerHTML=`<div class="box"><b>${num(d.price_th_per_sqm)} тыс ₽/м²</b>`
+    +` <span class="muted">— ориентир ${esc(basis)}${esc(extra||'')}; наблюдений ${d.sample||'—'}`
+    +(d.observed_at?`, данные на ${esc(d.observed_at)}`:'')+`</span></div>`;
+}
+
+$('#hint').addEventListener('click',async function(){
+  const where=$('#q').value.trim();
+  if(!where){$('#state').textContent='Укажите объект.';return}
+  // Отчёт на экране — ориентир берётся из него: это те самые конкуренты,
+  // которых человек сейчас видит. Отдельный запрос ходит своим радиусом и на
+  // той же площадке отвечал городской медианой при пятнадцати соседях рядом.
+  if(lastReport && lastReport.price_hint && lastReport.price_hint.available){
+    showHint(lastReport.price_hint,' по выборке этого отчёта');
+    return;
+  }
+  $('#hint').disabled=true; $('#hintout').innerHTML='<span class="muted">Считаю ориентир…</span>';
+  try{
+    const r=await fetch('/market/price-hint',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({address:where,segment:$('#segment').value||null})});
+    const d=await r.json();
+    if(!r.ok||d.available===false){
+      $('#hintout').innerHTML=`<div class="box">${esc(d.reason||d.detail||'Ориентир не рассчитан.')}</div>`;
+      return;
+    }
+    showHint(d,'');
+  }catch(e){$('#hintout').innerHTML=`<div class="box">${esc(e.message||e)}</div>`}
+  finally{$('#hint').disabled=false}
+});
+
+// Подсказки в поле объекта — из двух источников сразу: названия ЖК из
+// справочника «Пульса» и адреса из DaData. Кадастровый номер и координаты
+// подсказывать нечем и незачем — они однозначны.
+//
+// Адреса нужны потому, что кадастр под рукой не всегда, а место человек знает
+// всегда. Раньше поле умело только имена ЖК, и площадку без проекта — а это
+// как раз тот случай, ради которого кабинет и открывают, — приходилось искать
+// координатами.
+const sug=$('#sug'); let items=[], cur=-1, timer=null;
+const looksLikeName=t=>t.length>=2 && !/^\s*[\d.,;:\s-]+$/.test(t);
+function closeSug(){sug.style.display='none';items=[];cur=-1}
+function paint(){
+  if(!items.length){closeSug();return}
+  sug.innerHTML=items.map((it,i)=>
+    `<div data-i="${i}"${i===cur?' class="on"':''}>${esc(it.name)}`
+    +`<small>${esc(it.kind==='address'?'адрес'
+        :[it.segment,it.developer,it.address].filter(Boolean).join(' · '))}</small></div>`).join('');
+  sug.style.display='block';
+}
+function choose(i){
+  if(!items[i])return;
+  $('#q').value=items[i].name; closeSug(); build();
+}
+sug.addEventListener('mousedown',e=>{
+  const row=e.target.closest('div[data-i]'); if(row){e.preventDefault();choose(+row.dataset.i)}
+});
+$('#q').addEventListener('input',()=>{
+  const text=$('#q').value.trim();
+  clearTimeout(timer);
+  if(!looksLikeName(text)){closeSug();return}
+  timer=setTimeout(async()=>{
+    // Оба источника спрашиваются разом, а не по очереди: адрес и название —
+    // равноправные способы назвать объект, и заставлять человека угадывать,
+    // каким из них поле сегодня умеет пользоваться, незачем.
+    const ask=async(url)=>{
+      try{const r=await fetch(url); if(!r.ok)return{items:[]}; return await r.json()}
+      catch(e){return {items:[],reason:String(e.message||e)}}
+    };
+    const [names,places]=await Promise.all([
+      ask('/market/projects/suggest?q='+encodeURIComponent(text)),
+      ask('/market/address/suggest?q='+encodeURIComponent(text)),
+    ]);
+    items=[
+      ...((names.items||[]).map(it=>({...it,kind:'project'}))),
+      ...((places.items||[]).map(it=>({name:it.label,kind:'address'}))),
+    ];
+    cur=-1; paint();
+    // Пусто с обеих сторон — сказать почему. Молчащий список одинаково значит
+    // «не нашлось», «источник выключен» и «сеть не ответила».
+    if(!items.length){
+      const why=[names.reason,places.reason].filter(Boolean).join(' ');
+      $('#state').textContent=why||'';
+    } else { $('#state').textContent=''; }
+  },180);
+});
+$('#q').addEventListener('keydown',e=>{
+  const open=sug.style.display==='block';
+  if(open&&e.key==='ArrowDown'){cur=Math.min(cur+1,items.length-1);paint();e.preventDefault();return}
+  if(open&&e.key==='ArrowUp'){cur=Math.max(cur-1,0);paint();e.preventDefault();return}
+  if(e.key==='Escape'){closeSug();return}
+  if(e.key==='Enter'){
+    if(open&&cur>=0){choose(cur)}else{closeSug();build()}
+  }
+});
+document.addEventListener('click',e=>{if(!e.target.closest('#sug')&&e.target!==$('#q'))closeSug()});
+</script>"""
+
+
+# Версию кабинет не хранит и не объявляет — берёт у движка. Копий `VERSION`
+# в этом проекте было четырнадцать, и полтора десятка выпусков поднимали их
+# руками все разом, пока однажды не подняли только одну: стенд стал неотличим
+# от невыкаченного. Здесь та же цена вопроса — по кабинету нельзя было понять,
+# какая сборка на экране, и разбираться приходилось через `/health`.
+VERSION_PLACEHOLDER = "__DEVELOPAID_VERSION__"
+
+
+def app_version() -> str:
+    """Версия движка. Подменяется обёрткой, у которой есть `core`."""
+    try:
+        import main_legacy
+
+        return str(main_legacy.VERSION)
+    except Exception:
+        return "—"
+
+
+def cabinet_page() -> str:
+    return (
+        CABINET_PAGE.replace("__SECTIONS__", _sections_markup())
+        .replace(VERSION_PLACEHOLDER, app_version())
+    )
+
+
+def login_page(error: str = "") -> str:
+    markup = f'<div class="err">{error}</div>' if error else ""
+    return LOGIN_PAGE.replace("__ERROR__", markup)
+
+
+def diagnostics() -> dict[str, Any]:
+    return {"cabinet_key_set": bool(cabinet_key())}
