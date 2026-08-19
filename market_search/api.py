@@ -165,6 +165,17 @@ def install(app: FastAPI) -> MarketDiscoveryService:
             "reason": "Справочник проектов пуст: кэш не наполнен, а источник не ответил.",
         }
 
+    @app.get("/market/pulse/fields")
+    async def market_pulse_fields(request: Request) -> dict[str, Any]:
+        """Что источник кладёт в общий ответ и что из этого мы выбрасываем.
+
+        Нужна, чтобы ответить на вопрос «почему свод по файлу, а не по сайту»
+        фактом, а не догадкой: если цена и класс приходят вместе со списком
+        проектов, живой свод стоит пять запросов, а не семьсот.
+        """
+        cabinet_module.require_cabinet(request)
+        return await run_in_threadpool(service.pulse.probe_fields)
+
     @app.get("/market/address/suggest")
     async def market_address_suggest(request: Request, q: str = "") -> dict[str, Any]:
         """Подсказки адресов — тем же DaData, что и адресный поиск движка.

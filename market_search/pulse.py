@@ -371,7 +371,14 @@ class PulseClient:
         ]
         return self._projects
 
-    def _fetch_projects(self) -> list[dict[str, Any]] | None:
+    def _map_collection(self) -> dict[str, Any] | None:
+        """Сырой GeoJSON карты — как он пришёл, без отбора полей.
+
+        Отдельным методом, потому что его смотрят двое: разбор проектов, где
+        берётся семь полей, и проба полей, где нужно ровно обратное — узнать,
+        что ещё лежит в ответе и выбрасывается. Пока метода не было, ответ
+        разбирался на месте, и «что там есть» никто спросить не мог.
+        """
         if not self.available and not self._cookie("sessionid"):
             return None
         try:
@@ -393,9 +400,14 @@ class PulseClient:
                 self.errors.append("на странице карты нет данных проектов")
                 return None
         try:
-            collection = json.loads(_balanced_json(page, page.index("{", index)))
+            return json.loads(_balanced_json(page, page.index("{", index)))
         except ValueError as exc:
             self.errors.append(f"данные карты не разобрались: {exc}")
+            return None
+
+    def _fetch_projects(self) -> list[dict[str, Any]] | None:
+        collection = self._map_collection()
+        if collection is None:
             return None
 
         out: list[dict[str, Any]] = []
@@ -425,6 +437,41 @@ class PulseClient:
         ]
         return sorted((row for row in found if row[0] <= radius_km), key=lambda row: row[0])
 
+    def _class_collection(self, code: Any, title: str) -> dict[str, Any] | None:
+        """Выборка одного класса, как она пришла. Отбор полей — не здесь.
+
+        Тот же довод, что у карты: разбору классов нужен только `id`, а пробе
+        полей — всё остальное. Пока разбор жил внутри цикла, посмотреть на
+        ответ было нельзя, не переписав его.
+        """
+        payload = urllib.parse.urlencode(
+            {"data": json.dumps({"classes_ppn_list": [code]})}
+        ).encode("utf-8")
+        if not self._cookie("csrftoken") and not self.sign_in():
+            return None
+        try:
+            body = self._open(
+                _SEARCH_PATH,
+                data=payload,
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "X-CSRFToken": self._cookie("csrftoken") or "",
+                    "Referer": f"{self.base}{_MAP_PATH}",
+                },
+            )
+        except (urllib.error.URLError, OSError) as exc:
+            self.errors.append(f"класс «{title}»: {exc}")
+            return None
+        raw = lz_decompress_base64(body.decode("utf-8", errors="ignore"))
+        if not raw:
+            self.errors.append(f"класс «{title}»: ответ не разжался")
+            return None
+        try:
+            return json.loads(raw)
+        except ValueError:
+            self.errors.append(f"класс «{title}»: ответ не разобрался")
+            return None
+
     def segments(self, *, refresh: bool = False) -> dict[int, str]:
         """Класс каждого проекта: идентификатор → «Бизнес», «Премиум»…
 
@@ -440,33 +487,8 @@ class PulseClient:
 
         out: dict[int, str] = {}
         for code, title in _CLASS_FILTERS.items():
-            payload = urllib.parse.urlencode(
-                {"data": json.dumps({"classes_ppn_list": [code]})}
-            ).encode("utf-8")
-            csrf = self._cookie("csrftoken")
-            if not csrf and not self.sign_in():
-                return {}
-            try:
-                body = self._open(
-                    _SEARCH_PATH,
-                    data=payload,
-                    headers={
-                        "Content-Type": "application/x-www-form-urlencoded",
-                        "X-CSRFToken": self._cookie("csrftoken") or "",
-                        "Referer": f"{self.base}{_MAP_PATH}",
-                    },
-                )
-            except (urllib.error.URLError, OSError) as exc:
-                self.errors.append(f"класс «{title}»: {exc}")
-                continue
-            raw = lz_decompress_base64(body.decode("utf-8", errors="ignore"))
-            if not raw:
-                self.errors.append(f"класс «{title}»: ответ не разжался")
-                continue
-            try:
-                collection = json.loads(raw)
-            except ValueError:
-                self.errors.append(f"класс «{title}»: ответ не разобрался")
+            collection = self._class_collection(code, title)
+            if collection is None:
                 continue
             for feature in collection.get("features") or []:
                 if feature.get("id") is not None:
@@ -772,6 +794,61 @@ class PulseClient:
                 }
             )
         return out
+
+    # Поля, которые разбор карты забирает себе. Всё остальное из ответа
+    # выбрасывается — и до пробы никто не знал, что именно.
+    _MAP_FIELDS_TAKEN = ("name", "developer", "zastroychik", "construction_address")
+
+    def probe_fields(self) -> dict[str, Any]:
+        """Что источник кладёт в общий ответ и что из этого мы не берём.
+
+        Вопрос владельца, 19.08.2026: почему свод считается по скачанному
+        файлу, если есть сам сайт. Ответ упирался в цену — её берут поштучно,
+        и на семьсот проектов это семьсот запросов. Но проверено это не было:
+        разбор карты читает четыре свойства, разбор классов — один `id`, а
+        что ещё лежит в тех же ответах, никто не смотрел. Если цена и класс
+        приходят вместе со списком, живой свод стоит пять запросов, а не
+        семьсот, и спорить не о чем.
+
+        Проба ничего не считает и не кэширует: она называет ключи и показывает
+        по одному значению, чтобы решение принималось по факту, а не по
+        догадке.
+        """
+
+        def describe(collection: dict[str, Any] | None) -> dict[str, Any]:
+            if not collection:
+                return {"features": 0, "keys": [], "sample": {}}
+            features = collection.get("features") or []
+            keys: dict[str, int] = {}
+            sample: dict[str, Any] = {}
+            for feature in features:
+                props = (feature or {}).get("properties") or {}
+                for key, value in props.items():
+                    keys[key] = keys.get(key, 0) + 1
+                    if key not in sample and value not in (None, ""):
+                        sample[key] = value
+            return {
+                "features": len(features),
+                # Ключ, который есть не у всех, — это не поле, а исключение;
+                # доля показывается, чтобы это было видно сразу.
+                "keys": [
+                    {"key": key, "share_pct": round(100 * count / max(len(features), 1))}
+                    for key, count in sorted(keys.items(), key=lambda item: (-item[1], item[0]))
+                ],
+                "sample": sample,
+                "unused": sorted(set(keys) - set(self._MAP_FIELDS_TAKEN)),
+            }
+
+        if not self.available and not self._cookie("sessionid"):
+            return {"available": False, "reason": "Источник выключен: не заданы доступы"}
+        first = next(iter(_CLASS_FILTERS.items()), None)
+        return {
+            "available": True,
+            "map": describe(self._map_collection()),
+            "class_filter": describe(
+                self._class_collection(first[0], first[1]) if first else None
+            ),
+        }
 
     def diagnostics(self) -> dict[str, Any]:
         return {

@@ -205,3 +205,40 @@ def test_balanced_json_survives_nested_braces() -> None:
     text = 'x = {"a": {"b": "}"}, "c": [1,2]}; tail'
     blob = _balanced_json(text, text.index("{"))
     assert json.loads(blob) == {"a": {"b": "}"}, "c": [1, 2]}
+
+
+def test_the_probe_names_what_the_answer_carries_and_what_we_drop(tmp_path: Path) -> None:
+    """«Почему свод по файлу, а не по сайту» — вопрос про цену в общем ответе.
+
+    Разбор карты читает четыре свойства, разбор классов — один `id`. Что ещё
+    лежит в тех же ответах, никто не смотрел, и довод «цена только поштучно»
+    держался на догадке. Проба называет ключи фактом.
+    """
+    page = _map_page(
+        [
+            _feature(3372, "Дом", 55.7, 37.5, developer="Level Group",
+                     construction_address="ул. Мишина, д. 17",
+                     price_avg=512000, class_ppn="Бизнес"),
+            _feature(5924, "Второй", 55.71, 37.43, price_avg=708109),
+        ]
+    )
+
+    client = PulseClient(tmp_path, login="l", password="p")
+    client._open = lambda path, **kwargs: page.encode("utf-8")  # type: ignore[assignment]
+    client._cookie = lambda name: "cookie"  # type: ignore[assignment]
+
+    probe = client.probe_fields()
+    assert probe["available"] is True
+    keys = {row["key"]: row["share_pct"] for row in probe["map"]["keys"]}
+    assert keys["name"] == 100
+    # Поле, которое есть не у всех, — это исключение, и доля показывает это.
+    assert keys["developer"] == 50
+    # Главное: то, что приходит и выбрасывается, названо поимённо.
+    assert "price_avg" in probe["map"]["unused"]
+    assert "class_ppn" in probe["map"]["unused"]
+    assert "name" not in probe["map"]["unused"]
+    assert probe["map"]["sample"]["price_avg"] == 512000
+
+    # Без доступов проба не выдумывает пустой ответ, а говорит, что выключена.
+    off = PulseClient(tmp_path / "off", login="", password="")
+    assert off.probe_fields()["available"] is False
