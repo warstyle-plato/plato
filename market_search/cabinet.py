@@ -285,6 +285,10 @@ g.bub.on text.hov{opacity:1}
    становится анонимной. На экране постоянная подпись одна, своего проекта. */
 svg text.edge{opacity:0}
 g.bub.on circle{fill-opacity:.75}
+/* Шапка документа и колонтитул живут в разметке всегда, а показываются
+   только в печати: собирать их отдельным проходом значило бы считать те же
+   числа второй раз. */
+.printhead,.printfoot{display:none}
 /* Печать берёт все пары осей, а не ту, что открыта на экране: на бумаге
    переключателя нет, и оставшиеся четыре карты иначе не попали бы никуда. */
 .printviews{display:none}
@@ -293,6 +297,7 @@ g.bub.on circle{fill-opacity:.75}
    что стоит ниже, побеждает. Пока блок стоял выше, `.printviews{display:none}`
    гасил карты рынка обратно, а `#bubble{display:none}` (id — сильнее) убирал
    и открытую. В PDF не попадала ни одна: разом сработали обе половины. */
+@page{margin:14mm 12mm 20mm}
 @media print{
   /* В печать уходит отчёт, а не орудия его сборки: форма, кнопки и поле
      вопроса на бумаге бесполезны. Разделы не разрываются между страницами —
@@ -303,6 +308,30 @@ g.bub.on circle{fill-opacity:.75}
   #form, #askcard, .chips, button, #hintout, .cardwrap{display:none !important}
   #bubble{display:none}
   .whoshow,#tip{display:none !important}
+  /* Рабочая карточка — это пульт: чем опознан объект, кого добавить, кого
+     показать. На бумаге её заменяет шапка документа, иначе отчёт открывается
+     органами управления, которых на бумаге нет. */
+  .headcard,.addwrap,.handadd,#addstate{display:none !important}
+  .printhead{display:block;margin:0 0 6px}
+  .printhead .eyebrow{font-size:9.5pt;letter-spacing:.09em;text-transform:uppercase;
+    color:var(--dim);border-bottom:1px solid #16202b;padding-bottom:6px;margin-bottom:14px}
+  .printhead h1{font-size:26pt;line-height:1.12;margin:0 0 10px;letter-spacing:-.01em}
+  .printhead .standfirst{font-size:12pt;line-height:1.45;margin:0 0 10px;max-width:34em}
+  .printhead .whereis{font-size:10pt;color:var(--dim);margin-bottom:14px}
+  /* Полка показателей: главные числа стоят до первого графика, а не
+     вылавливаются из него. */
+  .printhead .shelf{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;
+    border-top:1px solid #dde5ed;border-bottom:1px solid #dde5ed;padding:12px 0;margin-bottom:12px}
+  .printhead .tile b{display:block;font-size:15pt;line-height:1.15}
+  .printhead .tile span{display:block;font-size:8.5pt;color:var(--dim);margin-top:3px}
+  .printhead .tile i{display:block;font-size:8pt;color:var(--dim);font-style:normal;margin-top:4px;
+    line-height:1.3}
+  .printhead .sample{font-size:9.5pt;color:var(--dim);line-height:1.4}
+  /* Колонтитул повторяется на каждой странице: лист, отделившийся от отчёта,
+     обязан сам говорить, чей он и на какую дату. Место под него отводит
+     нижнее поле страницы. */
+  .printfoot{display:block;position:fixed;left:0;right:0;bottom:4mm;
+    font-size:8pt;color:var(--dim);border-top:1px solid #dde5ed;padding-top:4px}
   /* Подвал печатается: на бумаге это подпись отчёта, а не кнопка. */
   .plato-footer{margin:18px 0 0;break-inside:avoid}
   .printviews{display:block}
@@ -1557,6 +1586,63 @@ async function build(){
   }finally{clearInterval(timer);$('#go').disabled=false;$('#state').textContent='';}
 }
 
+// Шапка печатного отчёта.
+//
+// На экране первая карточка — рабочий пульт: чем опознан объект, из чего
+// собрана выборка, кого показать на графиках, кого вписать руками. На бумаге
+// пульта нет, а документ, начинающийся с органов управления, читается как
+// распечатка экрана — чем он и был. Поэтому в печати эта карточка целиком
+// заменяется шапкой документа: кто, о чём, на какую дату, и полка показателей,
+// чтобы главные числа стояли до первого графика, а не были рассыпаны по нему.
+//
+// Числа не считаются здесь заново — берутся из того же результата, которым
+// живёт экран. Вторая реализация экономики начинается с «просто поделить».
+const MONTHS_OF=['января','февраля','марта','апреля','мая','июня','июля',
+                 'августа','сентября','октября','ноября','декабря'];
+function longDate(iso){
+  const parts=String(iso||'').slice(0,10).split('-');
+  if(parts.length!==3) return String(iso||'');
+  return `${Number(parts[2])} ${MONTHS_OF[Number(parts[1])-1]||''} ${parts[0]}`;
+}
+function printHead(d){
+  const s=d.subject||{}, c=d.comparison||{}, m=s.metrics||{};
+  const name=s.project_name||s.address||s.query||'объект';
+  const priceBlock=(d.blocks||[]).find(b=>b.code==='price')||{};
+  const paceBlock=(d.blocks||[]).find(b=>b.code==='pace')||{};
+  const own=(priceBlock.peers||{}).same_class||priceBlock.peers||{};
+  const tile=(value,label,note)=>value==null?''
+    :`<div class="tile"><b>${value}</b><span>${label}</span>`
+     +(note?`<i>${note}</i>`:'')+`</div>`;
+  const gap=own.vs_median_pct;
+  const shelf=[
+    tile(m.price_per_sqm?num(m.price_per_sqm)+' ₽/м²':null,'прайс-лист, не сделка',
+         m.lot_count?`средневзвешенная по ${num(m.lot_count)} лотам в экспозиции`:''),
+    tile(gap==null?null:(gap>0?'+':'')+num(gap,1)+' %',
+         `к медиане класса «${esc(s.segment||'—')}»`,
+         own.median?`медиана ${num(own.count)} соседей — ${num(own.median)} ₽/м²`:''),
+    tile(m.units_per_month==null?null:num(m.units_per_month,1),'квартир в месяц',
+         (paceBlock.peers||{}).median?`у соседей медиана ${num(paceBlock.peers.median,1)}`:''),
+    tile(m.lot_count==null?null:num(m.lot_count),'лотов в экспозиции',
+         m.living_units?`из ${num(m.living_units)} квартир проекта`:''),
+    tile(m.sales_end_forecast?esc(m.sales_end_forecast):null,'прогноз конца продаж',
+         'при нынешнем темпе'),
+  ].join('');
+  const where=[s.address, s.segment?'класс '+s.segment:''].filter(Boolean).join(' · ');
+  return `<div class="printhead">`
+    +`<div class="eyebrow">Отчёт по конкурентному окружению · срез ${esc(longDate(d.retrieved_at))}</div>`
+    +`<h1>${esc(name)} против рынка</h1>`
+    +`<p class="standfirst">${num(c.found)} жилых комплексов в ${esc(String(c.radius_km))} км`
+    +` от площадки. Что из них сопоставимо, сколько там просят за метр и как быстро`
+    +` у соседей уходят квартиры.</p>`
+    +(where?`<div class="whereis">${esc(where)}</div>`:'')
+    +(shelf?`<div class="shelf">${shelf}</div>`:'')
+    +`<div class="sample">В радиусе ${esc(String(c.radius_km))} км источник знает`
+    +` ${num(c.found)} проектов; сопоставимы по классу ${num(c.comparable)}, в выборку взято`
+    +` ${num(c.used)}. Прайс старше ${esc(c.fresh_since||'—')} — у ${num(c.stale_price)},`
+    +` цены нет вовсе у ${num(c.no_price)}`
+    +(c.added_by_hand?`; вписано вручную ${num(c.added_by_hand)}`:'')+`.</div></div>`;
+}
+
 function render(d){
   const s=d.subject||{}, c=d.comparison||{}, peers=d.peers||[];
   const m=s.metrics||{};
@@ -1564,7 +1650,13 @@ function render(d){
   const srcNote={neighbours:' <span class="muted">(класс не у источника — сложен по соседям)</span>',
     manual:' <span class="self">(выбран вручную'+(s.segment_by_source?', «Пульс» относит к «'+esc(s.segment_by_source)+'»':'')+')</span>'}[s.segment_source]||'';
   const cls=s.segment?esc(s.segment)+srcNote:'<span class="muted">не определён</span>';
-  let html=`<div class="card"><h2>${esc(s.project_name||s.address||s.query)}</h2>
+  // Колонтитул повторяется на каждой печатной странице: лист, отделившийся от
+  // отчёта, обязан сам говорить, чей он и на какую дату.
+  let html=printHead(d)
+    +`<div class="printfoot">${esc(s.project_name||s.address||s.query)} · конкурентное`
+    +` окружение · срез ${esc(String(d.retrieved_at||'').slice(0,10))} · источник:`
+    +` Пульс Продаж Новостроек</div>`
+    +`<div class="card headcard"><h2>${esc(s.project_name||s.address||s.query)}</h2>
     <div class="muted" style="font-size:13px">Опознан ${esc(src)} · класс: ${cls} · данные на ${esc(d.retrieved_at)}</div>
     <div class="kv" style="margin-top:12px">
       <div><b>${num(c.found)}</b><span>проектов в ${c.radius_km} км</span></div>

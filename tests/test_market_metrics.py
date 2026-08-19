@@ -2295,3 +2295,104 @@ def test_a_broken_basemap_answers_with_an_error_not_a_blank_map(monkeypatch) -> 
     assert client.get(
         "/land/basemap", params={"bbox": "0,0,9000000,9000000"}
     ).status_code == 400
+
+
+def test_the_printed_report_opens_as_a_document_not_as_a_control_panel(tmp_path) -> None:
+    """PDF кабинета был распечаткой экрана — им и открывался.
+
+    Первая карточка на экране это пульт: чем опознан объект, кого добавить в
+    выборку, кого показать на графиках. На бумаге органов управления нет, и
+    документ, начинающийся с них, читается как то, чем и был, — скриншот.
+    В печати её заменяет шапка документа: кто, о чём, на какую дату, и полка
+    главных чисел до первого графика.
+    """
+    import json
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if not node:
+        import pytest
+
+        pytest.skip("node не установлен")
+
+    from market_search.cabinet import CABINET_PAGE
+
+    start = CABINET_PAGE.index("const MONTHS_OF=")
+    end = CABINET_PAGE.index("\n}", CABINET_PAGE.index("+`.</div></div>`;", start)) + 2
+    source = CABINET_PAGE[start:end]
+
+    harness = """
+const num=(v,d=0)=>v===null||v===undefined?'—':Number(v)
+  .toLocaleString('ru-RU',{minimumFractionDigits:d,maximumFractionDigits:d});
+const esc=s=>String(s===null||s===undefined?'':s);
+"""
+    driver = """
+const d={retrieved_at:'2026-08-18',
+ subject:{project_name:'Кутузов Сити',segment:'Бизнес',
+   address:'Москва, ЗАО, Можайский, Гродненская, вл. 18',
+   metrics:{price_per_sqm:708109,lot_count:56,living_units:220,
+            units_per_month:4.6,sales_end_forecast:'02.2031'}},
+ comparison:{radius_km:3,found:45,comparable:12,used:10,stale_price:2,no_price:3,
+             fresh_since:'2026-06-01',added_by_hand:0},
+ blocks:[{code:'price',peers:{count:12,median:528152,vs_median_pct:34.1,
+    same_class:{count:6,median:528152,vs_median_pct:34.1}}},
+   {code:'pace',peers:{count:11,median:21.5}}]};
+const bare={retrieved_at:'2026-08-18',subject:{query:'55.7,37.5',metrics:{}},
+  comparison:{radius_km:2,found:3,comparable:0,used:0,stale_price:0,no_price:0},blocks:[]};
+console.log(JSON.stringify({full:printHead(d), bare:printHead(bare),
+  date:longDate('2026-08-18')}));
+"""
+    path = tmp_path / "head.js"
+    path.write_text(harness + source + driver, encoding="utf-8")
+    run = subprocess.run([node, str(path)], capture_output=True, text=True, timeout=30)
+    assert run.returncode == 0, run.stderr
+    result = json.loads(run.stdout.strip().splitlines()[-1])
+    # Разделитель разрядов у ru-RU — неразрывный пробел; сверять надо число,
+    # а не то, каким пробелом браузер его разделил.
+    space = {ord("\u00a0"): " ", ord("\u202f"): " "}
+    full = result["full"].translate(space)
+
+    # Дата среза — словами: «2026-08-18» в шапке документа выглядит выгрузкой.
+    assert result["date"] == "18 августа 2026"
+    assert "срез 18 августа 2026" in full
+    assert "<h1>Кутузов Сити против рынка</h1>" in full
+    assert "45 жилых комплексов в 3 км" in full
+    # Полка: значение, подпись и то, откуда значение взялось.
+    assert "708 109 ₽/м²" in full and "прайс-лист, не сделка" in full
+    assert "+34,1 %" in full and "медиана 6 соседей — 528 152 ₽/м²" in full
+    assert "у соседей медиана 21,5" in full
+    assert "02.2031" in full
+    # Состав выборки остаётся в отчёте: это методика, а не орган управления.
+    assert "сопоставимы по классу 12, в выборку взято 10" in full
+
+    # Плитки без числа не рисуются вовсе. Плитка с прочерком читается как
+    # ноль, а это не ноль — это «неизвестно», и разница здесь принципиальна.
+    assert '<div class="tile">' not in result["bare"]
+    assert '<div class="shelf">' not in result["bare"]
+    # Но шапка у безымянной точки всё равно есть: отчёт начинается одинаково.
+    assert "против рынка" in result["bare"]
+
+
+def test_the_printed_page_carries_its_own_name_and_hides_the_controls() -> None:
+    """Лист, отделившийся от отчёта, обязан сам говорить, чей он.
+
+    И наоборот: поле «добавить проект», список галочек и кнопки на бумаге
+    бесполезны — они там были ровно потому, что печатался экран.
+    """
+    from market_search.cabinet import CABINET_PAGE
+
+    # Колонтитул на каждой странице, и под него отведено поле страницы.
+    assert ".printfoot{display:block;position:fixed" in CABINET_PAGE
+    assert "@page{margin:14mm 12mm 20mm}" in CABINET_PAGE
+    assert "Пульс Продаж Новостроек</div>" in CABINET_PAGE
+    # Пульт в печати не участвует, шапка документа — участвует.
+    assert ".headcard,.addwrap,.handadd,#addstate{display:none !important}" in CABINET_PAGE
+    assert ".printhead,.printfoot{display:none}" in CABINET_PAGE
+    assert ".printhead{display:block" in CABINET_PAGE
+    # Правило прежнее: печать объявляется последней, иначе экранные правила,
+    # стоящие ниже, побеждают её.
+    assert CABINET_PAGE.index("@media print{") > CABINET_PAGE.index(".printhead,.printfoot{display:none}")
+    assert "@media print{" == CABINET_PAGE[
+        CABINET_PAGE.rindex("@media print{"):CABINET_PAGE.rindex("@media print{") + 13
+    ]
