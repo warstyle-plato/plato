@@ -1866,3 +1866,67 @@ def test_picked_peers_are_drawn_on_every_chart_not_only_price() -> None:
     assert "const picked=rows.filter(r=>!r.own&&r.shown);" in remain
     # Шкала считается вместе с отмеченными, иначе линия соседа уходит за поле.
     assert "picked.flatMap(r=>(r.points||[]).map(p=>p.rem)" in remain
+
+
+def test_the_hint_separates_the_market_level_from_a_start_price(tmp_path) -> None:
+    """«Рекомендуемая цена — видимо средняя. Значит стартовой быть не может?»
+
+    Вопрос верный. Медиана действующих прайсов — уровень рынка сегодня, у
+    проектов на разных стадиях: кто-то распродан наполовину и поднял цену,
+    кто-то только вышел. Для старта продаж сравнима цена входа соседей —
+    медиана их самых дешёвых лотов, та, с которой заводят покупателя.
+    """
+    from market_search.metrics import BLOCK_PRICE
+    from market_search.service_v6 import MarketDiscoveryService
+
+    service = MarketDiscoveryService(tmp_path)
+    segments = {i: "Бизнес" for i in (1, 2, 3)}
+    metrics = {
+        1: {"price_per_sqm": 500_000, "price_per_sqm_min": 430_000,
+            "observed_at": "2026-08-18", "units_per_month": 5.0},
+        2: {"price_per_sqm": 520_000, "price_per_sqm_min": 450_000,
+            "observed_at": "2026-08-18", "units_per_month": 6.0},
+        3: {"price_per_sqm": 560_000, "price_per_sqm_min": 470_000,
+            "observed_at": "2026-08-18", "units_per_month": 4.0},
+    }
+    projects = [
+        {"complex_id": i, "name": f"Сосед {i}", "developer": "—",
+         "latitude": 55.7300 + i / 1000, "longitude": 37.4400,
+         "address": "Москва, ЗАО, район Можайский, дом"}
+        for i in (1, 2, 3)
+    ]
+    service.pulse = _fake_pulse(segments, metrics, projects)
+
+    hint = service.build_report("55.73050, 37.44050", codes=[BLOCK_PRICE])["price_hint"]
+
+    assert hint["price_per_sqm"] == 520_000, "уровень рынка — медиана действующих"
+    # Цена входа считается по самым дешёвым лотам соседей и ниже уровня рынка.
+    assert hint["entry_per_sqm"] == 450_000
+    assert hint["entry_sample"] == 3
+    assert hint["entry_gap_pct"] == -13.5
+
+
+def test_the_premium_names_the_trade_not_only_its_halves() -> None:
+    """«И по цене соседей? Не только темпом?» — выбор один, а не две половины.
+
+    Деньги премии и потерянный срок стояли порознь, и складывать их человек
+    должен был в уме. Отказ от премии — это одновременно минус её деньги и
+    минус её срок; названы вместе, и названо допущение: цена соседей не
+    покупает их темп сама по себе.
+    """
+    from market_search.verdict import price_of_premium
+
+    subject = {"price_per_sqm": 708_109, "remaining_area": 10_534,
+               "remaining_units": 165, "units_per_month": 4.6}
+    peers = [
+        {"price_per_sqm": 560_000, "units_per_month": 12.0},
+        {"price_per_sqm": 570_000, "units_per_month": 13.0},
+    ]
+    money = price_of_premium(subject, peers)
+
+    assert money["premium_on_remainder"] == 1_507.5
+    assert money["months_lost"] == 22.7
+    # Цена месяца — деньги премии, делённые на выигранный срок.
+    assert money["price_of_month"] == 66.4
+    assert "Отказ от премии" in money["trade"]
+    assert "не покупает их темп сама по себе" in money["trade"]

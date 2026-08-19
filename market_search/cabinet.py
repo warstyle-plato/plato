@@ -831,6 +831,7 @@ function deepCard(d){
   return `<div class="card"><h2>Что стоит премия</h2>`
     +(story?`<div class="say watch"><b>⚠️ Разбор</b> ${esc(story)}</div>`:'')
     +(rows.length?`<div class="kv">${rows.join('')}</div>`:'')
+    +(money.trade?`<div class="say watch"><b>⚠️ Выбор</b> ${esc(money.trade)}</div>`:'')
     +(prem.length?`<h3>Премия к медиане соседей по месяцам, %</h3>`+premiumChart(prem):'')
     +`<div class="muted" style="font-size:12.5px;margin-top:10px">Обе величины условны: они показывают`
     +` масштаб выбора, а не прогноз. Премия на остатке — выручка, которую она приносит,`
@@ -1528,9 +1529,20 @@ document.querySelectorAll('.chips button').forEach(b=>b.addEventListener('click'
 // или кадастру понять, из какой цены исходить для будущего ЖК.
 function showHint(d,extra){
   const basis={peers:'по соседям рядом',okrug:'по округу',city:'по классу в Москве'}[d.basis]||d.basis||'';
+  // Два числа, а не одно. Медиана действующих прайсов — уровень рынка сегодня,
+  // у проектов на разных стадиях: кто-то распродан наполовину и поднял цену.
+  // Стартовой ценой она быть не может. Цена входа соседей — медиана их самых
+  // дешёвых лотов, то есть та, с которой заводят покупателя; для нового
+  // проекта сравнимо именно это.
   $('#hintout').innerHTML=`<div class="box"><b>${num(d.price_th_per_sqm)} тыс ₽/м²</b>`
-    +` <span class="muted">— ориентир ${esc(basis)}${esc(extra||'')}; наблюдений ${d.sample||'—'}`
-    +(d.observed_at?`, данные на ${esc(d.observed_at)}`:'')+`</span></div>`;
+    +` <span class="muted">— уровень рынка ${esc(basis)}${esc(extra||'')}; наблюдений ${d.sample||'—'}`
+    +(d.observed_at?`, данные на ${esc(d.observed_at)}`:'')+`</span>`
+    +(d.entry_th_per_sqm?`<div style="margin-top:6px"><b>${num(d.entry_th_per_sqm)} тыс ₽/м²</b>`
+      +` <span class="muted">— цена входа у соседей (медиана самых дешёвых лотов,`
+      +` ${d.entry_sample} проект.${d.entry_gap_pct?`, ${pct(d.entry_gap_pct)} к уровню рынка`:''}).`
+      +` Для старта продаж сравнимо это число: медиана действующих прайсов — уровень проектов`
+      +` на разных стадиях, среди них распроданные наполовину.</span></div>`:'')
+    +`</div>`;
 }
 
 $('#hint').addEventListener('click',async function(){
