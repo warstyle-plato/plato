@@ -262,7 +262,8 @@ g.bub:hover circle{fill-opacity:.75}
 </style>
 <header>
   <h1>Конструктор отчёта о рынке</h1>
-  <div class="sub">Внутренний раздел. Числа лицензионные — наружу не публикуются.</div>
+  <div class="sub">Внутренний раздел. Числа лицензионные — наружу не публикуются.
+    · версия __DEVELOPAID_VERSION__</div>
 </header>
 <main>
   <div class="card" id="form">
@@ -299,6 +300,7 @@ g.bub:hover circle{fill-opacity:.75}
     <button class="go" id="go">Собрать отчёт</button>
     <button class="go alt" id="hint">Ориентир цены</button>
     <button class="go alt" id="pdf" style="display:none">Сохранить PDF</button>
+    <button class="go alt" id="reset" style="display:none">Сбросить отчёт</button>
     <label class="upload">Загрузить финмодель ПЛАТО<input type="file" id="plan" accept=".xlsx,.xlsm"></label>
     <span id="planstate" class="muted"></span>
     <span id="state" class="muted" style="margin-left:12px"></span>
@@ -1173,6 +1175,7 @@ function render(d){
   }));
   $('#askcard').style.display='block';
   $('#pdf').style.display='inline-block';
+  $('#reset').style.display='inline-block';
   wireCards();
   wireAdd();
 }
@@ -1181,6 +1184,20 @@ $('#askbtn').addEventListener('click',askPlato);
 // PDF — печатью самой страницы. Второй вёрстки не заводим: она разошлась бы с
 // первой, и мы получили бы два достоверных на вид отчёта с разными числами.
 $('#pdf').addEventListener('click',()=>window.print());
+
+// Сброс. Отчёт держит не только разметку: вручную добавленные проекты, книгу
+// ПЛАТО, ответ Платона и ориентир. Стереть один экран и оставить остальное —
+// значит собрать следующий отчёт с чужим хвостом: добавленный руками сосед
+// приехал бы в выборку другого объекта и выглядел бы там найденным.
+$('#reset').addEventListener('click',function(){
+  lastReport=null; planData=null; added.clear(); bubbleView='speed';
+  $('#out').innerHTML=''; $('#hintout').innerHTML='';
+  $('#planstate').textContent=''; $('#state').textContent='';
+  $('#plan').value=''; $('#ask').value=''; $('#askout').innerHTML='';
+  $('#askcard').style.display='none';
+  $('#pdf').style.display='none'; $('#reset').style.display='none';
+  $('#q').focus();
+});
 $('#plan').addEventListener('change',e=>{if(e.target.files[0])loadPlan(e.target.files[0])});
 document.querySelectorAll('.chips button').forEach(b=>b.addEventListener('click',()=>{
   $('#ask').value=b.dataset.q; askPlato();
@@ -1264,8 +1281,29 @@ document.addEventListener('click',e=>{if(!e.target.closest('#sug')&&e.target!==$
 </script>"""
 
 
+# Версию кабинет не хранит и не объявляет — берёт у движка. Копий `VERSION`
+# в этом проекте было четырнадцать, и полтора десятка выпусков поднимали их
+# руками все разом, пока однажды не подняли только одну: стенд стал неотличим
+# от невыкаченного. Здесь та же цена вопроса — по кабинету нельзя было понять,
+# какая сборка на экране, и разбираться приходилось через `/health`.
+VERSION_PLACEHOLDER = "__DEVELOPAID_VERSION__"
+
+
+def app_version() -> str:
+    """Версия движка. Подменяется обёрткой, у которой есть `core`."""
+    try:
+        import main_legacy
+
+        return str(main_legacy.VERSION)
+    except Exception:
+        return "—"
+
+
 def cabinet_page() -> str:
-    return CABINET_PAGE.replace("__SECTIONS__", _sections_markup())
+    return (
+        CABINET_PAGE.replace("__SECTIONS__", _sections_markup())
+        .replace(VERSION_PLACEHOLDER, app_version())
+    )
 
 
 def login_page(error: str = "") -> str:

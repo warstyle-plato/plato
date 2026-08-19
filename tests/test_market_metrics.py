@@ -906,3 +906,53 @@ console.log(JSON.stringify(out));
     assert result["observer_restored"] is True
     assert result["timer_restored"] is True
     assert result["copies"] == 1
+
+
+def test_the_cabinet_says_which_build_it_is(tmp_path, monkeypatch) -> None:
+    """По кабинету нельзя было понять, какая сборка на экране.
+
+    Разбираться приходилось через `/health` с другого конца — а вопрос «это
+    уже выкачено или ещё нет» возникает у кабинета чаще, чем где-либо: он
+    меняется каждый день. Версия берётся у движка, своей копии нет.
+    """
+    import main_legacy
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from market_search.api import install
+    from market_search.cabinet import VERSION_PLACEHOLDER, cabinet_page
+
+    page = cabinet_page()
+    assert VERSION_PLACEHOLDER not in page, "плейсхолдер обязан подмениться"
+    assert f"версия {main_legacy.VERSION}" in page
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("MARKET_CABINET_KEY", "stand-key-2026")
+    app = FastAPI()
+    install(app)
+    opened = TestClient(app, headers={"X-Market-Key": "stand-key-2026"})
+    assert f"версия {main_legacy.VERSION}" in opened.get("/cabinet").text
+
+
+def test_the_report_can_be_dropped_whole() -> None:
+    """Сброс стирает отчёт целиком, а не один экран.
+
+    Добавленные руками соседи, книга ПЛАТО, ответ Платона и ориентир живут
+    рядом с разметкой. Оставить их — значит собрать следующий отчёт с чужим
+    хвостом: сосед, добавленный к одному объекту, приехал бы в выборку другого
+    и выглядел бы там найденным.
+    """
+    from market_search.cabinet import CABINET_PAGE
+
+    assert 'id="reset"' in CABINET_PAGE
+    reset = CABINET_PAGE[CABINET_PAGE.index("$('#reset').addEventListener"):]
+    reset = reset[: reset.index("});")]
+    for state in ("lastReport=null", "planData=null", "added.clear()",
+                  "$('#out').innerHTML=''", "$('#hintout').innerHTML=''",
+                  "$('#askout').innerHTML=''", "$('#plan').value=''"):
+        assert state in reset, state
+    # Кнопки отчёта прячутся вместе с ним, иначе «Сохранить PDF» печатала бы
+    # пустую страницу.
+    assert "$('#pdf').style.display='none'" in reset
+    assert "$('#reset').style.display='none'" in reset
