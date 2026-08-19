@@ -919,7 +919,11 @@ function wireAdd(){
       }catch(e){close(); $('#addstate').textContent='Подсказки не пришли: '+(e.message||e)}
     },180);
   });
-  list.addEventListener('mousedown',e=>{
+  // `pointerdown`, а не `mousedown`: на телефоне мыши нет, а синтетические
+  // мышиные события Safari шлёт не всегда и не всем узлам. Выбор из списка на
+  // тач-экране от этого срабатывал через раз. `pointerdown` покрывает и палец,
+  // и мышь, и перо, и приходит раньше, чем поле теряет фокус.
+  list.addEventListener('pointerdown',e=>{
     const row=e.target.closest('div[data-i]');
     if(!row) return;
     e.preventDefault();
@@ -1292,7 +1296,9 @@ function choose(i){
   if(!items[i])return;
   $('#q').value=items[i].name; closeSug(); build();
 }
-sug.addEventListener('mousedown',e=>{
+// Тот же довод, что и у списка добавления: палец шлёт `pointerdown`, мышь —
+// тоже, а `mousedown` на тач-экране приходит не всегда.
+sug.addEventListener('pointerdown',e=>{
   const row=e.target.closest('div[data-i]'); if(row){e.preventDefault();choose(+row.dataset.i)}
 });
 $('#q').addEventListener('input',()=>{

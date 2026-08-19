@@ -1225,3 +1225,17 @@ def test_the_cabinet_page_is_never_cached(tmp_path, monkeypatch) -> None:
     answer = TestClient(app, headers={"X-Market-Key": "stand-key-2026"}).get("/cabinet")
     assert answer.status_code == 200
     assert "no-store" in answer.headers.get("cache-control", "")
+
+
+def test_the_dropdowns_answer_a_finger_not_only_a_mouse() -> None:
+    """Кабинетом пользуются с телефона, а выбор из списка ловил `mousedown`.
+
+    Мыши на телефоне нет; синтетические мышиные события Safari шлёт не всегда
+    и не всякому узлу, поэтому выбор подсказки срабатывал через раз.
+    `pointerdown` покрывает палец, мышь и перо разом и приходит раньше, чем
+    поле теряет фокус.
+    """
+    from market_search.cabinet import CABINET_PAGE
+
+    assert "addEventListener('mousedown'" not in CABINET_PAGE
+    assert CABINET_PAGE.count("addEventListener('pointerdown'") == 2
