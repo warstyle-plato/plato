@@ -173,3 +173,19 @@ def test_a_dash_range_is_not_read_as_a_number():
         "land": {"cadastral_numbers_csv": "77:17:0110504:18152"},
     })
     assert mixed == ["77:17:0110504:18151", "77:17:0110504:18152"], "повторы убираются, порядок держится"
+
+
+def test_the_ppt_ratio_is_signed_by_the_document_not_by_the_methodology(applied):
+    """0,75 у жилья — согласованный ППТ, а не норматив ГлавАПУ.
+
+    Калькулятор даёт 0,65 жилой ГНС; на Румянцеве разница — 22 200 м² и около
+    7,8 млрд ₽ выручки. Число верное, но подписанное методикой оно молча уехало
+    бы в следующий проект, где ППТ другой.
+    """
+    data, tep = applied
+    assert tep["apartments"]["saleable"] == pytest.approx(222000 * 0.75)
+    note = next((item["note"] for item in data["notes"] if "квартиры —" in item["note"]), "")
+    assert "ППТ" in note, note
+    assert "0,65" in note and "144 300" in note.replace("\u00a0", " "), note
+    # Пропорции для ручной сборки остаются калькуляторными.
+    assert core.TEP_RATIOS["apartments"]["saleable_of_gns"] == 0.65

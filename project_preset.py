@@ -46,12 +46,23 @@ TBD = "TBD"
 # движком: расходится — режим молча не сработает.
 SOCIAL_MODE_BOTH = "Строительство и компенсация"
 
-# Коэффициенты перехода к продаваемой площади. Первые два — методика ГлавАПУ,
-# та же, что в расчёте ТЭП по кадастровому номеру. Третий — решение владельца
-# по Румянцеву: для башен 110 м усреднение 0,65 занижено.
-SALEABLE_RATIO_APARTMENTS = 0.75
-SALEABLE_RATIO_COMMERCIAL = 0.90
-SALEABLE_RATIO_OFFICES = 0.678
+# Коэффициенты перехода к продаваемой площади.
+#
+# Встроенная коммерция — методика ГлавАПУ: продаваемая равна НП, то есть 0,90
+# от ГНС. Здесь пресет и калькулятор совпадают.
+#
+# Жильё и офисы — не методика, а согласованный ППТ Румянцева (подтверждено
+# владельцем 19.08.2026). Калькулятор ГлавАПУ даёт 0,65 жилой ГНС — норматив
+# «в среднем по городу»; у проекта планировки эффективнее, и по ППТ согласовано
+# 0,75. Разница на Румянцеве — 22 200 м² продаваемой площади, около 7,8 млрд ₽
+# выручки, поэтому число обязано быть подписано документом, а не выдавать себя
+# за методику: подписанное методикой, оно молча уехало бы в другой проект.
+#
+# Пропорции для ручной сборки ТЭП живут отдельно — в `TEP_RATIOS` движка, и там
+# у жилья стоит калькуляторные 0,65.
+SALEABLE_RATIO_APARTMENTS = 0.75   # ППТ Румянцева, не норматив
+SALEABLE_RATIO_COMMERCIAL = 0.90   # методика ГлавАПУ: продаваемая = НП
+SALEABLE_RATIO_OFFICES = 0.678     # решение владельца: башни 110 м
 
 # Паркинг: методика города с августа 2026 — одно постоянное место на 90 м²
 # НП жилых зданий (НП — 90% ГНС), то есть на 100 м² жилой ГНС; гостевые —
@@ -165,7 +176,7 @@ def map_tep(data: dict[str, Any]) -> tuple[dict[str, Any], list[Field]]:
             preschool_places += _number(capacity.get("preschool_places")) or 0.0
         elif key in {"LOS", "RP_KNS"}:
             notes.append(Field(gfa, "source",
-                               f"{item.get('name')} — {gfa:,.0f} м² отнесены к наружным сетям"))
+                               f"{item.get('name')} — {_ru(gfa)} м² отнесены к наружным сетям"))
         elif "гараж" in str(item.get("name", "")).lower():
             garage_gns += gfa
         else:
@@ -202,21 +213,23 @@ def map_tep(data: dict[str, Any]) -> tuple[dict[str, Any], list[Field]]:
 
     notes.extend([
         Field(apartments, "derived",
-              f"квартиры — {residential_gns:,.0f} м² жилой части × {SALEABLE_RATIO_APARTMENTS}"),
+              f"квартиры — {_ru(residential_gns)} м² жилой части × {SALEABLE_RATIO_APARTMENTS} "
+              f"по согласованному ППТ; норматив калькулятора ГлавАПУ — 0,65, "
+              f"то есть {_ru(residential_gns * 0.65)} м²"),
         Field(commercial, "derived",
-              f"встроенная коммерция — {commercial_gns:,.0f} м² × {SALEABLE_RATIO_COMMERCIAL}"),
+              f"встроенная коммерция — {_ru(commercial_gns)} м² × {SALEABLE_RATIO_COMMERCIAL}"),
         Field(offices, "derived",
-              f"офисы — {office_gns:,.0f} м² × {SALEABLE_RATIO_OFFICES} (полезная по соглашению МПТ)"),
+              f"офисы — {_ru(office_gns)} м² × {SALEABLE_RATIO_OFFICES} (полезная по соглашению МПТ)"),
         Field(underground, "derived",
               f"подземный паркинг — потребность {permanent + guest + office_spaces} мест "
               f"({permanent} постоянных + {guest} гостевых жилья"
               + (f" + {office_spaces} офисных" if office_spaces else "")
               + (f") минус гараж {above}" if above else ")")
-              + f" = {underground}, {underground * UNDERGROUND_AREA_PER_SPACE:,.0f} м²"),
+              + f" = {underground}, {_ru(underground * UNDERGROUND_AREA_PER_SPACE)} м²"),
     ])
     if above:
         notes.append(Field(above, "derived",
-                           f"наземный гараж — {garage_gns:,.0f} м² ÷ {ABOVE_AREA_PER_SPACE:.0f} м²/место, "
+                           f"наземный гараж — {_ru(garage_gns)} м² ÷ {ABOVE_AREA_PER_SPACE:.0f} м²/место, "
                            "закрывает часть потребности"))
     return tep, notes
 
@@ -438,6 +451,12 @@ def map_economics(data: dict[str, Any]) -> tuple[dict[str, Any], list[Field]]:
 
 
 CADASTRAL_RE = re.compile(r"(?<!\d)(\d{2}:\d{2}:\d{6,8}:\d+)(?!\d)")
+
+
+def _ru(value: float) -> str:
+    """Число разрядами через пробел: «222 000», а не «222,000» — запятая в
+    русской записи читается как десятичная."""
+    return f"{value:,.0f}".replace(",", "\u00a0")
 
 
 def cadastral_numbers(preset: dict[str, Any]) -> list[str]:
