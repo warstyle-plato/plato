@@ -119,7 +119,14 @@ def install(app: FastAPI) -> MarketDiscoveryService:
             )
         if not cabinet_module.authorised(request):
             return HTMLResponse(cabinet_module.login_page(), status_code=401)
-        return HTMLResponse(cabinet_module.cabinet_page())
+        # Страница меняется по нескольку раз в день, а браузер держит HTML без
+        # заголовка сколько сочтёт нужным. Выкаченная правка на экране не
+        # появлялась, и отличить «не сделано» от «показана вчерашняя копия»
+        # было нечем — та же беда, из-за которой версия печатается в шапке.
+        return HTMLResponse(
+            cabinet_module.cabinet_page(),
+            headers={"Cache-Control": "no-store, must-revalidate"},
+        )
 
     @app.post("/cabinet/login")
     async def cabinet_login(request: Request) -> Any:

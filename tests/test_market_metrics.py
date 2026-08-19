@@ -1203,3 +1203,25 @@ def test_the_engine_geocoder_adapter_speaks_the_market_dialect() -> None:
         assert "DaData: ничего" in str(refusal.value)
     finally:
         main_registry.core._geocode_address = original
+
+
+def test_the_cabinet_page_is_never_cached(tmp_path, monkeypatch) -> None:
+    """Выкаченная правка не появлялась на экране — браузер держал вчерашнюю.
+
+    Кабинет меняется по нескольку раз в день, а HTML без заголовка браузер
+    хранит сколько сочтёт нужным. Отличить «не сделано» от «показана копия»
+    было нечем: ровно та беда, из-за которой версия печатается в шапке.
+    """
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from market_search.api import install
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("MARKET_CABINET_KEY", "stand-key-2026")
+    app = FastAPI()
+    install(app)
+
+    answer = TestClient(app, headers={"X-Market-Key": "stand-key-2026"}).get("/cabinet")
+    assert answer.status_code == 200
+    assert "no-store" in answer.headers.get("cache-control", "")
