@@ -49,7 +49,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.19.14"
+VERSION = "0.19.15"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -23728,6 +23728,16 @@ def survey_summary(days: int = 30) -> dict[str, Any]:
             title = next((g[1] for g in FEEDBACK_GROUPS if g[0] == group_key), group_key)
             notes.append({"at": survey.get("at"), "chat": survey.get("chat"),
                           "role": survey.get("role", ""), "group": title, "text": text})
+        # Свободные поля — тоже комментарий, и раньше они не доходили никуда:
+        # свод читал только привязанные к разделу. В боте комментарий один и
+        # приходит именно так, то есть пропала бы вся его половина.
+        for field, title in (("impression", "Общее впечатление"),
+                             ("mistakes", "Что пошло не так")):
+            text = str(survey.get(field) or "").strip()
+            if text:
+                notes.append({"at": survey.get("at"), "chat": survey.get("chat"),
+                              "role": survey.get("role", ""), "group": title,
+                              "text": text})
 
     return {
         "days": int(days),
