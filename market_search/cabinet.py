@@ -510,7 +510,7 @@ function trendChart(series){
     svg+=`<polyline points="${e.ex.toFixed(1)},${e.y.toFixed(1)} ${(W-R-6).toFixed(1)},${stack[i].toFixed(1)} `
        +`${(W-R+5).toFixed(1)},${stack[i].toFixed(1)}" fill="none" stroke="${c}" stroke-width="${e.own?1.4:0.7}"/>`
        +`<text x="${W-R+8}" y="${stack[i]+3}" font-size="10.5" fill="${e.colour||(e.own?'#C4581B':'#5b6b7d')}"`
-       +`${e.own?' font-weight="600"':''}>${esc(e.n.length>19?e.n.slice(0,18)+'…':e.n)} ${num(e.v)}</text>`;
+       +`${e.own?' font-weight="600"':''}>${esc(e.n.length>19?e.n.slice(0,18)+'…':e.n)} · ${num(e.v)}</text>`;
   });
   const note=known.length>1
     ? `Плотная полоса — половина соседей (от нижнего квартиля до верхнего), бледная — весь разброс`
@@ -552,11 +552,15 @@ function salesChart(rows){
   const mp=months.map((m,i)=>med[i]===null?null:`${i?'L':'M'}${x(i).toFixed(1)} ${y(med[i]).toFixed(1)}`).filter(Boolean).join(' ');
   if(mp) svg+=`<path d="${mp}" fill="none" stroke="#16202b" stroke-width="1.3" stroke-dasharray="5 4"/>`;
   const lastOwn=[...months].reverse().find(m=>at(own,m,'sold')!==null);
+  // Подпись — имя и значение через разделитель. Было слово «проект» и число
+  // впритык: «проект 4» читалось как «проект номер четыре», а это четыре ДДУ
+  // за последний месяц у проекта, у которого есть имя.
+  const ownName=esc((own.name||'проект').slice(0,16));
   svg+=`<text x="${W-R+8}" y="${y(at(own,lastOwn,'sold'))+4}" font-size="10.5" fill="#C4581B" font-weight="600">`
-     +`${rows.length<2?esc(own.name.slice(0,14)):'проект'} ${num(at(own,lastOwn,'sold'))}</text>`;
+     +`${ownName} · ${num(at(own,lastOwn,'sold'))} ДДУ</text>`;
   const lastMed=rows.length<2?null:[...med].reverse().find(v=>v!==null);
   if(lastMed!==undefined&&lastMed!==null)
-    svg+=`<text x="${W-R+8}" y="${y(lastMed)+4}" font-size="10.5" fill="#16202b">медиана ${num(lastMed,1)}</text>`;
+    svg+=`<text x="${W-R+8}" y="${y(lastMed)+4}" font-size="10.5" fill="#16202b">медиана · ${num(lastMed,1)} ДДУ</text>`;
   return '<div class="wrap">'+svg+'</svg></div>';
 }
 

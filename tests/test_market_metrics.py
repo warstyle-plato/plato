@@ -1611,3 +1611,19 @@ console.log(JSON.stringify({width, labels}));
     assert values, "подписи значений вообще не нашлись"
     longest = max(values, key=lambda row: row["x"])
     assert result["width"] - longest["x"] >= 60, "самой длинной подписи не хватит места"
+
+
+def test_a_chart_label_does_not_read_as_a_project_number() -> None:
+    """«проект 4» читалось как «проект номер четыре».
+
+    А это четыре ДДУ за последний месяц — у проекта, у которого есть имя.
+    Имя и значение разделены, единица названа.
+    """
+    from market_search.cabinet import CABINET_PAGE
+
+    sales = CABINET_PAGE[CABINET_PAGE.index("function salesChart"):]
+    sales = sales[: sales.index("function remainChart")]
+
+    assert "'проект'" not in sales.replace("(own.name||'проект')", "")
+    assert "${ownName} · ${num(at(own,lastOwn,'sold'))} ДДУ" in sales
+    assert "медиана · ${num(lastMed,1)} ДДУ" in sales
