@@ -1930,3 +1930,41 @@ def test_the_premium_names_the_trade_not_only_its_halves() -> None:
     assert money["price_of_month"] == 66.4
     assert "Отказ от премии" in money["trade"]
     assert "не покупает их темп сама по себе" in money["trade"]
+
+
+def test_hovering_a_month_shows_its_numbers_on_every_chart() -> None:
+    """«При наведении на точку данные нельзя показывать?» — можно и нужно.
+
+    Полоса на всю высоту месяца, а не попадание в саму точку: столбик бывает
+    шириной три пикселя, а линия — полтора, и вопрос всё равно про месяц
+    целиком, а не про одну серию.
+    """
+    from market_search.cabinet import CABINET_PAGE
+
+    # Каждая функция режется по своей границе: блок, вставленный не в ту
+    # функцию, обязан быть виден тесту, а не спрятаться в соседней.
+    for name, ends, needle in (
+        ("trendChart", "function salesChart", "медиана соседей: ${num(b.p50)} ₽/м²"),
+        ("salesChart", "function lotChart", "${one.row.name}: ${num(v,digits)} ${unit}"),
+        ("remainChart", "// Премия по месяцам", "${own.name}: ${num(pts[i].rem)} лотов"),
+    ):
+        body = CABINET_PAGE[CABINET_PAGE.index("function " + name):]
+        body = body[: body.index(ends)]
+        assert needle in body, name
+        assert 'fill="transparent">' in body, name
+
+
+def test_right_hand_labels_do_not_overlap_on_the_bar_charts() -> None:
+    """«Кутузов Сити · 48,4» и «медиана · 79,5» легли друг на друга.
+
+    Подписи ставились каждая на своей высоте: стоило числам сойтись, и они
+    накрывали друг друга. Тот же двухпроходный расклад, что на графике цены,
+    — расталкивание вниз и возврат в поле снизу вверх.
+    """
+    from market_search.cabinet import CABINET_PAGE
+
+    sales = CABINET_PAGE[CABINET_PAGE.index("function salesChart"):]
+    sales = sales[: sales.index("function lotChart")]
+    assert "tags.sort((a,b)=>a.y-b.y);" in sales
+    assert "tags.forEach(t=>{t.at=Math.max(t.y,prev+12);prev=t.at});" in sales
+    assert "for(let i=tags.length-1;i>=0;i--){tags[i].at=Math.min(tags[i].at,floor);floor=tags[i].at-12}" in sales

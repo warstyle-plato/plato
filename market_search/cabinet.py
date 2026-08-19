@@ -521,6 +521,25 @@ function trendChart(series){
        +`<text x="${W-R+8}" y="${stack[i]+3}" font-size="10.5" fill="${e.colour||(e.own?'#C4581B':'#5b6b7d')}"`
        +`${e.own?' font-weight="600"':''}>${esc(e.n.length>19?e.n.slice(0,18)+'…':e.n)} · ${num(e.v)}</text>`;
   });
+  // Наведение на месяц: своя цена, границы полосы, медиана и отмеченные —
+  // все числа этого месяца разом. Полоса на всю высоту, потому что вопрос
+  // про месяц, а не про попадание в конкретную линию.
+  months.forEach((m,i)=>{
+    const b=band[i];
+    const lines=[m];
+    if(own){const v=at(own,m); if(v!==null)lines.push(`${own.name}: ${num(v)} ₽/м²`)}
+    picked.forEach(p=>{const v=at(p,m); if(v!==null)lines.push(`${p.name}: ${num(v)} ₽/м²`)});
+    if(b){
+      lines.push(`медиана соседей: ${num(b.p50)} ₽/м²`);
+      lines.push(`полоса: ${num(b.p25)} — ${num(b.p75)} ₽/м² (${b.n} проект.)`);
+    }
+    if(lines.length<2)return;
+    const half=(W-L-R)/Math.max(months.length-1,1)/2;
+    svg+=`<rect x="${Math.max(L,x(i)-half).toFixed(1)}" y="${T}"`
+      +` width="${Math.min(half*2,W-R-Math.max(L,x(i)-half)).toFixed(1)}"`
+      +` height="${(H-B-T).toFixed(1)}" fill="transparent">`
+      +`<title>${esc(lines.join('\n'))}</title></rect>`;
+  });
   const note=known.length>1
     ? `Плотная полоса — половина соседей (от нижнего квартиля до верхнего), бледная — весь разброс`
       +` выборки, пунктир — медиана рынка без вашего проекта. Полоса построена по ${last.n} проектам`
@@ -589,17 +608,44 @@ function salesChart(rows, key, unit, digits){
   // впритык: «проект 4» читалось как «проект номер четыре», а это четыре ДДУ
   // за последний месяц у проекта, у которого есть имя.
   const ownName=esc((own.name||'проект').slice(0,16));
-  svg+=`<text x="${W-R+8}" y="${y(at(own,lastOwn,key))+4}" font-size="10.5" fill="#C4581B" font-weight="600">`
-     +`${ownName} · ${num(at(own,lastOwn,key),digits)} ${unit}</text>`;
+  // Подписи справа расталкиваются, а не ставятся каждая на своей высоте:
+  // «Кутузов Сити · 48,4» и «медиана · 79,5» ложились друг на друга, стоило
+  // числам сойтись. Тот же двухпроходный расклад, что на графике цены.
+  const tags=[{y:y(at(own,lastOwn,key)),
+               text:`${ownName} · ${num(at(own,lastOwn,key),digits)} ${unit}`,
+               colour:'#C4581B', bold:true}];
   const lastMed=rows.length<2?null:[...med].reverse().find(v=>v!==null);
   if(lastMed!==undefined&&lastMed!==null)
-    svg+=`<text x="${W-R+8}" y="${y(lastMed)+4}" font-size="10.5" fill="#16202b">медиана · ${num(lastMed,digits||1)} ${unit}</text>`;
+    tags.push({y:y(lastMed),text:`медиана · ${num(lastMed,digits||1)} ${unit}`,colour:'#16202b'});
   picked.forEach(r=>{
     const m=[...months].reverse().find(mm=>at(r,mm,key)!==null);
     if(m===undefined)return;
     const v=at(r,m,key);
-    svg+=`<text x="${W-R+8}" y="${y(v)+4}" font-size="10" fill="${pickedColour(picked,r)}">`
-      +`${esc(r.name.length>16?r.name.slice(0,15)+'…':r.name)} · ${num(v,digits)}</text>`;
+    tags.push({y:y(v),colour:pickedColour(picked,r),
+               text:`${esc(r.name.length>16?r.name.slice(0,15)+'…':r.name)} · ${num(v,digits)} ${unit}`});
+  });
+  tags.sort((a,b)=>a.y-b.y);
+  let prev=-99;
+  tags.forEach(t=>{t.at=Math.max(t.y,prev+12);prev=t.at});
+  let floor=H-4;
+  for(let i=tags.length-1;i>=0;i--){tags[i].at=Math.min(tags[i].at,floor);floor=tags[i].at-12}
+  tags.forEach(t=>{
+    svg+=`<text x="${W-R+8}" y="${(t.at+4).toFixed(1)}" font-size="10.5" fill="${t.colour}"`
+      +`${t.bold?' font-weight="600"':''}>${t.text}</text>`;
+  });
+
+  // Наведение на месяц показывает все числа этого месяца разом. Прозрачная
+  // полоса на всю высоту, а не попадание в сам столбик: попасть в столбик
+  // шириной три пикселя нельзя, а вопрос всё равно про месяц целиком.
+  months.forEach((m,i)=>{
+    const lines=[m].concat(series.map(one=>{
+      const v=at(one.row,m,key);
+      return v===null?null:`${one.row.name}: ${num(v,digits)} ${unit}`;
+    }).filter(Boolean));
+    if(med[i]!==null&&med[i]!==undefined) lines.push(`медиана соседей: ${num(med[i],digits||1)} ${unit}`);
+    svg+=`<rect x="${(x(i)-slot/2).toFixed(1)}" y="${T}" width="${slot.toFixed(1)}"`
+      +` height="${(H-B-T).toFixed(1)}" fill="transparent">`
+      +`<title>${esc(lines.join('\n'))}</title></rect>`;
   });
   return '<div class="wrap">'+svg+'</svg></div>';
 }
@@ -659,6 +705,19 @@ function remainChart(rows){
     if(lastMonth!==undefined)
       svg+=`<text x="${W-R+8}" y="${y(at(lastMonth))+4}" font-size="10" fill="${colour}">`
         +`${esc(r.name.length>16?r.name.slice(0,15)+'…':r.name)} · ${num(at(lastMonth))}</text>`;
+  });
+  const monthsOf=pts.map(p=>p.month);
+  monthsOf.forEach((m,i)=>{
+    const lines=[m,`${own.name}: ${num(pts[i].rem)} лотов`];
+    picked.forEach(r=>{
+      const p=(r.points||[]).find(p=>p.month===m);
+      if(p&&p.rem!==null&&p.rem!==undefined)lines.push(`${r.name}: ${num(p.rem)} лотов`);
+    });
+    const half=(W-L-R)/Math.max(pts.length-1,1)/2;
+    svg+=`<rect x="${Math.max(L,x(i)-half).toFixed(1)}" y="${T}"`
+      +` width="${Math.min(half*2,W-R-Math.max(L,x(i)-half)).toFixed(1)}"`
+      +` height="${(H-B-T).toFixed(1)}" fill="transparent">`
+      +`<title>${esc(lines.join('\n'))}</title></rect>`;
   });
   return '<div class="wrap">'+svg+'</svg></div>';
 }
