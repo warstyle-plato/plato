@@ -223,8 +223,9 @@ border-radius:9px;box-shadow:0 6px 22px rgba(20,35,60,.13);max-height:320px;over
 #sug div:last-child,#addsug div:last-child{border-bottom:0}
 #sug div:hover,#sug div.on,#addsug div:hover{background:#eef4fa}
 #sug small,#addsug small{display:block;color:var(--dim);font-size:12px}
-table.peers td.pick,table.peers th.pick{width:52px;text-align:center}
+td.pick,th.pick{width:56px;text-align:center}
 td.pick input{cursor:pointer}
+
 .cityref{display:block;margin:10px 0 2px;font-size:13.5px}
 .cityref .muted{font-size:12.5px}
 .addwrap{position:relative}
@@ -272,7 +273,7 @@ g.bub.on circle{fill-opacity:.75}
   main{max-width:none;padding:0}
   #form, #askcard, .chips, button, #hintout, .cardwrap{display:none !important}
   #bubble{display:none}
-  table.peers td.pick,table.peers th.pick{display:none}
+  td.pick,th.pick{display:none}
   .printviews{display:block}
   /* Ни наведённая, ни тапнутая подпись на бумагу не идёт: на печати нет ни
      того ни другого, а один случайно оставшийся ярлык читался бы как
@@ -764,9 +765,12 @@ function deepCard(d){
 // «Соседи в выборке» внизу; в таблицах разделов, где на соседа как раз и
 // смотрят, то же имя было мёртвым текстом.
 function compareTable(rows, cols){
-  return '<div class="wrap"><table><tr>'+cols.map(c=>`<th${c.num?' class="num"':''}>${c.t}</th>`).join('')+'</tr>'
+  // `cls` — класс на колонку целиком, заголовок и ячейки; `attr` — то, что
+  // колонка дописывает в ячейку сама (этим имя проекта становится ссылкой).
+  const klass=c=>c.num?' class="num"':(c.cls?` class="${c.cls}"`:'');
+  return '<div class="wrap"><table><tr>'+cols.map(c=>`<th${klass(c)}>${c.t}</th>`).join('')+'</tr>'
     +rows.map((r,i)=>'<tr'+(r.__own?' class="ownrow"':'')+'>'
-      +cols.map(c=>`<td${c.num?' class="num"':''}${c.attr?c.attr(r,i):''}>${c.f(r,i)}</td>`).join('')+'</tr>').join('')
+      +cols.map(c=>`<td${klass(c)}${c.attr?c.attr(r,i):''}>${c.f(r,i)}</td>`).join('')+'</tr>').join('')
     +'</table></div>';
 }
 
@@ -851,8 +855,15 @@ function sectionTable(code,ctx){
                attr:(r,i)=>r.__own?'':` class="link" data-peer="${i-1}"`},
               {t:'км',num:1,f:r=>r.__own?'—':num(r.distance_km,2)},
               {t:'Класс',f:r=>esc(r.segment||'—')}];
+  // Галочка стоит в таблице под самим графиком, а не в общем списке соседей
+  // внизу: смотрят на кривые и тут же отмечают, чью показать. Только в
+  // разделе цены — она и управляет графиком динамики цены.
+  const pick={t:'График',cls:'pick',
+    f:r=>r.__own?'':`<input type="checkbox" data-chart="${esc(r.complex_id)}"`
+      +`${onChart.has(String(r.complex_id))?' checked':''}`
+      +`${(r.price_series||[]).length>1?'':' disabled title="истории цены нет"'}>`};
   const cols={
-    price:[...base,{t:'₽/м²',num:1,f:r=>num(r.price_per_sqm)},
+    price:[pick,...base,{t:'₽/м²',num:1,f:r=>num(r.price_per_sqm)},
            {t:'мин',num:1,f:r=>num(r.price_per_sqm_min)},{t:'макс',num:1,f:r=>num(r.price_per_sqm_max)},
            {t:'Прайс от',f:r=>esc(r.observed_at||'—')}],
     pace:[...base,{t:'ДДУ/мес',num:1,f:r=>num(r.units_per_month,1)},
@@ -1337,14 +1348,9 @@ function render(d){
   html+=deepCard(d);
   html+=`<div class="card"><h2>Соседи в выборке</h2>
     <div class="wrap"><table class="peers">
-    <tr><th class="pick" title="показать кривую цены на графике">График</th>
-    <th>Проект</th><th>Застройщик</th><th class="num">км</th><th>Класс</th>
+    <tr><th>Проект</th><th>Застройщик</th><th class="num">км</th><th>Класс</th>
     <th class="num">₽/м²</th><th class="num">ДДУ/мес</th><th class="num">м²/мес</th><th class="num">Лотов</th><th>Прайс от</th></tr>`
-    +peers.map((p,i)=>`<tr${p.added_by_hand?' class="added byhand"':''}>`
-      +`<td class="pick"><input type="checkbox" data-chart="${esc(p.complex_id)}"`
-      +`${onChart.has(String(p.complex_id))?' checked':''}`
-      +`${(p.price_series||[]).length>1?'':' disabled title="истории цены нет"'}></td>`
-      +`<td class="link" data-peer="${i}">`
+    +peers.map((p,i)=>`<tr${p.added_by_hand?' class="added byhand"':''}><td class="link" data-peer="${i}">`
       +`${esc(p.name)}${p.added_by_hand?' <span class="muted">+</span>':''}</td><td class="muted">${esc(p.developer||'—')}</td>
       <td class="num">${num(p.distance_km,2)}</td><td>${esc(p.segment||'—')}</td>
       <td class="num">${p.price_per_sqm?num(p.price_per_sqm)

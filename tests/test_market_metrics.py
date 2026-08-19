@@ -1482,14 +1482,20 @@ def test_a_neighbour_curve_returns_to_the_chart_by_a_tick() -> None:
     from market_search.cabinet import CABINET_PAGE
 
     assert "const onChart=new Set();" in CABINET_PAGE
-    assert 'data-chart="${esc(p.complex_id)}"' in CABINET_PAGE
+    assert 'data-chart="${esc(r.complex_id)}"' in CABINET_PAGE
     assert "shown:onChart.has(String(p.complex_id))" in CABINET_PAGE
     # Сосед без истории цены отмечен быть не может — рисовать нечего.
     assert "' disabled title=\"истории цены нет\"'" in CABINET_PAGE
     # Перерисовка без запроса к серверу.
     assert "if(box.checked) onChart.add(id); else onChart.delete(id);\n      render(lastReport);" in CABINET_PAGE
-    # Колонка выбора живёт только в таблице соседей и не идёт в печать.
-    assert "table.peers td.pick,table.peers th.pick{display:none}" in CABINET_PAGE
+    # Галочка стоит в таблице под самим графиком, а не в общем списке внизу:
+    # смотрят на кривые и тут же отмечают, чью показать.
+    section = CABINET_PAGE[CABINET_PAGE.index("function sectionTable"):]
+    section = section[: section.index("return cols?compareTable")]
+    assert "price:[pick,...base," in section
+    assert "pace:[...base," in section, "галочка только у графика цены"
+    # В печать колонка не идёт.
+    assert "  td.pick,th.pick{display:none}" in CABINET_PAGE
 
 
 def test_only_the_subject_is_labelled_on_screen() -> None:
