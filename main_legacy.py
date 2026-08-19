@@ -49,7 +49,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.18.94"
+VERSION = "0.18.97"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -1578,6 +1578,29 @@ def import_project_preset(req: ProjectPresetRequest) -> dict[str, Any]:
             applied_tep[key].update(values)
         preview["applied_tep"] = applied_tep
     return preview
+
+
+_ASSETS_DIR = Path(__file__).resolve().parent / "assets"
+_ASSET_CACHE_HEADERS = {"Cache-Control": "public, max-age=604800"}
+
+
+@app.get("/assets/{name}", include_in_schema=False)
+def developaid_asset(name: str) -> Response:
+    """Картинки приложения. Лежат файлами и отдаются адресом с кэшем.
+
+    Вшивать их в `PAGE` нельзя: страница отдаётся на каждый запрос целиком, и
+    вес картинки платился бы каждым открытием — в том числе с телефона.
+    """
+    if not re.fullmatch(r"[a-z0-9._-]{1,64}", name) or "/" in name:
+        raise HTTPException(status_code=404, detail="Нет такого файла.")
+    path = _ASSETS_DIR / name
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Нет такого файла.")
+    types = {".webp": "image/webp", ".png": "image/png", ".svg": "image/svg+xml"}
+    media = types.get(path.suffix.lower())
+    if not media:
+        raise HTTPException(status_code=404, detail="Такой тип файлов не отдаётся.")
+    return Response(path.read_bytes(), media_type=media, headers=_ASSET_CACHE_HEADERS)
 
 
 @app.post("/import/manual-tep")
@@ -25211,7 +25234,7 @@ details.cadastral-box>summary::marker{color:#888}
 .ai-drawer{position:fixed;top:0;right:0;width:min(520px,96vw);height:100vh;background:#fff;border-left:1px solid #ccc;box-shadow:-12px 0 38px rgba(0,0,0,.12);z-index:1000;display:flex;flex-direction:column;transform:translateX(102%);transition:transform .18s ease}.ai-drawer.open{transform:translateX(0)}
 .ai-head{padding:18px 20px 14px;border-bottom:1px solid #ddd;display:flex;align-items:flex-start;justify-content:space-between;gap:14px}.ai-head h2{margin:0;font-size:19px}.ai-head p{margin:5px 0 0;color:#777;font-size:11px;line-height:1.45}.ai-close{border:0;background:none;font-size:25px;cursor:pointer;line-height:1}
 .ai-quick{padding:12px 16px;border-bottom:1px solid #eee;display:flex;gap:7px;flex-wrap:wrap}.ai-chip{border:1px solid #bbb;background:#fff;padding:7px 9px;font-size:11px;cursor:pointer}.ai-chip:hover{background:#f5f5f3}
-.ai-messages{flex:1;overflow:auto;padding:18px;background:#fafaf8}.ai-msg{max-width:92%;margin:0 0 14px;padding:12px 14px;font-size:13px;line-height:1.55;white-space:pre-wrap;border:1px solid #ddd;background:#fff}.ai-msg.user{margin-left:auto;background:#111;color:#fff;border-color:#111}.ai-msg.system{color:#777;font-size:11px;background:transparent;border:0;padding:0;max-width:100%}.ai-msg.error{border-color:#b33;color:#8c1d1d;background:#fff7f7}
+.ai-messages{flex:1;overflow:auto;padding:18px;background:#fafaf8}.ai-hero{display:flex;align-items:center;gap:14px;margin:0 0 16px}.ai-hero img{width:180px;height:auto;flex:none}.ai-hero-say{background:#fff;border:1px solid #e6e2d8;border-radius:14px;padding:12px 14px;font-size:14px;line-height:1.45}.ai-hero-say b{display:block;margin-bottom:4px}.ai-hero-say span{color:#555}@media(max-width:520px){.ai-hero img{width:120px}}.ai-msg{max-width:92%;margin:0 0 14px;padding:12px 14px;font-size:13px;line-height:1.55;white-space:pre-wrap;border:1px solid #ddd;background:#fff}.ai-msg.user{margin-left:auto;background:#111;color:#fff;border-color:#111}.ai-msg.system{color:#777;font-size:11px;background:transparent;border:0;padding:0;max-width:100%}.ai-msg.error{border-color:#b33;color:#8c1d1d;background:#fff7f7}
 .ai-compose{border-top:1px solid #ddd;padding:12px;background:#fff}.ai-compose textarea{width:100%;min-height:84px;max-height:180px;resize:vertical;border:1px solid #bbb;padding:11px;font:inherit;box-sizing:border-box}.ai-compose-row{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:8px}.ai-compose small{color:#888;font-size:10px;line-height:1.35}.ai-thinking{display:inline-block;color:#777;font-size:12px;padding:8px 0}
 .ai-overlay{position:fixed;inset:0;background:rgba(0,0,0,.18);z-index:999;display:none}.ai-overlay.open{display:block}
 @media(max-width:700px){.ai-drawer{width:100vw}.ai-open-btn .ai-label{display:none}}
@@ -25967,7 +25990,7 @@ details.cadastral-box>summary::marker{color:#888}
     <button class="ai-chip" onclick="askAgentQuick('Найди слабейшую очередь. Объясни причинно, почему её LLCR ниже целевого, и сам пересчитай реальные варианты оздоровления: перенос допустимых затрат, социалки, увеличение ТЭП. Дай ранжированную рекомендацию до LLCR не ниже 1,20.','phase_recovery')">Оздоровить слабую очередь</button>
     <button class="ai-chip" onclick="askAgentQuick('Оцени текущую цену покупки как инвестиционное решение: какой максимальный потолок цены при LLCR 1,20, насколько текущая цена от него отличается и что делать, если продавец не снижает цену.','purchase_evaluation')">Оценить цену покупки</button>
   </div>
-  <div id="aiMessages" class="ai-messages"><div class="ai-msg system">Платон Сергеевич анализирует проект через расчётные инструменты DevelopAid. Цифры и подбор параметров считает движок модели, а не языковая модель.</div></div>
+  <div id="aiMessages" class="ai-messages"><div id="aiHero" class="ai-hero"><img src="/assets/platon-hero.webp" alt="" width="260" height="298" loading="lazy"><div class="ai-hero-say"><b>Привет! Я Платон.</b><span>Помогу настроить отчёт и отвечу на вопросы.</span></div></div><div class="ai-msg system">Платон Сергеевич анализирует проект через расчётные инструменты DevelopAid. Цифры и подбор параметров считает движок модели, а не языковая модель.</div></div>
   <div class="ai-compose">
     <textarea id="aiInput" placeholder="Например: за сколько максимум можно купить проект, чтобы LLCR слабейшей очереди был не ниже 1,20?"></textarea>
     <div class="ai-compose-row"><small>Ориентир диагностики: LLCR 1,20x. Методика конкретного банка может отличаться.</small><button id="aiSendBtn" class="btn dark" onclick="sendAgentMessage()">Отправить</button></div>
@@ -26522,8 +26545,16 @@ function renderAiMarkdown(text){
   .replace(/^\s*[-*]\s+/gm,'• ')
   .replace(/\n/g,'<br>');
 }
-function appendAiMessage(role,content,extra=''){const d=document.createElement('div');d.className=`ai-msg ${role} ${extra}`.trim();d.innerHTML=renderAiMarkdown(content);aiMessages.appendChild(d);aiMessages.scrollTop=aiMessages.scrollHeight;return d}
+function appendAiMessage(role,content,extra=''){hideAiHero();const d=document.createElement('div');d.className=`ai-msg ${role} ${extra}`.trim();d.innerHTML=renderAiMarkdown(content);aiMessages.appendChild(d);aiMessages.scrollTop=aiMessages.scrollHeight;return d}
+// Картинка объясняет пустое окно и на этом её работа кончается: с первым
+// сообщением она уходит и переписке не мешает.
+function hideAiHero(){
+ const hero=document.getElementById('aiHero');
+ if(hero)hero.style.display='none';
+}
+
 function appendAiProposals(proposals){
+ hideAiHero();
  (proposals||[]).forEach(p=>{
    const idx=aiProposals.push(p)-1;
    const changes=(p.changes||[]).map(x=>`${escapeHtml(x.label)}: <b>${escapeHtml(x.old)}</b> → <b>${escapeHtml(x.new)}</b>`).join('<br>');
