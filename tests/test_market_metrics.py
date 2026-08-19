@@ -1555,3 +1555,59 @@ def test_the_site_verdict_shows_the_whole_product_line(tmp_path) -> None:
 
     assert "Что продаётся вокруг" in CABINET_PAGE
     assert "— здешний" in CABINET_PAGE
+
+
+def test_no_price_label_falls_outside_the_chart(tmp_path) -> None:
+    """«Вылезли цены»: у трёх верхних столбиков чисел не было видно.
+
+    Поле картинки кончалось там же, где самый длинный столбик, а подпись
+    ставилась за его концом — у самого дорогого проекта она уезжала за край
+    целиком, у соседних обрезалась. Проверяется геометрия, а не текст: тест
+    гоняет настоящую функцию в node и смотрит координаты подписей.
+    """
+    import json
+    import re
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if not node:
+        import pytest
+
+        pytest.skip("node не установлен")
+
+    from market_search.cabinet import CABINET_PAGE
+
+    start = CABINET_PAGE.index("function priceChart(")
+    end = CABINET_PAGE.index("\n}", CABINET_PAGE.index("return '<div class=\"wrap\">'+svg", start)) + 2
+    source = CABINET_PAGE[start:end]
+
+    harness = """
+const num=(v,d=0)=>v===null||v===undefined?'—':String(v);
+const esc=s=>String(s===null||s===undefined?'':s);
+"""
+    driver = """
+const peers=[
+  {name:'Дешёвый', price_per_sqm:268800},
+  {name:'Средний', price_per_sqm:540715},
+  {name:'Самый дорогой сосед', price_per_sqm:780032},
+];
+const html=priceChart(peers,{name:'Кутузов Сити',price_per_sqm:708109},540715);
+const width=Number(html.match(/viewBox="0 0 (\\d+)/)[1]);
+const labels=[...html.matchAll(/<text x="(\\d+(?:\\.\\d+)?)"[^>]*>([^<]*)<\\/text>/g)]
+  .map(m=>({x:Number(m[1]), text:m[2]}));
+console.log(JSON.stringify({width, labels}));
+"""
+    path = tmp_path / "price.js"
+    path.write_text(harness + source + driver, encoding="utf-8")
+    run = subprocess.run([node, str(path)], capture_output=True, text=True, timeout=30)
+    assert run.returncode == 0, run.stderr
+    result = json.loads(run.stdout.strip().splitlines()[-1])
+
+    # Каждая подпись начинается внутри поля и оставляет место на само число.
+    for label in result["labels"]:
+        assert label["x"] <= result["width"], f"подпись «{label['text']}» за краем"
+    values = [row for row in result["labels"] if re.fullmatch(r"\d+", row["text"])]
+    assert values, "подписи значений вообще не нашлись"
+    longest = max(values, key=lambda row: row["x"])
+    assert result["width"] - longest["x"] >= 60, "самой длинной подписи не хватит места"

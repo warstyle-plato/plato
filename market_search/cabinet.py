@@ -369,9 +369,14 @@ function priceChart(peers, subject, median){
   if(subject && subject.price_per_sqm) rows.push({n:subject.name||'объект',v:subject.price_per_sqm,self:true});
   if(rows.length<2) return '';
   rows.sort((a,b)=>a.v-b.v);
-  const max=Math.max(...rows.map(r=>r.v)), H=26, W=560, pad=210;
+  // Справа оставлено место под подпись значения. Прежде поле картинки
+  // кончалось там же, где самый длинный столбик, а подпись ставилась за его
+  // концом — и у самого дорогого проекта уезжала за край целиком, у соседних
+  // обрезалась наполовину. На экране это выглядело как «цены вылезли»: три
+  // верхних столбика стояли без чисел.
+  const max=Math.max(...rows.map(r=>r.v)), H=26, W=560, pad=210, tail=96;
   const h=rows.length*H+26;
-  let svg=`<svg viewBox="0 0 ${W+pad} ${h}" width="100%" role="img">`;
+  let svg=`<svg viewBox="0 0 ${W+pad+tail} ${h}" width="100%" role="img">`;
   rows.forEach((r,i)=>{
     const w=Math.max(2,Math.round(r.v/max*W)), y=i*H+4;
     svg+=`<text x="${pad-8}" y="${y+13}" text-anchor="end" font-size="12" fill="${r.self?'#C4581B':'#16202b'}"`
@@ -382,7 +387,8 @@ function priceChart(peers, subject, median){
   if(median){
     const x=pad+Math.round(median/max*W);
     svg+=`<line x1="${x}" y1="0" x2="${x}" y2="${rows.length*H+2}" stroke="#16202b" stroke-dasharray="4 3" stroke-width="1"/>`
-       +`<text x="${x+4}" y="${rows.length*H+18}" font-size="11" fill="#16202b">медиана ${num(median)}</text>`;
+       +`<text x="${Math.min(x+4,W+pad+tail-4).toFixed(0)}" y="${rows.length*H+18}" font-size="11"`
+       +` text-anchor="${x+4>W+pad?'end':'start'}" fill="#16202b">медиана ${num(median)}</text>`;
   }
   return '<div class="wrap">'+svg+'</svg></div>';
 }
