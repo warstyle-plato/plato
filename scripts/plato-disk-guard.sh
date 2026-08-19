@@ -61,20 +61,41 @@ fi
 say "уборка: свободно ${before} МБ"
 
 # Образы: рабочий и предыдущий (он нужен откату) остаются, остальные уходят.
+#
+# Идентификатор реестра берётся из `.env` тем же способом, что и в выкатке.
+# Раньше он читался только из окружения, а у cron окружения нет: предыдущий
+# образ не опознавался и удалялся вместе с прочими. Ночная уборка каждый раз
+# уносила единственный путь назад — молча, потому что в журнале стояло
+# «убрано образов: N», и выглядело это исправной работой.
+[ -n "${YC_REGISTRY_ID:-}" ] || YC_REGISTRY_ID=$(grep -E '^YC_REGISTRY_ID=' "$ROOT/.env" 2>/dev/null | tail -1 | cut -d= -f2- || true)
+
 keep_now=$(docker inspect --format '{{.Image}}' "$NAME" 2>/dev/null || true)
 keep_before=""
 if [ -f "$ROOT/data/deploy-previous" ] && [ -n "${YC_REGISTRY_ID:-}" ]; then
   keep_before=$(docker image inspect --format '{{.Id}}' \
     "cr.yandex/${YC_REGISTRY_ID}/${NAME}:$(cat "$ROOT/data/deploy-previous")" 2>/dev/null || true)
 fi
+if [ -z "$keep_before" ] && [ -f "$ROOT/data/deploy-previous" ]; then
+  say "предыдущий образ не опознан — откат этой уборки не переживёт"
+fi
+
 removed=0
 for image_id in $(docker images --format '{{.ID}}' | sort -u); do
   full=$(docker image inspect --format '{{.Id}}' "$image_id" 2>/dev/null || true)
   [ -n "$full" ] || continue
   [ "$full" = "$keep_now" ] && continue
   [ -n "$keep_before" ] && [ "$full" = "$keep_before" ] && continue
-  # Образ, на котором работает контейнер, docker не отдаст — и правильно.
-  docker rmi "$image_id" >/dev/null 2>&1 && removed=$((removed + 1))
+  # Машина общая: на ней живут стенды соседей. Их образы уборка тоже забирает,
+  # и это осознанно — иначе места не хватит, — но не молча. Имя удалённого
+  # пишется в журнал: «убрано 2» не даёт понять, чьё именно ушло, а спросить
+  # об этом задним числом уже негде. Образ работающего контейнера docker не
+  # отдаёт сам, поэтому ничего живого уборка снять не может.
+  tags=$(docker image inspect --format '{{join .RepoTags ", "}}' "$image_id" 2>/dev/null || true)
+  [ -n "$tags" ] || tags="без тега ($image_id)"
+  if docker rmi "$image_id" >/dev/null 2>&1; then
+    removed=$((removed + 1))
+    say "убран образ: ${tags}"
+  fi
 done
 docker image prune -f >/dev/null 2>&1 || true
 docker builder prune -f >/dev/null 2>&1 || true

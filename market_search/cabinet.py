@@ -217,7 +217,6 @@ line-height:1;color:var(--dim);cursor:pointer}
 .kv span{color:var(--dim);font-size:12px}
 .self{color:var(--rust);font-weight:600}
 .muted{color:var(--dim)}
-#addwrapdummy{}
 #sug,#addsug{position:absolute;z-index:30;left:0;right:0;top:100%;background:#fff;border:1px solid var(--line);
 border-radius:9px;box-shadow:0 6px 22px rgba(20,35,60,.13);max-height:320px;overflow:auto;display:none}
 #sug div,#addsug div{padding:8px 11px;cursor:pointer;font-size:14px;border-bottom:1px solid #f0f4f8}
