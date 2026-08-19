@@ -265,25 +265,20 @@ def test_a_table_edit_reaches_the_inputs():
     assert "renderInputs()" in handler, "поле во вводных должно показать своё число"
 
 
-def test_the_row_follows_the_last_number_you_typed():
-    """«Ввожу ГНС — считает, ввожу продаваемую — ничего» (владелец, 19.08.2026).
+def test_any_area_you_change_drives_the_row():
+    """«Поменять хочется любую площадь» (решение владельца, 19.08.2026).
 
-    Прежнее правило достраивало только пустые ячейки, поэтому на заполненной
-    строке ввод продаваемой не менял ничего. Теперь строка выводится из
-    последнего введённого числа, а руками введённое в этой же строке остаётся:
-    человек мог вписать факт по ГПЗУ, и подменять его выводом из соседней
-    ячейки нельзя.
+    Прежде правка достраивала только пустое, потом — только нетронутое: в обоих
+    случаях строка застревала. У квартир оставался ГНС 50 000 при продаваемой
+    50 000, и модель считала по нелепице, пока человек не удалит ячейку.
 
-    Проверено на живой странице: ГНС 54 900 → общая 51 606, продаваемая
-    30 963,6; правка продаваемой на 20 000 в строке с числами из импорта даёт
-    ГНС 35 461 и общую 33 333,3.
+    Теперь ведущее — любое из трёх чисел. Проверено на живой странице:
+    ГНС 25 000 → 22 500 и 16 250; общая 40 000 → ГНС 44 444,4 и продаваемая
+    28 888,9; продаваемая 50 000 → ГНС 76 923,1 и общая 69 230,8.
     """
     body = core.PAGE[core.PAGE.index("function tepCellChanged"):]
-    body = body[:body.index("function updateTepTotals")]
-    assert "tepMarkTouched(key,col)" in body, "правка ячейки не помечается"
-    assert "base[col]=Number(value||0)" in body, "тройка должна считаться от введённого числа"
-    assert "if(field!==col&&touched[field])return" in body, "введённое руками обязано выживать"
-
-    refill = core.PAGE[core.PAGE.index("function refillTepRow"):]
-    refill = refill[:refill.index("const tepRefillNote")]
-    assert "tepTouched[key]={}" in refill, "кнопка переписывает строку — пометки снимаются"
+    body = body[:body.index("let storageInsideParking")]
+    assert "base[col]=Number(value||0)" in body, "тройка считается от введённого числа"
+    assert "tepFillByRatios(key,base)" in body
+    assert "tepTouched" not in body, "памяти о правленых ячейках больше нет"
+    assert "['gns','total_area','saleable'].forEach(field=>{tep[key][field]=filled[field]})" in body
