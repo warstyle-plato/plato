@@ -49,7 +49,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.19.5"
+VERSION = "0.19.6"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -28893,7 +28893,7 @@ function renderTep(){
    if(TEP_RATIOS[key]){
      label+=` <button type="button" class="tep-refill" title="Пересчитать общую и продаваемую от ГНС по пропорциям" `+
        `onclick="refillTepRow('${key}')">⟳ по пропорциям</button>`;
-     const bad=tepRowComplaint(key,row);
+     const bad=tepRefillNote[key]||tepRowComplaint(key,row);
      if(bad)label+=` <span style="display:block;font-size:10px;color:#a33;margin-top:2px">${escapeHtml(bad)}</span>`;
    }
    let html=`<td>${label}</td>`;
@@ -28922,7 +28922,7 @@ function renderTepRatioNote(){
    '% ГНС, продаваемая '+landNum(r.saleable_of_gns*100,1)+'% ГНС · '+escapeHtml(r.source)+'</div>';
  }).join('');
  box.innerHTML='Пустые площади достраиваются пропорциями; введённое вами не перебивается. '+
-  '<details style="display:inline"><summary style="display:inline;cursor:pointer">какие доли</summary>'+
+  '<details style="display:inline"><summary style="display:inline;cursor:pointer">показать доли, по которым считается</summary>'+
   '<div style="margin-top:4px">'+rows+'</div></details>';
 }
 
@@ -28942,19 +28942,40 @@ function tepRowComplaint(key,row){
  return '';
 }
 
+// Выключатель объекта во вводных: пока он снят, строка обнуляется при каждом
+// пересчёте, и любое число в ней исчезает. Молчать об этом нельзя — человек
+// жмёт кнопку и видит нули.
+const TEP_ROW_SWITCH={offices:['offices_enabled','МФОЦ / офисы'],
+ standalone_retail:['retail_enabled','ТЦ / коммерция ОСЗ']};
+
 // Явный пересчёт строки: человек просит — считаем от ГНС и переписываем всё.
+// Пустая строка считаться не из чего: это тоже ответ, и он должен прозвучать.
 function refillTepRow(key){
  const r=TEP_RATIOS[key];
  if(!r)return;
  const row=tep[key];
- const gns=Number(row.gns||0);
+ const gns=Number(row.gns||0),sale=Number(row.saleable||0);
+ const say=text=>{tepRefillNote[key]=text;renderTep()};
+ const sw=TEP_ROW_SWITCH[key];
+ if(sw&&!inputs[sw[0]]){
+  say('Объект выключен во вводных: включите «'+sw[1]+' → Объект включен», иначе строка обнуляется при каждом пересчёте.');
+  return;
+ }
+ if(gns<=0&&sale<=0){
+  say('Нечего пересчитывать: впишите ГНС или продаваемую площадь — остальное достроится само.');
+  return;
+ }
  const base=gns>0?{gns:gns,total_area:0,saleable:0,useful:0}
-                 :{gns:0,total_area:0,saleable:Number(row.saleable||0),useful:0};
+                 :{gns:0,total_area:0,saleable:sale,useful:0};
  const filled=tepFillByRatios(key,base);
  ['gns','total_area','saleable','useful'].forEach(field=>{row[field]=filled[field]});
+ tepRefillNote[key]='';
  renderTep();
  calculate();
 }
+
+// Ответ кнопки живёт до следующей перерисовки строки.
+const tepRefillNote={};
 
 function tepCellChanged(key,col,value){
  tep[key][col]=Number(value||0);
