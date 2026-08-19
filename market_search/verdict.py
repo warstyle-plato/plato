@@ -24,6 +24,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .segments import BUSINESS, COMFORT, ECONOMY, ELITE, PREMIUM, normalize_segment
+
 
 PRICE_BAND_PCT = 15.0
 PACE_BAND_RATIO = 1.5
@@ -494,6 +496,78 @@ def positioning(subject: dict[str, Any], peers: list[dict[str, Any]], city) -> d
         "pool": len(pool),
         "lots_cheaper": lots_cheaper,
         "shelf": where,
+    }
+
+
+def site_verdict(peers: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Что здесь строить и почём — вывод для площадки без своего проекта.
+
+    У голого участка нет ни прайса, ни темпа, и обычный вывод («цена рынком
+    не подтверждается») не складывается: сравнивать нечего. Раньше на этом
+    месте так и стояло «вывод не сложился» — то есть отчёт молчал ровно там,
+    где решение и принимают. Между тем соседи отвечают на оба вопроса
+    покупки: какой продукт здесь берут и по какой цене.
+
+    Класс выбирается по числу проектов, а не по деньгам: один дорогой сосед
+    не делает место дорогим. При равенстве берётся верхний уровень — ошибиться
+    в сторону более дорогого продукта дешевле, чем построить дешёвый там, где
+    покупают дорогое: цену вниз двигать можно, продукт — нет.
+
+    Цена — медиана действующих прайсов этого класса. Соседи с мёртвым прайсом
+    в неё не идут, но в счёт проектов и в темп идут: продукт и скорость они
+    показывают честно.
+    """
+    if not peers:
+        return None
+
+    by_class: dict[str, list[dict[str, Any]]] = {}
+    for row in peers:
+        level = normalize_segment(row.get("segment"))
+        if level:
+            by_class.setdefault(level, []).append(row)
+    if not by_class:
+        return None
+
+    order = [ELITE, PREMIUM, BUSINESS, COMFORT, ECONOMY]
+    level = max(by_class, key=lambda key: (len(by_class[key]), -order.index(key)))
+    rows = by_class[level]
+
+    prices = [row["price_per_sqm"] for row in rows if row.get("price_per_sqm")]
+    pace = [row["units_per_month"] for row in rows if row.get("units_per_month")]
+    lots = [row["sold_lot_avg"] for row in rows if row.get("sold_lot_avg")]
+    price = _median([float(v) for v in prices])
+    speed = _median([float(v) for v in pace])
+    lot = _median([float(v) for v in lots])
+
+    said = [
+        f"Вокруг участка {len(rows)} из {len(peers)} сопоставимых проектов — «{level}»; "
+        f"это и есть здешний продукт."
+    ]
+    if price:
+        said.append(
+            f"Действующие прайсы этого класса дают медиану {_num(price)} ₽/м² "
+            f"({len(prices)} из {len(rows)} с живой ценой) — от неё и считать."
+        )
+    else:
+        said.append(
+            f"Действующих прайсов у соседей этого класса нет ни одного, "
+            f"поэтому цену отсюда взять нельзя — только продукт."
+        )
+    if speed:
+        said.append(f"Темп у них — медиана {_num(speed, 1)} ДДУ в месяц.")
+    if lot:
+        said.append(f"Берут лот около {_num(lot, 1)} м² — на него и считать квартирографию.")
+
+    return {
+        "tone": TONE_FLAT,
+        "headline": f"Здесь строят «{level}»" + (f" по {_num(price)} ₽/м²" if price else ""),
+        "text": " ".join(said),
+        "segment": level,
+        "price_per_sqm": int(price) if price else None,
+        "units_per_month": round(speed, 1) if speed else None,
+        "sold_lot_avg": round(lot, 1) if lot else None,
+        "projects": len(rows),
+        "priced": len(prices),
     }
 
 

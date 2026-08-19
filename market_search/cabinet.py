@@ -223,6 +223,8 @@ border-radius:9px;box-shadow:0 6px 22px rgba(20,35,60,.13);max-height:320px;over
 #sug div:last-child,#addsug div:last-child{border-bottom:0}
 #sug div:hover,#sug div.on,#addsug div:hover{background:#eef4fa}
 #sug small,#addsug small{display:block;color:var(--dim);font-size:12px}
+table.peers td.pick,table.peers th.pick{width:52px;text-align:center}
+td.pick input{cursor:pointer}
 .cityref{display:block;margin:10px 0 2px;font-size:13.5px}
 .cityref .muted{font-size:12.5px}
 .addwrap{position:relative}
@@ -267,6 +269,7 @@ g.bub.on circle{fill-opacity:.75}
   main{max-width:none;padding:0}
   #form, #askcard, .chips, button, #hintout, .cardwrap{display:none !important}
   #bubble{display:none}
+  table.peers td.pick,table.peers th.pick{display:none}
   .printviews{display:block}
   /* Ни наведённая, ни тапнутая подпись на бумагу не идёт: на печати нет ни
      того ни другого, а один случайно оставшийся ярлык читался бы как
@@ -455,6 +458,14 @@ function trendChart(series){
     .filter(Boolean).join(' ');
   // Свой проект поверх полосы, а если объект без истории — рисуем соседей
   // линиями, как раньше: полоса из одного-двух проектов ничего не говорит.
+  // Отмеченные галочкой в таблице — поверх полосы, каждый своим цветом.
+  // Их не больше горстки: галочек ставят две-три, чтобы сравнить с собой.
+  const PICKED=['#1367AE','#2E7D5B','#8E44AD','#B9770E','#0E7C86','#7D3C98'];
+  const picked=peers.filter(s=>s.shown);
+  picked.forEach((s,i)=>{
+    const c=PICKED[i%PICKED.length];
+    svg+=`<path d="${path(s)}" fill="none" stroke="${c}" stroke-width="1.8"><title>${esc(s.name)}</title></path>`;
+  });
   if(own) svg+=`<path d="${path(own)}" fill="none" stroke="#C4581B" stroke-width="2.6"/>`;
   else if(known.length<=1) peers.forEach(s=>{
     svg+=`<path d="${path(s)}" fill="none" stroke="#9dc2e6" stroke-width="1.3"><title>${esc(s.name)}</title></path>`;
@@ -474,6 +485,10 @@ function trendChart(series){
     marks.push({y:y(last.p50),ex:x(i),v:last.p50,n:'медиана',own:false});
     marks.push({y:y(last.p25),ex:x(i),v:last.p25,n:'низ выборки',own:false});
   }
+  picked.forEach((s,idx)=>{
+    for(let i=months.length-1;i>=0;i--){const v=at(s,months[i]);
+      if(v!==null){marks.push({y:y(v),ex:x(i),v,n:s.name,own:false,colour:PICKED[idx%PICKED.length]});break}}
+  });
   marks.sort((a,b)=>a.y-b.y);
   const stack=[];
   let prev=-99;
@@ -481,10 +496,10 @@ function trendChart(series){
   let floor=H-6;
   for(let i=stack.length-1;i>=0;i--){stack[i]=Math.min(stack[i],floor);floor=stack[i]-13}
   marks.forEach((e,i)=>{
-    const c=e.own?'#C4581B':'#8798a8';
+    const c=e.colour||(e.own?'#C4581B':'#8798a8');
     svg+=`<polyline points="${e.ex.toFixed(1)},${e.y.toFixed(1)} ${(W-R-6).toFixed(1)},${stack[i].toFixed(1)} `
        +`${(W-R+5).toFixed(1)},${stack[i].toFixed(1)}" fill="none" stroke="${c}" stroke-width="${e.own?1.4:0.7}"/>`
-       +`<text x="${W-R+8}" y="${stack[i]+3}" font-size="10.5" fill="${e.own?'#C4581B':'#5b6b7d'}"`
+       +`<text x="${W-R+8}" y="${stack[i]+3}" font-size="10.5" fill="${e.colour||(e.own?'#C4581B':'#5b6b7d')}"`
        +`${e.own?' font-weight="600"':''}>${esc(e.n.length>19?e.n.slice(0,18)+'…':e.n)} ${num(e.v)}</text>`;
   });
   const note=known.length>1
@@ -586,6 +601,11 @@ const VIEWS=[
   {id:'near',  name:'Цена и удалённость', x:'distance_km', y:'price_per_sqm', size:'lot_count'},
 ];
 let bubbleView='speed';
+// Чьи кривые показаны поверх полосы. Полоса отвечает на вопрос «где я
+// относительно рынка», но иногда нужно посмотреть на конкретного соседа — и
+// не уходя в его карточку, а рядом со своей линией. Галочка в таблице это и
+// делает; выбор переживает пересчёт разделов, потому что живёт здесь.
+const onChart=new Set();
 
 function bubbleChart(rows, view){
   const V=view||VIEWS[0];
@@ -1264,7 +1284,8 @@ function render(d){
     analysis:d.analysis, peers:peers, subjectMetrics:m,
     subjectName:s.project_name||s.address||s.query, subjectSegment:s.segment,
     series:[{name:s.project_name||'объект',own:true,points:d.price_series||[]}]
-      .concat(peers.map(p=>({name:p.name,own:false,points:p.price_series||[]}))),
+      .concat(peers.map(p=>({name:p.name,own:false,points:p.price_series||[],
+                             shown:onChart.has(String(p.complex_id))}))),
     sales:[{name:s.project_name||'объект',own:true,points:d.sales_series||[]}]
       .concat(peers.map(p=>({name:p.name,own:false,points:p.sales_series||[]})))
   };
@@ -1281,10 +1302,15 @@ function render(d){
 
   html+=deepCard(d);
   html+=`<div class="card"><h2>Соседи в выборке</h2>
-    <div class="wrap"><table>
-    <tr><th>Проект</th><th>Застройщик</th><th class="num">км</th><th>Класс</th>
+    <div class="wrap"><table class="peers">
+    <tr><th class="pick" title="показать кривую цены на графике">График</th>
+    <th>Проект</th><th>Застройщик</th><th class="num">км</th><th>Класс</th>
     <th class="num">₽/м²</th><th class="num">ДДУ/мес</th><th class="num">м²/мес</th><th class="num">Лотов</th><th>Прайс от</th></tr>`
-    +peers.map((p,i)=>`<tr${p.added_by_hand?' class="added byhand"':''}><td class="link" data-peer="${i}">`
+    +peers.map((p,i)=>`<tr${p.added_by_hand?' class="added byhand"':''}>`
+      +`<td class="pick"><input type="checkbox" data-chart="${esc(p.complex_id)}"`
+      +`${onChart.has(String(p.complex_id))?' checked':''}`
+      +`${(p.price_series||[]).length>1?'':' disabled title="истории цены нет"'}></td>`
+      +`<td class="link" data-peer="${i}">`
       +`${esc(p.name)}${p.added_by_hand?' <span class="muted">+</span>':''}</td><td class="muted">${esc(p.developer||'—')}</td>
       <td class="num">${num(p.distance_km,2)}</td><td>${esc(p.segment||'—')}</td>
       <td class="num">${p.price_per_sqm?num(p.price_per_sqm)
@@ -1308,6 +1334,15 @@ function render(d){
   wireAdd();
   const byHand=$('#mAdd');
   if(byHand) byHand.addEventListener('click',addByHand);
+  // Галочка рисует кривую соседа поверх полосы. Отчёт не пересобирается: это
+  // вопрос вида, а не расчёта, и лишний запрос к источнику тут не нужен.
+  document.querySelectorAll('input[data-chart]').forEach(box=>{
+    box.addEventListener('change',()=>{
+      const id=box.dataset.chart;
+      if(box.checked) onChart.add(id); else onChart.delete(id);
+      render(lastReport);
+    });
+  });
 }
 $('#go').addEventListener('click',build);
 $('#askbtn').addEventListener('click',askPlato);

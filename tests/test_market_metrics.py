@@ -1425,3 +1425,68 @@ def test_the_city_comparison_can_be_switched_off(tmp_path) -> None:
     assert without["city"]["asked"] is False
     # Соседи при этом считаются как обычно: выключается город, а не сравнение.
     assert without["blocks"][0]["peers"]["count"] == with_city["blocks"][0]["peers"]["count"]
+
+
+def test_a_bare_site_gets_a_verdict_about_what_to_build(tmp_path) -> None:
+    """«Вывод не сложился» стоял ровно там, где решение и принимают.
+
+    У площадки нет ни прайса, ни темпа, и обычный вывод — «цена рынком не
+    подтверждается» — не складывается: сравнивать нечего. Но вопрос покупки
+    именно здесь и стоит: что строить и почём. Соседи отвечают на оба.
+    """
+    from market_search.metrics import BLOCK_PRICE
+    from market_search.service_v6 import MarketDiscoveryService
+
+    service = MarketDiscoveryService(tmp_path)
+    segments = {1: "Элит/De Luxe", 2: "Элит/De Luxe", 3: "Премиум"}
+    metrics = {
+        1: {"price_per_sqm": 3_000_000, "observed_at": "2026-08-18",
+            "units_per_month": 1.2, "sold_lot_avg": 120.0},
+        2: {"price_per_sqm": 3_200_000, "observed_at": "2026-08-18",
+            "units_per_month": 0.8, "sold_lot_avg": 140.0},
+        3: {"price_per_sqm": 900_000, "observed_at": "2026-08-18", "units_per_month": 4.0},
+    }
+    projects = [
+        {"complex_id": i, "name": f"Сосед {i}", "developer": "—",
+         "latitude": 55.7340 + i / 2000, "longitude": 37.5657,
+         "address": "Москва, ЦАО, Хамовники, набережная"}
+        for i in (1, 2, 3)
+    ]
+    service.pulse = _fake_pulse(segments, metrics, projects)
+
+    # Точка нарочно в стороне от всех троих: это площадка, а не проект.
+    report = service.build_report("55.73800, 37.56570", codes=[BLOCK_PRICE])
+    assert not report["subject"]["metrics"].get("price_per_sqm")
+    site = report["analysis"]["site"]
+
+    # Класс — по числу проектов, а не по деньгам: один дорогой сосед не делает
+    # место дорогим.
+    assert site["segment"] == "элитный"
+    assert site["projects"] == 2
+    assert site["price_per_sqm"] == 3_100_000
+    assert site["units_per_month"] == 1.0
+    assert site["sold_lot_avg"] == 130.0
+    assert "Здесь строят" in site["headline"]
+
+    # И это же становится главным выводом отчёта — вместо «не сложился».
+    assert report["analysis"]["overall"] == site
+
+
+def test_a_neighbour_curve_returns_to_the_chart_by_a_tick() -> None:
+    """Полоса скрыла отдельные кривые — галочка возвращает нужную.
+
+    Полоса отвечает на «где я относительно рынка», но иногда надо посмотреть
+    на конкретного соседа рядом со своей линией, не уходя в его карточку.
+    Отчёт при этом не пересобирается: это вопрос вида, а не расчёта.
+    """
+    from market_search.cabinet import CABINET_PAGE
+
+    assert "const onChart=new Set();" in CABINET_PAGE
+    assert 'data-chart="${esc(p.complex_id)}"' in CABINET_PAGE
+    assert "shown:onChart.has(String(p.complex_id))" in CABINET_PAGE
+    # Сосед без истории цены отмечен быть не может — рисовать нечего.
+    assert "' disabled title=\"истории цены нет\"'" in CABINET_PAGE
+    # Перерисовка без запроса к серверу.
+    assert "if(box.checked) onChart.add(id); else onChart.delete(id);\n      render(lastReport);" in CABINET_PAGE
+    # Колонка выбора живёт только в таблице соседей и не идёт в печать.
+    assert "table.peers td.pick,table.peers th.pick{display:none}" in CABINET_PAGE

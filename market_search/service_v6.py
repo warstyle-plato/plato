@@ -27,7 +27,7 @@ from .http import RemoteServiceError
 from .dynamics import SalesDynamics
 from .market_reference import MoscowMarket
 from .metrics import build_blocks
-from .verdict import build_notes, positioning, premium_series, price_of_premium
+from .verdict import build_notes, positioning, premium_series, price_of_premium, site_verdict
 from .page_price import PageFetcher
 from .price_hint import price_hint
 from .pulse import PulseClient
@@ -783,6 +783,15 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         notes["premium_series"] = premium_series(subject_series, peers)
         notes["price_of_premium"] = price_of_premium(subject_metrics, peers)
         notes["positioning"] = positioning(subject_metrics, peers, reference)
+        # У площадки своего прайса нет, и обычный вывод не складывается:
+        # сравнивать нечего. Но решение здесь как раз и принимают — что
+        # строить и почём, — а отчёт молчал именно в этом месте. Соседи
+        # отвечают на оба вопроса, и вывод собирается по ним.
+        if not subject_metrics.get("price_per_sqm"):
+            site = site_verdict(peers)
+            if site:
+                notes["site"] = site
+                notes["overall"] = site
         # Ориентир цены для площадки без своего прайса считается по той же
         # выборке, что и отчёт. Кнопка ходила своим путём — радиус 2,5 км и
         # двадцать ближайших, — и на участке в Новогирееве отвечала «по классу
