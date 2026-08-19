@@ -49,7 +49,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.18.63"
+VERSION = "0.18.64"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -1590,6 +1590,14 @@ async def import_glavapu(request: Request, filename: str = "") -> dict[str, Any]
 
 _CADASTRAL_NUMBER_RE = re.compile(r"(?<!\d)(\d{2}:\d{2}:\d{6,8}:\d+)(?!\d)")
 _GLAVAPU_ANALYSIS_URL = "https://glavapu-api.ru/api/analysis"
+# Отказ калькулятора приходит на весь список разом («Анализ территории не найден
+# или БД вернула пустой результат») и не называет ни одного участка. Список из
+# двадцати двух участков по адресу так и не собрался в территорию, а человеку
+# осталась строка без единого номера — искать виновного было негде. Поэтому на
+# отказе список опрашивается по одному: спрашиваем сразу несколькими потоками,
+# иначе два десятка участков не уложатся в минуту, которую держит nginx.
+_GLAVAPU_PROBE_WORKERS = 4
+_GLAVAPU_PROBE_TIMEOUT_SECONDS = 15.0
 
 
 def _parse_cadastral_numbers(value: str | list[str]) -> list[str]:
@@ -1620,19 +1628,9 @@ def _external_error_message(exc: urllib.error.HTTPError) -> str:
         return str(exc.reason or exc)
 
 
-@app.post("/cadastral/analyze")
-def analyze_cadastral_territory(req: CadastralAnalysisRequest) -> dict[str, Any]:
-    # Как и остальные внешние справочники: если этот сервер до ГлавАПУ не
-    # достаёт, спрашиваем тот, который достаёт, вместо ошибки в интерфейсе.
-    if _core_api_url("/cadastral/analyze"):
-        return _core_post(
-            _core_api_url("/cadastral/analyze"),
-            _core_forward_payload(req),
-            _MO_CALC_TIMEOUT_SECONDS,
-        )
-    cadastral_numbers = _parse_cadastral_numbers(req.cadastral_numbers)
+def _glavapu_analysis_payload(numbers: list[str], timeout: float = 30.0) -> dict[str, Any]:
     request_data = json.dumps(
-        {"mode": "zu", "cad_numbers": cadastral_numbers},
+        {"mode": "zu", "cad_numbers": numbers},
         ensure_ascii=False,
     ).encode("utf-8")
     external_request = urllib.request.Request(
@@ -1646,7 +1644,7 @@ def analyze_cadastral_territory(req: CadastralAnalysisRequest) -> dict[str, Any]
         },
     )
     try:
-        with urllib.request.urlopen(external_request, timeout=30) as response:
+        with urllib.request.urlopen(external_request, timeout=timeout) as response:
             raw = response.read(5 * 1024 * 1024 + 1)
     except urllib.error.HTTPError as exc:
         raise HTTPException(
@@ -1661,9 +1659,116 @@ def analyze_cadastral_territory(req: CadastralAnalysisRequest) -> dict[str, Any]
     if len(raw) > 5 * 1024 * 1024:
         raise HTTPException(status_code=502, detail="Ответ сервиса определения территории слишком большой.")
     try:
-        payload = json.loads(raw.decode("utf-8"))
+        return json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise HTTPException(status_code=502, detail="Сервис определения территории вернул некорректный ответ.") from exc
+
+
+def _glavapu_knows_number(number: str) -> bool | None:
+    """Знает ли калькулятор этот участок. None — спросить не удалось.
+
+    Отказ калькулятора (4xx) — это его ответ «не знаю», а сорванная сеть —
+    отсутствие ответа: смешивать их нельзя, иначе недоступность внешнего
+    сервиса прочитается как отрицательный ответ о участке.
+    """
+    try:
+        payload = _glavapu_analysis_payload([number], _GLAVAPU_PROBE_TIMEOUT_SECONDS)
+    except HTTPException as exc:
+        if exc.status_code == 400:
+            return False
+        return None
+    except Exception:
+        return None
+    features = ((payload.get("cadZU") or {}).get("features")) or []
+    return bool(features)
+
+
+def _glavapu_probe_numbers(numbers: list[str]) -> dict[str, bool | None]:
+    verdicts: dict[str, bool | None] = {}
+    if not numbers:
+        return verdicts
+    workers = max(1, min(_GLAVAPU_PROBE_WORKERS, len(numbers)))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(_glavapu_knows_number, number): number for number in numbers}
+        for future in concurrent.futures.as_completed(futures):
+            number = futures[future]
+            try:
+                verdicts[number] = future.result()
+            except Exception:
+                verdicts[number] = None
+    return verdicts
+
+
+def _glavapu_analysis_with_diagnosis(numbers: list[str]) -> tuple[dict[str, Any], list[str]]:
+    """Территория калькулятора и объяснение, если собралась не по всем участкам."""
+    try:
+        return _glavapu_analysis_payload(numbers), []
+    except HTTPException as refusal:
+        # Разбирать список по одному имеет смысл, только когда калькулятор
+        # ответил и отказал: на сорванной сети это двадцать два бесполезных
+        # запроса и минута ожидания вместо причины.
+        if refusal.status_code != 400 or len(numbers) < 2:
+            raise
+    verdicts = _glavapu_probe_numbers(numbers)
+    known = [number for number in numbers if verdicts.get(number) is True]
+    unknown = [number for number in numbers if verdicts.get(number) is False]
+    unchecked = [number for number in numbers if verdicts.get(number) is None]
+    if not known:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Калькулятор ГлавАПУ не собрал территорию по этим участкам. "
+                "Проверил их по одному: "
+                + (
+                    f"ни один из {len(numbers)} не знаком калькулятору."
+                    if not unchecked
+                    else f"знакомых нет, ещё {len(unchecked)} проверить не удалось — калькулятор не ответил."
+                )
+            ),
+        )
+    diagnosis: list[str] = []
+    if unknown:
+        diagnosis.append(
+            "Калькулятор ГлавАПУ отказал по всему списку. Проверил участки по одному: "
+            + ", ".join(unknown)
+            + f" — калькулятору незнакомы ({len(unknown)} из {len(numbers)}). "
+            f"Территория и ТЭП собраны по остальным {len(known)}."
+        )
+    if unchecked:
+        diagnosis.append(
+            "Не удалось проверить: "
+            + ", ".join(unchecked)
+            + " — калькулятор не ответил. В территорию они не вошли; это не значит, что их нет."
+        )
+    try:
+        return _glavapu_analysis_payload(known), diagnosis
+    except HTTPException as second:
+        if second.status_code != 400:
+            raise
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Калькулятор ГлавАПУ знает {len(known)} участков по отдельности, "
+                "а вместе территорию по ним не собирает"
+                + (f" (незнакомых нет)" if not unknown and not unchecked else "")
+                + ". Уберите из списка лишние участки и повторите: скорее всего, "
+                "они не смежные."
+            ),
+        ) from second
+
+
+@app.post("/cadastral/analyze")
+def analyze_cadastral_territory(req: CadastralAnalysisRequest) -> dict[str, Any]:
+    # Как и остальные внешние справочники: если этот сервер до ГлавАПУ не
+    # достаёт, спрашиваем тот, который достаёт, вместо ошибки в интерфейсе.
+    if _core_api_url("/cadastral/analyze"):
+        return _core_post(
+            _core_api_url("/cadastral/analyze"),
+            _core_forward_payload(req),
+            _MO_CALC_TIMEOUT_SECONDS,
+        )
+    cadastral_numbers = _parse_cadastral_numbers(req.cadastral_numbers)
+    payload, diagnosis = _glavapu_analysis_with_diagnosis(cadastral_numbers)
 
     cad_territory = payload.get("cadZU") or {}
     features = cad_territory.get("features") or []
@@ -1688,8 +1793,10 @@ def analyze_cadastral_territory(req: CadastralAnalysisRequest) -> dict[str, Any]
     point = payload.get("pointPosition") or {}
     inside_moscow = bool(payload.get("insideMSC"))
 
-    warnings: list[str] = []
-    if missing:
+    warnings: list[str] = list(diagnosis)
+    # Когда список разбирался по одному, «не найдены» уже сказано подробнее —
+    # с числом, причиной и тем, по скольким участкам собрана территория.
+    if missing and not diagnosis:
         warnings.append("Не найдены: " + ", ".join(missing) + ".")
     if not inside_moscow:
         warnings.append("Калькулятор genplan.tech рассчитывает нормативные ТЭП только для территории Москвы.")
@@ -26606,8 +26713,11 @@ async function obtainTep(){
  if(insideMoscow)return obtainCadastralTep(analysis);
  if(regionOnly)return calculateMo(raw);
  if(analysis)return obtainCadastralTep(analysis);
+ // Тупик без выхода читается как «сервис сломан»: сведения ЕГРН по этим же
+ // номерам доступны всегда, и путь дальше через них есть.
  status.innerHTML='<span class="import-error">Не удалось определить территорию: '+escapeHtml(failure)+
-  '</span><br><span style="font-size:11px;color:#777">Нормативный ТЭП считается по Москве и Московской области. Для остальных регионов доступны сведения ЕГРН и загрузка готового ТЭП.</span>';
+  '</span><br><span style="font-size:11px;color:#777">Нормативный ТЭП считается по Москве и Московской области. '+
+  'Сведения ЕГРН по этим номерам доступны — кнопка «Только сведения ЕГРН» рядом; готовый ТЭП можно загрузить файлом.</span>';
 }
 
 // Токен запуска: каждый клик «Получить ТЭП» получает свой номер, и ответ
