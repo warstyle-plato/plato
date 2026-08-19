@@ -589,3 +589,29 @@ def test_every_element_the_script_asks_for_exists_in_the_markup() -> None:
     asked = set(re.findall(r"\$\('#([a-zA-Z0-9_-]+)'\)", page))
     assert asked, "скрипт не обращается ни к одному элементу — проверка бесполезна"
     assert not (asked - present), f"скрипт зовёт то, чего нет в разметке: {sorted(asked - present)}"
+
+
+def test_market_tab_can_be_switched_off_without_losing_the_button(monkeypatch) -> None:
+    """В production нужна кнопка и кабинет, но не вкладка «Рынок».
+
+    Вкладка — сниппетный конвейер, который мы списываем: приёмка по нему
+    красная. Кнопка ориентира от него не зависит — помощник поиска поля вложен
+    в её скрипт, иначе вся её ценность (работает сама по себе) пропадала бы.
+    """
+    from market_search.ui_v6 import install_price_hint
+
+    class FakeCore:
+        PAGE = "<html><head></head><body><div id='root'></div></body></html>"
+
+    only_button = FakeCore()
+    install_price_hint(only_button)
+    assert 'data-tab="marketDiscovery"' not in only_button.PAGE
+    assert "market-v6-price-hint" in only_button.PAGE
+    # Кнопка ищет поле цены сама, без панели.
+    assert "function mdApartmentPriceInput()" in only_button.PAGE
+    assert "function mdSetNativeValue(" in only_button.PAGE
+
+    # Повторная установка ничего не дублирует: страница собирается один раз,
+    # но модуль могут поставить дважды.
+    install_price_hint(only_button)
+    assert only_button.PAGE.count('id="market-v6-price-hint"') == 1

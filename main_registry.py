@@ -1,16 +1,28 @@
 """DevelopAid application entrypoint with persistent Telegram user registry."""
 
+import os
+
 import main as _base
 from developaid_v2 import install as install_v2
 from market_search import install as install_market_search
-from market_search.ui_v6 import install as install_market_ui
+from market_search.ui_v6 import install as install_market_ui, install_price_hint
 from telegram_user_registry import install
 
 app = _base.app
 core = _base.core
 registry = install(_base)
 market_search = install_market_search(app)
-install_market_ui(core)
+
+# Вкладка «Рынок» — сниппетный конвейер, который мы списываем: приёмка по нему
+# красная, и в production ему пока нечего делать. Гасится одной строкой в
+# окружении: `MARKET_TAB_ENABLED=0`. Умолчание оставлено включённым нарочно —
+# сборочный workflow читается из main и проверяет наличие вкладки; выключенная
+# по умолчанию, она уронила бы сборку превью, где вкладка как раз нужна.
+if os.getenv("MARKET_TAB_ENABLED", "1").strip().lower() not in ("0", "false", "no", "off"):
+    install_market_ui(core)
+else:
+    # Кнопка ориентира цены нужна и без панели: это одно число у поля модели.
+    install_price_hint(core)
 
 
 def _cadastre_from_egrn(number: str):

@@ -227,7 +227,28 @@ def install(core: Any) -> None:
     # которую читают, здесь — одно число, когда своей цифры ещё нет. Наружу
     # уходят только значение, дата и число наблюдений; перечень проектов
     # остаётся в панели, где его можно проверить.
-    hint_script = """<script id="market-v6-price-hint">
+    hint_script = PRICE_HINT_SCRIPT
+    if "</body>" in page:
+        page = page.replace("</body>", hint_script + "</body>", 1)
+    else:
+        page = page + hint_script
+
+    extra_style = (
+        '<style id="market-v6-style">'
+        "#marketDiscovery .md-summary .md-chip:nth-child(2){display:none}"
+        "</style>"
+    )
+    if "</head>" in page:
+        page = page.replace("</head>", extra_style + "</head>", 1)
+    else:
+        page = extra_style + page
+    core.PAGE = page
+
+# Скрипт кнопки живёт отдельной строкой: он ставится и без панели рынка.
+# Панель — аналитика, которую читают; кнопка — одно число, когда своей цифры
+# ещё нет. В production сегодня нужна вторая, но не первая, и связывать их
+# установку значит выкатывать лишнее.
+PRICE_HINT_SCRIPT = """<script id="market-v6-price-hint">
 (function(){
   function locationHint(){
     const cad=document.getElementById('cadastralNumbers');
@@ -287,18 +308,45 @@ def install(core: Any) -> None:
   const timer=setInterval(function(){init();if(++tries>20||document.getElementById('daHintBtn'))clearInterval(timer)},700);
 })();
 </script>"""
-    if "</body>" in page:
-        page = page.replace("</body>", hint_script + "</body>", 1)
-    else:
-        page = page + hint_script
 
-    extra_style = (
-        '<style id="market-v6-style">'
-        "#marketDiscovery .md-summary .md-chip:nth-child(2){display:none}"
-        "</style>"
-    )
-    if "</head>" in page:
-        page = page.replace("</head>", extra_style + "</head>", 1)
+
+def install_price_hint(core: Any) -> None:
+    """Только кнопка у поля цены, без вкладки «Рынок».
+
+    Помощник поиска поля вложен в сам скрипт: иначе кнопка зависела бы от
+    панели, а вся её ценность в том, что она работает сама по себе.
+    """
+    page = str(core.PAGE)
+    if 'id="market-v6-price-hint"' in page:
+        return
+    helper = """<script id="market-v6-price-field">
+function mdApartmentPriceInput(){
+  const direct=[
+    document.getElementById('apartment_price_th'),
+    document.querySelector('[name="apartment_price_th"]'),
+    document.querySelector('[data-key="apartment_price_th"]'),
+    document.querySelector('[data-field="apartment_price_th"]')
+  ].find(Boolean);
+  if(direct)return direct;
+  for(const el of document.querySelectorAll('input,select')){
+    const key=((el.id||'')+' '+(el.name||'')+' '+(el.dataset&&el.dataset.key||'')
+      +' '+(el.dataset&&el.dataset.field||'')).toLowerCase();
+    if(key.includes('apartment')&&key.includes('price'))return el;
+  }
+  return null;
+}
+function mdSetNativeValue(el,value){
+  const setter=Object.getOwnPropertyDescriptor(el.__proto__,'value');
+  if(setter&&setter.set)setter.set.call(el,value); else el.value=value;
+  el.dispatchEvent(new Event('input',{bubbles:true}));
+  el.dispatchEvent(new Event('change',{bubbles:true}));
+}
+function mdEsc(s){return String(s===null||s===undefined?'':s)
+  .replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
+</script>"""
+    block = helper + PRICE_HINT_SCRIPT
+    if "</body>" in page:
+        page = page.replace("</body>", block + "</body>", 1)
     else:
-        page = extra_style + page
+        page = page + block
     core.PAGE = page
