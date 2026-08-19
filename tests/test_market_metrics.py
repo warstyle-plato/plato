@@ -2525,3 +2525,142 @@ def test_the_asset_hook_is_actually_attached_to_the_engine() -> None:
     assert "/cabinet/report.pdf" in paths
     # Байты карты крючок берёт у движка, а не читает файлы сам.
     assert main_registry.market_search.local_asset("/land/nothing-here") is None
+
+
+def _kutuzov() -> tuple[dict, list[dict], dict, list[dict]]:
+    """Кутузов Сити на числах среза 18.08.2026 — те же, что в приёмочном PDF."""
+    subject = {"price_per_sqm": 708_109, "units_per_month": 4.6, "units_per_month_3m": 4.7,
+               "lot_count": 56, "living_units": 220, "remaining_units": 165,
+               "sales_end_forecast": "02.2031", "segment": "Бизнес"}
+    peers = [
+        {"name": "ИНДИВО", "segment": "Бизнес", "price_per_sqm": 599_558, "units_per_month": 5.7,
+         "lot_count": 57, "distance_km": 1.48,
+         "price_series": [{"month": "2026-01", "value": 564_600},
+                          {"month": "2026-07", "value": 455_000}]},
+        {"name": "Нексус от Аквилон", "segment": "Бизнес", "price_per_sqm": 563_767,
+         "units_per_month": 7.8, "lot_count": 164, "distance_km": 2.95,
+         "price_series": [{"month": "2026-01", "value": 606_000},
+                          {"month": "2026-07", "value": 563_700}]},
+        {"name": "СЕТ", "segment": "Бизнес", "price_per_sqm": 540_482, "units_per_month": 37.2,
+         "lot_count": 746, "distance_km": 0.73,
+         "price_series": [{"month": "2026-01", "value": 538_000},
+                          {"month": "2026-07", "value": 538_000}]},
+        {"name": "Веер", "segment": "Бизнес", "price_per_sqm": 515_823, "units_per_month": 34.4,
+         "lot_count": 1092, "distance_km": 0.95,
+         "price_series": [{"month": "2026-01", "value": 535_000},
+                          {"month": "2026-07", "value": 513_100}]},
+        {"name": "Верейская 41", "segment": "Бизнес", "price_per_sqm": 506_666,
+         "units_per_month": 21.5, "lot_count": 115, "distance_km": 0.49,
+         "price_series": [{"month": "2026-01", "value": 576_000},
+                          {"month": "2026-07", "value": 501_800}]},
+        {"name": "Стеллар Сити", "segment": "Бизнес", "price_per_sqm": 388_461,
+         "units_per_month": 24.0, "lot_count": 311, "distance_km": 2.90, "price_series": []},
+        {"name": "Родина Парк", "segment": "Премиум", "price_per_sqm": 780_032,
+         "units_per_month": 13.0, "lot_count": 105, "distance_km": 0.69, "price_series": []},
+    ]
+    comparison = {"found": 45, "comparable": 12, "used": 10, "stale_price": 17,
+                  "no_price": 13, "fresh_since": "2026-06-01"}
+    premium = [{"month": "2026-01", "own": 707_500, "median": 556_800, "premium_pct": 27.1},
+               {"month": "2026-04", "own": 746_300, "median": 530_000, "premium_pct": 40.8},
+               {"month": "2026-07", "own": 715_900, "median": 507_450, "premium_pct": 41.1}]
+    return subject, peers, comparison, premium
+
+
+def test_the_report_answers_the_question_the_sections_do_not() -> None:
+    """«И что?» — вопрос, который читатель складывал сам из пяти карточек.
+
+    Вывод — это связка двух чисел, которые порознь ничего не значат: цена и
+    коридор класса, темп и медиана темпа, сегодняшний разрыв и то, кем он
+    нажит. Проверяется на числах Кутузов Сити со среза 18.08.2026.
+    """
+    from market_search.narrative import findings
+
+    subject, peers, comparison, premium = _kutuzov()
+    out = findings(subject, peers, comparison, segment="Бизнес", premium=premium)
+    by_code = {row["code"]: row for row in out}
+    assert {"price", "pace", "premium", "volume", "alive", "horizon"} <= set(by_code)
+
+    # Цена: коридор класса и сосед классом выше, объясняющий, куда она попала.
+    price = by_code["price"]["text"]
+    assert "708 109 ₽/м²" in price and "ИНДИВО" in price
+    assert "Родина Парк" in price and "зазор между классами" in price
+
+    # Темп: отставание, его устойчивость и кто продаёт быстрее и почём.
+    pace = by_code["pace"]
+    assert "4,7 раза" in pace["headline"]
+    assert "устойчивый уровень" in pace["text"]
+    assert "СЕТ" in pace["text"] and "Веер" in pace["text"]
+    assert pace["tone"] == "bad"
+
+    # Разрыв: нажит их падением, а не нашим ростом — и это сказано прямо.
+    gap = by_code["premium"]["text"]
+    assert "с 27,1 % в январе до 41,1 % в июле" in gap
+    assert "Мы не дорожали — подешевели остальные." in gap
+    assert "ИНДИВО на 19,4 %" in gap
+
+    # Живая конкуренция: сорок пять проектов — не сорок пять конкурентов.
+    assert "1 июня 2026" in by_code["alive"]["text"], "дата в прозе пишется словами"
+
+
+def test_the_findings_speak_russian(tmp_path) -> None:
+    """Согласование ломается тише всего: числа верные, фраза — брак.
+
+    «1 092 лотов», «3,0 года», «у Веер», «медиана — -8,9 %», «Верейская 41
+    срезал» — каждое из этого было написано машиной и выглядело как опечатка
+    человека. Проверяется механически, потому что глазами это ловится через
+    раз, а читатель видит это первым.
+    """
+    import re
+
+    from market_search.narrative import _plural, findings
+
+    subject, peers, comparison, premium = _kutuzov()
+    text = " ".join(row["headline"] + " " + row["text"]
+                    for row in findings(subject, peers, comparison,
+                                        segment="Бизнес", premium=premium))
+
+    assert "1 092 лота" in text and "1 092 лотов" not in text
+    assert "36 месяцев" in text and "3 года" in text
+    assert "у Веер " not in text and "у СЕТ " not in text
+    # Минус после тире читается как опечатка: направление называется словом.
+    assert "— -" not in text and "на -" not in text
+    # Род имени проекта неизвестен — глагола при имени быть не должно.
+    assert "срезал" not in text.split("Снижались не все одинаково:")[-1]
+    # Дат в машинном виде в прозе нет.
+    assert not re.search(r"\d{4}-\d{2}-\d{2}", text)
+
+    # Само правило форм — на границах, где оно и ошибается.
+    assert [_plural(n, "лот", "лота", "лотов") for n in (1, 2, 5, 11, 21, 112, 1092)] == [
+        "лот", "лота", "лотов", "лотов", "лот", "лотов", "лота"]
+    # Дробное всегда требует родительного единственного: «4,6 квартиры».
+    assert _plural(4.6, "квартира", "квартиры", "квартир") == "квартиры"
+
+
+def test_a_finding_without_data_is_not_written_at_all() -> None:
+    """Пустой абзац «данных нет» читается как проделанная работа, а её не было."""
+    from market_search.narrative import findings
+
+    bare = findings({}, [], {}, segment=None, premium=[])
+    assert bare == []
+
+    subject, peers, comparison, premium = _kutuzov()
+    # Нет истории — нет вывода о том, кем нажит разрыв; остальные остаются.
+    without = findings(subject, peers, comparison, segment="Бизнес", premium=[])
+    assert "premium" not in {row["code"] for row in without}
+    assert "price" in {row["code"] for row in without}
+
+
+def test_the_findings_reach_both_surfaces() -> None:
+    """Отчёт один, поверхностей две — и текст на них один и тот же.
+
+    Кабинет и PDF рисуются из одной разметки, поэтому вывод, доехавший до
+    экрана, доезжает и до бумаги. Проверяется место: выводы стоят до графиков,
+    а не после них, — после пяти карточек читатель уже связал числа сам.
+    """
+    from market_search.cabinet import CABINET_PAGE
+
+    assert "<h2>Что из этого следует</h2>" in CABINET_PAGE
+    assert "(d.analysis||{}).findings" in CABINET_PAGE
+    assert CABINET_PAGE.index("Что из этого следует") < CABINET_PAGE.index("<h2>Где соседи</h2>")
+    # На бумаге выводы в одну колонку: две рвали бы предложение пополам.
+    assert ".findings{grid-template-columns:1fr;gap:10px}" in CABINET_PAGE

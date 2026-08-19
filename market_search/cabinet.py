@@ -272,6 +272,17 @@ g.bub:hover circle{fill-opacity:.75}
    имена проектов у кружков и линий были недостижимы вовсе. Касание ставит
    группе класс — те же правила, что у наведения, только по тапу. */
 g.bub.on text.hov{opacity:1}
+/* Выводы: две колонки на экране, чтобы пять штук читались одним взглядом, и
+   одна на бумаге — там колонка узкая, а строки длинные. Полоска тоном слева:
+   тот же язык, что у вердиктов разделов. */
+.findings{display:grid;grid-template-columns:1fr 1fr;gap:12px 20px;margin-top:4px}
+.finding{border-left:3px solid #c9d6e2;padding:2px 0 2px 12px;break-inside:avoid}
+.finding.good{border-color:#2E7D5B}
+.finding.watch{border-color:#B9770E}
+.finding.bad{border-color:#C4581B}
+.finding b{display:block;margin-bottom:4px}
+.finding p{margin:0;font-size:13.5px;line-height:1.5;color:#2b3a4a}
+@media (max-width:720px){.findings{grid-template-columns:1fr}}
 /* Карта: растр под разметкой, обе тянутся на одну рамку. Аспект задан рамке,
    а не картинке, — иначе до загрузки подложки страница прыгает на её высоту. */
 .geomap{position:relative;width:100%;aspect-ratio:680 / 460;background:#eeeee9;
@@ -340,6 +351,10 @@ g.bub.on circle{fill-opacity:.75}
      выделение, которого никто не делал. Класс сильнее, поэтому назван явно. */
   g.bub text.hov,g.bub.on text.hov{opacity:0}
   svg text.edge{opacity:1}
+  /* На бумаге колонка узкая, а выводы — связный текст: две колонки рвали бы
+     предложение пополам. */
+  .findings{grid-template-columns:1fr;gap:10px}
+  .finding p{font-size:10pt}
   .card{break-inside:avoid;page-break-inside:avoid;border:0;border-top:1px solid #dde5ed;
         border-radius:0;padding:14px 0;margin:0}
   h2{break-after:avoid}
@@ -1727,6 +1742,15 @@ function render(d){
     +(pos?`<div class="pos"><b>Куда попадает проект.</b> ${esc(pos.text)}</div>`:'')
     +mix
     +`</div>`;
+
+  // «Что из этого следует» — сразу за вердиктом и до графиков. Выводы связывают
+  // числа разных разделов, и читать их после пяти карточек поздно: к тому
+  // моменту читатель уже связал их сам, как получилось.
+  const found=(d.analysis||{}).findings||[];
+  if(found.length) html+=`<div class="card"><h2>Что из этого следует</h2>`
+    +`<div class="findings">`+found.map(f=>`<div class="finding ${esc(f.tone||'flat')}">`
+      +`<b>${esc(f.headline)}</b><p>${esc(f.text)}</p></div>`).join('')
+    +`</div></div>`;
 
   const market=[{...m, name:s.project_name||'объект', segment:s.segment, __own:true},
     ...peers.map(p=>({...p, __picked:onChart.has(String(p.complex_id))}))];

@@ -27,6 +27,7 @@ from .http import RemoteServiceError
 from .dynamics import SalesDynamics
 from .market_reference import MoscowMarket
 from .metrics import build_blocks
+from .narrative import findings
 from .verdict import (
     build_notes,
     positioning,
@@ -839,6 +840,24 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         notes["premium_series"] = premium_series(subject_series, peers)
         notes["price_of_premium"] = price_of_premium(subject_metrics, peers)
         notes["positioning"] = positioning(subject_metrics, peers, reference)
+        # «И что?» — вопрос, который читатель задавал сам, глядя на пять
+        # карточек с числами, и отвечал на него всякий раз по-разному. Ответ
+        # складывается один раз и одинаково: связка двух чисел, которые порознь
+        # ничего не значат.
+        notes["findings"] = findings(
+            subject_metrics,
+            peers,
+            {
+                "found": len(near),
+                "comparable": len(comparable),
+                "used": len(peers),
+                "stale_price": stale,
+                "no_price": priceless,
+                "fresh_since": fresh_since,
+            },
+            segment=segment,
+            premium=notes.get("premium_series"),
+        )
         # У площадки своего прайса нет, и обычный вывод не складывается:
         # сравнивать нечего. Но решение здесь как раз и принимают — что
         # строить и почём, — а отчёт молчал именно в этом месте. Соседи
