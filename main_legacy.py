@@ -49,7 +49,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.19.10"
+VERSION = "0.19.11"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -29144,10 +29144,6 @@ function refillTepRow(key){
                  :{gns:0,total_area:0,saleable:sale,useful:0};
  const filled=tepFillByRatios(key,base);
  ['gns','total_area','saleable','useful'].forEach(field=>{row[field]=filled[field]});
- // Кнопка переписывает строку целиком — значит и пометки «правлено руками»
- // снимаются, кроме того числа, от которого считали.
- tepTouched[key]={};
- tepTouched[key][gns>0?'gns':'saleable']=true;
  tepRefillNote[key]='';
  // Посчитанное возвращается во вводные — иначе `syncTep` вернёт прежнее.
  if(tepRowToInputs(key))renderInputs();
@@ -29180,34 +29176,21 @@ function tepRowToInputs(key){
  return true;
 }
 
-// Какие ячейки строки человек правил руками. Пропорции их не трогают, всё
-// остальное пересчитывается от последнего введённого числа: ввёл продаваемую —
-// общая и ГНС подстраиваются под неё, а не остаются прежними (замечание
-// владельца, 19.08.2026). Прежнее правило «достраиваем только пустое» на
-// заполненной строке не делало ничего, и это читалось как поломка.
-const tepTouched={};
-
-function tepMarkTouched(key,col){
- (tepTouched[key]=tepTouched[key]||{})[col]=true;
-}
-
+// Любое из трёх чисел — ведущее: изменили его, и два других пересчитались по
+// пропорциям. Правило одно на все случаи, без памяти о том, что человек уже
+// правил: «поменять хочется любую площадь» (решение владельца, 19.08.2026).
+// Прежняя защита введённого руками давала строку, которую нельзя досчитать: у
+// квартир оставался ГНС 50 000 при продаваемой 50 000, и модель считала по
+// нелепице, пока человек не удалит ячейку.
 function tepCellChanged(key,col,value){
  tep[key][col]=Number(value||0);
- if(['gns','total_area','saleable'].includes(col)){
-  tepMarkTouched(key,col);
-  const touched=tepTouched[key]||{};
-  // Считаем всю тройку от введённого числа — остальные два поля выводятся из
-  // него, а не из своих прежних значений.
+ if(['gns','total_area','saleable'].includes(col)&&TEP_RATIOS[key]){
   const base={gns:0,total_area:0,saleable:0,useful:0};
   base[col]=Number(value||0);
   const filled=tepFillByRatios(key,base);
-  ['gns','total_area','saleable'].forEach(field=>{
-   // Введённое руками в этой же строке остаётся: человек мог вписать факт по
-   // ГПЗУ, и подменять его выводом из соседней ячейки нельзя.
-   if(field!==col&&touched[field])return;
-   tep[key][field]=filled[field];
-  });
+  ['gns','total_area','saleable'].forEach(field=>{tep[key][field]=filled[field]});
   tep[key].useful=tep[key].saleable;
+  tepRefillNote[key]='';
   tepRowToInputs(key);
   renderInputs();
   renderTep();
