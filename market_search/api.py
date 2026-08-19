@@ -4,10 +4,11 @@ import os
 from pathlib import Path
 from typing import Any
 
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, quote
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
+from fastapi import Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel, Field, model_validator
 
@@ -16,6 +17,7 @@ from .geocoder import GeocodingError
 from .http import RemoteServiceError
 from .service_v6 import MarketDiscoveryService
 from .plan import PlanNotFound, parse_plan
+from . import report_pdf
 from .subject import SubjectNotFound
 
 
@@ -281,6 +283,62 @@ def install(app: FastAPI) -> MarketDiscoveryService:
             raise HTTPException(
                 status_code=502, detail=f"Платон не ответил: {type(exc).__name__}: {exc}"
             ) from exc
+
+    @app.post("/cabinet/report.pdf")
+    async def cabinet_report_pdf(request: Request) -> Response:
+        """PDF отчёта: печатает сервер, а не диалог печати браузера.
+
+        Номера страниц из CSS не ставятся — margin-boxes с `counter(page)` не
+        понимает ни Chrome, ни Safari, а свой колонтитул браузер печатает
+        целиком, вместе с адресом страницы и датой. У `page.pdf()` шаблон свой,
+        и номер в нём есть.
+
+        Разметка приходит с экрана готовой и здесь не пересчитывается: два
+        расчёта на одни данные разошлись бы молча, а видно бы это не было —
+        оба выглядят достоверно.
+        """
+        cabinet_module.require_cabinet(request)
+        payload = await request.json()
+        body = str((payload or {}).get("html") or "")
+        if not body.strip():
+            raise HTTPException(status_code=422, detail="Печатать нечего: отчёт пуст")
+        if len(body) > 8 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="Отчёт больше восьми мегабайт разметки")
+        title = str((payload or {}).get("title") or "Отчёт о рынке").strip()
+        footer = str((payload or {}).get("footer") or title).strip()
+
+        def local(url: str) -> tuple[bytes, str] | None:
+            """Байты того, что лежит по нашему же адресу.
+
+            Chromium в этом документе — не браузер человека: ни сессии, ни
+            адреса сервера у него нет. Ходить по сети за собственной картинкой
+            он не будет, поэтому байты берутся у того же кода, который отдал бы
+            их по этому адресу.
+            """
+            fetch = getattr(service, "local_asset", None)
+            if fetch is None:
+                return None
+            found = fetch(url)
+            if not found:
+                return None
+            return found, report_pdf.local_mime(url)
+
+        document = report_pdf.document(
+            report_pdf.inline_assets(body, local),
+            style=cabinet_module.cabinet_style(),
+            title=title,
+        )
+        try:
+            raw = await run_in_threadpool(report_pdf.render, document, footer=footer)
+        except report_pdf.PdfUnavailable as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        name = "".join(ch for ch in title if ch.isalnum() or ch in " -_")[:80].strip() or "report"
+        return Response(
+            raw,
+            media_type="application/pdf",
+            headers={"Content-Disposition":
+                     f"attachment; filename*=UTF-8''{quote(name)}.pdf"},
+        )
 
     @app.post("/cabinet/plan")
     async def cabinet_plan(request: Request) -> dict[str, Any]:

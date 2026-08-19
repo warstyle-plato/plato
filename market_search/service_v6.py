@@ -111,6 +111,11 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         # находит вовсе, и отчёт по живому адресу упирался в «место не
         # найдено», хотя в основном сервисе тот же адрес разбирается.
         self.geocode_address: Any = None
+        # Байты картинки по нашему же адресу — печати PDF. Chromium, который
+        # печатает, не браузер человека: ни сессии, ни адреса сервера у него
+        # нет, и за картой он по сети не пойдёт. Где что лежит, знает движок:
+        # карту рисует он, эмблему и баннер отдаёт он же.
+        self.local_asset: Any = None
 
     def _geocode_project(self, candidate: dict[str, Any], locality: str):
         raise NotImplementedError(

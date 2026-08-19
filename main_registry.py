@@ -105,6 +105,37 @@ def _geocode_for_market(query: str):
     )
 
 
+def _local_asset(url: str):
+    """Байты того, что приложение отдало бы по этому адресу.
+
+    Нужны печати: Chromium, печатающий PDF, — не браузер человека, и за нашей
+    же картинкой по сети он не пойдёт. Крючок, а не свой путь к файлам: карту
+    рисует движок (`/land/basemap`), эмблему и баннер он же отдаёт из `assets`,
+    и знать, где что лежит, модулю рынка незачем — это уже четвёртый случай
+    того же правила.
+    """
+    from urllib.parse import parse_qs, urlparse
+
+    parts = urlparse(url)
+    query = parse_qs(parts.query)
+    try:
+        if parts.path == "/land/basemap":
+            answer = core.land_basemap(
+                bbox=(query.get("bbox") or [""])[0],
+                width=int((query.get("width") or ["1024"])[0]),
+            )
+        elif parts.path.startswith("/assets/"):
+            answer = core.developaid_asset(parts.path.rsplit("/", 1)[-1])
+        else:
+            return None
+    except Exception:
+        # Не отдалось — пусть картинки в PDF не будет. Печать целого отчёта
+        # дороже одной иллюстрации, а подставлять пустоту вместо карты нельзя.
+        return None
+    return getattr(answer, "body", None)
+
+
+market_search.local_asset = _local_asset
 market_search.geocode_address = _geocode_for_market
 install_v2(app)
 # Тестовый адрес новой информационной архитектуры: та же PAGE, другой порядок.

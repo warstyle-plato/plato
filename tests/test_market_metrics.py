@@ -2396,3 +2396,132 @@ def test_the_printed_page_carries_its_own_name_and_hides_the_controls() -> None:
     assert "@media print{" == CABINET_PAGE[
         CABINET_PAGE.rindex("@media print{"):CABINET_PAGE.rindex("@media print{") + 13
     ]
+
+
+def _chromium_path() -> str:
+    """Chromium из образа: в проде он лежит там, где его ставит playwright."""
+    import glob
+    import os
+
+    root = os.environ.get("PLAYWRIGHT_BROWSERS_PATH") or ""
+    if not root:
+        return ""
+    found = sorted(glob.glob(os.path.join(root, "chromium-*", "chrome-linux", "chrome")))
+    return found[-1] if found else ""
+
+
+def test_the_pdf_is_printed_by_the_server_with_page_numbers(tmp_path) -> None:
+    """Номер страницы — единственное, чего стилями сделать нельзя.
+
+    `@page` браузеры понимают, а margin-boxes с `counter(page)` — ни Chrome, ни
+    Safari; свой колонтитул браузер печатает целиком, вместе с адресом
+    страницы и датой. У `page.pdf()` шаблон свой, и номер в нём есть.
+    Проверяется настоящей печатью: документ на несколько страниц обязан выйти
+    многостраничным PDF, а не заголовком с обещанием.
+    """
+    import re
+
+    import pytest
+
+    from market_search import report_pdf
+
+    chromium = _chromium_path()
+    body = "".join(
+        f'<div class="card"><h2>Раздел {i}</h2><p>{"строка отчёта " * 60}</p></div>'
+        for i in range(1, 9)
+    )
+    document = report_pdf.document(body, style="body{font:14px sans-serif}", title="Проба")
+    assert "<title>Проба</title>" in document
+    # Колонтитул Chromium и наш собственный — это две подписи на одной странице.
+    assert ".printfoot{display:none !important}" in document
+
+    template = report_pdf.footer_template("Кутузов Сити · срез 18.08.2026")
+    assert 'class="pageNumber"' in template and 'class="totalPages"' in template
+    assert "Кутузов Сити · срез 18.08.2026" in template
+
+    try:
+        raw = report_pdf.render(document, footer="Проба · срез", executable_path=chromium)
+    except report_pdf.PdfUnavailable as exc:
+        pytest.skip(f"Chromium недоступен: {exc}")
+    assert raw.startswith(b"%PDF-")
+    pages = len(re.findall(rb"/Type\s*/Page[^s]", raw))
+    assert pages >= 2, f"документ на восемь разделов уместился в {pages} страницу"
+
+
+def test_the_pdf_carries_its_pictures_inside_it() -> None:
+    """Карта в PDF — байтами, а не ссылкой на наш же адрес.
+
+    Chromium, который печатает, не браузер человека: ни сессии, ни адреса
+    сервера у него нет, и за `/land/basemap?...` он бы не пошёл. Байты берутся
+    у того же кода, который отдал бы их по этому адресу.
+    """
+    from market_search import report_pdf
+
+    asked: list[str] = []
+
+    def fetch(url: str):
+        asked.append(url)
+        if url.startswith("/land/basemap"):
+            return b"\x89PNG-map", "image/png"
+        return None
+
+    html = ('<img src="/land/basemap?bbox=1,2,3,4&amp;width=1360" alt="">'
+            '<img src="/assets/platon-quote.webp" alt="">')
+    done = report_pdf.inline_assets(html, fetch)
+    assert "data:image/png;base64," in done
+    assert "/land/basemap" not in done
+    # Не отдалось — ссылка остаётся как была. Пустой src нарисовал бы «карту
+    # пустого места» там, где карта просто не пришла.
+    assert '<img src="/assets/platon-quote.webp"' in done
+    assert asked == ["/land/basemap?bbox=1,2,3,4&amp;width=1360", "/assets/platon-quote.webp"]
+
+    assert report_pdf.local_mime("/assets/platon-quote.webp") == "image/webp"
+    assert report_pdf.local_mime("/land/basemap?bbox=1,2,3,4") == "application/octet-stream"
+
+
+def test_the_print_stylesheet_is_taken_from_the_page_not_copied() -> None:
+    """Стиль печати и стиль экрана — один и тот же текст.
+
+    Копию негде обновлять, потому что копии нет: разъехались бы они на первой
+    же правке и разъехались бы молча.
+    """
+    from market_search.cabinet import cabinet_page, cabinet_style
+
+    style = cabinet_style()
+    assert "@media print{" in style
+    assert ".printhead{display:block" in style
+    assert style in cabinet_page()
+
+
+def test_the_pdf_button_falls_back_to_the_browser_dialog() -> None:
+    """Сервер не напечатал — остаётся печать браузера.
+
+    Отчёт на бумаге важнее номеров страниц на нём, поэтому отказ печати не
+    обязан заканчиваться отсутствием отчёта.
+    """
+    from market_search.cabinet import CABINET_PAGE
+
+    handler = CABINET_PAGE[CABINET_PAGE.index("$('#pdf').addEventListener"):]
+    handler = handler[: handler.index("\n});") + 4]
+    assert "'/cabinet/report.pdf'" in handler
+    assert "window.print()" in handler
+    # Разметка уходит та же, что на экране: считать заново нечего.
+    assert "html:out.innerHTML" in handler
+    # Пустой отчёт печатать нечего — и сервер об этом не просят.
+    assert "if(!out||!out.innerHTML.trim()){window.print();return}" in handler
+
+
+def test_the_asset_hook_is_actually_attached_to_the_engine() -> None:
+    """Крючок, объявленный и никем не подцепленный, — это `None` в бою.
+
+    Модуль объявляет `local_asset` и без него печатает PDF без картинок; на
+    тестах модуля это незаметно, потому что там движка нет вовсе. Проверяется
+    сборка целиком: и что крючок подцеплен, и что маршрут печати существует.
+    """
+    import main_registry
+
+    assert callable(main_registry.market_search.local_asset)
+    paths = {getattr(route, "path", "") for route in main_registry.app.routes}
+    assert "/cabinet/report.pdf" in paths
+    # Байты карты крючок берёт у движка, а не читает файлы сам.
+    assert main_registry.market_search.local_asset("/land/nothing-here") is None

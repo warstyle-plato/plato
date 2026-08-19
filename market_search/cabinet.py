@@ -1861,7 +1861,35 @@ $('#go').addEventListener('click',build);
 $('#askbtn').addEventListener('click',askPlato);
 // PDF — печатью самой страницы. Второй вёрстки не заводим: она разошлась бы с
 // первой, и мы получили бы два достоверных на вид отчёта с разными числами.
-$('#pdf').addEventListener('click',()=>window.print());
+// PDF печатает сервер: номер страницы браузер из CSS ставить не умеет, а
+// своим колонтитулом печатает заодно адрес страницы и дату, и выключить
+// половину нельзя. Уходит та же разметка, что на экране, — считать заново
+// нечего. Не получилось — остаётся диалог печати: отчёт на бумаге важнее
+// номеров на нём.
+$('#pdf').addEventListener('click',async ()=>{
+  const out=$('#out');
+  if(!out||!out.innerHTML.trim()){window.print();return}
+  const s=(lastReport||{}).subject||{};
+  const name=s.project_name||s.address||s.query||'Отчёт о рынке';
+  const day=String((lastReport||{}).retrieved_at||'').slice(0,10);
+  const btn=$('#pdf'), was=btn.textContent;
+  btn.disabled=true; btn.textContent='Печатаю…';
+  try{
+    const r=await fetch('/cabinet/report.pdf',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({html:out.innerHTML, title:name+' — рынок '+day,
+        footer:name+' · конкурентное окружение · срез '+day+' · источник: Пульс Продаж Новостроек'})});
+    if(!r.ok) throw new Error((await r.json().catch(()=>({}))).detail||('код '+r.status));
+    const url=URL.createObjectURL(await r.blob());
+    const a=document.createElement('a');
+    a.href=url; a.download=name+' — рынок '+day+'.pdf';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),10000);
+  }catch(e){
+    $('#state').textContent='Сервер не напечатал ('+(e.message||e)+') — открываю печать браузера';
+    setTimeout(()=>{$('#state').textContent=''; window.print()},1200);
+  }finally{btn.disabled=false; btn.textContent=was}
+});
 
 // Сброс. Отчёт держит не только разметку: вручную добавленные проекты, книгу
 // ПЛАТО, ответ Платона и ориентир. Стереть один экран и оставить остальное —
@@ -2034,6 +2062,18 @@ def app_version() -> str:
         return str(main_legacy.VERSION)
     except Exception:
         return "—"
+
+
+def cabinet_style() -> str:
+    """Стиль страницы — тот же, каким печатается PDF.
+
+    Копии нет по той же причине, что и у версии: копию негде обновлять. Стиль
+    вынимается из самой страницы, а не переписывается рядом, иначе печать и
+    экран разъедутся на первой же правке — и разъедутся молча.
+    """
+    page = cabinet_page()
+    start = page.index("<style>") + len("<style>")
+    return page[start:page.index("</style>", start)]
 
 
 def cabinet_page() -> str:
