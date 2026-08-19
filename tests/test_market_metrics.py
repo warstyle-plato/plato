@@ -1490,3 +1490,68 @@ def test_a_neighbour_curve_returns_to_the_chart_by_a_tick() -> None:
     assert "if(box.checked) onChart.add(id); else onChart.delete(id);\n      render(lastReport);" in CABINET_PAGE
     # Колонка выбора живёт только в таблице соседей и не идёт в печать.
     assert "table.peers td.pick,table.peers th.pick{display:none}" in CABINET_PAGE
+
+
+def test_only_the_subject_is_labelled_on_screen() -> None:
+    """Четыре имени висели постоянно, у остальных надо было наводить.
+
+    Почему именно эти четыре — из карты не следует никак: это крайние по
+    осям, но читателю про оси ничего не сказано. На экране постоянная подпись
+    одна, своя. На бумаге наведения нет, и там крайние подписываются — иначе
+    карта в PDF становится анонимной.
+    """
+    from market_search.cabinet import CABINET_PAGE
+
+    assert "svg text.edge{opacity:0}" in CABINET_PAGE
+    assert "  svg text.edge{opacity:1}" in CABINET_PAGE
+    assert "if(own) svg+=label(own,'mine');" in CABINET_PAGE
+    assert "edges.forEach(p=>{svg+=label(p,'edge')});" in CABINET_PAGE
+
+
+def test_the_site_verdict_shows_the_whole_product_line(tmp_path) -> None:
+    """«Здесь строят элитный» без линейки вокруг — утверждение без основания.
+
+    Вывод называет один класс, а решение принимают, видя всё: сколько чего
+    рядом, по какой цене, каким темпом и каким лотом.
+    """
+    from market_search.metrics import BLOCK_PRICE
+    from market_search.service_v6 import MarketDiscoveryService
+
+    service = MarketDiscoveryService(tmp_path)
+    segments = {1: "Элит/De Luxe", 2: "Элит/De Luxe", 3: "Премиум", 4: "Премиум"}
+    metrics = {
+        1: {"price_per_sqm": 3_000_000, "observed_at": "2026-08-18",
+            "units_per_month": 1.2, "sold_lot_avg": 120.0, "lot_count": 40},
+        2: {"price_per_sqm": 3_200_000, "observed_at": "2026-08-18",
+            "units_per_month": 0.8, "sold_lot_avg": 140.0, "lot_count": 30},
+        # Прайса нет — в цену не идёт, в счёт и темп идёт.
+        3: {"units_per_month": 4.0, "sold_lot_avg": 80.0, "lot_count": 100},
+        4: {"price_per_sqm": 900_000, "observed_at": "2026-08-18",
+            "units_per_month": 6.0, "sold_lot_avg": 70.0, "lot_count": 60},
+    }
+    projects = [
+        {"complex_id": i, "name": f"Сосед {i}", "developer": "—",
+         "latitude": 55.7340 + i / 2000, "longitude": 37.5657,
+         "address": "Москва, ЦАО, Хамовники, набережная"}
+        for i in (1, 2, 3, 4)
+    ]
+    service.pulse = _fake_pulse(segments, metrics, projects)
+
+    report = service.build_report("55.73800, 37.56570", codes=[BLOCK_PRICE])
+    mix = report["analysis"]["site"]["mix"]
+    assert [row["segment"] for row in mix] == ["элитный", "премиум"]
+
+    premium = mix[1]
+    assert premium["projects"] == 2
+    # Один из двух без цены: медиана по одному прайсу не должна читаться как
+    # медиана по двум проектам, поэтому счёт с ценой назван отдельно.
+    assert premium["priced"] == 1
+    assert premium["price_median"] == 900_000
+    assert premium["units_per_month"] == 5.0
+    assert premium["exposure"] == 160
+
+    # Раскладка печатается рядом с выводом.
+    from market_search.cabinet import CABINET_PAGE
+
+    assert "Что продаётся вокруг" in CABINET_PAGE
+    assert "— здешний" in CABINET_PAGE

@@ -27,7 +27,14 @@ from .http import RemoteServiceError
 from .dynamics import SalesDynamics
 from .market_reference import MoscowMarket
 from .metrics import build_blocks
-from .verdict import build_notes, positioning, premium_series, price_of_premium, site_verdict
+from .verdict import (
+    build_notes,
+    positioning,
+    premium_series,
+    price_of_premium,
+    site_mix,
+    site_verdict,
+)
 from .page_price import PageFetcher
 from .price_hint import price_hint
 from .pulse import PulseClient
@@ -790,6 +797,7 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         if not subject_metrics.get("price_per_sqm"):
             site = site_verdict(peers)
             if site:
+                site["mix"] = site_mix(peers)
                 notes["site"] = site
                 notes["overall"] = site
         # Ориентир цены для площадки без своего прайса считается по той же

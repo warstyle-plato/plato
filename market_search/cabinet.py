@@ -251,6 +251,9 @@ g.bub:hover circle{fill-opacity:.75}
    имена проектов у кружков и линий были недостижимы вовсе. Касание ставит
    группе класс — те же правила, что у наведения, только по тапу. */
 g.bub.on text.hov{opacity:1}
+/* Крайние по осям — только на бумаге: там наведения нет, и без подписей карта
+   становится анонимной. На экране постоянная подпись одна, своего проекта. */
+svg text.edge{opacity:0}
 g.bub.on circle{fill-opacity:.75}
 /* Печать берёт все пары осей, а не ту, что открыта на экране: на бумаге
    переключателя нет, и оставшиеся четыре карты иначе не попали бы никуда. */
@@ -275,6 +278,7 @@ g.bub.on circle{fill-opacity:.75}
      того ни другого, а один случайно оставшийся ярлык читался бы как
      выделение, которого никто не делал. Класс сильнее, поэтому назван явно. */
   g.bub text.hov,g.bub.on text.hov{opacity:0}
+  svg text.edge{opacity:1}
   .card{break-inside:avoid;page-break-inside:avoid;border:0;border-top:1px solid #dde5ed;
         border-radius:0;padding:14px 0;margin:0}
   h2{break-after:avoid}
@@ -651,18 +655,24 @@ function bubbleChart(rows, view){
        +` text-anchor="${left?'end':'start'}" font-size="11" fill="#16202b" paint-order="stroke"`
        +` stroke="#fff" stroke-width="3.5">${esc(p.name)} · ${num(p[YK],yd)}</text></g>`;
   });
-  // Подписываем только тех, кого стоит узнать в лицо: свой проект и крайние
-  // по каждой оси. Подписать все — значит не подписать ни одного.
-  const marks=new Set();
-  const own=pts.find(p=>p.__own); if(own) marks.add(own);
+  // На экране постоянная подпись одна — своего проекта. Крайние по осям
+  // подписывались тоже, и получалось непонятное: четыре имени висят, у
+  // остальных надо наводить, а почему эти четыре — ниоткуда не следует.
+  //
+  // На бумаге наведения нет, и без подписей карта становится анонимной,
+  // поэтому крайние по осям печатаются — но только в печати.
+  const own=pts.find(p=>p.__own);
   const edge=(key,dir)=>[...pts].sort((a,b)=>dir*(b[key]-a[key]))[0];
-  [edge(YK,1),edge(YK,-1),edge(XK,1),edge(XK,-1)].forEach(p=>{if(p)marks.add(p)});
-  marks.forEach(p=>{
+  const edges=new Set();
+  [edge(YK,1),edge(YK,-1),edge(XK,1),edge(XK,-1)].forEach(p=>{if(p&&!p.__own)edges.add(p)});
+  const label=(p,cls)=>{
     const px=x(p[XK]), py=y(p[YK])-r(p[SK])-5;
-    svg+=`<text x="${px.toFixed(1)}" y="${py.toFixed(1)}" text-anchor="middle" font-size="10.5"`
-       +` fill="${p.__own?'#C4581B':'#5b6b7d'}"${p.__own?' font-weight="600"':''}>`
-       +`${esc(p.name.length>20?p.name.slice(0,19)+'…':p.name)}</text>`;
-  });
+    return `<text class="${cls}" x="${px.toFixed(1)}" y="${py.toFixed(1)}" text-anchor="middle"`
+      +` font-size="10.5" fill="${p.__own?'#C4581B':'#5b6b7d'}"${p.__own?' font-weight="600"':''}>`
+      +`${esc(p.name.length>20?p.name.slice(0,19)+'…':p.name)}</text>`;
+  };
+  if(own) svg+=label(own,'mine');
+  edges.forEach(p=>{svg+=label(p,'edge')});
   svg+=`<text x="${(L+W-R)/2}" y="${H-6}" text-anchor="middle" font-size="10.5" fill="#5b6b7d">${esc(AXES[XK].label)}</text>`
      +`<text x="14" y="${(T+H-B)/2}" text-anchor="middle" font-size="10.5" fill="#5b6b7d"`
      +` transform="rotate(-90 14 ${(T+H-B)/2})">${esc(AXES[YK].label)}</text>`;
@@ -1262,9 +1272,23 @@ function render(d){
   // рынка и ценами соседей, то есть ниже сгиба: человек открывал отчёт и
   // видел два больших графика вместо ответа на свой вопрос.
   const ov=(d.analysis||{}).overall, pos=(d.analysis||{}).positioning;
+  const site=(d.analysis||{}).site;
+  // Раскладка по классам печатается рядом с выводом о площадке: «здесь строят
+  // элитный» без линейки вокруг — утверждение без основания на экране.
+  const mix=(site&&site.mix&&site.mix.length>1)?`<h3>Что продаётся вокруг</h3>`
+    +compareTable(site.mix,[
+      {t:'Класс',f:r=>esc(r.segment)+(r.segment===site.segment?' <span class="self">— здешний</span>':'')},
+      {t:'Проектов',num:1,f:r=>num(r.projects)},
+      {t:'из них с ценой',num:1,f:r=>num(r.priced)},
+      {t:'₽/м², медиана',num:1,f:r=>num(r.price_median)},
+      {t:'ДДУ/мес',num:1,f:r=>num(r.units_per_month,1)},
+      {t:'лот, м²',num:1,f:r=>num(r.sold_lot_avg,1)},
+      {t:'лотов в продаже',num:1,f:r=>num(r.exposure)},
+    ]):'';
   if(ov) html+=`<div class="card verdict ${ov.tone}"><h2>${TONE[ov.tone]||''} ${esc(ov.headline)}</h2>`
     +`<div>${esc(ov.text)}</div>`
     +(pos?`<div class="pos"><b>Куда попадает проект.</b> ${esc(pos.text)}</div>`:'')
+    +mix
     +`</div>`;
 
   const market=[{...m, name:s.project_name||'объект', segment:s.segment, __own:true}, ...peers];

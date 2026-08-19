@@ -499,6 +499,48 @@ def positioning(subject: dict[str, Any], peers: list[dict[str, Any]], city) -> d
     }
 
 
+def site_mix(peers: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Раскладка соседей по классам: что здесь вообще продаётся.
+
+    Вывод называет один класс — здешний продукт, — но решение принимают,
+    видя всю линейку: сколько чего рядом, по какой цене, каким темпом и каким
+    лотом. Без этого «строить элитный» — утверждение без основания на экране.
+
+    Проекты без действующего прайса из цены выпадают, а из счёта и темпа —
+    нет: продукт и скорость они показывают честно, и для площадки это важнее
+    цены. Сколько их, сказано отдельной колонкой, чтобы медиана по двум
+    прайсам не читалась как медиана по десяти проектам.
+    """
+    by_class: dict[str, list[dict[str, Any]]] = {}
+    for row in peers:
+        level = normalize_segment(row.get("segment"))
+        if level:
+            by_class.setdefault(level, []).append(row)
+
+    order = [ELITE, PREMIUM, BUSINESS, COMFORT, ECONOMY]
+    out: list[dict[str, Any]] = []
+    for level in order:
+        rows = by_class.get(level)
+        if not rows:
+            continue
+        prices = [float(r["price_per_sqm"]) for r in rows if r.get("price_per_sqm")]
+        pace = [float(r["units_per_month"]) for r in rows if r.get("units_per_month")]
+        lots = [float(r["sold_lot_avg"]) for r in rows if r.get("sold_lot_avg")]
+        exposure = [float(r["lot_count"]) for r in rows if r.get("lot_count")]
+        out.append(
+            {
+                "segment": level,
+                "projects": len(rows),
+                "priced": len(prices),
+                "price_median": int(_median(prices)) if prices else None,
+                "units_per_month": round(_median(pace), 1) if pace else None,
+                "sold_lot_avg": round(_median(lots), 1) if lots else None,
+                "exposure": int(sum(exposure)) if exposure else None,
+            }
+        )
+    return out
+
+
 def site_verdict(peers: list[dict[str, Any]]) -> dict[str, Any] | None:
     """Что здесь строить и почём — вывод для площадки без своего проекта.
 
