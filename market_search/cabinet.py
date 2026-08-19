@@ -208,11 +208,11 @@ padding:5px 12px;font-size:13px;cursor:pointer}
 .plato{background:#f8fafc;border-left:3px solid var(--ink);padding:12px 14px;border-radius:0 8px 8px 0;
 margin-top:12px;white-space:normal}
 #askout{margin-top:10px}
-/* Портрет — тот же файл, что в окне Платона на главной, ссылкой по адресу.
-   Второй копии в base64 здесь нет по той же причине, что и копии версии:
-   копию негде обновлять. В печать не идёт — на бумаге вопросов не задают. */
-.plato-hero{display:flex;gap:14px;align-items:center;margin-bottom:10px}
-.plato-hero img{border-radius:10px;flex:none}
+/* Портрета здесь пока нет. Стоял кроп из окна Платона на главной — узкий
+   портрет 560×611, сжатый до 96 пикселей: в карточке это огрызок. Владелец
+   давал другую картинку — широкий баннер с цитатой и подписью; её в
+   репозитории нет, и до неё место занимает только сама реплика. */
+.plato-hero{margin-bottom:10px}
 .plato-say{font-size:14.5px;color:var(--ink);font-style:italic;margin-bottom:4px}
 td.link{color:var(--blue);cursor:pointer;text-decoration:underline dotted}
 .cardwrap{position:fixed;inset:0;background:rgba(20,35,60,.45);display:flex;align-items:flex-start;
@@ -365,12 +365,9 @@ g.bub.on circle{fill-opacity:.75}
   <div class="card" id="askcard" style="display:none">
     <h2>Спросить Платона Сергеевича</h2>
     <div class="plato-hero">
-      <img src="/assets/platon-hero.webp" alt="" width="96" height="110" loading="lazy">
-      <div>
-        <div class="plato-say">«Хорошие дома начинаются с правильных вопросов»</div>
-        <div class="muted" style="font-size:13px">
-          Он видит числа этого отчёта и объясняет их. Считает движок — модель не пересчитывает.
-        </div>
+      <div class="plato-say">«Хорошие дома начинаются с правильных вопросов»</div>
+      <div class="muted" style="font-size:13px">
+        Он видит числа этого отчёта и объясняет их. Считает движок — модель не пересчитывает.
       </div>
     </div>
     <div class="chips">
