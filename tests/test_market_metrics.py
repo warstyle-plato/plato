@@ -1493,7 +1493,7 @@ def test_the_neighbours_to_show_are_picked_in_one_place() -> None:
     # Перерисовка без запроса к серверу.
     assert "if(box.checked) onChart.add(id); else onChart.delete(id);\n      render(lastReport);" in CABINET_PAGE
     # В печать список выбора не идёт.
-    assert "  .whoshow,#tip,.plato-hero{display:none !important}" in CABINET_PAGE
+    assert "  .whoshow,#tip{display:none !important}" in CABINET_PAGE
 
 
 def test_only_the_subject_is_labelled_on_screen() -> None:
@@ -1997,35 +1997,32 @@ def test_the_chart_tooltip_is_ours_not_the_browser_one() -> None:
     assert "window.addEventListener('scroll',hideTip" in CABINET_PAGE
 
 
-def test_the_cabinet_does_not_wear_a_squeezed_portrait() -> None:
-    """В карточку встал кроп из окна Платона — узкий портрет 560×611, сжатый
-    до 96 пикселей. В карточке это огрызок, и владелец назвал его так же.
+def test_the_cabinet_footer_carries_the_banner(tmp_path, monkeypatch) -> None:
+    """Кроп из окна Платона в карточке был огрызком — он сделан под плашку
+    большого сайта. Баннер владельца широкий, с цитатой и подписью внутри, и
+    ему нужна вся ширина: место ему в подвале.
 
-    Картинка, которую он давал, — широкий баннер с цитатой и подписью; в
-    репозитории её нет. До неё место занимает сама реплика: пустое лучше
-    плохого, а «есть какая-то картинка» тут не цель.
+    Файл лежит рядом с кодом и отдаётся адресом. Копии в base64 нет: страница
+    уходит целиком на каждый запрос, и вес картинки платился бы каждым
+    открытием — правило то же, что у эмблемы и у версии.
     """
+    from fastapi.testclient import TestClient
+
     from market_search.cabinet import CABINET_PAGE
 
-    assert "Хорошие дома начинаются с правильных вопросов" in CABINET_PAGE
-    # Ни чужого кропа, ни копии в base64.
-    assert "platon-hero" not in CABINET_PAGE
+    assert '<img src="/assets/platon-quote.webp"' in CABINET_PAGE
     assert "data:image" not in CABINET_PAGE
+    assert ".plato-footer img{width:100%" in CABINET_PAGE
+    # У картинки есть подпись для тех, кто её не видит.
+    assert 'alt="Платон Сергеевич Федоскин' in CABINET_PAGE
+    # На бумаге подвал остаётся: это подпись отчёта, а не кнопка.
+    assert ".plato-footer{margin:18px 0 0;break-inside:avoid}" in CABINET_PAGE
 
-def test_the_map_marks_the_picked_by_outline_not_by_colour() -> None:
-    """Карта была единственным графиком, где отметка не работала вовсе.
+    import main_legacy
 
-    Пометить отмеченных цветом палитры нельзя: цвет кружка занят классом, и
-    один канал получил бы два смысла — карта перестала бы читаться. Метка
-    другая: тёмный контур и постоянная подпись. Шума это не добавляет, а
-    убавляет — у глаза появляется опора.
-    """
-    from market_search.cabinet import CABINET_PAGE
-
-    assert "__picked:onChart.has(String(p.complex_id))" in CABINET_PAGE
-    bubble = CABINET_PAGE[CABINET_PAGE.index("function bubbleChart"):]
-    bubble = bubble[: bubble.index("function premiumChart")]
-    assert "const marked=p.__picked&&!p.__own;" in bubble
-    # Цвет заливки остаётся классовым, меняется только обводка и плотность.
-    assert "stroke=\"${marked?'#16202b':c}\"" in bubble
-    assert "fill=\"${c}\"" in bubble
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    answer = TestClient(main_legacy.app).get("/assets/platon-quote.webp")
+    assert answer.status_code == 200
+    assert answer.headers["content-type"].startswith("image/")
+    # Вес: страницу открывают с телефона, и мегабайты тут ни к чему.
+    assert len(answer.content) < 200_000

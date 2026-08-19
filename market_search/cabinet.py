@@ -208,12 +208,14 @@ padding:5px 12px;font-size:13px;cursor:pointer}
 .plato{background:#f8fafc;border-left:3px solid var(--ink);padding:12px 14px;border-radius:0 8px 8px 0;
 margin-top:12px;white-space:normal}
 #askout{margin-top:10px}
-/* Портрета здесь пока нет. Стоял кроп из окна Платона на главной — узкий
-   портрет 560×611, сжатый до 96 пикселей: в карточке это огрызок. Владелец
-   давал другую картинку — широкий баннер с цитатой и подписью; её в
-   репозитории нет, и до неё место занимает только сама реплика. */
+/* Баннер — в подвале и во всю ширину: он широкий, ему нужна ширина, и цитата
+   с подписью в нём уже нарисованы. Кроп из окна Платона на главной сюда не
+   годится: он сделан под плашку большого сайта, а в карточке 96 пикселей
+   разваливается. В карточке вопроса осталась одна реплика текстом. */
 .plato-hero{margin-bottom:10px}
 .plato-say{font-size:14.5px;color:var(--ink);font-style:italic;margin-bottom:4px}
+.plato-footer{margin:26px 0 8px;line-height:0}
+.plato-footer img{width:100%;height:auto;border-radius:14px;display:block}
 td.link{color:var(--blue);cursor:pointer;text-decoration:underline dotted}
 .cardwrap{position:fixed;inset:0;background:rgba(20,35,60,.45);display:flex;align-items:flex-start;
 justify-content:center;padding:40px 16px;overflow:auto;z-index:50}
@@ -294,7 +296,9 @@ g.bub.on circle{fill-opacity:.75}
   main{max-width:none;padding:0}
   #form, #askcard, .chips, button, #hintout, .cardwrap{display:none !important}
   #bubble{display:none}
-  .whoshow,#tip,.plato-hero{display:none !important}
+  .whoshow,#tip{display:none !important}
+  /* Подвал печатается: на бумаге это подпись отчёта, а не кнопка. */
+  .plato-footer{margin:18px 0 0;break-inside:avoid}
   .printviews{display:block}
   /* Ни наведённая, ни тапнутая подпись на бумагу не идёт: на печати нет ни
      того ни другого, а один случайно оставшийся ярлык читался бы как
@@ -380,6 +384,9 @@ g.bub.on circle{fill-opacity:.75}
     <button class="go" id="askbtn">Спросить</button>
     <div id="askout"></div>
   </div>
+  <footer class="plato-footer">
+    <img src="/assets/platon-quote.webp" alt="Платон Сергеевич Федоскин: «Хорошие дома начинаются с правильных вопросов»" loading="lazy">
+  </footer>
 </main>
 <script>
 const $=s=>document.querySelector(s);
