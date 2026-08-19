@@ -1760,3 +1760,82 @@ def test_the_price_chart_says_how_many_bars_it_could_draw() -> None:
 
     assert "Столбик есть у ${withPrice} из ${peers.length} соседей выборки" in CABINET_PAGE
     assert "В разделах о темпе, лоте" in CABINET_PAGE
+
+
+def test_the_hint_finds_the_plot_of_a_loaded_project(tmp_path) -> None:
+    """«Ввёл участок, а кнопка пишет: укажите участок».
+
+    У загруженного проекта вводные восстановлены, ТЭП и плата за ВРИ
+    посчитаны, а текст в поле участка пустой — он не часть модели и с
+    проектом не сохраняется. Кнопка смотрела только в это поле и отвечала
+    «укажите участок» там, где участок известен и разобран.
+
+    Порядок источников — от точного к приблизительному: координаты
+    разобранного участка, потом запрос, которым его нашли, потом набранное.
+    """
+    import json
+    import re
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if not node:
+        import pytest
+
+        pytest.skip("node не установлен")
+
+    from market_search.ui_v6 import PRICE_HINT_SCRIPT
+
+    body = PRICE_HINT_SCRIPT[PRICE_HINT_SCRIPT.index("  const CADASTRE="):]
+    body = body[: body.index("\n  //")]
+
+    harness = """
+let fields={};
+const document={getElementById:id=>fields[id]||null};
+let landLookup=null;
+"""
+    driver = """
+const out={};
+// Загруженный проект: поле пустое, но участок разобран и знает координаты.
+fields={cadastralNumbers:{value:''}};
+landLookup={query:'77:07:0013005:1042', results:[
+  {found:false, center:null},
+  {found:true, center:{lat:55.71584, lng:37.43303}},
+]};
+out.loaded=locationHint();
+
+// Поле заполнено руками — берётся первый участок из списка.
+fields={cadastralNumbers:{value:'77:07:0013005:1042, 77:07:0013005:1043'}};
+landLookup=null;
+out.typed=locationHint();
+
+// Ни поля, ни координат — но запрос, которым участок нашли, остался.
+fields={cadastralNumbers:{value:''}};
+landLookup={query:'Москва, Саввинская наб, д 25', results:[{found:true, center:null}]};
+out.query=locationHint();
+
+// Пусто везде — это отказ, а не выдуманное место.
+fields={}; landLookup=null;
+out.nothing=locationHint();
+
+// Адрес, набранный руками в том же поле: этот формат прямо предложен в
+// подсказке поля, и запятая в нём часть адреса, а не разделитель.
+fields={cadastralNumbers:{value:'Московская область, г. Мытищи, ул. Мира, 1'}};
+landLookup=null;
+out.address=locationHint();
+console.log(JSON.stringify(out));
+"""
+    path = tmp_path / "hint-where.js"
+    path.write_text(harness + body + driver, encoding="utf-8")
+    run = subprocess.run([node, str(path)], capture_output=True, text=True, timeout=30)
+    assert run.returncode == 0, run.stderr
+    result = json.loads(run.stdout.strip().splitlines()[-1])
+
+    # Координаты однозначны и разбора не требуют — они первыми.
+    assert result["loaded"] == {"latitude": 55.71584, "longitude": 37.43303}
+    assert result["typed"] == {"address": "77:07:0013005:1042"}
+    # Адрес запятой не режется: она разделяет участки в списке номеров, а
+    # внутри адреса — часть его самого.
+    assert result["query"] == {"address": "Москва, Саввинская наб, д 25"}
+    assert result["nothing"] is None
+    assert result["address"] == {"address": "Московская область, г. Мытищи, ул. Мира, 1"}
