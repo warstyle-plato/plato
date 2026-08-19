@@ -586,6 +586,7 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         radius_km: float = 3.0,
         peers_limit: int = 12,
         segment_override: str | None = None,
+        extra_peers: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Конструктор: объект, сопоставимые соседи и выбранные разделы.
 
@@ -712,6 +713,44 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                 row["remaining_as_of"] = last["month"]
                 row["remaining_source"] = "отчёт за месяц"
 
+        # Соседи, добавленные человеком: взятый из справочника проект вне
+        # радиуса и вписанный руками, которого в источнике нет вовсе.
+        #
+        # Они кладутся сюда, до расчёта разделов, а не подмешиваются в таблицу
+        # на странице. Прежде добавленный проект попадал на график и в список,
+        # но не в медианы: разделы считает сервер по своему набору, а про
+        # добавленного он не знал. Выходил отчёт, где сосед виден, а на вывод
+        # не влияет, — и заметить это было нечем.
+        #
+        # Признак `added_by_hand` едет с каждым и печатается везде, где такой
+        # сосед участвует: вписанное от руки число не должно выглядеть как
+        # снятое у источника.
+        hand_added = 0
+        for row in extra_peers or []:
+            if not isinstance(row, dict):
+                continue
+            clean = {key: value for key, value in row.items() if value not in (None, "")}
+            if not clean.get("name"):
+                continue
+            clean["added_by_hand"] = True
+            clean.setdefault("price_series", [])
+            clean.setdefault("sales_series", [])
+            same = next(
+                (
+                    index
+                    for index, existing in enumerate(peers)
+                    if existing.get("complex_id") is not None
+                    and existing.get("complex_id") == clean.get("complex_id")
+                ),
+                None,
+            )
+            if same is None:
+                peers.append(clean)
+            else:
+                peers[same] = clean
+            hand_added += 1
+        peers.sort(key=lambda row: row.get("distance_km") if row.get("distance_km") is not None else 99)
+
         subject_metrics = own or {"name": subject.project_name or query, "segment": segment}
         subject_series = history.get(subject.project_id) or []
         subject_sales = self.dynamics.series(subject.project_id)
@@ -775,6 +814,11 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                 "used": len(peers),
                 "stale_price": stale,
                 "no_price": priceless,
+                # Сколько соседей в выборке поставил человек, а не источник.
+                # Число печатается рядом с остальными: выборка, наполовину
+                # собранная руками, и выборка из источника — разные вещи, и
+                # читатель обязан видеть, какая перед ним.
+                "added_by_hand": hand_added,
                 "fresh_since": fresh_since,
                 "dropped": max(len(comparable) - len(peers) - stale - priceless, 0),
             },

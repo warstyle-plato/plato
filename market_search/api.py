@@ -71,6 +71,12 @@ class ReportRequest(BaseModel):
     # Пусто — класс берётся у «Пульса». Ручной выбор не отменяет решения от
     # 18.08.2026, а называется в отчёте отдельным источником.
     segment: str | None = None
+    # Соседи, поставленные человеком: взятый из справочника проект вне радиуса
+    # и вписанный руками, которого в источнике нет. Они входят в расчёт
+    # разделов наравне с найденными, поэтому и приходят на сервер, а не живут
+    # на странице: иначе добавленный проект виден на графике, но на медианы и
+    # вывод не влияет — отчёт, где сосед есть и не считается.
+    extra_peers: list[dict[str, Any]] | None = Field(default=None, max_length=40)
 
     @model_validator(mode="after")
     def query_is_not_blank(self) -> "ReportRequest":
@@ -305,6 +311,7 @@ def install(app: FastAPI) -> MarketDiscoveryService:
                 radius_km=req.radius_km,
                 peers_limit=req.peers_limit,
                 segment_override=req.segment,
+                extra_peers=req.extra_peers,
             )
         except SubjectNotFound as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc

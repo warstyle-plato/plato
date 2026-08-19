@@ -225,6 +225,15 @@ border-radius:9px;box-shadow:0 6px 22px rgba(20,35,60,.13);max-height:320px;over
 #sug small,#addsug small{display:block;color:var(--dim);font-size:12px}
 .addwrap{position:relative}
 .addwrap input{width:100%}
+.handadd{margin-top:10px}
+.handadd summary{cursor:pointer;color:var(--blue);font-size:13.5px}
+.handgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px}
+.handgrid label{display:block;font-size:12px;color:var(--dim)}
+.handgrid input,.handgrid select{width:100%;padding:7px 9px;border:1px solid var(--line);
+border-radius:8px;font-size:14px;color:var(--ink);box-sizing:border-box}
+/* Вписанный руками сосед виден в таблице: число со слов и число из источника
+   нельзя показывать одинаково. */
+tr.byhand td:first-child:after{content:" · вручную";color:var(--rust);font-size:11px}
 tr.added td{background:#f1f8f4}
 ul.caveats{margin:6px 0 0;padding-left:20px;color:var(--dim);font-size:13.5px}
 ul.caveats li{margin:4px 0}
@@ -1075,12 +1084,42 @@ async function addProject(item){
     const d=await r.json();
     if(!r.ok){$('#addstate').textContent=d.detail||'Не получилось';return}
     added.set(item.complex_id,d);
-    lastReport.peers=[...(lastReport.peers||[]).filter(p=>p.complex_id!==d.complex_id), d]
-      .sort((a,b)=>(a.distance_km??99)-(b.distance_km??99));
-    // Разделы считаются заново: медианы, вердикт и таблицы должны учесть
-    // добавленного, иначе он окажется на графике, но не в выводах.
+    // Разделы считаются заново, и добавленный уезжает на сервер вместе с
+    // запросом: медианы и вывод считает он, а не страница. Прежде добавленный
+    // подмешивался только в таблицу здесь — сосед появлялся на графике и в
+    // списке, но в медианы не входил, и отчёт выглядел исправным.
     await rebuild();
   }catch(e){$('#addstate').textContent=String(e.message||e)}
+}
+
+// Проект, которого в справочнике нет: планируемый, чужой из другого города,
+// или тот, чьи числа известны из переписки, а не из источника. Ключ ему
+// выдаётся свой, отрицательный, — `complex_id` источника с ним не столкнётся.
+let handSeq=0;
+async function addByHand(){
+  if(!lastReport){$('#addstate').textContent='Сначала соберите отчёт.';return}
+  const name=($('#mName').value||'').trim();
+  if(!name){$('#addstate').textContent='У проекта должно быть название.';return}
+  const number=id=>{const v=($('#'+id).value||'').trim();return v===''?null:Number(v)};
+  const row={
+    complex_id:--handSeq,
+    name:name,
+    segment:$('#mSeg').value||null,
+    price_per_sqm:number('mPrice'),
+    units_per_month:number('mPace'),
+    remaining_units:number('mRem'),
+    distance_km:number('mKm'),
+    // Дата снятия у вписанного руками — сегодняшняя: иначе раздел цены сочтёт
+    // прайс несвежим и молча выбросит проект из медианы.
+    observed_at:(lastReport.retrieved_at||'').slice(0,10)||null,
+    added_by_hand:true,
+  };
+  if(row.price_per_sqm===null&&row.units_per_month===null&&row.remaining_units===null){
+    $('#addstate').textContent='Нужно хотя бы одно число: прайс, темп или остаток.';return;
+  }
+  added.set(row.complex_id,row);
+  ['mName','mPrice','mPace','mRem','mKm'].forEach(id=>{$('#'+id).value=''});
+  await rebuild();
 }
 
 async function rebuild(){
@@ -1090,14 +1129,10 @@ async function rebuild(){
   try{
     const r=await fetch('/market/report',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({query:s.query,codes,radius_km:(lastReport.comparison||{}).radius_km||3,
-        peers_limit:Number($('#limit').value),segment:$('#segment').value||null})});
+        peers_limit:Number($('#limit').value),segment:$('#segment').value||null,
+        extra_peers:[...added.values()]})});
     const d=await r.json();
-    if(r.ok){
-      const byId=new Map((d.peers||[]).map(p=>[p.complex_id,p]));
-      added.forEach((row,id)=>byId.set(id,row));
-      d.peers=[...byId.values()].sort((a,b)=>(a.distance_km??99)-(b.distance_km??99));
-      lastReport=d;
-    }
+    if(r.ok) lastReport=d;
   }catch(e){/* останемся на прежнем отчёте */}
   render(lastReport);
   $('#addstate').textContent=added.size?`Добавлено вручную: ${added.size}`:'';
@@ -1152,6 +1187,7 @@ function render(d){
       <div><b>${num(c.used)}</b><span>взято в выборку</span></div>
       <div><b>${num(c.stale_price)}</b><span>прайс старше ${esc(c.fresh_since)}</span></div>
       <div><b>${num(c.no_price)}</b><span>цены нет вовсе</span></div>
+      ${c.added_by_hand?`<div><b class="self">${num(c.added_by_hand)}</b><span>поставлено вручную</span></div>`:''}
     </div>`+((((d.city||{}).scope||{}).covered===false)?`<div class="scope">${esc(d.city.scope.reason)}</div>`:'')
     // Добавление проекта стояло в самом низу, под всем отчётом, — и его там
     // не находили. Оно меняет выборку целиком: медианы, вердикт и каждый
@@ -1159,7 +1195,24 @@ function render(d){
     +`<div class="addwrap" style="margin-top:12px"><input type="text" id="addq" autocomplete="off"
       placeholder="Добавить в сравнение любой проект из справочника — начните вводить название">
       <div id="addsug"></div></div>
-    <div id="addstate" class="muted" style="font-size:12.5px;margin-top:6px"></div>`
+    <div id="addstate" class="muted" style="font-size:12.5px;margin-top:6px"></div>
+    <details class="handadd"><summary>Вписать проект, которого нет в справочнике</summary>
+      <div class="muted" style="font-size:12.5px;margin:6px 0 8px">Он войдёт в медианы и в вывод
+        наравне с найденными и всюду будет помечен как вписанный вручную. Пустые поля не считаются:
+        проект без темпа просто не попадёт в раздел о темпе.</div>
+      <div class="handgrid">
+        <label>Название<input type="text" id="mName" autocomplete="off"></label>
+        <label>Класс<select id="mSeg">
+          <option value="">— не указан —</option>
+          <option>Стандарт/Эконом</option><option>Комфорт</option><option>Бизнес</option>
+          <option>Премиум</option><option>Элит/De Luxe</option></select></label>
+        <label>Прайс, ₽/м²<input type="number" id="mPrice" min="0" step="1000"></label>
+        <label>ДДУ в месяц<input type="number" id="mPace" min="0" step="0.1"></label>
+        <label>Остаток, лотов<input type="number" id="mRem" min="0" step="1"></label>
+        <label>Расстояние, км<input type="number" id="mKm" min="0" step="0.1"></label>
+      </div>
+      <button class="go alt" type="button" id="mAdd">Добавить в сравнение</button>
+    </details>`
     +`</div>`;
 
   // Вывод — первым, до графиков. Он стоял четвёртой карточкой, под картой
@@ -1208,7 +1261,7 @@ function render(d){
     <div class="wrap"><table>
     <tr><th>Проект</th><th>Застройщик</th><th class="num">км</th><th>Класс</th>
     <th class="num">₽/м²</th><th class="num">ДДУ/мес</th><th class="num">м²/мес</th><th class="num">Лотов</th><th>Прайс от</th></tr>`
-    +peers.map((p,i)=>`<tr${p.added_by_hand?' class="added"':''}><td class="link" data-peer="${i}">`
+    +peers.map((p,i)=>`<tr${p.added_by_hand?' class="added byhand"':''}><td class="link" data-peer="${i}">`
       +`${esc(p.name)}${p.added_by_hand?' <span class="muted">+</span>':''}</td><td class="muted">${esc(p.developer||'—')}</td>
       <td class="num">${num(p.distance_km,2)}</td><td>${esc(p.segment||'—')}</td>
       <td class="num">${num(p.price_per_sqm)}</td><td class="num">${num(p.units_per_month,1)}</td>
@@ -1227,6 +1280,8 @@ function render(d){
   $('#reset').style.display='inline-block';
   wireCards();
   wireAdd();
+  const byHand=$('#mAdd');
+  if(byHand) byHand.addEventListener('click',addByHand);
 }
 $('#go').addEventListener('click',build);
 $('#askbtn').addEventListener('click',askPlato);

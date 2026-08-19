@@ -1262,3 +1262,81 @@ def test_a_finger_can_reach_the_name_of_a_bubble_and_a_line() -> None:
     # Пальцем в линию толщиной 1,3 пикселя не попасть — нужна широкая полоса.
     assert 'g.ln path.hit{stroke:transparent;fill:none;stroke-width:14}' in CABINET_PAGE
     assert '<path class="hit"' in CABINET_PAGE
+
+
+def test_a_project_added_by_hand_counts_in_the_medians(tmp_path) -> None:
+    """Добавленный сосед был виден на графике, но на вывод не влиял.
+
+    Разделы считает сервер по своему набору соседей, а добавленный жил только
+    на странице: он попадал в таблицу и на график, в медианы — нет. Отчёт при
+    этом выглядел исправным, и заметить расхождение было нечем.
+
+    Заодно это открывает ручной ввод: проект, которого в справочнике нет
+    вовсе — планируемый или известный из переписки, — входит в расчёт тем же
+    путём и всюду помечен как поставленный руками.
+    """
+    from market_search.metrics import BLOCK_PRICE
+    from market_search.service_v6 import MarketDiscoveryService
+
+    service = MarketDiscoveryService(tmp_path)
+    segments = {i: "Бизнес" for i in (1, 2, 3)}
+    metrics = {
+        1: {"price_per_sqm": 500_000, "observed_at": "2026-08-18", "units_per_month": 5.0},
+        2: {"price_per_sqm": 520_000, "observed_at": "2026-08-18", "units_per_month": 6.0},
+        3: {"price_per_sqm": 560_000, "observed_at": "2026-08-18", "units_per_month": 4.0},
+    }
+    projects = [
+        {"complex_id": i, "name": f"Сосед {i}", "developer": "—",
+         "latitude": 55.7300 + i / 1000, "longitude": 37.4400,
+         "address": "Москва, ЗАО, район Можайский, дом"}
+        for i in (1, 2, 3)
+    ]
+    service.pulse = _fake_pulse(segments, metrics, projects)
+
+    # Точка совпадает с первым проектом — у объекта есть свой прайс, иначе
+    # раздел цены не считается вовсе и сравнивать нечего.
+    plain = service.build_report("55.73100, 37.44000", codes=[BLOCK_PRICE])
+    assert plain["blocks"][0]["peers"]["median"] == 540_000
+    assert plain["blocks"][0]["peers"]["count"] == 2
+    assert plain["comparison"]["added_by_hand"] == 0
+
+    # Вписанный руками дорогой сосед обязан сдвинуть медиану.
+    with_hand = service.build_report(
+        "55.73100, 37.44000",
+        codes=[BLOCK_PRICE],
+        extra_peers=[{
+            "complex_id": -1, "name": "Планируемый", "segment": "Бизнес",
+            "price_per_sqm": 900_000, "observed_at": "2026-08-19", "units_per_month": 2.0,
+        }],
+    )
+    assert with_hand["comparison"]["added_by_hand"] == 1
+    assert with_hand["blocks"][0]["peers"]["median"] == 560_000
+    assert with_hand["blocks"][0]["peers"]["count"] == 3
+
+    # Признак едет с соседом: число со слов не должно выглядеть как снятое.
+    hand = next(row for row in with_hand["peers"] if row["name"] == "Планируемый")
+    assert hand["added_by_hand"] is True
+
+    # Пустое имя — не проект, и молча в выборку не попадает.
+    empty = service.build_report(
+        "55.73100, 37.44000", codes=[BLOCK_PRICE],
+        extra_peers=[{"price_per_sqm": 900_000}],
+    )
+    assert empty["comparison"]["added_by_hand"] == 0
+
+
+def test_the_page_sends_hand_added_peers_to_the_server() -> None:
+    """Пересчёт обязан идти с добавленными, иначе сервер их не увидит."""
+    from market_search.cabinet import CABINET_PAGE
+
+    assert "extra_peers:[...added.values()]" in CABINET_PAGE
+    # Форма ручного ввода и её требование: без названия проекта нет.
+    assert 'id="mAdd"' in CABINET_PAGE
+    assert "У проекта должно быть название." in CABINET_PAGE
+    # Одного числа достаточно, но хоть одно нужно.
+    assert "Нужно хотя бы одно число: прайс, темп или остаток." in CABINET_PAGE
+    # Ключ отрицательный — с идентификаторами источника не столкнётся.
+    assert "complex_id:--handSeq" in CABINET_PAGE
+    # И видно в таблице, что сосед вписан руками.
+    assert 'tr.byhand td:first-child:after{content:" · вручную"' in CABINET_PAGE
+    assert "поставлено вручную" in CABINET_PAGE
