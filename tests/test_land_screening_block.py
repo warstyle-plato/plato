@@ -246,6 +246,7 @@ def test_a_parcel_without_egrn_is_not_declared_clean(monkeypatch):
     (боевая проверка владельца, 18.08.2026)."""
     monkeypatch.setattr(core, "_core_api_url", lambda path: "")
     monkeypatch.setattr(core, "_nspd_search_features", lambda q: [])
+    monkeypatch.setattr(core, "_LAND_RETRY_PAUSE_SECONDS", 0)
     monkeypatch.setattr(core, "_land_screen_findings",
                         lambda *a, **k: pytest.fail("без границ НСПД не спрашивают"))
     core._LAND_SCREENING_CACHE.clear()
@@ -351,6 +352,7 @@ def test_a_cut_list_says_so(monkeypatch):
     молчаливое усечение читается как «проверено всё»."""
     monkeypatch.setattr(core, "_core_api_url", lambda path: "")
     monkeypatch.setattr(core, "_nspd_search_features", lambda q: [])
+    monkeypatch.setattr(core, "_LAND_RETRY_PAUSE_SECONDS", 0)
     core._LAND_SCREENING_CACHE.clear()
     numbers = ", ".join(f"50:12:0101031:{n}" for n in range(1, 41))
     answer = core.land_screening(cad=numbers)
@@ -364,7 +366,8 @@ def test_a_cut_list_says_so(monkeypatch):
             {"flag_class": "economic", "name": "Охранная зона", "impact": "режет"}]},
             {"found": True, "cadastral_number": "50:12:0101031:2", "findings": []}],
     })
-    assert "проверено 10 из 22" in html
+    assert "участков: 22" in html
+    assert "не поместилось в запрос: 12" in html
 
 
 def test_the_waiting_plate_estimates_what_is_left():
@@ -459,3 +462,146 @@ def test_the_progress_line_names_the_skip():
     ], 5)
     assert "50:12:0100131:29 — меньше порога — не проверялся" in html
 
+
+def test_the_counts_add_up_to_what_was_typed():
+    """Владелец ввёл 22 номера и увидел «участков: 10» (19.08.2026).
+
+    Двенадцать участков исчезли из шапки и из разбивки: восемь мелких были
+    пропущены по порогу, по четырём не пришли сведения ЕГРН. Ни то ни другое
+    не потеря участка, но выглядело именно ей. Шапка обязана сходиться с тем,
+    что человек ввёл: проверено + мелкие + без сведений = запрошено.
+    """
+    parcels = [
+        {"found": True, "cadastral_number": "50:12:0100131:497", "area_ha": 7.3156,
+         "findings": [{"flag_class": "killer", "name": "ООПТ", "impact": "нельзя"}]},
+        {"found": True, "cadastral_number": "50:12:0100131:492", "area_ha": 8.2697,
+         "findings": [{"flag_class": "killer", "name": "ООПТ", "impact": "нельзя"}]},
+    ]
+    parcels += [{"found": True, "cadastral_number": f"50:12:0100131:{n}", "area_ha": 0.05,
+                 "too_small": True, "findings": []} for n in range(20, 28)]
+    parcels += [{"found": False, "cadastral_number": f"50:12:0100131:{n}",
+                 "note": "Сведения ЕГРН по номеру не получены."} for n in range(40, 52)]
+    _, html = _render({
+        "requested_count": 22, "checked_count": 22, "small_count": 8, "min_area_sqm": 1000.0,
+        "verdict": {"status": "CRITICAL", "headline": "Найдены ограничения", "disclaimer": ""},
+        "parcels": parcels,
+    })
+    assert "участков: 22" in html
+    assert "проверено: 2" in html
+    assert "мелких пропущено: 8" in html
+    assert "без сведений ЕГРН: 12" in html
+
+
+def test_a_skipped_parcel_is_not_called_clean():
+    """«Чисто» на непроверенном участке — тот же разрешительный вывод на пустоте."""
+    _, html = _render({
+        "requested_count": 3, "checked_count": 3, "small_count": 1, "min_area_sqm": 1000.0,
+        "verdict": {"status": "NO_CRITICAL_FLAGS", "headline": "Критических ограничений не обнаружено",
+                    "disclaimer": ""},
+        "parcels": [
+            {"found": True, "cadastral_number": "50:12:0100131:497", "area_ha": 7.3, "findings": []},
+            {"found": True, "cadastral_number": "50:12:0100131:29", "area_ha": 0.05,
+             "too_small": True, "findings": []},
+            {"found": False, "cadastral_number": "50:12:0100131:777"},
+        ],
+    })
+    small = html.split("50:12:0100131:29")[1].split("</div>")[0]
+    assert "не проверялся" in small and "чисто" not in small
+    lost = html.split("50:12:0100131:777")[1].split("</div>")[0]
+    assert "нет сведений ЕГРН" in lost and "чисто" not in lost
+    # Проверенный участок по-прежнему называется чистым — иначе теряется ответ.
+    checked = html.split("50:12:0100131:497")[1].split("</div>")[0]
+    assert "чисто" in checked
+
+
+def test_a_parcel_without_egrn_still_gets_a_line():
+    """Номер, по которому нет сведений, не исчезает из разбивки молча."""
+    _, html = _render({
+        "requested_count": 2, "checked_count": 2,
+        "verdict": {"status": "WARNING", "headline": "Есть ограничения", "disclaimer": ""},
+        "parcels": [
+            {"found": True, "cadastral_number": "50:12:0100131:497", "findings": [
+                {"flag_class": "economic", "name": "Охранная зона", "impact": "режет"}]},
+            {"found": False, "cadastral_number": "50:12:0100131:999"},
+        ],
+    })
+    assert "50:12:0100131:999" in html
+
+
+def test_a_missed_number_is_asked_twice(monkeypatch):
+    """НСПД отвечает не на каждый запрос — повтор возвращает участок.
+
+    На площадке из двадцати двух номеров сведения пришли по десяти, и
+    двенадцать участков выглядели несуществующими. Ни один из них не исчез с
+    кадастрового учёта — просто сервис не ответил.
+    """
+    monkeypatch.setattr(core, "_core_api_url", lambda path: "")
+    monkeypatch.setattr(core, "_LAND_RETRY_PAUSE_SECONDS", 0)
+    monkeypatch.setattr(core, "_land_screen_findings", lambda *a, **k: [])
+    calls = {"count": 0}
+
+    def flaky(query):
+        calls["count"] += 1
+        return [] if calls["count"] < 2 else [_parcel_of(21787.0, "50:12:0100131:497")]
+
+    monkeypatch.setattr(core, "_nspd_search_features", flaky)
+    core._LAND_SCREENING_CACHE.clear()
+    answer = core.land_screening(cad="50:12:0100131:497")
+    assert calls["count"] == 2, "промах спрашивается второй раз"
+    assert answer["parcels"][0]["found"] is True
+
+
+def test_a_refused_request_is_not_a_verdict_about_the_parcel(monkeypatch):
+    """Сорванный запрос — не «участка нет»: это про нас, а не про участок."""
+    monkeypatch.setattr(core, "_core_api_url", lambda path: "")
+    monkeypatch.setattr(core, "_LAND_RETRY_PAUSE_SECONDS", 0)
+
+    def refused(query):
+        raise RuntimeError("Сервис НСПД недоступен")
+
+    monkeypatch.setattr(core, "_nspd_search_features", refused)
+    core._LAND_SCREENING_CACHE.clear()
+    answer = core.land_screening(cad="50:12:0100131:497")
+    parcel = answer["parcels"][0]
+    assert parcel["found"] is False
+    assert parcel["probe_failed"] is True
+    assert "не прошёл" in parcel["note"]
+
+    _, html = _render({
+        "requested_count": 1, "checked_count": 1,
+        "verdict": {"status": "NOT_SCREENED", "headline": "Скрининг не выполнен", "disclaimer": ""},
+        "parcels": [parcel],
+    })
+    assert "НСПД не ответил: 1" in html or "запрос в НСПД не прошёл" in html
+    assert "без сведений ЕГРН: 1" not in html
+
+
+def test_the_reason_for_a_skip_is_the_real_one():
+    """Мелкий участок и неответивший НСПД получали чужой диагноз — «нет ЕГРН»."""
+    _, small = _render({
+        "requested_count": 1, "checked_count": 1, "small_count": 1, "min_area_sqm": 1000.0,
+        "verdict": {"status": "NOT_SCREENED", "headline": "Скрининг не выполнен", "disclaimer": ""},
+        "parcels": [{"found": True, "cadastral_number": "50:12:0100131:29", "area_ha": 0.05,
+                     "too_small": True, "findings": []}],
+    })
+    assert "мельче 10 соток" in small
+    assert "нет сведений ЕГРН" not in small
+
+    _, unreached = _render({
+        "requested_count": 1, "checked_count": 1,
+        "verdict": {"status": "NOT_SCREENED", "headline": "Скрининг не выполнен", "disclaimer": ""},
+        "parcels": [{"found": False, "probe_failed": True, "cadastral_number": "50:12:0100131:29"}],
+    })
+    assert "НСПД не ответил" in unreached
+    assert "нет сведений ЕГРН" not in unreached
+
+
+def test_an_unscreened_site_still_lists_its_parcels():
+    """Свод «не проверялось» не имеет права съедать разбивку по участкам."""
+    _, html = _render({
+        "requested_count": 3, "checked_count": 3,
+        "verdict": {"status": "NOT_SCREENED", "headline": "Скрининг не выполнен", "disclaimer": ""},
+        "parcels": [{"found": False, "cadastral_number": f"50:12:0100131:{n}"} for n in (1, 2, 3)],
+    })
+    for number in ("50:12:0100131:1", "50:12:0100131:2", "50:12:0100131:3"):
+        assert number in html
