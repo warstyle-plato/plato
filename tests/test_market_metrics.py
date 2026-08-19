@@ -1033,28 +1033,35 @@ def test_the_object_field_asks_both_sources_at_once() -> None:
     assert "[names.reason,places.reason].filter(Boolean)" in CABINET_PAGE
 
 
-def test_fifteen_lines_are_not_fifteen_colours() -> None:
-    """Пятнадцать линий пятнадцатью цветами не различаются никак.
+def test_the_market_is_a_band_not_fifteen_lines() -> None:
+    """Пятнадцать линий сливаются, и различать их незачем.
 
-    Девятый категориальный цвет неотличим от одного из первых восьми, а
-    подписи ко всем концам сразу дают клубок выносок — первая попытка так и
-    выглядела. Форма здесь другая: выделение. Свой проект рыжий, медиана
-    пунктиром, соседи — серый фон рынка; имя соседа берётся наведением, все
-    числа целиком лежат в таблице под графиком.
+    За отдельным конкурентом по такому графику не следят — смотрят, где идёт
+    своя цена относительно рынка. Столбики не спасают: шестнадцать серий по
+    восемнадцать месяцев в столбиках не читаются вовсе. Полоса квартилей
+    отвечает на тот же вопрос и не мешает смотреть.
+
+    Кривая отдельного соседа никуда не делась — она на его карточке, где
+    серия одна и линия уместна.
     """
     from market_search.cabinet import CABINET_PAGE
 
     trend = CABINET_PAGE[CABINET_PAGE.index("function trendChart"):]
     trend = trend[: trend.index("function salesChart")]
 
-    # Постоянных подписей ровно четыре: край сверху, край снизу, свой проект,
-    # медиана. Не «по подписи на линию».
-    assert "push(ends[0]); push(ends[ends.length-1]); push(ends.find(e=>e.own));" in trend
-    assert 'class="ln"' in trend
-    assert "g.ln:hover text.hov{opacity:1}" in CABINET_PAGE
-    # Соседи одного цвета — это решение, а не недосмотр: второго цвета для
-    # них в схеме нет.
-    assert trend.count('stroke="#c3d3e2"') == 1
+    # Две полосы: весь разброс бледной, половина выборки плотной.
+    assert "area('hi','lo')" in trend
+    assert "area('p75','p25')" in trend
+    # Медиана рынка — по соседям, без своего проекта: сравнивать себя с
+    # медианой, частью которой являешься, нельзя.
+    assert "const peers=rows.filter(s=>!s.own);" in trend
+    assert "peers.map(s=>at(s,m))" in trend
+    # Подписей ровно четыре: свой проект и три уровня полосы.
+    assert "'верх выборки'" in trend
+    assert "'низ выборки'" in trend
+    # И сказано, что это за полоса и где искать отдельного соседа.
+    assert "Плотная полоса — половина соседей" in trend
+    assert "в его карточке" in trend
 
 
 def test_adding_a_project_sits_with_the_sample_not_in_the_tail() -> None:
@@ -1253,15 +1260,12 @@ def test_a_finger_can_reach_the_name_of_a_bubble_and_a_line() -> None:
     from market_search.cabinet import CABINET_PAGE
 
     # Те же правила, что у наведения, только по классу от касания.
-    assert "g.bub.on text.hov,g.ln.on text.hov{opacity:1}" in CABINET_PAGE
-    assert "closest('g.bub, g.ln')" in CABINET_PAGE
+    assert "g.bub.on text.hov{opacity:1}" in CABINET_PAGE
+    assert "closest('g.bub')" in CABINET_PAGE
     # Повторное касание снимает подпись: тапнуть мимо на узком экране трудно.
     assert "if(group.classList.contains('on')){group.classList.remove('on');return}" in CABINET_PAGE
     # Порядок узлов в SVG — это порядок слоёв, иначе подпись уедет под соседей.
     assert "group.parentNode.appendChild(group)" in CABINET_PAGE
-    # Пальцем в линию толщиной 1,3 пикселя не попасть — нужна широкая полоса.
-    assert 'g.ln path.hit{stroke:transparent;fill:none;stroke-width:14}' in CABINET_PAGE
-    assert '<path class="hit"' in CABINET_PAGE
 
 
 def test_a_project_added_by_hand_counts_in_the_medians(tmp_path) -> None:

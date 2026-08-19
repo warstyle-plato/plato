@@ -243,23 +243,11 @@ ul.caveats li{margin:4px 0}
 g.bub text.hov{opacity:0;pointer-events:none}
 g.bub:hover text.hov{opacity:1}
 g.bub:hover circle{fill-opacity:.75}
-/* Линия соседа — фон рынка, пока на неё не навели. Пятнадцать линий
-   пятнадцатью цветами не различаются: девятый цвет неотличим от одного из
-   первых восьми. Поэтому имя показывается по наведению, а не всем сразу. */
-g.ln text.hov{opacity:0;pointer-events:none}
-g.ln:hover text.hov{opacity:1}
-g.ln:hover path.line{stroke:#1367AE;stroke-width:2.4}
-g.ln:hover circle{fill:#1367AE}
 /* Наведения на тач-экране не бывает, а кабинетом пользуются с телефона: там
    имена проектов у кружков и линий были недостижимы вовсе. Касание ставит
    группе класс — те же правила, что у наведения, только по тапу. */
-g.bub.on text.hov,g.ln.on text.hov{opacity:1}
+g.bub.on text.hov{opacity:1}
 g.bub.on circle{fill-opacity:.75}
-g.ln.on path.line{stroke:#1367AE;stroke-width:2.4}
-g.ln.on circle{fill:#1367AE}
-/* Полоса попадания шире самой линии: пальцем в линию толщиной 1,3 пикселя не
-   попасть. Она прозрачна и не печатается. */
-g.ln path.hit{stroke:transparent;fill:none;stroke-width:14}
 /* Печать берёт все пары осей, а не ту, что открыта на экране: на бумаге
    переключателя нет, и оставшиеся четыре карты иначе не попали бы никуда. */
 .printviews{display:none}
@@ -281,7 +269,7 @@ g.ln path.hit{stroke:transparent;fill:none;stroke-width:14}
   /* Ни наведённая, ни тапнутая подпись на бумагу не идёт: на печати нет ни
      того ни другого, а один случайно оставшийся ярлык читался бы как
      выделение, которого никто не делал. Класс сильнее, поэтому назван явно. */
-  g.bub text.hov,g.ln text.hov,g.bub.on text.hov,g.ln.on text.hov{opacity:0}
+  g.bub text.hov,g.bub.on text.hov{opacity:0}
   .card{break-inside:avoid;page-break-inside:avoid;border:0;border-top:1px solid #dde5ed;
         border-radius:0;padding:14px 0;margin:0}
   h2{break-after:avoid}
@@ -387,92 +375,121 @@ function priceChart(peers, subject, median){
   return '<div class="wrap">'+svg+'</svg></div>';
 }
 
-// Линии динамики: свой проект толстой рыжей, соседи тонкими синими, подписи
-// справа у последней точки. Медиана рынка по месяцам — пунктиром: без неё
-// видно, что цена росла, но не видно, росла ли она быстрее рынка.
+// Динамика цены: свой проект линией, рынок — полосой.
+//
+// Пятнадцать линий соседей превращались в клубок: их и не различить, и
+// различать незачем — за отдельным конкурентом читатель по такому графику не
+// следит, он смотрит, где идёт его цена относительно рынка. Столбики тут не
+// спасают: шестнадцать серий по восемнадцать месяцев в столбиках не читаются
+// вовсе. Полоса квартилей отвечает на тот же вопрос и не мешает смотреть:
+// внутри полосы цена — как у всех, выше — премия, ниже — скидка.
+//
+// Кривая отдельного соседа никуда не делась: она на его карточке, по клику из
+// любой таблицы. Там серия одна, и линия — уместная форма.
 function trendChart(series){
   const rows=series.filter(s=>s.points&&s.points.length>1);
   if(rows.length<1) return '<div class="muted">Истории цен по этой выборке нет.</div>';
   const months=[...new Set(rows.flatMap(s=>s.points.map(p=>p.month)))].sort();
   if(months.length<2) return '<div class="muted">Истории цен по этой выборке нет.</div>';
   const at=(s,m)=>{const p=s.points.find(p=>p.month===m);return p?p.value:null};
-  const med=months.map(m=>{
-    const v=rows.map(s=>at(s,m)).filter(x=>x!==null).sort((a,b)=>a-b);
-    return v.length?(v.length%2?v[(v.length-1)/2]:(v[v.length/2-1]+v[v.length/2])/2):null;
+
+  const own=rows.find(s=>s.own)||null;
+  const peers=rows.filter(s=>!s.own);
+  // Медиана рынка считается по соседям, без своего проекта. Прежде он входил
+  // в неё сам, и цена сравнивалась с медианой, частью которой является.
+  const quantile=(sorted,q)=>{
+    if(!sorted.length) return null;
+    const at=(sorted.length-1)*q, low=Math.floor(at), high=Math.ceil(at);
+    return low===high?sorted[low]:sorted[low]+(sorted[high]-sorted[low])*(at-low);
+  };
+  const band=months.map(m=>{
+    const v=peers.map(s=>at(s,m)).filter(x=>x!==null).sort((a,b)=>a-b);
+    if(!v.length) return null;
+    return {n:v.length, lo:v[0], hi:v[v.length-1],
+            p25:quantile(v,0.25), p50:quantile(v,0.5), p75:quantile(v,0.75)};
   });
+  const known=band.filter(Boolean);
+
   const all=rows.flatMap(s=>s.points.map(p=>p.value));
   const lo=Math.min(...all)*0.97, hi=Math.max(...all)*1.03;
-  // Высота считается от числа линий: подписи справа стоят столбиком, и при
-  // пятнадцати соседях фиксированная высота обрезала нижние.
-  const W=620,L=64,R=176,T=14,B=30;
-  const H=Math.max(260, rows.length*13+T+B+14);
+  const W=620,L=64,R=176,T=16,B=30,H=300;
   const x=i=>L+i*(W-L-R)/(months.length-1);
-  const y=v=>T+(H-T-B)*(1-(v-lo)/(hi-lo));
-  const path=s=>months.map((m,i)=>{const v=at(s,m);return v===null?null:`${i?'L':'M'}${x(i).toFixed(1)} ${y(v).toFixed(1)}`})
-    .filter(Boolean).join(' ');
+  const y=v=>T+(H-T-B)*(1-(v-lo)/(hi-lo||1));
+
   let svg=`<svg viewBox="0 0 ${W} ${H}" width="100%" role="img">`;
   [0,0.5,1].forEach(f=>{const v=lo+(hi-lo)*f;
     svg+=`<line x1="${L}" y1="${y(v)}" x2="${W-R}" y2="${y(v)}" stroke="#e6ecf2"/>`
        +`<text x="${L-6}" y="${y(v)+4}" text-anchor="end" font-size="10" fill="#8798a8">${num(v)}</text>`;});
   months.forEach((m,i)=>{ if(i%Math.ceil(months.length/6)) return;
     svg+=`<text x="${x(i)}" y="${H-10}" text-anchor="middle" font-size="10" fill="#8798a8">${m.slice(2)}</text>`;});
-  // Медиана рисуется только когда сравнивать есть с чем: на одной линии она
-  // совпадает с ней самой и в карточке проекта выглядела бы вторым числом.
-  const single=rows.length<2;
-  const mp=months.map((m,i)=>med[i]===null?null:`${i?'L':'M'}${x(i).toFixed(1)} ${y(med[i]).toFixed(1)}`).filter(Boolean).join(' ');
-  if(!single) svg+=`<path d="${mp}" fill="none" stroke="#16202b" stroke-width="1.2" stroke-dasharray="5 4"/>`;
-  // Пятнадцать линий пятнадцатью цветами не различаются никак: девятый цвет
-  // неотличим от одного из первых восьми, а подписи ко всем концам сразу дают
-  // клубок выносок — так и вышло с первой попыткой. Поэтому здесь не «каждой
-  // линии по имени», а выделение: свой проект рыжий, медиана пунктиром, соседи
-  // — серый фон рынка. Имя соседа берётся наведением, а все числа целиком
-  // лежат в таблице под графиком.
-  const ends=[];
-  rows.forEach(s=>{
-    let ex=null, ey=null, ev=null;
-    for(let i=months.length-1;i>=0;i--){const v=at(s,months[i]); if(v!==null){ex=x(i);ey=y(v);ev=v;break}}
-    if(s.own){
-      svg+=`<path d="${path(s)}" fill="none" stroke="#C4581B" stroke-width="2.6"/>`;
-      if(ex!==null) ends.push({y:ey,v:ev,n:s.name,own:true,ex:ex});
-      return;
-    }
-    // Сосед: линия серая, имя — в группе рядом с концом, показывается стилем.
-    svg+=`<g class="ln"><path class="hit" d="${path(s)}"/>`
-       +`<path class="line" d="${path(s)}" fill="none" stroke="#c3d3e2" stroke-width="1.3"/>`
-       +(ex===null?'':`<circle cx="${ex.toFixed(1)}" cy="${ey.toFixed(1)}" r="2.4" fill="#c3d3e2"/>`
-         +`<text class="hov" x="${(ex-6).toFixed(1)}" y="${(ey-6).toFixed(1)}" text-anchor="end"`
-         +` font-size="11" fill="#16202b" paint-order="stroke" stroke="#fff" stroke-width="3.5">`
-         +`${esc(s.name)} · ${num(ev)}</text>`)
-       +`</g>`;
-    if(ex!==null) ends.push({y:ey,v:ev,n:s.name,own:false,ex:ex});
+
+  // Полоса рисуется только там, где соседи есть: на карточке одного проекта
+  // сравнивать не с чем, и полоса совпала бы с самой линией.
+  const area=(keyHi,keyLo)=>{
+    const top=[], bottom=[];
+    months.forEach((m,i)=>{
+      const b=band[i];
+      if(!b) return;
+      top.push(`${x(i).toFixed(1)} ${y(b[keyHi]).toFixed(1)}`);
+      bottom.unshift(`${x(i).toFixed(1)} ${y(b[keyLo]).toFixed(1)}`);
+    });
+    if(top.length<2) return '';
+    return 'M'+top.join(' L')+' L'+bottom.join(' L')+' Z';
+  };
+  const wide=known.length>1?area('hi','lo'):'';
+  const core=known.length>1?area('p75','p25'):'';
+  if(wide) svg+=`<path d="${wide}" fill="#9dc2e6" fill-opacity="0.16" stroke="none"/>`;
+  if(core) svg+=`<path d="${core}" fill="#9dc2e6" fill-opacity="0.38" stroke="none"/>`;
+  const line=key=>months.map((m,i)=>{
+    const b=band[i];
+    return b===null?null:`${i?'L':'M'}${x(i).toFixed(1)} ${y(b[key]).toFixed(1)}`;
+  }).filter(Boolean).join(' ');
+  if(known.length>1) svg+=`<path d="${line('p50')}" fill="none" stroke="#16202b" stroke-width="1.2" stroke-dasharray="5 4"/>`;
+
+  const path=s=>months.map((m,i)=>{const v=at(s,m);return v===null?null:`${i?'L':'M'}${x(i).toFixed(1)} ${y(v).toFixed(1)}`})
+    .filter(Boolean).join(' ');
+  // Свой проект поверх полосы, а если объект без истории — рисуем соседей
+  // линиями, как раньше: полоса из одного-двух проектов ничего не говорит.
+  if(own) svg+=`<path d="${path(own)}" fill="none" stroke="#C4581B" stroke-width="2.6"/>`;
+  else if(known.length<=1) peers.forEach(s=>{
+    svg+=`<path d="${path(s)}" fill="none" stroke="#9dc2e6" stroke-width="1.3"><title>${esc(s.name)}</title></path>`;
   });
-  // Постоянных подписей ровно столько, чтобы читался масштаб: свой проект,
-  // верхний и нижний края выборки, медиана. Остальные — по наведению.
-  ends.sort((a,b)=>a.y-b.y);
-  const marked=[];
-  const push=e=>{if(e&&!marked.includes(e))marked.push(e)};
-  push(ends[0]); push(ends[ends.length-1]); push(ends.find(e=>e.own));
-  marked.sort((a,b)=>a.y-b.y);
-  const my=y(med[med.length-1]);
+
+  // Подписи справа: свой проект, медиана и края полосы. Больше и не нужно —
+  // именно эти четыре числа отвечают на вопрос «где я относительно рынка».
+  const last=known.length?known[known.length-1]:null;
+  const marks=[];
+  if(own){
+    for(let i=months.length-1;i>=0;i--){const v=at(own,months[i]);
+      if(v!==null){marks.push({y:y(v),ex:x(i),v,n:own.name,own:true});break}}
+  }
+  if(last){
+    const i=band.lastIndexOf(last);
+    marks.push({y:y(last.p75),ex:x(i),v:last.p75,n:'верх выборки',own:false});
+    marks.push({y:y(last.p50),ex:x(i),v:last.p50,n:'медиана',own:false});
+    marks.push({y:y(last.p25),ex:x(i),v:last.p25,n:'низ выборки',own:false});
+  }
+  marks.sort((a,b)=>a.y-b.y);
   const stack=[];
   let prev=-99;
-  marked.forEach(e=>{const yy=Math.max(e.y,prev+12);prev=yy;stack.push(yy)});
-  stack.push(Math.max(my,prev+12));
+  marks.forEach(e=>{const yy=Math.max(e.y,prev+13);prev=yy;stack.push(yy)});
   let floor=H-6;
-  for(let i=stack.length-1;i>=0;i--){stack[i]=Math.min(stack[i],floor);floor=stack[i]-12}
-  marked.forEach((e,i)=>{
+  for(let i=stack.length-1;i>=0;i--){stack[i]=Math.min(stack[i],floor);floor=stack[i]-13}
+  marks.forEach((e,i)=>{
     const c=e.own?'#C4581B':'#8798a8';
     svg+=`<polyline points="${e.ex.toFixed(1)},${e.y.toFixed(1)} ${(W-R-6).toFixed(1)},${stack[i].toFixed(1)} `
        +`${(W-R+5).toFixed(1)},${stack[i].toFixed(1)}" fill="none" stroke="${c}" stroke-width="${e.own?1.4:0.7}"/>`
-       +`<circle cx="${e.ex.toFixed(1)}" cy="${e.y.toFixed(1)}" r="${e.own?3.2:2.4}" fill="${c}"/>`
        +`<text x="${W-R+8}" y="${stack[i]+3}" font-size="10.5" fill="${e.own?'#C4581B':'#5b6b7d'}"`
        +`${e.own?' font-weight="600"':''}>${esc(e.n.length>19?e.n.slice(0,18)+'…':e.n)} ${num(e.v)}</text>`;
   });
-  if(!single) svg+=`<text x="${W-R+8}" y="${stack[stack.length-1]+3}" font-size="10.5" fill="#16202b">`
-     +`медиана ${num(med[med.length-1])}</text>`;
-  return '<div class="wrap">'+svg+'</svg></div>';
+  const note=known.length>1
+    ? `Плотная полоса — половина соседей (от нижнего квартиля до верхнего), бледная — весь разброс`
+      +` выборки, пунктир — медиана рынка без вашего проекта. Полоса построена по ${last.n} проектам`
+      +` с историей цены. Кривая отдельного соседа — в его карточке: нажмите имя в таблице ниже.`
+    : 'Соседей с историей цены меньше двух — полосу строить не из чего.';
+  return '<div class="wrap">'+svg+'</svg></div>'
+    +`<div class="muted" style="font-size:12.5px;margin-top:6px">${note}</div>`;
 }
-
 
 // Продажи по месяцам: свой проект столбиками, медиана соседей пунктиром.
 // Столбики, а не линия: продажи — это счёт событий за месяц, а не уровень,
@@ -1374,8 +1391,8 @@ function choose(i){
 document.addEventListener('pointerdown',function(e){
   const target=e.target;
   if(!target||typeof target.closest!=='function')return;
-  const group=target.closest('g.bub, g.ln');
-  document.querySelectorAll('g.bub.on, g.ln.on').forEach(node=>{
+  const group=target.closest('g.bub');
+  document.querySelectorAll('g.bub.on').forEach(node=>{
     if(node!==group)node.classList.remove('on');
   });
   if(!group)return;
