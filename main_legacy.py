@@ -21121,6 +21121,25 @@ def _tool_find_anomalies(
                 f"{weak['name']} имеет LLCR {weak['llcr_x']:.3f}x ниже 1,20x.",
                 {"phase_llcr": phase_vals})
 
+    # Объект, включённый во вводных, но отсутствующий в ТЭП. Деньги модель
+    # берёт из вводных, а ГНС проекта — сумма ТЭП: расходится знаменатель всех
+    # удельных показателей. На странице поля теперь связаны, но сохранённый
+    # проект мог лечь на диск с пустой строкой, и молчать об этом нельзя.
+    for switch, key, area_key, label in (
+            ("offices_enabled", "offices", "offices_gba_sqm", "МФОЦ / офисы"),
+            ("retail_enabled", "standalone_retail", "retail_gba_sqm", "ТЦ / коммерция ОСЗ")):
+        if not b(req.inputs, switch):
+            continue
+        declared = n(req.inputs, area_key)
+        in_tep = n(req.tep.get(key, {}) or {}, "gns")
+        if declared > 0 and abs(in_tep - declared) > 1:
+            add("high", "OBJECT_MISSING_IN_TEP",
+                f"{label}: во вводных {declared:,.0f} м² ГНС, в ТЭП {in_tep:,.0f} м². "
+                "Выручка и себестоимость объекта в модели есть, а в ГНС проекта его "
+                "нет — удельные показатели считаются не на ту площадь."
+                .replace(",", "\u00a0"),
+                {"inputs_gns_sqm": round(declared, 2), "tep_gns_sqm": round(in_tep, 2)})
+
     for key, row in req.tep.items():
         gns, total, saleable = n(row, "gns"), n(row, "total_area"), n(row, "saleable")
         if saleable > total + 1 and total > 0:
@@ -28658,7 +28677,7 @@ function renderInputs(){
       el.disabled=true;
       el.title='Москва: платежи ежеквартально — установлено нормативно';
      }
-     el.onchange=()=>{inputs[id]=type==='checkbox'?el.checked:(type==='number'&&!Array.isArray(f[4])?Number(el.value):el.value);if(id==='social_mode')inputs._social_mode_user_set=true;if(id==='vri_region'){renderInputs();return calculate()}if(['apartment_price_th','commercial_price_th','parking_price_th','main_above_th_per_sqm','main_under_th_per_sqm'].includes(id)){inputs.project_class='custom';syncProjectClassSelector()}if(['underground_manual_spaces','underground_manual_gns_sqm','underground_area_per_space_sqm'].includes(id)){syncUndergroundPair(id);syncTep(false)}if(['offices_enabled','retail_enabled','above_parking_enabled','social_mode','kindergarten_places','school_places','clinic_capacity','social_dou_gba_sqm','social_school_gba_sqm','social_clinic_gba_sqm','above_parking_spaces','above_parking_area_per_space_sqm'].includes(id)){const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();if(filled)renderInputs();syncTep(false)}refreshGroupPeeks();calculate()};
+     el.onchange=()=>{inputs[id]=type==='checkbox'?el.checked:(type==='number'&&!Array.isArray(f[4])?Number(el.value):el.value);if(id==='social_mode')inputs._social_mode_user_set=true;if(id==='vri_region'){renderInputs();return calculate()}if(['apartment_price_th','commercial_price_th','parking_price_th','main_above_th_per_sqm','main_under_th_per_sqm'].includes(id)){inputs.project_class='custom';syncProjectClassSelector()}if(UNDERGROUND_PAIR_INPUTS.includes(id))syncUndergroundPair(id);if(TEP_DERIVED_INPUTS.includes(id)){const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();if(filled)renderInputs();syncTep(false)}refreshGroupPeeks();calculate()};
      wrap.appendChild(el);grid.appendChild(wrap);
    });det.appendChild(grid);(ownTab?vriBox:box).appendChild(det);
  });
@@ -29048,8 +29067,26 @@ function applyRequiredSocialProgramFromGlavapu(){
  return changed;
 }
 
+// Поля вводных, из которых собирается таблица ТЭП. Список объявлен рядом с
+// самим `syncTep` и один на всё: связь «поле → ТЭП» держалась на строке в
+// обработчике `onchange`, и площадь офиса в неё не попала — объект включался,
+// а метры до таблицы не доезжали (замечание владельца, 19.08.2026). Тест
+// сверяет список с тем, что `syncTep` читает на самом деле.
+const UNDERGROUND_PAIR_INPUTS=['underground_manual_spaces','underground_manual_gns_sqm',
+ 'underground_area_per_space_sqm'];
+const TEP_DERIVED_INPUTS=UNDERGROUND_PAIR_INPUTS.concat([
+ 'underground_parking_disabled',
+ 'offices_enabled','offices_gba_sqm','offices_saleable_sqm',
+ 'retail_enabled','retail_gba_sqm','retail_saleable_sqm',
+ 'above_parking_enabled','above_parking_spaces','above_parking_area_per_space_sqm',
+ 'social_mode','kindergarten_places','school_places','clinic_capacity',
+ 'social_dou_gba_sqm','social_school_gba_sqm','social_clinic_gba_sqm']);
+
 function syncTep(rerender=true){
- const socialBuild=inputs.social_mode==='Строительство';
+ // Соцобъекты строятся и в совмещённом режиме — иначе ДОУ и школа исчезают
+ // из ТЭП при выбранном «Строительство и компенсация», хотя они в проекте.
+ const socialBuild=inputs.social_mode==='Строительство'
+   ||inputs.social_mode==='Строительство и компенсация';
  if(inputs.underground_parking_disabled||Number(inputs.underground_manual_spaces||0)>0||Number(inputs.underground_manual_gns_sqm||0)>0){repairParkingFromGlavapu()}else{tep.underground_parking.gns=Number(tep.underground_parking.units||0)*undergroundAreaPerSpace()}tep.underground_parking.total_area=tep.underground_parking.gns;
  tep.offices.gns=inputs.offices_enabled?Number(inputs.offices_gba_sqm||0):0;tep.offices.total_area=tep.offices.gns;tep.offices.saleable=inputs.offices_enabled?Number(inputs.offices_saleable_sqm||0):0;tep.offices.useful=tep.offices.saleable;
  tep.standalone_retail.gns=inputs.retail_enabled?Number(inputs.retail_gba_sqm||0):0;tep.standalone_retail.total_area=tep.standalone_retail.gns;tep.standalone_retail.saleable=inputs.retail_enabled?Number(inputs.retail_saleable_sqm||0):0;tep.standalone_retail.useful=tep.standalone_retail.saleable;
