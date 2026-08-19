@@ -98,11 +98,15 @@ def set_cookie(response: Response, key: str) -> None:
 
 
 SECTIONS: list[tuple[str, str, str]] = [
+    # Порядок — ход рассуждения: почём продают, как быстро, каким лотом,
+    # сколько метров в месяц, и только потом — сколько осталось. Остаток
+    # стоял третьим, посреди разговора о продукте, хотя он итог всего
+    # предыдущего: сколько ещё продавать при таком темпе и таком лоте.
     ("price", "Цена метра", "прайс проекта против соседей и против Москвы своего класса"),
     ("pace", "Темп продаж", "ДДУ в месяц, во сколько раз быстрее или медленнее соседей"),
-    ("stock", "Остаток и экспозиция", "сколько осталось, сколько выставлено, на сколько месяцев"),
     ("lot_size", "Размер лота", "средний проданный лот против среднего лота в проекте"),
     ("absorption", "Поглощение в метрах", "метры в месяц — темп, свободный от квартирографии"),
+    ("stock", "Остаток и экспозиция", "сколько осталось, сколько выставлено, на сколько месяцев"),
 ]
 
 
@@ -525,16 +529,21 @@ function trendChart(series){
 // Продажи по месяцам: свой проект столбиками, медиана соседей пунктиром.
 // Столбики, а не линия: продажи — это счёт событий за месяц, а не уровень,
 // и линия между двумя месяцами рисует переход, которого не было.
-function salesChart(rows){
+// Помесячные столбики: свой проект, медиана соседей пунктиром. Ключ и
+// единица — параметрами, потому что вопросов три и все они помесячные:
+// сколько ДДУ, сколько метров и каким лотом. Прежде график был только у
+// первого, а числа для остальных лежали в том же отчёте и не рисовались.
+function salesChart(rows, key, unit, digits){
+  key=key||'sold'; unit=unit||'ДДУ'; digits=digits||0;
   const own=rows.find(r=>r.own);
   if(!own||!own.points.length) return '<div class="muted">Истории продаж по этому проекту в отчёте нет — он покрывает «Москву старую».</div>';
   const months=[...new Set(rows.flatMap(r=>r.points.map(p=>p.month)))].sort();
   const at=(r,m,k)=>{const p=r.points.find(p=>p.month===m);return p?p[k]:null};
   const med=months.map(m=>{
-    const v=rows.filter(r=>!r.own).map(r=>at(r,m,'sold')).filter(x=>x!==null).sort((a,b)=>a-b);
+    const v=rows.filter(r=>!r.own).map(r=>at(r,m,key)).filter(x=>x!==null).sort((a,b)=>a-b);
     return v.length?(v.length%2?v[(v.length-1)/2]:(v[v.length/2-1]+v[v.length/2])/2):null;
   });
-  const vals=months.map(m=>at(own,m,'sold')).filter(v=>v!==null).concat(med.filter(v=>v!==null));
+  const vals=months.map(m=>at(own,m,key)).filter(v=>v!==null).concat(med.filter(v=>v!==null));
   const hi=Math.max(...vals,1)*1.15;
   const W=620,H=210,L=44,R=110,T=12,B=28;
   const bw=Math.max(4,(W-L-R)/months.length*0.62);
@@ -545,29 +554,42 @@ function salesChart(rows){
     svg+=`<line x1="${L}" y1="${y(v)}" x2="${W-R}" y2="${y(v)}" stroke="#e6ecf2"/>`
        +`<text x="${L-6}" y="${y(v)+4}" text-anchor="end" font-size="10" fill="#8798a8">${num(v)}</text>`;});
   months.forEach((m,i)=>{
-    const v=at(own,m,'sold');
+    const v=at(own,m,key);
     if(v!==null) svg+=`<rect x="${x(i)-bw/2}" y="${y(v)}" width="${bw}" height="${Math.max(1,H-B-y(v))}" rx="2" fill="#C4581B"/>`;
     if(i%Math.ceil(months.length/6)===0)
       svg+=`<text x="${x(i)}" y="${H-9}" text-anchor="middle" font-size="10" fill="#8798a8">${m.slice(2)}</text>`;
   });
   const mp=months.map((m,i)=>med[i]===null?null:`${i?'L':'M'}${x(i).toFixed(1)} ${y(med[i]).toFixed(1)}`).filter(Boolean).join(' ');
   if(mp) svg+=`<path d="${mp}" fill="none" stroke="#16202b" stroke-width="1.3" stroke-dasharray="5 4"/>`;
-  const lastOwn=[...months].reverse().find(m=>at(own,m,'sold')!==null);
+  const lastOwn=[...months].reverse().find(m=>at(own,m,key)!==null);
+  if(lastOwn===undefined) return '<div class="muted">Помесячных чисел по этому проекту в отчёте нет.</div>';
   // Подпись — имя и значение через разделитель. Было слово «проект» и число
   // впритык: «проект 4» читалось как «проект номер четыре», а это четыре ДДУ
   // за последний месяц у проекта, у которого есть имя.
   const ownName=esc((own.name||'проект').slice(0,16));
-  svg+=`<text x="${W-R+8}" y="${y(at(own,lastOwn,'sold'))+4}" font-size="10.5" fill="#C4581B" font-weight="600">`
-     +`${ownName} · ${num(at(own,lastOwn,'sold'))} ДДУ</text>`;
+  svg+=`<text x="${W-R+8}" y="${y(at(own,lastOwn,key))+4}" font-size="10.5" fill="#C4581B" font-weight="600">`
+     +`${ownName} · ${num(at(own,lastOwn,key),digits)} ${unit}</text>`;
   const lastMed=rows.length<2?null:[...med].reverse().find(v=>v!==null);
   if(lastMed!==undefined&&lastMed!==null)
-    svg+=`<text x="${W-R+8}" y="${y(lastMed)+4}" font-size="10.5" fill="#16202b">медиана · ${num(lastMed,1)} ДДУ</text>`;
+    svg+=`<text x="${W-R+8}" y="${y(lastMed)+4}" font-size="10.5" fill="#16202b">медиана · ${num(lastMed,digits||1)} ${unit}</text>`;
   return '<div class="wrap">'+svg+'</svg></div>';
 }
 
 // Остаток: линия одного проекта. Медиану соседей здесь не рисуем — остаток
 // зависит от объёма проекта, и середина между столотником и тысячником не
 // значит ничего.
+// Средний проданный лот по месяцам: метры делить на ДДУ. Числа для этого
+// лежали в отчёте с самого начала — просто не запрашивались. Вопрос он
+// закрывает свой: средний лот за всё время говорит о продукте, а по месяцам
+// видно, куда движется спрос — мельчает лот или укрупняется.
+function lotChart(rows){
+  const derive=r=>({...r, points:(r.points||[]).map(p=>({
+    month:p.month,
+    lot:(p.sold&&p.area&&p.sold>0)?p.area/p.sold:null,
+  })).filter(p=>p.lot!==null)});
+  return salesChart(rows.map(derive),'lot','м²',1);
+}
+
 function remainChart(rows){
   const own=rows.find(r=>r.own);
   const pts=(own?own.points:[]).filter(p=>p.rem!==null&&p.rem!==undefined);
@@ -835,9 +857,14 @@ function blockCard(b,ctx){
   const say=(ctx.analysis&&ctx.analysis.blocks&&ctx.analysis.blocks[b.code])||null;
   const verdict=say&&say.text?`<div class="say ${say.tone}"><b>${TONE[say.tone]||'•'} Разбор</b> ${esc(say.text)}</div>`:'';
   const chart=b.code==='price'?trendChart(ctx.series)
-    :b.code==='pace'?salesChart(ctx.sales)
+    :b.code==='pace'?salesChart(ctx.sales,'sold','ДДУ',0)
+    :b.code==='lot_size'?lotChart(ctx.sales)
+    :b.code==='absorption'?salesChart(ctx.sales,'area','м²',0)
     :b.code==='stock'?remainChart(ctx.sales):'';
-  const chartTitle={price:'Динамика цены, ₽/м²',pace:'Продажи по месяцам, ДДУ',stock:'Остаток по месяцам, лотов'}[b.code]||'Динамика';
+  const chartTitle={price:'Динамика цены, ₽/м²',pace:'Продажи по месяцам, ДДУ',
+    lot_size:'Средний проданный лот по месяцам, м²',
+    absorption:'Продажи по месяцам, м²',
+    stock:'Остаток по месяцам, лотов'}[b.code]||'Динамика';
   const table=sectionTable(b.code,ctx);
   return `<div class="card"><h2>${esc(b.title)}</h2>${empty}<div class="kv">${kv}</div>`
     +verdict+notes+(chart?`<h3>${chartTitle}</h3>${chart}`:'')+(table?`<h3>Сравнение</h3>${table}`:'')+`</div>`;
@@ -877,7 +904,20 @@ function sectionTable(code,ctx){
     absorption:[...base,{t:'м²/мес',num:1,f:r=>num(r.area_per_month)},
                 {t:'ДДУ/мес',num:1,f:r=>num(r.units_per_month,1)}],
   }[code];
-  return cols?compareTable(rows,cols):'';
+  if(!cols) return '';
+  // «Почему из двадцати тут только семь» — вопрос владельца. В выборке
+  // двадцать соседей, но нужное число источник знает не про всех: остальные
+  // стоят прочерками, и таблица выглядит наполовину пустой без объяснения.
+  // Сколько соседей отвечают на вопрос этого раздела — сказано под ней.
+  const KEY={price:'price_per_sqm',pace:'units_per_month',lot_size:'sold_lot_avg',
+             absorption:'area_per_month',stock:'remaining_units'}[code];
+  const peers=ctx.peers||[];
+  const have=KEY?peers.filter(p=>p[KEY]!==null&&p[KEY]!==undefined).length:peers.length;
+  const note=(KEY&&peers.length&&have<peers.length)
+    ? `<div class="muted" style="font-size:12.5px;margin-top:6px">Это число источник знает про`
+      +` ${have} из ${peers.length} соседей выборки; у остальных прочерк — не ноль, а отсутствие данных.</div>`
+    : '';
+  return compareTable(rows,cols)+note;
 }
 
 

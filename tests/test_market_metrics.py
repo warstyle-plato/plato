@@ -1491,7 +1491,7 @@ def test_a_neighbour_curve_returns_to_the_chart_by_a_tick() -> None:
     # Галочка стоит в таблице под самим графиком, а не в общем списке внизу:
     # смотрят на кривые и тут же отмечают, чью показать.
     section = CABINET_PAGE[CABINET_PAGE.index("function sectionTable"):]
-    section = section[: section.index("return cols?compareTable")]
+    section = section[: section.index("if(!cols) return")]
     assert "price:[pick,...base," in section
     assert "pace:[...base," in section, "галочка только у графика цены"
     # В печать колонка не идёт.
@@ -1631,8 +1631,8 @@ def test_a_chart_label_does_not_read_as_a_project_number() -> None:
     sales = sales[: sales.index("function remainChart")]
 
     assert "'проект'" not in sales.replace("(own.name||'проект')", "")
-    assert "${ownName} · ${num(at(own,lastOwn,'sold'))} ДДУ" in sales
-    assert "медиана · ${num(lastMed,1)} ДДУ" in sales
+    assert "${ownName} · ${num(at(own,lastOwn,key),digits)} ${unit}" in sales
+    assert "медиана · ${num(lastMed,digits||1)} ${unit}" in sales
 
 
 def test_a_manual_class_reaches_the_sections_not_only_the_sample(tmp_path) -> None:
@@ -1677,3 +1677,36 @@ def test_a_manual_class_reaches_the_sections_not_only_the_sample(tmp_path) -> No
     same = picked["blocks"][0]["peers"]["same_class"]
     assert same["count"] == 2, "«своим классом» обязаны стать премиальные соседи"
     assert same["median"] == 925_000
+
+
+def test_every_section_has_its_own_chart_and_the_stock_goes_last() -> None:
+    """График был только у цены, темпа и остатка — а вопросов пять.
+
+    Метры в месяц и средний лот по месяцам лежали в том же отчёте и не
+    рисовались: помесячная площадь у `dynamics` есть, её просто не
+    запрашивали. Порядок разделов — ход рассуждения: почём, как быстро, каким
+    лотом, сколько метров, и только потом сколько осталось; остаток стоял
+    третьим, посреди разговора о продукте, хотя он итог всего предыдущего.
+    """
+    from market_search.cabinet import CABINET_PAGE, SECTIONS
+
+    assert [code for code, _, _ in SECTIONS] == [
+        "price", "pace", "lot_size", "absorption", "stock",
+    ]
+    assert "b.code==='lot_size'?lotChart(ctx.sales)" in CABINET_PAGE
+    assert "b.code==='absorption'?salesChart(ctx.sales,'area','м²',0)" in CABINET_PAGE
+    assert "Средний проданный лот по месяцам, м²" in CABINET_PAGE
+    # Средний лот — метры делить на ДДУ, а не отдельное поле источника.
+    assert "(p.sold&&p.area&&p.sold>0)?p.area/p.sold:null" in CABINET_PAGE
+
+
+def test_a_dash_in_the_table_is_explained_not_left_hanging() -> None:
+    """«Почему из 20 тут только 7» — в выборке двадцать, а чисел семь.
+
+    Источник знает нужное не про всех, и таблица выглядела наполовину пустой
+    без объяснения. Прочерк — не ноль, и это сказано.
+    """
+    from market_search.cabinet import CABINET_PAGE
+
+    assert "Это число источник знает про" in CABINET_PAGE
+    assert "прочерк — не ноль, а отсутствие данных" in CABINET_PAGE
