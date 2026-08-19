@@ -49,7 +49,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.18.98"
+VERSION = "0.18.99"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -25234,7 +25234,7 @@ details.cadastral-box>summary::marker{color:#888}
 .ai-drawer{position:fixed;top:0;right:0;width:min(520px,96vw);height:100vh;background:#fff;border-left:1px solid #ccc;box-shadow:-12px 0 38px rgba(0,0,0,.12);z-index:1000;display:flex;flex-direction:column;transform:translateX(102%);transition:transform .18s ease}.ai-drawer.open{transform:translateX(0)}
 .ai-head{padding:18px 20px 14px;border-bottom:1px solid #ddd;display:flex;align-items:flex-start;justify-content:space-between;gap:14px}.ai-head h2{margin:0;font-size:19px}.ai-head p{margin:5px 0 0;color:#777;font-size:11px;line-height:1.45}.ai-close{border:0;background:none;font-size:25px;cursor:pointer;line-height:1}
 .ai-quick{padding:12px 16px;border-bottom:1px solid #eee;display:flex;gap:7px;flex-wrap:wrap}.ai-chip{border:1px solid #bbb;background:#fff;padding:7px 9px;font-size:11px;cursor:pointer}.ai-chip:hover{background:#f5f5f3}
-.ai-messages{flex:1;overflow:auto;padding:18px;background:#fafaf8}.ai-hero{display:flex;align-items:center;gap:14px;margin:0 0 16px}.ai-hero img{width:180px;height:auto;flex:none}.ai-hero-say{background:#fff;border:1px solid #e6e2d8;border-radius:14px;padding:12px 14px;font-size:14px;line-height:1.45}.ai-hero-say b{display:block;margin-bottom:4px}.ai-hero-say span{color:#555}@media(max-width:520px){.ai-hero img{width:120px}}.ai-msg{max-width:92%;margin:0 0 14px;padding:12px 14px;font-size:13px;line-height:1.55;white-space:pre-wrap;border:1px solid #ddd;background:#fff}.ai-msg.user{margin-left:auto;background:#111;color:#fff;border-color:#111}.ai-msg.system{color:#777;font-size:11px;background:transparent;border:0;padding:0;max-width:100%}.ai-msg.error{border-color:#b33;color:#8c1d1d;background:#fff7f7}
+.ai-messages{flex:1;overflow:auto;padding:18px;background:#fafaf8}.tep-refill{margin-left:8px;font-size:10px;padding:2px 7px;border:1px solid #d8d3c7;border-radius:999px;background:#fff;color:#555;cursor:pointer}.tep-refill:hover{background:#f2efe7}.ai-hero{display:flex;align-items:center;gap:14px;margin:0 0 16px}.ai-hero img{width:180px;height:auto;flex:none}.ai-hero-say{background:#fff;border:1px solid #e6e2d8;border-radius:14px;padding:12px 14px;font-size:14px;line-height:1.45}.ai-hero-say b{display:block;margin-bottom:4px}.ai-hero-say span{color:#555}@media(max-width:520px){.ai-hero img{width:120px}}.ai-msg{max-width:92%;margin:0 0 14px;padding:12px 14px;font-size:13px;line-height:1.55;white-space:pre-wrap;border:1px solid #ddd;background:#fff}.ai-msg.user{margin-left:auto;background:#111;color:#fff;border-color:#111}.ai-msg.system{color:#777;font-size:11px;background:transparent;border:0;padding:0;max-width:100%}.ai-msg.error{border-color:#b33;color:#8c1d1d;background:#fff7f7}
 .ai-compose{border-top:1px solid #ddd;padding:12px;background:#fff}.ai-compose textarea{width:100%;min-height:84px;max-height:180px;resize:vertical;border:1px solid #bbb;padding:11px;font:inherit;box-sizing:border-box}.ai-compose-row{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:8px}.ai-compose small{color:#888;font-size:10px;line-height:1.35}.ai-thinking{display:inline-block;color:#777;font-size:12px;padding:8px 0}
 .ai-overlay{position:fixed;inset:0;background:rgba(0,0,0,.18);z-index:999;display:none}.ai-overlay.open{display:block}
 @media(max-width:700px){.ai-drawer{width:100vw}.ai-open-btn .ai-label{display:none}}
@@ -28887,6 +28887,15 @@ function renderTep(){
    else if(key==='underground_parking'&&importedParking){
      label+=` <span style="display:block;font-size:10px;color:#777;margin-top:3px">Источник: ${num(importedParking.permanent)} жилых постоянных + ${num(importedParking.guest)} гостевых${importedParking.mfc?` + ${num(importedParking.mfc)} МФК`:''} = ${num(importedParking.spaces)} м/м</span>`;
    }
+   // Пропорции достраивают только пустое, поэтому в заполненной строке они
+   // молчат — и это читается как «ничего не работает» (замечание владельца,
+   // 19.08.2026). Кнопка делает то же явно: пересчитывает строку от ГНС.
+   if(TEP_RATIOS[key]){
+     label+=` <button type="button" class="tep-refill" title="Пересчитать общую и продаваемую от ГНС по пропорциям" `+
+       `onclick="refillTepRow('${key}')">⟳ по пропорциям</button>`;
+     const bad=tepRowComplaint(key,row);
+     if(bad)label+=` <span style="display:block;font-size:10px;color:#a33;margin-top:2px">${escapeHtml(bad)}</span>`;
+   }
    let html=`<td>${label}</td>`;
    ['gns','total_area','useful','saleable','transfer','units'].forEach(col=>{
      const locked=key==='underground_parking'&&(importedParking||inputs.underground_parking_disabled||Number(inputs.underground_manual_spaces||0)>0||Number(inputs.underground_manual_gns_sqm||0)>0)&&['gns','total_area','useful','saleable','transfer','units'].includes(col);
@@ -28910,6 +28919,39 @@ function renderTepRatioNote(){
    return label(key)+' — общая '+Math.round(r.total_of_gns*100)+'% ГНС, продаваемая '+
     Math.round(r.saleable_of_gns*1000)/10+'% ГНС ('+Math.round(ofTotal*1000)/10+'% общей, '+r.source+')';
   }).join('; ')+'. Введённое вами и пришедшее из ГлавАПУ пропорцией не перебивается.';
+}
+
+// Площади продукта связаны: продаваемая не бывает больше общей, общая — больше
+// ГНС. Введённое руками мы не правим, но и молчать не имеем права: числа,
+// противоречащие друг другу, дальше едут в выручку и себестоимость.
+function tepRowComplaint(key,row){
+ const gns=Number(row.gns||0),total=Number(row.total_area||0),sale=Number(row.saleable||0);
+ if(total>gns+1&&gns>0)return 'общая площадь больше ГНС — так не бывает, проверьте строку';
+ if(sale>total+1&&total>0)return 'продаваемая больше общей — так не бывает, проверьте строку';
+ if(gns>0&&sale>0){
+  // Доли объявлены от ГНС: продаваемая сравнивается с ней же, иначе сравнение
+  // поедет вслед за общей площадью, которая тоже может быть введена неверно.
+  const r=TEP_RATIOS[key];
+  const expected=gns*r.saleable_of_gns;
+  if(expected>0&&Math.abs(sale-expected)/expected>0.25)
+   return 'продаваемая расходится с пропорцией больше чем на четверть ('+
+    landNum(sale/gns*100,0)+'% ГНС против '+landNum(r.saleable_of_gns*100,0)+'%) — проверьте или пересчитайте';
+ }
+ return '';
+}
+
+// Явный пересчёт строки: человек просит — считаем от ГНС и переписываем всё.
+function refillTepRow(key){
+ const r=TEP_RATIOS[key];
+ if(!r)return;
+ const row=tep[key];
+ const gns=Number(row.gns||0);
+ const base=gns>0?{gns:gns,total_area:0,saleable:0,useful:0}
+                 :{gns:0,total_area:0,saleable:Number(row.saleable||0),useful:0};
+ const filled=tepFillByRatios(key,base);
+ ['gns','total_area','saleable','useful'].forEach(field=>{row[field]=filled[field]});
+ renderTep();
+ calculate();
 }
 
 function tepCellChanged(key,col,value){

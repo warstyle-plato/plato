@@ -144,3 +144,53 @@ def test_a_known_saleable_area_fills_the_gns_in_the_inputs():
     handler = core.PAGE[core.PAGE.index("el.onchange=()=>{"):]
     handler = handler[:handler.index("wrap.appendChild(el)")]
     assert "const derived=syncTep(false);if(filled||derived)renderInputs()" in handler
+
+
+def _complaint(key: str, row: dict) -> str:
+    """Настоящая проверка строки со страницы, через node."""
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node недоступен")
+    body = re.search(r"function tepRowComplaint\(key,row\)\{.*?\n\}", core.PAGE, re.S)
+    assert body, "tepRowComplaint не найдена"
+    script = (
+        f"const TEP_RATIOS={json.dumps(core.TEP_RATIOS, ensure_ascii=False)};\n"
+        "const landNum=(v,d)=>Number(v).toFixed(d);\n"
+        + body.group(0)
+        + f"\nconsole.log(JSON.stringify(tepRowComplaint({json.dumps(key)},{json.dumps(row)})));"
+    )
+    done = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
+    assert done.returncode == 0, done.stderr
+    return json.loads(done.stdout)
+
+
+def test_nonsense_in_a_row_is_called_out():
+    """«Вбил ерунду — ерунда и осталась» (замечание владельца, 19.08.2026).
+
+    Пропорции достраивают только пустое, поэтому в заполненной строке они молча
+    ничего не делают. Молчание читается как «ничего не работает», а числа,
+    противоречащие друг другу, едут дальше в выручку и себестоимость.
+    """
+    # ГНС 500 000, общая 45 000, продаваемая 500 000 — ровно тот случай.
+    assert "продаваемая больше общей" in _complaint(
+        "apartments", {"gns": 500000, "total_area": 45000, "saleable": 500000})
+    assert "общая площадь больше ГНС" in _complaint(
+        "apartments", {"gns": 45000, "total_area": 500000, "saleable": 100000})
+    # Расхождение с пропорцией больше четверти — предупреждение, а не запрет.
+    assert "расходится с пропорцией" in _complaint(
+        "offices", {"gns": 100000, "total_area": 94000, "saleable": 20000})
+    # Согласованная строка молчит.
+    assert _complaint("offices", {"gns": 100000, "total_area": 94000, "saleable": 56400}) == ""
+
+
+def test_the_row_can_be_refilled_on_demand():
+    """Кнопка делает явно то, что пропорции не делают сами: переписывает строку."""
+    body = core.PAGE[core.PAGE.index("function refillTepRow"):]
+    body = body[:body.index("function tepCellChanged")]
+    assert "tepFillByRatios(key,base)" in body
+    assert "renderTep()" in body and "calculate()" in body
+
+    table = core.PAGE[core.PAGE.index("function renderTep(){"):]
+    table = table[:table.index("function updateTepTotals")]
+    assert "refillTepRow(" in table, "кнопки нет в строке таблицы"
+    assert "tepRowComplaint(key,row)" in table, "предупреждение не выводится"
