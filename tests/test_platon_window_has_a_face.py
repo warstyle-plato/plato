@@ -66,3 +66,29 @@ def test_the_report_stays_without_pictures():
     source = inspect.getsource(core._build_developaid_pdf)
     assert "platon-hero" not in source
     assert "aiHero" not in source
+
+
+def test_the_picture_sits_on_the_panel_colour():
+    """Собственная тень рисунка ложится на цвет ленты, а не светлым ореолом.
+
+    Прозрачный вырез оставлял вокруг фигуры белёсый след — на телефоне он читался
+    прямоугольником, наклеенным поверх панели (замечание владельца, 19.08.2026).
+    Поэтому фон картинки — ровно тот же цвет, что у ленты сообщений; тест держит
+    их вместе, иначе смена цвета панели вернёт коробку.
+    """
+    pytest = __import__("pytest")
+    Image = pytest.importorskip("PIL.Image", reason="Pillow недоступен")
+    import re
+
+    css = re.search(r"\.ai-messages\{[^}]*background:(#[0-9a-fA-F]{6})", core.PAGE)
+    assert css, "фон ленты сообщений не объявлен"
+    panel = css.group(1).lower()
+    expected = tuple(int(panel[i:i + 2], 16) for i in (1, 3, 5))
+
+    path = Path(__file__).resolve().parent.parent / "assets" / "platon-hero.webp"
+    picture = Image.open(path).convert("RGB")
+    for corner in ((0, 0), (picture.width - 1, 0), (0, picture.height - 1)):
+        got = picture.getpixel(corner)
+        # webp сжимает с потерями и уводит канал на единицу-другую: глазу это
+        # недоступно, а точного равенства требовать бессмысленно.
+        assert all(abs(a - b) <= 4 for a, b in zip(got, expected)), (corner, got, expected)
