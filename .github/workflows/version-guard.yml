@@ -1,0 +1,30 @@
+name: Версия ветки выше main
+
+# Проверка «версия строго растёт» стоит на main и ловит столкновение уже после
+# слияния: сборка красная, образа нет, а разбираться идёт тот, кто влил вторым.
+# Здесь та же проверка, но на ветке и против её базы: ветка взяла 0.18.77, пока
+# соседняя сессия довела main до 0.18.81 (19.08.2026). Секунды работы вместо
+# двадцати минут сборки с Chromium.
+
+on:
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - "docs/**"
+
+concurrency:
+  group: version-guard-${{ github.head_ref }}
+  cancel-in-progress: true
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Нужны обе стороны сравнения: своя ветка и база.
+          fetch-depth: 0
+      - name: Версия выше, чем в базовой ветке
+        run: |
+          git fetch --no-tags origin "${{ github.base_ref }}"
+          python3 scripts/check_version_grows.py --base "origin/${{ github.base_ref }}"

@@ -78,3 +78,44 @@ def test_the_build_runs_the_check_before_the_tests():
         "смысл проверки — падать раньше двадцатиминутного прогона"
     )
     assert "fetch-depth: 2" in workflow, "без предыдущего коммита сравнивать не с чем"
+
+
+def _run_args(repo: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run([sys.executable, str(CHECK), *args],
+                          cwd=repo, capture_output=True, text=True)
+
+
+def test_the_next_free_number_is_printed_not_guessed(tmp_path: Path):
+    """Номер выбирался на глаз — ветка взяла 0.18.77 против main 0.18.81.
+
+    Проверка на main это ловит, но уже после слияния: сборка красная, образа
+    нет. Тот же скрипт теперь называет свободный номер, и угадывать нечего.
+    """
+    repo = _repo(tmp_path, 'VERSION = "0.18.81"\n', 'VERSION = "0.18.81"\n')
+    answer = _run_args(repo, "--next", "--base", "HEAD")
+    assert answer.returncode == 0, answer.stderr
+    assert answer.stdout.strip() == "0.18.82"
+
+
+def test_the_patch_does_not_run_past_a_hundred(tmp_path: Path):
+    """После x.y.99 растёт средний разряд: 0.17.100 не выпускается."""
+    repo = _repo(tmp_path, 'VERSION = "0.17.99"\n', 'VERSION = "0.17.99"\n')
+    answer = _run_args(repo, "--next", "--base", "HEAD")
+    assert answer.stdout.strip() == "0.18.1"
+
+
+def test_a_branch_below_its_base_is_caught_before_the_merge(tmp_path: Path):
+    """Ветка ниже базы — красная до слияния, а не после."""
+    repo = _repo(tmp_path, 'VERSION = "0.18.81"\nx = 1\n', 'VERSION = "0.18.77"\nx = 2\n')
+    answer = _run_args(repo, "--base", "HEAD~1")
+    assert answer.returncode == 1
+    assert "не выросла" in answer.stderr
+    # Отказ обязан называть выход, а не только диагноз.
+    assert "0.18.82" in answer.stderr
+
+
+def test_the_guard_runs_on_pull_requests():
+    """Проверка на ветке должна быть заведена в CI, иначе она никогда не идёт."""
+    guard = (ROOT / ".github" / "workflows" / "version-guard.yml").read_text(encoding="utf-8")
+    assert "pull_request" in guard
+    assert "check_version_grows.py --base" in guard
