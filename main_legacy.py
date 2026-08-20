@@ -23822,16 +23822,23 @@ def survey_summary(days: int = 30) -> dict[str, Any]:
     }
 
 
-def usage_csv(days: int = 30) -> bytes:
+def usage_csv(days: int = 30, events: list[dict[str, Any]] | None = None) -> bytes:
     """Выгрузка для разбора вопросов не глазами.
 
     Точка с запятой и BOM — чтобы Excel открыл кириллицу и не склеил колонки.
+
+    События можно передать снаружи: журнал пишется там, где обслужен запрос,
+    и выгрузка бота без событий ядра — половина картины. Пустая таблица при
+    этом читается как «людей не было», хотя это «диск Render пережил выкатку
+    и не пережил».
     """
     buffer = io.StringIO()
     writer = csv.writer(buffer, delimiter=";")
     writer.writerow(["время (UTC)", "поверхность", "событие", "chat_id", "user_id",
                      "кто", "текст"])
-    for event in usage_events(days):
+    rows = usage_events(days) if events is None else sorted(
+        events, key=lambda event: float(event.get("at") or 0))
+    for event in rows:
         writer.writerow([
             datetime.fromtimestamp(float(event.get("at") or 0),
                                    tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
@@ -23840,6 +23847,67 @@ def usage_csv(days: int = 30) -> bytes:
             event.get("name", ""), str(event.get("text") or "").replace("\n", " "),
         ])
     return ("﻿" + buffer.getvalue()).encode("utf-8")
+
+
+def profile_registry_summary(days: int = 30) -> dict[str, Any]:
+    """Сколько людей заполнило знакомство и кто это.
+
+    Знакомство — единственная запись, которая переживает выкатку: журнал
+    обращений живёт на том хосте, который обслужил запрос, а на Render его диск
+    кончается вместе с контейнером. Профили лежат на ядре файлами, поэтому
+    «сколько зарегистрировалось» считается по ним, а не по журналу.
+
+    Слова человека остаются словами человека: телеграм подтверждает аккаунт,
+    имя и компанию подтвердить нечем — так и записано в самой анкете.
+    """
+    directory = _PROJECTS_DIR.parent / "profiles"
+    people: list[dict[str, Any]] = []
+    try:
+        paths = sorted(directory.glob("*.json"))
+    except OSError:
+        paths = []
+    for path in paths:
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(record, dict):
+            continue
+        people.append(record)
+
+    def moment(record: dict[str, Any]) -> float:
+        raw = str(record.get("created") or record.get("updated") or "")
+        try:
+            return datetime.fromisoformat(raw).timestamp()
+        except ValueError:
+            return 0.0
+
+    people.sort(key=moment, reverse=True)
+    edge = time.time() - max(1, int(days)) * 86400
+    fresh = [record for record in people if moment(record) >= edge]
+
+    sources: dict[str, int] = {}
+    for record in people:
+        key = str(record.get("source") or "").strip() or "не сказали"
+        sources[key] = sources.get(key, 0) + 1
+
+    return {
+        "days": int(days),
+        "total": len(people),
+        "window": len(fresh),
+        "complete": len([r for r in people if profile_complete(r)]),
+        "by_source": sorted(sources.items(), key=lambda kv: -kv[1])[:8],
+        "recent": [{
+            "chat": int(record.get("chat_id") or 0),
+            "name": str(record.get("name") or ""),
+            "company": str(record.get("company") or ""),
+            "role": str(record.get("role") or ""),
+            "source": str(record.get("source") or ""),
+            "contact": str(record.get("contact") or ""),
+            "created": str(record.get("created") or ""),
+        } for record in people[:15]],
+        "dir": str(directory),
+    }
 
 
 def usage_admin_ids() -> set[int]:
@@ -24494,7 +24562,13 @@ def internal_usage_summary(req: InternalSummaryRequest) -> dict[str, Any]:
     if not hmac.compare_digest(str(req.sign or "").encode("utf-8"),
                                expected.encode("utf-8")):
         raise HTTPException(status_code=403, detail="Подпись не сошлась.")
-    return {"usage": usage_summary(days), "survey": survey_summary(days)}
+    return {"usage": usage_summary(days), "survey": survey_summary(days),
+            # Знакомства лежат здесь же, на ядре: у бота их нет вовсе, а
+            # вопрос «сколько зарегистрировалось» задают ему.
+            "registry": profile_registry_summary(days),
+            # Сырые события — чтобы выгрузка собиралась из обеих половин, а не
+            # из той, что пережила последнюю выкатку.
+            "events": usage_events(days)}
 
 
 @app.get("/auth/telegram/qr", include_in_schema=False)

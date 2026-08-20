@@ -1197,6 +1197,54 @@ def _respondents_block(data: dict) -> list[str]:
     return lines
 
 
+def _when_day(stamp: str) -> str:
+    """Дата знакомства по-человечески. Не разобралась — не показываем вовсе."""
+    try:
+        return datetime.fromisoformat(str(stamp)).strftime("%d.%m.%Y")
+    except ValueError:
+        return ""
+
+
+def _registry_block(days: int) -> list[str]:
+    """Кто зарегистрировался на портале — по знакомствам на ядре.
+
+    Считаем по профилям, а не по журналу: журнал у каждого хоста свой и на
+    Render живёт до следующей выкатки, а профиль лежит файлом на ядре и
+    переживает и выкатку, и пересоздание контейнера.
+    """
+    registry = (_remote_summaries(days) or {}).get("registry")
+    if not isinstance(registry, dict):
+        # Локальный ответ — на случай, когда ядра нет: тогда профили здесь.
+        try:
+            registry = core.profile_registry_summary(days)
+        except Exception:
+            return []
+    if not registry.get("total"):
+        return ["", "<b>Регистраций пока нет.</b> Знакомство спрашивается "
+                    "один раз после входа."]
+    lines = ["", f"<b>Зарегистрировано: {registry['total']}</b> "
+                 f"<i>(за {days} дн. — {registry.get('window', 0)})</i>"]
+    if registry.get("by_source"):
+        lines.append("Откуда узнали: " + " · ".join(
+            f"{html.escape(str(name))} {count}"
+            for name, count in registry["by_source"]))
+    for person in (registry.get("recent") or [])[:10]:
+        when = _when_day(str(person.get("created") or ""))
+        who = html.escape(str(person.get("name") or "без имени"))
+        company = html.escape(str(person.get("company") or ""))
+        role = html.escape(str(person.get("role") or ""))
+        tail = " · ".join(part for part in (company, role, when) if part)
+        line = f"• <b>{who}</b>" + (f" — {tail}" if tail else "")
+        chat = int(person.get("chat") or 0)
+        if chat:
+            line += f" · <code>{chat}</code>"
+        lines.append(line)
+    # Имя и компанию человек написал сам, и подтвердить их нечем: телеграм
+    # доказывает аккаунт, а не место работы.
+    lines.append("<i>Имя и компанию люди указывают сами — это их слова.</i>")
+    return lines
+
+
 def _survey_block(data: dict, title: str) -> list[str]:
     lines = [f"<b>{title}</b>", f"Анкет заполнено: <b>{data.get('answers', 0)}</b>"]
     groups = [g for g in (data.get("groups") or []) if g.get("count")]
@@ -1302,9 +1350,23 @@ def _stats_message(chat_id: int, user_id: int, argument: str) -> None:
             days = max(1, min(365, int(piece)))
     if "csv" in argument:
         try:
+            # Выгрузка собирается из обеих половин. Своя приходила пустой после
+            # каждой выкатки — диск Render живёт до следующей, — и пустая
+            # таблица читалась как «людей не было», хотя людей просто некому
+            # было записать: сайт обслуживает ядро, и его журнал цел.
+            remote = _remote_summaries(days) or {}
+            events = list(core.usage_events(days))
+            mine = len(events)
+            events.extend(event for event in (remote.get("events") or [])
+                          if isinstance(event, dict))
+            caption = (f"Журнал обращений за {days} дн.\n"
+                       f"Бот: {mine} · ядро (сайт): {len(events) - mine}")
+            if not remote and core._projects_remote_url("/internal/usage/summary"):
+                caption += "\nЯдро не ответило — в файле только половина бота."
             core._telegram_send_document_bytes(
-                chat_id, core.usage_csv(days), f"developaid-usage-{days}d.csv",
-                caption=f"Журнал обращений за {days} дн.", content_type="text/csv")
+                chat_id, core.usage_csv(days, events),
+                f"developaid-usage-{days}d.csv",
+                caption=caption, content_type="text/csv")
         except Exception as exc:
             _send_message(chat_id, "<b>Выгрузка не собралась.</b>\n"
                           + html.escape(f"{type(exc).__name__}: {exc}"))
@@ -1340,12 +1402,18 @@ def _stats_message(chat_id: int, user_id: int, argument: str) -> None:
             where = "сайт" if event.get("surface") == "site" else "бот"
             lines.append(f"• <i>{when} · {html.escape(who)} · {where}</i>\n"
                          f"{html.escape(str(event.get('text') or '')[:180])}")
+    # Регистрации живут на ядре: знакомство — единственная запись, которая
+    # переживает выкатку, а журнал бота на Render с ней кончается. Вопрос
+    # «сколько зарегистрировалось» задают боту, отвечать на него журналом
+    # нельзя — он покажет ноль там, где людей полсотни.
+    lines.extend(_registry_block(days))
     reminder = _stale_reference_line()
     if reminder:
         lines.append(reminder)
     lines.append("")
-    lines.append(f"<i>Хранится {s['keep_days']} дн. Выгрузка: <code>/stats csv</code>, "
-                 f"период: <code>/stats 7</code>.</i>")
+    lines.append(f"<i>Журнал бота хранится {s['keep_days']} дн. и обнуляется при "
+                 f"выкатке — на ядре он цел. Выгрузка обеих половин: "
+                 f"<code>/stats csv</code>, период: <code>/stats 7</code>.</i>")
     _send_message(chat_id, "\n".join(lines))
 
 
