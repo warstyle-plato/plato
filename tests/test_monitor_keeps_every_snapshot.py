@@ -245,3 +245,52 @@ def test_the_gantt_without_the_pm_export_says_so():
     assert gantt["source"]["with_baseline"] is False
     assert gantt["bars"][0]["slip_days"] is None
     assert gantt["deadline"] == {"known": False}
+
+def _sales_book(rows):
+    """Лист «План продаж» в миниатюре: период, метка, лоты, м², цена."""
+    import developaid_actuals as actuals
+
+    book = Workbook()
+    sheet = book.active
+    sheet.title = "План продаж"
+    for offset, (month, mark, units, area, price) in enumerate(rows):
+        line = actuals._SALES_FIRST_ROW + offset
+        sheet.cell(row=line, column=actuals._SALES_COLUMNS["period"] + 1,
+                   value=month)
+        sheet.cell(row=line, column=actuals._SALES_COLUMNS["mark"] + 1,
+                   value=mark)
+        sheet.cell(row=line, column=actuals._SALES_COLUMNS["units"] + 1,
+                   value=units)
+        sheet.cell(row=line, column=actuals._SALES_COLUMNS["area"] + 1,
+                   value=area)
+        sheet.cell(row=line, column=actuals._SALES_COLUMNS["price"] + 1,
+                   value=price)
+    blob = io.BytesIO()
+    book.save(blob)
+    return blob.getvalue()
+
+
+def test_sales_can_arrive_as_the_book_fact_rows_only():
+    """Из книги берутся только строки ФАКТ: план книги — не продажи."""
+    data = _sales_book([
+        (datetime.date(2026, 3, 1), "ФАКТ", 5, 300.0, 650_000.0),
+        (datetime.date(2026, 9, 1), "ПЛАН", 8, 500.0, 900_000.0),
+    ])
+    monitor.store_sales_file("Гродненская", data, "2026-07-31")
+
+    view_sales = monitor.snapshots("Гродненская")["sales"]
+    assert view_sales == ["2026-07-31"]
+
+    import json
+    stored = json.loads((monitor._SNAPSHOT_DIR / "Гродненская" / "sales"
+                         / "2026-07-31.json").read_text(encoding="utf-8"))
+    assert len(stored["rows"]) == 1
+    assert stored["rows"][0]["month"] == "2026-03-01"
+    assert stored["rows"][0]["revenue"] == pytest.approx(300.0 * 650_000.0)
+
+
+def test_a_book_without_fact_rows_is_refused():
+    data = _sales_book([(datetime.date(2026, 9, 1), "ПЛАН", 8, 500.0, 900_000.0)])
+
+    with pytest.raises(ValueError):
+        monitor.store_sales_file("Гродненская", data, "2026-07-31")

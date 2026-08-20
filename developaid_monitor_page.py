@@ -179,7 +179,11 @@ MONITOR_PAGE = r"""<!doctype html>
    <table id="salesRows"><tr><th class="t">месяц</th><th>лотов</th><th>м²</th><th>выручка, ₽</th></tr></table>
    <div class="row" style="margin-top:6px"><button id="salesAdd">+ строка</button>
     <label class="muted">на дату <input type="date" id="dSales"></label>
-    <button data-up="sales">Загрузить</button></div>
+    <button data-up="sales">Загрузить строки</button></div>
+   <div class="row" style="margin-top:6px">
+    <span class="muted">или книгой (лист «План продаж», возьмутся строки ФАКТ):</span>
+    <input type="file" id="fSales" accept=".xlsx">
+    <button data-up="salesFile">Загрузить файл</button></div>
    <div class="msg" id="mSales"></div><div class="muted" id="sSales"></div>
   </div>
  </div>
@@ -461,11 +465,16 @@ const uploads={
   if(!rows.length)throw new Error('заполните хотя бы одну строку');
   return api('/monitor/sales',{project:$('project').value,taken_at:$('dSales').value,rows});
  },
+ salesFile:async()=>{
+  const f=$('fSales').files[0];if(!f)throw new Error('выберите файл книги');
+  return api('/monitor/sales',{project:$('project').value,taken_at:$('dSales').value,
+   content_base64:await b64(f)});
+ },
 };
 for(const btn of document.querySelectorAll('button[data-up]')){
  btn.onclick=async()=>{
   const kind=btn.dataset.up;
-  const msg=$('m'+kind[0].toUpperCase()+kind.slice(1));
+  const msg=$('m'+kind[0].toUpperCase()+kind.slice(1))||$('mSales');
   msg.className='msg';msg.textContent='…';
   btn.disabled=true;
   try{

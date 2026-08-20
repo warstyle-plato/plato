@@ -127,6 +127,24 @@ def store_sales(project: str, rows: list[dict[str, Any]], taken_at: Any) -> dict
     return {"taken_at": day, "months": len(cleaned)}
 
 
+def store_sales_file(project: str, data: bytes, taken_at: Any) -> dict[str, Any]:
+    """Положить продажи из книги (лист «План продаж»), фактом.
+
+    Строки руками — для «в августе продано 4 лота»; файл — когда книга
+    всё-таки обновилась. Берутся только строки с меткой ФАКТ: план книги — не
+    продажи, и класть его продажами значило бы выдумывать факт.
+    """
+    parsed = actuals.read_sales(io.BytesIO(data))
+    fact = [{"month": _iso(row["month"])[:7], "units": row["units"],
+             "area": row["area"], "revenue": row["revenue"]}
+            for row in parsed["rows"] if row["fact"]]
+    if not fact:
+        raise ValueError("в файле не нашлось строк с меткой ФАКТ")
+    result = store_sales(project, fact, taken_at)
+    result["last_fact"] = _iso(parsed["last_fact"])
+    return result
+
+
 def store_schedule(project: str, gpr: bytes, pm: bytes | None,
                    taken_at: Any) -> dict[str, Any]:
     """Положить график работ снимком: очищенный ГПР и выгрузку планировщика.
