@@ -2750,9 +2750,11 @@ def test_a_site_gets_a_verdict_about_prospects_not_an_empty_page() -> None:
     # не считаем: медиана собрана по проектам от котлована до сдачи, а
     # стартующий выходит ниже. Умолчать значит выдать уровень рынка за старт.
     assert "средняя и цена входа — разные числа" in price
+    # Готовности у соседей нет — поправка не считается, и это сказано вслух.
     assert "Обе цифры — уровень рынка, а не цена старта." in price
     assert "на разных стадиях" in price
-    assert "стадии соседей источник не отдаёт" in price
+    assert "готовность соседей источник не отдаёт" in price
+    assert "Приведено к стадии старта" not in price
 
     speed = " ".join(by_code["speed"]["paragraphs"])
     assert "уходят за" in speed
@@ -3237,3 +3239,115 @@ console.log(JSON.stringify(out));
 
     # И человеку сказано, почему галочки уже стоят.
     assert "своего проекта у площадки нет" in CABINET_PAGE
+
+
+def test_the_stage_curve_prices_readiness_the_way_the_market_does() -> None:
+    """Цена условно готовой квартиры, умноженная на коэффициент готовности.
+
+    Модель владельца, 20.08.2026. Кривая S-образная нарочно: покупатель платит
+    не за потраченные месяцы, а за снятый риск, и снимается он неравномерно —
+    медленно у котлована, быстро в середине стройки, снова медленно у сдачи.
+    Линейная поправка ошибалась бы не формой, а смыслом.
+    """
+    from market_search.stage import START_FACTOR, at_readiness, factor, to_ready
+
+    # Концы закреплены: старт — доля от готовой, сдача — она сама.
+    assert factor(0) == START_FACTOR
+    assert factor(1) == 1.0
+    # Монотонность: готовее — дороже, без провалов.
+    steps = [factor(i / 20) for i in range(21)]
+    assert all(b >= a for a, b in zip(steps, steps[1:]))
+    # S-образность: прирост в середине больше, чем на концах.
+    middle = factor(0.55) - factor(0.45)
+    assert middle > factor(0.1) - factor(0.0)
+    assert middle > factor(1.0) - factor(0.9)
+    # Половина готовности — ровно половина надбавки: кривая симметрична.
+    assert abs(factor(0.5) - (START_FACTOR + 1.0) / 2) < 1e-9
+
+    # Приведение туда и обратно возвращает то же число.
+    assert abs(at_readiness(to_ready(600_000, 0.4), 0.4) - 600_000) < 1e-6
+    # Готовность вне диапазона не ломает счёт: 130 % — это ошибка ввода.
+    assert factor(1.7) == 1.0 and factor(-0.3) == START_FACTOR
+
+
+def test_a_neighbour_at_another_stage_is_adjusted_not_discarded() -> None:
+    """Если все соседи на половине цикла — они и есть рынок.
+
+    Отбраковка по стадии оставляет от восьми сопоставимых одного, и это хуже
+    восьми приведённых. В оценке поправку вносят, а не выбрасывают сравнимые:
+    цена соседа делится на его коэффициент, медиана этих цен умножается на
+    коэффициент нашей стадии.
+    """
+    from market_search.stage import START_FACTOR, adjust, factor
+
+    # Три соседа на разной готовности, но с одной и той же ценой готового метра.
+    ready = 700_000
+    peers = [
+        {"name": "котлован", "price_per_sqm": round(ready * factor(0.1)), "readiness": 0.1},
+        {"name": "середина", "price_per_sqm": round(ready * factor(0.5)), "readiness": 0.5},
+        {"name": "сдача", "price_per_sqm": round(ready * factor(0.95)), "readiness": 0.95},
+    ]
+    out = adjust(peers, target_readiness=0.0)
+    assert out is not None
+    # Приведение снимает разницу стадий: цена готового метра у всех одна.
+    assert abs(out["ready_price_per_sqm"] - ready) <= 2
+    # Ориентир для старта — она же, умноженная на стартовый коэффициент.
+    assert abs(out["price_per_sqm"] - round(ready * START_FACTOR)) <= 2
+    # И видно, что сделала поправка: рядом лежит медиана без неё.
+    assert out["plain_median"] == round(ready * factor(0.5))
+    assert out["price_per_sqm"] < out["plain_median"]
+    assert out["peers_used"] == 3
+
+    # Сосед без готовности в поправку не идёт — и сказано, сколько таких.
+    mixed = peers + [{"name": "неизвестно", "price_per_sqm": 900_000}]
+    both = adjust(mixed, target_readiness=0.0)
+    assert both["peers_used"] == 3 and both["peers_without_readiness"] == 1
+
+    # Готовность неизвестна у всех — поправки нет вовсе. «Привели к стадии» на
+    # пустом множестве было бы ложью в самом ответственном числе отчёта.
+    assert adjust([{"name": "х", "price_per_sqm": 700_000}], target_readiness=0.0) is None
+    assert adjust([], target_readiness=0.0) is None
+
+
+def test_the_report_switches_to_the_stage_correction_the_day_data_arrives() -> None:
+    """Поправка лежит подключённой и молчит, пока готовности нет.
+
+    Так и задумано: код, который ждёт данных в ящике стола, к их приходу
+    оказывается несовместимым с ними. Здесь наоборот — стоит готовности
+    появиться в строке соседа, и абзац сам меняется с «привести нечем» на
+    посчитанное, а разница с непоправленной медианой печатается рядом.
+    """
+    from market_search.narrative import analysis
+    from market_search.stage import factor
+
+    ready = 700_000
+    peers = [
+        {"name": f"Сосед {i}", "segment": "Бизнес", "readiness": done,
+         "price_per_sqm": round(ready * factor(done)), "units_per_month": 10,
+         "lot_count": 100, "distance_km": 0.5 + i * 0.2, "sold_lot_avg": 50}
+        for i, done in enumerate([0.15, 0.35, 0.55, 0.75, 0.9])
+    ]
+    site = {"segment": "бизнес", "price_per_sqm": 600_000, "units_per_month": 12.0}
+    parts = analysis({}, peers, {"found": 40, "no_price": 8, "stale_price": 7,
+                                 "fresh_since": "2026-02-01"},
+                     segment="Бизнес", site=site, hint={})
+    price = " ".join(next(p for p in parts if p["code"] == "price")["paragraphs"])
+
+    assert "Приведено к стадии старта" in price
+    # Цена готового метра восстановлена из разных стадий — она у всех одна.
+    assert "700 000 ₽/м² за готовый метр" in price
+    assert "медиане готовности 55 %" in price
+    # Видно и результат, и то, что поправка сделала: 560 000 против 640 465.
+    assert "560 000 ₽/м²" in price and "640 465" in price
+    # Допущение названо допущением, а не выдано за измерение.
+    assert "допущение, а не измерение" in price
+
+    # Без готовности — прежний честный абзац, и ни слова о приведении.
+    plain = [{**row, "readiness": None} for row in peers]
+    other = analysis({}, plain, {"found": 40, "no_price": 8, "stale_price": 7,
+                                 "fresh_since": "2026-02-01"},
+                     segment="Бизнес", site=site, hint={})
+    text = " ".join(next(p for p in other if p["code"] == "price")["paragraphs"])
+    assert "Приведено к стадии старта" not in text
+    assert "готовность соседей источник не отдаёт" in text
+
