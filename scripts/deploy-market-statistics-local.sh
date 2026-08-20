@@ -62,7 +62,7 @@ check_routes() {
           --data-urlencode "metric_type=main_construction" \
         | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d.get("methodology_version")=="2.0", d; assert d.get("unit")=="gba", d; assert d.get("metric_type")=="main_construction", d; assert d.get("recommended") is not None, d' \
         && curl -fsS --max-time 10 "http://127.0.0.1:${port}/api/statistics/sources" \
-        | python3 -c 'import json,sys; d=json.load(sys.stdin); assert isinstance(d,list) and d, d'; then
+        | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d.get("methodology_version")=="2.0", d; assert d.get("count",0)>0, d; assert isinstance(d.get("sources"),list), d'; then
         rm -f /tmp/market-stat-health.$$
         return 0
       fi
