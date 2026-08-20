@@ -54,7 +54,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.19.26"
+VERSION = "0.19.27"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -611,6 +611,43 @@ def _find_parameter(rows: list[list[Any]], name: str) -> Any:
     return None
 
 
+# Названия типов использования в выгрузке калькулятора — левый столбец таблицы
+# «УПКС и базовые стоимости по типам использования». Ключи наши, из
+# `VRI_USE_TYPES`: свой расчёт платы считает по ним.
+_GLAVAPU_USE_ROWS: list[tuple[str, str]] = [
+    ("mkd", "мкд"),
+    ("trade", "торговля"),
+    ("office", "офис"),
+    ("hotel", "временное проживание"),
+    ("garage", "гараж"),
+    ("industry", "производство"),
+    ("social", "социальные объекты"),
+]
+
+
+def _glavapu_base_costs(rows: list[list[Any]]) -> dict[str, float]:
+    """Базовые стоимости по типам использования из листа «Параметры территории».
+
+    Таблица идёт после заголовка «Тип использования | УПКС | Базовая»: третий
+    столбец — базовая стоимость, второй — УПКС. Нулевая базовая означает, что
+    за этот вид не платят (производство, социальные объекты), и ноль здесь
+    осмысленный — он и сохраняется.
+    """
+    found: dict[str, float] = {}
+    for row in rows or []:
+        name = str((row or [None])[0] or "").strip().lower()
+        if not name or len(row) < 3:
+            continue
+        key = next((code for code, needle in _GLAVAPU_USE_ROWS if name.startswith(needle)), "")
+        if not key:
+            continue
+        value = _ru_number(row[2])
+        if value is None:
+            continue
+        found[key] = float(value)
+    return found
+
+
 def parse_glavapu_xlsx(data: bytes, filename: str = "") -> dict[str, Any]:
     tables = _xlsx_read_tables(data)
     tep_sheet = next((name for name in tables if name.strip().lower() == "тэп"), None)
@@ -702,7 +739,17 @@ def parse_glavapu_xlsx(data: bytes, filename: str = "") -> dict[str, Any]:
         # расчётами одного участка обычно сидит именно здесь. Параметра нет
         # в выгрузке штатного калькулятора — тогда остаётся None и отчёт
         # просто молчит об основании.
-        "vri_base_cost_rub": _ru_number(_find_parameter(params_rows, "Базовая стоимость МКД")),
+        # Отдельной строки «Базовая стоимость МКД» в выгрузке калькулятора нет —
+        # значение стоит в таблице типов использования строкой «МКД (…)».
+        # Пока читали только строку, основание платы оставалось пустым, и
+        # карточка молчала о нём при живых числах в том же файле.
+        "vri_base_cost_rub": (_ru_number(_find_parameter(params_rows, "Базовая стоимость МКД"))
+                              or _glavapu_base_costs(params_rows).get("mkd")),
+        # Базовые стоимости по типам использования — таблица «УПКС и базовые
+        # стоимости» того же листа. Без неё свой расчёт платы за ВРИ требовал
+        # переписывать числа из файла руками, а «откуда взять базовую» —
+        # первый вопрос, который задаёт человек (владелец, 20.08.2026).
+        "vri_base_costs_by_use": _glavapu_base_costs(params_rows),
     }
 
     # Derived underground parking for the financial TEP.
@@ -26414,6 +26461,7 @@ details.cadastral-box>summary::marker{color:#888}
           <tbody id="vriOwnBody"></tbody>
           <tfoot><tr><th>Итого</th><th id="vriOwnSpp"></th><th></th><th id="vriOwnTotal"></th></tr></tfoot>
         </table></div>
+        <div id="vriOwnSource" style="color:#777;font-size:12px;margin-top:8px"></div>
         <div id="vriOwnNote" class="import-status" style="display:none"></div>
       </div>
       <div class="card" id="vriTabCard" style="display:none">
@@ -30270,10 +30318,17 @@ const TEP_DERIVED_INPUTS=UNDERGROUND_PAIR_INPUTS.concat([
 // расчёт молча нельзя.
 function glavapuCoefficients(){
  const imported=(inputs._glavapu_import||{});
- const coeff=imported.coefficients||{};
+ // Оснований два источника: ответ анализа по кадастровому номеру и выгрузка
+ // калькулятора, приложенная файлом. Выгрузка главнее: в ней те же числа, но
+ // в том виде, в каком их посчитал город.
+ const norm=imported.normalized||{};
+ const coeff=Object.assign({},imported.coefficients||{},
+  norm.rent_coefficient?{rent:norm.rent_coefficient}:{},
+  norm.vri_base_cost_rub?{base_cost_zh_high:norm.vri_base_cost_rub}:{});
  const territory=imported.territory||{};
  const inside=!!territory.inside_ttc;
  return {
+  bases:(norm.vri_base_costs_by_use||{}),
   k1:Number(coeff.rail||0),
   k2:Number((inside?coeff.business_inside_ttc:coeff.business_outside_ttc)||0),
   rent:Number(coeff.rent||0),
@@ -30294,10 +30349,14 @@ let vriOwnRows=null;
 function vriOwnState(){
  if(vriOwnRows)return vriOwnRows;
  const c=glavapuCoefficients();
- vriOwnRows=VRI_USE_TYPES.map(([key,label])=>({
-  type:key,label:label,spp:0,
-  base:(key==='mkd'&&c.base)?c.base:(key==='industry'||key==='social'?0:'')
- }));
+ // Базовые стоимости приходят таблицей из выгрузки калькулятора — переписывать
+ // их руками не надо. «Откуда взять базовую» был первый же вопрос, и правильный
+ // ответ на него — не объяснение, а заполненное поле.
+ vriOwnRows=VRI_USE_TYPES.map(([key,label])=>{
+  let base=c.bases&&c.bases[key]!==undefined?Number(c.bases[key]):'';
+  if(base===''&&key==='mkd'&&c.base)base=c.base;
+  return {type:key,label:label,spp:0,base:base};
+ });
  return vriOwnRows;
 }
 
@@ -30316,7 +30375,25 @@ function renderVriOwn(result){
  document.getElementById('vriOwnSpp').textContent=num(spp);
  document.getElementById('vriOwnTotal').textContent=result?num(result.total_mln):'—';
  const rent=document.getElementById('vriOwnRent');
- if(rent&&!rent.value){const c=glavapuCoefficients();if(c.rent)rent.value=c.rent}
+ const c=glavapuCoefficients();
+ if(rent&&!rent.value&&c.rent)rent.value=c.rent;
+ const hint=document.getElementById('vriOwnSource');
+ if(hint){
+  const known=rows.filter(row=>row.base!=='').length;
+  const parts=[];
+  if(known)parts.push('Базовые стоимости подставлены из выгрузки калькулятора ('
+    +known+' из '+rows.length+' типов), лист «Параметры территории».');
+  else parts.push('Базовых стоимостей нет: они на листе «Параметры территории» '
+    +'выгрузки калькулятора, столбец «Базовая». Приложите файл на вкладке «Участок» '
+    +'или впишите числа руками.');
+  if(c.quarter)parts.push('Квартал '+escapeHtml(c.quarter)+'.');
+  // Коэффициент аренды — доля, а не проценты: у Пресненского это 0,1497.
+  // Двузначное число в этом поле завышает плату в сотни раз, и молчать нельзя.
+  const rentValue=Number((rent&&rent.value)||0);
+  if(rentValue>1)parts.push('<b>Коэффициент аренды '+rentValue+' похож на проценты:</b> '
+    +'в выгрузке это доля вроде 0,1497. Проверьте — иначе плата вырастет в сотни раз.');
+  hint.innerHTML=parts.join(' ');
+ }
 }
 
 function vriOwnEdit(index,field,value){
@@ -30357,6 +30434,17 @@ async function calcVriOwn(){
  const say=(html,ok)=>{if(!note)return;note.style.display='';note.innerHTML=ok?('<span class="import-ok">'+html+'</span>'):html};
  if(!rows.length){say('Впишите метры хотя бы по одному типу использования.',false);return}
  if(!rent){say('Не задан коэффициент аренды квартала — он с листа «Параметры территории» вашей выгрузки.',false);return}
+ // Коэффициент аренды — доля (0,1497 у Пресненского). Двузначное число в этом
+ // поле завышает плату в сотни раз, и посчитать молча по нему нельзя.
+ if(rent>1&&!confirm('Коэффициент аренды '+rent+' похож на проценты: в выгрузке '
+   +'калькулятора это доля вроде 0,1497. Считать всё равно?')){return}
+ const noBase=rows.filter(row=>row.base===''||row.base===null);
+ if(noBase.length===rows.length){
+  say('Не задана базовая стоимость ни по одному типу. Она на листе «Параметры территории» '
+     +'выгрузки калькулятора, столбец «Базовая»: для жилья это МКД. Приложите выгрузку на '
+     +'вкладке «Участок» — тогда числа подставятся сами.',false);
+  return;
+ }
  let data;
  try{
   const r=await fetch('/vri/manual',{method:'POST',headers:{'Content-Type':'application/json'},
@@ -30422,8 +30510,11 @@ async function recalcFromTep(){
  inputs.school_places=d.school_places;
  inputs.clinic_capacity=d.clinic_capacity;
  if(d.compensation_mln>0)inputs.social_compensation_mln=d.compensation_mln;
+ const parkingWas=Number((tep.underground_parking&&tep.underground_parking.units)||0);
  inputs.underground_manual_spaces=d.parking_total;
  syncTep(false);renderInputs();renderTep();
+ lines.push('Машино-места в ТЭП: было '+parkingWas+', стало '
+   +Number((tep.underground_parking&&tep.underground_parking.units)||0));
  say('Подставлено: '+lines.join('<br>')
    +'<br>Это наш пересчёт по методике города, а не ответ калькулятора: он считает по нормативному ТЭП.',true);
  calculate();

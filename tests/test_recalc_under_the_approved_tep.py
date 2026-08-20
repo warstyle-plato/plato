@@ -139,3 +139,59 @@ def test_the_table_does_not_rebuild_itself_while_typing():
     body = page[page.index("function vriOwnEdit("):]
     body = body[:body.index("\n}\n")]
     assert "renderVriOwn" not in body, "правка ячейки не пересобирает таблицу"
+
+
+def test_the_base_costs_come_from_the_export():
+    """«Откуда взять базовую стоимость» — первый вопрос человека, и правильный
+    ответ на него не объяснение, а заполненное поле.
+
+    Таблица «УПКС и базовые стоимости по типам использования» лежит на листе
+    «Параметры территории» выгрузки калькулятора; читали из неё только
+    отдельную строку «Базовая стоимость МКД», которой там нет вовсе.
+    """
+    rows = [
+        ["Параметр", "Значение", "Ед.изм."],
+        ["Коэффициент аренды", "0,1497", "—"],
+        ["УПКС и базовые стоимости по типам использования", "", ""],
+        ["Тип использования", "УПКС, руб/м²", "Базовая, тыс.руб/м²"],
+        ["МКД (многоэтажный жилой дом)", "123 876,46", "287 560,46"],
+        ["Торговля и многофункц.", "111 369,28", "194 737,19"],
+        ["Офисы", "103 409,92", "187 578,99"],
+        ["Производство", "36 210,4", "0"],
+        ["Социальные объекты", "37 575,29", "0"],
+    ]
+    bases = core._glavapu_base_costs(rows)
+    assert bases["mkd"] == 287560.46
+    assert bases["trade"] == 194737.19
+    assert bases["office"] == 187578.99
+    # Ноль здесь осмысленный: за производство и соцобъекты не платят.
+    assert bases["industry"] == 0.0 and bases["social"] == 0.0
+
+
+def test_the_mkd_base_is_found_even_without_its_own_line():
+    """Отдельной строки «Базовая стоимость МКД» в выгрузке нет — значение
+    берётся из таблицы, иначе основание платы молчит при живых числах."""
+    rows = [
+        ["Параметр", "Значение", "Ед.изм."],
+        ["Тип использования", "УПКС, руб/м²", "Базовая, тыс.руб/м²"],
+        ["МКД (многоэтажный жилой дом)", "123 876,46", "287 560,46"],
+    ]
+    assert core._glavapu_base_costs(rows).get("mkd") == 287560.46
+
+
+def test_the_page_says_where_the_base_costs_live():
+    page = core.PAGE
+    assert "Параметры территории" in page
+    body = page[page.index("function renderVriOwn("):]
+    body = body[:body.index("\n}\n")]
+    assert "vriOwnSource" in body
+    # Коэффициент аренды — доля; двузначное число завышает плату в сотни раз.
+    assert "похож на проценты" in body
+
+
+def test_a_percent_looking_rent_is_not_calculated_silently():
+    page = core.PAGE
+    body = page[page.index("async function calcVriOwn("):]
+    body = body[:body.index("\n}\n")]
+    assert "rent>1" in body and "confirm(" in body
+    assert "Не задана базовая стоимость ни по одному типу" in body
