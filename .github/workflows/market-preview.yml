@@ -9,11 +9,16 @@ on:
     types: [opened, synchronize, reopened]
     paths:
       - "market_search/**"
+      - "developaid_statistics.py"
+      - "statistics_feature.py"
+      - "data/statistics/**"
       - "main_registry.py"
       - "market-preview-acceptance.py"
       - "tests/test_market_*.py"
+      - "tests/test_statistics_engine.py"
       - "tests/fixtures/market_golden_*.json"
       - "deploy-market-preview.sh"
+      - "scripts/deploy-market-statistics-local.sh"
       - ".github/workflows/market-preview.yml"
   workflow_dispatch:
     inputs:
@@ -59,9 +64,6 @@ jobs:
           cache-dependency-path: requirements-dev.txt
       - name: Зависимости
         run: python -m pip install -r requirements-dev.txt
-      # Модуль рынка живёт только в preview-ветках; в main лежит один этот workflow.
-      # Поэтому на PR в main проверять нечего, и красный крест там ничего не значил:
-      # он висел и на посторонних PR, задевших main_registry.py.
       - name: Есть ли в ветке модуль рынка
         id: present
         run: |
@@ -73,29 +75,47 @@ jobs:
           fi
       - name: Синтаксис и unit-тесты
         if: steps.present.outputs.value == 'yes'
+        shell: bash
         run: |
-          python -m py_compile market_search/*.py market_search/providers/*.py main_registry.py market-preview-acceptance.py
-          # Перечислять файлы нельзя: YAML берётся из main, а код — из preview-ветки.
-          # Каждый раз, когда набор тестов в ветке менялся, main патчили под неё.
-          python -m pytest tests/test_market_*.py -q
+          set -euo pipefail
+          compile_files=(market_search/*.py market_search/providers/*.py main_registry.py market-preview-acceptance.py)
+          if [ -f developaid_statistics.py ]; then
+            compile_files+=(developaid_statistics.py)
+          fi
+          if [ -f statistics_feature.py ]; then
+            compile_files+=(statistics_feature.py)
+          fi
+          python -m py_compile "${compile_files[@]}"
+
+          test_files=(tests/test_market_*.py)
+          if [ -f tests/test_statistics_engine.py ]; then
+            test_files+=(tests/test_statistics_engine.py)
+          fi
+          python -m pytest "${test_files[@]}" -q
       - name: Интеграция с основным entrypoint
         if: steps.present.outputs.value == 'yes'
         env:
-          # Вкладка «Рынок» по умолчанию выключена: отсутствующая переменная не
-          # должна читаться как согласие показать её в проде. Стенду превью она
-          # нужна, поэтому здесь включается явно.
           MARKET_TAB_ENABLED: "1"
         run: |
           python - <<'PY'
+          from pathlib import Path
           import main_registry
+
           paths = {getattr(route, "path", None) for route in main_registry.app.routes}
           assert "/market/discovery" in paths
           assert 'data-tab="marketDiscovery"' in main_registry.core.PAGE
-          # Проверяем, что модуль установлен и это тот же объект, а не какая у него
-          # версия: пин на имя модуля ломал сборку каждой следующей ветки.
           service = main_registry.market_search
           assert service is main_registry.app.state.market_discovery_service, service
           assert service.__class__.__module__.startswith("market_search.service"), service.__class__
+
+          if Path("developaid_statistics.py").exists() or Path("statistics_feature.py").exists():
+              required = {
+                  "/statistics",
+                  "/api/statistics/construction-cost",
+                  "/api/statistics/sources",
+              }
+              missing = sorted(required - paths)
+              assert not missing, f"missing statistics routes: {missing}"
           PY
 
   build:
@@ -184,11 +204,6 @@ jobs:
 
       - uses: docker/setup-buildx-action@v3
 
-      # provenance и sbom выключены не для скорости. С ними buildx публикует не
-      # образ, а OCI-индекс: сам образ плюс манифест аттестации. Yandex Registry
-      # такой индекс не принимает, и выглядит это обманчиво — слои и манифест
-      # образа уходят с «done», а следом «Cannot read manifest data», когда
-      # публикуется индекс. Один тег, одна платформа, обычный манифест Docker.
       - name: Собрать и опубликовать готовый образ
         uses: docker/build-push-action@v6
         with:
