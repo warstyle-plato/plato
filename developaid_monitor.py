@@ -126,6 +126,29 @@ def store_sales(project: str, rows: list[dict[str, Any]], taken_at: Any) -> dict
     return {"taken_at": day, "months": len(cleaned)}
 
 
+def store_schedule(project: str, gpr: bytes, pm: bytes | None,
+                   taken_at: Any) -> dict[str, Any]:
+    """Положить график работ снимком: очищенный ГПР и выгрузку планировщика.
+
+    Файла два и хранятся они парой: ГПР несёт код РСС, выгрузка планировщика —
+    базовый план и фактические даты. Один без другого Ганта не даёт, поэтому
+    снимок без выгрузки планировщика честно помечен: по нему видно «где», но
+    не «насколько уехали от базового плана».
+    """
+    day = _iso(taken_at)
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+        raise ValueError("дата графика нужна в виде ГГГГ-ММ-ДД")
+    folder = _project_dir(project) / "schedule"
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"{day}.xlsx"
+    if path.exists():
+        raise FileExistsError(f"снимок графика на {day} уже загружен")
+    path.write_bytes(gpr)
+    if pm:
+        (folder / f"{day}.pm.xlsx").write_bytes(pm)
+    return {"taken_at": day, "with_baseline": bool(pm)}
+
+
 def snapshots(project: str) -> dict[str, list[str]]:
     """Что уже загружено, по датам снимков."""
     folder = _project_dir(project)
@@ -134,7 +157,12 @@ def snapshots(project: str) -> dict[str, list[str]]:
         if not path.exists():
             return []
         return sorted(item.stem for item in path.glob(f"*{suffix}"))
-    return {"estimate": dates("estimate", ".xlsx"), "sales": dates("sales", ".json")}
+    return {
+        "estimate": dates("estimate", ".xlsx"),
+        "sales": dates("sales", ".json"),
+        "schedule": [day for day in dates("schedule", ".xlsx")
+                     if not day.endswith(".pm")],
+    }
 
 
 def _latest(project: str, kind: str, suffix: str, upto: str = "") -> Path | None:
@@ -182,6 +210,35 @@ def build(
         "estimate": estimate_path.stem,
         "sales": sales_path.stem if sales_path else "",
     }
+    return _plain(report)
+
+
+def gantt(project: str, cut: Any, upto: str = "") -> dict[str, Any]:
+    """Гант по последнему снимку графика: базовый план, текущий план и факт.
+
+    Считает сервер целиком, как и срез: страница получает полосы и сводку по
+    кодам РСС готовыми.
+    """
+    folder = _project_dir(project) / "schedule"
+    items = sorted(item for item in folder.glob("*.xlsx")
+                   if not item.name.endswith(".pm.xlsx")) if folder.exists() else []
+    if upto:
+        items = [item for item in items if item.stem <= upto]
+    if not items:
+        raise FileNotFoundError("нет ни одного снимка графика работ")
+    gpr_path = items[-1]
+    schedule = actuals.read_schedule(gpr_path)
+    pm_path = gpr_path.parent / f"{gpr_path.stem}.pm.xlsx"
+    deadline: dict[str, Any] = {"known": False}
+    if pm_path.exists():
+        pm = actuals.read_pm_schedule(pm_path)
+        actuals.merge_schedule(schedule, pm)
+        deadline = actuals.schedule_deadline(schedule, pm)
+    report = actuals.gantt(schedule, cut)
+    report["deadline"] = deadline
+    report["baseline"] = schedule.get("baseline", {"matched": 0})
+    report["source"] = {"schedule": gpr_path.stem,
+                       "with_baseline": pm_path.exists()}
     return _plain(report)
 
 

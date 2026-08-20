@@ -172,3 +172,76 @@ def test_the_service_takes_a_file_from_memory():
 
     assert works["total"] == pytest.approx(100e6)
     assert works["rows"][0]["date"] == datetime.date(2026, 5, 15)
+
+def _schedule_book():
+    """Очищенный ГПР в миниатюре."""
+    book = Workbook()
+    sheet = book.active
+    sheet.title = "ГПР"
+    sheet.cell(row=4, column=1, value="ID")
+    row = ["1", "1.16.1", "СМР", "Корпус 1", "Кладка", "Работа", 0.5,
+           "2026-07-01", "2026-09-30", "В работе", 60, "", "", "", "", "",
+           "2.2.1.4.", "Фундаментная плита", "Наследовано"]
+    for column, value in enumerate(row, 1):
+        sheet.cell(row=5, column=column, value=value)
+    blob = io.BytesIO()
+    book.save(blob)
+    return blob.getvalue()
+
+
+def _pm_book():
+    """Выгрузка планировщика в миниатюре: базовый план и факт для той же работы."""
+    book = Workbook()
+    sheet = book.active
+    sheet.title = "Таблица_задач1"
+    for column, title in {1: "Ид", 3: "Название_задачи", 6: "Уровень_структуры",
+                          9: "Начало", 10: "Окончание",
+                          19: "Фактическое_начало", 20: "Фактическое_окончание",
+                          21: "Базовое_начало", 22: "Базовое_окончание",
+                          36: "СДР", 39: "Суммарная_задача",
+                          49: "Статус"}.items():
+        sheet.cell(row=1, column=column, value=title)
+    values = {1: "1", 3: "Кладка", 6: 3, 9: "01 Июль 2026 9:00",
+              10: "30 Сентябрь 2026 18:00", 19: "Ср 01.07.26", 20: "НД",
+              21: "01 Июнь 2026 9:00", 22: "31 Июль 2026 18:00",
+              36: "1.16.1", 39: "Нет", 49: ""}
+    for column, value in values.items():
+        sheet.cell(row=2, column=column, value=value)
+    blob = io.BytesIO()
+    book.save(blob)
+    return blob.getvalue()
+
+
+def test_a_schedule_snapshot_is_a_pair_and_is_never_overwritten():
+    """ГПР несёт код РСС, выгрузка планировщика — базовый план: хранятся парой."""
+    monitor.store_schedule("Гродненская", _schedule_book(), _pm_book(),
+                           "2026-07-23")
+
+    assert monitor.snapshots("Гродненская")["schedule"] == ["2026-07-23"]
+    with pytest.raises(FileExistsError):
+        monitor.store_schedule("Гродненская", _schedule_book(), None,
+                               "2026-07-23")
+
+
+def test_the_gantt_measures_slip_from_the_baseline():
+    """Отставание — от базового плана; факт идущей работы кончается срезом."""
+    monitor.store_schedule("Гродненская", _schedule_book(), _pm_book(),
+                           "2026-07-23")
+
+    gantt = monitor.gantt("Гродненская", cut="2026-08-15")
+    bar = gantt["bars"][0]
+
+    assert bar["slip_days"] == 61
+    assert bar["fact"] == ["2026-07-01", "2026-08-15"]
+    assert gantt["source"] == {"schedule": "2026-07-23", "with_baseline": True}
+
+
+def test_the_gantt_without_the_pm_export_says_so():
+    """Без выгрузки планировщика Гант рисует текущий план и честно молчит о сдвиге."""
+    monitor.store_schedule("Гродненская", _schedule_book(), None, "2026-07-23")
+
+    gantt = monitor.gantt("Гродненская", cut="2026-08-15")
+
+    assert gantt["source"]["with_baseline"] is False
+    assert gantt["bars"][0]["slip_days"] is None
+    assert gantt["deadline"] == {"known": False}

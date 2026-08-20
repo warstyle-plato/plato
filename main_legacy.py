@@ -1489,6 +1489,23 @@ class MonitorViewRequest(BaseModel):
     key: str = ""
 
 
+class MonitorScheduleRequest(BaseModel):
+    project: str
+    taken_at: str
+    gpr_base64: str
+    pm_base64: str = ""
+    session: str = ""
+    key: str = ""
+
+
+class MonitorGanttRequest(BaseModel):
+    project: str
+    cut: str
+    upto: str = ""
+    session: str = ""
+    key: str = ""
+
+
 def _monitor_programme(req: MonitorViewRequest) -> dict[str, Any] | None:
     """Производственная программа, если её прислали.
 
@@ -1558,6 +1575,38 @@ def monitor_rewritten(project: str, first: str, second: str,
         return developaid_monitor.moved_between_snapshots(project, first, second)
     except FileNotFoundError as exc:
         raise HTTPException(404, str(exc))
+
+
+@app.post("/monitor/schedule", include_in_schema=False)
+def monitor_store_schedule(req: MonitorScheduleRequest) -> dict[str, Any]:
+    """Положить график работ снимком: очищенный ГПР и выгрузку планировщика.
+
+    Файла два: ГПР несёт код РСС при каждой работе, выгрузка планировщика —
+    базовый план и фактические даты. Без второй Гант рисует только текущий
+    план, и снимок про это честно говорит.
+    """
+    _require_web_access(req.session, req.key, "Монитор проекта")
+    try:
+        return developaid_monitor.store_schedule(
+            req.project, base64.b64decode(req.gpr_base64),
+            base64.b64decode(req.pm_base64) if req.pm_base64 else None,
+            req.taken_at)
+    except FileExistsError as exc:
+        raise HTTPException(409, str(exc))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/monitor/gantt", include_in_schema=False)
+def monitor_gantt(req: MonitorGanttRequest) -> dict[str, Any]:
+    """Гант по последнему снимку графика. Считает сервер, страница рисует."""
+    _require_web_access(req.session, req.key, "Монитор проекта")
+    try:
+        return developaid_monitor.gantt(req.project, cut=req.cut, upto=req.upto)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
 
 
 @app.post("/api/project-presets/import")
