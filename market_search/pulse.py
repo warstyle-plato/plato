@@ -873,6 +873,73 @@ class PulseClient:
             ),
         }
 
+    # Значения `object_type`, которые имеет смысл спросить. Список — догадка, и
+    # это нормально: задача пробы в том и состоит, чтобы догадку проверить.
+    # «living» здесь как контроль: если и он пуст, дело не в типах, а в доступе
+    # или в самом проекте.
+    _OBJECT_TYPES = ("living", "commercial", "nonliving", "non_living",
+                     "parking", "pantry", "storeroom", "apartment", "office")
+
+    def probe_object_types(self, complex_id: int) -> dict[str, Any]:
+        """Есть ли у источника коммерция и машино-места — спросив, а не гадая.
+
+        Всё, что мы из «Пульса» берём, прибито к жилью: цена запрашивается с
+        `object_type: "living"`, а в таблице проекта читаются `living_count`,
+        `living_area`, `living_lot_area_avg`. Приставка у каждого поля и сам
+        параметр говорят, что типы источник различает, — но это признак, а не
+        доказательство, и проверить его никто не пробовал.
+
+        Проба ничего не считает и не кэширует. Она спрашивает историю цены по
+        каждому типу и печатает сырые ключи таблицы проекта: если там лежит
+        `commercial_count` или `parking_count`, ответ виден без всяких гипотез.
+        """
+        if not self.available and not self._cookie("sessionid"):
+            return {"available": False, "reason": "Источник выключен: не заданы доступы"}
+        cid = int(complex_id)
+        answers: dict[str, Any] = {}
+        for kind in self._OBJECT_TYPES:
+            payload = {
+                "ids": [cid],
+                "opts": {"result_value": "sqm_price", "object_type": kind, "rooms": None,
+                         "only_last_months": 12, "area_min": None, "area_max": None},
+            }
+            try:
+                raw = self._post_json("/api/compare/price-dynamic-chart/", payload)
+            except Exception as exc:  # noqa: BLE001 — причина и есть ответ пробы
+                answers[kind] = {"error": f"{type(exc).__name__}: {exc}"}
+                continue
+            if isinstance(raw, str):
+                decoded = lz_decompress_base64(raw)
+                try:
+                    raw = json.loads(decoded) if decoded else None
+                except ValueError:
+                    raw = None
+            points: list[Any] = []
+            if isinstance(raw, list):
+                for row in raw:
+                    if isinstance(row, dict):
+                        points.extend(row.get("values") or [])
+            answers[kind] = {
+                "points": len(points),
+                # Одно значение важнее числа точек: пустой ряд и ряд из нулей
+                # выглядят одинаково в счётчике и по-разному по сути.
+                "sample": next((point for point in points if point.get("value")), None),
+            }
+        try:
+            table = self._post_json("/api/app/complex/table/", {"complex_id": cid})
+        except Exception as exc:  # noqa: BLE001
+            table = {"error": f"{type(exc).__name__}: {exc}"}
+        return {
+            "available": True,
+            "complex_id": cid,
+            # Сырые ключи таблицы: `commercial_count` или `parking_count` в них
+            # отвечают на вопрос без всякой интерпретации.
+            "table_keys": sorted(table) if isinstance(table, dict) else [],
+            "table_sample": {key: value for key, value in (table or {}).items()
+                             if not isinstance(value, (list, dict))} if isinstance(table, dict) else table,
+            "by_object_type": answers,
+        }
+
     def diagnostics(self) -> dict[str, Any]:
         return {
             "available": self.available,

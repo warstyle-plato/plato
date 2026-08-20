@@ -282,3 +282,60 @@ def test_suggestions_never_go_to_the_network(tmp_path: Path) -> None:
     fresh_client._fetch_projects = lambda: []  # type: ignore[assignment]
     assert fresh_client.projects() == []
     assert fresh_client.projects(fetch=False) == []
+
+
+def test_the_probe_asks_the_source_about_commercial_and_parking(monkeypatch, tmp_path) -> None:
+    """«Есть ли в Пульсе коммерция и машино-места» — вопрос владельца 20.08.2026.
+
+    Ответить по коду нельзя: всё, что мы берём, прибито к жилью. Цена
+    запрашивается с `object_type: "living"`, в таблице читаются
+    `living_count`, `living_area`. Приставка у каждого поля и сам параметр
+    говорят, что типы источник различает, — но это признак, а не
+    доказательство. Проба спрашивает и печатает ответ.
+    """
+    from market_search.pulse import PulseClient
+
+    client = PulseClient(tmp_path)
+    # `available` — свойство по наличию доступов, поэтому задаём сами доступы.
+    monkeypatch.setattr(client, "login", "probe")
+    monkeypatch.setattr(client, "password", "probe")
+
+    asked: list[tuple[str, dict]] = []
+
+    def fake_post(path: str, payload: dict):
+        asked.append((path, payload))
+        if path.endswith("/table/"):
+            return {"living_count": 220, "living_area": 13400,
+                    "commercial_count": 12, "parking_count": 180,
+                    "buildings": [{"id": 1}]}
+        kind = payload["opts"]["object_type"]
+        if kind == "living":
+            return [{"id": 1, "values": [{"month": "2026-07", "value": 708109}]}]
+        if kind == "parking":
+            return [{"id": 1, "values": [{"month": "2026-07", "value": 2_500_000}]}]
+        # Остальные типы источник не знает — и это тоже ответ.
+        return []
+
+    monkeypatch.setattr(client, "_post_json", fake_post)
+    out = client.probe_object_types(1)
+
+    assert out["available"] is True
+    # Спросили каждый тип, а не только жильё.
+    kinds = [payload["opts"]["object_type"] for path, payload in asked
+             if "price-dynamic-chart" in path]
+    assert "living" in kinds and "commercial" in kinds and "parking" in kinds
+    # Ответ по типам: где числа есть, где нет.
+    assert out["by_object_type"]["living"]["points"] == 1
+    assert out["by_object_type"]["parking"]["sample"]["value"] == 2_500_000
+    assert out["by_object_type"]["commercial"]["points"] == 0
+    # Сырые ключи таблицы отвечают на вопрос без интерпретации.
+    assert "commercial_count" in out["table_keys"]
+    assert "parking_count" in out["table_keys"]
+    # Списки и словари в образец не идут: проба должна читаться, а не листаться.
+    assert "buildings" not in out["table_sample"]
+
+    # Источник выключен — так и сказано, а не пустой ответ, читаемый как «нет».
+    monkeypatch.setattr(client, "login", "")
+    monkeypatch.setattr(client, "password", "")
+    monkeypatch.setattr(client, "_cookie", lambda name: None)
+    assert client.probe_object_types(1)["available"] is False

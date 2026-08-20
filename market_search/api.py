@@ -202,6 +202,31 @@ def install(app: FastAPI) -> MarketDiscoveryService:
         cabinet_module.require_cabinet(request)
         return await run_in_threadpool(service.pulse.probe_fields)
 
+    @app.get("/market/pulse/object-types")
+    async def market_pulse_object_types(request: Request, complex_id: int = 0) -> dict[str, Any]:
+        """Есть ли у источника коммерция и машино-места.
+
+        Всё, что мы берём, прибито к жилью: `object_type: "living"` у цены и
+        приставка `living_` у каждого поля таблицы. Приставка говорит, что типы
+        источник различает, — но это признак, а не доказательство. Проба
+        спрашивает историю по каждому типу и печатает сырые ключи таблицы:
+        `commercial_count` или `parking_count` в них отвечают на вопрос без
+        всякой интерпретации.
+
+        Без `complex_id` берётся первый проект справочника — чтобы спросить,
+        достаточно любого живого.
+        """
+        cabinet_module.require_cabinet(request)
+        if not complex_id:
+            known = await run_in_threadpool(service.pulse.projects)
+            complex_id = next((row.complex_id for row in known or []), 0)
+        if not complex_id:
+            raise HTTPException(
+                status_code=503,
+                detail="Справочник проектов пуст — укажите complex_id вручную",
+            )
+        return await run_in_threadpool(service.pulse.probe_object_types, complex_id)
+
     @app.get("/market/address/suggest")
     async def market_address_suggest(request: Request, q: str = "") -> dict[str, Any]:
         """Подсказки адресов — тем же DaData, что и адресный поиск движка.
