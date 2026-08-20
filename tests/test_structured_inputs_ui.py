@@ -8,8 +8,13 @@ ROOT = Path(__file__).resolve().parent.parent
 
 def test_v2_loads_structured_input_assets():
     html = (ROOT / "frontend_v2" / "index.html").read_text(encoding="utf-8")
-    assert "/v2/assets/structured_inputs.css" in html
-    assert "/v2/assets/structured_inputs.js" in html
+    routes = (ROOT / "developaid_v2.py").read_text(encoding="utf-8")
+    worker = (ROOT / "frontend_v2" / "sw.js").read_text(encoding="utf-8")
+    for asset in ("structured_inputs.css", "structured_inputs.js"):
+        url = f"/v2/assets/{asset}"
+        assert url in html
+        assert url in routes
+        assert url in worker
     assert html.index("/v2/assets/app.js") < html.index("/v2/assets/structured_inputs.js")
 
 
@@ -35,6 +40,8 @@ def test_tep_ui_uses_90_then_70_and_engine_understands_it():
     assert "Общая / ГНС" in js
     assert "Продаваемая / общей" in js
     assert "isUntouchedEngineDefault" in js
+    assert "hasFactualTepSource" in js
+    assert "!hasFactualTepSource()" in js
 
     applied, warnings = wrapper.core.tep_ratios_applied("apartments:90/70")
     assert warnings == []
