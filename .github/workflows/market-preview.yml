@@ -196,7 +196,7 @@ jobs:
           set -euo pipefail
           code=$(curl -sS -o "${RUNNER_TEMP}/iam.json" -w '%{http_code}' \
             -X POST https://auth.yandex.cloud/oauth/token \
-            --data-urlencode "grant_type=urn:ietf:params:oauth-grant-type:token-exchange" \
+            --data-urlencode "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
             --data-urlencode "requested_token_type=urn:ietf:params:oauth:token-type:access_token" \
             --data-urlencode "audience=${{ vars.YC_SERVICE_ACCOUNT_ID }}" \
             --data-urlencode "subject_token@${RUNNER_TEMP}/oidc.jwt" \
