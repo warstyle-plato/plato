@@ -106,7 +106,18 @@ def install(app, core) -> None:
     def guide_page() -> HTMLResponse:
         return HTMLResponse(page, headers=_HEADERS)
 
-    consent = Path(__file__).resolve().parent.joinpath("consent.html").read_text(encoding="utf-8")
+    # Срок хранения журнала объявлен в движке (`_USAGE_KEEP_DAYS`, переменная
+    # `DEVELOPAID_USAGE_KEEP_DAYS`) — документ подставляет его, а не хранит свою
+    # копию. Правило то же, что с `VERSION`: копию негде обновлять, потому что
+    # копии нет, а разошедшийся с кодом срок в документе — это неверное
+    # обещание, а не опечатка.
+    keep_days = str(int(getattr(core, "_USAGE_KEEP_DAYS", 180)))
+
+    def _document(name: str) -> str:
+        text = Path(__file__).resolve().parent.joinpath(name).read_text(encoding="utf-8")
+        return text.replace("__JOURNAL_KEEP_DAYS__", keep_days)
+
+    consent = _document("consent.html")
 
     @app.get("/consent", response_class=HTMLResponse, include_in_schema=False)
     def consent_page() -> HTMLResponse:
@@ -115,8 +126,8 @@ def install(app, core) -> None:
     # Документы ИП живут своими страницами, а не ссылками на чужой сайт:
     # ссылаться на политику другого лица нельзя — это его текст и его
     # обязательства (замечание владельца, 18.08.2026).
-    privacy = Path(__file__).resolve().parent.joinpath("privacy.html").read_text(encoding="utf-8")
-    ads_consent = Path(__file__).resolve().parent.joinpath("ads_consent.html").read_text(encoding="utf-8")
+    privacy = _document("privacy.html")
+    ads_consent = _document("ads_consent.html")
 
     @app.get("/privacy", response_class=HTMLResponse, include_in_schema=False)
     def privacy_page() -> HTMLResponse:
