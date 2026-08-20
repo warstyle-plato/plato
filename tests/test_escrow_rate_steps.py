@@ -73,21 +73,58 @@ def test_the_test_project_actually_reaches_the_ladder():
 
 
 def test_an_empty_field_keeps_the_single_rate():
-    """Таблица индивидуальна для каждого НКЛ: пустое поле ничего не меняет."""
-    plain = _run()["finance"]
-    same = _run(pf_special_steps="")["finance"]
-    assert plain["pf_interest"] == same["pf_interest"]
-    assert plain["avg_pf_rate"] == same["avg_pf_rate"]
-    assert same["pf_special_steps"] == []
+    """Пустое поле — прежнее поведение: одна ставка на весь срок.
+
+    С 0.19.35 умолчание поля — лестница НКЛ Сбера (решение владельца), поэтому
+    «как было» задаётся теперь явно пустой строкой, а не отсутствием правки.
+    """
+    plain = _run(pf_special_steps="")["finance"]
+    assert plain["pf_special_steps"] == []
+    stepped = _run()["finance"]
+    assert stepped["pf_interest"] < plain["pf_interest"], (
+        "умолчание — лестница, и на сильном проекте она дешевле одной ставки")
 
 
 def test_the_ladder_makes_a_strong_project_cheaper():
     """Ради этого всё и затевалось: одна ставка завышала проценты сильным."""
-    plain = _run()["finance"]
+    plain = _run(pf_special_steps="")["finance"]
     stepped = _run(pf_special_steps=LADDER)["finance"]
     assert stepped["pf_interest"] < plain["pf_interest"] * 0.5, (
         plain["pf_interest"], stepped["pf_interest"])
     assert stepped["avg_pf_rate"] < plain["avg_pf_rate"]
+
+
+def test_the_default_is_the_sber_ladder_and_it_is_named():
+    """Умолчание — числа из договора, и договор назван.
+
+    Прежде поле было пустым: таблица у каждого НКЛ своя, и типовую не зашивали.
+    Владелец решил иначе (20.08.2026): «ставим базово по умолчанию то, что у
+    Сбера, а человек может вручную вбить или оставить». Раз в каждый новый
+    проект уезжают числа конкретного договора, договор обязан быть назван — иначе
+    они читаются как норма.
+    """
+    assert core.DEFAULT_INPUTS["pf_special_steps"] == core.PF_SPECIAL_STEPS_DEFAULT
+    assert core.pf_special_steps(core.PF_SPECIAL_STEPS_DEFAULT) == [
+        (1.0, 0.0347), (1.1, 0.0175), (1.2, 0.0003), (1.3, 0.0001)]
+    assert "400F00BVX003" in core.PF_SPECIAL_STEPS_SOURCE
+
+
+def test_the_default_changes_nothing_where_the_coverage_never_gets_there():
+    """Умолчание не двигает проекты, не дотягивающие до первой ступени.
+
+    Ниже первой ступени действует обычная специальная ставка, а на вводных по
+    умолчанию покрытие до 1× не доходит. Значит, смена умолчания не переписала
+    экономику всем разом — и это проверяется, а не предполагается.
+    """
+    tep = {key: dict(value) for key, value in core.TEP_DEFAULT.items()}
+    def run(steps):
+        inputs = {**core.DEFAULT_INPUTS, "pf_special_steps": steps}
+        return core.calculate(core.CalcRequest(inputs=inputs, tep=tep, rates=[]))["finance"]
+    plain, stepped = run(""), run(core.PF_SPECIAL_STEPS_DEFAULT)
+    coverage = [row["coverage"] for row in stepped["rows"] if row["pf_balance"] > 0]
+    assert coverage and max(coverage) < 1.0, max(coverage or [0])
+    assert plain["pf_interest"] == stepped["pf_interest"]
+    assert plain["avg_pf_rate"] == stepped["avg_pf_rate"]
 
 
 def test_the_report_says_which_step_worked_and_how_long():
@@ -135,11 +172,12 @@ def test_the_pdf_prints_the_ladder():
 def test_the_field_is_declared_where_the_page_takes_it():
     fields = [item[0] for group in core.FIELD_GROUPS for item in group[1]]
     assert "pf_special_steps" in fields
-    assert core.DEFAULT_INPUTS["pf_special_steps"] == ""
+    assert core.DEFAULT_INPUTS["pf_special_steps"] == core.PF_SPECIAL_STEPS_DEFAULT
     finance_group = next(group for group in core.FIELD_GROUPS if group[0] == "Финансирование")
     field = next(item for item in finance_group[1] if item[0] == "pf_special_steps")
     assert field[3] == "text", "лестница вводится строкой, а не числом"
     assert "Пусто" in field[2], "пустое поле — прежнее поведение, и это сказано"
+    assert "по умолчанию" in field[2], "откуда взялись числа в поле — сказано там же"
 
 
 def test_the_formula_for_excel_matches_the_engine():

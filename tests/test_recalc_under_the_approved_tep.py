@@ -508,3 +508,79 @@ def test_the_page_substitutes_the_lease_payment_too():
     assert "land_right:String(inputs.land_right" in body
     assert "делитель 1,001" in body, "право видно в строке «было → стало»"
     assert "if(d.vri_total_mln>0)inputs.land_rights_cost_mln" in body
+
+
+def test_editing_the_tep_recalculates_by_itself():
+    """Правка метров пересчитывает ВРИ, соцнагрузку и места без кнопки.
+
+    Пересчёт был только кнопкой с подтверждением, и это оказалось не системой, а
+    ещё одной дверью: человек правит ТЭП по решению ГЗК, а плата за ВРИ,
+    соцнагрузка и машино-места остаются нормативными и завышенными кратно
+    («не гибкая система изменения ТЭПов после просчёта на калькуляторе ГлавАПУ»,
+    владелец, 20.08.2026).
+    """
+    page = core.PAGE
+    assert "function scheduleTepAutoRecalc()" in page
+    body = page[page.index("function tepCellChanged("):]
+    body = body[:body.index("\n// Сколько кладовых")]
+    assert "scheduleTepAutoRecalc()" in body, (
+        "правка ячейки ТЭП обязана заводить пересчёт — иначе он снова только кнопка")
+    refill = page[page.index("function refillTepRow("):]
+    refill = refill[:refill.index("\n// Ответ кнопки живёт")]
+    assert "scheduleTepAutoRecalc()" in refill
+
+
+def test_the_automatic_pass_does_not_ask_and_does_not_hide():
+    """Спрашивать на каждой правке нечего, но и молчать нельзя.
+
+    Подтверждение осталось у явного нажатия кнопки; автоматический ход вместо
+    него печатает «было → стало». Молча подменённое число ищут потом в отчёте.
+    """
+    page = core.PAGE
+    body = page[page.index("async function recalcFromTep("):]
+    body = body[:body.index("\nfunction syncTep(")]
+    assert "if(!silent&&!confirm(" in body, "автоматический ход не спрашивает"
+    assert "Пересчитано под новый ТЭП" in body, "и не молчит о том, что заменил"
+    # Пересчитывать не от чего — тишина, а не плашка на каждой правке.
+    assert "if(!silent)say('Нет исходного расчёта ГлавАПУ" in body
+
+
+def test_the_parking_requirement_follows_the_tep():
+    """Потребность в местах считается по метрам в таблице, а не по нормативным.
+
+    Строка «норматив обеспеченности ГлавАПУ — 957 м/м: не хватает 807» стояла на
+    числе из импорта: правка ТЭП вдвое её не двигала, и она требовала мест за
+    проект, которого нет.
+    """
+    page = core.PAGE
+    body = page[page.index("function getGlavapuUnderground()"):]
+    body = body[:body.index("\nfunction undergroundAreaPerSpace")]
+    assert "PARKING_2118.sqm_per_person" in body, (
+        "постоянные места — норма 2118-ПП от площади квартир")
+    assert "tep.apartments&&tep.apartments.saleable" in body
+    assert "impMfc*nowOffice/wasOffice" in body, (
+        "приобъектные МФК — пропорцией по офисным метрам")
+    # Числа нормы объявлены в движке и подставлены: копии на странице нет.
+    assert "const PARKING_2118=" in page
+    assert core.PARKING_2118_PARAMS["sqm_per_person"] == 33.0
+    assert core.PARKING_2118_PARAMS["household"] == 2.1
+    assert core.PARKING_2118_PARAMS["per_flat"] == 0.8
+    assert core.PARKING_2118_PARAMS["guest_share"] == 0.1
+
+
+def test_a_switched_off_row_cannot_be_edited_into_losing_its_metres():
+    """Правка выключенной строки затирала сохранённые метры.
+
+    Объект выключен — строка в таблице нулевая, потому что нулевой её видит
+    модель. Но ячейки принимали ввод и писали его во вводные поверх сохранённого:
+    после ввода в «передаваемую» продаваемая площадь 36 660 м² становилась нулём,
+    а следующей правкой — вписанным числом. Метры терялись молча.
+    """
+    page = core.PAGE
+    body = page[page.index("function renderTep("):page.index("// Правка ячейки ТЭП")]
+    assert "const rowOff=rowSwitch&&!inputs[rowSwitch[0]]" in body
+    assert "const locked=rowOff||" in body, "ячейки выключенной строки заперты"
+    assert "Сохранено:" in body, "сохранённые метры названы, а не спрятаны за нулями"
+    assert 'onclick="enableTepRow(' in body, (
+        "включить объект можно отсюда: решение за человеком, но не поход на другую вкладку")
+    assert "function enableTepRow(key)" in page
