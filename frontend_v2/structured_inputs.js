@@ -1,16 +1,13 @@
-/* Structured inputs for two assumptions that are tables, not scalar fields.
+/* Structured inputs for assumptions that are tables, not scalar fields.
 
    The engine keeps compact string representations because they travel with a
    saved project and are also understood by Excel generation. The UI must not
-   expose those transport strings to a user. */
+   expose those transport strings to a user — and must not keep a second copy
+   of the engine methodology. */
 
 (() => {
-  const BASE_TEP_TOTAL_PCT = 90;
-  const BASE_TEP_SALEABLE_OF_TOTAL_PCT = 70;
   const PF_STEPS_KEY = 'pf_special_steps';
   const TEP_RATIOS_KEY = 'tep_ratios_custom';
-
-  const ratioKeys = new Set(['apartments', 'ground_commercial', 'standalone_retail', 'offices']);
 
   function numberText(value, digits = 2) {
     const n = Number(value);
@@ -170,34 +167,30 @@
       .join(';');
   }
 
-  function ratioFromRow(row) {
+  function defaultRatio(rowKey) {
+    const ratios = form.defaults && form.defaults.tep_ratios;
+    const raw = ratios && ratios[rowKey];
+    if (!raw) return null;
+    const total = Number(raw.total_of_gns || 0);
+    const saleable = Number(raw.saleable_of_gns || 0);
+    if (!(total > 0) || !(saleable >= 0)) return null;
+    return {
+      total: total * 100,
+      saleable: saleable / total * 100,
+      source: String(raw.source || ''),
+    };
+  }
+
+  function ratioFromRow(row, rowKey) {
+    const baseline = defaultRatio(rowKey);
     const gns = Number(row.gns || 0);
     const total = Number(row.total_area || 0);
     const saleable = Number(row.saleable || 0);
     return {
-      total: gns > 0 && total > 0 ? total / gns * 100 : BASE_TEP_TOTAL_PCT,
-      saleable: total > 0 && saleable > 0 ? saleable / total * 100 : BASE_TEP_SALEABLE_OF_TOTAL_PCT,
+      total: gns > 0 && total > 0 ? total / gns * 100 : (baseline ? baseline.total : 0),
+      saleable: total > 0 && saleable > 0 ? saleable / total * 100 : (baseline ? baseline.saleable : 0),
+      source: 'по текущим ТЭП',
     };
-  }
-
-  function sameNumber(left, right) {
-    return Math.abs(Number(left || 0) - Number(right || 0)) < 1e-6;
-  }
-
-  function isUntouchedEngineDefault(rowKey, row) {
-    const baseline = form.defaults && form.defaults.tep && form.defaults.tep[rowKey];
-    if (!baseline) return false;
-    return ['gns', 'total_area', 'saleable'].every((key) => sameNumber(row[key], baseline[key]));
-  }
-
-  function factualSource(draft, result) {
-    const imported = draft && draft.inputs && draft.inputs._glavapu_import;
-    const source = String((result && result.project && result.project.source_label) || '').toLowerCase();
-    return Boolean(imported) || source.includes('глав') || source.includes('гзк') || source.includes('агр') || source.includes('поиск тэп');
-  }
-
-  function hasFactualTepSource() {
-    return factualSource(form.draft, state.result);
   }
 
   function applyRatio(row, totalPct, saleablePct) {
@@ -208,49 +201,19 @@
     if ('useful' in row && Number(row.useful || 0) <= Number(row.saleable || 0)) row.useful = row.saleable;
   }
 
-  function seedDevelopAidRatios(draft, result) {
-    if (!draft || factualSource(draft, result)) return draft;
-    const overrides = parseRatioOverrides(draft.inputs[TEP_RATIOS_KEY]);
-    ratioKeys.forEach((rowKey) => {
-      const row = draft.tep && draft.tep[rowKey];
-      if (!row || overrides[rowKey] || !isUntouchedEngineDefault(rowKey, row)) return;
-      overrides[rowKey] = { total: BASE_TEP_TOTAL_PCT, saleable: BASE_TEP_SALEABLE_OF_TOTAL_PCT };
-      applyRatio(row, BASE_TEP_TOTAL_PCT, BASE_TEP_SALEABLE_OF_TOTAL_PCT);
-    });
-    draft.inputs[TEP_RATIOS_KEY] = serializeRatioOverrides(overrides);
-    return draft;
-  }
-
-  /* Seed the working assumptions when the editable draft is created, not only
-     when the user happens to open the TEP step. Thus Calculate from any block
-     uses 90% / 70% for an untouched manual project. */
-  const baseDraftFromResult = draftFromResult;
-  draftFromResult = function structuredDraftFromResult(result) {
-    return seedDevelopAidRatios(baseDraftFromResult(result), result);
-  };
-
   function tepRatioStrip(rowKey, row, group, rerender) {
-    if (!ratioKeys.has(rowKey)) return;
+    const baseline = defaultRatio(rowKey);
+    if (!baseline) return;
     const overrides = parseRatioOverrides(form.draft.inputs[TEP_RATIOS_KEY]);
-    let current = overrides[rowKey];
-
-    /* Existing project / imported TEP wins. Only an untouched model default may
-       inherit the DevelopAid 90% → 70% assumption. A GlavAPU/GZK/AGR fact is
-       never rewritten just because the Inputs screen was opened. */
-    if (!current && !hasFactualTepSource() && isUntouchedEngineDefault(rowKey, row)) {
-      current = { total: BASE_TEP_TOTAL_PCT, saleable: BASE_TEP_SALEABLE_OF_TOTAL_PCT };
-      overrides[rowKey] = current;
-      form.draft.inputs[TEP_RATIOS_KEY] = serializeRatioOverrides(overrides);
-      applyRatio(row, current.total, current.saleable);
-    }
-    if (!current) current = ratioFromRow(row);
+    const current = overrides[rowKey] || ratioFromRow(row, rowKey);
+    const sourceText = baseline.source ? ` Источник: ${baseline.source}.` : '';
 
     const strip = document.createElement('div');
     strip.className = 'tep-ratio-strip';
     strip.innerHTML = `
       <div class="tep-ratio-copy">
         <span>ГНС → общая → продаваемая</span>
-        <small>Наше умолчание: общая 90% от ГНС; продаваемая 70% от общей. Фактические параметры можно заменить здесь.</small>
+        <small>Умолчание DevelopAid: общая ${numberText(baseline.total)}% от ГНС; продаваемая ${numberText(baseline.saleable)}% от общей.${sourceText} Фактические параметры можно заменить здесь.</small>
       </div>`;
 
     const total = document.createElement('label');
@@ -272,8 +235,8 @@
     const reset = document.createElement('button');
     reset.type = 'button';
     reset.className = 'structured-button is-muted tep-ratio-reset';
-    reset.textContent = '90% / 70%';
-    reset.title = 'Вернуть пропорции DevelopAid';
+    reset.textContent = `${numberText(baseline.total)}% / ${numberText(baseline.saleable)}%`;
+    reset.title = 'Вернуть пропорции DevelopAid из движка';
 
     function save(totalPct, saleablePct) {
       if (!(totalPct > 0 && totalPct <= 100 && saleablePct > 0 && saleablePct <= 100)) return;
@@ -285,7 +248,7 @@
 
     totalInput.addEventListener('change', () => save(Number(totalInput.value), Number(saleableInput.value)));
     saleableInput.addEventListener('change', () => save(Number(totalInput.value), Number(saleableInput.value)));
-    reset.addEventListener('click', () => save(BASE_TEP_TOTAL_PCT, BASE_TEP_SALEABLE_OF_TOTAL_PCT));
+    reset.addEventListener('click', () => save(baseline.total, baseline.saleable));
     strip.append(total, saleable, reset);
     group.appendChild(strip);
   }
@@ -319,6 +282,12 @@
       const title = document.createElement('h4');
       title.textContent = row.label;
       group.appendChild(title);
+      if (row.hint) {
+        const hint = document.createElement('p');
+        hint.className = 'tep-row-hint';
+        hint.textContent = row.hint;
+        group.appendChild(hint);
+      }
       if (!form.draft.tep[row.key]) form.draft.tep[row.key] = { label: row.label };
 
       const rerender = () => renderStep();
@@ -329,13 +298,20 @@
           { ...field, type: 'number' },
           form.draft.tep[row.key][field.key],
           (value) => {
-            form.draft.tep[row.key][field.key] = value;
             if (field.key === 'gns') {
+              /* Preserve the ratio that was visible before GNS changed. For an
+                 empty manual row this is the engine default; for an imported
+                 factual row it is the factual ratio on screen. */
               const overrides = parseRatioOverrides(form.draft.inputs[TEP_RATIOS_KEY]);
-              const ratio = overrides[row.key];
-              if (ratio) applyRatio(form.draft.tep[row.key], ratio.total, ratio.saleable);
+              const ratio = overrides[row.key] || ratioFromRow(form.draft.tep[row.key], row.key);
+              form.draft.tep[row.key][field.key] = value;
+              if (ratio && ratio.total > 0 && ratio.saleable > 0) {
+                applyRatio(form.draft.tep[row.key], ratio.total, ratio.saleable);
+              }
               rerender();
+              return;
             }
+            form.draft.tep[row.key][field.key] = value;
           }));
       });
       host.appendChild(group);
