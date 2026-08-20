@@ -190,6 +190,12 @@
     return ['gns', 'total_area', 'saleable'].every((key) => sameNumber(row[key], baseline[key]));
   }
 
+  function hasFactualTepSource() {
+    const imported = form.draft && form.draft.inputs && form.draft.inputs._glavapu_import;
+    const source = String((state.result && state.result.project && state.result.project.source_label) || '').toLowerCase();
+    return Boolean(imported) || source.includes('глав') || source.includes('гзк') || source.includes('агр') || source.includes('поиск тэп');
+  }
+
   function applyRatio(row, totalPct, saleablePct) {
     const gns = Number(row.gns || 0);
     if (!(gns > 0)) return;
@@ -203,11 +209,10 @@
     const overrides = parseRatioOverrides(form.draft.inputs[TEP_RATIOS_KEY]);
     let current = overrides[rowKey];
 
-    /* Existing project / imported TEP wins. Only a row that is still exactly the
-       engine's untouched default is migrated to the DevelopAid working default
-       90% → 70%. This avoids overwriting a GZK/AGR/GlavAPU factual ratio merely
-       because the user opened the Inputs screen. */
-    if (!current && isUntouchedEngineDefault(rowKey, row)) {
+    /* Existing project / imported TEP wins. Only an untouched model default may
+       inherit the DevelopAid 90% → 70% assumption. A GlavAPU/GZK/AGR fact is
+       never rewritten just because the Inputs screen was opened. */
+    if (!current && !hasFactualTepSource() && isUntouchedEngineDefault(rowKey, row)) {
       current = { total: BASE_TEP_TOTAL_PCT, saleable: BASE_TEP_SALEABLE_OF_TOTAL_PCT };
       overrides[rowKey] = current;
       form.draft.inputs[TEP_RATIOS_KEY] = serializeRatioOverrides(overrides);
