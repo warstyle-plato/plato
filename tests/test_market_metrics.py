@@ -1092,12 +1092,18 @@ def test_print_rules_are_declared_last() -> None:
     """
     from market_search.cabinet import CABINET_PAGE
 
+    import re
+
     style = CABINET_PAGE[: CABINET_PAGE.index("</style>", CABINET_PAGE.index("@media print"))]
     print_at = style.index("@media print")
     tail = style[print_at:]
-    # После блока печати — только он сам и @page, никаких правил экрана.
-    after = tail[tail.index("}\n@page") + 1 :]
-    assert after.strip() in ("@page{margin:14mm 12mm}", "")
+    # После блока печати — только он сам, комментарий и @page: никаких правил
+    # экрана. Комментарии выбрасываются, чтобы проверка не зависела от того,
+    # сколько их написано.
+    after = re.sub(r"/\*.*?\*/", "", tail[tail.rindex("}") + 1:], flags=re.S)
+    assert after.strip() == "", f"после печати стоят правила экрана: {after.strip()[:80]}"
+    single = re.sub(r"/\*.*?\*/", "", style, flags=re.S)
+    assert single.count("@page{") == 1, "@page объявлен дважды — победит последний"
     # И само правило на месте.
     assert ".printviews{display:block}" in tail
     assert style.index(".printviews{display:none}") < print_at
@@ -2362,7 +2368,10 @@ console.log(JSON.stringify({full:printHead(d), bare:printHead(bare),
     assert "708 109 ₽/м²" in full and "прайс-лист, не сделка" in full
     assert "+34,1 %" in full and "медиана 6 соседей — 528 152 ₽/м²" in full
     assert "у соседей медиана 21,5" in full
-    assert "02.2031" in full
+    # Прогноз и порог свежести пишутся словами: «02.2031» и «2026-06-01» —
+    # строки выгрузки, и в документе они выглядят неотформатированной ячейкой.
+    assert "февраль 2031" in full and "02.2031" not in full
+    assert "старше 1 июня 2026" in full and "2026-06-01" not in full
     # Состав выборки остаётся в отчёте: это методика, а не орган управления.
     assert "сопоставимы по классу 12, в выборку взято 10" in full
 
@@ -2385,6 +2394,10 @@ def test_the_printed_page_carries_its_own_name_and_hides_the_controls() -> None:
     # Колонтитул на каждой странице, и под него отведено поле страницы.
     assert ".printfoot{display:block;position:fixed" in CABINET_PAGE
     assert "@page{margin:14mm 12mm 20mm}" in CABINET_PAGE
+    # Полей страницы ровно одно объявление. Их было два, и побеждал последний:
+    # нижнее поле оставалось 12 мм, а колонтитул стоял в этом же поле, то есть
+    # на тексте. Второе объявление не спорит с первым — оно его отменяет.
+    assert CABINET_PAGE.count("@page{") == 1
     assert "Пульс Продаж Новостроек</div>" in CABINET_PAGE
     # Пульт в печати не участвует, шапка документа — участвует.
     assert ".headcard,.addwrap,.handadd,#addstate{display:none !important}" in CABINET_PAGE
@@ -2664,8 +2677,9 @@ def test_the_findings_reach_both_surfaces() -> None:
     assert "<h2>Что из этого следует</h2>" in CABINET_PAGE
     assert "(d.analysis||{}).findings" in CABINET_PAGE
     assert CABINET_PAGE.index("Что из этого следует") < CABINET_PAGE.index("<h2>Где соседи</h2>")
-    # На бумаге выводы в одну колонку: две рвали бы предложение пополам.
-    assert ".findings{grid-template-columns:1fr;gap:10px}" in CABINET_PAGE
+    # На бумаге выводы идут одной колонкой обычным потоком: две рвали бы
+    # предложение пополам, а сетку Chrome при печати не фрагментирует вовсе.
+    assert ".findings{display:block}" in CABINET_PAGE
 
 
 def test_the_report_ends_with_an_argued_analysis_for_a_live_project() -> None:
@@ -2906,3 +2920,86 @@ def test_a_failed_print_says_so_and_keeps_saying_it() -> None:
     import main_legacy
 
     assert f"document.body.dataset.version='{main_legacy.VERSION}'" in page
+
+
+def test_the_printed_pages_are_full_not_half_empty() -> None:
+    """Половина каждого листа была белой, и это не вкус, а правило вёрстки.
+
+    Карточке запрещали рваться целиком — а карточки высокие: не влезла, уехала
+    на новый лист. Неделима не карточка, а то, что внутри: график с подписью,
+    вывод, строка таблицы. Отдельно — сетка: Chrome её не фрагментирует, и
+    полоса выводов уезжала целиком, оставляя под заголовком пустоту.
+    """
+    from market_search.cabinet import CABINET_PAGE
+
+    printed = CABINET_PAGE[CABINET_PAGE.rindex("@media print{"):]
+    assert ".card{border:0" in printed
+    assert "break-inside:avoid" not in printed.split(".card{")[1].split("}")[0]
+    # Неделимы куски, а не карточка. График — да, таблица — нет: у неё строки.
+    assert ".wrap:has(> svg),.geomap,.finding,.tile{break-inside:avoid" in printed
+    assert "tr,thead{break-inside:avoid" in printed
+    assert "thead{display:table-header-group}" in printed
+    # Сетка выводов в печати становится обычным потоком.
+    assert ".findings{display:block}" in printed
+    # Заголовок не остаётся один на дне листа.
+    assert "h2,h3{break-after:avoid;page-break-after:avoid}" in printed
+    # Имя проекта на бумаге — текст, а не ссылка.
+    assert "text-decoration:none !important" in printed
+
+
+def test_the_map_does_not_stack_labels_on_top_of_each_other(tmp_path) -> None:
+    """Шесть подписей в плотном центре слились в кашу, читалась ни одна.
+
+    Имя ставится, только если его строка не задевает уже поставленную, и место
+    вокруг самого объекта занято заранее: подпись соседа перечёркивала
+    оранжевую точку — то есть ровно то, ради чего карту и смотрят.
+    """
+    import json
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if not node:
+        import pytest
+
+        pytest.skip("node не установлен")
+
+    from market_search.cabinet import CABINET_PAGE
+
+    start = CABINET_PAGE.index("const COMPASS=")
+    end = CABINET_PAGE.index("\n}", CABINET_PAGE.index('return `<div class="geomap">', start)) + 2
+    source = CABINET_PAGE[start:end]
+
+    harness = """
+const num=(v,d=0)=>v===null||v===undefined?'—':Number(v).toFixed(d);
+const esc=s=>String(s===null||s===undefined?'':s);
+const CLASS_COLOR={'Бизнес':'#1367AE'};
+"""
+    # Двенадцать проектов в одной точке с точностью до сотни метров: именно так
+    # выглядит центр выборки в плотном районе.
+    driver = """
+const subject={latitude:55.7305, longitude:37.5628, project_name:'Объект'};
+const rows=[{__own:true,name:'Объект'}];
+for(let i=0;i<12;i++) rows.push({name:'Очень длинное имя проекта '+i, segment:'Бизнес',
+  price_per_sqm:700000, latitude:55.7305+(i%4)*0.0006, longitude:37.5628+Math.floor(i/4)*0.0009});
+const html=mapChart(rows, subject);
+const labels=[...html.matchAll(/<text class="(?:mine|edge)" x="([\\d.]+)" y="([\\d.]+)"/g)]
+  .map(m=>({x:Number(m[1]), y:Number(m[2])}));
+console.log(JSON.stringify(labels));
+"""
+    path = tmp_path / "labels.js"
+    path.write_text(harness + source + driver, encoding="utf-8")
+    run = subprocess.run([node, str(path)], capture_output=True, text=True, timeout=30)
+    assert run.returncode == 0, run.stderr
+    labels = json.loads(run.stdout.strip().splitlines()[-1])
+
+    # Двенадцать имён в одной точке нарисовать нельзя — и не надо: остальные
+    # достаются наведением. Но те, что нарисованы, не должны налезать.
+    assert len(labels) < 12, "подписи ставятся все подряд — снова каша"
+    for one in labels:
+        for other in labels:
+            if one is other:
+                continue
+            assert not (abs(one["x"] - other["x"]) < 40 and abs(one["y"] - other["y"]) < 13), \
+                "две подписи налезли друг на друга"
+

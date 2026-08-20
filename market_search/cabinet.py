@@ -318,7 +318,6 @@ g.bub.on circle{fill-opacity:.75}
    что стоит ниже, побеждает. Пока блок стоял выше, `.printviews{display:none}`
    гасил карты рынка обратно, а `#bubble{display:none}` (id — сильнее) убирал
    и открытую. В PDF не попадала ни одна: разом сработали обе половины. */
-@page{margin:14mm 12mm 20mm}
 @media print{
   /* В печать уходит отчёт, а не орудия его сборки: форма, кнопки и поле
      вопроса на бумаге бесполезны. Разделы не разрываются между страницами —
@@ -341,13 +340,24 @@ g.bub.on circle{fill-opacity:.75}
   .printhead .whereis{font-size:10pt;color:var(--dim);margin-bottom:14px}
   /* Полка показателей: главные числа стоят до первого графика, а не
      вылавливаются из него. */
-  .printhead .shelf{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;
-    border-top:1px solid #dde5ed;border-bottom:1px solid #dde5ed;padding:12px 0;margin-bottom:12px}
-  .printhead .tile b{display:block;font-size:15pt;line-height:1.15}
-  .printhead .tile span{display:block;font-size:8.5pt;color:var(--dim);margin-top:3px}
-  .printhead .tile i{display:block;font-size:8pt;color:var(--dim);font-style:normal;margin-top:4px;
-    line-height:1.3}
-  .printhead .sample{font-size:9.5pt;color:var(--dim);line-height:1.4}
+  /* Полка показателей на подложке: пять чисел вразброс по белому читаются
+     как обрывки текста, а на своей плашке — как одна панель. Колонки равные и
+     разделены линейками, иначе длинная сноска второго столбца перекашивает
+     весь ряд. */
+  .printhead .shelf{display:grid;grid-template-columns:repeat(5,1fr);gap:0;
+    background:#f4f7fa;border:1px solid #e3ebf2;border-radius:6px;
+    padding:12px 0;margin:0 0 12px}
+  .printhead .tile{padding:0 12px;border-left:1px solid #e3ebf2}
+  .printhead .tile:first-child{border-left:0}
+  .printhead .tile b{display:block;font-size:14pt;line-height:1.1;min-height:2.2em}
+  .printhead .tile span{display:block;font-size:8.5pt;color:var(--dim);margin-top:4px;
+    line-height:1.25}
+  .printhead .tile i{display:block;font-size:8pt;color:#7b8b9a;font-style:normal;
+    margin-top:5px;line-height:1.3}
+  /* Состав выборки — мелкий шрифт документа: он нужен, но спорить с
+     заголовком не должен. */
+  .printhead .sample{font-size:9pt;color:var(--dim);line-height:1.45;
+    border-top:1px solid #e3ebf2;padding-top:8px}
   /* Колонтитул повторяется на каждой странице: лист, отделившийся от отчёта,
      обязан сам говорить, чей он и на какую дату. Место под него отводит
      нижнее поле страницы. */
@@ -368,17 +378,43 @@ g.bub.on circle{fill-opacity:.75}
   .essay p{font-size:10.5pt;line-height:1.5;max-width:none}
   /* На бумаге колонка узкая, а выводы — связный текст: две колонки рвали бы
      предложение пополам. */
-  .findings{grid-template-columns:1fr;gap:10px}
+  /* Сетку в печати не оставляем: Chrome grid не фрагментирует, и вся полоса
+     выводов уезжала на следующий лист целиком, оставляя под заголовком
+     пустоту в полстраницы. Обычный поток блоков делится как надо. */
+  .findings{display:block}
+  .finding{margin:0 0 10px}
   .finding p{font-size:10pt}
-  .card{break-inside:avoid;page-break-inside:avoid;border:0;border-top:1px solid #dde5ed;
-        border-radius:0;padding:14px 0;margin:0}
-  h2{break-after:avoid}
+  /* Полстраницы пустоты выходило из запрета рвать карточку целиком: карточка
+     высокая, не влезла — уехала на новый лист, оставив половину белой.
+     Неделима не карточка, а то, что внутри: график с подписью, вывод,
+     абзац. Их и держим вместе. */
+  .card{border:0;border-top:1px solid #dde5ed;border-radius:0;padding:14px 0;margin:0}
+  /* Неделим график: разорванный пополам он не читается ничем. А таблица
+     делится — она и так со строками, и запрет рвать её целиком отправлял
+     тридцать строк на новый лист, оставляя предыдущий наполовину белым.
+     Обёртка у них общая (`.wrap`), поэтому различаем по содержимому. */
+  .wrap:has(> svg),.geomap,.finding,.tile{break-inside:avoid;page-break-inside:avoid}
+  tr,thead{break-inside:avoid;page-break-inside:avoid}
+  thead{display:table-header-group}
+  /* Заголовок в одиночестве на дне страницы — обещание, которое лист не
+     выполняет. Он уходит вместе со своим содержимым. */
+  h2,h3{break-after:avoid;page-break-after:avoid}
+  h2{font-size:13.5pt;margin:0 0 8pt}
+  /* Подпись под графиком принадлежит графику, а не следующему разделу. */
+  .wrap+.muted{break-before:avoid}
+  /* На бумаге имя проекта — текст, а не ссылка: подчёркивание синим обещает
+     переход, которого у листа не бывает. */
+  .link,td.link,.peers a{color:inherit !important;text-decoration:none !important;
+    border-bottom:0 !important;cursor:auto}
   table{font-size:11px}
   th,td{padding:4px 6px}
   .say,.note,.scope{break-inside:avoid}
   a[href]:after{content:''}
 }
-@page{margin:14mm 12mm}
+/* Поля страницы объявлены один раз. Их было два, и побеждал последний:
+   нижнее поле оставалось 12 мм, а колонтитул стоял в этом же поле — то есть
+   на тексте. Нижнее шире прочих ровно под него. */
+@page{margin:14mm 12mm 20mm}
 </style>
 <header>
   <h1>Конструктор отчёта о рынке</h1>
@@ -1003,6 +1039,21 @@ function mapChart(rows, subject){
   // На бумаге наведения нет, и схема без подписей становится анонимной. Правило
   // подписи здесь своё и объяснимое — ближайшие: на карте «крайний по оси» из
   // пузырьков смысла не имеет, а ближайший сосед и есть первый конкурент.
+  // Шесть ближайших в плотном центре ложатся друг на друга: на Кутузов Сити
+  // шесть подписей слились в кашу, и читалась ни одна. Имя ставится, только
+  // если его строка не задевает уже поставленную; не поместилось — остаётся
+  // наведение и касание. Прямоугольник считается на глаз по длине имени: точных
+  // метрик текста в SVG до отрисовки нет, а промах в пару пикселей здесь
+  // безобиден.
+  // Место под имя объекта и под сам его кружок: подпись соседа, прошедшая
+  // рядом, перечёркивала оранжевую точку — то есть ровно то, ради чего карту
+  // и смотрят. Двумя строками, потому что занятость проверяется построчно.
+  const placed=[{x:cx-60,y:cy-30,w:120,h:13},{x:cx-60,y:cy-17,w:120,h:13}];
+  const fits=(px,py,name)=>{
+    const w=Math.min(name.length,20)*5.6+8, box={x:px-w/2,y:py-18,w:w,h:13};
+    if(placed.some(o=>Math.abs(o.x-box.x)<(o.w+box.w)/2&&Math.abs(o.y-box.y)<13)) return false;
+    placed.push(box); return true;
+  };
   const closest=new Set([...pts].sort((a,b)=>away(a)-away(b)).slice(0,6));
   // Дальние рисуются первыми, ближние поверх: в плотном центре сверху должен
   // оказаться тот, кто ближе, а не тот, кто раньше попался в списке.
@@ -1020,7 +1071,7 @@ function mapChart(rows, subject){
        +`<text class="hov" x="${(px+(left?-9:9)).toFixed(1)}" y="${(py+4).toFixed(1)}"`
        +` text-anchor="${left?'end':'start'}" font-size="11" fill="#16202b" paint-order="stroke"`
        +` stroke="#fff" stroke-width="3.5">${esc(p.name)}</text>`
-       +(marked||closest.has(p)
+       +((marked||closest.has(p))&&fits(px,py,short(p.name))
           ?`<text class="${marked?'mine':'edge'}" x="${px.toFixed(1)}" y="${(py-10).toFixed(1)}"`
            +` text-anchor="middle" font-size="10.5" fill="#2b3a4a" paint-order="stroke"`
            +` stroke="#fff" stroke-width="3">${esc(short(p.name))}</text>`
@@ -1631,6 +1682,28 @@ async function build(){
 // живёт экран. Вторая реализация экономики начинается с «просто поделить».
 const MONTHS_OF=['января','февраля','марта','апреля','мая','июня','июля',
                  'августа','сентября','октября','ноября','декабря'];
+// Дата в шапке пишется словами. «2031-02-01» и «Прайс старше 2026-02-01» —
+// это строки выгрузки, а не строки документа: в отчёте, который читают, они
+// выглядят так же, как выглядела бы неотформатированная ячейка.
+const MONTHS_NOM=['январь','февраль','март','апрель','май','июнь','июль',
+                  'август','сентябрь','октябрь','ноябрь','декабрь'];
+const MONTHS_GEN=['января','февраля','марта','апреля','мая','июня','июля',
+                  'августа','сентября','октября','ноября','декабря'];
+function monthYear(value){
+  const parts=String(value||'').split(/[-.\/]/).filter(Boolean);
+  if(parts.length<2) return String(value||'');
+  // Источник отдаёт и «2031-02-01», и «02.2031» — год там, где четыре цифры.
+  const year=parts.find(x=>x.length===4)||parts[0];
+  const month=Number(parts.find(x=>x!==year));
+  const name=MONTHS_NOM[month-1];
+  return name?`${name} ${year}`:String(value||'');
+}
+function dayDate(iso){
+  const parts=String(iso||'').slice(0,10).split('-');
+  if(parts.length!==3) return String(iso||'');
+  const name=MONTHS_GEN[Number(parts[1])-1];
+  return name?`${Number(parts[2])} ${name} ${parts[0]}`:String(iso||'');
+}
 function longDate(iso){
   const parts=String(iso||'').slice(0,10).split('-');
   if(parts.length!==3) return String(iso||'');
@@ -1656,7 +1729,7 @@ function printHead(d){
          (paceBlock.peers||{}).median?`у соседей медиана ${num(paceBlock.peers.median,1)}`:''),
     tile(m.lot_count==null?null:num(m.lot_count),'лотов в экспозиции',
          m.living_units?`из ${num(m.living_units)} квартир проекта`:''),
-    tile(m.sales_end_forecast?esc(m.sales_end_forecast):null,'прогноз конца продаж',
+    tile(m.sales_end_forecast?esc(monthYear(m.sales_end_forecast)):null,'прогноз конца продаж',
          'при нынешнем темпе'),
   ].join('');
   const where=[s.address, s.segment?'класс '+s.segment:''].filter(Boolean).join(' · ');
@@ -1670,7 +1743,8 @@ function printHead(d){
     +(shelf?`<div class="shelf">${shelf}</div>`:'')
     +`<div class="sample">В радиусе ${esc(String(c.radius_km))} км источник знает`
     +` ${num(c.found)} проектов; сопоставимы по классу ${num(c.comparable)}, в выборку взято`
-    +` ${num(c.used)}. Прайс старше ${esc(c.fresh_since||'—')} — у ${num(c.stale_price)},`
+    +` ${num(c.used)}. Прайс старше ${esc(c.fresh_since?dayDate(c.fresh_since):'—')}`
+    +` — у ${num(c.stale_price)},`
     +` цены нет вовсе у ${num(c.no_price)}`
     +(c.added_by_hand?`; вписано вручную ${num(c.added_by_hand)}`:'')+`.</div></div>`;
 }

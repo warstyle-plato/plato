@@ -21,6 +21,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from .segments import _LADDER, normalize_segment
@@ -75,6 +76,23 @@ def _day(iso: str | None) -> str:
         return f"{int(parts[2])} {GENITIVE[int(parts[1]) - 1]} {parts[0]}"
     except (ValueError, IndexError):
         return str(iso)
+
+
+def _month_year(value: str | None) -> str:
+    """«2031-02-01» в прозе — строка выгрузки, а не строка отчёта.
+
+    Источник отдаёт прогноз то полной датой, то «02.2031»; год узнаётся по
+    четырём цифрам, а не по месту в строке.
+    """
+    parts = [part for part in re.split(r"[-./]", str(value or "")) if part]
+    if len(parts) < 2:
+        return str(value or "")
+    year = next((part for part in parts if len(part) == 4), parts[0])
+    rest = next((part for part in parts if part != year), "")
+    try:
+        return f"{NOMINATIVE[int(rest) - 1]} {year}"
+    except (ValueError, IndexError):
+        return str(value or "")
 
 
 def _plural(count: float, one: str, few: str, many: str) -> str:
@@ -396,7 +414,7 @@ def _horizon_finding(subject) -> dict[str, Any] | None:
             f"при темпе {_num(pace, 1)} в месяц — это "
             f"{_amount(months, 'месяц', 'месяца', 'месяцев')}, то есть "
             f"{years_text} {_plural(years, 'год', 'года', 'лет')}; прогноз окончания продаж — "
-            f"{forecast}. Остаток в готовом доме означает либо пересмотр цены, либо расходы "
+            f"{_month_year(forecast)}. Остаток в готовом доме означает либо пересмотр цены, либо расходы "
             f"на содержание непроданного."
         ),
         "tone": "watch",
