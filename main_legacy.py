@@ -30,6 +30,9 @@ from xml.sax.saxutils import escape as xml_escape
 # Запуск Chromium — общий: его заводят и ГлавАПУ, и печать отчёта, и ломается
 # он у обоих сразу, а наружу выходит по-разному.
 import browser_launch
+# Профиль освоения стройки: им движок разносит СМР, им же отчёт о рынке считает
+# готовность дома по датам. Одна кривая на оба вопроса.
+import build_curve
 import socket
 import urllib.parse
 import urllib.error
@@ -54,7 +57,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.19.32"
+VERSION = "0.19.33"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -17826,19 +17829,14 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
             add_capex(article, bucket_month, bucket_value)
 
     def spread_s_curve(article: str, amount: float, start: date, months: int) -> None:
-        # S-кривая книги (лист CF_x, строка 12): первые 20% срока — вес 0,6,
-        # середина — 1,2, последние 20% — 0,8, нормируется на сумму весов.
-        # Равномерный разнос стройки расходился с книгой на 2-3% по процентам
-        # ПФ: деньги те же, помесячный профиль другой.
+        # S-кривая книги (лист CF_x, строка 12) объявлена одним местом —
+        # `build_curve`. Копия здесь была бы не удобством, а вторым мнением об
+        # одном процессе: этой же кривой отчёт о рынке считает готовность дома
+        # по датам, и разойтись им нельзя.
         if not amount:
             return
-        months = max(1, int(months))
-        weights = [0.6 if (index + 1) / months <= 0.2
-                   else (1.2 if (index + 1) / months <= 0.8 else 0.8)
-                   for index in range(months)]
-        total = sum(weights)
-        for index, weight in enumerate(weights):
-            add_capex(article, add_months(start, index), amount * weight / total)
+        for index, share in enumerate(build_curve.monthly_shares(months)):
+            add_capex(article, add_months(start, index), amount * share)
 
     add_capex("purchase", project_start, n(x, "purchase_price_mln") * 1_000_000)
 

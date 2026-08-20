@@ -3351,3 +3351,46 @@ def test_the_report_switches_to_the_stage_correction_the_day_data_arrives() -> N
     assert "Приведено к стадии старта" not in text
     assert "готовность соседей источник не отдаёт" in text
 
+
+
+def test_readiness_comes_from_the_same_curve_that_spreads_the_capex() -> None:
+    """Одна кривая на движок и на рынок, а не две об одном процессе.
+
+    Стадия в процентах ниоткуда не приходит — приходят даты. «Сколько
+    построено к этому месяцу» между ними должен говорить тот же профиль
+    освоения, которым движок разносит СМР: иначе модель считает стройку одной
+    кривой, а отчёт пересчитывает цену по другой, и сверить их нечем.
+    """
+    import build_curve
+    import main_legacy
+    from market_search.stage import readiness_from_dates
+
+    # Профиль книги: 20 % срока весом 0,6, середина 1,2, хвост 0,8.
+    shares = build_curve.monthly_shares(10)
+    assert abs(sum(shares) - 1.0) < 1e-9
+    assert shares[0] < shares[5] and shares[9] < shares[5]
+    assert abs(shares[0] / shares[5] - 0.6 / 1.2) < 1e-9
+    assert abs(shares[9] / shares[5] - 0.8 / 1.2) < 1e-9
+
+    # Готовность — накопленная доля: ноль до начала, единица после сдачи.
+    assert build_curve.readiness(0, 36) == 0.0
+    assert build_curve.readiness(36, 36) == 1.0
+    assert build_curve.readiness(40, 36) == 1.0
+    steps = [build_curve.readiness(m, 36) for m in range(37)]
+    assert all(b >= a for a, b in zip(steps, steps[1:]))
+
+    # Даты — в готовность.
+    assert readiness_from_dates("2025-01", "2028-01", "2025-01") == 0.0
+    assert readiness_from_dates("2025-01", "2028-01", "2028-06") == 1.0
+    assert 0.4 < readiness_from_dates("2025-01", "2028-01", "2026-07") < 0.55
+    # Нет даты — `None`, а не ноль: котлован и «мы не знаем» выглядят одинаково
+    # числом и значат противоположное.
+    assert readiness_from_dates("2025-01", None, "2026-07") is None
+    assert readiness_from_dates(None, "2028-01", "2026-07") is None
+    # Ввод не позже начала — негодные даты, а не готовый дом.
+    assert readiness_from_dates("2028-01", "2025-01", "2026-07") is None
+
+    # И движок берёт профиль оттуда же, а не держит копию.
+    source = open(main_legacy.__file__, encoding="utf-8").read()
+    assert "build_curve.monthly_shares(months)" in source
+    assert "0.6 if (index + 1) / months <= 0.2" not in source, "копия профиля вернулась"

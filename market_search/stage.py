@@ -32,6 +32,8 @@
 
 from __future__ import annotations
 
+import re
+
 # Цена старта в долях от цены готового метра. Это допущение, а не измерение:
 # разброс «котлован → сдача» по рынку называют в двадцать-тридцать процентов, и
 # 0,8 — середина этого разговора. Число объявлено здесь один раз, печатается в
@@ -66,6 +68,48 @@ def at_readiness(ready_price: float, readiness: float,
                  *, start_factor: float = START_FACTOR) -> float:
     """Цена готового метра, приведённая к нужной стадии."""
     return ready_price * factor(readiness, start_factor=start_factor)
+
+
+def readiness_from_dates(start: str | None, finish: str | None,
+                         today: str | None = None) -> float | None:
+    """Готовность дома по двум датам — той же кривой, что разносит СМР.
+
+    Стадия в процентах ниоткуда не приходит; приходят даты — начала стройки и
+    ввода. «Сколько построено к этому месяцу» между ними говорит кривая
+    освоения движка (`build_curve`), и другой у проекта быть не должно: две
+    кривые об одном процессе — это два мнения, которые не с чем сверить.
+
+    Нет любой из дат — `None`. Нулевая готовность и неизвестная выглядят
+    одинаково числом, а значат противоположное: одна говорит «котлован»,
+    другая — «мы не знаем».
+    """
+    import build_curve
+
+    first, last, now = _months(start), _months(finish), _months(today)
+    if first is None or last is None:
+        return None
+    if now is None:
+        return None
+    total = last - first
+    if total <= 0:
+        # Ввод не позже начала — это не готовый дом, это негодные даты.
+        return None
+    return build_curve.readiness_between(now - first, total)
+
+
+def _months(value: str | None) -> int | None:
+    """Дата в месяцах от нуля — считать разницу в месяцах проще, чем в днях."""
+    parts = [part for part in re.split(r"[-./\s]", str(value or "")) if part.isdigit()]
+    if len(parts) < 2:
+        return None
+    year = next((part for part in parts if len(part) == 4), None)
+    if year is None:
+        return None
+    rest = [part for part in parts if part is not year]
+    month = next((part for part in rest if 1 <= int(part) <= 12), None)
+    if month is None:
+        return None
+    return int(year) * 12 + int(month)
 
 
 def median(values: list[float]) -> float | None:
