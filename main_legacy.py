@@ -43,6 +43,7 @@ from pydantic import BaseModel
 # причине: он о выгрузках и их разборе, движок — об экономике.
 import developaid_actuals
 import developaid_monitor
+from developaid_monitor_page import MONITOR_PAGE as _MONITOR_PAGE_RAW
 
 # Перевод документов проекта (ГПЗУ, ППТ, соглашения ВРИ и МПТ, справки по
 # техприсоединению) в продукты и деньги модели живёт отдельным модулем: он о
@@ -1476,6 +1477,7 @@ class MonitorSalesRequest(BaseModel):
     project: str
     taken_at: str
     rows: list[dict[str, Any]] = []
+    content_base64: str = ""
     session: str = ""
     key: str = ""
 
@@ -1502,6 +1504,26 @@ class MonitorGanttRequest(BaseModel):
     project: str
     cut: str
     upto: str = ""
+    session: str = ""
+    key: str = ""
+
+
+class MonitorProgrammeRequest(BaseModel):
+    project: str
+    taken_at: str
+    start: str
+    content_base64: str
+    session: str = ""
+    key: str = ""
+
+
+class MonitorProposalRequest(BaseModel):
+    project: str
+    taken_at: str
+    start: str
+    code: str
+    sheet: str
+    content_base64: str
     session: str = ""
     key: str = ""
 
@@ -1539,8 +1561,11 @@ def monitor_store_sales(req: MonitorSalesRequest) -> dict[str, Any]:
     """Положить продажи. Они приходят отдельно: книга обновляется реже РСС."""
     _require_web_access(req.session, req.key, "Монитор проекта")
     try:
+        if req.content_base64:
+            return developaid_monitor.store_sales_file(
+                req.project, base64.b64decode(req.content_base64), req.taken_at)
         return developaid_monitor.store_sales(req.project, req.rows, req.taken_at)
-    except ValueError as exc:
+    except (ValueError, KeyError) as exc:
         raise HTTPException(400, str(exc))
 
 
@@ -1607,6 +1632,53 @@ def monitor_gantt(req: MonitorGanttRequest) -> dict[str, Any]:
         raise HTTPException(404, str(exc))
     except ValueError as exc:
         raise HTTPException(400, str(exc))
+
+
+@app.post("/monitor/programme", include_in_schema=False)
+def monitor_store_programme(req: MonitorProgrammeRequest) -> dict[str, Any]:
+    """Положить производственную программу снимком.
+
+    Первый месяц приходит с запросом: в шапке шахматки стоит «июль» без года,
+    и ошибка на двенадцать месяцев не видна ни в одной сумме.
+    """
+    _require_web_access(req.session, req.key, "Монитор проекта")
+    try:
+        return developaid_monitor.store_programme(
+            req.project, base64.b64decode(req.content_base64),
+            req.start, req.taken_at)
+    except FileExistsError as exc:
+        raise HTTPException(409, str(exc))
+    except (ValueError, KeyError) as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/monitor/proposal", include_in_schema=False)
+def monitor_store_proposal(req: MonitorProposalRequest) -> dict[str, Any]:
+    """Положить согласованный новый график статьи.
+
+    С его даты отставание статьи меряется от него, а не от сорванного плана:
+    старый уже никем не исполняется, и тревога по нему ложная.
+    """
+    _require_web_access(req.session, req.key, "Монитор проекта")
+    try:
+        return developaid_monitor.store_proposal(
+            req.project, base64.b64decode(req.content_base64),
+            req.sheet, req.start, req.code, req.taken_at)
+    except FileExistsError as exc:
+        raise HTTPException(409, str(exc))
+    except (ValueError, KeyError) as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.get("/monitor", include_in_schema=False)
+def monitor_page() -> HTMLResponse:
+    """Страница монитора. Скрыта, как и его маршруты; данные — за входом.
+
+    Сама страница отдаётся без проверки: это пустая оболочка, числа приходят
+    из /monitor/*, и каждый из них требует сессию. Запирать оболочку значило
+    бы дублировать проверку, которая уже стоит на данных.
+    """
+    return HTMLResponse(MONITOR_PAGE_HTML)
 
 
 @app.post("/api/project-presets/import")
@@ -29512,6 +29584,7 @@ initializeApp();
 # Подстановка разовая, на импорте: страница отдаётся на каждый запрос, а версия
 # за время работы процесса не меняется.
 PAGE = PAGE.replace(VERSION_PLACEHOLDER, VERSION)
+MONITOR_PAGE_HTML = _MONITOR_PAGE_RAW.replace("__VERSION__", VERSION)
 PAGE = PAGE.replace(FIELD_GROUPS_PLACEHOLDER,
                     json.dumps(FIELD_GROUPS, ensure_ascii=False))
 PAGE = PAGE.replace(INPUT_DEFAULT_PLACEHOLDER,
