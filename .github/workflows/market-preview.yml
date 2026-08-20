@@ -4,6 +4,22 @@
 name: Market preview
 
 on:
+  push:
+    branches:
+      - "agent/market-*"
+    paths:
+      - "market_search/**"
+      - "developaid_statistics.py"
+      - "statistics_feature.py"
+      - "data/statistics/**"
+      - "main_registry.py"
+      - "market-preview-acceptance.py"
+      - "tests/test_market_*.py"
+      - "tests/test_statistics_engine.py"
+      - "tests/fixtures/market_golden_*.json"
+      - "deploy-market-preview.sh"
+      - "scripts/deploy-market-statistics-local.sh"
+      - ".github/workflows/market-preview.yml"
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened]
@@ -180,7 +196,7 @@ jobs:
           set -euo pipefail
           code=$(curl -sS -o "${RUNNER_TEMP}/iam.json" -w '%{http_code}' \
             -X POST https://auth.yandex.cloud/oauth/token \
-            --data-urlencode "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
+            --data-urlencode "grant_type=urn:ietf:params:oauth-grant-type:token-exchange" \
             --data-urlencode "requested_token_type=urn:ietf:params:oauth:token-type:access_token" \
             --data-urlencode "audience=${{ vars.YC_SERVICE_ACCOUNT_ID }}" \
             --data-urlencode "subject_token@${RUNNER_TEMP}/oidc.jwt" \
