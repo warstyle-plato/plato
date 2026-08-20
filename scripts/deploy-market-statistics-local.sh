@@ -53,8 +53,16 @@ check_routes() {
     attempt=$((attempt+1))
     if curl -fsS --max-time 5 "http://127.0.0.1:${port}/health" >/tmp/market-stat-health.$$ 2>/dev/null; then
       if curl -fsS --max-time 10 "http://127.0.0.1:${port}/openapi.json" \
-        | python3 -c 'import json,sys; p=json.load(sys.stdin).get("paths",{}); req=("/market/discovery","/statistics","/api/statistics/construction-cost"); m=[x for x in req if x not in p]; assert not m, "missing: "+", ".join(m)' \
-        && curl -fsS --max-time 10 "http://127.0.0.1:${port}/statistics" >/dev/null; then
+        | python3 -c 'import json,sys; p=json.load(sys.stdin).get("paths",{}); req=("/market/discovery","/statistics","/api/statistics/construction-cost","/api/statistics/sources"); m=[x for x in req if x not in p]; assert not m, "missing: "+", ".join(m)' \
+        && curl -fsS --max-time 10 "http://127.0.0.1:${port}/statistics" >/dev/null \
+        && curl -fsS --max-time 10 --get "http://127.0.0.1:${port}/api/statistics/construction-cost" \
+          --data-urlencode "region=Москва" \
+          --data-urlencode "class=business" \
+          --data-urlencode "unit=gba" \
+          --data-urlencode "metric_type=main_construction" \
+        | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d.get("methodology_version")=="2.0", d; assert d.get("unit")=="gba", d; assert d.get("metric_type")=="main_construction", d; assert d.get("recommended") is not None, d' \
+        && curl -fsS --max-time 10 "http://127.0.0.1:${port}/api/statistics/sources" \
+        | python3 -c 'import json,sys; d=json.load(sys.stdin); assert isinstance(d,list) and d, d'; then
         rm -f /tmp/market-stat-health.$$
         return 0
       fi
@@ -76,7 +84,7 @@ if ! check_routes "$CHECK_PORT"; then
   exit 1
 fi
 docker rm -f "$STAGING" >/dev/null 2>&1 || true
-say "Staging прошёл: рынок + статистика зарегистрированы."
+say "Staging прошёл: рынок + статистика v2 зарегистрированы и отвечают."
 
 OLD_ID=$(docker ps --filter "publish=${PORT}" --format '{{.ID}}' | head -1 || true)
 if [ -n "$OLD_ID" ]; then
