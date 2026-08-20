@@ -355,3 +355,25 @@ def test_the_probe_asks_the_source_about_commercial_and_parking(monkeypatch, tmp
     monkeypatch.setattr(client, "password", "")
     monkeypatch.setattr(client, "_cookie", lambda name: None)
     assert client.probe_object_types(1)["available"] is False
+
+
+def test_a_refused_login_says_so_instead_of_answering_with_silence(monkeypatch, tmp_path) -> None:
+    """Пароль не подошёл — страница возвращается та же, с кодом 200.
+
+    Единственная молчаливая ветка во всей цепочке: доступы заданы, сеть жива,
+    ошибок нет — и данных нет тоже. Наружу это выходило как «источник ничего
+    не знает», хотя верный ответ — «нас не пустили».
+    """
+    from market_search.pulse import PulseClient
+
+    client = PulseClient(tmp_path)
+    monkeypatch.setattr(client, "login", "кто-то")
+    monkeypatch.setattr(client, "password", "не тот")
+    # Страница входа с токеном отдаётся, POST проходит, а сессии нет.
+    monkeypatch.setattr(client, "_open",
+                        lambda *a, **kw: b'csrfmiddlewaretoken" value="abc"')
+    monkeypatch.setattr(client, "_cookie", lambda name: None)
+
+    assert client.sign_in() is False
+    assert any("вход не удался" in line for line in client.errors)
+    assert any("PULSE_LOGIN" in line for line in client.errors)
