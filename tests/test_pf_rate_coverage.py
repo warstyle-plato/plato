@@ -68,8 +68,13 @@ def test_coverage_above_one_does_not_go_below_the_special_rate():
     Цена подобрана так, чтобы сценарий переваливал за 2×. После сверки удельных
     ставок с банковским бюджетом стройка подорожала, долг вырос, и прежней тысячи
     хватает только до 1,996× — то есть ветка, ради которой тест существует,
-    перестала бы достигаться, а тест остался бы зелёным."""
-    inputs, result = finance(apartment_price_th=1400)
+    перестала бы достигаться, а тест остался бы зелёным.
+
+    Лестница по умолчанию здесь выключена: тест охраняет прежнюю ветку «выше
+    2× почти бесплатно», а договорная ступень 0,01% при покрытии за 1,3× — не
+    она. Со ступенями этот же случай проверяет
+    `test_the_rate_never_falls_below_the_applicable_step`."""
+    inputs, result = finance(apartment_price_th=1400, pf_special_steps="")
     special = inputs["pf_special_pct"] / 100
     rows = [row for row in months_under_debt(result) if row["coverage"] > 1]
 
@@ -78,18 +83,36 @@ def test_coverage_above_one_does_not_go_below_the_special_rate():
         assert row["pf_rate"] == pytest.approx(special)
 
 
-def test_the_rate_never_falls_below_the_special_one():
+def test_the_rate_never_falls_below_the_applicable_step():
+    """Пол ставки — ступень лестницы этого месяца, а не одна специальная.
+
+    С лестницей Сбера во вводных по умолчанию (владелец, 20.08.2026) богатый
+    проект честно платит 0,01% при покрытии за 1,3× — это договорная ставка,
+    а не прежняя ветка «выше 2× почти бесплатно». Ниже первой ступени пол
+    прежний — обычная специальная ставка.
+    """
     for price in (350, 600, 1000, 1600, 2500):
         inputs, result = finance(apartment_price_th=price)
         special = inputs["pf_special_pct"] / 100
-        rates = [row["pf_rate"] for row in months_under_debt(result)]
+        steps = core.pf_special_steps(inputs.get("pf_special_steps"))
+        for row in months_under_debt(result):
+            floor = core.pf_special_rate_at(row["coverage"], steps, special)
+            assert row["pf_rate"] >= floor - 1e-12, (
+                f"цена {price}: ставка ниже ступени покрытия {row['coverage']:.2f}")
 
+
+def test_without_the_ladder_the_special_rate_is_the_floor():
+    """Пустое поле ступеней возвращает прежнее правило — одна ставка."""
+    for price in (350, 1000, 2500):
+        inputs, result = finance(apartment_price_th=price, pf_special_steps="")
+        special = inputs["pf_special_pct"] / 100
+        rates = [row["pf_rate"] for row in months_under_debt(result)]
         assert min(rates) >= special - 1e-12, f"цена {price}: ставка ушла ниже специальной"
 
 
 def test_a_richer_project_pays_at_least_the_special_rate_on_average():
-    """Средняя ставка не может быть ниже специальной — раньше выходило 0,74%."""
-    inputs, result = finance(apartment_price_th=1000)
+    """Без лестницы средняя не ниже специальной — раньше выходило 0,74%."""
+    inputs, result = finance(apartment_price_th=1000, pf_special_steps="")
 
     assert result["report"]["financing"]["avg_pf_rate"] >= inputs["pf_special_pct"] / 100
 

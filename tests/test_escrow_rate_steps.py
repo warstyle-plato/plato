@@ -73,21 +73,58 @@ def test_the_test_project_actually_reaches_the_ladder():
 
 
 def test_an_empty_field_keeps_the_single_rate():
-    """Таблица индивидуальна для каждого НКЛ: пустое поле ничего не меняет."""
-    plain = _run()["finance"]
-    same = _run(pf_special_steps="")["finance"]
-    assert plain["pf_interest"] == same["pf_interest"]
-    assert plain["avg_pf_rate"] == same["avg_pf_rate"]
-    assert same["pf_special_steps"] == []
+    """Пустое поле — прежнее поведение: одна ставка на весь срок.
+
+    С 0.19.35 умолчание поля — лестница НКЛ Сбера (решение владельца), поэтому
+    «как было» задаётся теперь явно пустой строкой, а не отсутствием правки.
+    """
+    plain = _run(pf_special_steps="")["finance"]
+    assert plain["pf_special_steps"] == []
+    stepped = _run()["finance"]
+    assert stepped["pf_interest"] < plain["pf_interest"], (
+        "умолчание — лестница, и на сильном проекте она дешевле одной ставки")
 
 
 def test_the_ladder_makes_a_strong_project_cheaper():
     """Ради этого всё и затевалось: одна ставка завышала проценты сильным."""
-    plain = _run()["finance"]
+    plain = _run(pf_special_steps="")["finance"]
     stepped = _run(pf_special_steps=LADDER)["finance"]
     assert stepped["pf_interest"] < plain["pf_interest"] * 0.5, (
         plain["pf_interest"], stepped["pf_interest"])
     assert stepped["avg_pf_rate"] < plain["avg_pf_rate"]
+
+
+def test_the_default_is_the_sber_ladder_and_it_is_named():
+    """Умолчание — числа из договора, и договор назван.
+
+    Прежде поле было пустым: таблица у каждого НКЛ своя, и типовую не зашивали.
+    Владелец решил иначе (20.08.2026): «ставим базово по умолчанию то, что у
+    Сбера, а человек может вручную вбить или оставить». Раз в каждый новый
+    проект уезжают числа конкретного договора, договор обязан быть назван — иначе
+    они читаются как норма.
+    """
+    assert core.DEFAULT_INPUTS["pf_special_steps"] == core.PF_SPECIAL_STEPS_DEFAULT
+    assert core.pf_special_steps(core.PF_SPECIAL_STEPS_DEFAULT) == [
+        (1.0, 0.0347), (1.1, 0.0175), (1.2, 0.0003), (1.3, 0.0001)]
+    assert "400F00BVX003" in core.PF_SPECIAL_STEPS_SOURCE
+
+
+def test_the_default_changes_nothing_where_the_coverage_never_gets_there():
+    """Умолчание не двигает проекты, не дотягивающие до первой ступени.
+
+    Ниже первой ступени действует обычная специальная ставка, а на вводных по
+    умолчанию покрытие до 1× не доходит. Значит, смена умолчания не переписала
+    экономику всем разом — и это проверяется, а не предполагается.
+    """
+    tep = {key: dict(value) for key, value in core.TEP_DEFAULT.items()}
+    def run(steps):
+        inputs = {**core.DEFAULT_INPUTS, "pf_special_steps": steps}
+        return core.calculate(core.CalcRequest(inputs=inputs, tep=tep, rates=[]))["finance"]
+    plain, stepped = run(""), run(core.PF_SPECIAL_STEPS_DEFAULT)
+    coverage = [row["coverage"] for row in stepped["rows"] if row["pf_balance"] > 0]
+    assert coverage and max(coverage) < 1.0, max(coverage or [0])
+    assert plain["pf_interest"] == stepped["pf_interest"]
+    assert plain["avg_pf_rate"] == stepped["avg_pf_rate"]
 
 
 def test_the_report_says_which_step_worked_and_how_long():
@@ -135,11 +172,12 @@ def test_the_pdf_prints_the_ladder():
 def test_the_field_is_declared_where_the_page_takes_it():
     fields = [item[0] for group in core.FIELD_GROUPS for item in group[1]]
     assert "pf_special_steps" in fields
-    assert core.DEFAULT_INPUTS["pf_special_steps"] == ""
+    assert core.DEFAULT_INPUTS["pf_special_steps"] == core.PF_SPECIAL_STEPS_DEFAULT
     finance_group = next(group for group in core.FIELD_GROUPS if group[0] == "Финансирование")
     field = next(item for item in finance_group[1] if item[0] == "pf_special_steps")
     assert field[3] == "text", "лестница вводится строкой, а не числом"
     assert "Пусто" in field[2], "пустое поле — прежнее поведение, и это сказано"
+    assert "по умолчанию" in field[2], "откуда взялись числа в поле — сказано там же"
 
 
 def test_the_formula_for_excel_matches_the_engine():
@@ -158,16 +196,35 @@ def test_the_generated_workbook_carries_the_ladder():
     import re
     import zipfile
 
+    import openpyxl
+
     inputs = {**core.DEFAULT_INPUTS, **STRONG, "pf_special_steps": LADDER}
     tep = {key: dict(value) for key, value in core.TEP_DEFAULT.items()}
     data, _meta = core.build_plato_model_v2(inputs, tep, None, "Ступени")
-    book = zipfile.ZipFile(io.BytesIO(data))
+    book = openpyxl.load_workbook(io.BytesIO(data))
+    ws = book["Вводные"]
+    # Лестница — вводная и в книге: числовые строки, которые можно править
+    # (владелец, 20.08.2026: «сейчас-то надбавка — это вводная»). Текстовое поле
+    # разбирается при сборке, его правка в Excel ничего не пересчитывает —
+    # пересчитывают эти строки.
+    ladder_rows = {}
+    for row in range(1, ws.max_row + 1):
+        label = str(ws.cell(row=row, column=1).value or "")
+        if label.startswith("Ступень"):
+            ladder_rows[label] = (row, ws.cell(row=row, column=2).value)
+    assert ladder_rows["Ступень 1 — покрытие от"][1] == 1
+    assert ladder_rows["Ступень 4 — ставка"][1] == 0.0001
+    # Помесячная формула ссылается на эти ячейки, а не несёт числа в себе.
+    edge_row = ladder_rows["Ступень 4 — покрытие от"][0]
     found = 0
-    for name in book.namelist():
-        if name.endswith(".xml") and "sheet" in name:
-            text = book.read(name).decode("utf-8", "ignore")
-            found += len(re.findall(r"IF\([A-Z]+\d+&gt;=1\.3,0\.0001", text))
+    for name in book.sheetnames:
+        for row in book[name].iter_rows():
+            for cell in row:
+                value = cell.value
+                if isinstance(value, str) and f"Вводные!$B${edge_row}" in value:
+                    found += 1
     assert found > 10, found
+    del re, zipfile  # прежний тест искал зашитые числа в XML — их больше нет
 
 
 def test_the_plato_template_gets_the_ladder_too():
@@ -186,9 +243,49 @@ def test_the_plato_template_gets_the_ladder_too():
     core._plato_apply_pf_rate_methodology(
         book, filled, missing, core.pf_special_steps(LADDER))
     assert not missing, missing
+    # Без листа «Вводные» в этой мини-книге ссылаться некуда — числа в формуле.
     assert sheet["C57"].value.startswith("=IF(C53>=1.3,0.0001")
     assert "0.045" in sheet["C57"].value, "ниже первой ступени — обычная ставка"
     assert any("ступени" in str(item.get("label", "")) for item in filled), filled
+
+
+def test_the_plato_ladder_is_editable_cells_not_baked_numbers():
+    """В настоящем шаблоне лестница — вводная: ячейки внизу «Вводных».
+
+    Человек работает книгой и правит лестницу как данные, а не как формулу по
+    всем месячным колонкам двух очередей. Вставить строки в середину листа
+    нельзя — openpyxl при сдвиге не переписывает формулы, а под блоком
+    финансирования вся карта записи фиксированными адресами, — поэтому блок
+    стоит в конце листа, где свободно и куда никто не ссылается.
+    """
+    openpyxl = __import__("openpyxl")
+    book = openpyxl.Workbook()
+    sheet = book.active
+    sheet.title = "КРЕДИТЫ"
+    inputs_sheet = book.create_sheet("Вводные")
+    inputs_sheet["A1"] = "ВВОДНЫЕ"
+    for column in ("C", "D"):
+        sheet[f"{column}55"] = f"=IF({column}$3<$D61,IF({column}53>1,{column}57,{column}56),{column}$13)"
+        sheet[f"{column}56"] = f"={column}54*(1-{column}53)+{column}57*{column}53"
+        sheet[f"{column}57"] = 0.045
+    filled: list = []
+    missing: list = []
+    core._plato_apply_pf_rate_methodology(
+        book, filled, missing, core.pf_special_steps(LADDER))
+    assert not missing, missing
+    labels = [str(inputs_sheet.cell(row=row, column=1).value or "")
+              for row in range(1, inputs_sheet.max_row + 1)]
+    assert any(label.startswith("СТУПЕНИ СТАВКИ ПФ") for label in labels)
+    edge_rows = [row for row in range(1, inputs_sheet.max_row + 1)
+                 if str(inputs_sheet.cell(row=row, column=1).value or "").endswith("покрытие от")]
+    assert len(edge_rows) == 4
+    assert inputs_sheet.cell(row=edge_rows[0], column=2).value == 1.0
+    # Формула ссылается на ячейки; пустой порог читается нулём и гасится
+    # защитой «порог > 0» — иначе стёртая ступень срабатывала бы всегда.
+    formula = sheet["C57"].value
+    assert f"Вводные!$B${edge_rows[0]}" in formula
+    assert f"AND(Вводные!$B${edge_rows[0]}>0" in formula
+    assert formula.rstrip(")").endswith("0.045"), "ниже первой ступени — обычная ставка"
 
 
 def test_a_template_that_does_not_take_the_ladder_is_named_out_loud():

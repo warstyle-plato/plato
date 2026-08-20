@@ -603,7 +603,10 @@ def test_the_form_does_not_lose_a_field(client):
     # служебные (импорт ГлавАПУ, метки миграций).
     skip = {"project_class", "rate_scenario", "rate_start_pct", "rate_start_date",
             "rate_target_high_pct", "rate_target_base_pct", "rate_target_low_pct",
-            "rate_normalization_months", "rate_curve_shape"}
+            "rate_normalization_months", "rate_curve_shape",
+            # Доли ТЭП правятся в своей панели у таблицы, а не полем формы:
+            # строка — их хранилище в проекте, не интерфейс.
+            "tep_ratios_custom"}
     missing = {key for key in core.DEFAULT_INPUTS
                if not key.startswith("_") and key not in skip and key not in shown}
 

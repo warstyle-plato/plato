@@ -309,7 +309,7 @@ BASELINE = {
     "required_kindergarten_places": 104, "required_school_places": 212,
     "required_clinic_capacity": 45,
     "parking_permanent": 897, "parking_guest": 90, "parking_attached": 12,
-    "change_vri_mln": 10562.660,
+    "change_vri_mln": 10562.660, "rent_coefficient": RENT,
     "social_compensation_kindergarten_mln": 1140.096,
     "social_compensation_school_mln": 1763.587,
     "social_compensation_clinic_mln": 533.794,
@@ -367,15 +367,48 @@ def test_the_rates_come_from_the_baseline_not_from_constants():
     assert abs(rates["parking_permanent_per_sqm"] - 897 / 107580) < 1e-12
 
 
-def test_the_mixed_use_payment_is_split_by_function():
-    """Общую ставку к нежилому применять нельзя: было 127 163 всё жильё, стало
-    17 220 жилья и 65 000 нежилого. Раскладываем по базовым стоимостям базы."""
+def test_the_standalone_building_is_shown_but_not_charged():
+    """Отдельно стоящее нежилое в плату не идёт — оно справочная строка.
+
+    Владелец, 20.08.2026: «смену ВРИ калькулятор считает по жилью и нежилью
+    первого этажа; зачем нам считать 65 000 отдельно стоящего здания офисов».
+    Прежде офисное здание считалось по ставке с поправкой базовых стоимостей и
+    давало 3 521,9 млн ₽ поверх 1 430,4 млн жилья: итог 4 952,3 выглядел
+    посчитанным, и увидеть в нём лишние три с половиной миллиарда было нечем.
+    Строка осталась — молчать про 65 000 м² нельзя, — но помечена справочной и
+    в сумму не входит.
+    """
     out = core.recalculate_from_glavapu_baseline(BASELINE, APPROVED)
     lines = {line["type"]: line for line in out["vri_lines"]}
     assert abs(lines["mkd"]["payment_mln"] - 1430.4) < 1.0
     assert abs(lines["office"]["payment_mln"] - 3521.9) < 1.0
-    assert abs(out["vri_total_mln"] - 4952.3) < 1.0
+    assert lines["office"]["in_total"] is False
+    assert "не включено" in lines["office"]["note"]
+    assert abs(out["vri_total_mln"] - 1430.4) < 1.0, "итог — только жильё со встройкой"
+    assert any("не включены" in text for text in out["warnings"])
     assert out["vri_total_mln"] < out["baseline"]["vri_mln"]
+
+
+def test_the_rate_is_cross_checked_against_the_city_formula():
+    """Пропорция подтверждается своей формулой, а не верится на слово.
+
+    Снятая с базы ставка обязана сходиться с 1,8964 × коэффициент аренды ×
+    базовая МКД / 1,00001 (владелец, 20.08.2026: «надо подтвердить эти
+    пропорции на своих формулах хотя бы внутри»). Ошибка чтения выгрузки —
+    съехавшая колонка, чужая строка — даёт пропорцию, у которой каждый
+    множитель выглядит правдоподобно, и ловится только этой сверкой.
+    """
+    out = core.recalculate_from_glavapu_baseline(BASELINE, APPROVED)
+    names = [c["name"] for c in out["self_check"]["checked"]]
+    assert "ставка ВРИ против формулы города" in names
+    check = next(c for c in out["self_check"]["checked"]
+                 if c["name"] == "ставка ВРИ против формулы города")
+    assert check["drift_pct"] < 5.0
+    assert out["self_check"]["mismatch"] == []
+    # Испорченная база — плата вдвое выше при тех же коэффициентах — не проходит.
+    broken = core.recalculate_from_glavapu_baseline(
+        dict(BASELINE, change_vri_mln=BASELINE["change_vri_mln"] * 2), APPROVED)
+    assert any("формулой города" in text for text in broken["self_check"]["mismatch"])
 
 
 def test_an_unknown_function_is_not_quietly_an_office():
@@ -508,3 +541,79 @@ def test_the_page_substitutes_the_lease_payment_too():
     assert "land_right:String(inputs.land_right" in body
     assert "делитель 1,001" in body, "право видно в строке «было → стало»"
     assert "if(d.vri_total_mln>0)inputs.land_rights_cost_mln" in body
+
+
+def test_editing_the_tep_recalculates_by_itself():
+    """Правка метров пересчитывает ВРИ, соцнагрузку и места без кнопки.
+
+    Пересчёт был только кнопкой с подтверждением, и это оказалось не системой, а
+    ещё одной дверью: человек правит ТЭП по решению ГЗК, а плата за ВРИ,
+    соцнагрузка и машино-места остаются нормативными и завышенными кратно
+    («не гибкая система изменения ТЭПов после просчёта на калькуляторе ГлавАПУ»,
+    владелец, 20.08.2026).
+    """
+    page = core.PAGE
+    assert "function scheduleTepAutoRecalc()" in page
+    body = page[page.index("function tepCellChanged("):]
+    body = body[:body.index("\n// Сколько кладовых")]
+    assert "scheduleTepAutoRecalc()" in body, (
+        "правка ячейки ТЭП обязана заводить пересчёт — иначе он снова только кнопка")
+    refill = page[page.index("function refillTepRow("):]
+    refill = refill[:refill.index("\n// Ответ кнопки живёт")]
+    assert "scheduleTepAutoRecalc()" in refill
+
+
+def test_the_automatic_pass_does_not_ask_and_does_not_hide():
+    """Спрашивать на каждой правке нечего, но и молчать нельзя.
+
+    Подтверждение осталось у явного нажатия кнопки; автоматический ход вместо
+    него печатает «было → стало». Молча подменённое число ищут потом в отчёте.
+    """
+    page = core.PAGE
+    body = page[page.index("async function recalcFromTep("):]
+    body = body[:body.index("\nfunction syncTep(")]
+    assert "if(!silent&&!confirm(" in body, "автоматический ход не спрашивает"
+    assert "Пересчитано под новый ТЭП" in body, "и не молчит о том, что заменил"
+    # Пересчитывать не от чего — тишина, а не плашка на каждой правке.
+    assert "if(!silent)say('Нет исходного расчёта ГлавАПУ" in body
+
+
+def test_the_parking_requirement_follows_the_tep():
+    """Потребность в местах считается по метрам в таблице, а не по нормативным.
+
+    Строка «норматив обеспеченности ГлавАПУ — 957 м/м: не хватает 807» стояла на
+    числе из импорта: правка ТЭП вдвое её не двигала, и она требовала мест за
+    проект, которого нет.
+    """
+    page = core.PAGE
+    body = page[page.index("function getGlavapuUnderground()"):]
+    body = body[:body.index("\nfunction undergroundAreaPerSpace")]
+    assert "PARKING_2118.sqm_per_person" in body, (
+        "постоянные места — норма 2118-ПП от площади квартир")
+    assert "tep.apartments&&tep.apartments.saleable" in body
+    assert "impMfc*nowOffice/wasOffice" in body, (
+        "приобъектные МФК — пропорцией по офисным метрам")
+    # Числа нормы объявлены в движке и подставлены: копии на странице нет.
+    assert "const PARKING_2118=" in page
+    assert core.PARKING_2118_PARAMS["sqm_per_person"] == 33.0
+    assert core.PARKING_2118_PARAMS["household"] == 2.1
+    assert core.PARKING_2118_PARAMS["per_flat"] == 0.8
+    assert core.PARKING_2118_PARAMS["guest_share"] == 0.1
+
+
+def test_a_switched_off_row_cannot_be_edited_into_losing_its_metres():
+    """Правка выключенной строки затирала сохранённые метры.
+
+    Объект выключен — строка в таблице нулевая, потому что нулевой её видит
+    модель. Но ячейки принимали ввод и писали его во вводные поверх сохранённого:
+    после ввода в «передаваемую» продаваемая площадь 36 660 м² становилась нулём,
+    а следующей правкой — вписанным числом. Метры терялись молча.
+    """
+    page = core.PAGE
+    body = page[page.index("function renderTep("):page.index("// Правка ячейки ТЭП")]
+    assert "const rowOff=rowSwitch&&!inputs[rowSwitch[0]]" in body
+    assert "const locked=rowOff||" in body, "ячейки выключенной строки заперты"
+    assert "Сохранено:" in body, "сохранённые метры названы, а не спрятаны за нулями"
+    assert 'onclick="enableTepRow(' in body, (
+        "включить объект можно отсюда: решение за человеком, но не поход на другую вкладку")
+    assert "function enableTepRow(key)" in page
