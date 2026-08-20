@@ -392,3 +392,34 @@ def test_the_transition_regime_is_explicit_not_guessed():
         BASELINE, dict(APPROVED, parking_norm_regime="что-то своё"))
     assert unknown["parking"]["regime"] == "2118_2026"
     assert any("режим" in text for text in unknown["warnings"])
+
+
+def test_a_leased_plot_still_pays_but_by_its_own_divisor():
+    """Плату за смену ВРИ берут при обоих правах — отличается делитель:
+    собственность 1,00001, аренда жилья 1,001 (формула калькулятора). Отказ при
+    аренде показывал бы ноль там, где платят (владелец, 20.08.2026)."""
+    owned = core.recalculate_from_glavapu_baseline(BASELINE, APPROVED)
+    leased = core.recalculate_from_glavapu_baseline(
+        BASELINE, dict(APPROVED, land_right="lease"))
+
+    assert leased["vri_total_mln"] > 0
+    assert leased["vri_lines"], "строки платы остаются, а не исчезают"
+    ratio = leased["vri_total_mln"] / owned["vri_total_mln"]
+    assert abs(ratio - 1.00001 / 1.001) < 1e-6, ratio
+    # Разница 0,099% — её называют, а не прячут.
+    assert any("аренда" in text and "1,001" in text for text in leased["warnings"])
+    # Повышенная составляющая первого года по 273-ПП здесь не считается, и это
+    # сказано вслух: молчание читалось бы как «других платежей нет».
+    assert any("273-ПП" in text for text in leased["warnings"])
+    # Соцнагрузка и парковка от права не зависят.
+    assert leased["parking"]["permanent"] == owned["parking"]["permanent"]
+    assert leased["compensation_mln"] == owned["compensation_mln"]
+
+
+def test_the_page_substitutes_the_lease_payment_too():
+    page = core.PAGE
+    body = page[page.index("async function recalcFromTep("):]
+    body = body[:body.index("\n}\n")]
+    assert "land_right:String(inputs.land_right" in body
+    assert "делитель 1,001" in body, "право видно в строке «было → стало»"
+    assert "if(d.vri_total_mln>0)inputs.land_rights_cost_mln" in body
