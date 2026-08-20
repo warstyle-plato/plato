@@ -2839,3 +2839,70 @@ def test_findings_and_analysis_travel_all_the_way_to_the_markup(tmp_path) -> Non
     # PDF печатает эту же разметку, поэтому отдельной проверки бумаги не нужно:
     # что нарисовано на экране, то и уходит в печать.
     assert "708 109" in markup
+
+
+def test_the_pdf_route_answers_through_the_whole_application(tmp_path, monkeypatch) -> None:
+    """Маршрут печати проверялся по частям, а работает он целиком.
+
+    Помощник печатал PDF в тесте, страница слала запрос — а между ними стояли
+    вход в кабинет, разбор тела, крючок картинок и поток, в котором Playwright
+    запускается. Пробел закрывается тем же путём, каким ходит человек: вход
+    ключом, POST разметки, PDF в ответе.
+    """
+    import glob
+    import re
+
+    import pytest
+    from fastapi.testclient import TestClient
+
+    chromium = _chromium_path()
+    if not chromium and not glob.glob("/root/.cache/ms-playwright/chromium-*"):
+        pytest.skip("Chromium недоступен")
+    monkeypatch.setenv("CHROMIUM_EXECUTABLE_PATH", chromium)
+    monkeypatch.setenv("MARKET_CABINET_KEY", "probe-key")
+
+    import main_registry
+
+    client = TestClient(main_registry.app)
+    assert client.post("/cabinet/login", data={"key": "probe-key"},
+                       follow_redirects=False).status_code == 303
+
+    body = '<div class="card"><h2>Проба</h2><p>' + "строка " * 90 + "</p></div>"
+    answer = client.post("/cabinet/report.pdf",
+                         json={"html": body * 6, "title": "Проба", "footer": "Проба · срез"})
+    assert answer.status_code == 200, answer.text
+    assert answer.headers["content-type"] == "application/pdf"
+    assert answer.content.startswith(b"%PDF-")
+    assert len(re.findall(rb"/Type\s*/Page[^s]", answer.content)) >= 2
+    # Имя файла — с человеческим названием, а не «download.pdf».
+    assert "filename*=UTF-8''" in answer.headers.get("content-disposition", "")
+
+    # Печатать нечего — это отказ с причиной, а не пустой файл.
+    assert client.post("/cabinet/report.pdf", json={"html": "  "}).status_code == 422
+
+
+def test_a_failed_print_says_so_and_keeps_saying_it() -> None:
+    """Молчаливый откат читается как «выкатки не было».
+
+    Сервер не напечатал — браузер печатает сам, и человек получает похожий на
+    вид файл без номеров страниц. Если причина гаснет через секунду, отличить
+    это от невыкаченной версии нечем. Сообщение остаётся до следующего отчёта
+    и называет версию страницы.
+    """
+    from market_search.cabinet import CABINET_PAGE, cabinet_page
+
+    handler = CABINET_PAGE[CABINET_PAGE.index("$('#pdf').addEventListener"):]
+    handler = handler[: handler.index("\n});") + 4]
+    assert "$('#pdfstate')" in handler
+    assert "why.style.display='block'" in handler
+    # Гаснуть само сообщение не должно: скрывается оно только новым отчётом.
+    assert "why.style.display='none'" not in handler
+    assert "document.body.dataset.version" in handler
+    assert 'id="pdfstate"' in CABINET_PAGE
+
+    # Версия попадает в разметку подставновкой, а не строкой в скрипте.
+    page = cabinet_page()
+    assert "__DEVELOPAID_VERSION__" not in page
+    import main_legacy
+
+    assert f"document.body.dataset.version='{main_legacy.VERSION}'" in page

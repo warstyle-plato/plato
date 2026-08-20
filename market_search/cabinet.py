@@ -272,6 +272,9 @@ g.bub:hover circle{fill-opacity:.75}
    имена проектов у кружков и линий были недостижимы вовсе. Касание ставит
    группе класс — те же правила, что у наведения, только по тапу. */
 g.bub.on text.hov{opacity:1}
+/* Отказ печати виден до следующего отчёта, а не секунду: сообщение, которое
+   надо успеть прочитать, — это не сообщение. */
+.pdffail{margin-top:10px;font-size:13px;line-height:1.5}
 /* Разбор — единственное место отчёта, которое читают подряд, а не выхватывают
    глазами. Поэтому колонка узкая: строка длиной во весь экран на третьей
    странице теряется. */
@@ -424,9 +427,11 @@ g.bub.on circle{fill-opacity:.75}
     <label class="upload">Загрузить финмодель ПЛАТО<input type="file" id="plan" accept=".xlsx,.xlsm"></label>
     <span id="planstate" class="muted"></span>
     <span id="state" class="muted" style="margin-left:12px"></span>
+    <div id="pdfstate" class="err pdffail" style="display:none"></div>
     <div id="hintout"></div>
   </div>
   <div id="out"></div>
+<script>document.body.dataset.version='__DEVELOPAID_VERSION__';</script>
 <div id="tip" role="status"></div>
   <div class="card" id="askcard" style="display:none">
     <h2>Спросить Платона Сергеевича</h2>
@@ -1920,6 +1925,7 @@ $('#pdf').addEventListener('click',async ()=>{
   const day=String((lastReport||{}).retrieved_at||'').slice(0,10);
   const btn=$('#pdf'), was=btn.textContent;
   btn.disabled=true; btn.textContent='Печатаю…';
+  $('#pdfstate').style.display='none';
   try{
     const r=await fetch('/cabinet/report.pdf',{method:'POST',
       headers:{'Content-Type':'application/json'},
@@ -1932,8 +1938,17 @@ $('#pdf').addEventListener('click',async ()=>{
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(()=>URL.revokeObjectURL(url),10000);
   }catch(e){
-    $('#state').textContent='Сервер не напечатал ('+(e.message||e)+') — открываю печать браузера';
-    setTimeout(()=>{$('#state').textContent=''; window.print()},1200);
+    // Откат к печати браузера — не тишина. Человек получает похожий на вид
+    // файл без номеров страниц и колонтитула и вправе счесть, что выкатки не
+    // было вовсе. Причина остаётся на экране до следующего отчёта, а не гаснет
+    // через секунду: сообщение, которое надо успеть прочитать, — это не
+    // сообщение.
+    const why=$('#pdfstate');
+    why.innerHTML=`<b>Сервер не напечатал PDF</b> (${esc(e.message||e)}).`
+      +` Открываю печать браузера — файл будет прежнего вида, без номеров страниц.`
+      +` Версия страницы: ${esc(document.body.dataset.version||'—')}.`;
+    why.style.display='block';
+    setTimeout(()=>window.print(),1500);
   }finally{btn.disabled=false; btn.textContent=was}
 });
 
