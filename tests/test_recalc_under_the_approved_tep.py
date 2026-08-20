@@ -306,7 +306,9 @@ def test_everything_falls_together_on_the_approved_tep():
     assert out["population"] == 322
     assert out["places"] == {"kindergarten": 15, "school": 29, "clinic": 7}
     assert 480 < out["compensation_mln"] < 500
-    assert out["parking"]["permanent"] == 130
+    # По 2118-ПП постоянные считаются от площади квартир, а не от наземной
+    # жилой: 10 621 / (33 × 2,1) × 0,8 = 123.
+    assert out["parking"]["permanent"] == 123
     assert out["parking"]["guest"] == 13
     assert out["parking"]["total"] == out["parking"]["permanent"] + out["parking"]["guest"] + out["parking"]["attached"]
     # Было в исходном расчёте — рядом, чтобы разница была видна.
@@ -322,3 +324,71 @@ def test_the_page_calls_the_baseline_recalculation():
     body = body[:body.index("\n}\n")]
     assert "matches_baseline===false" in body, "несходимость с базой останавливает показ"
     assert "было" in body and "стало" in body
+
+
+# --- места постоянного размещения по 2118-ПП --------------------------------
+# Приложение 5 к 945-ПП изложено в новой редакции постановлением 2118-ПП от
+# 05.08.2026. Прежняя наша строка (НП жилая / 90 × К1) на выгрузке давала те же
+# 897 мест — и это было совпадением: другой driver и лишний множитель.
+
+def test_the_permanent_places_follow_2118():
+    """Пункт 1: Nп = S / (S₁ × 2,1) × D. На выгрузке 77 696 м² квартир — 897."""
+    assert core.moscow_permanent_parking_2118(77696) == 897
+    assert core.moscow_permanent_parking_2118(10621) == 123
+    assert core.moscow_permanent_parking_2118(0) == 0
+
+
+def test_the_apartment_mix_is_the_second_stage():
+    """Пункт 2: F₁×0,8 + F₂×1,2 + F₃×1,6 — когда известен состав квартир."""
+    assert core.moscow_permanent_parking_by_mix(158, 0, 0) == 127
+    assert core.moscow_permanent_parking_by_mix(100, 40, 18) == 157
+    assert core.moscow_permanent_parking_by_mix(0, 0, 0) == 0
+
+
+def test_the_old_formula_was_right_by_accident():
+    """Прежняя строка совпала на базе и разошлась на утверждённом ТЭП.
+
+    НП жилая / 90 × К1 даёт 897 на исходных метрах и 130 на новых; по 2118-ПП
+    новых мест 123. Зелёная сверка на одной точке ничего не доказывала.
+    """
+    import math
+    old_on_baseline = math.ceil(107580 / 90 * 0.75)
+    old_on_approved = math.ceil(17220 * 0.9 / 90 * 0.75)
+    assert old_on_baseline == 897 == core.moscow_permanent_parking_2118(77696)
+    assert old_on_approved == 130
+    assert core.moscow_permanent_parking_2118(10621) == 123
+
+
+def test_the_self_check_now_covers_the_permanent_places():
+    out = core.recalculate_from_glavapu_baseline(BASELINE, APPROVED)
+    names = {row["name"]: row for row in out["self_check"]["checked"]}
+    assert names["постоянные машино-места"]["recalculated"] == 897
+    assert out["self_check"]["matches_baseline"] is True
+    assert out["parking"]["permanent"] == 123
+    assert out["parking"]["guest"] == 13
+    assert "2118-ПП" in out["parking"]["basis"]
+
+
+def test_a_baseline_counted_by_the_old_rules_is_named():
+    """База, посчитанная по прежней редакции, не воспроизводится новой
+    формулой — и это надо сказать, а не пересчитать молча."""
+    broken = dict(BASELINE, parking_permanent=672)  # как если бы применили К1
+    out = core.recalculate_from_glavapu_baseline(broken, APPROVED)
+    assert out["self_check"]["matches_baseline"] is False
+    assert any("постоянные" in text for text in out["self_check"]["mismatch"])
+
+
+def test_the_transition_regime_is_explicit_not_guessed():
+    """Переходные положения 2118-ПП (разрешение на строительство, свидетельство
+    АГР, одобренная 3D-модель на 05.08.2026, ввод до 01.01.2028) — это выбор
+    человека, а не догадка по дате."""
+    legacy = core.recalculate_from_glavapu_baseline(
+        BASELINE, dict(APPROVED, parking_norm_regime="legacy_945"))
+    assert legacy["parking"]["regime"] == "legacy_945"
+    assert legacy["parking"]["permanent"] == 130, "прежняя ставка базы"
+    assert "945-ПП" in legacy["parking"]["basis"]
+
+    unknown = core.recalculate_from_glavapu_baseline(
+        BASELINE, dict(APPROVED, parking_norm_regime="что-то своё"))
+    assert unknown["parking"]["regime"] == "2118_2026"
+    assert any("режим" in text for text in unknown["warnings"])

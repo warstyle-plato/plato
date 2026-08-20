@@ -54,7 +54,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.19.28"
+VERSION = "0.19.29"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -7131,6 +7131,48 @@ def vri_manual_payment(rows: list[dict[str, Any]], rent_coeff: float,
     }
 
 
+# --- места постоянного размещения транспортных средств жителей ---------------
+# Приложение 5 к 945-ПП в редакции 2118-ПП от 05.08.2026 (текст на руках,
+# владелец прислал 20.08.2026). Прежняя наша строка — НП жилая / 90 × К1 — на
+# выгрузке давала те же 897 мест, и это было совпадением: у неё другой
+# driver (наземная площадь вместо площади квартир) и лишний множитель К1,
+# которого в новом порядке нет вовсе. На утверждённом ТЭП различие уже видно —
+# 123 места против 130.
+_PARKING_2118_HOUSEHOLD = 2.1     # средний размер домовладения, чел.
+_PARKING_2118_PER_FLAT = 0.8      # D — мест на одну квартиру
+_PARKING_2118_MIX = {"small": 0.8, "medium": 1.2, "large": 1.6}
+_PARKING_REGIMES = ("2118_2026", "legacy_945")
+
+
+def moscow_permanent_parking_2118(apartment_area_sqm: float,
+                                  sqm_per_person: float = 33.0) -> int:
+    """Пункт 1: Nп = S / (S₁ × 2,1) × D — для градостроительного проектирования.
+
+    S — площадь квартир; S₁ — площадь квартир на жителя (33 м² по нормативам
+    города); D = 0,8 места на квартиру. Округление вверх.
+    """
+    area = max(0.0, float(apartment_area_sqm or 0.0))
+    per_person = float(sqm_per_person or 0.0)
+    if area <= 0 or per_person <= 0:
+        return 0
+    return math.ceil(area / (per_person * _PARKING_2118_HOUSEHOLD) * _PARKING_2118_PER_FLAT)
+
+
+def moscow_permanent_parking_by_mix(small: float, medium: float, large: float) -> int:
+    """Пункт 2: Nп = F₁×0,8 + F₂×1,2 + F₃×1,6 — когда известен состав квартир.
+
+    F₁ — до 70 м², F₂ — от 70 до 100, F₃ — свыше 100 плюс ИЖС и блокированные.
+    Это стадия АГР: до неё состава нет, и считают по пункту 1.
+    """
+    counts = (max(0.0, float(small or 0.0)), max(0.0, float(medium or 0.0)),
+              max(0.0, float(large or 0.0)))
+    if not any(counts):
+        return 0
+    return math.ceil(counts[0] * _PARKING_2118_MIX["small"]
+                     + counts[1] * _PARKING_2118_MIX["medium"]
+                     + counts[2] * _PARKING_2118_MIX["large"])
+
+
 def recalculate_from_glavapu_baseline(baseline: dict[str, Any],
                                       areas: dict[str, Any]) -> dict[str, Any]:
     """Пересчёт по параметрам исходного расчёта ГлавАПУ.
@@ -7213,7 +7255,27 @@ def recalculate_from_glavapu_baseline(baseline: dict[str, Any],
 
     # --- машино-места ----------------------------------------------------
     # К1 и К2 в ставках уже сидят: они сняты с базы, где город их применил.
-    permanent = math.ceil(res_spp * 0.9 * permanent_rate) if res_spp and permanent_rate else 0
+    regime = str(areas.get("parking_norm_regime") or "2118_2026")
+    if regime not in _PARKING_REGIMES:
+        regime = "2118_2026"
+        warnings.append("неизвестный режим норматива парковки — считаю по 2118-ПП")
+    flats = areas.get("apartment_mix") or {}
+    if regime == "legacy_945":
+        # Переходные положения 2118-ПП (п. 2.1): объекты с разрешением на
+        # строительство, свидетельством АГР, одобренной 3D-моделью на 05.08.2026
+        # или вводом до 01.01.2028 считаются по прежней редакции. Определять это
+        # «примерно по дате» нельзя — режим задаётся явно.
+        permanent = math.ceil(res_spp * 0.9 * permanent_rate) if res_spp and permanent_rate else 0
+        parking_basis = "прежняя редакция 945-ПП: ставка исходного расчёта на метр НП жилой"
+    elif any(float(flats.get(key) or 0) for key in ("small", "medium", "large")):
+        permanent = moscow_permanent_parking_by_mix(
+            flats.get("small"), flats.get("medium"), flats.get("large"))
+        parking_basis = ("приложение 5 к 945-ПП в редакции 2118-ПП, пункт 2: "
+                         "F₁×0,8 + F₂×1,2 + F₃×1,6 по составу квартир")
+    else:
+        permanent = moscow_permanent_parking_2118(apartments)
+        parking_basis = ("приложение 5 к 945-ПП в редакции 2118-ПП, пункт 1: "
+                         "S / (33 × 2,1) × 0,8")
     guest = math.ceil(permanent / 10.0) if permanent else 0
     attached = math.ceil(nonres_np * attached_rate) if nonres_np and attached_rate else 0
 
@@ -7282,6 +7344,12 @@ def recalculate_from_glavapu_baseline(baseline: dict[str, Any],
     if base_permanent:
         compare("гостевые машино-места", math.ceil(base_permanent / 10.0),
                 int(num(baseline, "parking_guest")))
+        if regime == "2118_2026" and base_apartments > 0:
+            # Настоящая проверка формулы: город посчитал 897 мест на 77 696 м²
+            # квартир — ровно столько даёт пункт 1. Разойдётся — значит база
+            # считалась по прежней редакции или норматив снова сменился.
+            compare("постоянные машино-места",
+                    moscow_permanent_parking_2118(base_apartments), base_permanent)
     self_check["matches_baseline"] = not self_check["mismatch"]
     if self_check["mismatch"]:
         warnings.append("пересчёт не воспроизводит исходный расчёт: "
@@ -7295,7 +7363,8 @@ def recalculate_from_glavapu_baseline(baseline: dict[str, Any],
         "compensation_mln": round(sum(compensation.values()), 3),
         "compensation_breakdown_mln": compensation,
         "parking": {"permanent": permanent, "guest": guest, "attached": attached,
-                    "total": permanent + guest + attached},
+                    "total": permanent + guest + attached,
+                    "regime": regime, "basis": parking_basis},
         "vri_lines": vri_lines,
         "vri_total_mln": round(vri_total, 3),
         "rates": rates,
