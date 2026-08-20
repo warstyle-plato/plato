@@ -1,6 +1,6 @@
 #!/usr/bin/env sh
-# Безопасная выкладка рыночного preview готовым образом из Yandex Registry.
-# Production-контейнер developaid и порт 8080 этот скрипт не затрагивает.
+# Безопасная выкладка market + statistics preview готовым образом из Yandex Registry.
+# Production-контейнер developaid (8080) и соседние стенды не затрагиваются.
 set -eu
 
 TAG=${1:-}
@@ -11,7 +11,9 @@ ROOT=${DEVELOPAID_ROOT:-$HOME/plato}
 ENV_FILE="$ROOT/.env"
 DATA_DIR="$ROOT/data/market-preview"
 PORT=${MARKET_PREVIEW_PORT:-8081}
-CHECK_PORT=${MARKET_PREVIEW_CHECK_PORT:-18081}
+CHECK_PORT=${MARKET_PREVIEW_CHECK_PORT:-}
+CHECK_PORT_FROM=18090
+CHECK_PORT_TO=18109
 STAGING_NAME=developaid-market-preview-staging
 FINAL_NAME="developaid-market-preview-${EXPECT_COMMIT:-$(date +%s)}-$(date +%s)"
 
@@ -23,6 +25,51 @@ YC_REGISTRY_ID=${YC_REGISTRY_ID:-$(grep -E '^YC_REGISTRY_ID=' "$ENV_FILE" 2>/dev
 IMAGE="cr.yandex/${YC_REGISTRY_ID}/developaid:${TAG}"
 
 say() { printf '%s  %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1"; }
+
+port_owner() {
+  probe=$1
+  name=$(docker ps --filter "publish=${probe}" --format '{{.Names}}' 2>/dev/null | head -1)
+  if [ -n "$name" ]; then
+    echo "$name"
+    return 0
+  fi
+  if command -v ss >/dev/null 2>&1 && ss -ltn 2>/dev/null | awk '{print $4}' | grep -qE "[:.]${probe}$"; then
+    echo "процесс на хосте"
+    return 0
+  fi
+  return 1
+}
+
+pick_check_port() {
+  probe=$CHECK_PORT_FROM
+  while [ "$probe" -le "$CHECK_PORT_TO" ]; do
+    if ! port_owner "$probe" >/dev/null 2>&1; then
+      echo "$probe"
+      return 0
+    fi
+    probe=$((probe + 1))
+  done
+  return 1
+}
+
+preflight_disk() {
+  say "Диск перед выкладкой:"
+  df -h /
+  guard="$ROOT/scripts/plato-disk-guard.sh"
+  if [ -f "$guard" ]; then
+    say "Запускаю безопасный disk guard."
+    sh "$guard"
+  fi
+  avail_kb=$(df -Pk / | awk 'NR==2 {print $4}')
+  # Образ обычно 2–3 ГБ. Оставляем минимум 4 ГБ до pull, чтобы не повторить
+  # аварию 18.08, когда закончилось место посреди docker pull.
+  min_kb=$((4 * 1024 * 1024))
+  if [ "${avail_kb:-0}" -lt "$min_kb" ]; then
+    echo "Недостаточно места перед pull: нужно минимум 4 ГБ свободно." >&2
+    df -h / >&2
+    exit 1
+  fi
+}
 
 registry_login() {
   token=$(curl -sf -H 'Metadata-Flavor: Google' \
@@ -68,7 +115,9 @@ PY
 route_check() {
   port=$1
   curl -fsS --max-time 10 "http://127.0.0.1:${port}/openapi.json" \
-    | python3 -c 'import json,sys; p=json.load(sys.stdin).get("paths",{}); assert "/market/discovery" in p, "маршрут /market/discovery не зарегистрирован"'
+    | python3 -c 'import json,sys; p=json.load(sys.stdin).get("paths",{}); required=("/market/discovery","/statistics","/api/statistics/construction-cost"); missing=[x for x in required if x not in p]; assert not missing, "не зарегистрированы маршруты: " + ", ".join(missing)'
+  # OpenAPI подтверждает регистрацию, а GET страницы ловит ошибку уже внутри handler.
+  curl -fsS --max-time 10 "http://127.0.0.1:${port}/statistics" >/dev/null
 }
 
 start_preview() {
@@ -90,38 +139,61 @@ start_preview() {
 
 restore_old() {
   if [ -n "${OLD_ID:-}" ]; then
-    say "Возвращаю прежний стенд ${OLD_ID}."
+    say "Возвращаю прежний market preview ${OLD_ID}."
     docker start "$OLD_ID" >/dev/null 2>&1 || true
   fi
 }
 
+# Никогда не используем фиксированный 18081: там живёт IA preview. Проверочный
+# порт выбирается из отдельного диапазона, а занятый порт считается чужой работой.
+if [ -n "$CHECK_PORT" ]; then
+  if owner=$(port_owner "$CHECK_PORT"); then
+    echo "Проверочный порт ${CHECK_PORT} занят: ${owner}. Чужой контейнер не трогаю." >&2
+    exit 1
+  fi
+else
+  CHECK_PORT=$(pick_check_port) || {
+    echo "Нет свободного проверочного порта в ${CHECK_PORT_FROM}–${CHECK_PORT_TO}." >&2
+    exit 1
+  }
+fi
+
+preflight_disk
 say "Скачивание ${IMAGE}."
 registry_login
 docker pull "$IMAGE" >/dev/null
 
+# 8081 принадлежит market preview, но останавливаем только контейнер, который
+# действительно сейчас его публикует. Никаких docker rm -f по фильтру порта.
 OLD_ID=$(docker ps --filter "publish=${PORT}" --format '{{.ID}}' | head -1 || true)
 if [ -n "$OLD_ID" ]; then
-  say "Временно останавливаю прежний стенд ${OLD_ID} на порту ${PORT}."
-  docker stop "$OLD_ID" >/dev/null
+  OLD_NAME=$(docker inspect -f '{{.Name}}' "$OLD_ID" 2>/dev/null | sed 's#^/##' || true)
+  case "$OLD_NAME" in
+    developaid-market-preview*) ;;
+    *) echo "Порт ${PORT} занят чужим контейнером ${OLD_NAME:-$OLD_ID}; выкладку прекращаю." >&2; exit 1 ;;
+  esac
 fi
 
 docker rm -f "$STAGING_NAME" >/dev/null 2>&1 || true
-say "Закрытая проба на 127.0.0.1:${CHECK_PORT}, один воркер."
+say "Закрытая проба на 127.0.0.1:${CHECK_PORT}."
 if ! start_preview "$STAGING_NAME" "127.0.0.1:${CHECK_PORT}:8000"; then
-  restore_old
   exit 1
 fi
 if ! verdict=$(health_check "$CHECK_PORT" 2>&1) || ! route_check "$CHECK_PORT"; then
   say "Проба не пройдена: ${verdict:-маршрут отсутствует}."
   docker logs --tail 80 "$STAGING_NAME" 2>&1 || true
   docker rm -f "$STAGING_NAME" >/dev/null 2>&1 || true
-  restore_old
   exit 1
 fi
 say "Проба пройдена: ${verdict}."
 docker rm -f "$STAGING_NAME" >/dev/null 2>&1 || true
 
-say "Запуск preview на 0.0.0.0:${PORT}, один воркер."
+if [ -n "$OLD_ID" ]; then
+  say "Останавливаю прежний market preview ${OLD_ID} на ${PORT}."
+  docker stop "$OLD_ID" >/dev/null
+fi
+
+say "Запуск preview на 0.0.0.0:${PORT}."
 if ! start_preview "$FINAL_NAME" "0.0.0.0:${PORT}:8000"; then
   restore_old
   exit 1
