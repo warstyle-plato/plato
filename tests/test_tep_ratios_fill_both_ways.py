@@ -32,6 +32,27 @@ import main as wrapper  # noqa: E402
 core = wrapper.core
 
 
+def page_function(name: str) -> str:
+    start = core.PAGE.index(f"function {name}(")
+    depth = 0
+    for position in range(core.PAGE.index("{", start), len(core.PAGE)):
+        if core.PAGE[position] == "{":
+            depth += 1
+        elif core.PAGE[position] == "}":
+            depth -= 1
+            if depth == 0:
+                return core.PAGE[start:position + 1]
+    raise AssertionError(f"не найдена функция {name}")
+
+
+# Доли читаются через tepRatio — слой правок человека поверх наших. В этих
+# тестах правок нет: пустые вводные дают наши доли, как и раньше.
+def ratio_layer() -> str:
+    return ("const inputs={};\n"
+            + page_function("tepRatioOverrides") + "\n"
+            + page_function("tepRatio") + "\n")
+
+
 def _fill(key: str, row: dict) -> dict:
     """Гоняет настоящую функцию страницы через node."""
     node = shutil.which("node")
@@ -41,6 +62,7 @@ def _fill(key: str, row: dict) -> dict:
     assert body, "tepFillByRatios не найдена на странице"
     script = (
         f"const TEP_RATIOS={json.dumps(core.TEP_RATIOS, ensure_ascii=False)};\n"
+            + ratio_layer()
         + body.group(0)
         + f"\nconsole.log(JSON.stringify(tepFillByRatios({json.dumps(key)},"
         + f"{json.dumps(row, ensure_ascii=False)})));"
@@ -156,7 +178,8 @@ def _complaint(key: str, row: dict) -> str:
     assert body, "tepRowComplaint не найдена"
     script = (
         f"const TEP_RATIOS={json.dumps(core.TEP_RATIOS, ensure_ascii=False)};\n"
-        "const landNum=(v,d)=>Number(v).toFixed(d);\n"
+            + ratio_layer()
+        + "const landNum=(v,d)=>Number(v).toFixed(d);\n"
         + body.group(0)
         + f"\nconsole.log(JSON.stringify(tepRowComplaint({json.dumps(key)},{json.dumps(row)})));"
     )
@@ -238,7 +261,11 @@ def test_the_disclosure_says_what_it_hides():
     """«Какие доли» само по себе не объясняет, что там внутри."""
     body = core.PAGE[core.PAGE.index("function renderTepRatioNote"):]
     body = body[:body.index("const TEP_ROW_SWITCH")]
-    assert "показать доли, по которым считается" in body
+    # Список долей стал вводом (просьба владельца, 20.08.2026): раскрытие
+    # предлагает изменить, изменённое держит раскрытие открытым и возвращается.
+    assert "показать и изменить доли" in body
+    assert "доли изменены вами — показать" in body
+    assert "вернуть наши" in body
 
 
 def test_a_table_edit_reaches_the_inputs():

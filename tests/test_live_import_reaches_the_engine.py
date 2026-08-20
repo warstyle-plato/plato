@@ -80,7 +80,12 @@ def live_import(preset_name: str) -> dict:
         "function renderGlavapuPreview(){}\n"
         "async function calculate(){}\nasync function sendTelegramResult(){}\n"
         f"let inputs={json.dumps(core.DEFAULT_INPUTS)};\n"
-        f"let tep={json.dumps(core.TEP_DEFAULT)};\nlet glavapuImport=null;\n")
+        f"let tep={json.dumps(core.TEP_DEFAULT)};\nlet glavapuImport=null;\n"
+        # Норма 2118-ПП объявлена в движке и подставляется на страницу
+        # плейсхолдером; здесь — та же подстановка, что делает импорт.
+        f"const PARKING_2118={json.dumps(core.PARKING_2118_PARAMS)};\n"
+        "function num(v){return Number(v||0).toLocaleString('ru-RU')}\n"
+        "function scheduleTepAutoRecalc(){}\n")
     # Живые — не заглушённые: именно они заполняют пару полей паркинга.
     real = "\n".join(page_function(name) for name in (
         "getGlavapuUnderground", "undergroundAreaPerSpace",
