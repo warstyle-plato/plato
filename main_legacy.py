@@ -54,7 +54,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.19.23"
+VERSION = "0.19.24"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -12314,19 +12314,19 @@ def build_project_workbook(
     # поедут все ссылки, а формулы листов ВРИ и ОТЧЁТ вычитают именно B82.
     # Разбивка «льгота отдельно, зачёт отдельно» остаётся в приложении и в
     # отчёте; книге важно, чтобы плата к оплате совпадала с движком.
-    transfer_offset = 0.0
+    # Считает льготу тот же код, что и движок (`vri_relief`), а не копия его
+    # правил: в книгу писалось поле «льгота — сумма», и всё, что льготой не
+    # является суммой, до неё не доезжало. Льгота долей (МПТ — обычный случай
+    # для Москвы) обнуляла плату в отчёте и оставляла её целиком в книге:
+    # 0 против 4 674 млн ₽ на 77:04:0001019:173, при одинаковых вводных.
     try:
-        transfer_offset = max(0.0, float(x.get("vri_transfer_offset_mln") or 0))
+        vri_gross = max(0.0, float(x.get("land_rights_cost_mln") or 0)) * 1_000_000
     except Exception:
-        missing.append("vri_transfer_offset_mln: не число")
-    if transfer_offset > 0:
-        relief_value = 0.0
-        try:
-            relief_value = max(0.0, float(x.get("vri_relief_mln") or 0))
-        except Exception:
-            relief_value = 0.0
-        put(_V4_INPUT_CELLS["vri_relief_mln"], number=relief_value + transfer_offset,
-            label="vri_relief_mln + vri_transfer_offset_mln")
+        vri_gross = 0.0
+        missing.append("land_rights_cost_mln: не число")
+    relief_amount, _net = vri_relief(x, vri_gross)
+    put(_V4_INPUT_CELLS["vri_relief_mln"], number=round(relief_amount / 1_000_000, 6),
+        label="льгота по плате за ВРИ (движковая: доля, сумма и зачёт вместе)")
 
     for key, coord in _V4_BOOL_CELLS.items():
         put(coord, text="Да" if x.get(key) else "Нет", label=key)
