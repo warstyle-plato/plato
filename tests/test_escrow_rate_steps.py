@@ -196,16 +196,35 @@ def test_the_generated_workbook_carries_the_ladder():
     import re
     import zipfile
 
+    import openpyxl
+
     inputs = {**core.DEFAULT_INPUTS, **STRONG, "pf_special_steps": LADDER}
     tep = {key: dict(value) for key, value in core.TEP_DEFAULT.items()}
     data, _meta = core.build_plato_model_v2(inputs, tep, None, "Ступени")
-    book = zipfile.ZipFile(io.BytesIO(data))
+    book = openpyxl.load_workbook(io.BytesIO(data))
+    ws = book["Вводные"]
+    # Лестница — вводная и в книге: числовые строки, которые можно править
+    # (владелец, 20.08.2026: «сейчас-то надбавка — это вводная»). Текстовое поле
+    # разбирается при сборке, его правка в Excel ничего не пересчитывает —
+    # пересчитывают эти строки.
+    ladder_rows = {}
+    for row in range(1, ws.max_row + 1):
+        label = str(ws.cell(row=row, column=1).value or "")
+        if label.startswith("Ступень"):
+            ladder_rows[label] = (row, ws.cell(row=row, column=2).value)
+    assert ladder_rows["Ступень 1 — покрытие от"][1] == 1
+    assert ladder_rows["Ступень 4 — ставка"][1] == 0.0001
+    # Помесячная формула ссылается на эти ячейки, а не несёт числа в себе.
+    edge_row = ladder_rows["Ступень 4 — покрытие от"][0]
     found = 0
-    for name in book.namelist():
-        if name.endswith(".xml") and "sheet" in name:
-            text = book.read(name).decode("utf-8", "ignore")
-            found += len(re.findall(r"IF\([A-Z]+\d+&gt;=1\.3,0\.0001", text))
+    for name in book.sheetnames:
+        for row in book[name].iter_rows():
+            for cell in row:
+                value = cell.value
+                if isinstance(value, str) and f"Вводные!$B${edge_row}" in value:
+                    found += 1
     assert found > 10, found
+    del re, zipfile  # прежний тест искал зашитые числа в XML — их больше нет
 
 
 def test_the_plato_template_gets_the_ladder_too():
@@ -224,9 +243,48 @@ def test_the_plato_template_gets_the_ladder_too():
     core._plato_apply_pf_rate_methodology(
         book, filled, missing, core.pf_special_steps(LADDER))
     assert not missing, missing
+    # Без листа «Вводные» в этой мини-книге ссылаться некуда — числа в формуле.
     assert sheet["C57"].value.startswith("=IF(C53>=1.3,0.0001")
     assert "0.045" in sheet["C57"].value, "ниже первой ступени — обычная ставка"
     assert any("ступени" in str(item.get("label", "")) for item in filled), filled
+
+
+def test_the_plato_ladder_is_editable_cells_not_baked_numbers():
+    """В настоящем шаблоне лестница — вводная: ячейки внизу «Вводных».
+
+    Человек работает книгой и правит лестницу как данные, а не как формулу по
+    всем месячным колонкам двух очередей. Вставить строки в середину листа
+    нельзя — openpyxl при сдвиге не переписывает формулы, а под блоком
+    финансирования вся карта записи фиксированными адресами, — поэтому блок
+    стоит в конце листа, где свободно и куда никто не ссылается.
+    """
+    openpyxl = __import__("openpyxl")
+    book = openpyxl.Workbook()
+    sheet = book.active
+    sheet.title = "КРЕДИТЫ"
+    inputs_sheet = book.create_sheet("Вводные")
+    inputs_sheet["A1"] = "ВВОДНЫЕ"
+    for column in ("C", "D"):
+        sheet[f"{column}55"] = f"=IF({column}$3<$D61,IF({column}53>1,{column}57,{column}56),{column}$13)"
+        sheet[f"{column}56"] = f"={column}54*(1-{column}53)+{column}57*{column}53"
+        sheet[f"{column}57"] = 0.045
+    filled: list = []
+    missing: list = []
+    core._plato_apply_pf_rate_methodology(
+        book, filled, missing, core.pf_special_steps(LADDER))
+    assert not missing, missing
+    labels = [str(inputs_sheet.cell(row=row, column=1).value or "")
+              for row in range(1, inputs_sheet.max_row + 1)]
+    assert any(label.startswith("СТУПЕНИ СТАВКИ ПФ") for label in labels)
+    edge_rows = [row for row in range(1, inputs_sheet.max_row + 1)
+                 if str(inputs_sheet.cell(row=row, column=1).value or "").endswith("покрытие от")]
+    assert len(edge_rows) == 4
+    assert inputs_sheet.cell(row=edge_rows[0], column=2).value == 1.0
+    # Формула ссылается на ячейки; пустой порог выключает ступень через N().
+    formula = sheet["C57"].value
+    assert f"Вводные!$B${edge_rows[0]}" in formula
+    assert "N(Вводные!$B$" in formula
+    assert formula.rstrip(")").endswith("0.045"), "ниже первой ступени — обычная ставка"
 
 
 def test_a_template_that_does_not_take_the_ladder_is_named_out_loud():

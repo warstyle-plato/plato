@@ -14411,6 +14411,39 @@ def _plato_apply_pf_rate_methodology(
     sheet = workbook["КРЕДИТЫ"]
     changed = 0
     stepped = 0
+    # Лестница — вводная и в книге: пороги и ставки ложатся ячейками на
+    # «Вводные» (колонки K–L свободны и никем не адресуются — проверено по
+    # всем листам), а формула строки 57 ссылается на них. Правка ячейки в
+    # Excel пересчитывает книгу; зашитые в формулу числа пришлось бы менять
+    # по всем месячным колонкам двух очередей (владелец, 20.08.2026:
+    # «сейчас-то надбавка — это вводная»).
+    # Вставить строки в середину листа нельзя: openpyxl при сдвиге формулы не
+    # переписывает, а под блоком финансирования живёт вся карта записи
+    # фиксированными адресами (B82 льгота и далее) — съехало бы всё. Низ листа
+    # свободен и никем не адресуется (проверено по всем листам), блок ложится
+    # туда теми же колонками A–C, в стиле самого листа.
+    step_refs: list[tuple[str, str]] | None = None
+    if steps and "Вводные" in workbook.sheetnames:
+        ws_in = workbook["Вводные"]
+        row_at = ws_in.max_row + 2
+        ws_in.cell(row=row_at, column=1, value="СТУПЕНИ СТАВКИ ПФ ПО ПОКРЫТИЮ ЭСКРОУ")
+        ws_in.cell(row=row_at + 1, column=1,
+                   value="Правьте значения — формула строки 57 листа «КРЕДИТЫ» "
+                         "читает их отсюда. Пустой порог выключает ступень.")
+        row_at += 2
+        step_refs = []
+        for index, (edge, rate) in enumerate(steps):
+            ws_in.cell(row=row_at, column=1, value=f"Ступень {index + 1} — покрытие от")
+            ws_in.cell(row=row_at, column=2, value=round(edge, 6))
+            ws_in.cell(row=row_at, column=3, value="×")
+            edge_ref = f"Вводные!$B${row_at}"
+            row_at += 1
+            ws_in.cell(row=row_at, column=1, value=f"Ступень {index + 1} — ставка")
+            rate_cell = ws_in.cell(row=row_at, column=2, value=round(rate, 8))
+            rate_cell.number_format = "0.00%"
+            ws_in.cell(row=row_at, column=3, value="% годовых")
+            step_refs.append((edge_ref, f"Вводные!$B${row_at}"))
+            row_at += 1
     # Очередей в книге две, и у каждой свой блок: 55–57 у первой, 78–80 у
     # второй. Правились только строки первой, и на многоочередном проекте
     # расхождение возвращалось через вторую.
@@ -14448,7 +14481,7 @@ def _plato_apply_pf_rate_methodology(
                     base = ""
                 if base:
                     special.value = "=" + pf_special_steps_formula(
-                        f"{col}{coverage_row}", steps, base)
+                        f"{col}{coverage_row}", steps, base, refs=step_refs)
                     stepped += 1
             changed += 1
     if not changed:
@@ -15317,6 +15350,29 @@ def build_plato_model_v2(
         key_row[key] = row
         row += 1
 
+    # Ступени ставки ПФ — отдельными числовыми строками, а не только текстом
+    # поля выше: текст разбирается при сборке книги, и его правка в Excel
+    # ничего не пересчитывает. Эти строки — пересчитывают: помесячные формулы
+    # ссылаются на них (владелец, 20.08.2026: «сейчас-то надбавка — это
+    # вводная»). Пустой порог выключает ступень.
+    _ladder = pf_special_steps(inputs.get("pf_special_steps"))
+    if _ladder:
+        ws_in.cell(row=row, column=1, value="СТУПЕНИ СТАВКИ ПФ ПО ПОКРЫТИЮ ЭСКРОУ"
+                   ).font = styles["section"]
+        row += 1
+        for index, (edge, rate) in enumerate(_ladder):
+            ws_in.cell(row=row, column=1, value=f"Ступень {index + 1} — покрытие от")
+            ws_in.cell(row=row, column=2, value=round(edge, 6)).number_format = ratio
+            ws_in.cell(row=row, column=3, value="×; пусто — ступень выключена")
+            key_row[f"pf_step{index}_edge"] = row
+            row += 1
+            ws_in.cell(row=row, column=1, value=f"Ступень {index + 1} — ставка")
+            ws_in.cell(row=row, column=2, value=round(rate, 8)).number_format = percent
+            ws_in.cell(row=row, column=3, value="% годовых")
+            key_row[f"pf_step{index}_rate"] = row
+            row += 1
+        row += 1
+
     ws_in.cell(row=key_row["permit"], column=2,
                value=f"=EDATE($B${key_row['project_start']},$B${key_row['ird_months']})"
                ).number_format = month_fmt
@@ -15923,12 +15979,15 @@ def build_plato_model_v2(
     # Ступени по покрытию эскроу — те же, что в движке. Их нет — формула та же,
     # что была: одна ставка на всё покрытие.
     _special_steps = pf_special_steps(inputs.get("pf_special_steps"))
+    _step_refs = [(ref(f"pf_step{index}_edge"), ref(f"pf_step{index}_rate"))
+                  for index in range(len(_special_steps))
+                  if f"pf_step{index}_edge" in key_row] or None
     credit.formula(
         "pf_special_rate",
         "Ставка ступени по покрытию" if _special_steps else "Ставка при покрытии 1×",
         lambda i: "=" + pf_special_steps_formula(
             credit.at("coverage", i), _special_steps,
-            rate_grid.outside("pf_special", i)), percent)
+            rate_grid.outside("pf_special", i), refs=_step_refs), percent)
     # Базовая ставка — на непокрытую эскроу часть долга, специальная — на
     # покрытую. Излишек эскроу сверх долга ставку ниже специальной не тянет.
     credit.formula("pf_rate", "Ставка ПФ",
@@ -18257,15 +18316,29 @@ def pf_special_steps(value: Any) -> list[tuple[float, float]]:
 
 
 def pf_special_steps_formula(coverage_ref: str, steps: list[tuple[float, float]],
-                             base: str) -> str:
+                             base: str,
+                             refs: list[tuple[str, str]] | None = None) -> str:
     """Лестница ступеней формулой Excel: вложенные IF по покрытию.
 
     Методику правят в двух местах — в движке и в книге. Ставку ПФ так уже
     теряли: правка ушла в движок, строка 57 листа «КРЕДИТЫ» осталась прежней,
     и книга показала 360,3 млн ₽ процентов против 746,5 млн ₽ в отчёте. Чтобы
     это не повторилось, формулу собирает тот же код, что считает ступени.
+
+    `refs` — пары ячеек (порог, ставка) вместо зашитых чисел: человек работает
+    книгой и правит лестницу как вводную, а не как формулу по всем месячным
+    колонкам (владелец, 20.08.2026: «сейчас-то надбавка — это вводная»).
+    Пустой порог выключает ступень: IF от пустой ячейки не срабатывает, потому
+    что покрытие больше нуля, а сравнение с пустотой даёт ЛОЖЬ только при
+    честном неравенстве — поэтому порог сравнивается через N().
     """
     formula = base
+    if refs:
+        assert len(refs) == len(steps)
+        for (edge_ref, rate_ref), _ in zip(refs, steps):
+            formula = (f"IF(AND(N({edge_ref})>0,{coverage_ref}>=N({edge_ref})),"
+                       f"N({rate_ref}),{formula})")
+        return formula
     for edge, rate in steps:
         formula = f"IF({coverage_ref}>={edge:.6g},{rate:.8g},{formula})"
     return formula
