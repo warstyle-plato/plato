@@ -9,6 +9,7 @@ from typing import Any, Iterable
 
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data" / "statistics"
+REFERENCE_DATA_DIR = ROOT / "reference_data" / "statistics"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 CLASS_ALIASES = {
@@ -32,6 +33,7 @@ CLASS_ALIASES = {
 UNIT_LABELS = {
     "gba": "₽/м² ГНС",
     "apartments": "₽/м² общей площади квартир",
+    "building_total": "₽/м² общей площади здания",
     "sellable": "₽/м² продаваемой площади",
 }
 
@@ -39,6 +41,7 @@ METRIC_LABELS = {
     "main_construction": "Основное строительство",
     "construction_plus_landscaping": "Строительство + благоустройство",
     "construction_normative": "Норматив стоимости строительства",
+    "declared_construction_cost": "Заявленная стоимость строительства",
     "full_construction_cost": "Полная стоимость строительства застройщика",
     "full_project_cost": "Полная себестоимость проекта",
 }
@@ -47,19 +50,38 @@ SCOPE_LABELS = {
     "above_ground_main": "Наземная часть / основные СМР",
     "construction_plus_landscaping": "СМР + благоустройство",
     "building_normative": "Норматив строительства здания",
+    "declared_project_construction": "Стоимость по проектным декларациям",
     "developer_full_cost": "Земля + строительство + сети + благоустройство + ТУ + ввод + прочие затраты",
     "full_project": "Полная себестоимость проекта",
 }
 
+INDEX_SOURCES = [
+    {
+        "source": "Росстат",
+        "region": "Российская Федерация",
+        "dataset": "Индексы цен производителей на строительную продукцию",
+        "published_at": "2026-07-31",
+        "source_url": "https://www.rosstat.gov.ru/statistics/price/",
+        "role": "date_indexer",
+        "automatic": False,
+        "notes": "Используется только для приведения дат. Абсолютную себестоимость из этого ряда не выводить.",
+    },
+    {
+        "source": "Мосстат",
+        "region": "Москва",
+        "dataset": "Индексы цен на продукцию (затраты, услуги) инвестиционного назначения за январь-июнь 2026 г.",
+        "published_at": "2026-08-12",
+        "source_url": "https://77.rosstat.gov.ru/folder/64640?print=1",
+        "role": "date_indexer",
+        "automatic": False,
+        "notes": "Источник московского ряда подключен. Автоиндексация включается только после загрузки числового ряда и теста направления индекса.",
+    },
+]
+
 
 @dataclass(frozen=True)
 class ConstructionObservation:
-    """Legacy object-level observation.
-
-    Kept for compatibility with the first statistics prototype. New curated data
-    should normally be stored as NormalizedBenchmark: public sources often
-    publish a ready ₽/m² indicator rather than enough object fields to rebuild it.
-    """
+    """Legacy object-level observation kept for backward compatibility."""
 
     source: str
     external_id: str
@@ -90,8 +112,6 @@ class ConstructionObservation:
 
 @dataclass(frozen=True)
 class ExternalBenchmark:
-    """Legacy external reference used by older callers."""
-
     source: str
     region: str
     reference_date: str
@@ -105,8 +125,7 @@ class ExternalBenchmark:
 class NormalizedBenchmark:
     """One benchmark point with explicit semantics.
 
-    Values with different unit, metric_type or cost_scope are never averaged
-    together. This is the central rule of the DevelopAid statistics module.
+    Values with different unit, metric_type or cost_scope are never averaged.
     """
 
     source: str
@@ -148,7 +167,7 @@ class BenchmarkResult:
     comparable_points: list[dict[str, Any]]
     external_benchmarks: list[dict[str, Any]]
     filters_relaxed: list[str]
-    methodology_version: str = "2.0"
+    methodology_version: str = "2.1"
 
 
 def normalize_class(value: str | None) -> str:
@@ -217,7 +236,14 @@ def load_external_benchmarks(path: Path | None = None) -> list[ExternalBenchmark
 
 
 def load_normalized_benchmarks(path: Path | None = None) -> list[NormalizedBenchmark]:
-    target = path or DATA_DIR / "normalized_benchmarks.json"
+    if path is not None:
+        target = path
+    else:
+        # Curated reference points are packaged with the image and must not be
+        # hidden by the writable /app/data volume used in preview/production.
+        target = REFERENCE_DATA_DIR / "normalized_benchmarks.json"
+        if not target.exists():
+            target = DATA_DIR / "normalized_benchmarks.json"
     if not target.exists():
         return []
     rows = json.loads(target.read_text(encoding="utf-8"))
@@ -250,7 +276,6 @@ def _curated_result(
     target_class = normalize_class(housing_class)
     active = [p for p in points if p.active and p.quality >= 0.5 and p.region == region]
 
-    # Strict comparison set. Never relax region, class, unit, metric or scope.
     comparable = [
         p
         for p in active
@@ -270,9 +295,6 @@ def _curated_result(
         median = statistics.median(values) if values else None
         p75 = _percentile(values, 0.75)
         mean = statistics.fmean(values) if values else None
-        # Internal project facts are allowed to seed the pilot recommendation.
-        # Public mass-market/full-cost sources stay visible as references, but
-        # cannot silently become a business-class main-construction number.
         internal_values = [
             p.value_rub_m2
             for p in comparable
@@ -337,13 +359,6 @@ def build_benchmark(
     min_sample: int = 5,
     normalized: Iterable[NormalizedBenchmark] | None = None,
 ) -> BenchmarkResult:
-    """Build a benchmark without mixing unlike measures.
-
-    Version 2 first uses curated NormalizedBenchmark points. The legacy object
-    sample remains as fallback so old tests/callers keep working while the data
-    pipeline is migrated.
-    """
-
     curated = _curated_result(
         list(normalized) if normalized is not None else load_normalized_benchmarks(),
         region=region,
@@ -418,6 +433,10 @@ def build_benchmark(
 def source_catalog(points: Iterable[NormalizedBenchmark] | None = None) -> list[dict[str, Any]]:
     rows = list(points) if points is not None else load_normalized_benchmarks()
     return [_point_dict(p) for p in rows if p.active]
+
+
+def index_source_catalog() -> list[dict[str, Any]]:
+    return [dict(row) for row in INDEX_SOURCES]
 
 
 def result_to_dict(result: BenchmarkResult) -> dict[str, Any]:
