@@ -8237,6 +8237,45 @@ def _glavapu_headless_state() -> dict[str, Any]:
     return {"state": "готов", "where": where}
 
 
+def _glavapu_health_file() -> Path:
+    return Path(os.getenv("DEVELOPAID_DATA_DIR") or "data") / "glavapu-health.json"
+
+
+def _glavapu_health_save() -> None:
+    """Счётчики — на диск, потому что воркеров два.
+
+    `_GLAVAPU_HEADLESS` живёт в памяти процесса, а `/glavapu/health` отвечает
+    тот воркер, которому достался запрос. Расчёт уходил в один, состояние
+    спрашивали у другого — и `runs: 0` читалось как «браузер не работает» при
+    работающем браузере. Правило проекта прямое: всё, что должно пережить
+    переход между запросами, дублируется на диск.
+    """
+    try:
+        path = _glavapu_health_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        keep = {key: _GLAVAPU_HEADLESS.get(key)
+                for key in ("last_ok", "last_error", "runs", "fallbacks")}
+        # Берётся большее из своего и записанного: счётчик у каждого воркера
+        # свой, а вопрос «считал ли калькулятор вообще» — про приложение. Файл
+        # от этого только растёт и никогда не отменяет чужой удачный расчёт.
+        seen = _glavapu_health_load()
+        keep["runs"] = max(int(keep.get("runs") or 0), int(seen.get("runs") or 0))
+        keep["fallbacks"] = max(int(keep.get("fallbacks") or 0),
+                                int(seen.get("fallbacks") or 0))
+        path.write_text(json.dumps(keep, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        # Диагностика не должна ронять расчёт: не записалось — не записалось.
+        pass
+
+
+def _glavapu_health_load() -> dict[str, Any]:
+    try:
+        raw = json.loads(_glavapu_health_file().read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
 @app.get("/glavapu/health")
 def glavapu_health() -> dict[str, Any]:
     """Состояние штатного калькулятора ГлавАПУ — для /status бота.
@@ -8258,6 +8297,17 @@ def glavapu_health() -> dict[str, Any]:
     state = dict(_glavapu_headless_state())
     state.update({key: _GLAVAPU_HEADLESS.get(key)
                   for key in ("last_ok", "last_error", "runs", "fallbacks")})
+    # К своим счётчикам добавляется то, что записали остальные воркеры: их
+    # память нам не видна, а вопрос «считал ли калькулятор» — про приложение
+    # целиком, а не про тот процесс, которому достался этот запрос.
+    shared = _glavapu_health_load()
+    state["runs"] = max(int(state.get("runs") or 0), int(shared.get("runs") or 0))
+    state["fallbacks"] = max(int(state.get("fallbacks") or 0),
+                             int(shared.get("fallbacks") or 0))
+    for key in ("last_ok", "last_error"):
+        if not state.get(key) and shared.get(key):
+            state[key] = shared[key]
+    state["worker"] = os.getpid()
     return state
 
 
@@ -8339,6 +8389,7 @@ def cadastral_tep_server(req: CadastralAnalysisRequest) -> dict[str, Any]:
             _GLAVAPU_HEADLESS["last_ok"] = datetime.now().isoformat(timespec="seconds")
             _GLAVAPU_HEADLESS["last_error"] = ""
             _GLAVAPU_HEADLESS_BLOCKED_UNTIL["at"] = 0.0
+            _glavapu_health_save()
             imported.setdefault("source", {}).update({
                 "format": "Штатный калькулятор ГлавАПУ — серверный запуск",
                 "cadastral_numbers": numbers,
@@ -8358,6 +8409,7 @@ def cadastral_tep_server(req: CadastralAnalysisRequest) -> dict[str, Any]:
             _GLAVAPU_HEADLESS["last_error"] = (
                 f"{datetime.now().isoformat(timespec='seconds')}: {_error_location(exc)}"
                 + (f" — {_reason[0][:200]}" if _reason else ""))
+            _glavapu_health_save()
             _glavapu_headless_failed()
             logging.warning("glavapu headless failed, falling back for %ds: %s",
                             int(_GLAVAPU_HEADLESS_COOLDOWN_SECONDS), exc)

@@ -9,5 +9,7 @@ data/platon_state/
 # запуске и живёт в томе data/, как и состояние Платона выше.
 data/telegram_users.sqlite3
 data/usage/
+# Счётчики ГлавАПУ: состояние процесса, а не код.
+data/glavapu-health.json
 # Коды входа через бота: одноразовые, живут в томе data/, как и проекты.
 data/web_login/

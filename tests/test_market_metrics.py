@@ -3394,3 +3394,40 @@ def test_readiness_comes_from_the_same_curve_that_spreads_the_capex() -> None:
     source = open(main_legacy.__file__, encoding="utf-8").read()
     assert "build_curve.monthly_shares(months)" in source
     assert "0.6 if (index + 1) / months <= 0.2" not in source, "копия профиля вернулась"
+
+
+def test_glavapu_health_answers_for_the_app_not_for_one_worker(tmp_path, monkeypatch) -> None:
+    """`runs: 0` при работающем браузере: воркеров два, память у них раздельная.
+
+    Расчёт уходил в один процесс, `/glavapu/health` отвечал другой — и нуль
+    читался как «калькулятор не работает». Правило проекта прямое: всё, что
+    должно пережить переход между запросами, дублируется на диск.
+    """
+    from fastapi.testclient import TestClient
+
+    import main_legacy
+
+    monkeypatch.setenv("DEVELOPAID_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(main_legacy, "_core_api_url", lambda path: "")
+
+    # Первый воркер посчитал.
+    monkeypatch.setitem(main_legacy._GLAVAPU_HEADLESS, "runs", 2)
+    monkeypatch.setitem(main_legacy._GLAVAPU_HEADLESS, "last_ok", "2026-08-20T15:40:00")
+    main_legacy._glavapu_health_save()
+
+    # Второй ничего не считал — и всё равно обязан рассказать про первого.
+    monkeypatch.setitem(main_legacy._GLAVAPU_HEADLESS, "runs", 0)
+    monkeypatch.setitem(main_legacy._GLAVAPU_HEADLESS, "last_ok", "")
+    answer = TestClient(main_legacy.app).get("/glavapu/health").json()
+    assert answer["runs"] == 2
+    assert answer["last_ok"] == "2026-08-20T15:40:00"
+    # И видно, кто ответил: иначе разбираться в расхождении снова нечем.
+    assert answer["worker"] > 0
+
+    # Чужой удачный расчёт не отменяется нулём своего: файл только растёт.
+    main_legacy._glavapu_health_save()
+    assert main_legacy._glavapu_health_load()["runs"] == 2
+
+    # Диагностика не роняет расчёт: некуда писать — молчим, а не падаем.
+    monkeypatch.setenv("DEVELOPAID_DATA_DIR", "/proc/нет-такого/каталога")
+    main_legacy._glavapu_health_save()
