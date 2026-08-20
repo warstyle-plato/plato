@@ -34,6 +34,7 @@
 .input-row input[type="text"] { width: 100%; padding: 8px 10px; border: 1px solid rgba(255, 255, 255, .12); border-radius: 9px; background: rgba(8, 18, 32, .7); color: #e2f0ff; font-size: 13px; }
 
 .tep-input-group { gap: 10px; }
+.tep-row-hint { margin: -3px 0 2px; max-width: 760px; color: rgba(226, 240, 255, .45); font-size: 10.5px; line-height: 1.45; }
 .tep-ratio-strip { display: grid; grid-template-columns: minmax(180px, 1.4fr) 150px 170px auto; gap: 10px; align-items: end; margin: 2px 0 6px; padding: 12px; border: 1px solid rgba(56, 215, 255, .16); border-radius: 13px; background: linear-gradient(135deg, rgba(47, 140, 255, .075), rgba(56, 215, 255, .035)); }
 .tep-ratio-copy { display: flex; flex-direction: column; gap: 3px; align-self: center; }
 .tep-ratio-copy span { color: #dfeeff; font-size: 12px; font-weight: 600; }
