@@ -52,8 +52,51 @@ def test_old_images_are_trimmed_after_success_not_before():
 
 
 def test_the_space_is_checked_before_pulling():
-    body = TEXT[TEXT.index('say "скачивание ${IMAGE}"') - 600:TEXT.index('say "скачивание ${IMAGE}"')]
-    assert "free_mb" in body and "6144" in body, "мало места — прибираем до скачивания"
+    body = TEXT[TEXT.index("registry_login\n"):TEXT.index('say "скачивание ${IMAGE}"')]
+    assert "free_mb" in body and "NEED_MB" in body, "мало места — прибираем до скачивания"
+
+
+def test_the_disk_is_said_out_loud_even_when_there_is_room():
+    """Проверка молчала, пока не считала нужным прибираться, и молчала же,
+    когда прибирать было нечего: со стороны выкатка выглядела так, будто диск
+    никто не смотрел, — а потом упиралась в него (владелец, 20.08.2026)."""
+    body = TEXT[TEXT.index("registry_login\n"):TEXT.index('say "скачивание ${IMAGE}"')]
+    announce = body[:body.index("if [")]
+    assert "free_mb" in announce and "total_mb" in announce, announce
+    assert "say" in announce, "остаток печатается всегда, а не только при уборке"
+
+
+def test_a_full_disk_is_refused_before_the_pull():
+    """`docker pull` на забитом диске падает на середине распаковки: сообщение
+    приходит от докера, звучит как сетевое, и оставляет мусор."""
+    body = TEXT[TEXT.index("registry_login\n"):TEXT.index('say "скачивание ${IMAGE}"')]
+    assert "FLOOR_MB" in body and "ОТКАЗ" in body, body
+    assert "disk_report" in body, "отказ показывает, чем занят диск"
+    assert "exit 1" in body
+
+
+def test_the_cleanup_lives_in_one_place():
+    """Уборка — у сторожа диска. Вторая с другими правилами разойдётся молча."""
+    clean = TEXT[TEXT.index("deep_clean() {"):]
+    clean = clean[:clean.index("\n}\n")]
+    assert "plato-disk-guard.sh" in clean and "--force" in clean
+    # Сторожа может не быть рядом — тогда убираем хотя бы своё, а не молчим.
+    assert "trim_images" in clean
+
+
+def test_the_deploy_notices_the_guard_is_not_in_cron():
+    """Уборка при выкатке закрывает дыру наполовину: без выкаток убирать
+    некому. Поставить cron за человека нельзя, сказать — обязательно."""
+    body = TEXT[TEXT.index('say "готово: ${verdict}"'):TEXT.index("# --- откат")]
+    assert "crontab -l" in body and "--install" in body
+
+
+def test_the_space_can_be_seen_without_deploying():
+    assert "--space)" in TEXT
+    report = TEXT[TEXT.index("disk_report() {"):]
+    report = report[:report.index("\n}\n")]
+    assert "docker system df" in report
+    assert "docker images" in report, "видно, какой образ занимает место"
 
 
 def test_a_failed_pull_says_how_much_room_is_left():
@@ -129,3 +172,46 @@ def test_the_health_shows_the_free_space():
     assert answer["disk_low"] is (answer["disk_free_mb"] is not None
                                   and answer["disk_free_mb"] < 3072)
 
+
+
+def test_the_guard_cleans_earlier_than_the_deploy_needs():
+    """Порог уборки не может быть ниже того, что нужно выкатке: иначе сторож
+    считает, что всё в порядке, ровно до момента, когда выкатка не проходит."""
+    guard = (ROOT / "scripts" / "plato-disk-guard.sh").read_text(encoding="utf-8")
+    threshold = int(re.search(r"^THRESHOLD_MB=(\d+)", guard, re.M).group(1))
+    need = int(re.search(r"^NEED_MB=(\d+)", TEXT, re.M).group(1))
+    assert threshold >= need, (threshold, need)
+
+
+def test_the_bot_shows_the_room_left_on_the_core():
+    """Диск кончается на ядре, а спрашивают бота: цифра должна попадаться на
+    глаза сама, а не лежать в /health, куда никто не ходит."""
+    import sys
+
+    sys.path.insert(0, str(ROOT))
+    import main as wrapper
+
+    core = wrapper.core
+    saved = core._projects_remote_url, core.health
+    try:
+        core._projects_remote_url = lambda path: ""
+        core.health = lambda: {"disk_free_mb": 1200, "disk_low": True}
+        low = wrapper._core_disk_line()
+        assert "1200" in low and "мало для выкатки" in low
+        assert "plato-disk-guard.sh" in low, "сказано, чем убирать"
+
+        core.health = lambda: {"disk_free_mb": 15000, "disk_low": False}
+        assert "15000" in wrapper._core_disk_line()
+
+        # Ядро молчит — строки нет вовсе: выдуманный остаток хуже отсутствия.
+        core.health = lambda: (_ for _ in ()).throw(RuntimeError("нет связи"))
+        assert wrapper._core_disk_line() == ""
+    finally:
+        core._projects_remote_url, core.health = saved
+
+
+def test_the_status_carries_that_line():
+    source = (ROOT / "main.py").read_text(encoding="utf-8")
+    status = source[source.index("def _status_message("):]
+    status = status[:status.index("@app.post(\"/telegram/context\")")]
+    assert "_core_disk_line()" in status

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import html
+import json
 import re
 import importlib.util
 import inspect
@@ -10,6 +11,7 @@ import os
 import sys
 import threading
 import time
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -707,6 +709,37 @@ def _glavapu_status_line() -> str:
             f"формулами. {html.escape(detail[:300])}{counters}")
 
 
+def _core_disk_line() -> str:
+    """Сколько места осталось на ядре — раньше, чем это станет поведением.
+
+    Диск кончается молча: выкатка падает на распаковке образа, а вход через
+    бота начинает отвечать ошибкой без объяснения, потому что коды входа
+    пишутся файлами. Ядро говорит остаток в `/health`, но смотреть туда некому:
+    страница живёт на ядре, а спрашивают бота. 20.08.2026 в потолок упёрлись
+    второй раз — значит, цифра должна попадаться на глаза сама.
+    """
+    remote = core._projects_remote_url("/health")
+    try:
+        if remote:
+            with urllib.request.urlopen(remote, timeout=6) as answer:
+                data = json.loads(answer.read().decode("utf-8"))
+        else:
+            data = core.health()
+    except Exception:
+        return ""
+    free = data.get("disk_free_mb")
+    if free is None:
+        return ""
+    free = int(free)
+    where = "ядро" if remote else "этот хост"
+    if data.get("disk_low") or free < 8192:
+        # Порог тот же, что у выкатки: образ два-три гигабайта, и рядом со
+        # старым он должен и скачаться, и распаковаться.
+        return (f"\nМесто на диске ({where}): <b>{free} МБ</b> — мало для выкатки. "
+                f"Уборка: <code>sh scripts/plato-disk-guard.sh --force</code>")
+    return f"\nМесто на диске ({where}): {free} МБ"
+
+
 def _status_message(chat_id: int, user_id: int) -> None:
     configured = bool(core._TELEGRAM_RUNTIME.get("configured"))
     _, context = _resolve_context(chat_id)
@@ -724,6 +757,7 @@ def _status_message(chat_id: int, user_id: int) -> None:
         f"Версия: {_RUNTIME_VERSION}\n"
         f"Платон: {platon_state}\n"
         f"Память расчётов: {_state_health(chat_id)}"
+        + _core_disk_line()
         + _glavapu_status_line()
         # Справочник устаревает тихо: расчёт идёт, числа выглядят как обычно,
         # а под ними прошлогодний тариф. Напоминание тут потому, что /status
