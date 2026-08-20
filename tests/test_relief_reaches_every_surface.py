@@ -138,3 +138,49 @@ def test_the_printed_phase_report_prints_the_phase(monkeypatch):
     second = bundle["phases"][1]["result"]
     rows = dict(core._pdf_entry_cost_rows(second, second["report"]["expense_structure"]))
     assert rows["Цена приобретения"].startswith("0")
+
+
+def _relief_cell(**extra) -> float:
+    """Что книга считает льготой: ячейка B82 листа «Вводные»."""
+    import io
+    import re
+    import zipfile
+
+    data, _name, _meta = core.build_project_workbook(
+        _inputs(**extra), _tep(), [], {}, project_name="проба")
+    book = zipfile.ZipFile(io.BytesIO(data))
+    xml = book.read(core._v4_inputs_sheet_path(book)).decode("utf-8")
+    found = re.search(r'<x:c r="B82"[^>]*>\s*<x:v>([^<]*)</x:v>', xml)
+    assert found, "ячейка льготы в книге не найдена"
+    return float(found.group(1))
+
+
+def test_the_workbook_takes_the_relief_the_engine_calculated():
+    """В книгу писалось поле «льгота — сумма», а не посчитанная льгота.
+
+    Льгота долей — обычный для Москвы случай (её получают через места
+    приложения труда) — до книги не доезжала вовсе: отчёт показывал плату 0,
+    книга платила полные 4 674 млн ₽ на 77:04:0001019:173. Одни и те же
+    вводные, два достоверных на вид документа (владелец, 20.08.2026).
+    """
+    # Доля — та самая ветка, которой в книге не было.
+    assert _relief_cell(vri_relief_mode="percent", vri_relief_pct=100) == pytest.approx(GROSS_MLN)
+    assert _relief_cell(vri_relief_mode="percent", vri_relief_pct=30) == pytest.approx(GROSS_MLN * 0.3)
+    # Сумма и зачёт — как и раньше, и вместе тоже.
+    assert _relief_cell(vri_relief_mode="amount", vri_relief_mln=500) == pytest.approx(500)
+    assert _relief_cell(vri_transfer_offset_mln=200) == pytest.approx(200)
+    assert _relief_cell(vri_relief_mode="amount", vri_relief_mln=500,
+                        vri_transfer_offset_mln=200) == pytest.approx(700)
+    # Больше платы льгота не бывает: движок её обрезает, книга обязана так же.
+    assert _relief_cell(vri_relief_mode="amount", vri_relief_mln=9000) == pytest.approx(GROSS_MLN)
+    assert _relief_cell() == pytest.approx(0.0)
+
+
+def test_the_book_and_the_engine_agree_on_what_is_paid():
+    """Сверяем не поле, а итог: сколько платы остаётся после льготы."""
+    for extra in ({"vri_relief_mode": "percent", "vri_relief_pct": 40},
+                  {"vri_relief_mode": "amount", "vri_relief_mln": 900},
+                  {"vri_transfer_offset_mln": 150},
+                  {}):
+        engine = core.vri_relief(_inputs(**extra), GROSS_MLN * 1_000_000)[0] / 1_000_000
+        assert _relief_cell(**extra) == pytest.approx(engine, rel=1e-6), extra

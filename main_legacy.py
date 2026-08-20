@@ -19,6 +19,7 @@ import threading
 import time
 import math
 import io
+import secrets
 import re
 import shutil
 import ssl
@@ -12313,19 +12314,19 @@ def build_project_workbook(
     # поедут все ссылки, а формулы листов ВРИ и ОТЧЁТ вычитают именно B82.
     # Разбивка «льгота отдельно, зачёт отдельно» остаётся в приложении и в
     # отчёте; книге важно, чтобы плата к оплате совпадала с движком.
-    transfer_offset = 0.0
+    # Считает льготу тот же код, что и движок (`vri_relief`), а не копия его
+    # правил: в книгу писалось поле «льгота — сумма», и всё, что льготой не
+    # является суммой, до неё не доезжало. Льгота долей (МПТ — обычный случай
+    # для Москвы) обнуляла плату в отчёте и оставляла её целиком в книге:
+    # 0 против 4 674 млн ₽ на 77:04:0001019:173, при одинаковых вводных.
     try:
-        transfer_offset = max(0.0, float(x.get("vri_transfer_offset_mln") or 0))
+        vri_gross = max(0.0, float(x.get("land_rights_cost_mln") or 0)) * 1_000_000
     except Exception:
-        missing.append("vri_transfer_offset_mln: не число")
-    if transfer_offset > 0:
-        relief_value = 0.0
-        try:
-            relief_value = max(0.0, float(x.get("vri_relief_mln") or 0))
-        except Exception:
-            relief_value = 0.0
-        put(_V4_INPUT_CELLS["vri_relief_mln"], number=relief_value + transfer_offset,
-            label="vri_relief_mln + vri_transfer_offset_mln")
+        vri_gross = 0.0
+        missing.append("land_rights_cost_mln: не число")
+    relief_amount, _net = vri_relief(x, vri_gross)
+    put(_V4_INPUT_CELLS["vri_relief_mln"], number=round(relief_amount / 1_000_000, 6),
+        label="льгота по плате за ВРИ (движковая: доля, сумма и зачёт вместе)")
 
     for key, coord in _V4_BOOL_CELLS.items():
         put(coord, text="Да" if x.get(key) else "Нет", label=key)
@@ -24210,6 +24211,17 @@ def project_save(owner: int, name: str, payload: dict[str, Any],
         raise HTTPException(
             status_code=507,
             detail=f"В хранилище уже {len(existing)} проектов — удалите ненужные.")
+    # Ссылка на проект переживает его правку. Иначе после сохранения код
+    # терялся, «Поделиться» выпускало второй, а первый продолжал жить и
+    # показывать старые числа: две живые ссылки на один проект, и та, что у
+    # получателя, — устаревшая.
+    share_code = ""
+    if project_id:
+        try:
+            previous = json.loads(_project_path(owner, project_id).read_text(encoding="utf-8"))
+            share_code = str(previous.get("share_code") or "")
+        except (OSError, ValueError, HTTPException):
+            share_code = ""
     record = {
         "id": project_id or hashlib.sha256(
             f"{owner}:{time.time()}:{name}".encode("utf-8")).hexdigest()[:12],
@@ -24223,6 +24235,8 @@ def project_save(owner: int, name: str, payload: dict[str, Any],
         "summary": summary or {},
         "payload": payload or {},
     }
+    if share_code:
+        record["share_code"] = share_code
     path = _project_path(owner, record["id"])
     # Запись через временный файл: воркеров два, и оборванная запись оставила
     # бы битый JSON вместо проекта.
@@ -24252,6 +24266,106 @@ def project_open(owner: int, project_id: str) -> dict[str, Any]:
     path = _project_path(owner, project_id)
     if not path.is_file():
         raise HTTPException(status_code=404, detail="Проект не найден")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+# --- передача проекта другому человеку ---------------------------------------
+# «А если я другому пользователю хочу скинуть проект, посчитанный мной? Не PDF,
+# а именно набор параметров для дальнейшей работы» (владелец, 20.08.2026).
+# Решение владельца: ссылку открывает любой, кто её получил, и живёт она
+# бессрочно.
+#
+# Ссылка отдаёт снимок, а не сам проект: получатель видит то, что ему прислали,
+# и правки автора задним числом эту картину не меняют. Копия, а не общий
+# доступ — два человека, уверенные, что смотрят одно и то же, худший исход для
+# финмодели, и изображать совместную работу нельзя.
+#
+# Раз ссылка вечная и открытая, её обязательно можно отозвать: у публичной
+# ссылки без выключателя нет способа передумать. Код у проекта один и тот же —
+# повторное «Поделиться» обновляет снимок по прежней ссылке, а не плодит их.
+def _shared_dir() -> Path:
+    return _PROJECTS_DIR.parent / "shared"
+
+
+def _shared_path(code: str) -> Path:
+    # Код приходит снаружи и превращается в имя файла: всё, кроме нашего
+    # алфавита, — отказ, иначе «../../» уводит чтение за пределы каталога.
+    if not re.fullmatch(r"[A-Za-z0-9_-]{8,64}", str(code or "")):
+        raise HTTPException(status_code=400, detail="Неверная ссылка на проект")
+    return _shared_dir() / f"{code}.json"
+
+
+def _shared_author(owner: int) -> str:
+    """Кем подписан снимок. Имя — из знакомства, если человек его оставил."""
+    try:
+        profile = profile_read(owner) or {}
+    except Exception:
+        return ""
+    name = str(profile.get("name") or "").strip()
+    company = str(profile.get("company") or "").strip()
+    if name and company:
+        return f"{name} ({company})"
+    return name
+
+
+def project_share(owner: int, project_id: str) -> dict[str, Any]:
+    """Сделать снимок проекта и вернуть код ссылки."""
+    record = project_open(owner, project_id)
+    code = str(record.get("share_code") or "")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{8,64}", code):
+        # Ссылка открыта для всех, у кого она есть, — значит, подобрать её быть
+        # не должно: код случайный и длинный, а не порядковый номер.
+        code = secrets.token_urlsafe(12)
+    snapshot = {
+        "code": code,
+        "shared_at": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
+        "author": _shared_author(owner),
+        "name": record.get("name"),
+        "saved_at": record.get("saved_at"),
+        "version": record.get("version"),
+        "cadastral": record.get("cadastral") or [],
+        "summary": record.get("summary") or {},
+        "payload": record.get("payload") or {},
+    }
+    directory = _shared_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    path = _shared_path(code)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
+    temporary.replace(path)
+
+    record["share_code"] = code
+    own = _project_path(owner, project_id)
+    temporary = own.with_suffix(".tmp")
+    temporary.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+    temporary.replace(own)
+    return {"code": code, "shared_at": snapshot["shared_at"], "name": snapshot["name"]}
+
+
+def project_unshare(owner: int, project_id: str) -> dict[str, Any]:
+    """Отозвать ссылку. Снимок удаляется, сам проект остаётся."""
+    record = project_open(owner, project_id)
+    code = str(record.get("share_code") or "")
+    if code:
+        try:
+            _shared_path(code).unlink(missing_ok=True)
+        except HTTPException:
+            pass
+    record.pop("share_code", None)
+    path = _project_path(owner, project_id)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+    temporary.replace(path)
+    return {"unshared": project_id}
+
+
+def project_shared(code: str) -> dict[str, Any]:
+    """Снимок по ссылке. Входа не требует — решение владельца."""
+    path = _shared_path(code)
+    if not path.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail="Ссылка не найдена: её отозвали или адрес набран с ошибкой.")
     return json.loads(path.read_text(encoding="utf-8"))
 
 
@@ -24336,6 +24450,33 @@ def projects_delete(req: ProjectRequest) -> dict[str, Any]:
     if forwarded is not None:
         return forwarded
     return project_delete(_project_owner(req.session, req.key), req.id)
+
+
+@app.post("/projects/share")
+def projects_share(req: ProjectRequest) -> dict[str, Any]:
+    forwarded = _projects_forward("/projects/share", req)
+    if forwarded is not None:
+        return forwarded
+    return project_share(_project_owner(req.session, req.key), req.id)
+
+
+@app.post("/projects/unshare")
+def projects_unshare(req: ProjectRequest) -> dict[str, Any]:
+    forwarded = _projects_forward("/projects/unshare", req)
+    if forwarded is not None:
+        return forwarded
+    return project_unshare(_project_owner(req.session, req.key), req.id)
+
+
+@app.post("/projects/shared")
+def projects_shared(req: ProjectRequest) -> dict[str, Any]:
+    """Открыть присланный проект. Вход не нужен: ссылку открывает любой, кто её
+    получил (решение владельца, 20.08.2026) — иначе её нельзя послать тому, кто
+    сервисом ещё не пользовался, а именно так им и делятся."""
+    forwarded = _projects_forward("/projects/shared", req)
+    if forwarded is not None:
+        return forwarded
+    return project_shared(req.id)
 
 
 # ---------------------------------------------------------------------------
@@ -31479,6 +31620,7 @@ async function openProjects(){
    +`<td>${s.net_profit_mln?money(s.net_profit_mln*1e6):'—'}</td>`
    +`<td>${s.llcr?mult(s.llcr):'—'}</td>`
    +`<td><button class="btn" onclick="loadProject('${p.id}')">Открыть</button> `
+   +`<button class="btn" onclick="shareProject('${p.id}')">Поделиться</button> `
    +`<button class="btn" onclick="deleteProject('${p.id}')">Удалить</button></td></tr>`;
  }).join('');
  projectsBody.innerHTML=rows||'<tr><td colspan="5">Пока ничего не сохранено.</td></tr>';
@@ -31512,6 +31654,70 @@ async function loadProject(id){
  renderInputs();renderTep();renderPhasing();persistLocalSilently();
  closeProjects();
  calculateAndOpen('report');
+}
+
+// Передача проекта другому человеку: не PDF, а набор параметров для работы
+// (владелец, 20.08.2026). Ссылку открывает любой, кто её получил, и живёт она
+// бессрочно — поэтому рядом всегда есть «отозвать»: у вечной открытой ссылки
+// без выключателя нет способа передумать.
+async function shareProject(id){
+ let answer;
+ try{answer=await projectsCall('/projects/share',{id})}
+ catch(e){alert(String(e.message||e));return}
+ const link=location.origin+'/?shared='+encodeURIComponent(answer.code);
+ // Буфер обмена доступен не везде (нет https, отказ в правах, старый WebView) —
+ // тогда ссылку показываем в поле, откуда её можно выделить руками. Молчаливое
+ // «скопировано», когда не скопировалось, хуже отсутствия кнопки.
+ let copied=false;
+ try{await navigator.clipboard.writeText(link);copied=true}catch(e){}
+ const message='Ссылка на проект «'+(answer.name||'')+'»:\n'+link+'\n\n'
+  +(copied?'Скопирована в буфер обмена. ':'')
+  +'Открыть её может любой, кому вы её пришлёте; получатель увидит снимок '
+  +'расчёта и сможет сохранить его себе. Ваши дальнейшие правки в этот снимок '
+  +'не попадут — обновите ссылку тем же «Поделиться».\n\n'
+  +'Отозвать ссылку — «Поделиться» ещё раз и «Отозвать» в этом окне.';
+ if(confirm(message+'\n\nОК — оставить ссылку, Отмена — отозвать её.'))return;
+ try{await projectsCall('/projects/unshare',{id});alert('Ссылка отозвана.')}
+ catch(e){alert(String(e.message||e))}
+}
+
+// Присланный проект: открывается по /?shared=<код>, входа не требует.
+async function openSharedProject(code){
+ let snapshot;
+ try{snapshot=await projectsCall('/projects/shared',{id:code})}
+ catch(e){alert('Проект по ссылке не открылся. '+String(e.message||e));return}
+ const who=snapshot.author?('от '+snapshot.author):'без подписи автора';
+ const when=String(snapshot.saved_at||'').replace('T',' ').slice(0,16);
+ const s=snapshot.summary||{};
+ const numbers=[s.revenue_mln?('выручка '+money(s.revenue_mln*1e6)):'',
+                s.net_profit_mln?('прибыль '+money(s.net_profit_mln*1e6)):'',
+                s.llcr?('LLCR '+mult(s.llcr)):''].filter(Boolean).join(' · ');
+ if(!confirm('Проект «'+(snapshot.name||'без названия')+'» '+who+'\n'
+   +(when?('посчитан '+when+'\n'):'')
+   +(snapshot.cadastral&&snapshot.cadastral.length?('участок: '+snapshot.cadastral.join(', ')+'\n'):'')
+   +(numbers?(numbers+'\n'):'')
+   +'\nОткрыть его вводные у себя? Ваш текущий расчёт будет заменён.'))return;
+ const data=snapshot.payload||{};
+ // Как и своя загрузка: присланное накладывается на умолчания, а не подменяет
+ // их — снимок мог быть сделан версией, где поля ещё не было.
+ inputs=Object.assign(structuredClone(INPUT_DEFAULT),data.inputs||{});
+ tep=structuredClone(TEP_DEFAULT);
+ Object.entries(data.tep||{}).forEach(([key,values])=>{
+  if(values&&typeof values==='object')tep[key]=Object.assign(tep[key]||{},values);
+ });
+ phasing=data.phasing||makeDefaultPhasing(1);
+ if(scenarioSelect)scenarioSelect.value=data.scenario||'base';
+ renderInputs();renderTep();renderPhasing();persistLocalSilently();
+ // Ссылка из адреса убирается: перезагрузка страницы не должна второй раз
+ // затирать работу, которую человек уже начал на присланных вводных.
+ try{history.replaceState(null,'',location.pathname)}catch(e){}
+ calculateAndOpen('report');
+}
+
+function checkSharedLink(){
+ let code='';
+ try{code=new URLSearchParams(location.search).get('shared')||''}catch(e){}
+ if(code)openSharedProject(code);
 }
 
 async function deleteProject(id){
@@ -31548,6 +31754,10 @@ function resetAll(){
 
 loadLocal();
 initProjects();
+// Присланный проект открывается сразу: человек пришёл по ссылке, а не за своей
+// вкладкой. Проверка идёт после loadLocal — сначала восстанавливается своё
+// состояние, потом спрашивается, заменить ли его присланным.
+checkSharedLink();
 // Кто зашёл, спрашивается один раз: у вошедшего без анкеты открывается
 // Анкету на загрузке только читаем: всплывать на каждой перезагрузке — это не
 // «спросить один раз», а спрашивать без конца. Показывается она после входа и
