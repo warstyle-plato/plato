@@ -27,6 +27,7 @@
 from __future__ import annotations
 
 import datetime
+import io
 import json
 import os
 import re
@@ -149,6 +150,95 @@ def store_schedule(project: str, gpr: bytes, pm: bytes | None,
     return {"taken_at": day, "with_baseline": bool(pm)}
 
 
+def store_programme(project: str, data: bytes, start: Any,
+                    taken_at: Any) -> dict[str, Any]:
+    """Положить производственную программу (шахматку) снимком.
+
+    Первый месяц хранится рядом с файлом: в шапке стоит «июль» без года, и
+    восстановить его из самого файла потом будет не из чего.
+    """
+    day = _iso(taken_at)
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+        raise ValueError("дата программы нужна в виде ГГГГ-ММ-ДД")
+    first = actuals._as_month(start)
+    if first is None:
+        raise ValueError("не задан первый месяц программы (`start`)")
+    parsed = actuals.read_programme(io.BytesIO(data), first)
+    if not parsed["by_code"]:
+        raise ValueError("в файле не нашлось производственной программы: "
+                         "нет строки месяцев или сумм по кодам")
+    folder = _project_dir(project) / "programme"
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"{day}.xlsx"
+    if path.exists():
+        raise FileExistsError(f"снимок программы на {day} уже загружен")
+    path.write_bytes(data)
+    (folder / f"{day}.json").write_text(json.dumps({
+        "taken_at": day, "start": _iso(first),
+    }, ensure_ascii=False), encoding="utf-8")
+    return {"taken_at": day, "start": _iso(first),
+            "codes": len(parsed["by_code"])}
+
+
+def store_proposal(project: str, data: bytes, sheet: str, start: Any,
+                   code: str, taken_at: Any) -> dict[str, Any]:
+    """Положить согласованный новый график статьи (предложение).
+
+    Живой пример — фасады: договорной график сорван, 11.08.2026 согласован
+    новый. С его даты отставание статьи меряется от него: старый план уже
+    никем не исполняется, и тревога по нему ложная.
+
+    Файл разбирается при загрузке, хранится разобранное: формат листа — вещь
+    одного письма, и читать его через полгода будет нечем.
+    """
+    day = _iso(taken_at)
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+        raise ValueError("дата предложения нужна в виде ГГГГ-ММ-ДД")
+    parsed = actuals.read_proposal(io.BytesIO(data), sheet, start, code)
+    folder = _project_dir(project) / "proposal"
+    folder.mkdir(parents=True, exist_ok=True)
+    slug = parsed["code"].replace(".", "-")
+    path = folder / f"{day}.{slug}.json"
+    if path.exists():
+        raise FileExistsError(
+            f"предложение по {parsed['code']} на {day} уже загружено")
+    path.write_text(json.dumps(_plain({
+        "taken_at": day,
+        "code": parsed["code"],
+        "start": parsed["start"],
+        "acceptance": parsed["acceptance"],
+        "payments": parsed["payments"],
+    }), ensure_ascii=False), encoding="utf-8")
+    return {"taken_at": day, "code": parsed["code"],
+            "acceptance_total": parsed["acceptance_total"],
+            "payments_total": parsed["payments_total"]}
+
+
+def _stored_programme(project: str, upto: str = "") -> dict[str, Any] | None:
+    """Последняя сохранённая программа, не позднее `upto`."""
+    path = _latest(project, "programme", ".xlsx", upto)
+    if path is None:
+        return None
+    meta = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
+    return actuals.read_programme(path, meta["start"])
+
+
+def _stored_proposals(project: str, upto: str = "") -> list[dict[str, Any]]:
+    """Последнее предложение по каждому коду, не позднее `upto`."""
+    folder = _project_dir(project) / "proposal"
+    if not folder.exists():
+        return []
+    latest: dict[str, Path] = {}
+    for item in sorted(folder.glob("*.json")):
+        day = item.name.split(".", 1)[0]
+        if upto and day > upto:
+            continue
+        code = item.stem.split(".", 1)[1]
+        latest[code] = item
+    return [json.loads(item.read_text(encoding="utf-8"))
+            for _, item in sorted(latest.items())]
+
+
 def snapshots(project: str) -> dict[str, list[str]]:
     """Что уже загружено, по датам снимков."""
     folder = _project_dir(project)
@@ -162,6 +252,9 @@ def snapshots(project: str) -> dict[str, list[str]]:
         "sales": dates("sales", ".json"),
         "schedule": [day for day in dates("schedule", ".xlsx")
                      if not day.endswith(".pm")],
+        "programme": dates("programme", ".xlsx"),
+        "proposal": sorted({item.split(".", 1)[0]
+                            for item in dates("proposal", ".json")}),
     }
 
 
@@ -189,6 +282,12 @@ def build(
     estimate_path = _latest(project, "estimate", ".xlsx", upto)
     if estimate_path is None:
         raise FileNotFoundError("нет ни одного снимка РСС")
+    if programme is None:
+        programme = _stored_programme(project, upto)
+    # Согласованный новый график статьи заменяет её план целиком: старый уже
+    # никем не исполняется, и отставание от него — ложная тревога.
+    programme = actuals.apply_proposals(
+        programme, _stored_proposals(project, upto))
     sales_path = _latest(project, "sales", ".json", upto)
     sales = None
     if sales_path is not None:
@@ -200,15 +299,33 @@ def build(
             "revenue": row["revenue"],
         } for row in stored["rows"]]}
 
+    works = actuals.read_completed_works(estimate_path)
     report = actuals.monitor(
         actuals.read_estimate(estimate_path),
         actuals.read_payments(estimate_path),
-        actuals.read_completed_works(estimate_path),
+        works,
         actuals.read_contracts(estimate_path),
         cut=cut, programme=programme, sales=sales)
+
+    # Разбивка «где отстаём» по кодам РСС. Свод говорит «сколько», разбивка —
+    # «где»: 275,4 млн ₽ сами по себе не показывают, фасады это или инженерка.
+    if programme:
+        schedule_folder = _project_dir(project) / "schedule"
+        schedule_paths = sorted(
+            item for item in schedule_folder.glob("*.xlsx")
+            if not item.name.endswith(".pm.xlsx")) if schedule_folder.exists() else []
+        if upto:
+            schedule_paths = [item for item in schedule_paths if item.stem <= upto]
+        schedule = (actuals.read_schedule(schedule_paths[-1]) if schedule_paths
+                    else {"rows": [], "works": [], "overdue": [],
+                          "without_code": []})
+        report["by_code"] = actuals.schedule_against_money(
+            schedule, programme, works, cut)["by_code"]
+
     report["source"] = {
         "estimate": estimate_path.stem,
         "sales": sales_path.stem if sales_path else "",
+        "proposals": (programme or {}).get("proposals", []),
     }
     return _plain(report)
 

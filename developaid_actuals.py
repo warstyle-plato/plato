@@ -2206,3 +2206,124 @@ def schedule_deadline(schedule: dict[str, Any], pm: dict[str, Any]) -> dict[str,
         "inner_slipped": sum(1 for value in inner if value > 0),
         "inner_measured": len(inner),
     }
+
+
+# ---------------------------------------------------------------------------
+# Предложение по графику статьи: новый план для одного кода РСС.
+#
+# Живой пример — фасады (2.2.2.6): подрядчик сорвал договорной график, и
+# 11.08.2026 согласован новый — лист «наше предложение». С этого момента
+# «отстаём или нет» по фасадам надо мерить от него, а не от шахматки РСС:
+# старый план уже никем не исполняется, и отставание от него — ложная тревога.
+#
+# Лист устроен как маленькая шахматка: месяцы в первой строке, внизу две
+# итоговые строки — «Материал» (авансы и оплаты материалов) и «СМР» (закрытие
+# КС). Это разные вещи: материал — деньги, которые уходят, СМР — работы,
+# которые принимаются. План приёмки — строка СМР; денежная потребность — обе.
+#
+# Год в шапке не написан («ФАКТ ИЮЛЬ», «август»…) — первый месяц задаётся
+# снаружи, тем же правилом, что у производственной программы.
+# ---------------------------------------------------------------------------
+
+_PROPOSAL_LABELS = {"материал": "payments_materials", "смр": "acceptance"}
+
+
+def read_proposal(path: Any, sheet: str, start: Any, code: str) -> dict[str, Any]:
+    """Новый график статьи: план приёмки и денежная потребность по месяцам.
+
+    Берутся только итоговые строки листа — «Материал» и «СМР» в колонке
+    подписей. Суммировать строки корпусов нельзя: у них свои подытоги, и лист
+    посчитался бы дважды.
+    """
+    first = _as_month(start)
+    if first is None:
+        raise ValueError("не задан первый месяц предложения (`start`)")
+    normalized_code = _code(code)
+    if not normalized_code:
+        raise ValueError("не задан код РСС, которому принадлежит предложение")
+
+    rows = list(_sheet(path, sheet))
+    if not rows:
+        raise ValueError(f"лист «{sheet}» пуст")
+    header = rows[0]
+    positions = [position for position, value in enumerate(header)
+                 if position >= 5 and any(
+                     month in _normalized(value) for month in _PROGRAMME_MONTHS)]
+    if not positions:
+        raise ValueError(f"в первой строке листа «{sheet}» не нашлось месяцев")
+    columns = [(position, _add_month(first, offset))
+               for offset, position in enumerate(sorted(positions))]
+
+    series: dict[str, dict[datetime.date, float]] = {
+        name: {} for name in _PROPOSAL_LABELS.values()}
+    found: set[str] = set()
+    for row in rows[1:]:
+        label = _normalized(row[4] if len(row) > 4 else None)
+        target = _PROPOSAL_LABELS.get(label)
+        if target is None or target in found:
+            continue
+        found.add(target)
+        for position, month in columns:
+            amount = _money(row[position] if position < len(row) else None)
+            if amount:
+                series[target][month] = amount
+    missing = set(_PROPOSAL_LABELS.values()) - found
+    if missing:
+        raise ValueError(
+            f"на листе «{sheet}» не нашлось итоговых строк: {sorted(missing)}")
+
+    payments = dict(series["payments_materials"])
+    for month, amount in series["acceptance"].items():
+        payments[month] = payments.get(month, 0.0) + amount
+    return {
+        "code": normalized_code,
+        "start": first,
+        "acceptance": series["acceptance"],
+        "payments": payments,
+        "acceptance_total": sum(series["acceptance"].values()),
+        "payments_total": sum(payments.values()),
+        "months": [month for _, month in columns],
+    }
+
+
+def apply_proposals(programme: dict[str, Any] | None,
+                    proposals: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Заменить в программе план тех кодов, по которым согласован новый график.
+
+    Замена целиком, а не с какого-то месяца: согласованное предложение — это
+    весь график статьи, включая уже прожитые месяцы. Мерить прошлое по старому
+    плану, а будущее по новому значило бы сшить два плана, которых никто в
+    таком виде не утверждал.
+    """
+    if not proposals:
+        return programme
+    if programme is None:
+        programme = {"by_code": {}, "leaves": set(), "months": [],
+                     "first": None, "last": None}
+    by_code = dict(programme.get("by_code") or {})
+    leaves = set(programme.get("leaves") or set(by_code))
+    months = list(programme.get("months") or [])
+    applied = []
+    for proposal in proposals:
+        code = proposal["code"]
+        acceptance = {_as_month(month): float(amount)
+                      for month, amount in (proposal.get("acceptance") or {}).items()}
+        acceptance = {month: amount for month, amount in acceptance.items()
+                      if month is not None}
+        by_code[code] = acceptance
+        leaves.add(code)
+        for month in acceptance:
+            if month not in months:
+                months.append(month)
+        applied.append({"code": code, "taken_at": proposal.get("taken_at", ""),
+                        "total": sum(acceptance.values())})
+    months.sort()
+    return {
+        **programme,
+        "by_code": by_code,
+        "leaves": leaves,
+        "months": months,
+        "first": months[0] if months else None,
+        "last": months[-1] if months else None,
+        "proposals": applied,
+    }
