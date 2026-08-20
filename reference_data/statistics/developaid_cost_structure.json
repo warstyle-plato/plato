@@ -1,0 +1,136 @@
+{
+  "methodology_version": "3.0",
+  "canonical_unit": "gba",
+  "canonical_unit_label": "₽/м² ГНС",
+  "components": [
+    {"key": "preparation", "label": "Подготовка площадки"},
+    {"key": "design", "label": "ПИР / РД / экспертиза"},
+    {"key": "main_above", "label": "Основное строительство — наземная часть"},
+    {"key": "main_under", "label": "Подземная часть / паркинг"},
+    {"key": "external_utilities", "label": "Наружные инженерные сети"},
+    {"key": "landscaping", "label": "Благоустройство"},
+    {"key": "technical_connection", "label": "ТУ / технологическое присоединение"},
+    {"key": "commissioning", "label": "Сдача и ввод"},
+    {"key": "site_maintenance", "label": "Содержание стройплощадки"},
+    {"key": "tech_customer", "label": "Техзаказчик / стройконтроль"},
+    {"key": "project_management", "label": "Управление проектом"},
+    {"key": "reserve", "label": "Резерв"},
+    {"key": "construction_capex", "label": "Construction CAPEX"},
+    {"key": "land", "label": "Земля / права на участок"},
+    {"key": "vri_infrastructure", "label": "ВРИ / инфраструктурные обязательства"},
+    {"key": "marketing_sales", "label": "Маркетинг / продажи"},
+    {"key": "financing", "label": "Финансирование"},
+    {"key": "full_development_cost", "label": "Full development cost"}
+  ],
+  "sources": [
+    {
+      "source_id": "developaid-grodnenskaya-structure-2026-07",
+      "source": "DevelopAid / Гродненская, 18",
+      "source_kind": "internal_project",
+      "region": "Москва",
+      "housing_class": "business",
+      "base_class": "business",
+      "reference_date": "2026-07-17",
+      "source_url": null,
+      "published": {"value_rub_m2": 265750.84, "unit": "gba", "label": "Стоимость строительства baseline", "scope": "construction_capex", "note": "5 855,262 млн ₽ / 22 032,9 м² ГНС DevelopAid."},
+      "comparability": "exact_da",
+      "components": {
+        "preparation": {"status": "value", "value_rub_m2": 3189.90, "unit": "gba"},
+        "design": {"status": "included_residual", "note": "Входит в Construction CAPEX; отдельная ставка не раскрыта в справочнике статистики."},
+        "main_above": {"status": "value", "value_rub_m2": 168816.78, "unit": "gba"},
+        "main_under": {"status": "separate_denominator", "value_rub_m2": 592526.29, "unit": "underground", "note": "Отдельная ставка подземной части; нельзя делить на общую ГНС без площади подземной части."},
+        "external_utilities": {"status": "value", "value_rub_m2": 9500.19, "unit": "gba"},
+        "landscaping": {"status": "value", "value_rub_m2": 7806.51, "unit": "gba"},
+        "technical_connection": {"status": "included_residual"},
+        "commissioning": {"status": "value", "value_rub_m2": 0, "unit": "gba"},
+        "site_maintenance": {"status": "value", "value_rub_m2": 39240.91, "unit": "gba"},
+        "tech_customer": {"status": "included_residual"},
+        "project_management": {"status": "included_residual"},
+        "reserve": {"status": "included_residual"},
+        "construction_capex": {"status": "value", "value_rub_m2": 265750.84, "unit": "gba", "note": "Контрольный итог; нераскрытый остаток не распределяется экспертно."},
+        "land": {"status": "outside_scope"},
+        "vri_infrastructure": {"status": "outside_scope"},
+        "marketing_sales": {"status": "outside_scope"},
+        "financing": {"status": "outside_scope"},
+        "full_development_cost": {"status": "not_disclosed"}
+      }
+    },
+    {
+      "source_id": "mke-ncsm-apartments-2025-09",
+      "source": "Москомэкспертиза / НЦСМ · площадь квартир",
+      "source_kind": "official_normative",
+      "region": "Москва",
+      "housing_class": "unknown",
+      "base_class": "comfort",
+      "reference_date": "2025-09-01",
+      "source_url": "https://www.mos.ru/upload/documents/files/4072/MKE-OD-26-32ot20042026PrilojeniekprikazyNCSMtekyshieceni_.pdf",
+      "published": {"value_rub_m2": 146190, "value_low_rub_m2": 139450, "value_high_rub_m2": 147310, "unit": "apartments", "label": "Норматив стоимости жилого здания", "scope": "building_normative"},
+      "comparability": "contextual",
+      "components": {
+        "design": {"status": "included_in_aggregate", "note": "ПИР и экспертиза учтены в показателе."},
+        "main_above": {"status": "included_in_aggregate"},
+        "site_maintenance": {"status": "included_in_aggregate"},
+        "construction_capex": {"status": "source_aggregate", "value_rub_m2": 146190, "unit": "apartments", "scope": "building_normative", "note": "Норматив здания, не Construction CAPEX DevelopAid."},
+        "land": {"status": "outside_scope"},
+        "vri_infrastructure": {"status": "outside_scope"},
+        "marketing_sales": {"status": "outside_scope"},
+        "financing": {"status": "outside_scope"}
+      }
+    },
+    {
+      "source_id": "mke-ncsm-building-total-2025-09",
+      "source": "Москомэкспертиза / НЦСМ · площадь здания",
+      "source_kind": "official_normative",
+      "region": "Москва",
+      "housing_class": "unknown",
+      "base_class": "comfort",
+      "reference_date": "2025-09-01",
+      "source_url": "https://www.mos.ru/upload/documents/files/4072/MKE-OD-26-32ot20042026PrilojeniekprikazyNCSMtekyshieceni_.pdf",
+      "published": {"value_rub_m2": 97805, "value_low_rub_m2": 90620, "value_high_rub_m2": 100790, "unit": "building_total", "label": "Норматив стоимости жилого здания", "scope": "building_normative"},
+      "comparability": "contextual",
+      "components": {
+        "design": {"status": "included_in_aggregate", "note": "ПИР и экспертиза учтены в показателе."},
+        "main_above": {"status": "included_in_aggregate"},
+        "site_maintenance": {"status": "included_in_aggregate"},
+        "construction_capex": {"status": "source_aggregate", "value_rub_m2": 97805, "unit": "building_total", "scope": "building_normative", "note": "Общая площадь здания не приравнивается к ГНС DevelopAid."}
+      }
+    },
+    {
+      "source_id": "ac-moscow-declared-2025-06",
+      "source": "Аналитический центр Москвы / проектные декларации",
+      "source_kind": "industry_benchmark",
+      "region": "Москва",
+      "housing_class": "unknown",
+      "base_class": "comfort",
+      "reference_date": "2025-06-01",
+      "source_url": "https://ac.mos.ru/download/estate/2025_08_05_%D0%9E%D0%B1%D0%B7%D0%BE%D1%80_%D1%80%D1%8B%D0%BD%D0%BA%D0%B0_%D0%B6%D0%B8%D0%BB%D0%BE%D0%B9_%D0%BD%D0%B5%D0%B4%D0%B2%D0%B8%D0%B6%D0%B8%D0%BC%D0%BE%D1%81%D1%82%D0%B8_%D0%98%D1%8E%D0%BD%D1%8C_2025.pdf",
+      "published": {"value_rub_m2": 148000, "unit": "building_total", "label": "Медианная заявленная стоимость строительства", "scope": "declared_project_construction"},
+      "comparability": "contextual",
+      "components": {
+        "main_above": {"status": "included_in_aggregate"},
+        "construction_capex": {"status": "source_aggregate", "value_rub_m2": 148000, "unit": "building_total", "scope": "declared_project_construction", "note": "Состав проектной декларации не тождественен Construction CAPEX DevelopAid."}
+      }
+    },
+    {
+      "source_id": "sis-erz-moscow-2026-04",
+      "source": "СИС / ЕРЗ.РФ",
+      "source_kind": "industry_benchmark",
+      "region": "Москва",
+      "housing_class": "mass_market",
+      "base_class": "comfort",
+      "reference_date": "2026-04-01",
+      "source_url": "https://erzrf.ru/publikacii/srednyaya-stoimost-stroitelstva-mkd-massovogo-sprosa-i-sredniye-tseny-na-rynke-nedvizhimosti-po-regionam-rf-na-aprel-2026-goda",
+      "published": {"value_rub_m2": 191692, "unit": "apartments", "label": "Полная стоимость строительства застройщика", "scope": "developer_full_cost"},
+      "comparability": "partial",
+      "components": {
+        "main_above": {"status": "unallocated_remainder", "share_low_pct": 69.3, "share_high_pct": 76.2, "note": "Остаток после раскрытых долей; это НЕ основной СМР, в остатке есть прочие расходы."},
+        "external_utilities": {"status": "combined_share", "share_low_pct": 8.0, "share_high_pct": 12.0, "group": "networks_landscaping", "note": "Сети + благо раскрыты только совместно."},
+        "landscaping": {"status": "combined_share", "share_low_pct": 8.0, "share_high_pct": 12.0, "group": "networks_landscaping", "note": "Не суммировать эту долю повторно с сетями."},
+        "technical_connection": {"status": "share", "share_pct": 4.7},
+        "construction_capex": {"status": "included_in_broader_total", "note": "Показатель шире Construction CAPEX DevelopAid."},
+        "land": {"status": "share_range", "share_low_pct": 11.1, "share_high_pct": 14.0},
+        "full_development_cost": {"status": "source_aggregate", "value_rub_m2": 191692, "unit": "apartments", "scope": "developer_full_cost", "note": "Это внешний full-cost benchmark, а не СМР."}
+      }
+    }
+  ]
+}
