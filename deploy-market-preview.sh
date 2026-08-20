@@ -115,9 +115,17 @@ PY
 route_check() {
   port=$1
   curl -fsS --max-time 10 "http://127.0.0.1:${port}/openapi.json" \
-    | python3 -c 'import json,sys; p=json.load(sys.stdin).get("paths",{}); required=("/market/discovery","/statistics","/api/statistics/construction-cost"); missing=[x for x in required if x not in p]; assert not missing, "не зарегистрированы маршруты: " + ", ".join(missing)'
+    | python3 -c 'import json,sys; p=json.load(sys.stdin).get("paths",{}); required=("/market/discovery","/statistics","/api/statistics/construction-cost","/api/statistics/sources"); missing=[x for x in required if x not in p]; assert not missing, "не зарегистрированы маршруты: " + ", ".join(missing)'
   # OpenAPI подтверждает регистрацию, а GET страницы ловит ошибку уже внутри handler.
   curl -fsS --max-time 10 "http://127.0.0.1:${port}/statistics" >/dev/null
+  curl -fsS --max-time 10 --get "http://127.0.0.1:${port}/api/statistics/construction-cost" \
+    --data-urlencode "region=Москва" \
+    --data-urlencode "class=business" \
+    --data-urlencode "unit=gba" \
+    --data-urlencode "metric_type=main_construction" \
+    | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d.get("methodology_version")=="2.0", d; assert d.get("recommended") is not None, d; assert d.get("unit")=="gba", d; assert d.get("metric_type")=="main_construction", d'
+  curl -fsS --max-time 10 "http://127.0.0.1:${port}/api/statistics/sources" \
+    | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d.get("methodology_version")=="2.0", d; assert d.get("count",0)>0, d; assert isinstance(d.get("sources"),list), d'
 }
 
 start_preview() {
@@ -185,7 +193,7 @@ if ! verdict=$(health_check "$CHECK_PORT" 2>&1) || ! route_check "$CHECK_PORT"; 
   docker rm -f "$STAGING_NAME" >/dev/null 2>&1 || true
   exit 1
 fi
-say "Проба пройдена: ${verdict}."
+say "Проба пройдена: ${verdict}; статистика v2 отвечает."
 docker rm -f "$STAGING_NAME" >/dev/null 2>&1 || true
 
 if [ -n "$OLD_ID" ]; then
