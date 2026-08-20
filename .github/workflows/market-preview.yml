@@ -10,8 +10,10 @@ on:
     paths:
       - "market_search/**"
       - "developaid_statistics.py"
+      - "developaid_cost_structure.py"
       - "statistics_feature.py"
       - "data/statistics/**"
+      - "reference_data/statistics/**"
       - "main_registry.py"
       - "market-preview-acceptance.py"
       - "tests/test_market_*.py"
@@ -26,8 +28,10 @@ on:
     paths:
       - "market_search/**"
       - "developaid_statistics.py"
+      - "developaid_cost_structure.py"
       - "statistics_feature.py"
       - "data/statistics/**"
+      - "reference_data/statistics/**"
       - "main_registry.py"
       - "market-preview-acceptance.py"
       - "tests/test_market_*.py"
@@ -98,6 +102,9 @@ jobs:
           if [ -f developaid_statistics.py ]; then
             compile_files+=(developaid_statistics.py)
           fi
+          if [ -f developaid_cost_structure.py ]; then
+            compile_files+=(developaid_cost_structure.py)
+          fi
           if [ -f statistics_feature.py ]; then
             compile_files+=(statistics_feature.py)
           fi
@@ -129,6 +136,9 @@ jobs:
                   "/statistics",
                   "/api/statistics/construction-cost",
                   "/api/statistics/sources",
+                  "/api/statistics/index-sources",
+                  "/api/statistics/cost-structure",
+                  "/api/statistics/class-adjustments",
               }
               missing = sorted(required - paths)
               assert not missing, f"missing statistics routes: {missing}"
