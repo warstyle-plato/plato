@@ -180,6 +180,16 @@
     };
   }
 
+  function sameNumber(left, right) {
+    return Math.abs(Number(left || 0) - Number(right || 0)) < 1e-6;
+  }
+
+  function isUntouchedEngineDefault(rowKey, row) {
+    const baseline = form.defaults && form.defaults.tep && form.defaults.tep[rowKey];
+    if (!baseline) return false;
+    return ['gns', 'total_area', 'saleable'].every((key) => sameNumber(row[key], baseline[key]));
+  }
+
   function applyRatio(row, totalPct, saleablePct) {
     const gns = Number(row.gns || 0);
     if (!(gns > 0)) return;
@@ -191,14 +201,26 @@
   function tepRatioStrip(rowKey, row, group, rerender) {
     if (!ratioKeys.has(rowKey)) return;
     const overrides = parseRatioOverrides(form.draft.inputs[TEP_RATIOS_KEY]);
-    const current = overrides[rowKey] || ratioFromRow(row);
+    let current = overrides[rowKey];
+
+    /* Existing project / imported TEP wins. Only a row that is still exactly the
+       engine's untouched default is migrated to the DevelopAid working default
+       90% → 70%. This avoids overwriting a GZK/AGR/GlavAPU factual ratio merely
+       because the user opened the Inputs screen. */
+    if (!current && isUntouchedEngineDefault(rowKey, row)) {
+      current = { total: BASE_TEP_TOTAL_PCT, saleable: BASE_TEP_SALEABLE_OF_TOTAL_PCT };
+      overrides[rowKey] = current;
+      form.draft.inputs[TEP_RATIOS_KEY] = serializeRatioOverrides(overrides);
+      applyRatio(row, current.total, current.saleable);
+    }
+    if (!current) current = ratioFromRow(row);
 
     const strip = document.createElement('div');
     strip.className = 'tep-ratio-strip';
     strip.innerHTML = `
       <div class="tep-ratio-copy">
         <span>ГНС → общая → продаваемая</span>
-        <small>Наше умолчание: общая 90% от ГНС; продаваемая 70% от общей</small>
+        <small>Наше умолчание: общая 90% от ГНС; продаваемая 70% от общей. Фактические параметры можно заменить здесь.</small>
       </div>`;
 
     const total = document.createElement('label');
