@@ -4175,6 +4175,7 @@ class VriManualRequest(BaseModel):
     rows: list[dict[str, Any]] = []
     rent_coeff: float = 0.0
     index: float | None = None
+    land_right: str = "ownership"
 
 
 @app.post("/vri/manual")
@@ -4186,7 +4187,8 @@ def vri_manual(req: VriManualRequest) -> dict[str, Any]:
     калькулятора для этого проекта неверен, а подменять его молча нельзя.
     Поэтому свой расчёт стоит рядом и подписан своим.
     """
-    return vri_manual_payment(req.rows, req.rent_coeff, req.index)
+    return vri_manual_payment(req.rows, req.rent_coeff, req.index,
+                              land_right=req.land_right)
 
 
 class BaselineRecalcRequest(BaseModel):
@@ -4216,6 +4218,7 @@ class TepDerivedRequest(BaseModel):
     zone_two: bool = False
     upks_rub: float = 0.0
     sqm_per_job: float = 36.0
+    parking_norm_regime: str = "2118_2026"
 
 
 @app.post("/tep/derived")
@@ -4227,7 +4230,8 @@ def tep_derived(req: TepDerivedRequest) -> dict[str, Any]:
         residential_living_spp_sqm=req.residential_living_spp_sqm,
         nonresidential_np_sqm=req.nonresidential_np_sqm,
         k1=req.k1, k2=req.k2, zone_two=req.zone_two,
-        upks_rub=req.upks_rub, sqm_per_job=req.sqm_per_job)
+        upks_rub=req.upks_rub, sqm_per_job=req.sqm_per_job,
+        parking_norm_regime=req.parking_norm_regime)
 
 
 @app.post("/land/lookup")
@@ -6238,6 +6242,12 @@ def vri_tep_quick(region: str, query: str,
                             * _GLAVAPU_VRI_BASE_INDEXATION / 1.00001 / 1e6, 3)
         mm = None
         if k1 > 0 and k2 > 0 and apartments > 0:
+            # Это ЗЕРКАЛО калькулятора, а не наш нормативный расчёт: строка
+            # выведена из двух его выгрузок и обязана отдавать то же, что отдал
+            # бы он. Наш ответ по 2118-ПП живёт в `tep_derived_norms` и
+            # `recalculate_from_glavapu_baseline` — он про наши метры и про
+            # закон, а этот про нормативный ТЭП города. Приводить их к одному
+            # числу нельзя: тогда фолбэк перестанет заменять калькулятор.
             mm_permanent = math.ceil(apartments_gns * 0.9 / 90.0 * k1)
             mm_guest = math.ceil(mm_permanent / 10.0)
             mm_onsite = math.ceil(commerce_np / 90.0 * k1 * k2)
@@ -7074,12 +7084,17 @@ VRI_USE_TYPES: list[list[str]] = [
 
 
 def vri_manual_payment(rows: list[dict[str, Any]], rent_coeff: float,
-                       index: float | None = None) -> dict[str, Any]:
+                       index: float | None = None, *,
+                       land_right: str = "ownership") -> dict[str, Any]:
     """Плата за смену ВРИ по своим метрам и своим основаниям.
 
     Формула та же, что у калькулятора (класс Df, метод calcOwn):
-    1,8964 × СПП × коэффициент аренды × базовая стоимость × индекс / 1,00001.
+    1,8964 × СПП × коэффициент аренды × базовая стоимость × индекс / делитель.
     Она линейна по СПП, поэтому считается построчно и складывается.
+
+    Делитель зависит от права на участок: собственность 1,00001, аренда 1,001.
+    Аренда платит — просто по своему делителю, на 0,099% меньше; повышенная
+    составляющая первого года по 273-ПП здесь не считается и названа вслух.
 
     Нулевая базовая стоимость — это «за этот вид не платят», а не «данных нет»:
     так в выгрузке стоят производство и социальные объекты. Отсутствующая
@@ -7087,6 +7102,9 @@ def vri_manual_payment(rows: list[dict[str, Any]], rent_coeff: float,
     """
     factor = float(index if index is not None else _GLAVAPU_VRI_BASE_INDEXATION)
     rent = max(0.0, float(rent_coeff or 0.0))
+    right = str(land_right or "ownership").strip().lower()
+    leased = right in ("lease", "аренда", "rent")
+    divisor = _VRI_RIGHT_DIVISOR["lease" if leased else "ownership"]
     labels = {item[0]: item[1] for item in VRI_USE_TYPES}
     lines: list[dict[str, Any]] = []
     missing: list[str] = []
@@ -7108,7 +7126,7 @@ def vri_manual_payment(rows: list[dict[str, Any]], rent_coeff: float,
         except (TypeError, ValueError):
             missing.append(f"{labels.get(key, key)}: базовая стоимость не число")
             continue
-        payment = 1.8964 * spp * rent * base * factor / 1.00001
+        payment = 1.8964 * spp * rent * base * factor / divisor
         total += payment
         lines.append({
             "type": key or "other",
@@ -7117,17 +7135,28 @@ def vri_manual_payment(rows: list[dict[str, Any]], rent_coeff: float,
             "base_cost_rub": round(base, 2),
             "payment_mln": round(payment / 1e6, 3),
         })
+    notes: list[str] = []
+    if leased:
+        notes.append(
+            "право на участок — аренда: делитель 1,001 вместо 1,00001, плата ниже "
+            "на 0,099%. Повышенная составляющая первого года по 273-ПП — отдельный "
+            "платёж, здесь не считается")
     return {
         "lines": lines,
         "total_mln": round(total / 1e6, 3),
         "rent_coeff": rent,
         "index": factor,
         "index_date": _GLAVAPU_VRI_BASE_INDEXATION_DATE,
+        "land_right": "lease" if leased else "ownership",
+        "land_right_divisor": divisor,
+        "notes": notes,
         "missing": missing,
         "basis": ("1,8964 × СПП × коэффициент аренды "
                   + f"{rent:g}".replace(".", ",")
                   + " × базовая стоимость × индекс "
-                  + f"{factor:g}".replace(".", ",")),
+                  + f"{factor:g}".replace(".", ",")
+                  + " / делитель " + f"{divisor:g}".replace(".", ",")
+                  + (" (аренда)" if leased else " (собственность)")),
     }
 
 
@@ -7489,7 +7518,8 @@ def tep_derived_norms(*, apartment_area_sqm: float, residential_living_spp_sqm: 
                       k1: float = 1.0, k2: float = 1.0,
                       zone_two: bool = False,
                       upks_rub: float = 0.0,
-                      sqm_per_job: float = 36.0) -> dict[str, Any]:
+                      sqm_per_job: float = 36.0,
+                      parking_norm_regime: str = "2118_2026") -> dict[str, Any]:
     """Что следует из введённого руками ТЭП: население, соцпотребность,
     компенсация, машино-места, места приложения труда.
 
@@ -7498,10 +7528,16 @@ def tep_derived_norms(*, apartment_area_sqm: float, residential_living_spp_sqm: 
     приобъектные 12 — воспроизводятся до единицы.
 
     `residential_living_spp_sqm` — СПП **жилая** (строка 7.1 выгрузки, у нас
-    «ТЭП → Квартиры → ГНС»), без нежилой части жилых зданий. Разница не
-    косметическая: от СПП жилых зданий (7.1 + 7.2) постоянных мест выходит 954
-    вместо 897. А вот плата за ВРИ считается наоборот — от полной СПП жилых
-    зданий, включая встроенные помещения.
+    «ТЭП → Квартиры → ГНС»), без нежилой части жилых зданий. В действующем
+    порядке она на постоянные места не влияет вовсе — они считаются от площади
+    квартир, — но нужна прежнему режиму и печатается в основании. Плата за ВРИ
+    берётся от полной СПП жилых зданий, включая встроенные помещения.
+
+    Постоянные места — приложение 5 к 945-ПП в редакции 2118-ПП: тот же расчёт,
+    что и в пересчёте по параметрам исходной выгрузки. Два наших ответа на одни
+    метры расходиться не могут: `parking_norm_regime="legacy_945"` возвращает
+    прежнюю строку (НП жилая / 90 × К1) — она нужна, чтобы сверяться с
+    калькулятором, а не как второе мнение о норме.
     """
     apartments = max(0.0, float(apartment_area_sqm or 0.0))
     residential_spp = max(0.0, float(residential_living_spp_sqm or 0.0))
@@ -7515,10 +7551,20 @@ def tep_derived_norms(*, apartment_area_sqm: float, residential_living_spp_sqm: 
     school = math.ceil((124 if zone_two else 90) * population / 1000) if population else 0
     clinic = math.ceil(19 * population / 1000) if population else 0
 
-    # Постоянные места считаются от НАЗЕМНОЙ ЖИЛОЙ площади (90% жилой СПП), а не
-    # от всей СПП жилых зданий: на выгрузке первое даёт 897 мест, второе — 954.
     residential_np = residential_spp * 0.9
-    permanent = math.ceil(residential_np / 90.0 * k1) if residential_np and k1 else 0
+    regime = str(parking_norm_regime or "2118_2026").strip().lower()
+    if regime not in _PARKING_REGIMES:
+        regime = "2118_2026"
+    if regime == "2118_2026":
+        permanent = moscow_permanent_parking_2118(apartments)
+        parking_basis = ("постоянные места — п. 1 приложения 5 к 945-ПП в редакции "
+                         "2118-ПП: площадь квартир / (33 × 2,1) × 0,8")
+    else:
+        # Прежняя строка города: от НАЗЕМНОЙ ЖИЛОЙ площади (90% жилой СПП), а не
+        # от всей СПП жилых зданий — на выгрузке первое даёт 897 мест, второе 954.
+        permanent = math.ceil(residential_np / 90.0 * k1) if residential_np and k1 else 0
+        parking_basis = ("постоянные места — прежняя строка города: НП жилая / 90 × К1 "
+                         f"{k1:g}".replace(".", ",") + " (режим сверки с калькулятором)")
     guest = math.ceil(permanent / 10.0) if permanent else 0
     onsite = math.ceil(nonresidential_np / 90.0 * k1 * k2) if nonresidential_np and k1 and k2 else 0
 
@@ -7546,6 +7592,8 @@ def tep_derived_norms(*, apartment_area_sqm: float, residential_living_spp_sqm: 
         "parking_guest": guest,
         "parking_onsite": onsite,
         "parking_total": permanent + guest + onsite,
+        "parking_norm_regime": regime,
+        "parking_basis": parking_basis,
         # Места приложения труда — основание льготы по плате за ВРИ (3135-ПП),
         # у калькулятора для неё своя строка 52 «Льгота на стр-во жилья за
         # создание МПТ». Норматив у нас 36 м² на место, у калькулятора на
@@ -30825,7 +30873,8 @@ async function calcVriOwn(){
  let data;
  try{
   const r=await fetch('/vri/manual',{method:'POST',headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({rent_coeff:rent,rows:rows.map(row=>({type:row.type,spp_sqm:Number(row.spp||0),
+   body:JSON.stringify({rent_coeff:rent,land_right:String(inputs.land_right||'ownership'),
+    rows:rows.map(row=>({type:row.type,spp_sqm:Number(row.spp||0),
     base_cost_rub:row.base===''?null:Number(row.base||0)}))})});
   data=await r.json();
   if(!r.ok)throw new Error(data.detail||'Расчёт не выполнен');
@@ -30846,7 +30895,9 @@ async function calcVriOwn(){
  vriOwnLast=data;
  renderVriOwn(data);
  const missing=(data.missing||[]).map(escapeHtml).join('; ');
+ const notes=(data.notes||[]).map(escapeHtml).join('; ');
  say('Плата '+num(data.total_mln)+' млн ₽. Основание: '+escapeHtml(data.basis)
+   +(notes?('<br>'+notes):'')
    +(missing?('<br>Не посчитано: '+missing):''),!missing);
 }
 

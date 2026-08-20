@@ -57,18 +57,100 @@ def test_the_formulas_reproduce_the_city_export():
     assert abs(payment["total_mln"] - 10562.660) / 10562.660 < 1e-4
 
 
-def test_the_permanent_places_come_from_the_living_area():
-    """Постоянные места считаются от НП жилой, а не от СПП жилых зданий.
+def test_the_permanent_places_no_longer_depend_on_the_living_area():
+    """Драйвер сменился: 2118-ПП считает от площади квартир, а не от НП жилой.
 
-    От полной СПП (119 533 + 7 630) выходит 954 места вместо 897 — разница не
-    косметическая, а на 57 мест подземного гаража.
+    В прежней строке от полной СПП жилых зданий (119 533 + 7 630) выходило 954
+    места вместо 897 — разница на 57 мест подземного гаража, и путать базы было
+    дорого. В действующем порядке базы нет вовсе: СПП жилая на постоянные места
+    не влияет, поэтому оба вызова дают одно число.
     """
     living = core.tep_derived_norms(apartment_area_sqm=77696,
                                     residential_living_spp_sqm=119533, k1=K1)
     whole = core.tep_derived_norms(apartment_area_sqm=77696,
                                    residential_living_spp_sqm=127163, k1=K1)
     assert living["parking_permanent"] == 897
-    assert whole["parking_permanent"] == 954
+    assert whole["parking_permanent"] == 897
+
+    # Прежняя строка остаётся доступной — но только чтобы сверяться с
+    # калькулятором, и на тех же метрах она отвечает иначе.
+    legacy_living = core.tep_derived_norms(
+        apartment_area_sqm=77696, residential_living_spp_sqm=119533, k1=K1,
+        parking_norm_regime="legacy_945")
+    legacy_whole = core.tep_derived_norms(
+        apartment_area_sqm=77696, residential_living_spp_sqm=127163, k1=K1,
+        parking_norm_regime="legacy_945")
+    assert legacy_living["parking_permanent"] == 897
+    assert legacy_whole["parking_permanent"] == 954
+
+
+def test_both_our_surfaces_answer_the_same_for_the_same_metres():
+    """Пересчёт под фактический ТЭП и пересчёт по базе — один ответ.
+
+    Две наши поверхности считают машино-места на одни и те же метры. Пока одна
+    из них жила на прежней строке города, они расходились: 130 против 123 — оба
+    числа выглядели посчитанными, и выбрать между ними было нечем.
+    """
+    derived = core.tep_derived_norms(
+        apartment_area_sqm=10621, residential_living_spp_sqm=17220, k1=K1)
+    rescaled = core.recalculate_from_glavapu_baseline(
+        BASELINE, {"apartment_area_sqm": 10621,
+                   "residential_spp_sqm": 17220,
+                   "residential_living_spp_sqm": 17220})
+    assert derived["parking_permanent"] == rescaled["parking"]["permanent"] == 123
+    assert derived["parking_guest"] == rescaled["parking"]["guest"]
+
+
+def test_the_legacy_regime_is_named_in_the_answer():
+    """Два числа под одним именем никто не заметит — режим печатается."""
+    now = core.tep_derived_norms(apartment_area_sqm=10621,
+                                 residential_living_spp_sqm=17220, k1=K1)
+    was = core.tep_derived_norms(apartment_area_sqm=10621,
+                                 residential_living_spp_sqm=17220, k1=K1,
+                                 parking_norm_regime="legacy_945")
+    assert now["parking_norm_regime"] == "2118_2026"
+    assert "2118" in now["parking_basis"]
+    assert was["parking_norm_regime"] == "legacy_945"
+    assert "К1" in was["parking_basis"]
+    assert now["parking_permanent"] == 123 and was["parking_permanent"] == 130
+    # Мусорный режим не молчит и не считает по-своему — откатывается к норме.
+    junk = core.tep_derived_norms(apartment_area_sqm=10621,
+                                  residential_living_spp_sqm=17220, k1=K1,
+                                  parking_norm_regime="как-нибудь")
+    assert junk["parking_norm_regime"] == "2118_2026"
+
+
+def test_a_leased_plot_pays_by_its_own_divisor_in_the_manual_calc():
+    """Свой расчёт платы за ВРИ тоже знает про аренду, а не считает всех своими.
+
+    Делитель формулы города: собственность 1,00001, аренда 1,001 — плата ниже
+    на 0,099%. Пока делитель был зашит числом, вкладка «Плата за ВРИ — свой
+    расчёт» отвечала арендатору ценой собственника и ничем это не выдавала.
+    """
+    rows = [{"type": "mkd", "spp_sqm": 127163, "base_cost_rub": BASE_MKD}]
+    own = core.vri_manual_payment(rows, RENT)
+    leased = core.vri_manual_payment(rows, RENT, land_right="lease")
+    assert leased["total_mln"] < own["total_mln"]
+    assert abs((own["total_mln"] - leased["total_mln"]) / own["total_mln"]
+               - 0.000989) < 1e-5
+    assert leased["land_right"] == "lease"
+    assert leased["land_right_divisor"] == 1.001
+    assert "аренда" in leased["basis"]
+    assert any("273-ПП" in note for note in leased["notes"]), (
+        "повышенная составляющая первого года — отдельный платёж, и молчать о "
+        "ней значит выдавать неполный расчёт за полный")
+    assert own["notes"] == []
+
+
+def test_the_page_sends_the_land_right_to_the_manual_calc():
+    """Правка, до которой не доезжает страница, не сделана."""
+    page = core.PAGE
+    call = page[page.index("/vri/manual"):]
+    call = call[:call.index("catch")]
+    assert "land_right:String(inputs.land_right||'ownership')" in call, (
+        "своё право на участок страница обязана донести — иначе делитель "
+        "аренды в движке недостижим")
+    assert "data.notes" in page, "оговорка про аренду должна быть видна человеку"
 
 
 def test_the_approved_tep_costs_less_than_the_norm(client):
@@ -83,7 +165,10 @@ def test_the_approved_tep_costs_less_than_the_norm(client):
     assert data["kindergarten_places"] == 15
     assert data["school_places"] in (29, 30)
     assert data["clinic_capacity"] == 7
-    assert data["parking_total"] == 243
+    # Машино-места по 2118-ПП: 123 постоянных + 13 гостевых + 100 приобъектных.
+    # Прежняя строка города давала 130 постоянных и 243 всего.
+    assert data["parking_permanent"] == 123
+    assert data["parking_total"] == 236
     assert 480 < data["compensation_mln"] < 500
     assert data["jobs"] > 1000, "МПТ — основание льготы, и их тут много"
 
