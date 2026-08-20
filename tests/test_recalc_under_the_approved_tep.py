@@ -193,5 +193,19 @@ def test_a_percent_looking_rent_is_not_calculated_silently():
     page = core.PAGE
     body = page[page.index("async function calcVriOwn("):]
     body = body[:body.index("\n}\n")]
-    assert "rent>1" in body and "confirm(" in body
+    assert "rent>1" in body
     assert "Не задана базовая стоимость ни по одному типу" in body
+
+
+def test_an_impossible_rent_coefficient_is_refused_not_confirmed():
+    """25 в поле коэффициента аренды дало 238 млрд ₽ платы, и они уехали в
+    модель (владелец, 20.08.2026). Коэффициента больше единицы в таблице 2
+    приложения 8 не бывает — это не «подтвердите», это отказ."""
+    page = core.PAGE
+    body = page[page.index("async function calcVriOwn("):]
+    body = body[:body.index("\n}\n")]
+    assert "if(rent>1){" in body
+    assert "не делается" in body
+    # И потолок здравого смысла на результат: плата за метр выше базовой
+    # стоимости метра означает перепутанный множитель.
+    assert "perSqm>500000" in body and "не подставлен" in body
