@@ -9,14 +9,19 @@ on:
     types: [opened, synchronize, reopened]
     paths:
       - "market_search/**"
+      - "developaid_statistics.py"
+      - "statistics_feature.py"
+      - "data/statistics/**"
       - "main_registry.py"
       - "market-preview-acceptance.py"
       - "tests/test_market_discovery*.py"
       - "tests/test_market_geo_apply_sources.py"
       - "tests/test_market_v5_strategy.py"
+      - "tests/test_statistics_engine.py"
       - "tests/fixtures/market_golden_*.json"
       - "tests/test_market_preview_deploy.py"
       - "deploy-market-preview.sh"
+      - "scripts/deploy-market-statistics-local.sh"
       - ".github/workflows/market-preview.yml"
   workflow_dispatch:
     inputs:
@@ -52,19 +57,33 @@ jobs:
         run: python -m pip install -r requirements-dev.txt
       - name: Синтаксис и unit-тесты
         run: |
-          python -m py_compile market_search/*.py market_search/providers/*.py main_registry.py market-preview-acceptance.py
+          python -m py_compile \
+            market_search/*.py \
+            market_search/providers/*.py \
+            developaid_statistics.py \
+            statistics_feature.py \
+            main_registry.py \
+            market-preview-acceptance.py
           python -m pytest \
             tests/test_market_discovery.py \
             tests/test_market_discovery_ui.py \
             tests/test_market_geo_apply_sources.py \
             tests/test_market_v5_strategy.py \
-            tests/test_market_preview_deploy.py -q
+            tests/test_market_preview_deploy.py \
+            tests/test_statistics_engine.py -q
       - name: Интеграция с основным entrypoint
         run: |
           python - <<'PY'
           import main_registry
           paths = {getattr(route, "path", None) for route in main_registry.app.routes}
-          assert "/market/discovery" in paths
+          required = {
+              "/market/discovery",
+              "/statistics",
+              "/api/statistics/construction-cost",
+              "/api/statistics/sources",
+          }
+          missing = sorted(required - paths)
+          assert not missing, f"missing routes: {missing}"
           assert 'data-tab="marketDiscovery"' in main_registry.core.PAGE
           service = main_registry.app.state.market_discovery_service
           assert service.__class__.__module__ == "market_search.service_v5", service.__class__.__module__
