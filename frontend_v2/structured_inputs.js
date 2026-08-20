@@ -193,6 +193,22 @@
     };
   }
 
+  function sameNumber(left, right) {
+    return Math.abs(Number(left || 0) - Number(right || 0)) < 1e-6;
+  }
+
+  function isUntouchedEngineDefault(rowKey, row) {
+    const baseline = form.defaults && form.defaults.tep && form.defaults.tep[rowKey];
+    if (!baseline) return false;
+    return ['gns', 'total_area', 'saleable'].every((key) => sameNumber(row[key], baseline[key]));
+  }
+
+  function factualSource(draft, result) {
+    const imported = draft && draft.inputs && draft.inputs._glavapu_import;
+    const source = String((result && result.project && result.project.source_label) || '').toLowerCase();
+    return Boolean(imported) || source.includes('глав') || source.includes('гзк') || source.includes('агр') || source.includes('поиск тэп');
+  }
+
   function applyRatio(row, totalPct, saleablePct) {
     const gns = Number(row.gns || 0);
     if (!(gns > 0)) return;
@@ -200,6 +216,30 @@
     row.saleable = row.total_area * saleablePct / 100;
     if ('useful' in row && Number(row.useful || 0) <= Number(row.saleable || 0)) row.useful = row.saleable;
   }
+
+  function seedEngineRatios(draft, result) {
+    if (!draft || factualSource(draft, result)) return draft;
+    const defaults = (form.defaults && form.defaults.tep_ratios) || {};
+    const overrides = parseRatioOverrides(draft.inputs[TEP_RATIOS_KEY]);
+    Object.keys(defaults).forEach((rowKey) => {
+      const row = draft.tep && draft.tep[rowKey];
+      const baseline = defaultRatio(rowKey);
+      if (!row || !baseline || overrides[rowKey] || !isUntouchedEngineDefault(rowKey, row)) return;
+      overrides[rowKey] = { total: baseline.total, saleable: baseline.saleable };
+      applyRatio(row, baseline.total, baseline.saleable);
+    });
+    draft.inputs[TEP_RATIOS_KEY] = serializeRatioOverrides(overrides);
+    return draft;
+  }
+
+  /* `TEP_DEFAULT` содержит исторические демонстрационные метры, а методические
+     доли живут в `TEP_RATIOS`. Для нетронутого ручного проекта приводим метры
+     к текущей методике при создании черновика. Импорт ГлавАПУ/ГЗК/АГР не
+     переписываем: там фактические параметры участка важнее умолчания. */
+  const baseDraftFromResult = draftFromResult;
+  draftFromResult = function structuredDraftFromResult(result) {
+    return seedEngineRatios(baseDraftFromResult(result), result);
+  };
 
   function tepRatioStrip(rowKey, row, group, rerender) {
     const baseline = defaultRatio(rowKey);
