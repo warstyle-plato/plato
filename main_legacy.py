@@ -54,7 +54,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.19.24"
+VERSION = "0.19.26"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -271,6 +271,9 @@ TEP_RATIOS: dict[str, dict[str, float]] = {
                           "source": "принято владельцем"},
 }
 TEP_RATIOS_PLACEHOLDER = "__DEVELOPAID_TEP_RATIOS__"
+# Типы использования для своего расчёта платы за ВРИ объявлены в движке
+# (`VRI_USE_TYPES`) и подставляются на страницу — копии списка нет.
+VRI_USE_TYPES_PLACEHOLDER = "__DEVELOPAID_VRI_USE_TYPES__"
 
 TEP_DEFAULT = {'apartments': {'label': 'Квартиры', 'gns': 130716.66012842482, 'total_area': 117647.0588235294, 'useful': 80000, 'saleable': 80000, 'transfer': 0, 'units': 1361.815754339119}, 'ground_commercial': {'label': 'Коммерция 1 эт.', 'gns': 9664.049734985854, 'total_area': 8695.652173913044, 'useful': 7826.08695652174, 'saleable': 7826.08695652174, 'transfer': 0, 'units': 0}, 'standalone_retail': {'label': 'Коммерция ОСЗ', 'gns': 0, 'total_area': 0, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 0}, 'offices': {'label': 'Офисы', 'gns': 0, 'total_area': 0, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 0}, 'above_parking': {'label': 'Наземный паркинг', 'gns': 0, 'total_area': 0, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 0}, 'underground_parking': {'label': 'Подземный паркинг', 'gns': 38763, 'total_area': 38763, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 1107.5142857142857}, 'storage': {'label': 'Кладовки', 'gns': 0, 'total_area': 0, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 0}, 'kindergarten': {'label': 'ДОУ', 'gns': 0, 'total_area': 3000, 'useful': 0, 'saleable': 0, 'transfer': 3000, 'units': 250}, 'school': {'label': 'СОШ', 'gns': 0, 'total_area': 0, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 0}, 'clinic': {'label': 'Поликлиника', 'gns': 0, 'total_area': 0, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 0}}
 FIELD_GROUPS = [['Сделка и сроки', [['purchase_price_mln', 'Стоимость покупки / цена входа', 'млн ₽', 'number'], ['land_rights_cost_mln', 'Оформление земельных правоотношений / смена ВРИ', 'млн ₽', 'number'], ['project_start', 'Начало проекта', 'дата', 'date'], ['ird_months', 'Срок ИРД до РнС', 'мес.; минимум 1 — ноль модель не считает', 'number'], ['construction_months', 'Срок строительства', 'мес.', 'number'], ['sales_lag_months', 'Лаг старта продаж после РнС', 'мес.', 'number'], ['bridge_repay_lag_months', 'Лаг погашения БРИДЖ после РнС', 'мес.', 'number'], ['residual_sales_months', 'Остаточные продажи после РВЭ', 'мес.', 'number']]], ['Смена ВРИ и земельные права', [['vri_required', 'Требуется изменение ВРИ', 'Да / Нет', 'checkbox'], ['vri_region', 'Регион', 'регион', 'select', [['msk', 'Москва'], ['mo', 'Московская область']]], ['land_right', 'Право на участок', 'право', 'select', [['ownership', 'Собственность'], ['lease', 'Аренда']]], ['vri_obligation_date_mode', 'Дата обязательства', 'режим', 'select', [['before_rns_1m', 'За месяц до РнС — экспертная оценка'], ['at_rns', 'В дату РнС'], ['before_rns_3m', 'За три месяца до РнС'], ['after_purchase', 'Через N мес. после покупки'], ['manual', 'Задана вручную']]], ['vri_months_after_purchase', 'Месяцев после покупки', 'мес.', 'number'], ['vri_obligation_date', 'Дата возникновения обязательства', 'точная дата по документу; пусто — экспертная оценка', 'date'], ['vri_payment_mode', 'Порядок оплаты', 'режим', 'select', [['lump', 'Единовременно'], ['installment', 'Рассрочка']]], ['vri_installment_years', 'Срок рассрочки', 'лет (Москва: 1, 3, 6)', 'number'], ['vri_periodicity_months', 'Периодичность платежей', 'мес.; в Москве всегда квартал', 'select', [['1', 'Ежемесячно'], ['3', 'Ежеквартально'], ['6', 'Раз в полгода'], ['12', 'Раз в год']]], ['vri_initial_pct', 'Первый взнос по рассрочке', '% от суммы', 'number'], ['vri_schedule_mode', 'График платежей', 'режим', 'select', [['auto', 'Автоматический'], ['manual', 'Ручной']]], ['vri_interest_enabled', 'Проценты на остаток', 'режим', 'select', [['', 'По региону'], ['1', 'Начисляются'], ['0', 'Не начисляются']]], ['vri_interest_spread_pp', 'Спред к ключевой ставке по рассрочке', 'п.п.', 'number'], ['vri_early_repay_after_pf', 'Досрочное погашение остатка после открытия ПФ', 'Да / Нет', 'checkbox'], ['vri_pf_open_date', 'Дата открытия ПФ', 'дата (пусто — РнС)', 'date'], ['vri_in_bank_budget', 'ВРИ включена в банковский бюджет', 'Да / Нет', 'checkbox'], ['vri_financing_mode', 'Источники оплаты', 'режим', 'select', [['auto', 'Как весь проект'], ['shares', 'Заданные доли']]], ['vri_share_bridge_pct', 'Доля БРИДЖ', '%', 'number'], ['vri_share_pf_pct', 'Доля ПФ', '%', 'number'], ['vri_share_equity_pct', 'Доля собственного капитала', '%', 'number'], ['vri_relief_mode', 'Льгота по плате', 'режим', 'select', [['none', 'Нет'], ['percent', 'Доля от суммы'], ['amount', 'Фиксированная сумма']]], ['vri_relief_pct', 'Льгота — доля от суммы', '%', 'number'], ['vri_relief_mln', 'Льгота — сумма', 'млн ₽', 'number'], ['vri_transfer_offset_mln', 'Зачёт переданных муниципалитету площадей', 'млн ₽; по соглашению — уменьшает плату за ВРИ', 'number'], ['vri_security_cost_mln', 'Расходы на обеспечение обязательства', 'млн ₽', 'number']]], ['Продажи', [['apartment_price_th', 'Стартовая цена квартир', 'тыс. ₽/м²', 'number'], ['commercial_price_th', 'Стартовая цена коммерции 1 этажа', 'тыс. ₽/м²', 'number'], ['parking_price_th', 'Цена подземного машино-места', 'тыс. ₽/шт.', 'number'], ['storage_price_th', 'Цена кладовой', 'тыс. ₽/шт.', 'number'], ['share_before_rve_pct', 'Доля продаж до РВЭ', '%', 'number'], ['pace_adjustment_pct', 'Корректировка темпа', '%', 'number'], ['inflation_after_rve_pct', 'Инфляция после РВЭ', '% год', 'number'], ['seasonal_reduction_pct', 'Сезонное снижение темпа', '%', 'number'], ['growth_stage1_pct', 'Рост цены — этап 1', '%', 'number'], ['growth_stage2_pct', 'Рост цены — этап 2', '%', 'number'], ['growth_stage3_pct', 'Рост цены — этап 3', '%', 'number'], ['growth_stage4_pct', 'Рост цены — этап 4', '%', 'number'], ['monthly_growth_pre_pct', 'Ежемесячный рост цены до РВЭ', '%/мес.', 'number'], ['monthly_growth_post_pct', 'Ежемесячный рост цены после РВЭ', '%/мес.', 'number']]], ['Строительство', [['ird_th_per_sqm', 'ИРД и согласования', 'тыс. ₽/м² ГНС', 'number'], ['design_p_th_per_sqm', 'Проектирование стадии П', 'тыс. ₽/м² ГНС', 'number'], ['design_rd_th_per_sqm', 'Проектирование стадии РД', 'тыс. ₽/м² ГНС', 'number'], ['preparation_th_per_sqm', 'Подготовительные работы', 'тыс. ₽/м² ГНС', 'number'], ['main_above_th_per_sqm', 'Основное строительство — наземная часть', 'тыс. ₽/м² ГНС', 'number'], ['main_under_th_per_sqm', 'Основное строительство — подземная часть', 'тыс. ₽/м² ГНС', 'number'], ['utilities_th_per_sqm', 'Наружные инженерные сети', 'тыс. ₽/м² ГНС', 'number'], ['landscaping_th_per_sqm', 'Благоустройство', 'тыс. ₽/м² ГНС', 'number'], ['commissioning_th_per_sqm', 'Сдача и ввод', 'тыс. ₽/м² ГНС', 'number'], ['site_maintenance_th_per_sqm', 'Содержание стройплощадки', 'тыс. ₽/м² ГНС', 'number'], ['gc_fee_pct', 'Вознаграждение генподрядчика', '% СМР', 'number'], ['author_supervision_pct', 'Авторский надзор', '% от П + РД', 'number'], ['project_management_pct', 'Управление проектом — зарплаты и накладные', '% прямых затрат', 'number'], ['technical_supervision_pct', 'Технический заказчик / стройконтроль (технадзор)', '% СМР', 'number'], ['reserve_pct', 'Резерв', '%', 'number']]], ['Коммерческие расходы и налоги', [['marketing_pct', 'Маркетинг', '% выручки', 'number'], ['selling_pct', 'Расходы на продажи', '% выручки', 'number'], ['profit_tax_pct', 'Налог на прибыль', '%', 'number'], ['vat_pct', 'НДС', '%', 'number']]], ['Финансирование', [['pre_pf_own_funds_mln', 'Собственные средства до открытия ПФ', 'млн ₽; тратятся раньше БРИДЖа и процентов не несут', 'number'], ['bridge_spread_pp', 'Спред БРИДЖ', 'п.п.', 'number'], ['bridge_cap_spread_pp', 'Спред капитализации БРИДЖ', 'п.п.', 'number'], ['pf_spread_pp', 'Спред ПФ', 'п.п.', 'number'], ['pf_special_pct', 'Ставка ПФ при покрытии эскроу 1×', '%', 'number'], ['pf_special_steps', 'Ступени ставки по покрытию эскроу', 'покрытие:ставка через ; — 100:3,47; 110:1,75; 120:0,03; 130:0,01. Пусто — одна ставка выше', 'text'], ['limit_fee_pct', 'Плата за лимит', '%', 'number'], ['reservation_fee_pct', 'Плата за резервирование', '%', 'number'], ['discount_rate_pct', 'Ставка дисконтирования', '%', 'number'], ['bridge_interest_mode', 'Проценты БРИДЖ при рефинансировании', 'режим', 'finance_select']]], ['Социальная нагрузка', [['social_mode', 'Форма исполнения', 'режим', 'select'], ['social_comp_date', 'Дата денежной компенсации', 'дата', 'date'], ['social_compensation_mln', 'Социальный платеж / компенсация по ГлавАПУ', 'млн ₽', 'number'], ['kindergarten_places', 'ДОУ — количество мест', 'мест', 'number'], ['kindergarten_cost_mln_per_place', 'ДОУ — себестоимость места', 'млн ₽/место', 'number'], ['kindergarten_start', 'ДОУ — начало строительства', 'дата', 'date'], ['kindergarten_months', 'ДОУ — срок строительства', 'мес.', 'number'], ['school_places', 'СОШ — количество мест', 'мест', 'number'], ['school_cost_mln_per_place', 'СОШ — себестоимость места', 'млн ₽/место', 'number'], ['school_start', 'СОШ — начало строительства', 'дата', 'date'], ['school_months', 'СОШ — срок строительства', 'мес.', 'number'], ['clinic_capacity', 'Поликлиника — мощность', 'пос./смену', 'number'], ['clinic_cost_mln_per_unit', 'Поликлиника — себестоимость мощности', 'млн ₽/(пос./смену)', 'number'], ['clinic_start', 'Поликлиника — начало строительства', 'дата', 'date'], ['clinic_months', 'Поликлиника — срок строительства', 'мес.', 'number'], ['social_dou_gba_sqm', 'ДОУ — общая площадь', 'м²', 'number'], ['social_dou_norm_sqm', 'ДОУ — норматив площади на место', 'м²/место', 'number'], ['social_school_gba_sqm', 'СОШ — общая площадь', 'м²', 'number'], ['social_school_norm_sqm', 'СОШ — норматив площади на место', 'м²/место', 'number'], ['social_clinic_gba_sqm', 'Поликлиника — общая площадь', 'м²', 'number'], ['social_clinic_norm_sqm', 'Поликлиника — норматив площади', 'м²/ед.', 'number']]], ['МФОЦ / офисы', [['offices_enabled', 'Объект включен', 'Да / Нет', 'checkbox'], ['offices_gba_sqm', 'Общая площадь (GBA)', 'м²', 'number'], ['offices_saleable_sqm', 'Продаваемая площадь', 'м²', 'number'], ['offices_start', 'Начало строительства', 'дата', 'date'], ['offices_months', 'Срок строительства', 'мес.', 'number'], ['offices_cost_th_per_sqm', 'Себестоимость строительства', 'тыс. ₽/м² GBA', 'number'], ['offices_sales_start', 'Старт продаж', 'дата', 'date'], ['offices_price_th_per_sqm', 'Стартовая цена', 'тыс. ₽/м²', 'number'], ['offices_share_before_rve_pct', 'Доля продаж до РВЭ', '%', 'number'], ['offices_residual_months', 'Остаточные продажи после РВЭ', 'мес.', 'number'], ['offices_growth_pre_pct', 'Рост цены до РВЭ', '%/мес.', 'number'], ['offices_growth_post_pct', 'Рост цены после РВЭ', '%/мес.', 'number']]], ['ТЦ / коммерция ОСЗ', [['retail_enabled', 'Объект включен', 'Да / Нет', 'checkbox'], ['retail_gba_sqm', 'Общая площадь (GBA)', 'м²', 'number'], ['retail_saleable_sqm', 'Продаваемая площадь', 'м²', 'number'], ['retail_start', 'Начало строительства', 'дата', 'date'], ['retail_months', 'Срок строительства', 'мес.', 'number'], ['retail_cost_th_per_sqm', 'Себестоимость строительства', 'тыс. ₽/м² GBA', 'number'], ['retail_sales_start', 'Старт продаж', 'дата', 'date'], ['retail_price_th_per_sqm', 'Стартовая цена', 'тыс. ₽/м²', 'number'], ['retail_share_before_rve_pct', 'Доля продаж до РВЭ', '%', 'number'], ['retail_residual_months', 'Остаточные продажи после РВЭ', 'мес.', 'number'], ['retail_growth_pre_pct', 'Рост цены до РВЭ', '%/мес.', 'number'], ['retail_growth_post_pct', 'Рост цены после РВЭ', '%/мес.', 'number']]], ['Подземный паркинг', [['underground_parking_disabled', 'Отказ от подземного паркинга', 'Да / Нет; места переносятся в наземный', 'checkbox'], ['underground_manual_spaces', 'Машино-места — решение проекта', 'шт.; из расчёта ТЭП — меняйте, площадь пересчитается', 'number'], ['underground_manual_gns_sqm', 'Площадь подземной парковки', 'м²; пересчитывается из мест и обратно', 'number'], ['underground_area_per_space_sqm', 'Норматив площади на машино-место', 'м²/место, гросс: рампы, проезды и техпомещения включены', 'number']]], ['Наземный паркинг', [['above_parking_enabled', 'Объект включен', 'Да / Нет', 'checkbox'], ['above_parking_spaces', 'Количество машино-мест', 'шт.', 'number'], ['above_parking_cost_mln_per_space', 'Себестоимость одного места', 'млн ₽/место', 'number'], ['above_parking_start', 'Начало строительства', 'дата', 'date'], ['above_parking_months', 'Срок строительства', 'мес.', 'number'], ['above_parking_sales_start', 'Старт продаж', 'дата', 'date'], ['above_parking_price_mln_per_space', 'Стартовая цена места', 'млн ₽/место', 'number'], ['above_parking_share_before_rve_pct', 'Доля продаж до РВЭ', '%', 'number'], ['above_parking_residual_months', 'Остаточные продажи после РВЭ', 'мес.', 'number'], ['above_parking_growth_pre_pct', 'Рост цены до РВЭ', '%/мес.', 'number'], ['above_parking_growth_post_pct', 'Рост цены после РВЭ', '%/мес.', 'number'], ['above_parking_area_per_space_sqm', 'Площадь на 1 место для ТЭП', 'м²/место', 'number']]]]
@@ -4120,6 +4123,49 @@ class LandLookupRequest(BaseModel):
     session: str = ""
 
 
+class VriManualRequest(BaseModel):
+    """Свой расчёт платы за ВРИ: метры и основания задаёт человек."""
+    rows: list[dict[str, Any]] = []
+    rent_coeff: float = 0.0
+    index: float | None = None
+
+
+@app.post("/vri/manual")
+def vri_manual(req: VriManualRequest) -> dict[str, Any]:
+    """Плата за смену ВРИ по своим метрам.
+
+    Калькулятор ГлавАПУ считает по нормативному ТЭП — плотность на площадь
+    участка. Когда ТЭП утверждён решением ГЗК и метров в разы меньше, ответ
+    калькулятора для этого проекта неверен, а подменять его молча нельзя.
+    Поэтому свой расчёт стоит рядом и подписан своим.
+    """
+    return vri_manual_payment(req.rows, req.rent_coeff, req.index)
+
+
+class TepDerivedRequest(BaseModel):
+    """Что следует из введённого руками ТЭП: соцпотребность, м/м, МПТ."""
+    apartment_area_sqm: float = 0.0
+    residential_living_spp_sqm: float = 0.0
+    nonresidential_np_sqm: float = 0.0
+    k1: float = 1.0
+    k2: float = 1.0
+    zone_two: bool = False
+    upks_rub: float = 0.0
+    sqm_per_job: float = 36.0
+
+
+@app.post("/tep/derived")
+def tep_derived(req: TepDerivedRequest) -> dict[str, Any]:
+    """Пересчёт производных под фактический ТЭП: население, места, компенсация,
+    машино-места, МПТ. Формулы городские; ответ подписан как наш расчёт."""
+    return tep_derived_norms(
+        apartment_area_sqm=req.apartment_area_sqm,
+        residential_living_spp_sqm=req.residential_living_spp_sqm,
+        nonresidential_np_sqm=req.nonresidential_np_sqm,
+        k1=req.k1, k2=req.k2, zone_two=req.zone_two,
+        upks_rub=req.upks_rub, sqm_per_job=req.sqm_per_job)
+
+
 @app.post("/land/lookup")
 def land_lookup(req: LandLookupRequest) -> dict[str, Any]:
     """Сведения ЕГРН по кадастровому номеру, адресу или координатам — по всей России."""
@@ -6093,10 +6139,24 @@ def vri_tep_quick(region: str, query: str,
         # обе сходятся до единицы. Остальные виды без изменений: гостевые —
         # десятая часть постоянных, приобъектные встроенных помещений —
         # НП/90 × К1 × К2, кратковременные — квартиры/22 100 и НП/450 с кэпом
-        # 4; округление всюду вверх. К2 берётся «вне ТТК» — признак попадания
-        # внутрь ТТК анализ не отдаёт.
+        # 4; округление всюду вверх.
+        #
+        # К2 брался «вне ТТК» с оговоркой «признак попадания внутрь ТТК анализ
+        # не отдаёт». Оговорка неверна: признак приходит тем же ответом
+        # (`insideTTC`) и лежит в двух строках от самого коэффициента, а у
+        # анализа есть оба значения. Выгрузка штатного калькулятора по участку
+        # внутри ТТК подписывает строку «К2 — деловая активность (внутри ТТК)»
+        # и берёт внутренний коэффициент; наш расчёт на тех же вводных считал
+        # приобъектные места по внешнему — то есть по другому числу.
         k1 = _land_float(coeff.get("rail")) or 0.0
-        k2 = _land_float(coeff.get("business_outside_ttc")) or 0.0
+        inside_ttc = bool(territory.get("inside_ttc"))
+        k2_key = "business_inside_ttc" if inside_ttc else "business_outside_ttc"
+        k2 = _land_float(coeff.get(k2_key)) or 0.0
+        if not k2 and inside_ttc:
+            # Внутреннего значения нет — берём внешнее, но это уже другое
+            # число, и молчать о подмене нельзя.
+            k2 = _land_float(coeff.get("business_outside_ttc")) or 0.0
+            k2_key = "business_outside_ttc"
         commerce_np = commerce_gns * 0.9
         # Плата за смену ВРИ МКД — формула калькулятора (класс Df, calcOwn):
         # 1,8964 × СПП жилых зданий × коэффициент аренды квартала × базовая
@@ -6210,7 +6270,10 @@ def vri_tep_quick(region: str, query: str,
             ["Параметр", "Значение", "Ед.изм."],
             ["Машино-места", "", ""],
             ["К1 — доступность рельсового каркаса", coeff.get("rail") or "", "—"],
-            ["К2 — деловая активность (вне ТТК)", coeff.get("business_outside_ttc") or "", "—"],
+            ["К2 — деловая активность "
+             + ("(внутри ТТК)" if bool(territory.get("inside_ttc")) else "(вне ТТК)"),
+             coeff.get("business_inside_ttc" if bool(territory.get("inside_ttc"))
+                       else "business_outside_ttc") or "", "—"],
             ["Социальные объекты", "", ""],
             ["Район", str(territory.get("district") or ""), "—"],
             ["Норматив ДОО", "44", "мест / 1000 жит."],
@@ -6925,6 +6988,165 @@ _GLAVAPU_COMPENSATION_RATES_DATE = "01.08.2026"
 # анализ территории отдаёт её прежней. Следующий квартал сдвинет индекс — при
 # расхождении платы на одинаковый процент при совпадающей базе первым
 # подозреваемым идёт эта константа, а не формула.
+# --- свой расчёт платы за ВРИ и производных ТЭП ------------------------------
+# Калькулятор ГлавАПУ считает по НОРМАТИВНОМУ ТЭП: плотность × площадь участка.
+# На руках у людей бывает решение ГЗК, где метров в разы меньше, и тогда ответ
+# калькулятора неверен для этого проекта — но менять его молча нельзя: город
+# считает по своему. Поэтому свой расчёт стоит рядом, на тех же формулах и на
+# основаниях участка, и подписан как свой (владелец, 20.08.2026).
+#
+# Типы использования — из листа «УПКС и базовые стоимости» выгрузки
+# калькулятора. Нулевая базовая стоимость означает, что за этот вид плата не
+# берётся: у производства и социальных объектов она ноль в самой выгрузке.
+VRI_USE_TYPES: list[list[str]] = [
+    ["mkd", "Жильё и встроенные помещения жилых зданий", "МКД (многоэтажный жилой дом)"],
+    ["trade", "Торговля и многофункциональные объекты", "Торговля и многофункц."],
+    ["office", "Офисы и административные здания", "Офисы"],
+    ["hotel", "Объекты временного проживания", "Временное проживание"],
+    ["garage", "Гаражи и хранение транспорта", "Гаражи"],
+    ["industry", "Производство", "Производство"],
+    ["social", "Социальные объекты", "Социальные объекты"],
+]
+
+
+def vri_manual_payment(rows: list[dict[str, Any]], rent_coeff: float,
+                       index: float | None = None) -> dict[str, Any]:
+    """Плата за смену ВРИ по своим метрам и своим основаниям.
+
+    Формула та же, что у калькулятора (класс Df, метод calcOwn):
+    1,8964 × СПП × коэффициент аренды × базовая стоимость × индекс / 1,00001.
+    Она линейна по СПП, поэтому считается построчно и складывается.
+
+    Нулевая базовая стоимость — это «за этот вид не платят», а не «данных нет»:
+    так в выгрузке стоят производство и социальные объекты. Отсутствующая
+    базовая — другое дело, и строка уходит в `missing`, а не в ноль.
+    """
+    factor = float(index if index is not None else _GLAVAPU_VRI_BASE_INDEXATION)
+    rent = max(0.0, float(rent_coeff or 0.0))
+    labels = {item[0]: item[1] for item in VRI_USE_TYPES}
+    lines: list[dict[str, Any]] = []
+    missing: list[str] = []
+    total = 0.0
+    for row in rows or []:
+        key = str((row or {}).get("type") or "").strip()
+        try:
+            spp = max(0.0, float((row or {}).get("spp_sqm") or 0.0))
+        except (TypeError, ValueError):
+            spp = 0.0
+        raw_base = (row or {}).get("base_cost_rub")
+        if spp <= 0:
+            continue
+        if raw_base in (None, ""):
+            missing.append(f"{labels.get(key, key)}: не задана базовая стоимость")
+            continue
+        try:
+            base = max(0.0, float(raw_base))
+        except (TypeError, ValueError):
+            missing.append(f"{labels.get(key, key)}: базовая стоимость не число")
+            continue
+        payment = 1.8964 * spp * rent * base * factor / 1.00001
+        total += payment
+        lines.append({
+            "type": key or "other",
+            "label": labels.get(key, key or "Прочее"),
+            "spp_sqm": round(spp, 2),
+            "base_cost_rub": round(base, 2),
+            "payment_mln": round(payment / 1e6, 3),
+        })
+    return {
+        "lines": lines,
+        "total_mln": round(total / 1e6, 3),
+        "rent_coeff": rent,
+        "index": factor,
+        "index_date": _GLAVAPU_VRI_BASE_INDEXATION_DATE,
+        "missing": missing,
+        "basis": ("1,8964 × СПП × коэффициент аренды "
+                  + f"{rent:g}".replace(".", ",")
+                  + " × базовая стоимость × индекс "
+                  + f"{factor:g}".replace(".", ",")),
+    }
+
+
+def tep_derived_norms(*, apartment_area_sqm: float, residential_living_spp_sqm: float,
+                      nonresidential_np_sqm: float = 0.0,
+                      k1: float = 1.0, k2: float = 1.0,
+                      zone_two: bool = False,
+                      upks_rub: float = 0.0,
+                      sqm_per_job: float = 36.0) -> dict[str, Any]:
+    """Что следует из введённого руками ТЭП: население, соцпотребность,
+    компенсация, машино-места, места приложения труда.
+
+    Формулы городские и сверены на выгрузке штатного калькулятора
+    (77:01:0004023, 20.08.2026): постоянные места 897, гостевые 90,
+    приобъектные 12 — воспроизводятся до единицы.
+
+    `residential_living_spp_sqm` — СПП **жилая** (строка 7.1 выгрузки, у нас
+    «ТЭП → Квартиры → ГНС»), без нежилой части жилых зданий. Разница не
+    косметическая: от СПП жилых зданий (7.1 + 7.2) постоянных мест выходит 954
+    вместо 897. А вот плата за ВРИ считается наоборот — от полной СПП жилых
+    зданий, включая встроенные помещения.
+    """
+    apartments = max(0.0, float(apartment_area_sqm or 0.0))
+    residential_spp = max(0.0, float(residential_living_spp_sqm or 0.0))
+    nonresidential_np = max(0.0, float(nonresidential_np_sqm or 0.0))
+    k1 = max(0.0, float(k1 or 0.0))
+    k2 = max(0.0, float(k2 or 0.0))
+    upks = max(0.0, float(upks_rub or 0.0))
+
+    population = math.ceil(apartments / 33.0) if apartments > 0 else 0
+    dou = math.ceil((63 if zone_two else 44) * population / 1000) if population else 0
+    school = math.ceil((124 if zone_two else 90) * population / 1000) if population else 0
+    clinic = math.ceil(19 * population / 1000) if population else 0
+
+    # Постоянные места считаются от НАЗЕМНОЙ ЖИЛОЙ площади (90% жилой СПП), а не
+    # от всей СПП жилых зданий: на выгрузке первое даёт 897 мест, второе — 954.
+    residential_np = residential_spp * 0.9
+    permanent = math.ceil(residential_np / 90.0 * k1) if residential_np and k1 else 0
+    guest = math.ceil(permanent / 10.0) if permanent else 0
+    onsite = math.ceil(nonresidential_np / 90.0 * k1 * k2) if nonresidential_np and k1 and k2 else 0
+
+    def compensation(places: float, uupss_th: float, land_sqm: float, factor: float) -> float:
+        if places <= 0 or upks <= 0:
+            return 0.0
+        return factor * (uupss_th * places / 1000.0 + places * land_sqm * upks / 1e6)
+
+    comp_dou = compensation(dou, 4799.71, 35.0, 1.2)
+    comp_school = compensation(school, 4578.69, 19.0, 1.2)
+    comp_clinic = compensation(clinic, 7887.92, 30.0, 1.0)
+    return {
+        "population": population,
+        "apartment_units": math.ceil(population / 2.1) if population else 0,
+        "kindergarten_places": dou,
+        "school_places": school,
+        "clinic_capacity": clinic,
+        "compensation_mln": round(comp_dou + comp_school + comp_clinic, 3),
+        "compensation_breakdown_mln": {
+            "kindergarten": round(comp_dou, 3),
+            "school": round(comp_school, 3),
+            "clinic": round(comp_clinic, 3),
+        },
+        "parking_permanent": permanent,
+        "parking_guest": guest,
+        "parking_onsite": onsite,
+        "parking_total": permanent + guest + onsite,
+        # Места приложения труда — основание льготы по плате за ВРИ (3135-ПП),
+        # у калькулятора для неё своя строка 52 «Льгота на стр-во жилья за
+        # создание МПТ». Норматив у нас 36 м² на место, у калькулятора на
+        # выгрузке 20.08.2026 выходит около 32 (6 867 м² → 214 мест): одна
+        # точка делителя не задаёт, поэтому он параметр, а не константа, и
+        # печатается вместе с ответом.
+        "jobs": math.ceil(nonresidential_np / sqm_per_job) if nonresidential_np and sqm_per_job else 0,
+        "sqm_per_job": float(sqm_per_job or 0.0),
+        "upks_rub": upks,
+        "k1": k1,
+        "k2": k2,
+        "zone_two": bool(zone_two),
+        # Компенсация без УПКС не считается, и ноль здесь означал бы «бесплатно».
+        "missing": ([] if upks > 0 or not population
+                    else ["УПКС квартала не задан — компенсация не посчитана"]),
+    }
+
+
 _GLAVAPU_VRI_BASE_INDEXATION = 1.0175
 _GLAVAPU_VRI_BASE_INDEXATION_DATE = "16.08.2026"
 
@@ -26153,8 +26375,9 @@ details.cadastral-box>summary::marker{color:#888}
         <div id="siteApplyStatus" class="import-status" style="display:none"></div>
       </div>
       <div class="card">
-        <div class="toolbar"><button class="btn" onclick="syncTep()">Обновить производные ТЭП из вводных</button><span style="color:#777;font-size:12px">В интерфейсе показывается 1 знак после запятой. При загруженном ГлавАПУ подземный паркинг является производным: постоянные + гостевые × 35 м².</span></div>
+        <div class="toolbar"><button class="btn" onclick="syncTep()">Обновить производные ТЭП из вводных</button><button class="btn dark" onclick="recalcFromTep()">Пересчитать под фактический ТЭП</button><span style="color:#777;font-size:12px">В интерфейсе показывается 1 знак после запятой. При загруженном ГлавАПУ подземный паркинг является производным: постоянные + гостевые × 35 м².</span></div>
         <div id="tepRatioNote" style="color:#777;font-size:11px;margin:2px 0 8px"></div>
+        <div id="tepDerivedNote" class="import-status" style="display:none"></div>
         <div class="scroll"><table class="teptable"><thead><tr><th>Продукт</th><th>ГНС, м²</th><th>Общая площадь, м²</th><th>Полезная площадь, м²</th><th>Продаваемая площадь, м²</th><th>Передаваемая площадь, м²</th><th>Количество, шт.</th></tr></thead><tbody id="tepBody"></tbody><tfoot><tr><th>Итого</th><th id="tg"></th><th id="ta"></th><th id="tu"></th><th id="ts"></th><th id="tt"></th><th id="tn"></th></tr></tfoot></table></div>
       </div>
     </div>
@@ -26170,6 +26393,28 @@ details.cadastral-box>summary::marker{color:#888}
         </div>
         <div class="note"><b>Дата обязательства по умолчанию — экспертно за месяц до РнС.</b> На этапе инвестиционного анализа точная дата соглашения обычно неизвестна; после появления утверждённых документов и графика её необходимо заменить на фактическую. Платежи до открытия ПФ несёт БРИДЖ или собственный капитал, после — ПФ, и только если ВРИ включена в банковский бюджет. Проценты по рассрочке считаются отдельно от процентов по кредитам.</div>
         <div id="vriInputGroups"></div>
+      </div>
+      <div class="card">
+        <div class="report-title">
+          <div>
+            <div class="section-title">Плата за ВРИ — свой расчёт</div>
+            <h2>По своим метрам и своим основаниям, когда ТЭП отличается от нормативного</h2>
+          </div>
+          <small>Формула калькулятора: 1,8964 × СПП × коэффициент аренды × базовая стоимость × индекс</small>
+        </div>
+        <div class="note">Калькулятор ГлавАПУ считает по <b>нормативному</b> ТЭП — плотность на площадь участка. Если ТЭП утверждён решением ГЗК и метров меньше, его ответ для этого проекта неверен, а подменять городской расчёт молча нельзя. Здесь тот же расчёт на ваших метрах, и он подписан как ваш. Базовые стоимости по типам использования — с листа «Параметры территории» выгрузки калькулятора; нулевая базовая означает, что за этот вид не платят (производство, соцобъекты).</div>
+        <div class="toolbar">
+          <label>Коэффициент аренды квартала <input type="number" step="any" id="vriOwnRent" style="width:110px"></label>
+          <button class="btn" onclick="fillVriOwnFromTep()">Взять метры из ТЭП</button>
+          <button class="btn dark" onclick="calcVriOwn()">Посчитать</button>
+          <button class="btn" onclick="applyVriOwn()">Подставить в модель</button>
+        </div>
+        <div class="scroll"><table class="teptable">
+          <thead><tr><th>Тип использования</th><th>СПП, м²</th><th>Базовая стоимость, ₽/м²</th><th>Плата, млн ₽</th></tr></thead>
+          <tbody id="vriOwnBody"></tbody>
+          <tfoot><tr><th>Итого</th><th id="vriOwnSpp"></th><th></th><th id="vriOwnTotal"></th></tr></tfoot>
+        </table></div>
+        <div id="vriOwnNote" class="import-status" style="display:none"></div>
       </div>
       <div class="card" id="vriTabCard" style="display:none">
         <div class="section-title">Результат</div>
@@ -27138,6 +27383,10 @@ function openTab(id,btn){
  // по-прежнему просит анкету при сохранении — это гарантия, а не место, где
  // спрашивают.
  if(id==='report')askProfileOnResult();
+ // Свой расчёт ВРИ рисуется при открытии вкладки: строки типов приходят из
+ // движка, метры и основания — из импорта, и до первого показа их некому
+ // подставить.
+ if(id==='vri'&&typeof renderVriOwn==='function')renderVriOwn(vriOwnLast);
 }
 
 function askProfileOnResult(){
@@ -29977,6 +30226,7 @@ function applyRequiredSocialProgramFromGlavapu(){
 // а метры до таблицы не доезжали (замечание владельца, 19.08.2026). Тест
 // сверяет список с тем, что `syncTep` читает на самом деле.
 const TEP_RATIOS=__DEVELOPAID_TEP_RATIOS__;
+const VRI_USE_TYPES=__DEVELOPAID_VRI_USE_TYPES__;
 
 // ТЭП собирают руками, и известно обычно одно число из трёх. Пропорции
 // достраивают остальные — в обе стороны: от ГНС вниз к продаваемой и от
@@ -30011,6 +30261,173 @@ const TEP_DERIVED_INPUTS=UNDERGROUND_PAIR_INPUTS.concat([
  'above_parking_enabled','above_parking_spaces','above_parking_area_per_space_sqm',
  'social_mode','kindergarten_places','school_places','clinic_capacity',
  'social_dou_gba_sqm','social_school_gba_sqm','social_clinic_gba_sqm']);
+
+// Пересчёт производных под фактический ТЭП. Калькулятор ГлавАПУ считает по
+// нормативу — плотность на площадь участка; когда ТЭП утверждён решением ГЗК и
+// метров в разы меньше, соцнагрузка, плата за ВРИ и машино-места остаются от
+// норматива и завышены кратно (владелец, 20.08.2026). Считает сервер теми же
+// формулами, что и бот, и подписывает ответ своим именем: подменять городской
+// расчёт молча нельзя.
+function glavapuCoefficients(){
+ const imported=(inputs._glavapu_import||{});
+ const coeff=imported.coefficients||{};
+ const territory=imported.territory||{};
+ const inside=!!territory.inside_ttc;
+ return {
+  k1:Number(coeff.rail||0),
+  k2:Number((inside?coeff.business_inside_ttc:coeff.business_outside_ttc)||0),
+  rent:Number(coeff.rent||0),
+  base:Number(coeff.base_cost_zh_high||0),
+  upks:Number(coeff.upks_zh_high||0),
+  inside:inside,
+  district:String(territory.district||''),
+  quarter:String(territory.cadastral_quarter||'')
+ };
+}
+
+// Свой расчёт платы за ВРИ: строки типов использования приходят из движка,
+// метры и основания задаёт человек. Базовая стоимость МКД подставляется из
+// импорта; остальные типы человек берёт с листа «Параметры территории» своей
+// выгрузки — у нас их нет, и выдумывать их нельзя.
+let vriOwnRows=null;
+
+function vriOwnState(){
+ if(vriOwnRows)return vriOwnRows;
+ const c=glavapuCoefficients();
+ vriOwnRows=VRI_USE_TYPES.map(([key,label])=>({
+  type:key,label:label,spp:0,
+  base:(key==='mkd'&&c.base)?c.base:(key==='industry'||key==='social'?0:'')
+ }));
+ return vriOwnRows;
+}
+
+function renderVriOwn(result){
+ const body=document.getElementById('vriOwnBody');
+ if(!body)return;
+ const rows=vriOwnState();
+ const paid={};
+ ((result&&result.lines)||[]).forEach(line=>{paid[line.type]=line.payment_mln});
+ body.innerHTML=rows.map((row,i)=>
+  '<tr><td>'+escapeHtml(row.label)+'</td>'
+  +'<td><input type="number" step="any" value="'+(row.spp||0)+'" onchange="vriOwnEdit('+i+',\'spp\',this.value)" style="width:120px"></td>'
+  +'<td><input type="number" step="any" value="'+(row.base===''?'':row.base)+'" onchange="vriOwnEdit('+i+',\'base\',this.value)" style="width:140px"></td>'
+  +'<td>'+(paid[row.type]!==undefined?num(paid[row.type]):'—')+'</td></tr>').join('');
+ const spp=rows.reduce((sum,row)=>sum+Number(row.spp||0),0);
+ document.getElementById('vriOwnSpp').textContent=num(spp);
+ document.getElementById('vriOwnTotal').textContent=result?num(result.total_mln):'—';
+ const rent=document.getElementById('vriOwnRent');
+ if(rent&&!rent.value){const c=glavapuCoefficients();if(c.rent)rent.value=c.rent}
+}
+
+function vriOwnEdit(index,field,value){
+ const rows=vriOwnState();
+ if(!rows[index])return;
+ rows[index][field]=value===''?'':Number(value);
+ // Перерисовывать таблицу на каждой правке нельзя: строка пересобирается под
+ // руками, поле теряет фокус, а значение, которое человек только что вписал в
+ // соседнюю ячейку, уходит в никуда вместе со старым узлом. Обновляем только
+ // итоги и гасим посчитанную плату — она больше не относится к этим метрам.
+ const spp=rows.reduce((sum,row)=>sum+Number(row.spp||0),0);
+ const sppCell=document.getElementById('vriOwnSpp');
+ if(sppCell)sppCell.textContent=num(spp);
+ const total=document.getElementById('vriOwnTotal');
+ if(total)total.textContent='—';
+ document.querySelectorAll('#vriOwnBody tr td:nth-child(4)').forEach(cell=>{cell.textContent='—'});
+ vriOwnLast=null;
+}
+
+function fillVriOwnFromTep(){
+ const rows=vriOwnState();
+ const by=key=>rows.find(row=>row.type===key);
+ // Плата за жильё считается от ПОЛНОЙ СПП жилых зданий — вместе со встроенными
+ // помещениями: на выгрузке калькулятора она посчитана именно так.
+ const mkd=Number((tep.apartments&&tep.apartments.gns)||0)
+   +Number((tep.ground_commercial&&tep.ground_commercial.gns)||0);
+ if(by('mkd'))by('mkd').spp=Math.round(mkd);
+ if(by('office'))by('office').spp=Math.round(Number((tep.offices&&tep.offices.gns)||0));
+ if(by('trade'))by('trade').spp=Math.round(Number((tep.standalone_retail&&tep.standalone_retail.gns)||0));
+ renderVriOwn(null);
+}
+
+async function calcVriOwn(){
+ const note=document.getElementById('vriOwnNote');
+ const rows=vriOwnState().filter(row=>Number(row.spp||0)>0);
+ const rentField=document.getElementById('vriOwnRent');
+ const rent=Number((rentField&&rentField.value)||0);
+ const say=(html,ok)=>{if(!note)return;note.style.display='';note.innerHTML=ok?('<span class="import-ok">'+html+'</span>'):html};
+ if(!rows.length){say('Впишите метры хотя бы по одному типу использования.',false);return}
+ if(!rent){say('Не задан коэффициент аренды квартала — он с листа «Параметры территории» вашей выгрузки.',false);return}
+ let data;
+ try{
+  const r=await fetch('/vri/manual',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({rent_coeff:rent,rows:rows.map(row=>({type:row.type,spp_sqm:Number(row.spp||0),
+    base_cost_rub:row.base===''?null:Number(row.base||0)}))})});
+  data=await r.json();
+  if(!r.ok)throw new Error(data.detail||'Расчёт не выполнен');
+ }catch(e){say('Расчёт не выполнен: '+escapeHtml(String(e.message||e)),false);return}
+ vriOwnLast=data;
+ renderVriOwn(data);
+ const missing=(data.missing||[]).map(escapeHtml).join('; ');
+ say('Плата '+num(data.total_mln)+' млн ₽. Основание: '+escapeHtml(data.basis)
+   +(missing?('<br>Не посчитано: '+missing):''),!missing);
+}
+
+let vriOwnLast=null;
+
+function applyVriOwn(){
+ if(!vriOwnLast){alert('Сначала посчитайте.');return}
+ inputs.land_rights_cost_mln=Number(vriOwnLast.total_mln||0);
+ inputs.vri_required=true;
+ renderInputs();calculate();
+ const note=document.getElementById('vriOwnNote');
+ if(note){note.style.display='';note.innerHTML='<span class="import-ok">Плата '+num(vriOwnLast.total_mln)
+   +' млн ₽ подставлена в модель. Это ваш расчёт по формуле калькулятора, а не ответ калькулятора.</span>'}
+}
+
+async function recalcFromTep(){
+ const note=document.getElementById('tepDerivedNote');
+ const c=glavapuCoefficients();
+ const say=(html,ok)=>{if(!note)return;note.style.display='';note.innerHTML=ok?('<span class="import-ok">'+html+'</span>'):html};
+ if(!c.k1||!c.upks){
+  say('Нет оснований участка: К1 и УПКС квартала приходят с импортом ГлавАПУ. '
+     +'Загрузите участок или впишите социалку и машино-места руками.',false);
+  return;
+ }
+ const apartments=Number((tep.apartments&&tep.apartments.saleable)||0);
+ const livingSpp=Number((tep.apartments&&tep.apartments.gns)||0);
+ // Нежилая наземная — встроенные помещения плюс отдельные объекты: приобъектные
+ // места считаются от неё, а МПТ от неё же дают льготу по плате за ВРИ.
+ const nonres=Number((tep.ground_commercial&&tep.ground_commercial.total_area)||0)
+   +Number((tep.offices&&tep.offices.total_area)||0)
+   +Number((tep.standalone_retail&&tep.standalone_retail.total_area)||0);
+ say('Считаю по фактическому ТЭП…',false);
+ let d;
+ try{
+  const r=await fetch('/tep/derived',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({apartment_area_sqm:apartments,residential_living_spp_sqm:livingSpp,
+    nonresidential_np_sqm:nonres,k1:c.k1,k2:c.k2,upks_rub:c.upks})});
+  d=await r.json();
+  if(!r.ok)throw new Error(d.detail||'Пересчёт не выполнен');
+ }catch(e){say('Пересчёт не выполнен: '+escapeHtml(String(e.message||e)),false);return}
+ const lines=['Население '+num(d.population)+' чел. · ДОО '+d.kindergarten_places
+   +' · школа '+d.school_places+' · поликлиника '+d.clinic_capacity
+   +' · компенсация '+num(d.compensation_mln)+' млн ₽',
+  'Машино-места '+d.parking_total+' = '+d.parking_permanent+' постоянных + '
+   +d.parking_guest+' гостевых + '+d.parking_onsite+' приобъектных (К1 '+c.k1+', К2 '+c.k2+')',
+  'Места приложения труда '+num(d.jobs)+' — основание льготы по плате за ВРИ'];
+ if(!confirm('Пересчёт под фактический ТЭП:\n\n'+lines.join('\n')
+   +'\n\nПодставить в модель? Плата за ВРИ не трогается — её считает отдельный блок на вкладке «ВРИ».'))
+  {say(lines.join('<br>'),true);return}
+ inputs.kindergarten_places=d.kindergarten_places;
+ inputs.school_places=d.school_places;
+ inputs.clinic_capacity=d.clinic_capacity;
+ if(d.compensation_mln>0)inputs.social_compensation_mln=d.compensation_mln;
+ inputs.underground_manual_spaces=d.parking_total;
+ syncTep(false);renderInputs();renderTep();
+ say('Подставлено: '+lines.join('<br>')
+   +'<br>Это наш пересчёт по методике города, а не ответ калькулятора: он считает по нормативному ТЭП.',true);
+ calculate();
+}
 
 function syncTep(rerender=true){
  // Соцобъекты строятся и в совмещённом режиме — иначе ДОУ и школа исчезают
@@ -32039,6 +32456,7 @@ PAGE = PAGE.replace(FIELD_GROUPS_PLACEHOLDER,
 PAGE = PAGE.replace(INPUT_DEFAULT_PLACEHOLDER,
                     json.dumps(DEFAULT_INPUTS, ensure_ascii=False))
 PAGE = PAGE.replace(TEP_RATIOS_PLACEHOLDER, json.dumps(TEP_RATIOS, ensure_ascii=False))
+PAGE = PAGE.replace(VRI_USE_TYPES_PLACEHOLDER, json.dumps(VRI_USE_TYPES, ensure_ascii=False))
 PAGE = PAGE.replace(FEEDBACK_FORM_PLACEHOLDER, json.dumps(
     {"groups": FEEDBACK_GROUPS, "roles": FEEDBACK_ROLES, "regions": FEEDBACK_REGIONS},
     ensure_ascii=False))
