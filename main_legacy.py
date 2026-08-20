@@ -7246,6 +7246,13 @@ def moscow_permanent_parking_by_mix(small: float, medium: float, large: float) -
                      + counts[2] * _PARKING_2118_MIX["large"])
 
 
+# Делители платы за смену ВРИ по праву на участок — из формулы калькулятора
+# (класс Df): собственность 1,00001, аренда жилья 1,001. Разница 0,099%, но
+# платят при обоих правах, и отказ вместо расчёта показывал бы ноль там, где
+# деньги есть.
+_VRI_RIGHT_DIVISOR: dict[str, float] = {"ownership": 1.00001, "lease": 1.001}
+
+
 def recalculate_from_glavapu_baseline(baseline: dict[str, Any],
                                       areas: dict[str, Any]) -> dict[str, Any]:
     """Пересчёт по параметрам исходного расчёта ГлавАПУ.
@@ -7361,25 +7368,29 @@ def recalculate_from_glavapu_baseline(baseline: dict[str, Any],
     base_mkd = float(bases.get("mkd") or 0.0)
     vri_lines = []
     vri_total = 0.0
-    # Ставка снята с расчёта, сделанного для права собственности: калькулятор
-    # считает плату за смену ВРИ именно так. Аренда городской земли — другой
-    # режим (273-ПП, приложение 8, там своя повышенная составляющая первого
-    # года), и переносить на неё ставку собственности нельзя. Соцнагрузка и
-    # парковка от права не зависят — их пересчитываем как обычно.
+    # Плата за смену ВРИ берётся при обоих правах — отличается делитель: у
+    # собственности 1,00001, у аренды жилья 1,001 (формула калькулятора, класс
+    # Df). Разница 0,099%. Отказывать при аренде было неверно: модель показывала
+    # ноль там, где платят (владелец, 20.08.2026).
     land_right = str(areas.get("land_right") or "ownership").strip().lower()
-    vri_available = land_right in ("", "ownership", "собственность")
-    if not vri_available:
+    leased = land_right in ("lease", "аренда", "rent")
+    # Ставка снята с расчёта калькулятора, а он считает для собственности.
+    right_factor = (_VRI_RIGHT_DIVISOR["ownership"] / _VRI_RIGHT_DIVISOR["lease"]
+                    if leased else 1.0)
+    if leased:
         warnings.append(
-            "право на участок — аренда, а ставка снята с расчёта для собственности: "
-            "плату за ВРИ этим способом не пересчитать, нужна выгрузка по аренде")
-    residential_payment = vri_rate * (res_spp + built_in_spp) if vri_available else 0.0
+            "право на участок — аренда: ставка снята с расчёта для собственности, "
+            "к плате применён делитель аренды 1,001 (разница 0,099%). Повышенная "
+            "составляющая первого года по 273-ПП — отдельный платёж, здесь не считается")
+    vri_available = True
+    residential_payment = vri_rate * (res_spp + built_in_spp) * right_factor
     if residential_payment:
         vri_lines.append({"type": "mkd", "spp_sqm": round(res_spp + built_in_spp, 2),
                           "payment_mln": round(residential_payment, 3),
                           "rate_mln_per_sqm": vri_rate})
         vri_total += residential_payment
     for use, spp in sorted(nonres_by_use.items()):
-        if spp <= 0 or not vri_available:
+        if spp <= 0:
             continue
         base_cost = bases.get(use)
         if base_cost is None or base_mkd <= 0:
@@ -7391,7 +7402,7 @@ def recalculate_from_glavapu_baseline(baseline: dict[str, Any],
             vri_lines.append({"type": use, "spp_sqm": round(spp, 2),
                               "payment_mln": 0.0, "rate_mln_per_sqm": 0.0})
             continue
-        rate = vri_rate * float(base_cost) / base_mkd
+        rate = vri_rate * float(base_cost) / base_mkd * right_factor
         payment = rate * spp
         vri_lines.append({"type": use, "spp_sqm": round(spp, 2),
                           "payment_mln": round(payment, 3), "rate_mln_per_sqm": rate})
@@ -7453,6 +7464,7 @@ def recalculate_from_glavapu_baseline(baseline: dict[str, Any],
         "vri_total_mln": round(vri_total, 3),
         "vri_available": vri_available,
         "land_right": land_right,
+        "land_right_factor": right_factor,
         "rates": rates,
         "baseline": {
             "vri_mln": round(vri_base, 3),
@@ -30892,9 +30904,8 @@ async function recalcFromTep(){
  const b=d.baseline||{};
  const cmp=(name,was,now)=>name+': было '+num(was)+' → стало '+num(now);
  const lines=[
-  d.vri_available===false
-   ? 'Плата за ВРИ: не пересчитана — участок в аренде, а ставка снята с расчёта для собственности'
-   : cmp('Плата за ВРИ, млн ₽',b.vri_mln,d.vri_total_mln),
+  cmp('Плата за ВРИ, млн ₽',b.vri_mln,d.vri_total_mln)
+   +(d.land_right_factor&&d.land_right_factor!==1?' (аренда: делитель 1,001)':''),
   cmp('Соцкомпенсация, млн ₽',b.compensation_mln,d.compensation_mln),
   cmp('Машино-места',b.parking_total,d.parking.total)
    +' ('+d.parking.permanent+' постоянных + '+d.parking.guest+' гостевых + '
@@ -30909,7 +30920,7 @@ async function recalcFromTep(){
  inputs.school_places=d.places.school;
  inputs.clinic_capacity=d.places.clinic;
  if(d.compensation_mln>0)inputs.social_compensation_mln=d.compensation_mln;
- if(d.vri_available!==false&&d.vri_total_mln>0)inputs.land_rights_cost_mln=d.vri_total_mln;
+ if(d.vri_total_mln>0)inputs.land_rights_cost_mln=d.vri_total_mln;
  const parkingWas=Number((tep.underground_parking&&tep.underground_parking.units)||0);
  inputs.underground_manual_spaces=d.parking.total;
  syncTep(false);renderInputs();renderTep();
