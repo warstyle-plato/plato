@@ -896,6 +896,11 @@ class PulseClient:
         if not self.available and not self._cookie("sessionid"):
             return {"available": False, "reason": "Источник выключен: не заданы доступы"}
         cid = int(complex_id)
+        # Причина неудачи лежит в `self.errors`: `_post_json` возвращает `None`
+        # и пишет туда, что случилось. Не прочитать её значит показать «точек
+        # ноль» и там, где типа нет, и там, где запрос не прошёл, — а это
+        # разные ответы. Запоминаем длину, чтобы отдать только своё.
+        errors_before = len(self.errors)
         answers: dict[str, Any] = {}
         for kind in self._OBJECT_TYPES:
             payload = {
@@ -932,6 +937,10 @@ class PulseClient:
         return {
             "available": True,
             "complex_id": cid,
+            # Вошли ли мы вообще. Пустой ответ без сессии — это отказ доступа,
+            # а не отсутствие данных, и путать их нельзя.
+            "signed_in": bool(self._cookie("sessionid")),
+            "errors": self.errors[errors_before:][:10],
             # Сырые ключи таблицы: `commercial_count` или `parking_count` в них
             # отвечают на вопрос без всякой интерпретации.
             "table_keys": sorted(table) if isinstance(table, dict) else [],

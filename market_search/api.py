@@ -218,7 +218,11 @@ def install(app: FastAPI) -> MarketDiscoveryService:
         """
         cabinet_module.require_cabinet(request)
         if not complex_id:
-            known = await run_in_threadpool(service.pulse.projects)
+            # Справочник может лежать в кэше на диске — тогда входа не было, и
+            # первый же запрос к API уйдёт без сессии. Просим свежий: проба,
+            # которая молча спрашивает неавторизованно, отвечает «данных нет»
+            # там, где верный ответ — «нас не пустили».
+            known = await run_in_threadpool(lambda: service.pulse.projects(refresh=True))
             complex_id = next((row.complex_id for row in known or []), 0)
         if not complex_id:
             raise HTTPException(

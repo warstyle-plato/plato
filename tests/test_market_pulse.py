@@ -334,6 +334,22 @@ def test_the_probe_asks_the_source_about_commercial_and_parking(monkeypatch, tmp
     # Списки и словари в образец не идут: проба должна читаться, а не листаться.
     assert "buildings" not in out["table_sample"]
 
+    # Вход и причины отказа — часть ответа. «Точек ноль» одинаково выглядит и
+    # там, где типа нет, и там, где запрос не прошёл: без причины проба врёт
+    # ровно в том месте, ради которого написана.
+    assert "signed_in" in out and "errors" in out
+
+    def failing_post(path: str, payload: dict):
+        client.errors.append(f"{path}: ответ не JSON")
+        return None
+
+    monkeypatch.setattr(client, "_post_json", failing_post)
+    broken = client.probe_object_types(1)
+    assert broken["errors"], "причина неудачи потерялась"
+    assert all(row["points"] == 0 for row in broken["by_object_type"].values())
+    # Контроль: пуст и «living» — значит дело не в типах, а в самом запросе.
+    assert broken["by_object_type"]["living"]["points"] == 0
+
     # Источник выключен — так и сказано, а не пустой ответ, читаемый как «нет».
     monkeypatch.setattr(client, "login", "")
     monkeypatch.setattr(client, "password", "")
