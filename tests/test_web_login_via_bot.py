@@ -126,3 +126,102 @@ def test_the_page_wires_the_login_in():
     assert "renderProjectsLogin();" in page
     assert "appendAiLoginButton();" in page
     assert "start_payload.startswith(\"login_\")" in Path(main.__file__).read_text(encoding="utf-8")
+
+
+def test_the_login_is_visible_without_opening_anything():
+    """Вход жил внутри личного кабинета и показывался только тем, у кого нет ни
+    сессии, ни ключа: человек с непринятым ключом до него не доходил вовсе
+    (замечание владельца, 18.08.2026). Кнопка стоит в шапке."""
+    page = main.PAGE
+    assert 'id="loginButton"' in page
+    button = page[page.index('id="loginButton"'):]
+    assert "Войти через Telegram" in button[:200]
+    assert 'onclick="openLogin()"' in button[:200]
+
+    body = page[page.index("function renderLoginButton()"):page.index("function openLogin()")]
+    assert "projectsAcceptsLogin" in body, "нет бота — нечего и предлагать"
+    assert "telegramSession" in body and "webSession()" in body
+    assert "projectsAdminKey" in body
+
+
+def test_the_bot_link_survives_a_blocked_popup():
+    """Окно бота открывается после запроса к серверу, и браузер часто считает
+    его непрошеным — Safari почти всегда. Тогда человек стоял перед пустым
+    ожиданием: ссылки на бота на экране не было."""
+    body = main.PAGE[main.PAGE.index("async function loginViaTelegram("):]
+    body = body[:body.index("const money=")]
+    assert "const opened=window.open(d.link" in body
+    assert "Открыть бота" in body, "ссылка показывается всегда"
+    assert "Браузер не дал открыть окно бота" in body
+    assert "encodeURI(d.link)" in body
+
+
+def test_the_link_leads_to_the_bot_with_the_code():
+    data = start_login()
+    assert data["link"].startswith("https://t.me/developaid_test_bot?start=login_")
+    assert data["code"] in data["link"]
+
+
+def test_a_missing_bot_name_is_said_out_loud():
+    """Кнопка входа прячется, когда сервер бота не предлагает, и человек
+    оставался перед панелью «войдите через бота» без самой кнопки — с одним
+    только ключом администратора (замечание владельца, 18.08.2026)."""
+    panel = main.PAGE[main.PAGE.index("function renderProjectsLogin("):]
+    panel = panel[:panel.index("function hideProjectsLogin(")]
+    assert "TELEGRAM_BOT_USERNAME" in panel, "причина названа именем переменной"
+    assert "Пока доступен только ключ администратора" in panel
+
+
+def test_the_status_tells_the_page_whether_the_bot_is_offered(monkeypatch):
+    """Признак берётся с сервера: имя бота на ядре задаётся переменной, потому
+    что getMe туда не проходит."""
+    monkeypatch.setenv("TELEGRAM_BOT_USERNAME", "")
+    monkeypatch.setattr(main, "_TELEGRAM_RUNTIME", dict(main._TELEGRAM_RUNTIME, username=""))
+    assert client.get("/projects/status").json()["accepts_login"] is False
+
+    monkeypatch.setenv("TELEGRAM_BOT_USERNAME", "developaid_test_bot")
+    assert client.get("/projects/status").json()["accepts_login"] is True
+
+
+# --- вход с телефона, когда на компьютере нет Telegram ----------------------------
+
+def test_the_qr_carries_the_same_link():
+    """На десктопе без приложения ссылка t.me открывает «поставьте Telegram»,
+    и вход упирается в тупик (замечание владельца, 18.08.2026). QR переносит
+    тот же код на телефон — новых прав он не даёт."""
+    data = start_login()
+    answer = client.get("/auth/telegram/qr", params={"code": data["code"]})
+    assert answer.status_code == 200
+    assert answer.headers["content-type"].startswith("image/svg+xml")
+    assert answer.content.startswith(b"<?xml") and b"<svg" in answer.content
+    assert answer.headers["cache-control"] == "no-store", "код одноразовый — не кэшируем"
+
+
+def test_a_junk_code_gets_no_picture():
+    """Код приходит снаружи: рисуем только то, что похоже на код, иначе QR
+    станет способом закодировать чужую ссылку нашим адресом."""
+    for bad in ("", "../../etc", "javascript:alert(1)", "https://example.com"):
+        assert client.get("/auth/telegram/qr", params={"code": bad}).status_code == 400
+
+
+def test_without_a_bot_name_there_is_nothing_to_encode(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_USERNAME", "")
+    monkeypatch.setattr(main, "_TELEGRAM_RUNTIME", dict(main._TELEGRAM_RUNTIME, username=""))
+    answer = client.get("/auth/telegram/qr", params={"code": "abc123"})
+    assert answer.status_code == 503
+    assert "TELEGRAM_BOT_USERNAME" in answer.json()["detail"]
+
+
+def test_the_page_shows_the_qr_and_survives_its_absence():
+    body = main.PAGE[main.PAGE.index("async function loginViaTelegram("):]
+    body = body[:body.index("const money=")]
+    assert "/auth/telegram/qr?code=" in body
+    assert "Наведите камеру телефона" in body
+    assert "onerror=" in body, "образ без библиотеки не должен оставлять битую картинку"
+    assert "Открыть бота" in body, "ссылка остаётся, даже если QR не отдался"
+
+
+def test_the_library_is_declared():
+    requirements = (Path(main.__file__).resolve().parent / "requirements.txt").read_text(encoding="utf-8")
+    assert "segno" in requirements, "образ соберётся без QR, а маршрут ответит 503"
+

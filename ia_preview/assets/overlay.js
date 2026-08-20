@@ -446,6 +446,10 @@
           hideSuggest();
           if (typeof window.obtainTep === 'function') window.obtainTep();
         } else if (houseLevel) {
+          // Выбор обязан быть виден: раньше поле оставалось с набранным
+          // текстом, и клик по подсказке выглядел как несработавший
+          // (замечание владельца, 18.08.2026).
+          suggestField.value = item.label || '';
           hideSuggest();
           resolveHouse(item.label || '');
         } else {
@@ -527,6 +531,23 @@
       return { query: label, note: '' };
     }
     if (typedSet && typedSet.length) {
+      /* Запасной поиск по сырой строке жаден: «Мишина 46» нашлась в
+         Калининграде, Свердловской области и Москве разом, и все пять
+         участков ссыпались в поле (скриншот владельца, 18.08.2026). Улица с
+         одинаковым именем в разных регионах — не адрес, а совпадение: округ у
+         настоящего адреса один. */
+      var district = function (num) { return String(num).split(':')[0]; };
+      var districts = {};
+      typedSet.forEach(function (num) { districts[district(num)] = true; });
+      if (Object.keys(districts).length > 1) {
+        return {
+          query: '',
+          note: 'Подсказку «' + label + '» поиск НСПД не распознал, а по тексту «' + typed
+            + '» участки нашлись в разных регионах (' + typedSet.length + ' шт.). '
+            + 'Это разные улицы с одинаковым названием — уточните адрес до дома '
+            + 'или введите кадастровый номер.'
+        };
+      }
       return {
         query: typed,
         note: 'Подсказку «' + label + '» поиск НСПД не распознал — участок найден по '
@@ -575,6 +596,12 @@
     ]).then(function (probes) {
       var decision = houseQueryDecision(label, typed, probes[0], probes[1]);
       suggestNote(decision.note);
+      // Пустой запрос — это ответ «так искать нельзя»: считать по пяти
+      // участкам из разных регионов хуже, чем не считать вовсе.
+      if (!decision.query) {
+        if (status) status.textContent = '';
+        return;
+      }
       runObtainTep(decision.query);
     });
   }

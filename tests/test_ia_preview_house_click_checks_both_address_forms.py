@@ -61,6 +61,8 @@ console.log(JSON.stringify({{
   greedy_geocoder: houseQueryDecision(LABEL, TYPED, [HOME], [HOME, STRANGER]),
   typed_misses_home: houseQueryDecision(LABEL, TYPED, [HOME], [NEIGHBOUR, STRANGER]),
   typed_probe_failed: houseQueryDecision(LABEL, TYPED, [HOME], null),
+  typed_across_regions: houseQueryDecision(LABEL, TYPED, [], [HOME, STRANGER, "66:23:0501021:45"]),
+  typed_one_region: houseQueryDecision(LABEL, TYPED, [], [HOME, NEIGHBOUR]),
 }}));
 """
     result = subprocess.run(
@@ -132,3 +134,41 @@ def test_the_layer_wires_the_decision_in():
     assert "Promise.all([" in source, "формы проверяются по очереди — плата в цепочку геокодера"
     # Проверка возвращает состав участков, а не «нашлось»: сравнивать больше нечем.
     assert "x.kind === 'land'" in source
+
+
+def test_a_street_name_repeated_across_the_country_is_not_an_address():
+    """«Мишина 46»: подсказка не распозналась, а по тексту участки нашлись в
+    Калининграде, Свердловской области и Москве — и все пять ссыпались в поле
+    (скриншот владельца, 18.08.2026). Разные округа — это разные улицы с
+    одинаковым названием, а не территория."""
+    case = run_decision_cases()["typed_across_regions"]
+    assert case["query"] == "", "считать по пяти регионам хуже, чем не считать"
+    assert "разных регионах" in case["note"]
+    assert "уточните адрес" in case["note"] and "кадастровый номер" in case["note"]
+
+
+def test_one_region_still_rescues():
+    """Несколько участков одного округа — это по-прежнему территория адреса."""
+    case = run_decision_cases()["typed_one_region"]
+    assert case["query"] == TYPED
+    assert "не распознал" in case["note"]
+
+
+def test_an_empty_query_stops_the_calculation():
+    source = _OVERLAY.read_text(encoding="utf-8")
+    body = source[source.index("function resolveHouse("):]
+    body = body[:body.index("function wireSuggest(")]
+    assert "if (!decision.query)" in body
+    assert "return;" in body[body.index("if (!decision.query)"):]
+
+
+def test_the_click_puts_the_chosen_address_into_the_field():
+    """Клик по подсказке выглядел несработавшим: поле оставалось с набранным
+    текстом, и выбор было не видно."""
+    source = _OVERLAY.read_text(encoding="utf-8")
+    body = source[source.index("} else if (houseLevel) {"):]
+    body = body[:body.index("} else {")]
+    assert "suggestField.value = item.label" in body
+    assert body.index("suggestField.value") < body.index("resolveHouse("), (
+        "адрес подставляется до запуска поиска")
+

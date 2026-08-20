@@ -158,6 +158,12 @@ def test_an_explicit_rerender_still_wins():
 
 
 def test_the_parking_fields_reach_sync_tep():
-    """Связь «поле → syncTep» — то, из-за чего правка вообще куда-то доходит."""
-    assert "['underground_manual_spaces','underground_manual_gns_sqm'," \
-           "'underground_area_per_space_sqm'].includes(id)" in core.PAGE.replace("\n", "")
+    """Связь «поле → syncTep» — то, из-за чего правка вообще куда-то доходит.
+
+    Список полей переехал к самому `syncTep` и стал один на всё: строка в
+    обработчике была копией, и площадь офиса в неё не попала (19.08.2026).
+    """
+    page = core.PAGE.replace("\n", "")
+    assert "const UNDERGROUND_PAIR_INPUTS=['underground_manual_spaces'," \
+           "'underground_manual_gns_sqm', 'underground_area_per_space_sqm']" in page
+    assert "TEP_DERIVED_INPUTS.includes(id)" in page

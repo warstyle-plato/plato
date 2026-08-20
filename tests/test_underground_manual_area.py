@@ -102,8 +102,12 @@ def test_the_page_offers_both_fields_and_warns_about_the_shortfall():
     assert "Площадь подземной парковки" in page
     assert "Норматив площади на машино-место" in page
     assert "function undergroundShortfallNote()" in page
-    # Места ГлавАПУ — норматив обеспеченности: нехватку человек должен видеть.
-    assert "норматив обеспеченности ГлавАПУ" in page
+    # Нехватку человек должен видеть — и видеть, по каким метрам она посчитана.
+    # Прежде строка называла норматив ГлавАПУ, посчитанный для НОРМАТИВНОГО ТЭП:
+    # правка ТЭП её не двигала, и она требовала мест за проект, которого нет.
+    assert "потребность по норме" in page
+    assert "не хватает" in page
+    assert "required.basis" in page, "основание потребности печатается рядом с числом"
     assert '"underground_manual_gns_sqm": 0' in page
 
 

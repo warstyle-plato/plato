@@ -92,7 +92,10 @@ def test_without_an_invite_the_menu_is_unchanged(monkeypatch):
 
     core._telegram_start_message(1, 1)
     keyboard = sent[-1]["reply_markup"]["inline_keyboard"]
-    assert keyboard[0][0].get("callback_data") == "flow_cad_yes"
+    # Первым идёт «Расчёт модели»: приветствие говорит теми же словами, что
+    # список команд (решение владельца, 18.08.2026), а способ расчёта
+    # спрашивается вторым уровнем.
+    assert keyboard[0][0].get("callback_data") == "calc_menu"
     assert "Спасибо, что зашли" not in sent[-1]["text"]
     assert sent[-1]["text"].startswith("<b>Добро пожаловать")
 
@@ -136,3 +139,33 @@ def test_a_plain_start_records_no_source(monkeypatch):
         "text": "/start",
     })
     assert "invite" not in [kind for kind, _ in written]
+
+
+def test_the_calculation_carries_the_visitor(monkeypatch):
+    """Расчёт и поиск участка писались без личности, и воронка обрывалась на
+    первой же ступени: «перешли по ссылке» — сотня, «посчитали» — ноль, потому
+    что связать расчёт с пришедшим было нечем.
+
+    Сессия в этих запросах нужна только для учёта: ни на расчёт, ни на поиск
+    она не влияет и в модель не входит."""
+    import copy
+
+    from fastapi.testclient import TestClient
+
+    written: list[tuple] = []
+    monkeypatch.setattr(core, "usage_track", lambda kind, **kw: written.append((kind, kw)))
+    client = TestClient(core.app)
+    answer = client.post("/calculate", json={
+        "inputs": dict(core.DEFAULT_INPUTS),
+        "tep": {key: dict(value) for key, value in core.TEP_DEFAULT.items()},
+        "rates": [], "session": "мусор.подпись"})
+    assert answer.status_code == 200, "негодная сессия не имеет права ронять расчёт"
+    kinds = {kind: payload for kind, payload in written}
+    assert "chat_id" in kinds["calc"]
+
+
+def test_the_page_sends_the_session_with_both_steps():
+    """Страница передаёт ту сессию, что учитывает и вход из бота, и вход на
+    сайте: по приглашению приходит первая, и webSession() её не знает."""
+    assert core.PAGE.count("session:activeSession()") >= 3
+    assert "session:webSession()" not in core.PAGE

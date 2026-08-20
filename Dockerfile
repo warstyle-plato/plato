@@ -37,11 +37,31 @@ ARG INSTALL_BROWSER=1
 # Браузер тоже качается из сети, и на той же сети скачивание срывается. Три
 # попытки вместо одной: пересобирать весь образ из-за одного оборванного
 # соединения — двадцать минут на ровном месте.
+#
+# И сборка обязана падать, если браузера не стало. Прежний цикл после трёх
+# неудачных попыток просто шёл дальше: образ уезжал без браузера, CI оставался
+# зелёным, а на проде это выходило как «ТЭП посчитан формулами» и «PDF прежнего
+# вида» — 20.08.2026 именно так и вышло. Зелёная сборка, не собравшая того, ради
+# чего затевалась, хуже красной: красную видно.
+#
+# Проверка — настоящим запуском, а не наличием файла: именно запуск и падал на
+# проде, а файл при этом мог лежать не той сборкой и не в том каталоге.
+#
+# Сборок две. Playwright при headless запускает не полный Chromium, а отдельный
+# `chromium-headless-shell`, и качается он отдельно. В образе стоял только
+# полный, и на проде 20.08.2026 всё, что заводит браузер, падало на «Executable
+# doesn't exist»: печать PDF откатывалась к диалогу браузера, ТЭП — к серверным
+# формулам. Старые версии playwright имени `chromium-headless-shell` не знают,
+# поэтому при отказе ставим как раньше — запуск умеет отступать сам.
 RUN if [ "$INSTALL_BROWSER" = "1" ]; then \
       for attempt in 1 2 3; do \
-        playwright install --with-deps chromium && break || \
-        { echo "playwright install: попытка $attempt не удалась"; sleep 10; }; \
-      done \
+        if playwright install --with-deps chromium chromium-headless-shell \
+           || playwright install --with-deps chromium; then break; fi; \
+        echo "playwright install: попытка $attempt не удалась"; sleep 10; \
+      done; \
+      python -c "from playwright.sync_api import sync_playwright; \
+p=sync_playwright().start(); b=p.chromium.launch(args=['--no-sandbox']); \
+print('браузер поднимается:', p.chromium.executable_path); b.close(); p.stop()" \
       && rm -rf /var/lib/apt/lists/*; \
     fi
 

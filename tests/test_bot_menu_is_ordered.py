@@ -50,7 +50,7 @@ def sources() -> str:
 
 def test_the_menu_holds_six_decisions():
     """Седьмой пункт — повод спросить, решение ли это или ещё одна команда."""
-    assert NAMES == ["calc", "model", "vritep", "mpt", "platon", "help"], NAMES
+    assert NAMES == ["calc", "model", "vritep", "mpt", "platon", "feedback", "help"], NAMES
 
 
 def test_the_calculations_stand_together():
@@ -182,3 +182,65 @@ def test_the_admin_command_stays_out_of_both_lists():
     """`/stats` работает, но это свод для владельца, а не пункт для всех."""
     assert "stats" not in NAMES + EXTRA_NAMES
     assert '"/stats"' in sources(), "команда должна остаться рабочей"
+
+
+# --- один продукт — один словарь -------------------------------------------------
+
+def _welcome_keyboard(monkeypatch) -> list[list[dict]]:
+    sent: list[dict] = []
+    monkeypatch.setattr(core, "_telegram_send_message",
+                        lambda chat_id, text, **kw: sent.append(kw))
+    monkeypatch.setattr(core, "_telegram_web_app_url", lambda chat_id, cads, **kw: "https://t/")
+    monkeypatch.setattr(core, "_telegram_dialog_clear", lambda chat_id: None)
+    core._telegram_start_message(1, 1)
+    return sent[-1]["reply_markup"]["inline_keyboard"]
+
+
+def _labels(rows) -> list[str]:
+    return [str(button.get("text") or "") for row in rows for button in row]
+
+
+def test_the_welcome_speaks_the_language_of_the_menu(monkeypatch):
+    """Список команд слева внизу показывал шесть решений, а приветствие —
+    восемь конкретных входов: один продукт объяснялся двумя словарями
+    (замечание владельца, 18.08.2026). Теперь решения те же и в том же
+    порядке."""
+    rows = _welcome_keyboard(monkeypatch)
+    labels = _labels(rows)
+    assert labels[0] == "Расчёт модели"
+    assert "Открыть готовую модель" in labels
+    assert "Расчёт ВРИ и ТЭП" in labels
+    assert "Платон Сергеевич" in labels
+    assert labels[-1] == "Что умеет DevelopAid", "помощь закрывает список, как в меню"
+    assert not any("кадастров" in label.lower() for label in labels), (
+        "способ расчёта — второй уровень, а не вход")
+
+
+def test_the_calculation_does_not_stand_below_the_help(monkeypatch):
+    """То же правило, что у списка команд: расчёт МПТ встаёт среди расчётов.
+    Расширение дописывало свою кнопку в конец — ниже «Что умеет»."""
+    labels = _labels(_welcome_keyboard(monkeypatch))
+    mpt = [index for index, label in enumerate(labels) if "МПТ" in label]
+    if mpt:
+        assert mpt[0] < labels.index("Что умеет DevelopAid")
+
+
+def test_the_first_button_opens_the_same_second_level_as_the_command():
+    """«Расчёт модели» в приветствии и команда /calc ведут в одно меню, а не в
+    два похожих."""
+    engine = (ROOT / "main_legacy.py").read_text(encoding="utf-8")
+    branch = engine[engine.index('if data == "calc_menu"'):]
+    assert "_telegram_calc_menu(chat_id)" in branch[:400]
+    assert engine.count("def _telegram_calc_menu(") == 1
+
+
+def test_the_help_menu_of_the_wrapper_speaks_the_same_words(monkeypatch):
+    """Третьим словарём говорила помощь обёртки: «Прокомментировать ТЭП» и
+    «Спросить Платона» вперемешку со входами. Проверяем сами кнопки, а не
+    исходник: комментарий рядом с ними — не кнопка."""
+    monkeypatch.setattr(core, "_telegram_web_app_url", lambda chat_id, cads, **kw: "https://t/")
+    labels = _labels(wrapper._help_markup(1)["inline_keyboard"])
+    assert labels[0] == "Расчёт модели"
+    assert "Расчёт ВРИ и ТЭП" in labels and "Платон Сергеевич" in labels
+    assert not any("кадастров" in label.lower() for label in labels)
+    assert "Прокомментировать ТЭП" not in labels, "второй уровень Платона — не решение"

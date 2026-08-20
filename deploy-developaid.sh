@@ -5,6 +5,7 @@
 #   sh deploy-developaid.sh prod        — поднять то, что помечено prod
 #   sh deploy-developaid.sh --rollback  — вернуть предыдущий образ
 #   sh deploy-developaid.sh --log       — журнал выкаток
+#   sh deploy-developaid.sh --space     — сколько места и чем занято
 #   sh deploy-developaid.sh --check 8080 [коммит] — проверить, что отвечает порт
 #
 # Главное правило: прежний контейнер живёт, пока новый не доказал, что
@@ -135,6 +136,75 @@ PY
   return 1
 }
 
+# --- место на диске ---------------------------------------------------------
+# Каждая выкатка тянет новый образ на два-три гигабайта, а прежние остаются
+# навсегда. Пять сборок за день — и диск полон: 18.08.2026 выкатка упала на
+# «no space left on device», прод остался на позавчерашней версии, а вход через
+# бота начал отвечать ошибкой без объяснения — коды входа пишутся файлами.
+# Поэтому: перед скачиванием проверяем место, после успешной выкатки убираем
+# всё, кроме текущего образа и предыдущего (он нужен откату).
+
+free_mb() {
+  df -Pm / | awk 'NR==2 {print $4}'
+}
+
+total_mb() {
+  df -Pm / | awk 'NR==2 {print $2}'
+}
+
+# Сколько нужно свободного, чтобы выкатка прошла: образ два-три гигабайта, и
+# рядом со старым он должен и скачаться, и распаковаться.
+NEED_MB=8192
+# Ниже этого не начинаем вовсе: `docker pull` упрётся в «no space left on
+# device» уже после того, как размажет по диску половину слоёв.
+FLOOR_MB=3584
+
+# Что именно занимает место. Печатается только когда прижало: в обычной
+# выкатке это шум, а при отказе — единственное, с чего начинают разбор.
+disk_report() {
+  say "диск: свободно $(free_mb) МБ из $(total_mb)"
+  docker system df 2>/dev/null | sed 's/^/    /' | while IFS= read -r line; do
+    say "$line"
+  done
+  say "самые большие образы:"
+  docker images --format '{{.Size}}\t{{.Repository}}:{{.Tag}}' 2>/dev/null \
+    | sort -h -r | head -5 | while IFS= read -r line; do
+      say "    $line"
+    done
+}
+
+# Уборка живёт в одном месте — в стороже диска. Копии здесь не будет по той же
+# причине, по какой её нет у версии: две уборки с разными правилами разойдутся,
+# и разойдутся молча.
+deep_clean() {
+  if [ -x "$ROOT/scripts/plato-disk-guard.sh" ] || [ -f "$ROOT/scripts/plato-disk-guard.sh" ]; then
+    say "зову сторожа диска: scripts/plato-disk-guard.sh --force"
+    sh "$ROOT/scripts/plato-disk-guard.sh" --force 2>&1 | sed 's/^/    /' || true
+  else
+    say "сторожа диска нет рядом — убираю только свои образы"
+    trim_images
+  fi
+}
+
+trim_images() {
+  keep_now=$(docker inspect --format '{{.Image}}' "$NAME" 2>/dev/null || true)
+  keep_before=""
+  [ -f "$PREVIOUS" ] && keep_before=$(docker image inspect --format '{{.Id}}' \
+    "${REPO}:$(cat "$PREVIOUS")" 2>/dev/null || true)
+  removed=0
+  for image_id in $(docker images "$REPO" --format '{{.ID}}' | sort -u); do
+    full=$(docker image inspect --format '{{.Id}}' "$image_id" 2>/dev/null || true)
+    [ -n "$full" ] || continue
+    [ "$full" = "$keep_now" ] && continue
+    [ -n "$keep_before" ] && [ "$full" = "$keep_before" ] && continue
+    # Образ, на котором кто-то работает, docker не отдаст — и правильно сделает.
+    docker rmi "$image_id" >/dev/null 2>&1 && removed=$((removed + 1))
+  done
+  docker image prune -f >/dev/null 2>&1 || true
+  [ "$removed" -gt 0 ] && say "убрано старых образов: ${removed}, свободно $(free_mb) МБ"
+  return 0
+}
+
 current_image() {
   docker inspect --format '{{.Config.Image}}' "$NAME" 2>/dev/null || true
 }
@@ -144,7 +214,12 @@ start_container() {
   docker rm -f "$name" >/dev/null 2>&1 || true
   # Данные и секреты живут на машине и переживают любую выкатку: в образе их
   # нет и быть не должно.
+  # Журнал контейнера без предела съедает диск молча: docker пишет его в
+  # /var/lib/docker/containers и сам не чистит. Держим тридцать мегабайт на
+  # контейнер — этого хватает на разбор падения, а на восемнадцатигигабайтной
+  # машине не отнимает место у образов.
   docker run -d --name "$name" --restart always \
+    --log-opt max-size=10m --log-opt max-file=3 \
     -p "$publish" \
     --env-file "$ROOT/.env" \
     -v "$ROOT/data:/app/data" \
@@ -165,6 +240,12 @@ case "${1:-}" in
     [ -n "${2:-}" ] || { echo "Укажите порт: sh deploy-developaid.sh --check 8080 [коммит]" >&2; exit 1; }
     health_check "$2" "${3:-}"
     exit $?
+    ;;
+  --space)
+    # Картина диска отдельной командой: смотреть её должно быть можно, не
+    # затевая выкатку.
+    disk_report
+    exit 0
     ;;
   --rollback)
     [ -f "$PREVIOUS" ] || { echo "Возвращаться некуда: предыдущий образ не записан." >&2; exit 1; }
@@ -190,8 +271,33 @@ say "было: ${WAS:-контейнера нет}"
 
 registry_login
 
+# Место говорится вслух всегда. Прежде проверка молчала, пока не считала нужным
+# прибираться, и молчала же, когда прибирать было нечего: со стороны выкатка
+# выглядела так, будто диск никто не смотрел, — а потом упиралась в него
+# (владелец, 20.08.2026: «скрипт ничего не проверил, мы упёрлись опять в 20 ГБ»).
+say "диск: свободно $(free_mb) МБ из $(total_mb) (нужно ${NEED_MB})"
+if [ "$(free_mb)" -lt "$NEED_MB" ]; then
+  say "места меньше нужного — прибираю до скачивания"
+  deep_clean
+  say "после уборки свободно $(free_mb) МБ"
+fi
+
+# Отказ до скачивания, а не после. `docker pull` на забитом диске падает на
+# середине распаковки: сообщение приходит от докера, звучит как сетевое, и
+# оставляет за собой мусор, который ищут руками. Прод при отказе не тронут —
+# он и так работает, и это единственное, что сейчас важно.
+if [ "$(free_mb)" -lt "$FLOOR_MB" ]; then
+  say "ОТКАЗ: свободно $(free_mb) МБ, меньше ${FLOOR_MB} — выкатка не начнётся"
+  disk_report
+  say "убрать место: sh scripts/plato-disk-guard.sh --force · docker system df"
+  exit 1
+fi
+
 say "скачивание ${IMAGE}"
-docker pull "$IMAGE" >/dev/null || { say "ПРОВАЛ: образ не скачался, прод не тронут"; exit 1; }
+docker pull "$IMAGE" >/dev/null || {
+  say "ПРОВАЛ: образ не скачался, прод не тронут (свободно $(free_mb) МБ)"
+  exit 1
+}
 
 # --- проверка на закрытом порту ---------------------------------------------
 # 127.0.0.1 — снаружи этот порт недоступен, проверяемая версия не видна
@@ -217,6 +323,17 @@ start_container "$NAME" "${APP_BIND}:${APP_PORT}:8000" "$IMAGE"
 
 if verdict=$(health_check "$APP_PORT" "$TAG" 2>&1); then
   say "готово: ${verdict}"
+  # Уборка после успеха, а не до: пока новый образ не доказал, что работает,
+  # старый — единственный путь назад.
+  trim_images
+  say "диск после выкатки: свободно $(free_mb) МБ из $(total_mb)"
+  # Уборка при выкатке закрывает дыру наполовину: когда выкаток нет, убирать
+  # некому. Ночной сторож это делает — но только если он поставлен, а тихо
+  # поставить его за человека нельзя: cron принадлежит машине, не скрипту.
+  case "$(crontab -l 2>/dev/null || true)" in
+    *plato-disk-guard.sh*) ;;
+    *) say "сторож диска не стоит в cron — поставьте: sh scripts/plato-disk-guard.sh --install" ;;
+  esac
   say "начато ${STARTED}, закончено $(date '+%Y-%m-%d %H:%M:%S'), отката не было"
   exit 0
 fi

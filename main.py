@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import html
+import json
 import re
 import importlib.util
 import inspect
@@ -10,6 +11,7 @@ import os
 import sys
 import threading
 import time
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -544,20 +546,23 @@ def _vritep_handle_text(chat_id: int, text: str) -> bool:
 
 
 def _help_markup(chat_id: int) -> dict[str, Any]:
+    # Те же решения и в том же порядке, что в приветствии и в списке команд:
+    # три меню на один продукт говорили тремя словарями (решение владельца,
+    # 18.08.2026). «Прокомментировать ТЭП» — второй уровень Платона, а не
+    # отдельное решение, и живёт в его меню.
     rows: list[list[dict[str, Any]]] = [
-        [{"text": "Расчёт по кадастровым номерам", "callback_data": "flow_cad_yes"}],
-        [{"text": "Собрать ТЭП без кадастра", "callback_data": "flow_cad_no"}],
-        [{"text": "Посчитать ВРИ и ТЭП", "callback_data": "vritep_start"}],
-        [{"text": "Прокомментировать ТЭП", "callback_data": "platon_tep"}],
-        [{"text": "Спросить Платона", "callback_data": "ask_platon"}],
+        [{"text": "Расчёт модели", "callback_data": "calc_menu"}],
     ]
     try:
         rows.append([{
-            "text": "Открыть мини-приложение DevelopAid",
+            "text": "Открыть готовую модель",
             "web_app": {"url": core._telegram_web_app_url(chat_id, [])},
         }])
     except Exception:
         pass
+    rows.append([{"text": "Расчёт ВРИ и ТЭП", "callback_data": "vritep_start"}])
+    rows.append([{"text": "Платон Сергеевич", "callback_data": "ask_platon"}])
+    rows.append([{"text": "Оценить DevelopAid", "callback_data": "fb_start"}])
     return {"inline_keyboard": rows}
 
 
@@ -704,6 +709,37 @@ def _glavapu_status_line() -> str:
             f"формулами. {html.escape(detail[:300])}{counters}")
 
 
+def _core_disk_line() -> str:
+    """Сколько места осталось на ядре — раньше, чем это станет поведением.
+
+    Диск кончается молча: выкатка падает на распаковке образа, а вход через
+    бота начинает отвечать ошибкой без объяснения, потому что коды входа
+    пишутся файлами. Ядро говорит остаток в `/health`, но смотреть туда некому:
+    страница живёт на ядре, а спрашивают бота. 20.08.2026 в потолок упёрлись
+    второй раз — значит, цифра должна попадаться на глаза сама.
+    """
+    remote = core._projects_remote_url("/health")
+    try:
+        if remote:
+            with urllib.request.urlopen(remote, timeout=6) as answer:
+                data = json.loads(answer.read().decode("utf-8"))
+        else:
+            data = core.health()
+    except Exception:
+        return ""
+    free = data.get("disk_free_mb")
+    if free is None:
+        return ""
+    free = int(free)
+    where = "ядро" if remote else "этот хост"
+    if data.get("disk_low") or free < 8192:
+        # Порог тот же, что у выкатки: образ два-три гигабайта, и рядом со
+        # старым он должен и скачаться, и распаковаться.
+        return (f"\nМесто на диске ({where}): <b>{free} МБ</b> — мало для выкатки. "
+                f"Уборка: <code>sh scripts/plato-disk-guard.sh --force</code>")
+    return f"\nМесто на диске ({where}): {free} МБ"
+
+
 def _status_message(chat_id: int, user_id: int) -> None:
     configured = bool(core._TELEGRAM_RUNTIME.get("configured"))
     _, context = _resolve_context(chat_id)
@@ -721,6 +757,7 @@ def _status_message(chat_id: int, user_id: int) -> None:
         f"Версия: {_RUNTIME_VERSION}\n"
         f"Платон: {platon_state}\n"
         f"Память расчётов: {_state_health(chat_id)}"
+        + _core_disk_line()
         + _glavapu_status_line()
         # Справочник устаревает тихо: расчёт идёт, числа выглядят как обычно,
         # а под ними прошлогодний тариф. Напоминание тут потому, что /status
@@ -1118,6 +1155,210 @@ def _sender_name(message: dict[str, Any]) -> str:
                                       str(sender.get("last_name") or "").strip()) if part)
 
 
+def _remote_summaries(days: int) -> dict | None:
+    """Свод с ядра: сайт живёт там, и анкеты, заполненные на сайте, лежат там же.
+
+    Журнал пишется на том хосте, который обслужил запрос. Бот на Render видел
+    только свою половину, и ответы людей с сайта не показывались никому
+    (18.08.2026). Подпись — общим токеном бота, как у подтверждения входа.
+    """
+    remote = core._projects_remote_url("/internal/usage/summary")
+    if not remote:
+        return None
+    try:
+        return core._core_post(remote, {
+            "days": int(days),
+            "sign": core._web_login_sign("usage-summary", int(days)),
+        }, 30.0)
+    except Exception:
+        # Свод — удобство: молчание лучше отказа вместо своей половины.
+        return None
+
+
+def _when(at: Any) -> str:
+    """Время события коротко. Журнал ведётся в UTC — так и подписано."""
+    try:
+        moment = datetime.fromtimestamp(float(at or 0), tz=timezone.utc)
+    except (TypeError, ValueError, OSError):
+        return ""
+    return moment.strftime("%d.%m %H:%M")
+
+
+def _note_line(note: dict) -> str:
+    """Комментарий с автором: кто, когда, о чём и что именно написал.
+
+    Раньше строка начиналась с роли, а роль в боте пустая, — получалось
+    «— : не верю числам», и переспросить было некого.
+    """
+    who = html.escape(str(note.get("who") or note.get("role") or "аноним"))
+    when = _when(note.get("at"))
+    head = f"<b>{who}</b>" + (f" · {when}" if when else "")
+    group = html.escape(str(note.get("group") or ""))
+    return f"{head} · <i>{group}</i>: " + html.escape(str(note.get("text") or "")[:400])
+
+
+def _respondents_block(data: dict) -> list[str]:
+    """Поимённо: кто отвечал, что поставил и где просел.
+
+    Свод средних говорит о сервисе, а этот список — о людях: анкета не
+    анонимная, и владельцу нужно знать, к кому вернуться с вопросом.
+    """
+    people = data.get("respondents") or []
+    if not people:
+        return []
+    lines = ["", "<b>Кто отвечал</b>"]
+    for person in people[:15]:
+        who = html.escape(str(person.get("who") or "аноним"))
+        when = _when(person.get("at"))
+        rated = int(person.get("rated") or 0)
+        head = f"• <b>{who}</b>" + (f" · {when}" if when else "")
+        if rated:
+            head += f" · {rated} оц., средняя {person.get('avg')}"
+        else:
+            head += " · без оценок"
+        chat = int(person.get("chat") or 0)
+        if chat:
+            head += f" · <code>{chat}</code>"
+        lines.append(head)
+        weak = [f"{html.escape(str(row['label']))} {row['score']}"
+                for row in (person.get("lowest") or []) if int(row["score"]) <= 3]
+        if weak:
+            lines.append("   ниже всего: " + " · ".join(weak))
+        for text in (person.get("texts") or [])[:3]:
+            lines.append("   «" + html.escape(str(text)[:400]) + "»")
+    if len(people) > 15:
+        lines.append(f"<i>…и ещё {len(people) - 15} чел.</i>")
+    return lines
+
+
+def _when_day(stamp: str) -> str:
+    """Дата знакомства по-человечески. Не разобралась — не показываем вовсе."""
+    try:
+        return datetime.fromisoformat(str(stamp)).strftime("%d.%m.%Y")
+    except ValueError:
+        return ""
+
+
+def _registry_block(days: int) -> list[str]:
+    """Кто зарегистрировался на портале — по знакомствам на ядре.
+
+    Считаем по профилям, а не по журналу: журнал у каждого хоста свой и на
+    Render живёт до следующей выкатки, а профиль лежит файлом на ядре и
+    переживает и выкатку, и пересоздание контейнера.
+    """
+    registry = (_remote_summaries(days) or {}).get("registry")
+    if not isinstance(registry, dict):
+        # Локальный ответ — на случай, когда ядра нет: тогда профили здесь.
+        try:
+            registry = core.profile_registry_summary(days)
+        except Exception:
+            return []
+    if not registry.get("total"):
+        return ["", "<b>Регистраций пока нет.</b> Знакомство спрашивается "
+                    "один раз после входа."]
+    lines = ["", f"<b>Зарегистрировано: {registry['total']}</b> "
+                 f"<i>(за {days} дн. — {registry.get('window', 0)})</i>"]
+    if registry.get("by_source"):
+        lines.append("Откуда узнали: " + " · ".join(
+            f"{html.escape(str(name))} {count}"
+            for name, count in registry["by_source"]))
+    for person in (registry.get("recent") or [])[:10]:
+        when = _when_day(str(person.get("created") or ""))
+        who = html.escape(str(person.get("name") or "без имени"))
+        company = html.escape(str(person.get("company") or ""))
+        role = html.escape(str(person.get("role") or ""))
+        tail = " · ".join(part for part in (company, role, when) if part)
+        line = f"• <b>{who}</b>" + (f" — {tail}" if tail else "")
+        chat = int(person.get("chat") or 0)
+        if chat:
+            line += f" · <code>{chat}</code>"
+        lines.append(line)
+    # Имя и компанию человек написал сам, и подтвердить их нечем: телеграм
+    # доказывает аккаунт, а не место работы.
+    lines.append("<i>Имя и компанию люди указывают сами — это их слова.</i>")
+    return lines
+
+
+def _survey_block(data: dict, title: str) -> list[str]:
+    lines = [f"<b>{title}</b>", f"Анкет заполнено: <b>{data.get('answers', 0)}</b>"]
+    groups = [g for g in (data.get("groups") or []) if g.get("count")]
+    if groups:
+        lines.append("Средние по разделам: " + " · ".join(
+            f"{html.escape(str(g['label']))} {g['avg']}" for g in groups))
+    for note in (data.get("notes") or [])[-10:]:
+        lines.append("• " + _note_line(note))
+    lines.extend(_respondents_block(data))
+    return lines
+
+
+def _survey_message(chat_id: int, user_id: int, argument: str) -> None:
+    """Свод теста: откуда пришли, докуда дошли, как оценили, что написали.
+
+    Доступ — как у статистики: свободные тексты людей чужим не показываем.
+    """
+    admins = core.usage_admin_ids()
+    if not admins or user_id not in admins:
+        _send_message(chat_id, "<b>Свод закрыт.</b> "
+                      + (f"Задайте <code>DEVELOPAID_ADMIN_IDS</code>: ваш ID "
+                         f"<code>{user_id}</code>." if not admins
+                         else "Ваш Telegram ID не в списке администраторов."))
+        return
+    days = 30
+    for piece in (argument or "").split():
+        if piece.isdigit():
+            days = max(1, min(365, int(piece)))
+    data = core.survey_summary(days)
+
+    lines = [f"<b>Тест платформы за {days} дн.</b>", ""]
+    # Воронка целиком, включая нули: пустая строка «выгрузили PDF: 0» говорит
+    # больше, чем её отсутствие.
+    lines.append("<b>Воронка</b> (людей)")
+    for label, count in data["funnel"].items():
+        lines.append(f"• {html.escape(label)}: <b>{count}</b>")
+    if data["by_source"]:
+        lines.append("")
+        lines.append("<b>Откуда пришли:</b> " + " · ".join(
+            f"{html.escape(str(name))} {count}" for name, count in data["by_source"]))
+
+    lines.append("")
+    lines.append(f"<b>Анкет заполнено: {data['answers']}</b>")
+    if data["groups"] and any(g["count"] for g in data["groups"]):
+        lines.append("")
+        lines.append("<b>Средние по разделам</b>")
+        for group in data["groups"]:
+            if not group["count"]:
+                continue
+            lines.append(f"• {html.escape(group['label'])}: <b>{group['avg']}</b> "
+                         f"<i>({group['count']} оц.)</i>")
+    if data["weakest"]:
+        lines.append("")
+        lines.append("<b>Слабее всего</b>")
+        for item in data["weakest"]:
+            lines.append(f"• {html.escape(item['label'])}: <b>{item['avg']}</b> "
+                         f"<i>({item['count']})</i>")
+    if data["notes"]:
+        lines.append("")
+        lines.append("<b>Что написали</b> <i>(время UTC)</i>")
+        for note in data["notes"][-20:]:
+            lines.append("• " + _note_line(note))
+    else:
+        lines.append("")
+        lines.append("<i>Свободных комментариев пока нет.</i>")
+    lines.extend(_respondents_block(data))
+    # Вторая половина ответов — на ядре: сайт обслуживает оно, и его журнал
+    # боту не виден. Показываем отдельным блоком, а не подмешиваем в средние:
+    # смешивать две выборки в одно число значит выдумывать третье.
+    remote = _remote_summaries(days)
+    remote_survey = (remote or {}).get("survey") or {}
+    if remote_survey.get("answers"):
+        lines.append("")
+        lines.extend(_survey_block(remote_survey, "Анкеты с сайта (ядро)"))
+    elif remote is None and core._projects_remote_url("/internal/usage/summary"):
+        lines.append("")
+        lines.append("<i>Свод с ядра не получен — показана только половина бота.</i>")
+    _send_message(chat_id, "\n".join(lines))
+
+
 def _stats_message(chat_id: int, user_id: int, argument: str) -> None:
     """Кто пользуется ботом и о чём спрашивает.
 
@@ -1143,9 +1384,23 @@ def _stats_message(chat_id: int, user_id: int, argument: str) -> None:
             days = max(1, min(365, int(piece)))
     if "csv" in argument:
         try:
+            # Выгрузка собирается из обеих половин. Своя приходила пустой после
+            # каждой выкатки — диск Render живёт до следующей, — и пустая
+            # таблица читалась как «людей не было», хотя людей просто некому
+            # было записать: сайт обслуживает ядро, и его журнал цел.
+            remote = _remote_summaries(days) or {}
+            events = list(core.usage_events(days))
+            mine = len(events)
+            events.extend(event for event in (remote.get("events") or [])
+                          if isinstance(event, dict))
+            caption = (f"Журнал обращений за {days} дн.\n"
+                       f"Бот: {mine} · ядро (сайт): {len(events) - mine}")
+            if not remote and core._projects_remote_url("/internal/usage/summary"):
+                caption += "\nЯдро не ответило — в файле только половина бота."
             core._telegram_send_document_bytes(
-                chat_id, core.usage_csv(days), f"developaid-usage-{days}d.csv",
-                caption=f"Журнал обращений за {days} дн.", content_type="text/csv")
+                chat_id, core.usage_csv(days, events),
+                f"developaid-usage-{days}d.csv",
+                caption=caption, content_type="text/csv")
         except Exception as exc:
             _send_message(chat_id, "<b>Выгрузка не собралась.</b>\n"
                           + html.escape(f"{type(exc).__name__}: {exc}"))
@@ -1181,12 +1436,18 @@ def _stats_message(chat_id: int, user_id: int, argument: str) -> None:
             where = "сайт" if event.get("surface") == "site" else "бот"
             lines.append(f"• <i>{when} · {html.escape(who)} · {where}</i>\n"
                          f"{html.escape(str(event.get('text') or '')[:180])}")
+    # Регистрации живут на ядре: знакомство — единственная запись, которая
+    # переживает выкатку, а журнал бота на Render с ней кончается. Вопрос
+    # «сколько зарегистрировалось» задают боту, отвечать на него журналом
+    # нельзя — он покажет ноль там, где людей полсотни.
+    lines.extend(_registry_block(days))
     reminder = _stale_reference_line()
     if reminder:
         lines.append(reminder)
     lines.append("")
-    lines.append(f"<i>Хранится {s['keep_days']} дн. Выгрузка: <code>/stats csv</code>, "
-                 f"период: <code>/stats 7</code>.</i>")
+    lines.append(f"<i>Журнал бота хранится {s['keep_days']} дн. и обнуляется при "
+                 f"выкатке — на ядре он цел. Выгрузка обеих половин: "
+                 f"<code>/stats csv</code>, период: <code>/stats 7</code>.</i>")
     _send_message(chat_id, "\n".join(lines))
 
 
@@ -1229,7 +1490,188 @@ def _usage_digest_loop() -> None:
                     _stats_message(admin, admin, "1")
         except Exception:
             pass  # сводка — удобство: молчание лучше падения фонового потока
+        try:
+            _deliver_profile_announcements()
+        except Exception:
+            pass
         time.sleep(900)
+
+
+def _deliver_profile_announcements() -> None:
+    """Знакомства с ядра — в чат владельцу.
+
+    Анкета сохраняется на ядре (данные людей живут в России), а до
+    api.telegram.org достаёт только этот хост. Ядро складывает знакомство в
+    очередь, мы забираем её и объявляем — иначе «новая регистрация» не дошла бы
+    ни до кого (18.08.2026).
+    """
+    admins = core.usage_admin_ids()
+    if not admins or not core._telegram_token() or not core._telegram_webhook_enabled():
+        return
+    remote = core._projects_remote_url("/internal/profile/announcements")
+    if remote:
+        payload = {"code": "profile-announcements", "chat_id": 0,
+                   "sign": core._web_login_sign("profile-announcements", 0)}
+        data = core._core_post(remote, payload, 30.0)
+        records = list(data.get("announcements") or [])
+    else:
+        # Один хост на всё — очередь та же, только идти за ней некуда.
+        records = core._profile_take_announcements()
+    for record in records:
+        core._telegram_send_profile_card(record, admins)
+
+
+# --- анкета в боте -----------------------------------------------------------
+# На сайте анкета — двадцать пунктов с оценками; в чате столько никто не
+# заполнит. Но одной оценки мало (владелец, 19.08.2026): «ничего страшного,
+# если пять раз оценку поставят, как на сайте, и в конце комментарий напишу».
+# Поэтому спрашиваем по разделам — кнопками, по одному вопросу за сообщение, —
+# а в конце берём одну строку словами.
+#
+# Список вопросов не пишется здесь второй раз: разделы берутся из
+# `core.FEEDBACK_GROUPS`, оценка ложится в тот же журнал (`survey`) под ключом
+# ведущего подпункта раздела — того самого, что показывает свод. Свод `/survey`
+# и сводка владельцу считают сайт и бота вместе, раздельно по поверхности.
+#
+# Записей на анкету две, и это осознанно: оценки уходят в журнал сразу, как
+# кончились вопросы, — брошенный на комментарии человек всё равно посчитан, —
+# а комментарий приезжает второй записью без оценок. Иначе либо оценки
+# теряются, либо каждая считается дважды и портит средние.
+_FEEDBACK_STATE = "feedback"
+
+
+def _feedback_questions() -> list[tuple[str, str, str]]:
+    """Вопросы бота: раздел анкеты, ключ оценки, из чего раздел состоит."""
+    questions: list[tuple[str, str, str]] = []
+    for group in getattr(core, "FEEDBACK_GROUPS", []):
+        members = list(group[2] or [])
+        if not members:
+            continue
+        # Ключ — ведущий подпункт раздела: он стоит первым не случайно, и свод
+        # показывает оценки по тем же ключам, что приходят с сайта.
+        questions.append((str(group[1]), str(members[0][0]),
+                          ", ".join(str(item[1]) for item in members)))
+    return questions
+
+
+def _feedback_state(chat_id: int) -> dict[str, Any]:
+    return _state_read(f"{_FEEDBACK_STATE}:{chat_id}") or {}
+
+
+def _feedback_remember(chat_id: int, payload: dict[str, Any]) -> None:
+    _state_write(f"{_FEEDBACK_STATE}:{chat_id}", payload)
+
+
+def _feedback_forget(chat_id: int) -> None:
+    _state_write(f"{_FEEDBACK_STATE}:{chat_id}", {})
+
+
+def _feedback_start(chat_id: int, name: str = "") -> None:
+    # Имя автора кладётся в состояние: анкета длинная, а событие с именем
+    # приходит только в начале. Без него в своде остаётся голый chat_id —
+    # владелец видел «— : не верю числам» и не знал, кого переспросить.
+    _feedback_remember(chat_id, {"stage": "rate", "index": 0, "ratings": {},
+                                 "name": str(name or "")})
+    total = len(_feedback_questions())
+    _send_message(
+        chat_id,
+        "<b>Оцените DevelopAid</b>\n"
+        f"{total} вопросов кнопками и одна строка словами в конце. "
+        "Чем не пользовались — пропускайте: пропуск это не единица.")
+    _feedback_ask(chat_id)
+
+
+def _feedback_ask(chat_id: int) -> None:
+    """Очередной вопрос. Кончились — переходим к комментарию."""
+    state = _feedback_state(chat_id)
+    questions = _feedback_questions()
+    index = int(state.get("index") or 0)
+    if index >= len(questions):
+        _feedback_finish(chat_id)
+        return
+    title, _key, members = questions[index]
+    _send_message(
+        chat_id,
+        f"<b>{html.escape(title)}</b> · вопрос {index + 1} из {len(questions)}\n"
+        f"<i>{html.escape(members)}</i>\n"
+        "1 — плохо, 5 — отлично.",
+        reply_markup={"inline_keyboard": [
+            # Номер вопроса — в самой кнопке: воркеров два, состояние лежит на
+            # диске, и кнопка позавчерашнего вопроса не должна отвечать за
+            # сегодняшний.
+            [{"text": str(score), "callback_data": f"fb_r{index}_{score}"}
+             for score in range(1, 6)],
+            [{"text": "Не пользовался", "callback_data": f"fb_s{index}"},
+             {"text": "Закончить", "callback_data": "fb_done"}],
+        ]})
+
+
+def _feedback_answer(chat_id: int, index: int, score: int | None) -> None:
+    """Ответ на вопрос под номером. Чужой номер — эхо старой кнопки, молчим."""
+    state = _feedback_state(chat_id)
+    if str(state.get("stage") or "") != "rate":
+        return
+    if int(state.get("index") or 0) != int(index):
+        return
+    questions = _feedback_questions()
+    if not 0 <= index < len(questions):
+        return
+    if score is not None and 1 <= score <= 5:
+        ratings = dict(state.get("ratings") or {})
+        ratings[questions[index][1]] = int(score)
+        state["ratings"] = ratings
+    state["index"] = index + 1
+    _feedback_remember(chat_id, state)
+    _feedback_ask(chat_id)
+
+
+def _feedback_finish(chat_id: int) -> None:
+    """Вопросы кончились: оценки в журнал, дальше ждём комментарий."""
+    state = _feedback_state(chat_id)
+    ratings = {key: int(value) for key, value in (state.get("ratings") or {}).items()
+               if isinstance(value, (int, float)) and 1 <= int(value) <= 5}
+    if ratings:
+        core.usage_track("survey", surface="telegram", chat_id=chat_id,
+                         user_id=chat_id, name=str(state.get("name") or ""),
+                         text="", ratings=ratings, problems={},
+                         impression="", mistakes="", role="", region="",
+                         projects=[], source="")
+    _feedback_remember(chat_id, {"stage": "text", "rated": len(ratings),
+                                 "name": str(state.get("name") or "")})
+    if ratings:
+        _send_message(
+            chat_id,
+            f"Оценок записано: {len(ratings)}. Спасибо.\n"
+            "Последнее: напишите одной строкой, что улучшить. "
+            "Нечего добавить — просто не отвечайте.")
+    else:
+        _send_message(
+            chat_id,
+            "Ни одной оценки — ничего страшного. Если есть что сказать, "
+            "напишите одной строкой.")
+
+
+def _feedback_save(chat_id: int, text: str) -> None:
+    """Комментарий отдельной записью: оценки уже посчитаны, второй раз нельзя."""
+    text = str(text or "").strip()
+    if not text:
+        return
+    core.usage_track("survey", surface="telegram", chat_id=chat_id,
+                     user_id=chat_id,
+                     name=str(_feedback_state(chat_id).get("name") or ""),
+                     text=text, ratings={}, problems={}, impression=text,
+                     mistakes="", role="", region="", projects=[], source="")
+    _feedback_forget(chat_id)
+    _send_message(chat_id, "Записал, спасибо. Это доходит до владельца сервиса.")
+
+
+def _feedback_pending_text(chat_id: int, text: str) -> bool:
+    """Свободный текст после анкеты. Возвращает True, если он был её частью."""
+    state = _feedback_state(chat_id)
+    if str(state.get("stage") or "") != "text" or not text:
+        return False
+    _feedback_save(chat_id, text)
+    return True
 
 
 def _handle_message(message: dict[str, Any]) -> None:
@@ -1247,6 +1689,12 @@ def _handle_message(message: dict[str, Any]) -> None:
     if command == "/help":
         _send_help(chat_id)
         return
+    if command in {"/feedback", "/оценить"}:
+        _feedback_start(chat_id, _sender_name(message))
+        return
+    if command in {"/survey", "/анкета"}:
+        _survey_message(chat_id, user_id, text.split(maxsplit=1)[1] if " " in text else "")
+        return
     if command in {"/stats", "/статистика"}:
         _stats_message(chat_id, user_id, text.split(maxsplit=1)[1] if " " in text else "")
         return
@@ -1261,6 +1709,10 @@ def _handle_message(message: dict[str, Any]) -> None:
         return
     if command in {"/vritep", "/vri", "/ври"}:
         _start_vritep(chat_id)
+        return
+    # Ответ на анкету идёт раньше разбора адресов и вопросов: «дорого и
+    # непонятно» — это комментарий, а не кадастровый номер.
+    if text and not command and _feedback_pending_text(chat_id, text):
         return
     if text and not command and _vritep_handle_text(chat_id, text):
         return
@@ -1296,6 +1748,24 @@ def _handle_update(update: dict[str, Any]) -> None:
                 _start_vritep(chat_id)
             else:
                 _vritep_ask_input(chat_id, "msk" if data == "vritep_msk" else "mo")
+            return
+        if data.startswith("fb_"):
+            _answer_callback(query)
+            if data == "fb_start":
+                _feedback_start(chat_id, _sender_name({"from": sender}))
+            elif data == "fb_skip":
+                _feedback_forget(chat_id)
+                _send_message(chat_id, "Хорошо, спрошу в другой раз.")
+            elif data == "fb_done":
+                _feedback_finish(chat_id)
+            elif data.startswith("fb_r"):
+                number, _, score = data[len("fb_r"):].partition("_")
+                if number.isdigit() and score.isdigit():
+                    _feedback_answer(chat_id, int(number), int(score))
+            elif data.startswith("fb_s"):
+                number = data[len("fb_s"):]
+                if number.isdigit():
+                    _feedback_answer(chat_id, int(number), None)
             return
         if data in {"ask_platon", "platon_tep", "platon_stop", "platon_discard",
                     "platon_apply", "show_help", "send_model"}:
