@@ -339,6 +339,22 @@ class PulseClient:
                         "Referer": f"{self.base}/",
                     },
                 )
+            except urllib.error.HTTPError as exc:
+                # 403 у Django — это чаще всего протухшая сессия или CSRF, а не
+                # запрет на сам метод. Прежде такой ответ ловился общим
+                # `URLError` и возвращал `None` без повтора: вход не
+                # переспрашивался, и отказ выглядел отсутствием данных.
+                detail = ""
+                try:
+                    detail = exc.read(400).decode("utf-8", errors="ignore").strip()
+                except Exception:  # noqa: BLE001 — тело ответа не обязано читаться
+                    detail = ""
+                if exc.code in (401, 403) and attempt == 1 and self.sign_in():
+                    continue
+                self.errors.append(
+                    f"{path}: {exc}" + (f" — {detail[:200]}" if detail else "")
+                )
+                return None
             except (urllib.error.URLError, OSError) as exc:
                 self.errors.append(f"{path}: {exc}")
                 return None

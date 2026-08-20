@@ -377,3 +377,43 @@ def test_a_refused_login_says_so_instead_of_answering_with_silence(monkeypatch, 
     assert client.sign_in() is False
     assert any("вход не удался" in line for line in client.errors)
     assert any("PULSE_LOGIN" in line for line in client.errors)
+
+
+def test_a_forbidden_answer_asks_to_sign_in_again(monkeypatch, tmp_path) -> None:
+    """403 у Django — чаще протухшая сессия, чем запрет на метод.
+
+    Прежде такой ответ ловился общим `URLError`, возвращал `None` без повтора,
+    и отказ доступа выглядел отсутствием данных: на проде 20.08.2026 проба
+    получила девять «403 FORBIDDEN» и показала это как «точек ноль».
+    Теперь вход переспрашивается один раз, а причина берётся из тела ответа —
+    сервер обычно пишет в нём, что именно ему не понравилось.
+    """
+    import io
+    import urllib.error
+
+    from market_search.pulse import PulseClient
+
+    client = PulseClient(tmp_path)
+    monkeypatch.setattr(client, "login", "x")
+    monkeypatch.setattr(client, "password", "y")
+    monkeypatch.setattr(client, "_cookie", lambda name: "csrf" if name == "csrftoken" else None)
+
+    calls: list[int] = []
+    logins: list[int] = []
+
+    def forbidden(path, data=None, headers=None):
+        calls.append(1)
+        raise urllib.error.HTTPError(
+            "https://pulsprodaj.ru" + path, 403, "FORBIDDEN", {},
+            io.BytesIO("CSRF verification failed".encode("utf-8")),
+        )
+
+    monkeypatch.setattr(client, "_open", forbidden)
+    monkeypatch.setattr(client, "sign_in", lambda: (logins.append(1), True)[1])
+
+    assert client._post_json("/api/app/complex/table/", {}) is None
+    # Два обращения, между ними — повторный вход.
+    assert len(calls) == 2 and len(logins) == 1
+    # Причина названа целиком: код и то, что ответил сервер.
+    assert client.errors and "403" in client.errors[-1]
+    assert "CSRF verification failed" in client.errors[-1]

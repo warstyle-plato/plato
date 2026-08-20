@@ -218,11 +218,13 @@ def install(app: FastAPI) -> MarketDiscoveryService:
         """
         cabinet_module.require_cabinet(request)
         if not complex_id:
-            # Справочник может лежать в кэше на диске — тогда входа не было, и
-            # первый же запрос к API уйдёт без сессии. Просим свежий: проба,
-            # которая молча спрашивает неавторизованно, отвечает «данных нет»
-            # там, где верный ответ — «нас не пустили».
-            known = await run_in_threadpool(lambda: service.pulse.projects(refresh=True))
+            # Справочник берётся как берут его все — из кэша, если он есть.
+            # Свежий (`refresh=True`) я тут однажды затребовал, чтобы гарантировать
+            # вход, и получил обратное: повторный вход меняет CSRF-токен, и все
+            # запросы пробы пошли с 403, тогда как обычный отчёт в ту же минуту
+            # собирался. Проба обязана ходить тем же путём, что рабочий код, —
+            # иначе она проверяет саму себя.
+            known = await run_in_threadpool(service.pulse.projects)
             complex_id = next((row.complex_id for row in known or []), 0)
         if not complex_id:
             raise HTTPException(
