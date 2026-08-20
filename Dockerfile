@@ -37,10 +37,18 @@ ARG INSTALL_BROWSER=1
 # Браузер тоже качается из сети, и на той же сети скачивание срывается. Три
 # попытки вместо одной: пересобирать весь образ из-за одного оборванного
 # соединения — двадцать минут на ровном месте.
+#
+# Сборок две. Playwright при headless запускает не полный Chromium, а отдельный
+# `chromium-headless-shell`, и качается он отдельно. В образе стоял только
+# полный, и на проде 20.08.2026 всё, что заводит браузер, падало на «Executable
+# doesn't exist»: печать PDF откатывалась к диалогу браузера, ТЭП — к серверным
+# формулам. Старые версии playwright имени `chromium-headless-shell` не знают,
+# поэтому при отказе ставим как раньше — запуск умеет отступать сам.
 RUN if [ "$INSTALL_BROWSER" = "1" ]; then \
       for attempt in 1 2 3; do \
-        playwright install --with-deps chromium && break || \
-        { echo "playwright install: попытка $attempt не удалась"; sleep 10; }; \
+        if playwright install --with-deps chromium chromium-headless-shell \
+           || playwright install --with-deps chromium; then break; fi; \
+        echo "playwright install: попытка $attempt не удалась"; sleep 10; \
       done \
       && rm -rf /var/lib/apt/lists/*; \
     fi

@@ -24,10 +24,11 @@ Safari; номера ставит только сам браузер, своим
 from __future__ import annotations
 
 import base64
-import os
 import re
 import threading
 from typing import Any, Callable
+
+import browser_launch
 
 # Печать держит одного Chromium за раз: рядом живёт браузер ГлавАПУ, и каждый
 # стоит трёхсот-четырёхсот мегабайт. Отчёт печатают редко, очередь дешевле
@@ -123,16 +124,20 @@ def render(html: str, *, footer: str, executable_path: str | None = None) -> byt
         raise PdfUnavailable("Печать занята другим отчётом — попробуйте через минуту")
     try:
         launch: dict[str, Any] = {
-            "headless": True,
             # Контейнер уже изолирован, а песочница Chromium в нём не
             # поднимается — тот же набор, что у браузера ГлавАПУ.
             "args": ["--no-sandbox", "--disable-dev-shm-usage"],
         }
-        path = executable_path or os.environ.get("CHROMIUM_EXECUTABLE_PATH") or ""
-        if path:
-            launch["executable_path"] = path
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(**launch)
+            # Запуск общий с ГлавАПУ: Playwright при headless берёт отдельную
+            # сборку `chromium_headless_shell`, а в образе её может не быть —
+            # и тогда падает не только печать. Отступление по способам живёт
+            # в одном месте, а не копией здесь.
+            browser = browser_launch.launch(
+                playwright,
+                args=launch["args"],
+                **({"executable_path": executable_path} if executable_path else {}),
+            )
             try:
                 page = browser.new_page()
                 page.set_default_timeout(_PDF_TIMEOUT_MS)

@@ -3003,3 +3003,105 @@ console.log(JSON.stringify(labels));
             assert not (abs(one["x"] - other["x"]) < 40 and abs(one["y"] - other["y"]) < 13), \
                 "две подписи налезли друг на друга"
 
+
+
+def test_chromium_starts_even_without_the_headless_shell(monkeypatch) -> None:
+    """Прод 20.08.2026: «Executable doesn't exist … chromium_headless_shell».
+
+    Playwright при headless запускает не полный Chromium, а отдельную сборку,
+    и качается она отдельным пакетом. В образе стоял только полный — и падало
+    всё, что заводит браузер: печать PDF откатывалась к диалогу браузера, ТЭП
+    ГлавАПУ — к серверным формулам. Две разные на вид поломки с одной
+    причиной, и обе выглядели как штатная работа.
+
+    Проверяется отступление: способ, который не сработал, не должен быть
+    последним словом, пока в кэше лежит рабочий файл.
+    """
+    import browser_launch
+
+    calls: list[dict] = []
+
+    class Chromium:
+        def launch(self, **options):
+            calls.append(options)
+            if "executable_path" not in options:
+                raise RuntimeError("Executable doesn't exist at chromium_headless_shell-1234")
+            return f"браузер из {options['executable_path']}"
+
+    class Fake:
+        chromium = Chromium()
+
+    monkeypatch.setattr(browser_launch, "executable_paths",
+                        lambda: ["/cache/chromium-1194/chrome-linux/chrome"])
+    monkeypatch.delenv("CHROMIUM_EXECUTABLE_PATH", raising=False)
+
+    browser = browser_launch.launch(Fake(), args=["--no-sandbox"])
+    assert browser == "браузер из /cache/chromium-1194/chrome-linux/chrome"
+    # Сначала как просит playwright, потом полный chromium, потом файл.
+    assert "channel" in calls[1] and calls[1]["channel"] == "chromium"
+    assert browser_launch.LAST_LAUNCH["how"].startswith("файл")
+    assert len(browser_launch.LAST_LAUNCH["tried"]) == 2
+
+    # Не поднялось ничем — это ошибка, а не пустой браузер: притвориться, что
+    # он есть, значит отложить ту же поломку на шаг дальше.
+    monkeypatch.setattr(browser_launch, "executable_paths", list)
+    import pytest
+
+    with pytest.raises(RuntimeError):
+        browser_launch.launch(Fake(), args=[])
+    assert browser_launch.LAST_LAUNCH["error"]
+
+
+def test_the_browser_state_is_visible_before_anyone_asks() -> None:
+    """«Chromium в образе есть» проверялось глазами при сборке — и было неверно.
+
+    Отсутствие браузера выходит наружу как «ТЭП посчитан формулами» и «PDF
+    прежнего вида». Ни то ни другое не называет причину, и оба выглядят как
+    штатная работа. В /health она названа до того, как о ней спросят.
+    """
+    from fastapi.testclient import TestClient
+
+    import main_legacy
+
+    answer = TestClient(main_legacy.app).get("/health").json()
+    assert "browsers" in answer
+    state = answer["browsers"]
+    assert set(state) >= {"browsers", "paths", "last_launch", "last_error", "tried"}
+    # Пустой список — честный ответ «в образе браузера нет», а не отсутствие поля.
+    assert isinstance(state["browsers"], list)
+
+
+def test_both_browser_users_go_through_the_same_launch() -> None:
+    """Копии запуска не заводим: она разошлась бы ровно в этот раз.
+
+    ГлавАПУ и печать PDF падали от одной причины и сообщали о ней по-разному.
+    Отступление по способам живёт в одном месте, и оба идут через него.
+    """
+    import inspect
+
+    import main_legacy
+    from market_search import report_pdf
+
+    engine = inspect.getsource(main_legacy._glavapu_browser_worker)
+    assert "browser_launch.launch(" in engine
+    assert "playwright.chromium.launch(" not in engine
+
+    printing = inspect.getsource(report_pdf.render)
+    assert "browser_launch.launch(" in printing
+    assert "playwright.chromium.launch(" not in printing
+
+
+def test_the_image_installs_the_headless_shell_too() -> None:
+    """В образе стояла одна сборка из двух, и это стоило суток тихой поломки.
+
+    Playwright при headless запускает `chromium-headless-shell`, и качается он
+    отдельно от полного Chromium. `playwright install chromium` ставит только
+    полный. Старые версии второго имени не знают, поэтому при отказе ставим
+    как раньше: запуск умеет отступать сам, но начинать надо с целого образа.
+    """
+    from pathlib import Path
+
+    text = Path("Dockerfile").read_text(encoding="utf-8")
+    assert "playwright install --with-deps chromium chromium-headless-shell" in text
+    # И запасной путь для старых версий, которые такого имени не знают.
+    assert "|| playwright install --with-deps chromium" in text

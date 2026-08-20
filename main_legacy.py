@@ -25,6 +25,10 @@ import ssl
 import zipfile
 import xml.etree.ElementTree as ET
 from xml.sax.saxutils import escape as xml_escape
+
+# Запуск Chromium — общий: его заводят и ГлавАПУ, и печать отчёта, и ломается
+# он у обоих сразу, а наружу выходит по-разному.
+import browser_launch
 import socket
 import urllib.parse
 import urllib.error
@@ -49,7 +53,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.19.19"
+VERSION = "0.19.20"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -7254,8 +7258,14 @@ def _glavapu_browser_worker() -> None:
                 try:
                     if browser is None or not browser.is_connected():
                         started = time.monotonic()
-                        browser = playwright.chromium.launch(
-                            headless=True, args=_GLAVAPU_HEADLESS_ARGS)
+                        # Запуск общий с печатью PDF: Playwright при headless
+                        # берёт отдельную сборку `chromium_headless_shell`, и
+                        # если её в образе нет, падает не только ГлавАПУ —
+                        # падает всё, что заводит браузер. Отказ при этом
+                        # выглядел по-разному: там формулы, тут прежний PDF, —
+                        # и обе поломки читались как «так работает».
+                        browser = browser_launch.launch(
+                            playwright, args=_GLAVAPU_HEADLESS_ARGS)
                         page = None
                         timings["launch"] = int((time.monotonic() - started) * 1000)
                     if page is None or page.is_closed():
@@ -18524,6 +18534,11 @@ def health() -> dict:
         # Порог не абстрактный: образ выкатки весит два-три гигабайта, и ниже
         # этого следующая выкатка не пройдёт.
         "disk_low": (free_mb is not None and free_mb < 3072),
+        # Браузер в образе — не подробность сборки. Его отсутствие выходит
+        # наружу как «ТЭП посчитан формулами» и «PDF прежнего вида»: две разные
+        # на вид поломки с одной причиной, и обе выглядят как штатная работа.
+        # Здесь она названа до того, как о ней спросят.
+        "browsers": browser_launch.diagnostics(),
     }
 
 
