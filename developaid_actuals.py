@@ -185,10 +185,16 @@ def _normalized(text: Any) -> str:
     return re.sub(r"\s+", " ", str(text or "").replace("ё", "е")).strip().lower()
 
 
-def _sheet(path: str | Path, name: str) -> Any:
+def _sheet(path: Any, name: str) -> Any:
+    """Строки листа. Источником может быть путь или уже прочитанные байты.
+
+    Веб-сервис принимает файл телом запроса и на диск его кладёт сам; заставлять
+    его писать временный файл ради чтения — лишний круг и лишняя точка отказа.
+    """
     from openpyxl import load_workbook
 
-    workbook = load_workbook(Path(path), read_only=True, data_only=True)
+    source = path if hasattr(path, "read") else Path(path)
+    workbook = load_workbook(source, read_only=True, data_only=True)
     try:
         if name not in workbook.sheetnames:
             raise KeyError(f"в книге нет листа «{name}»: {workbook.sheetnames}")

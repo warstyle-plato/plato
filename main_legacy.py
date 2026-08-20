@@ -42,6 +42,7 @@ from pydantic import BaseModel
 # наложение этого факта на плановую модель. Отдельным модулем по той же
 # причине: он о выгрузках и их разборе, движок — об экономике.
 import developaid_actuals
+import developaid_monitor
 
 # Перевод документов проекта (ГПЗУ, ППТ, соглашения ВРИ и МПТ, справки по
 # техприсоединению) в продукты и деньги модели живёт отдельным модулем: он о
@@ -1444,6 +1445,119 @@ def read_project_preset(preset_id: str) -> dict[str, Any]:
     if not path.is_file():
         raise HTTPException(status_code=404, detail="Пресет не найден")
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+# --- недельный монитор действующего проекта ---------------------------------
+#
+# Файлы приходят снимками и хранятся все: почти каждое расхождение, которое мы
+# разбирали на Гродненской, оказалось не ошибкой методики, а тем, что выгрузки
+# сняты в разные моменты. Прошлое к тому же переписывают — между РСС на 30.06 и
+# на 20.08 из мая ушло 124,2 млн ₽, а в июнь пришло 38,1, — и заметить это
+# можно только сравнением двух снимков.
+#
+# Файл приходит base64 в теле, а не multipart: остальные загрузки в этом
+# сервисе устроены так же, и заводить вторую форму приёма незачем.
+#
+# Маршруты скрыты из схемы и живут за тем же входом, что проекты и Платон:
+# здесь сметы, договоры и контрагенты действующего проекта, и открытым это
+# быть не может. Без токена бота гейт честно выключен, а не заперт для всех.
+
+
+class MonitorEstimateRequest(BaseModel):
+    project: str
+    taken_at: str
+    content_base64: str
+    filename: str = ""
+    session: str = ""
+    key: str = ""
+
+
+class MonitorSalesRequest(BaseModel):
+    project: str
+    taken_at: str
+    rows: list[dict[str, Any]] = []
+    session: str = ""
+    key: str = ""
+
+
+class MonitorViewRequest(BaseModel):
+    project: str
+    cut: str
+    programme_base64: str = ""
+    programme_start: str = ""
+    session: str = ""
+    key: str = ""
+
+
+def _monitor_programme(req: MonitorViewRequest) -> dict[str, Any] | None:
+    """Производственная программа, если её прислали.
+
+    Первый месяц задаётся явно: в шапке шахматки стоит «июль» без года, и
+    ошибка на двенадцать месяцев не видна ни в одной сумме.
+    """
+    if not req.programme_base64:
+        return None
+    if not req.programme_start:
+        raise HTTPException(400, "для программы нужен её первый месяц")
+    blob = io.BytesIO(base64.b64decode(req.programme_base64))
+    return developaid_actuals.read_programme(blob, req.programme_start)
+
+
+@app.post("/monitor/estimate", include_in_schema=False)
+def monitor_store_estimate(req: MonitorEstimateRequest) -> dict[str, Any]:
+    """Положить выгрузку РСС снимком на её дату."""
+    _require_web_access(req.session, req.key, "Монитор проекта")
+    try:
+        return developaid_monitor.store_estimate(
+            req.project, base64.b64decode(req.content_base64),
+            req.taken_at, req.filename)
+    except FileExistsError as exc:
+        raise HTTPException(409, str(exc))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/monitor/sales", include_in_schema=False)
+def monitor_store_sales(req: MonitorSalesRequest) -> dict[str, Any]:
+    """Положить продажи. Они приходят отдельно: книга обновляется реже РСС."""
+    _require_web_access(req.session, req.key, "Монитор проекта")
+    try:
+        return developaid_monitor.store_sales(req.project, req.rows, req.taken_at)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.get("/monitor/snapshots", include_in_schema=False)
+def monitor_snapshots(project: str, session: str = "", key: str = "") -> dict[str, Any]:
+    _require_web_access(session, key, "Монитор проекта")
+    return developaid_monitor.snapshots(project)
+
+
+@app.post("/monitor/view", include_in_schema=False)
+def monitor_view(req: MonitorViewRequest) -> dict[str, Any]:
+    """Срез и тренд по нему. Считает сервер, страница только рисует."""
+    _require_web_access(req.session, req.key, "Монитор проекта")
+    programme = _monitor_programme(req)
+    try:
+        return {
+            "snapshot": developaid_monitor.build(
+                req.project, cut=req.cut, programme=programme),
+            "trend": developaid_monitor.trend(
+                req.project, cut=req.cut, programme=programme),
+        }
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc))
+
+
+@app.get("/monitor/rewritten", include_in_schema=False)
+def monitor_rewritten(project: str, first: str, second: str,
+                      session: str = "", key: str = "") -> dict[str, Any]:
+    """Что переписали в прошлом между двумя снимками."""
+    _require_web_access(session, key, "Монитор проекта")
+    try:
+        return developaid_monitor.moved_between_snapshots(project, first, second)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc))
 
 
 @app.post("/api/project-presets/import")
