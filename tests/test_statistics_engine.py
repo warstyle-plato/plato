@@ -3,6 +3,7 @@ from pathlib import Path
 from developaid_statistics import (
     NormalizedBenchmark,
     build_benchmark,
+    index_source_catalog,
     load_normalized_benchmarks,
     result_to_dict,
 )
@@ -105,7 +106,34 @@ def test_curated_moscow_business_seed_is_loaded():
         metric_type="main_construction",
     )
     payload = result_to_dict(result)
-    assert payload["methodology_version"] == "2.0"
+    assert payload["methodology_version"] == "2.1"
     assert payload["recommended"] == 168817
     assert payload["n"] == 1
     assert payload["confidence"] == "pilot"
+
+
+def test_official_moscow_ncsm_is_packaged_as_two_distinct_denominators():
+    rows = load_normalized_benchmarks()
+    ncsm = [x for x in rows if x.source_kind == "official_normative" and x.region == "Москва"]
+    assert {x.unit for x in ncsm} == {"apartments", "building_total"}
+    apartments = next(x for x in ncsm if x.unit == "apartments")
+    building = next(x for x in ncsm if x.unit == "building_total")
+    assert apartments.value_low_rub_m2 == 139450
+    assert apartments.value_high_rub_m2 == 147310
+    assert building.value_low_rub_m2 == 90620
+    assert building.value_high_rub_m2 == 100790
+
+
+def test_moscow_declared_cost_is_not_gba():
+    rows = load_normalized_benchmarks()
+    declared = next(x for x in rows if x.external_id == "ac-moscow-eiszh-declared-cost-2025-06")
+    assert declared.value_rub_m2 == 148000
+    assert declared.unit == "building_total"
+    assert declared.metric_type == "declared_construction_cost"
+
+
+def test_index_sources_are_metadata_only_until_numeric_series_is_verified():
+    rows = index_source_catalog()
+    assert any(x["source"] == "Росстат" for x in rows)
+    assert any(x["source"] == "Мосстат" and x["region"] == "Москва" for x in rows)
+    assert all(x["automatic"] is False for x in rows)
