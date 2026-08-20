@@ -30,22 +30,6 @@ def select_options(core: Any, key: str) -> list[str]:
 # `calculate_phased`; подписи берутся из ТЭП движка.
 PHASE_PRODUCT_KEYS = ("apartments", "ground_commercial", "underground_parking", "storage")
 
-# Порядок на экране — продуктовый, а не исторический порядок словаря движка.
-# Кладовые стоят рядом с подземным паркингом: оба продукта продаются поштучно,
-# и цена кладовой без количества не должна жить отдельно в блоке «Продажи».
-_TEP_ROW_ORDER = (
-    "apartments",
-    "ground_commercial",
-    "underground_parking",
-    "storage",
-    "standalone_retail",
-    "offices",
-    "above_parking",
-    "kindergarten",
-    "school",
-    "clinic",
-)
-
 _TEP_ROW_HINTS = {
     "storage": (
         "Количество кладовых — самостоятельная ТЭП-вводная. Выручка считается "
@@ -103,17 +87,17 @@ def _field(item: list[Any], core: Any) -> dict[str, Any]:
 def _tep_block(core: Any) -> dict[str, Any]:
     """Блок ТЭП: строки продуктов движка и их собственные поля.
 
+    Порядок строк остаётся порядком `TEP_DEFAULT`: API формы не создаёт вторую
+    карту продуктов. Экран вправе переставить кладовые рядом с паркингом как
+    чисто визуальное решение.
+
     Методические доли не копируются: строка получает их из `core.TEP_RATIOS`.
     Для кладовых показываем только количество — именно оно вместе с ценой
     формирует выручку; нулевые ГНС/общая/полезная создавали видимость, будто
     от них что-то зависит.
     """
-    ordered = [key for key in _TEP_ROW_ORDER if key in core.TEP_DEFAULT]
-    ordered.extend(key for key in core.TEP_DEFAULT if key not in ordered)
-
     rows = []
-    for key in ordered:
-        row = core.TEP_DEFAULT[key]
+    for key, row in core.TEP_DEFAULT.items():
         names = [name for name in row if name != _TEP_LABEL_FIELD]
         if key == "storage":
             names = [name for name in names if name == "units"]
