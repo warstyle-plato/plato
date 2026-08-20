@@ -3166,3 +3166,68 @@ def test_the_browser_is_found_wherever_playwright_puts_it() -> None:
         assert browser_launch.cache_contents()["/нет/такого/каталога"] == ["каталога нет"]
     finally:
         browser_launch._CACHE_DIRS = saved
+
+
+def test_a_site_gets_named_neighbours_on_the_charts(tmp_path) -> None:
+    """У площадки нет своей линии — и на графике не остаётся главного героя.
+
+    Полоса рынка есть, а сравнивать её не с чем: правило «полоса вместо
+    пятнадцати линий» принималось для случая «моя линия против рынка», а
+    здесь этого случая нет. Тогда героями становятся соседи — те самые, по
+    которым считается ориентир цены. Отмечаем за человека, но один раз: снятую
+    им галочку возвращать нельзя, это уже не помощь, а спор.
+    """
+    import json
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if not node:
+        import pytest
+
+        pytest.skip("node не установлен")
+
+    from market_search.cabinet import CABINET_PAGE
+
+    start = CABINET_PAGE.index("  if(!autoPicked && !m.price_per_sqm){")
+    end = CABINET_PAGE.index("\n  }", start) + 4
+    rule = CABINET_PAGE[start:end]
+
+    driver = """
+let autoPicked=false; const onChart=new Set();
+const peers=[];
+for(let i=1;i<=9;i++) peers.push({complex_id:i, name:'Сосед '+i,
+  price_series:i<=7?[{month:'2026-01',value:5e5},{month:'2026-07',value:5e5}]:[],
+  sales_series:[]});
+const out={};
+// Площадка: своего прайса нет.
+let m={};
+%(rule)s
+out.site=[...onChart];
+// Человек снял одну галочку и отчёт перерисовался — возвращать её нельзя.
+onChart.delete('2');
+%(rule)s
+out.afterUncheck=[...onChart];
+// Действующий проект: героя не подменяем, галочки остаются пустыми.
+autoPicked=false; onChart.clear(); m={price_per_sqm:708109};
+%(rule)s
+out.project=[...onChart];
+console.log(JSON.stringify(out));
+""" % {"rule": rule}
+    path = tmp_path / "pick.js"
+    path.write_text(driver, encoding="utf-8")
+    run = subprocess.run([node, str(path)], capture_output=True, text=True, timeout=30)
+    assert run.returncode == 0, run.stderr
+    result = json.loads(run.stdout.strip().splitlines()[-1])
+
+    # Пятеро ближайших с историей — не все девять и не безымянная полоса.
+    assert result["site"] == ["1", "2", "3", "4", "5"]
+    # Сосед без помесячных чисел в отметку не идёт: рисовать по нему нечего.
+    assert "8" not in result["site"] and "9" not in result["site"]
+    # Снятая галочка не возвращается перерисовкой.
+    assert result["afterUncheck"] == ["1", "3", "4", "5"]
+    # У действующего проекта герой свой, и соседей за человека не отмечаем.
+    assert result["project"] == []
+
+    # И человеку сказано, почему галочки уже стоят.
+    assert "своего проекта у площадки нет" in CABINET_PAGE
