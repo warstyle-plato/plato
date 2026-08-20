@@ -54,7 +54,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.19.30"
+VERSION = "0.19.31"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -7361,14 +7361,25 @@ def recalculate_from_glavapu_baseline(baseline: dict[str, Any],
     base_mkd = float(bases.get("mkd") or 0.0)
     vri_lines = []
     vri_total = 0.0
-    residential_payment = vri_rate * (res_spp + built_in_spp)
+    # Ставка снята с расчёта, сделанного для права собственности: калькулятор
+    # считает плату за смену ВРИ именно так. Аренда городской земли — другой
+    # режим (273-ПП, приложение 8, там своя повышенная составляющая первого
+    # года), и переносить на неё ставку собственности нельзя. Соцнагрузка и
+    # парковка от права не зависят — их пересчитываем как обычно.
+    land_right = str(areas.get("land_right") or "ownership").strip().lower()
+    vri_available = land_right in ("", "ownership", "собственность")
+    if not vri_available:
+        warnings.append(
+            "право на участок — аренда, а ставка снята с расчёта для собственности: "
+            "плату за ВРИ этим способом не пересчитать, нужна выгрузка по аренде")
+    residential_payment = vri_rate * (res_spp + built_in_spp) if vri_available else 0.0
     if residential_payment:
         vri_lines.append({"type": "mkd", "spp_sqm": round(res_spp + built_in_spp, 2),
                           "payment_mln": round(residential_payment, 3),
                           "rate_mln_per_sqm": vri_rate})
         vri_total += residential_payment
     for use, spp in sorted(nonres_by_use.items()):
-        if spp <= 0:
+        if spp <= 0 or not vri_available:
             continue
         base_cost = bases.get(use)
         if base_cost is None or base_mkd <= 0:
@@ -7440,6 +7451,8 @@ def recalculate_from_glavapu_baseline(baseline: dict[str, Any],
                     "regime": regime, "basis": parking_basis},
         "vri_lines": vri_lines,
         "vri_total_mln": round(vri_total, 3),
+        "vri_available": vri_available,
+        "land_right": land_right,
         "rates": rates,
         "baseline": {
             "vri_mln": round(vri_base, 3),
@@ -30861,6 +30874,7 @@ async function recalcFromTep(){
    body:JSON.stringify({baseline:baseline,areas:{
     apartment_area_sqm:apartments,residential_living_spp_sqm:livingSpp,
     ground_commercial_spp_sqm:builtIn,nonresidential_np_sqm:nonres,
+    land_right:String(inputs.land_right||'ownership'),
     nonres_spp_by_use:{
      office:Number((tep.offices&&tep.offices.gns)||0),
      trade:Number((tep.standalone_retail&&tep.standalone_retail.gns)||0)}}})});
@@ -30878,7 +30892,9 @@ async function recalcFromTep(){
  const b=d.baseline||{};
  const cmp=(name,was,now)=>name+': было '+num(was)+' → стало '+num(now);
  const lines=[
-  cmp('Плата за ВРИ, млн ₽',b.vri_mln,d.vri_total_mln),
+  d.vri_available===false
+   ? 'Плата за ВРИ: не пересчитана — участок в аренде, а ставка снята с расчёта для собственности'
+   : cmp('Плата за ВРИ, млн ₽',b.vri_mln,d.vri_total_mln),
   cmp('Соцкомпенсация, млн ₽',b.compensation_mln,d.compensation_mln),
   cmp('Машино-места',b.parking_total,d.parking.total)
    +' ('+d.parking.permanent+' постоянных + '+d.parking.guest+' гостевых + '
@@ -30893,7 +30909,7 @@ async function recalcFromTep(){
  inputs.school_places=d.places.school;
  inputs.clinic_capacity=d.places.clinic;
  if(d.compensation_mln>0)inputs.social_compensation_mln=d.compensation_mln;
- if(d.vri_total_mln>0)inputs.land_rights_cost_mln=d.vri_total_mln;
+ if(d.vri_available!==false&&d.vri_total_mln>0)inputs.land_rights_cost_mln=d.vri_total_mln;
  const parkingWas=Number((tep.underground_parking&&tep.underground_parking.units)||0);
  inputs.underground_manual_spaces=d.parking.total;
  syncTep(false);renderInputs();renderTep();

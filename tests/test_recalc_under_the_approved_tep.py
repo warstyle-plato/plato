@@ -392,3 +392,31 @@ def test_the_transition_regime_is_explicit_not_guessed():
         BASELINE, dict(APPROVED, parking_norm_regime="что-то своё"))
     assert unknown["parking"]["regime"] == "2118_2026"
     assert any("режим" in text for text in unknown["warnings"])
+
+
+def test_a_leased_plot_does_not_get_the_ownership_rate():
+    """Ставка снята с расчёта для собственности: калькулятор считает плату
+    именно так. Аренда городской земли — другой режим (273-ПП, приложение 8,
+    своя повышенная составляющая первого года), и переносить на неё ставку
+    собственности нельзя."""
+    leased = core.recalculate_from_glavapu_baseline(
+        BASELINE, dict(APPROVED, land_right="lease"))
+    assert leased["vri_available"] is False
+    assert leased["vri_total_mln"] == 0.0
+    assert not leased["vri_lines"]
+    assert any("аренда" in text for text in leased["warnings"])
+    # Соцнагрузка и парковка от права не зависят — их считаем как обычно.
+    assert leased["parking"]["permanent"] == 123
+    assert 480 < leased["compensation_mln"] < 500
+
+    owned = core.recalculate_from_glavapu_baseline(BASELINE, APPROVED)
+    assert owned["vri_available"] is True and owned["vri_total_mln"] > 0
+
+
+def test_the_page_does_not_substitute_a_refused_payment():
+    page = core.PAGE
+    body = page[page.index("async function recalcFromTep("):]
+    body = body[:body.index("\n}\n")]
+    assert "land_right:String(inputs.land_right" in body
+    assert "vri_available===false" in body, "отказ виден в списке «было → стало»"
+    assert "d.vri_available!==false&&d.vri_total_mln>0" in body, "и не подставляется"
