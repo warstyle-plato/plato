@@ -49,7 +49,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.19.16"
+VERSION = "0.19.17"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -23722,11 +23722,40 @@ def survey_summary(days: int = 30) -> dict[str, Any]:
         groups.append({"key": group_key, "label": title,
                        "avg": average(collected), "count": len(collected)})
 
+    # Кто ответил. Анкета не анонимная — она привязана к chat_id, — но по одному
+    # номеру ничего не понять, и владелец видел «— : не верю числам» без всякого
+    # автора. Имя берётся тремя источниками по убыванию надёжности: знакомство
+    # (имя и компания, их человек написал сам), имя из Telegram в журнале,
+    # номер чата. Профиль лежит на ядре, поэтому на Render остаются два
+    # последних — там и живут ответы из бота.
+    def who(chat: int) -> str:
+        chat = int(chat or 0)
+        if not chat:
+            return "аноним"
+        profile = {}
+        try:
+            profile = profile_read(chat) or {}
+        except Exception:
+            profile = {}
+        name = str(profile.get("name") or "").strip() or name_by_chat.get(chat, "")
+        company = str(profile.get("company") or "").strip()
+        if name and company:
+            return f"{name} ({company})"
+        return name or f"chat {chat}"
+
+    name_by_chat: dict[int, str] = {}
+    for event in events:
+        chat = int(event.get("chat") or 0)
+        name = str(event.get("name") or "").strip()
+        if chat and name:
+            name_by_chat[chat] = name
+
     notes: list[dict[str, Any]] = []
     for survey in surveys:
         for group_key, text in (survey.get("problems") or {}).items():
             title = next((g[1] for g in FEEDBACK_GROUPS if g[0] == group_key), group_key)
             notes.append({"at": survey.get("at"), "chat": survey.get("chat"),
+                          "who": who(survey.get("chat")),
                           "role": survey.get("role", ""), "group": title, "text": text})
         # Свободные поля — тоже комментарий, и раньше они не доходили никуда:
         # свод читал только привязанные к разделу. В боте комментарий один и
@@ -23736,8 +23765,47 @@ def survey_summary(days: int = 30) -> dict[str, Any]:
             text = str(survey.get(field) or "").strip()
             if text:
                 notes.append({"at": survey.get("at"), "chat": survey.get("chat"),
+                              "who": who(survey.get("chat")),
                               "role": survey.get("role", ""), "group": title,
                               "text": text})
+
+    # Ответы поимённо. Средние показывают состояние сервиса, а этот список —
+    # разговор с конкретным человеком: что он поставил и что написал. Анкета
+    # приходит двумя записями (оценки и комментарий), поэтому они складываются
+    # по chat_id, а не показываются двумя строками.
+    people: dict[int, dict[str, Any]] = {}
+    for survey in sorted(surveys, key=lambda s: float(s.get("at") or 0)):
+        chat = int(survey.get("chat") or 0)
+        person = people.setdefault(chat, {
+            "chat": chat, "who": who(chat), "at": survey.get("at"),
+            "surface": survey.get("surface", ""), "role": survey.get("role", ""),
+            "scores": {}, "texts": [],
+        })
+        person["at"] = survey.get("at") or person["at"]
+        if survey.get("role"):
+            person["role"] = survey.get("role")
+        for key, value in (survey.get("ratings") or {}).items():
+            if key in FEEDBACK_ITEMS:
+                person["scores"][key] = int(value)
+        for text in list((survey.get("problems") or {}).values()) + [
+                survey.get("impression"), survey.get("mistakes")]:
+            text = str(text or "").strip()
+            if text:
+                person["texts"].append(text)
+    respondents = []
+    for person in people.values():
+        scores = list(person["scores"].values())
+        respondents.append({
+            "chat": person["chat"], "who": person["who"], "at": person["at"],
+            "surface": person["surface"], "role": person["role"],
+            "rated": len(scores), "avg": average(scores),
+            "texts": person["texts"],
+            "lowest": sorted(
+                ({"label": FEEDBACK_ITEMS[key], "score": score}
+                 for key, score in person["scores"].items()),
+                key=lambda row: row["score"])[:3],
+        })
+    respondents.sort(key=lambda row: float(row["at"] or 0), reverse=True)
 
     return {
         "days": int(days),
@@ -23750,6 +23818,7 @@ def survey_summary(days: int = 30) -> dict[str, Any]:
         "strongest": list(reversed(items[-5:])),
         "groups": groups,
         "notes": notes,
+        "respondents": respondents,
     }
 
 
