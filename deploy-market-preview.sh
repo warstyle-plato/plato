@@ -61,8 +61,6 @@ preflight_disk() {
     sh "$guard"
   fi
   avail_kb=$(df -Pk / | awk 'NR==2 {print $4}')
-  # Образ обычно 2–3 ГБ. Оставляем минимум 4 ГБ до pull, чтобы не повторить
-  # аварию 18.08, когда закончилось место посреди docker pull.
   min_kb=$((4 * 1024 * 1024))
   if [ "${avail_kb:-0}" -lt "$min_kb" ]; then
     echo "Недостаточно места перед pull: нужно минимум 4 ГБ свободно." >&2
@@ -115,17 +113,18 @@ PY
 route_check() {
   port=$1
   curl -fsS --max-time 10 "http://127.0.0.1:${port}/openapi.json" \
-    | python3 -c 'import json,sys; p=json.load(sys.stdin).get("paths",{}); required=("/market/discovery","/statistics","/api/statistics/construction-cost","/api/statistics/sources"); missing=[x for x in required if x not in p]; assert not missing, "не зарегистрированы маршруты: " + ", ".join(missing)'
-  # OpenAPI подтверждает регистрацию, а GET страницы ловит ошибку уже внутри handler.
+    | python3 -c 'import json,sys; p=json.load(sys.stdin).get("paths",{}); required=("/market/discovery","/statistics","/api/statistics/construction-cost","/api/statistics/sources","/api/statistics/index-sources"); missing=[x for x in required if x not in p]; assert not missing, "не зарегистрированы маршруты: " + ", ".join(missing)'
   curl -fsS --max-time 10 "http://127.0.0.1:${port}/statistics" >/dev/null
   curl -fsS --max-time 10 --get "http://127.0.0.1:${port}/api/statistics/construction-cost" \
     --data-urlencode "region=Москва" \
     --data-urlencode "class=business" \
     --data-urlencode "unit=gba" \
     --data-urlencode "metric_type=main_construction" \
-    | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d.get("methodology_version")=="2.0", d; assert d.get("recommended") is not None, d; assert d.get("unit")=="gba", d; assert d.get("metric_type")=="main_construction", d'
+    | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d.get("methodology_version")=="2.1", d; assert d.get("recommended") is not None, d; assert d.get("unit")=="gba", d; assert d.get("metric_type")=="main_construction", d'
   curl -fsS --max-time 10 "http://127.0.0.1:${port}/api/statistics/sources" \
-    | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d.get("methodology_version")=="2.0", d; assert d.get("count",0)>0, d; assert isinstance(d.get("sources"),list), d'
+    | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d.get("methodology_version")=="2.1", d; assert d.get("count",0)>=5, d; assert isinstance(d.get("sources"),list), d'
+  curl -fsS --max-time 10 "http://127.0.0.1:${port}/api/statistics/index-sources" \
+    | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d.get("methodology_version")=="2.1", d; assert d.get("count",0)>=2, d'
 }
 
 start_preview() {
@@ -152,8 +151,6 @@ restore_old() {
   fi
 }
 
-# Никогда не используем фиксированный 18081: там живёт IA preview. Проверочный
-# порт выбирается из отдельного диапазона, а занятый порт считается чужой работой.
 if [ -n "$CHECK_PORT" ]; then
   if owner=$(port_owner "$CHECK_PORT"); then
     echo "Проверочный порт ${CHECK_PORT} занят: ${owner}. Чужой контейнер не трогаю." >&2
@@ -171,8 +168,6 @@ say "Скачивание ${IMAGE}."
 registry_login
 docker pull "$IMAGE" >/dev/null
 
-# 8081 принадлежит market preview, но останавливаем только контейнер, который
-# действительно сейчас его публикует. Никаких docker rm -f по фильтру порта.
 OLD_ID=$(docker ps --filter "publish=${PORT}" --format '{{.ID}}' | head -1 || true)
 if [ -n "$OLD_ID" ]; then
   OLD_NAME=$(docker inspect -f '{{.Name}}' "$OLD_ID" 2>/dev/null | sed 's#^/##' || true)
@@ -193,7 +188,7 @@ if ! verdict=$(health_check "$CHECK_PORT" 2>&1) || ! route_check "$CHECK_PORT"; 
   docker rm -f "$STAGING_NAME" >/dev/null 2>&1 || true
   exit 1
 fi
-say "Проба пройдена: ${verdict}; статистика v2 отвечает."
+say "Проба пройдена: ${verdict}; статистика v2.1 отвечает."
 docker rm -f "$STAGING_NAME" >/dev/null 2>&1 || true
 
 if [ -n "$OLD_ID" ]; then
