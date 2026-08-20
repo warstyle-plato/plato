@@ -159,6 +159,12 @@ def _date(value: Any) -> datetime.date | None:
     if not isinstance(value, str):
         return None
     tail = re.split(r"\bот\b", value)[-1].strip()
+    iso = re.match(r"(\d{4})-(\d{2})-(\d{2})$", tail)
+    if iso:
+        try:
+            return datetime.date(*(int(part) for part in iso.groups()))
+        except ValueError:
+            return None
     match = re.match(r"(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{2,4})", tail)
     if match:
         day, month, year = (int(part) for part in match.groups())
@@ -1783,4 +1789,420 @@ def read_credits(path: str | Path) -> dict[str, Any]:
         "pf_balance": balance,
         "bridge_balance": bridge,
         "months": [month for _, month in months],
+    }
+
+
+# ---------------------------------------------------------------------------
+# График производства работ.
+#
+# Производственная программа РСС говорит, сколько денег принять в каком месяце,
+# и на этом кончается: из неё Ганта не выйдет, потому что у работы нет ни
+# начала, ни окончания — только помесячные суммы. ГПР даёт сроки, статус,
+# процент выполнения, предшественников и — главное — код РСС при каждой работе,
+# уже проставленный с основанием привязки. Значит сроки сшиваются с деньгами
+# тем же ключом, что платежи и акты, а не по названию работы.
+#
+# Считаются только строки типа «Работа». «Сводная» — это свёртка ветки WBS, и
+# сложить её с подчинёнными значит посчитать график дважды; вехи длительности
+# не имеют вовсе.
+# ---------------------------------------------------------------------------
+
+_SCHEDULE_SHEET = "ГПР"
+_SCHEDULE_FIRST_ROW = 5
+_SCHEDULE_COLUMNS = {
+    "id": 0, "wbs": 1, "section": 2, "object": 3, "name": 4, "kind": 5,
+    "progress": 6, "start": 7, "finish": 8, "status": 9, "duration": 10,
+    "predecessors": 11, "tender": 12, "tender_finish": 13, "float_days": 14,
+    "estimate_code": 16, "estimate_name": 17, "basis": 18,
+}
+_SCHEDULE_WORK = "работа"
+_SCHEDULE_OVERDUE = "просроч"
+
+
+def read_schedule(path: Any) -> dict[str, Any]:
+    """ГПР: работы со сроками, статусом, процентом и кодом РСС."""
+    rows: list[dict[str, Any]] = []
+    for index, row in enumerate(_sheet(path, _SCHEDULE_SHEET), 1):
+        if index < _SCHEDULE_FIRST_ROW:
+            continue
+
+        def cell(field: str) -> Any:
+            position = _SCHEDULE_COLUMNS[field]
+            return row[position] if position < len(row) else None
+
+        if cell("id") is None:
+            continue
+        status = str(cell("status") or "").strip()
+        rows.append({
+            "id": str(cell("id")).strip(),
+            "wbs": str(cell("wbs") or "").strip(),
+            "section": str(cell("section") or "").strip(),
+            "object": str(cell("object") or "").strip(),
+            "name": str(cell("name") or "").strip(),
+            "kind": str(cell("kind") or "").strip(),
+            "is_work": _SCHEDULE_WORK in _normalized(cell("kind")),
+            "progress": _money(cell("progress")),
+            "start": _date(cell("start")),
+            "finish": _date(cell("finish")),
+            "status": status,
+            "overdue": _SCHEDULE_OVERDUE in _normalized(status),
+            "duration": _money(cell("duration")),
+            "predecessors": str(cell("predecessors") or "").strip(),
+            "estimate_code": _code(cell("estimate_code")),
+            "estimate_name": str(cell("estimate_name") or "").strip(),
+            "basis": str(cell("basis") or "").strip(),
+        })
+    works = [item for item in rows if item["is_work"]]
+    return {
+        "rows": rows,
+        "works": works,
+        "overdue": [item for item in works if item["overdue"]],
+        "without_code": [item for item in works if not item["estimate_code"]],
+    }
+
+
+def schedule_against_money(
+    schedule: dict[str, Any],
+    programme: dict[str, Any] | None,
+    works: dict[str, Any] | None,
+    cut: Any,
+) -> dict[str, Any]:
+    """Свести просрочку по срокам с отставанием по деньгам.
+
+    Отставание в деньгах говорит «сколько», график — «где». Ответ нужен из
+    обоих: 275,4 млн ₽ сами по себе не показывают, фасады это или инженерка.
+
+    Оба источника сводятся по коду РСС — тому же ключу, которым разнесены
+    платежи и акты. Сшивать по названию работы нельзя: оно переформулируется
+    между выгрузками, а код нет.
+    """
+    cut_month = _as_month(cut)
+    if cut_month is None:
+        raise ValueError("не задана дата среза (`cut`)")
+
+    planned: dict[str, float] = {}
+    if programme:
+        leaves = programme.get("leaves") or set(programme["by_code"])
+        for code, series in programme["by_code"].items():
+            if code not in leaves:
+                continue
+            due = sum(value for month, value in series.items() if month < cut_month)
+            if due:
+                planned[code] = planned.get(code, 0.0) + due
+    accepted: dict[str, float] = {}
+    if works and programme and programme.get("months"):
+        start = programme["months"][0]
+        for item in works["rows"]:
+            if not item["construction"] or not item["date"]:
+                continue
+            if start <= item["date"] < cut_month:
+                code = item["code"]
+                accepted[code] = accepted.get(code, 0.0) + item["amount"]
+
+    by_code: dict[str, dict[str, Any]] = {}
+    for item in schedule["works"]:
+        code = item["estimate_code"]
+        entry = by_code.setdefault(code, {
+            "code": code, "article": item["estimate_name"],
+            "works": 0, "overdue": 0, "overdue_names": [],
+            "planned": planned.get(code, 0.0),
+            "accepted": accepted.get(code, 0.0),
+        })
+        entry["works"] += 1
+        if item["overdue"]:
+            entry["overdue"] += 1
+            entry["overdue_names"].append(item["name"].strip())
+    for code, plan_value in planned.items():
+        by_code.setdefault(code, {
+            "code": code, "article": "", "works": 0, "overdue": 0,
+            "overdue_names": [], "planned": plan_value,
+            "accepted": accepted.get(code, 0.0),
+        })
+    for entry in by_code.values():
+        entry["gap"] = entry["accepted"] - entry["planned"]
+
+    return {
+        "cut": cut_month,
+        "by_code": sorted(by_code.values(), key=lambda item: item["gap"]),
+        "overdue_works": len(schedule["overdue"]),
+        "total_works": len(schedule["works"]),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Базовый план и факт по срокам: выгрузка календарного планирования.
+#
+# Очищенный ГПР несёт код РСС при каждой работе — тем самым сроки сшиваются с
+# деньгами. Чего в нём нет: фактических дат начала и окончания и базового плана.
+# И то и другое лежит в исходной выгрузке планировщика («Таблица_задач1»), но
+# кода РСС там нет вовсе. Ни один файл сам по себе плана-факта не даёт; ключ —
+# `Ид`, он же `ID` очищенного ГПР, и на Кутузове сходится 632 из 632, включая
+# WBS до строки.
+#
+# **Отставание считается от базового плана, а не от текущего.** Текущие сроки
+# двигают — ровно так же, как между выгрузками переписывают акты. На Кутузове
+# верхний срок при этом держится: РнВ 30.09.2027 против базовых 26.09.2027,
+# четыре дня. А под ним 387 работ из 454 уехали вправо, медиана 66 дней: резерв
+# съеден внутри, работы сжаты в хвост. По текущему графику проект идёт в срок,
+# по базовому — нет, и видно это только сравнением двух колонок.
+# ---------------------------------------------------------------------------
+
+_PM_SHEET = "Таблица_задач1"
+_PM_COLUMNS = {
+    "id": 0, "uid": 1, "name": 2, "level": 5, "predecessors": 7,
+    "start": 8, "finish": 9, "float_days": 15, "progress": 17,
+    "actual_start": 18, "actual_finish": 19,
+    "baseline_start": 20, "baseline_finish": 21,
+    "wbs": 35, "milestone": 37, "summary": 38, "status": 48,
+}
+_PM_MONTHS = {
+    "январь": 1, "февраль": 2, "март": 3, "апрель": 4, "май": 5, "июнь": 6,
+    "июль": 7, "август": 8, "сентябрь": 9, "октябрь": 10, "ноябрь": 11,
+    "декабрь": 12,
+}
+_PM_EMPTY = {"нд", "н/д", ""}
+
+
+def _pm_date(value: Any) -> datetime.date | None:
+    """Дата из выгрузки планировщика. Форматов там два, и оба свои.
+
+    Плановые и базовые даты приходят словами — «07 Июль 2020 9:00»; ранние,
+    поздние и фактические — с днём недели впереди: «Вт 07.07.20». Общий разбор
+    на второй вид не годится: он ищет дату с начала строки и спотыкается о «Вт».
+    Незаполненное поле источник пишет как «НД» — это «даты нет», а не ошибка.
+    """
+    if isinstance(value, (datetime.date, datetime.datetime)):
+        return _date(value)
+    text = str(value or "").strip()
+    if _normalized(text) in _PM_EMPTY:
+        return None
+    worded = re.match(r"(\d{1,2})\s+([А-Яа-яЁё]+)\s+(\d{4})", text)
+    if worded:
+        month = _PM_MONTHS.get(_normalized(worded.group(2)))
+        if month:
+            try:
+                return datetime.date(
+                    int(worded.group(3)), month, int(worded.group(1)))
+            except ValueError:
+                return None
+    short = re.search(r"(\d{1,2})\.(\d{1,2})\.(\d{2,4})", text)
+    if short:
+        day, month, year = (int(part) for part in short.groups())
+        if year < 100:
+            year += 2000
+        if not 2000 <= year <= 2100:
+            return None
+        try:
+            return datetime.date(year, month, day)
+        except ValueError:
+            return None
+    return _date(value)
+
+
+def read_pm_schedule(path: Any) -> dict[str, Any]:
+    """Выгрузка планировщика: базовый план, факт и текущие сроки по задачам.
+
+    Кода РСС здесь нет — привязка к деньгам приходит из очищенного ГПР по `Ид`.
+    """
+    rows: list[dict[str, Any]] = []
+    for index, row in enumerate(_sheet(path, _PM_SHEET), 1):
+        if index == 1 or not row:
+            continue
+
+        def cell(field: str) -> Any:
+            position = _PM_COLUMNS[field]
+            return row[position] if position < len(row) else None
+
+        if cell("id") is None or str(cell("id")).strip() == "":
+            continue
+        status = str(cell("status") or "").strip()
+        rows.append({
+            "id": str(cell("id")).strip(),
+            "wbs": str(cell("wbs") or "").strip(),
+            "name": str(cell("name") or "").strip(),
+            "level": int(_money(cell("level")) or 0),
+            "summary": _normalized(cell("summary")) == "да",
+            "milestone": _normalized(cell("milestone")) == "да",
+            "start": _pm_date(cell("start")),
+            "finish": _pm_date(cell("finish")),
+            "baseline_start": _pm_date(cell("baseline_start")),
+            "baseline_finish": _pm_date(cell("baseline_finish")),
+            "actual_start": _pm_date(cell("actual_start")),
+            "actual_finish": _pm_date(cell("actual_finish")),
+            "progress": _money(cell("progress")),
+            "status": status,
+            "overdue": _SCHEDULE_OVERDUE in _normalized(status),
+            "predecessors": str(cell("predecessors") or "").strip(),
+        })
+    by_id = {item["id"]: item for item in rows}
+    return {
+        "rows": rows,
+        "by_id": by_id,
+        "with_baseline": [item for item in rows if item["baseline_finish"]],
+        "started": [item for item in rows if item["actual_start"]],
+    }
+
+
+def merge_schedule(schedule: dict[str, Any], pm: dict[str, Any]) -> dict[str, Any]:
+    """Пришить факт и базовый план к работам ГПР по `Ид`.
+
+    Совпадение проверяется, а не предполагается: если WBS одной и той же строки
+    в двух файлах разошлись, файлы — с разных срезов, и сшивать их значит
+    сравнивать один график с другим. Такие строки уходят в `conflicts`, а не
+    молча берут чужие даты.
+    """
+    matched, missing, conflicts = 0, [], []
+    for item in schedule["rows"]:
+        source = pm["by_id"].get(item["id"])
+        if source is None:
+            missing.append(item["id"])
+            continue
+        if item["wbs"] and source["wbs"] and item["wbs"] != source["wbs"]:
+            conflicts.append({"id": item["id"], "schedule": item["wbs"],
+                              "pm": source["wbs"]})
+            continue
+        matched += 1
+        item["baseline_start"] = source["baseline_start"]
+        item["baseline_finish"] = source["baseline_finish"]
+        item["actual_start"] = source["actual_start"]
+        item["actual_finish"] = source["actual_finish"]
+        if item["start"] is None:
+            item["start"] = source["start"]
+        if item["finish"] is None:
+            item["finish"] = source["finish"]
+    schedule["baseline"] = {
+        "matched": matched,
+        "missing": missing,
+        "conflicts": conflicts,
+        "total": len(schedule["rows"]),
+    }
+    return schedule
+
+
+def _slip(item: dict[str, Any]) -> int | None:
+    """Сдвиг окончания работы от базового плана, в днях."""
+    planned = item.get("actual_finish") or item.get("finish")
+    baseline = item.get("baseline_finish")
+    if planned is None or baseline is None:
+        return None
+    return (planned - baseline).days
+
+
+def gantt(schedule: dict[str, Any], cut: Any) -> dict[str, Any]:
+    """Полосы для Ганта: базовый план, текущий план и факт — по одной работе.
+
+    У идущей работы фактического окончания нет, и рисовать её факт до планового
+    окончания нельзя: это нарисует сделанным то, что ещё делается. Фактическая
+    полоса кончается срезом.
+    """
+    cut_date = _date(cut) or _pm_date(cut)
+    if cut_date is None:
+        month = _as_month(cut)
+        cut_date = datetime.date(month.year, month.month, 1) if month else None
+    if cut_date is None:
+        raise ValueError("не задана дата среза (`cut`)")
+
+    bars = []
+    for item in schedule["rows"]:
+        if not item.get("is_work", True):
+            continue
+        actual_start = item.get("actual_start")
+        actual_finish = item.get("actual_finish")
+        fact_to = actual_finish or (cut_date if actual_start else None)
+        bars.append({
+            "id": item["id"],
+            "wbs": item.get("wbs", ""),
+            "name": item.get("name", ""),
+            "section": item.get("section", ""),
+            "object": item.get("object", ""),
+            "code": item.get("estimate_code", ""),
+            "article": item.get("estimate_name", ""),
+            "status": item.get("status", ""),
+            "progress": item.get("progress") or 0.0,
+            "plan": [item.get("start"), item.get("finish")],
+            "baseline": [item.get("baseline_start"), item.get("baseline_finish")],
+            "fact": [actual_start, fact_to],
+            "slip_days": _slip(item),
+            "overdue": bool(item.get("overdue")),
+            "done": bool(actual_finish),
+            "running": bool(actual_start and not actual_finish),
+        })
+
+    slips = sorted(bar["slip_days"] for bar in bars if bar["slip_days"] is not None)
+    by_code: dict[str, dict[str, Any]] = {}
+    for bar in bars:
+        entry = by_code.setdefault(bar["code"], {
+            "code": bar["code"],
+            # Работа без кода РСС к деньгам не пришивается вовсе, и называть её
+            # статьёй первой попавшейся работы группы значит выдать догадку за
+            # привязку. У безкодовой группы имя одно — «без кода РСС».
+            "article": bar["article"] if bar["code"] else "без кода РСС",
+            "works": 0, "done": 0, "running": 0, "overdue": 0,
+            "slips": [], "worst": None, "worst_name": "",
+        })
+        entry["works"] += 1
+        entry["done"] += bar["done"]
+        entry["running"] += bar["running"]
+        entry["overdue"] += bar["overdue"]
+        if bar["slip_days"] is not None:
+            entry["slips"].append(bar["slip_days"])
+            if entry["worst"] is None or bar["slip_days"] > entry["worst"]:
+                entry["worst"] = bar["slip_days"]
+                entry["worst_name"] = bar["name"]
+    for entry in by_code.values():
+        entry["slip_median"] = _median(entry.pop("slips"))
+
+    return {
+        "cut": cut_date,
+        "bars": bars,
+        "by_code": sorted(
+            by_code.values(),
+            key=lambda entry: -(entry["worst"] if entry["worst"] is not None else -1)),
+        "slip_median": _median(slips),
+        "slipped": sum(1 for value in slips if value > 0),
+        "on_time": sum(1 for value in slips if value <= 0),
+        "measured": len(slips),
+        "works": len(bars),
+        "overdue": sum(1 for bar in bars if bar["overdue"]),
+        "running": sum(1 for bar in bars if bar["running"]),
+        "done": sum(1 for bar in bars if bar["done"]),
+    }
+
+
+def _median(values: list[int]) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    if len(ordered) % 2:
+        return float(ordered[middle])
+    return (ordered[middle - 1] + ordered[middle]) / 2.0
+
+
+def schedule_deadline(schedule: dict[str, Any], pm: dict[str, Any]) -> dict[str, Any]:
+    """Держится ли верхний срок и какой ценой.
+
+    Срок проекта — самое позднее окончание среди **листьев**, а не сводных
+    строк. Искать его по названию вехи нельзя: «РнВ получен» на другом проекте
+    назовут иначе. Брать сводную верхнего уровня — тоже: её базовый план это
+    свёртка всей ветки, и на Кутузове корень унаследован от чужого проекта
+    («ГРП Саввинская») с базовым окончанием в ноябре 2028-го. По корню выходило
+    бы, что проект идёт с опережением на 401 день. У листа базовый план свой.
+    """
+    tops = [item for item in pm["rows"]
+            if not item["summary"] and item["finish"] and item["baseline_finish"]]
+    if not tops:
+        return {"known": False}
+    top = max(tops, key=lambda item: item["finish"])
+    inner = [bar["slip_days"] for bar in gantt(schedule, top["finish"])["bars"]
+             if bar["slip_days"] is not None]
+    return {
+        "known": True,
+        "name": top["name"],
+        "finish": top["finish"],
+        "baseline_finish": top["baseline_finish"],
+        "slip_days": (top["finish"] - top["baseline_finish"]).days,
+        "inner_slip_median": _median(inner),
+        "inner_slipped": sum(1 for value in inner if value > 0),
+        "inner_measured": len(inner),
     }
