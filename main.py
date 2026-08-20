@@ -1141,6 +1141,62 @@ def _remote_summaries(days: int) -> dict | None:
         return None
 
 
+def _when(at: Any) -> str:
+    """Время события коротко. Журнал ведётся в UTC — так и подписано."""
+    try:
+        moment = datetime.fromtimestamp(float(at or 0), tz=timezone.utc)
+    except (TypeError, ValueError, OSError):
+        return ""
+    return moment.strftime("%d.%m %H:%M")
+
+
+def _note_line(note: dict) -> str:
+    """Комментарий с автором: кто, когда, о чём и что именно написал.
+
+    Раньше строка начиналась с роли, а роль в боте пустая, — получалось
+    «— : не верю числам», и переспросить было некого.
+    """
+    who = html.escape(str(note.get("who") or note.get("role") or "аноним"))
+    when = _when(note.get("at"))
+    head = f"<b>{who}</b>" + (f" · {when}" if when else "")
+    group = html.escape(str(note.get("group") or ""))
+    return f"{head} · <i>{group}</i>: " + html.escape(str(note.get("text") or "")[:400])
+
+
+def _respondents_block(data: dict) -> list[str]:
+    """Поимённо: кто отвечал, что поставил и где просел.
+
+    Свод средних говорит о сервисе, а этот список — о людях: анкета не
+    анонимная, и владельцу нужно знать, к кому вернуться с вопросом.
+    """
+    people = data.get("respondents") or []
+    if not people:
+        return []
+    lines = ["", "<b>Кто отвечал</b>"]
+    for person in people[:15]:
+        who = html.escape(str(person.get("who") or "аноним"))
+        when = _when(person.get("at"))
+        rated = int(person.get("rated") or 0)
+        head = f"• <b>{who}</b>" + (f" · {when}" if when else "")
+        if rated:
+            head += f" · {rated} оц., средняя {person.get('avg')}"
+        else:
+            head += " · без оценок"
+        chat = int(person.get("chat") or 0)
+        if chat:
+            head += f" · <code>{chat}</code>"
+        lines.append(head)
+        weak = [f"{html.escape(str(row['label']))} {row['score']}"
+                for row in (person.get("lowest") or []) if int(row["score"]) <= 3]
+        if weak:
+            lines.append("   ниже всего: " + " · ".join(weak))
+        for text in (person.get("texts") or [])[:3]:
+            lines.append("   «" + html.escape(str(text)[:400]) + "»")
+    if len(people) > 15:
+        lines.append(f"<i>…и ещё {len(people) - 15} чел.</i>")
+    return lines
+
+
 def _survey_block(data: dict, title: str) -> list[str]:
     lines = [f"<b>{title}</b>", f"Анкет заполнено: <b>{data.get('answers', 0)}</b>"]
     groups = [g for g in (data.get("groups") or []) if g.get("count")]
@@ -1148,9 +1204,8 @@ def _survey_block(data: dict, title: str) -> list[str]:
         lines.append("Средние по разделам: " + " · ".join(
             f"{html.escape(str(g['label']))} {g['avg']}" for g in groups))
     for note in (data.get("notes") or [])[-10:]:
-        who = html.escape(str(note.get("role") or "—"))
-        lines.append(f"• <i>{html.escape(str(note.get('group') or ''))}</i> · {who}: "
-                     + html.escape(str(note.get("text") or "")[:400]))
+        lines.append("• " + _note_line(note))
+    lines.extend(_respondents_block(data))
     return lines
 
 
@@ -1201,14 +1256,13 @@ def _survey_message(chat_id: int, user_id: int, argument: str) -> None:
                          f"<i>({item['count']})</i>")
     if data["notes"]:
         lines.append("")
-        lines.append("<b>Что написали</b>")
+        lines.append("<b>Что написали</b> <i>(время UTC)</i>")
         for note in data["notes"][-20:]:
-            who = html.escape(str(note.get("role") or "—"))
-            lines.append(f"• <i>{html.escape(str(note['group']))}</i> · {who}: "
-                         + html.escape(str(note["text"])[:400]))
+            lines.append("• " + _note_line(note))
     else:
         lines.append("")
         lines.append("<i>Свободных комментариев пока нет.</i>")
+    lines.extend(_respondents_block(data))
     # Вторая половина ответов — на ядре: сайт обслуживает оно, и его журнал
     # боту не виден. Показываем отдельным блоком, а не подмешиваем в средние:
     # смешивать две выборки в одно число значит выдумывать третье.
@@ -1410,8 +1464,12 @@ def _feedback_forget(chat_id: int) -> None:
     _state_write(f"{_FEEDBACK_STATE}:{chat_id}", {})
 
 
-def _feedback_start(chat_id: int) -> None:
-    _feedback_remember(chat_id, {"stage": "rate", "index": 0, "ratings": {}})
+def _feedback_start(chat_id: int, name: str = "") -> None:
+    # Имя автора кладётся в состояние: анкета длинная, а событие с именем
+    # приходит только в начале. Без него в своде остаётся голый chat_id —
+    # владелец видел «— : не верю числам» и не знал, кого переспросить.
+    _feedback_remember(chat_id, {"stage": "rate", "index": 0, "ratings": {},
+                                 "name": str(name or "")})
     total = len(_feedback_questions())
     _send_message(
         chat_id,
@@ -1472,10 +1530,12 @@ def _feedback_finish(chat_id: int) -> None:
                if isinstance(value, (int, float)) and 1 <= int(value) <= 5}
     if ratings:
         core.usage_track("survey", surface="telegram", chat_id=chat_id,
+                         user_id=chat_id, name=str(state.get("name") or ""),
                          text="", ratings=ratings, problems={},
                          impression="", mistakes="", role="", region="",
                          projects=[], source="")
-    _feedback_remember(chat_id, {"stage": "text", "rated": len(ratings)})
+    _feedback_remember(chat_id, {"stage": "text", "rated": len(ratings),
+                                 "name": str(state.get("name") or "")})
     if ratings:
         _send_message(
             chat_id,
@@ -1495,6 +1555,8 @@ def _feedback_save(chat_id: int, text: str) -> None:
     if not text:
         return
     core.usage_track("survey", surface="telegram", chat_id=chat_id,
+                     user_id=chat_id,
+                     name=str(_feedback_state(chat_id).get("name") or ""),
                      text=text, ratings={}, problems={}, impression=text,
                      mistakes="", role="", region="", projects=[], source="")
     _feedback_forget(chat_id)
@@ -1526,7 +1588,7 @@ def _handle_message(message: dict[str, Any]) -> None:
         _send_help(chat_id)
         return
     if command in {"/feedback", "/оценить"}:
-        _feedback_start(chat_id)
+        _feedback_start(chat_id, _sender_name(message))
         return
     if command in {"/survey", "/анкета"}:
         _survey_message(chat_id, user_id, text.split(maxsplit=1)[1] if " " in text else "")
@@ -1588,7 +1650,7 @@ def _handle_update(update: dict[str, Any]) -> None:
         if data.startswith("fb_"):
             _answer_callback(query)
             if data == "fb_start":
-                _feedback_start(chat_id)
+                _feedback_start(chat_id, _sender_name({"from": sender}))
             elif data == "fb_skip":
                 _feedback_forget(chat_id)
                 _send_message(chat_id, "Хорошо, спрошу в другой раз.")

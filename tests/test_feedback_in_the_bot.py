@@ -142,6 +142,83 @@ def test_the_comment_reaches_the_summary(monkeypatch):
         data["notes"]
 
 
+def test_the_survey_says_who_answered(monkeypatch):
+    """Анкета не анонимная: у комментария есть автор, а не прочерк.
+
+    Имя берётся из знакомства, если оно заполнено, — там человек написал его
+    сам, — иначе из журнала. Голый chat_id ответом на «кто это написал» не был.
+    """
+    events = [
+        {"at": 1_800_000_000.0, "kind": "message", "chat": 77, "name": "Владислав"},
+        {"at": 1_800_000_010.0, "kind": "survey", "surface": "telegram", "chat": 77,
+         "name": "Владислав", "ratings": {"general_overall": 2, "pdf_completeness": 3}},
+        {"at": 1_800_000_020.0, "kind": "survey", "surface": "telegram", "chat": 77,
+         "name": "Владислав", "impression": "не хватает графика продаж"},
+    ]
+    monkeypatch.setattr(core, "usage_events", lambda days=30: events)
+    monkeypatch.setattr(core.time, "time", lambda: 1_800_000_100.0)
+    monkeypatch.setattr(core, "profile_read",
+                        lambda owner: {"name": "Владислав Ситников", "company": "ПЛАТО"})
+    data = core.survey_summary(30)
+
+    note = data["notes"][-1]
+    assert note["text"] == "не хватает графика продаж"
+    assert note["who"] == "Владислав Ситников (ПЛАТО)"
+
+    # Анкета приходит двумя записями — человек в списке один, а не два.
+    assert len(data["respondents"]) == 1
+    person = data["respondents"][0]
+    assert person["chat"] == 77
+    assert person["who"] == "Владислав Ситников (ПЛАТО)"
+    assert person["rated"] == 2 and person["avg"] == 2.5
+    assert person["texts"] == ["не хватает графика продаж"]
+    assert person["lowest"][0] == {"label": core.FEEDBACK_ITEMS["general_overall"],
+                                   "score": 2}
+
+
+def test_without_a_profile_the_name_comes_from_the_journal(monkeypatch):
+    """Знакомство лежит на ядре, ответы из бота — на Render. Имя всё равно есть."""
+    events = [
+        {"at": 1_800_000_000.0, "kind": "survey", "surface": "telegram", "chat": 5,
+         "name": "Пётр", "ratings": {"general_overall": 5}},
+    ]
+    monkeypatch.setattr(core, "usage_events", lambda days=30: events)
+    monkeypatch.setattr(core.time, "time", lambda: 1_800_000_050.0)
+    monkeypatch.setattr(core, "profile_read", lambda owner: {})
+    data = core.survey_summary(30)
+    assert data["respondents"][0]["who"] == "Пётр"
+
+
+def test_the_bot_writes_down_who_is_answering(monkeypatch, tmp_path):
+    """Имя автора уезжает в журнал вместе с оценками и с комментарием."""
+    monkeypatch.setattr(wrapper, "_STATE_DIR", tmp_path)
+    _sent, tracked = _capture(monkeypatch)
+    wrapper._feedback_start(606, "Владислав Ситников")
+    _answer_all(606, 5)
+    wrapper._feedback_pending_text(606, "всё хорошо")
+    surveys = [kw for kind, kw in tracked if kind == "survey"]
+    assert len(surveys) == 2
+    assert all(kw["name"] == "Владислав Ситников" for kw in surveys), surveys
+    assert all(int(kw["chat_id"]) == 606 for kw in surveys)
+
+
+def test_the_summary_prints_the_author(monkeypatch):
+    """Строка комментария начинается с имени, а не с прочерка роли."""
+    line = wrapper._note_line({"at": 1_800_000_000.0, "who": "Владислав (ПЛАТО)",
+                               "group": "Отчёт на экране", "text": "не верю числам"})
+    assert "Владислав (ПЛАТО)" in line
+    assert "не верю числам" in line
+    block = wrapper._respondents_block({"respondents": [
+        {"chat": 77, "who": "Владислав", "at": 1_800_000_000.0, "rated": 7,
+         "avg": 4.1, "texts": ["мало графиков"],
+         "lowest": [{"label": "Полнота", "score": 2}]}]})
+    text = "\n".join(block)
+    assert "Кто отвечал" in text
+    assert "Владислав" in text and "мало графиков" in text
+    assert "Полнота 2" in text
+    assert "<code>77</code>" in text
+
+
 def test_the_question_is_declared_once():
     """Общая оценка — пункт анкеты, а не выдумка бота."""
     assert "general_overall" in core.FEEDBACK_ITEMS
