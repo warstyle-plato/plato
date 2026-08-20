@@ -2,9 +2,9 @@
 
 Блоки, подписи, единицы и типы полей берутся из `FIELD_GROUPS` — того же
 справочника, которым рисуется действующая страница и который читает
-`_field_meta()` для анализа чувствительности. Умолчания — `DEFAULT_INPUTS` и
-`TEP_DEFAULT`. Своего словаря полей здесь нет: третья копия разъехалась бы с
-первыми двумя молча, а поле, которого нет в карте, остаётся мусором.
+`_field_meta()` для анализа чувствительности. Умолчания — `DEFAULT_INPUTS`,
+`TEP_DEFAULT` и `TEP_RATIOS`. Своего словаря методики здесь нет: третья копия
+разъехалась бы с движком молча.
 
 Модуль ничего не считает и ничего не проверяет по существу: он описывает,
 что показать. Значения собирает страница, экономику считает движок.
@@ -25,9 +25,33 @@ def select_options(core: Any, key: str) -> list[str]:
     """Варианты списка — из движка, у которого их берут страница и книга."""
     return [str(pair[0]) for pair in core._M2_EXTRA_OPTIONS[key]]
 
+
 # Продукты, которые делятся между очередями. Ключи — те же, что понимает
 # `calculate_phased`; подписи берутся из ТЭП движка.
 PHASE_PRODUCT_KEYS = ("apartments", "ground_commercial", "underground_parking", "storage")
+
+# Порядок на экране — продуктовый, а не исторический порядок словаря движка.
+# Кладовые стоят рядом с подземным паркингом: оба продукта продаются поштучно,
+# и цена кладовой без количества не должна жить отдельно в блоке «Продажи».
+_TEP_ROW_ORDER = (
+    "apartments",
+    "ground_commercial",
+    "underground_parking",
+    "storage",
+    "standalone_retail",
+    "offices",
+    "above_parking",
+    "kindergarten",
+    "school",
+    "clinic",
+)
+
+_TEP_ROW_HINTS = {
+    "storage": (
+        "Количество кладовых — самостоятельная ТЭП-вводная. Выручка считается "
+        "как количество × цена кладовой; площадь кладовых сейчас в выручке не участвует."
+    ),
+}
 
 # Поле ТЭП «label» — подпись строки, а не вводная: редактировать нечего.
 _TEP_LABEL_FIELD = "label"
@@ -77,16 +101,45 @@ def _field(item: list[Any], core: Any) -> dict[str, Any]:
 
 
 def _tep_block(core: Any) -> dict[str, Any]:
-    """Блок ТЭП: строки продуктов движка и их собственные поля."""
+    """Блок ТЭП: строки продуктов движка и их собственные поля.
+
+    Методические доли не копируются: строка получает их из `core.TEP_RATIOS`.
+    Для кладовых показываем только количество — именно оно вместе с ценой
+    формирует выручку; нулевые ГНС/общая/полезная создавали видимость, будто
+    от них что-то зависит.
+    """
+    ordered = [key for key in _TEP_ROW_ORDER if key in core.TEP_DEFAULT]
+    ordered.extend(key for key in core.TEP_DEFAULT if key not in ordered)
+
     rows = []
-    for key, row in core.TEP_DEFAULT.items():
+    for key in ordered:
+        row = core.TEP_DEFAULT[key]
+        names = [name for name in row if name != _TEP_LABEL_FIELD]
+        if key == "storage":
+            names = [name for name in names if name == "units"]
         fields = [
             {"key": name,
              "label": _TEP_FIELD_LABELS.get(name, (name, ""))[0],
              "unit": _TEP_FIELD_LABELS.get(name, (name, ""))[1]}
-            for name in row if name != _TEP_LABEL_FIELD
+            for name in names
         ]
-        rows.append({"key": key, "label": str(row.get("label") or key), "fields": fields})
+        item: dict[str, Any] = {
+            "key": key,
+            "label": str(row.get("label") or key),
+            "fields": fields,
+        }
+        hint = _TEP_ROW_HINTS.get(key)
+        if hint:
+            item["hint"] = hint
+        ratios = (getattr(core, "TEP_RATIOS", {}) or {}).get(key)
+        if ratios:
+            total, saleable_of_total = core.tep_ratio_chain(ratios)
+            item["default_ratio"] = {
+                "total_pct": total * 100.0,
+                "saleable_of_total_pct": saleable_of_total * 100.0,
+                "source": str(ratios.get("source") or ""),
+            }
+        rows.append(item)
     return {
         "key": "tep",
         "title": "ТЭП проекта",
@@ -208,6 +261,7 @@ def form_description(core: Any) -> dict[str, Any]:
         "defaults": {
             "inputs": copy.deepcopy(core.DEFAULT_INPUTS),
             "tep": copy.deepcopy(core.TEP_DEFAULT),
+            "tep_ratios": copy.deepcopy(getattr(core, "TEP_RATIOS", {})),
             "phasing": copy.deepcopy(DEFAULT_PHASING),
         },
         "scenarios": copy.deepcopy(core.SCENARIOS),
