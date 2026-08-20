@@ -35,7 +35,7 @@
       .join('; ');
   }
 
-  function pfLadder(host, field) {
+  function pfLadder(host) {
     const card = document.createElement('section');
     card.className = 'structured-card pf-ladder-card';
 
@@ -190,10 +190,14 @@
     return ['gns', 'total_area', 'saleable'].every((key) => sameNumber(row[key], baseline[key]));
   }
 
-  function hasFactualTepSource() {
-    const imported = form.draft && form.draft.inputs && form.draft.inputs._glavapu_import;
-    const source = String((state.result && state.result.project && state.result.project.source_label) || '').toLowerCase();
+  function factualSource(draft, result) {
+    const imported = draft && draft.inputs && draft.inputs._glavapu_import;
+    const source = String((result && result.project && result.project.source_label) || '').toLowerCase();
     return Boolean(imported) || source.includes('глав') || source.includes('гзк') || source.includes('агр') || source.includes('поиск тэп');
+  }
+
+  function hasFactualTepSource() {
+    return factualSource(form.draft, state.result);
   }
 
   function applyRatio(row, totalPct, saleablePct) {
@@ -203,6 +207,27 @@
     row.saleable = row.total_area * saleablePct / 100;
     if ('useful' in row && Number(row.useful || 0) <= Number(row.saleable || 0)) row.useful = row.saleable;
   }
+
+  function seedDevelopAidRatios(draft, result) {
+    if (!draft || factualSource(draft, result)) return draft;
+    const overrides = parseRatioOverrides(draft.inputs[TEP_RATIOS_KEY]);
+    ratioKeys.forEach((rowKey) => {
+      const row = draft.tep && draft.tep[rowKey];
+      if (!row || overrides[rowKey] || !isUntouchedEngineDefault(rowKey, row)) return;
+      overrides[rowKey] = { total: BASE_TEP_TOTAL_PCT, saleable: BASE_TEP_SALEABLE_OF_TOTAL_PCT };
+      applyRatio(row, BASE_TEP_TOTAL_PCT, BASE_TEP_SALEABLE_OF_TOTAL_PCT);
+    });
+    draft.inputs[TEP_RATIOS_KEY] = serializeRatioOverrides(overrides);
+    return draft;
+  }
+
+  /* Seed the working assumptions when the editable draft is created, not only
+     when the user happens to open the TEP step. Thus Calculate from any block
+     uses 90% / 70% for an untouched manual project. */
+  const baseDraftFromResult = draftFromResult;
+  draftFromResult = function structuredDraftFromResult(result) {
+    return seedDevelopAidRatios(baseDraftFromResult(result), result);
+  };
 
   function tepRatioStrip(rowKey, row, group, rerender) {
     if (!ratioKeys.has(rowKey)) return;
@@ -279,7 +304,7 @@
   renderInputsBlock = function structuredInputsBlock(block, host) {
     block.fields.forEach((field) => {
       if (field.key === PF_STEPS_KEY) {
-        pfLadder(host, field);
+        pfLadder(host);
         return;
       }
       host.appendChild(fieldRow(field, form.draft.inputs[field.key],
