@@ -64,6 +64,11 @@ def test_the_pages_are_served():
         assert title in response.text, path
 
 
+def _flat(text: str) -> str:
+    """Текст документа без вёрстки: перенос строки в HTML — не разрыв фразы."""
+    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", text))
+
+
 def _document_pages() -> dict[str, str]:
     root = Path(core.__file__).resolve().parent / "guide"
     return {name: (root / name).read_text(encoding="utf-8")
@@ -124,3 +129,48 @@ def test_the_emblem_is_served():
     assert response.headers["content-type"] == "image/webp"
     assert response.content[:4] == b"RIFF"
 
+
+
+def test_the_documents_declare_what_the_journal_keeps():
+    """Документ описывает журнал так, как он устроен, а не уже.
+
+    Политика говорила «дата, время и вид действия», а журнал хранит ещё и
+    содержание обращения — искомый адрес или кадастр, текст сообщения боту,
+    вопрос Платону — с привязкой к аккаунту. Состав данных обязан быть заявлен
+    (152-ФЗ), поэтому расхождение документа с кодом — не мелочь формулировки.
+    """
+    for name in ("privacy.html", "consent.html"):
+        text = _flat(_document_pages()[name])
+        assert "содержание обращения" in text, name
+        assert "кадастровый номер участка" in text, name
+        assert "вопрос агенту Сервиса" in text, name
+
+
+def test_the_journal_term_is_taken_from_the_engine():
+    """Срок хранения журнала подставляется из движка, а не живёт копией."""
+    import main_registry
+    from fastapi.testclient import TestClient
+
+    for name in ("privacy.html", "consent.html"):
+        assert "__JOURNAL_KEEP_DAYS__" in _document_pages()[name], (
+            f"{name}: срок должен быть плейсхолдером, а не числом в тексте")
+
+    client = TestClient(main_registry.app)
+    days = str(int(core._USAGE_KEEP_DAYS))
+    for path in ("/privacy", "/consent"):
+        body = client.get(path).text
+        assert "__JOURNAL_KEEP_DAYS__" not in body, path
+        assert f"{days} дней" in body, (path, days)
+
+
+def test_the_documents_name_the_model_provider():
+    """Вопрос Платону уходит внешнему поставщику модели — это передача данных.
+
+    Политика перечисляла только НСПД, хотя текст вопроса и данные расчёта
+    уезжают к поставщику языковой модели, и за пределы страны. Умолчание здесь
+    того же рода, что и урезанный состав журнала.
+    """
+    for name in ("privacy.html", "consent.html"):
+        text = _flat(_document_pages()[name])
+        assert "языковой модели" in text, name
+        assert "за пределы Российской Федерации" in text, name
