@@ -2677,9 +2677,9 @@ def test_the_findings_reach_both_surfaces() -> None:
     assert "<h2>Что из этого следует</h2>" in CABINET_PAGE
     assert "(d.analysis||{}).findings" in CABINET_PAGE
     assert CABINET_PAGE.index("Что из этого следует") < CABINET_PAGE.index("<h2>Где соседи</h2>")
-    # На бумаге выводы идут одной колонкой обычным потоком: две рвали бы
-    # предложение пополам, а сетку Chrome при печати не фрагментирует вовсе.
-    assert ".findings{display:block}" in CABINET_PAGE
+    # На бумаге выводы остаются в двух колонках, но не сеткой: grid Chrome
+    # при печати не фрагментирует, колоночная вёрстка — фрагментирует.
+    assert ".findings{display:block;column-count:2" in CABINET_PAGE
 
 
 def test_the_report_ends_with_an_argued_analysis_for_a_live_project() -> None:
@@ -2933,14 +2933,18 @@ def test_the_printed_pages_are_full_not_half_empty() -> None:
     from market_search.cabinet import CABINET_PAGE
 
     printed = CABINET_PAGE[CABINET_PAGE.rindex("@media print{"):]
-    assert ".card{border:0" in printed
+    # Карточка остаётся панелью и на бумаге: на экране отчёт читается ими, и
+    # ровный текст без структуры вместо этого — потеря, а не аскетизм.
+    assert ".card{background:#fff;border:1px solid" in printed
+    # Но рвать её целиком по-прежнему не запрещаем: отсюда и бралась пустота.
     assert "break-inside:avoid" not in printed.split(".card{")[1].split("}")[0]
     # Неделимы куски, а не карточка. График — да, таблица — нет: у неё строки.
     assert ".wrap:has(> svg),.geomap,.finding,.tile{break-inside:avoid" in printed
     assert "tr,thead{break-inside:avoid" in printed
     assert "thead{display:table-header-group}" in printed
-    # Сетка выводов в печати становится обычным потоком.
-    assert ".findings{display:block}" in printed
+    # Сетка выводов в печати становится колонками: две колонки остаются, но
+    # grid Chrome при печати не фрагментирует, а колоночная вёрстка — да.
+    assert ".findings{display:block;column-count:2" in printed
     # Заголовок не остаётся один на дне листа.
     assert "h2,h3{break-after:avoid;page-break-after:avoid}" in printed
     # Имя проекта на бумаге — текст, а не ссылка.
@@ -3162,3 +3166,68 @@ def test_the_browser_is_found_wherever_playwright_puts_it() -> None:
         assert browser_launch.cache_contents()["/нет/такого/каталога"] == ["каталога нет"]
     finally:
         browser_launch._CACHE_DIRS = saved
+
+
+def test_a_site_gets_named_neighbours_on_the_charts(tmp_path) -> None:
+    """У площадки нет своей линии — и на графике не остаётся главного героя.
+
+    Полоса рынка есть, а сравнивать её не с чем: правило «полоса вместо
+    пятнадцати линий» принималось для случая «моя линия против рынка», а
+    здесь этого случая нет. Тогда героями становятся соседи — те самые, по
+    которым считается ориентир цены. Отмечаем за человека, но один раз: снятую
+    им галочку возвращать нельзя, это уже не помощь, а спор.
+    """
+    import json
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if not node:
+        import pytest
+
+        pytest.skip("node не установлен")
+
+    from market_search.cabinet import CABINET_PAGE
+
+    start = CABINET_PAGE.index("  if(!autoPicked && !m.price_per_sqm){")
+    end = CABINET_PAGE.index("\n  }", start) + 4
+    rule = CABINET_PAGE[start:end]
+
+    driver = """
+let autoPicked=false; const onChart=new Set();
+const peers=[];
+for(let i=1;i<=9;i++) peers.push({complex_id:i, name:'Сосед '+i,
+  price_series:i<=7?[{month:'2026-01',value:5e5},{month:'2026-07',value:5e5}]:[],
+  sales_series:[]});
+const out={};
+// Площадка: своего прайса нет.
+let m={};
+%(rule)s
+out.site=[...onChart];
+// Человек снял одну галочку и отчёт перерисовался — возвращать её нельзя.
+onChart.delete('2');
+%(rule)s
+out.afterUncheck=[...onChart];
+// Действующий проект: героя не подменяем, галочки остаются пустыми.
+autoPicked=false; onChart.clear(); m={price_per_sqm:708109};
+%(rule)s
+out.project=[...onChart];
+console.log(JSON.stringify(out));
+""" % {"rule": rule}
+    path = tmp_path / "pick.js"
+    path.write_text(driver, encoding="utf-8")
+    run = subprocess.run([node, str(path)], capture_output=True, text=True, timeout=30)
+    assert run.returncode == 0, run.stderr
+    result = json.loads(run.stdout.strip().splitlines()[-1])
+
+    # Пятеро ближайших с историей — не все девять и не безымянная полоса.
+    assert result["site"] == ["1", "2", "3", "4", "5"]
+    # Сосед без помесячных чисел в отметку не идёт: рисовать по нему нечего.
+    assert "8" not in result["site"] and "9" not in result["site"]
+    # Снятая галочка не возвращается перерисовкой.
+    assert result["afterUncheck"] == ["1", "3", "4", "5"]
+    # У действующего проекта герой свой, и соседей за человека не отмечаем.
+    assert result["project"] == []
+
+    # И человеку сказано, почему галочки уже стоят.
+    assert "своего проекта у площадки нет" in CABINET_PAGE
