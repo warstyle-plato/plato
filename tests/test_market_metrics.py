@@ -2677,9 +2677,9 @@ def test_the_findings_reach_both_surfaces() -> None:
     assert "<h2>Что из этого следует</h2>" in CABINET_PAGE
     assert "(d.analysis||{}).findings" in CABINET_PAGE
     assert CABINET_PAGE.index("Что из этого следует") < CABINET_PAGE.index("<h2>Где соседи</h2>")
-    # На бумаге выводы идут одной колонкой обычным потоком: две рвали бы
-    # предложение пополам, а сетку Chrome при печати не фрагментирует вовсе.
-    assert ".findings{display:block}" in CABINET_PAGE
+    # На бумаге выводы остаются в двух колонках, но не сеткой: grid Chrome
+    # при печати не фрагментирует, колоночная вёрстка — фрагментирует.
+    assert ".findings{display:block;column-count:2" in CABINET_PAGE
 
 
 def test_the_report_ends_with_an_argued_analysis_for_a_live_project() -> None:
@@ -2933,14 +2933,18 @@ def test_the_printed_pages_are_full_not_half_empty() -> None:
     from market_search.cabinet import CABINET_PAGE
 
     printed = CABINET_PAGE[CABINET_PAGE.rindex("@media print{"):]
-    assert ".card{border:0" in printed
+    # Карточка остаётся панелью и на бумаге: на экране отчёт читается ими, и
+    # ровный текст без структуры вместо этого — потеря, а не аскетизм.
+    assert ".card{background:#fff;border:1px solid" in printed
+    # Но рвать её целиком по-прежнему не запрещаем: отсюда и бралась пустота.
     assert "break-inside:avoid" not in printed.split(".card{")[1].split("}")[0]
     # Неделимы куски, а не карточка. График — да, таблица — нет: у неё строки.
     assert ".wrap:has(> svg),.geomap,.finding,.tile{break-inside:avoid" in printed
     assert "tr,thead{break-inside:avoid" in printed
     assert "thead{display:table-header-group}" in printed
-    # Сетка выводов в печати становится обычным потоком.
-    assert ".findings{display:block}" in printed
+    # Сетка выводов в печати становится колонками: две колонки остаются, но
+    # grid Chrome при печати не фрагментирует, а колоночная вёрстка — да.
+    assert ".findings{display:block;column-count:2" in printed
     # Заголовок не остаётся один на дне листа.
     assert "h2,h3{break-after:avoid;page-break-after:avoid}" in printed
     # Имя проекта на бумаге — текст, а не ссылка.
