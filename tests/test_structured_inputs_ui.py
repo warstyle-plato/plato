@@ -39,6 +39,8 @@ def test_tep_ui_uses_90_then_70_and_engine_understands_it():
     assert "BASE_TEP_SALEABLE_OF_TOTAL_PCT = 70" in js
     assert "Общая / ГНС" in js
     assert "Продаваемая / общей" in js
+    assert "seedDevelopAidRatios" in js
+    assert "draftFromResult = function structuredDraftFromResult" in js
     assert "isUntouchedEngineDefault" in js
     assert "hasFactualTepSource" in js
     assert "!hasFactualTepSource()" in js
