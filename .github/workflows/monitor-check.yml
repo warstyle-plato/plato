@@ -1,0 +1,40 @@
+name: Monitor checks
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "developaid_monitor.py"
+      - "developaid_monitor_manager.py"
+      - "developaid_monitor_page.py"
+      - "developaid_actuals.py"
+      - "tests/test_monitor*.py"
+      - "tests/test_weekly_monitor*.py"
+      - "tests/test_a_proposal_replaces_the_articles_plan.py"
+      - ".github/workflows/monitor-check.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  monitor:
+    name: Monitor regression tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+      - name: Monitor suite
+        run: |
+          python -m pytest \
+            tests/test_monitor*.py \
+            tests/test_weekly_monitor*.py \
+            tests/test_a_proposal_replaces_the_articles_plan.py \
+            -q
