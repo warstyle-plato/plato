@@ -122,14 +122,14 @@ def test_a_zero_base_is_free_and_a_missing_base_is_not():
 
 def test_the_page_asks_the_server_and_says_whose_answer_it_is():
     page = core.PAGE
-    assert "Пересчитать под фактический ТЭП" in page
-    assert "'/tep/derived'" in page and "'/vri/manual'" in page
+    assert "Пересчитать по параметрам исходного расчёта" in page
+    assert "'/tep/recalc-from-baseline'" in page and "'/vri/manual'" in page
     # Список типов использования подставляется из движка, копии на странице нет.
     assert "__DEVELOPAID_VRI_USE_TYPES__" not in page
     assert "Плата за ВРИ — свой расчёт" in page
     body = page[page.index("async function recalcFromTep("):]
     body = body[:body.index("\n}\n")]
-    assert "не ответ калькулятора" in body, "чей это расчёт — сказано вслух"
+    assert "исходного расчёта" in body, "чей это расчёт — сказано вслух"
 
 
 def test_the_table_does_not_rebuild_itself_while_typing():
@@ -139,3 +139,186 @@ def test_the_table_does_not_rebuild_itself_while_typing():
     body = page[page.index("function vriOwnEdit("):]
     body = body[:body.index("\n}\n")]
     assert "renderVriOwn" not in body, "правка ячейки не пересобирает таблицу"
+
+
+def test_the_base_costs_come_from_the_export():
+    """«Откуда взять базовую стоимость» — первый вопрос человека, и правильный
+    ответ на него не объяснение, а заполненное поле.
+
+    Таблица «УПКС и базовые стоимости по типам использования» лежит на листе
+    «Параметры территории» выгрузки калькулятора; читали из неё только
+    отдельную строку «Базовая стоимость МКД», которой там нет вовсе.
+    """
+    rows = [
+        ["Параметр", "Значение", "Ед.изм."],
+        ["Коэффициент аренды", "0,1497", "—"],
+        ["УПКС и базовые стоимости по типам использования", "", ""],
+        ["Тип использования", "УПКС, руб/м²", "Базовая, тыс.руб/м²"],
+        ["МКД (многоэтажный жилой дом)", "123 876,46", "287 560,46"],
+        ["Торговля и многофункц.", "111 369,28", "194 737,19"],
+        ["Офисы", "103 409,92", "187 578,99"],
+        ["Производство", "36 210,4", "0"],
+        ["Социальные объекты", "37 575,29", "0"],
+    ]
+    bases = core._glavapu_base_costs(rows)
+    assert bases["mkd"] == 287560.46
+    assert bases["trade"] == 194737.19
+    assert bases["office"] == 187578.99
+    # Ноль здесь осмысленный: за производство и соцобъекты не платят.
+    assert bases["industry"] == 0.0 and bases["social"] == 0.0
+
+
+def test_the_mkd_base_is_found_even_without_its_own_line():
+    """Отдельной строки «Базовая стоимость МКД» в выгрузке нет — значение
+    берётся из таблицы, иначе основание платы молчит при живых числах."""
+    rows = [
+        ["Параметр", "Значение", "Ед.изм."],
+        ["Тип использования", "УПКС, руб/м²", "Базовая, тыс.руб/м²"],
+        ["МКД (многоэтажный жилой дом)", "123 876,46", "287 560,46"],
+    ]
+    assert core._glavapu_base_costs(rows).get("mkd") == 287560.46
+
+
+def test_the_page_says_where_the_base_costs_live():
+    page = core.PAGE
+    assert "Параметры территории" in page
+    body = page[page.index("function renderVriOwn("):]
+    body = body[:body.index("\n}\n")]
+    assert "vriOwnSource" in body
+    # Коэффициент аренды — доля; двузначное число завышает плату в сотни раз.
+    assert "похож на проценты" in body
+
+
+def test_a_percent_looking_rent_is_not_calculated_silently():
+    page = core.PAGE
+    body = page[page.index("async function calcVriOwn("):]
+    body = body[:body.index("\n}\n")]
+    assert "rent>1" in body
+    assert "Не задана базовая стоимость ни по одному типу" in body
+
+
+def test_an_impossible_rent_coefficient_is_refused_not_confirmed():
+    """25 в поле коэффициента аренды дало 238 млрд ₽ платы, и они уехали в
+    модель (владелец, 20.08.2026). Коэффициента больше единицы в таблице 2
+    приложения 8 не бывает — это не «подтвердите», это отказ."""
+    page = core.PAGE
+    body = page[page.index("async function calcVriOwn("):]
+    body = body[:body.index("\n}\n")]
+    assert "if(rent>1){" in body
+    assert "не делается" in body
+    # И потолок здравого смысла на результат: плата за метр выше базовой
+    # стоимости метра означает перепутанный множитель.
+    assert "perSqm>500000" in body and "не подставлен" in body
+
+
+# --- пересчёт по параметрам исходного расчёта -------------------------------
+# Второй калькулятор строить не нужно: территория уже посчитана, при правке ТЭП
+# меняется количественная база. Ставки снимаются с самой выгрузки — у них нет
+# срока годности, и вводить коэффициенты руками (25 вместо 0,1497 дали 238 млрд)
+# больше негде.
+
+BASELINE = {
+    "residential_spp_sqm": 119533.0, "ground_commercial_spp_sqm": 7630.0,
+    "residential_np_sqm": 107580.0, "ground_commercial_np_sqm": 6867.0,
+    "apartment_area_sqm": 77696.0, "population": 2355,
+    "required_kindergarten_places": 104, "required_school_places": 212,
+    "required_clinic_capacity": 45,
+    "parking_permanent": 897, "parking_guest": 90, "parking_attached": 12,
+    "change_vri_mln": 10562.660,
+    "social_compensation_kindergarten_mln": 1140.096,
+    "social_compensation_school_mln": 1763.587,
+    "social_compensation_clinic_mln": 533.794,
+    "vri_base_costs_by_use": {"mkd": 287560.46, "trade": 194737.19,
+                              "office": 187578.99, "industry": 0.0, "social": 0.0},
+}
+
+APPROVED = {  # решение ГЗК от 14.05.2026 № 14 п. 88.2
+    "apartment_area_sqm": 10621.0, "residential_living_spp_sqm": 17220.0,
+    "ground_commercial_spp_sqm": 0.0, "nonresidential_np_sqm": 59433.0,
+    "nonres_spp_by_use": {"office": 65000.0},
+}
+
+
+def test_the_method_reproduces_the_baseline_on_its_own_tep():
+    """Самопроверка обратным ходом: на исходных метрах пересчёт обязан дать
+    исходные числа. Не даёт — это расхождение с базой, а не результат."""
+    out = core.recalculate_from_glavapu_baseline(BASELINE, APPROVED)
+    check = out["self_check"]
+    assert check["matches_baseline"] is True, check["mismatch"]
+    names = {row["name"]: row for row in check["checked"]}
+    # Проверяем то, что считается своей формулой против числа города. Плата за
+    # ВРИ и постоянные места по ставке воспроизводят базу тождественно — такая
+    # «проверка» ничего не значит, и её тут нет.
+    assert names["население"]["recalculated"] == 2355
+    assert names["места ДОО"]["recalculated"] == 104
+    assert names["места школы"]["recalculated"] == 212
+    assert names["мощность поликлиники"]["recalculated"] == 45
+    assert names["гостевые машино-места"]["recalculated"] == 90
+
+
+def test_a_baseline_that_does_not_reproduce_is_named_out_loud():
+    """Город сменил методику — ставка базы перестала воспроизводить базу.
+    Молча пересчитывать по ней нельзя."""
+    # Норматив школ у города стал другим — наша формула это увидит.
+    broken = dict(BASELINE, required_school_places=260)
+    out = core.recalculate_from_glavapu_baseline(broken, APPROVED)
+    assert out["self_check"]["matches_baseline"] is False
+    assert any("школы" in text for text in out["self_check"]["mismatch"])
+    assert out["warnings"]
+
+    # И правило гостевых мест: десятая часть постоянных.
+    broken = dict(BASELINE, parking_guest=200)
+    out = core.recalculate_from_glavapu_baseline(broken, APPROVED)
+    assert out["self_check"]["matches_baseline"] is False
+
+
+def test_the_rates_come_from_the_baseline_not_from_constants():
+    """Ставки территории снимаются с выгрузки: у зашитых УУПСС свой срок
+    годности, и на этом участке они дают 486,9 млн вместо 497,0."""
+    out = core.recalculate_from_glavapu_baseline(BASELINE, APPROVED)
+    rates = out["rates"]
+    assert abs(rates["vri_mln_per_sqm"] - 10562.660 / 127163) < 1e-9
+    assert abs(rates["social_mln_per_place"]["kindergarten"] - 1140.096 / 104) < 1e-9
+    assert abs(rates["parking_permanent_per_sqm"] - 897 / 107580) < 1e-12
+
+
+def test_the_mixed_use_payment_is_split_by_function():
+    """Общую ставку к нежилому применять нельзя: было 127 163 всё жильё, стало
+    17 220 жилья и 65 000 нежилого. Раскладываем по базовым стоимостям базы."""
+    out = core.recalculate_from_glavapu_baseline(BASELINE, APPROVED)
+    lines = {line["type"]: line for line in out["vri_lines"]}
+    assert abs(lines["mkd"]["payment_mln"] - 1430.4) < 1.0
+    assert abs(lines["office"]["payment_mln"] - 3521.9) < 1.0
+    assert abs(out["vri_total_mln"] - 4952.3) < 1.0
+    assert out["vri_total_mln"] < out["baseline"]["vri_mln"]
+
+
+def test_an_unknown_function_is_not_quietly_an_office():
+    """Функции нет в базе — плату по ней разложить не из чего, и молчать нельзя."""
+    out = core.recalculate_from_glavapu_baseline(
+        BASELINE, dict(APPROVED, nonres_spp_by_use={"hotel": 20000.0}))
+    assert any("hotel" in text for text in out["warnings"]), out["warnings"]
+    assert all(line["type"] != "hotel" for line in out["vri_lines"])
+
+
+def test_everything_falls_together_on_the_approved_tep():
+    out = core.recalculate_from_glavapu_baseline(BASELINE, APPROVED)
+    assert out["population"] == 322
+    assert out["places"] == {"kindergarten": 15, "school": 29, "clinic": 7}
+    assert 480 < out["compensation_mln"] < 500
+    assert out["parking"]["permanent"] == 130
+    assert out["parking"]["guest"] == 13
+    assert out["parking"]["total"] == out["parking"]["permanent"] + out["parking"]["guest"] + out["parking"]["attached"]
+    # Было в исходном расчёте — рядом, чтобы разница была видна.
+    assert out["baseline"]["parking_total"] == 999
+    assert out["baseline"]["vri_mln"] == 10562.66
+
+
+def test_the_page_calls_the_baseline_recalculation():
+    page = core.PAGE
+    assert "Пересчитать по параметрам исходного расчёта" in page
+    assert "'/tep/recalc-from-baseline'" in page
+    body = page[page.index("async function recalcFromTep("):]
+    body = body[:body.index("\n}\n")]
+    assert "matches_baseline===false" in body, "несходимость с базой останавливает показ"
+    assert "было" in body and "стало" in body

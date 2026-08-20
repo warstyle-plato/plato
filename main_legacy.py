@@ -54,7 +54,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.19.26"
+VERSION = "0.19.28"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -611,6 +611,43 @@ def _find_parameter(rows: list[list[Any]], name: str) -> Any:
     return None
 
 
+# Названия типов использования в выгрузке калькулятора — левый столбец таблицы
+# «УПКС и базовые стоимости по типам использования». Ключи наши, из
+# `VRI_USE_TYPES`: свой расчёт платы считает по ним.
+_GLAVAPU_USE_ROWS: list[tuple[str, str]] = [
+    ("mkd", "мкд"),
+    ("trade", "торговля"),
+    ("office", "офис"),
+    ("hotel", "временное проживание"),
+    ("garage", "гараж"),
+    ("industry", "производство"),
+    ("social", "социальные объекты"),
+]
+
+
+def _glavapu_base_costs(rows: list[list[Any]]) -> dict[str, float]:
+    """Базовые стоимости по типам использования из листа «Параметры территории».
+
+    Таблица идёт после заголовка «Тип использования | УПКС | Базовая»: третий
+    столбец — базовая стоимость, второй — УПКС. Нулевая базовая означает, что
+    за этот вид не платят (производство, социальные объекты), и ноль здесь
+    осмысленный — он и сохраняется.
+    """
+    found: dict[str, float] = {}
+    for row in rows or []:
+        name = str((row or [None])[0] or "").strip().lower()
+        if not name or len(row) < 3:
+            continue
+        key = next((code for code, needle in _GLAVAPU_USE_ROWS if name.startswith(needle)), "")
+        if not key:
+            continue
+        value = _ru_number(row[2])
+        if value is None:
+            continue
+        found[key] = float(value)
+    return found
+
+
 def parse_glavapu_xlsx(data: bytes, filename: str = "") -> dict[str, Any]:
     tables = _xlsx_read_tables(data)
     tep_sheet = next((name for name in tables if name.strip().lower() == "тэп"), None)
@@ -702,7 +739,17 @@ def parse_glavapu_xlsx(data: bytes, filename: str = "") -> dict[str, Any]:
         # расчётами одного участка обычно сидит именно здесь. Параметра нет
         # в выгрузке штатного калькулятора — тогда остаётся None и отчёт
         # просто молчит об основании.
-        "vri_base_cost_rub": _ru_number(_find_parameter(params_rows, "Базовая стоимость МКД")),
+        # Отдельной строки «Базовая стоимость МКД» в выгрузке калькулятора нет —
+        # значение стоит в таблице типов использования строкой «МКД (…)».
+        # Пока читали только строку, основание платы оставалось пустым, и
+        # карточка молчала о нём при живых числах в том же файле.
+        "vri_base_cost_rub": (_ru_number(_find_parameter(params_rows, "Базовая стоимость МКД"))
+                              or _glavapu_base_costs(params_rows).get("mkd")),
+        # Базовые стоимости по типам использования — таблица «УПКС и базовые
+        # стоимости» того же листа. Без неё свой расчёт платы за ВРИ требовал
+        # переписывать числа из файла руками, а «откуда взять базовую» —
+        # первый вопрос, который задаёт человек (владелец, 20.08.2026).
+        "vri_base_costs_by_use": _glavapu_base_costs(params_rows),
     }
 
     # Derived underground parking for the financial TEP.
@@ -4142,6 +4189,23 @@ def vri_manual(req: VriManualRequest) -> dict[str, Any]:
     return vri_manual_payment(req.rows, req.rent_coeff, req.index)
 
 
+class BaselineRecalcRequest(BaseModel):
+    """Пересчёт по параметрам исходного расчёта ГлавАПУ."""
+    baseline: dict[str, Any] = {}
+    areas: dict[str, Any] = {}
+
+
+@app.post("/tep/recalc-from-baseline")
+def tep_recalc_from_baseline(req: BaselineRecalcRequest) -> dict[str, Any]:
+    """Новые метры на ставках территории из исходного расчёта.
+
+    Второй калькулятор не строим: территория уже посчитана городом, ставки
+    снимаются с его же выгрузки и потому не стареют. Метод проверяет себя
+    обратным ходом — на исходном ТЭП обязан воспроизвести исходные числа.
+    """
+    return recalculate_from_glavapu_baseline(req.baseline, req.areas)
+
+
 class TepDerivedRequest(BaseModel):
     """Что следует из введённого руками ТЭП: соцпотребность, м/м, МПТ."""
     apartment_area_sqm: float = 0.0
@@ -7064,6 +7128,192 @@ def vri_manual_payment(rows: list[dict[str, Any]], rent_coeff: float,
                   + f"{rent:g}".replace(".", ",")
                   + " × базовая стоимость × индекс "
                   + f"{factor:g}".replace(".", ",")),
+    }
+
+
+def recalculate_from_glavapu_baseline(baseline: dict[str, Any],
+                                      areas: dict[str, Any]) -> dict[str, Any]:
+    """Пересчёт по параметрам исходного расчёта ГлавАПУ.
+
+    Второй калькулятор строить не нужно: территория уже посчитана, и при правке
+    ТЭП меняется только количественная база. Кадастровый квартал, К1, зона,
+    коэффициент аренды, базовые стоимости и УПКС остаются теми же — значит
+    ставки территории можно снять с самой выгрузки и применить к новым метрам
+    (решение владельца, 20.08.2026).
+
+    Так надёжнее зашитых констант: у ставок, снятых с базы, нет срока годности —
+    новая выгрузка приносит новые. Наши УУПСС дали компенсацию 486,9 млн там,
+    где ставки выгрузки дают 497,0.
+
+    Метод проверяет сам себя: применённый к ИСХОДНОМУ ТЭП, он обязан
+    воспроизвести числа ГлавАПУ. Не воспроизводит — результат не показывается
+    как расчёт, а называется расхождением с базой.
+    """
+    def num(source: dict[str, Any], key: str) -> float:
+        try:
+            return max(0.0, float(source.get(key) or 0.0))
+        except (TypeError, ValueError):
+            return 0.0
+
+    base_res_spp = num(baseline, "residential_spp_sqm")
+    base_built_in_spp = num(baseline, "ground_commercial_spp_sqm")
+    base_vri_spp = base_res_spp + base_built_in_spp
+    base_res_np = num(baseline, "residential_np_sqm")
+    base_built_in_np = num(baseline, "ground_commercial_np_sqm")
+    base_apartments = num(baseline, "apartment_area_sqm")
+
+    warnings: list[str] = []
+    rates: dict[str, Any] = {}
+
+    # --- ставки территории, снятые с базы --------------------------------
+    vri_base = num(baseline, "change_vri_mln")
+    vri_rate = vri_base / base_vri_spp if base_vri_spp > 0 else 0.0
+    if vri_rate <= 0:
+        warnings.append("в исходном расчёте нет платы за ВРИ — ставку снять не с чего")
+    rates["vri_mln_per_sqm"] = vri_rate
+
+    social_rates: dict[str, float] = {}
+    for key, money_key, places_key in (
+            ("kindergarten", "social_compensation_kindergarten_mln", "required_kindergarten_places"),
+            ("school", "social_compensation_school_mln", "required_school_places"),
+            ("clinic", "social_compensation_clinic_mln", "required_clinic_capacity")):
+        places = num(baseline, places_key)
+        money = num(baseline, money_key)
+        social_rates[key] = money / places if places > 0 else 0.0
+    rates["social_mln_per_place"] = social_rates
+    if not any(social_rates.values()):
+        warnings.append("в исходном расчёте нет компенсации за соцобъекты — ставки снять не с чего")
+
+    permanent_rate = (num(baseline, "parking_permanent") / base_res_np
+                      if base_res_np > 0 else 0.0)
+    attached_rate = (num(baseline, "parking_attached") / base_built_in_np
+                     if base_built_in_np > 0 else 0.0)
+    rates["parking_permanent_per_sqm"] = permanent_rate
+    rates["parking_attached_per_sqm"] = attached_rate
+
+    # --- новые метры -----------------------------------------------------
+    apartments = num(areas, "apartment_area_sqm")
+    res_spp = num(areas, "residential_living_spp_sqm")
+    built_in_spp = num(areas, "ground_commercial_spp_sqm")
+    nonres_np = num(areas, "nonresidential_np_sqm")
+    nonres_by_use = {str(key): max(0.0, float(value or 0.0))
+                     for key, value in (areas.get("nonres_spp_by_use") or {}).items()}
+
+    # --- население и соцпотребность --------------------------------------
+    # Пропорцией население не считают: округления вверх идут на каждом шаге.
+    zone_two = bool(areas.get("zone_two") or baseline.get("calculation_zone") == "2")
+    norms = tep_derived_norms(
+        apartment_area_sqm=apartments, residential_living_spp_sqm=res_spp,
+        nonresidential_np_sqm=nonres_np, k1=1.0, k2=1.0, zone_two=zone_two)
+    places = {"kindergarten": norms["kindergarten_places"],
+              "school": norms["school_places"],
+              "clinic": norms["clinic_capacity"]}
+    compensation = {key: round(social_rates.get(key, 0.0) * count, 3)
+                    for key, count in places.items()}
+
+    # --- машино-места ----------------------------------------------------
+    # К1 и К2 в ставках уже сидят: они сняты с базы, где город их применил.
+    permanent = math.ceil(res_spp * 0.9 * permanent_rate) if res_spp and permanent_rate else 0
+    guest = math.ceil(permanent / 10.0) if permanent else 0
+    attached = math.ceil(nonres_np * attached_rate) if nonres_np and attached_rate else 0
+
+    # --- плата за ВРИ ----------------------------------------------------
+    # Жильё — по ставке базы. Нежилые функции — по той же ставке, поправленной
+    # отношением базовых стоимостей: формула линейна, коэффициент аренды и
+    # индекс те же, и вводить их руками не надо (вписанные руками 25 вместо
+    # 0,1497 дали 238 млрд ₽ платы, 20.08.2026).
+    bases = dict((baseline.get("vri_base_costs_by_use") or {}))
+    base_mkd = float(bases.get("mkd") or 0.0)
+    vri_lines = []
+    vri_total = 0.0
+    residential_payment = vri_rate * (res_spp + built_in_spp)
+    if residential_payment:
+        vri_lines.append({"type": "mkd", "spp_sqm": round(res_spp + built_in_spp, 2),
+                          "payment_mln": round(residential_payment, 3),
+                          "rate_mln_per_sqm": vri_rate})
+        vri_total += residential_payment
+    for use, spp in sorted(nonres_by_use.items()):
+        if spp <= 0:
+            continue
+        base_cost = bases.get(use)
+        if base_cost is None or base_mkd <= 0:
+            warnings.append(
+                f"{use}: нет базовой стоимости в исходном расчёте — плату по этим "
+                f"{spp:,.0f} м² разложить не из чего".replace(",", " "))
+            continue
+        if float(base_cost) == 0.0:
+            vri_lines.append({"type": use, "spp_sqm": round(spp, 2),
+                              "payment_mln": 0.0, "rate_mln_per_sqm": 0.0})
+            continue
+        rate = vri_rate * float(base_cost) / base_mkd
+        payment = rate * spp
+        vri_lines.append({"type": use, "spp_sqm": round(spp, 2),
+                          "payment_mln": round(payment, 3), "rate_mln_per_sqm": rate})
+        vri_total += payment
+
+    # --- самопроверка обратным ходом -------------------------------------
+    # Проверять имеет смысл только то, что считается НЕ снятой с базы ставкой:
+    # плата за ВРИ и постоянные места по ставке воспроизводят базу тождественно,
+    # какой бы база ни была, и такая «проверка» ничего не значит. Настоящие
+    # проверки — там, где у нас своя формула против числа города: население по
+    # 33 м², места по нормативам зоны и гостевые как десятая часть постоянных.
+    self_check: dict[str, Any] = {"checked": [], "mismatch": []}
+
+    def compare(name: str, got: Any, want: Any) -> None:
+        self_check["checked"].append({"name": name, "baseline": want, "recalculated": got})
+        if want and got != want:
+            self_check["mismatch"].append(f"{name}: {got} против {want}")
+
+    if base_apartments > 0:
+        compare("население", math.ceil(base_apartments / 33.0), int(num(baseline, "population")))
+        base_pop = int(num(baseline, "population"))
+        if base_pop:
+            base_zone_two = bool(baseline.get("calculation_zone") == "2")
+            compare("места ДОО",
+                    math.ceil((63 if base_zone_two else 44) * base_pop / 1000),
+                    int(num(baseline, "required_kindergarten_places")))
+            compare("места школы",
+                    math.ceil((124 if base_zone_two else 90) * base_pop / 1000),
+                    int(num(baseline, "required_school_places")))
+            compare("мощность поликлиники",
+                    math.ceil(19 * base_pop / 1000),
+                    int(num(baseline, "required_clinic_capacity")))
+    base_permanent = int(num(baseline, "parking_permanent"))
+    if base_permanent:
+        compare("гостевые машино-места", math.ceil(base_permanent / 10.0),
+                int(num(baseline, "parking_guest")))
+    self_check["matches_baseline"] = not self_check["mismatch"]
+    if self_check["mismatch"]:
+        warnings.append("пересчёт не воспроизводит исходный расчёт: "
+                        + "; ".join(self_check["mismatch"]))
+
+    return {
+        "method": "glavapu_baseline_rescale",
+        "title": "Пересчёт по параметрам исходного расчёта ГлавАПУ",
+        "population": norms["population"],
+        "places": places,
+        "compensation_mln": round(sum(compensation.values()), 3),
+        "compensation_breakdown_mln": compensation,
+        "parking": {"permanent": permanent, "guest": guest, "attached": attached,
+                    "total": permanent + guest + attached},
+        "vri_lines": vri_lines,
+        "vri_total_mln": round(vri_total, 3),
+        "rates": rates,
+        "baseline": {
+            "vri_mln": round(vri_base, 3),
+            "compensation_mln": round(num(baseline, "social_compensation_kindergarten_mln")
+                                      + num(baseline, "social_compensation_school_mln")
+                                      + num(baseline, "social_compensation_clinic_mln"), 3),
+            "parking_total": int(num(baseline, "parking_permanent")
+                                 + num(baseline, "parking_guest")
+                                 + num(baseline, "parking_attached")),
+            "population": int(num(baseline, "population")),
+            "places": {"kindergarten": int(num(baseline, "required_kindergarten_places")),
+                       "school": int(num(baseline, "required_school_places")),
+                       "clinic": int(num(baseline, "required_clinic_capacity"))},
+        },
+        "self_check": self_check,
+        "warnings": warnings,
     }
 
 
@@ -26375,7 +26625,7 @@ details.cadastral-box>summary::marker{color:#888}
         <div id="siteApplyStatus" class="import-status" style="display:none"></div>
       </div>
       <div class="card">
-        <div class="toolbar"><button class="btn" onclick="syncTep()">Обновить производные ТЭП из вводных</button><button class="btn dark" onclick="recalcFromTep()">Пересчитать под фактический ТЭП</button><span style="color:#777;font-size:12px">В интерфейсе показывается 1 знак после запятой. При загруженном ГлавАПУ подземный паркинг является производным: постоянные + гостевые × 35 м².</span></div>
+        <div class="toolbar"><button class="btn" onclick="syncTep()">Обновить производные ТЭП из вводных</button><button class="btn dark" onclick="recalcFromTep()">Пересчитать по параметрам исходного расчёта</button><span style="color:#777;font-size:12px">В интерфейсе показывается 1 знак после запятой. При загруженном ГлавАПУ подземный паркинг является производным: постоянные + гостевые × 35 м².</span></div>
         <div id="tepRatioNote" style="color:#777;font-size:11px;margin:2px 0 8px"></div>
         <div id="tepDerivedNote" class="import-status" style="display:none"></div>
         <div class="scroll"><table class="teptable"><thead><tr><th>Продукт</th><th>ГНС, м²</th><th>Общая площадь, м²</th><th>Полезная площадь, м²</th><th>Продаваемая площадь, м²</th><th>Передаваемая площадь, м²</th><th>Количество, шт.</th></tr></thead><tbody id="tepBody"></tbody><tfoot><tr><th>Итого</th><th id="tg"></th><th id="ta"></th><th id="tu"></th><th id="ts"></th><th id="tt"></th><th id="tn"></th></tr></tfoot></table></div>
@@ -26414,6 +26664,7 @@ details.cadastral-box>summary::marker{color:#888}
           <tbody id="vriOwnBody"></tbody>
           <tfoot><tr><th>Итого</th><th id="vriOwnSpp"></th><th></th><th id="vriOwnTotal"></th></tr></tfoot>
         </table></div>
+        <div id="vriOwnSource" style="color:#777;font-size:12px;margin-top:8px"></div>
         <div id="vriOwnNote" class="import-status" style="display:none"></div>
       </div>
       <div class="card" id="vriTabCard" style="display:none">
@@ -30270,10 +30521,17 @@ const TEP_DERIVED_INPUTS=UNDERGROUND_PAIR_INPUTS.concat([
 // расчёт молча нельзя.
 function glavapuCoefficients(){
  const imported=(inputs._glavapu_import||{});
- const coeff=imported.coefficients||{};
+ // Оснований два источника: ответ анализа по кадастровому номеру и выгрузка
+ // калькулятора, приложенная файлом. Выгрузка главнее: в ней те же числа, но
+ // в том виде, в каком их посчитал город.
+ const norm=imported.normalized||{};
+ const coeff=Object.assign({},imported.coefficients||{},
+  norm.rent_coefficient?{rent:norm.rent_coefficient}:{},
+  norm.vri_base_cost_rub?{base_cost_zh_high:norm.vri_base_cost_rub}:{});
  const territory=imported.territory||{};
  const inside=!!territory.inside_ttc;
  return {
+  bases:(norm.vri_base_costs_by_use||{}),
   k1:Number(coeff.rail||0),
   k2:Number((inside?coeff.business_inside_ttc:coeff.business_outside_ttc)||0),
   rent:Number(coeff.rent||0),
@@ -30294,10 +30552,14 @@ let vriOwnRows=null;
 function vriOwnState(){
  if(vriOwnRows)return vriOwnRows;
  const c=glavapuCoefficients();
- vriOwnRows=VRI_USE_TYPES.map(([key,label])=>({
-  type:key,label:label,spp:0,
-  base:(key==='mkd'&&c.base)?c.base:(key==='industry'||key==='social'?0:'')
- }));
+ // Базовые стоимости приходят таблицей из выгрузки калькулятора — переписывать
+ // их руками не надо. «Откуда взять базовую» был первый же вопрос, и правильный
+ // ответ на него — не объяснение, а заполненное поле.
+ vriOwnRows=VRI_USE_TYPES.map(([key,label])=>{
+  let base=c.bases&&c.bases[key]!==undefined?Number(c.bases[key]):'';
+  if(base===''&&key==='mkd'&&c.base)base=c.base;
+  return {type:key,label:label,spp:0,base:base};
+ });
  return vriOwnRows;
 }
 
@@ -30316,7 +30578,25 @@ function renderVriOwn(result){
  document.getElementById('vriOwnSpp').textContent=num(spp);
  document.getElementById('vriOwnTotal').textContent=result?num(result.total_mln):'—';
  const rent=document.getElementById('vriOwnRent');
- if(rent&&!rent.value){const c=glavapuCoefficients();if(c.rent)rent.value=c.rent}
+ const c=glavapuCoefficients();
+ if(rent&&!rent.value&&c.rent)rent.value=c.rent;
+ const hint=document.getElementById('vriOwnSource');
+ if(hint){
+  const known=rows.filter(row=>row.base!=='').length;
+  const parts=[];
+  if(known)parts.push('Базовые стоимости подставлены из выгрузки калькулятора ('
+    +known+' из '+rows.length+' типов), лист «Параметры территории».');
+  else parts.push('Базовых стоимостей нет: они на листе «Параметры территории» '
+    +'выгрузки калькулятора, столбец «Базовая». Приложите файл на вкладке «Участок» '
+    +'или впишите числа руками.');
+  if(c.quarter)parts.push('Квартал '+escapeHtml(c.quarter)+'.');
+  // Коэффициент аренды — доля, а не проценты: у Пресненского это 0,1497.
+  // Двузначное число в этом поле завышает плату в сотни раз, и молчать нельзя.
+  const rentValue=Number((rent&&rent.value)||0);
+  if(rentValue>1)parts.push('<b>Коэффициент аренды '+rentValue+' похож на проценты:</b> '
+    +'в выгрузке это доля вроде 0,1497. Проверьте — иначе плата вырастет в сотни раз.');
+  hint.innerHTML=parts.join(' ');
+ }
 }
 
 function vriOwnEdit(index,field,value){
@@ -30357,6 +30637,24 @@ async function calcVriOwn(){
  const say=(html,ok)=>{if(!note)return;note.style.display='';note.innerHTML=ok?('<span class="import-ok">'+html+'</span>'):html};
  if(!rows.length){say('Впишите метры хотя бы по одному типу использования.',false);return}
  if(!rent){say('Не задан коэффициент аренды квартала — он с листа «Параметры территории» вашей выгрузки.',false);return}
+ // Коэффициент аренды — доля меньше единицы (0,1497 у Пресненского). При 25 в
+ // этом поле формула выдала 238 млрд ₽ платы и подставила их в модель
+ // (владелец, 20.08.2026). Спрашивать «считать всё равно?» тут нечего:
+ // коэффициента больше единицы в таблице 2 приложения 8 не бывает, и такой
+ // ответ — не расчёт, а мусор. Отказ, а не предупреждение.
+ if(rent>1){
+  say('Коэффициент аренды '+rent+' — это не доля. В таблице 2 приложения 8 к 273-ПП '
+     +'он меньше единицы (у Пресненского 0,1497). С таким множителем плата выходит '
+     +'в сотни раз больше настоящей, поэтому расчёт не делается.',false);
+  return;
+ }
+ const noBase=rows.filter(row=>row.base===''||row.base===null);
+ if(noBase.length===rows.length){
+  say('Не задана базовая стоимость ни по одному типу. Она на листе «Параметры территории» '
+     +'выгрузки калькулятора, столбец «Базовая»: для жилья это МКД. Приложите выгрузку на '
+     +'вкладке «Участок» — тогда числа подставятся сами.',false);
+  return;
+ }
  let data;
  try{
   const r=await fetch('/vri/manual',{method:'POST',headers:{'Content-Type':'application/json'},
@@ -30365,6 +30663,19 @@ async function calcVriOwn(){
   data=await r.json();
   if(!r.ok)throw new Error(data.detail||'Расчёт не выполнен');
  }catch(e){say('Расчёт не выполнен: '+escapeHtml(String(e.message||e)),false);return}
+ // Потолок здравого смысла: плата за метр СПП выше полумиллиона рублей
+ // означает, что перепутан множитель, а не что участок дорогой. Молча отдать
+ // такое число в модель нельзя — его потом ищут в отчёте.
+ const sppTotal=rows.reduce((sum,row)=>sum+Number(row.spp||0),0);
+ const perSqm=sppTotal>0?data.total_mln*1e6/sppTotal:0;
+ if(perSqm>500000){
+  vriOwnLast=null;
+  renderVriOwn(null);
+  say('Плата вышла '+num(Math.round(perSqm))+' ₽ за метр СПП — это в разы больше '
+     +'базовой стоимости метра, так не бывает. Проверьте коэффициент аренды и '
+     +'базовые стоимости: расчёт не подставлен.',false);
+  return;
+ }
  vriOwnLast=data;
  renderVriOwn(data);
  const missing=(data.missing||[]).map(escapeHtml).join('; ');
@@ -30386,46 +30697,69 @@ function applyVriOwn(){
 
 async function recalcFromTep(){
  const note=document.getElementById('tepDerivedNote');
- const c=glavapuCoefficients();
  const say=(html,ok)=>{if(!note)return;note.style.display='';note.innerHTML=ok?('<span class="import-ok">'+html+'</span>'):html};
- if(!c.k1||!c.upks){
-  say('Нет оснований участка: К1 и УПКС квартала приходят с импортом ГлавАПУ. '
-     +'Загрузите участок или впишите социалку и машино-места руками.',false);
+ const baseline=((inputs._glavapu_import||{}).normalized)||null;
+ if(!baseline||!Number(baseline.change_vri_mln||0)){
+  say('Нет исходного расчёта ГлавАПУ: пересчитывать не от чего. Загрузите участок '
+     +'или выгрузку калькулятора — ставки территории берутся из неё.',false);
   return;
  }
  const apartments=Number((tep.apartments&&tep.apartments.saleable)||0);
  const livingSpp=Number((tep.apartments&&tep.apartments.gns)||0);
+ const builtIn=Number((tep.ground_commercial&&tep.ground_commercial.gns)||0);
  // Нежилая наземная — встроенные помещения плюс отдельные объекты: приобъектные
  // места считаются от неё, а МПТ от неё же дают льготу по плате за ВРИ.
  const nonres=Number((tep.ground_commercial&&tep.ground_commercial.total_area)||0)
    +Number((tep.offices&&tep.offices.total_area)||0)
    +Number((tep.standalone_retail&&tep.standalone_retail.total_area)||0);
- say('Считаю по фактическому ТЭП…',false);
+ say('Пересчитываю по параметрам исходного расчёта…',false);
  let d;
  try{
-  const r=await fetch('/tep/derived',{method:'POST',headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({apartment_area_sqm:apartments,residential_living_spp_sqm:livingSpp,
-    nonresidential_np_sqm:nonres,k1:c.k1,k2:c.k2,upks_rub:c.upks})});
+  const r=await fetch('/tep/recalc-from-baseline',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({baseline:baseline,areas:{
+    apartment_area_sqm:apartments,residential_living_spp_sqm:livingSpp,
+    ground_commercial_spp_sqm:builtIn,nonresidential_np_sqm:nonres,
+    nonres_spp_by_use:{
+     office:Number((tep.offices&&tep.offices.gns)||0),
+     trade:Number((tep.standalone_retail&&tep.standalone_retail.gns)||0)}}})});
   d=await r.json();
   if(!r.ok)throw new Error(d.detail||'Пересчёт не выполнен');
  }catch(e){say('Пересчёт не выполнен: '+escapeHtml(String(e.message||e)),false);return}
- const lines=['Население '+num(d.population)+' чел. · ДОО '+d.kindergarten_places
-   +' · школа '+d.school_places+' · поликлиника '+d.clinic_capacity
-   +' · компенсация '+num(d.compensation_mln)+' млн ₽',
-  'Машино-места '+d.parking_total+' = '+d.parking_permanent+' постоянных + '
-   +d.parking_guest+' гостевых + '+d.parking_onsite+' приобъектных (К1 '+c.k1+', К2 '+c.k2+')',
-  'Места приложения труда '+num(d.jobs)+' — основание льготы по плате за ВРИ'];
- if(!confirm('Пересчёт под фактический ТЭП:\n\n'+lines.join('\n')
-   +'\n\nПодставить в модель? Плата за ВРИ не трогается — её считает отдельный блок на вкладке «ВРИ».'))
-  {say(lines.join('<br>'),true);return}
- inputs.kindergarten_places=d.kindergarten_places;
- inputs.school_places=d.school_places;
- inputs.clinic_capacity=d.clinic_capacity;
+ // Метод обязан воспроизводить исходный расчёт на исходных метрах. Не
+ // воспроизводит — это расхождение с базой, а не результат.
+ if(d.self_check&&d.self_check.matches_baseline===false){
+  say('Пересчёт не сходится с исходным расчётом ГлавАПУ: '
+     +escapeHtml((d.self_check.mismatch||[]).join('; '))
+     +'. Показывать такое как расчёт нельзя — нужна свежая выгрузка.',false);
+  return;
+ }
+ const b=d.baseline||{};
+ const cmp=(name,was,now)=>name+': было '+num(was)+' → стало '+num(now);
+ const lines=[
+  cmp('Плата за ВРИ, млн ₽',b.vri_mln,d.vri_total_mln),
+  cmp('Соцкомпенсация, млн ₽',b.compensation_mln,d.compensation_mln),
+  cmp('Машино-места',b.parking_total,d.parking.total)
+   +' ('+d.parking.permanent+' постоянных + '+d.parking.guest+' гостевых + '
+   +d.parking.attached+' приобъектных)',
+  cmp('Население, чел.',b.population,d.population)
+   +' · ДОО '+d.places.kindergarten+' · школа '+d.places.school+' · поликлиника '+d.places.clinic];
+ (d.warnings||[]).forEach(w=>lines.push('⚠ '+w));
+ if(!confirm('Пересчёт по параметрам исходного расчёта ГлавАПУ:\n\n'+lines.join('\n')
+   +'\n\nПодставить в модель?'))
+  {say(lines.map(escapeHtml).join('<br>'),true);return}
+ inputs.kindergarten_places=d.places.kindergarten;
+ inputs.school_places=d.places.school;
+ inputs.clinic_capacity=d.places.clinic;
  if(d.compensation_mln>0)inputs.social_compensation_mln=d.compensation_mln;
- inputs.underground_manual_spaces=d.parking_total;
+ if(d.vri_total_mln>0)inputs.land_rights_cost_mln=d.vri_total_mln;
+ const parkingWas=Number((tep.underground_parking&&tep.underground_parking.units)||0);
+ inputs.underground_manual_spaces=d.parking.total;
  syncTep(false);renderInputs();renderTep();
- say('Подставлено: '+lines.join('<br>')
-   +'<br>Это наш пересчёт по методике города, а не ответ калькулятора: он считает по нормативному ТЭП.',true);
+ lines.push('Машино-места в ТЭП: было '+parkingWas+', стало '
+   +Number((tep.underground_parking&&tep.underground_parking.units)||0));
+ say('Подставлено: '+lines.map(escapeHtml).join('<br>')
+   +'<br>Ставки территории взяты из исходного расчёта ГлавАПУ и применены к новым метрам. '
+   +'Проверено обратным ходом: на исходном ТЭП метод воспроизводит его числа.',true);
  calculate();
 }
 
