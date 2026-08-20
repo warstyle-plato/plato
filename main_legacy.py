@@ -13114,6 +13114,82 @@ def _v4_shared_weights(
     return _v4_normalized(weights, count)
 
 
+def _v4_ladder_rows_xml(xml: str, steps: list[tuple[float, float]]
+                        ) -> tuple[str, list[tuple[str, str]]]:
+    """Блок ступеней в XML листа «Вводные» книги v4; возвращает ссылки.
+
+    Книга v4 собирается прямо в XML — openpyxl её не пересобирает, поэтому и
+    блок лестницы дописывается строками XML в конец sheetData: низ листа
+    свободен, ссылки никуда не едут. Формат ячеек тот же, что у листа:
+    подпись inlineStr, значение числом.
+    """
+    import re as _re
+    rows = [int(number) for number in _re.findall(r'<x:row r="(\d+)"', xml)]
+    row_at = (max(rows) if rows else 0) + 2
+    parts: list[str] = []
+    refs: list[tuple[str, str]] = []
+
+    def text_cell(coord: str, value: str) -> str:
+        return (f'<x:c r="{coord}" t="inlineStr"><x:is><x:t>{value}</x:t></x:is></x:c>')
+
+    parts.append(f'<x:row r="{row_at}">'
+                 + text_cell(f"A{row_at}", "СТУПЕНИ СТАВКИ ПФ ПО ПОКРЫТИЮ ЭСКРОУ")
+                 + "</x:row>")
+    row_at += 1
+    parts.append(f'<x:row r="{row_at}">'
+                 + text_cell(f"A{row_at}",
+                             "Правьте значения — строка 41 листов CF читает их "
+                             "отсюда. Пустой порог выключает ступень.")
+                 + "</x:row>")
+    row_at += 1
+    for index, (edge, rate) in enumerate(steps):
+        parts.append(
+            f'<x:row r="{row_at}">'
+            + text_cell(f"A{row_at}", f"Ступень {index + 1} — покрытие от")
+            + f'<x:c r="B{row_at}"><x:v>{round(edge, 6):g}</x:v></x:c>'
+            + text_cell(f"C{row_at}", "×") + "</x:row>")
+        edge_ref = f"'Вводные'!$B${row_at}"
+        row_at += 1
+        parts.append(
+            f'<x:row r="{row_at}">'
+            + text_cell(f"A{row_at}", f"Ступень {index + 1} — ставка")
+            + f'<x:c r="B{row_at}"><x:v>{round(rate, 8):g}</x:v></x:c>'
+            + text_cell(f"C{row_at}", "% годовых") + "</x:row>")
+        refs.append((edge_ref, f"'Вводные'!$B${row_at}"))
+        row_at += 1
+    tail = "</x:sheetData>"
+    assert tail in xml
+    return xml.replace(tail, "".join(parts) + tail, 1), refs
+
+
+def _v4_step_worksheet_xml(text: str, steps: list[tuple[float, float]],
+                           refs: list[tuple[str, str]]) -> tuple[str, int]:
+    """Строка 41 CF-листа: одна ставка B28 становится лестницей по ссылкам.
+
+    Книга v4 знала только «Специальная ставка ПФ» ячейкой B28: движок считал
+    по ступеням, книга по одной ставке, и на проекте с покрытием выше 1×
+    паритет стоимости финансирования расходился на миллиарды. Тесты в эту
+    ветку не заходили, пока умолчание поля было пустым.
+    """
+    import re as _re
+    counter = 0
+
+    def swap(match: "_re.Match[str]") -> str:
+        nonlocal counter
+        body = match.group(1)
+        column = _re.search(r"\b([A-Z]{1,3})40\b", body)
+        if not column or "'Вводные'!$B$28" not in body:
+            return match.group(0)
+        stepped = pf_special_steps_formula(
+            f"{column.group(1)}40", steps, "'Вводные'!$B$28", refs=refs)
+        counter += 1
+        replaced = body.replace("'Вводные'!$B$28",
+                                "(" + stepped.replace(">", "&gt;") + ")")
+        return "<x:f>" + replaced + "</x:f>"
+
+    return _re.sub(r"<x:f>([^<]*'Вводные'!\$B\$28[^<]*)</x:f>", swap, text), counter
+
+
 def build_project_workbook(
     inputs: dict[str, Any],
     tep: dict[str, dict[str, Any]],
@@ -13784,6 +13860,20 @@ def build_project_workbook(
         put(f"AD{row}", number=float(x.get("pace_adjustment_pct") or 0) / 100.0,
             label="тренд темпа продаж")
 
+    # --- ступени ставки ПФ -------------------------------------------------
+    # Лестница — вводная и здесь: блок ячеек внизу «Вводных», формулы строки 41
+    # CF-листов ссылаются на него (владелец, 20.08.2026: «сейчас-то надбавка —
+    # это вводная»). Пустое поле оставляет одну ставку B28, как было.
+    _ladder_steps = pf_special_steps(x.get("pf_special_steps"))
+    _ladder_refs: list[tuple[str, str]] = []
+    _ladder_swapped = 0
+    if _ladder_steps:
+        try:
+            xml, _ladder_refs = _v4_ladder_rows_xml(xml, _ladder_steps)
+        except Exception as exc:
+            _ladder_steps = []
+            missing.append("Вводные · ступени ставки ПФ: " + _error_location(exc))
+
     # --- сборка ------------------------------------------------------------
     # Кэшированные результаты формул шаблона стираются на всех листах:
     # просмотрщики (Telegram, iOS) формулы не считают и показывали числа
@@ -13812,9 +13902,16 @@ def build_project_workbook(
                 text = payload.decode("utf-8")
                 text = re.sub(r"(<x:f(?:\s[^>]*)?>[^<]*</x:f>)<x:v>[^<]*</x:v>", r"\1", text)
                 text = re.sub(r"(<x:f(?:\s[^>]*)?/>)<x:v>[^<]*</x:v>", r"\1", text)
+                if _ladder_steps and "'Вводные'!$B$28" in text:
+                    text, swapped = _v4_step_worksheet_xml(text, _ladder_steps, _ladder_refs)
+                    _ladder_swapped += swapped
                 payload = text.encode("utf-8")
             archive.writestr(item, payload)
     source.close()
+    if _ladder_steps and not _ladder_swapped:
+        # Ступени заданы, а формулы не тронуты — книга посчитает по одной
+        # ставке, отчёт по лестнице, и оба будут выглядеть достоверно.
+        missing.append("CF · ступени ставки по покрытию эскроу")
 
     stem = _safe_file_stem(title, "project")
     filename = f"DevelopAid_модель_{stem}_{date.today().isoformat()}.xlsx"
@@ -14386,6 +14483,34 @@ def _plato_apply_pf_cashflow(
         missing.append("КРЕДИТЫ · движение ПФ")
 
 
+def _ladder_input_block(ws_in, steps: list[tuple[float, float]],
+                        where: str) -> list[tuple[str, str]]:
+    """Блок ступеней внизу листа «Вводные»: ячейки, на которые смотрит формула.
+
+    Низ листа свободен и никем не адресуется; вставка строк в середину для
+    openpyxl закрыта — он не переписывает формулы при сдвиге. Возвращает пары
+    ссылок (порог, ставка) для `pf_special_steps_formula`.
+    """
+    row_at = ws_in.max_row + 2
+    ws_in.cell(row=row_at, column=1, value="СТУПЕНИ СТАВКИ ПФ ПО ПОКРЫТИЮ ЭСКРОУ")
+    ws_in.cell(row=row_at + 1, column=1,
+               value=f"Правьте значения — {where}. Пустой порог выключает ступень.")
+    row_at += 2
+    refs: list[tuple[str, str]] = []
+    for index, (edge, rate) in enumerate(steps):
+        ws_in.cell(row=row_at, column=1, value=f"Ступень {index + 1} — покрытие от")
+        ws_in.cell(row=row_at, column=2, value=round(edge, 6))
+        ws_in.cell(row=row_at, column=3, value="×")
+        edge_ref = f"Вводные!$B${row_at}"
+        row_at += 1
+        ws_in.cell(row=row_at, column=1, value=f"Ступень {index + 1} — ставка")
+        ws_in.cell(row=row_at, column=2, value=round(rate, 8)).number_format = "0.00%"
+        ws_in.cell(row=row_at, column=3, value="% годовых")
+        refs.append((edge_ref, f"Вводные!$B${row_at}"))
+        row_at += 1
+    return refs
+
+
 def _plato_apply_pf_rate_methodology(
     workbook: Any, filled: list[dict[str, Any]], missing: list[str],
     steps: list[tuple[float, float]] | None = None,
@@ -14424,26 +14549,9 @@ def _plato_apply_pf_rate_methodology(
     # туда теми же колонками A–C, в стиле самого листа.
     step_refs: list[tuple[str, str]] | None = None
     if steps and "Вводные" in workbook.sheetnames:
-        ws_in = workbook["Вводные"]
-        row_at = ws_in.max_row + 2
-        ws_in.cell(row=row_at, column=1, value="СТУПЕНИ СТАВКИ ПФ ПО ПОКРЫТИЮ ЭСКРОУ")
-        ws_in.cell(row=row_at + 1, column=1,
-                   value="Правьте значения — формула строки 57 листа «КРЕДИТЫ» "
-                         "читает их отсюда. Пустой порог выключает ступень.")
-        row_at += 2
-        step_refs = []
-        for index, (edge, rate) in enumerate(steps):
-            ws_in.cell(row=row_at, column=1, value=f"Ступень {index + 1} — покрытие от")
-            ws_in.cell(row=row_at, column=2, value=round(edge, 6))
-            ws_in.cell(row=row_at, column=3, value="×")
-            edge_ref = f"Вводные!$B${row_at}"
-            row_at += 1
-            ws_in.cell(row=row_at, column=1, value=f"Ступень {index + 1} — ставка")
-            rate_cell = ws_in.cell(row=row_at, column=2, value=round(rate, 8))
-            rate_cell.number_format = "0.00%"
-            ws_in.cell(row=row_at, column=3, value="% годовых")
-            step_refs.append((edge_ref, f"Вводные!$B${row_at}"))
-            row_at += 1
+        step_refs = _ladder_input_block(
+            workbook["Вводные"], steps,
+            "формула строки 57 листа «КРЕДИТЫ» читает их отсюда")
     # Очередей в книге две, и у каждой свой блок: 55–57 у первой, 78–80 у
     # второй. Правились только строки первой, и на многоочередном проекте
     # расхождение возвращалось через вторую.
@@ -18328,16 +18436,16 @@ def pf_special_steps_formula(coverage_ref: str, steps: list[tuple[float, float]]
     `refs` — пары ячеек (порог, ставка) вместо зашитых чисел: человек работает
     книгой и правит лестницу как вводную, а не как формулу по всем месячным
     колонкам (владелец, 20.08.2026: «сейчас-то надбавка — это вводная»).
-    Пустой порог выключает ступень: IF от пустой ячейки не срабатывает, потому
-    что покрытие больше нуля, а сравнение с пустотой даёт ЛОЖЬ только при
-    честном неравенстве — поэтому порог сравнивается через N().
+    Пустой порог выключает ступень: в сравнении пустая ячейка читается нулём,
+    и защита «порог > 0» гасит ветку. Без неё было бы наоборот — покрытие
+    всегда не меньше пустоты, и стёртая ступень срабатывала бы всегда.
     """
     formula = base
     if refs:
         assert len(refs) == len(steps)
         for (edge_ref, rate_ref), _ in zip(refs, steps):
-            formula = (f"IF(AND(N({edge_ref})>0,{coverage_ref}>=N({edge_ref})),"
-                       f"N({rate_ref}),{formula})")
+            formula = (f"IF(AND({edge_ref}>0,{coverage_ref}>={edge_ref}),"
+                       f"{rate_ref},{formula})")
         return formula
     for edge, rate in steps:
         formula = f"IF({coverage_ref}>={edge:.6g},{rate:.8g},{formula})"

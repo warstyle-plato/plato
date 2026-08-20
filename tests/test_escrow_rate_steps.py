@@ -280,10 +280,11 @@ def test_the_plato_ladder_is_editable_cells_not_baked_numbers():
                  if str(inputs_sheet.cell(row=row, column=1).value or "").endswith("покрытие от")]
     assert len(edge_rows) == 4
     assert inputs_sheet.cell(row=edge_rows[0], column=2).value == 1.0
-    # Формула ссылается на ячейки; пустой порог выключает ступень через N().
+    # Формула ссылается на ячейки; пустой порог читается нулём и гасится
+    # защитой «порог > 0» — иначе стёртая ступень срабатывала бы всегда.
     formula = sheet["C57"].value
     assert f"Вводные!$B${edge_rows[0]}" in formula
-    assert "N(Вводные!$B$" in formula
+    assert f"AND(Вводные!$B${edge_rows[0]}>0" in formula
     assert formula.rstrip(")").endswith("0.045"), "ниже первой ступени — обычная ставка"
 
 
