@@ -3105,3 +3105,60 @@ def test_the_image_installs_the_headless_shell_too() -> None:
     assert "playwright install --with-deps chromium chromium-headless-shell" in text
     # И запасной путь для старых версий, которые такого имени не знают.
     assert "|| playwright install --with-deps chromium" in text
+    # Главное: сборка падает, если браузера не стало. Прежний цикл после трёх
+    # неудачных попыток шёл дальше — образ уезжал без браузера, CI оставался
+    # зелёным, а наружу это выходило как «ТЭП посчитан формулами». Зелёная
+    # сборка, не собравшая того, ради чего затевалась, хуже красной.
+    assert "p.chromium.launch(args=['--no-sandbox'])" in text
+    assert "браузер поднимается:" in text
+
+
+def test_the_browser_is_found_wherever_playwright_puts_it() -> None:
+    """`chrome-linux64`, а искали `chrome-linux` — перебор кончался, не начавшись.
+
+    Раскладка каталогов у Playwright менялась, и своя копия точного пути
+    промахнулась ровно на этом: на проде лежал `chrome-linux64`. Ищем по имени
+    файла, а не по пути, — и отдельно показываем, что в кэше лежит на самом
+    деле: пусто и «промахнулись шаблоном» выглядят одинаково.
+    """
+    import os
+    import stat
+
+    import browser_launch
+
+    def make(root, *parts):
+        path = os.path.join(root, *parts)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        open(path, "w").close()
+        os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR)
+        return path
+
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as root:
+        new = make(root, "chromium-1234", "chrome-linux64", "chrome")
+        old = make(root, "chromium-1194", "chrome-linux", "chrome")
+        shell = make(root, "chromium_headless_shell-1234",
+                     "chrome-headless-shell-linux64", "chrome-headless-shell")
+        # Не исполняемый файл браузером не считается.
+        make(root, "chromium-1234", "chrome-linux64", "readme")
+
+        saved = browser_launch._CACHE_DIRS
+        browser_launch._CACHE_DIRS = (root,)
+        try:
+            found = browser_launch.executable_paths()
+            assert new in found and old in found and shell in found
+            assert all(not path.endswith("readme") for path in found)
+            # Полный Chromium раньше шелла: он и есть то, чего может не хватать.
+            assert found.index(new) < found.index(shell)
+            listing = browser_launch.cache_contents()
+            assert "chromium-1234" in listing[root]
+        finally:
+            browser_launch._CACHE_DIRS = saved
+
+    # Каталога нет — так и сказано, а не пустым списком.
+    browser_launch._CACHE_DIRS = ("/нет/такого/каталога",)
+    try:
+        assert browser_launch.cache_contents()["/нет/такого/каталога"] == ["каталога нет"]
+    finally:
+        browser_launch._CACHE_DIRS = saved

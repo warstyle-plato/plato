@@ -34,22 +34,52 @@ _CACHE_DIRS = (
     os.path.expanduser("~/.cache/ms-playwright"),
     "/ms-playwright",
 )
-# Полный Chromium предпочтительнее шелла: он и есть то, чего может не хватать.
-_BINARIES = (
-    "chromium-*/chrome-linux/chrome",
-    "chromium_headless_shell-*/chrome-linux/chrome-headless-shell",
+# Раскладка каталогов у Playwright менялась: раньше `chrome-linux/chrome`,
+# теперь `chrome-linux64/chrome`. Своя копия точного пути промахнулась ровно
+# на этом — на проде лежал `chrome-linux64`, а искали `chrome-linux`, и перебор
+# заканчивался, не начавшись. Поэтому ищем по имени файла, а не по пути.
+_BINARY_NAMES = ("chrome", "chrome-headless-shell", "headless_shell")
+_BINARY_GLOBS = (
+    "chromium-*/*/chrome",
+    "chromium_headless_shell-*/*/chrome-headless-shell",
+    "chromium_headless_shell-*/*/headless_shell",
+    "*/*/chrome",
 )
 
 
 def executable_paths() -> list[str]:
-    """Что из браузеров реально лежит в кэше — по возрастанию предпочтения."""
+    """Что из браузеров реально лежит в кэше — полный Chromium первым."""
     found: list[str] = []
+    for root in _CACHE_DIRS:
+        if not root or not os.path.isdir(root):
+            continue
+        for pattern in _BINARY_GLOBS:
+            for path in sorted(glob.glob(os.path.join(root, pattern))):
+                if (os.path.basename(path) in _BINARY_NAMES
+                        and os.access(path, os.X_OK) and path not in found):
+                    found.append(path)
+    return found
+
+
+def cache_contents() -> dict[str, list[str]]:
+    """Что вообще лежит в кэше браузеров.
+
+    Пустой перебор путей и отсутствующий браузер — разные вещи, а выглядят
+    одинаково: «ни один способ не сработал». Здесь видно, промахнулись мы
+    шаблоном или в образе действительно пусто.
+    """
+    seen: dict[str, list[str]] = {}
     for root in _CACHE_DIRS:
         if not root:
             continue
-        for pattern in _BINARIES:
-            found.extend(sorted(glob.glob(os.path.join(root, pattern))))
-    return [path for path in found if os.path.exists(path)]
+        if not os.path.isdir(root):
+            seen[root] = ["каталога нет"]
+            continue
+        try:
+            seen[root] = sorted(os.listdir(root))[:20]
+        except OSError as exc:
+            seen[root] = [f"не прочитать: {exc}"]
+    return seen
 
 
 def launch(playwright: Any, *, args: list[str] | None = None, **extra: Any) -> Any:
@@ -102,6 +132,9 @@ def diagnostics() -> dict[str, Any]:
         "browsers": [os.path.basename(os.path.dirname(os.path.dirname(path)))
                      for path in found],
         "paths": found,
+        # Пусто в кэше и промах шаблоном выглядят одинаково — здесь они
+        # различимы: видно, что в каталоге лежит на самом деле.
+        "cache": cache_contents(),
         "last_launch": LAST_LAUNCH.get("how") or None,
         "last_error": LAST_LAUNCH.get("error") or None,
         "tried": LAST_LAUNCH.get("tried") or [],
