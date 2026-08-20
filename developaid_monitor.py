@@ -318,8 +318,9 @@ def build(
         } for row in stored["rows"]]}
 
     works = actuals.read_completed_works(estimate_path)
+    estimate = actuals.read_estimate(estimate_path)
     report = actuals.monitor(
-        actuals.read_estimate(estimate_path),
+        estimate,
         actuals.read_payments(estimate_path),
         works,
         actuals.read_contracts(estimate_path),
@@ -340,10 +341,28 @@ def build(
         report["by_code"] = actuals.schedule_against_money(
             schedule, programme, works, cut)["by_code"]
 
+    # РСС — банковская рамка, а не потребность: реальная потребность стоит в
+    # фин модели и в согласованных графиках. Где предложение дороже сметы
+    # своего кода, разница — это дофинансирование, и она называется вслух.
+    proposals = []
+    for item in (programme or {}).get("proposals", []):
+        entry = dict(item)
+        stored_rows = _stored_proposals(project, upto)
+        stored = next((row for row in stored_rows
+                       if row["code"] == item["code"]), None)
+        need = sum((stored or {}).get("payments", {}).values())
+        bank = next((float(row.get("estimate") or 0.0)
+                     for row in estimate["rows"]
+                     if row.get("code") == item["code"]), 0.0)
+        entry["need"] = need
+        entry["bank_estimate"] = bank
+        entry["beyond_bank"] = max(0.0, need - bank) if need and bank else 0.0
+        proposals.append(entry)
+
     report["source"] = {
         "estimate": estimate_path.stem,
         "sales": sales_path.stem if sales_path else "",
-        "proposals": (programme or {}).get("proposals", []),
+        "proposals": proposals,
     }
     return _plain(report)
 

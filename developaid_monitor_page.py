@@ -264,7 +264,7 @@ function renderView(d){
  const sch=snap.schedule||{};
  $('moneyCard').style.display='';
  $('money').innerHTML=
-  kpi('Бюджет РСС',mln(m.budget))+
+  kpi('Бюджет РСС (банковская рамка)',mln(m.budget))+
   kpi('Законтрактовано',mln(m.contracted))+
   kpi('Оплачено до среза',mln(m.paid))+
   kpi('Принято работ',mln(m.accepted))+
@@ -284,8 +284,13 @@ function renderView(d){
   $('scheduleNote').textContent=sch.reason||'Нет производственной программы — загрузите шахматку внизу.';
  }
  const props=(snap.source&&snap.source.proposals)||[];
- if(props.length){
-  $('scheduleNote').textContent+=' По '+props.map(p=>p.code).join(', ')+' план заменён согласованным предложением.';
+ for(const p of props){
+  let line=' По '+p.code+' план заменён согласованным предложением.';
+  if(p.beyond_bank>0){
+   line+=' Потребность '+mln(p.need)+' против банковской сметы '+mln(p.bank_estimate)
+    +' — дофинансирование '+mln(p.beyond_bank)+'.';
+  }
+  $('scheduleNote').textContent+=line;
  }
  const by=(snap.by_code||[]);
  if(by.length){

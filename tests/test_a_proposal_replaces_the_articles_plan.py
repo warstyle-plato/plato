@@ -184,3 +184,38 @@ def test_the_programme_snapshot_is_never_overwritten():
     with pytest.raises(FileExistsError):
         monitor.store_programme("Гродненская", _programme_book(),
                                 "2026-07", "2026-07-08")
+
+
+def test_the_need_beyond_the_bank_estimate_is_named():
+    """РСС — банковская рамка, а не потребность.
+
+    Реальная потребность стоит в фин модели и в согласованных графиках: на
+    фасадах Кутузова предложение несёт 1 173,4 млн ₽ против банковской сметы
+    710,8. Разница — дофинансирование, и она называется вслух, а не выглядит
+    ошибкой привязки кодов.
+    """
+    book = Workbook()
+    sheet = book.active
+    sheet.title = "Расчет стоимости строительства"
+    sheet.cell(row=9, column=1, value="Код")
+    sheet.cell(row=10, column=1, value="2.2.2.6")
+    sheet.cell(row=10, column=5, value=700.0)
+    sheet.cell(row=12, column=4, value="Всего инвестиционные расходы")
+    sheet.cell(row=12, column=5, value=1000.0)
+    for name in ("Реестр договоров", "Реестр платежей", "Реестр выполненных работ"):
+        book.create_sheet(name)
+    blob = io.BytesIO()
+    book.save(blob)
+    monitor.store_estimate("Гродненская", blob.getvalue(), "2026-08-20")
+    monitor.store_programme("Гродненская", _programme_book(),
+                            "2026-07", "2026-07-08")
+    monitor.store_proposal("Гродненская", _proposal_book().getvalue(),
+                           "наше предложение", "2026-07", "2.2.2.6",
+                           "2026-08-11")
+
+    proposal = monitor.build(
+        "Гродненская", cut="2026-09-01")["source"]["proposals"][0]
+
+    assert proposal["need"] == pytest.approx(530.3e6)
+    assert proposal["bank_estimate"] == pytest.approx(700.0)
+    assert proposal["beyond_bank"] == pytest.approx(530.3e6 - 700.0)
