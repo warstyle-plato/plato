@@ -7483,7 +7483,20 @@ def recalculate_from_glavapu_baseline(baseline: dict[str, Any],
         parking_basis = ("приложение 5 к 945-ПП в редакции 2118-ПП, пункт 1: "
                          "S / (33 × 2,1) × 0,8")
     guest = math.ceil(permanent / 10.0) if permanent else 0
-    attached = math.ceil(nonres_np * attached_rate) if nonres_np and attached_rate else 0
+    # Приобъектные места — по ставке базы от ВСТРОЕННЫХ помещений: ставка снята
+    # с их НП (12 мест на 6 867 м²), и растягивать её на отдельно стоящее
+    # офисное здание значит выдать 109 мест за посчитанные. У отдельного здания
+    # свой паркинг со своим нормативом, и он в проекте отдельным продуктом.
+    built_in_np = built_in_spp * 0.9
+    attached = (math.ceil(built_in_np * attached_rate)
+                if built_in_np and attached_rate else 0)
+    standalone_np = max(0.0, nonres_np - built_in_np)
+    if standalone_np > 1:
+        warnings.append(
+            f"приобъектные места посчитаны для встроенных помещений "
+            f"({built_in_np:,.0f} м² НП); отдельно стоящие нежилые здания "
+            f"({standalone_np:,.0f} м² НП) обеспечиваются своим паркингом и здесь "
+            f"не считаются".replace(",", " "))
 
     # --- плата за ВРИ ----------------------------------------------------
     # Жильё — по ставке базы. Нежилые функции — по той же ставке, поправленной
@@ -7515,24 +7528,44 @@ def recalculate_from_glavapu_baseline(baseline: dict[str, Any],
                           "payment_mln": round(residential_payment, 3),
                           "rate_mln_per_sqm": vri_rate})
         vri_total += residential_payment
+    # Отдельно стоящее нежилое здание в плату НЕ идёт (владелец, 20.08.2026:
+    # «смену ВРИ калькулятор считает по жилью и нежилью первого этажа; зачем нам
+    # считать 65 000 отдельно стоящего здания офисов»). Прежде оно считалось по
+    # той же ставке, поправленной отношением базовых стоимостей, и на ТЭП по
+    # решению ГЗК давало 3 656 млн ₽ поверх 1 444 млн жилья: плата выходила
+    # 5 100 вместо 1 444, и число выглядело посчитанным.
+    #
+    # Считать его всё же приходится — но отдельно и не в итог: свод норм 593-ПП
+    # даёт иному нежилому функциональный коэффициент 0,001, то есть плату почти
+    # нулевую, а таблица базовых стоимостей калькулятора несёт для торговли и
+    # офисов настоящие числа. Что из этого применит город к отдельному зданию,
+    # ни выгрузка, ни свод не решают. Молчать нельзя, приписывать к плате —
+    # тоже: строка стоит рядом с суммой и названа справочной.
+    standalone_total = 0.0
     for use, spp in sorted(nonres_by_use.items()):
         if spp <= 0:
             continue
         base_cost = bases.get(use)
         if base_cost is None or base_mkd <= 0:
             warnings.append(
-                f"{use}: нет базовой стоимости в исходном расчёте — плату по этим "
-                f"{spp:,.0f} м² разложить не из чего".replace(",", " "))
+                f"{use}: нет базовой стоимости в исходном расчёте — справочную плату "
+                f"по этим {spp:,.0f} м² посчитать не из чего".replace(",", " "))
             continue
-        if float(base_cost) == 0.0:
-            vri_lines.append({"type": use, "spp_sqm": round(spp, 2),
-                              "payment_mln": 0.0, "rate_mln_per_sqm": 0.0})
-            continue
-        rate = vri_rate * float(base_cost) / base_mkd * right_factor
+        rate = (vri_rate * float(base_cost) / base_mkd * right_factor
+                if float(base_cost) > 0 else 0.0)
         payment = rate * spp
+        standalone_total += payment
         vri_lines.append({"type": use, "spp_sqm": round(spp, 2),
-                          "payment_mln": round(payment, 3), "rate_mln_per_sqm": rate})
-        vri_total += payment
+                          "payment_mln": round(payment, 3), "rate_mln_per_sqm": rate,
+                          "in_total": False,
+                          "note": "отдельно стоящее здание — в плату не включено"})
+    if standalone_total > 0:
+        warnings.append(
+            f"отдельно стоящие нежилые здания в плату за ВРИ не включены "
+            f"({standalone_total:,.1f} млн ₽ справочно): город считает смену ВРИ по жилью "
+            f"и встроенным помещениям первых этажей. По 593-ПП у иного нежилого "
+            f"функциональный коэффициент 0,001 — плата почти нулевая, но применит ли "
+            f"город его к отдельному зданию, выгрузка не решает".replace(",", " "))
 
     # --- самопроверка обратным ходом -------------------------------------
     # Проверять имеет смысл только то, что считается НЕ снятой с базы ставкой:
@@ -7546,6 +7579,25 @@ def recalculate_from_glavapu_baseline(baseline: dict[str, Any],
         self_check["checked"].append({"name": name, "baseline": want, "recalculated": got})
         if want and got != want:
             self_check["mismatch"].append(f"{name}: {got} против {want}")
+
+    # Ставка, снятая с базы, обязана сходиться с формулой города: та же плата
+    # считается как 1,8964 × СПП × коэффициент аренды × базовая × индекс /
+    # делитель. Есть коэффициент и базовая — считаем и сверяем; расходится
+    # больше чем на 2% (индексация квартала) — это не ставка, а ошибка чтения
+    # выгрузки, и пропорция на ней даст уверенно неверные деньги.
+    base_rent = num(baseline, "rent_coefficient")
+    if vri_rate > 0 and base_rent > 0 and base_mkd > 0:
+        formula_rate = 1.8964 * base_rent * base_mkd / 1.00001 / 1e6
+        drift = abs(vri_rate - formula_rate) / formula_rate
+        self_check["checked"].append({
+            "name": "ставка ВРИ против формулы города",
+            "baseline": round(vri_rate, 6), "recalculated": round(formula_rate, 6),
+            "drift_pct": round(drift * 100, 2)})
+        if drift > 0.05:
+            self_check["mismatch"].append(
+                f"ставка ВРИ {vri_rate:.6f} млн/м² расходится с формулой города "
+                f"{formula_rate:.6f} на {drift*100:.1f}% — так индексация не дрейфует, "
+                f"похоже на ошибку чтения выгрузки")
 
     if base_apartments > 0:
         compare("население", math.ceil(base_apartments / 33.0), int(num(baseline, "population")))
@@ -31305,7 +31357,10 @@ async function recalcFromTep(options){
  if(d.compensation_mln>0)inputs.social_compensation_mln=d.compensation_mln;
  if(d.vri_total_mln>0)inputs.land_rights_cost_mln=d.vri_total_mln;
  const parkingWas=Number((tep.underground_parking&&tep.underground_parking.units)||0);
- inputs.underground_manual_spaces=d.parking.total;
+ // В подземный гараж идут постоянные и гостевые. Приобъектные — места у входа
+ // для посетителей встроенной коммерции, под землю их не кладут: с ними гараж
+ // выходил больше нормы, и лишние места ехали в себестоимость.
+ inputs.underground_manual_spaces=d.parking.permanent+d.parking.guest;
  syncTep(false);renderInputs();renderTep();
  lines.push('Машино-места в ТЭП: было '+parkingWas+', стало '
    +Number((tep.underground_parking&&tep.underground_parking.units)||0));

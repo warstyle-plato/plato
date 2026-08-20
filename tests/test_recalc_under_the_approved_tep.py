@@ -309,7 +309,7 @@ BASELINE = {
     "required_kindergarten_places": 104, "required_school_places": 212,
     "required_clinic_capacity": 45,
     "parking_permanent": 897, "parking_guest": 90, "parking_attached": 12,
-    "change_vri_mln": 10562.660,
+    "change_vri_mln": 10562.660, "rent_coefficient": RENT,
     "social_compensation_kindergarten_mln": 1140.096,
     "social_compensation_school_mln": 1763.587,
     "social_compensation_clinic_mln": 533.794,
@@ -367,15 +367,48 @@ def test_the_rates_come_from_the_baseline_not_from_constants():
     assert abs(rates["parking_permanent_per_sqm"] - 897 / 107580) < 1e-12
 
 
-def test_the_mixed_use_payment_is_split_by_function():
-    """Общую ставку к нежилому применять нельзя: было 127 163 всё жильё, стало
-    17 220 жилья и 65 000 нежилого. Раскладываем по базовым стоимостям базы."""
+def test_the_standalone_building_is_shown_but_not_charged():
+    """Отдельно стоящее нежилое в плату не идёт — оно справочная строка.
+
+    Владелец, 20.08.2026: «смену ВРИ калькулятор считает по жилью и нежилью
+    первого этажа; зачем нам считать 65 000 отдельно стоящего здания офисов».
+    Прежде офисное здание считалось по ставке с поправкой базовых стоимостей и
+    давало 3 521,9 млн ₽ поверх 1 430,4 млн жилья: итог 4 952,3 выглядел
+    посчитанным, и увидеть в нём лишние три с половиной миллиарда было нечем.
+    Строка осталась — молчать про 65 000 м² нельзя, — но помечена справочной и
+    в сумму не входит.
+    """
     out = core.recalculate_from_glavapu_baseline(BASELINE, APPROVED)
     lines = {line["type"]: line for line in out["vri_lines"]}
     assert abs(lines["mkd"]["payment_mln"] - 1430.4) < 1.0
     assert abs(lines["office"]["payment_mln"] - 3521.9) < 1.0
-    assert abs(out["vri_total_mln"] - 4952.3) < 1.0
+    assert lines["office"]["in_total"] is False
+    assert "не включено" in lines["office"]["note"]
+    assert abs(out["vri_total_mln"] - 1430.4) < 1.0, "итог — только жильё со встройкой"
+    assert any("не включены" in text for text in out["warnings"])
     assert out["vri_total_mln"] < out["baseline"]["vri_mln"]
+
+
+def test_the_rate_is_cross_checked_against_the_city_formula():
+    """Пропорция подтверждается своей формулой, а не верится на слово.
+
+    Снятая с базы ставка обязана сходиться с 1,8964 × коэффициент аренды ×
+    базовая МКД / 1,00001 (владелец, 20.08.2026: «надо подтвердить эти
+    пропорции на своих формулах хотя бы внутри»). Ошибка чтения выгрузки —
+    съехавшая колонка, чужая строка — даёт пропорцию, у которой каждый
+    множитель выглядит правдоподобно, и ловится только этой сверкой.
+    """
+    out = core.recalculate_from_glavapu_baseline(BASELINE, APPROVED)
+    names = [c["name"] for c in out["self_check"]["checked"]]
+    assert "ставка ВРИ против формулы города" in names
+    check = next(c for c in out["self_check"]["checked"]
+                 if c["name"] == "ставка ВРИ против формулы города")
+    assert check["drift_pct"] < 5.0
+    assert out["self_check"]["mismatch"] == []
+    # Испорченная база — плата вдвое выше при тех же коэффициентах — не проходит.
+    broken = core.recalculate_from_glavapu_baseline(
+        dict(BASELINE, change_vri_mln=BASELINE["change_vri_mln"] * 2), APPROVED)
+    assert any("формулой города" in text for text in broken["self_check"]["mismatch"])
 
 
 def test_an_unknown_function_is_not_quietly_an_office():
