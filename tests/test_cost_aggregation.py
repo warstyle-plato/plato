@@ -14,10 +14,12 @@ PROFSOYUZNAYA_TEP = {
     "underground_gns_sqm": 12915,
 }
 
-# Full project area, not the 7,711 m² remaining-sales plan from the 2026 control model.
+# Full sellable area is 13,710 m². Parking is a separate underground GNS block:
+# 3,629 m²; it is not added to sellable m² because parking is sold by spaces.
 GRODNENSKAYA_TEP = {
     "gba_sqm": 22032.9,
     "sellable_sqm": 13710,
+    "underground_gns_sqm": 3629,
 }
 
 
@@ -82,6 +84,8 @@ def test_same_market_sources_normalize_differently_for_grodnenskaya_and_profsoyu
     )
     prof_rows = {row["key"]: row for row in prof["recommendations"]}
     grod_rows = {row["key"]: row for row in grod["recommendations"]}
+
+    assert grod["target_areas"]["above_ground_gns_sqm"] == pytest.approx(18403.9, abs=0.01)
 
     # CORE.XP is published per sellable m². The same market rate must therefore
     # normalize to a different GNS rate for projects with different efficiency.
@@ -195,6 +199,7 @@ def test_recommendation_api_and_page_expose_audit_chain_for_both_project_shapes(
             "class": "business",
             "gba_sqm": 22032.9,
             "sellable_sqm": 13710,
+            "underground_gns_sqm": 3629,
         },
     ]
 
@@ -214,3 +219,5 @@ def test_recommendation_api_and_page_expose_audit_chain_for_both_project_shapes(
 
     prof_payload = client.get("/api/statistics/cost-recommendation", params=project_params[0]).json()
     assert prof_payload["target_areas"]["above_ground_gns_sqm"] == 47407
+    grod_payload = client.get("/api/statistics/cost-recommendation", params=project_params[1]).json()
+    assert grod_payload["target_areas"]["above_ground_gns_sqm"] == pytest.approx(18403.9, abs=0.01)
