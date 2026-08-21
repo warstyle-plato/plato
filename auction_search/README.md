@@ -25,6 +25,22 @@ Future adapters may be added only when the platform itself is the official ETP f
 9. Ordinary land continues through the existing cadastral → ГлавАПУ/MO TEP flow; KRT uses the standard preset preview/apply flow.
 10. Existing DevelopAid market/cost/financing layers calculate economics and ultimately max bid.
 
+Historical research is an explicit read-only path and is not exposed by the
+production API. Run, for example:
+
+```bash
+python -m auction_search.history_cli --since 2026-02-21 --until 2026-08-21 \
+  --source roseltorg \
+  --url https://www.roseltorg.ru/procedure/KNOWN_PUBLIC_PROCEDURE
+```
+
+RAD history uses the catalogue's public `Включая архивные` flag and searches
+both land and project-company shares. Roseltorg history deliberately replays
+known public procedure cards: the public UI has an archive selector, but the
+underlying request parameter is not treated as a stable API contract. The mode
+does not use a participant cabinet, download every attachment, deploy, or alter
+`/auctions/discover`.
+
 There is no second auction financial engine.
 
 ## Public-first authentication policy
@@ -92,6 +108,6 @@ Implemented:
 - KRT document parsing and standard DevelopAid project-preset handoff.
 
 Pending:
-- automatic Moscow enumeration on Roseltorg. Direct Roseltorg cards already work, but discovery remains disabled until its official public search/filter request contract is pinned and covered by fixtures.
+- automatic Roseltorg **archive** enumeration. Current public tag discovery is enabled; archive research stays on explicit public-card replay until the archive filter request contract is pinned and covered by fixtures.
 
 Discovery must use public ETP catalogues, not participant cabinets.

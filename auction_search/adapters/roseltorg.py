@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import re
+from datetime import date, datetime
 from html.parser import HTMLParser
 from urllib.parse import urlencode, urljoin, urlparse
 from urllib.request import Request, urlopen
+from zoneinfo import ZoneInfo
 
 from auction_search.adapters.base import AuctionPlatformAdapter
 from auction_search.classifier import classify_lot
@@ -17,6 +19,9 @@ from auction_search.models import (
     utc_now_iso,
 )
 from auction_search.parsing import cadastral_numbers, normalize_space, parse_decimal, parse_money
+
+
+_MOSCOW = ZoneInfo("Europe/Moscow")
 
 
 class _RoseltorgHTML(HTMLParser):
@@ -161,6 +166,48 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
             lots.append(lot)
         return lots
 
+    def discover_moscow_history(
+        self,
+        since: date,
+        until: date,
+        *,
+        candidate_urls: tuple[str, ...] = (),
+    ) -> list[AuctionLot]:
+        """Replay known public procedure cards inside a bounded date window.
+
+        Roseltorg exposes archive selection in its public UI, but its underlying
+        request parameter is not a stable documented contract. History therefore
+        accepts only explicit official procedure URLs instead of guessing a private
+        endpoint or changing the production tag search.
+        """
+        if since > until:
+            raise ValueError("history start date must not be after end date")
+        lots: list[AuctionLot] = []
+        seen_source_ids: set[str] = set()
+        for lot_url in dict.fromkeys(candidate_urls):
+            parsed = urlparse(lot_url)
+            host = (parsed.hostname or "").lower()
+            if not (host == "roseltorg.ru" or host.endswith(".roseltorg.ru")):
+                continue
+            if "/procedure/" not in parsed.path:
+                continue
+            # Explicit replay failures are surfaced to the caller. Silently
+            # returning an empty historical result would be a false negative.
+            lot = self.fetch_lot(lot_url)
+            published_at = self._published_at(str(lot.raw.get("page_text") or ""))
+            if published_at is None or not (since <= published_at.date() <= until):
+                continue
+            if lot.lot_kind not in self.RELEVANT_KINDS or not self._confirmed_moscow(lot):
+                continue
+            if lot.source.external_lot_id in seen_source_ids:
+                continue
+            seen_source_ids.add(lot.source.external_lot_id)
+            lot.raw["published_at"] = published_at.isoformat()
+            lot.raw["discovery_mode"] = "history"
+            lot.raw["discovered_via"] = "Roseltorg public procedure-card replay"
+            lots.append(lot)
+        return lots
+
     def fetch_lot(self, lot_url: str) -> AuctionLot:
         host = (urlparse(lot_url).hostname or "").lower()
         if not (host == "roseltorg.ru" or host.endswith(".roseltorg.ru")):
@@ -197,6 +244,7 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
         cad = cadastral_numbers(title + " " + text)
         area = self._area_from_text(title)
         lot_kind = classify_lot(title, procedure_method or "", [d.title for d in docs])
+        published_at = self._published_at(text)
 
         source = AuctionSource(
             platform=SourceKind.ROSELTORG,
@@ -220,7 +268,12 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
             application_deadline=deadline,
             status=status,
             documents=docs,
-            raw={"trading_section": section, "lot_region_code": lot_region_code, "page_text": text},
+            raw={
+                "trading_section": section,
+                "lot_region_code": lot_region_code,
+                "page_text": text,
+                "published_at": published_at.isoformat() if published_at is not None else None,
+            },
         )
         for field, value in {
             "title": title,
@@ -237,6 +290,23 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
             if value is not None:
                 lot.provenance[field] = Provenance(source_url=lot_url, fetched_at=fetched_at, raw_value=value)
         return lot
+
+    @staticmethod
+    def _published_at(text: str) -> datetime | None:
+        match = re.search(
+            r"Публикация\s+извещения\s*(?:\|)?\s*"
+            r"(\d{2}\.\d{2}\.\d{2,4})(?:\s+(\d{2}:\d{2}(?::\d{2})?))?",
+            text,
+            re.I,
+        )
+        if not match:
+            return None
+        raw_date = match.group(1)
+        clock = match.group(2) or "00:00:00"
+        if len(clock) == 5:
+            clock += ":00"
+        date_format = "%d.%m.%y" if len(raw_date.rsplit(".", 1)[-1]) == 2 else "%d.%m.%Y"
+        return datetime.strptime(f"{raw_date} {clock}", f"{date_format} %H:%M:%S").replace(tzinfo=_MOSCOW)
 
     @staticmethod
     def _lot_snippet(text: str, lot_no: str, limit: int = 5000) -> str:
