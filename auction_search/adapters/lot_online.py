@@ -4,7 +4,7 @@ import re
 from datetime import datetime
 from html.parser import HTMLParser
 from urllib.request import Request, urlopen
-from urllib.parse import urljoin, urlparse, parse_qs
+from urllib.parse import urljoin, urlparse, parse_qs, urlencode
 from zoneinfo import ZoneInfo
 
 from auction_search.adapters.base import AuctionPlatformAdapter
@@ -76,21 +76,95 @@ class _TextLinksParser(HTMLParser):
 class LotOnlineAdapter(AuctionPlatformAdapter):
     """Official RAD / Lot-online adapter.
 
-    `fetch_lot` uses only the official ETP card. Public-offer price periods are
-    parsed from the platform's own reduction table; current price/deposit/deadline
-    are never guessed from the headline start price.
+    Both discovery and lot ingestion use only public pages of the official ETP.
+    Discovery searches the official land catalogue for active Moscow records, then
+    verifies Moscow on each official lot card before returning it.
     """
 
     USER_AGENT = "DevelopAid-AuctionCollector/0.1 (+https://developaid.ru)"
+    CATALOG_URL = "https://catalog.lot-online.ru/index.php"
+    DISCOVERY_PAGE_SIZE = 96
+    DISCOVERY_MAX_PAGES = 3
 
     @property
     def platform_name(self) -> str:
         return "RAD / Lot-online"
 
-    def discover_moscow(self):
-        # Explicitly fail rather than silently scrape an unstable catalogue/search UI.
-        # The discovery endpoint will be enabled after its official request contract is fixed in tests.
-        return []
+    @classmethod
+    def _discovery_url(cls, page: int = 1) -> str:
+        params = {
+            "category_id": "2",
+            "dispatch": "categories.view",
+            "filter_fields[is_archive]": "false",
+            "personal_area": "",
+            "q": "москва",
+            "items_per_page": str(cls.DISCOVERY_PAGE_SIZE),
+        }
+        if page > 1:
+            params["page"] = str(page)
+        return cls.CATALOG_URL + "?" + urlencode(params)
+
+    @staticmethod
+    def _catalog_lot_urls(base_url: str, links: list[tuple[str, str]]) -> list[str]:
+        out: list[str] = []
+        seen: set[str] = set()
+        for href, _title in links:
+            absolute = urljoin(base_url, href)
+            parsed = urlparse(absolute)
+            if not (parsed.hostname or "").endswith("lot-online.ru"):
+                continue
+            query = parse_qs(parsed.query)
+            if query.get("dispatch", [""])[0] != "products.view":
+                continue
+            if not query.get("product_id", [""])[0]:
+                continue
+            if absolute in seen:
+                continue
+            seen.add(absolute)
+            out.append(absolute)
+        return out
+
+    @staticmethod
+    def _confirmed_moscow(lot: AuctionLot) -> bool:
+        values = [
+            lot.address or "",
+            str(lot.raw.get("region") or ""),
+            lot.title or "",
+        ]
+        haystack = " ".join(values).lower()
+        return "москва" in haystack or "г. москва" in haystack
+
+    def discover_moscow(self) -> list[AuctionLot]:
+        """Enumerate active Moscow land lots from the official public RAD catalogue.
+
+        The catalogue query is only discovery. Every candidate is re-read from its
+        official lot card, and non-Moscow results are discarded there.
+        """
+        candidate_urls: list[str] = []
+        seen: set[str] = set()
+        for page in range(1, self.DISCOVERY_MAX_PAGES + 1):
+            url = self._discovery_url(page)
+            req = Request(url, headers={"User-Agent": self.USER_AGENT})
+            with urlopen(req, timeout=25) as response:
+                html = response.read().decode(response.headers.get_content_charset() or "utf-8", errors="replace")
+            parser = _TextLinksParser()
+            parser.feed(html)
+            page_urls = self._catalog_lot_urls(url, parser.links)
+            new_urls = [item for item in page_urls if item not in seen]
+            if not new_urls:
+                break
+            candidate_urls.extend(new_urls)
+            seen.update(new_urls)
+            if len(page_urls) < self.DISCOVERY_PAGE_SIZE:
+                break
+
+        lots: list[AuctionLot] = []
+        for lot_url in candidate_urls:
+            lot = self.fetch_lot(lot_url)
+            if self._confirmed_moscow(lot):
+                lot.raw["discovered_via"] = self._discovery_url(1)
+                lots.append(lot)
+        return lots
 
     def fetch_lot(self, lot_url: str) -> AuctionLot:
         host = (urlparse(lot_url).hostname or "").lower()
