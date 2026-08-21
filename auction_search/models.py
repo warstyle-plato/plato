@@ -40,6 +40,19 @@ class Provenance:
 
 
 @dataclass
+class AuctionPricePeriod:
+    """One official public-offer price period, in the platform's Moscow time."""
+
+    starts_at: str
+    application_deadline: str
+    ends_at: str
+    price_rub: float
+    deposit_rub: Optional[float] = None
+    change_rub: Optional[float] = None
+    provenance: Optional[Provenance] = None
+
+
+@dataclass
 class KrtProgramItem:
     """One item of the official KRT development program.
 
@@ -103,6 +116,7 @@ class AuctionLot:
     application_deadline: Optional[str] = None
     auction_date: Optional[str] = None
     status: Optional[str] = None
+    price_schedule: list[AuctionPricePeriod] = field(default_factory=list)
     documents: list[AuctionDocument] = field(default_factory=list)
     krt_program: list[KrtProgramItem] = field(default_factory=list)
     obligations: list[KrtObligation] = field(default_factory=list)
