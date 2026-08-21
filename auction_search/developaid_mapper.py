@@ -42,10 +42,15 @@ def build_developaid_seed(lot: AuctionLot) -> dict:
     }
     if lot.lot_kind == LotKind.KRT:
         seed["krt"] = {
+            "development_program": [asdict(item) for item in lot.krt_program],
             "obligations": [asdict(o) for o in lot.obligations],
             "cost_candidates": obligation_cost_items(lot.obligations),
+            "document_extraction_complete": bool(lot.raw.get("krt_extraction_complete")),
+            "document_warnings": list(lot.raw.get("krt_document_warnings") or []),
             "tep_source_policy": "official_krt_documents",
             "glavapu_role": "validation_only",
+            "revenue_policy": "derive_from_official_program_then_apply_explicit_sellability_assumptions",
+            "cost_policy": "price_only_explicit_investor_obligations_with_developaid_norms",
         }
     else:
         seed["ordinary_land"] = {
