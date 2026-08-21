@@ -665,7 +665,9 @@ def test_every_choice_on_the_page_is_a_choice_in_the_workbook(book):
             # списка, а данные, которых мы не знаем заранее (лестница ставок
             # переписывается из конкретного НКЛ). Сторожим здесь именно поля
             # выбора: у них список известен, и книга обязана его повторить.
-            if kind in ("number", "date", "text"):
+            # «pf_steps» — тоже данные, а не выбор: ступени переписываются из
+            # конкретного НКЛ, и списка их значений не существует.
+            if kind in ("number", "date", "text", "pf_steps"):
                 continue
             address = f"B{meta['layout']['inputs'][key]}"
             assert address in validated, f"«{key}» ({kind}) остался свободным вводом"

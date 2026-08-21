@@ -96,5 +96,9 @@ def test_the_book_carries_engine_phase_volumes():
         assert sheet[f"Y{row}"].value == pytest.approx(
             phase_tep["underground_parking"]["gns"], rel=1e-9)
         units = float(sheet[f"AB{row}"].value or 0)
-        assert units == pytest.approx(phase_tep["underground_parking"]["units"])
+        # В книгу уезжает ПРОДАВАЕМОЕ количество: ячейка идёт в объём продаж, а
+        # гостевые места строятся, но не продаются. Построенное число здесь
+        # завышало бы выручку книги на их стоимость.
+        assert units == pytest.approx(
+            core.underground_saleable_spaces(phase_tep["underground_parking"]))
         assert units == int(units), "в книгу должны уезжать целые машино-места"
