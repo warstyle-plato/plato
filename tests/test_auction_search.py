@@ -1,6 +1,6 @@
 from auction_search.classifier import classify_lot
 from auction_search.developaid_mapper import build_developaid_seed
-from auction_search.krt import extract_krt_obligations
+from auction_search.krt import extract_krt_obligations, extract_krt_program
 from auction_search.models import AuctionLot, AuctionSource, LotKind, SourceKind
 from auction_search.service import AuctionSearchService
 
@@ -16,6 +16,10 @@ def source():
 
 def test_classifier_krt_overrides_generic_land_wording():
     assert classify_lot("Земельные участки. Право на заключение договора о комплексном развитии территории") == LotKind.KRT
+
+
+def test_generic_right_to_lease_is_not_krt():
+    assert classify_lot("Право на заключение договора аренды земельного участка") == LotKind.LAND_LEASE
 
 
 def test_small_ijs_is_filtered_out():
@@ -42,6 +46,26 @@ def test_legacy_50_cadastral_prefix_is_not_excluded_for_moscow():
     assert AuctionSearchService.is_development_relevant(lot) is True
 
 
+def test_krt_program_is_separate_from_investor_obligation():
+    text = ["Предельная площадь жилой застройки составляет 180 000 кв. м."]
+    program = extract_krt_program(
+        text,
+        source_url="https://official-etp.example/lot/1",
+        source_document="Решение КРТ.pdf",
+        fetched_at="2026-08-21T18:00:00Z",
+    )
+    obligations = extract_krt_obligations(
+        text,
+        source_url="https://official-etp.example/lot/1",
+        source_document="Решение КРТ.pdf",
+        fetched_at="2026-08-21T18:00:00Z",
+    )
+    assert program
+    assert program[0].category == "housing"
+    assert program[0].area_sqm == 180_000
+    assert obligations == []
+
+
 def test_krt_obligation_keeps_source_provenance():
     text = ["Инвестор обязан построить общеобразовательную школу на 775 мест и передать объект городу Москве безвозмездно."]
     items = extract_krt_obligations(
@@ -54,6 +78,8 @@ def test_krt_obligation_keeps_source_provenance():
     assert items[0].quantity == 775
     assert items[0].provenance.source_document == "Проект договора КРТ.pdf"
     assert items[0].estimated_cost_rub is None
+    assert items[0].transfer_free_of_charge is True
+    assert items[0].recipient == "город Москва"
 
 
 def test_krt_mapper_does_not_replace_terms_with_glavapu():
