@@ -1,0 +1,28 @@
+name: Auction search
+
+on:
+  pull_request:
+    paths:
+      - "auction_search/**"
+      - "tests/test_auction_search.py"
+      - "requirements.txt"
+      - "main_registry.py"
+      - ".github/workflows/auction-search.yml"
+  workflow_dispatch:
+
+jobs:
+  auction-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install test dependencies
+        run: python -m pip install pytest fastapi pydantic pypdf
+      - name: Compile auction modules
+        run: |
+          python -m compileall -q auction_search
+          python -m py_compile tests/test_auction_search.py
+      - name: Run auction tests
+        run: python -m pytest tests/test_auction_search.py -q
