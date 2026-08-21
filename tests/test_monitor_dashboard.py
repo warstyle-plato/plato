@@ -112,8 +112,10 @@ def test_funding_risk_uses_article_waterfall(monkeypatch):
 
 def test_page_has_funding_and_correct_cost_evidence_language():
     from developaid_monitor_page import MONITOR_PAGE
-    assert "Исчерпание лимита банка" in MONITOR_PAGE
-    assert "Доп. финансирование до РВЭ" in MONITOR_PAGE
+    assert "Исчерпание резерва" in MONITOR_PAGE
+    assert "Непокрытая потребность" in MONITOR_PAGE
     assert "Сырой PM" in MONITOR_PAGE
     assert "Актировано СМР / утв. модель" in MONITOR_PAGE
     assert "это не физический % WBS" in MONITOR_PAGE
+    assert "Утверждённый РНВ" in MONITOR_PAGE
+    assert "Current Forecast не рассчитан" in MONITOR_PAGE
