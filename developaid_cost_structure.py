@@ -52,7 +52,19 @@ def _load_json(path: Path) -> dict[str, Any]:
 
 
 def load_cost_structure() -> dict[str, Any]:
-    return _load_json(STRUCTURE_PATH)
+    data = _load_json(STRUCTURE_PATH)
+    # Correct a bad intermediate-workbook denominator that was accidentally
+    # curated as a source fact. The underlying Grodnenskaya FM has about
+    # 762m RUB of underground cost over 3,629 m² underground GNS: ~210k/m².
+    for source in data.get("sources", []):
+        if source.get("source_id") != "developaid-grodnenskaya-structure-2026-07":
+            continue
+        cell = source.get("components", {}).get("main_under")
+        if cell:
+            cell["value_rub_m2"] = 210000.0
+            cell["unit"] = "underground"
+            cell["note"] = "По исходной ФМ: ~762 млн ₽ / 3 629 м² подземной ГНС ≈ 210 тыс. ₽/м²."
+    return data
 
 
 def load_class_adjustments() -> dict[str, Any]:
