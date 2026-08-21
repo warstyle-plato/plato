@@ -63,7 +63,13 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
     SEARCH_URL = "https://www.roseltorg.ru/procedures/search"
     DISCOVERY_TAGS = ("земельный участок", "комплексное развитие")
     DISCOVERY_MAX_PAGES = 3
-    RELEVANT_KINDS = {LotKind.LAND_SALE, LotKind.LAND_LEASE, LotKind.KRT, LotKind.PROPERTY_COMPLEX, LotKind.UNFINISHED}
+    RELEVANT_KINDS = {
+        LotKind.LAND_SALE,
+        LotKind.LAND_LEASE,
+        LotKind.KRT,
+        LotKind.PROPERTY_COMPLEX,
+        LotKind.UNFINISHED,
+    }
 
     @property
     def platform_name(self) -> str:
@@ -88,7 +94,6 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
                 continue
             if not re.match(r"^/procedure/[^/]+(?:/\d+)?/?$", parsed.path):
                 continue
-            # Strip irrelevant tracking/search fragments while preserving optional lot number.
             canonical = f"https://www.roseltorg.ru{parsed.path.rstrip('/')}"
             if canonical in seen:
                 continue
@@ -98,18 +103,13 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
 
     @staticmethod
     def _confirmed_moscow(lot: AuctionLot) -> bool:
-        text = " ".join([
-            lot.address or "",
-            lot.title or "",
-            str(lot.raw.get("page_text") or ""),
-        ]).lower()
-        # Explicit federal-region marker on Roseltorg cards is strongest.
-        if re.search(r"(?:^|\s)77\.\s*(?:г\.?\s*)?москва\b", text):
+        # Never inspect the whole page here: every Roseltorg page contains the
+        # platform's own Moscow office address in the footer.
+        if str(lot.raw.get("lot_region_code") or "") == "77":
             return True
-        # New-Moscow/project titles often carry `г. Москва` directly.
-        if re.search(r"\bг\.?\s*москва\b", text):
+        text = " ".join([lot.address or "", lot.title or ""]).lower()
+        if re.search(r"\b(?:г\.?|город)\s*москва\b", text):
             return True
-        # Do not let `Московская область` satisfy the looser city token.
         without_oblast = re.sub(r"московск\w*\s+област\w*", "", text)
         return bool(re.search(r"\bмосква\b", without_oblast))
 
@@ -117,7 +117,7 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
     def _is_actionable_status(status: str | None) -> bool:
         low = (status or "").lower()
         if not low:
-            return True  # public search defaults to active; card text can vary by section
+            return True  # public search defaults to active; card markup varies by section
         if any(marker in low for marker in ("отмен", "заверш", "заключение договора", "архив")):
             return False
         return any(marker in low for marker in ("прием заяв", "приём заяв", "ожидани", "работа комиссии", "опублик"))
@@ -186,13 +186,13 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
         section = self._value(text, "Торговая секция", ("Подробнее", "Запрос на разъяснение", "Прием заявок", "Приём заявок"))
         start_price = self._money_near(text, "Начальная цена")
         if start_price is None:
-            # Many public property cards print the lot price without the label.
-            start_price = self._first_lot_money(text)
+            start_price = self._first_lot_money(text, lot_no)
         deposit = self._money_near(text, "Обеспечение заявки")
         deadline = self._deadline(text)
         organizer = self._value(text, "Организатор торгов", ("ФИО", "Телефон", "E-mail", "Способ проведения"))
         seller = self._value(text, "Название организации", ("Юридический адрес продавца", "Почтовый адрес продавца", "Место поставки"))
-        status = self._status(text)
+        status = self._status(text, lot_no)
+        lot_region_code = self._lot_region_code(text, lot_no)
         docs = self._documents(lot_url, parser.links, fetched_at)
         cad = cadastral_numbers(title + " " + text)
         area = self._area_from_text(title)
@@ -220,7 +220,7 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
             application_deadline=deadline,
             status=status,
             documents=docs,
-            raw={"trading_section": section, "page_text": text},
+            raw={"trading_section": section, "lot_region_code": lot_region_code, "page_text": text},
         )
         for field, value in {
             "title": title,
@@ -239,9 +239,23 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
         return lot
 
     @staticmethod
+    def _lot_snippet(text: str, lot_no: str, limit: int = 5000) -> str:
+        match = re.search(rf"\bЛот\s*(?:№\s*)?{re.escape(lot_no)}\b", text, re.I)
+        if not match:
+            return text[:limit]
+        return text[match.start(): match.start() + limit]
+
+    @staticmethod
+    def _lot_region_code(text: str, lot_no: str) -> str | None:
+        snippet = RoseltorgAdapter._lot_snippet(text, lot_no, 3500)
+        # Region labels on public cards are rendered as e.g. `77. г. Москва`.
+        match = re.search(r"\b(\d{2})\.\s*(?:г\.?\s*)?[А-ЯЁ][А-ЯЁа-яё -]{2,60}", snippet)
+        return match.group(1) if match else None
+
+    @staticmethod
     def _title(text: str, procedure_id: str, lot_no: str) -> str:
         candidates = (
-            rf"Лот\s*{re.escape(lot_no)}\s+(?:Прием заявок|Приём заявок|Опубликован|Ожидание приема заявок|Ожидание приёма заявок)?\s*(.+?)(?=Теги бета|Обеспечение заявки|Плата за участие|Посмотреть детальную информацию|Этапы)",
+            rf"Лот\s*{re.escape(lot_no)}\s+(?:Прием заявок|Приём заявок|Опубликован|Ожидание приема заявок|Ожидание приёма заявок|Работа комиссии|Заключение договора|Отменен|Отменён)?\s*(.+?)(?=Теги бета|Обеспечение заявки|Плата за участие|Посмотреть детальную информацию|Этапы)",
             rf"Лот\s*№\s*{re.escape(lot_no)}\s*[-–—:]?\s*(.+?)(?=Информация по торгам|Этапы|Дополнительная информация|Прием заявок|Приём заявок)",
             rf"Процедура:\s*{re.escape(procedure_id)}\s*(.+?)(?=Организатор торгов|Информация по торгам|Этапы|Дополнительная информация)",
         )
@@ -251,8 +265,6 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
                 value = normalize_space(match.group(1))
                 if len(value) >= 8:
                     return value[:1500]
-        # Procedure name is more useful than a synthetic ID when the lot heading
-        # markup changes.
         procedure_name = RoseltorgAdapter._value(text, "Наименование процедуры", ("Организатор торгов", "ФИО", "Телефон"))
         if procedure_name:
             return procedure_name[:1500]
@@ -284,10 +296,9 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
         return parse_money(match.group(0)) if match else None
 
     @staticmethod
-    def _first_lot_money(text: str):
-        idx = re.search(r"\bЛот\s*1\b", text, re.I)
-        snippet = text[idx.start(): idx.start() + 2200] if idx else text[:3000]
-        matches = re.findall(r"([\d\s\u00a0]+(?:[.,]\d+)?)\s*₽", snippet)
+    def _first_lot_money(text: str, lot_no: str = "1"):
+        snippet = RoseltorgAdapter._lot_snippet(text, lot_no, 2500)
+        matches = re.findall(r"(\d[\d\s\u00a0]*(?:[.,]\d+)?)\s*₽", snippet)
         for raw in matches:
             value = parse_money(raw + " ₽")
             if value is not None and value >= 1:
@@ -308,12 +319,23 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
         return RoseltorgAdapter._value(text, "Окончание приема заявок", ("Обеспечение заявки", "Обеспечение контракта", "Организатор торгов"))
 
     @staticmethod
-    def _status(text: str):
-        for marker in (
-            "Ожидание приема заявок", "Ожидание приёма заявок", "Прием заявок", "Приём заявок",
-            "Работа комиссии", "Опубликован", "Отменен", "Отменён", "Процедура завершена", "Заключение договора",
-        ):
-            if marker.lower() in text.lower():
+    def _status(text: str, lot_no: str = "1"):
+        snippet = RoseltorgAdapter._lot_snippet(text, lot_no, 650)
+        markers = (
+            "Ожидание приема заявок",
+            "Ожидание приёма заявок",
+            "Прием заявок",
+            "Приём заявок",
+            "Работа комиссии",
+            "Опубликован",
+            "Отменен",
+            "Отменён",
+            "Процедура завершена",
+            "Заключение договора",
+        )
+        low = snippet.lower()
+        for marker in markers:
+            if marker.lower() in low:
                 return marker
         return None
 
@@ -326,7 +348,21 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
     def _documents(base_url: str, links: list[tuple[str, str]], fetched_at: str) -> list[AuctionDocument]:
         out: list[AuctionDocument] = []
         seen: set[str] = set()
-        markers = ("договор", "документац", "гпзу", "егрн", "выписк", "решение", "проект", "извещ", "приказ", "приложение", ".pdf", ".doc", ".zip")
+        markers = (
+            "договор",
+            "документац",
+            "гпзу",
+            "егрн",
+            "выписк",
+            "решение",
+            "проект",
+            "извещ",
+            "приказ",
+            "приложение",
+            ".pdf",
+            ".doc",
+            ".zip",
+        )
         for href, title in links:
             absolute = urljoin(base_url, href)
             low = (title + " " + href).lower()
@@ -346,5 +382,12 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
                 dtype = "annex"
             elif "договор" in low:
                 dtype = "agreement"
-            out.append(AuctionDocument(title=title or href.rsplit("/", 1)[-1], url=absolute, document_type=dtype, fetched_at=fetched_at))
+            out.append(
+                AuctionDocument(
+                    title=title or href.rsplit("/", 1)[-1],
+                    url=absolute,
+                    document_type=dtype,
+                    fetched_at=fetched_at,
+                )
+            )
         return out
