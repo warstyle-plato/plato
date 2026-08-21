@@ -6,6 +6,8 @@ on:
     paths:
       - "developaid_monitor.py"
       - "developaid_monitor_manager.py"
+      - "developaid_monitor_dashboard.py"
+      - "developaid_monitor_schedule_graph.py"
       - "developaid_monitor_page.py"
       - "developaid_actuals.py"
       - "tests/test_monitor*.py"
