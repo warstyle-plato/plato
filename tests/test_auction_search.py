@@ -1,3 +1,5 @@
+from urllib.parse import parse_qs, urlparse
+
 from auction_search.adapters.lot_online import LotOnlineAdapter
 from auction_search.classifier import classify_lot
 from auction_search.developaid_mapper import build_developaid_seed
@@ -47,6 +49,42 @@ def test_legacy_50_cadastral_prefix_is_not_excluded_for_moscow():
         address="Москва, Коммунарка",
     )
     assert AuctionSearchService.is_development_relevant(lot) is True
+
+
+def test_rad_discovery_uses_official_public_catalogue_filters():
+    url = LotOnlineAdapter._discovery_url()
+    parsed = urlparse(url)
+    query = parse_qs(parsed.query)
+    assert parsed.hostname == "catalog.lot-online.ru"
+    assert query["category_id"] == ["2"]
+    assert query["dispatch"] == ["categories.view"]
+    assert query["filter_fields[is_archive]"] == ["false"]
+    assert query["q"] == ["москва"]
+    assert query["items_per_page"] == ["96"]
+
+
+def test_rad_catalogue_extracts_only_official_product_cards():
+    links = [
+        ("index.php?dispatch=products.view&product_id=1759924", "Коммунарка"),
+        ("https://catalog.lot-online.ru/index.php?dispatch=products.view&product_id=1759924", "дубль"),
+        ("index.php?dispatch=categories.view&category_id=2", "категория"),
+        ("https://example.com/index.php?dispatch=products.view&product_id=1", "чужой сайт"),
+    ]
+    urls = LotOnlineAdapter._catalog_lot_urls(LotOnlineAdapter._discovery_url(), links)
+    assert len(urls) == 1
+    assert "product_id=1759924" in urls[0]
+    assert urlparse(urls[0]).hostname == "catalog.lot-online.ru"
+
+
+def test_rad_moscow_confirmation_does_not_confuse_moscow_region():
+    moscow = AuctionLot(
+        source=source(), lot_kind=LotKind.LAND_SALE, title="Коммунарка", address="г. Москва, Коммунарка"
+    )
+    region = AuctionLot(
+        source=source(), lot_kind=LotKind.LAND_SALE, title="участок", address="Московская область, Одинцово"
+    )
+    assert LotOnlineAdapter._confirmed_moscow(moscow) is True
+    assert LotOnlineAdapter._confirmed_moscow(region) is False
 
 
 def test_rad_public_offer_schedule_is_structured():
