@@ -153,8 +153,12 @@ def test_tep_sheet_receives_model_areas(filled):
     assert sheet.cell(row=rows["СПП жилая"], column=4).value == pytest.approx(
         main.TEP_DEFAULT["apartments"]["gns"], abs=0.01
     )
+    # Строка «Постоянные парковки» складывается с гостевыми в ТЭП!I33, и сумма
+    # уходит в продажи. Гостевые не продаются, поэтому сюда идёт продаваемое
+    # количество, а строка гостевых обнуляется.
     assert sheet.cell(row=rows["Постоянные парковки"], column=4).value == pytest.approx(
-        main.TEP_DEFAULT["underground_parking"]["units"], abs=0.01
+        main.underground_saleable_spaces(main.TEP_DEFAULT["underground_parking"]),
+        abs=0.01
     )
 
 
