@@ -52,6 +52,21 @@ def _fmt_pct(value):
     return f"{sign}{float(value):.1f}%".replace(".", ",")
 
 
+def _fmt_sqm(value):
+    if value in (None, ""):
+        return ""
+    try:
+        return f"{float(value):g}"
+    except (TypeError, ValueError):
+        return ""
+
+
+def _fmt_range(low, high, value=None):
+    if low is not None and high is not None and float(low) != float(high):
+        return f"{_fmt_precise(low)} — {_fmt_precise(high)}"
+    return _fmt_precise(value if value is not None else low)
+
+
 def _fmt_row(row: dict | None) -> str:
     if not row:
         return "—"
@@ -101,7 +116,7 @@ def _reference_cards(region: str) -> str:
     specs = [
         ("developaid-grodnenskaya-main-above-2026-07", "Бизнес · основной СМР", "Фактический бюджет DevelopAid"),
         ("mke-ncsm-20-1-001-apartments-2025-09", "НЦСМ · площадь квартир", "Официальный московский норматив"),
-        ("mke-ncsm-20-1-001-building-total-2025-09", "НЦСМ · общая площадь здания", "Отдельный знаменатель, не ГНС"),
+        ("mke-ncsm-20-1-001-building-total-2025-09", "НЦСМ · площадь здания", "Отдельный знаменатель, не ГНС"),
         ("ac-moscow-eiszh-declared-cost-2025-06", "Проектные декларации", "Медиана по Москве"),
         ("sis-erz-2026-04-moscow", "Полная стоимость застройщика", "Массовое жильё, СИС / ЕРЗ"),
     ]
@@ -139,18 +154,17 @@ def _matrix_cell(cell: dict) -> str:
     note = cell.get("note")
     title = f' title="{_esc(note)}"' if note else ""
     if status in {"value", "source_aggregate"}:
-        adjusted = cell.get("adjusted_value_rub_m2")
+        value = cell.get("adjusted_value_rub_m2", cell.get("value_rub_m2"))
+        low = cell.get("adjusted_value_low_rub_m2", cell.get("value_low_rub_m2"))
+        high = cell.get("adjusted_value_high_rub_m2", cell.get("value_high_rub_m2"))
         source_value = cell.get("source_value_rub_m2", cell.get("value_rub_m2"))
-        value = adjusted if adjusted is not None else cell.get("value_rub_m2")
         unit_label = cell.get("unit_label") or STRUCTURE_UNIT_LABELS.get(cell.get("unit"), cell.get("unit", ""))
-        detail = ""
+        detail = f'<div class="cellnote">{_esc(unit_label)}</div>' if unit_label else ""
         if cell.get("class_adjusted"):
             ratio = cell.get("class_adjustment_ratio")
-            detail = f'<div class="cellnote">из {_fmt_precise(source_value)} · ×{ratio:.2f} по классу</div>'
-        elif unit_label:
-            detail = f'<div class="cellnote">{_esc(unit_label)}</div>'
-        badge = '<span class="estimate">B · нормализовано</span>' if cell.get("class_adjusted") else ""
-        return f'<div class="cellvalue"{title}>{_fmt_precise(value)} {badge}</div>{detail}'
+            detail = f'<div class="cellnote">из {_fmt_precise(source_value)} · ×{ratio:.2f} по классу<br>{_esc(unit_label)}</div>'
+        badge = '<span class="estimate">B</span>' if cell.get("class_adjusted") else ""
+        return f'<div class="cellvalue"{title}>{_fmt_range(low, high, value)} {badge}</div>{detail}'
     if status == "share":
         return f'<div class="share"{title}>{cell.get("share_pct")}%</div>'
     if status == "share_range":
@@ -182,6 +196,8 @@ def _cost_structure_table(matrix: dict) -> str:
     for source in sources:
         published = source.get("published", {})
         raw_value = published.get("value_rub_m2")
+        low = published.get("value_low_rub_m2")
+        high = published.get("value_high_rub_m2")
         adjusted = source.get("published_adjusted_value_rub_m2")
         unit_label = source.get("published_unit_label") or STRUCTURE_UNIT_LABELS.get(published.get("unit"), published.get("unit", ""))
         name = _esc(source.get("source"))
@@ -190,11 +206,13 @@ def _cost_structure_table(matrix: dict) -> str:
         if source.get("published_class_adjusted") and adjusted is not None:
             published_line = f'{_fmt_precise(raw_value)} → <b>{_fmt_precise(adjusted)}</b> <span class="estimate">B</span>'
         else:
-            published_line = _fmt_precise(raw_value)
+            published_line = _fmt_range(low, high, raw_value)
+        vat = "с НДС" if source.get("vat_included") is True else "НДС: н/д"
         heads.append(
             '<th class="sourcehead">'
             f'<div>{name}</div><div class="headvalue">{published_line}</div>'
-            f'<div class="headmeta">{_esc(unit_label)}<br>База класса: {_esc(source.get("base_class_label"))}<br>{_esc(source.get("reference_date"))}</div>'
+            f'<div class="headmeta">{_esc(unit_label)}<br>Класс: {_esc(source.get("base_class_label"))}'
+            f'<br>Цены: {_esc(source.get("price_basis_date") or source.get("reference_date"))} · {vat}</div>'
             '</th>'
         )
     body = []
@@ -214,12 +232,14 @@ def _recommendation_table(payload: dict) -> str:
         if row.get("key") == "construction_capex" or row.get("recommended_rub_m2") is not None or row.get("source_count"):
             grades = row.get("grade_counts", {})
             grade_text = " · ".join(f"{g}:{grades.get(g, 0)}" for g in ("A", "B", "C") if grades.get(g, 0)) or "—"
+            model_key = row.get("model_key")
+            model_note = f"<div class='tiny'>→ {model_key}</div>" if model_key else "<div class='tiny'>аналитическая статья</div>"
             rows.append(
                 "<tr>"
-                f"<td><b>{_esc(row.get('label'))}</b><div class='tiny'>{_esc(row.get('unit_label'))}</div></td>"
+                f"<td><b>{_esc(row.get('label'))}</b><div class='tiny'>{_esc(row.get('unit_label'))}</div>{model_note}</td>"
                 f"<td class='number'>{_fmt_precise(row.get('baseline_rub_m2'))}</td>"
                 f"<td class='number strong'>{_fmt_precise(row.get('recommended_rub_m2'))}</td>"
-                f"<td class='number'>{_fmt_precise(row.get('p25_rub_m2'))} — {_fmt_precise(row.get('p75_rub_m2'))}</td>"
+                f"<td class='number'>{_fmt_range(row.get('range_low_rub_m2'), row.get('range_high_rub_m2'))}</td>"
                 f"<td class='number'>{_fmt_pct(row.get('delta_to_baseline_pct'))}</td>"
                 f"<td>{row.get('source_count', 0)}<div class='tiny'>{_esc(grade_text)}</div></td>"
                 f"<td>{_esc(CONF_LABELS.get(row.get('confidence'), row.get('confidence')))}</td>"
@@ -229,7 +249,7 @@ def _recommendation_table(payload: dict) -> str:
         return '<div class="empty">Пока нет ни одной статьи с сопоставимой базой для агрегирования.</div>'
     return (
         '<div class="tablewrap"><table class="recommend"><thead><tr>'
-        '<th>Параметр DevelopAid</th><th>Baseline DA</th><th>Рекомендация</th><th>Коридор P25–P75</th>'
+        '<th>Параметр DevelopAid</th><th>Baseline DA</th><th>Consensus</th><th>Диапазон источников</th>'
         '<th>Δ к baseline</th><th>Источники</th><th>Достоверность</th></tr></thead><tbody>'
         + "".join(rows) + '</tbody></table></div>'
     )
@@ -241,20 +261,24 @@ def _normalization_table(payload: dict) -> str:
         for source in item.get("included_sources", []) + item.get("excluded_sources", []):
             included = source.get("included")
             status = '<span class="ok">участвует</span>' if included else '<span class="no">не участвует</span>'
+            source_basis = _esc(source.get("source_unit_label"))
+            normalized_basis = _esc(source.get("unit_label"))
+            transform = _esc(source.get("normalization"))
             rows.append(
                 "<tr>"
                 f"<td>{_esc(item.get('label'))}</td>"
-                f"<td>{_esc(source.get('source'))}<div class='tiny'>{_esc(source.get('reference_date'))}</div></td>"
+                f"<td>{_esc(source.get('source'))}<div class='tiny'>цены {_esc(source.get('price_basis_date'))}</div></td>"
                 f"<td><span class='grade g{_esc(source.get('grade'))}'>{_esc(source.get('grade'))}</span> {_esc(source.get('grade_label'))}</td>"
-                f"<td class='number'>{_fmt_precise(source.get('value_rub_m2'))}<div class='tiny'>{_esc(source.get('unit_label'))}</div></td>"
+                f"<td>{source_basis}<div class='tiny'>{transform}</div></td>"
+                f"<td class='number'>{_fmt_precise(source.get('value_rub_m2'))}<div class='tiny'>{normalized_basis}</div></td>"
                 f"<td class='number'>{source.get('weight', 0):.3f}</td>"
                 f"<td>{status}</td>"
                 f"<td>{_esc(source.get('reason'))}</td>"
                 "</tr>"
             )
     return (
-        '<div class="tablewrap"><table><thead><tr><th>Статья</th><th>Источник</th><th>Качество нормализации</th>'
-        '<th>Нормализовано</th><th>Вес</th><th>Агрегат</th><th>Почему</th></tr></thead><tbody>'
+        '<div class="tablewrap"><table><thead><tr><th>Статья</th><th>Источник</th><th>Качество</th>'
+        '<th>Исходная база → преобразование</th><th>Нормализовано</th><th>Вес</th><th>Агрегат</th><th>Почему</th></tr></thead><tbody>'
         + "".join(rows) + '</tbody></table></div>'
     )
 
@@ -281,6 +305,17 @@ def _class_adjustment_table(catalog: dict, active_class: str) -> str:
     return '<div class="coeffwrap"><table class="coeff"><thead><tr>' + head + '</tr></thead><tbody>' + ''.join(rows) + '</tbody></table></div>'
 
 
+def _target_areas(gba_sqm, sellable_sqm, underground_gns_sqm, above_ground_gns_sqm, apartments_sqm, building_total_sqm):
+    return {
+        "gba_sqm": gba_sqm,
+        "sellable_sqm": sellable_sqm,
+        "underground_gns_sqm": underground_gns_sqm,
+        "above_ground_gns_sqm": above_ground_gns_sqm,
+        "apartments_sqm": apartments_sqm,
+        "building_total_sqm": building_total_sqm,
+    }
+
+
 def install(app):
     @app.get("/api/statistics/construction-cost")
     def construction_cost(
@@ -298,9 +333,18 @@ def install(app):
 
     @app.get("/api/statistics/cost-recommendation")
     def statistics_cost_recommendation(
-        region: str = "Москва", housing_class: str = Query("business", alias="class")
+        region: str = "Москва", housing_class: str = Query("business", alias="class"),
+        gba_sqm: float | None = None, sellable_sqm: float | None = None,
+        underground_gns_sqm: float | None = None, above_ground_gns_sqm: float | None = None,
+        apartments_sqm: float | None = None, building_total_sqm: float | None = None,
     ):
-        return build_cost_recommendation(region=region, housing_class=housing_class)
+        return build_cost_recommendation(
+            region=region,
+            housing_class=housing_class,
+            target_areas=_target_areas(
+                gba_sqm, sellable_sqm, underground_gns_sqm, above_ground_gns_sqm, apartments_sqm, building_total_sqm
+            ),
+        )
 
     @app.get("/api/statistics/sources")
     def statistics_sources(region: str | None = None):
@@ -326,13 +370,19 @@ def install(app):
     def statistics_page(
         region: str = "Москва", housing_class: str = Query("business", alias="class"), city: str | None = None,
         unit: str = "gba", metric_type: str = "main_construction",
+        gba_sqm: float | None = None, sellable_sqm: float | None = None,
+        underground_gns_sqm: float | None = None, above_ground_gns_sqm: float | None = None,
+        apartments_sqm: float | None = None, building_total_sqm: float | None = None,
     ):
         r = result_to_dict(build_benchmark(
             load_observations(), load_external_benchmarks(), normalized=load_normalized_benchmarks(),
             region=region, housing_class=housing_class, city=city, unit=unit, metric_type=metric_type,
         ))
+        areas = _target_areas(
+            gba_sqm, sellable_sqm, underground_gns_sqm, above_ground_gns_sqm, apartments_sqm, building_total_sqm
+        )
         matrix = build_cost_structure_matrix(region=region, housing_class=housing_class)
-        recommendation = build_cost_recommendation(region=region, housing_class=housing_class)
+        recommendation = build_cost_recommendation(region=region, housing_class=housing_class, target_areas=areas)
         coeffs = class_adjustment_catalog()
         matrix_html = _cost_structure_table(matrix)
         recommendation_html = _recommendation_table(recommendation)
@@ -354,25 +404,29 @@ def install(app):
         unit_opts = "".join(f'<option value="{v}" {"selected" if unit == v else ""}>{_esc(label)}</option>' for v, label in UNIT_LABELS.items())
         metric_opts = "".join(f'<option value="{v}" {"selected" if metric_type == v else ""}>{_esc(label)}</option>' for v, label in METRIC_LABELS.items())
 
-        preset = {
-            row["key"]: {"value_rub_m2": row["recommended_rub_m2"], "unit": row["unit"]}
-            for row in recommendation.get("applyable_recommendations", [])
-        }
+        preset = recommendation.get("model_parameters_th_rub_m2", {})
         preset_json = json.dumps(preset, ensure_ascii=False).replace("</", "<\\/")
         weak = sum(1 for row in recommendation.get("applyable_recommendations", []) if row.get("confidence") in {"pilot", "insufficient"})
-        quality_note = (
-            f"Сейчас {weak} из {recommendation.get('applyable_count', 0)} применимых статей имеют пилотную базу. "
-            "Это не прячется: при добавлении сопоставимых источников агрегат пересчитается автоматически."
-            if recommendation.get("applyable_count") else "Пока нет статей, которые можно безопасно предложить модели."
-        )
+        missing = recommendation.get("missing_area_inputs", [])
+        if missing:
+            quality_note = "Для полной нормализации внешних источников заполните ТЭП выше: " + ", ".join(missing)
+        elif recommendation.get("applyable_count"):
+            quality_note = (
+                f"{weak} из {recommendation.get('applyable_count', 0)} применимых статей пока имеют пилотную базу; "
+                "это видно в confidence, а не спрятано в среднем."
+            )
+        else:
+            quality_note = "Пока нет статей, которые можно безопасно предложить модели."
 
         return HTMLResponse(f'''<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>DevelopAid — Себестоимость</title><style>
-*{{box-sizing:border-box}}body{{margin:0;background:#f4f5f7;color:#1c2430;font:15px -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}}.wrap{{max-width:1500px;margin:auto;padding:32px 24px 70px}}.top{{display:flex;justify-content:space-between;align-items:center;margin-bottom:26px}}.brand{{font-weight:800;font-size:20px}}.tag{{font-size:12px;padding:6px 10px;border:1px solid #d8dde5;border-radius:999px;background:#fff}}h1{{font-size:36px;margin:0 0 8px}}h2{{font-size:20px;margin:0 0 7px}}.sub,.sectionnote{{color:#697386;line-height:1.45}}.section{{margin-top:28px}}.primaryfilters{{display:flex;gap:10px;align-items:center;background:#fff;padding:14px;border:1px solid #e0e4ea;border-radius:14px;margin:18px 0}}.primaryfilters input{{flex:1}}.primaryfilters select{{min-width:180px}}input,select,button{{height:44px;border-radius:9px;border:1px solid #d5dae2;padding:0 12px;background:#fff;font:inherit;min-width:0}}button{{background:#182131;color:#fff;border-color:#182131;padding:0 20px;cursor:pointer}}button.secondary{{background:#fff;color:#182131}}.actionbar{{display:flex;gap:10px;align-items:center;margin:12px 0}}.hint{{font-size:12px;color:#6d7685}}table{{width:100%;border-collapse:collapse;background:#fff;border:1px solid #e0e4ea;font-size:13px}}td,th{{padding:11px;text-align:left;border-bottom:1px solid #edf0f4;vertical-align:top}}th{{font-size:11px;color:#747d8d;background:#fafbfc;text-transform:uppercase;letter-spacing:.03em}}.number{{text-align:right;font-variant-numeric:tabular-nums}}.strong{{font-weight:800;font-size:14px}}.tiny{{font-size:10px;color:#818a98;margin-top:3px}}.tablewrap,.matrixwrap,.coeffwrap{{overflow:auto;border:1px solid #dfe4ea;border-radius:14px;background:#fff}}.tablewrap table,.matrix,.coeff{{border:0}}.matrix{{min-width:1320px}}.matrix th,.matrix td{{border-right:1px solid #edf0f4}}.matrix .sticky{{position:sticky;left:0;z-index:3;min-width:240px;background:#fafbfc}}.rowlabel{{position:sticky;left:0;z-index:2;background:#fff;font-weight:650;min-width:240px}}.matrixcell{{min-width:205px;max-width:250px}}.sourcehead{{min-width:220px;max-width:260px;text-transform:none;letter-spacing:0;font-size:12px;color:#283241}}.headvalue{{font-size:14px;margin-top:7px;font-weight:600}}.headmeta,.cellnote{{font-size:10px;color:#778091;margin-top:5px;line-height:1.35;font-weight:400}}.cellvalue{{font-weight:750;font-size:14px}}.muted,.included{{color:#7f8896;font-size:12px}}.share{{font-weight:650;color:#475364}}.estimate,.grade{{display:inline-block;font-size:9px;font-weight:800;padding:2px 6px;border-radius:999px;background:#fff2c9;color:#735b16}}.gA{{background:#e8f5ee;color:#236642}}.gB{{background:#edf3fa;color:#285c89}}.gC{{background:#fff2c9;color:#735b16}}.gD{{background:#eef0f2;color:#727a85}}.ok{{color:#236642;font-weight:700}}.no{{color:#8d5860}}.totalrow{{background:#f6f8fa!important;font-weight:800;border-top:2px solid #dce2e8}}.callout{{background:#fff;border:1px solid #dce2e8;border-radius:16px;padding:20px}}.callout b{{font-size:17px}}.refs{{display:grid;grid-template-columns:repeat(5,1fr);gap:10px}}.refcard,.indexcard{{background:#fff;border:1px solid #e0e4ea;border-radius:12px;padding:14px}}.refvalue{{font-size:21px;font-weight:800;margin:7px 0}}.refmeta,.indexstatus{{font-size:11px;color:#758090;line-height:1.4}}.indices{{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}}.filters{{display:grid;grid-template-columns:1.4fr 1fr 1.25fr 1.5fr auto;gap:10px}}.hero{{margin-top:10px;background:#fff;border:1px solid #e0e4ea;border-radius:14px;padding:18px}}.hero .value{{font-size:32px;font-weight:800}}.grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:10px}}.card{{background:#fff;border:1px solid #e0e4ea;border-radius:12px;padding:14px}}.label{{font-size:11px;color:#778091}}.num{{font-size:18px;font-weight:750;margin-top:5px}}.expertbox,.method{{background:#fff8e6;border:1px solid #eedca3;border-radius:12px;padding:14px 16px;color:#68551c;line-height:1.45}}.coeff td,.coeff th{{text-align:center}}.coeff td:first-child,.coeff th:first-child{{text-align:left}}.activeclass{{background:#eef3f8!important;font-weight:800}}a{{color:#1e5a8a;text-decoration:none}}.tabs{{display:flex;gap:6px;margin:20px 0 10px}}.tab{{background:#fff;color:#485363;border-color:#d5dae2}}.tab.on{{background:#182131;color:#fff;border-color:#182131}}.panel{{display:none}}.panel.on{{display:block}}@media(max-width:900px){{.primaryfilters,.filters,.grid,.refs,.indices{{display:grid;grid-template-columns:1fr}}.wrap{{padding:22px 12px 50px}}h1{{font-size:30px}}}}
-</style></head><body><div class="wrap"><div class="top"><div class="brand">DevelopAid</div><div class="tag">COST BENCHMARK · METHOD v3.1</div></div><h1>Себестоимость строительства</h1><div class="sub">Цепочка расчёта теперь явная: <b>как опубликовано → нормализация к статье и базе DevelopAid → вес источника → агрегированная рекомендация</b>. Несопоставимый источник остаётся виден, но не портит среднее.</div><form class="primaryfilters" method="get"><input name="region" value="{reg}" placeholder="Регион"><select name="class">{opts}</select><input type="hidden" name="unit" value="{_esc(unit)}"><input type="hidden" name="metric_type" value="{_esc(metric_type)}"><button>Пересчитать</button></form>
+*{{box-sizing:border-box}}body{{margin:0;background:#f4f5f7;color:#1c2430;font:15px -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}}.wrap{{max-width:1500px;margin:auto;padding:32px 24px 70px}}.top{{display:flex;justify-content:space-between;align-items:center;margin-bottom:26px}}.brand{{font-weight:800;font-size:20px}}.tag{{font-size:12px;padding:6px 10px;border:1px solid #d8dde5;border-radius:999px;background:#fff}}h1{{font-size:36px;margin:0 0 8px}}h2{{font-size:20px;margin:0 0 7px}}.sub,.sectionnote{{color:#697386;line-height:1.45}}.section{{margin-top:28px}}.primaryfilters,.tepfilters{{display:grid;gap:10px;align-items:end;background:#fff;padding:14px;border:1px solid #e0e4ea;border-radius:14px;margin:18px 0}}.primaryfilters{{grid-template-columns:1.5fr 1fr auto}}.tepfilters{{grid-template-columns:repeat(4,1fr) auto}}.field label{{display:block;font-size:11px;color:#778091;margin:0 0 5px}}input,select,button{{height:44px;width:100%;border-radius:9px;border:1px solid #d5dae2;padding:0 12px;background:#fff;font:inherit;min-width:0}}button{{background:#182131;color:#fff;border-color:#182131;padding:0 20px;cursor:pointer}}button.secondary{{background:#fff;color:#182131}}.actionbar{{display:flex;gap:10px;align-items:center;margin:12px 0}}.actionbar button{{width:auto}}.hint{{font-size:12px;color:#6d7685}}table{{width:100%;border-collapse:collapse;background:#fff;border:1px solid #e0e4ea;font-size:13px}}td,th{{padding:11px;text-align:left;border-bottom:1px solid #edf0f4;vertical-align:top}}th{{font-size:11px;color:#747d8d;background:#fafbfc;text-transform:uppercase;letter-spacing:.03em}}.number{{text-align:right;font-variant-numeric:tabular-nums}}.strong{{font-weight:800;font-size:14px}}.tiny{{font-size:10px;color:#818a98;margin-top:3px}}.tablewrap,.matrixwrap,.coeffwrap{{overflow:auto;border:1px solid #dfe4ea;border-radius:14px;background:#fff}}.tablewrap table,.matrix,.coeff{{border:0}}.matrix{{min-width:1900px}}.matrix th,.matrix td{{border-right:1px solid #edf0f4}}.matrix .sticky{{position:sticky;left:0;z-index:3;min-width:260px;background:#fafbfc}}.rowlabel{{position:sticky;left:0;z-index:2;background:#fff;font-weight:650;min-width:260px}}.matrixcell{{min-width:210px;max-width:270px}}.sourcehead{{min-width:230px;max-width:285px;text-transform:none;letter-spacing:0;font-size:12px;color:#283241}}.headvalue{{font-size:14px;margin-top:7px;font-weight:600}}.headmeta,.cellnote{{font-size:10px;color:#778091;margin-top:5px;line-height:1.35;font-weight:400}}.cellvalue{{font-weight:750;font-size:13px}}.muted,.included{{color:#7f8896;font-size:12px}}.share{{font-weight:650;color:#475364}}.estimate,.grade{{display:inline-block;font-size:9px;font-weight:800;padding:2px 6px;border-radius:999px;background:#fff2c9;color:#735b16}}.gA{{background:#e8f5ee;color:#236642}}.gB{{background:#edf3fa;color:#285c89}}.gC{{background:#fff2c9;color:#735b16}}.gD{{background:#eef0f2;color:#727a85}}.ok{{color:#236642;font-weight:700}}.no{{color:#8d5860}}.totalrow{{background:#f6f8fa!important;font-weight:800;border-top:2px solid #dce2e8}}.callout{{background:#fff;border:1px solid #dce2e8;border-radius:16px;padding:20px}}.callout b{{font-size:17px}}.refs{{display:grid;grid-template-columns:repeat(5,1fr);gap:10px}}.refcard,.indexcard{{background:#fff;border:1px solid #e0e4ea;border-radius:12px;padding:14px}}.refvalue{{font-size:21px;font-weight:800;margin:7px 0}}.refmeta,.indexstatus{{font-size:11px;color:#758090;line-height:1.4}}.indices{{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}}.filters{{display:grid;grid-template-columns:1.4fr 1fr 1.25fr 1.5fr auto;gap:10px}}.hero{{margin-top:10px;background:#fff;border:1px solid #e0e4ea;border-radius:14px;padding:18px}}.hero .value{{font-size:32px;font-weight:800}}.grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:10px}}.card{{background:#fff;border:1px solid #e0e4ea;border-radius:12px;padding:14px}}.label{{font-size:11px;color:#778091}}.num{{font-size:18px;font-weight:750;margin-top:5px}}.expertbox,.method,.warning{{background:#fff8e6;border:1px solid #eedca3;border-radius:12px;padding:14px 16px;color:#68551c;line-height:1.45}}.warning{{margin:12px 0}}.coeff td,.coeff th{{text-align:center}}.coeff td:first-child,.coeff th:first-child{{text-align:left}}.activeclass{{background:#eef3f8!important;font-weight:800}}a{{color:#1e5a8a;text-decoration:none}}.tabs{{display:flex;gap:6px;margin:20px 0 10px}}.tab{{background:#fff;color:#485363;border-color:#d5dae2;width:auto}}.tab.on{{background:#182131;color:#fff;border-color:#182131}}.panel{{display:none}}.panel.on{{display:block}}@media(max-width:900px){{.primaryfilters,.tepfilters,.filters,.grid,.refs,.indices{{grid-template-columns:1fr}}.wrap{{padding:22px 12px 50px}}h1{{font-size:30px}}}}
+</style></head><body><div class="wrap"><div class="top"><div class="brand">DevelopAid</div><div class="tag">COST BENCHMARK · METHOD v3.2</div></div><h1>Себестоимость строительства</h1><div class="sub">Теперь это не витрина цифр. Цепочка явная: <b>как опубликовано → статья → класс → база площади → вес → агрегированный consensus → параметры модели.</b> Несопоставимый источник остаётся виден, но не получает голос в среднем.</div>
+<form method="get"><div class="primaryfilters"><div class="field"><label>Регион</label><input name="region" value="{reg}" placeholder="Регион"></div><div class="field"><label>Класс проекта</label><select name="class">{opts}</select></div><button>Пересчитать</button></div><div class="tepfilters"><div class="field"><label>Общая ГНС, м²</label><input type="number" step="0.01" name="gba_sqm" value="{_fmt_sqm(gba_sqm)}" placeholder="например 60 322"></div><div class="field"><label>Продаваемая, м²</label><input type="number" step="0.01" name="sellable_sqm" value="{_fmt_sqm(sellable_sqm)}" placeholder="например 31 526"></div><div class="field"><label>Подземная ГНС, м²</label><input type="number" step="0.01" name="underground_gns_sqm" value="{_fmt_sqm(underground_gns_sqm)}" placeholder="например 12 915"></div><div class="field"><label>Наземная ГНС, м²</label><input type="number" step="0.01" name="above_ground_gns_sqm" value="{_fmt_sqm(above_ground_gns_sqm)}" placeholder="если пусто = общая − подземная"></div><button>Нормализовать</button></div><input type="hidden" name="unit" value="{_esc(unit)}"><input type="hidden" name="metric_type" value="{_esc(metric_type)}"></form>
+{f'<div class="warning"><b>Не хватает ТЭП для полной нормализации:</b> {_esc(", ".join(missing))}. Внешние ставки на продаваемую/другую площадь пока показаны, но не усредняются с ГНС.</div>' if missing else ''}
 <div class="tabs"><button class="tab on" type="button" data-panel="recommendation">Рекомендация DevelopAid</button><button class="tab" type="button" data-panel="sources">Источники и нормализация</button></div>
-<div id="recommendation" class="panel on"><div class="section"><h2>Агрегированное предложение · {reg} · {_esc(cls_label)}</h2><div class="sectionnote">Не простое среднее. По каждой статье считаются только сопоставимые значения; веса учитывают качество нормализации, свежесть, тип и методологическую сопоставимость источника.</div>{recommendation_html}<div class="actionbar"><button type="button" id="copyPreset">Скопировать пресет</button><span class="hint" id="copyState">{_esc(quality_note)}</span></div><div class="callout"><b>Что можно применять в модель сейчас: {recommendation.get('applyable_count', 0)} статей.</b><div class="sectionnote" style="margin-top:6px">Полный construction budget не складывается из несопоставимых знаменателей. Он считается уже на ТЭП проекта после применения ставок наземной части, подземной части и общепроектных статей.</div></div></div><div class="section"><h2>Экспертная индексация по классу</h2><div class="expertbox"><b>Комфорт = 1,00.</b> Коэффициент класса — отдельный слой нормализации, а не статистика. Поэтому такая точка получает B, а не A.</div>{coeff_html}</div></div>
-<div id="sources" class="panel"><div class="section"><h2>1. Как опубликовано</h2><div class="sectionnote">Строки — наша структура; колонки — источники. Исходный scope, знаменатель площади и опубликованная цифра не переписываются задним числом.</div>{matrix_html}<div class="sectionnote">* Совместные доли не размазываются по статьям. Пусто означает «не раскрыто», а не ноль.</div></div><div class="section"><h2>2. Нормализация и допуск в агрегат</h2><div class="sectionnote">A — прямое совпадение; B — прозрачная нормализация; C — оценочная декомпозиция; D — только справочно. D имеет нулевой вес.</div>{normalization_html}</div><div class="section"><h2>3. Контрольные ориентиры</h2><div class="refs">{reference_cards}</div></div><div class="section"><h2>Индексация даты</h2><div class="indices">{index_cards}</div></div><div class="section"><h2>Реестр исходных источников</h2><div class="tablewrap"><table><thead><tr><th>Источник</th><th>Класс</th><th>Значение</th><th>База площади</th><th>Метрика</th><th>Scope</th><th>Дата</th></tr></thead><tbody>{source_rows}</tbody></table></div></div></div>
-<div class="section"><h2>Статистический explorer</h2><div class="sectionnote">Ниже сохранён старый срез для проверки конкретной метрики/единицы. Он не заменяет агрегатор по статьям.</div><form class="filters" method="get"><input name="region" value="{reg}"><select name="class">{opts}</select><select name="unit">{unit_opts}</select><select name="metric_type">{metric_opts}</select><button>Показать</button></form><div class="hero"><div class="label">Статистический ориентир · {reg} · {cls}</div><div class="value">{_fmt(r['recommended'])}</div><div>P25–P75: {_fmt(r['p25'])} — {_fmt(r['p75'])}</div></div><div class="grid"><div class="card"><div class="label">Медиана</div><div class="num">{_fmt(r['median'])}</div></div><div class="card"><div class="label">N</div><div class="num">{r['n']}</div></div><div class="card"><div class="label">Достоверность</div><div class="num">{_esc(conf)}</div></div><div class="card"><div class="label">Версия</div><div class="num">v{_esc(r['methodology_version'])}</div></div></div></div><div class="method">Метод v3.1: агрегирование выполняется по статье после нормализации; несопоставимые unit/scope не усредняются. При недостатке данных система показывает ограниченность вместо фиктивной точности.</div></div>
-<script>const preset={preset_json};document.querySelectorAll('.tab').forEach(b=>b.addEventListener('click',()=>{{document.querySelectorAll('.tab,.panel').forEach(x=>x.classList.remove('on'));b.classList.add('on');document.getElementById(b.dataset.panel).classList.add('on')}}));document.getElementById('copyPreset').addEventListener('click',async()=>{{const text=JSON.stringify(preset,null,2);try{{await navigator.clipboard.writeText(text);document.getElementById('copyState').textContent='Пресет скопирован. Следующий шаг — применить его к вводным модели.'}}catch(e){{document.getElementById('copyState').textContent='Не удалось скопировать автоматически.'}}}});</script></body></html>''')
+<div id="recommendation" class="panel on"><div class="section"><h2>Агрегированное предложение · {reg} · {_esc(cls_label)}</h2><div class="sectionnote">По каждой статье считается отдельный weighted consensus. Наземное СМР — на наземную ГНС, подземное — на подземную ГНС, остальные статьи — на общую ГНС. Диапазон использует опубликованные low/high источников.</div>{recommendation_html}<div class="actionbar"><button type="button" id="copyPreset">Скопировать параметры модели</button><span class="hint" id="copyState">{_esc(quality_note)}</span></div><div class="callout"><b>Автоматически мэппятся в модель: {recommendation.get('applyable_count', 0)} статей.</b><div class="sectionnote" style="margin-top:6px">ПИР, техзаказчик, управление и резерв тоже агрегируются, когда источник раскрывает их отдельно, но не записываются в несовпадающее поле модели автоматически. СМР CORE.XP не делится искусственно на наземку/подземку.</div></div></div><div class="section"><h2>Экспертная корректировка класса</h2><div class="expertbox"><b>Это отдельный слой.</b> Если у исследования есть прямой срез выбранного класса (как у CORE.XP), используется он. Коэффициент класса нужен только когда прямого среза нет и получает B, а не A.</div>{coeff_html}</div></div>
+<div id="sources" class="panel"><div class="section"><h2>1. Как опубликовано</h2><div class="sectionnote">В таблице сохранены исходные знаменатели, диапазоны, даты цен и scope. CORE.XP, например, публикует стоимость на м² полезной/продаваемой площади; DevelopAid не переименовывает её в ГНС.</div>{matrix_html}<div class="sectionnote">* Совместные доли не размазываются по статьям. Пусто означает «не раскрыто», а не ноль.</div></div><div class="section"><h2>2. Нормализация и допуск в агрегат</h2><div class="sectionnote">A — прямое совпадение; B — прозрачная нормализация; C — оценочная декомпозиция; D — только справочно. Видно исходную базу, преобразование, итоговую базу, вес и причину включения/исключения.</div>{normalization_html}</div><div class="section"><h2>3. Контрольные ориентиры</h2><div class="refs">{reference_cards}</div></div><div class="section"><h2>Индексация даты</h2><div class="indices">{index_cards}</div><div class="sectionnote" style="margin-top:8px">Пока дата не переиндексируется автоматически: она влияет на вес свежести и явно показана. Это специально — старую цену нельзя «осовременить» случайным CPI. Следующий слой должен использовать проверенный индекс строительной продукции Мосстата.</div></div><div class="section"><h2>Реестр исходных источников</h2><div class="tablewrap"><table><thead><tr><th>Источник</th><th>Класс</th><th>Значение</th><th>База площади</th><th>Метрика</th><th>Scope</th><th>Дата</th></tr></thead><tbody>{source_rows}</tbody></table></div></div></div>
+<div class="section"><h2>Статистический explorer</h2><div class="sectionnote">Старый срез оставлен как диагностический инструмент для конкретной метрики/единицы. Он не является агрегированным пресетом.</div><form class="filters" method="get"><input name="region" value="{reg}"><select name="class">{opts}</select><select name="unit">{unit_opts}</select><select name="metric_type">{metric_opts}</select><button>Показать</button></form><div class="hero"><div class="label">Статистический ориентир · {reg} · {cls}</div><div class="value">{_fmt(r['recommended'])}</div><div>P25–P75: {_fmt(r['p25'])} — {_fmt(r['p75'])}</div></div><div class="grid"><div class="card"><div class="label">Медиана</div><div class="num">{_fmt(r['median'])}</div></div><div class="card"><div class="label">N</div><div class="num">{r['n']}</div></div><div class="card"><div class="label">Достоверность</div><div class="num">{_esc(conf)}</div></div><div class="card"><div class="label">Версия</div><div class="num">v{_esc(r['methodology_version'])}</div></div></div></div><div class="method">Метод v3.2: агрегирование после нормализации статьи и знаменателя. Один отчёт с тремя классами считается одной выборкой. Нераскрытый scope не декомпозируется.</div></div>
+<script>const preset={preset_json};document.querySelectorAll('.tab').forEach(b=>b.addEventListener('click',()=>{{document.querySelectorAll('.tab,.panel').forEach(x=>x.classList.remove('on'));b.classList.add('on');document.getElementById(b.dataset.panel).classList.add('on')}}));document.getElementById('copyPreset').addEventListener('click',async()=>{{const text=JSON.stringify(preset,null,2);try{{await navigator.clipboard.writeText(text);document.getElementById('copyState').textContent='Параметры скопированы в формате ключ API → тыс. ₽/м².'}}catch(e){{document.getElementById('copyState').textContent='Не удалось скопировать автоматически.'}}}});</script></body></html>''')
 
     return app
