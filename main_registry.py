@@ -4,6 +4,7 @@ import os
 
 import main as _base
 from developaid_v2 import install as install_v2
+from excel_tep_sheet import install as install_excel_tep_sheet
 from guide import install as install_guide
 from ia_preview import install as install_ia_preview
 from market_search import install as install_market_search
@@ -14,6 +15,9 @@ from telegram_user_registry import install
 
 app = _base.app
 core = _base.core
+# Полная Excel-книга получает отдельный редактируемый лист ТЭП, не двигая ни
+# одной строки старого шаблона и его фиксированных ссылок.
+install_excel_tep_sheet(core)
 install_mpt(_base)
 install_mpt_bot_menu(_base)
 registry = install(_base)
