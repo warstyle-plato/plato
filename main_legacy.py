@@ -367,7 +367,7 @@ def tep_ratios_changed(raw: Any) -> list[str]:
 # (`VRI_USE_TYPES`) и подставляются на страницу — копии списка нет.
 VRI_USE_TYPES_PLACEHOLDER = "__DEVELOPAID_VRI_USE_TYPES__"
 
-TEP_DEFAULT = {'apartments': {'label': 'Квартиры', 'gns': 130716.66012842482, 'total_area': 117647.0588235294, 'useful': 80000, 'saleable': 80000, 'transfer': 0, 'units': 1361.815754339119}, 'ground_commercial': {'label': 'Коммерция 1 эт.', 'gns': 9664.049734985854, 'total_area': 8695.652173913044, 'useful': 7826.08695652174, 'saleable': 7826.08695652174, 'transfer': 0, 'units': 0}, 'standalone_retail': {'label': 'Коммерция ОСЗ', 'gns': 0, 'total_area': 0, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 0}, 'offices': {'label': 'Офисы', 'gns': 0, 'total_area': 0, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 0}, 'above_parking': {'label': 'Наземный паркинг', 'gns': 0, 'total_area': 0, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 0}, 'underground_parking': {'label': 'Подземный паркинг', 'gns': 38763, 'total_area': 38763, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 1107.5142857142857}, 'storage': {'label': 'Кладовки', 'gns': 0, 'total_area': 0, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 0}, 'kindergarten': {'label': 'ДОУ', 'gns': 0, 'total_area': 3000, 'useful': 0, 'saleable': 0, 'transfer': 3000, 'units': 250}, 'school': {'label': 'СОШ', 'gns': 0, 'total_area': 0, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 0}, 'clinic': {'label': 'Поликлиника', 'gns': 0, 'total_area': 0, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 0}}
+TEP_DEFAULT = {'apartments': {'label': 'Квартиры', 'gns': 130716.66012842482, 'total_area': 117647.0588235294, 'useful': 80000, 'saleable': 80000, 'transfer': 0, 'units': 1361.815754339119}, 'ground_commercial': {'label': 'Коммерция 1 эт.', 'gns': 9664.049734985854, 'total_area': 8695.652173913044, 'useful': 7826.08695652174, 'saleable': 7826.08695652174, 'transfer': 0, 'units': 0}, 'standalone_retail': {'label': 'Коммерция ОСЗ', 'gns': 0, 'total_area': 0, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 0}, 'offices': {'label': 'Офисы', 'gns': 0, 'total_area': 0, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 0}, 'above_parking': {'label': 'Наземный паркинг', 'gns': 0, 'total_area': 0, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 0}, 'underground_parking': {'label': 'Подземный паркинг', 'gns': 38763, 'total_area': 38763, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 1107.5142857142857}, 'storage': {'label': 'Кладовки', 'gns': 0, 'total_area': 0, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 0}, 'kindergarten': {'label': 'ДОУ', 'gns': 0, 'total_area': 3000, 'useful': 0, 'saleable': 0, 'transfer': 3000, 'units': 250}, 'school': {'label': 'СОШ', 'gns': 0, 'total_area': 0, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 0}, 'clinic': {'label': 'Поликлиника', 'gns': 0, 'total_area': 0, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 0}, 'other_mandatory': {'label': 'Прочие обязательные объекты', 'gns': 0, 'total_area': 0, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 0}}
 FIELD_GROUPS = [['Сделка и сроки', [['purchase_price_mln', 'Стоимость покупки / цена входа', 'млн ₽', 'number'], ['land_rights_cost_mln', 'Оформление земельных правоотношений / смена ВРИ', 'млн ₽', 'number'], ['project_start', 'Начало проекта', 'дата', 'date'], ['ird_months', 'Срок ИРД до РнС', 'мес.; минимум 1 — ноль модель не считает', 'number'], ['construction_months', 'Срок строительства', 'мес.', 'number'], ['sales_lag_months', 'Лаг старта продаж после РнС', 'мес.', 'number'], ['bridge_repay_lag_months', 'Лаг погашения БРИДЖ после РнС', 'мес.', 'number'], ['residual_sales_months', 'Остаточные продажи после РВЭ', 'мес.', 'number']]], ['Смена ВРИ и земельные права', [['vri_required', 'Требуется изменение ВРИ', 'Да / Нет', 'checkbox'], ['vri_region', 'Регион', 'регион', 'select', [['msk', 'Москва'], ['mo', 'Московская область']]], ['land_right', 'Право на участок', 'право', 'select', [['ownership', 'Собственность'], ['lease', 'Аренда']]], ['vri_obligation_date_mode', 'Дата обязательства', 'режим', 'select', [['before_rns_1m', 'За месяц до РнС — экспертная оценка'], ['at_rns', 'В дату РнС'], ['before_rns_3m', 'За три месяца до РнС'], ['after_purchase', 'Через N мес. после покупки'], ['manual', 'Задана вручную']]], ['vri_months_after_purchase', 'Месяцев после покупки', 'мес.', 'number'], ['vri_obligation_date', 'Дата возникновения обязательства', 'точная дата по документу; пусто — экспертная оценка', 'date'], ['vri_payment_mode', 'Порядок оплаты', 'режим', 'select', [['lump', 'Единовременно'], ['installment', 'Рассрочка']]], ['vri_installment_years', 'Срок рассрочки', 'лет (Москва: 1, 3, 6)', 'number'], ['vri_periodicity_months', 'Периодичность платежей', 'мес.; в Москве всегда квартал', 'select', [['1', 'Ежемесячно'], ['3', 'Ежеквартально'], ['6', 'Раз в полгода'], ['12', 'Раз в год']]], ['vri_initial_pct', 'Первый взнос по рассрочке', '% от суммы', 'number'], ['vri_schedule_mode', 'График платежей', 'режим', 'select', [['auto', 'Автоматический'], ['manual', 'Ручной']]], ['vri_interest_enabled', 'Проценты на остаток', 'режим', 'select', [['', 'По региону'], ['1', 'Начисляются'], ['0', 'Не начисляются']]], ['vri_interest_spread_pp', 'Спред к ключевой ставке по рассрочке', 'п.п.', 'number'], ['vri_early_repay_after_pf', 'Досрочное погашение остатка после открытия ПФ', 'Да / Нет', 'checkbox'], ['vri_pf_open_date', 'Дата открытия ПФ', 'дата (пусто — РнС)', 'date'], ['vri_in_bank_budget', 'ВРИ включена в банковский бюджет', 'Да / Нет', 'checkbox'], ['vri_financing_mode', 'Источники оплаты', 'режим', 'select', [['auto', 'Как весь проект'], ['shares', 'Заданные доли']]], ['vri_share_bridge_pct', 'Доля БРИДЖ', '%', 'number'], ['vri_share_pf_pct', 'Доля ПФ', '%', 'number'], ['vri_share_equity_pct', 'Доля собственного капитала', '%', 'number'], ['vri_relief_mode', 'Льгота по плате', 'режим', 'select', [['none', 'Нет'], ['percent', 'Доля от суммы'], ['amount', 'Фиксированная сумма']]], ['vri_relief_pct', 'Льгота — доля от суммы', '%', 'number'], ['vri_relief_mln', 'Льгота — сумма', 'млн ₽', 'number'], ['vri_transfer_offset_mln', 'Зачёт переданных муниципалитету площадей', 'млн ₽; по соглашению — уменьшает плату за ВРИ', 'number'], ['vri_security_cost_mln', 'Расходы на обеспечение обязательства', 'млн ₽', 'number']]], ['Продажи', [['apartment_price_th', 'Стартовая цена квартир', 'тыс. ₽/м²', 'number'], ['commercial_price_th', 'Стартовая цена коммерции 1 этажа', 'тыс. ₽/м²', 'number'], ['parking_price_th', 'Цена подземного машино-места', 'тыс. ₽/шт.', 'number'], ['storage_price_th', 'Цена кладовой', 'тыс. ₽/шт.', 'number'], ['share_before_rve_pct', 'Доля продаж до РВЭ', '%', 'number'], ['pace_adjustment_pct', 'Корректировка темпа', '%', 'number'], ['inflation_after_rve_pct', 'Инфляция после РВЭ', '% год', 'number'], ['seasonal_reduction_pct', 'Сезонное снижение темпа', '%', 'number'], ['growth_stage1_pct', 'Рост цены — этап 1', '%', 'number'], ['growth_stage2_pct', 'Рост цены — этап 2', '%', 'number'], ['growth_stage3_pct', 'Рост цены — этап 3', '%', 'number'], ['growth_stage4_pct', 'Рост цены — этап 4', '%', 'number'], ['monthly_growth_pre_pct', 'Ежемесячный рост цены до РВЭ', '%/мес.', 'number'], ['monthly_growth_post_pct', 'Ежемесячный рост цены после РВЭ', '%/мес.', 'number']]], ['Строительство', [['ird_th_per_sqm', 'ИРД и согласования', 'тыс. ₽/м² ГНС', 'number'], ['design_p_th_per_sqm', 'Проектирование стадии П', 'тыс. ₽/м² ГНС', 'number'], ['design_rd_th_per_sqm', 'Проектирование стадии РД', 'тыс. ₽/м² ГНС', 'number'], ['preparation_th_per_sqm', 'Подготовительные работы', 'тыс. ₽/м² ГНС', 'number'], ['main_above_th_per_sqm', 'Основное строительство — наземная часть', 'тыс. ₽/м² ГНС', 'number'], ['main_under_th_per_sqm', 'Основное строительство — подземная часть', 'тыс. ₽/м² ГНС', 'number'], ['utilities_th_per_sqm', 'Наружные инженерные сети', 'тыс. ₽/м² ГНС', 'number'], ['landscaping_th_per_sqm', 'Благоустройство', 'тыс. ₽/м² ГНС', 'number'], ['commissioning_th_per_sqm', 'Сдача и ввод', 'тыс. ₽/м² ГНС', 'number'], ['site_maintenance_th_per_sqm', 'Содержание стройплощадки', 'тыс. ₽/м² ГНС', 'number'], ['gc_fee_pct', 'Вознаграждение генподрядчика', '% СМР', 'number'], ['author_supervision_pct', 'Авторский надзор', '% от П + РД', 'number'], ['project_management_pct', 'Управление проектом — зарплаты и накладные', '% прямых затрат', 'number'], ['technical_supervision_pct', 'Технический заказчик / стройконтроль (технадзор)', '% СМР', 'number'], ['reserve_pct', 'Резерв', '%', 'number']]], ['Коммерческие расходы и налоги', [['marketing_pct', 'Маркетинг', '% выручки', 'number'], ['selling_pct', 'Расходы на продажи', '% выручки', 'number'], ['profit_tax_pct', 'Налог на прибыль', '%', 'number'], ['vat_pct', 'НДС', '%', 'number']]], ['Финансирование', [['pre_pf_own_funds_mln', 'Собственные средства до открытия ПФ', 'млн ₽; тратятся раньше БРИДЖа и процентов не несут', 'number'], ['bridge_spread_pp', 'Спред БРИДЖ', 'п.п.', 'number'], ['bridge_cap_spread_pp', 'Спред капитализации БРИДЖ', 'п.п.', 'number'], ['pf_spread_pp', 'Спред ПФ', 'п.п.', 'number'], ['pf_special_pct', 'Ставка ПФ при покрытии эскроу 1×', '%', 'number'], ['pf_limit_approved_mln', 'Одобренный лимит ПФ', 'млн ₽; 0 — лимит выводится из потребности. Задан — становится потолком, а нехватка показывается отдельно', 'number'], ['pf_special_steps', 'Ступени ставки по покрытию эскроу', 'покрытие:ставка через ; по умолчанию лестница НКЛ Сбера — впишите свою из договора. Пусто — одна ставка выше', 'text'], ['limit_fee_pct', 'Плата за лимит', '%', 'number'], ['reservation_fee_pct', 'Плата за резервирование', '%', 'number'], ['discount_rate_pct', 'Ставка дисконтирования', '%', 'number'], ['bridge_interest_mode', 'Проценты БРИДЖ при рефинансировании', 'режим', 'finance_select']]], ['Социальная нагрузка', [['social_mode', 'Форма исполнения', 'режим', 'select'], ['social_comp_date', 'Дата денежной компенсации', 'дата', 'date'], ['social_compensation_mln', 'Социальный платеж / компенсация по ГлавАПУ', 'млн ₽', 'number'], ['kindergarten_places', 'ДОУ — количество мест', 'мест', 'number'], ['kindergarten_cost_mln_per_place', 'ДОУ — себестоимость места', 'млн ₽/место', 'number'], ['kindergarten_start', 'ДОУ — начало строительства', 'дата', 'date'], ['kindergarten_months', 'ДОУ — срок строительства', 'мес.', 'number'], ['school_places', 'СОШ — количество мест', 'мест', 'number'], ['school_cost_mln_per_place', 'СОШ — себестоимость места', 'млн ₽/место', 'number'], ['school_start', 'СОШ — начало строительства', 'дата', 'date'], ['school_months', 'СОШ — срок строительства', 'мес.', 'number'], ['clinic_capacity', 'Поликлиника — мощность', 'пос./смену', 'number'], ['clinic_cost_mln_per_unit', 'Поликлиника — себестоимость мощности', 'млн ₽/(пос./смену)', 'number'], ['clinic_start', 'Поликлиника — начало строительства', 'дата', 'date'], ['clinic_months', 'Поликлиника — срок строительства', 'мес.', 'number'], ['social_dou_gba_sqm', 'ДОУ — общая площадь', 'м²', 'number'], ['social_dou_norm_sqm', 'ДОУ — норматив площади на место', 'м²/место', 'number'], ['social_school_gba_sqm', 'СОШ — общая площадь', 'м²', 'number'], ['social_school_norm_sqm', 'СОШ — норматив площади на место', 'м²/место', 'number'], ['social_clinic_gba_sqm', 'Поликлиника — общая площадь', 'м²', 'number'], ['social_clinic_norm_sqm', 'Поликлиника — норматив площади', 'м²/ед.', 'number']]], ['МФОЦ / офисы', [['offices_enabled', 'Объект включен', 'Да / Нет', 'checkbox'], ['offices_gba_sqm', 'Общая площадь (GBA)', 'м²', 'number'], ['offices_saleable_sqm', 'Продаваемая площадь', 'м²', 'number'], ['offices_start', 'Начало строительства', 'дата', 'date'], ['offices_months', 'Срок строительства', 'мес.', 'number'], ['offices_cost_th_per_sqm', 'Себестоимость строительства', 'тыс. ₽/м² GBA', 'number'], ['offices_sales_start', 'Старт продаж', 'дата', 'date'], ['offices_price_th_per_sqm', 'Стартовая цена', 'тыс. ₽/м²', 'number'], ['offices_share_before_rve_pct', 'Доля продаж до РВЭ', '%', 'number'], ['offices_residual_months', 'Остаточные продажи после РВЭ', 'мес.', 'number'], ['offices_growth_pre_pct', 'Рост цены до РВЭ', '%/мес.', 'number'], ['offices_growth_post_pct', 'Рост цены после РВЭ', '%/мес.', 'number']]], ['ТЦ / коммерция ОСЗ', [['retail_enabled', 'Объект включен', 'Да / Нет', 'checkbox'], ['retail_gba_sqm', 'Общая площадь (GBA)', 'м²', 'number'], ['retail_saleable_sqm', 'Продаваемая площадь', 'м²', 'number'], ['retail_start', 'Начало строительства', 'дата', 'date'], ['retail_months', 'Срок строительства', 'мес.', 'number'], ['retail_cost_th_per_sqm', 'Себестоимость строительства', 'тыс. ₽/м² GBA', 'number'], ['retail_sales_start', 'Старт продаж', 'дата', 'date'], ['retail_price_th_per_sqm', 'Стартовая цена', 'тыс. ₽/м²', 'number'], ['retail_share_before_rve_pct', 'Доля продаж до РВЭ', '%', 'number'], ['retail_residual_months', 'Остаточные продажи после РВЭ', 'мес.', 'number'], ['retail_growth_pre_pct', 'Рост цены до РВЭ', '%/мес.', 'number'], ['retail_growth_post_pct', 'Рост цены после РВЭ', '%/мес.', 'number']]], ['Подземный паркинг', [['underground_parking_disabled', 'Отказ от подземного паркинга', 'Да / Нет; места переносятся в наземный', 'checkbox'], ['underground_manual_spaces', 'Машино-места — решение проекта', 'шт.; из расчёта ТЭП — меняйте, площадь пересчитается', 'number'], ['underground_manual_gns_sqm', 'Площадь подземной парковки', 'м²; пересчитывается из мест и обратно', 'number'], ['underground_area_per_space_sqm', 'Норматив площади на машино-место', 'м²/место, гросс: рампы, проезды и техпомещения включены', 'number']]], ['Наземный паркинг', [['above_parking_enabled', 'Объект включен', 'Да / Нет', 'checkbox'], ['above_parking_spaces', 'Количество машино-мест', 'шт.', 'number'], ['above_parking_cost_mln_per_space', 'Себестоимость одного места', 'млн ₽/место', 'number'], ['above_parking_start', 'Начало строительства', 'дата', 'date'], ['above_parking_months', 'Срок строительства', 'мес.', 'number'], ['above_parking_sales_start', 'Старт продаж', 'дата', 'date'], ['above_parking_price_mln_per_space', 'Стартовая цена места', 'млн ₽/место', 'number'], ['above_parking_share_before_rve_pct', 'Доля продаж до РВЭ', '%', 'number'], ['above_parking_residual_months', 'Остаточные продажи после РВЭ', 'мес.', 'number'], ['above_parking_growth_pre_pct', 'Рост цены до РВЭ', '%/мес.', 'number'], ['above_parking_growth_post_pct', 'Рост цены после РВЭ', '%/мес.', 'number'], ['above_parking_area_per_space_sqm', 'Площадь на 1 место для ТЭП', 'м²/место', 'number']]]]
 # Удельные умолчания сверены с банковским бюджетом собственного проекта
 # (Гродненская, 18; ГНС наземной 19 341,14 м², подземная 3 733,2 м², лимит Сбера
@@ -19673,9 +19673,24 @@ def calculate(req: CalcRequest) -> dict:
     }
 
     products_report = []
+    report_krt_costs = {
+        "offices": float(op["capex_amounts"].get("offices", 0.0) or 0.0),
+        "standalone_retail": float(op["capex_amounts"].get("standalone_retail", 0.0) or 0.0),
+        "above_parking": float(op["capex_amounts"].get("above_parking", 0.0) or 0.0),
+    }
+    report_core_keys = ("apartments", "ground_commercial", "underground_parking", "storage")
+    report_core_quantity = sum(float(product_specs[key]["quantity"] or 0.0)
+                               for key in report_core_keys)
+    report_core_cost = max(total_capex - sum(report_krt_costs.values()), 0.0)
     for key, spec in product_specs.items():
         quantity = float(spec["quantity"] or 0)
         revenue_value = op["revenue_by_product"].get(key, 0.0)
+        tep_row = t.get(key) or {}
+        if key in report_krt_costs:
+            product_cost = report_krt_costs[key]
+        else:
+            product_cost = (report_core_cost * quantity / report_core_quantity
+                            if report_core_quantity else 0.0)
         schedule = op["revenue_product_schedules"].get(key, {})
         months_pre = max(1, months_between(spec["start"], spec["end_ref"]))
         pace = quantity * spec["share"] / months_pre if quantity else 0.0
@@ -19687,13 +19702,33 @@ def calculate(req: CalcRequest) -> dict:
             "label": spec["label"],
             "unit": spec["unit"],
             "quantity": quantity,
+            "gns": float(tep_row.get("gns", 0.0) or 0.0),
+            "saleable": float(tep_row.get("saleable", 0.0) or 0.0),
             "revenue": revenue_value,
+            "cost": product_cost,
+            "margin": ((revenue_value - product_cost) / revenue_value
+                       if revenue_value else None),
             "start_price_th": spec["start_price"],
             "avg_price_th": avg_price,
             "pace_pre": pace,
             "share_before_rve": spec["share"],
             "sales_start": start_date,
             "sales_end": end_date,
+        })
+
+    reported = {item["key"] for item in products_report}
+    for key, tep_row in t.items():
+        if key in reported or not any(float(tep_row.get(field, 0.0) or 0.0)
+                                      for field in ("gns", "total_area", "units")):
+            continue
+        products_report.append({
+            "key": key, "label": tep_row.get("label") or key, "unit": "м²",
+            "quantity": float(tep_row.get("units", 0.0) or 0.0),
+            "gns": float(tep_row.get("gns", 0.0) or tep_row.get("total_area", 0.0) or 0.0),
+            "saleable": float(tep_row.get("saleable", 0.0) or 0.0),
+            "revenue": 0.0, "cost": 0.0, "margin": None,
+            "start_price_th": 0.0, "avg_price_th": 0.0, "pace_pre": 0.0,
+            "share_before_rve": 0.0, "sales_start": None, "sales_end": None,
         })
 
     # Calendar / Gantt, mirroring the conceptual structure of the Excel Calendar sheet.
@@ -20191,6 +20226,57 @@ def _scale_tep_row_by_units(
 
 _PHASE_MASS_PRODUCTS = ("apartments", "ground_commercial", "underground_parking", "storage")
 
+# Absolute queue TEP is the authoritative layer above legacy percentage weights.
+# The aliases keep the atomic engine unchanged: several KRT products are read
+# from inputs, while the rest are read directly from TEP rows.
+_PHASE_PRODUCT_INPUT_ALIASES = {
+    "offices": {"gns": "offices_gba_sqm", "saleable": "offices_saleable_sqm"},
+    "standalone_retail": {"gns": "retail_gba_sqm", "saleable": "retail_saleable_sqm"},
+    "above_parking": {"units": "above_parking_spaces"},
+    "underground_parking": {
+        "gns": "underground_manual_gns_sqm", "units": "underground_manual_spaces",
+    },
+    "kindergarten": {"units": "kindergarten_places"},
+    "school": {"units": "school_places"},
+    "clinic": {"units": "clinic_capacity"},
+}
+
+
+def _explicit_phase_products(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Return sanitized absolute product TEP stored on a queue."""
+    products = cfg.get("products") or {}
+    if not isinstance(products, dict):
+        return {}
+    return {str(key): copy.deepcopy(value) for key, value in products.items()
+            if key in TEP_DEFAULT and isinstance(value, dict)}
+
+
+def _apply_explicit_phase_products(
+    p_tep: dict[str, dict[str, Any]],
+    p_inputs: dict[str, Any],
+    cfg: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    """Overlay manually edited queue TEP and synchronize atomic input aliases."""
+    explicit = _explicit_phase_products(cfg)
+    numeric_fields = ("gns", "total_area", "useful", "saleable", "transfer", "units")
+    for key, override in explicit.items():
+        row = copy.deepcopy(p_tep.get(key) or TEP_DEFAULT[key])
+        for field in numeric_fields:
+            if field in override:
+                row[field] = max(0.0, float(override.get(field) or 0.0))
+        if override.get("generates_revenue") is False:
+            row["saleable"] = 0.0
+        p_tep[key] = row
+        for field, input_key in _PHASE_PRODUCT_INPUT_ALIASES.get(key, {}).items():
+            p_inputs[input_key] = float(row.get(field) or 0.0)
+        if key == "offices":
+            p_inputs["offices_enabled"] = bool(row.get("gns") or row.get("saleable"))
+        elif key == "standalone_retail":
+            p_inputs["retail_enabled"] = bool(row.get("gns") or row.get("saleable"))
+        elif key == "above_parking":
+            p_inputs["above_parking_enabled"] = bool(row.get("gns") or row.get("units"))
+    return explicit
+
 
 def _phase_tep_product_rows(
     t_master: dict[str, dict[str, Any]],
@@ -20608,19 +20694,26 @@ def _consolidate_phase_results(
         for item in result["report"]["products"]:
             p = product_map.setdefault(item["key"], {
                 "key": item["key"], "label": item["label"], "unit": item["unit"],
-                "quantity": 0.0, "revenue": 0.0, "start_price_th": item["start_price_th"],
+                "quantity": 0.0, "gns": 0.0, "saleable": 0.0,
+                "revenue": 0.0, "cost": 0.0, "margin": None,
+                "start_price_th": item["start_price_th"],
                 "avg_price_th": 0.0, "pace_pre": None,
                 "share_before_rve": item["share_before_rve"],
                 "sales_start": None, "sales_end": None,
             })
             p["quantity"] += float(item["quantity"] or 0.0)
+            p["gns"] += float(item.get("gns", 0.0) or 0.0)
+            p["saleable"] += float(item.get("saleable", 0.0) or 0.0)
             p["revenue"] += float(item["revenue"] or 0.0)
+            p["cost"] += float(item.get("cost", 0.0) or 0.0)
             if item.get("sales_start"):
                 p["sales_start"] = item["sales_start"] if p["sales_start"] is None else min(p["sales_start"], item["sales_start"])
             if item.get("sales_end"):
                 p["sales_end"] = item["sales_end"] if p["sales_end"] is None else max(p["sales_end"], item["sales_end"])
     for p in product_map.values():
         p["avg_price_th"] = p["revenue"] / p["quantity"] / 1000 if p["quantity"] else 0.0
+        p["margin"] = ((p["revenue"] - p["cost"]) / p["revenue"]
+                       if p["revenue"] else None)
 
     # Consolidated project has no single RVE. Keep phase-specific sales pace and dates.
     phase_sales = []
@@ -21194,6 +21287,10 @@ def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
                     p_inputs["above_parking_cost_mln_per_space"]=n(x_master,"above_parking_cost_mln_per_space")*cost_inflation_factor
                     p_inputs["above_parking_price_mln_per_space"]=n(x_master,"above_parking_price_mln_per_space")*sales_price_inflation_factor
 
+        # Percentages above are only the initial allocation. Absolute queue TEP
+        # is authoritative once a user edits it; consolidation remains bottom-up.
+        explicit_products = _apply_explicit_phase_products(p_tep, p_inputs, cfg)
+
         result = calculate(CalcRequest(inputs=p_inputs, tep=p_tep, rates=rates))
 
         cash_shared = sum(shared_base_mln[k]*cash_weights[k][idx]/100*scenario_cost for k in shared_base_mln)*1_000_000
@@ -21209,7 +21306,7 @@ def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
             # Вводные и ТЭП очереди нужны выгрузке в шаблон ПЛАТО: без них она
             # заполняет каждый файл очереди данными всего проекта, и три файла
             # выходят одинаковыми.
-            "inputs":p_inputs,"tep":p_tep,
+            "inputs":p_inputs,"tep":p_tep,"products":explicit_products,
             "cash_shared_cost":cash_shared,"allocated_shared_cost":allocated_shared,
             "allocated_net_profit":allocated_profit,
             "product_weights":{k:product_weights[k][idx] for k in product_weights},
@@ -27651,6 +27748,15 @@ details.cadastral-box>summary::marker{color:#888}
       </div>
 
       <div class="card phase-config-only">
+        <div class="report-title">
+          <div><div class="section-title">Реальные ТЭП очередей</div><h2>Продукты и обязательные объекты после распределения долей</h2></div>
+          <small>Пустое поле — расчёт по долям; введённое значение становится авторитетным</small>
+        </div>
+        <div class="note">ГНС, продаваемая площадь и количество хранятся внутри конкретной очереди. Для школ, ДОУ и прочих обязательных объектов продаваемая площадь должна быть равна нулю.</div>
+        <div class="scroll" style="max-height:none"><table class="phase-table"><thead id="phaseTepHead"></thead><tbody id="phaseTepBody"></tbody></table></div>
+      </div>
+
+      <div class="card phase-config-only">
         <div class="section-title">Общепроектные расходы — фактический Cash Flow</div>
         <div style="font-size:11px;color:#777;margin-bottom:10px">О1 по умолчанию несёт покупку/ВРИ и повышенную долю ИРД, подготовки и наружных сетей.</div>
         <div class="scroll"><table class="phase-table"><thead id="phaseCashHead"></thead><tbody id="phaseCashBody"></tbody></table></div>
@@ -28386,7 +28492,7 @@ function frontLoadedPreset(count,kind){
 function makeDefaultPhasing(count=1){
  const w=phaseWeightPreset(count);
  return {enabled:false,user_enabled:false,default_version:'0.12.25',phase_count:count,target_size_sqm:70000,phase_gap_months:12,cost_inflation_pct:8,sales_price_inflation_pct:8,
-  phases:Array.from({length:count},(_,i)=>({name:`О${i+1}`,start_offset_months:i*12,construction_months:Number(INPUT_DEFAULT.construction_months||24)})),
+  phases:Array.from({length:count},(_,i)=>({name:`О${i+1}`,start_offset_months:i*12,construction_months:Number(INPUT_DEFAULT.construction_months||24),products:{}})),
   products:{apartments:[...w],ground_commercial:[...w],underground_parking:[...w],storage:[...w]},
   shared_cash:{purchase:frontLoadedPreset(count,'purchase'),land_rights:frontLoadedPreset(count,'land_rights'),ird:frontLoadedPreset(count,'ird'),design:frontLoadedPreset(count,'design'),preparation:frontLoadedPreset(count,'preparation'),utilities:frontLoadedPreset(count,'utilities'),social_compensation:frontLoadedPreset(count,'social_compensation')},
   shared_allocation:{purchase:[...w],land_rights:[...w],ird:[...w],design:[...w],preparation:[...w],utilities:[...w],social_compensation:[...w],social_construction:[...w]},
@@ -28847,6 +28953,22 @@ function setPhaseCount(count){const e=phasing.enabled&&Number(count)>1,t=phasing
 function autoPhaseDates(){phasing.phases.forEach((p,i)=>p.start_offset_months=i*Number(phasing.phase_gap_months||12));normalizeSocialObjectDates();renderPhasing();calculate()}
 function autoSuggestPhasing(){const c=recommendationCount(),cinf=Number(phasing.cost_inflation_pct??8),pinf=Number(phasing.sales_price_inflation_pct??8);phasing=makeDefaultPhasing(c);phasing.enabled=c>1;phasing.user_enabled=c>1;phasing.cost_inflation_pct=cinf;phasing.sales_price_inflation_pct=pinf;phasing.target_size_sqm=Number(document.getElementById('phaseTargetSize')?.value||70000);phasing.phase_gap_months=Number(document.getElementById('phaseGap')?.value||12);phasing.phases.forEach((p,i)=>p.start_offset_months=i*phasing.phase_gap_months);autoSocialObjects(false);renderPhasing();calculate()}
 function setPhaseProductShare(k,i,v){phasing.products[k][i]=Number(v||0);renderPhasingStatus()}
+function phaseProductDerived(key,field,index){
+ const master=Number((tep[key]||{})[field]||0),count=Number(phasing.phase_count||1);
+ if(['apartments','ground_commercial','underground_parking','storage'].includes(key)){
+  const a=(phasing.products[key]||phaseWeightPreset(count)).slice(0,count),sum=a.reduce((s,v)=>s+Number(v||0),0)||100;
+  return master*Number(a[index]||0)/sum;
+ }
+ const assigned={offices:Math.min(3,count),standalone_retail:Math.min(2,count),above_parking:Math.min(2,count)}[key]||1;
+ return index+1===Number((phasing.discrete||{})[key]||assigned)?master:0;
+}
+function setPhaseProductTep(index,key,field,value){
+ const phase=phasing.phases[index];if(!phase)return;if(!phase.products)phase.products={};
+ if(!phase.products[key])phase.products[key]={assumption_source:'Введено пользователем'};
+ if(value==='')delete phase.products[key][field];else phase.products[key][field]=Math.max(0,Number(value||0));
+ if(Object.keys(phase.products[key]).every(k=>k==='assumption_source'))delete phase.products[key];
+ calculate();
+}
 function setSharedShare(bucket,k,i,v){phasing[bucket][k][i]=Number(v||0)}
 function splitCapacity(total,typical){let t=Math.max(0,Number(total||0)),out=[];typical=Math.max(1,Number(typical||1));while(t>0){const v=Math.min(typical,t);out.push(v);t-=v}return out}
 function autoSocialObjects(doRender=true){
@@ -28892,6 +29014,19 @@ function renderPhasing(){
  const pl={apartments:'Квартиры',ground_commercial:'Коммерция 1 этажа',underground_parking:'Подземный паркинг',storage:'Кладовые'};
  phaseProductHead.innerHTML=`<tr><th>Продукт</th>${phasing.phases.map(p=>`<th>${p.name}</th>`).join('')}<th>Итого</th></tr>`;
  phaseProductBody.innerHTML=Object.entries(phasing.products).map(([k,a])=>{const s=a.reduce((x,y)=>x+Number(y||0),0);return `<tr><td>${pl[k]}</td>${a.map((v,i)=>`<td><input type="number" step="1" value="${Number(v).toFixed(1)}" onchange="setPhaseProductShare('${k}',${i},this.value)"></td>`).join('')}<td class="${Math.abs(s-100)<.1?'phase-total-ok':'phase-total-bad'}">${s.toFixed(1)}%</td></tr>`}).join('');renderPhasingStatus();
+ phasing.phases.forEach(p=>{if(!p.products)p.products={}});
+ const tepLabels={apartments:'Жильё',ground_commercial:'Коммерция 1 этажа',standalone_retail:'Коммерция ОСЗ',offices:'Офисы / деловая недвижимость',above_parking:'Наземный паркинг',underground_parking:'Подземный паркинг',storage:'Кладовые',kindergarten:'ДОУ',school:'СОШ',clinic:'Поликлиника',other_mandatory:'Прочие обязательные объекты'};
+ const tepKeys=Object.keys(tepLabels).filter(k=>tep[k]);
+ phaseTepHead.innerHTML=`<tr><th>Продукт</th>${phasing.phases.map(p=>`<th>${p.name}<br><small>ГНС · продаваемая · шт.</small></th>`).join('')}<th>Итого по очередям</th></tr>`;
+ phaseTepBody.innerHTML=tepKeys.map(k=>{
+  const totals={gns:0,saleable:0,units:0};
+  const cells=phasing.phases.map((p,i)=>{
+   const own=(p.products||{})[k]||{};
+   const inputsHtml=['gns','saleable','units'].map(field=>{const derived=phaseProductDerived(k,field,i),has=own[field]!==undefined,value=has?Number(own[field]):derived;totals[field]+=value;return `<input type="number" min="0" step="any" value="${has?value:''}" placeholder="${Number(value.toFixed(2))}" title="${field}" onchange="setPhaseProductTep(${i},'${k}','${field}',this.value)">`}).join('');
+   return `<td><div style="display:grid;grid-template-columns:repeat(3,minmax(80px,1fr));gap:5px">${inputsHtml}</div></td>`;
+  }).join('');
+  return `<tr><td><b>${tepLabels[k]}</b></td>${cells}<td>${num(totals.gns)} · ${num(totals.saleable)} · ${num(totals.units)}</td></tr>`;
+ }).join('');
  const sl={purchase:'Покупка / вход',land_rights:'Земельные права / ВРИ',ird:'ИРД',design:'П + РД',preparation:'Подготовительные',utilities:'Наружные сети',social_compensation:'Соцкомпенсация',social_construction:'Соцобъекты — аналитическая аллокация'};
  renderShareTable('phaseCashHead','phaseCashBody',phasing.shared_cash,sl,'shared_cash');renderShareTable('phaseAllocHead','phaseAllocBody',phasing.shared_allocation,sl,'shared_allocation');
  socialObjectsBody.innerHTML=phasing.social_objects.map((o,i)=>`<tr><td><input value="${o.name||''}" onchange="updateSocialObject(${i},'name',this.value)"></td><td><select onchange="updateSocialObject(${i},'type',this.value)"><option value="kindergarten" ${o.type==='kindergarten'?'selected':''}>ДОУ</option><option value="school" ${o.type==='school'?'selected':''}>СОШ</option><option value="clinic" ${o.type==='clinic'?'selected':''}>Поликлиника</option></select></td><td><input type="number" value="${Number(o.capacity||0)}" onchange="updateSocialObject(${i},'capacity',this.value)"></td><td><select onchange="updateSocialObject(${i},'phase',this.value)">${phaseOptions(o.phase)}</select></td><td><input type="date" value="${o.start_date||''}" onchange="updateSocialObject(${i},'start_date',this.value)"></td><td><button class="btn" onclick="deleteSocialObject(${i})">×</button></td></tr>`).join('');renderSocialStatus();
@@ -32570,15 +32705,17 @@ function renderResult(){
 
  if(phaseBundle&&phaseBundle.mode==='phased'&&reportView==='all'&&Array.isArray(r.report.phase_products)){
    const phaseNames=(phaseBundle.phases||[]).map(x=>x.name);
-   salesReportHead.innerHTML=`<tr><th>Продукт</th><th>Всего</th>${phaseNames.map(n=>`<th>${n}: объём</th><th>${n}: темп до своего РВЭ</th>`).join('')}<th>Средняя цена</th><th>Выручка</th></tr>`;
+   const productTotals=Object.fromEntries((r.report.products||[]).map(x=>[x.key,x]));
+   salesReportHead.innerHTML=`<tr><th>Продукт</th><th>ГНС, м²</th><th>Продаваемая, м²</th>${phaseNames.map(n=>`<th>${n}: объём</th>`).join('')}<th>Средняя цена</th><th>Выручка</th><th>Себестоимость</th><th>Маржа</th></tr>`;
    salesReportTable.innerHTML=(r.report.phase_products||[]).map(p=>{
      const by=Object.fromEntries((p.phases||[]).map(x=>[x.phase,x]));
-     return `<tr><td>${p.label}</td><td>${num(p.quantity)} ${p.unit}</td>`+
-       phaseNames.map(n=>{const x=by[n]||{};return `<td>${num(x.quantity||0)} ${p.unit}</td><td>${num(x.pace_pre||0)} ${p.unit}/мес<br><span style="font-size:10px;color:#888">до ${dateRu(x.rve)}</span></td>`}).join('')+
-       `<td>${th(p.avg_price_th)}</td><td>${money(p.revenue)}</td></tr>`;
+     const total=productTotals[p.key]||{};
+     return `<tr><td>${p.label}</td><td>${num(total.gns||0)}</td><td>${num(total.saleable||0)}</td>`+
+       phaseNames.map(n=>{const x=by[n]||{};return `<td>${num(x.quantity||0)} ${p.unit}<div class="cell-sub">${num(x.pace_pre||0)} ${p.unit}/мес</div></td>`}).join('')+
+       `<td>${th(p.avg_price_th)}</td><td>${money(p.revenue)}</td><td>${money(total.cost||0)}</td><td>${total.margin==null?'—':pct(total.margin)}</td></tr>`;
    }).join('');
  }else{
-   salesReportHead.innerHTML='<tr><th>Продукт</th><th>Объём</th><th>Темп до РВЭ</th><th>Продажи до РВЭ</th><th>Стартовая цена</th><th>Средняя цена</th><th>Выручка</th><th>Старт продаж</th><th>Финиш продаж</th></tr>';
+   salesReportHead.innerHTML='<tr><th>Продукт</th><th>ГНС, м²</th><th>Продаваемая, м²</th><th>Объём</th><th>Средняя цена</th><th>Выручка</th><th>Себестоимость</th><th>Маржа</th></tr>';
    // Квартиры продаются штуками: «40 квартир в месяц» проверяется отделом
    // продаж и рынком, «2 400 м² в месяц» — нет. Метры остаются главными,
    // штуки идут второй строкой там же, а не абзацем ниже.
@@ -32587,14 +32724,13 @@ function renderResult(){
    const sub=text=>`<div class="cell-sub">${text}</div>`;
    salesReportTable.innerHTML=(r.report.products||[]).map(p=>`<tr>
     <td>${p.label}</td>
+    <td>${num(p.gns||0)}</td>
+    <td>${num(p.saleable||0)}</td>
     <td>${num(p.quantity)} ${p.unit}${inUnits(p)?sub(num(Math.round(ap.units_total))+' шт.'):''}</td>
-    <td>${num(p.pace_pre)} ${p.unit}/мес${inUnits(p)?sub(num2(ap.pace_pre_rve_units)+' кв./мес.'):''}</td>
-    <td>${pct(p.share_before_rve)}</td>
-    <td>${th(p.start_price_th)}</td>
     <td>${th(p.avg_price_th)}</td>
     <td>${money(p.revenue)}</td>
-    <td>${dateRu(p.sales_start)}</td>
-    <td>${dateRu(p.sales_end)}</td>
+    <td>${money(p.cost||0)}</td>
+    <td>${p.margin==null?'—':pct(p.margin)}</td>
    </tr>`).join('');
  }
 
