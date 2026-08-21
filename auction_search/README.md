@@ -18,11 +18,14 @@ Future adapters may be added only when the platform itself is the official ETP f
 2. `adapter.fetch_lot()` normalizes one official ETP card into `AuctionLot`.
 3. `classify_lot()` determines the legal structure **before** financial modeling.
 4. Development-noise filter removes obvious IJS/small non-development land.
-5. Official attached documents are downloaded and typed.
+5. Official attached documents are downloaded and typed only for a selected lot.
 6. For KRT, decision / notice / draft agreement / annexes are parsed into a separate development program and investor obligations with exact provenance.
-7. `build_developaid_seed()` creates a conservative project seed.
-8. Existing DevelopAid enrichment may then add cadastral/planning restrictions, market pricing and cost norms.
-9. Existing model calculates economics and max bid.
+7. `build_project_preset()` converts the selected lot into the existing `developaid.project_preset.v4` envelope. Auction price is carried as the current acquisition-price input.
+8. `/auctions` hands that preset to the canonical DevelopAid model page through same-origin `sessionStorage`.
+9. Ordinary land continues through the existing cadastral → ГлавАПУ/MO TEP flow; KRT uses the standard preset preview/apply flow.
+10. Existing DevelopAid market/cost/financing layers calculate economics and ultimately max bid.
+
+There is no second auction financial engine.
 
 ## Public-first authentication policy
 
@@ -31,8 +34,8 @@ The collector must never require a participant account merely to discover or rea
 - Lot cards and public attachments are requested without credentials first.
 - HTTP 401/403 or an official redirect/login page is recorded as `auth_required`; it is **not** treated as a missing document or an empty set of KRT obligations.
 - If a service account is later required, its authenticated session is supplied only through runtime secrets. Current supported secret boundaries are `AUCTION_ROSELTORG_COOKIE` and `AUCTION_LOTONLINE_COOKIE`.
-- Cookies/passwords/tokens are never stored in `AuctionLot`, provenance, logs, fixtures, GitHub, or exported DevelopAid reports.
-- The collector does not automate CAPTCHA/2FA bypass. If a platform requires an interactive login, the approved service-account session is created outside the parser and injected as a secret.
+- Cookies/passwords/tokens are never stored in `AuctionLot`, provenance, logs, fixtures, GitHub, browser `sessionStorage`, or exported DevelopAid reports.
+- The collector does not automate CAPTCHA/2FA bypass. If a platform requires an interactive login, the approved service-account session is created outside the parser and injected as a server-side secret.
 
 This lets us add a dedicated DevelopAid account later without changing the normalized auction model or KRT parser.
 
@@ -52,7 +55,9 @@ For KRT, the official auction/KRT documents define the project perimeter and inv
 - stages and deadlines,
 - other contractual payments or obligations.
 
-ГлавАПУ may be used later as a validation/enrichment layer only.
+ГлавАПУ is a validation/enrichment layer only.
+
+The preset mapper deliberately maps only unambiguous KRT products into the existing financial products. Housing, explicit office area, parking and clearly identified school/DOU capacity can be mapped automatically. Ambiguous public-business/MFC, retail or industrial area remains an explicit open item until its revenue product is classified; it is never silently converted into offices.
 
 ## Provenance
 
@@ -63,7 +68,7 @@ Every material auction fact should carry:
 - `fetched_at`,
 - `raw_value`.
 
-The UI should display auction facts separately from DevelopAid assumptions/calculations.
+The UI displays auction facts separately from DevelopAid assumptions/calculations.
 
 ## Deduplication
 
@@ -78,4 +83,15 @@ Canonical identity is primarily cadastral-number based. Do **not** assume Moscow
 
 ## Current rollout boundary
 
-Direct ingestion of official RAD/Lot-online and Roseltorg lot URLs is implemented. Automatic enumeration of all current Moscow lots remains disabled until each platform's public search/filter request contract is pinned in fixtures. Discovery must use the public catalogue, not a participant cabinet.
+Implemented:
+- `/auctions` screening UI;
+- public Moscow land discovery from the official RAD/Lot-online catalogue, with every candidate re-verified from its official lot card;
+- direct official RAD/Lot-online and Roseltorg lot ingestion;
+- public-offer reduction schedule parsing on RAD;
+- public-first document download plus optional service-account session boundary;
+- KRT document parsing and standard DevelopAid project-preset handoff.
+
+Pending:
+- automatic Moscow enumeration on Roseltorg. Direct Roseltorg cards already work, but discovery remains disabled until its official public search/filter request contract is pinned and covered by fixtures.
+
+Discovery must use public ETP catalogues, not participant cabinets.
