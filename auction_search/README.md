@@ -102,6 +102,10 @@ Canonical identity is primarily cadastral-number based. Do **not** assume Moscow
 Implemented:
 - `/auctions` screening UI;
 - public Moscow land discovery from the official RAD/Lot-online catalogue, with every candidate re-verified from its official lot card;
+- guarded current discovery of development project-company shares from the
+  official Lot-online category. It is off by default and is enabled only by
+  `AUCTION_LOTONLINE_PROJECT_SHARES_DISCOVERY=true`; merging or deploying the
+  code does not widen the production catalogue on its own;
 - direct official RAD/Lot-online and Roseltorg lot ingestion;
 - public-offer reduction schedule parsing on RAD;
 - public-first document download plus optional service-account session boundary;

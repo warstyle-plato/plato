@@ -2,6 +2,7 @@ from datetime import date
 from urllib.parse import parse_qs, urlparse
 
 from auction_search.adapters.lot_online import LotOnlineAdapter
+from auction_search.api import _discovery_adapters
 from auction_search.bridge import auction_page_with_handoff, install_page_bridge
 from auction_search.classifier import classify_lot
 from auction_search.developaid_mapper import build_developaid_seed
@@ -43,6 +44,11 @@ def test_development_project_company_share_is_property_complex():
     assert classify_lot(title) == LotKind.PROPERTY_COMPLEX
     verbose_title = "Продажа доли в размере 100 (сто) % уставного капитала компании, владеющей зданием"
     assert classify_lot(verbose_title) == LotKind.PROPERTY_COMPLEX
+
+
+def test_non_development_company_share_is_not_promoted_to_property_complex():
+    title = "Продажа доли в размере 100% уставного капитала ООО ПРАЧЕЧНАЯ"
+    assert classify_lot(title) == LotKind.OTHER
 
 
 def test_small_ijs_is_filtered_out():
@@ -87,6 +93,48 @@ def test_rad_history_is_opt_in_and_checks_project_company_shares():
     assert query["category_id"] == ["85"]
     assert query["filter_fields[is_archive]"] == ["true"]
     assert LotOnlineAdapter._discovery_url() != url
+
+
+def test_rad_current_project_shares_are_disabled_by_default(monkeypatch):
+    adapter = LotOnlineAdapter()
+    captured = {}
+
+    def discover_urls(**kwargs):
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(adapter, "_discover_candidate_urls", discover_urls)
+    assert adapter.discover_moscow() == []
+    assert captured["category_ids"] == ("2",)
+    assert captured["include_archive"] is False
+
+
+def test_rad_current_project_shares_can_be_enabled_explicitly(monkeypatch):
+    adapter = LotOnlineAdapter(include_project_shares=True)
+    captured = {}
+
+    def discover_urls(**kwargs):
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(adapter, "_discover_candidate_urls", discover_urls)
+    assert adapter.discover_moscow() == []
+    assert captured["category_ids"] == ("2", "85")
+    assert captured["include_archive"] is False
+
+
+def test_api_runtime_flag_controls_project_share_discovery(monkeypatch):
+    monkeypatch.delenv("AUCTION_LOTONLINE_PROJECT_SHARES_DISCOVERY", raising=False)
+    default_adapter = _discovery_adapters("lot_online")[0]
+    assert default_adapter.include_project_shares is False
+
+    monkeypatch.setenv("AUCTION_LOTONLINE_PROJECT_SHARES_DISCOVERY", "true")
+    enabled_adapter = _discovery_adapters("lot_online")[0]
+    assert enabled_adapter.include_project_shares is True
+
+    monkeypatch.setenv("AUCTION_LOTONLINE_PROJECT_SHARES_DISCOVERY", "false")
+    disabled_adapter = _discovery_adapters("all")[0]
+    assert disabled_adapter.include_project_shares is False
 
 
 def test_rad_publication_date_is_parsed_in_moscow_time():

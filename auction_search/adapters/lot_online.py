@@ -86,9 +86,16 @@ class LotOnlineAdapter(AuctionPlatformAdapter):
     DISCOVERY_PAGE_SIZE = 96
     DISCOVERY_MAX_PAGES = 3
     HISTORY_MAX_PAGES = 8
+    LAND_CATEGORY_ID = "2"
+    PROJECT_SHARES_CATEGORY_ID = "85"
     # Developer projects are sometimes sold through the project company rather
     # than as land. Category 85 is the official "Акции и доли предприятий" tree.
-    HISTORY_CATEGORY_IDS = ("2", "85")
+    HISTORY_CATEGORY_IDS = (LAND_CATEGORY_ID, PROJECT_SHARES_CATEGORY_ID)
+
+    def __init__(self, *, include_project_shares: bool = False):
+        # Current production discovery keeps the established land-only behavior
+        # unless the server operator explicitly enables the guarded rollout.
+        self.include_project_shares = include_project_shares
 
     @property
     def platform_name(self) -> str:
@@ -176,13 +183,18 @@ class LotOnlineAdapter(AuctionPlatformAdapter):
         return "москва" in haystack or "г. москва" in haystack
 
     def discover_moscow(self) -> list[AuctionLot]:
-        """Enumerate active Moscow land lots from the official public RAD catalogue.
+        """Enumerate active Moscow development lots from the public RAD catalogue.
 
         The catalogue query is only discovery. Every candidate is re-read from its
-        official lot card, and non-Moscow results are discarded there.
+        official lot card, and non-Moscow results are discarded there. Project-
+        company shares remain opt-in so deployment of this code alone cannot widen
+        the production catalogue.
         """
+        category_ids = (self.LAND_CATEGORY_ID,)
+        if self.include_project_shares:
+            category_ids += (self.PROJECT_SHARES_CATEGORY_ID,)
         candidate_urls = self._discover_candidate_urls(
-            category_ids=("2",),
+            category_ids=category_ids,
             include_archive=False,
             max_pages=self.DISCOVERY_MAX_PAGES,
         )
@@ -191,7 +203,9 @@ class LotOnlineAdapter(AuctionPlatformAdapter):
         for lot_url in candidate_urls:
             lot = self.fetch_lot(lot_url)
             if self._confirmed_moscow(lot):
-                lot.raw["discovered_via"] = self._discovery_url(1)
+                lot.raw["discovery_mode"] = "current"
+                lot.raw["discovery_category_ids"] = list(category_ids)
+                lot.raw["discovered_via"] = "Lot-online public current catalogue"
                 lots.append(lot)
         return lots
 

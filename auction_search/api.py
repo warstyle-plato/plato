@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 from typing import Any
 from urllib.parse import urlparse
@@ -26,6 +27,19 @@ class AuctionIngestRequest(BaseModel):
     include_raw: bool = False
 
 
+_LOTONLINE_PROJECT_SHARES_FLAG = "AUCTION_LOTONLINE_PROJECT_SHARES_DISCOVERY"
+
+
+def _feature_enabled(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _lot_online_discovery_adapter() -> LotOnlineAdapter:
+    return LotOnlineAdapter(
+        include_project_shares=_feature_enabled(_LOTONLINE_PROJECT_SHARES_FLAG),
+    )
+
+
 def _adapter_for(url: str):
     host = (urlparse(url).hostname or "").lower()
     if host == "roseltorg.ru" or host.endswith(".roseltorg.ru"):
@@ -38,11 +52,11 @@ def _adapter_for(url: str):
 def _discovery_adapters(source: str):
     value = (source or "all").strip().lower()
     if value in {"lot_online", "rad", "lot-online"}:
-        return [LotOnlineAdapter()]
+        return [_lot_online_discovery_adapter()]
     if value in {"roseltorg", "ros"}:
         return [RoseltorgAdapter()]
     if value == "all":
-        return [LotOnlineAdapter(), RoseltorgAdapter()]
+        return [_lot_online_discovery_adapter(), RoseltorgAdapter()]
     raise ValueError("source: all, lot_online или roseltorg")
 
 
@@ -81,6 +95,10 @@ def install(app: FastAPI) -> None:
                     "direct_lot_ingest": True,
                     "moscow_discovery": True,
                     "discovery_access": "public_catalogue",
+                    "project_company_shares_discovery": {
+                        "enabled": _feature_enabled(_LOTONLINE_PROJECT_SHARES_FLAG),
+                        "rollout": "explicit_runtime_flag",
+                    },
                 },
                 {
                     "id": "roseltorg",
