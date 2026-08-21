@@ -14,6 +14,11 @@ PROFSOYUZNAYA_TEP = {
     "underground_gns_sqm": 12915,
 }
 
+GRODNENSKAYA_TEP = {
+    "gba_sqm": 22032.9,
+    "sellable_sqm": 7711.317283741423,
+}
+
 
 def test_business_recommendation_keeps_exact_developaid_bases():
     result = build_cost_recommendation("Москва", "business", as_of=date(2026, 8, 21))
@@ -65,6 +70,34 @@ def test_article_consensus_uses_multiple_independent_sources_not_simple_listing(
         "core-xp-moscow-business-2024-09",
     }
     assert utilities["recommended_rub_m2"] != utilities["baseline_rub_m2"]
+
+
+def test_same_market_sources_normalize_differently_for_grodnenskaya_and_profsoyuznaya():
+    prof = build_cost_recommendation(
+        "Москва", "business", as_of=date(2026, 8, 21), target_areas=PROFSOYUZNAYA_TEP
+    )
+    grod = build_cost_recommendation(
+        "Москва", "business", as_of=date(2026, 8, 21), target_areas=GRODNENSKAYA_TEP
+    )
+    prof_rows = {row["key"]: row for row in prof["recommendations"]}
+    grod_rows = {row["key"]: row for row in grod["recommendations"]}
+
+    # CORE.XP is published per sellable m². The same market rate must therefore
+    # normalize to a different GNS rate for projects with different efficiency.
+    prof_design = prof_rows["design"]
+    grod_design = grod_rows["design"]
+    assert prof_design["recommended_rub_m2"] == pytest.approx(4442.34, abs=0.02)
+    assert grod_design["recommended_rub_m2"] == pytest.approx(2974.92, abs=0.02)
+    assert prof_design["recommended_rub_m2"] > grod_design["recommended_rub_m2"]
+
+    # Where both the internal project observation and CORE.XP are comparable,
+    # the result is a real weighted consensus, not a copied source value.
+    assert prof_rows["preparation"]["recommended_rub_m2"] == pytest.approx(3972.76, abs=0.03)
+    assert grod_rows["preparation"]["recommended_rub_m2"] == pytest.approx(3355.15, abs=0.03)
+    assert prof_rows["external_utilities"]["recommended_rub_m2"] == pytest.approx(7242.69, abs=0.03)
+    assert grod_rows["external_utilities"]["recommended_rub_m2"] == pytest.approx(6919.18, abs=0.03)
+    assert prof_rows["landscaping"]["recommended_rub_m2"] == pytest.approx(5948.00, abs=0.03)
+    assert grod_rows["landscaping"]["recommended_rub_m2"] == pytest.approx(5683.31, abs=0.03)
 
 
 def test_core_class_slices_from_one_study_get_one_vote():
@@ -143,29 +176,40 @@ def test_combined_share_is_not_fake_split_into_two_articles():
         assert "совместную долю" in sis["reason"]
 
 
-def test_recommendation_api_and_page_expose_audit_chain():
+def test_recommendation_api_and_page_expose_audit_chain_for_both_project_shapes():
     app = FastAPI()
     install(app)
     client = TestClient(app)
-    params = {
-        "region": "Москва",
-        "class": "business",
-        "gba_sqm": 60322,
-        "sellable_sqm": 31526,
-        "underground_gns_sqm": 12915,
-    }
 
-    response = client.get("/api/statistics/cost-recommendation", params=params)
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["methodology_version"] == "3.2"
-    assert payload["target_areas"]["above_ground_gns_sqm"] == 47407
-    assert payload["model_parameters_th_rub_m2"]["main_above_th_per_sqm"] == pytest.approx(168.817, abs=0.001)
+    project_params = [
+        {
+            "region": "Москва",
+            "class": "business",
+            "gba_sqm": 60322,
+            "sellable_sqm": 31526,
+            "underground_gns_sqm": 12915,
+        },
+        {
+            "region": "Москва",
+            "class": "business",
+            "gba_sqm": 22032.9,
+            "sellable_sqm": 7711.317283741423,
+        },
+    ]
 
-    page = client.get("/statistics", params=params)
-    assert page.status_code == 200
-    assert "Рекомендация DevelopAid" in page.text
-    assert "Источники и нормализация" in page.text
-    assert "CORE.XP" in page.text
-    assert "Наземная ГНС" in page.text
-    assert "как опубликовано → статья → класс → база площади" in page.text
+    for params in project_params:
+        response = client.get("/api/statistics/cost-recommendation", params=params)
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["methodology_version"] == "3.2"
+        assert payload["model_parameters_th_rub_m2"]["main_above_th_per_sqm"] == pytest.approx(168.817, abs=0.001)
+
+        page = client.get("/statistics", params=params)
+        assert page.status_code == 200
+        assert "Рекомендация DevelopAid" in page.text
+        assert "Источники и нормализация" in page.text
+        assert "CORE.XP" in page.text
+        assert "как опубликовано → статья → класс → база площади" in page.text
+
+    prof_payload = client.get("/api/statistics/cost-recommendation", params=project_params[0]).json()
+    assert prof_payload["target_areas"]["above_ground_gns_sqm"] == 47407
