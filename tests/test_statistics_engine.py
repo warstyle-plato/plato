@@ -152,7 +152,7 @@ def test_class_adjustment_is_explicit_expert_layer_with_comfort_base():
 
 def test_cost_structure_matrix_uses_developaid_rows_and_keeps_units():
     matrix = build_cost_structure_matrix(region="Москва", housing_class="business")
-    assert matrix["methodology_version"] == "3.0"
+    assert matrix["methodology_version"] == "3.1"
     assert matrix["canonical_unit"] == "gba"
     keys = [x["key"] for x in matrix["components"]]
     assert "main_above" in keys
@@ -163,7 +163,8 @@ def test_cost_structure_matrix_uses_developaid_rows_and_keeps_units():
     by_id = {x["source_id"]: x for x in matrix["sources"]}
     grodno = by_id["developaid-grodnenskaya-structure-2026-07"]
     assert grodno["cells"]["main_above"]["adjusted_value_rub_m2"] == 168816.78
-    assert grodno["cells"]["main_above"]["unit"] == "gba"
+    assert grodno["cells"]["main_above"]["unit"] == "above_ground"
+    assert grodno["cells"]["main_under"]["unit"] == "underground"
 
     ncsm = by_id["mke-ncsm-apartments-2025-09"]
     assert ncsm["published"]["unit"] == "apartments"
