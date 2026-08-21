@@ -40,8 +40,15 @@ def _version(text: str) -> tuple[int, ...]:
 
 
 def _show(ref: str) -> str:
-    return subprocess.run(["git", "show", f"{ref}:{ENGINE}"],
-                          capture_output=True, text=True, check=True).stdout
+    data = subprocess.run(
+        ["git", "show", f"{ref}:{ENGINE}"],
+        capture_output=True,
+        check=True,
+    ).stdout
+    # A release guard must still be able to reject or recover from a damaged
+    # previous revision. VERSION is ASCII; replacement keeps that line readable
+    # without treating invalid source bytes as valid application code.
+    return data.decode("utf-8", errors="replace")
 
 
 def _next_version(base: tuple[int, ...]) -> str:
@@ -89,6 +96,11 @@ def main() -> int:
     after_text = _show("HEAD")
     if before_text == after_text:
         print("Движок не менялся — версия может остаться прежней.")
+        return 0
+    if ("\x00" in before_text or "\ufffd" in before_text) and not (
+        "\x00" in after_text or "\ufffd" in after_text
+    ):
+        print("Повреждённое ядро восстановлено — сравнение версии пропущено.")
         return 0
     before, after = _version(before_text), _version(after_text)
     if after > before:

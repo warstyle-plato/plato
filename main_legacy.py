@@ -1,3 +1,4 @@
+
 from __future__ import annotations
 
 import calendar
@@ -63,7 +64,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.19.38"
+VERSION = "0.19.37"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -8614,9 +8615,17679 @@ def _glavapu_headless_state() -> dict[str, Any]:
     if not _GLAVAPU_HEADLESS_ENABLED:
         return {"state": "выключен", "where": where,
                 "hint": ("Штатный калькулятор запускает ядро. Нужны GLAVAPU_HEADLESS=1 "
-                         "�
-... 1009762 bytes omitted ...
-�адают ему.
+                         "в .env ядра и образ с Chromium (docker compose build).")
+                if where == "ядро" else
+                ("Расчёт остался на Render — ядро не ответило или его адрес не задан. "
+                 "Браузер живёт только на ядре.")}
+    blocked = max(0, int(_GLAVAPU_HEADLESS_BLOCKED_UNTIL["at"] - time.monotonic()))
+    if blocked:
+        return {"state": "предохранитель", "where": where, "blocked_for": blocked,
+                "last_error": str(_GLAVAPU_HEADLESS.get("last_error") or ""),
+                "hint": "Браузер сорвался; следующая попытка через "
+                        f"{blocked} с. Причина — в last_error."}
+    return {"state": "готов", "where": where}
+
+
+def _glavapu_health_file() -> Path:
+    return Path(os.getenv("DEVELOPAID_DATA_DIR") or "data") / "glavapu-health.json"
+
+
+def _glavapu_health_save() -> None:
+    """Счётчики — на диск, потому что воркеров два.
+
+    `_GLAVAPU_HEADLESS` живёт в памяти процесса, а `/glavapu/health` отвечает
+    тот воркер, которому достался запрос. Расчёт уходил в один, состояние
+    спрашивали у другого — и `runs: 0` читалось как «браузер не работает» при
+    работающем браузере. Правило проекта прямое: всё, что должно пережить
+    переход между запросами, дублируется на диск.
+    """
+    try:
+        path = _glavapu_health_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        keep = {key: _GLAVAPU_HEADLESS.get(key)
+                for key in ("last_ok", "last_error", "runs", "fallbacks")}
+        # Берётся большее из своего и записанного: счётчик у каждого воркера
+        # свой, а вопрос «считал ли калькулятор вообще» — про приложение. Файл
+        # от этого только растёт и никогда не отменяет чужой удачный расчёт.
+        seen = _glavapu_health_load()
+        keep["runs"] = max(int(keep.get("runs") or 0), int(seen.get("runs") or 0))
+        keep["fallbacks"] = max(int(keep.get("fallbacks") or 0),
+                                int(seen.get("fallbacks") or 0))
+        path.write_text(json.dumps(keep, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        # Диагностика не должна ронять расчёт: не записалось — не записалось.
+        pass
+
+
+def _glavapu_health_load() -> dict[str, Any]:
+    try:
+        raw = json.loads(_glavapu_health_file().read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+@app.get("/glavapu/health")
+def glavapu_health() -> dict[str, Any]:
+    """Состояние штатного калькулятора ГлавАПУ — для /status бота.
+
+    Браузер живёт на ядре, а /status спрашивают у бота на Render: без этого
+    маршрута сбой связки с ГлавАПУ виден только в предупреждении карточки ТЭП,
+    которое легко пролистать. Если задан адрес ядра — спрашиваем его, иначе
+    отвечаем о себе; счётчики показывают, чем закончились прошлые расчёты.
+    """
+    url = _core_api_url("/glavapu/health")
+    if url:
+        try:
+            request = urllib.request.Request(url, headers={"Accept": "application/json"})
+            with urllib.request.urlopen(request, timeout=10) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except Exception as exc:
+            return {"state": "ядро недоступно", "where": "Render",
+                    "hint": f"Ядро не ответило на запрос состояния: {exc}"}
+    state = dict(_glavapu_headless_state())
+    state.update({key: _GLAVAPU_HEADLESS.get(key)
+                  for key in ("last_ok", "last_error", "runs", "fallbacks")})
+    # К своим счётчикам добавляется то, что записали остальные воркеры: их
+    # память нам не видна, а вопрос «считал ли калькулятор» — про приложение
+    # целиком, а не про тот процесс, которому достался этот запрос.
+    shared = _glavapu_health_load()
+    state["runs"] = max(int(state.get("runs") or 0), int(shared.get("runs") or 0))
+    state["fallbacks"] = max(int(state.get("fallbacks") or 0),
+                             int(shared.get("fallbacks") or 0))
+    for key in ("last_ok", "last_error"):
+        if not state.get(key) and shared.get(key):
+            state[key] = shared[key]
+    state["worker"] = os.getpid()
+    return state
+
+
+def _cadastral_analysis_for(numbers: list[str],
+                            supplied: dict[str, Any] | None) -> dict[str, Any]:
+    """Территория запрошенных участков — присланная страницей или своя.
+
+    Страница собирает территорию перед расчётом ТЭП и держит её в руках; тот же
+    вопрос ГлавАПУ второй раз за один клик стоил внешнего запроса на ровном
+    месте. Принимается присланная территория только тех участков, что запрошены:
+    иначе ТЭП посчитался бы по чужим коэффициентам, выглядя безупречно.
+    """
+    if isinstance(supplied, dict):
+        recognized = {str(x).strip() for x in (supplied.get("recognized") or [])}
+        coefficients = supplied.get("coefficients") or {}
+        area = float((supplied.get("territory") or {}).get("area_ha") or 0.0)
+        if recognized == {str(x).strip() for x in numbers} and coefficients and area > 0:
+            return supplied
+    return analyze_cadastral_territory(
+        CadastralAnalysisRequest(cadastral_numbers=numbers))
+
+
+@app.post("/cadastral/tep-server")
+def cadastral_tep_server(req: CadastralAnalysisRequest) -> dict[str, Any]:
+    """ТЭП по формулам ГлавАПУ, посчитанный сервером.
+
+    Штатный путь гоняет настоящий калькулятор в скрытом iframe браузера —
+    Telegram WebView этого не тянет, и сбор падал по таймауту: сайт собирал
+    ТЭП, мини-приложение нет. Формулы калькулятора сняты с его кода и
+    сходятся с контрольными выгрузками до единицы, поэтому серверный расчёт —
+    равноценная замена, а не суррогат."""
+    numbers = _parse_cadastral_numbers(req.cadastral_numbers)
+    request_started = time.monotonic()
+    logging.info("tep-server rid=%s numbers=%s analysis=%s headless=%s",
+                 req.request_id or "-", ", ".join(numbers),
+                 "прислана" if req.cadastral_analysis else "нет",
+                 "готов" if _glavapu_headless_available() else "недоступен")
+
+    # Расчёт уходит на ядро — тем же путём, что и анализ территории. Браузер
+    # для штатного калькулятора живёт там: на ядре свой образ, четыре гигабайта
+    # и нет засыпания, а Render к тому же не наш Dockerfile. На самом ядре
+    # адрес пуст, и пересылать некуда — там считаем.
+    if _core_api_url("/cadastral/tep-server"):
+        try:
+            forwarded = _core_post(
+                _core_api_url("/cadastral/tep-server"),
+                _core_forward_payload(req),
+                _MO_CALC_TIMEOUT_SECONDS,
+            )
+            logging.info("tep-server rid=%s ядро ответило за %.1f с",
+                         req.request_id or "-", time.monotonic() - request_started)
+            return forwarded
+        except Exception as exc:
+            # Ядро не ответило — считаем здесь формулами, как раньше.
+            logging.warning("tep-server core forward failed: %s", exc)
+
+    # Сначала — настоящий калькулятор. Формулы остаются фолбэком: копия
+    # методики отстаёт от города на неизвестный срок, и это уже дважды
+    # находил человек на скриншотах, а не мы.
+    # Тот же участок, посчитанный настоящим калькулятором час назад, — это тот
+    # же ТЭП. Браузер поднимать незачем.
+    if _glavapu_headless_available() and numbers:
+        # Браузер на ходу — запасной ответ из памяти не годится: он отвечал бы
+        # за калькулятор, который снова работает.
+        cached = _glavapu_tep_cached(numbers, want_calculator=True)
+        if cached is not None:
+            logging.info("tep-server rid=%s из кэша", req.request_id or "-")
+            return cached
+
+    if _glavapu_headless_available() and numbers:
+        try:
+            started = time.monotonic()
+            analysis = _cadastral_analysis_for(numbers, req.cadastral_analysis)
+            area = float((analysis.get("territory") or {}).get("area_ha") or 0.0)
+            rows = _glavapu_headless_rows(numbers, area)
+            imported = import_cadastral_tep(CadastralTepRequest(
+                rows=rows, cadastral_analysis=analysis))
+            _GLAVAPU_HEADLESS["runs"] += 1
+            _GLAVAPU_HEADLESS["last_ok"] = datetime.now().isoformat(timespec="seconds")
+            _GLAVAPU_HEADLESS["last_error"] = ""
+            _GLAVAPU_HEADLESS_BLOCKED_UNTIL["at"] = 0.0
+            _glavapu_health_save()
+            imported.setdefault("source", {}).update({
+                "format": "Штатный калькулятор ГлавАПУ — серверный запуск",
+                "cadastral_numbers": numbers,
+                "calculated_at": date.today().isoformat(),
+                "headless": {"state": "готов", "where": "ядро"},
+            })
+            logging.info("tep-server rid=%s готов за %.1f с",
+                         req.request_id or "-", time.monotonic() - started)
+            _glavapu_tep_store(numbers, imported)
+            return imported
+        except Exception as exc:
+            _GLAVAPU_HEADLESS["fallbacks"] += 1
+            # Первая строка сообщения Playwright называет виновника прямо:
+            # «<div id="react-joyride-portal"> intercepts pointer events» —
+            # без неё причина срыва читалась только из логов контейнера.
+            _reason = str(exc).strip().splitlines()
+            _GLAVAPU_HEADLESS["last_error"] = (
+                f"{datetime.now().isoformat(timespec='seconds')}: {_error_location(exc)}"
+                + (f" — {_reason[0][:200]}" if _reason else ""))
+            _glavapu_health_save()
+            _glavapu_headless_failed()
+            logging.warning("glavapu headless failed, falling back for %ds: %s",
+                            int(_GLAVAPU_HEADLESS_COOLDOWN_SECONDS), exc)
+
+    # Формулы тоже помнятся: пока штатный калькулятор недоступен, повторный
+    # расчёт того же участка не должен снова ходить к ГлавАПУ за территорией.
+    cached_formulas = _glavapu_tep_cached(numbers) if numbers else None
+    if cached_formulas is not None:
+        logging.info("tep-server rid=%s формулы из кэша", req.request_id or "-")
+        return cached_formulas
+
+    # Территория для формул: присланная страницей идёт без сети вовсе. Если её
+    # нет и спросить не у кого — не роняем расчёт, формулы спросят сами.
+    formulas_analysis = None
+    if numbers:
+        try:
+            formulas_analysis = _cadastral_analysis_for(numbers, req.cadastral_analysis)
+        except Exception as exc:
+            logging.info("tep-server: территорию для формул взять не удалось: %s", exc)
+    quick = vri_tep_quick("msk", ", ".join(numbers), analysis=formulas_analysis)
+    result = parse_glavapu_xlsx(quick["file"], quick["filename"])
+    result["source"].update({
+        "format": "Формулы калькулятора ГлавАПУ — серверный расчёт DevelopAid",
+        "cadastral_numbers": numbers,
+        "calculated_at": date.today().isoformat(),
+    })
+    headless_state = _glavapu_headless_state()
+    result["source"]["headless"] = headless_state
+    result["warnings"].insert(
+        0,
+        "ТЭП посчитан серверными формулами ГлавАПУ: штатный калькулятор "
+        f"недоступен ({headless_state['state']}, {headless_state['where']}). "
+        + str(headless_state.get("hint") or "")
+        + " Формулы сняты с его кода и сходятся с контрольными выгрузками до "
+        "единицы, но методику город меняет — расчёт штатного калькулятора имеет "
+        "приоритет."
+        + (f" Последняя ошибка запуска: {_GLAVAPU_HEADLESS['last_error']}."
+           if _GLAVAPU_HEADLESS.get("last_error") else ""),
+    )
+    if _GLAVAPU_FORMULA_DRIFT["items"]:
+        result["warnings"].insert(
+            0,
+            "ВНИМАНИЕ: серверные формулы разошлись со штатным калькулятором "
+            "(" + "; ".join(_GLAVAPU_FORMULA_DRIFT["items"][:4]) + "). "
+            "Методика ГлавАПУ могла измениться — сверьте расчёт на сайте.",
+        )
+    if numbers:
+        _glavapu_tep_store(numbers, result, is_fallback=True)
+    logging.info("tep-server rid=%s формулы за %.1f с", req.request_id or "-",
+                 time.monotonic() - request_started)
+    return result
+
+
+@app.post("/cadastral/tep-from-calculator")
+def import_cadastral_tep(req: CadastralTepRequest) -> dict[str, Any]:
+    if not 30 <= len(req.rows) <= 150:
+        raise HTTPException(status_code=400, detail="Калькулятор вернул неполную таблицу ТЭП")
+    table_rows: list[list[Any]] = []
+    for item in req.rows:
+        code = str(item.get("code") or "").strip()[:20]
+        name = str(item.get("name") or "").strip()[:300]
+        unit = str(item.get("unit") or "").strip()[:80]
+        value = str(item.get("value") or "").strip()[:120]
+        if name and value:
+            table_rows.append([code or None, name, unit, value])
+    codes = {str(row[0]) for row in table_rows if row[0]}
+    if not {"1", "10", "42", "54", "60"}.issubset(codes):
+        raise HTTPException(status_code=400, detail="Не все контрольные строки ТЭП получены из калькулятора")
+
+    analysis = req.cadastral_analysis or {}
+    territory = analysis.get("territory") or {}
+    coefficients = analysis.get("coefficients") or {}
+    parameters = [
+        ["Район", territory.get("district") or ""],
+        ["Административный округ", territory.get("administrative_district") or ""],
+        ["Кадастровый квартал", territory.get("cadastral_quarter") or ""],
+        ["Коэффициент аренды", coefficients.get("rent")],
+        ["Коэффициент МПТ", coefficients.get("mpt_location")],
+    ]
+    numbers = analysis.get("recognized") or analysis.get("requested") or []
+    safe_numbers = "_".join(str(number).replace(":", "-") for number in numbers[:3]) or "территория"
+    filename = f"ГлавАПУ_{safe_numbers}.xlsx"
+    workbook = _build_glavapu_xlsx_from_rows(table_rows, parameters)
+    try:
+        result = parse_glavapu_xlsx(workbook, filename)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Не удалось перенести ТЭП из калькулятора: {exc}") from exc
+    result["source"].update({
+        "format": "Калькулятор ТЭП ГлавАПУ — автоматическое получение",
+        "cadastral_numbers": numbers,
+        "calculated_at": date.today().isoformat(),
+        "calculator_url": analysis.get("calculator_url") or "https://genplan.tech/calc/",
+    })
+    result.setdefault("notes", []).insert(
+        0,
+        "Показатели автоматически считаны из готовой таблицы genplan.tech.",
+    )
+    # Каждый успешный сбор штатного калькулятора — бесплатная сверка серверных
+    # формул: разошлись — значит, ГлавАПУ поменял методику, и путь Telegram
+    # начал бы врать. Ошибка, ушедшая только в лог, — ошибка, которой нет,
+    # поэтому расхождение кричит здесь, в /status и в серверных ответах.
+    _glavapu_drift_in_background(table_rows, [str(n) for n in numbers])
+    if _GLAVAPU_FORMULA_DRIFT.get("items"):
+        result["warnings"].insert(
+            0,
+            "ВНИМАНИЕ: серверные формулы DevelopAid разошлись со штатным "
+            "калькулятором (" + "; ".join(_GLAVAPU_FORMULA_DRIFT["items"][:4]) + "). "
+            "Методика ГлавАПУ могла измениться — расчёты Telegram и кнопки бота "
+            "требуют сверки.",
+        )
+    return result
+
+
+_TELEGRAM_PUBLIC_BASE_URL = (
+    os.environ.get("TELEGRAM_PUBLIC_BASE_URL")
+    or os.environ.get("RENDER_EXTERNAL_URL")
+    or "https://plato-development-investment-model.onrender.com"
+).rstrip("/")
+
+# Вебхук и мини-приложение живут по разным адресам, когда бот на Render, а
+# модель — там, где доступен НСПД: адрес вебхука должен остаться на Render,
+# иначе Telegram перестанет доставлять обновления, а кнопка «Открыть модель»
+# должна вести на ядро, иначе в модели не заработают ни адреса, ни область.
+_TELEGRAM_WEB_APP_BASE_URL = (
+    os.environ.get("TELEGRAM_WEBAPP_URL")
+    or os.environ.get("TELEGRAM_WEB_APP_BASE_URL")
+    or _TELEGRAM_PUBLIC_BASE_URL
+).rstrip("/")
+_TELEGRAM_RUNTIME: dict[str, Any] = {
+    "configured": False,
+    "username": "",
+    "last_error": "",
+    "configured_at": "",
+}
+_TELEGRAM_DIALOGS: dict[int, dict[str, Any]] = {}
+_TELEGRAM_DIALOG_LOCK = threading.Lock()
+_TELEGRAM_DIALOG_TTL_SECONDS = 6 * 60 * 60
+
+
+def _telegram_dialog_get(chat_id: int) -> dict[str, Any] | None:
+    now = int(time.time())
+    with _TELEGRAM_DIALOG_LOCK:
+        current = _TELEGRAM_DIALOGS.get(int(chat_id))
+        if not current:
+            return None
+        if now - int(current.get("updated_at") or 0) > _TELEGRAM_DIALOG_TTL_SECONDS:
+            _TELEGRAM_DIALOGS.pop(int(chat_id), None)
+            return None
+        return copy.deepcopy(current)
+
+
+def _telegram_dialog_save(chat_id: int, dialog: dict[str, Any]) -> None:
+    saved = copy.deepcopy(dialog)
+    saved["updated_at"] = int(time.time())
+    with _TELEGRAM_DIALOG_LOCK:
+        _TELEGRAM_DIALOGS[int(chat_id)] = saved
+
+
+def _telegram_dialog_clear(chat_id: int) -> None:
+    with _TELEGRAM_DIALOG_LOCK:
+        _TELEGRAM_DIALOGS.pop(int(chat_id), None)
+
+
+def _telegram_dialog_number(text: str, *, site_area: bool = False) -> float:
+    normalized = str(text or "").lower().replace("ё", "е")
+    normalized = re.sub(r"(?<=\d)[\s\u00a0\u202f](?=\d)", "", normalized)
+    match = re.search(r"[-+]?\d+(?:[.,]\d+)?", normalized)
+    if not match:
+        raise ValueError("Не вижу числа")
+    value = float(match.group(0).replace(",", "."))
+    if re.search(r"\bмлн\b", normalized):
+        value *= 1_000_000
+    elif re.search(r"\bтыс\.?\b", normalized):
+        value *= 1_000
+    if site_area and not re.search(r"\bга\b", normalized) and re.search(r"м[²2]|кв\.?\s*м", normalized):
+        value /= 10_000
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError("Значение должно быть больше нуля")
+    return value
+
+
+def _telegram_token() -> str:
+    return os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+
+
+def _telegram_webhook_secret() -> str:
+    token = _telegram_token()
+    return hashlib.sha256(("plato-webhook:" + token).encode("utf-8")).hexdigest()
+
+
+def _telegram_webhook_enabled() -> bool:
+    """Регистрировать ли вебхук у Telegram.
+
+    Когда бот и мини-приложение развёрнуты по разным адресам, токен нужен обоим:
+    подпись сессии считается им же, и без токена мини-приложение отвечает
+    «Telegram-сессия недействительна». Но вебхук у бота один, поэтому на хосте
+    с моделью регистрацию надо выключить — иначе он уведёт обновления на себя.
+    """
+    return os.environ.get("TELEGRAM_WEBHOOK_ENABLED", "1").strip().lower() not in {
+        "0", "false", "no", "off",
+    }
+
+
+def _telegram_api(method: str, payload: dict[str, Any] | None = None) -> Any:
+    token = _telegram_token()
+    if not token:
+        raise RuntimeError("TELEGRAM_BOT_TOKEN не задан")
+    request = urllib.request.Request(
+        f"https://api.telegram.org/bot{token}/{method}",
+        data=json.dumps(payload or {}, ensure_ascii=False).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            body = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")[:500]
+        raise RuntimeError(f"Telegram API: HTTP {exc.code}: {detail}") from exc
+    except Exception as exc:
+        raise RuntimeError(f"Telegram API недоступен: {exc}") from exc
+    if not body.get("ok"):
+        raise RuntimeError("Telegram API: " + str(body.get("description") or "неизвестная ошибка"))
+    return body.get("result")
+
+
+def _telegram_allowed_user_ids() -> set[int]:
+    raw = os.environ.get("TELEGRAM_ALLOWED_USER_IDS", "").strip()
+    result: set[int] = set()
+    for value in re.split(r"[\s,;]+", raw):
+        if value and value.lstrip("-").isdigit():
+            result.add(int(value))
+    return result
+
+
+def _telegram_user_allowed(user_id: int) -> bool:
+    allowed = _telegram_allowed_user_ids()
+    return not allowed or int(user_id) in allowed
+
+
+def _telegram_session(
+    chat_id: int,
+    cadastral_numbers: list[str],
+    lifetime_seconds: int = 86400,
+    manual_tep: dict[str, Any] | None = None,
+    calc_overrides: dict[str, Any] | None = None,
+) -> str:
+    token = _telegram_token()
+    if not token:
+        raise RuntimeError("Telegram-бот не настроен")
+    payload = {
+        "chat_id": int(chat_id),
+        "cad": list(cadastral_numbers),
+        "exp": int(time.time()) + int(lifetime_seconds),
+    }
+    if manual_tep:
+        payload["manual_tep"] = manual_tep
+    if calc_overrides:
+        payload["calc_overrides"] = calc_overrides
+    raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    if len(raw) > 24_000:
+        raise RuntimeError("Ручной ТЭП слишком велик для Telegram-сессии")
+    encoded = base64.urlsafe_b64encode(raw).rstrip(b"=")
+    signature = hmac.new(token.encode("utf-8"), encoded, hashlib.sha256).digest()[:20]
+    return encoded.decode("ascii") + "." + base64.urlsafe_b64encode(signature).rstrip(b"=").decode("ascii")
+
+
+def _telegram_verify_session(value: str) -> dict[str, Any]:
+    token = _telegram_token()
+    if not token:
+        # Подпись сессии считается токеном бота. Без него проверка не пройдёт
+        # никогда, и «сессия истекла» уводит в ложном направлении: истекать там
+        # нечему, просто хост не знает, чем проверять.
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "На этом сервере не задан TELEGRAM_BOT_TOKEN, поэтому подпись Telegram-сессии "
+                "проверить нечем. Задайте тот же токен, что у бота, и TELEGRAM_WEBHOOK_ENABLED=0, "
+                "чтобы этот сервер не забрал вебхук себе."
+            ),
+        )
+    try:
+        encoded_text, signature_text = str(value or "").split(".", 1)
+        encoded = encoded_text.encode("ascii")
+        supplied = base64.urlsafe_b64decode(signature_text + "=" * (-len(signature_text) % 4))
+        expected = hmac.new(token.encode("utf-8"), encoded, hashlib.sha256).digest()[:20]
+        if not hmac.compare_digest(supplied, expected):
+            raise ValueError("signature")
+        raw = base64.urlsafe_b64decode(encoded_text + "=" * (-len(encoded_text) % 4))
+        payload = json.loads(raw.decode("utf-8"))
+        if int(payload.get("exp") or 0) < int(time.time()):
+            raise ValueError("expired")
+        payload["chat_id"] = int(payload["chat_id"])
+        raw_cad = payload.get("cad") or []
+        payload["cad"] = _parse_cadastral_numbers(raw_cad) if raw_cad else []
+        manual_tep = payload.get("manual_tep")
+        if manual_tep is not None and not isinstance(manual_tep, dict):
+            raise ValueError("manual_tep")
+        calc_overrides = payload.get("calc_overrides")
+        if calc_overrides is not None and not isinstance(calc_overrides, dict):
+            raise ValueError("calc_overrides")
+        return payload
+    except Exception as exc:
+        raise HTTPException(status_code=403, detail="Telegram-сессия недействительна или истекла") from exc
+
+
+def _telegram_web_app_url(
+    chat_id: int,
+    cadastral_numbers: list[str],
+    manual_tep: dict[str, Any] | None = None,
+    calc_overrides: dict[str, Any] | None = None,
+    mode: str | None = None,
+) -> str:
+    fragment: dict[str, str] = {
+        "telegram_session": _telegram_session(
+            chat_id,
+            cadastral_numbers,
+            manual_tep=manual_tep,
+            calc_overrides=calc_overrides,
+        ),
+    }
+    if cadastral_numbers:
+        fragment["cad"] = ", ".join(cadastral_numbers)
+    if mode:
+        fragment["mode"] = str(mode)
+    # v=VERSION ломает кэш Telegram WebView: без него после выкатки открывалась
+    # старая сборка страницы, и починки «не доезжали» до мини-приложения.
+    return (_TELEGRAM_WEB_APP_BASE_URL + "/?telegram=1&v="
+            + urllib.parse.quote(VERSION) + "#" + urllib.parse.urlencode(fragment))
+
+
+def _telegram_send_message(
+    chat_id: int,
+    text: str,
+    *,
+    reply_markup: dict[str, Any] | None = None,
+) -> Any:
+    payload: dict[str, Any] = {
+        "chat_id": int(chat_id),
+        "text": text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True,
+    }
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+    return _telegram_api("sendMessage", payload)
+
+
+
+def _telegram_send_document_bytes(
+    chat_id: int,
+    content: bytes,
+    filename: str,
+    caption: str = "",
+    content_type: str = "application/octet-stream",
+) -> Any:
+    token = _telegram_token()
+    if not token:
+        raise RuntimeError("TELEGRAM_BOT_TOKEN не задан")
+    boundary = "----DevelopAidBoundary" + hashlib.sha256(os.urandom(16)).hexdigest()[:20]
+    body = io.BytesIO()
+
+    def field(name: str, value: str) -> None:
+        body.write(f"--{boundary}\r\n".encode())
+        body.write(f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode())
+        body.write(str(value).encode("utf-8"))
+        body.write(b"\r\n")
+
+    field("chat_id", str(int(chat_id)))
+    if caption:
+        field("caption", caption)
+        field("parse_mode", "HTML")
+    body.write(f"--{boundary}\r\n".encode())
+    body.write(
+        f'Content-Disposition: form-data; name="document"; filename="{filename}"\r\n'.encode("utf-8")
+    )
+    body.write(f"Content-Type: {content_type}\r\n\r\n".encode("ascii"))
+    body.write(content)
+    body.write(b"\r\n")
+    body.write(f"--{boundary}--\r\n".encode())
+    request = urllib.request.Request(
+        f"https://api.telegram.org/bot{token}/sendDocument",
+        data=body.getvalue(),
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            result = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")[:500]
+        raise RuntimeError(f"Telegram API sendDocument: HTTP {exc.code}: {detail}") from exc
+    if not result.get("ok"):
+        raise RuntimeError("Telegram API sendDocument: " + str(result.get("description") or "неизвестная ошибка"))
+    return result.get("result")
+
+
+def _telegram_send_photo_bytes(
+    chat_id: int,
+    content: bytes,
+    filename: str,
+    caption: str = "",
+) -> Any:
+    """sendPhoto тем же multipart, что и документы: фото видно в чате сразу."""
+    token = _telegram_token()
+    if not token:
+        raise RuntimeError("TELEGRAM_BOT_TOKEN не задан")
+    boundary = "----DevelopAidBoundary" + hashlib.sha256(os.urandom(16)).hexdigest()[:20]
+    body = io.BytesIO()
+
+    def field(name: str, value: str) -> None:
+        body.write(f"--{boundary}\r\n".encode())
+        body.write(f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode())
+        body.write(str(value).encode("utf-8"))
+        body.write(b"\r\n")
+
+    field("chat_id", str(int(chat_id)))
+    if caption:
+        field("caption", caption)
+        field("parse_mode", "HTML")
+    body.write(f"--{boundary}\r\n".encode())
+    body.write(
+        f'Content-Disposition: form-data; name="photo"; filename="{filename}"\r\n'.encode("utf-8")
+    )
+    body.write(b"Content-Type: image/png\r\n\r\n")
+    body.write(content)
+    body.write(b"\r\n")
+    body.write(f"--{boundary}--\r\n".encode())
+    request = urllib.request.Request(
+        f"https://api.telegram.org/bot{token}/sendPhoto",
+        data=body.getvalue(),
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            result = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")[:500]
+        raise RuntimeError(f"Telegram API sendPhoto: HTTP {exc.code}: {detail}") from exc
+    if not result.get("ok"):
+        raise RuntimeError("Telegram API sendPhoto: " + str(result.get("description") or "неизвестная ошибка"))
+    return result.get("result")
+
+
+def _telegram_territory_photo(chat_id: int, numbers: list[str]) -> bool:
+    """Картинка территории в чат: контуры ЕГРН поверх подложки НСПД.
+
+    Та же картинка, что на сайте в карточке участка, — в боте её не было вовсе
+    (замечание владельца, 16.08.2026). Контуры приходят из /land/lookup
+    (`contour_merc`), подложка — из /land/map-image; оба маршрута на Render
+    пересылают на ядро сами. Любой сбой — просто нет фото: картинка украшение,
+    расчёт от неё не зависит, поэтому наружу не роняется ничего.
+    """
+    try:
+        data = land_lookup(LandLookupRequest(
+            query=", ".join(numbers), limit=max(10, len(numbers))))
+        found = [item for item in (data.get("results") or [])
+                 if item.get("found") and item.get("contour_merc")]
+        rings = [ring for item in found for ring in item["contour_merc"]
+                 if isinstance(ring, list) and len(ring) >= 3]
+        points = [p for ring in rings for p in ring
+                  if isinstance(p, (list, tuple)) and len(p) >= 2]
+        if not points:
+            return False
+        min_x = min(p[0] for p in points); max_x = max(p[0] for p in points)
+        min_y = min(p[1] for p in points); max_y = max(p[1] for p in points)
+        span = max(max_x - min_x, max_y - min_y, 1.0)
+        pad = max(span * 0.08, 25.0)
+        b_min_x, b_min_y = min_x - pad, min_y - pad
+        b_max_x, b_max_y = max_x + pad, max_y + pad
+        from PIL import Image, ImageDraw
+        try:
+            response = land_map_image(
+                bbox=f"{b_min_x:.1f},{b_min_y:.1f},{b_max_x:.1f},{b_max_y:.1f}")
+            backdrop = Image.open(io.BytesIO(bytes(response.body))).convert("RGBA")
+        except Exception:
+            # Голый контур на белом фоне в чате — шум, а не информация
+            # (владелец, 16.08.2026). Нет карты — нет фото; расчёту это не
+            # мешает, а на сайте карточка участка и без карты в контексте.
+            return False
+        w, h = backdrop.size
+        overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        overlay_draw = ImageDraw.Draw(overlay)
+        pixel_rings = []
+        for ring in rings:
+            px = [((p[0] - b_min_x) / (b_max_x - b_min_x) * w,
+                   (b_max_y - p[1]) / (b_max_y - b_min_y) * h)
+                  for p in ring if isinstance(p, (list, tuple)) and len(p) >= 2]
+            if len(px) < 3:
+                continue
+            pixel_rings.append(px)
+            # Полупрозрачная заливка — как на сайте: участок видно пятном, а
+            # карта под ним остаётся читаемой.
+            overlay_draw.polygon(px, fill=(245, 245, 243, 90))
+        if not pixel_rings:
+            return False
+        image = Image.alpha_composite(backdrop, overlay).convert("RGB")
+        draw = ImageDraw.Draw(image)
+        for px in pixel_rings:
+            closed = px + [px[0]]
+            # Белая подкладка под тёмной линией: граница читается на пёстрой карте.
+            draw.line(closed, fill=(255, 255, 255), width=7, joint="curve")
+            draw.line(closed, fill=(180, 35, 24), width=3, joint="curve")
+        out = io.BytesIO()
+        image.save(out, format="PNG")
+        listed = ", ".join(str(item.get("cadastral_number") or "") for item in found[:5])
+        count = len(found)
+        caption = (
+            f"Контур участка {listed} · границы ЕГРН" if count == 1
+            else f"Территория из {count} участков: {listed} · границы ЕГРН")
+        caption += " · подложка — публичная карта НСПД"
+        _telegram_send_photo_bytes(chat_id, out.getvalue(), "territory.png", caption)
+        return True
+    except Exception as exc:
+        logging.info("Фото территории пропущено: %s", exc)
+        return False
+
+
+def _telegram_territory_photo_async(chat_id: int, numbers: list[str]) -> None:
+    """Фото уходит фоном: сбор контуров и подложки ходит в НСПД и не должен
+    держать ответ вебхука — правило «тяжёлое не считается внутри запроса»."""
+    threading.Thread(
+        target=_telegram_territory_photo, args=(chat_id, list(numbers)),
+        name="territory-photo", daemon=True,
+    ).start()
+
+
+def _telegram_send_template(chat_id: int) -> Any:
+    try:
+        encoded = MANUAL_TEP_TEMPLATE_B64_PATH.read_text(encoding="ascii").strip()
+        content = base64.b64decode(encoded, validate=True)
+    except Exception as exc:
+        raise RuntimeError("Excel-шаблон ТЭП повреждён или не найден") from exc
+    if not content.startswith(b"PK"):
+        raise RuntimeError("Excel-шаблон ТЭП повреждён")
+    return _telegram_send_document_bytes(
+        chat_id,
+        content,
+        MANUAL_TEP_TEMPLATE_FILENAME,
+        (
+            "<b>Excel-шаблон исходного ТЭП DevelopAid</b>\n\n"
+            "1. Заполните общие сведения и жёлтые ячейки ТЭП.\n"
+            "2. Не переименовывайте лист, не меняйте коды и не удаляйте строки.\n"
+            "3. Сохраните файл в формате .xlsx и отправьте его обратно в этот чат.\n\n"
+            "Бот проверит структуру, покажет сводку и предложит открыть проект в DevelopAid."
+        ),
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
+def _telegram_download_document(document: dict[str, Any]) -> tuple[bytes, str]:
+    filename = str(document.get("file_name") or "ТЭП.xlsx").strip()[:180]
+    if not filename.lower().endswith(".xlsx"):
+        raise ValueError("Нужен заполненный файл .xlsx из шаблона DevelopAid")
+    declared_size = int(document.get("file_size") or 0)
+    if declared_size > 5 * 1024 * 1024:
+        raise ValueError("Файл слишком большой. Лимит — 5 МБ")
+    file_id = str(document.get("file_id") or "")
+    if not file_id:
+        raise ValueError("Telegram не передал идентификатор файла")
+    info = _telegram_api("getFile", {"file_id": file_id}) or {}
+    file_path = str(info.get("file_path") or "")
+    if not file_path:
+        raise ValueError("Telegram не подготовил файл к загрузке")
+    url = f"https://api.telegram.org/file/bot{_telegram_token()}/{urllib.parse.quote(file_path, safe='/')}"
+    try:
+        with urllib.request.urlopen(url, timeout=20) as response:
+            data = response.read(5 * 1024 * 1024 + 1)
+    except Exception as exc:
+        raise RuntimeError(f"Не удалось скачать файл из Telegram: {exc}") from exc
+    if len(data) > 5 * 1024 * 1024:
+        raise ValueError("Файл слишком большой. Лимит — 5 МБ")
+    return data, filename
+
+
+def _telegram_money_mln(value: Any) -> str:
+    try:
+        amount = float(value or 0)
+    except Exception:
+        amount = 0.0
+    if abs(amount) >= 1000:
+        return f"{amount / 1000:,.2f}".replace(",", " ").replace(".", ",") + " млрд ₽"
+    return f"{amount:,.1f}".replace(",", " ").replace(".", ",") + " млн ₽"
+
+
+def _telegram_number(value: Any, digits: int = 1) -> str:
+    try:
+        number = float(value or 0)
+    except Exception:
+        number = 0.0
+    return f"{number:,.{digits}f}".replace(",", " ").replace(".", ",")
+
+
+def _telegram_dialog_data_lines(data: dict[str, Any]) -> list[str]:
+    fields = (
+        ("site_area_ha", "территория", "га", 4),
+        ("project_total_gns_sqm", "ГНС надземной части проекта", "м²", 0),
+        ("apartments_gns_sqm", "жилая ГНС", "м²", 0),
+        ("apartments_saleable_sqm", "продаваемая площадь квартир", "м²", 0),
+        ("residential_density_spp_th_ha", "плотность", "тыс. м²/га", 2),
+        ("commercial_saleable_sqm", "продаваемая коммерция", "м²", 0),
+        ("commercial_gns_sqm", "ГНС коммерции", "м²", 0),
+        ("parking_spaces", "паркинг", "м/м", 0),
+        ("kindergarten_places", "ДОО", "мест", 0),
+        ("school_places", "школа", "мест", 0),
+        ("clinic_capacity", "поликлиника", "пос./смену", 0),
+    )
+    lines = [
+        f"• {label} — {_telegram_number(data.get(key), digits)} {unit}"
+        for key, label, unit, digits in fields
+        if data.get(key) is not None
+    ]
+    if str(data.get("district") or "").strip():
+        lines.append("• район — " + html.escape(str(data["district"])))
+    return lines
+
+
+def _telegram_dialog_has_primary(data: dict[str, Any]) -> bool:
+    return any(
+        float(data.get(key) or 0) > 0
+        for key in (
+            "project_total_gns_sqm", "apartments_gns_sqm",
+            "apartments_saleable_sqm", "residential_density_spp_th_ha",
+        )
+    )
+
+
+def _telegram_dialog_merge(data: dict[str, Any], recognized: dict[str, Any]) -> int:
+    allowed = {
+        "project_name", "district", "site_area_ha", "project_total_gns_sqm",
+        "apartments_saleable_sqm", "apartments_gns_sqm", "residential_density_spp_th_ha",
+        "commercial_saleable_sqm", "commercial_gns_sqm", "parking_spaces", "storage_units",
+        "kindergarten_places", "school_places", "clinic_capacity",
+        "land_rights_cost_mln", "social_compensation_mln",
+    }
+    count = 0
+    for key in allowed:
+        value = recognized.get(key)
+        if value is None or value == "":
+            continue
+        data[key] = value
+        count += 1
+    return count
+
+
+def _telegram_dialog_primary_menu(chat_id: int) -> None:
+    _telegram_send_message(
+        chat_id,
+        "<b>Что известно по объёму застройки?</b>\n\n"
+        "Выберите один основной показатель. Остальные DevelopAid рассчитает из него.",
+        reply_markup={"inline_keyboard": [
+            [{"text": "ГНС проекта", "callback_data": "flow_primary_gns"}],
+            [{"text": "Продаваемая площадь квартир", "callback_data": "flow_primary_saleable"}],
+            [{"text": "Плотность застройки", "callback_data": "flow_primary_density"}],
+            [{"text": "Знаю несколько показателей", "callback_data": "flow_primary_multiple"}],
+            [{"text": "Начать заново", "callback_data": "flow_restart"}],
+        ]},
+    )
+
+
+def _telegram_dialog_extras_menu(chat_id: int, dialog: dict[str, Any]) -> None:
+    dialog["step"] = "extras"
+    _telegram_dialog_save(chat_id, dialog)
+    lines = _telegram_dialog_data_lines(dialog.get("data") or {})
+    known = "\n".join(lines) if lines else "• пока ничего"
+    _telegram_send_message(
+        chat_id,
+        "<b>Основы собраны</b>\n\n"
+        "Сейчас известно:\n" + known + "\n\n"
+        "Добавьте любые известные параметры. Когда закончите, нажмите "
+        "<b>«Рассчитать недостающее»</b> — DevelopAid заполнит остальное ориентировочно по нормативам.",
+        reply_markup={"inline_keyboard": [
+            [
+                {"text": "Коммерция", "callback_data": "flow_extra_commercial"},
+                {"text": "Паркинг", "callback_data": "flow_extra_parking"},
+            ],
+            [
+                {"text": "Соцобъекты", "callback_data": "flow_extra_social"},
+                {"text": "Район", "callback_data": "flow_extra_district"},
+            ],
+            [{"text": "Другие параметры сообщением", "callback_data": "flow_extra_other"}],
+            [{"text": "Рассчитать недостающее", "callback_data": "flow_calculate"}],
+            [{"text": "Начать заново", "callback_data": "flow_restart"}],
+        ]},
+    )
+
+
+def _telegram_dialog_callback(chat_id: int, user_id: int, action: str) -> None:
+    if action == "flow_restart":
+        _telegram_dialog_clear(chat_id)
+        _telegram_start_message(chat_id, user_id)
+        return
+    if action == "flow_cad_yes":
+        _telegram_dialog_save(chat_id, {"step": "await_cadastre", "data": {}})
+        _telegram_send_message(
+            chat_id,
+            "<b>Введите все кадастровые номера</b>\n\n"
+            "Можно через запятую или каждый с новой строки. Например:\n"
+            "<code>77:02:0016009:1934, 77:02:0016009:1935</code>",
+        )
+        return
+    if action == "flow_address":
+        _telegram_dialog_save(chat_id, {"step": "await_address", "data": {}})
+        _telegram_send_message(
+            chat_id,
+            "<b>Введите адрес участка</b>\n\n"
+            "Например: <code>Московская область, Мытищи, Олимпийский проспект, 29</code>.\n"
+            "Можно и координатами через запятую: <code>55.9105, 37.7365</code>.\n\n"
+            "DevelopAid найдёт участок в ЕГРН и посчитает территорию. "
+            "Выдача фильтруется до земельных участков — квартир и машино-мест в ней не будет.",
+        )
+        return
+    if action == "flow_cad_no":
+        _telegram_dialog_save(chat_id, {"step": "await_site_area", "data": {}})
+        _telegram_send_message(
+            chat_id,
+            "<b>Какая площадь территории?</b>\n\n"
+            "Напишите в гектарах или квадратных метрах, например: <code>2,4 га</code> или <code>24 000 м²</code>.",
+        )
+        return
+
+    dialog = _telegram_dialog_get(chat_id)
+    if not dialog:
+        _telegram_send_message(chat_id, "Расчёт не найден или устарел. Начнём заново.")
+        _telegram_start_message(chat_id, user_id)
+        return
+
+    if action == "flow_cad_choose_class":
+        _telegram_cad_class_menu(chat_id, dialog)
+        return
+    if action in {"flow_cad_class_comfort", "flow_cad_class_business", "flow_cad_class_elite"}:
+        key = action.removeprefix("flow_cad_class_")
+        preset = PROJECT_CLASS_PRESETS[key]
+        data = dialog.setdefault("data", {})
+        data["project_class"] = key
+        data["prices_custom"] = False
+        data["apartment_price_th"] = float(preset["apartment_price_th"])
+        data["commercial_price_th"] = float(preset["commercial_price_th"])
+        data["parking_price_th"] = float(preset["parking_price_th"])
+        data["smr_th_per_sqm"] = float(_TELEGRAM_CLASS_SMR_PRESETS[key])
+        _telegram_send_cad_calculate_button(chat_id, dialog)
+        return
+    if action == "flow_cad_class_custom":
+        data = dialog.setdefault("data", {})
+        if str(data.get("project_class") or "") not in _TELEGRAM_CLASS_SMR_PRESETS:
+            _telegram_cad_class_menu(chat_id, dialog)
+            return
+        dialog["step"] = "await_cad_apartment_price"
+        data["prices_custom"] = True
+        _telegram_dialog_save(chat_id, dialog)
+        _telegram_send_message(
+            chat_id,
+            "<b>Изменить цены реализации</b>\n\n"
+            "СМР останется из выбранного класса.\n\n"
+            "Введите цену продажи жилья в тыс. ₽/м², например <code>420</code> или <code>1,2 млн</code>.",
+        )
+        return
+
+    prompts = {
+        "flow_primary_gns": (
+            "project_total_gns_sqm", "await_value",
+            "<b>Введите ГНС надземной части проекта</b> без паркинга и соцобъектов, в м².",
+        ),
+        "flow_primary_saleable": (
+            "apartments_saleable_sqm", "await_value",
+            "<b>Введите продаваемую площадь квартир</b> в м².",
+        ),
+        "flow_primary_density": (
+            "residential_density_spp_th_ha", "await_value",
+            "<b>Введите плотность застройки</b> в тыс. м² СПП на гектар, например <code>28,5</code>.",
+        ),
+        "flow_extra_parking": (
+            "parking_spaces", "await_value",
+            "<b>Сколько машино-мест предусмотрено?</b> Введите общее количество.",
+        ),
+        "flow_extra_district": (
+            "district", "await_text",
+            "<b>Введите район Москвы</b>, например <code>Коммунарка</code>. Если это другой регион — напишите город или район.",
+        ),
+    }
+    if action in prompts:
+        key, step, prompt = prompts[action]
+        dialog["step"] = step
+        dialog["pending_key"] = key
+        _telegram_dialog_save(chat_id, dialog)
+        _telegram_send_message(chat_id, prompt)
+        return
+    if action == "flow_primary_multiple":
+        dialog["step"] = "await_primary_multiple"
+        _telegram_dialog_save(chat_id, dialog)
+        _telegram_send_message(
+            chat_id,
+            "<b>Напишите известные показатели одним сообщением</b>\n\n"
+            "Например: <code>ГНС проекта 70 000 м², квартиры 42 000 м² продаваемой площади, коммерция 2 500 м²</code>.",
+        )
+        return
+    if action == "flow_extra_commercial":
+        _telegram_send_message(
+            chat_id,
+            "<b>Что известно по встроенной коммерции?</b>",
+            reply_markup={"inline_keyboard": [
+                [{"text": "Продаваемая площадь", "callback_data": "flow_commercial_saleable"}],
+                [{"text": "ГНС коммерции", "callback_data": "flow_commercial_gns"}],
+                [{"text": "Назад", "callback_data": "flow_extras"}],
+            ]},
+        )
+        return
+    if action in {"flow_commercial_saleable", "flow_commercial_gns"}:
+        dialog["step"] = "await_value"
+        dialog["pending_key"] = (
+            "commercial_saleable_sqm" if action.endswith("saleable") else "commercial_gns_sqm"
+        )
+        _telegram_dialog_save(chat_id, dialog)
+        label = "продаваемую площадь" if action.endswith("saleable") else "ГНС"
+        _telegram_send_message(chat_id, f"<b>Введите {label} встроенной коммерции</b> в м².")
+        return
+    if action == "flow_extra_social":
+        dialog["step"] = "await_social"
+        _telegram_dialog_save(chat_id, dialog)
+        _telegram_send_message(
+            chat_id,
+            "<b>Введите известные мощности соцобъектов</b>\n\n"
+            "Например: <code>ДОО 150 мест, школа 300 мест, поликлиника 100 посещений в смену</code>. "
+            "Можно указать только один объект.",
+        )
+        return
+    if action == "flow_extra_other":
+        dialog["step"] = "await_other"
+        _telegram_dialog_save(chat_id, dialog)
+        _telegram_send_message(
+            chat_id,
+            "<b>Напишите остальные известные параметры одним сообщением</b>\n\n"
+            "DevelopAid распознает их и вернёт вас в меню проверки.",
+        )
+        return
+    if action in {"flow_extras", "flow_edit"}:
+        _telegram_dialog_extras_menu(chat_id, dialog)
+        return
+    if action == "flow_calculate":
+        try:
+            parsed = build_freeform_tep("", raw_values=dialog.get("data") or {})
+        except (ValueError, RuntimeError) as exc:
+            _telegram_send_message(chat_id, "<b>Пока не могу рассчитать ТЭП.</b>\n" + html.escape(str(exc)))
+            return
+        _telegram_send_tep_review(chat_id, parsed, dialog_mode=True)
+        return
+
+
+def _telegram_handle_dialog_text(chat_id: int, text: str) -> bool:
+    dialog = _telegram_dialog_get(chat_id)
+    if not dialog:
+        return False
+    step = str(dialog.get("step") or "")
+    data = dialog.setdefault("data", {})
+    try:
+        if step == "await_address":
+            _telegram_dialog_clear(chat_id)
+            _telegram_handle_address(chat_id, text)
+            return True
+        if step == "await_cadastre":
+            # В поле для номеров могут прислать адрес — не заставляем начинать заново.
+            try:
+                numbers = _parse_cadastral_numbers(text)
+            except HTTPException:
+                if not _looks_like_address(text):
+                    raise
+                _telegram_dialog_clear(chat_id)
+                _telegram_handle_address(chat_id, text)
+                return True
+            _telegram_dialog_clear(chat_id)
+            _telegram_handle_cadastral_numbers(chat_id, numbers, text)
+            return True
+        if step == "await_site_area":
+            data["site_area_ha"] = _telegram_dialog_number(text, site_area=True)
+            dialog["step"] = "choose_primary"
+            _telegram_dialog_save(chat_id, dialog)
+            _telegram_dialog_primary_menu(chat_id)
+            return True
+        if step == "await_cad_apartment_price":
+            data["apartment_price_th"] = _telegram_econ_value_th(text)
+            dialog["step"] = "await_cad_commercial_price"
+            _telegram_dialog_save(chat_id, dialog)
+            _telegram_send_message(chat_id, "<b>Цена продажи нежилья / коммерции</b>\n\nВведите в тыс. ₽/м², например <code>450</code>.")
+            return True
+        if step == "await_cad_commercial_price":
+            data["commercial_price_th"] = _telegram_econ_value_th(text)
+            dialog["step"] = "await_cad_parking_price"
+            _telegram_dialog_save(chat_id, dialog)
+            _telegram_send_message(chat_id, "<b>Цена машино-места</b>\n\nВведите в тыс. ₽ за место, например <code>2500</code>, или <code>2,5 млн</code>.")
+            return True
+        if step == "await_cad_parking_price":
+            data["parking_price_th"] = _telegram_econ_value_th(text)
+            _telegram_send_cad_calculate_button(chat_id, dialog)
+            return True
+        if step == "await_value":
+            key = str(dialog.get("pending_key") or "")
+            if not key:
+                raise ValueError("Не найден ожидаемый показатель")
+            value = _telegram_dialog_number(text)
+            if key in {"parking_spaces", "storage_units"}:
+                value = int(round(value))
+            data[key] = value
+            dialog.pop("pending_key", None)
+            _telegram_dialog_extras_menu(chat_id, dialog)
+            return True
+        if step == "await_text":
+            key = str(dialog.get("pending_key") or "")
+            value = str(text or "").strip()[:120]
+            if not value:
+                raise ValueError("Ответ пустой")
+            data[key] = value
+            dialog.pop("pending_key", None)
+            _telegram_dialog_extras_menu(chat_id, dialog)
+            return True
+        if step in {"await_primary_multiple", "await_social", "await_other", "extras"}:
+            recognized = _recognize_freeform_tep_text(text)
+            if step == "await_social":
+                recognized = {
+                    key: recognized.get(key)
+                    for key in ("kindergarten_places", "school_places", "clinic_capacity")
+                }
+            added = _telegram_dialog_merge(data, recognized)
+            if not added:
+                raise ValueError("Не удалось распознать ни одного показателя")
+            if step == "await_primary_multiple" and not _telegram_dialog_has_primary(data):
+                raise ValueError("Укажите ГНС, продаваемую площадь квартир либо плотность")
+            _telegram_dialog_extras_menu(chat_id, dialog)
+            return True
+        if step == "choose_primary":
+            _telegram_dialog_primary_menu(chat_id)
+            return True
+    except (ValueError, RuntimeError, HTTPException) as exc:
+        detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+        _telegram_send_message(
+            chat_id,
+            "<b>Не удалось принять ответ.</b>\n" + html.escape(str(detail)) + "\n\nПопробуйте ещё раз или нажмите /start.",
+        )
+        return True
+    return False
+
+
+def _telegram_calc_menu(chat_id: int) -> None:
+    """Второй уровень «Расчёта модели»: четыре способа взять ТЭП.
+
+    В плоском списке команд они стояли четырьмя похожими строками, и выбирать
+    приходилось между функциями, которые на вид не отличались. Расчёт при этом
+    один и тот же — разное только то, откуда берутся исходные данные, и здесь
+    это видно.
+    """
+    _telegram_send_message(
+        chat_id,
+        "<b>Расчёт модели</b>\n"
+        "Откуда взять ТЭП проекта?",
+        reply_markup={"inline_keyboard": [
+            [{"text": "Свои вводные, без кадастра", "callback_data": "flow_cad_no"}],
+            [{"text": "По адресу участка", "callback_data": "flow_address"}],
+            [{"text": "По кадастровому номеру", "callback_data": "flow_cad_yes"}],
+            [{"text": "Скачать Excel-шаблон ТЭП", "callback_data": "tep_template"}],
+        ]},
+    )
+
+
+_INVITE_SOURCE_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
+
+
+def _telegram_invite_source(payload: str) -> str:
+    """Метка приглашения из «/start <метка>».
+
+    Payload приходит снаружи, поэтому в журнал попадает только то, что похоже
+    на метку: буквы, цифры, дефис и подчёркивание. Подтверждение входа на сайт
+    (`login_…`) меткой не считается — это другой сценарий.
+    """
+    value = str(payload or "").strip()
+    if not value or value.startswith("login_"):
+        return ""
+    return value if _INVITE_SOURCE_RE.match(value) else ""
+
+
+def _telegram_sender_name(message: dict[str, Any]) -> str:
+    """Имя для журнала: как человек подписан в Telegram."""
+    sender = (message or {}).get("from") or {}
+    parts = [str(sender.get("first_name") or ""), str(sender.get("last_name") or "")]
+    name = " ".join(part for part in parts if part).strip()
+    login = str(sender.get("username") or "").strip()
+    if login:
+        name = f"{name} @{login}".strip()
+    return name
+
+
+def _telegram_start_message(chat_id: int, user_id: int, source: str = "") -> None:
+    if not _telegram_user_allowed(user_id):
+        _telegram_send_message(
+            chat_id,
+            "<b>Доступ к DevelopAid пока не открыт.</b>\n"
+            f"Ваш Telegram ID: <code>{user_id}</code>\n"
+            "Добавьте его в TELEGRAM_ALLOWED_USER_IDS в Render.",
+        )
+        return
+    _telegram_dialog_clear(chat_id)
+    # Пришедшему по приглашению первой идёт кнопка сайта: он ещё не знает ни
+    # адреса, ни того, что тут есть. Читать список сценариев бота он не станет —
+    # ему нужно увидеть расчёт, а не меню.
+    invited = [[{"text": "Открыть DevelopAid — полный расчёт",
+                 "web_app": {"url": _telegram_web_app_url(chat_id, [])}}]] if source else []
+    # Приветствие говорит теми же словами, что список команд слева внизу:
+    # те же решения и в том же порядке (решение владельца, 18.08.2026). Прежде
+    # здесь стояли восемь конкретных входов, а в списке команд — шесть решений,
+    # и один продукт объяснялся двумя разными словарями. Способ («по кадастру,
+    # по адресу, без кадастра, шаблон») спрашивается вторым уровнем — тем же
+    # `_telegram_calc_menu`, что и у команды /calc.
+    button = {"inline_keyboard": invited + [
+        [{"text": "Расчёт модели", "callback_data": "calc_menu"}],
+        [{"text": "Открыть готовую модель", "web_app": {"url": _telegram_web_app_url(chat_id, [])}}],
+        [{"text": "Расчёт ВРИ и ТЭП", "callback_data": "vritep_start"}],
+        # Сюда расширение вставляет «Льгота МПТ» — перед помощью, как в списке команд.
+        [{"text": "Платон Сергеевич", "callback_data": "ask_platon"}],
+        [{"text": "Что умеет DevelopAid", "callback_data": "show_help"}],
+    ]}
+    _telegram_send_message(
+        chat_id,
+        ("<b>Спасибо, что зашли посмотреть.</b> Это рабочая версия, и нам важно, "
+         "что в ней не сходится с вашей практикой — кнопка выше открывает расчёт, "
+         "войти отдельно не нужно.\n\n" if source else "")
+        + "<b>Добро пожаловать в DevelopAid</b>\n\n"
+        "Если на переговорах в «Кофемании» нужно за пять минут отфильтровать 50–60 земельных участков, "
+        "на встрече — на пальцах объяснить региональному девелоперу, почему трёхлетний БРИДЖ не позволяет "
+        "купить проект по 100 тысяч рублей за метр, или вы просто решили немного оптимизировать расходы "
+        "на аналитиков перед покупкой проекта в Ховрино — <b>DevelopAid вам поможет</b>.\n\n"
+        "Модель работает с проектами <b>по всей России</b>, а не только в Москве.\n\n"
+        "Считает плату за изменение ВРИ (Москва и область) и собирает ТЭП "
+        "по нормативам ГлавАПУ прямо из кадастра.\n\n"
+        "Начать расчёт можно:\n"
+        "• по кадастровым номерам участков;\n"
+        "• без кадастра, ответив на вопросы бота;\n"
+        "• загрузив заполненный Excel-шаблон.\n\n"
+        "После первичного расчёта проект можно открыть в мини-приложении и настроить практически всё:\n"
+        "• ТЭП и состав продуктов;\n"
+        "• цены и темпы продаж;\n"
+        "• себестоимость и сроки строительства;\n"
+        "• прогноз ключевой ставки;\n"
+        "• БРИДЖ и проектное финансирование;\n"
+        "• очередность проекта;\n"
+        "• распределение расходов и социальной нагрузки;\n"
+        "• строительство или компенсацию социальных объектов;\n"
+        "• сценарии изменения доходов и затрат.\n\n"
+        "DevelopAid рассчитает экономику, потребность в финансировании, динамику долга и эскроу, прибыль, "
+        "маржинальность и LLCR, а также сформирует PDF-отчёт с графиками и календарным планом — "
+        "и живую Excel-модель со всеми формулами: открывайте, проверяйте, показывайте банку.\n\n"
+        "<i>Доплату по коэффициенту Д, увы, пока не предсказывает.</i>\n\n"
+        "<b>С чего начнём?</b>",
+        reply_markup=button,
+    )
+
+
+def _telegram_handle_glavapu_document(chat_id: int, data: bytes, filename: str) -> bool:
+    """Файл формата калькулятора ГлавАПУ, присланный прямо в чат.
+
+    Подпись к выгрузке кнопки «Посчитать ВРИ и ТЭП» обещает, что файл
+    «можно загрузить в DevelopAid как обычный ТЭП», — а чат принимал только
+    шаблон DevelopAid, и обещание работало лишь через мини-приложение."""
+    try:
+        parsed = parse_glavapu_xlsx(data, filename)
+    except Exception:
+        return False
+    normalized = parsed.get("normalized") or {}
+    # Разбор не отказывается от чужой книги: он ищет свои подписи, ничего не
+    # находит и возвращает набор из одних None. Дальше файл шёл как «распознан»,
+    # и человек получал сводку из нулей — «территория 0,0000 га, квартиры 0 м²»
+    # — вместо ответа, что это не тот формат. Считаем по числам: из 61 ключа
+    # непустым в чужом файле остаётся один, и тот не вычитан, а подставлен
+    # разбором по умолчанию (suggested_social_mode).
+    if not any(isinstance(value, (int, float)) and not isinstance(value, bool) and value
+               for value in normalized.values()):
+        return False
+    mappings = parsed.get("mappings") or {}
+    session = {
+        "project_name": "",
+        "region": "Москва",
+        "site_area_ha": normalized.get("site_area_ha") or 0,
+        "source": parsed.get("source") or {},
+        "inputs": {
+            **(mappings.get("inputs") or {}),
+            "_glavapu_import": {
+                "source": parsed.get("source") or {},
+                "normalized": normalized,
+                "recognized": parsed.get("recognized") or [],
+                "warnings": parsed.get("warnings") or [],
+                "mappings": mappings,
+            },
+        },
+        "tep": mappings.get("tep") or {},
+    }
+    button = {"inline_keyboard": [[{
+        "text": "Открыть ТЭП в DevelopAid",
+        "web_app": {"url": _telegram_web_app_url(chat_id, [], session)},
+    }]]}
+    _telegram_send_message(
+        chat_id,
+        "<b>Файл калькулятора ГлавАПУ распознан</b>\n"
+        f"Территория: <b>{_telegram_number(normalized.get('site_area_ha'), 4)} га</b>\n"
+        f"Квартиры: <b>{_telegram_number(normalized.get('apartment_area_sqm'), 0)} м²</b>\n"
+        f"Смена ВРИ: <b>{_telegram_money_mln(normalized.get('change_vri_mln'))}</b>\n"
+        f"Социальная компенсация: <b>{_telegram_money_mln(normalized.get('social_compensation_total_mln'))}</b>\n\n"
+        "Проверьте сводку и откройте модель — ТЭП перенесётся целиком.",
+        reply_markup=button,
+    )
+    return True
+
+
+def _telegram_handle_manual_document(chat_id: int, document: dict[str, Any]) -> None:
+    try:
+        data, filename = _telegram_download_document(document)
+    except (ValueError, RuntimeError) as exc:
+        _telegram_send_message(
+            chat_id,
+            "<b>Не удалось принять файл.</b>\n" + html.escape(str(exc)),
+        )
+        return
+    try:
+        parsed = parse_manual_tep_xlsx(data, filename)
+    except (ValueError, RuntimeError) as exc:
+        # В чат приходят два наших же формата: шаблон DevelopAid и файл
+        # калькулятора ГлавАПУ (в т.ч. выгрузка кнопки «Посчитать ВРИ и ТЭП»).
+        if _telegram_handle_glavapu_document(chat_id, data, filename):
+            return
+        _telegram_send_message(
+            chat_id,
+            "<b>Не удалось принять ручной ТЭП.</b>\n" + html.escape(str(exc)) +
+            "\n\nСкачайте актуальный шаблон командой /template и не меняйте его структуру. "
+            "Бот принимает в чате два формата: шаблон DevelopAid и файл калькулятора ГлавАПУ.",
+        )
+        return
+
+    summary = parsed.get("summary") or {}
+    project_name = str(parsed.get("project_name") or "Без названия")
+    region = str(parsed.get("region") or "").strip()
+    region_line = f"Регион: <b>{html.escape(region)}</b>\n" if region else ""
+    manual_session = {
+        "project_name": parsed.get("project_name") or "",
+        "region": parsed.get("region") or "",
+        "site_area_ha": parsed.get("site_area_ha") or 0,
+        "source": parsed.get("source") or {},
+        "inputs": parsed.get("inputs") or {},
+        "tep": parsed.get("tep") or {},
+    }
+    button = {
+        "inline_keyboard": [[{
+            "text": "Открыть ТЭП в DevelopAid",
+            "web_app": {"url": _telegram_web_app_url(chat_id, [], manual_session)},
+        }]]
+    }
+    _telegram_send_message(
+        chat_id,
+        "<b>Ручной ТЭП распознан</b>\n"
+        f"Проект: <b>{html.escape(project_name)}</b>\n"
+        f"{region_line}"
+        f"Территория: <b>{_telegram_number(parsed.get('site_area_ha'), 4)} га</b>\n"
+        f"ГНС: <b>{_telegram_number(summary.get('total_gns_sqm'), 0)} м²</b>\n"
+        f"Продаваемая площадь: <b>{_telegram_number(summary.get('total_saleable_sqm'), 0)} м²</b>\n"
+        f"Квартиры: <b>{_telegram_number(summary.get('apartment_saleable_sqm'), 0)} м²</b>\n"
+        f"Паркинг: <b>{_telegram_number(summary.get('parking_spaces'), 0)} м/м</b>\n"
+        f"Смена ВРИ: <b>{_telegram_money_mln(summary.get('land_rights_cost_mln'))}</b>\n"
+        f"Социальная компенсация: <b>{_telegram_money_mln(summary.get('social_compensation_mln'))}</b>\n\n"
+        "Проверьте сводку и откройте модель. Финансовые параметры можно настроить уже в DevelopAid.",
+        reply_markup=button,
+    )
+
+
+def _telegram_handle_freeform_tep(chat_id: int, text: str) -> None:
+    try:
+        parsed = build_freeform_tep(text)
+    except (ValueError, RuntimeError) as exc:
+        _telegram_send_message(
+            chat_id,
+            "<b>Не хватает исходных данных.</b>\n"
+            + html.escape(str(exc))
+            + ".\n\nПример: <code>Участок 2,4 га. Квартиры 42 000 м², коммерция 2 500 м².</code>",
+        )
+        return
+
+    _telegram_send_tep_review(chat_id, parsed, dialog_mode=False)
+
+
+def _telegram_send_tep_review(chat_id: int, parsed: dict[str, Any], *, dialog_mode: bool) -> None:
+    summary = parsed.get("summary") or {}
+    entered = set(parsed.get("entered_fields") or [])
+
+    def source_mark(key: str) -> str:
+        return "введено" if key in entered else "расчёт"
+
+    manual_session = {
+        "project_name": parsed.get("project_name") or "",
+        "site_area_ha": parsed.get("site_area_ha") or 0,
+        "source": parsed.get("source") or {},
+        "inputs": parsed.get("inputs") or {},
+        "tep": parsed.get("tep") or {},
+    }
+    keyboard = [[{
+            "text": "Подтвердить и открыть DevelopAid",
+            "web_app": {"url": _telegram_web_app_url(chat_id, [], manual_session)},
+        }]]
+    if dialog_mode:
+        keyboard.append([
+            {"text": "Изменить данные", "callback_data": "flow_edit"},
+            {"text": "Начать заново", "callback_data": "flow_restart"},
+        ])
+    button = {"inline_keyboard": keyboard}
+    provided = "\n".join("• " + html.escape(item) for item in parsed.get("provided") or [])
+    calculated = (
+        f"• совокупная ГНС проекта — {_telegram_number(summary.get('total_gns_sqm'), 0)} м²\n"
+        f"• плотность СПП — {_telegram_number(summary.get('density_spp_th_ha'), 2)} тыс. м²/га\n"
+        f"• население — {_telegram_number(summary.get('population'), 0)} чел.\n"
+        f"• квартир — {_telegram_number(summary.get('apartment_units'), 0)} шт.\n"
+        f"• подземный паркинг — {_telegram_number(summary.get('parking_spaces'), 0)} м/м "
+        f"({source_mark('parking_spaces')})\n"
+        f"• нормативная социальная потребность — "
+        f"ДОО {_telegram_number(summary.get('required_kindergarten_places'), 0)} мест; "
+        f"школа {_telegram_number(summary.get('required_school_places'), 0)} мест; "
+        f"поликлиника {_telegram_number(summary.get('required_clinic_capacity'), 0)} пос./смену\n"
+        f"• мощности, принятые в модель — "
+        f"ДОО {_telegram_number(summary.get('kindergarten_places'), 0)} мест ({source_mark('kindergarten_places')}); "
+        f"школа {_telegram_number(summary.get('school_places'), 0)} мест ({source_mark('school_places')}); "
+        f"поликлиника {_telegram_number(summary.get('clinic_capacity'), 0)} пос./смену "
+        f"({source_mark('clinic_capacity')})"
+    )
+    assumptions = parsed.get("assumptions") or []
+    assumptions_text = "\n".join("• " + html.escape(item) for item in assumptions[:8])
+    message_text = (
+        "<b>Проверьте ТЭП перед созданием проекта</b>\n\n"
+        "<b>Вы указали</b>\n" + provided + "\n\n"
+        "<b>DevelopAid рассчитал ориентировочно</b>\n" + calculated
+    )
+    if assumptions_text:
+        message_text += "\n\n<b>Допущения и ограничения</b>\n" + assumptions_text
+    message_text += "\n\nЕсли всё верно — подтвердите."
+    if dialog_mode:
+        message_text += " Для корректировки нажмите «Изменить данные»."
+    else:
+        message_text += " Любой показатель можно исправить следующим сообщением целиком."
+    _telegram_send_message(chat_id, message_text, reply_markup=button)
+
+
+
+# _DEVELOPAID_MINIMAL_CAD_PRICING_V01216
+
+def _telegram_econ_value_th(text: str) -> float:
+    """Parse a user-entered economic value and return thousand rubles."""
+    normalized = str(text or "").lower().replace("ё", "е")
+    normalized = re.sub(r"(?<=\d)[\s\u00a0\u202f](?=\d)", "", normalized)
+    match = re.search(r"[-+]?\d+(?:[.,]\d+)?", normalized)
+    if not match:
+        raise ValueError("Не вижу числа")
+    value = float(match.group(0).replace(",", "."))
+    if re.search(r"\bмлн\b", normalized):
+        value *= 1000.0
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError("Значение должно быть больше нуля")
+    return value
+
+
+_TELEGRAM_CLASS_SMR_PRESETS = {
+    "comfort": 110.0,
+    "business": 190.0,
+    "elite": 300.0,
+}
+
+
+def _telegram_cad_class_menu(chat_id: int, dialog: dict[str, Any]) -> None:
+    dialog["step"] = "choose_cad_class"
+    _telegram_dialog_save(chat_id, dialog)
+    _telegram_send_message(
+        chat_id,
+        "<b>Класс жилья / параметры экспресс-расчёта</b>\n\n"
+        "Выберите класс. Он сразу задаёт базовые цены реализации и себестоимость СМР. "
+        "Перед расчётом DevelopAid покажет все принятые параметры.\n\n"
+        "• <b>Комфорт</b> — жильё 350 тыс. ₽/м²; нежильё 350 тыс. ₽/м²; "
+        "м/м 1,5 млн ₽; СМР 110 тыс. ₽/м² ГНС.\n"
+        "• <b>Бизнес</b> — жильё 650 тыс. ₽/м²; нежильё 650 тыс. ₽/м²; "
+        "м/м 5 млн ₽; СМР 190 тыс. ₽/м² ГНС.\n"
+        "• <b>Элитный</b> — жильё 1,5 млн ₽/м²; нежильё 1,5 млн ₽/м²; "
+        "м/м 20 млн ₽; СМР 300 тыс. ₽/м² ГНС.\n\n"
+        "СМР включает общестрой, благоустройство и резервы; наружные инженерные сети учитываются отдельно.",
+        reply_markup={"inline_keyboard": [
+            [{"text": "Комфорт", "callback_data": "flow_cad_class_comfort"}],
+            [{"text": "Бизнес", "callback_data": "flow_cad_class_business"}],
+            [{"text": "Элитный", "callback_data": "flow_cad_class_elite"}],
+            [{"text": "Начать заново", "callback_data": "flow_restart"}],
+        ]},
+    )
+
+
+def _telegram_send_cad_calculate_button(chat_id: int, dialog: dict[str, Any]) -> None:
+    data = dialog.get("data") or {}
+    numbers = list(data.get("cadastral_numbers") or [])
+    if not numbers:
+        raise ValueError("Не найдены кадастровые номера текущего расчёта")
+    overrides = {
+        "project_class": str(data.get("project_class") or ""),
+        "apartment_price_th": float(data.get("apartment_price_th") or 0),
+        "commercial_price_th": float(data.get("commercial_price_th") or 0),
+        "parking_price_th": float(data.get("parking_price_th") or 0),
+        "smr_th_per_sqm": float(data.get("smr_th_per_sqm") or 0),
+    }
+    values = [
+        overrides["apartment_price_th"], overrides["commercial_price_th"],
+        overrides["parking_price_th"], overrides["smr_th_per_sqm"],
+    ]
+    if overrides["project_class"] not in _TELEGRAM_CLASS_SMR_PRESETS or min(values) <= 0:
+        raise ValueError("Не заполнены параметры выбранного класса")
+    class_label = PROJECT_CLASS_PRESETS.get(overrides["project_class"], {}).get("label") or "—"
+    prices_note = " · цены изменены вручную" if bool(data.get("prices_custom")) else ""
+    url = _telegram_web_app_url(chat_id, numbers, calc_overrides=overrides)
+    dialog["step"] = "ready_cad_calculation"
+    dialog["calc_overrides"] = overrides
+    _telegram_dialog_save(chat_id, dialog)
+    _telegram_send_message(
+        chat_id,
+        "<b>Параметры перед расчётом</b>\n\n"
+        f"Класс: <b>{html.escape(class_label)}</b>{html.escape(prices_note)}\n"
+        f"• жильё — {_telegram_number(overrides['apartment_price_th'], 0)} тыс. ₽/м²\n"
+        f"• нежильё — {_telegram_number(overrides['commercial_price_th'], 0)} тыс. ₽/м²\n"
+        f"• машино-место — {_telegram_number(overrides['parking_price_th'] / 1000, 2)} млн ₽\n"
+        f"• СМР — {_telegram_number(overrides['smr_th_per_sqm'], 0)} тыс. ₽/м² ГНС\n\n"
+        "СМР: общестрой + благоустройство + резервы; наружные инженерные сети — отдельно.\n"
+        "Остальные предпосылки — умолчания DevelopAid текущей версии: прежние правки "
+        "в мини-приложении на экспресс-расчёт не переносятся.\n\n"
+        "После подтверждения DevelopAid получит ТЭП ГлавАПУ и рассчитает проект.",
+        reply_markup={"inline_keyboard": [
+            [{"text": "Рассчитать проект", "web_app": {"url": url}}],
+            [{"text": "Изменить цены", "callback_data": "flow_cad_class_custom"}],
+            [{"text": "Выбрать другой класс", "callback_data": "flow_cad_choose_class"}],
+        ]},
+    )
+
+
+def _telegram_mo_parsed(mo: dict[str, Any]) -> dict[str, Any]:
+    """Расчёт по Подмосковью в формате карточки ТЭП бота."""
+    social = mo.get("social") or {}
+    territory = mo.get("territory") or {}
+    vri = mo.get("vri") or {}
+    tep = mo.get("tep") or {}
+    site_area_ha = float(territory.get("site_area_ha") or 0)
+    apartments = float(social.get("apartments_sqm") or 0)
+    gns = float(social.get("gns_sqm") or 0)
+    provided = [
+        f"участок — {_telegram_number(site_area_ha, 4)} га по ЕГРН",
+        f"плотность — {_telegram_number(mo.get('density_sqm_per_ha'), 0)} м² квартир на 1 га",
+        f"квартиры — {_telegram_number(apartments, 0)} м²",
+    ]
+    if territory.get("district"):
+        provided.append(f"округ — {territory['district']}")
+    assumptions = [
+        "социальная нагрузка рассчитана по нормативам РНГП Московской области",
+        f"плата за смену ВРИ — {_telegram_money_mln((vri.get('payment_used_rub') or 0) / 1_000_000)} "
+        f"({vri.get('payment_basis') or 'не определена'})",
+    ]
+    assumptions.extend(str(item) for item in (mo.get("warnings") or [])[:4])
+    return {
+        "project_name": territory.get("district") or "Проект в Подмосковье",
+        "site_area_ha": site_area_ha,
+        "source": {
+            "type": "mo_calculator",
+            "cadastral_numbers": territory.get("cadastral_numbers") or [],
+            "district": territory.get("district") or "",
+        },
+        "inputs": mo.get("inputs") or {},
+        "tep": tep,
+        "provided": provided,
+        "assumptions": assumptions,
+        "entered_fields": [],
+        "summary": {
+            "total_gns_sqm": gns,
+            "density_spp_th_ha": (gns / 1000.0 / site_area_ha) if site_area_ha else 0,
+            "population": social.get("population") or 0,
+            "apartment_units": (tep.get("apartments") or {}).get("units") or 0,
+            "parking_spaces": (social.get("parking") or {}).get("permanent_spaces") or 0,
+            "required_kindergarten_places": (social.get("kindergarten") or {}).get("required_places") or 0,
+            "required_school_places": (social.get("school") or {}).get("required_places") or 0,
+            "required_clinic_capacity": (social.get("clinic") or {}).get("required_capacity") or 0,
+            "kindergarten_places": (social.get("kindergarten") or {}).get("places") or 0,
+            "school_places": (social.get("school") or {}).get("places") or 0,
+            "clinic_capacity": (social.get("clinic") or {}).get("capacity") or 0,
+        },
+    }
+
+
+def _telegram_plural(count: int, one: str, few: str, many: str) -> str:
+    """Русское склонение по числу: 1 участок, 2 участка, 5 участков."""
+    count = abs(int(count))
+    if count % 100 // 10 == 1:
+        return many
+    last = count % 10
+    if last == 1:
+        return one
+    if 2 <= last <= 4:
+        return few
+    return many
+
+
+def _telegram_mo_sources_message(mo: dict[str, Any]) -> str:
+    """Нормативы, по которым посчитано, и предупреждения расчёта."""
+    upks = mo.get("upks") or {}
+    source = upks.get("source") or {}
+    vri = mo.get("vri") or {}
+    lines = ["<b>Исходные нормативы</b>"]
+    land = source.get("land") or {}
+    oks = source.get("oks") or {}
+    if land.get("report"):
+        lines.append(f"УПКС земли: {html.escape(str(land['report']))}")
+    if oks.get("report"):
+        lines.append(f"УПКС ОКС: {html.escape(str(oks['report']))}")
+    if vri.get("market_price_document"):
+        lines.append(
+            f"Кср: {html.escape(str(vri['market_price_document']))}"
+            + (f" · {html.escape(str(vri.get('market_price_period')))}" if vri.get("market_price_period") else "")
+        )
+    if vri.get("kd_document"):
+        lines.append(f"Кд: {html.escape(str(vri['kd_document']))}")
+
+    warnings = list(mo.get("warnings") or [])
+    for item in vri.get("warnings") or []:
+        if item not in warnings:
+            warnings.append(item)
+    if warnings:
+        lines.append("")
+        lines.append("<b>Предупреждения</b>")
+        lines.extend("• " + html.escape(str(item)) for item in warnings)
+    return "\n".join(lines)
+
+
+def _telegram_handle_mo_numbers(chat_id: int, numbers: list[str], query: str = "") -> None:
+    # В ядро уходит исходный текст пользователя: он может быть адресом или
+    # координатами, а не списком номеров, и разбирать его должно ядро.
+    request_query = _land_text(query) or ", ".join(numbers)
+    if numbers:
+        progress = f"Получил {len(numbers)} участ{_telegram_plural(len(numbers), 'ок', 'ка', 'ков')}."
+    else:
+        progress = "Получил запрос."
+    _telegram_send_message(
+        chat_id, f"{progress} Запрашиваю сведения ЕГРН и выполняю расчёт…"
+    )
+    try:
+        mo = mo_calculate_via_core(request_query, limit=_LAND_LOOKUP_MAX_RESULTS)
+    except HTTPException as exc:
+        _telegram_send_message(
+            chat_id,
+            "<b>Не удалось рассчитать участок в Подмосковье.</b>\n" + html.escape(str(exc.detail)),
+        )
+        return
+    territory = mo.get("territory") or {}
+    social = mo.get("social") or {}
+    vri = mo.get("vri") or {}
+    requested = len(numbers)
+    found = int(territory.get("parcel_count") or 0)
+    parcels = f"<b>{found}</b>" + (f" из {requested}" if requested and found != requested else "")
+    # Потерянный участок — потерянные гектары: площадь, квартиры и вся
+    # социалка занижены, и молчать об этом рядом с площадью нельзя.
+    missing_note = ""
+    if requested and found < requested:
+        missing_note = (
+            f"⚠️ <b>Без сведений ЕГРН: {requested - found} участков — площадь и весь "
+            "расчёт занижены.</b> Повторите запрос: НСПД отвечает не с первого раза. "
+            "Номера — в предупреждениях ниже.\n"
+        )
+    _telegram_send_message(
+        chat_id,
+        "<b>Участок в Московской области</b>\n"
+        f"Участков: {parcels}\n"
+        f"Площадь: <b>{_telegram_number(territory.get('site_area_ha'), 4)} га</b>\n"
+        f"{missing_note}"
+        f"Округ: <b>{html.escape(str(territory.get('district') or '—'))}</b>\n"
+        f"Кадастровый квартал: <b>{html.escape(str(territory.get('quarter') or '—'))}</b>\n\n"
+        f"Плотность: {_telegram_number(mo.get('density_sqm_per_ha'), 0)} м² квартир на 1 га\n"
+        f"Квартиры: {_telegram_number(social.get('apartments_sqm'), 0)} м²\n"
+        f"Население: {_telegram_number(social.get('population'), 0)} чел.\n\n"
+        f"<b>Социальная нагрузка</b>\n"
+        f"ДОУ: {_telegram_number((social.get('kindergarten') or {}).get('places'), 0)} мест\n"
+        f"СОШ: {_telegram_number((social.get('school') or {}).get('places'), 0)} мест\n"
+        f"Поликлиника: {_telegram_number((social.get('clinic') or {}).get('capacity'), 0)} пос./смену\n"
+        f"Машино-места: {_telegram_number((social.get('parking') or {}).get('permanent_spaces'), 0)} шт.\n\n"
+        f"Смена ВРИ: <b>{_telegram_money_mln((vri.get('payment_used_rub') or 0) / 1_000_000)}</b>\n"
+        f"Основание: {html.escape(str(vri.get('payment_basis') or '—'))}",
+    )
+    _telegram_send_message(chat_id, _telegram_mo_sources_message(mo))
+    # Картинка территории — как на сайте: контуры ЕГРН поверх карты НСПД.
+    _telegram_territory_photo_async(chat_id, numbers)
+    _telegram_send_tep_review(chat_id, _telegram_mo_parsed(mo), dialog_mode=False)
+
+
+def cadastral_route(numbers: list[str], analysis: dict[str, Any] | None) -> str:
+    """Куда считать участок: «moscow», «mo» или «error».
+
+    Кадастровый номер 50:* принадлежит не только Московской области — у Новой
+    Москвы кадастры тоже начинаются с 50. Поэтому один префикс никогда не
+    выбирает областные правила: сначала спрашиваем ГлавАПУ, и только если
+    территория не московская, уходим в областной расчёт.
+    """
+    if bool(((analysis or {}).get("territory") or {}).get("inside_moscow")):
+        return "moscow"
+    region_only = bool(numbers) and all(
+        str(number).strip().startswith(_MO_REGION_CODE + ":") for number in numbers
+    )
+    if region_only:
+        return "mo"
+    return "moscow" if analysis else "error"
+
+
+# Ручной ввод ТЭП описывает объём: «Участок 2,4 га. Квартиры 42 000 м²». Адрес
+# таких единиц не содержит, и по ним свободный текст отличается от адреса —
+# иначе описание проекта уходило бы искать в ЕГРН и ждало бы там три минуты.
+_TEP_TEXT_MARKERS = re.compile(
+    r"\d\s*(га|гa|m2|м2|м²|кв\.?\s*м|тыс|мест|шт|млн|млрд)", re.IGNORECASE
+)
+
+
+# Вопрос — не адрес. Без этой проверки «Какая цена объекта оптимальна?» уходило
+# искать участок в ЕГРН, и пользователь получал «участок не найден» вместо ответа.
+_QUESTION_MARKERS = re.compile(
+    r"\?|^\s*(как|какая|какой|какие|каков|почему|зачем|сколько|что|чем|где|когда|стоит ли|можно ли|"
+    r"объясни|посчитай|сравни|проверь|покажи|расскажи|оцени|подскажи)\b",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_question(text: str) -> bool:
+    return bool(_QUESTION_MARKERS.search(str(text or "").strip()))
+
+
+# Адрес должен выглядеть адресом. Прежнее правило считало адресом любой текст
+# из трёх букв, и реплика в диалоге — «кроме пункта 2 остальные сопоставимы по
+# другим очередям» — уходила искать участок в ЕГРН.
+_ADDRESS_WORDS = re.compile(
+    r"\b(?:город|посёлок|поселок|село|деревня|станица|хутор|микрорайон|квартал|"
+    r"улица|проспект|проезд|шоссе|бульвар|набережная|переулок|площадь|тупик|"
+    r"аллея|владение|корпус|строение|область|район|край|округ|"
+    r"москва|московская|санкт-петербург|петербург|севастополь|подмосковье|"
+    r"мкр|просп|наб|пер|пл|бул|ул|пр-т|пр-кт|б-р|р-н|обл|стр|корп|влд|вл|"
+    r"снт|днп|пгт|тер)\b",
+    re.IGNORECASE,
+)
+# Сокращения через точку: «г. Химки», «ул. Мишина», «д. 46».
+_ADDRESS_SHORTHAND = re.compile(r"(?:^|[\s,])(?:г|гор|с|д|п|ул|пр|ш|пер|пл|наб|обл|р|к|стр|вл)\.",
+                                re.IGNORECASE)
+# «Что-то, что-то, 46» — форма адреса даже без слов-указателей.
+_ADDRESS_SHAPE = re.compile(r"^[^,]+,[^,]+,\s*\d+[А-Яа-яA-Za-z/-]*\s*$")
+
+
+def _looks_like_address(text: str) -> bool:
+    value = str(text or "").strip()
+    if not value or len(value) > 300:
+        return False
+    if _TEP_TEXT_MARKERS.search(value) or _looks_like_question(value):
+        return False
+    if not re.search(r"[А-Яа-яЁёA-Za-z]{3}", value):
+        return False
+    return bool(
+        _ADDRESS_WORDS.search(value)
+        or _ADDRESS_SHORTHAND.search(value)
+        or _ADDRESS_SHAPE.match(value)
+    )
+
+
+def _telegram_handle_address(chat_id: int, query: str) -> bool:
+    """Ищет участок по адресу через ядро. Возвращает False, если ничего не нашлось."""
+    _telegram_send_message(chat_id, "Ищу участок по адресу в ЕГРН…")
+    try:
+        found = land_lookup_via_core(query, limit=_LAND_LOOKUP_MAX_RESULTS)
+    except HTTPException as exc:
+        _telegram_send_message(
+            chat_id,
+            "<b>Не удалось найти участок по адресу.</b>\n" + html.escape(str(exc.detail)),
+        )
+        return True
+    results = [item for item in (found.get("results") or []) if item.get("cadastral_number")]
+    if not results:
+        hidden = int(found.get("hidden_count") or 0)
+        note = (
+            f"\nПо этому адресу нашлись только объекты недвижимости ({hidden}), а не земельные участки."
+            if hidden else ""
+        )
+        _telegram_send_message(
+            chat_id,
+            "<b>Участок по этому адресу не найден.</b>" + note
+            + "\n\nПопробуйте уточнить адрес или пришлите кадастровый номер.",
+        )
+        return True
+
+    numbers = [str(item["cadastral_number"]) for item in results]
+    lines = [
+        f"• <code>{html.escape(str(item['cadastral_number']))}</code>"
+        + (f" · {_telegram_number(item.get('area_sqm'), 0)} м²" if item.get("area_sqm") else "")
+        + (f" · {html.escape(str(item.get('address')))}" if item.get("address") else "")
+        for item in results[:10]
+    ]
+    more = f"\n…и ещё {len(numbers) - 10}" if len(numbers) > 10 else ""
+    _telegram_send_message(
+        chat_id,
+        f"<b>Нашёл по адресу: {len(numbers)} участ{_telegram_plural(len(numbers), 'ок', 'ка', 'ков')}</b>\n"
+        + "\n".join(lines) + more + "\n\nСчитаю по ним территорию…",
+    )
+    _telegram_handle_cadastral_numbers(chat_id, numbers, ", ".join(numbers))
+    return True
+
+
+def _telegram_handle_cadastral_numbers(chat_id: int, numbers: list[str], query: str = "") -> None:
+    analysis: dict[str, Any] | None = None
+    failure = ""
+    try:
+        analysis = analyze_cadastral_territory(CadastralAnalysisRequest(cadastral_numbers=numbers))
+    except HTTPException as exc:
+        failure = str(exc.detail)
+    route = cadastral_route(numbers, analysis)
+    if route == "mo":
+        _telegram_handle_mo_numbers(chat_id, numbers, query)
+        return
+    if route == "error" or analysis is None:
+        _telegram_send_message(
+            chat_id, "<b>Не удалось сформировать территорию.</b>\n" + html.escape(failure)
+        )
+        return
+    recognized = analysis.get("recognized") or numbers
+    territory = analysis.get("territory") or {}
+    district = " · ".join(
+        str(value) for value in (
+            territory.get("administrative_district"),
+            territory.get("district"),
+        ) if value
+    ) or "—"
+    dialog = {
+        "step": "choose_cad_class",
+        "data": {
+            "cadastral_numbers": list(recognized),
+            "territory": territory,
+        },
+    }
+    _telegram_dialog_save(chat_id, dialog)
+    _telegram_send_message(
+        chat_id,
+        "<b>Территория сформирована</b>\n"
+        f"Участков: <b>{int(territory.get('parcel_count') or len(recognized))}</b>\n"
+        f"Площадь: <b>{_telegram_number(territory.get('area_ha'), 4)} га</b>\n"
+        f"Район: <b>{html.escape(district)}</b>\n"
+        f"Кадастровый квартал: <b>{html.escape(str(territory.get('cadastral_quarter') or '—'))}</b>\n\n"
+        "Кадастровый расчёт ТЭП остаётся прежним. Перед расчётом выберите класс — он задаст базовые цены и СМР.",
+    )
+    # Картинка территории — как на сайте: контуры ЕГРН поверх карты НСПД.
+    _telegram_territory_photo_async(chat_id, recognized)
+    _telegram_cad_class_menu(chat_id, dialog)
+
+
+def _telegram_handle_message(message: dict[str, Any]) -> None:
+    chat = message.get("chat") or {}
+    sender = message.get("from") or {}
+    chat_id = int(chat.get("id") or 0)
+    user_id = int(sender.get("id") or chat_id)
+    if not chat_id:
+        return
+    if str(chat.get("type") or "") != "private":
+        _telegram_send_message(chat_id, "DevelopAid работает в личном чате с ботом.")
+        return
+    text = str(message.get("text") or "").strip()
+    command = text.split(maxsplit=1)[0].split("@", 1)[0].lower() if text.startswith("/") else ""
+    if command in {"/start", "/help", "/menu"}:
+        # «/start login_<код>» — подтверждение входа на сайт: человек пришёл
+        # по ссылке со страницы, код связывается с его chat_id, и страница
+        # забирает сессию. Отвечаем по делу и не разворачиваем меню.
+        start_payload = text.split(maxsplit=1)[1].strip() if " " in text else ""
+        if command == "/start" and start_payload.startswith("login_"):
+            try:
+                _web_login_confirm(start_payload[len("login_"):], chat_id,
+                                   _telegram_sender_name(message))
+                _telegram_send_message(
+                    chat_id,
+                    "<b>Вход на сайт подтверждён.</b> Вернитесь во вкладку браузера — "
+                    "она подхватит вход сама в течение пары секунд.")
+            except HTTPException as exc:
+                _telegram_send_message(
+                    chat_id, "<b>Вход не подтверждён.</b>\n" + html.escape(str(exc.detail)))
+            except Exception as exc:
+                _telegram_send_message(
+                    chat_id, "<b>Вход не подтверждён.</b>\n" + html.escape(str(exc)))
+            return
+        # «/start <метка>» — переход по приглашению: ссылку кладут в канал, и
+        # адрес сайта человек заранее не знает. Метка приезжает в payload, и с
+        # первого нажатия известно, кто пришёл и откуда: chat_id, имя, источник.
+        # Иначе от публикации на пятьсот человек остаётся только счётчик заходов
+        # без единого имени, а спросить потом некого.
+        source = _telegram_invite_source(start_payload)
+        if source:
+            usage_track("invite", surface="bot", chat_id=chat_id, user_id=user_id,
+                        name=_telegram_sender_name(message), source=source)
+        _telegram_start_message(chat_id, user_id, source=source)
+        return
+    if command == "/status":
+        status = "подключён" if _TELEGRAM_RUNTIME.get("configured") else "запускается"
+        _telegram_send_message(
+            chat_id,
+            f"<b>DevelopAid bot:</b> {status}\nTelegram ID: <code>{user_id}</code>\nВерсия: {VERSION}",
+        )
+        return
+    if command == "/cancel":
+        _telegram_dialog_clear(chat_id)
+        _telegram_start_message(chat_id, user_id)
+        return
+    if not _telegram_user_allowed(user_id):
+        _telegram_start_message(chat_id, user_id)
+        return
+    if command == "/template":
+        _telegram_send_template(chat_id)
+        return
+    if command == "/calc":
+        _telegram_calc_menu(chat_id)
+        return
+    if command == "/cadastre":
+        _telegram_dialog_callback(chat_id, user_id, "flow_cad_yes")
+        return
+    if command == "/address":
+        _telegram_dialog_callback(chat_id, user_id, "flow_address")
+        return
+    if command == "/tep":
+        _telegram_dialog_callback(chat_id, user_id, "flow_cad_no")
+        return
+    if command in {"/model", "/plato"}:
+        _telegram_send_message(
+            chat_id,
+            "<b>Модель DevelopAid</b>\n\n"
+            "Откройте полную модель для настройки экономики, финансирования и сценариев.",
+            reply_markup={"inline_keyboard": [[{
+                "text": "Открыть модель DevelopAid",
+                "web_app": {"url": _telegram_web_app_url(chat_id, [])},
+            }]]},
+        )
+        return
+    if command == "/example":
+        _telegram_send_message(
+            chat_id,
+            "<b>Пример свободного ввода</b>\n\n"
+            "<code>Проект Северный. Участок 2,4 га. Квартиры — 42 000 м² продаваемой площади. "
+            "Коммерция — 2 500 м². Подземный паркинг — 620 мест. ДОУ — 150 мест.</code>",
+        )
+        return
+    document = message.get("document")
+    if isinstance(document, dict):
+        _telegram_handle_manual_document(chat_id, document)
+        return
+    if _telegram_handle_dialog_text(chat_id, text):
+        return
+
+    try:
+        numbers = _parse_cadastral_numbers(text)
+    except HTTPException:
+        # Адрес раньше уходил в сбор ТЭП вручную, и бот спрашивал площадь в
+        # гектарах вместо того, чтобы найти участок — хотя веб-версия ищет.
+        if _looks_like_address(text) and _telegram_handle_address(chat_id, text):
+            return
+        _telegram_handle_freeform_tep(chat_id, text)
+        return
+    _telegram_handle_cadastral_numbers(chat_id, numbers, text)
+
+
+def _telegram_handle_update(update: dict[str, Any]) -> None:
+    message = update.get("message")
+    if isinstance(message, dict):
+        _telegram_handle_message(message)
+        return
+    query = update.get("callback_query")
+    if isinstance(query, dict):
+        sender = query.get("from") or {}
+        user_id = int(sender.get("id") or 0)
+        message = query.get("message") or {}
+        chat_id = int(((message.get("chat") or {}).get("id")) or user_id)
+        query_id = str(query.get("id") or "")
+        data = str(query.get("data") or "")
+        if query_id:
+            try:
+                _telegram_api("answerCallbackQuery", {"callback_query_id": query_id})
+            except Exception:
+                pass
+        if not chat_id:
+            return
+        if not _telegram_user_allowed(user_id):
+            _telegram_start_message(chat_id, user_id)
+            return
+        if data == "tep_template":
+            _telegram_send_template(chat_id)
+            return
+        if data == "calc_menu":
+            # Второй уровень «Расчёта модели» — тот же, что у команды /calc:
+            # выбор способа живёт в одном месте, а не в двух похожих меню.
+            _telegram_calc_menu(chat_id)
+            return
+        if data == "show_help":
+            _telegram_send_message(
+                chat_id,
+                "<b>Что умеет DevelopAid</b>\n\n"
+                "Отправьте кадастровый номер, адрес или координаты — методику бот выберет сам:\n\n"
+                "• <b>Москва</b>, включая Троицкий и Новомосковский округа, — нормативные ТЭП "
+                "по калькулятору ГлавАПУ;\n"
+                "• <b>Московская область</b> — нормативы РНГП МО и плата за смену ВРИ по УПКС "
+                "и распоряжению № 114-Р;\n"
+                "• <b>другой регион</b> — сведения ЕГРН по участку, ТЭП вводится экспертно: "
+                "ответами на вопросы бота или через Excel-шаблон.\n\n"
+                "Дальше одинаково для всех: продажи, затраты, налоги, БРИДЖ, ПФ и эскроу, "
+                "прогноз ключевой ставки и сценарии, очередность с распределением общепроектных "
+                "расходов и социальной нагрузки, PDF-отчёт и выгрузка модели в Excel.\n\n"
+                "Подробная пошаговая инструкция — команда /help.",
+                reply_markup={"inline_keyboard": [[{
+                    "text": "Открыть мини-приложение DevelopAid",
+                    "web_app": {"url": _telegram_web_app_url(chat_id, [])},
+                }]]},
+            )
+            return
+        if data.startswith("flow_"):
+            _telegram_dialog_callback(chat_id, user_id, data)
+
+
+def _telegram_configure() -> None:
+    if not _telegram_token():
+        _TELEGRAM_RUNTIME.update(configured=False, last_error="TELEGRAM_BOT_TOKEN не задан")
+        return
+    errors: list[str] = []
+    try:
+        info = _telegram_api("getMe")
+        _TELEGRAM_RUNTIME["username"] = str((info or {}).get("username") or "")
+        if _telegram_webhook_enabled():
+            _telegram_api("setWebhook", {
+                "url": _TELEGRAM_PUBLIC_BASE_URL + "/telegram/webhook",
+                "secret_token": _telegram_webhook_secret(),
+                "allowed_updates": ["message", "callback_query"],
+                "drop_pending_updates": False,
+            })
+        else:
+            # Второй экземпляр с тем же токеном обязан молчать: вебхук у Telegram
+            # один на бота, и перерегистрация увела бы обновления с хоста, где
+            # бот действительно живёт. Токен здесь нужен только чтобы проверять
+            # подпись сессии мини-приложения и отправлять готовую карточку.
+            _TELEGRAM_RUNTIME["webhook_mode"] = "выключен: вебхук держит другой хост"
+        _telegram_api("setMyCommands", {"commands": TELEGRAM_BOT_COMMANDS})
+        try:
+            _telegram_api("setChatMenuButton", {
+                "menu_button": {
+                    "type": "commands",
+                }
+            })
+        except Exception as exc:
+            errors.append(str(exc))
+        _TELEGRAM_RUNTIME.update(
+            configured=True,
+            last_error="; ".join(errors),
+            configured_at=datetime.now(timezone.utc).isoformat(),
+        )
+    except Exception as exc:
+        _TELEGRAM_RUNTIME.update(configured=False, last_error=str(exc))
+
+
+@app.on_event("startup")
+def _start_telegram_configuration() -> None:
+    if _telegram_token():
+        threading.Thread(target=_telegram_configure, daemon=True).start()
+
+
+@app.get("/telegram/status")
+def telegram_status() -> dict[str, Any]:
+    allowed = _telegram_allowed_user_ids()
+    return {
+        "enabled": bool(_telegram_token()),
+        "configured": bool(_TELEGRAM_RUNTIME.get("configured")),
+        "username": _TELEGRAM_RUNTIME.get("username") or "",
+        "bot_url": (
+            "https://t.me/" + str(_TELEGRAM_RUNTIME.get("username"))
+            if _TELEGRAM_RUNTIME.get("username") else ""
+        ),
+        "webhook_url": _TELEGRAM_PUBLIC_BASE_URL + "/telegram/webhook",
+        "access_mode": "allowlist" if allowed else "open",
+        "allowed_users_count": len(allowed),
+        "configured_at": _TELEGRAM_RUNTIME.get("configured_at") or "",
+        "last_error": _TELEGRAM_RUNTIME.get("last_error") or "",
+        # Кто считает ТЭП: настоящий калькулятор или наш пересказ методики.
+        # Без этого «бот опять посчитал не то» проверяется только скриншотами.
+        "glavapu_headless": {
+            "enabled": _GLAVAPU_HEADLESS_ENABLED,
+            "runs": _GLAVAPU_HEADLESS.get("runs", 0),
+            "fallbacks": _GLAVAPU_HEADLESS.get("fallbacks", 0),
+            # Сколько раз расчёт не дождался свободного браузера: если растёт,
+            # машине мало памяти под параллельные запуски.
+            "queue_timeouts": _GLAVAPU_HEADLESS.get("waits", 0),
+            "parallel_slots": _GLAVAPU_HEADLESS_SLOTS,
+            # Секунды расчёта по шагам: «считает минуту» — это диагноз, а не
+            # жалоба, только когда видно, какой шаг эту минуту берёт.
+            "last_ms": dict(_GLAVAPU_HEADLESS.get("last_ms") or {}),
+            # Повторный расчёт того же участка обязан быть мгновенным: если
+            # попаданий нет, значит браузер поднимается там, где не должен.
+            "cache_hits": _GLAVAPU_TEP_CACHE_HITS["hits"],
+            "cache_size": len(_GLAVAPU_TEP_CACHE),
+            # Пока предохранитель взведён, расчёт идёт формулами сразу, а не
+            # после полутора минут ожидания. Причина — в last_error.
+            "blocked_for_seconds": max(0, int(_GLAVAPU_HEADLESS_BLOCKED_UNTIL["at"]
+                                              - time.monotonic())),
+            "browser_warm": bool(_GLAVAPU_BROWSER_THREAD
+                                 and _GLAVAPU_BROWSER_THREAD.is_alive()),
+            "last_ok": _GLAVAPU_HEADLESS.get("last_ok", ""),
+            "last_error": _GLAVAPU_HEADLESS.get("last_error", ""),
+        },
+        "version": VERSION,
+    }
+
+
+def _telegram_process_update(update: dict[str, Any]) -> None:
+    try:
+        _telegram_handle_update(update)
+    except Exception as exc:
+        # Причина доносится в чат вместе с местом: «попробуйте через минуту»
+        # не лечит ничего, если через минуту сломается то же самое, а логи
+        # хостинга недоступны. Здесь это работало наоборот всех прочих веток —
+        # верхний перехват оставлял себе всё, что до него долетело.
+        where = _error_location(exc)
+        _TELEGRAM_RUNTIME["last_error"] = where
+        message = update.get("message") if isinstance(update, dict) else None
+        chat_id = ((message or {}).get("chat") or {}).get("id") if isinstance(message, dict) else None
+        if chat_id:
+            try:
+                _telegram_send_message(
+                    int(chat_id),
+                    "<b>Не удалось завершить запрос.</b>\n"
+                    f"<i>{html.escape(where[:300])}</i>\n\n"
+                    "Если повторится — пришлите эту строку: в ней файл, строка и функция.",
+                )
+            except Exception:
+                pass
+
+
+@app.post("/telegram/webhook")
+async def telegram_webhook(request: Request) -> dict[str, bool]:
+    token = _telegram_token()
+    supplied = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+    if not token or not hmac.compare_digest(supplied, _telegram_webhook_secret()):
+        raise HTTPException(status_code=403, detail="Invalid Telegram webhook secret")
+    update = await request.json()
+    threading.Thread(target=_telegram_process_update, args=(update,), daemon=True).start()
+    return {"ok": True}
+
+
+@app.post("/telegram/session-data")
+def telegram_session_data(req: TelegramSessionRequest) -> dict[str, Any]:
+    session = _telegram_verify_session(req.session)
+    chat_id = int(session["chat_id"])
+    if not _telegram_user_allowed(chat_id):
+        raise HTTPException(status_code=403, detail="Доступ к боту закрыт")
+    return {
+        "cadastral_numbers": session.get("cad") or [],
+        "manual_tep": session.get("manual_tep"),
+        "calc_overrides": session.get("calc_overrides") or {},
+    }
+
+
+
+# Встроенные в PDF гарнитуры кириллицы не содержат, поэтому отчёт целиком —
+# и таблицы, и заголовки, и колонтитул — набирается подключённым TTF. Каталоги
+# различаются между дистрибутивами: у Debian это liberation, у части сборок
+# liberation2, поэтому ищем по обоим и не привязываемся к одному пути.
+_PDF_FONT_DIRS = (
+    "/usr/share/fonts/truetype/dejavu",
+    "/usr/share/fonts/truetype/liberation",
+    "/usr/share/fonts/truetype/liberation2",
+    "/usr/share/fonts/dejavu",
+)
+_PDF_REGULAR_FILES = ("DejaVuSans.ttf", "LiberationSans-Regular.ttf")
+_PDF_BOLD_FILES = ("DejaVuSans-Bold.ttf", "LiberationSans-Bold.ttf")
+
+
+def _pdf_find_font(names: tuple[str, ...]) -> str | None:
+    for name in names:
+        for directory in _PDF_FONT_DIRS:
+            candidate = Path(directory) / name
+            if candidate.is_file():
+                return str(candidate)
+    return None
+
+
+def _pdf_font_names() -> tuple[str, str]:
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    regular = _pdf_find_font(_PDF_REGULAR_FILES)
+    bold = _pdf_find_font(_PDF_BOLD_FILES)
+    if not regular or not bold:
+        raise RuntimeError(
+            "На сервере не найден шрифт с кириллицей для PDF. "
+            "Установите пакеты fontconfig и fonts-dejavu-core "
+            "(в образе они ставятся в Dockerfile) и пересоберите контейнер."
+        )
+    if "DevelopAidSans" not in pdfmetrics.getRegisteredFontNames():
+        pdfmetrics.registerFont(TTFont("DevelopAidSans", regular))
+    if "DevelopAidSansBold" not in pdfmetrics.getRegisteredFontNames():
+        pdfmetrics.registerFont(TTFont("DevelopAidSansBold", bold))
+    return "DevelopAidSans", "DevelopAidSansBold"
+
+
+def _pdf_num(value: Any, decimals: int = 1) -> str:
+    try:
+        number = float(value or 0)
+    except Exception:
+        return "—"
+    return f"{number:,.{decimals}f}".replace(",", " ").replace(".", ",")
+
+
+def _pdf_money(value: Any) -> str:
+    try:
+        number = float(value or 0)
+    except Exception:
+        return "—"
+    if abs(number) >= 1_000_000_000:
+        return _pdf_num(number / 1_000_000_000, 2) + " млрд ₽"
+    return _pdf_num(number / 1_000_000, 1) + " млн ₽"
+
+
+def _pdf_pct(value: Any) -> str:
+    try:
+        return _pdf_num(float(value or 0) * 100, 1) + "%"
+    except Exception:
+        return "—"
+
+
+def _pdf_entry_cost_rows(result: dict[str, Any],
+                         expense_structure: list[dict[str, Any]]) -> list[list[str]]:
+    """Цена входа и плата за ВРИ — из расчёта, а не из формы.
+
+    Форма не знает ни о льготе, ни о доле очереди. При стопроцентной льготе
+    отчёт печатал полную плату за смену ВРИ как расход, которого в модели нет:
+    ключевая экономика не сходилась с собственной структурой расходов ниже, и
+    оба числа выглядели достоверно.
+    """
+    purchase = 0.0
+    for group in expense_structure or []:
+        if str(group.get("label")) == "Цена приобретения":
+            purchase = float(group.get("value") or 0)
+            break
+    paid = float((result.get("capex") or {}).get("land_rights") or 0)
+    relief = float(((result.get("vri") or {}).get("totals") or {}).get("relief") or 0)
+    return [
+        ["Цена приобретения", _pdf_money(purchase)],
+        ["Смена ВРИ / земельные права",
+         _pdf_money(paid) + (f" (льгота {_pdf_money(relief)})" if relief > 0 else "")],
+    ]
+
+
+def _purchase_feasibility(
+    purchase_price_mln: Any,
+    net_profit_mln: Any,
+    llcr: Any,
+    debt_amount: Any = 0.0,
+) -> dict[str, str]:
+    """Return a short preliminary purchase-feasibility conclusion.
+
+    The conclusion uses only the current model parameters. It does not estimate
+    market value or calculate an alternative purchase price.
+    """
+    try:
+        purchase_price = float(purchase_price_mln or 0.0)
+    except (TypeError, ValueError):
+        purchase_price = 0.0
+    try:
+        net_profit = float(net_profit_mln or 0.0)
+    except (TypeError, ValueError):
+        net_profit = 0.0
+    try:
+        llcr_value = float(llcr or 0.0)
+    except (TypeError, ValueError):
+        llcr_value = 0.0
+    try:
+        debt = float(debt_amount or 0.0)
+    except (TypeError, ValueError):
+        debt = 0.0
+
+    if purchase_price <= 0:
+        return {
+            "status": "not_available",
+            "title": "Вывод не сформирован",
+            "text": "Цена покупки не указана, поэтому оценить целесообразность приобретения при текущих параметрах нельзя.",
+        }
+    if net_profit <= 0:
+        return {
+            "status": "negative",
+            "title": "Предварительно нецелесообразна",
+            "text": "При текущей цене покупки и принятых параметрах проект не формирует положительную чистую прибыль.",
+        }
+    if debt > 0 and llcr_value < 1.0:
+        return {
+            "status": "negative",
+            "title": "Предварительно нецелесообразна",
+            "text": "Проект прибылен, но денежного потока недостаточно для обслуживания расчётной долговой нагрузки: LLCR ниже 1,00x.",
+        }
+    if debt > 0 and llcr_value < 1.20:
+        return {
+            "status": "review",
+            "title": "Требует пересмотра условий покупки",
+            "text": "Проект формирует прибыль, однако LLCR ниже целевого уровня 1,20x. Следует проверить цену покупки, себестоимость, сроки и условия финансирования.",
+        }
+    if debt > 0:
+        return {
+            "status": "positive",
+            "title": "Предварительно целесообразна",
+            "text": "При текущей цене покупки проект формирует положительную чистую прибыль, а LLCR находится не ниже целевого уровня 1,20x.",
+        }
+    return {
+        "status": "positive",
+        "title": "Предварительно целесообразна",
+        "text": "При текущей цене покупки проект формирует положительную чистую прибыль; долговое финансирование не создаёт ограничений по LLCR.",
+    }
+
+
+class _PdfSection:
+    """Метка секции в потоке отчёта.
+
+    Разделы собирались в том порядке, в каком их удобно было считать, и отчёт
+    читался не как разбор проекта, а как история правок: удельные расходы
+    стройки стояли на первой странице до ТЭП, вводные — после выводов и
+    чувствительности, а графики продаж жили в блоке финансирования. Порядок
+    вычислений менять нельзя (одно опирается на другое), поэтому разделы
+    помечаются здесь, а собираются в читаемом порядке при сборке документа.
+    """
+
+    __slots__ = ("name",)
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+
+def _pdf_screening_numbers(inputs: dict[str, Any]) -> list[str]:
+    """Кадастровые номера проекта для раздела реализуемости посадки."""
+    snapshot = inputs.get("_land_lookup") or {}
+    raw = _land_text(snapshot.get("query")) or _land_text(inputs.get("cadastral_numbers"))
+    numbers = [n for n in re.split(r"[\s,;]+", raw) if n]
+    return [n for n in numbers if re.match(r"^\d{2}:\d{2}:\d{6,8}:\d+$", n)][:10]
+
+
+def _pdf_ordered_story(story: list[Any], order: list[tuple[str, bool]],
+                       page_break: Any) -> list[Any]:
+    """Поток отчёта, пересобранный по секциям.
+
+    До первой метки идёт шапка — она остаётся на месте. Разрыв страницы
+    ставится перед секцией, только если в ней что-то есть: пустая секция не
+    имеет права оставлять за собой пустую страницу.
+    """
+    head: list[Any] = []
+    sections: dict[str, list[Any]] = {}
+    current: str | None = None
+    for item in story:
+        if isinstance(item, _PdfSection):
+            current = item.name
+            sections.setdefault(current, [])
+            continue
+        (sections[current] if current is not None else head).append(item)
+    out = list(head)
+    for name, breaks_page in order:
+        block = sections.get(name) or []
+        if not block:
+            continue
+        if breaks_page and out:
+            out.append(page_break())
+        out.extend(block)
+    return out
+
+
+def _pdf_pf_step_rows(financing: dict[str, Any]) -> list[list[str]]:
+    """Ступени надбавки по покрытию эскроу — строками таблицы финансирования.
+
+    Средняя ставка без лестницы объяснима, с лестницей — нет: банк спросит,
+    почему процент такой, и ответ «в среднем 0,22%» его не устроит. Показываем
+    ступень, её ставку и сколько месяцев она действовала. Ступеней нет — нет и
+    строк: у большинства НКЛ ставка одна.
+    """
+    rows: list[list[str]] = []
+    for step in (financing.get("pf_special_steps") or []):
+        edge = str(step.get("coverage_from_pct", "")).replace(".", ",")
+        rate = str(step.get("rate_pct", "")).replace(".", ",")
+        rows.append([f"Ступень: покрытие от {edge}%",
+                     f"{rate}% · {int(step.get('months') or 0)} мес."])
+    return rows
+
+
+def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+    from reportlab.lib.units import mm
+    from reportlab.graphics.shapes import Circle, Drawing, Line, PolyLine, Polygon, Rect, String
+    from reportlab.platypus import KeepTogether, SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
+
+    regular, bold = _pdf_font_names()
+    result = payload.get("result") or {}
+    inputs = payload.get("inputs") or {}
+    summary = result.get("summary") or {}
+    report = result.get("report") or {}
+    financing = report.get("financing") or {}
+    tep_report = result.get("tep") or {}
+    products = report.get("products") or []
+    expense_structure = report.get("expense_structure") or []
+    calendar_data = report.get("calendar") or {}
+    cads = payload.get("cadastral_numbers") or []
+    source_label = str(payload.get("source_label") or "ТЭП DevelopAid")
+    scenario_key = str(payload.get("scenario") or "base")
+    scenario_label = {"conservative":"Консервативный","base":"Базовый","optimistic":"Оптимистичный"}.get(scenario_key, scenario_key or "Базовый")
+    class_key = str(inputs.get("project_class") or "")
+    class_label = PROJECT_CLASS_PRESETS.get(class_key, {}).get("label") or "Пользовательский"
+    project_name = str(payload.get("project_name") or "").strip()
+    title_scope = project_name or (", ".join(str(x) for x in cads) if cads else "Девелоперский проект")
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf,pagesize=A4,rightMargin=14*mm,leftMargin=14*mm,topMargin=14*mm,bottomMargin=15*mm,title=f"DevelopAid — {title_scope}",author="DevelopAid")
+    styles = getSampleStyleSheet()
+    normal = ParagraphStyle("normal_ru",parent=styles["BodyText"],fontName=regular,fontSize=8.8,leading=12,textColor=colors.HexColor("#222222"))
+    small = ParagraphStyle("small_ru",parent=normal,fontSize=7.4,leading=9.5,textColor=colors.HexColor("#666666"))
+    h1 = ParagraphStyle("h1_ru",parent=styles["Title"],fontName=bold,fontSize=20,leading=24,spaceAfter=5,textColor=colors.HexColor("#111111"))
+    h2 = ParagraphStyle("h2_ru",parent=styles["Heading2"],fontName=bold,fontSize=12.5,leading=16,spaceBefore=8,spaceAfter=6,textColor=colors.HexColor("#111111"))
+
+    def P(value: Any, style=normal):
+        text = str(value if value not in (None, "") else "—")
+        return Paragraph(html.escape(text).replace("\n", "<br/>"), style)
+
+    def table(rows, widths=None, header=True, font_size=8.0):
+        converted=[]
+        for r_idx,row in enumerate(rows):
+            converted.append([cell if hasattr(cell,'wrap') else P(cell, small if (header and r_idx==0) else normal) for cell in row])
+        t=Table(converted,colWidths=widths,repeatRows=1 if header else 0,hAlign='LEFT')
+        commands=[('FONTNAME',(0,0),(-1,-1),regular),('FONTSIZE',(0,0),(-1,-1),font_size),('VALIGN',(0,0),(-1,-1),'MIDDLE'),('GRID',(0,0),(-1,-1),0.35,colors.HexColor('#D8D8D8')),('LEFTPADDING',(0,0),(-1,-1),5),('RIGHTPADDING',(0,0),(-1,-1),5),('TOPPADDING',(0,0),(-1,-1),4),('BOTTOMPADDING',(0,0),(-1,-1),4)]
+        if header and rows:
+            commands += [('BACKGROUND',(0,0),(-1,0),colors.HexColor('#F1F1EF')),('FONTNAME',(0,0),(-1,0),bold)]
+        t.setStyle(TableStyle(commands));return t
+
+    def chart_month(value: Any) -> str:
+        try:
+            parsed = d(str(value)[:10])
+            return f"{parsed.month:02d}.{parsed.year}"
+        except Exception:
+            return str(value or "—")[:7]
+
+    def tornado_chart(rows: list[dict[str, Any]], base: float, digits: int) -> Drawing | None:
+        """Горизонтальные плечи от базовой линии, как на вкладке.
+
+        Плечо рисуется от базы к своему значению, поэтому случай, когда рост
+        параметра ухудшает показатель, отображается сам собой.
+        """
+        values = [base]
+        for row in rows:
+            for key in ("low_result", "high_result"):
+                if row.get(key) is not None:
+                    values.append(float(row[key]))
+        low, high = min(values), max(values)
+        if high - low < 1e-9:
+            high = low + 1.0
+        span = (high - low) * 1.08
+        low -= (high - low) * 0.04
+        width, row_h = 500, 17
+        label_width, plot = 170, 250
+        height = 14 + row_h * len(rows)
+        drawing = Drawing(width, height)
+
+        def position(value: float) -> float:
+            return label_width + (value - low) / span * plot
+
+        for index, row in enumerate(rows):
+            y = height - 14 - index * row_h
+            label = str(row.get("label") or "—")
+            if len(label) > 30:
+                label = label[:28] + "…"
+            drawing.add(String(0, y, label, fontName=regular, fontSize=7,
+                               fillColor=colors.HexColor("#333333")))
+            for key, colour in (("low_result", "#A35D00"), ("high_result", "#2D6A4F")):
+                value = row.get(key)
+                if value is None:
+                    continue
+                start = min(position(base), position(float(value)))
+                end = max(position(base), position(float(value)))
+                drawing.add(Rect(start, y - 2, max(1.0, end - start), 9,
+                                 fillColor=colors.HexColor(colour), strokeColor=None))
+            pair = [row.get("low_result"), row.get("high_result")]
+            pair = [float(v) for v in pair if v is not None]
+            if pair:
+                drawing.add(String(position(max(pair)) + 4, y, _pdf_num(max(pair), digits),
+                                   fontName=regular, fontSize=6.5,
+                                   fillColor=colors.HexColor("#777777")))
+        drawing.add(Line(position(base), 2, position(base), height - 4,
+                         strokeColor=colors.HexColor("#111111"), strokeWidth=1))
+        return drawing
+
+    def expense_bar_chart(items: list[dict[str, Any]]) -> Drawing | None:
+        ranked = [
+            {"label": str(item.get("label") or "—"), "value": float(item.get("value") or 0)}
+            for item in items if float(item.get("value") or 0) > 0
+        ]
+        ranked.sort(key=lambda item: item["value"], reverse=True)
+        if not ranked:
+            return None
+        if len(ranked) > 7:
+            ranked = ranked[:6] + [{
+                "label": "Прочие расходы",
+                "value": sum(item["value"] for item in ranked[6:]),
+            }]
+        width, row_h = 500, 20
+        height = 18 + row_h * len(ranked)
+        drawing = Drawing(width, height)
+        maximum = max(item["value"] for item in ranked) or 1.0
+        label_width, bar_width = 174, 240
+        for index, item in enumerate(ranked):
+            y = height - 18 - index * row_h
+            label = item["label"]
+            if len(label) > 31:
+                label = label[:29] + "…"
+            drawing.add(String(
+                0, y, label, fontName=regular, fontSize=7.5,
+                fillColor=colors.HexColor("#333333"),
+            ))
+            drawing.add(Rect(
+                label_width, y - 2,
+                max(1.0, bar_width * item["value"] / maximum), 9,
+                fillColor=colors.HexColor("#202020" if index == 0 else "#777777"),
+                strokeColor=None,
+            ))
+            drawing.add(String(
+                width, y, _pdf_num(item["value"] / 1_000_000_000, 2),
+                fontName=bold, fontSize=7.5, textAnchor="end",
+                fillColor=colors.HexColor("#222222"),
+            ))
+        drawing.add(String(
+            width, height - 7, "млрд ₽", fontName=regular, fontSize=6.5,
+            textAnchor="end", fillColor=colors.HexColor("#777777"),
+        ))
+        return drawing
+
+    def line_chart(
+        rows: list[dict[str, Any]],
+        series: list[dict[str, Any]],
+        unit: str,
+        height: float = 132,
+    ) -> Drawing | None:
+        if not rows:
+            return None
+        width = 500
+        left, right, bottom, top = 42, 8, 22, 22
+        plot_w, plot_h = width - left - right, height - bottom - top
+
+        values: list[float] = []
+        for row in rows:
+            for spec in series:
+                active = spec.get("active")
+                if active and not active(row):
+                    continue
+                values.append(float(row.get(spec["key"], 0.0) or 0.0) * float(spec.get("factor", 1.0)))
+        maximum = max(values or [0.0])
+        if maximum <= 0:
+            return None
+        maximum *= 1.08
+
+        drawing = Drawing(width, height)
+        x_at = lambda index: left + (plot_w * index / max(len(rows) - 1, 1))
+        y_at = lambda value: bottom + plot_h * max(0.0, value) / maximum
+
+        for tick in range(5):
+            value = maximum * tick / 4
+            y = y_at(value)
+            drawing.add(Line(left, y, width - right, y, strokeColor=colors.HexColor("#E2E2E2"), strokeWidth=0.5))
+            drawing.add(String(
+                left - 5, y - 2, _pdf_num(value, 1), fontName=regular,
+                fontSize=6.5, textAnchor="end", fillColor=colors.HexColor("#777777"),
+            ))
+
+        legend_x = left
+        for spec in series:
+            color = colors.HexColor(spec["color"])
+            drawing.add(Line(legend_x, height - 8, legend_x + 13, height - 8, strokeColor=color, strokeWidth=2.2))
+            drawing.add(String(
+                legend_x + 17, height - 11, spec["label"], fontName=regular,
+                fontSize=6.8, fillColor=colors.HexColor("#444444"),
+            ))
+            legend_x += 17 + min(105, 4.6 * len(spec["label"]))
+        drawing.add(String(
+            width - right, height - 11, unit, fontName=regular, fontSize=6.5,
+            textAnchor="end", fillColor=colors.HexColor("#777777"),
+        ))
+
+        for spec in series:
+            color = colors.HexColor(spec["color"])
+            segments: list[list[tuple[float, float]]] = []
+            current: list[tuple[float, float]] = []
+            for index, row in enumerate(rows):
+                active = spec.get("active")
+                if active and not active(row):
+                    if current:
+                        segments.append(current)
+                        current = []
+                    continue
+                value = float(row.get(spec["key"], 0.0) or 0.0) * float(spec.get("factor", 1.0))
+                current.append((x_at(index), y_at(value)))
+            if current:
+                segments.append(current)
+            for points in segments:
+                if len(points) >= 2:
+                    drawing.add(PolyLine(points, strokeColor=color, strokeWidth=2.0, fillColor=None))
+                elif points:
+                    drawing.add(Circle(points[0][0], points[0][1], 1.7, fillColor=color, strokeColor=None))
+
+        marker_indexes = sorted(set([0, len(rows) // 2, len(rows) - 1]))
+        for index in marker_indexes:
+            drawing.add(String(
+                x_at(index), 5, chart_month(rows[index].get("month")),
+                fontName=regular, fontSize=6.4, textAnchor="middle",
+                fillColor=colors.HexColor("#777777"),
+            ))
+        return drawing
+
+    def sales_bar_chart(rows: list[dict[str, Any]], height: float = 108,
+                        key: str = "sales", factor: float = 1 / 1_000_000_000,
+                        unit_label: str = "млрд ₽/мес.", digits: int = 1) -> Drawing | None:
+        if not rows:
+            return None
+        values = [max(0.0, float(row.get(key, 0.0) or 0.0) * factor) for row in rows]
+        maximum = max(values or [0.0])
+        if maximum <= 0:
+            return None
+        width = 500
+        left, right, bottom, top = 42, 8, 21, 12
+        plot_w, plot_h = width - left - right, height - bottom - top
+        maximum *= 1.08
+        drawing = Drawing(width, height)
+        for tick in range(4):
+            value = maximum * tick / 3
+            y = bottom + plot_h * value / maximum
+            drawing.add(Line(left, y, width - right, y, strokeColor=colors.HexColor("#E5E5E5"), strokeWidth=0.5))
+            drawing.add(String(
+                left - 5, y - 2, _pdf_num(value, digits), fontName=regular,
+                fontSize=6.5, textAnchor="end", fillColor=colors.HexColor("#777777"),
+            ))
+        slot = plot_w / max(len(rows), 1)
+        bar_width = max(1.0, slot * 0.72)
+        for index, value in enumerate(values):
+            if value <= 0:
+                continue
+            x = left + index * slot + (slot - bar_width) / 2
+            drawing.add(Rect(
+                x, bottom, bar_width, plot_h * value / maximum,
+                fillColor=colors.HexColor("#202020"), strokeColor=None,
+            ))
+        drawing.add(String(
+            width - right, height - 8, unit_label, fontName=regular,
+            fontSize=6.5, textAnchor="end", fillColor=colors.HexColor("#777777"),
+        ))
+        for index in sorted(set([0, len(rows) // 2, len(rows) - 1])):
+            x = left + (index + 0.5) * slot
+            drawing.add(String(
+                x, 4, chart_month(rows[index].get("month")),
+                fontName=regular, fontSize=6.4, textAnchor="middle",
+                fillColor=colors.HexColor("#777777"),
+            ))
+        return drawing
+
+    def gantt_drawings(items: list[dict[str, Any]], chunk_size: int = 18) -> list[Drawing]:
+        """Build a real calendar Gantt for the PDF report.
+
+        Bars are positioned by actual project dates. Milestones are diamonds.
+        Multi-phase projects keep separate event rows and use phase colours.
+        Long calendars are split into several repeated-axis drawings.
+        """
+        prepared: list[dict[str, Any]] = []
+        for raw in items:
+            try:
+                start = d(raw.get("start"))
+                end = d(raw.get("end") or raw.get("start"))
+            except Exception:
+                continue
+            if end < start:
+                start, end = end, start
+            item = dict(raw)
+            item["_start"] = start
+            item["_end"] = end
+            prepared.append(item)
+        if not prepared:
+            return []
+
+        first = min(item["_start"] for item in prepared)
+        last = max(item["_end"] for item in prepared)
+        q_month = ((first.month - 1) // 3) * 3 + 1
+        horizon_start = date(first.year, q_month, 1)
+        last_q_month = ((last.month - 1) // 3) * 3 + 1
+        horizon_end = add_months(date(last.year, last_q_month, 1), 3)
+        total_days = max(1, (horizon_end - horizon_start).days)
+
+        width = 500.0
+        label_width = 148.0
+        track_x = label_width
+        track_width = width - label_width
+        axis_height = 36.0
+        row_height = 19.0
+        phase_palette = ["#171717", "#A35D00", "#2D6A4F", "#4F6D7A", "#7A5C61"]
+        group_palette = {
+            "Финансирование": "#4B4B4B",
+            "Продажи": "#7B7B7B",
+            "Социальная нагрузка": "#A0A0A0",
+            "Строительство": "#202020",
+            "Подготовка": "#666666",
+            "Ключевые вехи": "#111111",
+        }
+
+        def x_at(value: date) -> float:
+            ratio = (value - horizon_start).days / total_days
+            return track_x + track_width * max(0.0, min(1.0, ratio))
+
+        chunks = [prepared[i:i + chunk_size] for i in range(0, len(prepared), chunk_size)]
+        drawings: list[Drawing] = []
+        for chunk in chunks:
+            rows: list[tuple[str, Any]] = []
+            previous_group = None
+            for item in chunk:
+                group = str(item.get("group") or "Прочее")
+                if group != previous_group:
+                    rows.append(("group", group))
+                    previous_group = group
+                rows.append(("event", item))
+
+            height = axis_height + row_height * len(rows) + 4.0
+            drawing = Drawing(width, height)
+            body_top = height - axis_height
+
+            drawing.add(Rect(0, body_top, width, axis_height, fillColor=colors.HexColor("#F6F6F4"), strokeColor=None))
+            drawing.add(Line(label_width, 0, label_width, height, strokeColor=colors.HexColor("#CFCFCF"), strokeWidth=0.6))
+            drawing.add(String(4, height - 13, "Этап / событие", fontName=bold, fontSize=7.4, fillColor=colors.HexColor("#222222")))
+
+            quarter = horizon_start
+            while quarter < horizon_end:
+                next_quarter = add_months(quarter, 3)
+                x = x_at(quarter)
+                x_next = x_at(next_quarter)
+                drawing.add(Line(x, 0, x, body_top, strokeColor=colors.HexColor("#DDDDDD"), strokeWidth=0.45))
+                drawing.add(String((x + x_next) / 2, height - 29, f"Q{((quarter.month - 1) // 3) + 1}", fontName=regular, fontSize=6.2, textAnchor="middle", fillColor=colors.HexColor("#666666")))
+                quarter = next_quarter
+            drawing.add(Line(x_at(horizon_end), 0, x_at(horizon_end), body_top, strokeColor=colors.HexColor("#DDDDDD"), strokeWidth=0.45))
+
+            for year in range(horizon_start.year, horizon_end.year + 1):
+                ys = max(horizon_start, date(year, 1, 1))
+                ye = min(horizon_end, date(year + 1, 1, 1))
+                if ye <= ys:
+                    continue
+                x1, x2 = x_at(ys), x_at(ye)
+                drawing.add(String((x1 + x2) / 2, height - 12, str(year), fontName=bold, fontSize=7.0, textAnchor="middle", fillColor=colors.HexColor("#333333")))
+                drawing.add(Line(x1, 0, x1, height, strokeColor=colors.HexColor("#B9B9B9"), strokeWidth=0.75))
+
+            for row_index, (kind, value) in enumerate(rows):
+                y = body_top - (row_index + 1) * row_height
+                drawing.add(Line(0, y, width, y, strokeColor=colors.HexColor("#E4E4E4"), strokeWidth=0.4))
+                if kind == "group":
+                    drawing.add(Rect(0, y, width, row_height, fillColor=colors.HexColor("#F1F1EF"), strokeColor=None))
+                    drawing.add(String(4, y + 6, str(value).upper(), fontName=bold, fontSize=6.5, fillColor=colors.HexColor("#666666")))
+                    continue
+
+                item = value
+                label = str(item.get("label") or "—")
+                phase_name = str(item.get("phase_name") or "").strip()
+                if phase_name and phase_name.lower() not in label.lower():
+                    label = f"{phase_name} · {label}"
+                if len(label) > 34:
+                    label = label[:32] + "…"
+                start = item["_start"]
+                end = item["_end"]
+                drawing.add(String(4, y + 9, label, fontName=regular, fontSize=6.7, fillColor=colors.HexColor("#222222")))
+                date_label = start.strftime("%m.%Y") if start == end else f"{start.strftime('%m.%Y')}—{end.strftime('%m.%Y')}"
+                drawing.add(String(4, y + 2.3, date_label, fontName=regular, fontSize=5.4, fillColor=colors.HexColor("#777777")))
+
+                phase_index = int(item.get("phase_index") or 0)
+                colour = phase_palette[min(max(phase_index - 1, 0), len(phase_palette) - 1)] if phase_index else group_palette.get(str(item.get("group") or ""), "#333333")
+                fill = colors.HexColor(colour)
+                x1 = x_at(start)
+                x2 = x_at(end + timedelta(days=1))
+                centre_y = y + row_height / 2
+                milestone = str(item.get("kind") or "") == "milestone" or start == end
+                if milestone:
+                    size = 4.1
+                    drawing.add(Polygon([x1, centre_y + size, x1 + size, centre_y, x1, centre_y - size, x1 - size, centre_y], fillColor=fill, strokeColor=None))
+                else:
+                    drawing.add(Rect(x1, centre_y - 4.0, max(2.2, x2 - x1), 8.0, fillColor=fill, strokeColor=None))
+
+            drawing.add(Line(0, 0, width, 0, strokeColor=colors.HexColor("#CFCFCF"), strokeWidth=0.6))
+            drawings.append(drawing)
+        return drawings
+
+    story=[P("DevelopAid",h1),P("Инвестиционный отчёт по девелоперскому проекту",h2),P(title_scope,ParagraphStyle("scope",parent=h2,fontSize=11,textColor=colors.HexColor('#555555')))]
+    meta=[["Дата расчёта",date.today().strftime("%d.%m.%Y")],["Источник ТЭП",source_label],["Класс жилья",class_label],["Сценарий",scenario_label]]
+    # Один расчёт — один идентификатор: у пары «PDF + книга» из одного ответа
+    # бота он совпадает, и сверка начинается с него, а не со спора о версиях.
+    meta.append(["Идентификатор расчёта",
+                 f"{_calculation_fingerprint(inputs, payload.get('tep'), payload.get('phasing'))}"
+                 f" · DevelopAid {VERSION}"])
+    if cads: meta.append(["Кадастровые номера",", ".join(str(x) for x in cads)])
+    parity_problems = [str(item) for item in (payload.get("parity_problems") or [])]
+    story += [Spacer(1,4*mm),table(meta,[45*mm,125*mm],header=False),Spacer(1,5*mm)]
+    if parity_problems:
+        story.append(P(
+            "<b>Расчёт в окне разошёлся с расчётом на сервере.</b> В отчёт взяты "
+            "числа сервера: " + "; ".join(parity_problems[:4])
+            + ". Чаще всего это старая страница в браузере — обновите её.",
+            ParagraphStyle("parity", parent=small, fontSize=8.0,
+                           textColor=colors.HexColor("#A35D00"))))
+    # Реализуемость посадки идёт ПЕРЕД финансовым выводом (архитектура,
+    # раздел «Места в интерфейсе»): сначала что мешает строить, потом деньги.
+    # Отчёт не имеет права падать из-за внешнего сервиса — раздел пропускается.
+    try:
+        screening_numbers = _pdf_screening_numbers(inputs)
+        screening = land_screening(cad=",".join(screening_numbers)) if screening_numbers else None
+    except Exception:
+        screening = None
+    if screening:
+        verdict = screening.get("verdict") or {}
+        story.append(_PdfSection("screening"))
+        story.append(P("Реализуемость посадки", h2))
+        story.append(P(verdict.get("headline", ""), ParagraphStyle(
+            "screening_head", parent=normal, fontName=bold, fontSize=9.5)))
+        rows = [["Ограничение", "Влияние", "Основание"]]
+        for parcel in screening.get("parcels") or []:
+            for finding in parcel.get("findings") or []:
+                mark = {"killer": "СТОП", "economic": "ВЛИЯЕТ"}.get(
+                    finding.get("flag_class"), "справка")
+                numbers = finding.get("reg_numbers") or (
+                    [finding.get("reg_number")] if finding.get("reg_number") else [])
+                basis = ", ".join(str(n) for n in numbers if n)
+                if finding.get("document_number"):
+                    basis = (basis + " · " if basis else "") + str(finding["document_number"])
+                share = finding.get("coverage_pct")
+                impact = str(finding.get("impact", ""))
+                if share is not None:
+                    impact = f"{impact} · накрывает ~{_pdf_num(share, 0)}% участка".strip(" ·")
+                rows.append([f"{mark} · {finding.get('name','')}", impact, basis or "—"])
+        if len(rows) > 1:
+            story.append(table(rows, [70*mm, 60*mm, 40*mm]))
+        elif verdict.get("status") == "NOT_SCREENED":
+            # Та же честность, что и на экране: не спрашивали — значит не знаем.
+            story.append(P("Ограничения не проверялись: по номеру нет сведений ЕГРН.", small))
+        else:
+            story.append(P("В НСПД ограничений на участок не обнаружено.", small))
+        if verdict.get("free_pct") is not None:
+            story.append(P(
+                f"Свободно от ограничений ~{_pdf_num(verdict['free_pct'], 0)}% площади участка "
+                "(оценка наложением границ зон на контур ЕГРН, точность порядка процента).",
+                small))
+        story.append(P(verdict.get("disclaimer", ""), small))
+        story.append(Spacer(1, 4*mm))
+    story.append(_PdfSection("summary"));story.append(P("Ключевая экономика",h2))
+    kpis=[
+        *_pdf_entry_cost_rows(result, expense_structure),
+        ["Выручка",_pdf_money(summary.get('revenue'))],["Расходы всего",_pdf_money(summary.get('total_expenses'))],["EBITDA",_pdf_money(summary.get('ebitda'))],["Чистая прибыль",_pdf_money(summary.get('net_profit'))],["Маржинальность",_pdf_pct(summary.get('margin'))],["LLCR",_pdf_num(summary.get('llcr'),2)+"x"],["Расчётный БРИДЖ",_pdf_money(financing.get('calculated_bridge'))],["Фактический пик БРИДЖ",_pdf_money(financing.get('actual_bridge'))],["Пиковая (непокрытая эскроу) задолженность ПФ",_pdf_money(financing.get('pf_uncovered_peak'))],["Проценты и комиссии",_pdf_money(financing.get('interest_and_fees'))],
+    ]
+    # Остаток ПФ на конец проекта — это несостоявшееся погашение, а не деталь
+    # финансирования: без него отчёт выглядел безупречно при непогашенном долге.
+    _ending_pf=float(financing.get('ending_pf') or 0)
+    if _ending_pf>500_000:
+        kpis.append(["Непогашенный долг ПФ на конец проекта",_pdf_money(_ending_pf)])
+    story.append(table([["Показатель","Значение"]]+kpis,[112*mm,58*mm]))
+    story.append(_PdfSection("vri"))
+    # Основание платы за ВРИ — тремя множителями формулы ГлавАПУ. Расхождение
+    # платы между двумя расчётами одного участка всегда сидит в одном из них
+    # (чаще в базовой стоимости — город индексирует её поквартально), и без
+    # расшифровки его приходилось искать перепиской со скриншотами.
+    _vri_src = (inputs.get("_glavapu_import") or {}).get("normalized") or {}
+    _vri_spp = float(_vri_src.get("spp_total_sqm") or 0)
+    _vri_rent = _vri_src.get("rent_coefficient")
+    _vri_base = _vri_src.get("vri_base_cost_rub")
+    if _vri_spp > 0 and _vri_rent and _vri_base:
+        story.append(P(
+            f"Плата за смену ВРИ — по формуле ГлавАПУ: СПП {_pdf_num(_vri_spp, 0)} м²"
+            f" × коэффициент аренды {_pdf_num(_vri_rent, 4)}"
+            f" × базовая стоимость {_pdf_num(_vri_base, 0)} ₽/м² × 1,8964."
+            " Базовую стоимость город индексирует поквартально — расчёты разных"
+            " дат по одному участку могут отличаться на величину индексации.",
+            small))
+    story.append(_PdfSection("summary"))
+    # Удельная экономика проекта была только в книге и на странице, а в отчёте
+    # её не было вовсе: решение принимают по рублю на метр, а не по миллиардам.
+    # Обе базы обязаны стоять рядом — на ГНС считают стройку, на продаваемую
+    # сравнивают с ценой продажи, и подмена одной другой ошибается вдвое.
+    unit_economics = report.get("unit_economics") or []
+    if unit_economics:
+        ue_rows = [["Показатель", "Всего", "тыс ₽/м² ГНС", "тыс ₽/м² продаваемой"]]
+        for item in unit_economics:
+            ue_rows.append([
+                str(item.get("label") or "—"),
+                _pdf_money(item.get("total")),
+                _pdf_num(item.get("per_gns_th"), 1),
+                _pdf_num(item.get("per_saleable_th"), 1),
+            ])
+        story.append(KeepTogether([
+            P("Удельная экономика проекта", h2),
+            table(ue_rows, [62*mm, 40*mm, 34*mm, 34*mm], font_size=7.6),
+            P(f"База ГНС — {_pdf_num(summary.get('project_gns_sqm'), 0)} м² всего проекта; "
+              f"база продаваемой — {_pdf_num(summary.get('monetizable_saleable_sqm'), 0)} м² "
+              "монетизируемой площади (паркинг и кладовые продаются штуками и в неё "
+              "не входят).", small),
+        ]))
+    story.append(_PdfSection("expenses_detail"))
+    # Удельные расходы стройки — детализация структуры расходов, а не свод:
+    # по ним читается себестоимость, но читать её раньше ТЭП бессмысленно.
+    construction_costs = report.get("construction_costs") or []
+    if construction_costs:
+        # «ГНС проекта» в заголовке обязателен: без него 23 тыс ₽/м² подземной
+        # части читались как ставка на подземный метр (она — 190, во вводных).
+        cc_rows = [["Статья", "млн ₽", "тыс ₽/м² ГНС проекта", "тыс ₽/м² продаваемой"]]
+        for item in construction_costs:
+            cc_rows.append([
+                str(item.get("label") or "—"),
+                _pdf_num(float(item.get("value") or 0) / 1e6, 1),
+                _pdf_num(item.get("per_gns_th"), 2),
+                _pdf_num(item.get("per_saleable_th"), 2),
+            ])
+        cc_total = sum(float(item.get("value") or 0) for item in construction_costs)
+        cc_gns = float(summary.get("project_gns_sqm") or 0)
+        cc_saleable = float(summary.get("monetizable_saleable_sqm") or 0)
+        cc_rows.append([
+            "Итого строительство",
+            _pdf_num(cc_total / 1e6, 1),
+            _pdf_num(cc_total / cc_gns / 1000 if cc_gns else 0, 2),
+            _pdf_num(cc_total / cc_saleable / 1000 if cc_saleable else 0, 2),
+        ])
+        story.append(KeepTogether([
+            P("Удельные расходы строительства", h2),
+            table(cc_rows, [70*mm, 30*mm, 35*mm, 35*mm], font_size=7.6),
+            P("Внутренние инженерные сети входят в СМР соответствующей части.", small),
+        ]))
+    story.append(_PdfSection("summary"))
+    purchase_assessment = _purchase_feasibility(
+        inputs.get("purchase_price_mln"),
+        float(summary.get("net_profit") or 0) / 1_000_000,
+        summary.get("llcr"),
+        max(
+            float(financing.get("calculated_bridge") or 0),
+            float(financing.get("pf_uncovered_peak") or 0),
+        ),
+    )
+    story.append(KeepTogether([
+        P("Оценка целесообразности покупки", h2),
+        table([
+            ["Вывод", purchase_assessment["title"]],
+            ["Основание", purchase_assessment["text"]],
+        ], [45*mm, 125*mm], header=False, font_size=8.0),
+    ]))
+    story.append(_PdfSection("tep"));story.append(P("ТЭП",h2))
+    tep_rows=[["Продукт","ГНС, м²","Продаваемая, м²","Кол-во"]]
+    for row in tep_report.get('rows') or []:
+        if not any(float(row.get(k) or 0) for k in ('gns','saleable','units')): continue
+        tep_rows.append([row.get('label') or row.get('key') or '—',_pdf_num(row.get('gns'),0),_pdf_num(row.get('saleable'),0),_pdf_num(row.get('units'),0)])
+    total=tep_report.get('total') or {}
+    tep_rows.append(["Итого",_pdf_num(total.get('gns'),0),_pdf_num(total.get('saleable'),0),_pdf_num(total.get('units'),0)])
+    story.append(table(tep_rows,[75*mm,32*mm,38*mm,25*mm]))
+
+    # Очередность меняет проект целиком — сроки, инфляцию затрат, стартовые цены
+    # и нагрузку по финансированию, — а отчёт о ней молчал: сводные цифры были,
+    # а из чего они сложились, увидеть было негде.
+    comparison = result.get("comparison") or []
+    if len(comparison) > 1:
+        story.append(_PdfSection("phases"));story.append(P("Очереди проекта",h2))
+        phase_cfg = {str(item.get("name") or ""): item for item in
+                     ((payload.get("phasing") or {}).get("phases") or [])}
+        params=[["Очередь","Сдвиг старта, мес.","Строительство, мес.","Инфляция затрат","Индексация цены"]]
+        for item in comparison:
+            cfg = phase_cfg.get(str(item.get("name") or "")) or {}
+            params.append([
+                str(item.get("name") or "—"),
+                _pdf_num(cfg.get("start_offset_months"),0) if cfg else "—",
+                _pdf_num(cfg.get("construction_months"),0) if cfg else "—",
+                _pdf_num((float(item.get("cost_inflation_factor") or 1)-1)*100,1)+"%",
+                _pdf_num((float(item.get("sales_price_inflation_factor") or 1)-1)*100,1)+"%",
+            ])
+        story.append(table(params,[30*mm,35*mm,38*mm,34*mm,33*mm],font_size=7.4))
+        story.append(P("Сравнение очередей",h2))
+        head=[["Очередь","ГНС, м²","Продаваемая, м²","Выручка","Расходы","Чистая прибыль","LLCR"]]
+        for item in comparison:
+            head.append([
+                str(item.get("name") or "—"),
+                _pdf_num(item.get("gns_sqm"),0),_pdf_num(item.get("saleable_sqm"),0),
+                _pdf_money(item.get("revenue")),_pdf_money(item.get("total_expenses")),
+                _pdf_money(item.get("net_profit")),_pdf_num(item.get("llcr"),2)+"x",
+            ])
+        head.append([
+            "Итого",_pdf_num(sum(float(i.get("gns_sqm") or 0) for i in comparison),0),
+            _pdf_num(sum(float(i.get("saleable_sqm") or 0) for i in comparison),0),
+            _pdf_money(summary.get("revenue")),_pdf_money(summary.get("total_expenses")),
+            _pdf_money(summary.get("net_profit")),_pdf_num(summary.get("llcr"),2)+"x",
+        ])
+        story.append(table(head,[22*mm,25*mm,29*mm,26*mm,26*mm,27*mm,15*mm],font_size=7.0))
+        # Кассовая и аллоцированная прибыль очереди — разные показатели с
+        # одинаковой суммой по проекту; без словаря их сравнивали лоб в лоб
+        # с книгой и читали методику как расхождение моделей.
+        allocated_parts = [
+            f"{item.get('name')}: {_pdf_money(item.get('allocated_net_profit'))}"
+            for item in comparison if item.get("allocated_net_profit") is not None]
+        if allocated_parts:
+            story.append(P(
+                "Прибыль очередей выше — кассовая, как в CF-листах Excel-книги: общие "
+                "расходы (покупка, ВРИ, соцнагрузка) стоят в очереди их оплаты. "
+                "Аллоцированная прибыль разносит их экономически: "
+                + "; ".join(allocated_parts)
+                + ". Сумма по проекту в обеих раскладках одна.", small))
+        story.append(P("Удельные показатели по очередям",h2))
+        # Итог по удельным — это отношение сумм, а не сумма отношений: у очередей
+        # разные площади, и среднее по строкам дало бы неверную величину.
+        def ratio(value_key: str, area_key: str) -> str:
+            area=sum(float(i.get(area_key) or 0) for i in comparison)
+            value=sum(float(i.get(value_key) or 0) for i in comparison)
+            return _pdf_num(value/area/1000,1) if area else "—"
+        # «Выручка на м² прод.» делит всю выручку очереди, включая паркинг и
+        # кладовые; чисто квартирная колонка — общий знаменатель с книгой:
+        # в ней та же строка, и цифры обязаны совпадать один в один.
+        def apartments_total() -> str:
+            area=sum(float(i.get("apartment_saleable_sqm") or 0) for i in comparison)
+            value=sum(float(i.get("apartment_price_th") or 0)
+                      *float(i.get("apartment_saleable_sqm") or 0) for i in comparison)
+            return _pdf_num(value/area,1) if area else "—"
+        units=[["Очередь","Выручка на м² прод.","в т.ч. квартиры","Выручка на м² ГНС","Расходы на м² прод.","Расходы на м² ГНС","Прибыль на м² прод.","Прибыль на м² ГНС"]]
+        for item in comparison:
+            units.append([
+                str(item.get("name") or "—"),
+                _pdf_num(item.get("revenue_per_saleable_th"),1),
+                _pdf_num(item.get("apartment_price_th"),1),
+                _pdf_num(item.get("revenue_per_gns_th"),1),
+                _pdf_num(item.get("expenses_per_saleable_th"),1),_pdf_num(item.get("expenses_per_gns_th"),1),
+                _pdf_num(item.get("net_profit_per_saleable_th"),1),
+                _pdf_num(item.get("net_profit_per_gns_th"),1),
+            ])
+        units.append([
+            "Итого",ratio("revenue","saleable_sqm"),apartments_total(),ratio("revenue","gns_sqm"),
+            ratio("total_expenses","saleable_sqm"),ratio("total_expenses","gns_sqm"),
+            ratio("net_profit","saleable_sqm"),ratio("net_profit","gns_sqm"),
+        ])
+        story.append(table(units,[18*mm,23*mm,21*mm,22*mm,23*mm,22*mm,21*mm,20*mm],font_size=6.6))
+        story.append(P("Значения удельных показателей — в тыс. ₽ за м². «Выручка на м² прод.» включает штучные продукты (паркинг, кладовые); «в т.ч. квартиры» — только квартиры на м² их продаваемой площади, эта же строка есть в Excel-книге. Итоговая строка считается как отношение сумм, а не как среднее по очередям.",small))
+
+    # Раздел появляется только если чувствительность считали на вкладке.
+    # Гнать полсотни расчётов внутри сборки PDF ради раздела, который никто не
+    # просил, незачем — а сборка отчёта и так идёт следом за карточкой.
+    sensitivity = payload.get("sensitivity") if isinstance(payload.get("sensitivity"), dict) else None
+    if sensitivity and (sensitivity.get("items") or []):
+        base = sensitivity.get("base") or {}
+        digits = int(base.get("digits") or 2)
+        rows = list(sensitivity["items"])[:14]
+        story.append(_PdfSection("sensitivity"))
+        story.append(P("Чувствительность проекта",h2))
+        story.append(P(
+            f"Показатель: {base.get('label') or ''} · база "
+            f"{_pdf_num(base.get('value'), digits)} {base.get('unit') or ''} · "
+            f"охват: {base.get('scope_label') or ''} · отклонение "
+            f"{_pdf_num(sensitivity.get('change_pct'), 0)}% и "
+            f"{_pdf_num(sensitivity.get('duration_change_months'), 0)} мес. для сроков. "
+            "Меняется один параметр за расчёт.", small))
+        chart = tornado_chart(rows, float(base.get("value") or 0), digits)
+        if chart:
+            story.extend([chart, Spacer(1, 3*mm)])
+        table_rows=[["Параметр","Ниже","Выше","Размах"]]
+        for row in rows:
+            table_rows.append([
+                str(row.get("label") or "—"),
+                _pdf_num(row.get("low_result"), digits),
+                _pdf_num(row.get("high_result"), digits),
+                _pdf_num(row.get("impact"), digits),
+            ])
+        story.append(table(table_rows,[92*mm,26*mm,26*mm,26*mm],font_size=7.4))
+        for line in (sensitivity.get("verdict") or []):
+            story.append(P(str(line), small))
+
+    story.append(_PdfSection("premises"));story.append(P("Цены и основные предпосылки",h2))
+    premise_rows=[["Параметр","Значение"],["Стартовая цена квартир",_pdf_num(inputs.get('apartment_price_th'),0)+" тыс. ₽/м²"],["Стартовая цена коммерции",_pdf_num(inputs.get('commercial_price_th'),0)+" тыс. ₽/м²"],["Цена подземного машино-места",_pdf_num(inputs.get('parking_price_th'),0)+" тыс. ₽/шт."],["СМР наземной части",_pdf_num(inputs.get('main_above_th_per_sqm'),0)+" тыс. ₽/м² ГНС"],["СМР подземной части",_pdf_num(inputs.get('main_under_th_per_sqm'),0)+" тыс. ₽/м² ГНС"],["Наружные инженерные сети",_pdf_num(inputs.get('utilities_th_per_sqm'),1)+" тыс. ₽/м² ГНС"],["Доля продаж до РВЭ",_pdf_num(inputs.get('share_before_rve_pct'),1)+"%"],["Налог на прибыль",_pdf_num(inputs.get('profit_tax_pct'),1)+"%"]]
+    story.append(table(premise_rows,[105*mm,65*mm]))
+    story.append(_PdfSection("expenses"));story.append(P("Структура расходов",h2))
+    expense_chart=expense_bar_chart(expense_structure)
+    if expense_chart:
+        story.extend([expense_chart,Spacer(1,2*mm)])
+    # Рубль на метр — в обеих базах, как во всех удельных отчёта: именно по
+    # этим статьям спорят с подрядчиком и с банком, а в долях процента спор
+    # не ведут.
+    expense_rows=[["Статья","Сумма","Доля","тыс ₽/м² ГНС","тыс ₽/м² продаваемой"]]
+    total_expense=sum(float(item.get('value') or 0) for item in expense_structure) or float(summary.get('total_expenses') or 0)
+    _exp_gns=float(summary.get('project_gns_sqm') or 0)
+    _exp_saleable=float(summary.get('monetizable_saleable_sqm') or 0)
+    for item in expense_structure:
+        value=float(item.get('value') or 0)
+        if value<=0: continue
+        # Удельные берутся из расчёта, без запасного счёта на месте. Запасной
+        # счёт здесь уже стоил дорого: свод по очередям приходил без удельных,
+        # печать досчитывала их сама и выглядела безупречно, а страница
+        # показывала нули во всех строках. Одна поверхность прикрывала ошибку
+        # другой, и найти её удалось только глазами.
+        expense_rows.append([item.get('label') or '—',_pdf_money(value),
+                             (_pdf_num(value/total_expense*100,1)+'%') if total_expense else '—',
+                             _pdf_num(item.get('per_gns_th') or 0,1),
+                             _pdf_num(item.get('per_saleable_th') or 0,1)])
+    expense_rows.append(["Итого расходы",_pdf_money(total_expense),"100,0%" if total_expense else "—",
+                         _pdf_num(total_expense/_exp_gns/1000 if _exp_gns else 0,1),
+                         _pdf_num(total_expense/_exp_saleable/1000 if _exp_saleable else 0,1)])
+    story.append(table(expense_rows,[62*mm,32*mm,20*mm,28*mm,28*mm],font_size=7.4))
+    story.append(_PdfSection("income"));story.append(P("Продажи и продукты",h2))
+    product_rows=[["Продукт","Объём","Темп до РВЭ","Стартовая цена","Средняя цена","Выручка"]]
+    for item in products:
+        quantity=float(item.get('quantity') or 0);revenue=float(item.get('revenue') or 0)
+        if quantity<=0 and revenue<=0: continue
+        unit=item.get('unit') or ''
+        pace=item.get('pace_pre')
+        product_rows.append([item.get('label') or '—',_pdf_num(quantity,0)+(' '+unit if unit else ''),
+                             (_pdf_num(pace,0)+' '+unit+'/мес') if pace else '—',
+                             _pdf_num(item.get('start_price_th'),0)+" тыс. ₽",_pdf_num(item.get('avg_price_th'),0)+" тыс. ₽",_pdf_money(revenue)])
+    story.append(table(product_rows,[45*mm,26*mm,28*mm,26*mm,26*mm,29*mm],font_size=7.4))
+    # Квартиры продаются штуками. «40 квартир в месяц» проверяется отделом
+    # продаж и рынком, «2 400 м² в месяц» — нет, а в отчёте был только метр.
+    apartment_sales = report.get("apartment_sales") or {}
+    if float(apartment_sales.get("units_total") or 0) > 0:
+        story.append(KeepTogether([
+            P("Темп продаж квартир", h2),
+            table([
+                ["Показатель", "Значение"],
+                ["Квартир в проекте", _pdf_num(apartment_sales.get("units_total"), 0) + " шт."],
+                ["Средняя площадь квартиры", _pdf_num(apartment_sales.get("avg_unit_sqm"), 1) + " м²"],
+                ["Средняя цена квартиры", _pdf_money(float(apartment_sales.get("avg_unit_price_mln") or 0) * 1e6)],
+                ["Темп до РВЭ", _pdf_num(apartment_sales.get("pace_pre_rve_units"), 1) + " кв./мес."],
+                ["Средний темп за весь период продаж", _pdf_num(apartment_sales.get("pace_units"), 1) + " кв./мес."],
+                ["Пиковый месяц", _pdf_num(apartment_sales.get("peak_units"), 1) + " кв."],
+                ["Длительность продаж", _pdf_num(apartment_sales.get("months"), 0) + " мес."],
+            ], [112*mm, 58*mm], font_size=7.6),
+            P("Штуки пересчитаны из помесячных продаж по средней площади квартиры "
+              "из ТЭП: изменится нарезка — изменится и темп.", small),
+        ]))
+    story.append(_PdfSection("financing"));story.append(P("Финансирование и динамика проекта",h2))
+    finance_rows=[["Показатель","Значение"],["Расчётный БРИДЖ",_pdf_money(financing.get('calculated_bridge'))],["Пиковый фактический БРИДЖ (тело долга)",_pdf_money(financing.get('actual_bridge'))],["Собственные средства до ПФ",_pdf_money(financing.get('own_funds'))],["Пик БРИДЖ с капитализацией процентов (справочно)",_pdf_money(financing.get('bridge_peak_capitalized') or financing.get('actual_bridge'))],["Пиковая (непокрытая эскроу) задолженность ПФ",_pdf_money(financing.get('pf_uncovered_peak'))],["Лимит ПФ",_pdf_money(financing.get('pf_limit'))],["Текущая ключевая ставка",_pdf_pct(financing.get('current_key_rate'))],["Спред БРИДЖ",_pdf_pct(financing.get('bridge_spread'))],["Ставка БРИДЖ на текущей ключевой",_pdf_pct(financing.get('current_bridge_rate'))],["Средняя ключевая за период БРИДЖ",_pdf_pct(financing.get('avg_bridge_key_rate'))],["Средневзвешенная ставка БРИДЖ за период",_pdf_pct(financing.get('avg_bridge_rate'))],["Средняя фактическая ставка ПФ",_pdf_pct(financing.get('avg_pf_effective_rate'))],*_pdf_pf_step_rows(financing),["Проценты и комиссии",_pdf_money(financing.get('interest_and_fees'))],["Непогашенный долг ПФ на конец проекта",_pdf_money(financing.get('ending_pf'))],["LLCR",_pdf_num(summary.get('llcr'),2)+"x"]]
+    story.append(table(finance_rows,[112*mm,58*mm],font_size=7.6))
+
+    # Restore the bridge-purpose disclosure that exists in the web report.
+    # VRI is deliberately absent: it is funded directly by PF at RnS/permit.
+    bridge_total = float(financing.get("calculated_bridge") or 0.0)
+    capex_data = result.get("capex") or {}
+    # Режим «строительство и компенсация» PDF не знал: денежная часть падала
+    # в ноль и молча уезжала в «приобретение проекта», а сайт в той же строке
+    # показывал её отдельно. Два достоверных на вид отчёта с разными числами —
+    # ровно то, что правило «поверхности считают одинаково» запрещает.
+    social_mode_now = str(summary.get("social_payment_mode") or "")
+    social_construction = sum(
+        float(value or 0.0) * 1_000_000
+        for value in ((summary.get("social_payment_breakdown") or {}).get("construction") or {}).values()
+    )
+    if social_mode_now == "Денежная компенсация":
+        bridge_social = float(capex_data.get("social") or 0.0)
+    elif social_mode_now == SOCIAL_MODE_BOTH:
+        bridge_social = max(0.0, float(summary.get("social_payment") or 0.0) - social_construction)
+    else:
+        bridge_social = 0.0
+    bridge_design_p = float(capex_data.get("design_p") or 0.0)
+    bridge_design_rd = float(capex_data.get("design_rd") or 0.0)
+    bridge_purchase = max(
+        0.0,
+        bridge_total - bridge_social - bridge_design_p - bridge_design_rd,
+    )
+    bridge_uses = [
+        ("Приобретение проекта", bridge_purchase),
+        ("Социальная компенсация", bridge_social),
+        ("Проектирование - стадия П", bridge_design_p),
+        ("Проектирование - стадия РД", bridge_design_rd),
+    ]
+    bridge_uses = [(label, value) for label, value in bridge_uses if value > 0.5]
+    bridge_rows = [["Цель", "Сумма", "Доля"]]
+    for label, value in bridge_uses:
+        share = _pdf_num(value / bridge_total * 100, 1) + "%" if bridge_total else "—"
+        bridge_rows.append([label, _pdf_money(value), share])
+    bridge_rows.append([
+        "ИТОГО БРИДЖ",
+        _pdf_money(bridge_total),
+        "100,0%" if bridge_total else "—",
+    ])
+    story.append(KeepTogether([
+        P("Структура расчётного БРИДЖА", h2),
+        table(bridge_rows, [98*mm, 45*mm, 27*mm], font_size=8.0),
+    ]))
+
+    # Фактический пик — по статьям, оплаченным к его месяцу. Без этой таблицы
+    # разница между лимитом методики и реальной потребностью («остальное
+    # вашими») читалась только глазами по структуре расходов.
+    actual_structure = list(financing.get("actual_bridge_structure") or [])
+    if actual_structure:
+        actual_peak = float(financing.get("actual_bridge") or 0)
+        actual_rows = [["Статья", "Оплачено к пику", "Доля"]]
+        for item in actual_structure:
+            value = float(item.get("value") or 0)
+            actual_rows.append([
+                str(item.get("label") or "—"), _pdf_money(value),
+                _pdf_num(float(item.get("share") or 0) * 100, 1) + "%",
+            ])
+        actual_rows.append(["ПИК БРИДЖА", _pdf_money(actual_peak),
+                            "100,0%" if actual_peak else "—"])
+        month = str(financing.get("actual_bridge_month") or "")
+        story.append(KeepTogether([
+            P("Структура фактического БРИДЖА"
+              + (f" · {'.'.join(reversed(month.split('-')))}" if month else ""), h2),
+            table(actual_rows, [98*mm, 45*mm, 27*mm], font_size=8.0),
+            P("Оплачено к месяцу пика. До открытия ПФ у проекта нет ни выручки, ни ПФ, "
+              "поэтому остаток БРИДЖа равен оплаченному; разница с расчётным лимитом — "
+              "расходы, под которые лимит не даётся.", small),
+        ]))
+
+    timeline_rows=list((result.get("finance") or {}).get("rows") or [])
+    debt_chart=line_chart(
+        timeline_rows,
+        [
+            {"label":"БРИДЖ","key":"bridge_balance","factor":1/1_000_000_000,"color":"#171717","active":lambda row:float(row.get("bridge_balance",0) or 0)>0},
+            {"label":"ПФ","key":"pf_balance","factor":1/1_000_000_000,"color":"#A35D00","active":lambda row:float(row.get("pf_balance",0) or 0)>0},
+            {"label":"Эскроу","key":"escrow","factor":1/1_000_000_000,"color":"#2D6A4F","active":lambda row:float(row.get("escrow",0) or 0)>0},
+        ],
+        "млрд ₽",
+        height=128,
+    )
+    if debt_chart:
+        story.append(KeepTogether([P("Долг и наполнение эскроу",h2),debt_chart]))
+
+    rate_chart=line_chart(
+        timeline_rows,
+        [
+            {"label":"Ключевая ставка","key":"key_rate","factor":100,"color":"#777777"},
+            {"label":"БРИДЖ","key":"bridge_rate","factor":100,"color":"#171717","active":lambda row:float(row.get("bridge_balance",0) or 0)>0},
+            {"label":"Фактическая ПФ","key":"pf_rate","factor":100,"color":"#A35D00","active":lambda row:float(row.get("pf_balance",0) or 0)>0},
+        ],
+        "%",
+        height=128,
+    )
+    if rate_chart:
+        story.append(KeepTogether([P("Ставки финансирования",h2),rate_chart]))
+
+    story.append(_PdfSection("income"))
+    pace_chart=sales_bar_chart(timeline_rows,height=104)
+    if pace_chart:
+        story.append(KeepTogether([P("Месячный темп продаж",h2),pace_chart]))
+
+    # Тот же темп в штуках квартир: денежный график прячет и рост цены, и
+    # изменение нарезки — по нему не видно, сколько квартир уходит в месяц.
+    apartment_pace_rows = (report.get("apartment_sales") or {}).get("rows") or []
+    units_chart=sales_bar_chart(apartment_pace_rows,height=104,key="units",
+                                factor=1.0,unit_label="квартир/мес.",digits=0)
+    if units_chart:
+        story.append(KeepTogether([P("Месячный темп продаж квартир, шт.",h2),units_chart]))
+
+    story.append(_PdfSection("calendar"))
+    events=calendar_data.get('events') or []
+    if events:
+        gantt_pages=gantt_drawings(events)
+        for page_index,gantt in enumerate(gantt_pages):
+            story.append(PageBreak())
+            story.append(P("Календарный план проекта" if page_index==0 else "Календарный план проекта · продолжение",h2))
+            story.append(gantt)
+        story.append(Spacer(1,2*mm))
+        story.append(P("Полосы построены по фактическим датам модели; ромбами отмечены ключевые вехи. При включённой очередности этапы каждой очереди показаны отдельными строками.",small))
+    story.append(_PdfSection("footer"))
+    story.extend([Spacer(1,4*mm),P("Отчёт сформирован автоматически DevelopAid на основании текущих вводных модели. Перед инвестиционным решением требуется проверка исходных данных, юридических предпосылок и условий кредитования.",small)])
+
+    def footer(canvas,doc_obj):
+        canvas.saveState();canvas.setFont(regular,7);canvas.setFillColor(colors.HexColor('#777777'));canvas.drawString(14*mm,8*mm,'DevelopAid · Девелоперская инвестиционная модель');canvas.drawRightString(A4[0]-14*mm,8*mm,f'Стр. {doc_obj.page}');canvas.restoreState()
+    # Разбор проекта, а не история правок: что за участок → что на нём выходит
+    # → на чём считали → сколько стоит → сколько приносит → чем финансируется
+    # → чем рискуем → когда.
+    story = _pdf_ordered_story(story, [
+        ("tep", False), ("vri", False), ("screening", True), ("summary", False),
+        ("phases", True), ("premises", True),
+        ("expenses", False), ("expenses_detail", False),
+        ("income", True), ("financing", True), ("sensitivity", True),
+        ("calendar", False), ("footer", False),
+    ], PageBreak)
+    doc.build(story,onFirstPage=footer,onLaterPages=footer)
+    return buf.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# Состав выгружаемой модели
+# ---------------------------------------------------------------------------
+
+_MODEL_FINANCE_COLUMNS: list[tuple[str, str, str]] = [
+    ("sales", "Продажи (поступления)", "mln"),
+    ("project_costs", "Расходы проекта", "mln"),
+    ("key_rate", "Ключевая ставка", "pct"),
+    ("bridge_rate", "Ставка БРИДЖ", "pct"),
+    ("bridge_draw", "Выборка БРИДЖ", "mln"),
+    ("bridge_balance", "Остаток БРИДЖ", "mln"),
+    ("bridge_interest", "Проценты БРИДЖ", "mln"),
+    ("bridge_capitalization", "Капитализация БРИДЖ", "mln"),
+    ("pf_draw", "Выборка ПФ", "mln"),
+    ("pf_repayment", "Погашение ПФ", "mln"),
+    ("pf_balance", "Остаток ПФ", "mln"),
+    ("escrow", "Эскроу", "mln"),
+    ("escrow_release", "Раскрытие эскроу", "mln"),
+    ("coverage", "Покрытие эскроу, ×", "num"),
+    ("pf_rate", "Ставка ПФ", "pct"),
+    ("pf_interest", "Проценты ПФ", "mln"),
+    ("pf_interest_capitalization", "Капитализация процентов ПФ", "mln"),
+    ("limit_fee", "Плата за лимит", "mln"),
+    ("interest_payment", "Выплата процентов", "mln"),
+    ("taxable_margin", "Налоговая маржа", "mln"),
+    ("financing_tax_deduction", "Вычет по финансированию", "mln"),
+    ("taxable_profit_cumulative", "Накопленная база налога", "mln"),
+    ("profit_tax", "Налог на прибыль", "mln"),
+]
+
+# Суммировать по месяцам можно только потоки; остатки и ставки — нет.
+_MODEL_FINANCE_SUMMABLE = {
+    "sales", "project_costs", "bridge_draw", "bridge_interest", "bridge_capitalization",
+    "pf_draw", "pf_repayment", "escrow_release", "pf_interest", "pf_interest_capitalization",
+    "limit_fee", "interest_payment", "taxable_margin", "financing_tax_deduction", "profit_tax",
+}
+
+_MODEL_CAPEX_LABELS: list[tuple[str, str]] = [
+    ("land_rights", "Земельные правоотношения / смена ВРИ"),
+    ("vri_security", "Обеспечение обязательства по ВРИ"),
+    ("vri_interest", "Проценты по рассрочке ВРИ"),
+    ("ird", "ИРД и согласования"),
+    ("design_p", "Проектирование, стадия П"),
+    ("design_rd", "Проектирование, стадия РД"),
+    ("author_supervision", "Авторский надзор"),
+    ("technical_supervision", "Технический заказчик / стройконтроль"),
+    ("preparation", "Подготовительные работы"),
+    ("main_above", "Основное строительство, наземная часть"),
+    ("main_under", "Основное строительство, подземная часть"),
+    ("utilities", "Наружные инженерные сети"),
+    ("landscaping", "Благоустройство"),
+    ("commissioning", "Сдача и ввод"),
+    ("site_maintenance", "Содержание стройплощадки"),
+    ("offices", "МФОЦ / офисы"),
+    ("standalone_retail", "ТЦ / коммерция ОСЗ"),
+    ("above_parking", "Наземный паркинг"),
+    ("social", "Социальная нагрузка"),
+    ("project_management", "Управление проектом"),
+    ("gc_fee", "Вознаграждение генподрядчика"),
+    ("reserve", "Резерв"),
+]
+
+_MODEL_SUMMARY_ROWS: list[tuple[str, str, str]] = [
+    ("revenue", "Выручка", "mln"),
+    ("capex", "CAPEX", "mln"),
+    ("commercial_costs", "Коммерческие расходы", "mln"),
+    ("total_expenses", "Расходы всего", "mln"),
+    ("ebitda", "EBITDA", "mln"),
+    ("financing_cost", "Стоимость финансирования", "mln"),
+    ("profit_before_tax", "Прибыль до налога", "mln"),
+    ("profit_tax", "Налог на прибыль", "mln"),
+    ("vat", "НДС", "mln"),
+    ("net_profit", "Чистая прибыль", "mln"),
+    ("margin", "Маржинальность", "pct"),
+    ("llcr", "LLCR", "num"),
+    ("npv", "NPV", "mln"),
+    ("irr_equity", "IRR собственного капитала", "pct"),
+    ("full_project_cost", "Полная стоимость проекта", "mln"),
+    ("project_gns_sqm", "ГНС проекта, м²", "int"),
+    ("monetizable_saleable_sqm", "Продаваемая площадь, м²", "int"),
+    ("full_cost_per_saleable_th", "Полная себестоимость, тыс. ₽/м² продаж", "num"),
+    ("construction_cost_per_gns_th", "Строительство, тыс. ₽/м² ГНС", "num"),
+]
+
+_MODEL_FINANCE_SUMMARY_ROWS: list[tuple[str, str, str]] = [
+    ("calculated_bridge_limit", "Расчётный лимит БРИДЖ", "mln"),
+    ("peak_bridge", "Пиковая задолженность БРИДЖ", "mln"),
+    ("bridge_interest", "Проценты БРИДЖ", "mln"),
+    ("avg_bridge_rate", "Средняя ставка БРИДЖ", "pct"),
+    ("pf_limit", "Лимит ПФ", "mln"),
+    ("pf_limit_required", "Требуется лимита ПФ по расчёту", "mln"),
+    ("pf_shortfall", "Непокрытая потребность в ПФ", "mln"),
+    ("peak_pf", "Пиковая задолженность ПФ", "mln"),
+    ("peak_uncovered_pf", "Пиковая непокрытая эскроу задолженность ПФ", "mln"),
+    ("pf_interest", "Проценты ПФ", "mln"),
+    ("pf_limit_fee", "Плата за лимит ПФ", "mln"),
+    ("avg_pf_base_rate", "Средняя ставка ПФ без эффекта эскроу", "pct"),
+    ("avg_pf_effective_rate", "Средняя фактическая ставка ПФ с учётом эскроу", "pct"),
+    ("financing_cost", "Стоимость финансирования всего", "mln"),
+    ("llcr", "LLCR", "num"),
+]
+
+
+def _model_value_cell(value: Any, kind: str) -> _XlsxCell:
+    if kind == "mln":
+        return _cell_mln(value)
+    if kind == "pct":
+        number = _land_float(value)
+        return _XlsxCell(number, _XLSX_STYLE_PCT) if number is not None else _cell_text("")
+    if kind == "int":
+        return _cell_num(value, _XLSX_STYLE_INT)
+    return _cell_num(value)
+
+
+def _model_sheet_summary(result: dict[str, Any], meta: dict[str, Any]) -> dict[str, Any]:
+    summary = result.get("summary") or {}
+    finance = result.get("finance") or {}
+    dates = result.get("dates") or {}
+    rows: list[list[_XlsxCell]] = [
+        [_cell_text("DevelopAid · инвестиционная модель проекта", _XLSX_STYLE_TITLE)],
+        [_cell_text(str(meta.get("title") or "Расчёт"), _XLSX_STYLE_BOLD)],
+        [_cell_text("Выгружено"), _cell_text(date.today().isoformat())],
+        [_cell_text("Сценарий"), _cell_text(str(meta.get("scenario") or "base"))],
+        [_cell_text("Все денежные показатели — млн ₽, если не указано иное")],
+        [],
+        [_cell_text("Ключевые даты", _XLSX_STYLE_BOLD)],
+        *[
+            [_cell_text(label), _cell_text(dates.get(key) or "—")]
+            for key, label in (
+                ("project_start", "Начало проекта"),
+                ("permit", "РнС"),
+                ("sales_start", "Старт продаж"),
+                ("rve", "РВЭ"),
+            )
+        ],
+        [],
+        [_cell_text("Экономика проекта", _XLSX_STYLE_BOLD)],
+        _header_row(["Показатель", "Значение"]),
+    ]
+    for key, label, kind in _MODEL_SUMMARY_ROWS:
+        source = summary if key in summary else finance
+        rows.append([_cell_text(label), _model_value_cell(source.get(key), kind)])
+    rows.extend([
+        [],
+        [_cell_text("Финансирование", _XLSX_STYLE_BOLD)],
+        _header_row(["Показатель", "Значение"]),
+    ])
+    for key, label, kind in _MODEL_FINANCE_SUMMARY_ROWS:
+        rows.append([_cell_text(label), _model_value_cell(finance.get(key), kind)])
+    return {"name": "Сводка", "rows": rows, "widths": [52, 20], "freeze": ""}
+
+
+def _model_sheet_inputs(inputs: dict[str, Any]) -> dict[str, Any]:
+    rows: list[list[_XlsxCell]] = [
+        [_cell_text("Вводные модели", _XLSX_STYLE_TITLE)],
+        [_cell_text("Значения соответствуют вкладке «Вводные». Ключ нужен для переноса обратно в модель.")],
+        [],
+        _header_row(["Раздел", "Показатель", "Значение", "Ед. изм.", "Ключ"]),
+    ]
+    for group_name, fields in FIELD_GROUPS:
+        for field in fields:
+            key, label, unit, kind = field[0], field[1], field[2], field[3]
+            options = dict(field[4]) if len(field) > 4 else {}
+            value = inputs.get(key)
+            if kind == "number":
+                value_cell = _cell_num(value)
+            elif kind == "checkbox":
+                value_cell = _cell_text("Да" if value else "Нет")
+            elif options:
+                value_cell = _cell_text(options.get(str(value or ""), value))
+            else:
+                value_cell = _cell_text(value)
+            rows.append([
+                _cell_text(group_name), _cell_text(label), value_cell,
+                _cell_text(unit), _cell_text(key),
+            ])
+    extra = [key for key in sorted(inputs) if key.startswith("_")]
+    if extra:
+        rows.extend([[], [_cell_text("Служебные поля проекта", _XLSX_STYLE_BOLD)]])
+        for key in extra:
+            rows.append([_cell_text(""), _cell_text(key), _cell_text(json.dumps(
+                inputs.get(key), ensure_ascii=False, default=str)[:400])])
+    return {"name": "Вводные", "rows": rows, "widths": [26, 46, 16, 16, 28], "freeze": "A5", "split_y": 4}
+
+
+def _model_sheet_tep(result: dict[str, Any]) -> dict[str, Any]:
+    tep = result.get("tep") or {}
+    header = ["Продукт", "ГНС, м²", "Общая площадь, м²", "Полезная, м²", "Продаваемая, м²", "Передаётся, м²", "Единицы"]
+    rows: list[list[_XlsxCell]] = [
+        [_cell_text("ТЭП проекта", _XLSX_STYLE_TITLE)],
+        [],
+        _header_row(header),
+    ]
+    first_data_row = len(rows) + 1
+    for item in tep.get("rows") or []:
+        rows.append([
+            _cell_text(item.get("label")),
+            _cell_num(item.get("gns"), _XLSX_STYLE_INT),
+            _cell_num(item.get("total_area"), _XLSX_STYLE_INT),
+            _cell_num(item.get("useful"), _XLSX_STYLE_INT),
+            _cell_num(item.get("saleable"), _XLSX_STYLE_INT),
+            _cell_num(item.get("transfer"), _XLSX_STYLE_INT),
+            _cell_num(item.get("units"), _XLSX_STYLE_INT),
+        ])
+    last_data_row = len(rows)
+    total = tep.get("total") or {}
+    total_row: list[_XlsxCell] = [_cell_text("Итого", _XLSX_STYLE_BOLD)]
+    for offset, key in enumerate(("gns", "total_area", "useful", "saleable", "transfer", "units"), start=1):
+        column = _xlsx_column_name(offset)
+        total_row.append(_cell_formula(
+            _sum_formula(column, first_data_row, last_data_row),
+            total.get(key),
+            _XLSX_STYLE_TOTAL_INT,
+        ))
+    rows.append(total_row)
+    return {"name": "ТЭП", "rows": rows, "widths": [30] + [18] * 6, "freeze": "A4", "split_y": 3}
+
+
+def _model_sheet_revenue(result: dict[str, Any]) -> dict[str, Any]:
+    report = result.get("report") or {}
+    rows: list[list[_XlsxCell]] = [
+        [_cell_text("Выручка по продуктам", _XLSX_STYLE_TITLE)],
+        [],
+        _header_row([
+            "Продукт", "Ед. изм.", "Количество", "Стартовая цена, тыс. ₽",
+            "Средняя цена, тыс. ₽", "Выручка, млн ₽",
+        ]),
+    ]
+    first_data_row = len(rows) + 1
+    for item in report.get("products") or []:
+        rows.append([
+            _cell_text(item.get("label")),
+            _cell_text(item.get("unit")),
+            _cell_num(item.get("quantity"), _XLSX_STYLE_INT),
+            _cell_num(item.get("start_price_th")),
+            _cell_num(item.get("avg_price_th")),
+            _cell_mln(item.get("revenue")),
+        ])
+    last_data_row = len(rows)
+    revenue_total = (result.get("revenue") or {}).get("total")
+    rows.append([
+        _cell_text("Итого", _XLSX_STYLE_BOLD), _cell_text(""), _cell_text(""), _cell_text(""), _cell_text(""),
+        _cell_formula(
+            _sum_formula("F", first_data_row, last_data_row),
+            (_land_float(revenue_total) or 0.0) / 1_000_000.0,
+        ),
+    ])
+    unit_economics = report.get("unit_economics") or []
+    if unit_economics:
+        rows.extend([
+            [], [_cell_text("Юнит-экономика", _XLSX_STYLE_BOLD)],
+            _header_row(["Показатель", "Всего, млн ₽", "На м² ГНС, тыс. ₽", "На м² продаж, тыс. ₽"]),
+        ])
+        for item in unit_economics:
+            rows.append([
+                _cell_text(item.get("label")),
+                _cell_mln(item.get("total")),
+                _cell_num(item.get("per_gns_th")),
+                _cell_num(item.get("per_saleable_th")),
+            ])
+    # Темп в штуках — та же цифра, что в отчёте: квартиры продаются штуками,
+    # и отдел продаж считает планы в них, а не в метрах.
+    apartment_sales = report.get("apartment_sales") or {}
+    if float(apartment_sales.get("units_total") or 0) > 0:
+        rows.extend([
+            [], [_cell_text("Темп продаж квартир", _XLSX_STYLE_BOLD)],
+            _header_row(["Показатель", "Значение"]),
+            [_cell_text("Квартир в проекте, шт."), _cell_num(apartment_sales.get("units_total"), _XLSX_STYLE_INT)],
+            [_cell_text("Средняя площадь квартиры, м²"), _cell_num(apartment_sales.get("avg_unit_sqm"))],
+            [_cell_text("Средняя цена квартиры, млн ₽"), _cell_num(apartment_sales.get("avg_unit_price_mln"))],
+            [_cell_text("Темп до РВЭ, кв./мес."), _cell_num(apartment_sales.get("pace_pre_rve_units"))],
+            [_cell_text("Средний темп за период продаж, кв./мес."), _cell_num(apartment_sales.get("pace_units"))],
+            [_cell_text("Пиковый месяц, кв."), _cell_num(apartment_sales.get("peak_units"))],
+        ])
+    return {"name": "Выручка", "rows": rows, "widths": [34, 14, 16, 20, 20, 18], "freeze": "A4", "split_y": 3}
+
+
+def _model_sheet_costs(result: dict[str, Any]) -> dict[str, Any]:
+    capex = result.get("capex") or {}
+    rows: list[list[_XlsxCell]] = [
+        [_cell_text("Расходы проекта", _XLSX_STYLE_TITLE)],
+        [],
+        _header_row(["Статья", "Сумма, млн ₽", "Доля в CAPEX"]),
+    ]
+    first_data_row = len(rows) + 1
+    capex_total = _land_float(capex.get("total")) or 0.0
+    for key, label in _MODEL_CAPEX_LABELS:
+        value = _land_float(capex.get(key)) or 0.0
+        share_row = len(rows) + 1
+        rows.append([
+            _cell_text(label),
+            _cell_mln(value),
+            _cell_formula(
+                f"IF($B${first_data_row + len(_MODEL_CAPEX_LABELS)}=0,0,B{share_row}/$B${first_data_row + len(_MODEL_CAPEX_LABELS)})",
+                (value / capex_total) if capex_total else 0.0,
+                _XLSX_STYLE_PCT,
+            ),
+        ])
+    last_data_row = len(rows)
+    rows.append([
+        _cell_text("CAPEX всего", _XLSX_STYLE_BOLD),
+        _cell_formula(_sum_formula("B", first_data_row, last_data_row), capex_total / 1_000_000.0),
+        _cell_text(""),
+    ])
+    rows.extend([
+        [],
+        [_cell_text("Коммерческие расходы"), _cell_mln(result.get("commercial_costs"))],
+        [_cell_text("Стоимость финансирования"), _cell_mln((result.get("summary") or {}).get("financing_cost"))],
+        [_cell_text("Налог на прибыль"), _cell_mln((result.get("summary") or {}).get("profit_tax"))],
+        [_cell_text("НДС"), _cell_mln((result.get("summary") or {}).get("vat"))],
+    ])
+    structure = (result.get("report") or {}).get("expense_structure") or []
+    charts: list[dict[str, Any]] = []
+    if structure:
+        rows.extend([
+            [], [_cell_text("Структура расходов проекта", _XLSX_STYLE_BOLD)],
+            _header_row(["Статья", "Сумма, млн ₽", "Доля"]),
+        ])
+        structure_first = len(rows) + 1
+        for item in structure:
+            rows.append([
+                _cell_text(item.get("label")),
+                _cell_mln(item.get("value")),
+                _XlsxCell(_land_float(item.get("share")), _XLSX_STYLE_PCT),
+            ])
+        charts.append({
+            "kind": "bar",
+            "title": "Структура полных расходов",
+            "y_title": "млн ₽",
+            "categories": _xlsx_sheet_ref("Расходы", "A", structure_first, len(rows)),
+            "series": [{
+                "name": "Расходы, млн ₽",
+                "values": _xlsx_sheet_ref("Расходы", "B", structure_first, len(rows)),
+            }],
+            "anchor": (4, 2),
+            "span": (9, 22),
+        })
+    return {
+        "name": "Расходы", "rows": rows, "widths": [46, 18, 14],
+        "freeze": "A4", "split_y": 3, "charts": charts,
+    }
+
+
+def _model_sheet_monthly(result: dict[str, Any], name: str = "Помесячно") -> dict[str, Any]:
+    finance = result.get("finance") or {}
+    finance_rows = finance.get("rows") or []
+    header = ["Месяц"] + [label for _, label, _ in _MODEL_FINANCE_COLUMNS]
+    rows: list[list[_XlsxCell]] = [
+        [_cell_text("Помесячная модель · млн ₽, ставки — % годовых", _XLSX_STYLE_TITLE)],
+        [],
+        _header_row(header),
+    ]
+    first_data_row = len(rows) + 1
+    for item in finance_rows:
+        row: list[_XlsxCell] = [_cell_text(item.get("month"))]
+        for key, _, kind in _MODEL_FINANCE_COLUMNS:
+            row.append(_model_value_cell(item.get(key), kind))
+        rows.append(row)
+    last_data_row = len(rows)
+    if finance_rows:
+        total_row: list[_XlsxCell] = [_cell_text("Итого", _XLSX_STYLE_BOLD)]
+        for index, (key, _, kind) in enumerate(_MODEL_FINANCE_COLUMNS, start=1):
+            if key not in _MODEL_FINANCE_SUMMABLE:
+                total_row.append(_cell_text(""))
+                continue
+            column = _xlsx_column_name(index)
+            total = sum(_land_float(item.get(key)) or 0.0 for item in finance_rows)
+            total_row.append(_cell_formula(
+                _sum_formula(column, first_data_row, last_data_row),
+                total / 1_000_000.0 if kind == "mln" else total,
+            ))
+        rows.append(total_row)
+    charts: list[dict[str, Any]] = []
+    if finance_rows:
+        keys = [key for key, _, _ in _MODEL_FINANCE_COLUMNS]
+        months = _xlsx_sheet_ref(name, "A", first_data_row, last_data_row)
+        series = []
+        for key, label, color in (
+            ("pf_balance", "Остаток ПФ", "19324A"),
+            ("escrow", "Эскроу", "6B8E23"),
+            ("bridge_balance", "Остаток БРИДЖ", "B4762A"),
+        ):
+            if key not in keys:
+                continue
+            column = _xlsx_column_name(keys.index(key) + 1)
+            series.append({
+                "name": label, "color": color,
+                "values": _xlsx_sheet_ref(name, column, first_data_row, last_data_row),
+            })
+        if series:
+            charts.append({
+                "kind": "line",
+                "title": "Динамика долга и эскроу",
+                "y_title": "млн ₽",
+                "categories": months,
+                "series": series,
+                "anchor": (1, len(rows) + 2),
+                "span": (12, 22),
+            })
+    return {
+        "name": name,
+        "rows": rows,
+        "widths": [12] + [17] * len(_MODEL_FINANCE_COLUMNS),
+        "freeze": "B4",
+        "split_x": 1,
+        "split_y": 3,
+        "charts": charts,
+    }
+
+
+def _model_sheet_cashflow(result: dict[str, Any]) -> dict[str, Any]:
+    cashflow = result.get("cashflow") or {}
+    months = cashflow.get("months") or []
+    rows: list[list[_XlsxCell]] = [
+        [_cell_text("Денежный поток · млн ₽", _XLSX_STYLE_TITLE)],
+        [],
+        _header_row([
+            "Месяц", "Проектный поток", "Собственный капитал", "Налог на прибыль",
+            "Проектный поток нарастающим итогом",
+        ]),
+    ]
+    first_data_row = len(rows) + 1
+    project = cashflow.get("project") or []
+    equity = cashflow.get("equity") or []
+    tax = cashflow.get("profit_tax") or []
+    running = 0.0
+    for index, month in enumerate(months):
+        value = _land_float(project[index] if index < len(project) else 0) or 0.0
+        running += value
+        current_row = first_data_row + index
+        rows.append([
+            _cell_text(month),
+            _cell_mln(value),
+            _cell_mln(equity[index] if index < len(equity) else 0),
+            _cell_mln(tax[index] if index < len(tax) else 0),
+            _cell_formula(
+                f"SUM($B${first_data_row}:B{current_row})",
+                running / 1_000_000.0,
+                _XLSX_STYLE_NUM,
+            ),
+        ])
+    return {"name": "Денежный поток", "rows": rows, "widths": [12, 20, 22, 20, 34], "freeze": "A4", "split_y": 3}
+
+
+def _model_sheet_calendar(result: dict[str, Any]) -> dict[str, Any]:
+    calendar_data = (result.get("report") or {}).get("calendar") or {}
+    rows: list[list[_XlsxCell]] = [
+        [_cell_text("Календарный план", _XLSX_STYLE_TITLE)],
+        [_cell_text("Горизонт"), _cell_text(calendar_data.get("start") or "—"), _cell_text(calendar_data.get("end") or "—")],
+        [],
+        _header_row(["Событие", "Начало", "Окончание", "Группа"]),
+    ]
+    for event in calendar_data.get("events") or []:
+        rows.append([
+            _cell_text(event.get("label")),
+            _cell_text(event.get("start")),
+            _cell_text(event.get("end")),
+            _cell_text(event.get("group")),
+        ])
+    return {"name": "Календарь", "rows": rows, "widths": [46, 16, 16, 20], "freeze": "A5", "split_y": 4}
+
+
+def _model_matrix_sheet(
+    name: str,
+    title: str,
+    months: list[str],
+    blocks: list[tuple[str, list[dict[str, Any]], str]],
+) -> dict[str, Any]:
+    """Лист «строки × месяцы»: статьи или продукты по горизонтали времени."""
+    rows: list[list[_XlsxCell]] = [[_cell_text(title, _XLSX_STYLE_TITLE)], []]
+    for block_title, items, unit in blocks:
+        if not items:
+            continue
+        rows.append([_cell_text(block_title, _XLSX_STYLE_BOLD)])
+        rows.append(_header_row([f"Показатель, {unit}", "Итого"] + months))
+        first_data_row = len(rows) + 1
+        money = unit.startswith("млн")
+        last_column = _xlsx_column_name(len(months) + 1)
+        for item in items:
+            row_number = len(rows) + 1
+            values = item.get("values") or []
+            total = _land_float(item.get("total")) or 0.0
+            row: list[_XlsxCell] = [
+                _cell_text(item.get("label")),
+                _cell_formula(
+                    f"SUM(C{row_number}:{last_column}{row_number})",
+                    total / 1_000_000.0 if money else total,
+                ),
+            ]
+            for value in values:
+                number = _land_float(value) or 0.0
+                row.append(_cell_num(number / 1_000_000.0 if money else number))
+            rows.append(row)
+        last_data_row = len(rows)
+        total_row: list[_XlsxCell] = [_cell_text("Итого", _XLSX_STYLE_BOLD)]
+        for index in range(len(months) + 1):
+            column = _xlsx_column_name(index + 1)
+            column_total = sum(
+                (_land_float((item.get("values") or [0] * len(months))[index - 1]) or 0.0)
+                if index else (_land_float(item.get("total")) or 0.0)
+                for item in items
+            )
+            total_row.append(_cell_formula(
+                _sum_formula(column, first_data_row, last_data_row),
+                column_total / 1_000_000.0 if money else column_total,
+            ))
+        rows.append(total_row)
+        rows.append([])
+    return {
+        "name": name,
+        "rows": rows,
+        "widths": [46, 16] + [13] * len(months),
+        "freeze": "C5",
+        "split_x": 2,
+        "split_y": 4,
+    }
+
+
+# Остатки берутся на конец квартала, ставки и покрытие — средние за квартал.
+_MODEL_FINANCE_BALANCES = {"bridge_balance", "pf_balance", "escrow", "taxable_profit_cumulative"}
+_MODEL_FINANCE_AVERAGES = {"key_rate", "bridge_rate", "pf_rate", "coverage"}
+
+
+def _quarter_label(month: str) -> str:
+    text = str(month or "")
+    try:
+        parsed = datetime.strptime(text[:10], "%Y-%m-%d")
+    except ValueError:
+        return text
+    return f"{parsed.year}-Q{(parsed.month - 1) // 3 + 1}"
+
+
+def _quarter_groups(months: list[str]) -> list[tuple[str, list[int]]]:
+    groups: dict[str, list[int]] = {}
+    order: list[str] = []
+    for index, month in enumerate(months):
+        label = _quarter_label(month)
+        if label not in groups:
+            groups[label] = []
+            order.append(label)
+        groups[label].append(index)
+    return [(label, groups[label]) for label in order]
+
+
+def _quarterly_items(items: list[dict[str, Any]], groups: list[tuple[str, list[int]]]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for item in items:
+        values = item.get("values") or []
+        result.append({
+            **item,
+            "values": [
+                sum(_land_float(values[index]) or 0.0 for index in indexes if index < len(values))
+                for _, indexes in groups
+            ],
+        })
+    return result
+
+
+def _model_sheet_quarterly_costs(result: dict[str, Any]) -> dict[str, Any] | None:
+    monthly = result.get("monthly") or {}
+    months = monthly.get("months") or []
+    if not months:
+        return None
+    groups = _quarter_groups(months)
+    extra = [
+        {"label": "Коммерческие расходы", "total": sum(monthly.get("commercial_costs") or []),
+         "values": monthly.get("commercial_costs") or []},
+        {"label": "Налог на прибыль", "total": sum(monthly.get("profit_tax") or []),
+         "values": monthly.get("profit_tax") or []},
+    ]
+    return _model_matrix_sheet(
+        "Расходы поквартально",
+        "Расходы проекта по статьям и кварталам · млн ₽",
+        [label for label, _ in groups],
+        [
+            ("Инвестиционные расходы (CAPEX)", _quarterly_items(monthly.get("costs") or [], groups), "млн ₽"),
+            ("Прочие расходы", _quarterly_items([item for item in extra if abs(item["total"]) > 1e-9], groups), "млн ₽"),
+        ],
+    )
+
+
+def _model_sheet_quarterly_sales(result: dict[str, Any]) -> dict[str, Any] | None:
+    monthly = result.get("monthly") or {}
+    months = monthly.get("months") or []
+    if not months:
+        return None
+    groups = _quarter_groups(months)
+    return _model_matrix_sheet(
+        "Продажи поквартально",
+        "Продажи по продуктам и кварталам",
+        [label for label, _ in groups],
+        [
+            ("Выручка", _quarterly_items(monthly.get("revenue") or [], groups), "млн ₽"),
+            ("Реализованные объёмы", _quarterly_items(monthly.get("quantity") or [], groups), "м² и шт."),
+        ],
+    )
+
+
+def _model_sheet_quarterly_finance(result: dict[str, Any]) -> dict[str, Any] | None:
+    """Финансирование по кварталам: потоки суммируются, остатки на конец, ставки средние."""
+    finance_rows = (result.get("finance") or {}).get("rows") or []
+    if not finance_rows:
+        return None
+    groups = _quarter_groups([str(row.get("month") or "") for row in finance_rows])
+    header = ["Квартал"] + [label for _, label, _ in _MODEL_FINANCE_COLUMNS]
+    rows: list[list[_XlsxCell]] = [
+        [_cell_text("Финансирование по кварталам · млн ₽, ставки — % годовых", _XLSX_STYLE_TITLE)],
+        [_cell_text("Потоки суммируются за квартал, остатки долга и эскроу — на конец квартала, "
+                    "ставки и покрытие — среднее за квартал.")],
+        [],
+        _header_row(header),
+    ]
+    first_data_row = len(rows) + 1
+    aggregated: list[dict[str, float]] = []
+    for label, indexes in groups:
+        row: list[_XlsxCell] = [_cell_text(label)]
+        values: dict[str, float] = {}
+        for key, _, kind in _MODEL_FINANCE_COLUMNS:
+            numbers = [_land_float(finance_rows[index].get(key)) or 0.0 for index in indexes]
+            if key in _MODEL_FINANCE_BALANCES:
+                value = numbers[-1] if numbers else 0.0
+            elif key in _MODEL_FINANCE_AVERAGES:
+                value = sum(numbers) / len(numbers) if numbers else 0.0
+            else:
+                value = sum(numbers)
+            values[key] = value
+            row.append(_model_value_cell(value, kind))
+        aggregated.append(values)
+        rows.append(row)
+    last_data_row = len(rows)
+    total_row: list[_XlsxCell] = [_cell_text("Итого", _XLSX_STYLE_BOLD)]
+    for index, (key, _, kind) in enumerate(_MODEL_FINANCE_COLUMNS, start=1):
+        if key not in _MODEL_FINANCE_SUMMABLE:
+            total_row.append(_cell_text(""))
+            continue
+        column = _xlsx_column_name(index)
+        total = sum(item[key] for item in aggregated)
+        total_row.append(_cell_formula(
+            _sum_formula(column, first_data_row, last_data_row),
+            total / 1_000_000.0 if kind == "mln" else total,
+        ))
+    rows.append(total_row)
+    return {
+        "name": "Финансирование поквартально",
+        "rows": rows,
+        "widths": [12] + [17] * len(_MODEL_FINANCE_COLUMNS),
+        "freeze": "B5",
+        "split_x": 1,
+        "split_y": 4,
+    }
+
+
+def _model_sheet_monthly_costs(result: dict[str, Any]) -> dict[str, Any] | None:
+    monthly = result.get("monthly") or {}
+    months = monthly.get("months") or []
+    if not months:
+        return None
+    extra = [
+        {"label": "Коммерческие расходы", "total": sum(monthly.get("commercial_costs") or []),
+         "values": monthly.get("commercial_costs") or []},
+        {"label": "Налог на прибыль", "total": sum(monthly.get("profit_tax") or []),
+         "values": monthly.get("profit_tax") or []},
+    ]
+    return _model_matrix_sheet(
+        "Расходы помесячно",
+        "Расходы проекта по статьям и месяцам · млн ₽",
+        months,
+        [
+            ("Инвестиционные расходы (CAPEX)", monthly.get("costs") or [], "млн ₽"),
+            ("Прочие расходы", [item for item in extra if abs(item["total"]) > 1e-9], "млн ₽"),
+        ],
+    )
+
+
+def _model_sheet_monthly_sales(result: dict[str, Any]) -> dict[str, Any] | None:
+    monthly = result.get("monthly") or {}
+    months = monthly.get("months") or []
+    if not months:
+        return None
+    return _model_matrix_sheet(
+        "Продажи помесячно",
+        "Продажи по продуктам и месяцам",
+        months,
+        [
+            ("Выручка", monthly.get("revenue") or [], "млн ₽"),
+            ("Реализованные объёмы", monthly.get("quantity") or [], "м² и шт."),
+        ],
+    )
+
+
+_MODEL_VRI_SETTING_ROWS: list[tuple[str, str]] = [
+    ("region", "Регион"),
+    ("land_right", "Право на участок"),
+    ("obligation_date", "Дата возникновения обязательства"),
+    ("obligation_basis", "Основание даты"),
+    ("payment_mode", "Порядок оплаты"),
+    ("years", "Срок рассрочки, лет"),
+    ("periodicity", "Периодичность платежей, мес."),
+    ("schedule_mode", "График платежей"),
+    ("interest_enabled", "Проценты на остаток"),
+    ("pf_open", "Дата открытия ПФ"),
+    ("in_bank_budget", "Включена в банковский бюджет"),
+    ("financing_mode", "Источники оплаты"),
+]
+
+_MODEL_VRI_LABELS: dict[str, str] = {
+    "msk": "Москва", "mo": "Московская область",
+    "ownership": "Собственность", "lease": "Аренда",
+    "lump": "Единовременно", "installment": "Рассрочка",
+    "auto": "Автоматический", "shares": "Заданные доли",
+    "manual": "Ручной", "True": "Да", "False": "Нет",
+}
+
+
+def _model_sheet_vri(result: dict[str, Any]) -> dict[str, Any] | None:
+    """Отдельный лист по плате за смену ВРИ: график, проценты и источники оплаты."""
+    vri = result.get("vri") or {}
+    if not vri.get("enabled"):
+        return None
+    totals = vri.get("totals") or {}
+    settings = vri.get("settings") or {}
+    rows: list[list[_XlsxCell]] = [
+        [_cell_text("Плата за изменение ВРИ · млн ₽", _XLSX_STYLE_TITLE)],
+        [],
+    ]
+    if _land_float(totals.get("relief")):
+        rows.extend([
+            [_cell_text("Обязательство до льготы"), _cell_mln(totals.get("gross"))],
+            [_cell_text("Льгота"), _cell_mln(totals.get("relief"))],
+        ])
+    rows.extend([
+        [_cell_text("Сумма обязательства"), _cell_mln(totals.get("amount"))],
+        [_cell_text("Основной долг"), _cell_mln(totals.get("principal"))],
+        [_cell_text("Проценты по рассрочке"), _cell_mln(totals.get("interest"))],
+        [_cell_text("Расходы на обеспечение"), _cell_mln(totals.get("security_cost"))],
+        [_cell_text("Выплаты до открытия ПФ"), _cell_mln(totals.get("before_pf"))],
+        [_cell_text("Выплаты после открытия ПФ"), _cell_mln(totals.get("after_pf"))],
+        [_cell_text("Профинансировано БРИДЖем"), _cell_mln(totals.get("bridge"))],
+        [_cell_text("Профинансировано ПФ"), _cell_mln(totals.get("pf"))],
+        [_cell_text("Профинансировано капиталом"), _cell_mln(totals.get("equity"))],
+        [_cell_text("Денежный поток по ВРИ, всего", _XLSX_STYLE_BOLD), _cell_mln(totals.get("cash"))],
+    ])
+    if settings:
+        rows.extend([[], [_cell_text("Условия", _XLSX_STYLE_BOLD)]])
+        for key, label in _MODEL_VRI_SETTING_ROWS:
+            if key not in settings:
+                continue
+            value = settings.get(key)
+            rows.append([
+                _cell_text(label),
+                _cell_text(_MODEL_VRI_LABELS.get(str(value), value)),
+            ])
+    schedule = vri.get("rows") or []
+    if schedule:
+        header = ["Дата", "Период", "Основной долг", "Проценты", "Платёж",
+                  "Остаток после платежа", "До ПФ", "БРИДЖ", "ПФ", "Капитал"]
+        rows.extend([[], [_cell_text("График платежей по обязательству", _XLSX_STYLE_BOLD)], _header_row(header)])
+        first_data_row = len(rows) + 1
+        for item in schedule:
+            rows.append([
+                _cell_text(item.get("date")),
+                _XlsxCell(float(item.get("period") or 0)),
+                _cell_mln(item.get("principal")),
+                _cell_mln(item.get("interest")),
+                _cell_mln(item.get("total")),
+                _cell_mln(item.get("balance_after")),
+                _cell_text("Да" if item.get("before_pf") else "Нет"),
+                _cell_mln(item.get("bridge")),
+                _cell_mln(item.get("pf")),
+                _cell_mln(item.get("equity")),
+            ])
+        last_data_row = len(rows)
+        total_row: list[_XlsxCell] = [_cell_text("Итого", _XLSX_STYLE_BOLD), _cell_text("")]
+        for column, key in (("C", "principal"), ("D", "interest"), ("E", "total")):
+            total_row.append(_cell_formula(
+                _sum_formula(column, first_data_row, last_data_row),
+                sum(_land_float(item.get(key)) or 0.0 for item in schedule) / 1_000_000.0,
+            ))
+        total_row.extend([_cell_text(""), _cell_text("")])
+        for column, key in (("H", "bridge"), ("I", "pf"), ("J", "equity")):
+            total_row.append(_cell_formula(
+                _sum_formula(column, first_data_row, last_data_row),
+                sum(_land_float(item.get(key)) or 0.0 for item in schedule) / 1_000_000.0,
+            ))
+        rows.append(total_row)
+    for warning in vri.get("warnings") or []:
+        rows.append([_cell_text(warning)])
+    return {
+        "name": "ВРИ",
+        "rows": rows,
+        "widths": [34, 12, 16, 14, 14, 22, 10, 14, 14, 14],
+        "freeze": "A4", "split_y": 3,
+    }
+
+
+def _model_sheets_for_result(
+    result: dict[str, Any], inputs: dict[str, Any], meta: dict[str, Any]
+) -> list[dict[str, Any]]:
+    sheets = [
+        _model_sheet_summary(result, meta),
+        _model_sheet_inputs(inputs),
+        _model_sheet_tep(result),
+        _model_sheet_revenue(result),
+        _model_sheet_costs(result),
+        _model_sheet_vri(result),
+        _model_sheet_monthly(result),
+        _model_sheet_monthly_costs(result),
+        _model_sheet_monthly_sales(result),
+        _model_sheet_quarterly_finance(result),
+        _model_sheet_quarterly_costs(result),
+        _model_sheet_quarterly_sales(result),
+        _model_sheet_cashflow(result),
+        _model_sheet_calendar(result),
+    ]
+    return [sheet for sheet in sheets if sheet]
+
+
+def _model_phase_sheet_name(index: int, name: str) -> str:
+    clean = re.sub(r"[\[\]:*?/\\']", " ", str(name or f"О{index}")).strip() or f"О{index}"
+    return f"{index}. {clean}"[:31]
+
+
+def _model_sheet_phase_comparison(bundle: dict[str, Any]) -> dict[str, Any]:
+    comparison = bundle.get("comparison") or []
+    phasing = bundle.get("phasing") or {}
+    header = [
+        "Очередь", "Продаваемая площадь, м²", "Общая площадь ГНС, м²",
+        "Выручка, млн ₽",
+        "Цена реализации, тыс ₽/м² продаваемой", "Цена реализации, тыс ₽/м² ГНС",
+        "CAPEX, млн ₽",
+        "CAPEX, тыс ₽/м² продаваемой", "CAPEX, тыс ₽/м² ГНС",
+        "Полные расходы, млн ₽",
+        "Полные расходы, тыс ₽/м² продаваемой", "Полные расходы, тыс ₽/м² ГНС",
+        "Чистая прибыль, тыс ₽/м² продаваемой", "Чистая прибыль, тыс ₽/м² ГНС",
+        "Общие расходы (касса), млн ₽", "Общие расходы (аллокация), млн ₽",
+        "Пик БРИДЖ, млн ₽", "Пик ПФ, млн ₽", "LLCR",
+        "Чистая прибыль, млн ₽", "Прибыль с аллокацией, млн ₽", "Маржинальность",
+        "Социальная нагрузка, млн ₽", "Социальные объекты",
+        "Индексация себестоимости", "Индексация цен",
+    ]
+    rows: list[list[_XlsxCell]] = [
+        [_cell_text("Сравнение очередей", _XLSX_STYLE_TITLE)],
+        [
+            _cell_text("Очередей"), _cell_num(len(comparison), _XLSX_STYLE_INT),
+            _cell_text("Разрыв между очередями, мес."), _cell_num(phasing.get("phase_gap_months"), _XLSX_STYLE_INT),
+        ],
+        [],
+        _header_row(header),
+    ]
+    first_data_row = len(rows) + 1
+    for item in comparison:
+        rows.append([
+            _cell_text(item.get("name")),
+            _cell_num(item.get("saleable_sqm"), _XLSX_STYLE_INT),
+            _cell_num(item.get("gns_sqm"), _XLSX_STYLE_INT),
+            _cell_mln(item.get("revenue")),
+            _cell_num(item.get("revenue_per_saleable_th")),
+            _cell_num(item.get("revenue_per_gns_th")),
+            _cell_mln(item.get("capex")),
+            _cell_num(item.get("capex_per_saleable_th")),
+            _cell_num(item.get("capex_per_gns_th")),
+            _cell_mln(item.get("total_expenses")),
+            _cell_num(item.get("expenses_per_saleable_th")),
+            _cell_num(item.get("expenses_per_gns_th")),
+            _cell_num(item.get("net_profit_per_saleable_th")),
+            _cell_num(item.get("net_profit_per_gns_th")),
+            _cell_mln(item.get("cash_shared_cost")),
+            _cell_mln(item.get("allocated_shared_cost")),
+            _cell_mln(item.get("peak_bridge")),
+            _cell_mln(item.get("peak_pf")),
+            _cell_num(item.get("llcr")),
+            _cell_mln(item.get("net_profit")),
+            _cell_mln(item.get("allocated_net_profit")),
+            _XlsxCell(_land_float(item.get("margin")), _XLSX_STYLE_PCT),
+            _cell_mln(item.get("social_cost")),
+            _cell_text(", ".join(item.get("social_objects") or []) or "—"),
+            _cell_num(item.get("cost_inflation_factor")),
+            _cell_num(item.get("sales_price_inflation_factor")),
+        ])
+    last_data_row = len(rows)
+    if comparison:
+        total_row: list[_XlsxCell] = [_cell_text("Итого", _XLSX_STYLE_BOLD)]
+        # Колонки — по заголовку, а не по номеру: номера разъезжаются каждый
+        # раз, когда в таблицу добавляется показатель, и итоговая строка молча
+        # начинает суммировать чужой столбец. Графики этот урок уже усвоили.
+        area_columns = {
+            header.index("Продаваемая площадь, м²"): "saleable_sqm",
+            header.index("Общая площадь ГНС, м²"): "gns_sqm",
+        }
+        money_columns = {
+            header.index("Выручка, млн ₽"): "revenue",
+            header.index("CAPEX, млн ₽"): "capex",
+            header.index("Полные расходы, млн ₽"): "total_expenses",
+            header.index("Общие расходы (касса), млн ₽"): "cash_shared_cost",
+            header.index("Общие расходы (аллокация), млн ₽"): "allocated_shared_cost",
+            header.index("Чистая прибыль, млн ₽"): "net_profit",
+            header.index("Прибыль с аллокацией, млн ₽"): "allocated_net_profit",
+            header.index("Социальная нагрузка, млн ₽"): "social_cost",
+        }
+        # Удельные показатели складывать нельзя: сумма рублей на метр по очередям
+        # ничего не значит. В итоге считаем отношение сводных величин — это и есть
+        # показатель по проекту целиком.
+        ratio_columns = {
+            header.index("Цена реализации, тыс ₽/м² продаваемой"): ("revenue", "saleable_sqm"),
+            header.index("Цена реализации, тыс ₽/м² ГНС"): ("revenue", "gns_sqm"),
+            header.index("CAPEX, тыс ₽/м² продаваемой"): ("capex", "saleable_sqm"),
+            header.index("CAPEX, тыс ₽/м² ГНС"): ("capex", "gns_sqm"),
+            header.index("Полные расходы, тыс ₽/м² продаваемой"): ("total_expenses", "saleable_sqm"),
+            header.index("Полные расходы, тыс ₽/м² ГНС"): ("total_expenses", "gns_sqm"),
+            header.index("Чистая прибыль, тыс ₽/м² продаваемой"): ("net_profit", "saleable_sqm"),
+            header.index("Чистая прибыль, тыс ₽/м² ГНС"): ("net_profit", "gns_sqm"),
+        }
+
+        def column_total(key: str) -> float:
+            return sum(_land_float(item.get(key)) or 0.0 for item in comparison)
+
+        for index in range(1, len(header)):
+            column = _xlsx_column_name(index)
+            if index in area_columns:
+                total_row.append(_cell_formula(
+                    _sum_formula(column, first_data_row, last_data_row),
+                    column_total(area_columns[index]),
+                    _XLSX_STYLE_TOTAL_INT,
+                ))
+            elif index in money_columns:
+                total_row.append(_cell_formula(
+                    _sum_formula(column, first_data_row, last_data_row),
+                    column_total(money_columns[index]) / 1_000_000.0,
+                    _XLSX_STYLE_TOTAL,
+                ))
+            elif index in ratio_columns:
+                value_key, area_key = ratio_columns[index]
+                value_col = _xlsx_column_name(next(i for i, k in money_columns.items() if k == value_key))
+                area_col = _xlsx_column_name(next(i for i, k in area_columns.items() if k == area_key))
+                total_row_number = last_data_row + 1
+                area_total = column_total(area_key)
+                total_row.append(_cell_formula(
+                    f"IF({area_col}{total_row_number}=0,0,{value_col}{total_row_number}*1000/{area_col}{total_row_number})",
+                    column_total(value_key) / area_total / 1000.0 if area_total else 0.0,
+                    _XLSX_STYLE_TOTAL,
+                ))
+            else:
+                total_row.append(_cell_text(""))
+        rows.append(total_row)
+    charts: list[dict[str, Any]] = []
+    if comparison:
+        # Колонки берём по заголовку: буквы разъезжаются каждый раз, когда в
+        # таблицу добавляется показатель, и графики начинают рисовать чужой ряд.
+        def series_ref(label: str) -> str:
+            return _xlsx_sheet_ref(
+                "Сравнение очередей", _xlsx_column_name(header.index(label)),
+                first_data_row, last_data_row,
+            )
+
+        names = _xlsx_sheet_ref("Сравнение очередей", "A", first_data_row, last_data_row)
+        charts.append({
+            "kind": "bar", "title": "LLCR по очередям", "y_title": "×",
+            "categories": names,
+            "series": [{"name": "LLCR", "values": series_ref("LLCR")}],
+            "anchor": (1, len(rows) + 2), "span": (7, 18),
+        })
+        charts.append({
+            "kind": "bar", "title": "Выручка и CAPEX по очередям", "y_title": "млн ₽",
+            "categories": names,
+            "series": [
+                {"name": "Выручка", "values": series_ref("Выручка, млн ₽")},
+                {"name": "CAPEX", "values": series_ref("CAPEX, млн ₽"), "color": "B4762A"},
+            ],
+            "anchor": (9, len(rows) + 2), "span": (8, 18),
+        })
+        charts.append({
+            "kind": "bar", "title": "Удельные показатели, тыс ₽/м² продаваемой", "y_title": "тыс ₽/м²",
+            "categories": names,
+            "series": [
+                {"name": "Цена реализации", "values": series_ref("Цена реализации, тыс ₽/м² продаваемой")},
+                {"name": "Полные расходы", "values": series_ref("Полные расходы, тыс ₽/м² продаваемой"), "color": "B4762A"},
+            ],
+            "anchor": (17, len(rows) + 2), "span": (8, 18),
+        })
+    return {"name": "Сравнение очередей", "rows": rows, "widths": [14] + [20] * (len(header) - 1),
+            "freeze": "A5", "split_y": 4, "charts": charts}
+
+
+def _model_sheet_consolidation(bundle: dict[str, Any], phase_sheet_names: list[str]) -> dict[str, Any]:
+    """Живая консолидация: суммы по месяцам собираются формулами с листов очередей."""
+    phases = bundle.get("phases") or []
+    months: list[str] = []
+    seen: set[str] = set()
+    for phase in phases:
+        for row in ((phase.get("result") or {}).get("finance") or {}).get("rows") or []:
+            month = str(row.get("month") or "")
+            if month and month not in seen:
+                seen.add(month)
+                months.append(month)
+    months.sort()
+    summable = [(key, label, kind) for key, label, kind in _MODEL_FINANCE_COLUMNS if key in _MODEL_FINANCE_SUMMABLE]
+    header = ["Месяц"] + [label for _, label, _ in summable]
+    rows: list[list[_XlsxCell]] = [
+        [_cell_text("Консолидация очередей · млн ₽", _XLSX_STYLE_TITLE)],
+        [_cell_text("Значения собираются формулами SUMIF с листов очередей этой же книги — "
+                    "правка любой очереди сразу меняет свод.")],
+        [],
+        _header_row(header),
+    ]
+    first_data_row = len(rows) + 1
+    # Колонки на листах очередей совпадают с _MODEL_FINANCE_COLUMNS.
+    source_column = {key: _xlsx_column_name(index) for index, (key, _, _) in enumerate(_MODEL_FINANCE_COLUMNS, start=1)}
+    phase_rows_by_month: list[dict[str, dict[str, Any]]] = []
+    for phase in phases:
+        by_month: dict[str, dict[str, Any]] = {}
+        for row in ((phase.get("result") or {}).get("finance") or {}).get("rows") or []:
+            by_month[str(row.get("month") or "")] = row
+        phase_rows_by_month.append(by_month)
+    for month_index, month in enumerate(months):
+        row_number = first_data_row + month_index
+        row: list[_XlsxCell] = [_cell_text(month)]
+        for key, _, kind in summable:
+            column = source_column[key]
+            parts = [
+                f"SUMIF('{sheet}'!$A:$A,$A{row_number},'{sheet}'!{column}:{column})"
+                for sheet in phase_sheet_names
+            ]
+            total = sum(
+                _land_float((by_month.get(month) or {}).get(key)) or 0.0
+                for by_month in phase_rows_by_month
+            )
+            row.append(_cell_formula(
+                "+".join(parts) if parts else "0",
+                total / 1_000_000.0 if kind == "mln" else total,
+                _XLSX_STYLE_NUM,
+            ))
+        rows.append(row)
+    last_data_row = len(rows)
+    if months:
+        total_row: list[_XlsxCell] = [_cell_text("Итого", _XLSX_STYLE_BOLD)]
+        for index, (key, _, kind) in enumerate(summable, start=1):
+            column = _xlsx_column_name(index)
+            total = sum(
+                _land_float(row.get(key)) or 0.0
+                for by_month in phase_rows_by_month
+                for row in by_month.values()
+            )
+            total_row.append(_cell_formula(
+                _sum_formula(column, first_data_row, last_data_row),
+                total / 1_000_000.0 if kind == "mln" else total,
+            ))
+        rows.append(total_row)
+    return {
+        "name": "Консолидация помесячно",
+        "rows": rows,
+        "widths": [12] + [19] * len(summable),
+        "freeze": "B5",
+        "split_x": 1,
+        "split_y": 4,
+    }
+
+
+def _model_readme(
+    bundle: dict[str, Any],
+    meta: dict[str, Any],
+    files: list[str],
+    template_notes: list[str] | None = None,
+) -> bytes:
+    phased = str(bundle.get("mode") or "single") == "phased"
+    lines = [
+        "DevelopAid · выгрузка инвестиционной модели",
+        f"Проект: {meta.get('title') or 'Расчёт'}",
+        f"Дата выгрузки: {date.today().isoformat()}",
+        f"Сценарий: {meta.get('scenario') or 'base'}",
+        f"Режим: {'по очередям' if phased else 'единый расчёт'}",
+        "",
+        "Состав архива:",
+        *[f"  - {name}" for name in files],
+        "",
+        "Файлы 00…09 — живая модель на шаблоне ПЛАТО.",
+        "  Заполнены только листы-вводные: «Вводные» и «Расчет ВРИ (ТЭП)».",
+        "  Все остальные листы — Дашборд, ОТЧЕТ, ТЭП, СРОКИ, CF, cf_0…cf_2, КРЕДИТЫ,",
+        "  ЗУ, LLCR — пересчитываются формулами самого шаблона при открытии.",
+        "  Правка любой вводной пересчитывает книгу целиком: это модель, а не отчёт.",
+        "",
+        "Файлы 90…99 — детализация расчёта DevelopAid.",
+        "  Это НЕ модель: числа посчитаны движком и записаны значениями, формулами",
+        "  собраны только итоги строк и консолидация очередей. Правка вводной здесь",
+        "  ничего не пересчитывает — для этого есть файлы 00…09.",
+        "  Нужны ради того, чего в шаблоне нет: помесячная и поквартальная разбивка",
+        "  по статьям и продуктам, график платежей ВРИ, диаграммы.",
+        "",
+        "Как читать детализацию:",
+        "  Сводка — ключевые показатели и финансирование расчёта.",
+        "  Вводные — все параметры модели с ключами для переноса обратно.",
+        "  ТЭП — состав площадей и единиц по продуктам.",
+        "  Выручка / Расходы — продуктовая выручка, статьи CAPEX и структура затрат.",
+        "  Помесячно — сердце модели: продажи, расходы, БРИДЖ, ПФ, эскроу, ставки, налог по месяцам.",
+        "  Денежный поток — проектный и собственный поток, накопленный итог формулой.",
+        "  Календарь — сроки этапов проекта.",
+        "",
+        "Единицы: денежные показатели — млн ₽, площади — м², ставки и доли — проценты.",
+    ]
+    for note in template_notes or []:
+        lines.extend(["", note])
+    if phased:
+        lines.extend([
+            "",
+            "Консолидатор:",
+            "  Файл 90_Детализация_консолидация.xlsx содержит очереди отдельными листами и лист",
+            "  «Консолидация помесячно», где суммы собираются формулами SUMIF с этих листов.",
+            "  Правка месяца в очереди сразу меняет свод. Отдельные файлы очередей —",
+            "  та же модель по одной очереди на случай, если нужен изолированный расчёт.",
+            "  Складывать по месяцам можно только потоки; остатки долга, ставки и покрытие",
+            "  эскроу в консолидации не суммируются — они смотрятся по каждой очереди.",
+        ])
+    lines.extend([
+        "",
+        "Выгрузка отражает расчёт веб-модели DevelopAid на дату формирования.",
+        "Это предварительная инвестиционная модель, а не отчёт оценщика и не решение банка.",
+    ])
+    return ("\n".join(lines) + "\n").encode("utf-8")
+
+
+def _safe_file_stem(value: str, fallback: str = "DevelopAid") -> str:
+    stem = re.sub(r"[^0-9A-Za-zА-Яа-яЁё _-]+", "_", str(value or "")).strip(" _")
+    return (stem[:60] or fallback)
+
+
+def build_model_archive(
+    inputs: dict[str, Any],
+    tep: dict[str, dict[str, Any]],
+    rates: list[dict[str, Any]] | None = None,
+    phasing: dict[str, Any] | None = None,
+    *,
+    project_name: str = "",
+    scenario: str = "base",
+) -> tuple[bytes, str]:
+    """Полная модель в ZIP: единый расчёт или очереди с книгой-консолидатором."""
+    # Частичная выгрузка (например, из Telegram) дополняется базовыми значениями
+    # ровно так же, как это делает мини-приложение при загрузке проекта.
+    inputs = {**copy.deepcopy(DEFAULT_INPUTS), **(inputs or {})}
+    merged_tep = copy.deepcopy(TEP_DEFAULT)
+    for key, values in (tep or {}).items():
+        if isinstance(values, dict) and key in merged_tep:
+            merged_tep[key].update(values)
+        else:
+            merged_tep[key] = values
+    tep = merged_tep
+    bundle = _run_authoritative_model(inputs, tep, rates or [], phasing or {})
+    consolidated = bundle.get("consolidated") or {}
+    phases = bundle.get("phases") or []
+    phased = str(bundle.get("mode") or "single") == "phased" and len(phases) > 1
+    title = str(project_name or "").strip() or "Проект DevelopAid"
+    meta = {"title": title, "scenario": scenario}
+    stem = _safe_file_stem(title)
+
+    # Живая модель — это шаблон ПЛАТО: в нём 113 708 формул, и правка вводной
+    # пересчитывает всю книгу. Наши листы — детализация расчёта рядом с ним:
+    # помесячная и поквартальная разбивка, график ВРИ, диаграммы. Считать их
+    # моделью нельзя: там формулами собраны только итоги.
+    archive_files: list[tuple[str, bytes]] = []
+    template_notes: list[str] = []
+    try:
+        if not phased:
+            content, _ = fill_plato_template(inputs, tep, scenario=scenario, project_name=title)
+            archive_files.append((f"00_Модель_{stem}.xlsx", content))
+        else:
+            phase_files: list[tuple[str, str]] = []
+            for index, phase in enumerate(phases, start=1):
+                phase_inputs = {**inputs, **(phase.get("inputs") or {})}
+                phase_tep = phase.get("tep") or tep
+                label = str(phase.get("name") or f"О{index}")
+                phase_name = _safe_file_stem(label, f"О{index}")
+                content, _ = fill_plato_template(
+                    phase_inputs, phase_tep, scenario=scenario,
+                    project_name=f"{title} · {label}" if title else label,
+                )
+                file_name = f"{index:02d}_Модель_{phase_name}.xlsx"
+                archive_files.append((file_name, content))
+                phase_files.append((label, file_name))
+            # Свод очередей — отдельная книга со ссылками на файлы очередей, а не
+            # ещё одна модель всего проекта: та считала бы проект без разрывов
+            # между очередями и без индексации, то есть другой проект.
+            content, consolidator_report = fill_plato_consolidator(bundle, phase_files)
+            archive_files.insert(0, (f"00_Консолидатор_{stem}.xlsx", content))
+            template_notes.extend(consolidator_report.get("notes") or [])
+    except HTTPException as exc:
+        template_notes.append(
+            f"Живая модель на шаблоне ПЛАТО не собрана: {exc.detail} "
+            "В архиве осталась только детализация расчёта."
+        )
+
+    if not phased:
+        sheets = _model_sheets_for_result(consolidated, inputs, meta)
+        archive_files.append((f"90_Детализация_{stem}.xlsx", _build_model_xlsx(sheets)))
+    else:
+        phase_sheet_names: list[str] = []
+        phase_monthly_sheets: list[dict[str, Any]] = []
+        for index, phase in enumerate(phases, start=1):
+            sheet_name = _model_phase_sheet_name(index, phase.get("name"))
+            phase_sheet_names.append(sheet_name)
+            monthly = _model_sheet_monthly(phase.get("result") or {}, name=sheet_name)
+            phase_monthly_sheets.append(monthly)
+        consolidator_sheets = [
+            _model_sheet_summary(consolidated, {**meta, "title": f"{title} · все очереди"}),
+            _model_sheet_phase_comparison(bundle),
+            _model_sheet_consolidation(bundle, phase_sheet_names),
+            *phase_monthly_sheets,
+            _model_sheet_inputs(inputs),
+            _model_sheet_tep(consolidated),
+            _model_sheet_revenue(consolidated),
+            _model_sheet_costs(consolidated),
+            _model_sheet_vri(consolidated),
+            _model_sheet_cashflow(consolidated),
+            _model_sheet_calendar(consolidated),
+        ]
+        # Лист ВРИ необязателен: без платы за смену ВРИ его нет. Одноочередная
+        # ветка это учитывала, а здесь None уезжал прямо в сборку книги —
+        # и весь архив многоочередного проекта не собирался.
+        archive_files.append(("90_Детализация_консолидация.xlsx",
+                              _build_model_xlsx([s for s in consolidator_sheets if s])))
+        for index, phase in enumerate(phases, start=1):
+            phase_title = f"{title} · очередь {phase.get('name') or index}"
+            phase_sheets = _model_sheets_for_result(
+                phase.get("result") or {}, inputs, {**meta, "title": phase_title}
+            )
+            phase_name = _safe_file_stem(str(phase.get("name") or f"О{index}"), f"О{index}")
+            archive_files.append((f"9{index}_Детализация_{phase_name}.xlsx", _build_model_xlsx(phase_sheets)))
+
+    readme = _model_readme(
+        bundle, meta, [name for name, _ in archive_files] + ["README.txt"], template_notes
+    )
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as archive:
+        for name, payload in archive_files:
+            archive.writestr(name, payload)
+        archive.writestr("README.txt", readme)
+    suffix = "очереди" if phased else "модель"
+    return out.getvalue(), f"DevelopAid_{stem}_{suffix}_{date.today().isoformat()}.zip"
+
+
+class ModelExportRequest(BaseModel):
+    inputs: dict[str, Any]
+    tep: dict[str, dict[str, Any]]
+    rates: list[dict[str, Any]] = []
+    phasing: dict[str, Any] = {}
+    project_name: str = ""
+    scenario: str = "base"
+
+
+@app.post("/report/model")
+def report_model(req: ModelExportRequest) -> Response:
+    try:
+        content, filename = build_model_archive(
+            req.inputs,
+            req.tep,
+            req.rates,
+            req.phasing,
+            project_name=req.project_name,
+            scenario=req.scenario,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Не удалось собрать модель: {exc}") from exc
+    encoded_name = urllib.parse.quote(filename)
+    return Response(
+        content=content,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition":
+                f"attachment; filename=DevelopAid_model.zip; filename*=UTF-8''{encoded_name}",
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# Единая книга проекта: templates/DevelopAid_model_v4.xlsx. Считает весь
+# проект живыми формулами; сюда пишутся только вводные листа «Вводные» —
+# каждая ячейка ввода подписана «Ключом API» движка. Книга несёт диаграммы,
+# которые openpyxl при перезаписи теряет, поэтому значения правятся прямо
+# в XML внутри zip — как и выгрузка в шаблон ПЛАТО ниже.
+# ---------------------------------------------------------------------------
+
+_V4_TEMPLATE_PATH = Path(__file__).resolve().parent / "templates" / "DevelopAid_model_v4.xlsx"
+
+# Ключ движка -> ячейка листа «Вводные». Проценты движок хранит в пунктах
+# (25 = 25%), книга — в долях, пересчёт по суффиксу _pct/_pp.
+_V4_INPUT_CELLS: dict[str, str] = {
+    "purchase_price_mln": "B15", "land_rights_cost_mln": "B16",
+    "social_compensation_mln": "B17", "marketing_pct": "B19", "selling_pct": "B20",
+    "profit_tax_pct": "B21", "vat_pct": "B22", "discount_rate_pct": "B23",
+    "bridge_spread_pp": "B25", "pf_spread_pp": "B27", "pf_special_pct": "B28",
+    "limit_fee_pct": "B29", "reservation_fee_pct": "B30",
+    "ird_th_per_sqm": "B40", "design_p_th_per_sqm": "B41",
+    "design_rd_th_per_sqm": "B42", "preparation_th_per_sqm": "B43",
+    "main_above_th_per_sqm": "B44", "main_under_th_per_sqm": "B45",
+    "utilities_th_per_sqm": "B46", "landscaping_th_per_sqm": "B47",
+    "commissioning_th_per_sqm": "B48", "site_maintenance_th_per_sqm": "B49",
+    "gc_fee_pct": "B50", "author_supervision_pct": "B51",
+    "project_management_pct": "B52", "technical_supervision_pct": "B53",
+    "reserve_pct": "B54",
+    "apartment_price_th": "B59", "commercial_price_th": "B60",
+    "parking_price_th": "B61", "storage_price_th": "B62",
+    "share_before_rve_pct": "B63", "monthly_growth_pre_pct": "B64",
+    "monthly_growth_post_pct": "B65", "sales_lag_months": "B68",
+    "residual_sales_months": "B69",
+    "vri_periodicity_months": "B78", "vri_interest_spread_pp": "B81",
+    "vri_relief_mln": "B82", "vri_security_cost_mln": "B83",
+    # Свои деньги до ПФ. Поля не было в карте, и книга считала весь разрыв до
+    # РнС банковским: пик БРИДЖа расходился ровно на внесённую сумму (3,2 млрд
+    # на Вест Гарден), а следом проценты, налог, прибыль и LLCR. Место у поля
+    # не в блоке финансирования только потому, что там нет ни одной пустой
+    # строки, а вставлять строку в шаблон нельзя — поедут все ссылки.
+    "pre_pf_own_funds_mln": "B85",
+    "site_area_ha": "K7",
+    "offices_gba_sqm": "K23", "offices_saleable_sqm": "K24",
+    "offices_start": "K27", "offices_months": "K28",
+    "offices_cost_th_per_sqm": "K29", "offices_sales_start": "K30",
+    "offices_price_th_per_sqm": "K31", "offices_share_before_rve_pct": "K32",
+    "offices_growth_pre_pct": "K34", "offices_growth_post_pct": "K35",
+    "retail_gba_sqm": "K43", "retail_saleable_sqm": "K44",
+    "retail_start": "K47", "retail_months": "K48",
+    "retail_cost_th_per_sqm": "K49", "retail_sales_start": "K50",
+    "retail_price_th_per_sqm": "K51", "retail_share_before_rve_pct": "K52",
+    "retail_growth_pre_pct": "K54", "retail_growth_post_pct": "K55",
+    "above_parking_spaces": "K63", "above_parking_area_per_space_sqm": "K64",
+    "above_parking_cost_mln_per_space": "K67", "above_parking_start": "K68",
+    "above_parking_months": "K69", "above_parking_sales_start": "K70",
+    "above_parking_price_mln_per_space": "K71",
+    "above_parking_share_before_rve_pct": "K72",
+    "above_parking_growth_pre_pct": "K74", "above_parking_growth_post_pct": "K75",
+}
+_V4_DATE_KEYS = frozenset({
+    "offices_start", "offices_sales_start", "retail_start", "retail_sales_start",
+    "above_parking_start", "above_parking_sales_start",
+})
+_V4_BOOL_CELLS = {  # ключ -> ячейка «Да/Нет»
+    "offices_enabled": "K20", "retail_enabled": "K40", "above_parking_enabled": "K60",
+}
+# Проценты в этих ячейках движок хранит пунктами, но сами ключи без суффикса.
+_V4_NO_PCT_KEYS = frozenset({"vri_relief_mln", "vri_security_cost_mln"})
+
+
+def _v4_excel_serial(value: Any) -> float | None:
+    """ISO-дата -> серийный номер Excel (стиль даты уже стоит на ячейке)."""
+    try:
+        parsed = datetime.strptime(str(value)[:10], "%Y-%m-%d").date()
+    except Exception:
+        return None
+    return float((parsed - date(1899, 12, 30)).days)
+
+
+def _v4_number(value: Any) -> str:
+    number = float(value)
+    if number == int(number) and abs(number) < 1e15:
+        return str(int(number))
+    return format(number, ".10g")
+
+
+def _v4_set_cell(
+    xml: str,
+    coord: str,
+    *,
+    number: Any = None,
+    text: str | None = None,
+    formula: str | None = None,
+) -> tuple[str, bool]:
+    """Заменяет содержимое ячейки, сохраняя её стиль. Формат листа — теги x:."""
+    pattern = re.compile(
+        r'<x:c r="%s"([^>]*?)(?:/>|>.*?</x:c>)' % re.escape(coord), re.S)
+    found = pattern.search(xml)
+    if not found:
+        return xml, False
+    style = re.search(r'\ss="(\d+)"', found.group(1))
+    style_attr = f' s="{style.group(1)}"' if style else ""
+    if formula is not None:
+        body = f"<x:f>{xml_escape(formula)}</x:f>"
+        replacement = f'<x:c r="{coord}"{style_attr}>{body}</x:c>'
+    elif text is not None:
+        replacement = (
+            f'<x:c r="{coord}"{style_attr} t="inlineStr">'
+            f"<x:is><x:t>{xml_escape(str(text))}</x:t></x:is></x:c>"
+        )
+    else:
+        replacement = f'<x:c r="{coord}"{style_attr}><x:v>{_v4_number(number)}</x:v></x:c>'
+    return xml[:found.start()] + replacement + xml[found.end():], True
+
+
+def _v4_sheet_path(archive: zipfile.ZipFile, name: str) -> str:
+    workbook = archive.read("xl/workbook.xml").decode("utf-8")
+    sheet = re.search(r'<x:sheet name="%s"[^>]*r:id="([^"]+)"' % re.escape(name), workbook)
+    if not sheet:
+        raise RuntimeError(f"в книге v4 нет листа «{name}»")
+    rels = archive.read("xl/_rels/workbook.xml.rels").decode("utf-8")
+    rel = re.search(r'Target="([^"]+)"[^>]*Id="%s"' % re.escape(sheet.group(1)), rels) \
+        or re.search(r'Id="%s"[^>]*Target="([^"]+)"' % re.escape(sheet.group(1)), rels)
+    if not rel:
+        raise RuntimeError(f"лист «{name}» не найден в связях книги v4")
+    target = rel.group(1)
+    return "xl/" + target.lstrip("/").removeprefix("xl/")
+
+
+def _v4_inputs_sheet_path(archive: zipfile.ZipFile) -> str:
+    return _v4_sheet_path(archive, "Вводные")
+
+
+def _v4_normalized(weights: list[float], count: int) -> list[float]:
+    """Веса очередей в долях единицы. Страница хранит их в процентах
+    ([40, 32, 28]); записанные как есть, они раздували ГНС очереди в
+    сорок раз. Нормировка на сумму принимает оба формата."""
+    total = sum(weights[:count])
+    return [w / total for w in weights[:count]]
+
+
+def _v4_fold_tail(weights: list[float], enabled: int, book: int) -> list[float]:
+    """Очередей больше, чем листов CF в книге: хвост сливается в последнюю
+    книжную очередь, а не размазывается по всем — объёмы четвёртой очереди
+    ближе по срокам к третьей, чем к первой."""
+    trimmed = weights[:enabled]
+    if enabled > book and len(trimmed) >= book:
+        trimmed = trimmed[:book - 1] + [sum(trimmed[book - 1:])]
+    return trimmed
+
+
+def _v4_parity_targets(consolidated: dict[str, Any]) -> dict[str, float]:
+    """Контрольные числа движка для parity-блока листа ПРОВЕРКИ."""
+    summary = consolidated.get("summary") or {}
+    finance = consolidated.get("finance") or {}
+    return {
+        "revenue_mln": float(summary.get("revenue") or 0) / 1e6,
+        "capex_mln": float(summary.get("capex") or 0) / 1e6,
+        "ebitda_mln": float(summary.get("ebitda") or 0) / 1e6,
+        "financing_mln": float(summary.get("financing_cost") or 0) / 1e6,
+        "tax_mln": float(summary.get("profit_tax") or 0) / 1e6,
+        "net_profit_mln": float(summary.get("net_profit") or 0) / 1e6,
+        "llcr": float(summary.get("llcr") or 0),
+        "peak_bridge_mln": float(finance.get("peak_bridge") or 0) / 1e6,
+        "peak_pf_mln": float(finance.get("peak_pf") or 0) / 1e6,
+    }
+
+
+def _calculation_fingerprint(
+    inputs: dict[str, Any] | None,
+    tep: dict[str, Any] | None,
+    phasing: dict[str, Any] | None,
+) -> str:
+    """Отпечаток вводных: один расчёт — один идентификатор в PDF и книге.
+
+    Сверка пары «PDF + книга» начинается с вопроса, один ли это расчёт;
+    без отпечатка его выясняли, сравнивая цифры и споря о версиях."""
+    payload = json.dumps(
+        {
+            "inputs": {k: v for k, v in sorted((inputs or {}).items())
+                       if not str(k).startswith("_")},
+            "tep": tep or {},
+            "phasing": phasing or {},
+        },
+        ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
+
+
+def _v4_fold_tep_rows(
+    rows: list[dict[str, dict[str, Any]]], book: int
+) -> list[dict[str, dict[str, Any]]]:
+    """Очередей больше, чем листов CF в книге: объёмы хвоста складываются в
+    последнюю книжную очередь — та же логика, что у долей в _v4_fold_tail."""
+    if len(rows) <= book:
+        return rows
+    merged: dict[str, dict[str, Any]] = {}
+    for tail_row in rows[book - 1:]:
+        for key, product in tail_row.items():
+            if key not in merged:
+                merged[key] = copy.deepcopy(product)
+            else:
+                for field in ("gns", "total_area", "useful", "saleable", "transfer", "units"):
+                    merged[key][field] = (
+                        float(merged[key].get(field) or 0) + float(product.get(field) or 0))
+    return rows[:book - 1] + [merged]
+
+
+def _v4_shared_weights(
+    phasing: dict[str, Any], key: str, count: int, enabled: int | None = None
+) -> list[float]:
+    # Доли P/Q/R в книге — кассовый график платежа, поэтому источником служат
+    # кассовые доли движка (shared_cash), а не экономическая аллокация
+    # (shared_allocation): с аллокацией книга платила ВРИ тремя кусками перед
+    # РнС каждой очереди, а движок — целиком перед первым РнС. Дефолт движка
+    # тот же: покупка, ВРИ и соцкомпенсация кассово в первой очереди.
+    weights = [float(w or 0) for w in ((phasing.get("shared_cash") or {}).get(key) or [])]
+    weights = _v4_fold_tail(weights, enabled or count, count)
+    if len(weights) < count or sum(weights[:count]) <= 0:
+        return [1.0 if index == 0 else 0.0 for index in range(count)]
+    return _v4_normalized(weights, count)
+
+
+def _v4_ladder_rows_xml(xml: str, steps: list[tuple[float, float]]
+                        ) -> tuple[str, list[tuple[str, str]]]:
+    """Блок ступеней в XML листа «Вводные» книги v4; возвращает ссылки.
+
+    Книга v4 собирается прямо в XML — openpyxl её не пересобирает, поэтому и
+    блок лестницы дописывается строками XML в конец sheetData: низ листа
+    свободен, ссылки никуда не едут. Формат ячеек тот же, что у листа:
+    подпись inlineStr, значение числом.
+    """
+    import re as _re
+    rows = [int(number) for number in _re.findall(r'<x:row r="(\d+)"', xml)]
+    row_at = (max(rows) if rows else 0) + 2
+    parts: list[str] = []
+    refs: list[tuple[str, str]] = []
+
+    def text_cell(coord: str, value: str) -> str:
+        return (f'<x:c r="{coord}" t="inlineStr"><x:is><x:t>{value}</x:t></x:is></x:c>')
+
+    parts.append(f'<x:row r="{row_at}">'
+                 + text_cell(f"A{row_at}", "СТУПЕНИ СТАВКИ ПФ ПО ПОКРЫТИЮ ЭСКРОУ")
+                 + "</x:row>")
+    row_at += 1
+    parts.append(f'<x:row r="{row_at}">'
+                 + text_cell(f"A{row_at}",
+                             "Правьте значения — строка 41 листов CF читает их "
+                             "отсюда. Пустой порог выключает ступень.")
+                 + "</x:row>")
+    row_at += 1
+    for index, (edge, rate) in enumerate(steps):
+        parts.append(
+            f'<x:row r="{row_at}">'
+            + text_cell(f"A{row_at}", f"Ступень {index + 1} — покрытие от")
+            + f'<x:c r="B{row_at}"><x:v>{round(edge, 6):g}</x:v></x:c>'
+            + text_cell(f"C{row_at}", "×") + "</x:row>")
+        edge_ref = f"'Вводные'!$B${row_at}"
+        row_at += 1
+        parts.append(
+            f'<x:row r="{row_at}">'
+            + text_cell(f"A{row_at}", f"Ступень {index + 1} — ставка")
+            + f'<x:c r="B{row_at}"><x:v>{round(rate, 8):g}</x:v></x:c>'
+            + text_cell(f"C{row_at}", "% годовых") + "</x:row>")
+        refs.append((edge_ref, f"'Вводные'!$B${row_at}"))
+        row_at += 1
+    tail = "</x:sheetData>"
+    assert tail in xml
+    return xml.replace(tail, "".join(parts) + tail, 1), refs
+
+
+def _v4_step_worksheet_xml(text: str, steps: list[tuple[float, float]],
+                           refs: list[tuple[str, str]]) -> tuple[str, int]:
+    """Строка 41 CF-листа: одна ставка B28 становится лестницей по ссылкам.
+
+    Книга v4 знала только «Специальная ставка ПФ» ячейкой B28: движок считал
+    по ступеням, книга по одной ставке, и на проекте с покрытием выше 1×
+    паритет стоимости финансирования расходился на миллиарды. Тесты в эту
+    ветку не заходили, пока умолчание поля было пустым.
+    """
+    import re as _re
+    counter = 0
+
+    def swap(match: "_re.Match[str]") -> str:
+        nonlocal counter
+        body = match.group(1)
+        column = _re.search(r"\b([A-Z]{1,3})40\b", body)
+        if not column or "'Вводные'!$B$28" not in body:
+            return match.group(0)
+        stepped = pf_special_steps_formula(
+            f"{column.group(1)}40", steps, "'Вводные'!$B$28", refs=refs)
+        counter += 1
+        replaced = body.replace("'Вводные'!$B$28",
+                                "(" + stepped.replace(">", "&gt;") + ")")
+        return "<x:f>" + replaced + "</x:f>"
+
+    return _re.sub(r"<x:f>([^<]*'Вводные'!\$B\$28[^<]*)</x:f>", swap, text), counter
+
+
+def build_project_workbook(
+    inputs: dict[str, Any],
+    tep: dict[str, dict[str, Any]],
+    rates: list[dict[str, Any]] | None = None,
+    phasing: dict[str, Any] | None = None,
+    *,
+    project_name: str = "",
+    scenario: str = "base",
+    finance_hints: dict[str, Any] | None = None,
+) -> tuple[bytes, str, dict[str, Any]]:
+    """Книга DevelopAid v4, заполненная текущими вводными.
+
+    Пишутся только значения листа «Вводные»; весь расчёт — формулы книги.
+    Ячейка без соответствия уходит в meta["missing"], а не молчит.
+    """
+    x = {**DEFAULT_INPUTS, **{k: v for k, v in (inputs or {}).items() if not str(k).startswith("_")}}
+    # Лимиты финансирования — из движка: книжная пропорция от CAPEX-блоков
+    # занижала лимит ПФ очереди с офисами, и плата за невыбранный лимит
+    # выходила вдвое меньше движковой. Поверхности считают один раз: бот
+    # передаёт готовый результат, остальные пути считают здесь; при падении
+    # движка книга остаётся на собственных формулах долей.
+    if finance_hints is None:
+        try:
+            _hint_bundle = _run_authoritative_model(
+                inputs or {}, tep or {}, rates or [], phasing or {})
+            _hint_phases = _hint_bundle.get("phases") or []
+            if _hint_phases:
+                finance_hints = {
+                    "pf_limit_by_phase": [
+                        float(p["result"]["finance"].get("pf_limit", 0.0)) / 1e6
+                        for p in _hint_phases],
+                    "bridge_peak_by_phase": [
+                        float(p["result"]["finance"].get("peak_bridge", 0.0)) / 1e6
+                        for p in _hint_phases],
+                }
+            else:
+                _hint_fin = _hint_bundle["consolidated"]["finance"]
+                finance_hints = {
+                    "pf_limit_by_phase": [float(_hint_fin.get("pf_limit", 0.0)) / 1e6],
+                    "bridge_peak_by_phase": [float(_hint_fin.get("peak_bridge", 0.0)) / 1e6],
+                }
+            finance_hints["parity"] = _v4_parity_targets(_hint_bundle["consolidated"])
+        except Exception:
+            finance_hints = {}
+    p = phasing or {}
+    missing: list[str] = []
+
+    template = _V4_TEMPLATE_PATH.read_bytes()
+    source = zipfile.ZipFile(io.BytesIO(template))
+    sheet_path = _v4_inputs_sheet_path(source)
+    xml = source.read(sheet_path).decode("utf-8")
+
+    def put(coord: str, *, number=None, text=None, formula=None, label=""):
+        nonlocal xml
+        xml, done = _v4_set_cell(xml, coord, number=number, text=text, formula=formula)
+        if not done:
+            missing.append(label or coord)
+
+    def num_row(row: dict[str, Any] | None, field: str) -> float:
+        try:
+            return float((row or {}).get(field) or 0)
+        except Exception:
+            return 0.0
+
+    # --- скалярные вводные по карте ключей -------------------------------
+    for key, coord in _V4_INPUT_CELLS.items():
+        value = x.get(key)
+        if value in (None, ""):
+            continue
+        if key in _V4_DATE_KEYS:
+            serial = _v4_excel_serial(value)
+            if serial is not None:
+                put(coord, number=serial, label=key)
+            continue
+        try:
+            number = float(value)
+        except Exception:
+            missing.append(f"{key}: не число ({value!r})")
+            continue
+        if (key.endswith("_pct") or key.endswith("_pp")) and key not in _V4_NO_PCT_KEYS:
+            number /= 100.0
+        put(coord, number=number, label=key)
+
+    # Зачёт переданных муниципалитету площадей уменьшает плату так же, как
+    # льгота, и в книге ложится в ту же ячейку: строку в шаблон не вставить —
+    # поедут все ссылки, а формулы листов ВРИ и ОТЧЁТ вычитают именно B82.
+    # Разбивка «льгота отдельно, зачёт отдельно» остаётся в приложении и в
+    # отчёте; книге важно, чтобы плата к оплате совпадала с движком.
+    # Считает льготу тот же код, что и движок (`vri_relief`), а не копия его
+    # правил: в книгу писалось поле «льгота — сумма», и всё, что льготой не
+    # является суммой, до неё не доезжало. Льгота долей (МПТ — обычный случай
+    # для Москвы) обнуляла плату в отчёте и оставляла её целиком в книге:
+    # 0 против 4 674 млн ₽ на 77:04:0001019:173, при одинаковых вводных.
+    try:
+        vri_gross = max(0.0, float(x.get("land_rights_cost_mln") or 0)) * 1_000_000
+    except Exception:
+        vri_gross = 0.0
+        missing.append("land_rights_cost_mln: не число")
+    relief_amount, _net = vri_relief(x, vri_gross)
+    put(_V4_INPUT_CELLS["vri_relief_mln"], number=round(relief_amount / 1_000_000, 6),
+        label="льгота по плате за ВРИ (движковая: доля, сумма и зачёт вместе)")
+
+    for key, coord in _V4_BOOL_CELLS.items():
+        put(coord, text="Да" if x.get(key) else "Нет", label=key)
+
+    # --- шапка, сценарий и ставка ----------------------------------------
+    title = str(project_name or x.get("project_name") or "Проект DevelopAid")
+    put("B4", text=title, label="project_name")
+    # B6 — не надпись, а ключ: книга ищет его MATCH'ем по списку сценариев
+    # («Base»/«Optimistic»/…), русское слово роняет весь расчёт.
+    put("B6", text="Base", label="scenario")
+    put("E5", number=float(x.get("scenario_revenue_multiplier") or 1), label="scenario_revenue_multiplier")
+    put("E6", number=float(x.get("scenario_cost_multiplier") or 1), label="scenario_cost_multiplier")
+    start_serial = _v4_excel_serial(x.get("project_start")) or _v4_excel_serial("2027-01-01")
+    put("B8", number=start_serial, label="project_start")
+    put("B36", number=start_serial, label="price_cost_base_date")
+    # Дата платежа денежной компенсации. Ячейка подписана ключом движка, но в
+    # карту записи не входила — и книга жила на формуле шаблона «за месяц до
+    # РнС», а введённую дату не видела вовсе. Пока умолчание совпадало с этим
+    # месяцем, стороны сходились случайно. Методика теперь одна на обе
+    # (social_cash_payment_date), поэтому дата приходит числом.
+    _book_permit = add_months(str(x.get("project_start") or "2027-01-01")[:10],
+                              int(max(float(IRD_MONTHS_MIN), n(x, "ird_months", 18.0))))
+    put("B18", number=_v4_excel_serial(social_cash_payment_date(x, _book_permit)),
+        label="social_comp_date")
+    # Конец горизонта движка: он не выводится из РВЭ, а тянется за последним
+    # денежным потоком — стройка садика заканчивается позже РВЭ + 12 месяцев и
+    # растягивает расчёт. Книга знала только календарную часть правила и
+    # переставала начислять проценты ПФ там, где долг ещё жив: три месяца и
+    # 8,8 млн ₽ мимо на садике 250 мест. Формула берёт максимум из своей
+    # границы и этой даты — правка сроков прямо в Excel по-прежнему двигает
+    # границу вслед за РВЭ.
+    try:
+        _horizon = build_operating_model(
+            {**DEFAULT_INPUTS, **{k: v for k, v in (inputs or {}).items()
+                                  if not str(k).startswith("_")}},
+            tep or {}, rates or [])["end"]
+        put("B71", number=_v4_excel_serial(_horizon.isoformat()) or 0.0,
+            label="engine_horizon_end")
+    except Exception:
+        put("B71", number=0.0, label="engine_horizon_end")
+    put("B33", number=n(x, "rate_start_pct", 14.0) / 100.0, label="rate_start_pct")
+    put("B35", number=n(x, "rate_normalization_months", 24.0), label="rate_normalization_months")
+    put("E8", number=n(x, "rate_target_base_pct", 9.0) / 100.0, label="rate_target_base_pct")
+    put("F8", number=n(x, "rate_target_low_pct", 7.0) / 100.0, label="rate_target_low_pct")
+    put("G8", number=n(x, "rate_target_high_pct", 11.0) / 100.0, label="rate_target_high_pct")
+    # Сезонность: в движке одно значение на январь и май–август.
+    seasonal = float(x.get("seasonal_reduction_pct") or 0) / 100.0
+    put("B67", number=seasonal, label="seasonal_reduction_pct (январь)")
+    put("B70", number=seasonal, label="seasonal_reduction_pct (май–август)")
+    put("B31", text=str(x.get("bridge_interest_mode") or "Капитализация в ПФ"),
+        label="bridge_interest_mode")
+    # Форма исполнения соцнагрузки: книге она нужна не для расходов (те
+    # приходят суммой в B17), а для базы комиссии выдачи БРИДЖа. Движок берёт
+    # в расчётный лимит только денежную компенсацию, стройку — нет, а B17
+    # несёт обе, и без признака комиссия считалась и со стройки.
+    put("B37", text=str(x.get("social_mode") or "Строительство"),
+        label="social_mode")
+
+    # Социалка строительством: в книге v4 один канал соцнагрузки —
+    # компенсация (B17). Без свёртки стоимость строительства садов, школ и
+    # поликлиники выпадала из расходов книги целиком — у Мытищ это миллиарды,
+    # и LLCR книги завышался против движка. Сумма индексируется как в движке:
+    # каждый объект раскладывается по очередям той же
+    # _phase_social_allocation, и его стоимость растёт с инфляцией затрат к
+    # старту своей очереди — базовая сумма занижала социалку на 12%.
+    # График строительства при этом сворачивается в разовый платёж за месяц
+    # до РнС (дата B18 — формула книги): приближение, но расход не теряется.
+    social_cash_by_phase: list[float] | None = None
+    social_monthly_by_phase: list[list[float]] | None = None
+    social_breakdown = {typ: {"places": 0.0, "cost": 0.0, "phases": set()}
+                        for typ in ("kindergarten", "school", "clinic")}
+    social_is_construction = str(x.get("social_mode") or "") in ("Строительство", SOCIAL_MODE_BOTH)
+    if social_is_construction:
+        social_count = max(1, min(4, int(p.get("phase_count") or 1) if p.get("enabled") else 1))
+        social_phases = list(p.get("phases") or [])
+        # Отсутствующий ключ — не ноль: движок без cost_inflation_pct берёт
+        # 8% годовых, и социалка поздних очередей растёт тем же фактором.
+        social_inflation = (float(p.get("cost_inflation_pct", 8.0) or 0) / 100.0
+                            if social_count > 1 else 0.0)
+        cost_per = {
+            "kindergarten": float(x.get("kindergarten_cost_mln_per_place") or 0),
+            "school": float(x.get("school_cost_mln_per_place") or 0),
+            "clinic": float(x.get("clinic_cost_mln_per_unit") or 0),
+        }
+        objects = [dict(obj) for obj in (p.get("social_objects") or []) if isinstance(obj, dict)]
+        if not objects:
+            for typ, key in (("kindergarten", "kindergarten_places"),
+                             ("school", "school_places"), ("clinic", "clinic_capacity")):
+                capacity = float(x.get(key) or 0)
+                if capacity > 0:
+                    objects.append({"type": typ, "capacity": capacity, "auto": True})
+        if objects:
+            _phase_social_allocation(objects, social_count)
+        social_build = 0.0
+        social_build_by_phase = [0.0, 0.0, 0.0, 0.0]
+        # Расшифровка для ОТЧЁТа и ТЭП: сумма B17 приезжала чёрным ящиком,
+        # и «где расходы на садик и школы» было не увидеть нигде в книге.
+        for obj in objects:
+            phase_index = max(1, min(social_count, int(obj.get("phase") or 1))) - 1
+            offset_months = (float(social_phases[phase_index].get("start_offset_months") or 0)
+                             if phase_index < len(social_phases) else 0.0)
+            factor = (1.0 + social_inflation) ** (offset_months / 12.0)
+            cost = (float(obj.get("capacity") or 0)
+                    * cost_per.get(str(obj.get("type") or "kindergarten"), 0.0) * factor)
+            social_build += cost
+            social_build_by_phase[min(phase_index, 3)] += cost
+            slot = social_breakdown.get(str(obj.get("type") or "kindergarten"))
+            if slot is not None:
+                slot["places"] += float(obj.get("capacity") or 0)
+                slot["cost"] += cost
+                slot["phases"].add(phase_index + 1)
+        if social_build > 0:
+            # Только стройка: движок в режиме «Строительство» денежную
+            # компенсацию не платит вовсе — либо одно, либо другое. Сложение
+            # обеих сумм задваивало социалку на ГлавАПУ-проекте с компенсацией
+            # в вводных: 774 млн в книге против 166 у движка, минус 648 млн
+            # EBITDA и плюс 11% к пику БРИДЖа.
+            # В совмещённом режиме проект и строит, и платит: в книге канал
+            # соцнагрузки один, поэтому в B17 идёт сумма обеих форм, а
+            # денежная часть дублируется в B56 — из неё считается база
+            # комиссии выдачи БРИДЖа, куда стройка не входит.
+            cash_part = (n(x, "social_compensation_mln")
+                         if str(x.get("social_mode")) == SOCIAL_MODE_BOTH else 0.0)
+            put("B17", number=social_build + cash_part,
+                label="социалка строительством" + (" и компенсацией" if cash_part else ""))
+            put("B56", number=cash_part, label="денежная часть соцнагрузки")
+            # Кассовые доли R — по очередям объектов: «всё в первую» верно
+            # для денежной компенсации, а стройка платится там, где стоит
+            # объект. Доля 100% в О1 перегружала её ПФ на миллиарды и
+            # уводила первую очередь в дефолт при гасящем долг движке.
+            social_cash_by_phase = [share / social_build
+                                    for share in social_build_by_phase]
+            # Разовый платёж завышал пик БРИДЖа на сотни миллионов: движок
+            # строит соцобъекты месяцами, книга платила всё за месяц до РнС.
+            # Теперь книга размазывает сумму равномерно: B18 — старт первого
+            # объекта, E18 — окно до конца последнего (компенсация: E18=1).
+            spans = []
+            for typ, start_key, months_key, months_default in (
+                ("kindergarten", "kindergarten_start", "kindergarten_months", 24),
+                ("school", "school_start", "school_months", 30),
+                ("clinic", "clinic_start", "clinic_months", 24),
+            ):
+                if not any(str(obj.get("type")) == typ for obj in objects):
+                    continue
+                start = str(x.get(start_key) or "")[:10]
+                if not start:
+                    continue
+                months = max(1, int(float(x.get(months_key) or months_default)))
+                spans.append((start, add_months(start, months)))
+            if spans:
+                social_start = min(span[0] for span in spans)
+                social_end = max(span[1] for span in spans)
+                window = max(1, months_between(
+                    date.fromisoformat(social_start), social_end))
+                serial = _v4_excel_serial(social_start)
+                if serial is not None:
+                    put("B18", number=serial, label="старт соцстроительства")
+                    put("E18", number=float(window), label="окно соцстроительства")
+            # Помесячный график соцстройки — готовыми числами по очередям:
+            # единое окно B18/E18 платило социалку всех очередей одним куском,
+            # а движок строит каждый объект в своей очереди — объект без
+            # своей даты стартует со старта очереди, введённая дата раньше
+            # очереди объекту не положена. Расхождение держало БРИДЖ первой
+            # очереди на сотни миллионов меньше движка.
+            months_by_type = {
+                "kindergarten": max(1, int(float(x.get("kindergarten_months") or 24))),
+                "school": max(1, int(float(x.get("school_months") or 30))),
+                "clinic": max(1, int(float(x.get("clinic_months") or 24))),
+            }
+            project_start_iso = str(x.get("project_start") or "2027-01-01")[:10]
+            # Атомарный движок (одна очередь) строит по введённым датам типов;
+            # подмена «объект стартует со старта своей очереди» — только
+            # фазовая. Иначе single-режим строил социалку с первого месяца
+            # и завышал пик БРИДЖа на десять процентов.
+            typed_starts = {
+                "kindergarten": str(x.get("kindergarten_start") or "")[:10],
+                "school": str(x.get("school_start") or "")[:10],
+                "clinic": str(x.get("clinic_start") or "")[:10],
+            }
+            # Движок агрегирует объекты типа внутри фазы: сумма мест и
+            # минимальная из собственных дат; общие вводные даты в
+            # фазированном режиме не участвуют.
+            grouped: dict[tuple[int, str], dict[str, Any]] = {}
+            for obj in objects:
+                phase_index = max(1, min(social_count, int(obj.get("phase") or 1))) - 1
+                typ = str(obj.get("type") or "kindergarten")
+                slot = grouped.setdefault((phase_index, typ), {"capacity": 0.0, "dates": []})
+                slot["capacity"] += float(obj.get("capacity") or 0)
+                if obj.get("start_date"):
+                    slot["dates"].append(str(obj["start_date"])[:10])
+            social_monthly_by_phase = [[0.0] * 120 for _ in range(4)]
+            for (phase_index, typ), slot in grouped.items():
+                offset_months = (float(social_phases[phase_index].get("start_offset_months") or 0)
+                                 if phase_index < len(social_phases) else 0.0)
+                cost = (slot["capacity"] * cost_per.get(typ, 0.0)
+                        * (1.0 + social_inflation) ** (offset_months / 12.0))
+                if cost <= 0:
+                    continue
+                phase_start = add_months(project_start_iso, int(offset_months)).isoformat()
+                if social_count == 1:
+                    own_start = (min(slot["dates"]) if slot["dates"]
+                                 else typed_starts.get(typ) or phase_start)
+                    obj_start = max(own_start, project_start_iso)
+                else:
+                    obj_start = max(min(slot["dates"]) if slot["dates"] else phase_start,
+                                    phase_start)
+                span_months = months_by_type.get(typ, 24)
+                first_col = months_between(
+                    date.fromisoformat(project_start_iso), date.fromisoformat(obj_start))
+                for month_index in range(span_months):
+                    column = first_col + month_index
+                    if 0 <= column < 120:
+                        social_monthly_by_phase[min(phase_index, 3)][column] += cost / span_months
+            # Денежная часть совмещённого режима — одним платежом в свою дату,
+            # а не размазанная по графику стройки: это разные обязательства с
+            # разными сроками, и движок платит их порознь.
+            if str(x.get("social_mode")) == SOCIAL_MODE_BOTH:
+                cash_mln = n(x, "social_compensation_mln")
+                # Дата — движковой методикой: платёж не выходит за бридж-период.
+                comp_date = social_cash_payment_date(
+                    x, add_months(project_start_iso,
+                                  int(max(float(IRD_MONTHS_MIN), n(x, "ird_months", 18.0)))))
+                if cash_mln > 0:
+                    column = months_between(date.fromisoformat(project_start_iso), comp_date)
+                    if 0 <= column < 120:
+                        social_monthly_by_phase[0][column] += cash_mln
+
+    # --- расшифровка соцнагрузки: ОТЧЕТ (E31:H37) и ТЭП (38–44) -----------
+    # «Где в Excel расходы на садик и школы?» — раньше нигде: B17 приезжал
+    # одной цифрой. Значения пишутся числами на дату сборки; контрольные
+    # итоги в книге — формулами (H37, E44), чтобы сумма сходилась с B17.
+    report_sheet_path = _v4_sheet_path(source, "ОТЧЕТ")
+    tep_sheet_path = _v4_sheet_path(source, "ТЭП")
+    report_xml = source.read(report_sheet_path).decode("utf-8")
+    tep_xml = source.read(tep_sheet_path).decode("utf-8")
+
+    # Соцстройка — готовыми числами в строку 31 блока каждой очереди CAPEX:
+    # объект платится в своей очереди её календарём, как в движке. Итог
+    # строки становится суммой месяцев — прежняя формула с R-долей осталась
+    # бы жить своей жизнью поверх записанных чисел.
+    capex_sheet_path = _v4_sheet_path(source, "CAPEX")
+    capex_xml = source.read(capex_sheet_path).decode("utf-8")
+    if social_monthly_by_phase is not None:
+        from openpyxl.utils import get_column_letter as _col
+        for phase_index in range(4):
+            row = 31 + 34 * phase_index
+            for column_index, value in enumerate(social_monthly_by_phase[phase_index]):
+                capex_xml, done = _v4_set_cell(
+                    capex_xml, f"{_col(4 + column_index)}{row}", number=round(value, 6))
+                if not done:
+                    missing.append(f"соцграфик CAPEX: колонка {column_index} очереди {phase_index + 1}")
+                    break
+            capex_xml, done = _v4_set_cell(
+                capex_xml, f"B{row}", formula=f"SUM(D{row}:DS{row})")
+            if not done:
+                missing.append(f"соцграфик CAPEX: итог очереди {phase_index + 1}")
+
+    # Ключевая ставка — движковой кривой, а не линейкой шаблона: движок ведёт
+    # экспоненциальное снижение от даты стартовой ставки (generate_rate_curve),
+    # книга линейно снижала от первого месяца проекта. На старте в январе 2027
+    # при ставке с июля 2026 книга держала ключ 14% там, где у движка уже 12%,
+    # и БРИДЖ с ПФ дорожали на десятки миллионов из ниоткуда. Сценарный
+    # переключатель сохранён: целевая ставка остаётся ячейкой B34 (= H8).
+    rates_sheet_path = _v4_sheet_path(source, "Ставки")
+    rates_xml = source.read(rates_sheet_path).decode("utf-8")
+    try:
+        _rs_raw = str(x.get("rate_start_date") or "")[:10]
+        _ps_date = date.fromisoformat(str(x.get("project_start") or "2027-01-01")[:10])
+        _rs_date = date.fromisoformat(_rs_raw) if _rs_raw else _ps_date
+        _curve_offset = ((_ps_date.year - _rs_date.year) * 12
+                         + (_ps_date.month - _rs_date.month)
+                         - (1 if _rs_date.day > 1 else 0))
+        _curve_shape = max(0.05, float(x.get("rate_curve_shape") or 2.0))
+    except Exception:
+        _curve_offset, _curve_shape = 0, 2.0
+    from openpyxl.utils import get_column_letter as _rate_col
+    for _rate_index in range(120):
+        _X = _rate_col(4 + _rate_index)
+        _progress = (f"(1-EXP(-{_curve_shape:g}*MIN(MAX(0,{_X}$4-1+{_curve_offset}),"
+                     f"'Вводные'!$B$35)/'Вводные'!$B$35))/(1-EXP(-{_curve_shape:g}))")
+        rates_xml, done = _v4_set_cell(
+            rates_xml, f"{_X}5",
+            formula=(f"MAX(0,'Вводные'!$B$34,'Вводные'!$B$33"
+                     f"+('Вводные'!$B$34-'Вводные'!$B$33)*{_progress})"))
+        if not done:
+            missing.append(f"кривая ключевой ставки: колонка {_rate_index}")
+            break
+
+    # Лист «Источники» — данными этого проекта, а не шаблонного: там жил
+    # кадастр 77:09 и московское 593-ПП даже у областных проектов, и сверка
+    # честно читала это как «источники от другой юрисдикции».
+    sources_sheet_path = _v4_sheet_path(source, "Источники")
+    sources_xml = source.read(sources_sheet_path).decode("utf-8")
+    _tep_source = ("Импорт ГлавАПУ" if (inputs or {}).get("_glavapu_import")
+                   else "ТЭП DevelopAid (вводные проекта)")
+    sources_xml, _ = _v4_set_cell(sources_xml, "C6", text=_tep_source)
+    sources_xml, _ = _v4_set_cell(sources_xml, "D6", text=str(
+        project_name or x.get("project_name") or "текущий проект"))
+    if str(x.get("vri_region") or "msk") == "mo":
+        sources_xml, _ = _v4_set_cell(
+            sources_xml, "C7", text="Московская область")
+        sources_xml, _ = _v4_set_cell(
+            sources_xml, "D7",
+            text="Диапазоны платы за смену ВРИ по округам МО (справочник DevelopAid)")
+    calculation_id = _calculation_fingerprint(inputs, tep, phasing)
+    sources_xml, _ = _v4_set_cell(
+        sources_xml, "C16", text=f"Сборка DevelopAid {VERSION}")
+    sources_xml, _ = _v4_set_cell(
+        sources_xml, "D16",
+        text=f"собрано {date.today().isoformat()} · расчёт {calculation_id}")
+
+    # Parity-блок ПРОВЕРОК: контрольные числа движка — значениями в C, допуск
+    # в E; формулы книги в B посчитает Excel, и вердикт листа скажет FAIL,
+    # если поверхности разойдутся. Без движковых чисел строки молчат.
+    checks_sheet_path = _v4_sheet_path(source, "ПРОВЕРКИ")
+    checks_xml = source.read(checks_sheet_path).decode("utf-8")
+    _parity = (finance_hints or {}).get("parity") or {}
+    if _parity:
+        _parity_rows = (
+            (76, "revenue_mln"), (77, "capex_mln"), (78, "ebitda_mln"),
+            (79, "financing_mln"), (80, "tax_mln"), (81, "net_profit_mln"),
+            (82, "llcr"), (83, "peak_bridge_mln"), (84, "peak_pf_mln"),
+        )
+        for _row, _key in _parity_rows:
+            _target = float(_parity.get(_key) or 0.0)
+            # Допуск: полпроцента от величины, но не уже 1 млн (LLCR: 0,02) —
+            # ловим методические разъезды, а не шум сериализации.
+            _tol = 0.02 if _key == "llcr" else max(1.0, abs(_target) * 0.005)
+            checks_xml, done = _v4_set_cell(checks_xml, f"C{_row}", number=round(_target, 4))
+            if done:
+                checks_xml, done = _v4_set_cell(checks_xml, f"E{_row}", number=round(_tol, 4))
+            if not done:
+                missing.append(f"паритет ПРОВЕРКИ: строка {_row}")
+                break
+
+    def _put_extra(sheet_xml: str, coord: str, *, number=None, text=None) -> str:
+        updated, done = _v4_set_cell(sheet_xml, coord, number=number, text=text)
+        if not done:
+            missing.append(f"расшифровка соцнагрузки: {coord}")
+        return updated
+
+    social_compensation_amount = (
+        0.0 if social_is_construction else float(x.get("social_compensation_mln") or 0))
+    _social_rows = (
+        ("kindergarten", 33, 40, "kindergarten_places", "social_dou_gba_sqm"),
+        ("school", 34, 41, "school_places", "social_school_gba_sqm"),
+        ("clinic", 35, 42, "clinic_capacity", "social_clinic_gba_sqm"),
+    )
+    for typ, report_row, tep_row, places_key, gba_key in _social_rows:
+        slot = social_breakdown[typ]
+        places = slot["places"] if social_is_construction else float(x.get(places_key) or 0)
+        cost = round(slot["cost"], 3)
+        queue_label = ("+".join(f"О{n}" for n in sorted(slot["phases"]))
+                       if slot["phases"] else "—")
+        report_xml = _put_extra(report_xml, f"F{report_row}", number=round(places))
+        report_xml = _put_extra(report_xml, f"G{report_row}", text=queue_label)
+        report_xml = _put_extra(report_xml, f"H{report_row}", number=cost)
+        tep_xml = _put_extra(tep_xml, f"B{tep_row}", number=round(places))
+        tep_xml = _put_extra(tep_xml, f"C{tep_row}", number=round(float(x.get(gba_key) or 0)))
+        tep_xml = _put_extra(tep_xml, f"D{tep_row}", text=queue_label)
+        tep_xml = _put_extra(tep_xml, f"E{tep_row}", number=cost)
+    report_xml = _put_extra(report_xml, "H36", number=round(social_compensation_amount, 3))
+    tep_xml = _put_extra(tep_xml, "E43", number=round(social_compensation_amount, 3))
+
+    # Лимит БРИДЖ в книге режет выборку (CF r34). Логика вводных DevelopAid —
+    # «всё финансирует банк», поэтому лимит расчётный: сделка, ВРИ, социалка
+    # и весь CAPEX. Фиксированные 3 500 млн душили проект крупнее Мишина.
+    put("B24", formula=(
+        "ROUNDUP(($B$15+$B$16+$B$17+$B$83"
+        "+SUM('CAPEX'!$B$35,'CAPEX'!$B$69,'CAPEX'!$B$103,'CAPEX'!$B$137))/10,0)*10"
+    ), label="bridge_limit_mln")
+
+    # Лимит ПФ — движковый: у движка лимит равен потребности фазы, и книжный
+    # ROUNDUP от CAPEX занижал его на проценты вместе с платой за невыбранный
+    # лимит. Без движка остаётся шаблонная формула от CAPEX-блоков.
+    hint_limits = list((finance_hints or {}).get("pf_limit_by_phase") or [])
+    if hint_limits:
+        pf_limit_total = math.ceil(sum(hint_limits) / 10.0) * 10.0
+        put("B26", number=pf_limit_total, label="pf_limit_mln (движок)")
+
+    # --- ВРИ ---------------------------------------------------------------
+    land_cost = float(x.get("land_rights_cost_mln") or 0)
+    put("B74", text="Да" if land_cost > 0 else "Нет", label="vri_required")
+    if str(x.get("vri_payment_mode") or "lump") == "installment":
+        years = int(float(x.get("vri_installment_years") or 3))
+        word = "год" if years == 1 else ("года" if years in (2, 3, 4) else "лет")
+        put("B75", text=f"{years} {word}", label="vri_payment_mode")
+    else:
+        put("B75", text="Единовременно", label="vri_payment_mode")
+    lead = {"before_rns_1m": 1, "before_rns_3m": 3, "at_rns": 0}.get(
+        str(x.get("vri_obligation_date_mode") or "before_rns_1m"), 1)
+    put("B76", number=float(lead), label="vri_obligation_lead_months")
+    put("B80", text="Нет" if x.get("vri_interest_enabled") is False else "Да",
+        label="vri_interest_enabled")
+    put("B84", text="Да" if x.get("vri_early_repay_after_pf") else "Нет",
+        label="vri_early_repay_after_pf")
+
+    # --- плотность: базовый потенциал равен применяемому, коэффициент 1 ----
+    put("K6", text="Москва" if str(x.get("vri_region") or "msk") == "msk"
+        else "Московская область", label="vri_region")
+    area = float(x.get("site_area_ha") or 0)
+    density = float(x.get("site_density_sqm_per_ha") or 0) or 30000.0
+    put("K7", number=area, label="site_area_ha")
+    put("K8", text="Нет", label="use_default_density")
+    put("K11", number=density, label="site_density_sqm_per_ha")
+    # Базовый потенциал равен применяемому: коэффициент пересчёта ТЭП = 1,
+    # базовый ТЭП очередей — ровно ТЭП проекта. При нулевой площади деление
+    # 0/0 гасится IFERROR и коэффициент тоже 1.
+    put("K13", number=(area * density if area > 0 else 0), label="base_gfa_potential_sqm")
+
+    # Полный срок продаж объектов = стройка + остаточные продажи движка.
+    for prefix, coord in (("offices", "K33"), ("retail", "K53"), ("above_parking", "K73")):
+        months = float(x.get(f"{prefix}_months") or 0)
+        residual = float(x.get(f"{prefix}_residual_months") or 0)
+        if months > 0:
+            put(coord, number=months + residual, label=f"{prefix}_sales_term_months")
+
+    # Очередь финансирования объектов — из очерёдности проекта, как в движке
+    # (офисы по умолчанию в третьей, ТЦ и наземный паркинг во второй).
+    # Шаблонная единица сажала офисы в первую очередь: продаваемая площадь
+    # очередей и их средние цены расходились с отчётом.
+    discrete = (phasing or {}).get("discrete") or {}
+    queue_cap = max(1, min(4, int((phasing or {}).get("phase_count") or 1)
+                           if (phasing or {}).get("enabled") else 1))
+    phase_offsets = [float(item.get("start_offset_months") or 0)
+                     for item in ((phasing or {}).get("phases") or [])]
+    for field, coord, default, date_cells, date_keys in (
+        ("offices", "K21", 3, ("K27", "K30"), ("offices_start", "offices_sales_start")),
+        ("standalone_retail", "K41", 2, ("K47", "K50"), ("retail_start", "retail_sales_start")),
+        ("above_parking", "K61", 2, ("K68", "K70"),
+         ("above_parking_start", "above_parking_sales_start")),
+    ):
+        queue = max(1, min(queue_cap, int(float(discrete.get(field) or default))))
+        put(coord, number=float(queue), label=f"очередь {field}")
+        # Даты объекта сдвигаются на сдвиг старта его очереди — как в движке.
+        # Сырая мастер-дата строила офисы третьей очереди на два года раньше:
+        # CAPEX падал в БРИДЖ до РнС, и пик завышался почти вдвое.
+        offset = (phase_offsets[queue - 1]
+                  if (phasing or {}).get("enabled") and queue - 1 < len(phase_offsets) else 0.0)
+        if offset:
+            for cell, key in zip(date_cells, date_keys):
+                base = x.get(key)
+                if base:
+                    shifted = _v4_excel_serial(add_months(str(base)[:10], int(offset)))
+                    if shifted is not None:
+                        put(cell, number=shifted, label=f"{key} (сдвиг очереди)")
+
+    # --- очереди: базовый ТЭП в W..AC, доли и сроки -------------------------
+    enabled_phases = int(p.get("phase_count") or 1) if p.get("enabled") else 1
+    count = max(1, min(4, enabled_phases))
+    if enabled_phases > 4:
+        missing.append(
+            f"очередей {enabled_phases}, а листов CF в книге четыре: объёмы и доли "
+            "5-й и последующих слиты в четвёртую очередь"
+        )
+    # Выключенная очерёдность сроков не задаёт. Конфигурация переживает свой
+    # выключатель — она остаётся в сохранённом проекте и с экрана не видна, —
+    # а книга читала `phases[0]` не глядя на признак. На 77:09:0004014:13 это
+    # подменяло срок строительства 36 месяцев на 24 из давно выключенной
+    # очереди: движок при выключенной в обёртку очередей не заходит вовсе
+    # (`calculate_phased` сразу зовёт `calculate`), и от одной цифры разъезжались
+    # РВЭ, горизонт, кривая CAPEX, пик ПФ и LLCR — восемь строк паритета.
+    phases = list(p.get("phases") or []) if p.get("enabled") else []
+    # ТЭП очередей — канонической аллокацией движка (_phase_tep_product_rows):
+    # книга получает готовые числа и не может разойтись с расчётом ни в долях,
+    # ни в округлении штучных продуктов.
+    canon_rows = _v4_fold_tep_rows(
+        _phase_tep_product_rows(
+            {key: dict(value) for key, value in (tep or {}).items() if isinstance(value, dict)},
+            p, max(1, min(5, enabled_phases)))[0],
+        count)
+    shared = {key: _v4_shared_weights(p, key, count, enabled_phases)
+              for key in ("purchase", "land_rights", "social_compensation", "own_funds")}
+    # Индексация очередей — готовыми множителями к сдвигу старта, как в
+    # движке: О1 ×1, О2 ×1,08, О3 ×1,166 при 8% в год. Годовая инфляция в
+    # AE/AF здесь не пишется: книга ведёт её от даты базы цен до старта
+    # продаж и индексировала даже первую очередь — на +12% против движка.
+    # Отсутствующий ключ — не ноль: движок при пропуске берёт 8% годовых
+    # (_phase_sales_price_inflation_factor), и книга обязана взять те же 8%,
+    # иначе О2/О3 продаются по ценам первой очереди — минус 2,5 млрд выручки
+    # на дефолтных вводных, которых нет в расчёте.
+    price_inflation = float(p.get("sales_price_inflation_pct", 8.0) or 0) / 100.0 if count > 1 else 0.0
+    cost_inflation = float(p.get("cost_inflation_pct", 8.0) or 0) / 100.0 if count > 1 else 0.0
+
+    for index in range(4):
+        row = 88 + index
+        active = index < count
+        crow = canon_rows[index] if active and index < len(canon_rows) else {}
+        phase = phases[index] if index < len(phases) else {}
+        put(f"B{row}", text="Да" if active else "Нет", label=f"очередь {index + 1}")
+        offset = float(phase.get("start_offset_months") or 0) if active else 0.0
+        put(f"D{row}", number=start_serial if not active else
+            (_v4_excel_serial(add_months(str(x.get("project_start") or "2027-01-01"), int(offset)))
+             or start_serial), label=f"старт очереди {index + 1}")
+        # Ноль здесь осмыслен: «разрешение уже есть, строим сразу». Прежде стояло
+        # `x.get("ird_months") or 18`, а ноль в Python ложен — и в книгу уезжали
+        # восемнадцать месяцев. Движок считал РнС в день старта и БРИДЖ не брал
+        # вовсе, книга считала его полтора года: 1,28 млрд тела и 190 млн
+        # процентов, которых в проекте нет. Читаем через n(): она подменяет
+        # только None и пустую строку.
+        put(f"E{row}", number=max(float(IRD_MONTHS_MIN), n(x, "ird_months", 18.0)),
+            label=f"ИРД очереди {index + 1}")
+        months = phase.get("construction_months")
+        put(f"F{row}", number=(float(months) if months not in (None, "")
+                               else n(x, "construction_months", 24.0)),
+            label=f"стройка очереди {index + 1}")
+        put(f"G{row}", number=n(x, "sales_lag_months", 0.0), label=f"лаг очереди {index + 1}")
+        put(f"P{row}", number=shared["purchase"][index] if active else 0.0, label="доля покупки")
+        # Свои деньги — один котёл на проект: без деления каждая очередь взяла
+        # бы всю сумму. Умолчание движка то же, что у покупки, — всё в первой.
+        put(f"AI{row}", number=shared["own_funds"][index] if active else 0.0,
+            label="доля собственных средств")
+        put(f"Q{row}", number=shared["land_rights"][index] if active else 0.0, label="доля ВРИ")
+        put(f"R{row}", number=(
+            (social_cash_by_phase[index] if index < len(social_cash_by_phase) else 0.0)
+            if social_cash_by_phase is not None
+            else shared["social_compensation"][index]) if active else 0.0,
+            label="доля соцнагрузки")
+        offset_years = (offset if active else 0.0) / 12.0
+        put(f"S{row}", number=(1.0 + price_inflation) ** offset_years, label="множитель цены")
+        put(f"T{row}", number=(1.0 + cost_inflation) ** offset_years, label="множитель затрат")
+        # Доли лимитов — от движковых лимитов фаз, а не от квартирных весов:
+        # очередь с офисами на 13,5 млрд получала 28% лимита ПФ по весу
+        # квартир, и книга недосчитывала плату за невыбранный лимит вдвое.
+        # Без движка (fallback) — живой формулой от полных расходов очереди:
+        # блочные итоги CAPEX несут покупку, ВРИ, социалку и объекты.
+        pf_hint = list((finance_hints or {}).get("pf_limit_by_phase") or [])
+        bridge_hint = list((finance_hints or {}).get("bridge_peak_by_phase") or [])
+        pf_hint = _v4_fold_tail(pf_hint, len(pf_hint), count) if pf_hint else []
+        bridge_hint = _v4_fold_tail(bridge_hint, len(bridge_hint), count) if bridge_hint else []
+        pf_total = sum(pf_hint)
+        bridge_total = sum(bridge_hint)
+        if active and pf_total > 0 and index < len(pf_hint):
+            put(f"V{row}", number=pf_hint[index] / pf_total, label="доля лимита ПФ")
+            put(f"U{row}", number=(bridge_hint[index] / bridge_total
+                                   if bridge_total > 0 and index < len(bridge_hint)
+                                   else pf_hint[index] / pf_total),
+                label="доля лимита БРИДЖ")
+        elif active:
+            need_cell = ("'CAPEX'!$B$35", "'CAPEX'!$B$69",
+                         "'CAPEX'!$B$103", "'CAPEX'!$B$137")[index]
+            need_total = "SUM('CAPEX'!$B$35,'CAPEX'!$B$69,'CAPEX'!$B$103,'CAPEX'!$B$137)"
+            share_formula = f"IFERROR({need_cell}/{need_total},{1.0 if index == 0 else 0.0})"
+            put(f"U{row}", formula=share_formula, label="доля лимита БРИДЖ")
+            put(f"V{row}", formula=share_formula, label="доля лимита ПФ")
+        else:
+            put(f"U{row}", number=0.0, label="доля лимита БРИДЖ")
+            put(f"V{row}", number=0.0, label="доля лимита ПФ")
+        put(f"W{row}", number=num_row(crow.get("apartments"), "gns"), label="ГНС квартир")
+        put(f"X{row}", number=num_row(crow.get("ground_commercial"), "gns"),
+            label="ГНС коммерции")
+        put(f"Y{row}", number=num_row(crow.get("underground_parking"), "gns"),
+            label="ГНС подземная")
+        put(f"Z{row}", number=num_row(crow.get("apartments"), "saleable"),
+            label="прод. квартир")
+        put(f"AA{row}", number=num_row(crow.get("ground_commercial"), "saleable"),
+            label="прод. коммерции")
+        put(f"AB{row}", number=num_row(crow.get("underground_parking"), "units"),
+            label="паркинг, шт.")
+        put(f"AC{row}", number=num_row(crow.get("storage"), "units"), label="кладовые, шт.")
+        put(f"AE{row}", number=0.0, label="инфляция цены")
+        put(f"AF{row}", number=0.0, label="инфляция затрат")
+        # Тренд темпа продаж — движковый pace (25% по умолчанию): вес месяца
+        # растёт линейно от старта продаж к РВЭ, после РВЭ не действует.
+        # Дефолт шаблона 1%/мес компаундился всё окно продаж и смещал объём
+        # в дорогие месяцы: +36 млн по квартирам на Мытищах из ниоткуда.
+        put(f"AD{row}", number=float(x.get("pace_adjustment_pct") or 0) / 100.0,
+            label="тренд темпа продаж")
+
+    # --- ступени ставки ПФ -------------------------------------------------
+    # Лестница — вводная и здесь: блок ячеек внизу «Вводных», формулы строки 41
+    # CF-листов ссылаются на него (владелец, 20.08.2026: «сейчас-то надбавка —
+    # это вводная»). Пустое поле оставляет одну ставку B28, как было.
+    _ladder_steps = pf_special_steps(x.get("pf_special_steps"))
+    _ladder_refs: list[tuple[str, str]] = []
+    _ladder_swapped = 0
+    if _ladder_steps:
+        try:
+            xml, _ladder_refs = _v4_ladder_rows_xml(xml, _ladder_steps)
+        except Exception as exc:
+            _ladder_steps = []
+            missing.append("Вводные · ступени ставки ПФ: " + _error_location(exc))
+
+    # --- сборка ------------------------------------------------------------
+    # Кэшированные результаты формул шаблона стираются на всех листах:
+    # просмотрщики (Telegram, iOS) формулы не считают и показывали числа
+    # проекта, под который книга собиралась в прошлый раз, — «модель не
+    # подтянула вводные». Excel пересчитает всё при открытии
+    # (fullCalcOnLoad уже стоит в книге).
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as archive:
+        for item in source.infolist():
+            payload = source.read(item.filename)
+            if item.filename == sheet_path:
+                payload = xml.encode("utf-8")
+            elif item.filename == report_sheet_path:
+                payload = report_xml.encode("utf-8")
+            elif item.filename == tep_sheet_path:
+                payload = tep_xml.encode("utf-8")
+            elif item.filename == capex_sheet_path:
+                payload = capex_xml.encode("utf-8")
+            elif item.filename == rates_sheet_path:
+                payload = rates_xml.encode("utf-8")
+            elif item.filename == sources_sheet_path:
+                payload = sources_xml.encode("utf-8")
+            elif item.filename == checks_sheet_path:
+                payload = checks_xml.encode("utf-8")
+            if item.filename.startswith("xl/worksheets/") and item.filename.endswith(".xml"):
+                text = payload.decode("utf-8")
+                text = re.sub(r"(<x:f(?:\s[^>]*)?>[^<]*</x:f>)<x:v>[^<]*</x:v>", r"\1", text)
+                text = re.sub(r"(<x:f(?:\s[^>]*)?/>)<x:v>[^<]*</x:v>", r"\1", text)
+                if _ladder_steps and "'Вводные'!$B$28" in text:
+                    text, swapped = _v4_step_worksheet_xml(text, _ladder_steps, _ladder_refs)
+                    _ladder_swapped += swapped
+                payload = text.encode("utf-8")
+            archive.writestr(item, payload)
+    source.close()
+    if _ladder_steps and not _ladder_swapped:
+        # Ступени заданы, а формулы не тронуты — книга посчитает по одной
+        # ставке, отчёт по лестнице, и оба будут выглядеть достоверно.
+        missing.append("CF · ступени ставки по покрытию эскроу")
+
+    stem = _safe_file_stem(title, "project")
+    filename = f"DevelopAid_модель_{stem}_{date.today().isoformat()}.xlsx"
+    return out.getvalue(), filename, {"missing": missing, "phased": count > 1}
+
+
+class WorkbookExportRequest(BaseModel):
+    inputs: dict[str, Any]
+    tep: dict[str, dict[str, Any]]
+    rates: list[dict[str, Any]] = []
+    phasing: dict[str, Any] = {}
+    project_name: str = ""
+    scenario: str = "base"
+
+
+_XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+@app.post("/report/workbook")
+def report_workbook(req: WorkbookExportRequest) -> Response:
+    try:
+        content, filename, meta = build_project_workbook(
+            req.inputs, req.tep, req.rates, req.phasing,
+            project_name=req.project_name, scenario=req.scenario,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Не удалось собрать книгу: {exc}") from exc
+    if meta.get("missing"):
+        # Молча пропущенное поле — потерянные данные: доносим в журнал.
+        _TELEGRAM_RUNTIME["last_error"] = "Книга v4, без соответствия: " + "; ".join(
+            str(item) for item in meta["missing"][:6])
+    encoded_name = urllib.parse.quote(filename)
+    return Response(
+        content=content,
+        media_type=_XLSX_MEDIA_TYPE,
+        headers={
+            "Content-Disposition":
+                f"attachment; filename=DevelopAid_model.xlsx; filename*=UTF-8''{encoded_name}",
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# Выгрузка в шаблон ПЛАТО: заполняем только листы-вводные, остальное считает
+# сам шаблон. В templates/PLATO_template.xlsx около ста тысяч формул на 27
+# листах, поэтому трогать их нельзя — иначе рушится вся модель.
+# ---------------------------------------------------------------------------
+
+_PLATO_TEMPLATE_PATH = Path(__file__).resolve().parent / "templates" / "PLATO_template.xlsx"
+
+# Лист «Вводные»: подпись параметра -> ключ модели и способ пересчёта.
+#   number — как есть, pct — проценты в доли, date — дата, bool — Да/Нет.
+_PLATO_INPUT_MAP: list[tuple[str, str, str]] = [
+    ("Стоимость покупки / цена входа", "purchase_price_mln", "number"),
+    ("Начало проекта", "project_start", "date"),
+    ("Срок строительства", "construction_months", "number"),
+    ("Стартовая цена квартир", "apartment_price_th", "number"),
+    ("Стартовая цена коммерции", "commercial_price_th", "number"),
+    ("Цена машино-места", "parking_price_th", "number"),
+    ("Цена кладовой", "storage_price_th", "number"),
+    ("Доля продаж до РВЭ", "share_before_rve_pct", "pct"),
+    ("Смещение темпа продаж к поздним месяцам", "pace_adjustment_pct", "pct"),
+    ("Инфляция после РВЭ", "inflation_after_rve_pct", "pct"),
+    ("Сезонное снижение темпа", "seasonal_reduction_pct", "pct"),
+    ("Рост цены — этап 1", "growth_stage1_pct", "pct"),
+    ("Рост цены — этап 2", "growth_stage2_pct", "pct"),
+    ("Рост цены — этап 3", "growth_stage3_pct", "pct"),
+    ("Рост цены — этап 4", "growth_stage4_pct", "pct"),
+    ("ИРД и согласования", "ird_th_per_sqm", "number"),
+    ("Проектирование стадии П", "design_p_th_per_sqm", "number"),
+    ("Проектирование стадии РД", "design_rd_th_per_sqm", "number"),
+    ("Подготовительные работы", "preparation_th_per_sqm", "number"),
+    ("Основное строительство ЖК", "main_above_th_per_sqm", "number"),
+    ("Наружные инженерные сети", "utilities_th_per_sqm", "number"),
+    ("Благоустройство", "landscaping_th_per_sqm", "number"),
+    ("Сдача и ввод", "commissioning_th_per_sqm", "number"),
+    ("Содержание стройплощадки", "site_maintenance_th_per_sqm", "number"),
+    ("Вознаграждение генподрядчика", "gc_fee_pct", "pct"),
+    ("Резерв", "reserve_pct", "pct"),
+    ("Управление проектом", "project_management_pct", "pct"),
+    ("Маркетинг", "marketing_pct", "pct"),
+    ("Расходы на продажи", "selling_pct", "pct"),
+    ("Налог на прибыль", "profit_tax_pct", "pct"),
+    ("НДС", "vat_pct", "pct"),
+    ("Спред БРИДЖ", "bridge_spread_pp", "pct"),
+    ("Спред капитализации БРИДЖ", "bridge_cap_spread_pp", "pct"),
+    ("Спред ПФ", "pf_spread_pp", "pct"),
+    ("Специальная ставка ПФ", "pf_special_pct", "pct"),
+    ("Плата за лимит", "limit_fee_pct", "pct"),
+    ("Плата за резервирование", "reservation_fee_pct", "pct"),
+    ("Ставка дисконтирования", "discount_rate_pct", "pct"),
+    ("Срок ИРД до РнС", "ird_months", "number"),
+    ("Лаг старта продаж после РнС", "sales_lag_months", "number"),
+    ("Лаг погашения БРИДЖ после РнС", "bridge_repay_lag_months", "number"),
+    ("Остаточные продажи после РВЭ", "residual_sales_months", "number"),
+    # Социальная нагрузка
+    ("Количество мест", "kindergarten_places", "number"),          # блок ДОУ
+    ("Мощность", "clinic_capacity", "number"),
+    ("Срок строительства", "kindergarten_months", "number"),        # уточняется блоком
+    # Отдельно стоящие объекты
+    ("Продаваемая площадь", "offices_saleable_sqm", "number"),
+    ("Количество машино-мест", "above_parking_spaces", "number"),
+]
+
+# Поля, где шаблон считает своё вместо нашего и потому обязан уступить.
+# Себестоимость соцобъектов и мощность поликлиники он тянет с листа
+# «Расчет ВРИ (ТЭП)» — остаток прежней методики, расходящийся с движком.
+_PLATO_OVERRIDE_TEMPLATE_FORMULA = frozenset({
+    "kindergarten_cost_mln_per_place",
+    "school_cost_mln_per_place",
+    "clinic_cost_mln_per_unit",
+    "clinic_capacity",
+})
+
+# Блочные параметры: (блок в колонке A, подпись в B) -> ключ и тип.
+_PLATO_BLOCK_MAP: list[tuple[str, str, str, str]] = [
+    ("ДОУ", "Количество мест", "kindergarten_places", "number"),
+    ("ДОУ", "Срок строительства", "kindergarten_months", "number"),
+    ("СОШ", "Количество мест", "school_places", "number"),
+    ("СОШ", "Срок строительства", "school_months", "number"),
+    ("Поликлиника", "Мощность", "clinic_capacity", "number"),
+    ("Поликлиника", "Срок строительства", "clinic_months", "number"),
+    # Себестоимость соцобъектов в карту не входила, и в ячейках оставалось то,
+    # что лежало в шаблоне: 0,0097 млн ₽ за место вместо 2,75. Социальная
+    # нагрузка выходила 0,6 млн ₽ вместо 193,2 млн ₽, а прибыль и LLCR — выше
+    # настоящих. Движок эти же поля читает, значит и шаблон обязан их получать.
+    ("ДОУ", "Себестоимость одного места", "kindergarten_cost_mln_per_place", "number"),
+    ("СОШ", "Себестоимость одного места", "school_cost_mln_per_place", "number"),
+    ("Поликлиника", "Себестоимость единицы мощности", "clinic_cost_mln_per_unit", "number"),
+    ("МФОЦ / офисы", "Общая площадь (GBA)", "offices_gba_sqm", "number"),
+    ("МФОЦ / офисы", "Продаваемая площадь", "offices_saleable_sqm", "number"),
+    ("МФОЦ / офисы", "Срок строительства", "offices_months", "number"),
+    ("МФОЦ / офисы", "Себестоимость строительства", "offices_cost_th_per_sqm", "number"),
+    ("МФОЦ / офисы", "Стартовая цена", "offices_price_th_per_sqm", "number"),
+    ("МФОЦ / офисы", "Доля продаж до РВЭ", "offices_share_before_rve_pct", "pct"),
+    ("МФОЦ / офисы", "Остаточные продажи после РВЭ", "offices_residual_months", "number"),
+    ("МФОЦ / офисы", "Объект включен", "offices_enabled", "bool"),
+    ("ТЦ / коммерция", "Общая площадь (GBA)", "retail_gba_sqm", "number"),
+    ("ТЦ / коммерция", "Продаваемая площадь", "retail_saleable_sqm", "number"),
+    ("ТЦ / коммерция", "Срок строительства", "retail_months", "number"),
+    ("ТЦ / коммерция", "Себестоимость строительства", "retail_cost_th_per_sqm", "number"),
+    ("ТЦ / коммерция", "Стартовая цена", "retail_price_th_per_sqm", "number"),
+    ("ТЦ / коммерция", "Доля продаж до РВЭ", "retail_share_before_rve_pct", "pct"),
+    ("ТЦ / коммерция", "Остаточные продажи после РВЭ", "retail_residual_months", "number"),
+    ("ТЦ / коммерция", "Объект включен", "retail_enabled", "bool"),
+    ("Наземный парки", "Количество машино-мест", "above_parking_spaces", "number"),
+    ("Наземный парки", "Себестоимость одного места", "above_parking_cost_mln_per_space", "number"),
+    ("Наземный парки", "Срок строительства", "above_parking_months", "number"),
+    ("Наземный парки", "Стартовая цена места", "above_parking_price_mln_per_space", "number"),
+    ("Наземный парки", "Доля продаж до РВЭ", "above_parking_share_before_rve_pct", "pct"),
+    ("Наземный парки", "Остаточные продажи после РВЭ", "above_parking_residual_months", "number"),
+    ("Наземный парки", "Объект включен", "above_parking_enabled", "bool"),
+    # У отдельно стоящих объектов рост цены и календарь задаются напрямую —
+    # в отличие от жилья, где шаблон выводит месячный рост из целевого. Без
+    # этих строк объекты считались по умолчанию шаблона, а не по модели.
+    ("МФОЦ / офисы", "Ежемесячный рост цены до РВЭ", "offices_growth_pre_pct", "pct"),
+    ("МФОЦ / офисы", "Ежемесячный рост цены после РВЭ", "offices_growth_post_pct", "pct"),
+    ("МФОЦ / офисы", "Начало строительства", "offices_start", "date"),
+    ("МФОЦ / офисы", "Старт продаж", "offices_sales_start", "date"),
+    ("ТЦ / коммерция", "Ежемесячный рост цены до РВЭ", "retail_growth_pre_pct", "pct"),
+    ("ТЦ / коммерция", "Ежемесячный рост цены после РВЭ", "retail_growth_post_pct", "pct"),
+    ("ТЦ / коммерция", "Начало строительства", "retail_start", "date"),
+    ("ТЦ / коммерция", "Старт продаж", "retail_sales_start", "date"),
+    ("Наземный парки", "Ежемесячный рост цены до РВЭ", "above_parking_growth_pre_pct", "pct"),
+    ("Наземный парки", "Ежемесячный рост цены после РВЭ", "above_parking_growth_post_pct", "pct"),
+    ("Наземный парки", "Начало строительства", "above_parking_start", "date"),
+    ("Наземный парки", "Старт продаж", "above_parking_sales_start", "date"),
+]
+
+# Лист «Расчет ВРИ (ТЭП)»: подпись в колонке B -> что кладём в колонку D.
+_PLATO_TEP_ROWS: list[tuple[str, str]] = [
+    ("Количество квартир", "apartments.units"),
+    ("СПП жилая", "apartments.gns"),
+    ("СПП нежилой части жилых зданий", "ground_commercial.gns"),
+    ("НП жилая", "apartments.total_area"),
+    ("НП нежилой части жилых зданий", "ground_commercial.total_area"),
+    ("Площадь квартир", "apartments.saleable"),
+    ("Нежилая наземная площадь (ННП)", "ground_commercial.saleable"),
+    ("Постоянные парковки", "underground_parking.units"),
+    # ТЭП!I33 шаблона складывает постоянные и гостевые парковки. Гостевые в
+    # модели не продаются, и оставленное в шаблоне чужое значение добавляло
+    # к расчёту несуществующие машино-места — обнуляем явно.
+    ("Гостевые парковки", "underground_parking.guest_units"),
+]
+
+
+def _plato_normalize(text: Any) -> str:
+    return re.sub(r"\s+", " ", str(text or "").replace("ё", "е").replace("—", "-")).strip().lower()
+
+
+def _plato_value(kind: str, value: Any) -> Any:
+    if kind == "date":
+        text = _land_text(value)
+        try:
+            return datetime.strptime(text[:10], "%Y-%m-%d")
+        except ValueError:
+            return None
+    if kind == "bool":
+        return "Да" if bool(value) else "Нет"
+    number = _land_float(value)
+    if number is None:
+        return None
+    return number / 100.0 if kind == "pct" else number
+
+
+def _plato_tep_value(tep: dict[str, dict[str, Any]], path: str) -> float | None:
+    product, field = path.split(".", 1)
+    values = tep.get(product) or {}
+    if field not in values:
+        # Показателя нет в модели — значит в шаблоне на его месте данные чужого
+        # проекта, и оставлять их нельзя: они попадут в расчёт как свои.
+        return 0.0
+    return _land_float(values.get(field))
+
+
+# Лист «ЗУ» шаблона — не справка, а действующий блок: cf_1 ссылается на него
+# 357 раз. В нём уже собраны рассрочка ВРИ помесячно (строка 64), окончательный
+# платёж (65) и проценты на остаток по ключевой плюс спред (66). Не заполнены
+# только вводные, а вместо них в шаблоне остались данные чужого проекта:
+# кадастровый номер на Лётной, плановая кадастровая стоимость 1,51 млрд и даты
+# 2024 года. Мы их вычищаем и подставляем свои.
+_PLATO_LAND_BLOCKS = ((22, 31), (40, 49))
+_PLATO_LAND_ROWS = (
+    "Кад.№", "Адрес", "Площадь, кв.м", "ВРИ", "УПКС жилье",
+    "Кадастровая стоимость", "План. кад.стоимость, руб.",
+    "Ставка арендной платы, %", "Смена ВРИ, руб.", "Дата первого платежа:",
+)
+
+
+def _plato_land_parcel(inputs: dict[str, Any]) -> dict[str, Any]:
+    """Сведения об участке из последнего поиска ЕГРН или расчёта Подмосковья."""
+    lookup = (inputs.get("_land_lookup") or {}).get("results") or []
+    parcel = next((item for item in lookup if item.get("kind") == "land"), None)
+    if parcel:
+        return parcel
+    parcels = ((inputs.get("_mo_calc") or {}).get("vri") or {}).get("parcels") or []
+    return parcels[0] if parcels else {}
+
+
+def _plato_drop_external_links(data: bytes) -> bytes:
+    """Убрать из книги ссылку на отсутствующий внешний файл.
+
+    В шаблоне живёт ссылка на лист «ОПТИМУМ» с пометкой xlPathMissing: файла,
+    на который она указывает, нет. Excel при открытии спрашивает про обновление
+    связей, а часть программ такую книгу просто не грузит. Расчёт от неё не
+    зависит — ни одна формула наружу не смотрит, — поэтому связь удаляется
+    целиком: сама часть, ссылка из книги, отношение и запись типа.
+    """
+    source = zipfile.ZipFile(io.BytesIO(data))
+    if not any("externalLink" in name for name in source.namelist()):
+        return data
+    buffer = io.BytesIO()
+    result = zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED)
+    for item in source.infolist():
+        if "externalLink" in item.filename:
+            continue
+        payload = source.read(item.filename)
+        if item.filename == "xl/workbook.xml":
+            payload = re.sub(rb"<externalReferences>.*?</externalReferences>", b"", payload, flags=re.S)
+        elif item.filename == "xl/_rels/workbook.xml.rels":
+            payload = re.sub(rb"<Relationship[^>]*externalLink[^>]*/>", b"", payload)
+        elif item.filename == "[Content_Types].xml":
+            payload = re.sub(rb"<Override[^>]*externalLink[^>]*/>", b"", payload)
+        result.writestr(item, payload)
+    result.close()
+    return buffer.getvalue()
+
+
+def _plato_merge_management_and_smr(
+    sheet: Any, rows_by_label: dict[str, list[int]],
+    inputs: dict[str, Any], tep: dict[str, dict[str, Any]],
+    filled: list[dict[str, Any]],
+) -> None:
+    """Слить техзаказчика с управлением, а подземные СМР — с наземными.
+
+    Книга ведёт одну строку «Управление проектом» и одну «Основное
+    строительство ЖК». Движок считает управление, технический заказчик и
+    авторский надзор порознь, а СМР — отдельно по наземной и подземной части.
+    Пишется в колонки сценариев D–F. Колонка G — переключатель: там формула
+    INDEX, выбирающая сценарий, и запись значением её убивает.
+
+    Разложить их в книге некуда, поэтому передаётся то же самое одним числом:
+    процент, дающий сумму трёх статей на базе книги, и ставка, дающая сумму
+    обеих частей на всём ГНС.
+    """
+    result = calculate(CalcRequest(inputs=dict(inputs), tep=dict(tep), rates=[]))
+    capex = result.get("capex") or {}
+
+    def amount(name: str) -> float:
+        value = capex.get(name)
+        return float(value) if isinstance(value, (int, float)) else 0.0
+
+    # База книги под процент управления — строительные статьи плюс соцобъекты:
+    # ровно то, что она показывает строками «Расходы на строительство» и
+    # «Строительство соцобъектов».
+    base = sum(amount(name) for name in (
+        "ird", "design_p", "design_rd", "preparation", "main_above", "main_under",
+        "gc_fee", "utilities", "landscaping", "commissioning", "site_maintenance",
+        "reserve", "social",
+    ))
+    management = amount("project_management") + amount("technical_supervision") + amount("author_supervision")
+    if base > 0 and management > 0:
+        rows = rows_by_label.get(_plato_normalize("Управление проектом")) or []
+        if rows:
+            share = round(management / base, 6)
+            for column in range(4, 7):
+                sheet.cell(row=rows[0], column=column).value = share
+            filled.append({"sheet": "Вводные", "row": rows[0],
+                           "label": "Управление проектом · с техзаказчиком и надзором",
+                           "value": share})
+
+    gns = sum(float((tep.get(key) or {}).get("gns") or 0.0) for key in tep)
+    smr = amount("main_above") + amount("main_under")
+    if gns > 0 and smr > 0:
+        rows = rows_by_label.get(_plato_normalize("Основное строительство ЖК")) or []
+        if rows:
+            rate = round(smr / gns / 1000.0, 6)
+            for column in range(4, 7):
+                sheet.cell(row=rows[0], column=column).value = rate
+            filled.append({"sheet": "Вводные", "row": rows[0],
+                           "label": "Основное строительство · с подземной частью",
+                           "value": rate})
+
+
+def _plato_fill_land_sheet(
+    workbook: Any, inputs: dict[str, Any], filled: list[dict[str, Any]]
+) -> None:
+    if "ЗУ" not in workbook.sheetnames:
+        return
+    sheet = workbook["ЗУ"]
+
+    def put(row: int, value: Any, label: str) -> None:
+        sheet.cell(row=row, column=3).value = value
+        filled.append({"sheet": "ЗУ", "row": row, "label": label, "value": value})
+
+    parcel = _plato_land_parcel(inputs)
+    first_block = True
+    for start, end in _PLATO_LAND_BLOCKS:
+        labels = {
+            _plato_normalize(sheet.cell(row=row, column=2).value): row
+            for row in range(start, end + 1)
+        }
+        for name in _PLATO_LAND_ROWS:
+            row = labels.get(_plato_normalize(name))
+            if row:
+                sheet.cell(row=row, column=3).value = None
+        if not first_block:
+            continue
+        first_block = False
+        for name, value in (
+            ("Кад.№", _land_text(parcel.get("cadastral_number"))),
+            ("Адрес", _land_text(parcel.get("address"))),
+            ("Площадь, кв.м", _land_float(parcel.get("area_sqm"))),
+            ("ВРИ", _land_text(parcel.get("permitted_use"))),
+            ("Кадастровая стоимость", _land_float(parcel.get("cadastral_value_rub"))),
+        ):
+            row = labels.get(_plato_normalize(name))
+            if row and value not in (None, ""):
+                put(row, value, name)
+
+    # Условия рассрочки ВРИ: доля к оплате после льготы, спред и окно платежей.
+    permit = add_months(d(inputs.get("project_start", "2027-01-01")),
+                        max(IRD_MONTHS_MIN, int(n(inputs, "ird_months", 18))))
+    gross = n(inputs, "land_rights_cost_mln") * 1_000_000
+    relief, net = vri_relief(inputs, gross)
+    schedule = build_vri_schedule(inputs, net, permit)
+    labels = {
+        _plato_normalize(sheet.cell(row=row, column=2).value): row
+        for row in range(56, 70)
+    }
+    share = (net / gross) if gross else 1.0
+    row = labels.get(_plato_normalize("Доля оплаты"))
+    if row:
+        put(row, round(share, 6), "Доля оплаты по ВРИ")
+    row = labels.get(_plato_normalize("%% за рассрочку"))
+    if row:
+        put(row, round(n(inputs, "vri_interest_spread_pp", 3.0) / 100.0, 6), "Спред по рассрочке ВРИ")
+
+    rows = schedule.get("rows") or []
+    if not rows and gross > 0:
+        # Сумма ВРИ есть, а графика нет — так бывает, когда стоимость введена
+        # руками, а расчёт ВРИ выключен. Уйти отсюда молча нельзя: в книге
+        # останутся её собственные формулы — первый платёж в дату РнС и
+        # рассрочка на 72 месяца равными долями. Движок же платит по дате
+        # обязательства, по умолчанию за месяц до РнС, то есть до открытия ПФ,
+        # и платёж несёт БРИДЖ. Расхождение выходит не в графике, а в объёме
+        # долга: книга выбирала ПФ на 1,2 млрд ₽ меньше расчёта.
+        obligation, _basis, _estimated = vri_obligation_date(inputs, permit)
+        rows = [{"date": obligation.isoformat(), "amount": net}]
+    if not rows:
+        return
+    first = d(rows[0]["date"])
+    last = d(rows[-1]["date"])
+    row = labels.get(_plato_normalize("Первый"))
+    if row:
+        put(row, datetime(first.year, first.month, first.day), "Первый платёж ВРИ")
+    row = labels.get(_plato_normalize("Последний"))
+    if row:
+        # В шаблоне «Последний» по умолчанию равен «Первому», поэтому окно
+        # платежей пустое и вся плата падает в первый месяц.
+        put(row, datetime(last.year, last.month, last.day), "Последний платёж ВРИ")
+    row = labels.get(_plato_normalize("В месяц"))
+    if row:
+        months = max(1, months_between(first, last))
+        sheet.cell(row=row, column=3).value = f"=C{row - 4}/{months}"
+        filled.append({"sheet": "ЗУ", "row": row,
+                       "label": "Ежемесячный платёж ВРИ", "value": f"1/{months}"})
+    _plato_repair_vri_columns(sheet, labels, filled)
+
+
+def _plato_repair_vri_columns(
+    sheet: Any, labels: dict[str, int], filled: list[dict[str, Any]]
+) -> None:
+    """Достраивает первые две колонки рассрочки ВРИ.
+
+    В шаблоне окончательный платёж в колонке D задан статикой
+    ='Расчет ВРИ (ТЭП)'!D73 — плата падает в первый месяц модели независимо
+    от дат, а E65 пустая. Проценты на остаток в D66 и E66 тоже отсутствуют,
+    поэтому первые два месяца их не начисляют. С третьей колонки формулы
+    правильные — повторяем их для первых двух.
+    """
+    final_row = labels.get(_plato_normalize("Окончательный платеж"))
+    interest_row = labels.get(_plato_normalize("Плата за рассрочку"))
+    monthly_row = labels.get(_plato_normalize("В месяц"))
+    total_row = labels.get(_plato_normalize("Плата за ВРИ итого"))
+    if not (final_row and interest_row and monthly_row and total_row):
+        return
+    fixes = {
+        f"D{final_row}": f"=IF(D19=$C${final_row - 2},$C${total_row},0)",
+        f"E{final_row}": f"=IF(E19=$C${final_row - 2},$C${total_row}-SUM($D{monthly_row}:D{monthly_row}),0)",
+        f"D{interest_row}": f"=IF(D19>=$C${final_row - 3},$C${total_row}*D{interest_row - 5}/12,0)",
+        f"E{interest_row}": (
+            f"=IF(E19>=$C${final_row - 3},($C${total_row}-SUM($D{monthly_row}:D{final_row}))"
+            f"*E{interest_row - 5}/12,0)"
+        ),
+    }
+    for reference, formula in fixes.items():
+        sheet[reference] = formula
+    filled.append({"sheet": "ЗУ", "row": final_row,
+                   "label": "Первые месяцы рассрочки ВРИ", "value": "формулы достроены"})
+
+
+from openpyxl.utils import get_column_letter, column_index_from_string  # noqa: E402
+from openpyxl.formula.translate import Translator  # noqa: E402
+
+
+def _plato_fix_social_capex_links(
+    workbook: Any, filled: list[dict[str, Any]], missing: list[str],
+) -> None:
+    """CAPEX соцобъектов при денежной компенсации ссылался на количество мест.
+
+    Формулы G6:G8 листа «ОБЪЕКТЫ КРТ» брали 'Расчет ВРИ (ТЭП)'!D54:D56 и делили
+    на тысячу. Но в строках 54–56 лежит мощность — 15 мест, 10, 5, — а деньги
+    ниже, в 84–86. Вместо 188,4 млн ₽ по ДОО выходило 0,015: ошибка ссылки на
+    строку, не методики. Подписи там повторяются дважды, и промахнуться легко —
+    на этом же месте я уже спотыкался, записывая компенсацию.
+    """
+    if "ОБЪЕКТЫ КРТ" not in workbook.sheetnames or "Расчет ВРИ (ТЭП)" not in workbook.sheetnames:
+        missing.append("ОБЪЕКТЫ КРТ · ссылки на компенсацию")
+        return
+    tep = workbook["Расчет ВРИ (ТЭП)"]
+    start = next(
+        (row for row in range(1, tep.max_row + 1)
+         if "компенсац" in _plato_normalize(tep.cell(row=row, column=2).value)),
+        None,
+    )
+    if not start:
+        missing.append("ОБЪЕКТЫ КРТ · ссылки на компенсацию")
+        return
+    money = {}
+    for row in range(start + 1, min(start + 8, tep.max_row + 1)):
+        label = _plato_normalize(tep.cell(row=row, column=2).value)
+        if label in ("доо", "школа", "поликлиника"):
+            money[label] = row
+
+    sheet = workbook["ОБЪЕКТЫ КРТ"]
+    changed = 0
+    for cell_row, label in ((6, "доо"), (7, "школа"), (8, "поликлиника")):
+        target = money.get(label)
+        cell = sheet.cell(row=cell_row, column=7)
+        if not target or not isinstance(cell.value, str):
+            continue
+        # Меняем только ссылку и убираем перевод в миллионы: в строках 84–86
+        # деньги уже в миллионах, делить их на тысячу незачем.
+        fixed = re.sub(
+            r"'Расчет ВРИ \(ТЭП\)'!\$?D\d+\s*/\s*1000",
+            f"'Расчет ВРИ (ТЭП)'!$D${target}",
+            cell.value,
+        )
+        if fixed == cell.value:
+            continue
+        cell.value = fixed
+        changed += 1
+    if not changed:
+        missing.append("ОБЪЕКТЫ КРТ · ссылки на компенсацию")
+        return
+    filled.append({"sheet": "ОБЪЕКТЫ КРТ", "row": 6,
+                   "label": "CAPEX соцобъектов · ссылка на деньги, а не на места",
+                   "value": changed})
+
+
+def _plato_backward_range(formula: str) -> bool:
+    """Есть ли в формуле диапазон, у которого конец левее начала."""
+    for start, end in re.findall(r"\$?([A-Z]{1,2})\d+:\$?([A-Z]{1,2})\d+", formula):
+        if column_index_from_string(end) < column_index_from_string(start):
+            return True
+    return False
+
+
+def _plato_apply_pf_cashflow(
+    workbook: Any, filled: list[dict[str, Any]], missing: list[str],
+) -> None:
+    """Живая формула погашения ПФ вместо выборки из листа «факт».
+
+    Строка 61 листа «КРЕДИТЫ» брала погашение из «факта» — фактических данных
+    действующего проекта. На инвестиционном анализе их нет, лист пуст, и долг
+    только накапливался: 1,83 → 7,94 млрд ₽ за двадцать четыре месяца, ни разу
+    не уменьшившись, при том что доступных средств к концу набиралось 9,56.
+    Отсюда и расхождение с расчётом по выборке ПФ и процентам.
+
+    Формула остаётся формулой: аналитик меняет цены или сроки — книга
+    пересчитывает погашение сама. Гасим тем, что накоплено к прошлому месяцу
+    плюс поступления текущего, но не больше остатка долга. Ссылка на
+    предыдущую колонку, а не на строку 51 того же месяца, — иначе выйдет
+    круговая ссылка: строка 51 сама зависит от погашения.
+    """
+    if "КРЕДИТЫ" not in workbook.sheetnames:
+        missing.append("КРЕДИТЫ · движение ПФ")
+        return
+    sheet = workbook["КРЕДИТЫ"]
+    total = 0
+    for row, label in ((60, "Получение ПФ"), (61, "Погашение ПФ")):
+        stale = [c for c in range(2, sheet.max_column + 1)
+                 if isinstance(sheet.cell(row=row, column=c).value, str)
+                 and "факт!" in sheet.cell(row=row, column=c).value]
+        if not stale:
+            continue
+        donor_column = next(
+            (c for c in range(2, sheet.max_column + 1)
+             if isinstance(sheet.cell(row=row, column=c).value, str)
+             and sheet.cell(row=row, column=c).value.startswith("=")
+             and "факт!" not in sheet.cell(row=row, column=c).value
+             and "SUM(" != sheet.cell(row=row, column=c).value[1:5]
+             and c > max(stale)),
+            None,
+        )
+        if not donor_column:
+            missing.append(f"КРЕДИТЫ · {label.lower()}")
+            continue
+        donor = sheet.cell(row=row, column=donor_column).value
+        origin = f"{get_column_letter(donor_column)}{row}"
+        for column in stale:
+            target = f"{get_column_letter(column)}{row}"
+            moved = Translator(donor, origin=origin).translate_formula(target)
+            # Накопительные диапазоны в первой колонке вырождаются
+            # (SUM($S61:R61)): Excel нормализует их и получает ссылку на саму
+            # себя. Считать там нечего — ни выбирать, ни гасить ещё не из чего.
+            if _plato_backward_range(moved):
+                sheet.cell(row=row, column=column).value = 0
+            else:
+                sheet.cell(row=row, column=column).value = moved
+            total += 1
+        filled.append({"sheet": "КРЕДИТЫ", "row": row,
+                       "label": f"{label} · формула вместо листа «факт»",
+                       "value": len(stale)})
+    if not total:
+        missing.append("КРЕДИТЫ · движение ПФ")
+
+
+def _ladder_input_block(ws_in, steps: list[tuple[float, float]],
+                        where: str) -> list[tuple[str, str]]:
+    """Блок ступеней внизу листа «Вводные»: ячейки, на которые смотрит формула.
+
+    Низ листа свободен и никем не адресуется; вставка строк в середину для
+    openpyxl закрыта — он не переписывает формулы при сдвиге. Возвращает пары
+    ссылок (порог, ставка) для `pf_special_steps_formula`.
+    """
+    row_at = ws_in.max_row + 2
+    ws_in.cell(row=row_at, column=1, value="СТУПЕНИ СТАВКИ ПФ ПО ПОКРЫТИЮ ЭСКРОУ")
+    ws_in.cell(row=row_at + 1, column=1,
+               value=f"Правьте значения — {where}. Пустой порог выключает ступень.")
+    row_at += 2
+    refs: list[tuple[str, str]] = []
+    for index, (edge, rate) in enumerate(steps):
+        ws_in.cell(row=row_at, column=1, value=f"Ступень {index + 1} — покрытие от")
+        ws_in.cell(row=row_at, column=2, value=round(edge, 6))
+        ws_in.cell(row=row_at, column=3, value="×")
+        edge_ref = f"Вводные!$B${row_at}"
+        row_at += 1
+        ws_in.cell(row=row_at, column=1, value=f"Ступень {index + 1} — ставка")
+        ws_in.cell(row=row_at, column=2, value=round(rate, 8)).number_format = "0.00%"
+        ws_in.cell(row=row_at, column=3, value="% годовых")
+        refs.append((edge_ref, f"Вводные!$B${row_at}"))
+        row_at += 1
+    return refs
+
+
+def _plato_apply_pf_rate_methodology(
+    workbook: Any, filled: list[dict[str, Any]], missing: list[str],
+    steps: list[tuple[float, float]] | None = None,
+) -> None:
+    """Привести ставку ПФ на листе «КРЕДИТЫ» к действующей методике.
+
+    Шаблон считает ставку двумя ветками: строка 56 «СЗ > Эскроу» — взвешенная
+    сумма базовой и специальной ставок, строка 57 «СЗ < Эскроу» — снижение
+    специальной ставки на трансферный доход (D17) и полка 0,01% годовых выше
+    двух покрытий. Вторая ветка описывает то, чего в кредитном договоре нет:
+    покрывать больше 100% долга нечего, и ниже специальной ставка не идёт.
+    Ровно эти две ветки убраны из движка, и пока они оставались в книге, она
+    считала долг почти бесплатным — 360,3 млн ₽ процентов против 746,5 млн ₽
+    в расчёте на одних и тех же вводных.
+
+    Поэтому строка 55 больше не выбирает ветку, а строка 56 берёт вес покрытия
+    с ограничением сверху. Трогаются только помесячные колонки: в P–R той же
+    строки лежат сводные AVERAGEIF, и их формулы другие.
+    """
+    if "КРЕДИТЫ" not in workbook.sheetnames:
+        missing.append("КРЕДИТЫ · методика ставки ПФ")
+        return
+    sheet = workbook["КРЕДИТЫ"]
+    changed = 0
+    stepped = 0
+    # Лестница — вводная и в книге: пороги и ставки ложатся ячейками на
+    # «Вводные» (колонки K–L свободны и никем не адресуются — проверено по
+    # всем листам), а формула строки 57 ссылается на них. Правка ячейки в
+    # Excel пересчитывает книгу; зашитые в формулу числа пришлось бы менять
+    # по всем месячным колонкам двух очередей (владелец, 20.08.2026:
+    # «сейчас-то надбавка — это вводная»).
+    # Вставить строки в середину листа нельзя: openpyxl при сдвиге формулы не
+    # переписывает, а под блоком финансирования живёт вся карта записи
+    # фиксированными адресами (B82 льгота и далее) — съехало бы всё. Низ листа
+    # свободен и никем не адресуется (проверено по всем листам), блок ложится
+    # туда теми же колонками A–C, в стиле самого листа.
+    step_refs: list[tuple[str, str]] | None = None
+    if steps and "Вводные" in workbook.sheetnames:
+        step_refs = _ladder_input_block(
+            workbook["Вводные"], steps,
+            "формула строки 57 листа «КРЕДИТЫ» читает их отсюда")
+    # Очередей в книге две, и у каждой свой блок: 55–57 у первой, 78–80 у
+    # второй. Правились только строки первой, и на многоочередном проекте
+    # расхождение возвращалось через вторую.
+    for rate_row, coverage_row, special_row, weighted_row in ((55, 53, 57, 56), (78, 76, 80, 79)):
+        # =IF(X$3<$D61,IF(X53>1,X57,X56),X$13) -> =IF(X$3<$D61,X56,X$13)
+        branch = re.compile(
+            rf"^=IF\((?P<col>[A-Z]{{1,2}})\$3<\$D(?P<anchor>\d+),"
+            rf"IF\((?P=col){coverage_row}>1,(?P=col){special_row},(?P=col){weighted_row}\),"
+            rf"(?P=col)\$13\)$"
+        )
+        weight = re.compile(rf"\b([A-Z]{{1,2}}){coverage_row}\b")
+        for column in range(1, sheet.max_column + 1):
+            rate = sheet.cell(row=rate_row, column=column)
+            share = sheet.cell(row=weighted_row, column=column)
+            if not isinstance(rate.value, str) or not isinstance(share.value, str):
+                continue
+            match = branch.match(rate.value.strip())
+            if not match or "MIN(" in share.value:
+                continue
+            col = match.group("col")
+            rate.value = f"=IF({col}$3<$D{match.group('anchor')},{col}{weighted_row},{col}$13)"
+            share.value = weight.sub(rf"MIN(\g<1>{coverage_row},1)", share.value)
+            if steps:
+                # Ступени задали — строка специальной ставки перестаёт быть
+                # константой и выбирается по покрытию того же месяца, как в
+                # движке. Прежнее содержимое ячейки становится последней
+                # ветвью: ниже первой ступени действует обычная ставка.
+                special = sheet.cell(row=special_row, column=column)
+                previous = special.value
+                if isinstance(previous, str) and previous.strip().startswith("="):
+                    base = previous.strip()[1:]
+                elif isinstance(previous, (int, float)):
+                    base = f"{float(previous):.8g}"
+                else:
+                    base = ""
+                if base:
+                    special.value = "=" + pf_special_steps_formula(
+                        f"{col}{coverage_row}", steps, base, refs=step_refs)
+                    stepped += 1
+            changed += 1
+    if not changed:
+        # Шаблон переставили или формулы переписали — молча считать по старому
+        # нельзя, это возвращает расхождение по процентам.
+        missing.append("КРЕДИТЫ · методика ставки ПФ")
+        return
+    filled.append({
+        "sheet": "КРЕДИТЫ", "row": 55,
+        "label": "Ставка ПФ · вес покрытия ограничен 1×", "value": changed,
+    })
+    if steps:
+        if not stepped:
+            # Ступени заданы, а в книгу не легли — это расхождение методик,
+            # и молчать о нём нельзя: книга посчитает по одной ставке, отчёт
+            # по лестнице, и оба будут выглядеть достоверно.
+            missing.append("КРЕДИТЫ · ступени ставки по покрытию эскроу")
+        else:
+            filled.append({
+                "sheet": "КРЕДИТЫ", "row": 57,
+                "label": "Ставка ПФ · ступени по покрытию эскроу", "value": stepped,
+            })
+
+
+def fill_plato_template(
+    inputs: dict[str, Any],
+    tep: dict[str, dict[str, Any]],
+    *,
+    scenario: str = "base",
+    template_path: Path | None = None,
+    project_name: str = "",
+) -> tuple[bytes, dict[str, Any]]:
+    """Заполняет листы-вводные шаблона ПЛАТО, не трогая формулы."""
+    try:
+        from openpyxl import load_workbook
+    except ImportError as exc:  # pragma: no cover - зависимость объявлена в requirements
+        raise HTTPException(
+            status_code=500,
+            detail="Для выгрузки в шаблон ПЛАТО нужен пакет openpyxl. Добавьте его в requirements.txt.",
+        ) from exc
+
+    path = template_path or _PLATO_TEMPLATE_PATH
+    if not path.is_file():
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Шаблон ПЛАТО не найден на сервере: положите файл в "
+                "templates/PLATO_template.xlsx и передеплойте сервис."
+            ),
+        )
+    merged = {**copy.deepcopy(DEFAULT_INPUTS), **(inputs or {})}
+    merged_tep = copy.deepcopy(TEP_DEFAULT)
+    for key, values in (tep or {}).items():
+        if isinstance(values, dict) and key in merged_tep:
+            merged_tep[key].update(values)
+
+    workbook = load_workbook(path, data_only=False, keep_vba=False)
+    filled: list[dict[str, Any]] = []
+    missing: list[str] = []
+
+    sheet = workbook["Вводные"]
+    rows_by_label: dict[str, list[int]] = defaultdict(list)
+    rows_by_block: dict[tuple[str, str], list[int]] = defaultdict(list)
+    for row in range(1, sheet.max_row + 1):
+        block = _plato_normalize(sheet.cell(row=row, column=1).value)
+        label = _plato_normalize(sheet.cell(row=row, column=2).value)
+        if label:
+            rows_by_label[label].append(row)
+            if block:
+                rows_by_block[(block, label)].append(row)
+
+    def write_scenario_row(row: int, value: Any, name: str, *, replace_formula: bool = False) -> None:
+        # Значение модели одно, поэтому оно кладётся во все три сценария:
+        # переключатель в шаблоне тогда не меняет цифры расчёта DevelopAid.
+        # Колонка G обычно выбирает сценарий формулой INDEX и трогать её нельзя,
+        # но у выключателей «Объект включен» сценарных колонок нет вовсе: там
+        # пусто, а в G лежит готовое «Нет». Пока мы писали только в D:F, МФОЦ,
+        # ТЦ и наземный паркинг оставались выключенными в каждой выгрузке, и их
+        # выручка пропадала из модели.
+        # replace_formula — для полей, где шаблон считает своё вместо нашего.
+        # Себестоимость соцобъектов он тянул с листа «Расчет ВРИ (ТЭП)» и давал
+        # 0,0097 млн ₽ за место вместо 2,75: социальная нагрузка выходила
+        # 0,6 млн ₽ вместо 193,2 млн ₽. Считает движок, шаблон обязан показывать
+        # его цифры, а не остатки прежней методики.
+        for column in (4, 5, 6, 7):
+            cell = sheet.cell(row=row, column=column)
+            formula = isinstance(cell.value, str) and cell.value.startswith("=")
+            if formula and not (replace_formula and column != 7):
+                continue
+            cell.value = value
+        filled.append({"sheet": "Вводные", "row": row, "label": name, "value": value})
+
+    for label, key, kind in _PLATO_INPUT_MAP:
+        rows = rows_by_label.get(_plato_normalize(label)) or []
+        if not rows or key not in merged:
+            continue
+        value = _plato_value(kind, merged.get(key))
+        if value is None:
+            continue
+        write_scenario_row(rows[0], value, label)
+
+    for block, label, key, kind in _PLATO_BLOCK_MAP:
+        block_key, label_key = _plato_normalize(block), _plato_normalize(label)
+        rows = rows_by_block.get((block_key, label_key)) or []
+        if not rows:
+            # Подписи блоков в шаблоне длиннее ключа карты, сверяем по началу строки.
+            rows = [
+                row
+                for (found_block, found_label), found_rows in rows_by_block.items()
+                if found_label == label_key and found_block.startswith(block_key)
+                for row in found_rows
+            ]
+        if not rows:
+            missing.append(f"Вводные · {block} · {label}")
+            continue
+        value = _plato_value(kind, merged.get(key))
+        if value is None:
+            continue
+        write_scenario_row(rows[0], value, f"{block} · {label}",
+                           replace_formula=key in _PLATO_OVERRIDE_TEMPLATE_FORMULA)
+
+    # Прогноз ключевой ставки устроен не как остальные вводные: подпись лежит
+    # в колонке A, а значения разбросаны по C–G. Карта ищет подписи в колонке B
+    # и до этого блока не дотягивалась, поэтому шаблон жил на своих ставках:
+    # цели 13/11/10% против наших 11/9/7% и выбранный сценарий «Низкая» вместо
+    # базового. Проценты по кредитам расходились с расчётом почти на треть.
+    rate_scenario_names = {"high": "Высокая", "base": "Базовая", "low": "Низкая"}
+    rate_row = next(
+        (row for row in range(1, sheet.max_row + 1)
+         if _plato_normalize(sheet.cell(row=row, column=1).value) == "сценарий ставки"),
+        None,
+    )
+    if rate_row is None:
+        missing.append("Вводные · Прогноз ключевой ставки")
+    else:
+        scenario_key = str(merged.get("rate_scenario") or "base").strip().lower()
+        rate_cells: list[tuple[int, int, Any, str]] = [
+            (rate_row, 3, rate_scenario_names.get(scenario_key, "Базовая"), "Сценарий ставки"),
+            (rate_row, 5, n(merged, "rate_start_pct", 0.0) / 100, "Текущая ключевая ставка"),
+            (rate_row, 7, n(merged, "rate_normalization_months", 24), "Срок выхода на цель"),
+            (rate_row + 1, 4, n(merged, "rate_target_high_pct", 0.0) / 100, "Целевая ставка · высокая"),
+            (rate_row + 1, 5, n(merged, "rate_target_base_pct", 0.0) / 100, "Целевая ставка · базовая"),
+            (rate_row + 1, 6, n(merged, "rate_target_low_pct", 0.0) / 100, "Целевая ставка · низкая"),
+        ]
+        for row, column, value, name in rate_cells:
+            cell = sheet.cell(row=row, column=column)
+            # Колонку G строки «Целевая ставка» выбирает формула INDEX по C54 —
+            # её трогать нельзя, иначе сценарий перестанет переключаться.
+            if isinstance(cell.value, str) and cell.value.startswith("="):
+                continue
+            cell.value = value
+            filled.append({"sheet": "Вводные", "row": row, "label": name, "value": value})
+
+    # Шаблон не принимает месячный рост цены напрямую: он выводит его из
+    # целевого совокупного роста за период продаж по формуле
+    # (1+цель)^(1/N)-1, где N — месяцы от старта продаж до РВЭ. Пока эта строка
+    # не заполнена, там остаётся 30% сценария, а модель считает по своим
+    # 1,5% в месяц — на длинных продажах расхождение по выручке доходит до
+    # четверти. Пересчитываем цель обратно, чтобы месячный рост совпал.
+    growth_rows = rows_by_label.get(_plato_normalize(
+        "Целевой совокупный рост цены от старта продаж до РВЭ")) or []
+    if growth_rows:
+        monthly = (_land_float(merged.get("monthly_growth_pre_pct")) or 0.0) / 100.0
+        months = int(_land_float(merged.get("construction_months")) or 0) - int(
+            _land_float(merged.get("sales_lag_months")) or 0)
+        target = (1.0 + monthly) ** max(1, months) - 1.0
+        # Округлять грубее нельзя: шаблон берёт из этого числа корень степени
+        # months, и потерянные знаки возвращаются заметной ошибкой в месячном росте.
+        write_scenario_row(growth_rows[0], round(target, 12),
+                           "Целевой совокупный рост цены от старта продаж до РВЭ")
+
+    mode_rows = rows_by_block.get((_plato_normalize("Соцнагрузка"), _plato_normalize("Форма исполнения"))) or []
+    if not mode_rows:
+        mode_rows = rows_by_label.get(_plato_normalize("Форма исполнения")) or []
+    if mode_rows:
+        write_scenario_row(mode_rows[0], str(merged.get("social_mode") or "Строительство"), "Форма исполнения")
+
+    # Прогноз ключевой ставки
+    for label, key, kind in (
+        ("Текущая ключевая ставка", "rate_start_pct", "pct"),
+        ("Срок выхода на цель, мес.", "rate_normalization_months", "number"),
+    ):
+        for row in range(1, sheet.max_row + 1):
+            for column in range(1, 8):
+                if _plato_normalize(sheet.cell(row=row, column=column).value) == _plato_normalize(label):
+                    target = sheet.cell(row=row, column=column + 1)
+                    value = _plato_value(kind, merged.get(key))
+                    if value is not None and not (isinstance(target.value, str) and str(target.value).startswith("=")):
+                        target.value = value
+                        filled.append({"sheet": "Вводные", "row": row, "label": label, "value": value})
+                    break
+
+    tep_sheet = workbook["Расчет ВРИ (ТЭП)"]
+    tep_rows: dict[str, int] = {}
+    for row in range(1, tep_sheet.max_row + 1):
+        label = _plato_normalize(tep_sheet.cell(row=row, column=2).value)
+        if label and label not in tep_rows:
+            tep_rows[label] = row
+    for label, path_expr in _PLATO_TEP_ROWS:
+        row = tep_rows.get(_plato_normalize(label))
+        if not row:
+            missing.append(f"Расчет ВРИ (ТЭП) · {label}")
+            continue
+        value = _plato_tep_value(merged_tep, path_expr)
+        if value is None:
+            continue
+        tep_sheet.cell(row=row, column=4).value = round(value, 4)
+        filled.append({"sheet": "Расчет ВРИ (ТЭП)", "row": row, "label": label, "value": round(value, 4)})
+
+    # Стоимость смены ВРИ и компенсация социальных объектов — из модели.
+    vri_row = tep_rows.get(_plato_normalize("Многоквартирная жилые здания"))
+    if vri_row:
+        land_rights = _land_float(merged.get("land_rights_cost_mln")) or 0.0
+        tep_sheet.cell(row=vri_row, column=4).value = round(land_rights, 3)
+        filled.append({"sheet": "Расчет ВРИ (ТЭП)", "row": vri_row,
+                       "label": "Стоимость смены ВРИ", "value": round(land_rights, 3)})
+
+    # Компенсация за социальные объекты разнесена по типам — так её и считает
+    # калькулятор ГлавАПУ, и так её читает импорт. В книгу же уходила только
+    # плата за ВРИ, а строки ДОО, школы и поликлиники оставались с прежними
+    # числами шаблона: 319,1 + 509,6 + 159,8 = 988,4 млн ₽ вместо 580,7. При
+    # денежной форме исполнения книга берёт обременение именно отсюда, поэтому
+    # расходы завышались на 407,7 млн ₽, а следом расходились прибыль и LLCR.
+    imported = (merged.get("_glavapu_import") or {}).get("normalized") or {}
+    # Подписи «ДОО», «Школа» и «Поликлиника» на листе встречаются дважды: сперва
+    # количество мест в «Расчёте объектов обслуживания», ниже — деньги. Ищем от
+    # заголовка компенсации, иначе сумма ляжет в строку мощности.
+    compensation_start = next(
+        (row for row in range(1, tep_sheet.max_row + 1)
+         if "компенсац" in _plato_normalize(tep_sheet.cell(row=row, column=2).value)),
+        None,
+    )
+    # Итог компенсации — отдельная строка, а не сумма трёх ниже. Книга берёт
+    # обременение именно из неё: ОТЧЕТ!C15 -> Вводные!G100 -> D83. Пока писалась
+    # только раскладка, итог оставался прежним, и в модели держались 988,4 млн ₽
+    # вместо 580,7 — раскладка при этом уже была правильной.
+    if compensation_start and isinstance(imported.get("social_compensation_total_mln"), (int, float)):
+        total = round(float(imported["social_compensation_total_mln"]), 3)
+        tep_sheet.cell(row=compensation_start, column=4).value = total
+        filled.append({"sheet": "Расчет ВРИ (ТЭП)", "row": compensation_start,
+                       "label": "Компенсация · итого", "value": total})
+
+    for label, key in (
+        ("ДОО", "social_compensation_kindergarten_mln"),
+        ("Школа", "social_compensation_school_mln"),
+        ("Поликлиника", "social_compensation_clinic_mln"),
+    ):
+        row = None
+        if compensation_start:
+            row = next(
+                (r for r in range(compensation_start + 1, min(compensation_start + 8, tep_sheet.max_row + 1))
+                 if _plato_normalize(tep_sheet.cell(row=r, column=2).value) == _plato_normalize(label)),
+                None,
+            )
+        value = imported.get(key)
+        if not row or not isinstance(value, (int, float)):
+            continue
+        tep_sheet.cell(row=row, column=4).value = round(float(value), 3)
+        filled.append({"sheet": "Расчет ВРИ (ТЭП)", "row": row,
+                       "label": f"Компенсация · {label}", "value": round(float(value), 3)})
+
+    # Техзаказчик и авторский надзор — те же расходы на управление, а СМР
+    # подземной части — те же СМР: в книге под них нет отдельных строк, и
+    # держать их порознь незачем. Передаём слитыми: эффективный процент
+    # управления и взвешенная ставка строительства. Без этого книга считала
+    # управление своими 5% (291,9 млн ₽ против 523,1) и знала только наземную
+    # часть, отчего расходы на строительство расходились с расчётом.
+    try:
+        _plato_merge_management_and_smr(sheet, rows_by_label, merged, tep, filled)
+    except Exception as exc:
+        missing.append("Вводные · управление и СМР: " + _error_location(exc))
+
+    _plato_fill_land_sheet(workbook, merged, filled)
+    _plato_apply_pf_rate_methodology(
+        workbook, filled, missing, pf_special_steps(merged.get("pf_special_steps")))
+    _plato_apply_pf_cashflow(workbook, filled, missing)
+    _plato_fix_social_capex_links(workbook, filled, missing)
+
+    # Имя проекта в шапке ОТЧЕТа — не украшение: без него каждая выгрузка
+    # уезжает заказчику подписанной чужим проектом из шаблона.
+    title = str(project_name or "").strip()
+    if title:
+        workbook["ОТЧЕТ"]["C1"] = title
+        filled.append({"sheet": "ОТЧЕТ", "row": 1, "label": "Проект", "value": title})
+
+    workbook.calculation.fullCalcOnLoad = True
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+    return _plato_drop_external_links(buffer.getvalue()), {
+        "filled": filled,
+        "filled_count": len(filled),
+        "missing": missing,
+        "scenario": scenario,
+        "template": path.name,
+    }
+
+
+_PLATO_CONSOLIDATOR_PATH = Path(__file__).resolve().parent / "templates" / "PLATO_consolidator.xlsx"
+_PLATO_CONSOLIDATOR_SLOTS = 4
+
+
+def fill_plato_consolidator(
+    bundle: dict[str, Any],
+    phase_files: list[tuple[str, str]],
+    *,
+    template_path: Path | None = None,
+) -> tuple[bytes, dict[str, Any]]:
+    """Заполняет НАСТРОЙКИ консолидатора именами выгруженных файлов очередей.
+
+    Консолидатор — отдельная книга: она не пересчитывает проект, а собирает
+    показатели с листов «ОТЧЕТ», «CF» и «КРЕДИТЫ» файлов очередей через
+    ДВССЫЛ / INDIRECT. Поэтому от нас нужны ровно имена файлов, признак
+    активности очереди и общепроектные суммы; всё остальное — формулы шаблона.
+    """
+    from openpyxl import load_workbook
+
+    path = template_path or _PLATO_CONSOLIDATOR_PATH
+    if not path.is_file():
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Шаблон консолидатора не найден на сервере: положите файл в "
+                "templates/PLATO_consolidator.xlsx и передеплойте сервис."
+            ),
+        )
+
+    workbook = load_workbook(path)
+    sheet = workbook["НАСТРОЙКИ"]
+    consolidated = bundle.get("consolidated") or {}
+    phases = bundle.get("phases") or []
+    finance = consolidated.get("finance") or {}
+    rows = finance.get("rows") or []
+    notes: list[str] = []
+
+    # Доли БРИДЖ между очередями берём по их собственным пикам: это и есть та
+    # пропорция, в которой очереди пользуются общим бриджем.
+    peaks = [float((p.get("result") or {}).get("finance", {}).get("peak_bridge") or 0.0) for p in phases]
+    total_peak = sum(peaks)
+
+    used = min(len(phase_files), _PLATO_CONSOLIDATOR_SLOTS)
+    if len(phase_files) > _PLATO_CONSOLIDATOR_SLOTS:
+        notes.append(
+            f"Консолидатор рассчитан на {_PLATO_CONSOLIDATOR_SLOTS} очереди, "
+            f"в проекте их {len(phase_files)}: в свод попали первые "
+            f"{_PLATO_CONSOLIDATOR_SLOTS}, остальные надо добавлять вручную."
+        )
+
+    assigned = 0.0
+    for slot in range(_PLATO_CONSOLIDATOR_SLOTS):
+        row = 5 + slot
+        if slot < used:
+            name, file_name = phase_files[slot]
+            sheet.cell(row=row, column=2).value = "Да"
+            sheet.cell(row=row, column=3).value = name
+            sheet.cell(row=row, column=4).value = file_name
+            if slot == used - 1:
+                # Остаток округления кладём на последнюю очередь: шаблон
+                # проверяет сумму долей и ругается на расхождение.
+                share = round(1.0 - assigned, 6)
+            else:
+                share = round(peaks[slot] / total_peak if total_peak else 1.0 / used, 6)
+                assigned += share
+            sheet.cell(row=row, column=5).value = share
+        else:
+            sheet.cell(row=row, column=2).value = "Нет"
+            sheet.cell(row=row, column=4).value = None
+            sheet.cell(row=row, column=5).value = 0
+
+    def put(reference: str, value: Any) -> None:
+        sheet[reference] = value
+
+    # Режим «Весь БРИДЖ в О1» обнулил бы доли остальных очередей, а у нас бридж
+    # считается по каждой очереди отдельно — оставляем ручные доли.
+    put("B14", "По ручным долям")
+    put("B15", "Да")
+    put("B16", round(float(finance.get("peak_bridge") or 0.0) / 1e6, 3))
+    put("B17", round(float(finance.get("bridge_interest") or 0.0) / 1e6, 3))
+    put("B18", round(float(((consolidated.get("vri") or {}).get("totals") or {}).get("cash") or 0.0) / 1e6, 3))
+
+    start = str((consolidated.get("dates") or {}).get("project_start") or "")
+    if start:
+        put("B19", datetime.strptime(start[:10], "%Y-%m-%d"))
+        put("B25", datetime.strptime(start[:10], "%Y-%m-%d"))
+    put("B20", (_land_float((consolidated.get("inputs") or {}).get("discount_rate_pct")) or 20.0) / 100.0)
+    if rows:
+        put("B26", len(rows))
+
+    # Пока внешние книги не открыты, ДВССЫЛ возвращает ноль, и консолидатор
+    # показывает пустой свод. Лист КЭШ_СВОД — его запасной источник: кладём
+    # туда наши цифры, чтобы файл был осмысленным сразу после выгрузки.
+    summary = consolidated.get("summary") or {}
+    cache = workbook["КЭШ_СВОД"]
+    cache["B2"] = round(float(summary.get("revenue") or 0.0) / 1e6, 3)
+    cache["B3"] = round(float(summary.get("total_expenses") or 0.0) / 1e6, 3)
+    cache["B4"] = round(
+        (float(summary.get("revenue") or 0.0) - float(summary.get("total_expenses") or 0.0)) / 1e6, 3)
+    cache["B5"] = round(float(finance.get("bridge_draw_total") or 0.0) / 1e6, 3)
+    cache["B6"] = round(float(finance.get("pf_draw_total") or 0.0) / 1e6, 3)
+
+    workbook.calculation.fullCalcOnLoad = True
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+    return _plato_drop_external_links(buffer.getvalue()), {
+        "template": path.name,
+        "phases": [file_name for _, file_name in phase_files[:used]],
+        "notes": notes,
+    }
+
+
+class PlatoTemplateRequest(BaseModel):
+    inputs: dict[str, Any]
+    tep: dict[str, dict[str, Any]]
+    rates: list[dict[str, Any]] = []
+    phasing: dict[str, Any] = {}
+    project_name: str = ""
+    scenario: str = "base"
+
+
+# --- Новая книга: вводные, помесячный расчёт, отчёт ------------------------
+#
+# Шаблон ПЛАТО — учётная модель действующего проекта: погашение и выборка там
+# приходят с листа «факт», рассрочка ВРИ зашита на шесть лет, а параллельный
+# лист «Расчет ВРИ (ТЭП)» считает свои нормативы. Свести его с движком удалось
+# восемью правками, и каждая проверялась чужим пересчётом, потому что здесь
+# посчитать книгу нечем.
+#
+# Эта книга собирается с нуля и устроена иначе. Вводные и помесячные драйверы —
+# продажи, затраты, ключевая ставка — приходят значениями: это сценарий, а не
+# расчёт, и спорить о нём книге незачем. Весь финансовый блок — эскроу, БРИДЖ,
+# ПФ, ставки, проценты, налог, LLCR — живые формулы по методике движка.
+# Аналитик меняет спред, ставку или налог и видит пересчёт.
+
+_MODEL2_INPUTS: list[tuple[str, str, str]] = [
+    ("Цена покупки / вход", "purchase_price_mln", "млн ₽"),
+    ("Смена ВРИ / земельные права", "land_rights_cost_mln", "млн ₽"),
+    ("Спред БРИДЖ", "bridge_spread_pp", "п.п."),
+    ("Спред капитализации БРИДЖ", "bridge_cap_spread_pp", "п.п."),
+    ("Спред ПФ", "pf_spread_pp", "п.п."),
+    ("Ставка ПФ при покрытии эскроу 1×", "pf_special_pct", "%"),
+    ("Плата за лимит", "limit_fee_pct", "%"),
+    ("Плата за резервирование", "reservation_fee_pct", "%"),
+    ("Налог на прибыль", "profit_tax_pct", "%"),
+]
+
+# Листы книги. Порядок сборки — это порядок зависимостей: продажи и затраты
+# не знают о кредите, эскроу не знает о ставке, кредит читает всех троих.
+# Циклов между листами нет, иначе Excel показал бы круговую ссылку.
+_M2_SHEETS = {
+    "inputs": "Вводные",
+    "tep": "ТЭП",
+    "schedule": "СРОКИ",
+    "sales": "ПРОДАЖИ",
+    "costs": "СЕБЕСТОИМОСТЬ",
+    "rates": "СТАВКИ",
+    "escrow": "ЭСКРОУ",
+    "credit": "КРЕДИТОВАНИЕ",
+    "tax": "НАЛОГИ",
+    "cf": "CF",
+    "llcr": "LLCR",
+    "vri": "ВРИ",
+    "report": "ОТЧЁТ",
+}
+
+# Продукт -> как книга его считает. Колонка базы: 5 — продаваемая площадь,
+# 7 — единицы; у отдельных объектов КРТ база берётся не с «ТЭП», а прямо из
+# вводных — движок считает их по своим полям. Сезонность и смещение темпа
+# действуют только на основные продукты: к объектам КРТ движок их не применяет.
+_M2_PRODUCTS: dict[str, dict[str, Any]] = {
+    "apartments": {
+        "base_column": 5, "price": "apartment_price_th", "scale": 0.001, "unit": "м²",
+        "share": "share_before_rve_pct", "residual": "residual_sales_months",
+        "growth_pre": "monthly_growth_pre_pct", "growth_post": "monthly_growth_post_pct",
+        "core": True,
+    },
+    "ground_commercial": {
+        "base_column": 5, "price": "commercial_price_th", "scale": 0.001, "unit": "м²",
+        "share": "share_before_rve_pct", "residual": "residual_sales_months",
+        "growth_pre": "monthly_growth_pre_pct", "growth_post": "monthly_growth_post_pct",
+        "core": True,
+    },
+    "underground_parking": {
+        "base_column": 7, "price": "parking_price_th", "scale": 0.001, "unit": "м/м",
+        "share": "share_before_rve_pct", "residual": "residual_sales_months",
+        "growth_pre": "monthly_growth_pre_pct", "growth_post": "monthly_growth_post_pct",
+        "core": True,
+    },
+    "storage": {
+        "base_column": 7, "price": "storage_price_th", "scale": 0.001, "unit": "шт.",
+        "share": "share_before_rve_pct", "residual": "residual_sales_months",
+        "growth_pre": "monthly_growth_pre_pct", "growth_post": "monthly_growth_post_pct",
+        "core": True,
+    },
+    "offices": {
+        "base_input": "offices_saleable_sqm", "price": "offices_price_th_per_sqm",
+        "scale": 0.001, "unit": "м²", "share": "offices_share_before_rve_pct",
+        "residual": "offices_residual_months", "growth_pre": "offices_growth_pre_pct",
+        "growth_post": "offices_growth_post_pct", "core": False,
+        "sales_start": "offices_sales_start", "build_start": "offices_start",
+        "build_months": "offices_months",
+    },
+    "standalone_retail": {
+        "base_input": "retail_saleable_sqm", "price": "retail_price_th_per_sqm",
+        "scale": 0.001, "unit": "м²", "share": "retail_share_before_rve_pct",
+        "residual": "retail_residual_months", "growth_pre": "retail_growth_pre_pct",
+        "growth_post": "retail_growth_post_pct", "core": False,
+        "sales_start": "retail_sales_start", "build_start": "retail_start",
+        "build_months": "retail_months",
+    },
+    "above_parking": {
+        "base_input": "above_parking_spaces", "price": "above_parking_price_mln_per_space",
+        "scale": 1.0, "unit": "м/м", "share": "above_parking_share_before_rve_pct",
+        "residual": "above_parking_residual_months", "growth_pre": "above_parking_growth_pre_pct",
+        "growth_post": "above_parking_growth_post_pct", "core": False,
+        "sales_start": "above_parking_sales_start", "build_start": "above_parking_start",
+        "build_months": "above_parking_months",
+    },
+}
+
+# Месяцы пониженного спроса — те же, что в шаблоне ПЛАТО (лист ПОДБОР_КВ.М).
+_M2_SEASONAL_LOW_MONTHS = (1, 5, 6, 7, 8)
+
+# Списки для полей, у которых на странице свой набор вариантов: FIELD_GROUPS их
+# не несёт, а без них в книге вместо выбора остаётся свободный ввод.
+_M2_EXTRA_OPTIONS: dict[str, list[list[str]]] = {
+    "bridge_interest_mode": [["Капитализация в ПФ", "Капитализация в ПФ"],
+                             ["Выплата при рефинансировании", "Выплата при рефинансировании"]],
+    "social_mode": [["Строительство", "Строительство"],
+                    ["Денежная компенсация", "Денежная компенсация"],
+                    [SOCIAL_MODE_BOTH, SOCIAL_MODE_BOTH]],
+}
+
+# Прогноз ключевой ставки: на странице он в своём блоке, а не в FIELD_GROUPS.
+# Без него ставка приезжала бы в книгу готовым рядом чисел.
+_M2_RATE_INPUTS: list[tuple[str, str, str, str]] = [
+    ("rate_start_date", "Дата стартовой ставки", "дата", "date"),
+    ("rate_start_pct", "Ключевая ставка на старте", "%", "number"),
+    ("rate_target_high_pct", "Цель — консервативный сценарий", "%", "number"),
+    ("rate_target_base_pct", "Цель — базовый сценарий", "%", "number"),
+    ("rate_target_low_pct", "Цель — оптимистичный сценарий", "%", "number"),
+    ("rate_normalization_months", "Срок выхода на цель", "мес.", "number"),
+    ("rate_curve_shape", "Форма кривой", "коэффициент", "number"),
+    ("rate_scenario", "Сценарий ставки", "сценарий", "select"),
+]
+
+_M2_RATE_SCENARIOS = [["high", "Консервативный"], ["base", "Базовый"], ["low", "Оптимистичный"]]
+
+# Поля страницы, до расчёта не доходящие: движок их не читает, они уезжают
+# только в шаблон ПЛАТО. В книге они помечены — иначе аналитик правит этап
+# роста цены, ничего не происходит, и виноватой оказывается книга.
+# «vat_pct» ушла отсюда 16.08.2026: НДС теперь считается, и пометка «не
+# участвует» на «Вводных» стала бы такой же обманкой, какой была сама ставка.
+_M2_TEMPLATE_ONLY_INPUTS = frozenset({
+    "inflation_after_rve_pct", "growth_stage1_pct", "growth_stage2_pct",
+    "growth_stage3_pct", "growth_stage4_pct",
+})
+
+# Из базы резерва движок исключает цену входа и стоимость рассрочки ВРИ:
+# процент берётся от набора статей, в который они не входят.
+_M2_RESERVE_EXCLUDED = frozenset({"reserve", "purchase", "vri_interest", "vri_security"})
+
+# Статьи затрат в порядке листа. Третий признак — считает ли книга статью сама.
+# Плата за ВРИ и соцнагрузка идут по собственным графикам (рассрочка на своём
+# листе, объекты со своими сроками ввода) и приходят рядом значений; считаемые
+# статьи стоят на листе всегда, даже с нулевой суммой, — иначе нулевая цена
+# входа лишает книгу строки и вписать покупку становится некуда.
+_M2_COST_ARTICLES: list[tuple[str, str, bool]] = [
+    ("purchase", "Приобретение / вход", True),
+    ("land_rights", "Земельные правоотношения / смена ВРИ", False),
+    ("ird", "ИРД и согласования", True),
+    ("design_p", "Проектирование, стадия П", True),
+    ("design_rd", "Проектирование, стадия РД", True),
+    ("preparation", "Подготовительные работы", True),
+    ("main_above", "Основное строительство, наземная часть", True),
+    ("main_under", "Основное строительство, подземная часть", True),
+    ("utilities", "Наружные инженерные сети", True),
+    ("site_maintenance", "Содержание стройплощадки", True),
+    ("author_supervision", "Авторский надзор", True),
+    ("technical_supervision", "Технический заказчик / стройконтроль", True),
+    ("project_management", "Управление проектом", True),
+    ("landscaping", "Благоустройство", True),
+    ("commissioning", "Сдача и ввод", True),
+    ("social", "Социальная нагрузка", False),
+    ("offices", "МФОЦ / офисы", False),
+    ("standalone_retail", "ТЦ / коммерция ОСЗ", False),
+    ("above_parking", "Наземный паркинг", False),
+    ("vri_interest", "Проценты по рассрочке ВРИ", False),
+    ("vri_security", "Обеспечение по рассрочке ВРИ", False),
+    ("gc_fee", "Вознаграждение генподрядчика", True),
+    ("reserve", "Резерв", True),
+]
+
+# Показатели листа «ОТЧЁТ» — порядок строк, на него ссылается тест.
+_M2_REPORT_KEYS = [
+    "revenue", "capex", "operating", "ebitda", "financing_cost",
+    "profit_before_tax", "profit_tax", "vat", "net_profit",
+    "peak_bridge", "pf_draw_total", "peak_pf", "avg_pf_rate", "llcr",
+]
+
+
+def _model2_letter(index: int) -> str:
+    return get_column_letter(index)
+
+
+class _MonthGrid:
+    """Помесячный лист: колонка A — подписи, B и далее — месяцы.
+
+    Строки заводятся по порядку и запоминаются под ключом, поэтому формулы
+    ссылаются на соседей по имени, а не по номеру: вставка строки посередине
+    не ломает лист.
+    """
+
+    MONTH_ROW = 2
+    FIRST_COLUMN = 2
+
+    def __init__(self, sheet, months: list, styles: dict, *, title: str = "") -> None:
+        self.sheet = sheet
+        self.months = months
+        self.styles = styles
+        self.rows: dict[str, int] = {}
+        self._next = 3
+        sheet.cell(row=1, column=1, value=title or sheet.title).font = styles["title"]
+        sheet.cell(row=self.MONTH_ROW, column=1, value="Месяц").font = styles["bold"]
+        for index, month in enumerate(months):
+            cell = sheet.cell(row=self.MONTH_ROW, column=self.FIRST_COLUMN + index, value=month)
+            cell.number_format = styles["month"]
+            cell.font = styles["bold"]
+        sheet.column_dimensions["A"].width = 46
+        sheet.freeze_panes = "B3"
+
+    # --- адресация ---------------------------------------------------------
+
+    def letter(self, index: int) -> str:
+        return get_column_letter(self.FIRST_COLUMN + index)
+
+    def month(self, index: int) -> str:
+        return f"{self.letter(index)}${self.MONTH_ROW}"
+
+    def at(self, key: str, index: int) -> str:
+        """Ссылка на свою строку в колонке месяца — для формул этого же листа."""
+        return f"{self.letter(index)}{self.rows[key]}"
+
+    def before(self, key: str, index: int) -> str:
+        """Та же строка месяцем раньше; в первом месяце — ноль."""
+        return "0" if index == 0 else f"{self.letter(index - 1)}{self.rows[key]}"
+
+    def outside(self, key: str, index: int) -> str:
+        """Ссылка с другого листа."""
+        return f"{self.sheet.title}!{self.letter(index)}{self.rows[key]}"
+
+    def outside_before(self, key: str, index: int) -> str:
+        if index == 0:
+            return "0"
+        return f"{self.sheet.title}!{self.letter(index - 1)}{self.rows[key]}"
+
+    def span(self, key: str) -> str:
+        """Весь ряд месяцев одной строки: «ЛИСТ!B7:BD7»."""
+        last = self.letter(len(self.months) - 1)
+        return f"{self.sheet.title}!{self.letter(0)}{self.rows[key]}:{last}{self.rows[key]}"
+
+    # --- строки ------------------------------------------------------------
+
+    def layout(self, *items: str | tuple[str, str]) -> None:
+        """Разметить лист до заполнения.
+
+        Формула ссылается на соседа сверху и снизу — «остаток на конец месяца»
+        нужен строке «раскрытие», а сам считается через неё. Поэтому номера
+        строк раздаются один раз, здесь, а формулы пишутся потом в любом
+        порядке. Пара («section», «БРИДЖ») — заголовок блока.
+        """
+        for item in items:
+            if isinstance(item, tuple):
+                self.sheet.cell(row=self._next, column=1, value=item[1]).font = self.styles["section"]
+            else:
+                self.rows[item] = self._next
+            self._next += 1
+
+    def values(self, key: str, label: str, series, fmt: str, *, bold: bool = False) -> int:
+        row = self._claim(key, label, bold=bold, driver=True)
+        for index in range(len(self.months)):
+            value = float(series[index]) if index < len(series) else 0.0
+            cell = self.sheet.cell(row=row, column=self.FIRST_COLUMN + index,
+                                   value=round(value, 12))
+            cell.number_format = fmt
+        return row
+
+    def formula(self, key: str, label: str, maker, fmt: str, *, bold: bool = False) -> int:
+        row = self._claim(key, label, bold=bold)
+        for index in range(len(self.months)):
+            cell = self.sheet.cell(row=row, column=self.FIRST_COLUMN + index,
+                                   value=maker(index))
+            cell.number_format = fmt
+        return row
+
+    def _claim(self, key: str, label: str, *, bold: bool = False, driver: bool = False) -> int:
+        row = self.rows.get(key)
+        if row is None:
+            row = self._next
+            self._next += 1
+            self.rows[key] = row
+        cell = self.sheet.cell(row=row, column=1, value=label)
+        if bold:
+            cell.font = self.styles["bold"]
+        elif driver:
+            cell.font = self.styles["driver"]
+        return row
+
+
+def build_plato_model_v2(
+    inputs: dict[str, Any],
+    tep: dict[str, dict[str, Any]],
+    rates: list[dict[str, Any]] | None = None,
+    project_name: str = "",
+) -> tuple[bytes, dict[str, Any]]:
+    """Собрать финансовую модель заново: тринадцать листов, живой расчёт.
+
+    Помесячные драйверы — объёмы продаж, выручка по продуктам, статьи затрат,
+    прогноз ключевой ставки, налоговая маржа — записаны значениями: это
+    сценарий, и спорить о нём книге незачем. Весь финансовый контур считается
+    формулами по методике движка (`simulate_financing`): продажи копятся на
+    эскроу до РВЭ; до РнС затраты несёт БРИДЖ; на РнС тело рефинансируется в
+    ПФ, а начисленные проценты переносятся; покрытие берётся по эскроу до
+    раскрытия и по долгу ПФ после выборки, но до погашения; ставка — взвешенная
+    сумма базовой и специальной; погашение идёт раскрытием эскроу на РВЭ и
+    продажами после.
+    """
+    import openpyxl
+    import openpyxl.styles
+    import openpyxl.worksheet.datavalidation
+
+    result = calculate(CalcRequest(inputs=dict(inputs), tep=dict(tep), rates=list(rates or [])))
+    finance = result.get("finance") or {}
+    rows = finance.get("rows") or []
+    monthly = result.get("monthly") or {}
+    if not rows:
+        raise HTTPException(status_code=500, detail="Расчёт не дал помесячных строк")
+
+    summary = result.get("summary") or {}
+    report = result.get("report") or {}
+    dates = result.get("dates") or {}
+    permit = d(dates.get("permit"))
+    rve = d(dates.get("rve"))
+    months = [d(item["month"]) for item in rows]
+    span = range(len(months))
+    capitalize = str(inputs.get("bridge_interest_mode", "Капитализация в ПФ")) == "Капитализация в ПФ"
+    transferred = float(finance.get("transferred_bridge_interest") or 0.0)
+
+    workbook = openpyxl.Workbook()
+    ws_in = workbook.active
+    ws_in.title = _M2_SHEETS["inputs"]
+    sheets = {key: (ws_in if key == "inputs" else workbook.create_sheet(title))
+              for key, title in _M2_SHEETS.items()}
+
+    money = "#,##0.0"
+    percent = "0.00%"
+    ratio = "0.0000"
+    area = "#,##0"
+    month_fmt = "mmm yyyy"
+    styles = {
+        "title": openpyxl.styles.Font(bold=True, size=12),
+        "bold": openpyxl.styles.Font(bold=True),
+        "section": openpyxl.styles.Font(bold=True, color="1F4E79"),
+        "driver": openpyxl.styles.Font(color="808080"),
+        "month": month_fmt,
+    }
+
+    # --- Вводные -----------------------------------------------------------
+    # Вводные — это все поля модели, теми же группами, что и на странице: их
+    # больше сотни, и урезанный список делал книгу нередактируемой. Проценты
+    # хранятся долями, чтобы формулы умножали на них напрямую. Поля выбора
+    # получают тот же список вариантов, что и на странице: свободный ввод в
+    # ячейке, от которой зависит ветка расчёта, — это опечатка ценой в отчёт.
+    ws_in["A1"] = "ВВОДНЫЕ"
+    ws_in["A1"].font = styles["title"]
+    ws_in["A2"] = "Меняйте колонку B. Серым на помесячных листах помечены графики — они приходят значениями."
+    for column, label in ((1, "Параметр"), (2, "Значение"), (3, "Ед. изм.")):
+        ws_in.cell(row=4, column=column, value=label).font = styles["bold"]
+
+    key_row: dict[str, int] = {}
+    choices: dict[str, list[str]] = {}
+
+    def options_of(key: str, field: tuple) -> list[list[str]] | None:
+        if len(field) > 4 and field[4]:
+            return [list(pair) for pair in field[4]]
+        return _M2_EXTRA_OPTIONS.get(key)
+
+    def put_input(row: int, key: str, label: str, unit: str, kind: str,
+                  options: list[list[str]] | None) -> None:
+        ws_in.cell(row=row, column=1, value=label)
+        cell = ws_in.cell(row=row, column=2)
+        raw = inputs.get(key, DEFAULT_INPUTS.get(key))
+        if kind == "number":
+            value = n(inputs, key, float(DEFAULT_INPUTS.get(key) or 0.0))
+            if unit in ("%", "п.п.") or str(unit).startswith("%"):
+                cell.value, cell.number_format = round(value / 100.0, 12), percent
+            else:
+                cell.value, cell.number_format = round(value, 6), money
+        elif kind == "date":
+            cell.value = d(raw) if raw else None
+            cell.number_format = month_fmt
+        elif kind == "checkbox":
+            # Да/Нет вместо 1/0: аналитик читает лист, а не расшифровывает его.
+            cell.value = "Да" if raw else "Нет"
+            options = [["Да", "Да"], ["Нет", "Нет"]]
+        elif options:
+            # В ячейке — подпись варианта, как на странице; ветки расчёта
+            # сравниваются с ней же, поэтому кода в книге нет вовсе.
+            labels = {str(value): title for value, title in options}
+            cell.value = labels.get(str(raw if raw is not None else ""), str(raw or ""))
+        else:
+            cell.value = "" if raw is None else str(raw)
+        if options:
+            titles = [str(title) for _, title in options]
+            choices[key] = titles
+            rule = openpyxl.worksheet.datavalidation.DataValidation(
+                type="list", formula1='"' + ",".join(titles) + '"', allow_blank=False,
+                showDropDown=False, showErrorMessage=True,
+                errorTitle="Выберите из списка",
+                error="Значение должно быть одним из вариантов, как на странице DevelopAid.",
+            )
+            ws_in.add_data_validation(rule)
+            rule.add(cell)
+        if key in _M2_TEMPLATE_ONLY_INPUTS:
+            ws_in.cell(row=row, column=1).font = styles["driver"]
+            cell.font = styles["driver"]
+            ws_in.cell(row=row, column=3,
+                       value=f"{unit} · в расчёте не участвует, уходит в шаблон ПЛАТО")
+        else:
+            ws_in.cell(row=row, column=3, value=unit)
+        key_row[key] = row
+
+    row = 5
+    for group, fields in FIELD_GROUPS:
+        ws_in.cell(row=row, column=1, value=group.upper()).font = styles["section"]
+        row += 1
+        for field in fields:
+            key, label, unit, kind = field[0], field[1], field[2], field[3]
+            if key in key_row:
+                continue
+            put_input(row, key, label, unit, kind, options_of(key, field))
+            row += 1
+        row += 1
+
+    ws_in.cell(row=row, column=1, value="ПРОГНОЗ КЛЮЧЕВОЙ СТАВКИ").font = styles["section"]
+    row += 1
+    for key, label, unit, kind in _M2_RATE_INPUTS:
+        options = _M2_RATE_SCENARIOS if key == "rate_scenario" else None
+        put_input(row, key, label, unit, kind, options)
+        row += 1
+    row += 1
+
+    ws_in.cell(row=row, column=1, value="РАСЧЁТНЫЕ СРОКИ И ЛИМИТЫ").font = styles["section"]
+    row += 1
+    # Всё в этом блоке — следствие вводных, а не отдельная вводная: сдвинули
+    # срок ИРД, и поехали РнС, график освоения, выборка долга и его стоимость.
+    for key, label, unit in (
+        ("permit", "РнС (начало проекта + срок ИРД)", ""),
+        ("rve", "РВЭ (РнС + срок строительства)", ""),
+        ("bridge_limit", "Расчётный лимит БРИДЖ", "млн ₽"),
+        ("pf_limit", "Лимит ПФ", "млн ₽"),
+        ("bridge_fee", "Комиссия за резервирование БРИДЖ", "млн ₽"),
+        ("pf_reservation_fee", "Комиссия за резервирование ПФ", "млн ₽"),
+    ):
+        ws_in.cell(row=row, column=1, value=label)
+        if unit:
+            ws_in.cell(row=row, column=3, value=unit)
+        key_row[key] = row
+        row += 1
+
+    # Ступени ставки ПФ — отдельными числовыми строками, а не только текстом
+    # поля выше: текст разбирается при сборке книги, и его правка в Excel
+    # ничего не пересчитывает. Эти строки — пересчитывают: помесячные формулы
+    # ссылаются на них (владелец, 20.08.2026: «сейчас-то надбавка — это
+    # вводная»). Пустой порог выключает ступень.
+    _ladder = pf_special_steps(inputs.get("pf_special_steps"))
+    if _ladder:
+        ws_in.cell(row=row, column=1, value="СТУПЕНИ СТАВКИ ПФ ПО ПОКРЫТИЮ ЭСКРОУ"
+                   ).font = styles["section"]
+        row += 1
+        for index, (edge, rate) in enumerate(_ladder):
+            ws_in.cell(row=row, column=1, value=f"Ступень {index + 1} — покрытие от")
+            ws_in.cell(row=row, column=2, value=round(edge, 6)).number_format = ratio
+            ws_in.cell(row=row, column=3, value="×; пусто — ступень выключена")
+            key_row[f"pf_step{index}_edge"] = row
+            row += 1
+            ws_in.cell(row=row, column=1, value=f"Ступень {index + 1} — ставка")
+            ws_in.cell(row=row, column=2, value=round(rate, 8)).number_format = percent
+            ws_in.cell(row=row, column=3, value="% годовых")
+            key_row[f"pf_step{index}_rate"] = row
+            row += 1
+        row += 1
+
+    ws_in.cell(row=key_row["permit"], column=2,
+               value=f"=EDATE($B${key_row['project_start']},$B${key_row['ird_months']})"
+               ).number_format = month_fmt
+    ws_in.cell(row=key_row["rve"], column=2,
+               value=f"=EDATE($B${key_row['permit']},$B${key_row['construction_months']})"
+               ).number_format = month_fmt
+    for key, limit_key in (("bridge_fee", "bridge_limit"), ("pf_reservation_fee", "pf_limit")):
+        ws_in.cell(row=key_row[key], column=2,
+                   value=f"=$B${key_row[limit_key]}*$B${key_row['reservation_fee_pct']}"
+                   ).number_format = money
+    for key in ("bridge_limit", "pf_limit"):
+        ws_in.cell(row=key_row[key], column=2).number_format = money
+
+    ws_in.column_dimensions["A"].width = 56
+    ws_in.column_dimensions["B"].width = 20
+    ws_in.column_dimensions["C"].width = 44
+
+    def ref(key: str) -> str:
+        return f"{_M2_SHEETS['inputs']}!$B${key_row[key]}"
+
+    # Режим переноса процентов БРИДЖа — не флаг 1/0, а тот же выбор, что на
+    # странице: книга сравнивает ячейку с подписью варианта.
+    capitalized = f'({ref("bridge_interest_mode")}="Капитализация в ПФ")'
+
+    # --- ТЭП ---------------------------------------------------------------
+    ws_tep = sheets["tep"]
+    ws_tep["A1"] = "ТЕХНИКО-ЭКОНОМИЧЕСКИЕ ПОКАЗАТЕЛИ"
+    ws_tep["A1"].font = styles["title"]
+    ws_tep["A2"] = "Площади — исходные данные проекта. Всё, что ниже, книга считает от них."
+    headers = ["Продукт", "ГНС, м²", "Общая площадь, м²", "Полезная, м²",
+               "Продаваемая, м²", "Передаётся городу, м²", "Единиц"]
+    for column, label in enumerate(headers, start=1):
+        ws_tep.cell(row=4, column=column, value=label).font = styles["bold"]
+    tep_rows = (result.get("tep") or {}).get("rows") or []
+    tep_row_of: dict[str, int] = {}
+    for offset, item in enumerate(tep_rows):
+        line = 5 + offset
+        tep_row_of[str(item.get("key"))] = line
+        ws_tep.cell(row=line, column=1, value=item.get("label"))
+        for column, key in enumerate(
+                ("gns", "total_area", "useful", "saleable", "transfer", "units"), start=2):
+            ws_tep.cell(row=line, column=column,
+                        value=round(float(item.get(key) or 0.0), 6)).number_format = area
+    total_line = 5 + len(tep_rows)
+    ws_tep.cell(row=total_line, column=1, value="ИТОГО").font = styles["bold"]
+    for column in range(2, 8):
+        letter = get_column_letter(column)
+        cell = ws_tep.cell(row=total_line, column=column,
+                           value=f"=SUM({letter}5:{letter}{total_line - 1})")
+        cell.number_format = area
+        cell.font = styles["bold"]
+
+    # Базы для удельных ставок: наземная и подземная ГНС основных продуктов.
+    # Отдельные объекты КРТ считаются по своим ставкам и в базу не входят.
+    core_above_keys = ("apartments", "ground_commercial", "storage")
+    base_line = total_line + 2
+    ws_tep.cell(row=base_line, column=1, value="БАЗЫ ДЛЯ УДЕЛЬНЫХ СТАВОК").font = styles["section"]
+    tep_base: dict[str, int] = {}
+    above = "+".join(f"B{tep_row_of[key]}" for key in core_above_keys if key in tep_row_of) or "0"
+    under = f"B{tep_row_of['underground_parking']}" if "underground_parking" in tep_row_of else "0"
+    for offset, (key, label, formula) in enumerate((
+        ("core_above_gns", "ГНС наземная, м²", f"={above}"),
+        ("core_under_gns", "ГНС подземная, м²", f"={under}"),
+        ("core_total_gns", "ГНС всего, м²", f"=B{base_line + 1}+B{base_line + 2}"),
+    )):
+        line = base_line + 1 + offset
+        ws_tep.cell(row=line, column=1, value=label).font = styles["bold"]
+        ws_tep.cell(row=line, column=2, value=formula).number_format = area
+        tep_base[key] = line
+
+    ws_tep.column_dimensions["A"].width = 32
+    for column in range(2, 8):
+        ws_tep.column_dimensions[get_column_letter(column)].width = 20
+
+    def tep_ref(key: str) -> str:
+        return f"{_M2_SHEETS['tep']}!$B${tep_base[key]}"
+
+    def tep_cell(product: str, column: int) -> str:
+        return f"{_M2_SHEETS['tep']}!${get_column_letter(column)}${tep_row_of[product]}"
+
+    # --- СРОКИ -------------------------------------------------------------
+    ws_dates = sheets["schedule"]
+    ws_dates["A1"] = "КАЛЕНДАРЬ ПРОЕКТА"
+    ws_dates["A1"].font = styles["title"]
+    for column, label in enumerate(("Этап", "Группа", "Начало", "Окончание", "Месяцев"), start=1):
+        ws_dates.cell(row=3, column=column, value=label).font = styles["bold"]
+    events = ((report.get("calendar") or {}).get("events")) or []
+    for offset, event in enumerate(events):
+        line = 4 + offset
+        ws_dates.cell(row=line, column=1, value=event.get("label"))
+        ws_dates.cell(row=line, column=2, value=event.get("group"))
+        ws_dates.cell(row=line, column=3, value=d(event.get("start"))).number_format = month_fmt
+        ws_dates.cell(row=line, column=4, value=d(event.get("end"))).number_format = month_fmt
+        # Длительность считает книга: правка даты сразу видна в сроке.
+        ws_dates.cell(row=line, column=5,
+                      value=f"=(YEAR(D{line})-YEAR(C{line}))*12+MONTH(D{line})-MONTH(C{line})+1")
+    ws_dates.column_dimensions["A"].width = 34
+    ws_dates.column_dimensions["B"].width = 22
+    for column in ("C", "D", "E"):
+        ws_dates.column_dimensions[column].width = 14
+
+    # --- ПРОДАЖИ -----------------------------------------------------------
+    # Здесь не осталось выгруженных чисел. Объём — база из ТЭП, разложенная по
+    # весам месяцев; веса складываются из сезонности и смещения темпа к поздним
+    # месяцам и нормируются отдельно до и после РВЭ, поэтому доля продаж до РВЭ
+    # остаётся ровно заданной. Цена растёт своим темпом до РВЭ и своим после.
+    # Ровно так же это считает движок — `sales_weights` и `sales_schedule`.
+    sales = _MonthGrid(sheets["sales"], months, styles, title="ПРОДАЖИ")
+    labels = {str(item["key"]): item for item in (monthly.get("quantity") or [])}
+    products: list[tuple[str, dict[str, Any]]] = []
+    for key, spec in _M2_PRODUCTS.items():
+        # Основные продукты стоят всегда: нулевая площадь на «ТЭП» сама даёт
+        # нулевые продажи. Объекты КРТ появляются, только когда включены, —
+        # иначе книга посчитала бы их по вводным, а движок держит нули.
+        if not spec["core"] and key not in labels:
+            continue
+        item = labels.get(key) or {
+            "key": key, "label": (TEP_DEFAULT.get(key) or {}).get("label") or key}
+        products.append((key, item))
+
+    sales_layout: list[str | tuple[str, str]] = []
+    for key, item in products:
+        sales_layout += [
+            ("section", item.get("label") or key),
+            f"season_{key}", f"index_{key}", f"post_index_{key}",
+            f"wpre_{key}", f"wpost_{key}", f"weight_{key}",
+            f"quantity_{key}", f"price_{key}", f"revenue_{key}",
+        ]
+    sales_layout += [("section", "Итого"), "quantity_total", "revenue", "revenue_cum"]
+    sales.layout(*sales_layout)
+
+    # Параметры продаж — отдельным блоком под сеткой: объём, стартовая цена,
+    # окно продаж, доля до РВЭ, темпы роста, сезонность и смещение темпа.
+    param_line = sales._next + 2
+    sheets["sales"].cell(row=param_line, column=1, value="ПАРАМЕТРЫ ПРОДАЖ").font = styles["section"]
+    param_line += 1
+    for column, label in enumerate((
+            "Продукт", "Ед.", "Объём", "Стартовая цена, млн ₽/ед.", "Старт продаж",
+            "Окончание (РВЭ продукта)", "Месяцев до РВЭ", "Остаточных месяцев",
+            "Доля до РВЭ", "Рост цены до РВЭ", "Рост цены после РВЭ",
+            "Сезонное снижение", "Смещение темпа"), start=1):
+        sheets["sales"].cell(row=param_line, column=column, value=label).font = styles["bold"]
+    param_row = {key: param_line + 1 + offset for offset, (key, _) in enumerate(products)}
+
+    for key, item in products:
+        spec = _M2_PRODUCTS[key]
+        line = param_row[key]
+        base = (tep_cell(key, spec["base_column"]) if spec.get("base_column")
+                else ref(spec["base_input"]))
+        if spec["core"]:
+            start = f"=EDATE({ref('permit')},{ref('sales_lag_months')})"
+            finish = f"={ref('rve')}"
+            seasonal = f"={ref('seasonal_reduction_pct')}"
+            pace = f"={ref('pace_adjustment_pct')}"
+        else:
+            start = f"={ref(spec['sales_start'])}"
+            finish = f"=EDATE({ref(spec['build_start'])},{ref(spec['build_months'])})"
+            seasonal, pace = "=0", "=0"
+        for column, value, fmt in (
+            (1, item.get("label") or key, None),
+            (2, spec["unit"], None),
+            (3, f"={base}", area),
+            (4, f"={ref(spec['price'])}*{spec['scale']}", ratio),
+            (5, start, month_fmt),
+            (6, finish, month_fmt),
+            (7, f"=MAX(1,(YEAR(F{line})-YEAR(E{line}))*12+MONTH(F{line})-MONTH(E{line}))", "0"),
+            (8, f"={ref(spec['residual'])}", "0"),
+            (9, f"={ref(spec['share'])}", percent),
+            (10, f"={ref(spec['growth_pre'])}", percent),
+            (11, f"={ref(spec['growth_post'])}", percent),
+            (12, seasonal, percent),
+            (13, pace, percent),
+        ):
+            cell = sheets["sales"].cell(row=line, column=column, value=value)
+            if fmt:
+                cell.number_format = fmt
+
+    def par(key: str, column: str) -> str:
+        return f"${column}${param_row[key]}"
+
+    low_season = ",".join(f"MONTH({{month}})={value}" for value in _M2_SEASONAL_LOW_MONTHS)
+
+    for key, item in products:
+        sales.formula(
+            f"season_{key}", "Сезонный коэффициент",
+            lambda i, key=key: (
+                f"=IF(OR({low_season.format(month=sales.month(i))}),1+{par(key, 'L')},1)"), ratio)
+        sales.formula(
+            f"index_{key}", "№ месяца от старта продаж",
+            lambda i, key=key: (
+                f"=(YEAR({sales.month(i)})-YEAR({par(key, 'E')}))*12"
+                f"+MONTH({sales.month(i)})-MONTH({par(key, 'E')})"), "0")
+        sales.formula(
+            f"post_index_{key}", "№ месяца от РВЭ",
+            lambda i, key=key: (
+                f"=(YEAR({sales.month(i)})-YEAR({par(key, 'F')}))*12"
+                f"+MONTH({sales.month(i)})-MONTH({par(key, 'F')})"), "0")
+        # Смещение темпа нарастает линейно от старта продаж и действует только
+        # до РВЭ; сезонность — на всём сроке продаж.
+        sales.formula(
+            f"wpre_{key}", "Вес месяца до РВЭ",
+            lambda i, key=key: (
+                f"=IF(AND({sales.month(i)}>={par(key, 'E')},{sales.month(i)}<{par(key, 'F')}),"
+                f"{sales.at(f'season_{key}', i)}"
+                f"*(1+{par(key, 'M')}*MIN(1,{sales.at(f'index_{key}', i)}/{par(key, 'G')})),0)"),
+            ratio)
+        sales.formula(
+            f"wpost_{key}", "Вес месяца после РВЭ",
+            lambda i, key=key: (
+                f"=IF(AND({sales.month(i)}>={par(key, 'F')},"
+                f"{sales.at(f'post_index_{key}', i)}<{par(key, 'H')}),"
+                f"{sales.at(f'season_{key}', i)},0)"), ratio)
+        # Веса нормируются отдельно до и после РВЭ — иначе заданная доля продаж
+        # до РВЭ поплывёт вслед за сезонностью.
+        sales.formula(
+            f"weight_{key}", "Доля периода в объёме",
+            lambda i, key=key: (
+                f"=IFERROR({par(key, 'I')}*{sales.at(f'wpre_{key}', i)}"
+                f"/SUM({sales.span(f'wpre_{key}')}),0)"
+                f"+IFERROR((1-{par(key, 'I')})*{sales.at(f'wpost_{key}', i)}"
+                f"/SUM({sales.span(f'wpost_{key}')}),0)"), percent)
+        sales.formula(
+            f"quantity_{key}", f"Объём продаж, {_M2_PRODUCTS[key]['unit']}",
+            lambda i, key=key: f"={par(key, 'C')}*{sales.at(f'weight_{key}', i)}", area)
+        sales.formula(
+            f"price_{key}", "Цена, млн ₽ за единицу",
+            lambda i, key=key: (
+                f"=IF({sales.month(i)}<{par(key, 'F')},"
+                f"{par(key, 'D')}*(1+{par(key, 'J')})^{sales.at(f'index_{key}', i)},"
+                f"{par(key, 'D')}*(1+{par(key, 'J')})^{par(key, 'G')}"
+                f"*(1+{par(key, 'K')})^{sales.at(f'post_index_{key}', i)})"), ratio)
+        sales.formula(
+            f"revenue_{key}", "Выручка, млн ₽",
+            lambda i, key=key: (
+                f"={sales.at(f'quantity_{key}', i)}*{sales.at(f'price_{key}', i)}"),
+            money, bold=True)
+
+    quantity_keys = [f"quantity_{key}" for key, _ in products]
+    revenue_keys = [f"revenue_{key}" for key, _ in products]
+    sales.formula("quantity_total", "Объём продаж, всего",
+                  lambda i: "=" + ("+".join(sales.at(k, i) for k in quantity_keys) or "0"), area)
+    sales.formula("revenue", "Выручка, всего",
+                  lambda i: "=" + ("+".join(sales.at(k, i) for k in revenue_keys) or "0"),
+                  money, bold=True)
+    sales.formula("revenue_cum", "Выручка нарастающим",
+                  lambda i: f"={sales.before('revenue_cum', i)}+{sales.at('revenue', i)}", money)
+
+    line = param_line + len(products) + 2
+    sheets["sales"].cell(row=line, column=1, value="ИТОГИ ПО ПРОДУКТАМ").font = styles["section"]
+    line += 1
+    for column, label in enumerate(
+            ("Продукт", "Объём", "Выручка, млн ₽", "Средняя цена, млн ₽/ед."), start=1):
+        sheets["sales"].cell(row=line, column=column, value=label).font = styles["bold"]
+    for offset, (key, item) in enumerate(products):
+        current = line + 1 + offset
+        sheets["sales"].cell(row=current, column=1, value=item.get("label") or key)
+        sheets["sales"].cell(row=current, column=2,
+                             value=f"=SUM({sales.span(f'quantity_{key}')})").number_format = area
+        sheets["sales"].cell(row=current, column=3,
+                             value=f"=SUM({sales.span(f'revenue_{key}')})").number_format = money
+        sheets["sales"].cell(row=current, column=4,
+                             value=f"=IFERROR(C{current}/B{current},0)").number_format = ratio
+    for column in range(2, 14):
+        sheets["sales"].column_dimensions[get_column_letter(column)].width = 15
+
+    # --- СЕБЕСТОИМОСТЬ -----------------------------------------------------
+    # Статья считается как ставка × база, а по месяцам раскладывается ровно по
+    # окну освоения — так же, как это делает движок. Ставку правят на
+    # «Вводных», базу — на «ТЭП», окно — в блоке калькуляции под сеткой.
+    costs = _MonthGrid(sheets["costs"], months, styles, title="СЕБЕСТОИМОСТЬ · млн ₽")
+    cost_rows = {item["key"]: item for item in (monthly.get("costs") or [])}
+    articles = [(key, label) for key, label, computed in _M2_COST_ARTICLES
+                if computed or key in cost_rows]
+    computed_keys = {key for key, _, computed in _M2_COST_ARTICLES if computed}
+    cost_keys = [f"cost_{key}" for key, _ in articles]
+    costs.layout("index", ("section", "Инвестиционные затраты"), *cost_keys, "capex",
+                 ("section", "Операционные затраты"), "operating", "total", "total_cum",
+                 ("section", "Потребность в долге"), "debt", "own")
+    costs.formula("index", "№ месяца от старта проекта",
+                  lambda i: (f"=(YEAR({costs.month(i)})-YEAR({ref('project_start')}))*12"
+                             f"+MONTH({costs.month(i)})-MONTH({ref('project_start')})+1"), "0")
+
+    # Блок калькуляции под сеткой: сумма статьи, окно освоения и его номер.
+    calc_line = costs._next + 2
+    sheets["costs"].cell(row=calc_line, column=1, value="КАЛЬКУЛЯЦИЯ СТАТЕЙ").font = styles["section"]
+    calc_line += 1
+    for column, label in enumerate(
+            ("Статья", "Сумма, млн ₽", "Старт освоения", "Месяцев", "№ месяца старта"), start=1):
+        sheets["costs"].cell(row=calc_line, column=column, value=label).font = styles["bold"]
+    calc_row = {key: calc_line + 1 + offset for offset, (key, _) in enumerate(articles)}
+
+    def amount(key: str) -> str:
+        return f"$B${calc_row[key]}"
+
+    last_column = sales.letter(len(months) - 1)
+
+    def monthly_sum(row_key: str) -> str:
+        line = costs.rows[row_key]
+        return f"SUM(B{line}:{last_column}{line})"
+
+    # Окна освоения — те же, что в движке: ИРД от старта проекта, проектирование
+    # и подготовка прижаты к РнС, стройка идёт весь срок строительства,
+    # благоустройство и ввод — последние три месяца до РВЭ.
+    design_window = f"MIN(6,{ref('ird_months')})"
+    to_permit = f"EDATE({ref('permit')},-{design_window})"
+    before_rve = f"EDATE({ref('rve')},-3)"
+    build_months = ref("construction_months")
+    works = "+".join(amount(key) for key in
+                     ("main_above", "main_under", "social", "offices",
+                      "standalone_retail", "above_parking") if key in calc_row) or "0"
+
+    def unit_rate(rate_key: str, base_key: str) -> str:
+        return f"={tep_ref(base_key)}*{ref(rate_key)}/1000"
+
+    plan: dict[str, tuple[str, str, str]] = {
+        "purchase": (f"={ref('purchase_price_mln')}", f"={ref('project_start')}", "=1"),
+        "ird": (unit_rate("ird_th_per_sqm", "core_total_gns"),
+                f"={ref('project_start')}", f"={ref('ird_months')}"),
+        "design_p": (unit_rate("design_p_th_per_sqm", "core_total_gns"),
+                     f"={to_permit}", f"={design_window}"),
+        "design_rd": (unit_rate("design_rd_th_per_sqm", "core_total_gns"),
+                      f"={to_permit}", f"={design_window}"),
+        "preparation": (unit_rate("preparation_th_per_sqm", "core_total_gns"),
+                        f"={to_permit}", f"={design_window}"),
+        "main_above": (unit_rate("main_above_th_per_sqm", "core_above_gns"),
+                       f"={ref('permit')}", f"={build_months}"),
+        "main_under": (unit_rate("main_under_th_per_sqm", "core_under_gns"),
+                       f"={ref('permit')}", f"={build_months}"),
+        "utilities": (unit_rate("utilities_th_per_sqm", "core_total_gns"),
+                      f"={ref('permit')}", f"={build_months}"),
+        "site_maintenance": (unit_rate("site_maintenance_th_per_sqm", "core_total_gns"),
+                             f"={ref('permit')}", f"={build_months}"),
+        "landscaping": (unit_rate("landscaping_th_per_sqm", "core_total_gns"),
+                        f"={before_rve}", "=3"),
+        "commissioning": (unit_rate("commissioning_th_per_sqm", "core_total_gns"),
+                          f"={before_rve}", "=3"),
+        "author_supervision": (
+            f"=({amount('design_p')}+{amount('design_rd')})*{ref('author_supervision_pct')}"
+            if "design_p" in calc_row else "=0",
+            f"={ref('permit')}", f"={build_months}"),
+        "technical_supervision": (f"=({works})*{ref('technical_supervision_pct')}",
+                                  f"={ref('permit')}", f"={build_months}"),
+        "gc_fee": (f"=({works})*{ref('gc_fee_pct')}", f"={ref('permit')}", f"={build_months}"),
+    }
+    # Управление проектом не имеет собственного окна: оно идёт за расходами,
+    # которыми вызвано, — процент от прямых затрат каждого месяца, как в
+    # движке. Сумма статьи в калькуляции — итог этого ряда.
+    management_profile_keys = [
+        key for key in ("ird", "design_p", "design_rd", "author_supervision",
+                        "preparation", "main_above", "main_under", "utilities",
+                        "landscaping", "site_maintenance")
+        if key in calc_row
+    ]
+
+    for key, label in articles:
+        line = calc_row[key]
+        sheets["costs"].cell(row=line, column=1, value=label)
+        if key == "reserve":
+            # Резерв — процент от прочих статей и потому считается последним.
+            # Цена входа и стоимость рассрочки ВРИ в его базу не входят: в
+            # движке их нет в наборе, от которого берётся процент, и лишние
+            # 700 млн ₽ покупки дали бы 35 млн ₽ резерва из ниоткуда.
+            others = "+".join(amount(other) for other, _ in articles
+                              if other not in _M2_RESERVE_EXCLUDED)
+            formula = f"=({others})*{ref('reserve_pct')}"
+            start, length = f"={ref('permit')}", f"={build_months}"
+        elif key in plan:
+            formula, start, length = plan[key]
+        else:
+            # Плата за ВРИ и соцнагрузка идут по собственным графикам: рассрочка
+            # на своём листе и три объекта со своими сроками. Сумма — итог ряда.
+            formula = f"={monthly_sum(f'cost_{key}')}"
+            start, length = "", ""
+        sheets["costs"].cell(row=line, column=2, value=formula).number_format = money
+        if start:
+            sheets["costs"].cell(row=line, column=3, value=start).number_format = month_fmt
+            sheets["costs"].cell(row=line, column=4, value=length).number_format = "0"
+            sheets["costs"].cell(
+                row=line, column=5,
+                value=f"=(YEAR(C{line})-YEAR({ref('project_start')}))*12"
+                      f"+MONTH(C{line})-MONTH({ref('project_start')})+1").number_format = "0"
+
+    # Стройка идёт S-кривой движка, а не равномерным окном. Профиль месяца —
+    # доля из фактического движкового ряда (числом), сумма статьи — живая
+    # формула калькуляции: ставку правят на «Вводных», профиль остаётся.
+    s_curve_keys = {"main_above", "main_under", "utilities", "site_maintenance",
+                    "author_supervision", "technical_supervision", "gc_fee", "reserve"}
+
+    def s_profile(key: str) -> list[float]:
+        values = [float(v or 0) for v in ((cost_rows.get(key) or {}).get("values") or [])]
+        total = sum(values)
+        return [v / total for v in values] if total else []
+
+    for key, label in articles:
+        row_key = f"cost_{key}"
+        if key == "project_management" and key in computed_keys:
+            costs.formula(row_key, label,
+                          lambda i: ("=(" + "+".join(
+                              costs.at(f"cost_{k}", i) for k in management_profile_keys)
+                              + f")*{ref('project_management_pct')}"), money)
+        elif key in s_curve_keys and key in computed_keys:
+            profile = s_profile(key)
+            costs.formula(row_key, label,
+                          lambda i, profile=profile, key=key: (
+                              f"={amount(key)}*{profile[i]:.12f}"
+                              if i < len(profile) and profile[i] else "=0"), money)
+        elif key in computed_keys:
+            line = calc_row[key]
+            costs.formula(row_key, label,
+                          lambda i, line=line: (
+                              f"=IF(AND({costs.at('index', i)}>=$E${line},"
+                              f"{costs.at('index', i)}<$E${line}+$D${line}),"
+                              f"$B${line}/MAX($D${line},1),0)"), money)
+        else:
+            item = cost_rows.get(key) or {}
+            costs.values(row_key, f"{label} · свой график",
+                         [v / 1e6 for v in (item.get("values") or [])], money)
+
+    costs.formula("capex", "CAPEX, всего",
+                  lambda i: "=" + "+".join(costs.at(key, i) for key in cost_keys), money, bold=True)
+    # Маркетинг и продажи — процент от выручки, а не отдельный ряд чисел.
+    costs.formula("operating", "Маркетинг, продажи и содержание",
+                  lambda i: (f"={sales.outside('revenue', i)}"
+                             f"*({ref('marketing_pct')}+{ref('selling_pct')})"), money)
+    costs.formula("total", "Расходы, всего",
+                  lambda i: f"={costs.at('capex', i)}+{costs.at('operating', i)}", money, bold=True)
+    costs.formula("total_cum", "Расходы нарастающим",
+                  lambda i: f"={costs.before('total_cum', i)}+{costs.at('total', i)}", money)
+
+    # Не все расходы финансируются банком: денежная компенсация соцобъектов и
+    # плата за ВРИ вне банковского бюджета оплачиваются своими деньгами.
+    # Движок в режиме «проценты в тело ПФ» дописывает перенос в затраты месяца
+    # РнС — здесь он снимается, книга добавит его сама на «КРЕДИТОВАНИИ».
+    debt_costs = []
+    for item in rows:
+        value = float(item.get("project_costs") or 0.0)
+        if not capitalize and d(item["month"]) == permit:
+            value -= transferred
+        debt_costs.append(value / 1e6)
+    costs.values("debt", "Затраты, финансируемые долгом", debt_costs, money)
+    costs.formula("own", "Оплачивается своими деньгами",
+                  lambda i: f"={costs.at('total', i)}-{costs.at('debt', i)}", money)
+
+    # Расчётный лимит БРИДЖ — цена входа и проектирование, а при денежной
+    # компенсации соцобъектов ещё и она: до РнС эти расходы несёт БРИДЖ.
+    def cost_amount(key: str) -> str:
+        return f"{_M2_SHEETS['costs']}!{amount(key)}"
+
+    bridge_parts = "+".join(cost_amount(key) for key in ("purchase", "design_p", "design_rd")
+                            if key in calc_row) or "0"
+    social_part = (f'+IF({ref("social_mode")}="Денежная компенсация",{cost_amount("social")},0)'
+                   if "social" in calc_row else "")
+    ws_in.cell(row=key_row["bridge_limit"], column=2, value=f"={bridge_parts}{social_part}")
+
+    line = max(costs._next, calc_line + len(articles) + 1) + 2
+    sheets["costs"].cell(row=line, column=1, value="СТРУКТУРА РАСХОДОВ").font = styles["section"]
+    line += 1
+    for column, label in enumerate(("Статья", "Сумма, млн ₽", "Доля"), start=1):
+        sheets["costs"].cell(row=line, column=column, value=label).font = styles["bold"]
+    structure = report.get("expense_structure") or []
+    for offset, item in enumerate(structure):
+        current = line + 1 + offset
+        sheets["costs"].cell(row=current, column=1, value=item.get("label"))
+        sheets["costs"].cell(row=current, column=2,
+                             value=round(float(item.get("value") or 0.0) / 1e6, 3)).number_format = money
+        sheets["costs"].cell(
+            row=current, column=3,
+            value=f"=IFERROR(B{current}/SUM($B${line + 1}:$B${line + len(structure)}),0)",
+        ).number_format = percent
+    sheets["costs"].column_dimensions["B"].width = 16
+    for column in ("C", "D", "E"):
+        sheets["costs"].column_dimensions[column].width = 16
+
+    # --- СТАВКИ ------------------------------------------------------------
+    rate_grid = _MonthGrid(sheets["rates"], months, styles, title="СТАВКИ")
+    rate_grid.layout("key_rate",
+                     ("section", "БРИДЖ"), "bridge_spread", "bridge",
+                     "bridge_cap_spread", "bridge_cap",
+                     ("section", "Проектное финансирование"), "pf_spread", "pf_base", "pf_special")
+    # Прогноз ключевой ставки собирается формулой, как в движке: плавный выход
+    # на цель сценария за срок нормализации, форма кривой задаётся показателем.
+    horizon = f"MAX(1,{ref('rate_normalization_months')})"
+    shape = f"MAX(0.05,{ref('rate_curve_shape')})"
+    target = (f'IF({ref("rate_scenario")}="Консервативный",{ref("rate_target_high_pct")},'
+              f'IF({ref("rate_scenario")}="Оптимистичный",{ref("rate_target_low_pct")},'
+              f'{ref("rate_target_base_pct")}))')
+    rate_grid.layout("months_from_start", "progress")
+    # Ряд прогноза начинается в дату стартовой ставки, а месяцы модели — первого
+    # числа: пока не наступило то же число, действует ставка предыдущего шага.
+    rate_grid.formula(
+        "months_from_start", "Месяцев от даты стартовой ставки",
+        lambda i: (f"=MAX(0,(YEAR({rate_grid.month(i)})-YEAR({ref('rate_start_date')}))*12"
+                   f"+MONTH({rate_grid.month(i)})-MONTH({ref('rate_start_date')})"
+                   f"-IF(DAY({ref('rate_start_date')})>1,1,0))"), "0")
+    rate_grid.formula(
+        "progress", "Пройдено до цели",
+        lambda i: (f"=IF({rate_grid.at('months_from_start', i)}>={horizon},1,"
+                   f"(1-EXP(-{shape}*{rate_grid.at('months_from_start', i)}/{horizon}))"
+                   f"/(1-EXP(-{shape})))"), percent)
+    rate_grid.formula(
+        "key_rate", "Ключевая ставка (прогноз)",
+        lambda i: (f"={ref('rate_start_pct')}+({target}-{ref('rate_start_pct')})"
+                   f"*{rate_grid.at('progress', i)}"), percent, bold=True)
+    rate_grid.formula("bridge_spread", "Спред БРИДЖ", lambda i: f"={ref('bridge_spread_pp')}", percent)
+    rate_grid.formula("bridge", "Ставка БРИДЖ",
+                      lambda i: f"={rate_grid.at('key_rate', i)}+{rate_grid.at('bridge_spread', i)}",
+                      percent, bold=True)
+    rate_grid.formula("bridge_cap_spread", "Спред капитализации",
+                      lambda i: f"={ref('bridge_cap_spread_pp')}", percent)
+    rate_grid.formula("bridge_cap", "Ставка капитализации БРИДЖ",
+                      lambda i: f"={rate_grid.at('key_rate', i)}+{rate_grid.at('bridge_cap_spread', i)}",
+                      percent)
+    rate_grid.formula("pf_spread", "Спред ПФ", lambda i: f"={ref('pf_spread_pp')}", percent)
+    rate_grid.formula("pf_base", "Базовая ставка ПФ",
+                      lambda i: f"={rate_grid.at('key_rate', i)}+{rate_grid.at('pf_spread', i)}",
+                      percent, bold=True)
+    rate_grid.formula("pf_special", "Ставка при покрытии эскроу 1×",
+                      lambda i: f"={ref('pf_special_pct')}", percent, bold=True)
+
+    # --- ЭСКРОУ ------------------------------------------------------------
+    escrow = _MonthGrid(sheets["escrow"], months, styles, title="ЭСКРОУ · млн ₽")
+    escrow.layout("sales", "inflow", "release", "balance", "free_sales")
+    escrow.formula("sales", "Поступления от продаж",
+                   lambda i: f"={sales.outside('revenue', i)}", money)
+    escrow.formula("inflow", "Зачисление на эскроу (до РВЭ)",
+                   lambda i: f"=IF({escrow.month(i)}<{ref('rve')},{escrow.at('sales', i)},0)", money)
+    escrow.formula("release", "Раскрытие эскроу на РВЭ",
+                   lambda i: (f"=IF({escrow.month(i)}={ref('rve')},"
+                              f"{escrow.before('balance', i)}+{escrow.at('inflow', i)},0)"), money)
+    escrow.formula("balance", "Остаток на счетах эскроу",
+                   lambda i: (f"={escrow.before('balance', i)}+{escrow.at('inflow', i)}"
+                              f"-{escrow.at('release', i)}"), money, bold=True)
+    escrow.formula("free_sales", "Продажи после РВЭ (мимо эскроу)",
+                   lambda i: f"=IF({escrow.month(i)}>{ref('rve')},{escrow.at('sales', i)},0)", money)
+
+    # --- КРЕДИТОВАНИЕ ------------------------------------------------------
+    credit = _MonthGrid(sheets["credit"], months, styles, title="КРЕДИТОВАНИЕ · млн ₽")
+    credit.layout(
+        ("section", "БРИДЖ"), "bridge_rate", "bridge_cap_rate", "bridge_draw", "bridge_gross",
+        "bridge_refinance", "bridge_balance", "bridge_interest", "bridge_cap",
+        "bridge_transfer", "bridge_payable",
+        ("section", "Проектное финансирование"), "pf_draw", "pf_gross", "pf_repayment",
+        "pf_balance", "coverage", "pf_base_rate", "pf_special_rate", "pf_rate",
+        "pf_interest", "pf_cap", "limit_fee", "interest_payment", "pf_payable",
+        ("section", "Итого стоимость долга"), "fees", "cost")
+    credit.formula("bridge_rate", "Ставка", lambda i: f"={rate_grid.outside('bridge', i)}", percent)
+    credit.formula("bridge_cap_rate", "Ставка капитализации",
+                   lambda i: f"={rate_grid.outside('bridge_cap', i)}", percent)
+    credit.formula("bridge_draw", "Выборка (затраты до РнС)",
+                   lambda i: (f"=IF({credit.month(i)}<{ref('permit')},"
+                              f"MAX({costs.outside('debt', i)},0),0)"), money)
+    credit.formula("bridge_gross", "Долг до рефинансирования",
+                   lambda i: f"={credit.before('bridge_balance', i)}+{credit.at('bridge_draw', i)}", money)
+    credit.formula("bridge_refinance", "Рефинансирование тела в ПФ на РнС",
+                   lambda i: (f"=IF({credit.month(i)}={ref('permit')},"
+                              f"{credit.at('bridge_gross', i)},0)"), money)
+    credit.formula("bridge_balance", "Остаток БРИДЖ",
+                   lambda i: f"={credit.at('bridge_gross', i)}-{credit.at('bridge_refinance', i)}",
+                   money, bold=True)
+
+    def bridge_accrues(index: int) -> str:
+        return (f"AND({credit.month(index)}<{ref('permit')},"
+                f"{credit.at('bridge_gross', index)}>0)")
+
+    credit.formula("bridge_interest", "Проценты начисленные",
+                   lambda i: (f"=IF({bridge_accrues(i)},{credit.at('bridge_gross', i)}"
+                              f"*{credit.at('bridge_rate', i)}/12,0)"), money)
+    credit.formula("bridge_cap", "Капитализация процентов",
+                   lambda i: (f"=IF({bridge_accrues(i)},{credit.before('bridge_payable', i)}"
+                              f"*{credit.at('bridge_cap_rate', i)}/12,0)"), money)
+
+    def bridge_accrued(index: int) -> str:
+        return (f"{credit.before('bridge_payable', index)}+{credit.at('bridge_interest', index)}"
+                f"+{credit.at('bridge_cap', index)}")
+
+    credit.formula("bridge_transfer", "Перенос процентов на РнС",
+                   lambda i: f"=IF({credit.month(i)}={ref('permit')},{bridge_accrued(i)},0)", money)
+    credit.formula("bridge_payable", "Начисленные проценты, остаток",
+                   lambda i: f"={bridge_accrued(i)}-{credit.at('bridge_transfer', i)}", money)
+
+    credit.formula("pf_draw", "Выборка",
+                   lambda i: (f"=IF({credit.month(i)}>={ref('permit')},"
+                              f"MAX({costs.outside('debt', i)},0),0)"
+                              f"+{credit.at('bridge_refinance', i)}"
+                              f"+IF({capitalized},0,{credit.at('bridge_transfer', i)})"), money)
+    credit.formula("pf_gross", "Долг до погашения",
+                   lambda i: f"={credit.before('pf_balance', i)}+{credit.at('pf_draw', i)}", money)
+    credit.formula("pf_repayment", "Погашение (раскрытие эскроу и продажи после РВЭ)",
+                   lambda i: (f"=MIN({escrow.outside('release', i)}+{escrow.outside('free_sales', i)},"
+                              f"MAX({credit.at('pf_gross', i)},0))"), money)
+    credit.formula("pf_balance", "Остаток ПФ",
+                   lambda i: f"={credit.at('pf_gross', i)}-{credit.at('pf_repayment', i)}",
+                   money, bold=True)
+    # Покрытие — эскроу до раскрытия к долгу ПФ после выборки, но до погашения.
+    # Взять эскроу после раскрытия — на РВЭ покрытие обнулится, ставка прыгнет к
+    # базовой и проценты уедут вверх на весь остаток проекта.
+    credit.formula("coverage", "Покрытие эскроу, ×",
+                   lambda i: (f"=IF(AND({credit.month(i)}>={ref('permit')},"
+                              f"{credit.at('pf_gross', i)}>0),"
+                              f"({escrow.outside_before('balance', i)}"
+                              f"+{escrow.outside('inflow', i)})/{credit.at('pf_gross', i)},0)"),
+                   ratio, bold=True)
+    credit.formula("pf_base_rate", "Базовая ставка", lambda i: f"={rate_grid.outside('pf_base', i)}", percent)
+    # Ступени по покрытию эскроу — те же, что в движке. Их нет — формула та же,
+    # что была: одна ставка на всё покрытие.
+    _special_steps = pf_special_steps(inputs.get("pf_special_steps"))
+    _step_refs = [(ref(f"pf_step{index}_edge"), ref(f"pf_step{index}_rate"))
+                  for index in range(len(_special_steps))
+                  if f"pf_step{index}_edge" in key_row] or None
+    credit.formula(
+        "pf_special_rate",
+        "Ставка ступени по покрытию" if _special_steps else "Ставка при покрытии 1×",
+        lambda i: "=" + pf_special_steps_formula(
+            credit.at("coverage", i), _special_steps,
+            rate_grid.outside("pf_special", i), refs=_step_refs), percent)
+    # Базовая ставка — на непокрытую эскроу часть долга, специальная — на
+    # покрытую. Излишек эскроу сверх долга ставку ниже специальной не тянет.
+    credit.formula("pf_rate", "Ставка ПФ",
+                   lambda i: (f"=IF({credit.month(i)}>={ref('permit')},"
+                              f"{credit.at('pf_base_rate', i)}*(1-MIN({credit.at('coverage', i)},1))"
+                              f"+{credit.at('pf_special_rate', i)}*MIN({credit.at('coverage', i)},1),0)"),
+                   percent, bold=True)
+    credit.formula("pf_interest", "Проценты начисленные",
+                   lambda i: (f"=IF({credit.at('pf_gross', i)}>0,{credit.at('pf_gross', i)}"
+                              f"*{credit.at('pf_rate', i)}/12,0)"), money)
+
+    def pf_payable_start(index: int) -> str:
+        return (f"{credit.before('pf_payable', index)}"
+                f"+IF({capitalized},{credit.at('bridge_transfer', index)},0)")
+
+    credit.formula("pf_cap", "Капитализация процентов",
+                   lambda i: (f"=IF({credit.at('pf_gross', i)}>0,({pf_payable_start(i)})"
+                              f"*{credit.at('pf_rate', i)}/12,0)"), money)
+    credit.formula("limit_fee", "Плата за неиспользованный лимит",
+                   # Окно доступности линии: до РВЭ. После РВЭ лимита, за
+                   # который платят, больше нет — решение владельца.
+                   lambda i: (f"=IF(AND({credit.at('pf_gross', i)}>0,"
+                              f"{credit.month(i)}<{ref('rve')}),"
+                              f"MAX({ref('pf_limit')}-{credit.at('pf_gross', i)},0)"
+                              f"*{ref('limit_fee_pct')}/12,0)"), money)
+
+    def pf_accrued(index: int) -> str:
+        return (f"{pf_payable_start(index)}+{credit.at('pf_interest', index)}"
+                f"+{credit.at('pf_cap', index)}+{credit.at('limit_fee', index)}")
+
+    credit.formula("interest_payment", "Выплата процентов (с РВЭ)",
+                   lambda i: (f"=IF(AND({credit.month(i)}>={ref('rve')},{pf_accrued(i)}>0),"
+                              f"{pf_accrued(i)},0)"), money)
+    credit.formula("pf_payable", "Начисленные проценты, остаток",
+                   lambda i: f"={pf_accrued(i)}-{credit.at('interest_payment', i)}", money)
+
+    credit.formula("fees", "Комиссии за резервирование",
+                   lambda i: ((f"={ref('bridge_fee')}" if i == 0 else "=0")
+                              + f"+IF({credit.month(i)}={ref('permit')},{ref('pf_reservation_fee')},0)"),
+                   money)
+    credit.formula("cost", "Проценты и комиссии за месяц",
+                   lambda i: (f"={credit.at('bridge_interest', i)}+{credit.at('bridge_cap', i)}"
+                              f"+{credit.at('pf_interest', i)}+{credit.at('pf_cap', i)}"
+                              f"+{credit.at('limit_fee', i)}+{credit.at('fees', i)}"),
+                   money, bold=True)
+
+    # Лимит ПФ банк округляет вверх до десяти миллионов от общей выборки.
+    ws_in.cell(row=key_row["pf_limit"], column=2,
+               value=f"=CEILING(SUM({credit.span('pf_draw')}),10)")
+
+    # --- НАЛОГИ ------------------------------------------------------------
+    tax = _MonthGrid(sheets["tax"], months, styles, title="НАЛОГ НА ПРИБЫЛЬ · млн ₽")
+    tax.layout("margin", "adjust", "deduction", "margin_cum", "deduction_cum",
+               "base", "tax", "tax_cum", "vat")
+    tax.values("margin", "Маржа реализованных продуктов",
+               [float(item.get("taxable_margin") or 0.0) / 1e6 for item in rows], money)
+    adjust = [0.0] * len(rows)
+    if rows:
+        adjust[-1] = float(finance.get("financing_tax_reconciliation") or 0.0) / 1e6
+    tax.values("adjust", "Корректировка вычетов (сверка)", adjust, money)
+    # НДС — денежный расход проекта: без него книга показывала прибыль выше
+    # расчёта ровно на его величину, и обе цифры выглядели достоверно.
+    vat_schedule = {d(month): value for month, value in
+                    (finance.get("vat_schedule") or {}).items()}
+    tax.values("vat", "НДС к уплате",
+               [round(vat_schedule.get(d(item["month"]), 0.0) / 1e6, 6) for item in rows],
+               money)
+    tax.formula("deduction", "Вычет по финансированию (выплачено)",
+                lambda i: (f"={credit.outside('interest_payment', i)}"
+                           f"+{credit.outside('fees', i)}+{tax.at('adjust', i)}"), money)
+    tax.formula("margin_cum", "Маржа нарастающим",
+                lambda i: f"={tax.before('margin_cum', i)}+{tax.at('margin', i)}", money)
+    tax.formula("deduction_cum", "Вычеты нарастающим",
+                lambda i: f"={tax.before('deduction_cum', i)}+{tax.at('deduction', i)}", money)
+    tax.formula("base", "Налоговая база",
+                lambda i: f"=MAX({tax.at('margin_cum', i)}-{tax.at('deduction_cum', i)},0)", money)
+    # Налог платится не раньше РВЭ и с зачётом уже уплаченного.
+    tax.formula("tax", "Налог за месяц",
+                lambda i: (f"=IF({tax.month(i)}>={ref('rve')},"
+                           f"MAX({tax.at('base', i)}*{ref('profit_tax_pct')}"
+                           f"-{tax.before('tax_cum', i)},0),0)"), money, bold=True)
+    tax.formula("tax_cum", "Уплачено нарастающим",
+                lambda i: f"={tax.before('tax_cum', i)}+{tax.at('tax', i)}", money)
+
+    # --- CF ----------------------------------------------------------------
+    flow = _MonthGrid(sheets["cf"], months, styles, title="ДВИЖЕНИЕ ДЕНЕЖНЫХ СРЕДСТВ · млн ₽")
+    flow.layout(
+        ("section", "Операционная деятельность"), "revenue", "capex", "operating", "tax",
+        "vat", "interest", "project", "project_cum",
+        ("section", "Финансовая деятельность"), "bridge_draw", "bridge_repay",
+        "pf_draw", "pf_repay", "financing",
+        ("section", "Поток на собственный капитал"), "cash_in", "equity", "equity_cum")
+    flow.formula("revenue", "Поступления от продаж", lambda i: f"={sales.outside('revenue', i)}", money)
+    flow.formula("capex", "CAPEX", lambda i: f"=-{costs.outside('capex', i)}", money)
+    flow.formula("operating", "Маркетинг, продажи и содержание",
+                 lambda i: f"=-{costs.outside('operating', i)}", money)
+    flow.formula("tax", "Налог на прибыль", lambda i: f"=-{tax.outside('tax', i)}", money)
+    flow.formula("vat", "НДС", lambda i: f"=-{tax.outside('vat', i)}", money)
+    flow.formula("interest", "Проценты и комиссии выплаченные",
+                 lambda i: f"=-{credit.outside('interest_payment', i)}-{credit.outside('fees', i)}", money)
+    # Проектный поток — как его считает движок: до финансирования тела долга,
+    # но после его обслуживания. Именно он идёт в NPV.
+    flow.formula("project", "Проектный поток",
+                 lambda i: (f"={flow.at('revenue', i)}+{flow.at('capex', i)}"
+                            f"+{flow.at('operating', i)}+{flow.at('tax', i)}"
+                            f"+{flow.at('interest', i)}"), money, bold=True)
+    flow.formula("project_cum", "Проектный поток нарастающим",
+                 lambda i: f"={flow.before('project_cum', i)}+{flow.at('project', i)}", money)
+
+    flow.formula("bridge_draw", "Выборка БРИДЖ", lambda i: f"={credit.outside('bridge_draw', i)}", money)
+    flow.formula("bridge_repay", "Погашение БРИДЖ (рефинансирование)",
+                 lambda i: f"=-{credit.outside('bridge_refinance', i)}", money)
+    flow.formula("pf_draw", "Выборка ПФ", lambda i: f"={credit.outside('pf_draw', i)}", money)
+    flow.formula("pf_repay", "Погашение ПФ", lambda i: f"=-{credit.outside('pf_repayment', i)}", money)
+    flow.formula("financing", "Финансовый поток",
+                 lambda i: (f"={flow.at('bridge_draw', i)}+{flow.at('bridge_repay', i)}"
+                            f"+{flow.at('pf_draw', i)}+{flow.at('pf_repay', i)}"), money, bold=True)
+
+    # До РВЭ выручка лежит на эскроу и акционеру недоступна: в поток попадают
+    # раскрытие и продажи после РВЭ, а не начисленная выручка.
+    flow.formula("cash_in", "Денежные поступления (эскроу раскрыто)",
+                 lambda i: (f"=IF({flow.month(i)}<{ref('rve')},0,"
+                            f"{flow.at('revenue', i)}+{escrow.outside('release', i)})"), money)
+    flow.formula("equity", "Поток на собственный капитал",
+                 lambda i: (f"={flow.at('cash_in', i)}+{flow.at('capex', i)}"
+                            f"+{flow.at('operating', i)}+{flow.at('tax', i)}"
+                            f"+{flow.at('interest', i)}+{flow.at('financing', i)}"), money, bold=True)
+    flow.formula("equity_cum", "Поток на собственный капитал нарастающим",
+                 lambda i: f"={flow.before('equity_cum', i)}+{flow.at('equity', i)}", money)
+
+    # --- LLCR --------------------------------------------------------------
+    ws_llcr = sheets["llcr"]
+    ws_llcr["A1"] = "LLCR"
+    ws_llcr["A1"].font = styles["title"]
+    ws_llcr["A2"] = ((result.get("notes") or {}).get("llcr") or "")
+    llcr_rows = [
+        ("Поступления (выручка)", f"=SUM({sales.span('revenue')})", money),
+        ("Маркетинг, продажи и содержание", f"=-SUM({costs.span('operating')})", money),
+        ("CAPEX", f"=-SUM({costs.span('capex')})", money),
+        ("Налог на прибыль", f"=-SUM({tax.span('tax')})", money),
+        ("НДС", f"=-SUM({tax.span('vat')})", money),
+        ("Выборка ПФ", f"=SUM({credit.span('pf_draw')})", money),
+        ("ЧИСЛИТЕЛЬ", "=SUM(B4:B9)", money),
+        ("Выборка ПФ", "=B9", money),
+        ("Проценты и комиссии", f"=SUM({credit.span('cost')})", money),
+        ("ЗНАМЕНАТЕЛЬ", "=B11+B12", money),
+        ("LLCR", "=IFERROR(B10/B13,0)", ratio),
+    ]
+    for offset, (label, formula, fmt) in enumerate(llcr_rows):
+        line = 4 + offset
+        cell = ws_llcr.cell(row=line, column=1, value=label)
+        if label in ("ЧИСЛИТЕЛЬ", "ЗНАМЕНАТЕЛЬ", "LLCR"):
+            cell.font = styles["bold"]
+        ws_llcr.cell(row=line, column=2, value=formula).number_format = fmt
+    ws_llcr.column_dimensions["A"].width = 40
+    ws_llcr.column_dimensions["B"].width = 18
+
+    # --- ВРИ ---------------------------------------------------------------
+    ws_vri = sheets["vri"]
+    ws_vri["A1"] = "ПЛАТА ЗА СМЕНУ ВРИ"
+    ws_vri["A1"].font = styles["title"]
+    vri = result.get("vri") or {}
+    if vri.get("enabled") and (vri.get("rows") or []):
+        for column, label in enumerate(
+                ("Дата", "Период", "Основной долг", "Проценты", "Платёж",
+                 "Остаток", "БРИДЖ", "ПФ", "Свои средства"), start=1):
+            ws_vri.cell(row=3, column=column, value=label).font = styles["bold"]
+        for offset, item in enumerate(vri.get("rows") or []):
+            line = 4 + offset
+            ws_vri.cell(row=line, column=1, value=d(item.get("date"))).number_format = month_fmt
+            ws_vri.cell(row=line, column=2, value=item.get("period"))
+            for column, key in enumerate(
+                    ("principal", "interest", "total", "balance_after", "bridge", "pf", "equity"),
+                    start=3):
+                ws_vri.cell(row=line, column=column,
+                            value=round(float(item.get(key) or 0.0) / 1e6, 3)).number_format = money
+        last_line = 3 + len(vri.get("rows") or [])
+        ws_vri.cell(row=last_line + 1, column=1, value="ИТОГО").font = styles["bold"]
+        for column in (3, 4, 5, 7, 8, 9):
+            letter = get_column_letter(column)
+            cell = ws_vri.cell(row=last_line + 1, column=column,
+                               value=f"=SUM({letter}4:{letter}{last_line})")
+            cell.number_format = money
+            cell.font = styles["bold"]
+    else:
+        ws_vri["A3"] = "Смена ВРИ в расчёте не участвует: плата равна нулю."
+    ws_vri.column_dimensions["A"].width = 16
+    for column in range(2, 10):
+        ws_vri.column_dimensions[get_column_letter(column)].width = 16
+
+    # --- ОТЧЁТ -------------------------------------------------------------
+    ws_rep = sheets["report"]
+    ws_rep["A1"] = f"ОТЧЁТ · {project_name or 'проект'}"
+    ws_rep["A1"].font = styles["title"]
+    ws_rep["A2"] = "Колонка B считается книгой, C — расчёт DevelopAid, D — разница."
+    for column, label in ((1, "Показатель"), (2, "Книга"), (3, "DevelopAid"), (4, "Δ")):
+        ws_rep.cell(row=3, column=column, value=label).font = styles["bold"]
+
+    row_of = {key: 4 + offset for offset, key in enumerate(_M2_REPORT_KEYS)}
+
+    def own(key: str) -> str:
+        return f"$B${row_of[key]}"
+
+    report_rows: list[tuple[str, str, str, str, float]] = [
+        ("revenue", "Выручка", f"=SUM({sales.span('revenue')})", money,
+         float(summary.get("revenue") or 0.0) / 1e6),
+        ("capex", "CAPEX (инвестиции)", f"=SUM({costs.span('capex')})", money,
+         float(summary.get("capex") or 0.0) / 1e6),
+        ("operating", "Маркетинг, продажи и содержание", f"=SUM({costs.span('operating')})", money,
+         float(summary.get("commercial_costs") or 0.0) / 1e6),
+        ("ebitda", "EBITDA", f"={own('revenue')}-{own('capex')}-{own('operating')}", money,
+         float(summary.get("ebitda") or 0.0) / 1e6),
+        ("financing_cost", "Проценты и комиссии", f"=SUM({credit.span('cost')})", money,
+         float(summary.get("financing_cost") or 0.0) / 1e6),
+        ("profit_before_tax", "Прибыль до налога",
+         f"={own('ebitda')}-{own('financing_cost')}", money,
+         float(summary.get("profit_before_tax") or 0.0) / 1e6),
+        ("profit_tax", "Налог на прибыль", f"=SUM({tax.span('tax')})", money,
+         float(summary.get("profit_tax") or 0.0) / 1e6),
+        ("vat", "НДС", f"=SUM({tax.span('vat')})", money,
+         float(finance.get("vat") or 0.0) / 1e6),
+        ("net_profit", "Чистая прибыль",
+         f"={own('profit_before_tax')}-{own('profit_tax')}-{own('vat')}", money,
+         float(summary.get("net_profit") or 0.0) / 1e6),
+        ("peak_bridge", "Пик БРИДЖ", f"=MAX({credit.span('bridge_balance')})", money,
+         float(finance.get("peak_bridge") or 0.0) / 1e6),
+        ("pf_draw_total", "Выборка ПФ", f"=SUM({credit.span('pf_draw')})", money,
+         float(finance.get("pf_draw_total") or 0.0) / 1e6),
+        ("peak_pf", "Пик ПФ", f"=MAX({credit.span('pf_balance')})", money,
+         float(finance.get("peak_pf") or 0.0) / 1e6),
+        ("avg_pf_rate", "Средневзвешенная ставка ПФ",
+         f"=IFERROR(SUMPRODUCT({credit.span('pf_gross')},{credit.span('pf_rate')})"
+         f"/SUM({credit.span('pf_gross')}),0)", percent,
+         float(finance.get("avg_pf_rate") or 0.0)),
+        ("llcr", "LLCR", f"={_M2_SHEETS['llcr']}!$B$14", ratio,
+         float(summary.get("llcr") or 0.0)),
+    ]
+    for key, label, formula, fmt, expected in report_rows:
+        line = row_of[key]
+        cell = ws_rep.cell(row=line, column=1, value=label)
+        if key in ("ebitda", "net_profit", "llcr"):
+            cell.font = styles["bold"]
+        ws_rep.cell(row=line, column=2, value=formula).number_format = fmt
+        ws_rep.cell(row=line, column=3, value=round(expected, 12)).number_format = fmt
+        ws_rep.cell(row=line, column=4, value=f"=B{line}-C{line}").number_format = fmt
+
+    line = 4 + len(report_rows) + 1
+    ws_rep.cell(row=line, column=1, value="УДЕЛЬНЫЕ ПОКАЗАТЕЛИ").font = styles["section"]
+    line += 1
+    for column, label in enumerate(
+            ("Показатель", "Всего, млн ₽", "На ГНС, тыс. ₽/м²", "На продаваемую, тыс. ₽/м²"), start=1):
+        ws_rep.cell(row=line, column=column, value=label).font = styles["bold"]
+    for offset, item in enumerate(report.get("unit_economics") or []):
+        current = line + 1 + offset
+        ws_rep.cell(row=current, column=1, value=item.get("label"))
+        ws_rep.cell(row=current, column=2,
+                    value=round(float(item.get("total") or 0.0) / 1e6, 3)).number_format = money
+        ws_rep.cell(row=current, column=3,
+                    value=round(float(item.get("per_gns_th") or 0.0), 3)).number_format = money
+        ws_rep.cell(row=current, column=4,
+                    value=round(float(item.get("per_saleable_th") or 0.0), 3)).number_format = money
+    ws_rep.column_dimensions["A"].width = 40
+    for column in ("B", "C", "D"):
+        ws_rep.column_dimensions[column].width = 18
+
+    # Отчёт открывается первым, дальше — вводные и расчётные листы по порядку.
+    workbook.move_sheet(ws_rep, offset=-(len(workbook.sheetnames) - 1))
+    workbook.calculation.fullCalcOnLoad = True
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+    return buffer.getvalue(), {
+        "months": len(rows),
+        "sheets": list(workbook.sheetnames),
+        "layout": {
+            "sales": dict(sales.rows), "costs": dict(costs.rows), "rates": dict(rate_grid.rows),
+            "escrow": dict(escrow.rows), "credit": dict(credit.rows), "tax": dict(tax.rows),
+            "cf": dict(flow.rows), "inputs": dict(key_row), "report": dict(row_of),
+        },
+        "engine": {key: expected for key, _, _, _, expected in report_rows},
+    }
+
+
+def build_plato_archive(
+    inputs: dict[str, Any],
+    tep: dict[str, dict[str, Any]],
+    rates: list[dict[str, Any]] | None = None,
+    phasing: dict[str, Any] | None = None,
+    *,
+    project_name: str = "",
+    scenario: str = "base",
+) -> tuple[bytes, str, dict[str, Any]]:
+    """ZIP: шаблон ПЛАТО на весь проект и по одному файлу на очередь."""
+    bundle = _run_authoritative_model(inputs, tep, rates or [], phasing or {})
+    phases = bundle.get("phases") or []
+    phased = str(bundle.get("mode") or "single") == "phased" and len(phases) > 1
+    title = str(project_name or "").strip() or "Проект DevelopAid"
+    stem = _safe_file_stem(title)
+
+    files: list[tuple[str, bytes]] = []
+    reports: list[dict[str, Any]] = []
+    consolidator_note: list[str] = []
+
+    if phased:
+        # Сначала очереди: консолидатору нужны их имена файлов, чтобы прописать
+        # внешние ссылки.
+        phase_files: list[tuple[str, str]] = []
+        for index, phase in enumerate(phases, start=1):
+            phase_inputs = {**inputs, **(phase.get("inputs") or {})}
+            phase_tep = phase.get("tep") or tep
+            phase_name = str(phase.get("name") or f"О{index}")
+            content, phase_report = fill_plato_template(
+                phase_inputs, phase_tep, scenario=scenario,
+                project_name=f"{title} · {phase_name}",
+            )
+            name = f"{index:02d}_Очередь_{_safe_file_stem(phase_name, f'О{index}')}.xlsx"
+            files.append((name, content))
+            reports.append({"file": name, **phase_report})
+            phase_files.append((phase_name, name))
+
+        consolidator, consolidator_report = fill_plato_consolidator(bundle, phase_files)
+        files.insert(0, (f"00_Консолидатор_{stem}.xlsx", consolidator))
+        reports.insert(0, {"file": files[0][0], **consolidator_report})
+        consolidator_note = list(consolidator_report.get("notes") or [])
+    else:
+        content, report = fill_plato_template(inputs, tep, scenario=scenario, project_name=title)
+        files.append((f"{stem}_ПЛАТО.xlsx", content))
+        reports.append({"file": files[-1][0], **report})
+
+    # Шаблон ПЛАТО принимает плату за ВРИ одной суммой и не умеет рассрочку,
+    # поэтому график платежей едет рядом отдельной книгой, а сам шаблон не
+    # трогается.
+    vri_sheet = _model_sheet_vri(bundle.get("consolidated") or {})
+    if vri_sheet:
+        files.append((f"ВРИ_график_{stem}.xlsx", _build_model_xlsx([vri_sheet])))
+
+    # Собственная книга DevelopAid: те же вводные, но расчёт живыми формулами
+    # по методике движка. Шаблон ПЛАТО — учётная модель действующего проекта,
+    # и часть его листов приходит с «факта»; эта считает проект целиком.
+    try:
+        model_v2, _ = build_plato_model_v2(inputs, tep, rates or [], project_name=title)
+    except Exception as exc:  # книга не должна ронять выгрузку шаблона
+        reports.append({"file": "Модель_DevelopAid", "missing": [f"не собрана: {exc}"]})
+    else:
+        files.append((f"Модель_DevelopAid_{stem}.xlsx", model_v2))
+
+    readme = [
+        "DevelopAid · выгрузка в шаблон ПЛАТО",
+        f"Проект: {title}",
+        f"Дата выгрузки: {date.today().isoformat()}",
+        f"Режим: {'по очередям' if phased else 'единый расчёт'}",
+        "",
+        "Заполнены только листы-вводные: «Вводные» и «Расчет ВРИ (ТЭП)».",
+        "Плата за смену ВРИ в шаблоне — одна сумма без графика, поэтому",
+        "рассрочка, проценты на остаток и источники оплаты вынесены в отдельную",
+        "книгу «ВРИ_график_…»; сам шаблон при этом не меняется.",
+        "Все остальные листы шаблона — Дашборд, ОТЧЕТ, ТЭП, СРОКИ, CF, cf_0…cf_2,",
+        "КРЕДИТЫ, ЗУ, LLCR — считаются формулами самого шаблона при открытии.",
+        "",
+        "Значения модели записаны во все три сценария шаблона (консервативный,",
+        "базовый, оптимистичный), поэтому переключатель сценария не меняет цифры",
+        "расчёта DevelopAid.",
+        "",
+        "Excel пересчитывает книгу при открытии. Если значения выглядят старыми,",
+        "нажмите Ctrl+Alt+F9.",
+        "",
+        "МОДЕЛЬ DEVELOPAID",
+        "Файл «Модель_DevelopAid_…» — отдельная книга на три листа: «Вводные»,",
+        "«Расчёт» и «ОТЧЁТ». Помесячные драйверы (продажи, затраты, ключевая",
+        "ставка, налоговая маржа) записаны значениями — это сценарий. Весь",
+        "финансовый контур — эскроу, БРИДЖ, ПФ, покрытие, ставки, проценты,",
+        "налог и LLCR — живые формулы: меняете спред или ставку на «Вводных»",
+        "и видите пересчёт. На листе «ОТЧЁТ» колонка B считается книгой,",
+        "колонка C — тот же показатель из расчёта DevelopAid, колонка D — разница.",
+        *([
+            "",
+            "КОНСОЛИДАТОР",
+            "Файл 00_Консолидатор_… — отдельная книга: она не считает проект заново,",
+            "а собирает показатели с листов «ОТЧЕТ», «CF» и «КРЕДИТЫ» файлов очередей",
+            "через ДВССЫЛ / INDIRECT. Имена файлов уже прописаны на листе «НАСТРОЙКИ».",
+            "",
+            "Чтобы свод посчитался:",
+            "  1. распакуйте все файлы архива в одну папку;",
+            "  2. откройте файлы очередей одновременно с консолидатором —",
+            "     ДВССЫЛ не читает закрытые внешние книги, при закрытых источниках",
+            "     свод покажет нули;",
+            "  3. если файлы переименуете, поправьте имена в НАСТРОЙКИ!D5:D8.",
+            "",
+            "Пока источники закрыты, консолидатор показывает цифры с листа «КЭШ_СВОД» —",
+            "это снимок расчёта DevelopAid на момент выгрузки, а не живой свод.",
+        ] if phased else []),
+        *([""] + consolidator_note if consolidator_note else []),
+        "",
+        "Состав архива:",
+        *[f"  - {name}" for name, _ in files],
+    ]
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as archive:
+        for name, payload in files:
+            archive.writestr(name, payload)
+        archive.writestr("README.txt", ("\n".join(readme) + "\n").encode("utf-8"))
+    suffix = "очереди" if phased else "модель"
+    return out.getvalue(), f"DevelopAid_ПЛАТО_{stem}_{suffix}_{date.today().isoformat()}.zip", {
+        "phased": phased,
+        "files": reports,
+    }
+
+
+@app.post("/report/plato")
+def report_plato(req: PlatoTemplateRequest) -> Response:
+    try:
+        content, filename, _ = build_plato_archive(
+            req.inputs, req.tep, req.rates, req.phasing,
+            project_name=req.project_name, scenario=req.scenario,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Не удалось заполнить шаблон ПЛАТО: {exc}") from exc
+    encoded = urllib.parse.quote(filename)
+    return Response(
+        content=content,
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename=DevelopAid_PLATO.zip; filename*=UTF-8''{encoded}"},
+    )
+
+
+# Что с чем сверяется на листе «ОТЧЕТ» шаблона. Слева подпись в колонке B,
+# справа — как та же величина зовётся в результате движка. Знак не важен:
+# шаблон пишет расходы отрицательными, движок — положительными.
+_PLATO_AUDIT_ROWS: list[tuple[str, str, str]] = [
+    ("Поступления", "summary.revenue", "выручка"),
+    ("Вход", "inputs.purchase_price_mln", "цена приобретения"),
+    ("Расходы на ЗУ", "inputs.land_rights_cost_mln", "смена ВРИ и земельные права"),
+    ("Строительство соцобъектов", "capex.social", "социальная нагрузка"),
+    ("Коммерческие", "summary.commercial_costs", "коммерческие расходы"),
+    ("Расходы", "summary.total_expenses", "расходы всего"),
+    ("EBITDA", "summary.ebitda", "EBITDA"),
+    ("%% по кредитам", "summary.financing_cost", "проценты и комиссии"),
+    ("Налог на прибыль / прочие налоги", "summary.profit_tax", "налог на прибыль"),
+    ("Чистая прибыль", "summary.net_profit", "чистая прибыль"),
+    ("NPV @20%", "summary.npv", "NPV"),
+    ("LLCR", "summary.llcr", "LLCR"),
+    ("Маржинальность", "summary.margin", "маржинальность"),
+]
+
+# Доли и коэффициенты сравниваются как есть, деньги — в миллионах рублей.
+_PLATO_AUDIT_AS_IS = frozenset({"summary.llcr", "summary.margin"})
+
+
+def _plato_audit_expected(bundle: dict[str, Any], inputs: dict[str, Any], path: str) -> float | None:
+    where, _, key = path.partition(".")
+    if where == "inputs":
+        return n(inputs, key, 0.0)
+    result = bundle.get("consolidated") or {}
+    if where == "summary":
+        value = (result.get("summary") or {}).get(key)
+    elif where == "capex":
+        value = (result.get("capex") or {}).get(key)
+    else:
+        return None
+    if value is None:
+        return None
+    return float(value) if path in _PLATO_AUDIT_AS_IS else float(value) / 1e6
+
+
+def audit_plato_workbook(
+    content: bytes,
+    inputs: dict[str, Any],
+    tep: dict[str, dict[str, Any]],
+    rates: list[dict[str, Any]] | None = None,
+    phasing: dict[str, Any] | None = None,
+    *,
+    tolerance_pct: float = 1.0,
+) -> dict[str, Any]:
+    """Сверяет посчитанную книгу ПЛАТО с расчётом движка.
+
+    Шаблон — живая книга на формулах, и ошибиться он может независимо от нас:
+    ячейка тянет значение не оттуда, остаётся хвост прежней методики, ломается
+    ссылка. Найти это глазами дорого — сегодня расхождение по социальной
+    нагрузке (0,6 млн ₽ против 193,2 млн ₽) искалось полтора десятка шагов.
+
+    Книга должна быть пересчитана Excel: openpyxl формулы не считает и читает
+    только сохранённый результат. Непосчитанную книгу функция так и назовёт,
+    а не выдаст пустые расхождения за совпадение.
+    """
+    try:
+        from openpyxl import load_workbook
+    except ModuleNotFoundError as exc:
+        raise HTTPException(status_code=500, detail="Для сверки нужен пакет openpyxl") from exc
+
+    workbook = load_workbook(io.BytesIO(content), data_only=True)
+    if "ОТЧЕТ" not in workbook.sheetnames:
+        raise HTTPException(status_code=400, detail="В книге нет листа «ОТЧЕТ» — это не модель ПЛАТО")
+    sheet = workbook["ОТЧЕТ"]
+    found: dict[str, float] = {}
+    for row in range(1, 90):
+        label = sheet.cell(row=row, column=2).value
+        value = sheet.cell(row=row, column=3).value
+        if isinstance(label, str) and isinstance(value, (int, float)):
+            found.setdefault(_plato_normalize(label), float(value))
+
+    bundle = _run_authoritative_model(
+        copy.deepcopy(inputs or {}), copy.deepcopy(tep or {}),
+        copy.deepcopy(rates or []), copy.deepcopy(phasing or {}),
+    )
+    items: list[dict[str, Any]] = []
+    missing: list[str] = []
+    for label, path, name in _PLATO_AUDIT_ROWS:
+        model = found.get(_plato_normalize(label))
+        expected = _plato_audit_expected(bundle, inputs or {}, path)
+        if model is None or expected is None:
+            missing.append(name)
+            continue
+        model = abs(model) if not path.startswith("summary.llcr") else model
+        expected_abs = abs(expected)
+        delta = abs(model) - expected_abs
+        scale = max(abs(expected_abs), 1e-9)
+        items.append({
+            "name": name,
+            "label": label,
+            "model": round(abs(model), 4),
+            "engine": round(expected_abs, 4),
+            "delta": round(delta, 4),
+            "delta_pct": round(delta / scale * 100, 3),
+            "matches": abs(delta) <= max(abs(expected_abs) * tolerance_pct / 100, 1e-6),
+        })
+
+    mismatched = [item for item in items if not item["matches"]]
+    mismatched.sort(key=lambda item: abs(item["delta"]), reverse=True)
+    if not found:
+        verdict = ("Книга не пересчитана: формулы не имеют сохранённого результата. "
+                   "Откройте её в Excel, дождитесь пересчёта, сохраните и повторите сверку.")
+    elif not mismatched:
+        verdict = f"Расхождений сверх {_telegram_number(tolerance_pct, 1)}% не найдено."
+    else:
+        worst = mismatched[0]
+        verdict = (f"Расхождений: {len(mismatched)} из {len(items)}. Больше всего расходится "
+                   f"«{worst['name']}»: в модели {_telegram_number(worst['model'], 1)}, "
+                   f"в расчёте {_telegram_number(worst['engine'], 1)}.")
+    return {
+        "recalculated": bool(found),
+        "tolerance_pct": tolerance_pct,
+        "items": items,
+        "mismatched": mismatched,
+        "missing": missing,
+        "verdict": verdict,
+    }
+
+
+@app.get("/report/plato/status")
+def report_plato_status() -> dict[str, Any]:
+    """Есть ли шаблон на сервере и сколько полей карта умеет заполнять."""
+    return {
+        "template_available": _PLATO_TEMPLATE_PATH.is_file(),
+        "template_path": str(_PLATO_TEMPLATE_PATH),
+        "input_fields": len(_PLATO_INPUT_MAP) + len(_PLATO_BLOCK_MAP),
+        "tep_rows": len(_PLATO_TEP_ROWS),
+    }
+
+
+@app.post("/report/pdf")
+async def report_pdf(request: Request) -> Response:
+    payload=await request.json()
+    if not isinstance(payload,dict) or not isinstance(payload.get("result"),dict):
+        raise HTTPException(status_code=400,detail="Нет данных расчёта для PDF")
+    # PDF пересчитывает модель на сервере — это не бесплатно, и отчёт уносят
+    # с собой: с сайта он доступен после входа через Telegram (мягкий гейт).
+    _require_web_access(str(payload.get("session") or ""),
+                        str(payload.get("access_key") or ""), "PDF-отчёт")
+    usage_track("pdf", surface="site",
+                chat_id=_web_identity_chat_id(str(payload.get("session") or "")))
+    # Один расчёт на обе поверхности. Правило применили к боту и забыли про
+    # сайт: бот пересчитывал модель на сервере, а здесь отчёт строился по
+    # результату из браузера. Пока вкладка свежая, разницы нет; стоит ей
+    # устареть — сайт печатает своё, бот своё, и оба выглядят достоверно.
+    if isinstance(payload.get("inputs"), dict) and payload.get("tep"):
+        try:
+            from starlette.concurrency import run_in_threadpool
+            bundle = await run_in_threadpool(
+                _run_authoritative_model,
+                payload.get("inputs") or {}, payload.get("tep") or {},
+                payload.get("rates") or [], payload.get("phasing") or {})
+            server_result = bundle["consolidated"]
+            problems = _parity_mismatch(
+                {**server_result, "inputs": payload.get("inputs") or {}},
+                {**(payload.get("result") or {}), "inputs": payload.get("inputs") or {}},
+            )
+            payload = {**payload, "result": server_result}
+            if problems:
+                # В чат тут писать некому — расхождение печатается в самом
+                # отчёте: молча подменить числа нельзя, человек увидит в PDF
+                # не то, что было на экране, и не поймёт почему.
+                payload["parity_problems"] = problems
+        except Exception as exc:
+            logging.warning("report pdf recalculation failed: %s", exc)
+    # Торнадо в PDF с сайта: страница шлёт чувствительность, только если её
+    # считали в окне, а бот дообогащал отчёт сам — и его PDF выходил «лучше»
+    # при тех же вводных. Считает движок; пул потоков — чтобы десятки
+    # пересчётов чувствительности не держали event loop обоих воркеров.
+    if not payload.get("sensitivity") and isinstance(payload.get("inputs"), dict) and payload.get("tep"):
+        try:
+            from starlette.concurrency import run_in_threadpool
+            payload = {**payload, "sensitivity": await run_in_threadpool(
+                run_sensitivity,
+                payload.get("inputs") or {}, payload.get("tep") or {},
+                payload.get("rates") or [], payload.get("phasing") or {})}
+        except Exception:
+            pass  # без анализа отчёт всё равно нужен — раздела просто не будет
+    try: content=_build_developaid_pdf(payload)
+    except Exception as exc: raise HTTPException(status_code=500,detail=f"Не удалось сформировать PDF: {exc}") from exc
+    project_name=str(payload.get("project_name") or "DevelopAid").strip();safe=re.sub(r"[^0-9A-Za-zА-Яа-я_-]+","_",project_name).strip("_")[:60] or "DevelopAid";filename=f"DevelopAid_Отчет_{safe}_{date.today().isoformat()}.pdf";encoded_name=urllib.parse.quote(filename)
+    return Response(content=content,media_type="application/pdf",headers={"Content-Disposition":f"attachment; filename=DevelopAid_report.pdf; filename*=UTF-8''{encoded_name}"})
+
+
+@app.post("/telegram/result")
+def telegram_result(req: TelegramResultRequest,
+                    background: BackgroundTasks = None) -> dict[str, bool]:
+    session = _telegram_verify_session(req.session)
+    chat_id = int(session["chat_id"])
+    if not _telegram_user_allowed(chat_id):
+        raise HTTPException(status_code=403, detail="Доступ к боту закрыт")
+    summary = req.summary or {}
+    session_numbers = session.get("cad") or []
+    raw_result_numbers = summary.get("cadastral_numbers") or []
+    result_numbers = _parse_cadastral_numbers(raw_result_numbers) if raw_result_numbers else []
+    numbers = session_numbers or result_numbers
+    if session_numbers and result_numbers and session_numbers != result_numbers:
+        raise HTTPException(status_code=403, detail="Кадастровые номера не совпадают с Telegram-сессией")
+
+    irr = summary.get("irr_equity")
+    irr_text = "N/A"
+    if irr is not None:
+        try:
+            irr_text = _telegram_number(float(irr) * 100, 1) + "%"
+        except Exception:
+            pass
+    margin_text = _telegram_number(float(summary.get("margin") or 0) * 100, 1) + "%"
+    parking = float(summary.get("parking_spaces") or 0)
+    project_name = str(summary.get("project_name") or "").strip()
+    source_label = str(summary.get("source_label") or "ТЭП DevelopAid").strip()
+    purchase_assessment = _purchase_feasibility(
+        summary.get("purchase_price_mln"),
+        summary.get("net_profit_mln"),
+        summary.get("llcr"),
+        max(
+            float(summary.get("calculated_bridge_mln") or 0),
+            float(summary.get("pf_uncovered_peak_mln") or 0),
+        ),
+    )
+    # Продукт с ГНС и без продаваемой площади делает вердикт бессмысленным:
+    # расходы полные, выручки нет, и «нецелесообразна» относится к дырке
+    # в ТЭП, а не к проекту. Об этом надо сказать раньше вывода.
+    broken_products = _tep_cost_without_revenue(
+        (summary.get("report_payload") or {}).get("tep") or {}
+    )
+    if broken_products:
+        purchase_assessment = {
+            "status": "not_available",
+            "title": "Вывод не сформирован — ТЭП неполный",
+            "text": (
+                "Нет продаваемой площади: " + ", ".join(broken_products)
+                + ". Себестоимость считается от ГНС и учтена полностью, выручки по этим "
+                "продуктам нет — расчёт показывает убыток по этой причине, а не из-за "
+                "экономики проекта. Проверьте ТЭП и повторите расчёт."
+            ),
+        }
+    if numbers:
+        scope_line = f"Участки: <code>{html.escape(', '.join(numbers))}</code>\n"
+    elif project_name:
+        scope_line = f"Проект: <b>{html.escape(project_name)}</b>\n"
+    else:
+        scope_line = ""
+    # Непогашенный ПФ — это дефолт по кредиту, а не строка детализации. Раньше
+    # остаток считался, но никуда не выводился, и карточка выглядела безупречно
+    # при долге в миллиарды. Порог 0,5 млн отсекает копеечные хвосты округления.
+    ending_pf_mln = float(summary.get("ending_pf_mln") or 0)
+    if ending_pf_mln > 0.5:
+        debt_warning = (
+            "⚠️ <b>Долг ПФ не погашается к концу проекта</b>\n"
+            f"• остаток — {_telegram_money_mln(ending_pf_mln)}\n"
+            "• выручки через эскроу не хватает на полное погашение проектного "
+            "финансирования — для банка это риск дефолта.\n\n"
+        )
+    else:
+        debt_warning = ""
+    text = (
+        "<b>Расчёт DevelopAid готов</b>\n"
+        + scope_line +
+        f"Источник ТЭП: <b>{html.escape(source_label)}</b>\n\n"
+        "<b>ТЭП</b>\n"
+        f"• территория — {_telegram_number(summary.get('site_area_ha'), 4)} га\n"
+        f"• квартиры — {_telegram_number(summary.get('apartment_area_sqm'), 0)} м²\n"
+        f"• смена ВРИ — {_telegram_money_mln(summary.get('change_vri_mln'))}\n"
+        f"• социальная нагрузка — {_telegram_money_mln(summary.get('social_compensation_mln'))}\n"
+        f"• подземный паркинг — {_telegram_number(parking, 0)} м/м\n\n"
+        "<b>Предварительная экономика</b>\n"
+        f"• цена покупки — {_telegram_money_mln(summary.get('purchase_price_mln'))}\n"
+        f"• выручка — {_telegram_money_mln(summary.get('revenue_mln'))}\n"
+        f"• расходы всего — {_telegram_money_mln(summary.get('total_expenses_mln'))}\n"
+        f"• EBITDA — {_telegram_money_mln(summary.get('ebitda_mln'))}\n"
+        f"• чистая прибыль — {_telegram_money_mln(summary.get('net_profit_mln'))}\n"
+        f"• маржинальность — {margin_text}\n"
+        f"• LLCR — {_telegram_number(summary.get('llcr'), 2)}x\n"
+        f"• расчётный БРИДЖ — {_telegram_money_mln(summary.get('calculated_bridge_mln'))}\n"
+        f"• Пиковая (непокрытая эскроу) задолженность ПФ — {_telegram_money_mln(summary.get('pf_uncovered_peak_mln'))}\n\n"
+        + debt_warning +
+        "<b>Оценка целесообразности покупки</b>\n"
+        f"• <b>{html.escape(purchase_assessment['title'])}</b>\n"
+        f"• {html.escape(purchase_assessment['text'])}\n\n"
+        "<i>Вывод предварительный и основан только на текущих вводных DevelopAid; цены, сроки и себестоимость можно изменить в модели.</i>"
+    )
+    button = {
+        "inline_keyboard": [[{
+            "text": "Открыть и изменить расчёт",
+            "web_app": {"url": _telegram_web_app_url(
+                chat_id,
+                numbers,
+                session.get("manual_tep"),
+                session.get("calc_overrides"),
+                mode="edit",
+            )},
+        }]]
+    }
+    _telegram_send_message(chat_id, text, reply_markup=button)
+    report_payload=summary.get("report_payload")
+    if isinstance(report_payload,dict) and isinstance(report_payload.get("result"),dict):
+        # PDF и Excel-модель собираются десятки секунд, и пока они собирались,
+        # мини-приложение ждало ответа на этот запрос: в чат всё уже пришло, а
+        # окно висело с надписью «Отправляю в чат…». Отвечаем сразу, вложения
+        # уходят следом.
+        if background is not None:
+            background.add_task(_telegram_send_attachments, chat_id, report_payload,
+                                project_name, list(numbers))
+        else:
+            _telegram_send_attachments(chat_id, report_payload, project_name, list(numbers))
+    return {"ok": True}
+
+
+# Что обязано совпасть у всех поверхностей. Слева путь в результате расчёта,
+# справа — подпись для человека и допуск: доли сверяются абсолютной разницей,
+# деньги — относительной.
+_PARITY_FIELDS: list[tuple[str, str, str]] = [
+    ("summary.llcr", "LLCR", "ratio"),
+    ("summary.revenue", "выручка", "money"),
+    ("summary.total_expenses", "расходы", "money"),
+    ("summary.ebitda", "EBITDA", "money"),
+    ("summary.net_profit", "чистая прибыль", "money"),
+    ("summary.financing_cost", "проценты и комиссии", "money"),
+    ("summary.social_payment", "социальная нагрузка", "money"),
+    ("report.financing.actual_bridge", "пик БРИДЖа", "money"),
+    ("report.financing.pf_peak", "выборка ПФ", "money"),
+    ("inputs.land_rights_cost_mln", "ВРИ", "money"),
+]
+
+
+def _parity_value(result: dict[str, Any], path: str) -> float | None:
+    node: Any = result
+    for part in path.split("."):
+        if not isinstance(node, dict):
+            return None
+        node = node.get(part)
+    return float(node) if isinstance(node, (int, float)) else None
+
+
+def _parity_mismatch(server: dict[str, Any], client: dict[str, Any]) -> list[str]:
+    """Расхождения присланного расчёта с пересчитанным на сервере.
+
+    Карточка и PDF строились по результату из мини-приложения, а Excel-модель
+    пересчитывалась на сервере из тех же вводных. Пока обе стороны совпадают,
+    разницы не видно; стоит браузеру остаться на прежней версии страницы — и
+    PDF показывает одну экономику, детализация другую, причём обе выглядят
+    достоверно. Поэтому расхождение ищется явно, а не предполагается.
+    """
+    problems: list[str] = []
+    for path, label, kind in _PARITY_FIELDS:
+        theirs = _parity_value(client, path)
+        ours = _parity_value(server, path)
+        if theirs is None or ours is None:
+            continue
+        if kind == "ratio":
+            differs = abs(theirs - ours) > 0.005
+        else:
+            scale = max(abs(ours), abs(theirs), 1.0)
+            differs = abs(theirs - ours) / scale > 0.001
+        if differs:
+            problems.append(f"{label}: {theirs:,.4g} против {ours:,.4g}")
+    return problems
+
+
+def _telegram_send_attachments(
+    chat_id: int,
+    report_payload: dict[str, Any],
+    project_name: str,
+    numbers: list[str],
+) -> None:
+    """PDF-отчёт и Excel-модель вдогонку к карточке."""
+    # Чувствительность в отчёт с сайта попадает по кнопке на вкладке, но в боте
+    # мини-приложение закрывается сразу после расчёта — до вкладки не добраться,
+    # и раздел не появлялся никогда. Считаем сами: 0,25 с на одноочередной
+    # проект и около секунды на трёхочередной, а вложения и так идут в фоне.
+    # Один расчёт на обе поверхности. Прежде PDF строился по результату из
+    # мини-приложения, а Excel-модель считалась здесь заново — два источника на
+    # одни вводные, и разошедшийся браузер давал разную экономику в отчёте и в
+    # детализации. Теперь считаем один раз и отдаём обеим.
+    try:
+        bundle = _run_authoritative_model(
+            report_payload.get("inputs") or {},
+            report_payload.get("tep") or {},
+            report_payload.get("rates") or [],
+            report_payload.get("phasing") or {},
+        )
+        server_result = bundle["consolidated"]
+        problems = _parity_mismatch(
+            {**server_result, "inputs": report_payload.get("inputs") or {}},
+            {**(report_payload.get("result") or {}), "inputs": report_payload.get("inputs") or {}},
+        )
+        report_payload = {**report_payload, "result": server_result}
+        if problems:
+            # Хостинг закрыт, и молча подменить числа нельзя: человек увидит
+            # в PDF не то, что было на экране, и не поймёт почему.
+            _TELEGRAM_RUNTIME["last_error"] = "Паритет: " + "; ".join(problems[:4])
+            try:
+                _telegram_send_message(chat_id, (
+                    "<b>Расчёт в окне разошёлся с расчётом на сервере.</b>\n"
+                    "В отчёт и модель взяты числа сервера: " + "; ".join(problems[:4])
+                    + ".\nЧаще всего это старая страница в браузере — обновите её."
+                ))
+            except Exception:
+                pass
+    except Exception as exc:
+        # Пересчёт не удался — отдаём то, что прислали: отчёт нужнее сверки.
+        _TELEGRAM_RUNTIME["last_error"] = "Пересчёт для отчёта: " + _error_location(exc)
+
+    if not report_payload.get("sensitivity"):
+        try:
+            report_payload = {**report_payload, "sensitivity": run_sensitivity(
+                report_payload.get("inputs") or {},
+                report_payload.get("tep") or {},
+                report_payload.get("rates") or [],
+                report_payload.get("phasing") or {},
+            )}
+        except Exception as exc:
+            # Без анализа отчёт всё равно нужен: раздел просто не появится.
+            _TELEGRAM_RUNTIME["last_error"] = "Чувствительность: " + _error_location(exc)
+    try:
+        pdf_bytes=_build_developaid_pdf(report_payload);scope=project_name or ("_".join(number.replace(":","-") for number in numbers[:2]) if numbers else "project");safe_scope=re.sub(r"[^0-9A-Za-zА-Яа-я_-]+","_",scope).strip("_")[:60] or "project"
+        _telegram_send_document_bytes(chat_id,pdf_bytes,f"DevelopAid_Report_{safe_scope}.pdf",caption="<b>PDF-отчёт DevelopAid</b> · актуальный расчёт проекта")
+    except Exception as exc:
+        _TELEGRAM_RUNTIME["last_error"]="PDF: "+str(exc)
+        try: _telegram_send_message(chat_id,"<i>Карточка рассчитана, но PDF временно не сформирован.</i>")
+        except Exception: pass
+    try:
+        # Авторитетный расчёт мог не состояться (bundle не существует) —
+        # книга тогда собирается без подсказок, но обязана собраться.
+        workbook_hints = None
+        try:
+            hint_phases = (bundle.get("phases") or []) if isinstance(bundle, dict) else []
+            if hint_phases:
+                workbook_hints = {
+                    "pf_limit_by_phase": [
+                        float(p["result"]["finance"].get("pf_limit", 0.0)) / 1e6
+                        for p in hint_phases],
+                    "bridge_peak_by_phase": [
+                        float(p["result"]["finance"].get("peak_bridge", 0.0)) / 1e6
+                        for p in hint_phases],
+                }
+            else:
+                _fin = ((bundle or {}).get("consolidated") or {}).get("finance") or {}
+                if _fin:
+                    workbook_hints = {
+                        "pf_limit_by_phase": [float(_fin.get("pf_limit", 0.0)) / 1e6],
+                        "bridge_peak_by_phase": [float(_fin.get("peak_bridge", 0.0)) / 1e6],
+                    }
+            if workbook_hints is not None and isinstance(bundle, dict):
+                # Контрольные числа для parity-блока ПРОВЕРОК: движок уже
+                # посчитан — книга получает те же цели, что видел PDF.
+                workbook_hints["parity"] = _v4_parity_targets(
+                    bundle.get("consolidated") or {})
+        except Exception:
+            workbook_hints = None
+        model_bytes, model_filename, model_meta = build_project_workbook(
+            report_payload.get("inputs") or {},
+            report_payload.get("tep") or {},
+            report_payload.get("rates") or [],
+            report_payload.get("phasing") or {},
+            project_name=str(report_payload.get("project_name") or project_name or ""),
+            scenario=str(report_payload.get("scenario") or "base"),
+            finance_hints=workbook_hints,
+        )
+        if model_meta.get("missing"):
+            _TELEGRAM_RUNTIME["last_error"] = "Книга v4, без соответствия: " + "; ".join(
+                str(item) for item in model_meta["missing"][:6])
+        _telegram_send_document_bytes(
+            chat_id,
+            model_bytes,
+            model_filename,
+            caption=(
+                "<b>Полная модель DevelopAid</b> · Excel считает формулами "
+                "из текущих вводных"
+                + (" · очереди на листе «Вводные»" if model_meta.get("phased") else "")
+                + ". Откройте в Excel: предпросмотр формулы не считает."
+            ),
+            content_type=_XLSX_MEDIA_TYPE,
+        )
+    except Exception as exc:
+        # Молчать нельзя: человек получал карточку и PDF, а модель просто не
+        # приходила — и выглядело это как «отчёт есть, а модели нет».
+        _TELEGRAM_RUNTIME["last_error"]="Модель: "+_error_location(exc)
+        try:
+            _telegram_send_message(
+                chat_id,
+                "<b>Excel-модель не собралась.</b>\n"
+                f"<i>{html.escape(_error_location(exc)[:300])}</i>\n\n"
+                "Карточка и PDF выше посчитаны и верны — не хватает только выгрузки. "
+                "Соберите её заново командой /model.",
+            )
+        except Exception:
+            pass
+
+
+
+def _server_preset_meta(preset_id: str) -> dict[str, Any]:
+    meta = SERVER_TEP_PRESETS.get(preset_id)
+    if not meta:
+        raise HTTPException(status_code=404, detail="Предустановка не найдена")
+    path = PRESET_DIR / meta["filename"]
+    if not path.exists():
+        raise HTTPException(status_code=500, detail=f"Файл предустановки отсутствует на сервере: {meta['filename']}")
+    return {**meta, "id": preset_id, "path": path}
+
+
+def _is_admin_request(session: str = "", key: str = "") -> bool:
+    """Владелец сервиса: свой chat_id в списке или ключ администратора."""
+    secret = _env_str("DEVELOPAID_ADMIN_KEY", "").strip()
+    if secret and key and hmac.compare_digest(str(key).encode("utf-8"),
+                                              secret.encode("utf-8")):
+        return True
+    chat_id = _web_identity_chat_id(str(session or ""))
+    return bool(chat_id) and chat_id in usage_admin_ids()
+
+
+def _require_admin(session: str, key: str, what: str) -> None:
+    """Готовые примеры и пресеты — витрина владельца, а не посторонних.
+
+    В них лежат настоящие проекты с ценами, сроками и экономикой (решение
+    владельца, 18.08.2026): показывать их каждому, кто открыл сайт, нельзя.
+    Механизм честно выключен там, где владельца опознать нечем — иначе на
+    машине без настроек примеры пропали бы у всех, включая самого владельца.
+    """
+    if not usage_admin_ids() and not _env_str("DEVELOPAID_ADMIN_KEY", "").strip():
+        return
+    if _is_admin_request(session, key):
+        return
+    raise HTTPException(status_code=403, detail=f"{what} — только для владельца сервиса.")
+
+
+@app.get("/presets")
+def list_server_presets(session: str = "", key: str = "") -> dict[str, Any]:
+    _require_admin(session, key, "Готовые примеры")
+    items = []
+    for preset_id, meta in SERVER_TEP_PRESETS.items():
+        path = PRESET_DIR / meta["filename"]
+        items.append({
+            "id": preset_id,
+            "name": meta["name"],
+            "filename": meta["filename"],
+            "description": meta["description"],
+            "available": path.exists(),
+            "download_url": f"/presets/{preset_id}/download",
+        })
+    return {"presets": items}
+
+
+@app.get("/presets/{preset_id}")
+def get_server_preset(preset_id: str, session: str = "", key: str = "") -> dict[str, Any]:
+    _require_admin(session, key, "Готовые примеры")
+    meta = _server_preset_meta(preset_id)
+    try:
+        payload = parse_glavapu_xlsx(meta["path"].read_bytes(), meta["filename"])
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Не удалось разобрать серверную предустановку: {exc}") from exc
+    payload["source"]["preset_id"] = preset_id
+    payload["source"]["preset_name"] = meta["name"]
+    payload["source"]["server_preset"] = True
+    payload["warnings"] = [
+        f"Загружена серверная предустановка «{meta['name']}».",
+        *payload.get("warnings", []),
+    ]
+    return payload
+
+
+@app.get("/presets/{preset_id}/download")
+def download_server_preset(preset_id: str, session: str = "", key: str = ""):
+    _require_admin(session, key, "Файл предустановки")
+    meta = _server_preset_meta(preset_id)
+    return FileResponse(
+        path=str(meta["path"]),
+        filename=meta["filename"],
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
+def n(x: dict, key: str, default: float = 0.0) -> float:
+    try:
+        value = x.get(key, default)
+        return float(default if value in (None, "") else value)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def b(x: dict, key: str) -> bool:
+    value = x.get(key, False)
+    if isinstance(value, bool):
+        return value
+    return str(value).lower() in ("1", "true", "да", "yes", "on")
+
+
+def d(value: str | date) -> date:
+    return value if isinstance(value, date) else date.fromisoformat(str(value))
+
+
+def add_months(value: str | date, months: int) -> date:
+    value = d(value)
+    m = value.month - 1 + int(months)
+    year = value.year + m // 12
+    month = m % 12 + 1
+    day = min(value.day, calendar.monthrange(year, month)[1])
+    return date(year, month, day)
+
+
+def months_between(start: date, end: date) -> int:
+    return (end.year - start.year) * 12 + end.month - start.month
+
+
+def month_range(start: date, end: date) -> list[date]:
+    cur = date(start.year, start.month, 1)
+    end = date(end.year, end.month, 1)
+    out = []
+    while cur <= end:
+        out.append(cur)
+        cur = add_months(cur, 1)
+    return out
+
+
+
+def social_cash_payment_date(x: dict[str, Any], permit: date) -> date:
+    """Когда платится денежная компенсация за соцобъекты.
+
+    Компенсация — условие получения РнС, и банк держит её в лимите БРИДЖа
+    наравне с покупкой и проектированием. Значит она платится в период
+    доступности БРИДЖа: после РнС линия уже рефинансирована в ПФ, и платить
+    ею нечего. Решение владельца, 18.08.2026: «верно как банк».
+
+    Прежде движок платил строго в заданную дату, а книга — за месяц до РнС
+    своей формулой (`Вводные!B18`), в дату из вводных не заглядывая вовсе:
+    поля не было в карте записи. Пока дата умолчания совпадала с «месяцем до
+    РнС», обе стороны сходились случайно; стоило срокам проекта разъехаться с
+    ней — и пик БРИДЖа расходился ровно на сумму компенсации (4712,5 млн в
+    книге против 4132,8 у движка), а следом стоимость финансирования и прибыль.
+
+    Дату из вводных функция уважает, пока та укладывается в бридж-период:
+    компенсацию платят и раньше — при подписании договора о развитии, задолго
+    до разрешения.
+    """
+    deadline = add_months(permit, -1)
+    raw = str(x.get("social_comp_date") or "").strip()
+    if not raw:
+        return deadline
+    try:
+        wanted = d(raw)
+    except ValueError:
+        return deadline
+    return min(wanted, deadline)
+
+
+def generate_rate_curve(
+    start_date: date,
+    start_rate_pct: float,
+    target_high_pct: float = 11.0,
+    target_base_pct: float = 9.0,
+    target_low_pct: float = 7.0,
+    normalization_months: int = 24,
+    total_months: int = 180,
+    shape: float = 2.0,
+) -> list[dict[str, Any]]:
+    """Smooth mean-reversion-like curve that reaches the target exactly at the horizon.
+
+    Internal names are kept for compatibility:
+    high = conservative, base = base, low = optimistic.
+    """
+    horizon = max(1, int(normalization_months))
+    shape = max(0.05, float(shape))
+    denom = 1.0 - exp(-shape)
+    targets = {
+        "high": float(target_high_pct),
+        "base": float(target_base_pct),
+        "low": float(target_low_pct),
+    }
+
+    out: list[dict[str, Any]] = []
+    for i in range(max(total_months, horizon) + 1):
+        month = add_months(start_date, i)
+        if i >= horizon:
+            progress = 1.0
+        else:
+            progress = (1.0 - exp(-shape * i / horizon)) / denom
+
+        row: dict[str, Any] = {"date": month.isoformat()}
+        for key, target in targets.items():
+            row[key] = float(start_rate_pct) + (target - float(start_rate_pct)) * progress
+        out.append(row)
+    return out
+
+
+def fetch_current_cbr_key_rate() -> dict[str, Any]:
+    """Fetch the latest announced key-rate decision from the Bank of Russia.
+
+    The historical table can lag a newly announced decision until its effective
+    date. The press-release feed is therefore authoritative for the web button;
+    the historical table remains a secondary source.
+    """
+    fallback = {
+        "rate": 14.0,
+        "date": "2026-07-24",
+        "live": False,
+        "source": "Банк России — резервное значение на дату сборки",
+    }
+
+    try:
+        feed_url = "https://www.cbr.ru/rss/RssPress"
+        req = urllib.request.Request(
+            feed_url,
+            headers={
+                "User-Agent": f"Mozilla/5.0 {USER_AGENT}",
+                "Accept-Language": "ru-RU,ru;q=0.9",
+            },
+        )
+        raw = urllib.request.urlopen(req, timeout=6).read()
+        root = ET.fromstring(raw)
+        decisions: list[tuple[date, float]] = []
+        for item in root.findall(".//item"):
+            title = (item.findtext("title") or "").replace("\xa0", " ").strip()
+            normalized = title.lower()
+            if "ключевую ставку" not in normalized or "принял решение" not in normalized:
+                continue
+            rate_match = re.search(
+                r"(?:до|на\s+уровне)\s*([0-9]+(?:[.,][0-9]+)?)\s*%",
+                title,
+                flags=re.I,
+            )
+            date_matches = re.findall(r"(\d{2}\.\d{2}\.\d{4})", title)
+            if not rate_match or not date_matches:
+                continue
+            decision_date = datetime.strptime(date_matches[-1], "%d.%m.%Y").date()
+            decision_rate = float(rate_match.group(1).replace(",", "."))
+            decisions.append((decision_date, decision_rate))
+        if decisions:
+            latest_date, latest_rate = max(decisions, key=lambda item: item[0])
+            return {
+                "rate": latest_rate,
+                "date": latest_date.isoformat(),
+                "live": True,
+                "source": "Банк России — решение Совета директоров",
+            }
+    except Exception:
+        pass
+
+    try:
+        today = date.today()
+        start = today - timedelta(days=45)
+        query = urllib.parse.urlencode({
+            "UniDbQuery.Posted": "True",
+            "UniDbQuery.From": start.strftime("%d.%m.%Y"),
+            "UniDbQuery.To": today.strftime("%d.%m.%Y"),
+        })
+        url = "https://www.cbr.ru/hd_base/keyrate/?" + query
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": f"Mozilla/5.0 {USER_AGENT}",
+                "Accept-Language": "ru-RU,ru;q=0.9",
+            },
+        )
+        html = urllib.request.urlopen(req, timeout=6).read().decode("utf-8", errors="ignore")
+        rows = re.findall(
+            r"<td[^>]*>\s*(\d{2}\.\d{2}\.\d{4})\s*</td>\s*"
+            r"<td[^>]*>\s*([0-9]+(?:,[0-9]+)?)\s*</td>",
+            html,
+            flags=re.I | re.S,
+        )
+        if not rows:
+            return fallback
+
+        parsed = []
+        for dt_text, rate_text in rows:
+            dt = date(int(dt_text[6:10]), int(dt_text[3:5]), int(dt_text[0:2]))
+            rate = float(rate_text.replace(",", "."))
+            parsed.append((dt, rate))
+        latest_date, latest_rate = max(parsed, key=lambda item: item[0])
+        return {
+            "rate": latest_rate,
+            "date": latest_date.isoformat(),
+            "live": True,
+            "source": "Банк России",
+        }
+    except Exception:
+        return fallback
+
+
+def rate_lookup(rates: list[dict[str, Any]], month: date, scenario: str) -> float:
+    scenario = scenario if scenario in ("high", "base", "low") else "base"
+    if not rates:
+        return 0.0
+    selected = float(rates[0].get(scenario, 0.0))
+    for row in rates:
+        if d(row["date"]) <= month:
+            selected = float(row.get(scenario, selected))
+        else:
+            break
+    return selected / 100.0
+
+
+# Месяцы пониженного спроса — январь и май-август. Тот же список зашит в
+# шаблоне ПЛАТО (лист ПОДБОР_КВ.М, строка 56), и расходиться с ним нельзя:
+# иначе два расчёта по одним и тем же вводным дают разную выручку.
+_SEASONAL_LOW_MONTHS = (1, 5, 6, 7, 8)
+
+
+def sales_weights(
+    start: date,
+    rve: date,
+    share_before: float,
+    residual_months: int,
+    seasonal: float = 0.0,
+    pace: float = 0.0,
+) -> dict[date, float]:
+    """Доли продаж по месяцам: сезонность и смещение темпа к поздним месяцам.
+
+    Повторяет распределение шаблона ПЛАТО. Сезонность действует на всём сроке
+    продаж, смещение темпа — только до РВЭ, нарастая линейно от старта продаж.
+    Веса нормируются отдельно до и после РВЭ, поэтому доля продаж до РВЭ
+    остаётся ровно заданной.
+    """
+    pre_months = max(1, months_between(start, rve))
+    residual_months = max(0, int(residual_months))
+    share_before = max(0.0, min(1.0, share_before))
+
+    def season(month: date) -> float:
+        return 1.0 + seasonal if month.month in _SEASONAL_LOW_MONTHS else 1.0
+
+    pre = [(add_months(start, i), season(add_months(start, i)) * (1.0 + pace * min(1.0, i / pre_months)))
+           for i in range(pre_months)]
+    post = [(add_months(rve, i), season(add_months(rve, i))) for i in range(residual_months)]
+
+    weights: dict[date, float] = defaultdict(float)
+    pre_total = sum(w for _, w in pre)
+    if pre_total > 0:
+        for month, w in pre:
+            weights[month] += share_before * w / pre_total
+    post_total = sum(w for _, w in post)
+    if post_total > 0:
+        for month, w in post:
+            weights[month] += (1.0 - share_before) * w / post_total
+    return dict(weights)
+
+
+def sales_schedule(
+    quantity: float,
+    start_price: float,
+    start: date,
+    rve: date,
+    share_before: float,
+    residual_months: int,
+    growth_before: float,
+    growth_after: float,
+    seasonal: float = 0.0,
+    pace: float = 0.0,
+) -> dict[date, float]:
+    out: dict[date, float] = defaultdict(float)
+    if quantity <= 0 or start_price <= 0:
+        return dict(out)
+
+    pre_months = max(1, months_between(start, rve))
+    weights = sales_weights(start, rve, share_before, residual_months, seasonal, pace)
+    price_at_rve = start_price * pow(1 + growth_before, pre_months)
+
+    for month, weight in weights.items():
+        if month < rve:
+            price = start_price * pow(1 + growth_before, months_between(start, month))
+        else:
+            price = price_at_rve * pow(1 + growth_after, months_between(rve, month))
+        out[month] += quantity * weight * price
+
+    return dict(out)
+
+
+def quantity_schedule(
+    quantity: float,
+    start: date,
+    rve: date,
+    share_before: float,
+    residual_months: int,
+    seasonal: float = 0.0,
+    pace: float = 0.0,
+) -> dict[date, float]:
+    """Physical sales volume by month, using the same phasing as sales_schedule()."""
+    out: dict[date, float] = defaultdict(float)
+    if quantity <= 0:
+        return dict(out)
+    for month, weight in sales_weights(start, rve, share_before, residual_months, seasonal, pace).items():
+        out[month] += quantity * weight
+    return dict(out)
+
+
+def spread_evenly(target: dict[date, float], amount: float, start: date, months: int) -> None:
+    months = max(1, int(months))
+    if not amount:
+        return
+    each = amount / months
+    for i in range(months):
+        target[add_months(start, i)] += each
+
+
+
+def _monthly_npv(cashflows: list[float], annual_rate: float) -> float:
+    if not cashflows:
+        return 0.0
+    monthly_rate = pow(1.0 + max(annual_rate, -0.999999), 1.0 / 12.0) - 1.0
+    return sum(cf / pow(1.0 + monthly_rate, i) for i, cf in enumerate(cashflows))
+
+
+def _monthly_irr(cashflows: list[float]) -> float | None:
+    if not cashflows or not any(v < 0 for v in cashflows) or not any(v > 0 for v in cashflows):
+        return None
+
+    def npv(rate: float) -> float:
+        if rate <= -0.999999:
+            return float("inf")
+        try:
+            return sum(cf / pow(1.0 + rate, i) for i, cf in enumerate(cashflows))
+        except OverflowError:
+            return 0.0
+
+    lo, hi = -0.95, 1.0
+    f_lo, f_hi = npv(lo), npv(hi)
+    expand = 0
+    while f_lo * f_hi > 0 and hi < 100 and expand < 30:
+        hi *= 2
+        f_hi = npv(hi)
+        expand += 1
+    if f_lo * f_hi > 0:
+        return None
+
+    for _ in range(180):
+        mid = (lo + hi) / 2
+        f_mid = npv(mid)
+        if abs(f_mid) < 1e-5:
+            lo = hi = mid
+            break
+        if f_lo * f_mid <= 0:
+            hi = mid
+            f_hi = f_mid
+        else:
+            lo = mid
+            f_lo = f_mid
+
+    monthly = (lo + hi) / 2
+    return pow(1 + monthly, 12) - 1
+
+
+def _iso(value: date) -> str:
+    return value.isoformat()
+
+
+
+def effective_social_program(x: dict) -> dict[str, float]:
+    imported = (x.get("_glavapu_import") or {}).get("normalized", {})
+
+    def choose(input_key: str, required_key: str) -> float:
+        explicit = n(x, input_key)
+        required = n(imported, required_key)
+        if (str(x.get("social_mode", "Строительство")) in ("Строительство", SOCIAL_MODE_BOTH)
+                and explicit <= 0 and required > 0):
+            return required
+        return explicit
+
+    return {
+        "kindergarten_places": choose("kindergarten_places", "required_kindergarten_places"),
+        "school_places": choose("school_places", "required_school_places"),
+        "clinic_capacity": choose("clinic_capacity", "required_clinic_capacity"),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Плата за изменение ВРИ: обязательство, график платежей и источники оплаты.
+#
+# Плата за смену ВРИ — не разовый расход на дату РнС. Она возникает по
+# соглашению, может гаситься рассрочкой с процентами на остаток и делится
+# между БРИДЖем, ПФ и собственным капиталом. От этого зависят лимит БРИДЖа,
+# потребность в ПФ, проценты и, следом, NPV, IRR и LLCR.
+# ---------------------------------------------------------------------------
+
+VRI_DEFAULTS: dict[str, Any] = {
+    "vri_required": True,
+    "vri_region": "msk",                  # msk | mo
+    "land_right": "ownership",            # ownership | lease
+    "vri_obligation_date": "",            # пусто — дата РнС
+    "vri_payment_mode": "lump",           # lump | installment
+    "vri_installment_years": 3,           # Москва: 1, 3 или 6
+    "vri_periodicity_months": 3,          # Москва: квартальные платежи
+    "vri_schedule_mode": "auto",          # auto | manual
+    "vri_interest_enabled": "",           # пусто — по региону: Москва да, МО нет
+    "vri_interest_spread_pp": 3.0,        # ключевая + 3 п.п.
+    "vri_early_repay_after_pf": False,
+    "vri_pf_open_date": "",               # пусто — дата РнС
+    "vri_in_bank_budget": True,
+    "vri_financing_mode": "auto",         # auto — как весь проект; shares — явные доли
+    "vri_share_bridge_pct": 0.0,
+    "vri_share_pf_pct": 0.0,
+    "vri_share_equity_pct": 0.0,
+    "vri_security_cost_mln": 0.0,         # расходы на обеспечение обязательства
+    "vri_obligation_date_mode": "before_rns_1m",  # at_rns | before_rns_1m | before_rns_3m | after_purchase | manual
+    "vri_months_after_purchase": 12,
+    "vri_initial_pct": 0.0,               # доля первого платежа при рассрочке
+    "vri_relief_mode": "none",            # none | percent | amount
+    "vri_relief_pct": 0.0,
+    "vri_relief_mln": 0.0,
+    # Зачёт переданных муниципалитету площадей (практика Подмосковья).
+    "vri_transfer_offset_mln": 0.0,
+}
+
+# Москва: рассрочка по постановлению даётся на 1, 3 или 6 лет.
+_VRI_MSK_TERMS = (1, 3, 6)
+
+# Московская область: рассрочка зависит от суммы обязательства. Официальные
+# диапазоны в модель не зашиты — их задаёт пользователь списком
+# {"limit_mln": …, "years": …, "periodicity_months": …}; последняя строка без
+# limit_mln работает как «свыше». Пока список пуст, применяется срок из ввода
+# и в отчёт уходит предупреждение.
+_VRI_MO_RANGES_KEY = "vri_mo_ranges"
+
+
+def vri_relief(x: dict[str, Any], gross: float) -> tuple[float, float]:
+    """Льгота по плате за ВРИ: доля или фиксированная сумма. Возвращает (льгота, к оплате).
+
+    Обязательство может быть уменьшено решением города — например, при
+    строительстве социальных объектов за свой счёт. Льгота срезается с валовой
+    суммы до построения графика: рассрочка, проценты и резерв считаются уже от
+    того, что реально предстоит заплатить.
+    """
+    gross = max(0.0, float(gross or 0.0))
+    mode = str(x.get("vri_relief_mode") or "none").strip().lower()
+    if mode == "percent":
+        relief = gross * max(0.0, min(100.0, n(x, "vri_relief_pct", 0.0))) / 100.0
+    elif mode == "amount":
+        relief = max(0.0, n(x, "vri_relief_mln", 0.0)) * 1_000_000
+    else:
+        relief = 0.0
+    # Передача площадей муниципалитету в зачёт платы — практика Подмосковья:
+    # застройщик отдаёт метры и на их стоимость уменьшает обязательство. Сумма
+    # зачёта берётся из соглашения, а не считается нами по цене продажи:
+    # муниципалитет засчитывает по своей оценке, и она другая. Зачёт идёт
+    # поверх льготы: это разные основания, и складывать их правильно.
+    relief += max(0.0, n(x, "vri_transfer_offset_mln", 0.0)) * 1_000_000
+    relief = min(gross, relief)
+    return relief, gross - relief
+
+
+def _vri_flag(value: Any, default: bool) -> bool:
+    if value is None or value == "":
+        return default
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "да", "yes", "on"}
+    return bool(value)
+
+
+def _vri_date(value: Any, fallback: date) -> date:
+    text = str(value or "").strip()
+    if not text:
+        return fallback
+    try:
+        return d(text)
+    except Exception:
+        return fallback
+
+
+def _vri_region(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if text in {"mo", "50", "мо", "московская область", "подмосковье", "region", "мособласть"}:
+        return "mo"
+    return "msk"
+
+
+def _vri_mo_range(x: dict[str, Any], amount: float) -> dict[str, Any] | None:
+    """Срок и периодичность рассрочки МО по диапазону суммы обязательства."""
+    rows = x.get(_VRI_MO_RANGES_KEY) or []
+    parsed: list[tuple[float, dict[str, Any]]] = []
+    for item in rows:
+        if not isinstance(item, dict):
+            continue
+        raw_limit = item.get("limit_mln")
+        limit = float("inf") if raw_limit in (None, "") else float(raw_limit) * 1_000_000
+        parsed.append((limit, item))
+    if not parsed:
+        return None
+    for limit, item in sorted(parsed, key=lambda pair: pair[0]):
+        if amount <= limit:
+            return {
+                "years": max(1, int(float(item.get("years") or 1))),
+                "periodicity": max(1, int(float(item.get("periodicity_months") or 3))),
+                "limit_mln": None if limit == float("inf") else limit / 1_000_000,
+            }
+    return None
+
+
+_VRI_DATE_LABELS = {
+    "at_rns": "в дату РнС",
+    "before_rns_1m": "за месяц до РнС",
+    "before_rns_3m": "за три месяца до РнС",
+    "after_purchase": "через N месяцев после покупки",
+    "manual": "введена вручную",
+}
+
+
+def vri_obligation_date(x: dict[str, Any], permit: date) -> tuple[date, str, bool]:
+    """Дата возникновения обязательства по ВРИ: (дата, пояснение, оценочная ли).
+
+    Соглашение о смене ВРИ подписывается до получения РнС, поэтому дата не
+    обязана совпадать с РнС. Платёж до открытия ПФ несёт БРИДЖ, а не ПФ, —
+    сдвиг даты меняет пик БРИДЖа, и режим лучше выбирать осознанно.
+    """
+    mode = str(x.get("vri_obligation_date_mode") or "before_rns_1m").strip().lower()
+    raw = str(x.get("vri_obligation_date") or "").strip()
+    if raw:
+        try:
+            return d(raw), "Дата известна — введена вручную", False
+        except Exception:
+            pass
+    if mode == "manual":
+        return permit, "Выбран ручной режим, но дата не задана — принята дата РнС", True
+    if mode == "before_rns_1m":
+        return add_months(permit, -1), "Оценочная дата — за месяц до РнС", True
+    if mode == "before_rns_3m":
+        return add_months(permit, -3), "Оценочная дата — за три месяца до РнС", True
+    if mode == "after_purchase":
+        months = max(0, int(n(x, "vri_months_after_purchase", 12)))
+        start = d(x.get("project_start", "2027-01-01"))
+        return add_months(start, months), f"Оценочная дата — через {months} мес. после покупки", True
+    if mode == "at_rns":
+        return permit, "Оценочная дата — в дату РнС", True
+    return add_months(permit, -1), "Оценочная дата — за месяц до РнС", True
+
+
+def _vri_settings(x: dict[str, Any], permit: date, amount: float = 0.0) -> dict[str, Any]:
+    region = _vri_region(x.get("vri_region"))
+    obligation_date, obligation_basis, obligation_estimated = vri_obligation_date(x, permit)
+    interest_default = region == "msk"
+    years = int(n(x, "vri_installment_years", VRI_DEFAULTS["vri_installment_years"]) or 3)
+    periodicity = int(n(x, "vri_periodicity_months", VRI_DEFAULTS["vri_periodicity_months"]) or 3)
+    mo_range = None
+    if region == "msk":
+        if years not in _VRI_MSK_TERMS:
+            years = min(_VRI_MSK_TERMS, key=lambda item: abs(item - years))
+        periodicity = 3
+    else:
+        mo_range = _vri_mo_range(x, amount)
+        if mo_range:
+            years = mo_range["years"]
+            periodicity = mo_range["periodicity"]
+    return {
+        "required": _vri_flag(x.get("vri_required"), VRI_DEFAULTS["vri_required"]),
+        "region": region,
+        "land_right": str(x.get("land_right") or VRI_DEFAULTS["land_right"]),
+        "obligation_date": obligation_date,
+        "obligation_basis": obligation_basis,
+        "obligation_estimated": obligation_estimated,
+        "initial_pct": max(0.0, min(100.0, n(x, "vri_initial_pct", 0.0))),
+        "payment_mode": str(x.get("vri_payment_mode") or VRI_DEFAULTS["vri_payment_mode"]).strip().lower(),
+        "years": max(1, years),
+        "periodicity": max(1, periodicity),
+        "mo_range": mo_range,
+        "schedule_mode": str(x.get("vri_schedule_mode") or VRI_DEFAULTS["vri_schedule_mode"]).strip().lower(),
+        "interest_enabled": _vri_flag(x.get("vri_interest_enabled"), interest_default),
+        "spread": n(x, "vri_interest_spread_pp", VRI_DEFAULTS["vri_interest_spread_pp"]) / 100.0,
+        "early_repay": _vri_flag(x.get("vri_early_repay_after_pf"), VRI_DEFAULTS["vri_early_repay_after_pf"]),
+        "pf_open": _vri_date(x.get("vri_pf_open_date"), permit),
+        "in_bank_budget": _vri_flag(x.get("vri_in_bank_budget"), VRI_DEFAULTS["vri_in_bank_budget"]),
+        "financing_mode": str(x.get("vri_financing_mode") or VRI_DEFAULTS["vri_financing_mode"]).strip().lower(),
+        "share_bridge": n(x, "vri_share_bridge_pct", 0.0) / 100.0,
+        "share_pf": n(x, "vri_share_pf_pct", 0.0) / 100.0,
+        "share_equity": n(x, "vri_share_equity_pct", 0.0) / 100.0,
+        "security_cost": n(x, "vri_security_cost_mln", 0.0) * 1_000_000,
+    }
+
+
+def _vri_payment_dates(settings: dict[str, Any], *, after_initial: bool = False) -> list[date]:
+    """Даты платежей по обязательству ВРИ.
+
+    Рассрочка начинается в дату обязательства, а не через период после неё.
+    Прежде первый платёж отодвигался на целый период, и при дате обязательства
+    за месяц до РнС — умолчание — вся рассрочка оказывалась уже за РнС: до
+    получения разрешения не платилось ничего, хотя соглашение подписано раньше.
+    Исключение одно: если задан первый взнос, он и есть платёж в дату
+    обязательства, а регулярные платежи идут следом.
+    """
+    start = settings["obligation_date"]
+    if settings["payment_mode"] != "installment":
+        return [start]
+    periodicity = settings["periodicity"]
+    count = max(1, int(round(settings["years"] * 12 / periodicity)))
+    offset = 1 if after_initial else 0
+    return [add_months(start, periodicity * (index + offset)) for index in range(count)]
+
+
+def _vri_manual_rows(x: dict[str, Any]) -> list[tuple[date, float]]:
+    rows: list[tuple[date, float]] = []
+    for item in x.get("vri_manual_schedule") or []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            when = d(str(item.get("date")))
+        except Exception:
+            continue
+        amount = float(item.get("principal_mln") or item.get("amount_mln") or 0.0) * 1_000_000
+        if amount:
+            rows.append((when, amount))
+    return sorted(rows, key=lambda pair: pair[0])
+
+
+def _vri_split_payment(
+    amount: float, before_pf: bool, settings: dict[str, Any]
+) -> tuple[float, float, float]:
+    """Разносит платёж на БРИДЖ, ПФ и собственный капитал."""
+    def fallback() -> tuple[float, float, float]:
+        # Если банк ВРИ не финансирует, платёж не может лечь ни на ПФ, ни на
+        # БРИДЖ: бридж — тоже банковские деньги. Всё остаётся на капитале.
+        if not settings["in_bank_budget"]:
+            return 0.0, 0.0, amount
+        if before_pf:
+            return amount, 0.0, 0.0
+        return 0.0, amount, 0.0
+
+    if settings["financing_mode"] != "shares":
+        return fallback()
+    total = settings["share_bridge"] + settings["share_pf"] + settings["share_equity"]
+    if total <= 0:
+        return fallback()
+    bridge = amount * settings["share_bridge"] / total
+    pf = amount * settings["share_pf"] / total
+    equity = amount * settings["share_equity"] / total
+    if pf and (before_pf or not settings["in_bank_budget"]):
+        # ПФ ещё не открыт (или банк ВРИ не финансирует): его долю принимает
+        # БРИДЖ до РнС и собственный капитал — когда банковского бюджета нет.
+        if before_pf and settings["in_bank_budget"]:
+            bridge += pf
+        else:
+            equity += pf
+        pf = 0.0
+    if not settings["in_bank_budget"] and bridge:
+        equity += bridge
+        bridge = 0.0
+    return bridge, pf, equity
+
+
+def build_vri_schedule(
+    x: dict[str, Any],
+    amount_rub: float,
+    permit: date,
+    rates: list[dict[str, Any]] | None = None,
+    scenario: str = "base",
+) -> dict[str, Any]:
+    """График платежей по обязательству ВРИ с процентами и источниками оплаты."""
+    amount = max(0.0, float(amount_rub or 0.0))
+    settings = _vri_settings(x, permit, amount)
+    warnings: list[str] = []
+
+    def public(extra: dict[str, Any]) -> dict[str, Any]:
+        return {
+            **settings,
+            "obligation_date": settings["obligation_date"].isoformat(),
+            "pf_open": settings["pf_open"].isoformat(),
+            **extra,
+        }
+
+    if amount > 0 and not settings["required"]:
+        # Плата задана, а признак снят — противоречие, и разрешать его в пользу
+        # «не платим» нельзя: сумма всё равно сидит в расходах, а графика нет,
+        # то есть расход есть, а денег на него никто не занимает. Наружу это
+        # выходило расхождением объёма долга с книгой. Снятый признак при
+        # ненулевой плате чаще всего означает не «ВРИ не нужна», а поле,
+        # которого не было в сохранённом проекте: страница рисует чекбокс по
+        # `!!inputs[id]` и возвращает явный false, затирая умолчание.
+        settings["required"] = True
+        warnings.append(
+            "Признак «Требуется изменение ВРИ» снят, но плата задана — "
+            "платежи разнесены по дате обязательства."
+        )
+
+    if (
+        amount > 0
+        and not settings["in_bank_budget"]
+        and settings["financing_mode"] != "shares"
+        and settings["share_equity"] <= 0
+    ):
+        # Тот же случай, что и с признаком выше: снятый флаг банковского бюджета
+        # означает «плату вносим своими деньгами», и долг падает на всю сумму
+        # ВРИ. На проекте 77:09:0004014:13 это давало LLCR 1,16x вместо 1,07x —
+        # разница в целую инвестиционную оценку, а в отчёте не видно ничего.
+        # Осознанный отказ от банковского финансирования выражается долями:
+        # заданный собственный капитал или режим «shares» здесь не трогаются.
+        settings["in_bank_budget"] = True
+        warnings.append(
+            "Признак «ВРИ включена в банковский бюджет» снят, а доли оплаты не заданы — "
+            "плата отнесена на банковское финансирование. Если платите своими деньгами, "
+            "укажите долю собственного капитала."
+        )
+
+    if not settings["required"] or amount <= 0:
+        return {
+            "enabled": False,
+            "region": settings["region"],
+            "payment_mode": settings["payment_mode"],
+            "rows": [],
+            "totals": {
+                "amount": 0.0, "principal": 0.0, "interest": 0.0, "security_cost": 0.0,
+                "before_pf": 0.0, "after_pf": 0.0, "bridge": 0.0, "pf": 0.0,
+                "equity": 0.0, "cash": 0.0,
+            },
+            "settings": public({}),
+            "warnings": warnings,
+        }
+
+    manual = _vri_manual_rows(x) if settings["schedule_mode"] == "manual" else []
+    if settings["schedule_mode"] == "manual" and not manual:
+        warnings.append("Выбран ручной график ВРИ, но платежи не заданы — применён автоматический график.")
+    if manual:
+        planned = manual
+        manual_total = sum(value for _, value in planned)
+        if abs(manual_total - amount) > 1.0:
+            warnings.append(
+                f"Ручной график ВРИ на {manual_total / 1_000_000:.1f} млн ₽ не совпадает "
+                f"с суммой обязательства {amount / 1_000_000:.1f} млн ₽."
+            )
+    else:
+        initial = amount * settings["initial_pct"] / 100.0
+        has_initial = initial > 0 and settings["payment_mode"] == "installment"
+        dates = _vri_payment_dates(settings, after_initial=has_initial)
+        if has_initial:
+            # Первый взнос платится в дату обязательства, остаток дробится
+            # на регулярные платежи графика.
+            share = (amount - initial) / len(dates)
+            planned = [(settings["obligation_date"], initial)]
+            planned += [(when, share) for when in dates]
+        else:
+            share = amount / len(dates)
+            planned = [(when, share) for when in dates]
+
+    if settings["payment_mode"] == "installment" and settings["region"] == "mo":
+        if settings["interest_enabled"]:
+            warnings.append(
+                "Для Московской области проценты по рассрочке начисляются только если это "
+                "прямо предусмотрено соглашением."
+            )
+        if settings["schedule_mode"] != "manual" and not settings["mo_range"]:
+            warnings.append(
+                "Диапазоны рассрочки Московской области не заданы — срок и периодичность "
+                "взяты из ввода."
+            )
+
+    rows: list[dict[str, Any]] = []
+    balance = amount
+    accrued = 0.0
+    cursor = settings["obligation_date"]
+    early_done = False
+    for index, (when, principal) in enumerate(planned, start=1):
+        # Проценты на остаток по ключевой ставке плюс спред, помесячно до даты платежа.
+        if settings["interest_enabled"] and balance > 0:
+            month = cursor
+            while month < when:
+                if rates:
+                    key_rate = rate_lookup(rates, month, scenario)
+                else:
+                    key_rate = n(x, "rate_start_pct", 0.0) / 100.0
+                accrued += balance * (key_rate + settings["spread"]) / 12.0
+                month = add_months(month, 1)
+        cursor = when
+        pay_principal = min(principal, balance)
+        if (
+            settings["early_repay"]
+            and not early_done
+            and settings["payment_mode"] == "installment"
+            and when >= settings["pf_open"]
+        ):
+            pay_principal = balance
+            early_done = True
+        interest = accrued
+        accrued = 0.0
+        balance = max(0.0, balance - pay_principal)
+        before_pf = when < settings["pf_open"]
+        bridge, pf, equity = _vri_split_payment(pay_principal + interest, before_pf, settings)
+        rows.append({
+            "date": when.isoformat(),
+            "period": index,
+            "principal": round(pay_principal, 2),
+            "interest": round(interest, 2),
+            "total": round(pay_principal + interest, 2),
+            "balance_after": round(balance, 2),
+            "before_pf": before_pf,
+            "bridge": round(bridge, 2),
+            "pf": round(pf, 2),
+            "equity": round(equity, 2),
+        })
+        if early_done:
+            break
+    if balance > 1.0:
+        warnings.append(
+            f"После последнего платежа остаётся непогашенный остаток {balance / 1_000_000:.1f} млн ₽."
+        )
+
+    security = settings["security_cost"]
+    if security:
+        before_pf = settings["obligation_date"] < settings["pf_open"]
+        bridge, pf, equity = _vri_split_payment(security, before_pf, settings)
+        rows.insert(0, {
+            "date": settings["obligation_date"].isoformat(), "period": 0,
+            "principal": 0.0, "interest": 0.0, "total": round(security, 2),
+            "balance_after": round(amount, 2), "before_pf": before_pf,
+            "bridge": round(bridge, 2), "pf": round(pf, 2), "equity": round(equity, 2),
+            "security": True,
+        })
+
+    totals = {
+        "amount": round(amount, 2),
+        "principal": round(sum(row["principal"] for row in rows), 2),
+        "interest": round(sum(row["interest"] for row in rows), 2),
+        "security_cost": round(security, 2),
+        "before_pf": round(sum(row["total"] for row in rows if row["before_pf"]), 2),
+        "after_pf": round(sum(row["total"] for row in rows if not row["before_pf"]), 2),
+        "bridge": round(sum(row["bridge"] for row in rows), 2),
+        "pf": round(sum(row["pf"] for row in rows), 2),
+        "equity": round(sum(row["equity"] for row in rows), 2),
+        "cash": round(sum(row["total"] for row in rows), 2),
+    }
+    return {
+        "enabled": True,
+        "region": settings["region"],
+        "payment_mode": settings["payment_mode"],
+        "rows": rows,
+        "totals": totals,
+        "settings": public({}),
+        "warnings": warnings,
+    }
+
+
+def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None = None) -> dict:
+    project_start = d(x.get("project_start", "2027-01-01"))
+    # Минимум применяется здесь, а не только при разносе расходов: РнС в день
+    # старта — это и есть тот нулевой период, на котором книга и движок
+    # расходятся целиком.
+    permit = add_months(project_start, max(IRD_MONTHS_MIN, int(n(x, "ird_months", 18))))
+    sales_start = add_months(permit, int(n(x, "sales_lag_months", 0)))
+    rve = add_months(permit, int(n(x, "construction_months", 24)))
+    residual = int(n(x, "residual_sales_months", 6))
+    end = add_months(rve, max(residual + 3, 12))
+
+    apartment = t.get("apartments", {})
+    commercial = t.get("ground_commercial", {})
+    underground = t.get("underground_parking", {})
+    storage = t.get("storage", {})
+
+    core_above_gns = n(apartment, "gns") + n(commercial, "gns")
+    core_under_gns = n(underground, "gns") + n(storage, "gns")
+    core_total_gns = core_above_gns + core_under_gns
+
+    revenue: dict[date, float] = defaultdict(float)
+    revenue_by_product: dict[str, float] = {}
+    revenue_product_schedules: dict[str, dict[date, float]] = {}
+    quantity_product_schedules: dict[str, dict[date, float]] = {}
+
+    def add_product(
+        name: str,
+        schedule: dict[date, float],
+        physical_schedule: dict[date, float],
+    ) -> None:
+        revenue_product_schedules[name] = dict(schedule)
+        quantity_product_schedules[name] = dict(physical_schedule)
+        revenue_by_product[name] = sum(schedule.values())
+        for month, value in schedule.items():
+            revenue[month] += value
+
+    share = n(x, "share_before_rve_pct", 85) / 100
+    growth_pre = n(x, "monthly_growth_pre_pct", 1.5) / 100
+    growth_post = n(x, "monthly_growth_post_pct", 0.25) / 100
+    # Сезонность и смещение темпа были в интерфейсе, но на расчёт не влияли:
+    # уходили только в шаблон ПЛАТО. Из-за этого шаблон и модель по одним и тем
+    # же вводным давали разную выручку.
+    seasonal = n(x, "seasonal_reduction_pct", -15) / 100
+    pace = n(x, "pace_adjustment_pct", 25) / 100
+
+    def core_product(name: str, quantity: float, price_th: float) -> None:
+        # Все четыре основных продукта индексируются одним темпом: шаблон ведёт
+        # цены паркинга и кладовых от цены квартир той же пропорцией.
+        add_product(name, sales_schedule(
+            quantity, price_th * 1000, sales_start, rve, share, residual,
+            growth_pre, growth_post, seasonal, pace,
+        ), quantity_schedule(quantity, sales_start, rve, share, residual, seasonal, pace))
+
+    core_product("apartments", n(apartment, "saleable"), n(x, "apartment_price_th"))
+    core_product("ground_commercial", n(commercial, "saleable"), n(x, "commercial_price_th"))
+    core_product("underground_parking", n(underground, "units"), n(x, "parking_price_th"))
+    core_product("storage", n(storage, "units"), n(x, "storage_price_th"))
+
+    standalone_capex = {}
+    if b(x, "offices_enabled"):
+        offices_sales_start = d(x["offices_sales_start"])
+        offices_rve = add_months(d(x["offices_start"]), int(n(x, "offices_months", 24)))
+        offices_share = n(x, "offices_share_before_rve_pct", 85) / 100
+        offices_residual = int(n(x, "offices_residual_months", 6))
+        add_product("offices", sales_schedule(
+            n(x, "offices_saleable_sqm"), n(x, "offices_price_th_per_sqm") * 1000,
+            offices_sales_start, offices_rve,
+            offices_share, offices_residual,
+            n(x, "offices_growth_pre_pct", 1.5) / 100,
+            n(x, "offices_growth_post_pct", 0.25) / 100,
+        ), quantity_schedule(
+            n(x, "offices_saleable_sqm"), offices_sales_start, offices_rve,
+            offices_share, offices_residual,
+        ))
+        standalone_capex["offices"] = n(x, "offices_gba_sqm") * n(x, "offices_cost_th_per_sqm") * 1000
+    else:
+        revenue_by_product["offices"] = 0.0
+        standalone_capex["offices"] = 0.0
+
+    if b(x, "retail_enabled"):
+        retail_sales_start = d(x["retail_sales_start"])
+        retail_rve = add_months(d(x["retail_start"]), int(n(x, "retail_months", 24)))
+        retail_share = n(x, "retail_share_before_rve_pct", 85) / 100
+        retail_residual = int(n(x, "retail_residual_months", 6))
+        add_product("standalone_retail", sales_schedule(
+            n(x, "retail_saleable_sqm"), n(x, "retail_price_th_per_sqm") * 1000,
+            retail_sales_start, retail_rve,
+            retail_share, retail_residual,
+            n(x, "retail_growth_pre_pct", 1.5) / 100,
+            n(x, "retail_growth_post_pct", 0.25) / 100,
+        ), quantity_schedule(
+            n(x, "retail_saleable_sqm"), retail_sales_start, retail_rve,
+            retail_share, retail_residual,
+        ))
+        standalone_capex["standalone_retail"] = n(x, "retail_gba_sqm") * n(x, "retail_cost_th_per_sqm") * 1000
+    else:
+        revenue_by_product["standalone_retail"] = 0.0
+        standalone_capex["standalone_retail"] = 0.0
+
+    if b(x, "above_parking_enabled"):
+        above_parking_end = add_months(d(x["above_parking_start"]), int(n(x, "above_parking_months", 18)))
+        above_parking_sales_start = d(x["above_parking_sales_start"])
+        above_parking_share = n(x, "above_parking_share_before_rve_pct", 85) / 100
+        above_parking_residual = int(n(x, "above_parking_residual_months", 6))
+        add_product("above_parking", sales_schedule(
+            n(x, "above_parking_spaces"), n(x, "above_parking_price_mln_per_space") * 1_000_000,
+            above_parking_sales_start, above_parking_end,
+            above_parking_share, above_parking_residual,
+            n(x, "above_parking_growth_pre_pct", 0.75) / 100,
+            n(x, "above_parking_growth_post_pct", 0.2) / 100,
+        ), quantity_schedule(
+            n(x, "above_parking_spaces"), above_parking_sales_start, above_parking_end,
+            above_parking_share, above_parking_residual,
+        ))
+        standalone_capex["above_parking"] = n(x, "above_parking_spaces") * n(x, "above_parking_cost_mln_per_space") * 1_000_000
+    else:
+        revenue_by_product["above_parking"] = 0.0
+        standalone_capex["above_parking"] = 0.0
+
+    # Scenario model:
+    # base = 100% revenue / 100% project costs
+    # conservative = 90% revenue / 110% project costs
+    # optimistic = 110% revenue / 90% project costs
+    revenue_multiplier = n(x, "scenario_revenue_multiplier", 1.0)
+    cost_multiplier = n(x, "scenario_cost_multiplier", 1.0)
+
+    # Keep the base revenue profile so variable operating expenses can be
+    # scenarioed independently from the income side.
+    base_revenue = dict(revenue)
+
+    if abs(revenue_multiplier - 1.0) > 1e-12:
+        revenue = defaultdict(float, {
+            month: value * revenue_multiplier for month, value in revenue.items()
+        })
+        for key in list(revenue_by_product):
+            revenue_by_product[key] *= revenue_multiplier
+        for key in list(revenue_product_schedules):
+            revenue_product_schedules[key] = {
+                month: value * revenue_multiplier
+                for month, value in revenue_product_schedules[key].items()
+            }
+
+    # Льгота срезается сразу: и резерв, и график рассрочки должны считаться от
+    # суммы к оплате, а не от валового обязательства.
+    vri_gross = n(x, "land_rights_cost_mln") * 1_000_000
+    vri_relief_amount, vri_net = vri_relief(x, vri_gross)
+
+    amounts = {
+        "land_rights": vri_net,
+        "ird": core_total_gns * n(x, "ird_th_per_sqm") * 1000,
+        "design_p": core_total_gns * n(x, "design_p_th_per_sqm") * 1000,
+        "design_rd": core_total_gns * n(x, "design_rd_th_per_sqm") * 1000,
+        "author_supervision": 0.0,
+        "technical_supervision": 0.0,
+        "preparation": core_total_gns * n(x, "preparation_th_per_sqm") * 1000,
+        "main_above": core_above_gns * n(x, "main_above_th_per_sqm") * 1000,
+        "main_under": core_under_gns * n(x, "main_under_th_per_sqm") * 1000,
+        "utilities": core_total_gns * n(x, "utilities_th_per_sqm") * 1000,
+        "landscaping": core_total_gns * n(x, "landscaping_th_per_sqm") * 1000,
+        "commissioning": core_total_gns * n(x, "commissioning_th_per_sqm") * 1000,
+        "site_maintenance": core_total_gns * n(x, "site_maintenance_th_per_sqm") * 1000,
+        "offices": standalone_capex["offices"],
+        "standalone_retail": standalone_capex["standalone_retail"],
+        "above_parking": standalone_capex["above_parking"],
+    }
+
+    social_program = effective_social_program(x)
+    social_construction_breakdown = {
+        "kindergarten": social_program["kindergarten_places"] * n(x, "kindergarten_cost_mln_per_place") * 1_000_000,
+        "school": social_program["school_places"] * n(x, "school_cost_mln_per_place") * 1_000_000,
+        "clinic": social_program["clinic_capacity"] * n(x, "clinic_cost_mln_per_unit") * 1_000_000,
+    }
+    social_construction_total = sum(social_construction_breakdown.values())
+    imported_social_compensation = n(x, "social_compensation_mln") * 1_000_000
+    social_mode = str(x.get("social_mode", "Строительство"))
+    if social_mode == "Денежная компенсация":
+        social_total = imported_social_compensation if imported_social_compensation > 0 else social_construction_total
+    elif social_mode == SOCIAL_MODE_BOTH:
+        # Обе формы разом. Редкий, но реальный случай: школу и садик проект
+        # строит сам, а за спортивный объект платит деньгами. Прежде режимы
+        # исключали друг друга, и денежная нагрузка либо отменяла стройку,
+        # либо молча не считалась вовсе — на Румянцеве это 1,15 млрд ₽.
+        social_total = social_construction_total + imported_social_compensation
+    else:
+        social_total = social_construction_total
+    amounts["social"] = social_total
+
+    # Optional absolute base-cost overrides used only by the phasing wrapper.
+    # Ordinary single-phase calculations do not set this field and are unchanged.
+    cost_overrides = x.get("_cost_override_mln") or {}
+    for override_key, override_value_mln in cost_overrides.items():
+        if override_key in amounts and override_value_mln is not None:
+            amounts[override_key] = float(override_value_mln) * 1_000_000
+
+    works_base = (
+        amounts["main_above"] + amounts["main_under"] + amounts["social"]
+        + amounts["offices"] + amounts["standalone_retail"] + amounts["above_parking"]
+    )
+    design_base = amounts["design_p"] + amounts["design_rd"]
+
+    # Author supervision is modeled as a percentage of design P + RD.
+    # No arbitrary fixed-million hardcode is used.
+    amounts["author_supervision"] = design_base * n(x, "author_supervision_pct", 0.0) / 100
+
+    # Project management is a separate developer overhead:
+    # salaries of the project team, office/admin support and other management overheads.
+    # The base mirrors the original Excel logic conceptually: design/surveys,
+    # preparation, main construction, utilities, landscaping and site maintenance.
+    management_base = (
+        amounts["ird"]
+        + amounts["design_p"] + amounts["design_rd"] + amounts["author_supervision"]
+        + amounts["preparation"]
+        + amounts["main_above"] + amounts["main_under"]
+        + amounts["utilities"]
+        + amounts["landscaping"]
+        + amounts["site_maintenance"]
+    )
+    amounts["project_management"] = management_base * n(x, "project_management_pct", 5.0) / 100
+
+    # Technical customer / construction control is a different cost item.
+    # No separate rate exists in the source Inputs, so default is 0% until explicitly set.
+    amounts["technical_supervision"] = works_base * n(x, "technical_supervision_pct", 0.0) / 100
+
+    amounts["gc_fee"] = works_base * n(x, "gc_fee_pct") / 100
+
+    base_for_overheads = sum(amounts.values())
+    amounts["reserve"] = base_for_overheads * n(x, "reserve_pct") / 100
+
+    capex: dict[date, float] = defaultdict(float)
+    # Помесячная детализация по статьям: тот же расклад, что и в общем ряду,
+    # но с разбивкой — нужна для выгрузки финмодели и сверки с эталоном.
+    capex_by_article: dict[str, dict[date, float]] = defaultdict(lambda: defaultdict(float))
+
+    def add_capex(article: str, month: date, amount: float) -> None:
+        capex[month] += amount
+        capex_by_article[article][month] += amount
+
+    def spread_article(article: str, amount: float, start: date, months: int) -> None:
+        bucket: dict[date, float] = defaultdict(float)
+        spread_evenly(bucket, amount, start, months)
+        for bucket_month, bucket_value in bucket.items():
+            add_capex(article, bucket_month, bucket_value)
+
+    def spread_s_curve(article: str, amount: float, start: date, months: int) -> None:
+        # S-кривая книги (лист CF_x, строка 12) объявлена одним местом —
+        # `build_curve`. Копия здесь была бы не удобством, а вторым мнением об
+        # одном процессе: этой же кривой отчёт о рынке считает готовность дома
+        # по датам, и разойтись им нельзя.
+        if not amount:
+            return
+        for index, share in enumerate(build_curve.monthly_shares(months)):
+            add_capex(article, add_months(start, index), amount * share)
+
+    add_capex("purchase", project_start, n(x, "purchase_price_mln") * 1_000_000)
+
+    # Плата за смену ВРИ идёт по собственному графику: единовременно или
+    # рассрочкой с процентами на остаток. Проценты по рассрочке — отдельная
+    # статья, они не смешиваются с процентами по кредитам. Доля, оплаченная
+    # собственным капиталом, исключается из базы долгового финансирования.
+    vri = build_vri_schedule(
+        x, amounts["land_rights"], permit, rates, str(x.get("rate_scenario", "base"))
+    )
+    vri["totals"]["gross"] = round(vri_gross, 2)
+    vri["totals"]["relief"] = round(vri_relief_amount, 2)
+    if vri_relief_amount > 0 and not vri["enabled"]:
+        vri["totals"]["amount"] = round(vri_net, 2)
+    vri_equity_by_month: dict[date, float] = defaultdict(float)
+    if vri["enabled"]:
+        for row in vri["rows"]:
+            when = d(row["date"])
+            if when < project_start:
+                # Обязательство возникло раньше очереди: платёж относим на её
+                # старт, иначе он выпадет за горизонт расчёта и потеряется.
+                when = project_start
+                row["shifted_to_start"] = True
+            if row["principal"]:
+                add_capex("land_rights", when, row["principal"])
+            if row["interest"]:
+                add_capex("vri_interest", when, row["interest"])
+            if row.get("security"):
+                add_capex("vri_security", when, row["total"])
+            if row["equity"]:
+                vri_equity_by_month[when] += row["equity"]
+        if any(row.get("shifted_to_start") for row in vri["rows"]):
+            vri["warnings"].append(
+                "Часть платежей ВРИ приходится на период до старта расчёта — "
+                "они отнесены на первый месяц."
+            )
+    else:
+        add_capex("land_rights", permit, amounts["land_rights"])
+    amounts["vri_interest"] = vri["totals"]["interest"]
+    amounts["vri_security"] = vri["totals"]["security_cost"]
+    amounts["land_rights_gross"] = vri_gross
+    amounts["land_rights_relief"] = vri_relief_amount
+
+    ird_months = max(IRD_MONTHS_MIN, int(n(x, "ird_months", 18)))
+    spread_article("ird", amounts["ird"], project_start, ird_months)
+    # Project design cash flow is concentrated toward RnS rather than spread evenly from acquisition.
+    # This materially improves bridge timing and follows the schedule logic of the current workbook.
+    design_window = min(6, ird_months)
+    spread_article("design_p", amounts["design_p"], add_months(permit, -design_window), design_window)
+    spread_article("design_rd", amounts["design_rd"], add_months(permit, -design_window), design_window)
+    spread_article("preparation", amounts["preparation"], add_months(permit, -design_window), design_window)
+
+    construction_months = max(1, int(n(x, "construction_months", 24)))
+    spread_s_curve("main_above", amounts["main_above"], permit, construction_months)
+    spread_s_curve("main_under", amounts["main_under"], permit, construction_months)
+    spread_s_curve("utilities", amounts["utilities"], permit, construction_months)
+    spread_s_curve("site_maintenance", amounts["site_maintenance"], permit, construction_months)
+    spread_s_curve("author_supervision", amounts["author_supervision"], permit, construction_months)
+    spread_s_curve("technical_supervision", amounts["technical_supervision"], permit, construction_months)
+    spread_article("landscaping", amounts["landscaping"], add_months(rve, -3), 3)
+    spread_article("commissioning", amounts["commissioning"], add_months(rve, -3), 3)
+
+    # Управление проектом — следом за расходами, которыми оно вызвано: равный
+    # календарный разнос от старта до РВЭ сажал полный штаб с первого дня и
+    # догружал БРИДЖ сотнями миллионов при реальных тратах в одно проектирование.
+    management_profile_articles = (
+        "ird", "design_p", "design_rd", "author_supervision", "preparation",
+        "main_above", "main_under", "utilities", "landscaping", "site_maintenance",
+    )
+    management_profile: dict[date, float] = defaultdict(float)
+    for profile_article in management_profile_articles:
+        for profile_month, profile_value in capex_by_article[profile_article].items():
+            management_profile[profile_month] += profile_value
+    management_total = sum(management_profile.values())
+    if management_total > 0:
+        for profile_month, profile_value in management_profile.items():
+            add_capex("project_management", profile_month,
+                      amounts["project_management"] * profile_value / management_total)
+    else:
+        spread_article("project_management", amounts["project_management"],
+                       project_start, max(1, months_between(project_start, rve)))
+
+    social_mode_now = str(x.get("social_mode", "Строительство"))
+    social_cash_date = social_cash_payment_date(x, permit)
+    if social_mode_now in ("Строительство", SOCIAL_MODE_BOTH):
+        if social_program["kindergarten_places"]:
+            spread_article("social", social_construction_breakdown["kindergarten"],
+                           d(x["kindergarten_start"]), int(n(x, "kindergarten_months", 24)))
+        if social_program["school_places"]:
+            spread_article("social", social_construction_breakdown["school"],
+                           d(x["school_start"]), int(n(x, "school_months", 30)))
+        if social_program["clinic_capacity"]:
+            spread_article("social", social_construction_breakdown["clinic"],
+                           d(x["clinic_start"]), int(n(x, "clinic_months", 24)))
+        # Каждая стройка идёт своим графиком, а денежная часть — одним
+        # платежом в свою дату: это разные обязательства с разными сроками.
+        if social_mode_now == SOCIAL_MODE_BOTH and imported_social_compensation > 0:
+            add_capex("social", social_cash_date, imported_social_compensation)
+    else:
+        add_capex("social", social_cash_date, social_total)
+
+    if amounts["offices"]:
+        spread_article("offices", amounts["offices"], d(x["offices_start"]), int(n(x, "offices_months", 24)))
+    if amounts["standalone_retail"]:
+        spread_article("standalone_retail", amounts["standalone_retail"], d(x["retail_start"]), int(n(x, "retail_months", 24)))
+    if amounts["above_parking"]:
+        spread_article("above_parking", amounts["above_parking"], d(x["above_parking_start"]), int(n(x, "above_parking_months", 18)))
+
+    # GC, reserve and project management belong to the construction phase rather than the pre-RnS bridge period.
+    # This is closer to the timing used in the current Excel cash-flow model.
+    spread_s_curve("gc_fee", amounts["gc_fee"], permit, construction_months)
+    spread_s_curve("reserve", amounts["reserve"], permit, construction_months)
+
+    # Apply expense scenario to ALL project-side cash outflows exactly once:
+    # acquisition, VRI, social burden, design, construction, overheads, etc.
+    if abs(cost_multiplier - 1.0) > 1e-12:
+        capex = defaultdict(float, {
+            month: value * cost_multiplier for month, value in capex.items()
+        })
+        capex_by_article = defaultdict(lambda: defaultdict(float), {
+            article: defaultdict(float, {
+                month: value * cost_multiplier for month, value in schedule.items()
+            })
+            for article, schedule in capex_by_article.items()
+        })
+        for key in list(amounts):
+            amounts[key] *= cost_multiplier
+
+    # Marketing + selling expenses are also scenarioed as expenses relative to BASE,
+    # not reduced merely because conservative revenue is lower.
+    operating: dict[date, float] = defaultdict(float)
+    for month, value in base_revenue.items():
+        operating[month] += (
+            value
+            * (n(x, "marketing_pct") + n(x, "selling_pct")) / 100
+            * cost_multiplier
+        )
+
+    # A standalone KRT object may finish after the residential phase. Keep it in
+    # the financing, tax and cash-flow horizon instead of only adding its revenue
+    # to the project total.
+    dated_flows = list(revenue) + list(capex) + list(operating)
+    if dated_flows:
+        end = max(end, max(dated_flows))
+
+    # Долговое финансирование видит все расходы проекта, кроме той части платы
+    # за ВРИ, которую собственник закрывает капиталом: она не создаёт ни выборки
+    # БРИДЖа, ни выборки ПФ.
+    debt_capex = dict(capex)
+    for month, equity_value in vri_equity_by_month.items():
+        debt_capex[month] = max(0.0, debt_capex.get(month, 0.0) - equity_value)
+
+    return {
+        "project_start": project_start,
+        "permit": permit,
+        "sales_start": sales_start,
+        "rve": rve,
+        "end": end,
+        "revenue": dict(revenue),
+        "revenue_by_product": revenue_by_product,
+        "revenue_product_schedules": revenue_product_schedules,
+        "quantity_product_schedules": quantity_product_schedules,
+        "capex": dict(capex),
+        "capex_by_article": {article: dict(schedule) for article, schedule in capex_by_article.items()},
+        "debt_capex": debt_capex,
+        "operating": dict(operating),
+        "capex_amounts": amounts,
+        "core_above_gns": core_above_gns,
+        "core_under_gns": core_under_gns,
+        "social_program": social_program,
+        "social_construction_breakdown": social_construction_breakdown,
+        "social_cash_date": social_cash_date,
+        "imported_social_compensation": imported_social_compensation,
+        "vri": vri,
+        "vri_equity": dict(vri_equity_by_month),
+    }
+
+
+# --- ступенчатая специальная ставка ------------------------------------------
+# В договорах НКЛ надбавка к ключевой ступенчатая: BVX003 — 3,47% при покрытии
+# эскроу 100–110%, 1,75% при 110–120%, 0,03% при 120–130%, дальше 0,01%. У нас
+# ставка была одна на всё покрытие, и модель завышала проценты сильным
+# проектам. Таблица индивидуальна для каждого НКЛ, поэтому «типовую» зашивать
+# нельзя: ступени вводятся полем, пустое поле оставляет одну ставку.
+_PF_STEP_PAIR = re.compile(r"(\d+(?:[.,]\d+)?)\s*%?\s*[:=\-–—]\s*(\d+(?:[.,]\d+)?)")
+
+
+def pf_special_steps(value: Any) -> list[tuple[float, float]]:
+    """Ступени «покрытие → ставка» из строки. Доли, а не проценты.
+
+    Принимаем то, что человек перепишет из договора: «100:3,47; 110:1,75»,
+    «100% - 3.47%», с переносами строк. Разделитель пар не фиксируем — пара
+    опознаётся по самой форме «число : число», иначе запятая работает и
+    разделителем, и десятичной точкой сразу, а в договоре она десятичная.
+    """
+    if isinstance(value, (list, tuple)):
+        pairs = []
+        for item in value:
+            if isinstance(item, (list, tuple)) and len(item) >= 2:
+                pairs.append((str(item[0]), str(item[1])))
+        found = pairs
+    else:
+        found = _PF_STEP_PAIR.findall(str(value or ""))
+    steps: list[tuple[float, float]] = []
+    for raw_coverage, raw_rate in found:
+        try:
+            coverage = float(str(raw_coverage).replace(",", ".").strip())
+            rate = float(str(raw_rate).replace(",", ".").strip())
+        except (TypeError, ValueError):
+            continue
+        # Покрытие пишут и процентами (110), и разами (1,1). Ниже трёх — это
+        # разы: покрытие 3% лестницей не описывают, а покрытие 3× бывает.
+        if coverage > 3:
+            coverage /= 100.0
+        if coverage <= 0 or rate < 0:
+            continue
+        steps.append((coverage, rate / 100.0))
+    steps.sort(key=lambda step: step[0])
+    return steps
+
+
+def pf_special_steps_formula(coverage_ref: str, steps: list[tuple[float, float]],
+                             base: str,
+                             refs: list[tuple[str, str]] | None = None) -> str:
+    """Лестница ступеней формулой Excel: вложенные IF по покрытию.
+
+    Методику правят в двух местах — в движке и в книге. Ставку ПФ так уже
+    теряли: правка ушла в движок, строка 57 листа «КРЕДИТЫ» осталась прежней,
+    и книга показала 360,3 млн ₽ процентов против 746,5 млн ₽ в отчёте. Чтобы
+    это не повторилось, формулу собирает тот же код, что считает ступени.
+
+    `refs` — пары ячеек (порог, ставка) вместо зашитых чисел: человек работает
+    книгой и правит лестницу как вводную, а не как формулу по всем месячным
+    колонкам (владелец, 20.08.2026: «сейчас-то надбавка — это вводная»).
+    Пустой порог выключает ступень: в сравнении пустая ячейка читается нулём,
+    и защита «порог > 0» гасит ветку. Без неё было бы наоборот — покрытие
+    всегда не меньше пустоты, и стёртая ступень срабатывала бы всегда.
+    """
+    formula = base
+    if refs:
+        assert len(refs) == len(steps)
+        for (edge_ref, rate_ref), _ in zip(refs, steps):
+            formula = (f"IF(AND({edge_ref}>0,{coverage_ref}>={edge_ref}),"
+                       f"{rate_ref},{formula})")
+        return formula
+    for edge, rate in steps:
+        formula = f"IF({coverage_ref}>={edge:.6g},{rate:.8g},{formula})"
+    return formula
+
+
+def pf_special_rate_at(coverage: float, steps: list[tuple[float, float]],
+                       default_rate: float) -> float:
+    """Ставка ступени по фактическому покрытию месяца.
+
+    Ниже первой ступени действует обычная специальная ставка: лестница в
+    договоре начинается со стопроцентного покрытия, и придумывать за банк то,
+    что ниже, мы не будем.
+    """
+    rate = default_rate
+    for edge, step_rate in steps:
+        if coverage + 1e-9 >= edge:
+            rate = step_rate
+        else:
+            break
+    return rate
+
+
+def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) -> dict:
+    project_start = op["project_start"]
+    permit = op["permit"]
+    rve = op["rve"]
+    end = op["end"]
+    months = month_range(project_start, end)
+    scenario = str(x.get("rate_scenario", "low"))
+    interest_mode = str(x.get("bridge_interest_mode", "Капитализация в ПФ"))
+
+    # Excel input logic: purchase + social compensation + P/RD design.
+    calculated_bridge_limit = (
+        n(x, "purchase_price_mln") * 1_000_000
+        + op["capex_amounts"]["design_p"]
+        + op["capex_amounts"]["design_rd"]
+    )
+    if str(x.get("social_mode")) == "Денежная компенсация":
+        calculated_bridge_limit += op["capex_amounts"]["social"]
+    elif str(x.get("social_mode")) == SOCIAL_MODE_BOTH:
+        # В лимит БРИДЖа входит только денежная часть: стройку соцобъектов
+        # банк финансирует проектным финансированием после РнС, и включать её
+        # в БРИДЖ значило бы просить лимит дважды.
+        calculated_bridge_limit += n(x, "social_compensation_mln") * 1_000_000
+
+    # Часть первоначального финансирования может идти не из банка: собственные
+    # деньги, заём учредителя, перехваченный чужой долг. Эти средства тратятся
+    # раньше БРИДЖа, процентов не несут и не возвращаются — это вклад, а не
+    # кредит. Прежде модель считала весь разрыв до ПФ банковским, и проект с
+    # собственным входом выглядел дороже, чем он есть.
+    own_funds_total = max(0.0, n(x, "pre_pf_own_funds_mln") * 1_000_000)
+
+    # Одобренный лимит ПФ. Пусто — движок ведёт себя как прежде: лимит
+    # выводится из потребности, и выборка ничем не ограничена. Задан — он
+    # становится потолком, а всё, что сверх него, выходит отдельной величиной
+    # «непокрытая потребность», а не дофинансируется молча.
+    #
+    # На Гродненской это ровно тот случай, ради которого поле заведено: книга
+    # выбирает лимит на 99,92% и показывает маржу 10,7% и LLCR 1,13, потому что
+    # считает по лимиту, который включает ещё не одобренный дофинанс. Разрыв в
+    # такой модели не виден нигде — он равен нулю по построению.
+    approved_pf_limit = max(0.0, n(x, "pf_limit_approved_mln") * 1_000_000)
+
+    # Лестница разбирается один раз на расчёт, а не в каждом месяце: строку
+    # человек вводит руками, и разбирать её сотню раз незачем.
+    special_steps = pf_special_steps(x.get("pf_special_steps"))
+    base_special_rate = n(x, "pf_special_pct") / 100
+
+    # Финансирование до среза — факт, а не расчёт. Остатки долга и эскроу
+    # приходят из книги, уплаченные проценты — из реестра платежей. Это то же
+    # правило, что для CAPEX и продаж, и финансирование было последним, что ему
+    # не подчинялось: движок выводил проценты из долга, ставки и покрытия, хотя
+    # они уже начислены и заплачены. Считать их заново значит спорить с
+    # банковской выпиской.
+    #
+    # Месяцы до среза берут остатки из факта и не начисляют ничего; с месяца
+    # среза расчёт идёт как обычно, но стартует не с нуля, а с этих остатков.
+    financing_fact = op.get("financing_fact") or {}
+    fact_cut = financing_fact.get("cut")
+
+    def run(pf_limit: float | None, cap: float | None = None) -> dict:
+        own_funds_left = own_funds_total
+        own_funds_used = 0.0
+        pf_shortfall_total = 0.0
+        pf_shortfall_month: date | None = None
+        bridge_balance = 0.0
+        bridge_interest_payable = 0.0
+        pf_balance = 0.0
+        pf_interest_payable = 0.0
+        escrow = 0.0
+
+        bridge_draw_total = bridge_repayment_total = 0.0
+        bridge_interest_total = bridge_cap_total = 0.0
+        bridge_fee = calculated_bridge_limit * n(x, "reservation_fee_pct") / 100
+
+        pf_draw_total = pf_repayment_total = 0.0
+        pf_interest_total = pf_cap_total = pf_limit_fee_total = 0.0
+        pf_reservation_fee = (pf_limit or 0.0) * n(x, "reservation_fee_pct") / 100 if pf_limit else 0.0
+        transferred_bridge_interest = 0.0
+
+        weighted_bridge_num = weighted_bridge_key_num = weighted_bridge_den = 0.0
+        weighted_pf_num = weighted_pf_den = 0.0
+        weighted_pf_base_num = weighted_pf_key_num = 0.0
+        # Сколько месяцев отработала каждая ступень: без этого процент нечем
+        # объяснить банку — видна средняя, а из чего она сложилась, нет.
+        step_months: dict[float, int] = {}
+        rows = []
+
+        for month in months:
+            sales = op["revenue"].get(month, 0.0)
+            project_costs = op["debt_capex"].get(month, 0.0) + op["operating"].get(month, 0.0)
+
+            key_rate = rate_lookup(rates, month, scenario)
+            bridge_rate = key_rate + n(x, "bridge_spread_pp") / 100
+            bridge_cap_rate = key_rate + n(x, "bridge_cap_spread_pp") / 100
+            pf_base_rate = key_rate + n(x, "pf_spread_pp") / 100
+            # Ставка ступени выбирается по покрытию этого месяца, а не по
+            # среднему за проект: покрытие растёт по мере продаж, и в этом весь
+            # смысл лестницы. Само покрытие считается ниже, после выборки ПФ.
+            special_rate = base_special_rate
+
+            bridge_draw = bridge_repayment = bridge_interest = bridge_cap = 0.0
+            own_draw = 0.0
+            pf_draw = pf_repayment = pf_interest = pf_cap = limit_fee = 0.0
+            interest_payment = 0.0
+            escrow_release = 0.0
+
+            if fact_cut and month < fact_cut:
+                # Остаток, которого в факте нет, — это «не менялся», а не ноль:
+                # выгрузка кончается раньше среза, и обнулить долг значило бы
+                # погасить его выгрузкой.
+                pf_balance = financing_fact.get("pf_balance", {}).get(month, pf_balance)
+                bridge_balance = financing_fact.get(
+                    "bridge_balance", {}).get(month, bridge_balance)
+                escrow = financing_fact.get("escrow", {}).get(month, escrow)
+                pf_interest = financing_fact.get("interest", {}).get(month, 0.0)
+                pf_interest_total += pf_interest
+                coverage = escrow / pf_balance if pf_balance > 0 else 0.0
+                pf_rate = 0.0
+                rows.append({
+                    "month": month.isoformat(), "sales": sales,
+                    "project_costs": project_costs, "key_rate": key_rate,
+                    "bridge_rate": bridge_rate, "bridge_draw": 0.0,
+                    "own_funds_draw": 0.0, "bridge_repayment": 0.0,
+                    "bridge_balance": bridge_balance, "bridge_interest": 0.0,
+                    "bridge_capitalization": 0.0, "pf_draw": 0.0,
+                    "pf_repayment": 0.0, "pf_balance": pf_balance,
+                    "escrow": escrow, "escrow_release": 0.0,
+                    "coverage": coverage, "pf_rate": pf_rate,
+                    "pf_interest": pf_interest, "pf_interest_capitalization": 0.0,
+                    "limit_fee": 0.0, "interest_payment": pf_interest,
+                })
+                continue
+
+            if month < rve:
+                escrow += sales
+
+            # BРИДЖ finances project cash needs before RnS.
+            if month < permit:
+                need = max(project_costs, 0.0)
+                # Свои деньги идут первыми: банк добирает остаток.
+                own_draw = min(own_funds_left, need)
+                own_funds_left -= own_draw
+                own_funds_used += own_draw
+                bridge_draw = need - own_draw
+                bridge_balance += bridge_draw
+                bridge_draw_total += bridge_draw
+                if bridge_balance > 0:
+                    bridge_interest = bridge_balance * bridge_rate / 12
+                    bridge_cap = bridge_interest_payable * bridge_cap_rate / 12
+                    bridge_interest_payable += bridge_interest + bridge_cap
+                    bridge_interest_total += bridge_interest
+                    bridge_cap_total += bridge_cap
+                    weighted_bridge_num += bridge_balance * bridge_rate
+                    weighted_bridge_key_num += bridge_balance * key_rate
+                    weighted_bridge_den += bridge_balance
+
+            # At RnS, refinance bridge body. Bridge interest is transferred as accrued PF interest by default.
+            if month == permit:
+                bridge_repayment = bridge_balance
+                bridge_repayment_total += bridge_repayment
+                pf_draw += bridge_balance
+                bridge_balance = 0.0
+
+                transferred_bridge_interest = bridge_interest_payable
+                if interest_mode == "Капитализация в ПФ":
+                    pf_interest_payable += bridge_interest_payable
+                else:
+                    project_costs += bridge_interest_payable
+                bridge_interest_payable = 0.0
+
+            if month >= permit:
+                # PF finances all project costs; escrow is not available before RVE.
+                pf_draw += max(project_costs, 0.0)
+                if cap is not None:
+                    # Потолок считается от остатка на начало месяца: погашения
+                    # в этом месяце идут ниже по циклу и свободного лимита
+                    # сейчас ещё не дают. Капитализированные проценты лимит не
+                    # выбирают (решение владельца 04.08.2026) — потолок держит
+                    # только тело долга.
+                    room = max(cap - pf_balance, 0.0)
+                    if pf_draw > room:
+                        pf_shortfall_total += pf_draw - room
+                        if pf_shortfall_month is None:
+                            pf_shortfall_month = month
+                        pf_draw = room
+                pf_balance += pf_draw
+                pf_draw_total += pf_draw
+
+                coverage = escrow / pf_balance if pf_balance > 0 else 0.0
+
+                # Базовая ставка (ключ + спред ПФ) начисляется на часть долга, не покрытую
+                # эскроу; покрытая часть считается по специальной ставке. Средняя ставка по
+                # кредиту — их взвешенная сумма. Излишек эскроу сверх долга ставку ниже
+                # специальной не опускает: покрывать больше 100% нечего.
+                weight = min(coverage, 1.0)
+                special_rate = pf_special_rate_at(coverage, special_steps, base_special_rate)
+                if special_steps and pf_balance > 0:
+                    step_months[special_rate] = step_months.get(special_rate, 0) + 1
+                pf_rate = pf_base_rate * (1 - weight) + special_rate * weight
+
+                if pf_balance > 0:
+                    pf_interest = pf_balance * pf_rate / 12
+                    pf_cap = pf_interest_payable * pf_rate / 12
+                    pf_interest_payable += pf_interest + pf_cap
+                    pf_interest_total += pf_interest
+                    pf_cap_total += pf_cap
+                    weighted_pf_num += pf_balance * pf_rate
+                    weighted_pf_base_num += pf_balance * pf_base_rate
+                    weighted_pf_key_num += pf_balance * key_rate
+                    weighted_pf_den += pf_balance
+
+                    # Плата за невыбранный лимит — только в период доступности
+                    # линии: с открытия ПФ до РВЭ. После РВЭ эскроу раскрыт и
+                    # лимита, за который платят, больше нет — решение владельца
+                    # («после РВЭ платить не за что, всё погашено»). Прежде
+                    # плата тикала, пока жив долг, и на Мытищах давала +465 млн
+                    # комиссий к книге.
+                    if pf_limit and month < rve:
+                        limit_fee = max(pf_limit - pf_balance, 0.0) * n(x, "limit_fee_pct") / 100 / 12
+                        pf_interest_payable += limit_fee
+                        pf_limit_fee_total += limit_fee
+
+                # Release escrow at RVE; subsequent sales also repay PF.
+                available_for_repayment = 0.0
+                if month == rve:
+                    escrow_release = escrow
+                    available_for_repayment = escrow_release
+                    escrow = 0.0
+                elif month > rve:
+                    available_for_repayment = sales
+
+                if available_for_repayment > 0 and pf_balance > 0:
+                    pf_repayment = min(available_for_repayment, pf_balance)
+                    pf_balance -= pf_repayment
+                    pf_repayment_total += pf_repayment
+
+                # Current Excel pays accumulated interest at RVE and current interest thereafter.
+                if month >= rve and pf_interest_payable > 0:
+                    interest_payment = pf_interest_payable
+                    pf_interest_payable = 0.0
+            else:
+                coverage = 0.0
+                pf_rate = 0.0
+
+            rows.append({
+                "month": month.isoformat(),
+                "sales": sales,
+                "project_costs": project_costs,
+                "key_rate": key_rate,
+                "bridge_rate": bridge_rate,
+                "bridge_draw": bridge_draw,
+                "own_funds_draw": own_draw,
+                # Погашение тела БРИДЖа рефинансированием строка не отдавала, а
+                # поток на собственный капитал его спрашивал: получал ноль и
+                # считал выборку ПФ на РнС чистым притоком. Тело заходило дважды —
+                # сначала выборкой БРИДЖа, потом выборкой ПФ, — и IRR улетал.
+                "bridge_repayment": bridge_repayment,
+                "bridge_balance": bridge_balance,
+                "bridge_interest": bridge_interest,
+                "bridge_capitalization": bridge_cap,
+                "pf_draw": pf_draw,
+                "pf_repayment": pf_repayment,
+                "pf_balance": pf_balance,
+                "escrow": escrow,
+                "escrow_release": escrow_release,
+                "coverage": coverage,
+                "pf_rate": pf_rate,
+                # Ставка ступени этого месяца — рядом с покрытием, из которого
+                # она выбрана: помесячная таблица должна отвечать «почему
+                # столько», не отсылая к вводным.
+                "pf_special_rate": special_rate,
+                "pf_interest": pf_interest,
+                "pf_interest_capitalization": pf_cap,
+                "limit_fee": limit_fee,
+                "interest_payment": interest_payment,
+            })
+
+        return {
+            "rows": rows,
+            "calculated_bridge_limit": calculated_bridge_limit,
+            "bridge_fee": bridge_fee,
+            "bridge_draw_total": bridge_draw_total,
+            "bridge_repayment_total": bridge_repayment_total,
+            "bridge_interest": bridge_interest_total,
+            "bridge_capitalization": bridge_cap_total,
+            "transferred_bridge_interest": transferred_bridge_interest,
+            "peak_bridge": max((r["bridge_balance"] for r in rows), default=0.0),
+            "own_funds_used": own_funds_used,
+            "own_funds_available": own_funds_total,
+            "avg_bridge_rate": weighted_bridge_num / weighted_bridge_den if weighted_bridge_den else 0.0,
+            "avg_bridge_key_rate": weighted_bridge_key_num / weighted_bridge_den if weighted_bridge_den else 0.0,
+            "current_key_rate": n(x, "rate_start_pct", 14.0) / 100,
+            "bridge_spread": n(x, "bridge_spread_pp") / 100,
+            "current_bridge_rate": (
+                n(x, "rate_start_pct", 14.0) + n(x, "bridge_spread_pp")
+            ) / 100,
+            "bridge_rate_at_project_start": (
+                rate_lookup(rates, project_start, scenario)
+                + n(x, "bridge_spread_pp") / 100
+            ),
+
+            "pf_draw_total": pf_draw_total,
+            "pf_repayment_total": pf_repayment_total,
+            "pf_reservation_fee": pf_reservation_fee,
+            "pf_interest": pf_interest_total,
+            "pf_interest_capitalization": pf_cap_total,
+            "pf_limit_fee": pf_limit_fee_total,
+            "peak_pf": max((r["pf_balance"] for r in rows), default=0.0),
+            "peak_uncovered_pf": max((max(r["pf_balance"] - r["escrow"], 0.0) for r in rows), default=0.0),
+            # Покрытие эскроу — то, от чего зависит ставка ПФ, и в книге оно
+            # отдельной строкой. Без него нельзя ни свериться, ни проверить
+            # тестом, дошёл ли расчёт до ступеней: на умолчаниях покрытие
+            # упирается в 0,96× и ветка со ступенями не исполняется вовсе.
+            "peak_escrow": max((r["escrow"] for r in rows), default=0.0),
+            "peak_coverage": max(
+                (r["escrow"] / r["pf_balance"] for r in rows if r["pf_balance"] > 0),
+                default=0.0),
+            "avg_pf_rate": weighted_pf_num / weighted_pf_den if weighted_pf_den else 0.0,
+            "avg_pf_effective_rate": weighted_pf_num / weighted_pf_den if weighted_pf_den else 0.0,
+            "avg_pf_base_rate": weighted_pf_base_num / weighted_pf_den if weighted_pf_den else 0.0,
+            "avg_pf_key_rate": weighted_pf_key_num / weighted_pf_den if weighted_pf_den else 0.0,
+            "pf_special_rate": base_special_rate,
+            # Ступени с числом месяцев — по возрастанию покрытия, как в договоре.
+            "pf_special_steps": [
+                {"coverage_from_pct": round(edge * 100, 2),
+                 "rate_pct": round(rate * 100, 4),
+                 "months": int(step_months.get(rate, 0))}
+                for edge, rate in special_steps],
+            "ending_pf": pf_balance,
+            "ending_interest_payable": pf_interest_payable,
+            "pf_shortfall": pf_shortfall_total,
+            # Датой, а не объектом: результат уезжает в JSON на страницу и в
+            # бот, и `date` там ломает сериализацию молча — на отчёте, а не на
+            # расчёте.
+            "pf_shortfall_month": pf_shortfall_month.isoformat() if pf_shortfall_month else "",
+        }
+
+    # First pass determines the calculated PF limit; Excel rounds the financing requirement to 10m.
+    first = run(None)
+    pf_limit = ceil(first["pf_draw_total"] / 10_000_000) * 10_000_000 if first["pf_draw_total"] else 0.0
+    if approved_pf_limit:
+        result = run(approved_pf_limit, cap=approved_pf_limit)
+    else:
+        result = run(pf_limit)
+    # «Лимит ПФ» — тот, по которому живёт проект: одобренный, если он задан.
+    # Комиссии за лимит и резервирование берутся с него же.
+    result["pf_limit"] = approved_pf_limit or pf_limit
+    # Сколько лимита проект просит на самом деле — считается свободным
+    # прогоном, без потолка. Сравнение с одобренным и есть цена вопроса.
+    result["pf_limit_required"] = pf_limit
+    result["pf_limit_approved"] = approved_pf_limit
+
+    total_revenue = sum(op["revenue"].values())
+    total_capex = sum(op["capex"].values())
+    commercial_costs = sum(op["operating"].values())
+
+    financing_cost = (
+        result["bridge_interest"] + result["bridge_capitalization"] + result["bridge_fee"]
+        + result["pf_interest"] + result["pf_interest_capitalization"]
+        + result["pf_limit_fee"] + result["pf_reservation_fee"]
+    )
+    profit_before_tax = total_revenue - total_capex - commercial_costs - financing_cost
+
+    # Profit tax follows the workbook's cumulative realization method.
+    # Core products share one residual cost pool; every standalone KRT object
+    # recognizes its own construction cost by physical m2 / parking spaces sold.
+    core_products = (
+        "apartments", "ground_commercial", "underground_parking", "storage"
+    )
+    krt_products = ("offices", "standalone_retail", "above_parking")
+    product_costs = {
+        "offices": op["capex_amounts"].get("offices", 0.0),
+        "standalone_retail": op["capex_amounts"].get("standalone_retail", 0.0),
+        "above_parking": op["capex_amounts"].get("above_parking", 0.0),
+    }
+    core_cost = max(
+        total_capex + commercial_costs - sum(product_costs.values()), 0.0
+    )
+    tax_cost_by_product = {"core": core_cost, **product_costs}
+
+    revenue_schedules = op.get("revenue_product_schedules", {})
+    quantity_schedules = op.get("quantity_product_schedules", {})
+    tax_margin_schedules: dict[str, dict[date, float]] = {}
+
+    core_quantity_total = sum(
+        sum(quantity_schedules.get(key, {}).values()) for key in core_products
+    )
+    core_months = set()
+    for key in core_products:
+        core_months.update(revenue_schedules.get(key, {}))
+        core_months.update(quantity_schedules.get(key, {}))
+    core_margin: dict[date, float] = {}
+    for month in core_months:
+        revenue_month = sum(
+            revenue_schedules.get(key, {}).get(month, 0.0) for key in core_products
+        )
+        quantity_month = sum(
+            quantity_schedules.get(key, {}).get(month, 0.0) for key in core_products
+        )
+        recognized_cost = (
+            core_cost * quantity_month / core_quantity_total
+            if core_quantity_total else 0.0
+        )
+        core_margin[month] = revenue_month - recognized_cost
+    if core_cost and not core_quantity_total:
+        core_margin[rve] = core_margin.get(rve, 0.0) - core_cost
+    tax_margin_schedules["core"] = core_margin
+
+    for key in krt_products:
+        quantity_total = sum(quantity_schedules.get(key, {}).values())
+        unit_cost = product_costs[key] / quantity_total if quantity_total else 0.0
+        product_months = set(revenue_schedules.get(key, {})) | set(quantity_schedules.get(key, {}))
+        tax_margin_schedules[key] = {
+            month: (
+                revenue_schedules.get(key, {}).get(month, 0.0)
+                - quantity_schedules.get(key, {}).get(month, 0.0) * unit_cost
+            )
+            for month in product_months
+        }
+
+    tax_margin_by_month: dict[date, float] = defaultdict(float)
+    tax_margin_by_product = {}
+    for key, schedule in tax_margin_schedules.items():
+        tax_margin_by_product[key] = sum(schedule.values())
+        for month, value in schedule.items():
+            tax_margin_by_month[month] += value
+
+    # Financing deductions are recognized when paid. The bridge and PF setup
+    # fees are dated separately because they are not included in monthly rows.
+    financing_deductions: dict[date, float] = defaultdict(float)
+    for row in result["rows"]:
+        financing_deductions[d(row["month"])] += float(row.get("interest_payment", 0.0) or 0.0)
+    financing_deductions[project_start] += result["bridge_fee"]
+    financing_deductions[permit] += result["pf_reservation_fee"]
+
+    # Reconcile rounding and any residual accrued amount to the final period so
+    # the schedule equals the project's reported interest and fee total exactly.
+    financing_reconciliation = financing_cost - sum(financing_deductions.values())
+    if abs(financing_reconciliation) > 0.01:
+        financing_deductions[end] += financing_reconciliation
+
+    # НДС. Жильё по ДДУ освобождено (пп. 23.1 п. 3 ст. 149 НК), нежилое —
+    # облагается: ПСН, офисы, паркинг и кладовые. Решение владельца
+    # (15.08.2026), методика снята с книги внешней модели: там ставка 22%,
+    # отдельная статья БДДС и «Начало уплаты НДС» ровно в дату РВЭ.
+    #
+    # Затраты в модели заданы с НДС, поэтому входящий налог уже сидит в них.
+    # К вычету идёт не весь: при освобождённых операциях доля, приходящаяся на
+    # них, остаётся в себестоимости (п. 4 ст. 170 НК). Отсюда частая ошибка
+    # «стройка 10 млрд — вернут 1,8»: возвращают только долю нежилого.
+    vat_rate = max(0.0, n(x, "vat_pct", 22)) / 100
+    vat_taxable_products = tuple(
+        key for key in (*core_products, *krt_products) if key != "apartments"
+    )
+    vat_schedule: dict[date, float] = {}
+    vat_charged = vat_input_deductible = 0.0
+    if vat_rate > 0:
+        gross_to_tax = vat_rate / (1 + vat_rate)
+        taxable_revenue = sum(
+            sum(revenue_schedules.get(key, {}).values()) for key in vat_taxable_products
+        )
+        # Начисление — по передаче объекта, а не по признанию выручки: до
+        # раскрытия эскроу оплаты застройщику нет, и база возникает актом
+        # после ввода (ст. 167 НК). Всё, что продано до РВЭ, начисляется в РВЭ.
+        # Начисление целиком в дату РВЭ: так устроена внешняя модель, с
+        # которой сверялись («Начало уплаты НДС» = РВЭ), и так книга считает
+        # тем же одним выражением. Хвост остаточных продаж платится на
+        # несколько месяцев раньше срока — в запас, а не в оптимизм.
+        charged_by_month: dict[date, float] = {rve: taxable_revenue * gross_to_tax}
+        vat_charged = sum(charged_by_month.values())
+        # Входящий НДС — со строительных и коммерческих затрат. Покупка
+        # участка, плата за ВРИ и проценты по кредитам НДС не облагаются,
+        # поэтому в базу вычета не входят.
+        # База берётся от итога CAPEX, а не суммированием словаря статей: в нём
+        # живут теневые ключи вроде land_rights_gross, и слепая сумма задваивала
+        # плату за ВРИ — книга и движок расходились ровно на неё.
+        # Исключаем по вводным, а не по словарю статей: покупка в него не
+        # попадает вовсе (уходит прямо в месячный CAPEX), а плата за ВРИ лежит
+        # там дважды — вместе с теневым land_rights_gross. Книга вычитает те же
+        # две ячейки, B15 и B16, поэтому обе поверхности сходятся.
+        vat_bearing_costs = (
+            total_capex + commercial_costs
+            - n(x, "purchase_price_mln") * 1_000_000
+            - n(x, "land_rights_cost_mln") * 1_000_000
+            - op["capex_amounts"].get("vri_interest", 0.0)
+            - op["capex_amounts"].get("vri_security", 0.0)
+        )
+        deductible_share = taxable_revenue / total_revenue if total_revenue else 0.0
+        vat_input_deductible = vat_bearing_costs * gross_to_tax * deductible_share
+        # Вычет накапливается по ходу стройки, начисление приходит после ввода —
+        # значит к моменту передачи он уже есть, и живыми деньгами уходит
+        # только разница.
+        due = max(vat_charged - vat_input_deductible, 0.0)
+        if due > 0:
+            vat_schedule[rve] = due
+    vat = sum(vat_schedule.values())
+    # Из базы налога на прибыль уходит НДС к уплате, а не начисленный:
+    # выручка признаётся без налога (минус начисленный), а затраты — без
+    # входящего в части, принятой к вычету (плюс вычет). В сумме это ровно
+    # чистый НДС. Вычитать начисленный значило бы дважды учесть вычет.
+    vat_charged_by_month = dict(vat_schedule)
+
+    tax_rate = n(x, "profit_tax_pct", 25) / 100
+    cumulative_margin = cumulative_financing = tax_paid = 0.0
+    profit_tax_schedule: dict[date, float] = {}
+    tax_rows = []
+    row_by_month = {d(row["month"]): row for row in result["rows"]}
+    for month in months:
+        margin_month = tax_margin_by_month.get(month, 0.0) - vat_charged_by_month.get(month, 0.0)
+        financing_month = financing_deductions.get(month, 0.0)
+        cumulative_margin += margin_month
+        cumulative_financing += financing_month
+        taxable_profit_cumulative = max(cumulative_margin - cumulative_financing, 0.0)
+        tax_month = 0.0
+        if month >= rve:
+            tax_month = max(taxable_profit_cumulative * tax_rate - tax_paid, 0.0)
+        tax_paid += tax_month
+        profit_tax_schedule[month] = tax_month
+        if month in row_by_month:
+            row_by_month[month]["taxable_margin"] = margin_month
+            row_by_month[month]["financing_tax_deduction"] = financing_month
+            row_by_month[month]["taxable_profit_cumulative"] = taxable_profit_cumulative
+            row_by_month[month]["profit_tax"] = tax_month
+        tax_rows.append({
+            "month": month.isoformat(),
+            "margin": margin_month,
+            "financing_deduction": financing_month,
+            "taxable_profit_cumulative": taxable_profit_cumulative,
+            "profit_tax": tax_month,
+        })
+    profit_tax = sum(profit_tax_schedule.values())
+
+
+    # LLCR methodology mirrors the current workbook presentation:
+    # numerator = project receipts - operating/tax - investment + PF inflow.
+    # denominator = PF principal + interest/commissions, excluding duplicated transferred bridge interest.
+    llcr_numerator = total_revenue - commercial_costs - profit_tax - vat - total_capex + result["pf_draw_total"]
+
+    # To reproduce Excel's correction concept, create a "reported" total where transferred bridge interest
+    # appears in both bridge and PF buckets, then subtract it once.
+    reported_interest_and_fees = financing_cost + result["transferred_bridge_interest"]
+    llcr_denominator = (
+        result["pf_draw_total"] + reported_interest_and_fees - result["transferred_bridge_interest"]
+    )
+    llcr = llcr_numerator / llcr_denominator if llcr_denominator else 0.0
+
+    result.update({
+        "financing_cost": financing_cost,
+        "profit_tax": profit_tax,
+        "vat": vat,
+        "vat_charged": vat_charged,
+        "vat_input_deductible": vat_input_deductible,
+        "vat_schedule": {month.isoformat(): value for month, value in vat_schedule.items()},
+        "profit_tax_schedule": {
+            month.isoformat(): value for month, value in profit_tax_schedule.items()
+        },
+        "tax_rows": tax_rows,
+        "tax_margin_by_product": tax_margin_by_product,
+        "tax_cost_by_product": tax_cost_by_product,
+        "financing_tax_deductions": sum(financing_deductions.values()),
+        "financing_tax_reconciliation": financing_reconciliation,
+        "profit_before_tax": profit_before_tax,
+        "llcr": llcr,
+        "llcr_numerator": llcr_numerator,
+        "llcr_denominator": llcr_denominator,
+        "reported_interest_and_fees": reported_interest_and_fees,
+        "total_revenue": total_revenue,
+        "total_capex": total_capex,
+        "commercial_costs": commercial_costs,
+    })
+    return result
+
+
+def calculate(req: CalcRequest) -> dict:
+    x = req.inputs
+    t = req.tep
+    rates = req.rates
+    if not rates:
+        rates = generate_rate_curve(
+            d(x.get("rate_start_date", date.today().isoformat())),
+            n(x, "rate_start_pct", 14.0),
+            n(x, "rate_target_high_pct", 11.0),
+            n(x, "rate_target_base_pct", 9.0),
+            n(x, "rate_target_low_pct", 7.0),
+            int(n(x, "rate_normalization_months", 24)),
+            180,
+            n(x, "rate_curve_shape", 2.0),
+        )
+
+    # ГлавАПУ is the authoritative source for required underground parking.
+    # Repair stale browser/localStorage TEP values before every calculation.
+    # Заданная руками площадь — исключение и главнее импорта: норматив 35 м²
+    # на место описывает потребность, а реальный подземный этаж диктуют пятно
+    # застройки, рампы и техпомещения. Пока поле пустое, защита от устаревших
+    # значений работает как раньше.
+    # Ведущее — количество мест: девелопер решает, сколько машино-мест ему
+    # нужно, а ГлавАПУ даёт лишь норматив обеспеченности (минимум). Нужно
+    # больше — строится ещё подземный этаж, и площадь растёт пропорционально:
+    # 50 мест это 1 750 м², а не 980 от норматива. Норматив 35 м² — гросс,
+    # рампы, проезды и техпомещения уже внутри. Площадь можно задать и прямо,
+    # когда она известна из проекта.
+    manual_spaces = n(x, "underground_manual_spaces")
+    manual_underground = n(x, "underground_manual_gns_sqm")
+    area_per_space = n(x, "underground_area_per_space_sqm", 35.0) or 35.0
+    imported = (x.get("_glavapu_import") or {}).get("normalized", {})
+    if b(x, "underground_parking_disabled") and "underground_parking" in t:
+        # Подземного паркинга нет вовсе: в области нормативную потребность
+        # закрывают наземным гаражом, и он дешевле. Ноль в поле мест значит
+        # «по нормативу», поэтому отказ выражается отдельным признаком —
+        # иначе импорт ГлавАПУ восстановил бы паркинг при первом пересчёте.
+        for field in ("units", "gns", "total_area", "useful", "saleable", "transfer"):
+            t["underground_parking"][field] = 0.0
+    elif (manual_spaces > 0 or manual_underground > 0) and "underground_parking" in t:
+        spaces = (manual_spaces if manual_spaces > 0
+                  else round(manual_underground / area_per_space))
+        area = manual_underground if manual_underground > 0 else spaces * area_per_space
+        t["underground_parking"]["units"] = spaces
+        t["underground_parking"]["gns"] = area
+        t["underground_parking"]["total_area"] = area
+        t["underground_parking"]["useful"] = 0.0
+        t["underground_parking"]["saleable"] = 0.0
+        t["underground_parking"]["transfer"] = 0.0
+    elif imported:
+        permanent = n(imported, "parking_permanent")
+        guest = n(imported, "parking_guest")
+        underground_spaces = permanent + guest
+        if underground_spaces > 0 and "underground_parking" in t:
+            t["underground_parking"]["units"] = underground_spaces
+            t["underground_parking"]["gns"] = underground_spaces * area_per_space
+            t["underground_parking"]["total_area"] = underground_spaces * area_per_space
+            t["underground_parking"]["useful"] = 0.0
+            t["underground_parking"]["saleable"] = 0.0
+            t["underground_parking"]["transfer"] = 0.0
+
+    op = build_operating_model(x, t, rates)
+    # Прошлое действующего проекта не выдумывается — оно случилось. Наложение
+    # стоит здесь, между построением модели и финансированием: подменённые ряды
+    # доходят до долга, налогов и LLCR сами, и второй реализации не возникает.
+    actuals_report: dict[str, Any] = {}
+    if getattr(req, "actuals", None):
+        overlaid = developaid_actuals.overlay(op, req.actuals)
+        op = overlaid["op"]
+        actuals_report = overlaid["report"]
+    fin = simulate_financing(x, t, rates, op)
+
+    tep_rows = []
+    for key, row in t.items():
+        tep_rows.append({
+            "key": key,
+            "label": row.get("label", key),
+            "gns": n(row, "gns"),
+            "total_area": n(row, "total_area"),
+            "useful": n(row, "useful"),
+            "saleable": n(row, "saleable"),
+            "transfer": n(row, "transfer"),
+            "units": n(row, "units"),
+        })
+
+    tep_total = {
+        key: sum(row[key] for row in tep_rows)
+        for key in ("gns", "total_area", "useful", "saleable", "transfer", "units")
+    }
+
+    total_revenue = fin["total_revenue"]
+    total_capex = fin["total_capex"]
+    after_finance_pre_tax = fin["profit_before_tax"]
+    net_profit = after_finance_pre_tax - fin["profit_tax"] - fin.get("vat", 0.0)
+
+    # Report-level project metrics.
+    monetizable_saleable_sqm = sum(
+        n(row, "saleable") for key, row in t.items()
+        if key in ("apartments", "ground_commercial", "standalone_retail", "offices")
+    )
+    apartment_saleable_sqm = n(t.get("apartments", {}), "saleable")
+    core_gns = op["core_above_gns"] + op["core_under_gns"]
+
+    construction_capex = sum(op["capex_amounts"].get(k, 0.0) for k in (
+        "ird", "design_p", "design_rd", "author_supervision", "preparation",
+        "main_above", "main_under", "utilities", "landscaping",
+        "commissioning", "site_maintenance", "gc_fee", "reserve"
+    ))
+    full_project_cost = total_capex + fin["commercial_costs"] + fin["financing_cost"] + fin["profit_tax"] + fin.get("vat", 0.0)
+    avg_apartment_price = (
+        op["revenue_by_product"].get("apartments", 0.0) / apartment_saleable_sqm / 1000
+        if apartment_saleable_sqm else 0.0
+    )
+    full_cost_per_saleable = full_project_cost / monetizable_saleable_sqm / 1000 if monetizable_saleable_sqm else 0.0
+    construction_cost_per_gns = construction_capex / core_gns / 1000 if core_gns else 0.0
+    ebitda = total_revenue - total_capex - fin["commercial_costs"]
+    ebitda_per_saleable = ebitda / monetizable_saleable_sqm / 1000 if monetizable_saleable_sqm else 0.0
+    net_profit_per_saleable = net_profit / monetizable_saleable_sqm / 1000 if monetizable_saleable_sqm else 0.0
+
+    # Unit economics by total GNS and monetizable saleable area.
+    project_gns_sqm = sum(n(row, "gns") for row in t.values())
+    total_expenses = total_capex + fin["commercial_costs"] + fin["financing_cost"] + fin["profit_tax"] + fin.get("vat", 0.0)
+
+    def per_sqm_th(value: float, area: float) -> float:
+        return value / area / 1000 if area else 0.0
+
+    unit_economics = [
+        {
+            "label": "Выручка",
+            "total": total_revenue,
+            "per_gns_th": per_sqm_th(total_revenue, project_gns_sqm),
+            "per_saleable_th": per_sqm_th(total_revenue, monetizable_saleable_sqm),
+        },
+        {
+            "label": "CAPEX",
+            "total": total_capex,
+            "per_gns_th": per_sqm_th(total_capex, project_gns_sqm),
+            "per_saleable_th": per_sqm_th(total_capex, monetizable_saleable_sqm),
+        },
+        {
+            "label": "Маркетинг и продажи",
+            "total": fin["commercial_costs"],
+            "per_gns_th": per_sqm_th(fin["commercial_costs"], project_gns_sqm),
+            "per_saleable_th": per_sqm_th(fin["commercial_costs"], monetizable_saleable_sqm),
+        },
+        {
+            "label": "EBITDA",
+            "total": ebitda,
+            "per_gns_th": per_sqm_th(ebitda, project_gns_sqm),
+            "per_saleable_th": per_sqm_th(ebitda, monetizable_saleable_sqm),
+        },
+        {
+            "label": "Проценты и комиссии",
+            "total": fin["financing_cost"],
+            "per_gns_th": per_sqm_th(fin["financing_cost"], project_gns_sqm),
+            "per_saleable_th": per_sqm_th(fin["financing_cost"], monetizable_saleable_sqm),
+        },
+        {
+            "label": "Налог на прибыль",
+            "total": fin["profit_tax"],
+            "per_gns_th": per_sqm_th(fin["profit_tax"], project_gns_sqm),
+            "per_saleable_th": per_sqm_th(fin["profit_tax"], monetizable_saleable_sqm),
+        },
+        {
+            # НДС — в тех же двух базах, что и всё остальное: одна база без
+            # второй уже читалась как другой показатель.
+            "label": "НДС",
+            "total": fin.get("vat", 0.0),
+            "per_gns_th": per_sqm_th(fin.get("vat", 0.0), project_gns_sqm),
+            "per_saleable_th": per_sqm_th(fin.get("vat", 0.0), monetizable_saleable_sqm),
+        },
+        {
+            "label": "Полные расходы",
+            "total": total_expenses,
+            "per_gns_th": per_sqm_th(total_expenses, project_gns_sqm),
+            "per_saleable_th": per_sqm_th(total_expenses, monetizable_saleable_sqm),
+        },
+        {
+            "label": "Чистая прибыль",
+            "total": net_profit,
+            "per_gns_th": per_sqm_th(net_profit, project_gns_sqm),
+            "per_saleable_th": per_sqm_th(net_profit, monetizable_saleable_sqm),
+        },
+    ]
+
+    # Удельные расходы строительства: статьи стройки в деньгах и на м² ГНС.
+    # В структуре расходов они склеены крупными группами, а решение о
+    # себестоимости принимают по статьям — СМР, сети, благоустройство.
+    # Внутренние инженерные сети отдельной статьёй не живут: они в составе
+    # СМР соответствующей части, об этом отчёт говорит явно.
+    construction_costs = []
+    for cc_label, cc_keys in (
+        ("ИРД", ("ird",)),
+        ("Проектирование (П, РД) и авторский надзор",
+         ("design_p", "design_rd", "author_supervision")),
+        ("Подготовка территории", ("preparation",)),
+        ("СМР наземной части", ("main_above",)),
+        ("СМР подземной части", ("main_under",)),
+        ("Наружные инженерные сети", ("utilities",)),
+        ("Благоустройство", ("landscaping",)),
+        ("Сдача и ввод", ("commissioning",)),
+        ("Содержание стройплощадки", ("site_maintenance",)),
+        ("Вознаграждение генподрядчика", ("gc_fee",)),
+        ("Технический заказчик / стройконтроль", ("technical_supervision",)),
+        ("Управление проектом", ("project_management",)),
+        ("Резерв", ("reserve",)),
+    ):
+        cc_value = sum(op["capex_amounts"].get(key, 0.0) for key in cc_keys)
+        if cc_value <= 0:
+            continue
+        construction_costs.append({
+            "label": cc_label,
+            "value": cc_value,
+            "per_gns_th": per_sqm_th(cc_value, project_gns_sqm),
+            # На продаваемую — та база, в которой считают цену: стройка на м²
+            # ГНС и стройка на м² продаж различаются в полтора-два раза, и
+            # сравнивать с ценой продажи можно только вторую.
+            "per_saleable_th": per_sqm_th(cc_value, monetizable_saleable_sqm),
+        })
+
+    # Темп продаж квартир в штуках. В метрах он есть везде, но продаются
+    # квартиры штуками: «40 квартир в месяц» проверяется отделом продаж и
+    # рынком, а «2 400 м² в месяц» — нет. Пересчёт идёт через среднюю площадь
+    # квартиры из ТЭП, поэтому меняется вместе с ней.
+    apartment_units_total = n(t.get("apartments", {}), "units")
+    avg_apartment_sqm = (apartment_saleable_sqm / apartment_units_total
+                         if apartment_units_total else 0.0)
+    apartment_sales: dict[str, Any] = {}
+    apartment_quantity = op.get("quantity_product_schedules", {}).get("apartments") or {}
+    if avg_apartment_sqm > 0 and apartment_quantity:
+        monthly = [(month, sqm / avg_apartment_sqm)
+                   for month, sqm in sorted(apartment_quantity.items()) if sqm > 0]
+        before_rve = [units for month, units in monthly if month <= op["rve"]]
+        apartment_sales = {
+            "units_total": apartment_units_total,
+            "avg_unit_sqm": avg_apartment_sqm,
+            "avg_unit_price_mln": (avg_apartment_sqm * avg_apartment_price / 1000
+                                   if avg_apartment_price else 0.0),
+            "pace_pre_rve_units": sum(before_rve) / len(before_rve) if before_rve else 0.0,
+            "pace_units": sum(u for _, u in monthly) / len(monthly) if monthly else 0.0,
+            "peak_units": max((u for _, u in monthly), default=0.0),
+            "months": len(monthly),
+            "rows": [{"month": month.isoformat(), "units": units} for month, units in monthly],
+        }
+
+    # Expense structure: categories are mutually exclusive and sum to total expenses.
+    purchase_value = n(x, "purchase_price_mln") * 1_000_000
+    expense_groups = [
+        ("Цена приобретения", purchase_value),
+        ("Смена ВРИ / земельные права",
+         op["capex_amounts"].get("land_rights", 0.0)
+         + op["capex_amounts"].get("vri_security", 0.0)),
+        ("Проценты по рассрочке ВРИ", op["capex_amounts"].get("vri_interest", 0.0)),
+        ("ИРД и проектирование",
+         op["capex_amounts"].get("ird", 0.0)
+         + op["capex_amounts"].get("design_p", 0.0)
+         + op["capex_amounts"].get("design_rd", 0.0)
+         + op["capex_amounts"].get("author_supervision", 0.0)),
+        ("Основное строительство",
+         op["capex_amounts"].get("preparation", 0.0)
+         + op["capex_amounts"].get("main_above", 0.0)
+         + op["capex_amounts"].get("main_under", 0.0)
+         + op["capex_amounts"].get("utilities", 0.0)
+         + op["capex_amounts"].get("landscaping", 0.0)
+         + op["capex_amounts"].get("commissioning", 0.0)
+         + op["capex_amounts"].get("site_maintenance", 0.0)
+         + op["capex_amounts"].get("gc_fee", 0.0)),
+        ("Отдельные объекты",
+         op["capex_amounts"].get("offices", 0.0)
+         + op["capex_amounts"].get("standalone_retail", 0.0)
+         + op["capex_amounts"].get("above_parking", 0.0)),
+        ("Социальная нагрузка", op["capex_amounts"].get("social", 0.0)),
+        ("Управление проектом",
+         op["capex_amounts"].get("project_management", 0.0)),
+        ("Технический заказчик / стройконтроль",
+         op["capex_amounts"].get("technical_supervision", 0.0)),
+        ("Резерв",
+         op["capex_amounts"].get("reserve", 0.0)),
+        ("Маркетинг и продажи", fin["commercial_costs"]),
+        ("Проценты и комиссии", fin["financing_cost"]),
+        ("Налог на прибыль", fin["profit_tax"]),
+        # НДС виден отдельной строкой: он не налог на прибыль и не
+        # стройка, и прятать его внутри «налогов» значит скрыть от
+        # человека статью, которая растёт вместе с долей нежилого.
+        ("НДС", fin.get("vat", 0.0)),
+    ]
+    expense_structure = []
+    expense_base = sum(value for _, value in expense_groups)
+    for label, value in expense_groups:
+        if value <= 0:
+            continue
+        expense_structure.append({
+            "label": label,
+            "value": value,
+            "share": value / expense_base if expense_base else 0.0,
+            # Удельные — обе базы, как везде в отчёте. Именно по этим статьям
+            # спорят с подрядчиком и с банком, а в рублях на метр их не было.
+            "per_gns_th": per_sqm_th(value, project_gns_sqm),
+            "per_saleable_th": per_sqm_th(value, monetizable_saleable_sqm),
+        })
+    expense_structure.sort(key=lambda item: item["value"], reverse=True)
+
+    # Project/equity cash flow proxy for NPV / IRR.
+    row_by_month = {d(r["month"]): r for r in fin["rows"]}
+    timeline = month_range(op["project_start"], op["end"])
+    project_cf = []
+    equity_cf = []
+    for month in timeline:
+        revenue_m = op["revenue"].get(month, 0.0)
+        capex_m = op["capex"].get(month, 0.0)
+        opex_m = op["operating"].get(month, 0.0)
+        fr = row_by_month.get(month, {})
+        bridge_draw = float(fr.get("bridge_draw", 0.0) or 0.0)
+        bridge_repay = float(fr.get("bridge_repayment", 0.0) or 0.0)
+        pf_draw = float(fr.get("pf_draw", 0.0) or 0.0)
+        pf_repay = float(fr.get("pf_repayment", 0.0) or 0.0)
+        int_pay = float(fr.get("interest_payment", 0.0) or 0.0)
+        # Limit fees are capitalized into interest payable inside the financing
+        # engine and therefore already included in interest_payment when paid.
+        fees = 0.0
+        tax = float(fr.get("profit_tax", 0.0) or 0.0)
+        project_cf.append(revenue_m - capex_m - opex_m - int_pay - fees - tax)
+        escrow_release = float(fr.get("escrow_release", 0.0) or 0.0)
+        cash_revenue_to_equity = 0.0 if month < op["rve"] else revenue_m + escrow_release
+        equity_cf.append(
+            cash_revenue_to_equity - capex_m - opex_m - int_pay - fees - tax
+            + bridge_draw + pf_draw - bridge_repay - pf_repay
+        )
+
+    if project_cf:
+        project_cf[0] -= fin["bridge_fee"]
+    if equity_cf:
+        equity_cf[0] -= fin["bridge_fee"]
+    permit_idx = months_between(op["project_start"], op["permit"])
+    if 0 <= permit_idx < len(project_cf):
+        project_cf[permit_idx] -= fin["pf_reservation_fee"]
+        equity_cf[permit_idx] -= fin["pf_reservation_fee"]
+
+    discount_rate = n(x, "discount_rate_pct", 20) / 100
+    project_npv = _monthly_npv(project_cf, discount_rate)
+    irr_equity = _monthly_irr(equity_cf)
+
+    # Product economics / sales KPIs.
+    product_specs = {
+        "apartments": {
+            "label": "Квартиры", "quantity": n(t.get("apartments", {}), "saleable"),
+            "unit": "м²", "start_price": n(x, "apartment_price_th"), "share": n(x, "share_before_rve_pct", 85)/100,
+            "start": op["sales_start"], "end_ref": op["rve"], "residual": int(n(x, "residual_sales_months", 6))
+        },
+        "ground_commercial": {
+            "label": "Коммерция 1 этажа", "quantity": n(t.get("ground_commercial", {}), "saleable"),
+            "unit": "м²", "start_price": n(x, "commercial_price_th"), "share": n(x, "share_before_rve_pct", 85)/100,
+            "start": op["sales_start"], "end_ref": op["rve"], "residual": int(n(x, "residual_sales_months", 6))
+        },
+        "underground_parking": {
+            "label": "Подземный паркинг", "quantity": n(t.get("underground_parking", {}), "units"),
+            "unit": "шт.", "start_price": n(x, "parking_price_th"), "share": n(x, "share_before_rve_pct", 85)/100,
+            "start": op["sales_start"], "end_ref": op["rve"], "residual": int(n(x, "residual_sales_months", 6))
+        },
+        "storage": {
+            "label": "Кладовые", "quantity": n(t.get("storage", {}), "units"),
+            "unit": "шт.", "start_price": n(x, "storage_price_th"), "share": n(x, "share_before_rve_pct", 85)/100,
+            "start": op["sales_start"], "end_ref": op["rve"], "residual": int(n(x, "residual_sales_months", 6))
+        },
+        "offices": {
+            "label": "Офисы / МФОЦ", "quantity": n(x, "offices_saleable_sqm") if b(x, "offices_enabled") else 0,
+            "unit": "м²", "start_price": n(x, "offices_price_th_per_sqm"), "share": n(x, "offices_share_before_rve_pct", 85)/100,
+            "start": d(x["offices_sales_start"]), "end_ref": add_months(d(x["offices_start"]), int(n(x, "offices_months", 24))),
+            "residual": int(n(x, "offices_residual_months", 6))
+        },
+        "standalone_retail": {
+            "label": "Коммерция ОСЗ", "quantity": n(x, "retail_saleable_sqm") if b(x, "retail_enabled") else 0,
+            "unit": "м²", "start_price": n(x, "retail_price_th_per_sqm"), "share": n(x, "retail_share_before_rve_pct", 85)/100,
+            "start": d(x["retail_sales_start"]), "end_ref": add_months(d(x["retail_start"]), int(n(x, "retail_months", 24))),
+            "residual": int(n(x, "retail_residual_months", 6))
+        },
+        "above_parking": {
+            "label": "Наземный паркинг", "quantity": n(x, "above_parking_spaces") if b(x, "above_parking_enabled") else 0,
+            "unit": "шт.", "start_price": n(x, "above_parking_price_mln_per_space")*1000, "share": n(x, "above_parking_share_before_rve_pct", 85)/100,
+            "start": d(x["above_parking_sales_start"]), "end_ref": add_months(d(x["above_parking_start"]), int(n(x, "above_parking_months", 18))),
+            "residual": int(n(x, "above_parking_residual_months", 6))
+        }
+    }
+
+    products_report = []
+    for key, spec in product_specs.items():
+        quantity = float(spec["quantity"] or 0)
+        revenue_value = op["revenue_by_product"].get(key, 0.0)
+        schedule = op["revenue_product_schedules"].get(key, {})
+        months_pre = max(1, months_between(spec["start"], spec["end_ref"]))
+        pace = quantity * spec["share"] / months_pre if quantity else 0.0
+        avg_price = revenue_value / quantity / 1000 if quantity else 0.0
+        start_date = min(schedule.keys()).isoformat() if schedule else None
+        end_date = max(schedule.keys()).isoformat() if schedule else None
+        products_report.append({
+            "key": key,
+            "label": spec["label"],
+            "unit": spec["unit"],
+            "quantity": quantity,
+            "revenue": revenue_value,
+            "start_price_th": spec["start_price"],
+            "avg_price_th": avg_price,
+            "pace_pre": pace,
+            "share_before_rve": spec["share"],
+            "sales_start": start_date,
+            "sales_end": end_date,
+        })
+
+    # Calendar / Gantt, mirroring the conceptual structure of the Excel Calendar sheet.
+    calendar_events = []
+    def add_event(label: str, start: date, end: date | None = None, group: str = "Проект", kind: str = "bar"):
+        calendar_events.append({
+            "label": label, "start": _iso(start), "end": _iso(end or start),
+            "group": group, "kind": kind
+        })
+
+    add_event("Сделка / начало проекта", op["project_start"], group="Ключевые вехи", kind="milestone")
+    add_event("ИРД и согласования", op["project_start"], op["permit"], group="Подготовка")
+    design_start = add_months(op["permit"],
+                              -min(6, max(IRD_MONTHS_MIN, int(n(x, "ird_months", 18)))))
+    add_event("Проектирование П и РД", design_start, op["permit"], group="Подготовка")
+    bridge_end = add_months(op["permit"], int(n(x, "bridge_repay_lag_months", 0)))
+    add_event("БРИДЖ", op["project_start"], bridge_end, group="Финансирование")
+    add_event("РнС", op["permit"], group="Ключевые вехи", kind="milestone")
+    add_event("Старт продаж", op["sales_start"], group="Ключевые вехи", kind="milestone")
+    add_event("Строительство ЖК", op["permit"], op["rve"], group="Строительство")
+    if any(v > 0 for v in (op["capex_amounts"].get("utilities", 0), op["capex_amounts"].get("landscaping", 0))):
+        add_event("Сети и благоустройство", op["permit"], op["rve"], group="Строительство")
+
+    if str(x.get("social_mode")) == "Денежная компенсация":
+        add_event("Социальный платёж", d(x["social_comp_date"]), group="Социальная нагрузка", kind="milestone")
+    else:
+        if n(x, "kindergarten_places"):
+            add_event("ДОУ", d(x["kindergarten_start"]), add_months(d(x["kindergarten_start"]), int(n(x, "kindergarten_months", 24))), group="Социальная нагрузка")
+        if n(x, "school_places"):
+            add_event("СОШ", d(x["school_start"]), add_months(d(x["school_start"]), int(n(x, "school_months", 30))), group="Социальная нагрузка")
+        if n(x, "clinic_capacity"):
+            add_event("Поликлиника", d(x["clinic_start"]), add_months(d(x["clinic_start"]), int(n(x, "clinic_months", 24))), group="Социальная нагрузка")
+
+    if b(x, "offices_enabled"):
+        add_event("Офисы / МФОЦ", d(x["offices_start"]), add_months(d(x["offices_start"]), int(n(x, "offices_months", 24))), group="Отдельные объекты")
+    if b(x, "retail_enabled"):
+        add_event("Коммерция ОСЗ", d(x["retail_start"]), add_months(d(x["retail_start"]), int(n(x, "retail_months", 24))), group="Отдельные объекты")
+    if b(x, "above_parking_enabled"):
+        add_event("Наземный паркинг", d(x["above_parking_start"]), add_months(d(x["above_parking_start"]), int(n(x, "above_parking_months", 18))), group="Отдельные объекты")
+
+    sales_months = [month for sched in op["revenue_product_schedules"].values() for month in sched]
+    sales_end = max(sales_months) if sales_months else add_months(op["rve"], int(n(x, "residual_sales_months", 6)))
+    add_event("Продажи", op["sales_start"], sales_end, group="Продажи")
+    add_event("РВЭ / РНВ", op["rve"], group="Ключевые вехи", kind="milestone")
+    add_event("Окончание продаж", sales_end, group="Ключевые вехи", kind="milestone")
+
+    pf_active_months = [d(row["month"]) for row in fin["rows"] if (row.get("pf_balance", 0) or row.get("pf_draw", 0) or row.get("pf_repayment", 0))]
+    if pf_active_months:
+        add_event("Проектное финансирование", min(pf_active_months), max(pf_active_months), group="Финансирование")
+
+    calendar_start = min(d(e["start"]) for e in calendar_events)
+    calendar_end = max(d(e["end"]) for e in calendar_events)
+
+    # Фактический пик БРИДЖа расшифровывается по статьям: расчётный лимит имеет
+    # разбивку по целям, а пик — не имел, и разница между ними («остальное
+    # вашими») читалась только глазами по структуре расходов.
+    monthly_detail = _monthly_detail(op, timeline, row_by_month)
+    bridge_peak_month = _bridge_peak_month(fin["rows"])
+
+    return {
+        "dates": {
+            "project_start": op["project_start"].isoformat(),
+            "permit": op["permit"].isoformat(),
+            "sales_start": op["sales_start"].isoformat(),
+            "rve": op["rve"].isoformat(),
+            # Дата платежа компенсации — не всегда та, что введена: банк держит
+            # её в лимите БРИДЖа, поэтому платёж не выходит за бридж-период.
+            # Без этой строки перенос было бы видно только по пику долга.
+            "social_cash": op["social_cash_date"].isoformat(),
+        },
+        "tep": {
+            "rows": tep_rows,
+            "total": tep_total,
+            "core_above_gns": op["core_above_gns"],
+            "core_under_gns": op["core_under_gns"],
+        },
+        "revenue": {"total": total_revenue, **op["revenue_by_product"]},
+        # land_rights_gross и land_rights_relief — справочные величины платы
+        # до льготы: в total их нет, а таблица расходов на странице рисует все
+        # ключи подряд — и показывала их сырыми именами. Валовая плата и льгота
+        # уходят наружу полем vri.totals, не статьями CAPEX.
+        "capex": {"total": total_capex,
+                  **{key: value for key, value in op["capex_amounts"].items()
+                     if key not in ("land_rights_gross", "land_rights_relief")}},
+        "vri": op["vri"],
+        # Отчёт о наложении факта. Пустой словарь на обычном расчёте, а на
+        # действующем проекте — что подменено, чем и с какими оговорками.
+        # Наружу он идёт потому, что наложение меняет числа: приближение,
+        # видное только в коде, неотличимо от точного расчёта.
+        "actuals": actuals_report,
+        "commercial_costs": fin["commercial_costs"],
+        "finance": fin,
+        "summary": {
+            "revenue": total_revenue,
+            "capex": total_capex,
+            "commercial_costs": fin["commercial_costs"],
+            "ebitda": ebitda,
+            "financing_cost": fin["financing_cost"],
+            "profit_before_tax": after_finance_pre_tax,
+            "profit_tax": fin["profit_tax"],
+            # НДС живёт в summary рядом с налогом на прибыль, а не только в
+            # finance: поверхности читают сводку, и без этого ключа налог,
+            # уменьшающий чистую прибыль на миллиард, нигде не показывался.
+            "vat": fin.get("vat", 0.0),
+            "net_profit": net_profit,
+            "margin": net_profit / total_revenue if total_revenue else 0.0,
+            "llcr": fin["llcr"],
+            "ending_pf": fin.get("ending_pf", 0.0),
+            "scenario_revenue_multiplier": n(x, "scenario_revenue_multiplier", 1.0),
+            "scenario_cost_multiplier": n(x, "scenario_cost_multiplier", 1.0),
+            "npv": project_npv,
+            "irr_equity": irr_equity,
+            "full_project_cost": full_project_cost,
+            "monetizable_saleable_sqm": monetizable_saleable_sqm,
+            "apartment_saleable_sqm": apartment_saleable_sqm,
+            "average_apartment_price_th": avg_apartment_price,
+            # Каждый удельный показатель — в двух базах. Одна база без второй
+            # уже стоила разбирательств: 23 тыс ₽/м² подземной части читались
+            # как ставка за подземный метр, а она 190.
+            "full_cost_per_saleable_th": full_cost_per_saleable,
+            "full_cost_per_gns_th": per_sqm_th(full_project_cost, project_gns_sqm),
+            "construction_cost_per_gns_th": construction_cost_per_gns,
+            "construction_cost_per_saleable_th": per_sqm_th(
+                construction_capex, monetizable_saleable_sqm),
+            "ebitda_per_saleable_th": ebitda_per_saleable,
+            "ebitda_per_gns_th": per_sqm_th(ebitda, project_gns_sqm),
+            "net_profit_per_saleable_th": net_profit_per_saleable,
+            "net_profit_per_gns_th": per_sqm_th(net_profit, project_gns_sqm),
+            "project_gns_sqm": project_gns_sqm,
+            "total_expenses": total_expenses,
+            "social_payment": op["capex_amounts"].get("social", 0.0),
+            "social_payment_mode": str(x.get("social_mode", "")),
+            # Режимов три, а проверка знала два: при «строительстве и
+            # компенсации» в CAPEX лежит и стройка, и денежная часть, а
+            # ожидание считалось по одной стройке — самопроверка всегда
+            # падала, и отчёт 2.0 писал «социалка расходится с режимом» на
+            # исправном расчёте (замечание владельца, 19.08.2026).
+            "social_in_capex_check": abs(
+                op["capex_amounts"].get("social", 0.0)
+                - (
+                    sum(op.get("social_construction_breakdown", {}).values())
+                    + (op.get("imported_social_compensation", 0.0)
+                       if str(x.get("social_mode", "")) == SOCIAL_MODE_BOTH else 0.0)
+                    if str(x.get("social_mode", "")) in ("Строительство", SOCIAL_MODE_BOTH)
+                    else op.get("imported_social_compensation", 0.0)
+                )
+            ) < 1.0,
+            "social_program": op.get("social_program", {}),
+            "social_payment_breakdown": {
+                "construction": {
+                    "kindergarten_mln": op.get("social_construction_breakdown", {}).get("kindergarten", 0.0) / 1_000_000,
+                    "school_mln": op.get("social_construction_breakdown", {}).get("school", 0.0) / 1_000_000,
+                    "clinic_mln": op.get("social_construction_breakdown", {}).get("clinic", 0.0) / 1_000_000,
+                },
+                "compensation": {
+                    "kindergarten_mln": n((x.get("_glavapu_import") or {}).get("normalized", {}), "social_compensation_kindergarten_mln"),
+                    "school_mln": n((x.get("_glavapu_import") or {}).get("normalized", {}), "social_compensation_school_mln"),
+                    "clinic_mln": n((x.get("_glavapu_import") or {}).get("normalized", {}), "social_compensation_clinic_mln"),
+                },
+            },
+        },
+        "report": {
+            "products": products_report,
+            "unit_economics": unit_economics,
+            "construction_costs": construction_costs,
+            "apartment_sales": apartment_sales,
+            "expense_structure": expense_structure,
+            "calendar": {
+                "start": calendar_start.isoformat(),
+                "end": calendar_end.isoformat(),
+                "events": calendar_events,
+            },
+            "financing": {
+                "calculated_bridge": fin["calculated_bridge_limit"],
+                "actual_bridge": fin["peak_bridge"],
+                "actual_bridge_month": bridge_peak_month,
+                "own_funds": fin.get("own_funds_used", 0.0),
+                "own_funds_available": fin.get("own_funds_available", 0.0),
+                "actual_bridge_structure": _bridge_actual_structure(
+                    [monthly_detail], bridge_peak_month, fin["peak_bridge"],
+                    _own_funds_by(fin["rows"], bridge_peak_month)),
+                "pf_peak": fin["peak_pf"],
+                "pf_uncovered_peak": fin.get("peak_uncovered_pf", 0.0),
+                "pf_limit": fin["pf_limit"],
+                "avg_bridge_rate": fin["avg_bridge_rate"],
+                "avg_bridge_key_rate": fin.get("avg_bridge_key_rate", 0.0),
+                "current_key_rate": fin.get("current_key_rate", 0.0),
+                "bridge_spread": fin.get("bridge_spread", 0.0),
+                "current_bridge_rate": fin.get("current_bridge_rate", 0.0),
+                "bridge_rate_at_project_start": fin.get("bridge_rate_at_project_start", 0.0),
+                "avg_pf_rate": fin["avg_pf_rate"],
+                "avg_pf_effective_rate": fin["avg_pf_effective_rate"],
+                "avg_pf_base_rate": fin["avg_pf_base_rate"],
+                "avg_pf_key_rate": fin["avg_pf_key_rate"],
+                "pf_special_rate": fin["pf_special_rate"],
+                # Ступени и сколько месяцев отработала каждая: средняя ставка
+                # без этого — число, которое банку нечем объяснить.
+                "pf_special_steps": fin.get("pf_special_steps") or [],
+                "interest_and_fees": fin["financing_cost"],
+                "ending_pf": fin.get("ending_pf", 0.0),
+                # Пик тела и пик с капитализированными процентами — разные
+                # показатели: книга ведёт остаток сразу с капитализацией, и
+                # одинаковое слово «пик» читалось как расхождение моделей.
+                "bridge_peak_capitalized": fin["peak_bridge"]
+                + fin.get("transferred_bridge_interest", 0.0),
+            }
+        },
+        "cashflow": {
+            "months": [month.isoformat() for month in timeline],
+            "project": project_cf,
+            "equity": equity_cf,
+            "profit_tax": [
+                float(row_by_month.get(month, {}).get("profit_tax", 0.0) or 0.0)
+                for month in timeline
+            ],
+        },
+        # Помесячная детализация финмодели: статьи расходов, продукты продаж и
+        # физические объёмы по месяцам. Суммы сходятся с итогами выше.
+        "monthly": monthly_detail,
+        "excel_control": EXCEL_CONTROL,
+        "notes": {
+            "llcr": "LLCR рассчитан по структуре действующего листа LLCR: поступления минус операционные/инвестиционные расходы плюс ПФ, делённые на ПФ и стоимость долга.",
+            "finance": "Помесячная логика БРИДЖ/ПФ/эскроу перенесена в код. До окончательной замены Excel требуется контрольная сверка нескольких сценариев по месяцам.",
+            "tax": "Налог на прибыль начисляется накопительно не ранее РВЭ: маржа реализованных основных продуктов и отдельных объектов КРТ минус выплаченные проценты и комиссии.",
+        },
+    }
+
+
+_MONTHLY_CAPEX_LABELS: dict[str, str] = {
+    "purchase": "Покупка / цена входа",
+    "land_rights": "Земельные правоотношения / смена ВРИ",
+    "vri_security": "Обеспечение обязательства по ВРИ",
+    "vri_interest": "Проценты по рассрочке ВРИ",
+    "ird": "ИРД и согласования",
+    "design_p": "Проектирование, стадия П",
+    "design_rd": "Проектирование, стадия РД",
+    "preparation": "Подготовительные работы",
+    "main_above": "Основное строительство, наземная часть",
+    "main_under": "Основное строительство, подземная часть",
+    "utilities": "Наружные инженерные сети",
+    "site_maintenance": "Содержание стройплощадки",
+    "author_supervision": "Авторский надзор",
+    "technical_supervision": "Технический заказчик / стройконтроль",
+    "project_management": "Управление проектом",
+    "landscaping": "Благоустройство",
+    "commissioning": "Сдача и ввод",
+    "social": "Социальная нагрузка",
+    "offices": "МФОЦ / офисы",
+    "standalone_retail": "ТЦ / коммерция ОСЗ",
+    "above_parking": "Наземный паркинг",
+    "gc_fee": "Вознаграждение генподрядчика",
+    "reserve": "Резерв",
+}
+
+
+def _monthly_series(schedule: dict[date, float], timeline: list[date]) -> list[float]:
+    return [float(schedule.get(month, 0.0) or 0.0) for month in timeline]
+
+
+def _monthly_detail(
+    op: dict[str, Any], timeline: list[date], row_by_month: dict[date, dict[str, Any]]
+) -> dict[str, Any]:
+    """Помесячная детализация: расходы по статьям, продажи по продуктам, объёмы."""
+    capex_by_article = op.get("capex_by_article") or {}
+    revenue_schedules = op.get("revenue_product_schedules") or {}
+    quantity_schedules = op.get("quantity_product_schedules") or {}
+
+    def product_label(key: str) -> str:
+        return str((TEP_DEFAULT.get(key) or {}).get("label") or key)
+
+    def order(key: str) -> int:
+        keys = list(_MONTHLY_CAPEX_LABELS)
+        return keys.index(key) if key in keys else len(keys)
+
+    costs = [
+        {
+            "key": key,
+            "label": _MONTHLY_CAPEX_LABELS.get(key, key),
+            "total": round(sum(schedule.values()), 2),
+            "values": [round(value, 2) for value in _monthly_series(schedule, timeline)],
+        }
+        for key, schedule in capex_by_article.items()
+        if abs(sum(schedule.values())) > 1e-9
+    ]
+    costs.sort(key=lambda item: order(item["key"]))
+    revenue = [
+        {
+            "key": key,
+            "label": product_label(key),
+            "total": round(sum(schedule.values()), 2),
+            "values": [round(value, 2) for value in _monthly_series(schedule, timeline)],
+        }
+        for key, schedule in revenue_schedules.items()
+        if abs(sum(schedule.values())) > 1e-9
+    ]
+    quantity = [
+        {
+            "key": key,
+            "label": product_label(key),
+            "total": round(sum(schedule.values()), 4),
+            "values": [round(value, 4) for value in _monthly_series(schedule, timeline)],
+        }
+        for key, schedule in quantity_schedules.items()
+        if abs(sum(schedule.values())) > 1e-9
+    ]
+    return {
+        "months": [month.isoformat() for month in timeline],
+        "costs": costs,
+        "revenue": revenue,
+        "quantity": quantity,
+        "commercial_costs": [round(value, 2) for value in _monthly_series(op.get("operating") or {}, timeline)],
+        "capex_total": [round(value, 2) for value in _monthly_series(op.get("capex") or {}, timeline)],
+        "profit_tax": [
+            round(float((row_by_month.get(month) or {}).get("profit_tax", 0.0) or 0.0), 2)
+            for month in timeline
+        ],
+    }
+
+
+def _bridge_peak_month(rows: list[dict[str, Any]]) -> str:
+    peak = max(rows, key=lambda row: float(row.get("bridge_balance") or 0.0), default=None)
+    if not peak or float(peak.get("bridge_balance") or 0.0) <= 0:
+        return ""
+    month = peak.get("month")
+    return month.isoformat() if hasattr(month, "isoformat") else str(month)
+
+
+def _own_funds_by(rows: list[dict[str, Any]], month: str) -> float:
+    """Сколько собственных средств вложено к этому месяцу включительно."""
+    if not month:
+        return 0.0
+    total = 0.0
+    for row in rows:
+        row_month = row.get("month")
+        iso = row_month.isoformat() if hasattr(row_month, "isoformat") else str(row_month)
+        if iso <= month:
+            total += float(row.get("own_funds_draw") or 0.0)
+    return total
+
+
+def _bridge_actual_structure(monthlies: list[dict[str, Any]], peak_month: str,
+                             peak_value: float, own_funds: float = 0.0) -> list[dict[str, Any]]:
+    """Что оплачено к месяцу пика БРИДЖа — по статьям.
+
+    Расчётный лимит расшифрован по четырём целям методики, а фактический пик —
+    ничем; разница между ними разбиралась перепиской, хотя это и есть то, что
+    банк называет «остальное вашими». До открытия ПФ у проекта нет ни выручки,
+    ни ПФ, поэтому остаток БРИДЖа в месяц пика равен всему, что к этому месяцу
+    оплачено. Если сходится не до конца — расхождение показывается строкой, а не
+    прячется в округление.
+    """
+    if not peak_month:
+        return []
+    totals: dict[str, float] = defaultdict(float)
+    for monthly in monthlies:
+        months = [str(month) for month in (monthly.get("months") or [])]
+        upto = [index for index, month in enumerate(months) if month <= peak_month]
+        for cost in monthly.get("costs") or []:
+            values = cost.get("values") or []
+            totals[str(cost.get("label") or "—")] += sum(
+                float(values[index] or 0.0) for index in upto if index < len(values))
+    rows = [{"label": label, "value": value}
+            for label, value in totals.items() if value > 1_000_000]
+    rows.sort(key=lambda item: -item["value"])
+    # Часть оплаченного закрыта не банком: собственные средства уменьшают долг,
+    # а не расходы, поэтому они стоят отдельной строкой со знаком минус — иначе
+    # сумма статей перестала бы сходиться с пиком.
+    if own_funds > 1_000_000:
+        rows.append({"label": "Оплачено собственными средствами", "value": -own_funds})
+    paid = sum(item["value"] for item in rows)
+    residual = float(peak_value or 0.0) - paid
+    if abs(residual) > max(float(peak_value or 0.0) * 0.01, 1_000_000):
+        rows.append({
+            "label": "Покрыто выручкой и ПФ" if residual < 0 else "Проценты и капитализация",
+            "value": residual,
+        })
+    base = float(peak_value or 0.0) or paid
+    for item in rows:
+        item["share"] = item["value"] / base if base else 0.0
+    return rows
+
+
+@app.get("/health")
+def health() -> dict:
+    # Выкатка сверяет ответ с тем коммитом, который выпускала: без этого
+    # «поднялось» означает лишь «что-то поднялось». Данные тоже проверяются —
+    # каталог примонтирован томом, и потерять его молча дороже всего.
+    data_dir = Path(os.getenv("DEVELOPAID_DATA_DIR") or "data")
+    # Свободное место — не украшение ответа: 18.08.2026 диск кончился молча,
+    # выкатка упала на распаковке образа, а вход через бота стал отвечать
+    # ошибкой без объяснения, потому что коды входа пишутся файлами. Заполненный
+    # диск виден в /health раньше, чем в поведении.
+    free_mb: float | None = None
+    try:
+        usage = shutil.disk_usage(data_dir if data_dir.exists() else Path("."))
+        free_mb = round(usage.free / (1024 * 1024))
+    except Exception:
+        free_mb = None
+    return {
+        "status": "ok",
+        "version": VERSION,
+        "commit": COMMIT,
+        "data_dir": str(data_dir),
+        "data_writable": os.access(data_dir, os.W_OK) if data_dir.exists() else False,
+        "disk_free_mb": free_mb,
+        # Порог не абстрактный: образ выкатки весит два-три гигабайта, и ниже
+        # этого следующая выкатка не пройдёт.
+        "disk_low": (free_mb is not None and free_mb < 3072),
+        # Браузер в образе — не подробность сборки. Его отсутствие выходит
+        # наружу как «ТЭП посчитан формулами» и «PDF прежнего вида»: две разные
+        # на вид поломки с одной причиной, и обе выглядят как штатная работа.
+        # Здесь она названа до того, как о ней спросят.
+        "browsers": browser_launch.diagnostics(),
+    }
+
+
+@app.get("/defaults")
+def defaults() -> dict:
+    return {
+        "inputs": DEFAULT_INPUTS,
+        "tep": TEP_DEFAULT,
+        "rates": RATE_CURVE,
+        "scenarios": SCENARIOS,
+        "excel_control": EXCEL_CONTROL,
+    }
+
+
+
+def _normalized_phase_weights(values: Any, count: int, fallback: list[float] | None = None) -> list[float]:
+    vals: list[float] = []
+    if isinstance(values, list):
+        for i in range(count):
+            try:
+                vals.append(max(0.0, float(values[i])))
+            except Exception:
+                vals.append(0.0)
+    else:
+        vals = [0.0] * count
+    total = sum(vals)
+    if total <= 0:
+        base = fallback or [100.0 / count] * count
+        vals = [float(base[i]) if i < len(base) else 0.0 for i in range(count)]
+        total = sum(vals)
+    return [v * 100.0 / total for v in vals]
+
+
+def _default_phase_weights(count: int) -> list[float]:
+    presets = {
+        1: [100.0],
+        2: [55.0, 45.0],
+        3: [40.0, 32.0, 28.0],
+        4: [32.0, 26.0, 22.0, 20.0],
+        5: [28.0, 22.0, 19.0, 16.0, 15.0],
+    }
+    return presets.get(count, [100.0 / count] * count)
+
+
+def _scale_tep_row(row: dict[str, Any], share_pct: float) -> dict[str, Any]:
+    result = copy.deepcopy(row)
+    factor = share_pct / 100.0
+    for key in ("gns", "total_area", "useful", "saleable", "transfer", "units"):
+        result[key] = n(result, key) * factor
+    return result
+
+
+def _integer_phase_allocations(total_units: float, weights: list[float]) -> list[int]:
+    """Split indivisible units across phases while preserving the exact rounded total."""
+    total = max(0, int(round(float(total_units or 0.0))))
+    if not weights:
+        return [total]
+    norm = _normalized_phase_weights(weights, len(weights))
+    raw = [total * w / 100.0 for w in norm]
+    floors = [int(math.floor(v)) for v in raw]
+    remainder = total - sum(floors)
+    order = sorted(range(len(raw)), key=lambda i: (raw[i] - floors[i], norm[i]), reverse=True)
+    for i in order[:remainder]:
+        floors[i] += 1
+    return floors
+
+
+def _scale_tep_row_by_units(
+    row: dict[str, Any],
+    allocations: list[int],
+    phase_index: int,
+) -> dict[str, Any]:
+    result = copy.deepcopy(row)
+    total_units = float(n(row, "units"))
+    allocated = int(allocations[phase_index]) if phase_index < len(allocations) else 0
+    factor = (allocated / total_units) if total_units > 0 else 0.0
+    for key in ("gns", "total_area", "useful", "saleable", "transfer"):
+        result[key] = n(result, key) * factor
+    result["units"] = float(allocated)
+    return result
+
+
+_PHASE_MASS_PRODUCTS = ("apartments", "ground_commercial", "underground_parking", "storage")
+
+
+def _phase_tep_product_rows(
+    t_master: dict[str, dict[str, Any]],
+    phasing: dict[str, Any],
+    count: int,
+) -> tuple[list[dict[str, dict[str, Any]]], dict[str, list[float]]]:
+    """Каноническое деление массовых продуктов по очередям.
+
+    Единственное место, где ТЭП режется на очереди: движок собирает из этих
+    строк вводные каждой фазы, а книга получает готовые числа. Раньше книга
+    нормировала доли сама — с собственным запасным раскладом «поровну» против
+    движкового пресета 40/32/28 — и умножала итог на дробную долю даже для
+    паркинга, который движок раздаёт целыми местами: очереди расходились на
+    ±1 машино-место и десятки метров ГНС. Дробные метры делятся долями как
+    есть, штучные продукты — целыми с сохранением итога. Одна очередь —
+    не деление: движок без очередей считает атомарно по сырому ТЭП с дробными
+    местами, и округлять их здесь значило бы разойтись с ним на полместа.
+    """
+    if count <= 1:
+        return ([{key: copy.deepcopy(t_master[key])
+                  for key in _PHASE_MASS_PRODUCTS if key in t_master}],
+                {key: [100.0] for key in _PHASE_MASS_PRODUCTS})
+    default_weights = _default_phase_weights(count)
+    products_cfg = (phasing or {}).get("products") or {}
+    product_weights = {
+        key: _normalized_phase_weights(products_cfg.get(key), count, default_weights)
+        for key in _PHASE_MASS_PRODUCTS
+    }
+    indivisible = {
+        key: _integer_phase_allocations(n(t_master.get(key, {}), "units"), product_weights[key])
+        for key in ("underground_parking", "storage")
+        if key in t_master
+    }
+    rows: list[dict[str, dict[str, Any]]] = []
+    for idx in range(count):
+        per: dict[str, dict[str, Any]] = {}
+        for key in _PHASE_MASS_PRODUCTS:
+            if key not in t_master:
+                continue
+            if key in indivisible:
+                per[key] = _scale_tep_row_by_units(t_master[key], indivisible[key], idx)
+            else:
+                per[key] = _scale_tep_row(t_master[key], product_weights[key][idx])
+        rows.append(per)
+    return rows, product_weights
+
+
+_PHASE_INFLATABLE_INPUTS = (
+    "ird_th_per_sqm",
+    "design_p_th_per_sqm",
+    "design_rd_th_per_sqm",
+    "preparation_th_per_sqm",
+    "main_above_th_per_sqm",
+    "main_under_th_per_sqm",
+    "utilities_th_per_sqm",
+    "landscaping_th_per_sqm",
+    "commissioning_th_per_sqm",
+    "site_maintenance_th_per_sqm",
+)
+
+
+def _phase_cost_inflation_factor(phasing: dict[str, Any], offset_months: int) -> float:
+    annual = float(phasing.get("cost_inflation_pct", 8.0) or 0.0) / 100.0
+    return (1.0 + annual) ** (max(0, int(offset_months)) / 12.0)
+
+
+def _phase_sales_price_inflation_factor(phasing: dict[str, Any], offset_months: int) -> float:
+    """Annual market-price inflation between queue launches.
+    Monthly price growth after each queue's own sales start stays in atomic calculate().
+    """
+    annual = float(phasing.get("sales_price_inflation_pct", 8.0) or 0.0) / 100.0
+    return (1.0 + annual) ** (max(0, int(offset_months)) / 12.0)
+
+
+def _zero_tep_row(row: dict[str, Any]) -> dict[str, Any]:
+    result = copy.deepcopy(row)
+    for key in ("gns", "total_area", "useful", "saleable", "transfer", "units"):
+        result[key] = 0.0
+    return result
+
+
+def _shift_iso(value: Any, months: int) -> Any:
+    if not value:
+        return value
+    try:
+        return add_months(d(value), months).isoformat()
+    except Exception:
+        return value
+
+
+def _sum_dicts(items: list[dict[str, Any]]) -> dict[str, float]:
+    keys: set[str] = set()
+    for item in items:
+        keys.update(item.keys())
+    out: dict[str, float] = {}
+    for key in keys:
+        if key == "total":
+            continue
+        total = 0.0
+        for item in items:
+            try:
+                total += float(item.get(key, 0.0) or 0.0)
+            except Exception:
+                pass
+        out[key] = total
+    out["total"] = sum(float(item.get("total", 0.0) or 0.0) for item in items)
+    return out
+
+
+def _combine_cashflows(results: list[dict[str, Any]], master_start: date) -> tuple[list[date], list[float], list[float]]:
+    project_by_month: dict[date, float] = defaultdict(float)
+    equity_by_month: dict[date, float] = defaultdict(float)
+    for result in results:
+        cf = result.get("cashflow") or {}
+        months = cf.get("months") or []
+        project = cf.get("project") or []
+        equity = cf.get("equity") or []
+        for i, month_text in enumerate(months):
+            month = d(month_text)
+            if i < len(project):
+                project_by_month[month] += float(project[i] or 0.0)
+            if i < len(equity):
+                equity_by_month[month] += float(equity[i] or 0.0)
+    if not project_by_month and not equity_by_month:
+        return [], [], []
+    end = max(list(project_by_month.keys()) + list(equity_by_month.keys()))
+    months = month_range(master_start, end)
+    return (
+        months,
+        [project_by_month.get(m, 0.0) for m in months],
+        [equity_by_month.get(m, 0.0) for m in months],
+    )
+
+
+def _aggregate_finance(results: list[dict[str, Any]]) -> dict[str, Any]:
+    month_map: dict[str, dict[str, float]] = {}
+    additive = (
+        "bridge_draw", "bridge_repayment", "bridge_interest", "bridge_capitalization",
+        "bridge_balance", "own_funds_draw", "pf_draw", "pf_repayment", "pf_interest",
+        "pf_interest_capitalization", "pf_balance", "escrow", "limit_fee",
+        "interest_payment", "profit_tax", "taxable_margin",
+        "financing_tax_deduction", "taxable_profit_cumulative",
+        "revenue", "capex", "operating",
+    )
+    source_rows: dict[tuple[int, str], dict[str, Any]] = {}
+    for ri, result in enumerate(results):
+        for row in result["finance"]["rows"]:
+            source_rows[(ri, row["month"])] = row
+            agg = month_map.setdefault(row["month"], {key: 0.0 for key in additive})
+            for key in additive:
+                agg[key] += float(row.get(key, 0.0) or 0.0)
+
+    rows: list[dict[str, Any]] = []
+    for month in sorted(month_map):
+        agg = month_map[month]
+        key_rate = 0.0
+        bridge_num = bridge_den = pf_num = pf_den = 0.0
+        for ri, result in enumerate(results):
+            row = source_rows.get((ri, month))
+            if not row:
+                continue
+            key_rate = float(row.get("key_rate", key_rate) or key_rate)
+            bb = float(row.get("bridge_balance", 0.0) or 0.0)
+            pb = float(row.get("pf_balance", 0.0) or 0.0)
+            bridge_num += bb * float(row.get("bridge_rate", 0.0) or 0.0)
+            bridge_den += bb
+            pf_num += pb * float(row.get("pf_rate", 0.0) or 0.0)
+            pf_den += pb
+        out = dict(agg)
+        out["month"] = month
+        out["key_rate"] = key_rate
+        out["bridge_rate"] = bridge_num / bridge_den if bridge_den else 0.0
+        out["pf_rate"] = pf_num / pf_den if pf_den else 0.0
+        out["coverage"] = out["escrow"] / out["pf_balance"] if out["pf_balance"] else 0.0
+        rows.append(out)
+
+    fs = [r["finance"] for r in results]
+    bridge_weight = sum(max(f["peak_bridge"], 0.0) for f in fs)
+    pf_weight = sum(max(f["peak_pf"], 0.0) for f in fs)
+    peak_bridge = max((r["bridge_balance"] for r in rows), default=0.0)
+    peak_pf = max((r["pf_balance"] for r in rows), default=0.0)
+    peak_uncovered_pf = max((max(r["pf_balance"] - r["escrow"], 0.0) for r in rows), default=0.0)
+    peak_total_debt = max((r["bridge_balance"] + r["pf_balance"] for r in rows), default=0.0)
+    peak_escrow = max((r["escrow"] for r in rows), default=0.0)
+    llcr_num = sum(f["llcr_numerator"] for f in fs)
+    llcr_den = sum(f["llcr_denominator"] for f in fs)
+
+    financing_cost = sum(f["financing_cost"] for f in fs)
+    return {
+        "rows": rows,
+        "calculated_bridge_limit": sum(f["calculated_bridge_limit"] for f in fs),
+        "bridge_draw_total": sum(f["bridge_draw_total"] for f in fs),
+        "own_funds_used": sum(f.get("own_funds_used", 0.0) for f in fs),
+        "own_funds_available": sum(f.get("own_funds_available", 0.0) for f in fs),
+        "peak_bridge": peak_bridge,
+        "avg_bridge_rate": (
+            sum(f["avg_bridge_rate"] * max(f["peak_bridge"], 0.0) for f in fs) / bridge_weight
+            if bridge_weight else 0.0
+        ),
+        "avg_bridge_key_rate": (
+            sum(f.get("avg_bridge_key_rate", 0.0) * max(f["peak_bridge"], 0.0) for f in fs) / bridge_weight
+            if bridge_weight else 0.0
+        ),
+        "current_key_rate": fs[0].get("current_key_rate", 0.0) if fs else 0.0,
+        "bridge_spread": fs[0].get("bridge_spread", 0.0) if fs else 0.0,
+        "current_bridge_rate": fs[0].get("current_bridge_rate", 0.0) if fs else 0.0,
+        "bridge_rate_at_project_start": (
+            sum(f.get("bridge_rate_at_project_start", 0.0) * max(f["peak_bridge"], 0.0) for f in fs) / bridge_weight
+            if bridge_weight else 0.0
+        ),
+        "bridge_interest": sum(f["bridge_interest"] for f in fs),
+        "bridge_capitalization": sum(f["bridge_capitalization"] for f in fs),
+        "bridge_fee": sum(f["bridge_fee"] for f in fs),
+        "transferred_bridge_interest": sum(f["transferred_bridge_interest"] for f in fs),
+        "pf_limit": sum(f["pf_limit"] for f in fs),
+        "pf_draw_total": sum(f["pf_draw_total"] for f in fs),
+        "peak_pf": peak_pf,
+        "peak_uncovered_pf": peak_uncovered_pf,
+        "pf_repayment_total": sum(f["pf_repayment_total"] for f in fs),
+        "ending_pf": sum(f["ending_pf"] for f in fs),
+        "avg_pf_rate": (
+            sum(f["avg_pf_rate"] * max(f["peak_pf"], 0.0) for f in fs) / pf_weight
+            if pf_weight else 0.0
+        ),
+        "avg_pf_effective_rate": (
+            sum(f["avg_pf_effective_rate"] * max(f["peak_pf"], 0.0) for f in fs) / pf_weight
+            if pf_weight else 0.0
+        ),
+        "avg_pf_base_rate": (
+            sum(f["avg_pf_base_rate"] * max(f["peak_pf"], 0.0) for f in fs) / pf_weight
+            if pf_weight else 0.0
+        ),
+        "avg_pf_key_rate": (
+            sum(f["avg_pf_key_rate"] * max(f["peak_pf"], 0.0) for f in fs) / pf_weight
+            if pf_weight else 0.0
+        ),
+        "pf_special_rate": fs[0]["pf_special_rate"] if fs else 0.0,
+        "pf_interest": sum(f["pf_interest"] for f in fs),
+        "pf_interest_capitalization": sum(f["pf_interest_capitalization"] for f in fs),
+        "pf_limit_fee": sum(f["pf_limit_fee"] for f in fs),
+        "pf_reservation_fee": sum(f["pf_reservation_fee"] for f in fs),
+        "financing_cost": financing_cost,
+        "reported_interest_and_fees": financing_cost,
+        "total_revenue": sum(f["total_revenue"] for f in fs),
+        "total_capex": sum(f["total_capex"] for f in fs),
+        "commercial_costs": sum(f["commercial_costs"] for f in fs),
+        "profit_tax": sum(f["profit_tax"] for f in fs),
+        "vat": sum(f.get("vat", 0.0) for f in fs),
+        "vat_charged": sum(f.get("vat_charged", 0.0) for f in fs),
+        "vat_input_deductible": sum(f.get("vat_input_deductible", 0.0) for f in fs),
+        "tax_margin_by_product": {
+            key: sum(float((f.get("tax_margin_by_product") or {}).get(key, 0.0) or 0.0) for f in fs)
+            for key in ("core", "offices", "standalone_retail", "above_parking")
+        },
+        "tax_cost_by_product": {
+            key: sum(float((f.get("tax_cost_by_product") or {}).get(key, 0.0) or 0.0) for f in fs)
+            for key in ("core", "offices", "standalone_retail", "above_parking")
+        },
+        "financing_tax_deductions": sum(float(f.get("financing_tax_deductions", 0.0) or 0.0) for f in fs),
+        "profit_before_tax": sum(f["profit_before_tax"] for f in fs),
+        "llcr_numerator": llcr_num,
+        "llcr_denominator": llcr_den,
+        "llcr": llcr_num / llcr_den if llcr_den else 0.0,
+        "peak_total_debt": peak_total_debt,
+        "peak_escrow": peak_escrow,
+    }
+
+
+def _consolidate_phase_results(
+    master_inputs: dict[str, Any],
+    phase_items: list[dict[str, Any]],
+    comparison: list[dict[str, Any]],
+) -> dict[str, Any]:
+    results = [item["result"] for item in phase_items]
+    finance = _aggregate_finance(results)
+    consolidated_bridge_month = _bridge_peak_month(finance["rows"])
+
+    tep_map: dict[str, dict[str, Any]] = {}
+    for result in results:
+        for row in result["tep"]["rows"]:
+            target = tep_map.setdefault(row["key"], {
+                "key": row["key"], "label": row["label"],
+                "gns": 0.0, "total_area": 0.0, "useful": 0.0,
+                "saleable": 0.0, "transfer": 0.0, "units": 0.0,
+            })
+            for field in ("gns", "total_area", "useful", "saleable", "transfer", "units"):
+                target[field] += float(row.get(field, 0.0) or 0.0)
+    tep_rows = list(tep_map.values())
+    tep_total = {
+        field: sum(row[field] for row in tep_rows)
+        for field in ("gns", "total_area", "useful", "saleable", "transfer", "units")
+    }
+
+    revenue = _sum_dicts([r["revenue"] for r in results])
+    capex = _sum_dicts([r["capex"] for r in results])
+    total_revenue = finance["total_revenue"]
+    total_capex = finance["total_capex"]
+    commercial_costs = finance["commercial_costs"]
+    ebitda = total_revenue - total_capex - commercial_costs
+    net_profit = sum(r["summary"]["net_profit"] for r in results)
+
+    saleable = sum(r["summary"]["monetizable_saleable_sqm"] for r in results)
+    apartment_saleable = sum(r["summary"]["apartment_saleable_sqm"] for r in results)
+    project_gns = sum(r["summary"]["project_gns_sqm"] for r in results)
+    # НДС — такой же денежный расход проекта, как налог на прибыль: без него
+    # строки структуры расходов не сходятся с итоговой строкой, и обе
+    # выглядят достоверно.
+    full_cost = (total_capex + commercial_costs + finance["financing_cost"]
+                 + finance["profit_tax"] + finance.get("vat", 0.0))
+    avg_apt_price = revenue.get("apartments", 0.0) / apartment_saleable / 1000 if apartment_saleable else 0.0
+
+    construction_keys = (
+        "ird", "design_p", "design_rd", "author_supervision", "preparation",
+        "main_above", "main_under", "utilities", "landscaping",
+        "commissioning", "site_maintenance", "gc_fee", "reserve",
+    )
+    construction_capex = sum(capex.get(k, 0.0) for k in construction_keys)
+    core_gns = sum(r["tep"]["core_above_gns"] + r["tep"]["core_under_gns"] for r in results)
+
+    master_start = d(master_inputs.get("project_start", results[0]["dates"]["project_start"]))
+    cf_months, project_cf, equity_cf = _combine_cashflows(results, master_start)
+    tax_by_month = {
+        d(row["month"]): float(row.get("profit_tax", 0.0) or 0.0)
+        for row in finance["rows"]
+    }
+    discount_rate = n(master_inputs, "discount_rate_pct", 20) / 100
+    npv = _monthly_npv(project_cf, discount_rate) if project_cf else 0.0
+    irr_equity = _monthly_irr(equity_cf) if equity_cf else None
+
+    def per_th(value: float, area: float) -> float:
+        return value / area / 1000 if area else 0.0
+
+    unit_economics = []
+    for label, value in (
+        ("Выручка", total_revenue), ("CAPEX", total_capex),
+        ("Маркетинг и продажи", commercial_costs), ("EBITDA", ebitda),
+        ("Проценты и комиссии", finance["financing_cost"]),
+        ("Налог на прибыль", finance["profit_tax"]),
+        ("НДС", finance.get("vat", 0.0)),
+        ("Полные расходы", full_cost), ("Чистая прибыль", net_profit),
+    ):
+        unit_economics.append({
+            "label": label, "total": value,
+            "per_gns_th": per_th(value, project_gns),
+            "per_saleable_th": per_th(value, saleable),
+        })
+
+    # Статьи стройки суммируются по очередям; порядок статей задан движком
+    # и сохраняется словарём — сортировать по сумме их нельзя, это смета.
+    construction_map: dict[str, float] = {}
+    for result in results:
+        for item in result["report"].get("construction_costs") or []:
+            construction_map[item["label"]] = (
+                construction_map.get(item["label"], 0.0) + float(item["value"] or 0.0))
+    construction_costs = [
+        {"label": label, "value": value, "per_gns_th": per_th(value, project_gns),
+         "per_saleable_th": per_th(value, saleable)}
+        for label, value in construction_map.items() if value > 0
+    ]
+
+    # Темп продаж квартир в штуках складывается по месяцам всех очередей:
+    # в один месяц могут продаваться квартиры двух очередей сразу, и отдел
+    # продаж видит их одной цифрой, а не двумя.
+    apartment_units_by_month: dict[str, float] = defaultdict(float)
+    apartment_units_total = 0.0
+    apartment_area_total = 0.0
+    for result in results:
+        phase_sales_apartments = (result["report"].get("apartment_sales") or {})
+        apartment_units_total += float(phase_sales_apartments.get("units_total") or 0.0)
+        apartment_area_total += (float(phase_sales_apartments.get("units_total") or 0.0)
+                                 * float(phase_sales_apartments.get("avg_unit_sqm") or 0.0))
+        for row in phase_sales_apartments.get("rows") or []:
+            apartment_units_by_month[str(row["month"])] += float(row["units"] or 0.0)
+    apartment_sales: dict[str, Any] = {}
+    if apartment_units_by_month:
+        monthly = sorted(apartment_units_by_month.items())
+        last_rve = max(d(r["dates"]["rve"]) for r in results)
+        before_rve = [units for month, units in monthly if d(month) <= last_rve]
+        apartment_sales = {
+            "units_total": apartment_units_total,
+            "avg_unit_sqm": (apartment_area_total / apartment_units_total
+                             if apartment_units_total else 0.0),
+            "avg_unit_price_mln": (apartment_area_total / apartment_units_total
+                                   * avg_apt_price / 1000 if apartment_units_total else 0.0),
+            "pace_pre_rve_units": sum(before_rve) / len(before_rve) if before_rve else 0.0,
+            "pace_units": sum(u for _, u in monthly) / len(monthly),
+            "peak_units": max(u for _, u in monthly),
+            "months": len(monthly),
+            "rows": [{"month": month, "units": units} for month, units in monthly],
+        }
+
+    expense_map: dict[str, float] = defaultdict(float)
+    for result in results:
+        for item in result["report"]["expense_structure"]:
+            expense_map[item["label"]] += float(item["value"] or 0.0)
+    expense_base = sum(expense_map.values())
+    expense_structure = [
+        {
+            "label": label,
+            "value": value,
+            "share": value / expense_base if expense_base else 0.0,
+            # Удельные складывать нельзя — их пересчитывают от сводных площадей.
+            # Пока их тут не было, свод по всему проекту показывал нули во всех
+            # строках, а итоговая строка считалась отдельно и стояла живая:
+            # таблица выглядела сломанной ровно там, где по ней и спорят.
+            "per_gns_th": value / project_gns / 1000 if project_gns else 0.0,
+            "per_saleable_th": value / saleable / 1000 if saleable else 0.0,
+        }
+        for label, value in expense_map.items() if value > 0
+    ]
+    expense_structure.sort(key=lambda x: x["value"], reverse=True)
+
+    product_map: dict[str, dict[str, Any]] = {}
+    for result in results:
+        for item in result["report"]["products"]:
+            p = product_map.setdefault(item["key"], {
+                "key": item["key"], "label": item["label"], "unit": item["unit"],
+                "quantity": 0.0, "revenue": 0.0, "start_price_th": item["start_price_th"],
+                "avg_price_th": 0.0, "pace_pre": None,
+                "share_before_rve": item["share_before_rve"],
+                "sales_start": None, "sales_end": None,
+            })
+            p["quantity"] += float(item["quantity"] or 0.0)
+            p["revenue"] += float(item["revenue"] or 0.0)
+            if item.get("sales_start"):
+                p["sales_start"] = item["sales_start"] if p["sales_start"] is None else min(p["sales_start"], item["sales_start"])
+            if item.get("sales_end"):
+                p["sales_end"] = item["sales_end"] if p["sales_end"] is None else max(p["sales_end"], item["sales_end"])
+    for p in product_map.values():
+        p["avg_price_th"] = p["revenue"] / p["quantity"] / 1000 if p["quantity"] else 0.0
+
+    # Consolidated project has no single RVE. Keep phase-specific sales pace and dates.
+    phase_sales = []
+    for key, total_item in product_map.items():
+        phases = []
+        for phase_item in phase_items:
+            item = next((p for p in phase_item["result"]["report"]["products"] if p["key"] == key), None)
+            if not item:
+                continue
+            phases.append({
+                "phase": phase_item["name"],
+                "phase_index": phase_item["index"],
+                "quantity": float(item.get("quantity", 0.0) or 0.0),
+                "unit": item.get("unit"),
+                "pace_pre": float(item.get("pace_pre", 0.0) or 0.0),
+                "share_before_rve": float(item.get("share_before_rve", 0.0) or 0.0),
+                "start_price_th": float(item.get("start_price_th", 0.0) or 0.0),
+                "avg_price_th": float(item.get("avg_price_th", 0.0) or 0.0),
+                "revenue": float(item.get("revenue", 0.0) or 0.0),
+                "sales_start": item.get("sales_start"),
+                "sales_end": item.get("sales_end"),
+                "rve": phase_item["result"]["dates"]["rve"],
+                "cost_inflation_factor": phase_item.get("cost_inflation_factor", 1.0),
+                "sales_price_inflation_factor": phase_item.get("sales_price_inflation_factor", 1.0),
+            })
+        phase_sales.append({
+            "key": key,
+            "label": total_item["label"],
+            "unit": total_item["unit"],
+            "quantity": total_item["quantity"],
+            "revenue": total_item["revenue"],
+            "avg_price_th": total_item["avg_price_th"],
+            "phases": phases,
+        })
+
+    events = []
+    for phase_item in phase_items:
+        for event in phase_item["result"]["report"]["calendar"]["events"]:
+            e = copy.deepcopy(event)
+            e["label"] = f"{phase_item['name']} · {e['label']}"
+            e["group"] = f"{phase_item['name']} · {e['group']}"
+            # Calendar-only metadata. It does not participate in any financial calculation.
+            e["phase_index"] = phase_item["index"]
+            e["phase_name"] = phase_item["name"]
+            events.append(e)
+    cal_start = min(d(e["start"]) for e in events)
+    cal_end = max(d(e["end"]) for e in events)
+
+    social_program = {
+        "kindergarten_places": sum(r["summary"]["social_program"].get("kindergarten_places", 0.0) for r in results),
+        "school_places": sum(r["summary"]["social_program"].get("school_places", 0.0) for r in results),
+        "clinic_capacity": sum(r["summary"]["social_program"].get("clinic_capacity", 0.0) for r in results),
+    }
+    social_construction = {
+        key: sum(r["summary"]["social_payment_breakdown"]["construction"].get(key, 0.0) for r in results)
+        for key in ("kindergarten_mln", "school_mln", "clinic_mln")
+    }
+    social_compensation = {
+        key: sum(r["summary"]["social_payment_breakdown"]["compensation"].get(key, 0.0) for r in results)
+        for key in ("kindergarten_mln", "school_mln", "clinic_mln")
+    }
+
+    return {
+        "dates": {
+            "project_start": min(r["dates"]["project_start"] for r in results),
+            "permit": min(r["dates"]["permit"] for r in results),
+            "sales_start": min(r["dates"]["sales_start"] for r in results),
+            "rve": max(r["dates"]["rve"] for r in results),
+        },
+        "tep": {
+            "rows": tep_rows, "total": tep_total,
+            "core_above_gns": sum(r["tep"]["core_above_gns"] for r in results),
+            "core_under_gns": sum(r["tep"]["core_under_gns"] for r in results),
+        },
+        "revenue": revenue,
+        "capex": capex,
+        "commercial_costs": commercial_costs,
+        "finance": finance,
+        "summary": {
+            "revenue": total_revenue, "capex": total_capex,
+            "commercial_costs": commercial_costs, "ebitda": ebitda,
+            "financing_cost": finance["financing_cost"],
+            "profit_before_tax": finance["profit_before_tax"],
+            "profit_tax": finance["profit_tax"], "vat": finance.get("vat", 0.0),
+            "net_profit": net_profit,
+            "margin": net_profit / total_revenue if total_revenue else 0.0,
+            "llcr": finance["llcr"],
+            "ending_pf": finance.get("ending_pf", 0.0),
+            "min_phase_llcr": min((r["summary"]["llcr"] for r in results), default=0.0),
+            "scenario_revenue_multiplier": n(master_inputs, "scenario_revenue_multiplier", 1.0),
+            "scenario_cost_multiplier": n(master_inputs, "scenario_cost_multiplier", 1.0),
+            "npv": npv, "irr_equity": irr_equity,
+            "full_project_cost": full_cost,
+            "monetizable_saleable_sqm": saleable,
+            "apartment_saleable_sqm": apartment_saleable,
+            "average_apartment_price_th": avg_apt_price,
+            "full_cost_per_saleable_th": per_th(full_cost, saleable),
+            "full_cost_per_gns_th": per_th(full_cost, project_gns),
+            "construction_cost_per_gns_th": per_th(construction_capex, core_gns),
+            "construction_cost_per_saleable_th": per_th(construction_capex, saleable),
+            "ebitda_per_saleable_th": per_th(ebitda, saleable),
+            "ebitda_per_gns_th": per_th(ebitda, project_gns),
+            "net_profit_per_saleable_th": per_th(net_profit, saleable),
+            "net_profit_per_gns_th": per_th(net_profit, project_gns),
+            "project_gns_sqm": project_gns, "total_expenses": full_cost,
+            "social_payment": sum(r["summary"]["social_payment"] for r in results),
+            "social_payment_mode": str(master_inputs.get("social_mode", "")),
+            "social_in_capex_check": all(r["summary"].get("social_in_capex_check", True) for r in results),
+            "social_program": social_program,
+            "social_payment_breakdown": {
+                "construction": social_construction,
+                "compensation": social_compensation,
+            },
+            "phase_count": len(results),
+            "peak_total_debt": finance["peak_total_debt"],
+        },
+        "report": {
+            "products": list(product_map.values()),
+            "phase_products": phase_sales,
+            "unit_economics": unit_economics,
+            "construction_costs": construction_costs,
+            "apartment_sales": apartment_sales,
+            "expense_structure": expense_structure,
+            "calendar": {"start": cal_start.isoformat(), "end": cal_end.isoformat(), "events": events},
+            "financing": {
+                "calculated_bridge": finance["calculated_bridge_limit"],
+                "actual_bridge": finance["peak_bridge"],
+                # Пик свода — общий месяц, а не сумма пиков очередей, поэтому и
+                # расшифровка собирается на этот общий месяц по всем очередям.
+                "actual_bridge_month": consolidated_bridge_month,
+                "own_funds": finance.get("own_funds_used", 0.0),
+                "own_funds_available": finance.get("own_funds_available", 0.0),
+                "actual_bridge_structure": _bridge_actual_structure(
+                    [result.get("monthly") or {} for result in results],
+                    consolidated_bridge_month, finance["peak_bridge"],
+                    _own_funds_by(finance["rows"], consolidated_bridge_month)),
+                "pf_peak": finance["peak_pf"],
+                "pf_uncovered_peak": finance["peak_uncovered_pf"],
+                "pf_limit": finance["pf_limit"],
+                "avg_bridge_rate": finance["avg_bridge_rate"],
+                "avg_bridge_key_rate": finance.get("avg_bridge_key_rate", 0.0),
+                "current_key_rate": finance.get("current_key_rate", 0.0),
+                "bridge_spread": finance.get("bridge_spread", 0.0),
+                "current_bridge_rate": finance.get("current_bridge_rate", 0.0),
+                "bridge_rate_at_project_start": finance.get("bridge_rate_at_project_start", 0.0),
+                "avg_pf_rate": finance["avg_pf_rate"],
+                "avg_pf_effective_rate": finance["avg_pf_effective_rate"],
+                "avg_pf_base_rate": finance["avg_pf_base_rate"],
+                "avg_pf_key_rate": finance["avg_pf_key_rate"],
+                "pf_special_rate": finance["pf_special_rate"],
+                "interest_and_fees": finance["financing_cost"],
+                "ending_pf": finance.get("ending_pf", 0.0),
+                "bridge_peak_capitalized": finance["peak_bridge"]
+                + finance.get("transferred_bridge_interest", 0.0),
+                "peak_total_debt": finance["peak_total_debt"],
+                "peak_escrow": finance["peak_escrow"],
+            },
+        },
+        "cashflow": {
+            "months": [m.isoformat() for m in cf_months],
+            "project": project_cf, "equity": equity_cf,
+            "profit_tax": [tax_by_month.get(m, 0.0) for m in cf_months],
+        },
+        "comparison": comparison,
+        "excel_control": EXCEL_CONTROL,
+        "notes": {
+            "phasing": "Очередность — внешняя надстройка над единым одноочередным движком: отдельные ТЭП, сроки, инфляция затрат, инфляция стартовой цены продажи и дискретные объекты.",
+            "sales": "У многоочередного проекта нет единого РВЭ: темп продаж показывается отдельно по каждой очереди.",
+            "finance": "О1 по умолчанию несёт покупку, ВРИ и повышенную раннюю нагрузку. ПФ пока считается отдельным атомарным расчётом каждой очереди; банковский общий Bridge/PF waterfall требует отдельной финальной сверки.",
+        },
+    }
+
+
+# Поздняя раскладка социальных объектов по очередям.
+#
+# Первая очередь несёт сети, подготовительный период и самый длинный срок, поэтому
+# социальные объекты по умолчанию уезжают вправо: школа — в последнюю очередь,
+# ДОУ — во вторую, поликлиника — ближе к концу. Поликлинике первая очередь
+# разрешена, если её туда двигает обязательство; школе и ДОУ — нет.
+_SOCIAL_LATE_POLICY: dict[str, dict[str, Any]] = {
+    "kindergarten": {"label": "ДОУ", "target": "second", "auto_earliest": 2},
+    "clinic": {"label": "Поликлиника", "target": "second_last", "auto_earliest": 1},
+    "school": {"label": "СОШ", "target": "last", "auto_earliest": 2},
+}
+
+
+def _social_target_phase(target: str, count: int) -> int:
+    if count <= 1:
+        return 1
+    if target == "last":
+        return count
+    if target == "second":
+        return min(2, count)
+    if target == "second_last":
+        return count - 1 if count >= 3 else count
+    return count
+
+
+def _phase_social_allocation(
+    social_objects: list[dict[str, Any]], count: int
+) -> list[dict[str, Any]]:
+    """Расставляет объекты по очередям и объясняет, почему объект встал именно туда."""
+    allocation: list[dict[str, Any]] = []
+    for obj in social_objects:
+        # JSON.stringify превращает пропуск в массиве в null, и весь расчёт
+        # очередей падал на ровном месте: «'NoneType' object has no attribute get».
+        if not isinstance(obj, dict):
+            continue
+        typ = str(obj.get("type") or "kindergarten")
+        policy = _SOCIAL_LATE_POLICY.get(typ) or _SOCIAL_LATE_POLICY["kindergarten"]
+        auto_phase = max(int(policy["auto_earliest"]), _social_target_phase(str(policy["target"]), count))
+        auto_phase = min(auto_phase, count)
+        limit = obj.get("not_later_than")
+        limit_value = int(limit) if isinstance(limit, (int, float)) and int(limit) >= 1 else None
+        manual = obj.get("phase")
+        manual_value = int(manual) if isinstance(manual, (int, float)) and int(manual) >= 1 else None
+
+        if manual_value and not obj.get("auto"):
+            phase = min(max(manual_value, 1), count)
+            reason = "вручную"
+        elif limit_value and limit_value < auto_phase:
+            phase = min(max(limit_value, 1), count)
+            reason = f"обязательство: не позже очереди {limit_value}"
+        else:
+            phase = auto_phase
+            reason = "поздняя раскладка: разгружаем первую очередь"
+
+        obj["phase"] = phase
+        allocation.append({
+            "name": str(obj.get("name") or policy["label"]),
+            "type": typ,
+            "capacity": float(obj.get("capacity", 0.0) or 0.0),
+            "phase": phase,
+            "auto_phase": auto_phase,
+            "not_later_than": limit_value,
+            "reason": reason,
+            "moved_earlier": bool(limit_value and phase < auto_phase),
+        })
+    return allocation
+
+
+def _consolidate_vri(phase_items: list[dict[str, Any]]) -> dict[str, Any]:
+    """Сводный график ВРИ: одно обязательство проекта, доли очередей на общих датах."""
+    money = ("principal", "interest", "total", "bridge", "pf", "equity")
+    merged: dict[str, dict[str, Any]] = {}
+    totals = {
+        key: 0.0 for key in
+        ("amount", "principal", "interest", "security_cost", "before_pf", "after_pf",
+         "bridge", "pf", "equity", "cash", "gross", "relief")
+    }
+    warnings: list[str] = []
+    enabled = False
+    region = payment_mode = ""
+    for item in phase_items:
+        block = item["result"].get("vri") or {}
+        if not block.get("enabled"):
+            continue
+        enabled = True
+        region = block.get("region") or region
+        payment_mode = block.get("payment_mode") or payment_mode
+        for key in totals:
+            totals[key] += float(block["totals"].get(key, 0.0) or 0.0)
+        for warning in block.get("warnings") or []:
+            if warning not in warnings:
+                warnings.append(warning)
+        for row in block.get("rows") or []:
+            slot = merged.setdefault(row["date"], {
+                "date": row["date"], "before_pf": row["before_pf"], "by_phase": {},
+                **{key: 0.0 for key in money},
+            })
+            for key in money:
+                slot[key] += float(row.get(key, 0.0) or 0.0)
+            slot["by_phase"][item["name"]] = slot["by_phase"].get(item["name"], 0.0) + float(row["total"])
+            slot["before_pf"] = slot["before_pf"] or row["before_pf"]
+    rows = []
+    balance = totals["amount"]
+    for date_key in sorted(merged):
+        slot = merged[date_key]
+        balance = max(0.0, balance - slot["principal"])
+        rows.append({
+            **{key: round(slot[key], 2) for key in money},
+            "date": date_key, "period": len(rows) + 1,
+            "before_pf": slot["before_pf"], "balance_after": round(balance, 2),
+            "by_phase": {name: round(value, 2) for name, value in slot["by_phase"].items()},
+        })
+    return {
+        "enabled": enabled,
+        "region": region,
+        "payment_mode": payment_mode,
+        "rows": rows,
+        "totals": {key: round(value, 2) for key, value in totals.items()},
+        "warnings": warnings,
+    }
+
+
+def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
+    x_master = copy.deepcopy(req.inputs)
+    t_master = copy.deepcopy(req.tep)
+    rates = copy.deepcopy(req.rates)
+    phasing = copy.deepcopy(req.phasing or {})
+    phases_cfg = phasing.get("phases") or []
+    count = max(1, min(5, int(phasing.get("phase_count") or len(phases_cfg) or 1)))
+
+    if not phasing.get("enabled") or count <= 1:
+        single = calculate(CalcRequest(inputs=x_master, tep=t_master, rates=rates))
+        return {"mode": "single", "consolidated": single, "phases": [], "comparison": []}
+
+    while len(phases_cfg) < count:
+        phases_cfg.append({
+            "name": f"О{len(phases_cfg)+1}",
+            "start_offset_months": len(phases_cfg) * int(phasing.get("phase_gap_months", 12)),
+            "construction_months": int(n(x_master, "construction_months", 24)),
+        })
+    # Дополненную конфигурацию надо вернуть наружу. «phasing.get("phases") or []»
+    # для пустого списка отдаёт новый объект, и достроенные очереди оставались
+    # внутри функции: отчёт показывал сдвиг старта и сроки прочерками.
+    phasing["phases"] = phases_cfg
+
+    default_weights = _default_phase_weights(count)
+    phase_product_rows, product_weights = _phase_tep_product_rows(t_master, phasing, count)
+
+    shared_cash = phasing.get("shared_cash") or {}
+    shared_alloc = phasing.get("shared_allocation") or {}
+    cash_defaults = {
+        "purchase": [100.0] + [0.0]*(count-1),
+        "land_rights": [100.0] + [0.0]*(count-1),
+        "ird": default_weights,
+        "design": default_weights,
+        "preparation": default_weights,
+        "utilities": default_weights,
+        "social_compensation": [100.0] + [0.0]*(count-1),
+        # Свои деньги вкладывают на входе, поэтому по умолчанию они целиком в
+        # первой очереди. Иное распределение задаётся shared_cash.own_funds.
+        "own_funds": [100.0] + [0.0]*(count-1),
+    }
+    cash_weights = {
+        key: _normalized_phase_weights(shared_cash.get(key), count, cash_defaults[key])
+        for key in cash_defaults
+    }
+    allocation_weights = {
+        key: _normalized_phase_weights(shared_alloc.get(key), count, default_weights)
+        for key in (*cash_defaults.keys(), "social_construction")
+    }
+
+    x_base = copy.deepcopy(x_master)
+    x_base["scenario_cost_multiplier"] = 1.0
+    x_base["scenario_revenue_multiplier"] = 1.0
+    base_op = build_operating_model(x_base, copy.deepcopy(t_master), rates)
+    base_amounts = base_op["capex_amounts"]
+    master_vri_obligation = _vri_settings(x_master, base_op["permit"])["obligation_date"]
+    shared_base_mln = {
+        "purchase": n(x_master, "purchase_price_mln"),
+        "land_rights": base_amounts.get("land_rights", 0.0) / 1_000_000,
+        "ird": base_amounts.get("ird", 0.0) / 1_000_000,
+        "design": (base_amounts.get("design_p", 0.0)+base_amounts.get("design_rd", 0.0))/1_000_000,
+        "preparation": base_amounts.get("preparation", 0.0) / 1_000_000,
+        "utilities": base_amounts.get("utilities", 0.0) / 1_000_000,
+        "social_compensation": n(x_master, "social_compensation_mln") if str(x_master.get("social_mode"))=="Денежная компенсация" else 0.0,
+    }
+
+    # Пропуск в массиве JSON.stringify отдаёт как null. Чистим один раз здесь:
+    # список читают несколько мест, и каждое падало бы на своём .get.
+    social_objects = [copy.deepcopy(obj) for obj in (phasing.get("social_objects") or [])
+                      if isinstance(obj, dict)]
+    # Совмещённый режим тоже строит: без него реестр объектов оставался пустым,
+    # стройка школы и садика в очередях исчезала, и соцнагрузка выходила нулевой.
+    if (str(x_master.get("social_mode")) in ("Строительство", SOCIAL_MODE_BOTH)
+            and not social_objects):
+        # Реестр объектов пуст — собираем его из вводных, чтобы нагрузка не потерялась.
+        for typ, key in (("kindergarten", "kindergarten_places"), ("school", "school_places"),
+                         ("clinic", "clinic_capacity")):
+            capacity = n(x_master, key)
+            if capacity > 0:
+                social_objects.append({
+                    "name": _SOCIAL_LATE_POLICY[typ]["label"], "type": typ,
+                    "capacity": capacity, "auto": True,
+                    "not_later_than": x_master.get(f"{typ}_not_later_than"),
+                })
+    social_allocation = _phase_social_allocation(social_objects, count) if social_objects else []
+
+    discrete = phasing.get("discrete") or {}
+    master_import = (x_master.get("_glavapu_import") or {}).get("normalized", {})
+    phase_items: list[dict[str, Any]] = []
+    comparison: list[dict[str, Any]] = []
+    tax_rate = n(x_master, "profit_tax_pct", 25) / 100
+    scenario_cost = n(x_master, "scenario_cost_multiplier", 1.0)
+
+    # Total social construction cost for analytical allocation.
+    total_social_construction = 0.0
+    if str(x_master.get("social_mode")) in ("Строительство", SOCIAL_MODE_BOTH):
+        for obj in social_objects:
+            capacity = float(obj.get("capacity", 0.0) or 0.0)
+            typ = str(obj.get("type"))
+            unit_cost = (
+                n(x_master, "kindergarten_cost_mln_per_place") if typ == "kindergarten"
+                else n(x_master, "school_cost_mln_per_place") if typ == "school"
+                else n(x_master, "clinic_cost_mln_per_unit")
+            )
+            total_social_construction += capacity * unit_cost * 1_000_000 * scenario_cost
+
+    for idx in range(count):
+        cfg = phases_cfg[idx]
+        name = str(cfg.get("name") or f"О{idx+1}")
+        offset = int(cfg.get("start_offset_months", idx*int(phasing.get("phase_gap_months",12))))
+        p_inputs = copy.deepcopy(x_master)
+        p_tep = copy.deepcopy(t_master)
+        p_inputs["project_start"] = add_months(d(x_master["project_start"]), offset).isoformat()
+        p_inputs["construction_months"] = int(cfg.get("construction_months", n(x_master,"construction_months",24)))
+        p_inputs.pop("_glavapu_import", None)
+
+        # Mass products are split only in the phasing wrapper; the atomic single-phase engine is unchanged.
+        for key, split_row in phase_product_rows[idx].items():
+            if key in p_tep:
+                p_tep[key] = copy.deepcopy(split_row)
+
+        # Поделённую строку паркинга нельзя отдавать движку вместе с общим
+        # решением по машино-местам: атомарный расчёт считает поле «решение
+        # проекта» главнее ТЭП и в каждой очереди перетирал долю полным итогом.
+        # На Мытищах 2 723 места превращались в 8 169 — ровно втрое, — и то же
+        # самое происходило с подземной ГНС. Доля очереди объявляется здесь и
+        # тем же полем, иначе движок посчитает по своему.
+        if not b(p_inputs, "underground_parking_disabled"):
+            parking_row = p_tep.get("underground_parking") or {}
+            if n(x_master, "underground_manual_spaces") > 0 or n(x_master, "underground_manual_gns_sqm") > 0:
+                p_inputs["underground_manual_spaces"] = n(parking_row, "units")
+                p_inputs["underground_manual_gns_sqm"] = n(parking_row, "gns")
+
+        # Cost inflation belongs to the queue wrapper, not to the atomic engine.
+        cost_inflation_factor = _phase_cost_inflation_factor(phasing, offset)
+        for cost_key in _PHASE_INFLATABLE_INPUTS:
+            p_inputs[cost_key] = n(x_master, cost_key) * cost_inflation_factor
+
+        # Queue launch price inflation is independent of monthly price growth during sales.
+        # At 8% annual and offsets 0 / 12 / 24m => x1.000 / x1.080 / x1.1664.
+        sales_price_inflation_factor = _phase_sales_price_inflation_factor(phasing, offset)
+        p_inputs["apartment_price_th"] = n(x_master,"apartment_price_th")*sales_price_inflation_factor
+        p_inputs["commercial_price_th"] = n(x_master,"commercial_price_th")*sales_price_inflation_factor
+        p_inputs["parking_price_th"] = n(x_master,"parking_price_th")*sales_price_inflation_factor
+        p_inputs["storage_price_th"] = n(x_master,"storage_price_th")*sales_price_inflation_factor
+
+        p_inputs["purchase_price_mln"] = shared_base_mln["purchase"]*cash_weights["purchase"][idx]/100
+        p_inputs["land_rights_cost_mln"] = shared_base_mln["land_rights"]*cash_weights["land_rights"][idx]/100
+        # Свои средства — один котёл на проект: без деления каждая очередь
+        # получила бы всю сумму, и проект «финансировал» бы себя вчетверо.
+        p_inputs["pre_pf_own_funds_mln"] = (
+            n(x_master, "pre_pf_own_funds_mln") * cash_weights["own_funds"][idx] / 100)
+        # ВРИ — обязательство всего проекта, а не отдельной очереди. Рассрочка
+        # (в Москве до шести лет) идёт по общему календарю: даты платежей у всех
+        # очередей одни и те же, различается только доля. Поэтому дату
+        # обязательства фиксируем абсолютной, иначе она уехала бы вместе со
+        # стартом очереди и шестилетний график растянулся бы на срок проекта.
+        p_inputs["vri_obligation_date"] = master_vri_obligation.isoformat()
+        # Льгота уже срезана в базовом расчёте, из которого взята доля очереди:
+        # применять её повторно к доле нельзя.
+        p_inputs["vri_relief_mode"] = "none"
+
+        design_total = shared_base_mln["design"]
+        design_p_total = base_amounts.get("design_p",0.0)/1_000_000
+        p_ratio = design_p_total/design_total if design_total else .5
+        p_inputs["_cost_override_mln"] = {
+            "ird": shared_base_mln["ird"]*cash_weights["ird"][idx]/100*cost_inflation_factor,
+            "design_p": design_total*p_ratio*cash_weights["design"][idx]/100*cost_inflation_factor,
+            "design_rd": design_total*(1-p_ratio)*cash_weights["design"][idx]/100*cost_inflation_factor,
+            "preparation": shared_base_mln["preparation"]*cash_weights["preparation"][idx]/100*cost_inflation_factor,
+            "utilities": shared_base_mln["utilities"]*cash_weights["utilities"][idx]/100*cost_inflation_factor,
+        }
+
+        if str(x_master.get("social_mode")) == "Денежная компенсация":
+            p_inputs["social_mode"] = "Денежная компенсация"
+            sw = cash_weights["social_compensation"][idx]/100
+            p_inputs["social_compensation_mln"] = shared_base_mln["social_compensation"]*sw
+            shifted_comp_date = d(_shift_iso(x_master.get("social_comp_date"), offset))
+            phase_start_date = d(p_inputs["project_start"])
+            p_inputs["social_comp_date"] = max(shifted_comp_date, phase_start_date).isoformat()
+            p_inputs["kindergarten_places"] = p_inputs["school_places"] = p_inputs["clinic_capacity"] = 0
+            # Места обнулялись, а строки ТЭП соцобъектов оставались в каждой
+            # очереди целиком: свод показывал ДОУ и СОШ трижды, и ГНС проекта
+            # росла на 29 тыс. м² из воздуха. Денег это не стоило — соцобъекты
+            # в этом режиме не строятся, — но по ГНС считаются все удельные
+            # показатели. Объект остаётся в первой очереди, чтобы свод сходился
+            # с исходным ТЭП, как у офисов и наземного паркинга.
+            if idx > 0:
+                for social_key in ("kindergarten", "school", "clinic"):
+                    if social_key in p_tep:
+                        p_tep[social_key] = _zero_tep_row(p_tep[social_key])
+            if master_import:
+                p_inputs["_glavapu_import"] = {"normalized": {
+                    "social_compensation_kindergarten_mln": n(master_import,"social_compensation_kindergarten_mln")*sw,
+                    "social_compensation_school_mln": n(master_import,"social_compensation_school_mln")*sw,
+                    "social_compensation_clinic_mln": n(master_import,"social_compensation_clinic_mln")*sw,
+                }}
+        else:
+            p_inputs["social_mode"] = "Строительство"
+            # Совмещённый режим: стройка расходится по очередям своими
+            # объектами, а денежная часть — кассовыми долями, как обычная
+            # компенсация. Без этого очередь получала только стройку, и 1,15
+            # млрд по спортивному объекту исчезали из фазового расчёта.
+            if str(x_master.get("social_mode")) == SOCIAL_MODE_BOTH:
+                cash_share = cash_weights["social_compensation"][idx] / 100
+                cash_part = n(x_master, "social_compensation_mln") * cash_share
+                if cash_part > 0:
+                    p_inputs["social_mode"] = SOCIAL_MODE_BOTH
+                    p_inputs["social_compensation_mln"] = cash_part
+                    shifted = d(_shift_iso(x_master.get("social_comp_date"), offset))
+                    p_inputs["social_comp_date"] = max(
+                        shifted, d(p_inputs["project_start"])).isoformat()
+                else:
+                    p_inputs["social_compensation_mln"] = 0.0
+            p_inputs["kindergarten_cost_mln_per_place"] = n(x_master,"kindergarten_cost_mln_per_place")*cost_inflation_factor
+            p_inputs["school_cost_mln_per_place"] = n(x_master,"school_cost_mln_per_place")*cost_inflation_factor
+            p_inputs["clinic_cost_mln_per_unit"] = n(x_master,"clinic_cost_mln_per_unit")*cost_inflation_factor
+            sums = {"kindergarten":0.0,"school":0.0,"clinic":0.0}
+            starts = {"kindergarten":[],"school":[],"clinic":[]}
+            for obj in social_objects:
+                if int(obj.get("phase",1) or 1) != idx+1:
+                    continue
+                typ = str(obj.get("type","kindergarten"))
+                if typ not in sums:
+                    continue
+                sums[typ] += float(obj.get("capacity",0.0) or 0.0)
+                if obj.get("start_date"):
+                    starts[typ].append(str(obj["start_date"]))
+            p_inputs["kindergarten_places"] = sums["kindergarten"]
+            p_inputs["school_places"] = sums["school"]
+            p_inputs["clinic_capacity"] = sums["clinic"]
+            phase_start_date = d(p_inputs["project_start"])
+            def phase_social_start(values: list[str]) -> str:
+                candidate = d(min(values)) if values else phase_start_date
+                # A social object assigned to a queue cannot start before that queue itself.
+                return max(candidate, phase_start_date).isoformat()
+            p_inputs["kindergarten_start"] = phase_social_start(starts["kindergarten"])
+            p_inputs["school_start"] = phase_social_start(starts["school"])
+            p_inputs["clinic_start"] = phase_social_start(starts["clinic"])
+            p_tep["kindergarten"] = {**p_tep.get("kindergarten",{"label":"ДОУ"}),
+                "gns":0.0,"total_area":sums["kindergarten"]*n(x_master,"social_dou_norm_sqm",12),
+                "useful":0.0,"saleable":0.0,"transfer":sums["kindergarten"]*n(x_master,"social_dou_norm_sqm",12),"units":sums["kindergarten"]}
+            p_tep["school"] = {**p_tep.get("school",{"label":"СОШ"}),
+                "gns":0.0,"total_area":sums["school"]*n(x_master,"social_school_norm_sqm",13),
+                "useful":0.0,"saleable":0.0,"transfer":sums["school"]*n(x_master,"social_school_norm_sqm",13),"units":sums["school"]}
+            p_tep["clinic"] = {**p_tep.get("clinic",{"label":"Поликлиника"}),
+                "gns":0.0,"total_area":sums["clinic"]*n(x_master,"social_clinic_norm_sqm",15),
+                "useful":0.0,"saleable":0.0,"transfer":sums["clinic"]*n(x_master,"social_clinic_norm_sqm",15),"units":sums["clinic"]}
+
+        # Дефолтные очереди объектов — те же, что на странице и в билдере
+        # книги (офисы — 3, ТЦ и паркинг — 2): без discrete движок сажал
+        # офисы в первую очередь, книга — в третью, и поверхности молча
+        # расходились на весь объём объекта.
+        for prefix, tep_key, default_queue in (
+                ("offices", "offices", 3),
+                ("retail", "standalone_retail", 2),
+                ("above_parking", "above_parking", 2)):
+            assigned = int(discrete.get(tep_key, default_queue) or default_queue)
+            # Очередь за пределами проекта уронила бы объект в никуда.
+            assigned = max(1, min(count, assigned))
+            enabled_key = "offices_enabled" if prefix=="offices" else "retail_enabled" if prefix=="retail" else "above_parking_enabled"
+            p_inputs[enabled_key] = bool(x_master.get(enabled_key)) and assigned==idx+1
+            if tep_key in p_tep and assigned != idx+1:
+                p_tep[tep_key] = _zero_tep_row(p_tep[tep_key])
+            if p_inputs[enabled_key]:
+                for suffix in ("start","sales_start"):
+                    dk=f"{prefix}_{suffix}"
+                    if dk in p_inputs:
+                        p_inputs[dk]=_shift_iso(x_master.get(dk),offset)
+                if prefix=="offices":
+                    p_inputs["offices_cost_th_per_sqm"]=n(x_master,"offices_cost_th_per_sqm")*cost_inflation_factor
+                    p_inputs["offices_price_th_per_sqm"]=n(x_master,"offices_price_th_per_sqm")*sales_price_inflation_factor
+                elif prefix=="retail":
+                    p_inputs["retail_cost_th_per_sqm"]=n(x_master,"retail_cost_th_per_sqm")*cost_inflation_factor
+                    p_inputs["retail_price_th_per_sqm"]=n(x_master,"retail_price_th_per_sqm")*sales_price_inflation_factor
+                else:
+                    p_inputs["above_parking_cost_mln_per_space"]=n(x_master,"above_parking_cost_mln_per_space")*cost_inflation_factor
+                    p_inputs["above_parking_price_mln_per_space"]=n(x_master,"above_parking_price_mln_per_space")*sales_price_inflation_factor
+
+        result = calculate(CalcRequest(inputs=p_inputs, tep=p_tep, rates=rates))
+
+        cash_shared = sum(shared_base_mln[k]*cash_weights[k][idx]/100*scenario_cost for k in shared_base_mln)*1_000_000
+        allocated_shared = sum(shared_base_mln[k]*allocation_weights[k][idx]/100*scenario_cost for k in shared_base_mln)*1_000_000
+        if str(x_master.get("social_mode"))=="Строительство":
+            cash_shared += result["summary"]["social_payment"]
+            allocated_shared += total_social_construction*allocation_weights["social_construction"][idx]/100
+
+        allocated_profit = result["summary"]["net_profit"] + (cash_shared-allocated_shared)*(1-tax_rate)
+
+        phase_items.append({
+            "name":name,"index":idx+1,"result":result,
+            # Вводные и ТЭП очереди нужны выгрузке в шаблон ПЛАТО: без них она
+            # заполняет каждый файл очереди данными всего проекта, и три файла
+            # выходят одинаковыми.
+            "inputs":p_inputs,"tep":p_tep,
+            "cash_shared_cost":cash_shared,"allocated_shared_cost":allocated_shared,
+            "allocated_net_profit":allocated_profit,
+            "product_weights":{k:product_weights[k][idx] for k in product_weights},
+            "cost_inflation_factor":cost_inflation_factor,
+            "cost_inflation_pct":float(phasing.get("cost_inflation_pct",8.0) or 0.0),
+            "sales_price_inflation_factor":sales_price_inflation_factor,
+            "sales_price_inflation_pct":float(phasing.get("sales_price_inflation_pct",8.0) or 0.0),
+            "start_offset_months":offset,
+        })
+        # Удельные показатели считаем от кассовых величин самой очереди: общие
+        # расходы уже сидят в её денежном потоке по кассовым весам, поэтому
+        # рубль на метр сопоставим с кассовыми строками таблицы.
+        p_saleable = float(result["summary"].get("monetizable_saleable_sqm") or 0.0)
+        p_gns = float(result["summary"].get("project_gns_sqm") or 0.0)
+        p_expenses = float(result["summary"].get("total_expenses") or 0.0)
+
+        def per_th(value: float, area: float) -> float:
+            return value / area / 1000.0 if area else 0.0
+
+        comparison.append({
+            "name":name,"saleable_sqm":result["summary"]["monetizable_saleable_sqm"],
+            # Чисто квартирная удельная цена: смешанные периметры («вся выручка
+            # на м²» против «площадные продукты») не сверить глазами, а
+            # квартиры на м² продаваемой — общий знаменатель отчёта и книги.
+            "apartment_price_th":result["summary"].get("average_apartment_price_th", 0.0),
+            "apartment_saleable_sqm":result["summary"].get("apartment_saleable_sqm", 0.0),
+            "gns_sqm":p_gns,"total_expenses":p_expenses,
+            "revenue_per_saleable_th":per_th(result["summary"]["revenue"], p_saleable),
+            "revenue_per_gns_th":per_th(result["summary"]["revenue"], p_gns),
+            "capex_per_gns_th":per_th(result["summary"]["capex"], p_gns),
+            "capex_per_saleable_th":per_th(result["summary"]["capex"], p_saleable),
+            "expenses_per_saleable_th":per_th(p_expenses, p_saleable),
+            "expenses_per_gns_th":per_th(p_expenses, p_gns),
+            "net_profit_per_saleable_th":per_th(result["summary"]["net_profit"], p_saleable),
+            "net_profit_per_gns_th":per_th(result["summary"]["net_profit"], p_gns),
+            "revenue":result["summary"]["revenue"],"capex":result["summary"]["capex"],
+            "cash_shared_cost":cash_shared,"allocated_shared_cost":allocated_shared,
+            "peak_bridge":result["finance"]["peak_bridge"],"peak_pf":result["finance"]["peak_pf"],
+            "llcr":result["summary"]["llcr"],"net_profit":result["summary"]["net_profit"],
+            "allocated_net_profit":allocated_profit,"margin":result["summary"]["margin"],
+            "cost_inflation_factor":cost_inflation_factor,
+            "sales_price_inflation_factor":sales_price_inflation_factor,
+            "social_cost":sum(
+                float(item.get("capacity", 0.0) or 0.0) * (
+                    n(x_master, "kindergarten_cost_mln_per_place") if item["type"] == "kindergarten"
+                    else n(x_master, "school_cost_mln_per_place") if item["type"] == "school"
+                    else n(x_master, "clinic_cost_mln_per_unit")
+                ) * 1_000_000 * cost_inflation_factor
+                for item in social_allocation if item["phase"] == idx + 1
+            ),
+            "social_objects":[item["name"] for item in social_allocation if item["phase"] == idx + 1],
+        })
+
+    consolidated = _consolidate_phase_results(x_master, phase_items, comparison)
+    vri_summary = _consolidate_vri(phase_items)
+    vri_summary["totals"]["gross"] = round(base_amounts.get("land_rights_gross", 0.0), 2)
+    vri_summary["totals"]["relief"] = round(base_amounts.get("land_rights_relief", 0.0), 2)
+    consolidated["vri"] = vri_summary
+    for item, row in zip(phase_items, comparison):
+        row["vri_cash"] = item["result"].get("vri", {}).get("totals", {}).get("cash", 0.0)
+    return {"mode":"phased","consolidated":consolidated,"phases":phase_items,"comparison":comparison,
+            "phasing":phasing,"social_allocation":social_allocation,"vri":vri_summary}
+
+
+@app.post("/calculate-phased")
+def calculate_phased_api(req: PhasedCalcRequest) -> dict[str, Any]:
+    # Очерёдность — тот же расчёт экономики, и та же граница входа.
+    _require_web_access(req.session, req.access_key, "Расчёт экономики")
+    return calculate_phased(req)
+
+
+@app.post("/analysis/sensitivity")
+def sensitivity_api(req: SensitivityRequest) -> dict[str, Any]:
+    return run_sensitivity(
+        req.inputs, req.tep, req.rates, req.phasing,
+        metric=req.metric, scope=req.scope, selected_view=req.selected_view,
+        parameters=list(req.parameters), change_pct=req.change_pct,
+        duration_change_months=req.duration_change_months,
+    )
+
+
+@app.get("/analysis/sensitivity/options")
+def sensitivity_options() -> dict[str, Any]:
+    """Показатели и параметры для формы: справочник один, дублировать его нельзя."""
+    meta = _field_meta()
+    return {
+        "metrics": [
+            {"key": key, "label": info["label"], "unit": info["unit"], "better": info["better"]}
+            for key, info in _SENSITIVITY_METRICS.items()
+        ],
+        "parameters": [
+            {
+                "key": spec["key"],
+                "label": _sensitivity_label(spec, meta)[0],
+                "unit": _sensitivity_label(spec, meta)[1],
+                "group": spec["group"],
+                "kind": spec["kind"],
+            }
+            for spec in _SENSITIVITY_PARAMETERS
+        ],
+    }
+
+
+
+# ---------------------------------------------------------------------------
+# DevelopAid SERGEEVICH FEDOSKIN — tool-using read-only investment analyst
+# The LLM chooses tools; all financial arithmetic and parameter search are executed
+# deterministically by the DevelopAid calculation engine on the server.
+# ---------------------------------------------------------------------------
+_AGENT_RATE_BUCKET: dict[str, list[float]] = defaultdict(list)
+_AGENT_GLOBAL_BUCKET: list[float] = []
+_AGENT_IP_LIMIT_PER_HOUR = 30
+_AGENT_GLOBAL_LIMIT_PER_HOUR = 300
+_AGENT_BANK_LLCR_TARGET = 1.20
+_AGENT_MAX_TOOL_ROUNDS = 8
+
+_DevelopAid_METHODOLOGY = [
+    {
+        "id": "LLCR_TARGET",
+        "topic": "llcr",
+        "rule": "В аналитике DevelopAid целевой банковский ориентир LLCR принят 1,20x. Это пользовательский ориентир модели, а не универсальный норматив всех банков.",
+    },
+    {
+        "id": "LLCR_PHASE_CONTROL",
+        "topic": "llcr",
+        "rule": "Для многоочередного проекта контролировать не только сводный LLCR, но и минимальный LLCR по очередям; bank-safe критерий — слабейшая очередь не ниже 1,20x.",
+    },
+    {
+        "id": "PURCHASE_BRIDGE",
+        "topic": "financing",
+        "rule": "Цена покупки, финансируемая БРИДЖем, влияет не только на CAPEX: она увеличивает потребность в БРИДЖе, проценты/комиссии и последующее рефинансирование в ПФ, поэтому предельную цену определять только полным пересчётом модели.",
+    },
+    {
+        "id": "MANAGEMENT",
+        "topic": "expenses",
+        "rule": "Управление проектом — зарплаты, административные и общехозяйственные расходы девелопера. Не смешивать с техническим заказчиком, стройконтролем и авторским надзором.",
+    },
+    {
+        "id": "COST_DEFINITION",
+        "topic": "expenses",
+        "rule": "Различать строительную себестоимость на м² ГНС и полную себестоимость на продаваемый м², включающую землю/ВРИ, социалку, управление, коммерческие расходы, финансирование и налог.",
+    },
+    {
+        "id": "PROFIT_TAX_BY_PRODUCT",
+        "topic": "expenses",
+        "rule": "Налог на прибыль считать накопительно не ранее РВЭ: маржа реализованных основных продуктов плюс отдельная маржа МФОЦ, ОСЗ и наземного паркинга по физически реализованным м²/местам, минус выплаченные проценты и банковские комиссии. Маржу каждого объекта КРТ включать в базу один раз.",
+    },
+    {
+        "id": "GLAVAPU",
+        "topic": "tep",
+        "rule": "При наличии импорта ГлавАПУ использовать его как контрольный первичный источник ТЭП и обязательной социальной нагрузки; расхождения с моделью явно показывать.",
+    },
+    {
+        "id": "PARKING",
+        "topic": "tep",
+        "rule": "Для импортированной логики ГлавАПУ подземный паркинг формируется из постоянных + гостевых мест, площадь принимается 35 м²/место; места присоединённых объектов и кратковременной остановки не дублировать.",
+    },
+    {
+        "id": "SOCIAL_IS_AN_OBLIGATION",
+        "topic": "social",
+        "rule": "Социальная нагрузка — обязательство по градостроительной документации, а не параметр оптимизации. В Москве обнулить её нельзя: строить не дадут. Допустимые решения — форма исполнения (строительство против денежной компенсации), уточнение мощностей по нормативу и сроки в пределах обязательств. Сценарий «социалка = 0» показывает предел чувствительности, а не путь оздоровления.",
+    },
+    {
+        "id": "VRI_RELIEF",
+        "topic": "social",
+        "rule": "Земельно-правовую нагрузку в Москве снижают законно двумя способами: льготой по плате за смену ВРИ (её получают через места приложения труда — поля «Льгота — доля от суммы» и «Льгота — сумма») и рассрочкой платежа (1, 3 или 6 лет, платежи квартальные). Рассрочка меняет не сумму, а её распределение: первые платежи приходятся на дату обязательства, до открытия ПФ их несёт БРИДЖ, поэтому эффект на LLCR считается моделью. Саму плату девелопер не выбирает — её считает город по формуле.",
+    },
+    {
+        "id": "PARKING_2118PP",
+        "topic": "tep",
+        "rule": "Постановление Правительства Москвы № 2118-ПП (подписано 05.08.2026, краткое изложение — перед применением к проекту сверить с текстом документа): расчёт машино-мест на стадии ГЗК ведётся по общей площади квартир, на стадии АГР — по количеству квартир с учётом их площади. Нормативы обеспеченности постоянными местами: 0,8 места на квартиру до 70 м², 1,2 — от 70 до 100 м², 1,6 — свыше 100 м², а также для индивидуальных и блокированных домов. Нормы 945-ПП в новой редакции применяются независимо от ПЗЗ; противоречащие нормы ПЗЗ не действуют. Переходные положения: требования не распространяются на объекты, у которых на 05.08.2026 уже есть разрешения, положительные заключения экспертизы или утверждённые АГР.",
+    },
+    {
+        "id": "PARKING_2118PP_ECONOMY",
+        "topic": "expenses",
+        "rule": "Рост нормативной обеспеченности машино-местами увеличивает подземную часть, а с ней СМР подземной части и полную себестоимость на продаваемый метр. В модели это проверяется полями «Машино-места — решение проекта» и «Площадь подземной парковки»: пара согласована, ввод одного пересчитывает другое по нормативу площади. Пока калькулятор ГлавАПУ не обновлён под новые нормативы, он отдаёт прежнюю потребность — новое число вводится вручную.",
+    },
+    {
+        "id": "SOCIAL",
+        "topic": "social",
+        "rule": "При режиме «Строительство» социальные объекты учитывать как дискретные объекты с привязкой к очереди и графику; при компенсации — как денежный платёж. Не учитывать один и тот же объём дважды.",
+    },
+    {
+        "id": "PHASING",
+        "topic": "phasing",
+        "rule": "В сводном CF общепроектный расход учитывается один раз. Для аналитики очередей различать кассовое несение расхода и экономическую аллокацию.",
+    },
+    {
+        "id": "EXPERT_PRESET_OVERRIDE",
+        "topic": "tep",
+        "rule": "Если серверный проектный preset содержит явно помеченную экспертную корректировку, в рабочем сценарии она имеет приоритет над исходным ТЭП, но исходное значение должно сохраняться и показываться как контрольный источник.",
+    },
+    {
+        "id": "WEAK_PHASE_LOGIC",
+        "topic": "phasing",
+        "rule": "Если LLCR отдельной очереди ниже цели, сначала определить дисбаланс между долей выручки/ТЭП и долей ранней нагрузки. Реальные меры проверять в порядке: корректность cash-аллокации и сроков → перенос реально переносимых затрат/соцобъектов → увеличение выручечного ТЭП слабой очереди → изменение сроков → цена входа/себестоимость. Не переносить покупку/ВРИ косметически ради улучшения коэффициента.",
+    },
+    {
+        "id": "PHASE_COST_INFLATION",
+        "topic": "phasing",
+        "rule": "В очередности базовая инфляция себестоимости — 8% годовых. Она применяется во внешней фазовой надстройке к затратам соответствующей очереди по её сдвигу старта; атомарный одноочередный движок не меняется.",
+    },
+    {
+        "id": "PHASE_SALES_PRICE_INFLATION",
+        "topic": "phasing",
+        "rule": "Инфляция стартовой цены продажи по очередям — отдельный параметр, базово 8% годовых между стартами очередей. Месячный рост цены применяется уже после собственного старта продаж каждой очереди; эти механизмы нельзя смешивать.",
+    },
+    {
+        "id": "CLASS_AND_SCENARIO_PRESETS",
+        "topic": "expenses",
+        "rule": "Класс проекта задаёт базовые цены и базовую строительную себестоимость. Сценарий применяется поверх класса: базовый = цены 100%/затраты 100%; консервативный = цены -10%/затраты +10%; оптимистичный = цены +10%/затраты -10%.",
+    },
+    {
+        "id": "TECH_CUSTOMER_DEFAULT",
+        "topic": "expenses",
+        "rule": "Технический заказчик/стройконтроль — отдельная статья, базово 5% СМР. Управление проектом — тоже 5%, но это зарплаты и административные накладные девелопера; статьи не смешивать.",
+    },
+    {
+        "id": "MARKET_BENCHMARK_NORMALIZATION",
+        "topic": "expenses",
+        "rule": "Рыночные ставки СМР сравнивать только на одинаковом знаменателе и одинаковом составе. Ставку на продаваемую площадь пересчитывать в ставку на ГНС через площади конкретного проекта. Внешние сети, генподряд, резерв, техзаказчик и управление учитывать отдельно, если они не входят в benchmark.",
+    },
+    {
+        "id": "AGENT_INPUT_CHANGES",
+        "topic": "all",
+        "rule": "Платон может подготовить изменение Inputs после сценарного расчёта, но реальная модель меняется только после явного подтверждения пользователя кнопкой «Применить в модель».",
+    },
+    {
+        "id": "PURCHASE_OFFER_DECISION",
+        "topic": "financing",
+        "rule": "На конкретную цену продавца Платон должен дать управленческое решение одним сценарием: экономика при офере → потолок цены при LLCR 1,20 → если офер выше, требуемые изменения цены продаж/себестоимости. Не запускать повторную полную диагностику без необходимости.",
+    },
+    {
+        "id": "MYTISHCHI_MFC",
+        "topic": "tep",
+        "rule": "В preset Мытищи МФК/офисы — отдельный дискретный продукт: 26 700 м² GBA/ГНС и 21 360 м² полезной/продаваемой площади. Его нельзя одновременно учитывать как standalone retail. Парковка МФК 434 м/м добавляется к жилому подземному паркингу 2 289 м/м.",
+    },
+]
+
+_AGENT_INSTRUCTIONS = """
+Ты — Платон Сергеевич Федоскин, AI-консультант DevelopAid по девелоперской инвестиционной модели и проектному финансированию.
+
+ТЫ НЕ ДОЛЖЕН САМ СЧИТАТЬ ЦИФРЫ МОДЕЛИ.
+Для любого вопроса о текущих цифрах, причинах показателей, рекомендациях или подборе параметров ОБЯЗАТЕЛЬНО используй доступные инструменты.
+Все численные выводы должны опираться на tool outputs.
+
+Правила выбора инструментов:
+- «Почему такой LLCR / откуда цифра / что входит?» → explain_metric и при необходимости trace_metric.
+- «За сколько максимум купить / какая себестоимость / какая цена продаж нужна / подобрать параметр» → goal_seek.
+- «Что будет, если...» → simulate_change.
+- «Продают за X», «просят X за участок», «если цена покупки X — брать/что делать?» → evaluate_purchase_offer. Это приоритетный одношаговый инструмент; после его результата сразу дай решение и НЕ запускай повторную общую диагностику, если пользователь её отдельно не просил.
+- Рыночная ставка дана на другом знаменателе («90 тыс. на продаваемую», «на общую») → normalize_market_benchmark до любых выводов.
+- Пользователь просит реально поменять вводные или ты сформировал конкретную рекомендуемую конфигурацию → сначала рассчитай, затем prepare_model_patch.
+- «Есть ли ошибки / аномалии / что не сходится?» → find_anomalies.
+- Методологический вопрос → get_methodology; если вопрос связан с текущим проектом, дополнительно используй расчётный инструмент.
+- Вопрос «как сделать», «с чего начать», «где кнопка» → get_user_guide; отвечай шагами из руководства и давай ссылку на раздел вида /guide#inputs. Не выдумывай кнопки: называй только те, что есть в руководстве.
+
+Особые правила:
+1. LLCR 1,20x — целевой ориентир пользователя для DevelopAid, не называй его универсальным нормативом всех банков.
+2. Для многоочередного проекта при банковской рекомендации предпочитай scope=weakest_phase, если пользователь явно не просит только сводный проект.
+2a. Если хотя бы одна очередь ниже 1,20x, не ограничивайся констатацией. Сначала вызови diagnose_project_logic, затем phase_recovery_options. Построй причинный вывод: хватает ли слабой очереди ТЭП/выручки относительно CAPEX, ранних общепроектных затрат, Bridge и социалки; затем ранжируй реальные варианты оздоровления.
+2b. Различай реальное улучшение проекта и косметическую перекладку. Покупку/ВРИ нельзя просто перенести в другую очередь ради красивого LLCR. Социалку и сети можно предлагать переносить только как сценарий при фактической реализуемости по графику/обязательствам.
+2f. Социальная нагрузка и плата за смену ВРИ — обязательства, а не параметры оптимизации. В Москве обнулить социалку нельзя: строить не дадут. Не подавай «социалка = 0» или «плата за ВРИ = 0» как способ оздоровления, даже если инструмент такой сценарий посчитал; если считаешь для оценки чувствительности, называй это пределом, а не решением, и повторяй оговорку инструмента.
+2g. Законные рычаги земельно-правовой нагрузки в Москве: льгота по плате за смену ВРИ (её получают через места приложения труда) — поля vri_relief_pct / vri_relief_mln; рассрочка платежа — vri_installment_years, vri_initial_pct (Москва: 1, 3 или 6 лет, платежи квартальные). Рассрочка меняет не сумму, а её распределение во времени: первые платежи до открытия ПФ несёт БРИДЖ, поэтому эффект на LLCR считай моделью, а не на глаз. Форма исполнения социалки (строительство против денежной компенсации) — тоже решение, но это не обнуление.
+2c. Различай годовую инфляцию стартовой цены между очередями и месячный рост цены внутри каждой очереди. Не индексируй О2/О3 месячным ростом за период до их старта продаж.
+2d. Класс проекта задаёт базовые цены/затраты; сценарий — относительный стресс или апсайд ±10% поверх выбранного класса.
+2e. Управление проектом 5% и технический заказчик/стройконтроль 5% — разные статьи с разным экономическим смыслом.
+3. На вопрос о максимальной цене покупки при LLCR 1,20 вызывай goal_seek:
+   variable=purchase_price_mln, target_metric=llcr, target_value=1.20,
+   constraint=at_least, objective=maximum_variable, scope=weakest_phase для многоочередного проекта
+   либо consolidated для одноочередного.
+4. На вопрос о максимальной строительной себестоимости вызывай goal_seek:
+   variable=main_construction_cost_th_per_sqm с теми же правилами LLCR.
+5. Не говори «примерно» там, где инструмент вернул точный расчётный результат.
+6. Если инструмент сообщает ограничение/предупреждение методики — обязательно упомяни его.
+7. Не утверждай, что банк гарантированно одобрит проект.
+8. Ты не можешь менять модель без подтверждения пользователя. prepare_model_patch только готовит изменение; реальный Input меняется после кнопки «Применить в модель».
+8a. Если пользователь пишет «поставь», «измени», «повысить», «снизить» и значение известно — проверь эффект и подготовь patch. Не ограничивайся инструкцией пользователю, где вручную менять поле.
+8b. Тендерную ставку на продаваемую/общую площадь никогда не сравнивай напрямую со ставкой DevelopAid на ГНС. Сначала нормализуй знаменатель. Отдельно проверяй состав: внешние сети, генподряд, резерв, техзаказчик и управление могут сидеть отдельными строками.
+9. Ответ: сначала прямой вывод, затем 3–7 ключевых расчётов/причин.
+10. Если данные противоречат друг другу, не сглаживай противоречие — покажи его.
+11. Имя используй естественно, не представляйся в каждом ответе.
+12. Учитывай контекст предыдущего ответа. Короткий follow-up вроде «а если продают за 650?» относится к предмету предыдущего обсуждения; не начинай анализ проекта заново.
+13. Если tool output содержит final_answer_ready=true, прекрати вызовы инструментов и сформулируй ответ. Не вызывай тот же инструмент повторно.
+14. Для простого управленческого вопроса ответ должен заканчиваться решением: «брать / не брать / торговаться до X / при каких условиях цена становится допустимой».
+""".strip()
+
+
+def _agent_client_id(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()[:80]
+    if request.client:
+        return str(request.client.host)[:80]
+    return "unknown"
+
+
+def _agent_rate_limit(request: Request) -> None:
+    now = time.time()
+    cutoff = now - 3600
+    client_id = _agent_client_id(request)
+    global _AGENT_GLOBAL_BUCKET
+    _AGENT_GLOBAL_BUCKET = [t for t in _AGENT_GLOBAL_BUCKET if t >= cutoff]
+    bucket = [t for t in _AGENT_RATE_BUCKET.get(client_id, []) if t >= cutoff]
+    if len(bucket) >= _AGENT_IP_LIMIT_PER_HOUR:
+        raise HTTPException(status_code=429, detail="Лимит AI-запросов исчерпан. Попробуйте позже.")
+    if len(_AGENT_GLOBAL_BUCKET) >= _AGENT_GLOBAL_LIMIT_PER_HOUR:
+        raise HTTPException(status_code=429, detail="Общий лимит AI-запросов временно исчерпан.")
+    bucket.append(now)
+    _AGENT_RATE_BUCKET[client_id] = bucket
+    _AGENT_GLOBAL_BUCKET.append(now)
+
+
+def _run_authoritative_model(
+    inputs: dict[str, Any],
+    tep: dict[str, dict[str, Any]],
+    rates: list[dict[str, Any]],
+    phasing: dict[str, Any],
+) -> dict[str, Any]:
+    x = copy.deepcopy(inputs)
+    t = copy.deepcopy(tep)
+    rr = copy.deepcopy(rates)
+    p = copy.deepcopy(phasing or {})
+    if p.get("enabled") and int(p.get("phase_count") or 1) > 1:
+        return calculate_phased(PhasedCalcRequest(inputs=x, tep=t, rates=rr, phasing=p))
+    single = calculate(CalcRequest(inputs=x, tep=t, rates=rr))
+    return {"mode": "single", "consolidated": single, "phases": [], "comparison": []}
+
+
+def _selected_result(bundle: dict[str, Any], selected_view: str) -> tuple[str, dict[str, Any]]:
+    view = str(selected_view or "all")
+    if bundle.get("mode") == "phased" and view.startswith("phase"):
+        try:
+            idx = int(view.replace("phase", "")) - 1
+            item = bundle.get("phases", [])[idx]
+            return item.get("name", f"О{idx+1}"), item["result"]
+        except Exception:
+            pass
+    return "Весь проект", bundle["consolidated"]
+
+
+def _scope_result(
+    bundle: dict[str, Any],
+    requested_scope: str,
+    selected_view: str,
+) -> tuple[str, dict[str, Any]]:
+    scope = str(requested_scope or "selected")
+    if scope == "consolidated" or bundle.get("mode") != "phased":
+        return "Весь проект", bundle["consolidated"]
+    if scope == "weakest_phase":
+        phases = bundle.get("phases") or []
+        if phases:
+            item = min(phases, key=lambda p: float(p["result"]["summary"].get("llcr", 0) or 0))
+            return item.get("name", "Слабейшая очередь"), item["result"]
+        return "Весь проект", bundle["consolidated"]
+    return _selected_result(bundle, selected_view)
+
+
+def _phase_comparison_for_agent(bundle: dict[str, Any]) -> list[dict[str, Any]]:
+    if bundle.get("mode") != "phased":
+        return []
+    out = []
+    for item in bundle.get("comparison") or []:
+        out.append({
+            "name": item.get("name"),
+            "saleable_sqm": round(float(item.get("saleable_sqm", 0) or 0), 2),
+            "gns_sqm": round(float(item.get("gns_sqm", 0) or 0), 2),
+            "revenue_mln": round(float(item.get("revenue", 0) or 0) / 1e6, 2),
+            "revenue_per_saleable_th": round(float(item.get("revenue_per_saleable_th", 0) or 0), 2),
+            "revenue_per_gns_th": round(float(item.get("revenue_per_gns_th", 0) or 0), 2),
+            "capex_mln": round(float(item.get("capex", 0) or 0) / 1e6, 2),
+            "capex_per_gns_th": round(float(item.get("capex_per_gns_th", 0) or 0), 2),
+            "capex_per_saleable_th": round(float(item.get("capex_per_saleable_th", 0) or 0), 2),
+            "total_expenses_mln": round(float(item.get("total_expenses", 0) or 0) / 1e6, 2),
+            "expenses_per_saleable_th": round(float(item.get("expenses_per_saleable_th", 0) or 0), 2),
+            "expenses_per_gns_th": round(float(item.get("expenses_per_gns_th", 0) or 0), 2),
+            "net_profit_per_saleable_th": round(float(item.get("net_profit_per_saleable_th", 0) or 0), 2),
+            "net_profit_per_gns_th": round(float(item.get("net_profit_per_gns_th", 0) or 0), 2),
+            "cash_shared_cost_mln": round(float(item.get("cash_shared_cost", 0) or 0) / 1e6, 2),
+            "allocated_shared_cost_mln": round(float(item.get("allocated_shared_cost", 0) or 0) / 1e6, 2),
+            "peak_bridge_mln": round(float(item.get("peak_bridge", 0) or 0) / 1e6, 2),
+            "peak_pf_mln": round(float(item.get("peak_pf", 0) or 0) / 1e6, 2),
+            "llcr_x": round(float(item.get("llcr", 0) or 0), 4),
+            "net_profit_mln": round(float(item.get("net_profit", 0) or 0) / 1e6, 2),
+            "margin_pct": round(float(item.get("margin", 0) or 0) * 100, 3),
+        })
+    return out
+
+
+def _result_snapshot(result: dict[str, Any]) -> dict[str, Any]:
+    s = result.get("summary") or {}
+    f = result.get("finance") or {}
+    return {
+        "revenue_mln": round(float(s.get("revenue", 0) or 0) / 1e6, 2),
+        "capex_mln": round(float(s.get("capex", 0) or 0) / 1e6, 2),
+        "commercial_costs_mln": round(float(s.get("commercial_costs", 0) or 0) / 1e6, 2),
+        "financing_cost_mln": round(float(s.get("financing_cost", 0) or 0) / 1e6, 2),
+        "profit_tax_mln": round(float(s.get("profit_tax", 0) or 0) / 1e6, 2),
+        "net_profit_mln": round(float(s.get("net_profit", 0) or 0) / 1e6, 2),
+        "margin_pct": round(float(s.get("margin", 0) or 0) * 100, 3),
+        "llcr_x": round(float(s.get("llcr", 0) or 0), 4),
+        "npv_mln": round(float(s.get("npv", 0) or 0) / 1e6, 2),
+        "irr_equity_pct": round(float(s["irr_equity"]) * 100, 3) if s.get("irr_equity") is not None else None,
+        "peak_bridge_mln": round(float(f.get("peak_bridge", 0) or 0) / 1e6, 2),
+        "peak_pf_mln": round(float(f.get("peak_pf", 0) or 0) / 1e6, 2),
+        "pf_draw_total_mln": round(float(f.get("pf_draw_total", 0) or 0) / 1e6, 2),
+        "full_cost_per_saleable_th_per_sqm": round(float(s.get("full_cost_per_saleable_th", 0) or 0), 2),
+        "full_cost_per_gns_th_per_sqm": round(float(s.get("full_cost_per_gns_th", 0) or 0), 2),
+        "construction_cost_per_gns_th_per_sqm": round(float(s.get("construction_cost_per_gns_th", 0) or 0), 2),
+        "construction_cost_per_saleable_th_per_sqm": round(float(s.get("construction_cost_per_saleable_th", 0) or 0), 2),
+        "average_apartment_price_th_per_sqm": round(float(s.get("average_apartment_price_th", 0) or 0), 2),
+    }
+
+
+def _metric_value(
+    bundle: dict[str, Any],
+    metric: str,
+    scope: str,
+    selected_view: str,
+) -> tuple[str, float | None, dict[str, Any]]:
+    label, result = _scope_result(bundle, scope, selected_view)
+    s = result.get("summary") or {}
+    mapping = {
+        "llcr": float(s.get("llcr", 0) or 0),
+        "margin_pct": float(s.get("margin", 0) or 0) * 100,
+        "net_profit_mln": float(s.get("net_profit", 0) or 0) / 1e6,
+        "npv_mln": float(s.get("npv", 0) or 0) / 1e6,
+        "irr_equity_pct": (float(s["irr_equity"]) * 100 if s.get("irr_equity") is not None else None),
+        # Метрики анализа чувствительности берутся отсюда же: одна выборка
+        # показателя на целеподбор Платона и на Tornado.
+        "ebitda_mln": float(s.get("ebitda", 0) or 0) / 1e6,
+        "total_expenses_mln": float(s.get("total_expenses", 0) or 0) / 1e6,
+        "equity_need_mln": _equity_need(result) / 1e6,
+        "peak_debt_mln": _peak_total_debt(result) / 1e6,
+        "peak_bridge_mln": float((result.get("finance") or {}).get("peak_bridge", 0) or 0) / 1e6,
+        "pf_draw_total_mln": float((result.get("finance") or {}).get("pf_draw_total", 0) or 0) / 1e6,
+    }
+    return label, mapping.get(metric), result
+
+
+def _equity_need(result: dict[str, Any]) -> float:
+    """Пиковая потребность в собственном капитале — худший накопленный отток."""
+    flows = ((result.get("cashflow") or {}).get("equity")) or []
+    worst = cumulative = 0.0
+    for value in flows:
+        cumulative += float(value or 0)
+        worst = min(worst, cumulative)
+    return -worst
+
+
+def _peak_total_debt(result: dict[str, Any]) -> float:
+    """Пик совокупного долга: БРИДЖ и ПФ в один и тот же месяц, а не порознь."""
+    rows = (result.get("finance") or {}).get("rows") or []
+    return max(
+        (float(row.get("bridge_balance") or 0) + float(row.get("pf_balance") or 0) for row in rows),
+        default=0.0,
+    )
+
+
+# --- Анализ чувствительности (Tornado) ---------------------------------------
+#
+# Один параметр за расчёт — One Factor at a Time. Сценарии «консервативный /
+# базовый / оптимистичный» этого не заменяют: там одновременно двигаются и цены,
+# и затраты, и по ним не понять, что именно решает судьбу проекта.
+
+_SENSITIVITY_METRICS: dict[str, dict[str, Any]] = {
+    "llcr":               {"label": "LLCR", "unit": "x", "digits": 3, "better": "higher"},
+    "npv_mln":            {"label": "NPV", "unit": "млн ₽", "digits": 0, "better": "higher"},
+    "irr_equity_pct":     {"label": "IRR на собственный капитал", "unit": "%", "digits": 1, "better": "higher"},
+    "net_profit_mln":     {"label": "Чистая прибыль", "unit": "млн ₽", "digits": 0, "better": "higher"},
+    "ebitda_mln":         {"label": "EBITDA", "unit": "млн ₽", "digits": 0, "better": "higher"},
+    "equity_need_mln":    {"label": "Потребность в собственном капитале", "unit": "млн ₽", "digits": 0, "better": "lower"},
+    "peak_debt_mln":      {"label": "Максимальный совокупный долг", "unit": "млн ₽", "digits": 0, "better": "lower"},
+    "peak_bridge_mln":    {"label": "Максимальный БРИДЖ", "unit": "млн ₽", "digits": 0, "better": "lower"},
+    "pf_draw_total_mln":  {"label": "Максимальная выборка ПФ", "unit": "млн ₽", "digits": 0, "better": "lower"},
+    "total_expenses_mln": {"label": "Полные расходы проекта", "unit": "млн ₽", "digits": 0, "better": "lower"},
+}
+
+
+def _field_meta() -> dict[str, tuple[str, str]]:
+    """Названия и единицы вводных — из того же справочника, что рисует форму."""
+    meta: dict[str, tuple[str, str]] = {}
+    for _, fields in FIELD_GROUPS:
+        for item in fields:
+            meta[str(item[0])] = (str(item[1]), str(item[2]))
+    return meta
+
+
+# Что можно двигать. kind: pct — масштабируется на процент, months — сдвигается
+# на месяцы. where: где лежит значение. needs: когда параметр имеет смысл.
+_SENSITIVITY_PARAMETERS: list[dict[str, Any]] = [
+    # Доходная часть
+    {"key": "apartment_price_th", "kind": "pct", "group": "Доходы", "product": "apartments"},
+    {"key": "commercial_price_th", "kind": "pct", "group": "Доходы", "product": "ground_commercial"},
+    {"key": "parking_price_th", "kind": "pct", "group": "Доходы", "product": "underground_parking"},
+    {"key": "storage_price_th", "kind": "pct", "group": "Доходы", "product": "storage"},
+    {"key": "pace_adjustment_pct", "kind": "pct", "group": "Доходы", "allow_negative": True},
+    {"key": "share_before_rve_pct", "kind": "pct", "group": "Доходы", "max": 100.0},
+    {"key": "monthly_growth_pre_pct", "kind": "pct", "group": "Доходы"},
+    {"key": "monthly_growth_post_pct", "kind": "pct", "group": "Доходы"},
+    # Затраты
+    {"key": "purchase_price_mln", "kind": "pct", "group": "Затраты"},
+    {"key": "main_above_th_per_sqm", "kind": "pct", "group": "Затраты"},
+    {"key": "main_under_th_per_sqm", "kind": "pct", "group": "Затраты"},
+    {"key": "utilities_th_per_sqm", "kind": "pct", "group": "Затраты"},
+    {"key": "landscaping_th_per_sqm", "kind": "pct", "group": "Затраты"},
+    {"key": "project_management_pct", "kind": "pct", "group": "Затраты"},
+    {"key": "technical_supervision_pct", "kind": "pct", "group": "Затраты"},
+    {"key": "gc_fee_pct", "kind": "pct", "group": "Затраты"},
+    {"key": "reserve_pct", "kind": "pct", "group": "Затраты"},
+    {"key": "marketing_pct", "kind": "pct", "group": "Затраты"},
+    {"key": "selling_pct", "kind": "pct", "group": "Затраты"},
+    {"key": "social_compensation_mln", "kind": "pct", "group": "Затраты", "needs": "social_payment"},
+    {"key": "land_rights_cost_mln", "kind": "pct", "group": "Затраты"},
+    # Сроки
+    {"key": "ird_months", "kind": "months", "group": "Сроки", "min": 1.0},
+    {"key": "construction_months", "kind": "months", "group": "Сроки", "min": 1.0},
+    {"key": "sales_lag_months", "kind": "months", "group": "Сроки", "min": 0.0},
+    {"key": "phase_gap_months", "kind": "months", "group": "Сроки", "where": "phasing",
+     "label": "Лаг между очередями", "unit": "мес.", "min": 0.0, "needs": "phased"},
+    {"key": "project_start", "kind": "months", "group": "Сроки", "where": "date",
+     "label": "Задержка старта проекта", "unit": "мес."},
+    # Финансирование
+    {"key": "bridge_spread_pp", "kind": "pct", "group": "Финансирование"},
+    {"key": "pf_spread_pp", "kind": "pct", "group": "Финансирование"},
+    {"key": "discount_rate_pct", "kind": "pct", "group": "Финансирование"},
+]
+
+_SENSITIVITY_BY_KEY = {item["key"]: item for item in _SENSITIVITY_PARAMETERS}
+
+
+def _sensitivity_applicable(
+    spec: dict[str, Any],
+    inputs: dict[str, Any],
+    tep: dict[str, Any],
+    phasing: dict[str, Any],
+) -> str:
+    """Пусто — параметр применим, иначе причина, по которой он бесполезен."""
+    needs = spec.get("needs")
+    if needs == "phased":
+        if not (phasing.get("enabled") and int(phasing.get("phase_count") or 1) > 1):
+            return "очерёдность выключена"
+        return ""
+    if needs == "social_payment" and str(inputs.get("social_mode") or "") == "Строительство":  # noqa: E501
+        return "социальные объекты строятся, а не компенсируются деньгами"
+    product = spec.get("product")
+    if product:
+        row = tep.get(product) or {}
+        if not (float(row.get("saleable") or 0) or float(row.get("units") or 0)):
+            return "продукта нет в ТЭП"
+    if spec.get("where") in (None, "inputs") and spec["kind"] == "pct":
+        if not float(n(inputs, spec["key"], 0.0)):
+            # Ноль, умноженный на процент, остаётся нулём: расчёт не изменится.
+            return "значение равно нулю"
+    return ""
+
+
+def _sensitivity_base_value(
+    spec: dict[str, Any], inputs: dict[str, Any], phasing: dict[str, Any]
+) -> float:
+    where = spec.get("where")
+    if where == "phasing":
+        return float(phasing.get(spec["key"]) or 0)
+    if where == "date":
+        return 0.0
+    return n(inputs, spec["key"], 0.0)
+
+
+def _sensitivity_shift(spec: dict[str, Any], base: float, direction: int,
+                       change_pct: float, months: float) -> float:
+    if spec["kind"] == "months":
+        value = base + direction * months
+    else:
+        value = base * (1 + direction * change_pct / 100.0)
+    if not spec.get("allow_negative"):
+        value = max(float(spec.get("min", 0.0)), value)
+    if spec.get("max") is not None:
+        value = min(float(spec["max"]), value)
+    return round(value, 6)
+
+
+def _sensitivity_apply(
+    spec: dict[str, Any],
+    value: float,
+    inputs: dict[str, Any],
+    phasing: dict[str, Any],
+) -> None:
+    where = spec.get("where")
+    if where == "phasing":
+        phasing[spec["key"]] = value
+        # Сдвиг лага пересобирает старты очередей: они заданы смещением.
+        for index, phase in enumerate(phasing.get("phases") or []):
+            if isinstance(phase, dict):
+                phase["start_offset_months"] = index * value
+        return
+    if where == "date":
+        start = _vri_date(inputs.get("project_start"), date.today())
+        inputs["project_start"] = add_months(start, int(round(value))).isoformat()
+        return
+    inputs[spec["key"]] = value
+
+
+def _sensitivity_label(spec: dict[str, Any], meta: dict[str, tuple[str, str]]) -> tuple[str, str]:
+    if spec.get("label"):
+        return str(spec["label"]), str(spec.get("unit") or "")
+    return meta.get(spec["key"], (spec["key"], ""))
+
+
+_SENSITIVITY_LLCR_TARGET = 1.20
+
+
+def _sensitivity_number(value: float | None, digits: int) -> str:
+    return "—" if value is None else _telegram_number(value, digits)
+
+
+def _sensitivity_verdict(
+    metric: str,
+    base_value: float,
+    items: list[dict[str, Any]],
+    change_pct: float,
+    months: float,
+) -> list[str]:
+    """Вывод по правилам, а не по мнению: перечисляем то, что видно в цифрах."""
+    if not items:
+        return ["Ни один параметр не изменил показатель: анализировать нечего."]
+    info = _SENSITIVITY_METRICS[metric]
+    digits = int(info["digits"])
+    better_higher = info["better"] == "higher"
+    lines: list[str] = []
+
+    def worst_of(row: dict[str, Any]) -> tuple[float | None, float]:
+        """Худшее из двух плеч и то, на сколько для этого сдвинут параметр."""
+        pair = [(row["low_result"], row["low_input"]), (row["high_result"], row["high_input"])]
+        pair = [item for item in pair if item[0] is not None]
+        if not pair:
+            return None, 0.0
+        return min(pair) if better_higher else max(pair)
+
+    top = items[0]
+    worst_value, worst_input = worst_of(top)
+    step = f"{_telegram_number(months, 0)} мес." if top["kind"] == "months" \
+        else f"{_telegram_number(change_pct, 0)}%"
+    lines.append(
+        f"Наибольшее влияние на «{info['label']}» оказывает параметр «{top['label']}»: "
+        f"отклонение на {step} меняет показатель с {_sensitivity_number(base_value, digits)} "
+        f"до {_sensitivity_number(worst_value, digits)} в худшую сторону "
+        f"(размах {_sensitivity_number(top['impact'], digits)} {info['unit']})."
+    )
+    if len(items) > 1:
+        following = ", ".join(f"«{row['label']}»" for row in items[1:3])
+        lines.append(f"Далее по значимости: {following}.")
+
+    if metric == "llcr":
+        breaking = [row for row in items if (worst_of(row)[0] or 0) < _SENSITIVITY_LLCR_TARGET]
+        if base_value >= _SENSITIVITY_LLCR_TARGET and breaking:
+            names = ", ".join(f"«{row['label']}»" for row in breaking[:5])
+            lines.append(
+                f"Опускают LLCR ниже целевых {_telegram_number(_SENSITIVITY_LLCR_TARGET, 2)}x: {names}."
+            )
+        elif base_value < _SENSITIVITY_LLCR_TARGET:
+            lines.append(
+                f"Базовый LLCR {_sensitivity_number(base_value, digits)}x уже ниже целевых "
+                f"{_telegram_number(_SENSITIVITY_LLCR_TARGET, 2)}x — целевой уровень не держится "
+                "и без отклонений."
+            )
+    if metric == "npv_mln":
+        negative = [row for row in items if (worst_of(row)[0] or 0) < 0]
+        if base_value >= 0 and negative:
+            names = ", ".join(f"«{row['label']}»" for row in negative[:5])
+            lines.append(f"Уводят NPV в минус: {names}.")
+    if metric == "equity_need_mln" and base_value > 0:
+        heavy = [row for row in items if (worst_of(row)[0] or 0) > base_value * 1.25]
+        if heavy:
+            names = ", ".join(f"«{row['label']}»" for row in heavy[:5])
+            lines.append(f"Увеличивают потребность в собственном капитале более чем на четверть: {names}.")
+
+    lines.append(
+        "Tornado меняет параметры по одному. Сочетание нескольких отклонений сразу "
+        "здесь не показано и обычно хуже любого из них по отдельности."
+    )
+    return lines
+
+
+def run_sensitivity(
+    inputs: dict[str, Any],
+    tep: dict[str, dict[str, Any]],
+    rates: list[dict[str, Any]],
+    phasing: dict[str, Any],
+    *,
+    metric: str = "llcr",
+    scope: str = "",
+    selected_view: str = "all",
+    parameters: list[str] | None = None,
+    change_pct: float = 10.0,
+    duration_change_months: float = 6.0,
+) -> dict[str, Any]:
+    """Tornado: влияние каждого параметра по отдельности на выбранный показатель."""
+    if metric not in _SENSITIVITY_METRICS:
+        raise HTTPException(
+            status_code=400,
+            detail="Неизвестный показатель: " + str(metric)
+            + ". Доступны: " + ", ".join(sorted(_SENSITIVITY_METRICS)),
+        )
+    change_pct = abs(float(change_pct or 0))
+    duration_change_months = abs(float(duration_change_months or 0))
+    if change_pct <= 0 and duration_change_months <= 0:
+        raise HTTPException(status_code=400, detail="Задайте отклонение в процентах или месяцах")
+
+    # Работаем на копиях: вводные пользователя эта функция не трогает.
+    base_inputs = copy.deepcopy(inputs or {})
+    base_tep = copy.deepcopy(tep or {})
+    base_rates = copy.deepcopy(rates or [])
+    base_phasing = copy.deepcopy(phasing or {})
+
+    base_bundle = _run_authoritative_model(base_inputs, base_tep, base_rates, base_phasing)
+    if not scope:
+        scope = "weakest_phase" if base_bundle.get("mode") == "phased" else "consolidated"
+    scope_label, base_value, _ = _metric_value(base_bundle, metric, scope, selected_view)
+    if base_value is None:
+        # Например, IRR не считается, когда поток собственного капитала не меняет
+        # знак. Анализировать нечего: не от чего отсчитывать отклонения.
+        raise HTTPException(
+            status_code=400,
+            detail=f"Показатель «{_SENSITIVITY_METRICS[metric]['label']}» "
+                   "не определён в текущем расчёте — выберите другой",
+        )
+
+    meta = _field_meta()
+    warnings: list[str] = []
+    requested = [str(key) for key in (parameters or [])]
+    if requested:
+        unknown = [key for key in requested if key not in _SENSITIVITY_BY_KEY]
+        if unknown:
+            raise HTTPException(
+                status_code=400,
+                detail="Неизвестные параметры: " + ", ".join(unknown),
+            )
+        specs = [_SENSITIVITY_BY_KEY[key] for key in requested]
+    else:
+        specs = list(_SENSITIVITY_PARAMETERS)
+
+    items: list[dict[str, Any]] = []
+    for spec in specs:
+        reason = _sensitivity_applicable(spec, base_inputs, base_tep, base_phasing)
+        label, unit = _sensitivity_label(spec, meta)
+        if reason:
+            if requested:
+                warnings.append(f"{label}: не анализируется — {reason}.")
+            continue
+        step = duration_change_months if spec["kind"] == "months" else change_pct
+        if step <= 0:
+            continue
+        base_param = _sensitivity_base_value(spec, base_inputs, base_phasing)
+        results: dict[str, float | None] = {}
+        shifted: dict[str, float] = {}
+        for direction, name in ((-1, "low"), (1, "high")):
+            value = _sensitivity_shift(spec, base_param, direction, change_pct, duration_change_months)
+            shifted[name] = value
+            if value == base_param:
+                results[name] = base_value
+                continue
+            scenario_inputs = copy.deepcopy(base_inputs)
+            scenario_phasing = copy.deepcopy(base_phasing)
+            _sensitivity_apply(spec, value, scenario_inputs, scenario_phasing)
+            try:
+                bundle = _run_authoritative_model(
+                    scenario_inputs, copy.deepcopy(base_tep),
+                    copy.deepcopy(base_rates), scenario_phasing,
+                )
+                results[name] = _metric_value(bundle, metric, scope, selected_view)[1]
+            except Exception as exc:
+                # Отказ одного сценария не должен ронять весь анализ.
+                results[name] = None
+                warnings.append(f"{label}: сценарий не посчитан — {_error_location(exc)}.")
+        low, high = results.get("low"), results.get("high")
+        if low is None and high is None:
+            continue
+        low_delta = None if low is None else round(low - base_value, 6)
+        high_delta = None if high is None else round(high - base_value, 6)
+        impact = max(abs(low_delta or 0.0), abs(high_delta or 0.0))
+        if low is not None and high is not None:
+            impact = abs(high - low)
+        items.append({
+            "parameter": spec["key"],
+            "label": label,
+            "unit": unit,
+            "group": spec["group"],
+            "kind": spec["kind"],
+            "base_input": round(base_param, 6),
+            "low_input": shifted["low"],
+            "high_input": shifted["high"],
+            "low_result": low,
+            "high_result": high,
+            "low_delta": low_delta,
+            "high_delta": high_delta,
+            "impact": round(impact, 6),
+        })
+
+    items.sort(key=lambda item: item["impact"], reverse=True)
+    info = _SENSITIVITY_METRICS[metric]
+    verdict = _sensitivity_verdict(metric, base_value, items, change_pct, duration_change_months)
+    return {
+        "verdict": verdict,
+        "base": {
+            "metric": metric,
+            "label": info["label"],
+            "unit": info["unit"],
+            "digits": info["digits"],
+            "better": info["better"],
+            "value": round(base_value, 6),
+            "scope": scope,
+            "scope_label": scope_label,
+        },
+        "change_pct": change_pct,
+        "duration_change_months": duration_change_months,
+        "items": items,
+        "warnings": warnings,
+        "method": (
+            "Один параметр за расчёт (One Factor at a Time). Значения считает движок модели; "
+            "сочетание нескольких отклонений Tornado не показывает."
+        ),
+    }
+
+
+def _phase_llcr(bundle: dict[str, Any]) -> list[dict[str, Any]]:
+    if bundle.get("mode") != "phased":
+        return []
+    return [
+        {"name": p.get("name"), "llcr_x": round(float(p["result"]["summary"].get("llcr", 0) or 0), 4)}
+        for p in bundle.get("phases") or []
+    ]
+
+
+def _mln_map(raw: dict[str, Any]) -> dict[str, float]:
+    return {
+        str(k): round(float(v or 0) / 1e6, 2)
+        for k, v in raw.items()
+        if k != "total" and isinstance(v, (int, float))
+    }
+
+
+def _tool_explain_metric(
+    req: AgentChatRequest,
+    bundle: dict[str, Any],
+    metric: str,
+    scope: str,
+) -> dict[str, Any]:
+    label, result = _scope_result(bundle, scope, req.selected_view)
+    s = result.get("summary") or {}
+    f = result.get("finance") or {}
+    report = result.get("report") or {}
+    base = {"scope": label, "metric": metric, "snapshot": _result_snapshot(result)}
+
+    if metric == "llcr":
+        numerator_components = {
+            "project_revenue_mln": round(float(f.get("total_revenue", 0) or 0) / 1e6, 2),
+            "minus_commercial_costs_mln": round(float(f.get("commercial_costs", 0) or 0) / 1e6, 2),
+            "minus_profit_tax_mln": round(float(f.get("profit_tax", 0) or 0) / 1e6, 2),
+            "minus_capex_mln": round(float(f.get("total_capex", 0) or 0) / 1e6, 2),
+            "plus_pf_draw_mln": round(float(f.get("pf_draw_total", 0) or 0) / 1e6, 2),
+        }
+        base.update({
+            "value_x": round(float(s.get("llcr", 0) or 0), 4),
+            "target_x": _AGENT_BANK_LLCR_TARGET,
+            "formula": "LLCR = (выручка - коммерческие расходы - налог - CAPEX + выборка ПФ) / (выборка ПФ + фактические проценты и комиссии)",
+            "numerator_mln": round(float(f.get("llcr_numerator", 0) or 0) / 1e6, 2),
+            "numerator_components": numerator_components,
+            "denominator_mln": round(float(f.get("llcr_denominator", 0) or 0) / 1e6, 2),
+            "denominator_components": {
+                "pf_draw_mln": round(float(f.get("pf_draw_total", 0) or 0) / 1e6, 2),
+                "actual_financing_cost_mln": round(float(f.get("financing_cost", 0) or 0) / 1e6, 2),
+                "reported_interest_and_fees_mln": round(float(f.get("reported_interest_and_fees", 0) or 0) / 1e6, 2),
+                "transferred_bridge_interest_eliminated_mln": round(float(f.get("transferred_bridge_interest", 0) or 0) / 1e6, 2),
+            },
+            "phase_llcr": _phase_llcr(bundle),
+            "interpretation": "Рост цены покупки/CAPEX и стоимости финансирования обычно ухудшает LLCR; рост выручки улучшает, но эффект зависит от графика и ПФ.",
+        })
+        if bundle.get("mode") == "phased":
+            base["model_caveat"] = (
+                "Текущая многоочередная версия считает финансирование очередей через существующий фазовый движок; "
+                "это аналитическая модель и не заменяет банковскую модель единого общего БРИДЖа с формальным рефинансированием между ПФ очередей."
+            )
+        return base
+
+    if metric == "expense_structure":
+        expenses = [
+            {
+                "label": item.get("label"),
+                "value_mln": round(float(item.get("value", 0) or 0) / 1e6, 2),
+                "share_pct": round(float(item.get("share", 0) or 0) * 100, 2),
+            }
+            for item in (report.get("expense_structure") or [])
+        ]
+        base.update({
+            "expense_structure": expenses,
+            "totals": {
+                "capex_mln": round(float(s.get("capex", 0) or 0) / 1e6, 2),
+                "commercial_costs_mln": round(float(s.get("commercial_costs", 0) or 0) / 1e6, 2),
+                "financing_cost_mln": round(float(s.get("financing_cost", 0) or 0) / 1e6, 2),
+                "profit_tax_mln": round(float(s.get("profit_tax", 0) or 0) / 1e6, 2),
+                "total_expenses_mln": round(float(s.get("total_expenses", 0) or 0) / 1e6, 2),
+            },
+            "definitions": {
+                "construction_cost": "строительные и проектные затраты на м² ГНС",
+                "full_cost": "полные расходы проекта на продаваемый м², включая землю/ВРИ, социалку, управление, коммерцию, финансирование и налог",
+            },
+        })
+        return base
+
+    if metric == "revenue":
+        base["products"] = [
+            {
+                "label": p.get("label"),
+                "quantity": round(float(p.get("quantity", 0) or 0), 2),
+                "unit": p.get("unit"),
+                "start_price_th": round(float(p.get("start_price_th", 0) or 0), 2),
+                "avg_price_th": round(float(p.get("avg_price_th", 0) or 0), 2),
+                "revenue_mln": round(float(p.get("revenue", 0) or 0) / 1e6, 2),
+                "sales_start": p.get("sales_start"),
+                "sales_end": p.get("sales_end"),
+            }
+            for p in (report.get("products") or [])
+        ]
+        base["total_revenue_mln"] = round(float(s.get("revenue", 0) or 0) / 1e6, 2)
+        return base
+
+    if metric == "capex":
+        base["capex_components_mln"] = _mln_map(result.get("capex") or {})
+        base["total_capex_mln"] = round(float(s.get("capex", 0) or 0) / 1e6, 2)
+        return base
+
+    if metric == "profit_tax":
+        margin_by_product = f.get("tax_margin_by_product") or {}
+        cost_by_product = f.get("tax_cost_by_product") or {}
+        financing_raw = f.get("financing_tax_deductions") or 0.0
+        financing_total = (
+            sum(float(v or 0) for v in financing_raw.values())
+            if isinstance(financing_raw, dict)
+            else float(financing_raw or 0)
+        )
+        base.update({
+            "formula": "Налог = MAX(накопленная маржа продуктов - накопленные расходы финансирования, 0) × ставка - ранее уплаченный налог; не ранее РВЭ",
+            "rate_pct": round(n(req.inputs, "profit_tax_pct", 25), 3),
+            "margin_by_product_mln": _mln_map(margin_by_product),
+            "recognized_cost_by_product_mln": _mln_map(cost_by_product),
+            "financing_deductions_mln": round(financing_total / 1e6, 2),
+            "tax_base_before_losses_mln": round(
+                (sum(float(v or 0) for v in margin_by_product.values())
+                 - financing_total) / 1e6,
+                2,
+            ),
+            "profit_tax_mln": round(float(f.get("profit_tax", 0) or 0) / 1e6, 2),
+            "payments": [
+                {"month": row.get("month"), "profit_tax_mln": round(float(row.get("profit_tax", 0) or 0) / 1e6, 2)}
+                for row in (f.get("rows") or [])
+                if float(row.get("profit_tax", 0) or 0) > 0
+            ],
+        })
+        return base
+
+    if metric == "net_profit":
+        base.update({
+            "formula": "Чистая прибыль = Выручка - CAPEX - Маркетинг/продажи - Проценты/комиссии - Налог",
+            "components_mln": {
+                "revenue": round(float(s.get("revenue", 0) or 0) / 1e6, 2),
+                "capex": round(float(s.get("capex", 0) or 0) / 1e6, 2),
+                "commercial": round(float(s.get("commercial_costs", 0) or 0) / 1e6, 2),
+                "financing": round(float(s.get("financing_cost", 0) or 0) / 1e6, 2),
+                "tax": round(float(s.get("profit_tax", 0) or 0) / 1e6, 2),
+                "net_profit": round(float(s.get("net_profit", 0) or 0) / 1e6, 2),
+            },
+        })
+        return base
+
+    if metric == "unit_cost":
+        base.update({
+            "construction_cost_per_gns_th_per_sqm": round(float(s.get("construction_cost_per_gns_th", 0) or 0), 2),
+            "construction_cost_per_saleable_th_per_sqm": round(float(s.get("construction_cost_per_saleable_th", 0) or 0), 2),
+            "full_cost_per_saleable_th_per_sqm": round(float(s.get("full_cost_per_saleable_th", 0) or 0), 2),
+            "full_cost_per_gns_th_per_sqm": round(float(s.get("full_cost_per_gns_th", 0) or 0), 2),
+            "project_gns_sqm": round(float(s.get("project_gns_sqm", 0) or 0), 2),
+            "monetizable_saleable_sqm": round(float(s.get("monetizable_saleable_sqm", 0) or 0), 2),
+            "expense_structure": [
+                {
+                    "label": i.get("label"),
+                    "value_mln": round(float(i.get("value", 0) or 0) / 1e6, 2),
+                    "share_pct": round(float(i.get("share", 0) or 0) * 100, 2),
+                    "per_gns_th_per_sqm": round(float(i.get("per_gns_th", 0) or 0), 2),
+                    "per_saleable_th_per_sqm": round(float(i.get("per_saleable_th", 0) or 0), 2),
+                }
+                for i in (report.get("expense_structure") or [])
+            ],
+        })
+        return base
+
+    if metric == "financing":
+        base.update({
+            "peak_bridge_mln": round(float(f.get("peak_bridge", 0) or 0) / 1e6, 2),
+            "calculated_bridge_limit_mln": round(float(f.get("calculated_bridge_limit", 0) or 0) / 1e6, 2),
+            "peak_pf_mln": round(float(f.get("peak_pf", 0) or 0) / 1e6, 2),
+            "pf_limit_mln": round(float(f.get("pf_limit", 0) or 0) / 1e6, 2),
+            "financing_cost_mln": round(float(f.get("financing_cost", 0) or 0) / 1e6, 2),
+            "avg_bridge_rate_pct": round(float(f.get("avg_bridge_rate", 0) or 0) * 100, 3),
+            "avg_pf_base_rate_pct": round(float(f.get("avg_pf_base_rate", 0) or 0) * 100, 3),
+            "avg_pf_effective_rate_pct": round(float(f.get("avg_pf_effective_rate", 0) or 0) * 100, 3),
+            "pf_special_rate_pct": round(float(f.get("pf_special_rate", 0) or 0) * 100, 3),
+        })
+        return base
+
+    if metric == "tep":
+        base["tep"] = [
+            {
+                "key": row.get("key"), "label": row.get("label"),
+                "gns": round(float(row.get("gns", 0) or 0), 2),
+                "total_area": round(float(row.get("total_area", 0) or 0), 2),
+                "saleable": round(float(row.get("saleable", 0) or 0), 2),
+                "units": round(float(row.get("units", 0) or 0), 2),
+            }
+            for row in ((result.get("tep") or {}).get("rows") or [])
+        ]
+        return base
+
+    return {"error": f"Неизвестная метрика {metric}"}
+
+
+def _tool_trace_metric(
+    req: AgentChatRequest,
+    bundle: dict[str, Any],
+    metric: str,
+    scope: str,
+) -> dict[str, Any]:
+    label, result = _scope_result(bundle, scope, req.selected_view)
+    imported = ((req.inputs.get("_glavapu_import") or {}).get("normalized") or {})
+    trace: dict[str, Any] = {"scope": label, "metric": metric}
+
+    if metric == "llcr":
+        explanation = _tool_explain_metric(req, bundle, "llcr", scope)
+        trace["source_chain"] = [
+            "Продажи и график выручки → total_revenue",
+            "CAPEX/коммерческие расходы/налог → LLCR numerator",
+            "Потребность в финансировании → выборка ПФ",
+            "БРИДЖ/ПФ/ставки/комиссии → financing_cost",
+            "numerator / denominator → LLCR",
+        ]
+        trace["calculation"] = explanation
+        return trace
+
+    if metric == "profit_tax":
+        trace["source_chain"] = [
+            "Реализованный физический объём каждого продукта",
+            "Выручка продукта минус признанная себестоимость его реализованного объёма",
+            "Сумма маржи жилья, коммерции, кладовых, подземного паркинга и объектов КРТ",
+            "Минус фактически признанные проценты и банковские комиссии",
+            "Накопленная налоговая база после РВЭ минус ранее уплаченный налог",
+        ]
+        trace["details"] = _tool_explain_metric(req, bundle, "profit_tax", scope)
+        return trace
+
+    if metric == "revenue":
+        trace["source_chain"] = [
+            "ТЭП продаваемого продукта",
+            "Стартовая цена",
+            "Помесячная индексация и темп продаж",
+            "График продаж",
+            "Выручка продукта → совокупная выручка",
+        ]
+        trace["details"] = _tool_explain_metric(req, bundle, "revenue", scope)
+        return trace
+
+    if metric == "capex":
+        trace["source_chain"] = [
+            "ТЭП ГНС/объектов",
+            "Удельные ставки строительства и проектирования",
+            "Социальная нагрузка / ВРИ / цена покупки",
+            "Управление / техзаказчик / резерв / генподрядчик",
+            "Помесячный график → CAPEX",
+        ]
+        trace["details"] = _tool_explain_metric(req, bundle, "capex", scope)
+        return trace
+
+    if metric in ("full_cost", "construction_cost"):
+        trace["source_chain"] = [
+            "Строительная себестоимость: проектирование + СМР + сети + благоустройство + связанные строительные статьи",
+            "Полная себестоимость: строительные + покупка/ВРИ + социалка + управление + коммерция + финансирование + налог",
+        ]
+        trace["details"] = _tool_explain_metric(req, bundle, "unit_cost", scope)
+        return trace
+
+    if metric == "net_profit":
+        trace["source_chain"] = [
+            "Выручка",
+            "минус CAPEX",
+            "минус маркетинг и продажи",
+            "минус проценты и комиссии",
+            "минус налог",
+            "равно чистая прибыль",
+        ]
+        trace["details"] = _tool_explain_metric(req, bundle, "net_profit", scope)
+        return trace
+
+    if metric == "commercial_area":
+        row = req.tep.get("ground_commercial", {}) or {}
+        trace["model_value"] = {
+            "gns_sqm": round(n(row, "gns"), 2),
+            "total_area_sqm": round(n(row, "total_area"), 2),
+            "saleable_sqm": round(n(row, "saleable"), 2),
+        }
+        trace["glavapu_control"] = {
+            "spp_nonresidential_sqm": imported.get("spp_nonresidential_sqm"),
+            "np_nonresidential_sqm": imported.get("np_nonresidential_sqm"),
+        } if imported else None
+        trace["source_chain"] = [
+            "ГлавАПУ: нежилая СПП/НП (если импортирован)",
+            "Маппинг в ground_commercial",
+            "Распределение по очередям при включённой очередности",
+            "Продаваемая площадь → выручка коммерции 1 этажа",
+        ]
+        return trace
+
+    if metric == "parking":
+        row = req.tep.get("underground_parking", {}) or {}
+        trace["model_value"] = {
+            "spaces": round(n(row, "units"), 2),
+            "gns_sqm": round(n(row, "gns"), 2),
+        }
+        trace["glavapu_control"] = {
+            "permanent": imported.get("parking_permanent"),
+            "guest": imported.get("parking_guest"),
+            "expected_underground_spaces": (
+                float(imported.get("parking_permanent", 0) or 0)
+                + float(imported.get("parking_guest", 0) or 0)
+            ) if imported else None,
+        } if imported else None
+        trace["rule"] = "При импорте ГлавАПУ: постоянные + гостевые; 35 м² ГНС/место."
+        return trace
+
+    if metric == "social":
+        s = result.get("summary") or {}
+        trace["mode"] = req.inputs.get("social_mode")
+        trace["social_payment_mln"] = round(float(s.get("social_payment", 0) or 0) / 1e6, 2)
+        trace["program"] = s.get("social_program")
+        trace["breakdown"] = s.get("social_payment_breakdown")
+        trace["glavapu_requirements"] = {
+            "kindergarten_places": imported.get("required_kindergarten_places"),
+            "school_places": imported.get("required_school_places"),
+            "clinic_capacity": imported.get("required_clinic_capacity"),
+            "compensation_mln": imported.get("social_compensation_mln"),
+        } if imported else None
+        return trace
+
+    if metric == "purchase_price":
+        trace["input_purchase_price_mln"] = round(n(req.inputs, "purchase_price_mln"), 2)
+        trace["source_chain"] = [
+            "Цена покупки → ранний CAPEX",
+            "дефицит CF → БРИДЖ",
+            "проценты/комиссии БРИДЖ",
+            "рефинансирование/ПФ по текущей логике модели",
+            "стоимость финансирования и долговая нагрузка → LLCR/NPV/прибыль",
+        ]
+        trace["current_financing"] = _tool_explain_metric(req, bundle, "financing", scope)
+        return trace
+
+    return {"error": f"Неизвестная трассировка {metric}"}
+
+
+_GOAL_VARIABLES = {
+    "purchase_price_mln": "Цена покупки, млн ₽",
+    "main_construction_cost_th_per_sqm": "Основное строительство, тыс. ₽/м² ГНС (одинаково надземная/подземная ставка)",
+    "apartment_price_th": "Стартовая цена квартир, тыс. ₽/м²",
+    "commercial_price_th": "Стартовая цена коммерции, тыс. ₽/м²",
+    "parking_price_th": "Цена подземного машино-места, тыс. ₽/шт.",
+    "social_compensation_mln": "Социальная компенсация, млн ₽",
+    "bridge_spread_pp": "Спред БРИДЖ, п.п.",
+}
+
+
+# Земельно-правовые рычаги Москвы. Обнулить социальную нагрузку нельзя —
+# строить не дадут, — а вот льгота по плате за смену ВРИ (её получают через
+# места приложения труда) и рассрочка платежа законны и работают. Пока этих
+# переменных у агента не было, единственным рычагом такого масштаба оставалась
+# `social_compensation_mln`, и совет «обнулить социалку» был продиктован не
+# пониманием, а набором инструментов.
+# Величины, которые задаёт не девелопер, а обязательство. Крутить их как
+# «что если» можно — предлагать как способ оздоровления нельзя: социальную
+# нагрузку в Москве не обнуляют, строить не дадут. Оговорка возвращается самим
+# инструментом, потому что правило «упоминай предупреждения инструмента» агент
+# соблюдает, а помнить инструкцию под конец длинного разбора — не обязан.
+_AGENT_REGULATED_VARIABLES = {
+    "social_compensation_mln": (
+        "Социальная нагрузка — обязательство по градостроительной документации, "
+        "а не параметр оптимизации: обнулять её нельзя. Законные пути — форма "
+        "исполнения (строительство против компенсации), уточнение мощностей по "
+        "нормативу и сроки в пределах обязательств."),
+    "land_rights_cost_mln": (
+        "Плата за смену ВРИ считается городом по формуле и не выбирается "
+        "девелопером. Снижают её льготой (в Москве — через места приложения "
+        "труда, поле «Льгота по плате») и рассрочкой платежа, а не уменьшением "
+        "самой платы."),
+    "parking_price_th": "",
+}
+
+
+def _regulated_notes(variables: list[str]) -> list[str]:
+    """Оговорки к сценариям, трогающим нормативные величины."""
+    notes: list[str] = []
+    for variable in variables:
+        note = _AGENT_REGULATED_VARIABLES.get(variable)
+        if note and note not in notes:
+            notes.append(note)
+    return notes
+
+
+_VRI_RELIEF_VARIABLES = {
+    "vri_relief_pct": "Льгота по плате за смену ВРИ, % от суммы (МПТ и иные основания)",
+    "vri_relief_mln": "Льгота по плате за смену ВРИ, млн ₽",
+    "vri_transfer_offset_mln": "Зачёт переданных муниципалитету площадей, млн ₽",
+    "vri_installment_years": "Срок рассрочки платы за ВРИ, лет (Москва: 1, 3, 6)",
+    "vri_initial_pct": "Первый взнос по рассрочке ВРИ, % от суммы",
+}
+
+_PATCH_VARIABLES = {
+    **_GOAL_VARIABLES,
+    **_VRI_RELIEF_VARIABLES,
+    "main_above_th_per_sqm": "Основное строительство — наземная часть, тыс. ₽/м² ГНС",
+    "main_under_th_per_sqm": "Основное строительство — подземная часть, тыс. ₽/м² ГНС",
+    "storage_price_th": "Цена кладовой, тыс. ₽/шт.",
+    "offices_price_th_per_sqm": "Стартовая цена МФК/офисов, тыс. ₽/м²",
+    "offices_cost_th_per_sqm": "Себестоимость МФК/офисов, тыс. ₽/м² GBA",
+    "utilities_th_per_sqm": "Внешние сети, тыс. ₽/м² ГНС",
+    "technical_supervision_pct": "Технический заказчик / стройконтроль, %",
+    "project_management_pct": "Управление проектом, %",
+    "gc_fee_pct": "Генподрядчик, %",
+    "reserve_pct": "Резерв, %",
+}
+
+
+def _get_patch_value(inputs: dict[str, Any], variable: str) -> float:
+    if variable in _GOAL_VARIABLES:
+        return _get_variable_value(inputs, variable)
+    return n(inputs, variable)
+
+
+def _apply_patch_value(inputs: dict[str, Any], variable: str, value: float) -> None:
+    if variable in _GOAL_VARIABLES:
+        _apply_variable(inputs, variable, value)
+    elif variable in _PATCH_VARIABLES:
+        inputs[variable] = value
+        # Режим — следствие заданного числа, а не отдельное решение: льгота в
+        # процентах без режима «доля от суммы» осталась бы нулём, а срок
+        # рассрочки без режима «рассрочка» — единовременным платежом.
+        if variable == "vri_relief_pct" and value > 0:
+            inputs["vri_relief_mode"] = "percent"
+        elif variable == "vri_relief_mln" and value > 0:
+            inputs["vri_relief_mode"] = "amount"
+        elif variable in ("vri_installment_years", "vri_initial_pct") and value > 0:
+            inputs["vri_payment_mode"] = "installment"
+
+
+def _get_variable_value(inputs: dict[str, Any], variable: str) -> float:
+    if variable == "main_construction_cost_th_per_sqm":
+        above = n(inputs, "main_above_th_per_sqm")
+        under = n(inputs, "main_under_th_per_sqm")
+        return (above + under) / 2 if above and under else max(above, under)
+    return n(inputs, variable)
+
+
+def _apply_variable(inputs: dict[str, Any], variable: str, value: float) -> None:
+    if variable == "main_construction_cost_th_per_sqm":
+        inputs["main_above_th_per_sqm"] = value
+        inputs["main_under_th_per_sqm"] = value
+    else:
+        inputs[variable] = value
+
+
+def _default_goal_bounds(
+    req: AgentChatRequest,
+    bundle: dict[str, Any],
+    variable: str,
+) -> tuple[float, float]:
+    current = max(_get_variable_value(req.inputs, variable), 0.0)
+    revenue_mln = float(bundle["consolidated"]["summary"].get("revenue", 0) or 0) / 1e6
+    if variable == "purchase_price_mln":
+        return 0.0, max(current * 3 + 1000, revenue_mln * 0.75, 2000)
+    if variable == "main_construction_cost_th_per_sqm":
+        return 1.0, max(current * 3, 750.0)
+    if variable in ("apartment_price_th", "commercial_price_th"):
+        return max(1.0, current * 0.25), max(current * 3, current + 1000)
+    if variable == "parking_price_th":
+        return max(1.0, current * 0.1), max(current * 4, current + 30000)
+    if variable == "social_compensation_mln":
+        return 0.0, max(current * 3 + 1000, revenue_mln * 0.35, 2000)
+    if variable == "bridge_spread_pp":
+        return 0.0, max(current * 3, 30.0)
+    return 0.0, max(current * 3 + 1, 100.0)
+
+
+def _constraint_ok(value: float | None, target: float, constraint: str) -> bool:
+    if value is None or not math.isfinite(value):
+        return False
+    tol = max(abs(target) * 1e-5, 1e-6)
+    if constraint == "at_least":
+        return value >= target - tol
+    if constraint == "at_most":
+        return value <= target + tol
+    return abs(value - target) <= max(abs(target) * 1e-4, 1e-5)
+
+
+def _tool_goal_seek(
+    req: AgentChatRequest,
+    bundle: dict[str, Any],
+    variable: str,
+    target_metric: str,
+    target_value: float,
+    constraint: str,
+    objective: str,
+    scope: str,
+    lower_bound: float | None,
+    upper_bound: float | None,
+) -> dict[str, Any]:
+    if variable not in _GOAL_VARIABLES:
+        return {"available": False, "reason": f"Переменная {variable} не разрешена для Goal Seek."}
+
+    current_var = _get_variable_value(req.inputs, variable)
+    resolved_scope = scope
+    if scope == "weakest_phase" and bundle.get("mode") != "phased":
+        resolved_scope = "consolidated"
+
+    current_label, current_metric, current_result = _metric_value(
+        bundle, target_metric, resolved_scope, req.selected_view
+    )
+    if current_metric is None:
+        return {"available": False, "reason": f"Метрика {target_metric} недоступна."}
+
+    default_lo, default_hi = _default_goal_bounds(req, bundle, variable)
+    lo = float(lower_bound) if lower_bound is not None else default_lo
+    hi = float(upper_bound) if upper_bound is not None else default_hi
+    if hi <= lo:
+        return {"available": False, "reason": "Верхняя граница должна быть больше нижней."}
+
+    cache: dict[float, tuple[float | None, dict[str, Any], str]] = {}
+
+    def evaluate(v: float) -> tuple[float | None, dict[str, Any], str]:
+        key = round(float(v), 7)
+        if key in cache:
+            return cache[key]
+        x = copy.deepcopy(req.inputs)
+        _apply_variable(x, variable, float(v))
+        b = _run_authoritative_model(x, req.tep, req.rates, req.phasing)
+        lbl, metric_value, res = _metric_value(b, target_metric, resolved_scope, req.selected_view)
+        cache[key] = (metric_value, b, lbl)
+        return metric_value, b, lbl
+
+    # Coarse scan first: robust against imperfect monotonicity.
+    points = [lo + (hi - lo) * i / 16 for i in range(17)]
+    sampled = []
+    for p in points:
+        mv, b, lbl = evaluate(p)
+        sampled.append((p, mv, _constraint_ok(mv, target_value, constraint)))
+
+    feasible = [item for item in sampled if item[2]]
+    if not feasible:
+        closest = min(
+            sampled,
+            key=lambda item: abs((item[1] if item[1] is not None else float("inf")) - target_value),
+        )
+        return {
+            "available": False,
+            "reason": "В заданном диапазоне не найдено значение переменной, удовлетворяющее целевому условию.",
+            "variable": variable,
+            "variable_label": _GOAL_VARIABLES[variable],
+            "target_metric": target_metric,
+            "target_value": target_value,
+            "constraint": constraint,
+            "scope": resolved_scope,
+            "current_variable": round(current_var, 4),
+            "current_metric": round(float(current_metric), 6),
+            "search_bounds": [round(lo, 4), round(hi, 4)],
+            "closest_tested": {
+                "variable": round(closest[0], 4),
+                "metric": round(float(closest[1]), 6) if closest[1] is not None else None,
+            },
+        }
+
+    if objective == "maximum_variable":
+        best = max(feasible, key=lambda item: item[0])
+        best_idx = sampled.index(best)
+        if best_idx == len(sampled) - 1:
+            chosen_v = best[0]
+            threshold_beyond = True
+        else:
+            a, b = best[0], sampled[best_idx + 1][0]
+            # refine boundary: a feasible, b nonfeasible where possible
+            for _ in range(14):
+                mid = (a + b) / 2
+                mv, _, _ = evaluate(mid)
+                if _constraint_ok(mv, target_value, constraint):
+                    a = mid
+                else:
+                    b = mid
+            chosen_v = a
+            threshold_beyond = False
+    elif objective == "minimum_variable":
+        best = min(feasible, key=lambda item: item[0])
+        best_idx = sampled.index(best)
+        if best_idx == 0:
+            chosen_v = best[0]
+            threshold_beyond = True
+        else:
+            a, b = sampled[best_idx - 1][0], best[0]
+            # refine: a nonfeasible, b feasible
+            for _ in range(14):
+                mid = (a + b) / 2
+                mv, _, _ = evaluate(mid)
+                if _constraint_ok(mv, target_value, constraint):
+                    b = mid
+                else:
+                    a = mid
+            chosen_v = b
+            threshold_beyond = False
+    else:
+        # nearest exact target among sampled values, then local interval refinement by absolute error
+        best = min(feasible if constraint != "equal" else sampled,
+                   key=lambda item: abs((item[1] if item[1] is not None else float("inf")) - target_value))
+        chosen_v = best[0]
+        threshold_beyond = False
+        step = (hi - lo) / 16
+        a, b = max(lo, chosen_v - step), min(hi, chosen_v + step)
+        for _ in range(14):
+            m1 = a + (b - a) / 3
+            m2 = b - (b - a) / 3
+            v1, _, _ = evaluate(m1)
+            v2, _, _ = evaluate(m2)
+            e1 = abs((v1 if v1 is not None else float("inf")) - target_value)
+            e2 = abs((v2 if v2 is not None else float("inf")) - target_value)
+            if e1 <= e2:
+                b = m2
+            else:
+                a = m1
+        chosen_v = (a + b) / 2
+
+    chosen_metric, chosen_bundle, chosen_label = evaluate(chosen_v)
+    _, chosen_result = _scope_result(chosen_bundle, resolved_scope, req.selected_view)
+
+    result = {
+        "available": True,
+        "variable": variable,
+        "variable_label": _GOAL_VARIABLES[variable],
+        "regulatory_notes": _regulated_notes([variable]),
+        "target_metric": target_metric,
+        "target_value": target_value,
+        "constraint": constraint,
+        "objective": objective,
+        "scope": resolved_scope,
+        "scope_label": chosen_label,
+        "current": {
+            "variable": round(current_var, 4),
+            "metric": round(float(current_metric), 6),
+            "snapshot": _result_snapshot(current_result),
+        },
+        "solution": {
+            "variable": round(chosen_v, 4),
+            "metric": round(float(chosen_metric), 6) if chosen_metric is not None else None,
+            "change_abs": round(chosen_v - current_var, 4),
+            "change_pct": round((chosen_v / current_var - 1) * 100, 2) if current_var else None,
+            "snapshot": _result_snapshot(chosen_result),
+        },
+        "search_bounds": [round(lo, 4), round(hi, 4)],
+        "threshold_beyond_bound": threshold_beyond,
+        "calculation_method": "Детерминированный Goal Seek: многократный полный пересчёт DevelopAid на копии текущей модели; исходная модель не изменяется.",
+        "phase_llcr_at_solution": _phase_llcr(chosen_bundle),
+    }
+    if bundle.get("mode") == "phased":
+        result["model_caveat"] = (
+            "Для многоочередного проекта результат использует текущий фазовый финансовый движок DevelopAid. "
+            "Единый общий БРИДЖ с формальным межочередным рефинансированием пока не выделен как отдельная банковская facility."
+        )
+    return result
+
+
+def _tool_simulate_change(
+    req: AgentChatRequest,
+    bundle: dict[str, Any],
+    changes: list[dict[str, Any]],
+    scope: str,
+) -> dict[str, Any]:
+    x = copy.deepcopy(req.inputs)
+    applied = []
+    for item in changes[:8]:
+        variable = str(item.get("variable", ""))
+        value = float(item.get("value", 0) or 0)
+        if variable not in _GOAL_VARIABLES:
+            continue
+        old = _get_variable_value(x, variable)
+        _apply_variable(x, variable, value)
+        applied.append({
+            "variable": variable,
+            "label": _GOAL_VARIABLES[variable],
+            "old": round(old, 4),
+            "new": round(value, 4),
+        })
+    if not applied:
+        return {"available": False, "reason": "Нет допустимых изменений для моделирования."}
+
+    regulated = _regulated_notes([item["variable"] for item in applied])
+
+    scenario_bundle = _run_authoritative_model(x, req.tep, req.rates, req.phasing)
+    resolved_scope = scope if not (scope == "weakest_phase" and bundle.get("mode") != "phased") else "consolidated"
+    base_label, base_result = _scope_result(bundle, resolved_scope, req.selected_view)
+    new_label, new_result = _scope_result(scenario_bundle, resolved_scope, req.selected_view)
+    b = _result_snapshot(base_result)
+    nres = _result_snapshot(new_result)
+
+    delta = {}
+    for key in (
+        "revenue_mln", "capex_mln", "commercial_costs_mln", "financing_cost_mln",
+        "profit_tax_mln", "net_profit_mln", "margin_pct", "llcr_x", "npv_mln",
+        "peak_bridge_mln", "peak_pf_mln", "full_cost_per_saleable_th_per_sqm",
+        "full_cost_per_gns_th_per_sqm", "construction_cost_per_gns_th_per_sqm",
+        "construction_cost_per_saleable_th_per_sqm",
+    ):
+        bv, nv = b.get(key), nres.get(key)
+        if isinstance(bv, (int, float)) and isinstance(nv, (int, float)):
+            delta[key] = round(nv - bv, 4)
+
+    return {
+        "available": True,
+        "scope": resolved_scope,
+        "scope_label": new_label,
+        "changes": applied,
+        "regulatory_notes": regulated,
+        "current": b,
+        "scenario": nres,
+        "delta": delta,
+        "phase_llcr_current": _phase_llcr(bundle),
+        "phase_llcr_scenario": _phase_llcr(scenario_bundle),
+        "method": "Сценарный пересчёт на копии модели; текущие вводные не изменены.",
+    }
+
+
+def _tool_normalize_market_benchmark(
+    req: AgentChatRequest,
+    product: str,
+    value_th_per_sqm: float,
+    source_basis: str,
+    target_basis: str,
+    includes_external_networks: bool,
+) -> dict[str, Any]:
+    product = str(product)
+    row = req.tep.get(product, {}) if product in ("apartments", "ground_commercial") else {}
+    if product == "offices":
+        areas = {
+            "gns": float(n(req.inputs, "offices_gba_sqm")),
+            "total_area": float(n(req.inputs, "offices_gba_sqm")),
+            "saleable": float(n(req.inputs, "offices_saleable_sqm")),
+        }
+        model_variable = "offices_cost_th_per_sqm" if target_basis in ("gns", "total_area") else None
+        current_model_rate = n(req.inputs, "offices_cost_th_per_sqm") if model_variable else None
+    else:
+        areas = {
+            "gns": float(n(row, "gns")),
+            "total_area": float(n(row, "total_area")),
+            "saleable": float(n(row, "saleable")),
+        }
+        model_variable = "main_above_th_per_sqm" if product == "apartments" and target_basis == "gns" else None
+        current_model_rate = n(req.inputs, "main_above_th_per_sqm") if model_variable else None
+
+    src_area = areas.get(source_basis, 0.0)
+    tgt_area = areas.get(target_basis, 0.0)
+    if src_area <= 0 or tgt_area <= 0:
+        return {
+            "available": False,
+            "reason": f"Нет положительной площади для пересчёта {source_basis} → {target_basis}.",
+            "areas": areas,
+        }
+
+    converted = float(value_th_per_sqm) * src_area / tgt_area
+    comparison = None
+    if current_model_rate and current_model_rate > 0:
+        comparison = {
+            "current_model_rate_th_per_sqm": round(current_model_rate, 4),
+            "benchmark_converted_th_per_sqm": round(converted, 4),
+            "benchmark_vs_model_pct": round((converted / current_model_rate - 1.0) * 100.0, 2),
+        }
+
+    notes = [
+        "Пересчёт сохраняет общий бюджет: ставка × площадь исходного знаменателя = ставка × площадь целевого знаменателя.",
+    ]
+    if not includes_external_networks:
+        notes.append(
+            f"Benchmark указан без внешних сетей; в DevelopAid внешние сети учитываются отдельной строкой "
+            f"{n(req.inputs, 'utilities_th_per_sqm'):.2f} тыс. ₽/м² ГНС и не должны автоматически добавляться в сравниваемую ставку СМР."
+        )
+    if product == "apartments" and source_basis == "saleable" and target_basis == "gns":
+        notes.append("Для жилой части это корректный способ сопоставить тендерную ставку на продаваемую площадь с базой DevelopAid на ГНС.")
+
+    return {
+        "available": True,
+        "product": product,
+        "input_benchmark_th_per_sqm": round(float(value_th_per_sqm), 4),
+        "source_basis": source_basis,
+        "target_basis": target_basis,
+        "source_area_sqm": round(src_area, 2),
+        "target_area_sqm": round(tgt_area, 2),
+        "converted_benchmark_th_per_sqm": round(converted, 4),
+        "suggested_model_variable": model_variable,
+        "comparison": comparison,
+        "notes": notes,
+    }
+
+
+def _tool_prepare_model_patch(
+    req: AgentChatRequest,
+    bundle: dict[str, Any],
+    changes: list[dict[str, Any]],
+    scope: str,
+    reason: str,
+) -> dict[str, Any]:
+    x = copy.deepcopy(req.inputs)
+    applied = []
+    patch = {}
+    for item in changes[:12]:
+        variable = str(item.get("variable", ""))
+        if variable not in _PATCH_VARIABLES:
+            continue
+        value = float(item.get("value", 0) or 0)
+        old = _get_patch_value(x, variable)
+        _apply_patch_value(x, variable, value)
+        patch[variable] = value
+        applied.append({
+            "variable": variable,
+            "label": _PATCH_VARIABLES[variable],
+            "old": round(old, 4),
+            "new": round(value, 4),
+        })
+    if not applied:
+        return {"available": False, "reason": "Нет допустимых изменений для подготовки."}
+
+    scenario_bundle = _run_authoritative_model(x, req.tep, req.rates, req.phasing)
+    resolved_scope = scope if not (scope == "weakest_phase" and bundle.get("mode") != "phased") else "consolidated"
+    _, base_result = _scope_result(bundle, resolved_scope, req.selected_view)
+    new_label, new_result = _scope_result(scenario_bundle, resolved_scope, req.selected_view)
+    base_snap = _result_snapshot(base_result)
+    new_snap = _result_snapshot(new_result)
+
+    delta = {}
+    for key in (
+        "revenue_mln", "capex_mln", "financing_cost_mln", "net_profit_mln",
+        "margin_pct", "llcr_x", "npv_mln", "peak_bridge_mln", "peak_pf_mln",
+        "full_cost_per_saleable_th_per_sqm", "full_cost_per_gns_th_per_sqm",
+        "construction_cost_per_gns_th_per_sqm", "construction_cost_per_saleable_th_per_sqm",
+    ):
+        bv, nv = base_snap.get(key), new_snap.get(key)
+        if isinstance(bv, (int, float)) and isinstance(nv, (int, float)):
+            delta[key] = round(nv - bv, 4)
+
+    title_parts = [f"{x['label']}: {x['old']} → {x['new']}" for x in applied[:3]]
+    title = " · ".join(title_parts)
+    return {
+        "available": True,
+        "proposal": {
+            "title": title,
+            "reason": str(reason or "")[:1000],
+            "patch": patch,
+            "changes": applied,
+            "scope": resolved_scope,
+            "scope_label": new_label,
+            "current": base_snap,
+            "scenario": new_snap,
+            "delta": delta,
+            "phase_llcr_current": _phase_llcr(bundle),
+            "phase_llcr_scenario": _phase_llcr(scenario_bundle),
+        },
+        "method": "Подготовлено изменение Inputs. Реальная модель изменится только после подтверждения пользователя кнопкой «Применить в модель».",
+    }
+
+
+# Соцобъекты строятся и передаются городу: у них выручки нет по существу,
+# а не из-за непрочитанного ТЭП.
+_NON_MONETIZABLE_TEP_KEYS = ("kindergarten", "school", "clinic")
+# Паркинг и кладовые продаются штуками, всё остальное — метрами. Отсюда и
+# разный признак «продавать нечего»: у одних ноль мест, у других ноль площади.
+_UNIT_PRICED_TEP_KEYS = ("underground_parking", "above_parking", "storage")
+
+
+def _error_location(exc: BaseException) -> str:
+    """Текст ошибки вместе с местом, где она случилась.
+
+    «'NoneType' object has no attribute 'get'» без строки кода не значит ничего:
+    такое сообщение даёт десяток разных мест. Доступа к логам хостинга нет,
+    поэтому место приходится доносить туда, где ошибку видно, — в чат.
+    """
+    import traceback
+    reason = str(getattr(exc, "detail", None) or exc) or type(exc).__name__
+    frames = traceback.extract_tb(exc.__traceback__)
+    if not frames:
+        return reason
+    last = frames[-1]
+    return f"{reason} ({Path(last.filename).name}:{last.lineno}, {last.name})"
+
+
+def _tep_cost_without_revenue(tep: dict[str, Any]) -> list[str]:
+    """Продукты, у которых есть ГНС, но нечего продавать.
+
+    Стройка считается от ГНС, поэтому такой продукт даёт полные расходы и ноль
+    выручки. В подавляющем большинстве случаев это непрочитанный ТЭП, а не
+    проект без продаж, и вердикт «нецелесообразна» по такому расчёту неверен.
+    """
+    broken = []
+    for key, row in (tep or {}).items():
+        if key in _NON_MONETIZABLE_TEP_KEYS or not isinstance(row, dict):
+            continue
+        if float(row.get("gns") or 0) <= 0 or float(row.get("transfer") or 0) > 0:
+            continue
+        sellable = (float(row.get("units") or 0) if key in _UNIT_PRICED_TEP_KEYS
+                    else float(row.get("saleable") or 0))
+        if sellable > 0:
+            continue
+        broken.append(str(row.get("label") or TEP_DEFAULT.get(key, {}).get("label") or key))
+    return broken
+
+
+def _tool_find_anomalies(
+    req: AgentChatRequest,
+    bundle: dict[str, Any],
+    scope: str,
+) -> dict[str, Any]:
+    anomalies = []
+    imported = ((req.inputs.get("_glavapu_import") or {}).get("normalized") or {})
+    label, result = _scope_result(bundle, scope, req.selected_view)
+    s = result.get("summary") or {}
+
+    def add(severity: str, code: str, message: str, evidence: dict[str, Any] | None = None):
+        anomalies.append({
+            "severity": severity,
+            "code": code,
+            "message": message,
+            "evidence": evidence or {},
+        })
+
+    llcr = float(s.get("llcr", 0) or 0)
+    if llcr < _AGENT_BANK_LLCR_TARGET:
+        add("high", "LLCR_BELOW_TARGET",
+            f"LLCR {llcr:.3f}x ниже целевого ориентира {_AGENT_BANK_LLCR_TARGET:.2f}x.",
+            {"llcr_x": round(llcr, 4), "target_x": _AGENT_BANK_LLCR_TARGET})
+
+    if bundle.get("mode") == "phased":
+        phase_vals = _phase_llcr(bundle)
+        weak = min(phase_vals, key=lambda x: x["llcr_x"]) if phase_vals else None
+        if weak and weak["llcr_x"] < _AGENT_BANK_LLCR_TARGET:
+            add("high", "WEAKEST_PHASE_LLCR",
+                f"{weak['name']} имеет LLCR {weak['llcr_x']:.3f}x ниже 1,20x.",
+                {"phase_llcr": phase_vals})
+
+    # Объект, включённый во вводных, но отсутствующий в ТЭП. Деньги модель
+    # берёт из вводных, а ГНС проекта — сумма ТЭП: расходится знаменатель всех
+    # удельных показателей. На странице поля теперь связаны, но сохранённый
+    # проект мог лечь на диск с пустой строкой, и молчать об этом нельзя.
+    for switch, key, area_key, label in (
+            ("offices_enabled", "offices", "offices_gba_sqm", "МФОЦ / офисы"),
+            ("retail_enabled", "standalone_retail", "retail_gba_sqm", "ТЦ / коммерция ОСЗ")):
+        if not b(req.inputs, switch):
+            continue
+        declared = n(req.inputs, area_key)
+        in_tep = n(req.tep.get(key, {}) or {}, "gns")
+        if declared > 0 and abs(in_tep - declared) > 1:
+            add("high", "OBJECT_MISSING_IN_TEP",
+                f"{label}: во вводных {declared:,.0f} м² ГНС, в ТЭП {in_tep:,.0f} м². "
+                "Выручка и себестоимость объекта в модели есть, а в ГНС проекта его "
+                "нет — удельные показатели считаются не на ту площадь."
+                .replace(",", "\u00a0"),
+                {"inputs_gns_sqm": round(declared, 2), "tep_gns_sqm": round(in_tep, 2)})
+
+    for key, row in req.tep.items():
+        gns, total, saleable = n(row, "gns"), n(row, "total_area"), n(row, "saleable")
+        if saleable > total + 1 and total > 0:
+            add("high", "SALEABLE_GT_TOTAL",
+                f"{row.get('label', key)}: продаваемая площадь больше общей.",
+                {"saleable_sqm": round(saleable, 2), "total_area_sqm": round(total, 2)})
+        if total > gns + 1 and gns > 0 and key not in ("kindergarten", "school", "clinic"):
+            add("medium", "TOTAL_GT_GNS",
+                f"{row.get('label', key)}: общая площадь превышает ГНС — проверить трактовку полей.",
+                {"total_area_sqm": round(total, 2), "gns_sqm": round(gns, 2)})
+
+    if imported:
+        expert_override = req.inputs.get("_preset_expert_overrides") or {}
+        if expert_override:
+            add("info", "EXPERT_PRESET_OVERRIDE",
+                str(expert_override.get("note") or "В проекте применена экспертная корректировка preset."),
+                expert_override)
+
+        comm = req.tep.get("ground_commercial", {}) or {}
+        model_comm = n(comm, "saleable")
+        src_nonres = float(imported.get("np_nonresidential_sqm", 0) or 0)
+        if src_nonres > 0 and abs(model_comm - src_nonres) > max(100, src_nonres * 0.05):
+            add("high", "COMMERCIAL_AREA_MISMATCH",
+                "Продаваемая коммерция 1 этажа существенно расходится с нежилой НП ГлавАПУ.",
+                {"model_saleable_sqm": round(model_comm, 2), "glavapu_np_nonresidential_sqm": round(src_nonres, 2)})
+
+        parking = req.tep.get("underground_parking", {}) or {}
+        expected_spaces = float(imported.get("parking_permanent", 0) or 0) + float(imported.get("parking_guest", 0) or 0)
+        model_spaces = n(parking, "units")
+        expected_gns = expected_spaces * 35
+        model_gns = n(parking, "gns")
+        if expected_spaces > 0 and (abs(model_spaces - expected_spaces) > 0.5 or abs(model_gns - expected_gns) > 5):
+            add("high", "PARKING_MISMATCH",
+                "Подземный паркинг не совпадает с контрольной логикой ГлавАПУ.",
+                {
+                    "model_spaces": round(model_spaces, 2),
+                    "expected_spaces": round(expected_spaces, 2),
+                    "model_gns_sqm": round(model_gns, 2),
+                    "expected_gns_sqm": round(expected_gns, 2),
+                })
+
+        req_dou = float(imported.get("required_kindergarten_places", 0) or 0)
+        req_school = float(imported.get("required_school_places", 0) or 0)
+        req_clinic = float(imported.get("required_clinic_capacity", 0) or 0)
+        if str(req.inputs.get("social_mode", "")) in ("Строительство", SOCIAL_MODE_BOTH):
+            prog = s.get("social_program") or {}
+            actual = {
+                "kindergarten": float(prog.get("kindergarten_places", 0) or 0),
+                "school": float(prog.get("school_places", 0) or 0),
+                "clinic": float(prog.get("clinic_capacity", 0) or 0),
+            }
+            if actual["kindergarten"] + 0.01 < req_dou or actual["school"] + 0.01 < req_school or actual["clinic"] + 0.01 < req_clinic:
+                add("high", "SOCIAL_CAPACITY_SHORTFALL",
+                    "Мощности социальных объектов ниже требований ГлавАПУ.",
+                    {
+                        "required": {"kindergarten": req_dou, "school": req_school, "clinic": req_clinic},
+                        "model": actual,
+                    })
+
+    exp = result.get("report", {}).get("expense_structure") or []
+    total_exp = sum(float(i.get("value", 0) or 0) for i in exp)
+    purchase = next((float(i.get("value", 0) or 0) for i in exp if i.get("label") == "Покупка и земельные права"), 0.0)
+    if total_exp > 0 and purchase / total_exp > 0.35:
+        add("medium", "HIGH_LAND_SHARE",
+            "Покупка и земельные права формируют более 35% полных расходов; чувствительность к цене входа высокая.",
+            {"share_pct": round(purchase / total_exp * 100, 2)})
+
+    # Себестоимость строительства считается от ГНС. Продукт с количеством, но
+    # без площади приносит выручку бесплатно и завышает и прибыль, и LLCR —
+    # именно так 833 кладовые без площади дали 1,03 млрд ₽ и +0,07 к LLCR.
+    revenue_by_product = result.get("revenue") or {}
+    for row in (result.get("tep") or {}).get("rows") or []:
+        key = str(row.get("key") or "")
+        product_revenue = float(revenue_by_product.get(key, 0) or 0)
+        if product_revenue <= 0:
+            continue
+        if float(row.get("gns", 0) or 0) > 0 or float(row.get("total_area", 0) or 0) > 0:
+            continue
+        share = product_revenue / float(s.get("revenue", 0) or 1)
+        add("high", "REVENUE_WITHOUT_COST_BASIS",
+            f"{row.get('label') or key}: {_pdf_num(row.get('units'), 0)} ед. без площади. "
+            f"Выручка {_pdf_num(product_revenue / 1e6, 0)} млн ₽ учтена, а себестоимость "
+            f"строительства считается от ГНС и равна нулю — прибыль и LLCR завышены "
+            f"(доля в выручке {share * 100:.1f}%). Проверьте количество в ТЭП.",
+            {"product": key, "units": row.get("units"),
+             "revenue_mln": round(product_revenue / 1e6, 1),
+             "revenue_share_pct": round(share * 100, 2)})
+
+    # Обратный случай: ГНС есть, продаваемой площади нет. Стройка считается от
+    # ГНС, поэтому расходы полные, а выручки нет вовсе — модель показывает
+    # убыток и LLCR около нуля там, где на деле не прочитан ТЭП. Так ГлавАПУ дал
+    # 10,58 га жилой застройки с «площадью квартир» 0 м²: расходы 23,2 млрд ₽,
+    # выручка 2,3 млрд ₽ и вердикт «нецелесообразна» по несуществующей причине.
+    rows = (result.get("tep") or {}).get("rows") or []
+    by_key = {str(row.get("key") or ""): row for row in rows}
+    for label in _tep_cost_without_revenue(by_key):
+        row = next((r for r in rows if str(r.get("label") or "") == label), None)
+        key = str((row or {}).get("key") or "")
+        gns = float((row or {}).get("gns", 0) or 0)
+        if float(revenue_by_product.get(key, 0) or 0) > 0:
+            continue
+        share = gns / max(sum(float(r.get("gns", 0) or 0) for r in rows), 1.0)
+        add("high", "COST_BASIS_WITHOUT_REVENUE",
+            f"{row.get('label') or key}: ГНС {_pdf_num(gns, 0)} м² при нулевой продаваемой площади. "
+            f"Себестоимость строительства считается от ГНС и учтена полностью, а выручки нет — "
+            f"убыток и LLCR занижены (доля в ГНС {share * 100:.1f}%). "
+            f"Обычно это непрочитанный ТЭП, а не проект без продаж: проверьте продаваемую площадь.",
+            {"product": key, "gns_sqm": round(gns, 1),
+             "gns_share_pct": round(share * 100, 2)})
+
+    if not anomalies:
+        anomalies.append({
+            "severity": "info",
+            "code": "NO_STRUCTURAL_ANOMALIES",
+            "message": "По встроенным контрольным правилам явных структурных аномалий не найдено. Это не заменяет сверку с исходным Excel/банковской моделью.",
+            "evidence": {},
+        })
+
+    return {
+        "scope": label,
+        "anomalies": anomalies,
+        "glavapu_loaded": bool(imported),
+        "checks_count": 9,
+        "note": "Проверяются структурные и контрольные несоответствия; рыночные benchmark-значения без внешнего источника не используются.",
+    }
+
+
+def _tool_get_methodology(topic: str) -> dict[str, Any]:
+    rules = _DevelopAid_METHODOLOGY if topic == "all" else [r for r in _DevelopAid_METHODOLOGY if r["topic"] == topic]
+    return {"topic": topic, "rules": rules}
+
+
+_GUIDE_PAGE_PATH = Path(__file__).resolve().parent / "guide" / "page.html"
+
+
+def _tool_get_user_guide(section: str) -> dict[str, Any]:
+    """Руководство пользователя /guide текстом — для «как сделать» и «где кнопка».
+
+    Источник — тот же файл, что отдаёт страница /guide: у Платона нет своей
+    копии руководства, поэтому ей негде устареть. Читается лениво при вызове.
+    """
+    try:
+        html_text = _GUIDE_PAGE_PATH.read_text(encoding="utf-8")
+    except OSError:
+        return {"available": False, "reason": "Файл руководства не найден на сервере."}
+    html_text = html_text.replace("__DEVELOPAID_VERSION__", VERSION)
+    # Таблицы классов и сценариев подставляются движком на страницу; Платону
+    # эти числа доступны точнее — из самих пресетов.
+    html_text = html_text.replace("__GUIDE_CLASS_ROWS__", "")
+    html_text = html_text.replace("__GUIDE_SCENARIO_ROWS__", "")
+    found = re.findall(r'<section id="([a-z-]+)"[^>]*>(.*?)</section>', html_text, re.S)
+
+    def _plain(chunk: str) -> str:
+        text = re.sub(r"<[^>]+>", " ", chunk)
+        text = html.unescape(text)
+        return re.sub(r"\s+", " ", text).strip()
+
+    sections = [{"id": sid, "url": f"/guide#{sid}", "text": _plain(body)} for sid, body in found]
+    if section != "all":
+        sections = [item for item in sections if item["id"] == section]
+        if not sections:
+            return {"available": False, "reason": f"В руководстве нет раздела «{section}»."}
+    return {
+        "available": True,
+        "section": section,
+        "sections": sections,
+        "class_presets": PROJECT_CLASS_PRESETS,
+        "note": "Отсылая пользователя к руководству, давай ссылку вида /guide#раздел.",
+    }
+
+
+
+
+def _clone_agent_req_with_inputs(req: AgentChatRequest, inputs: dict[str, Any]) -> Any:
+    """Minimal request-like clone for deterministic internal scenario tools."""
+    class _ReqClone:
+        pass
+    q = _ReqClone()
+    q.inputs = inputs
+    q.tep = req.tep
+    q.rates = req.rates
+    q.phasing = req.phasing
+    q.selected_view = req.selected_view
+    q.history = req.history
+    q.message = req.message
+    return q
+
+
+def _tool_evaluate_purchase_offer(
+    req: AgentChatRequest,
+    bundle: dict[str, Any],
+    offer_price_mln: float,
+    target_llcr: float = 1.20,
+) -> dict[str, Any]:
+    """One-stop decision for 'they sell for X, what do we do?'.
+
+    Calculates:
+    - economics at the offered purchase price;
+    - current maximum purchase price at target LLCR;
+    - if offer is too high, required apartment starting price and allowable
+      construction-cost threshold under the offered purchase price.
+    """
+    offer = max(0.0, float(offer_price_mln))
+    scope = "weakest_phase" if bundle.get("mode") == "phased" else "consolidated"
+
+    # 1) Full model at offered purchase price.
+    x_offer = copy.deepcopy(req.inputs)
+    x_offer["purchase_price_mln"] = offer
+    offer_bundle = _run_authoritative_model(x_offer, req.tep, req.rates, req.phasing)
+    offer_label, offer_result = _scope_result(offer_bundle, scope, req.selected_view)
+    offer_snapshot = _result_snapshot(offer_result)
+    min_llcr_offer = (
+        min((float(p["result"]["summary"].get("llcr", 0) or 0) for p in offer_bundle.get("phases") or []), default=offer_snapshot.get("llcr_x", 0))
+        if offer_bundle.get("mode") == "phased"
+        else float(offer_snapshot.get("llcr_x", 0) or 0)
+    )
+
+    # 2) Maximum purchase price under target LLCR on current economics.
+    ceiling = _tool_goal_seek(
+        req, bundle,
+        "purchase_price_mln", "llcr", target_llcr,
+        "at_least", "maximum_variable", scope,
+        None, None,
+    )
+    ceiling_value = None
+    if ceiling.get("available"):
+        ceiling_value = float((ceiling.get("solution") or {}).get("variable", 0) or 0)
+
+    offer_req = _clone_agent_req_with_inputs(req, x_offer)
+
+    # 3) What would need to change if seller will not move.
+    required_price = _tool_goal_seek(
+        offer_req, offer_bundle,
+        "apartment_price_th", "llcr", target_llcr,
+        "at_least", "minimum_variable", scope,
+        None, None,
+    )
+    max_cost = _tool_goal_seek(
+        offer_req, offer_bundle,
+        "main_construction_cost_th_per_sqm", "llcr", target_llcr,
+        "at_least", "maximum_variable", scope,
+        None, None,
+    )
+
+    if ceiling_value is not None:
+        gap = offer - ceiling_value
+        gap_pct = (offer / ceiling_value - 1) * 100 if ceiling_value > 0 else None
+    else:
+        gap = None
+        gap_pct = None
+
+    target_met = min_llcr_offer >= target_llcr - 1e-5
+    if target_met:
+        decision = (
+            "Цена предложения проходит целевой LLCR по текущей модели. "
+            "Нужно проверить стресс-сценарий и условия сделки, но ценовой потолок не нарушен."
+        )
+    else:
+        decision = (
+            "По текущей экономике покупать по этой цене нельзя без изменения параметров проекта: "
+            "LLCR ниже целевого. Сначала торг до расчётного потолка либо подтверждённое улучшение "
+            "выручки/себестоимости/очередности."
+        )
+
+    return {
+        "available": True,
+        "final_answer_ready": True,
+        "tool_intent": "purchase_offer_decision",
+        "offer_price_mln": round(offer, 4),
+        "target_llcr_x": target_llcr,
+        "scope": scope,
+        "scope_label": offer_label,
+        "decision": decision,
+        "at_offer": {
+            "min_llcr_x": round(min_llcr_offer, 4),
+            "snapshot": offer_snapshot,
+            "phase_llcr": _phase_llcr(offer_bundle),
+        },
+        "current_economics_purchase_ceiling": ceiling,
+        "comparison": {
+            "ceiling_mln": round(ceiling_value, 4) if ceiling_value is not None else None,
+            "offer_above_ceiling_mln": round(gap, 4) if gap is not None else None,
+            "offer_above_ceiling_pct": round(gap_pct, 2) if gap_pct is not None else None,
+        },
+        "if_seller_holds_price": {
+            "required_apartment_start_price": required_price,
+            "max_construction_cost": max_cost,
+        },
+        "recommended_order": [
+            "Не принимать решение по одной цене участка — смотреть LLCR слабейшей очереди и сводную экономику.",
+            "Если офер выше расчётного потолка: сначала торг по цене входа.",
+            "Если продавец не снижает цену: подтверждать реальными данными рост цены продаж или снижение СМР.",
+            "После этого пересчитать очередность/социальную нагрузку и только затем принимать решение.",
+        ],
+        "calculation_method": "Полный детерминированный пересчёт текущей DevelopAid-модели на копии; реальные Inputs не изменены.",
+    }
+
+
+def _tool_diagnose_project_logic(
+    req: AgentChatRequest,
+    bundle: dict[str, Any],
+) -> dict[str, Any]:
+    if bundle.get("mode") != "phased":
+        return {
+            "mode": "single",
+            "message": "Проект одноочередный; анализ дисбаланса между очередями неприменим.",
+            "snapshot": _result_snapshot(bundle["consolidated"]),
+        }
+
+    phases = bundle.get("phases") or []
+    rows = []
+    total_revenue = sum(float(p["result"]["summary"].get("revenue", 0) or 0) for p in phases) or 1.0
+    total_capex = sum(float(p["result"]["summary"].get("capex", 0) or 0) for p in phases) or 1.0
+    total_saleable = sum(float(p["result"]["summary"].get("monetizable_saleable_sqm", 0) or 0) for p in phases) or 1.0
+    total_shared = sum(float(p.get("cash_shared_cost", 0) or 0) for p in phases) or 1.0
+
+    for p in phases:
+        r = p["result"]
+        s = r["summary"]
+        f = r["finance"]
+        rows.append({
+            "phase": p["name"],
+            "index": p["index"],
+            "llcr_x": round(float(s.get("llcr", 0) or 0), 4),
+            "revenue_mln": round(float(s.get("revenue", 0) or 0)/1e6, 2),
+            "revenue_share_pct": round(float(s.get("revenue", 0) or 0)/total_revenue*100, 2),
+            "saleable_sqm": round(float(s.get("monetizable_saleable_sqm", 0) or 0), 2),
+            "saleable_share_pct": round(float(s.get("monetizable_saleable_sqm", 0) or 0)/total_saleable*100, 2),
+            "capex_mln": round(float(s.get("capex", 0) or 0)/1e6, 2),
+            "capex_share_pct": round(float(s.get("capex", 0) or 0)/total_capex*100, 2),
+            "cash_shared_cost_mln": round(float(p.get("cash_shared_cost", 0) or 0)/1e6, 2),
+            "cash_shared_share_pct": round(float(p.get("cash_shared_cost", 0) or 0)/total_shared*100, 2),
+            "social_mln": round(float(s.get("social_payment", 0) or 0)/1e6, 2),
+            "peak_bridge_mln": round(float(f.get("peak_bridge", 0) or 0)/1e6, 2),
+            "peak_pf_mln": round(float(f.get("peak_pf", 0) or 0)/1e6, 2),
+            "financing_cost_mln": round(float(s.get("financing_cost", 0) or 0)/1e6, 2),
+            "cost_inflation_factor": round(float(p.get("cost_inflation_factor", 1.0) or 1.0), 4),
+            "product_weights": p.get("product_weights") or {},
+        })
+
+    weak = min(rows, key=lambda x: x["llcr_x"])
+    causes = []
+    if weak["cash_shared_share_pct"] > weak["revenue_share_pct"] + 7:
+        causes.append({
+            "code": "EARLY_SHARED_BURDEN",
+            "message": "Слабая очередь несёт непропорционально высокую долю ранних общепроектных Cash-расходов относительно своей выручки.",
+            "evidence": {
+                "shared_cash_share_pct": weak["cash_shared_share_pct"],
+                "revenue_share_pct": weak["revenue_share_pct"],
+            },
+        })
+    if weak["capex_share_pct"] > weak["revenue_share_pct"] + 5:
+        causes.append({
+            "code": "CAPEX_REVENUE_IMBALANCE",
+            "message": "Доля CAPEX слабой очереди выше её доли выручки.",
+            "evidence": {
+                "capex_share_pct": weak["capex_share_pct"],
+                "revenue_share_pct": weak["revenue_share_pct"],
+            },
+        })
+    if weak["saleable_share_pct"] + 4 < weak["capex_share_pct"]:
+        causes.append({
+            "code": "INSUFFICIENT_TEP",
+            "message": "Выручечного ТЭП слабой очереди недостаточно относительно её затратной нагрузки.",
+            "evidence": {
+                "saleable_share_pct": weak["saleable_share_pct"],
+                "capex_share_pct": weak["capex_share_pct"],
+            },
+        })
+    if weak["social_mln"] > 0:
+        causes.append({
+            "code": "SOCIAL_BURDEN",
+            "message": "В слабой очереди есть ранняя социальная нагрузка; перенос допустим только если это реально по обязательствам и графику.",
+            "evidence": {"social_mln": weak["social_mln"]},
+        })
+    if weak["peak_bridge_mln"] > max(weak["revenue_mln"]*0.20, 500):
+        causes.append({
+            "code": "HIGH_BRIDGE",
+            "message": "Высокая потребность в БРИДЖе усиливает долговую нагрузку и стоимость финансирования слабой очереди.",
+            "evidence": {
+                "peak_bridge_mln": weak["peak_bridge_mln"],
+                "revenue_mln": weak["revenue_mln"],
+            },
+        })
+    if not causes:
+        causes.append({
+            "code": "MULTIFACTOR",
+            "message": "Очевидного единственного дисбаланса нет; требуется сценарный подбор по ТЭП, срокам, социалке и цене входа.",
+            "evidence": {},
+        })
+
+    return {
+        "mode": "phased",
+        "target_llcr_x": _AGENT_BANK_LLCR_TARGET,
+        "weakest_phase": weak,
+        "phases": rows,
+        "causes": causes,
+        "decision_order": [
+            "Проверить корректность фактической cash-аллокации и сроков расходов.",
+            "Перенести только реально переносимые затраты/социальные объекты.",
+            "Увеличить выручечный ТЭП слабой очереди, если нагрузку перенести недостаточно.",
+            "Проверить изменение лагов/сроков запуска.",
+            "После операционных мер — подбирать цену входа или себестоимость.",
+        ],
+        "warning": "Не улучшать LLCR косметическим переносом покупки/ВРИ между очередями; это не меняет реальную экономику проекта.",
+    }
+
+
+def _rebalance_phase_weights(
+    phasing: dict[str, Any],
+    target_idx: int,
+    delta_pp: float,
+) -> dict[str, Any]:
+    p = copy.deepcopy(phasing)
+    count = int(p.get("phase_count") or 1)
+    for key in ("apartments", "ground_commercial", "underground_parking", "storage"):
+        arr = list((p.get("products") or {}).get(key) or _default_phase_weights(count))
+        arr = _normalized_phase_weights(arr, count, _default_phase_weights(count))
+        room = max(0.0, 100.0 - arr[target_idx])
+        add = min(float(delta_pp), room)
+        donors = [i for i in range(count) if i != target_idx and arr[i] > 0]
+        donor_total = sum(arr[i] for i in donors)
+        if add <= 0 or donor_total <= 0:
+            continue
+        arr[target_idx] += add
+        for i in donors:
+            arr[i] -= add * arr[i] / donor_total
+        p.setdefault("products", {})[key] = arr
+    return p
+
+
+def _move_reallocatable_cash(
+    phasing: dict[str, Any],
+    target_idx: int,
+    move_fraction: float,
+) -> dict[str, Any]:
+    p = copy.deepcopy(phasing)
+    count = int(p.get("phase_count") or 1)
+    bucket = p.setdefault("shared_cash", {})
+    movable = ("ird", "design", "preparation", "utilities")
+    recipients = [i for i in range(count) if i > target_idx]
+    if not recipients:
+        recipients = [i for i in range(count) if i != target_idx]
+    if not recipients:
+        return p
+    for key in movable:
+        arr = list(bucket.get(key) or _default_phase_weights(count))
+        arr = _normalized_phase_weights(arr, count, _default_phase_weights(count))
+        move = arr[target_idx] * max(0.0, min(0.8, move_fraction))
+        arr[target_idx] -= move
+        base = sum(arr[i] for i in recipients)
+        if base <= 0:
+            for i in recipients:
+                arr[i] += move / len(recipients)
+        else:
+            for i in recipients:
+                arr[i] += move * arr[i] / base
+        bucket[key] = arr
+    return p
+
+
+def _move_social_from_phase(
+    phasing: dict[str, Any],
+    target_phase_no: int,
+) -> tuple[dict[str, Any], list[str]]:
+    p = copy.deepcopy(phasing)
+    count = int(p.get("phase_count") or 1)
+    dest = target_phase_no + 1 if target_phase_no < count else None
+    moved = []
+    if dest is None:
+        return p, moved
+    for obj in p.get("social_objects") or []:
+        if int(obj.get("phase", 1) or 1) == target_phase_no:
+            moved.append(str(obj.get("name") or obj.get("type") or "Соцобъект"))
+            obj["phase"] = dest
+            obj["start_mode"] = "auto"
+            obj.pop("start_date", None)
+    return p, moved
+
+
+def _min_phase_llcr(bundle: dict[str, Any]) -> float:
+    if bundle.get("mode") != "phased":
+        return float(bundle["consolidated"]["summary"].get("llcr", 0) or 0)
+    vals = [float(p["result"]["summary"].get("llcr", 0) or 0) for p in bundle.get("phases") or []]
+    return min(vals) if vals else 0.0
+
+
+def _tool_phase_recovery_options(
+    req: AgentChatRequest,
+    bundle: dict[str, Any],
+    target_llcr: float = 1.20,
+) -> dict[str, Any]:
+    if bundle.get("mode") != "phased":
+        return {"available": False, "reason": "Проект одноочередный."}
+
+    phases = bundle.get("phases") or []
+    weak_item = min(phases, key=lambda p: float(p["result"]["summary"].get("llcr", 0) or 0))
+    weak_idx = int(weak_item["index"]) - 1
+    weak_no = weak_idx + 1
+    base_min = _min_phase_llcr(bundle)
+    base_np = float(bundle["consolidated"]["summary"].get("net_profit", 0) or 0)
+
+    candidates = []
+
+    def test(name: str, description: str, phasing_variant: dict[str, Any], feasibility: str, intervention_count: int):
+        b = _run_authoritative_model(req.inputs, req.tep, req.rates, phasing_variant)
+        m = _min_phase_llcr(b)
+        npv = float(b["consolidated"]["summary"].get("net_profit", 0) or 0)
+        candidates.append({
+            "name": name,
+            "description": description,
+            "feasibility": feasibility,
+            "intervention_count": intervention_count,
+            "min_llcr_x": round(m, 4),
+            "improvement_x": round(m - base_min, 4),
+            "achieves_target": m >= target_llcr - 1e-5,
+            "phase_llcr": _phase_llcr(b),
+            "net_profit_change_mln": round((npv - base_np)/1e6, 2),
+            "phasing_preview": {
+                "products": phasing_variant.get("products"),
+                "shared_cash": phasing_variant.get("shared_cash"),
+                "social_objects": phasing_variant.get("social_objects"),
+            },
+        })
+
+    # 1. Correct/shift only reallocatable timed shared costs; never purchase/VRI.
+    for fraction in (0.25, 0.50):
+        pv = _move_reallocatable_cash(req.phasing, weak_idx, fraction)
+        test(
+            f"Перенести {int(fraction*100)}% переносимой ранней нагрузки {weak_item['name']}",
+            "Перераспределяются только ИРД, П/РД, подготовка и наружные сети; покупка и ВРИ остаются там, где реально возникают.",
+            pv,
+            "Требует проверки фактического графика договоров/работ.",
+            1,
+        )
+
+    # 2. Move social objects out of weak phase if possible.
+    social_variant, moved = _move_social_from_phase(req.phasing, weak_no)
+    if moved:
+        test(
+            f"Перенести социалку из {weak_item['name']} в следующую очередь",
+            "Перенос: " + ", ".join(moved) + ".",
+            social_variant,
+            "Только если допустимо инвестобязательствами, РНС и фактическим графиком.",
+            1,
+        )
+
+    # 3. Add revenue-generating TEP to weak phase.
+    for delta in (5.0, 10.0, 15.0):
+        pv = _rebalance_phase_weights(req.phasing, weak_idx, delta)
+        test(
+            f"Увеличить долю массового ТЭП {weak_item['name']} на {delta:.0f} п.п.",
+            "Квартиры, коммерция 1 этажа, подземный паркинг и кладовые перераспределяются пропорционально из других очередей.",
+            pv,
+            "Требует градостроительной и продуктовой реализуемости.",
+            1,
+        )
+
+    # 4. Combined realistic measures: moderate cost timing + TEP.
+    pv = _move_reallocatable_cash(req.phasing, weak_idx, 0.25)
+    pv = _rebalance_phase_weights(pv, weak_idx, 5.0)
+    test(
+        f"Комбинация: нагрузка −25% + ТЭП {weak_item['name']} +5 п.п.",
+        "Сначала перенос реально переносимых ранних затрат, затем умеренное увеличение выручечного ТЭП.",
+        pv,
+        "Комбинированный сценарий; требует проверки обеих предпосылок.",
+        2,
+    )
+    if moved:
+        pv2, _ = _move_social_from_phase(req.phasing, weak_no)
+        pv2 = _rebalance_phase_weights(pv2, weak_idx, 5.0)
+        test(
+            f"Комбинация: перенос социалки + ТЭП {weak_item['name']} +5 п.п.",
+            "Соцобъекты переносятся по графику, слабая очередь получает больше выручечного ТЭП.",
+            pv2,
+            "Требует допустимости переноса социалки и градостроительной реализуемости ТЭП.",
+            2,
+        )
+
+    candidates.sort(
+        key=lambda c: (
+            0 if c["achieves_target"] else 1,
+            c["intervention_count"],
+            -c["min_llcr_x"],
+            -c["net_profit_change_mln"],
+        )
+    )
+
+    # Only after operational measures calculate hard economic thresholds.
+    fallback = {}
+    if not any(c["achieves_target"] for c in candidates):
+        fallback["max_purchase_price"] = _tool_goal_seek(
+            req, bundle, "purchase_price_mln", "llcr", target_llcr,
+            "at_least", "maximum_variable", "weakest_phase", None, None,
+        )
+        fallback["max_construction_cost"] = _tool_goal_seek(
+            req, bundle, "main_construction_cost_th_per_sqm", "llcr", target_llcr,
+            "at_least", "maximum_variable", "weakest_phase", None, None,
+        )
+
+    return {
+        "available": True,
+        "target_llcr_x": target_llcr,
+        "baseline_min_llcr_x": round(base_min, 4),
+        "weakest_phase": weak_item["name"],
+        "ranked_options": candidates[:8],
+        "fallback_thresholds": fallback,
+        "logic": [
+            "Сначала исправляется реальный дисбаланс нагрузки/ТЭП.",
+            "Покупка и ВРИ не переносятся косметически.",
+            "Социалка переносится только как условный сценарий при юридической/графиковой реализуемости.",
+            "Если операционные меры не дают 1,20x — рассчитывается предельная цена входа/себестоимость.",
+        ],
+    }
+
+
+_AGENT_TOOLS = [
+    {
+        "type": "function",
+        "name": "explain_metric",
+        "description": "Получить точный расчёт и структуру показателя текущей модели. Используй перед объяснением LLCR, расходов, выручки, CAPEX, прибыли, себестоимости, финансирования или ТЭП.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "metric": {
+                    "type": "string",
+                    "enum": ["llcr", "expense_structure", "revenue", "capex", "profit_tax", "net_profit", "unit_cost", "financing", "tep"],
+                },
+                "scope": {
+                    "type": "string",
+                    "enum": ["selected", "consolidated", "weakest_phase"],
+                },
+            },
+            "required": ["metric", "scope"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
+    {
+        "type": "function",
+        "name": "trace_metric",
+        "description": "Проследить происхождение показателя от вводных/ТЭП до результата; использовать для вопросов «откуда взялось», расхождений площадей, паркинга, социалки, цены покупки и LLCR.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "metric": {
+                    "type": "string",
+                    "enum": ["llcr", "revenue", "capex", "profit_tax", "net_profit", "full_cost", "construction_cost", "commercial_area", "parking", "social", "purchase_price"],
+                },
+                "scope": {
+                    "type": "string",
+                    "enum": ["selected", "consolidated", "weakest_phase"],
+                },
+            },
+            "required": ["metric", "scope"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
+    {
+        "type": "function",
+        "name": "goal_seek",
+        "description": "Универсальный аналог Excel «Подбор параметра». Многократно пересчитывает модель на копии и ищет допустимое значение входного параметра для целевой метрики. Для максимальной цены покупки при LLCR>=1.20 используй purchase_price_mln + llcr + at_least + maximum_variable.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "variable": {
+                    "type": "string",
+                    "enum": [
+                        "purchase_price_mln", "main_construction_cost_th_per_sqm",
+                        "apartment_price_th", "commercial_price_th", "parking_price_th",
+                        "social_compensation_mln", "bridge_spread_pp"
+                    ],
+                },
+                "target_metric": {
+                    "type": "string",
+                    "enum": ["llcr", "margin_pct", "net_profit_mln", "npv_mln", "irr_equity_pct"],
+                },
+                "target_value": {"type": "number"},
+                "constraint": {
+                    "type": "string",
+                    "enum": ["at_least", "at_most", "equal"],
+                },
+                "objective": {
+                    "type": "string",
+                    "enum": ["maximum_variable", "minimum_variable", "nearest_target"],
+                },
+                "scope": {
+                    "type": "string",
+                    "enum": ["selected", "consolidated", "weakest_phase"],
+                },
+                "lower_bound": {"type": ["number", "null"]},
+                "upper_bound": {"type": ["number", "null"]},
+            },
+            "required": [
+                "variable", "target_metric", "target_value", "constraint",
+                "objective", "scope", "lower_bound", "upper_bound"
+            ],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
+    {
+        "type": "function",
+        "name": "simulate_change",
+        "description": "Пересчитать сценарий на копии модели и сравнить с текущим. Используй для вопросов «что будет если изменить цену покупки/стройку/цены продаж/социалку/спред БРИДЖ».",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "changes": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "variable": {
+                                "type": "string",
+                                "enum": [
+                                    "purchase_price_mln", "main_construction_cost_th_per_sqm",
+                                    "apartment_price_th", "commercial_price_th", "parking_price_th",
+                                    "social_compensation_mln", "bridge_spread_pp"
+                                ],
+                            },
+                            "value": {"type": "number"},
+                        },
+                        "required": ["variable", "value"],
+                        "additionalProperties": False,
+                    },
+                },
+                "scope": {
+                    "type": "string",
+                    "enum": ["selected", "consolidated", "weakest_phase"],
+                },
+            },
+            "required": ["changes", "scope"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
+    {
+        "type": "function",
+        "name": "normalize_market_benchmark",
+        "description": "Нормализовать рыночную/тендерную ставку между знаменателями продаваемая площадь, общая площадь и ГНС по ТЭП текущего проекта. Обязательно использовать перед сравнением ставки вида «90 тыс. на продаваемую» с модельной ставкой на ГНС.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "product": {"type": "string", "enum": ["apartments", "ground_commercial", "offices"]},
+                "value_th_per_sqm": {"type": "number"},
+                "source_basis": {"type": "string", "enum": ["saleable", "total_area", "gns"]},
+                "target_basis": {"type": "string", "enum": ["saleable", "total_area", "gns"]},
+                "includes_external_networks": {"type": "boolean"}
+            },
+            "required": ["product", "value_th_per_sqm", "source_basis", "target_basis", "includes_external_networks"],
+            "additionalProperties": False
+        },
+        "strict": True,
+    },
+    {
+        "type": "function",
+        "name": "prepare_model_patch",
+        "description": "Подготовить подтверждаемое изменение реальных Inputs после анализа/сценарного расчёта. Само модель не меняет: возвращает кнопку применения. Используй, когда пользователь просит изменить/поставить вводные или когда ты сформировал конкретную рекомендацию и хочешь дать её применить.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "changes": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "variable": {
+                                "type": "string",
+                                "enum": [
+                                    "purchase_price_mln", "main_construction_cost_th_per_sqm",
+                                    "main_above_th_per_sqm", "main_under_th_per_sqm",
+                                    "apartment_price_th", "commercial_price_th", "parking_price_th",
+                                    "storage_price_th", "offices_price_th_per_sqm", "offices_cost_th_per_sqm",
+                                    "social_compensation_mln", "bridge_spread_pp", "utilities_th_per_sqm",
+                                    "technical_supervision_pct", "project_management_pct", "gc_fee_pct", "reserve_pct"
+                                ]
+                            },
+                            "value": {"type": "number"}
+                        },
+                        "required": ["variable", "value"],
+                        "additionalProperties": False
+                    }
+                },
+                "scope": {"type": "string", "enum": ["selected", "consolidated", "weakest_phase"]},
+                "reason": {"type": "string"}
+            },
+            "required": ["changes", "scope", "reason"],
+            "additionalProperties": False
+        },
+        "strict": True,
+    },
+    {
+        "type": "function",
+        "name": "find_anomalies",
+        "description": "Проверить структурные аномалии текущей модели: LLCR, слабую очередь, несоответствия ГлавАПУ/ТЭП, коммерцию, паркинг, социалку и подозрительно высокую долю цены входа.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "scope": {
+                    "type": "string",
+                    "enum": ["selected", "consolidated", "weakest_phase"],
+                }
+            },
+            "required": ["scope"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
+    {
+        "type": "function",
+        "name": "evaluate_purchase_offer",
+        "description": "Одним вызовом оценить конкретную цену продавца/участка: пересчитать модель при этой цене, сравнить с максимальной ценой покупки при целевом LLCR и показать, что должно измениться, если продавец цену не снижает. Использовать для фраз вроде «продают за 650, что делать?» или «если просят 3 млрд, брать?».",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "offer_price_mln": {"type": "number"},
+                "target_llcr": {"type": "number"}
+            },
+            "required": ["offer_price_mln", "target_llcr"],
+            "additionalProperties": False
+        },
+        "strict": True,
+    },
+    {
+        "type": "function",
+        "name": "diagnose_project_logic",
+        "description": "Причинно диагностировать многоочередный проект: найти слабейшую очередь и сравнить её долю выручки/ТЭП с CAPEX, ранними общими расходами, Bridge и социалкой. Обязательно использовать, если LLCR любой очереди ниже 1,20.",
+        "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": False
+        },
+        "strict": True,
+    },
+    {
+        "type": "function",
+        "name": "phase_recovery_options",
+        "description": "Построить и реально пересчитать варианты оздоровления слабейшей очереди: перенос только реально переносимых ранних затрат, перенос социалки как условный сценарий, увеличение ТЭП слабой очереди и комбинированные меры. Ранжирует варианты по достижению LLCR>=1,20.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target_llcr": {"type": "number"}
+            },
+            "required": ["target_llcr"],
+            "additionalProperties": False
+        },
+        "strict": True,
+    },
+    {
+        "type": "function",
+        "name": "get_methodology",
+        "description": "Получить утверждённые методологические правила DevelopAid. Используй для определений и правил учёта.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "topic": {
+                    "type": "string",
+                    "enum": ["llcr", "expenses", "financing", "tep", "phasing", "social", "all"],
+                }
+            },
+            "required": ["topic"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
+    {
+        "type": "function",
+        "name": "get_user_guide",
+        "description": (
+            "Руководство пользователя по интерфейсу DevelopAid: как ввести участок, "
+            "пять способов ввода данных, шаги первого расчёта, где кнопки PDF и Excel, "
+            "что проверять. Используй для вопросов «как сделать», «с чего начать», "
+            "«где найти» — и давай ссылку на раздел вида /guide#inputs."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "section": {
+                    "type": "string",
+                    "enum": ["start", "inputs", "example", "first-run",
+                             "project", "economics", "result", "export", "all"],
+                }
+            },
+            "required": ["section"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
+]
+
+
+def _execute_agent_tool(
+    name: str,
+    args: dict[str, Any],
+    req: AgentChatRequest,
+    bundle: dict[str, Any],
+) -> dict[str, Any]:
+    if name == "explain_metric":
+        return _tool_explain_metric(req, bundle, args["metric"], args["scope"])
+    if name == "trace_metric":
+        return _tool_trace_metric(req, bundle, args["metric"], args["scope"])
+    if name == "goal_seek":
+        return _tool_goal_seek(
+            req, bundle,
+            args["variable"], args["target_metric"], float(args["target_value"]),
+            args["constraint"], args["objective"], args["scope"],
+            args.get("lower_bound"), args.get("upper_bound"),
+        )
+    if name == "simulate_change":
+        return _tool_simulate_change(req, bundle, args["changes"], args["scope"])
+    if name == "normalize_market_benchmark":
+        return _tool_normalize_market_benchmark(
+            req,
+            args["product"], float(args["value_th_per_sqm"]),
+            args["source_basis"], args["target_basis"],
+            bool(args["includes_external_networks"]),
+        )
+    if name == "prepare_model_patch":
+        return _tool_prepare_model_patch(
+            req, bundle, args["changes"], args["scope"], args["reason"]
+        )
+    if name == "find_anomalies":
+        return _tool_find_anomalies(req, bundle, args["scope"])
+    if name == "evaluate_purchase_offer":
+        return _tool_evaluate_purchase_offer(
+            req, bundle,
+            float(args["offer_price_mln"]),
+            float(args.get("target_llcr", 1.20) or 1.20),
+        )
+    if name == "diagnose_project_logic":
+        return _tool_diagnose_project_logic(req, bundle)
+    if name == "phase_recovery_options":
+        return _tool_phase_recovery_options(req, bundle, float(args.get("target_llcr", 1.20) or 1.20))
+    if name == "get_methodology":
+        return _tool_get_methodology(args["topic"])
+    if name == "get_user_guide":
+        return _tool_get_user_guide(args["section"])
+    return {"error": f"Unknown tool: {name}"}
+
+
+def _extract_openai_text(data: dict[str, Any]) -> str:
+    if isinstance(data.get("output_text"), str) and data["output_text"].strip():
+        return data["output_text"].strip()
+    pieces: list[str] = []
+    for item in data.get("output") or []:
+        if item.get("type") != "message":
+            continue
+        for content in item.get("content") or []:
+            if content.get("type") in ("output_text", "text") and content.get("text"):
+                pieces.append(str(content["text"]))
+    return "\n".join(pieces).strip()
+
+
+# Платон Сергеевич живёт в интерфейсе на Яндексе, но думать может через Render.
+# Наружу уносится ровно один шаг — обращение к OpenAI. Цикл вызова инструментов,
+# расчётный контекст, LLCR, очереди, Goal Seek, аномалии и сценарии остаются на
+# том же сервере, где считается модель: инструменты работают по её данным, и
+# разрывать этот цикл нельзя.
+_PLATO_AI_URL = _env_str("PLATO_AI_URL", "").strip()
+_PLATO_AI_PROXY_SECRET = _env_str("PLATO_AI_PROXY_SECRET", "").strip()
+# Свободный вопрос вроде «при каких параметрах проект станет рентабельным»
+# гоняет goal_seek и simulate_change по нескольку раз, каждый — полный пересчёт
+# модели. В сто двадцать секунд это не укладывалось, а соединение до окна всё
+# равно рвётся раньше и результат забирается опросом — значит ждать модель
+# дольше ничего не стоит.
+_PLATO_AI_TIMEOUT_SECONDS = max(30.0, _env_float("PLATO_AI_TIMEOUT_SECONDS", 240.0))
+# Окно первой попытки — на пробуждение Render после простоя: он засыпает и
+# первый запрос уходит в тишину. Живой сервис отвечает быстрее, а долгие
+# ответы дожидаются на повторе с полным таймаутом.
+_PLATO_WAKE_TIMEOUT_SECONDS = max(15.0, _env_float("PLATO_AI_WAKE_TIMEOUT_SECONDS", 45.0))
+# Пинг, чтобы сервис модели не засыпал: Render гасит бесплатный инстанс после
+# ~15 минут тишины, и первый живой вопрос платит за пробуждение. Ноль — выключить.
+_PLATO_KEEPALIVE_MINUTES = max(0.0, _env_float("PLATO_AI_KEEPALIVE_MINUTES", 10.0))
+# Сколько сервер держит соединение, прежде чем отдать работу опросу. Быстрый
+# ответ приходит тем же запросом — лишнего похода за ним не будет; всё, что
+# длиннее, забирается по номеру запуска. Двадцать секунд — с запасом ниже
+# любого чужого предела: ни nginx, ни Render, ни мобильная сеть на таком сроке
+# соединение не рвут.
+_PLATO_CHAT_HANDOFF_SECONDS = max(1.0, _env_float("PLATO_CHAT_HANDOFF_SECONDS", 20.0))
+_PLATO_PROXY_HANDOFF_SECONDS = max(1.0, _env_float("PLATO_AI_HANDOFF_SECONDS", 20.0))
+_PLATO_PROXY_POLL_SECONDS = max(0.2, _env_float("PLATO_AI_POLL_SECONDS", 2.0))
+_PLATO_PROXY_POLL_TIMEOUT = max(5.0, _env_float("PLATO_AI_POLL_TIMEOUT_SECONDS", 30.0))
+# Сколько ждёт тот, кому соединение держать не перед кем — бот в своём потоке.
+_PLATO_AGENT_WAIT_SECONDS = max(60.0, _env_float("PLATO_AGENT_WAIT_SECONDS", 900.0))
+# Сколько всего отпущено разговору с моделью. Восемь раундов, каждый со своим
+# сроком в четыре минуты, дают полчаса — столько не ждёт никто, и ответа за
+# этим всё равно нет. Кончился бюджет — собираем ответ из посчитанного.
+_PLATO_AGENT_BUDGET_SECONDS = max(60.0, _env_float("PLATO_AGENT_BUDGET_SECONDS", 420.0))
+_PLATO_KEEPALIVE: dict[str, Any] = {"enabled": False, "last_ok": "", "last_error": ""}
+_PLATON_LOG = logging.getLogger("developaid.platon")
+
+# Между Яндексом и Render TLS-соединение изредка обрывается на чтении ответа:
+# на той стороне запрос отработал с кодом 200, а клиент получает
+# UNEXPECTED_EOF_WHILE_READING. Это транспорт, а не отказ сервиса, поэтому
+# такой вызов повторяется, а детерминированные ответы приложения — нет.
+_PLATO_PROXY_ATTEMPTS = 3
+_PLATO_PROXY_BACKOFF = (1, 2)
+_PLATO_PROXY_TRANSPORT_ERRORS = (
+    ssl.SSLEOFError, ssl.SSLError, ConnectionResetError, ConnectionAbortedError,
+    BrokenPipeError, http.client.IncompleteRead, urllib.error.URLError,
+)
+_PLATO_TRANSPORT_MARKERS = (
+    "unexpected_eof", "eof occurred", "connection reset", "broken pipe",
+    "incompleteread", "connection aborted", "premature", "ssl",
+)
+
+
+def _plato_transport_failure(exc: Exception) -> bool:
+    """Транспортный ли это сбой — по причине внутри URLError."""
+    reason = getattr(exc, "reason", None)
+    if isinstance(reason, (ssl.SSLError, ConnectionResetError, ConnectionAbortedError,
+                           BrokenPipeError, TimeoutError)):
+        return True
+    return any(marker in str(reason or exc).lower() for marker in _PLATO_TRANSPORT_MARKERS)
+
+
+def _openai_direct_request(payload: dict[str, Any],
+                           budget_seconds: float | None = None) -> dict[str, Any]:
+    """Прямой вызов OpenAI. Ключ нужен только здесь.
+
+    Срок задаётся снаружи ради самопроверки: ей нужен короткий ответ «дошло или
+    нет», а не полный срок тяжёлого вопроса.
+    """
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        # Сюда попадают двумя путями, и лечатся они по-разному: на Render не
+        # задан ключ, на Яндексе — не задан адрес прокси, и тогда «добавьте
+        # OPENAI_API_KEY» — вредный совет: ключа на этой машине быть не должно.
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Вызов модели выполняется на этом сервере, но OPENAI_API_KEY не задан. "
+                "Если это ядро на Яндексе, ключ сюда добавлять не нужно — задайте "
+                "PLATO_AI_URL и PLATO_AI_PROXY_SECRET, чтобы вызов уходил на Render."
+            ),
+        )
+    request = urllib.request.Request(
+        "https://api.openai.com/v1/responses",
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "User-Agent": USER_AGENT,
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(
+                request, timeout=budget_seconds or _PLATO_AI_TIMEOUT_SECONDS) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        try:
+            detail = json.loads(exc.read().decode("utf-8"))
+            message = ((detail.get("error") or {}).get("message") or str(detail))
+        except Exception:
+            message = str(exc)
+        raise HTTPException(status_code=502, detail=f"OpenAI API: {message[:700]}")
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Не удалось обратиться к OpenAI API: {str(exc)[:500]}")
+
+
+def _plato_proxy_result_url(ticket: str) -> str:
+    """Адрес выдачи ответа по билету — сосед `/chat` на том же сервисе."""
+    if not _PLATO_AI_URL or not ticket:
+        return ""
+    try:
+        parts = urllib.parse.urlsplit(_PLATO_AI_URL)
+        if not parts.scheme or not parts.netloc:
+            return ""
+        base = parts.path[: -len("/chat")] if parts.path.endswith("/chat") else parts.path
+        return urllib.parse.urlunsplit(
+            (parts.scheme, parts.netloc, base.rstrip("/") + "/result/" + ticket, "", ""))
+    except Exception:
+        return ""
+
+
+def _plato_proxy_await(ticket: str, headers: dict[str, str], deadline: float) -> dict[str, Any]:
+    """Забирает ответ сервиса модели по билету — короткими запросами.
+
+    Длинного соединения между машинами больше нет вообще: сервис модели принял
+    работу и считает её у себя, а мы спрашиваем результат по секундам. Рвать
+    тут нечему — ни у прокси, ни у мобильной сети нет повода закрыть запрос,
+    который живёт две секунды.
+    """
+    url = _plato_proxy_result_url(ticket)
+    if not url:
+        raise HTTPException(
+            status_code=502,
+            detail="Сервис модели принял работу, но адрес выдачи ответа собрать не удалось.")
+    poll_headers = {key: value for key, value in headers.items() if key != "Content-Type"}
+    broken = ""
+    started = time.monotonic()
+    announced = 0.0
+    while time.monotonic() < deadline:
+        time.sleep(_PLATO_PROXY_POLL_SECONDS)
+        waited = time.monotonic() - started
+        # Ожидание с секундомером: «сервис модели считает 70 с» — это работа,
+        # «жду ответ» без числа — это неизвестно что.
+        _plato_trace_stage("ai_wait", f"Сервис модели считает · {int(waited)} с")
+        if waited - announced >= 30:
+            announced = waited
+            _PLATON_LOG.info("Platon proxy waiting on ticket %s, %.0fs", ticket, waited)
+        try:
+            request = urllib.request.Request(url, headers=poll_headers, method="GET")
+            with urllib.request.urlopen(request, timeout=_PLATO_PROXY_POLL_TIMEOUT) as response:
+                data = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Сервис модели не отдал ответ по билету: код {exc.code}.") from exc
+        except Exception as exc:
+            # Сорванный опрос работу не отменяет: она идёт на той стороне.
+            broken = f"{type(exc).__name__}: {str(exc)[:200]}"
+            continue
+        if data.get("pending"):
+            continue
+        if data.get("error"):
+            raise HTTPException(status_code=int(data.get("status") or 502),
+                                detail=str(data["error"])[:700])
+        answer = data.get("answer")
+        if isinstance(answer, dict):
+            return answer
+        raise HTTPException(status_code=502,
+                            detail="Сервис модели вернул пустой ответ по билету.")
+    raise HTTPException(
+        status_code=504,
+        detail=(
+            f"Платон Сергеевич не ответил за {int(_PLATO_AI_TIMEOUT_SECONDS)} с."
+            + (f" Опрос срывался: {broken}." if broken else "")
+        ),
+    )
+
+
+def _openai_proxy_request(payload: dict[str, Any],
+                          budget_seconds: float | None = None) -> dict[str, Any]:
+    """Тот же вызов, но руками другого сервиса — там, где лежит ключ."""
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "User-Agent": USER_AGENT,
+    }
+    if _PLATO_AI_PROXY_SECRET:
+        try:
+            # Заголовки HTTP не переносят не-ASCII: с кириллицей в секрете
+            # запрос падал бы на кодировании, а не на проверке доступа.
+            _PLATO_AI_PROXY_SECRET.encode("ascii")
+        except UnicodeEncodeError as exc:
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "PLATO_AI_PROXY_SECRET содержит не-ASCII символы, "
+                    "а заголовок HTTP их не передаёт. Задайте секрет из латиницы и цифр."
+                ),
+            ) from exc
+        headers["X-Plato-Secret"] = _PLATO_AI_PROXY_SECRET
+    # Соединение до Render не переиспользуется: между Яндексом и Cloudflare
+    # keep-alive рвётся на чтении ответа, и клиент получает TLS EOF там, где на
+    # той стороне запрос уже отработал с кодом 200.
+    headers["Connection"] = "close"
+    # Билет — один на весь вызов, а не на попытку: повтор после обрыва должен
+    # подобрать уже начатую работу, а не заказать её второй раз.
+    ticket = os.urandom(6).hex()
+    body = json.dumps({"payload": payload, "ticket": ticket}, ensure_ascii=False).encode("utf-8")
+    budget = float(budget_seconds or _PLATO_AI_TIMEOUT_SECONDS)
+    deadline = time.monotonic() + budget
+
+    last_transport: Exception | None = None
+    timed_out = False
+    for attempt in range(1, _PLATO_PROXY_ATTEMPTS + 1):
+        # Новый Request на каждую попытку: прежний тянет за собой то же
+        # соединение, на котором и оборвалось.
+        request = urllib.request.Request(_PLATO_AI_URL, data=body, headers=headers, method="POST")
+        # Первая попытка ждёт меньше: спящий Render всё равно не ответит, а
+        # человек не должен сидеть перед пустым окном полный таймаут, чтобы
+        # только потом начался повтор. Живой сервис в это окно укладывается —
+        # долгие ответы дожидаются на второй попытке с полным сроком.
+        attempt_timeout = (min(_PLATO_WAKE_TIMEOUT_SECONDS, budget)
+                           if attempt == 1 and _PLATO_PROXY_ATTEMPTS > 1
+                           else budget)
+        # Срок задуман на весь вызов модели, а тратился на каждую попытку:
+        # 45 + 240 + 240 — это 525 с там, где обещано 240, и окно успевало
+        # сдаться раньше, чем ядро переставало ждать. Остаток бюджета режет
+        # каждую следующую попытку.
+        left = deadline - time.monotonic()
+        if left <= 0.05:
+            timed_out = True
+            break
+        attempt_timeout = min(attempt_timeout, left)
+        # Номер попытки виден человеку. Вторая попытка означает ровно одно:
+        # сервис модели не ответил за окно пробуждения — и это первое, что надо
+        # знать при разборе «Платон завис», не заглядывая в лог.
+        _plato_trace_stage(
+            "ai_ask",
+            "Спрашиваю сервис модели"
+            + (f" (попытка {attempt} из {_PLATO_PROXY_ATTEMPTS})" if attempt > 1 else ""))
+        try:
+            with urllib.request.urlopen(request, timeout=attempt_timeout) as response:
+                raw = response.read()
+            if not raw:
+                raise http.client.IncompleteRead(b"")
+            answer = json.loads(raw.decode("utf-8"))
+            if attempt > 1:
+                _PLATON_LOG.info("Platon proxy attempt %d/%d succeeded", attempt, _PLATO_PROXY_ATTEMPTS)
+            if isinstance(answer, dict) and answer.get("pending"):
+                # Сервис модели принял работу и соединение не держит. Дальше —
+                # опрос по билету: длинного запроса между машинами не остаётся.
+                _PLATON_LOG.info("Platon proxy job accepted, ticket %s", ticket)
+                return _plato_proxy_await(ticket, headers, deadline)
+            return answer
+        except urllib.error.HTTPError as exc:
+            # Ответ приложения — не транспортный сбой: повторять нечего.
+            try:
+                message = str((json.loads(exc.read().decode("utf-8")) or {}).get("detail") or "")
+            except Exception:
+                message = ""
+            if exc.code in (401, 403):
+                message = message or "Секрет PLATO_AI_PROXY_SECRET не совпадает."
+            raise HTTPException(
+                status_code=502,
+                detail=f"Платон Сергеевич временно недоступен: {message or f'сервис ответил ошибкой {exc.code}'}.",
+            ) from exc
+        except _PLATO_PROXY_TRANSPORT_ERRORS as exc:
+            if isinstance(exc, urllib.error.URLError) and not _plato_transport_failure(exc):
+                raise
+            last_transport = exc
+            _PLATON_LOG.info("Platon proxy attempt %d/%d failed: %s",
+                             attempt, _PLATO_PROXY_ATTEMPTS, type(exc).__name__)
+            if attempt >= _PLATO_PROXY_ATTEMPTS:
+                break
+            delay = _PLATO_PROXY_BACKOFF[attempt - 1]
+            _PLATON_LOG.info("Platon proxy retry in %ds", delay)
+            time.sleep(delay)
+        except (socket.timeout, TimeoutError) as exc:
+            # Таймаут — тоже повод повторить, а не сдаваться. Render засыпает
+            # после простоя, и первый запрос уходит на его пробуждение: он
+            # честно не отвечает, зато следующий попадает в живой сервис.
+            # Прежде первая же тишина отдавалась как окончательная 504, и
+            # человек видел «Ошибка AI (504)» на вопрос, который сработал бы
+            # со второй попытки.
+            last_transport = exc
+            timed_out = True
+            _PLATON_LOG.info("Platon proxy attempt %d/%d timed out after %ds",
+                             attempt, _PLATO_PROXY_ATTEMPTS, int(attempt_timeout))
+            if attempt >= _PLATO_PROXY_ATTEMPTS:
+                break
+            time.sleep(_PLATO_PROXY_BACKOFF[attempt - 1])
+        except json.JSONDecodeError as exc:
+            # Тело пришло рваным: 200 без разобранного JSON успехом не считаем.
+            last_transport = exc
+            _PLATON_LOG.info("Platon proxy attempt %d/%d failed: broken body",
+                             attempt, _PLATO_PROXY_ATTEMPTS)
+            if attempt >= _PLATO_PROXY_ATTEMPTS:
+                break
+            time.sleep(_PLATO_PROXY_BACKOFF[attempt - 1])
+
+    if timed_out:
+        raise HTTPException(
+            status_code=504,
+            detail=(
+                f"Платон Сергеевич не ответил за {int(_PLATO_AI_TIMEOUT_SECONDS)} с "
+                f"({_PLATO_PROXY_ATTEMPTS} попытки). Обычно это пробуждение сервиса "
+                "после простоя — повторите вопрос через минуту."
+            ),
+        ) from last_transport
+    raise HTTPException(
+        status_code=502,
+        detail=(
+            "Платон Сергеевич временно недоступен: соединение с сервисом модели обрывается. "
+            f"Попыток: {_PLATO_PROXY_ATTEMPTS}. Повторите вопрос через минуту."
+        ),
+    ) from last_transport
+
+
+def _plato_keepalive_url() -> str:
+    """Адрес пробуждения — /health на хосте сервиса модели.
+
+    Пингуем именно health, а не сам /internal/plato/chat: тот вызывает модель
+    и стоит токенов, а разбудить инстанс достаточно любым запросом.
+    """
+    if not _PLATO_AI_URL:
+        return ""
+    try:
+        parts = urllib.parse.urlsplit(_PLATO_AI_URL)
+        if not parts.scheme or not parts.netloc:
+            return ""
+        return urllib.parse.urlunsplit((parts.scheme, parts.netloc, "/health", "", ""))
+    except Exception:
+        return ""
+
+
+def _plato_keepalive_loop() -> None:
+    url = _plato_keepalive_url()
+    if not url:
+        return
+    interval = _PLATO_KEEPALIVE_MINUTES * 60.0
+    _PLATO_KEEPALIVE["enabled"] = True
+    while True:
+        try:
+            request = urllib.request.Request(
+                url, headers={"User-Agent": USER_AGENT}, method="GET")
+            with urllib.request.urlopen(request, timeout=30) as response:
+                response.read(2048)
+            _PLATO_KEEPALIVE["last_ok"] = datetime.now().isoformat(timespec="seconds")
+            _PLATO_KEEPALIVE["last_error"] = ""
+        except Exception as exc:
+            # Пинг — удобство, а не работа: молчаливо переживаем любой сбой,
+            # но оставляем след, чтобы «Платон опять засыпает» было чем
+            # объяснить, не заходя на хостинг.
+            # Причина целиком, а не одно имя класса: «URLError» не отличает
+            # «имя не разрешается» от «сеть не пускает» и от «сертификат не
+            # сошёлся», а лечится это тремя разными способами. Один разбор на
+            # этом уже стоил дня переписки.
+            reason = getattr(exc, "reason", None)
+            _PLATO_KEEPALIVE["last_error"] = (
+                f"{datetime.now().isoformat(timespec='seconds')}: "
+                f"{type(exc).__name__}: {str(reason or exc)[:200]}")
+            _PLATON_LOG.info("Platon keepalive failed: %s: %s",
+                             type(exc).__name__, str(reason or exc)[:200])
+        time.sleep(interval)
+
+
+@app.on_event("startup")
+def _start_plato_keepalive() -> None:
+    """Будим сервис модели только оттуда, где он внешний.
+
+    На самом Render PLATO_AI_URL пуст — там пинговать некого и незачем:
+    инстанс, который сам себя пингует, всё равно уснёт вместе с потоком.
+    """
+    # В обратной схеме пинговать некого: до сервиса модели с этой машины не
+    # дойти, ради этого схему и развернули. Строка «пинг не проходит» там была
+    # бы вечной и ничего не значила.
+    if _PLATO_AI_URL and _PLATO_KEEPALIVE_MINUTES > 0 and not _PLATO_PULL_ENABLED:
+        threading.Thread(target=_plato_keepalive_loop, daemon=True).start()
+
+
+@app.on_event("startup")
+def _start_glavapu_warm_up() -> None:
+    """Браузер греется сразу после старта, а не на первом расчёте.
+
+    Прогрев идёт в фоне и в отдельном потоке: контейнер обязан подняться и
+    начать отвечать, даже если ГлавАПУ в этот момент недоступен.
+    """
+    if _GLAVAPU_HEADLESS_ENABLED:
+        threading.Thread(target=_glavapu_warm_up, name="glavapu-warm-up",
+                         daemon=True).start()
+
+
+def _plato_route() -> str:
+    """Куда уйдёт вызов модели: «render_pull», «render_proxy» или «local_openai».
+
+    Решает адрес прокси, а не наличие ключа. На Яндексе ключа нет и быть не
+    должно: если адрес задан, вызов обязан уйти на Render — молчаливый откат к
+    api.openai.com увёл бы запрос туда, куда с этой машины ходить нельзя.
+
+    «render_pull» — то же самое, но наоборот: ядро не зовёт сервис модели, а
+    кладёт задание и ждёт, пока его заберут. Так работает там, где исходящее
+    соединение до сервиса не устанавливается вовсе.
+    """
+    if _PLATO_AI_URL:
+        return "render_pull" if _PLATO_PULL_ENABLED else "render_proxy"
+    return "local_openai"
+
+
+def _agent_reasoning_effort(model: str) -> str | None:
+    """Бюджет размышлений модели на один раунд.
+
+    Числа Платону считает движок: модель в цикле только выбирает инструменты и
+    формулирует вывод, а думала при этом с полным бюджетом reasoning-модели —
+    десятки секунд на раунд, при восьми раундах это и были «пять минут».
+    По умолчанию бюджет низкий; OPENAI_AGENT_REASONING поднимает его обратно
+    (medium/high) или выключает параметр совсем (off) для моделей, которые его
+    не принимают.
+    """
+    effort = os.getenv("OPENAI_AGENT_REASONING", "").strip().lower()
+    if effort == "off":
+        return None
+    if effort in ("minimal", "low", "medium", "high"):
+        return effort
+    # Параметр понимают только reasoning-модели; остальным его слать нельзя.
+    if model.startswith(("gpt-5", "o1", "o3", "o4")):
+        return "low"
+    return None
+
+
+def _openai_responses_request(payload: dict[str, Any],
+                              budget_seconds: float | None = None) -> dict[str, Any]:
+    route = _plato_route()
+    # Маршрут — первое, что спрашивают при разборе «Платон молчит». В сообщении
+    # только имя маршрута: ни адреса, ни секрета, ни ключа.
+    _PLATON_LOG.info("Platon route: %s", route)
+    if route in ("render_proxy", "render_pull"):
+        if not _PLATO_AI_PROXY_SECRET:
+            # Отступать некуда: с заданным адресом прокси прямой вызов OpenAI
+            # запрещён, поэтому это отказ, а не переключение маршрута.
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "AI-прокси Render не настроен: задан PLATO_AI_URL, но не задан "
+                    "PLATO_AI_PROXY_SECRET. Без секрета Render отклонит служебный вызов."
+                ),
+            )
+        if route == "render_pull":
+            return _openai_pull_request(payload, budget_seconds)
+        return _openai_proxy_request(payload, budget_seconds)
+    return _openai_direct_request(payload, budget_seconds)
+
+
+class PlatoAiProxyRequest(BaseModel):
+    payload: dict[str, Any] = {}
+    # Билет присылает клиент, который готов забрать ответ опросом. Старый
+    # клиент его не шлёт — и получает ответ тем же запросом, как раньше.
+    ticket: str = ""
+
+
+_PLATO_PROXY_JOBS: dict[str, threading.Event] = {}
+_PLATO_PROXY_JOBS_LOCK = threading.Lock()
+
+
+def _plato_proxy_stored(stored: dict[str, Any]) -> dict[str, Any]:
+    if stored.get("error"):
+        raise HTTPException(status_code=int(stored.get("status") or 502),
+                            detail=str(stored["error"])[:700])
+    answer = stored.get("answer")
+    if isinstance(answer, dict):
+        return answer
+    raise HTTPException(status_code=502, detail="Пустой ответ модели.")
+
+
+def _plato_proxy_job(ticket: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Работа по билету: считаем у себя, соединение не держим.
+
+    Один вызов reasoning-модели с инструментами занимает больше, чем держит
+    соединение любое промежуточное звено. Раньше это ломалось молча: на той
+    стороне работа доходила до конца, а клиент получал разорванный запрос и
+    начинал всё заново — и так по кругу, пока человек не переставал ждать.
+    """
+    stored = _plato_answer_get("proxy" + ticket)
+    if stored is not None:
+        return _plato_proxy_stored(stored)
+
+    with _PLATO_PROXY_JOBS_LOCK:
+        done = _PLATO_PROXY_JOBS.get(ticket)
+        fresh = done is None
+        if fresh:
+            done = _PLATO_PROXY_JOBS[ticket] = threading.Event()
+
+    if fresh:
+        def worker() -> None:
+            try:
+                _plato_answer_put("proxy" + ticket, {"answer": _openai_direct_request(payload)})
+            except HTTPException as exc:
+                _plato_answer_put("proxy" + ticket,
+                                  {"error": str(exc.detail)[:700], "status": exc.status_code})
+            except Exception as exc:
+                _plato_answer_put("proxy" + ticket,
+                                  {"error": f"{type(exc).__name__}: {str(exc)[:600]}", "status": 502})
+            finally:
+                # Ответ на диске раньше, чем снят признак работы: повтор с тем
+                # же билетом обязан найти либо работу, либо результат — но не
+                # пустоту, из которой закажет второй вызов модели.
+                done.set()
+                with _PLATO_PROXY_JOBS_LOCK:
+                    _PLATO_PROXY_JOBS.pop(ticket, None)
+
+        threading.Thread(target=worker, name="plato-proxy-" + ticket, daemon=True).start()
+
+    if done.wait(_PLATO_PROXY_HANDOFF_SECONDS):
+        stored = _plato_answer_get("proxy" + ticket)
+        if stored is not None:
+            return _plato_proxy_stored(stored)
+    return {"pending": True, "ticket": ticket}
+
+
+@app.get("/internal/plato/result/{ticket}")
+def internal_plato_result(ticket: str, request: Request) -> dict[str, Any]:
+    """Выдача ответа по билету. Тот же секрет, что и у самого вызова."""
+    _plato_internal_guard(request)
+    if not _TRACE_ID_RE.fullmatch(str(ticket or "").strip().lower()):
+        raise HTTPException(status_code=400, detail="Неверный билет.")
+    stored = _plato_answer_get("proxy" + str(ticket).strip().lower())
+    if stored is None:
+        return {"pending": True}
+    return {"pending": False, **stored}
+
+
+# --- Обратное направление: работу забирает сервис модели ---------------------
+# Из российского дата-центра до Render не дойти: TCP до его адресов не
+# устанавливается вовсе — при том, что сам Cloudflare, за которым Render стоит,
+# доступен. Ни сроками, ни адресом, ни группой безопасности это не лечится.
+# Поэтому направление разворачивается: ядро кладёт задание у себя, а сервис
+# модели — которому наружу ходить не мешает никто, он и до OpenAI, и до Telegram
+# дозванивается — забирает его коротким опросом и приносит ответ обратно.
+#
+# Очередь живёт на диске: воркеров два, и задание, положенное одним, обязан
+# видеть другой. Забрать задание может только один — файл переименовывается, и
+# проигравший получает его отсутствие, а не вторую копию работы.
+
+_PLATO_PULL_ENABLED = _env_str("PLATO_AI_PULL", "").strip().lower() in {
+    "1", "on", "yes", "true", "да"}
+_PLATO_PULL_URL = _env_str("PLATO_PULL_URL", "").strip().rstrip("/")
+_PLATO_QUEUE_WAIT_SECONDS = max(5.0, _env_float("PLATO_QUEUE_WAIT_SECONDS", 25.0))
+_PLATO_QUEUE_POLL_SECONDS = 0.4
+
+
+def _plato_job_path(job_id: str, suffix: str = "json") -> Path:
+    return _PLATO_STAGE_DIR / f"job_{job_id}.{suffix}"
+
+
+def _plato_puller_seen_touch() -> None:
+    """Отметка «сервис модели приходил за заданием».
+
+    Ядро знает про Render ровно одно: приходил он за очередью или нет. Без этой
+    отметки срыв объяснялся догадкой — «проверьте, запущен ли разбор очереди», —
+    и одинаково выглядели три разных случая: разбор не запущен вовсе, Render
+    заснул, разбор жив, но задание не берёт. Отметка на диске, а не в памяти:
+    воркеров два, и опрос попадёт в другой.
+    """
+    try:
+        _PLATO_STAGE_DIR.mkdir(parents=True, exist_ok=True)
+        (_PLATO_STAGE_DIR / "puller.seen").write_text(str(time.time()), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _plato_puller_seen_ago() -> float | None:
+    """Сколько секунд назад приходил сервис модели. None — не приходил ни разу."""
+    try:
+        return max(0.0, time.time() - float(
+            (_PLATO_STAGE_DIR / "puller.seen").read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        return None
+
+
+def _plato_puller_diagnosis() -> str:
+    """Причина словами — по факту, а не по догадке."""
+    ago = _plato_puller_seen_ago()
+    if ago is None:
+        return ("Сервис модели ни разу не приходил за заданием: разбор очереди на нём "
+                "не запущен. На Render нужны PLATO_PULL_URL и OPENAI_API_KEY, "
+                "а PLATO_AI_URL должен быть пуст.")
+    if ago > 120:
+        return (f"За очередью он последний раз приходил {int(ago // 60)} мин назад и "
+                "сейчас молчит: скорее всего, заснул или перезапускается.")
+    return (f"За очередью он приходил {int(ago)} с назад, но задание не забрал — "
+            "связь есть, дело в самом разборе.")
+
+
+def _plato_job_claim() -> dict[str, Any]:
+    """Старейшее задание, забранное насовсем.
+
+    Переименование — единственная операция, которая на общем диске атомарна:
+    два опроса не могут забрать одно задание, и работа не будет сделана дважды.
+    """
+    try:
+        paths = sorted(_PLATO_STAGE_DIR.glob("job_*.json"))
+    except OSError:
+        return {}
+    for path in paths:
+        taken = path.with_suffix(".taken")
+        try:
+            path.rename(taken)
+        except OSError:
+            continue  # забрал сосед
+        try:
+            data = json.loads(taken.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            taken.unlink(missing_ok=True)
+            continue
+        return {"job_id": path.stem[len("job_"):], "payload": data.get("payload") or {}}
+    return {}
+
+
+def _openai_pull_request(payload: dict[str, Any],
+                         budget_seconds: float | None = None) -> dict[str, Any]:
+    """Кладёт задание в очередь и ждёт, пока сервис модели вернёт ответ."""
+    job_id = os.urandom(6).hex()
+    deadline = time.monotonic() + float(budget_seconds or _PLATO_AI_TIMEOUT_SECONDS)
+    try:
+        _PLATO_STAGE_DIR.mkdir(parents=True, exist_ok=True)
+        _plato_job_path(job_id).write_text(
+            json.dumps({"at": time.time(), "payload": payload}, ensure_ascii=False),
+            encoding="utf-8")
+    except OSError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Не удалось поставить задание в очередь: {type(exc).__name__}") from exc
+
+    _plato_trace_stage("ai_queue", "Задание передано сервису модели")
+    waited = 0.0
+    while time.monotonic() < deadline:
+        time.sleep(_PLATO_QUEUE_POLL_SECONDS)
+        waited += _PLATO_QUEUE_POLL_SECONDS
+        stored = _plato_answer_get("pull" + job_id)
+        if stored is not None:
+            _PLATON_LOG.info("Platon pull job %s answered in %.1fs", job_id, waited)
+            return _plato_proxy_stored(stored)
+        _plato_trace_stage("ai_queue", f"Сервис модели считает · {int(waited)} с")
+
+    _plato_job_path(job_id).unlink(missing_ok=True)
+    _plato_job_path(job_id, "taken").unlink(missing_ok=True)
+    _PLATON_LOG.info("Platon pull job %s expired after %.0fs", job_id, waited)
+    raise HTTPException(
+        status_code=504,
+        detail=(f"Сервис модели не забрал задание за {int(waited)} с. "
+                + _plato_puller_diagnosis()))
+
+
+def _plato_queue_guard(request: Request) -> None:
+    """Очередь открыта только по общему секрету и только когда она включена."""
+    if not _PLATO_PULL_ENABLED:
+        raise HTTPException(
+            status_code=503,
+            detail="Очередь заданий выключена: задайте PLATO_AI_PULL=1 на этом сервере.")
+    expected = _env_str("PLATO_AI_PROXY_SECRET", "").strip()
+    if not expected:
+        raise HTTPException(
+            status_code=503,
+            detail="PLATO_AI_PROXY_SECRET не задан: очередь заданий выключена.")
+    supplied = str(request.headers.get("X-Plato-Secret") or "")
+    if not hmac.compare_digest(supplied, expected):
+        raise HTTPException(status_code=403, detail="Неверный секрет служебного вызова.")
+
+
+class PlatoJobResult(BaseModel):
+    answer: dict[str, Any] | None = None
+    error: str = ""
+    status: int = 502
+
+
+@app.get("/internal/plato/queue")
+def internal_plato_queue(request: Request, wait: float = 0.0) -> dict[str, Any]:
+    """Очередное задание для сервиса модели.
+
+    Запрос ждёт появления задания до `wait` секунд: без ожидания сервис модели
+    либо частил бы опросом, либо отвечал бы с задержкой в целый интервал.
+    """
+    _plato_queue_guard(request)
+    _plato_puller_seen_touch()
+    limit = min(max(0.0, float(wait or 0.0)), _PLATO_QUEUE_WAIT_SECONDS)
+    deadline = time.monotonic() + limit
+    while True:
+        job = _plato_job_claim()
+        if job:
+            _PLATON_LOG.info("Platon pull job %s taken", job.get("job_id"))
+            return job
+        if time.monotonic() >= deadline:
+            return {}
+        time.sleep(_PLATO_QUEUE_POLL_SECONDS)
+
+
+@app.post("/internal/plato/queue/{job_id}")
+def internal_plato_queue_result(job_id: str, req: PlatoJobResult,
+                                request: Request) -> dict[str, Any]:
+    """Ответ на задание. Неудача кладётся так же, как успех: ждать нечего."""
+    _plato_queue_guard(request)
+    job_id = str(job_id or "").strip().lower()
+    if not _TRACE_ID_RE.fullmatch(job_id):
+        raise HTTPException(status_code=400, detail="Неверный номер задания.")
+    if isinstance(req.answer, dict) and req.answer:
+        _plato_answer_put("pull" + job_id, {"answer": req.answer})
+    else:
+        _plato_answer_put("pull" + job_id, {
+            "error": str(req.error or "Сервис модели вернул пустой ответ.")[:700],
+            "status": int(req.status or 502)})
+    _plato_job_path(job_id, "taken").unlink(missing_ok=True)
+    return {"stored": True}
+
+
+def _plato_pull_once(base: str, headers: dict[str, str]) -> bool:
+    """Один круг: забрать задание, посчитать, вернуть ответ.
+
+    Возвращает True, если задание было. Ошибка модели возвращается тем же путём,
+    что и ответ: молчание оставило бы ядро ждать до конца срока впустую.
+    """
+    try:
+        request = urllib.request.Request(
+            f"{base}/internal/plato/queue?wait={int(_PLATO_QUEUE_WAIT_SECONDS)}",
+            headers=headers, method="GET")
+        with urllib.request.urlopen(
+                request, timeout=_PLATO_QUEUE_WAIT_SECONDS + 15) as response:
+            job = json.loads(response.read().decode("utf-8") or "{}")
+    except Exception as exc:
+        _PLATON_LOG.info("Platon pull: очередь недоступна: %s", type(exc).__name__)
+        time.sleep(5.0)
+        return False
+
+    job_id = str((job or {}).get("job_id") or "")
+    if not job_id:
+        return False
+
+    started = time.monotonic()
+    try:
+        body: dict[str, Any] = {"answer": _openai_direct_request(job.get("payload") or {})}
+    except HTTPException as exc:
+        body = {"error": str(exc.detail)[:700], "status": exc.status_code}
+    except Exception as exc:
+        body = {"error": f"{type(exc).__name__}: {str(exc)[:600]}", "status": 502}
+
+    data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+    post_headers = {**headers, "Content-Type": "application/json"}
+    for attempt in (1, 2, 3):
+        try:
+            request = urllib.request.Request(
+                f"{base}/internal/plato/queue/{job_id}", data=data,
+                headers=post_headers, method="POST")
+            with urllib.request.urlopen(request, timeout=30) as response:
+                response.read(256)
+            _PLATON_LOG.info("Platon pull job %s done in %.1fs", job_id,
+                             time.monotonic() - started)
+            return True
+        except Exception as exc:
+            _PLATON_LOG.info("Platon pull: ответ по заданию %s не доставлен (%d/3): %s",
+                             job_id, attempt, type(exc).__name__)
+            time.sleep(2.0 * attempt)
+    return True
+
+
+def _plato_pull_worker() -> None:
+    base = _PLATO_PULL_URL
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": USER_AGENT,
+        "X-Plato-Secret": _PLATO_AI_PROXY_SECRET,
+        "Connection": "close",
+    }
+    _PLATON_LOG.info("Platon pull worker started for %s", base)
+    while True:
+        try:
+            _plato_pull_once(base, headers)
+        except Exception as exc:  # поток обязан пережить любую неожиданность
+            _PLATON_LOG.info("Platon pull worker error: %s", type(exc).__name__)
+            time.sleep(5.0)
+
+
+@app.on_event("startup")
+def _start_plato_pull_worker() -> None:
+    """Очередь разбирает тот, у кого есть ключ и нет своего прокси, — Render."""
+    if _PLATO_PULL_URL and not _PLATO_AI_URL and os.getenv("OPENAI_API_KEY", "").strip():
+        threading.Thread(target=_plato_pull_worker, name="plato-pull", daemon=True).start()
+
+
+def _plato_internal_guard(request: Request) -> None:
+    """Служебный путь обслуживает только тот, у кого нет своего прокси."""
+    # Секрет задан на обеих машинах — он общий, — поэтому одного секрета мало,
+    # чтобы отличить Render от ядра. Отличает адрес прокси: он задан только у
+    # клиента. Без этой проверки вызов этого пути на ядре ушёл бы прямо на
+    # api.openai.com, то есть ровно туда, откуда его и уводили.
+    if _PLATO_AI_URL:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Этот сервер сам обращается к AI-прокси и служебные вызовы не обслуживает. "
+                "Зовите /internal/plato/chat на Render — там задан OPENAI_API_KEY."
+            ),
+        )
+    expected = _env_str("PLATO_AI_PROXY_SECRET", "").strip()
+    if not expected:
+        raise HTTPException(
+            status_code=503,
+            detail="PLATO_AI_PROXY_SECRET не задан: служебный вызов Платона Сергеевича выключен.",
+        )
+    supplied = str(request.headers.get("X-Plato-Secret") or "")
+    if not hmac.compare_digest(supplied, expected):
+        raise HTTPException(status_code=403, detail="Неверный секрет служебного вызова.")
+
+
+@app.post("/internal/plato/chat")
+def internal_plato_chat(req: PlatoAiProxyRequest, request: Request) -> dict[str, Any]:
+    """Служебный вызов OpenAI для сервера, где ключа нет. Наружу не публикуется.
+
+    Браузер сюда не ходит: он обращается только к своему серверу, поэтому нет
+    ни CORS, ни зависимости от VPN, ни раскрытия внутреннего адреса.
+    """
+    _plato_internal_guard(request)
+    payload = req.payload if isinstance(req.payload, dict) else {}
+    if not payload:
+        raise HTTPException(status_code=400, detail="Пустой запрос к модели.")
+    ticket = str(req.ticket or "").strip().lower()
+    if ticket and _TRACE_ID_RE.fullmatch(ticket):
+        return _plato_proxy_job(ticket, payload)
+    # Клиент без билета забрать ответ опросом не умеет — держим соединение,
+    # как держали: ломать старую машину выкаткой новой мы не вправе.
+    return _openai_direct_request(payload)
+
+
+def _agent_initial_snapshot(req: AgentChatRequest, bundle: dict[str, Any]) -> dict[str, Any]:
+    selected_label, selected = _selected_result(bundle, req.selected_view)
+    return {
+        "mode": bundle.get("mode"),
+        "selected_view": selected_label,
+        "selected_snapshot": _result_snapshot(selected),
+        "phase_comparison": _phase_comparison_for_agent(bundle),
+        "bank_target_llcr_x": _AGENT_BANK_LLCR_TARGET,
+        "glavapu_loaded": bool((req.inputs.get("_glavapu_import") or {}).get("normalized")),
+        "purchase_price_mln": round(n(req.inputs, "purchase_price_mln"), 2),
+        "project_class": req.inputs.get("project_class"),
+        "preset_expert_overrides": req.inputs.get("_preset_expert_overrides"),
+    }
+
+
+def _call_openai_tool_agent(
+    req: AgentChatRequest,
+    bundle: dict[str, Any],
+    trace_id: str = "",
+) -> dict[str, Any]:
+    model = os.getenv("OPENAI_AGENT_MODEL", "gpt-5.6").strip() or "gpt-5.6"
+
+    # Keep only compact dialogue; model state comes through server tools, not a giant JSON dump.
+    input_items: list[dict[str, Any]] = []
+    for item in (req.history or [])[-6:]:
+        role = str(item.get("role", ""))
+        content = str(item.get("content", ""))[:3500]
+        if role in ("user", "assistant") and content:
+            input_items.append({"role": role, "content": content})
+
+    snapshot = _agent_initial_snapshot(req, bundle)
+    input_items.append({
+        "role": "user",
+        "content": (
+            "PROJECT_SNAPSHOT (только ориентир; за деталями обязательно вызывай tools):\n"
+            + json.dumps(snapshot, ensure_ascii=False, separators=(",", ":"))
+            + "\n\nQUESTION:\n"
+            + str(req.message or "").strip()
+        ),
+    })
+
+    tools_used: list[dict[str, Any]] = []
+    proposals: list[dict[str, Any]] = []
+    tool_cache: dict[str, dict[str, Any]] = {}
+    final_ready_seen = False
+    effort = _agent_reasoning_effort(model)
+    # Номер запуска — в поток: вызов модели лежит на три этажа ниже и стадию
+    # оттуда писать больше нечем.
+    _PLATO_TRACE_LOCAL.trace_id = trace_id
+    conversation_started = time.monotonic()
+    for _round in range(_AGENT_MAX_TOOL_ROUNDS):
+        spent = time.monotonic() - conversation_started
+        if spent > _PLATO_AGENT_BUDGET_SECONDS:
+            # Восемь раундов по несколько минут — это полчаса, которых нет ни у
+            # кого. Дальше не спрашиваем, а собираем ответ из посчитанного:
+            # оборванный разговор человеку бесполезен, неполный — нет.
+            _PLATON_LOG.info("Platon [%s] budget spent after %d rounds (%.0fs), synthesising",
+                             trace_id, _round, spent)
+            _plato_trace_write(trace_id, "synthesis", "Собираю ответ из посчитанного")
+            break
+        _plato_trace_write(trace_id, f"llm_{_round + 1}",
+                           "Платон Сергеевич думает" + (f" · шаг {_round + 1}" if _round else ""))
+        round_started = time.monotonic()
+        payload = {
+            "model": model,
+            "instructions": _AGENT_INSTRUCTIONS,
+            "input": input_items,
+            "tools": _AGENT_TOOLS,
+            # Несколько инструментов за раунд: каждый раунд — это полный проход
+            # модели, и просить explain_metric и goal_seek по очереди означало
+            # платить за два прохода там, где хватает одного.
+            "parallel_tool_calls": True,
+            "max_output_tokens": 2600,
+            "store": False,
+        }
+        if effort:
+            payload["reasoning"] = {"effort": effort}
+        response = _openai_responses_request(payload)
+        # Время раунда — то, чего не хватало при разборе «Платон завис»: по
+        # логу видно, ушли минуты в модель или в цепочку до неё.
+        _PLATON_LOG.info("Platon [%s] round %d took %.1fs",
+                         trace_id, _round + 1, time.monotonic() - round_started)
+        output = response.get("output") or []
+        input_items.extend(output)
+
+        calls = [item for item in output if item.get("type") == "function_call"]
+        if not calls:
+            answer = _extract_openai_text(response)
+            if not answer:
+                raise HTTPException(status_code=502, detail="Платон Сергеевич не сформировал текстовый ответ.")
+            return {
+                "answer": answer,
+                "model": model,
+                "response_id": response.get("id"),
+                "tools_used": tools_used,
+                "proposals": proposals,
+            }
+
+        for call in calls:
+            name = str(call.get("name", ""))
+            call_id = str(call.get("call_id", ""))
+            _plato_trace_write(trace_id, "tool",
+                               f"Считаю движком: {_AGENT_TOOL_LABELS.get(name, name)}")
+            try:
+                args = json.loads(call.get("arguments") or "{}")
+            except Exception:
+                args = {}
+            cache_key = name + ":" + json.dumps(args, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            if cache_key in tool_cache:
+                tool_result = copy.deepcopy(tool_cache[cache_key])
+                if isinstance(tool_result, dict):
+                    tool_result["_repeat_notice"] = "Этот точный расчёт уже выполнялся. Не вызывай его снова; сформулируй вывод."
+            else:
+                try:
+                    tool_result = _execute_agent_tool(name, args, req, bundle)
+                except Exception as exc:
+                    tool_result = {"error": f"{type(exc).__name__}: {str(exc)[:500]}"}
+                tool_cache[cache_key] = copy.deepcopy(tool_result)
+            tools_used.append({"name": name, "arguments": args})
+            if isinstance(tool_result, dict) and tool_result.get("final_answer_ready"):
+                final_ready_seen = True
+            if name == "prepare_model_patch" and isinstance(tool_result, dict):
+                proposal = tool_result.get("proposal")
+                if proposal:
+                    proposals.append(proposal)
+            input_items.append({
+                "type": "function_call_output",
+                "call_id": call_id,
+                "output": json.dumps(tool_result, ensure_ascii=False, separators=(",", ":")),
+            })
+        if final_ready_seen:
+            input_items.append({
+                "role": "user",
+                "content": "Инструмент уже дал достаточный расчёт для решения (final_answer_ready=true). Сейчас сформулируй окончательный управленческий ответ без дополнительных tool calls."
+            })
+
+    # Never expose an internal tool-loop limit as the user's answer.
+    # Force one final synthesis pass without tools using all accumulated verified outputs.
+    synthesis_payload = {
+        "model": model,
+        **({"reasoning": {"effort": effort}} if effort else {}),
+        "instructions": (
+            _AGENT_INSTRUCTIONS
+            + "\n\nКРИТИЧЕСКОЕ ПРАВИЛО: инструментов больше нет. "
+              "Немедленно дай окончательный ответ пользователю только по уже полученным расчётам. "
+              "Не проси дополнительные вызовы. Начни с решения и укажи ключевые цифры."
+        ),
+        "input": input_items + [{
+            "role": "user",
+            "content": "Лимит внутренних аналитических шагов достигнут. Синтезируй окончательное решение сейчас; не продолжай анализ."
+        }],
+        "max_output_tokens": 2600,
+        "store": False,
+    }
+    _plato_trace_write(trace_id, "synthesis", "Собираю окончательный ответ")
+    try:
+        final_response = _openai_responses_request(synthesis_payload)
+        answer = _extract_openai_text(final_response)
+        if answer:
+            return {
+                "answer": answer,
+                "model": model,
+                "response_id": final_response.get("id"),
+                "tools_used": tools_used,
+                "proposals": proposals,
+                "forced_synthesis": True,
+            }
+    except Exception:
+        pass
+
+    # Deterministic user-safe fallback if even synthesis fails.
+    if tool_cache:
+        last = list(tool_cache.values())[-1]
+        if isinstance(last, dict) and last.get("decision"):
+            answer = str(last["decision"])
+            comp = last.get("comparison") or {}
+            if comp.get("ceiling_mln") is not None:
+                answer += (
+                    f" Расчётный потолок цены покупки: {comp['ceiling_mln']:.2f} млн ₽; "
+                    f"предложение выше потолка на {comp.get('offer_above_ceiling_mln', 0):.2f} млн ₽."
+                )
+            return {
+                "answer": answer,
+                "model": model,
+                "response_id": None,
+                "tools_used": tools_used,
+                "proposals": proposals,
+                "forced_synthesis": True,
+            }
+
+    # Сюда доходят, когда модель молчала весь разговор. Молча отдавать 502
+    # нельзя: человеку нужно знать, где ушло время — иначе «завис» неотличимо
+    # от «думает».
+    spent_total = time.monotonic() - conversation_started
+    raise HTTPException(
+        status_code=502,
+        detail=(
+            "Не удалось сформировать итоговый ответ по выполненным расчётам: "
+            f"модель молчала {int(spent_total)} с, инструментов выполнено "
+            f"{len(tools_used)}. Расчётная модель работает — повторите вопрос."
+        ),
+    )
+
+
+# --- Ускорение Платона -----------------------------------------------------
+# Ответ на кнопку занимал минуту по трём причинам сразу. Каждый вопрос шёл в
+# модель, даже когда ответ целиком считает движок: кнопка «Структура расходов» —
+# это explain_metric и форматирование, модели там решать нечего. Один и тот же
+# вопрос по тем же вводным считался заново. А пока запрос шёл, окно показывало
+# одну надпись, и «долго» было неотличимо от «зависло».
+#
+# Поэтому: у запроса есть trace_id и стадия на диске (воркера два, опрос стадии
+# может прийти не в тот, где идёт расчёт); ответы живут в кэше десять минут;
+# сценарии кнопок считаются движком без обращения к модели.
+
+_PLATO_STAGE_DIR = Path(__file__).resolve().parent / "data" / "platon_state" / "agent"
+_PLATO_TRACE_TTL = 3600
+_PLATO_ANSWER_TTL = 600
+_TRACE_ID_RE = re.compile(r"^[0-9a-f]{8,32}$")
+_PLATO_TRACE_LOCAL = threading.local()
+
+
+def _plato_stage_path(kind: str, key: str) -> Path:
+    return _PLATO_STAGE_DIR / f"{kind}_{key}.json"
+
+
+def _plato_trace_write(trace_id: str, stage: str, label: str) -> None:
+    if not trace_id:
+        return
+    try:
+        _PLATO_STAGE_DIR.mkdir(parents=True, exist_ok=True)
+        _plato_stage_path("trace", trace_id).write_text(
+            json.dumps({"stage": stage, "label": label, "at": time.time()},
+                       ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass  # стадия — удобство; ронять из-за неё ответ нельзя
+
+
+def _plato_trace_stage(stage: str, label: str) -> None:
+    """Стадия текущего запроса — оттуда, где номер запуска не передавали.
+
+    Вызов модели лежит на три этажа ниже разбора вопроса, и тащить номер
+    параметром через каждый — значит трогать всё, что зовёт OpenAI. Работа
+    каждого запроса и так идёт в своём потоке, поэтому номер живёт в потоке.
+    """
+    trace_id = getattr(_PLATO_TRACE_LOCAL, "trace_id", "") or ""
+    if trace_id:
+        _plato_trace_write(trace_id, stage, label)
+
+
+def _plato_stage_cleanup() -> None:
+    try:
+        cutoff = time.time() - _PLATO_TRACE_TTL
+        for pattern in ("*.json", "*.taken"):
+            for path in _PLATO_STAGE_DIR.glob(pattern):
+                if path.stat().st_mtime < cutoff:
+                    path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+@app.get("/agent/trace/{trace_id}")
+def agent_trace(trace_id: str) -> dict[str, Any]:
+    """Текущая стадия запроса — окно опрашивает её, пока ждёт ответ."""
+    if not _TRACE_ID_RE.fullmatch(trace_id):
+        raise HTTPException(status_code=400, detail="Неверный идентификатор запроса.")
+    try:
+        return json.loads(_plato_stage_path("trace", trace_id).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"stage": "unknown", "label": ""}
+
+
+def _plato_answer_key(req: AgentChatRequest, scenario: str) -> str:
+    # Свободный вопрос зависит от истории диалога — «а почему?» без неё другой
+    # вопрос. Сценарий кнопки от истории не зависит, и класть её в ключ значило
+    # бы промахиваться мимо кэша при каждом повторном нажатии.
+    payload = {
+        "message": str(req.message or "").strip(),
+        "scenario": scenario,
+        "inputs": req.inputs,
+        "tep": req.tep,
+        "rates": req.rates,
+        "phasing": req.phasing,
+        "view": req.selected_view,
+    }
+    if not scenario:
+        payload["history"] = (req.history or [])[-6:]
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
+
+
+def _plato_answer_get(key: str) -> dict[str, Any] | None:
+    try:
+        data = json.loads(_plato_stage_path("answer", key).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if time.time() - float(data.get("at", 0) or 0) > _PLATO_ANSWER_TTL:
+        return None
+    payload = data.get("payload")
+    return payload if isinstance(payload, dict) else None
+
+
+def _plato_answer_put(key: str, payload: dict[str, Any]) -> None:
+    try:
+        _PLATO_STAGE_DIR.mkdir(parents=True, exist_ok=True)
+        _plato_stage_path("answer", key).write_text(
+            json.dumps({"at": time.time(), "payload": payload}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except (OSError, TypeError, ValueError):
+        pass
+
+
+# --- Кто пользуется и о чём спрашивает --------------------------------------
+# Пользователей считали по ощущениям, а вопросы читали через плечо. Ни того, ни
+# другого не хватает, чтобы решать, что делать дальше: непонятно, растёт ли
+# аудитория, и непонятно, о чём её спрашивают чаще всего.
+#
+# Журнал — построчный файл на день. Строка пишется одним `write` в режиме
+# добавления: воркеров два, и перезаписывать общий файл им нельзя. Хранится
+# полгода, чистится при записи. Выключается переменной, потому что журнал
+# пользовательских текстов — это данные людей, и решение хранить их принимает
+# владелец, а не код.
+
+_USAGE_DIR = Path(_env_str("DEVELOPAID_USAGE_DIR", "").strip()
+                  or (Path(__file__).resolve().parent / "data" / "usage"))
+_USAGE_KEEP_DAYS = max(1, int(_env_float("DEVELOPAID_USAGE_KEEP_DAYS", 180.0)))
+_USAGE_TEXT_LIMIT = 500
+_USAGE_LOCK = threading.Lock()
+_USAGE_SWEPT: dict[str, str] = {}
+
+
+def _usage_enabled() -> bool:
+    return _env_str("DEVELOPAID_USAGE_JOURNAL", "on").strip().lower() not in {
+        "off", "0", "no", "false", "выкл"}
+
+
+def _usage_day(at: float) -> str:
+    return datetime.fromtimestamp(at, tz=timezone.utc).strftime("%Y-%m-%d")
+
+
+def _usage_path(day: str) -> Path:
+    return _USAGE_DIR / f"events-{day}.jsonl"
+
+
+def _usage_sweep(today: str) -> None:
+    """Старое удаляется раз в день, а не на каждой записи."""
+    if _USAGE_SWEPT.get("day") == today:
+        return
+    _USAGE_SWEPT["day"] = today
+    try:
+        cutoff = (datetime.now(tz=timezone.utc)
+                  - timedelta(days=_USAGE_KEEP_DAYS)).strftime("%Y-%m-%d")
+        for path in _USAGE_DIR.glob("events-*.jsonl"):
+            if path.stem[len("events-"):] < cutoff:
+                path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def usage_track(kind: str, *, surface: str = "bot", chat_id: int = 0, user_id: int = 0,
+                name: str = "", text: str = "", **extra: Any) -> None:
+    """Одно событие в журнал. Молча — учёт не имеет права ронять ответ."""
+    if not _usage_enabled():
+        return
+    at = time.time()
+    record = {
+        "at": round(at, 3),
+        "surface": surface,
+        "kind": kind,
+        "chat": int(chat_id or 0),
+        "user": int(user_id or 0),
+        "name": str(name or "")[:80],
+        "text": str(text or "").strip()[:_USAGE_TEXT_LIMIT],
+    }
+    record.update({key: value for key, value in extra.items() if value not in (None, "")})
+    day = _usage_day(at)
+    try:
+        with _USAGE_LOCK:
+            _USAGE_DIR.mkdir(parents=True, exist_ok=True)
+            _usage_sweep(day)
+            with _usage_path(day).open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except (OSError, TypeError, ValueError):
+        pass
+
+
+def usage_events(days: int = 30) -> list[dict[str, Any]]:
+    """События за последние N суток, по возрастанию времени."""
+    events: list[dict[str, Any]] = []
+    now = datetime.now(tz=timezone.utc)
+    for back in range(max(1, int(days))):
+        path = _usage_path((now - timedelta(days=back)).strftime("%Y-%m-%d"))
+        if not path.is_file():
+            continue
+        try:
+            for line in path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    continue  # оборванная строка не отменяет остальной день
+                if isinstance(record, dict):
+                    events.append(record)
+        except OSError:
+            continue
+    events.sort(key=lambda item: float(item.get("at") or 0))
+    return events
+
+
+def usage_summary(days: int = 30) -> dict[str, Any]:
+    """Свод: сколько людей, сколько новых, что нажимают, о чём спрашивают.
+
+    Читается весь журнал, а не окно свода: «новый» — это тот, кого раньше не
+    было вообще, а не тот, кого не было последний месяц. По окну в тридцать дней
+    вернувшийся через полгода человек считался новым. Команда ручная, файлов за
+    полгода меньше двух сотен — цена чтения того стоит.
+    """
+    events = usage_events(max(days, _USAGE_KEEP_DAYS))
+    now = time.time()
+
+    def users_since(seconds: float) -> set[int]:
+        return {int(e.get("user") or 0) for e in events
+                if e.get("surface") == "bot" and float(e.get("at") or 0) >= now - seconds
+                and int(e.get("user") or 0)}
+
+    window = [e for e in events if float(e.get("at") or 0) >= now - days * 86400]
+    seen_before: dict[int, float] = {}
+    for event in events:
+        user = int(event.get("user") or 0)
+        if user and user not in seen_before:
+            seen_before[user] = float(event.get("at") or 0)
+
+    commands: dict[str, int] = {}
+    buttons: dict[str, int] = {}
+    questions: list[dict[str, Any]] = []
+    for event in window:
+        kind = str(event.get("kind") or "")
+        text = str(event.get("text") or "")
+        if kind == "command":
+            key = text.split(maxsplit=1)[0].split("@", 1)[0].lower()
+            commands[key] = commands.get(key, 0) + 1
+        elif kind == "button":
+            buttons[text] = buttons.get(text, 0) + 1
+        elif kind == "question":
+            questions.append(event)
+
+    return {
+        "days": int(days),
+        "users_today": len(users_since(86400)),
+        "users_7d": len(users_since(7 * 86400)),
+        "users_30d": len(users_since(30 * 86400)),
+        "users_window": len({int(e.get("user") or 0) for e in window
+                             if e.get("surface") == "bot" and int(e.get("user") or 0)}),
+        "new_users_window": len([user for user, first in seen_before.items()
+                                 if first >= now - days * 86400]),
+        "events_window": len(window),
+        "questions_bot": len([q for q in questions if q.get("surface") == "bot"]),
+        "questions_site": len([q for q in questions if q.get("surface") == "site"]),
+        "top_commands": sorted(commands.items(), key=lambda kv: -kv[1])[:8],
+        "top_buttons": sorted(buttons.items(), key=lambda kv: -kv[1])[:8],
+        "last_questions": questions[-15:],
+        "enabled": _usage_enabled(),
+        "keep_days": _USAGE_KEEP_DAYS,
+        "dir": str(_USAGE_DIR),
+    }
+
+
+def survey_summary(days: int = 30) -> dict[str, Any]:
+    """Свод теста: откуда пришли, докуда дошли, как оценили, что написали.
+
+    Воронка считается по людям, а не по событиям: один человек, посчитавший
+    десять проектов, — это один дошедший, а не десять. Средние оценки —
+    по подпунктам и по разделам, и рядом всегда число ответов: среднее по
+    двум ответам выглядит так же солидно, как по двадцати, и вводит в
+    заблуждение сильнее всего.
+
+    Свободные тексты не сворачиваются ни во что: их читают целиком. Ради них
+    анкета и затевалась.
+    """
+    events = usage_events(max(days, _USAGE_KEEP_DAYS))
+    now = time.time()
+    window = [e for e in events if float(e.get("at") or 0) >= now - days * 86400]
+
+    # Метка источника приезжает один раз, при нажатии Start. Дальше события
+    # приходят без неё, поэтому источник восстанавливается по chat_id.
+    source_by_chat: dict[int, str] = {}
+    for event in events:
+        if str(event.get("kind")) == "invite":
+            chat = int(event.get("chat") or 0)
+            if chat:
+                source_by_chat[chat] = str(event.get("source") or "")
+
+    def people(kind: str) -> set[int]:
+        return {int(e.get("chat") or 0) for e in window
+                if str(e.get("kind")) == kind and int(e.get("chat") or 0)}
+
+    invited = people("invite")
+    funnel = {
+        "перешли по ссылке": len(invited),
+        "искали участок": len(people("land")),
+        "посчитали": len(people("calc")),
+        "выгрузили PDF": len(people("pdf")),
+        "ответили на анкету": len(people("survey")),
+    }
+    by_source: dict[str, int] = {}
+    for chat in invited:
+        key = source_by_chat.get(chat) or "без метки"
+        by_source[key] = by_source.get(key, 0) + 1
+
+    surveys = [e for e in window if str(e.get("kind")) == "survey"]
+    scores: dict[str, list[int]] = {}
+    for survey in surveys:
+        for key, value in (survey.get("ratings") or {}).items():
+            if key in FEEDBACK_ITEMS:
+                scores.setdefault(key, []).append(int(value))
+
+    def average(values: list[int]) -> float:
+        return round(sum(values) / len(values), 2) if values else 0.0
+
+    items = [{"key": key, "label": FEEDBACK_ITEMS[key],
+              "avg": average(values), "count": len(values)}
+             for key, values in scores.items()]
+    items.sort(key=lambda row: (row["avg"], -row["count"]))
+
+    groups = []
+    for group_key, title, members in FEEDBACK_GROUPS:
+        collected = [score for item in members for score in scores.get(item[0], [])]
+        groups.append({"key": group_key, "label": title,
+                       "avg": average(collected), "count": len(collected)})
+
+    # Кто ответил. Анкета не анонимная — она привязана к chat_id, — но по одному
+    # номеру ничего не понять, и владелец видел «— : не верю числам» без всякого
+    # автора. Имя берётся тремя источниками по убыванию надёжности: знакомство
+    # (имя и компания, их человек написал сам), имя из Telegram в журнале,
+    # номер чата. Профиль лежит на ядре, поэтому на Render остаются два
+    # последних — там и живут ответы из бота.
+    def who(chat: int) -> str:
+        chat = int(chat or 0)
+        if not chat:
+            return "аноним"
+        profile = {}
+        try:
+            profile = profile_read(chat) or {}
+        except Exception:
+            profile = {}
+        name = str(profile.get("name") or "").strip() or name_by_chat.get(chat, "")
+        company = str(profile.get("company") or "").strip()
+        if name and company:
+            return f"{name} ({company})"
+        return name or f"chat {chat}"
+
+    name_by_chat: dict[int, str] = {}
+    for event in events:
+        chat = int(event.get("chat") or 0)
+        name = str(event.get("name") or "").strip()
+        if chat and name:
+            name_by_chat[chat] = name
+
+    notes: list[dict[str, Any]] = []
+    for survey in surveys:
+        for group_key, text in (survey.get("problems") or {}).items():
+            title = next((g[1] for g in FEEDBACK_GROUPS if g[0] == group_key), group_key)
+            notes.append({"at": survey.get("at"), "chat": survey.get("chat"),
+                          "who": who(survey.get("chat")),
+                          "role": survey.get("role", ""), "group": title, "text": text})
+        # Свободные поля — тоже комментарий, и раньше они не доходили никуда:
+        # свод читал только привязанные к разделу. В боте комментарий один и
+        # приходит именно так, то есть пропала бы вся его половина.
+        for field, title in (("impression", "Общее впечатление"),
+                             ("mistakes", "Что пошло не так")):
+            text = str(survey.get(field) or "").strip()
+            if text:
+                notes.append({"at": survey.get("at"), "chat": survey.get("chat"),
+                              "who": who(survey.get("chat")),
+                              "role": survey.get("role", ""), "group": title,
+                              "text": text})
+
+    # Ответы поимённо. Средние показывают состояние сервиса, а этот список —
+    # разговор с конкретным человеком: что он поставил и что написал. Анкета
+    # приходит двумя записями (оценки и комментарий), поэтому они складываются
+    # по chat_id, а не показываются двумя строками.
+    people: dict[int, dict[str, Any]] = {}
+    for survey in sorted(surveys, key=lambda s: float(s.get("at") or 0)):
+        chat = int(survey.get("chat") or 0)
+        person = people.setdefault(chat, {
+            "chat": chat, "who": who(chat), "at": survey.get("at"),
+            "surface": survey.get("surface", ""), "role": survey.get("role", ""),
+            "scores": {}, "texts": [],
+        })
+        person["at"] = survey.get("at") or person["at"]
+        if survey.get("role"):
+            person["role"] = survey.get("role")
+        for key, value in (survey.get("ratings") or {}).items():
+            if key in FEEDBACK_ITEMS:
+                person["scores"][key] = int(value)
+        for text in list((survey.get("problems") or {}).values()) + [
+                survey.get("impression"), survey.get("mistakes")]:
+            text = str(text or "").strip()
+            if text:
+                person["texts"].append(text)
+    respondents = []
+    for person in people.values():
+        scores = list(person["scores"].values())
+        respondents.append({
+            "chat": person["chat"], "who": person["who"], "at": person["at"],
+            "surface": person["surface"], "role": person["role"],
+            "rated": len(scores), "avg": average(scores),
+            "texts": person["texts"],
+            "lowest": sorted(
+                ({"label": FEEDBACK_ITEMS[key], "score": score}
+                 for key, score in person["scores"].items()),
+                key=lambda row: row["score"])[:3],
+        })
+    respondents.sort(key=lambda row: float(row["at"] or 0), reverse=True)
+
+    return {
+        "days": int(days),
+        "funnel": funnel,
+        "by_source": sorted(by_source.items(), key=lambda kv: -kv[1]),
+        "answers": len(surveys),
+        "roles": sorted({str(s.get("role") or "—") for s in surveys}),
+        # Слабейшие подпункты идут первыми: свод читают, чтобы понять, что чинить.
+        "weakest": items[:8],
+        "strongest": list(reversed(items[-5:])),
+        "groups": groups,
+        "notes": notes,
+        "respondents": respondents,
+    }
+
+
+def usage_csv(days: int = 30, events: list[dict[str, Any]] | None = None) -> bytes:
+    """Выгрузка для разбора вопросов не глазами.
+
+    Точка с запятой и BOM — чтобы Excel открыл кириллицу и не склеил колонки.
+
+    События можно передать снаружи: журнал пишется там, где обслужен запрос,
+    и выгрузка бота без событий ядра — половина картины. Пустая таблица при
+    этом читается как «людей не было», хотя это «диск Render пережил выкатку
+    и не пережил».
+    """
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, delimiter=";")
+    writer.writerow(["время (UTC)", "поверхность", "событие", "chat_id", "user_id",
+                     "кто", "текст"])
+    rows = usage_events(days) if events is None else sorted(
+        events, key=lambda event: float(event.get("at") or 0))
+    for event in rows:
+        writer.writerow([
+            datetime.fromtimestamp(float(event.get("at") or 0),
+                                   tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+            event.get("surface", ""), event.get("kind", ""),
+            event.get("chat", ""), event.get("user", ""),
+            event.get("name", ""), str(event.get("text") or "").replace("\n", " "),
+        ])
+    return ("﻿" + buffer.getvalue()).encode("utf-8")
+
+
+def profile_registry_summary(days: int = 30) -> dict[str, Any]:
+    """Сколько людей заполнило знакомство и кто это.
+
+    Знакомство — единственная запись, которая переживает выкатку: журнал
+    обращений живёт на том хосте, который обслужил запрос, а на Render его диск
+    кончается вместе с контейнером. Профили лежат на ядре файлами, поэтому
+    «сколько зарегистрировалось» считается по ним, а не по журналу.
+
+    Слова человека остаются словами человека: телеграм подтверждает аккаунт,
+    имя и компанию подтвердить нечем — так и записано в самой анкете.
+    """
+    directory = _PROJECTS_DIR.parent / "profiles"
+    people: list[dict[str, Any]] = []
+    try:
+        paths = sorted(directory.glob("*.json"))
+    except OSError:
+        paths = []
+    for path in paths:
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(record, dict):
+            continue
+        people.append(record)
+
+    def moment(record: dict[str, Any]) -> float:
+        raw = str(record.get("created") or record.get("updated") or "")
+        try:
+            return datetime.fromisoformat(raw).timestamp()
+        except ValueError:
+            return 0.0
+
+    people.sort(key=moment, reverse=True)
+    edge = time.time() - max(1, int(days)) * 86400
+    fresh = [record for record in people if moment(record) >= edge]
+
+    sources: dict[str, int] = {}
+    for record in people:
+        key = str(record.get("source") or "").strip() or "не сказали"
+        sources[key] = sources.get(key, 0) + 1
+
+    return {
+        "days": int(days),
+        "total": len(people),
+        "window": len(fresh),
+        "complete": len([r for r in people if profile_complete(r)]),
+        "by_source": sorted(sources.items(), key=lambda kv: -kv[1])[:8],
+        "recent": [{
+            "chat": int(record.get("chat_id") or 0),
+            "name": str(record.get("name") or ""),
+            "company": str(record.get("company") or ""),
+            "role": str(record.get("role") or ""),
+            "source": str(record.get("source") or ""),
+            "contact": str(record.get("contact") or ""),
+            "created": str(record.get("created") or ""),
+        } for record in people[:15]],
+        "dir": str(directory),
+    }
+
+
+def usage_admin_ids() -> set[int]:
+    """Кому показывать статистику. Пусто — значит никому: список чужих вопросов
+    не та вещь, которую отдают по умолчанию."""
+    raw = _env_str("DEVELOPAID_ADMIN_IDS", "")
+    ids: set[int] = set()
+    for piece in re.split(r"[,\s;]+", raw or ""):
+        piece = piece.strip()
+        if piece.lstrip("-").isdigit():
+            ids.add(int(piece))
+    return ids
+
+
+# ---------------------------------------------------------------------------
+# Хранилище проектов
+#
+# Проект живёт в браузере: `localStorage` держит один-единственный набор, и
+# второй участок затирает первый. Смотреть площадки подряд можно, вернуться к
+# позавчерашней — нет.
+#
+# Хранится не всё подряд, а то, что явно сохранили: просмотр площадки — это
+# черновик, и складывать каждый пересчёт значит завести свалку вместо полки.
+#
+# Место хранения — ядро на Яндексе, а не Render. Две причины, и обе жёсткие:
+# диск Render живёт до следующей выкатки, а привязанные к человеку данные
+# россиян по 152-ФЗ (ст. 18.1) обязаны лежать в России. Поэтому Render свои
+# запросы пересылает на ядро и у себя не хранит ничего.
+#
+# С 15.08.2026 (решение владельца) хранилище общее: владельца опознаёт
+# подписанная телеграм-сессия — мини-приложения или входа через бота, — и
+# каждый chat_id живёт в своём каталоге со своим лимитом. Регистрации нет:
+# личность и так выдаёт бот. Данные лежат на ядре в России; текст согласия
+# на обработку — на владельце проекта.
+# ---------------------------------------------------------------------------
+
+_PROJECTS_DIR = Path(_env_str("DEVELOPAID_PROJECTS_DIR", "").strip()
+                     or (Path(__file__).resolve().parent / "data" / "projects"))
+_PROJECTS_LIMIT = max(1, int(_env_float("DEVELOPAID_PROJECTS_LIMIT", 200.0)))
+_PROJECT_PAYLOAD_LIMIT = 4 * 1024 * 1024
+
+
+def _projects_remote_url(path: str) -> str:
+    """Адрес ядра, если мы не ядро. Пусто — храним у себя."""
+    return _core_api_url(path) if _MO_CALC_API_URL else ""
+
+
+def _project_owner(session: str = "", key: str = "") -> int:
+    """Кто сохраняет. Опознаём двумя способами, оба сводятся к «это владелец».
+
+    Подписанная Telegram-сессия — из мини-приложения или входа через бота —
+    несёт chat_id: каждый пользователь бота хранит свои проекты в своём
+    каталоге (решение владельца, 15.08.2026). Ключ администратора остаётся
+    входом без телеграма; не задан — способ выключён, а не открыт всем.
+    """
+    if session:
+        chat_id = int(_telegram_verify_session(session).get("chat_id") or 0)
+        if chat_id:
+            return chat_id
+        raise HTTPException(status_code=403, detail="В сессии нет владельца — войдите заново.")
+    admins = usage_admin_ids()
+    if not admins:
+        raise HTTPException(
+            status_code=503,
+            detail="Хранилище проектов не настроено: задайте DEVELOPAID_ADMIN_IDS.")
+    secret = _env_str("DEVELOPAID_ADMIN_KEY", "").strip()
+    # Сравниваем байтами: `compare_digest` отказывается работать со строками,
+    # где есть не-ASCII, а ключ владелец задаёт какой захочет.
+    if secret and key and hmac.compare_digest(str(key).encode("utf-8"), secret.encode("utf-8")):
+        return sorted(admins)[0]
+    # Пустой `DEVELOPAID_ADMIN_KEY` отказывал теми же словами, что неверный
+    # ключ: человек вводил его снова и снова, а принимать было нечему
+    # (замечание владельца, 18.08.2026). Причины разные — и ответы разные.
+    if not secret:
+        raise HTTPException(
+            status_code=403,
+            detail=("Ключи на этом сервере не принимаются: DEVELOPAID_ADMIN_KEY "
+                    "не задан. Войдите через Telegram — кнопка в «Личном кабинете»."))
+    if not key:
+        raise HTTPException(
+            status_code=403,
+            detail=("Войдите через Telegram (кнопка в «Личном кабинете») либо "
+                    "введите ключ администратора — иначе сервер не знает, чей "
+                    "это проект."))
+    raise HTTPException(
+        status_code=403,
+        detail=("Ключ администратора не подошёл. Проверьте его или войдите "
+                "через Telegram — кнопка в «Личном кабинете»."))
+
+
+def _project_dir(owner: int) -> Path:
+    return _PROJECTS_DIR / str(int(owner))
+
+
+def _project_path(owner: int, project_id: str) -> Path:
+    # Имя файла приходит снаружи: всё, кроме нашего же алфавита, — отказ, иначе
+    # «../../» уводит запись за пределы каталога владельца.
+    if not re.fullmatch(r"[0-9a-f]{12}", str(project_id or "")):
+        raise HTTPException(status_code=400, detail="Неверный идентификатор проекта")
+    return _project_dir(owner) / f"{project_id}.json"
+
+
+def _project_card(record: dict[str, Any]) -> dict[str, Any]:
+    """Строка списка: имя, время и несколько чисел, чтобы узнать проект не открывая."""
+    summary = record.get("summary") or {}
+    return {
+        "id": record.get("id"),
+        "name": record.get("name"),
+        "saved_at": record.get("saved_at"),
+        "version": record.get("version"),
+        "cadastral": record.get("cadastral") or [],
+        "summary": {key: summary.get(key) for key in
+                    ("revenue_mln", "net_profit_mln", "llcr", "purchase_price_mln")},
+    }
+
+
+def project_save(owner: int, name: str, payload: dict[str, Any],
+                 summary: dict[str, Any] | None = None,
+                 cadastral: list[str] | None = None,
+                 project_id: str = "") -> dict[str, Any]:
+    body = json.dumps(payload or {}, ensure_ascii=False)
+    if len(body.encode("utf-8")) > _PROJECT_PAYLOAD_LIMIT:
+        raise HTTPException(status_code=413, detail="Проект слишком велик для хранилища")
+    directory = _project_dir(owner)
+    directory.mkdir(parents=True, exist_ok=True)
+    existing = sorted(directory.glob("*.json"))
+    if not project_id and len(existing) >= _PROJECTS_LIMIT:
+        raise HTTPException(
+            status_code=507,
+            detail=f"В хранилище уже {len(existing)} проектов — удалите ненужные.")
+    # Ссылка на проект переживает его правку. Иначе после сохранения код
+    # терялся, «Поделиться» выпускало второй, а первый продолжал жить и
+    # показывать старые числа: две живые ссылки на один проект, и та, что у
+    # получателя, — устаревшая.
+    share_code = ""
+    if project_id:
+        try:
+            previous = json.loads(_project_path(owner, project_id).read_text(encoding="utf-8"))
+            share_code = str(previous.get("share_code") or "")
+        except (OSError, ValueError, HTTPException):
+            share_code = ""
+    record = {
+        "id": project_id or hashlib.sha256(
+            f"{owner}:{time.time()}:{name}".encode("utf-8")).hexdigest()[:12],
+        "owner": int(owner),
+        "name": str(name or "Без названия").strip()[:120] or "Без названия",
+        # До миллисекунд: два сохранения подряд попадали в одну секунду, и
+        # список сортировался как придётся.
+        "saved_at": datetime.now(tz=timezone.utc).isoformat(timespec="milliseconds"),
+        "version": VERSION,
+        "cadastral": [str(item)[:40] for item in (cadastral or [])][:20],
+        "summary": summary or {},
+        "payload": payload or {},
+    }
+    if share_code:
+        record["share_code"] = share_code
+    path = _project_path(owner, record["id"])
+    # Запись через временный файл: воркеров два, и оборванная запись оставила
+    # бы битый JSON вместо проекта.
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+    temporary.replace(path)
+    return _project_card(record)
+
+
+def project_list(owner: int) -> list[dict[str, Any]]:
+    directory = _project_dir(owner)
+    cards: list[dict[str, Any]] = []
+    for path in directory.glob("*.json") if directory.is_dir() else []:
+        # Анкета переехала в свой каталог, но у тех, кто заполнил её раньше,
+        # файл ещё лежит здесь: список проектов о нём знать не должен.
+        if path.name == "profile.json":
+            continue
+        try:
+            cards.append(_project_card(json.loads(path.read_text(encoding="utf-8"))))
+        except Exception:
+            continue  # битый файл не должен прятать остальные
+    cards.sort(key=lambda item: str(item.get("saved_at") or ""), reverse=True)
+    return cards
+
+
+def project_open(owner: int, project_id: str) -> dict[str, Any]:
+    path = _project_path(owner, project_id)
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Проект не найден")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+# --- передача проекта другому человеку ---------------------------------------
+# «А если я другому пользователю хочу скинуть проект, посчитанный мной? Не PDF,
+# а именно набор параметров для дальнейшей работы» (владелец, 20.08.2026).
+# Решение владельца: ссылку открывает любой, кто её получил, и живёт она
+# бессрочно.
+#
+# Ссылка отдаёт снимок, а не сам проект: получатель видит то, что ему прислали,
+# и правки автора задним числом эту картину не меняют. Копия, а не общий
+# доступ — два человека, уверенные, что смотрят одно и то же, худший исход для
+# финмодели, и изображать совместную работу нельзя.
+#
+# Раз ссылка вечная и открытая, её обязательно можно отозвать: у публичной
+# ссылки без выключателя нет способа передумать. Код у проекта один и тот же —
+# повторное «Поделиться» обновляет снимок по прежней ссылке, а не плодит их.
+def _shared_dir() -> Path:
+    return _PROJECTS_DIR.parent / "shared"
+
+
+def _shared_path(code: str) -> Path:
+    # Код приходит снаружи и превращается в имя файла: всё, кроме нашего
+    # алфавита, — отказ, иначе «../../» уводит чтение за пределы каталога.
+    if not re.fullmatch(r"[A-Za-z0-9_-]{8,64}", str(code or "")):
+        raise HTTPException(status_code=400, detail="Неверная ссылка на проект")
+    return _shared_dir() / f"{code}.json"
+
+
+def _shared_author(owner: int) -> str:
+    """Кем подписан снимок. Имя — из знакомства, если человек его оставил."""
+    try:
+        profile = profile_read(owner) or {}
+    except Exception:
+        return ""
+    name = str(profile.get("name") or "").strip()
+    company = str(profile.get("company") or "").strip()
+    if name and company:
+        return f"{name} ({company})"
+    return name
+
+
+def project_share(owner: int, project_id: str) -> dict[str, Any]:
+    """Сделать снимок проекта и вернуть код ссылки."""
+    record = project_open(owner, project_id)
+    code = str(record.get("share_code") or "")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{8,64}", code):
+        # Ссылка открыта для всех, у кого она есть, — значит, подобрать её быть
+        # не должно: код случайный и длинный, а не порядковый номер.
+        code = secrets.token_urlsafe(12)
+    snapshot = {
+        "code": code,
+        "shared_at": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
+        "author": _shared_author(owner),
+        "name": record.get("name"),
+        "saved_at": record.get("saved_at"),
+        "version": record.get("version"),
+        "cadastral": record.get("cadastral") or [],
+        "summary": record.get("summary") or {},
+        "payload": record.get("payload") or {},
+    }
+    directory = _shared_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    path = _shared_path(code)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
+    temporary.replace(path)
+
+    record["share_code"] = code
+    own = _project_path(owner, project_id)
+    temporary = own.with_suffix(".tmp")
+    temporary.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+    temporary.replace(own)
+    return {"code": code, "shared_at": snapshot["shared_at"], "name": snapshot["name"]}
+
+
+def project_unshare(owner: int, project_id: str) -> dict[str, Any]:
+    """Отозвать ссылку. Снимок удаляется, сам проект остаётся."""
+    record = project_open(owner, project_id)
+    code = str(record.get("share_code") or "")
+    if code:
+        try:
+            _shared_path(code).unlink(missing_ok=True)
+        except HTTPException:
+            pass
+    record.pop("share_code", None)
+    path = _project_path(owner, project_id)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+    temporary.replace(path)
+    return {"unshared": project_id}
+
+
+def project_shared(code: str) -> dict[str, Any]:
+    """Снимок по ссылке. Входа не требует — решение владельца."""
+    path = _shared_path(code)
+    if not path.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail="Ссылка не найдена: её отозвали или адрес набран с ошибкой.")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def project_delete(owner: int, project_id: str) -> dict[str, Any]:
+    path = _project_path(owner, project_id)
+    if path.is_file():
+        path.unlink()
+    return {"deleted": project_id}
+
+
+class ProjectRequest(BaseModel):
+    session: str = ""
+    key: str = ""
+    id: str = ""
+    name: str = ""
+    payload: dict[str, Any] = {}
+    summary: dict[str, Any] = {}
+    cadastral: list[str] = []
+
+
+def _projects_forward(path: str, req: ProjectRequest) -> dict[str, Any] | None:
+    """Render ничего не хранит: его дело — донести запрос до ядра."""
+    url = _projects_remote_url(path)
+    if not url:
+        return None
+    return _core_post(url, req.model_dump(), 30.0)
+
+
+@app.get("/projects/status")
+def projects_status() -> dict[str, Any]:
+    """Есть ли смысл показывать кнопки: настроено ли хранилище и чем входить."""
+    return {
+        # Хранилище настроено, когда есть чем опознать владельца: подписью
+        # сессии (токен бота) или списком администраторов под ключ.
+        "configured": bool(_telegram_token()) or bool(usage_admin_ids()),
+        "accepts_key": bool(_env_str("DEVELOPAID_ADMIN_KEY", "").strip()),
+        "accepts_login": bool(_telegram_token()) and bool(_web_login_bot_username()),
+        "remote": bool(_projects_remote_url("/projects/list")),
+        "limit": _PROJECTS_LIMIT,
+        # Расчёт экономики за входом. Без токена бота гейт выключен — страница
+        # не должна запирать дверь, которую сервер не запирает.
+        "calc_requires_login": bool(_telegram_token()),
+    }
+
+
+@app.post("/projects/save")
+def projects_save(req: ProjectRequest) -> dict[str, Any]:
+    forwarded = _projects_forward("/projects/save", req)
+    if forwarded is not None:
+        return forwarded
+    owner = _project_owner(req.session, req.key)
+    # Знакомство спрашивают там, где человек оставляет у нас работу, а не на
+    # каждом запросе: расчёт открыт, а сохранённый проект уже чей-то. Спрашивают
+    # у вошедшего через Telegram; админский ключ — это сам владелец, ему
+    # представляться некому.
+    if req.session and not profile_complete(profile_read(owner)):
+        raise HTTPException(
+            status_code=428,
+            detail="Заполните знакомство: имя, компания и откуда узнали о нас.")
+    return project_save(owner, req.name, req.payload, req.summary, req.cadastral, req.id)
+
+
+@app.post("/projects/list")
+def projects_list(req: ProjectRequest) -> dict[str, Any]:
+    forwarded = _projects_forward("/projects/list", req)
+    if forwarded is not None:
+        return forwarded
+    return {"projects": project_list(_project_owner(req.session, req.key))}
+
+
+@app.post("/projects/open")
+def projects_open(req: ProjectRequest) -> dict[str, Any]:
+    forwarded = _projects_forward("/projects/open", req)
+    if forwarded is not None:
+        return forwarded
+    return project_open(_project_owner(req.session, req.key), req.id)
+
+
+@app.post("/projects/delete")
+def projects_delete(req: ProjectRequest) -> dict[str, Any]:
+    forwarded = _projects_forward("/projects/delete", req)
+    if forwarded is not None:
+        return forwarded
+    return project_delete(_project_owner(req.session, req.key), req.id)
+
+
+@app.post("/projects/share")
+def projects_share(req: ProjectRequest) -> dict[str, Any]:
+    forwarded = _projects_forward("/projects/share", req)
+    if forwarded is not None:
+        return forwarded
+    return project_share(_project_owner(req.session, req.key), req.id)
+
+
+@app.post("/projects/unshare")
+def projects_unshare(req: ProjectRequest) -> dict[str, Any]:
+    forwarded = _projects_forward("/projects/unshare", req)
+    if forwarded is not None:
+        return forwarded
+    return project_unshare(_project_owner(req.session, req.key), req.id)
+
+
+@app.post("/projects/shared")
+def projects_shared(req: ProjectRequest) -> dict[str, Any]:
+    """Открыть присланный проект. Вход не нужен: ссылку открывает любой, кто её
+    получил (решение владельца, 20.08.2026) — иначе её нельзя послать тому, кто
+    сервисом ещё не пользовался, а именно так им и делятся."""
+    forwarded = _projects_forward("/projects/shared", req)
+    if forwarded is not None:
+        return forwarded
+    return project_shared(req.id)
+
+
+# ---------------------------------------------------------------------------
+# Знакомство: кто зашёл, как зовут, из какой компании и откуда узнал о нас
+# (решение владельца, 18.08.2026).
+#
+# Личность подтверждает Telegram — вход уже доказывает, что за экраном живой
+# аккаунт, и даёт chat_id. Анкета добавляет то, что подтвердить нечем и незачем
+# делать вид, что подтверждено: имя, компанию, источник. Хранится рядом с
+# проектами, тем же владельцем и в том же общем хранилище на ядре.
+
+_PROFILE_FIELD_LIMIT = 200
+_PROFILE_SOURCES = (
+    "Телеграм-канал", "Рекомендация коллеги", "Поиск в интернете",
+    "Конференция или мероприятие", "Соцсети", "Другое",
+)
+
+
+class ProfileRequest(BaseModel):
+    session: str = ""
+    key: str = ""
+    name: str = ""
+    company: str = ""
+    role: str = ""
+    source: str = ""
+    contact: str = ""
+    consent: bool = False
+
+
+def _profile_path(owner: int) -> Path:
+    # Анкета лежит рядом с проектами, но не среди них: список читает из
+    # каталога владельца все *.json, и знакомство показывалось строкой в «Моих
+    # проектах» — с именем человека, прочерками и кнопкой «Удалить» (боевая
+    # проверка владельца, 18.08.2026).
+    return _PROJECTS_DIR.parent / "profiles" / f"{int(owner)}.json"
+
+
+def _profile_legacy_path(owner: int) -> Path:
+    """Где анкета лежала до переезда. Читаем, пока не переписана."""
+    return _project_dir(owner) / "profile.json"
+
+
+def _profile_text(value: Any) -> str:
+    # Поле приходит снаружи: режем по длине и убираем перевод строки, чтобы
+    # анкета не превращалась в способ прислать нам страницу текста.
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    return text[:_PROFILE_FIELD_LIMIT]
+
+
+def profile_read(owner: int) -> dict[str, Any]:
+    for path in (_profile_path(owner), _profile_legacy_path(owner)):
+        if not path.is_file():
+            continue
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+    return {}
+
+
+def _profile_store(owner: int, record: dict[str, Any]) -> None:
+    """Пишет анкету на новое место и убирает её со старого."""
+    path = _profile_path(owner)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+    temporary.replace(path)
+    _profile_legacy_path(owner).unlink(missing_ok=True)
+
+
+def profile_complete(record: dict[str, Any]) -> bool:
+    """Заполненной анкета считается, когда есть имя, компания и источник."""
+    return all(_profile_text(record.get(key)) for key in ("name", "company", "source"))
+
+
+def profile_write(owner: int, req: ProfileRequest) -> dict[str, Any]:
+    name, company = _profile_text(req.name), _profile_text(req.company)
+    source = _profile_text(req.source)
+    if not name or not company or not source:
+        raise HTTPException(
+            status_code=400,
+            detail="Заполните имя, компанию и откуда узнали о нас.")
+    if not bool(req.consent):
+        raise HTTPException(
+            status_code=400,
+            detail="Без согласия на обработку персональных данных анкету принять нельзя.")
+    previous = profile_read(owner)
+    record = {
+        "chat_id": int(owner),
+        "name": name,
+        "company": company,
+        "role": _profile_text(req.role),
+        "source": source,
+        "contact": _profile_text(req.contact),
+        "telegram_name": _profile_text(previous.get("telegram_name")),
+        "consent": True,
+        "consent_at": previous.get("consent_at") or datetime.now().isoformat(timespec="seconds"),
+        "created": previous.get("created") or datetime.now().isoformat(timespec="seconds"),
+        "updated": datetime.now().isoformat(timespec="seconds"),
+    }
+    _profile_store(owner, record)
+    return {"saved": True, "profile": record, "first_time": not bool(previous)}
+
+
+def _profile_remember_telegram_name(owner: int, name: str) -> None:
+    """Имя из Telegram — подсказка для анкеты, а не сама анкета."""
+    name = _profile_text(name)
+    if not name or not owner:
+        return
+    record = profile_read(owner)
+    if _profile_text(record.get("telegram_name")) == name:
+        return
+    record["telegram_name"] = name
+    record.setdefault("chat_id", int(owner))
+    _profile_store(owner, record)
+
+
+def _profile_forward(path: str, req: ProfileRequest) -> dict[str, Any] | None:
+    url = _projects_remote_url(path)
+    if not url:
+        return None
+    return _core_post(url, req.model_dump(), 30.0)
+
+
+@app.post("/profile/get")
+def profile_get(req: ProfileRequest) -> dict[str, Any]:
+    """Анкета владельца сессии: заполнена ли и чем подставить поля."""
+    forwarded = _profile_forward("/profile/get", req)
+    if forwarded is not None:
+        return forwarded
+    owner = _project_owner(req.session, req.key)
+    record = profile_read(owner)
+    return {
+        "chat_id": owner,
+        "complete": profile_complete(record),
+        "profile": record,
+        "sources": list(_PROFILE_SOURCES),
+    }
+
+
+@app.post("/profile/save")
+def profile_save(req: ProfileRequest) -> dict[str, Any]:
+    forwarded = _profile_forward("/profile/save", req)
+    if forwarded is not None:
+        # Ядро до api.telegram.org не достаёт, поэтому о новом знакомстве
+        # владельцу сообщает тот хост, у которого есть Telegram.
+        if forwarded.get("first_time"):
+            _profile_announce(forwarded.get("profile") or {})
+        return forwarded
+    saved = profile_write(_project_owner(req.session, req.key), req)
+    if saved.get("first_time"):
+        _profile_announce(saved.get("profile") or {})
+    return saved
+
+
+def _profile_pending_path() -> Path:
+    return _PROJECTS_DIR.parent / "profile_announcements.jsonl"
+
+
+def _profile_remember_announcement(record: dict[str, Any]) -> None:
+    """Кладёт знакомство в очередь для того, у кого есть Telegram.
+
+    Анкета сохраняется на ядре, а до api.telegram.org достаёт только Render —
+    сообщение «новая регистрация» иначе не ушло бы никуда. Ядро складывает
+    знакомство на диск, Render забирает его тем же путём, каким пересылает
+    проекты (18.08.2026).
+    """
+    try:
+        path = _profile_pending_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception:
+        # Очередь — доставка, а не регистрация: анкета уже сохранена.
+        pass
+
+
+def _profile_take_announcements() -> list[dict[str, Any]]:
+    """Забирает накопленные знакомства. Забрать может только один: файл
+    переименовывается, и второй читатель получает его отсутствие."""
+    path = _profile_pending_path()
+    taken = path.with_suffix(".taken")
+    try:
+        path.replace(taken)
+    except Exception:
+        return []
+    records: list[dict[str, Any]] = []
+    try:
+        for line in taken.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                records.append(json.loads(line))
+            except Exception:
+                continue
+    finally:
+        taken.unlink(missing_ok=True)
+    return records
+
+
+@app.post("/internal/profile/announcements")
+def profile_announcements(req: WebLoginConfirmRequest) -> dict[str, Any]:
+    """Знакомства, которые ещё некому было объявить. Только для своего хоста.
+
+    Подпись — тем же токеном бота, что и подтверждение входа: секрет общий у
+    ядра и Render, а посторонний его не знает. Отдаём разом и удаляем: это
+    доставка, а не хранилище.
+    """
+    expected = _web_login_sign("profile-announcements", int(req.chat_id or 0))
+    if not hmac.compare_digest(str(req.sign or "").encode("utf-8"),
+                               expected.encode("utf-8")):
+        raise HTTPException(status_code=403, detail="Подпись не сошлась.")
+    return {"announcements": _profile_take_announcements()}
+
+
+def _profile_announce(record: dict[str, Any]) -> None:
+    """Новое знакомство — в чат владельцу. Молча, если сообщить нечем."""
+    admins = usage_admin_ids()
+    if not admins or not _telegram_token() or not _telegram_webhook_enabled():
+        # Telegram здесь недоступен — знакомство ждёт того, у кого он есть.
+        _profile_remember_announcement(record)
+        return
+    _telegram_send_profile_card(record, admins)
+
+
+def _telegram_send_profile_card(record: dict[str, Any], admins: set[int]) -> None:
+    lines = [
+        "<b>Новая регистрация</b>",
+        f"Имя: {html.escape(str(record.get('name') or '—'))}",
+        f"Компания: {html.escape(str(record.get('company') or '—'))}",
+    ]
+    if record.get("role"):
+        lines.append(f"Роль: {html.escape(str(record['role']))}")
+    lines.append(f"Узнал(а) о нас: {html.escape(str(record.get('source') or '—'))}")
+    if record.get("contact"):
+        lines.append(f"Контакт: {html.escape(str(record['contact']))}")
+    if record.get("telegram_name"):
+        lines.append(f"Telegram: {html.escape(str(record['telegram_name']))}")
+    lines.append(f"chat_id: <code>{int(record.get('chat_id') or 0)}</code>")
+    for admin in sorted(admins):
+        try:
+            _telegram_send_message(admin, "\n".join(lines))
+        except Exception:
+            # Уведомление — не часть регистрации: анкета уже сохранена.
+            pass
+
+
+# ---------------------------------------------------------------------------
+# Вход на сайт через телеграм-бота (решение владельца, 15.08.2026).
+#
+# Личность пользователя уже есть у бота — chat_id: на ней держатся проекты,
+# сессии мини-приложения и журнал обращений. Сайт получает ту же личность без
+# второй регистрации: страница просит одноразовый код, человек жмёт Start в
+# боте по ссылке t.me/<бот>?start=login_<код>, бот подтверждает код, страница
+# коротким опросом забирает подписанную сессию — ту же, что у мини-приложения,
+# поэтому и проверка одна (`_telegram_verify_session`).
+#
+# Коды живут на ядре, как и проекты: бот на Render доносит подтверждение
+# внутренним вызовом с подписью токеном бота, страница забирает сессию через
+# пересылку — тем же путём, что /projects/*. Код одноразовый и короткоживущий,
+# сессия входа длинная. Вход мягкий: смотреть и считать можно без него, за
+# входом — сохранение проектов, Платон и PDF (они стоят денег или хранят
+# данные). Без TELEGRAM_BOT_TOKEN весь механизм честно выключен: проверять
+# подпись нечем, и порядок остаётся прежним.
+# ---------------------------------------------------------------------------
+
+_WEB_LOGIN_TTL_SECONDS = 300
+_WEB_LOGIN_SESSION_SECONDS = 30 * 86400
+
+
+def _web_login_dir() -> Path:
+    directory = _PROJECTS_DIR.parent / "web_login"
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
+
+
+def _web_login_path(code: str) -> Path:
+    # Код приходит снаружи: всё, кроме нашего алфавита, — отказ, иначе «../»
+    # уводит запись за пределы каталога (то же правило, что у проектов).
+    if not re.fullmatch(r"[0-9a-f]{12}", str(code or "")):
+        raise HTTPException(status_code=400, detail="Неверный код входа.")
+    return _web_login_dir() / f"{code}.json"
+
+
+def _web_login_sign(code: str, chat_id: int) -> str:
+    """Подпись внутреннего подтверждения: бот на Render и ядро делят токен."""
+    token = _telegram_token()
+    if not token:
+        raise HTTPException(
+            status_code=503,
+            detail="TELEGRAM_BOT_TOKEN не задан — вход через бота недоступен.")
+    raw = f"web-login:{code}:{int(chat_id)}".encode("utf-8")
+    digest = hmac.new(token.encode("utf-8"), raw, hashlib.sha256).digest()[:20]
+    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+
+
+def _web_login_bot_username() -> str:
+    # Ядро до api.telegram.org не достаёт (направление закрыто), getMe там не
+    # проходит — имя бота задаётся переменной. На Render его знает getMe.
+    return (str(_TELEGRAM_RUNTIME.get("username") or "")
+            or _env_str("TELEGRAM_BOT_USERNAME", "").strip())
+
+
+class WebLoginClaimRequest(BaseModel):
+    code: str = ""
+
+
+class WebLoginConfirmRequest(BaseModel):
+    code: str = ""
+    chat_id: int = 0
+    sign: str = ""
+    name: str = ""
+
+
+class FeedbackRequest(BaseModel):
+    role: str = ""
+    region: str = ""
+    ratings: dict[str, Any] = {}
+    problems: dict[str, Any] = {}
+    impression: str = ""
+    mistakes: str = ""
+    projects: list[str] = []
+    session: str = ""
+    source: str = ""
+
+
+def _feedback_clean(req: FeedbackRequest) -> dict[str, Any]:
+    """Разбор анкеты: наружу выходит только то, о чём спрашивали.
+
+    Поля приходят из браузера, то есть могут быть любыми. Профиль сверяется со
+    списком, оценки — целые от одного до пяти, всё остальное режется по длине.
+    Пустая оценка — это «не пользовался», и она не единица: непользовавшийся,
+    засчитанный единицей, портит средние сильнее, чем отсутствие ответа.
+    """
+    groups = {group[0] for group in FEEDBACK_GROUPS}
+    ratings: dict[str, int] = {}
+    for key, value in (req.ratings or {}).items():
+        if str(key) not in FEEDBACK_ITEMS:
+            continue
+        try:
+            score = int(value)
+        except (TypeError, ValueError):
+            continue
+        if 1 <= score <= 5:
+            ratings[str(key)] = score
+    # Комментарий — один на раздел: девять полей ввода это работа, за которую
+    # никто не подписывался, а один на раздел человек пишет там, где ему есть
+    # что сказать.
+    problems = {str(key): str(value).strip()[:_USAGE_TEXT_LIMIT]
+                for key, value in (req.problems or {}).items()
+                if str(key) in groups and str(value or "").strip()}
+    return {
+        "role": req.role if req.role in FEEDBACK_ROLES else "",
+        "region": req.region if req.region in FEEDBACK_REGIONS else "",
+        "ratings": ratings,
+        "problems": problems,
+        "impression": str(req.impression or "").strip()[:_USAGE_TEXT_LIMIT],
+        "mistakes": str(req.mistakes or "").strip()[:_USAGE_TEXT_LIMIT],
+        "projects": [str(name).strip()[:80] for name in (req.projects or [])[:20]
+                     if str(name or "").strip()],
+        "source": _telegram_invite_source(req.source),
+    }
+
+
+@app.post("/feedback")
+def feedback_submit(req: FeedbackRequest) -> dict[str, Any]:
+    """Анкета обратной связи. Вход не требуется: гейт мягкий, а мнение того,
+    кто не вошёл, нужно не меньше — он и бросил, скорее всего, раньше."""
+    data = _feedback_clean(req)
+    if not (data["ratings"] or data["impression"] or data["mistakes"]):
+        raise HTTPException(status_code=400, detail="Анкета пустая.")
+    usage_track("survey", surface="site",
+                chat_id=_web_identity_chat_id(req.session),
+                text=data["impression"], **data)
+    return {"ok": True}
+
+
+class InternalSummaryRequest(BaseModel):
+    days: int = 30
+    sign: str = ""
+
+
+@app.post("/internal/usage/summary")
+def internal_usage_summary(req: InternalSummaryRequest) -> dict[str, Any]:
+    """Свод учёта и анкет этого хоста — для того, у кого есть Telegram.
+
+    Журнал пишется там, где обслужен запрос: сайт живёт на ядре, бот на Render,
+    и `/survey` в боте видел только свою половину — анкеты, заполненные на
+    сайте, не показывались никому (18.08.2026). Подпись — общим токеном бота,
+    как у подтверждения входа: свод несёт свободные тексты людей и посторонним
+    не отдаётся.
+    """
+    days = max(1, min(365, int(req.days or 30)))
+    expected = _web_login_sign("usage-summary", days)
+    if not hmac.compare_digest(str(req.sign or "").encode("utf-8"),
+                               expected.encode("utf-8")):
+        raise HTTPException(status_code=403, detail="Подпись не сошлась.")
+    return {"usage": usage_summary(days), "survey": survey_summary(days),
+            # Знакомства лежат здесь же, на ядре: у бота их нет вовсе, а
+            # вопрос «сколько зарегистрировалось» задают ему.
             "registry": profile_registry_summary(days),
             # Сырые события — чтобы выгрузка собиралась из обеих половин, а не
             # из той, что пережила последнюю выкатку.
