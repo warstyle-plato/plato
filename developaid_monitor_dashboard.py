@@ -1,4 +1,10 @@
-"""Management KPI, funding-risk and recurring-input layer for Project Monitor."""
+"""Management KPI, funding-risk and recurring-input layer for Project Monitor.
+
+Funding is calculated article-by-article. A free balance in one RSS article is
+not silently allowed to finance another article. Once an article's own balance
+is exhausted, that month's need consumes the explicit 2.8/2.9 reserve; only
+after the reserve is exhausted does the model report uncovered financing.
+"""
 from __future__ import annotations
 
 import datetime
@@ -43,37 +49,69 @@ def _latest_sales(project: str, upto: datetime.date | None = None) -> Path | Non
 
 def _find_header(ws: Any, needle: str, max_rows: int = 20) -> tuple[int, int] | None:
     wanted = _norm(needle)
-    for r, row in enumerate(ws.iter_rows(min_row=1, max_row=min(ws.max_row, max_rows), values_only=True), 1):
+    for r, row in enumerate(
+        ws.iter_rows(min_row=1, max_row=min(ws.max_row, max_rows), values_only=True), 1
+    ):
         for c, value in enumerate(row, 1):
             if wanted in _norm(value):
                 return r, c
     return None
 
 
+def _month_value(value: Any, year: int, previous_month: int) -> tuple[datetime.date | None, int, int]:
+    if isinstance(value, datetime.datetime):
+        day = value.date().replace(day=1)
+        return day, day.year, day.month
+    if isinstance(value, datetime.date):
+        day = value.replace(day=1)
+        return day, day.year, day.month
+    ru_months = {
+        "январь": 1, "февраль": 2, "март": 3, "апрель": 4,
+        "май": 5, "июнь": 6, "июль": 7, "август": 8,
+        "сентябрь": 9, "октябрь": 10, "ноябрь": 11, "декабрь": 12,
+    }
+    month = ru_months.get(_norm(value))
+    if not month:
+        return None, year, previous_month
+    if previous_month and month < previous_month:
+        year += 1
+    return datetime.date(year, month, 1), year, month
+
+
 def _finance_baseline(project: str) -> dict[str, Any]:
     path = _finance_file(project)
     if not path.exists():
         return {"known": False, "reason": "не загружен финансовый baseline"}
+
     from openpyxl import load_workbook
+
     wb = load_workbook(path, read_only=True, data_only=True)
     try:
         if "Расчет стоимости строительства" not in wb.sheetnames:
             return {"known": False, "reason": "нет листа «Расчет стоимости строительства»"}
         ws = wb["Расчет стоимости строительства"]
         approved_hdr = _find_header(ws, "Утвержденная фин.модель проекта")
-        need_hdr = _find_header(ws, "Средства на завершение согласно бюджету")
+        need_hdr = _find_header(ws, "Средства на завершение строительства") or _find_header(
+            ws, "Средства на завершение согласно бюджету"
+        )
         paid_hdr = _find_header(ws, "Оплачено по состояни")
         programme_hdr = _find_header(ws, "производств")
         tail_hdr = _find_header(ws, "Остаток к выполнению на 01.04.27")
+        rss_limit_hdr = _find_header(ws, "Общая сметная стоимость")
         if not approved_hdr or not need_hdr:
-            return {"known": False, "reason": "не найдены колонки утвержденной модели/потребности"}
+            return {"known": False, "reason": "не найдены колонки утвержденной модели/остатка"}
+
         approved_col = approved_hdr[1]
         need_col = need_hdr[1]
-        paid_col = paid_hdr[1] if paid_hdr else 9
-        programme_col = programme_hdr[1] if programme_hdr else 13
-        tail_col = tail_hdr[1] if tail_hdr else 24
+        paid_col = paid_hdr[1] if paid_hdr else 8
+        rss_limit_col = rss_limit_hdr[1] if rss_limit_hdr else 4
+        programme_col = programme_hdr[1] if programme_hdr else 10
+        tail_col = tail_hdr[1] if tail_hdr else 20
+
         total_row = None
         reserve_rows: list[int] = []
+        source_rows: list[dict[str, Any]] = []
+        stack: list[dict[str, Any]] = []
         for r, values in enumerate(ws.iter_rows(values_only=True), 1):
             code = actuals._code(values[0] if values else None)
             article = _norm(values[1] if len(values) > 1 else None)
@@ -81,40 +119,96 @@ def _finance_baseline(project: str) -> dict[str, Any]:
                 total_row = r
             if code in {"2.8", "2.9"}:
                 reserve_rows.append(r)
+            if not code:
+                continue
+            depth = code.count(".") + 1
+            while stack and stack[-1]["depth"] >= depth:
+                stack.pop()
+            row = {
+                "row": r,
+                "code": code,
+                "depth": depth,
+                "parent": stack[-1] if stack else None,
+                "has_children": False,
+            }
+            if stack:
+                stack[-1]["has_children"] = True
+            source_rows.append(row)
+            stack.append(row)
+
         if total_row is None:
             return {"known": False, "reason": "не найдена итоговая строка глав 2+3"}
+
         approved = actuals._money(ws.cell(total_row, approved_col).value)
         completion_need = actuals._money(ws.cell(total_row, need_col).value)
         paid_at_baseline = actuals._money(ws.cell(total_row, paid_col).value)
         tail_after_apr = actuals._money(ws.cell(total_row, tail_col).value)
+
         reserve = 0.0
         reserve_parts: dict[str, float] = {}
         for r in reserve_rows:
             code = actuals._code(ws.cell(r, 1).value)
-            amount = actuals._money(ws.cell(r, 10).value)
-            reserve += amount
-            reserve_parts[code] = amount
+            # Reserve is an explicit budget line. Prefer the remaining/completion
+            # column, falling back to the RSS cap when the sheet has not been
+            # refreshed with a residual value yet.
+            amount = actuals._money(ws.cell(r, need_col).value)
+            if amount <= 0:
+                amount = actuals._money(ws.cell(r, rss_limit_col).value)
+            reserve += max(0.0, amount)
+            reserve_parts[code] = max(0.0, amount)
+
         month_row = (programme_hdr[0] + 1) if programme_hdr else 9
-        ru_months = {"январь":1,"февраль":2,"март":3,"апрель":4,"май":5,"июнь":6,
-                     "июль":7,"август":8,"сентябрь":9,"октябрь":10,"ноябрь":11,"декабрь":12}
-        monthly: dict[str, float] = {}
+        month_columns: list[tuple[int, datetime.date]] = []
         year = 2026
         previous_month = 0
-        for c in range(programme_col, min(ws.max_column, programme_col + 15) + 1):
-            label = _norm(ws.cell(month_row, c).value)
-            month = ru_months.get(label)
-            if not month:
+        for c in range(programme_col, min(ws.max_column, programme_col + 18) + 1):
+            month, year, previous_month = _month_value(
+                ws.cell(month_row, c).value, year, previous_month
+            )
+            if month:
+                month_columns.append((c, month))
+
+        monthly_total: dict[str, float] = {}
+        for c, month in month_columns:
+            monthly_total[month.isoformat()] = actuals._money(ws.cell(total_row, c).value)
+
+        # Only terminal rows are financing buckets. Parent rows (2.2, 2.2.2,
+        # 2.3...) repeat the same programme and would double-count need.
+        articles: dict[str, dict[str, Any]] = {}
+        for meta in source_rows:
+            code = meta["code"]
+            if meta["has_children"] or not code.startswith("2") or code in {"2.8", "2.9"}:
                 continue
-            if previous_month and month < previous_month:
-                year += 1
-            previous_month = month
-            monthly[datetime.date(year, month, 1).isoformat()] = actuals._money(ws.cell(total_row, c).value)
+            r = meta["row"]
+            month_need = {
+                month.isoformat(): max(0.0, actuals._money(ws.cell(r, c).value))
+                for c, month in month_columns
+            }
+            if not any(month_need.values()):
+                continue
+            item = articles.setdefault(code, {
+                "code": code,
+                "name": str(ws.cell(r, 2).value or "").strip(),
+                "rss_limit": 0.0,
+                "paid_at_baseline": 0.0,
+                "monthly_need": {month.isoformat(): 0.0 for _, month in month_columns},
+            })
+            item["rss_limit"] += actuals._money(ws.cell(r, rss_limit_col).value)
+            item["paid_at_baseline"] += actuals._money(ws.cell(r, paid_col).value)
+            for month, amount in month_need.items():
+                item["monthly_need"][month] = item["monthly_need"].get(month, 0.0) + amount
+
         return {
-            "known": True, "source": path.name, "approved": approved,
+            "known": True,
+            "source": path.name,
+            "approved": approved,
             "completion_need_at_baseline": completion_need,
             "paid_at_baseline": paid_at_baseline,
-            "reserve": reserve, "reserve_parts": reserve_parts,
-            "monthly_need": monthly, "tail_after_apr": tail_after_apr,
+            "reserve": reserve,
+            "reserve_parts": reserve_parts,
+            "monthly_need": monthly_total,
+            "tail_after_apr": tail_after_apr,
+            "articles": articles,
         }
     finally:
         wb.close()
@@ -132,6 +226,7 @@ def _rss_ch23(estimate: dict[str, Any]) -> dict[str, float]:
 def _payment_total_ch23(rss: Path, estimate: dict[str, Any]) -> float:
     payments = actuals.read_payments(rss)
     parents = {row["code"]: row.get("parent") for row in estimate.get("rows") or []}
+
     def root(code: str) -> str:
         seen = set()
         while code and code not in seen:
@@ -141,98 +236,213 @@ def _payment_total_ch23(rss: Path, estimate: dict[str, Any]) -> float:
                 return code.split(".")[0]
             code = parent
         return code.split(".")[0] if code else ""
-    return sum(float(row.get("amount") or 0.0) for row in payments.get("rows") or []
-               if root(str(row.get("estimate_code") or "").rstrip(".")) in {"2", "3"})
+
+    return sum(
+        float(row.get("amount") or 0.0)
+        for row in payments.get("rows") or []
+        if root(str(row.get("estimate_code") or "").rstrip(".")) in {"2", "3"}
+    )
 
 
-def _interpolated_crossing(month: datetime.date, month_amount: float, before: float, threshold: float) -> datetime.date:
+def _payment_by_code(rss: Path) -> dict[str, float]:
+    result: dict[str, float] = {}
+    for row in actuals.read_payments(rss).get("rows") or []:
+        code = actuals._code(row.get("estimate_code"))
+        if not code:
+            continue
+        result[code] = result.get(code, 0.0) + float(row.get("amount") or 0.0)
+    return result
+
+
+def _interpolated_crossing(
+    month: datetime.date, month_amount: float, before: float, threshold: float
+) -> datetime.date:
     if month_amount <= 0:
         return month
     ratio = max(0.0, min(1.0, (threshold - before) / month_amount))
-    if month.month == 12:
-        nxt = datetime.date(month.year + 1, 1, 1)
-    else:
-        nxt = datetime.date(month.year, month.month + 1, 1)
+    nxt = (
+        datetime.date(month.year + 1, 1, 1)
+        if month.month == 12
+        else datetime.date(month.year, month.month + 1, 1)
+    )
     days = max(1, (nxt - month).days)
     return month + datetime.timedelta(days=max(0, min(days - 1, round(ratio * days))))
+
+
+def _article_waterfall(
+    articles: dict[str, dict[str, Any]],
+    reserve: float,
+    cut: datetime.date,
+    current_paid: dict[str, float] | None = None,
+) -> dict[str, Any]:
+    """Monthly article-limit -> reserve -> uncovered waterfall."""
+    current_paid = current_paid or {}
+    cut_month = cut.replace(day=1)
+    months = sorted({
+        monitor._day(month)
+        for item in articles.values()
+        for month in (item.get("monthly_need") or {})
+        if monitor._day(month) is not None and monitor._day(month) >= cut_month
+    })
+    months = [month for month in months if month is not None]
+
+    state: dict[str, float] = {}
+    opening_raw: dict[str, float] = {}
+    for code, item in articles.items():
+        paid = current_paid.get(code)
+        if paid is None:
+            paid = float(item.get("paid_at_baseline") or 0.0)
+        raw = float(item.get("rss_limit") or 0.0) - float(paid or 0.0)
+        opening_raw[code] = raw
+        state[code] = max(0.0, raw)
+
+    reserve_balance = max(0.0, float(reserve or 0.0))
+    reserve_start = None
+    reserve_exhaustion = None
+    cumulative_reserve_need = 0.0
+    cumulative_unfunded = 0.0
+    monthly_need: dict[str, float] = {}
+    monthly_reserve_draw: dict[str, float] = {}
+    monthly_unfunded: dict[str, float] = {}
+    monthly_reserve_balance: dict[str, float] = {}
+    article_rows: list[dict[str, Any]] = []
+
+    first_shortfall: dict[str, datetime.date] = {}
+    for month in months:
+        month_key = month.isoformat()
+        month_need_total = 0.0
+        month_shortfall = 0.0
+        for code, item in articles.items():
+            need = max(0.0, float((item.get("monthly_need") or {}).get(month_key, 0.0) or 0.0))
+            month_need_total += need
+            available = state.get(code, 0.0)
+            own_funding = min(available, need)
+            shortage = max(0.0, need - own_funding)
+            state[code] = max(0.0, available - need)
+            month_shortfall += shortage
+            if shortage > 0 and code not in first_shortfall:
+                first_shortfall[code] = month
+
+        monthly_need[month_key] = month_need_total
+        before_need = cumulative_reserve_need
+        cumulative_reserve_need += month_shortfall
+        if month_shortfall > 0 and reserve_start is None:
+            reserve_start = month
+
+        draw = min(reserve_balance, month_shortfall)
+        uncovered = max(0.0, month_shortfall - draw)
+        reserve_balance -= draw
+        cumulative_unfunded += uncovered
+        monthly_reserve_draw[month_key] = draw
+        monthly_unfunded[month_key] = uncovered
+        monthly_reserve_balance[month_key] = reserve_balance
+
+        if reserve_exhaustion is None and month_shortfall > 0 and cumulative_reserve_need > reserve:
+            reserve_exhaustion = _interpolated_crossing(
+                month, month_shortfall, before_need, reserve
+            )
+
+    for code, item in sorted(articles.items()):
+        article_rows.append({
+            "code": code,
+            "name": item.get("name", ""),
+            "opening_limit_raw": opening_raw.get(code, 0.0),
+            "opening_limit": max(0.0, opening_raw.get(code, 0.0)),
+            "remaining_limit": state.get(code, 0.0),
+            "first_reserve_month": monitor._iso(first_shortfall.get(code)),
+        })
+
+    return {
+        "opening_bank_remaining": sum(max(0.0, value) for value in opening_raw.values()),
+        "opening_article_deficit": sum(max(0.0, -value) for value in opening_raw.values()),
+        "remaining_article_limits": sum(state.values()),
+        "reserve_start": reserve_start,
+        "reserve_exhaustion": reserve_exhaustion,
+        "reserve_balance": reserve_balance,
+        "reserve_need": cumulative_reserve_need,
+        "additional_financing": cumulative_unfunded,
+        "monthly_need": monthly_need,
+        "monthly_reserve_draw": monthly_reserve_draw,
+        "monthly_unfunded": monthly_unfunded,
+        "monthly_reserve_balance": monthly_reserve_balance,
+        "articles": article_rows,
+    }
 
 
 def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, Any]) -> dict[str, Any]:
     baseline = _finance_baseline(project)
     if not baseline.get("known"):
         return {"known": False, "reason": baseline.get("reason", "нет финансового baseline")}
+
     estimate = actuals.read_estimate(rss)
     current = _rss_ch23(estimate)
     paid_actual = _payment_total_ch23(rss, estimate)
     paid_delta = max(0.0, paid_actual - float(baseline["paid_at_baseline"] or 0.0))
     remaining_need = max(0.0, float(baseline["completion_need_at_baseline"] or 0.0) - paid_delta)
-    bank_remaining = max(0.0, current["limit"] - paid_actual)
-    reserve = min(float(baseline["reserve"] or 0.0), bank_remaining)
-    ordinary_remaining = max(0.0, bank_remaining - reserve)
+
+    articles = baseline.get("articles") or {}
+    if not articles:
+        return {
+            "known": False,
+            "reason": "в финансовом baseline не найдена постатейная программа потребности",
+            "source": baseline.get("source"),
+        }
+
+    waterfall = _article_waterfall(
+        articles,
+        float(baseline.get("reserve") or 0.0),
+        cut,
+        _payment_by_code(rss),
+    )
     rnv = monitor._day((view.get("schedule") or {}).get("forecast_end"))
     if rnv is None:
         rnv = monitor._day((view.get("schedule") or {}).get("approved_end"))
-    monthly: dict[datetime.date, float] = {}
-    for key, amount in (baseline.get("monthly_need") or {}).items():
-        month = monitor._day(key)
-        if month is None:
-            continue
-        if month.year == cut.year and month.month == cut.month:
-            if month.month == 12:
-                nxt = datetime.date(month.year + 1, 1, 1)
-            else:
-                nxt = datetime.date(month.year, month.month + 1, 1)
-            share = max(0.0, min(1.0, (nxt - cut).days / max(1, (nxt - month).days)))
-            amount *= share
-        elif month < cut.replace(day=1):
-            continue
-        monthly[month] = max(0.0, float(amount or 0.0))
-    tail = max(0.0, float(baseline.get("tail_after_apr") or 0.0))
-    tail_start = datetime.date(2027, 4, 1)
-    if rnv and rnv >= tail_start and tail > 0:
-        months: list[datetime.date] = []
-        cursor = tail_start
-        while cursor <= rnv.replace(day=1):
-            months.append(cursor)
-            cursor = (datetime.date(cursor.year + 1, 1, 1) if cursor.month == 12
-                      else datetime.date(cursor.year, cursor.month + 1, 1))
-        if months:
-            per = tail / len(months)
-            for month in months:
-                monthly[month] = monthly.get(month, 0.0) + per
-    curve_total = sum(monthly.values())
-    if curve_total > 0 and remaining_need > 0:
-        factor = remaining_need / curve_total
-        monthly = {m: v * factor for m, v in monthly.items()}
-    cumulative = 0.0
-    reserve_start = None
-    exhausted = None
-    for month in sorted(monthly):
-        amount = monthly[month]
-        before = cumulative
-        cumulative += amount
-        if reserve_start is None and cumulative > ordinary_remaining:
-            reserve_start = _interpolated_crossing(month, amount, before, ordinary_remaining)
-        if exhausted is None and cumulative > bank_remaining:
-            exhausted = _interpolated_crossing(month, amount, before, bank_remaining)
-    additional = max(0.0, remaining_need - bank_remaining)
+
+    reserve_start = waterfall["reserve_start"]
+    reserve_exhaustion = waterfall["reserve_exhaustion"]
     return {
-        "known": True, "source": baseline["source"], "bank_limit": current["limit"],
-        "paid_actual": paid_actual, "bank_remaining": bank_remaining,
-        "remaining_need": remaining_need, "reserve": reserve,
-        "reserve_parts": baseline["reserve_parts"], "ordinary_remaining": ordinary_remaining,
-        "reserve_start": monitor._iso(reserve_start), "bank_exhaustion": monitor._iso(exhausted),
-        "additional_financing": additional, "forecast_to": monitor._iso(rnv),
-        "monthly_need": {monitor._iso(k): v for k, v in sorted(monthly.items())},
-        "method": "ДДС утвержденной модели до 01.04.2027 + остаток потребности до forecast РВЭ/РНВ",
+        "known": True,
+        "source": baseline["source"],
+        "bank_limit": current["limit"],
+        "paid_actual": paid_actual,
+        "bank_remaining": waterfall["opening_bank_remaining"],
+        "opening_article_deficit": waterfall["opening_article_deficit"],
+        "remaining_need": remaining_need,
+        "reserve": float(baseline.get("reserve") or 0.0),
+        "reserve_parts": baseline.get("reserve_parts") or {},
+        "reserve_start": monitor._iso(reserve_start),
+        "reserve_exhaustion": monitor._iso(reserve_exhaustion),
+        # Backward-compatible field used by the red marker/card. It now means
+        # the first uncovered need after article limits + explicit reserve.
+        "bank_exhaustion": monitor._iso(reserve_exhaustion),
+        "reserve_balance": waterfall["reserve_balance"],
+        "reserve_need": waterfall["reserve_need"],
+        "additional_financing": waterfall["additional_financing"],
+        "forecast_to": monitor._iso(rnv),
+        "monthly_need": waterfall["monthly_need"],
+        "monthly_reserve_draw": waterfall["monthly_reserve_draw"],
+        "monthly_unfunded": waterfall["monthly_unfunded"],
+        "monthly_reserve_balance": waterfall["monthly_reserve_balance"],
+        "articles": waterfall["articles"],
+        "tail_after_apr": max(0.0, float(baseline.get("tail_after_apr") or 0.0)),
+        "method": (
+            "постатейный waterfall: потребность месяца → остаток лимита статьи RSS → "
+            "резервы 2.8/2.9 → непокрытая потребность; свободные лимиты других статей "
+            "автоматически не кросс-финансируют дефицит"
+        ),
     }
 
 
 def _physical_smr(rss: Path, estimate: dict[str, Any], cut: datetime.date) -> float:
     works = actuals.read_completed_works(rss)
-    return sum(float(row.get("amount") or 0.0) for row in works.get("rows") or []
-               if row.get("construction") and row.get("date") and row["date"] <= cut
-               and str(row.get("code") or "").startswith("2"))
+    return sum(
+        float(row.get("amount") or 0.0)
+        for row in works.get("rows") or []
+        if row.get("construction")
+        and row.get("date")
+        and row["date"] <= cut
+        and str(row.get("code") or "").startswith("2")
+    )
 
 
 def _sales_snapshot(project: str, cut: datetime.date) -> dict[str, Any]:
@@ -240,9 +450,12 @@ def _sales_snapshot(project: str, cut: datetime.date) -> dict[str, Any]:
     if path is None:
         return {"known": False, "reason": "не загружен отчет о продажах"}
     from openpyxl import load_workbook
+
     wb = load_workbook(path, read_only=True, data_only=True)
     try:
-        preferred = next((name for name in ("Продажи П-Ф", "Продажи", "Дашборд") if name in wb.sheetnames), "")
+        preferred = next(
+            (name for name in ("Продажи П-Ф", "Продажи", "Дашборд") if name in wb.sheetnames), ""
+        )
         return {"known": True, "source": path.name, "sheet": preferred}
     finally:
         wb.close()
@@ -255,26 +468,40 @@ def _dashboard(project: str, rss: Path, cut: datetime.date, view: dict[str, Any]
     physical = _physical_smr(rss, estimate, cut)
     approved = float(finance.get("approved") or 0.0)
     funding = _funding_risk(project, rss, cut, view)
+    graph = (view.get("schedule") or {}).get("dependency_graph") or {}
     return {
-        "physical": {"accepted": physical, "completion": physical / approved if approved > 0 else None},
+        "physical": {
+            "accepted": physical,
+            "completion": physical / approved if approved > 0 else None,
+        },
         "construction": {
-            "approved": approved or None, "limit": current["limit"], "contracted": current["contracted"],
+            "approved": approved or None,
+            "limit": current["limit"],
+            "contracted": current["contracted"],
             "remaining_need": funding.get("remaining_need") if funding.get("known") else None,
         },
         "schedule": {
             "approved_finish": (view.get("schedule") or {}).get("approved_end"),
             "forecast_finish": (view.get("schedule") or {}).get("forecast_end"),
-            "rnv_delay_days": ((view.get("schedule") or {}).get("dependency_graph") or {}).get("rnv_delay_days"),
+            "forecast_known": graph.get("forecast_known", True),
+            "forecast_source": graph.get("forecast_source", ""),
+            "rnv_delay_days": graph.get("rnv_delay_days"),
         },
-        "sales": _sales_snapshot(project, cut), "funding": funding,
-        "sources": {"rss": rss.name, "physical_fact": "Реестр выполненных работ",
-                    "payment_fact": "Реестр платежей", "financial_baseline": finance.get("source")},
+        "sales": _sales_snapshot(project, cut),
+        "funding": funding,
+        "sources": {
+            "rss": rss.name,
+            "physical_fact": "Реестр выполненных работ",
+            "payment_fact": "Реестр платежей",
+            "financial_baseline": finance.get("source"),
+        },
     }
 
 
 def _store_sales_file(project: str, data: bytes, taken_at: Any) -> dict[str, Any]:
     day = monitor._iso(taken_at)
     from openpyxl import load_workbook
+
     wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
     try:
         if not any(name in wb.sheetnames for name in ("Продажи П-Ф", "Продажи", "Дашборд")):
@@ -288,12 +515,15 @@ def _store_sales_file(project: str, data: bytes, taken_at: Any) -> dict[str, Any
     return {"taken_at": day, "stored": True, "path": str(path), "bytes": len(data)}
 
 
-def _store_proposal(project: str, data: bytes, sheet: str, start: Any,
-                    code: str, taken_at: Any) -> dict[str, Any]:
+def _store_proposal(
+    project: str, data: bytes, sheet: str, start: Any, code: str, taken_at: Any
+) -> dict[str, Any]:
     return schedule_graph.store_reference(project, data, sheet, start, code, taken_at)
 
 
-def _build(project: str, cut: Any, programme: dict[str, Any] | None = None, upto: str = "") -> dict[str, Any]:
+def _build(
+    project: str, cut: Any, programme: dict[str, Any] | None = None, upto: str = ""
+) -> dict[str, Any]:
     if _ORIGINAL_BUILD is None:
         raise RuntimeError("dashboard layer is not installed")
     view = _ORIGINAL_BUILD(project, cut, programme=programme, upto=upto)
