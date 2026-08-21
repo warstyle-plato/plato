@@ -1,8 +1,10 @@
 from auction_search.adapters.lot_online import LotOnlineAdapter
 from auction_search.classifier import classify_lot
 from auction_search.developaid_mapper import build_developaid_seed
+from auction_search.documents import DocumentAuthorizationRequired, _looks_like_login_page, _request_headers
 from auction_search.krt import extract_krt_obligations, extract_krt_program
-from auction_search.models import AuctionLot, AuctionSource, LotKind, SourceKind
+from auction_search.krt_pipeline import enrich_krt_from_official_documents
+from auction_search.models import AuctionDocument, AuctionLot, AuctionSource, LotKind, SourceKind
 from auction_search.service import AuctionSearchService
 
 
@@ -67,6 +69,44 @@ def test_rad_public_offer_schedule_is_structured():
     assert periods[0].deposit_rub == 165_037_500
     assert periods[0].application_deadline.startswith("2026-08-27T14:00")
     assert periods[1].price_rub == 1_020_811_950
+
+
+def test_public_first_document_headers_do_not_require_credentials(monkeypatch):
+    monkeypatch.delenv("AUCTION_LOTONLINE_COOKIE", raising=False)
+    headers, authenticated = _request_headers("https://catalog.lot-online.ru/file.pdf")
+    assert authenticated is False
+    assert "Cookie" not in headers
+
+
+def test_service_account_session_is_read_only_from_runtime_secret(monkeypatch):
+    monkeypatch.setenv("AUCTION_ROSELTORG_COOKIE", "session=fake-test-value")
+    headers, authenticated = _request_headers("https://www.roseltorg.ru/file.pdf")
+    assert authenticated is True
+    assert headers["Cookie"] == "session=fake-test-value"
+
+
+def test_html_login_form_is_detected_as_authorization_boundary():
+    html = b'<html><form><input type="password"><button>Login</button></form></html>'
+    assert _looks_like_login_page("https://www.roseltorg.ru/login", "text/html", html) is True
+
+
+def test_krt_auth_required_is_not_mistaken_for_no_obligations(monkeypatch):
+    lot = AuctionLot(
+        source=source(),
+        lot_kind=LotKind.KRT,
+        title="КРТ Тест",
+        documents=[AuctionDocument(title="Проект договора КРТ.pdf", url="https://catalog.lot-online.ru/doc.pdf")],
+    )
+
+    def require_auth(_document):
+        raise DocumentAuthorizationRequired("login required")
+
+    monkeypatch.setattr("auction_search.krt_pipeline.extract_document_paragraphs", require_auth)
+    enriched = enrich_krt_from_official_documents(lot)
+    assert enriched.raw["krt_auth_required"] is True
+    assert enriched.raw["krt_extraction_complete"] is False
+    assert enriched.documents[0].auth_required is True
+    assert enriched.documents[0].access_status == "auth_required"
 
 
 def test_krt_program_is_separate_from_investor_obligation():
