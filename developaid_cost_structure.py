@@ -11,11 +11,12 @@ STRUCTURE_PATH = REFERENCE_DIR / "developaid_cost_structure.json"
 CLASS_ADJUSTMENTS_PATH = REFERENCE_DIR / "class_adjustments.json"
 
 UNIT_LABELS = {
-    "gba": "₽/м² ГНС",
+    "gba": "₽/м² общей ГНС",
+    "above_ground": "₽/м² наземной ГНС",
     "apartments": "₽/м² общей площади квартир",
     "building_total": "₽/м² общей площади здания",
     "sellable": "₽/м² продаваемой площади",
-    "underground": "₽/м² подземной площади",
+    "underground": "₽/м² подземной ГНС",
 }
 
 CLASS_LABELS = {
@@ -80,6 +81,14 @@ def _round_money(value: float | None) -> float | None:
     return None if value is None else round(float(value), 2)
 
 
+def _apply_range_adjustment(result: dict[str, Any], ratio: float) -> None:
+    for key in ("value_low_rub_m2", "value_high_rub_m2"):
+        value = result.get(key)
+        if value is not None:
+            result[f"source_{key}"] = _round_money(value)
+            result[f"adjusted_{key}"] = _round_money(float(value) * ratio)
+
+
 def _decorate_cell(component: str, cell: dict[str, Any], source_class: str, target_class: str, cfg: dict[str, Any]) -> dict[str, Any]:
     result = deepcopy(cell)
     result["status_label"] = STATUS_LABELS.get(result.get("status"), result.get("status", ""))
@@ -94,6 +103,7 @@ def _decorate_cell(component: str, cell: dict[str, Any], source_class: str, targ
             result["source_value_rub_m2"] = _round_money(value)
             result["class_adjustment_ratio"] = round(ratio, 4)
             result["adjusted_value_rub_m2"] = _round_money(float(value) * ratio)
+            _apply_range_adjustment(result, ratio)
             result["class_adjusted"] = source_class != target_class
             result["adjustment_method"] = "expert_component_ratio"
 
@@ -103,6 +113,7 @@ def _decorate_cell(component: str, cell: dict[str, Any], source_class: str, targ
             result["source_value_rub_m2"] = _round_money(value)
             result["class_adjustment_ratio"] = round(ratio, 4)
             result["adjusted_value_rub_m2"] = _round_money(float(value) * ratio)
+            _apply_range_adjustment(result, ratio)
             result["class_adjusted"] = source_class != target_class
             result["adjustment_method"] = "expert_scope_ratio"
     return result
@@ -148,7 +159,7 @@ def build_cost_structure_matrix(region: str = "Москва", housing_class: str
         sources.append(source)
 
     return {
-        "methodology_version": structure.get("methodology_version", "3.0"),
+        "methodology_version": structure.get("methodology_version", "3.1"),
         "region": region,
         "housing_class": target_class,
         "housing_class_label": CLASS_LABELS.get(target_class, target_class),
@@ -167,7 +178,8 @@ def build_cost_structure_matrix(region: str = "Москва", housing_class: str
         },
         "rules": [
             "Строки таблицы — статьи методики DevelopAid; терминология внешнего источника не меняет структуру модели.",
-            "Значения с разными знаменателями площади не усредняются и не конвертируются без исходных площадей.",
+            "Наземное и подземное СМР имеют собственные знаменатели площади; общепроектные статьи — общую ГНС.",
+            "Значения с разными знаменателями площади конвертируются только при наличии ТЭП целевого проекта.",
             "Пустая статья означает отсутствие раскрытия, а не нулевую стоимость.",
             "Экспертный коэффициент класса показан отдельно от опубликованного значения и не маскируется под статистику.",
         ],
@@ -181,10 +193,7 @@ def class_adjustment_catalog() -> dict[str, Any]:
         "status": cfg.get("status", "expert_provisional"),
         "base_class": cfg.get("base_class", "comfort"),
         "base_class_label": CLASS_LABELS.get(cfg.get("base_class", "comfort"), cfg.get("base_class")),
-        "classes": [
-            {"key": key, "label": CLASS_LABELS.get(key, key)}
-            for key in cfg.get("classes", [])
-        ],
+        "classes": [{"key": key, "label": CLASS_LABELS.get(key, key)} for key in cfg.get("classes", [])],
         "components": cfg.get("components", {}),
         "scope_coefficients": cfg.get("scope_coefficients", {}),
         "rules": cfg.get("rules", []),
