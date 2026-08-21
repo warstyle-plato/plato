@@ -59,3 +59,21 @@ def test_the_revenue_and_the_report_agree_on_what_is_sold():
     assert round(parking["quantity"]) == 335, (
         "в отчёте показано не то, что продано — расхождение внутри одной строки")
     assert parking["revenue"] > 0
+
+
+def test_the_book_is_sold_the_same_spaces_as_the_engine():
+    """Книга получает продаваемые места, а не все построенные.
+
+    Прежде в строку «Постоянные парковки» шло `units` — все места разом,
+    включая гостевые, а строка гостевых обнулялась. Движок тогда продавал
+    столько же, и паритет книги с движком проходил: обе стороны ошибались
+    одинаково. Согласие — не правильность, и проверка, сверяющая две
+    реализации одной ошибки, молчит именно тогда, когда нужна.
+    """
+    tep = {"underground_parking": {"units": 369}}
+    assert core._plato_tep_value(tep, "underground_parking.saleable_units") == 335
+    # Гостевые строятся, но в сумму продаж ТЭП!I33 не входят.
+    assert core._plato_tep_value(tep, "underground_parking.guest_units") == 0.0
+    paths = [path for _, path in core._PLATO_TEP_ROWS]
+    assert "underground_parking.units" not in paths, (
+        "в продажи книги снова уехали все места, включая гостевые")
