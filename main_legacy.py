@@ -57,7 +57,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.19.39"
+VERSION = "0.19.38"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -30773,9 +30773,29 @@ function renderTep(){
        +`. <button type="button" class="tep-refill" onclick="enableTepRow('${key}')">включить объект</button></span>`;
    }
    let html=`<td>${label}</td>`;
+   // Доля стоит под тем числом, которое из неё получается: «% ГНС» под общей
+   // площадью, «% общей» под продаваемой. Прежде они лежали под раскрытием над
+   // таблицей — свёрнутым по умолчанию, и это читалось как «их нет вовсе»
+   // (владелец, 21.08.2026). Отдельной колонкой слева было бы непонятно: доля
+   // без своего числа рядом не читается.
+   const chain=TEP_RATIOS[key]?tepRatioChain(tepRatio(key)):null;
+   const own=chain&&tepRatioChangedKeys().includes(key);
+   const ratioField=col=>{
+    if(!chain)return '';
+    const which=col==='total_area'?'total':(col==='saleable'?'saleable':'');
+    if(!which)return '';
+    const value=Math.round((which==='total'?chain[0]:chain[1])*1e4)/100;
+    const of=which==='total'?'% ГНС':'% общей';
+    return '<div style="margin-top:3px;font-size:11px;color:'+(own?'#a33':'#777')+';white-space:nowrap">'
+     +'<input type="number" step="0.1" min="0" max="100" value="'+value+'" style="width:56px;font-size:11px" '
+     +'title="доля, по которой достраивается это число" '
+     +'onchange="tepRatioSet(\''+key+'\',\''+which+'\',this.value)">'+of
+     +(own&&which==='saleable'?' <button type="button" class="tep-refill" onclick="tepRatioReset(\''+key+'\')">наши</button>':'')
+     +'</div>';
+   };
    ['gns','total_area','useful','saleable','transfer','units'].forEach(col=>{
      const locked=rowOff||(key==='underground_parking'&&(importedParking||inputs.underground_parking_disabled||Number(inputs.underground_manual_spaces||0)>0||Number(inputs.underground_manual_gns_sqm||0)>0)&&['gns','total_area','useful','saleable','transfer','units'].includes(col));
-     html+=`<td><input type="number" step="0.1" value="${inputDisplay(row[col])}" ${locked?'readonly style="background:#f3f3f1;color:#555"':''} onchange="tepCellChanged('${key}','${col}',this.value)"></td>`;
+     html+=`<td><input type="number" step="0.1" value="${inputDisplay(row[col])}" ${locked?'readonly style="background:#f3f3f1;color:#555"':''} onchange="tepCellChanged('${key}','${col}',this.value)">${locked?'':ratioField(col)}</td>`;
    });tr.innerHTML=html;body.appendChild(tr);
  });updateTepTotals();renderTepRatioNote();
 }
@@ -30785,45 +30805,19 @@ function renderTep(){
 // Пропорции печатаются рядом с таблицей: подставленное число, происхождение
 // которого не видно, неотличимо от введённого человеком.
 function renderTepRatioNote(){
- // Раньше здесь лежал справочный список долей: посмотреть можно, изменить
- // нельзя. Но доли — умолчание, а не норма: у человека на руках бывает ГПЗУ или
- // АГР со своими (просьба владельца, 20.08.2026). Поэтому список стал вводом, а
- // читается он цепочкой, которой считает человек: ГНС → общая → продаваемая.
- // Стена текста на телефоне ни к чему, поэтому всё под раскрытием — но открытым,
- // как только доли отличаются от наших: изменённое число обязано быть видно.
+ // Сами доли теперь стоят в таблице под своими числами, поэтому здесь остаётся
+ // только правило и отказ. Раскрытие со списком долей убрано: свёрнутое по
+ // умолчанию, оно читалось как «долей нет вовсе» (владелец, 21.08.2026).
  const box=document.getElementById('tepRatioNote');
  if(!box)return;
- const label=key=>((TEP_DEFAULT[key]||{}).label)||key;
  const changed=tepRatioChangedKeys();
- const rows=Object.keys(TEP_RATIOS).map(key=>{
-  const r=tepRatio(key),c=tepRatioChain(r),mine=tepRatioChain(TEP_RATIOS[key]);
-  const own=changed.includes(key);
-  // Значение поля — простое число с точкой: `landNum` печатает по-русски, с
-  // запятой и неразрывным пробелом, и `input type=number` такое не принимает —
-  // поле открылось бы пустым, а доля выглядела бы стёртой.
-  const field=(what,value)=>'<input type="number" step="0.1" min="0" max="100" value="'+
-   (Math.round(Number(value)*1e4)/1e4)+'" style="width:64px" onchange="tepRatioSet(\''+key+'\',\''+what+'\',this.value)">';
-  return '<div style="margin:3px 0">'+escapeHtml(label(key))+' — общая '+field('total',c[0]*100)+
-   '% ГНС, продаваемая '+field('saleable',c[1]*100)+'% общей'+
-   ' <span style="color:#777">= '+landNum(c[0]*c[1]*100,1)+'% ГНС · '+escapeHtml(r.source)+
-   (own?', наши были '+landNum(mine[0]*100,0)+' / '+landNum(mine[1]*100,1):'')+'</span>'+
-   (own?' <button type="button" class="tep-refill" onclick="tepRatioReset(\''+key+'\')">вернуть наши</button>':'')+
-   '</div>';
- }).join('');
- // Отказ стоит СНАРУЖИ раскрытия и открывает его. Внутри закрытого `details`
- // он не виден вовсе — человек вписал 140%, ничего не изменилось, и молчание
- // читается как «поле не работает». Молчащая проверка неотличима от
- // отсутствующей.
  const complaint=tepRatioComplaint
   ?'<div style="color:#a33;margin-top:4px">'+escapeHtml(tepRatioComplaint)+'</div>':'';
- const open=changed.length||tepRatioComplaint;
- box.innerHTML='Пустые площади достраиваются долями; введённое вами не перебивается. '+
-  '<details style="display:inline"'+(open?' open':'')+
-  '><summary style="display:inline;cursor:pointer">'+
-  (changed.length?'доли изменены вами — показать':'показать и изменить доли')+'</summary>'+
-  '<div style="margin-top:4px">'+rows+
-  '<div style="margin-top:4px;color:#777">Доли уезжают в проект вместе со вводными: '+
-  'сохраните проект — и они откроются такими же.</div></div></details>'+complaint;
+ box.innerHTML='Пустые площади достраиваются долями под столбцами; введённое вами не перебивается.'
+  +(changed.length
+    ?' <span style="color:#a33">Доли изменены вами — они выделены красным и уезжают в проект вместе со вводными.</span>'
+    :'')
+  +complaint;
 }
 
 // Наши доли объявлены один раз — в движке, и подставлены сюда. Правка человека
