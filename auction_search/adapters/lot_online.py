@@ -43,11 +43,13 @@ class _TextLinksParser(HTMLParser):
         self.links: list[tuple[str, str]] = []
         self._href: str | None = None
         self._anchor_parts: list[str] = []
+        self._anchor_context: str = ""
 
     def handle_starttag(self, tag, attrs):
         if tag.lower() == "a":
             self._href = dict(attrs).get("href")
             self._anchor_parts = []
+            self._anchor_context = self.parts[-1] if self.parts else ""
 
     def handle_data(self, data):
         value = data.strip()
@@ -58,9 +60,13 @@ class _TextLinksParser(HTMLParser):
 
     def handle_endtag(self, tag):
         if tag.lower() == "a" and self._href is not None:
-            self.links.append((self._href, normalize_space(" ".join(self._anchor_parts))))
+            label = normalize_space(" ".join(self._anchor_parts))
+            if label.lower() in {"скачать", "download", "файл"} and self._anchor_context:
+                label = normalize_space(self._anchor_context)
+            self.links.append((self._href, label))
             self._href = None
             self._anchor_parts = []
+            self._anchor_context = ""
 
     @property
     def text(self) -> str:
@@ -250,15 +256,20 @@ class LotOnlineAdapter(AuctionPlatformAdapter):
         for href, title in links:
             absolute = urljoin(base_url, href)
             low = (title + " " + href).lower()
-            if absolute in seen or not any(m in low for m in markers):
+            is_attachment = "rad_attachment.getfile" in low or "attachment_id=" in low
+            if absolute in seen or (not is_attachment and not any(m in low for m in markers)):
                 continue
             seen.add(absolute)
             dtype = "other"
             if "егрн" in low or "выписк" in low:
                 dtype = "egrn"
-            elif "договор" in low:
-                dtype = "agreement"
             elif "решение" in low and "крт" in low:
                 dtype = "krt_decision"
+            elif "извещ" in low or "сообщение" in low:
+                dtype = "notice"
+            elif "прилож" in low:
+                dtype = "annex"
+            elif "договор" in low:
+                dtype = "agreement"
             out.append(AuctionDocument(title=title or href.rsplit("/", 1)[-1], url=absolute, document_type=dtype, fetched_at=fetched_at))
         return out
