@@ -165,14 +165,18 @@ $('salesBtn').onclick=async()=>{const f=$('sales').files[0];if(!f)return msg('we
 
 function renderDash(v){
  const d=v.dashboard||{},s=d.schedule||{},ph=d.physical||{},f=d.funding||{};
+ const forecastKnown=!!s.forecast_known;
+ const scheduleTitle=forecastKnown?'Forecast РВЭ / РНВ':'Утверждённый РНВ';
+ const scheduleDate=forecastKnown?s.forecast_finish:s.approved_finish;
+ const scheduleSub=forecastKnown?(s.rnv_delay_days?`+${s.rnv_delay_days} дн к утвержденному сроку`:(s.forecast_source||'forecast по PM-сети')):'Current Forecast не рассчитан: нет actualized WBS/rebaseline, отличный от baseline';
  $('dashCard').classList.remove('hidden');$('source').textContent=(d.sources&&d.sources.rss)||'';
  $('kpis').innerHTML=
-   kpi('Forecast РВЭ / РНВ',dt(s.forecast_finish),s.rnv_delay_days?`+${s.rnv_delay_days} дн к утвержденному сроку`:'по утверждённой PM-сети',s.rnv_delay_days>0?'bad':'good')+
+   kpi(scheduleTitle,dt(scheduleDate),scheduleSub,forecastKnown&&s.rnv_delay_days>0?'bad':forecastKnown?'good':'')+
    kpi('Актировано СМР / утв. модель',pct(ph.completion),`${money(ph.accepted)} по датированным КС · это не физический % WBS`)+
-   kpi('Остаток реальной потребности',money(f.remaining_need),`до ${dt(f.forecast_to)}`)+
-   kpi('Начало использования резерва',dt(f.reserve_start),`резерв ${money(f.reserve)} · 2.8/2.9`,f.reserve_start?'warn':'')+
-   kpi('Исчерпание лимита банка',dt(f.bank_exhaustion),`остаток лимита ${money(f.bank_remaining)}`,f.bank_exhaustion?'bad':'good')+
-   kpi('Доп. финансирование до РВЭ',money(f.additional_financing),f.known?f.method:(f.reason||'нет данных'),f.additional_financing>0?'bad':'good');
+   kpi('Остаток реальной потребности',money(f.remaining_need),`финансовый остаток; календарный forecast отдельно`)+
+   kpi('Начало использования резерва',dt(f.reserve_start),`резерв ${money(f.reserve)} · 2.8/2.9 · постатейно`,f.reserve_start?'warn':'')+
+   kpi('Исчерпание резерва',dt(f.reserve_exhaustion||f.bank_exhaustion),`остаток лимитов статей ${money(f.bank_remaining)}`,f.reserve_exhaustion||f.bank_exhaustion?'bad':'good')+
+   kpi('Непокрытая потребность',money(f.additional_financing),f.known?f.method:(f.reason||'нет данных'),f.additional_financing>0?'bad':'good');
 }
 function collect(nodes,out=[]){for(const n of nodes||[]){out.push(n);collect(n.children||[],out)}return out}
 function toDate(v){const d=new Date(v);return isNaN(d)?null:d}
@@ -181,6 +185,7 @@ function renderGantt(v){
  const roots=(v.schedule&&v.schedule.management)||[];
  if(!roots.length){$('ganttCard').classList.add('hidden');return}
  $('ganttCard').classList.remove('hidden');
+ const forecastKnown=!!(((v.dashboard||{}).schedule||{}).forecast_known);
  const all=collect(roots,[]),starts=all.map(x=>toDate(x.plan_start)).filter(Boolean),finishes=all.map(x=>toDate(x.forecast_finish||x.plan_finish)).filter(Boolean),fund=v.financing||{};
  if(!starts.length||!finishes.length)return;
  if(fund.forecast_to){const z=toDate(fund.forecast_to);if(z)finishes.push(z)}
@@ -192,7 +197,7 @@ function renderGantt(v){
  html+='</div><div style="text-align:right">Срок · КС · оплаты</div></div>';
 
  function commonMarks(){
-   let x='';const cp=pos(v.cut),rs=pos(fund.reserve_start),ex=pos(fund.bank_exhaustion);
+   let x='';const cp=pos(v.cut),rs=pos(fund.reserve_start),ex=pos(fund.reserve_exhaustion||fund.bank_exhaustion);
    if(cp!=null)x+=`<span class="cut" style="left:${cp}%"></span>`;
    if(rs!=null)x+=`<span class="reserve-mark" style="left:${rs}%"></span>`;
    if(ex!=null)x+=`<span class="limit-mark" style="left:${ex}%"></span><span class="funding-zone" style="left:${ex}%;right:0"></span>`;
@@ -207,14 +212,14 @@ function renderGantt(v){
      const ratio=Math.max(0,Math.min(1,Number(n.actual_progress)));
      works+=`<span class="ksbar" title="КС/EAC — стоимостное актирование, не физический процент" style="left:${ps}%;width:${Math.max(0,(pf-ps)*ratio)}%"></span>`;
    }
-   if(ff!=null&&pf!=null&&ff>pf){works+=`<span class="tail" style="left:${pf}%;width:${ff-pf}%"></span><span class="mark" style="left:${ff}%"></span>`}
+   if(forecastKnown&&ff!=null&&pf!=null&&ff>pf){works+=`<span class="tail" style="left:${pf}%;width:${ff-pf}%"></span><span class="mark" style="left:${ff}%"></span>`}
 
    const pm=Object.entries(payments.plan||{}),fm=Object.entries(payments.fact||{}),mx=Math.max(1,...pm.map(x=>Number(x[1])||0),...fm.map(x=>Number(x[1])||0));
    for(const [m,a] of pm){const x=pos(m);if(x!=null)pays+=`<span class="pay planpay" style="left:${x}%;height:${Math.max(2,(Number(a)||0)/mx*16)}px"></span>`}
    for(const [m,a] of fm){const x=pos(m);if(x!=null)pays+=`<span class="pay" style="left:${x}%;height:${Math.max(2,(Number(a)||0)/mx*16)}px"></span>`}
 
    const delta=n.delta_days!=null?Number(n.delta_days):0;
-   let main=n.schedule_closed?'<span class="oktext">завершено</span>':(delta>0?`<span class="risktext">+${delta} дн</span>`:'по графику');
+   let main=n.schedule_closed?'<span class="oktext">завершено</span>':(!forecastKnown?'утверждённый график':(delta>0?`<span class="risktext">+${delta} дн</span>`:'forecast без сдвига'));
    let evidence='';
    if(lvl==='rss'&&n.actual_progress!=null)evidence=`КС/EAC ${pct(n.actual_progress)}`;
    else if(lvl==='task')evidence=n.baseline_status||n.status||'WBS';
@@ -235,16 +240,18 @@ function renderGantt(v){
  document.querySelectorAll('.g-row').forEach(el=>el.onclick=()=>{
    const key=el.dataset.key,n=collect(roots,[]).find(x=>(x.key||('task:'+String(x.id||x.wbs||x.name)))===key);
    if(!n)return;selected=key;if((n.children||[]).length){expanded.has(key)?expanded.delete(key):expanded.add(key)}
-   renderGantt(v);renderDetail(n);
+   renderGantt(v);renderDetail(n,forecastKnown);
  });
 }
 
-function renderDetail(n){
+function renderDetail(n,forecastKnown=true){
  $('detailCard').classList.remove('hidden');$('detailTitle').textContent=(n.code?`${n.code} · `:'')+(n.name||n.wbs||'Статья');
  const dep=n.dependencies||{},pay=n.payments||{},delta=n.delta_days!=null?Number(n.delta_days):0,lvl=n.level||'task';
  const evidence=(lvl==='rss'&&n.actual_progress!=null)?pct(n.actual_progress):'—';
+ const scheduleValue=forecastKnown?dt(n.forecast_finish):dt(n.plan_finish);
+ const scheduleLabel=forecastKnown?'Срок / forecast':'Утверждённый срок';
  $('detailGrid').innerHTML=
-  `<div class="mini"><div class="l">Срок / forecast</div><div class="v ${delta>0?'bad':''}">${dt(n.forecast_finish)}</div><div class="sub">утверждено ${dt(n.plan_finish)} · ${n.schedule_closed?'завершено':delta>0?'+'+delta+' дн':'без сдвига'}</div></div>`+
+  `<div class="mini"><div class="l">${scheduleLabel}</div><div class="v ${forecastKnown&&delta>0?'bad':''}">${scheduleValue}</div><div class="sub">${n.schedule_closed?'завершено':forecastKnown?(delta>0?'+'+delta+' дн':'forecast без сдвига'):'нет actualized WBS для reforecast'}</div></div>`+
   `<div class="mini"><div class="l">КС / EAC</div><div class="v">${evidence}</div><div class="sub">${lvl==='rss'?`${money(n.accepted)} актировано · не физический % WBS`:'показывается только на RSS-уровне'}</div></div>`+
   `<div class="mini"><div class="l">Оплаты</div><div class="v">${money(pay.fact_total)}</div><div class="sub">план ${money(pay.plan_total)}</div></div>`+
   `<div class="mini"><div class="l">Float / влияние</div><div class="v">${lvl==='task'&&dep.current_float_days!=null?dep.current_float_days+' дн':'—'}</div><div class="sub">${lvl==='task'?`передано ${dep.inherited_delay_days||0} дн · РНВ ${dep.impact_rnv_days||0} дн`:'float показывается только на WBS'}</div></div>`;
