@@ -9,6 +9,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from auction_search.adapters import LotOnlineAdapter, RoseltorgAdapter
+from auction_search.bridge import auction_page_with_handoff
 from auction_search.developaid_mapper import build_developaid_seed
 from auction_search.documents import DocumentExtractionError
 from auction_search.krt_pipeline import enrich_krt_from_official_documents
@@ -58,7 +59,7 @@ def install(app: FastAPI) -> None:
     @app.get("/auctions", response_class=HTMLResponse)
     async def auctions_home() -> HTMLResponse:
         return HTMLResponse(
-            auctions_page(),
+            auction_page_with_handoff(auctions_page()),
             headers={"Cache-Control": "no-store, must-revalidate"},
         )
 
