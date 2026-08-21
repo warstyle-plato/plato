@@ -7,9 +7,11 @@ on:
       - "developaid_v2_result.py"
       - "developaid_v2_demo.py"
       - "developaid_v2_prototype_fixtures.py"
+      - "excel_tep_sheet.py"
       - "frontend_v2/**"
       - "tests/test_developaid_v2.py"
       - "tests/test_developaid_v2_live_result.py"
+      - "tests/test_excel_tep_sheet.py"
       - "main_registry.py"
       - ".github/workflows/developaid-v2-prototype.yml"
   workflow_dispatch:
@@ -29,6 +31,10 @@ jobs:
       - name: Compile modules
         run: >
           python -m py_compile developaid_v2.py developaid_v2_result.py
-          developaid_v2_demo.py developaid_v2_prototype_fixtures.py main_registry.py
-      - name: Run v2 tests
-        run: python -m pytest tests/test_developaid_v2.py tests/test_developaid_v2_live_result.py -q
+          developaid_v2_demo.py developaid_v2_prototype_fixtures.py
+          excel_tep_sheet.py main_registry.py
+      - name: Run v2 and Excel TEP tests
+        run: >
+          python -m pytest tests/test_developaid_v2.py
+          tests/test_developaid_v2_live_result.py
+          tests/test_excel_tep_sheet.py -q
