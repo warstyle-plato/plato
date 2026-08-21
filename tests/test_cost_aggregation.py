@@ -16,16 +16,14 @@ PROFSOYUZNAYA_TEP = {
 
 # Grodnenskaya project TEP:
 # - total GNS: 22,032.9 m²
-# - above-ground GNS: 19,341 m²
-# - therefore underground GNS in the model denominator: 2,691.9 m²
+# - underground GNS: 3,629 m²
+# - therefore above-ground GNS: 18,403.9 m²
 # - full sellable area: 13,710 m²
-# The separately stated 3,629 m² parking area is NOT used as underground GNS,
-# because it is a different parking-area metric and would break the GNS balance.
 GRODNENSKAYA_TEP = {
     "gba_sqm": 22032.9,
     "sellable_sqm": 13710,
-    "above_ground_gns_sqm": 19341,
-    "underground_gns_sqm": 2691.9,
+    "above_ground_gns_sqm": 18403.9,
+    "underground_gns_sqm": 3629,
 }
 
 
@@ -91,8 +89,8 @@ def test_same_market_sources_normalize_differently_for_grodnenskaya_and_profsoyu
     prof_rows = {row["key"]: row for row in prof["recommendations"]}
     grod_rows = {row["key"]: row for row in grod["recommendations"]}
 
-    assert grod["target_areas"]["above_ground_gns_sqm"] == pytest.approx(19341, abs=0.01)
-    assert grod["target_areas"]["underground_gns_sqm"] == pytest.approx(2691.9, abs=0.01)
+    assert grod["target_areas"]["above_ground_gns_sqm"] == pytest.approx(18403.9, abs=0.01)
+    assert grod["target_areas"]["underground_gns_sqm"] == pytest.approx(3629, abs=0.01)
 
     # CORE.XP is published per sellable m². The same market rate must therefore
     # normalize to a different GNS rate for projects with different efficiency.
@@ -206,8 +204,8 @@ def test_recommendation_api_and_page_expose_audit_chain_for_both_project_shapes(
             "class": "business",
             "gba_sqm": 22032.9,
             "sellable_sqm": 13710,
-            "above_ground_gns_sqm": 19341,
-            "underground_gns_sqm": 2691.9,
+            "above_ground_gns_sqm": 18403.9,
+            "underground_gns_sqm": 3629,
         },
     ]
 
@@ -228,5 +226,5 @@ def test_recommendation_api_and_page_expose_audit_chain_for_both_project_shapes(
     prof_payload = client.get("/api/statistics/cost-recommendation", params=project_params[0]).json()
     assert prof_payload["target_areas"]["above_ground_gns_sqm"] == 47407
     grod_payload = client.get("/api/statistics/cost-recommendation", params=project_params[1]).json()
-    assert grod_payload["target_areas"]["above_ground_gns_sqm"] == pytest.approx(19341, abs=0.01)
-    assert grod_payload["target_areas"]["underground_gns_sqm"] == pytest.approx(2691.9, abs=0.01)
+    assert grod_payload["target_areas"]["above_ground_gns_sqm"] == pytest.approx(18403.9, abs=0.01)
+    assert grod_payload["target_areas"]["underground_gns_sqm"] == pytest.approx(3629, abs=0.01)
