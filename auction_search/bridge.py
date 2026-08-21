@@ -2,6 +2,7 @@ from __future__ import annotations
 
 
 BRIDGE_MARKER = "developaid-auction-preset-bridge-v1"
+AUCTIONS_HANDOFF_MARKER = "developaid-auction-list-handoff-v1"
 
 # The bridge deliberately calls existing page functions. It does not reproduce the
 # financial engine or the project-preset mapping in browser code.
@@ -57,6 +58,40 @@ BRIDGE_SCRIPT = r'''
 })();
 </script>
 '''
+
+
+AUCTIONS_HANDOFF_SCRIPT = r'''
+<script id="developaid-auction-list-handoff-v1">
+(function(){
+ const KEY='developaid.auction.pending.v1';
+ document.addEventListener('click',function(event){
+  const button=event.target&&event.target.closest?event.target.closest('#modelBtn'):null;
+  if(!button||button.disabled)return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  if(typeof state==='undefined'||!state.ingested||!state.ingested.project_preset)return;
+  const payload={
+   project_preset:state.ingested.project_preset,
+   lot_kind:(state.ingested.screening||{}).legal_structure||'',
+   source_url:((state.ingested.lot||{}).source||{}).lot_url||''
+  };
+  try{
+   sessionStorage.setItem(KEY,JSON.stringify(payload));
+   location.href='/?auction_import=1';
+  }catch(err){
+   const note=document.getElementById('modelNote');
+   if(note)note.textContent='Не удалось передать preset в модель: '+String(err&&err.message||err);
+  }
+ },true);
+})();
+</script>
+'''
+
+
+def auction_page_with_handoff(page: str) -> str:
+    if not isinstance(page, str) or AUCTIONS_HANDOFF_MARKER in page or "</body>" not in page:
+        return page
+    return page.replace("</body>", AUCTIONS_HANDOFF_SCRIPT + "\n</body>", 1)
 
 
 def install_page_bridge(core) -> bool:
