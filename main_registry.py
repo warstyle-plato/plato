@@ -3,6 +3,7 @@
 import os
 
 import main as _base
+from auction_search import install as install_auction_search
 from developaid_v2 import install as install_v2
 from guide import install as install_guide
 from ia_preview import install as install_ia_preview
@@ -18,6 +19,7 @@ install_mpt(_base)
 install_mpt_bot_menu(_base)
 registry = install(_base)
 market_search = install_market_search(app)
+install_auction_search(app)
 
 # Вкладка «Рынок» — сниппетный конвейер, который мы списываем: приёмка по нему
 # красная, и в production ему пока нечего делать. Умолчание выключено, и это
