@@ -23,6 +23,8 @@ class AuctionSearchService:
         for adapter in self.adapters:
             lots.extend(adapter.discover_moscow())
         lots = self._deduplicate(lots)
+        for lot in lots:
+            self.screen_lot(lot)
         if include_noise:
             return lots
         return [lot for lot in lots if self.is_development_relevant(lot)]
@@ -43,6 +45,8 @@ class AuctionSearchService:
             if discover is not None:
                 lots.extend(discover(since, until, candidate_urls=urls))
         lots = self._deduplicate_history(lots)
+        for lot in lots:
+            self.screen_lot(lot)
         if include_noise:
             return lots
         return [lot for lot in lots if self.is_development_relevant(lot)]
@@ -73,15 +77,67 @@ class AuctionSearchService:
 
     @staticmethod
     def is_development_relevant(lot: AuctionLot) -> bool:
-        if lot.lot_kind == LotKind.KRT:
-            return True
-        if lot.lot_kind in {LotKind.PROPERTY_COMPLEX, LotKind.UNFINISHED}:
-            return True
-        use = (lot.permitted_use or "").lower()
+        return AuctionSearchService.screen_lot(lot)["development_relevant"]
+
+    @staticmethod
+    def screen_lot(lot: AuctionLot) -> dict:
+        selected: list[str] = []
+        excluded: list[str] = []
+        flags: list[str] = []
+        location = " ".join((lot.address or "", str(lot.raw.get("region") or ""), lot.title or "")).lower()
+        if "москва" in location:
+            selected.append("Москва")
+        kind_labels = {LotKind.KRT: "КРТ", LotKind.PROPERTY_COMPLEX: "имущественный комплекс", LotKind.UNFINISHED: "незавершённый объект", LotKind.LAND_SALE: "продажа земли", LotKind.LAND_LEASE: "аренда земли"}
+        if lot.lot_kind in kind_labels:
+            selected.append(kind_labels[lot.lot_kind])
+        if lot.land_area_sqm is not None:
+            if lot.land_area_sqm >= 10_000:
+                selected.append(f"площадь {lot.land_area_sqm / 10_000:g} га")
+                flags.append("large_site")
+            else:
+                selected.append(f"площадь {lot.land_area_sqm:g} м²")
+        if lot.permitted_use:
+            selected.append(lot.permitted_use)
+
+        use = " ".join((lot.permitted_use or "", lot.title or "")).lower()
         noise_markers = ("ижс", "индивидуальн", "личного подсобного", "садовод", "огород")
         if any(m in use for m in noise_markers):
-            return False
-        # Do not require 77:* cadastral prefix: New Moscow contains legacy 50:* parcels.
-        if lot.land_area_sqm is not None and lot.land_area_sqm < 5_000:
-            return False
-        return lot.lot_kind in {LotKind.LAND_SALE, LotKind.LAND_LEASE}
+            excluded.append("ИЖС или индивидуальное использование")
+            flags.append("individual_housing")
+        residential_house = any(m in use for m in ("жилой дом", "жилого дома", "жилым домом", "домовладение"))
+        small = lot.land_area_sqm is not None and lot.land_area_sqm < 5_000
+        if residential_house:
+            flags.append("existing_residential_house")
+        if small:
+            excluded.append("участок меньше 5 000 м²")
+            flags.append("small_site")
+        if residential_house and small:
+            excluded.append("малый участок с жилым домом")
+
+        if lot.lot_kind == LotKind.KRT:
+            relevant = True
+        elif lot.lot_kind in {LotKind.PROPERTY_COMPLEX, LotKind.UNFINISHED}:
+            relevant = not (residential_house and small)
+        else:
+            relevant = lot.lot_kind in {LotKind.LAND_SALE, LotKind.LAND_LEASE} and not excluded
+        lot.selection_reasons = selected
+        lot.exclusion_reasons = excluded
+        lot.relevance_flags = flags
+        rating = "Высокая" if relevant and lot.lot_kind == LotKind.KRT else "Средняя" if relevant else "Шум"
+        why_here = " · ".join(selected[:4])
+        concerns = excluded or (["нужна проверка градостроительного потенциала"] if relevant else [])
+        return {
+            "development_relevant": relevant,
+            "rating": rating,
+            "selection_reasons": selected,
+            "exclusion_reasons": excluded,
+            "relevance_flags": flags,
+            "why_here": why_here,
+            "platon_explanation": {
+                "rating": rating,
+                "why_here": why_here,
+                "concerns": concerns,
+                "verify_before_calculation": ["официальные документы лота", "кадастр и градостроительные ограничения"],
+                "grounding": "selection_reasons_and_official_lot_fields_only",
+            },
+        }
