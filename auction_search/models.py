@@ -125,6 +125,9 @@ class AuctionLot:
     documents: list[AuctionDocument] = field(default_factory=list)
     krt_program: list[KrtProgramItem] = field(default_factory=list)
     obligations: list[KrtObligation] = field(default_factory=list)
+    selection_reasons: list[str] = field(default_factory=list)
+    exclusion_reasons: list[str] = field(default_factory=list)
+    relevance_flags: list[str] = field(default_factory=list)
     provenance: dict[str, Provenance] = field(default_factory=dict)
     raw: dict[str, Any] = field(default_factory=dict, repr=False)
 

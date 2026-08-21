@@ -18,7 +18,7 @@ from auction_search.models import (
     SourceKind,
     utc_now_iso,
 )
-from auction_search.parsing import cadastral_numbers, normalize_space, parse_decimal, parse_money
+from auction_search.parsing import cadastral_numbers, normalize_space, parse_area_sqm, parse_decimal, parse_money
 
 
 _MOSCOW = ZoneInfo("Europe/Moscow")
@@ -274,7 +274,7 @@ class LotOnlineAdapter(AuctionPlatformAdapter):
         min_price = self._money_after(text, "Минимальная цена")
         address = self._short_value(text, "Адрес", ("Земельный участок", "Субъект Федерации", "Категория земель"))
         region = self._short_value(text, "Регион", ("Адрес", "Земельный участок"))
-        area = self._numeric_after(text, "Площадь")
+        area, area_raw = self._extract_land_area(text)
         permitted_use = self._short_value(text, "Разрешенное использование", ("Кадастровый номер", "Коммуникации", "Порядок ознакомления"))
         seller = self._short_value(text, "Наименование ФО", ("Является залогом", "Ограничения и обременения"))
         procedure = self._short_value(text, "Вид процедуры", ("Код лота", "Код процедуры"))
@@ -322,7 +322,7 @@ class LotOnlineAdapter(AuctionPlatformAdapter):
             "title": title,
             "address": address,
             "cadastral_numbers": ", ".join(cad),
-            "land_area_sqm": str(area) if area is not None else None,
+            "land_area_sqm": area_raw,
             "permitted_use": permitted_use,
             "seller": seller,
             "procedure_type": procedure,
@@ -355,7 +355,7 @@ class LotOnlineAdapter(AuctionPlatformAdapter):
                 r"\s*:?\s*\d{2}\.\d{2}\.\d{4})+\s*"
             )
             candidate = re.sub(metadata, "", candidate, flags=re.I)
-            candidate = normalize_space(candidate).strip(" :-")
+            candidate = LotOnlineAdapter._strip_title_chrome(candidate)
             if len(candidate) >= 8:
                 return candidate[:1500]
         candidates = re.findall(
@@ -365,7 +365,52 @@ class LotOnlineAdapter(AuctionPlatformAdapter):
         )
         if candidates:
             return normalize_space(candidates[-1])[:1500]
-        return normalize_space(head[-1500:])
+        return LotOnlineAdapter._strip_title_chrome(head[-1500:])
+
+    @staticmethod
+    def _strip_title_chrome(value: str) -> str:
+        candidate = normalize_space(value).strip(" :-")
+        matches = list(re.finditer(
+            r"(?:объекты\s+)?список\s+сравнения.*?расширенн(?:ый|ого)\s+поиск(?:а)?",
+            candidate,
+            re.I,
+        ))
+        if matches:
+            candidate = candidate[matches[-1].end():].strip(" :-")
+        for marker in ("Описание лота", "Наименование лота"):
+            pos = candidate.lower().rfind(marker.lower())
+            if pos >= 0:
+                candidate = candidate[pos + len(marker):].strip(" :-")
+        return normalize_space(candidate)[:1500]
+
+    @staticmethod
+    def _extract_land_area(text: str) -> tuple[float | None, str | None]:
+        patterns = (
+            r"земельн(?:ый|ого)\s+участ(?:ок|ка)[^.;]{0,80}?\bпл(?:ощадью|ощадь|\.)?\s*[:\-]?\s*"
+            r"(?P<area>[\d\s\u00a0]+(?:[.,]\d+)?)\s*(?P<unit>кв\.?\s*м|м2|м²|га)\b",
+            r"площадь\s+земельного\s+участка\s*[:\-]?\s*"
+            r"(?P<area>[\d\s\u00a0]+(?:[.,]\d+)?)\s*(?P<unit>кв\.?\s*м|м2|м²|га)\b",
+        )
+        for pattern in patterns:
+            match = re.search(pattern, text, re.I)
+            if match:
+                raw = normalize_space(match.group("area") + " " + match.group("unit"))
+                value = parse_decimal(match.group("area"))
+                if value is not None and match.group("unit").lower() == "га":
+                    value *= 10_000
+                return value, raw
+        match = re.search(
+            r"\bПлощадь\s+([\d\s\u00a0]+(?:[.,]\d+)?)\s*(кв\.?\s*м|м2|м²|га)?",
+            text,
+            re.I,
+        )
+        if not match:
+            return None, None
+        raw = normalize_space(match.group(0)[len("Площадь"):])
+        value = parse_area_sqm(raw) if match.group(2) else parse_decimal(match.group(1))
+        if value is not None and match.group(2) and match.group(2).lower() == "га":
+            value *= 10_000
+        return value, raw
 
     @staticmethod
     def _published_at(text: str) -> datetime | None:

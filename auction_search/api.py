@@ -138,7 +138,7 @@ def install(app: FastAPI) -> None:
                 {
                     **_public_lot_dict(lot),
                     "screening": {
-                        "development_relevant": AuctionSearchService.is_development_relevant(lot),
+                        **AuctionSearchService.screen_lot(lot),
                         "documents_count": len(lot.documents),
                         "full_document_parse_deferred": True,
                     },
@@ -162,6 +162,7 @@ def install(app: FastAPI) -> None:
             # Platform outages/layout changes are upstream failures, not model errors.
             raise HTTPException(status_code=502, detail=f"Не удалось прочитать официальный лот: {exc}") from exc
 
+        screening = AuctionSearchService.screen_lot(lot)
         normalized = lot.to_dict()
         if not req.include_raw:
             normalized.pop("raw", None)
@@ -176,6 +177,7 @@ def install(app: FastAPI) -> None:
                 "filled_inputs": project_preset.get("auction_import", {}).get("filled_inputs", {}),
             },
             "screening": {
+                **screening,
                 "legal_structure": lot.lot_kind.value,
                 "requires_krt_terms": lot.lot_kind == LotKind.KRT,
                 "krt_documents_complete": (

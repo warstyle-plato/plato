@@ -156,6 +156,42 @@ def test_rad_title_is_scoped_after_publication_metadata():
     )
 
 
+def test_rad_title_drops_catalogue_navigation_chrome():
+    text = (
+        "Опубликовано: На lot-online.ru: 20.08.2026 10:00 "
+        "объекты Список сравнения Сохранённые шаблоны поиска Расширенный поиск "
+        "Земельный участок пл. 800,0 кв.м. с жилым домом пл. 43,3 кв.м., Москва, Рассудово "
+        "Начальная цена 12 000 000 ₽"
+    )
+    title = LotOnlineAdapter._extract_title(text)
+    assert title.startswith("Земельный участок пл. 800,0 кв.м.")
+    assert "Список сравнения" not in title
+    assert "Расширенный поиск" not in title
+
+
+def test_rad_land_area_prefers_parcel_over_house_and_normalizes_decimal_comma():
+    text = "Земельный участок пл. 800,0 кв.м. с жилым домом площадью 43,3 кв.м."
+    area, raw = LotOnlineAdapter._extract_land_area(text)
+    assert area == 800
+    assert raw == "800,0 кв.м"
+
+
+def test_small_rad_site_with_residential_house_is_noise_with_auditable_reasons():
+    lot = AuctionLot(
+        source=source(),
+        lot_kind=LotKind.LAND_SALE,
+        title="Земельный участок пл. 800,0 кв.м. с жилым домом пл. 43,3 кв.м.",
+        address="Москва, Новофёдоровское, Рассудово",
+        land_area_sqm=800,
+    )
+    screening = AuctionSearchService.screen_lot(lot)
+    assert screening["development_relevant"] is False
+    assert screening["rating"] == "Шум"
+    assert "малый участок с жилым домом" in screening["exclusion_reasons"]
+    assert screening["platon_explanation"]["grounding"] == "selection_reasons_and_official_lot_fields_only"
+    assert lot.selection_reasons[:3] == ["Москва", "продажа земли", "площадь 800 м²"]
+
+
 def test_history_keeps_relisted_procedures_with_same_cadastre():
     first = AuctionLot(
         source=AuctionSource(SourceKind.LOT_ONLINE, "https://catalog.lot-online.ru/1", "old", "now"),
