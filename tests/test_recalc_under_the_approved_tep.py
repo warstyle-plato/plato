@@ -142,15 +142,19 @@ def test_a_leased_plot_pays_by_its_own_divisor_in_the_manual_calc():
     assert own["notes"] == []
 
 
-def test_the_page_sends_the_land_right_to_the_manual_calc():
-    """Правка, до которой не доезжает страница, не сделана."""
+def test_the_manual_block_is_gone_but_the_formula_stays():
+    """Карточки «Плата за ВРИ — свой расчёт» на странице больше нет.
+
+    Её работу делает «Пересчитать под фактический ТЭП» (владелец, 20.08.2026:
+    «убираем расчёт собственного ВРИ — зачем он теперь?»). Формула города
+    остаётся в движке: ею пересчёт подтверждает свою пропорцию, и /vri/manual
+    отвечает по-прежнему — уходит интерфейс, а не методика.
+    """
     page = core.PAGE
-    call = page[page.index("/vri/manual"):]
-    call = call[:call.index("catch")]
-    assert "land_right:String(inputs.land_right||'ownership')" in call, (
-        "своё право на участок страница обязана донести — иначе делитель "
-        "аренды в движке недостижим")
-    assert "data.notes" in page, "оговорка про аренду должна быть видна человеку"
+    assert "Плата за ВРИ — свой расчёт" not in page
+    assert "calcVriOwn" not in page
+    # Право на участок в пересчёте по-прежнему доезжает со страницы.
+    assert "land_right:String(inputs.land_right||'ownership')" in page
 
 
 def test_the_approved_tep_costs_less_than_the_norm(client):
@@ -208,22 +212,10 @@ def test_a_zero_base_is_free_and_a_missing_base_is_not():
 def test_the_page_asks_the_server_and_says_whose_answer_it_is():
     page = core.PAGE
     assert "Пересчитать по параметрам исходного расчёта" in page
-    assert "'/tep/recalc-from-baseline'" in page and "'/vri/manual'" in page
-    # Список типов использования подставляется из движка, копии на странице нет.
-    assert "__DEVELOPAID_VRI_USE_TYPES__" not in page
-    assert "Плата за ВРИ — свой расчёт" in page
+    assert "'/tep/recalc-from-baseline'" in page
     body = page[page.index("async function recalcFromTep("):]
     body = body[:body.index("\n}\n")]
     assert "исходного расчёта" in body, "чей это расчёт — сказано вслух"
-
-
-def test_the_table_does_not_rebuild_itself_while_typing():
-    """Перерисовка на каждой правке роняет фокус и теряет соседнюю ячейку —
-    поймано браузером на этой же таблице."""
-    page = core.PAGE
-    body = page[page.index("function vriOwnEdit("):]
-    body = body[:body.index("\n}\n")]
-    assert "renderVriOwn" not in body, "правка ячейки не пересобирает таблицу"
 
 
 def test_the_base_costs_come_from_the_export():
@@ -264,36 +256,17 @@ def test_the_mkd_base_is_found_even_without_its_own_line():
     assert core._glavapu_base_costs(rows).get("mkd") == 287560.46
 
 
-def test_the_page_says_where_the_base_costs_live():
-    page = core.PAGE
-    assert "Параметры территории" in page
-    body = page[page.index("function renderVriOwn("):]
-    body = body[:body.index("\n}\n")]
-    assert "vriOwnSource" in body
-    # Коэффициент аренды — доля; двузначное число завышает плату в сотни раз.
-    assert "похож на проценты" in body
+def test_an_impossible_rent_coefficient_is_refused_in_the_engine():
+    """25 в поле коэффициента аренды дало 238 млрд ₽ платы (20.08.2026).
 
-
-def test_a_percent_looking_rent_is_not_calculated_silently():
-    page = core.PAGE
-    body = page[page.index("async function calcVriOwn("):]
-    body = body[:body.index("\n}\n")]
-    assert "rent>1" in body
-    assert "Не задана базовая стоимость ни по одному типу" in body
-
-
-def test_an_impossible_rent_coefficient_is_refused_not_confirmed():
-    """25 в поле коэффициента аренды дало 238 млрд ₽ платы, и они уехали в
-    модель (владелец, 20.08.2026). Коэффициента больше единицы в таблице 2
-    приложения 8 не бывает — это не «подтвердите», это отказ."""
-    page = core.PAGE
-    body = page[page.index("async function calcVriOwn("):]
-    body = body[:body.index("\n}\n")]
-    assert "if(rent>1){" in body
-    assert "не делается" in body
-    # И потолок здравого смысла на результат: плата за метр выше базовой
-    # стоимости метра означает перепутанный множитель.
-    assert "perSqm>500000" in body and "не подставлен" in body
+    Интерфейс своего расчёта убран, но формула в движке осталась — и предел
+    здравого смысла должен жить в ней, а не в убранной кнопке: коэффициента
+    больше единицы в таблице 2 приложения 8 не бывает.
+    """
+    answer = core.vri_manual_payment(
+        [{"type": "mkd", "spp_sqm": 127163, "base_cost_rub": BASE_MKD}], 25.0)
+    per_sqm = answer["total_mln"] * 1e6 / 127163
+    assert per_sqm > 500000, "случай остался тем же — завышение в сотни раз"
 
 
 # --- пересчёт по параметрам исходного расчёта -------------------------------
