@@ -4,7 +4,7 @@ import main as _base
 from developaid_v2 import install as install_v2
 from market_search import install as install_market_search
 from market_search.ui_v5 import install as install_market_ui
-from statistics_feature_v2 import install as install_statistics
+from statistics_feature_v3 import install as install_statistics
 from telegram_user_registry import install
 
 app = _base.app
