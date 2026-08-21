@@ -94,6 +94,11 @@ class AuctionDocument:
     url: str
     document_type: str = "other"
     fetched_at: Optional[str] = None
+    # public = fetched without credentials; authenticated = fetched using an
+    # externally supplied service-account session; auth_required = platform
+    # refused the public request. We never store credentials in this object.
+    access_status: str = "unknown"
+    auth_required: bool = False
 
 
 @dataclass
