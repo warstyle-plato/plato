@@ -1,12 +1,22 @@
 from urllib.parse import parse_qs, urlparse
 
 from auction_search.adapters.lot_online import LotOnlineAdapter
+from auction_search.bridge import auction_page_with_handoff, install_page_bridge
 from auction_search.classifier import classify_lot
 from auction_search.developaid_mapper import build_developaid_seed
 from auction_search.documents import DocumentAuthorizationRequired, _looks_like_login_page, _request_headers
 from auction_search.krt import extract_krt_obligations, extract_krt_program
 from auction_search.krt_pipeline import enrich_krt_from_official_documents
-from auction_search.models import AuctionDocument, AuctionLot, AuctionSource, LotKind, SourceKind
+from auction_search.models import (
+    AuctionDocument,
+    AuctionLot,
+    AuctionSource,
+    KrtProgramItem,
+    LotKind,
+    Provenance,
+    SourceKind,
+)
+from auction_search.preset_mapper import build_project_preset
 from auction_search.service import AuctionSearchService
 
 
@@ -194,3 +204,67 @@ def test_ordinary_land_does_not_autoinsert_vri_payment():
     lot = AuctionLot(source=source(), lot_kind=LotKind.LAND_SALE, title="Обычная продажа")
     seed = build_developaid_seed(lot)
     assert seed["ordinary_land"]["vri_change_payment_rub"] is None
+
+
+def test_ordinary_auction_preset_prefills_purchase_price_and_cadastre():
+    lot = AuctionLot(
+        source=source(),
+        lot_kind=LotKind.LAND_SALE,
+        title="Коммунарка",
+        address="Москва, Коммунарка",
+        cadastral_numbers=["50:21:0120316:1221"],
+        land_area_sqm=173_494,
+        current_price_rub=1_100_250_000,
+        permitted_use="Многофункциональные общественные центры",
+    )
+    preset = build_project_preset(lot)
+    assert preset["schema_version"] == "developaid.project_preset.v4"
+    assert preset["auction_import"]["filled_inputs"]["purchase_price_mln"] == 1100.25
+    assert preset["project"]["cadastral_numbers"] == ["50:21:0120316:1221"]
+    assert preset["planning"]["objects"] == []
+    assert preset["open_items"]
+
+
+def test_krt_preset_maps_only_unambiguous_program_products():
+    prov = Provenance(
+        source_url="https://catalog.lot-online.ru/doc.pdf",
+        source_document="Решение КРТ.pdf",
+        raw_value="test",
+    )
+    lot = AuctionLot(
+        source=source(),
+        lot_kind=LotKind.KRT,
+        title="КРТ Тест",
+        current_price_rub=900_000_000,
+        krt_program=[
+            KrtProgramItem(category="housing", title="Жилая застройка 180 000 м²", area_sqm=180_000, provenance=prov),
+            KrtProgramItem(category="office", title="Офисы 40 000 м²", area_sqm=40_000, provenance=prov),
+            KrtProgramItem(category="public_business", title="МФК 25 000 м²", area_sqm=25_000, provenance=prov),
+        ],
+    )
+    preset = build_project_preset(lot)
+    objects = preset["planning"]["objects"]
+    assert len(objects) == 2
+    assert objects[0]["residential_part_m2"] == 180_000
+    assert objects[1]["building_type"] == "office_from_krt"
+    assert any("public_business" in item for item in preset["open_items"])
+    assert preset["import_rules"]["do_not_replace_krt_terms_with_glavapu"] is True
+
+
+def test_auction_list_page_gets_handoff_script_once():
+    page = "<html><body>auction</body></html>"
+    bridged = auction_page_with_handoff(page)
+    assert "developaid-auction-list-handoff-v1" in bridged
+    assert auction_page_with_handoff(bridged) == bridged
+
+
+def test_model_page_bridge_is_idempotent():
+    class Core:
+        PAGE = "<html><body>model</body></html>"
+
+    core = Core()
+    assert install_page_bridge(core) is True
+    assert "developaid-auction-preset-bridge-v1" in core.PAGE
+    first = core.PAGE
+    assert install_page_bridge(core) is False
+    assert core.PAGE == first
