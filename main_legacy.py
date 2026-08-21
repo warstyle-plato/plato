@@ -57,7 +57,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.19.38"
+VERSION = "0.19.39"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -27753,6 +27753,7 @@ details.cadastral-box>summary::marker{color:#888}
            и требовать для этого localStorage.removeItem — значит не менять. -->
       <span id="projectsStorageActions" style="display:none;gap:14px">
         <button class="btn dark" onclick="saveProjectToServer()">Сохранить текущий</button>
+        <button class="btn" onclick="downloadCurrentSettings()">Скачать настройки текущего</button>
         <button class="btn" onclick="changeProjectsKey()">Сменить ключ</button>
       </span>
       <button class="btn" style="margin-left:auto" onclick="closeProjects()">Закрыть</button>
@@ -27785,6 +27786,16 @@ details.cadastral-box>summary::marker{color:#888}
       <div class="section-title" style="margin-bottom:8px">Мои проекты</div>
       <div style="font-size:11px;color:#777;margin-bottom:10px">
         Хранится на ядре в России. Сохраняется только то, что вы сохранили сами.
+      </div>
+      <!-- Ссылка живёт на нашем сервере и требует, чтобы он отвечал. Файл
+           настроек не требует ничего: его пересылают почтой, кладут в папку
+           проекта, открывают через год. Это разные способы передачи, и один
+           другого не заменяет. -->
+      <div class="upload-line" style="align-items:center;margin-bottom:10px">
+        <button class="btn" onclick="importSettingsFile()">Загрузить файл настроек</button>
+        <input type="file" id="settingsFileInput" accept=".json,application/json" style="display:none"
+               onchange="applySettingsFile(this)">
+        <span style="font-size:11px;color:#888">файл .json из кнопки «Файл» — свой или присланный</span>
       </div>
       <div class="scroll"><table>
         <thead><tr><th>Проект</th><th>Выручка</th><th>Чистая прибыль</th><th>LLCR</th><th></th></tr></thead>
@@ -33131,7 +33142,8 @@ async function openProjects(){
    +`<td>${s.net_profit_mln?money(s.net_profit_mln*1e6):'—'}</td>`
    +`<td>${s.llcr?mult(s.llcr):'—'}</td>`
    +`<td><button class="btn" onclick="loadProject('${p.id}')">Открыть</button> `
-   +`<button class="btn" onclick="shareProject('${p.id}')">Поделиться</button> `
+   +`<button class="btn" onclick="shareProject('${p.id}')">Ссылка</button> `
+   +`<button class="btn" onclick="downloadSettingsFile('${p.id}')">Файл</button> `
    +`<button class="btn" onclick="deleteProject('${p.id}')">Удалить</button></td></tr>`;
  }).join('');
  projectsBody.innerHTML=rows||'<tr><td colspan="5">Пока ничего не сохранено.</td></tr>';
@@ -33155,6 +33167,92 @@ async function loadProject(id){
  const data=record.payload||{};
  // Как и локальная загрузка: сохранённое накладывается на умолчания, а не
  // подменяет их — иначе поле, добавленное позже, исчезнет.
+ inputs=Object.assign(structuredClone(INPUT_DEFAULT),data.inputs||{});
+ tep=structuredClone(TEP_DEFAULT);
+ Object.entries(data.tep||{}).forEach(([key,values])=>{
+  if(values&&typeof values==='object')tep[key]=Object.assign(tep[key]||{},values);
+ });
+ phasing=data.phasing||makeDefaultPhasing(1);
+ scenarioSelect.value=data.scenario||'base';
+ renderInputs();renderTep();renderPhasing();persistLocalSilently();
+ closeProjects();
+ calculateAndOpen('report');
+}
+
+// Файл настроек — второй способ передать проект, рядом со ссылкой (владелец,
+// 21.08.2026). Ссылка живёт на нашем сервере: он должен отвечать, а код —
+// не протухнуть. Файл не зависит ни от чего — его пересылают почтой, кладут
+// в папку проекта, открывают через год. Внутри тот же снимок, что и по
+// ссылке: вводные, ТЭП, очерёдность, сценарий — и ничего сверх того.
+const SETTINGS_FILE_KIND='developaid.project.settings';
+
+function settingsFileFrom(name,payload){
+ return {kind:SETTINGS_FILE_KIND,version:1,app_version:'__DEVELOPAID_VERSION__',
+  name:name||'Проект',saved_at:new Date().toISOString(),
+  inputs:payload.inputs||{},tep:payload.tep||{},
+  phasing:payload.phasing||null,scenario:payload.scenario||'base'};
+}
+
+// Скачивание собирается на месте: файл не уходит на сервер и обратно, поэтому
+// не зависит ни от сети, ни от того, доступен ли он вошедшему.
+function saveJsonFile(name,data){
+ const blob=new Blob([JSON.stringify(data,null,1)],{type:'application/json'});
+ const url=URL.createObjectURL(blob);
+ const a=document.createElement('a');
+ a.href=url;a.download=name;document.body.appendChild(a);a.click();
+ document.body.removeChild(a);setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
+
+function safeFileName(name){
+ return String(name||'Проект').replace(/[\\/:*?"<>|]+/g,' ').trim().slice(0,60)||'Проект';
+}
+
+async function downloadSettingsFile(id){
+ let record;
+ try{record=await projectsCall('/projects/open',{id})}
+ catch(e){alert(String(e.message||e));return}
+ const payload=record.payload||{};
+ saveJsonFile(safeFileName(record.name)+' — настройки DevelopAid.json',
+              settingsFileFrom(record.name,payload));
+}
+
+// Текущий проект — тот, что открыт на экране, а не сохранённый. Сохранять
+// ради выгрузки не заставляем: человек мог ничего не сохранять вовсе.
+function downloadCurrentSettings(){
+ saveJsonFile(safeFileName(currentProjectName())+' — настройки DevelopAid.json',
+  settingsFileFrom(currentProjectName(),
+   {inputs:inputs,tep:tep,phasing:phasing,scenario:scenarioSelect.value}));
+}
+
+// Имя берётся оттуда же, откуда его предлагает сохранение на сервер: своего
+// поля с именем на странице нет, и заводить второе значило бы развести их.
+function currentProjectName(){
+ const meta=inputs._manual_tep_import||null;
+ return (meta&&meta.project_name)||projectCadastral()[0]||'Проект DevelopAid';
+}
+
+function importSettingsFile(){
+ const input=document.getElementById('settingsFileInput');
+ if(input){input.value='';input.click()}
+}
+
+// Чужой файл — данные, а не команда: проверяем, что это наш формат, и
+// накладываем на умолчания, а не подменяем их. Иначе поле, добавленное после
+// выгрузки, исчезнет — на этом уже обжигались с сохранённым состоянием.
+async function applySettingsFile(input){
+ const file=input&&input.files&&input.files[0];
+ if(!file)return;
+ let data;
+ try{data=JSON.parse(await file.text())}
+ catch(e){alert('Файл не читается как JSON: '+String(e.message||e));return}
+ if(!data||data.kind!==SETTINGS_FILE_KIND){
+  alert('Это не файл настроек DevelopAid. Нужен .json из кнопки «Файл» рядом с проектом.');
+  return;
+ }
+ if(!confirm('Загрузить настройки «'+String(data.name||'без имени')+'»?\n\n'
+  +'Сохранён: '+String(data.saved_at||'').replace('T',' ').slice(0,16)
+  +(data.app_version?' · версия '+data.app_version:'')+'\n\n'
+  +'Текущие вводные на экране будут заменены.'))return;
  inputs=Object.assign(structuredClone(INPUT_DEFAULT),data.inputs||{});
  tep=structuredClone(TEP_DEFAULT);
  Object.entries(data.tep||{}).forEach(([key,values])=>{
