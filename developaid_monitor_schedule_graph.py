@@ -1,9 +1,10 @@
-"""Dependency/float forecast layer for DevelopAid Project Monitor.
+"""Dependency/float layer for DevelopAid Project Monitor.
 
-The PM workbook is a fixed source of relationships only. Physical progress is
-never read from PM: it remains RSS accepted acts. This module propagates delays
-through the actual PM dependency graph and preserves the original schedule while
-allowing approved article rebaselines to be stored separately.
+The PM workbook is a fixed source of relationships and float. It is not a
+source of current physical progress. A current forecast exists only when the
+schedule contains an explicit actualized/rebaseline seed that differs from the
+original PM finish; otherwise the approved PM date is reported as approved,
+not mislabeled as forecast.
 """
 from __future__ import annotations
 
@@ -83,12 +84,17 @@ def _parse_predecessors(value: Any) -> list[dict[str, Any]]:
             continue
         pid, ru_type, lag = m.groups()
         kind = {None: "FS", "ОН": "FS", "НН": "SS", "ОО": "FF", "НО": "SF"}[ru_type]
-        out.append({"id": pid, "type": kind, "lag_days": int(round(float((lag or "0").replace(",", "."))))})
+        out.append({
+            "id": pid,
+            "type": kind,
+            "lag_days": int(round(float((lag or "0").replace(",", ".")))),
+        })
     return out
 
 
-def store_reference(project: str, data: bytes, sheet: str, start: Any,
-                    code: str, taken_at: Any) -> dict[str, Any]:
+def store_reference(
+    project: str, data: bytes, sheet: str, start: Any, code: str, taken_at: Any
+) -> dict[str, Any]:
     day = monitor._iso(taken_at)
     base = monitor._project_dir(project) / "baseline"
     base.mkdir(parents=True, exist_ok=True)
@@ -101,9 +107,15 @@ def store_reference(project: str, data: bytes, sheet: str, start: Any,
     slug = re.sub(r"[^0-9A-Za-zА-Яа-я_-]+", "-", str(code)).strip("-") or "article"
     path = folder / f"{day}.{slug}.xlsx"
     path.write_bytes(data)
-    (folder / f"{day}.{slug}.json").write_text(json.dumps({
-        "taken_at": day, "code": code, "sheet": sheet, "start": monitor._iso(start),
-    }, ensure_ascii=False), encoding="utf-8")
+    (folder / f"{day}.{slug}.json").write_text(
+        json.dumps({
+            "taken_at": day,
+            "code": code,
+            "sheet": sheet,
+            "start": monitor._iso(start),
+        }, ensure_ascii=False),
+        encoding="utf-8",
+    )
     return {"taken_at": day, "code": code, "stored": "rebaseline", "bytes": len(data)}
 
 
@@ -112,6 +124,7 @@ def _load_pm(project: str) -> dict[str, Any]:
     if not path.exists():
         return {"known": False, "tasks": {}, "rnv_id": "", "source": ""}
     from openpyxl import load_workbook
+
     wb = load_workbook(path, read_only=True, data_only=True)
     try:
         ws = wb["Таблица_задач1"] if "Таблица_задач1" in wb.sheetnames else wb[wb.sheetnames[0]]
@@ -119,9 +132,13 @@ def _load_pm(project: str) -> dict[str, Any]:
         header_values = next(rows, ())
         header = {_norm(v).replace(" ", "_"): i for i, v in enumerate(header_values)}
         aliases = {
-            "id": ("ид", "id"), "name": ("название_задачи", "наименование_работ"),
-            "pred": ("предшественники",), "start": ("начало",), "finish": ("окончание",),
-            "free": ("свободный_временной_резерв",), "total": ("общий_временной_резерв",),
+            "id": ("ид", "id"),
+            "name": ("название_задачи", "наименование_работ"),
+            "pred": ("предшественники",),
+            "start": ("начало",),
+            "finish": ("окончание",),
+            "free": ("свободный_временной_резерв",),
+            "total": ("общий_временной_резерв",),
         }
         idx: dict[str, int] = {}
         for key, names in aliases.items():
@@ -135,13 +152,18 @@ def _load_pm(project: str) -> dict[str, Any]:
             def cell(key: str) -> Any:
                 i = idx.get(key, -1)
                 return values[i] if 0 <= i < len(values) else None
+
             tid = str(cell("id") or "").strip()
             name = str(cell("name") or "").strip()
-            start = _date(cell("start")); finish = _date(cell("finish"))
+            start = _date(cell("start"))
+            finish = _date(cell("finish"))
             if not tid or not name or not start or not finish:
                 continue
             task = {
-                "id": tid, "name": name, "start": start, "finish": finish,
+                "id": tid,
+                "name": name,
+                "start": start,
+                "finish": finish,
                 "duration_days": max(0, (finish - start).days),
                 "predecessors": _parse_predecessors(cell("pred")),
                 "free_float_days": _days(cell("free")),
@@ -149,8 +171,14 @@ def _load_pm(project: str) -> dict[str, Any]:
             }
             tasks[tid] = task
             low = _norm(name)
-            if (("рнв" in low and "получ" in low) or
-                ("разрешен" in low and "ввод" in low and ("получ" in low or "выдан" in low))):
+            if (
+                ("рнв" in low and "получ" in low)
+                or (
+                    "разрешен" in low
+                    and "ввод" in low
+                    and ("получ" in low or "выдан" in low)
+                )
+            ):
                 rnv_id = tid
         return {"known": bool(tasks), "tasks": tasks, "rnv_id": rnv_id, "source": path.name}
     finally:
@@ -162,6 +190,7 @@ def _rebaselines(project: str) -> dict[str, dict[str, Any]]:
     if not folder.exists():
         return {}
     from openpyxl import load_workbook
+
     result: dict[str, dict[str, Any]] = {}
     for meta_path in sorted(folder.glob("*.json")):
         try:
@@ -189,7 +218,9 @@ def _rebaselines(project: str) -> dict[str, dict[str, Any]]:
     return result
 
 
-def _constraint_start(edge: dict[str, Any], pred: dict[str, Any], succ: dict[str, Any]) -> datetime.date:
+def _constraint_start(
+    edge: dict[str, Any], pred: dict[str, Any], succ: dict[str, Any]
+) -> datetime.date:
     lag = datetime.timedelta(days=edge["lag_days"])
     duration = datetime.timedelta(days=succ["duration_days"])
     kind = edge["type"]
@@ -202,10 +233,19 @@ def _constraint_start(edge: dict[str, Any], pred: dict[str, Any], succ: dict[str
     return pred["forecast_finish"] + lag
 
 
-def _propagate(pm: dict[str, Any], seeds: dict[str, datetime.date]) -> dict[str, dict[str, Any]]:
-    tasks = {tid: {**item, "forecast_start": item["start"], "forecast_finish": item["finish"],
-                   "own_delay_days": 0, "inherited_delay_days": 0}
-             for tid, item in pm["tasks"].items()}
+def _propagate(
+    pm: dict[str, Any], seeds: dict[str, datetime.date]
+) -> dict[str, dict[str, Any]]:
+    tasks = {
+        tid: {
+            **item,
+            "forecast_start": item["start"],
+            "forecast_finish": item["finish"],
+            "own_delay_days": 0,
+            "inherited_delay_days": 0,
+        }
+        for tid, item in pm["tasks"].items()
+    }
     successors: dict[str, list[dict[str, Any]]] = {}
     indegree = {tid: 0 for tid in tasks}
     for sid, succ in tasks.items():
@@ -216,6 +256,7 @@ def _propagate(pm: dict[str, Any], seeds: dict[str, datetime.date]) -> dict[str,
                 successors.setdefault(edge["id"], []).append({**edge, "successor_id": sid})
                 indegree[sid] += 1
         succ["predecessors"] = valid
+
     for tid, finish in seeds.items():
         task = tasks.get(tid)
         if not task or not finish or finish <= task["finish"]:
@@ -224,6 +265,7 @@ def _propagate(pm: dict[str, Any], seeds: dict[str, datetime.date]) -> dict[str,
         task["forecast_start"] = task["start"] + datetime.timedelta(days=shift)
         task["forecast_finish"] = finish
         task["own_delay_days"] = shift
+
     queue = [tid for tid, deg in indegree.items() if deg == 0]
     order: list[str] = []
     while queue:
@@ -237,6 +279,7 @@ def _propagate(pm: dict[str, Any], seeds: dict[str, datetime.date]) -> dict[str,
     if len(order) < len(tasks):
         ordered = set(order)
         order.extend(tid for tid in tasks if tid not in ordered)
+
     for _ in range(2):
         for sid in order:
             succ = tasks[sid]
@@ -249,6 +292,7 @@ def _propagate(pm: dict[str, Any], seeds: dict[str, datetime.date]) -> dict[str,
                 succ["forecast_start"] += datetime.timedelta(days=delta)
                 succ["forecast_finish"] += datetime.timedelta(days=delta)
                 succ["inherited_delay_days"] += delta
+
     for tid, task in tasks.items():
         task["successors"] = successors.get(tid, [])
         shift = max(0, (task["forecast_finish"] - task["finish"]).days)
@@ -269,19 +313,47 @@ def apply(project: str, view: dict[str, Any]) -> dict[str, Any]:
     schedule = view.get("schedule") or {}
     pm = _load_pm(project)
     if not pm["known"]:
-        schedule["dependency_graph"] = {"known": False, "reason": "не загружен сырой PM/ГРП"}
+        schedule["dependency_graph"] = {
+            "known": False,
+            "forecast_known": False,
+            "reason": "не загружен сырой PM/ГРП",
+        }
         return view
+
     seeds: dict[str, datetime.date] = {}
+    seed_sources: set[str] = set()
     for row in schedule.get("rows") or []:
         tid = str(row.get("id") or "").strip()
         forecast = monitor._day(row.get("forecast_finish"))
-        if tid in pm["tasks"] and forecast:
+        pm_task = pm["tasks"].get(tid)
+        if not pm_task or not forecast:
+            continue
+        # Baseline copied into forecast_finish is not a forecast seed. Only an
+        # explicit deviation (approved rebaseline / later actualized WBS) may
+        # drive the network.
+        if forecast > pm_task["finish"]:
             seeds[tid] = forecast
+            seed_sources.add(str(row.get("forecast_source") or "actualized_wbs"))
+
+    forecast_known = bool(seeds)
     tasks = _propagate(pm, seeds)
     rnv = tasks.get(pm["rnv_id"]) if pm["rnv_id"] else None
-    baseline_rnv = rnv["finish"] if rnv else max((t["finish"] for t in tasks.values()), default=None)
-    forecast_rnv = rnv["forecast_finish"] if rnv else max((t["forecast_finish"] for t in tasks.values()), default=None)
-    project_delay = max(0, (forecast_rnv - baseline_rnv).days) if baseline_rnv and forecast_rnv else 0
+    baseline_rnv = (
+        rnv["finish"]
+        if rnv
+        else max((t["finish"] for t in tasks.values()), default=None)
+    )
+    network_rnv = (
+        rnv["forecast_finish"]
+        if rnv
+        else max((t["forecast_finish"] for t in tasks.values()), default=None)
+    )
+    project_delay = (
+        max(0, (network_rnv - baseline_rnv).days)
+        if forecast_known and baseline_rnv and network_rnv
+        else None
+    )
+
     ancestors: set[str] = set()
     if pm["rnv_id"] in tasks:
         stack = [pm["rnv_id"]]
@@ -291,14 +363,18 @@ def apply(project: str, view: dict[str, Any]) -> dict[str, Any]:
                 continue
             ancestors.add(tid)
             stack.extend(edge["id"] for edge in tasks[tid]["predecessors"])
-    flat = {str(row.get("id") or "").strip(): row for row in schedule.get("rows") or []}
+
+    flat = {
+        str(row.get("id") or "").strip(): row
+        for row in schedule.get("rows") or []
+    }
     for tid, row in flat.items():
         task = tasks.get(tid)
         if not task:
             continue
         propagated = task["forecast_finish"]
         own = monitor._day(row.get("forecast_finish"))
-        if propagated and (own is None or propagated > own):
+        if forecast_known and propagated and (own is None or propagated > own):
             row["forecast_finish"] = monitor._iso(propagated)
             finish = monitor._day(row.get("plan_finish"))
             row["delta_days"] = (propagated - finish).days if finish else None
@@ -308,24 +384,46 @@ def apply(project: str, view: dict[str, Any]) -> dict[str, Any]:
             "current_float_days": task["current_float_days"],
             "own_delay_days": task["own_delay_days"],
             "inherited_delay_days": task["inherited_delay_days"],
-            "impact_rnv_days": project_delay if tid in ancestors and task["current_float_days"] <= 0 else 0,
+            "impact_rnv_days": (
+                project_delay
+                if project_delay is not None
+                and tid in ancestors
+                and task["current_float_days"] <= 0
+                else 0
+            ),
             "predecessors": [
-                {"id": e["id"], "name": tasks[e["id"]]["name"], "type": e["type"], "lag_days": e["lag_days"]}
+                {
+                    "id": e["id"],
+                    "name": tasks[e["id"]]["name"],
+                    "type": e["type"],
+                    "lag_days": e["lag_days"],
+                }
                 for e in task["predecessors"]
             ],
             "successors": [
-                {"id": e["successor_id"], "name": tasks[e["successor_id"]]["name"], "type": e["type"], "lag_days": e["lag_days"]}
+                {
+                    "id": e["successor_id"],
+                    "name": tasks[e["successor_id"]]["name"],
+                    "type": e["type"],
+                    "lag_days": e["lag_days"],
+                }
                 for e in task["successors"]
             ],
         }
+
     management = schedule.get("management") or []
     for node in _walk_nodes(management):
         if node.get("id"):
             src = flat.get(str(node.get("id") or "").strip())
             if src:
-                node.update({k: src.get(k) for k in ("forecast_finish", "delta_days", "dependencies")})
+                node.update({
+                    k: src.get(k)
+                    for k in ("forecast_finish", "delta_days", "dependencies")
+                })
                 node.setdefault("level", "task")
+
     rebaselines = _rebaselines(project)
+
     def aggregate(node: dict[str, Any]) -> None:
         children = [c for c in node.get("children", []) if isinstance(c, dict)]
         for child in children:
@@ -349,19 +447,33 @@ def apply(project: str, view: dict[str, Any]) -> dict[str, Any]:
             deps = [c.get("dependencies") for c in children if c.get("dependencies")]
             if deps:
                 node["dependencies"] = {
-                    "current_float_days": min((d.get("current_float_days", 10**9) for d in deps), default=None),
-                    "impact_rnv_days": max((d.get("impact_rnv_days", 0) for d in deps), default=0),
-                    "predecessors": [], "successors": [],
+                    "current_float_days": min(
+                        (d.get("current_float_days", 10**9) for d in deps),
+                        default=None,
+                    ),
+                    "impact_rnv_days": max(
+                        (d.get("impact_rnv_days", 0) for d in deps), default=0
+                    ),
+                    "predecessors": [],
+                    "successors": [],
                 }
+
     for root in management:
         aggregate(root)
+
+    source = ", ".join(sorted(seed_sources)) if seed_sources else ""
     schedule["dependency_graph"] = {
-        "known": True, "source": pm["source"], "tasks": len(tasks),
-        "rnv_baseline": monitor._iso(baseline_rnv), "rnv_forecast": monitor._iso(forecast_rnv),
+        "known": True,
+        "source": pm["source"],
+        "tasks": len(tasks),
+        "forecast_known": forecast_known,
+        "forecast_source": source,
+        "rnv_baseline": monitor._iso(baseline_rnv),
+        "rnv_forecast": monitor._iso(network_rnv) if forecast_known else None,
         "rnv_delay_days": project_delay,
     }
-    if forecast_rnv:
-        schedule["forecast_end"] = monitor._iso(forecast_rnv)
-    if baseline_rnv:
-        schedule["approved_end"] = monitor._iso(baseline_rnv)
+    schedule["approved_end"] = monitor._iso(baseline_rnv) if baseline_rnv else None
+    schedule["forecast_end"] = (
+        monitor._iso(network_rnv) if forecast_known and network_rnv else None
+    )
     return view
