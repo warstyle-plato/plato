@@ -5,7 +5,7 @@ import developaid_monitor as monitor
 import developaid_monitor_dashboard as dashboard
 
 
-def test_physical_smr_counts_only_dated_construction_acts(monkeypatch):
+def test_dated_construction_acts_exclude_nonconstruction_and_undated_rows(monkeypatch):
     monkeypatch.setattr(dashboard.actuals, "read_completed_works", lambda _: {"rows": [
         {"code": "2.2.1", "amount": 100.0, "construction": True, "date": datetime.date(2026, 8, 10)},
         {"code": "2.2.1", "amount": 500.0, "construction": False, "date": datetime.date(2026, 8, 10)},
@@ -35,9 +35,10 @@ def test_funding_risk_runs_to_rnv_not_to_april(monkeypatch):
     assert result["reserve"] == 100.0
 
 
-def test_page_has_funding_and_pm_risk_language():
+def test_page_has_funding_and_correct_cost_evidence_language():
     from developaid_monitor_page import MONITOR_PAGE
     assert "Исчерпание лимита банка" in MONITOR_PAGE
     assert "Доп. финансирование до РВЭ" in MONITOR_PAGE
     assert "Сырой PM" in MONITOR_PAGE
-    assert "клик по строке также открывает проблему" in MONITOR_PAGE
+    assert "Актировано СМР / утв. модель" in MONITOR_PAGE
+    assert "это не физический % WBS" in MONITOR_PAGE

@@ -1,9 +1,8 @@
-"""Regression guard for the user-facing Project Monitor operating contract.
+"""Regression guard for the Project Monitor operating contract.
 
-A project benchmark is fixed once. After that the recurring operating inputs
-are only a fresh RSS 6.1.2 and a sales report. Raw PM and approved article
-rebaselines are benchmark/schedule metadata; they are not weekly sources of
-physical fact. Physical fact still comes only from RSS accepted-work acts.
+A project benchmark is fixed once. After that recurring inputs are a fresh RSS
+6.1.2 and sales. RSS accepted-work acts are cost/evidence; they are not a
+calendar clock and cannot by themselves move WBS dates.
 """
 
 from pathlib import Path
@@ -15,7 +14,6 @@ import developaid_monitor_page as page
 def test_monitor_page_exposes_fixed_benchmark_then_rss_and_sales():
     html = page.MONITOR_PAGE
     assert "Benchmark проекта" in html
-    assert "После benchmark регулярно нужны только новый РСС и отчёт продаж" in html
     assert 'id="gpr"' in html
     assert 'id="finance"' in html
     assert 'id="pm"' in html
@@ -23,7 +21,8 @@ def test_monitor_page_exposes_fixed_benchmark_then_rss_and_sales():
     assert 'id="sales"' in html
     assert 'id="programmeFile"' not in html
     assert 'id="proposalFile"' not in html
-    assert "Физический факт — только «Реестр выполненных работ»" in html
+    assert "КС/актирование — только «Реестр выполненных работ»" in html
+    assert "КС/EAC не считается физическим процентом WBS" in html
 
 
 def test_monitor_build_does_not_replace_baseline_with_legacy_programmes():

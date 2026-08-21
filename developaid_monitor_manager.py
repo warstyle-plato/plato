@@ -1,14 +1,13 @@
-"""Management aggregation for Project Monitor.
+"""Managerial hierarchy for DevelopAid Project Monitor.
 
-The operating contract stays deliberately small: a fixed PM/GPR baseline and
-one fresh RSS 6.1.2 every week.
+Important semantics:
 
-Physical progress is read only from ``Реестр выполненных работ``. Payment fact
-is read only from ``Реестр платежей``. The RSS/DevelopAid crosswalk is used for
-hierarchy and naming only; it never becomes physical fact.
-
-The director view is hierarchical:
-    control block -> DevelopAid article -> RSS code -> WBS tasks.
+* RSS accepted-work acts are a cost/evidence source. ``accepted / EAC`` is
+  shown as an *act-cost ratio* and is never treated as a physical WBS percent.
+* Calendar forecast never extrapolates dates from the monetary pace of acts.
+  Dates come from the approved GPR/PM network and approved rebaselines.
+* RSS codes remain the financial crosswalk. They do not define the temporal
+  phase hierarchy: one financial code may span several WBS phases.
 """
 from __future__ import annotations
 
@@ -19,6 +18,7 @@ from typing import Any
 
 import developaid_actuals as actuals
 import developaid_monitor as monitor
+import developaid_monitor_schedule_graph as schedule_graph
 
 _INSTALLED = False
 _ORIGINAL_BUILD = None
@@ -26,15 +26,17 @@ _ORIGINAL_GANTT = None
 
 
 def _natural(value: Any) -> tuple:
-    """Natural ordering: 2.2.3.9 comes before 2.2.3.10."""
     return tuple(
         (0, int(part)) if part.isdigit() else (1, part.lower())
         for part in re.findall(r"\d+|[^\d]+", str(value or ""))
     )
 
 
+def _norm(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip().lower().replace("ё", "е"))
+
+
 def _as_date(value: Any) -> datetime.date | None:
-    """Dates from the base Monitor can already be JSON/plain ISO strings."""
     if isinstance(value, datetime.datetime):
         return value.date()
     if isinstance(value, datetime.date):
@@ -49,9 +51,9 @@ def _codes(value: Any) -> list[str]:
     ))
 
 
-def _control(code: str) -> str:
+def _financial_control(code: str) -> str:
     if code.startswith("2.1"):
-        return "Подготовка"
+        return "Подготовка / ПОС"
     if code.startswith(("2.2", "2.3")):
         return "Основные объекты"
     if code.startswith("2.4"):
@@ -67,9 +69,9 @@ def _control(code: str) -> str:
     return "Прочие СМР"
 
 
-def _detail(code: str) -> str:
+def _financial_detail(code: str) -> str:
     if code.startswith("2.1"):
-        return "Подготовительные работы"
+        return "Подготовительный период / ПОС"
     if code.startswith("2.2.1"):
         return "Основное строительство — подземная часть"
     if code.startswith(("2.2.2", "2.2.3", "2.3")):
@@ -78,15 +80,41 @@ def _detail(code: str) -> str:
         return "Наружные инженерные сети"
     if code.startswith("2.5"):
         return "Благоустройство"
-    return _control(code)
+    return _financial_control(code)
+
+
+def _schedule_bucket(task: dict[str, Any], code: str) -> tuple[str, str]:
+    """Temporal hierarchy is WBS-led; RSS code is only the finance crosswalk.
+
+    The Grodnenskaya GPR is a good example: RSS 2.1 contains both the already
+    completed territory-preparation scope and late POS/site-operation/
+    demobilisation tasks. Treating all of 2.1 as one time phase makes
+    "Подготовка" look open for years.
+    """
+    wbs = str(task.get("wbs") or "")
+    name = _norm(task.get("name"))
+    section = _norm(task.get("section"))
+    obj = _norm(task.get("object"))
+
+    if code.startswith("2.1"):
+        if wbs.startswith("1.16.1.2"):
+            return "Подготовка", "Подготовка территории"
+        if wbs.startswith("1.16.1.3"):
+            return "Организация стройплощадки / ПОС", "ПОС и временная инфраструктура"
+        late_markers = (
+            "демонтаж башенн", "демобилиз", "перебазиров", "подкран",
+            "временн", "механизац", "штаб", "пос",
+        )
+        if any(marker in name for marker in late_markers):
+            return "Организация стройплощадки / ПОС", "ПОС и временная инфраструктура"
+        if "подготов" in section or "подготов" in obj or "подготов" in name:
+            return "Подготовка", "Подготовка территории"
+
+    return _financial_control(code), _financial_detail(code)
 
 
 def _baseline_mapping(project: str) -> dict[str, dict[str, str]]:
-    """Read RSS -> DevelopAid naming from Project Control's ``РСС ФАКТ``.
-
-    This is a crosswalk only. Values from this sheet are never used as the
-    physical fact for the Gantt.
-    """
+    """RSS naming/crosswalk only; never a source of schedule fact."""
     path = monitor._baseline_file(project)
     if path is None:
         return {}
@@ -114,37 +142,16 @@ def _baseline_mapping(project: str) -> dict[str, dict[str, str]]:
                 continue
             if not header:
                 continue
-
             code_index = header["code"]
             code = actuals._code(values[code_index] if code_index < len(values) else None)
             if not code:
                 continue
-            article_index = header["article"]
-            article = (
-                str(values[article_index] or "").strip()
-                if article_index < len(values) else ""
-            )
             rss_index = header.get("rss_name", -1)
-            rss_name = (
-                str(values[rss_index] or "").strip()
-                if 0 <= rss_index < len(values) else ""
-            )
-            low = article.lower().replace("ё", "е")
-            detail = _detail(code)
-            if "подзем" in low:
-                detail = "Основное строительство — подземная часть"
-            elif "надзем" in low or "назем" in low or "вис" in low:
-                detail = "Основное строительство — надземная часть + ВИС"
-            elif "подготов" in low:
-                detail = "Подготовительные работы"
-            elif "наруж" in low:
-                detail = "Наружные инженерные сети"
-            elif "благо" in low:
-                detail = "Благоустройство"
             result[code] = {
-                "rss_name": rss_name,
-                "detail": detail,
-                "control": _control(code),
+                "rss_name": (
+                    str(values[rss_index] or "").strip()
+                    if 0 <= rss_index < len(values) else ""
+                ),
             }
         return result
     finally:
@@ -174,7 +181,11 @@ def _metrics(
     code: str,
     cut: datetime.date,
 ) -> dict[str, Any]:
-    """Physical fact for one RSS article, strictly from accepted-work rows."""
+    """Cost/evidence metrics for one RSS article.
+
+    ``accepted_ratio`` is deliberately named so nobody can mistake it for
+    physical WBS progress.
+    """
     matched = _descendants(estimate, code)
     eac = float((estimate["by_code"].get(code) or {}).get("estimate") or 0.0)
     rows = [
@@ -193,53 +204,165 @@ def _metrics(
     return {
         "eac": eac,
         "accepted": accepted,
-        "progress": accepted / eac if eac > 0 else None,
-        "rate": recent / eac / 3 if eac > 0 else None,
-        "last": max((row["date"] for row in rows), default=None),
+        "accepted_ratio": accepted / eac if eac > 0 else None,
+        "act_cost_rate_3m": recent / eac / 3 if eac > 0 else None,
+        "last_act": max((row["date"] for row in rows), default=None),
     }
 
 
-def _status(
-    start: datetime.date,
-    finish: datetime.date,
-    cut: datetime.date,
-    plan: float,
-    fact: float | None,
-    rate: float | None,
-    forecast: datetime.date | None,
-) -> str:
-    if cut < start:
-        return "ПО ПЛАНУ: НЕ НАЧАТО"
-    if fact is None:
-        return "НЕТ ДАННЫХ РСС"
-    if fact >= 1:
-        return "ЗАВЕРШЕНО"
-    if (not rate or rate <= 1e-9) and fact < plan:
-        return "НЕТ ТЕМПА / РИСК"
-    if forecast and forecast > finish:
-        return "ОТСТАВАНИЕ"
-    return "В СРОК" if fact >= plan else "ОТСТАВАНИЕ"
+def _baseline_status(project: str) -> dict[str, dict[str, Any]]:
+    """Approved GPR status is schedule metadata, not physical RSS fact."""
+    try:
+        baseline = monitor._read_baseline_gpr(project)
+    except Exception:
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for item in baseline.get("works") or []:
+        tid = str(item.get("id") or item.get("wbs") or "").strip()
+        if not tid:
+            continue
+        status = _norm(item.get("status"))
+        out[tid] = {
+            "closed": "заверш" in status,
+            "status": str(item.get("status") or ""),
+        }
+    return out
 
 
-def _forecast(
+def _sanitize_base_schedule(project: str, schedule: dict[str, Any]) -> None:
+    """Remove the old money-pace calendar forecast from base Monitor rows."""
+    statuses = _baseline_status(project)
+    for row in schedule.get("rows") or []:
+        tid = str(row.get("id") or row.get("wbs") or "").strip()
+        meta = statuses.get(tid, {})
+        row["rss_accepted_ratio"] = row.get("actual_progress")
+        row["rss_act_cost_rate_3m"] = row.get("rate_3m")
+        row["progress_kind"] = "accepted_cost_ratio"
+        row["progress_label"] = "КС / EAC"
+        row["baseline_closed"] = bool(meta.get("closed"))
+        row["baseline_status"] = meta.get("status", "")
+        row["actual_progress"] = None
+        row["actual_equivalent_date"] = None
+        row["forecast_finish"] = row.get("plan_finish")
+        row["delta_days"] = 0
+        if row["baseline_closed"]:
+            row["status"] = "ЗАВЕРШЕНО ПО УТВЕРЖДЕННОМУ ГПР"
+        else:
+            row["status"] = "АКТУАЛЬНЫЙ СРОК = УТВЕРЖДЕННЫЙ ГПР"
+
+
+def _seed_rebaselines(project: str, schedule: dict[str, Any]) -> None:
+    """Use approved article rebaseline as a calendar seed for the PM graph."""
+    try:
+        rebaselines = schedule_graph._rebaselines(project)
+    except Exception:
+        return
+    if not rebaselines:
+        return
+
+    rows = schedule.get("rows") or []
+    for code, rb in rebaselines.items():
+        finish = rb.get("finish")
+        if not finish:
+            continue
+        candidates = [
+            row for row in rows
+            if code in _codes(row.get("code"))
+            and not row.get("baseline_closed")
+            and _as_date(row.get("plan_finish")) is not None
+        ]
+        if not candidates:
+            continue
+        terminal = max(candidates, key=lambda row: _as_date(row.get("plan_finish")))
+        terminal["forecast_finish"] = monitor._iso(finish)
+        terminal["forecast_source"] = "approved_rebaseline"
+        terminal["rebaseline_seed"] = {
+            "code": code,
+            "finish": monitor._iso(finish),
+            "source": rb.get("source", ""),
+        }
+        plan_finish = _as_date(terminal.get("plan_finish"))
+        terminal["delta_days"] = (
+            (finish - plan_finish).days if plan_finish else None
+        )
+
+
+def _rss_row(
+    code: str,
+    tasks: list[dict[str, Any]],
+    estimate: dict[str, Any],
+    works: dict[str, Any],
+    mapping: dict[str, dict[str, str]],
     cut: datetime.date,
-    fact: float | None,
-    rate: float | None,
-    last: datetime.date | None,
-) -> datetime.date | None:
-    if fact is None:
-        return None
-    if fact >= 1:
-        return last or cut
-    if rate and rate > 1e-9:
-        days = round((1 - max(0.0, fact)) / rate * 30.4375)
-        return cut + datetime.timedelta(days=days)
-    return None
+    control: str,
+    detail: str,
+) -> dict[str, Any]:
+    start = min(_as_date(task["plan_start"]) for task in tasks)
+    finish = max(_as_date(task["plan_finish"]) for task in tasks)
+    metrics = _metrics(estimate, works, code, cut)
+    closed = bool(tasks) and all(bool(task.get("baseline_closed")) for task in tasks)
+
+    forecasts = [
+        _as_date(task.get("forecast_finish"))
+        for task in tasks
+        if _as_date(task.get("forecast_finish")) is not None
+    ]
+    forecast = finish if closed else (max(forecasts) if forecasts else finish)
+
+    duration = max(1, (finish - start).days)
+    ratio = metrics["accepted_ratio"]
+    cost_equivalent_date = (
+        start + datetime.timedelta(
+            days=round(duration * min(max(ratio or 0.0, 0.0), 1.0))
+        )
+        if ratio is not None else None
+    )
+    meta = mapping.get(code, {})
+    return {
+        "key": f"rss:{control}:{detail}:{code}",
+        "level": "rss",
+        "code": code,
+        "name": (
+            meta.get("rss_name")
+            or (estimate["by_code"].get(code) or {}).get("article")
+            or code
+        ),
+        "control": control,
+        "detail": detail,
+        "plan_start": start,
+        "plan_finish": finish,
+        "plan_progress": None,
+        "actual_progress": ratio,
+        "actual_equivalent_date": cost_equivalent_date,
+        "accepted": metrics["accepted"],
+        "eac": metrics["eac"],
+        "rate_3m": metrics["act_cost_rate_3m"],
+        "progress_kind": "accepted_cost_ratio",
+        "progress_label": "КС / EAC",
+        "last_act": metrics["last_act"],
+        "forecast_finish": forecast,
+        "delta_days": (forecast - finish).days if forecast else None,
+        "status": "ЗАВЕРШЕНО ПО УТВЕРЖДЕННОМУ ГПР" if closed else "В РАБОТЕ",
+        "schedule_closed": closed,
+        "children": tasks,
+    }
+
+
+def _unique_financial(children: list[dict[str, Any]]) -> tuple[float, float, float | None]:
+    by_code: dict[str, dict[str, Any]] = {}
+    for item in children:
+        code = str(item.get("code") or "")
+        if code and code not in by_code:
+            by_code[code] = item
+    if not by_code:
+        return 0.0, 0.0, None
+    eac = sum(float(item.get("eac") or 0.0) for item in by_code.values())
+    accepted = sum(float(item.get("accepted") or 0.0) for item in by_code.values())
+    return eac, accepted, accepted / eac if eac > 0 else None
 
 
 def _summary(
     children: list[dict[str, Any]],
-    cut: datetime.date,
     name: str,
     key: str,
     level: str,
@@ -249,42 +372,21 @@ def _summary(
     if start is None or finish is None:
         raise ValueError("в baseline отсутствуют даты управленческого блока")
 
-    eac = sum(float(item.get("eac") or 0.0) for item in children)
-    if eac > 0:
-        plan = sum(
-            float(item.get("plan_progress") or 0.0) * float(item.get("eac") or 0.0)
-            for item in children
-        ) / eac
-        accepted = sum(float(item.get("accepted") or 0.0) for item in children)
-        fact = accepted / eac
-        recent = sum(
-            float(item.get("rate_3m") or 0.0) * float(item.get("eac") or 0.0) * 3
-            for item in children
-        )
-        rate = recent / eac / 3
-    else:
-        plan = sum(float(item.get("plan_progress") or 0.0) for item in children) / max(1, len(children))
-        accepted = 0.0
-        fact = None
-        rate = None
-
+    closed = bool(children) and all(bool(item.get("schedule_closed")) for item in children)
     forecasts = [
         _as_date(item.get("forecast_finish"))
         for item in children
         if _as_date(item.get("forecast_finish")) is not None
     ]
-    forecast = max(forecasts) if forecasts else None
-    status = _status(start, finish, cut, plan, fact, rate, forecast)
-    if (
-        any(item.get("status") == "НЕТ ТЕМПА / РИСК" for item in children)
-        and status not in {"ЗАВЕРШЕНО", "ПО ПЛАНУ: НЕ НАЧАТО"}
-    ):
-        status = "НЕТ ТЕМПА / РИСК"
+    forecast = finish if closed else (max(forecasts) if forecasts else finish)
+    eac, accepted, accepted_ratio = _unique_financial(children)
 
     duration = max(1, (finish - start).days)
-    fact_date = (
-        start + datetime.timedelta(days=round(duration * min(max(fact or 0.0, 0.0), 1.0)))
-        if fact is not None else None
+    cost_equivalent_date = (
+        start + datetime.timedelta(
+            days=round(duration * min(max(accepted_ratio or 0.0, 0.0), 1.0))
+        )
+        if accepted_ratio is not None else None
     )
     return {
         "key": key,
@@ -292,15 +394,17 @@ def _summary(
         "name": name,
         "plan_start": start,
         "plan_finish": finish,
-        "plan_progress": plan,
-        "actual_progress": fact,
-        "actual_equivalent_date": fact_date,
+        "plan_progress": None,
+        "actual_progress": accepted_ratio,
+        "actual_equivalent_date": cost_equivalent_date,
         "accepted": accepted,
         "eac": eac,
-        "rate_3m": rate,
+        "progress_kind": "accepted_cost_ratio",
+        "progress_label": "КС / EAC",
         "forecast_finish": forecast,
         "delta_days": (forecast - finish).days if forecast else None,
-        "status": status,
+        "status": "ЗАВЕРШЕНО" if closed else "В РАБОТЕ",
+        "schedule_closed": closed,
         "children": children,
     }
 
@@ -317,9 +421,7 @@ def _management(
     if cut is None:
         raise ValueError("не задана дата среза")
 
-    # The base Monitor serializes its result before returning it, so dates here
-    # may be ISO strings. Normalize once before any duration arithmetic.
-    tasks_by_code: dict[str, list[dict[str, Any]]] = {}
+    grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
     for raw_task in schedule.get("rows") or []:
         task = dict(raw_task)
         start = _as_date(task.get("plan_start"))
@@ -328,73 +430,41 @@ def _management(
             continue
         task["plan_start"] = start
         task["plan_finish"] = finish
-        task["forecast_finish"] = _as_date(task.get("forecast_finish"))
-        task["actual_equivalent_date"] = _as_date(task.get("actual_equivalent_date"))
-        for code in _codes(task.get("code")):
-            tasks_by_code.setdefault(code, []).append(task)
+        task["forecast_finish"] = _as_date(task.get("forecast_finish")) or finish
+        task["level"] = "task"
+        task["schedule_closed"] = bool(task.get("baseline_closed"))
+        task["actual_progress"] = None
+        task["actual_equivalent_date"] = None
+        task["accepted"] = None
+        task["eac"] = None
+        task["progress_kind"] = "wbs_schedule"
+
+        codes = _codes(task.get("code"))
+        for code in codes:
+            control, detail = _schedule_bucket(task, code)
+            grouped.setdefault((control, detail, code), []).append(task)
 
     rss_rows: list[dict[str, Any]] = []
-    for code, tasks in tasks_by_code.items():
-        start = min(task["plan_start"] for task in tasks)
-        finish = max(task["plan_finish"] for task in tasks)
-        metrics = _metrics(estimate, works, code, cut)
-        weights = [
-            max(1, (task["plan_finish"] - task["plan_start"]).days)
-            for task in tasks
-        ]
-        plan = sum(
-            float(task.get("plan_progress") or 0.0) * weight
-            for task, weight in zip(tasks, weights)
-        ) / sum(weights)
-        forecast = _forecast(cut, metrics["progress"], metrics["rate"], metrics["last"])
-        meta = mapping.get(code, {})
-        duration = max(1, (finish - start).days)
-        fact_date = (
-            start + datetime.timedelta(
-                days=round(duration * min(max(metrics["progress"] or 0.0, 0.0), 1.0))
-            )
-            if metrics["progress"] is not None else None
-        )
-        rss_rows.append({
-            "key": f"rss:{code}",
-            "level": "rss",
-            "code": code,
-            "name": (
-                meta.get("rss_name")
-                or (estimate["by_code"].get(code) or {}).get("article")
-                or code
-            ),
-            "control": meta.get("control") or _control(code),
-            "detail": meta.get("detail") or _detail(code),
-            "plan_start": start,
-            "plan_finish": finish,
-            "plan_progress": plan,
-            "actual_progress": metrics["progress"],
-            "actual_equivalent_date": fact_date,
-            "accepted": metrics["accepted"],
-            "eac": metrics["eac"],
-            "rate_3m": metrics["rate"],
-            "forecast_finish": forecast,
-            "delta_days": (forecast - finish).days if forecast else None,
-            "status": _status(
-                start, finish, cut, plan, metrics["progress"], metrics["rate"], forecast
-            ),
-            "children": tasks,
-        })
+    for (control, detail, code), tasks in grouped.items():
+        rss_rows.append(_rss_row(
+            code, tasks, estimate, works, mapping, cut, control, detail
+        ))
+    rss_rows.sort(key=lambda item: (
+        _natural(item["control"]),
+        _natural(item["detail"]),
+        _natural(item["code"]),
+    ))
 
-    rss_rows.sort(key=lambda item: _natural(item["code"]))
-
-    buckets: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    detail_buckets: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for row in rss_rows:
-        buckets.setdefault((row["control"], row["detail"]), []).append(row)
+        detail_buckets.setdefault((row["control"], row["detail"]), []).append(row)
 
     details: list[dict[str, Any]] = []
-    for (control, detail), children in buckets.items():
-        item = _summary(children, cut, detail, f"detail:{control}:{detail}", "detail")
+    for (control, detail), children in detail_buckets.items():
+        item = _summary(children, detail, f"detail:{control}:{detail}", "detail")
         item["control"] = control
         item["sort_code"] = min((child["code"] for child in children), key=_natural)
         details.append(item)
-    details.sort(key=lambda item: _natural(item["sort_code"]))
 
     control_buckets: dict[str, list[dict[str, Any]]] = {}
     for row in details:
@@ -402,18 +472,25 @@ def _management(
 
     controls: list[dict[str, Any]] = []
     for control, children in control_buckets.items():
-        item = _summary(children, cut, control, f"control:{control}", "control")
+        item = _summary(children, control, f"control:{control}", "control")
         item["sort_code"] = min(
-            (child["sort_code"] for child in children),
-            key=_natural,
+            (child["sort_code"] for child in children), key=_natural
         )
         controls.append(item)
-    controls.sort(key=lambda item: _natural(item["sort_code"]))
+
+    order = {
+        "Подготовка": 0,
+        "Организация стройплощадки / ПОС": 1,
+        "Основные объекты": 2,
+        "Наружные сети": 3,
+        "Благоустройство": 4,
+    }
+    controls.sort(key=lambda item: (order.get(item["name"], 99), _natural(item["sort_code"])))
     return controls
 
 
 def _payment_baseline(project: str) -> dict[str, Any]:
-    """Read project/control Plan from fixed ``CF ПЛАН-ФАКТ`` baseline."""
+    """Read Plan from fixed ``CF ПЛАН-ФАКТ`` baseline."""
     from openpyxl import load_workbook
 
     folder = monitor._project_dir(project) / "baseline"
@@ -491,7 +568,7 @@ def _payment_baseline(project: str) -> dict[str, Any]:
 
 
 def _payments(project: str, rss: Path) -> dict[str, Any]:
-    """Payment fact, strictly from the current RSS payment register."""
+    """Payment fact strictly from current RSS payment register."""
     baseline = _payment_baseline(project)
     payments = actuals.read_payments(rss)
     total_fact: dict[str, float] = {}
@@ -505,7 +582,7 @@ def _payments(project: str, rss: Path) -> dict[str, Any]:
         month = date.replace(day=1).isoformat()
         amount = float(row.get("amount") or 0.0)
         code = str(row.get("estimate_code") or "").rstrip(".")
-        article = _control(code) if code else "Не сопоставлено"
+        article = _financial_control(code) if code else "Не сопоставлено"
         total_fact[month] = total_fact.get(month, 0.0) + amount
         article_fact.setdefault(article, {})
         article_fact[article][month] = article_fact[article].get(month, 0.0) + amount
@@ -560,15 +637,17 @@ def _attach_payments(nodes: list[dict[str, Any]], cash: dict[str, Any]) -> None:
     by_code = cash.get("by_code_fact", {})
 
     def visit(node: dict[str, Any]) -> None:
-        if node.get("level") == "control":
-            item = by_article.get(node["name"], {})
+        level = node.get("level")
+        if level == "control":
+            financial_name = node["name"]
+            item = by_article.get(financial_name, {})
             node["payments"] = {
                 "plan": item.get("plan", {}),
                 "fact": item.get("fact", {}),
                 "plan_total": item.get("plan_total"),
                 "fact_total": item.get("fact_total", 0.0),
             }
-        elif node.get("level") == "rss":
+        elif level == "rss":
             fact = by_code.get(node.get("code", ""), {})
             node["payments"] = {
                 "plan": {},
@@ -595,16 +674,21 @@ def _build(
     if rss is None:
         return view
 
+    _sanitize_base_schedule(project, view["schedule"])
+    _seed_rebaselines(project, view["schedule"])
+
     management = _management(project, rss, view["schedule"])
     cash = _payments(project, rss)
     _attach_payments(management, cash)
     view["schedule"]["management"] = monitor._plain(management)
-    view["schedule"]["fact_source"] = "Реестр выполненных работ"
+    view["schedule"]["fact_source"] = "Реестр выполненных работ (КС, стоимостное свидетельство)"
+    view["schedule"]["forecast_method"] = (
+        "утвержденный ГПР/PM + утвержденные rebaseline + зависимости; "
+        "денежный темп актирования календарные даты не двигает"
+    )
     view["payments"] = monitor._plain(cash)
 
     works = actuals.read_completed_works(rss)
-    # The headline physical number must use the same source as the Gantt, not
-    # the aggregate "completed" cell from the estimate sheet.
     view["money"]["accepted"] = float(works.get("construction_dated") or 0.0)
     view["money"]["payment_fact"] = float(cash.get("fact_total") or 0.0)
     return view
@@ -625,14 +709,13 @@ def _gantt(project: str, cut: Any, upto: str = "") -> dict[str, Any]:
             "schedule": "fixed-baseline",
             "estimate": view["source"]["estimate"],
             "with_baseline": True,
-            "fact": "Реестр выполненных работ",
+            "fact": "Реестр выполненных работ (КС / EAC)",
             "payments": "Реестр платежей",
         },
     }
 
 
 def install() -> None:
-    """Install the manager view once while preserving the base Monitor API."""
     global _INSTALLED, _ORIGINAL_BUILD, _ORIGINAL_GANTT
     if _INSTALLED:
         return

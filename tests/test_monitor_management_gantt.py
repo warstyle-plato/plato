@@ -12,16 +12,19 @@ def test_rss_codes_use_natural_numeric_order():
     ]
 
 
-def test_management_groups_follow_developaid_control_structure():
-    assert manager._control("2.1") == "Подготовка"
-    assert manager._control("2.2.1.4") == "Основные объекты"
-    assert manager._detail("2.2.1.4") == "Основное строительство — подземная часть"
-    assert manager._detail("2.2.3.4") == "Основное строительство — надземная часть + ВИС"
-    assert manager._control("2.4.3") == "Наружные сети"
-    assert manager._control("2.5") == "Благоустройство"
+def test_rss_21_is_split_by_wbs_meaning_not_used_as_one_schedule_phase():
+    prep = {"wbs": "1.16.1.2.4", "name": "Организация строительной площадки"}
+    pos = {"wbs": "1.16.1.3.1", "name": "Работы, предусмотренные ПОС"}
+
+    assert manager._schedule_bucket(prep, "2.1") == (
+        "Подготовка", "Подготовка территории"
+    )
+    assert manager._schedule_bucket(pos, "2.1") == (
+        "Организация стройплощадки / ПОС", "ПОС и временная инфраструктура"
+    )
 
 
-def test_physical_progress_uses_construction_acts_only():
+def test_completed_works_are_cost_evidence_not_physical_wbs_percent():
     cut = datetime.date(2026, 8, 1)
     estimate = {
         "rows": [{"code": "2.2.1.4", "parent": ""}],
@@ -30,10 +33,8 @@ def test_physical_progress_uses_construction_acts_only():
     works = {"rows": [
         {"code": "2.2.1.4", "construction": True,
          "date": datetime.date(2026, 7, 15), "amount": 40.0},
-        # Money-like/non-construction rows must never become physical Gantt fact.
         {"code": "2.2.1.4", "construction": False,
          "date": datetime.date(2026, 7, 20), "amount": 50.0},
-        # Future act is outside the reporting cut.
         {"code": "2.2.1.4", "construction": True,
          "date": datetime.date(2026, 8, 15), "amount": 30.0},
     ]}
@@ -41,28 +42,51 @@ def test_physical_progress_uses_construction_acts_only():
     result = manager._metrics(estimate, works, "2.2.1.4", cut)
 
     assert result["accepted"] == pytest.approx(40.0)
-    assert result["progress"] == pytest.approx(0.4)
+    assert result["accepted_ratio"] == pytest.approx(0.4)
+    assert "progress" not in result
 
 
-def test_summary_aggregates_unique_rss_rows_not_wbs_duplicates():
-    cut = datetime.date(2026, 8, 1)
-    children = [
-        {"plan_start": datetime.date(2026, 1, 1),
-         "plan_finish": datetime.date(2026, 10, 1),
-         "plan_progress": 0.7, "actual_progress": 0.5,
-         "accepted": 50.0, "eac": 100.0, "rate_3m": 0.1,
-         "forecast_finish": datetime.date(2026, 9, 1), "status": "В СРОК"},
-        {"plan_start": datetime.date(2026, 3, 1),
-         "plan_finish": datetime.date(2026, 12, 1),
-         "plan_progress": 0.4, "actual_progress": 0.2,
-         "accepted": 20.0, "eac": 100.0, "rate_3m": 0.05,
-         "forecast_finish": datetime.date(2027, 1, 1), "status": "ОТСТАВАНИЕ"},
-    ]
+def test_money_pace_can_never_push_a_wbs_finish_to_2031(monkeypatch):
+    monkeypatch.setattr(manager, "_baseline_status", lambda _: {
+        "100": {"closed": False, "status": "В работе"}
+    })
+    schedule = {"rows": [{
+        "id": "100",
+        "wbs": "1.16.2.5",
+        "plan_finish": "2027-03-31",
+        "forecast_finish": "2031-06-01",
+        "actual_progress": 0.829,
+        "rate_3m": 0.002,
+        "delta_days": 1523,
+    }]}
 
-    result = manager._summary(children, cut, "Основные объекты",
-                              "control:Основные объекты", "control")
+    manager._sanitize_base_schedule("demo", schedule)
+    row = schedule["rows"][0]
 
-    assert result["eac"] == pytest.approx(200.0)
-    assert result["accepted"] == pytest.approx(70.0)
-    assert result["actual_progress"] == pytest.approx(0.35)
-    assert result["children"] == children
+    assert row["forecast_finish"] == "2027-03-31"
+    assert row["delta_days"] == 0
+    assert row["actual_progress"] is None
+    assert row["rss_accepted_ratio"] == pytest.approx(0.829)
+    assert row["progress_kind"] == "accepted_cost_ratio"
+
+
+def test_closed_wbs_stays_closed_even_if_cost_ratio_is_below_one(monkeypatch):
+    monkeypatch.setattr(manager, "_baseline_status", lambda _: {
+        "914": {"closed": True, "status": "Завершено"}
+    })
+    schedule = {"rows": [{
+        "id": "914",
+        "wbs": "1.16.1.2.4",
+        "plan_finish": "2025-06-09",
+        "forecast_finish": "2031-01-01",
+        "actual_progress": 0.829,
+        "rate_3m": 0.0,
+        "delta_days": 2000,
+    }]}
+
+    manager._sanitize_base_schedule("demo", schedule)
+    row = schedule["rows"][0]
+
+    assert row["baseline_closed"] is True
+    assert row["forecast_finish"] == "2025-06-09"
+    assert row["status"] == "ЗАВЕРШЕНО ПО УТВЕРЖДЕННОМУ ГПР"
