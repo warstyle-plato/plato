@@ -57,7 +57,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.19.37"
+VERSION = "0.19.38"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -18009,7 +18009,13 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
 
     core_product("apartments", n(apartment, "saleable"), n(x, "apartment_price_th"))
     core_product("ground_commercial", n(commercial, "saleable"), n(x, "commercial_price_th"))
-    core_product("underground_parking", n(underground, "units"), n(x, "parking_price_th"))
+    # Гостевые места не продаются: они по нормативу обслуживают посетителей и
+    # остаются общим имуществом. Модель продавала весь паркинг целиком —
+    # на 369 местах это 34 несуществующие продажи (владелец, 21.08.2026).
+    # В книгу это правило было записано давно («Гостевые парковки» обнуляются
+    # в ТЭП!I33), а движок его не исполнял: обещание без исполнения.
+    core_product("underground_parking", underground_saleable_spaces(underground),
+                 n(x, "parking_price_th"))
     core_product("storage", n(storage, "units"), n(x, "storage_price_th"))
 
     standalone_capex = {}
@@ -18473,6 +18479,37 @@ def pf_special_rate_at(coverage: float, steps: list[tuple[float, float]],
     return rate
 
 
+def underground_guest_spaces(row: dict[str, Any]) -> int:
+    """Гостевые места подземного паркинга — те, что не продаются.
+
+    Точное число приходит с импортом ГлавАПУ и хранится рядом с местами. Когда
+    его нет (места введены руками), оно выводится из самого норматива: гостевые
+    — десятая часть постоянных, значит из S = P + ceil(P/10) следует P ≈ S/1,1,
+    и гостевых остаётся S/11. На 369 местах это 34 — ровно столько, сколько
+    насчитал владелец.
+    """
+    known = row.get("guest_units")
+    if known not in (None, ""):
+        try:
+            return max(0, int(round(float(known))))
+        except (TypeError, ValueError):
+            pass
+    try:
+        total = float(row.get("units") or 0)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, int(round(total / 11.0))) if total > 0 else 0
+
+
+def underground_saleable_spaces(row: dict[str, Any]) -> float:
+    """Продаваемые машино-места: всё, кроме гостевых."""
+    try:
+        total = float(row.get("units") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    return max(0.0, total - underground_guest_spaces(row))
+
+
 def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) -> dict:
     project_start = op["project_start"]
     permit = op["permit"]
@@ -18522,6 +18559,10 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
         bridge_fee = calculated_bridge_limit * n(x, "reservation_fee_pct") / 100
 
         pf_draw_total = pf_repayment_total = 0.0
+        # Касса проекта: выручка, оставшаяся после погашения долга. Она несёт
+        # расходы следующих месяцев вперёд ПФ — иначе модель раздаёт деньги
+        # собственнику, пока обязательства ещё живы.
+        cash_reserve = 0.0
         pf_interest_total = pf_cap_total = pf_limit_fee_total = 0.0
         pf_reservation_fee = (pf_limit or 0.0) * n(x, "reservation_fee_pct") / 100 if pf_limit else 0.0
         transferred_bridge_interest = 0.0
@@ -18551,6 +18592,7 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
             own_draw = 0.0
             pf_draw = pf_repayment = pf_interest = pf_cap = limit_fee = 0.0
             interest_payment = 0.0
+            reserve_before = cash_reserve
             escrow_release = 0.0
 
             if month < rve:
@@ -18592,7 +18634,20 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
 
             if month >= permit:
                 # PF finances all project costs; escrow is not available before RVE.
-                pf_draw += max(project_costs, 0.0)
+                # Но сначала тратится СОБСТВЕННАЯ касса проекта. Раньше её не
+                # было вовсе: выручка сверх остатка долга считалась свободной в
+                # тот же месяц, а расход следующего месяца снова выбирался из
+                # ПФ. На проекте с рассрочкой ВРИ дольше продаж это давало
+                # дефолт при живой прибыли: продажи кончались в декабре 2030,
+                # платежи ВРИ шли до июня 2031, выбирались из ПФ и гасить их
+                # было уже нечем — модель показывала 2,45 млрд прибыли и
+                # непогашенный долг 140 млн ₽ одновременно (владелец,
+                # 21.08.2026). Деньги нельзя раздать собственнику, пока живы
+                # известные будущие обязательства.
+                need = max(project_costs, 0.0)
+                from_reserve = min(cash_reserve, need)
+                cash_reserve -= from_reserve
+                pf_draw += need - from_reserve
                 pf_balance += pf_draw
                 pf_draw_total += pf_draw
 
@@ -18639,10 +18694,13 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
                 elif month > rve:
                     available_for_repayment = sales
 
-                if available_for_repayment > 0 and pf_balance > 0:
+                if available_for_repayment > 0:
                     pf_repayment = min(available_for_repayment, pf_balance)
                     pf_balance -= pf_repayment
                     pf_repayment_total += pf_repayment
+                    # Остаток после погашения — касса проекта, а не деньги
+                    # собственника: ими оплачиваются расходы следующих месяцев.
+                    cash_reserve += available_for_repayment - pf_repayment
 
                 # Current Excel pays accumulated interest at RVE and current interest thereafter.
                 if month >= rve and pf_interest_payable > 0:
@@ -18670,6 +18728,8 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
                 "bridge_capitalization": bridge_cap,
                 "pf_draw": pf_draw,
                 "pf_repayment": pf_repayment,
+                "cash_reserve": cash_reserve,
+                "reserve_used": max(0.0, reserve_before - cash_reserve),
                 "pf_balance": pf_balance,
                 "escrow": escrow,
                 "escrow_release": escrow_release,
@@ -19014,6 +19074,9 @@ def calculate(req: CalcRequest) -> dict:
         underground_spaces = permanent + guest
         if underground_spaces > 0 and "underground_parking" in t:
             t["underground_parking"]["units"] = underground_spaces
+            # Точное число гостевых известно из выгрузки — выводить его из
+            # доли незачем, а потерять значит продать их.
+            t["underground_parking"]["guest_units"] = guest
             t["underground_parking"]["gns"] = underground_spaces * area_per_space
             t["underground_parking"]["total_area"] = underground_spaces * area_per_space
             t["underground_parking"]["useful"] = 0.0
@@ -19306,7 +19369,9 @@ def calculate(req: CalcRequest) -> dict:
             "start": op["sales_start"], "end_ref": op["rve"], "residual": int(n(x, "residual_sales_months", 6))
         },
         "underground_parking": {
-            "label": "Подземный паркинг", "quantity": n(t.get("underground_parking", {}), "units"),
+            # Продаётся не весь паркинг: гостевые места остаются общими.
+            "label": "Подземный паркинг",
+            "quantity": underground_saleable_spaces(t.get("underground_parking", {})),
             "unit": "шт.", "start_price": n(x, "parking_price_th"), "share": n(x, "share_before_rve_pct", 85)/100,
             "start": op["sales_start"], "end_ref": op["rve"], "residual": int(n(x, "residual_sales_months", 6))
         },
