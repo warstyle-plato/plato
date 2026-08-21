@@ -109,6 +109,15 @@ def render(inputs: dict, tail: str = "console.log(JSON.stringify(groups()));") -
         PAGE[PAGE.index("const GROUP_PEEK={"):PAGE.index("function groupPeek(")],
         page_function("groupPeek"),
         page_function("refreshGroupPeeks"),
+        # Лестница ставки ПФ рисуется своим виджетом прямо в форме, поэтому
+        # `renderInputs` без него не работает вовсе.
+        page_function("parsePfStepsInput"),
+        page_function("pfEdgeText"),
+        page_function("savePfSteps"),
+        page_function("pfStepEdit"),
+        page_function("pfStepRemove"),
+        page_function("pfStepAdd"),
+        page_function("renderPfStepsEditor"),
         page_function("renderInputs"),
         DOM,
         f"const inputs=Object.assign(structuredClone(INPUT_DEFAULT),{json.dumps(inputs)});",

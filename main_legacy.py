@@ -18582,10 +18582,6 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
         bridge_fee = calculated_bridge_limit * n(x, "reservation_fee_pct") / 100
 
         pf_draw_total = pf_repayment_total = 0.0
-        # Касса проекта: выручка, оставшаяся после погашения долга. Она несёт
-        # расходы следующих месяцев вперёд ПФ — иначе модель раздаёт деньги
-        # собственнику, пока обязательства ещё живы.
-        cash_reserve = 0.0
         pf_interest_total = pf_cap_total = pf_limit_fee_total = 0.0
         pf_reservation_fee = (pf_limit or 0.0) * n(x, "reservation_fee_pct") / 100 if pf_limit else 0.0
         transferred_bridge_interest = 0.0
@@ -18615,7 +18611,6 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
             own_draw = 0.0
             pf_draw = pf_repayment = pf_interest = pf_cap = limit_fee = 0.0
             interest_payment = 0.0
-            reserve_before = cash_reserve
             escrow_release = 0.0
 
             if month < rve:
@@ -18657,20 +18652,7 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
 
             if month >= permit:
                 # PF finances all project costs; escrow is not available before RVE.
-                # Но сначала тратится СОБСТВЕННАЯ касса проекта. Раньше её не
-                # было вовсе: выручка сверх остатка долга считалась свободной в
-                # тот же месяц, а расход следующего месяца снова выбирался из
-                # ПФ. На проекте с рассрочкой ВРИ дольше продаж это давало
-                # дефолт при живой прибыли: продажи кончались в декабре 2030,
-                # платежи ВРИ шли до июня 2031, выбирались из ПФ и гасить их
-                # было уже нечем — модель показывала 2,45 млрд прибыли и
-                # непогашенный долг 140 млн ₽ одновременно (владелец,
-                # 21.08.2026). Деньги нельзя раздать собственнику, пока живы
-                # известные будущие обязательства.
-                need = max(project_costs, 0.0)
-                from_reserve = min(cash_reserve, need)
-                cash_reserve -= from_reserve
-                pf_draw += need - from_reserve
+                pf_draw += max(project_costs, 0.0)
                 pf_balance += pf_draw
                 pf_draw_total += pf_draw
 
@@ -18717,13 +18699,10 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
                 elif month > rve:
                     available_for_repayment = sales
 
-                if available_for_repayment > 0:
+                if available_for_repayment > 0 and pf_balance > 0:
                     pf_repayment = min(available_for_repayment, pf_balance)
                     pf_balance -= pf_repayment
                     pf_repayment_total += pf_repayment
-                    # Остаток после погашения — касса проекта, а не деньги
-                    # собственника: ими оплачиваются расходы следующих месяцев.
-                    cash_reserve += available_for_repayment - pf_repayment
 
                 # Current Excel pays accumulated interest at RVE and current interest thereafter.
                 if month >= rve and pf_interest_payable > 0:
@@ -18751,8 +18730,6 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
                 "bridge_capitalization": bridge_cap,
                 "pf_draw": pf_draw,
                 "pf_repayment": pf_repayment,
-                "cash_reserve": cash_reserve,
-                "reserve_used": max(0.0, reserve_before - cash_reserve),
                 "pf_balance": pf_balance,
                 "escrow": escrow,
                 "escrow_release": escrow_release,
