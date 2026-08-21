@@ -6,7 +6,11 @@ from auction_search.models import LotKind
 
 
 _KRT_MARKERS = (
-    "комплексн", "крт", "договор о комплексном развитии", "право на заключение договора",
+    "комплексное развитие территории",
+    "комплексного развития территории",
+    "договор о комплексном развитии территории",
+    "аукцион (комплексное развитие территории)",
+    "крт",
 )
 _LEASE_MARKERS = ("аренда", "право аренды", "договор аренды")
 _PROPERTY_MARKERS = ("имущественный комплекс", "зик", "здание и земельный участок")
@@ -16,7 +20,8 @@ _UNFINISHED_MARKERS = ("объект незавершенного строите
 def classify_lot(title: str, procedure_text: str = "", document_titles: list[str] | None = None) -> LotKind:
     """Classify the legal/economic nature of a lot before any financial modeling.
 
-    This intentionally runs before cadastral enrichment. KRT terms override generic land wording.
+    This intentionally runs before cadastral enrichment. KRT requires an explicit
+    KRT marker; a generic right to conclude a lease/sale agreement is not KRT.
     """
     haystack = " ".join([title or "", procedure_text or "", " ".join(document_titles or [])]).lower()
     compact = re.sub(r"\s+", " ", haystack)
