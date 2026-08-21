@@ -40,6 +40,26 @@ class Provenance:
 
 
 @dataclass
+class KrtProgramItem:
+    """One item of the official KRT development program.
+
+    This describes what the KRT documents allow/require to be built. It is not
+    automatically a cost: commercial area can generate revenue, while social or
+    infrastructure items can become investor obligations depending on the contract.
+    """
+
+    category: str
+    title: str
+    area_sqm: Optional[float] = None
+    quantity: Optional[float] = None
+    unit: Optional[str] = None
+    disposition: Optional[str] = None  # commercial / city_transfer / infrastructure / unknown
+    source_text: Optional[str] = None
+    provenance: Optional[Provenance] = None
+    confidence: float = 1.0
+
+
+@dataclass
 class KrtObligation:
     category: str
     title: str
@@ -84,6 +104,7 @@ class AuctionLot:
     auction_date: Optional[str] = None
     status: Optional[str] = None
     documents: list[AuctionDocument] = field(default_factory=list)
+    krt_program: list[KrtProgramItem] = field(default_factory=list)
     obligations: list[KrtObligation] = field(default_factory=list)
     provenance: dict[str, Provenance] = field(default_factory=dict)
     raw: dict[str, Any] = field(default_factory=dict, repr=False)
