@@ -1,3 +1,5 @@
 from .base import AuctionPlatformAdapter
+from .lot_online import LotOnlineAdapter
+from .roseltorg import RoseltorgAdapter
 
-__all__ = ["AuctionPlatformAdapter"]
+__all__ = ["AuctionPlatformAdapter", "LotOnlineAdapter", "RoseltorgAdapter"]
