@@ -11,6 +11,17 @@ from auction_search.models import LotKind
 _KRT_RE = re.compile(r"(?:\bкрт\b|комплексн\w*\s+развити\w*\s+территор\w*)", re.I)
 _LEASE_RE = re.compile(r"аренд\w*", re.I)
 _PROPERTY_RE = re.compile(r"(?:имущественн\w*\s+комплекс\w*|\bзик\b|здани\w*\s+и\s+земельн\w*\s+участ\w*)", re.I)
+_EQUITY_RE = re.compile(
+    r"(?:100\s*(?:\([^)]*\)\s*)?%\s*(?:дол\w*|уставн\w*\s+капитал\w*)|"
+    r"дол\w*\s+(?:в\s+размере\s+)?100\s*(?:\([^)]*\)\s*)?%|"
+    r"дол\w*\s+(?:в\s+)?уставн\w*\s+капитал\w*)",
+    re.I,
+)
+_DEVELOPMENT_ASSET_RE = re.compile(
+    r"(?:девелоп\w*|застрой\w*|жил\w*\s+комплекс\w*|проект\w*\s+(?:строительств\w*|комплекс\w*)|"
+    r"гпзу|рнс|земельн\w*\s+участ\w*|недвижим\w*|здани\w*)",
+    re.I,
+)
 _UNFINISHED_RE = re.compile(r"(?:объект\w*\s+незавершенн\w*\s+строительств\w*|незавершенн\w*)", re.I)
 _LAND_RE = re.compile(r"(?:земельн\w*|участ\w*)", re.I)
 
@@ -28,7 +39,7 @@ def classify_lot(title: str, procedure_text: str = "", document_titles: list[str
         return LotKind.KRT
     if _UNFINISHED_RE.search(compact):
         return LotKind.UNFINISHED
-    if _PROPERTY_RE.search(compact):
+    if _PROPERTY_RE.search(compact) or (_EQUITY_RE.search(compact) and _DEVELOPMENT_ASSET_RE.search(compact)):
         return LotKind.PROPERTY_COMPLEX
     if _LEASE_RE.search(compact):
         return LotKind.LAND_LEASE

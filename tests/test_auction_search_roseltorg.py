@@ -1,3 +1,4 @@
+from datetime import date
 from urllib.parse import parse_qs, urlparse
 
 from auction_search.adapters.roseltorg import RoseltorgAdapter
@@ -97,3 +98,38 @@ def test_krt_public_card_shape_classifies_from_method_and_title():
     from auction_search.classifier import classify_lot
 
     assert classify_lot(title, method, []) == LotKind.KRT
+
+
+def test_roseltorg_publication_date_supports_two_digit_year():
+    published = RoseltorgAdapter._published_at("Публикация извещения | 30.04.25 23:59:00 (МСК)")
+    assert published is not None
+    assert published.date() == date(2025, 4, 30)
+    assert published.utcoffset().total_seconds() == 3 * 60 * 60
+
+
+def test_roseltorg_history_requires_explicit_official_cards(monkeypatch):
+    adapter = RoseltorgAdapter()
+    calls = []
+
+    def fetch(url):
+        calls.append(url)
+        return AuctionLot(
+            source=AuctionSource(SourceKind.ROSELTORG, url, "known/1", "now"),
+            lot_kind=LotKind.KRT,
+            title="КРТ, город Москва",
+            raw={
+                "lot_region_code": "77",
+                "page_text": "Публикация извещения | 15.05.26 12:00:00 (МСК)",
+            },
+        )
+
+    monkeypatch.setattr(adapter, "fetch_lot", fetch)
+    assert adapter.discover_moscow_history(date(2026, 2, 21), date(2026, 8, 21)) == []
+    lots = adapter.discover_moscow_history(
+        date(2026, 2, 21),
+        date(2026, 8, 21),
+        candidate_urls=("https://www.roseltorg.ru/procedure/known", "https://example.com/procedure/no"),
+    )
+    assert len(lots) == 1
+    assert calls == ["https://www.roseltorg.ru/procedure/known"]
+    assert lots[0].raw["discovery_mode"] == "history"
