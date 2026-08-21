@@ -19,10 +19,22 @@ Future adapters may be added only when the platform itself is the official ETP f
 3. `classify_lot()` determines the legal structure **before** financial modeling.
 4. Development-noise filter removes obvious IJS/small non-development land.
 5. Official attached documents are downloaded and typed.
-6. For KRT, decision / notice / draft agreement / annexes are parsed into `KrtObligation` records with exact provenance.
+6. For KRT, decision / notice / draft agreement / annexes are parsed into a separate development program and investor obligations with exact provenance.
 7. `build_developaid_seed()` creates a conservative project seed.
 8. Existing DevelopAid enrichment may then add cadastral/planning restrictions, market pricing and cost norms.
 9. Existing model calculates economics and max bid.
+
+## Public-first authentication policy
+
+The collector must never require a participant account merely to discover or read a public lot.
+
+- Lot cards and public attachments are requested without credentials first.
+- HTTP 401/403 or an official redirect/login page is recorded as `auth_required`; it is **not** treated as a missing document or an empty set of KRT obligations.
+- If a service account is later required, its authenticated session is supplied only through runtime secrets. Current supported secret boundaries are `AUCTION_ROSELTORG_COOKIE` and `AUCTION_LOTONLINE_COOKIE`.
+- Cookies/passwords/tokens are never stored in `AuctionLot`, provenance, logs, fixtures, GitHub, or exported DevelopAid reports.
+- The collector does not automate CAPTCHA/2FA bypass. If a platform requires an interactive login, the approved service-account session is created outside the parser and injected as a secret.
+
+This lets us add a dedicated DevelopAid account later without changing the normalized auction model or KRT parser.
 
 ## KRT source-of-truth rule
 
@@ -63,3 +75,7 @@ Canonical identity is primarily cadastral-number based. Do **not** assume Moscow
 - Alternative ordinary-land scenario: calculate VRI-change payment only if DevelopAid explicitly models a post-acquisition VRI change.
 - KRT: price of the right to conclude the KRT agreement, VRI payment (if legally applicable), lease/acquisition payments and investor obligations are separate model lines.
 - Physical KRT obligations are priced by DevelopAid cost norms; the obligation itself must come from the official documents.
+
+## Current rollout boundary
+
+Direct ingestion of official RAD/Lot-online and Roseltorg lot URLs is implemented. Automatic enumeration of all current Moscow lots remains disabled until each platform's public search/filter request contract is pinned in fixtures. Discovery must use the public catalogue, not a participant cabinet.
