@@ -13,6 +13,7 @@ from auction_search.developaid_mapper import build_developaid_seed
 from auction_search.documents import DocumentExtractionError
 from auction_search.krt_pipeline import enrich_krt_from_official_documents
 from auction_search.models import LotKind
+from auction_search.preset_mapper import build_project_preset
 from auction_search.service import AuctionSearchService
 from auction_search.ui import auctions_page
 
@@ -138,9 +139,16 @@ def install(app: FastAPI) -> None:
         normalized = lot.to_dict()
         if not req.include_raw:
             normalized.pop("raw", None)
+        project_preset = build_project_preset(lot)
         return {
             "lot": normalized,
             "developaid_seed": build_developaid_seed(lot),
+            "project_preset": project_preset,
+            "project_preset_import": {
+                "endpoint": "/api/project-presets/import",
+                "mode": "preview_then_apply",
+                "filled_inputs": project_preset.get("auction_import", {}).get("filled_inputs", {}),
+            },
             "screening": {
                 "legal_structure": lot.lot_kind.value,
                 "requires_krt_terms": lot.lot_kind == LotKind.KRT,
@@ -153,7 +161,7 @@ def install(app: FastAPI) -> None:
                 "ready_for_financial_model": (
                     bool(lot.krt_program or lot.obligations) and not lot.raw.get("krt_document_warnings")
                     if lot.lot_kind == LotKind.KRT
-                    else bool(lot.cadastral_numbers and lot.start_price_rub is not None)
+                    else bool(lot.cadastral_numbers and (lot.current_price_rub is not None or lot.start_price_rub is not None))
                 ),
             },
         }
