@@ -14,9 +14,10 @@ PROFSOYUZNAYA_TEP = {
     "underground_gns_sqm": 12915,
 }
 
+# Full project area, not the 7,711 m² remaining-sales plan from the 2026 control model.
 GRODNENSKAYA_TEP = {
     "gba_sqm": 22032.9,
-    "sellable_sqm": 7711.317283741423,
+    "sellable_sqm": 13710,
 }
 
 
@@ -87,17 +88,17 @@ def test_same_market_sources_normalize_differently_for_grodnenskaya_and_profsoyu
     prof_design = prof_rows["design"]
     grod_design = grod_rows["design"]
     assert prof_design["recommended_rub_m2"] == pytest.approx(4442.34, abs=0.02)
-    assert grod_design["recommended_rub_m2"] == pytest.approx(2974.92, abs=0.02)
-    assert prof_design["recommended_rub_m2"] > grod_design["recommended_rub_m2"]
+    assert grod_design["recommended_rub_m2"] == pytest.approx(5289.14, abs=0.02)
+    assert prof_design["recommended_rub_m2"] < grod_design["recommended_rub_m2"]
 
     # Where both the internal project observation and CORE.XP are comparable,
     # the result is a real weighted consensus, not a copied source value.
     assert prof_rows["preparation"]["recommended_rub_m2"] == pytest.approx(3972.76, abs=0.03)
-    assert grod_rows["preparation"]["recommended_rub_m2"] == pytest.approx(3355.15, abs=0.03)
+    assert grod_rows["preparation"]["recommended_rub_m2"] == pytest.approx(4329.17, abs=0.03)
     assert prof_rows["external_utilities"]["recommended_rub_m2"] == pytest.approx(7242.69, abs=0.03)
-    assert grod_rows["external_utilities"]["recommended_rub_m2"] == pytest.approx(6919.18, abs=0.03)
+    assert grod_rows["external_utilities"]["recommended_rub_m2"] == pytest.approx(7429.38, abs=0.03)
     assert prof_rows["landscaping"]["recommended_rub_m2"] == pytest.approx(5948.00, abs=0.03)
-    assert grod_rows["landscaping"]["recommended_rub_m2"] == pytest.approx(5683.31, abs=0.03)
+    assert grod_rows["landscaping"]["recommended_rub_m2"] == pytest.approx(6100.75, abs=0.03)
 
 
 def test_core_class_slices_from_one_study_get_one_vote():
@@ -193,7 +194,7 @@ def test_recommendation_api_and_page_expose_audit_chain_for_both_project_shapes(
             "region": "Москва",
             "class": "business",
             "gba_sqm": 22032.9,
-            "sellable_sqm": 7711.317283741423,
+            "sellable_sqm": 13710,
         },
     ]
 
