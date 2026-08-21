@@ -93,11 +93,23 @@ def test_the_case_is_the_one_that_used_to_hide_the_gap(defaulting_case):
 
 
 def test_the_book_and_the_engine_agree_on_the_cost_of_financing(defaulting_case):
-    """Допуск — тот же полпроцента, что у паритетного блока ПРОВЕРОК."""
+    """Допуск — процент, и остаток объяснён.
+
+    Движок с 21.08.2026 резервирует деньги под будущие платежи ВРИ: пока
+    обязательство живо, касса не раздаётся собственнику и долг гасится позже.
+    Книга этого не умеет — там waterfall собран формулами, и резерва в них нет.
+    Отсюда устойчивая разница около 0,7% по стоимости финансирования: движок
+    платит чуть больше процентов. Разница видна в блоке «ПАРИТЕТ С ДВИЖКОМ»
+    самой книги, а не спрятана, и стоит в открытых задачах — учить книгу
+    резерву надо отдельной работой, это не подгонка допуска.
+    """
     result, evaluator = defaulting_case
     engine = float(result["summary"]["financing_cost"]) / 1e6
     book = float(evaluator.cell("CF_1", "B74") or 0)
-    assert book == pytest.approx(engine, rel=0.005)
+    assert book == pytest.approx(engine, rel=0.01)
+    # Книга обязана быть ДЕШЕВЛЕ: у неё нет резерва, значит долг гасится раньше.
+    # Дороже — это уже другая ошибка, и допуском её прикрывать нельзя.
+    assert book <= engine, "книга дороже движка — резервом это не объясняется"
 
 
 def test_the_interest_stops_where_the_model_ends(defaulting_case):

@@ -13852,8 +13852,13 @@ def build_project_workbook(
             label="прод. квартир")
         put(f"AA{row}", number=num_row(crow.get("ground_commercial"), "saleable"),
             label="прод. коммерции")
-        put(f"AB{row}", number=num_row(crow.get("underground_parking"), "units"),
-            label="паркинг, шт.")
+        # Продаваемые места, а не все построенные: гостевые строятся, но не
+        # продаются. Ячейка уходит в объём продаж (Продажи!B20 ← Вводные!N88),
+        # поэтому построенное число завышало выручку книги ровно на стоимость
+        # гостевых мест — и паритет с движком ловил это как расхождение EBITDA.
+        put(f"AB{row}", number=underground_saleable_spaces(
+                crow.get("underground_parking") or {}),
+            label="паркинг продаваемый, шт.")
         put(f"AC{row}", number=num_row(crow.get("storage"), "units"), label="кладовые, шт.")
         put(f"AE{row}", number=0.0, label="инфляция цены")
         put(f"AF{row}", number=0.0, label="инфляция затрат")
@@ -15538,8 +15543,14 @@ def build_plato_model_v2(
         ws_tep.cell(row=line, column=1, value=item.get("label"))
         for column, key in enumerate(
                 ("gns", "total_area", "useful", "saleable", "transfer", "units"), start=2):
+            # «Единиц» книга умножает на цену, значит это ПРОДАВАЕМОЕ количество:
+            # гостевые машино-места строятся, но не продаются. Пока сюда шло
+            # построенное число, книга считала выручку выше расчёта — и ровно на
+            # стоимость гостевых мест.
+            source = "saleable_units" if key == "units" else key
             ws_tep.cell(row=line, column=column,
-                        value=round(float(item.get(key) or 0.0), 6)).number_format = area
+                        value=round(float(item.get(source, item.get(key)) or 0.0), 6)
+                        ).number_format = area
     total_line = 5 + len(tep_rows)
     ws_tep.cell(row=total_line, column=1, value="ИТОГО").font = styles["bold"]
     for column in range(2, 8):
@@ -19109,6 +19120,11 @@ def calculate(req: CalcRequest) -> dict:
             "saleable": n(row, "saleable"),
             "transfer": n(row, "transfer"),
             "units": n(row, "units"),
+            # Построено и продаётся — разные числа: гостевые места строятся, но
+            # не продаются. Книга берёт в «Единиц» продаваемое количество, иначе
+            # её выручка окажется выше расчёта на стоимость гостевых мест.
+            "saleable_units": (underground_saleable_spaces(row)
+                               if key == "underground_parking" else n(row, "units")),
         })
 
     tep_total = {

@@ -109,13 +109,22 @@ def test_the_places_stay_whole(project):
 
 
 def test_the_consolidated_report_shows_the_project_total(project):
-    """Свод — это проект, а не сумма трёх проектов."""
+    """Свод — это проект, а не сумма трёх проектов.
+
+    В продуктах отчёта стоит ПРОДАВАЕМОЕ количество: гостевые места строятся,
+    но не продаются (владелец, 21.08.2026). Проверяется по-прежнему то же —
+    свод равен участку, а не утроен.
+    """
     inputs, tep = project
+    saleable = float(core.underground_saleable_spaces(tep["underground_parking"]))
+    assert 0 < saleable < PARKING_SPACES, "гостевые обязаны отниматься"
     bundle = core.calculate_phased(core.PhasedCalcRequest(
         inputs=inputs, tep=tep, rates=[], phasing=phasing(3)))
     parking = next(item for item in bundle["consolidated"]["report"]["products"]
                    if item["key"] == "underground_parking")
-    assert parking["quantity"] == pytest.approx(PARKING_SPACES)
+    # Место — штука, и каждая очередь округляет свою долю вверх: на трёх
+    # очередях свод может разойтись с участком на единицу. Утроение — нет.
+    assert parking["quantity"] == pytest.approx(saleable, abs=1.0)
 
 
 # --- то же самое для всех остальных строк ----------------------------------------

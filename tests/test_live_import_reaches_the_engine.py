@@ -134,15 +134,23 @@ def test_the_page_and_the_engine_see_one_parking(mytishchi):
 
 @pytest.mark.parametrize("count", [1, 2, 3, 4])
 def test_the_queues_keep_the_imported_parking(mytishchi, count):
-    """Главная проверка: свод очередей равен паркингу участка."""
+    """Главная проверка: свод очередей равен паркингу участка.
+
+    Сравнивать с полным числом мест больше нельзя: гостевые строятся, но не
+    продаются (владелец, 21.08.2026), а в продуктах отчёта стоит продаваемое
+    количество. Проверка при этом та же — очереди делят паркинг участка, а не
+    множат его.
+    """
     inputs, tep = mytishchi["inputs"], mytishchi["tep"]
     master = float(tep["underground_parking"]["units"])
     assert master > 0, "в файле нет подземного паркинга — тест проверял бы ноль"
+    saleable = float(core.underground_saleable_spaces(tep["underground_parking"]))
+    assert 0 < saleable < master, "гостевые обязаны отниматься от продаваемых"
     bundle = core.calculate_phased(core.PhasedCalcRequest(
         inputs=inputs, tep=tep, rates=[], phasing=phasing(count)))
     total = next(item for item in bundle["consolidated"]["report"]["products"]
                  if item["key"] == "underground_parking")
-    assert total["quantity"] == pytest.approx(master, abs=1.0)
+    assert total["quantity"] == pytest.approx(saleable, abs=1.0)
 
 
 @pytest.mark.parametrize("count", [2, 3, 4])
@@ -184,9 +192,9 @@ def test_no_imported_product_is_multiplied(mytishchi, count):
 def test_the_rule_holds_for_another_site():
     project = live_import("Мишина_ТЭП.xlsx")
     inputs, tep = project["inputs"], project["tep"]
-    master = float(tep["underground_parking"]["units"])
+    saleable = float(core.underground_saleable_spaces(tep["underground_parking"]))
     bundle = core.calculate_phased(core.PhasedCalcRequest(
         inputs=inputs, tep=tep, rates=[], phasing=phasing(3)))
     total = next(item for item in bundle["consolidated"]["report"]["products"]
                  if item["key"] == "underground_parking")
-    assert total["quantity"] == pytest.approx(master, abs=1.0)
+    assert total["quantity"] == pytest.approx(saleable, abs=1.0)
