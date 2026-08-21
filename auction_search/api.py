@@ -5,6 +5,7 @@ from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from auction_search.adapters import LotOnlineAdapter, RoseltorgAdapter
@@ -13,6 +14,7 @@ from auction_search.documents import DocumentExtractionError
 from auction_search.krt_pipeline import enrich_krt_from_official_documents
 from auction_search.models import LotKind
 from auction_search.service import AuctionSearchService
+from auction_search.ui import auctions_page
 
 
 class AuctionIngestRequest(BaseModel):
@@ -51,6 +53,13 @@ def install(app: FastAPI) -> None:
     if getattr(app.state, "auction_search_installed", False):
         return
     app.state.auction_search_installed = True
+
+    @app.get("/auctions", response_class=HTMLResponse)
+    async def auctions_home() -> HTMLResponse:
+        return HTMLResponse(
+            auctions_page(),
+            headers={"Cache-Control": "no-store, must-revalidate"},
+        )
 
     @app.get("/auctions/sources")
     async def auction_sources() -> dict[str, Any]:
