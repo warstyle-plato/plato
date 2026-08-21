@@ -1,3 +1,4 @@
+from auction_search.adapters.lot_online import LotOnlineAdapter
 from auction_search.classifier import classify_lot
 from auction_search.developaid_mapper import build_developaid_seed
 from auction_search.krt import extract_krt_obligations, extract_krt_program
@@ -44,6 +45,28 @@ def test_legacy_50_cadastral_prefix_is_not_excluded_for_moscow():
         address="Москва, Коммунарка",
     )
     assert AuctionSearchService.is_development_relevant(lot) is True
+
+
+def test_rad_public_offer_schedule_is_structured():
+    # Same official table shape as the Kommunarka RAD lot; no network in unit test.
+    text = (
+        "Время начала периода, начала приема заявок Время окончания приема заявок "
+        "Время окончания периода Величина изменения Предложение Сумма задатка Время внесения задатка "
+        "22.07.2026 00:00 27.08.2026 14:00 31.08.2026 00:00 "
+        "0.00 1 100 250 000.00 165 037 500.00 27.08.2026 14:00 "
+        "31.08.2026 00:00 01.09.2026 14:00 05.09.2026 00:00 "
+        "79 438 050.00 1 020 811 950.00 153 121 792.50 01.09.2026 14:00"
+    )
+    periods = LotOnlineAdapter._price_schedule(
+        text,
+        lot_url="https://catalog.lot-online.ru/test",
+        fetched_at="2026-08-21T18:00:00Z",
+    )
+    assert len(periods) == 2
+    assert periods[0].price_rub == 1_100_250_000
+    assert periods[0].deposit_rub == 165_037_500
+    assert periods[0].application_deadline.startswith("2026-08-27T14:00")
+    assert periods[1].price_rub == 1_020_811_950
 
 
 def test_krt_program_is_separate_from_investor_obligation():
