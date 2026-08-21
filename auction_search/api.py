@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from typing import Any
 from urllib.parse import urlparse
 
@@ -9,7 +10,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from auction_search.adapters import LotOnlineAdapter, RoseltorgAdapter
-from auction_search.bridge import auction_page_with_handoff
+from auction_search.bridge import auction_page_with_handoff, install_page_bridge
 from auction_search.developaid_mapper import build_developaid_seed
 from auction_search.documents import DocumentExtractionError
 from auction_search.krt_pipeline import enrich_krt_from_official_documents
@@ -55,6 +56,12 @@ def install(app: FastAPI) -> None:
     if getattr(app.state, "auction_search_installed", False):
         return
     app.state.auction_search_installed = True
+
+    # main.py loads the canonical legacy core as `developaid_core`. Inject only the
+    # same-origin handoff bootstrap; no calculation or project UI is duplicated.
+    core = sys.modules.get("developaid_core")
+    if core is not None:
+        install_page_bridge(core)
 
     @app.get("/auctions", response_class=HTMLResponse)
     async def auctions_home() -> HTMLResponse:
