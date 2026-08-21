@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 from urllib.parse import urlparse
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 
@@ -12,6 +12,7 @@ from auction_search.developaid_mapper import build_developaid_seed
 from auction_search.documents import DocumentExtractionError
 from auction_search.krt_pipeline import enrich_krt_from_official_documents
 from auction_search.models import LotKind
+from auction_search.service import AuctionSearchService
 
 
 class AuctionIngestRequest(BaseModel):
@@ -29,6 +30,23 @@ def _adapter_for(url: str):
     raise ValueError("Поддерживаются только официальные URL Росэлторг и РАД/Lot-online")
 
 
+def _discovery_adapters(source: str):
+    value = (source or "all").strip().lower()
+    if value in {"lot_online", "rad", "lot-online"}:
+        return [LotOnlineAdapter()]
+    if value in {"roseltorg", "ros"}:
+        return [RoseltorgAdapter()]
+    if value == "all":
+        return [LotOnlineAdapter(), RoseltorgAdapter()]
+    raise ValueError("source: all, lot_online или roseltorg")
+
+
+def _public_lot_dict(lot) -> dict[str, Any]:
+    data = lot.to_dict()
+    data.pop("raw", None)
+    return data
+
+
 def install(app: FastAPI) -> None:
     if getattr(app.state, "auction_search_installed", False):
         return
@@ -43,16 +61,54 @@ def install(app: FastAPI) -> None:
                     "id": "lot_online",
                     "name": "Российский аукционный дом / Lot-online",
                     "direct_lot_ingest": True,
-                    "moscow_discovery": False,
+                    "moscow_discovery": True,
+                    "discovery_access": "public_catalogue",
                 },
                 {
                     "id": "roseltorg",
                     "name": "Росэлторг",
                     "direct_lot_ingest": True,
                     "moscow_discovery": False,
+                    "discovery_access": "pending_public_search_contract",
                 },
             ],
-            "note": "Discovery включается отдельно после фиксации официальных публичных search-endpoint площадок.",
+            "document_access": "public_first_optional_service_account_session",
+        }
+
+    @app.get("/auctions/discover")
+    async def auction_discover(
+        source: str = Query(default="all"),
+        include_noise: bool = Query(default=False),
+    ) -> dict[str, Any]:
+        """Discover current Moscow opportunities from official public ETP catalogues.
+
+        This endpoint does not download/parse every attachment. Full KRT document
+        extraction happens only through `/auctions/ingest` for a selected lot.
+        """
+        try:
+            adapters = _discovery_adapters(source)
+            service = AuctionSearchService(adapters)
+            lots = await run_in_threadpool(lambda: service.discover_moscow(include_noise=include_noise))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Не удалось получить публичный каталог ЭТП: {exc}") from exc
+
+        return {
+            "source_policy": "official_etp_only",
+            "source": source,
+            "count": len(lots),
+            "lots": [
+                {
+                    **_public_lot_dict(lot),
+                    "screening": {
+                        "development_relevant": AuctionSearchService.is_development_relevant(lot),
+                        "documents_count": len(lot.documents),
+                        "full_document_parse_deferred": True,
+                    },
+                }
+                for lot in lots
+            ],
         }
 
     @app.post("/auctions/ingest")
@@ -81,6 +137,9 @@ def install(app: FastAPI) -> None:
                 "requires_krt_terms": lot.lot_kind == LotKind.KRT,
                 "krt_documents_complete": (
                     bool(lot.raw.get("krt_extraction_complete")) if lot.lot_kind == LotKind.KRT else None
+                ),
+                "krt_auth_required": (
+                    bool(lot.raw.get("krt_auth_required")) if lot.lot_kind == LotKind.KRT else None
                 ),
                 "ready_for_financial_model": (
                     bool(lot.krt_program or lot.obligations) and not lot.raw.get("krt_document_warnings")
