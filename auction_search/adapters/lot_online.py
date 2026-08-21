@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import date, datetime
 from html.parser import HTMLParser
 from urllib.request import Request, urlopen
 from urllib.parse import urljoin, urlparse, parse_qs, urlencode
@@ -85,17 +85,34 @@ class LotOnlineAdapter(AuctionPlatformAdapter):
     CATALOG_URL = "https://catalog.lot-online.ru/index.php"
     DISCOVERY_PAGE_SIZE = 96
     DISCOVERY_MAX_PAGES = 3
+    HISTORY_MAX_PAGES = 8
+    LAND_CATEGORY_ID = "2"
+    PROJECT_SHARES_CATEGORY_ID = "85"
+    # Developer projects are sometimes sold through the project company rather
+    # than as land. Category 85 is the official "Акции и доли предприятий" tree.
+    HISTORY_CATEGORY_IDS = (LAND_CATEGORY_ID, PROJECT_SHARES_CATEGORY_ID)
+
+    def __init__(self, *, include_project_shares: bool = False):
+        # Current production discovery keeps the established land-only behavior
+        # unless the server operator explicitly enables the guarded rollout.
+        self.include_project_shares = include_project_shares
 
     @property
     def platform_name(self) -> str:
         return "RAD / Lot-online"
 
     @classmethod
-    def _discovery_url(cls, page: int = 1) -> str:
+    def _discovery_url(
+        cls,
+        page: int = 1,
+        *,
+        category_id: str = "2",
+        include_archive: bool = False,
+    ) -> str:
         params = {
-            "category_id": "2",
+            "category_id": category_id,
             "dispatch": "categories.view",
-            "filter_fields[is_archive]": "false",
+            "filter_fields[is_archive]": "true" if include_archive else "false",
             "personal_area": "",
             "q": "москва",
             "items_per_page": str(cls.DISCOVERY_PAGE_SIZE),
@@ -103,6 +120,37 @@ class LotOnlineAdapter(AuctionPlatformAdapter):
         if page > 1:
             params["page"] = str(page)
         return cls.CATALOG_URL + "?" + urlencode(params)
+
+    def _discover_candidate_urls(
+        self,
+        *,
+        category_ids: tuple[str, ...],
+        include_archive: bool,
+        max_pages: int,
+    ) -> list[str]:
+        candidate_urls: list[str] = []
+        seen: set[str] = set()
+        for category_id in category_ids:
+            for page in range(1, max_pages + 1):
+                url = self._discovery_url(
+                    page,
+                    category_id=category_id,
+                    include_archive=include_archive,
+                )
+                req = Request(url, headers={"User-Agent": self.USER_AGENT})
+                with urlopen(req, timeout=25) as response:
+                    html = response.read().decode(response.headers.get_content_charset() or "utf-8", errors="replace")
+                parser = _TextLinksParser()
+                parser.feed(html)
+                page_urls = self._catalog_lot_urls(url, parser.links)
+                new_urls = [item for item in page_urls if item not in seen]
+                if not new_urls:
+                    break
+                candidate_urls.extend(new_urls)
+                seen.update(new_urls)
+                if len(page_urls) < self.DISCOVERY_PAGE_SIZE:
+                    break
+        return candidate_urls
 
     @staticmethod
     def _catalog_lot_urls(base_url: str, links: list[tuple[str, str]]) -> list[str]:
@@ -135,35 +183,77 @@ class LotOnlineAdapter(AuctionPlatformAdapter):
         return "москва" in haystack or "г. москва" in haystack
 
     def discover_moscow(self) -> list[AuctionLot]:
-        """Enumerate active Moscow land lots from the official public RAD catalogue.
+        """Enumerate active Moscow development lots from the public RAD catalogue.
 
         The catalogue query is only discovery. Every candidate is re-read from its
-        official lot card, and non-Moscow results are discarded there.
+        official lot card, and non-Moscow results are discarded there. Project-
+        company shares remain opt-in so deployment of this code alone cannot widen
+        the production catalogue.
         """
-        candidate_urls: list[str] = []
-        seen: set[str] = set()
-        for page in range(1, self.DISCOVERY_MAX_PAGES + 1):
-            url = self._discovery_url(page)
-            req = Request(url, headers={"User-Agent": self.USER_AGENT})
-            with urlopen(req, timeout=25) as response:
-                html = response.read().decode(response.headers.get_content_charset() or "utf-8", errors="replace")
-            parser = _TextLinksParser()
-            parser.feed(html)
-            page_urls = self._catalog_lot_urls(url, parser.links)
-            new_urls = [item for item in page_urls if item not in seen]
-            if not new_urls:
-                break
-            candidate_urls.extend(new_urls)
-            seen.update(new_urls)
-            if len(page_urls) < self.DISCOVERY_PAGE_SIZE:
-                break
+        category_ids = (self.LAND_CATEGORY_ID,)
+        if self.include_project_shares:
+            category_ids += (self.PROJECT_SHARES_CATEGORY_ID,)
+        candidate_urls = self._discover_candidate_urls(
+            category_ids=category_ids,
+            include_archive=False,
+            max_pages=self.DISCOVERY_MAX_PAGES,
+        )
 
         lots: list[AuctionLot] = []
         for lot_url in candidate_urls:
             lot = self.fetch_lot(lot_url)
             if self._confirmed_moscow(lot):
-                lot.raw["discovered_via"] = self._discovery_url(1)
+                lot.raw["discovery_mode"] = "current"
+                lot.raw["discovery_category_ids"] = list(category_ids)
+                lot.raw["discovered_via"] = "Lot-online public current catalogue"
                 lots.append(lot)
+        return lots
+
+    def discover_moscow_history(
+        self,
+        since: date,
+        until: date,
+        *,
+        candidate_urls: tuple[str, ...] = (),
+    ) -> list[AuctionLot]:
+        """Read a bounded historical window without changing current discovery.
+
+        This opt-in path uses the official catalogue's "Включая архивные" flag
+        and also checks project-company shares. Cards without a public publication
+        date fail closed, so a stale result cannot leak into the requested window.
+        """
+        if since > until:
+            raise ValueError("history start date must not be after end date")
+        urls = self._discover_candidate_urls(
+            category_ids=self.HISTORY_CATEGORY_IDS,
+            include_archive=True,
+            max_pages=self.HISTORY_MAX_PAGES,
+        )
+        for url in candidate_urls:
+            host = (urlparse(url).hostname or "").lower()
+            if host == "lot-online.ru" or host.endswith(".lot-online.ru"):
+                urls.append(url)
+
+        lots: list[AuctionLot] = []
+        seen_source_ids: set[str] = set()
+        for lot_url in dict.fromkeys(urls):
+            try:
+                lot = self.fetch_lot(lot_url)
+            except Exception:
+                # Historical catalogues regularly retain partially migrated cards.
+                continue
+            published_at = self._published_at(str(lot.raw.get("page_text") or ""))
+            if published_at is None or not (since <= published_at.date() <= until):
+                continue
+            if not self._confirmed_moscow(lot):
+                continue
+            if lot.source.external_lot_id in seen_source_ids:
+                continue
+            seen_source_ids.add(lot.source.external_lot_id)
+            lot.raw["published_at"] = published_at.isoformat()
+            lot.raw["discovery_mode"] = "history"
+            lot.raw["discovered_via"] = "Lot-online public catalogue including archive"
+            lots.append(lot)
         return lots
 
     def fetch_lot(self, lot_url: str) -> AuctionLot:
@@ -194,7 +284,8 @@ class LotOnlineAdapter(AuctionPlatformAdapter):
         current_period = self._current_actionable_period(schedule)
 
         docs = self._documents(lot_url, parser.links, fetched_at)
-        lot_kind = classify_lot(title, procedure or "", [d.title for d in docs])
+        lot_kind = classify_lot(" ".join([title, address or ""]), procedure or "", [d.title for d in docs])
+        published_at = self._published_at(text)
         source = AuctionSource(
             platform=SourceKind.LOT_ONLINE,
             lot_url=lot_url,
@@ -221,7 +312,11 @@ class LotOnlineAdapter(AuctionPlatformAdapter):
             status=status,
             price_schedule=schedule,
             documents=docs,
-            raw={"region": region, "page_text": text},
+            raw={
+                "region": region,
+                "page_text": text,
+                "published_at": published_at.isoformat() if published_at is not None else None,
+            },
         )
         for field, value in {
             "title": title,
@@ -246,10 +341,44 @@ class LotOnlineAdapter(AuctionPlatformAdapter):
     def _extract_title(text: str) -> str:
         idx = text.find("Начальная цена")
         head = text[:idx] if idx > 0 else text
-        candidates = re.findall(r"(?:Земельный участок|Право[^.]{10,}|Объект[^.]{10,})[^#]{20,}", head, re.I)
+        published = list(
+            re.finditer(
+                r"На\s+lot-online\.ru\s*:?\s*\d{2}\.\d{2}\.\d{4}(?:\s+\d{2}:\d{2})?",
+                head,
+                re.I,
+            )
+        )
+        if published:
+            candidate = head[published[-1].end():]
+            metadata = (
+                r"^(?:\s*(?:В\s+официальном\s+издании|В\s+Едином\s+федеральном\s+реестре)"
+                r"\s*:?\s*\d{2}\.\d{2}\.\d{4})+\s*"
+            )
+            candidate = re.sub(metadata, "", candidate, flags=re.I)
+            candidate = normalize_space(candidate).strip(" :-")
+            if len(candidate) >= 8:
+                return candidate[:1500]
+        candidates = re.findall(
+            r"(?:Земельный участок|Право|Объект|Продажа|Реализация)\s+[^#]{20,}",
+            head,
+            re.I,
+        )
         if candidates:
             return normalize_space(candidates[-1])[:1500]
         return normalize_space(head[-1500:])
+
+    @staticmethod
+    def _published_at(text: str) -> datetime | None:
+        match = re.search(
+            r"(?:На\s+lot-online\.ru|Дата\s+публикации|Опубликовано)\s*:?\s*"
+            r"(\d{2}\.\d{2}\.\d{4})(?:\s+(\d{2}:\d{2}))?",
+            text,
+            re.I,
+        )
+        if not match:
+            return None
+        clock = match.group(2) or "00:00"
+        return datetime.strptime(f"{match.group(1)} {clock}", "%d.%m.%Y %H:%M").replace(tzinfo=_MOSCOW)
 
     @staticmethod
     def _money_after(text: str, label: str):

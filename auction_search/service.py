@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+from datetime import date
 from typing import Iterable
 
 from auction_search.adapters.base import AuctionPlatformAdapter
@@ -25,6 +26,35 @@ class AuctionSearchService:
         if include_noise:
             return lots
         return [lot for lot in lots if self.is_development_relevant(lot)]
+
+    def discover_moscow_history(
+        self,
+        since: date,
+        until: date,
+        *,
+        include_noise: bool = False,
+        candidate_urls: Iterable[str] = (),
+    ) -> list[AuctionLot]:
+        """Opt-in historical discovery; never called by the production endpoint."""
+        urls = tuple(candidate_urls)
+        lots: list[AuctionLot] = []
+        for adapter in self.adapters:
+            discover = getattr(adapter, "discover_moscow_history", None)
+            if discover is not None:
+                lots.extend(discover(since, until, candidate_urls=urls))
+        lots = self._deduplicate_history(lots)
+        if include_noise:
+            return lots
+        return [lot for lot in lots if self.is_development_relevant(lot)]
+
+    @staticmethod
+    def _deduplicate_history(lots: Iterable[AuctionLot]) -> list[AuctionLot]:
+        """Keep relistings: history identity is an official procedure, not a parcel."""
+        by_source: OrderedDict[str, AuctionLot] = OrderedDict()
+        for lot in lots:
+            key = f"{lot.source.platform.value}:{lot.source.external_lot_id}"
+            by_source.setdefault(key, lot)
+        return list(by_source.values())
 
     @staticmethod
     def _deduplicate(lots: Iterable[AuctionLot]) -> list[AuctionLot]:

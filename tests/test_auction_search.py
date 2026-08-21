@@ -1,6 +1,8 @@
+from datetime import date
 from urllib.parse import parse_qs, urlparse
 
 from auction_search.adapters.lot_online import LotOnlineAdapter
+from auction_search.api import _discovery_adapters
 from auction_search.bridge import auction_page_with_handoff, install_page_bridge
 from auction_search.classifier import classify_lot
 from auction_search.developaid_mapper import build_developaid_seed
@@ -37,6 +39,18 @@ def test_generic_right_to_lease_is_not_krt():
     assert classify_lot("Право на заключение договора аренды земельного участка") == LotKind.LAND_LEASE
 
 
+def test_development_project_company_share_is_property_complex():
+    title = "Продажа 100% доли юрлица — собственника проекта комплекса жилой застройки"
+    assert classify_lot(title) == LotKind.PROPERTY_COMPLEX
+    verbose_title = "Продажа доли в размере 100 (сто) % уставного капитала компании, владеющей зданием"
+    assert classify_lot(verbose_title) == LotKind.PROPERTY_COMPLEX
+
+
+def test_non_development_company_share_is_not_promoted_to_property_complex():
+    title = "Продажа доли в размере 100% уставного капитала ООО ПРАЧЕЧНАЯ"
+    assert classify_lot(title) == LotKind.OTHER
+
+
 def test_small_ijs_is_filtered_out():
     lot = AuctionLot(
         source=source(),
@@ -71,6 +85,117 @@ def test_rad_discovery_uses_official_public_catalogue_filters():
     assert query["filter_fields[is_archive]"] == ["false"]
     assert query["q"] == ["москва"]
     assert query["items_per_page"] == ["96"]
+
+
+def test_rad_history_is_opt_in_and_checks_project_company_shares():
+    url = LotOnlineAdapter._discovery_url(category_id="85", include_archive=True)
+    query = parse_qs(urlparse(url).query)
+    assert query["category_id"] == ["85"]
+    assert query["filter_fields[is_archive]"] == ["true"]
+    assert LotOnlineAdapter._discovery_url() != url
+
+
+def test_rad_current_project_shares_are_disabled_by_default(monkeypatch):
+    adapter = LotOnlineAdapter()
+    captured = {}
+
+    def discover_urls(**kwargs):
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(adapter, "_discover_candidate_urls", discover_urls)
+    assert adapter.discover_moscow() == []
+    assert captured["category_ids"] == ("2",)
+    assert captured["include_archive"] is False
+
+
+def test_rad_current_project_shares_can_be_enabled_explicitly(monkeypatch):
+    adapter = LotOnlineAdapter(include_project_shares=True)
+    captured = {}
+
+    def discover_urls(**kwargs):
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(adapter, "_discover_candidate_urls", discover_urls)
+    assert adapter.discover_moscow() == []
+    assert captured["category_ids"] == ("2", "85")
+    assert captured["include_archive"] is False
+
+
+def test_api_runtime_flag_controls_project_share_discovery(monkeypatch):
+    monkeypatch.delenv("AUCTION_LOTONLINE_PROJECT_SHARES_DISCOVERY", raising=False)
+    default_adapter = _discovery_adapters("lot_online")[0]
+    assert default_adapter.include_project_shares is False
+
+    monkeypatch.setenv("AUCTION_LOTONLINE_PROJECT_SHARES_DISCOVERY", "true")
+    enabled_adapter = _discovery_adapters("lot_online")[0]
+    assert enabled_adapter.include_project_shares is True
+
+    monkeypatch.setenv("AUCTION_LOTONLINE_PROJECT_SHARES_DISCOVERY", "false")
+    disabled_adapter = _discovery_adapters("all")[0]
+    assert disabled_adapter.include_project_shares is False
+
+
+def test_rad_publication_date_is_parsed_in_moscow_time():
+    published = LotOnlineAdapter._published_at("Опубликовано: На lot-online.ru: 18.05.2026 17:01")
+    assert published is not None
+    assert published.date() == date(2026, 5, 18)
+    assert published.utcoffset().total_seconds() == 3 * 60 * 60
+
+
+def test_rad_title_is_scoped_after_publication_metadata():
+    text = (
+        "Каталог Земельный участок со зданием Опубликовано: "
+        "На lot-online.ru: 07.07.2026 16:38 "
+        "Продажа доли в размере 100 (сто) % уставного капитала ООО РИВЬЕРА ПАРК "
+        "Начальная цена 750 000 000 ₽"
+    )
+    assert LotOnlineAdapter._extract_title(text) == (
+        "Продажа доли в размере 100 (сто) % уставного капитала ООО РИВЬЕРА ПАРК"
+    )
+
+
+def test_history_keeps_relisted_procedures_with_same_cadastre():
+    first = AuctionLot(
+        source=AuctionSource(SourceKind.LOT_ONLINE, "https://catalog.lot-online.ru/1", "old", "now"),
+        lot_kind=LotKind.PROPERTY_COMPLEX,
+        title="old",
+        cadastral_numbers=["77:05:0003002:54"],
+    )
+    relist = AuctionLot(
+        source=AuctionSource(SourceKind.LOT_ONLINE, "https://catalog.lot-online.ru/2", "new", "now"),
+        lot_kind=LotKind.PROPERTY_COMPLEX,
+        title="new",
+        cadastral_numbers=["77:05:0003002:54"],
+    )
+    assert AuctionSearchService._deduplicate_history([first, relist]) == [first, relist]
+
+
+def test_rad_history_filters_cards_by_publication_window(monkeypatch):
+    adapter = LotOnlineAdapter()
+    captured = {}
+
+    def discover_urls(**kwargs):
+        captured.update(kwargs)
+        return ["https://catalog.lot-online.ru/index.php?dispatch=products.view&product_id=old"]
+
+    def fetch(url):
+        return AuctionLot(
+            source=AuctionSource(SourceKind.LOT_ONLINE, url, "old", "now"),
+            lot_kind=LotKind.PROPERTY_COMPLEX,
+            title="Проект жилой застройки, г. Москва",
+            address="г. Москва",
+            raw={"region": "Москва", "page_text": "На lot-online.ru: 18.05.2026 17:01"},
+        )
+
+    monkeypatch.setattr(adapter, "_discover_candidate_urls", discover_urls)
+    monkeypatch.setattr(adapter, "fetch_lot", fetch)
+    lots = adapter.discover_moscow_history(date(2026, 2, 21), date(2026, 8, 21))
+    assert len(lots) == 1
+    assert captured["category_ids"] == ("2", "85")
+    assert captured["include_archive"] is True
+    assert lots[0].raw["published_at"].startswith("2026-05-18T17:01")
 
 
 def test_rad_catalogue_extracts_only_official_product_cards():
