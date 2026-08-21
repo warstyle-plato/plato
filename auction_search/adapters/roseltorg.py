@@ -127,6 +127,35 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
             return False
         return any(marker in low for marker in ("прием заяв", "приём заяв", "ожидани", "работа комиссии", "опублик"))
 
+    @staticmethod
+    def _is_asset_disposal(lot: AuctionLot) -> bool:
+        """Reject procurement/services that merely mention land in their subject."""
+        text = " ".join((lot.title or "", lot.procedure_type or "", str(lot.raw.get("trading_section") or ""))).lower()
+        procurement = (
+            "223-фз", "коммерческие закупки", "объекты закупки", "услуги по",
+            "оказание услуг", "оценка (определение", "оспаривания кадастровой стоимости",
+        )
+        if any(marker in text for marker in procurement):
+            return False
+        disposal = (
+            "продажа земельного участка", "продажа объекта", "продажа имущества",
+            "право на заключение договора аренды", "комплексное развитие территории",
+            "реализация имущества", "аукцион по продаже",
+        )
+        return lot.lot_kind == LotKind.KRT or any(marker in text for marker in disposal)
+
+    @staticmethod
+    def _has_current_deadline(deadline: str | None) -> bool:
+        if not deadline:
+            return False
+        raw = deadline.strip()
+        for fmt in ("%d.%m.%Y %H:%M:%S", "%d.%m.%Y %H:%M", "%d.%m.%y %H:%M:%S", "%d.%m.%y %H:%M"):
+            try:
+                return datetime.strptime(raw, fmt).replace(tzinfo=_MOSCOW) >= datetime.now(_MOSCOW)
+            except ValueError:
+                continue
+        return False
+
     def discover_moscow(self) -> list[AuctionLot]:
         candidate_urls: list[str] = []
         seen_urls: set[str] = set()
@@ -155,9 +184,13 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
                 continue
             if lot.lot_kind not in self.RELEVANT_KINDS:
                 continue
+            if not self._is_asset_disposal(lot):
+                continue
             if not self._confirmed_moscow(lot):
                 continue
             if not self._is_actionable_status(lot.status):
+                continue
+            if not self._has_current_deadline(lot.application_deadline):
                 continue
             if lot.canonical_key in seen_lots:
                 continue
@@ -325,20 +358,31 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
     @staticmethod
     def _title(text: str, procedure_id: str, lot_no: str) -> str:
         candidates = (
-            rf"Лот\s*{re.escape(lot_no)}\s+(?:Прием заявок|Приём заявок|Опубликован|Ожидание приема заявок|Ожидание приёма заявок|Работа комиссии|Заключение договора|Отменен|Отменён)?\s*(.+?)(?=Теги бета|Обеспечение заявки|Плата за участие|Посмотреть детальную информацию|Этапы)",
+            rf"Лот\s*{re.escape(lot_no)}\s+(?:Прием заявок|Приём заявок|Опубликован|Ожидание приема заявок|Ожидание приёма заявок|Работа комиссии|Заключение договора|Отменен|Отменён)?\s*(.+?)(?=Теги бета|Обеспечение заявки|Плата за участие|Посмотреть детальную информацию|Показать полностью|Документы|Объекты закупки|Этапы)",
             rf"Лот\s*№\s*{re.escape(lot_no)}\s*[-–—:]?\s*(.+?)(?=Информация по торгам|Этапы|Дополнительная информация|Прием заявок|Приём заявок)",
             rf"Процедура:\s*{re.escape(procedure_id)}\s*(.+?)(?=Организатор торгов|Информация по торгам|Этапы|Дополнительная информация)",
         )
         for pattern in candidates:
             match = re.search(pattern, text, re.I)
             if match:
-                value = normalize_space(match.group(1))
+                value = RoseltorgAdapter._clean_title(match.group(1))
                 if len(value) >= 8:
                     return value[:1500]
         procedure_name = RoseltorgAdapter._value(text, "Наименование процедуры", ("Организатор торгов", "ФИО", "Телефон"))
         if procedure_name:
             return procedure_name[:1500]
         return f"Росэлторг {procedure_id}, лот {lot_no}"
+
+    @staticmethod
+    def _clean_title(value: str) -> str:
+        clean = normalize_space(value)
+        clean = re.split(
+            r"Показать\s+полностью|\bДокументы\b|Объекты\s+закупки|\bНМЦ\b|Место\s+поставки",
+            clean,
+            maxsplit=1,
+            flags=re.I,
+        )[0]
+        return normalize_space(clean).strip(" :-")
 
     @staticmethod
     def _value(text: str, label: str, stops: tuple[str, ...]):

@@ -1,4 +1,5 @@
-from datetime import date
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 from urllib.parse import parse_qs, urlparse
 
 from auction_search.adapters.roseltorg import RoseltorgAdapter
@@ -133,3 +134,38 @@ def test_roseltorg_history_requires_explicit_official_cards(monkeypatch):
     assert len(lots) == 1
     assert calls == ["https://www.roseltorg.ru/procedure/known"]
     assert lots[0].raw["discovery_mode"] == "history"
+
+
+def test_procurement_services_that_mention_land_are_not_asset_disposals():
+    procurement = AuctionLot(
+        source=_source(),
+        lot_kind=LotKind.LAND_SALE,
+        title="Коммерческие закупки по 223-ФЗ Оценка земельного участка для оспаривания кадастровой стоимости",
+        procedure_type="Запрос предложений",
+    )
+    sale = AuctionLot(
+        source=_source(),
+        lot_kind=LotKind.LAND_SALE,
+        title="Аукцион по продаже земельного участка, г. Москва",
+    )
+    assert RoseltorgAdapter._is_asset_disposal(procurement) is False
+    assert RoseltorgAdapter._is_asset_disposal(sale) is True
+
+
+def test_current_discovery_rejects_expired_or_missing_deadlines():
+    now = datetime.now(ZoneInfo("Europe/Moscow"))
+    future = (now + timedelta(days=2)).strftime("%d.%m.%y %H:%M")
+    past = (now - timedelta(days=2)).strftime("%d.%m.%y %H:%M")
+    assert RoseltorgAdapter._has_current_deadline(future) is True
+    assert RoseltorgAdapter._has_current_deadline(past) is False
+    assert RoseltorgAdapter._has_current_deadline(None) is False
+
+
+def test_roseltorg_title_stops_before_procurement_card_chrome():
+    text = (
+        "Лот 1 Прием заявок Продажа объекта по адресу: г. Москва, пер. Вадковский, вл. 18, стр. 4. "
+        "Показать полностью Лот 1 Документы Объекты закупки 1 Продажа 1 ЕД НМЦ не указано"
+    )
+    assert RoseltorgAdapter._title(text, "COM03122000005", "1") == (
+        "Продажа объекта по адресу: г. Москва, пер. Вадковский, вл. 18, стр. 4."
+    )

@@ -419,6 +419,13 @@ def test_auction_list_page_gets_handoff_script_once():
     assert auction_page_with_handoff(bridged) == bridged
 
 
+def test_auction_ui_does_not_render_missing_area_as_zero():
+    from auction_search.ui import auctions_page
+
+    page = auctions_page()
+    assert "n!==null&&n!==undefined&&n!==''" in page
+
+
 def test_model_page_bridge_is_idempotent():
     class Core:
         PAGE = "<html><body>model</body></html>"
