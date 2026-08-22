@@ -64,6 +64,17 @@ def test_the_filename_is_a_single_xlsx_not_an_archive(default_book):
     assert filename.endswith(".xlsx")
 
 
+def test_the_book_contains_no_foreign_mishina_caption(default_book):
+    content, _, _, sheet = default_book
+    assert sheet["J13"].value == "Базовый потенциал проекта"
+    with zipfile.ZipFile(io.BytesIO(content)) as archive:
+        text = "\n".join(
+            archive.read(name).decode("utf-8", errors="ignore")
+            for name in archive.namelist()
+        )
+    assert "Мишина" not in text
+
+
 # --- значения --------------------------------------------------------------
 
 def test_percent_points_become_fractions(default_book):
