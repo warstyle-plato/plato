@@ -19,7 +19,7 @@ from auction_search.models import LotKind
 from auction_search.preset_mapper import build_project_preset
 from auction_search.service import AuctionSearchService
 from auction_search.ui import auctions_page
-from market_search.krt_registry import KrtRegistry
+from market_search.krt_registry import CATALOGUE_URL, KrtRegistry
 from market_search import cabinet as market_cabinet
 from market_search.geocoder import GeocodingError
 from market_search.http import RemoteServiceError
@@ -133,9 +133,11 @@ def install(app: FastAPI) -> None:
     @app.get("/auctions/krt")
     async def auction_krt_catalogue() -> dict[str, Any]:
         projects = await run_in_threadpool(krt_registry.catalogue)
+        status = krt_registry.status()
         return {
-            "source": "https://krt.mos.ru/projects/",
+            "source": CATALOGUE_URL,
             "geometry_status": "not_published_in_catalogue",
+            **status,
             "count": len(projects),
             "projects": projects,
         }
