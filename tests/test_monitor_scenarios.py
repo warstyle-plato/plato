@@ -40,7 +40,6 @@ def test_delay_is_propagated_to_rnv():
 def test_current_pace_uses_rss_evidence_but_not_as_physical_fact():
     d = datetime.date
     row = {"rss_accepted_ratio": .5, "rss_act_cost_rate_3m": .1}
-    # Five months remain at the observed cost-act pace.
     assert scenarios._pace_finish(row, d(2026, 1, 1)) == d(2026, 6, 2)
 
 
@@ -66,12 +65,11 @@ def test_acceleration_recovers_current_delay_but_not_before_baseline():
     assert changed["1"] == d(2026, 3, 1)
 
 
-def test_monitor_page_exposes_three_real_scenarios():
+def test_monitor_v2_keeps_scenario_engine_out_of_primary_ui_for_now():
     from developaid_monitor_page import MONITOR_PAGE
-    assert "data-scenario=\"current_pace\"" in MONITOR_PAGE
-    assert "data-scenario=\"delay_wbs\"" in MONITOR_PAGE
-    assert "data-scenario=\"accelerate_wbs\"" in MONITOR_PAGE
-    assert "/monitor/scenario" in MONITOR_PAGE
+    assert "Cost control" in MONITOR_PAGE
+    assert "Управленческий Гант" in MONITOR_PAGE
+    assert "Платон · сценарный анализ" not in MONITOR_PAGE
 
 
 def test_scenario_route_is_registered_behind_monitor_access_gate():
