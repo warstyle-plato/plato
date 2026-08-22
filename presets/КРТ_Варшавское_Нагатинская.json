@@ -364,6 +364,7 @@
   },
   "phasing": {
     "enabled": true,
+    "phase_count": 4,
     "phase_gap_months": 12,
     "products": {
       "apartments": [
