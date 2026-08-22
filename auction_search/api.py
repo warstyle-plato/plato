@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import sys
 from typing import Any
@@ -15,6 +16,7 @@ from auction_search.bridge import auction_page_with_handoff, install_page_bridge
 from auction_search.developaid_mapper import build_developaid_seed
 from auction_search.documents import DocumentExtractionError
 from auction_search.krt_pipeline import enrich_krt_from_official_documents
+from auction_search.krt_screening import build_krt_model_screening
 from auction_search.models import LotKind
 from auction_search.preset_mapper import build_project_preset
 from auction_search.service import AuctionSearchService
@@ -24,6 +26,9 @@ from market_search import cabinet as market_cabinet
 from market_search.geocoder import GeocodingError
 from market_search.http import RemoteServiceError
 from market_search.subject import SubjectNotFound
+
+
+logger = logging.getLogger(__name__)
 
 
 class AuctionIngestRequest(BaseModel):
@@ -154,12 +159,38 @@ def install(app: FastAPI) -> None:
         if market is None:
             raise HTTPException(status_code=503, detail="Маркетинговый движок не подключён")
         try:
-            return await run_in_threadpool(
-                lambda: market.build_report(
+            def build_report_with_model() -> dict[str, Any]:
+                report = market.build_report(
                     f"krt:{slug}", radius_km=radius_km, peers_limit=peers_limit,
                     city_reference=False, include_project_totals=True,
                 )
-            )
+                finder = getattr(krt_registry, "find", None)
+                project = finder(f"krt:{slug}") if callable(finder) else None
+                if project is None:
+                    project = next(
+                        (item for item in krt_registry.catalogue() if item.get("slug") == slug),
+                        None,
+                    )
+                if core is None:
+                    screening = {
+                        "available": False,
+                        "reason": "Финансовый движок DevelopAid не подключён",
+                    }
+                else:
+                    try:
+                        screening = build_krt_model_screening(project, report, core)
+                    except Exception:
+                        # Marketing remains useful if a preliminary model cannot
+                        # be assembled.  Do not turn an optional screen into a
+                        # failure of the existing market report.
+                        logger.exception("KRT model screening failed slug=%s", slug)
+                        screening = {
+                            "available": False,
+                            "reason": "Предварительный прогон модели временно недоступен",
+                        }
+                return {**report, "model_screening": screening}
+
+            return await run_in_threadpool(build_report_with_model)
         except (SubjectNotFound, GeocodingError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except RemoteServiceError as exc:

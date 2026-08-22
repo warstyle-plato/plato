@@ -1,6 +1,8 @@
 from pathlib import Path
+import sys
 from types import SimpleNamespace
 
+from market_search.geocoder import GeocodingError
 from market_search.krt_registry import KrtRegistry, parse_catalogue, parse_catalogue_markdown
 from market_search.subject import SOURCE_KRT, resolve_subject
 
@@ -83,21 +85,91 @@ def test_krt_is_a_subject_with_an_explicit_approximation(tmp_path: Path) -> None
     assert "геометр" in subject.notes[0].lower()
 
 
+def test_krt_multiple_holdings_are_geocoded_as_separate_addresses() -> None:
+    territory = {
+        "slug": "two-holdings",
+        "query": "krt:two-holdings",
+        "name": "ул. Сеславинская, вл. 6А, Минская ул., вл. 2Г",
+        "district": "Перово",
+        "geocode_query": (
+            "Москва, Перово, ул. Сеславинская, вл. 6А, Минская ул., вл. 2Г"
+        ),
+    }
+    calls = []
+
+    def geocode(query: str):
+        calls.append(query)
+        if query == "Москва, ул. Сеславинская, вл. 6А":
+            return SimpleNamespace(
+                latitude=55.744, longitude=37.499, display_name=query
+            )
+        raise GeocodingError(f"Адрес «{query}» не найден")
+
+    subject = resolve_subject(
+        "krt:two-holdings", geocode=geocode, find_krt=lambda query: territory
+    )
+
+    assert calls == ["Москва, ул. Сеславинская, вл. 6А"]
+    assert subject.address == "Москва, ул. Сеславинская, вл. 6А"
+    assert "отдельному адресу" in subject.notes[1]
+
+
+def test_krt_falls_back_to_district_when_each_address_is_not_found() -> None:
+    territory = {
+        "slug": "district-fallback",
+        "query": "krt:district-fallback",
+        "name": "ул. Первая, вл. 1, Вторая ул., вл. 2",
+        "district": "Перово",
+        "geocode_query": "Москва, Перово, ул. Первая, вл. 1, Вторая ул., вл. 2",
+    }
+    calls = []
+
+    def geocode(query: str):
+        calls.append(query)
+        if query == "Москва, район Перово":
+            return SimpleNamespace(
+                latitude=55.751, longitude=37.786, display_name=query
+            )
+        raise GeocodingError(f"Адрес «{query}» не найден")
+
+    subject = resolve_subject(
+        "krt:district-fallback", geocode=geocode, find_krt=lambda query: territory
+    )
+
+    assert calls == [
+        "Москва, ул. Первая, вл. 1",
+        "Москва, Вторая ул., вл. 2",
+        "Москва, район Перово",
+    ]
+    assert subject.address == "Москва, район Перово"
+    assert "предварительного анализа" in subject.notes[1]
+
+
 def test_auctions_exposes_krt_as_a_separate_tab_and_endpoint(monkeypatch) -> None:
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
+    import main_legacy as core
     from auction_search.api import install
 
-    project = {"slug": "test", "name": "КРТ Тест", "status": "Планируемый"}
+    project = {
+        "slug": "test", "name": "КРТ Тест", "status": "Планируемый",
+        "housing_gfa_sqm": 161_680, "total_gfa_sqm": 184_930,
+    }
     calls = []
     monkeypatch.setenv("MARKET_CABINET_KEY", "test-key")
+    monkeypatch.setitem(sys.modules, "developaid_core", core)
     app = FastAPI()
     app.state.market_discovery_service = SimpleNamespace(
         krt=SimpleNamespace(
             catalogue=lambda: [project], status=lambda: {"complete": True, "refreshing": False}
         ),
         build_report=lambda query, **kwargs: calls.append((query, kwargs)) or {
-            "subject": {"project_name": "КРТ Тест"}, "peers": [{"name": "ЖК рядом"}]
+            "subject": {"project_name": "КРТ Тест"},
+            "peers": [{"name": "ЖК рядом"}],
+            "analysis": {"site": {
+                "segment": "бизнес", "price_per_sqm": 708_000, "sold_lot_avg": 50.0,
+            }},
+            "price_hint": {"entry_per_sqm": 650_000, "price_per_sqm": 708_000},
         },
     )
     install(app)
@@ -111,6 +183,8 @@ def test_auctions_exposes_krt_as_a_separate_tab_and_endpoint(monkeypatch) -> Non
     assert "жильё и быстрый старт" in page.text
     assert "Короткий вывод Платона" in page.text
     assert "analysis.site||analysis.overall" in page.text
+    assert "Получить маркетинг и прогнать модель" in page.text
+    assert "Предварительный прогон модели" in page.text
     answer = client.get("/auctions/krt")
     assert answer.status_code == 200
     assert answer.json()["projects"] == [project]
@@ -119,5 +193,7 @@ def test_auctions_exposes_krt_as_a_separate_tab_and_endpoint(monkeypatch) -> Non
     market = client.get("/auctions/krt/test/market", headers={"X-Market-Key": "test-key"})
     assert market.status_code == 200
     assert market.json()["peers"][0]["name"] == "ЖК рядом"
+    assert market.json()["model_screening"]["available"] is True
+    assert market.json()["model_screening"]["phasing"]["count"] == 2
     assert calls[0][0] == "krt:test"
     assert calls[0][1]["include_project_totals"] is True
