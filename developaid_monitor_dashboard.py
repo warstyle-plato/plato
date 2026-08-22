@@ -394,7 +394,7 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
         cut,
         _payment_by_code(rss),
     )
-    rnv = monitor._day((view.get("schedule") or {}).get("forecast_end"))
+    rnv = monitor._day(_current_forecast_end(view))
     if rnv is None:
         rnv = monitor._day((view.get("schedule") or {}).get("approved_end"))
 
@@ -482,7 +482,7 @@ def _dashboard(project: str, rss: Path, cut: datetime.date, view: dict[str, Any]
         },
         "schedule": {
             "approved_finish": (view.get("schedule") or {}).get("approved_end"),
-            "forecast_finish": (view.get("schedule") or {}).get("forecast_end"),
+            "forecast_finish": _current_forecast_end(view),
             "forecast_known": graph.get("forecast_known", True),
             "forecast_source": graph.get("forecast_source", ""),
             "rnv_delay_days": graph.get("rnv_delay_days"),
@@ -519,6 +519,24 @@ def _store_proposal(
     project: str, data: bytes, sheet: str, start: Any, code: str, taken_at: Any
 ) -> dict[str, Any]:
     return schedule_graph.store_reference(project, data, sheet, start, code, taken_at)
+
+
+def _current_forecast_end(view: dict[str, Any]) -> Any:
+    """Текущий прогноз РНВ — сеть по темпу, а не плоский максимум по строкам.
+
+    `schedule.forecast_end` — это `max(forecast_finish)` по WBS: он не знает
+    PM-зависимостей и потому отвечает на другой вопрос. Pace считает сеть и
+    кладёт ответ в `pace_forecast_end`, но дашборд собирался заново и брал
+    плоский максимум — на Кутузов Сити шапка показывала 04.01.2029, а
+    «Платон · управленческий прогноз» 11.02.2028 на том же срезе и том же
+    снимке РСС. Подпись шапки при этом обещала «КС / EAC proxy + PM
+    dependencies» — обещание, которого она не исполняла.
+
+    Плоский максимум остаётся запасным ответом: без PM-графа сети нет, и
+    честнее показать позднейшую строку, чем ничего.
+    """
+    schedule = view.get("schedule") or {}
+    return schedule.get("pace_forecast_end") or schedule.get("forecast_end")
 
 
 def _build(

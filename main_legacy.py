@@ -65,7 +65,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.19.52"
+VERSION = "0.19.53"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -369,7 +369,7 @@ def tep_ratios_changed(raw: Any) -> list[str]:
 VRI_USE_TYPES_PLACEHOLDER = "__DEVELOPAID_VRI_USE_TYPES__"
 
 TEP_DEFAULT = {'apartments': {'label': 'Квартиры', 'gns': 130716.66012842482, 'total_area': 117647.0588235294, 'useful': 80000, 'saleable': 80000, 'transfer': 0, 'units': 1361.815754339119}, 'ground_commercial': {'label': 'Коммерция 1 эт.', 'gns': 9664.049734985854, 'total_area': 8695.652173913044, 'useful': 7826.08695652174, 'saleable': 7826.08695652174, 'transfer': 0, 'units': 0}, 'standalone_retail': {'label': 'Коммерция ОСЗ', 'gns': 0, 'total_area': 0, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 0}, 'offices': {'label': 'Офисы', 'gns': 0, 'total_area': 0, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 0}, 'above_parking': {'label': 'Наземный паркинг', 'gns': 0, 'total_area': 0, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 0}, 'underground_parking': {'label': 'Подземный паркинг', 'gns': 38763, 'total_area': 38763, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 1107.5142857142857}, 'storage': {'label': 'Кладовки', 'gns': 0, 'total_area': 0, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 0}, 'kindergarten': {'label': 'ДОУ', 'gns': 0, 'total_area': 3000, 'useful': 0, 'saleable': 0, 'transfer': 3000, 'units': 250}, 'school': {'label': 'СОШ', 'gns': 0, 'total_area': 0, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 0}, 'clinic': {'label': 'Поликлиника', 'gns': 0, 'total_area': 0, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 0}, 'other_mandatory': {'label': 'Прочие обязательные объекты', 'gns': 0, 'total_area': 0, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 0}}
-FIELD_GROUPS = [['Сделка и сроки', [['purchase_price_mln', 'Стоимость покупки / цена входа', 'млн ₽', 'number'], ['land_rights_cost_mln', 'Оформление земельных правоотношений / смена ВРИ', 'млн ₽', 'number'], ['project_start', 'Начало проекта', 'дата', 'date'], ['ird_months', 'Срок ИРД до РнС', 'мес.; минимум 1 — ноль модель не считает', 'number'], ['construction_months', 'Срок строительства', 'мес.', 'number'], ['sales_lag_months', 'Лаг старта продаж после РнС', 'мес.', 'number'], ['bridge_repay_lag_months', 'Лаг погашения БРИДЖ после РнС', 'мес.', 'number'], ['residual_sales_months', 'Остаточные продажи после РВЭ', 'мес.', 'number']]], ['Смена ВРИ и земельные права', [['vri_required', 'Требуется изменение ВРИ', 'Да / Нет', 'checkbox'], ['vri_region', 'Регион', 'регион', 'select', [['msk', 'Москва'], ['mo', 'Московская область']]], ['land_right', 'Право на участок', 'право', 'select', [['ownership', 'Собственность'], ['lease', 'Аренда']]], ['vri_obligation_date_mode', 'Дата обязательства', 'режим', 'select', [['before_rns_1m', 'За месяц до РнС — экспертная оценка'], ['at_rns', 'В дату РнС'], ['before_rns_3m', 'За три месяца до РнС'], ['after_purchase', 'Через N мес. после покупки'], ['manual', 'Задана вручную']]], ['vri_months_after_purchase', 'Месяцев после покупки', 'мес.', 'number'], ['vri_obligation_date', 'Дата возникновения обязательства', 'точная дата по документу; пусто — экспертная оценка', 'date'], ['vri_payment_mode', 'Порядок оплаты', 'режим', 'select', [['lump', 'Единовременно'], ['installment', 'Рассрочка']]], ['vri_installment_years', 'Срок рассрочки', 'лет (Москва: 1, 3, 6)', 'number'], ['vri_periodicity_months', 'Периодичность платежей', 'мес.; в Москве всегда квартал', 'select', [['1', 'Ежемесячно'], ['3', 'Ежеквартально'], ['6', 'Раз в полгода'], ['12', 'Раз в год']]], ['vri_initial_pct', 'Первый взнос по рассрочке', '% от суммы', 'number'], ['vri_schedule_mode', 'График платежей', 'режим', 'select', [['auto', 'Автоматический'], ['manual', 'Ручной']]], ['vri_interest_enabled', 'Проценты на остаток', 'режим', 'select', [['', 'По региону'], ['1', 'Начисляются'], ['0', 'Не начисляются']]], ['vri_interest_spread_pp', 'Спред к ключевой ставке по рассрочке', 'п.п.', 'number'], ['vri_early_repay_after_pf', 'Досрочное погашение остатка после открытия ПФ', 'Да / Нет', 'checkbox'], ['vri_pf_open_date', 'Дата открытия ПФ', 'дата (пусто — РнС)', 'date'], ['vri_in_bank_budget', 'ВРИ включена в банковский бюджет', 'Да / Нет', 'checkbox'], ['vri_financing_mode', 'Источники оплаты', 'режим', 'select', [['auto', 'Как весь проект'], ['shares', 'Заданные доли']]], ['vri_share_bridge_pct', 'Доля БРИДЖ', '%', 'number'], ['vri_share_pf_pct', 'Доля ПФ', '%', 'number'], ['vri_share_equity_pct', 'Доля собственного капитала', '%', 'number'], ['vri_relief_mode', 'Льгота по плате', 'режим', 'select', [['none', 'Нет'], ['percent', 'Доля от суммы'], ['amount', 'Фиксированная сумма']]], ['vri_relief_pct', 'Льгота — доля от суммы', '%', 'number'], ['vri_relief_mln', 'Льгота — сумма', 'млн ₽', 'number'], ['vri_transfer_offset_mln', 'Зачёт переданных муниципалитету площадей', 'млн ₽; по соглашению — уменьшает плату за ВРИ', 'number'], ['vri_security_cost_mln', 'Расходы на обеспечение обязательства', 'млн ₽', 'number']]], ['Продажи', [['apartment_price_th', 'Стартовая цена квартир', 'тыс. ₽/м²', 'number'], ['commercial_price_th', 'Стартовая цена коммерции 1 этажа', 'тыс. ₽/м²', 'number'], ['parking_price_th', 'Цена подземного машино-места', 'тыс. ₽/шт.', 'number'], ['storage_price_th', 'Цена кладовой', 'тыс. ₽/шт.', 'number'], ['share_before_rve_pct', 'Доля продаж до РВЭ', '%', 'number'], ['pace_adjustment_pct', 'Корректировка темпа', '%', 'number'], ['inflation_after_rve_pct', 'Инфляция после РВЭ', '% год', 'number'], ['seasonal_reduction_pct', 'Сезонное снижение темпа', '%', 'number'], ['growth_stage1_pct', 'Рост цены — этап 1', '%', 'number'], ['growth_stage2_pct', 'Рост цены — этап 2', '%', 'number'], ['growth_stage3_pct', 'Рост цены — этап 3', '%', 'number'], ['growth_stage4_pct', 'Рост цены — этап 4', '%', 'number'], ['monthly_growth_pre_pct', 'Ежемесячный рост цены до РВЭ', '%/мес.', 'number'], ['monthly_growth_post_pct', 'Ежемесячный рост цены после РВЭ', '%/мес.', 'number']]], ['Строительство', [['ird_th_per_sqm', 'ИРД и согласования', 'тыс. ₽/м² ГНС', 'number'], ['design_p_th_per_sqm', 'Проектирование стадии П', 'тыс. ₽/м² ГНС', 'number'], ['design_rd_th_per_sqm', 'Проектирование стадии РД', 'тыс. ₽/м² ГНС', 'number'], ['preparation_th_per_sqm', 'Подготовительные работы', 'тыс. ₽/м² ГНС', 'number'], ['main_above_th_per_sqm', 'Основное строительство — наземная часть', 'тыс. ₽/м² ГНС', 'number'], ['main_under_th_per_sqm', 'Основное строительство — подземная часть', 'тыс. ₽/м² ГНС', 'number'], ['utilities_th_per_sqm', 'Наружные инженерные сети', 'тыс. ₽/м² ГНС', 'number'], ['landscaping_th_per_sqm', 'Благоустройство', 'тыс. ₽/м² ГНС', 'number'], ['commissioning_th_per_sqm', 'Сдача и ввод', 'тыс. ₽/м² ГНС', 'number'], ['site_maintenance_th_per_sqm', 'Содержание стройплощадки', 'тыс. ₽/м² ГНС', 'number'], ['gc_fee_pct', 'Вознаграждение генподрядчика', '% СМР', 'number'], ['author_supervision_pct', 'Авторский надзор', '% от П + РД', 'number'], ['project_management_pct', 'Управление проектом — зарплаты и накладные', '% прямых затрат', 'number'], ['technical_supervision_pct', 'Технический заказчик / стройконтроль (технадзор)', '% СМР', 'number'], ['reserve_pct', 'Резерв', '%', 'number']]], ['Коммерческие расходы и налоги', [['marketing_pct', 'Маркетинг', '% выручки', 'number'], ['selling_pct', 'Расходы на продажи', '% выручки', 'number'], ['profit_tax_pct', 'Налог на прибыль', '%', 'number'], ['vat_pct', 'НДС', '%', 'number']]], ['Финансирование', [['pre_pf_own_funds_mln', 'Собственные средства до открытия ПФ', 'млн ₽; тратятся раньше БРИДЖа и процентов не несут', 'number'], ['bridge_spread_pp', 'Спред БРИДЖ', 'п.п.', 'number'], ['bridge_cap_spread_pp', 'Спред капитализации БРИДЖ', 'п.п.', 'number'], ['pf_spread_pp', 'Спред ПФ', 'п.п.', 'number'], ['pf_special_pct', 'Ставка ПФ при покрытии эскроу 1×', '%', 'number'], ['pf_limit_approved_mln', 'Одобренный лимит ПФ', 'млн ₽; 0 — лимит выводится из потребности. Задан — становится потолком, а нехватка показывается отдельно', 'number'], ['pf_special_steps', 'Ступени ставки по покрытию эскроу', 'покрытие:ставка через ; по умолчанию лестница НКЛ Сбера — впишите свою из договора. Пусто — одна ставка выше', 'text'], ['limit_fee_pct', 'Плата за лимит', '%', 'number'], ['reservation_fee_pct', 'Плата за резервирование', '%', 'number'], ['discount_rate_pct', 'Ставка дисконтирования', '%', 'number'], ['bridge_interest_mode', 'Проценты БРИДЖ при рефинансировании', 'режим', 'finance_select']]], ['Социальная нагрузка', [['social_mode', 'Форма исполнения', 'режим', 'select'], ['social_comp_date', 'Дата денежной компенсации', 'дата', 'date'], ['social_compensation_mln', 'Социальный платеж / компенсация по ГлавАПУ', 'млн ₽', 'number'], ['kindergarten_places', 'ДОУ — количество мест', 'мест', 'number'], ['kindergarten_cost_mln_per_place', 'ДОУ — себестоимость места', 'млн ₽/место', 'number'], ['kindergarten_start', 'ДОУ — начало строительства', 'дата', 'date'], ['kindergarten_months', 'ДОУ — срок строительства', 'мес.', 'number'], ['school_places', 'СОШ — количество мест', 'мест', 'number'], ['school_cost_mln_per_place', 'СОШ — себестоимость места', 'млн ₽/место', 'number'], ['school_start', 'СОШ — начало строительства', 'дата', 'date'], ['school_months', 'СОШ — срок строительства', 'мес.', 'number'], ['clinic_capacity', 'Поликлиника — мощность', 'пос./смену', 'number'], ['clinic_cost_mln_per_unit', 'Поликлиника — себестоимость мощности', 'млн ₽/(пос./смену)', 'number'], ['clinic_start', 'Поликлиника — начало строительства', 'дата', 'date'], ['clinic_months', 'Поликлиника — срок строительства', 'мес.', 'number'], ['social_dou_gba_sqm', 'ДОУ — общая площадь', 'м²', 'number'], ['social_dou_norm_sqm', 'ДОУ — норматив площади на место', 'м²/место', 'number'], ['social_school_gba_sqm', 'СОШ — общая площадь', 'м²', 'number'], ['social_school_norm_sqm', 'СОШ — норматив площади на место', 'м²/место', 'number'], ['social_clinic_gba_sqm', 'Поликлиника — общая площадь', 'м²', 'number'], ['social_clinic_norm_sqm', 'Поликлиника — норматив площади', 'м²/ед.', 'number']]], ['МФОЦ / офисы', [['offices_enabled', 'Объект включен', 'Да / Нет', 'checkbox'], ['offices_gba_sqm', 'Общая площадь (GBA)', 'м²', 'number'], ['offices_saleable_sqm', 'Продаваемая площадь', 'м²', 'number'], ['offices_start', 'Начало строительства', 'дата', 'date'], ['offices_months', 'Срок строительства', 'мес.', 'number'], ['offices_cost_th_per_sqm', 'Себестоимость строительства', 'тыс. ₽/м² GBA', 'number'], ['offices_sales_start', 'Старт продаж', 'дата', 'date'], ['offices_price_th_per_sqm', 'Стартовая цена', 'тыс. ₽/м²', 'number'], ['offices_share_before_rve_pct', 'Доля продаж до РВЭ', '%', 'number'], ['offices_residual_months', 'Остаточные продажи после РВЭ', 'мес.', 'number'], ['offices_growth_pre_pct', 'Рост цены до РВЭ', '%/мес.', 'number'], ['offices_growth_post_pct', 'Рост цены после РВЭ', '%/мес.', 'number']]], ['ТЦ / коммерция ОСЗ', [['retail_enabled', 'Объект включен', 'Да / Нет', 'checkbox'], ['retail_gba_sqm', 'Общая площадь (GBA)', 'м²', 'number'], ['retail_saleable_sqm', 'Продаваемая площадь', 'м²', 'number'], ['retail_start', 'Начало строительства', 'дата', 'date'], ['retail_months', 'Срок строительства', 'мес.', 'number'], ['retail_cost_th_per_sqm', 'Себестоимость строительства', 'тыс. ₽/м² GBA', 'number'], ['retail_sales_start', 'Старт продаж', 'дата', 'date'], ['retail_price_th_per_sqm', 'Стартовая цена', 'тыс. ₽/м²', 'number'], ['retail_share_before_rve_pct', 'Доля продаж до РВЭ', '%', 'number'], ['retail_residual_months', 'Остаточные продажи после РВЭ', 'мес.', 'number'], ['retail_growth_pre_pct', 'Рост цены до РВЭ', '%/мес.', 'number'], ['retail_growth_post_pct', 'Рост цены после РВЭ', '%/мес.', 'number']]], ['Подземный паркинг', [['underground_parking_disabled', 'Отказ от подземного паркинга', 'Да / Нет; места переносятся в наземный', 'checkbox'], ['underground_manual_spaces', 'Машино-места — решение проекта', 'шт.; из расчёта ТЭП — меняйте, площадь пересчитается', 'number'], ['underground_manual_gns_sqm', 'Площадь подземной парковки', 'м²; пересчитывается из мест и обратно', 'number'], ['underground_area_per_space_sqm', 'Норматив площади на машино-место', 'м²/место, гросс: рампы, проезды и техпомещения включены', 'number']]], ['Наземный паркинг', [['above_parking_enabled', 'Объект включен', 'Да / Нет', 'checkbox'], ['above_parking_spaces', 'Количество машино-мест', 'шт.', 'number'], ['above_parking_cost_mln_per_space', 'Себестоимость одного места', 'млн ₽/место', 'number'], ['above_parking_start', 'Начало строительства', 'дата', 'date'], ['above_parking_months', 'Срок строительства', 'мес.', 'number'], ['above_parking_sales_start', 'Старт продаж', 'дата', 'date'], ['above_parking_price_mln_per_space', 'Стартовая цена места', 'млн ₽/место', 'number'], ['above_parking_share_before_rve_pct', 'Доля продаж до РВЭ', '%', 'number'], ['above_parking_residual_months', 'Остаточные продажи после РВЭ', 'мес.', 'number'], ['above_parking_growth_pre_pct', 'Рост цены до РВЭ', '%/мес.', 'number'], ['above_parking_growth_post_pct', 'Рост цены после РВЭ', '%/мес.', 'number'], ['above_parking_area_per_space_sqm', 'Площадь на 1 место для ТЭП', 'м²/место', 'number']]]]
+FIELD_GROUPS = [['Сделка и сроки', [['purchase_price_mln', 'Стоимость покупки / цена входа', 'млн ₽', 'number'], ['land_rights_cost_mln', 'Оформление земельных правоотношений / смена ВРИ', 'млн ₽', 'number'], ['project_start', 'Начало проекта', 'дата', 'date'], ['ird_months', 'Срок ИРД до РнС', 'мес.; минимум 1 — ноль модель не считает', 'number'], ['construction_months', 'Срок строительства', 'мес.', 'number'], ['sales_lag_months', 'Лаг старта продаж после РнС', 'мес.', 'number'], ['bridge_repay_lag_months', 'Лаг погашения БРИДЖ после РнС', 'мес.', 'number'], ['residual_sales_months', 'Остаточные продажи после РВЭ', 'мес.', 'number']]], ['Смена ВРИ и земельные права', [['vri_required', 'Требуется изменение ВРИ', 'Да / Нет', 'checkbox'], ['vri_region', 'Регион', 'регион', 'select', [['msk', 'Москва'], ['mo', 'Московская область']]], ['land_right', 'Право на участок', 'право', 'select', [['ownership', 'Собственность'], ['lease', 'Аренда']]], ['vri_obligation_date_mode', 'Дата обязательства', 'режим', 'select', [['before_rns_1m', 'За месяц до РнС — экспертная оценка'], ['at_rns', 'В дату РнС'], ['before_rns_3m', 'За три месяца до РнС'], ['after_purchase', 'Через N мес. после покупки'], ['manual', 'Задана вручную']]], ['vri_months_after_purchase', 'Месяцев после покупки', 'мес.', 'number'], ['vri_obligation_date', 'Дата возникновения обязательства', 'точная дата по документу; пусто — экспертная оценка', 'date'], ['vri_payment_mode', 'Порядок оплаты', 'режим', 'select', [['lump', 'Единовременно'], ['installment', 'Рассрочка']]], ['vri_installment_years', 'Срок рассрочки', 'лет (Москва: 1, 3, 6)', 'number'], ['vri_periodicity_months', 'Периодичность платежей', 'мес.; в Москве всегда квартал', 'select', [['1', 'Ежемесячно'], ['3', 'Ежеквартально'], ['6', 'Раз в полгода'], ['12', 'Раз в год']]], ['vri_initial_pct', 'Первый взнос по рассрочке', '% от суммы', 'number'], ['vri_schedule_mode', 'График платежей', 'режим', 'select', [['auto', 'Автоматический'], ['manual', 'Ручной']]], ['vri_interest_enabled', 'Проценты на остаток', 'режим', 'select', [['', 'По региону'], ['1', 'Начисляются'], ['0', 'Не начисляются']]], ['vri_interest_spread_pp', 'Спред к ключевой ставке по рассрочке', 'п.п.', 'number'], ['vri_early_repay_after_pf', 'Досрочное погашение остатка после открытия ПФ', 'Да / Нет', 'checkbox'], ['vri_pf_open_date', 'Дата открытия ПФ', 'дата (пусто — РнС)', 'date'], ['vri_in_bank_budget', 'ВРИ включена в банковский бюджет', 'Да / Нет', 'checkbox'], ['vri_financing_mode', 'Источники оплаты', 'режим', 'select', [['auto', 'Как весь проект'], ['shares', 'Заданные доли']]], ['vri_share_bridge_pct', 'Доля БРИДЖ', '%', 'number'], ['vri_share_pf_pct', 'Доля ПФ', '%', 'number'], ['vri_share_equity_pct', 'Доля собственного капитала', '%', 'number'], ['vri_relief_mode', 'Льгота по плате', 'режим', 'select', [['none', 'Нет'], ['percent', 'Доля от суммы'], ['amount', 'Фиксированная сумма']]], ['vri_relief_pct', 'Льгота — доля от суммы', '%', 'number'], ['vri_relief_mln', 'Льгота — сумма', 'млн ₽', 'number'], ['vri_transfer_offset_mln', 'Зачёт переданных муниципалитету площадей', 'млн ₽; по соглашению — уменьшает плату за ВРИ', 'number'], ['vri_security_cost_mln', 'Расходы на обеспечение обязательства', 'млн ₽', 'number']]], ['Продажи', [['apartment_price_th', 'Стартовая цена квартир', 'тыс. ₽/м²', 'number'], ['commercial_price_th', 'Стартовая цена коммерции 1 этажа', 'тыс. ₽/м²', 'number'], ['parking_price_th', 'Цена подземного машино-места', 'тыс. ₽/шт.', 'number'], ['storage_price_th', 'Цена кладовой', 'тыс. ₽/шт.', 'number'], ['share_before_rve_pct', 'Доля продаж до РВЭ', '%', 'number'], ['pace_adjustment_pct', 'Корректировка темпа', '%', 'number'], ['inflation_after_rve_pct', 'Инфляция после РВЭ', '% год', 'number'], ['seasonal_reduction_pct', 'Сезонное снижение темпа', '%', 'number'], ['growth_stage1_pct', 'Рост цены — этап 1', '%', 'number'], ['growth_stage2_pct', 'Рост цены — этап 2', '%', 'number'], ['growth_stage3_pct', 'Рост цены — этап 3', '%', 'number'], ['growth_stage4_pct', 'Рост цены — этап 4', '%', 'number'], ['monthly_growth_pre_pct', 'Ежемесячный рост цены до РВЭ', '%/мес.', 'number'], ['monthly_growth_post_pct', 'Ежемесячный рост цены после РВЭ', '%/мес.', 'number']]], ['Строительство', [['demolition_area_sqm', 'Снос — площадь сносимого', 'м²; по обязательствам КРТ, а не по новой ГНС', 'number'], ['demolition_cost_th_per_sqm', 'Снос — стоимость', 'тыс. ₽/м² сносимого; пусто при непустой площади — статья не посчитана', 'number'], ['resettlement_cost_mln', 'Расселение', 'млн ₽; отдельное обязательство КРТ, не соцнагрузка', 'number'], ['ird_th_per_sqm', 'ИРД и согласования', 'тыс. ₽/м² ГНС', 'number'], ['design_p_th_per_sqm', 'Проектирование стадии П', 'тыс. ₽/м² ГНС', 'number'], ['design_rd_th_per_sqm', 'Проектирование стадии РД', 'тыс. ₽/м² ГНС', 'number'], ['preparation_th_per_sqm', 'Подготовительные работы', 'тыс. ₽/м² ГНС', 'number'], ['main_above_th_per_sqm', 'Основное строительство — наземная часть', 'тыс. ₽/м² ГНС', 'number'], ['main_under_th_per_sqm', 'Основное строительство — подземная часть', 'тыс. ₽/м² ГНС', 'number'], ['utilities_th_per_sqm', 'Наружные инженерные сети', 'тыс. ₽/м² ГНС', 'number'], ['landscaping_th_per_sqm', 'Благоустройство', 'тыс. ₽/м² ГНС', 'number'], ['commissioning_th_per_sqm', 'Сдача и ввод', 'тыс. ₽/м² ГНС', 'number'], ['site_maintenance_th_per_sqm', 'Содержание стройплощадки', 'тыс. ₽/м² ГНС', 'number'], ['gc_fee_pct', 'Вознаграждение генподрядчика', '% СМР', 'number'], ['author_supervision_pct', 'Авторский надзор', '% от П + РД', 'number'], ['project_management_pct', 'Управление проектом — зарплаты и накладные', '% прямых затрат', 'number'], ['technical_supervision_pct', 'Технический заказчик / стройконтроль (технадзор)', '% СМР', 'number'], ['reserve_pct', 'Резерв', '%', 'number']]], ['Коммерческие расходы и налоги', [['marketing_pct', 'Маркетинг', '% выручки', 'number'], ['selling_pct', 'Расходы на продажи', '% выручки', 'number'], ['profit_tax_pct', 'Налог на прибыль', '%', 'number'], ['vat_pct', 'НДС', '%', 'number']]], ['Финансирование', [['pre_pf_own_funds_mln', 'Собственные средства до открытия ПФ', 'млн ₽; тратятся раньше БРИДЖа и процентов не несут', 'number'], ['bridge_spread_pp', 'Спред БРИДЖ', 'п.п.', 'number'], ['bridge_cap_spread_pp', 'Спред капитализации БРИДЖ', 'п.п.', 'number'], ['pf_spread_pp', 'Спред ПФ', 'п.п.', 'number'], ['pf_special_pct', 'Ставка ПФ при покрытии эскроу 1×', '%', 'number'], ['pf_limit_approved_mln', 'Одобренный лимит ПФ', 'млн ₽; 0 — лимит выводится из потребности. Задан — становится потолком, а нехватка показывается отдельно', 'number'], ['pf_special_steps', 'Ступени ставки по покрытию эскроу', 'лестница как в НКЛ: диапазон покрытия — своя ставка; по умолчанию лестница Сбера, впишите свою из договора. Пусто — одна ставка выше', 'pf_steps'], ['limit_fee_pct', 'Плата за лимит', '%', 'number'], ['reservation_fee_pct', 'Плата за резервирование', '%', 'number'], ['discount_rate_pct', 'Ставка дисконтирования', '%', 'number'], ['bridge_interest_mode', 'Проценты БРИДЖ при рефинансировании', 'режим', 'finance_select']]], ['Социальная нагрузка', [['social_mode', 'Форма исполнения', 'режим', 'select'], ['social_comp_date', 'Дата денежной компенсации', 'дата', 'date'], ['social_compensation_mln', 'Социальный платеж / компенсация по ГлавАПУ', 'млн ₽', 'number'], ['kindergarten_places', 'ДОУ — количество мест', 'мест', 'number'], ['kindergarten_cost_mln_per_place', 'ДОУ — себестоимость места', 'млн ₽/место', 'number'], ['kindergarten_start', 'ДОУ — начало строительства', 'дата', 'date'], ['kindergarten_months', 'ДОУ — срок строительства', 'мес.', 'number'], ['school_places', 'СОШ — количество мест', 'мест', 'number'], ['school_cost_mln_per_place', 'СОШ — себестоимость места', 'млн ₽/место', 'number'], ['school_start', 'СОШ — начало строительства', 'дата', 'date'], ['school_months', 'СОШ — срок строительства', 'мес.', 'number'], ['clinic_capacity', 'Поликлиника — мощность', 'пос./смену', 'number'], ['clinic_cost_mln_per_unit', 'Поликлиника — себестоимость мощности', 'млн ₽/(пос./смену)', 'number'], ['clinic_start', 'Поликлиника — начало строительства', 'дата', 'date'], ['clinic_months', 'Поликлиника — срок строительства', 'мес.', 'number'], ['social_dou_gba_sqm', 'ДОУ — общая площадь', 'м²', 'number'], ['social_dou_norm_sqm', 'ДОУ — норматив площади на место', 'м²/место', 'number'], ['social_school_gba_sqm', 'СОШ — общая площадь', 'м²', 'number'], ['social_school_norm_sqm', 'СОШ — норматив площади на место', 'м²/место', 'number'], ['social_clinic_gba_sqm', 'Поликлиника — общая площадь', 'м²', 'number'], ['social_clinic_norm_sqm', 'Поликлиника — норматив площади', 'м²/ед.', 'number']]], ['МФОЦ / офисы', [['offices_enabled', 'Объект включен', 'Да / Нет', 'checkbox'], ['offices_gba_sqm', 'Общая площадь (GBA)', 'м²', 'number'], ['offices_saleable_sqm', 'Продаваемая площадь', 'м²', 'number'], ['offices_start', 'Начало строительства', 'дата', 'date'], ['offices_months', 'Срок строительства', 'мес.', 'number'], ['offices_cost_th_per_sqm', 'Себестоимость строительства', 'тыс. ₽/м² GBA', 'number'], ['offices_sales_start', 'Старт продаж', 'дата', 'date'], ['offices_price_th_per_sqm', 'Стартовая цена', 'тыс. ₽/м²', 'number'], ['offices_share_before_rve_pct', 'Доля продаж до РВЭ', '%', 'number'], ['offices_residual_months', 'Остаточные продажи после РВЭ', 'мес.', 'number'], ['offices_growth_pre_pct', 'Рост цены до РВЭ', '%/мес.', 'number'], ['offices_growth_post_pct', 'Рост цены после РВЭ', '%/мес.', 'number']]], ['ТЦ / коммерция ОСЗ', [['retail_enabled', 'Объект включен', 'Да / Нет', 'checkbox'], ['retail_gba_sqm', 'Общая площадь (GBA)', 'м²', 'number'], ['retail_saleable_sqm', 'Продаваемая площадь', 'м²', 'number'], ['retail_start', 'Начало строительства', 'дата', 'date'], ['retail_months', 'Срок строительства', 'мес.', 'number'], ['retail_cost_th_per_sqm', 'Себестоимость строительства', 'тыс. ₽/м² GBA', 'number'], ['retail_sales_start', 'Старт продаж', 'дата', 'date'], ['retail_price_th_per_sqm', 'Стартовая цена', 'тыс. ₽/м²', 'number'], ['retail_share_before_rve_pct', 'Доля продаж до РВЭ', '%', 'number'], ['retail_residual_months', 'Остаточные продажи после РВЭ', 'мес.', 'number'], ['retail_growth_pre_pct', 'Рост цены до РВЭ', '%/мес.', 'number'], ['retail_growth_post_pct', 'Рост цены после РВЭ', '%/мес.', 'number']]], ['Подземный паркинг', [['underground_parking_disabled', 'Отказ от подземного паркинга', 'Да / Нет; места переносятся в наземный', 'checkbox'], ['underground_manual_spaces', 'Машино-места — решение проекта', 'шт.; из расчёта ТЭП — меняйте, площадь пересчитается', 'number'], ['underground_manual_gns_sqm', 'Площадь подземной парковки', 'м²; пересчитывается из мест и обратно', 'number'], ['underground_area_per_space_sqm', 'Норматив площади на машино-место', 'м²/место, гросс: рампы, проезды и техпомещения включены', 'number']]], ['Наземный паркинг', [['above_parking_enabled', 'Объект включен', 'Да / Нет', 'checkbox'], ['above_parking_spaces', 'Количество машино-мест', 'шт.', 'number'], ['above_parking_cost_mln_per_space', 'Себестоимость одного места', 'млн ₽/место', 'number'], ['above_parking_start', 'Начало строительства', 'дата', 'date'], ['above_parking_months', 'Срок строительства', 'мес.', 'number'], ['above_parking_sales_start', 'Старт продаж', 'дата', 'date'], ['above_parking_price_mln_per_space', 'Стартовая цена места', 'млн ₽/место', 'number'], ['above_parking_share_before_rve_pct', 'Доля продаж до РВЭ', '%', 'number'], ['above_parking_residual_months', 'Остаточные продажи после РВЭ', 'мес.', 'number'], ['above_parking_growth_pre_pct', 'Рост цены до РВЭ', '%/мес.', 'number'], ['above_parking_growth_post_pct', 'Рост цены после РВЭ', '%/мес.', 'number'], ['above_parking_area_per_space_sqm', 'Площадь на 1 место для ТЭП', 'м²/место', 'number']]]]
 # Удельные умолчания сверены с банковским бюджетом собственного проекта
 # (Гродненская, 18; ГНС наземной 19 341,14 м², подземная 3 733,2 м², лимит Сбера
 # по главам). Проценты сошлись — генподряд 7%, коммерческие 7% от выручки,
@@ -385,7 +385,7 @@ FIELD_GROUPS = [['Сделка и сроки', [['purchase_price_mln', 'Стои
 # задаёт ставку ПФ, и на 71% проект по умолчаниям перестаёт гасить долг.
 # Ставки классов (PROJECT_CLASS_PRESETS) проверку прошли и не менялись: старт
 # квартир 644,94 против пресета 650, машино-место 5 000 против 5 000.
-DEFAULT_INPUTS = {'project_class': 'comfort', 'purchase_price_mln': 0, 'construction_months': 24, 'apartment_price_th': 350, 'commercial_price_th': 350, 'parking_price_th': 1500, 'storage_price_th': 1000, 'share_before_rve_pct': 85, 'pace_adjustment_pct': 25, 'inflation_after_rve_pct': 3, 'seasonal_reduction_pct': -15, 'growth_stage1_pct': 0, 'growth_stage2_pct': 0, 'growth_stage3_pct': 0, 'growth_stage4_pct': 0, 'ird_th_per_sqm': 1, 'design_p_th_per_sqm': 6.0, 'design_rd_th_per_sqm': 8.5, 'preparation_th_per_sqm': 2.75, 'main_above_th_per_sqm': 110, 'utilities_th_per_sqm': 10.25, 'landscaping_th_per_sqm': 11.5, 'commissioning_th_per_sqm': 1, 'site_maintenance_th_per_sqm': 4.7, 'gc_fee_pct': 7, 'reserve_pct': 5, 'project_management_pct': 5, 'technical_supervision_pct': 5, 'author_supervision_pct': 3, 'marketing_pct': 4.5, 'selling_pct': 2.5, 'profit_tax_pct': 25, 'vat_pct': 22, 'pre_pf_own_funds_mln': 0.0, 'bridge_spread_pp': 6, 'bridge_cap_spread_pp': 6, 'pf_spread_pp': 4.5, 'pf_special_pct': 4.5, 'pf_limit_approved_mln': 0.0, 'pf_special_steps': PF_SPECIAL_STEPS_DEFAULT, 'limit_fee_pct': 0.7, 'reservation_fee_pct': 0.1, 'discount_rate_pct': 20, 'monthly_growth_pre_pct': 1.5, 'monthly_growth_post_pct': 0.25, 'ird_months': 18, 'sales_lag_months': 0, 'bridge_repay_lag_months': 0, 'residual_sales_months': 6, 'social_comp_date': '2028-06-01', 'social_compensation_mln': 0, 'kindergarten_places': 250, 'kindergarten_cost_mln_per_place': 2.75, 'kindergarten_start': '2028-06-01', 'kindergarten_months': 24, 'school_places': 0, 'school_cost_mln_per_place': 3, 'school_start': '2028-06-01', 'school_months': 30, 'clinic_capacity': 0, 'clinic_cost_mln_per_unit': 3, 'clinic_start': '2028-06-01', 'clinic_months': 24, 'offices_gba_sqm': 10000, 'offices_saleable_sqm': 6000, 'offices_start': '2028-07-01', 'offices_months': 24, 'offices_cost_th_per_sqm': 200, 'offices_sales_start': '2028-07-01', 'offices_price_th_per_sqm': 500, 'offices_share_before_rve_pct': 85, 'offices_residual_months': 6, 'offices_growth_pre_pct': 1.5, 'offices_growth_post_pct': 0.25, 'retail_gba_sqm': 10000, 'retail_saleable_sqm': 6000, 'retail_start': '2028-07-01', 'retail_months': 24, 'retail_cost_th_per_sqm': 200, 'retail_sales_start': '2028-07-01', 'retail_price_th_per_sqm': 500, 'retail_share_before_rve_pct': 85, 'retail_residual_months': 6, 'retail_growth_pre_pct': 1.5, 'retail_growth_post_pct': 0.25, 'above_parking_spaces': 550, 'above_parking_cost_mln_per_space': 1, 'above_parking_start': '2028-07-01', 'above_parking_months': 18, 'above_parking_sales_start': '2028-07-01', 'above_parking_price_mln_per_space': 2, 'above_parking_share_before_rve_pct': 85, 'above_parking_residual_months': 6, 'above_parking_growth_pre_pct': 0.75, 'above_parking_growth_post_pct': 0.2, 'social_dou_gba_sqm': 3000, 'social_school_gba_sqm': 0, 'social_clinic_gba_sqm': 0, 'project_start': '2027-01-01', 'main_under_th_per_sqm': 110, 'social_mode': 'Строительство', 'social_dou_norm_sqm': 12, 'social_school_norm_sqm': 13, 'social_clinic_norm_sqm': 15, 'offices_enabled': False, 'retail_enabled': False, 'above_parking_enabled': False, 'above_parking_area_per_space_sqm': 25, 'underground_area_per_space_sqm': 35, 'underground_manual_gns_sqm': 0, 'underground_manual_spaces': 0, 'underground_parking_disabled': False, 'rate_scenario': 'base', 'land_rights_cost_mln': 2864.291514155844, 'bridge_interest_mode': 'Капитализация в ПФ', 'rate_start_pct': 14.0, 'rate_start_date': '2026-07-24', 'rate_target_high_pct': 11.0, 'rate_target_base_pct': 9.0, 'rate_target_low_pct': 7.0, 'rate_normalization_months': 24, 'rate_curve_shape': 2.0, 'vri_required': True, 'vri_region': 'msk', 'land_right': 'ownership', 'vri_obligation_date': '', 'vri_payment_mode': 'lump', 'vri_installment_years': 3, 'vri_periodicity_months': 3, 'vri_schedule_mode': 'auto', 'vri_interest_enabled': '', 'vri_interest_spread_pp': 3.0, 'vri_early_repay_after_pf': False, 'vri_pf_open_date': '', 'vri_in_bank_budget': True, 'vri_financing_mode': 'auto', 'vri_share_bridge_pct': 0.0, 'vri_share_pf_pct': 0.0, 'vri_share_equity_pct': 0.0, 'vri_security_cost_mln': 0.0, 'vri_relief_mode': 'none', 'vri_relief_pct': 0.0, 'vri_relief_mln': 0.0, 'vri_transfer_offset_mln': 0.0, 'vri_obligation_date_mode': 'before_rns_1m', 'vri_months_after_purchase': 12, 'vri_initial_pct': 0.0, 'tep_ratios_custom': ''}
+DEFAULT_INPUTS = {'project_class': 'comfort', 'purchase_price_mln': 0, 'construction_months': 24, 'apartment_price_th': 350, 'commercial_price_th': 350, 'parking_price_th': 1500, 'storage_price_th': 1000, 'share_before_rve_pct': 85, 'pace_adjustment_pct': 25, 'inflation_after_rve_pct': 3, 'seasonal_reduction_pct': -15, 'growth_stage1_pct': 0, 'growth_stage2_pct': 0, 'growth_stage3_pct': 0, 'growth_stage4_pct': 0, 'demolition_area_sqm': 0.0, 'demolition_cost_th_per_sqm': 0.0, 'resettlement_cost_mln': 0.0, 'ird_th_per_sqm': 1, 'design_p_th_per_sqm': 6.0, 'design_rd_th_per_sqm': 8.5, 'preparation_th_per_sqm': 2.75, 'main_above_th_per_sqm': 110, 'utilities_th_per_sqm': 10.25, 'landscaping_th_per_sqm': 11.5, 'commissioning_th_per_sqm': 1, 'site_maintenance_th_per_sqm': 4.7, 'gc_fee_pct': 7, 'reserve_pct': 5, 'project_management_pct': 5, 'technical_supervision_pct': 5, 'author_supervision_pct': 3, 'marketing_pct': 4.5, 'selling_pct': 2.5, 'profit_tax_pct': 25, 'vat_pct': 22, 'pre_pf_own_funds_mln': 0.0, 'bridge_spread_pp': 6, 'bridge_cap_spread_pp': 6, 'pf_spread_pp': 4.5, 'pf_special_pct': 4.5, 'pf_limit_approved_mln': 0.0, 'pf_special_steps': PF_SPECIAL_STEPS_DEFAULT, 'limit_fee_pct': 0.7, 'reservation_fee_pct': 0.1, 'discount_rate_pct': 20, 'monthly_growth_pre_pct': 1.5, 'monthly_growth_post_pct': 0.25, 'ird_months': 18, 'sales_lag_months': 0, 'bridge_repay_lag_months': 0, 'residual_sales_months': 6, 'social_comp_date': '2028-06-01', 'social_compensation_mln': 0, 'kindergarten_places': 250, 'kindergarten_cost_mln_per_place': 2.75, 'kindergarten_start': '2028-06-01', 'kindergarten_months': 24, 'school_places': 0, 'school_cost_mln_per_place': 3, 'school_start': '2028-06-01', 'school_months': 30, 'clinic_capacity': 0, 'clinic_cost_mln_per_unit': 3, 'clinic_start': '2028-06-01', 'clinic_months': 24, 'offices_gba_sqm': 10000, 'offices_saleable_sqm': 6000, 'offices_start': '2028-07-01', 'offices_months': 24, 'offices_cost_th_per_sqm': 200, 'offices_sales_start': '2028-07-01', 'offices_price_th_per_sqm': 500, 'offices_share_before_rve_pct': 85, 'offices_residual_months': 6, 'offices_growth_pre_pct': 1.5, 'offices_growth_post_pct': 0.25, 'retail_gba_sqm': 10000, 'retail_saleable_sqm': 6000, 'retail_start': '2028-07-01', 'retail_months': 24, 'retail_cost_th_per_sqm': 200, 'retail_sales_start': '2028-07-01', 'retail_price_th_per_sqm': 500, 'retail_share_before_rve_pct': 85, 'retail_residual_months': 6, 'retail_growth_pre_pct': 1.5, 'retail_growth_post_pct': 0.25, 'above_parking_spaces': 550, 'above_parking_cost_mln_per_space': 1, 'above_parking_start': '2028-07-01', 'above_parking_months': 18, 'above_parking_sales_start': '2028-07-01', 'above_parking_price_mln_per_space': 2, 'above_parking_share_before_rve_pct': 85, 'above_parking_residual_months': 6, 'above_parking_growth_pre_pct': 0.75, 'above_parking_growth_post_pct': 0.2, 'social_dou_gba_sqm': 3000, 'social_school_gba_sqm': 0, 'social_clinic_gba_sqm': 0, 'project_start': '2027-01-01', 'main_under_th_per_sqm': 110, 'social_mode': 'Строительство', 'social_dou_norm_sqm': 12, 'social_school_norm_sqm': 13, 'social_clinic_norm_sqm': 15, 'offices_enabled': False, 'retail_enabled': False, 'above_parking_enabled': False, 'above_parking_area_per_space_sqm': 25, 'underground_area_per_space_sqm': 35, 'underground_manual_gns_sqm': 0, 'underground_manual_spaces': 0, 'underground_parking_disabled': False, 'rate_scenario': 'base', 'land_rights_cost_mln': 2864.291514155844, 'bridge_interest_mode': 'Капитализация в ПФ', 'rate_start_pct': 14.0, 'rate_start_date': '2026-07-24', 'rate_target_high_pct': 11.0, 'rate_target_base_pct': 9.0, 'rate_target_low_pct': 7.0, 'rate_normalization_months': 24, 'rate_curve_shape': 2.0, 'vri_required': True, 'vri_region': 'msk', 'land_right': 'ownership', 'vri_obligation_date': '', 'vri_payment_mode': 'lump', 'vri_installment_years': 3, 'vri_periodicity_months': 3, 'vri_schedule_mode': 'auto', 'vri_interest_enabled': '', 'vri_interest_spread_pp': 3.0, 'vri_early_repay_after_pf': False, 'vri_pf_open_date': '', 'vri_in_bank_budget': True, 'vri_financing_mode': 'auto', 'vri_share_bridge_pct': 0.0, 'vri_share_pf_pct': 0.0, 'vri_share_equity_pct': 0.0, 'vri_security_cost_mln': 0.0, 'vri_relief_mode': 'none', 'vri_relief_pct': 0.0, 'vri_relief_mln': 0.0, 'vri_transfer_offset_mln': 0.0, 'vri_obligation_date_mode': 'before_rns_1m', 'vri_months_after_purchase': 12, 'vri_initial_pct': 0.0, 'tep_ratios_custom': ''}
 EXCEL_CONTROL = {'llcr': 1.103956112148479, 'bridge_principal_mln': 1345.8299811734776, 'bridge_interest_mln': 61.01315248705002, 'pf_draw_mln': 30011.506226781967, 'pf_interest_and_fees_mln': 2112.072941531574, 'all_interest_and_fees_mln': 2173.086094018624}
 LOGO_B64 = "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"
 
@@ -1142,6 +1142,7 @@ def parse_manual_tep_xlsx(data: bytes, filename: str = "") -> dict[str, Any]:
 
     known_keys = set(TEP_DEFAULT)
     tep_mapping: dict[str, dict[str, float]] = {}
+    transfer_conflicts: list[str] = []
     for row in rows[header_index + 1:]:
         code = str(row[0] if row else "").strip()
         if not code:
@@ -1170,6 +1171,24 @@ def parse_manual_tep_xlsx(data: bytes, filename: str = "") -> dict[str, Any]:
             total_area = gns
         if saleable > 0 and useful <= 0:
             useful = saleable
+        # Переданные муниципалитету метры строятся, но не продаются — правило
+        # общее для всех шаблонов (владелец, 23.08.2026). На странице его
+        # держит обработчик поля: правка передаваемой убирает столько же из
+        # продаваемой. У файла такого обработчика нет, колонки независимы, и
+        # заполненные обе целиком продали бы переданное. Инвариант проверяется
+        # здесь: продаваемая не больше «общая минус передаваемая». Срабатывает
+        # только при нарушении, поэтому вычесть дважды нельзя.
+        if transfer > 0 and saleable > 0 and total_area > 0:
+            allowed = max(0.0, total_area - transfer)
+            if saleable > allowed + 1.0:
+                transfer_conflicts.append(
+                    f"{label}: продаваемая {saleable:,.0f} м² при передаваемой "
+                    f"{transfer:,.0f} м² и общей {total_area:,.0f} м² — "
+                    f"передаваемая не продаётся, продаваемая уменьшена до "
+                    f"{allowed:,.0f} м²".replace(",", " ")
+                )
+                saleable = allowed
+                useful = min(useful, allowed)
         tep_mapping[code] = {
             "gns": gns,
             "total_area": total_area,
@@ -1267,6 +1286,9 @@ def parse_manual_tep_xlsx(data: bytes, filename: str = "") -> dict[str, Any]:
         "inputs": inputs_mapping,
         "tep": tep_mapping,
         "recognized": recognized,
+        # Молчаливое исправление неотличимо от отсутствующего: если продаваемая
+        # была урезана до «общая минус передаваемая», это сказано вслух.
+        "notes": transfer_conflicts,
         "summary": {
             "total_gns_sqm": total_gns,
             "total_saleable_sqm": total_saleable,
@@ -11990,6 +12012,8 @@ _MODEL_CAPEX_LABELS: list[tuple[str, str]] = [
     ("design_rd", "Проектирование, стадия РД"),
     ("author_supervision", "Авторский надзор"),
     ("technical_supervision", "Технический заказчик / стройконтроль"),
+    ("demolition", "Снос и демонтаж"),
+    ("resettlement", "Расселение"),
     ("preparation", "Подготовительные работы"),
     ("main_above", "Основное строительство, наземная часть"),
     ("main_under", "Основное строительство, подземная часть"),
@@ -14187,8 +14211,10 @@ def build_project_workbook(
             label="прод. квартир")
         put(f"AA{row}", number=num_row(crow.get("ground_commercial"), "saleable"),
             label="прод. коммерции")
-        put(f"AB{row}", number=num_row(crow.get("underground_parking"), "units"),
-            label="паркинг, шт.")
+        # Строится весь паркинг (ГНС в Y), а продаются только не гостевые места:
+        # AB кормит «Продажи», поэтому здесь стоит проданное, а не построенное.
+        put(f"AB{row}", number=underground_saleable_spaces(crow.get("underground_parking") or {}),
+            label="паркинг к продаже, шт.")
         put(f"AC{row}", number=num_row(crow.get("storage"), "units"), label="кладовые, шт.")
         put(f"AE{row}", number=0.0, label="инфляция цены")
         put(f"AF{row}", number=0.0, label="инфляция затрат")
@@ -14431,10 +14457,11 @@ _PLATO_TEP_ROWS: list[tuple[str, str]] = [
     ("НП нежилой части жилых зданий", "ground_commercial.total_area"),
     ("Площадь квартир", "apartments.saleable"),
     ("Нежилая наземная площадь (ННП)", "ground_commercial.saleable"),
-    ("Постоянные парковки", "underground_parking.units"),
-    # ТЭП!I33 шаблона складывает постоянные и гостевые парковки. Гостевые в
-    # модели не продаются, и оставленное в шаблоне чужое значение добавляло
-    # к расчёту несуществующие машино-места — обнуляем явно.
+    # ТЭП!I33 шаблона складывает постоянные и гостевые парковки. Значит в
+    # «постоянные» идёт не всё число мест, а число за вычетом гостевых —
+    # иначе гостевые считаются дважды. Обе строки пишутся явно: оставленное
+    # в шаблоне чужое значение попало бы в расчёт как своё.
+    ("Постоянные парковки", "underground_parking.permanent_units"),
     ("Гостевые парковки", "underground_parking.guest_units"),
 ]
 
@@ -14461,6 +14488,13 @@ def _plato_value(kind: str, value: Any) -> Any:
 def _plato_tep_value(tep: dict[str, dict[str, Any]], path: str) -> float | None:
     product, field = path.split(".", 1)
     values = tep.get(product) or {}
+    if product == "underground_parking" and field in ("permanent_units", "guest_units"):
+        # Гостевые места модель хранит рядом с общим числом, а при ручном вводе
+        # выводит из норматива. Книге нужны обе половины по отдельности.
+        if not values:
+            return 0.0
+        guest = float(underground_guest_spaces(values))
+        return guest if field == "guest_units" else underground_saleable_spaces(values)
     if field not in values:
         # Показателя нет в модели — значит в шаблоне на его месте данные чужого
         # проекта, и оставлять их нельзя: они попадут в расчёт как свои.
@@ -15500,6 +15534,8 @@ _M2_COST_ARTICLES: list[tuple[str, str, bool]] = [
     ("ird", "ИРД и согласования", True),
     ("design_p", "Проектирование, стадия П", True),
     ("design_rd", "Проектирование, стадия РД", True),
+    ("demolition", "Снос и демонтаж", True),
+    ("resettlement", "Расселение", True),
     ("preparation", "Подготовительные работы", True),
     ("main_above", "Основное строительство, наземная часть", True),
     ("main_under", "Основное строительство, подземная часть", True),
@@ -18357,7 +18393,12 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
 
     core_product("apartments", n(apartment, "saleable"), n(x, "apartment_price_th"))
     core_product("ground_commercial", n(commercial, "saleable"), n(x, "commercial_price_th"))
-    core_product("underground_parking", n(underground, "units"), n(x, "parking_price_th"))
+    # Гостевые места не продаются: по нормативу они обслуживают посетителей и
+    # остаются общим имуществом. Модель продавала весь паркинг целиком — на
+    # 369 местах это 34 несуществующие продажи (владелец, 21.08.2026). В книгу
+    # правило было записано давно, а движок его не исполнял.
+    core_product("underground_parking", underground_saleable_spaces(underground),
+                 n(x, "parking_price_th"))
     core_product("storage", n(storage, "units"), n(x, "storage_price_th"))
 
     standalone_capex = {}
@@ -18456,6 +18497,13 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
         "design_rd": core_total_gns * n(x, "design_rd_th_per_sqm") * 1000,
         "author_supervision": 0.0,
         "technical_supervision": 0.0,
+        # Снос считается от площади СНОСИМОГО, а не от новой ГНС: это разные
+        # метры, и удельная ставка подготовительных работ здесь не годится.
+        # Расселение — отдельное обязательство КРТ и отдельные деньги.
+        # Ни то ни другое не соцнагрузка: соцнагрузка компенсируется деньгами
+        # и входит в расчётный лимит БРИДЖа, а снос — нет.
+        "demolition": n(x, "demolition_area_sqm") * n(x, "demolition_cost_th_per_sqm") * 1000,
+        "resettlement": n(x, "resettlement_cost_mln") * 1_000_000,
         "preparation": core_total_gns * n(x, "preparation_th_per_sqm") * 1000,
         "main_above": core_above_gns * n(x, "main_above_th_per_sqm") * 1000,
         "main_under": core_under_gns * n(x, "main_under_th_per_sqm") * 1000,
@@ -18604,6 +18652,10 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
     design_window = min(6, ird_months)
     spread_article("design_p", amounts["design_p"], add_months(permit, -design_window), design_window)
     spread_article("design_rd", amounts["design_rd"], add_months(permit, -design_window), design_window)
+    # Снос и расселение идут до РнС, вместе с подготовительными работами:
+    # строить на занятой площадке нельзя.
+    spread_article("demolition", amounts["demolition"], add_months(permit, -design_window), design_window)
+    spread_article("resettlement", amounts["resettlement"], add_months(permit, -design_window), design_window)
     spread_article("preparation", amounts["preparation"], add_months(permit, -design_window), design_window)
 
     construction_months = max(1, int(n(x, "construction_months", 24)))
@@ -18819,6 +18871,37 @@ def pf_special_rate_at(coverage: float, steps: list[tuple[float, float]],
         else:
             break
     return rate
+
+
+def underground_guest_spaces(row: dict[str, Any]) -> int:
+    """Гостевые места подземного паркинга — те, что не продаются.
+
+    Точное число приходит с импортом ГлавАПУ и хранится рядом с местами. Когда
+    его нет (места введены руками), оно выводится из самого норматива: гостевые
+    — десятая часть постоянных, значит из S = P + ceil(P/10) следует P ≈ S/1,1,
+    и гостевых остаётся S/11. На 369 местах это 34 — ровно столько, сколько
+    насчитал владелец.
+    """
+    known = row.get("guest_units")
+    if known not in (None, ""):
+        try:
+            return max(0, int(round(float(known))))
+        except (TypeError, ValueError):
+            pass
+    try:
+        total = float(row.get("units") or 0)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, int(round(total / 11.0))) if total > 0 else 0
+
+
+def underground_saleable_spaces(row: dict[str, Any]) -> float:
+    """Продаваемые машино-места: всё, кроме гостевых."""
+    try:
+        total = float(row.get("units") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    return max(0.0, total - underground_guest_spaces(row))
 
 
 def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) -> dict:
@@ -19492,6 +19575,9 @@ def calculate(req: CalcRequest) -> dict:
         underground_spaces = permanent + guest
         if underground_spaces > 0 and "underground_parking" in t:
             t["underground_parking"]["units"] = underground_spaces
+            # Точное число гостевых известно из выгрузки — выводить его из доли
+            # незачем, а потерять значит продать их.
+            t["underground_parking"]["guest_units"] = guest
             t["underground_parking"]["gns"] = underground_spaces * area_per_space
             t["underground_parking"]["total_area"] = underground_spaces * area_per_space
             t["underground_parking"]["useful"] = 0.0
@@ -19792,7 +19878,9 @@ def calculate(req: CalcRequest) -> dict:
             "start": op["sales_start"], "end_ref": op["rve"], "residual": int(n(x, "residual_sales_months", 6))
         },
         "underground_parking": {
-            "label": "Подземный паркинг", "quantity": n(t.get("underground_parking", {}), "units"),
+            # Продаётся не весь паркинг: гостевые места остаются общими.
+            "label": "Подземный паркинг",
+            "quantity": underground_saleable_spaces(t.get("underground_parking", {})),
             "unit": "шт.", "start_price": n(x, "parking_price_th"), "share": n(x, "share_before_rve_pct", 85)/100,
             "start": op["sales_start"], "end_ref": op["rve"], "residual": int(n(x, "residual_sales_months", 6))
         },
@@ -28048,29 +28136,6 @@ details.cadastral-box>summary::marker{color:#888}
         <div class="note"><b>Дата обязательства по умолчанию — экспертно за месяц до РнС.</b> На этапе инвестиционного анализа точная дата соглашения обычно неизвестна; после появления утверждённых документов и графика её необходимо заменить на фактическую. Платежи до открытия ПФ несёт БРИДЖ или собственный капитал, после — ПФ, и только если ВРИ включена в банковский бюджет. Проценты по рассрочке считаются отдельно от процентов по кредитам.</div>
         <div id="vriInputGroups"></div>
       </div>
-      <div class="card">
-        <div class="report-title">
-          <div>
-            <div class="section-title">Плата за ВРИ — свой расчёт</div>
-            <h2>По своим метрам и своим основаниям, когда ТЭП отличается от нормативного</h2>
-          </div>
-          <small>Формула калькулятора: 1,8964 × СПП × коэффициент аренды × базовая стоимость × индекс</small>
-        </div>
-        <div class="note">Калькулятор ГлавАПУ считает по <b>нормативному</b> ТЭП — плотность на площадь участка. Если ТЭП утверждён решением ГЗК и метров меньше, его ответ для этого проекта неверен, а подменять городской расчёт молча нельзя. Здесь тот же расчёт на ваших метрах, и он подписан как ваш. Базовые стоимости по типам использования — с листа «Параметры территории» выгрузки калькулятора; нулевая базовая означает, что за этот вид не платят (производство, соцобъекты).</div>
-        <div class="toolbar">
-          <label>Коэффициент аренды квартала <input type="number" step="any" id="vriOwnRent" style="width:110px"></label>
-          <button class="btn" onclick="fillVriOwnFromTep()">Взять метры из ТЭП</button>
-          <button class="btn dark" onclick="calcVriOwn()">Посчитать</button>
-          <button class="btn" onclick="applyVriOwn()">Подставить в модель</button>
-        </div>
-        <div class="scroll"><table class="teptable">
-          <thead><tr><th>Тип использования</th><th>СПП, м²</th><th>Базовая стоимость, ₽/м²</th><th>Плата, млн ₽</th></tr></thead>
-          <tbody id="vriOwnBody"></tbody>
-          <tfoot><tr><th>Итого</th><th id="vriOwnSpp"></th><th></th><th id="vriOwnTotal"></th></tr></tfoot>
-        </table></div>
-        <div id="vriOwnSource" style="color:#777;font-size:12px;margin-top:8px"></div>
-        <div id="vriOwnNote" class="import-status" style="display:none"></div>
-      </div>
       <div class="card" id="vriTabCard" style="display:none">
         <div class="section-title">Результат</div>
         <div class="report-2col">
@@ -28534,6 +28599,7 @@ details.cadastral-box>summary::marker{color:#888}
            и требовать для этого localStorage.removeItem — значит не менять. -->
       <span id="projectsStorageActions" style="display:none;gap:14px">
         <button class="btn dark" onclick="saveProjectToServer()">Сохранить текущий</button>
+        <button class="btn" onclick="downloadCurrentSettings()">Скачать настройки текущего</button>
         <button class="btn" onclick="changeProjectsKey()">Сменить ключ</button>
       </span>
       <button class="btn" style="margin-left:auto" onclick="closeProjects()">Закрыть</button>
@@ -28566,6 +28632,16 @@ details.cadastral-box>summary::marker{color:#888}
       <div class="section-title" style="margin-bottom:8px">Мои проекты</div>
       <div style="font-size:11px;color:#777;margin-bottom:10px">
         Хранится на ядре в России. Сохраняется только то, что вы сохранили сами.
+      </div>
+      <!-- Ссылка живёт на нашем сервере и требует, чтобы он отвечал. Файл
+           настроек не требует ничего: его пересылают почтой, кладут в папку
+           проекта, открывают через год. Это разные способы передачи, и один
+           другого не заменяет. -->
+      <div class="upload-line" style="align-items:center;margin-bottom:10px">
+        <button class="btn" onclick="importSettingsFile()">Загрузить файл настроек</button>
+        <input type="file" id="settingsFileInput" accept=".json,application/json" style="display:none"
+               onchange="applySettingsFile(this)">
+        <span style="font-size:11px;color:#888">файл .json из кнопки «Файл» — свой или присланный</span>
       </div>
       <div class="scroll"><table>
         <thead><tr><th>Проект</th><th>Выручка</th><th>Чистая прибыль</th><th>LLCR</th><th></th></tr></thead>
@@ -29068,7 +29144,6 @@ function openTab(id,btn){
  // Свой расчёт ВРИ рисуется при открытии вкладки: строки типов приходят из
  // движка, метры и основания — из импорта, и до первого показа их некому
  // подставить.
- if(id==='vri'&&typeof renderVriOwn==='function')renderVriOwn(vriOwnLast);
 }
 
 function askProfileOnResult(){
@@ -31480,6 +31555,7 @@ function renderInputs(){
        wrap.innerHTML+=`<div class="note" style="margin:0;padding:11px 12px">Определяется по выбранной очереди на вкладке «Очередность». По умолчанию — дата начала этой очереди.</div>`;
        grid.appendChild(wrap);return;
      }
+     if(type==='pf_steps'){renderPfStepsEditor(wrap);grid.appendChild(wrap);return;}
      let el;
      if(Array.isArray(f[4])){el=document.createElement('select');f[4].forEach(pair=>{let o=document.createElement('option');o.value=pair[0];o.textContent=pair[1];el.appendChild(o)})}
      else if(type==='select'){el=document.createElement('select');__DEVELOPAID_SOCIAL_MODES__.forEach(v=>{let o=document.createElement('option');o.value=v;o.textContent=v;el.appendChild(o)})}
@@ -31659,9 +31735,29 @@ function renderTep(){
        +`. <button type="button" class="tep-refill" onclick="enableTepRow('${key}')">включить объект</button></span>`;
    }
    let html=`<td>${label}</td>`;
+   // Доля стоит под тем числом, которое из неё получается: «% ГНС» под общей
+   // площадью, «% общей» под продаваемой. Прежде они лежали под раскрытием над
+   // таблицей — свёрнутым по умолчанию, и это читалось как «их нет вовсе»
+   // (владелец, 21.08.2026). Отдельной колонкой слева было бы непонятно: доля
+   // без своего числа рядом не читается.
+   const chain=TEP_RATIOS[key]?tepRatioChain(tepRatio(key)):null;
+   const own=chain&&tepRatioChangedKeys().includes(key);
+   const ratioField=col=>{
+    if(!chain)return '';
+    const which=col==='total_area'?'total':(col==='saleable'?'saleable':'');
+    if(!which)return '';
+    const value=Math.round((which==='total'?chain[0]:chain[1])*1e4)/100;
+    const of=which==='total'?'% ГНС':'% общей';
+    return '<div style="margin-top:3px;font-size:11px;color:'+(own?'#a33':'#777')+';white-space:nowrap">'
+     +'<input type="number" step="0.1" min="0" max="100" value="'+value+'" style="width:56px;font-size:11px" '
+     +'title="доля, по которой достраивается это число" '
+     +'onchange="tepRatioSet(\''+key+'\',\''+which+'\',this.value)">'+of
+     +(own&&which==='saleable'?' <button type="button" class="tep-refill" onclick="tepRatioReset(\''+key+'\')">наши</button>':'')
+     +'</div>';
+   };
    ['gns','total_area','useful','saleable','transfer','units'].forEach(col=>{
      const locked=rowOff||(key==='underground_parking'&&(importedParking||inputs.underground_parking_disabled||Number(inputs.underground_manual_spaces||0)>0||Number(inputs.underground_manual_gns_sqm||0)>0)&&['gns','total_area','useful','saleable','transfer','units'].includes(col));
-     html+=`<td><input type="number" step="0.1" value="${inputDisplay(row[col])}" ${locked?'readonly style="background:#f3f3f1;color:#555"':''} onchange="tepCellChanged('${key}','${col}',this.value)"></td>`;
+     html+=`<td><input type="number" step="0.1" value="${inputDisplay(row[col])}" ${locked?'readonly style="background:#f3f3f1;color:#555"':''} onchange="tepCellChanged('${key}','${col}',this.value)">${locked?'':ratioField(col)}</td>`;
    });tr.innerHTML=html;body.appendChild(tr);
  });updateTepTotals();renderTepRatioNote();
 }
@@ -31671,45 +31767,19 @@ function renderTep(){
 // Пропорции печатаются рядом с таблицей: подставленное число, происхождение
 // которого не видно, неотличимо от введённого человеком.
 function renderTepRatioNote(){
- // Раньше здесь лежал справочный список долей: посмотреть можно, изменить
- // нельзя. Но доли — умолчание, а не норма: у человека на руках бывает ГПЗУ или
- // АГР со своими (просьба владельца, 20.08.2026). Поэтому список стал вводом, а
- // читается он цепочкой, которой считает человек: ГНС → общая → продаваемая.
- // Стена текста на телефоне ни к чему, поэтому всё под раскрытием — но открытым,
- // как только доли отличаются от наших: изменённое число обязано быть видно.
+ // Сами доли теперь стоят в таблице под своими числами, поэтому здесь остаётся
+ // только правило и отказ. Раскрытие со списком долей убрано: свёрнутое по
+ // умолчанию, оно читалось как «долей нет вовсе» (владелец, 21.08.2026).
  const box=document.getElementById('tepRatioNote');
  if(!box)return;
- const label=key=>((TEP_DEFAULT[key]||{}).label)||key;
  const changed=tepRatioChangedKeys();
- const rows=Object.keys(TEP_RATIOS).map(key=>{
-  const r=tepRatio(key),c=tepRatioChain(r),mine=tepRatioChain(TEP_RATIOS[key]);
-  const own=changed.includes(key);
-  // Значение поля — простое число с точкой: `landNum` печатает по-русски, с
-  // запятой и неразрывным пробелом, и `input type=number` такое не принимает —
-  // поле открылось бы пустым, а доля выглядела бы стёртой.
-  const field=(what,value)=>'<input type="number" step="0.1" min="0" max="100" value="'+
-   (Math.round(Number(value)*1e4)/1e4)+'" style="width:64px" onchange="tepRatioSet(\''+key+'\',\''+what+'\',this.value)">';
-  return '<div style="margin:3px 0">'+escapeHtml(label(key))+' — общая '+field('total',c[0]*100)+
-   '% ГНС, продаваемая '+field('saleable',c[1]*100)+'% общей'+
-   ' <span style="color:#777">= '+landNum(c[0]*c[1]*100,1)+'% ГНС · '+escapeHtml(r.source)+
-   (own?', наши были '+landNum(mine[0]*100,0)+' / '+landNum(mine[1]*100,1):'')+'</span>'+
-   (own?' <button type="button" class="tep-refill" onclick="tepRatioReset(\''+key+'\')">вернуть наши</button>':'')+
-   '</div>';
- }).join('');
- // Отказ стоит СНАРУЖИ раскрытия и открывает его. Внутри закрытого `details`
- // он не виден вовсе — человек вписал 140%, ничего не изменилось, и молчание
- // читается как «поле не работает». Молчащая проверка неотличима от
- // отсутствующей.
  const complaint=tepRatioComplaint
   ?'<div style="color:#a33;margin-top:4px">'+escapeHtml(tepRatioComplaint)+'</div>':'';
- const open=changed.length||tepRatioComplaint;
- box.innerHTML='Пустые площади достраиваются долями; введённое вами не перебивается. '+
-  '<details style="display:inline"'+(open?' open':'')+
-  '><summary style="display:inline;cursor:pointer">'+
-  (changed.length?'доли изменены вами — показать':'показать и изменить доли')+'</summary>'+
-  '<div style="margin-top:4px">'+rows+
-  '<div style="margin-top:4px;color:#777">Доли уезжают в проект вместе со вводными: '+
-  'сохраните проект — и они откроются такими же.</div></div></details>'+complaint;
+ box.innerHTML='Пустые площади достраиваются долями под столбцами; введённое вами не перебивается.'
+  +(changed.length
+    ?' <span style="color:#a33">Доли изменены вами — они выделены красным и уезжают в проект вместе со вводными.</span>'
+    :'')
+  +complaint;
 }
 
 // Наши доли объявлены один раз — в движке, и подставлены сюда. Правка человека
@@ -32258,166 +32328,11 @@ function glavapuCoefficients(){
 // метры и основания задаёт человек. Базовая стоимость МКД подставляется из
 // импорта; остальные типы человек берёт с листа «Параметры территории» своей
 // выгрузки — у нас их нет, и выдумывать их нельзя.
-let vriOwnRows=null;
-
-function vriOwnState(){
- if(vriOwnRows)return vriOwnRows;
- const c=glavapuCoefficients();
- // Базовые стоимости приходят таблицей из выгрузки калькулятора — переписывать
- // их руками не надо. «Откуда взять базовую» был первый же вопрос, и правильный
- // ответ на него — не объяснение, а заполненное поле.
- vriOwnRows=VRI_USE_TYPES.map(([key,label])=>{
-  let base=c.bases&&c.bases[key]!==undefined?Number(c.bases[key]):'';
-  if(base===''&&key==='mkd'&&c.base)base=c.base;
-  return {type:key,label:label,spp:0,base:base};
- });
- return vriOwnRows;
-}
-
-function renderVriOwn(result){
- const body=document.getElementById('vriOwnBody');
- if(!body)return;
- const rows=vriOwnState();
- const paid={};
- ((result&&result.lines)||[]).forEach(line=>{paid[line.type]=line.payment_mln});
- body.innerHTML=rows.map((row,i)=>
-  '<tr><td>'+escapeHtml(row.label)+'</td>'
-  +'<td><input type="number" step="any" value="'+(row.spp||0)+'" onchange="vriOwnEdit('+i+',\'spp\',this.value)" style="width:120px"></td>'
-  +'<td><input type="number" step="any" value="'+(row.base===''?'':row.base)+'" onchange="vriOwnEdit('+i+',\'base\',this.value)" style="width:140px"></td>'
-  +'<td>'+(paid[row.type]!==undefined?num(paid[row.type]):'—')+'</td></tr>').join('');
- const spp=rows.reduce((sum,row)=>sum+Number(row.spp||0),0);
- document.getElementById('vriOwnSpp').textContent=num(spp);
- document.getElementById('vriOwnTotal').textContent=result?num(result.total_mln):'—';
- const rent=document.getElementById('vriOwnRent');
- const c=glavapuCoefficients();
- if(rent&&!rent.value&&c.rent)rent.value=c.rent;
- const hint=document.getElementById('vriOwnSource');
- if(hint){
-  const known=rows.filter(row=>row.base!=='').length;
-  const parts=[];
-  if(known)parts.push('Базовые стоимости подставлены из выгрузки калькулятора ('
-    +known+' из '+rows.length+' типов), лист «Параметры территории».');
-  else parts.push('Базовых стоимостей нет: они на листе «Параметры территории» '
-    +'выгрузки калькулятора, столбец «Базовая». Приложите файл на вкладке «Участок» '
-    +'или впишите числа руками.');
-  if(c.quarter)parts.push('Квартал '+escapeHtml(c.quarter)+'.');
-  // Коэффициент аренды — доля, а не проценты: у Пресненского это 0,1497.
-  // Двузначное число в этом поле завышает плату в сотни раз, и молчать нельзя.
-  const rentValue=Number((rent&&rent.value)||0);
-  if(rentValue>1)parts.push('<b>Коэффициент аренды '+rentValue+' похож на проценты:</b> '
-    +'в выгрузке это доля вроде 0,1497. Проверьте — иначе плата вырастет в сотни раз.');
-  hint.innerHTML=parts.join(' ');
- }
-}
-
-function vriOwnEdit(index,field,value){
- const rows=vriOwnState();
- if(!rows[index])return;
- rows[index][field]=value===''?'':Number(value);
- // Перерисовывать таблицу на каждой правке нельзя: строка пересобирается под
- // руками, поле теряет фокус, а значение, которое человек только что вписал в
- // соседнюю ячейку, уходит в никуда вместе со старым узлом. Обновляем только
- // итоги и гасим посчитанную плату — она больше не относится к этим метрам.
- const spp=rows.reduce((sum,row)=>sum+Number(row.spp||0),0);
- const sppCell=document.getElementById('vriOwnSpp');
- if(sppCell)sppCell.textContent=num(spp);
- const total=document.getElementById('vriOwnTotal');
- if(total)total.textContent='—';
- document.querySelectorAll('#vriOwnBody tr td:nth-child(4)').forEach(cell=>{cell.textContent='—'});
- vriOwnLast=null;
-}
-
-function fillVriOwnFromTep(){
- const rows=vriOwnState();
- const by=key=>rows.find(row=>row.type===key);
- // Плата за жильё считается от ПОЛНОЙ СПП жилых зданий — вместе со встроенными
- // помещениями: на выгрузке калькулятора она посчитана именно так.
- const mkd=Number((tep.apartments&&tep.apartments.gns)||0)
-   +Number((tep.ground_commercial&&tep.ground_commercial.gns)||0);
- if(by('mkd'))by('mkd').spp=Math.round(mkd);
- if(by('office'))by('office').spp=Math.round(Number((tep.offices&&tep.offices.gns)||0));
- if(by('trade'))by('trade').spp=Math.round(Number((tep.standalone_retail&&tep.standalone_retail.gns)||0));
- renderVriOwn(null);
-}
-
-async function calcVriOwn(){
- const note=document.getElementById('vriOwnNote');
- const rows=vriOwnState().filter(row=>Number(row.spp||0)>0);
- const rentField=document.getElementById('vriOwnRent');
- const rent=Number((rentField&&rentField.value)||0);
- const say=(html,ok)=>{if(!note)return;note.style.display='';note.innerHTML=ok?('<span class="import-ok">'+html+'</span>'):html};
- if(!rows.length){say('Впишите метры хотя бы по одному типу использования.',false);return}
- if(!rent){say('Не задан коэффициент аренды квартала — он с листа «Параметры территории» вашей выгрузки.',false);return}
- // Коэффициент аренды — доля меньше единицы (0,1497 у Пресненского). При 25 в
- // этом поле формула выдала 238 млрд ₽ платы и подставила их в модель
- // (владелец, 20.08.2026). Спрашивать «считать всё равно?» тут нечего:
- // коэффициента больше единицы в таблице 2 приложения 8 не бывает, и такой
- // ответ — не расчёт, а мусор. Отказ, а не предупреждение.
- if(rent>1){
-  say('Коэффициент аренды '+rent+' — это не доля. В таблице 2 приложения 8 к 273-ПП '
-     +'он меньше единицы (у Пресненского 0,1497). С таким множителем плата выходит '
-     +'в сотни раз больше настоящей, поэтому расчёт не делается.',false);
-  return;
- }
- const noBase=rows.filter(row=>row.base===''||row.base===null);
- if(noBase.length===rows.length){
-  say('Не задана базовая стоимость ни по одному типу. Она на листе «Параметры территории» '
-     +'выгрузки калькулятора, столбец «Базовая»: для жилья это МКД. Приложите выгрузку на '
-     +'вкладке «Участок» — тогда числа подставятся сами.',false);
-  return;
- }
- let data;
- try{
-  const r=await fetch('/vri/manual',{method:'POST',headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({rent_coeff:rent,land_right:String(inputs.land_right||'ownership'),
-    rows:rows.map(row=>({type:row.type,spp_sqm:Number(row.spp||0),
-    base_cost_rub:row.base===''?null:Number(row.base||0)}))})});
-  data=await r.json();
-  if(!r.ok)throw new Error(data.detail||'Расчёт не выполнен');
- }catch(e){say('Расчёт не выполнен: '+escapeHtml(String(e.message||e)),false);return}
- // Потолок здравого смысла: плата за метр СПП выше полумиллиона рублей
- // означает, что перепутан множитель, а не что участок дорогой. Молча отдать
- // такое число в модель нельзя — его потом ищут в отчёте.
- const sppTotal=rows.reduce((sum,row)=>sum+Number(row.spp||0),0);
- const perSqm=sppTotal>0?data.total_mln*1e6/sppTotal:0;
- if(perSqm>500000){
-  vriOwnLast=null;
-  renderVriOwn(null);
-  say('Плата вышла '+num(Math.round(perSqm))+' ₽ за метр СПП — это в разы больше '
-     +'базовой стоимости метра, так не бывает. Проверьте коэффициент аренды и '
-     +'базовые стоимости: расчёт не подставлен.',false);
-  return;
- }
- vriOwnLast=data;
- renderVriOwn(data);
- const missing=(data.missing||[]).map(escapeHtml).join('; ');
- const notes=(data.notes||[]).map(escapeHtml).join('; ');
- say('Плата '+num(data.total_mln)+' млн ₽. Основание: '+escapeHtml(data.basis)
-   +(notes?('<br>'+notes):'')
-   +(missing?('<br>Не посчитано: '+missing):''),!missing);
-}
-
-let vriOwnLast=null;
-
-function applyVriOwn(){
- if(!vriOwnLast){alert('Сначала посчитайте.');return}
- inputs.land_rights_cost_mln=Number(vriOwnLast.total_mln||0);
- inputs.vri_required=true;
- renderInputs();calculate();
- const note=document.getElementById('vriOwnNote');
- if(note){note.style.display='';note.innerHTML='<span class="import-ok">Плата '+num(vriOwnLast.total_mln)
-   +' млн ₽ подставлена в модель. Это ваш расчёт по формуле калькулятора, а не ответ калькулятора.</span>'}
-}
-
-// Пересчёт по параметрам исходного расчёта ГлавАПУ. Раньше он был только
-// кнопкой с подтверждением, и это оказалось не системой, а ещё одной дверью:
-// человек правит ТЭП по решению ГЗК, а плата за ВРИ, соцнагрузка и машино-места
-// остаются нормативными и завышенными кратно — «не гибкая система изменения
-// ТЭПов после просчёта на калькуляторе ГлавАПУ» (владелец, 20.08.2026).
-// Теперь тот же пересчёт идёт сам после правки метров; кнопка осталась для
-// явного повтора. При автоматическом ходе подтверждения нет — вместо него
-// строка «было → стало»: молча подменённое число ищут потом в отчёте.
-let tepAutoTimer=null;
+// Карточки своего расчёта ВРИ больше нет (владелец, 20.08.2026):
+// его работу делает «Пересчитать под фактический ТЭП» — плата считается
+// по ставкам исходной выгрузки вместе с социалкой и машино-местами.
+// Сама формула города осталась в движке (vri_manual_payment): ею пересчёт
+// подтверждает свою пропорцию, и /vri/manual отвечает по-прежнему.
 
 function scheduleTepAutoRecalc(){
  const baseline=((inputs._glavapu_import||{}).normalized)||null;
@@ -32794,6 +32709,75 @@ function row(label,value){return `<tr><td>${label}</td><td>${value}</td></tr>`}
 // Ступени надбавки по покрытию эскроу. Пусто — строк нет вовсе: у большинства
 // НКЛ ставка одна, и пустая таблица «ступеней» читалась бы как их отсутствие
 // в договоре, а не как невведённые вводные.
+// Лестница ставки ПФ — таблицей диапазонов, как в НКЛ: «от 100% до 110% —
+// 3,47%», а не строкой через точку с запятой (владелец, 20.08.2026: «там
+// должна быть лесенка как в НКЛ и выбор ставки под каждый диапазон»).
+// Хранится по-прежнему строкой во вводных (pf_special_steps) — тем же
+// форматом, который читает движок и обе книги: таблица здесь только
+// представление строки, второго хранилища нет.
+function parsePfStepsInput(){
+ const found=String(inputs.pf_special_steps||'').match(/-?\d+(?:[.,]\d+)?\s*:\s*-?\d+(?:[.,]\d+)?/g)||[];
+ const steps=found.map(pair=>{
+  const parts=pair.split(':');
+  let edge=Number(String(parts[0]).replace(',','.'));
+  const rate=Number(String(parts[1]).replace(',','.'));
+  if(edge>0&&edge<=3)edge*=100; // разы → проценты, как в движке
+  return {edge:edge,rate:rate};
+ }).filter(s=>s.edge>0&&s.rate>=0);
+ steps.sort((a,b)=>a.edge-b.edge);
+ return steps;
+}
+function pfEdgeText(v){return String(Math.round(v*100)/100).replace('.',',')}
+function savePfSteps(steps){
+ inputs.pf_special_steps=steps.filter(s=>s.edge>0)
+  .sort((a,b)=>a.edge-b.edge)
+  .map(s=>pfEdgeText(s.edge)+':'+String(s.rate).replace('.',',')).join('; ');
+ const box=document.getElementById('pfStepsEditor');
+ if(box){const wrap=box.parentNode;box.remove();renderPfStepsEditor(wrap);}
+ refreshGroupPeeks();calculate();
+}
+function pfStepEdit(index,what,value){
+ const steps=parsePfStepsInput();
+ if(!steps[index])return;
+ steps[index][what]=Number(String(value).replace(',','.'))||0;
+ savePfSteps(steps);
+}
+function pfStepRemove(index){const steps=parsePfStepsInput();steps.splice(index,1);savePfSteps(steps);}
+function pfStepAdd(){
+ const steps=parsePfStepsInput();
+ const last=steps[steps.length-1];
+ steps.push(last?{edge:last.edge+10,rate:Math.max(0.01,Math.round(last.rate*50)/100)}:{edge:100,rate:3.47});
+ savePfSteps(steps);
+}
+function renderPfStepsEditor(wrap){
+ const steps=parsePfStepsInput();
+ const special=String(inputs.pf_special_pct??INPUT_DEFAULT.pf_special_pct??'').replace('.',',');
+ let html='<table style="border-collapse:collapse;margin-top:2px">'+
+  '<tr><th style="text-align:left;padding:2px 10px 2px 0;font-size:11px;color:#777">ПОКРЫТИЕ ЭСКРОУ</th>'+
+  '<th style="text-align:left;padding:2px 8px;font-size:11px;color:#777">СТАВКА, % ГОДОВЫХ</th><th></th></tr>';
+ if(steps.length){
+  // Ниже первой ступени лестница договора не описывает ничего — действует
+  // обычная специальная ставка, и строка называет её поле по имени.
+  html+='<tr><td style="padding:2px 10px 2px 0;color:#777">ниже '+pfEdgeText(steps[0].edge)+'%</td>'+
+   '<td style="padding:2px 8px;color:#777">'+special+'% — «Ставка ПФ при покрытии 1×»</td><td></td></tr>';
+ }
+ steps.forEach((s,i)=>{
+  const upper=steps[i+1]?'– '+pfEdgeText(steps[i+1].edge)+'%':'% и выше';
+  html+='<tr><td style="padding:2px 10px 2px 0;white-space:nowrap">от '+
+   '<input type="number" step="any" min="0" value="'+s.edge+'" style="width:64px" '+
+   'onchange="pfStepEdit('+i+',\'edge\',this.value)">'+(steps[i+1]?'% '+upper:upper)+'</td>'+
+   '<td style="padding:2px 8px"><input type="number" step="any" min="0" value="'+s.rate+'" style="width:72px" '+
+   'onchange="pfStepEdit('+i+',\'rate\',this.value)">%</td>'+
+   '<td><button type="button" class="tep-refill" title="убрать ступень" onclick="pfStepRemove('+i+')">×</button></td></tr>';
+ });
+ html+='</table><div style="margin-top:4px"><button type="button" class="tep-refill" onclick="pfStepAdd()">+ ступень</button>'+
+  (steps.length
+   ?' <button type="button" class="tep-refill" onclick="savePfSteps([])">без лестницы — одна ставка</button>'
+   :' <span style="color:#777">лестницы нет — весь долг под эскроу идёт по ставке выше</span>')+'</div>';
+ const box=document.createElement('div');box.id='pfStepsEditor';box.innerHTML=html;
+ wrap.appendChild(box);
+}
+
 function pfStepRows(f){
  const steps=(f&&f.pf_special_steps)||[];
  if(!steps.length)return '';
@@ -34152,7 +34136,8 @@ async function openProjects(){
    +`<td>${s.net_profit_mln?money(s.net_profit_mln*1e6):'—'}</td>`
    +`<td>${s.llcr?mult(s.llcr):'—'}</td>`
    +`<td><button class="btn" onclick="loadProject('${p.id}')">Открыть</button> `
-   +`<button class="btn" onclick="shareProject('${p.id}')">Поделиться</button> `
+   +`<button class="btn" onclick="shareProject('${p.id}')">Ссылка</button> `
+   +`<button class="btn" onclick="downloadSettingsFile('${p.id}')">Файл</button> `
    +`<button class="btn" onclick="deleteProject('${p.id}')">Удалить</button></td></tr>`;
  }).join('');
  projectsBody.innerHTML=rows||'<tr><td colspan="5">Пока ничего не сохранено.</td></tr>';
@@ -34176,6 +34161,92 @@ async function loadProject(id){
  const data=record.payload||{};
  // Как и локальная загрузка: сохранённое накладывается на умолчания, а не
  // подменяет их — иначе поле, добавленное позже, исчезнет.
+ inputs=Object.assign(structuredClone(INPUT_DEFAULT),data.inputs||{});
+ tep=structuredClone(TEP_DEFAULT);
+ Object.entries(data.tep||{}).forEach(([key,values])=>{
+  if(values&&typeof values==='object')tep[key]=Object.assign(tep[key]||{},values);
+ });
+ phasing=data.phasing||makeDefaultPhasing(1);
+ scenarioSelect.value=data.scenario||'base';
+ renderInputs();renderTep();renderPhasing();persistLocalSilently();
+ closeProjects();
+ calculateAndOpen('report');
+}
+
+// Файл настроек — второй способ передать проект, рядом со ссылкой (владелец,
+// 21.08.2026). Ссылка живёт на нашем сервере: он должен отвечать, а код —
+// не протухнуть. Файл не зависит ни от чего — его пересылают почтой, кладут
+// в папку проекта, открывают через год. Внутри тот же снимок, что и по
+// ссылке: вводные, ТЭП, очерёдность, сценарий — и ничего сверх того.
+const SETTINGS_FILE_KIND='developaid.project.settings';
+
+function settingsFileFrom(name,payload){
+ return {kind:SETTINGS_FILE_KIND,version:1,app_version:'__DEVELOPAID_VERSION__',
+  name:name||'Проект',saved_at:new Date().toISOString(),
+  inputs:payload.inputs||{},tep:payload.tep||{},
+  phasing:payload.phasing||null,scenario:payload.scenario||'base'};
+}
+
+// Скачивание собирается на месте: файл не уходит на сервер и обратно, поэтому
+// не зависит ни от сети, ни от того, доступен ли он вошедшему.
+function saveJsonFile(name,data){
+ const blob=new Blob([JSON.stringify(data,null,1)],{type:'application/json'});
+ const url=URL.createObjectURL(blob);
+ const a=document.createElement('a');
+ a.href=url;a.download=name;document.body.appendChild(a);a.click();
+ document.body.removeChild(a);setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
+
+function safeFileName(name){
+ return String(name||'Проект').replace(/[\\/:*?"<>|]+/g,' ').trim().slice(0,60)||'Проект';
+}
+
+async function downloadSettingsFile(id){
+ let record;
+ try{record=await projectsCall('/projects/open',{id})}
+ catch(e){alert(String(e.message||e));return}
+ const payload=record.payload||{};
+ saveJsonFile(safeFileName(record.name)+' — настройки DevelopAid.json',
+              settingsFileFrom(record.name,payload));
+}
+
+// Текущий проект — тот, что открыт на экране, а не сохранённый. Сохранять
+// ради выгрузки не заставляем: человек мог ничего не сохранять вовсе.
+function downloadCurrentSettings(){
+ saveJsonFile(safeFileName(currentProjectName())+' — настройки DevelopAid.json',
+  settingsFileFrom(currentProjectName(),
+   {inputs:inputs,tep:tep,phasing:phasing,scenario:scenarioSelect.value}));
+}
+
+// Имя берётся оттуда же, откуда его предлагает сохранение на сервер: своего
+// поля с именем на странице нет, и заводить второе значило бы развести их.
+function currentProjectName(){
+ const meta=inputs._manual_tep_import||null;
+ return (meta&&meta.project_name)||projectCadastral()[0]||'Проект DevelopAid';
+}
+
+function importSettingsFile(){
+ const input=document.getElementById('settingsFileInput');
+ if(input){input.value='';input.click()}
+}
+
+// Чужой файл — данные, а не команда: проверяем, что это наш формат, и
+// накладываем на умолчания, а не подменяем их. Иначе поле, добавленное после
+// выгрузки, исчезнет — на этом уже обжигались с сохранённым состоянием.
+async function applySettingsFile(input){
+ const file=input&&input.files&&input.files[0];
+ if(!file)return;
+ let data;
+ try{data=JSON.parse(await file.text())}
+ catch(e){alert('Файл не читается как JSON: '+String(e.message||e));return}
+ if(!data||data.kind!==SETTINGS_FILE_KIND){
+  alert('Это не файл настроек DevelopAid. Нужен .json из кнопки «Файл» рядом с проектом.');
+  return;
+ }
+ if(!confirm('Загрузить настройки «'+String(data.name||'без имени')+'»?\n\n'
+  +'Сохранён: '+String(data.saved_at||'').replace('T',' ').slice(0,16)
+  +(data.app_version?' · версия '+data.app_version:'')+'\n\n'
+  +'Текущие вводные на экране будут заменены.'))return;
  inputs=Object.assign(structuredClone(INPUT_DEFAULT),data.inputs||{});
  tep=structuredClone(TEP_DEFAULT);
  Object.entries(data.tep||{}).forEach(([key,values])=>{

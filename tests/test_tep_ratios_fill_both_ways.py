@@ -145,12 +145,19 @@ def test_the_cell_editor_fills_the_neighbours():
     assert "calculate()" in handler
 
 
-def test_the_ratios_are_printed_next_to_the_table():
-    """Подставленное число, происхождение которого не видно, неотличимо от введённого."""
-    body = core.PAGE[core.PAGE.index("function renderTepRatioNote"):]
-    body = body[:body.index("function tepCellChanged")]
-    assert "общая " in body and "% ГНС" in body and "продаваемая " in body
-    assert "r.source" in body, "происхождение доли не названо"
+def test_the_ratios_stand_under_their_own_numbers():
+    """Доля стоит под тем числом, которое из неё получается.
+
+    Прежде доли лежали под раскрытием над таблицей — свёрнутым по умолчанию, и
+    это читалось как «их нет вовсе» (владелец, 21.08.2026). Колонкой слева было
+    бы непонятно: доля без своего числа рядом не читается.
+    """
+    body = core.PAGE[core.PAGE.index("const ratioField=col=>{"):]
+    body = body[:body.index("['gns','total_area'")]
+    assert "col==='total_area'?'total'" in body, "«% ГНС» — под общей площадью"
+    assert "col==='saleable'?'saleable'" in body, "«% общей» — под продаваемой"
+    assert "% ГНС" in body and "% общей" in body
+    assert "tepRatioSet(" in body, "поле правит долю, а не только показывает её"
     assert 'id="tepRatioNote"' in core.PAGE
 
 
@@ -223,15 +230,15 @@ def test_the_row_can_be_refilled_on_demand():
 def test_the_note_is_one_line_not_a_wall():
     """На телефоне подпись занимала семь строк — её никто не читал.
 
-    Правило остаётся на виду одной фразой, доли — под раскрытием: они нужны
-    тому, кто спросил, а не всем и сразу.
+    Список долей из неё ушёл в таблицу, поэтому осталось правило и отказ.
+    Раскрытия здесь больше нет: свёрнутое, оно прятало сами поля.
     """
-    body = core.PAGE[core.PAGE.index("function renderTepRatioNote"):]
-    body = body[:body.index("function tepRowComplaint")]
-    assert "<details" in body, "подробности должны быть свёрнуты"
-    visible = body[body.index("box.innerHTML="):body.index("<details")]
-    assert len(visible) < 260, "видимая часть подписи снова разрослась"
+    body = page_function("renderTepRatioNote")
+    assert "<details" not in body, "доли больше не прячутся под раскрытием"
+    visible = body[body.index("box.innerHTML="):]
+    assert len(visible) < 700, "подпись снова разрослась"
     assert "не перебивается" in visible, "главное правило должно остаться на виду"
+    assert "tepRatioComplaint" in body, "отказ по доле обязан быть виден"
 
 
 def test_the_button_says_why_it_did_nothing():
@@ -257,15 +264,14 @@ def test_the_button_says_why_it_did_nothing():
     assert "tepRefillNote[key]||tepRowComplaint(key,row)" in table
 
 
-def test_the_disclosure_says_what_it_hides():
-    """«Какие доли» само по себе не объясняет, что там внутри."""
-    body = core.PAGE[core.PAGE.index("function renderTepRatioNote"):]
-    body = body[:body.index("const TEP_ROW_SWITCH")]
-    # Список долей стал вводом (просьба владельца, 20.08.2026): раскрытие
-    # предлагает изменить, изменённое держит раскрытие открытым и возвращается.
-    assert "показать и изменить доли" in body
-    assert "доли изменены вами — показать" in body
-    assert "вернуть наши" in body
+def test_a_changed_ratio_is_visible_without_asking():
+    """Своя доля отличается от нашей — и это видно, а не выясняется."""
+    body = core.PAGE[core.PAGE.index("const chain=TEP_RATIOS[key]?tepRatioChain"):]
+    body = body[:body.index("['gns','total_area'")]
+    assert "tepRatioChangedKeys()" in body, "изменённая доля выделяется"
+    assert "#a33" in body, "выделение цветом, а не молча"
+    assert "tepRatioReset(" in body, "вернуть наши — рядом с изменённой долей"
+    assert "Доли изменены вами" in page_function("renderTepRatioNote")
 
 
 def test_a_table_edit_reaches_the_inputs():

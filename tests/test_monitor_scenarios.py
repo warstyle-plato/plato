@@ -40,7 +40,9 @@ def test_delay_is_propagated_to_rnv():
 def test_current_pace_uses_rss_evidence_but_not_as_physical_fact():
     d = datetime.date
     row = {"rss_accepted_ratio": .5, "rss_act_cost_rate_3m": .1}
-    assert scenarios._pace_finish(row, d(2026, 1, 1)) == d(2026, 6, 2)
+    # Формула одна на оба контура и возвращает пару «дата, способ»:
+    # способ подписывает строку, дата двигает сеть.
+    assert scenarios._pace_finish(row, d(2026, 1, 1))[0] == d(2026, 6, 2)
 
 
 def test_current_pace_does_not_turn_mixed_rss_21_into_finish_date():
@@ -49,7 +51,7 @@ def test_current_pace_does_not_turn_mixed_rss_21_into_finish_date():
         "code": "2.1", "plan_start": "2024-01-01",
         "rss_accepted_ratio": .8, "rss_act_cost_rate_3m": .02,
     }
-    assert scenarios._pace_finish(row, d(2026, 8, 22)) is None
+    assert scenarios._pace_finish(row, d(2026, 8, 22))[0] is None
 
 
 def test_forecast_coverage_says_why_rss_21_is_excluded():
@@ -110,8 +112,14 @@ def test_past_need_is_not_resurrected_by_scenario_rephasing():
 
 def test_acceleration_recovers_current_delay_but_not_before_baseline():
     d = datetime.date
+    # Задержка объявляется так, как её признаёт общий контур: утверждённым
+    # rebaseline. Голый `forecast_finish` — это уже учтённый в PM план, и
+    # пересевать им сеть значило бы считать одну задержку дважды. Прежде
+    # сценарный движок так и делал, а верхняя карточка — нет; отсюда и разные
+    # даты РНВ на Гродненской.
     view = {"schedule": {"rows": [{
         "id": "1", "forecast_finish": "2026-04-15", "code": "2.2.1",
+        "forecast_source": "approved_rebaseline",
     }]}}
     _, changed = scenarios._scenario_seeds(
         view, pm(), d(2026, 1, 15), "accelerate_wbs", ["1"], 0, 100
