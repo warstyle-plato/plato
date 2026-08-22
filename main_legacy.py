@@ -29362,6 +29362,18 @@ function setPhaseProductShare(k,i,v){
 }
 function phaseProductDerived(key,field,index){
  const master=Number((tep[key]||{})[field]||0),count=Number(phasing.phase_count||1);
+ // Social objects are assigned by their registry, not by the generic fallback
+ // to queue 1.  Without this branch the screen showed the master capacity in
+ // O1 and the explicit KRT object again in O2/O3: ДОУ 700 instead of 350 and
+ // school 2,000 instead of 1,000 places.  Preserve the master total while
+ // distributing every displayed field by the registered capacity.
+ if(['kindergarten','school','clinic'].includes(key)){
+  const registry=(phasing.social_objects||[]).filter(o=>o&&o.type===key),totalCapacity=registry.reduce((s,o)=>s+Math.max(0,Number(o.capacity||0)),0);
+  if(registry.length){
+   const phaseCapacity=registry.filter(o=>Number(o.phase||1)===index+1).reduce((s,o)=>s+Math.max(0,Number(o.capacity||0)),0);
+   return field==='units'?phaseCapacity:(totalCapacity>0?master*phaseCapacity/totalCapacity:0);
+  }
+ }
  if(phasing.products[key]){
   const a=(phasing.products[key]||phaseWeightPreset(count)).slice(0,count),sum=a.reduce((s,v)=>s+Number(v||0),0)||100;
   return master*Number(a[index]||0)/sum;
@@ -29468,7 +29480,14 @@ function renderPhasing(){
  phaseProductBody.innerHTML=Object.entries(phasing.products).map(([k,a])=>{const s=a.reduce((x,y)=>x+Number(y||0),0);return `<tr><td>${pl[k]||k}</td>${a.map((v,i)=>`<td><input type="number" step="1" value="${Number(v).toFixed(1)}" ${i===a.length-1?'readonly title="Автоматический остаток до 100%"':`onchange="setPhaseProductShare('${k}',${i},this.value)"`}></td>`).join('')}<td class="${Math.abs(s-100)<.1?'phase-total-ok':'phase-total-bad'}">${s.toFixed(1)}%</td></tr>`}).join('');renderPhasingStatus();
  phasing.phases.forEach(p=>{if(!p.products)p.products={}});
  const tepLabels={apartments:'Жильё',ground_commercial:'Коммерция 1 этажа',standalone_retail:'Коммерция ОСЗ',offices:'Офисы / деловая недвижимость',above_parking:'Наземный паркинг',underground_parking:'Подземный паркинг',storage:'Кладовые',kindergarten:'ДОУ',school:'СОШ',clinic:'Поликлиника',other_mandatory:'Прочие обязательные объекты'};
- const tepKeys=Object.keys(tepLabels).filter(k=>tep[k]);
+ const numericTepFields=['gns','total_area','useful','saleable','transfer','units'];
+ const activePhaseProduct=k=>numericTepFields.some(field=>Number((tep[k]||{})[field]||0)>0)
+  ||!!phasing.products[k]
+  ||phasing.phases.some(p=>numericTepFields.some(field=>Number((((p.products||{})[k]||{})[field])||0)>0))
+  ||(phasing.social_objects||[]).some(o=>o&&o.type===k&&Number(o.capacity||0)>0);
+ // The queue is a set of actual project products.  Empty defaults such as
+ // storage, above-ground parking and clinic must not look like KRT objects.
+ const tepKeys=Object.keys(tepLabels).filter(k=>tep[k]&&activePhaseProduct(k));
  phaseTepHead.innerHTML=`<tr><th>Продукт</th>${phasing.phases.map(p=>`<th>${p.name}<br><small>ГНС · продаваемая · шт.</small></th>`).join('')}<th>Итого по очередям</th></tr>`;
  phaseTepBody.innerHTML=tepKeys.map(k=>{
   const totals={gns:0,saleable:0,units:0};
@@ -33861,7 +33880,24 @@ async function applyPreset(){
   if(values&&typeof values==='object')tep[key]=Object.assign(tep[key]||{},values);
  });
  if(data.project_name)inputs._manual_tep_import={project_name:data.project_name};
- renderInputs();renderTep();persistLocalSilently();
+ // Полный пресет приносит и собственную очередность. Оставлять прежний
+ // `phasing` нельзя: тогда новый ТЭП раскладывается по долям другого проекта
+ // (например, 40/13,1/34/12,9 вместо 25/25/25/25), хотя предпросмотр обещал
+ // применить очереди пресета.
+ if(data.phasing){
+  const importedPhasing=structuredClone(data.phasing);
+  const phaseDefaults=makeDefaultPhasing(Number(importedPhasing.phase_count||1));
+  phasing=Object.assign(phaseDefaults,importedPhasing);
+  // Продуктовые доли пресета заменяют старый проект целиком; служебные
+  // аллокации расходов, которых в файле нет, добираются из безопасных
+  // умолчаний, чтобы таблицы очередности оставались рабочими.
+  phasing.products=importedPhasing.products||phaseDefaults.products;
+  phasing.shared_cash=Object.assign(phaseDefaults.shared_cash,importedPhasing.shared_cash||{});
+  phasing.shared_allocation=Object.assign(phaseDefaults.shared_allocation,importedPhasing.shared_allocation||{});
+  phasing.discrete=Object.assign(phaseDefaults.discrete,importedPhasing.discrete||{});
+  phasing.social_objects=importedPhasing.social_objects||[];
+ }else phasing=makeDefaultPhasing(1);
+ renderInputs();renderTep();renderPhasing();persistLocalSilently();
  closePreset();
  // Участок приезжает вместе с проектом: номера в поле, а следом та же
  // выгрузка ЕГРН и скрининг, что при ручном вводе. ТЭП при этом не трогаем —

@@ -158,10 +158,11 @@ def map_tep(data: dict[str, Any]) -> tuple[dict[str, Any], list[Field]]:
     становятся: первый оплачивается деньгами, вторые входят в сети.
     """
     objects = _objects(data)
-    residential_gns = commercial_gns = office_gns = 0.0
-    residential_saleable = commercial_saleable = office_saleable = 0.0
+    residential_gns = commercial_gns = office_gns = retail_gns = 0.0
+    office_total_area = retail_total_area = 0.0
+    residential_saleable = commercial_saleable = office_saleable = retail_saleable = 0.0
     residential_saleable_explicit = commercial_saleable_explicit = False
-    office_saleable_explicit = False
+    office_saleable_explicit = retail_saleable_explicit = False
     garage_gns = 0.0
     school_places = preschool_places = 0.0
     school_gfa = preschool_gfa = shared_education_gfa = 0.0
@@ -205,7 +206,18 @@ def map_tep(data: dict[str, Any]) -> tuple[dict[str, Any], list[Field]]:
         elif "гараж" in str(item.get("name", "")).lower():
             garage_gns += gfa
         else:
+            product_type = str(item.get("product_type") or "").strip().lower()
+            item_name = str(item.get("name") or "").strip().lower()
+            if (product_type in {"shopping_center", "standalone_retail", "retail"}
+                    or "торгов" in item_name or item_name.startswith("тц")):
+                retail_gns += gfa
+                retail_total_area += _number(item.get("total_area_m2")) or gfa
+                if _number(item.get("saleable_m2")) is not None:
+                    retail_saleable += _number(item.get("saleable_m2")) or 0.0
+                    retail_saleable_explicit = True
+                continue
             office_gns += gfa
+            office_total_area += _number(item.get("total_area_m2")) or gfa
             if _number(item.get("saleable_m2")) is not None:
                 office_saleable += _number(item.get("saleable_m2")) or 0.0
                 office_saleable_explicit = True
@@ -232,6 +244,7 @@ def map_tep(data: dict[str, Any]) -> tuple[dict[str, Any], list[Field]]:
                else canonical_office_saleable
                if canonical_office_saleable is not None
                else office_gns * SALEABLE_RATIO_OFFICES)
+    retail = retail_saleable if retail_saleable_explicit else retail_gns * 0.564
     # Потребность в машино-местах — у жилья и у офисов своя, и отдельно
     # стоящий гараж её закрывает: под землю уходит только остаток. Прежде
     # подземный паркинг считался от одних квартир, офисные места не
@@ -243,15 +256,26 @@ def map_tep(data: dict[str, Any]) -> tuple[dict[str, Any], list[Field]]:
     office_spaces = math.ceil(offices / OFFICE_SQM_PER_SPACE) if derive_parking and offices else 0
     above = math.ceil(garage_gns / ABOVE_AREA_PER_SPACE) if garage_gns else 0
     underground = max(0, permanent + guest + office_spaces - above)
+    planning = data.get("planning") if isinstance(data.get("planning"), dict) else {}
+    underground_plan = (planning.get("underground") or {}) if isinstance(
+        planning.get("underground"), dict) else {}
+    explicit_underground_spaces = _number(underground_plan.get("spaces"))
+    explicit_underground_area = _number(underground_plan.get("area_m2"))
+    if explicit_underground_spaces is not None:
+        underground = int(round(explicit_underground_spaces))
+    underground_area = (explicit_underground_area if explicit_underground_area is not None
+                        else underground * UNDERGROUND_AREA_PER_SPACE)
 
     tep = {
         "apartments": {"gns": residential_gns, "saleable": apartments,
                        "total_area": residential_gns * 0.9, "useful": apartments},
         "ground_commercial": {"gns": commercial_gns, "saleable": commercial,
-                              "total_area": commercial_gns, "useful": commercial},
+                              "total_area": commercial_gns * 0.9, "useful": commercial},
         "offices": {"gns": office_gns, "saleable": offices,
-                    "total_area": office_gns, "useful": offices},
-        "underground_parking": {"gns": underground * UNDERGROUND_AREA_PER_SPACE,
+                    "total_area": office_total_area, "useful": offices},
+        "standalone_retail": {"gns": retail_gns, "saleable": retail,
+                              "total_area": retail_total_area, "useful": retail},
+        "underground_parking": {"gns": underground_area,
                                 "units": underground, "saleable": 0.0},
         "above_parking": {"gns": garage_gns, "units": above, "saleable": 0.0},
         "school": {"units": school_places,
@@ -283,8 +307,17 @@ def map_tep(data: dict[str, Any]) -> tuple[dict[str, Any], list[Field]]:
                f"офисы — {_ru(offices)} м² заданы один раз в каноническом ТЭП проекта"
                if canonical_office_saleable is not None else
                f"офисы — {_ru(office_gns)} м² × {SALEABLE_RATIO_OFFICES} (полезная по соглашению МПТ)")),
+        Field(retail, "source" if retail_saleable_explicit else "derived",
+              (f"ТЦ / коммерция ОСЗ — {_ru(retail)} м² заданы объектами пресета"
+               if retail_saleable_explicit else
+               f"ТЦ / коммерция ОСЗ — {_ru(retail_gns)} м² × 0,564")),
     ])
-    if derive_parking:
+    if explicit_underground_spaces is not None:
+        notes.append(Field(
+            underground, "source",
+            f"подземный паркинг — {underground} мест, {_ru(underground_area)} м² "
+            "заданы расчётом проекта"))
+    elif derive_parking:
         notes.append(Field(
             underground, "derived",
             f"подземный паркинг — потребность {permanent + guest + office_spaces} мест "
@@ -378,6 +411,10 @@ def map_inputs(data: dict[str, Any], tep: dict[str, Any]) -> tuple[dict[str, Any
         inputs["offices_enabled"] = True
         inputs["offices_gba_sqm"] = tep["offices"]["gns"]
         inputs["offices_saleable_sqm"] = tep["offices"]["saleable"]
+    if tep.get("standalone_retail", {}).get("gns"):
+        inputs["retail_enabled"] = True
+        inputs["retail_gba_sqm"] = tep["standalone_retail"]["gns"]
+        inputs["retail_saleable_sqm"] = tep["standalone_retail"]["saleable"]
     if tep.get("above_parking", {}).get("units"):
         inputs["above_parking_enabled"] = True
         inputs["above_parking_spaces"] = tep["above_parking"]["units"]
@@ -492,10 +529,12 @@ def map_economics(data: dict[str, Any]) -> tuple[dict[str, Any], list[Field]]:
         "parking_price_th": "цена машино-места",
         "storage_price_th": "цена кладовой",
         "offices_price_th_per_sqm": "цена офисов",
+        "retail_price_th_per_sqm": "цена ТЦ / коммерции ОСЗ",
         "above_parking_price_mln_per_space": "цена места в гараже",
         "main_above_th_per_sqm": "СМР наземной части",
         "main_under_th_per_sqm": "СМР подземной части",
         "offices_cost_th_per_sqm": "себестоимость офисов",
+        "retail_cost_th_per_sqm": "себестоимость ТЦ / коммерции ОСЗ",
         "ird_months": "срок ИРД",
         "construction_months": "срок строительства",
         "share_before_rve_pct": "доля продаж до РВЭ",
