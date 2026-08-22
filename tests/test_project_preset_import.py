@@ -530,3 +530,26 @@ def test_a_preset_says_out_loud_what_it_left_to_the_defaults():
     social = (350 * full["inputs"]["kindergarten_cost_mln_per_place"]
               + 1000 * full["inputs"]["school_cost_mln_per_place"])
     assert social == pytest.approx(8188.56, abs=0.01)
+
+
+def test_the_school_is_built_when_people_move_in():
+    """Соцобъект размещают объектом со сроком, а не метрами в фазе.
+
+    Пресет раскладывал школу и садик полем `social_gba_m2` по фазам, а движок
+    для размещения читает `social_objects`. Его не было, раскладка шла
+    умолчанием «поздняя раскладка», и школа на 1 000 мест уезжала в четвёртую
+    очередь: ввод 2035 года при заселении с 2032-го, а вся её стоимость с
+    инфляцией ложилась на самую маленькую очередь.
+    """
+    path = Path(__file__).resolve().parent.parent / "presets" / "КРТ_Нагатино.json"
+    if not path.exists():
+        pytest.skip("пресет КРТ Нагатино не найден")
+    preview = project_preset.build_preview(json.loads(path.read_text(encoding="utf-8")))
+    objects = (preview["phasing"] or {}).get("social_objects") or []
+    assert objects, "пресет обязан объявить соцобъекты, а не только их метры"
+    by_type = {str(item.get("type")): item for item in objects}
+    assert by_type["kindergarten"]["not_later_than"] == 1
+    assert by_type["school"]["not_later_than"] == 2, (
+        "школа нужна к заселению первых очередей, а не к концу стройки")
+    for item in objects:
+        assert item.get("basis"), "срок обязан нести основание: в извещении его нет"
