@@ -25,6 +25,7 @@
 
 from __future__ import annotations
 
+import copy
 import math
 import re
 from typing import Any
@@ -158,9 +159,12 @@ def map_tep(data: dict[str, Any]) -> tuple[dict[str, Any], list[Field]]:
     """
     objects = _objects(data)
     residential_gns = commercial_gns = office_gns = 0.0
+    residential_saleable = commercial_saleable = office_saleable = 0.0
+    residential_saleable_explicit = commercial_saleable_explicit = False
+    office_saleable_explicit = False
     garage_gns = 0.0
     school_places = preschool_places = 0.0
-    education_gfa = 0.0
+    school_gfa = preschool_gfa = shared_education_gfa = 0.0
     notes: list[Field] = []
 
     for key, item in objects.items():
@@ -175,10 +179,26 @@ def map_tep(data: dict[str, Any]) -> tuple[dict[str, Any], list[Field]]:
         if residential is not None:
             residential_gns += residential
             commercial_gns += embedded or 0.0
+            if _number(item.get("residential_saleable_m2")) is not None:
+                residential_saleable += _number(item.get("residential_saleable_m2")) or 0.0
+                residential_saleable_explicit = True
+            if _number(item.get("embedded_nonresidential_saleable_m2")) is not None:
+                commercial_saleable += _number(item.get("embedded_nonresidential_saleable_m2")) or 0.0
+                commercial_saleable_explicit = True
         elif capacity:
-            education_gfa += gfa
-            school_places += _number(capacity.get("school_places")) or 0.0
-            preschool_places += _number(capacity.get("preschool_places")) or 0.0
+            item_school_places = _number(capacity.get("school_places")) or 0.0
+            item_preschool_places = _number(capacity.get("preschool_places")) or 0.0
+            school_places += item_school_places
+            preschool_places += item_preschool_places
+            # A combined EDU object has to be split by capacity, as before.
+            # Separate school and preschool objects already carry exact GFA;
+            # redistributing their sum by places would silently change both.
+            if item_school_places and not item_preschool_places:
+                school_gfa += gfa
+            elif item_preschool_places and not item_school_places:
+                preschool_gfa += gfa
+            else:
+                shared_education_gfa += gfa
         elif key in {"LOS", "RP_KNS"}:
             notes.append(Field(gfa, "source",
                                f"{item.get('name')} — {_ru(gfa)} м² отнесены к наружным сетям"))
@@ -186,17 +206,25 @@ def map_tep(data: dict[str, Any]) -> tuple[dict[str, Any], list[Field]]:
             garage_gns += gfa
         else:
             office_gns += gfa
+            if _number(item.get("saleable_m2")) is not None:
+                office_saleable += _number(item.get("saleable_m2")) or 0.0
+                office_saleable_explicit = True
 
-    apartments = residential_gns * SALEABLE_RATIO_APARTMENTS
-    commercial = commercial_gns * SALEABLE_RATIO_COMMERCIAL
-    offices = office_gns * SALEABLE_RATIO_OFFICES
+    apartments = (residential_saleable if residential_saleable_explicit
+                  else residential_gns * SALEABLE_RATIO_APARTMENTS)
+    commercial = (commercial_saleable if commercial_saleable_explicit
+                  else commercial_gns * SALEABLE_RATIO_COMMERCIAL)
+    offices = (office_saleable if office_saleable_explicit
+               else office_gns * SALEABLE_RATIO_OFFICES)
     # Потребность в машино-местах — у жилья и у офисов своя, и отдельно
     # стоящий гараж её закрывает: под землю уходит только остаток. Прежде
     # подземный паркинг считался от одних квартир, офисные места не
     # учитывались вовсе, а гараж стоял рядом продуктом и ничего не убавлял.
-    permanent = math.ceil(residential_gns / PARKING_GNS_PER_SPACE)
-    guest = math.ceil(permanent * PARKING_GUEST_SHARE)
-    office_spaces = math.ceil(offices / OFFICE_SQM_PER_SPACE) if offices else 0
+    import_rules = data.get("import_rules") if isinstance(data.get("import_rules"), dict) else {}
+    derive_parking = import_rules.get("derive_parking_from_tep", True) is not False
+    permanent = math.ceil(residential_gns / PARKING_GNS_PER_SPACE) if derive_parking else 0
+    guest = math.ceil(permanent * PARKING_GUEST_SHARE) if derive_parking else 0
+    office_spaces = math.ceil(offices / OFFICE_SQM_PER_SPACE) if derive_parking and offices else 0
     above = math.ceil(garage_gns / ABOVE_AREA_PER_SPACE) if garage_gns else 0
     underground = max(0, permanent + guest + office_spaces - above)
 
@@ -211,27 +239,40 @@ def map_tep(data: dict[str, Any]) -> tuple[dict[str, Any], list[Field]]:
                                 "units": underground, "saleable": 0.0},
         "above_parking": {"gns": garage_gns, "units": above, "saleable": 0.0},
         "school": {"units": school_places,
-                   "total_area": education_gfa * school_places / max(1.0, school_places + preschool_places)},
+                   "total_area": school_gfa + shared_education_gfa * school_places /
+                   max(1.0, school_places + preschool_places)},
         "kindergarten": {"units": preschool_places,
-                         "total_area": education_gfa * preschool_places / max(1.0, school_places + preschool_places)},
+                         "total_area": preschool_gfa + shared_education_gfa * preschool_places /
+                         max(1.0, school_places + preschool_places)},
     }
 
     notes.extend([
-        Field(apartments, "derived",
-              f"квартиры — {_ru(residential_gns)} м² жилой части × {SALEABLE_RATIO_APARTMENTS} "
-              f"по согласованному ППТ; норматив калькулятора ГлавАПУ — 0,65, "
-              f"то есть {_ru(residential_gns * 0.65)} м²"),
-        Field(commercial, "derived",
-              f"встроенная коммерция — {_ru(commercial_gns)} м² × {SALEABLE_RATIO_COMMERCIAL}"),
-        Field(offices, "derived",
-              f"офисы — {_ru(office_gns)} м² × {SALEABLE_RATIO_OFFICES} (полезная по соглашению МПТ)"),
-        Field(underground, "derived",
-              f"подземный паркинг — потребность {permanent + guest + office_spaces} мест "
-              f"({permanent} постоянных + {guest} гостевых жилья"
-              + (f" + {office_spaces} офисных" if office_spaces else "")
-              + (f") минус гараж {above}" if above else ")")
-              + f" = {underground}, {_ru(underground * UNDERGROUND_AREA_PER_SPACE)} м²"),
+        Field(apartments, "source" if residential_saleable_explicit else "derived",
+              (f"квартиры — {_ru(apartments)} м² заданы объектами пресета"
+               if residential_saleable_explicit else
+               f"квартиры — {_ru(residential_gns)} м² жилой части × {SALEABLE_RATIO_APARTMENTS} "
+               f"по согласованному ППТ; норматив калькулятора ГлавАПУ — 0,65, "
+               f"то есть {_ru(residential_gns * 0.65)} м²")),
+        Field(commercial, "source" if commercial_saleable_explicit else "derived",
+              (f"встроенная коммерция — {_ru(commercial)} м² заданы объектами пресета"
+               if commercial_saleable_explicit else
+               f"встроенная коммерция — {_ru(commercial_gns)} м² × {SALEABLE_RATIO_COMMERCIAL}")),
+        Field(offices, "source" if office_saleable_explicit else "derived",
+              (f"офисы — {_ru(offices)} м² заданы объектами пресета"
+               if office_saleable_explicit else
+               f"офисы — {_ru(office_gns)} м² × {SALEABLE_RATIO_OFFICES} (полезная по соглашению МПТ)")),
     ])
+    if derive_parking:
+        notes.append(Field(
+            underground, "derived",
+            f"подземный паркинг — потребность {permanent + guest + office_spaces} мест "
+            f"({permanent} постоянных + {guest} гостевых жилья"
+            + (f" + {office_spaces} офисных" if office_spaces else "")
+            + (f") минус гараж {above}" if above else ")")
+            + f" = {underground}, {_ru(underground * UNDERGROUND_AREA_PER_SPACE)} м²"))
+    else:
+        notes.append(Field(TBD, "tbd",
+                           "паркинг не рассчитан: пресет запрещает выводить его без исходных данных"))
     if above:
         notes.append(Field(above, "derived",
                            f"наземный гараж — {_ru(garage_gns)} м² ÷ {ABOVE_AREA_PER_SPACE:.0f} м²/место, "
@@ -423,6 +464,7 @@ def map_economics(data: dict[str, Any]) -> tuple[dict[str, Any], list[Field]]:
     inputs: dict[str, Any] = {}
     notes: list[Field] = []
     known = {
+        "purchase_price_mln": "цена приобретения / цена права КРТ",
         "apartment_price_th": "цена квартир",
         "commercial_price_th": "цена коммерции 1 этажа",
         "parking_price_th": "цена машино-места",
@@ -522,11 +564,23 @@ def map_phasing(data: dict[str, Any]) -> tuple[dict[str, Any], list[Field]]:
             "start_offset_months": int(_number(item.get("start_offset_months"))
                                        or index * gap),
             "construction_months": int(_number(item.get("construction_months")) or 24),
+            **({"products": copy.deepcopy(item["products"])}
+               if isinstance(item.get("products"), dict) else {}),
         } for index, item in enumerate(phases[:4])],
     }
-    shared = phasing.get("shared_cash")
-    if isinstance(shared, dict):
-        out["shared_cash"] = shared
+    products = phasing.get("products")
+    if isinstance(products, dict):
+        out["products"] = copy.deepcopy(products)
+    # Keep the object registry and allocation settings together with the
+    # phases. Dropping `social_objects` made the engine rebuild school and
+    # preschool from defaults and assign them to unrelated queues.
+    for key in ("shared_cash", "shared_allocation", "discrete"):
+        value = phasing.get(key)
+        if isinstance(value, dict):
+            out[key] = copy.deepcopy(value)
+    social_objects = phasing.get("social_objects")
+    if isinstance(social_objects, list):
+        out["social_objects"] = copy.deepcopy(social_objects)
     notes = [Field(len(out["phases"]), "assumption",
                    "очереди: " + ", ".join(
                        f"{item['name']} через {item['start_offset_months']} мес., "
