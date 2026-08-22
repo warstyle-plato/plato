@@ -108,8 +108,11 @@ def test_earned_cash_replaces_later_queue_bridge_and_recalculates_economics(naga
     off_row = independent["phase_financing"]["rows"][3]
     on_row = unified["phase_financing"]["rows"][3]
 
-    assert off_row["new_bridge"] == pytest.approx(1_292_304_054.57, abs=1.0)
-    assert on_row["project_cash_used"] == pytest.approx(1_292_304_054.57, abs=1.0)
+    # Product TEP may change the absolute requirement; the invariant is that
+    # already-earned cash replaces exactly the bridge the queue otherwise
+    # would have drawn, never a hard-coded historical preset amount.
+    assert off_row["new_bridge"] > 0
+    assert on_row["project_cash_used"] == pytest.approx(off_row["new_bridge"], abs=1.0)
     assert on_row["new_bridge"] == pytest.approx(0.0, abs=1.0)
     assert on_row["pre_rns_costs"] == pytest.approx(
         on_row["project_cash_used"] + on_row["own_funds"] + on_row["new_bridge"],

@@ -259,8 +259,28 @@ def map_tep(data: dict[str, Any]) -> tuple[dict[str, Any], list[Field]]:
     planning = data.get("planning") if isinstance(data.get("planning"), dict) else {}
     underground_plan = (planning.get("underground") or {}) if isinstance(
         planning.get("underground"), dict) else {}
-    explicit_underground_spaces = _number(underground_plan.get("spaces"))
-    explicit_underground_area = _number(underground_plan.get("area_m2"))
+    # Absolute queue TEP is more authoritative than an older project-level
+    # parking assumption.  Rumyantsevo, for example, still carries a draft
+    # 1,510-space envelope in planning.underground, while its two approved
+    # queue rows contain 1,236 + 1,289 = 2,525 spaces.  Nagatino has no
+    # absolute parking rows, so its project calculation remains the source.
+    phase_parking_rows = []
+    phasing = data.get("phasing") if isinstance(data.get("phasing"), dict) else {}
+    for phase in phasing.get("phases") or []:
+        products = phase.get("products") if isinstance(phase, dict) else None
+        row = products.get("underground_parking") if isinstance(products, dict) else None
+        if isinstance(row, dict):
+            phase_parking_rows.append(row)
+    phase_spaces = sum((_number(row.get("units")) or 0.0) for row in phase_parking_rows)
+    phase_area = sum((_number(row.get("gns"))
+                      if _number(row.get("gns")) is not None
+                      else _number(row.get("total_area")) or 0.0)
+                     for row in phase_parking_rows)
+    has_phase_parking = bool(phase_parking_rows and (phase_spaces > 0 or phase_area > 0))
+    explicit_underground_spaces = (phase_spaces if has_phase_parking
+                                   else _number(underground_plan.get("spaces")))
+    explicit_underground_area = (phase_area if has_phase_parking and phase_area > 0
+                                 else _number(underground_plan.get("area_m2")))
     if explicit_underground_spaces is not None:
         underground = int(round(explicit_underground_spaces))
     underground_area = (explicit_underground_area if explicit_underground_area is not None
@@ -316,7 +336,8 @@ def map_tep(data: dict[str, Any]) -> tuple[dict[str, Any], list[Field]]:
         notes.append(Field(
             underground, "source",
             f"подземный паркинг — {underground} мест, {_ru(underground_area)} м² "
-            "заданы расчётом проекта"))
+            + ("агрегированы из ТЭП очередей" if has_phase_parking
+               else "заданы расчётом проекта")))
     elif derive_parking:
         notes.append(Field(
             underground, "derived",
