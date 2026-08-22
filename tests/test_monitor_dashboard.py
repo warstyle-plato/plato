@@ -38,9 +38,6 @@ def test_article_surplus_does_not_cross_fund_another_article():
 
 
 def test_grodnenskaya_reserve_control_benchmark_exhausts_in_november():
-    # Control figures from «справка резервы_обновлено_по_остаткам_20.08.2026».
-    # We intentionally model them as article shortfalls: the waterfall must not
-    # defer reserve use because another article still has a free bank balance.
     articles = {
         "2.2.3.3": {
             "rss_limit": 0.0,
@@ -114,8 +111,7 @@ def test_page_has_funding_and_correct_cost_evidence_language():
     from developaid_monitor_page import MONITOR_PAGE
     assert "Исчерпание резерва" in MONITOR_PAGE
     assert "Непокрытая потребность" in MONITOR_PAGE
-    assert "Сырой PM" in MONITOR_PAGE
-    assert "Актировано СМР / утв. модель" in MONITOR_PAGE
-    assert "это не физический % WBS" in MONITOR_PAGE
+    assert "Cost control" in MONITOR_PAGE
+    assert "КС / EAC proxy" in MONITOR_PAGE
     assert "Утверждённый РНВ" in MONITOR_PAGE
-    assert "Current Forecast не рассчитан" in MONITOR_PAGE
+    assert "Current Forecast РНВ" in MONITOR_PAGE

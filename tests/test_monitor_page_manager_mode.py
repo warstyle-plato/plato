@@ -2,22 +2,23 @@ from developaid_monitor_page import MONITOR_PAGE
 
 
 def test_manager_gantt_is_default_and_sources_are_explicit():
-    assert "Управленческий Гант · сроки + КС + оплаты" in MONITOR_PAGE
-    assert "КС/актирование — только «Реестр выполненных работ»" in MONITOR_PAGE
-    assert "Денежный факт — только «Реестр платежей»" in MONITOR_PAGE
-    assert "КС/EAC не считается физическим процентом WBS" in MONITOR_PAGE
+    assert "Управленческий Гант" in MONITOR_PAGE
+    assert "Проект → корпус/объект → этап → WBS" in MONITOR_PAGE
+    assert "Реестр выполненных работ" in MONITOR_PAGE
+    assert "Реестр платежей" in MONITOR_PAGE
+    assert "КС/EAC" in MONITOR_PAGE
 
 
-def test_works_and_payments_have_separate_lanes():
-    assert 'lane-name">работы' in MONITOR_PAGE
-    assert 'lane-name">оплаты' in MONITOR_PAGE
-    assert "КС/EAC (только RSS-уровень)" in MONITOR_PAGE
-    assert "план оплат" in MONITOR_PAGE
-    assert "факт оплат" in MONITOR_PAGE
+def test_payments_are_removed_from_gantt_and_live_in_cost_control():
+    assert 'lane-name">оплаты' not in MONITOR_PAGE
+    assert 'class="lane paylane"' not in MONITOR_PAGE
+    assert "Cost control" in MONITOR_PAGE
+    assert "payment-strip" in MONITOR_PAGE
+    assert "Наведите на сегмент — дата и сумма" in MONITOR_PAGE
 
 
 def test_problem_card_and_rebaseline_are_exposed():
     assert 'id="detailCard"' in MONITOR_PAGE
-    assert "зависимости PM" in MONITOR_PAGE
-    assert "Утверждённый rebaseline статьи" in MONITOR_PAGE
+    assert "Что влияет на работу" in MONITOR_PAGE
+    assert "Утверждённый rebaseline" in MONITOR_PAGE
     assert 'id="worksCard"' not in MONITOR_PAGE

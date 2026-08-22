@@ -5,6 +5,8 @@ import developaid_monitor_manager as _manager
 _manager.install()
 import developaid_monitor_dashboard as _dashboard
 _dashboard.install()
+import developaid_monitor_pace as _pace
+_pace.install()
 
 MONITOR_PAGE = r"""<!doctype html>
 <html lang="ru">
@@ -14,277 +16,71 @@ MONITOR_PAGE = r"""<!doctype html>
 <title>DevelopAid · Project Monitor</title>
 <style>
 :root{
-  --bg:#f5f6f8;--card:#fff;--text:#18202a;--muted:#667085;--line:#e4e7ec;
-  --navy:#183153;--navy2:#2f4b6c;--risk:#b42318;--warn:#9a6700;--ok:#247044;
-  --plan:#c7ced7;--grid:#eef1f4
+ --bg:#f5f6f8;--card:#fff;--text:#18202a;--muted:#667085;--line:#e4e7ec;
+ --navy:#183153;--navy2:#2f4b6c;--risk:#b42318;--warn:#9a6700;--ok:#247044;
+ --plan:#c7ced7;--fact:#315579;--grid:#eef1f4;--soft:#f8fafc
 }
-*{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--text);font:13px Inter,Arial,sans-serif}
-.wrap{max-width:1580px;margin:auto;padding:20px}
-.top{display:flex;justify-content:space-between;gap:20px;align-items:end;margin-bottom:12px}
-h1{margin:0;font-size:24px} h2{margin:0;font-size:14px}
-.muted{color:var(--muted)}
-.controls,.files,.auth-actions,.legend{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
-.field{display:flex;flex-direction:column;gap:4px}
-.field label{font-size:10px;text-transform:uppercase;font-weight:750;color:var(--muted)}
-input{height:34px;border:1px solid #d0d5dd;border-radius:6px;padding:0 8px;background:#fff}
-.btn{height:34px;border:0;border-radius:6px;padding:0 12px;background:var(--navy);color:#fff;font-weight:700;cursor:pointer}
-.btn.alt{background:#475467}.btn.ghost{background:#fff;color:var(--navy);border:1px solid #cfd5dd}
-.card{background:var(--card);border:1px solid var(--line);border-radius:10px;margin-top:10px;overflow:hidden}
-.head{padding:12px 14px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;gap:12px;align-items:center}
-.body{padding:13px 14px}
-.setup{display:grid;grid-template-columns:1.15fr 1fr;gap:10px}
-.box{border:1px solid var(--line);border-radius:8px;padding:12px;background:#fbfcfd}
-.box b{display:block;margin-bottom:6px}.box p{font-size:11px;line-height:1.45;color:var(--muted);margin:4px 0 10px}
-.msg{font-size:11px;margin-top:7px;min-height:14px}.good{color:var(--ok)}.bad{color:var(--risk)}.warn{color:var(--warn)}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:13px Inter,Arial,sans-serif}
+.wrap{max-width:1640px;margin:auto;padding:18px}.top{display:flex;justify-content:space-between;gap:18px;align-items:end;margin-bottom:10px}
+h1{margin:0;font-size:24px}h2{margin:0;font-size:14px}.muted{color:var(--muted)}
+.controls,.files,.auth-actions,.legend{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.field{display:flex;flex-direction:column;gap:4px}
+.field label{font-size:10px;text-transform:uppercase;font-weight:750;color:var(--muted)}input{height:34px;border:1px solid #d0d5dd;border-radius:6px;padding:0 8px;background:#fff}
+.btn{height:34px;border:0;border-radius:6px;padding:0 12px;background:var(--navy);color:#fff;font-weight:700;cursor:pointer}.btn.alt{background:#475467}.btn.ghost{background:#fff;color:var(--navy);border:1px solid #cfd5dd}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;margin-top:10px;overflow:hidden}.head{padding:12px 14px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;gap:12px;align-items:center}.body{padding:13px 14px}
+.setup{display:grid;grid-template-columns:1.15fr 1fr;gap:10px}.box{border:1px solid var(--line);border-radius:8px;padding:12px;background:#fbfcfd}.box b{display:block;margin-bottom:6px}.box p{font-size:11px;line-height:1.45;color:var(--muted);margin:4px 0 10px}
+.msg{font-size:11px;margin-top:7px;min-height:14px}.good{color:var(--ok)}.bad{color:var(--risk)}.warn{color:var(--warn)}.hidden{display:none!important}
 .auth-card{border-left:4px solid var(--navy)}.auth-title{font-size:16px;font-weight:760;margin-bottom:4px}
-.kpis{display:grid;grid-template-columns:repeat(6,1fr);gap:8px}
-.kpi{border:1px solid var(--line);border-radius:8px;padding:11px;min-height:105px}
-.kpi .l{font-size:9px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);font-weight:800}
-.kpi .n{font-size:22px;font-weight:760;margin:8px 0 4px}.kpi .s{font-size:10px;line-height:1.35;color:var(--muted)}
-.legend{font-size:10px;color:var(--muted);margin-top:4px}
-.lg{display:inline-flex;align-items:center;gap:4px}
-.sw{display:inline-block;width:18px;height:6px;border-radius:3px}.sw.plan{background:var(--plan)}.sw.ks{background:var(--navy)}
-.sw.tail{height:3px;background:var(--risk)}.sw.pay{width:4px;height:12px;background:var(--navy2);border-radius:0}.sw.payplan{width:4px;height:12px;background:#cbd2da;border-radius:0}
-.g-axis,.g-row{display:grid;grid-template-columns:335px 1fr 225px}
-.g-axis{padding:8px 12px;border-bottom:1px solid var(--line);font-size:10px;color:var(--muted)}
-.axis{height:20px;position:relative}.tick{position:absolute;transform:translateX(-50%);white-space:nowrap}
-.g-row{min-height:72px;border-bottom:1px solid var(--grid)}
-.g-label,.g-metrics{padding:9px 11px}.g-label{cursor:pointer}
-.title{font-weight:680}.sub{font-size:10px;color:var(--muted);margin-top:4px}.chev{display:inline-block;width:16px;color:#667085}
-.lanes{position:relative;padding:5px 0}
-.lane-wrap{display:grid;grid-template-columns:42px 1fr;align-items:center}
-.lane-name{font-size:8px;text-transform:uppercase;color:#98a2b3;text-align:right;padding-right:6px}
-.lane{height:27px;position:relative;background:repeating-linear-gradient(to right,transparent,transparent calc(12.5% - 1px),#f0f2f5 calc(12.5% - 1px),#f0f2f5 12.5%)}
-.lane.paylane{height:25px;border-top:1px solid #f0f2f5}
-.planbar{position:absolute;top:10px;height:7px;background:var(--plan);border-radius:3px}
-.ksbar{position:absolute;top:10px;height:7px;background:var(--navy);border-radius:3px}
-.closedbar{position:absolute;top:10px;height:7px;background:#667085;border-radius:3px}
-.tail{position:absolute;top:12px;height:3px;background:var(--risk)}
-.mark{position:absolute;top:5px;width:2px;height:17px;background:var(--risk)}
-.cut{position:absolute;top:0;bottom:0;width:1px;background:#344054;opacity:.75}
-.funding-zone{position:absolute;top:0;bottom:0;background:rgba(180,35,24,.065);pointer-events:none}
-.reserve-mark{position:absolute;top:0;bottom:0;border-left:1px dashed var(--warn);pointer-events:none}
-.limit-mark{position:absolute;top:0;bottom:0;border-left:2px solid var(--risk);pointer-events:none}
-.pay{position:absolute;bottom:3px;width:5px;background:var(--navy2);transform:translateX(-2px)}
-.pay.planpay{background:#cbd2da}
-.g-metrics{text-align:right;font-size:10px;color:var(--muted);line-height:1.45}
-.m-main{font-weight:700;color:var(--text)}.risktext{color:var(--risk)}.oktext{color:var(--ok)}
-.lvl-detail .g-label{padding-left:27px}.lvl-rss .g-label{padding-left:44px}.lvl-task .g-label{padding-left:62px;background:#fafbfc}
-.selected{background:#f5f8fb}
-.detail-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
-.mini{border:1px solid var(--line);border-radius:7px;padding:10px}.mini .l{font-size:9px;text-transform:uppercase;color:var(--muted);font-weight:800}
-.mini .v{font-size:17px;font-weight:750;margin-top:5px}
-.links{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}.links>div{border-top:1px solid var(--line);padding-top:8px}
-.linkrow{font-size:11px;margin:5px 0;line-height:1.35}.hidden{display:none!important}
-.scenario-grid{display:grid;grid-template-columns:1fr 1.4fr;gap:12px}.scenario-actions{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:10px}.scenario-result{border-left:3px solid var(--navy);padding:10px 12px;background:#f7f9fc;line-height:1.5}.scenario-metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-top:9px}.scenario-metrics .mini{background:#fff}
-@media(max-width:1100px){.kpis{grid-template-columns:repeat(2,1fr)}.setup{grid-template-columns:1fr}.g-axis,.g-row{grid-template-columns:245px 1fr 155px}.lane-wrap{grid-template-columns:34px 1fr}}
+.kpis{display:grid;grid-template-columns:repeat(8,1fr);gap:8px}.kpi{border:1px solid var(--line);border-radius:8px;padding:10px;min-height:102px}.kpi .l{font-size:9px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);font-weight:800}.kpi .n{font-size:20px;font-weight:760;margin:8px 0 4px}.kpi .s{font-size:10px;line-height:1.35;color:var(--muted)}
+.finance-grid{display:grid;grid-template-columns:1.3fr 1fr;gap:16px}.finance-bars{display:grid;gap:9px}.finrow{display:grid;grid-template-columns:155px 1fr 105px;gap:10px;align-items:center}.finlabel{font-size:10px;color:var(--muted)}.finvalue{text-align:right;font-size:11px;font-weight:700}.track{height:12px;background:#edf0f3;border-radius:7px;overflow:hidden;position:relative}.fill{height:100%;background:var(--navy)}.fill.accepted{background:#58708f}.fill.paid{background:#8c9aaa}.fill.remaining{background:#d5dbe2}.fill.risk{background:var(--risk)}.funding-compare{display:grid;gap:8px;border-left:1px solid var(--line);padding-left:16px}.funding-big{font-size:19px;font-weight:760}.funding-row{display:flex;justify-content:space-between;gap:12px;border-bottom:1px solid var(--grid);padding:6px 0}
+.legend{font-size:10px;color:var(--muted);margin-top:4px}.lg{display:inline-flex;align-items:center;gap:4px}.sw{display:inline-block;width:18px;height:6px;border-radius:3px}.sw.plan{background:var(--plan)}.sw.fact{background:var(--fact)}.sw.late{height:3px;background:var(--risk)}.sw.ahead{height:3px;background:var(--ok)}
+.g-axis,.g-row{display:grid;grid-template-columns:330px 1fr 235px}.g-axis{padding:8px 12px;border-bottom:1px solid var(--line);font-size:10px;color:var(--muted)}.axis{height:20px;position:relative}.tick{position:absolute;transform:translateX(-50%);white-space:nowrap}
+.g-row{min-height:64px;border-bottom:1px solid var(--grid)}.g-label,.g-metrics{padding:9px 11px}.g-label{cursor:pointer}.title{font-weight:680}.sub{font-size:10px;color:var(--muted);margin-top:4px}.chev{display:inline-block;width:16px;color:#667085}
+.timeline{position:relative;margin:10px 0 4px;height:25px;background:repeating-linear-gradient(to right,transparent,transparent calc(12.5% - 1px),#f0f2f5 calc(12.5% - 1px),#f0f2f5 12.5%)}
+.planbar,.factbar,.latebar,.aheadbar{position:absolute;border-radius:4px}.planbar{top:9px;height:7px;background:var(--plan)}.factbar{top:9px;height:7px;background:var(--fact)}.latebar{top:11px;height:3px;background:var(--risk)}.aheadbar{top:11px;height:3px;background:var(--ok)}
+.forecastmark{position:absolute;top:4px;width:2px;height:17px;background:var(--risk)}.forecastmark.ahead{background:var(--ok)}.cut{position:absolute;top:0;bottom:0;width:1px;background:#344054;opacity:.8}.funding-zone{position:absolute;top:0;bottom:0;background:rgba(180,35,24,.055);pointer-events:none}.reserve-mark{position:absolute;top:0;bottom:0;border-left:1px dashed var(--warn);pointer-events:none}.limit-mark{position:absolute;top:0;bottom:0;border-left:2px solid var(--risk);pointer-events:none}
+.g-metrics{text-align:right;font-size:10px;color:var(--muted);line-height:1.45}.m-main{font-weight:700;color:var(--text)}.risktext{color:var(--risk)}.oktext{color:var(--ok)}
+.lvl-corpus{background:#fbfcfd}.lvl-corpus .title{font-size:14px}.lvl-stage .g-label{padding-left:26px}.lvl-task .g-label{padding-left:46px}.selected{background:#f2f6fa}
+.detail-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:8px}.mini{border:1px solid var(--line);border-radius:7px;padding:10px}.mini .l{font-size:9px;text-transform:uppercase;color:var(--muted);font-weight:800}.mini .v{font-size:16px;font-weight:750;margin-top:5px}.links{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}.links>div{border-top:1px solid var(--line);padding-top:8px}.linkrow{font-size:11px;margin:5px 0;line-height:1.35}
+.payment-strip{display:flex;height:18px;border-radius:5px;overflow:hidden;background:#eef1f4;margin-top:8px}.payment-seg{height:100%;min-width:2px;background:var(--navy2);border-right:1px solid #fff}.notice{margin-top:8px;padding:8px 10px;border-radius:6px;background:#fff8e8;color:#7a5600;font-size:10px;line-height:1.4}
+@media(max-width:1200px){.kpis{grid-template-columns:repeat(4,1fr)}.setup,.finance-grid{grid-template-columns:1fr}.g-axis,.g-row{grid-template-columns:250px 1fr 170px}.detail-grid{grid-template-columns:repeat(3,1fr)}}
 </style>
 </head>
 <body><div class="wrap">
-<div class="top">
- <div><h1>DevelopAid · Project Monitor</h1><div class="muted">Утвержденный ГПР / rebaseline → КС и платежи РСС → зависимости PM → финансовый риск</div></div>
- <div class="controls"><div class="field"><label>Проект</label><input id="project" value="Кутузов Сити"></div><div class="field"><label>Срез</label><input id="cut" type="date"></div><button class="btn" id="refresh">Обновить</button></div>
-</div>
-
-<div class="card auth-card" id="loginBox"><div class="body">
- <div class="auth-title">Вход в Project Monitor</div>
- <div class="muted">Войдите через Telegram тем же аккаунтом DevelopAid.</div>
- <div class="auth-actions" style="margin-top:10px"><button class="btn" id="loginBtn">Войти через Telegram</button><button class="btn ghost" id="keyBtn">Ключ администратора</button><button class="btn ghost hidden" id="logoutBtn">Выйти</button><span id="loginState"></span></div>
- <div class="msg" id="loginMsg"></div>
-</div></div>
-
+<div class="top"><div><h1>DevelopAid · Project Monitor</h1><div class="muted">План → факт по актам КС → forecast по темпу → PM-зависимости → финансирование</div></div><div class="controls"><div class="field"><label>Проект</label><input id="project" value="Кутузов Сити"></div><div class="field"><label>Срез</label><input id="cut" type="date"></div><button class="btn" id="refresh">Обновить</button></div></div>
+<div class="card auth-card" id="loginBox"><div class="body"><div class="auth-title">Вход в Project Monitor</div><div class="muted">Войдите через Telegram тем же аккаунтом DevelopAid.</div><div class="auth-actions" style="margin-top:10px"><button class="btn" id="loginBtn">Войти через Telegram</button><button class="btn ghost" id="keyBtn">Ключ администратора</button><button class="btn ghost hidden" id="logoutBtn">Выйти</button><span id="loginState"></span></div><div class="msg" id="loginMsg"></div></div></div>
 <div id="privateArea" class="hidden">
-<div class="card"><div class="head"><h2>Инициализация и обновление</h2><span class="muted">benchmark фиксируется один раз</span></div><div class="body setup">
- <div class="box"><b>1 · Benchmark проекта</b>
-  <p>ГПР задаёт WBS и привязку к РСС. Финансовая книга — утверждённую модель, потребность и ДДС. Сырой PM — только зависимости, float и конечную веху.</p>
-  <div class="files"><input id="gpr" type="file" accept=".xlsx"><span class="muted">ГПР+RSS</span><input id="finance" type="file" accept=".xlsx"><span class="muted">ФМ/потребность</span><input id="pm" type="file" accept=".xlsx"><span class="muted">сырой PM</span><input id="baselineDate" type="date"><button class="btn alt" id="baselineBtn">Зафиксировать</button></div>
-  <div class="msg" id="baselineMsg"></div>
-  <div style="margin-top:10px;border-top:1px solid var(--line);padding-top:9px"><b>Утверждённый rebaseline статьи</b>
-   <div class="files"><input id="rebase" type="file" accept=".xlsx"><input id="rebaseCode" value="2.2.2.6"><input id="rebaseSheet" value="наше предложение"><button class="btn alt" id="rebaseBtn">Добавить rebaseline</button></div>
-   <div class="msg" id="rebaseMsg"></div>
-  </div>
- </div>
- <div class="box"><b>2 · Регулярное обновление</b>
-  <p><strong>КС/актирование — только «Реестр выполненных работ».</strong> Денежный факт — только «Реестр платежей». КС/EAC не считается физическим процентом WBS и не двигает календарные сроки.</p>
-  <div class="files"><input id="rss" type="file" accept=".xlsx"><input id="rssDate" type="date"><button class="btn alt" id="rssBtn">Загрузить РСС</button></div>
-  <div class="files" style="margin-top:8px"><input id="sales" type="file" accept=".xlsx"><button class="btn alt" id="salesBtn">Загрузить продажи</button></div>
-  <div class="msg" id="weeklyMsg"></div>
- </div>
+<div class="card"><div class="head"><h2>Данные проекта</h2><span class="muted">baseline фиксируется один раз · далее полный РСС</span></div><div class="body setup">
+ <div class="box"><b>1 · Benchmark</b><p>ГПР задаёт WBS, объекты/корпуса и привязку RSS. Финансовая книга — утверждённый бюджет и потребность. PM — зависимости и float.</p><div class="files"><input id="gpr" type="file" accept=".xlsx"><input id="finance" type="file" accept=".xlsx"><input id="pm" type="file" accept=".xlsx"><input id="baselineDate" type="date"><button class="btn alt" id="baselineBtn">Зафиксировать</button></div><div class="msg" id="baselineMsg"></div><div style="margin-top:9px;border-top:1px solid var(--line);padding-top:9px"><b>Утверждённый rebaseline</b><div class="files"><input id="rebase" type="file" accept=".xlsx"><input id="rebaseCode" value="2.2.2.6"><input id="rebaseSheet" value="наше предложение"><button class="btn alt" id="rebaseBtn">Добавить</button></div><div class="msg" id="rebaseMsg"></div></div></div>
+ <div class="box"><b>2 · Текущий срез</b><p>Факт работ — датированные записи «Реестр выполненных работ». Платежи — «Реестр платежей». КС/EAC используется как прозрачный proxy темпа для forecast.</p><div class="files"><input id="rss" type="file" accept=".xlsx"><input id="rssDate" type="date"><button class="btn alt" id="rssBtn">Загрузить РСС</button></div><div class="files" style="margin-top:8px"><input id="sales" type="file" accept=".xlsx"><button class="btn alt" id="salesBtn">Загрузить продажи</button></div><div class="msg" id="weeklyMsg"></div></div>
 </div></div>
-
 <div class="card hidden" id="dashCard"><div class="head"><h2>Состояние проекта</h2><span class="muted" id="source"></span></div><div class="body"><div class="kpis" id="kpis"></div></div></div>
-
-<div class="card hidden" id="scenarioCard"><div class="head"><div><h2>Платон · сценарный анализ</h2><div class="muted">Расчёт по PM-зависимостям и постатейному финансированию, без подмены факта</div></div></div><div class="body scenario-grid">
- <div><div class="scenario-actions"><button class="btn" data-scenario="current_pace">Текущий темп</button><button class="btn alt" data-scenario="delay_wbs">Задержка WBS</button><button class="btn alt" data-scenario="accelerate_wbs">Ускорение WBS</button></div>
-  <div class="files"><input id="scenarioWbs" placeholder="WBS или название работы"><input id="scenarioValue" type="number" min="1" value="30"><span class="muted" id="scenarioUnit">дней / %</span></div><div class="msg" id="scenarioMsg"></div></div>
- <div id="scenarioOutput" class="scenario-result muted">Выберите сценарий. Платон пересчитает связанные работы, РНВ и потребность в финансировании.</div>
-</div></div>
-
-<div class="card hidden" id="ganttCard"><div class="head">
- <div><h2>Управленческий Гант · сроки + КС + оплаты</h2>
-  <div class="legend">
-   <span class="lg"><i class="sw plan"></i>утверждённый график</span>
-   <span class="lg"><i class="sw ks"></i>КС/EAC (только RSS-уровень)</span>
-   <span class="lg"><i class="sw tail"></i>сдвиг forecast</span>
-   <span class="lg"><i class="sw payplan"></i>план оплат</span>
-   <span class="lg"><i class="sw pay"></i>факт оплат</span>
-  </div>
- </div>
- <span class="muted">клик: блок → RSS → WBS</span>
-</div><div id="gantt"></div></div>
-
-<div class="card hidden" id="detailCard"><div class="head"><h2 id="detailTitle">Статья</h2><span class="muted">график · КС · оплаты · зависимости PM</span></div><div class="body"><div class="detail-grid" id="detailGrid"></div><div class="links"><div><b>Что влияет на эту работу</b><div id="pred"></div></div><div><b>На что влияет она</b><div id="succ"></div></div></div></div></div>
-</div>
-<div class="msg bad" id="viewMsg"></div>
-</div>
-
+<div class="card hidden" id="financeCard"><div class="head"><div><h2>Cost control</h2><div class="muted">100% = утверждённый бюджет строительства</div></div><span class="muted">бюджет ≠ лимит банка</span></div><div class="body finance-grid"><div class="finance-bars" id="financeBars"></div><div class="funding-compare" id="fundingCompare"></div></div></div>
+<div class="card hidden" id="ganttCard"><div class="head"><div><h2>Управленческий Гант</h2><div class="legend"><span class="lg"><i class="sw plan"></i>утверждённый план</span><span class="lg"><i class="sw fact"></i>факт КС/EAC proxy</span><span class="lg"><i class="sw late"></i>отставание forecast</span><span class="lg"><i class="sw ahead"></i>опережение forecast</span></div></div><span class="muted">Проект → корпус/объект → этап → WBS</span></div><div id="gantt"></div></div>
+<div class="card hidden" id="detailCard"><div class="head"><h2 id="detailTitle">Работа</h2><span class="muted">срок · КС · деньги · зависимости</span></div><div class="body"><div class="detail-grid" id="detailGrid"></div><div id="paymentDetail"></div><div id="financeNotice"></div><div class="links"><div><b>Что влияет на работу</b><div id="pred"></div></div><div><b>На что влияет работа</b><div id="succ"></div></div></div></div></div>
+</div><div class="msg bad" id="viewMsg"></div></div>
 <script>
 'use strict';
-const $=id=>document.getElementById(id), expanded=new Set(); let selected=null;
-const WEB_SESSION_KEY='developaid_web_session', ADMIN_KEY='plato_projects_key';
-const today=new Date().toISOString().slice(0,10);
-$('cut').value=today;$('rssDate').value=today;$('baselineDate').value=today;
-
-function readStorage(...keys){try{for(const k of keys){const v=localStorage.getItem(k);if(v)return v}}catch(e){}return ''}
-function session(){return readStorage(WEB_SESSION_KEY,'session','developaid_session')}
-function adminKey(){return readStorage(ADMIN_KEY,'key','developaid_key')}
-function hasAuth(){return !!(session()||adminKey())}
-function auth(){return {session:session(),key:adminKey()}}
-function syncAuthUi(){const yes=hasAuth();$('loginBox').classList.toggle('hidden',yes);$('privateArea').classList.toggle('hidden',!yes);$('logoutBtn').classList.toggle('hidden',!yes);$('loginState').textContent=yes?'Вход выполнен':'';return yes}
-function requireLogin(text='Войдите через Telegram, чтобы открыть данные проекта.'){$('loginBox').classList.remove('hidden');$('privateArea').classList.add('hidden');msg('loginMsg',text,'bad')}
+const $=id=>document.getElementById(id),expanded=new Set();let selected=null,currentView=null;
+const WEB_SESSION_KEY='developaid_web_session',ADMIN_KEY='plato_projects_key',today=new Date().toISOString().slice(0,10);$('cut').value=today;$('rssDate').value=today;$('baselineDate').value=today;
+function readStorage(...keys){try{for(const k of keys){const v=localStorage.getItem(k);if(v)return v}}catch(e){}return ''}function session(){return readStorage(WEB_SESSION_KEY,'session','developaid_session')}function adminKey(){return readStorage(ADMIN_KEY,'key','developaid_key')}function hasAuth(){return !!(session()||adminKey())}function auth(){return{session:session(),key:adminKey()}}
+function syncAuthUi(){const yes=hasAuth();$('loginBox').classList.toggle('hidden',yes);$('privateArea').classList.toggle('hidden',!yes);$('logoutBtn').classList.toggle('hidden',!yes);$('loginState').textContent=yes?'Вход выполнен':'';return yes}function requireLogin(text='Войдите через Telegram, чтобы открыть данные проекта.'){$('loginBox').classList.remove('hidden');$('privateArea').classList.add('hidden');msg('loginMsg',text,'bad')}
 async function post(path,p){const r=await fetch(path,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(Object.assign(auth(),p||{}))}),d=await r.json().catch(()=>({}));if(r.status===401)requireLogin();if(!r.ok)throw new Error(d.detail||('HTTP '+r.status));return d}
-const b64=f=>new Promise((ok,no)=>{const r=new FileReader();r.onload=()=>ok(String(r.result).split(',')[1]);r.onerror=no;r.readAsDataURL(f)});
-function money(v){if(v==null||!isFinite(Number(v)))return '—';const n=Number(v);return Math.abs(n)>=1e9?(n/1e9).toLocaleString('ru-RU',{maximumFractionDigits:2})+' млрд ₽':(n/1e6).toLocaleString('ru-RU',{maximumFractionDigits:1})+' млн ₽'}
-function pct(v){return v==null?'—':(Number(v)*100).toLocaleString('ru-RU',{maximumFractionDigits:1})+'%'}
-function dt(v){if(!v)return '—';const d=new Date(v);return isNaN(d)?v:d.toLocaleDateString('ru-RU')}
-function msg(id,t,cls=''){const e=$(id);if(!e)return;e.textContent=t;e.className='msg '+cls}
-function kpi(l,n,s='',cls=''){return `<div class="kpi"><div class="l">${l}</div><div class="n ${cls}">${n}</div><div class="s">${s}</div></div>`}
-
-$('loginBtn').onclick=async()=>{msg('loginMsg','Открываю Telegram…','good');try{const r=await fetch('/auth/telegram/start',{method:'POST'}),d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.detail||'Вход через Telegram недоступен');if(!d.code)throw new Error('Сервер не вернул код входа');if(d.link)window.open(d.link,'_blank');msg('loginMsg','Подтвердите вход в Telegram.','good');for(let i=0;i<60;i++){await new Promise(ok=>setTimeout(ok,2000));const c=await fetch('/auth/telegram/claim',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:d.code})}),cd=await c.json().catch(()=>({}));if(c.ok&&cd.session){localStorage.setItem(WEB_SESSION_KEY,cd.session);syncAuthUi();await refresh();return}if(c.status>=500)throw new Error(cd.detail||'Ошибка подтверждения входа')}throw new Error('Подтверждение не пришло за 2 минуты.')}catch(e){msg('loginMsg',e.message,'bad')}};
-$('keyBtn').onclick=()=>{const k=prompt('Ключ администратора (DEVELOPAID_ADMIN_KEY)');if(!k)return;localStorage.setItem(ADMIN_KEY,k.trim());syncAuthUi();refresh()};
-$('logoutBtn').onclick=()=>{try{localStorage.removeItem(WEB_SESSION_KEY);localStorage.removeItem('session');localStorage.removeItem('developaid_session');localStorage.removeItem(ADMIN_KEY);localStorage.removeItem('key');localStorage.removeItem('developaid_key')}catch(e){}syncAuthUi();requireLogin('Сессия удалена. Войдите через Telegram.')};
-
-$('baselineBtn').onclick=async()=>{const g=$('gpr').files[0],f=$('finance').files[0],pm=$('pm').files[0],d=$('baselineDate').value,p=$('project').value.trim();if(!g||!f)return msg('baselineMsg','Нужны ГПР+RSS и финансовая книга','bad');try{msg('baselineMsg','Фиксирую benchmark…','good');await post('/monitor/schedule',{project:p,taken_at:d,gpr_base64:await b64(g),pm_base64:await b64(f)});if(pm)await post('/monitor/proposal',{project:p,taken_at:d,start:d,code:'__PM__',sheet:'Таблица_задач1',content_base64:await b64(pm)});msg('baselineMsg','Benchmark создан. PM-зависимости сохранены отдельно.','good');await refresh()}catch(e){msg('baselineMsg',e.message,'bad')}};
-$('rebaseBtn').onclick=async()=>{const f=$('rebase').files[0];if(!f)return msg('rebaseMsg','Выберите файл rebaseline','bad');try{await post('/monitor/proposal',{project:$('project').value.trim(),taken_at:$('cut').value,start:$('cut').value,code:$('rebaseCode').value.trim(),sheet:$('rebaseSheet').value.trim(),content_base64:await b64(f)});msg('rebaseMsg','Rebaseline сохранён; исходный ГПР остаётся историческим baseline v1.','good');await refresh()}catch(e){msg('rebaseMsg',e.message,'bad')}};
-$('rssBtn').onclick=async()=>{const f=$('rss').files[0],d=$('rssDate').value;if(!f)return msg('weeklyMsg','Выберите РСС 6.1.2','bad');try{await post('/monitor/estimate',{project:$('project').value.trim(),taken_at:d,filename:f.name,content_base64:await b64(f)});$('cut').value=d;msg('weeklyMsg','РСС загружен: КС и платежи пересчитаны.','good');await refresh()}catch(e){if(String(e.message).includes('уже загружен')){$('cut').value=d;msg('weeklyMsg','Этот срез уже сохранён — открываю существующий расчёт.','warn');await refresh();return}msg('weeklyMsg',e.message,'bad')}};
-$('salesBtn').onclick=async()=>{const f=$('sales').files[0];if(!f)return msg('weeklyMsg','Выберите отчёт продаж','bad');try{await post('/monitor/sales',{project:$('project').value.trim(),taken_at:$('cut').value,content_base64:await b64(f)});msg('weeklyMsg','Продажи сохранены.','good');await refresh()}catch(e){msg('weeklyMsg',e.message,'bad')}};
-
-function renderDash(v){
- const d=v.dashboard||{},s=d.schedule||{},ph=d.physical||{},f=d.funding||{};
- const forecastKnown=!!s.forecast_known;
- const scheduleTitle=forecastKnown?'Forecast РВЭ / РНВ':'Утверждённый РНВ';
- const scheduleDate=forecastKnown?s.forecast_finish:s.approved_finish;
- const scheduleSub=forecastKnown?(s.rnv_delay_days?`+${s.rnv_delay_days} дн к утвержденному сроку`:(s.forecast_source||'forecast по PM-сети')):'Current Forecast не рассчитан: нет actualized WBS/rebaseline, отличный от baseline';
- $('dashCard').classList.remove('hidden');$('source').textContent=(d.sources&&d.sources.rss)||'';
- $('scenarioCard').classList.remove('hidden');
- $('kpis').innerHTML=
-   kpi(scheduleTitle,dt(scheduleDate),scheduleSub,forecastKnown&&s.rnv_delay_days>0?'bad':forecastKnown?'good':'')+
-   kpi('Актировано СМР / утв. модель',pct(ph.completion),`${money(ph.accepted)} по датированным КС · это не физический % WBS`)+
-   kpi('Остаток реальной потребности',money(f.remaining_need),`финансовый остаток; календарный forecast отдельно`)+
-   kpi('Начало использования резерва',dt(f.reserve_start),`резерв ${money(f.reserve)} · 2.8/2.9 · постатейно`,f.reserve_start?'warn':'')+
-   kpi('Исчерпание резерва',dt(f.reserve_exhaustion||f.bank_exhaustion),`остаток лимитов статей ${money(f.bank_remaining)}`,f.reserve_exhaustion||f.bank_exhaustion?'bad':'good')+
-   kpi('Непокрытая потребность',money(f.additional_financing),f.known?f.method:(f.reason||'нет данных'),f.additional_financing>0?'bad':'good');
-}
-async function runScenario(kind){
- const wbs=$('scenarioWbs').value.trim(),value=Number($('scenarioValue').value)||0;
- if(kind!=='current_pace'&&!wbs)return msg('scenarioMsg','Укажите WBS или часть названия работы','bad');
- msg('scenarioMsg','Платон пересчитывает сеть и финансирование…','good');
- try{const r=await post('/monitor/scenario',{project:$('project').value.trim(),cut:$('cut').value,kind,wbs,days:kind==='delay_wbs'?value:0,acceleration_pct:kind==='accelerate_wbs'?value:20}),s=r.schedule||{},f=r.funding||{};
-  $('scenarioOutput').className='scenario-result';$('scenarioOutput').innerHTML=`<b>${r.answer||'Сценарий рассчитан'}</b><div class="scenario-metrics"><div class="mini"><div class="l">РНВ сценария</div><div class="v">${dt(s.scenario_rnv)}</div><div class="sub">к текущему прогнозу ${Number(s.impact_vs_current_days)>=0?'+':''}${s.impact_vs_current_days||0} дн</div></div><div class="mini"><div class="l">К утверждённому РНВ</div><div class="v ${Number(s.delay_vs_approved_days)>0?'bad':'good'}">${Number(s.delay_vs_approved_days)>=0?'+':''}${s.delay_vs_approved_days||0} дн</div><div class="sub">baseline ${dt(s.approved_rnv)}</div></div><div class="mini"><div class="l">Потребность в дофинансе</div><div class="v ${Number(f.additional_financing)>0?'bad':'good'}">${money(f.additional_financing)}</div><div class="sub">резерв до ${dt(f.reserve_exhaustion)}</div></div></div>`;
-  msg('scenarioMsg','Сценарий рассчитан из загруженного состояния проекта.','good')
- }catch(e){msg('scenarioMsg',e.message,'bad')}
-}
-document.querySelectorAll('[data-scenario]').forEach(b=>b.onclick=()=>runScenario(b.dataset.scenario));
-function collect(nodes,out=[]){for(const n of nodes||[]){out.push(n);collect(n.children||[],out)}return out}
-function toDate(v){const d=new Date(v);return isNaN(d)?null:d}
-
-function renderGantt(v){
- const roots=(v.schedule&&v.schedule.management)||[];
- if(!roots.length){$('ganttCard').classList.add('hidden');return}
- $('ganttCard').classList.remove('hidden');
- const forecastKnown=!!(((v.dashboard||{}).schedule||{}).forecast_known);
- const all=collect(roots,[]),starts=all.map(x=>toDate(x.plan_start)).filter(Boolean),finishes=all.map(x=>toDate(x.forecast_finish||x.plan_finish)).filter(Boolean),fund=v.financing||{};
- if(!starts.length||!finishes.length)return;
- if(fund.forecast_to){const z=toDate(fund.forecast_to);if(z)finishes.push(z)}
- let min=new Date(Math.min(...starts.map(d=>+d))),max=new Date(Math.max(...finishes.map(d=>+d)));
- min.setDate(min.getDate()-15);max.setDate(max.getDate()+15);
- const span=Math.max(1,+max-+min),pos=x=>{const d=toDate(x);return d?Math.max(0,Math.min(100,(+d-+min)/span*100)):null};
- let html='<div class="g-axis"><div>Этап / статья / WBS</div><div class="axis">';
- for(let i=0;i<=6;i++){const d=new Date(+min+span*i/6);html+=`<span class="tick" style="left:${i/6*100}%">${d.toLocaleDateString('ru-RU',{month:'short',year:'2-digit'})}</span>`}
- html+='</div><div style="text-align:right">Срок · КС · оплаты</div></div>';
-
- function commonMarks(){
-   let x='';const cp=pos(v.cut),rs=pos(fund.reserve_start),ex=pos(fund.reserve_exhaustion||fund.bank_exhaustion);
-   if(cp!=null)x+=`<span class="cut" style="left:${cp}%"></span>`;
-   if(rs!=null)x+=`<span class="reserve-mark" style="left:${rs}%"></span>`;
-   if(ex!=null)x+=`<span class="limit-mark" style="left:${ex}%"></span><span class="funding-zone" style="left:${ex}%;right:0"></span>`;
-   return x;
- }
- function row(n){
-   const key=n.key||('task:'+String(n.id||n.wbs||n.name)),kids=(n.children||[]).filter(Boolean),open=expanded.has(key),lvl=n.level||'task',ps=pos(n.plan_start),pf=pos(n.plan_finish),ff=pos(n.forecast_finish),sel=selected===key?' selected':'',payments=n.payments||{},dep=n.dependencies||{};
-   let works=commonMarks(),pays=commonMarks();
-   if(ps!=null&&pf!=null)works+=`<span class="planbar" style="left:${ps}%;width:${Math.max(1,pf-ps)}%"></span>`;
-   if(n.schedule_closed&&ps!=null&&pf!=null)works+=`<span class="closedbar" style="left:${ps}%;width:${Math.max(1,pf-ps)}%"></span>`;
-   else if(lvl==='rss'&&n.actual_progress!=null&&ps!=null&&pf!=null){
-     const ratio=Math.max(0,Math.min(1,Number(n.actual_progress)));
-     works+=`<span class="ksbar" title="КС/EAC — стоимостное актирование, не физический процент" style="left:${ps}%;width:${Math.max(0,(pf-ps)*ratio)}%"></span>`;
-   }
-   if(forecastKnown&&ff!=null&&pf!=null&&ff>pf){works+=`<span class="tail" style="left:${pf}%;width:${ff-pf}%"></span><span class="mark" style="left:${ff}%"></span>`}
-
-   const pm=Object.entries(payments.plan||{}),fm=Object.entries(payments.fact||{}),mx=Math.max(1,...pm.map(x=>Number(x[1])||0),...fm.map(x=>Number(x[1])||0));
-   for(const [m,a] of pm){const x=pos(m);if(x!=null)pays+=`<span class="pay planpay" style="left:${x}%;height:${Math.max(2,(Number(a)||0)/mx*16)}px"></span>`}
-   for(const [m,a] of fm){const x=pos(m);if(x!=null)pays+=`<span class="pay" style="left:${x}%;height:${Math.max(2,(Number(a)||0)/mx*16)}px"></span>`}
-
-   const delta=n.delta_days!=null?Number(n.delta_days):0;
-   let main=n.schedule_closed?'<span class="oktext">завершено</span>':(!forecastKnown?'утверждённый график':(delta>0?`<span class="risktext">+${delta} дн</span>`:'forecast без сдвига'));
-   let evidence='';
-   if(lvl==='rss'&&n.actual_progress!=null)evidence=`КС/EAC ${pct(n.actual_progress)}`;
-   else if(lvl==='task')evidence=n.baseline_status||n.status||'WBS';
-   let third='';
-   if(lvl==='task'&&dep.current_float_days!=null)third=`float ${dep.current_float_days} дн${dep.impact_rnv_days?` · РНВ +${dep.impact_rnv_days} дн`:''}`;
-   else if(dep.impact_rnv_days)third=`влияние на РНВ +${dep.impact_rnv_days} дн`;
-   const paid=payments.fact_total==null?'':`оплачено ${money(payments.fact_total)}`;
-
-   html+=`<div class="g-row lvl-${lvl}${sel}" data-key="${key}">
-    <div class="g-label"><span class="chev">${kids.length?(open?'▾':'▸'):''}</span><span class="title">${n.code?`${n.code} · `:''}${n.name||n.wbs||''}</span><div class="sub">${lvl==='task'?'WBS '+(n.wbs||n.id||''):lvl==='rss'?'RSS · финансовая привязка':lvl==='detail'?'этап':'управленческий блок'}</div></div>
-    <div class="lanes"><div class="lane-wrap"><span class="lane-name">работы</span><div class="lane">${works}</div></div><div class="lane-wrap"><span class="lane-name">оплаты</span><div class="lane paylane">${pays}</div></div></div>
-    <div class="g-metrics"><div class="m-main">${main}</div><div>${evidence}</div><div>${paid}</div><div>${third}</div></div>
-   </div>`;
-   if(open)for(const c of kids)row(c);
- }
- for(const r of roots)row(r);
- $('gantt').innerHTML=html;
- document.querySelectorAll('.g-row').forEach(el=>el.onclick=()=>{
-   const key=el.dataset.key,n=collect(roots,[]).find(x=>(x.key||('task:'+String(x.id||x.wbs||x.name)))===key);
-   if(!n)return;selected=key;if((n.children||[]).length){expanded.has(key)?expanded.delete(key):expanded.add(key)}
-   renderGantt(v);renderDetail(n,forecastKnown);
- });
-}
-
-function renderDetail(n,forecastKnown=true){
- $('detailCard').classList.remove('hidden');$('detailTitle').textContent=(n.code?`${n.code} · `:'')+(n.name||n.wbs||'Статья');
- const dep=n.dependencies||{},pay=n.payments||{},delta=n.delta_days!=null?Number(n.delta_days):0,lvl=n.level||'task';
- const evidence=(lvl==='rss'&&n.actual_progress!=null)?pct(n.actual_progress):'—';
- const scheduleValue=forecastKnown?dt(n.forecast_finish):dt(n.plan_finish);
- const scheduleLabel=forecastKnown?'Срок / forecast':'Утверждённый срок';
- $('detailGrid').innerHTML=
-  `<div class="mini"><div class="l">${scheduleLabel}</div><div class="v ${forecastKnown&&delta>0?'bad':''}">${scheduleValue}</div><div class="sub">${n.schedule_closed?'завершено':forecastKnown?(delta>0?'+'+delta+' дн':'forecast без сдвига'):'нет actualized WBS для reforecast'}</div></div>`+
-  `<div class="mini"><div class="l">КС / EAC</div><div class="v">${evidence}</div><div class="sub">${lvl==='rss'?`${money(n.accepted)} актировано · не физический % WBS`:'показывается только на RSS-уровне'}</div></div>`+
-  `<div class="mini"><div class="l">Оплаты</div><div class="v">${money(pay.fact_total)}</div><div class="sub">план ${money(pay.plan_total)}</div></div>`+
-  `<div class="mini"><div class="l">Float / влияние</div><div class="v">${lvl==='task'&&dep.current_float_days!=null?dep.current_float_days+' дн':'—'}</div><div class="sub">${lvl==='task'?`передано ${dep.inherited_delay_days||0} дн · РНВ ${dep.impact_rnv_days||0} дн`:'float показывается только на WBS'}</div></div>`;
- const fmt=x=>`<div class="linkrow"><b>${x.id}</b> ${x.name||''}<br><span class="muted">${x.type||''}${x.lag_days?` ${x.lag_days>0?'+':''}${x.lag_days} дн`:''}</span></div>`;
- $('pred').innerHTML=(lvl==='task'?(dep.predecessors||[]).map(fmt).join(''):'')||'<span class="muted">связи показываются на WBS-уровне</span>';
- $('succ').innerHTML=(lvl==='task'?(dep.successors||[]).map(fmt).join(''):'')||'<span class="muted">связи показываются на WBS-уровне</span>';
-}
-
-async function refresh(){
- if(!hasAuth()){syncAuthUi();msg('viewMsg','Войдите через Telegram, чтобы открыть данные проекта.','bad');return}
- syncAuthUi();const p=$('project').value.trim();if(!p)return;
- try{msg('viewMsg','');const raw=await post('/monitor/view',{project:p,cut:$('cut').value,upto:''});const v=raw.snapshot||raw.view||raw.report||raw.response||raw;renderDash(v);renderGantt(v)}
- catch(e){msg('viewMsg',e.message,'bad')}
-}
-$('refresh').onclick=refresh;syncAuthUi();if(hasAuth())refresh();else msg('viewMsg','Войдите через Telegram, чтобы открыть данные проекта.','bad');
+const b64=f=>new Promise((ok,no)=>{const r=new FileReader();r.onload=()=>ok(String(r.result).split(',')[1]);r.onerror=no;r.readAsDataURL(f)});function money(v){if(v==null||!isFinite(Number(v)))return '—';const n=Number(v);return Math.abs(n)>=1e9?(n/1e9).toLocaleString('ru-RU',{maximumFractionDigits:2})+' млрд ₽':(n/1e6).toLocaleString('ru-RU',{maximumFractionDigits:1})+' млн ₽'}function pct(v){return v==null||!isFinite(Number(v))?'—':(Number(v)*100).toLocaleString('ru-RU',{maximumFractionDigits:1})+'%'}function dt(v){if(!v)return '—';const d=new Date(v);return isNaN(d)?v:d.toLocaleDateString('ru-RU')}function msg(id,t,cls=''){const e=$(id);if(!e)return;e.textContent=t;e.className='msg '+cls}function kpi(l,n,s='',cls=''){return `<div class="kpi"><div class="l">${l}</div><div class="n ${cls}">${n}</div><div class="s">${s}</div></div>`}
+$('loginBtn').onclick=async()=>{msg('loginMsg','Открываю Telegram…','good');try{const r=await fetch('/auth/telegram/start',{method:'POST'}),d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.detail||'Вход через Telegram недоступен');if(d.link)window.open(d.link,'_blank');for(let i=0;i<60;i++){await new Promise(ok=>setTimeout(ok,2000));const c=await fetch('/auth/telegram/claim',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:d.code})}),cd=await c.json().catch(()=>({}));if(c.ok&&cd.session){localStorage.setItem(WEB_SESSION_KEY,cd.session);syncAuthUi();await refresh();return}}throw new Error('Подтверждение не пришло за 2 минуты.')}catch(e){msg('loginMsg',e.message,'bad')}};$('keyBtn').onclick=()=>{const k=prompt('Ключ администратора (DEVELOPAID_ADMIN_KEY)');if(!k)return;localStorage.setItem(ADMIN_KEY,k.trim());syncAuthUi();refresh()};$('logoutBtn').onclick=()=>{try{[WEB_SESSION_KEY,'session','developaid_session',ADMIN_KEY,'key','developaid_key'].forEach(k=>localStorage.removeItem(k))}catch(e){}syncAuthUi();requireLogin('Сессия удалена. Войдите через Telegram.')};
+$('baselineBtn').onclick=async()=>{const g=$('gpr').files[0],f=$('finance').files[0],pm=$('pm').files[0],d=$('baselineDate').value,p=$('project').value.trim();if(!g||!f)return msg('baselineMsg','Нужны ГПР+RSS и финансовая книга','bad');try{msg('baselineMsg','Фиксирую benchmark…','good');await post('/monitor/schedule',{project:p,taken_at:d,gpr_base64:await b64(g),pm_base64:await b64(f)});if(pm)await post('/monitor/proposal',{project:p,taken_at:d,start:d,code:'__PM__',sheet:'Таблица_задач1',content_base64:await b64(pm)});msg('baselineMsg','Benchmark создан.','good');await refresh()}catch(e){msg('baselineMsg',e.message,'bad')}};$('rebaseBtn').onclick=async()=>{const f=$('rebase').files[0];if(!f)return msg('rebaseMsg','Выберите файл rebaseline','bad');try{await post('/monitor/proposal',{project:$('project').value.trim(),taken_at:$('cut').value,start:$('cut').value,code:$('rebaseCode').value.trim(),sheet:$('rebaseSheet').value.trim(),content_base64:await b64(f)});msg('rebaseMsg','Rebaseline сохранён.','good');await refresh()}catch(e){msg('rebaseMsg',e.message,'bad')}};$('rssBtn').onclick=async()=>{const f=$('rss').files[0],d=$('rssDate').value;if(!f)return msg('weeklyMsg','Выберите РСС 6.1.2','bad');try{await post('/monitor/estimate',{project:$('project').value.trim(),taken_at:d,filename:f.name,content_base64:await b64(f)});$('cut').value=d;msg('weeklyMsg','РСС загружен.','good');await refresh()}catch(e){if(String(e.message).includes('уже загружен')){$('cut').value=d;msg('weeklyMsg','Срез уже сохранён — открываю.','warn');await refresh();return}msg('weeklyMsg',e.message,'bad')}};$('salesBtn').onclick=async()=>{const f=$('sales').files[0];if(!f)return msg('weeklyMsg','Выберите отчёт продаж','bad');try{await post('/monitor/sales',{project:$('project').value.trim(),taken_at:$('cut').value,content_base64:await b64(f)});msg('weeklyMsg','Продажи сохранены.','good')}catch(e){msg('weeklyMsg',e.message,'bad')}};
+function renderDash(v){const d=v.dashboard||{},s=d.schedule||{},ph=d.physical||{},c=d.construction||{},f=d.funding||{},known=!!s.forecast_known,approved=Number(c.approved||0),paid=Number(f.paid_actual||((v.money||{}).payment_fact)||0),contracted=Number(c.contracted||0),remainingBudget=Math.max(0,approved-paid),uncontracted=Math.max(0,approved-contracted);$('dashCard').classList.remove('hidden');$('source').textContent=(d.sources&&d.sources.rss)||'';$('kpis').innerHTML=kpi('Утверждённый РНВ',dt(s.approved_finish),'baseline PM')+kpi('Current Forecast РНВ',known?dt(s.forecast_finish):'—',known?(s.rnv_delay_days?`+${s.rnv_delay_days} дн · ${s.forecast_source||''}`:(s.forecast_source||'по темпу')):'недостаточно факта для forecast',known&&s.rnv_delay_days>0?'bad':known?'good':'')+kpi('КС / утверждённый бюджет',pct(approved>0?Number(ph.accepted||0)/approved:null),`${money(ph.accepted)} актировано`)+kpi('Остаток бюджета',money(remainingBudget),`утв. ${money(approved)} − оплачено ${money(paid)}`)+kpi('Не законтрактовано',money(uncontracted),`законтрактовано ${money(contracted)}`)+kpi('Остаток лимита банка',money(f.bank_remaining),`потребность ${money(f.remaining_need)}`)+kpi('Резерв',money(f.reserve_balance!=null?f.reserve_balance:f.reserve),f.reserve_exhaustion?`исчерпание ${dt(f.reserve_exhaustion)}`:`старт ${dt(f.reserve_start)}`)+kpi('Непокрытая потребность',money(f.additional_financing),f.method||'',Number(f.additional_financing)>0?'bad':'good');renderFinance(v,approved,contracted,Number(ph.accepted||0),paid,remainingBudget)}
+function renderFinance(v,approved,contracted,accepted,paid,remainingBudget){const f=((v.dashboard||{}).funding)||{},den=Math.max(approved,1),bar=(label,value,cls,title)=>`<div class="finrow" title="${title||''}"><div class="finlabel">${label}</div><div class="track"><div class="fill ${cls||''}" style="width:${Math.max(0,Math.min(100,value/den*100))}%"></div></div><div class="finvalue">${money(value)}</div></div>`;$('financeCard').classList.remove('hidden');$('financeBars').innerHTML=bar('Утверждённый бюджет',approved,'','100% утверждённого бюджета')+bar('Законтрактовано',contracted,'',`${pct(contracted/den)} бюджета`)+bar('Актировано КС',accepted,'accepted',`${pct(accepted/den)} бюджета`)+bar('Оплачено',paid,'paid',`${pct(paid/den)} бюджета`)+bar('Остаток бюджета',remainingBudget,'remaining',`${pct(remainingBudget/den)} бюджета`);$('fundingCompare').innerHTML=`<div><div class="muted">Финансирование до завершения</div><div class="funding-big">${money(f.remaining_need)}</div></div><div class="funding-row"><span>Остаток лимита банка</span><b>${money(f.bank_remaining)}</b></div><div class="funding-row"><span>Резерв 2.8/2.9</span><b>${money(f.reserve_balance!=null?f.reserve_balance:f.reserve)}</b></div><div class="funding-row"><span>Начало резерва</span><b>${dt(f.reserve_start)}</b></div><div class="funding-row"><span>Исчерпание резерва</span><b class="${f.reserve_exhaustion?'bad':''}">${dt(f.reserve_exhaustion)}</b></div><div class="funding-row"><span>Доп. финансирование</span><b class="${Number(f.additional_financing)>0?'bad':'good'}">${money(f.additional_financing)}</b></div>`}
+function collectOriginal(nodes,out=[],ctx={control:'',detail:'',rss:null}){for(const n of nodes||[]){const level=n.level||'';const next={...ctx};if(level==='control')next.control=n.name||'';if(level==='detail')next.detail=n.name||'';if(level==='rss')next.rss=n;if(level==='task')out.push({task:n,control:next.control,detail:next.detail,rss:next.rss});collectOriginal(n.children||[],out,next)}return out}
+function corpusLabel(task){const parts=[task.object,task.section,task.name].filter(Boolean).join(' '),m=parts.match(/(?:корпус|корп\.?|башня)\s*№?\s*([0-9A-Za-zА-Яа-я-]+)/i);if(m)return 'Корпус '+m[1];const obj=String(task.object||'').trim();if(obj&&obj.length<90)return obj;return 'Общие работы'}
+function sortNatural(a,b){return String(a).localeCompare(String(b),'ru',{numeric:true,sensitivity:'base'})}
+function summarize(children,name,key,level){const dates=x=>new Date(x);const starts=children.map(x=>dates(x.plan_start)).filter(x=>!isNaN(x)),ends=children.map(x=>dates(x.plan_finish)).filter(x=>!isNaN(x)),ffs=children.map(x=>dates(x.forecast_finish||x.plan_finish)).filter(x=>!isNaN(x));const eac=children.reduce((s,x)=>s+Number(x.eac||0),0),accepted=children.reduce((s,x)=>s+Number(x.accepted||0),0);const planStart=starts.length?new Date(Math.min(...starts)):null,planFinish=ends.length?new Date(Math.max(...ends)):null,ff=ffs.length?new Date(Math.max(...ffs)):planFinish;return{key,level,name,plan_start:planStart?planStart.toISOString().slice(0,10):null,plan_finish:planFinish?planFinish.toISOString().slice(0,10):null,forecast_finish:ff?ff.toISOString().slice(0,10):null,delta_days:planFinish&&ff?Math.round((ff-planFinish)/86400000):0,eac,accepted,actual_progress:eac>0?accepted/eac:null,children}}
+function managementByCorpus(roots){const flat=collectOriginal(roots,[]),corps={};for(const x of flat){const corp=corpusLabel(x.task),stage=x.detail||x.control||'Работы';corps[corp]??={};corps[corp][stage]??=[];const t={...x.task,_rss:x.rss,_control:x.control,_detail:x.detail};corps[corp][stage].push(t)}return Object.keys(corps).sort(sortNatural).map(corp=>{const stages=Object.keys(corps[corp]).sort(sortNatural).map(stage=>summarize(corps[corp][stage],stage,`stage:${corp}:${stage}`,'stage'));return summarize(stages,corp,`corpus:${corp}`,'corpus')})}
+function toDate(v){const d=new Date(v);return isNaN(d)?null:d}function allNodes(nodes,out=[]){for(const n of nodes||[]){out.push(n);allNodes(n.children||[],out)}return out}
+function renderGantt(v){const source=(v.schedule&&v.schedule.management)||[],roots=managementByCorpus(source);if(!roots.length){$('ganttCard').classList.add('hidden');return}$('ganttCard').classList.remove('hidden');const all=allNodes(roots,[]),starts=all.map(x=>toDate(x.plan_start)).filter(Boolean),ends=all.map(x=>toDate(x.forecast_finish||x.plan_finish)).filter(Boolean),fund=v.financing||{};if(!starts.length||!ends.length)return;let min=new Date(Math.min(...starts.map(x=>+x))),max=new Date(Math.max(...ends.map(x=>+x)));min.setDate(min.getDate()-15);max.setDate(max.getDate()+15);const span=Math.max(1,+max-+min),pos=x=>{const d=toDate(x);return d?Math.max(0,Math.min(100,(+d-+min)/span*100)):null};let html='<div class="g-axis"><div>Корпус / этап / WBS</div><div class="axis">';for(let i=0;i<=6;i++){const d=new Date(+min+span*i/6);html+=`<span class="tick" style="left:${i/6*100}%">${d.toLocaleDateString('ru-RU',{month:'short',year:'2-digit'})}</span>`}html+='</div><div style="text-align:right">Forecast · отклонение · КС</div></div>';
+function marks(){let x='',cp=pos(v.cut),rs=pos(fund.reserve_start),ex=pos(fund.reserve_exhaustion||fund.bank_exhaustion);if(cp!=null)x+=`<span class="cut" style="left:${cp}%" title="дата среза"></span>`;if(rs!=null)x+=`<span class="reserve-mark" style="left:${rs}%" title="начало использования резерва"></span>`;if(ex!=null)x+=`<span class="limit-mark" style="left:${ex}%" title="исчерпание резерва"></span><span class="funding-zone" style="left:${ex}%;right:0"></span>`;return x}
+function row(n){const key=n.key||('task:'+String(n.id||n.wbs||n.name)),kids=n.children||[],open=expanded.has(key),lvl=n.level||'task',ps=pos(n.plan_start),pf=pos(n.plan_finish),ff=pos(n.forecast_finish),sel=selected===key?' selected':'',ratio=n.pace_progress!=null?Number(n.pace_progress):(n.actual_progress!=null?Number(n.actual_progress):null);let line=marks();if(ps!=null&&pf!=null)line+=`<span class="planbar" style="left:${ps}%;width:${Math.max(1,pf-ps)}%" title="План: ${dt(n.plan_start)} — ${dt(n.plan_finish)}"></span>`;if(ratio!=null&&ps!=null&&pf!=null)line+=`<span class="factbar" style="left:${ps}%;width:${Math.max(0,(pf-ps)*Math.max(0,Math.min(1,ratio)))}%" title="КС/EAC proxy: ${pct(ratio)}"></span>`;const delta=n.delta_days==null?null:Number(n.delta_days);if(ff!=null&&pf!=null&&delta!=null&&delta>0)line+=`<span class="latebar" style="left:${pf}%;width:${Math.max(1,ff-pf)}%"></span><span class="forecastmark" style="left:${ff}%"></span>`;if(ff!=null&&pf!=null&&delta!=null&&delta<0)line+=`<span class="aheadbar" style="left:${ff}%;width:${Math.max(1,pf-ff)}%"></span><span class="forecastmark ahead" style="left:${ff}%"></span>`;let main=delta==null?'forecast не рассчитан':delta>0?`<span class="risktext">+${delta} дн</span>`:delta<0?`<span class="oktext">${delta} дн</span>`:'<span class="oktext">по сроку</span>';const evidence=ratio!=null?`КС/EAC ${pct(ratio)}`:'';html+=`<div class="g-row lvl-${lvl}${sel}" data-key="${key}"><div class="g-label"><span class="chev">${kids.length?(open?'▾':'▸'):''}</span><span class="title">${n.name||n.wbs||''}</span><div class="sub">${lvl==='task'?'WBS '+(n.wbs||n.id||'')+(n._rss?` · RSS ${n._rss.code||''}`:''):lvl==='stage'?'этап':'корпус / объект'}</div></div><div><div class="timeline">${line}</div></div><div class="g-metrics"><div class="m-main">${main}</div><div>${ff!=null?'forecast '+dt(n.forecast_finish):''}</div><div>${evidence}</div></div></div>`;if(open)for(const c of kids)row(c)}for(const r of roots)row(r);$('gantt').innerHTML=html;document.querySelectorAll('.g-row').forEach(el=>el.onclick=()=>{const key=el.dataset.key,n=allNodes(roots,[]).find(x=>(x.key||('task:'+String(x.id||x.wbs||x.name)))===key);if(!n)return;selected=key;if((n.children||[]).length){expanded.has(key)?expanded.delete(key):expanded.add(key)}renderGantt(v);renderDetail(n)})}
+function renderDetail(n){$('detailCard').classList.remove('hidden');$('detailTitle').textContent=n.name||n.wbs||'Работа';const rss=n.level==='task'?n._rss:null,src=rss||n,pay=(src&&src.payments)||{},dep=n.dependencies||{},budget=Number((src&&src.eac)||0),accepted=Number((src&&src.accepted)||0),paid=Number(pay.fact_total||0),balance=budget>0?Math.max(0,budget-paid):null,ratio=n.pace_progress!=null?n.pace_progress:(src&&src.actual_progress);$('detailGrid').innerHTML=`<div class="mini"><div class="l">План конец</div><div class="v">${dt(n.plan_finish)}</div></div><div class="mini"><div class="l">Forecast</div><div class="v ${Number(n.delta_days)>0?'bad':Number(n.delta_days)<0?'good':''}">${dt(n.forecast_finish)}</div><div class="sub">${n.delta_days==null?'—':(Number(n.delta_days)>0?'+':'')+n.delta_days+' дн'}</div></div><div class="mini"><div class="l">КС / EAC proxy</div><div class="v">${pct(ratio)}</div><div class="sub">${money(accepted)} актировано</div></div><div class="mini"><div class="l">Бюджет / EAC статьи</div><div class="v">${money(budget)}</div><div class="sub">RSS ${src&&src.code?src.code:'—'}</div></div><div class="mini"><div class="l">Оплачено</div><div class="v">${money(paid)}</div><div class="sub">Реестр платежей</div></div><div class="mini"><div class="l">Остаток статьи</div><div class="v">${money(balance)}</div><div class="sub">EAC − оплачено</div></div>`;const facts=Object.entries(pay.fact||{}),total=facts.reduce((s,x)=>s+Number(x[1]||0),0);$('paymentDetail').innerHTML=facts.length?`<div style="margin-top:10px"><b>Оплаты по месяцам</b><div class="payment-strip">${facts.map(([m,a])=>`<span class="payment-seg" style="width:${Math.max(1,Number(a||0)/Math.max(total,1)*100)}%" title="${dt(m)} · ${money(a)}"></span>`).join('')}</div><div class="sub">Наведите на сегмент — дата и сумма.</div></div>`:'';$('financeNotice').innerHTML=(n.level==='task'&&rss)?'<div class="notice">Финансы показаны по связанной статье RSS целиком. Если одна статья RSS покрывает несколько корпусов, платежи и бюджет не распределяются между корпусами без отдельного источника — Monitor их не выдумывает.</div>':'';const fmt=x=>`<div class="linkrow"><b>${x.id}</b> ${x.name||''}<br><span class="muted">${x.type||''}${x.lag_days?` ${x.lag_days>0?'+':''}${x.lag_days} дн`:''}</span></div>`;$('pred').innerHTML=(dep.predecessors||[]).map(fmt).join('')||'<span class="muted">нет данных</span>';$('succ').innerHTML=(dep.successors||[]).map(fmt).join('')||'<span class="muted">нет данных</span>'}
+async function refresh(){if(!hasAuth()){syncAuthUi();msg('viewMsg','Войдите через Telegram, чтобы открыть данные проекта.','bad');return}syncAuthUi();const p=$('project').value.trim();if(!p)return;try{msg('viewMsg','');const raw=await post('/monitor/view',{project:p,cut:$('cut').value,upto:''});const v=raw.snapshot||raw.view||raw.report||raw.response||raw;currentView=v;renderDash(v);renderGantt(v)}catch(e){msg('viewMsg',e.message,'bad')}}$('refresh').onclick=refresh;syncAuthUi();if(hasAuth())refresh();else msg('viewMsg','Войдите через Telegram, чтобы открыть данные проекта.','bad');
 </script>
 </body></html>
 """
