@@ -100,14 +100,17 @@ def test_main_tabs_expose_real_phase_tep_and_product_economics():
 
 
 def test_phase_share_editor_rebalances_all_queues_and_recalculates_real_tep():
-    """Percentages and visible absolute TEP must stay synchronized both ways."""
+    """Edits lock left queues; only queues on the right absorb the remainder."""
     page = core.PAGE
     assert "rebalancePhaseProductShares" in page
-    assert "remaining=100-edited" in page
+    assert "lockedTotal=out.slice(0,index)" in page
+    assert "j>index" in page
     assert "phasing.products[k]=rebalancePhaseProductShares" in page
     assert "['gns','total_area','useful','saleable','transfer','units']" in page
-    assert "syncPhaseProductSharesFromTep(key,field)" in page
+    assert "syncPhaseProductSharesFromTep(key,field,index)" in page
     assert "phase.products[key][field]=x" in page
     assert "x/total*100" in page
     assert 'value="${Number(value.toFixed(2))}"' in page
+    assert 'readonly title="Автоматический остаток до 100%"' in page
+    assert "<small>остаток</small>" in page
     assert "renderPhasing();calculate()" in page
