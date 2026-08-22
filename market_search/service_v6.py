@@ -46,6 +46,7 @@ from .subject import Subject, resolve_subject
 from .segments import SegmentResolver, detect_district, districts_match, segments_comparable
 from .service import MarketDiscoveryService as LegacyMarketDiscoveryService, haversine_km
 from .yandex_search import official_cards_from_docs
+from .krt_registry import KrtRegistry
 
 
 def _fresh_price_since(today) -> str:
@@ -117,6 +118,7 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         # нет, и за картой он по сети не пойдёт. Где что лежит, знает движок:
         # карту рисует он, эмблему и баннер отдаёт он же.
         self.local_asset: Any = None
+        self.krt = KrtRegistry(Path(data_dir))
 
     def _geocode_project(self, candidate: dict[str, Any], locality: str):
         raise NotImplementedError(
@@ -556,6 +558,7 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
             geocode=self.geocode_address or self.geocoder.geocode,
             cadastre=self.cadastre_lookup,
             find_project=self.pulse.find_project if self.pulse.available else None,
+            find_krt=self.krt.find,
         )
 
     def peer_row(
@@ -601,6 +604,7 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         segment_override: str | None = None,
         extra_peers: list[dict[str, Any]] | None = None,
         city_reference: bool = True,
+        include_project_totals: bool = False,
     ) -> dict[str, Any]:
         """Конструктор: объект, сопоставимые соседи и выбранные разделы.
 
@@ -742,6 +746,9 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                 "longitude": project.longitude,
                 **metrics,
             }
+            if include_project_totals:
+                row.update(self.pulse.project_totals(project.complex_id))
+                row.update(self.pulse.remaining(project.complex_id))
             if not metrics.get("price_per_sqm"):
                 row["price_status"] = "нет"
             elif observed < fresh_since:

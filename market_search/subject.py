@@ -35,6 +35,7 @@ SOURCE_CADASTRE = "cadastre"
 SOURCE_COORDS = "coordinates"
 SOURCE_PROJECT = "project"
 SOURCE_ADDRESS = "address"
+SOURCE_KRT = "krt"
 
 
 @dataclass
@@ -51,6 +52,8 @@ class Subject:
     project_name: str | None = None
     segment: str | None = None
     notes: list[str] = field(default_factory=list)
+    subject_type: str = "site"
+    source_data: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -64,6 +67,8 @@ class Subject:
             "project_name": self.project_name,
             "segment": self.segment,
             "notes": self.notes,
+            "subject_type": self.subject_type,
+            "source_data": self.source_data,
         }
 
 
@@ -77,6 +82,7 @@ def resolve_subject(
     geocode: Callable[[str], Any] | None = None,
     cadastre: Callable[[str], dict[str, Any] | None] | None = None,
     find_project: Callable[[str], dict[str, Any] | None] | None = None,
+    find_krt: Callable[[str], dict[str, Any] | None] | None = None,
 ) -> Subject:
     """Разобрать ввод в точку. Каждый способ пробуется в порядке надёжности."""
     text = " ".join(str(query or "").split())
@@ -117,6 +123,20 @@ def resolve_subject(
             source=SOURCE_COORDS,
             query=text,
         )
+
+    if find_krt:
+        territory = find_krt(text)
+        if territory:
+            if not geocode:
+                raise SubjectNotFound("КРТ найдена, но геокодер не подключён")
+            point = geocode(str(territory.get("geocode_query") or territory.get("name") or text))
+            return Subject(
+                latitude=float(point.latitude), longitude=float(point.longitude),
+                source=SOURCE_KRT, query=str(territory.get("query") or text),
+                address=getattr(point, "display_name", None), project_name=territory.get("name"),
+                subject_type="krt", source_data=territory,
+                notes=["КРТ взята из krt.mos.ru; точка поставлена геокодером. Официальная геометрия границ не получена."],
+            )
 
     if find_project:
         project = find_project(text)

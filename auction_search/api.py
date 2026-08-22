@@ -5,7 +5,7 @@ import sys
 from typing import Any
 from urllib.parse import urlparse
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
@@ -19,6 +19,11 @@ from auction_search.models import LotKind
 from auction_search.preset_mapper import build_project_preset
 from auction_search.service import AuctionSearchService
 from auction_search.ui import auctions_page
+from market_search.krt_registry import KrtRegistry
+from market_search import cabinet as market_cabinet
+from market_search.geocoder import GeocodingError
+from market_search.http import RemoteServiceError
+from market_search.subject import SubjectNotFound
 
 
 class AuctionIngestRequest(BaseModel):
@@ -72,6 +77,10 @@ def install(app: FastAPI) -> None:
     if getattr(app.state, "auction_search_installed", False):
         return
     app.state.auction_search_installed = True
+    market = getattr(app.state, "market_discovery_service", None)
+    krt_registry = getattr(market, "krt", None) or KrtRegistry(
+        os.path.join(os.getenv("DATA_DIR", "data"), "market")
+    )
 
     # main.py loads the canonical legacy core as `developaid_core`. Inject only the
     # same-origin handoff bootstrap; no calculation or project UI is duplicated.
@@ -120,6 +129,39 @@ def install(app: FastAPI) -> None:
             ],
             "document_access": "public_first_optional_service_account_session",
         }
+
+    @app.get("/auctions/krt")
+    async def auction_krt_catalogue() -> dict[str, Any]:
+        projects = await run_in_threadpool(krt_registry.catalogue)
+        return {
+            "source": "https://krt.mos.ru/projects/",
+            "geometry_status": "not_published_in_catalogue",
+            "count": len(projects),
+            "projects": projects,
+        }
+
+    @app.get("/auctions/krt/{slug}/market")
+    async def auction_krt_market(
+        slug: str,
+        request: Request,
+        radius_km: float = Query(default=3.0, ge=0.25, le=10.0),
+        peers_limit: int = Query(default=12, ge=1, le=20),
+    ) -> dict[str, Any]:
+        """Existing market engine, embedded in the KRT opportunity card."""
+        market_cabinet.require_cabinet(request)
+        if market is None:
+            raise HTTPException(status_code=503, detail="Маркетинговый движок не подключён")
+        try:
+            return await run_in_threadpool(
+                lambda: market.build_report(
+                    f"krt:{slug}", radius_km=radius_km, peers_limit=peers_limit,
+                    city_reference=False, include_project_totals=True,
+                )
+            )
+        except (SubjectNotFound, GeocodingError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except RemoteServiceError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     @app.get("/auctions/discover")
     async def auction_discover(
