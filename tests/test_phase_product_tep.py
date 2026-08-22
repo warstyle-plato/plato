@@ -97,3 +97,16 @@ def test_main_tabs_expose_real_phase_tep_and_product_economics():
     assert "setPhaseProductTep" in page
     assert "Продаваемая, м²" in page
     assert "Себестоимость" in page and "Маржа" in page
+
+
+def test_phase_share_editor_rebalances_all_queues_and_recalculates_real_tep():
+    """Percentages and visible absolute TEP must stay synchronized both ways."""
+    page = core.PAGE
+    assert "rebalancePhaseProductShares" in page
+    assert "remaining=100-edited" in page
+    assert "phasing.products[k]=rebalancePhaseProductShares" in page
+    assert "['gns','total_area','useful','saleable','transfer','units']" in page
+    assert "syncPhaseProductSharesFromTep(key,field)" in page
+    assert "x/total*100" in page
+    assert 'value="${Number(value.toFixed(2))}"' in page
+    assert "renderPhasing();calculate()" in page
