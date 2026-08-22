@@ -65,7 +65,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.19.43"
+VERSION = "0.19.44"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -28995,11 +28995,12 @@ function autoPhaseDates(){phasing.phases.forEach((p,i)=>p.start_offset_months=i*
 function autoSuggestPhasing(){const c=recommendationCount(),cinf=Number(phasing.cost_inflation_pct??8),pinf=Number(phasing.sales_price_inflation_pct??8);phasing=makeDefaultPhasing(c);phasing.enabled=c>1;phasing.user_enabled=c>1;phasing.cost_inflation_pct=cinf;phasing.sales_price_inflation_pct=pinf;phasing.target_size_sqm=Number(document.getElementById('phaseTargetSize')?.value||70000);phasing.phase_gap_months=Number(document.getElementById('phaseGap')?.value||12);phasing.phases.forEach((p,i)=>p.start_offset_months=i*phasing.phase_gap_months);autoSocialObjects(false);renderPhasing();calculate()}
 function rebalancePhaseProductShares(values,index,value){
  const count=Math.max(1,Number(phasing.phase_count||values.length||1)),out=Array.from({length:count},(_,j)=>Math.max(0,Number(values[j]||0)));
- const edited=Math.max(0,Math.min(100,Number(value||0))),remaining=100-edited;out[index]=edited;
- const others=out.map((x,j)=>j===index?0:x),otherTotal=others.reduce((s,x)=>s+x,0),otherIndexes=out.map((_,j)=>j).filter(j=>j!==index);
- if(!otherIndexes.length)return [100];
+ const lockedTotal=out.slice(0,index).reduce((s,x)=>s+x,0),available=Math.max(0,100-lockedTotal),rightIndexes=out.map((_,j)=>j).filter(j=>j>index);
+ if(!rightIndexes.length){out[index]=available;return out}
+ const edited=Math.max(0,Math.min(available,Number(value||0))),remaining=available-edited;out[index]=edited;
+ const rightTotal=rightIndexes.reduce((s,j)=>s+out[j],0);
  let allocated=0;
- otherIndexes.forEach((j,pos)=>{const next=pos===otherIndexes.length-1?remaining-allocated:(otherTotal>0?remaining*others[j]/otherTotal:remaining/otherIndexes.length);out[j]=Math.max(0,Number(next.toFixed(6)));allocated+=out[j]});
+ rightIndexes.forEach((j,pos)=>{const next=pos===rightIndexes.length-1?remaining-allocated:(rightTotal>0?remaining*out[j]/rightTotal:remaining/rightIndexes.length);out[j]=Math.max(0,Number(next.toFixed(6)));allocated+=out[j]});
  return out;
 }
 function setPhaseProductShare(k,i,v){
@@ -29019,10 +29020,12 @@ function phaseProductDerived(key,field,index){
  const assigned={offices:Math.min(3,count),standalone_retail:Math.min(2,count),above_parking:Math.min(2,count)}[key]||1;
  return index+1===Number((phasing.discrete||{})[key]||assigned)?master:0;
 }
-function syncPhaseProductSharesFromTep(key,field){
+function syncPhaseProductSharesFromTep(key,field,index){
  if(!phasing.products[key])return;
  const values=phasing.phases.map((p,i)=>{const own=(p.products||{})[key]||{};return Math.max(0,Number(own[field]!==undefined?own[field]:phaseProductDerived(key,field,i)))}),total=values.reduce((s,x)=>s+x,0);
  if(total<=0)return;
+ const master=Math.max(0,Number((tep[key]||{})[field]||0));
+ if(master>0){phasing.products[key]=rebalancePhaseProductShares(phasing.products[key],index,values[index]/master*100);phasing.phases.forEach(p=>{const product=(p.products||{})[key];if(product)delete product[field]});return}
  values.forEach((x,i)=>{const phase=phasing.phases[i];if(!phase.products)phase.products={};if(!phase.products[key])phase.products[key]={assumption_source:'Введено пользователем'};phase.products[key][field]=x});
  let allocated=0;
  phasing.products[key]=values.map((x,i)=>{const share=i===values.length-1?100-allocated:Number((x/total*100).toFixed(6));allocated+=share;return Math.max(0,share)});
@@ -29032,7 +29035,7 @@ function setPhaseProductTep(index,key,field,value){
  if(!phase.products[key])phase.products[key]={assumption_source:'Введено пользователем'};
  if(value==='')delete phase.products[key][field];else phase.products[key][field]=Math.max(0,Number(value||0));
  if(Object.keys(phase.products[key]).every(k=>k==='assumption_source'))delete phase.products[key];
- syncPhaseProductSharesFromTep(key,field);renderPhasing();calculate();
+ syncPhaseProductSharesFromTep(key,field,index);renderPhasing();calculate();
 }
 function setSharedShare(bucket,k,i,v){phasing[bucket][k][i]=Number(v||0)}
 function splitCapacity(total,typical){let t=Math.max(0,Number(total||0)),out=[];typical=Math.max(1,Number(typical||1));while(t>0){const v=Math.min(typical,t);out.push(v);t-=v}return out}
@@ -29077,8 +29080,8 @@ function renderPhasing(){
    : `${recommended} очереди при ${num(currentMonetizableSaleable())} м²`;
  phaseCards.innerHTML=phasing.phases.map((p,i)=>{const cf=Math.pow(1+Number(phasing.cost_inflation_pct??8)/100,Number(p.start_offset_months||0)/12),pf=Math.pow(1+Number(phasing.sales_price_inflation_pct??8)/100,Number(p.start_offset_months||0)/12);return `<div class="phase-card"><h3>${p.name}</h3><div class="field"><label>Название</label><input value="${p.name}" onchange="phasing.phases[${i}].name=this.value;renderPhasing()"></div><div class="field"><label>Сдвиг старта, мес.</label><input type="number" value="${p.start_offset_months}" onchange="phasing.phases[${i}].start_offset_months=Number(this.value);normalizeSocialObjectDates();renderPhasing();calculate()"></div><div class="field"><label>Строительство, мес.</label><input type="number" value="${p.construction_months}" onchange="phasing.phases[${i}].construction_months=Number(this.value);calculate()"></div><div style="font-size:11px;color:#777;margin-top:8px">Старт: ${dateRu(addMonthsJS(inputs.project_start,p.start_offset_months))}<br>Индекс затрат: ×${cf.toFixed(3)}<br>Индекс стартовой цены: ×${pf.toFixed(3)}</div></div>`}).join('');
  const pl={apartments:'Квартиры',ground_commercial:'Коммерция 1 этажа',underground_parking:'Подземный паркинг',storage:'Кладовые'};
- phaseProductHead.innerHTML=`<tr><th>Продукт</th>${phasing.phases.map(p=>`<th>${p.name}</th>`).join('')}<th>Итого</th></tr>`;
- phaseProductBody.innerHTML=Object.entries(phasing.products).map(([k,a])=>{const s=a.reduce((x,y)=>x+Number(y||0),0);return `<tr><td>${pl[k]}</td>${a.map((v,i)=>`<td><input type="number" step="1" value="${Number(v).toFixed(1)}" onchange="setPhaseProductShare('${k}',${i},this.value)"></td>`).join('')}<td class="${Math.abs(s-100)<.1?'phase-total-ok':'phase-total-bad'}">${s.toFixed(1)}%</td></tr>`}).join('');renderPhasingStatus();
+ phaseProductHead.innerHTML=`<tr><th>Продукт</th>${phasing.phases.map((p,i)=>`<th>${p.name}${i===phasing.phases.length-1?'<br><small>остаток</small>':''}</th>`).join('')}<th>Итого</th></tr>`;
+ phaseProductBody.innerHTML=Object.entries(phasing.products).map(([k,a])=>{const s=a.reduce((x,y)=>x+Number(y||0),0);return `<tr><td>${pl[k]}</td>${a.map((v,i)=>`<td><input type="number" step="1" value="${Number(v).toFixed(1)}" ${i===a.length-1?'readonly title="Автоматический остаток до 100%"':`onchange="setPhaseProductShare('${k}',${i},this.value)"`}></td>`).join('')}<td class="${Math.abs(s-100)<.1?'phase-total-ok':'phase-total-bad'}">${s.toFixed(1)}%</td></tr>`}).join('');renderPhasingStatus();
  phasing.phases.forEach(p=>{if(!p.products)p.products={}});
  const tepLabels={apartments:'Жильё',ground_commercial:'Коммерция 1 этажа',standalone_retail:'Коммерция ОСЗ',offices:'Офисы / деловая недвижимость',above_parking:'Наземный паркинг',underground_parking:'Подземный паркинг',storage:'Кладовые',kindergarten:'ДОУ',school:'СОШ',clinic:'Поликлиника',other_mandatory:'Прочие обязательные объекты'};
  const tepKeys=Object.keys(tepLabels).filter(k=>tep[k]);
@@ -29087,7 +29090,7 @@ function renderPhasing(){
   const totals={gns:0,saleable:0,units:0};
   const cells=phasing.phases.map((p,i)=>{
    const own=(p.products||{})[k]||{};
-   const inputsHtml=['gns','saleable','units'].map(field=>{const derived=phaseProductDerived(k,field,i),has=own[field]!==undefined,value=has?Number(own[field]):derived;totals[field]+=value;return `<input type="number" min="0" step="any" value="${Number(value.toFixed(2))}" title="${field}${has?' — введено вручную':' — рассчитано по доле'}" onchange="setPhaseProductTep(${i},'${k}','${field}',this.value)">`}).join('');
+   const inputsHtml=['gns','saleable','units'].map(field=>{const derived=phaseProductDerived(k,field,i),has=own[field]!==undefined,value=has?Number(own[field]):derived,isRemainder=!!phasing.products[k]&&i===phasing.phases.length-1;totals[field]+=value;return `<input type="number" min="0" step="any" value="${Number(value.toFixed(2))}" title="${isRemainder?'Автоматический остаток':field+(has?' — введено вручную':' — рассчитано по доле')}" ${isRemainder?'readonly':`onchange="setPhaseProductTep(${i},'${k}','${field}',this.value)"`}>`}).join('');
    return `<td><div style="display:grid;grid-template-columns:repeat(3,minmax(80px,1fr));gap:5px">${inputsHtml}</div></td>`;
   }).join('');
   return `<tr><td><b>${tepLabels[k]}</b></td>${cells}<td>${num(totals.gns)} · ${num(totals.saleable)} · ${num(totals.units)}</td></tr>`;
