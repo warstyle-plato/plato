@@ -54,6 +54,19 @@ def test_delayed_article_need_is_moved_without_changing_amount():
     assert sum(shifted["2.2.1.4"]["monthly_need"].values()) == pytest.approx(70)
 
 
+def test_past_need_is_not_resurrected_by_scenario_rephasing():
+    articles = {"2.2.1.4": {"rss_limit": 10, "monthly_need": {
+        "2026-06-01": 100, "2026-08-01": 30,
+    }}}
+    shifted = scenarios._shift_articles(
+        articles, {"2.2.1": 90}, datetime.date(2026, 8, 21)
+    )
+    assert shifted["2.2.1.4"]["monthly_need"] == {
+        "2026-06-01": 100.0,
+        "2026-10-01": 30.0,
+    }
+
+
 def test_acceleration_recovers_current_delay_but_not_before_baseline():
     d = datetime.date
     view = {"schedule": {"rows": [{
@@ -65,11 +78,13 @@ def test_acceleration_recovers_current_delay_but_not_before_baseline():
     assert changed["1"] == d(2026, 3, 1)
 
 
-def test_monitor_v2_keeps_scenario_engine_out_of_primary_ui_for_now():
+def test_monitor_v2_shows_scenario_comparison_in_primary_ui():
     from developaid_monitor_page import MONITOR_PAGE
     assert "Cost control" in MONITOR_PAGE
     assert "Управленческий Гант" in MONITOR_PAGE
-    assert "Платон · сценарный анализ" not in MONITOR_PAGE
+    assert "Платон · сценарный анализ" in MONITOR_PAGE
+    assert "data-scenario=\"current_pace\"" in MONITOR_PAGE
+    assert "Текущий утверждённый план" in MONITOR_PAGE
 
 
 def test_scenario_route_is_registered_behind_monitor_access_gate():

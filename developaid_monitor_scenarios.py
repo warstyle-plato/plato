@@ -109,21 +109,35 @@ def _article_shifts(
     return shifts
 
 
-def _shift_articles(articles: dict[str, Any], shifts: dict[str, int]) -> dict[str, Any]:
+def _shift_articles(
+    articles: dict[str, Any], shifts: dict[str, int], cut: datetime.date | None = None
+) -> dict[str, Any]:
+    """Rephase only future need; past plan must never become future need again."""
+    cut_month = cut.replace(day=1) if cut else None
     result: dict[str, Any] = {}
     for code, item in articles.items():
         relevant = [days for root, days in shifts.items() if code == root or code.startswith(root + ".") or root.startswith(code + ".")]
         days = max(relevant, default=0)
         monthly: dict[str, float] = {}
         for month, amount in (item.get("monthly_need") or {}).items():
-            key = _shift_month(month, days)
+            source_month = monitor._day(month)
+            # The waterfall already ignores months before the cut. Keeping a
+            # past month in place is essential: shifting it beyond the cut
+            # would resurrect already executed plan and count it for a second
+            # time on top of actual payments.
+            key = (
+                month
+                if cut_month and source_month and source_month < cut_month
+                else _shift_month(month, days)
+            )
             monthly[key] = monthly.get(key, 0.0) + float(amount or 0.0)
         result[code] = {**item, "monthly_need": monthly}
     return result
 
 
 def _answer(kind: str, target: str, delta: int, rnv: datetime.date,
-            baseline_rnv: datetime.date, funding: dict[str, Any]) -> str:
+            baseline_rnv: datetime.date, funding: dict[str, Any],
+            current_funding: dict[str, Any]) -> str:
     label = {
         "current_pace": "При сохранении текущего темпа",
         "delay_wbs": f"При задержке WBS {target} на {delta} дн.",
@@ -132,9 +146,17 @@ def _answer(kind: str, target: str, delta: int, rnv: datetime.date,
     slip = (rnv - baseline_rnv).days
     need = float(funding.get("additional_financing") or 0.0)
     reserve = funding.get("reserve_exhaustion")
+    current_reserve = current_funding.get("reserve_exhaustion")
     timing = f"РНВ: {monitor._iso(rnv)} ({slip:+d} дн. к утверждённому сроку)."
     money = f"Непокрытая потребность: {need / 1e6:,.1f} млн ₽.".replace(",", " ")
-    reserve_text = f" Резерв исчерпывается {monitor._iso(reserve)}." if reserve else ""
+    reserve_text = ""
+    if reserve and current_reserve:
+        reserve_text = (
+            f" По утверждённому ДДС резерв исчерпывается "
+            f"{monitor._iso(current_reserve)}, в сценарии — {monitor._iso(reserve)}."
+        )
+    elif reserve:
+        reserve_text = f" В сценарии резерв исчерпывается {monitor._iso(reserve)}."
     return f"{label}. {timing} {money}{reserve_text}"
 
 
@@ -181,15 +203,26 @@ def run(project: str, cut: Any, kind: str, wbs: str = "", days: int = 0,
     # including "current pace", shifts it against approved PM dates (while the
     # headline schedule impact is still shown against today's forecast).
     shifts = _article_shifts(view, pm, approved_tasks, scenario_tasks)
-    articles = _shift_articles(finance.get("articles") or {}, shifts)
+    paid_by_code = dashboard._payment_by_code(rss)
+    baseline_funding = dashboard._article_waterfall(
+        finance.get("articles") or {}, float(finance.get("reserve") or 0.0),
+        cut_date, paid_by_code,
+    )
+    articles = _shift_articles(finance.get("articles") or {}, shifts, cut_date)
     funding = dashboard._article_waterfall(
         articles, float(finance.get("reserve") or 0.0), cut_date,
-        dashboard._payment_by_code(rss),
+        paid_by_code,
     )
     funding = {**funding,
         "reserve_start": monitor._iso(funding.get("reserve_start")),
         "reserve_exhaustion": monitor._iso(funding.get("reserve_exhaustion")),
     }
+    baseline_funding = {**baseline_funding,
+        "reserve_start": monitor._iso(baseline_funding.get("reserve_start")),
+        "reserve_exhaustion": monitor._iso(baseline_funding.get("reserve_exhaustion")),
+    }
+    baseline_reserve = monitor._day(baseline_funding.get("reserve_exhaustion"))
+    scenario_reserve = monitor._day(funding.get("reserve_exhaustion"))
     target_rows = [{
         "id": tid, "name": pm["tasks"][tid]["name"],
         "finish_before": monitor._iso(base_tasks[tid]["forecast_finish"]),
@@ -217,11 +250,38 @@ def run(project: str, cut: Any, kind: str, wbs: str = "", days: int = 0,
             "targets": target_rows,
         },
         "funding": {
+            "current_dds": {
+                "reserve_start": baseline_funding.get("reserve_start"),
+                "reserve_exhaustion": baseline_funding.get("reserve_exhaustion"),
+                "additional_financing": baseline_funding.get("additional_financing"),
+            },
+            "scenario_dds": {
+                "reserve_start": funding.get("reserve_start"),
+                "reserve_exhaustion": funding.get("reserve_exhaustion"),
+                "additional_financing": funding.get("additional_financing"),
+            },
+            "reserve_exhaustion_change_days": (
+                (scenario_reserve - baseline_reserve).days
+                if baseline_reserve and scenario_reserve else None
+            ),
+            "additional_financing_change": (
+                float(funding.get("additional_financing") or 0.0)
+                - float(baseline_funding.get("additional_financing") or 0.0)
+            ),
             "remaining_article_limits": funding.get("remaining_article_limits"),
             "reserve_balance": funding.get("reserve_balance"),
             "reserve_exhaustion": funding.get("reserve_exhaustion"),
             "additional_financing": funding.get("additional_financing"),
             "monthly_unfunded": funding.get("monthly_unfunded"),
+            "scope_note": (
+                "Переносится только будущая потребность от даты среза. "
+                "Прошлый план повторно не учитывается. Стоимость продления "
+                "срока (проценты ПФ и дополнительные накладные) в этот контур "
+                "пока не включена."
+            ),
         },
-        "answer": _answer(kind, wbs, days, scenario_rnv, baseline_rnv, funding),
+        "answer": _answer(
+            kind, wbs, days, scenario_rnv, baseline_rnv, funding,
+            baseline_funding,
+        ),
     })
