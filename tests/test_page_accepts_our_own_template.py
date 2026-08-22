@@ -137,6 +137,12 @@ def test_the_template_parser_reads_the_whole_file():
     assert parsed["tep"]["apartments"]["units"] == 355
     assert parsed["tep"]["ground_commercial"]["saleable"] == pytest.approx(2451.09)
     assert parsed["tep"]["underground_parking"]["units"] == 266
+    # The issued DevelopAid_TEP_2 workbook predates this product row. It must
+    # continue to load and receives a safe zero until a new template is issued.
+    assert parsed["tep"]["other_mandatory"] == {
+        "gns": 0.0, "total_area": 0.0, "useful": 0.0,
+        "saleable": 0.0, "transfer": 0.0, "units": 0.0,
+    }
 
 
 # --- шаблон скачивается там же, где загружается ---------------------------------
