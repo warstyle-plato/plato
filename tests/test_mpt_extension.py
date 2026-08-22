@@ -57,6 +57,30 @@ def test_the_panel_asks_for_areas_not_a_checkbox():
     assert 'id="mpt-mixed"' not in _MPT_FRAGMENT
 
 
+def test_the_panel_accepts_a_cadastral_number_for_priority_quarters():
+    assert 'id="mpt-cadastral"' in _MPT_FRAGMENT
+    assert "99 кварталов" in _MPT_FRAGMENT
+
+
+def test_priority_cadastral_number_reaches_the_api(client):
+    response = client.post("/api/mpt/calculate", json={
+        "category": "office", "district": "Раменки", "ttk_position": "outside",
+        "cadastral_number": "77:07:0012002:123", "area_sqm": 10_000,
+    })
+    assert response.status_code == 200
+    assert response.json()["kmest"] == 0.8
+    assert "таблица 2" in response.json()["kmest_source"]
+
+
+def test_malformed_cadastral_number_is_explained_by_the_api(client):
+    response = client.post("/api/mpt/calculate", json={
+        "category": "office", "district": "Солнцево", "ttk_position": "outside",
+        "cadastral_number": "77:07", "area_sqm": 10_000,
+    })
+    assert response.status_code == 400
+    assert "кадастровый" in response.json()["detail"].lower()
+
+
 def test_the_quarter_field_stays_empty_by_default():
     """Кзатр пересматривается с первого числа каждого квартала. Подставленный
     текущий квартал делал бы прошлогоднее число похожим на действующее."""
@@ -71,7 +95,7 @@ def test_the_split_reaches_the_api(client):
     })
     assert response.status_code == 200
     data = response.json()
-    assert data["kmest"] == pytest.approx((6_000 * 0.75 + 4_000 * 0.3) / 10_000)
+    assert data["kmest"] == pytest.approx((6_000 * 0.7 + 4_000 * 0.3) / 10_000)
     assert [row["column"] for row in data["kmest_mix"]] == ["business", "social"]
 
 

@@ -135,4 +135,4 @@ def test_above_the_minimum_nothing_changed():
     result = calc(area_sqm=10_000)
     assert result.eligible_for_minimum is True
     assert result.benefit_rub == result.potential_benefit_rub
-    assert result.benefit_rub == pytest.approx(1_000.0 * 10_000.0 * 166.23078 * 0.75)
+    assert result.benefit_rub == pytest.approx(1_000.0 * 10_000.0 * 166.23078 * 0.7)

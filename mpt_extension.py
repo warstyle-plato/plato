@@ -54,6 +54,7 @@ _PAGE_MARKER = 'id="mpt-benefit-template"'
 class MptCalculateRequest(BaseModel):
     category: str
     district: str
+    cadastral_number: str = ""
     area_sqm: float = Field(gt=0)
     mode: str = "new"
     ttk_position: str | None = None
@@ -71,12 +72,11 @@ class MptCalculateRequest(BaseModel):
     ons_registered_before_2019_11_01: bool | None = None
 
 
-# Прежний интерфейс слал «Ксрок» и кадастровый номер: первого в постановлении
-# нет вовсе, второй был нужен таблице из 99 кварталов, которой там тоже нет.
-# Молча проглотить их нельзя — Ксрок менял ответ до 10%.
+# Коэффициента срока реализации в действующей формуле нет. Прежний флаг
+# смешанного назначения не передаёт площади по отдельным графам таблицы.
+# Кадастровый номер, напротив, используется приоритетной таблицей 2.
 _REMOVED_FIELDS = {
     "kterm": "Ксрок в 1874-ПП отсутствует: формула п. 1.14.1 — 1000 × Sмпт × Кзатр × Кмест.",
-    "cadastral_number": "Таблицы кадастровых кварталов в 1874-ПП нет; Кмест берётся по району.",
     "mixed_use": (
         "Признак смешанного назначения заменён площадями: примечание к таблице "
         "приложения 3 требует применять коэффициенты пропорционально площади, "
@@ -195,6 +195,7 @@ _MPT_FRAGMENT = r'''
         <div><label for="mpt-mode">Сценарий</label><select id="mpt-mode"><option value="new">Новое строительство</option><option value="reconstruction">Реконструкция</option><option value="ons">ОНС</option></select></div>
         <div><label for="mpt-district">Район Москвы</label><select id="mpt-district"><option value="">— выберите район —</option></select></div>
         <div id="mpt-ttk-wrap"><label for="mpt-ttk">Положение относительно ТТК <span style="opacity:.6">п. 1.2</span></label><select id="mpt-ttk"><option value="">— выберите —</option><option value="outside">За внешней границей ТТК</option><option value="inside">Внутри ТТК</option></select></div>
+        <div id="mpt-cadastral-wrap" class="mpt-wide"><label for="mpt-cadastral">Кадастровый номер участка или квартал <span style="opacity:.6">таблица 2: для 99 кварталов Кмест 0,8</span></label><input id="mpt-cadastral" type="text" placeholder="77:07:0012002:123"></div>
         <div><label id="mpt-area-label" for="mpt-area">Общая площадь МПТ, м²</label><input id="mpt-area" type="number" min="0" step="1" placeholder="10000"></div>
         <div><label for="mpt-parking">Парковки, м²</label><input id="mpt-parking" type="number" min="0" step="1" value="0"></div>
         <div><label for="mpt-garages">Гаражи, м²</label><input id="mpt-garages" type="number" min="0" step="1" value="0"></div>
@@ -208,8 +209,8 @@ _MPT_FRAGMENT = r'''
         <div id="mpt-split-wrap" class="mpt-wide">
           <p class="mpt-note" style="margin:2px 0 8px">Если назначение сразу по нескольким ВРИ из граф 2 и 3, укажите площади: коэффициенты применяются пропорционально (примечание к таблице приложения 3), а минимальная площадь поднимается до 5 000 м² (п. 3.1.3). Пустые поля — весь объект идёт по графе выбранного типа.</p>
           <div class="mpt-grid">
-            <div><label for="mpt-area-business">Площадь по графе 2 (деловое управление, производство), м²</label><input id="mpt-area-business" type="number" min="0" step="1" value="0"></div>
-            <div><label for="mpt-area-social">Площадь по графе 3 (социальное, спорт, культура, образование), м²</label><input id="mpt-area-social" type="number" min="0" step="1" value="0"></div>
+            <div><label for="mpt-area-business">Площадь по графе 3 (деловое управление, наука, торговля), м²</label><input id="mpt-area-business" type="number" min="0" step="1" value="0"></div>
+            <div><label for="mpt-area-social">Площадь по графе 4 (социальное и бытовое обслуживание), м²</label><input id="mpt-area-social" type="number" min="0" step="1" value="0"></div>
           </div>
         </div>
         <div id="mpt-ons-wrap" class="mpt-wide mpt-hidden">
@@ -284,11 +285,12 @@ _MPT_FRAGMENT = r'''
     // ТТК — условие присвоения статуса (п. 1.2), а не множитель Кмест:
     // спрашиваем у всех, кроме гостиниц, а не у двух категорий в одной группе.
     q('mpt-ttk-wrap').classList.toggle('mpt-hidden',hotel);
+    q('mpt-cadastral-wrap').classList.toggle('mpt-hidden',category!=='office');
     q('mpt-rooms-wrap').classList.toggle('mpt-hidden',!hotel);
     q('mpt-ons-wrap').classList.toggle('mpt-hidden',mode!=='ons');
     q('mpt-warehouse-wrap').classList.toggle('mpt-hidden',hotel);
     q('mpt-yard-wrap').classList.toggle('mpt-hidden',hotel);
-    // Гостиница — графа 4 целиком: делить её площадь между графами 2 и 3
+    // Гостиница — графа 5 целиком: делить её площадь между графами 3 и 4
     // постановление не предусматривает, и расчёт такой запрос отклоняет.
     q('mpt-split-wrap').classList.toggle('mpt-hidden',hotel);
     if(hotel){q('mpt-warehouse').value='0';q('mpt-yard').value='0';q('mpt-area-business').value='0';q('mpt-area-social').value='0';}
@@ -328,6 +330,8 @@ _MPT_FRAGMENT = r'''
     const payload={
       category:q('mpt-category').value,
       district:q('mpt-district').value,
+      cadastral_number:q('mpt-category').value==='office'
+        ? (q('mpt-cadastral').value||'').trim() : '',
       area_sqm:Number(q('mpt-area').value||0),
       mode:q('mpt-mode').value,
       ttk_position:q('mpt-ttk').value||null,
