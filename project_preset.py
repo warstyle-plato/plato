@@ -80,6 +80,11 @@ PARKING_GUEST_SHARE = 0.10
 UNDERGROUND_AREA_PER_SPACE = 35.0
 ABOVE_AREA_PER_SPACE = 25.0
 OFFICE_SQM_PER_SPACE = 100.0
+# Средний продаваемый лот. Число квартир пресет обязан назвать сам: без него
+# на странице оставалась абсолютная величина из TEP_DEFAULT (1 361,8), снятая
+# с чужой продаваемой площади, — «поле, которого нет в карте записи, молча
+# остаётся мусором из шаблона». Дефолт — тот же лот, что зашит в TEP_DEFAULT.
+DEFAULT_LOT_AREA_SQM = 58.7
 
 
 class PresetError(ValueError):
@@ -286,9 +291,16 @@ def map_tep(data: dict[str, Any]) -> tuple[dict[str, Any], list[Field]]:
     underground_area = (explicit_underground_area if explicit_underground_area is not None
                         else underground * UNDERGROUND_AREA_PER_SPACE)
 
+    tep_derived = data.get("tep_derived") if isinstance(data.get("tep_derived"), dict) else {}
+    lot_area = (_number(underground_plan.get("average_lot_m2"))
+                or _number(tep_derived.get("average_lot_m2"))
+                or DEFAULT_LOT_AREA_SQM)
+    apartment_units = apartments / lot_area if lot_area > 0 else 0.0
+    guest_declared = _number(underground_plan.get("guest_spaces"))
     tep = {
         "apartments": {"gns": residential_gns, "saleable": apartments,
-                       "total_area": residential_gns * 0.9, "useful": apartments},
+                       "total_area": residential_gns * 0.9, "useful": apartments,
+                       "units": apartment_units},
         "ground_commercial": {"gns": commercial_gns, "saleable": commercial,
                               "total_area": commercial_gns * 0.9, "useful": commercial},
         "offices": {"gns": office_gns, "saleable": offices,
@@ -296,7 +308,12 @@ def map_tep(data: dict[str, Any]) -> tuple[dict[str, Any], list[Field]]:
         "standalone_retail": {"gns": retail_gns, "saleable": retail,
                               "total_area": retail_total_area, "useful": retail},
         "underground_parking": {"gns": underground_area,
-                                "units": underground, "saleable": 0.0},
+                                "units": underground, "saleable": 0.0,
+                                # Гостевые места строятся, но не продаются:
+                                # без явного числа движок выводит их из
+                                # норматива, а пресет знает точное.
+                                **({"guest_units": int(round(guest_declared))}
+                                   if guest_declared is not None else {})},
         "above_parking": {"gns": garage_gns, "units": above, "saleable": 0.0},
         "school": {"units": school_places,
                    "total_area": school_gfa + shared_education_gfa * school_places /

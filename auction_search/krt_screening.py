@@ -288,8 +288,12 @@ def build_krt_model_screening(
     consolidated = bundle["consolidated"]
     metrics = _snapshot(core, consolidated)
     phases = _phase_rows(bundle)
-    weakest_llcr = min((row["llcr_x"] for row in phases), default=_number(metrics.get("llcr_x")))
-    traffic = _traffic_light(weakest_llcr, _number(metrics.get("net_profit_mln")))
+    project_llcr = _number(metrics.get("llcr_x"))
+    weakest_llcr = min((row["llcr_x"] for row in phases), default=project_llcr)
+    # Светофор судит проект целиком: слабейшая очередь — диагноз, а не приговор.
+    # Она обслуживается кассой соседних очередей, и по ней одной хорошая
+    # площадка выглядит пограничной (решение владельца, 23.08.2026).
+    traffic = _traffic_light(project_llcr, _number(metrics.get("net_profit_mln")))
     entry_capacity = _goal_seek_entry_capacity(core, inputs, tep, phasing, bundle)
     capped_at_five = (
         phasing["phase_count"] == MAX_PHASES
@@ -304,8 +308,9 @@ def build_krt_model_screening(
     text = (
         f"Маркетинг рекомендует класс «{segment}»; в модель поставлена стартовая цена "
         f"{_ru_number(start_price)} ₽/м². {queue_text.capitalize()}. "
-        f"До цены входа и неизвестных обязательств модель даёт LLCR слабейшей очереди "
-        f"{weakest_llcr:.2f}x и маржу {metrics.get('margin_pct', 0):.1f}%."
+        f"До цены входа и неизвестных обязательств модель даёт LLCR проекта "
+        f"{project_llcr:.2f}x и маржу {metrics.get('margin_pct', 0):.1f}%"
+        + (f"; слабейшая очередь — {weakest_llcr:.2f}x." if len(phases) > 1 else ".")
     )
 
     assumptions = [
@@ -369,12 +374,16 @@ def build_krt_model_screening(
             "phases": phases,
         },
         "absorption": absorption,
-        "metrics": {**metrics, "weakest_phase_llcr_x": round(weakest_llcr, 3)},
+        "metrics": {
+            **metrics,
+            "project_llcr_x": round(project_llcr, 3),
+            "weakest_phase_llcr_x": round(weakest_llcr, 3),
+        },
         "entry_capacity": entry_capacity,
         "assumptions": assumptions,
         "exclusions": exclusions,
         "criterion": (
-            "Светофор модели проверяет положительную прибыль и LLCR слабейшей очереди; "
+            "Светофор модели проверяет положительную прибыль и LLCR проекта целиком; "
             "целевой ориентир DevelopAid — 1,20x. Это фильтр для углублённой проверки, не решение о покупке."
         ),
     }

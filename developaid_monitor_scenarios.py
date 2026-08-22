@@ -12,6 +12,7 @@ from typing import Any
 
 import developaid_monitor as monitor
 import developaid_monitor_dashboard as dashboard
+import developaid_monitor_forecast as forecast
 import developaid_monitor_schedule_graph as graph
 
 
@@ -26,27 +27,10 @@ def _shift_month(value: str, days: int) -> str:
     return shifted.replace(day=1).isoformat()
 
 
-def _pace_finish(row: dict[str, Any], cut: datetime.date) -> datetime.date | None:
-    if row.get("baseline_closed"):
-        return None
-    start = monitor._day(row.get("plan_start"))
-    if start is not None and cut < start:
-        return None
-    codes = monitor._codes(row.get("code"))
-    if codes and all(code.startswith("2.1") for code in codes):
-        return None
-    progress = row.get("rss_accepted_ratio")
-    rate = row.get("rss_act_cost_rate_3m")
-    if progress is None:
-        progress = row.get("actual_progress")
-    if rate is None:
-        rate = row.get("rate_3m")
-    if progress is None or float(progress) >= 1:
-        return None
-    if rate is None or float(rate) <= 1e-9:
-        return None
-    months = max(0.0, (1.0 - max(0.0, float(progress))) / float(rate))
-    return cut + datetime.timedelta(days=round(months * 30.4375))
+# Формула темпа живёт в общем модуле: копия здесь отвечала иначе на
+# завершённых задачах и на строках без планового финиша, и сценарий «Текущий
+# темп» получал другую сеть, чем верхняя карточка.
+_pace_finish = forecast.pace_finish
 
 
 def _forecast_coverage(view: dict[str, Any], cut: datetime.date) -> dict[str, Any]:
@@ -66,7 +50,7 @@ def _forecast_coverage(view: dict[str, Any], cut: datetime.date) -> dict[str, An
         excluded.update(mixed)
         eligible = codes - mixed
         active.update(eligible)
-        if _pace_finish(row, cut) is not None:
+        if _pace_finish(row, cut)[0] is not None:
             observed.update(eligible)
     ratio = len(observed) / len(active) if active else 0.0
     confidence = "достаточная" if ratio >= 0.65 else "средняя" if ratio >= 0.3 else "низкая"
@@ -106,13 +90,10 @@ def _scenario_seeds(
         str(row.get("id") or row.get("wbs") or "").strip(): row
         for row in (view.get("schedule") or {}).get("rows") or []
     }
-    current: dict[str, datetime.date] = {}
-    for tid, task in pm["tasks"].items():
-        pace = _pace_finish(rows.get(tid, {}), cut)
-        existing = monitor._day(rows.get(tid, {}).get("forecast_finish"))
-        candidate = max((d for d in (pace, existing) if d), default=task["finish"])
-        if candidate > task["finish"]:
-            current[tid] = candidate
+    # Seeds текущего темпа берутся из общего контура — того же, которым живёт
+    # верхняя карточка. Своё правило здесь и давало другую дату РНВ.
+    current = forecast.current_seeds(
+        (view.get("schedule") or {}).get("rows") or [], cut)["seeds"]
 
     changed = dict(current)
     if kind == "delay_wbs":
@@ -129,10 +110,7 @@ def _scenario_seeds(
     return current, changed
 
 
-def _network_rnv(pm: dict[str, Any], tasks: dict[str, dict[str, Any]]) -> datetime.date:
-    if pm.get("rnv_id") and pm["rnv_id"] in tasks:
-        return tasks[pm["rnv_id"]]["forecast_finish"]
-    return max(task["forecast_finish"] for task in tasks.values())
+_network_rnv = forecast.network_rnv
 
 
 def _forecast_drivers(
@@ -171,7 +149,10 @@ def _forecast_drivers(
             "pace_3m": row.get("rss_act_cost_rate_3m"),
             "source": (
                 "КС/EAC + PM-зависимости"
-                if _pace_finish(row, monitor._day(view.get("cut")) or plan) is not None
+                # Формула возвращает пару «дата, способ»: проверять надо дату.
+                # `is not None` на кортеже всегда истинно и подписывал бы
+                # утверждённый rebaseline как прогноз по КС.
+                if _pace_finish(row, monitor._day(view.get("cut")) or plan)[0] is not None
                 else str(row.get("forecast_source") or "утверждённый rebaseline")
             ),
         })
@@ -321,7 +302,19 @@ def run(project: str, cut: Any, kind: str, wbs: str = "", days: int = 0,
         "finish_before": monitor._iso(base_tasks[tid]["forecast_finish"]),
         "finish_after": monitor._iso(scenario_tasks[tid]["forecast_finish"]),
     } for tid in targets]
+    # Служебный блок: по нему сразу видно, если два экрана считают по разным
+    # срезам или снимкам РСС. Без него совпадение дат приходится проверять
+    # глазами, а расхождение — угадывать.
+    forecast_context = {
+        "cut": monitor._iso(cut_date),
+        "rss_snapshot": str(getattr(rss, "name", rss) or ""),
+        "pm_source": str(pm.get("source") or "known"),
+        "forecast_method": "current_pace_network",
+        "pace_seed_count": len(current_seeds),
+        "excluded_rss_codes": sorted(coverage.get("excluded_articles") or []) or ["2.1"],
+    }
     return monitor._plain({
+        "forecast_context": forecast_context,
         "scenario": {"kind": kind, "wbs": wbs, "days": days,
                      "acceleration_pct": acceleration_pct},
         "state": {
@@ -336,7 +329,13 @@ def run(project: str, cut: Any, kind: str, wbs: str = "", days: int = 0,
             "paid_actual": paid_actual,
         },
         "schedule": {
-            "approved_rnv": baseline_rnv, "current_pace_rnv": current_rnv,
+            "approved_rnv": baseline_rnv,
+            # Три разные величины, и путать их нельзя: утверждённый срок,
+            # текущий прогноз по факту и результат what-if. Сценарий «текущий
+            # темп» обязан совпадать с текущим прогнозом — это инвариант, а не
+            # совпадение.
+            "current_forecast_rnv": current_rnv,
+            "current_pace_rnv": current_rnv,
             "scenario_rnv": scenario_rnv,
             "impact_vs_current_days": (scenario_rnv - current_rnv).days,
             "delay_vs_approved_days": (scenario_rnv - baseline_rnv).days,
