@@ -1,4 +1,5 @@
 from pathlib import Path
+import sys
 from types import SimpleNamespace
 
 from market_search.krt_registry import KrtRegistry, parse_catalogue, parse_catalogue_markdown
@@ -86,18 +87,28 @@ def test_krt_is_a_subject_with_an_explicit_approximation(tmp_path: Path) -> None
 def test_auctions_exposes_krt_as_a_separate_tab_and_endpoint(monkeypatch) -> None:
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
+    import main_legacy as core
     from auction_search.api import install
 
-    project = {"slug": "test", "name": "КРТ Тест", "status": "Планируемый"}
+    project = {
+        "slug": "test", "name": "КРТ Тест", "status": "Планируемый",
+        "housing_gfa_sqm": 161_680, "total_gfa_sqm": 184_930,
+    }
     calls = []
     monkeypatch.setenv("MARKET_CABINET_KEY", "test-key")
+    monkeypatch.setitem(sys.modules, "developaid_core", core)
     app = FastAPI()
     app.state.market_discovery_service = SimpleNamespace(
         krt=SimpleNamespace(
             catalogue=lambda: [project], status=lambda: {"complete": True, "refreshing": False}
         ),
         build_report=lambda query, **kwargs: calls.append((query, kwargs)) or {
-            "subject": {"project_name": "КРТ Тест"}, "peers": [{"name": "ЖК рядом"}]
+            "subject": {"project_name": "КРТ Тест"},
+            "peers": [{"name": "ЖК рядом"}],
+            "analysis": {"site": {
+                "segment": "бизнес", "price_per_sqm": 708_000, "sold_lot_avg": 50.0,
+            }},
+            "price_hint": {"entry_per_sqm": 650_000, "price_per_sqm": 708_000},
         },
     )
     install(app)
@@ -111,6 +122,8 @@ def test_auctions_exposes_krt_as_a_separate_tab_and_endpoint(monkeypatch) -> Non
     assert "жильё и быстрый старт" in page.text
     assert "Короткий вывод Платона" in page.text
     assert "analysis.site||analysis.overall" in page.text
+    assert "Получить маркетинг и прогнать модель" in page.text
+    assert "Предварительный прогон модели" in page.text
     answer = client.get("/auctions/krt")
     assert answer.status_code == 200
     assert answer.json()["projects"] == [project]
@@ -119,5 +132,7 @@ def test_auctions_exposes_krt_as_a_separate_tab_and_endpoint(monkeypatch) -> Non
     market = client.get("/auctions/krt/test/market", headers={"X-Market-Key": "test-key"})
     assert market.status_code == 200
     assert market.json()["peers"][0]["name"] == "ЖК рядом"
+    assert market.json()["model_screening"]["available"] is True
+    assert market.json()["model_screening"]["phasing"]["count"] == 2
     assert calls[0][0] == "krt:test"
     assert calls[0][1]["include_project_totals"] is True
