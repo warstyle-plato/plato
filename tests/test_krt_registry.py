@@ -240,7 +240,9 @@ def test_auctions_exposes_krt_as_a_separate_tab_and_endpoint(monkeypatch) -> Non
     assert "input.type='checkbox'" in page.text
     assert "krtOkrugs:new Set()" in page.text
     assert "state.krtOkrugs.has(x.okrug)" in page.text
+    assert "const values=KRT_OKRUGS" in page.text
     assert "const KRT_OKRUGS=['ЦАО','САО'" in page.text
+    assert "'НАО','ТАО','ЗелАО'" in page.text
     assert "Оценка Платона" in page.text
     assert "жильё и быстрый старт" in page.text
     assert "Короткий вывод Платона" in page.text
