@@ -1,18 +1,20 @@
 from developaid_monitor_page import MONITOR_PAGE
 
 
-def test_dashboard_does_not_call_cost_ratio_physical_readiness():
+def test_dashboard_uses_ks_as_progress_proxy_not_fake_physical_readiness():
     assert "Физическая готовность СМР" not in MONITOR_PAGE
-    assert "Актировано СМР / утв. модель" in MONITOR_PAGE
-    assert "это не физический % WBS" in MONITOR_PAGE
+    assert "КС / утв. модель" in MONITOR_PAGE
+    assert "КС-факт / эквивалент выполнения" in MONITOR_PAGE
 
 
-def test_payment_ticks_live_on_their_own_lane():
-    assert '<span class="lane-name">работы</span>' in MONITOR_PAGE
-    assert '<span class="lane-name">оплаты</span>' in MONITOR_PAGE
-    assert 'class="lane paylane"' in MONITOR_PAGE
+def test_payments_are_hoverable_points_not_vertical_columns():
+    assert 'class="paydot fact"' in MONITOR_PAGE
+    assert 'class="paydot plan"' in MONITOR_PAGE
+    assert "факт оплаты ${money(a)}" in MONITOR_PAGE
+    assert "план оплаты ${money(a)}" in MONITOR_PAGE
+    assert 'lane-name">оплаты' not in MONITOR_PAGE
 
 
-def test_float_is_presented_only_as_wbs_metric():
-    assert "lvl==='task'&&dep.current_float_days" in MONITOR_PAGE
-    assert "float показывается только на WBS" in MONITOR_PAGE
+def test_float_stays_in_wbs_detail_context():
+    assert "dep.current_float_days" in MONITOR_PAGE
+    assert "влияние на РНВ" in MONITOR_PAGE
