@@ -113,10 +113,11 @@ def test_weekly_input_is_one_rss_file_for_cost_evidence_and_payments():
     view = monitor.build("Гродненская", cut="2026-08-15")
 
     work = view["schedule"]["rows"][0]
-    assert work["actual_progress"] is None
+    assert work["actual_progress"] == pytest.approx(0.4)
     assert work["rss_accepted_ratio"] == pytest.approx(0.4)
-    assert work["progress_kind"] == "accepted_cost_ratio"
-    assert work["forecast_finish"] == "2026-09-30"
+    assert work["progress_kind"] == "accepted_cost_progress_proxy"
+    assert work["forecast_finish"] == "2026-10-09"
+    assert work["delta_days"] == 9
     assert view["money"]["accepted"] == pytest.approx(400e6)
     assert view["money"]["payment_fact"] == pytest.approx(240e6)
     cash = {row["month"]: row for row in view["payments"]["rows"]}
@@ -126,7 +127,7 @@ def test_weekly_input_is_one_rss_file_for_cost_evidence_and_payments():
     assert cash["2026-08-01"]["fact"] == pytest.approx(150e6)
 
 
-def test_next_rss_snapshot_updates_cost_evidence_without_touching_baseline():
+def test_next_rss_snapshot_updates_progress_and_forecast_without_touching_baseline():
     _setup_baseline()
     monitor.store_estimate("Гродненская", _rss_book(
         acts=[("15.07.2026", 200e6)], payments=[]), "2026-07-31")
@@ -138,12 +139,12 @@ def test_next_rss_snapshot_updates_cost_evidence_without_touching_baseline():
 
     assert first["schedule"]["rows"][0]["plan_finish"] == "2026-09-30"
     assert second["schedule"]["rows"][0]["plan_finish"] == "2026-09-30"
-    assert first["schedule"]["rows"][0]["actual_progress"] is None
-    assert second["schedule"]["rows"][0]["actual_progress"] is None
+    assert first["schedule"]["rows"][0]["actual_progress"] == pytest.approx(0.2)
+    assert second["schedule"]["rows"][0]["actual_progress"] == pytest.approx(0.45)
     assert first["schedule"]["rows"][0]["rss_accepted_ratio"] == pytest.approx(0.2)
     assert second["schedule"]["rows"][0]["rss_accepted_ratio"] == pytest.approx(0.45)
-    assert first["schedule"]["rows"][0]["forecast_finish"] == "2026-09-30"
-    assert second["schedule"]["rows"][0]["forecast_finish"] == "2026-09-30"
+    assert first["schedule"]["rows"][0]["forecast_finish"] == "2026-10-12"
+    assert second["schedule"]["rows"][0]["forecast_finish"] == "2026-10-20"
     assert monitor.snapshots("Гродненская")["estimate"] == ["2026-07-31", "2026-08-31"]
 
 

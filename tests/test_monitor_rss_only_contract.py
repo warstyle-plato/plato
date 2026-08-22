@@ -1,8 +1,9 @@
 """Regression guard for the Project Monitor operating contract.
 
 A project benchmark is fixed once. After that recurring inputs are a fresh RSS
-6.1.2 and sales. RSS accepted-work acts are cost/evidence; they are not a
-calendar clock and cannot by themselves move WBS dates.
+6.1.2 and sales. RSS accepted-work acts are the operational progress proxy;
+calendar variance is derived from actual КС % versus the approved linear plan,
+not from the recent monetary act rate.
 """
 
 from pathlib import Path
@@ -21,8 +22,8 @@ def test_monitor_page_exposes_fixed_benchmark_then_rss_and_sales():
     assert 'id="sales"' in html
     assert 'id="programmeFile"' not in html
     assert 'id="proposalFile"' not in html
-    assert "КС/актирование — только «Реестр выполненных работ»" in html
-    assert "КС/EAC не считается физическим процентом WBS" in html
+    assert "Состояние работ берётся из актов РСС" in html
+    assert "Forecast строится из КС-процента" in html
 
 
 def test_monitor_build_does_not_replace_baseline_with_legacy_programmes():

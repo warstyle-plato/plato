@@ -38,9 +38,6 @@ def test_article_surplus_does_not_cross_fund_another_article():
 
 
 def test_grodnenskaya_reserve_control_benchmark_exhausts_in_november():
-    # Control figures from «справка резервы_обновлено_по_остаткам_20.08.2026».
-    # We intentionally model them as article shortfalls: the waterfall must not
-    # defer reserve use because another article still has a free bank balance.
     articles = {
         "2.2.3.3": {
             "rss_limit": 0.0,
@@ -59,7 +56,6 @@ def test_grodnenskaya_reserve_control_benchmark_exhausts_in_november():
         reserve=306_141_482.2601274,
         cut=datetime.date(2026, 8, 21),
     )
-
     assert result["reserve_start"] == datetime.date(2026, 8, 1)
     assert result["monthly_reserve_balance"]["2026-08-01"] == pytest.approx(304_141_482.2601274)
     assert result["monthly_reserve_balance"]["2026-09-01"] == pytest.approx(237_811_139.2601274)
@@ -98,11 +94,9 @@ def test_funding_risk_uses_article_waterfall(monkeypatch):
     monkeypatch.setattr(dashboard, "_payment_total_ch23", lambda *_: 200.0)
     monkeypatch.setattr(dashboard, "_payment_by_code", lambda _: {})
     view = {"schedule": {"approved_end": "2027-09-30", "forecast_end": None}}
-
     result = dashboard._funding_risk(
         "demo", Path("rss.xlsx"), datetime.date(2026, 8, 20), view
     )
-
     assert result["reserve_start"] == "2026-08-01"
     assert result["reserve_exhaustion"].startswith("2026-09-")
     assert result["additional_financing"] == pytest.approx(20.0)
@@ -110,12 +104,11 @@ def test_funding_risk_uses_article_waterfall(monkeypatch):
     assert "постатейный waterfall" in result["method"]
 
 
-def test_page_has_funding_and_correct_cost_evidence_language():
+def test_page_has_project_dashboard_and_funding_language():
     from developaid_monitor_page import MONITOR_PAGE
-    assert "Исчерпание резерва" in MONITOR_PAGE
-    assert "Непокрытая потребность" in MONITOR_PAGE
-    assert "Сырой PM" in MONITOR_PAGE
-    assert "Актировано СМР / утв. модель" in MONITOR_PAGE
-    assert "это не физический % WBS" in MONITOR_PAGE
+    assert "Общий Dashboard проекта" in MONITOR_PAGE
     assert "Утверждённый РНВ" in MONITOR_PAGE
-    assert "Current Forecast не рассчитан" in MONITOR_PAGE
+    assert "Current Forecast РНВ" in MONITOR_PAGE
+    assert "Исчерпание резерва" in MONITOR_PAGE
+    assert "Доп. финансирование" in MONITOR_PAGE
+    assert "КС / утв. модель" in MONITOR_PAGE
