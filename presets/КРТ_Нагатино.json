@@ -32,21 +32,30 @@
         "gfa_m2": 229490.0,
         "residential_part_m2": 215720.6,
         "embedded_nonresidential_m2": 13769.4,
-        "building_type": "residential"
+        "building_type": "residential",
+        "residential_saleable_m2": 140218.4,
+        "embedded_nonresidential_saleable_m2": 12392.5,
+        "saleable_basis": "Площадь квартир = население 4250 × 33 м² (приложение 5 к 945-ПП в редакции 2118-ПП). Общая доля 0,65 от СПП — калькуляторная цепочка ГлавАПУ. Без явного числа загрузчик берёт фолбэк 0,75 и даёт на 21 572 м² больше."
       },
       {
         "id": "ODO1",
         "name": "Офисный центр",
         "in_deal_perimeter": true,
         "gfa_m2": 92845.0,
-        "building_type": "office"
+        "building_type": "office",
+        "total_area_m2": 87274.3,
+        "saleable_m2": 52364.6,
+        "saleable_basis": "TEP_RATIOS движка: общая 0,94 от ГНС, продаваемая 0,564."
       },
       {
         "id": "ODO2",
         "name": "Торговый центр",
         "in_deal_perimeter": true,
         "gfa_m2": 92845.0,
-        "building_type": "retail"
+        "building_type": "retail",
+        "total_area_m2": 87274.3,
+        "saleable_m2": 52364.6,
+        "saleable_basis": "TEP_RATIOS движка: общая 0,94 от ГНС, продаваемая 0,564."
       },
       {
         "id": "SCHOOL",
@@ -54,7 +63,15 @@
         "in_deal_perimeter": true,
         "gfa_m2": 22220.0,
         "cost_classification": "mandatory_social_construction",
-        "building_type": "education"
+        "building_type": "education",
+        "capacity": {
+          "total_places": 1000,
+          "school_places": 1000,
+          "preschool_places": 0
+        },
+        "construction_capex_in_project": true,
+        "mandatory_for_project": true,
+        "note": "Обязательство КРТ: СОШ 1000 мест, строительство и безвозмездная передача."
       },
       {
         "id": "DOO",
@@ -62,15 +79,39 @@
         "in_deal_perimeter": true,
         "gfa_m2": 6300.0,
         "cost_classification": "mandatory_social_construction",
-        "building_type": "education"
+        "building_type": "education",
+        "capacity": {
+          "total_places": 350,
+          "school_places": 0,
+          "preschool_places": 350
+        },
+        "construction_capex_in_project": true,
+        "mandatory_for_project": true,
+        "note": "Обязательство КРТ: ДОО 350 мест, строительство и безвозмездная передача."
+      },
+      {
+        "id": "DEMO",
+        "name": "Снос и демонтаж существующей застройки",
+        "in_deal_perimeter": true,
+        "gfa_m2": 0.0,
+        "cost_classification": "social_burden_cash",
+        "social_burden_cash_rub": 768206600.0,
+        "note": "54 871,9 м² × 14 тыс ₽/м² = 768,2 млн ₽. Это НЕ соцнагрузка по существу — снос отдельное обязательство КРТ. Проведён денежной соцнагрузкой по решению владельца 23.08.2026: у книги DevelopAid_model_v4 нет строки под снос, а соцнагрузка доезжает в неё одним числом (Вводные!B17), и обе поверхности сходятся. Следствие принято осознанно: сумма входит в расчётный лимит БРИДЖа и в строку «Социальная нагрузка» отчёта. Ставка — оценка DevelopAid, не смета."
       }
-    ]
+    ],
+    "underground": {
+      "spaces": 2503,
+      "guest_spaces": 162,
+      "area_m2": 87605,
+      "area_per_space_m2": 35,
+      "basis": "Расчёт паркинга пресета (tep_derived.parking), сверенный с выгрузкой ГлавАПУ 77:05:0004001. Без явного числа загрузчик считает своей упрощённой формулой и даёт 3 004 места — на 501 больше."
+    }
   },
   "social_infrastructure": {
     "school_places": 1000,
     "kindergarten_places": 350,
     "mode": "Строительство",
-    "note": "Обязательства КРТ: строятся, не продаются, деньгами не компенсируются."
+    "note": "Обязательства КРТ: строятся, не продаются, деньгами не компенсируются. Мощность объявлена в capacity самих объектов — оттуда её читает загрузчик; раздела social_infrastructure он не видит."
   },
   "demolition": {
     "area_m2": 54871.9,
@@ -82,7 +123,8 @@
     "cost_high_mln": 768.2,
     "estimate_status": "ОЦЕНКА DevelopAid, НЕ СМЕТА",
     "basis": "Площадь и число объектов — таблица извещения (39 ОКС, все с признаком «Снос/реконструкция», объектов «сохранение» в таблице нет). Признак через дробь документ не раскрывает, поэтому площадь — верхняя граница. Ставка — оценка полного пакета: разборка надземной части, фундаменты и подземные части (их в площади ОКС нет), вывоз и утилизация, ПОС и разрешения, риск асбеста. Источника по ставке сноса у DevelopAid нет ни одного — заменить сметой подрядчика. Применена верхняя граница: на торгах ошибка вверх дешевле ошибки вниз.",
-    "capex_article": "demolition · подготовительный период, до РнС; НЕ соцнагрузка"
+    "capex_article": "demolition · подготовительный период, до РнС; НЕ соцнагрузка",
+    "routing": "Проведён денежной соцнагрузкой (объект DEMO). Прежние ключи economics.demolition_* загрузчик не читал вовсе — снос не доезжал в модель ни рублём."
   },
   "resettlement": {
     "cost_mln": 0.0,
@@ -99,10 +141,7 @@
     "note": "Цена входа по КРТ. Не смешивать с платой за смену ВРИ — она нулевая."
   },
   "economics": {
-    "purchase_price_mln": 2403.657,
-    "demolition_area_sqm": 54871.9,
-    "demolition_cost_th_per_sqm": 14.0,
-    "resettlement_cost_mln": 0.0
+    "purchase_price_mln": 2403.657
   },
   "tep_derived": {
     "population": 4250,

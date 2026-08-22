@@ -153,9 +153,14 @@ def test_tep_sheet_receives_model_areas(filled):
     assert sheet.cell(row=rows["СПП жилая"], column=4).value == pytest.approx(
         main.TEP_DEFAULT["apartments"]["gns"], abs=0.01
     )
-    assert sheet.cell(row=rows["Постоянные парковки"], column=4).value == pytest.approx(
-        main.TEP_DEFAULT["underground_parking"]["units"], abs=0.01
-    )
+    # ТЭП!I33 шаблона складывает постоянные и гостевые. Значит в «постоянные»
+    # идёт число мест за вычетом гостевых, иначе гостевые считаются дважды, —
+    # а сумма двух строк обязана дать построенный паркинг целиком.
+    total = main.TEP_DEFAULT["underground_parking"]["units"]
+    guest = sheet.cell(row=rows["Гостевые парковки"], column=4).value
+    permanent = sheet.cell(row=rows["Постоянные парковки"], column=4).value
+    assert guest == pytest.approx(round(total / 11.0), abs=0.01)
+    assert permanent + guest == pytest.approx(total, abs=0.01)
 
 
 def test_price_growth_target_reproduces_the_model_monthly_growth(filled):

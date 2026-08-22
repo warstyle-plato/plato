@@ -448,3 +448,50 @@ def test_the_screen_offers_a_field_for_unknown_values():
 def test_the_projects_key_can_be_changed_without_the_console():
     assert "changeProjectsKey()" in core.PAGE
     assert "Сменить ключ" in core.PAGE
+
+
+def test_the_social_capacity_lives_inside_the_object():
+    """Мощность соцобъекта читается из `capacity` объекта, а не из своего раздела.
+
+    В пресете КРТ Нагатино школа и ДОО были объявлены объектами, а места —
+    отдельным разделом `social_infrastructure`, которого загрузчик не видит.
+    Пресет выглядел полным, ошибки не было, а реестр соцобъектов показывал
+    0 / 0: поле, которого нет в карте записи, молча остаётся пустым.
+    """
+    path = Path(__file__).resolve().parent.parent / "presets" / "КРТ_Нагатино.json"
+    if not path.exists():
+        pytest.skip("пресет КРТ Нагатино не найден")
+    data = project_preset.parse_preset(json.loads(path.read_text(encoding="utf-8")))
+    tep, _ = project_preset.map_tep(data)
+    assert tep["school"]["units"] == 1000
+    assert tep["kindergarten"]["units"] == 350
+    assert tep["school"]["total_area"] == 22220
+    assert tep["kindergarten"]["total_area"] == 6300
+
+
+def test_the_nagatino_preset_declares_its_own_numbers():
+    """Пресет обязан назвать площади и места сам, а не отдать их фолбэкам.
+
+    Продаваемая жилья, машино-места и число квартир были описаны в разделе
+    `tep_derived`, но не объявлены у объектов. Загрузчик их не видел и брал
+    свои умолчания: продаваемая выходила 161 790 м² вместо 140 218 (доля 0,75
+    вместо 0,65), паркинг 3 004 места вместо 2 503, а количество квартир
+    оставалось абсолютной величиной 1 361,8 из TEP_DEFAULT — снятой с чужой
+    продаваемой площади, то есть 118 м² на квартиру.
+    """
+    path = Path(__file__).resolve().parent.parent / "presets" / "КРТ_Нагатино.json"
+    if not path.exists():
+        pytest.skip("пресет КРТ Нагатино не найден")
+    preview = project_preset.build_preview(json.loads(path.read_text(encoding="utf-8")))
+    tep = preview["tep"]
+    assert tep["apartments"]["saleable"] == pytest.approx(140_218.4, abs=1.0)
+    assert tep["underground_parking"]["units"] == 2503
+    assert tep["underground_parking"]["guest_units"] == 162
+    assert tep["apartments"]["units"] > 2000  # не 1 361,8 из умолчаний
+    saleable = tep["apartments"]["saleable"]
+    assert 45 <= saleable / tep["apartments"]["units"] <= 70
+
+    # Снос доезжает деньгами: прежние ключи economics.demolition_* загрузчик
+    # не читал вовсе, и статья не попадала в модель ни рублём.
+    assert preview["inputs"]["social_compensation_mln"] == pytest.approx(768.2, abs=0.1)
+    assert preview["inputs"]["social_mode"] == project_preset.SOCIAL_MODE_BOTH

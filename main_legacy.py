@@ -14189,8 +14189,10 @@ def build_project_workbook(
             label="прод. квартир")
         put(f"AA{row}", number=num_row(crow.get("ground_commercial"), "saleable"),
             label="прод. коммерции")
-        put(f"AB{row}", number=num_row(crow.get("underground_parking"), "units"),
-            label="паркинг, шт.")
+        # Строится весь паркинг (ГНС в Y), а продаются только не гостевые места:
+        # AB кормит «Продажи», поэтому здесь стоит проданное, а не построенное.
+        put(f"AB{row}", number=underground_saleable_spaces(crow.get("underground_parking") or {}),
+            label="паркинг к продаже, шт.")
         put(f"AC{row}", number=num_row(crow.get("storage"), "units"), label="кладовые, шт.")
         put(f"AE{row}", number=0.0, label="инфляция цены")
         put(f"AF{row}", number=0.0, label="инфляция затрат")
@@ -14433,10 +14435,11 @@ _PLATO_TEP_ROWS: list[tuple[str, str]] = [
     ("НП нежилой части жилых зданий", "ground_commercial.total_area"),
     ("Площадь квартир", "apartments.saleable"),
     ("Нежилая наземная площадь (ННП)", "ground_commercial.saleable"),
-    ("Постоянные парковки", "underground_parking.units"),
-    # ТЭП!I33 шаблона складывает постоянные и гостевые парковки. Гостевые в
-    # модели не продаются, и оставленное в шаблоне чужое значение добавляло
-    # к расчёту несуществующие машино-места — обнуляем явно.
+    # ТЭП!I33 шаблона складывает постоянные и гостевые парковки. Значит в
+    # «постоянные» идёт не всё число мест, а число за вычетом гостевых —
+    # иначе гостевые считаются дважды. Обе строки пишутся явно: оставленное
+    # в шаблоне чужое значение попало бы в расчёт как своё.
+    ("Постоянные парковки", "underground_parking.permanent_units"),
     ("Гостевые парковки", "underground_parking.guest_units"),
 ]
 
@@ -14463,6 +14466,13 @@ def _plato_value(kind: str, value: Any) -> Any:
 def _plato_tep_value(tep: dict[str, dict[str, Any]], path: str) -> float | None:
     product, field = path.split(".", 1)
     values = tep.get(product) or {}
+    if product == "underground_parking" and field in ("permanent_units", "guest_units"):
+        # Гостевые места модель хранит рядом с общим числом, а при ручном вводе
+        # выводит из норматива. Книге нужны обе половины по отдельности.
+        if not values:
+            return 0.0
+        guest = float(underground_guest_spaces(values))
+        return guest if field == "guest_units" else underground_saleable_spaces(values)
     if field not in values:
         # Показателя нет в модели — значит в шаблоне на его месте данные чужого
         # проекта, и оставлять их нельзя: они попадут в расчёт как свои.
@@ -18361,7 +18371,12 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
 
     core_product("apartments", n(apartment, "saleable"), n(x, "apartment_price_th"))
     core_product("ground_commercial", n(commercial, "saleable"), n(x, "commercial_price_th"))
-    core_product("underground_parking", n(underground, "units"), n(x, "parking_price_th"))
+    # Гостевые места не продаются: по нормативу они обслуживают посетителей и
+    # остаются общим имуществом. Модель продавала весь паркинг целиком — на
+    # 369 местах это 34 несуществующие продажи (владелец, 21.08.2026). В книгу
+    # правило было записано давно, а движок его не исполнял.
+    core_product("underground_parking", underground_saleable_spaces(underground),
+                 n(x, "parking_price_th"))
     core_product("storage", n(storage, "units"), n(x, "storage_price_th"))
 
     standalone_capex = {}
@@ -18834,6 +18849,37 @@ def pf_special_rate_at(coverage: float, steps: list[tuple[float, float]],
         else:
             break
     return rate
+
+
+def underground_guest_spaces(row: dict[str, Any]) -> int:
+    """Гостевые места подземного паркинга — те, что не продаются.
+
+    Точное число приходит с импортом ГлавАПУ и хранится рядом с местами. Когда
+    его нет (места введены руками), оно выводится из самого норматива: гостевые
+    — десятая часть постоянных, значит из S = P + ceil(P/10) следует P ≈ S/1,1,
+    и гостевых остаётся S/11. На 369 местах это 34 — ровно столько, сколько
+    насчитал владелец.
+    """
+    known = row.get("guest_units")
+    if known not in (None, ""):
+        try:
+            return max(0, int(round(float(known))))
+        except (TypeError, ValueError):
+            pass
+    try:
+        total = float(row.get("units") or 0)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, int(round(total / 11.0))) if total > 0 else 0
+
+
+def underground_saleable_spaces(row: dict[str, Any]) -> float:
+    """Продаваемые машино-места: всё, кроме гостевых."""
+    try:
+        total = float(row.get("units") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    return max(0.0, total - underground_guest_spaces(row))
 
 
 def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) -> dict:
@@ -19507,6 +19553,9 @@ def calculate(req: CalcRequest) -> dict:
         underground_spaces = permanent + guest
         if underground_spaces > 0 and "underground_parking" in t:
             t["underground_parking"]["units"] = underground_spaces
+            # Точное число гостевых известно из выгрузки — выводить его из доли
+            # незачем, а потерять значит продать их.
+            t["underground_parking"]["guest_units"] = guest
             t["underground_parking"]["gns"] = underground_spaces * area_per_space
             t["underground_parking"]["total_area"] = underground_spaces * area_per_space
             t["underground_parking"]["useful"] = 0.0
@@ -19807,7 +19856,9 @@ def calculate(req: CalcRequest) -> dict:
             "start": op["sales_start"], "end_ref": op["rve"], "residual": int(n(x, "residual_sales_months", 6))
         },
         "underground_parking": {
-            "label": "Подземный паркинг", "quantity": n(t.get("underground_parking", {}), "units"),
+            # Продаётся не весь паркинг: гостевые места остаются общими.
+            "label": "Подземный паркинг",
+            "quantity": underground_saleable_spaces(t.get("underground_parking", {})),
             "unit": "шт.", "start_price": n(x, "parking_price_th"), "share": n(x, "share_before_rve_pct", 85)/100,
             "start": op["sales_start"], "end_ref": op["rve"], "residual": int(n(x, "residual_sales_months", 6))
         },
