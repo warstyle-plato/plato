@@ -11494,6 +11494,10 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     # Остаток ПФ на конец проекта — это несостоявшееся погашение, а не деталь
     # финансирования: без него отчёт выглядел безупречно при непогашенном долге.
     _ending_pf=float(financing.get('ending_pf') or 0)
+    _rve_pf_shortfall=float(financing.get('rve_pf_shortfall') or 0)
+    if _rve_pf_shortfall>500_000:
+        kpis.append(["Остаток ПФ после раскрытия эскроу в РВЭ",
+                     _pdf_money(_rve_pf_shortfall)])
     if _ending_pf>500_000:
         kpis.append(["Непогашенный долг ПФ на конец проекта",_pdf_money(_ending_pf)])
     story.append(table([["Показатель","Значение"]]+kpis,[112*mm,58*mm]))
@@ -11794,7 +11798,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
               "из ТЭП: изменится нарезка — изменится и темп.", small),
         ]))
     story.append(_PdfSection("financing"));story.append(P("Финансирование и динамика проекта",h2))
-    finance_rows=[["Показатель","Значение"],["Расчётный БРИДЖ",_pdf_money(financing.get('calculated_bridge'))],["Пиковый фактический БРИДЖ (тело долга)",_pdf_money(financing.get('actual_bridge'))],["Собственные средства до ПФ",_pdf_money(financing.get('own_funds'))],["Пик БРИДЖ с капитализацией процентов (справочно)",_pdf_money(financing.get('bridge_peak_capitalized') or financing.get('actual_bridge'))],["Пиковая (непокрытая эскроу) задолженность ПФ",_pdf_money(financing.get('pf_uncovered_peak'))],["Лимит ПФ",_pdf_money(financing.get('pf_limit'))],["Текущая ключевая ставка",_pdf_pct(financing.get('current_key_rate'))],["Спред БРИДЖ",_pdf_pct(financing.get('bridge_spread'))],["Ставка БРИДЖ на текущей ключевой",_pdf_pct(financing.get('current_bridge_rate'))],["Средняя ключевая за период БРИДЖ",_pdf_pct(financing.get('avg_bridge_key_rate'))],["Средневзвешенная ставка БРИДЖ за период",_pdf_pct(financing.get('avg_bridge_rate'))],["Средняя фактическая ставка ПФ",_pdf_pct(financing.get('avg_pf_effective_rate'))],*_pdf_pf_step_rows(financing),["Проценты и комиссии",_pdf_money(financing.get('interest_and_fees'))],["Непогашенный долг ПФ на конец проекта",_pdf_money(financing.get('ending_pf'))],["LLCR",_pdf_num(summary.get('llcr'),2)+"x"]]
+    finance_rows=[["Показатель","Значение"],["Расчётный БРИДЖ",_pdf_money(financing.get('calculated_bridge'))],["Пиковый фактический БРИДЖ (тело долга)",_pdf_money(financing.get('actual_bridge'))],["Собственные средства до ПФ",_pdf_money(financing.get('own_funds'))],["Пик БРИДЖ с капитализацией процентов (справочно)",_pdf_money(financing.get('bridge_peak_capitalized') or financing.get('actual_bridge'))],["Пиковая (непокрытая эскроу) задолженность ПФ",_pdf_money(financing.get('pf_uncovered_peak'))],["Долг ПФ перед раскрытием в РВЭ",_pdf_money(financing.get('rve_pf_before_repayment'))],["Раскрытый эскроу в РВЭ",_pdf_money(financing.get('rve_escrow_release'))],["Остаток ПФ после раскрытия в РВЭ",_pdf_money(financing.get('rve_pf_shortfall'))],["Лимит ПФ",_pdf_money(financing.get('pf_limit'))],["Текущая ключевая ставка",_pdf_pct(financing.get('current_key_rate'))],["Спред БРИДЖ",_pdf_pct(financing.get('bridge_spread'))],["Ставка БРИДЖ на текущей ключевой",_pdf_pct(financing.get('current_bridge_rate'))],["Средняя ключевая за период БРИДЖ",_pdf_pct(financing.get('avg_bridge_key_rate'))],["Средневзвешенная ставка БРИДЖ за период",_pdf_pct(financing.get('avg_bridge_rate'))],["Средняя фактическая ставка ПФ",_pdf_pct(financing.get('avg_pf_effective_rate'))],*_pdf_pf_step_rows(financing),["Проценты и комиссии",_pdf_money(financing.get('interest_and_fees'))],["Непогашенный долг ПФ на конец проекта",_pdf_money(financing.get('ending_pf'))],["LLCR",_pdf_num(summary.get('llcr'),2)+"x"]]
     story.append(table(finance_rows,[112*mm,58*mm],font_size=7.6))
 
     # Restore the bridge-purpose disclosure that exists in the web report.
@@ -12034,6 +12038,9 @@ _MODEL_FINANCE_SUMMARY_ROWS: list[tuple[str, str, str]] = [
     ("pf_shortfall", "Непокрытая потребность в ПФ", "mln"),
     ("peak_pf", "Пиковая задолженность ПФ", "mln"),
     ("peak_uncovered_pf", "Пиковая непокрытая эскроу задолженность ПФ", "mln"),
+    ("rve_pf_before_repayment", "Долг ПФ перед раскрытием в РВЭ", "mln"),
+    ("rve_escrow_release", "Раскрытый эскроу в РВЭ", "mln"),
+    ("rve_pf_shortfall", "Остаток ПФ после раскрытия в РВЭ", "mln"),
     ("pf_interest", "Проценты ПФ", "mln"),
     ("pf_limit_fee", "Плата за лимит ПФ", "mln"),
     ("avg_pf_base_rate", "Средняя ставка ПФ без эффекта эскроу", "pct"),
@@ -17100,6 +17107,19 @@ def telegram_result(req: TelegramResultRequest,
         scope_line = f"Проект: <b>{html.escape(project_name)}</b>\n"
     else:
         scope_line = ""
+    # Остаток непосредственно после раскрытия и долг на конец проекта — разные
+    # риски. Первый может быть закрыт последующими продажами, поэтому он должен
+    # быть виден даже тогда, когда ending_pf уже равен нулю.
+    rve_pf_shortfall_mln = float(summary.get("rve_pf_shortfall_mln") or 0)
+    if rve_pf_shortfall_mln > 0.5:
+        rve_warning = (
+            "⚠️ <b>Эскроу не погашает ПФ полностью в РВЭ</b>\n"
+            f"• остаток после раскрытия — {_telegram_money_mln(rve_pf_shortfall_mln)}\n"
+            "• остаток должен быть погашен последующими продажами или иным "
+            "источником.\n\n"
+        )
+    else:
+        rve_warning = ""
     # Непогашенный ПФ — это дефолт по кредиту, а не строка детализации. Раньше
     # остаток считался, но никуда не выводился, и карточка выглядела безупречно
     # при долге в миллиарды. Порог 0,5 млн отсекает копеечные хвосты округления.
@@ -17133,7 +17153,7 @@ def telegram_result(req: TelegramResultRequest,
         f"• LLCR — {_telegram_number(summary.get('llcr'), 2)}x\n"
         f"• расчётный БРИДЖ — {_telegram_money_mln(summary.get('calculated_bridge_mln'))}\n"
         f"• Пиковая (непокрытая эскроу) задолженность ПФ — {_telegram_money_mln(summary.get('pf_uncovered_peak_mln'))}\n\n"
-        + debt_warning +
+        + rve_warning + debt_warning +
         "<b>Оценка целесообразности покупки</b>\n"
         f"• <b>{html.escape(purchase_assessment['title'])}</b>\n"
         f"• {html.escape(purchase_assessment['text'])}\n\n"
@@ -19105,6 +19125,17 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
                 "interest_payment": interest_payment,
             })
 
+        rve_row = next((row for row in rows if d(row.get("month")) == rve), {})
+        rve_pf_shortfall = max(0.0, float(rve_row.get("pf_balance", 0.0) or 0.0))
+        rve_escrow_release = max(
+            0.0, float(rve_row.get("escrow_release", 0.0) or 0.0))
+        # Body immediately before disclosure: what was repaid plus what stayed
+        # outstanding. This is the comparison users expect at RVE; the peak
+        # uncovered debt and the ending balance answer different questions.
+        rve_pf_before_repayment = (
+            rve_pf_shortfall
+            + max(0.0, float(rve_row.get("pf_repayment", 0.0) or 0.0)))
+
         return {
             "rows": rows,
             "calculated_bridge_limit": calculated_bridge_limit,
@@ -19159,6 +19190,9 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
                  "months": int(step_months.get(rate, 0))}
                 for edge, rate in special_steps],
             "ending_pf": pf_balance,
+            "rve_pf_before_repayment": rve_pf_before_repayment,
+            "rve_escrow_release": rve_escrow_release,
+            "rve_pf_shortfall": rve_pf_shortfall,
             "ending_interest_payable": pf_interest_payable,
             "pf_shortfall": pf_shortfall_total,
             # Датой, а не объектом: результат уезжает в JSON на страницу и в
@@ -19952,6 +19986,7 @@ def calculate(req: CalcRequest) -> dict:
             "margin": net_profit / total_revenue if total_revenue else 0.0,
             "llcr": fin["llcr"],
             "ending_pf": fin.get("ending_pf", 0.0),
+            "rve_pf_shortfall": fin.get("rve_pf_shortfall", 0.0),
             "scenario_revenue_multiplier": n(x, "scenario_revenue_multiplier", 1.0),
             "scenario_cost_multiplier": n(x, "scenario_cost_multiplier", 1.0),
             "npv": project_npv,
@@ -20029,6 +20064,9 @@ def calculate(req: CalcRequest) -> dict:
                     _project_cash_by(fin["rows"], bridge_peak_month)),
                 "pf_peak": fin["peak_pf"],
                 "pf_uncovered_peak": fin.get("peak_uncovered_pf", 0.0),
+                "rve_pf_before_repayment": fin.get("rve_pf_before_repayment", 0.0),
+                "rve_escrow_release": fin.get("rve_escrow_release", 0.0),
+                "rve_pf_shortfall": fin.get("rve_pf_shortfall", 0.0),
                 "pf_limit": fin["pf_limit"],
                 "avg_bridge_rate": fin["avg_bridge_rate"],
                 "avg_bridge_key_rate": fin.get("avg_bridge_key_rate", 0.0),
@@ -20803,6 +20841,13 @@ def _aggregate_finance(results: list[dict[str, Any]]) -> dict[str, Any]:
         "llcr": llcr_num / llcr_den if llcr_den else 0.0,
         "peak_total_debt": peak_total_debt,
         "peak_escrow": peak_escrow,
+        # У многоочередного проекта своё РВЭ у каждой очереди. Свод показывает
+        # сумму остатков, возникших в эти даты, а не сравнивает долг одной
+        # очереди с эскроу другой.
+        "rve_pf_before_repayment": sum(
+            f.get("rve_pf_before_repayment", 0.0) for f in fs),
+        "rve_escrow_release": sum(f.get("rve_escrow_release", 0.0) for f in fs),
+        "rve_pf_shortfall": sum(f.get("rve_pf_shortfall", 0.0) for f in fs),
     }
 
 
@@ -21066,6 +21111,7 @@ def _consolidate_phase_results(
             "margin": net_profit / total_revenue if total_revenue else 0.0,
             "llcr": finance["llcr"],
             "ending_pf": finance.get("ending_pf", 0.0),
+            "rve_pf_shortfall": finance.get("rve_pf_shortfall", 0.0),
             "min_phase_llcr": min((r["summary"]["llcr"] for r in results), default=0.0),
             "scenario_revenue_multiplier": n(master_inputs, "scenario_revenue_multiplier", 1.0),
             "scenario_cost_multiplier": n(master_inputs, "scenario_cost_multiplier", 1.0),
@@ -21118,6 +21164,9 @@ def _consolidate_phase_results(
                     _project_cash_by(finance["rows"], consolidated_bridge_month)),
                 "pf_peak": finance["peak_pf"],
                 "pf_uncovered_peak": finance["peak_uncovered_pf"],
+                "rve_pf_before_repayment": finance.get("rve_pf_before_repayment", 0.0),
+                "rve_escrow_release": finance.get("rve_escrow_release", 0.0),
+                "rve_pf_shortfall": finance.get("rve_pf_shortfall", 0.0),
                 "pf_limit": finance["pf_limit"],
                 "avg_bridge_rate": finance["avg_bridge_rate"],
                 "avg_bridge_key_rate": finance.get("avg_bridge_key_rate", 0.0),
@@ -28279,6 +28328,7 @@ details.cadastral-box>summary::marker{color:#888}
           <span id="pdfReportMeta">—</span>
         </div>
         <div class="kpis report-kpis" id="reportKpi"></div>
+        <div id="pfRveWarning" class="note warning" style="display:none;margin-top:14px"></div>
       </div>
 
       <div class="report-toc no-print" id="reportToc"></div>
@@ -30909,6 +30959,7 @@ async function sendTelegramResult(){
    llcr:Number(s.llcr||0),
    calculated_bridge_mln:Number(f.calculated_bridge||0)/1e6,
    pf_uncovered_peak_mln:Number(f.pf_uncovered_peak||0)/1e6,
+   rve_pf_shortfall_mln:Number(f.rve_pf_shortfall||0)/1e6,
    ending_pf_mln:Number(f.ending_pf||0)/1e6,
     report_payload:currentPdfReportPayload(cads)
  };
@@ -32817,10 +32868,22 @@ function renderResult(){
  ];
  reportKpi.innerHTML=reportKpis.map(x=>`<div class="kpi"><span>${x[0]}</span><b>${x[1]}</b></div>`).join('');
 
+ const rveFinance=r.report.financing||{},rveGap=Number(rveFinance.rve_pf_shortfall||0),rveDebt=Number(rveFinance.rve_pf_before_repayment||0),rveEscrow=Number(rveFinance.rve_escrow_release||0),rveWarning=document.getElementById('pfRveWarning');
+ if(rveWarning){
+  if(rveGap>500000){
+   const scope=Number(r.summary.phase_count||0)>1?'В даты РВЭ очередей':'В момент РВЭ';
+   rveWarning.style.display='block';
+   rveWarning.innerHTML=`<b>Эскроу не погашает ПФ полностью.</b> ${scope}: долг перед раскрытием ${money(rveDebt)}, раскрытый эскроу ${money(rveEscrow)}, остаток ПФ после раскрытия <b>${money(rveGap)}</b>. Этот остаток должен быть погашен последующими продажами или иным источником.`;
+  }else{
+   rveWarning.style.display='none';rveWarning.textContent='';
+  }
+ }
+
  llcrValue.textContent=mult(r.summary.llcr);
  financeKpi.innerHTML=[
   ['Пиковый БРИДЖ',money(f.peak_bridge)],
   ['Пиковая (непокрытая эскроу) задолженность ПФ',money(f.peak_uncovered_pf)],
+  ['Остаток ПФ после раскрытия эскроу в РВЭ',money(f.rve_pf_shortfall)],
   ['Ставка БРИДЖ на текущей ключевой',pct(f.current_bridge_rate)],
   ['Средневзвешенная ставка БРИДЖ за период',pct(f.avg_bridge_rate)],
   ['Средняя ставка ПФ без эффекта эскроу',pct(f.avg_pf_base_rate)],
@@ -32849,6 +32912,7 @@ function renderResult(){
   row('Совокупная выборка',money(f.pf_draw_total))+
   row('Пиковый остаток',money(f.peak_pf))+
   row('Погашено основного долга',money(f.pf_repayment_total))+
+  row('Остаток после раскрытия эскроу в РВЭ',money(f.rve_pf_shortfall))+
   row('Остаток',money(f.ending_pf))+
   row('Средняя ключевая ставка в период ПФ',pct(f.avg_pf_key_rate))+
   row('Средняя ставка ПФ без эффекта эскроу',pct(f.avg_pf_base_rate))+
@@ -32958,6 +33022,9 @@ function renderResult(){
   // Ушла из плиток шапки: для общей оценки проекта величина неочевидная, а
   // здесь, среди лимитов и ставок, читается тем, чем является.
   row('Пиковая (непокрытая эскроу) задолженность ПФ',money(r.report.financing.pf_uncovered_peak))+
+  row('Долг ПФ перед раскрытием в РВЭ',money(r.report.financing.rve_pf_before_repayment))+
+  row('Раскрытый эскроу в РВЭ',money(r.report.financing.rve_escrow_release))+
+  row('Остаток ПФ после раскрытия в РВЭ',money(r.report.financing.rve_pf_shortfall))+
   (r.report.financing.peak_total_debt!=null?row('Максимальный совокупный долг',money(r.report.financing.peak_total_debt)):'')+
   row('Текущая ключевая ставка',pct(r.report.financing.current_key_rate))+
   row('Спред БРИДЖ',pct(r.report.financing.bridge_spread))+
