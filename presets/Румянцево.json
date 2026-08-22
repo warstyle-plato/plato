@@ -532,19 +532,140 @@
   "phasing": {
     "enabled": true,
     "phase_gap_months": 24,
+    "products": {
+      "apartments": [50.5630630631, 49.4369369369],
+      "ground_commercial": [50.7170266753, 49.2829733247],
+      "underground_parking": [48.9504950495, 51.0495049505],
+      "storage": [50, 50]
+    },
+    "social_objects": [
+      {
+        "name": "СОШ в составе единого образовательного объекта",
+        "type": "school",
+        "capacity": 350,
+        "phase": 1
+      },
+      {
+        "name": "ДОО в составе единого образовательного объекта",
+        "type": "kindergarten",
+        "capacity": 180,
+        "phase": 1
+      }
+    ],
     "phases": [
       {
         "name": "ВГК-1",
         "start_offset_months": 0,
-        "construction_months": 36
+        "construction_months": 36,
+        "products": {
+          "apartments": {
+            "gns": 112250,
+            "total_area": 101025,
+            "useful": 84187.5,
+            "saleable": 84187.5,
+            "generates_revenue": true,
+            "assumption_source": "ППТ Румянцево: жилая ГНС ВГК-1; продаваемая площадь 75% по согласованной предпосылке проекта"
+          },
+          "ground_commercial": {
+            "gns": 7420,
+            "total_area": 7420,
+            "useful": 6678,
+            "saleable": 6678,
+            "generates_revenue": true,
+            "assumption_source": "ППТ Румянцево: встроенные помещения ВГК-1; продаваемая площадь 90%"
+          },
+          "underground_parking": {
+            "gns": 43260,
+            "total_area": 43260,
+            "saleable": 0,
+            "units": 1236,
+            "generates_revenue": true,
+            "assumption_source": "расчётная потребность Румянцево; 35 м² ГНС на машино-место"
+          },
+          "school": {
+            "gns": 0,
+            "total_area": 9265.0943396226,
+            "saleable": 0,
+            "transfer": 9265.0943396226,
+            "units": 350,
+            "generates_revenue": false,
+            "capex_mln": 1050,
+            "assumption_source": "единый EDU 14 030 м² распределён по местам; 3 млн ₽ на место"
+          },
+          "kindergarten": {
+            "gns": 0,
+            "total_area": 4764.9056603774,
+            "saleable": 0,
+            "transfer": 4764.9056603774,
+            "units": 180,
+            "generates_revenue": false,
+            "capex_mln": 540,
+            "assumption_source": "единый EDU 14 030 м² распределён по местам; 3 млн ₽ на место"
+          },
+          "offices": {
+            "gns": 0,
+            "saleable": 0,
+            "generates_revenue": true,
+            "assumption_source": "объект не назначен в очередь"
+          },
+          "above_parking": {
+            "gns": 0,
+            "saleable": 0,
+            "units": 0,
+            "generates_revenue": true,
+            "assumption_source": "объект не назначен в очередь"
+          }
+        }
       },
       {
         "name": "ВГК-2",
         "start_offset_months": 24,
-        "construction_months": 36
+        "construction_months": 36,
+        "products": {
+          "apartments": {
+            "gns": 109750,
+            "total_area": 98775,
+            "useful": 82312.5,
+            "saleable": 82312.5,
+            "generates_revenue": true,
+            "assumption_source": "ППТ Румянцево: жилая ГНС ВГК-2; продаваемая площадь 75% по согласованной предпосылке проекта"
+          },
+          "ground_commercial": {
+            "gns": 7210,
+            "total_area": 7210,
+            "useful": 6489,
+            "saleable": 6489,
+            "generates_revenue": true,
+            "assumption_source": "ППТ Румянцево: встроенные помещения ВГК-2; продаваемая площадь 90%"
+          },
+          "offices": {
+            "gns": 125160,
+            "total_area": 125160,
+            "useful": 84858.48,
+            "saleable": 84858.48,
+            "generates_revenue": true,
+            "assumption_source": "ППТ и согласованная продуктовая предпосылка Румянцево: полезная площадь 67,8%"
+          },
+          "above_parking": {
+            "gns": 19150,
+            "total_area": 19150,
+            "saleable": 0,
+            "units": 766,
+            "generates_revenue": true,
+            "assumption_source": "общественно-деловое здание с гаражом; 25 м² ГНС на машино-место"
+          },
+          "underground_parking": {
+            "gns": 45115,
+            "total_area": 45115,
+            "saleable": 0,
+            "units": 1289,
+            "generates_revenue": true,
+            "assumption_source": "остаток общей расчётной потребности Румянцево после наземного гаража"
+          }
+        }
       }
     ],
-    "note": "очередь = один жилой корпус: 166 500 м² квартир одной очередью требуют 65 продаж в месяц"
+    "note": "Проценты сохранены как стартовое распределение. products внутри каждой очереди — авторитетные редактируемые ТЭП для вкладок «Очередность» и «Результат». Назначение EDU в ВГК-1 является стартовой предпосылкой и требует подтверждения календарём проекта."
   },
   "construction_cost_settings": {
     "scope": "Rumyantsevo preset only",

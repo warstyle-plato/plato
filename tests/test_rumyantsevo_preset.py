@@ -102,6 +102,13 @@ def test_the_phasing_comes_from_the_file(applied):
     assert [phase["name"] for phase in phases] == ["ВГК-1", "ВГК-2"]
     assert phases[1]["start_offset_months"] == 24
     assert all(phase["construction_months"] == 36 for phase in phases)
+    # Percentages remain the first fill only. The queue now carries the real
+    # product TEP used by both the phasing and product-result tabs.
+    assert phases[0]["products"]["apartments"]["gns"] == 112250
+    assert phases[1]["products"]["apartments"]["gns"] == 109750
+    assert phases[1]["products"]["offices"]["gns"] == 125160
+    assert phases[1]["products"]["above_parking"]["units"] == 766
+    assert phases[0]["products"]["school"]["generates_revenue"] is False
 
 
 def test_the_prices_and_costs_arrive(applied):
