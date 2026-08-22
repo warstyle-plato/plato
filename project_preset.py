@@ -158,10 +158,11 @@ def map_tep(data: dict[str, Any]) -> tuple[dict[str, Any], list[Field]]:
     становятся: первый оплачивается деньгами, вторые входят в сети.
     """
     objects = _objects(data)
-    residential_gns = commercial_gns = office_gns = 0.0
-    residential_saleable = commercial_saleable = office_saleable = 0.0
+    residential_gns = commercial_gns = office_gns = retail_gns = 0.0
+    office_total_area = retail_total_area = 0.0
+    residential_saleable = commercial_saleable = office_saleable = retail_saleable = 0.0
     residential_saleable_explicit = commercial_saleable_explicit = False
-    office_saleable_explicit = False
+    office_saleable_explicit = retail_saleable_explicit = False
     garage_gns = 0.0
     school_places = preschool_places = 0.0
     school_gfa = preschool_gfa = shared_education_gfa = 0.0
@@ -205,17 +206,45 @@ def map_tep(data: dict[str, Any]) -> tuple[dict[str, Any], list[Field]]:
         elif "гараж" in str(item.get("name", "")).lower():
             garage_gns += gfa
         else:
+            product_type = str(item.get("product_type") or "").strip().lower()
+            item_name = str(item.get("name") or "").strip().lower()
+            if (product_type in {"shopping_center", "standalone_retail", "retail"}
+                    or "торгов" in item_name or item_name.startswith("тц")):
+                retail_gns += gfa
+                retail_total_area += _number(item.get("total_area_m2")) or gfa
+                if _number(item.get("saleable_m2")) is not None:
+                    retail_saleable += _number(item.get("saleable_m2")) or 0.0
+                    retail_saleable_explicit = True
+                continue
             office_gns += gfa
+            office_total_area += _number(item.get("total_area_m2")) or gfa
             if _number(item.get("saleable_m2")) is not None:
                 office_saleable += _number(item.get("saleable_m2")) or 0.0
                 office_saleable_explicit = True
 
+    canonical = data.get("canonical_tep") if isinstance(data.get("canonical_tep"), dict) else {}
+    canonical_products = (canonical.get("products") or {}) if isinstance(
+        canonical.get("products"), dict) else {}
+    canonical_apartments = canonical_products.get("apartments") or {}
+    canonical_offices = canonical_products.get("offices") or {}
+    canonical_apartment_saleable = _number(canonical_apartments.get("saleable_m2"))
+    canonical_office_saleable = _number(canonical_offices.get("saleable_m2"))
+
+    # A project-level saleable input is canonical and must not be copied into
+    # every object/queue merely so the importer can see it.  The queue shares
+    # split this one total later.  Foreign project ratios remain only the legacy
+    # fallback for old presets that carry neither object nor canonical totals.
     apartments = (residential_saleable if residential_saleable_explicit
+                  else canonical_apartment_saleable
+                  if canonical_apartment_saleable is not None
                   else residential_gns * SALEABLE_RATIO_APARTMENTS)
     commercial = (commercial_saleable if commercial_saleable_explicit
                   else commercial_gns * SALEABLE_RATIO_COMMERCIAL)
     offices = (office_saleable if office_saleable_explicit
+               else canonical_office_saleable
+               if canonical_office_saleable is not None
                else office_gns * SALEABLE_RATIO_OFFICES)
+    retail = retail_saleable if retail_saleable_explicit else retail_gns * 0.564
     # Потребность в машино-местах — у жилья и у офисов своя, и отдельно
     # стоящий гараж её закрывает: под землю уходит только остаток. Прежде
     # подземный паркинг считался от одних квартир, офисные места не
@@ -227,15 +256,46 @@ def map_tep(data: dict[str, Any]) -> tuple[dict[str, Any], list[Field]]:
     office_spaces = math.ceil(offices / OFFICE_SQM_PER_SPACE) if derive_parking and offices else 0
     above = math.ceil(garage_gns / ABOVE_AREA_PER_SPACE) if garage_gns else 0
     underground = max(0, permanent + guest + office_spaces - above)
+    planning = data.get("planning") if isinstance(data.get("planning"), dict) else {}
+    underground_plan = (planning.get("underground") or {}) if isinstance(
+        planning.get("underground"), dict) else {}
+    # Absolute queue TEP is more authoritative than an older project-level
+    # parking assumption.  Rumyantsevo, for example, still carries a draft
+    # 1,510-space envelope in planning.underground, while its two approved
+    # queue rows contain 1,236 + 1,289 = 2,525 spaces.  Nagatino has no
+    # absolute parking rows, so its project calculation remains the source.
+    phase_parking_rows = []
+    phasing = data.get("phasing") if isinstance(data.get("phasing"), dict) else {}
+    for phase in phasing.get("phases") or []:
+        products = phase.get("products") if isinstance(phase, dict) else None
+        row = products.get("underground_parking") if isinstance(products, dict) else None
+        if isinstance(row, dict):
+            phase_parking_rows.append(row)
+    phase_spaces = sum((_number(row.get("units")) or 0.0) for row in phase_parking_rows)
+    phase_area = sum((_number(row.get("gns"))
+                      if _number(row.get("gns")) is not None
+                      else _number(row.get("total_area")) or 0.0)
+                     for row in phase_parking_rows)
+    has_phase_parking = bool(phase_parking_rows and (phase_spaces > 0 or phase_area > 0))
+    explicit_underground_spaces = (phase_spaces if has_phase_parking
+                                   else _number(underground_plan.get("spaces")))
+    explicit_underground_area = (phase_area if has_phase_parking and phase_area > 0
+                                 else _number(underground_plan.get("area_m2")))
+    if explicit_underground_spaces is not None:
+        underground = int(round(explicit_underground_spaces))
+    underground_area = (explicit_underground_area if explicit_underground_area is not None
+                        else underground * UNDERGROUND_AREA_PER_SPACE)
 
     tep = {
         "apartments": {"gns": residential_gns, "saleable": apartments,
                        "total_area": residential_gns * 0.9, "useful": apartments},
         "ground_commercial": {"gns": commercial_gns, "saleable": commercial,
-                              "total_area": commercial_gns, "useful": commercial},
+                              "total_area": commercial_gns * 0.9, "useful": commercial},
         "offices": {"gns": office_gns, "saleable": offices,
-                    "total_area": office_gns, "useful": offices},
-        "underground_parking": {"gns": underground * UNDERGROUND_AREA_PER_SPACE,
+                    "total_area": office_total_area, "useful": offices},
+        "standalone_retail": {"gns": retail_gns, "saleable": retail,
+                              "total_area": retail_total_area, "useful": retail},
+        "underground_parking": {"gns": underground_area,
                                 "units": underground, "saleable": 0.0},
         "above_parking": {"gns": garage_gns, "units": above, "saleable": 0.0},
         "school": {"units": school_places,
@@ -247,9 +307,12 @@ def map_tep(data: dict[str, Any]) -> tuple[dict[str, Any], list[Field]]:
     }
 
     notes.extend([
-        Field(apartments, "source" if residential_saleable_explicit else "derived",
+        Field(apartments, "source" if residential_saleable_explicit else
+              "assumption" if canonical_apartment_saleable is not None else "derived",
               (f"квартиры — {_ru(apartments)} м² заданы объектами пресета"
                if residential_saleable_explicit else
+               f"квартиры — {_ru(apartments)} м² заданы один раз в каноническом ТЭП проекта"
+               if canonical_apartment_saleable is not None else
                f"квартиры — {_ru(residential_gns)} м² жилой части × {SALEABLE_RATIO_APARTMENTS} "
                f"по согласованному ППТ; норматив калькулятора ГлавАПУ — 0,65, "
                f"то есть {_ru(residential_gns * 0.65)} м²")),
@@ -257,12 +320,25 @@ def map_tep(data: dict[str, Any]) -> tuple[dict[str, Any], list[Field]]:
               (f"встроенная коммерция — {_ru(commercial)} м² заданы объектами пресета"
                if commercial_saleable_explicit else
                f"встроенная коммерция — {_ru(commercial_gns)} м² × {SALEABLE_RATIO_COMMERCIAL}")),
-        Field(offices, "source" if office_saleable_explicit else "derived",
+        Field(offices, "source" if office_saleable_explicit else
+              "assumption" if canonical_office_saleable is not None else "derived",
               (f"офисы — {_ru(offices)} м² заданы объектами пресета"
                if office_saleable_explicit else
+               f"офисы — {_ru(offices)} м² заданы один раз в каноническом ТЭП проекта"
+               if canonical_office_saleable is not None else
                f"офисы — {_ru(office_gns)} м² × {SALEABLE_RATIO_OFFICES} (полезная по соглашению МПТ)")),
+        Field(retail, "source" if retail_saleable_explicit else "derived",
+              (f"ТЦ / коммерция ОСЗ — {_ru(retail)} м² заданы объектами пресета"
+               if retail_saleable_explicit else
+               f"ТЦ / коммерция ОСЗ — {_ru(retail_gns)} м² × 0,564")),
     ])
-    if derive_parking:
+    if explicit_underground_spaces is not None:
+        notes.append(Field(
+            underground, "source",
+            f"подземный паркинг — {underground} мест, {_ru(underground_area)} м² "
+            + ("агрегированы из ТЭП очередей" if has_phase_parking
+               else "заданы расчётом проекта")))
+    elif derive_parking:
         notes.append(Field(
             underground, "derived",
             f"подземный паркинг — потребность {permanent + guest + office_spaces} мест "
@@ -356,6 +432,10 @@ def map_inputs(data: dict[str, Any], tep: dict[str, Any]) -> tuple[dict[str, Any
         inputs["offices_enabled"] = True
         inputs["offices_gba_sqm"] = tep["offices"]["gns"]
         inputs["offices_saleable_sqm"] = tep["offices"]["saleable"]
+    if tep.get("standalone_retail", {}).get("gns"):
+        inputs["retail_enabled"] = True
+        inputs["retail_gba_sqm"] = tep["standalone_retail"]["gns"]
+        inputs["retail_saleable_sqm"] = tep["standalone_retail"]["saleable"]
     if tep.get("above_parking", {}).get("units"):
         inputs["above_parking_enabled"] = True
         inputs["above_parking_spaces"] = tep["above_parking"]["units"]
@@ -470,10 +550,12 @@ def map_economics(data: dict[str, Any]) -> tuple[dict[str, Any], list[Field]]:
         "parking_price_th": "цена машино-места",
         "storage_price_th": "цена кладовой",
         "offices_price_th_per_sqm": "цена офисов",
+        "retail_price_th_per_sqm": "цена ТЦ / коммерции ОСЗ",
         "above_parking_price_mln_per_space": "цена места в гараже",
         "main_above_th_per_sqm": "СМР наземной части",
         "main_under_th_per_sqm": "СМР подземной части",
         "offices_cost_th_per_sqm": "себестоимость офисов",
+        "retail_cost_th_per_sqm": "себестоимость ТЦ / коммерции ОСЗ",
         "ird_months": "срок ИРД",
         "construction_months": "срок строительства",
         "share_before_rve_pct": "доля продаж до РВЭ",
@@ -566,11 +648,17 @@ def map_phasing(data: dict[str, Any]) -> tuple[dict[str, Any], list[Field]]:
             "construction_months": int(_number(item.get("construction_months")) or 24),
             **({"products": copy.deepcopy(item["products"])}
                if isinstance(item.get("products"), dict) else {}),
+            **({"preparation_scope": copy.deepcopy(item["preparation_scope"])}
+               if isinstance(item.get("preparation_scope"), dict) else {}),
         } for index, item in enumerate(phases[:4])],
     }
     products = phasing.get("products")
     if isinstance(products, dict):
         out["products"] = copy.deepcopy(products)
+    strategy = str(phasing.get("financing_strategy") or "").strip().lower()
+    if strategy not in {"independent", "unified_project_cash"}:
+        strategy = "independent"
+    out["financing_strategy"] = strategy
     # Keep the object registry and allocation settings together with the
     # phases. Dropping `social_objects` made the engine rebuild school and
     # preschool from defaults and assign them to unrelated queues.

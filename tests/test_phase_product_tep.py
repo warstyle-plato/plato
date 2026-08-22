@@ -114,3 +114,33 @@ def test_phase_share_editor_rebalances_all_queues_and_recalculates_real_tep():
     assert 'readonly title="Автоматический остаток до 100%"' in page
     assert "<small>остаток</small>" in page
     assert "renderPhasing();calculate()" in page
+
+
+def test_real_tep_editor_caps_values_at_the_remaining_project_total():
+    """A queue cannot consume more GNS, saleable area, or units than remain."""
+    page = core.PAGE
+    assert "function phaseProductTepLimit(key,field,index)" in page
+    assert "phaseProductTepValues(key,field).slice(0,index)" in page
+    assert "Math.min(limit,requested)" in page
+    assert "function clampPhaseProductTepRight(key,field,index)" in page
+    assert "rightTotal<=remaining+1e-6" in page
+    assert 'max="${Number(limit.toFixed(6))}"' in page
+    assert "Значение ограничено до" in page
+    assert 'id="phaseTepWarning"' in page
+
+
+def test_social_registry_does_not_duplicate_master_capacity_in_phase_one():
+    """A manual social assignment must replace the generic O1 fallback."""
+    page = core.PAGE
+    helper = page[page.index("function phaseProductDerived("):]
+    helper = helper[:helper.index("let phaseTepEditWarning")]
+    assert "['kindergarten','school','clinic'].includes(key)" in helper
+    assert "o.type===key" in helper
+    assert "field==='units'?phaseCapacity" in helper
+
+
+def test_real_tep_table_hides_products_that_are_zero_everywhere():
+    """Empty storage/parking/clinic defaults are not project products."""
+    page = core.PAGE
+    assert "const activePhaseProduct=k=>" in page
+    assert "filter(k=>tep[k]&&activePhaseProduct(k))" in page

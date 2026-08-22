@@ -391,6 +391,20 @@ def test_applying_lays_over_the_defaults():
     assert "structuredClone(TEP_DEFAULT)" in body
 
 
+def test_applying_replaces_stale_phasing_with_the_preset_phasing():
+    """ТЭП нового проекта нельзя раскладывать по долям старого проекта.
+
+    До исправления импорт менял вводные и метры, но вообще не присваивал
+    `phasing`: на экране оставались 40/13,1/34/12,9 и прочие старые доли.
+    """
+    body = core.PAGE[core.PAGE.index("async function applyPreset("):]
+    body = body[:body.index("// --- хранилище проектов")]
+    assert "const importedPhasing=structuredClone(data.phasing)" in body
+    assert "phasing.products=importedPhasing.products||phaseDefaults.products" in body
+    assert "phasing.shared_cash=Object.assign" in body
+    assert "renderPhasing()" in body
+
+
 # --- две нагрузки сразу модель пока не считает ----------------------------------
 
 def test_cash_burden_does_not_cancel_mandatory_construction():

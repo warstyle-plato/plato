@@ -40,7 +40,8 @@ def test_source_components_reconcile_to_ppt_gns(imported):
     preset, _, _ = imported
     controls = preset["validation_controls"]
     assert controls["components_sum_m2"] == 443700
-    assert (controls["residential_gns_m2"] + controls["offices_gns_m2"]
+    assert (controls["residential_gns_m2"] + controls["shopping_center_gns_m2"]
+            + controls["offices_gns_m2"]
             + controls["school_gfa_m2"] + controls["preschool_gfa_m2"]
             + controls["utility_gfa_m2"]) == 443700
 
@@ -52,25 +53,34 @@ def test_purchase_price_is_not_vri(imported):
         preset["validation_controls"]["purchase_price_rub"] / 1e6)
     assert inputs["land_rights_cost_mln"] == 0
     assert inputs["vri_required"] is False
-    assert inputs["apartment_price_th"] == 500
-    assert inputs["offices_price_th_per_sqm"] == 350
-    assert inputs["main_above_th_per_sqm"] == 110
-    assert inputs["offices_cost_th_per_sqm"] == 200
+    # The KRT source gives the acquisition right, not product prices/costs.
+    # Service defaults may remain on the screen, but the preset must not
+    # masquerade them as project data.
+    assert set(preset["economics"]) == {"purchase_price_mln", "origins"}
+    assert set(preset["economics"]["origins"]) == {"purchase_price_mln"}
 
 
 def test_explicit_saleable_assumptions_replace_foreign_ratios(imported):
     preset, data, _ = imported
     tep = data["applied_tep"]
-    assert tep["apartments"]["gns"] == 229490
-    assert tep["apartments"]["saleable"] == 170000
-    assert tep["offices"]["gns"] == 185460
-    assert tep["offices"]["saleable"] == 150000
-    assert preset["canonical_tep"]["products"]["apartments"]["ratio_source"].startswith("working")
-    assert preset["canonical_tep"]["products"]["offices"]["ratio_source"].startswith("working")
-    assert tep["underground_parking"]["gns"] == 0
-    assert tep["underground_parking"]["units"] == 0
-    assert any(note["origin"] == "tbd" and "паркинг" in note["note"].lower()
-               for note in data["notes"])
+    assert tep["apartments"]["gns"] == pytest.approx(215720.6)
+    assert tep["apartments"]["saleable"] == pytest.approx(140218.39)
+    assert tep["ground_commercial"]["gns"] == pytest.approx(13769.4)
+    assert tep["ground_commercial"]["saleable"] == pytest.approx(12392.46)
+    assert tep["standalone_retail"]["gns"] == pytest.approx(92730)
+    assert tep["standalone_retail"]["saleable"] == pytest.approx(52299.72)
+    assert tep["offices"]["gns"] == pytest.approx(92730)
+    assert tep["offices"]["saleable"] == pytest.approx(52299.72)
+    apartment_source = preset["canonical_tep"]["products"]["apartments"]["ratio_source"]
+    retail_source = preset["canonical_tep"]["products"]["shopping_center"]["ratio_source"]
+    office_source = preset["canonical_tep"]["products"]["offices"]["ratio_source"]
+    assert "ГлавАПУ" in apartment_source
+    assert "Рабочая предпосылка" in retail_source
+    assert "Рабочая предпосылка" in office_source
+    assert tep["underground_parking"]["gns"] == pytest.approx(101710)
+    assert tep["underground_parking"]["units"] == 2906
+    assert not any(note["origin"] == "tbd" and "паркинг" in note["note"].lower()
+                   for note in data["notes"])
 
 
 def test_separate_social_objects_keep_their_exact_gfa(imported):
@@ -80,40 +90,91 @@ def test_separate_social_objects_keep_their_exact_gfa(imported):
 
 
 def test_real_product_tep_reaches_every_queue(imported):
-    _, data, _ = imported
+    _, data, tep = imported
     phases = data["phasing"]["phases"]
     assert len(phases) == 4
-    assert [phase["products"]["apartments"]["gns"] for phase in phases] == [57372.5] * 4
-    assert [phase["products"]["apartments"]["saleable"] for phase in phases] == [42500] * 4
-    assert phases[1]["products"]["offices"]["gns"] == 92730
-    assert phases[1]["products"]["offices"]["saleable"] == 75000
-    assert phases[3]["products"]["offices"]["gns"] == 92730
-    assert phases[3]["products"]["offices"]["saleable"] == 75000
+    assert data["phasing"]["products"]["apartments"] == [25, 25, 25, 25]
+    assert data["phasing"]["products"]["ground_commercial"] == [25, 25, 25, 25]
+    assert data["phasing"]["products"]["underground_parking"] == pytest.approx([
+        446 / 2906 * 100, 1051 / 2906 * 100, 445 / 2906 * 100, 964 / 2906 * 100,
+    ])
+    assert data["phasing"]["discrete"] == {"standalone_retail": 2, "offices": 4}
+    assert all("apartments" not in (phase.get("products") or {}) for phase in phases)
+    assert all("offices" not in (phase.get("products") or {}) for phase in phases)
+
+    bundle = core.calculate_phased(core.PhasedCalcRequest(
+        inputs=data["applied_inputs"], tep=tep, rates=[], phasing=data["phasing"]))
+    assert [phase["tep"]["apartments"]["gns"] for phase in bundle["phases"]] == pytest.approx([53930.15] * 4)
+    assert [phase["tep"]["apartments"]["saleable"] for phase in bundle["phases"]] == pytest.approx([35054.5975] * 4)
+    assert [phase["tep"]["ground_commercial"]["gns"] for phase in bundle["phases"]] == pytest.approx([3442.35] * 4)
+    assert [phase["tep"]["standalone_retail"]["gns"] for phase in bundle["phases"]] == [0, 92730, 0, 0]
+    assert [phase["tep"]["offices"]["gns"] for phase in bundle["phases"]] == [0, 0, 0, 92730]
+    assert [phase["tep"]["underground_parking"]["units"] for phase in bundle["phases"]] == [446, 1051, 445, 964]
     assert phases[2]["products"]["school"]["gns"] == 22220
-    assert phases[2]["products"]["kindergarten"]["gns"] == 6300
+    assert phases[1]["products"]["kindergarten"]["gns"] == 6300
     assert phases[2]["products"]["other_mandatory"]["gns"] == 230
     assert phases[2]["products"]["school"]["generates_revenue"] is False
-    assert data["phasing"]["social_objects"][0]["phase"] == 3
+    assert {item["type"]: item["phase"] for item in data["phasing"]["social_objects"]} == {
+        "school": 3, "kindergarten": 2,
+    }
+
+
+def test_changed_shares_recalculate_queue_metres(imported):
+    _, data, tep = imported
+    phasing = copy.deepcopy(data["phasing"])
+    phasing["products"]["apartments"] = [45, 30, 15, 10]
+    bundle = core.calculate_phased(core.PhasedCalcRequest(
+        inputs=data["applied_inputs"], tep=tep, rates=[], phasing=phasing))
+    assert [phase["tep"]["apartments"]["gns"] for phase in bundle["phases"]] == pytest.approx([
+        97074.27, 64716.18, 32358.09, 21572.06,
+    ])
+    assert sum(phase["tep"]["apartments"]["gns"] for phase in bundle["phases"]) == pytest.approx(215720.6)
+
+
+def test_site_preparation_is_separate_from_new_construction_tep(imported):
+    preset, data, _ = imported
+    preparation = preset["site_preparation"]
+    assert preparation["scope"] == "demolition_or_reconstruction"
+    assert preparation["phase"] == 1
+    assert preparation["cost_mln"] == pytest.approx(823.0785)
+    assert preparation["unit_cost_th_per_m2"] == 15
+    assert preparation["owner_buyout_compensation_mln"] == "TBD"
+    assert preparation["generates_revenue"] is False
+    assert preparation["included_in_new_construction_gns"] is False
+    assert preparation["included_in_saleable_area"] is False
+    assert preparation["unique_capital_objects_count"] == 39
+    assert len(preparation["objects"]) == 39
+    assert sum(item["listed_area_m2"] for item in preparation["objects"]) == pytest.approx(54871.9)
+    phase_preparation = data["phasing"]["phases"][0]["preparation_scope"]
+    assert phase_preparation["listed_existing_area_m2"] == 54871.9
 
 
 def test_consolidation_is_bottom_up_from_queue_products(imported):
     _, data, tep = imported
     bundle = core.calculate_phased(core.PhasedCalcRequest(
         inputs=data["applied_inputs"], tep=tep, rates=[], phasing=data["phasing"]))
-    assert [phase["result"]["summary"]["project_gns_sqm"] for phase in bundle["phases"]] == [
-        57372.5, 150102.5, 86122.5, 150102.5,
-    ]
-    assert bundle["consolidated"]["summary"]["project_gns_sqm"] == 443700
     products = {row["key"]: row for row in bundle["consolidated"]["report"]["products"]}
-    assert products["apartments"]["gns"] == 229490
-    assert products["apartments"]["saleable"] == 170000
+    assert products["apartments"]["gns"] == pytest.approx(215720.6)
+    assert products["apartments"]["saleable"] == pytest.approx(140218.39)
     assert products["apartments"]["revenue"] > 0
-    assert products["offices"]["gns"] == 185460
-    assert products["offices"]["saleable"] == 150000
+    assert products["ground_commercial"]["gns"] == pytest.approx(13769.4)
+    assert products["standalone_retail"]["gns"] == pytest.approx(92730)
+    assert products["offices"]["gns"] == pytest.approx(92730)
+    assert products["offices"]["saleable"] == pytest.approx(52299.72)
     assert products["offices"]["revenue"] > 0
     assert products["school"]["gns"] == 22220
     assert products["kindergarten"]["gns"] == 6300
     assert products["other_mandatory"]["gns"] == 230
+    # The PPT GNS remains 443,700 m².  Underground parking is a separate
+    # 101,710 m² construction area and is never used to reconcile the PPT.
+    official_gns = sum(products[key]["gns"] for key in (
+        "apartments", "ground_commercial", "standalone_retail", "offices",
+        "school", "kindergarten", "other_mandatory",
+    ))
+    assert official_gns == pytest.approx(443700)
+    assert products["underground_parking"]["gns"] == pytest.approx(101710)
+    assert bundle["consolidated"]["summary"]["project_gns_sqm"] == pytest.approx(
+        official_gns + products["underground_parking"]["gns"])
     assert all(products[key]["revenue"] == 0
                for key in ("school", "kindergarten", "other_mandatory"))
 
@@ -123,4 +184,3 @@ def test_cadastral_list_is_explicit_and_deduplicated(imported):
     numbers = data["cadastral_numbers"]
     assert len(numbers) == preset["validation_controls"]["cadastral_numbers_count"]
     assert len(numbers) == len(set(numbers))
-
