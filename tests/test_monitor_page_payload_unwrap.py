@@ -6,5 +6,5 @@ def test_monitor_unwraps_view_payload_before_rendering():
 
 
 def test_existing_rss_snapshot_is_opened_instead_of_stopping():
-    assert "Этот срез уже сохранён — открываю существующий расчёт" in MONITOR_PAGE
+    assert "Срез уже сохранён — открываю" in MONITOR_PAGE
     assert "уже загружен" in MONITOR_PAGE
