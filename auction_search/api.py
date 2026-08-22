@@ -16,6 +16,7 @@ from auction_search.bridge import auction_page_with_handoff, install_page_bridge
 from auction_search.developaid_mapper import build_developaid_seed
 from auction_search.documents import DocumentExtractionError
 from auction_search.krt_pipeline import enrich_krt_from_official_documents
+from auction_search.krt_ranking import KrtRanking
 from auction_search.krt_screening import build_krt_model_screening
 from auction_search.models import LotKind
 from auction_search.preset_mapper import build_project_preset
@@ -86,6 +87,7 @@ def install(app: FastAPI) -> None:
     krt_registry = getattr(market, "krt", None) or KrtRegistry(
         os.path.join(os.getenv("DATA_DIR", "data"), "market")
     )
+    krt_ranking = KrtRanking(os.path.join(os.getenv("DATA_DIR", "data"), "market"))
 
     # main.py loads the canonical legacy core as `developaid_core`. Inject only the
     # same-origin handoff bootstrap; no calculation or project UI is duplicated.
@@ -145,6 +147,62 @@ def install(app: FastAPI) -> None:
             **status,
             "count": len(projects),
             "projects": projects,
+        }
+
+    def _screen_one(project: dict[str, Any]) -> dict[str, Any]:
+        """Один прогон для рейтинга — тем же путём, что и открытая карточка.
+
+        Второго скрининга не заводим: разойдись они, список и карточка
+        показали бы про одну площадку разное, и оба достоверно.
+        """
+        if core is None or market is None:
+            return {"available": False, "reason": "Финансовый движок DevelopAid не подключён"}
+        report = market.build_report(
+            f"krt:{project.get('slug')}", radius_km=3.0, peers_limit=12,
+            city_reference=False, include_project_totals=True,
+        )
+        return build_krt_model_screening(project, report, core)
+
+    @app.get("/auctions/krt/ranking")
+    async def auction_krt_ranking() -> dict[str, Any]:
+        """Балл по всем КРТ: потолок цены входа на метр продаваемой.
+
+        Отдаёт посчитанное сразу — даже на ходу прогона: половина рейтинга с
+        честным ходом полезнее пустого экрана, который ничего не объясняет.
+        """
+        return {
+            "measure": "entry_capacity_rub_per_sqm",
+            "measure_label": "Потолок цены входа, ₽/м² продаваемой",
+            "target_llcr": 1.20,
+            "price_note": (
+                "Цена аукциона в балл не входит: у проекта каталога krt.mos.ru "
+                "ценового поля нет. Балл отвечает «сколько площадка выдерживает "
+                "за вход», а не «проходит ли она по объявленной цене»."
+            ),
+            "progress": krt_ranking.progress(),
+            "rows": krt_ranking.rows(),
+        }
+
+    @app.post("/auctions/krt/ranking/refresh")
+    async def auction_krt_ranking_refresh(request: Request) -> dict[str, Any]:
+        """Запустить фоновый прогон по каталогу. На ходу — не запускает второй."""
+        market_cabinet.require_cabinet(request)
+        if market is None or core is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Прогон требует и маркетингового движка, и движка DevelopAid",
+            )
+        projects = await run_in_threadpool(krt_registry.catalogue)
+        if not projects:
+            raise HTTPException(
+                status_code=503,
+                detail="Каталог КРТ ещё не получен — обновите каталог и повторите",
+            )
+        started = krt_ranking.start(projects, _screen_one)
+        return {
+            "started": started,
+            "reason": "" if started else "Прогон уже идёт",
+            "progress": krt_ranking.progress(),
         }
 
     @app.get("/auctions/krt/{slug}/market")
