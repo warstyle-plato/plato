@@ -27794,6 +27794,7 @@ details.cadastral-box>summary::marker{color:#888}
           <small>Пустое поле — расчёт по долям; введённое значение становится авторитетным</small>
         </div>
         <div class="note">ГНС, продаваемая площадь и количество хранятся внутри конкретной очереди. Для школ, ДОУ и прочих обязательных объектов продаваемая площадь должна быть равна нулю.</div>
+        <div id="phaseTepWarning" class="phase-total-bad" style="min-height:18px;margin:8px 0" aria-live="polite"></div>
         <div class="scroll" style="max-height:none"><table class="phase-table"><thead id="phaseTepHead"></thead><tbody id="phaseTepBody"></tbody></table></div>
       </div>
 
@@ -29020,9 +29021,26 @@ function phaseProductDerived(key,field,index){
  const assigned={offices:Math.min(3,count),standalone_retail:Math.min(2,count),above_parking:Math.min(2,count)}[key]||1;
  return index+1===Number((phasing.discrete||{})[key]||assigned)?master:0;
 }
+let phaseTepEditWarning='';
+function phaseProductTepValues(key,field){
+ return phasing.phases.map((p,i)=>{const own=(p.products||{})[key]||{};return Math.max(0,Number(own[field]!==undefined?own[field]:phaseProductDerived(key,field,i)))});
+}
+function phaseProductTepLimit(key,field,index){
+ const master=Math.max(0,Number((tep[key]||{})[field]||0));
+ if(!(master>0))return null;
+ const locked=phaseProductTepValues(key,field).slice(0,index).reduce((s,x)=>s+x,0);
+ return Math.max(0,master-locked);
+}
+function clampPhaseProductTepRight(key,field,index){
+ const master=Math.max(0,Number((tep[key]||{})[field]||0));if(!(master>0))return;
+ const values=phaseProductTepValues(key,field),used=values.slice(0,index+1).reduce((s,x)=>s+x,0),remaining=Math.max(0,master-used),rightIndexes=values.map((_,i)=>i).filter(i=>i>index),rightTotal=rightIndexes.reduce((s,i)=>s+values[i],0);
+ if(rightTotal<=remaining+1e-6)return;
+ let allocated=0;
+ rightIndexes.forEach((i,pos)=>{const next=pos===rightIndexes.length-1?remaining-allocated:remaining*values[i]/rightTotal;const phase=phasing.phases[i];if(!phase.products)phase.products={};if(!phase.products[key])phase.products[key]={assumption_source:'Введено пользователем'};phase.products[key][field]=Math.max(0,Number(next.toFixed(6)));allocated+=phase.products[key][field]});
+}
 function syncPhaseProductSharesFromTep(key,field,index){
  if(!phasing.products[key])return;
- const values=phasing.phases.map((p,i)=>{const own=(p.products||{})[key]||{};return Math.max(0,Number(own[field]!==undefined?own[field]:phaseProductDerived(key,field,i)))}),total=values.reduce((s,x)=>s+x,0);
+ const values=phaseProductTepValues(key,field),total=values.reduce((s,x)=>s+x,0);
  if(total<=0)return;
  const master=Math.max(0,Number((tep[key]||{})[field]||0));
  if(master>0){phasing.products[key]=rebalancePhaseProductShares(phasing.products[key],index,values[index]/master*100);phasing.phases.forEach(p=>{const product=(p.products||{})[key];if(product)delete product[field]});return}
@@ -29033,9 +29051,11 @@ function syncPhaseProductSharesFromTep(key,field,index){
 function setPhaseProductTep(index,key,field,value){
  const phase=phasing.phases[index];if(!phase)return;if(!phase.products)phase.products={};
  if(!phase.products[key])phase.products[key]={assumption_source:'Введено пользователем'};
- if(value==='')delete phase.products[key][field];else phase.products[key][field]=Math.max(0,Number(value||0));
+ const requested=value===''?null:Math.max(0,Number(value||0)),limit=phaseProductTepLimit(key,field,index),bounded=requested===null?null:(limit===null?requested:Math.min(limit,requested));
+ phaseTepEditWarning=requested!==null&&bounded<requested-1e-6?`Значение ограничено до ${num(bounded)}: доступный остаток исходного ТЭП — ${num(limit)}.`:'';
+ if(bounded===null)delete phase.products[key][field];else phase.products[key][field]=bounded;
  if(Object.keys(phase.products[key]).every(k=>k==='assumption_source'))delete phase.products[key];
- syncPhaseProductSharesFromTep(key,field,index);renderPhasing();calculate();
+ syncPhaseProductSharesFromTep(key,field,index);if(!phasing.products[key])clampPhaseProductTepRight(key,field,index);renderPhasing();calculate();
 }
 function setSharedShare(bucket,k,i,v){phasing[bucket][k][i]=Number(v||0)}
 function splitCapacity(total,typical){let t=Math.max(0,Number(total||0)),out=[];typical=Math.max(1,Number(typical||1));while(t>0){const v=Math.min(typical,t);out.push(v);t-=v}return out}
@@ -29090,11 +29110,12 @@ function renderPhasing(){
   const totals={gns:0,saleable:0,units:0};
   const cells=phasing.phases.map((p,i)=>{
    const own=(p.products||{})[k]||{};
-   const inputsHtml=['gns','saleable','units'].map(field=>{const derived=phaseProductDerived(k,field,i),has=own[field]!==undefined,value=has?Number(own[field]):derived,isRemainder=!!phasing.products[k]&&i===phasing.phases.length-1;totals[field]+=value;return `<input type="number" min="0" step="any" value="${Number(value.toFixed(2))}" title="${isRemainder?'Автоматический остаток':field+(has?' — введено вручную':' — рассчитано по доле')}" ${isRemainder?'readonly':`onchange="setPhaseProductTep(${i},'${k}','${field}',this.value)"`}>`}).join('');
+   const inputsHtml=['gns','saleable','units'].map(field=>{const derived=phaseProductDerived(k,field,i),has=own[field]!==undefined,value=has?Number(own[field]):derived,isRemainder=!!phasing.products[k]&&i===phasing.phases.length-1,limit=phaseProductTepLimit(k,field,i),maxAttr=limit===null?'':`max="${Number(limit.toFixed(6))}"`;totals[field]+=value;return `<input type="number" min="0" ${maxAttr} step="any" value="${Number(value.toFixed(2))}" title="${isRemainder?'Автоматический остаток':field+(has?' — введено вручную':' — рассчитано по доле')+(limit===null?'':` · максимум ${num(limit)}`)}" ${isRemainder?'readonly':`onchange="setPhaseProductTep(${i},'${k}','${field}',this.value)"`}>`}).join('');
    return `<td><div style="display:grid;grid-template-columns:repeat(3,minmax(80px,1fr));gap:5px">${inputsHtml}</div></td>`;
   }).join('');
   return `<tr><td><b>${tepLabels[k]}</b></td>${cells}<td>${num(totals.gns)} · ${num(totals.saleable)} · ${num(totals.units)}</td></tr>`;
  }).join('');
+ if(document.getElementById('phaseTepWarning'))phaseTepWarning.textContent=phaseTepEditWarning;
  const sl={purchase:'Покупка / вход',land_rights:'Земельные права / ВРИ',ird:'ИРД',design:'П + РД',preparation:'Подготовительные',utilities:'Наружные сети',social_compensation:'Соцкомпенсация',social_construction:'Соцобъекты — аналитическая аллокация'};
  renderShareTable('phaseCashHead','phaseCashBody',phasing.shared_cash,sl,'shared_cash');renderShareTable('phaseAllocHead','phaseAllocBody',phasing.shared_allocation,sl,'shared_allocation');
  socialObjectsBody.innerHTML=phasing.social_objects.map((o,i)=>`<tr><td><input value="${o.name||''}" onchange="updateSocialObject(${i},'name',this.value)"></td><td><select onchange="updateSocialObject(${i},'type',this.value)"><option value="kindergarten" ${o.type==='kindergarten'?'selected':''}>ДОУ</option><option value="school" ${o.type==='school'?'selected':''}>СОШ</option><option value="clinic" ${o.type==='clinic'?'selected':''}>Поликлиника</option></select></td><td><input type="number" value="${Number(o.capacity||0)}" onchange="updateSocialObject(${i},'capacity',this.value)"></td><td><select onchange="updateSocialObject(${i},'phase',this.value)">${phaseOptions(o.phase)}</select></td><td><input type="date" value="${o.start_date||''}" onchange="updateSocialObject(${i},'start_date',this.value)"></td><td><button class="btn" onclick="deleteSocialObject(${i})">×</button></td></tr>`).join('');renderSocialStatus();

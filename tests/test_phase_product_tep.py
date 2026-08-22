@@ -114,3 +114,16 @@ def test_phase_share_editor_rebalances_all_queues_and_recalculates_real_tep():
     assert 'readonly title="Автоматический остаток до 100%"' in page
     assert "<small>остаток</small>" in page
     assert "renderPhasing();calculate()" in page
+
+
+def test_real_tep_editor_caps_values_at_the_remaining_project_total():
+    """A queue cannot consume more GNS, saleable area, or units than remain."""
+    page = core.PAGE
+    assert "function phaseProductTepLimit(key,field,index)" in page
+    assert "phaseProductTepValues(key,field).slice(0,index)" in page
+    assert "Math.min(limit,requested)" in page
+    assert "function clampPhaseProductTepRight(key,field,index)" in page
+    assert "rightTotal<=remaining+1e-6" in page
+    assert 'max="${Number(limit.toFixed(6))}"' in page
+    assert "Значение ограничено до" in page
+    assert 'id="phaseTepWarning"' in page
