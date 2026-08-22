@@ -28599,7 +28599,6 @@ details.cadastral-box>summary::marker{color:#888}
            и требовать для этого localStorage.removeItem — значит не менять. -->
       <span id="projectsStorageActions" style="display:none;gap:14px">
         <button class="btn dark" onclick="saveProjectToServer()">Сохранить текущий</button>
-        <button class="btn" onclick="downloadCurrentSettings()">Скачать настройки текущего</button>
         <button class="btn" onclick="changeProjectsKey()">Сменить ключ</button>
       </span>
       <button class="btn" style="margin-left:auto" onclick="closeProjects()">Закрыть</button>
@@ -28637,11 +28636,17 @@ details.cadastral-box>summary::marker{color:#888}
            настроек не требует ничего: его пересылают почтой, кладут в папку
            проекта, открывают через год. Это разные способы передачи, и один
            другого не заменяет. -->
+      <!-- Скачать и загрузить — две половины одного действия, и стоять они
+           обязаны рядом. Скачивание жило в шапке диалога, за экран выше
+           списка, а загрузка здесь: владелец искал кнопку и не нашёл
+           (23.08.2026). Подпись при этом ссылалась на кнопку «Файл», которой
+           на странице давно нет. -->
       <div class="upload-line" style="align-items:center;margin-bottom:10px">
+        <button class="btn" onclick="downloadCurrentSettings()">Скачать настройки текущего</button>
         <button class="btn" onclick="importSettingsFile()">Загрузить файл настроек</button>
         <input type="file" id="settingsFileInput" accept=".json,application/json" style="display:none"
                onchange="applySettingsFile(this)">
-        <span style="font-size:11px;color:#888">файл .json из кнопки «Файл» — свой или присланный</span>
+        <span style="font-size:11px;color:#888">файл .json с вводными и ТЭП — свой или присланный</span>
       </div>
       <div class="scroll"><table>
         <thead><tr><th>Проект</th><th>Выручка</th><th>Чистая прибыль</th><th>LLCR</th><th></th></tr></thead>
@@ -34240,7 +34245,7 @@ async function applySettingsFile(input){
  try{data=JSON.parse(await file.text())}
  catch(e){alert('Файл не читается как JSON: '+String(e.message||e));return}
  if(!data||data.kind!==SETTINGS_FILE_KIND){
-  alert('Это не файл настроек DevelopAid. Нужен .json из кнопки «Файл» рядом с проектом.');
+  alert('Это не файл настроек DevelopAid. Нужен .json из кнопки «Скачать настройки текущего».');
   return;
  }
  if(!confirm('Загрузить настройки «'+String(data.name||'без имени')+'»?\n\n'
