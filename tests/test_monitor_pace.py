@@ -48,7 +48,7 @@ def test_future_task_has_no_pace_forecast():
     assert pace._status(row, cut, finish) == "БУДУЩАЯ ЗАДАЧА"
 
 
-def test_management_aggregate_uses_separate_pace_forecast_fields():
+def test_management_aggregate_exposes_pace_forecast_on_presentation_tree():
     nodes = [{
         "level": "corpus",
         "plan_finish": "2027-06-30",
@@ -61,7 +61,7 @@ def test_management_aggregate_uses_separate_pace_forecast_fields():
         ],
     }]
     pace._aggregate_management(nodes)
-    assert nodes[0]["forecast_finish"] == "2027-06-30"
+    assert nodes[0]["forecast_finish"] == "2027-07-15"
     assert nodes[0]["pace_forecast_finish"] == "2027-07-15"
     assert nodes[0]["pace_delta_days"] == 15
     assert nodes[0]["pace_forecast_known"] is True
