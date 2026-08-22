@@ -595,6 +595,10 @@ def map_phasing(data: dict[str, Any]) -> tuple[dict[str, Any], list[Field]]:
     products = phasing.get("products")
     if isinstance(products, dict):
         out["products"] = copy.deepcopy(products)
+    strategy = str(phasing.get("financing_strategy") or "").strip().lower()
+    if strategy not in {"independent", "unified_project_cash"}:
+        strategy = "independent"
+    out["financing_strategy"] = strategy
     # Keep the object registry and allocation settings together with the
     # phases. Dropping `social_objects` made the engine rebuild school and
     # preschool from defaults and assign them to unrelated queues.

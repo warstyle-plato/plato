@@ -11627,6 +11627,33 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
             _pdf_money(summary.get("net_profit")),_pdf_num(summary.get("llcr"),2)+"x",
         ])
         story.append(table(head,[22*mm,25*mm,29*mm,26*mm,26*mm,27*mm,15*mm],font_size=7.0))
+        phase_financing = result.get("phase_financing") or {}
+        funding_rows = phase_financing.get("rows") or []
+        if funding_rows:
+            story.append(P("Стратегия финансирования очередей",h2))
+            funding = [["Очередь","Затраты до РНС","Cash проекта","Свои средства","Новый БРИДЖ","ПФ после РНС"]]
+            for row in funding_rows:
+                funding.append([
+                    str(row.get("name") or "—"),
+                    _pdf_money(row.get("pre_rns_costs")),
+                    _pdf_money(row.get("project_cash_used")),
+                    _pdf_money(row.get("own_funds")),
+                    _pdf_money(row.get("new_bridge")),
+                    _pdf_money(row.get("peak_pf")),
+                ])
+            totals = phase_financing.get("totals") or {}
+            funding.append([
+                "Итого",_pdf_money(totals.get("pre_rns_costs")),
+                _pdf_money(totals.get("project_cash_used")),
+                _pdf_money(totals.get("own_funds")),
+                _pdf_money(totals.get("new_bridge")),"—",
+            ])
+            story.append(table(funding,[22*mm,31*mm,28*mm,28*mm,31*mm,30*mm],font_size=6.7))
+            story.append(P(
+                ("Единый денежный поток проекта включён. " if phase_financing.get("enabled")
+                 else "Независимое финансирование очередей включено. ")
+                + "Свободный cash учитывается только после обслуживания долга более ранней "
+                  "очереди; эскроу, будущая прибыль и банковские лимиты не используются.", small))
         # Кассовая и аллоцированная прибыль очереди — разные показатели с
         # одинаковой суммой по проекту; без словаря их сравнивали лоб в лоб
         # с книгой и читали методику как расхождение моделей.
@@ -11919,6 +11946,8 @@ _MODEL_FINANCE_COLUMNS: list[tuple[str, str, str]] = [
     ("project_costs", "Расходы проекта", "mln"),
     ("key_rate", "Ключевая ставка", "pct"),
     ("bridge_rate", "Ставка БРИДЖ", "pct"),
+    ("project_cash_draw", "Свободный cash проекта", "mln"),
+    ("own_funds_draw", "Собственные средства", "mln"),
     ("bridge_draw", "Выборка БРИДЖ", "mln"),
     ("bridge_balance", "Остаток БРИДЖ", "mln"),
     ("bridge_interest", "Проценты БРИДЖ", "mln"),
@@ -11942,7 +11971,8 @@ _MODEL_FINANCE_COLUMNS: list[tuple[str, str, str]] = [
 
 # Суммировать по месяцам можно только потоки; остатки и ставки — нет.
 _MODEL_FINANCE_SUMMABLE = {
-    "sales", "project_costs", "bridge_draw", "bridge_interest", "bridge_capitalization",
+    "sales", "project_costs", "project_cash_draw", "own_funds_draw",
+    "bridge_draw", "bridge_interest", "bridge_capitalization",
     "pf_draw", "pf_repayment", "escrow_release", "pf_interest", "pf_interest_capitalization",
     "limit_fee", "interest_payment", "taxable_margin", "financing_tax_deduction", "profit_tax",
 }
@@ -12745,7 +12775,9 @@ def _model_sheet_phase_comparison(bundle: dict[str, Any]) -> dict[str, Any]:
         "Полные расходы, тыс ₽/м² продаваемой", "Полные расходы, тыс ₽/м² ГНС",
         "Чистая прибыль, тыс ₽/м² продаваемой", "Чистая прибыль, тыс ₽/м² ГНС",
         "Общие расходы (касса), млн ₽", "Общие расходы (аллокация), млн ₽",
-        "Пик БРИДЖ, млн ₽", "Пик ПФ, млн ₽", "LLCR",
+        "Пик БРИДЖ, млн ₽", "Затраты до РНС, млн ₽",
+        "Свободный cash проекта, млн ₽", "Собственные средства, млн ₽",
+        "Новый БРИДЖ, млн ₽", "Пик ПФ, млн ₽", "LLCR",
         "Чистая прибыль, млн ₽", "Прибыль с аллокацией, млн ₽", "Маржинальность",
         "Социальная нагрузка, млн ₽", "Социальные объекты",
         "Индексация себестоимости", "Индексация цен",
@@ -12779,6 +12811,10 @@ def _model_sheet_phase_comparison(bundle: dict[str, Any]) -> dict[str, Any]:
             _cell_mln(item.get("cash_shared_cost")),
             _cell_mln(item.get("allocated_shared_cost")),
             _cell_mln(item.get("peak_bridge")),
+            _cell_mln(item.get("pre_rns_costs")),
+            _cell_mln(item.get("project_cash_used")),
+            _cell_mln(item.get("own_funds")),
+            _cell_mln(item.get("new_bridge")),
             _cell_mln(item.get("peak_pf")),
             _cell_num(item.get("llcr")),
             _cell_mln(item.get("net_profit")),
@@ -12805,6 +12841,10 @@ def _model_sheet_phase_comparison(bundle: dict[str, Any]) -> dict[str, Any]:
             header.index("Полные расходы, млн ₽"): "total_expenses",
             header.index("Общие расходы (касса), млн ₽"): "cash_shared_cost",
             header.index("Общие расходы (аллокация), млн ₽"): "allocated_shared_cost",
+            header.index("Затраты до РНС, млн ₽"): "pre_rns_costs",
+            header.index("Свободный cash проекта, млн ₽"): "project_cash_used",
+            header.index("Собственные средства, млн ₽"): "own_funds",
+            header.index("Новый БРИДЖ, млн ₽"): "new_bridge",
             header.index("Чистая прибыль, млн ₽"): "net_profit",
             header.index("Прибыль с аллокацией, млн ₽"): "allocated_net_profit",
             header.index("Социальная нагрузка, млн ₽"): "social_cost",
@@ -18787,6 +18827,21 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
     # собственным входом выглядел дороже, чем он есть.
     own_funds_total = max(0.0, n(x, "pre_pf_own_funds_mln") * 1_000_000)
 
+    # In the unified-project-cash mode the phased wrapper passes only cash
+    # that an earlier queue has already released after its own debt service.
+    # The schedule is dated: a receipt in July cannot fund another queue in
+    # June.  This is deliberately an internal input of the atomic engine; a
+    # standalone project never invents project cash for itself.
+    project_cash_schedule: dict[date, float] = defaultdict(float)
+    for raw_month, raw_value in (x.get("_phase_project_cash_schedule") or {}).items():
+        try:
+            month = d(raw_month)
+            value = max(0.0, float(raw_value or 0.0))
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            project_cash_schedule[month] += value
+
     # Одобренный лимит ПФ. Пусто — движок ведёт себя как прежде: лимит
     # выводится из потребности, и выборка ничем не ограничена. Задан — он
     # становится потолком, а всё, что сверх него, выходит отдельной величиной
@@ -18818,6 +18873,10 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
     def run(pf_limit: float | None, cap: float | None = None) -> dict:
         own_funds_left = own_funds_total
         own_funds_used = 0.0
+        project_cash_available = sum(
+            value for month, value in project_cash_schedule.items()
+            if month < project_start)
+        project_cash_used = 0.0
         pf_shortfall_total = 0.0
         pf_shortfall_month: date | None = None
         bridge_balance = 0.0
@@ -18844,6 +18903,7 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
         rows = []
 
         for month in months:
+            project_cash_available += project_cash_schedule.get(month, 0.0)
             sales = op["revenue"].get(month, 0.0)
             project_costs = op["debt_capex"].get(month, 0.0) + op["operating"].get(month, 0.0)
 
@@ -18857,7 +18917,7 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
             special_rate = base_special_rate
 
             bridge_draw = bridge_repayment = bridge_interest = bridge_cap = 0.0
-            own_draw = 0.0
+            own_draw = project_cash_draw = 0.0
             pf_draw = pf_repayment = pf_interest = pf_cap = limit_fee = 0.0
             interest_payment = 0.0
             escrow_release = 0.0
@@ -18878,7 +18938,8 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
                     "month": month.isoformat(), "sales": sales,
                     "project_costs": project_costs, "key_rate": key_rate,
                     "bridge_rate": bridge_rate, "bridge_draw": 0.0,
-                    "own_funds_draw": 0.0, "bridge_repayment": 0.0,
+                    "project_cash_draw": 0.0, "own_funds_draw": 0.0,
+                    "bridge_repayment": 0.0,
                     "bridge_balance": bridge_balance, "bridge_interest": 0.0,
                     "bridge_capitalization": 0.0, "pf_draw": 0.0,
                     "pf_repayment": 0.0, "pf_balance": pf_balance,
@@ -18895,11 +18956,17 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
             # BРИДЖ finances project cash needs before RnS.
             if month < permit:
                 need = max(project_costs, 0.0)
-                # Свои деньги идут первыми: банк добирает остаток.
+                # В едином потоке уже заработанный cash проекта идёт первым:
+                # он уменьшает новую внешнюю потребность. Затем используются
+                # заявленные собственные средства, остаток выбирается БРИДЖем.
+                project_cash_draw = min(project_cash_available, need)
+                project_cash_available -= project_cash_draw
+                project_cash_used += project_cash_draw
+                need -= project_cash_draw
                 own_draw = min(own_funds_left, need)
                 own_funds_left -= own_draw
                 own_funds_used += own_draw
-                bridge_draw = need - own_draw
+                bridge_draw = max(0.0, need - own_draw)
                 bridge_balance += bridge_draw
                 bridge_draw_total += bridge_draw
                 if bridge_balance > 0:
@@ -19007,6 +19074,7 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
                 "key_rate": key_rate,
                 "bridge_rate": bridge_rate,
                 "bridge_draw": bridge_draw,
+                "project_cash_draw": project_cash_draw,
                 "own_funds_draw": own_draw,
                 # Погашение тела БРИДЖа рефинансированием строка не отдавала, а
                 # поток на собственный капитал его спрашивал: получал ноль и
@@ -19043,6 +19111,8 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
             "bridge_capitalization": bridge_cap_total,
             "transferred_bridge_interest": transferred_bridge_interest,
             "peak_bridge": max((r["bridge_balance"] for r in rows), default=0.0),
+            "project_cash_used": project_cash_used,
+            "project_cash_available_unused": project_cash_available,
             "own_funds_used": own_funds_used,
             "own_funds_available": own_funds_total,
             "avg_bridge_rate": weighted_bridge_num / weighted_bridge_den if weighted_bridge_den else 0.0,
@@ -19948,9 +20018,11 @@ def calculate(req: CalcRequest) -> dict:
                 "actual_bridge_month": bridge_peak_month,
                 "own_funds": fin.get("own_funds_used", 0.0),
                 "own_funds_available": fin.get("own_funds_available", 0.0),
+                "project_cash": fin.get("project_cash_used", 0.0),
                 "actual_bridge_structure": _bridge_actual_structure(
                     [monthly_detail], bridge_peak_month, fin["peak_bridge"],
-                    _own_funds_by(fin["rows"], bridge_peak_month)),
+                    _own_funds_by(fin["rows"], bridge_peak_month),
+                    _project_cash_by(fin["rows"], bridge_peak_month)),
                 "pf_peak": fin["peak_pf"],
                 "pf_uncovered_peak": fin.get("peak_uncovered_pf", 0.0),
                 "pf_limit": fin["pf_limit"],
@@ -20110,8 +20182,22 @@ def _own_funds_by(rows: list[dict[str, Any]], month: str) -> float:
     return total
 
 
+def _project_cash_by(rows: list[dict[str, Any]], month: str) -> float:
+    """Сколько свободного cash проекта направлено в очередь к месяцу."""
+    if not month:
+        return 0.0
+    total = 0.0
+    for row in rows:
+        row_month = row.get("month")
+        iso = row_month.isoformat() if hasattr(row_month, "isoformat") else str(row_month)
+        if iso <= month:
+            total += float(row.get("project_cash_draw") or 0.0)
+    return total
+
+
 def _bridge_actual_structure(monthlies: list[dict[str, Any]], peak_month: str,
-                             peak_value: float, own_funds: float = 0.0) -> list[dict[str, Any]]:
+                             peak_value: float, own_funds: float = 0.0,
+                             project_cash: float = 0.0) -> list[dict[str, Any]]:
     """Что оплачено к месяцу пика БРИДЖа — по статьям.
 
     Расчётный лимит расшифрован по четырём целям методики, а фактический пик —
@@ -20139,6 +20225,8 @@ def _bridge_actual_structure(monthlies: list[dict[str, Any]], peak_month: str,
     # сумма статей перестала бы сходиться с пиком.
     if own_funds > 1_000_000:
         rows.append({"label": "Оплачено собственными средствами", "value": -own_funds})
+    if project_cash > 1_000_000:
+        rows.append({"label": "Оплачено свободным cash проекта", "value": -project_cash})
     paid = sum(item["value"] for item in rows)
     residual = float(peak_value or 0.0) - paid
     if abs(residual) > max(float(peak_value or 0.0) * 0.01, 1_000_000):
@@ -20462,11 +20550,128 @@ def _combine_cashflows(results: list[dict[str, Any]], master_start: date) -> tup
     )
 
 
+def _phase_financing_strategy(phasing: dict[str, Any]) -> str:
+    """Normalize the public strategy; independent financing is the default."""
+    raw = str(phasing.get("financing_strategy") or "").strip().lower()
+    if raw in {"unified_project_cash", "unified", "project_cash"}:
+        return "unified_project_cash"
+    if raw == "independent":
+        return "independent"
+    return "independent"
+
+
+def _phase_free_cash_schedule(result: dict[str, Any]) -> list[tuple[date, float]]:
+    """Cash actually released to the sponsor after phase debt service.
+
+    Atomic equity cash flow keeps pre-RVE revenue at zero (escrow), offsets
+    bridge/PF draws against funded costs, and deducts repayments, interest and
+    taxes.  Its positive dated values are therefore the conservative pool that
+    may be used by a later queue without transferring a bank facility.
+    """
+    cashflow = result.get("cashflow") or {}
+    return [
+        (d(month_text), float(raw_value or 0.0))
+        for month_text, raw_value in zip(
+            cashflow.get("months") or [], cashflow.get("equity") or [])
+        if float(raw_value or 0.0) > 1e-6
+    ]
+
+
+def _available_project_cash_schedule(
+    sources: list[dict[str, Any]],
+) -> dict[str, float]:
+    schedule: dict[str, float] = defaultdict(float)
+    for source in sources:
+        remaining = float(source.get("remaining", 0.0) or 0.0)
+        if remaining > 1e-6:
+            schedule[str(source["month"])] += remaining
+    return dict(schedule)
+
+
+def _consume_project_cash_sources(
+    sources: list[dict[str, Any]], result: dict[str, Any], target_phase: int,
+) -> list[dict[str, Any]]:
+    """Attribute actual dated project-cash draws to earlier queues FIFO."""
+    transfers: list[dict[str, Any]] = []
+    ordered = sorted(sources, key=lambda item: (str(item["month"]), int(item["phase"])))
+    for row in (result.get("finance") or {}).get("rows") or []:
+        remaining_draw = float(row.get("project_cash_draw", 0.0) or 0.0)
+        if remaining_draw <= 1e-6:
+            continue
+        draw_month = str(row.get("month") or "")
+        for source in ordered:
+            if int(source["phase"]) >= target_phase or str(source["month"]) > draw_month:
+                continue
+            available = float(source.get("remaining", 0.0) or 0.0)
+            used = min(available, remaining_draw)
+            if used <= 1e-6:
+                continue
+            source["remaining"] = available - used
+            remaining_draw -= used
+            transfers.append({
+                "month": draw_month,
+                "cash_month": str(source["month"]),
+                "from_phase": int(source["phase"]),
+                "to_phase": target_phase,
+                "amount": used,
+            })
+            if remaining_draw <= 1e-6:
+                break
+        if remaining_draw > 1.0:
+            raise RuntimeError("Project-cash draw exceeds available earlier-phase cash")
+    return transfers
+
+
+def _phase_financing_summary(
+    phase_items: list[dict[str, Any]], strategy: str,
+    transfers: list[dict[str, Any]],
+) -> dict[str, Any]:
+    rows: list[dict[str, Any]] = []
+    for index, item in enumerate(phase_items, start=1):
+        result = item.get("result") or {}
+        finance = result.get("finance") or {}
+        permit = d((result.get("dates") or {}).get("permit"))
+        before_rns = sum(
+            max(0.0, float(row.get("project_costs", 0.0) or 0.0))
+            for row in finance.get("rows") or []
+            if d(row.get("month")) < permit
+        )
+        project_cash = float(finance.get("project_cash_used", 0.0) or 0.0)
+        own_funds = float(finance.get("own_funds_used", 0.0) or 0.0)
+        new_bridge = float(finance.get("bridge_draw_total", 0.0) or 0.0)
+        rows.append({
+            "phase": index,
+            "name": str(item.get("name") or f"О{index}"),
+            "pre_rns_costs": before_rns,
+            "project_cash_used": project_cash,
+            "own_funds": own_funds,
+            "new_bridge": new_bridge,
+            "peak_pf": float(finance.get("peak_pf", 0.0) or 0.0),
+            "free_cash_generated": sum(value for _, value in _phase_free_cash_schedule(result)),
+        })
+    return {
+        "strategy": strategy,
+        "enabled": strategy == "unified_project_cash",
+        "rows": rows,
+        "transfers": transfers,
+        "totals": {
+            key: sum(float(row.get(key, 0.0) or 0.0) for row in rows)
+            for key in ("pre_rns_costs", "project_cash_used", "own_funds", "new_bridge")
+        },
+        "excluded_sources": ["escrow", "bridge_limit", "pf_limit", "bank_debt", "future_profit"],
+        "rule": (
+            "Only dated positive cash released after debt service by an earlier queue "
+            "may replace pre-RNS bridge/equity of a later queue."
+        ),
+    }
+
+
 def _aggregate_finance(results: list[dict[str, Any]]) -> dict[str, Any]:
     month_map: dict[str, dict[str, float]] = {}
     additive = (
         "bridge_draw", "bridge_repayment", "bridge_interest", "bridge_capitalization",
-        "bridge_balance", "own_funds_draw", "pf_draw", "pf_repayment", "pf_interest",
+        "bridge_balance", "project_cash_draw", "own_funds_draw",
+        "pf_draw", "pf_repayment", "pf_interest",
         "pf_interest_capitalization", "pf_balance", "escrow", "limit_fee",
         "interest_payment", "profit_tax", "taxable_margin",
         "financing_tax_deduction", "taxable_profit_cumulative",
@@ -20520,6 +20725,7 @@ def _aggregate_finance(results: list[dict[str, Any]]) -> dict[str, Any]:
         "rows": rows,
         "calculated_bridge_limit": sum(f["calculated_bridge_limit"] for f in fs),
         "bridge_draw_total": sum(f["bridge_draw_total"] for f in fs),
+        "project_cash_used": sum(f.get("project_cash_used", 0.0) for f in fs),
         "own_funds_used": sum(f.get("own_funds_used", 0.0) for f in fs),
         "own_funds_available": sum(f.get("own_funds_available", 0.0) for f in fs),
         "peak_bridge": peak_bridge,
@@ -20600,6 +20806,7 @@ def _consolidate_phase_results(
     master_inputs: dict[str, Any],
     phase_items: list[dict[str, Any]],
     comparison: list[dict[str, Any]],
+    phase_financing: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     results = [item["result"] for item in phase_items]
     finance = _aggregate_finance(results)
@@ -20827,6 +21034,8 @@ def _consolidate_phase_results(
         for key in ("kindergarten_mln", "school_mln", "clinic_mln")
     }
 
+    phase_financing = phase_financing or _phase_financing_summary(
+        phase_items, "independent", [])
     return {
         "dates": {
             "project_start": min(r["dates"]["project_start"] for r in results),
@@ -20897,10 +21106,12 @@ def _consolidate_phase_results(
                 "actual_bridge_month": consolidated_bridge_month,
                 "own_funds": finance.get("own_funds_used", 0.0),
                 "own_funds_available": finance.get("own_funds_available", 0.0),
+                "project_cash": finance.get("project_cash_used", 0.0),
                 "actual_bridge_structure": _bridge_actual_structure(
                     [result.get("monthly") or {} for result in results],
                     consolidated_bridge_month, finance["peak_bridge"],
-                    _own_funds_by(finance["rows"], consolidated_bridge_month)),
+                    _own_funds_by(finance["rows"], consolidated_bridge_month),
+                    _project_cash_by(finance["rows"], consolidated_bridge_month)),
                 "pf_peak": finance["peak_pf"],
                 "pf_uncovered_peak": finance["peak_uncovered_pf"],
                 "pf_limit": finance["pf_limit"],
@@ -20921,6 +21132,7 @@ def _consolidate_phase_results(
                 + finance.get("transferred_bridge_interest", 0.0),
                 "peak_total_debt": finance["peak_total_debt"],
                 "peak_escrow": finance["peak_escrow"],
+                "phase_financing": phase_financing,
             },
         },
         "cashflow": {
@@ -20929,11 +21141,12 @@ def _consolidate_phase_results(
             "profit_tax": [tax_by_month.get(m, 0.0) for m in cf_months],
         },
         "comparison": comparison,
+        "phase_financing": phase_financing,
         "excel_control": EXCEL_CONTROL,
         "notes": {
             "phasing": "Очередность — внешняя надстройка над единым одноочередным движком: отдельные ТЭП, сроки, инфляция затрат, инфляция стартовой цены продажи и дискретные объекты.",
             "sales": "У многоочередного проекта нет единого РВЭ: темп продаж показывается отдельно по каждой очереди.",
-            "finance": "О1 по умолчанию несёт покупку, ВРИ и повышенную раннюю нагрузку. ПФ пока считается отдельным атомарным расчётом каждой очереди; банковский общий Bridge/PF waterfall требует отдельной финальной сверки.",
+            "finance": "БРИДЖ и ПФ остаются отдельными банковскими линиями каждой очереди. В режиме единого денежного потока только уже высвобождённый cash более ранней очереди после обслуживания её долга уменьшает затраты до РНС следующей очереди; эскроу, будущая прибыль и банковские лимиты не переносятся.",
         },
     }
 
@@ -21149,6 +21362,13 @@ def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
     master_import = (x_master.get("_glavapu_import") or {}).get("normalized", {})
     phase_items: list[dict[str, Any]] = []
     comparison: list[dict[str, Any]] = []
+    financing_strategy = _phase_financing_strategy(phasing)
+    phasing["financing_strategy"] = financing_strategy
+    # Dated, already-earned cash from completed/working earlier queues.  Each
+    # source is consumed once; unused balances remain available to the next
+    # queue, never to an earlier one.
+    project_cash_sources: list[dict[str, Any]] = []
+    project_cash_transfers: list[dict[str, Any]] = []
     tax_rate = n(x_master, "profit_tax_pct", 25) / 100
     scenario_cost = n(x_master, "scenario_cost_multiplier", 1.0)
 
@@ -21355,7 +21575,22 @@ def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
         # is authoritative once a user edits it; consolidation remains bottom-up.
         explicit_products = _apply_explicit_phase_products(p_tep, p_inputs, cfg)
 
+        if financing_strategy == "unified_project_cash" and idx > 0:
+            p_inputs["_phase_project_cash_schedule"] = (
+                _available_project_cash_schedule(project_cash_sources))
+
         result = calculate(CalcRequest(inputs=p_inputs, tep=p_tep, rates=rates))
+
+        if financing_strategy == "unified_project_cash":
+            project_cash_transfers.extend(_consume_project_cash_sources(
+                project_cash_sources, result, idx + 1))
+            for cash_month, amount in _phase_free_cash_schedule(result):
+                project_cash_sources.append({
+                    "phase": idx + 1,
+                    "month": cash_month.isoformat(),
+                    "amount": amount,
+                    "remaining": amount,
+                })
 
         cash_shared = sum(shared_base_mln[k]*cash_weights[k][idx]/100*scenario_cost for k in shared_base_mln)*1_000_000
         allocated_shared = sum(shared_base_mln[k]*allocation_weights[k][idx]/100*scenario_cost for k in shared_base_mln)*1_000_000
@@ -21424,7 +21659,19 @@ def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
             "social_objects":[item["name"] for item in social_allocation if item["phase"] == idx + 1],
         })
 
-    consolidated = _consolidate_phase_results(x_master, phase_items, comparison)
+    phase_financing = _phase_financing_summary(
+        phase_items, financing_strategy, project_cash_transfers)
+    for phase_item, comparison_row, financing_row in zip(
+            phase_items, comparison, phase_financing["rows"]):
+        phase_item["phase_financing"] = copy.deepcopy(financing_row)
+        comparison_row.update({
+            "pre_rns_costs": financing_row["pre_rns_costs"],
+            "project_cash_used": financing_row["project_cash_used"],
+            "own_funds": financing_row["own_funds"],
+            "new_bridge": financing_row["new_bridge"],
+        })
+    consolidated = _consolidate_phase_results(
+        x_master, phase_items, comparison, phase_financing)
     vri_summary = _consolidate_vri(phase_items)
     vri_summary["totals"]["gross"] = round(base_amounts.get("land_rights_gross", 0.0), 2)
     vri_summary["totals"]["relief"] = round(base_amounts.get("land_rights_relief", 0.0), 2)
@@ -21432,7 +21679,8 @@ def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
     for item, row in zip(phase_items, comparison):
         row["vri_cash"] = item["result"].get("vri", {}).get("totals", {}).get("cash", 0.0)
     return {"mode":"phased","consolidated":consolidated,"phases":phase_items,"comparison":comparison,
-            "phasing":phasing,"social_allocation":social_allocation,"vri":vri_summary}
+            "phasing":phasing,"social_allocation":social_allocation,"vri":vri_summary,
+            "phase_financing":phase_financing}
 
 
 @app.post("/calculate-phased")
@@ -21752,6 +22000,10 @@ def _phase_comparison_for_agent(bundle: dict[str, Any]) -> list[dict[str, Any]]:
             "cash_shared_cost_mln": round(float(item.get("cash_shared_cost", 0) or 0) / 1e6, 2),
             "allocated_shared_cost_mln": round(float(item.get("allocated_shared_cost", 0) or 0) / 1e6, 2),
             "peak_bridge_mln": round(float(item.get("peak_bridge", 0) or 0) / 1e6, 2),
+            "pre_rns_costs_mln": round(float(item.get("pre_rns_costs", 0) or 0) / 1e6, 2),
+            "project_cash_used_mln": round(float(item.get("project_cash_used", 0) or 0) / 1e6, 2),
+            "own_funds_mln": round(float(item.get("own_funds", 0) or 0) / 1e6, 2),
+            "new_bridge_mln": round(float(item.get("new_bridge", 0) or 0) / 1e6, 2),
             "peak_pf_mln": round(float(item.get("peak_pf", 0) or 0) / 1e6, 2),
             "llcr_x": round(float(item.get("llcr", 0) or 0), 4),
             "net_profit_mln": round(float(item.get("net_profit", 0) or 0) / 1e6, 2),
@@ -27822,6 +28074,22 @@ details.cadastral-box>summary::marker{color:#888}
       </div>
 
       <div class="card phase-config-only">
+        <div class="report-title">
+          <div><div class="section-title">Стратегия финансирования очередей</div><h2>Независимые линии или единый денежный поток проекта</h2></div>
+        </div>
+        <div style="display:grid;gap:8px;margin:10px 0">
+          <label><input id="phaseFinancingIndependent" name="phaseFinancingStrategy" type="radio" value="independent" onchange="setPhaseFinancingStrategy(this.value)"> Независимое финансирование очередей <small>— по умолчанию</small></label>
+          <label><input id="phaseFinancingUnified" name="phaseFinancingStrategy" type="radio" value="unified_project_cash" onchange="setPhaseFinancingStrategy(this.value)"> Единый денежный поток проекта</label>
+        </div>
+        <div class="note">В едином потоке уже полученный свободный cash предыдущих очередей после обслуживания их долга уменьшает затраты следующей очереди до РНС. Эскроу, будущая прибыль, лимиты БРИДЖ/ПФ и банковский долг другой очереди не используются.</div>
+        <div id="phaseFinancingSummary" class="phase-status" style="margin:10px 0">Выполните расчёт очередей.</div>
+        <div class="scroll"><table class="phase-table">
+          <thead><tr><th>Очередь</th><th>Затраты до РНС</th><th>Свободный cash проекта</th><th>Собственные средства</th><th>Новый БРИДЖ</th><th>ПФ после РНС</th></tr></thead>
+          <tbody id="phaseFinancingBody"></tbody>
+        </table></div>
+      </div>
+
+      <div class="card phase-config-only">
         <div class="section-title">Общепроектные расходы — фактический Cash Flow</div>
         <div style="font-size:11px;color:#777;margin-bottom:10px">О1 по умолчанию несёт покупку/ВРИ и повышенную долю ИРД, подготовки и наружных сетей.</div>
         <div class="scroll"><table class="phase-table"><thead id="phaseCashHead"></thead><tbody id="phaseCashBody"></tbody></table></div>
@@ -28556,7 +28824,7 @@ function frontLoadedPreset(count,kind){
 }
 function makeDefaultPhasing(count=1){
  const w=phaseWeightPreset(count);
- return {enabled:false,user_enabled:false,default_version:'0.12.25',phase_count:count,target_size_sqm:70000,phase_gap_months:12,cost_inflation_pct:8,sales_price_inflation_pct:8,
+ return {enabled:false,user_enabled:false,default_version:'0.12.25',phase_count:count,target_size_sqm:70000,phase_gap_months:12,cost_inflation_pct:8,sales_price_inflation_pct:8,financing_strategy:'independent',
   phases:Array.from({length:count},(_,i)=>({name:`О${i+1}`,start_offset_months:i*12,construction_months:Number(INPUT_DEFAULT.construction_months||24),products:{}})),
   products:{apartments:[...w],ground_commercial:[...w],underground_parking:[...w],storage:[...w]},
   shared_cash:{purchase:frontLoadedPreset(count,'purchase'),land_rights:frontLoadedPreset(count,'land_rights'),ird:frontLoadedPreset(count,'ird'),design:frontLoadedPreset(count,'design'),preparation:frontLoadedPreset(count,'preparation'),utilities:frontLoadedPreset(count,'utilities'),social_compensation:frontLoadedPreset(count,'social_compensation')},
@@ -29004,19 +29272,22 @@ function normalizeSocialObjectDates(){
    }
  });
 }
+function currentPhaseFinancingStrategy(){
+ return phasing.financing_strategy||'independent';
+}
 function togglePhasing(v){
  if(v&&Number(phasing.phase_count||1)<=1){
-   const t=phasing.target_size_sqm||70000,g=phasing.phase_gap_months||12,cinf=Number(phasing.cost_inflation_pct??8),pinf=Number(phasing.sales_price_inflation_pct??8);
+   const t=phasing.target_size_sqm||70000,g=phasing.phase_gap_months||12,cinf=Number(phasing.cost_inflation_pct??8),pinf=Number(phasing.sales_price_inflation_pct??8),strategy=currentPhaseFinancingStrategy();
    phasing=makeDefaultPhasing(Math.max(2,recommendationCount()));
-   phasing.target_size_sqm=t;phasing.phase_gap_months=g;phasing.cost_inflation_pct=cinf;phasing.sales_price_inflation_pct=pinf;
+   phasing.target_size_sqm=t;phasing.phase_gap_months=g;phasing.cost_inflation_pct=cinf;phasing.sales_price_inflation_pct=pinf;phasing.financing_strategy=strategy;
  }
  phasing.enabled=!!v;phasing.user_enabled=!!v;
  if(v&&!phasing.social_objects.length&&inputs.social_mode==='Строительство')autoSocialObjects(false);
  normalizeSocialObjectDates();renderInputs();renderPhasing();calculate()
 }
-function setPhaseCount(count){const e=phasing.enabled&&Number(count)>1,t=phasing.target_size_sqm||70000,g=phasing.phase_gap_months||12,cinf=Number(phasing.cost_inflation_pct??8),pinf=Number(phasing.sales_price_inflation_pct??8);phasing=makeDefaultPhasing(Math.max(1,Math.min(5,count)));phasing.enabled=e;phasing.user_enabled=e;phasing.target_size_sqm=t;phasing.phase_gap_months=g;phasing.cost_inflation_pct=cinf;phasing.sales_price_inflation_pct=pinf;phasing.phases.forEach((p,i)=>p.start_offset_months=i*g);autoSocialObjects(false);normalizeSocialObjectDates();renderInputs();renderPhasing();calculate()}
+function setPhaseCount(count){const e=phasing.enabled&&Number(count)>1,t=phasing.target_size_sqm||70000,g=phasing.phase_gap_months||12,cinf=Number(phasing.cost_inflation_pct??8),pinf=Number(phasing.sales_price_inflation_pct??8),strategy=currentPhaseFinancingStrategy();phasing=makeDefaultPhasing(Math.max(1,Math.min(5,count)));phasing.enabled=e;phasing.user_enabled=e;phasing.target_size_sqm=t;phasing.phase_gap_months=g;phasing.cost_inflation_pct=cinf;phasing.sales_price_inflation_pct=pinf;phasing.financing_strategy=strategy;phasing.phases.forEach((p,i)=>p.start_offset_months=i*g);autoSocialObjects(false);normalizeSocialObjectDates();renderInputs();renderPhasing();calculate()}
 function autoPhaseDates(){phasing.phases.forEach((p,i)=>p.start_offset_months=i*Number(phasing.phase_gap_months||12));normalizeSocialObjectDates();renderPhasing();calculate()}
-function autoSuggestPhasing(){const c=recommendationCount(),cinf=Number(phasing.cost_inflation_pct??8),pinf=Number(phasing.sales_price_inflation_pct??8);phasing=makeDefaultPhasing(c);phasing.enabled=c>1;phasing.user_enabled=c>1;phasing.cost_inflation_pct=cinf;phasing.sales_price_inflation_pct=pinf;phasing.target_size_sqm=Number(document.getElementById('phaseTargetSize')?.value||70000);phasing.phase_gap_months=Number(document.getElementById('phaseGap')?.value||12);phasing.phases.forEach((p,i)=>p.start_offset_months=i*phasing.phase_gap_months);autoSocialObjects(false);renderPhasing();calculate()}
+function autoSuggestPhasing(){const c=recommendationCount(),cinf=Number(phasing.cost_inflation_pct??8),pinf=Number(phasing.sales_price_inflation_pct??8),strategy=currentPhaseFinancingStrategy();phasing=makeDefaultPhasing(c);phasing.enabled=c>1;phasing.user_enabled=c>1;phasing.cost_inflation_pct=cinf;phasing.sales_price_inflation_pct=pinf;phasing.financing_strategy=strategy;phasing.target_size_sqm=Number(document.getElementById('phaseTargetSize')?.value||70000);phasing.phase_gap_months=Number(document.getElementById('phaseGap')?.value||12);phasing.phases.forEach((p,i)=>p.start_offset_months=i*phasing.phase_gap_months);autoSocialObjects(false);renderPhasing();calculate()}
 function rebalancePhaseProductShares(values,index,value){
  const count=Math.max(1,Number(phasing.phase_count||values.length||1)),out=Array.from({length:count},(_,j)=>Math.max(0,Number(values[j]||0)));
  const lockedTotal=out.slice(0,index).reduce((s,x)=>s+x,0),available=Math.max(0,100-lockedTotal),rightIndexes=out.map((_,j)=>j).filter(j=>j>index);
@@ -29107,6 +29378,22 @@ function renderSocialStatus(){
  socialObjectsStatus.innerHTML=Object.keys(t).map(k=>{const ok=Math.abs(t[k]-r[k])<.01;return `<span class="${ok?'phase-total-ok':'phase-total-bad'}">${l[k]}: ${num(t[k])} / ${num(r[k])}${ok?' ✓':' — не сходится'}</span>`}).join(' &nbsp; ')
 }
 function renderPhasingStatus(){if(!document.getElementById('phaseProductStatus'))return;phaseProductStatus.textContent='Контроль 100% — '+Object.entries(phasing.products).map(([k,a])=>{const s=a.reduce((x,y)=>x+Number(y||0),0);return `${k}: ${s.toFixed(1)}% ${Math.abs(s-100)<.1?'✓':'!'}`}).join(' · ')}
+function setPhaseFinancingStrategy(value){
+ phasing.financing_strategy=value==='unified_project_cash'?'unified_project_cash':'independent';
+ renderPhasing();calculate();
+}
+function renderPhaseFinancing(){
+ const independent=document.getElementById('phaseFinancingIndependent'),unified=document.getElementById('phaseFinancingUnified'),body=document.getElementById('phaseFinancingBody'),summary=document.getElementById('phaseFinancingSummary');
+ const strategy=currentPhaseFinancingStrategy();phasing.financing_strategy=strategy;
+ if(independent)independent.checked=strategy==='independent';if(unified)unified.checked=strategy==='unified_project_cash';if(!body||!summary)return;
+ const funding=phaseBundle&&phaseBundle.mode==='phased'?phaseBundle.phase_financing:null;
+ if(!funding||funding.strategy!==strategy){body.innerHTML='';summary.textContent='Пересчитываю финансирование очередей…';return}
+ const rows=funding.rows||[],totals=funding.totals||{};
+ body.innerHTML=rows.map(x=>`<tr><td>${escapeHtml(x.name||('О'+x.phase))}</td><td>${money(x.pre_rns_costs)}</td><td>${money(x.project_cash_used)}</td><td>${money(x.own_funds)}</td><td>${money(x.new_bridge)}</td><td>${money(x.peak_pf)}</td></tr>`).join('');
+ summary.innerHTML=funding.enabled
+  ?`Единый поток включён: cash проекта профинансировал <b>${money(totals.project_cash_used)}</b> затрат следующих очередей до РНС. Новый БРИДЖ — ${money(totals.new_bridge)}.`
+  :`Независимый режим: каждая очередь закрывает затраты до РНС своим капиталом и БРИДЖем. Общая фактическая выборка БРИДЖ — <b>${money(totals.new_bridge)}</b>.`;
+}
 function renderShareTable(h,b,data,labels,bucket){
  const head=document.getElementById(h),body=document.getElementById(b);if(!head||!body)return;
  head.innerHTML=`<tr><th>Статья</th>${phasing.phases.map(p=>`<th>${p.name}</th>`).join('')}<th>Итого</th></tr>`;
@@ -29144,6 +29431,7 @@ function renderPhasing(){
  socialObjectsBody.innerHTML=phasing.social_objects.map((o,i)=>`<tr><td><input value="${o.name||''}" onchange="updateSocialObject(${i},'name',this.value)"></td><td><select onchange="updateSocialObject(${i},'type',this.value)"><option value="kindergarten" ${o.type==='kindergarten'?'selected':''}>ДОУ</option><option value="school" ${o.type==='school'?'selected':''}>СОШ</option><option value="clinic" ${o.type==='clinic'?'selected':''}>Поликлиника</option></select></td><td><input type="number" value="${Number(o.capacity||0)}" onchange="updateSocialObject(${i},'capacity',this.value)"></td><td><select onchange="updateSocialObject(${i},'phase',this.value)">${phaseOptions(o.phase)}</select></td><td><input type="date" value="${o.start_date||''}" onchange="updateSocialObject(${i},'start_date',this.value)"></td><td><button class="btn" onclick="deleteSocialObject(${i})">×</button></td></tr>`).join('');renderSocialStatus();
  assignOffices.innerHTML=phaseOptions(phasing.discrete.offices);assignRetail.innerHTML=phaseOptions(phasing.discrete.standalone_retail);assignAboveParking.innerHTML=phaseOptions(phasing.discrete.above_parking);
  assignOffices.value=String(phasing.discrete.offices||1);assignRetail.value=String(phasing.discrete.standalone_retail||1);assignAboveParking.value=String(phasing.discrete.above_parking||1)
+ renderPhaseFinancing();
 }
 
 function waitForGenplan(test,timeout=60000){
@@ -32418,7 +32706,7 @@ async function calculate(){
     lastResult.tep.rows.forEach(r=>{if(!tep[r.key])return;['gns','total_area','useful','saleable','transfer','units'].forEach(k=>{if(r[k]!=null)tep[r.key][k]=Number(r[k])})})
    }
  }
- repairParkingFromGlavapu();renderResult();renderPhaseReportControls();
+ repairParkingFromGlavapu();renderResult();renderPhaseReportControls();renderPhaseFinancing();
  if(document.getElementById('tep')&&document.getElementById('tep').classList.contains('active'))renderTep();
  // Состояние сохраняется каждым пересчётом, а не отдельной кнопкой и
  // телеграм-потоком: применённая предустановка не переживала перезагрузку —
@@ -32460,6 +32748,10 @@ function renderPhaseComparison(){
   ['Общепроектная нагрузка — cash',c.map(x=>money(x.cash_shared_cost)),'—'],
   ['Аллоцированные общие расходы',c.map(x=>money(x.allocated_shared_cost)),'—'],
   ['Пиковый БРИДЖ',c.map(x=>money(x.peak_bridge)),money(cons.finance.peak_bridge)],
+  ['Затраты до РНС',c.map(x=>money(x.pre_rns_costs)),money(((phaseBundle.phase_financing||{}).totals||{}).pre_rns_costs)],
+  ['Свободный cash проекта',c.map(x=>money(x.project_cash_used)),money(((phaseBundle.phase_financing||{}).totals||{}).project_cash_used)],
+  ['Собственные средства',c.map(x=>money(x.own_funds)),money(((phaseBundle.phase_financing||{}).totals||{}).own_funds)],
+  ['Новый БРИДЖ',c.map(x=>money(x.new_bridge)),money(((phaseBundle.phase_financing||{}).totals||{}).new_bridge)],
   ['Пиковый остаток ПФ',c.map(x=>money(x.peak_pf)),money(cons.finance.peak_pf)],
   ['LLCR',c.map(x=>mult(x.llcr)),mult(cons.summary.llcr)],
   ['Чистая прибыль — cash',c.map(x=>money(x.net_profit)),money(cons.summary.net_profit)],
