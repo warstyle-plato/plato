@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 import sys
 from types import SimpleNamespace
@@ -54,6 +55,45 @@ def test_rendered_official_catalogue_keeps_the_same_fields() -> None:
     assert rows[0].district == "Щукино"
 
 
+def test_rendered_catalogue_does_not_assign_the_next_card_to_previous_krt() -> None:
+    markdown = """
+[Ул. Сеславинская, вл. 6А, Минская ул., вл. 2Г Подробнее](https://api.krt.mos.ru/projects/seslavinskaya)
+
+Площадь: 1.79
+Округ: ЗАО
+Район: Филёвский парк
+Статус: Планируемый
+
+[Полимерная ул., вл. 8 (Мартеновская ул.)Подробнее](https://api.krt.mos.ru/projects/polimernaya)
+
+Площадь: 12.97
+Округ: ВАО
+Район: Новогиреево
+Статус: Планируемый
+Общий объем застройки: 305440
+Жилое назначение: 300440
+
+[Зеленый проспект, влд. 2Подробнее](https://api.krt.mos.ru/projects/zelenyy)
+
+Площадь: 2.28
+Округ: ВАО
+Район: Перово
+Статус: Планируемый
+Общий объем застройки: 79010
+Жилое назначение: 79010
+"""
+
+    rows = parse_catalogue_markdown(markdown)
+
+    assert [row.slug for row in rows] == ["seslavinskaya", "polimernaya", "zelenyy"]
+    assert rows[0].area_ha == 1.79
+    assert rows[0].okrug == "ЗАО"
+    assert rows[0].district == "Филёвский парк"
+    assert rows[0].housing_gfa_sqm is None
+    assert rows[1].housing_gfa_sqm == 300440
+    assert rows[2].housing_gfa_sqm == 79010
+
+
 def test_cold_catalogue_never_waits_for_the_city_portal(tmp_path: Path) -> None:
     registry = KrtRegistry(tmp_path, fetch=lambda url: (_ for _ in ()).throw(
         AssertionError("network must stay off the request thread")
@@ -70,6 +110,23 @@ def test_registry_uses_last_snapshot_when_portal_is_down(tmp_path: Path) -> None
     assert rows and good.path.exists()
     bad = KrtRegistry(tmp_path, fetch=lambda url: (_ for _ in ()).throw(OSError("down")))
     assert bad.projects(refresh=True)[0].name == "№7 Октябрьское поле"
+
+
+def test_legacy_misaligned_snapshot_is_refreshed_even_when_fresh(tmp_path: Path) -> None:
+    registry = KrtRegistry(tmp_path, fetch=lambda url: PAGE.encode())
+    registry.path.parent.mkdir(parents=True)
+    registry.path.write_text(json.dumps({
+        "complete": True,
+        "projects": [{
+            "slug": "old", "name": "Старая карточка", "url": "https://example.test",
+        }],
+    }), encoding="utf-8")
+    started = []
+    registry.refresh_in_background = lambda: started.append(True) or True
+
+    assert registry.catalogue()[0]["slug"] == "old"
+    assert registry.status()["complete"] is False
+    assert started == [True]
 
 
 def test_krt_is_a_subject_with_an_explicit_approximation(tmp_path: Path) -> None:
@@ -179,6 +236,7 @@ def test_auctions_exposes_krt_as_a_separate_tab_and_endpoint(monkeypatch) -> Non
     assert "Проекты КРТ Москвы" in page.text
     assert "/auctions/krt" in page.text
     assert 'id="krtOkrug"' in page.text
+    assert "const KRT_OKRUGS=['ЦАО','САО'" in page.text
     assert "Оценка Платона" in page.text
     assert "жильё и быстрый старт" in page.text
     assert "Короткий вывод Платона" in page.text
