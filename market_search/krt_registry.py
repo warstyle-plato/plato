@@ -22,6 +22,7 @@ from .http import RemoteServiceError, fresh, load_json, request_bytes, save_json
 BASE_URL = "https://api.krt.mos.ru"
 CATALOGUE_URL = BASE_URL + "/projects/"
 JINA_PREFIX = "https://r.jina.ai/"
+CACHE_SCHEMA_VERSION = 2
 _SPACE = re.compile(r"\s+")
 _NUMBER = re.compile(r"[-+]?\d+(?:[.,]\d+)?")
 
@@ -127,7 +128,7 @@ def parse_catalogue(html: str) -> tuple[list[KrtTerritory], str | None]:
 
 
 _MARKDOWN_CARD = re.compile(
-    r"\[([^\]\n]+?)\s+Подробнее\]\(https?://(?:api\.)?krt\.mos\.ru/projects/([^/?#)]+)\)"
+    r"\[([^\]\n]+?)\s*Подробнее\]\(https?://(?:api\.)?krt\.mos\.ru/projects/([^/?#)]+)\)"
 )
 
 
@@ -168,7 +169,7 @@ class KrtRegistry:
 
     def projects(self, *, refresh: bool = False, max_pages: int = 100) -> list[KrtTerritory]:
         cached = load_json(self.path)
-        if (cached and not refresh and fresh(self.path, self.ttl_seconds)
+        if (self._cache_current(cached) and not refresh and fresh(self.path, self.ttl_seconds)
                 and cached.get("complete", True)):
             return self._decode(cached)
         rows: list[KrtTerritory] = []
@@ -179,6 +180,7 @@ class KrtRegistry:
             if not rows:
                 return
             save_json(self.path, {
+                "schema_version": CACHE_SCHEMA_VERSION,
                 "source": CATALOGUE_URL, "retrieved_at": int(time.time()),
                 "complete": complete, "projects": [row.to_dict() for row in rows],
             })
@@ -240,13 +242,21 @@ class KrtRegistry:
                 continue
         return out
 
+    @staticmethod
+    def _cache_current(payload: Any) -> bool:
+        return bool(
+            isinstance(payload, dict)
+            and payload.get("schema_version") == CACHE_SCHEMA_VERSION
+        )
+
     def find(self, query: str) -> dict[str, Any] | None:
         text = _SPACE.sub(" ", str(query or "")).strip()
         slug = text[4:] if text.lower().startswith("krt:") else None
         low = text.casefold()
         cached = load_json(self.path)
         rows = self._decode(cached) if cached else []
-        if not cached or not fresh(self.path, self.ttl_seconds) or not cached.get("complete", True):
+        if (not self._cache_current(cached) or not fresh(self.path, self.ttl_seconds)
+                or not cached.get("complete", True)):
             self.refresh_in_background()
         for item in rows:
             if (slug and item.slug == slug) or (not slug and item.name.casefold() == low):
@@ -259,7 +269,8 @@ class KrtRegistry:
             return []
         cached = load_json(self.path)
         rows = self._decode(cached) if cached else []
-        if not cached or not fresh(self.path, self.ttl_seconds) or not cached.get("complete", True):
+        if (not self._cache_current(cached) or not fresh(self.path, self.ttl_seconds)
+                or not cached.get("complete", True)):
             self.refresh_in_background()
         ranked = [row for row in rows if needle in row.name.casefold()
                   or needle in (row.district or "").casefold()]
@@ -270,14 +281,17 @@ class KrtRegistry:
         """Return the snapshot immediately; all network work stays off-thread."""
         cached = load_json(self.path)
         rows = self._decode(cached) if cached else []
-        if not cached or not fresh(self.path, self.ttl_seconds) or not cached.get("complete", True):
+        if (not self._cache_current(cached) or not fresh(self.path, self.ttl_seconds)
+                or not cached.get("complete", True)):
             self.refresh_in_background()
         return [row.to_dict() for row in rows]
 
     def status(self) -> dict[str, bool]:
         cached = load_json(self.path)
         return {
-            "complete": bool(cached and cached.get("complete", True)),
+            "complete": bool(
+                self._cache_current(cached) and cached.get("complete", True)
+            ),
             "refreshing": self._refreshing,
         }
 
