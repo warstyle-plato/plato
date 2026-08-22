@@ -481,6 +481,15 @@ def test_auction_ui_does_not_render_missing_area_as_zero():
     assert "n!==null&&n!==undefined&&n!==''" in page
 
 
+def test_auction_ui_names_city_discovery_and_shows_source_funnel():
+    from auction_search.ui import auctions_page
+
+    page = auctions_page()
+    assert '<option value="investmoscow">Торги Москвы → ЭТП</option>' in page
+    assert "без подтверждённой ЭТП" in page
+    assert "нужны адаптеры" in page
+
+
 def test_model_page_bridge_is_idempotent():
     class Core:
         PAGE = "<html><body>model</body></html>"
