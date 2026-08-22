@@ -33,8 +33,18 @@ def _pace_finish(row: dict[str, Any], cut: datetime.date) -> tuple[datetime.date
     progress = _clamp(row.get("rss_accepted_ratio"))
     if not start or not finish or progress is None:
         return None, ""
+    if row.get("baseline_closed"):
+        return None, "baseline_closed"
     if cut < start:
         return None, "future"
+    # RSS 2.1 is not one physical work package. On real projects it combines
+    # early site preparation with POS/site-operation and demobilisation that
+    # continue until the end of construction. Its aggregate accepted/EAC pace
+    # is useful cost evidence, but converting it into a WBS finish creates the
+    # fake multi-year "Подготовительный период" forecast seen on Grodnenskaya.
+    codes = monitor._codes(row.get("code"))
+    if codes and all(code.startswith("2.1") for code in codes):
+        return None, "mixed_lifecycle_rss"
     if progress >= 0.999999:
         return cut, "accepted_complete"
 
@@ -141,7 +151,11 @@ def _apply_pace(project: str, view: dict[str, Any], cut: datetime.date) -> dict[
         row["pace_progress"] = row.get("rss_accepted_ratio")
         row["pace_forecast_known"] = predicted is not None
         row["pace_forecast_method"] = method
-        row["pace_status"] = _status(row, cut, predicted)
+        row["pace_status"] = (
+            "КС — ТОЛЬКО СТОИМОСТНОЙ ИНДИКАТОР"
+            if method == "mixed_lifecycle_rss"
+            else _status(row, cut, predicted)
+        )
         # Keep manager contract: progress_kind stays accepted_cost_ratio.
         if predicted is None:
             continue

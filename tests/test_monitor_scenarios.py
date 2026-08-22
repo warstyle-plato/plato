@@ -43,6 +43,47 @@ def test_current_pace_uses_rss_evidence_but_not_as_physical_fact():
     assert scenarios._pace_finish(row, d(2026, 1, 1)) == d(2026, 6, 2)
 
 
+def test_current_pace_does_not_turn_mixed_rss_21_into_finish_date():
+    d = datetime.date
+    row = {
+        "code": "2.1", "plan_start": "2024-01-01",
+        "rss_accepted_ratio": .8, "rss_act_cost_rate_3m": .02,
+    }
+    assert scenarios._pace_finish(row, d(2026, 8, 22)) is None
+
+
+def test_forecast_coverage_says_why_rss_21_is_excluded():
+    d = datetime.date
+    view = {"schedule": {"rows": [
+        {"code": "2.1", "plan_start": "2024-01-01", "plan_finish": "2027-09-30",
+         "rss_accepted_ratio": .8, "rss_act_cost_rate_3m": .02},
+        {"code": "2.2.1", "plan_start": "2026-01-01", "plan_finish": "2027-03-01",
+         "rss_accepted_ratio": .5, "rss_act_cost_rate_3m": .1},
+    ]}}
+    result = scenarios._forecast_coverage(view, d(2026, 8, 22))
+    assert result["active_articles"] == 1
+    assert result["observed_articles"] == 1
+    assert result["excluded_articles"] == ["2.1"]
+    assert "смешивает" in result["exclusion_note"]
+
+
+def test_forecast_drivers_explain_marginal_rnv_impact():
+    d = datetime.date
+    view = {"cut": "2026-01-15", "schedule": {"rows": [{
+        "id": "1", "code": "2.2.1", "plan_start": "2026-01-01",
+        "rss_accepted_ratio": .5, "rss_act_cost_rate_3m": .1,
+    }]}}
+    seeds = {"1": d(2026, 2, 20)}
+    current = scenarios.graph._propagate(pm(), seeds)
+    drivers = scenarios._forecast_drivers(
+        view, pm(), seeds, scenarios._network_rnv(pm(), current)
+    )
+    assert drivers[0]["id"] == "1"
+    assert drivers[0]["local_delay_days"] == 20
+    assert drivers[0]["rnv_impact_days"] == 19
+    assert drivers[0]["rss_codes"] == ["2.2.1"]
+
+
 def test_delayed_article_need_is_moved_without_changing_amount():
     articles = {"2.2.1.4": {"rss_limit": 10, "monthly_need": {
         "2026-08-01": 30, "2026-09-01": 40,
