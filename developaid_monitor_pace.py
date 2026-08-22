@@ -2,8 +2,9 @@
 
 The weekly RSS completed-works register is the recurring state/evidence source.
 Accepted cost / EAC is used as an explicit management proxy for progress pace.
-It does NOT overwrite the fixed baseline schedule fields.  Pace results live in
-``pace_*`` fields and late pace forecasts are propagated through the PM network.
+It does NOT overwrite the fixed ``schedule.rows`` baseline/approved forecast.
+Pace results live in ``pace_*`` fields; only the derived management tree and
+project dashboard expose them as the current forecast.
 """
 from __future__ import annotations
 
@@ -26,7 +27,7 @@ def _clamp(value: Any, low: float = 0.0, high: float = 1.0) -> float | None:
 
 
 def _pace_finish(row: dict[str, Any], cut: datetime.date) -> tuple[datetime.date | None, str]:
-    """Forecast a task finish from accepted-cost progress and observed pace."""
+    """Forecast one task finish from accepted-cost progress and observed pace."""
     start = monitor._day(row.get("plan_start"))
     finish = monitor._day(row.get("plan_finish"))
     progress = _clamp(row.get("rss_accepted_ratio"))
@@ -95,7 +96,7 @@ def _effective_child_finish(child: dict[str, Any]) -> datetime.date | None:
 
 
 def _aggregate_management(nodes: list[dict[str, Any]]) -> None:
-    """Roll pace forecast up without overwriting baseline/approved forecast."""
+    """Roll pace forecast up on presentation nodes, leaving schedule.rows intact."""
     def visit(node: dict[str, Any]) -> None:
         children = [c for c in node.get("children", []) if isinstance(c, dict)]
         for child in children:
@@ -111,9 +112,14 @@ def _aggregate_management(nodes: list[dict[str, Any]]) -> None:
         if not finishes:
             return
         forecast = max(finishes)
-        node["pace_forecast_finish"] = monitor._iso(forecast)
         finish = monitor._day(node.get("plan_finish"))
-        node["pace_delta_days"] = (forecast - finish).days if finish else None
+        delta = (forecast - finish).days if finish else None
+        node["pace_forecast_finish"] = monitor._iso(forecast)
+        node["pace_delta_days"] = delta
+        # management is a derived presentation tree, so it may expose pace as
+        # its current forecast while the auditable schedule.rows stay untouched.
+        node["forecast_finish"] = monitor._iso(forecast)
+        node["delta_days"] = delta
     for root in nodes:
         visit(root)
 
@@ -136,7 +142,7 @@ def _apply_pace(project: str, view: dict[str, Any], cut: datetime.date) -> dict[
         row["pace_forecast_known"] = predicted is not None
         row["pace_forecast_method"] = method
         row["pace_status"] = _status(row, cut, predicted)
-        # Preserve manager semantics: progress_kind remains accepted_cost_ratio.
+        # Keep manager contract: progress_kind stays accepted_cost_ratio.
         if predicted is None:
             continue
         evidence += 1
@@ -148,7 +154,7 @@ def _apply_pace(project: str, view: dict[str, Any], cut: datetime.date) -> dict[
         if finish and predicted > finish:
             late_seeds[tid] = predicted
 
-    # Approved rebaseline remains a valid seed alongside current act pace.
+    # Approved rebaseline is propagated together with late current-pace seeds.
     for row in rows:
         if not (row.get("rebaseline_seed") or str(row.get("forecast_source") or "") == "approved_rebaseline"):
             continue
@@ -177,9 +183,7 @@ def _apply_pace(project: str, view: dict[str, Any], cut: datetime.date) -> dict[
         own = local_forecasts.get(tid)
         network = (propagated.get(tid) or {}).get("forecast_finish") if propagated else None
         plan = monitor._day(row.get("plan_finish"))
-
         effective = own
-        # Network propagation only constrains a task if it moves later than plan.
         if network and plan and network > plan:
             effective = max([d for d in (own, network) if d]) if own else network
         if effective is None:
@@ -206,6 +210,10 @@ def _apply_pace(project: str, view: dict[str, Any], cut: datetime.date) -> dict[
             "pace_forecast_finish", "pace_delta_days", "pace_status",
         ):
             node[key] = src.get(key)
+        if src.get("pace_forecast_known") and src.get("pace_forecast_finish"):
+            node["forecast_finish"] = src["pace_forecast_finish"]
+            node["delta_days"] = src.get("pace_delta_days")
+            node["status"] = src.get("pace_status") or node.get("status")
     _aggregate_management(management)
 
     if evidence <= 0:
@@ -234,8 +242,6 @@ def _apply_pace(project: str, view: dict[str, Any], cut: datetime.date) -> dict[
     schedule["dependency_graph"] = graph
     schedule["pace_forecast_end"] = monitor._iso(network_rnv) if network_rnv else None
 
-    # Dashboard is the management surface: show the pace-based current forecast
-    # there while fixed schedule rows remain immutable for audit/regression.
     dash_schedule = ((view.get("dashboard") or {}).get("schedule") or {})
     dash_schedule["forecast_known"] = True
     dash_schedule["forecast_finish"] = monitor._iso(network_rnv) if network_rnv else None
