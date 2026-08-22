@@ -29432,6 +29432,23 @@ function rebalancePhaseProductShares(values,index,value){
  rightIndexes.forEach((j,pos)=>{const next=pos===rightIndexes.length-1?remaining-allocated:(rightTotal>0?remaining*out[j]/rightTotal:remaining/rightIndexes.length);out[j]=Math.max(0,Number(next.toFixed(6)));allocated+=out[j]});
  return out;
 }
+// Итог строки обязан говорить про то, что на экране. Пока поле в фокусе, доли
+// ещё не применены: набранные 30 при остальных 25 дают 105, а ИТОГО показывало
+// зелёные 100,0% от прошлого состояния — итог выглядел сошедшимся ровно тогда,
+// когда строка ему противоречила (владелец, 23.08.2026). Пересчёт долей и
+// метров остаётся на уходе из поля: ребаланс по каждой набранной цифре считал
+// бы «3» отдельной правкой и уводил соседние очереди не туда.
+function previewPhaseProductShares(key){
+ const row=document.querySelector(`tr[data-share-row="${key}"]`);
+ if(!row)return;
+ const total=row.querySelector('[data-share-total]');
+ if(!total)return;
+ const shown=Array.from(row.querySelectorAll('input')).reduce((s,el)=>s+Number(el.value||0),0);
+ const stored=(phasing.products[key]||[]).reduce((s,x)=>s+Number(x||0),0);
+ total.className=Math.abs(shown-100)<.1?'phase-total-ok':'phase-total-bad';
+ total.innerHTML=shown.toFixed(1)+'%'+(Math.abs(shown-stored)>1e-6
+  ?'<br><small>не применено — нажмите Enter или уведите курсор</small>':'');
+}
 function setPhaseProductShare(k,i,v){
  if(!phasing.products[k])return;
  phasing.products[k]=rebalancePhaseProductShares(phasing.products[k],i,v);
@@ -29557,7 +29574,7 @@ function renderPhasing(){
  phaseCards.innerHTML=phasing.phases.map((p,i)=>{const cf=Math.pow(1+Number(phasing.cost_inflation_pct??8)/100,Number(p.start_offset_months||0)/12),pf=Math.pow(1+Number(phasing.sales_price_inflation_pct??8)/100,Number(p.start_offset_months||0)/12);return `<div class="phase-card"><h3>${p.name}</h3><div class="field"><label>Название</label><input value="${p.name}" onchange="phasing.phases[${i}].name=this.value;renderPhasing()"></div><div class="field"><label>Сдвиг старта, мес.</label><input type="number" value="${p.start_offset_months}" onchange="phasing.phases[${i}].start_offset_months=Number(this.value);normalizeSocialObjectDates();renderPhasing();calculate()"></div><div class="field"><label>Строительство, мес.</label><input type="number" value="${p.construction_months}" onchange="phasing.phases[${i}].construction_months=Number(this.value);calculate()"></div><div style="font-size:11px;color:#777;margin-top:8px">Старт: ${dateRu(addMonthsJS(inputs.project_start,p.start_offset_months))}<br>Индекс затрат: ×${cf.toFixed(3)}<br>Индекс стартовой цены: ×${pf.toFixed(3)}</div></div>`}).join('');
  const pl={apartments:'Квартиры',ground_commercial:'Коммерция 1 этажа',offices:'Офисы / деловая недвижимость',standalone_retail:'Коммерция ОСЗ',above_parking:'Наземный паркинг',underground_parking:'Подземный паркинг',storage:'Кладовые'};
  phaseProductHead.innerHTML=`<tr><th>Продукт</th>${phasing.phases.map((p,i)=>`<th>${p.name}${i===phasing.phases.length-1?'<br><small>остаток</small>':''}</th>`).join('')}<th>Итого</th></tr>`;
- phaseProductBody.innerHTML=Object.entries(phasing.products).map(([k,a])=>{const s=a.reduce((x,y)=>x+Number(y||0),0);return `<tr><td>${pl[k]||k}</td>${a.map((v,i)=>`<td><input type="number" step="1" value="${Number(v).toFixed(1)}" ${i===a.length-1?'readonly title="Автоматический остаток до 100%"':`onchange="setPhaseProductShare('${k}',${i},this.value)"`}></td>`).join('')}<td class="${Math.abs(s-100)<.1?'phase-total-ok':'phase-total-bad'}">${s.toFixed(1)}%</td></tr>`}).join('');renderPhasingStatus();
+ phaseProductBody.innerHTML=Object.entries(phasing.products).map(([k,a])=>{const s=a.reduce((x,y)=>x+Number(y||0),0);return `<tr data-share-row="${k}"><td>${pl[k]||k}</td>${a.map((v,i)=>`<td><input type="number" step="1" value="${Number(v).toFixed(1)}" ${i===a.length-1?'readonly title="Автоматический остаток до 100%"':`oninput="previewPhaseProductShares('${k}')" onchange="setPhaseProductShare('${k}',${i},this.value)"`}></td>`).join('')}<td data-share-total="${k}" class="${Math.abs(s-100)<.1?'phase-total-ok':'phase-total-bad'}">${s.toFixed(1)}%</td></tr>`}).join('');renderPhasingStatus();
  phasing.phases.forEach(p=>{if(!p.products)p.products={}});
  const tepLabels={apartments:'Жильё',ground_commercial:'Коммерция 1 этажа',standalone_retail:'Коммерция ОСЗ',offices:'Офисы / деловая недвижимость',above_parking:'Наземный паркинг',underground_parking:'Подземный паркинг',storage:'Кладовые',kindergarten:'ДОУ',school:'СОШ',clinic:'Поликлиника',other_mandatory:'Прочие обязательные объекты'};
  const numericTepFields=['gns','total_area','useful','saleable','transfer','units'];
@@ -31753,16 +31770,23 @@ function renderTep(){
     if(!which)return '';
     const value=Math.round((which==='total'?chain[0]:chain[1])*1e4)/100;
     const of=which==='total'?'% ГНС':'% общей';
-    return '<div style="margin-top:3px;font-size:11px;color:'+(own?'#a33':'#777')+';white-space:nowrap">'
-     +'<input type="number" step="0.1" min="0" max="100" value="'+value+'" style="width:56px;font-size:11px" '
+    // Доля стоит ровно под своим числом и по его левому краю: разная ширина
+    // без общей раскладки давала лесенку, а ячейки без доли (ГНС) вдобавок
+    // центрировались по высоте и уезжали вниз — таблица выглядела кривой
+    // (владелец, 23.08.2026).
+    return '<div style="margin-top:4px;font-size:11px;color:'+(own?'#a33':'#777')
+     +';white-space:nowrap;display:flex;align-items:center;gap:4px">'
+     +'<input type="number" step="0.1" min="0" max="100" value="'+value+'" style="width:52px;font-size:11px;margin:0" '
      +'title="доля, по которой достраивается это число" '
-     +'onchange="tepRatioSet(\''+key+'\',\''+which+'\',this.value)">'+of
-     +(own&&which==='saleable'?' <button type="button" class="tep-refill" onclick="tepRatioReset(\''+key+'\')">наши</button>':'')
+     +'onchange="tepRatioSet(\''+key+'\',\''+which+'\',this.value)"><span>'+of+'</span>
+     +(own&&which==='saleable'?'<button type="button" class="tep-refill" onclick="tepRatioReset(\''+key+'\')">наши</button>':'')
      +'</div>';
    };
    ['gns','total_area','useful','saleable','transfer','units'].forEach(col=>{
      const locked=rowOff||(key==='underground_parking'&&(importedParking||inputs.underground_parking_disabled||Number(inputs.underground_manual_spaces||0)>0||Number(inputs.underground_manual_gns_sqm||0)>0)&&['gns','total_area','useful','saleable','transfer','units'].includes(col));
-     html+=`<td><input type="number" step="0.1" value="${inputDisplay(row[col])}" ${locked?'readonly style="background:#f3f3f1;color:#555"':''} onchange="tepCellChanged('${key}','${col}',this.value)">${locked?'':ratioField(col)}</td>`;
+     // Два атрибута style на одном input браузер не складывает — берёт первый,
+     // и запертая ячейка теряла бы серый фон. Стиль собирается один.
+     html+=`<td style="vertical-align:top"><input type="number" step="0.1" value="${inputDisplay(row[col])}" style="margin:0${locked?';background:#f3f3f1;color:#555':''}" ${locked?'readonly':''} onchange="tepCellChanged('${key}','${col}',this.value)">${locked?'':ratioField(col)}</td>`;
    });tr.innerHTML=html;body.appendChild(tr);
  });updateTepTotals();renderTepRatioNote();
 }

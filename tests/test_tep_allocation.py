@@ -95,6 +95,11 @@ def test_the_book_carries_engine_phase_volumes():
             phase_tep["ground_commercial"]["gns"], rel=1e-9)
         assert sheet[f"Y{row}"].value == pytest.approx(
             phase_tep["underground_parking"]["gns"], rel=1e-9)
+        # Строится весь паркинг (площадь в Y), а продаётся он без гостевых
+        # мест: AB кормит лист «Продажи», поэтому там стоит проданное.
         units = float(sheet[f"AB{row}"].value or 0)
-        assert units == pytest.approx(phase_tep["underground_parking"]["units"])
+        built = float(phase_tep["underground_parking"]["units"])
+        assert units == pytest.approx(core.underground_saleable_spaces(
+            phase_tep["underground_parking"]))
+        assert units < built, "гостевые места не продаются"
         assert units == int(units), "в книгу должны уезжать целые машино-места"
