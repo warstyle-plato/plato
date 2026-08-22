@@ -182,6 +182,25 @@ class LotOnlineAdapter(AuctionPlatformAdapter):
         haystack = " ".join(values).lower()
         return "москва" in haystack or "г. москва" in haystack
 
+    @staticmethod
+    def _is_test_lot(lot: AuctionLot) -> bool:
+        """Fail closed for explicit official-platform test cards."""
+        title = normalize_space(lot.title or "").lower()
+        return bool(re.match(r"^\[?\s*тест\s*\]?\b", title)) or "тестовый лот" in title
+
+    @staticmethod
+    def _has_current_deadline(deadline: str | None) -> bool:
+        """Current discovery must have a parseable, non-expired application deadline."""
+        if not deadline:
+            return False
+        try:
+            parsed = datetime.fromisoformat(deadline.strip())
+        except ValueError:
+            return False
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=_MOSCOW)
+        return parsed.astimezone(_MOSCOW) >= datetime.now(_MOSCOW)
+
     def discover_moscow(self) -> list[AuctionLot]:
         """Enumerate active Moscow development lots from the public RAD catalogue.
 
@@ -202,11 +221,19 @@ class LotOnlineAdapter(AuctionPlatformAdapter):
         lots: list[AuctionLot] = []
         for lot_url in candidate_urls:
             lot = self.fetch_lot(lot_url)
-            if self._confirmed_moscow(lot):
-                lot.raw["discovery_mode"] = "current"
-                lot.raw["discovery_category_ids"] = list(category_ids)
-                lot.raw["discovered_via"] = "Lot-online public current catalogue"
-                lots.append(lot)
+            if not self._confirmed_moscow(lot):
+                continue
+            if self._is_test_lot(lot):
+                continue
+            # The public catalogue currently leaks old and test cards even with
+            # is_archive=false. The official card is authoritative: without a
+            # future application deadline this is not a current opportunity.
+            if not self._has_current_deadline(lot.application_deadline):
+                continue
+            lot.raw["discovery_mode"] = "current"
+            lot.raw["discovery_category_ids"] = list(category_ids)
+            lot.raw["discovered_via"] = "Lot-online public current catalogue"
+            lots.append(lot)
         return lots
 
     def discover_moscow_history(
