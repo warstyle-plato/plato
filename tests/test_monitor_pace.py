@@ -48,6 +48,14 @@ def test_future_task_has_no_pace_forecast():
     assert pace._status(row, cut, finish) == "БУДУЩАЯ ЗАДАЧА"
 
 
+def test_mixed_lifecycle_rss_21_is_cost_evidence_not_a_calendar_forecast():
+    cut = datetime.date(2026, 8, 22)
+    row = _row(code="2.1", plan_start="2024-01-01", plan_finish="2027-09-30")
+    finish, method = pace._pace_finish(row, cut)
+    assert finish is None
+    assert method == "mixed_lifecycle_rss"
+
+
 def test_management_aggregate_exposes_pace_forecast_on_presentation_tree():
     nodes = [{
         "level": "corpus",

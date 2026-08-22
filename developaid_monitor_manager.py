@@ -71,7 +71,7 @@ def _financial_control(code: str) -> str:
 
 def _financial_detail(code: str) -> str:
     if code.startswith("2.1"):
-        return "Подготовительный период / ПОС"
+        return "ПОС и общеплощадочные работы"
     if code.startswith("2.2.1"):
         return "Основное строительство — подземная часть"
     if code.startswith(("2.2.2", "2.2.3", "2.3")):

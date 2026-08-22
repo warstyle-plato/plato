@@ -27,6 +27,14 @@ def _shift_month(value: str, days: int) -> str:
 
 
 def _pace_finish(row: dict[str, Any], cut: datetime.date) -> datetime.date | None:
+    if row.get("baseline_closed"):
+        return None
+    start = monitor._day(row.get("plan_start"))
+    if start is not None and cut < start:
+        return None
+    codes = monitor._codes(row.get("code"))
+    if codes and all(code.startswith("2.1") for code in codes):
+        return None
     progress = row.get("rss_accepted_ratio")
     rate = row.get("rss_act_cost_rate_3m")
     if progress is None:
@@ -39,6 +47,42 @@ def _pace_finish(row: dict[str, Any], cut: datetime.date) -> datetime.date | Non
         return None
     months = max(0.0, (1.0 - max(0.0, float(progress))) / float(rate))
     return cut + datetime.timedelta(days=round(months * 30.4375))
+
+
+def _forecast_coverage(view: dict[str, Any], cut: datetime.date) -> dict[str, Any]:
+    """Explain how much active RSS evidence supports the pace forecast."""
+    active: set[str] = set()
+    observed: set[str] = set()
+    excluded: set[str] = set()
+    for row in (view.get("schedule") or {}).get("rows") or []:
+        start = monitor._day(row.get("plan_start"))
+        finish = monitor._day(row.get("plan_finish"))
+        if not start or not finish or start > cut or row.get("baseline_closed"):
+            continue
+        codes = set(monitor._codes(row.get("code")))
+        if not codes:
+            continue
+        mixed = {code for code in codes if code.startswith("2.1")}
+        excluded.update(mixed)
+        eligible = codes - mixed
+        active.update(eligible)
+        if _pace_finish(row, cut) is not None:
+            observed.update(eligible)
+    ratio = len(observed) / len(active) if active else 0.0
+    confidence = "достаточная" if ratio >= 0.65 else "средняя" if ratio >= 0.3 else "низкая"
+    return {
+        "active_articles": len(active),
+        "observed_articles": len(observed),
+        "coverage_ratio": ratio,
+        "confidence": confidence,
+        "excluded_articles": sorted(excluded),
+        "exclusion_note": (
+            "RSS 2.1 исключена из календарной экстраполяции: статья смешивает "
+            "раннюю подготовку, ПОС и позднюю демобилизацию. КС/EAC по ней "
+            "остаётся стоимостным индикатором."
+            if excluded else ""
+        ),
+    }
 
 
 def _target_ids(pm: dict[str, Any], wbs: str) -> list[str]:
@@ -89,6 +133,53 @@ def _network_rnv(pm: dict[str, Any], tasks: dict[str, dict[str, Any]]) -> dateti
     if pm.get("rnv_id") and pm["rnv_id"] in tasks:
         return tasks[pm["rnv_id"]]["forecast_finish"]
     return max(task["forecast_finish"] for task in tasks.values())
+
+
+def _forecast_drivers(
+    view: dict[str, Any], pm: dict[str, Any], current_seeds: dict[str, datetime.date],
+    current_rnv: datetime.date, limit: int = 5,
+) -> list[dict[str, Any]]:
+    """Rank current-pace seeds by marginal impact on the RNV forecast."""
+    rows = {
+        str(row.get("id") or row.get("wbs") or "").strip(): row
+        for row in (view.get("schedule") or {}).get("rows") or []
+    }
+    candidates = sorted(
+        current_seeds,
+        key=lambda tid: (current_seeds[tid] - pm["tasks"][tid]["finish"]).days,
+        reverse=True,
+    )[:12]
+    drivers: list[dict[str, Any]] = []
+    for tid in candidates:
+        task = pm["tasks"][tid]
+        row = rows.get(tid, {})
+        without = dict(current_seeds)
+        without.pop(tid, None)
+        without_rnv = _network_rnv(pm, graph._propagate(pm, without))
+        impact = max(0, (current_rnv - without_rnv).days)
+        forecast = current_seeds[tid]
+        plan = task["finish"]
+        drivers.append({
+            "id": tid,
+            "name": task["name"],
+            "rss_codes": monitor._codes(row.get("code")),
+            "plan_finish": monitor._iso(plan),
+            "forecast_finish": monitor._iso(forecast),
+            "local_delay_days": max(0, (forecast - plan).days),
+            "rnv_impact_days": impact,
+            "progress": row.get("rss_accepted_ratio"),
+            "pace_3m": row.get("rss_act_cost_rate_3m"),
+            "source": (
+                "КС/EAC + PM-зависимости"
+                if _pace_finish(row, monitor._day(view.get("cut")) or plan) is not None
+                else str(row.get("forecast_source") or "утверждённый rebaseline")
+            ),
+        })
+    drivers.sort(
+        key=lambda item: (item["rnv_impact_days"], item["local_delay_days"]),
+        reverse=True,
+    )
+    return drivers[:limit]
 
 
 def _article_shifts(
@@ -189,6 +280,8 @@ def run(project: str, cut: Any, kind: str, wbs: str = "", days: int = 0,
     baseline_rnv = _network_rnv(pm, approved_tasks)
     current_rnv = _network_rnv(pm, base_tasks)
     scenario_rnv = _network_rnv(pm, scenario_tasks)
+    coverage = _forecast_coverage(view, cut_date)
+    drivers = _forecast_drivers(view, pm, current_seeds, current_rnv)
 
     finance = dashboard._finance_baseline(project)
     if not finance.get("known"):
@@ -248,6 +341,18 @@ def run(project: str, cut: Any, kind: str, wbs: str = "", days: int = 0,
             "impact_vs_current_days": (scenario_rnv - current_rnv).days,
             "delay_vs_approved_days": (scenario_rnv - baseline_rnv).days,
             "targets": target_rows,
+            "drivers": drivers,
+        },
+        "model": {
+            **coverage,
+            "basis": [
+                "утверждённый baseline ГПР/PM",
+                "факт КС и EAC из RSS на дату среза",
+                "темп актирования за последние 3 месяца",
+                "FS/SS/FF/SF-зависимости и лаги PM",
+                "утверждённый ДДС, лимиты статей и резерв 2.8/2.9",
+            ],
+            "method": "детерминированный расчёт; Платон объясняет результат модели",
         },
         "funding": {
             "current_dds": {
