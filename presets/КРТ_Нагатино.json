@@ -1,0 +1,136 @@
+{
+  "schema_version": "developaid.project_preset.v4",
+  "project": {
+    "name": "КРТ Нагатино",
+    "region": "Москва",
+    "status": "подготовка к торгам",
+    "currency": "RUB",
+    "site_area_ha": 14.62,
+    "land_area_ha": 14.62
+  },
+  "source_priority": [
+    "Извещение и лотовая документация торгов, распоряжение ДГИ № ДГИ-Р-54/26",
+    "Проект планировки территории и утверждённый ТЭП",
+    "Явные предпосылки андеррайтинга с указанием основания"
+  ],
+  "planning": {
+    "objects": [
+      {
+        "id": "RES",
+        "name": "Жилая застройка",
+        "in_deal_perimeter": true,
+        "gfa_m2": 229490.0,
+        "residential_part_m2": 215720.6,
+        "embedded_nonresidential_m2": 13769.4,
+        "building_type": "residential"
+      },
+      {
+        "id": "ODO1",
+        "name": "Общественно-деловой объект 1",
+        "in_deal_perimeter": true,
+        "gfa_m2": 92845.0,
+        "building_type": "office"
+      },
+      {
+        "id": "ODO2",
+        "name": "Общественно-деловой объект 2",
+        "in_deal_perimeter": true,
+        "gfa_m2": 92845.0,
+        "building_type": "office"
+      },
+      {
+        "id": "SCHOOL",
+        "name": "СОШ",
+        "in_deal_perimeter": true,
+        "gfa_m2": 22220.0,
+        "cost_classification": "mandatory_social_construction",
+        "building_type": "education"
+      },
+      {
+        "id": "DOO",
+        "name": "ДОО",
+        "in_deal_perimeter": true,
+        "gfa_m2": 6300.0,
+        "cost_classification": "mandatory_social_construction",
+        "building_type": "education"
+      }
+    ]
+  },
+  "social_infrastructure": {
+    "school_places": 1000,
+    "kindergarten_places": 350,
+    "mode": "Строительство",
+    "note": "Школа и ДОО — обязательства КРТ: строятся, не продаются и не компенсируются деньгами."
+  },
+  "vri": {
+    "required": false,
+    "payment_rub": 0,
+    "basis": "КРТ: плата за смену ВРИ не взимается — подтверждено вводными пакета."
+  },
+  "transaction": {
+    "acquisition_price_rub": 2403657113,
+    "price_status": "лотовая документация торгов",
+    "note": "Цена входа по КРТ. Не смешивать с платой за смену ВРИ — она нулевая."
+  },
+  "economics": {
+    "purchase_price_mln": 2403.657
+  },
+  "phasing": {
+    "enabled": true,
+    "phase_count": 4,
+    "note": "Четыре очереди заданы контекстом. Разбивка продуктов по очередям в исходных данных отсутствует — см. open_items, равные доли не проставлены."
+  },
+  "tep_derived": {
+    "basis": "Цепочка ГлавАПУ, восстановленная по двум выгрузкам (vri_tep_quick): СПП жилых зданий делится 94/6 между жильём и встроенной коммерцией; доли общей и продаваемой — TEP_RATIOS движка.",
+    "apartments": {
+      "gns": 215720.6,
+      "total_area": 194148.5,
+      "saleable": 140218.4
+    },
+    "ground_commercial": {
+      "gns": 13769.4,
+      "total_area": 12392.5,
+      "saleable": 12392.5
+    },
+    "office_1": {
+      "gns": 92845.0,
+      "total_area": 87274.3,
+      "saleable": 52364.6
+    },
+    "office_2": {
+      "gns": 92845.0,
+      "total_area": 87274.3,
+      "saleable": 52364.6
+    },
+    "underground_parking": {
+      "permanent": 1619,
+      "guest": 162,
+      "units": 1781,
+      "basis": "Приложение 5 к 945-ПП в редакции 2118-ПП, пункт 1: площадь квартир / (33 × 2,1) × 0,8; гостевые — десятая часть. Гостевые строятся, но не продаются."
+    }
+  },
+  "validation_controls": {
+    "gfa_total_m2": 443700.0,
+    "residential_gns_m2": 229490.0,
+    "public_business_gns_m2": 214210.0,
+    "components_sum_m2": 443700.0,
+    "acquisition_price_rub": 2403657113,
+    "vri_must_remain_zero": true
+  },
+  "open_items": [
+    "Распределение продуктов по четырём очередям — в исходных данных нет.",
+    "Обязательства КРТ сверх школы и ДОО (сети, дороги, благоустройство) — нет.",
+    "Снос и расселение: объёмы и стоимость — нет.",
+    "Деление общественно-деловых на два объекта принято равным: документа нет.",
+    "Цены реализации и себестоимость строительства — не заданы, брать из класса проекта.",
+    "Приобъектные машино-места нежилых объектов: нужны К1 и К2 квартала."
+  ],
+  "claude_import_notes": {
+    "required_behavior": [
+      "Схема v4 — рабочая в коде; версии v6 не существует, схему не менять.",
+      "Продаваемые площади посчитаны нашими долями, а не взяты со слов: основание в tep_derived.basis.",
+      "Цена входа — в покупку, ВРИ остаётся нулём.",
+      "Школа, ДОО и гостевые машино-места не продаются."
+    ]
+  }
+}
