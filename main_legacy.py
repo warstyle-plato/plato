@@ -65,7 +65,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.19.40"
+VERSION = "0.19.41"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -28993,7 +28993,23 @@ function togglePhasing(v){
 function setPhaseCount(count){const e=phasing.enabled&&Number(count)>1,t=phasing.target_size_sqm||70000,g=phasing.phase_gap_months||12,cinf=Number(phasing.cost_inflation_pct??8),pinf=Number(phasing.sales_price_inflation_pct??8);phasing=makeDefaultPhasing(Math.max(1,Math.min(5,count)));phasing.enabled=e;phasing.user_enabled=e;phasing.target_size_sqm=t;phasing.phase_gap_months=g;phasing.cost_inflation_pct=cinf;phasing.sales_price_inflation_pct=pinf;phasing.phases.forEach((p,i)=>p.start_offset_months=i*g);autoSocialObjects(false);normalizeSocialObjectDates();renderInputs();renderPhasing();calculate()}
 function autoPhaseDates(){phasing.phases.forEach((p,i)=>p.start_offset_months=i*Number(phasing.phase_gap_months||12));normalizeSocialObjectDates();renderPhasing();calculate()}
 function autoSuggestPhasing(){const c=recommendationCount(),cinf=Number(phasing.cost_inflation_pct??8),pinf=Number(phasing.sales_price_inflation_pct??8);phasing=makeDefaultPhasing(c);phasing.enabled=c>1;phasing.user_enabled=c>1;phasing.cost_inflation_pct=cinf;phasing.sales_price_inflation_pct=pinf;phasing.target_size_sqm=Number(document.getElementById('phaseTargetSize')?.value||70000);phasing.phase_gap_months=Number(document.getElementById('phaseGap')?.value||12);phasing.phases.forEach((p,i)=>p.start_offset_months=i*phasing.phase_gap_months);autoSocialObjects(false);renderPhasing();calculate()}
-function setPhaseProductShare(k,i,v){phasing.products[k][i]=Number(v||0);renderPhasingStatus()}
+function rebalancePhaseProductShares(values,index,value){
+ const count=Math.max(1,Number(phasing.phase_count||values.length||1)),out=Array.from({length:count},(_,j)=>Math.max(0,Number(values[j]||0)));
+ const edited=Math.max(0,Math.min(100,Number(value||0))),remaining=100-edited;out[index]=edited;
+ const others=out.map((x,j)=>j===index?0:x),otherTotal=others.reduce((s,x)=>s+x,0),otherIndexes=out.map((_,j)=>j).filter(j=>j!==index);
+ if(!otherIndexes.length)return [100];
+ let allocated=0;
+ otherIndexes.forEach((j,pos)=>{const next=pos===otherIndexes.length-1?remaining-allocated:(otherTotal>0?remaining*others[j]/otherTotal:remaining/otherIndexes.length);out[j]=Math.max(0,Number(next.toFixed(6)));allocated+=out[j]});
+ return out;
+}
+function setPhaseProductShare(k,i,v){
+ if(!phasing.products[k])return;
+ phasing.products[k]=rebalancePhaseProductShares(phasing.products[k],i,v);
+ // A new percentage allocation replaces stale absolute TEP for this product.
+ // Otherwise an imported/manual override masks the percentages on screen.
+ phasing.phases.forEach(p=>{const product=(p.products||{})[k];if(!product)return;['gns','total_area','useful','saleable','transfer','units'].forEach(field=>delete product[field]);product.assumption_source='Распределено по долям очередей'});
+ renderPhasing();calculate();
+}
 function phaseProductDerived(key,field,index){
  const master=Number((tep[key]||{})[field]||0),count=Number(phasing.phase_count||1);
  if(['apartments','ground_commercial','underground_parking','storage'].includes(key)){
@@ -29003,12 +29019,19 @@ function phaseProductDerived(key,field,index){
  const assigned={offices:Math.min(3,count),standalone_retail:Math.min(2,count),above_parking:Math.min(2,count)}[key]||1;
  return index+1===Number((phasing.discrete||{})[key]||assigned)?master:0;
 }
+function syncPhaseProductSharesFromTep(key,field){
+ if(!phasing.products[key])return;
+ const values=phasing.phases.map((p,i)=>{const own=(p.products||{})[key]||{};return Math.max(0,Number(own[field]!==undefined?own[field]:phaseProductDerived(key,field,i)))}),total=values.reduce((s,x)=>s+x,0);
+ if(total<=0)return;
+ let allocated=0;
+ phasing.products[key]=values.map((x,i)=>{const share=i===values.length-1?100-allocated:Number((x/total*100).toFixed(6));allocated+=share;return Math.max(0,share)});
+}
 function setPhaseProductTep(index,key,field,value){
  const phase=phasing.phases[index];if(!phase)return;if(!phase.products)phase.products={};
  if(!phase.products[key])phase.products[key]={assumption_source:'Введено пользователем'};
  if(value==='')delete phase.products[key][field];else phase.products[key][field]=Math.max(0,Number(value||0));
  if(Object.keys(phase.products[key]).every(k=>k==='assumption_source'))delete phase.products[key];
- calculate();
+ syncPhaseProductSharesFromTep(key,field);renderPhasing();calculate();
 }
 function setSharedShare(bucket,k,i,v){phasing[bucket][k][i]=Number(v||0)}
 function splitCapacity(total,typical){let t=Math.max(0,Number(total||0)),out=[];typical=Math.max(1,Number(typical||1));while(t>0){const v=Math.min(typical,t);out.push(v);t-=v}return out}
@@ -29063,7 +29086,7 @@ function renderPhasing(){
   const totals={gns:0,saleable:0,units:0};
   const cells=phasing.phases.map((p,i)=>{
    const own=(p.products||{})[k]||{};
-   const inputsHtml=['gns','saleable','units'].map(field=>{const derived=phaseProductDerived(k,field,i),has=own[field]!==undefined,value=has?Number(own[field]):derived;totals[field]+=value;return `<input type="number" min="0" step="any" value="${has?value:''}" placeholder="${Number(value.toFixed(2))}" title="${field}" onchange="setPhaseProductTep(${i},'${k}','${field}',this.value)">`}).join('');
+   const inputsHtml=['gns','saleable','units'].map(field=>{const derived=phaseProductDerived(k,field,i),has=own[field]!==undefined,value=has?Number(own[field]):derived;totals[field]+=value;return `<input type="number" min="0" step="any" value="${Number(value.toFixed(2))}" title="${field}${has?' — введено вручную':' — рассчитано по доле'}" onchange="setPhaseProductTep(${i},'${k}','${field}',this.value)">`}).join('');
    return `<td><div style="display:grid;grid-template-columns:repeat(3,minmax(80px,1fr));gap:5px">${inputsHtml}</div></td>`;
   }).join('');
   return `<tr><td><b>${tepLabels[k]}</b></td>${cells}<td>${num(totals.gns)} · ${num(totals.saleable)} · ${num(totals.units)}</td></tr>`;
