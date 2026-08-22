@@ -52,6 +52,7 @@ from pydantic import BaseModel
 # причине: он о выгрузках и их разборе, движок — об экономике.
 import developaid_actuals
 import developaid_monitor
+import developaid_monitor_scenarios
 from developaid_monitor_page import MONITOR_PAGE as _MONITOR_PAGE_RAW
 
 # Перевод документов проекта (ГПЗУ, ППТ, соглашения ВРИ и МПТ, справки по
@@ -64,7 +65,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.19.39"
+VERSION = "0.19.40"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -1742,6 +1743,17 @@ class MonitorGanttRequest(BaseModel):
     key: str = ""
 
 
+class MonitorScenarioRequest(BaseModel):
+    project: str
+    cut: str
+    kind: str
+    wbs: str = ""
+    days: int = 0
+    acceleration_pct: float = 20.0
+    session: str = ""
+    key: str = ""
+
+
 class MonitorProgrammeRequest(BaseModel):
     project: str
     taken_at: str
@@ -1862,6 +1874,21 @@ def monitor_gantt(req: MonitorGanttRequest) -> dict[str, Any]:
     _require_web_access(req.session, req.key, "Монитор проекта")
     try:
         return developaid_monitor.gantt(req.project, cut=req.cut, upto=req.upto)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/monitor/scenario", include_in_schema=False)
+def monitor_scenario(req: MonitorScenarioRequest) -> dict[str, Any]:
+    """Посчитать what-if по PM-сети и утверждённому контуру финансирования."""
+    _require_web_access(req.session, req.key, "Монитор проекта")
+    try:
+        return developaid_monitor_scenarios.run(
+            req.project, req.cut, req.kind, req.wbs, req.days,
+            req.acceleration_pct,
+        )
     except FileNotFoundError as exc:
         raise HTTPException(404, str(exc))
     except ValueError as exc:
