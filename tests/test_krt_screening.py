@@ -42,6 +42,10 @@ def test_krt_screening_uses_market_class_and_authoritative_phasing() -> None:
     assert result["metrics"]["weakest_phase_llcr_x"] == min(
         row["llcr_x"] for row in result["phasing"]["phases"]
     )
+    # Светофор судит проект целиком, слабейшая очередь остаётся рядом диагнозом.
+    assert result["metrics"]["project_llcr_x"] == round(result["metrics"]["llcr_x"], 3)
+    assert result["metrics"]["project_llcr_x"] >= result["metrics"]["weakest_phase_llcr_x"]
+    assert "LLCR проекта" in result["text"]
     assert result["entry_capacity"]["available"] is True
     assert result["entry_capacity"]["amount_mln"] > 0
     assert any("Цена приобретения" in row for row in result["exclusions"])

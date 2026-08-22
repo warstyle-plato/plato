@@ -140,14 +140,20 @@ def test_the_button_is_gone_and_the_fields_are_there():
         "доли вводятся числом с потолком 100%")
 
 
-def test_the_refusal_stands_outside_the_collapsed_block():
-    """Отказ внутри закрытого раскрытия не виден — а молчание читается как поломка."""
+def test_the_refusal_is_visible_without_opening_anything():
+    """Отказ, которого не видно, читается как поломка.
+
+    Раскрытия над таблицей больше нет — доли переехали под свои числа
+    (владелец, 21.08.2026), — поэтому и прятать отказ стало негде. Проверка
+    осталась той же по смыслу: он рисуется в подписи, а не молчит.
+    """
     page = core.PAGE
     body = page[page.index("function renderTepRatioNote"):]
     body = body[:body.index("\nfunction tepRatioOverrides")]
-    assert "</details>'+complaint" in body, (
-        "плашка отказа обязана стоять снаружи <details>, иначе её не видно")
-    assert "tepRatioComplaint?' open'" in body.replace(" ", "") or "open=changed.length||tepRatioComplaint" in body
+    assert "<details" not in body, "доли и отказ больше ничем не накрыты"
+    assert "tepRatioComplaint" in body
+    assert "box.innerHTML=" in body and "+complaint" in body, (
+        "отказ обязан попадать в подпись, а не теряться")
 
 
 def test_the_ratios_survive_a_plot_import():

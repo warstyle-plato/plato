@@ -1,0 +1,312 @@
+{
+  "schema_version": "developaid.project_preset.v4",
+  "project": {
+    "name": "КРТ Нагатино",
+    "region": "Москва",
+    "currency": "RUB",
+    "status": "подготовка к торгам",
+    "site_area_ha": 14.62,
+    "land_area_ha": 14.62,
+    "cadastral_quarter": "77:05:0004001"
+  },
+  "source_priority": [
+    "Извещение и лотовая документация торгов, распоряжение ДГИ № ДГИ-Р-54/26",
+    "Выгрузка калькулятора ГлавАПУ по кварталу 77:05:0004001 от 22.08.2026 — коэффициенты территории",
+    "Проект планировки территории (ТЭП по объектам) — не предоставлен, см. open_items"
+  ],
+  "territory_coefficients": {
+    "k1_rail": 0.75,
+    "k2_business": 0.5,
+    "k2_note": "вне ТТК",
+    "rent_coefficient": 0.1184,
+    "district": "Нагатино-Садовники",
+    "calculation_zone": 1,
+    "source": "выгрузка ГлавАПУ, лист «Параметры территории», 22.08.2026"
+  },
+  "planning": {
+    "objects": [
+      {
+        "id": "RES",
+        "name": "Жилая застройка",
+        "in_deal_perimeter": true,
+        "gfa_m2": 229490.0,
+        "residential_part_m2": 215720.6,
+        "embedded_nonresidential_m2": 13769.4,
+        "building_type": "residential",
+        "residential_saleable_m2": 140218.4,
+        "embedded_nonresidential_saleable_m2": 12392.5,
+        "saleable_basis": "Площадь квартир = население 4250 × 33 м² (приложение 5 к 945-ПП в редакции 2118-ПП). Общая доля 0,65 от СПП — калькуляторная цепочка ГлавАПУ. Без явного числа загрузчик берёт фолбэк 0,75 и даёт на 21 572 м² больше."
+      },
+      {
+        "id": "ODO1",
+        "name": "Офисный центр",
+        "in_deal_perimeter": true,
+        "gfa_m2": 92845.0,
+        "building_type": "office",
+        "total_area_m2": 87274.3,
+        "saleable_m2": 52364.6,
+        "saleable_basis": "TEP_RATIOS движка: общая 0,94 от ГНС, продаваемая 0,564."
+      },
+      {
+        "id": "ODO2",
+        "name": "Торговый центр",
+        "in_deal_perimeter": true,
+        "gfa_m2": 92845.0,
+        "building_type": "retail",
+        "total_area_m2": 87274.3,
+        "saleable_m2": 52364.6,
+        "saleable_basis": "TEP_RATIOS движка: общая 0,94 от ГНС, продаваемая 0,564."
+      },
+      {
+        "id": "SCHOOL",
+        "name": "СОШ",
+        "in_deal_perimeter": true,
+        "gfa_m2": 22220.0,
+        "cost_classification": "mandatory_social_construction",
+        "building_type": "education",
+        "capacity": {
+          "total_places": 1000,
+          "school_places": 1000,
+          "preschool_places": 0
+        },
+        "construction_capex_in_project": true,
+        "mandatory_for_project": true,
+        "note": "Обязательство КРТ: СОШ 1000 мест, строительство и безвозмездная передача."
+      },
+      {
+        "id": "DOO",
+        "name": "ДОО",
+        "in_deal_perimeter": true,
+        "gfa_m2": 6300.0,
+        "cost_classification": "mandatory_social_construction",
+        "building_type": "education",
+        "capacity": {
+          "total_places": 350,
+          "school_places": 0,
+          "preschool_places": 350
+        },
+        "construction_capex_in_project": true,
+        "mandatory_for_project": true,
+        "note": "Обязательство КРТ: ДОО 350 мест, строительство и безвозмездная передача."
+      },
+      {
+        "id": "DEMO",
+        "name": "Снос и демонтаж существующей застройки",
+        "in_deal_perimeter": true,
+        "gfa_m2": 0.0,
+        "cost_classification": "social_burden_cash",
+        "social_burden_cash_rub": 768206600.0,
+        "note": "54 871,9 м² × 14 тыс ₽/м² = 768,2 млн ₽. Это НЕ соцнагрузка по существу — снос отдельное обязательство КРТ. Проведён денежной соцнагрузкой по решению владельца 23.08.2026: у книги DevelopAid_model_v4 нет строки под снос, а соцнагрузка доезжает в неё одним числом (Вводные!B17), и обе поверхности сходятся. Следствие принято осознанно: сумма входит в расчётный лимит БРИДЖа и в строку «Социальная нагрузка» отчёта. Ставка — оценка DevelopAid, не смета."
+      }
+    ],
+    "underground": {
+      "spaces": 2503,
+      "guest_spaces": 162,
+      "area_m2": 87605,
+      "area_per_space_m2": 35,
+      "basis": "Расчёт паркинга пресета (tep_derived.parking), сверенный с выгрузкой ГлавАПУ 77:05:0004001. Без явного числа загрузчик считает своей упрощённой формулой и даёт 3 004 места — на 501 больше."
+    }
+  },
+  "social_infrastructure": {
+    "school_places": 1000,
+    "kindergarten_places": 350,
+    "mode": "Строительство",
+    "note": "Обязательства КРТ: строятся, не продаются, деньгами не компенсируются. Мощность объявлена в capacity самих объектов — оттуда её читает загрузчик; раздела social_infrastructure он не видит."
+  },
+  "demolition": {
+    "area_m2": 54871.9,
+    "objects_count": 39,
+    "rate_low_th_per_sqm": 10.0,
+    "rate_high_th_per_sqm": 14.0,
+    "rate_applied_th_per_sqm": 14.0,
+    "cost_low_mln": 548.7,
+    "cost_high_mln": 768.2,
+    "estimate_status": "ОЦЕНКА DevelopAid, НЕ СМЕТА",
+    "basis": "Площадь и число объектов — таблица извещения (39 ОКС, все с признаком «Снос/реконструкция», объектов «сохранение» в таблице нет). Признак через дробь документ не раскрывает, поэтому площадь — верхняя граница. Ставка — оценка полного пакета: разборка надземной части, фундаменты и подземные части (их в площади ОКС нет), вывоз и утилизация, ПОС и разрешения, риск асбеста. Источника по ставке сноса у DevelopAid нет ни одного — заменить сметой подрядчика. Применена верхняя граница: на торгах ошибка вверх дешевле ошибки вниз.",
+    "capex_article": "demolition · подготовительный период, до РнС; НЕ соцнагрузка",
+    "routing": "Проведён денежной соцнагрузкой (объект DEMO). Прежние ключи economics.demolition_* загрузчик не читал вовсе — снос не доезжал в модель ни рублём."
+  },
+  "resettlement": {
+    "cost_mln": 0.0,
+    "basis": "Ноль — это вывод, а не пропуск: в перечне сносимого гаражи и административные здания, многоквартирных домов нет. Компенсации арендаторам промзоны за досрочное расторжение в извещении не раскрыты."
+  },
+  "vri": {
+    "required": false,
+    "payment_rub": 0,
+    "basis": "КРТ: плата за смену ВРИ не взимается — по вводным пакета."
+  },
+  "transaction": {
+    "acquisition_price_rub": 2403657113,
+    "price_status": "лотовая документация",
+    "note": "Цена входа по КРТ. Не смешивать с платой за смену ВРИ — она нулевая."
+  },
+  "economics": {
+    "purchase_price_mln": 2403.657
+  },
+  "tep_derived": {
+    "population": 4250,
+    "apartment_area_m2": 140218.4,
+    "basis": "Цепочка ГлавАПУ: СПП жилых зданий 94/6 между жильём и встроенной коммерцией; доли общей и продаваемой — TEP_RATIOS движка. Площадь квартир = население × 33 м² (сверено с выгрузкой 77:05:0004001).",
+    "apartments": {
+      "gns": 215720.6,
+      "total_area": 194148.5,
+      "saleable": 140218.4
+    },
+    "ground_commercial": {
+      "gns": 13769.4,
+      "total_area": 12392.5,
+      "saleable": 12392.5
+    },
+    "offices": {
+      "gns": 92845.0,
+      "total_area": 87274.3,
+      "saleable": 52364.6
+    },
+    "standalone_retail": {
+      "gns": 92845.0,
+      "total_area": 87274.3,
+      "saleable": 52364.6
+    },
+    "parking": {
+      "residential_permanent": 1619,
+      "residential_guest": 162,
+      "residential_short": 7,
+      "ground_commercial_onsite": 47,
+      "ground_commercial_short": 4,
+      "office_onsite": 328,
+      "office_short": 4,
+      "retail_onsite": 328,
+      "retail_short": 4,
+      "total_units": 2503,
+      "saleable_units": 2341,
+      "underground_gns_m2": 87605,
+      "area_per_space_m2": 35,
+      "basis": "Жильё — приложение 5 к 945-ПП в редакции 2118-ПП; нежилое — НП/90 × К1 × К2; кратковременные — S/22100 у жилья и min(4, НП/450) у нежилого. Пять чисел воспроизвели выгрузку ГлавАПУ 77:05:0004001 до единицы. Для отдельно стоящих офиса и ТЦ формула НЕ сверена: в той выгрузке СПП нежилых зданий нулевая.",
+      "guest_not_for_sale": "Гостевые места строятся, но не продаются."
+    }
+  },
+  "phasing": {
+    "enabled": true,
+    "phase_count": 4,
+    "phases": [
+      {
+        "name": "Очередь 1",
+        "apartments": {
+          "gns": 53930.2,
+          "total_area": 48537.1,
+          "saleable": 35054.6
+        },
+        "ground_commercial": {
+          "gns": 3442.3,
+          "total_area": 3098.1,
+          "saleable": 3098.1
+        },
+        "social_gba_m2": 6300.0,
+        "underground_parking": {
+          "units": 464,
+          "gns": 16240
+        },
+        "above_ground_gns_m2": 63672.5
+      },
+      {
+        "name": "Очередь 2",
+        "apartments": {
+          "gns": 53930.2,
+          "total_area": 48537.1,
+          "saleable": 35054.6
+        },
+        "ground_commercial": {
+          "gns": 3442.3,
+          "total_area": 3098.1,
+          "saleable": 3098.1
+        },
+        "social_gba_m2": 22220.0,
+        "underground_parking": {
+          "units": 464,
+          "gns": 16240
+        },
+        "above_ground_gns_m2": 79592.5
+      },
+      {
+        "name": "Очередь 3 · офисы",
+        "apartments": {
+          "gns": 53930.2,
+          "total_area": 48537.1,
+          "saleable": 35054.6
+        },
+        "ground_commercial": {
+          "gns": 3442.3,
+          "total_area": 3098.1,
+          "saleable": 3098.1
+        },
+        "social_gba_m2": 0.0,
+        "underground_parking": {
+          "units": 796,
+          "gns": 27860
+        },
+        "above_ground_gns_m2": 150217.5,
+        "offices": {
+          "gns": 92845.0,
+          "total_area": 87274.3,
+          "saleable": 52364.6
+        }
+      },
+      {
+        "name": "Очередь 4 · ТЦ",
+        "apartments": {
+          "gns": 53930.2,
+          "total_area": 48537.1,
+          "saleable": 35054.6
+        },
+        "ground_commercial": {
+          "gns": 3442.3,
+          "total_area": 3098.1,
+          "saleable": 3098.1
+        },
+        "social_gba_m2": 0.0,
+        "underground_parking": {
+          "units": 796,
+          "gns": 27860
+        },
+        "above_ground_gns_m2": 150217.5,
+        "standalone_retail": {
+          "gns": 92845.0,
+          "total_area": 87274.3,
+          "saleable": 52364.6
+        }
+      }
+    ],
+    "note": "Жильё разделено поровну: документа о разбивке нет. ДОО в первой очереди, СОШ во второй — допущение, не документ."
+  },
+  "validation_controls": {
+    "above_ground_gns_m2": 443700.0,
+    "underground_gns_m2": 87605,
+    "project_gns_m2": 531305.0,
+    "components_sum_m2": 443700.0,
+    "acquisition_price_rub": 2403657113,
+    "vri_must_remain_zero": true,
+    "demolition_area_m2": 54871.9
+  },
+  "open_items": [
+    "Ставка сноса — оценка DevelopAid 10–14 тыс ₽/м², не смета. Заменить сметой подрядчика.",
+    "Признак «Снос/реконструкция» у всех 39 объектов: доля сохраняемых не определена.",
+    "ППТ с ТЭП по объектам не предоставлен: продаваемые площади посчитаны нашими долями.",
+    "Население 4 250 чел. выведено из площади квартир — сверить с ППТ.",
+    "Разбивка жилья по четырём очередям: документа нет, взято поровну.",
+    "Размещение ДОО и СОШ по очередям — допущение.",
+    "Обязательства КРТ сверх школы, ДОО и сноса (сети, дороги, благоустройство) — нет данных.",
+    "Компенсации арендаторам промзоны за досрочное расторжение — в извещении не раскрыты.",
+    "Норматив приобъектной парковки для ОТДЕЛЬНО СТОЯЩИХ офиса и ТЦ не сверен с выгрузкой.",
+    "Цены реализации и себестоимость — не заданы, берутся из класса проекта.",
+    "35 м²/место — наш норматив гросс; проектное решение может дать другое."
+  ],
+  "claude_import_notes": {
+    "required_behavior": [
+      "Схема v4 — рабочая в коде; версии v6 не существует.",
+      "Цена входа — в покупку, ВРИ остаётся нулём.",
+      "Снос и расселение — статьи CAPEX подготовительного периода, НЕ соцнагрузка.",
+      "Школа, ДОО и гостевые машино-места не продаются.",
+      "Подземная ГНС не входит в 443 700 м² ППТ — она сверх."
+    ]
+  }
+}

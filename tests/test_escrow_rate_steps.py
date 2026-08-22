@@ -175,7 +175,12 @@ def test_the_field_is_declared_where_the_page_takes_it():
     assert core.DEFAULT_INPUTS["pf_special_steps"] == core.PF_SPECIAL_STEPS_DEFAULT
     finance_group = next(group for group in core.FIELD_GROUPS if group[0] == "Финансирование")
     field = next(item for item in finance_group[1] if item[0] == "pf_special_steps")
-    assert field[3] == "text", "лестница вводится строкой, а не числом"
+    # Лестница рисуется таблицей диапазонов, как в НКЛ (владелец, 20.08.2026);
+    # хранится по-прежнему строкой того же формата — второго хранилища нет.
+    assert field[3] == "pf_steps", "лестница — таблица диапазонов, не текстовое поле"
+    page = core.PAGE
+    assert "renderPfStepsEditor" in page and "pfStepAdd" in page
+    assert "и выше" in page, "верхний диапазон назван, а не подразумевается"
     assert "Пусто" in field[2], "пустое поле — прежнее поведение, и это сказано"
     assert "по умолчанию" in field[2], "откуда взялись числа в поле — сказано там же"
 
