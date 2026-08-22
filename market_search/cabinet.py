@@ -431,7 +431,7 @@ g.bub.on circle{fill-opacity:.75}
   <div class="card" id="form">
     <div class="row">
       <div style="flex:2 1 380px;position:relative">
-        <label class="f">Объект: кадастровый номер, адрес, координаты или название проекта</label>
+        <label class="f">Объект: КРТ, кадастровый номер, адрес, координаты или название проекта</label>
         <input type="text" id="q" autocomplete="off"
                placeholder="77:07:0013005:1042 · Гродненская 18 · Кутузов Сити">
         <div id="sug"></div>
@@ -1645,7 +1645,7 @@ async function rebuild(){
 
 async function build(){
   const codes=[...document.querySelectorAll('input[name=code]:checked')].map(i=>i.value);
-  const query=$('#q').value.trim();
+  const query=selectedSubjectQuery||$('#q').value.trim();
   if(!query){$('#state').textContent='Укажите объект.';return}
   if(!codes.length){$('#state').textContent='Выберите хотя бы один раздел.';return}
   $('#go').disabled=true;
@@ -2057,7 +2057,7 @@ $('#pdf').addEventListener('click',async ()=>{
 // значит собрать следующий отчёт с чужим хвостом: добавленный руками сосед
 // приехал бы в выборку другого объекта и выглядел бы там найденным.
 $('#reset').addEventListener('click',function(){
-  lastReport=null; planData=null; added.clear(); bubbleView='speed';
+  lastReport=null; planData=null; added.clear(); bubbleView='speed'; selectedSubjectQuery=null;
   $('#out').innerHTML=''; $('#hintout').innerHTML='';
   $('#planstate').textContent=''; $('#state').textContent='';
   $('#plan').value=''; $('#ask').value=''; $('#askout').innerHTML='';
@@ -2123,19 +2123,21 @@ $('#hint').addEventListener('click',async function(){
 // всегда. Раньше поле умело только имена ЖК, и площадку без проекта — а это
 // как раз тот случай, ради которого кабинет и открывают, — приходилось искать
 // координатами.
-const sug=$('#sug'); let items=[], cur=-1, timer=null;
+const sug=$('#sug'); let items=[], cur=-1, timer=null, selectedSubjectQuery=null;
 const looksLikeName=t=>t.length>=2 && !/^\s*[\d.,;:\s-]+$/.test(t);
 function closeSug(){sug.style.display='none';items=[];cur=-1}
 function paint(){
   if(!items.length){closeSug();return}
   sug.innerHTML=items.map((it,i)=>
     `<div data-i="${i}"${i===cur?' class="on"':''}>${esc(it.name)}`
-    +`<small>${esc(it.kind==='address'?'адрес'
+    +`<small>${esc(it.kind==='address'?'адрес':it.kind==='krt'
+        ?['КРТ',it.status,it.district,it.area_ha?it.area_ha+' га':null].filter(Boolean).join(' · ')
         :[it.segment,it.developer,it.address].filter(Boolean).join(' · '))}</small></div>`).join('');
   sug.style.display='block';
 }
 function choose(i){
   if(!items[i])return;
+  selectedSubjectQuery=items[i].query||null;
   $('#q').value=items[i].name; closeSug(); build();
 }
 // Имя проекта по касанию. На мышке работает наведение, на телефоне наведения
@@ -2166,6 +2168,7 @@ sug.addEventListener('pointerdown',e=>{
   const row=e.target.closest('div[data-i]'); if(row){e.preventDefault();choose(+row.dataset.i)}
 });
 $('#q').addEventListener('input',()=>{
+  selectedSubjectQuery=null;
   const text=$('#q').value.trim();
   clearTimeout(timer);
   if(!looksLikeName(text)){closeSug();return}
@@ -2177,11 +2180,13 @@ $('#q').addEventListener('input',()=>{
       try{const r=await fetch(url); if(!r.ok)return{items:[]}; return await r.json()}
       catch(e){return {items:[],reason:String(e.message||e)}}
     };
-    const [names,places]=await Promise.all([
+    const [names,places,krt]=await Promise.all([
       ask('/market/projects/suggest?q='+encodeURIComponent(text)),
       ask('/market/address/suggest?q='+encodeURIComponent(text)),
+      ask('/market/krt/suggest?q='+encodeURIComponent(text)),
     ]);
     items=[
+      ...((krt.items||[]).map(it=>({...it,name:it.name,kind:'krt'}))),
       ...((names.items||[]).map(it=>({...it,kind:'project'}))),
       ...((places.items||[]).map(it=>({name:it.label,kind:'address'}))),
     ];
@@ -2189,8 +2194,9 @@ $('#q').addEventListener('input',()=>{
     // Пусто с обеих сторон — сказать почему. Молчащий список одинаково значит
     // «не нашлось», «источник выключен» и «сеть не ответила».
     if(!items.length){
-      const why=[names.reason,places.reason].filter(Boolean).join(' ');
-      $('#state').textContent=why||'';
+      const why=[names.reason,places.reason].filter(Boolean);
+      if(krt.reason) why.unshift(krt.reason);
+      $('#state').textContent=why.join(' ');
     } else { $('#state').textContent=''; }
   },180);
 });
@@ -2204,6 +2210,11 @@ $('#q').addEventListener('keydown',e=>{
   }
 });
 document.addEventListener('click',e=>{if(!e.target.closest('#sug')&&e.target!==$('#q'))closeSug()});
+const incomingKrt=new URLSearchParams(location.search);
+if(incomingKrt.get('krt')){
+  selectedSubjectQuery='krt:'+incomingKrt.get('krt');
+  $('#q').value=incomingKrt.get('name')||selectedSubjectQuery;
+}
 </script>"""
 
 

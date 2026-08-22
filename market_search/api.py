@@ -191,6 +191,16 @@ def install(app: FastAPI) -> MarketDiscoveryService:
             ),
         }
 
+    @app.get("/market/krt/suggest")
+    async def market_krt_suggest(request: Request, q: str = "") -> dict[str, Any]:
+        """Projects from the public Moscow KRT catalogue; market data stays separate."""
+        cabinet_module.require_cabinet(request)
+        text = " ".join(str(q or "").split())
+        if len(text) < 2:
+            return {"items": [], "reason": "Введите хотя бы две буквы."}
+        items = await run_in_threadpool(service.krt.suggest, text, 8)
+        return {"items": items, "reason": None if items else "В каталоге КРТ совпадений нет."}
+
     @app.get("/market/pulse/fields")
     async def market_pulse_fields(request: Request) -> dict[str, Any]:
         """Что источник кладёт в общий ответ и что из этого мы выбрасываем.
