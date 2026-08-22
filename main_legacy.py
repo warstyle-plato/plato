@@ -65,7 +65,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.19.42"
+VERSION = "0.19.43"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -29023,6 +29023,7 @@ function syncPhaseProductSharesFromTep(key,field){
  if(!phasing.products[key])return;
  const values=phasing.phases.map((p,i)=>{const own=(p.products||{})[key]||{};return Math.max(0,Number(own[field]!==undefined?own[field]:phaseProductDerived(key,field,i)))}),total=values.reduce((s,x)=>s+x,0);
  if(total<=0)return;
+ values.forEach((x,i)=>{const phase=phasing.phases[i];if(!phase.products)phase.products={};if(!phase.products[key])phase.products[key]={assumption_source:'Введено пользователем'};phase.products[key][field]=x});
  let allocated=0;
  phasing.products[key]=values.map((x,i)=>{const share=i===values.length-1?100-allocated:Number((x/total*100).toFixed(6));allocated+=share;return Math.max(0,share)});
 }

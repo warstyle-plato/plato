@@ -107,6 +107,7 @@ def test_phase_share_editor_rebalances_all_queues_and_recalculates_real_tep():
     assert "phasing.products[k]=rebalancePhaseProductShares" in page
     assert "['gns','total_area','useful','saleable','transfer','units']" in page
     assert "syncPhaseProductSharesFromTep(key,field)" in page
+    assert "phase.products[key][field]=x" in page
     assert "x/total*100" in page
     assert 'value="${Number(value.toFixed(2))}"' in page
     assert "renderPhasing();calculate()" in page
