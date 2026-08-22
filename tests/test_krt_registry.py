@@ -236,6 +236,10 @@ def test_auctions_exposes_krt_as_a_separate_tab_and_endpoint(monkeypatch) -> Non
     assert "Проекты КРТ Москвы" in page.text
     assert "/auctions/krt" in page.text
     assert 'id="krtOkrug"' in page.text
+    assert 'id="krtOkrugOptions"' in page.text
+    assert "input.type='checkbox'" in page.text
+    assert "krtOkrugs:new Set()" in page.text
+    assert "state.krtOkrugs.has(x.okrug)" in page.text
     assert "const KRT_OKRUGS=['ЦАО','САО'" in page.text
     assert "Оценка Платона" in page.text
     assert "жильё и быстрый старт" in page.text
