@@ -1142,6 +1142,7 @@ def parse_manual_tep_xlsx(data: bytes, filename: str = "") -> dict[str, Any]:
 
     known_keys = set(TEP_DEFAULT)
     tep_mapping: dict[str, dict[str, float]] = {}
+    transfer_conflicts: list[str] = []
     for row in rows[header_index + 1:]:
         code = str(row[0] if row else "").strip()
         if not code:
@@ -1170,6 +1171,24 @@ def parse_manual_tep_xlsx(data: bytes, filename: str = "") -> dict[str, Any]:
             total_area = gns
         if saleable > 0 and useful <= 0:
             useful = saleable
+        # Переданные муниципалитету метры строятся, но не продаются — правило
+        # общее для всех шаблонов (владелец, 23.08.2026). На странице его
+        # держит обработчик поля: правка передаваемой убирает столько же из
+        # продаваемой. У файла такого обработчика нет, колонки независимы, и
+        # заполненные обе целиком продали бы переданное. Инвариант проверяется
+        # здесь: продаваемая не больше «общая минус передаваемая». Срабатывает
+        # только при нарушении, поэтому вычесть дважды нельзя.
+        if transfer > 0 and saleable > 0 and total_area > 0:
+            allowed = max(0.0, total_area - transfer)
+            if saleable > allowed + 1.0:
+                transfer_conflicts.append(
+                    f"{label}: продаваемая {saleable:,.0f} м² при передаваемой "
+                    f"{transfer:,.0f} м² и общей {total_area:,.0f} м² — "
+                    f"передаваемая не продаётся, продаваемая уменьшена до "
+                    f"{allowed:,.0f} м²".replace(",", " ")
+                )
+                saleable = allowed
+                useful = min(useful, allowed)
         tep_mapping[code] = {
             "gns": gns,
             "total_area": total_area,
@@ -1267,6 +1286,9 @@ def parse_manual_tep_xlsx(data: bytes, filename: str = "") -> dict[str, Any]:
         "inputs": inputs_mapping,
         "tep": tep_mapping,
         "recognized": recognized,
+        # Молчаливое исправление неотличимо от отсутствующего: если продаваемая
+        # была урезана до «общая минус передаваемая», это сказано вслух.
+        "notes": transfer_conflicts,
         "summary": {
             "total_gns_sqm": total_gns,
             "total_saleable_sqm": total_saleable,

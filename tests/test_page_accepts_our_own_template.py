@@ -145,6 +145,46 @@ def test_the_template_parser_reads_the_whole_file():
     }
 
 
+def test_transferred_area_is_not_sold_from_a_file():
+    """Передаваемая не продаётся — правило одно на все шаблоны.
+
+    На странице его держит обработчик поля: правка передаваемой убирает
+    столько же из продаваемой. У файла обработчика нет, колонки независимы,
+    и заполненные обе целиком продали бы переданные муниципалитету метры.
+    Проверка срабатывает только при нарушении инварианта, поэтому вычесть
+    дважды она не может.
+    """
+    import io as _io
+    import openpyxl as _openpyxl
+
+    book = _openpyxl.load_workbook(_io.BytesIO(a_filled_template()))
+    sheet = book.active
+    # Квартиры: общая 43 201,96, продаваемая 29 308,89. Вписываем 20 000 м²
+    # передаваемых, не трогая продаваемую: вместе они больше общей, то есть
+    # переданные метры остались в продаже.
+    for row in range(13, 30):
+        if str(sheet.cell(row=row, column=1).value or "") == "apartments":
+            sheet.cell(row=row, column=7, value=20000)
+            break
+    buffer = _io.BytesIO()
+    book.save(buffer)
+
+    parsed = core.parse_manual_tep_xlsx(buffer.getvalue(), "шаблон.xlsx")
+    apartments = parsed["tep"]["apartments"]
+    assert apartments["transfer"] == pytest.approx(20000)
+    assert apartments["saleable"] == pytest.approx(43201.96 - 20000, abs=0.01)
+    assert apartments["saleable"] + apartments["transfer"] <= apartments["total_area"] + 1
+    # Молчаливое исправление неотличимо от отсутствующего.
+    assert any("передаваемая не продаётся" in note for note in parsed["notes"])
+
+
+def test_a_clean_template_keeps_its_saleable_area():
+    """Инвариант не трогает файл, который его и не нарушал."""
+    parsed = core.parse_manual_tep_xlsx(a_filled_template(), "шаблон.xlsx")
+    assert parsed["tep"]["apartments"]["saleable"] == pytest.approx(29308.89)
+    assert parsed["notes"] == []
+
+
 # --- шаблон скачивается там же, где загружается ---------------------------------
 
 def test_the_page_offers_the_template_for_download():
