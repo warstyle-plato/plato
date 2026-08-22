@@ -52,15 +52,21 @@ def test_purchase_price_is_not_vri(imported):
         preset["validation_controls"]["purchase_price_rub"] / 1e6)
     assert inputs["land_rights_cost_mln"] == 0
     assert inputs["vri_required"] is False
+    assert inputs["apartment_price_th"] == 500
+    assert inputs["offices_price_th_per_sqm"] == 350
+    assert inputs["main_above_th_per_sqm"] == 110
+    assert inputs["offices_cost_th_per_sqm"] == 200
 
 
-def test_foreign_saleable_and_parking_ratios_are_not_applied(imported):
-    _, data, _ = imported
+def test_explicit_saleable_assumptions_replace_foreign_ratios(imported):
+    preset, data, _ = imported
     tep = data["applied_tep"]
     assert tep["apartments"]["gns"] == 229490
-    assert tep["apartments"]["saleable"] == 0
+    assert tep["apartments"]["saleable"] == 170000
     assert tep["offices"]["gns"] == 185460
-    assert tep["offices"]["saleable"] == 0
+    assert tep["offices"]["saleable"] == 150000
+    assert preset["canonical_tep"]["products"]["apartments"]["ratio_source"].startswith("working")
+    assert preset["canonical_tep"]["products"]["offices"]["ratio_source"].startswith("working")
     assert tep["underground_parking"]["gns"] == 0
     assert tep["underground_parking"]["units"] == 0
     assert any(note["origin"] == "tbd" and "паркинг" in note["note"].lower()
@@ -78,8 +84,11 @@ def test_real_product_tep_reaches_every_queue(imported):
     phases = data["phasing"]["phases"]
     assert len(phases) == 4
     assert [phase["products"]["apartments"]["gns"] for phase in phases] == [57372.5] * 4
+    assert [phase["products"]["apartments"]["saleable"] for phase in phases] == [42500] * 4
     assert phases[1]["products"]["offices"]["gns"] == 92730
+    assert phases[1]["products"]["offices"]["saleable"] == 75000
     assert phases[3]["products"]["offices"]["gns"] == 92730
+    assert phases[3]["products"]["offices"]["saleable"] == 75000
     assert phases[2]["products"]["school"]["gns"] == 22220
     assert phases[2]["products"]["kindergarten"]["gns"] == 6300
     assert phases[2]["products"]["other_mandatory"]["gns"] == 230
@@ -97,12 +106,16 @@ def test_consolidation_is_bottom_up_from_queue_products(imported):
     assert bundle["consolidated"]["summary"]["project_gns_sqm"] == 443700
     products = {row["key"]: row for row in bundle["consolidated"]["report"]["products"]}
     assert products["apartments"]["gns"] == 229490
+    assert products["apartments"]["saleable"] == 170000
+    assert products["apartments"]["revenue"] > 0
     assert products["offices"]["gns"] == 185460
+    assert products["offices"]["saleable"] == 150000
+    assert products["offices"]["revenue"] > 0
     assert products["school"]["gns"] == 22220
     assert products["kindergarten"]["gns"] == 6300
     assert products["other_mandatory"]["gns"] == 230
     assert all(products[key]["revenue"] == 0
-               for key in ("apartments", "offices", "school", "kindergarten", "other_mandatory"))
+               for key in ("school", "kindergarten", "other_mandatory"))
 
 
 def test_cadastral_list_is_explicit_and_deduplicated(imported):
