@@ -19,8 +19,9 @@ from urllib.parse import urljoin
 from .http import RemoteServiceError, fresh, load_json, request_bytes, save_json
 
 
-BASE_URL = "https://krt.mos.ru"
+BASE_URL = "https://api.krt.mos.ru"
 CATALOGUE_URL = BASE_URL + "/projects/"
+JINA_PREFIX = "https://r.jina.ai/"
 _SPACE = re.compile(r"\s+")
 _NUMBER = re.compile(r"[-+]?\d+(?:[.,]\d+)?")
 
@@ -125,6 +126,38 @@ def parse_catalogue(html: str) -> tuple[list[KrtTerritory], str | None]:
     return rows, parser.next_url
 
 
+_MARKDOWN_CARD = re.compile(
+    r"\[([^\]\n]+?)\s+Подробнее\]\(https?://(?:api\.)?krt\.mos\.ru/projects/([^/?#)]+)\)"
+)
+
+
+def parse_catalogue_markdown(markdown: str) -> list[KrtTerritory]:
+    """Parse the official page as rendered by the read-only transport fallback."""
+    matches = list(_MARKDOWN_CARD.finditer(markdown))
+    rows: list[KrtTerritory] = []
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(markdown)
+        block = markdown[match.end():end]
+        fields: dict[str, str] = {}
+        for line in block.splitlines():
+            text = _SPACE.sub(" ", line).strip().strip("*")
+            if ":" in text:
+                key, value = text.split(":", 1)
+                fields[key.strip().lower()] = value.strip()
+        slug, name = match.group(2), match.group(1).strip()
+        rows.append(KrtTerritory(
+            slug=slug, name=name, url=f"{BASE_URL}/projects/{slug}",
+            area_ha=_number(fields.get("площадь", "")),
+            okrug=fields.get("округ"), district=fields.get("район"), status=fields.get("статус"),
+            total_gfa_sqm=_number(fields.get("общий объем застройки", "")),
+            housing_gfa_sqm=_number(fields.get("жилое назначение", "")),
+            nonresidential_gfa_sqm=_number(fields.get("нежилое назначение", "")),
+            business_gfa_sqm=_number(fields.get("общественно-деловое назначение", "")),
+            jobs=_number(fields.get("прирост рабочих мест", "")),
+        ))
+    return rows
+
+
 class KrtRegistry:
     def __init__(self, data_dir: Path, *, fetch: Callable[[str], bytes] | None = None) -> None:
         self.path = Path(data_dir) / "krt" / "catalogue.json"
@@ -135,25 +168,66 @@ class KrtRegistry:
 
     def projects(self, *, refresh: bool = False, max_pages: int = 100) -> list[KrtTerritory]:
         cached = load_json(self.path)
-        if cached and not refresh and fresh(self.path, self.ttl_seconds):
+        if (cached and not refresh and fresh(self.path, self.ttl_seconds)
+                and cached.get("complete", True)):
             return self._decode(cached)
+        rows: list[KrtTerritory] = []
+        seen_urls: set[str] = set()
+        seen_slugs: set[str] = set()
+
+        def persist(*, complete: bool) -> None:
+            if not rows:
+                return
+            save_json(self.path, {
+                "source": CATALOGUE_URL, "retrieved_at": int(time.time()),
+                "complete": complete, "projects": [row.to_dict() for row in rows],
+            })
+
+        # The official host is primary. It occasionally drops all TCP traffic;
+        # failure then switches the public catalogue only to a read-only page
+        # renderer. User requests never wait for either path (see catalogue()).
+        direct_complete = False
         try:
-            rows, seen, url = [], set(), CATALOGUE_URL
+            url = CATALOGUE_URL
             for _ in range(max_pages):
-                if not url or url in seen:
+                if not url or url in seen_urls:
+                    direct_complete = True
                     break
-                seen.add(url)
+                seen_urls.add(url)
                 page, url = parse_catalogue(self.fetch(url).decode("utf-8", errors="replace"))
-                rows.extend(page)
-            unique = {row.slug: row for row in rows}
-            if unique:
-                payload = {"source": CATALOGUE_URL, "retrieved_at": int(time.time()),
-                           "projects": [row.to_dict() for row in unique.values()]}
-                save_json(self.path, payload)
-                return list(unique.values())
+                if not page:
+                    direct_complete = True
+                    break
+                new_rows = [row for row in page if row.slug not in seen_slugs]
+                rows.extend(new_rows)
+                seen_slugs.update(row.slug for row in new_rows)
+                persist(complete=False)
         except (RemoteServiceError, OSError, UnicodeError):
             pass
-        return self._decode(cached) if cached else []
+        if rows and direct_complete:
+            persist(complete=True)
+            return rows
+
+        # The renderer preserves the official page text and links. Pagination
+        # has no reliable final-page marker, so a repeated page is the stop.
+        try:
+            for page_number in range(1, max_pages + 1):
+                suffix = "" if page_number == 1 else f"?PAGEN_1={page_number}"
+                document = self.fetch(JINA_PREFIX + CATALOGUE_URL + suffix).decode(
+                    "utf-8", errors="replace"
+                )
+                page = parse_catalogue_markdown(document)
+                new_rows = [row for row in page if row.slug not in seen_slugs]
+                if not page or not new_rows:
+                    persist(complete=bool(rows))
+                    return rows
+                rows.extend(new_rows)
+                seen_slugs.update(row.slug for row in new_rows)
+                persist(complete=False)
+        except (RemoteServiceError, OSError, UnicodeError):
+            pass
+        persist(complete=False)
+        return rows or (self._decode(cached) if cached else [])
 
     @staticmethod
     def _decode(payload: Any) -> list[KrtTerritory]:
@@ -172,10 +246,7 @@ class KrtRegistry:
         low = text.casefold()
         cached = load_json(self.path)
         rows = self._decode(cached) if cached else []
-        # Ordinary addresses pass through this resolver too. Never turn an
-        # unrelated market report into a synchronous crawl of krt.mos.ru.
-        if slug and not rows:
-            rows = self.projects(max_pages=1)
+        if not cached or not fresh(self.path, self.ttl_seconds) or not cached.get("complete", True):
             self.refresh_in_background()
         for item in rows:
             if (slug and item.slug == slug) or (not slug and item.name.casefold() == low):
@@ -187,11 +258,8 @@ class KrtRegistry:
         if len(needle) < 2:
             return []
         cached = load_json(self.path)
-        # A cold autocomplete request may read one page, but never walks the
-        # whole Bitrix catalogue while a person is typing.  The full snapshot
-        # continues in a daemon thread and the previous snapshot stays usable.
-        rows = self._decode(cached) if cached else self.projects(max_pages=1)
-        if not cached or not fresh(self.path, self.ttl_seconds):
+        rows = self._decode(cached) if cached else []
+        if not cached or not fresh(self.path, self.ttl_seconds) or not cached.get("complete", True):
             self.refresh_in_background()
         ranked = [row for row in rows if needle in row.name.casefold()
                   or needle in (row.district or "").casefold()]
@@ -199,12 +267,19 @@ class KrtRegistry:
         return [row.to_dict() for row in ranked[:limit]]
 
     def catalogue(self) -> list[dict[str, Any]]:
-        """Fast UI snapshot; complete a cold/stale catalogue off-thread."""
+        """Return the snapshot immediately; all network work stays off-thread."""
         cached = load_json(self.path)
-        rows = self._decode(cached) if cached else self.projects(max_pages=1)
-        if not cached or not fresh(self.path, self.ttl_seconds):
+        rows = self._decode(cached) if cached else []
+        if not cached or not fresh(self.path, self.ttl_seconds) or not cached.get("complete", True):
             self.refresh_in_background()
         return [row.to_dict() for row in rows]
+
+    def status(self) -> dict[str, bool]:
+        cached = load_json(self.path)
+        return {
+            "complete": bool(cached and cached.get("complete", True)),
+            "refreshing": self._refreshing,
+        }
 
     def refresh_in_background(self) -> bool:
         with self._refresh_lock:

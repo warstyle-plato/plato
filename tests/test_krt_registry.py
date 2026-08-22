@@ -1,7 +1,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 
-from market_search.krt_registry import KrtRegistry, parse_catalogue
+from market_search.krt_registry import KrtRegistry, parse_catalogue, parse_catalogue_markdown
 from market_search.subject import SOURCE_KRT, resolve_subject
 
 
@@ -17,7 +17,7 @@ PAGE = """
 
 def test_catalogue_parser_keeps_source_tep_and_pagination() -> None:
     rows, next_url = parse_catalogue(PAGE)
-    assert next_url == "https://krt.mos.ru/projects/?PAGEN_1=2"
+    assert next_url == "https://api.krt.mos.ru/projects/?PAGEN_1=2"
     assert len(rows) == 1
     row = rows[0]
     assert row.slug == "no7-oktabr-skoe-pole"
@@ -25,6 +25,41 @@ def test_catalogue_parser_keeps_source_tep_and_pagination() -> None:
     assert row.housing_gfa_sqm == 161680
     assert row.business_gfa_sqm == 12700
     assert row.query == "krt:no7-oktabr-skoe-pole"
+
+
+def test_rendered_official_catalogue_keeps_the_same_fields() -> None:
+    markdown = """
+[№7 Октябрьское поле Подробнее](https://api.krt.mos.ru/projects/no7-oktabr-skoe-pole)
+
+Площадь: 5.92
+
+Округ: СЗАО
+
+Район: Щукино
+
+Статус: В реализации
+
+Общий объем застройки: 184930
+
+Жилое назначение: 161680
+
+Прирост рабочих мест: 1490
+"""
+    rows = parse_catalogue_markdown(markdown)
+    assert len(rows) == 1
+    assert rows[0].slug == "no7-oktabr-skoe-pole"
+    assert rows[0].housing_gfa_sqm == 161680
+    assert rows[0].district == "Щукино"
+
+
+def test_cold_catalogue_never_waits_for_the_city_portal(tmp_path: Path) -> None:
+    registry = KrtRegistry(tmp_path, fetch=lambda url: (_ for _ in ()).throw(
+        AssertionError("network must stay off the request thread")
+    ))
+    started = []
+    registry.refresh_in_background = lambda: started.append(True) or True
+    assert registry.catalogue() == []
+    assert started == [True]
 
 
 def test_registry_uses_last_snapshot_when_portal_is_down(tmp_path: Path) -> None:
@@ -58,7 +93,9 @@ def test_auctions_exposes_krt_as_a_separate_tab_and_endpoint(monkeypatch) -> Non
     monkeypatch.setenv("MARKET_CABINET_KEY", "test-key")
     app = FastAPI()
     app.state.market_discovery_service = SimpleNamespace(
-        krt=SimpleNamespace(catalogue=lambda: [project]),
+        krt=SimpleNamespace(
+            catalogue=lambda: [project], status=lambda: {"complete": True, "refreshing": False}
+        ),
         build_report=lambda query, **kwargs: calls.append((query, kwargs)) or {
             "subject": {"project_name": "КРТ Тест"}, "peers": [{"name": "ЖК рядом"}]
         },
@@ -72,6 +109,7 @@ def test_auctions_exposes_krt_as_a_separate_tab_and_endpoint(monkeypatch) -> Non
     answer = client.get("/auctions/krt")
     assert answer.status_code == 200
     assert answer.json()["projects"] == [project]
+    assert answer.json()["complete"] is True
     assert client.get("/auctions/krt/test/market").status_code == 401
     market = client.get("/auctions/krt/test/market", headers={"X-Market-Key": "test-key"})
     assert market.status_code == 200
