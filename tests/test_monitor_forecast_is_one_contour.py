@@ -107,3 +107,32 @@ def test_the_context_says_which_cut_and_snapshot_were_used():
     assert context["forecast_method"] == "current_pace_network"
     assert context["excluded_rss_codes"] == ["2.1"]
     assert context["pace_seed_count"] == 0
+
+
+def test_the_header_shows_the_network_forecast_not_a_flat_maximum():
+    """Третий контур: шапка брала `max(forecast_finish)` по строкам.
+
+    Плоский максимум не знает PM-зависимостей и отвечает на другой вопрос. На
+    Кутузов Сити 22.08.2026 шапка показывала 04.01.2029, а «Платон ·
+    управленческий прогноз» — 11.02.2028: один срез, один снимок РСС, две даты.
+    Подпись шапки при этом обещала «КС / EAC proxy + PM dependencies» —
+    обещание, которого она не исполняла.
+    """
+    import developaid_monitor_dashboard as dashboard
+
+    view = {"schedule": {"forecast_end": "2029-01-04",
+                         "pace_forecast_end": "2028-02-11"}}
+    assert dashboard._current_forecast_end(view) == "2028-02-11"
+
+    # Без PM-графа сети нет: честнее показать позднейшую строку, чем ничего.
+    assert dashboard._current_forecast_end(
+        {"schedule": {"forecast_end": "2029-01-04"}}) == "2029-01-04"
+
+
+def test_the_flat_maximum_is_not_read_directly_any_more():
+    """Прямое чтение `forecast_end` в дашборде — возвращение третьего контура."""
+    source = Path("developaid_monitor_dashboard.py").read_text(encoding="utf-8")
+    body = source[source.index("def _current_forecast_end("):]
+    body = body[body.index("\n\n\n"):]
+    assert '.get("forecast_end")' not in body, (
+        "плоский максимум снова читается напрямую, минуя общий контур")
