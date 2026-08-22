@@ -2,6 +2,7 @@ from pathlib import Path
 import sys
 from types import SimpleNamespace
 
+from market_search.geocoder import GeocodingError
 from market_search.krt_registry import KrtRegistry, parse_catalogue, parse_catalogue_markdown
 from market_search.subject import SOURCE_KRT, resolve_subject
 
@@ -82,6 +83,66 @@ def test_krt_is_a_subject_with_an_explicit_approximation(tmp_path: Path) -> None
     assert subject.subject_type == "krt"
     assert subject.source_data["total_gfa_sqm"] == 184930
     assert "геометр" in subject.notes[0].lower()
+
+
+def test_krt_multiple_holdings_are_geocoded_as_separate_addresses() -> None:
+    territory = {
+        "slug": "two-holdings",
+        "query": "krt:two-holdings",
+        "name": "ул. Сеславинская, вл. 6А, Минская ул., вл. 2Г",
+        "district": "Перово",
+        "geocode_query": (
+            "Москва, Перово, ул. Сеславинская, вл. 6А, Минская ул., вл. 2Г"
+        ),
+    }
+    calls = []
+
+    def geocode(query: str):
+        calls.append(query)
+        if query == "Москва, ул. Сеславинская, вл. 6А":
+            return SimpleNamespace(
+                latitude=55.744, longitude=37.499, display_name=query
+            )
+        raise GeocodingError(f"Адрес «{query}» не найден")
+
+    subject = resolve_subject(
+        "krt:two-holdings", geocode=geocode, find_krt=lambda query: territory
+    )
+
+    assert calls == ["Москва, ул. Сеславинская, вл. 6А"]
+    assert subject.address == "Москва, ул. Сеславинская, вл. 6А"
+    assert "отдельному адресу" in subject.notes[1]
+
+
+def test_krt_falls_back_to_district_when_each_address_is_not_found() -> None:
+    territory = {
+        "slug": "district-fallback",
+        "query": "krt:district-fallback",
+        "name": "ул. Первая, вл. 1, Вторая ул., вл. 2",
+        "district": "Перово",
+        "geocode_query": "Москва, Перово, ул. Первая, вл. 1, Вторая ул., вл. 2",
+    }
+    calls = []
+
+    def geocode(query: str):
+        calls.append(query)
+        if query == "Москва, район Перово":
+            return SimpleNamespace(
+                latitude=55.751, longitude=37.786, display_name=query
+            )
+        raise GeocodingError(f"Адрес «{query}» не найден")
+
+    subject = resolve_subject(
+        "krt:district-fallback", geocode=geocode, find_krt=lambda query: territory
+    )
+
+    assert calls == [
+        "Москва, ул. Первая, вл. 1",
+        "Москва, Вторая ул., вл. 2",
+        "Москва, район Перово",
+    ]
+    assert subject.address == "Москва, район Перово"
+    assert "предварительного анализа" in subject.notes[1]
 
 
 def test_auctions_exposes_krt_as_a_separate_tab_and_endpoint(monkeypatch) -> None:

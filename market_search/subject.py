@@ -38,6 +38,51 @@ SOURCE_ADDRESS = "address"
 SOURCE_KRT = "krt"
 
 
+_STREET_MARKER = (
+    r"(?:ул(?:ица)?\.?|пер(?:еулок)?\.?|проспект|пр-т\.?|шоссе|ш\.?|"
+    r"наб(?:ережная)?\.?|бульвар|б-?р\.?|проезд|площадь|пл\.?)"
+)
+_NEXT_ADDRESS = re.compile(
+    rf"[,;]\s*(?=[^,;]{{0,80}}\b{_STREET_MARKER}(?=\s|,|;|$))",
+    re.IGNORECASE,
+)
+_HAS_STREET = re.compile(rf"\b{_STREET_MARKER}(?=\s|,|;|$)", re.IGNORECASE)
+
+
+def _krt_geocode_candidates(
+    territory: dict[str, Any], fallback: str
+) -> list[tuple[str, str]]:
+    """Return safe approximate points without joining several holdings."""
+    name = " ".join(str(territory.get("name") or "").split())
+    parts = [part.strip(" ,;") for part in _NEXT_ADDRESS.split(name)] if name else []
+    address_parts = [part for part in parts if _HAS_STREET.search(part)]
+    multiple_addresses = len(address_parts) > 1
+
+    candidates: list[tuple[str, str]] = []
+    candidates.extend((f"Москва, {part}", "address_fragment") for part in address_parts)
+
+    combined = " ".join(
+        str(territory.get("geocode_query") or name or fallback).split()
+    )
+    if combined and not multiple_addresses:
+        candidates.append((combined, "catalogue_query"))
+
+    district = " ".join(str(territory.get("district") or "").split())
+    if district:
+        candidates.append((f"Москва, район {district}", "district"))
+
+    # Preserve order because the first successful address is the most precise
+    # approximation available without the official KRT boundary geometry.
+    unique: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for candidate, precision in candidates:
+        key = candidate.casefold()
+        if key not in seen:
+            unique.append((candidate, precision))
+            seen.add(key)
+    return unique
+
+
 @dataclass
 class Subject:
     """Точка отчёта и то, чем она опознана."""
@@ -129,13 +174,43 @@ def resolve_subject(
         if territory:
             if not geocode:
                 raise SubjectNotFound("КРТ найдена, но геокодер не подключён")
-            point = geocode(str(territory.get("geocode_query") or territory.get("name") or text))
+            point = None
+            used_query = ""
+            used_precision = ""
+            last_error: RuntimeError | None = None
+            for candidate, precision in _krt_geocode_candidates(territory, text):
+                try:
+                    point = geocode(candidate)
+                    used_query, used_precision = candidate, precision
+                    break
+                except RuntimeError as exc:
+                    last_error = exc
+            if point is None:
+                if last_error:
+                    raise last_error
+                raise SubjectNotFound("У КРТ нет адреса или района для поиска")
+
+            notes = [
+                "КРТ взята из krt.mos.ru; официальная геометрия границ не получена."
+            ]
+            if used_precision == "address_fragment":
+                notes.append(
+                    f"Точка поставлена по отдельному адресу «{used_query}»; "
+                    "остальные владения проекта не объединялись в один поисковый запрос."
+                )
+            elif used_precision == "district":
+                notes.append(
+                    f"Адрес проекта не найден; для предварительного анализа точка "
+                    f"поставлена по району: {used_query}."
+                )
+            else:
+                notes.append(f"Точка поставлена геокодером по запросу: {used_query}.")
             return Subject(
                 latitude=float(point.latitude), longitude=float(point.longitude),
                 source=SOURCE_KRT, query=str(territory.get("query") or text),
                 address=getattr(point, "display_name", None), project_name=territory.get("name"),
                 subject_type="krt", source_data=territory,
-                notes=["КРТ взята из krt.mos.ru; точка поставлена геокодером. Официальная геометрия границ не получена."],
+                notes=notes,
             )
 
     if find_project:
