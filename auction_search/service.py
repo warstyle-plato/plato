@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections import OrderedDict
 from datetime import date
 from typing import Iterable
@@ -100,6 +101,13 @@ class AuctionSearchService:
             selected.append(lot.permitted_use)
 
         use = " ".join((lot.permitted_use or "", lot.title or "")).lower()
+        explicit_test_lot = (
+            bool(re.match(r"^\s*\[?\s*тест\s*\]?\b", lot.title or "", re.I))
+            or "тестовый лот" in use
+        )
+        if explicit_test_lot:
+            excluded.append("тестовая карточка ЭТП")
+            flags.append("platform_test_lot")
         noise_markers = ("ижс", "индивидуальн", "личного подсобного", "садовод", "огород")
         if any(m in use for m in noise_markers):
             excluded.append("ИЖС или индивидуальное использование")
@@ -114,7 +122,9 @@ class AuctionSearchService:
         if residential_house and small:
             excluded.append("малый участок с жилым домом")
 
-        if lot.lot_kind == LotKind.KRT:
+        if explicit_test_lot:
+            relevant = False
+        elif lot.lot_kind == LotKind.KRT:
             relevant = True
         elif lot.lot_kind in {LotKind.PROPERTY_COMPLEX, LotKind.UNFINISHED}:
             relevant = not (residential_house and small)

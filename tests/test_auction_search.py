@@ -1,5 +1,6 @@
-from datetime import date
+from datetime import date, datetime, timedelta
 from urllib.parse import parse_qs, urlparse
+from zoneinfo import ZoneInfo
 
 from auction_search.adapters.lot_online import LotOnlineAdapter
 from auction_search.api import _discovery_adapters
@@ -121,6 +122,60 @@ def test_rad_current_project_shares_can_be_enabled_explicitly(monkeypatch):
     assert adapter.discover_moscow() == []
     assert captured["category_ids"] == ("2", "85")
     assert captured["include_archive"] is False
+
+
+def test_rad_current_discovery_rejects_test_and_deadline_less_catalogue_leaks(monkeypatch):
+    adapter = LotOnlineAdapter()
+    monkeypatch.setattr(
+        adapter,
+        "_discover_candidate_urls",
+        lambda **_kwargs: ["test", "archive", "current"],
+    )
+    future = (datetime.now(ZoneInfo("Europe/Moscow")) + timedelta(days=2)).isoformat()
+    lots = {
+        "test": AuctionLot(
+            source=source(),
+            lot_kind=LotKind.LAND_SALE,
+            title="[Тест] Тестовый лот |",
+            address="Москва",
+            application_deadline=future,
+        ),
+        "archive": AuctionLot(
+            source=source(),
+            lot_kind=LotKind.LAND_SALE,
+            title="Прв аук 12:35 23.03.2021 |",
+            address="Москва",
+            application_deadline=None,
+        ),
+        "current": AuctionLot(
+            source=source(),
+            lot_kind=LotKind.LAND_SALE,
+            title="Продажа земельного участка в Коммунарке",
+            address="Москва",
+            application_deadline=future,
+        ),
+    }
+    monkeypatch.setattr(adapter, "fetch_lot", lots.__getitem__)
+
+    discovered = adapter.discover_moscow()
+
+    assert [lot.title for lot in discovered] == ["Продажа земельного участка в Коммунарке"]
+
+
+def test_explicit_platform_test_lot_is_screened_as_noise():
+    lot = AuctionLot(
+        source=source(),
+        lot_kind=LotKind.KRT,
+        title="[Тест] Тестовый лот |",
+        address="Москва",
+    )
+
+    screening = AuctionSearchService.screen_lot(lot)
+
+    assert screening["development_relevant"] is False
+    assert screening["rating"] == "Шум"
+    assert "тестовая карточка ЭТП" in screening["exclusion_reasons"]
+    assert "platform_test_lot" in screening["relevance_flags"]
 
 
 def test_api_runtime_flag_controls_project_share_discovery(monkeypatch):
