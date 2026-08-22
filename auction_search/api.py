@@ -10,7 +10,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
-from auction_search.adapters import LotOnlineAdapter, RoseltorgAdapter
+from auction_search.adapters import InvestMoscowDiscoveryAdapter, LotOnlineAdapter, RoseltorgAdapter
 from auction_search.bridge import auction_page_with_handoff, install_page_bridge
 from auction_search.developaid_mapper import build_developaid_seed
 from auction_search.documents import DocumentExtractionError
@@ -55,9 +55,11 @@ def _discovery_adapters(source: str):
         return [_lot_online_discovery_adapter()]
     if value in {"roseltorg", "ros"}:
         return [RoseltorgAdapter()]
+    if value in {"investmoscow", "moscow", "city"}:
+        return [InvestMoscowDiscoveryAdapter()]
     if value == "all":
-        return [_lot_online_discovery_adapter(), RoseltorgAdapter()]
-    raise ValueError("source: all, lot_online или roseltorg")
+        return [_lot_online_discovery_adapter(), RoseltorgAdapter(), InvestMoscowDiscoveryAdapter()]
+    raise ValueError("source: all, lot_online, roseltorg или investmoscow")
 
 
 def _public_lot_dict(lot) -> dict[str, Any]:
@@ -107,6 +109,14 @@ def install(app: FastAPI) -> None:
                     "moscow_discovery": True,
                     "discovery_access": "public_tags_search",
                 },
+                {
+                    "id": "investmoscow",
+                    "name": "Официальный портал «Торги Москвы» → фактическая ЭТП",
+                    "direct_lot_ingest": False,
+                    "moscow_discovery": True,
+                    "discovery_access": "public_city_catalogue_then_official_etp",
+                    "facts_source": "conducting_etp_only",
+                },
             ],
             "document_access": "public_first_optional_service_account_session",
         }
@@ -134,6 +144,11 @@ def install(app: FastAPI) -> None:
             "source_policy": "official_etp_only",
             "source": source,
             "count": len(lots),
+            "coverage": [
+                report
+                for adapter in adapters
+                if (report := getattr(adapter, "last_report", None)) is not None
+            ],
             "lots": [
                 {
                     **_public_lot_dict(lot),

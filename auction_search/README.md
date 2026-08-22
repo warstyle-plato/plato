@@ -6,24 +6,38 @@ Primary-source-only infrastructure for investment lots located in Moscow.
 
 Auction facts are accepted only from the official electronic trading platform (ETP) conducting the procedure. Aggregators are not adapters and must never populate model fields.
 
+Official registries and city catalogues may be used as **discovery-only**
+sources. They can nominate a city card and the linked conducting ETP, but they
+cannot populate `AuctionLot`. The ETP adapter re-reads the official platform
+card before the lot enters screening.
+
 Initial adapters:
 - Roseltorg — city / public-property procedures conducted there.
 - RAD / Lot-online — distressed, ASV and other procedures conducted there.
+
+Discovery-only catalogues:
+- the official Moscow investment portal (`investmoscow.ru`) — active land,
+  KRT search and company-share cards, followed by a mandatory conducting-ETP
+  link. Unsupported ETP hosts are reported in the source funnel instead of
+  being silently discarded or parsed as facts from the city catalogue.
 
 Future adapters may be added only when the platform itself is the official ETP for the procedure.
 
 ## Processing pipeline
 
-1. `adapter.discover_moscow()` discovers official Moscow lots.
-2. `adapter.fetch_lot()` normalizes one official ETP card into `AuctionLot`.
-3. `classify_lot()` determines the legal structure **before** financial modeling.
-4. Development-noise filter removes obvious IJS/small non-development land.
-5. Official attached documents are downloaded and typed only for a selected lot.
-6. For KRT, decision / notice / draft agreement / annexes are parsed into a separate development program and investor obligations with exact provenance.
-7. `build_project_preset()` converts the selected lot into the existing `developaid.project_preset.v4` envelope. Auction price is carried as the current acquisition-price input.
-8. `/auctions` hands that preset to the canonical DevelopAid model page through same-origin `sessionStorage`.
-9. Ordinary land continues through the existing cadastral → ГлавАПУ/MO TEP flow; KRT uses the standard preset preview/apply flow.
-10. Existing DevelopAid market/cost/financing layers calculate economics and ultimately max bid.
+1. Direct ETP catalogues and discovery-only official city catalogues nominate
+   current Moscow procedures.
+2. Discovery-only city cards are resolved to the conducting ETP; unresolved or
+   unsupported platforms remain source diagnostics, not lots.
+3. `adapter.fetch_lot()` normalizes one official ETP card into `AuctionLot`.
+4. `classify_lot()` determines the legal structure **before** financial modeling.
+5. Development-noise filter removes obvious IJS/small non-development land.
+6. Official attached documents are downloaded and typed only for a selected lot.
+7. For KRT, decision / notice / draft agreement / annexes are parsed into a separate development program and investor obligations with exact provenance.
+8. `build_project_preset()` converts the selected lot into the existing `developaid.project_preset.v4` envelope. Auction price is carried as the current acquisition-price input.
+9. `/auctions` hands that preset to the canonical DevelopAid model page through same-origin `sessionStorage`.
+10. Ordinary land continues through the existing cadastral → ГлавАПУ/MO TEP flow; KRT uses the standard preset preview/apply flow.
+11. Existing DevelopAid market/cost/financing layers calculate economics and ultimately max bid.
 
 Historical research is an explicit read-only path and is not exposed by the
 production API. Run, for example:
