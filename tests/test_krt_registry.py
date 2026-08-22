@@ -109,6 +109,8 @@ def test_auctions_exposes_krt_as_a_separate_tab_and_endpoint(monkeypatch) -> Non
     assert 'id="krtOkrug"' in page.text
     assert "Оценка Платона" in page.text
     assert "жильё и быстрый старт" in page.text
+    assert "Короткий вывод Платона" in page.text
+    assert "analysis.site||analysis.overall" in page.text
     answer = client.get("/auctions/krt")
     assert answer.status_code == 200
     assert answer.json()["projects"] == [project]
