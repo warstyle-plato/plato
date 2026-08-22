@@ -77,6 +77,7 @@ input{height:34px;border:1px solid #d0d5dd;border-radius:6px;padding:0 8px;backg
 .mini .v{font-size:17px;font-weight:750;margin-top:5px}
 .links{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}.links>div{border-top:1px solid var(--line);padding-top:8px}
 .linkrow{font-size:11px;margin:5px 0;line-height:1.35}.hidden{display:none!important}
+.scenario-grid{display:grid;grid-template-columns:1fr 1.4fr;gap:12px}.scenario-actions{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:10px}.scenario-result{border-left:3px solid var(--navy);padding:10px 12px;background:#f7f9fc;line-height:1.5}.scenario-metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-top:9px}.scenario-metrics .mini{background:#fff}
 @media(max-width:1100px){.kpis{grid-template-columns:repeat(2,1fr)}.setup{grid-template-columns:1fr}.g-axis,.g-row{grid-template-columns:245px 1fr 155px}.lane-wrap{grid-template-columns:34px 1fr}}
 </style>
 </head>
@@ -113,6 +114,12 @@ input{height:34px;border:1px solid #d0d5dd;border-radius:6px;padding:0 8px;backg
 </div></div>
 
 <div class="card hidden" id="dashCard"><div class="head"><h2>Состояние проекта</h2><span class="muted" id="source"></span></div><div class="body"><div class="kpis" id="kpis"></div></div></div>
+
+<div class="card hidden" id="scenarioCard"><div class="head"><div><h2>Платон · сценарный анализ</h2><div class="muted">Расчёт по PM-зависимостям и постатейному финансированию, без подмены факта</div></div></div><div class="body scenario-grid">
+ <div><div class="scenario-actions"><button class="btn" data-scenario="current_pace">Текущий темп</button><button class="btn alt" data-scenario="delay_wbs">Задержка WBS</button><button class="btn alt" data-scenario="accelerate_wbs">Ускорение WBS</button></div>
+  <div class="files"><input id="scenarioWbs" placeholder="WBS или название работы"><input id="scenarioValue" type="number" min="1" value="30"><span class="muted" id="scenarioUnit">дней / %</span></div><div class="msg" id="scenarioMsg"></div></div>
+ <div id="scenarioOutput" class="scenario-result muted">Выберите сценарий. Платон пересчитает связанные работы, РНВ и потребность в финансировании.</div>
+</div></div>
 
 <div class="card hidden" id="ganttCard"><div class="head">
  <div><h2>Управленческий Гант · сроки + КС + оплаты</h2>
@@ -170,6 +177,7 @@ function renderDash(v){
  const scheduleDate=forecastKnown?s.forecast_finish:s.approved_finish;
  const scheduleSub=forecastKnown?(s.rnv_delay_days?`+${s.rnv_delay_days} дн к утвержденному сроку`:(s.forecast_source||'forecast по PM-сети')):'Current Forecast не рассчитан: нет actualized WBS/rebaseline, отличный от baseline';
  $('dashCard').classList.remove('hidden');$('source').textContent=(d.sources&&d.sources.rss)||'';
+ $('scenarioCard').classList.remove('hidden');
  $('kpis').innerHTML=
    kpi(scheduleTitle,dt(scheduleDate),scheduleSub,forecastKnown&&s.rnv_delay_days>0?'bad':forecastKnown?'good':'')+
    kpi('Актировано СМР / утв. модель',pct(ph.completion),`${money(ph.accepted)} по датированным КС · это не физический % WBS`)+
@@ -178,6 +186,16 @@ function renderDash(v){
    kpi('Исчерпание резерва',dt(f.reserve_exhaustion||f.bank_exhaustion),`остаток лимитов статей ${money(f.bank_remaining)}`,f.reserve_exhaustion||f.bank_exhaustion?'bad':'good')+
    kpi('Непокрытая потребность',money(f.additional_financing),f.known?f.method:(f.reason||'нет данных'),f.additional_financing>0?'bad':'good');
 }
+async function runScenario(kind){
+ const wbs=$('scenarioWbs').value.trim(),value=Number($('scenarioValue').value)||0;
+ if(kind!=='current_pace'&&!wbs)return msg('scenarioMsg','Укажите WBS или часть названия работы','bad');
+ msg('scenarioMsg','Платон пересчитывает сеть и финансирование…','good');
+ try{const r=await post('/monitor/scenario',{project:$('project').value.trim(),cut:$('cut').value,kind,wbs,days:kind==='delay_wbs'?value:0,acceleration_pct:kind==='accelerate_wbs'?value:20}),s=r.schedule||{},f=r.funding||{};
+  $('scenarioOutput').className='scenario-result';$('scenarioOutput').innerHTML=`<b>${r.answer||'Сценарий рассчитан'}</b><div class="scenario-metrics"><div class="mini"><div class="l">РНВ сценария</div><div class="v">${dt(s.scenario_rnv)}</div><div class="sub">к текущему прогнозу ${Number(s.impact_vs_current_days)>=0?'+':''}${s.impact_vs_current_days||0} дн</div></div><div class="mini"><div class="l">К утверждённому РНВ</div><div class="v ${Number(s.delay_vs_approved_days)>0?'bad':'good'}">${Number(s.delay_vs_approved_days)>=0?'+':''}${s.delay_vs_approved_days||0} дн</div><div class="sub">baseline ${dt(s.approved_rnv)}</div></div><div class="mini"><div class="l">Потребность в дофинансе</div><div class="v ${Number(f.additional_financing)>0?'bad':'good'}">${money(f.additional_financing)}</div><div class="sub">резерв до ${dt(f.reserve_exhaustion)}</div></div></div>`;
+  msg('scenarioMsg','Сценарий рассчитан из загруженного состояния проекта.','good')
+ }catch(e){msg('scenarioMsg',e.message,'bad')}
+}
+document.querySelectorAll('[data-scenario]').forEach(b=>b.onclick=()=>runScenario(b.dataset.scenario));
 function collect(nodes,out=[]){for(const n of nodes||[]){out.push(n);collect(n.children||[],out)}return out}
 function toDate(v){const d=new Date(v);return isNaN(d)?null:d}
 
