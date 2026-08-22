@@ -12,59 +12,18 @@ import datetime
 from typing import Any
 
 import developaid_monitor as monitor
+import developaid_monitor_forecast as forecast
 import developaid_monitor_schedule_graph as schedule_graph
 
 _INSTALLED = False
 _ORIGINAL_BUILD = None
 
 
-def _clamp(value: Any, low: float = 0.0, high: float = 1.0) -> float | None:
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return None
-    return max(low, min(high, number))
-
-
-def _pace_finish(row: dict[str, Any], cut: datetime.date) -> tuple[datetime.date | None, str]:
-    """Forecast one task finish from accepted-cost progress and observed pace."""
-    start = monitor._day(row.get("plan_start"))
-    finish = monitor._day(row.get("plan_finish"))
-    progress = _clamp(row.get("rss_accepted_ratio"))
-    if not start or not finish or progress is None:
-        return None, ""
-    if row.get("baseline_closed"):
-        return None, "baseline_closed"
-    if cut < start:
-        return None, "future"
-    # RSS 2.1 is not one physical work package. On real projects it combines
-    # early site preparation with POS/site-operation and demobilisation that
-    # continue until the end of construction. Its aggregate accepted/EAC pace
-    # is useful cost evidence, but converting it into a WBS finish creates the
-    # fake multi-year "Подготовительный период" forecast seen on Grodnenskaya.
-    codes = monitor._codes(row.get("code"))
-    if codes and all(code.startswith("2.1") for code in codes):
-        return None, "mixed_lifecycle_rss"
-    if progress >= 0.999999:
-        return cut, "accepted_complete"
-
-    try:
-        monthly_rate = float(row.get("rss_act_cost_rate_3m") or 0.0)
-    except (TypeError, ValueError):
-        monthly_rate = 0.0
-    method = "rolling_3m_acts"
-
-    if monthly_rate <= 1e-9:
-        elapsed_days = max(0, (cut - start).days)
-        if progress <= 1e-9 or elapsed_days <= 0:
-            return None, "no_pace"
-        monthly_rate = progress / max(elapsed_days / 30.4375, 1 / 30.4375)
-        method = "average_acts_since_start"
-
-    if monthly_rate <= 1e-9:
-        return None, "no_pace"
-    remaining_months = max(0.0, (1.0 - progress) / monthly_rate)
-    return cut + datetime.timedelta(days=round(remaining_months * 30.4375)), method
+# Формула прогноза и правило отбора seeds объявлены один раз — в
+# `developaid_monitor_forecast`. Копия здесь отвечала иначе на завершённых
+# задачах, и сценарий «Текущий темп» получал другую сеть, чем эта карточка.
+_clamp = forecast._clamp
+_pace_finish = forecast.pace_finish
 
 
 def _status(row: dict[str, Any], cut: datetime.date, predicted: datetime.date | None) -> str:
