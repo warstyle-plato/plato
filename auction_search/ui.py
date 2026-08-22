@@ -38,9 +38,11 @@ AUCTIONS_PAGE = r'''<!doctype html>
       <select id="krtPurpose"><option value="">Любое назначение</option><option value="housing_gfa_sqm">Жильё</option><option value="business_gfa_sqm">Общественно-деловое</option><option value="nonresidential_gfa_sqm">Нежилое</option></select>
       <select id="krtProfile" title="Критерии предварительной оценки Платона"><option value="housing_ready">Платон: жильё и быстрый старт</option><option value="housing_pipeline">Платон: жилищный потенциал</option><option value="business">Платон: деловая застройка</option></select>
       <button id="krtRefresh" class="primary">Обновить каталог</button>
+      <button id="krtRankBtn">Оценить все КРТ моделью</button>
     </div>
     <div class="stats"><div class="stat"><b id="krtCount">—</b><span>проектов</span></div><div class="stat"><b id="krtArea">—</b><span>га территории</span></div><div class="stat"><b id="krtHousing">—</b><span>м² жилья</span></div><div class="stat"><b id="krtGfa">—</b><span>м² всего</span></div></div>
-    <div class="layout"><div class="tablewrap"><table><thead><tr><th>Проект КРТ</th><th>Оценка Платона</th><th>Статус</th><th>Площадь</th><th>Общий объём</th><th>Жильё</th><th>Рабочие места</th></tr></thead><tbody id="krtRows"></tbody></table><div id="krtEmpty" class="empty">Открываю официальный каталог krt.mos.ru…</div></div><aside class="side" id="krtSide"><div class="empty">Выберите проект КРТ.<br>ТЭП берутся из krt.mos.ru, рынок считает существующий движок DevelopAid.</div></aside></div>
+    <div id="krtRankStatus" class="notice" style="display:none"></div>
+    <div class="layout"><div class="tablewrap"><table><thead><tr><th>Проект КРТ</th><th>Оценка Платона</th><th title="Предельная цена входа при LLCR 1,20x, на метр продаваемой площади">Потолок входа, ₽/м²</th><th>Статус</th><th>Площадь</th><th>Общий объём</th><th>Жильё</th><th>Рабочие места</th></tr></thead><tbody id="krtRows"></tbody></table><div id="krtEmpty" class="empty">Открываю официальный каталог krt.mos.ru…</div></div><aside class="side" id="krtSide"><div class="empty">Выберите проект КРТ.<br>ТЭП берутся из krt.mos.ru, рынок считает существующий движок DevelopAid.</div></aside></div>
   </div>
   <div class="filters" id="auctionFilters">
     <select id="source"><option value="all">Все официальные источники</option><option value="investmoscow">Торги Москвы → ЭТП</option><option value="lot_online">РАД / Lot-online</option><option value="roseltorg">Росэлторг</option></select>
@@ -62,7 +64,7 @@ AUCTIONS_PAGE = r'''<!doctype html>
   </div>
 </div>
 <script>
-const state={lots:[],filtered:[],coverage:[],selected:null,ingested:null,krt:[],krtFiltered:[],krtOkrugs:new Set(),krtModels:{},krtPolls:0,krtTimer:null};
+const state={lots:[],filtered:[],coverage:[],selected:null,ingested:null,krt:[],krtFiltered:[],krtOkrugs:new Set(),krtModels:{},krtPolls:0,krtTimer:null,krtRank:{},krtRankProgress:null,krtRankTimer:null};
 const KRT_OKRUGS=['ЦАО','САО','СВАО','ВАО','ЮВАО','ЮАО','ЮЗАО','ЗАО','СЗАО','НАО','ТАО','ЗелАО'];
 const $=id=>document.getElementById(id);
 const fmtMoney=n=>Number.isFinite(Number(n))?new Intl.NumberFormat('ru-RU',{maximumFractionDigits:1}).format(Number(n)/1e6)+' млн ₽':'—';
@@ -91,7 +93,66 @@ function closeKrtOkrugs(){const menu=$('krtOkrugMenu'),button=$('krtOkrugToggle'
 function krtFit(x){const profile=$('krtProfile').value,total=Number(x.total_gfa_sqm)||0,housing=Number(x.housing_gfa_sqm)||0,business=Number(x.business_gfa_sqm)||0,area=Number(x.area_ha)||0,jobs=Number(x.jobs)||0,active=x.status==='В реализации';let score=0,reasons=[],checks=[];const complete=[x.okrug,x.district,x.status,total,area].filter(Boolean).length;score+=complete*3;if(complete>=4)reasons.push('основные ТЭП заполнены');else checks.push('неполные исходные ТЭП');if(profile==='housing_ready'){score+=active?30:12;reasons.push(active?'проект уже в реализации':'проект пока планируемый');const share=total?housing/total:0;score+=Math.min(35,share*45);if(housing>0)reasons.push(`жильё ${Math.round(share*100)}% общего объёма`);else checks.push('жилой объём не указан');score+=housing>=200000?20:housing>=50000?14:housing>0?7:0}else if(profile==='housing_pipeline'){score+=active?20:18;const share=total?housing/total:0;score+=Math.min(42,share*52);if(housing>0)reasons.push(`жилищный потенциал ${fmtArea(housing)}`);else checks.push('жилой объём не указан');score+=housing>=300000?22:housing>=100000?16:housing>0?8:0}else{score+=active?22:15;const share=total?business/total:0;score+=Math.min(42,share*52);if(business>0)reasons.push(`деловой объём ${fmtArea(business)}`);else checks.push('деловой объём не указан');score+=jobs>=3000?21:jobs>=500?14:jobs>0?7:0}if(area>0&&area<=40){score+=5;reasons.push('управляемый масштаб территории')}else if(area>40)checks.push('крупная территория требует поэтапной проверки');score=Math.max(0,Math.min(100,Math.round(score)));const tone=score>=75?'ok':score>=50?'warn':'bad',label=score>=75?'Высокое':score>=50?'Среднее':'Низкое';return{score,tone,label,reasons:reasons.slice(0,4),checks:checks.slice(0,3)}}
 function filterKrt(){const q=$('krtSearch').value.trim().toLowerCase(),status=$('krtStatus').value,purpose=$('krtPurpose').value;state.krtFiltered=state.krt.filter(x=>(!q||[x.name,x.district,x.okrug].join(' ').toLowerCase().includes(q))&&(!state.krtOkrugs.size||state.krtOkrugs.has(x.okrug))&&(!status||x.status===status)&&(!purpose||Number(x[purpose])>0)).sort((a,b)=>krtFit(b).score-krtFit(a).score||String(a.name).localeCompare(String(b.name),'ru'));renderKrt()}
 function sumKrt(rows,key,d){const n=rows.reduce((s,x)=>s+(Number(x[key])||0),0);return new Intl.NumberFormat('ru-RU',{maximumFractionDigits:d}).format(n)}
-function renderKrt(){const a=state.krtFiltered,body=$('krtRows');body.innerHTML='';$('krtEmpty').style.display=a.length?'none':'grid';$('krtCount').textContent=a.length;$('krtArea').textContent=sumKrt(a,'area_ha',1);$('krtHousing').textContent=sumKrt(a,'housing_gfa_sqm',0);$('krtGfa').textContent=sumKrt(a,'total_gfa_sqm',0);a.forEach(x=>{const fit=krtFit(x),model=state.krtModels[x.slug],light=model?.traffic_light,tr=document.createElement('tr'),deep=light?`Модель · ${esc(light.label)}`:`${fit.score} · ${fit.label}`,tone=light?.tone||fit.tone,title=light?'Предварительный прогон финансовой модели':'Предварительно, до анализа рынка';tr.innerHTML=`<td><div class="lotname">${esc(x.name)}</div><div class="source">${esc([x.okrug,x.district].filter(Boolean).join(' · '))}</div></td><td><span class="fit ${tone}" title="${title}"><span class="light"></span>${deep}</span></td><td><span class="tag ${x.status==='В реализации'?'ok':'warn'}">${esc(x.status||'—')}</span></td><td>${x.area_ha?esc(x.area_ha+' га'):'—'}</td><td>${fmtArea(x.total_gfa_sqm)}</td><td>${fmtArea(x.housing_gfa_sqm)}</td><td>${esc(x.jobs??'—')}</td>`;tr.onclick=()=>selectKrt(x);body.appendChild(tr)})}
+function renderKrt(){const a=state.krtFiltered,body=$('krtRows');body.innerHTML='';$('krtEmpty').style.display=a.length?'none':'grid';$('krtCount').textContent=a.length;$('krtArea').textContent=sumKrt(a,'area_ha',1);$('krtHousing').textContent=sumKrt(a,'housing_gfa_sqm',0);$('krtGfa').textContent=sumKrt(a,'total_gfa_sqm',0);a.forEach(x=>{const fit=krtFit(x),model=state.krtModels[x.slug],light=model?.traffic_light,tr=document.createElement('tr'),deep=light?`Модель · ${esc(light.label)}`:`${fit.score} · ${fit.label}`,tone=light?.tone||fit.tone,title=light?'Предварительный прогон финансовой модели':'Предварительно, до анализа рынка';tr.innerHTML=`<td><div class="lotname">${esc(x.name)}</div><div class="source">${esc([x.okrug,x.district].filter(Boolean).join(' · '))}</div></td><td><span class="fit ${tone}" title="${title}"><span class="light"></span>${deep}</span></td><td class="money">${krtRankCell(x.slug)}</td><td><span class="tag ${x.status==='В реализации'?'ok':'warn'}">${esc(x.status||'—')}</span></td><td>${x.area_ha?esc(x.area_ha+' га'):'—'}</td><td>${fmtArea(x.total_gfa_sqm)}</td><td>${fmtArea(x.housing_gfa_sqm)}</td><td>${esc(x.jobs??'—')}</td>`;tr.onclick=()=>selectKrt(x);body.appendChild(tr)})}
+// Балл — потолок цены входа на метр продаваемой (решение владельца,
+// 23.08.2026). На метр, а не в абсолюте: потолок в рублях выгоден крупным
+// площадкам просто по размеру. Пустая ячейка значит «не посчитали», и это не
+// то же самое, что «не выдерживает», — поэтому у неё своя подпись.
+function krtRankCell(slug){
+ const row=state.krtRank[slug];
+ if(!row)return '<span class="source">не оценён</span>';
+ if(!row.available)return `<span class="source" title="${esc(row.reason||'')}">не посчитан</span>`;
+ const per=row.entry_capacity_rub_per_sqm;
+ if(per===null||per===undefined)
+  return `<span class="source" title="${esc(row.entry_capacity_reason||'')}">потолок не подобран</span>`;
+ const total=row.entry_capacity_mln!=null?` · ${fmtMln(row.entry_capacity_mln)}`:'';
+ return `<b>${new Intl.NumberFormat('ru-RU').format(per)}</b><span class="source">${esc(total)}</span>`;
+}
+// Ход показывается тем, что есть: сколько посчитано из скольких, что считается
+// сейчас, сколько секунд идёт. Ожидание без признака работы читается как
+// внезапность, а прогон по каталогу идёт минутами.
+function renderKrtRankStatus(){
+ const box=$('krtRankStatus'),p=state.krtRankProgress;
+ if(!box)return;
+ if(!p||(!p.running&&!p.total&&!p.updated_at)){box.style.display='none';return}
+ box.style.display='';
+ if(p.running){
+  const left=p.current?` · сейчас: ${esc(p.current)}`:'';
+  const failed=p.failed?` · не посчитано: ${p.failed}`:'';
+  box.className='notice';
+  box.innerHTML=`<span class="spinner"></span>Считаю модель по каталогу: ${p.done} из ${p.total} · ${p.elapsed_seconds||0} с${left}${failed}`;
+  return;
+ }
+ const when=p.updated_at?new Date(p.updated_at*1000).toLocaleString('ru-RU'):'';
+ const failed=p.failed?` Не посчитано: ${p.failed}.`:'';
+ box.className=p.stale?'notice warn':'notice';
+ box.innerHTML=`Оценка модели по каталогу от ${esc(when)}.${failed}`
+  +(p.stale?' Данные старше суток — обновите.':'');
+}
+async function loadKrtRanking(){
+ try{
+  const r=await fetch('/auctions/krt/ranking',{cache:'no-store'}),d=await r.json();
+  if(!r.ok)throw new Error(d.detail||'Рейтинг не получен');
+  state.krtRank={};(d.rows||[]).forEach(row=>{state.krtRank[row.slug]=row;
+   if(row.available&&row.traffic_light)state.krtModels[row.slug]={traffic_light:row.traffic_light}});
+  state.krtRankProgress=d.progress||null;
+  renderKrtRankStatus();renderKrt();
+  clearTimeout(state.krtRankTimer);
+  if(d.progress&&d.progress.running)state.krtRankTimer=setTimeout(loadKrtRanking,3000);
+ }catch(e){const box=$('krtRankStatus');if(box){box.style.display='';box.className='notice warn';box.textContent=String(e.message||e)}}
+}
+async function startKrtRanking(){
+ const b=$('krtRankBtn');b.disabled=true;b.innerHTML='<span class="spinner"></span>Запускаю';
+ try{
+  const r=await fetch('/auctions/krt/ranking/refresh',{method:'POST'}),d=await r.json();
+  if(!r.ok){
+   if(r.status===401)throw new Error('Нужен вход в кабинет рынка: откройте /cabinet в соседней вкладке и войдите по ключу.');
+   throw new Error(d.detail||'Прогон не запущен');
+  }
+  state.krtRankProgress=d.progress||null;renderKrtRankStatus();loadKrtRanking();
+ }catch(e){const box=$('krtRankStatus');box.style.display='';box.className='notice warn';box.textContent=String(e.message||e)}
+ finally{b.disabled=false;b.textContent='Оценить все КРТ моделью'}
+}
 function selectKrt(x){state.selectedKrt=x;const fit=krtFit(x),cached=state.krtModels[x.slug];$('krtSide').innerHTML=`<h2>${esc(x.name)}</h2><div class="sub">krt.mos.ru · ${esc([x.okrug,x.district].filter(Boolean).join(' · '))}</div><div class="notice"><div class="fit ${fit.tone}"><span class="light"></span>Предварительная оценка Платона: ${fit.score}/100 · ${fit.label}</div><div class="source">По официальным ТЭП, до проверки окружения и экономики.</div></div><div class="items">${fit.reasons.map(x=>`<div class="item"><b>Соответствует запросу</b>${esc(x)}</div>`).join('')}${fit.checks.map(x=>`<div class="item"><b>Нужно проверить</b>${esc(x)}</div>`).join('')}</div><div class="kv"><div>Статус</div><div>${esc(x.status||'—')}</div><div>Площадь</div><div>${esc(x.area_ha?x.area_ha+' га':'—')}</div><div>Всего построить</div><div>${fmtArea(x.total_gfa_sqm)}</div><div>Жильё</div><div>${fmtArea(x.housing_gfa_sqm)}</div><div>Нежилое</div><div>${fmtArea(x.nonresidential_gfa_sqm)}</div><div>Общественно-деловое</div><div>${fmtArea(x.business_gfa_sqm)}</div><div>Рабочие места</div><div>${esc(x.jobs??'—')}</div></div><div class="notice warn">Официальный полигон границ пока не получен. Анализ использует геокодированную точку и помечает это приближение.</div><div class="actions"><button class="primary" id="krtMarket">Получить маркетинг и прогнать модель</button><button id="krtSource">Открыть krt.mos.ru</button></div><div id="krtMarketResult">${cached?renderKrtModel(cached):''}</div>`;$('krtMarket').onclick=()=>loadKrtMarket(x);$('krtSource').onclick=()=>window.open(x.url,'_blank','noopener')}
 async function loadKrtMarket(x){const b=$('krtMarket'),out=$('krtMarketResult');b.disabled=true;b.innerHTML='<span class="spinner"></span>Рынок → модель';out.innerHTML='<div class="notice">Определяю продукт и цену, затем запускаю финансовый движок и автоматические очереди…</div>';try{const r=await fetch('/auctions/krt/'+encodeURIComponent(x.slug)+'/market',{cache:'no-store'}),d=await r.json();if(!r.ok){if(r.status===401)throw new Error('Нужен вход в кабинет рынка: откройте /cabinet в соседней вкладке и войдите по ключу.');throw new Error(d.detail||'Маркетинг не получен')}if(d.model_screening?.available){state.krtModels[x.slug]=d.model_screening;renderKrt()}renderKrtMarket(d,out)}catch(e){out.innerHTML=`<div class="notice warn">${esc(e.message||e)}</div>`}finally{b.disabled=false;b.textContent='Обновить маркетинг и модель'}}
 function renderKrtModel(m){
@@ -108,8 +169,9 @@ function renderKrtMarket(d,out){
  const entry=hint.entry_per_sqm?`Для старта продаж ориентир входной цены — ${new Intl.NumberFormat('ru-RU').format(hint.entry_per_sqm)} ₽/м²; средняя цена проекта формируется позднее по очередям и квартирографии.`:'';
  out.innerHTML=`<div class="section"><h3>Короткий вывод Платона</h3><div class="notice"><b>${esc(headline)}</b><div style="margin-top:5px">${esc(summary)}</div>${entry?`<div class="source" style="margin-top:7px">${esc(entry)}</div>`:''}</div></div>${renderKrtModel(d.model_screening)}<div class="section"><h3>Рынок рядом</h3><div class="kv"><div>Радиус</div><div>${esc(c.radius_km||3)} км</div><div>Найдено проектов</div><div>${esc(c.found??peers.length)}</div><div>Использовано</div><div>${esc(c.used??peers.length)}</div><div>Ориентир цены</div><div class="money">${price?new Intl.NumberFormat('ru-RU').format(price)+' ₽/м²':'—'}</div></div></div><div class="section"><h3>Реализуемые проекты</h3><div class="items">${peers.length?peers.map(p=>`<div class="item"><b>${esc(p.name)} · ${esc(p.distance_km??'—')} км</b><div>${p.price_per_sqm?new Intl.NumberFormat('ru-RU').format(p.price_per_sqm)+' ₽/м²':'цена не опубликована'}${p.price_per_sqm_min?' · от '+new Intl.NumberFormat('ru-RU').format(p.price_per_sqm_min):''}</div><div class="source">${esc([p.developer,p.segment,p.living_area?'объём '+fmtArea(p.living_area):null,p.remaining_units?'остаток '+p.remaining_units+' лотов':null,p.units_per_month?'темп '+p.units_per_month+' ДДУ/мес':null].filter(Boolean).join(' · '))}</div></div>`).join(''):'<div class="notice">Сопоставимых проектов в выбранном радиусе не найдено.</div>'}</div></div>`
 }
-$('tabAuctions').onclick=()=>switchTab(false);$('tabKrt').onclick=()=>switchTab(true);$('krtRefresh').onclick=loadKrt;$('krtSearch').oninput=filterKrt;$('krtStatus').onchange=filterKrt;$('krtPurpose').onchange=filterKrt;$('krtProfile').onchange=()=>{filterKrt();if(state.selectedKrt)selectKrt(state.selectedKrt)};
+$('tabAuctions').onclick=()=>switchTab(false);$('tabKrt').onclick=()=>switchTab(true);$('krtRefresh').onclick=loadKrt;$('krtRankBtn').onclick=startKrtRanking;$('krtSearch').oninput=filterKrt;$('krtStatus').onchange=filterKrt;$('krtPurpose').onchange=filterKrt;$('krtProfile').onchange=()=>{filterKrt();if(state.selectedKrt)selectKrt(state.selectedKrt)};
 $('krtOkrugToggle').onclick=e=>{e.stopPropagation();const menu=$('krtOkrugMenu'),open=menu.classList.contains('hidden');menu.classList.toggle('hidden',!open);$('krtOkrugToggle').setAttribute('aria-expanded',String(open))};$('krtOkrugMenu').onclick=e=>e.stopPropagation();$('krtOkrugClear').onclick=()=>{state.krtOkrugs.clear();$('krtOkrugOptions').querySelectorAll('input').forEach(x=>x.checked=false);updateKrtOkrugLabel();filterKrt()};document.addEventListener('click',closeKrtOkrugs);document.addEventListener('keydown',e=>{if(e.key==='Escape'){closeKrtOkrugs();$('krtOkrugToggle').focus()}});
+loadKrtRanking();
 $('refresh').onclick=discover;$('search').oninput=filter;$('kind').onchange=filter;$('source').onchange=discover;$('noise').onchange=discover;
 </script>
 </body></html>'''

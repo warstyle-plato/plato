@@ -495,3 +495,38 @@ def test_the_nagatino_preset_declares_its_own_numbers():
     # не читал вовсе, и статья не попадала в модель ни рублём.
     assert preview["inputs"]["social_compensation_mln"] == pytest.approx(768.2, abs=0.1)
     assert preview["inputs"]["social_mode"] == project_preset.SOCIAL_MODE_BOTH
+
+
+def test_a_preset_says_out_loud_what_it_left_to_the_defaults():
+    """Незаявленная экономика — умолчание движка, и оно обязано быть названо.
+
+    Пресет КРТ Нагатино объявлял площади и обязательства, но ни одной цены и
+    ни одной ставки себестоимости. Квартиры уходили в расчёт по 350 тыс ₽/м²,
+    СМР по 110, место ДОО по 2,75 млн и место СОШ по 3 млн — соцобъекты
+    стоили 3 962 млн вместо 8 189, а отчёт выглядел безупречно.
+    """
+    bare = project_preset.build_preview({
+        "schema_version": "developaid.project_preset.v4",
+        "project": {"name": "Пустой"},
+        "planning": {"objects": [{
+            "id": "RES", "name": "Жильё", "gfa_m2": 10_000,
+            "residential_part_m2": 10_000, "building_type": "residential",
+        }]},
+    })
+    silent = [note["note"] for note in bare["notes"] if "умолчания движка" in note["note"]]
+    assert silent, "пресет без цен обязан сказать, что цен в нём нет"
+    assert "цену квартир" in silent[0]
+    assert "СМР наземной части" in silent[0]
+
+    path = Path(__file__).resolve().parent.parent / "presets" / "КРТ_Нагатино.json"
+    if not path.exists():
+        pytest.skip("пресет КРТ Нагатино не найден")
+    full = project_preset.build_preview(json.loads(path.read_text(encoding="utf-8")))
+    assert not [n for n in full["notes"] if "умолчания движка" in n["note"]]
+    # Себестоимость места соцобъекта объявить было негде: ключей не было в
+    # карте, и заданное в файле молча пропадало.
+    assert full["inputs"]["school_cost_mln_per_place"] == pytest.approx(6.29856)
+    assert full["inputs"]["kindergarten_cost_mln_per_place"] == pytest.approx(5.4)
+    social = (350 * full["inputs"]["kindergarten_cost_mln_per_place"]
+              + 1000 * full["inputs"]["school_cost_mln_per_place"])
+    assert social == pytest.approx(8188.56, abs=0.01)

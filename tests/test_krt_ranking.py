@@ -1,0 +1,145 @@
+"""Балл по всем КРТ разом, а не только по открытой карточке.
+
+Прогон модели жил внутри карточки: сравнить две площадки значило открыть их по
+очереди и запомнить числа. Балл — потолок цены входа **на метр продаваемой**
+(решение владельца, 23.08.2026): потолок в абсолюте выгоден крупным площадкам
+просто по размеру. Цена аукциона в балл не входит и входить пока не может — у
+проекта каталога krt.mos.ru ценового поля нет вовсе.
+
+Запуск: python3 -m pytest tests/test_krt_ranking.py -q
+"""
+
+from __future__ import annotations
+
+import sys
+import time
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from auction_search import krt_ranking  # noqa: E402
+
+
+PROJECT = {"slug": "nagatino", "name": "КРТ Нагатино", "okrug": "ЮАО",
+           "district": "Нагатино-Садовники", "status": "Планируемый", "area_ha": 12.0}
+
+
+def _screening(amount_mln: float, saleable: float) -> dict:
+    return {
+        "available": True,
+        "traffic_light": {"tone": "ok", "label": "Операционный сценарий проходит"},
+        "metrics": {"project_llcr_x": 1.31, "weakest_phase_llcr_x": 1.19,
+                    "margin_pct": 14.8, "net_profit_mln": 17_084.9},
+        "phasing": {"count": 3, "saleable_sqm": saleable},
+        "market": {"recommended_segment": "комфорт", "start_price_rub_sqm": 442_050},
+        "entry_capacity": {"available": True, "amount_mln": amount_mln},
+    }
+
+
+def test_the_score_is_the_ceiling_per_saleable_metre():
+    row = krt_ranking.score_row(PROJECT, _screening(7_816.9, 191_279))
+    assert row["entry_capacity_mln"] == pytest.approx(7_816.9)
+    # 7 816,9 млн ₽ на 191 279 м² — балл в рублях за метр.
+    assert row["entry_capacity_rub_per_sqm"] == round(7_816.9 * 1e6 / 191_279)
+    assert row["saleable_sqm"] == 191_279
+    assert row["traffic_light"]["tone"] == "ok"
+
+
+def test_a_bigger_site_does_not_win_by_size_alone():
+    """Ради этого балл и считается на метр, а не в абсолюте."""
+    small = krt_ranking.score_row({**PROJECT, "slug": "small"}, _screening(900, 20_000))
+    large = krt_ranking.score_row({**PROJECT, "slug": "large"}, _screening(7_000, 400_000))
+    assert large["entry_capacity_mln"] > small["entry_capacity_mln"]
+    assert small["entry_capacity_rub_per_sqm"] > large["entry_capacity_rub_per_sqm"]
+    order = sorted([small, large], key=krt_ranking._rank_key)
+    assert order[0]["slug"] == "small", "на метр площадка поменьше сильнее"
+
+
+def test_an_unpriced_site_falls_to_the_bottom_but_stays():
+    """«Не посчитали» — не то же самое, что «не выдерживает»."""
+    good = krt_ranking.score_row({**PROJECT, "slug": "good"}, _screening(5_000, 100_000))
+    blind = krt_ranking.score_row(
+        {**PROJECT, "slug": "blind"}, {"available": False, "reason": "Маркетинг не дал цены"})
+    no_ceiling = krt_ranking.score_row(
+        {**PROJECT, "slug": "flat"},
+        {**_screening(0, 100_000), "entry_capacity": {"available": False, "reason": "нет решения"}})
+    order = [row["slug"] for row in sorted([blind, no_ceiling, good], key=krt_ranking._rank_key)]
+    assert order[0] == "good"
+    assert set(order) == {"good", "blind", "flat"}, "непосчитанное не исчезает из списка"
+    assert blind["available"] is False and blind["reason"]
+    assert no_ceiling["entry_capacity_rub_per_sqm"] is None
+    assert no_ceiling["entry_capacity_reason"]
+
+
+def test_the_run_shows_its_progress_and_keeps_what_it_counted(tmp_path):
+    """Ход виден, а прерванный прогон оставляет посчитанное."""
+    ranking = krt_ranking.KrtRanking(tmp_path)
+    assert ranking.rows() == []
+    assert ranking.progress()["running"] is False
+
+    seen: list[str] = []
+
+    def screen(project: dict) -> dict:
+        seen.append(project["slug"])
+        if project["slug"] == "broken":
+            raise RuntimeError("рынок не ответил")
+        return _screening(1_000, 50_000)
+
+    projects = [{**PROJECT, "slug": s, "name": s} for s in ("a", "broken", "b")]
+    assert ranking.start(projects, screen) is True
+    for _ in range(200):
+        if not ranking.progress()["running"]:
+            break
+        time.sleep(0.02)
+    progress = ranking.progress()
+    assert progress["running"] is False
+    assert progress["done"] == 3 and progress["total"] == 3
+    # Ошибка одной площадки не останавливает прогон, но и не молчит.
+    assert progress["failed"] == 1
+    assert seen == ["a", "broken", "b"]
+
+    rows = {row["slug"]: row for row in ranking.rows()}
+    assert set(rows) == {"a", "broken", "b"}
+    assert rows["broken"]["available"] is False
+    assert "рынок не ответил" in rows["broken"]["reason"]
+    assert rows["a"]["entry_capacity_rub_per_sqm"] == round(1_000 * 1e6 / 50_000)
+
+
+def test_a_second_run_does_not_start_while_one_is_going(tmp_path):
+    ranking = krt_ranking.KrtRanking(tmp_path)
+    release = {"go": False}
+
+    def screen(project: dict) -> dict:
+        while not release["go"]:
+            time.sleep(0.01)
+        return _screening(100, 10_000)
+
+    projects = [{**PROJECT, "slug": "a", "name": "a"}]
+    assert ranking.start(projects, screen) is True
+    assert ranking.start(projects, screen) is False, "второй прогон на ходу не запускается"
+    release["go"] = True
+    for _ in range(200):
+        if not ranking.progress()["running"]:
+            break
+        time.sleep(0.02)
+    assert ranking.progress()["running"] is False
+
+
+def test_the_screen_shows_the_run_and_names_the_measure():
+    """Ожидание без признака работы читается как внезапность.
+
+    Прогон по каталогу идёт минутами, поэтому на экране обязаны стоять
+    счётчик, текущая площадка и секунды. И сам балл обязан быть назван: две
+    разные величины под одним заголовком никто не заметит.
+    """
+    from auction_search.ui import auctions_page
+
+    page = auctions_page()
+    assert "Потолок входа, ₽/м²" in page, "колонка называет, что в ней"
+    assert "Оценить все КРТ моделью" in page
+    assert "/auctions/krt/ranking" in page and "/auctions/krt/ranking/refresh" in page
+    assert "из ${p.total}" in page and "p.elapsed_seconds" in page and "p.current" in page
+    # Пустая ячейка обязана различать «не оценён» и «не выдерживает».
+    assert "не оценён" in page and "потолок не подобран" in page
