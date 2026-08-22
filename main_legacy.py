@@ -64,7 +64,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.19.38"
+VERSION = "0.19.39"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -1177,6 +1177,20 @@ def parse_manual_tep_xlsx(data: bytes, filename: str = "") -> dict[str, Any]:
             "transfer": transfer,
             "units": units,
         }
+
+    # `other_mandatory` was added to the product model after the downloadable
+    # DevelopAid_TEP_2 workbook had already been issued. Old files remain
+    # valid: the new row is zero unless it is explicitly present. Requiring it
+    # would make the application reject the very template it still serves.
+    for key in {"other_mandatory"}:
+        tep_mapping.setdefault(key, {
+            "gns": 0.0,
+            "total_area": 0.0,
+            "useful": 0.0,
+            "saleable": 0.0,
+            "transfer": 0.0,
+            "units": 0.0,
+        })
 
     missing = sorted(known_keys - set(tep_mapping))
     if missing:
@@ -32726,7 +32740,7 @@ function renderResult(){
     <td>${p.label}</td>
     <td>${num(p.gns||0)}</td>
     <td>${num(p.saleable||0)}</td>
-    <td>${num(p.quantity)} ${p.unit}${inUnits(p)?sub(num(Math.round(ap.units_total))+' шт.'):''}</td>
+    <td>${num(p.quantity)} ${p.unit}${inUnits(p)?sub(num(Math.round(ap.units_total))+' шт. · '+num2(ap.pace_pre_rve_units)+' кв./мес.'):''}</td>
     <td>${th(p.avg_price_th)}</td>
     <td>${money(p.revenue)}</td>
     <td>${money(p.cost||0)}</td>
