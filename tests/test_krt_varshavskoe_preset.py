@@ -65,8 +65,12 @@ def test_explicit_saleable_assumptions_replace_foreign_ratios(imported):
     assert tep["apartments"]["saleable"] == 170000
     assert tep["offices"]["gns"] == 185460
     assert tep["offices"]["saleable"] == 150000
-    assert preset["canonical_tep"]["products"]["apartments"]["ratio_source"].startswith("working")
-    assert preset["canonical_tep"]["products"]["offices"]["ratio_source"].startswith("working")
+    apartment_source = preset["canonical_tep"]["products"]["apartments"]["ratio_source"]
+    office_source = preset["canonical_tep"]["products"]["offices"]["ratio_source"]
+    assert "explicit user input" in apartment_source
+    assert "explicit user input" in office_source
+    assert "not a Rumyantsevo coefficient" in apartment_source
+    assert "not a Rumyantsevo coefficient" in office_source
     assert tep["underground_parking"]["gns"] == 0
     assert tep["underground_parking"]["units"] == 0
     assert any(note["origin"] == "tbd" and "паркинг" in note["note"].lower()
@@ -80,20 +84,53 @@ def test_separate_social_objects_keep_their_exact_gfa(imported):
 
 
 def test_real_product_tep_reaches_every_queue(imported):
-    _, data, _ = imported
+    _, data, tep = imported
     phases = data["phasing"]["phases"]
     assert len(phases) == 4
-    assert [phase["products"]["apartments"]["gns"] for phase in phases] == [57372.5] * 4
-    assert [phase["products"]["apartments"]["saleable"] for phase in phases] == [42500] * 4
-    assert phases[1]["products"]["offices"]["gns"] == 92730
-    assert phases[1]["products"]["offices"]["saleable"] == 75000
-    assert phases[3]["products"]["offices"]["gns"] == 92730
-    assert phases[3]["products"]["offices"]["saleable"] == 75000
+    assert data["phasing"]["products"]["apartments"] == [25, 25, 25, 25]
+    assert data["phasing"]["products"]["offices"] == [0, 50, 0, 50]
+    assert all("apartments" not in (phase.get("products") or {}) for phase in phases)
+    assert all("offices" not in (phase.get("products") or {}) for phase in phases)
+
+    bundle = core.calculate_phased(core.PhasedCalcRequest(
+        inputs=data["applied_inputs"], tep=tep, rates=[], phasing=data["phasing"]))
+    assert [phase["tep"]["apartments"]["gns"] for phase in bundle["phases"]] == [57372.5] * 4
+    assert [phase["tep"]["apartments"]["saleable"] for phase in bundle["phases"]] == [42500] * 4
+    assert [phase["tep"]["offices"]["gns"] for phase in bundle["phases"]] == [0, 92730, 0, 92730]
+    assert [phase["tep"]["offices"]["saleable"] for phase in bundle["phases"]] == [0, 75000, 0, 75000]
     assert phases[2]["products"]["school"]["gns"] == 22220
     assert phases[2]["products"]["kindergarten"]["gns"] == 6300
     assert phases[2]["products"]["other_mandatory"]["gns"] == 230
     assert phases[2]["products"]["school"]["generates_revenue"] is False
     assert data["phasing"]["social_objects"][0]["phase"] == 3
+
+
+def test_changed_shares_recalculate_queue_metres(imported):
+    _, data, tep = imported
+    phasing = copy.deepcopy(data["phasing"])
+    phasing["products"]["apartments"] = [45, 30, 15, 10]
+    bundle = core.calculate_phased(core.PhasedCalcRequest(
+        inputs=data["applied_inputs"], tep=tep, rates=[], phasing=phasing))
+    assert [phase["tep"]["apartments"]["gns"] for phase in bundle["phases"]] == pytest.approx([
+        103270.5, 68847, 34423.5, 22949,
+    ])
+    assert sum(phase["tep"]["apartments"]["gns"] for phase in bundle["phases"]) == 229490
+
+
+def test_site_preparation_is_separate_from_new_construction_tep(imported):
+    preset, data, _ = imported
+    preparation = preset["site_preparation"]
+    assert preparation["scope"] == "demolition_or_reconstruction"
+    assert preparation["phase"] == 1
+    assert preparation["cost_mln"] == "TBD"
+    assert preparation["generates_revenue"] is False
+    assert preparation["included_in_new_construction_gns"] is False
+    assert preparation["included_in_saleable_area"] is False
+    assert preparation["unique_capital_objects_count"] == 39
+    assert len(preparation["objects"]) == 39
+    assert sum(item["listed_area_m2"] for item in preparation["objects"]) == pytest.approx(54871.9)
+    phase_preparation = data["phasing"]["phases"][0]["preparation_scope"]
+    assert phase_preparation["listed_existing_area_m2"] == 54871.9
 
 
 def test_consolidation_is_bottom_up_from_queue_products(imported):
@@ -123,4 +160,3 @@ def test_cadastral_list_is_explicit_and_deduplicated(imported):
     numbers = data["cadastral_numbers"]
     assert len(numbers) == preset["validation_controls"]["cadastral_numbers_count"]
     assert len(numbers) == len(set(numbers))
-

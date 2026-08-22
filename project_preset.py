@@ -210,11 +210,27 @@ def map_tep(data: dict[str, Any]) -> tuple[dict[str, Any], list[Field]]:
                 office_saleable += _number(item.get("saleable_m2")) or 0.0
                 office_saleable_explicit = True
 
+    canonical = data.get("canonical_tep") if isinstance(data.get("canonical_tep"), dict) else {}
+    canonical_products = (canonical.get("products") or {}) if isinstance(
+        canonical.get("products"), dict) else {}
+    canonical_apartments = canonical_products.get("apartments") or {}
+    canonical_offices = canonical_products.get("offices") or {}
+    canonical_apartment_saleable = _number(canonical_apartments.get("saleable_m2"))
+    canonical_office_saleable = _number(canonical_offices.get("saleable_m2"))
+
+    # A project-level saleable input is canonical and must not be copied into
+    # every object/queue merely so the importer can see it.  The queue shares
+    # split this one total later.  Foreign project ratios remain only the legacy
+    # fallback for old presets that carry neither object nor canonical totals.
     apartments = (residential_saleable if residential_saleable_explicit
+                  else canonical_apartment_saleable
+                  if canonical_apartment_saleable is not None
                   else residential_gns * SALEABLE_RATIO_APARTMENTS)
     commercial = (commercial_saleable if commercial_saleable_explicit
                   else commercial_gns * SALEABLE_RATIO_COMMERCIAL)
     offices = (office_saleable if office_saleable_explicit
+               else canonical_office_saleable
+               if canonical_office_saleable is not None
                else office_gns * SALEABLE_RATIO_OFFICES)
     # Потребность в машино-местах — у жилья и у офисов своя, и отдельно
     # стоящий гараж её закрывает: под землю уходит только остаток. Прежде
@@ -247,9 +263,12 @@ def map_tep(data: dict[str, Any]) -> tuple[dict[str, Any], list[Field]]:
     }
 
     notes.extend([
-        Field(apartments, "source" if residential_saleable_explicit else "derived",
+        Field(apartments, "source" if residential_saleable_explicit else
+              "assumption" if canonical_apartment_saleable is not None else "derived",
               (f"квартиры — {_ru(apartments)} м² заданы объектами пресета"
                if residential_saleable_explicit else
+               f"квартиры — {_ru(apartments)} м² заданы один раз в каноническом ТЭП проекта"
+               if canonical_apartment_saleable is not None else
                f"квартиры — {_ru(residential_gns)} м² жилой части × {SALEABLE_RATIO_APARTMENTS} "
                f"по согласованному ППТ; норматив калькулятора ГлавАПУ — 0,65, "
                f"то есть {_ru(residential_gns * 0.65)} м²")),
@@ -257,9 +276,12 @@ def map_tep(data: dict[str, Any]) -> tuple[dict[str, Any], list[Field]]:
               (f"встроенная коммерция — {_ru(commercial)} м² заданы объектами пресета"
                if commercial_saleable_explicit else
                f"встроенная коммерция — {_ru(commercial_gns)} м² × {SALEABLE_RATIO_COMMERCIAL}")),
-        Field(offices, "source" if office_saleable_explicit else "derived",
+        Field(offices, "source" if office_saleable_explicit else
+              "assumption" if canonical_office_saleable is not None else "derived",
               (f"офисы — {_ru(offices)} м² заданы объектами пресета"
                if office_saleable_explicit else
+               f"офисы — {_ru(offices)} м² заданы один раз в каноническом ТЭП проекта"
+               if canonical_office_saleable is not None else
                f"офисы — {_ru(office_gns)} м² × {SALEABLE_RATIO_OFFICES} (полезная по соглашению МПТ)")),
     ])
     if derive_parking:
@@ -566,6 +588,8 @@ def map_phasing(data: dict[str, Any]) -> tuple[dict[str, Any], list[Field]]:
             "construction_months": int(_number(item.get("construction_months")) or 24),
             **({"products": copy.deepcopy(item["products"])}
                if isinstance(item.get("products"), dict) else {}),
+            **({"preparation_scope": copy.deepcopy(item["preparation_scope"])}
+               if isinstance(item.get("preparation_scope"), dict) else {}),
         } for index, item in enumerate(phases[:4])],
     }
     products = phasing.get("products")

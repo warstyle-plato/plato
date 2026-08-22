@@ -20336,15 +20336,25 @@ def _phase_tep_product_rows(
     не деление: движок без очередей считает атомарно по сырому ТЭП с дробными
     местами, и округлять их здесь значило бы разойтись с ним на полместа.
     """
+    products_cfg = (phasing or {}).get("products") or {}
+    # Most projects keep offices, standalone retail and an above-ground garage
+    # as one discrete object. A KRT project may contain several real office
+    # objects in different queues, though. If the preset/user explicitly
+    # supplies percentage weights for such a product, it becomes share-based
+    # without changing the default behaviour of existing projects.
+    split_products = list(_PHASE_MASS_PRODUCTS)
+    split_products.extend(
+        key for key in products_cfg
+        if key in TEP_DEFAULT and key not in split_products
+    )
     if count <= 1:
         return ([{key: copy.deepcopy(t_master[key])
-                  for key in _PHASE_MASS_PRODUCTS if key in t_master}],
-                {key: [100.0] for key in _PHASE_MASS_PRODUCTS})
+                  for key in split_products if key in t_master}],
+                {key: [100.0] for key in split_products})
     default_weights = _default_phase_weights(count)
-    products_cfg = (phasing or {}).get("products") or {}
     product_weights = {
         key: _normalized_phase_weights(products_cfg.get(key), count, default_weights)
-        for key in _PHASE_MASS_PRODUCTS
+        for key in split_products
     }
     indivisible = {
         key: _integer_phase_allocations(n(t_master.get(key, {}), "units"), product_weights[key])
@@ -20354,7 +20364,7 @@ def _phase_tep_product_rows(
     rows: list[dict[str, dict[str, Any]]] = []
     for idx in range(count):
         per: dict[str, dict[str, Any]] = {}
-        for key in _PHASE_MASS_PRODUCTS:
+        for key in split_products:
             if key not in t_master:
                 continue
             if key in indivisible:
@@ -21169,6 +21179,12 @@ def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
         for key, split_row in phase_product_rows[idx].items():
             if key in p_tep:
                 p_tep[key] = copy.deepcopy(split_row)
+                # Several products are read by the atomic engine from inputs,
+                # not directly from the TEP table. Keep those aliases equal
+                # to the queue row, otherwise a 50% office share is overwritten
+                # by the full project office area during calculation.
+                for field, input_key in _PHASE_PRODUCT_INPUT_ALIASES.get(key, {}).items():
+                    p_inputs[input_key] = float(split_row.get(field) or 0.0)
 
         # Поделённую строку паркинга нельзя отдавать движку вместе с общим
         # решением по машино-местам: атомарный расчёт считает поле «решение
@@ -21306,13 +21322,20 @@ def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
                 ("offices", "offices", 3),
                 ("retail", "standalone_retail", 2),
                 ("above_parking", "above_parking", 2)):
-            assigned = int(discrete.get(tep_key, default_queue) or default_queue)
-            # Очередь за пределами проекта уронила бы объект в никуда.
-            assigned = max(1, min(count, assigned))
             enabled_key = "offices_enabled" if prefix=="offices" else "retail_enabled" if prefix=="retail" else "above_parking_enabled"
-            p_inputs[enabled_key] = bool(x_master.get(enabled_key)) and assigned==idx+1
-            if tep_key in p_tep and assigned != idx+1:
-                p_tep[tep_key] = _zero_tep_row(p_tep[tep_key])
+            if tep_key in product_weights:
+                # Explicit percentages mean this is a set of queue objects,
+                # not one discrete object assigned through the dropdown.
+                row = p_tep.get(tep_key) or {}
+                p_inputs[enabled_key] = bool(x_master.get(enabled_key)) and bool(
+                    n(row, "gns") or n(row, "saleable") or n(row, "units"))
+            else:
+                assigned = int(discrete.get(tep_key, default_queue) or default_queue)
+                # Очередь за пределами проекта уронила бы объект в никуда.
+                assigned = max(1, min(count, assigned))
+                p_inputs[enabled_key] = bool(x_master.get(enabled_key)) and assigned==idx+1
+                if tep_key in p_tep and assigned != idx+1:
+                    p_tep[tep_key] = _zero_tep_row(p_tep[tep_key])
             if p_inputs[enabled_key]:
                 for suffix in ("start","sales_start"):
                     dk=f"{prefix}_{suffix}"
@@ -29014,7 +29037,7 @@ function setPhaseProductShare(k,i,v){
 }
 function phaseProductDerived(key,field,index){
  const master=Number((tep[key]||{})[field]||0),count=Number(phasing.phase_count||1);
- if(['apartments','ground_commercial','underground_parking','storage'].includes(key)){
+ if(phasing.products[key]){
   const a=(phasing.products[key]||phaseWeightPreset(count)).slice(0,count),sum=a.reduce((s,v)=>s+Number(v||0),0)||100;
   return master*Number(a[index]||0)/sum;
  }
@@ -29099,9 +29122,9 @@ function renderPhasing(){
    ? `1 очередь при ${num(currentMonetizableSaleable())} м² — разбиение не требуется`
    : `${recommended} очереди при ${num(currentMonetizableSaleable())} м²`;
  phaseCards.innerHTML=phasing.phases.map((p,i)=>{const cf=Math.pow(1+Number(phasing.cost_inflation_pct??8)/100,Number(p.start_offset_months||0)/12),pf=Math.pow(1+Number(phasing.sales_price_inflation_pct??8)/100,Number(p.start_offset_months||0)/12);return `<div class="phase-card"><h3>${p.name}</h3><div class="field"><label>Название</label><input value="${p.name}" onchange="phasing.phases[${i}].name=this.value;renderPhasing()"></div><div class="field"><label>Сдвиг старта, мес.</label><input type="number" value="${p.start_offset_months}" onchange="phasing.phases[${i}].start_offset_months=Number(this.value);normalizeSocialObjectDates();renderPhasing();calculate()"></div><div class="field"><label>Строительство, мес.</label><input type="number" value="${p.construction_months}" onchange="phasing.phases[${i}].construction_months=Number(this.value);calculate()"></div><div style="font-size:11px;color:#777;margin-top:8px">Старт: ${dateRu(addMonthsJS(inputs.project_start,p.start_offset_months))}<br>Индекс затрат: ×${cf.toFixed(3)}<br>Индекс стартовой цены: ×${pf.toFixed(3)}</div></div>`}).join('');
- const pl={apartments:'Квартиры',ground_commercial:'Коммерция 1 этажа',underground_parking:'Подземный паркинг',storage:'Кладовые'};
+ const pl={apartments:'Квартиры',ground_commercial:'Коммерция 1 этажа',offices:'Офисы / деловая недвижимость',standalone_retail:'Коммерция ОСЗ',above_parking:'Наземный паркинг',underground_parking:'Подземный паркинг',storage:'Кладовые'};
  phaseProductHead.innerHTML=`<tr><th>Продукт</th>${phasing.phases.map((p,i)=>`<th>${p.name}${i===phasing.phases.length-1?'<br><small>остаток</small>':''}</th>`).join('')}<th>Итого</th></tr>`;
- phaseProductBody.innerHTML=Object.entries(phasing.products).map(([k,a])=>{const s=a.reduce((x,y)=>x+Number(y||0),0);return `<tr><td>${pl[k]}</td>${a.map((v,i)=>`<td><input type="number" step="1" value="${Number(v).toFixed(1)}" ${i===a.length-1?'readonly title="Автоматический остаток до 100%"':`onchange="setPhaseProductShare('${k}',${i},this.value)"`}></td>`).join('')}<td class="${Math.abs(s-100)<.1?'phase-total-ok':'phase-total-bad'}">${s.toFixed(1)}%</td></tr>`}).join('');renderPhasingStatus();
+ phaseProductBody.innerHTML=Object.entries(phasing.products).map(([k,a])=>{const s=a.reduce((x,y)=>x+Number(y||0),0);return `<tr><td>${pl[k]||k}</td>${a.map((v,i)=>`<td><input type="number" step="1" value="${Number(v).toFixed(1)}" ${i===a.length-1?'readonly title="Автоматический остаток до 100%"':`onchange="setPhaseProductShare('${k}',${i},this.value)"`}></td>`).join('')}<td class="${Math.abs(s-100)<.1?'phase-total-ok':'phase-total-bad'}">${s.toFixed(1)}%</td></tr>`}).join('');renderPhasingStatus();
  phasing.phases.forEach(p=>{if(!p.products)p.products={}});
  const tepLabels={apartments:'Жильё',ground_commercial:'Коммерция 1 этажа',standalone_retail:'Коммерция ОСЗ',offices:'Офисы / деловая недвижимость',above_parking:'Наземный паркинг',underground_parking:'Подземный паркинг',storage:'Кладовые',kindergarten:'ДОУ',school:'СОШ',clinic:'Поликлиника',other_mandatory:'Прочие обязательные объекты'};
  const tepKeys=Object.keys(tepLabels).filter(k=>tep[k]);
