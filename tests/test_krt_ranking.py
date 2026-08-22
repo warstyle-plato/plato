@@ -143,3 +143,25 @@ def test_the_screen_shows_the_run_and_names_the_measure():
     assert "из ${p.total}" in page and "p.elapsed_seconds" in page and "p.current" in page
     # Пустая ячейка обязана различать «не оценён» и «не выдерживает».
     assert "не оценён" in page and "потолок не подобран" in page
+
+
+def test_the_site_is_drawn_but_its_boundary_is_not_invented():
+    """Картинка участка есть, а контура нет — и это сказано вслух.
+
+    Каталог krt.mos.ru полигонов не публикует и сам это объявляет
+    (`geometry_status: not_published_in_catalogue`): есть геокодированная точка
+    и площадь. Рисовать по ним квадрат «примерной площади» нельзя — фигура на
+    карте читается как контур, и по ней начнут мерить пятно застройки.
+    """
+    from auction_search.ui import auctions_page
+
+    page = auctions_page()
+    assert "krtSiteMap(" in page, "карта участка строится"
+    assert "/land/basemap" in page, "подложку отдаёт движок, второй карты нет"
+    # Кадастровый слой на этом масштабе даёт клубок границ без улиц: он
+    # упомянут только объяснением в комментарии, но не запрашивается.
+    assert "/land/map-image?" not in page
+    assert "контур не показан" in page, "отсутствие границ названо вслух"
+    assert "масштаб" in page.lower() or " м</span>" in page, "у карты есть линейка"
+    # Точность геокодера — часть ответа, а не подробность.
+    assert "precision" in page and "приблизительное" in page

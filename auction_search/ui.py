@@ -98,6 +98,53 @@ function renderKrt(){const a=state.krtFiltered,body=$('krtRows');body.innerHTML=
 // 23.08.2026). На метр, а не в абсолюте: потолок в рублях выгоден крупным
 // площадкам просто по размеру. Пустая ячейка значит «не посчитали», и это не
 // то же самое, что «не выдерживает», — поэтому у неё своя подпись.
+// Картинка участка. Границ КРТ каталог krt.mos.ru не публикует и сам это
+// объявляет (`geometry_status: not_published_in_catalogue`) — есть только
+// геокодированная точка и площадь в гектарах. Поэтому рисуем карту улиц вокруг
+// точки с меткой и масштабной линейкой, и НЕ рисуем фигуру «примерной
+// площади»: квадрат или круг на карте читается как контур, и по нему начнут
+// мерить пятно застройки. Подложку отдаёт движковый `/land/basemap` тем же
+// меркаторным bbox, в котором мы ставим метку, — совмещать в браузере нечего.
+// Кадастровый слой `/land/map-image` для этого масштаба не годится: он верен
+// на двухстах метрах карточки участка, а на километре даёт клубок границ ЕГРН
+// без улиц и названий.
+const MERC=20037508.342789244;
+const mercX=lon=>lon*MERC/180;
+const mercY=lat=>Math.log(Math.tan((90+lat)*Math.PI/360))*MERC/Math.PI;
+function krtSiteMap(subject,areaHa){
+ const lat=Number(subject&&subject.latitude), lon=Number(subject&&subject.longitude);
+ if(!Number.isFinite(lat)||!Number.isFinite(lon))
+  return '<div class="notice warn">Точка участка не определена — карта не построена.</div>';
+ // Кадр по площади: сторона квадрата такой же площади, с запасом в 2,5 раза,
+ // чтобы было видно окружение. Меньше 600 м не берём — на 300 м улиц не видно.
+ const side=Math.max(600, Math.sqrt(Math.max(1,Number(areaHa)||1)*10000)*2.5);
+ const half=side/2, cx=mercX(lon), cy=mercY(lat);
+ // Меркатор растягивает метры к северу — поправка по широте, иначе кадр
+ // окажется у́же заявленного и масштабная линейка соврёт.
+ const k=1/Math.cos(lat*Math.PI/180), hx=half*k, hy=half*k;
+ const bbox=[cx-hx,cy-hy,cx+hx,cy+hy].join(',');
+ const src='/land/basemap?'+new URLSearchParams({bbox:bbox,width:'900'});
+ const scale=Math.round(side/4/50)*50||100;
+ const scalePct=(scale/side*100).toFixed(1);
+ const precision=String((subject&&subject.precision)||'');
+ const rough=precision&&precision!=='street'&&precision!=='house';
+ return `<div class="section"><h3>Участок на карте</h3>
+  <div style="position:relative;border:1px solid #e3e3e0;overflow:hidden">
+   <img src="${src}" alt="Карта окрестностей участка" style="display:block;width:100%"
+        onerror="this.parentNode.innerHTML='<div class=\'empty\' style=\'padding:26px\'>Подложка карты недоступна</div>'">
+   <span style="position:absolute;left:50%;top:50%;width:14px;height:14px;margin:-7px 0 0 -7px;
+                border:3px solid #b3261e;border-radius:50%;background:rgba(255,255,255,.65)"></span>
+   <div style="position:absolute;left:12px;bottom:12px;background:rgba(255,255,255,.9);
+               padding:4px 8px;font-size:11px;display:flex;align-items:center;gap:7px">
+    <span style="display:block;height:3px;background:#222;width:${scalePct}%;min-width:34px"></span>
+    <span>${scale} м</span>
+   </div>
+  </div>
+  <div class="source" style="margin-top:7px">Метка — геокодированный центр территории, кадр ${Math.round(side)} м.
+   Официальный полигон границ КРТ каталогом не публикуется, поэтому контур не показан:
+   по нему стали бы мерить пятно застройки.${rough?' Точность геокодера ниже уровня улицы — положение метки приблизительное.':''}</div>
+ </div>`;
+}
 function krtRankCell(slug){
  const row=state.krtRank[slug];
  if(!row)return '<span class="source">не оценён</span>';
@@ -167,7 +214,7 @@ function renderKrtMarket(d,out){
  const headline=verdict.headline||(price?'Рыночный ориентир найден':'Вывод по продукту пока не сложился');
  const summary=verdict.text||(peers.length?'Платон нашёл соседние проекты, но данных об их классе недостаточно для уверенного ответа, что именно здесь строить.':'В выбранном радиусе недостаточно сопоставимых проектов для вывода о продукте и цене.');
  const entry=hint.entry_per_sqm?`Для старта продаж ориентир входной цены — ${new Intl.NumberFormat('ru-RU').format(hint.entry_per_sqm)} ₽/м²; средняя цена проекта формируется позднее по очередям и квартирографии.`:'';
- out.innerHTML=`<div class="section"><h3>Короткий вывод Платона</h3><div class="notice"><b>${esc(headline)}</b><div style="margin-top:5px">${esc(summary)}</div>${entry?`<div class="source" style="margin-top:7px">${esc(entry)}</div>`:''}</div></div>${renderKrtModel(d.model_screening)}<div class="section"><h3>Рынок рядом</h3><div class="kv"><div>Радиус</div><div>${esc(c.radius_km||3)} км</div><div>Найдено проектов</div><div>${esc(c.found??peers.length)}</div><div>Использовано</div><div>${esc(c.used??peers.length)}</div><div>Ориентир цены</div><div class="money">${price?new Intl.NumberFormat('ru-RU').format(price)+' ₽/м²':'—'}</div></div></div><div class="section"><h3>Реализуемые проекты</h3><div class="items">${peers.length?peers.map(p=>`<div class="item"><b>${esc(p.name)} · ${esc(p.distance_km??'—')} км</b><div>${p.price_per_sqm?new Intl.NumberFormat('ru-RU').format(p.price_per_sqm)+' ₽/м²':'цена не опубликована'}${p.price_per_sqm_min?' · от '+new Intl.NumberFormat('ru-RU').format(p.price_per_sqm_min):''}</div><div class="source">${esc([p.developer,p.segment,p.living_area?'объём '+fmtArea(p.living_area):null,p.remaining_units?'остаток '+p.remaining_units+' лотов':null,p.units_per_month?'темп '+p.units_per_month+' ДДУ/мес':null].filter(Boolean).join(' · '))}</div></div>`).join(''):'<div class="notice">Сопоставимых проектов в выбранном радиусе не найдено.</div>'}</div></div>`
+ out.innerHTML=`${krtSiteMap(d.subject,(state.selectedKrt||{}).area_ha)}<div class="section"><h3>Короткий вывод Платона</h3><div class="notice"><b>${esc(headline)}</b><div style="margin-top:5px">${esc(summary)}</div>${entry?`<div class="source" style="margin-top:7px">${esc(entry)}</div>`:''}</div></div>${renderKrtModel(d.model_screening)}<div class="section"><h3>Рынок рядом</h3><div class="kv"><div>Радиус</div><div>${esc(c.radius_km||3)} км</div><div>Найдено проектов</div><div>${esc(c.found??peers.length)}</div><div>Использовано</div><div>${esc(c.used??peers.length)}</div><div>Ориентир цены</div><div class="money">${price?new Intl.NumberFormat('ru-RU').format(price)+' ₽/м²':'—'}</div></div></div><div class="section"><h3>Реализуемые проекты</h3><div class="items">${peers.length?peers.map(p=>`<div class="item"><b>${esc(p.name)} · ${esc(p.distance_km??'—')} км</b><div>${p.price_per_sqm?new Intl.NumberFormat('ru-RU').format(p.price_per_sqm)+' ₽/м²':'цена не опубликована'}${p.price_per_sqm_min?' · от '+new Intl.NumberFormat('ru-RU').format(p.price_per_sqm_min):''}</div><div class="source">${esc([p.developer,p.segment,p.living_area?'объём '+fmtArea(p.living_area):null,p.remaining_units?'остаток '+p.remaining_units+' лотов':null,p.units_per_month?'темп '+p.units_per_month+' ДДУ/мес':null].filter(Boolean).join(' · '))}</div></div>`).join(''):'<div class="notice">Сопоставимых проектов в выбранном радиусе не найдено.</div>'}</div></div>`
 }
 $('tabAuctions').onclick=()=>switchTab(false);$('tabKrt').onclick=()=>switchTab(true);$('krtRefresh').onclick=loadKrt;$('krtRankBtn').onclick=startKrtRanking;$('krtSearch').oninput=filterKrt;$('krtStatus').onchange=filterKrt;$('krtPurpose').onchange=filterKrt;$('krtProfile').onchange=()=>{filterKrt();if(state.selectedKrt)selectKrt(state.selectedKrt)};
 $('krtOkrugToggle').onclick=e=>{e.stopPropagation();const menu=$('krtOkrugMenu'),open=menu.classList.contains('hidden');menu.classList.toggle('hidden',!open);$('krtOkrugToggle').setAttribute('aria-expanded',String(open))};$('krtOkrugMenu').onclick=e=>e.stopPropagation();$('krtOkrugClear').onclick=()=>{state.krtOkrugs.clear();$('krtOkrugOptions').querySelectorAll('input').forEach(x=>x.checked=false);updateKrtOkrugLabel();filterKrt()};document.addEventListener('click',closeKrtOkrugs);document.addEventListener('keydown',e=>{if(e.key==='Escape'){closeKrtOkrugs();$('krtOkrugToggle').focus()}});
