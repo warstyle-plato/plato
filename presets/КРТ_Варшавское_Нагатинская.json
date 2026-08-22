@@ -70,11 +70,11 @@
         "gfa_m2": 57372.5,
         "residential_part_m2": 57372.5,
         "embedded_nonresidential_m2": 0,
-        "residential_saleable_m2": 0,
+        "residential_saleable_m2": 42500,
         "embedded_nonresidential_saleable_m2": 0,
-        "saleable_status": "TBD",
+        "saleable_status": "working_assumption",
         "allocation_origin": "assumption",
-        "note": "25% жилой ГНС — стартовое распределение. Продаваемая площадь не задана без источника."
+        "note": "25% жилой ГНС и 42 500 м² продаваемой площади — рабочая предпосылка из продуктового примера проекта; заменить после подтверждения квартирографии."
       },
       {
         "id": "HOUSING_2",
@@ -83,11 +83,11 @@
         "gfa_m2": 57372.5,
         "residential_part_m2": 57372.5,
         "embedded_nonresidential_m2": 0,
-        "residential_saleable_m2": 0,
+        "residential_saleable_m2": 42500,
         "embedded_nonresidential_saleable_m2": 0,
-        "saleable_status": "TBD",
+        "saleable_status": "working_assumption",
         "allocation_origin": "assumption",
-        "note": "25% жилой ГНС — стартовое распределение. Продаваемая площадь не задана без источника."
+        "note": "25% жилой ГНС и 42 500 м² продаваемой площади — рабочая предпосылка из продуктового примера проекта; заменить после подтверждения квартирографии."
       },
       {
         "id": "HOUSING_3",
@@ -96,11 +96,11 @@
         "gfa_m2": 57372.5,
         "residential_part_m2": 57372.5,
         "embedded_nonresidential_m2": 0,
-        "residential_saleable_m2": 0,
+        "residential_saleable_m2": 42500,
         "embedded_nonresidential_saleable_m2": 0,
-        "saleable_status": "TBD",
+        "saleable_status": "working_assumption",
         "allocation_origin": "assumption",
-        "note": "25% жилой ГНС — стартовое распределение. Продаваемая площадь не задана без источника."
+        "note": "25% жилой ГНС и 42 500 м² продаваемой площади — рабочая предпосылка из продуктового примера проекта; заменить после подтверждения квартирографии."
       },
       {
         "id": "HOUSING_4",
@@ -109,31 +109,31 @@
         "gfa_m2": 57372.5,
         "residential_part_m2": 57372.5,
         "embedded_nonresidential_m2": 0,
-        "residential_saleable_m2": 0,
+        "residential_saleable_m2": 42500,
         "embedded_nonresidential_saleable_m2": 0,
-        "saleable_status": "TBD",
+        "saleable_status": "working_assumption",
         "allocation_origin": "assumption",
-        "note": "25% жилой ГНС — стартовое распределение. Продаваемая площадь не задана без источника."
+        "note": "25% жилой ГНС и 42 500 м² продаваемой площади — рабочая предпосылка из продуктового примера проекта; заменить после подтверждения квартирографии."
       },
       {
         "id": "OFFICE_1",
         "name": "Общественно-деловой объект 1",
         "in_deal_perimeter": true,
         "gfa_m2": 92730,
-        "saleable_m2": 0,
-        "saleable_status": "TBD",
+        "saleable_m2": 75000,
+        "saleable_status": "working_assumption",
         "allocation_origin": "assumption",
-        "note": "Половина 185 460 м². Деление на два равных объекта — рабочая предпосылка, не коэффициент Румянцево."
+        "note": "92 730 м² ГНС и 75 000 м² продаваемой площади — рабочая предпосылка из продуктового примера проекта; не коэффициент Румянцево."
       },
       {
         "id": "OFFICE_2",
         "name": "Общественно-деловой объект 2",
         "in_deal_perimeter": true,
         "gfa_m2": 92730,
-        "saleable_m2": 0,
-        "saleable_status": "TBD",
+        "saleable_m2": 75000,
+        "saleable_status": "working_assumption",
         "allocation_origin": "assumption",
-        "note": "Половина 185 460 м². Деление на два равных объекта — рабочая предпосылка, не коэффициент Румянцево."
+        "note": "92 730 м² ГНС и 75 000 м² продаваемой площади — рабочая предпосылка из продуктового примера проекта; не коэффициент Румянцево."
       },
       {
         "id": "SCHOOL",
@@ -215,7 +215,7 @@
     "project_specific_only": true,
     "required_behavior": [
       "Use the v4 preset structure already supported by DevelopAid.",
-      "Keep saleable housing and office area at zero until a source or explicit underwriting premise is supplied.",
+      "Use the explicit working assumptions: 170,000 m² saleable housing and 150,000 m² saleable offices; keep them editable and visibly marked as assumptions.",
       "Do not apply Rumyantsevo coefficients to this project.",
       "Store 2,403,657,113.51 RUB as acquisition purchase price, never as VRI.",
       "Keep school, preschool and the 230 m² utility object non-revenue products in phase 3.",
@@ -251,7 +251,12 @@
     "purchase_price_rub": 2403657113.51,
     "purchase_price_field": "economics.purchase_price_mln",
     "vri_must_remain_zero": true,
-    "saleable_ratio_source_required": true
+    "saleable_ratio_source_required": true,
+    "apartments_saleable_m2": 170000,
+    "offices_saleable_m2": 150000,
+    "total_revenue_saleable_m2": 320000,
+    "apartment_price_th": 500,
+    "offices_price_th_per_sqm": 350
   },
   "land": {
     "area_ha": 14.62,
@@ -287,7 +292,7 @@
   "transaction": {
     "type": "право заключения договора о комплексном развитии территории",
     "start_price_rub": 2403657113.51,
-    "deposit_rub": 480731422.70,
+    "deposit_rub": 480731422.7,
     "auction_date": "2026-09-29",
     "application_deadline": "2026-09-21T15:00:00+03:00",
     "price_includes_vat": true,
@@ -300,38 +305,56 @@
     "tep": "Лотовая документация, страница 6: ГНС 443 700 м²; жильё 229 490 м²; общественно-деловые и иные объекты 214 210 м²",
     "cadastral": "Приложение 2 к извещению, страницы 29–43",
     "product_split": "Рабочая модель из обсуждения проекта: 185 460 м² деловой части разделены на два объекта по 92 730 м²",
-    "housing_phase_split": "Рабочая стартовая предпосылка: 25% / 25% / 25% / 25%"
+    "housing_phase_split": "Рабочая стартовая предпосылка: 25% / 25% / 25% / 25%",
+    "saleable_underwriting": "Рабочий продуктовый пример из обсуждения проекта: жильё 170 000 м² по 500 тыс. ₽/м²; офисы 150 000 м² по 350 тыс. ₽/м²."
   },
   "canonical_tep": {
     "headline": {
       "ppt_gns_m2": 443700,
       "residential_gns_m2": 229490,
       "public_business_and_other_gns_m2": 214210,
-      "saleable_m2": 0,
-      "saleable_status": "TBD — source required"
+      "saleable_m2": 320000,
+      "saleable_status": "working underwriting assumption"
     },
     "products": {
       "apartments": {
         "gns_m2": 229490,
-        "saleable_m2": 0,
-        "saleable_ratio": "TBD",
-        "ratio_source": "TBD"
+        "saleable_m2": 170000,
+        "saleable_ratio": 0.7407730184321757,
+        "ratio_source": "working underwriting assumption from project discussion"
       },
       "offices": {
         "gns_m2": 185460,
-        "saleable_m2": 0,
-        "saleable_ratio": "TBD",
-        "ratio_source": "TBD",
+        "saleable_m2": 150000,
+        "saleable_ratio": 0.8087997411840828,
+        "ratio_source": "working underwriting assumption from project discussion",
         "objects": [
-          {"name": "Общественно-деловой объект 1", "gns_m2": 92730},
-          {"name": "Общественно-деловой объект 2", "gns_m2": 92730}
+          {
+            "name": "Общественно-деловой объект 1",
+            "gns_m2": 92730,
+            "saleable_m2": 75000
+          },
+          {
+            "name": "Общественно-деловой объект 2",
+            "gns_m2": 92730,
+            "saleable_m2": 75000
+          }
         ]
       }
     },
     "non_revenue_objects": {
-      "school": {"gns_m2": 22220, "units": 1000},
-      "preschool": {"gns_m2": 6300, "units": 350},
-      "other_mandatory": {"gns_m2": 230, "units": 1}
+      "school": {
+        "gns_m2": 22220,
+        "units": 1000
+      },
+      "preschool": {
+        "gns_m2": 6300,
+        "units": 350
+      },
+      "other_mandatory": {
+        "gns_m2": 230,
+        "units": 1
+      }
     },
     "reconciliation": {
       "residential_plus_public_business_m2": 443700,
@@ -343,14 +366,44 @@
     "enabled": true,
     "phase_gap_months": 12,
     "products": {
-      "apartments": [25, 25, 25, 25],
-      "ground_commercial": [25, 25, 25, 25],
-      "underground_parking": [25, 25, 25, 25],
-      "storage": [25, 25, 25, 25]
+      "apartments": [
+        25,
+        25,
+        25,
+        25
+      ],
+      "ground_commercial": [
+        25,
+        25,
+        25,
+        25
+      ],
+      "underground_parking": [
+        25,
+        25,
+        25,
+        25
+      ],
+      "storage": [
+        25,
+        25,
+        25,
+        25
+      ]
     },
     "social_objects": [
-      {"name": "Школа", "type": "school", "capacity": 1000, "phase": 3},
-      {"name": "ДОО", "type": "kindergarten", "capacity": 350, "phase": 3}
+      {
+        "name": "Школа",
+        "type": "school",
+        "capacity": 1000,
+        "phase": 3
+      },
+      {
+        "name": "ДОО",
+        "type": "kindergarten",
+        "capacity": 350,
+        "phase": 3
+      }
     ],
     "phases": [
       {
@@ -361,14 +414,14 @@
           "apartments": {
             "gns": 57372.5,
             "total_area": 57372.5,
-            "useful": 0,
-            "saleable": 0,
+            "useful": 42500,
+            "saleable": 42500,
             "units": 0,
             "generates_revenue": true,
             "start_date": "TBD",
             "end_date": "TBD",
             "capex_mln": "TBD",
-            "assumption_source": "25% жилой ГНС; продаваемая площадь требует отдельного источника"
+            "assumption_source": "Рабочая предпосылка проекта: 170 000 м² продаваемого жилья, по 42 500 м² на очередь"
           },
           "offices": {
             "gns": 0,
@@ -386,26 +439,26 @@
           "apartments": {
             "gns": 57372.5,
             "total_area": 57372.5,
-            "useful": 0,
-            "saleable": 0,
+            "useful": 42500,
+            "saleable": 42500,
             "units": 0,
             "generates_revenue": true,
             "start_date": "TBD",
             "end_date": "TBD",
             "capex_mln": "TBD",
-            "assumption_source": "25% жилой ГНС; продаваемая площадь требует отдельного источника"
+            "assumption_source": "Рабочая предпосылка проекта: 170 000 м² продаваемого жилья, по 42 500 м² на очередь"
           },
           "offices": {
             "gns": 92730,
             "total_area": 92730,
-            "useful": 0,
-            "saleable": 0,
+            "useful": 75000,
+            "saleable": 75000,
             "units": 1,
             "generates_revenue": true,
             "start_date": "TBD",
             "end_date": "TBD",
             "capex_mln": "TBD",
-            "assumption_source": "рабочее деление 185 460 м² на два объекта; продаваемая площадь требует источника"
+            "assumption_source": "Рабочая предпосылка проекта: 150 000 м² продаваемых офисов, по 75 000 м² на объект"
           }
         }
       },
@@ -417,14 +470,14 @@
           "apartments": {
             "gns": 57372.5,
             "total_area": 57372.5,
-            "useful": 0,
-            "saleable": 0,
+            "useful": 42500,
+            "saleable": 42500,
             "units": 0,
             "generates_revenue": true,
             "start_date": "TBD",
             "end_date": "TBD",
             "capex_mln": "TBD",
-            "assumption_source": "25% жилой ГНС; продаваемая площадь требует отдельного источника"
+            "assumption_source": "Рабочая предпосылка проекта: 170 000 м² продаваемого жилья, по 42 500 м² на очередь"
           },
           "offices": {
             "gns": 0,
@@ -481,26 +534,26 @@
           "apartments": {
             "gns": 57372.5,
             "total_area": 57372.5,
-            "useful": 0,
-            "saleable": 0,
+            "useful": 42500,
+            "saleable": 42500,
             "units": 0,
             "generates_revenue": true,
             "start_date": "TBD",
             "end_date": "TBD",
             "capex_mln": "TBD",
-            "assumption_source": "25% жилой ГНС; продаваемая площадь требует отдельного источника"
+            "assumption_source": "Рабочая предпосылка проекта: 170 000 м² продаваемого жилья, по 42 500 м² на очередь"
           },
           "offices": {
             "gns": 92730,
             "total_area": 92730,
-            "useful": 0,
-            "saleable": 0,
+            "useful": 75000,
+            "saleable": 75000,
             "units": 1,
             "generates_revenue": true,
             "start_date": "TBD",
             "end_date": "TBD",
             "capex_mln": "TBD",
-            "assumption_source": "рабочее деление 185 460 м² на два объекта; продаваемая площадь требует источника"
+            "assumption_source": "Рабочая предпосылка проекта: 150 000 м² продаваемых офисов, по 75 000 м² на объект"
           }
         }
       }
@@ -510,19 +563,22 @@
   },
   "economics": {
     "purchase_price_mln": 2403.65711351,
-    "apartment_price_th": "TBD",
-    "offices_price_th_per_sqm": "TBD",
-    "main_above_th_per_sqm": "TBD",
-    "offices_cost_th_per_sqm": "TBD",
+    "apartment_price_th": 500,
+    "offices_price_th_per_sqm": 350,
+    "main_above_th_per_sqm": 110,
+    "offices_cost_th_per_sqm": 200,
     "origins": {
-      "purchase_price_mln": "source"
+      "purchase_price_mln": "source",
+      "apartment_price_th": "assumption",
+      "offices_price_th_per_sqm": "assumption",
+      "main_above_th_per_sqm": "assumption",
+      "offices_cost_th_per_sqm": "assumption"
     }
   },
   "open_items": [
-    "Задать продаваемую площадь жилья и источник коэффициента перехода от ГНС.",
-    "Задать продаваемую площадь общественно-деловых объектов и источник коэффициента.",
+    "Подтвердить рабочую продаваемую площадь: жильё 170 000 м², офисы 150 000 м².",
+    "Подтвердить рабочие цены: жильё 500 тыс. ₽/м², офисы 350 тыс. ₽/м².",
     "Подтвердить деление 185 460 м² деловой части на два объекта по 92 730 м².",
-    "Задать цены реализации по продуктам.",
     "Задать CAPEX и сроки по каждому продукту и очереди.",
     "Получить параметры паркинга; автоматический расчёт по коэффициентам другого проекта отключен.",
     "Проверить актуальные кадастровые номера и участки, входящие в КРТ частично."
