@@ -28,7 +28,10 @@ krt.mos.ru ценового поля нет вовсе (`KrtTerritory` несё�
 
 from __future__ import annotations
 
+import datetime
 import logging
+import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -39,9 +42,39 @@ from market_search.http import load_json, save_json
 logger = logging.getLogger(__name__)
 
 CACHE_SCHEMA_VERSION = 1
+# Отчёт площадки версионируется отдельно от рейтинга: его состав меняется чаще
+# — маркетинг, модель, рекомендация Платона, — а строка рейтинга живёт своей
+# жизнью. Чужая версия читается как «нет отчёта», а не как отчёт с дырами.
+REPORT_SCHEMA_VERSION = 1
+# Что каталог видел раньше. Нужно ровно для одного: отличить площадку, которая
+# появилась на этой неделе, от той, что лежит там полгода. Без этого «новое»
+# пришлось бы определять глазами по списку из ста двадцати строк.
+FIRST_SEEN_SCHEMA_VERSION = 1
+# Сколько площадка считается новой после появления. Месяц: каталог обновляется
+# раз в неделю, и метка, живущая один прогон, до человека может не дожить.
+NEW_FOR_SECONDS = 30 * 24 * 60 * 60
 # Сутки: каталог КРТ обновляется реже, а цены рынка — не чаще. Столько же живёт
 # и сам каталог (`KrtRegistry.ttl_seconds`), и расходиться им незачем.
 DEFAULT_TTL_SECONDS = 24 * 60 * 60
+
+# Раз в неделю каталог обновляется и пересчитывается сам: ждать прогон каждый
+# раз, когда открываешь торги, — это минуты на пустом месте (владелец,
+# 23.08.2026). Неделя выбрана по источнику: krt.mos.ru меняется медленнее, а
+# цены рынка мы и так пересчитываем не чаще суток.
+WEEKLY_SECONDS = 7 * 24 * 60 * 60
+# Пересчёт в ночь с субботы на воскресенье, в 3 часа по Москве (владелец,
+# 23.08.2026): к утру воскресенья каталог свежий, а рабочая неделя начинается с
+# посчитанного. Сервер живёт в UTC, поэтому смещение объявлено явно — «три часа
+# ночи» без часового пояса означало бы разное на разных машинах.
+MOSCOW_UTC_OFFSET_HOURS = 3
+SCHEDULE_WEEKDAY = 6      # воскресенье, как считает datetime.weekday()
+SCHEDULE_HOUR = 3
+# Как часто поток просыпается посмотреть, не пора ли. Час — чтобы после
+# перезапуска не ждать неделю до первой проверки.
+HEARTBEAT_SECONDS = 60 * 60
+# Замок протухает: воркер мог умереть посреди прогона, и без срока каталог
+# больше никогда бы не обновился.
+LOCK_TTL_SECONDS = 6 * 60 * 60
 
 
 def _number(value: Any) -> float:
@@ -112,13 +145,90 @@ class KrtRanking:
 
     def __init__(self, data_dir: str | Path, *, ttl_seconds: int = DEFAULT_TTL_SECONDS) -> None:
         self.path = Path(data_dir) / "krt" / "ranking.json"
+        self.lock_path = Path(data_dir) / "krt" / "ranking.lock"
+        # Полный отчёт площадки лежит своим файлом рядом с рейтингом. Прогон и
+        # так считает его целиком — маркетинг, модель, очереди, потолок входа, —
+        # и выбрасывал, оставляя строку с одним баллом. Человек открывал
+        # карточку и ждал те же минуты второй раз, хотя всё уже посчитано.
+        self.reports_dir = Path(data_dir) / "krt" / "reports"
+        self.first_seen_path = Path(data_dir) / "krt" / "first_seen.json"
         self.ttl_seconds = ttl_seconds
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._progress: dict[str, Any] = {
             "running": False, "done": 0, "total": 0, "current": "",
             "started_at": None, "finished_at": None, "failed": 0, "stop_reason": "",
+            "scheduled": False,
         }
+
+    # --- расписание -----------------------------------------------------
+
+    def last_scheduled_moment(self, now: float | None = None) -> float:
+        """Момент последнего наступившего срока: воскресенье, 3 часа по Москве.
+
+        Считаем не «неделю от прошлого прогона», а календарную точку: иначе
+        расписание уползает на часы каждой выкаткой, и «ночь с субботы на
+        воскресенье» превращается в «когда придётся».
+        """
+        stamp = datetime.datetime.fromtimestamp(
+            now if now is not None else time.time(), tz=datetime.timezone.utc)
+        local = stamp + datetime.timedelta(hours=MOSCOW_UTC_OFFSET_HOURS)
+        target = local.replace(hour=SCHEDULE_HOUR, minute=0, second=0, microsecond=0)
+        # Отступаем назад до ближайшего воскресенья 03:00, которое уже прошло.
+        target -= datetime.timedelta(days=(local.weekday() - SCHEDULE_WEEKDAY) % 7)
+        if target > local:
+            target -= datetime.timedelta(days=7)
+        return (target - datetime.timedelta(hours=MOSCOW_UTC_OFFSET_HOURS)).timestamp()
+
+    def due(self, now: float | None = None) -> bool:
+        """Пора ли считать: кэша нет или он старше последнего срока."""
+        cached = load_json(self.path) or {}
+        at = cached.get("updated_at")
+        if not at:
+            return True
+        try:
+            return float(at) < self.last_scheduled_moment(now)
+        except (TypeError, ValueError):
+            return True
+
+    def claim(self) -> bool:
+        """Взять работу может только один воркер из двух.
+
+        Память у воркеров раздельная, поэтому договариваются они файлом:
+        создание атомарное, проигравший получает отказ и просто уходит спать.
+        Тот же приём, что у очереди заданий Платона.
+        """
+        self.lock_path.parent.mkdir(parents=True, exist_ok=True)
+        for _ in range(2):
+            try:
+                handle = os.open(self.lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            except FileExistsError:
+                try:
+                    age = time.time() - self.lock_path.stat().st_mtime
+                except OSError:
+                    return False
+                if age <= LOCK_TTL_SECONDS:
+                    return False
+                # Протухший замок снимаем и пробуем ещё раз — ровно один.
+                try:
+                    self.lock_path.unlink()
+                except OSError:
+                    return False
+                continue
+            except OSError:
+                return False
+            try:
+                os.write(handle, str(int(time.time())).encode("ascii"))
+            finally:
+                os.close(handle)
+            return True
+        return False
+
+    def release(self) -> None:
+        try:
+            self.lock_path.unlink()
+        except OSError:
+            pass
 
     # --- чтение ---------------------------------------------------------
 
@@ -128,6 +238,102 @@ class KrtRanking:
             return []
         rows = cached.get("rows")
         return list(rows) if isinstance(rows, list) else []
+
+    # --- что каталог видел раньше ---------------------------------------
+
+    def first_seen(self) -> dict[str, int]:
+        cached = load_json(self.first_seen_path)
+        if not isinstance(cached, dict):
+            return {}
+        if cached.get("schema_version") != FIRST_SEEN_SCHEMA_VERSION:
+            return {}
+        slugs = cached.get("slugs")
+        return {str(key): int(value) for key, value in slugs.items()} if isinstance(slugs, dict) else {}
+
+    def mark_seen(self, slugs: list[str], now: float | None = None) -> dict[str, int]:
+        """Отметить нынешний состав каталога и вернуть, когда что впервые увидено.
+
+        Первый в жизни снимок никого новым не делает: мы только начали смотреть,
+        и сто двадцать четыре «новинки» разом — это не новость, а шум. Новыми
+        становятся те, кого не было в прошлом снимке.
+        """
+        stamp = int(now if now is not None else time.time())
+        known = self.first_seen()
+        bootstrap = not known
+        seen = {str(slug) for slug in slugs if str(slug).strip()}
+        # Исчезнувшие из каталога забываются: вернувшаяся площадка — это снова
+        # новость, а вечный список слагов рос бы без конца.
+        updated = {slug: known.get(slug, 0 if bootstrap else stamp) for slug in seen}
+        save_json(self.first_seen_path, {
+            "schema_version": FIRST_SEEN_SCHEMA_VERSION,
+            "updated_at": stamp,
+            "bootstrapped_at": (load_json(self.first_seen_path) or {}).get("bootstrapped_at", stamp),
+            "slugs": updated,
+        })
+        return updated
+
+    @staticmethod
+    def is_new(first_seen_at: Any, now: float | None = None) -> bool:
+        stamp = float(now if now is not None else time.time())
+        try:
+            seen_at = float(first_seen_at or 0)
+        except (TypeError, ValueError):
+            return False
+        return seen_at > 0 and (stamp - seen_at) <= NEW_FOR_SECONDS
+
+    def report_path(self, slug: str) -> Path:
+        """Файл отчёта площадки. Слаг проверяется: он приходит из адреса."""
+        safe = re.sub(r"[^a-z0-9_-]+", "-", str(slug or "").strip().lower())[:120]
+        if not safe or safe == "-":
+            raise ValueError("Пустой идентификатор площадки")
+        return self.reports_dir / f"{safe}.json"
+
+    def report(self, slug: str) -> dict[str, Any] | None:
+        """Сохранённый отчёт или None. Чужая схема — это «нет», а не мусор."""
+        try:
+            cached = load_json(self.report_path(slug))
+        except ValueError:
+            return None
+        if not isinstance(cached, dict):
+            return None
+        if cached.get("schema_version") != REPORT_SCHEMA_VERSION:
+            return None
+        return cached
+
+    def save_report(
+        self, slug: str, payload: dict[str, Any], *, computed_at: int | None = None
+    ) -> None:
+        """Сохранить отчёт. `computed_at` задаётся, когда счёт не повторяли.
+
+        Дописать к отчёту рекомендацию Платона — не значит пересчитать его.
+        Штамповать при этом текущее время значило бы врать про свежесть: на
+        экране стояло бы «посчитано минуту назад» рядом с числами недельной
+        давности.
+        """
+        try:
+            path = self.report_path(slug)
+        except ValueError:
+            return
+        save_json(path, {
+            "schema_version": REPORT_SCHEMA_VERSION,
+            "slug": slug,
+            "computed_at": int(computed_at if computed_at is not None else time.time()),
+            **payload,
+        })
+
+    def upsert_row(self, row: dict[str, Any]) -> None:
+        """Обновить одну строку рейтинга, не трогая остальные.
+
+        Пересчёт одной площадки из карточки обязан доехать и до таблицы: иначе
+        балл в списке и числа в карточке расходятся, и оба выглядят верными.
+        Прогон по каталогу в это время не идёт — он держит замок.
+        """
+        slug = str(row.get("slug") or "")
+        if not slug:
+            return
+        rows = {str(item.get("slug") or ""): item for item in self.rows()}
+        rows[slug] = row
+        self._persist(rows)
 
     def progress(self) -> dict[str, Any]:
         with self._lock:
@@ -153,6 +359,8 @@ class KrtRanking:
         self,
         projects: list[dict[str, Any]],
         screen: Callable[[dict[str, Any]], dict[str, Any]],
+        *,
+        scheduled: bool = False,
     ) -> bool:
         """Запустить прогон. Повторный вызов на ходу ничего не запускает."""
         with self._lock:
@@ -161,7 +369,7 @@ class KrtRanking:
             self._progress = {
                 "running": True, "done": 0, "total": len(projects), "current": "",
                 "started_at": time.time(), "finished_at": None, "failed": 0,
-                "stop_reason": "",
+                "stop_reason": "", "scheduled": bool(scheduled),
             }
         thread = threading.Thread(
             target=self._run, args=(projects, screen), name="krt-ranking", daemon=True)
@@ -195,11 +403,23 @@ class KrtRanking:
                 row = score_row(project, screening)
                 if row["slug"]:
                     rows[row["slug"]] = row
+                    # Отчёт кладётся целиком, даже когда посчитать не вышло:
+                    # «не посчитали и вот почему» — тоже ответ, и карточка
+                    # должна показывать его, а не пустоту с кнопкой.
+                    self.save_report(row["slug"], {
+                        "project": project,
+                        "market": screening.pop("market_report", None),
+                        "screening": screening,
+                    })
                 with self._lock:
                     self._progress["done"] = index
                 self._persist(rows)
         finally:
             self._persist(rows)
+            # Замок отпускается ровно здесь: держать его до протухания значило
+            # бы, что после первого же прогона неделя превращается в шесть часов
+            # ожидания следующего.
+            self.release()
             with self._lock:
                 self._progress["running"] = False
                 self._progress["current"] = ""

@@ -150,7 +150,7 @@ def test_the_page_opens_a_received_link():
     body = body[:body.index("\n}\n")]
     # Присланное накладывается на умолчания, а не подменяет их: снимок мог быть
     # сделан версией, где поля ещё не было.
-    assert "Object.assign(structuredClone(INPUT_DEFAULT)" in body
+    assert "applyProjectSnapshot(data)" in body, "наложение живёт одной функцией"
     assert "history.replaceState" in body, "ссылка уходит из адреса после открытия"
     assert "checkSharedLink();" in page
 

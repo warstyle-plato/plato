@@ -46,6 +46,25 @@ def load_local_body() -> str:
     raise AssertionError("не найдена loadLocal")
 
 
+def page_function(name: str) -> str:
+    """Функция со страницы, а не её пересказ здесь.
+
+    `loadLocal` зовёт `cloneValue`, и заглушка с собственным клоном пережила бы
+    переименование молча — ровно та ошибка, ради которой этот файл написан.
+    """
+    source = core.PAGE
+    start = source.index(f"function {name}(")
+    depth = 0
+    for position in range(source.index("{", start), len(source)):
+        if source[position] == "{":
+            depth += 1
+        elif source[position] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start:position + 1]
+    raise AssertionError(f"не найдена функция {name}")
+
+
 def restore(saved: dict) -> dict:
     """Прогоняет настоящий loadLocal над состоянием старого браузера."""
     node = shutil.which("node")
@@ -54,7 +73,8 @@ def restore(saved: dict) -> dict:
     script = (
         f"const INPUT_DEFAULT={defaults('INPUT_DEFAULT')};\n"
         f"const TEP_DEFAULT={defaults('TEP_DEFAULT')};\n"
-        "let inputs=structuredClone(INPUT_DEFAULT),tep=structuredClone(TEP_DEFAULT),"
+        + page_function("cloneValue") + "\n"
+        "let inputs=cloneValue(INPUT_DEFAULT),tep=cloneValue(TEP_DEFAULT),"
         "phasing={},rates=[];\n"
         "const scenarioSelect={value:'base'};\n"
         "function makeDefaultPhasing(){return {enabled:false}}\n"

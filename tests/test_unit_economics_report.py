@@ -122,7 +122,10 @@ def test_the_pdf_prints_the_unit_economics(payload):
     assert "Удельная экономика проекта" in text
     assert "продаваемой" in text
     # Обе базы названы числом: «тыс ₽/м²» без базы читается как что угодно.
-    assert "База ГНС" in text
+    # И названа верно: база включает подземную часть, а та в наземную площадь
+    # не входит — «ГНС» здесь было бы чужим именем.
+    assert "База — строительный объём" in text
+    assert "наземная часть" in text and "плюс подземная" in text
 
 
 def test_the_pdf_construction_table_gained_the_saleable_column(payload):
