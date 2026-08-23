@@ -250,8 +250,8 @@ def _sanitize_base_schedule(project: str, schedule: dict[str, Any]) -> None:
         # быть менее готова, чем принято в baseline.
         article_ratio = row.get("actual_progress")
         own = meta.get("progress")
-        if own is not None:
-            row["rss_accepted_ratio"] = max(float(article_ratio or 0.0), own)
+        if own is not None and own > float(article_ratio or 0.0):
+            row["rss_accepted_ratio"] = own
             row["progress_kind"] = "accepted_cost_ratio_floor_gpr"
             row["progress_label"] = "КС / EAC, не ниже % ГПР"
         else:
