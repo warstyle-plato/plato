@@ -233,6 +233,44 @@ def _baseline_file(project: str) -> Path | None:
     return items[0] if items else None
 
 
+def store_schedule_fact(project: str, data: bytes, taken_at: Any) -> dict[str, Any]:
+    """Положить еженедельный ГПР-факт снимком: проценты и статусы поверх baseline.
+
+    План проекта зафиксирован baseline и не меняется; меняется выполнение.
+    Прораб проставляет проценты в тот же файл ГПР и присылает его раз в
+    неделю — вместе с РСС. Каждый снимок хранится отдельно: переписанное
+    прошлое видно только парой снимков.
+    """
+    day = _iso(taken_at)
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+        raise ValueError("дата ГПР-факта нужна в виде ГГГГ-ММ-ДД")
+    parsed = _read_baseline_gpr_bytes(data)
+    folder = _project_dir(project) / "schedule_fact"
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"{day}.xlsx"
+    if path.exists():
+        raise FileExistsError(f"ГПР-факт на {day} уже загружен")
+    path.write_bytes(data)
+    works = parsed["works"]
+    return {
+        "taken_at": day,
+        "works": len(works),
+        "completed": sum(1 for row in works
+                         if "заверш" in str(row.get("status") or "").lower()
+                         or (row.get("progress") or 0) >= 0.999),
+    }
+
+
+def latest_schedule_fact(project: str, upto: str = "") -> dict[str, Any] | None:
+    """Свежайший снимок ГПР-факта, не позднее `upto`. Нет снимка — None."""
+    path = _latest(project, "schedule_fact", ".xlsx", upto)
+    if path is None:
+        return None
+    parsed = _read_baseline_gpr_bytes(path.read_bytes())
+    parsed["taken_at"] = path.stem
+    return parsed
+
+
 def _read_baseline_gpr(project: str) -> dict[str, Any]:
     path = _baseline_file(project)
     if path is None:
@@ -607,11 +645,33 @@ def moved_between_snapshots(project: str, first: str, second: str) -> dict[str, 
 # ---------------------------------------------------------------------------
 
 def store_sales(project: str, rows: list[dict[str, Any]], taken_at: Any) -> dict[str, Any]:
+    """Продажи строками — то, чего книга ещё не знает.
+
+    Книга обновляется раз в месяц и отстаёт; «в августе продано 4 лота»
+    приходит словами задолго до выгрузки. Месяц из строк перекрывает тот же
+    месяц книги в срезе.
+    """
     day = _iso(taken_at)
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+        raise ValueError("дата продаж нужна в виде ГГГГ-ММ-ДД")
+    cleaned = []
+    for row in rows or []:
+        month = actuals._as_month(row.get("month"))
+        if month is None:
+            continue
+        cleaned.append({
+            "month": _iso(month)[:7],
+            "units": float(row.get("units") or 0),
+            "area": float(row.get("area") or 0),
+            "revenue": float(row.get("revenue") or 0),
+        })
+    if not cleaned:
+        raise ValueError("ни в одной строке нет месяца")
     folder = _project_dir(project) / "sales"
     folder.mkdir(parents=True, exist_ok=True)
-    (folder / f"{day}.json").write_text(json.dumps({"taken_at": day, "rows": rows}, ensure_ascii=False), encoding="utf-8")
-    return {"taken_at": day, "months": len(rows or []), "ignored_by_monitor": True}
+    (folder / f"{day}.json").write_text(json.dumps(
+        {"taken_at": day, "rows": cleaned}, ensure_ascii=False), encoding="utf-8")
+    return {"taken_at": day, "months": len(cleaned)}
 
 
 def store_sales_file(project: str, data: bytes, taken_at: Any) -> dict[str, Any]:

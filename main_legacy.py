@@ -65,7 +65,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.19.67"
+VERSION = "0.19.69"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -1884,6 +1884,27 @@ def monitor_store_schedule(req: MonitorScheduleRequest) -> dict[str, Any]:
             req.project, base64.b64decode(req.gpr_base64),
             base64.b64decode(req.pm_base64) if req.pm_base64 else None,
             req.taken_at)
+    except FileExistsError as exc:
+        raise HTTPException(409, str(exc))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+class MonitorScheduleFactRequest(BaseModel):
+    project: str
+    taken_at: str
+    content_base64: str
+    session: str = ""
+    key: str = ""
+
+
+@app.post("/monitor/schedule-fact", include_in_schema=False)
+def monitor_store_schedule_fact(req: MonitorScheduleFactRequest) -> dict[str, Any]:
+    """Еженедельный ГПР-факт: проценты и статусы поверх неизменного baseline."""
+    _require_web_access(req.session, req.key, "Монитор проекта")
+    try:
+        return developaid_monitor.store_schedule_fact(
+            req.project, base64.b64decode(req.content_base64), req.taken_at)
     except FileExistsError as exc:
         raise HTTPException(409, str(exc))
     except ValueError as exc:
