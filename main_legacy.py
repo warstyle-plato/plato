@@ -65,7 +65,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.19.59"
+VERSION = "0.19.60"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -12835,12 +12835,12 @@ def _model_sheet_phase_comparison(bundle: dict[str, Any]) -> dict[str, Any]:
     header = [
         "Очередь", "Продаваемая площадь, м²", "Общая площадь ГНС, м²",
         "Выручка, млн ₽",
-        "Цена реализации, тыс ₽/м² продаваемой", "Цена реализации, тыс ₽/м² ГНС",
+        "Цена реализации, тыс ₽/м² продаваемой", "Цена реализации, тыс ₽/м² строит. объёма",
         "CAPEX, млн ₽",
-        "CAPEX, тыс ₽/м² продаваемой", "CAPEX, тыс ₽/м² ГНС",
+        "CAPEX, тыс ₽/м² продаваемой", "CAPEX, тыс ₽/м² строит. объёма",
         "Полные расходы, млн ₽",
-        "Полные расходы, тыс ₽/м² продаваемой", "Полные расходы, тыс ₽/м² ГНС",
-        "Чистая прибыль, тыс ₽/м² продаваемой", "Чистая прибыль, тыс ₽/м² ГНС",
+        "Полные расходы, тыс ₽/м² продаваемой", "Полные расходы, тыс ₽/м² строит. объёма",
+        "Чистая прибыль, тыс ₽/м² продаваемой", "Чистая прибыль, тыс ₽/м² строит. объёма",
         "Общие расходы (касса), млн ₽", "Общие расходы (аллокация), млн ₽",
         "Пик БРИДЖ, млн ₽", "Затраты до РНС, млн ₽",
         "Свободный cash проекта, млн ₽", "Собственные средства, млн ₽",
@@ -12921,13 +12921,13 @@ def _model_sheet_phase_comparison(bundle: dict[str, Any]) -> dict[str, Any]:
         # показатель по проекту целиком.
         ratio_columns = {
             header.index("Цена реализации, тыс ₽/м² продаваемой"): ("revenue", "saleable_sqm"),
-            header.index("Цена реализации, тыс ₽/м² ГНС"): ("revenue", "gns_sqm"),
+            header.index("Цена реализации, тыс ₽/м² строит. объёма"): ("revenue", "gns_sqm"),
             header.index("CAPEX, тыс ₽/м² продаваемой"): ("capex", "saleable_sqm"),
-            header.index("CAPEX, тыс ₽/м² ГНС"): ("capex", "gns_sqm"),
+            header.index("CAPEX, тыс ₽/м² строит. объёма"): ("capex", "gns_sqm"),
             header.index("Полные расходы, тыс ₽/м² продаваемой"): ("total_expenses", "saleable_sqm"),
-            header.index("Полные расходы, тыс ₽/м² ГНС"): ("total_expenses", "gns_sqm"),
+            header.index("Полные расходы, тыс ₽/м² строит. объёма"): ("total_expenses", "gns_sqm"),
             header.index("Чистая прибыль, тыс ₽/м² продаваемой"): ("net_profit", "saleable_sqm"),
-            header.index("Чистая прибыль, тыс ₽/м² ГНС"): ("net_profit", "gns_sqm"),
+            header.index("Чистая прибыль, тыс ₽/м² строит. объёма"): ("net_profit", "gns_sqm"),
         }
 
         def column_total(key: str) -> float:
@@ -28535,7 +28535,7 @@ details.cadastral-box>summary::marker{color:#888}
           <div id="expenseStructureChart" class="expense-bars"></div>
           <div class="scroll" style="max-height:none">
             <table class="metric-table metric-compact">
-              <thead><tr><th>Категория</th><th>Сумма</th><th>Доля</th><th>тыс ₽/м² ГНС</th><th>тыс ₽/м² прод.</th></tr></thead>
+              <thead><tr><th>Категория</th><th>Сумма</th><th>Доля</th><th>тыс ₽/м² строит. объёма</th><th>тыс ₽/м² прод.</th></tr></thead>
               <tbody id="expenseStructureTable"></tbody>
               <tfoot><tr><th>Итого расходов</th><th id="expenseTotal"></th><th>100%</th><th id="expenseTotalGns"></th><th id="expenseTotalSaleable"></th></tr></tfoot>
             </table>
@@ -28544,7 +28544,7 @@ details.cadastral-box>summary::marker{color:#888}
       </div>
       <div class="card">
         <div class="section-title">Структура затрат по статьям</div>
-        <table><thead><tr><th>Статья</th><th>Сумма</th><th>тыс ₽/м² ГНС</th><th>тыс ₽/м² прод.</th></tr></thead>
+        <table><thead><tr><th>Статья</th><th>Сумма</th><th>тыс ₽/м² строит. объёма</th><th>тыс ₽/м² прод.</th></tr></thead>
         <tbody id="capexTable"></tbody></table>
       </div>
       </div>
@@ -28553,7 +28553,7 @@ details.cadastral-box>summary::marker{color:#888}
         <div class="report-section-title">Доходы</div>
       <div class="card">
         <div class="section-title">Структура выручки</div>
-        <table><thead><tr><th>Продукт</th><th>Выручка</th><th>тыс ₽/м² ГНС</th><th>тыс ₽/м² прод.</th></tr></thead>
+        <table><thead><tr><th>Продукт</th><th>Выручка</th><th>тыс ₽/м² строит. объёма</th><th>тыс ₽/м² прод.</th></tr></thead>
         <tbody id="revenueTable"></tbody></table>
       </div>
       <div class="card">

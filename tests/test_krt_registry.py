@@ -247,11 +247,21 @@ def test_auctions_exposes_krt_as_a_separate_tab_and_endpoint(monkeypatch) -> Non
     assert "жильё и быстрый старт" in page.text
     assert "Короткий вывод Платона" in page.text
     assert "analysis.site||analysis.overall" in page.text
-    assert "Получить маркетинг и прогнать модель" in page.text
+    # Карточка открывает посчитанное, а не запускает счёт заново: кнопка
+    # называется пересчётом, потому что отчёт уже лежит.
+    assert "Пересчитать сейчас" in page.text
+    assert "Передать в DevelopAid" in page.text
     assert "Предварительный прогон модели" in page.text
     answer = client.get("/auctions/krt")
     assert answer.status_code == 200
-    assert answer.json()["projects"] == [project]
+    # Каталог дописывает к площадке, когда её впервые увидели: «новое» — это
+    # разница с прошлым составом, и считать её должен сервер, а не человек
+    # глазами по списку.
+    returned = answer.json()["projects"]
+    assert [{key: value for key, value in row.items()
+             if key not in {"first_seen_at", "is_new"}} for row in returned] == [project]
+    assert returned[0]["is_new"] is False, "первый снимок новым никого не делает"
+    assert "new_count" in answer.json()
     assert answer.json()["complete"] is True
     assert client.get("/auctions/krt/test/market").status_code == 401
     market = client.get("/auctions/krt/test/market", headers={"X-Market-Key": "test-key"})
