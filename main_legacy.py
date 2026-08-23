@@ -65,7 +65,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.19.67"
+VERSION = "0.19.68"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -13584,6 +13584,19 @@ def _v4_fold_tail(weights: list[float], enabled: int, book: int) -> list[float]:
 # движка — и один месяц пошёл по 3,47% вместо 1,75%, а стоимость
 # финансирования разошлась на 28,9 млн ₽ при совпадающих выручке, CAPEX,
 # EBITDA и пике долга.
+# Что входит в многоквартирный дом, а что стоит отдельным объектом (решение
+# владельца, 23.08.2026: жильё, коммерция, машино-места и кладовки — это МКД).
+# Подземный паркинг и кладовые продаются своими продуктами, но строятся тем же
+# домом, и в промежуточном итоге стоят с ним. Список объявлен один раз: копия
+# на странице разошлась бы с этой молча.
+MKD_PRODUCTS: tuple[str, ...] = (
+    "apartments", "ground_commercial", "underground_parking", "storage",
+)
+STANDALONE_PRODUCTS: tuple[str, ...] = (
+    "standalone_retail", "offices", "above_parking",
+)
+
+
 MANAGEMENT_PROFILE_ARTICLES: tuple[str, ...] = (
     "ird", "design_p", "design_rd", "author_supervision", "preparation",
     "main_above", "main_under", "utilities", "landscaping", "site_maintenance",
@@ -29954,7 +29967,21 @@ function renderPhasing(){
    const inputsHtml=['gns','saleable','units'].map(field=>{const derived=phaseProductDerived(k,field,i),has=own[field]!==undefined,value=has?Number(own[field]):derived,isRemainder=!!phasing.products[k]&&i===phasing.phases.length-1,limit=phaseProductTepLimit(k,field,i),maxAttr=limit===null?'':`max="${Number(limit.toFixed(6))}"`;totals[field]+=value;return `<input type="number" min="0" ${maxAttr} step="any" value="${Number(value.toFixed(2))}" title="${isRemainder?'Автоматический остаток':field+(has?' — введено вручную':' — рассчитано по доле')+(limit===null?'':` · максимум ${num(limit)}`)}" ${isRemainder?'readonly':`onchange="setPhaseProductTep(${i},'${k}','${field}',this.value)"`}>`}).join('');
    return `<td><div style="display:grid;grid-template-columns:repeat(3,minmax(80px,1fr));gap:5px">${inputsHtml}</div></td>`;
   }).join('');
-  return `<tr><td><b>${tepLabels[k]}</b></td>${cells}<td>${num(totals.gns)} · ${num(totals.saleable)} · ${num(totals.units)}</td></tr>`;
+  // Сумма очередей сравнивается с проектом, а не показывается сама по себе.
+  // Ячейка, вписанная руками, за правкой пропорций не идёт — и это правильно,
+  // фактический ТЭП из ГПЗУ затираться не должен. Неправильно другое: пока
+  // расхождение молчит, две строки выглядят одинаково достоверно. Сумма метров
+  // по очередям обязана сходиться с проектом — на пресете Нагатино паркинг
+  // расходился на 17 мест и 595 м², и заметить это было негде.
+  const master={gns:Number((tep[k]||{}).gns||0),saleable:Number((tep[k]||{}).saleable||0),units:Number((tep[k]||{}).units||0)};
+  const off=['gns','saleable','units'].filter(f=>Math.abs(totals[f]-master[f])>Math.max(1,master[f]*0.001));
+  const names={gns:'ГНС',saleable:'продаваемая',units:'шт.'};
+  const totalCell=off.length
+   ? `<span class="phase-total-bad">${num(totals.gns)} · ${num(totals.saleable)} · ${num(totals.units)}</span>`
+     +`<div class="phase-total-bad" style="font-size:11px;font-weight:500;margin-top:3px">не сходится с проектом: `
+     +off.map(f=>`${names[f]} ${num(totals[f])} против ${num(master[f])} (${totals[f]>master[f]?'+':''}${num(totals[f]-master[f])})`).join('; ')+`</div>`
+   : `<span class="phase-total-ok">${num(totals.gns)} · ${num(totals.saleable)} · ${num(totals.units)} ✓</span>`;
+  return `<tr><td><b>${tepLabels[k]}</b></td>${cells}<td>${totalCell}</td></tr>`;
  }).join('');
  if(document.getElementById('phaseTepWarning'))phaseTepWarning.textContent=phaseTepEditWarning;
  const sl={purchase:'Покупка / вход',land_rights:'Земельные права / ВРИ',ird:'ИРД',design:'П + РД',preparation:'Подготовительные',utilities:'Наружные сети',social_compensation:'Соцкомпенсация',social_construction:'Соцобъекты — аналитическая аллокация'};
@@ -32647,6 +32674,7 @@ function applyRequiredSocialProgramFromGlavapu(){
 // а метры до таблицы не доезжали (замечание владельца, 19.08.2026). Тест
 // сверяет список с тем, что `syncTep` читает на самом деле.
 const TEP_RATIOS=__DEVELOPAID_TEP_RATIOS__;
+const MKD_PRODUCTS=__DEVELOPAID_MKD_PRODUCTS__;
 const PARKING_2118=__DEVELOPAID_PARKING_2118__;
 const VRI_USE_TYPES=__DEVELOPAID_VRI_USE_TYPES__;
 
@@ -33188,10 +33216,21 @@ function renderPhaseComparison(){
  // семь нулевых строк — это шум, а не полнота.
  const prodOrder=(cons.report&&cons.report.products||[]).map(p=>p.key);
  const prodLabel={};(cons.report&&cons.report.products||[]).forEach(p=>{prodLabel[p.key]=p.label});
- const prodRows=prodOrder.filter(k=>c.some(x=>Number((x.revenue_by_product||{})[k]||0)>0))
-  .map(k=>[' · '+(prodLabel[k]||k),
-           c.map(x=>money((x.revenue_by_product||{})[k]||0)),
-           money((cons.report.products.find(p=>p.key===k)||{}).revenue||0)]);
+ const shown=prodOrder.filter(k=>c.some(x=>Number((x.revenue_by_product||{})[k]||0)>0));
+ const sumOf=(keys,x)=>keys.reduce((s,k)=>s+Number((x.revenue_by_product||{})[k]||0),0);
+ const sumCons=keys=>keys.reduce((s,k)=>s+Number((cons.report.products.find(p=>p.key===k)||{}).revenue||0),0);
+ // Промежуточный итог заводится, только когда в группе больше одного продукта:
+ // «Итого МКД» под единственной строкой квартир — это та же строка дважды.
+ const group=(keys,label)=>{
+  const mine=shown.filter(k=>keys.includes(k));
+  const rows=mine.map(k=>[' · '+(prodLabel[k]||k),
+                          c.map(x=>money((x.revenue_by_product||{})[k]||0)),
+                          money((cons.report.products.find(p=>p.key===k)||{}).revenue||0)]);
+  if(mine.length>1)rows.push([label,c.map(x=>money(sumOf(mine,x))),money(sumCons(mine))]);
+  return rows;
+ };
+ const prodRows=[...group(MKD_PRODUCTS,'Итого МКД'),
+                 ...group(prodOrder.filter(k=>!MKD_PRODUCTS.includes(k)),'Итого отдельные объекты')];
  const rows=[
   ['Продаваемая площадь',c.map(x=>num(x.saleable_sqm)+' м²'),num(csSale)+' м²'],
   ['Общая площадь — ГНС',c.map(x=>num(x.gns_sqm)+' м²'),num(csGns)+' м²'],
@@ -35047,6 +35086,9 @@ PAGE = PAGE.replace(FIELD_GROUPS_PLACEHOLDER,
 PAGE = PAGE.replace(INPUT_DEFAULT_PLACEHOLDER,
                     json.dumps(DEFAULT_INPUTS, ensure_ascii=False))
 PAGE = PAGE.replace(TEP_RATIOS_PLACEHOLDER, json.dumps(TEP_RATIOS, ensure_ascii=False))
+# Состав МКД — из движка, копии на странице нет.
+PAGE = PAGE.replace("__DEVELOPAID_MKD_PRODUCTS__",
+                    json.dumps(list(MKD_PRODUCTS), ensure_ascii=False))
 PAGE = PAGE.replace(PARKING_2118_PLACEHOLDER,
                     json.dumps(PARKING_2118_PARAMS, ensure_ascii=False))
 PAGE = PAGE.replace(VRI_USE_TYPES_PLACEHOLDER, json.dumps(VRI_USE_TYPES, ensure_ascii=False))
