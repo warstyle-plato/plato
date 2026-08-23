@@ -243,3 +243,39 @@ def test_the_baseline_plan_dates_stay_even_with_a_fact_snapshot(tmp_path, monkey
     work = baseline["works"][0]
     assert work["start"] == d1
     assert work["finish"] == d2
+
+
+def test_a_work_percent_entered_on_the_page_wins_over_everything(tmp_path, monkeypatch):
+    """В акте РСС нет имени работы — последнее слово о работе за человеком.
+
+    Процент вводится в карточке работы на странице и живёт поверх baseline
+    и еженедельного ГПР-факта; поздний снимок перекрывает ранний.
+    """
+    import datetime
+    import developaid_monitor as monitor
+
+    monkeypatch.setattr(monitor, "_SNAPSHOT_DIR", tmp_path)
+    d1, d2 = datetime.date(2025, 8, 23), datetime.date(2025, 10, 28)
+    monitor.store_schedule("Кутузов", _gpr_book([
+        (1393, "Разработка котлована", 0.0, d1, d2, "Просрочено", "2.2.1.1"),
+    ]), None, "2026-07-23")
+
+    monitor.store_work_fact("Кутузов", [
+        {"id": "1393", "progress": 0.6}], "2026-08-10")
+    monitor.store_work_fact("Кутузов", [
+        {"id": "1393", "progress": 1.0, "status": "Завершено"}], "2026-08-20")
+
+    status = manager._baseline_status("Кутузов")
+    assert status["1393"]["closed"] is True
+    assert status["1393"]["progress"] == pytest.approx(1.0)
+
+    facts = monitor.work_facts("Кутузов", upto="2026-08-15")
+    assert facts["1393"]["progress"] == pytest.approx(0.6)
+
+
+def test_a_row_without_id_or_percent_is_refused(tmp_path, monkeypatch):
+    import developaid_monitor as monitor
+
+    monkeypatch.setattr(monitor, "_SNAPSHOT_DIR", tmp_path)
+    with pytest.raises(ValueError):
+        monitor.store_work_fact("Кутузов", [{"progress": "не число"}], "2026-08-20")
