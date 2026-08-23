@@ -211,7 +211,7 @@ margin-top:12px;white-space:normal}
 /* Баннер — в подвале и во всю ширину: он широкий, ему нужна ширина. Реплика
    в нём нарисована, поэтому текстом её рядом нет: одна и та же фраза дважды
    на экране читается как недосмотр, каковым и была. */
-.plato-footer{margin:26px 0 8px;line-height:0}
+.brand{display:block;margin-bottom:10px;line-height:0}.brand img{height:26px;width:auto;display:block}.legal-footer{display:flex;gap:18px;flex-wrap:wrap;padding:14px 0 6px;font-size:11px;color:#8b8b8b}.legal-footer a{color:#8b8b8b}.plato-footer{margin:26px 0 8px;line-height:0}
 .plato-footer img{width:100%;height:auto;border-radius:14px;display:block}
 td.link{color:var(--blue);cursor:pointer;text-decoration:underline dotted}
 .cardwrap{position:fixed;inset:0;background:rgba(20,35,60,.45);display:flex;align-items:flex-start;
@@ -423,6 +423,7 @@ g.bub.on circle{fill-opacity:.75}
 @page{margin:14mm 12mm 20mm}
 </style>
 <header>
+  <a class="brand" href="/" title="DevelopAid"><img src="/guide/assets/logo.webp" alt="ПЛАТО" height="26"></a>
   <h1>Конструктор отчёта о рынке</h1>
   <div class="sub">Внутренний раздел. Числа лицензионные — наружу не публикуются.
     · версия __DEVELOPAID_VERSION__</div>
@@ -493,6 +494,7 @@ g.bub.on circle{fill-opacity:.75}
   <footer class="plato-footer">
     <img src="/assets/platon-quote.webp" alt="Платон Сергеевич Федоскин: «Хорошие дома начинаются с правильных вопросов»" loading="lazy">
   </footer>
+  __DEVELOPAID_LEGAL_FOOTER__
 </main>
 <script>
 const $=s=>document.querySelector(s);
@@ -2248,10 +2250,25 @@ def cabinet_style() -> str:
     return page[start:page.index("</style>", start)]
 
 
+LEGAL_FOOTER_PLACEHOLDER = "__DEVELOPAID_LEGAL_FOOTER__"
+
+
+def legal_footer() -> str:
+    """Подвал документов ИП. Состав берётся из `PAGE`, копии здесь нет."""
+    try:
+        import guide
+        import main_legacy
+
+        return guide.legal_footer_html(main_legacy)
+    except Exception:
+        return ""
+
+
 def cabinet_page() -> str:
     return (
         CABINET_PAGE.replace("__SECTIONS__", _sections_markup())
         .replace(VERSION_PLACEHOLDER, app_version())
+        .replace(LEGAL_FOOTER_PLACEHOLDER, legal_footer())
     )
 
 
