@@ -609,7 +609,7 @@ def install(app: FastAPI) -> None:
                 if project is not None and screening.get("available") is not None \
                         and not custom_ratios:
                     stored = dict(screening)
-                    krt_ranking.save_report(slug, {
+                    krt_ranking.save_failure_or_report(slug, stored, {
                         "project": project,
                         "market": _market_digest(report),
                         "screening": {key: value for key, value in stored.items()

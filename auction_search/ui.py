@@ -206,12 +206,25 @@ function krtScore(x){
  const score=Math.max(0,Math.min(100,Math.round(fit.score*(1-cut/100))));
  const tone=score>=75?'ok':score>=50?'warn':'bad';
  const label=score>=75?'Высокое':score>=50?'Среднее':'Низкое';
- return {score,base:fit.score,cut,cuts,tone,label,counted,fit};
+ return {score,base:fit.score,cut,cuts,tone,label,counted,fit,
+         reason:rank.reason||'',staleReason:rank.recompute_reason||'',
+         staleAt:rank.recompute_failed_at||0,countedAt:rank.computed_at||0};
+}
+// Отказ без причины — это не ответ. Строка «модель не считалась» стояла у всех
+// двадцати площадок разом (23.08.2026), а почему — знал только журнал на
+// машине, куда с экрана не заглянешь. Причина приходит в строке рейтинга
+// (`reason`) и просто не выводилась.
+function krtWhen(stamp){
+ if(!Number(stamp))return '';
+ try{return new Date(Number(stamp)*1000).toLocaleDateString('ru-RU',{day:'numeric',month:'long'})}catch(e){return ''}
 }
 function krtScoreNote(sc){
- if(!sc.counted)return 'ТЭП '+sc.base+' · модель не считалась';
- if(!sc.cut)return 'ТЭП '+sc.base+' · расчёт не снизил';
- return 'ТЭП '+sc.base+' · расчёт снял '+sc.cut+'%: '+sc.cuts.map(c=>c.label).join(', ');
+ if(!sc.counted)return 'ТЭП '+sc.base+' · модель не считалась'+(sc.reason?': '+sc.reason:'');
+ const head='ТЭП '+sc.base+(sc.cut?' · расчёт снял '+sc.cut+'%: '+sc.cuts.map(c=>c.label).join(', '):' · расчёт не снизил');
+ if(!sc.staleReason)return head;
+ // Числа остались от удавшегося счёта — значит, надо сказать, от какого.
+ const when=krtWhen(sc.countedAt);
+ return head+' · числа от '+(when||'прошлого счёта')+', пересчёт не удался: '+sc.staleReason;
 }
 function filterKrt(){const q=$('krtSearch').value.trim().toLowerCase(),status=$('krtStatus').value,purpose=$('krtPurpose').value;state.krtFiltered=state.krt.filter(x=>(!q||[x.name,x.district,x.okrug].join(' ').toLowerCase().includes(q))&&(!state.krtOkrugs.size||state.krtOkrugs.has(x.okrug))&&(!status||x.status===status)&&(!purpose||Number(x[purpose])>0)).sort((a,b)=>krtScore(b).score-krtScore(a).score||String(a.name).localeCompare(String(b.name),'ru'));renderKrt()}
 function sumKrt(rows,key,d){const n=rows.reduce((s,x)=>s+(Number(x[key])||0),0);return new Intl.NumberFormat('ru-RU',{maximumFractionDigits:d}).format(n)}
@@ -227,7 +240,7 @@ function renderKrtNewNote(){
  if(!box.innerHTML.includes('Новых в каталоге'))box.innerHTML+=`<div class="source">${line}</div>`;
 }
 function renderKrt(){const a=state.krtFiltered,body=$('krtRows');body.innerHTML='';$('krtEmpty').style.display=a.length?'none':'grid';$('krtCount').textContent=a.length;$('krtArea').textContent=sumKrt(a,'area_ha',1);$('krtHousing').textContent=sumKrt(a,'housing_gfa_sqm',0);$('krtGfa').textContent=sumKrt(a,'total_gfa_sqm',0);a.forEach(x=>{const sc=krtScore(x),model=state.krtModels[x.slug],light=model?.traffic_light,tr=document.createElement('tr');
- const title=sc.counted?`Потенциал по ТЭП ${sc.base}; расчёт снял ${sc.cut}%. ${light?.label||''}`:'Балл по ТЭП; модель ещё не считалась';
+ const title=sc.counted?`Потенциал по ТЭП ${sc.base}; расчёт снял ${sc.cut}%. ${light?.label||''}`:('Балл по ТЭП; модель ещё не считалась'+(sc.reason?'. '+sc.reason:''));
  const fresh=x.is_new?'<span class="tag new" title="Появилась в каталоге недавно">новое</span>':'';
  tr.innerHTML=`<td><div class="lotname">${esc(x.name)}${fresh}</div><div class="source">${esc([x.okrug,x.district].filter(Boolean).join(' · '))}</div></td><td><span class="fit ${sc.tone}" title="${esc(title)}"><span class="light"></span>${sc.score} · ${esc(sc.label)}</span><div class="source">${esc(krtScoreNote(sc))}</div></td><td class="money">${krtRankCell(x.slug)}</td><td><span class="tag ${x.status==='В реализации'?'ok':'warn'}">${esc(x.status||'—')}</span></td><td>${x.area_ha?esc(x.area_ha+' га'):'—'}</td><td>${fmtArea(x.total_gfa_sqm)}</td><td>${fmtArea(x.housing_gfa_sqm)}</td><td>${esc(x.jobs??'—')}</td>`;tr.onclick=()=>selectKrt(x);body.appendChild(tr)});renderAskContext()}
 // Балл — потолок цены входа на метр продаваемой (решение владельца,
@@ -581,7 +594,7 @@ function askDigest(){
   list.slice(0,12).forEach(x=>{
    const sc=krtScore(x), rank=state.krtRank[x.slug]||{};
    lines.push(`— ${x.name} (${[x.okrug,x.district].filter(Boolean).join(', ')}): балл ${sc.score}`
-    +` (потенциал по ТЭП ${sc.base}${sc.counted?`, расчёт снял ${sc.cut}%`:', модель не считалась'})`
+    +` (потенциал по ТЭП ${sc.base}${sc.counted?`, расчёт снял ${sc.cut}%`:`, модель не считалась${sc.reason?': '+sc.reason:''}`})`
     +`; жильё ${fmtArea(x.housing_gfa_sqm)}, всего ${fmtArea(x.total_gfa_sqm)}, ${x.area_ha||'—'} га`
     +(rank.project_llcr_x!=null?`; LLCR ${Number(rank.project_llcr_x).toFixed(2)}x`:'')
     +(rank.margin_pct!=null?`, маржа ${Number(rank.margin_pct).toFixed(1)}%`:'')
