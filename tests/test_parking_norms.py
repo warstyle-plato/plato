@@ -80,16 +80,19 @@ def test_the_trade_relief_does_not_leak_to_other_functions() -> None:
     assert abs(office["raw_spaces"] - 900 / 63.0) < 1e-9
 
 
-def test_built_in_premises_keep_the_line_that_reproduces_the_city() -> None:
-    """Зеркало калькулятора — отдельная вещь, и она себя называет.
+def test_built_in_premises_have_their_own_line_in_annex_6() -> None:
+    """90 кв. м ННП на место — своя строка приложения 6, а не строка таблицы 1.
 
-    Строки для встроенных помещений в приложении 1 нет вовсе; наша строка
-    воспроизводит ответ ГлавАПУ до единицы, и подменять её таблицей для
-    отдельно стоящих объектов нельзя молча.
+    Полгода это число жило у нас как «практика города, восстановленная по
+    выгрузке»: в приложении 1 такой строки нет, а 63 оттуда давало на тех же
+    метрах 22 вместо 15. Основание нашлось 24.08.2026. Число не менялось —
+    появилось основание, и это разные вещи.
     """
     got = pn.moscow_required("office", 10_000, k1=1.0, k2=1.0, built_in=True)
-    assert got["x2"] == 100.0
-    assert any("ГлавАПУ" in line for line in got["assumptions"])
+    assert got["x2"] == 90.0
+    assert got["source_confirmed"] is True
+    assert "приложение 6" in got["normative_source"]
+    assert got["input_unit"] == pn.UNIT_ABOVE_NONRES_SQM
 
 
 # --- Московская область -----------------------------------------------------
@@ -181,10 +184,11 @@ def test_k1_is_read_from_walking_distance() -> None:
     assert pn.moscow_k1(0)["value"] is None
 
 
-def test_an_unknown_function_is_a_refusal_not_a_guess() -> None:
+def test_an_unknown_function_points_at_the_design_brief() -> None:
+    """Сноска 6: ВРИ вне приложения — число мест по заданию на проектирование."""
     got = pn.moscow_required("spaceport", 1000, k1=1.0, k2=1.0)
     assert got["required_spaces"] is None
-    assert "не заведена" in got["reason"]
+    assert "заданием на проектирование" in got["reason"]
 
 
 def test_the_result_carries_its_own_grounds() -> None:

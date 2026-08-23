@@ -52,10 +52,22 @@ def test_moscow_uses_the_act_for_standalone_objects() -> None:
     assert by_key["standalone_retail"]["x2"] == 54.0
 
 
-def test_built_in_commerce_keeps_the_line_that_reproduces_the_city() -> None:
+def test_built_in_commerce_uses_its_own_line_of_annex_6() -> None:
     got = core.parking_demand(_inputs(), TEP)
     row = next(r for r in got["rows"] if r["tep_key"] == "ground_commercial")
-    assert row["x2"] == pn.MOSCOW_BUILT_IN_X2
+    assert row["x2"] == 90.0
+
+
+def test_built_in_base_is_the_nonresidential_above_ground_area() -> None:
+    """У встроенной коммерции ГНС — это суммарная поэтажная, а НП её 90%.
+
+    Взять столбец вслепую значит ошибиться на десятую часть метров: у отдельно
+    стоящих объектов тот же столбец значит другое.
+    """
+    tep = {"ground_commercial": {"label": "Коммерция 1 эт.", "gns": 10_000,
+                                 "total_area": 9_000}}
+    got = core.parking_demand(_inputs(), tep)
+    assert got["rows"][0]["input_value"] == 9_000
 
 
 def test_the_base_is_the_above_ground_area_of_the_object() -> None:

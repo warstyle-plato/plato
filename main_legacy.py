@@ -66,7 +66,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.19.73"
+VERSION = "0.19.74"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -8267,7 +8267,20 @@ def parking_demand(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any
     underground = surface = 0
     for tep_key, function, built_in, switch in _PARKING_DEMAND_PRODUCTS:
         row = (tep or {}).get(tep_key) or {}
-        area = n(row, "gns")
+        # База у юрисдикций РАЗНАЯ, и это часть норматива, а не подробность.
+        # Москва считает от нежилой наземной площади (сноска 2 приложения 1),
+        # область — от общей (приложение 10 и п. 5.12). Между ними десятая
+        # часть метров, и подмена не выглядит ошибкой.
+        #
+        # Внутри Москвы столбцы значат разное у разных продуктов: у встроенной
+        # коммерции цепочка ГлавАПУ кладёт в ГНС суммарную поэтажную площадь, а
+        # НП — её 90%; у отдельно стоящих ГНС и есть наземная площадь здания.
+        if jurisdiction == parking_norms.MOSCOW_OBLAST:
+            area = n(row, "total_area") or n(row, "gns")
+        elif built_in:
+            area = n(row, "total_area") or n(row, "gns") * 0.9
+        else:
+            area = n(row, "gns")
         if area <= 0:
             continue
         if jurisdiction == parking_norms.MOSCOW:
@@ -12458,7 +12471,68 @@ def _model_sheet_tep(result: dict[str, Any]) -> dict[str, Any]:
             _XLSX_STYLE_TOTAL_INT,
         ))
     rows.append(total_row)
+    rows.extend(_model_parking_norm_rows(result))
     return {"name": "ТЭП", "rows": rows, "widths": [30] + [18] * 6, "freeze": "A4", "split_y": 3}
+
+
+def _model_parking_norm_rows(result: dict[str, Any]) -> list[list[_XlsxCell]]:
+    """Нормативная потребность нежилья — отдельным блоком под ТЭП.
+
+    Методику меняют в двух местах: в движке и в книге. Ставку ПФ однажды
+    правили только в движке, и книга полгода считала своё — расхождение нашли
+    по чужой сверке. Поэтому норма приезжает в книгу тем же числом, что на
+    экране, и с тем же основанием.
+
+    Построенный ТЭП и нормативная потребность — разные вещи, и стоять в одной
+    таблице они не должны: «требуется 596 мест» не значит «596 мест
+    построено». Отсюда отдельный заголовок, а не лишние строки в ТЭП.
+    """
+    parking = result.get("parking") or {}
+    data = parking.get("rows") or []
+    if not data:
+        return []
+    oblast = str(parking.get("jurisdiction") or "") == "moscow_oblast"
+    rows: list[list[_XlsxCell]] = [
+        [],
+        [_cell_text("Приобъектная парковка нежилья — нормативная потребность",
+                    _XLSX_STYLE_TITLE)],
+        _header_row(["Объект", "База, м²", "Расчётная единица", "На одно место",
+                     "К1", "К2", "Требуется мест"]),
+    ]
+    for item in data:
+        if oblast:
+            per = (f"{_ru_number_text(item.get('norm_denominator_min'))}–"
+                   f"{_ru_number_text(item.get('norm_denominator_max'))}")
+        else:
+            per = _ru_number_text(item.get("x2"))
+        rows.append([
+            _cell_text(item.get("label") or item.get("function") or "—"),
+            _cell_num(item.get("input_value"), _XLSX_STYLE_INT),
+            _cell_text(item.get("input_unit_label") or ""),
+            _cell_text(per),
+            _cell_text("" if oblast else _ru_number_text(item.get("k1"))),
+            _cell_text("" if oblast else _ru_number_text(item.get("k2"))),
+            _cell_num(item.get("required_spaces"), _XLSX_STYLE_INT),
+        ])
+    rows.append([
+        _cell_text("Итого требуется", _XLSX_STYLE_BOLD), _cell_text(""), _cell_text(""),
+        _cell_text(""), _cell_text(""), _cell_text(""),
+        _cell_num(parking.get("required_total"), _XLSX_STYLE_TOTAL_INT),
+    ])
+    rows.append([_cell_text(
+        f"Из них в свой подземный — {int(parking.get('to_underground') or 0)}, "
+        f"в общий наземный паркинг — {int(parking.get('to_surface') or 0)}")])
+    sources = list(dict.fromkeys(
+        str(item.get("normative_source") or "") for item in data if item.get("normative_source")))
+    for line in sources:
+        rows.append([_cell_text("Основание: " + line)])
+    # Неподтверждённое и непосчитанное говорится вслух. Пустая строка вместо
+    # оговорки читается как «посчитано и всё в порядке».
+    for line in parking.get("assumptions") or []:
+        rows.append([_cell_text("Допущение: " + line)])
+    for line in parking.get("missing") or []:
+        rows.append([_cell_text("Не посчитано — " + line)])
+    return rows
 
 
 def _model_sheet_revenue(result: dict[str, Any]) -> dict[str, Any]:
