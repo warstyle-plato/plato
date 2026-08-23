@@ -29,6 +29,7 @@ krt.mos.ru ценового поля нет вовсе (`KrtTerritory` несё�
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from pathlib import Path
@@ -42,6 +43,18 @@ CACHE_SCHEMA_VERSION = 1
 # Сутки: каталог КРТ обновляется реже, а цены рынка — не чаще. Столько же живёт
 # и сам каталог (`KrtRegistry.ttl_seconds`), и расходиться им незачем.
 DEFAULT_TTL_SECONDS = 24 * 60 * 60
+
+# Раз в неделю каталог обновляется и пересчитывается сам: ждать прогон каждый
+# раз, когда открываешь торги, — это минуты на пустом месте (владелец,
+# 23.08.2026). Неделя выбрана по источнику: krt.mos.ru меняется медленнее, а
+# цены рынка мы и так пересчитываем не чаще суток.
+WEEKLY_SECONDS = 7 * 24 * 60 * 60
+# Как часто поток просыпается посмотреть, не пора ли. Час — чтобы после
+# перезапуска не ждать неделю до первой проверки.
+HEARTBEAT_SECONDS = 60 * 60
+# Замок протухает: воркер мог умереть посреди прогона, и без срока каталог
+# больше никогда бы не обновился.
+LOCK_TTL_SECONDS = 6 * 60 * 60
 
 
 def _number(value: Any) -> float:
@@ -112,13 +125,67 @@ class KrtRanking:
 
     def __init__(self, data_dir: str | Path, *, ttl_seconds: int = DEFAULT_TTL_SECONDS) -> None:
         self.path = Path(data_dir) / "krt" / "ranking.json"
+        self.lock_path = Path(data_dir) / "krt" / "ranking.lock"
         self.ttl_seconds = ttl_seconds
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._progress: dict[str, Any] = {
             "running": False, "done": 0, "total": 0, "current": "",
             "started_at": None, "finished_at": None, "failed": 0, "stop_reason": "",
+            "scheduled": False,
         }
+
+    # --- расписание -----------------------------------------------------
+
+    def due(self, interval: float = WEEKLY_SECONDS) -> bool:
+        """Пора ли считать: кэша нет или он старше срока."""
+        cached = load_json(self.path) or {}
+        at = cached.get("updated_at")
+        if not at:
+            return True
+        try:
+            return time.time() - float(at) > interval
+        except (TypeError, ValueError):
+            return True
+
+    def claim(self) -> bool:
+        """Взять работу может только один воркер из двух.
+
+        Память у воркеров раздельная, поэтому договариваются они файлом:
+        создание атомарное, проигравший получает отказ и просто уходит спать.
+        Тот же приём, что у очереди заданий Платона.
+        """
+        self.lock_path.parent.mkdir(parents=True, exist_ok=True)
+        for _ in range(2):
+            try:
+                handle = os.open(self.lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            except FileExistsError:
+                try:
+                    age = time.time() - self.lock_path.stat().st_mtime
+                except OSError:
+                    return False
+                if age <= LOCK_TTL_SECONDS:
+                    return False
+                # Протухший замок снимаем и пробуем ещё раз — ровно один.
+                try:
+                    self.lock_path.unlink()
+                except OSError:
+                    return False
+                continue
+            except OSError:
+                return False
+            try:
+                os.write(handle, str(int(time.time())).encode("ascii"))
+            finally:
+                os.close(handle)
+            return True
+        return False
+
+    def release(self) -> None:
+        try:
+            self.lock_path.unlink()
+        except OSError:
+            pass
 
     # --- чтение ---------------------------------------------------------
 
@@ -153,6 +220,8 @@ class KrtRanking:
         self,
         projects: list[dict[str, Any]],
         screen: Callable[[dict[str, Any]], dict[str, Any]],
+        *,
+        scheduled: bool = False,
     ) -> bool:
         """Запустить прогон. Повторный вызов на ходу ничего не запускает."""
         with self._lock:
@@ -161,7 +230,7 @@ class KrtRanking:
             self._progress = {
                 "running": True, "done": 0, "total": len(projects), "current": "",
                 "started_at": time.time(), "finished_at": None, "failed": 0,
-                "stop_reason": "",
+                "stop_reason": "", "scheduled": bool(scheduled),
             }
         thread = threading.Thread(
             target=self._run, args=(projects, screen), name="krt-ranking", daemon=True)
@@ -200,6 +269,10 @@ class KrtRanking:
                 self._persist(rows)
         finally:
             self._persist(rows)
+            # Замок отпускается ровно здесь: держать его до протухания значило
+            # бы, что после первого же прогона неделя превращается в шесть часов
+            # ожидания следующего.
+            self.release()
             with self._lock:
                 self._progress["running"] = False
                 self._progress["current"] = ""

@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import threading
+import time
 from typing import Any
 from urllib.parse import urlparse
 
@@ -16,7 +18,7 @@ from auction_search.bridge import auction_page_with_handoff, install_page_bridge
 from auction_search.developaid_mapper import build_developaid_seed
 from auction_search.documents import DocumentExtractionError
 from auction_search.krt_pipeline import enrich_krt_from_official_documents
-from auction_search.krt_ranking import KrtRanking
+from auction_search.krt_ranking import HEARTBEAT_SECONDS, KrtRanking
 from auction_search.krt_screening import build_krt_model_screening
 from auction_search.models import LotKind
 from auction_search.preset_mapper import build_project_preset
@@ -94,6 +96,35 @@ def install(app: FastAPI) -> None:
         os.path.join(os.getenv("DATA_DIR", "data"), "market")
     )
     krt_ranking = KrtRanking(os.path.join(os.getenv("DATA_DIR", "data"), "market"))
+
+    def _weekly_ranking() -> None:
+        """Раз в неделю каталог обновляется и считается сам.
+
+        Ждать прогон каждый раз, когда открываешь торги, — это минуты на пустом
+        месте (владелец, 23.08.2026). Здесь считается ВЕСЬ каталог, а не срез
+        фильтра: никто не ждёт, а к утру должно быть посчитано всё.
+
+        Воркеров два, память у них раздельная, поэтому работу берёт один — по
+        файловому замку. Проигравший просто спит дальше. Отключается
+        переменной `AUCTION_KRT_WEEKLY=0`.
+        """
+        while True:
+            try:
+                if market is not None and core is not None and krt_ranking.due():
+                    if krt_ranking.claim():
+                        try:
+                            projects = krt_registry.projects(refresh=True)
+                            rows = [row.to_dict() if hasattr(row, "to_dict") else row
+                                    for row in projects]
+                            if rows and not krt_ranking.start(rows, _screen_one, scheduled=True):
+                                krt_ranking.release()
+                        except Exception:
+                            logger.exception("weekly KRT ranking failed")
+                            krt_ranking.release()
+            except Exception:
+                logger.exception("weekly KRT ranking loop")
+            time.sleep(HEARTBEAT_SECONDS)
+
 
     # main.py loads the canonical legacy core as `developaid_core`. Inject only the
     # same-origin handoff bootstrap; no calculation or project UI is duplicated.
@@ -403,3 +434,9 @@ def install(app: FastAPI) -> None:
                 ),
             },
         }
+
+    # Поток поднимается последним: он зовёт `_screen_one`, а замыкание
+    # разрешается в момент вызова — стартуй он выше, первая же итерация
+    # получила бы NameError.
+    if os.getenv("AUCTION_KRT_WEEKLY", "1").strip() not in {"0", "false", "no"}:
+        threading.Thread(target=_weekly_ranking, name="krt-weekly", daemon=True).start()

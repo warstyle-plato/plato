@@ -186,14 +186,19 @@ function renderKrtRankStatus(){
   const left=p.current?` · сейчас: ${esc(p.current)}`:'';
   const failed=p.failed?` · не посчитано: ${p.failed}`:'';
   box.className='notice';
-  box.innerHTML=`<span class="spinner"></span>Считаю модель по каталогу: ${p.done} из ${p.total} · ${p.elapsed_seconds||0} с${left}${failed}`;
+  const how=p.scheduled?'по расписанию':'по вашей кнопке';
+  box.innerHTML=`<span class="spinner"></span>Считаю модель ${how}: ${p.done} из ${p.total} · ${p.elapsed_seconds||0} с${left}${failed}`;
   return;
  }
  const when=p.updated_at?new Date(p.updated_at*1000).toLocaleString('ru-RU'):'';
  const failed=p.failed?` Не посчитано: ${p.failed}.`:'';
  box.className=p.stale?'notice warn':'notice';
+ // Счёт идёт сам раз в неделю — это надо сказать, иначе кнопку жмут каждый
+ // раз и ждут минуты на пустом месте.
  box.innerHTML=`Оценка модели по каталогу от ${esc(when)}.${failed}`
-  +(p.stale?' Данные старше суток — обновите.':'');
+  +' Каталог обновляется и пересчитывается сам раз в неделю; кнопка нужна, '
+  +'только если хотите пересчитать отобранное прямо сейчас.'
+  +(p.stale?' Данные старше суток.':'');
 }
 async function loadKrtRanking(){
  try{

@@ -213,3 +213,47 @@ def test_the_auctions_page_wears_the_developaid_system():
     # Прямые углы: круглыми остаются только спиннер и точка светофора.
     rounded = re.findall(r"border-radius:([^;}]+)", style)
     assert all(value.strip() in {"0", "50%"} for value in rounded), rounded
+
+
+def test_the_catalogue_counts_itself_once_a_week(tmp_path):
+    """Раз в неделю каталог считается сам, и берёт работу один воркер из двух.
+
+    Ждать прогон каждый раз, когда открываешь торги, — это минуты на пустом
+    месте. Воркеров два, память у них раздельная, поэтому договариваются они
+    файлом: создание атомарное, проигравший уходит спать.
+    """
+    first = krt_ranking.KrtRanking(tmp_path)
+    second = krt_ranking.KrtRanking(tmp_path)   # второй воркер, та же папка
+
+    assert first.due() is True, "пустой кэш — считать пора"
+    assert first.claim() is True
+    assert second.claim() is False, "второй воркер не должен считать то же самое"
+    first.release()
+    assert second.claim() is True, "после освобождения работа снова доступна"
+    second.release()
+
+    # Свежий кэш откладывает следующий прогон.
+    first._persist({"a": {"slug": "a", "available": True,
+                          "entry_capacity_rub_per_sqm": 1, "name": "a"}})
+    assert first.due() is False
+    assert first.due(interval=0) is True, "срок задаётся, а не зашит"
+
+
+def test_a_dead_worker_does_not_freeze_the_schedule(tmp_path, monkeypatch):
+    """Замок протухает: иначе упавший воркер остановил бы обновление навсегда."""
+    ranking = krt_ranking.KrtRanking(tmp_path)
+    assert ranking.claim() is True
+    # Воркер умер, не отпустив замок.
+    monkeypatch.setattr(krt_ranking, "LOCK_TTL_SECONDS", -1)
+    other = krt_ranking.KrtRanking(tmp_path)
+    assert other.claim() is True, "протухший замок снимается"
+    other.release()
+
+
+def test_the_screen_says_the_count_is_automatic():
+    """Про расписание надо сказать, иначе кнопку жмут каждый раз."""
+    from auction_search.ui import auctions_page
+
+    page = auctions_page()
+    assert "сам раз в неделю" in page
+    assert "p.scheduled" in page, "видно, чей это прогон — расписания или кнопки"
