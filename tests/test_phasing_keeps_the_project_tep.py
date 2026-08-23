@@ -115,7 +115,20 @@ def test_the_consolidated_report_shows_the_project_total(project):
         inputs=inputs, tep=tep, rates=[], phasing=phasing(3)))
     parking = next(item for item in bundle["consolidated"]["report"]["products"]
                    if item["key"] == "underground_parking")
-    assert parking["quantity"] == pytest.approx(PARKING_SPACES)
+    # Строка выручки несёт ПРОДАВАЕМЫЕ места: гостевые строятся, но не
+    # продаются. Свод равен сумме очередей, а не пересчёту по проекту целиком:
+    # места неделимы, и гостевые отсчитываются в каждой очереди своим целым —
+    # на трёх очередях это расходится с прямым счётом на одно место.
+    by_queue = sum(core.underground_saleable_spaces(
+        next(row for row in phase["result"]["tep"]["rows"]
+             if row["key"] == "underground_parking"))
+        for phase in bundle["phases"])
+    assert parking["quantity"] == pytest.approx(by_queue)
+    assert parking["quantity"] == pytest.approx(
+        core.underground_saleable_spaces(tep["underground_parking"]), abs=len(bundle["phases"]))
+    # Полное число мест при этом сохраняется до единицы: строится весь паркинг.
+    rows = {row["key"]: row for row in bundle["consolidated"]["tep"]["rows"]}
+    assert rows["underground_parking"]["units"] == pytest.approx(PARKING_SPACES)
 
 
 # --- то же самое для всех остальных строк ----------------------------------------
