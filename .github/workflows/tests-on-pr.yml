@@ -37,6 +37,12 @@ permissions:
 jobs:
   test:
     name: Полный набор
+    # Пуш в ветку уже слитого PR всё равно поднимает `synchronize`, и набор
+    # уходил на двадцать пять минут ради PR, который слить второй раз нельзя
+    # (23.08.2026: коммит лёг на ветку после слияния — четыре прогона впустую).
+    # Слитый PR проверять нечего: его код уже в main, и там его проверяет
+    # сборка. Работа после слияния начинается с новой ветки от main.
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == false
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
