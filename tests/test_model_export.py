@@ -264,9 +264,9 @@ def test_phase_comparison_has_unit_metrics():
     first = formulas.max_row - len(bundle["comparison"])
     for label, key in [
         ("Цена реализации, тыс ₽/м² продаваемой", "revenue_per_saleable_th"),
-        ("Цена реализации, тыс ₽/м² ГНС", "revenue_per_gns_th"),
+        ("Цена реализации, тыс ₽/м² строит. объёма", "revenue_per_gns_th"),
         ("Полные расходы, тыс ₽/м² продаваемой", "expenses_per_saleable_th"),
-        ("Полные расходы, тыс ₽/м² ГНС", "expenses_per_gns_th"),
+        ("Полные расходы, тыс ₽/м² строит. объёма", "expenses_per_gns_th"),
     ]:
         column = column_of(formulas, label)
         for offset, item in enumerate(bundle["comparison"]):

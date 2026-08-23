@@ -214,10 +214,27 @@ current_image() {
 running_version() {
   live_port=$(docker port "$NAME" 8000 2>/dev/null | head -1 | sed 's/.*://') || true
   [ -n "${live_port:-}" ] || return 0
-  curl -fsS --max-time 5 "http://127.0.0.1:${live_port}/health" 2>/dev/null \
-    | python3 -c "import json,sys
-try: print(json.load(sys.stdin).get('version') or '')
-except Exception: pass" 2>/dev/null || true
+  # Ответ ложится в файл, а не в трубу, — по тому же правилу, что и в
+  # health_check: читать /health со стандартного ввода в этом скрипте нельзя.
+  # Здесь труба сработала бы (программа приходит через -c, стандартный ввод
+  # свободен), но правило держится одно на скрипт: следующая правка так же
+  # незаметно поменяет -c на heredoc, и проверка снова начнёт врать.
+  live_file="${TMPDIR:-/tmp}/developaid-live-version.$$.json"
+  live_version=""
+  if curl -fsS --max-time 5 "http://127.0.0.1:${live_port}/health" \
+       -o "$live_file" 2>/dev/null && [ -s "$live_file" ]; then
+    live_version=$(python3 - "$live_file" 2>/dev/null <<'VERSION_READER' || true
+import json, sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as handle:
+        print(json.load(handle).get("version") or "")
+except Exception:
+    pass
+VERSION_READER
+)
+  fi
+  rm -f "$live_file"
+  printf '%s' "${live_version}"
 }
 
 # Сравнение выпусков по разрядам: 0.19.9 младше 0.19.10, а строкой — наоборот.
