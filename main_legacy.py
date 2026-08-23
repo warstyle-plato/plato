@@ -65,7 +65,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.19.66"
+VERSION = "0.19.67"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -12943,9 +12943,21 @@ def _model_phase_sheet_name(index: int, name: str) -> str:
 def _model_sheet_phase_comparison(bundle: dict[str, Any]) -> dict[str, Any]:
     comparison = bundle.get("comparison") or []
     phasing = bundle.get("phasing") or {}
+    # Выручка по продуктам — теми же колонками, что и на экране. Одной строкой
+    # она не отвечает, чем очередь живёт: у одной весь объём в квартирах, у
+    # другой треть в паркинге и ОСЗ, а маржа и риск у них разные. Колонки
+    # заводятся только под продукты, у которых выручка есть хоть в одной
+    # очереди: семь пустых столбцов — это шум, а не полнота.
+    products = (bundle.get("consolidated") or {}).get("report", {}).get("products") or []
+    product_labels = {str(p.get("key")): str(p.get("label") or p.get("key"))
+                      for p in products}
+    product_keys = [key for key in product_labels
+                    if any(float((item.get("revenue_by_product") or {}).get(key) or 0.0) > 0
+                           for item in comparison)]
+    product_headers = [f"Выручка · {product_labels[key]}, млн ₽" for key in product_keys]
     header = [
         "Очередь", "Продаваемая площадь, м²", "Общая площадь ГНС, м²",
-        "Выручка, млн ₽",
+        "Выручка, млн ₽", *product_headers,
         "Цена реализации, тыс ₽/м² продаваемой", "Цена реализации, тыс ₽/м² строит. объёма",
         "CAPEX, млн ₽",
         "CAPEX, тыс ₽/м² продаваемой", "CAPEX, тыс ₽/м² строит. объёма",
@@ -12976,6 +12988,8 @@ def _model_sheet_phase_comparison(bundle: dict[str, Any]) -> dict[str, Any]:
             _cell_num(item.get("saleable_sqm"), _XLSX_STYLE_INT),
             _cell_num(item.get("gns_sqm"), _XLSX_STYLE_INT),
             _cell_mln(item.get("revenue")),
+            *[_cell_mln((item.get("revenue_by_product") or {}).get(key) or 0.0)
+              for key in product_keys],
             _cell_num(item.get("revenue_per_saleable_th")),
             _cell_num(item.get("revenue_per_gns_th")),
             _cell_mln(item.get("capex")),
@@ -13016,6 +13030,10 @@ def _model_sheet_phase_comparison(bundle: dict[str, Any]) -> dict[str, Any]:
         money_columns = {
             header.index("Выручка, млн ₽"): "revenue",
             header.index("CAPEX, млн ₽"): "capex",
+            # Столбцы продуктов складываются так же, как остальные деньги:
+            # итоговая строка обязана сойтись с выручкой свода по каждому.
+            **{header.index(title): ("revenue_by_product", key)
+               for title, key in zip(product_headers, product_keys)},
             header.index("Полные расходы, млн ₽"): "total_expenses",
             header.index("Общие расходы (касса), млн ₽"): "cash_shared_cost",
             header.index("Общие расходы (аллокация), млн ₽"): "allocated_shared_cost",
@@ -13041,7 +13059,13 @@ def _model_sheet_phase_comparison(bundle: dict[str, Any]) -> dict[str, Any]:
             header.index("Чистая прибыль, тыс ₽/м² строит. объёма"): ("net_profit", "gns_sqm"),
         }
 
-        def column_total(key: str) -> float:
+        def column_total(key: Any) -> float:
+            # Ключ бывает вложенным: выручка продукта лежит в словаре
+            # `revenue_by_product`, а не отдельным полем очереди.
+            if isinstance(key, tuple):
+                outer, inner = key
+                return sum(_land_float((item.get(outer) or {}).get(inner)) or 0.0
+                           for item in comparison)
             return sum(_land_float(item.get(key)) or 0.0 for item in comparison)
 
         for index in range(1, len(header)):
@@ -22070,6 +22094,16 @@ def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
             "net_profit_per_saleable_th":per_th(result["summary"]["net_profit"], p_saleable),
             "net_profit_per_gns_th":per_th(result["summary"]["net_profit"], p_gns),
             "revenue":result["summary"]["revenue"],"capex":result["summary"]["capex"],
+            # Выручка очереди по продуктам. Одной строкой она не отвечает на
+            # вопрос, чем очередь живёт: у одной весь объём в квартирах, у
+            # другой треть в паркинге и ОСЗ, а маржа и риск у них разные.
+            # Числа берутся из отчёта очереди, а не считаются здесь заново.
+            "revenue_by_product":{
+                str(item.get("key")): float(item.get("revenue") or 0.0)
+                for item in (result.get("report") or {}).get("products") or []},
+            "saleable_by_product":{
+                str(item.get("key")): float(item.get("quantity") or 0.0)
+                for item in (result.get("report") or {}).get("products") or []},
             "cash_shared_cost":cash_shared,"allocated_shared_cost":allocated_shared,
             "peak_bridge":result["finance"]["peak_bridge"],"peak_pf":result["finance"]["peak_pf"],
             "llcr":result["summary"]["llcr"],"net_profit":result["summary"]["net_profit"],
@@ -33148,10 +33182,21 @@ function renderPhaseComparison(){
  phaseComparisonHead.innerHTML=`<tr><th>Показатель</th>${c.map(x=>`<th>${x.name}</th>`).join('')}<th>Свод</th></tr>`;
  const cs=cons.summary,csSale=cs.monetizable_saleable_sqm||0,csGns=cs.project_gns_sqm||0;
  const perTh=(v,a)=>a?num2(v/a/1000)+' тыс ₽/м²':'—';
+ // Выручка одной строкой не говорит, чем очередь живёт: у одной весь объём в
+ // квартирах, у другой треть в паркинге и ОСЗ, а маржа и риск у них разные.
+ // Строки строятся по продуктам, у которых выручка есть хоть в одной очереди:
+ // семь нулевых строк — это шум, а не полнота.
+ const prodOrder=(cons.report&&cons.report.products||[]).map(p=>p.key);
+ const prodLabel={};(cons.report&&cons.report.products||[]).forEach(p=>{prodLabel[p.key]=p.label});
+ const prodRows=prodOrder.filter(k=>c.some(x=>Number((x.revenue_by_product||{})[k]||0)>0))
+  .map(k=>[' · '+(prodLabel[k]||k),
+           c.map(x=>money((x.revenue_by_product||{})[k]||0)),
+           money((cons.report.products.find(p=>p.key===k)||{}).revenue||0)]);
  const rows=[
   ['Продаваемая площадь',c.map(x=>num(x.saleable_sqm)+' м²'),num(csSale)+' м²'],
   ['Общая площадь — ГНС',c.map(x=>num(x.gns_sqm)+' м²'),num(csGns)+' м²'],
   ['Выручка',c.map(x=>money(x.revenue)),money(cs.revenue)],
+  ...prodRows,
   ['Цена реализации на м² продаваемой',c.map(x=>num2(x.revenue_per_saleable_th)+' тыс ₽/м²'),perTh(cs.revenue,csSale)],
   ['Цена реализации на м² ГНС',c.map(x=>num2(x.revenue_per_gns_th)+' тыс ₽/м²'),perTh(cs.revenue,csGns)],
   ['CAPEX',c.map(x=>money(x.capex)),money(cs.capex)],
