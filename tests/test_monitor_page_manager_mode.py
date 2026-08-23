@@ -14,7 +14,7 @@ def test_manager_gantt_is_default_and_sources_are_explicit():
 def test_rss_articles_show_plan_fact_and_forecast_shift():
     assert "RSS-статья · КС/EAC proxy" in MONITOR_PAGE
     assert "план ${pct(planRatio)} · КС ${pct(ratio)}" in MONITOR_PAGE
-    assert "${dt(n.plan_finish)} → ${known?dt(n.forecast_finish):'—'}" in MONITOR_PAGE
+    assert "${dt(n.plan_finish)} → ${known&&!n.forecast_partial?dt(n.forecast_finish):'—'}" in MONITOR_PAGE
 
 
 def test_platon_forecast_leads_with_drivers_and_model_confidence():

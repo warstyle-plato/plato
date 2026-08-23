@@ -78,18 +78,65 @@ def _month_value(value: Any, year: int, previous_month: int) -> tuple[datetime.d
     return datetime.date(year, month, 1), year, month
 
 
+_FINANCE_CACHE: dict[tuple, dict[str, Any]] = {}
+
+
 def _finance_baseline(project: str) -> dict[str, Any]:
+    """Финансовый baseline. Результат помнится по (путь, mtime, размер).
+
+    Читается один раз одним проходом: на read-only книге каждый `ws.cell()`
+    перечитывает XML листа целиком, и 904 обращения стоили 23 секунды на
+    срез — при том что baseline по определению неизменен.
+    """
+    import copy as _copy
+    import os as _os
+
     path = _finance_file(project)
     if not path.exists():
         return {"known": False, "reason": "не загружен финансовый baseline"}
+    stat = _os.stat(path)
+    key = (str(path), stat.st_mtime_ns, stat.st_size)
+    if key in _FINANCE_CACHE:
+        return _copy.deepcopy(_FINANCE_CACHE[key])
+    result = _read_finance_baseline(path)
+    if len(_FINANCE_CACHE) > 8:
+        _FINANCE_CACHE.clear()
+    _FINANCE_CACHE[key] = result
+    return _copy.deepcopy(result)
 
+
+class _Grid:
+    """Лист, прочитанный одним проходом, с интерфейсом cell(row, col)."""
+
+    def __init__(self, ws: Any) -> None:
+        self.rows = list(ws.iter_rows(values_only=True))
+        self.max_row = len(self.rows)
+        self.max_column = max((len(row) for row in self.rows), default=0)
+
+    class _Cell:
+        __slots__ = ("value",)
+
+        def __init__(self, value: Any) -> None:
+            self.value = value
+
+    def cell(self, row: int, column: int) -> "_Grid._Cell":
+        values = self.rows[row - 1] if 0 < row <= len(self.rows) else ()
+        return self._Cell(values[column - 1] if 0 < column <= len(values) else None)
+
+    def iter_rows(self, min_row: int = 1, max_row: int | None = None,
+                  values_only: bool = True) -> Any:
+        stop = max_row if max_row is not None else len(self.rows)
+        return iter(self.rows[min_row - 1:stop])
+
+
+def _read_finance_baseline(path: Path) -> dict[str, Any]:
     from openpyxl import load_workbook
 
     wb = load_workbook(path, read_only=True, data_only=True)
     try:
         if "Расчет стоимости строительства" not in wb.sheetnames:
             return {"known": False, "reason": "нет листа «Расчет стоимости строительства»"}
-        ws = wb["Расчет стоимости строительства"]
+        ws = _Grid(wb["Расчет стоимости строительства"])
         approved_hdr = _find_header(ws, "Утвержденная фин.модель проекта")
         need_hdr = _find_header(ws, "Средства на завершение строительства") or _find_header(
             ws, "Средства на завершение согласно бюджету"
@@ -343,9 +390,14 @@ def _article_waterfall(
             )
 
     for code, item in sorted(articles.items()):
+        limit = float(item.get("rss_limit") or 0.0)
+        need_total = sum(max(0.0, float(v or 0.0))
+                         for v in (item.get("monthly_need") or {}).values())
         article_rows.append({
             "code": code,
             "name": item.get("name", ""),
+            "limit": limit,
+            "need_total": need_total,
             "opening_limit_raw": opening_raw.get(code, 0.0),
             "opening_limit": max(0.0, opening_raw.get(code, 0.0)),
             "remaining_limit": state.get(code, 0.0),
@@ -445,20 +497,75 @@ def _physical_smr(rss: Path, estimate: dict[str, Any], cut: datetime.date) -> fl
     )
 
 
-def _sales_snapshot(project: str, cut: datetime.date) -> dict[str, Any]:
-    path = _latest_sales(project, cut)
-    if path is None:
-        return {"known": False, "reason": "не загружен отчет о продажах"}
-    from openpyxl import load_workbook
+def _latest_sales_rows(project: str, upto: datetime.date | None = None) -> Path | None:
+    folder = monitor._project_dir(project) / "sales"
+    if not folder.exists():
+        return None
+    rows = sorted(folder.glob("*.json"))
+    if upto:
+        rows = [row for row in rows if row.stem[:10] <= upto.isoformat()]
+    return rows[-1] if rows else None
 
-    wb = load_workbook(path, read_only=True, data_only=True)
-    try:
-        preferred = next(
-            (name for name in ("Продажи П-Ф", "Продажи", "Дашборд") if name in wb.sheetnames), ""
-        )
-        return {"known": True, "source": path.name, "sheet": preferred}
-    finally:
-        wb.close()
+
+def _sales_snapshot(project: str, cut: datetime.date) -> dict[str, Any]:
+    """Продажи: числа, а не факт наличия файла.
+
+    Источника два, и они дополняют друг друга. Книга обновляется раз в месяц
+    и несёт историю (лист «План продаж», строки ФАКТ); строки руками несут
+    то, чего книга ещё не знает — «в августе продано 4 лота» приходит словами
+    за месяц до выгрузки. Месяц из строк перекрывает тот же месяц книги.
+    """
+    import json as _json
+
+    monthly: dict[str, dict[str, float]] = {}
+    sources: list[str] = []
+
+    book = _latest_sales(project, cut)
+    if book is not None:
+        try:
+            parsed = actuals.read_sales(book)
+        except Exception:
+            parsed = None
+        if parsed:
+            for row in parsed["rows"]:
+                if not row.get("fact") or not row.get("month"):
+                    continue
+                monthly[monitor._iso(row["month"])[:7]] = {
+                    "units": float(row.get("units") or 0.0),
+                    "area": float(row.get("area") or 0.0),
+                    "revenue": float(row.get("revenue") or 0.0),
+                }
+            sources.append(book.name)
+        else:
+            sources.append(f"{book.name} (лист продаж не разобран)")
+
+    manual = _latest_sales_rows(project, cut)
+    if manual is not None:
+        stored = _json.loads(manual.read_text(encoding="utf-8"))
+        for row in stored.get("rows") or []:
+            month = monitor._iso(actuals._as_month(row.get("month")))[:7]
+            if not month:
+                continue
+            monthly[month] = {
+                "units": float(row.get("units") or 0.0),
+                "area": float(row.get("area") or 0.0),
+                "revenue": float(row.get("revenue") or 0.0),
+            }
+        sources.append(f"строки на {stored.get('taken_at', manual.stem)}")
+
+    if not monthly:
+        return {"known": False, "reason": "не загружены ни книга, ни строки продаж"}
+    months = sorted(monthly)
+    recent = [{"month": month, **monthly[month]} for month in months[-3:]]
+    return {
+        "known": True,
+        "source": " + ".join(sources),
+        "last_fact": months[-1],
+        "total_units": sum(row["units"] for row in monthly.values()),
+        "total_area": sum(row["area"] for row in monthly.values()),
+        "total_revenue": sum(row["revenue"] for row in monthly.values()),
+        "recent": recent,
+    }
 
 
 def _dashboard(project: str, rss: Path, cut: datetime.date, view: dict[str, Any]) -> dict[str, Any]:
@@ -504,8 +611,11 @@ def _store_sales_file(project: str, data: bytes, taken_at: Any) -> dict[str, Any
 
     wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
     try:
-        if not any(name in wb.sheetnames for name in ("Продажи П-Ф", "Продажи", "Дашборд")):
-            raise ValueError("в книге не найден лист продаж")
+        known = ("Продажи П-Ф", "Продажи", "Дашборд", "План продаж")
+        if not any(name in wb.sheetnames for name in known):
+            raise ValueError(
+                "в книге не найден лист продаж — жду «Продажи П-Ф», «Продажи», "
+                "«Дашборд» или «План продаж»")
     finally:
         wb.close()
     path = _sales_dir(project) / f"{day}.xlsx"

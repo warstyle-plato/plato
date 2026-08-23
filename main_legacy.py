@@ -1891,6 +1891,46 @@ def monitor_store_schedule(req: MonitorScheduleRequest) -> dict[str, Any]:
         raise HTTPException(400, str(exc))
 
 
+class MonitorScheduleFactRequest(BaseModel):
+    project: str
+    taken_at: str
+    content_base64: str
+    session: str = ""
+    key: str = ""
+
+
+class MonitorWorkFactRequest(BaseModel):
+    project: str
+    taken_at: str
+    rows: list[dict[str, Any]] = []
+    session: str = ""
+    key: str = ""
+
+
+@app.post("/monitor/work-fact", include_in_schema=False)
+def monitor_store_work_fact(req: MonitorWorkFactRequest) -> dict[str, Any]:
+    """Точечный факт по работе ГПР — процент, введённый на странице."""
+    _require_web_access(req.session, req.key, "Монитор проекта")
+    try:
+        return developaid_monitor.store_work_fact(
+            req.project, req.rows, req.taken_at)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/monitor/schedule-fact", include_in_schema=False)
+def monitor_store_schedule_fact(req: MonitorScheduleFactRequest) -> dict[str, Any]:
+    """Еженедельный ГПР-факт: проценты и статусы поверх неизменного baseline."""
+    _require_web_access(req.session, req.key, "Монитор проекта")
+    try:
+        return developaid_monitor.store_schedule_fact(
+            req.project, base64.b64decode(req.content_base64), req.taken_at)
+    except FileExistsError as exc:
+        raise HTTPException(409, str(exc))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
 @app.post("/monitor/gantt", include_in_schema=False)
 def monitor_gantt(req: MonitorGanttRequest) -> dict[str, Any]:
     """Гант по последнему снимку графика. Считает сервер, страница рисует."""

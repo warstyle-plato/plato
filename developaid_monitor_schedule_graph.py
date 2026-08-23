@@ -119,10 +119,31 @@ def store_reference(
     return {"taken_at": day, "code": code, "stored": "rebaseline", "bytes": len(data)}
 
 
+_PM_CACHE: dict[tuple, dict[str, Any]] = {}
+
+
 def _load_pm(project: str) -> dict[str, Any]:
+    """PM-выгрузка, разобранная один раз на файл: baseline не меняется,
+    а книга в полторы тысячи строк на 84 колонки стоит секунду разбора и
+    читается дважды на каждый срез."""
+    import copy as _copy
+    import os as _os
+
     path = monitor._project_dir(project) / "baseline" / "pm.xlsx"
     if not path.exists():
         return {"known": False, "tasks": {}, "rnv_id": "", "source": ""}
+    stat = _os.stat(path)
+    key = (str(path), stat.st_mtime_ns, stat.st_size)
+    if key in _PM_CACHE:
+        return _copy.deepcopy(_PM_CACHE[key])
+    result = _read_pm(path)
+    if len(_PM_CACHE) > 8:
+        _PM_CACHE.clear()
+    _PM_CACHE[key] = result
+    return _copy.deepcopy(result)
+
+
+def _read_pm(path: Any) -> dict[str, Any]:
     from openpyxl import load_workbook
 
     wb = load_workbook(path, read_only=True, data_only=True)

@@ -114,4 +114,72 @@ def test_page_has_funding_and_correct_cost_evidence_language():
     assert "Cost control" in MONITOR_PAGE
     assert "КС / EAC proxy" in MONITOR_PAGE
     assert "Утверждённый РНВ" in MONITOR_PAGE
-    assert "Current Forecast РНВ" in MONITOR_PAGE
+    assert "Прогноз РНВ" in MONITOR_PAGE
+
+
+def test_sales_merge_book_fact_with_manual_rows(tmp_path, monkeypatch):
+    """Строка руками перекрывает тот же месяц книги, а не дублирует его.
+
+    Книга обновляется раз в месяц и отстаёт: «в августе продано 4 лота»
+    приходит словами раньше выгрузки. На Кутузове книга знала 41 лот по март,
+    август пришёл строкой.
+    """
+    import io
+    import json
+    from openpyxl import Workbook
+
+    monkeypatch.setattr(monitor, "_SNAPSHOT_DIR", tmp_path)
+
+    import developaid_actuals as actuals
+
+    book = Workbook()
+    sheet = book.active
+    sheet.title = "План продаж"
+    for offset, (month, mark, units, area, price) in enumerate([
+        (datetime.date(2026, 3, 1), "ФАКТ", 3, 300.0, 650_000.0),
+        (datetime.date(2026, 8, 1), "ФАКТ", 1, 50.0, 600_000.0),
+        (datetime.date(2026, 9, 1), "ПЛАН", 9, 500.0, 900_000.0),
+    ]):
+        line = actuals._SALES_FIRST_ROW + offset
+        sheet.cell(row=line, column=actuals._SALES_COLUMNS["period"] + 1, value=month)
+        sheet.cell(row=line, column=actuals._SALES_COLUMNS["mark"] + 1, value=mark)
+        sheet.cell(row=line, column=actuals._SALES_COLUMNS["units"] + 1, value=units)
+        sheet.cell(row=line, column=actuals._SALES_COLUMNS["area"] + 1, value=area)
+        sheet.cell(row=line, column=actuals._SALES_COLUMNS["price"] + 1, value=price)
+    blob = io.BytesIO()
+    book.save(blob)
+
+    monitor.store_sales_file("Гродненская", blob.getvalue(), "2026-07-31")
+    monitor.store_sales("Гродненская", [
+        {"month": "2026-08", "units": 4, "area": 240.0, "revenue": 160e6},
+    ], "2026-08-20")
+
+    snapshot = dashboard._sales_snapshot("Гродненская", datetime.date(2026, 8, 23))
+
+    assert snapshot["known"]
+    assert snapshot["last_fact"] == "2026-08"
+    # август из строк (4 лота), а не из книги (1 лот); план книги не факт
+    assert snapshot["total_units"] == pytest.approx(3 + 4)
+    assert snapshot["total_revenue"] == pytest.approx(300.0 * 650_000.0 + 160e6)
+
+
+def test_manual_sales_rows_are_not_ignored(tmp_path, monkeypatch):
+    monkeypatch.setattr(monitor, "_SNAPSHOT_DIR", tmp_path)
+    stored = monitor.store_sales("Гродненская", [
+        {"month": "2026-08", "units": 4, "area": 240.0, "revenue": 160e6},
+    ], "2026-08-20")
+
+    assert "ignored_by_monitor" not in stored
+    assert stored["months"] == 1
+
+    with pytest.raises(ValueError):
+        monitor.store_sales("Гродненская", [{"units": 4}], "2026-08-21")
+
+
+def test_missing_finance_book_is_a_reason_not_a_zero(tmp_path, monkeypatch):
+    """Ноль, показанный вместо «книги нет», неотличим от посчитанного нуля."""
+    monkeypatch.setattr(monitor, "_SNAPSHOT_DIR", tmp_path)
+    baseline = dashboard._finance_baseline("Гродненская")
+
+    assert baseline["known"] is False
+    assert "не загружен" in baseline["reason"]
