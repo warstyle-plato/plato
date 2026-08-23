@@ -28944,7 +28944,7 @@ async function sendFeedback(){
 
 function phaseWeightPreset(count){
  const p={1:[100],2:[55,45],3:[40,32,28],4:[32,26,22,20],5:[28,22,19,16,15]};
- return structuredClone(p[count]||Array(count).fill(100/count));
+ return cloneValue(p[count]||Array(count).fill(100/count));
 }
 function frontLoadedPreset(count,kind){
  if(count===3){
@@ -28967,7 +28967,21 @@ function makeDefaultPhasing(count=1){
   social_objects:[],discrete:{offices:Math.min(3,count),standalone_retail:Math.min(2,count),above_parking:Math.min(2,count)}
  };
 }
-let inputs=structuredClone(INPUT_DEFAULT), tep=structuredClone(TEP_DEFAULT), rates=structuredClone(RATE_DEFAULT),
+// structuredClone есть не везде: в Safari он появился в 15.4, а стоял этот
+// вызов ВТОРОЙ строкой состояния — до объявления всего остального. Браузер без
+// него ронял скрипт целиком, а поскольку кнопку «Личный кабинет» показывает
+// initProjects() в самом конце файла, страница оставалась без кабинета, без
+// расчёта и без единого слова о причине. Одна отсутствующая функция — и весь
+// продукт мёртв (телефон владельца, 23.08.2026).
+function cloneValue(value){
+ if(typeof structuredClone==='function'){
+  try{return cloneValue(value)}catch(e){}
+ }
+ // Запасной путь честно ограничен: вводные, ТЭП и ставки — простые данные,
+ // ровно те же, что уходят в файл настроек через JSON.
+ try{return JSON.parse(JSON.stringify(value))}catch(e){return value}
+}
+let inputs=cloneValue(INPUT_DEFAULT), tep=cloneValue(TEP_DEFAULT), rates=cloneValue(RATE_DEFAULT),
  lastResult=null, glavapuImport=null, cadastralAnalysis=null, phasing=makeDefaultPhasing(1), phaseBundle=null, reportView='all';
 const TELEGRAM_HASH_PARAMS=new URLSearchParams(window.location.hash.startsWith('#')?window.location.hash.slice(1):'');
 const telegramSession=TELEGRAM_HASH_PARAMS.get('telegram_session')||'';
@@ -29727,7 +29741,7 @@ async function obtainServerTep(analysis,status,runId){
  if(!response.ok)throw new Error(payload.detail||'Серверный расчёт ТЭП не получился');
  if(runId!==tepRunSequence){tepRunLog(runId,'ответ устаревшего запуска отброшен');return null}
  glavapuImport=payload;
- inputs._cadastral_analysis=structuredClone(analysis);
+ inputs._cadastral_analysis=cloneValue(analysis);
  renderGlavapuPreview(payload);
  drawLandPreviewQuiet();
  const areaText=Number((analysis.territory||{}).area_ha||0).toLocaleString('ru-RU',{minimumFractionDigits:4,maximumFractionDigits:4});
@@ -29775,7 +29789,7 @@ async function obtainCadastralTep(preAnalysis){
    }
    if(!(analysis.recognized||[]).length)throw new Error('Калькулятор не распознал кадастровые номера');
    cadastralAnalysis=analysis;
-   inputs._cadastral_analysis=structuredClone(analysis);
+   inputs._cadastral_analysis=cloneValue(analysis);
    // Площадь из ЕГРН — пока нет ГлавАПУ и ручного ввода, участок мерится ей.
    {
     const cadArea=Number(((analysis||{}).territory||{}).area_ha||0);
@@ -29830,7 +29844,7 @@ async function obtainCadastralTep(preAnalysis){
    tepStep='перенос ТЭП в модель';
    status.textContent='4 из 4 · Подготавливаю сверку перед применением…';
    glavapuImport=payload;
-   inputs._cadastral_analysis=structuredClone(analysis);
+   inputs._cadastral_analysis=cloneValue(analysis);
    renderGlavapuPreview(payload);
    drawLandPreviewQuiet();
    const areaText=Number((analysis.territory||{}).area_ha||0).toLocaleString('ru-RU',{minimumFractionDigits:4,maximumFractionDigits:4});
@@ -29909,7 +29923,7 @@ async function drawLandPreviewQuiet(query){
   const data=await response.json();
   if(!Number(data.found_count||0))return;
   landLookup=data;
-  inputs._land_lookup=structuredClone(data);
+  inputs._land_lookup=cloneValue(data);
   renderLandLookup(data);
  }catch(e){/* контур — украшение, не данные */}
 }
@@ -30222,7 +30236,7 @@ async function lookupLand(options){
   landLookup=data;
   // Снимок сохраняется в проект сразу: отдельная кнопка «Сохранить участок»
   // была лишним шагом, и забытая, она молча теряла сведения при закрытии.
-  inputs._land_lookup=structuredClone(data);
+  inputs._land_lookup=cloneValue(data);
   renderLandLookup(data);
   // Скрининг — довесок к карточке, а не ответ на запрос. Его сбой не имеет
   // права утащить весь поиск в ветку ошибки: сведения ЕГРН уже получены, и
@@ -30406,7 +30420,7 @@ function useLandForTep(){
 function renderStoredLand(){
  const stored=inputs._land_lookup;
  if(!stored)return;
- landLookup=structuredClone(stored);
+ landLookup=cloneValue(stored);
  const field=document.getElementById('cadastralNumbers');
  if(field)field.value=stored.query||'';
  renderLandLookup(landLookup);
@@ -30780,7 +30794,7 @@ function renderStoredMo(){
 function renderStoredCadastral(){
  const stored=inputs._cadastral_analysis;
  if(!stored)return;
- cadastralAnalysis=structuredClone(stored);
+ cadastralAnalysis=cloneValue(stored);
  const field=document.getElementById('cadastralNumbers');
  if(field)field.value=(stored.requested||[]).join(', ');
  renderCadastralPreview(cadastralAnalysis);
@@ -31778,7 +31792,7 @@ function renderTep(){
      +';white-space:nowrap;display:flex;align-items:center;gap:4px">'
      +'<input type="number" step="0.1" min="0" max="100" value="'+value+'" style="width:52px;font-size:11px;margin:0" '
      +'title="доля, по которой достраивается это число" '
-     +'onchange="tepRatioSet(\''+key+'\',\''+which+'\',this.value)"><span>'+of+'</span>
+     +'onchange="tepRatioSet(\''+key+'\',\''+which+'\',this.value)"><span>'+of+'</span>'
      +(own&&which==='saleable'?'<button type="button" class="tep-refill" onclick="tepRatioReset(\''+key+'\')">наши</button>':'')
      +'</div>';
    };
@@ -33731,8 +33745,8 @@ function loadLocal(){try{const x=JSON.parse(localStorage.getItem('plato_v04'));i
  // Иначе поле, добавленное после сохранения, в браузере просто отсутствует:
  // список показывает пустую строку, а число при пересчёте становится нулём —
  // так «Периодичность платежей» ВРИ оказалась 0 при расчёте по квартальной.
- inputs=Object.assign(structuredClone(INPUT_DEFAULT),x.inputs||{});
- tep=structuredClone(TEP_DEFAULT);
+ inputs=Object.assign(cloneValue(INPUT_DEFAULT),x.inputs||{});
+ tep=cloneValue(TEP_DEFAULT);
  Object.entries(x.tep||{}).forEach(([key,values])=>{
   if(values&&typeof values==='object')tep[key]=Object.assign(tep[key]||{},values);
  });
@@ -33887,8 +33901,8 @@ async function applyPreset(){
   if(!response.ok)throw new Error(data.detail||'Пресет не применён');
  }catch(e){alert(String(e.message||e));return}
  // Как и всюду: приходящее накладывается на умолчания, а не заменяет их.
- inputs=Object.assign(structuredClone(INPUT_DEFAULT),data.applied_inputs||{});
- tep=structuredClone(TEP_DEFAULT);
+ inputs=Object.assign(cloneValue(INPUT_DEFAULT),data.applied_inputs||{});
+ tep=cloneValue(TEP_DEFAULT);
  Object.entries(data.applied_tep||{}).forEach(([key,values])=>{
   if(values&&typeof values==='object')tep[key]=Object.assign(tep[key]||{},values);
  });
@@ -33898,7 +33912,7 @@ async function applyPreset(){
  // (например, 40/13,1/34/12,9 вместо 25/25/25/25), хотя предпросмотр обещал
  // применить очереди пресета.
  if(data.phasing){
-  const importedPhasing=structuredClone(data.phasing);
+  const importedPhasing=cloneValue(data.phasing);
   const phaseDefaults=makeDefaultPhasing(Number(importedPhasing.phase_count||1));
   phasing=Object.assign(phaseDefaults,importedPhasing);
   // Продуктовые доли пресета заменяют старый проект целиком; служебные
@@ -34190,8 +34204,8 @@ async function loadProject(id){
  const data=record.payload||{};
  // Как и локальная загрузка: сохранённое накладывается на умолчания, а не
  // подменяет их — иначе поле, добавленное позже, исчезнет.
- inputs=Object.assign(structuredClone(INPUT_DEFAULT),data.inputs||{});
- tep=structuredClone(TEP_DEFAULT);
+ inputs=Object.assign(cloneValue(INPUT_DEFAULT),data.inputs||{});
+ tep=cloneValue(TEP_DEFAULT);
  Object.entries(data.tep||{}).forEach(([key,values])=>{
   if(values&&typeof values==='object')tep[key]=Object.assign(tep[key]||{},values);
  });
@@ -34276,8 +34290,8 @@ async function applySettingsFile(input){
   +'Сохранён: '+String(data.saved_at||'').replace('T',' ').slice(0,16)
   +(data.app_version?' · версия '+data.app_version:'')+'\n\n'
   +'Текущие вводные на экране будут заменены.'))return;
- inputs=Object.assign(structuredClone(INPUT_DEFAULT),data.inputs||{});
- tep=structuredClone(TEP_DEFAULT);
+ inputs=Object.assign(cloneValue(INPUT_DEFAULT),data.inputs||{});
+ tep=cloneValue(TEP_DEFAULT);
  Object.entries(data.tep||{}).forEach(([key,values])=>{
   if(values&&typeof values==='object')tep[key]=Object.assign(tep[key]||{},values);
  });
@@ -34332,8 +34346,8 @@ async function openSharedProject(code){
  const data=snapshot.payload||{};
  // Как и своя загрузка: присланное накладывается на умолчания, а не подменяет
  // их — снимок мог быть сделан версией, где поля ещё не было.
- inputs=Object.assign(structuredClone(INPUT_DEFAULT),data.inputs||{});
- tep=structuredClone(TEP_DEFAULT);
+ inputs=Object.assign(cloneValue(INPUT_DEFAULT),data.inputs||{});
+ tep=cloneValue(TEP_DEFAULT);
  Object.entries(data.tep||{}).forEach(([key,values])=>{
   if(values&&typeof values==='object')tep[key]=Object.assign(tep[key]||{},values);
  });
@@ -34360,8 +34374,8 @@ async function deleteProject(id){
 
 function resetAll(){
  localStorage.removeItem('plato_v04');
- inputs=structuredClone(INPUT_DEFAULT);
- tep=structuredClone(TEP_DEFAULT);
+ inputs=cloneValue(INPUT_DEFAULT);
+ tep=cloneValue(TEP_DEFAULT);
  phasing=makeDefaultPhasing(1);phaseBundle=null;reportView='all';cadastralAnalysis=null;landLookup=null;moResult=null;
  rates=[];
  scenarioSelect.value='base';
@@ -34383,6 +34397,36 @@ function resetAll(){
  syncRateControlsFromInputs();generateRateCurve();renderRates();
  refreshCurrentKeyRate(true);
 }
+
+// Ошибка, ушедшая только в консоль, — это ошибка, которой нет: на телефоне
+// консоли не видно вовсе. Скрипт страницы — 340 килобайт, и любой отказ в нём
+// раньше оставлял человека перед мёртвой страницей без единого слова
+// (телефон владельца, 23.08.2026: пропал «Личный кабинет», расчёт не считался,
+// причина нигде). Теперь причина доносится на экран — как в чат из движка.
+window.addEventListener('error', function(event){
+ try{
+  var box=document.getElementById('pageFailure');
+  if(!box){
+   box=document.createElement('div');
+   box.id='pageFailure';
+   box.style.cssText='margin:12px;padding:12px 14px;border:1px solid #a33;'
+    +'background:#fdeeee;color:#7a1f1f;font-size:13px;line-height:1.5';
+   document.body.insertBefore(box, document.body.firstChild);
+  }
+  var where=(event.filename||'страница')+':'+(event.lineno||0);
+  box.textContent='Страница не доработала до конца: '
+   +(event.message||'ошибка без описания')+' ('+where+'). '
+   +'Часть кнопок может не появиться. Пришлите этот текст — по нему видно место.';
+ }catch(e){}
+});
+
+// Кабинет показывается до всего остального. Прежде его открывал initProjects()
+// в самом конце файла, и любой сбой выше оставлял кнопку скрытой навсегда:
+// хранилище работало, а войти в него было нечем.
+try{
+ var projectsEarly=document.getElementById('projectsButton');
+ if(projectsEarly)projectsEarly.style.display='';
+}catch(e){}
 
 loadLocal();
 initProjects();

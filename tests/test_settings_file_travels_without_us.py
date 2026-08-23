@@ -92,8 +92,8 @@ def test_a_foreign_file_is_data_not_a_command():
     body = page_function("applySettingsFile")
     assert "data.kind!==SETTINGS_FILE_KIND" in body, "формат файла проверяется"
     assert "Это не файл настроек DevelopAid" in body
-    assert "structuredClone(INPUT_DEFAULT)" in body, "наложение, а не подмена"
-    assert "structuredClone(TEP_DEFAULT)" in body
+    assert "cloneValue(INPUT_DEFAULT)" in body, "наложение, а не подмена"
+    assert "cloneValue(TEP_DEFAULT)" in body
     assert "confirm(" in body, "замена вводных на экране — с подтверждением"
 
 
