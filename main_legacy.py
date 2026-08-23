@@ -28740,6 +28740,32 @@ details.cadastral-box>summary::marker{color:#888}
   </div>
 </div>
 
+<!-- Ловушка ставится ОТДЕЛЬНЫМ скриптом и ДО основного. Обработчик, объявленный
+     внутри скрипта, который сам не смог разобраться, не сработает никогда: до
+     него исполнение не доходит. Прежняя версия ловушки лежала в конце большого
+     блока и молчала ровно в том случае, ради которого писалась (телефон
+     владельца, 23.08.2026: страница мертва, причины нет). -->
+<script>
+window.addEventListener('error', function(event){
+ try{
+  var box=document.getElementById('pageFailure');
+  if(!box){
+   box=document.createElement('div');
+   box.id='pageFailure';
+   box.style.cssText='margin:12px;padding:12px 14px;border:1px solid #a33;'
+    +'background:#fdeeee;color:#7a1f1f;font-size:13px;line-height:1.5;'
+    +'white-space:pre-wrap;word-break:break-word';
+   var host=document.body||document.documentElement;
+   host.insertBefore(box, host.firstChild);
+  }
+  var where=(event.filename||'страница')+':'+(event.lineno||0)+':'+(event.colno||0);
+  box.textContent='Страница не доработала до конца.\n'
+   +(event.message||'ошибка без описания')+'\n'+where+'\n'
+   +'Пришлите этот текст — по нему видно точное место.';
+ }catch(e){}
+}, true);
+</script>
+
 <script>
 const SCENARIOS={"conservative":{"scenario_revenue_multiplier":0.9,"scenario_cost_multiplier":1.1},"base":{"scenario_revenue_multiplier":1.0,"scenario_cost_multiplier":1.0},"optimistic":{"scenario_revenue_multiplier":1.1,"scenario_cost_multiplier":0.9}};
 const PROJECT_CLASS_PRESETS={
@@ -34397,28 +34423,6 @@ function resetAll(){
  syncRateControlsFromInputs();generateRateCurve();renderRates();
  refreshCurrentKeyRate(true);
 }
-
-// Ошибка, ушедшая только в консоль, — это ошибка, которой нет: на телефоне
-// консоли не видно вовсе. Скрипт страницы — 340 килобайт, и любой отказ в нём
-// раньше оставлял человека перед мёртвой страницей без единого слова
-// (телефон владельца, 23.08.2026: пропал «Личный кабинет», расчёт не считался,
-// причина нигде). Теперь причина доносится на экран — как в чат из движка.
-window.addEventListener('error', function(event){
- try{
-  var box=document.getElementById('pageFailure');
-  if(!box){
-   box=document.createElement('div');
-   box.id='pageFailure';
-   box.style.cssText='margin:12px;padding:12px 14px;border:1px solid #a33;'
-    +'background:#fdeeee;color:#7a1f1f;font-size:13px;line-height:1.5';
-   document.body.insertBefore(box, document.body.firstChild);
-  }
-  var where=(event.filename||'страница')+':'+(event.lineno||0);
-  box.textContent='Страница не доработала до конца: '
-   +(event.message||'ошибка без описания')+' ('+where+'). '
-   +'Часть кнопок может не появиться. Пришлите этот текст — по нему видно место.';
- }catch(e){}
-});
 
 // Кабинет показывается до всего остального. Прежде его открывал initProjects()
 // в самом конце файла, и любой сбой выше оставлял кнопку скрытой навсегда:

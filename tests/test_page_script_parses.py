@@ -84,11 +84,24 @@ def test_the_cabinet_does_not_depend_on_the_whole_script_finishing():
 
 
 def test_a_dead_page_says_so_instead_of_staying_silent():
-    """Ошибка, ушедшая только в консоль, — это ошибка, которой нет."""
+    """Ошибка, ушедшая только в консоль, — это ошибка, которой нет.
+
+    И ловушка обязана стоять ОТДЕЛЬНЫМ скриптом ДО основного: обработчик,
+    объявленный внутри скрипта, который сам не смог разобраться, не сработает
+    никогда — до него исполнение не доходит. Первая версия лежала в конце
+    большого блока и молчала ровно в том случае, ради которого писалась.
+    """
     page = core.PAGE
     assert "window.addEventListener('error'" in page
     assert "pageFailure" in page
     assert "Страница не доработала до конца" in page
+
+    blocks = [m for m in re.finditer(r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>", page, re.S)]
+    assert len(blocks) >= 2, "ловушка обязана быть отдельным блоком"
+    trap = next(i for i, m in enumerate(blocks) if "pageFailure" in m.group(1))
+    main_block = next(i for i, m in enumerate(blocks) if "function calculate(" in m.group(1))
+    assert trap < main_block, "ловушка должна стоять раньше того, что она ловит"
+    assert "event.colno" in blocks[trap].group(1), "нужны строка и колонка — иначе место не найти"
 
 
 def test_cloning_never_kills_the_page():
