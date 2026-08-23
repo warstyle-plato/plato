@@ -117,3 +117,41 @@ def test_the_question_to_platon_carries_both_sides(ranking) -> None:
     assert "1,31x" in prompt, "LLCR подаётся готовым числом, модель его не считает"
     assert "НЕ УЧТЕНО: Цена приобретения" in prompt
     assert "Не выдумывай чисел" in prompt
+
+
+# --- новое в каталоге -----------------------------------------------------------
+
+def test_the_first_ever_snapshot_marks_nobody_as_new(ranking) -> None:
+    """Мы только начали смотреть: сто двадцать «новинок» разом — это не новость."""
+    seen = ranking.mark_seen(["a", "b", "c"])
+    assert set(seen) == {"a", "b", "c"}
+    assert all(value == 0 for value in seen.values())
+    assert not any(ranking.is_new(value) for value in seen.values())
+
+
+def test_a_site_absent_from_the_previous_snapshot_is_new(ranking) -> None:
+    import time as _time
+    ranking.mark_seen(["a", "b"])
+    later = _time.time() + 7 * 86400
+    seen = ranking.mark_seen(["a", "b", "c"], now=later)
+    assert seen["a"] == 0 and seen["b"] == 0
+    assert ranking.is_new(seen["c"], now=later)
+    assert not ranking.is_new(seen["a"], now=later)
+
+
+def test_the_mark_expires(ranking) -> None:
+    import time as _time
+    ranking.mark_seen(["a"])
+    later = _time.time() + 7 * 86400
+    seen = ranking.mark_seen(["a", "c"], now=later)
+    assert not ranking.is_new(seen["c"], now=later + 400 * 86400)
+
+
+def test_a_site_that_left_and_came_back_is_news_again(ranking) -> None:
+    import time as _time
+    ranking.mark_seen(["a", "c"])
+    gone = ranking.mark_seen(["a"], now=_time.time() + 7 * 86400)
+    assert "c" not in gone, "исчезнувшая площадка забывается"
+    back = _time.time() + 14 * 86400
+    seen = ranking.mark_seen(["a", "c"], now=back)
+    assert ranking.is_new(seen["c"], now=back)

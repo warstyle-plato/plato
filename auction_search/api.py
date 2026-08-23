@@ -18,7 +18,8 @@ from auction_search.bridge import auction_page_with_handoff, install_page_bridge
 from auction_search.developaid_mapper import build_developaid_seed
 from auction_search.documents import DocumentExtractionError
 from auction_search.krt_pipeline import enrich_krt_from_official_documents
-from auction_search.krt_ranking import HEARTBEAT_SECONDS, KrtRanking, score_row
+from auction_search.krt_ranking import (
+    HEARTBEAT_SECONDS, NEW_FOR_SECONDS, KrtRanking, score_row)
 from auction_search.krt_screening import build_krt_model_screening
 from auction_search.models import LotKind
 from auction_search.preset_mapper import build_project_preset
@@ -286,12 +287,25 @@ def install(app: FastAPI) -> None:
     @app.get("/auctions/krt")
     async def auction_krt_catalogue() -> dict[str, Any]:
         projects = await run_in_threadpool(krt_registry.catalogue)
+        # Каталог отмечается на каждом чтении: «новое» — это разница с прошлым
+        # составом, и считать её должен тот, кто состав видит, а не человек
+        # глазами по списку из ста двадцати строк.
+        seen = await run_in_threadpool(
+            krt_ranking.mark_seen, [str(row.get("slug") or "") for row in projects])
+        projects = [
+            {**row,
+             "first_seen_at": seen.get(str(row.get("slug") or "")) or 0,
+             "is_new": krt_ranking.is_new(seen.get(str(row.get("slug") or "")))}
+            for row in projects
+        ]
         status = krt_registry.status()
         return {
             "source": CATALOGUE_URL,
             "geometry_status": "not_published_in_catalogue",
             **status,
             "count": len(projects),
+            "new_count": sum(1 for row in projects if row["is_new"]),
+            "new_for_days": NEW_FOR_SECONDS // 86400,
             "projects": projects,
         }
 

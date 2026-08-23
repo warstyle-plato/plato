@@ -68,6 +68,17 @@ def test_the_handoff_sends_the_counted_inputs_not_a_new_model() -> None:
     assert "developaid.auction.pending.v1" in body, "тот же мост, что у лотов"
 
 
+def test_the_list_always_shows_a_number(script_free: None = None) -> None:
+    """Балл не вытесняется вердиктом модели: сравнивать надо число с числом."""
+    script = page_script(auctions_page())
+    body = script[script.index("function renderKrt("):]
+    body = body[:body.index("\nfunction krtSiteMap(")]
+    assert "${sc.score} · ${esc(sc.label)}" in body
+    assert "Модель · ${esc(light.label)}" not in body, "вердикт больше не заменяет балл"
+    assert "krtScoreNote(sc)" in body, "рядом сказано, что балл снизило"
+    assert "x.is_new" in body, "новая площадка помечается"
+
+
 def test_the_market_blocks_are_rendered_by_one_function() -> None:
     """Свежий запрос и сохранённый отчёт рисуют соседей одной разметкой."""
     script = page_script(auctions_page())

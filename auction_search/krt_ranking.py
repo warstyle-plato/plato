@@ -46,6 +46,13 @@ CACHE_SCHEMA_VERSION = 1
 # — маркетинг, модель, рекомендация Платона, — а строка рейтинга живёт своей
 # жизнью. Чужая версия читается как «нет отчёта», а не как отчёт с дырами.
 REPORT_SCHEMA_VERSION = 1
+# Что каталог видел раньше. Нужно ровно для одного: отличить площадку, которая
+# появилась на этой неделе, от той, что лежит там полгода. Без этого «новое»
+# пришлось бы определять глазами по списку из ста двадцати строк.
+FIRST_SEEN_SCHEMA_VERSION = 1
+# Сколько площадка считается новой после появления. Месяц: каталог обновляется
+# раз в неделю, и метка, живущая один прогон, до человека может не дожить.
+NEW_FOR_SECONDS = 30 * 24 * 60 * 60
 # Сутки: каталог КРТ обновляется реже, а цены рынка — не чаще. Столько же живёт
 # и сам каталог (`KrtRegistry.ttl_seconds`), и расходиться им незачем.
 DEFAULT_TTL_SECONDS = 24 * 60 * 60
@@ -144,6 +151,7 @@ class KrtRanking:
         # и выбрасывал, оставляя строку с одним баллом. Человек открывал
         # карточку и ждал те же минуты второй раз, хотя всё уже посчитано.
         self.reports_dir = Path(data_dir) / "krt" / "reports"
+        self.first_seen_path = Path(data_dir) / "krt" / "first_seen.json"
         self.ttl_seconds = ttl_seconds
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
@@ -230,6 +238,48 @@ class KrtRanking:
             return []
         rows = cached.get("rows")
         return list(rows) if isinstance(rows, list) else []
+
+    # --- что каталог видел раньше ---------------------------------------
+
+    def first_seen(self) -> dict[str, int]:
+        cached = load_json(self.first_seen_path)
+        if not isinstance(cached, dict):
+            return {}
+        if cached.get("schema_version") != FIRST_SEEN_SCHEMA_VERSION:
+            return {}
+        slugs = cached.get("slugs")
+        return {str(key): int(value) for key, value in slugs.items()} if isinstance(slugs, dict) else {}
+
+    def mark_seen(self, slugs: list[str], now: float | None = None) -> dict[str, int]:
+        """Отметить нынешний состав каталога и вернуть, когда что впервые увидено.
+
+        Первый в жизни снимок никого новым не делает: мы только начали смотреть,
+        и сто двадцать четыре «новинки» разом — это не новость, а шум. Новыми
+        становятся те, кого не было в прошлом снимке.
+        """
+        stamp = int(now if now is not None else time.time())
+        known = self.first_seen()
+        bootstrap = not known
+        seen = {str(slug) for slug in slugs if str(slug).strip()}
+        # Исчезнувшие из каталога забываются: вернувшаяся площадка — это снова
+        # новость, а вечный список слагов рос бы без конца.
+        updated = {slug: known.get(slug, 0 if bootstrap else stamp) for slug in seen}
+        save_json(self.first_seen_path, {
+            "schema_version": FIRST_SEEN_SCHEMA_VERSION,
+            "updated_at": stamp,
+            "bootstrapped_at": (load_json(self.first_seen_path) or {}).get("bootstrapped_at", stamp),
+            "slugs": updated,
+        })
+        return updated
+
+    @staticmethod
+    def is_new(first_seen_at: Any, now: float | None = None) -> bool:
+        stamp = float(now if now is not None else time.time())
+        try:
+            seen_at = float(first_seen_at or 0)
+        except (TypeError, ValueError):
+            return False
+        return seen_at > 0 and (stamp - seen_at) <= NEW_FOR_SECONDS
 
     def report_path(self, slug: str) -> Path:
         """Файл отчёта площадки. Слаг проверяется: он приходит из адреса."""
