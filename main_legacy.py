@@ -14920,6 +14920,52 @@ def _ladder_input_block(ws_in, steps: list[tuple[float, float]],
     return refs
 
 
+_PLATO_PARKING_SALES_CELL = "I33"
+_PLATO_PARKING_SALES_EXPECTED = "='Расчет ВРИ (ТЭП)'!D68+'Расчет ВРИ (ТЭП)'!D69"
+_PLATO_PARKING_SALES_FIXED = "='Расчет ВРИ (ТЭП)'!D68"
+
+
+def _plato_sell_only_permanent_parking(
+    workbook, filled: list[dict[str, Any]], missing: list[str],
+) -> None:
+    """Книга продаёт столько же машино-мест, сколько движок.
+
+    Гостевые места строятся, но не продаются — это методика, и движок ей уже
+    следует. Книга не следовала: `ТЭП!I33` складывала постоянные и гостевые, а
+    это число читают ровно два листа, и оба про продажи — `ПОДБОР_КВ.М`!D32 и
+    `План продаж`!D7. Площадь и стоимость стройки отсюда не берутся вовсе
+    (проверено по всем формулам шаблона), так что сумма здесь означала одно:
+    гостевые места продаются.
+
+    Расхождение выходило ровно в десятую часть паркинга — 2 054 млн ₽ выручки
+    в книге против 1 867 у движка на умолчаниях, — и тянуло за собой всё:
+    эскроу, покрытие, ступень ставки ПФ, налог, LLCR. Две поверхности на одни
+    вводные, обе достоверные на вид.
+
+    Формула сверяется перед заменой. Другая формула — это другая книга, и
+    молча переписывать её нельзя: строка уходит в `missing`.
+    """
+    if "ТЭП" not in workbook.sheetnames:
+        missing.append("ТЭП · продаваемые машино-места")
+        return
+    sheet = workbook["ТЭП"]
+    cell = sheet[_PLATO_PARKING_SALES_CELL]
+    current = str(cell.value or "").replace(" ", "")
+    if current == _PLATO_PARKING_SALES_FIXED.replace(" ", ""):
+        return
+    if current != _PLATO_PARKING_SALES_EXPECTED.replace(" ", ""):
+        missing.append(
+            f"ТЭП!{_PLATO_PARKING_SALES_CELL} · формула не опознана: {cell.value!r}")
+        return
+    cell.value = _PLATO_PARKING_SALES_FIXED
+    filled.append({
+        "sheet": "ТЭП", "cell": _PLATO_PARKING_SALES_CELL,
+        "label": "Продаваемые машино-места",
+        "value": _PLATO_PARKING_SALES_FIXED,
+        "note": "гостевые места строятся, но не продаются — как в движке",
+    })
+
+
 def _plato_apply_pf_rate_methodology(
     workbook: Any, filled: list[dict[str, Any]], missing: list[str],
     steps: list[tuple[float, float]] | None = None,
@@ -15276,6 +15322,7 @@ def fill_plato_template(
         workbook, filled, missing, pf_special_steps(merged.get("pf_special_steps")))
     _plato_apply_pf_cashflow(workbook, filled, missing)
     _plato_fix_social_capex_links(workbook, filled, missing)
+    _plato_sell_only_permanent_parking(workbook, filled, missing)
 
     # Имя проекта в шапке ОТЧЕТа — не украшение: без него каждая выгрузка
     # уезжает заказчику подписанной чужим проектом из шаблона.

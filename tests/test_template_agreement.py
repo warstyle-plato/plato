@@ -133,7 +133,11 @@ def template_params(content: bytes) -> dict:
         "apartments_sqm": area("площадь квартир"),
         "commercial_sqm": area("нежилая наземная площадь (ннп)"),
         # ТЭП!I33 шаблона складывает постоянные и гостевые парковки.
-        "parking_units": area("постоянные парковки") + area("гостевые парковки"),
+        # Продаются только постоянные: гостевые строятся, но не продаются, и
+        # `ТЭП!I33` книги ссылается ровно на постоянные. Сумма здесь означала бы
+        # ту самую продажу гостевых мест, из-за которой книга давала на десятую
+        # часть паркинга больше движка.
+        "parking_units": area("постоянные парковки"),
         "price_apartment": value("стартовая цена квартир"),
         "price_commercial": value("стартовая цена коммерции"),
         "price_parking": value("цена машино-места"),
@@ -151,16 +155,37 @@ def engine_mln(products: dict, key: str) -> float:
     return float(products.get(key) or 0.0) / 1e6
 
 
-def test_guest_parking_of_a_foreign_project_is_cleared():
-    """Гостевые парковки шаблона нельзя оставлять: ТЭП прибавляет их к продаваемым."""
+def test_guest_parking_of_a_foreign_project_is_replaced_by_ours():
+    """Чужое число гостевых мест заменяется нашим, а не остаётся в книге.
+
+    Прежде строка просто обнулялась — тогда гостевые места нигде не значились.
+    Теперь книга знает их отдельно: постоянные продаются, гостевые строятся, а
+    сумма обеих строк равна тому, что посчитал движок.
+    """
     stale = load_workbook(TEMPLATE)["Расчет ВРИ (ТЭП)"]
     rows = {main._plato_normalize(stale.cell(row=r, column=2).value): r
             for r in range(1, stale.max_row + 1)}
-    row = rows["гостевые парковки"]
-    assert stale.cell(row=row, column=4).value  # в шаблоне лежит чужое значение
+    guest_row, permanent_row = rows["гостевые парковки"], rows["постоянные парковки"]
+    foreign = stale.cell(row=guest_row, column=4).value
+    assert foreign  # в шаблоне лежит чужое значение
+
     content, _ = main.fill_plato_template(main.DEFAULT_INPUTS, main.TEP_DEFAULT)
     filled = load_workbook(io.BytesIO(content))["Расчет ВРИ (ТЭП)"]
-    assert filled.cell(row=row, column=4).value == 0
+    guest = filled.cell(row=guest_row, column=4).value
+    permanent = filled.cell(row=permanent_row, column=4).value
+    engine = main.TEP_DEFAULT["underground_parking"]
+
+    assert guest == main.underground_guest_spaces(engine)
+    assert guest != foreign, "чужое значение шаблона не должно пережить выгрузку"
+    assert permanent == pytest.approx(main.underground_saleable_spaces(engine))
+    assert permanent + guest == pytest.approx(float(engine["units"]))
+
+
+def test_the_workbook_sells_only_permanent_parking():
+    """`ТЭП!I33` читают два листа, и оба про продажи — гостевым там не место."""
+    content, _ = main.fill_plato_template(main.DEFAULT_INPUTS, main.TEP_DEFAULT)
+    book = load_workbook(io.BytesIO(content))
+    assert book["ТЭП"]["I33"].value == "='Расчет ВРИ (ТЭП)'!D68"
 
 
 def test_standalone_objects_can_be_switched_on():
