@@ -683,6 +683,33 @@ def test_the_limits_are_calculated_not_typed(book):
     assert close(pf, finance["pf_limit"] / 1e6)
 
 
+def test_the_book_sells_only_the_spaces_that_are_sold(book):
+    """Гостевые машино-места строятся и стоят денег, но не продаются.
+
+    Объём продаж паркинга книга брала из колонки «Единиц» — всех построенных
+    мест, — и продавала гостевые вместе с остальными. На умолчаниях это
+    624 млн ₽ лишней выручки: она уходила на эскроу, поднимала покрытие,
+    роняла ступень ставки ПФ и меняла налог и LLCR. Ни одна из этих величин
+    ошибкой не выглядела — расходились две достоверные на вид модели.
+    """
+    workbook, evaluator, engine, meta = book
+    row = next(item for item in engine["tep"]["rows"]
+               if item["key"] == "underground_parking")
+    guest = core.underground_guest_spaces(core.TEP_DEFAULT["underground_parking"])
+    assert guest > 0, "без гостевых мест проверка ничего не проверяет"
+
+    sheet = workbook[core._M2_SHEETS["tep"]]
+    line = next(cell.row for cell in sheet["A"]
+                if cell.value == row["label"])
+    assert sheet.cell(row=line, column=8).value == pytest.approx(guest)
+    assert sheet.cell(row=line, column=9).value == f"=G{line}-H{line}"
+
+    sold = evaluator.cell(core._M2_SHEETS["tep"], f"I{line}")
+    assert sold == pytest.approx(core.underground_saleable_spaces(
+        core.TEP_DEFAULT["underground_parking"]))
+    assert sold < float(row["units"])
+
+
 # --- вспомогательное -------------------------------------------------------
 
 def _reopen(workbook):
