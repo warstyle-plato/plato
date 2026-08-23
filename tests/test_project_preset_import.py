@@ -387,8 +387,8 @@ def test_the_screen_separates_documents_from_calculations():
 def test_applying_lays_over_the_defaults():
     body = core.PAGE[core.PAGE.index("async function applyPreset("):]
     body = body[:body.index("// --- хранилище проектов")]
-    assert "structuredClone(INPUT_DEFAULT)" in body
-    assert "structuredClone(TEP_DEFAULT)" in body
+    assert "cloneValue(INPUT_DEFAULT)" in body
+    assert "cloneValue(TEP_DEFAULT)" in body
 
 
 def test_applying_replaces_stale_phasing_with_the_preset_phasing():
@@ -399,7 +399,7 @@ def test_applying_replaces_stale_phasing_with_the_preset_phasing():
     """
     body = core.PAGE[core.PAGE.index("async function applyPreset("):]
     body = body[:body.index("// --- хранилище проектов")]
-    assert "const importedPhasing=structuredClone(data.phasing)" in body
+    assert "const importedPhasing=cloneValue(data.phasing)" in body
     assert "phasing.products=importedPhasing.products||phaseDefaults.products" in body
     assert "phasing.shared_cash=Object.assign" in body
     assert "renderPhasing()" in body

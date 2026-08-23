@@ -65,7 +65,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.19.54"
+VERSION = "0.19.55"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -21500,6 +21500,12 @@ def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
     social_allocation = _phase_social_allocation(social_objects, count) if social_objects else []
 
     discrete = phasing.get("discrete") or {}
+    # Объект, который очередь объявила своими метрами, размещён явно — и
+    # умолчание `discrete` сажает его второй раз. ТЦ, объявленный в четвёртой
+    # очереди, по умолчанию движка попадал ещё и во вторую: 92 845 м² ГНС
+    # строились и продавались дважды, а подпись «Очередь 4 · ТЦ» при этом
+    # выглядела верной. Явное размещение сильнее умолчания.
+    explicitly_placed = {key for cfg in phases_cfg for key in _explicit_phase_products(cfg)}
     master_import = (x_master.get("_glavapu_import") or {}).get("normalized", {})
     phase_items: list[dict[str, Any]] = []
     comparison: list[dict[str, Any]] = []
@@ -21684,7 +21690,11 @@ def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
                 ("retail", "standalone_retail", 2),
                 ("above_parking", "above_parking", 2)):
             enabled_key = "offices_enabled" if prefix=="offices" else "retail_enabled" if prefix=="retail" else "above_parking_enabled"
-            if tep_key in product_weights:
+            if tep_key in explicitly_placed:
+                declared = _explicit_phase_products(cfg).get(tep_key) or {}
+                p_inputs[enabled_key] = bool(x_master.get(enabled_key)) and bool(
+                    n(declared, "gns") or n(declared, "saleable") or n(declared, "units"))
+            elif tep_key in product_weights:
                 # Explicit percentages mean this is a set of queue objects,
                 # not one discrete object assigned through the dropdown.
                 row = p_tep.get(tep_key) or {}
@@ -21695,9 +21705,16 @@ def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
                 # Очередь за пределами проекта уронила бы объект в никуда.
                 assigned = max(1, min(count, assigned))
                 p_inputs[enabled_key] = bool(x_master.get(enabled_key)) and assigned==idx+1
-                if tep_key in p_tep and assigned != idx+1:
+            # Объект не в этой очереди — значит и метров его здесь нет. Гасить
+            # один выключатель мало: площадь объекта движок читает из вводных,
+            # и оставленное «на всякий случай» число видно и в ТЭП очереди, и
+            # в её выгрузке — там, где объекта нет вовсе.
+            if not p_inputs[enabled_key]:
+                if tep_key in p_tep:
                     p_tep[tep_key] = _zero_tep_row(p_tep[tep_key])
-            if p_inputs[enabled_key]:
+                for field, input_key in _PHASE_PRODUCT_INPUT_ALIASES.get(tep_key, {}).items():
+                    p_inputs[input_key] = 0.0
+            else:
                 for suffix in ("start","sales_start"):
                     dk=f"{prefix}_{suffix}"
                     if dk in p_inputs:

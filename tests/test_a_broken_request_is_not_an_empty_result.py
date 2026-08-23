@@ -46,6 +46,25 @@ def page_function(name: str) -> str:
     raise AssertionError(f"не найдена функция {name}")
 
 
+def page_plain_function(name: str) -> str:
+    """Обычное объявление функции со страницы — не переписанное здесь заново.
+
+    Копия в заглушке пережила бы переименование молча: `lookupLand` ловит
+    любую ошибку, и ReferenceError на несуществующей функции выглядел бы в
+    точности как оборванная сеть — то самое, ради чего написан этот файл.
+    """
+    start = core.PAGE.index(f"function {name}(")
+    depth = 0
+    for position in range(core.PAGE.index("{", start), len(core.PAGE)):
+        if core.PAGE[position] == "{":
+            depth += 1
+        elif core.PAGE[position] == "}":
+            depth -= 1
+            if depth == 0:
+                return core.PAGE[start:position + 1]
+    raise AssertionError(f"не найдена функция {name}")
+
+
 DOM = """
 const CONNECTION_HINT=' Не удалось связаться с сервером. Если включён VPN — отключите его и повторите: сведения ЕГРН запрашиваются с российского адреса.';
 const nodes={cadastralNumbers:{value:'Одинцово, Маковского 28'},
@@ -56,7 +75,6 @@ const escapeHtml=(s)=>String(s);
 let landLookup=null;let inputs={};
 function renderLandLookup(){}
 function hideLandPreview(){}
-function structuredClone(x){return JSON.parse(JSON.stringify(x))}
 // Сессия входа едет вместе с запросом — только для учёта, на поиск не влияет.
 function activeSession(){return ''}
 """
@@ -67,7 +85,7 @@ def run(fetch_js: str) -> dict:
     if not node:
         pytest.skip("node недоступен")
     script = "\n".join([
-        DOM, fetch_js, page_function("lookupLand"),
+        DOM, page_plain_function("cloneValue"), fetch_js, page_function("lookupLand"),
         "(async()=>{const out=await lookupLand({quiet:true});"
         "console.log(JSON.stringify({returned:out,status:nodes.cadastralStatus.innerHTML}));})()",
     ])

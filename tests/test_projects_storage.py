@@ -234,8 +234,8 @@ def test_the_page_loads_a_project_over_the_defaults():
     добавленное после сохранения."""
     body = core.PAGE[core.PAGE.index("async function loadProject("):]
     body = body[:body.index("async function deleteProject(")]
-    assert "Object.assign(structuredClone(INPUT_DEFAULT)" in body
-    assert "structuredClone(TEP_DEFAULT)" in body
+    assert "Object.assign(cloneValue(INPUT_DEFAULT)" in body
+    assert "cloneValue(TEP_DEFAULT)" in body
 
 
 def test_the_page_sends_both_ways_of_identifying():
