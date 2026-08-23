@@ -193,14 +193,25 @@ def _read_finance_baseline(path: Path) -> dict[str, Any]:
 
         reserve = 0.0
         reserve_parts: dict[str, float] = {}
+        # Резерв ищется по трём колонкам по убыванию доверия: «на завершение
+        # согласно бюджету», «согласно лимитам», «Общая сметная стоимость
+        # Увеличенная». Первоначальная смета — последней: на Кутузове бюджетная
+        # колонка резервов пуста, и запасной ход на «первоначальную» терял
+        # 2.8 целиком и показывал 209,7 млн вместо 306,1.
+        limits_hdr = _find_header(ws, "Средства на завершение согласно лимитам")
+        increased_hdr = _find_header(ws, "Увеличенная")
         for r in reserve_rows:
             code = actuals._code(ws.cell(r, 1).value)
-            # Reserve is an explicit budget line. Prefer the remaining/completion
-            # column, falling back to the RSS cap when the sheet has not been
-            # refreshed with a residual value yet.
-            amount = actuals._money(ws.cell(r, need_col).value)
-            if amount <= 0:
-                amount = actuals._money(ws.cell(r, rss_limit_col).value)
+            amount = 0.0
+            for col in (need_col,
+                        limits_hdr[1] if limits_hdr else None,
+                        increased_hdr[1] if increased_hdr else None,
+                        rss_limit_col):
+                if col is None:
+                    continue
+                amount = actuals._money(ws.cell(r, col).value)
+                if amount > 0:
+                    break
             reserve += max(0.0, amount)
             reserve_parts[code] = max(0.0, amount)
 

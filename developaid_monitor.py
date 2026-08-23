@@ -261,6 +261,40 @@ def store_schedule_fact(project: str, data: bytes, taken_at: Any) -> dict[str, A
     }
 
 
+def replace_finance_baseline(project: str, data: bytes,
+                             taken_at: Any) -> dict[str, Any]:
+    """Заменить финансовый baseline утверждённым пересчётом.
+
+    Финкнигу пересчитывают решением — например, когда потребность фасадов
+    переводят на согласованный график. Прежняя книга не выбрасывается, а
+    уходит снимком в историю: переписанное прошлое должно быть видно.
+    """
+    day = _iso(taken_at)
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+        raise ValueError("дата пересчёта нужна в виде ГГГГ-ММ-ДД")
+    from openpyxl import load_workbook
+    import io as _io
+    try:
+        wb = load_workbook(_io.BytesIO(data), read_only=True)
+    except Exception:
+        raise ValueError("файл не читается как книга Excel")
+    try:
+        if "Расчет стоимости строительства" not in wb.sheetnames:
+            raise ValueError("в книге нет листа «Расчет стоимости строительства»")
+    finally:
+        wb.close()
+    folder = _project_dir(project) / "baseline"
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / "finance.xlsx"
+    if path.exists():
+        history = _project_dir(project) / "finance_history"
+        history.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d%H%M%S")
+        (history / f"replaced-{stamp}.xlsx").write_bytes(path.read_bytes())
+    path.write_bytes(data)
+    return {"taken_at": day, "replaced": True}
+
+
 def store_work_fact(project: str, rows: list[dict[str, Any]],
                     taken_at: Any) -> dict[str, Any]:
     """Точечный факт по работам ГПР — процент и статус, введённые со страницы.
@@ -297,6 +331,42 @@ def store_work_fact(project: str, rows: list[dict[str, Any]],
     path.write_text(json.dumps({"taken_at": day, "rows": list(merged.values())},
                                ensure_ascii=False), encoding="utf-8")
     return {"taken_at": day, "works": len(cleaned)}
+
+
+# Монолитный цикл: работы, которые физически не могут быть не сделаны, когда
+# объект стоит в бетоне до верха. Правило выведено на Кутузове: тендерный
+# график держал нули на котловане при статусе стройки «под фасад».
+_MONOLITH_CYCLE = re.compile(
+    r"котлован|бетонн[а-я]* подготов|гидроизоляц|стяжк|фундамент|монолит"
+    r"|несущ|перекрыт|колонн|каркас|армирован|арматур|балк|ростверк|шпунт"
+    r"|земляны|свай|обратн[а-я]* засыпк|распределительн[а-я]* балк",
+    re.IGNORECASE)
+
+
+def close_completed_stage(project: str, object_query: str,
+                          taken_at: Any) -> dict[str, Any]:
+    """Экспертная разметка: закрыть сотней монолитный цикл объекта.
+
+    Проценты пишутся точечными фактами поверх графика — сам baseline не
+    трогается, и разметку видно снимком: кто, когда и что закрыл.
+    """
+    baseline = _read_baseline_gpr(project)
+    query = str(object_query or "").strip().lower()
+    rows = []
+    for work in baseline["works"]:
+        status = str(work.get("status") or "").lower()
+        if "заверш" in status or (work.get("progress") or 0) >= 0.999:
+            continue
+        haystack = f"{work.get('object') or ''} {work.get('section') or ''}".lower()
+        if query and query not in haystack:
+            continue
+        if not _MONOLITH_CYCLE.search(str(work.get("name") or "")):
+            continue
+        rows.append({"id": str(work.get("id")), "progress": 1.0,
+                     "status": "Завершено (экспертная разметка)"})
+    if not rows:
+        return {"taken_at": _iso(taken_at), "works": 0}
+    return store_work_fact(project, rows, taken_at)
 
 
 def work_facts(project: str, upto: str = "") -> dict[str, dict[str, Any]]:

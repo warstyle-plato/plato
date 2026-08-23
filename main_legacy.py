@@ -1917,6 +1917,38 @@ def monitor_store_work_fact(req: MonitorWorkFactRequest) -> dict[str, Any]:
         raise HTTPException(400, str(exc))
 
 
+class MonitorStageCloseRequest(BaseModel):
+    project: str
+    taken_at: str
+    object_query: str = ""
+    session: str = ""
+    key: str = ""
+
+
+@app.post("/monitor/finance-baseline", include_in_schema=False)
+def monitor_replace_finance(req: MonitorScheduleFactRequest) -> dict[str, Any]:
+    """Заменить финкнигу утверждённым пересчётом; прежняя уходит в историю."""
+    _require_web_access(req.session, req.key, "Монитор проекта")
+    try:
+        return developaid_monitor.replace_finance_baseline(
+            req.project, base64.b64decode(req.content_base64), req.taken_at)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/monitor/work-fact/stage", include_in_schema=False)
+def monitor_close_stage(req: MonitorStageCloseRequest) -> dict[str, Any]:
+    """Закрыть сотней монолитный цикл объекта — экспертная разметка."""
+    _require_web_access(req.session, req.key, "Монитор проекта")
+    try:
+        return developaid_monitor.close_completed_stage(
+            req.project, req.object_query, req.taken_at)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
 @app.post("/monitor/schedule-fact", include_in_schema=False)
 def monitor_store_schedule_fact(req: MonitorScheduleFactRequest) -> dict[str, Any]:
     """Еженедельный ГПР-факт: проценты и статусы поверх неизменного baseline."""
