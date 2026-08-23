@@ -261,6 +261,59 @@ def store_schedule_fact(project: str, data: bytes, taken_at: Any) -> dict[str, A
     }
 
 
+def store_work_fact(project: str, rows: list[dict[str, Any]],
+                    taken_at: Any) -> dict[str, Any]:
+    """Точечный факт по работам ГПР — процент и статус, введённые со страницы.
+
+    В акте РСС нет имени работы — только статья, поэтому автоматически акт
+    в работу не превращается. Точечный процент вводится в Ганте и хранится
+    снимком; поздний снимок перекрывает раннюю запись той же работы, а
+    незатронутые работы живут по актам и baseline.
+    """
+    day = _iso(taken_at)
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+        raise ValueError("дата факта нужна в виде ГГГГ-ММ-ДД")
+    cleaned = []
+    for row in rows or []:
+        tid = str(row.get("id") or "").strip()
+        if not tid:
+            continue
+        try:
+            progress = max(0.0, min(1.0, float(row.get("progress"))))
+        except (TypeError, ValueError):
+            continue
+        cleaned.append({"id": tid, "progress": progress,
+                        "status": str(row.get("status") or "")})
+    if not cleaned:
+        raise ValueError("ни в одной строке нет id и процента")
+    folder = _project_dir(project) / "work_fact"
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"{day}.json"
+    stored = []
+    if path.exists():
+        stored = json.loads(path.read_text(encoding="utf-8")).get("rows", [])
+    merged = {row["id"]: row for row in stored}
+    merged.update({row["id"]: row for row in cleaned})
+    path.write_text(json.dumps({"taken_at": day, "rows": list(merged.values())},
+                               ensure_ascii=False), encoding="utf-8")
+    return {"taken_at": day, "works": len(cleaned)}
+
+
+def work_facts(project: str, upto: str = "") -> dict[str, dict[str, Any]]:
+    """Все точечные факты по работам, поздние поверх ранних."""
+    folder = _project_dir(project) / "work_fact"
+    if not folder.exists():
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    items = sorted(folder.glob("*.json"))
+    if upto:
+        items = [item for item in items if item.stem <= upto]
+    for path in items:
+        for row in json.loads(path.read_text(encoding="utf-8")).get("rows", []):
+            out[str(row.get("id"))] = row
+    return out
+
+
 def latest_schedule_fact(project: str, upto: str = "") -> dict[str, Any] | None:
     """Свежайший снимок ГПР-факта, не позднее `upto`. Нет снимка — None."""
     path = _latest(project, "schedule_fact", ".xlsx", upto)

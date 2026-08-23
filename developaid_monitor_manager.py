@@ -228,6 +228,18 @@ def _baseline_status(project: str) -> dict[str, dict[str, Any]]:
                  for item in fact.get("works") or []}
         rows = [fresh.get(str(item.get("id") or item.get("wbs") or "").strip(),
                           item) for item in rows]
+    # Точечные проценты со страницы — поверх всего: в акте РСС нет имени
+    # работы, и последнее слово о конкретной работе остаётся за человеком.
+    try:
+        manual = monitor.work_facts(project)
+    except Exception:
+        manual = {}
+    if manual:
+        rows = [dict(item, progress=manual[tid]["progress"],
+                     status=manual[tid].get("status") or item.get("status"))
+                if (tid := str(item.get("id") or item.get("wbs") or "").strip())
+                in manual else item
+                for item in rows]
     out: dict[str, dict[str, Any]] = {}
     for item in rows:
         tid = str(item.get("id") or item.get("wbs") or "").strip()

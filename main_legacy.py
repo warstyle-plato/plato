@@ -65,7 +65,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.19.69"
+VERSION = "0.19.70"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -1896,6 +1896,25 @@ class MonitorScheduleFactRequest(BaseModel):
     content_base64: str
     session: str = ""
     key: str = ""
+
+
+class MonitorWorkFactRequest(BaseModel):
+    project: str
+    taken_at: str
+    rows: list[dict[str, Any]] = []
+    session: str = ""
+    key: str = ""
+
+
+@app.post("/monitor/work-fact", include_in_schema=False)
+def monitor_store_work_fact(req: MonitorWorkFactRequest) -> dict[str, Any]:
+    """Точечный факт по работе ГПР — процент, введённый на странице."""
+    _require_web_access(req.session, req.key, "Монитор проекта")
+    try:
+        return developaid_monitor.store_work_fact(
+            req.project, req.rows, req.taken_at)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
 
 
 @app.post("/monitor/schedule-fact", include_in_schema=False)

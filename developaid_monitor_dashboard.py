@@ -390,9 +390,14 @@ def _article_waterfall(
             )
 
     for code, item in sorted(articles.items()):
+        limit = float(item.get("rss_limit") or 0.0)
+        need_total = sum(max(0.0, float(v or 0.0))
+                         for v in (item.get("monthly_need") or {}).values())
         article_rows.append({
             "code": code,
             "name": item.get("name", ""),
+            "limit": limit,
+            "need_total": need_total,
             "opening_limit_raw": opening_raw.get(code, 0.0),
             "opening_limit": max(0.0, opening_raw.get(code, 0.0)),
             "remaining_limit": state.get(code, 0.0),
