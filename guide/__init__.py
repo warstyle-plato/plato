@@ -57,6 +57,48 @@ def brand_logo(core) -> bytes:
     return base64.b64decode(found.group(1)) if found else b""
 
 
+# Ссылки подвала объявлены в `PAGE` и берутся оттуда же, что и эмблема.
+# Поверхностей у продукта уже семь, и подвал на них расходился: у торгов и у
+# кабинета рынка его не было вовсе — из карточки лота нельзя было попасть ни в
+# политику, ни в согласие. Правило то же, что с `VERSION` и с эмблемой: копию
+# негде обновлять, потому что копии нет.
+#
+# «Оценить DevelopAid» из общего набора исключено намеренно: этот пункт зовёт
+# `openFeedback` — функцию `PAGE`. На чужой поверхности её нет, и ссылка вела
+# бы в ошибку консоли. Документы ИП от этого не зависят.
+_FOOTER_IN_PAGE = re.compile(r"<footer[^>]*>(.*?)</footer>", re.S)
+_FOOTER_LINK = re.compile(r'<a href="(/[a-z-]+)"[^>]*>([^<]+)</a>')
+_FOOTER_OWNER = re.compile(r"<span>(©[^<]+)</span>")
+
+
+def legal_links(core) -> list[tuple[str, str]]:
+    """Ссылки на документы ИП — те же, что в подвале `PAGE`. Пусто — подвал изменился."""
+    found = _FOOTER_IN_PAGE.search(core.PAGE)
+    if not found:
+        return []
+    return [(href, label.strip()) for href, label in _FOOTER_LINK.findall(found.group(1))]
+
+
+def legal_owner(core) -> str:
+    """Строка владельца из подвала `PAGE`."""
+    found = _FOOTER_IN_PAGE.search(core.PAGE)
+    owner = _FOOTER_OWNER.search(found.group(1)) if found else None
+    return owner.group(1).strip() if owner else ""
+
+
+def legal_footer_html(core, css_class: str = "legal-footer") -> str:
+    """Подвал для поверхности, у которой своя вёрстка: разметка её, состав общий."""
+    links = legal_links(core)
+    owner = legal_owner(core)
+    if not links or not owner:
+        # Молчать нельзя: пустой подвал выглядит так же, как отсутствующий, а
+        # причина у них разная. Разошлась разметка `PAGE` — это видно сразу.
+        return ('<footer class="%s"><span>Подвал не собран: разметка главной '
+                'страницы изменилась.</span></footer>' % css_class)
+    items = "".join(f'<a href="{href}">{label}</a>' for href, label in links)
+    return f'<footer class="{css_class}"><span>{owner}</span>{items}</footer>'
+
+
 def _fmt(value) -> str:
     # Форматирование, не расчёт: число из движка показывается как есть,
     # с русским разделителем тысяч.

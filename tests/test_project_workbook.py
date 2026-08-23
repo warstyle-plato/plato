@@ -92,8 +92,10 @@ def test_the_tep_lands_in_the_first_queue(default_book):
     assert sheet["B89"].value == "Нет"
     assert sheet["W88"].value == pytest.approx(core.TEP_DEFAULT["apartments"]["gns"], rel=1e-6)
     assert sheet["Z88"].value == pytest.approx(core.TEP_DEFAULT["apartments"]["saleable"], rel=1e-6)
+    # В очередь книги едут ПРОДАВАЕМЫЕ места: этой колонкой считается выручка,
+    # а гостевые места строятся, но не продаются.
     assert sheet["AB88"].value == pytest.approx(
-        core.TEP_DEFAULT["underground_parking"]["units"], rel=1e-6)
+        core.underground_saleable_spaces(core.TEP_DEFAULT["underground_parking"]), rel=1e-6)
 
 
 def test_the_project_start_drives_the_horizon(default_book):

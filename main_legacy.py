@@ -65,7 +65,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.19.63"
+VERSION = "0.19.65"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -2703,6 +2703,19 @@ def _geometry_points(node: Any, out: list[tuple[float, float]]) -> None:
             _geometry_points(child, out)
 
 
+def _wgs84_to_mercator(lat: float, lng: float) -> tuple[float, float]:
+    """Широта и долгота → веб-меркатор. Обратное к `_mercator_to_wgs84`.
+
+    Формула жила внутри `_geometry_center`, а нужна она и там, где точка
+    приходит готовой парой координат — например, ссылкой на карту НСПД для
+    территории КРТ. Второй такой пересчёт (тем более в браузере) разошёлся бы
+    с этим молча, и ссылка вела бы рядом с участком.
+    """
+    merc_x = lng * 20037508.34 / 180.0
+    merc_y = math.log(math.tan((90.0 + lat) * math.pi / 360.0)) / (math.pi / 180.0)
+    return merc_x, merc_y * 20037508.34 / 180.0
+
+
 def _geometry_center(geometry: Any) -> dict[str, Any] | None:
     if not isinstance(geometry, dict):
         return None
@@ -2715,9 +2728,7 @@ def _geometry_center(geometry: Any) -> dict[str, Any] | None:
     if abs(x) <= 180.0 and abs(y) <= 90.0:
         # Уже WGS84 (GeoJSON порядок — долгота, широта).
         lat, lng = y, x
-        merc_x = lng * 20037508.34 / 180.0
-        merc_y = math.log(math.tan((90.0 + lat) * math.pi / 360.0)) / (math.pi / 180.0)
-        merc_y = merc_y * 20037508.34 / 180.0
+        merc_x, merc_y = _wgs84_to_mercator(lat, lng)
     else:
         lat, lng = _mercator_to_wgs84(x, y)
         merc_x, merc_y = x, y
@@ -13438,6 +13449,74 @@ def _v4_fold_tail(weights: list[float], enabled: int, book: int) -> list[float]:
     return trimmed
 
 
+# Статьи, за которыми идёт «Управление проектом»: своего окна у него нет —
+# штаб загружен тем, чем вызван, и его доля месяца равна доле этих расходов.
+# Список объявлен здесь и больше нигде: движок разносит по нему статью, книга
+# v2 собирает по нему формулу, а книга v4 приводится к нему при выгрузке.
+# Копия в шаблоне v4 включала «Сдачу и ввод» — статью последних трёх месяцев,
+# — и книга смещала управление к сдаче: помесячный CAPEX расходился с движком
+# на сотую долю процента. Само по себе это ничего не стоило, пока покрытие
+# эскроу не легло на ступень ставки ПФ: 1,10002× в книге против 1,09993× у
+# движка — и один месяц пошёл по 3,47% вместо 1,75%, а стоимость
+# финансирования разошлась на 28,9 млн ₽ при совпадающих выручке, CAPEX,
+# EBITDA и пике долга.
+MANAGEMENT_PROFILE_ARTICLES: tuple[str, ...] = (
+    "ird", "design_p", "design_rd", "author_supervision", "preparation",
+    "main_above", "main_under", "utilities", "landscaping", "site_maintenance",
+)
+
+# Строки листа CAPEX книги v4: блок очереди повторяется каждые 34 строки.
+_V4_CAPEX_ARTICLE_ROW: dict[str, int] = {
+    "ird": 16, "design_p": 17, "design_rd": 18, "author_supervision": 19,
+    "preparation": 20, "main_above": 21, "main_under": 22, "utilities": 23,
+    "landscaping": 24, "commissioning": 25, "site_maintenance": 26,
+    "technical_supervision": 27, "project_management": 28, "gc_fee": 29,
+    "reserve": 30,
+}
+_V4_CAPEX_BLOCK_STRIDE = 34
+_V4_CAPEX_PHASES = 4
+
+
+def _v4_management_profile_ranges() -> tuple[int, int, list[int]]:
+    """Первая и последняя строка профиля и строки, которые в него не входят."""
+    rows = sorted(_V4_CAPEX_ARTICLE_ROW[key] for key in MANAGEMENT_PROFILE_ARTICLES)
+    first, last = rows[0], rows[-1]
+    excluded = [row for row in range(first, last + 1) if row not in rows]
+    return first, last, excluded
+
+
+def _v4_apply_management_profile(xml: str, missing: list[str]) -> str:
+    """Приводит формулу «Управление проектом» книги v4 к списку движка.
+
+    Шаблон брал сплошной диапазон строк, а в нём лежит и статья, которой в
+    профиле движка нет. Формула не переписывается вслепую: не опознали — в
+    `missing`, а не молча посчитали по-своему.
+    """
+    first, last, excluded = _v4_management_profile_ranges()
+    if not excluded:
+        return xml
+    for phase in range(_V4_CAPEX_PHASES):
+        base = _V4_CAPEX_BLOCK_STRIDE * phase
+        top, bottom = first + base, last + base
+        drop = [row + base for row in excluded]
+        pattern = re.compile(
+            r"SUM\((?P<col>[A-Z]{1,2})%d:(?P=col)%d\)/SUM\(\$D\$%d:\$DS\$%d\)"
+            % (top, bottom, top, bottom))
+        def replace(match: "re.Match[str]") -> str:
+            column = match.group("col")
+            month = (f"(SUM({column}{top}:{column}{bottom})-"
+                     + "-".join(f"{column}{row}" for row in drop) + ")")
+            total = (f"(SUM($D${top}:$DS${bottom})-"
+                     + "-".join(f"SUM($D${row}:$DS${row})" for row in drop) + ")")
+            return f"{month}/{total}"
+        xml, count = pattern.subn(replace, xml)
+        if not count:
+            missing.append(
+                f"CAPEX · профиль управления очереди {phase + 1}: формула строки "
+                f"{_V4_CAPEX_ARTICLE_ROW['project_management'] + base} не опознана")
+    return xml
+
+
 def _v4_parity_targets(consolidated: dict[str, Any]) -> dict[str, float]:
     """Контрольные числа движка для parity-блока листа ПРОВЕРКИ."""
     summary = consolidated.get("summary") or {}
@@ -13928,6 +14007,7 @@ def build_project_workbook(
     # бы жить своей жизнью поверх записанных чисел.
     capex_sheet_path = _v4_sheet_path(source, "CAPEX")
     capex_xml = source.read(capex_sheet_path).decode("utf-8")
+    capex_xml = _v4_apply_management_profile(capex_xml, missing)
     if social_monthly_by_phase is not None:
         from openpyxl.utils import get_column_letter as _col
         for phase_index in range(4):
@@ -14920,6 +15000,52 @@ def _ladder_input_block(ws_in, steps: list[tuple[float, float]],
     return refs
 
 
+_PLATO_PARKING_SALES_CELL = "I33"
+_PLATO_PARKING_SALES_EXPECTED = "='Расчет ВРИ (ТЭП)'!D68+'Расчет ВРИ (ТЭП)'!D69"
+_PLATO_PARKING_SALES_FIXED = "='Расчет ВРИ (ТЭП)'!D68"
+
+
+def _plato_sell_only_permanent_parking(
+    workbook, filled: list[dict[str, Any]], missing: list[str],
+) -> None:
+    """Книга продаёт столько же машино-мест, сколько движок.
+
+    Гостевые места строятся, но не продаются — это методика, и движок ей уже
+    следует. Книга не следовала: `ТЭП!I33` складывала постоянные и гостевые, а
+    это число читают ровно два листа, и оба про продажи — `ПОДБОР_КВ.М`!D32 и
+    `План продаж`!D7. Площадь и стоимость стройки отсюда не берутся вовсе
+    (проверено по всем формулам шаблона), так что сумма здесь означала одно:
+    гостевые места продаются.
+
+    Расхождение выходило ровно в десятую часть паркинга — 2 054 млн ₽ выручки
+    в книге против 1 867 у движка на умолчаниях, — и тянуло за собой всё:
+    эскроу, покрытие, ступень ставки ПФ, налог, LLCR. Две поверхности на одни
+    вводные, обе достоверные на вид.
+
+    Формула сверяется перед заменой. Другая формула — это другая книга, и
+    молча переписывать её нельзя: строка уходит в `missing`.
+    """
+    if "ТЭП" not in workbook.sheetnames:
+        missing.append("ТЭП · продаваемые машино-места")
+        return
+    sheet = workbook["ТЭП"]
+    cell = sheet[_PLATO_PARKING_SALES_CELL]
+    current = str(cell.value or "").replace(" ", "")
+    if current == _PLATO_PARKING_SALES_FIXED.replace(" ", ""):
+        return
+    if current != _PLATO_PARKING_SALES_EXPECTED.replace(" ", ""):
+        missing.append(
+            f"ТЭП!{_PLATO_PARKING_SALES_CELL} · формула не опознана: {cell.value!r}")
+        return
+    cell.value = _PLATO_PARKING_SALES_FIXED
+    filled.append({
+        "sheet": "ТЭП", "cell": _PLATO_PARKING_SALES_CELL,
+        "label": "Продаваемые машино-места",
+        "value": _PLATO_PARKING_SALES_FIXED,
+        "note": "гостевые места строятся, но не продаются — как в движке",
+    })
+
+
 def _plato_apply_pf_rate_methodology(
     workbook: Any, filled: list[dict[str, Any]], missing: list[str],
     steps: list[tuple[float, float]] | None = None,
@@ -15276,6 +15402,7 @@ def fill_plato_template(
         workbook, filled, missing, pf_special_steps(merged.get("pf_special_steps")))
     _plato_apply_pf_cashflow(workbook, filled, missing)
     _plato_fix_social_capex_links(workbook, filled, missing)
+    _plato_sell_only_permanent_parking(workbook, filled, missing)
 
     # Имя проекта в шапке ОТЧЕТа — не украшение: без него каждая выгрузка
     # уезжает заказчику подписанной чужим проектом из шаблона.
@@ -15480,13 +15607,14 @@ _M2_PRODUCTS: dict[str, dict[str, Any]] = {
         "core": True,
     },
     "underground_parking": {
-        "base_column": 7, "price": "parking_price_th", "scale": 0.001, "unit": "м/м",
+        # Колонка 9 — «Продаётся, ед.»: гостевые места в продажи не входят.
+        "base_column": 9, "price": "parking_price_th", "scale": 0.001, "unit": "м/м",
         "share": "share_before_rve_pct", "residual": "residual_sales_months",
         "growth_pre": "monthly_growth_pre_pct", "growth_post": "monthly_growth_post_pct",
         "core": True,
     },
     "storage": {
-        "base_column": 7, "price": "storage_price_th", "scale": 0.001, "unit": "шт.",
+        "base_column": 9, "price": "storage_price_th", "scale": 0.001, "unit": "шт.",
         "share": "share_before_rve_pct", "residual": "residual_sales_months",
         "growth_pre": "monthly_growth_pre_pct", "growth_post": "monthly_growth_post_pct",
         "core": True,
@@ -15922,7 +16050,8 @@ def build_plato_model_v2(
     ws_tep["A1"].font = styles["title"]
     ws_tep["A2"] = "Площади — исходные данные проекта. Всё, что ниже, книга считает от них."
     headers = ["Продукт", "ГНС, м²", "Общая площадь, м²", "Полезная, м²",
-               "Продаваемая, м²", "Передаётся городу, м²", "Единиц"]
+               "Продаваемая, м²", "Передаётся городу, м²", "Единиц",
+               "Гостевых, ед.", "Продаётся, ед."]
     for column, label in enumerate(headers, start=1):
         ws_tep.cell(row=4, column=column, value=label).font = styles["bold"]
     tep_rows = (result.get("tep") or {}).get("rows") or []
@@ -15932,12 +16061,17 @@ def build_plato_model_v2(
         tep_row_of[str(item.get("key"))] = line
         ws_tep.cell(row=line, column=1, value=item.get("label"))
         for column, key in enumerate(
-                ("gns", "total_area", "useful", "saleable", "transfer", "units"), start=2):
+                ("gns", "total_area", "useful", "saleable", "transfer", "units",
+                 "guest_units"), start=2):
             ws_tep.cell(row=line, column=column,
                         value=round(float(item.get(key) or 0.0), 6)).number_format = area
+        # Продаётся — то, что остаётся за вычетом гостевых: правка мест на этой
+        # же строке сразу двигает объём продаж, а не оставляет выгруженное число.
+        ws_tep.cell(row=line, column=9,
+                    value=f"=G{line}-H{line}").number_format = area
     total_line = 5 + len(tep_rows)
     ws_tep.cell(row=total_line, column=1, value="ИТОГО").font = styles["bold"]
-    for column in range(2, 8):
+    for column in range(2, 10):
         letter = get_column_letter(column)
         cell = ws_tep.cell(row=total_line, column=column,
                            value=f"=SUM({letter}5:{letter}{total_line - 1})")
@@ -15963,7 +16097,7 @@ def build_plato_model_v2(
         tep_base[key] = line
 
     ws_tep.column_dimensions["A"].width = 32
-    for column in range(2, 8):
+    for column in range(2, 10):
         ws_tep.column_dimensions[get_column_letter(column)].width = 20
 
     def tep_ref(key: str) -> str:
@@ -16239,12 +16373,7 @@ def build_plato_model_v2(
     # Управление проектом не имеет собственного окна: оно идёт за расходами,
     # которыми вызвано, — процент от прямых затрат каждого месяца, как в
     # движке. Сумма статьи в калькуляции — итог этого ряда.
-    management_profile_keys = [
-        key for key in ("ird", "design_p", "design_rd", "author_supervision",
-                        "preparation", "main_above", "main_under", "utilities",
-                        "landscaping", "site_maintenance")
-        if key in calc_row
-    ]
+    management_profile_keys = [key for key in MANAGEMENT_PROFILE_ARTICLES if key in calc_row]
 
     for key, label in articles:
         line = calc_row[key]
@@ -18707,12 +18836,8 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
     # Управление проектом — следом за расходами, которыми оно вызвано: равный
     # календарный разнос от старта до РВЭ сажал полный штаб с первого дня и
     # догружал БРИДЖ сотнями миллионов при реальных тратах в одно проектирование.
-    management_profile_articles = (
-        "ird", "design_p", "design_rd", "author_supervision", "preparation",
-        "main_above", "main_under", "utilities", "landscaping", "site_maintenance",
-    )
     management_profile: dict[date, float] = defaultdict(float)
-    for profile_article in management_profile_articles:
+    for profile_article in MANAGEMENT_PROFILE_ARTICLES:
         for profile_month, profile_value in capex_by_article[profile_article].items():
             management_profile[profile_month] += profile_value
     management_total = sum(management_profile.values())
@@ -19633,6 +19758,12 @@ def calculate(req: CalcRequest) -> dict:
 
     tep_rows = []
     for key, row in t.items():
+        # Гостевые машино-места строятся и стоят денег, но не продаются. Число
+        # едет в строку ТЭП, а не выводится каждой поверхностью заново: книга
+        # считала объём продаж от всех мест и продавала гостевые вместе с
+        # остальными — выручка расходилась с движком на их стоимость.
+        guest = float(underground_guest_spaces(row)) if key == "underground_parking" else 0.0
+        units = n(row, "units")
         tep_rows.append({
             "key": key,
             "label": row.get("label", key),
@@ -19641,12 +19772,15 @@ def calculate(req: CalcRequest) -> dict:
             "useful": n(row, "useful"),
             "saleable": n(row, "saleable"),
             "transfer": n(row, "transfer"),
-            "units": n(row, "units"),
+            "units": units,
+            "guest_units": guest,
+            "saleable_units": max(0.0, units - guest),
         })
 
     tep_total = {
         key: sum(row[key] for row in tep_rows)
-        for key in ("gns", "total_area", "useful", "saleable", "transfer", "units")
+        for key in ("gns", "total_area", "useful", "saleable", "transfer", "units",
+                    "guest_units", "saleable_units")
     }
 
     total_revenue = fin["total_revenue"]

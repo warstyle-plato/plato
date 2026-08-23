@@ -245,7 +245,7 @@ def install(app: FastAPI) -> None:
     @app.get("/auctions", response_class=HTMLResponse)
     async def auctions_home() -> HTMLResponse:
         return HTMLResponse(
-            auction_page_with_handoff(auctions_page()),
+            auction_page_with_handoff(auctions_page(core)),
             headers={"Cache-Control": "no-store, must-revalidate"},
         )
 
@@ -359,13 +359,30 @@ def install(app: FastAPI) -> None:
         except (GeocodingError, RemoteServiceError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         data = point.to_dict() if hasattr(point, "to_dict") else {}
+        # Ссылка на публичную карту НСПД строится движком (`_nspd_map_url`) —
+        # координаты там в веб-меркаторе, и второй сборщик этого адреса в
+        # браузере разошёлся бы с первым молча. Ссылка нужна не как украшение:
+        # подложка — то, на чём рисуют, и когда она не пришла, первоисточник
+        # остаётся единственным способом посмотреть на участок.
+        nspd_url = ""
+        latitude, longitude = data.get("latitude"), data.get("longitude")
+        if core is not None and latitude is not None and longitude is not None:
+            try:
+                merc_x, merc_y = core._wgs84_to_mercator(
+                    float(latitude), float(longitude))
+                nspd_url = core._nspd_map_url(
+                    {"merc_x": round(merc_x, 2), "merc_y": round(merc_y, 2)}, "")
+            except Exception:
+                logger.exception("НСПД: адрес карты не собрался slug=%s", slug)
+                nspd_url = ""
         return {
             "slug": slug,
             "query": query,
-            "latitude": data.get("latitude"),
-            "longitude": data.get("longitude"),
+            "latitude": latitude,
+            "longitude": longitude,
             "precision": data.get("precision"),
             "area_ha": project.get("area_ha"),
+            "nspd_url": nspd_url,
         }
 
     @app.get("/auctions/krt/ranking")
@@ -528,8 +545,13 @@ def install(app: FastAPI) -> None:
         request: Request,
         radius_km: float = Query(default=3.0, ge=0.25, le=10.0),
         peers_limit: int = Query(default=12, ge=1, le=20),
+        tep_ratios: str = Query(default="", max_length=400),
     ) -> dict[str, Any]:
-        """Existing market engine, embedded in the KRT opportunity card."""
+        """Existing market engine, embedded in the KRT opportunity card.
+
+        `tep_ratios` — доли ТЭП в том же виде, что во вводных страницы
+        («apartments: 90/65»). Пусто — наши умолчания.
+        """
         market_cabinet.require_cabinet(request)
         if market is None:
             raise HTTPException(status_code=503, detail="Маркетинговый движок не подключён")
@@ -553,7 +575,8 @@ def install(app: FastAPI) -> None:
                     }
                 else:
                     try:
-                        screening = build_krt_model_screening(project, report, core)
+                        screening = build_krt_model_screening(
+                            project, report, core, tep_ratios)
                     except Exception:
                         # Marketing remains useful if a preliminary model cannot
                         # be assembled.  Do not turn an optional screen into a
@@ -567,7 +590,13 @@ def install(app: FastAPI) -> None:
                 # поэтому и оседает он там же. Иначе «пересчитать сейчас»
                 # обновляло бы только экран: на диске остался бы прошлый отчёт,
                 # в таблице — прошлый балл, и оба выглядели бы верными.
-                if project is not None and screening.get("available") is not None:
+                # Расчёт на чужих долях в общий рейтинг не идёт. Балл в списке
+                # и числа в карточке обязаны быть про одно: сохрани мы сюда
+                # разовое допущение аналитика, таблица показывала бы его всем и
+                # выглядела бы при этом посчитанной по методике.
+                custom_ratios = bool((screening.get("tep_ratios") or {}).get("custom"))
+                if project is not None and screening.get("available") is not None \
+                        and not custom_ratios:
                     stored = dict(screening)
                     krt_ranking.save_report(slug, {
                         "project": project,

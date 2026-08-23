@@ -134,15 +134,28 @@ def test_the_page_and_the_engine_see_one_parking(mytishchi):
 
 @pytest.mark.parametrize("count", [1, 2, 3, 4])
 def test_the_queues_keep_the_imported_parking(mytishchi, count):
-    """Главная проверка: свод очередей равен паркингу участка."""
+    """Главная проверка: свод очередей равен паркингу участка.
+
+    Строка «продукты» — это выручка, и мест в ней столько, сколько продаётся:
+    гостевые строятся и стоят денег, но не продаются. Сверять её с построенными
+    местами участка значит сравнивать разные величины — построенные проверяются
+    ниже, на строках ТЭП."""
     inputs, tep = mytishchi["inputs"], mytishchi["tep"]
-    master = float(tep["underground_parking"]["units"])
-    assert master > 0, "в файле нет подземного паркинга — тест проверял бы ноль"
+    built = float(tep["underground_parking"]["units"])
+    master = core.underground_saleable_spaces(tep["underground_parking"])
+    assert built > 0, "в файле нет подземного паркинга — тест проверял бы ноль"
+    assert master > 0
     bundle = core.calculate_phased(core.PhasedCalcRequest(
         inputs=inputs, tep=tep, rates=[], phasing=phasing(count)))
     total = next(item for item in bundle["consolidated"]["report"]["products"]
                  if item["key"] == "underground_parking")
-    assert total["quantity"] == pytest.approx(master, abs=1.0)
+    assert total["quantity"] == pytest.approx(master, abs=float(count))
+    if bundle["phases"]:
+        queues = sum(float(row.get("units") or 0.0)
+                     for phase in bundle["phases"]
+                     for row in phase["result"]["tep"]["rows"]
+                     if row["key"] == "underground_parking")
+        assert queues == pytest.approx(built, abs=1.0), "построенные места очереди не множат"
 
 
 @pytest.mark.parametrize("count", [2, 3, 4])
@@ -184,9 +197,15 @@ def test_no_imported_product_is_multiplied(mytishchi, count):
 def test_the_rule_holds_for_another_site():
     project = live_import("Мишина_ТЭП.xlsx")
     inputs, tep = project["inputs"], project["tep"]
-    master = float(tep["underground_parking"]["units"])
+    master = core.underground_saleable_spaces(tep["underground_parking"])
+    built = float(tep["underground_parking"]["units"])
     bundle = core.calculate_phased(core.PhasedCalcRequest(
         inputs=inputs, tep=tep, rates=[], phasing=phasing(3)))
     total = next(item for item in bundle["consolidated"]["report"]["products"]
                  if item["key"] == "underground_parking")
-    assert total["quantity"] == pytest.approx(master, abs=1.0)
+    assert total["quantity"] == pytest.approx(master, abs=3.0)
+    queues = sum(float(row.get("units") or 0.0)
+                 for phase in bundle["phases"]
+                 for row in phase["result"]["tep"]["rows"]
+                 if row["key"] == "underground_parking")
+    assert queues == pytest.approx(built, abs=1.0), "построенные места очереди не множат"

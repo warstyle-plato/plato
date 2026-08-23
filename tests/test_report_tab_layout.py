@@ -243,12 +243,12 @@ def test_an_uncounted_sensitivity_offers_to_count_it():
 def test_the_revenue_table_speaks_in_roubles_per_metre(report_tab):
     assert "Структура выручки" in report_tab
     head = report_tab[report_tab.find("Структура выручки"):]
-    assert "тыс ₽/м² ГНС" in head[:400] and "тыс ₽/м² прод." in head[:400]
+    assert "тыс ₽/м² строит. объёма" in head[:400] and "тыс ₽/м² прод." in head[:400]
 
 
 def test_the_capex_table_speaks_in_roubles_per_metre(report_tab):
     head = report_tab[report_tab.find("Структура затрат по статьям"):]
-    assert "тыс ₽/м² ГНС" in head[:400] and "тыс ₽/м² прод." in head[:400]
+    assert "тыс ₽/м² строит. объёма" in head[:400] and "тыс ₽/м² прод." in head[:400]
 
 
 def test_the_social_load_is_shown_per_metre():
