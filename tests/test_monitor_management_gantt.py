@@ -90,3 +90,62 @@ def test_closed_wbs_stays_closed_even_if_cost_ratio_is_below_one(monkeypatch):
     assert row["baseline_closed"] is True
     assert row["forecast_finish"] == "2025-06-09"
     assert row["status"] == "ЗАВЕРШЕНО ПО УТВЕРЖДЕННОМУ ГПР"
+
+
+def test_own_gpr_percent_is_the_floor_of_task_readiness(monkeypatch):
+    """КС статьи — готовность всей статьи, а не задачи.
+
+    «Разработка котлована», физически пройденная, наследовала статейные 67,8%
+    и давала +472 дня, из которых +83 доезжали до РНВ по FS-цепочке. Свой
+    процент задачи из утверждённого ГПР — нижняя граница: задача не может
+    быть менее готова, чем принято в baseline.
+    """
+    monkeypatch.setattr(manager, "_baseline_status", lambda _: {
+        "1393": {"closed": False, "status": "Просрочено", "progress": 0.9},
+    })
+    schedule = {"rows": [{
+        "id": "1393",
+        "wbs": "1.16.2.1",
+        "plan_finish": "2025-10-28",
+        "forecast_finish": "2027-02-12",
+        "actual_progress": 0.678,
+        "rate_3m": 0.02,
+        "delta_days": 472,
+    }]}
+
+    manager._sanitize_base_schedule("demo", schedule)
+    row = schedule["rows"][0]
+
+    assert row["rss_accepted_ratio"] == pytest.approx(0.9)
+    assert row["progress_kind"] == "accepted_cost_ratio_floor_gpr"
+
+
+def test_a_task_at_full_gpr_percent_is_closed_without_the_word(monkeypatch):
+    """100% в ГПР значит «сделано», даже если статус забыли перевести."""
+    import developaid_monitor as monitor
+
+    monkeypatch.setattr(monitor, "_read_baseline_gpr", lambda _: {"works": [
+        {"id": "7", "status": "Просрочено", "progress": 1.0},
+        {"id": "8", "status": "В работе", "progress": 0.55},
+        {"id": "9", "status": "Завершено", "progress": None},
+    ]})
+
+    out = manager._baseline_status("demo")
+
+    assert out["7"]["closed"] is True
+    assert out["8"]["closed"] is False
+    assert out["8"]["progress"] == pytest.approx(0.55)
+    assert out["9"]["closed"] is True
+
+
+def test_gpr_percent_written_as_hundred_scale_is_normalized(monkeypatch):
+    import developaid_monitor as monitor
+
+    monkeypatch.setattr(monitor, "_read_baseline_gpr", lambda _: {"works": [
+        {"id": "5", "status": "В работе", "progress": 86.0},
+    ]})
+
+    out = manager._baseline_status("demo")
+
+    assert out["5"]["progress"] == pytest.approx(0.86)
+    assert out["5"]["closed"] is False
