@@ -77,6 +77,23 @@ def test_a_new_push_cancels_the_previous_run():
     assert "head_ref" in concurrency["group"]
 
 
+def test_a_merged_pull_request_is_not_run_again():
+    """Пуш в ветку слитого PR всё равно поднимает `synchronize`.
+
+    23.08.2026 коммит лёг на ветку через минуту после слияния — и набор ушёл
+    на двадцать пять минут ради PR, который слить второй раз нельзя. Вместе с
+    ним впустую отработали ещё три проверки. Слитый PR проверять нечего: его
+    код уже в main, и там его проверяет сборка. Работа после слияния
+    начинается с новой ветки от main, а не с дописывания в старую.
+    """
+    condition = _load(ON_PR)["jobs"]["test"].get("if") or ""
+    assert "github.event.pull_request.merged == false" in condition, \
+        "прогон снова запускается на слитом PR"
+    # Ручной запуск payload'а pull_request не несёт, и условие оставило бы его
+    # без работы: `merged` там пусто, а пусто — это не false.
+    assert "workflow_dispatch" in condition
+
+
 def test_it_does_not_build_a_second_image():
     """PR проверяет код; образ собирается из main. Второй сборщик образа — это
     двадцать лишних минут и второй ответ на вопрос, что именно уехало."""

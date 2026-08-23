@@ -166,3 +166,68 @@ def test_a_map_that_did_not_build_says_why_and_leaves_the_source():
     assert "Карта не построена: " in page
     assert "Геокодер не нашёл адрес территории" in page
     assert "Подложка карты не ответила" in page
+
+
+# --- точка карты берётся тем же путём, что точка отчёта -----------------------
+
+def test_the_map_point_is_resolved_like_the_report_point():
+    """Четвёртый случай одной ошибки: свой путь там, где есть общий.
+
+    `/auctions/krt/{slug}/point` звал `market.geocoder` напрямую — мимо крючка
+    `geocode_address`. На ядре ключа Яндекса нет, значит на деле работал один
+    Nominatim, и карта отвечала «Nominatim: место не найдено» на территорию,
+    которую отчёт находил (экран владельца, 23.08.2026). Хуже того: точка карты
+    и точка, на которой посчитан отчёт, могли разойтись — а карта это то, на
+    что смотрят.
+    """
+    import inspect
+
+    from auction_search import api
+
+    source = inspect.getsource(api.install)
+    point = source[source.index("async def auction_krt_point"):
+                   source.index("async def auction_krt_ranking")]
+    assert "market.resolve_subject" in point, "точка карты снова считается своим путём"
+    assert "geocoder.geocode" not in point, "геокодер зовётся мимо крючка сервиса"
+
+
+def test_the_service_prefers_the_engine_geocoder():
+    """Крючок объявлен и используется: свой геокодер знает Яндекс и Nominatim,
+    движковый — ещё и DaData, и цепочку из трёх источников подряд."""
+    import inspect
+
+    from market_search import service_v6
+
+    source = inspect.getsource(service_v6.MarketDiscoveryService.resolve_subject)
+    assert "self.geocode_address or self.geocoder.geocode" in source
+    import main_registry
+    assert callable(getattr(main_registry.market_search, "geocode_address", None))
+
+
+def test_the_krt_ladder_falls_back_to_the_district():
+    """Один запрос вместо лестницы — это пустая карта там, где хватило бы района.
+
+    Порядок именно такой: отдельный адрес точнее запроса каталога, а район —
+    последнее приближение, и оно помечается как район, а не выдаётся за адрес.
+    """
+    from market_search.subject import _krt_geocode_candidates
+
+    territory = {
+        "name": "Территория по адресу: Проектируемый проезд № 4062, вл. 1",
+        "district": "Нагатинский Затон",
+        "geocode_query": "Москва, Нагатинский Затон, Территория по адресу: "
+                         "Проектируемый проезд № 4062, вл. 1",
+    }
+    ladder = _krt_geocode_candidates(territory, "krt:test")
+    kinds = [kind for _, kind in ladder]
+    assert kinds == ["address_fragment", "catalogue_query", "district"], kinds
+    assert ladder[-1][0] == "Москва, район Нагатинский Затон"
+
+
+def test_the_card_says_how_the_point_was_found():
+    """Центр района выглядит на карте так же уверенно, как настоящий адрес."""
+    page = auctions_page()
+    assert "subject.notes" in page, "объяснение точки до экрана не доезжает"
+    assert "precision" not in page[page.index("function krtSiteMap"):
+                                   page.index("function krtRankCell")], \
+        "своя оценка точности осталась рядом с движковой"

@@ -163,8 +163,12 @@ def test_the_site_is_drawn_but_its_boundary_is_not_invented():
     assert "/land/map-image?" not in page
     assert "контур не показан" in page, "отсутствие границ названо вслух"
     assert "масштаб" in page.lower() or " м</span>" in page, "у карты есть линейка"
-    # Точность геокодера — часть ответа, а не подробность.
-    assert "precision" in page and "приблизительное" in page
+    # Чем опознана точка — часть ответа, а не подробность: центр района
+    # выглядит на карте так же уверенно, как настоящий адрес. Прежде это была
+    # своя оценка точности геокодера рядом с картой; теперь точка берётся тем
+    # же `resolve_subject`, что и точка отчёта, и объяснение приезжает вместе с
+    # ней — «по отдельному адресу», «по запросу каталога», «по району».
+    assert "subject.notes" in page
 
 
 def test_the_run_counts_what_the_filter_left():
