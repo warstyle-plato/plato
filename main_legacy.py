@@ -65,7 +65,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.19.53"
+VERSION = "0.19.54"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -25711,6 +25711,13 @@ def usage_track(kind: str, *, surface: str = "bot", chat_id: int = 0, user_id: i
                 handle.write(json.dumps(record, ensure_ascii=False) + "\n")
     except (OSError, TypeError, ValueError):
         pass
+    # Человек и его анкета живут дольше журнала: журнал подметается через
+    # полгода и умирает вместе с контейнером Render, а на вопросы «сколько у
+    # нас пользователей» и «что нам написали» отвечать надо всегда.
+    users_touch(record["chat"], surface=record["surface"], kind=kind,
+                name=record["name"])
+    if kind == "survey":
+        survey_store(record)
 
 
 def usage_events(days: int = 30) -> list[dict[str, Any]]:
@@ -25838,7 +25845,20 @@ def survey_summary(days: int = 30) -> dict[str, Any]:
         key = source_by_chat.get(chat) or "без метки"
         by_source[key] = by_source.get(key, 0) + 1
 
+    # Анкеты берутся из хранилища, а не только из журнала: журнал подметается,
+    # а анкета должна лежать вечно. Журнальные оставлены для тех, что записаны
+    # до появления хранилища; дубли снимаются по времени и чату.
     surveys = [e for e in window if str(e.get("kind")) == "survey"]
+    seen_surveys = {(round(float(e.get("at") or 0), 3), int(e.get("chat") or 0))
+                    for e in surveys}
+    for stored in survey_records():
+        at = float(stored.get("at") or 0)
+        if at < now - days * 86400:
+            continue
+        if (round(at, 3), int(stored.get("chat") or 0)) in seen_surveys:
+            continue
+        surveys.append(stored)
+    surveys.sort(key=lambda item: float(item.get("at") or 0))
     scores: dict[str, list[int]] = {}
     for survey in surveys:
         for key, value in (survey.get("ratings") or {}).items():
@@ -26045,6 +26065,167 @@ def profile_registry_summary(days: int = 30) -> dict[str, Any]:
         } for record in people[:15]],
         "dir": str(directory),
     }
+
+
+# --- анкеты и пользователи: то, что должно пережить всё ----------------------
+#
+# Журнал обращений подметается через `_USAGE_KEEP_DAYS` и живёт на том хосте,
+# который обслужил запрос: на Render он кончается вместе с контейнером. Анкета
+# и факт «человек пришёл» — самые редкие и самые дорогие записи из всех, что мы
+# собираем, и держать их там нельзя. Поэтому они лежат файлами рядом с
+# профилями знакомства: на ядре, в смонтированном томе, без срока.
+#
+# Найдено разбором журнала 23.08.2026: на 711 расчётов пришлись 2 знакомства и
+# 1 анкета, а «сколько у нас пользователей» ответить было нечем — вопросы
+# Платону писались вовсе без `chat_id`, и 74 живых вопроса легли под нулём.
+
+
+def _surveys_dir() -> Path:
+    return _PROJECTS_DIR.parent / "surveys"
+
+
+def _users_dir() -> Path:
+    return _PROJECTS_DIR.parent / "users"
+
+
+def survey_store(record: dict[str, Any]) -> str:
+    """Одна анкета — один файл, навсегда. Возвращает имя файла или пустую строку.
+
+    Имя несёт время и chat, чтобы файлы сортировались по дате и повторная
+    запись той же анкеты не плодила копий: анкета приходит двумя записями
+    (оценки и комментарий), и у каждой своё время.
+    """
+    try:
+        at = float(record.get("at") or time.time())
+    except (TypeError, ValueError):
+        at = time.time()
+    stamp = datetime.fromtimestamp(at, tz=timezone.utc).strftime("%Y%m%d-%H%M%S")
+    name = f"{stamp}-{int(record.get('chat') or 0)}.json"
+    try:
+        directory = _surveys_dir()
+        directory.mkdir(parents=True, exist_ok=True)
+        payload = dict(record)
+        payload["at"] = round(at, 3)
+        (directory / name).write_text(
+            json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    except (OSError, TypeError, ValueError):
+        return ""
+    return name
+
+
+def survey_records() -> list[dict[str, Any]]:
+    """Все сохранённые анкеты по возрастанию времени."""
+    records: list[dict[str, Any]] = []
+    try:
+        paths = sorted(_surveys_dir().glob("*.json"))
+    except OSError:
+        paths = []
+    for path in paths:
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(record, dict):
+            record.setdefault("kind", "survey")
+            records.append(record)
+    records.sort(key=lambda item: float(item.get("at") or 0))
+    return records
+
+
+def users_touch(chat_id: int, *, surface: str = "", kind: str = "",
+                name: str = "") -> None:
+    """Отметить живого человека. Молча — учёт не имеет права ронять ответ.
+
+    Зовётся из `usage_track`, то есть из единственного места, где сходятся все
+    обращения: ветка, добавленная позже, иначе молча выпадет из счёта. Пишем
+    только тех, у кого есть `chat_id`, — вход через телеграм и есть наше
+    определение пользователя (решение владельца, 23.08.2026).
+    """
+    chat = int(chat_id or 0)
+    if not chat:
+        return
+    try:
+        directory = _users_dir()
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / f"{chat}.json"
+        record: dict[str, Any] = {}
+        if path.is_file():
+            try:
+                loaded = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    record = loaded
+            except (OSError, ValueError):
+                record = {}
+        now = round(time.time(), 3)
+        record["chat"] = chat
+        record.setdefault("first_seen", now)
+        record["last_seen"] = now
+        if name:
+            record["name"] = str(name)[:80]
+        if surface:
+            surfaces = record.get("surfaces")
+            record["surfaces"] = sorted({*(surfaces if isinstance(surfaces, list) else []),
+                                         str(surface)})
+        if kind:
+            kinds = record.get("kinds")
+            kinds = kinds if isinstance(kinds, dict) else {}
+            kinds[str(kind)] = int(kinds.get(str(kind)) or 0) + 1
+            record["kinds"] = kinds
+        path.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+    except (OSError, TypeError, ValueError):
+        return
+
+
+def users_registry_summary(days: int = 30) -> dict[str, Any]:
+    """Сколько у нас пользователей — по входам через телеграм.
+
+    Реестр переживает и выкатку, и подметание журнала: он лежит файлами на
+    ядре. «Всего» — это все, кого мы вообще видели; «за окно» — те, кто пришёл
+    впервые за последние N суток. Смешивать их в одно число нельзя: первое
+    отвечает на «сколько у нас людей», второе на «сколько пришло за неделю».
+    """
+    people: list[dict[str, Any]] = []
+    try:
+        paths = sorted(_users_dir().glob("*.json"))
+    except OSError:
+        paths = []
+    for path in paths:
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(record, dict) and int(record.get("chat") or 0):
+            people.append(record)
+    people.sort(key=lambda item: float(item.get("first_seen") or 0), reverse=True)
+    edge = time.time() - max(1, int(days)) * 86400
+    fresh = [item for item in people if float(item.get("first_seen") or 0) >= edge]
+    active = [item for item in people if float(item.get("last_seen") or 0) >= edge]
+
+    def profile_name(chat: int) -> str:
+        try:
+            record = profile_read(chat) or {}
+        except Exception:
+            record = {}
+        name = str(record.get("name") or "").strip()
+        company = str(record.get("company") or "").strip()
+        return f"{name} ({company})" if name and company else name
+
+    return {
+        "days": int(days),
+        "total": len(people),
+        "new_in_window": len(fresh),
+        "active_in_window": len(active),
+        "recent": [{
+            "chat": int(item.get("chat") or 0),
+            "name": profile_name(int(item.get("chat") or 0)) or str(item.get("name") or ""),
+            "first_seen": float(item.get("first_seen") or 0),
+            "last_seen": float(item.get("last_seen") or 0),
+            "surfaces": item.get("surfaces") or [],
+            "kinds": item.get("kinds") or {},
+        } for item in people[:15]],
+        "dir": str(_users_dir()),
+    }
+
 
 
 def usage_admin_ids() -> set[int]:
@@ -26824,6 +27005,35 @@ class InternalSummaryRequest(BaseModel):
     sign: str = ""
 
 
+class InternalSurveyRequest(BaseModel):
+    record: dict[str, Any] = {}
+    sign: str = ""
+
+
+@app.post("/internal/survey/save")
+def internal_survey_save(req: InternalSurveyRequest) -> dict[str, Any]:
+    """Анкета из бота — на хранение к ядру.
+
+    Бот живёт на Render, где диск кончается вместе с контейнером: анкета,
+    заполненная в чате, переживала ровно до следующей выкатки. Хранилище одно
+    и лежит на ядре, рядом с профилями; подпись — общим токеном бота, как у
+    свода: анкета несёт слова человека и посторонним не отдаётся.
+    """
+    record = req.record if isinstance(req.record, dict) else {}
+    chat = int(record.get("chat") or 0)
+    expected = _web_login_sign("survey-save", chat)
+    if not hmac.compare_digest(str(req.sign or "").encode("utf-8"),
+                               expected.encode("utf-8")):
+        raise HTTPException(status_code=403, detail="Подпись не сошлась.")
+    record.setdefault("kind", "survey")
+    name = survey_store(record)
+    if not name:
+        raise HTTPException(status_code=500, detail="Анкета не сохранена.")
+    users_touch(chat, surface=str(record.get("surface") or "telegram"),
+                kind="survey", name=str(record.get("name") or ""))
+    return {"ok": True, "stored": name}
+
+
 @app.post("/internal/usage/summary")
 def internal_usage_summary(req: InternalSummaryRequest) -> dict[str, Any]:
     """Свод учёта и анкет этого хоста — для того, у кого есть Telegram.
@@ -26843,6 +27053,9 @@ def internal_usage_summary(req: InternalSummaryRequest) -> dict[str, Any]:
             # Знакомства лежат здесь же, на ядре: у бота их нет вовсе, а
             # вопрос «сколько зарегистрировалось» задают ему.
             "registry": profile_registry_summary(days),
+            # Пользователи — вход через телеграм. Реестр лежит на ядре и
+            # переживает выкатку, в отличие от sqlite бота на Render.
+            "users": users_registry_summary(days),
             # Сырые события — чтобы выгрузка собиралась из обеих половин, а не
             # из той, что пережила последнюю выкатку.
             "events": usage_events(days)}
@@ -27495,7 +27708,10 @@ def agent_chat(req: AgentChatRequest, request: Request) -> dict[str, Any]:
     _require_web_access(req.session, req.access_key, "Платон отвечает")
     # Учёт здесь, а не в общей части: бот идёт тем же путём, но его вопросы уже
     # записаны в журнал как сообщения — иначе каждый считался бы дважды.
+    # chat_id здесь не был передан вовсе, и все вопросы ложились под нулём:
+    # соседний `/calculate` его пишет, а этот — нет (разбор журнала 23.08.2026).
     usage_track("question", surface="site", text=str(req.message or ""),
+                chat_id=_web_identity_chat_id(str(getattr(req, "session", "") or "")),
                 scenario=str(req.scenario or ""))
     trace_id, done, outcome = _plato_chat_launch(req, request)
     if not done.wait(_PLATO_CHAT_HANDOFF_SECONDS):

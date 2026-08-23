@@ -1239,6 +1239,42 @@ def _when_day(stamp: str) -> str:
         return ""
 
 
+def _users_block(days: int) -> list[str]:
+    """Сколько у нас пользователей. Реестр лежит на ядре и переживает выкатку.
+
+    Два числа рядом, а не одно: «всего» — все, кого мы видели; «за окно» — те,
+    кто пришёл впервые. Знакомство считается отдельным блоком ниже: нажать
+    Start и представиться — разные вещи, и разница между ними это воронка.
+    """
+    users = (_remote_summaries(days) or {}).get("users")
+    if not isinstance(users, dict):
+        try:
+            users = core.users_registry_summary(days)
+        except Exception:
+            return []
+    if not users.get("total"):
+        return []
+    lines = ["", f"<b>Пользователей всего: {users['total']}</b> "
+                 f"<i>(впервые за {days} дн. — {users.get('new_in_window', 0)}, "
+                 f"заходили — {users.get('active_in_window', 0)})</i>"]
+    for person in (users.get("recent") or [])[:10]:
+        who = html.escape(str(person.get("name") or "")) or f"chat {person.get('chat')}"
+        kinds = person.get("kinds") or {}
+        what = " · ".join(f"{html.escape(str(k))} {v}" for k, v in
+                          sorted(kinds.items(), key=lambda kv: -kv[1])[:4])
+        lines.append(f"• <b>{who}</b> — {_when_day(_iso(person.get('first_seen')))}"
+                     + (f" · {what}" if what else "")
+                     + f" · <code>{person.get('chat')}</code>")
+    return lines
+
+
+def _iso(at: Any) -> str:
+    try:
+        return datetime.fromtimestamp(float(at or 0), tz=timezone.utc).isoformat()
+    except (TypeError, ValueError, OSError):
+        return ""
+
+
 def _registry_block(days: int) -> list[str]:
     """Кто зарегистрировался на портале — по знакомствам на ядре.
 
@@ -1440,6 +1476,7 @@ def _stats_message(chat_id: int, user_id: int, argument: str) -> None:
     # переживает выкатку, а журнал бота на Render с ней кончается. Вопрос
     # «сколько зарегистрировалось» задают боту, отвечать на него журналом
     # нельзя — он покажет ноль там, где людей полсотни.
+    lines.extend(_users_block(days))
     lines.extend(_registry_block(days))
     reminder = _stale_reference_line()
     if reminder:
@@ -1625,17 +1662,59 @@ def _feedback_answer(chat_id: int, index: int, score: int | None) -> None:
     _feedback_ask(chat_id)
 
 
+def _survey_to_core(chat_id: int, name: str, **fields: Any) -> None:
+    """Анкета из чата — в хранилище на ядре, а не только в журнал Render.
+
+    Журнал бота живёт до следующей выкатки, а анкета должна лежать вечно
+    (решение владельца, 23.08.2026: «нам нужны анкеты и юзеры»). Пишем обеими
+    руками: журнал даёт воронку и остаётся как был, хранилище — сами ответы.
+    Неответ ядра не молчит: без него анкета уцелеет только до выкатки, и это
+    надо знать.
+    """
+    core.usage_track("survey", surface="telegram", chat_id=chat_id,
+                     user_id=chat_id, name=name, **fields)
+    remote = core._projects_remote_url("/internal/survey/save")
+    if not remote:
+        return
+    record = {"at": time.time(), "surface": "telegram", "kind": "survey",
+              "chat": int(chat_id), "user": int(chat_id), "name": name, **fields}
+    try:
+        core._core_post(remote, {
+            "record": record,
+            "sign": core._web_login_sign("survey-save", int(chat_id)),
+        }, 20.0)
+    except Exception as exc:
+        # Человеку об этом говорить незачем — он своё дело сделал. Но и молчать
+        # нельзя: анкета осталась только в журнале Render и не переживёт
+        # выкатку, поэтому след остаётся в логе и в самом журнале.
+        core._PLATON_LOG.warning("Анкета не доехала до ядра: %s: %s",
+                                 type(exc).__name__, exc)
+        core.usage_track("survey_lost", surface="telegram", chat_id=chat_id,
+                         user_id=chat_id, name=name,
+                         text=f"{type(exc).__name__}: {exc}"[:200])
+
+
 def _feedback_finish(chat_id: int) -> None:
-    """Вопросы кончились: оценки в журнал, дальше ждём комментарий."""
+    """Вопросы кончились: оценки в журнал, дальше ждём комментарий.
+
+    Зовётся из двух мест — сам, когда вопросы кончились, и по кнопке
+    «Закончить», которая остаётся висеть под последним вопросом. Владелец
+    прошёл анкету и получил подряд «Оценок записано: 7» и «Ни одной оценки»
+    (23.08.2026): второй вызов читал уже перезаписанное состояние. Воркеров
+    к тому же два, и гонка дала бы не только два сообщения, но и две записи
+    оценок — то есть удвоенные средние. Поэтому завершение идемпотентно: этап
+    уже сменился — молчим.
+    """
     state = _feedback_state(chat_id)
+    if str(state.get("stage") or "") != "rate":
+        return
     ratings = {key: int(value) for key, value in (state.get("ratings") or {}).items()
                if isinstance(value, (int, float)) and 1 <= int(value) <= 5}
     if ratings:
-        core.usage_track("survey", surface="telegram", chat_id=chat_id,
-                         user_id=chat_id, name=str(state.get("name") or ""),
-                         text="", ratings=ratings, problems={},
-                         impression="", mistakes="", role="", region="",
-                         projects=[], source="")
+        _survey_to_core(chat_id, str(state.get("name") or ""),
+                        text="", ratings=ratings, problems={},
+                        impression="", mistakes="", role="", region="",
+                        projects=[], source="")
     _feedback_remember(chat_id, {"stage": "text", "rated": len(ratings),
                                  "name": str(state.get("name") or "")})
     if ratings:
@@ -1656,11 +1735,9 @@ def _feedback_save(chat_id: int, text: str) -> None:
     text = str(text or "").strip()
     if not text:
         return
-    core.usage_track("survey", surface="telegram", chat_id=chat_id,
-                     user_id=chat_id,
-                     name=str(_feedback_state(chat_id).get("name") or ""),
-                     text=text, ratings={}, problems={}, impression=text,
-                     mistakes="", role="", region="", projects=[], source="")
+    _survey_to_core(chat_id, str(_feedback_state(chat_id).get("name") or ""),
+                    text=text, ratings={}, problems={}, impression=text,
+                    mistakes="", role="", region="", projects=[], source="")
     _feedback_forget(chat_id)
     _send_message(chat_id, "Записал, спасибо. Это доходит до владельца сервиса.")
 
