@@ -173,3 +173,84 @@ def test_bounds_are_read_in_both_coordinate_systems():
 def test_an_empty_geometry_gives_nothing_not_zero():
     assert core._geometry_bounds_wgs84(None) is None
     assert core._geometry_bounds_wgs84({"type": "Polygon", "coordinates": []}) is None
+
+
+# --- рамка шире участка, и это не запрет здесь --------------------------------
+
+def _findings(monkeypatch, zones):
+    """zones: список (геометрия, класс). Портал отдаёт по одной зоне на слой."""
+    def fake(params: str, layer_id: int, api_version: str):
+        fields = dict(urllib.parse.parse_qsl(params))
+        index = core._NSPD_SCREEN_LAYERS.index(int(fields["QUERY_LAYERS"])) \
+            if int(fields["QUERY_LAYERS"]) in core._NSPD_SCREEN_LAYERS else -1
+        if not (0 <= index < len(zones)):
+            return {"features": []}
+        geometry, category, kind = zones[index]
+        return {"features": [{"geometry": geometry, "properties": {"options": {
+            "categoryName": category, "type_zone": kind,
+            "reg_numb_border": f"50:21-6.{index}", "name_by_doc": kind}}}]}
+
+    monkeypatch.setattr(core, "_nspd_getfeatureinfo_request", fake)
+    return core._land_screen_findings(55.7203, 37.5508, PARCEL)
+
+
+# Зона за западной границей: рамку запроса задевает, участка не касается.
+OUTSIDE = {"type": "Polygon", "coordinates": [[
+    [37.5480, 55.7200], [37.5499, 55.7200], [37.5499, 55.7206],
+    [37.5480, 55.7206], [37.5480, 55.7200]]]}
+# Полоса внутри участка.
+INSIDE = {"type": "Polygon", "coordinates": [[
+    [37.5502, 55.7200], [37.5506, 55.7200], [37.5506, 55.7206],
+    [37.5502, 55.7206], [37.5502, 55.7200]]]}
+
+
+def test_a_zone_that_misses_the_parcel_is_marked_off_parcel(monkeypatch):
+    found = _findings(monkeypatch, [
+        (INSIDE, "Охранная зона", "Охранная зона инженерных коммуникаций"),
+        (OUTSIDE, "Санитарно-защитная зона", "Санитарно-защитная зона"),
+    ])
+    by_name = {f["name"]: f for f in found}
+    assert by_name["Охранная зона инженерных коммуникаций"]["on_parcel"] is True
+    assert by_name["Санитарно-защитная зона"]["on_parcel"] is False
+
+
+def test_a_neighbours_szz_does_not_make_the_verdict_red(monkeypatch):
+    """Красный вердикт из-за СЗЗ, не касающейся участка ни одним процентом, —
+    ложная тревога худшего рода (экран владельца, 23.08.2026)."""
+    found = _findings(monkeypatch, [
+        (OUTSIDE, "Санитарно-защитная зона", "Санитарно-защитная зона"),
+    ])
+    assert found and found[0]["on_parcel"] is False
+    verdict = core._land_screening_verdict(found, probed=True, method="contour")
+    assert verdict["status"] != "CRITICAL", verdict["headline"]
+    assert verdict["killer_count"] == 0
+    # Молча выброшенное ограничение читается как его отсутствие — считаем вслух.
+    assert verdict["nearby_count"] == 1
+
+
+def test_a_zone_on_the_parcel_still_counts(monkeypatch):
+    """Проверка, что фильтр не съел настоящие ограничения."""
+    found = _findings(monkeypatch, [
+        (INSIDE, "Санитарно-защитная зона", "Санитарно-защитная зона"),
+    ])
+    verdict = core._land_screening_verdict(found, probed=True, method="contour")
+    assert verdict["killer_count"] == 1 and verdict["nearby_count"] == 0
+
+
+def test_a_zone_without_geometry_is_not_dismissed(monkeypatch):
+    """«Ноль процентов» и «доля не измерена» — разные ответы.
+
+    У зоны без геометрии доли нет, и считать её отсутствующей на участке
+    нельзя: она найдена запросом по этому участку.
+    """
+    found = _findings(monkeypatch, [
+        (None, "Санитарно-защитная зона", "Санитарно-защитная зона"),
+    ])
+    assert found and found[0]["on_parcel"] is True
+    assert found[0].get("coverage_pct") is None
+
+
+def test_the_disclaimer_explains_the_wider_frame():
+    text = core._land_screening_verdict([], probed=True, method="contour")["disclaimer"]
+    assert "Рамка запроса шире контура" in text
+    assert "рядом с участком" in text

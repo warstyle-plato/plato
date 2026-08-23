@@ -3783,6 +3783,14 @@ def _land_apply_coverage(findings: list[dict[str, Any]], parcel_geometry: Any) -
         geometry = item.pop("geometry", None)
         if share is not None:
             item["coverage_pct"] = round(share * 100.0, 1)
+        # Рамка запроса шире участка намеренно — иначе полоса вдоль границы не
+        # находится. Плата за это: в ответ попадают зоны, задевшие рамку, но не
+        # сам участок. Измеренный ноль их и означает: ни одна из точек сетки
+        # внутри контура в зону не попала. «Ноль» и «нет геометрии» — разные
+        # ответы: у второго доля не измерена, и считать его отсутствующим на
+        # участке нельзя. Тонкая полоса, реально пересекающая контур, ноль не
+        # даёт — она ловится сеткой и показывается как «<0,1%».
+        item["on_parcel"] = share is None or share > 0
         if bbox and share:
             outline = _land_zone_outline(geometry, bbox)
             if outline:
@@ -3831,6 +3839,12 @@ def _land_group_findings(findings: list[dict[str, Any]]) -> list[dict[str, Any]]
         share = finding.get("coverage_pct")
         if share is not None and share > (current.get("coverage_pct") or 0.0):
             current["coverage_pct"] = share
+        # Ограничение лежит на участке, если на нём лежит хоть одна его подзона.
+        # Тридцать семь подзон СЗЗ, из которых ни одна участка не касается, —
+        # это соседнее предприятие, попавшее в рамку запроса, а не запрет здесь.
+        if finding.get("on_parcel"):
+            current["on_parcel"] = True
+        current.setdefault("on_parcel", False)
         # Рисунок показывает все подзоны разом: одна из них — не ограничение,
         # а его кусок.
         if finding.get("outline_merc"):
@@ -3893,8 +3907,15 @@ def _land_screening_verdict(findings: list[dict[str, Any]],
     нашёлся ни один из трёх номеров, экран показывал зелёное «критических
     ограничений не обнаружено» — разрешающий вывод на пустоте (18.08.2026).
     """
-    killers = [f for f in findings if f.get("flag_class") == "killer"]
-    economic = [f for f in findings if f.get("flag_class") == "economic"]
+    # Рамка запроса шире участка, поэтому в находки попадают и зоны по
+    # соседству. Красный вердикт «жилая застройка запрещена» из-за СЗЗ, не
+    # касающейся участка ни одним процентом, — ложная тревога худшего рода
+    # (экран владельца, 23.08.2026). Вердикт считает то, что на участке;
+    # соседнее остаётся в списке, но отдельно и без веса.
+    here = [f for f in findings if f.get("on_parcel", True)]
+    nearby = [f for f in findings if not f.get("on_parcel", True)]
+    killers = [f for f in here if f.get("flag_class") == "killer"]
+    economic = [f for f in here if f.get("flag_class") == "economic"]
     if not probed:
         status = "NOT_SCREENED"
         headline = "Скрининг не выполнен: сведений ЕГРН по участку нет"
@@ -3907,14 +3928,17 @@ def _land_screening_verdict(findings: list[dict[str, Any]],
     # Свободное пятно — общий ответ по участку, у всех находок он один и тот
     # же; у нескольких участков берём худший: сводка не имеет права выглядеть
     # лучше самого стеснённого из них.
-    free = [f.get("free_pct") for f in findings if f.get("free_pct") is not None]
+    free = [f.get("free_pct") for f in here if f.get("free_pct") is not None]
     return {
         "status": status,
         "headline": headline,
         "free_pct": min(free) if free else None,
         "killer_count": len(killers),
         "economic_count": len(economic),
-        "total": len(findings),
+        "total": len(here),
+        # Соседнее считается отдельно и называется числом: молча выброшенное
+        # ограничение читается как его отсутствие.
+        "nearby_count": len(nearby),
         "probed": bool(probed),
         "probe_method": method or ("contour" if probed else ""),
         "disclaimer": (_land_screening_disclaimer(method) if probed else
@@ -3934,7 +3958,10 @@ def _land_screening_disclaimer(method: str) -> str:
                 "него нет, наложить зоны не на что. Полоса вдоль края (охранная "
                 "зона ЛЭП, газопровод) в центр не попадает, поэтому пустой "
                 "результат проверкой участка не является.")
-    return base + " Слои опрошены по контуру участка целиком, а не в одной точке."
+    return (base + " Слои опрошены по контуру участка целиком, а не в одной точке. "
+            "Рамка запроса шире контура, поэтому зоны, задевшие её, но не сам "
+            "участок, перечислены отдельно — «рядом с участком» — и на вывод "
+            "не влияют.")
 
 
 @app.get("/land/screening", include_in_schema=False)
@@ -4045,7 +4072,13 @@ def land_screening(cad: str = "", min_area_sqm: float | None = None) -> dict[str
             "category": _land_text(_nspd_value(options, "category")),
             "permitted_use": _land_text(_nspd_value(options, "permitted_use")),
             "center": center or None,
-            "findings": findings,
+            # Находки на участке и находки по соседству — разные ответы.
+            # Соседнее не выбрасывается: рамка запроса его увидела, и молчать
+            # об этом нельзя. Но и в один список с ограничениями участка оно не
+            # идёт — иначе тридцать семь подзон чужой СЗЗ выглядят запретом
+            # здесь.
+            "findings": [f for f in findings if f.get("on_parcel", True)],
+            "nearby": [f for f in findings if not f.get("on_parcel", True)],
             "too_small": too_small,
             "probe_method": probe_method,
             "verdict": _land_screening_verdict(findings,
@@ -4056,6 +4089,7 @@ def land_screening(cad: str = "", min_area_sqm: float | None = None) -> dict[str
         parcels.append(parcel)
 
     everything = [f for p in parcels for f in p.get("findings", [])]
+    nearby_total = sum(len(p.get("nearby") or []) for p in parcels)
     probed = any(p.get("found") and p.get("center") for p in parcels)
     return {
         "parcels": parcels,
@@ -4063,6 +4097,7 @@ def land_screening(cad: str = "", min_area_sqm: float | None = None) -> dict[str
         "checked_count": len(numbers),
         "min_area_sqm": threshold,
         "small_count": sum(1 for p in parcels if p.get("too_small")),
+        "nearby_count": nearby_total,
         "single": len(parcels) == 1,
         # У свода метод — худший из участков: один точечный опрос делает
         # оговоркой всю сводку, иначе она выглядит увереннее своей слабой части.
@@ -30512,6 +30547,16 @@ function renderLandScreening(data){
   const flags=(p&&p.findings)||[];
   body=flags.length?list(flags)
    :'<ul><li>В НСПД ограничений на участок не обнаружено.</li></ul>';
+  // Рамка запроса шире контура намеренно: иначе полоса вдоль границы не
+  // находится. Зоны, задевшие рамку, но не сам участок, показываются отдельно
+  // и без флага — молча выброшенное ограничение читается как его отсутствие,
+  // а поставленное в общий список выглядит запретом здесь.
+  const near=(p&&p.nearby)||[];
+  if(near.length)body+=`<div class="meta" style="margin-top:10px">Рядом с участком, но не на нём — ${near.length} `
+   +`ограничени${near.length===1?'е':(near.length<5?'я':'й')}: `
+   +escapeHtml(near.slice(0,4).map(f=>f.name||f.type_zone||f.category||'зона').join(', '))
+   +`${near.length>4?' и ещё '+(near.length-4):''}. На вывод они не влияют: `
+   +`ни одна не накрывает участок.</div>`;
  }else{
   // Перечисляются все запрошенные участки, а не только найденные: человек
   // ввёл двадцать два номера и вправе увидеть двадцать две строки. Пропущенный
