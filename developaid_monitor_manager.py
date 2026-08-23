@@ -216,8 +216,20 @@ def _baseline_status(project: str) -> dict[str, dict[str, Any]]:
         baseline = monitor._read_baseline_gpr(project)
     except Exception:
         return {}
+    # Еженедельный ГПР-факт несёт свежие проценты и статусы поверх baseline:
+    # план не меняется, меняется выполнение. Без снимка работает сам baseline.
+    rows = list(baseline.get("works") or [])
+    try:
+        fact = monitor.latest_schedule_fact(project)
+    except Exception:
+        fact = None
+    if fact:
+        fresh = {str(item.get("id") or item.get("wbs") or "").strip(): item
+                 for item in fact.get("works") or []}
+        rows = [fresh.get(str(item.get("id") or item.get("wbs") or "").strip(),
+                          item) for item in rows]
     out: dict[str, dict[str, Any]] = {}
-    for item in baseline.get("works") or []:
+    for item in rows:
         tid = str(item.get("id") or item.get("wbs") or "").strip()
         if not tid:
             continue
