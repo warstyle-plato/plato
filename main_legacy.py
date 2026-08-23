@@ -65,7 +65,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.19.65"
+VERSION = "0.19.66"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -2703,6 +2703,30 @@ def _geometry_points(node: Any, out: list[tuple[float, float]]) -> None:
             _geometry_points(child, out)
 
 
+def _geometry_bounds_wgs84(geometry: Any) -> tuple[float, float, float, float] | None:
+    """Границы фигуры в градусах: запад, юг, восток, север.
+
+    Геометрия НСПД приходит и в градусах, и в веб-меркаторе — различаем так
+    же, как `_geometry_center`: координаты внутри ±180/±90 считаем градусами.
+    """
+    if not isinstance(geometry, dict):
+        return None
+    points: list[tuple[float, float]] = []
+    _geometry_points(geometry.get("coordinates"), points)
+    if not points:
+        return None
+    degrees = all(abs(x) <= 180.0 and abs(y) <= 90.0 for x, y in points)
+    if not degrees:
+        points = [tuple(reversed(_mercator_to_wgs84(x, y))) for x, y in points]
+    west = min(p[0] for p in points)
+    east = max(p[0] for p in points)
+    south = min(p[1] for p in points)
+    north = max(p[1] for p in points)
+    if east <= west or north <= south:
+        return None
+    return west, south, east, north
+
+
 def _wgs84_to_mercator(lat: float, lng: float) -> tuple[float, float]:
     """Широта и долгота → веб-меркатор. Обратное к `_mercator_to_wgs84`.
 
@@ -3088,7 +3112,8 @@ def land_map_probe(bbox: str = "") -> dict[str, Any]:
 
 
 def _nspd_getfeatureinfo(lat: float, lng: float, layer_id: int,
-                         api_version: str = "v3") -> Any:
+                         api_version: str = "v3",
+                         bounds: tuple[float, float, float, float] | None = None) -> Any:
     """WMS GetFeatureInfo произвольного слоя НСПД в точке — как клик по карте.
 
     Тот же запрос, что `_nspd_point_features` шлёт на слой ЗУ (36048), но с
@@ -3101,6 +3126,26 @@ def _nspd_getfeatureinfo(lat: float, lng: float, layer_id: int,
     операции, разные версии. Бросает HTTPException — обработку оставляем
     вызывающему.
     """
+    if bounds is not None:
+        # Опрос контура, а не точки. Пиксель запроса растягивается на весь
+        # участок: WMS ищет объекты под пикселем, и пиксель размером с участок
+        # спрашивает «что пересекает этот участок» вместо «что лежит вот в этой
+        # точке». Охранная зона ЛЭП идёт полосой вдоль границы — в центр она не
+        # попадает, и слой отвечал пусто (участок 50:21:0120316:1221, владелец
+        # 23.08.2026). Ответ выходит с запасом: зона, задевшая рамку, но не сам
+        # участок, отсеется долей накрытия — её считает `_land_coverage_shares`
+        # по настоящему контуру, а не по рамке.
+        west, south, east, north = bounds
+        params = urllib.parse.urlencode({
+            "REQUEST": "GetFeatureInfo", "SERVICE": "WMS", "VERSION": "1.3.0",
+            "INFO_FORMAT": "application/json", "FORMAT": "image/png", "STYLES": "",
+            "TRANSPARENT": "true", "QUERY_LAYERS": layer_id, "LAYERS": layer_id,
+            "WIDTH": 1, "HEIGHT": 1, "I": 0, "J": 0,
+            "CRS": "EPSG:4326", "BBOX": f"{west},{south},{east},{north}",
+            "FEATURE_COUNT": "50",
+        })
+        return _nspd_getfeatureinfo_request(params, layer_id, api_version)
+
     zoom = 24
     tiles = 1 << zoom
     tile_size = 512
@@ -3121,6 +3166,17 @@ def _nspd_getfeatureinfo(lat: float, lng: float, layer_id: int,
         "CRS": "EPSG:4326", "BBOX": f"{west},{south},{east},{north}",
         "FEATURE_COUNT": "10",
     })
+    return _nspd_getfeatureinfo_request(params, layer_id, api_version)
+
+
+def _nspd_getfeatureinfo_request(params: str, layer_id: int, api_version: str) -> Any:
+    """Сам запрос GetFeatureInfo: заголовки, предохранитель, разбор ответа.
+
+    Вынесено из `_nspd_getfeatureinfo`, потому что спрашивать можно двумя
+    способами — точкой и контуром, — а отвечает на них один и тот же портал с
+    одним и тем же WAF и одним предохранителем. Второй экземпляр этой обвязки
+    разошёлся бы с первым: паузу считали бы порознь.
+    """
     version = api_version if api_version in {"v3", "v4"} else "v3"
     # Referer под конкретный слой: WAF НСПД отдал Forbidden на тематические
     # слои, пока мы слали общий `thematic=PKK` (кадастровая карта). В браузере
@@ -3640,10 +3696,21 @@ def _land_screen_findings(lat: float, lng: float,
     """
     findings: list[dict[str, Any]] = []
     seen: set[str] = set()
+    # Контур участка, а не его центр. Полоса вдоль границы — охранная зона ЛЭП,
+    # газопровод, красная линия — в центр не попадает вовсе, слой отвечает
+    # пусто, и вердикт говорит «критических ограничений не обнаружено» на
+    # непроверенном (участок 50:21:0120316:1221, владелец 23.08.2026). Нет
+    # геометрии — спрашиваем точкой, но это другой ответ, и он назван.
+    bounds = _geometry_bounds_wgs84(parcel_geometry)
 
     def ask(layer_id: int) -> tuple[int, list[dict[str, Any]]]:
         try:
-            return layer_id, _nspd_features(_nspd_getfeatureinfo(lat, lng, layer_id, "v3"))
+            # Контур передаётся, только когда он есть: без него это тот же
+            # точечный запрос, что и раньше, и лишний аргумент у него ничего
+            # не значит.
+            answer = (_nspd_getfeatureinfo(lat, lng, layer_id, "v3", bounds) if bounds
+                      else _nspd_getfeatureinfo(lat, lng, layer_id, "v3"))
+            return layer_id, _nspd_features(answer)
         except Exception:
             return layer_id, []
 
@@ -3685,7 +3752,13 @@ def _land_screen_findings(lat: float, lng: float,
                 "geometry": feature.get("geometry") if isinstance(feature, dict) else None,
             }))
     _land_apply_coverage(findings, parcel_geometry)
-    return _land_group_findings(findings)
+    grouped = _land_group_findings(findings)
+    # Чем спрошено — часть ответа. «Опрошен контур» и «опрошена одна точка» —
+    # это разница между «проверено» и «похоже, чисто», и читатель обязан её
+    # видеть, а не выводить из пустого списка.
+    for item in grouped:
+        item["probe_method"] = "contour" if bounds else "point"
+    return grouped
 
 
 def _land_apply_coverage(findings: list[dict[str, Any]], parcel_geometry: Any) -> None:
@@ -3801,12 +3874,18 @@ _LAND_SCREEN_ORDER = {"killer": 0, "economic": 1, "info": 2}
 
 
 def _land_screening_verdict(findings: list[dict[str, Any]],
-                            probed: bool = True) -> dict[str, Any]:
+                            probed: bool = True,
+                            method: str = "") -> dict[str, Any]:
     """Свод по находкам. Никакого «участок подходит» — только факты и их вес.
 
     Запрещено выдавать разрешительный вывод (решение владельца, архитектура,
     раздел 8): максимум — «критических ограничений не обнаружено», и то с
     оговоркой, что видно лишь внесённое в ЕГРН.
+
+    `method` — чем спрашивали: `contour` (по контуру участка) или `point` (в
+    одной точке, когда границ нет). Полоса вдоль границы в центр не попадает,
+    поэтому точечный опрос не доказывает чистоты участка — и оговорка обязана
+    это говорить, а не оставлять читателя выводить из пустого списка.
 
     `probed` — спрашивали ли вообще НСПД. Без сведений ЕГРН у участка нет
     границ, спрашивать не о чем, и пустой список находок значит «не проверяли»,
@@ -3837,14 +3916,25 @@ def _land_screening_verdict(findings: list[dict[str, Any]],
         "economic_count": len(economic),
         "total": len(findings),
         "probed": bool(probed),
-        "disclaimer": (("Проверены ограничения, внесённые в ЕГРН и опубликованные "
-                        "в НСПД. Отсутствие записи не доказывает отсутствия "
-                        "ограничения: сервитуты, ГПЗУ и часть красных линий в "
-                        "реестре не отражаются.") if probed else
+        "probe_method": method or ("contour" if probed else ""),
+        "disclaimer": (_land_screening_disclaimer(method) if probed else
                        ("Границы участка не получены, поэтому НСПД об ограничениях "
                         "не спрашивали. Проверьте кадастровый номер или запросите "
                         "выписку ЕГРН.")),
     }
+
+
+def _land_screening_disclaimer(method: str) -> str:
+    """Оговорка называет и границы метода, и то, чем спрошено."""
+    base = ("Проверены ограничения, внесённые в ЕГРН и опубликованные в НСПД. "
+            "Отсутствие записи не доказывает отсутствия ограничения: сервитуты, "
+            "ГПЗУ и часть красных линий в реестре не отражаются.")
+    if method == "point":
+        return (base + " Слои опрошены в одной точке — центре участка: границ у "
+                "него нет, наложить зоны не на что. Полоса вдоль края (охранная "
+                "зона ЛЭП, газопровод) в центр не попадает, поэтому пустой "
+                "результат проверкой участка не является.")
+    return base + " Слои опрошены по контуру участка целиком, а не в одной точке."
 
 
 @app.get("/land/screening", include_in_schema=False)
@@ -3933,12 +4023,15 @@ def land_screening(cad: str = "", min_area_sqm: float | None = None) -> dict[str
         # определяет. Пропуск не выдаётся за проверку: у участка стоит признак.
         parcel_area = _land_float(_nspd_value(options, "area_sqm")) or 0.0
         too_small = bool(threshold and parcel_area and parcel_area < threshold)
+        probe_method = ""
         if center and not too_small:
             # Контур участка идёт в скрининг: зоны накладываются на него, и
             # видно, съели они угол или весь участок.
             findings = _land_screen_findings(center["lat"], center["lng"],
                                              matched.get("geometry"))
             findings.sort(key=lambda f: _LAND_SCREEN_ORDER.get(f.get("flag_class"), 3))
+            probe_method = ("contour" if _geometry_bounds_wgs84(matched.get("geometry"))
+                            else "point")
         area = _land_float(_nspd_value(options, "area_sqm"))
         contour = _geometry_contours_merc(matched.get("geometry"))
         parcel = {
@@ -3954,8 +4047,10 @@ def land_screening(cad: str = "", min_area_sqm: float | None = None) -> dict[str
             "center": center or None,
             "findings": findings,
             "too_small": too_small,
+            "probe_method": probe_method,
             "verdict": _land_screening_verdict(findings,
-                                               probed=bool(center) and not too_small),
+                                               probed=bool(center) and not too_small,
+                                               method=probe_method),
         }
         _LAND_SCREENING_CACHE[number] = (time.time(), parcel)
         parcels.append(parcel)
@@ -3969,7 +4064,12 @@ def land_screening(cad: str = "", min_area_sqm: float | None = None) -> dict[str
         "min_area_sqm": threshold,
         "small_count": sum(1 for p in parcels if p.get("too_small")),
         "single": len(parcels) == 1,
-        "verdict": _land_screening_verdict(everything, probed=probed),
+        # У свода метод — худший из участков: один точечный опрос делает
+        # оговоркой всю сводку, иначе она выглядит увереннее своей слабой части.
+        "verdict": _land_screening_verdict(
+            everything, probed=probed,
+            method=("point" if any(p.get("probe_method") == "point" for p in parcels)
+                    else ("contour" if probed else ""))),
         "calculated_at": datetime.now().strftime("%d.%m.%Y %H:%M"),
     }
 
