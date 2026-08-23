@@ -65,7 +65,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.19.68"
+VERSION = "0.19.69"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -32492,7 +32492,7 @@ function siteDensitySourceLabel(){
  if(glavapuDensitySqmHa()>0)return 'из калькулятора ГлавАПУ (Москва)';
  return 'по умолчанию 30 000 м²/га';
 }
-async function applyNormativeTep(){
+async function applyNormativeTep(densityOverride){
  // Нормативный пересчёт по РНГП МО — те же формулы, что в калькуляторе
  // Подмосковья: квартиры = площадь × плотность, население 28 м²/чел, ДОО
  // 65 и СОШ 135 мест на 1000 жителей, поликлиника 17,75 пос./смену,
@@ -32502,7 +32502,9 @@ async function applyNormativeTep(){
  // первоначального объёма квартир — очередям доставалась разбивка от
  // проекта, которого больше нет.
  const area=Number(inputs.site_area_ha||0);
- const density=effectiveSiteDensity();
+ // Плотность может прийти извне: обратный счёт от заданного объёма квартир
+ // считает её как метры ÷ гектары и гонит те же нормативы РНГП.
+ const density=Number(densityOverride)>0?Number(densityOverride):effectiveSiteDensity();
  const stored=inputs._mo_calc||{};
  // Округ решает Кср и Кд платы за ВРИ. Без него расчёт берёт среднее по
  // области: на Мытищах это 198 907 ₽ вместо 238 052 ₽ за метр — и плата
@@ -32543,7 +32545,10 @@ async function applyNormativeTep(){
  if(!parcels&&keepRegion)inputs.vri_region=keepRegion;
  inputs._mo_calc={query:body.query,territory:data.territory||{},
   density_sqm_per_ha:data.density_sqm_per_ha,vri:data.vri||{},social:data.social||{},
-  balance:data.balance||{},warnings:data.warnings||[]};
+  balance:data.balance||{},warnings:data.warnings||[],
+  // Объём квартир последнего нормативного расчёта. По нему обратный счёт
+  // отличает правку человека от собственного результата и не зовёт себя по кругу.
+  apartments_saleable:Number((data.tep&&data.tep.apartments&&data.tep.apartments.saleable)||0)};
  if(data.territory&&data.territory.district)inputs.mo_district=data.territory.district;
  moResult=data;
  syncTep(false);
@@ -32797,15 +32802,66 @@ function glavapuCoefficients(){
 // Сама формула города осталась в движке (vri_manual_payment): ею пересчёт
 // подтверждает свою пропорцию, и /vri/manual отвечает по-прежнему.
 
+// Обратный счёт в Московской области. РНГП считает всё от населения, а
+// население — от площади квартир: поставили 200 000 вместо 672 690 — и ДОО,
+// СОШ, поликлиника, машино-места, рабочие места и плата за ВРИ обязаны упасть
+// втрое. Прежде правка квартир меняла только свою строку: соцобъекты
+// оставались от объёма, которого больше нет, и баланс территории уходил в
+// минус (владелец, 23.08.2026: «всё же должно обратным счётом поменяться»).
+//
+// Формулы для этого уже написаны в `applyNormativeTep` — их просто никто не
+// звал при ручной правке: кнопка считает вперёд от плотности, а не назад от
+// метров. Здесь плотность выводится из самих метров.
+//
+// Пересчёт идёт, только когда изменились КВАРТИРЫ: они драйвер нормативов.
+// Правка офисов или коммерции своего населения не создаёт, и гнать по ней
+// нормативный расчёт значило бы затирать введённое человеком.
+let moAutoApartments=null;
+let moAutoBusy=false;
+function moNormativeApartments(){
+ return Number((inputs._mo_calc||{}).apartments_saleable||0);
+}
 function scheduleTepAutoRecalc(){
  const baseline=((inputs._glavapu_import||{}).normalized)||null;
- // Пересчитывать не от чего — молчим: пустая плашка на каждой правке хуже,
- // чем её отсутствие.
- if(!baseline||!Number(baseline.change_vri_mln||0))return;
+ if(baseline&&Number(baseline.change_vri_mln||0)){
+  clearTimeout(tepAutoTimer);
+  // Правка идёт ячейка за ячейкой; считать после каждой значит слать запрос на
+  // каждый символ и показывать промежуточные числа как результат.
+  tepAutoTimer=setTimeout(()=>{recalcFromTep({silent:true})},500);
+  return;
+ }
+ // Московская область: своей выгрузки нет, но есть нормативы РНГП.
+ if(!inputs._mo_calc)return;
+ const area=Number(inputs.site_area_ha||0);
+ const apartments=Number((tep.apartments&&tep.apartments.saleable)||0);
+ if(!(area>0&&apartments>0))return;
+ // Пересчёт сам переписывает строку квартир — без этой отсечки он звал бы себя
+ // по кругу.
+ if(moAutoBusy)return;
+ const known=moAutoApartments!==null?moAutoApartments:moNormativeApartments();
+ if(known>0&&Math.abs(apartments-known)<=Math.max(1,known*0.0005))return;
  clearTimeout(tepAutoTimer);
- // Правка идёт ячейка за ячейкой; считать после каждой значит слать запрос на
- // каждый символ и показывать промежуточные числа как результат.
- tepAutoTimer=setTimeout(()=>{recalcFromTep({silent:true})},500);
+ tepAutoTimer=setTimeout(()=>{recalcMoFromApartments(apartments,area)},500);
+}
+async function recalcMoFromApartments(apartments,area){
+ const note=document.getElementById('tepDerivedNote');
+ const say=(html,ok)=>{if(!note)return;note.style.display='';
+  note.innerHTML=ok?('<span class="import-ok">'+html+'</span>'):html};
+ moAutoBusy=true;
+ try{
+  const density=apartments/area;
+  say('Пересчитываю нормативы РНГП под '+num(apartments)+' м² квартир: '
+   +'плотность '+num(density)+' м²/га, население, социалка, машино-места и плата за ВРИ…',false);
+  await applyNormativeTep(density);
+  moAutoApartments=Number((tep.apartments&&tep.apartments.saleable)||0);
+  say('Нормативы пересчитаны под '+num(moAutoApartments)+' м² квартир: '
+   +'социалка, машино-места, рабочие места и плата за ВРИ следуют за объёмом.',true);
+ }catch(e){
+  // Молчать нельзя: человек уже видит новые квартиры и старую социалку рядом,
+  // и без объяснения это выглядит посчитанным.
+  say('Нормативы под новый объём не пересчитались: '+escapeHtml(e.message||e)
+   +'. Социалка, машино-места и плата за ВРИ остались от прежнего объёма.',false);
+ }finally{moAutoBusy=false}
 }
 
 async function recalcFromTep(options){
