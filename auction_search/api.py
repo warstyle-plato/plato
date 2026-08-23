@@ -350,15 +350,22 @@ def install(app: FastAPI) -> None:
                 (item for item in krt_registry.catalogue() if item.get("slug") == slug), None)
         if not project:
             raise HTTPException(status_code=404, detail="Территория КРТ не найдена")
-        query = str(project.get("geocode_query") or project.get("name") or "").strip()
-        geocoder = getattr(market, "geocoder", None)
-        if geocoder is None or not query:
-            raise HTTPException(status_code=503, detail="Геокодер недоступен")
+        # Точка берётся тем же путём, что и точка отчёта, — `resolve_subject`.
+        # Свой вызов геокодера здесь был четвёртым случаем одной ошибки: модуль
+        # завёл свой путь туда, где у сервиса уже есть общий. Цена была не в
+        # красоте. Во-первых, он звал `market.geocoder` напрямую, мимо крючка
+        # `geocode_address`, — то есть на ядре один Nominatim вместо движковой
+        # цепочки (Яндекс, DaData, Nominatim), и карта отвечала «место не
+        # найдено» на территорию, которую отчёт находил. Во-вторых, он слал
+        # один запрос вместо лестницы `_krt_geocode_candidates` (отдельный
+        # адрес → запрос каталога → район). И в-третьих — главное: точка карты
+        # и точка, на которой посчитан отчёт, могли оказаться разными. Карта —
+        # то, на что смотрят; расходиться ей с расчётом нельзя.
         try:
-            point = await run_in_threadpool(geocoder.geocode, query)
-        except (GeocodingError, RemoteServiceError) as exc:
+            subject = await run_in_threadpool(market.resolve_subject, f"krt:{slug}")
+        except (GeocodingError, RemoteServiceError, RuntimeError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        data = point.to_dict() if hasattr(point, "to_dict") else {}
+        data = subject.to_dict() if hasattr(subject, "to_dict") else {}
         # Ссылка на публичную карту НСПД строится движком (`_nspd_map_url`) —
         # координаты там в веб-меркаторе, и второй сборщик этого адреса в
         # браузере разошёлся бы с первым молча. Ссылка нужна не как украшение:
@@ -377,10 +384,14 @@ def install(app: FastAPI) -> None:
                 nspd_url = ""
         return {
             "slug": slug,
-            "query": query,
+            "query": data.get("query") or "",
             "latitude": latitude,
             "longitude": longitude,
             "precision": data.get("precision"),
+            "address": data.get("address"),
+            # Чем опознана точка — часть ответа, а не подробность: центр района
+            # выглядит на карте так же уверенно, как настоящий адрес.
+            "notes": data.get("notes") or [],
             "area_ha": project.get("area_ha"),
             "nspd_url": nspd_url,
         }
