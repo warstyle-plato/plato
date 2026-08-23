@@ -229,7 +229,56 @@ async function startKrtRanking(){
  }catch(e){const box=$('krtRankStatus');box.style.display='';box.className='notice warn';box.textContent=String(e.message||e)}
  finally{b.disabled=false;b.textContent='Оценить все КРТ моделью'}
 }
-function selectKrt(x){state.selectedKrt=x;const fit=krtFit(x),cached=state.krtModels[x.slug];$('krtSide').innerHTML=`<h2>${esc(x.name)}</h2><div class="sub">krt.mos.ru · ${esc([x.okrug,x.district].filter(Boolean).join(' · '))}</div><div class="notice"><div class="fit ${fit.tone}"><span class="light"></span>Предварительная оценка Платона: ${fit.score}/100 · ${fit.label}</div><div class="source">По официальным ТЭП, до проверки окружения и экономики.</div></div><div class="items">${fit.reasons.map(x=>`<div class="item"><b>Соответствует запросу</b>${esc(x)}</div>`).join('')}${fit.checks.map(x=>`<div class="item"><b>Нужно проверить</b>${esc(x)}</div>`).join('')}</div><div class="kv"><div>Статус</div><div>${esc(x.status||'—')}</div><div>Площадь</div><div>${esc(x.area_ha?x.area_ha+' га':'—')}</div><div>Всего построить</div><div>${fmtArea(x.total_gfa_sqm)}</div><div>Жильё</div><div>${fmtArea(x.housing_gfa_sqm)}</div><div>Нежилое</div><div>${fmtArea(x.nonresidential_gfa_sqm)}</div><div>Общественно-деловое</div><div>${fmtArea(x.business_gfa_sqm)}</div><div>Рабочие места</div><div>${esc(x.jobs??'—')}</div></div><div class="notice warn">Официальный полигон границ пока не получен. Анализ использует геокодированную точку и помечает это приближение.</div><div class="actions"><button class="primary" id="krtMarket">Получить маркетинг и прогнать модель</button><button id="krtSource">Открыть krt.mos.ru</button></div><div id="krtMapBox"><div class="notice">Строю карту участка…</div></div><div id="krtMarketResult">${cached?renderKrtModel(cached):''}</div>`;$('krtMarket').onclick=()=>loadKrtMarket(x);$('krtSource').onclick=()=>window.open(x.url,'_blank','noopener');loadKrtPoint(x)}
+function selectKrt(x){state.selectedKrt=x;const fit=krtFit(x),cached=state.krtModels[x.slug];$('krtSide').innerHTML=`<h2>${esc(x.name)}</h2><div class="sub">krt.mos.ru · ${esc([x.okrug,x.district].filter(Boolean).join(' · '))}</div><div class="notice"><div class="fit ${fit.tone}"><span class="light"></span>Предварительная оценка Платона: ${fit.score}/100 · ${fit.label}</div><div class="source">По официальным ТЭП, до проверки окружения и экономики.</div></div><div class="items">${fit.reasons.map(x=>`<div class="item"><b>Соответствует запросу</b>${esc(x)}</div>`).join('')}${fit.checks.map(x=>`<div class="item"><b>Нужно проверить</b>${esc(x)}</div>`).join('')}</div><div class="kv"><div>Статус</div><div>${esc(x.status||'—')}</div><div>Площадь</div><div>${esc(x.area_ha?x.area_ha+' га':'—')}</div><div>Всего построить</div><div>${fmtArea(x.total_gfa_sqm)}</div><div>Жильё</div><div>${fmtArea(x.housing_gfa_sqm)}</div><div>Нежилое</div><div>${fmtArea(x.nonresidential_gfa_sqm)}</div><div>Общественно-деловое</div><div>${fmtArea(x.business_gfa_sqm)}</div><div>Рабочие места</div><div>${esc(x.jobs??'—')}</div></div><div class="notice warn">Официальный полигон границ пока не получен. Анализ использует геокодированную точку и помечает это приближение.</div><div class="actions"><button class="primary" id="krtMarket">Получить маркетинг и прогнать модель</button><button id="krtShare">Поделиться</button><button id="krtSource">Открыть krt.mos.ru</button></div><div id="krtShareNote" class="notice" style="display:none"></div><div id="krtMapBox"><div class="notice">Строю карту участка…</div></div><div id="krtMarketResult">${cached?renderKrtModel(cached):''}</div>`;$('krtMarket').onclick=()=>loadKrtMarket(x);$('krtSource').onclick=()=>window.open(x.url,'_blank','noopener');
+ $('krtShare').onclick=()=>shareKrt(x);
+ // На узком экране колонка карточки уходит ПОД таблицу, и нажатие на строку
+ // выглядит как «ничего не произошло»: карточка открылась там, куда не смотрят
+ // (телефон владельца, 23.08.2026). Прокручиваем к ней.
+ if(window.matchMedia('(max-width:950px)').matches){
+  try{$('krtSide').scrollIntoView({behavior:'smooth',block:'start'})}catch(e){$('krtSide').scrollIntoView()}
+ }
+ loadKrtPoint(x)}
+
+// Поделиться территорией: ссылка открывает ту же карточку с теми же выводами.
+// Отдаём не «посмотри КРТ такой-то», а сам разбор — балл, светофор, класс от
+// маркетинга, потолок входа и чего в нём не учтено: без этого получатель видит
+// цифру без основания и достраивает основание сам.
+function krtShareText(x){
+ const r=state.krtRank[x.slug]||{}, m=state.krtModels[x.slug]||{};
+ const light=r.traffic_light||m.traffic_light||{};
+ const lines=['КРТ · '+(x.name||''), [x.okrug,x.district].filter(Boolean).join(' · ')];
+ if(x.area_ha)lines.push('Площадь: '+x.area_ha+' га');
+ if(x.total_gfa_sqm)lines.push('Объём: '+fmtArea(x.total_gfa_sqm)+' всего, '+fmtArea(x.housing_gfa_sqm)+' жильё');
+ if(light.label)lines.push('Модель DevelopAid: '+light.label);
+ if(r.entry_capacity_rub_per_sqm!=null)
+  lines.push('Потолок цены входа: '+new Intl.NumberFormat('ru-RU').format(r.entry_capacity_rub_per_sqm)
+   +' ₽/м² продаваемой'+(r.entry_capacity_mln!=null?' · '+fmtMln(r.entry_capacity_mln):''));
+ if(r.project_llcr_x!=null)lines.push('LLCR проекта: '+Number(r.project_llcr_x).toFixed(2)+'x'
+   +(r.weakest_phase_llcr_x!=null?' · слабейшая очередь '+Number(r.weakest_phase_llcr_x).toFixed(2)+'x':''));
+ if(r.margin_pct!=null)lines.push('Маржа до неизвестных обязательств: '+Number(r.margin_pct).toFixed(1)+'%');
+ if(r.segment)lines.push('Класс от маркетинга: '+r.segment
+   +(r.start_price_rub_sqm?' · старт '+new Intl.NumberFormat('ru-RU').format(r.start_price_rub_sqm)+' ₽/м²':''));
+ if(r.available===false&&r.reason)lines.push('Не посчитано: '+r.reason);
+ lines.push('');
+ lines.push('Чего нет в оценке: цена аукциона (в каталоге krt.mos.ru её нет), '
+  +'обязательства КРТ сверх опубликованных, границы территории.');
+ lines.push('Оценка предварительная, до проверки документов. DevelopAid.');
+ lines.push(location.origin+'/auctions#krt='+encodeURIComponent(x.slug));
+ return lines.filter(v=>v!==undefined&&v!==null).join('\n');
+}
+async function shareKrt(x){
+ const text=krtShareText(x), note=$('krtShareNote');
+ const say=t=>{if(note){note.textContent=t;note.style.display=''}};
+ try{
+  if(navigator.share){await navigator.share({title:'КРТ · '+(x.name||''),text:text});return}
+  await navigator.clipboard.writeText(text);
+  say('Разбор скопирован — вставьте в переписку.');
+ }catch(e){
+  // Отказ бывает и намеренным: человек закрыл окно «Поделиться».
+  if(e&&e.name==='AbortError')return;
+  say('Скопировать не удалось: '+(e&&e.message?e.message:e));
+ }
+}
 async function loadKrtMarket(x){const b=$('krtMarket'),out=$('krtMarketResult');b.disabled=true;b.innerHTML='<span class="spinner"></span>Рынок → модель';out.innerHTML='<div class="notice">Определяю продукт и цену, затем запускаю финансовый движок и автоматические очереди…</div>';try{const r=await fetch('/auctions/krt/'+encodeURIComponent(x.slug)+'/market',{cache:'no-store'}),d=await r.json();if(!r.ok){if(r.status===401)throw new Error('Нужен вход в кабинет рынка: откройте /cabinet в соседней вкладке и войдите по ключу.');throw new Error(d.detail||'Маркетинг не получен')}if(d.model_screening?.available){state.krtModels[x.slug]=d.model_screening;renderKrt()}renderKrtMarket(d,out)}catch(e){out.innerHTML=`<div class="notice warn">${esc(e.message||e)}</div>`}finally{b.disabled=false;b.textContent='Обновить маркетинг и модель'}}
 function renderKrtModel(m){
  if(!m?.available)return `<div class="section"><h3>Предварительный прогон модели</h3><div class="notice warn">${esc(m?.reason||'Модель не рассчитана')}</div></div>`;
@@ -248,6 +297,19 @@ function renderKrtMarket(d,out){
 $('tabAuctions').onclick=()=>switchTab(false);$('tabKrt').onclick=()=>switchTab(true);$('krtRefresh').onclick=loadKrt;$('krtRankBtn').onclick=startKrtRanking;$('krtSearch').oninput=filterKrt;$('krtStatus').onchange=filterKrt;$('krtPurpose').onchange=filterKrt;$('krtProfile').onchange=()=>{filterKrt();if(state.selectedKrt)selectKrt(state.selectedKrt)};
 $('krtOkrugToggle').onclick=e=>{e.stopPropagation();const menu=$('krtOkrugMenu'),open=menu.classList.contains('hidden');menu.classList.toggle('hidden',!open);$('krtOkrugToggle').setAttribute('aria-expanded',String(open))};$('krtOkrugMenu').onclick=e=>e.stopPropagation();$('krtOkrugClear').onclick=()=>{state.krtOkrugs.clear();$('krtOkrugOptions').querySelectorAll('input').forEach(x=>x.checked=false);updateKrtOkrugLabel();filterKrt()};document.addEventListener('click',closeKrtOkrugs);document.addEventListener('keydown',e=>{if(e.key==='Escape'){closeKrtOkrugs();$('krtOkrugToggle').focus()}});
 loadKrtRanking();
+// Ссылка из «Поделиться» открывает ту же территорию: получатель попадает на
+// разбор, а не на общий список, где ещё надо искать.
+(function openSharedKrt(){
+ const m=/[#&]krt=([^&]+)/.exec(location.hash||'');
+ if(!m)return;
+ const slug=decodeURIComponent(m[1]);
+ const tries=[0,1200,3000,6000,10000];
+ tries.forEach(delay=>setTimeout(()=>{
+  if(state.selectedKrt&&state.selectedKrt.slug===slug)return;
+  const found=(state.krt||[]).find(v=>v.slug===slug);
+  if(found){switchTab(true);selectKrt(found)}
+ },delay));
+})();
 $('refresh').onclick=discover;$('search').oninput=filter;$('kind').onchange=filter;$('source').onchange=discover;$('noise').onchange=discover;
 </script>
 </body></html>'''

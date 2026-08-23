@@ -236,7 +236,6 @@ def test_the_catalogue_counts_itself_once_a_week(tmp_path):
     first._persist({"a": {"slug": "a", "available": True,
                           "entry_capacity_rub_per_sqm": 1, "name": "a"}})
     assert first.due() is False
-    assert first.due(interval=0) is True, "срок задаётся, а не зашит"
 
 
 def test_a_dead_worker_does_not_freeze_the_schedule(tmp_path, monkeypatch):
@@ -257,3 +256,65 @@ def test_the_screen_says_the_count_is_automatic():
     page = auctions_page()
     assert "сам раз в неделю" in page
     assert "p.scheduled" in page, "видно, чей это прогон — расписания или кнопки"
+
+
+def test_the_schedule_is_a_calendar_point_not_a_countdown(tmp_path):
+    """Ночь с субботы на воскресенье, 3 часа по Москве.
+
+    Считается календарная точка, а не «неделя от прошлого прогона»: иначе
+    расписание уползает на часы с каждой выкаткой, и «ночь с субботы на
+    воскресенье» превращается в «когда придётся».
+    """
+    import datetime
+
+    ranking = krt_ranking.KrtRanking(tmp_path)
+    msk = datetime.timezone(datetime.timedelta(hours=3))
+
+    def moment(when: str) -> datetime.datetime:
+        stamp = ranking.last_scheduled_moment(datetime.datetime.fromisoformat(when).timestamp())
+        return datetime.datetime.fromtimestamp(stamp, tz=msk)
+
+    # В понедельник последним сроком было воскресенье этой недели.
+    assert moment("2026-08-24T12:00:00+03:00").strftime("%w %H:%M") == "0 03:00"
+    assert moment("2026-08-24T12:00:00+03:00").day == 23
+    # В воскресенье до трёх ночи срок ещё прошлой недели.
+    assert moment("2026-08-23T02:00:00+03:00").day == 16
+    # После трёх — уже сегодняшний.
+    assert moment("2026-08-23T04:00:00+03:00").day == 23
+    # В субботу вечером — прошлое воскресенье.
+    assert moment("2026-08-22T23:00:00+03:00").day == 16
+
+
+def test_sharing_a_site_carries_the_findings_not_just_a_link():
+    """Делимся разбором, а не ссылкой «посмотри».
+
+    Балл без основания получатель достроит сам, и достроит неверно: в оценке
+    нет цены аукциона и нераскрытых обязательств КРТ, и это надо сказать.
+    """
+    from auction_search.ui import auctions_page
+
+    page = auctions_page()
+    assert 'id="krtShare"' in page and "shareKrt(" in page
+    assert "krtShareText(" in page
+    for expected in ("Потолок цены входа", "LLCR проекта", "Класс от маркетинга",
+                     "Чего нет в оценке", "цена аукциона", "Оценка предварительная"):
+        assert expected in page, expected
+    # navigator.share, а где его нет — буфер обмена.
+    assert "navigator.share" in page and "clipboard.writeText" in page
+
+
+def test_the_card_is_reachable_on_a_phone():
+    """На узком экране карточка уходит ПОД таблицу, и нажатие выглядит как ничего."""
+    from auction_search.ui import auctions_page
+
+    page = auctions_page()
+    assert "max-width:950px" in page and "scrollIntoView" in page
+
+
+def test_a_shared_link_opens_that_very_site():
+    """Ссылка ведёт на разбор территории, а не в общий список."""
+    from auction_search.ui import auctions_page
+
+    page = auctions_page()
+    assert "/auctions#krt=" in page, "ссылка несёт слаг территории"
+    assert "openSharedKrt" in page and "krt=([^&]+)" in page

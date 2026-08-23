@@ -28,6 +28,7 @@ krt.mos.ru ценового поля нет вовсе (`KrtTerritory` несё�
 
 from __future__ import annotations
 
+import datetime
 import logging
 import os
 import threading
@@ -49,6 +50,13 @@ DEFAULT_TTL_SECONDS = 24 * 60 * 60
 # 23.08.2026). Неделя выбрана по источнику: krt.mos.ru меняется медленнее, а
 # цены рынка мы и так пересчитываем не чаще суток.
 WEEKLY_SECONDS = 7 * 24 * 60 * 60
+# Пересчёт в ночь с субботы на воскресенье, в 3 часа по Москве (владелец,
+# 23.08.2026): к утру воскресенья каталог свежий, а рабочая неделя начинается с
+# посчитанного. Сервер живёт в UTC, поэтому смещение объявлено явно — «три часа
+# ночи» без часового пояса означало бы разное на разных машинах.
+MOSCOW_UTC_OFFSET_HOURS = 3
+SCHEDULE_WEEKDAY = 6      # воскресенье, как считает datetime.weekday()
+SCHEDULE_HOUR = 3
 # Как часто поток просыпается посмотреть, не пора ли. Час — чтобы после
 # перезапуска не ждать неделю до первой проверки.
 HEARTBEAT_SECONDS = 60 * 60
@@ -137,14 +145,31 @@ class KrtRanking:
 
     # --- расписание -----------------------------------------------------
 
-    def due(self, interval: float = WEEKLY_SECONDS) -> bool:
-        """Пора ли считать: кэша нет или он старше срока."""
+    def last_scheduled_moment(self, now: float | None = None) -> float:
+        """Момент последнего наступившего срока: воскресенье, 3 часа по Москве.
+
+        Считаем не «неделю от прошлого прогона», а календарную точку: иначе
+        расписание уползает на часы каждой выкаткой, и «ночь с субботы на
+        воскресенье» превращается в «когда придётся».
+        """
+        stamp = datetime.datetime.fromtimestamp(
+            now if now is not None else time.time(), tz=datetime.timezone.utc)
+        local = stamp + datetime.timedelta(hours=MOSCOW_UTC_OFFSET_HOURS)
+        target = local.replace(hour=SCHEDULE_HOUR, minute=0, second=0, microsecond=0)
+        # Отступаем назад до ближайшего воскресенья 03:00, которое уже прошло.
+        target -= datetime.timedelta(days=(local.weekday() - SCHEDULE_WEEKDAY) % 7)
+        if target > local:
+            target -= datetime.timedelta(days=7)
+        return (target - datetime.timedelta(hours=MOSCOW_UTC_OFFSET_HOURS)).timestamp()
+
+    def due(self, now: float | None = None) -> bool:
+        """Пора ли считать: кэша нет или он старше последнего срока."""
         cached = load_json(self.path) or {}
         at = cached.get("updated_at")
         if not at:
             return True
         try:
-            return time.time() - float(at) > interval
+            return float(at) < self.last_scheduled_moment(now)
         except (TypeError, ValueError):
             return True
 
