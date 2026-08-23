@@ -165,3 +165,51 @@ def test_the_site_is_drawn_but_its_boundary_is_not_invented():
     assert "масштаб" in page.lower() or " м</span>" in page, "у карты есть линейка"
     # Точность геокодера — часть ответа, а не подробность.
     assert "precision" in page and "приблизительное" in page
+
+
+def test_the_run_counts_what_the_filter_left():
+    """Считаются отобранные площадки, а не весь каталог.
+
+    Смотрят перспективные округа и нужный статус; прогон по всем ста двадцати
+    четырём — это минуты чужой работы и чужой нагрузки на рынок (владелец,
+    23.08.2026). Список слагов приходит со страницы, пустой значит «все».
+    """
+    from auction_search.ui import auctions_page
+
+    page = auctions_page()
+    assert "state.krtFiltered" in page and "slugs:slugs" in page, (
+        "страница обязана отправлять отфильтрованный список")
+    assert "Оценить отобранные моделью" in page, "кнопка не должна обещать «все»"
+
+
+def test_the_card_shows_the_map_without_running_the_market():
+    """Карта появляется при выборе территории, а не после отчёта рынка.
+
+    Полный отчёт считает соседей, цены и модель — гонять его ради картинки
+    незачем. Точку отдаёт отдельный лёгкий маршрут через тот же геокодер.
+    """
+    from auction_search.ui import auctions_page
+
+    page = auctions_page()
+    assert "krtMapBox" in page, "в карточке есть место под карту"
+    assert "loadKrtPoint(x)" in page, "карта грузится при выборе территории"
+    assert "/point" in page, "точка берётся отдельным маршрутом"
+    # Отчёт рынка карту больше не рисует — иначе их стало бы две.
+    assert page.count("krtSiteMap(") == 2, "карта строится в одном месте"
+
+
+def test_the_auctions_page_wears_the_developaid_system():
+    """Сервис один — страница торгов не должна выглядеть чужой."""
+    import re
+
+    from auction_search.ui import auctions_page
+
+    page = auctions_page()
+    style = page[page.index("<style>"):page.index("</style>")]
+    assert "--bg:#f2f2ef" in style and "--line:#dedede" in style and "--text:#171717" in style
+    assert "Inter," not in style, "у продукта системный шрифт, а не Inter"
+    assert "prefers-color-scheme:dark" not in style, "у продукта нет тёмной темы"
+    assert "box-shadow" not in style, "у продукта нет теней"
+    # Прямые углы: круглыми остаются только спиннер и точка светофора.
+    rounded = re.findall(r"border-radius:([^;}]+)", style)
+    assert all(value.strip() in {"0", "50%"} for value in rounded), rounded

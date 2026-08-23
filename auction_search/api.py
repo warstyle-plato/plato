@@ -32,6 +32,12 @@ from market_search.subject import SubjectNotFound
 logger = logging.getLogger(__name__)
 
 
+class KrtRankingRequest(BaseModel):
+    """Что считать: слаги отобранных площадок. Пусто — весь каталог."""
+
+    slugs: list[str] = Field(default_factory=list, max_length=400)
+
+
 class AuctionIngestRequest(BaseModel):
     url: str = Field(min_length=12, max_length=2000)
     enrich_krt_documents: bool = True
@@ -163,6 +169,43 @@ def install(app: FastAPI) -> None:
         )
         return build_krt_model_screening(project, report, core)
 
+    @app.get("/auctions/krt/{slug}/point")
+    async def auction_krt_point(slug: str) -> dict[str, Any]:
+        """Геокодированная точка территории — чтобы показать её на карте.
+
+        Полный отчёт рынка ради одной картинки гонять незачем: он считает
+        соседей, цены и модель. Здесь только адрес → координата, через тот же
+        геокодер движка и тот же кэш; своего второго geocode не заводим.
+        Точность возвращается вместе с точкой: центр района выглядит на карте
+        так же уверенно, как настоящий адрес.
+        """
+        if market is None:
+            raise HTTPException(status_code=503, detail="Маркетинговый движок не подключён")
+        finder = getattr(krt_registry, "find", None)
+        project = finder(f"krt:{slug}") if callable(finder) else None
+        if project is None:
+            project = next(
+                (item for item in krt_registry.catalogue() if item.get("slug") == slug), None)
+        if not project:
+            raise HTTPException(status_code=404, detail="Территория КРТ не найдена")
+        query = str(project.get("geocode_query") or project.get("name") or "").strip()
+        geocoder = getattr(market, "geocoder", None)
+        if geocoder is None or not query:
+            raise HTTPException(status_code=503, detail="Геокодер недоступен")
+        try:
+            point = await run_in_threadpool(geocoder.geocode, query)
+        except (GeocodingError, RemoteServiceError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        data = point.to_dict() if hasattr(point, "to_dict") else {}
+        return {
+            "slug": slug,
+            "query": query,
+            "latitude": data.get("latitude"),
+            "longitude": data.get("longitude"),
+            "precision": data.get("precision"),
+            "area_ha": project.get("area_ha"),
+        }
+
     @app.get("/auctions/krt/ranking")
     async def auction_krt_ranking() -> dict[str, Any]:
         """Балл по всем КРТ: потолок цены входа на метр продаваемой.
@@ -184,8 +227,17 @@ def install(app: FastAPI) -> None:
         }
 
     @app.post("/auctions/krt/ranking/refresh")
-    async def auction_krt_ranking_refresh(request: Request) -> dict[str, Any]:
-        """Запустить фоновый прогон по каталогу. На ходу — не запускает второй."""
+    async def auction_krt_ranking_refresh(
+        request: Request, body: KrtRankingRequest | None = None
+    ) -> dict[str, Any]:
+        """Запустить фоновый прогон. На ходу — не запускает второй.
+
+        Считаются те площадки, которые остались после фильтра на экране, а не
+        весь каталог: смотрят перспективные округа и нужный статус, а прогон по
+        всем ста двадцати четырём — это минуты чужой работы и чужой нагрузки на
+        рынок (владелец, 23.08.2026). Список слагов приходит со страницы; пустой
+        список значит «весь каталог» — так ведёт себя вызов без тела.
+        """
         market_cabinet.require_cabinet(request)
         if market is None or core is None:
             raise HTTPException(
@@ -198,6 +250,16 @@ def install(app: FastAPI) -> None:
                 status_code=503,
                 detail="Каталог КРТ ещё не получен — обновите каталог и повторите",
             )
+        wanted = [str(slug) for slug in ((body.slugs if body else None) or []) if str(slug).strip()]
+        if wanted:
+            order = {slug: index for index, slug in enumerate(wanted)}
+            projects = [row for row in projects if str(row.get("slug")) in order]
+            projects.sort(key=lambda row: order.get(str(row.get("slug")), 0))
+            if not projects:
+                raise HTTPException(
+                    status_code=422,
+                    detail="Ни одна из выбранных площадок не найдена в каталоге",
+                )
         started = krt_ranking.start(projects, _screen_one)
         return {
             "started": started,
