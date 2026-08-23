@@ -78,18 +78,65 @@ def _month_value(value: Any, year: int, previous_month: int) -> tuple[datetime.d
     return datetime.date(year, month, 1), year, month
 
 
+_FINANCE_CACHE: dict[tuple, dict[str, Any]] = {}
+
+
 def _finance_baseline(project: str) -> dict[str, Any]:
+    """Финансовый baseline. Результат помнится по (путь, mtime, размер).
+
+    Читается один раз одним проходом: на read-only книге каждый `ws.cell()`
+    перечитывает XML листа целиком, и 904 обращения стоили 23 секунды на
+    срез — при том что baseline по определению неизменен.
+    """
+    import copy as _copy
+    import os as _os
+
     path = _finance_file(project)
     if not path.exists():
         return {"known": False, "reason": "не загружен финансовый baseline"}
+    stat = _os.stat(path)
+    key = (str(path), stat.st_mtime_ns, stat.st_size)
+    if key in _FINANCE_CACHE:
+        return _copy.deepcopy(_FINANCE_CACHE[key])
+    result = _read_finance_baseline(path)
+    if len(_FINANCE_CACHE) > 8:
+        _FINANCE_CACHE.clear()
+    _FINANCE_CACHE[key] = result
+    return _copy.deepcopy(result)
 
+
+class _Grid:
+    """Лист, прочитанный одним проходом, с интерфейсом cell(row, col)."""
+
+    def __init__(self, ws: Any) -> None:
+        self.rows = list(ws.iter_rows(values_only=True))
+        self.max_row = len(self.rows)
+        self.max_column = max((len(row) for row in self.rows), default=0)
+
+    class _Cell:
+        __slots__ = ("value",)
+
+        def __init__(self, value: Any) -> None:
+            self.value = value
+
+    def cell(self, row: int, column: int) -> "_Grid._Cell":
+        values = self.rows[row - 1] if 0 < row <= len(self.rows) else ()
+        return self._Cell(values[column - 1] if 0 < column <= len(values) else None)
+
+    def iter_rows(self, min_row: int = 1, max_row: int | None = None,
+                  values_only: bool = True) -> Any:
+        stop = max_row if max_row is not None else len(self.rows)
+        return iter(self.rows[min_row - 1:stop])
+
+
+def _read_finance_baseline(path: Path) -> dict[str, Any]:
     from openpyxl import load_workbook
 
     wb = load_workbook(path, read_only=True, data_only=True)
     try:
         if "Расчет стоимости строительства" not in wb.sheetnames:
             return {"known": False, "reason": "нет листа «Расчет стоимости строительства»"}
-        ws = wb["Расчет стоимости строительства"]
+        ws = _Grid(wb["Расчет стоимости строительства"])
         approved_hdr = _find_header(ws, "Утвержденная фин.модель проекта")
         need_hdr = _find_header(ws, "Средства на завершение строительства") or _find_header(
             ws, "Средства на завершение согласно бюджету"
