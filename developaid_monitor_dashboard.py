@@ -445,20 +445,75 @@ def _physical_smr(rss: Path, estimate: dict[str, Any], cut: datetime.date) -> fl
     )
 
 
-def _sales_snapshot(project: str, cut: datetime.date) -> dict[str, Any]:
-    path = _latest_sales(project, cut)
-    if path is None:
-        return {"known": False, "reason": "не загружен отчет о продажах"}
-    from openpyxl import load_workbook
+def _latest_sales_rows(project: str, upto: datetime.date | None = None) -> Path | None:
+    folder = monitor._project_dir(project) / "sales"
+    if not folder.exists():
+        return None
+    rows = sorted(folder.glob("*.json"))
+    if upto:
+        rows = [row for row in rows if row.stem[:10] <= upto.isoformat()]
+    return rows[-1] if rows else None
 
-    wb = load_workbook(path, read_only=True, data_only=True)
-    try:
-        preferred = next(
-            (name for name in ("Продажи П-Ф", "Продажи", "Дашборд") if name in wb.sheetnames), ""
-        )
-        return {"known": True, "source": path.name, "sheet": preferred}
-    finally:
-        wb.close()
+
+def _sales_snapshot(project: str, cut: datetime.date) -> dict[str, Any]:
+    """Продажи: числа, а не факт наличия файла.
+
+    Источника два, и они дополняют друг друга. Книга обновляется раз в месяц
+    и несёт историю (лист «План продаж», строки ФАКТ); строки руками несут
+    то, чего книга ещё не знает — «в августе продано 4 лота» приходит словами
+    за месяц до выгрузки. Месяц из строк перекрывает тот же месяц книги.
+    """
+    import json as _json
+
+    monthly: dict[str, dict[str, float]] = {}
+    sources: list[str] = []
+
+    book = _latest_sales(project, cut)
+    if book is not None:
+        try:
+            parsed = actuals.read_sales(book)
+        except Exception:
+            parsed = None
+        if parsed:
+            for row in parsed["rows"]:
+                if not row.get("fact") or not row.get("month"):
+                    continue
+                monthly[monitor._iso(row["month"])[:7]] = {
+                    "units": float(row.get("units") or 0.0),
+                    "area": float(row.get("area") or 0.0),
+                    "revenue": float(row.get("revenue") or 0.0),
+                }
+            sources.append(book.name)
+        else:
+            sources.append(f"{book.name} (лист продаж не разобран)")
+
+    manual = _latest_sales_rows(project, cut)
+    if manual is not None:
+        stored = _json.loads(manual.read_text(encoding="utf-8"))
+        for row in stored.get("rows") or []:
+            month = monitor._iso(actuals._as_month(row.get("month")))[:7]
+            if not month:
+                continue
+            monthly[month] = {
+                "units": float(row.get("units") or 0.0),
+                "area": float(row.get("area") or 0.0),
+                "revenue": float(row.get("revenue") or 0.0),
+            }
+        sources.append(f"строки на {stored.get('taken_at', manual.stem)}")
+
+    if not monthly:
+        return {"known": False, "reason": "не загружены ни книга, ни строки продаж"}
+    months = sorted(monthly)
+    recent = [{"month": month, **monthly[month]} for month in months[-3:]]
+    return {
+        "known": True,
+        "source": " + ".join(sources),
+        "last_fact": months[-1],
+        "total_units": sum(row["units"] for row in monthly.values()),
+        "total_area": sum(row["area"] for row in monthly.values()),
+        "total_revenue": sum(row["revenue"] for row in monthly.values()),
+        "recent": recent,
+    }
 
 
 def _dashboard(project: str, rss: Path, cut: datetime.date, view: dict[str, Any]) -> dict[str, Any]:
@@ -504,8 +559,11 @@ def _store_sales_file(project: str, data: bytes, taken_at: Any) -> dict[str, Any
 
     wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
     try:
-        if not any(name in wb.sheetnames for name in ("Продажи П-Ф", "Продажи", "Дашборд")):
-            raise ValueError("в книге не найден лист продаж")
+        known = ("Продажи П-Ф", "Продажи", "Дашборд", "План продаж")
+        if not any(name in wb.sheetnames for name in known):
+            raise ValueError(
+                "в книге не найден лист продаж — жду «Продажи П-Ф», «Продажи», "
+                "«Дашборд» или «План продаж»")
     finally:
         wb.close()
     path = _sales_dir(project) / f"{day}.xlsx"

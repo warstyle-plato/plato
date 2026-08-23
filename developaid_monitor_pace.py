@@ -202,8 +202,8 @@ def _apply_pace(project: str, view: dict[str, Any], cut: datetime.date) -> dict[
     graph = schedule.get("dependency_graph") or {}
     graph["pace_forecast_known"] = True
     graph["pace_forecast_source"] = (
-        "КС / EAC proxy + PM dependencies"
-        if pm.get("known") else "КС / EAC proxy; PM dependencies unavailable"
+        "темп актов КС + PM-зависимости"
+        if pm.get("known") else "темп актов КС; PM-выгрузки нет"
     )
     graph["pace_evidence_tasks"] = evidence
     graph["pace_network_affected_tasks"] = affected
