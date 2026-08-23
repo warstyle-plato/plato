@@ -65,7 +65,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.19.64"
+VERSION = "0.19.65"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -2703,6 +2703,19 @@ def _geometry_points(node: Any, out: list[tuple[float, float]]) -> None:
             _geometry_points(child, out)
 
 
+def _wgs84_to_mercator(lat: float, lng: float) -> tuple[float, float]:
+    """Широта и долгота → веб-меркатор. Обратное к `_mercator_to_wgs84`.
+
+    Формула жила внутри `_geometry_center`, а нужна она и там, где точка
+    приходит готовой парой координат — например, ссылкой на карту НСПД для
+    территории КРТ. Второй такой пересчёт (тем более в браузере) разошёлся бы
+    с этим молча, и ссылка вела бы рядом с участком.
+    """
+    merc_x = lng * 20037508.34 / 180.0
+    merc_y = math.log(math.tan((90.0 + lat) * math.pi / 360.0)) / (math.pi / 180.0)
+    return merc_x, merc_y * 20037508.34 / 180.0
+
+
 def _geometry_center(geometry: Any) -> dict[str, Any] | None:
     if not isinstance(geometry, dict):
         return None
@@ -2715,9 +2728,7 @@ def _geometry_center(geometry: Any) -> dict[str, Any] | None:
     if abs(x) <= 180.0 and abs(y) <= 90.0:
         # Уже WGS84 (GeoJSON порядок — долгота, широта).
         lat, lng = y, x
-        merc_x = lng * 20037508.34 / 180.0
-        merc_y = math.log(math.tan((90.0 + lat) * math.pi / 360.0)) / (math.pi / 180.0)
-        merc_y = merc_y * 20037508.34 / 180.0
+        merc_x, merc_y = _wgs84_to_mercator(lat, lng)
     else:
         lat, lng = _mercator_to_wgs84(x, y)
         merc_x, merc_y = x, y
