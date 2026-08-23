@@ -65,7 +65,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.19.55"
+VERSION = "0.19.56"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -34240,6 +34240,22 @@ function changeProjectsKey(){
  openProjects();
 }
 
+// Присланный проект накладывается на умолчания одним способом — этим.
+// Копий было три (кабинет, файл настроек, полученная ссылка), и площадка КРТ
+// стала бы четвёртой: поле, добавленное позже, чинится в одной из них и
+// остаётся сломанным в остальных — ровно так уже терялась периодичность ВРИ.
+function applyProjectSnapshot(data){
+ data=data||{};
+ inputs=Object.assign(cloneValue(INPUT_DEFAULT),data.inputs||{});
+ tep=cloneValue(TEP_DEFAULT);
+ Object.entries(data.tep||{}).forEach(([key,values])=>{
+  if(values&&typeof values==='object')tep[key]=Object.assign(tep[key]||{},values);
+ });
+ phasing=data.phasing||makeDefaultPhasing(1);
+ if(typeof scenarioSelect!=='undefined'&&scenarioSelect)scenarioSelect.value=data.scenario||'base';
+ renderInputs();renderTep();renderPhasing();persistLocalSilently();
+}
+
 async function loadProject(id){
  let record;
  try{record=await projectsCall('/projects/open',{id})}
@@ -34247,14 +34263,7 @@ async function loadProject(id){
  const data=record.payload||{};
  // Как и локальная загрузка: сохранённое накладывается на умолчания, а не
  // подменяет их — иначе поле, добавленное позже, исчезнет.
- inputs=Object.assign(cloneValue(INPUT_DEFAULT),data.inputs||{});
- tep=cloneValue(TEP_DEFAULT);
- Object.entries(data.tep||{}).forEach(([key,values])=>{
-  if(values&&typeof values==='object')tep[key]=Object.assign(tep[key]||{},values);
- });
- phasing=data.phasing||makeDefaultPhasing(1);
- scenarioSelect.value=data.scenario||'base';
- renderInputs();renderTep();renderPhasing();persistLocalSilently();
+ applyProjectSnapshot(data);
  closeProjects();
  calculateAndOpen('report');
 }
@@ -34333,14 +34342,7 @@ async function applySettingsFile(input){
   +'Сохранён: '+String(data.saved_at||'').replace('T',' ').slice(0,16)
   +(data.app_version?' · версия '+data.app_version:'')+'\n\n'
   +'Текущие вводные на экране будут заменены.'))return;
- inputs=Object.assign(cloneValue(INPUT_DEFAULT),data.inputs||{});
- tep=cloneValue(TEP_DEFAULT);
- Object.entries(data.tep||{}).forEach(([key,values])=>{
-  if(values&&typeof values==='object')tep[key]=Object.assign(tep[key]||{},values);
- });
- phasing=data.phasing||makeDefaultPhasing(1);
- scenarioSelect.value=data.scenario||'base';
- renderInputs();renderTep();renderPhasing();persistLocalSilently();
+ applyProjectSnapshot(data);
  closeProjects();
  calculateAndOpen('report');
 }
@@ -34389,14 +34391,7 @@ async function openSharedProject(code){
  const data=snapshot.payload||{};
  // Как и своя загрузка: присланное накладывается на умолчания, а не подменяет
  // их — снимок мог быть сделан версией, где поля ещё не было.
- inputs=Object.assign(cloneValue(INPUT_DEFAULT),data.inputs||{});
- tep=cloneValue(TEP_DEFAULT);
- Object.entries(data.tep||{}).forEach(([key,values])=>{
-  if(values&&typeof values==='object')tep[key]=Object.assign(tep[key]||{},values);
- });
- phasing=data.phasing||makeDefaultPhasing(1);
- if(scenarioSelect)scenarioSelect.value=data.scenario||'base';
- renderInputs();renderTep();renderPhasing();persistLocalSilently();
+ applyProjectSnapshot(data);
  // Ссылка из адреса убирается: перезагрузка страницы не должна второй раз
  // затирать работу, которую человек уже начал на присланных вводных.
  try{history.replaceState(null,'',location.pathname)}catch(e){}

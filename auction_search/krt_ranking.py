@@ -31,6 +31,7 @@ from __future__ import annotations
 import datetime
 import logging
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -41,6 +42,10 @@ from market_search.http import load_json, save_json
 logger = logging.getLogger(__name__)
 
 CACHE_SCHEMA_VERSION = 1
+# Отчёт площадки версионируется отдельно от рейтинга: его состав меняется чаще
+# — маркетинг, модель, рекомендация Платона, — а строка рейтинга живёт своей
+# жизнью. Чужая версия читается как «нет отчёта», а не как отчёт с дырами.
+REPORT_SCHEMA_VERSION = 1
 # Сутки: каталог КРТ обновляется реже, а цены рынка — не чаще. Столько же живёт
 # и сам каталог (`KrtRegistry.ttl_seconds`), и расходиться им незачем.
 DEFAULT_TTL_SECONDS = 24 * 60 * 60
@@ -134,6 +139,11 @@ class KrtRanking:
     def __init__(self, data_dir: str | Path, *, ttl_seconds: int = DEFAULT_TTL_SECONDS) -> None:
         self.path = Path(data_dir) / "krt" / "ranking.json"
         self.lock_path = Path(data_dir) / "krt" / "ranking.lock"
+        # Полный отчёт площадки лежит своим файлом рядом с рейтингом. Прогон и
+        # так считает его целиком — маркетинг, модель, очереди, потолок входа, —
+        # и выбрасывал, оставляя строку с одним баллом. Человек открывал
+        # карточку и ждал те же минуты второй раз, хотя всё уже посчитано.
+        self.reports_dir = Path(data_dir) / "krt" / "reports"
         self.ttl_seconds = ttl_seconds
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
@@ -221,6 +231,60 @@ class KrtRanking:
         rows = cached.get("rows")
         return list(rows) if isinstance(rows, list) else []
 
+    def report_path(self, slug: str) -> Path:
+        """Файл отчёта площадки. Слаг проверяется: он приходит из адреса."""
+        safe = re.sub(r"[^a-z0-9_-]+", "-", str(slug or "").strip().lower())[:120]
+        if not safe or safe == "-":
+            raise ValueError("Пустой идентификатор площадки")
+        return self.reports_dir / f"{safe}.json"
+
+    def report(self, slug: str) -> dict[str, Any] | None:
+        """Сохранённый отчёт или None. Чужая схема — это «нет», а не мусор."""
+        try:
+            cached = load_json(self.report_path(slug))
+        except ValueError:
+            return None
+        if not isinstance(cached, dict):
+            return None
+        if cached.get("schema_version") != REPORT_SCHEMA_VERSION:
+            return None
+        return cached
+
+    def save_report(
+        self, slug: str, payload: dict[str, Any], *, computed_at: int | None = None
+    ) -> None:
+        """Сохранить отчёт. `computed_at` задаётся, когда счёт не повторяли.
+
+        Дописать к отчёту рекомендацию Платона — не значит пересчитать его.
+        Штамповать при этом текущее время значило бы врать про свежесть: на
+        экране стояло бы «посчитано минуту назад» рядом с числами недельной
+        давности.
+        """
+        try:
+            path = self.report_path(slug)
+        except ValueError:
+            return
+        save_json(path, {
+            "schema_version": REPORT_SCHEMA_VERSION,
+            "slug": slug,
+            "computed_at": int(computed_at if computed_at is not None else time.time()),
+            **payload,
+        })
+
+    def upsert_row(self, row: dict[str, Any]) -> None:
+        """Обновить одну строку рейтинга, не трогая остальные.
+
+        Пересчёт одной площадки из карточки обязан доехать и до таблицы: иначе
+        балл в списке и числа в карточке расходятся, и оба выглядят верными.
+        Прогон по каталогу в это время не идёт — он держит замок.
+        """
+        slug = str(row.get("slug") or "")
+        if not slug:
+            return
+        rows = {str(item.get("slug") or ""): item for item in self.rows()}
+        rows[slug] = row
+        self._persist(rows)
+
     def progress(self) -> dict[str, Any]:
         with self._lock:
             state = dict(self._progress)
@@ -289,6 +353,14 @@ class KrtRanking:
                 row = score_row(project, screening)
                 if row["slug"]:
                     rows[row["slug"]] = row
+                    # Отчёт кладётся целиком, даже когда посчитать не вышло:
+                    # «не посчитали и вот почему» — тоже ответ, и карточка
+                    # должна показывать его, а не пустоту с кнопкой.
+                    self.save_report(row["slug"], {
+                        "project": project,
+                        "market": screening.pop("market_report", None),
+                        "screening": screening,
+                    })
                 with self._lock:
                     self._progress["done"] = index
                 self._persist(rows)

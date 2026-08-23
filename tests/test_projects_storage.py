@@ -229,13 +229,20 @@ def test_the_examples_do_not_wait_for_a_key():
     assert "if(!projectsStorageReady)" in body.replace(" ", "")
 
 
+def _snapshot_body() -> str:
+    """Тело единственного места, где присланное накладывается на умолчания."""
+    body = core.PAGE[core.PAGE.index("function applyProjectSnapshot("):]
+    return body[:body.index("\n}\n")]
+
+
 def test_the_page_loads_a_project_over_the_defaults():
     """Та же ошибка, что была с localStorage: подмена целиком роняет поле,
     добавленное после сохранения."""
     body = core.PAGE[core.PAGE.index("async function loadProject("):]
     body = body[:body.index("async function deleteProject(")]
-    assert "Object.assign(cloneValue(INPUT_DEFAULT)" in body
-    assert "cloneValue(TEP_DEFAULT)" in body
+    assert "applyProjectSnapshot(data)" in body, "наложение живёт одной функцией"
+    assert "Object.assign(cloneValue(INPUT_DEFAULT)" in _snapshot_body()
+    assert "cloneValue(TEP_DEFAULT)" in _snapshot_body()
 
 
 def test_the_page_sends_both_ways_of_identifying():

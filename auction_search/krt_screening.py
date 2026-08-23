@@ -353,6 +353,15 @@ def build_krt_model_screening(
         "available": True,
         "preliminary": True,
         "traffic_light": traffic,
+        # Вводные, которыми это посчитано, едут вместе с результатом. Без них
+        # «передать в DevelopAid» пришлось бы собирать модель второй раз — а
+        # два сборщика на одну площадку однажды разойдутся, и обе страницы
+        # будут показывать разное про один и тот же проект.
+        "model_inputs": {
+            "inputs": copy.deepcopy(inputs),
+            "tep": copy.deepcopy(tep),
+            "phasing": copy.deepcopy(phasing),
+        },
         "headline": traffic["label"],
         "text": text,
         "market": {
