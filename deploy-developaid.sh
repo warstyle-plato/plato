@@ -209,6 +209,38 @@ current_image() {
   docker inspect --format '{{.Config.Image}}' "$NAME" 2>/dev/null || true
 }
 
+# Версия того, что работает прямо сейчас. Спрашивается у самого контейнера, а
+# не у тега образа: тег переставляют, а версию приложение объявляет о себе.
+running_version() {
+  live_port=$(docker port "$NAME" 8000 2>/dev/null | head -1 | sed 's/.*://') || true
+  [ -n "${live_port:-}" ] || return 0
+  curl -fsS --max-time 5 "http://127.0.0.1:${live_port}/health" 2>/dev/null \
+    | python3 -c "import json,sys
+try: print(json.load(sys.stdin).get('version') or '')
+except Exception: pass" 2>/dev/null || true
+}
+
+# Сравнение выпусков по разрядам: 0.19.9 младше 0.19.10, а строкой — наоборот.
+# Печатает older / same / newer про первый аргумент относительно второго.
+version_order() {
+  python3 -c "import sys
+def parts(value):
+    out = []
+    for chunk in str(value or '').split('.'):
+        digits = ''.join(ch for ch in chunk if ch.isdigit())
+        if digits == '':
+            raise ValueError(value)
+        out.append(int(digits))
+    return out or [0]
+try:
+    left, right = parts(sys.argv[1]), parts(sys.argv[2])
+except ValueError:
+    print('unknown'); raise SystemExit(0)
+size = max(len(left), len(right))
+left += [0] * (size - len(left)); right += [0] * (size - len(right))
+print('older' if left < right else 'newer' if left > right else 'same')" "$1" "$2" 2>/dev/null || echo unknown
+}
+
 start_container() {
   name="$1"; publish="$2"; image="$3"
   docker rm -f "$name" >/dev/null 2>&1 || true
@@ -314,6 +346,32 @@ if ! verdict=$(health_check "$STAGING_PORT" "$TAG" 2>&1); then
 fi
 say "проба пройдена: ${verdict}"
 docker rm -f "$STAGING_NAME" >/dev/null 2>&1 || true
+
+# Откат назад не бывает случайным — а до сих пор бывал. Сборка образа из main
+# упала дважды подряд на проверке версии, тег `prod` остался на прошлом
+# выпуске, и выкатка молча увела прод на релиз назад: с экрана пропало всё,
+# что там было (владелец, 23.08.2026). Проба этого не ловит: она спрашивает
+# «жив ли новый образ», а не «новее ли он работающего».
+NEW_VERSION=$(printf '%s' "$verdict" | sed -n 's/^версия \([^,]*\),.*/\1/p')
+LIVE_VERSION=$(running_version)
+if [ -n "${LIVE_VERSION:-}" ] && [ -n "${NEW_VERSION:-}" ]; then
+  case "$(version_order "$NEW_VERSION" "$LIVE_VERSION")" in
+    older)
+      if [ "${ALLOW_DOWNGRADE:-0}" = "1" ]; then
+        say "ОТКАТ НАЗАД: ${LIVE_VERSION} → ${NEW_VERSION}, разрешён явно"
+      else
+        say "ОТКАЗ: в реестре ${NEW_VERSION}, а работает ${LIVE_VERSION} — это шаг назад"
+        say "прод не тронут. Обычно так бывает, когда сборка из main упала и тег остался на прошлом выпуске:"
+        say "  проверьте вкладку Actions, почините сборку, и выкатывайте снова"
+        say "  осознанный откат: ALLOW_DOWNGRADE=1 sh $0 ${TAG}"
+        exit 1
+      fi
+      ;;
+    same) say "версия та же: ${NEW_VERSION} — меняется только образ" ;;
+    newer) say "выпуск растёт: ${LIVE_VERSION} → ${NEW_VERSION}" ;;
+    *) say "версии не сравнить (${LIVE_VERSION} → ${NEW_VERSION}) — продолжаю" ;;
+  esac
+fi
 
 # --- замена рабочего контейнера ---------------------------------------------
 [ -n "$WAS" ] && printf '%s\n' "${WAS##*:}" > "$PREVIOUS"
