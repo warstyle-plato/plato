@@ -293,8 +293,11 @@ function krtSiteMap(subject,areaHa){
  const src='/land/basemap?'+new URLSearchParams({bbox:bbox,width:'900'});
  const scale=Math.round(side/4/50)*50||100;
  const scalePct=(scale/side*100).toFixed(1);
- const precision=String((subject&&subject.precision)||'');
- const rough=precision&&precision!=='street'&&precision!=='house';
+ // Чем опознана точка, говорит сам разбор: «по отдельному адресу», «по
+ // району», «по запросу каталога». Прежде здесь стояла своя оценка точности
+ // геокодера — а точка теперь берётся тем же путём, что и точка отчёта, и
+ // объяснение приезжает вместе с ней.
+ const notes=Array.isArray(subject&&subject.notes)?subject.notes:[];
  return `<div class="section"><h3>Участок на карте</h3>
   <div style="position:relative;border:1px solid #e3e3e0;overflow:hidden">
    <img src="${src}" alt="Карта окрестностей участка" style="display:block;width:100%"
@@ -309,7 +312,8 @@ function krtSiteMap(subject,areaHa){
   </div>
   <div class="source" style="margin-top:7px">Метка — геокодированный центр территории, кадр ${Math.round(side)} м.
    Официальный полигон границ КРТ каталогом не публикуется, поэтому контур не показан:
-   по нему стали бы мерить пятно застройки.${rough?' Точность геокодера ниже уровня улицы — положение метки приблизительное.':''}</div>
+   по нему стали бы мерить пятно застройки.</div>
+  ${notes.length?`<div class="source" style="margin-top:5px">${notes.map(esc).join('<br>')}</div>`:''}
   ${krtNspdLink(subject&&subject.nspd_url)}
  </div>`;
 }
