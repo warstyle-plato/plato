@@ -1662,6 +1662,35 @@ def _feedback_answer(chat_id: int, index: int, score: int | None) -> None:
     _feedback_ask(chat_id)
 
 
+def _user_to_core(chat_id: int, name: str, kind: str) -> None:
+    """Человек из чата — в реестр на ядре, а не только на диск Render.
+
+    `usage_track` пишет реестр там, где обслужен запрос. Бот обслуживает
+    вебхук на Render, где диск кончается вместе с контейнером, — и «сколько у
+    нас пользователей» обнулялось каждой выкаткой (замечание владельца,
+    23.08.2026). Отправка фоновая и молчаливая: учёт не имеет права задерживать
+    ответ человеку и не имеет права его ронять.
+    """
+    chat = int(chat_id or 0)
+    if not chat:
+        return
+    remote = core._projects_remote_url("/internal/user/touch")
+    if not remote:
+        return
+
+    def send() -> None:
+        try:
+            core._core_post(remote, {
+                "chat": chat, "name": name, "surface": "telegram", "kind": kind,
+                "sign": core._web_login_sign("user-touch", chat),
+            }, 15.0)
+        except Exception as exc:
+            core._PLATON_LOG.warning("Пользователь не доехал до ядра: %s: %s",
+                                     type(exc).__name__, exc)
+
+    threading.Thread(target=send, daemon=True).start()
+
+
 def _survey_to_core(chat_id: int, name: str, **fields: Any) -> None:
     """Анкета из чата — в хранилище на ядре, а не только в журнал Render.
 
@@ -1760,6 +1789,7 @@ def _handle_message(message: dict[str, Any]) -> None:
     # веткам значило бы потерять те, что уходят в движок.
     core.usage_track("command" if command else "message", chat_id=chat_id, user_id=user_id,
                      name=_sender_name(message), text=text)
+    _user_to_core(chat_id, _sender_name(message), "command" if command else "message")
     if command == "/status":
         _status_message(chat_id, user_id)
         return
@@ -1819,6 +1849,7 @@ def _handle_update(update: dict[str, Any]) -> None:
         core.usage_track("button", chat_id=chat_id,
                          user_id=int(sender.get("id") or chat_id or 0),
                          name=_sender_name({"from": sender}), text=data)
+        _user_to_core(chat_id, _sender_name({"from": sender}), "button")
         if data in {"vritep_start", "vritep_msk", "vritep_mo"}:
             _answer_callback(query)
             if data == "vritep_start":

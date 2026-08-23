@@ -143,3 +143,48 @@ def test_finishing_the_survey_twice_says_it_once(monkeypatch):
     assert len(written) == 1, "оценки записались дважды — средние удвоятся"
     assert len(sent) == 1, sent
     assert "Оценок записано: 1" in sent[0]
+
+
+def test_bot_sends_the_person_to_the_core_registry(monkeypatch):
+    """Человек из чата попадает в реестр ядра, а не только на диск Render.
+
+    `usage_track` пишет реестр там, где обслужен запрос. Вебхук обслуживает
+    Render, где диск кончается вместе с контейнером: без пересылки «сколько у
+    нас пользователей» обнуляется каждой выкаткой (владелец, 23.08.2026).
+    """
+    import main as bot
+
+    # Обёртка грузит движок отдельным модулем (`developaid_core`), поэтому
+    # подменять надо её экземпляр, а не тот, что импортировал тест.
+    engine = bot.core
+    posted: list[dict] = []
+    monkeypatch.setattr(engine, "_projects_remote_url",
+                        lambda path: "https://core.example" + path)
+    monkeypatch.setattr(engine, "_web_login_sign", lambda code, chat: f"{code}:{chat}")
+    monkeypatch.setattr(engine, "_core_post",
+                        lambda url, payload, timeout: posted.append(payload) or {})
+
+    thread_bodies: list = []
+    monkeypatch.setattr(bot.threading, "Thread",
+                        lambda target, daemon=False: type(
+                            "Now", (), {"start": lambda self, fn=target: thread_bodies.append(fn())})())
+
+    bot._user_to_core(102728814, "Владелец", "command")
+    assert posted and posted[0]["chat"] == 102728814
+    assert posted[0]["sign"] == "user-touch:102728814"
+    assert posted[0]["kind"] == "command"
+
+
+def test_the_core_registry_accepts_only_a_signed_person(storage, monkeypatch):
+    """Реестр несёт имена людей — чужому его не пополнить."""
+    from fastapi import HTTPException
+
+    monkeypatch.setattr(core, "_telegram_token", lambda: "test-token")
+    good = core._web_login_sign("user-touch", 77)
+    core.internal_user_touch(core.InternalUserRequest(chat=77, name="Пётр", sign=good))
+    assert core.users_registry_summary(30)["total"] == 1
+
+    with pytest.raises(HTTPException) as refusal:
+        core.internal_user_touch(core.InternalUserRequest(chat=78, sign="подделка"))
+    assert refusal.value.status_code == 403
+    assert core.users_registry_summary(30)["total"] == 1

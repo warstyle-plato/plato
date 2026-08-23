@@ -65,7 +65,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.19.54"
+VERSION = "0.19.55"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -27003,6 +27003,35 @@ def feedback_submit(req: FeedbackRequest) -> dict[str, Any]:
 class InternalSummaryRequest(BaseModel):
     days: int = 30
     sign: str = ""
+
+
+class InternalUserRequest(BaseModel):
+    chat: int = 0
+    name: str = ""
+    surface: str = "telegram"
+    kind: str = ""
+    sign: str = ""
+
+
+@app.post("/internal/user/touch")
+def internal_user_touch(req: InternalUserRequest) -> dict[str, Any]:
+    """Человек из бота — в реестр на ядре.
+
+    `usage_track` пишет реестр там, где обслужен запрос, а бот живёт на Render:
+    его пользователи обнулялись каждой выкаткой ровно так же, как анкеты
+    (замечание владельца, 23.08.2026 — «в боте тоже всё обнуляется, не видно
+    никакой истории»). Реестр один и лежит на ядре, рядом с профилями.
+    """
+    chat = int(req.chat or 0)
+    expected = _web_login_sign("user-touch", chat)
+    if not hmac.compare_digest(str(req.sign or "").encode("utf-8"),
+                               expected.encode("utf-8")):
+        raise HTTPException(status_code=403, detail="Подпись не сошлась.")
+    if not chat:
+        raise HTTPException(status_code=400, detail="Нужен chat.")
+    users_touch(chat, surface=str(req.surface or "telegram"),
+                kind=str(req.kind or ""), name=str(req.name or ""))
+    return {"ok": True}
 
 
 class InternalSurveyRequest(BaseModel):
