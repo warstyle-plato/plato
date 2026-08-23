@@ -66,7 +66,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.19.74"
+VERSION = "0.19.76"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -12475,6 +12475,18 @@ def _model_sheet_tep(result: dict[str, Any]) -> dict[str, Any]:
     return {"name": "ТЭП", "rows": rows, "widths": [30] + [18] * 6, "freeze": "A4", "split_y": 3}
 
 
+def _parking_num_text(value: Any) -> str:
+    """Число норматива строкой: 63.0 -> «63», 0.75 -> «0,75»."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return ""
+    if number != number or abs(number) == float("inf"):
+        return ""
+    text = f"{number:.4f}".rstrip("0").rstrip(".")
+    return (text or "0").replace(".", ",")
+
+
 def _model_parking_norm_rows(result: dict[str, Any]) -> list[list[_XlsxCell]]:
     """Нормативная потребность нежилья — отдельным блоком под ТЭП.
 
@@ -12501,17 +12513,17 @@ def _model_parking_norm_rows(result: dict[str, Any]) -> list[list[_XlsxCell]]:
     ]
     for item in data:
         if oblast:
-            per = (f"{_ru_number_text(item.get('norm_denominator_min'))}–"
-                   f"{_ru_number_text(item.get('norm_denominator_max'))}")
+            per = (f"{_parking_num_text(item.get('norm_denominator_min'))}–"
+                   f"{_parking_num_text(item.get('norm_denominator_max'))}")
         else:
-            per = _ru_number_text(item.get("x2"))
+            per = _parking_num_text(item.get("x2"))
         rows.append([
             _cell_text(item.get("label") or item.get("function") or "—"),
             _cell_num(item.get("input_value"), _XLSX_STYLE_INT),
             _cell_text(item.get("input_unit_label") or ""),
             _cell_text(per),
-            _cell_text("" if oblast else _ru_number_text(item.get("k1"))),
-            _cell_text("" if oblast else _ru_number_text(item.get("k2"))),
+            _cell_text("" if oblast else _parking_num_text(item.get("k1"))),
+            _cell_text("" if oblast else _parking_num_text(item.get("k2"))),
             _cell_num(item.get("required_spaces"), _XLSX_STYLE_INT),
         ])
     rows.append([
