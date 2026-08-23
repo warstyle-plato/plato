@@ -188,3 +188,50 @@ def test_the_core_registry_accepts_only_a_signed_person(storage, monkeypatch):
         core.internal_user_touch(core.InternalUserRequest(chat=78, sign="подделка"))
     assert refusal.value.status_code == 403
     assert core.users_registry_summary(30)["total"] == 1
+
+
+def test_bot_restores_its_user_history_from_the_core(tmp_path, monkeypatch):
+    """После выкатки таблица бота пуста — историю приносит ядро.
+
+    Реестр бота живёт в sqlite на диске Render и умирает вместе с контейнером:
+    «в боте тоже всё обнуляется, не видно никакой истории» (владелец,
+    23.08.2026). Ядро держит свою копию в смонтированном томе и отдаёт её на
+    старте.
+    """
+    import main as bot
+    import telegram_user_registry as reg
+
+    registry = reg.Registry(tmp_path / "users.sqlite3")
+    assert registry.stats()[0] == 0        # свежий контейнер: истории нет
+
+    engine = bot.core
+    monkeypatch.setattr(engine, "_projects_remote_url",
+                        lambda path: "https://core.example" + path)
+    monkeypatch.setattr(engine, "_web_login_sign", lambda code, chat: f"{code}:{chat}")
+    monkeypatch.setattr(engine, "_core_post", lambda url, payload, timeout: {
+        "users": [{"chat": 102728814, "name": "Владелец", "first_seen": 1000.0,
+                   "last_seen": 2000.0},
+                  {"chat": 555, "name": "Гость", "first_seen": 1500.0,
+                   "last_seen": 1600.0}]})
+
+    restored = reg.restore_from_core(bot, registry)
+    assert restored == 2
+    assert registry.stats()[0] == 2
+    row = registry.get(102728814)
+    assert row and row["first_seen"] == 1000 and row["last_seen"] == 2000
+
+
+def test_the_core_user_list_is_signed(storage, monkeypatch):
+    """Список людей чужому не отдаётся — в нём имена и даты."""
+    from fastapi import HTTPException
+
+    monkeypatch.setattr(core, "_telegram_token", lambda: "test-token")
+    core.usage_track("calc", surface="site", chat_id=4242)
+
+    answer = core.internal_users_list(core.InternalUsersListRequest(
+        sign=core._web_login_sign("users-list", 0)))
+    assert [item["chat"] for item in answer["users"]] == [4242]
+
+    with pytest.raises(HTTPException) as refusal:
+        core.internal_users_list(core.InternalUsersListRequest(sign="подделка"))
+    assert refusal.value.status_code == 403

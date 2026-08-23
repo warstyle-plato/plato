@@ -65,7 +65,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.19.55"
+VERSION = "0.19.56"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -27032,6 +27032,38 @@ def internal_user_touch(req: InternalUserRequest) -> dict[str, Any]:
     users_touch(chat, surface=str(req.surface or "telegram"),
                 kind=str(req.kind or ""), name=str(req.name or ""))
     return {"ok": True}
+
+
+class InternalUsersListRequest(BaseModel):
+    sign: str = ""
+
+
+@app.post("/internal/users/list")
+def internal_users_list(req: InternalUsersListRequest) -> dict[str, Any]:
+    """Весь реестр людей — чтобы бот восстановил историю после выкатки.
+
+    Реестр бота лежит в sqlite на Render и умирает вместе с контейнером:
+    «в боте тоже всё обнуляется, не видно никакой истории» (владелец,
+    23.08.2026). Ядро отдаёт свою копию, и бот на старте наполняет из неё свою
+    таблицу — история перестаёт зависеть от того, когда была последняя выкатка.
+    """
+    expected = _web_login_sign("users-list", 0)
+    if not hmac.compare_digest(str(req.sign or "").encode("utf-8"),
+                               expected.encode("utf-8")):
+        raise HTTPException(status_code=403, detail="Подпись не сошлась.")
+    records: list[dict[str, Any]] = []
+    try:
+        paths = sorted(_users_dir().glob("*.json"))
+    except OSError:
+        paths = []
+    for path in paths:
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(record, dict) and int(record.get("chat") or 0):
+            records.append(record)
+    return {"users": records}
 
 
 class InternalSurveyRequest(BaseModel):
