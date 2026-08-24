@@ -58,6 +58,7 @@ from developaid_monitor_page import MONITOR_PAGE as _MONITOR_PAGE_RAW
 # Перевод документов проекта (ГПЗУ, ППТ, соглашения ВРИ и МПТ, справки по
 # техприсоединению) в продукты и деньги модели живёт отдельным модулем: он о
 # документах, движок — об экономике, и смешивать их незачем.
+import document_intake
 import parking_norms
 import project_preset
 
@@ -66,7 +67,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.19.76"
+VERSION = "0.19.77"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -263,6 +264,11 @@ PROJECT_CLASS_PRESETS = {
 # сделок похожа. Своя вписывается поверх, пустое поле возвращает одну ставку.
 # Ниже первой ступени действует обычная специальная ставка, поэтому на вводных,
 # где покрытие не доходит до 1×, умолчание ничего не меняет.
+# Предел присланного документа. Тизер весит мегабайт, решение ГЗК полтора;
+# двадцать мегабайт — это уже том проектной документации, и читать его
+# страницами дешевле, чем гонять целиком через модель.
+_DOCUMENT_INTAKE_MAX_BYTES = 20 * 1024 * 1024
+
 PF_SPECIAL_STEPS_DEFAULT = "100:3,47; 110:1,75; 120:0,03; 130:0,01"
 PF_SPECIAL_STEPS_SOURCE = "НКЛ Сбербанка 400F00BVX003 от 04.08.2026"
 
@@ -428,6 +434,24 @@ class SensitivityRequest(BaseModel):
     parameters: list[str] = []
     change_pct: float = 10.0
     duration_change_months: float = 6.0
+
+
+class AgentDocumentRequest(BaseModel):
+    """Присланный документ по участку: тизер, справка, решение ГЗК.
+
+    Файл приходит base64 в теле, а не формой: тем же путём, что и остальные
+    запросы страницы, и без второго способа авторизации.
+    """
+    filename: str = ""
+    content_b64: str = ""
+    inputs: dict[str, Any] = {}
+    tep: dict[str, dict[str, Any]] = {}
+    session: str = ""
+    access_key: str = ""
+    # Ключи, которые человек подтвердил в таблице разбора. Пусто — только
+    # показать: применение это отдельное действие, а не следствие загрузки.
+    accept: list[str] = []
+    extraction: dict[str, Any] = {}
 
 
 class AgentChatRequest(BaseModel):
@@ -28109,6 +28133,56 @@ def plato_answer(req: AgentChatRequest, request: Request) -> dict[str, Any]:
             detail=(f"Платон Сергеевич не ответил за {int(_PLATO_AGENT_WAIT_SECONDS)} с. "
                     "Повторите вопрос."))
     return _plato_chat_result(trace_id, outcome)
+
+
+@app.post("/agent/document")
+def agent_document(req: AgentDocumentRequest, request: Request) -> dict[str, Any]:
+    """Разобрать документ по участку и показать, что из него можно взять.
+
+    Три хода: что написано (с цитатой), что из этого следует (считает движок),
+    чего в документе нет (спрашивается). Ничего не подставляется молча —
+    применение отдельным вызовом с уже подтверждёнными ключами.
+    """
+    _require_web_access(req.session, req.access_key, "Разбор документа")
+    # Применение уже разобранного: модель второй раз не зовём — она бы
+    # прочитала документ заново и могла ответить иначе на тех же страницах.
+    if req.accept:
+        got = document_intake.apply_intake(
+            req.extraction or {}, req.inputs or {}, req.tep or {}, accept=req.accept)
+        usage_track("document_apply", surface="site",
+                    text=str(req.filename or ""))
+        return {"applied": got["applied"], "refused": got["refused"],
+                "inputs": got["inputs"], "tep": got["tep"]}
+
+    try:
+        data = base64.b64decode(str(req.content_b64 or ""), validate=True)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"Файл не прочитался: {exc}") from exc
+    if not data:
+        raise HTTPException(status_code=400, detail="Пустой файл")
+    if len(data) > _DOCUMENT_INTAKE_MAX_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=(f"Файл больше {_DOCUMENT_INTAKE_MAX_BYTES // (1024 * 1024)} МБ. "
+                    "Пришлите нужные страницы отдельно."))
+    document = document_intake.extract_text(data, req.filename)
+    if document.get("scanned") or not document.get("text"):
+        # Скан — не пустой документ, и выдавать «ничего не нашли» за ответ
+        # нельзя: человек решит, что в файле пусто.
+        return {"document": document, "fields": [], "questions": [], "notes": [],
+                "reason": document.get("reason") or "в документе нет текста"}
+
+    usage_track("document", surface="site", text=str(req.filename or ""))
+    payload = AgentChatRequest(
+        message=document_intake.intake_prompt(document),
+        inputs=dict(req.inputs or DEFAULT_INPUTS),
+        tep={key: dict(value) for key, value in (req.tep or TEP_DEFAULT).items()},
+        scenario="document_intake",
+    )
+    answer = plato_answer(payload, request)
+    got = document_intake.parse_intake(str(answer.get("answer") or ""))
+    return {"document": {key: value for key, value in document.items() if key != "text"},
+            **got}
 
 
 @app.get("/agent/result/{trace_id}")
