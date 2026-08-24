@@ -78,16 +78,22 @@ def _number(value: Any) -> float | None:
         return None
 
 
-def _pick_sheet_name(names: list[str]) -> str:
+def _pick_sheet_name(names: list[str], *, hints: tuple[str, ...] = ()) -> str:
     """Имя листа плана. Одинаково для обоих форматов — выбор один на разбор."""
-    for hint in SHEET_HINTS:
+    wanted = hints or SHEET_HINTS
+    for hint in wanted:
         for name in names:
             if _norm(name) == hint:
                 return name
-    for name in names:
-        if "план" in _norm(name) and "прод" in _norm(name):
-            return name
-    raise PlanNotFound("В книге нет листа с планом продаж")
+    for hint in wanted:
+        for name in names:
+            if _norm(name).startswith(hint):
+                return name
+    if not hints:
+        for name in names:
+            if "план" in _norm(name) and "прод" in _norm(name):
+                return name
+    raise PlanNotFound("В книге нет нужного листа продаж")
 
 
 # Шапка бывает не на третьей строке: во втором шаблоне отчёта над таблицей
@@ -175,7 +181,7 @@ def _is_xlsb(data: bytes) -> bool:
         return False
 
 
-def _sheet_rows(data: bytes) -> tuple[list[tuple], str]:
+def _sheet_rows(data: bytes, *, hints: tuple[str, ...] = ()) -> tuple[list[tuple], str]:
     """Строки листа плана — из .xlsx, .xlsm или .xlsb одинаковыми кортежами.
 
     Двоичный .xlsb — не экзотика: рабочая финмодель на двадцать семь листов в
@@ -191,7 +197,7 @@ def _sheet_rows(data: bytes) -> tuple[list[tuple], str]:
                 "Книга в формате .xlsb, а библиотека pyxlsb не установлена") from exc
         try:
             with open_workbook(io.BytesIO(data)) as book:
-                name = _pick_sheet_name(list(book.sheets))
+                name = _pick_sheet_name(list(book.sheets), hints=hints)
                 with book.get_sheet(name) as sheet:
                     return [tuple(cell.v for cell in row) for row in sheet.rows()], name
         except PlanNotFound:
@@ -207,7 +213,7 @@ def _sheet_rows(data: bytes) -> tuple[list[tuple], str]:
         book = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
     except Exception as exc:
         raise PlanNotFound(f"Файл не читается как книга Excel: {exc}") from exc
-    name = _pick_sheet_name(list(book.sheetnames))
+    name = _pick_sheet_name(list(book.sheetnames), hints=hints)
     return [row for row in book[name].iter_rows(values_only=True)], name
 
 
@@ -286,3 +292,109 @@ def compare(plan: dict[str, Any], market: list[dict[str, Any]]) -> dict[str, Any
         "fact_total": round(sum(r["fact_units"] or 0 for r in done), 1),
         "plan_total": round(sum(r["plan_units"] or 0 for r in ahead), 1),
     }
+
+
+# --- продажи по продуктам ---------------------------------------------------
+# Лист «Продажи ФМ_new» устроен поперёк: месяцы по колонкам парами «план/факт»,
+# продукты по строкам. Он богаче листа плана и, главное, СВЕЖЕЕ: на книге
+# владельца факт по квартирам там доходит до июля 2026, тогда как на «План
+# продаж_утв» пометка «факт» обрывается в мае. Читая только лист плана, мы
+# показывали бы факт короче на два месяца — и это выглядело бы как «продажи
+# встали», а не как «мы читаем не тот лист».
+PRODUCT_SHEET_HINTS = ("продажи фм_new", "продажи фм new", "продажи фм", "продажи п-ф_new")
+
+# Ключ продукта — наш, подпись — из книги: подписи в книгах правят руками.
+PRODUCT_ROWS = (
+    ("apartments", ("квартира", "квартиры")),
+    ("storage", ("кладовые", "кладовки")),
+    ("parking", ("машиноместа", "машино-места", "м/м")),
+    ("commercial", ("коммерческие площади", "псн", "коммерция")),
+)
+# Меры внутри блока продукта. «Цена продажи» намеренно не берётся: она в книге
+# считается делением, и второй счёт той же цены однажды разошёлся бы с первым.
+PRODUCT_MEASURES = (
+    ("escrow_th", ("эскроу",)),
+    ("area", ("м2", "кв.м", "м²")),
+    ("units", ("шт",)),
+    ("contracts_th", ("заключенные договоры", "заключённые договоры")),
+)
+# Ниже помесячного блока в том же листе лежит такой же по подписям блок «Продажи
+# по годам». Прочитать его следом значит сложить год с месяцем и не заметить.
+_BLOCK_BREAK = ("продажи по годам", "продажи по кварталам")
+# «Итого» стоит последней строкой блока и несёт те же подписи мер, что продукт.
+# Без этого его эскроу и договоры дописывались в ПОСЛЕДНИЙ продукт — в книге
+# владельца коммерция получала 114 месяцев вместо 74, и сумма выглядела просто
+# крупной коммерцией.
+_BLOCK_END = ("итого", "всего")
+
+
+def _product_header(rows: list[tuple]) -> tuple[int, list[tuple[int, str, str]]]:
+    """Строка с «план/факт» и разбор колонок: индекс, месяц, вид."""
+    for index, row in enumerate(rows[:_HEADER_SEARCH_DEPTH]):
+        marks = [position for position, cell in enumerate(row)
+                 if _norm(cell) in ("план", "факт")]
+        if len(marks) < 4:
+            continue
+        dates = rows[index - 1] if index else ()
+        columns: list[tuple[int, str, str]] = []
+        for position in marks:
+            month = _month(dates[position]) if position < len(dates) else None
+            if not month:
+                continue
+            columns.append((position, month, "fact" if _norm(row[position]) == "факт" else "plan"))
+        if columns:
+            return index, columns
+    raise PlanNotFound("В листе продаж не найдена строка «план / факт»")
+
+
+def parse_product_sales(data: bytes) -> dict[str, Any]:
+    """План и факт по каждому продукту помесячно.
+
+    Лист плана знает только квартиры; кладовые, машино-места и коммерция не
+    видны в отчёте вовсе, хотя в книге они есть и по ним тоже есть факт.
+    """
+    rows, sheet_name = _sheet_rows(data, hints=PRODUCT_SHEET_HINTS)
+    header, columns = _product_header(rows)
+    products: dict[str, dict[str, Any]] = {}
+    current: str | None = None
+    for row in rows[header + 1:]:
+        label = _norm(row[2] if len(row) > 2 else "")
+        if not label:
+            continue
+        if any(mark in label for mark in _BLOCK_BREAK):
+            break
+        if label in _BLOCK_END:
+            current = None
+            continue
+        matched = next((key for key, names in PRODUCT_ROWS if label in names), None)
+        if matched:
+            current = matched
+            products.setdefault(current, {"label": str(row[2]).strip(), "months": {}})
+            continue
+        if current is None:
+            continue
+        measure = next((key for key, names in PRODUCT_MEASURES
+                        if any(label.startswith(name) for name in names)), None)
+        if measure is None:
+            continue
+        for position, month, kind in columns:
+            value = _number(row[position]) if position < len(row) else None
+            if value is None:
+                continue
+            slot = products[current]["months"].setdefault(
+                (month, kind), {"month": month, "kind": kind})
+            slot[measure] = value
+
+    if not products:
+        raise PlanNotFound("В листе продаж не найдено ни одного продукта")
+    fact_until = ""
+    for product in products.values():
+        product["months"] = sorted(product["months"].values(),
+                                   key=lambda item: (item["month"], item["kind"]))
+        for item in product["months"]:
+            # Ноль — это «в этом месяце не продавали», а не «факта нет»: месяц
+            # с нулём и месяц без строки читаются одинаково, а значат разное.
+            if item["kind"] == "fact" and any(
+                    _number(item.get(key)) for key in ("area", "units", "contracts_th")):
+                fact_until = max(fact_until, item["month"])
+    return {"sheet": sheet_name, "products": products, "fact_until": fact_until}

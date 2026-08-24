@@ -14,6 +14,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from auction_search.adapters import InvestMoscowDiscoveryAdapter, LotOnlineAdapter, RoseltorgAdapter
+from auction_search.adapters.torgi_gov import TorgiGovAdapter
 from auction_search.bridge import auction_page_with_handoff, install_page_bridge
 from auction_search.developaid_mapper import build_developaid_seed
 from auction_search.documents import DocumentExtractionError
@@ -77,9 +78,19 @@ def _discovery_adapters(source: str):
         return [RoseltorgAdapter()]
     if value in {"investmoscow", "moscow", "city"}:
         return [InvestMoscowDiscoveryAdapter()]
+    if value in {"torgi", "torgi_gov", "bankruptcy"}:
+        return [TorgiGovAdapter()]
     if value == "all":
-        return [_lot_online_discovery_adapter(), RoseltorgAdapter(), InvestMoscowDiscoveryAdapter()]
-    raise ValueError("source: all, lot_online, roseltorg или investmoscow")
+        adapters = [_lot_online_discovery_adapter(), RoseltorgAdapter(),
+                    InvestMoscowDiscoveryAdapter()]
+        # Банкротные лоты идут в общую выдачу, только когда источник включён:
+        # его коды видов торгов ещё не сверены живым ответом, а включённый
+        # непроверенный источник хуже отсутствующего — он приносит лоты, и
+        # они выглядят так же, как проверенные.
+        if TorgiGovAdapter.enabled():
+            adapters.append(TorgiGovAdapter())
+        return adapters
+    raise ValueError("source: all, lot_online, roseltorg, investmoscow или torgi")
 
 
 def _public_lot_dict(lot) -> dict[str, Any]:
@@ -264,6 +275,17 @@ def install(app: FastAPI) -> None:
                         "enabled": _feature_enabled(_LOTONLINE_PROJECT_SHARES_FLAG),
                         "rollout": "explicit_runtime_flag",
                     },
+                },
+                {
+                    "id": "torgi_gov",
+                    "name": "ГИС Торги (torgi.gov.ru) — имущество должников",
+                    "direct_lot_ingest": False,
+                    "moscow_discovery": TorgiGovAdapter.enabled(),
+                    "discovery_access": "public_api",
+                    "note": ("Банкротные и залоговые лоты: имущественные комплексы, "
+                             "здания, незавершёнка. Городские площадки их не видят. "
+                             "Коды видов торгов не сверены живым ответом — источник "
+                             "включается переменной TORGI_GOV_DISCOVERY=1."),
                 },
                 {
                     "id": "roseltorg",
@@ -623,6 +645,16 @@ def install(app: FastAPI) -> None:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except RemoteServiceError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    @app.get("/auctions/torgi/probe")
+    async def auction_torgi_probe(page: int = Query(default=0)) -> dict[str, Any]:
+        """Сырой ответ ГИС Торгов и разобранный лот рядом.
+
+        Из песочницы torgi.gov.ru закрыт сетевой политикой, как НСПД: сверить
+        поля можно только с ядра. Показываем и сырое, и разобранное вместе —
+        расхождение должно быть видно глазами, а не вылезти числом в отчёте.
+        """
+        return await run_in_threadpool(lambda: TorgiGovAdapter().probe(page))
 
     @app.get("/auctions/discover")
     async def auction_discover(

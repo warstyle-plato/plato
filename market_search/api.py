@@ -16,6 +16,7 @@ from . import cabinet as cabinet_module
 from .geocoder import GeocodingError
 from .http import RemoteServiceError
 from .service_v6 import MarketDiscoveryService
+from . import board
 from .plan import PlanNotFound, parse_plan
 from . import report_pdf
 from .subject import SubjectNotFound
@@ -396,9 +397,25 @@ def install(app: FastAPI) -> MarketDiscoveryService:
         if len(data) > 60 * 1024 * 1024:
             raise HTTPException(status_code=413, detail="Книга больше 60 МБ — это не финмодель")
         try:
-            return parse_plan(data)
+            got = parse_plan(data)
         except PlanNotFound as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        # Отчёт правлению читается из той же книги и тем же вызовом: просить
+        # человека загрузить один файл дважды — значит однажды получить два
+        # разных файла и показать их как один проект.
+        #
+        # Его отсутствие не ошибка: у книги без листов статуса есть план, и
+        # это законный отчёт. Поэтому неудача идёт причиной рядом, а не
+        # пятисоткой поверх удавшегося разбора.
+        for key, reader in (("board_sales", board.parse_board_sales),
+                            ("board_status", board.parse_board_status)):
+            try:
+                got[key] = reader(data)
+            except PlanNotFound as exc:
+                got.setdefault("board_missing", []).append(str(exc))
+            except Exception as exc:  # noqa: BLE001
+                got.setdefault("board_missing", []).append(f"{key}: {exc}")
+        return got
 
     @app.post("/market/report")
     async def market_report(request: Request, req: ReportRequest) -> dict[str, Any]:

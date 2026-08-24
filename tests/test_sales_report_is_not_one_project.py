@@ -188,3 +188,80 @@ def test_the_date_column_is_found_by_its_label() -> None:
 def test_the_header_may_stand_below_the_twelfth_row() -> None:
     """Над таблицей второго шаблона — блок с составом очередей на семнадцать строк."""
     assert plan._HEADER_SEARCH_DEPTH >= 19
+
+
+# --- продажи по продуктам ---------------------------------------------------
+
+def _product_sheet() -> bytes:
+    """Лист «Продажи ФМ_new»: месяцы по колонкам, продукты по строкам.
+
+    Внизу того же листа лежит такой же по подписям блок «Продажи по годам», а
+    под последним продуктом — строки «Итого» с теми же мерами. И то и другое
+    молча дописывается не туда, если их не остановить.
+    """
+    openpyxl = pytest.importorskip("openpyxl")
+    book = openpyxl.Workbook()
+    sheet = book.active
+    sheet.title = "Продажи ФМ_new"
+    sheet.append([None, None, "Продажи по месяцам"])
+    sheet.append([None, None, None, "2025 Q3", "2025 Q3", "2025 Q4", "2025 Q4"])
+    sheet.append([None, None, "Объект недвижимости",
+                  datetime.date(2025, 7, 1), datetime.date(2025, 7, 1),
+                  datetime.date(2025, 10, 1), datetime.date(2025, 10, 1)])
+    sheet.append([None, None, None, "план", "факт", "план", "факт"])
+    sheet.append([None, None, "Квартира"])
+    sheet.append([None, None, "Эскроу, тыс. руб. ", 10, 11, 20, 21])
+    sheet.append([None, None, "м2", 30, 33.3, 40, 44])
+    sheet.append([None, None, "Заключенные договоры, тыс. руб.", 100, 110, 200, 220])
+    sheet.append([None, None, "Машиноместа"])
+    sheet.append([None, None, "Эскроу, тыс. руб. ", 1, 2, 3, 4])
+    sheet.append([None, None, "шт", 5, 6, 7, 8])
+    sheet.append([None, None, "Итого"])
+    sheet.append([None, None, "Эскроу, тыс. руб. ", 999, 999, 999, 999])
+    sheet.append([None, None, "Продажи по годам"])
+    sheet.append([None, None, "Квартира"])
+    sheet.append([None, None, "м2", 888, 888, 888, 888])
+    buffer = io.BytesIO()
+    book.save(buffer)
+    return buffer.getvalue()
+
+
+def test_products_are_read_separately() -> None:
+    """Лист плана знает только квартиры — кладовые и паркинг не видны вовсе."""
+    got = plan.parse_product_sales(_product_sheet())
+    assert set(got["products"]) == {"apartments", "parking"}
+
+
+def test_plan_and_fact_stand_side_by_side() -> None:
+    got = plan.parse_product_sales(_product_sheet())
+    july = {item["kind"]: item for item in got["products"]["apartments"]["months"]
+            if item["month"] == "2025-07"}
+    assert july["plan"]["area"] == 30
+    assert july["fact"]["area"] == 33.3
+    assert july["fact"]["escrow_th"] == 11
+
+
+def test_the_total_row_does_not_leak_into_the_last_product() -> None:
+    """Иначе «Итого» дописывается в последний продукт и выглядит крупным паркингом."""
+    got = plan.parse_product_sales(_product_sheet())
+    parking = got["products"]["parking"]["months"]
+    assert all(item.get("escrow_th") != 999 for item in parking)
+
+
+def test_the_yearly_block_below_is_not_added_to_the_months() -> None:
+    """Сложить год с месяцем и не заметить — тот же класс, что «Итого»."""
+    got = plan.parse_product_sales(_product_sheet())
+    areas = [item.get("area") for item in got["products"]["apartments"]["months"]]
+    assert 888 not in areas
+
+
+def test_the_fact_horizon_comes_from_non_empty_months() -> None:
+    """Ноль — это «не продавали», а не «факта нет»: месяцы читаются по-разному."""
+    got = plan.parse_product_sales(_product_sheet())
+    assert got["fact_until"] == "2025-10"
+
+
+def test_the_price_is_not_re_read_from_the_book() -> None:
+    """Цена в книге посчитана делением; второй счёт разошёлся бы с первым."""
+    keys = {key for key, _ in plan.PRODUCT_MEASURES}
+    assert "price" not in keys
