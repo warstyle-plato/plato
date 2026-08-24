@@ -21758,7 +21758,26 @@ def _profit_tax_schedule(
     year_result = 0.0       # прибыль или убыток текущего года
     year_used = 0.0         # сколько убытка прошлых лет зачтено в этом году
     year_tax_paid = 0.0
+    # Всё, что признано ДО первого облагаемого месяца, приходит в год РВЭ, а
+    # не пропадает. Выручка по ДДУ облагается при передаче объекта, поэтому
+    # налог и начинается с РВЭ — но это ОТСРОЧКА, а не списание. Пока база
+    # была накопленной с начала проекта, разницы не было: прибыль доживала до
+    # РВЭ сама. С годовым сбросом прибыльные годы до РВЭ обнулялись молча — на
+    # проверочном проекте так пропали 4 327 и 13 407 млн, и налог вышел вдвое
+    # меньше должного при внешне исправном расчёте.
+    deferred = 0.0
     for month in months:
+        gated = first_taxable_month is not None and month < first_taxable_month
+        if gated:
+            deferred += (margin_by_month.get(month, 0.0)
+                         - financing_by_month.get(month, 0.0))
+            schedule[month] = 0.0
+            detail.append({
+                "month": month.isoformat(), "year_result": deferred,
+                "loss_used": 0.0, "loss_carry_forward": prior_losses,
+                "taxable_base": 0.0, "profit_tax": 0.0,
+            })
+            continue
         if year is not None and month.year != year:
             # Год закрылся: убыточный пополняет запас, прибыльный — тратит.
             if year_result < 0:
@@ -21768,7 +21787,8 @@ def _profit_tax_schedule(
             year_result = year_used = year_tax_paid = 0.0
         year = month.year
         year_result += (margin_by_month.get(month, 0.0)
-                        - financing_by_month.get(month, 0.0))
+                        - financing_by_month.get(month, 0.0)) + deferred
+        deferred = 0.0
         year_used = (min(prior_losses, year_result * use_limit)
                      if year_result > 0 and prior_losses > 0 else 0.0)
         base = max(year_result - year_used, 0.0)
