@@ -1578,11 +1578,77 @@ function boardShare(part,whole){
   if(!whole||part===null||part===undefined)return '—';
   return new Intl.NumberFormat('ru-RU',{maximumFractionDigits:0}).format(part/whole*100)+'%';
 }
+// Разбор сводки. Переписать числа из книги — не отчёт: человек видит их и у
+// себя в файле. Отчёт обязан СОПОСТАВИТЬ то, что в книге лежит по разным
+// листам и потому рядом никогда не оказывается.
+//
+// Считается здесь, а не языковой моделью: пороги названы, арифметика видна, и
+// один и тот же файл всегда даёт один и тот же вывод.
+function boardStage(stages, words){
+  return (stages||[]).find(x=>{
+    const name=String(x.stage||'').toLowerCase();
+    return words.every(w=>name.includes(w));
+  })||null;
+}
+function boardVerdict(sales, status){
+  const lines=[]; let tone='ok';
+  const money=(sales&&sales.money)||{}, totals=money.totals||{};
+  const sold=totals.sold, paid=totals.paid, budget=totals.total;
+  // 1. Стройка против денег. Самый банковский вопрос: разрыв закрывается ПФ,
+  //    и он же поднимает ставку через покрытие эскроу.
+  const smr=boardStage(status&&status.stages,['смр']);
+  if(smr&&smr.share!==null&&paid&&budget){
+    const paidShare=paid/budget, gap=(smr.share-paidShare)*100;
+    if(gap>=10){
+      tone='warn';
+      lines.push(`Стройка ушла вперёд денег: СМР освоено на ${Math.round(smr.share*100)}%, `
+        +`а продажи оплачены на ${Math.round(paidShare*100)}% — разрыв ${Math.round(gap)} п.п. `
+        +`закрывается проектным финансированием, и он же держит покрытие эскроу низким.`);
+    }else{
+      lines.push(`Стройка и деньги идут вровень: СМР ${Math.round(smr.share*100)}%, `
+        +`оплачено ${Math.round(paidShare*100)}%.`);
+    }
+  }
+  // 2. Оплачено против проданного. «Продано» — это обязательство покупателя,
+  //    «оплачено» — деньги на эскроу; между ними дебиторка и время.
+  if(sold&&paid!==null&&paid!==undefined){
+    const ratio=paid/sold, debt=sold-paid;
+    if(ratio<0.7){
+      tone=tone==='ok'?'warn':tone;
+      lines.push(`Из законтрактованного оплачено ${Math.round(ratio*100)}%: `
+        +`${boardNum(debt,0)} млн ₽ ещё не на эскроу. До раскрытия счетов это не деньги проекта.`);
+    }else{
+      lines.push(`Оплачено ${Math.round(ratio*100)}% законтрактованного — рассрочки почти не копятся.`);
+    }
+  }
+  // 3. Какой формат уходит. По средней цене этого не видно вовсе, а решение по
+  //    прайсу принимается именно по нему.
+  const brackets=(sales&&sales.brackets||[]).filter(b=>b.share!==null&&b.share!==undefined);
+  if(brackets.length>=2){
+    const best=brackets.reduce((a,b)=>b.share>a.share?b:a);
+    const worst=brackets.reduce((a,b)=>b.share<a.share?b:a);
+    if(best.share>=worst.share*1.5){
+      lines.push(`Формат расходится неравномерно: ${esc(best.range)} м² продан на `
+        +`${Math.round(best.share*100)}%, ${esc(worst.range)} м² — на ${Math.round(worst.share*100)}%. `
+        +`Остаток копится в том, что уходит медленнее.`);
+      if(best.price&&worst.price&&best.price<worst.price){
+        lines.push(`При этом быстрый формат дешевле медленного: `
+          +`${boardNum(best.price,0)} против ${boardNum(worst.price,0)} тыс ₽/м². `
+          +`Прайс догоняет спрос, а не ведёт его.`);
+      }
+    }
+  }
+  return {tone, lines};
+}
 function boardCard(data){
   if(!data)return '';
   const sales=data.board_sales||null, status=data.board_status||null;
   if(!sales&&!status)return '';
   let html='<div class="card"><h2>Отчёт правлению</h2>';
+  const pv=boardVerdict(sales,status);
+  if(pv.lines.length){
+    html+=`<div class="say ${pv.tone}"><b>${TONE[pv.tone]||'•'} Разбор</b> ${pv.lines.join(' ')}</div>`;
+  }
   const money=(sales&&sales.money)||{}, volume=(sales&&sales.volume)||{};
   const products=money.products||{};
   const keys=Object.keys(products);

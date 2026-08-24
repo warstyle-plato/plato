@@ -210,3 +210,78 @@ def test_a_missing_board_is_not_an_error_on_the_whole_upload() -> None:
     """У книги без листов статуса есть план, и это законный отчёт."""
     source = Path("market_search/api.py").read_text(encoding="utf-8")
     assert "board_missing" in source
+
+
+# --- разбор, а не пересказ --------------------------------------------------
+# Первая версия карточки переписывала числа из книги в таблицу. Владелец сказал
+# прямо: непонятно, что это дало — человек видит те же числа у себя в файле.
+# Отчёт обязан СОПОСТАВИТЬ то, что в книге лежит по разным листам и потому
+# рядом никогда не оказывается.
+
+
+def _verdict(sales: dict, status: dict) -> dict:
+    """Настоящий код разбора из кабинета, прогнанный через node."""
+    import json
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node недоступен")
+    source = Path("market_search/cabinet.py").read_text(encoding="utf-8")
+    start = source.index("function boardStage")
+    end = source.index("function boardCard(")
+    script = (
+        "const TONE={ok:'v',warn:'!',bad:'x'};\n"
+        "function esc(x){return String(x)}\n"
+        "function boardNum(v,d){if(v===null||v===undefined||!isFinite(v))return '—';\n"
+        " return new Intl.NumberFormat('ru-RU',{maximumFractionDigits:d===undefined?1:d}).format(v)}\n"
+        + source[start:end]
+        + f"console.log(JSON.stringify(boardVerdict({json.dumps(sales)},{json.dumps(status)})));"
+    )
+    done = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
+    assert done.returncode == 0, done.stderr
+    return json.loads(done.stdout)
+
+
+def test_the_report_compares_construction_with_money() -> None:
+    """Самый банковский вопрос: разрыв между стройкой и эскроу закрывает ПФ."""
+    got = _verdict(board.parse_board_sales(_sales_book()),
+                   board.parse_board_status(_status_book()))
+    assert got["tone"] == "warn"
+    assert any("Стройка ушла вперёд" in line for line in got["lines"])
+    assert any("проектным финансированием" in line for line in got["lines"])
+
+
+def test_the_report_says_how_much_is_contracted_but_not_paid() -> None:
+    """«Продано» — обязательство покупателя, «оплачено» — деньги на эскроу."""
+    got = _verdict(board.parse_board_sales(_sales_book()),
+                   board.parse_board_status(_status_book()))
+    assert any("оплачено 55%" in line for line in got["lines"])
+    assert any("не на эскроу" in line for line in got["lines"])
+
+
+def test_the_report_names_which_format_is_stuck() -> None:
+    """По средней цене этого не видно, а решение по прайсу принимается по нему."""
+    got = _verdict(board.parse_board_sales(_sales_book()),
+                   board.parse_board_status(_status_book()))
+    assert any("Формат расходится неравномерно" in line for line in got["lines"])
+
+
+def test_a_healthy_project_is_not_scolded() -> None:
+    """Порог должен молчать там, где всё в порядке, иначе он ничего не значит."""
+    sales = {"money": {"totals": {"sold": 1000.0, "paid": 900.0, "total": 4000.0}},
+             "volume": {}, "brackets": []}
+    status = {"stages": [{"stage": "СМР ЖК", "budget_mln": 100.0,
+                          "done_mln": 25.0, "share": 0.25}]}
+    got = _verdict(sales, status)
+    assert got["tone"] == "ok"
+    assert any("вровень" in line for line in got["lines"])
+    assert any("рассрочки почти не копятся" in line for line in got["lines"])
+
+
+def test_the_verdict_is_computed_not_written_by_a_model() -> None:
+    """Один и тот же файл обязан всегда давать один и тот же вывод."""
+    sales = board.parse_board_sales(_sales_book())
+    status = board.parse_board_status(_status_book())
+    assert _verdict(sales, status) == _verdict(sales, status)
