@@ -232,3 +232,42 @@ def test_reserve_reads_completion_by_limits_before_the_original_estimate(tmp_pat
     assert baseline["reserve"] == pytest.approx(306.2e6)
     assert baseline["reserve_parts"]["2.8"] == pytest.approx(152.9e6)
     assert baseline["reserve_parts"]["2.9"] == pytest.approx(153.3e6)
+
+
+def test_the_summary_speaks_the_deficit_and_its_date(monkeypatch):
+    """Лимит, модель, дефицит и дата решения — словами, а не столбиками."""
+    funding = {
+        "known": True,
+        "remaining_need": 3.82e9,
+        "bank_remaining": 655.3e6,
+        "reserve": 306.1e6,
+        "reserve_start": "2026-08-01",
+        "reserve_exhaustion": "2026-09-03",
+        "additional_financing": 1.86e9,
+        "monthly_unfunded": {"2026-10-01": 150e6, "2026-11-01": 300e6},
+        "articles": [
+            {"code": "2.2.2.6", "name": "Наружная отделка (Фасады)",
+             "need_total": 1.1e9, "opening_limit": 0.4e9},
+        ],
+    }
+    view = {"dashboard": {"schedule": {
+        "approved_finish": "2027-09-30",
+        "forecast_finish": "2027-11-04",
+        "rnv_delay_days": 35,
+    }}}
+
+    text = " ".join(dashboard._summary(view, funding, {"known": False}))
+
+    assert "3,82 млрд ₽" in text
+    assert "961,4 млн ₽" in text          # 655,3 + 306,1 — доступно
+    assert "03.09.2026" in text            # резерв кончается
+    assert "октябрь 2026" in text          # первый месяц без денег
+    assert "1,86 млрд ₽" in text           # дофинансирование
+    assert "04.11.2027" in text            # прогноз ввода
+    assert "на 35 дней позже плана" in text
+    assert "2.2.2.6" in text               # где не хватает больше всего
+
+
+def test_the_summary_is_honest_without_a_finance_book():
+    text = " ".join(dashboard._summary({}, {"known": False}, {"known": False}))
+    assert "не загружена" in text

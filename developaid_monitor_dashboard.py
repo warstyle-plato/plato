@@ -579,6 +579,113 @@ def _sales_snapshot(project: str, cut: datetime.date) -> dict[str, Any]:
     }
 
 
+def _fmt_money(value: Any) -> str:
+    number = float(value or 0.0)
+    if abs(number) >= 1e9:
+        text = f"{number/1e9:,.2f}".replace(",", " ").replace(".", ",")
+        return f"{text} млрд ₽"
+    text = f"{number/1e6:,.1f}".replace(",", " ").replace(".", ",")
+    return f"{text} млн ₽"
+
+
+def _month_name(value: Any) -> str:
+    day = monitor._day(value)
+    if day is None:
+        return str(value or "")
+    names = ("январь", "февраль", "март", "апрель", "май", "июнь", "июль",
+             "август", "сентябрь", "октябрь", "ноябрь", "декабрь")
+    return f"{names[day.month - 1]} {day.year}"
+
+
+def _summary(view: dict[str, Any], funding: dict[str, Any],
+             sales: dict[str, Any]) -> list[str]:
+    """Управленческое резюме словами — из тех же чисел, что и графики.
+
+    Лимит, утверждённая модель, дефицит и его дата не должны собираться в
+    голове из столбиков: сервер, который их посчитал, обязан их и сказать.
+    """
+    out: list[str] = []
+    schedule = (view.get("dashboard") or {}).get("schedule") or view.get("schedule") or {}
+    approved = monitor._day(schedule.get("approved_finish") or schedule.get("approved_end"))
+    forecast = monitor._day(schedule.get("forecast_finish"))
+    delay = schedule.get("rnv_delay_days")
+    if approved and forecast:
+        drift = (f"на {delay} дней позже плана" if isinstance(delay, (int, float))
+                 and delay and delay > 0 else "в срок")
+        out.append(
+            f"Срок. Утверждённый ввод — {approved.strftime('%d.%m.%Y')}; при "
+            f"нынешнем темпе актов КС модель ждёт "
+            f"{forecast.strftime('%d.%m.%Y')} — {drift}.")
+
+    if not funding.get("known"):
+        out.append("Деньги. Финансовая книга не загружена — потребность и "
+                   "дефицит посчитать не из чего.")
+        return out
+
+    need = float(funding.get("remaining_need") or 0.0)
+    bank = float(funding.get("bank_remaining") or 0.0)
+    reserve = float(funding.get("reserve") or 0.0)
+    fuel = bank + reserve
+    out.append(
+        f"Деньги. До конца стройки по утверждённому ДДС нужно {_fmt_money(need)}. "
+        f"Доступно {_fmt_money(fuel)}: {_fmt_money(bank)} остатков лимитов "
+        f"статей и {_fmt_money(reserve)} резерва 2.8/2.9 — "
+        f"{fuel / need * 100:.0f}% потребности." if need > 0 else
+        f"Деньги. Потребности по утверждённому ДДС не осталось; доступно {_fmt_money(fuel)}.")
+
+    start = funding.get("reserve_start")
+    exhaustion = funding.get("reserve_exhaustion")
+    unfunded = funding.get("monthly_unfunded") or {}
+    first_gap = next((month for month in sorted(unfunded)
+                      if float(unfunded[month] or 0.0) > 1e6), None)
+    gap_total = float(funding.get("additional_financing") or 0.0)
+    if gap_total > 1e6:
+        pieces = []
+        if start:
+            pieces.append(f"с {_month_name(start)} статьи начинают тратить резерв")
+        if exhaustion:
+            pieces.append(f"{monitor._day(exhaustion).strftime('%d.%m.%Y')} резерв "
+                          f"кончается")
+        if first_gap:
+            pieces.append(f"с {_month_name(first_gap)} платить нечем — "
+                          f"в этот месяц не хватает "
+                          f"{_fmt_money(unfunded[first_gap])}")
+        out.append("Когда возникает дыра. " + "; ".join(pieces) + ". "
+                   f"Всего до конца не хватает {_fmt_money(gap_total)} — это и "
+                   "есть потребность в дофинансировании.")
+        deadline = exhaustion or first_gap
+        if deadline:
+            out.append(
+                f"Решение. Дофинансирование или увеличение лимитов на "
+                f"{_fmt_money(gap_total)} нужно согласовать до "
+                f"{monitor._day(deadline).strftime('%d.%m.%Y')} — дальше стройка "
+                "платит только тем, что осталось, и темп станет падать.")
+    else:
+        out.append("Дыры по утверждённому ДДС нет: лимиты статей и резерв "
+                   "закрывают потребность до конца.")
+
+    rows = funding.get("articles") or []
+    short = sorted((row for row in rows
+                    if float(row.get("need_total") or 0.0)
+                    > float(row.get("opening_limit") or 0.0) + 1e6),
+                   key=lambda row: float(row.get("need_total") or 0.0)
+                   - float(row.get("opening_limit") or 0.0), reverse=True)[:3]
+    if short:
+        names = "; ".join(
+            f"{row['code']} {str(row.get('name') or '').strip()} — не хватает "
+            f"{_fmt_money(float(row.get('need_total') or 0.0) - float(row.get('opening_limit') or 0.0))}"
+            for row in short)
+        out.append(f"Где не хватает больше всего: {names}. Резерв общий и "
+                   "закрывает их по очереди месяцев, пока не кончится.")
+
+    if sales.get("known"):
+        out.append(
+            f"Продажи. Продано {sales.get('total_units', 0):.0f} лотов на "
+            f"{_fmt_money(sales.get('total_revenue'))}; последний факт — "
+            f"{sales.get('last_fact', '')}.")
+    return out
+
+
 def _dashboard(project: str, rss: Path, cut: datetime.date, view: dict[str, Any]) -> dict[str, Any]:
     estimate = actuals.read_estimate(rss)
     finance = _finance_baseline(project)
@@ -607,6 +714,7 @@ def _dashboard(project: str, rss: Path, cut: datetime.date, view: dict[str, Any]
         },
         "sales": _sales_snapshot(project, cut),
         "funding": funding,
+        "summary": _summary(view, funding, _sales_snapshot(project, cut)),
         "sources": {
             "rss": rss.name,
             "physical_fact": "Реестр выполненных работ",
