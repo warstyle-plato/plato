@@ -67,7 +67,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.19.84"
+VERSION = "0.19.85"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -20155,31 +20155,29 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
     vat_charged_by_month = dict(vat_schedule)
 
     tax_rate = n(x, "profit_tax_pct", 25) / 100
-    cumulative_margin = cumulative_financing = tax_paid = 0.0
-    profit_tax_schedule: dict[date, float] = {}
+    margins = {month: (tax_margin_by_month.get(month, 0.0)
+                       - vat_charged_by_month.get(month, 0.0)) for month in months}
+    profit_tax_schedule, tax_detail = _profit_tax_schedule(
+        months, margins, financing_deductions, rve, tax_rate)
     tax_rows = []
     row_by_month = {d(row["month"]): row for row in result["rows"]}
-    for month in months:
-        margin_month = tax_margin_by_month.get(month, 0.0) - vat_charged_by_month.get(month, 0.0)
+    for month, line in zip(months, tax_detail):
+        margin_month = margins.get(month, 0.0)
         financing_month = financing_deductions.get(month, 0.0)
-        cumulative_margin += margin_month
-        cumulative_financing += financing_month
-        taxable_profit_cumulative = max(cumulative_margin - cumulative_financing, 0.0)
-        tax_month = 0.0
-        if month >= rve:
-            tax_month = max(taxable_profit_cumulative * tax_rate - tax_paid, 0.0)
-        tax_paid += tax_month
-        profit_tax_schedule[month] = tax_month
+        tax_month = profit_tax_schedule.get(month, 0.0)
         if month in row_by_month:
             row_by_month[month]["taxable_margin"] = margin_month
             row_by_month[month]["financing_tax_deduction"] = financing_month
-            row_by_month[month]["taxable_profit_cumulative"] = taxable_profit_cumulative
+            row_by_month[month]["taxable_profit_cumulative"] = line["taxable_base"]
+            row_by_month[month]["loss_carry_forward"] = line["loss_carry_forward"]
             row_by_month[month]["profit_tax"] = tax_month
         tax_rows.append({
             "month": month.isoformat(),
             "margin": margin_month,
             "financing_deduction": financing_month,
-            "taxable_profit_cumulative": taxable_profit_cumulative,
+            "taxable_profit_cumulative": line["taxable_base"],
+            "loss_used": line["loss_used"],
+            "loss_carry_forward": line["loss_carry_forward"],
             "profit_tax": tax_month,
         })
     profit_tax = sum(profit_tax_schedule.values())
@@ -20201,6 +20199,10 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
     result.update({
         "financing_cost": financing_cost,
         "profit_tax": profit_tax,
+        # Ставка едет вместе с результатом: свод очередей пересчитывает
+        # налог как один налогоплательщик и обязан взять ту же ставку,
+        # а не вторую копию из мастер-вводных.
+        "profit_tax_rate": tax_rate,
         "vat": vat,
         "vat_charged": vat_charged,
         "vat_input_deductible": vat_input_deductible,
@@ -20785,6 +20787,10 @@ def calculate(req: CalcRequest) -> dict:
             "financing_cost": fin["financing_cost"],
             "profit_before_tax": after_finance_pre_tax,
             "profit_tax": fin["profit_tax"],
+            # Ставка едет в сводке рядом с налогом: свод очередей считает
+            # налог заново как один налогоплательщик и берёт ставку отсюда,
+            # а не вторую копию из мастер-вводных.
+            "profit_tax_rate": fin.get("profit_tax_rate", 0.0),
             # НДС живёт в summary рядом с налогом на прибыль, а не только в
             # finance: поверхности читают сводку, и без этого ключа налог,
             # уменьшающий чистую прибыль на миллиард, нигде не показывался.
@@ -21515,6 +21521,23 @@ def _phase_financing_summary(
     }
 
 
+def _phase_tax_rate(results: list[dict[str, Any]]) -> float:
+    """Ставка налога, по которой посчитаны очереди.
+
+    Берётся из самих результатов, а не из вводных мастера: свод обязан
+    пересчитывать налог по той же ставке, что уже применена к очередям.
+    Вторая копия «двадцать пять процентов» рядом со сводом однажды
+    разъехалась бы с расчётом, и обе выглядели бы верными.
+
+    Очереди с разными ставками — не наш случай и молчать о нём нельзя:
+    ноль отключает пересчёт, и свод остаётся суммой очередей.
+    """
+    rates = {round(float((r.get("summary") or {}).get("profit_tax_rate") or 0.0), 6)
+             for r in results}
+    rates.discard(0.0)
+    return rates.pop() if len(rates) == 1 else 0.0
+
+
 def _aggregate_finance(results: list[dict[str, Any]]) -> dict[str, Any]:
     month_map: dict[str, dict[str, float]] = {}
     additive = (
@@ -21557,6 +21580,35 @@ def _aggregate_finance(results: list[dict[str, Any]]) -> dict[str, Any]:
         out["pf_rate"] = pf_num / pf_den if pf_den else 0.0
         out["coverage"] = out["escrow"] / out["pf_balance"] if out["pf_balance"] else 0.0
         rows.append(out)
+
+    # Налог очередей считается ЗАНОВО и на своде, а не складывается из
+    # очередей (решение владельца, 24.08.2026: «очереди это один проект»).
+    # Складывать нельзя: у каждой очереди база обрезалась нулём отдельно, и
+    # убыток убыточной очереди выбрасывался целиком. На Румянцеве первая
+    # очередь давала −5 264,6 млн, и эти деньги просто пропадали — налог
+    # выходил на 1 316 млн больше, чем платит один налогоплательщик.
+    #
+    # Ловилось это чудом: паритет сверяет только консолидацию, а сдвиг
+    # расходов между очередями в ней гасится. Наружу он вылез единственным
+    # путём — через налог, и только потому, что убыток обрезается нулём.
+    tax_rate = _phase_tax_rate(results)
+    consolidated_profit_tax: float | None = None
+    if rows and tax_rate > 0:
+        months = [d(row["month"]) for row in rows]
+        margins = {d(row["month"]): float(row.get("taxable_margin", 0.0) or 0.0)
+                   for row in rows}
+        financings = {d(row["month"]): float(row.get("financing_tax_deduction", 0.0) or 0.0)
+                      for row in rows}
+        first_taxable = min(
+            (d(r["dates"]["rve"]) for r in results if (r.get("dates") or {}).get("rve")),
+            default=None)
+        schedule, detail = _profit_tax_schedule(
+            months, margins, financings, first_taxable, tax_rate)
+        for row, line in zip(rows, detail):
+            row["profit_tax"] = schedule.get(d(row["month"]), 0.0)
+            row["taxable_profit_cumulative"] = line["taxable_base"]
+            row["loss_carry_forward"] = line["loss_carry_forward"]
+        consolidated_profit_tax = sum(schedule.values())
 
     fs = [r["finance"] for r in results]
     bridge_weight = sum(max(f["peak_bridge"], 0.0) for f in fs)
@@ -21629,7 +21681,11 @@ def _aggregate_finance(results: list[dict[str, Any]]) -> dict[str, Any]:
         "total_revenue": sum(f["total_revenue"] for f in fs),
         "total_capex": sum(f["total_capex"] for f in fs),
         "commercial_costs": sum(f["commercial_costs"] for f in fs),
-        "profit_tax": sum(f["profit_tax"] for f in fs),
+        # Налог свода — пересчитанный как у одного налогоплательщика, а не
+        # сумма очередей. Оставить сумму значило бы посчитать заново и не
+        # применить: строки показывали бы одно, итог другое.
+        "profit_tax": (consolidated_profit_tax if consolidated_profit_tax is not None
+                       else sum(f["profit_tax"] for f in fs)),
         "vat": sum(f.get("vat", 0.0) for f in fs),
         "vat_charged": sum(f.get("vat_charged", 0.0) for f in fs),
         "vat_input_deductible": sum(f.get("vat_input_deductible", 0.0) for f in fs),
@@ -21656,6 +21712,115 @@ def _aggregate_finance(results: list[dict[str, Any]]) -> dict[str, Any]:
         "rve_escrow_release": sum(f.get("rve_escrow_release", 0.0) for f in fs),
         "rve_pf_shortfall": sum(f.get("rve_pf_shortfall", 0.0) for f in fs),
     }
+
+
+# Налог на прибыль: перенос убытка по ст. 283 НК.
+#
+# Убыток прошлых лет переносится бессрочно (десятилетний лимит снят с 2017
+# года), но уменьшить им базу можно НЕ БОЛЕЕ ЧЕМ НАПОЛОВИНУ — ограничение
+# продлено до конца 2030 года. Внутри одного года доходы и расходы сходятся
+# свободно: половинное правило касается только убытка ЗАКРЫТЫХ лет.
+#
+# Прежде движок вёл базу накопленной с начала проекта и гасил ею прибыль
+# целиком: это мягче закона — налог начинался позже, чем на самом деле.
+_LOSS_CARRY_USE_LIMIT = 0.5
+
+
+def _profit_tax_schedule(
+    months: list[date],
+    margin_by_month: dict[date, float],
+    financing_by_month: dict[date, float],
+    first_taxable_month: date | None,
+    tax_rate: float,
+    use_limit: float = _LOSS_CARRY_USE_LIMIT,
+) -> tuple[dict[date, float], list[dict[str, Any]]]:
+    """График налога на прибыль с переносом убытка и половинным ограничением.
+
+    Объявлен один раз и зовётся дважды: одиночным расчётом и сводом очередей.
+    Вторая реализация того же правила однажды разойдётся с первой, и обе
+    будут выглядеть верными — так уже расходились ставка ПФ и профиль
+    управления между движком и книгой.
+
+    Возвращает помесячный налог и построчную расшифровку: сколько убытка
+    прошлых лет зачтено в этом году и сколько осталось. Без расшифровки
+    «налог вырос» не отличить от «зачёт упёрся в половину».
+    """
+    schedule: dict[date, float] = {}
+    detail: list[dict[str, Any]] = []
+    prior_losses = 0.0      # убыток закрытых лет, ждущий зачёта
+    year: int | None = None
+    year_result = 0.0       # прибыль или убыток текущего года
+    year_used = 0.0         # сколько убытка прошлых лет зачтено в этом году
+    year_tax_paid = 0.0
+    for month in months:
+        if year is not None and month.year != year:
+            # Год закрылся: убыточный пополняет запас, прибыльный — тратит.
+            if year_result < 0:
+                prior_losses += -year_result
+            else:
+                prior_losses -= year_used
+            year_result = year_used = year_tax_paid = 0.0
+        year = month.year
+        year_result += (margin_by_month.get(month, 0.0)
+                        - financing_by_month.get(month, 0.0))
+        year_used = (min(prior_losses, year_result * use_limit)
+                     if year_result > 0 and prior_losses > 0 else 0.0)
+        base = max(year_result - year_used, 0.0)
+        target = base * tax_rate if (
+            first_taxable_month is None or month >= first_taxable_month) else 0.0
+        tax_month = max(target - year_tax_paid, 0.0)
+        year_tax_paid += tax_month
+        schedule[month] = tax_month
+        detail.append({
+            "month": month.isoformat(),
+            "year_result": year_result,
+            "loss_used": year_used,
+            "loss_carry_forward": prior_losses - year_used,
+            "taxable_base": base,
+            "profit_tax": tax_month,
+        })
+    return schedule, detail
+
+
+def _reallocate_phase_tax(
+    results: list[dict[str, Any]],
+    comparison: list[dict[str, Any]],
+    consolidated_tax: float,
+) -> None:
+    """Сводный налог раздаётся очередям по их вкладу в облагаемую базу.
+
+    Очередь без базы налога не платит — у убыточной он остаётся нулевым, и
+    именно её убыток снизил налог остальным. Прибыль очереди правится на ту
+    же величину, иначе сумма очередей разойдётся со сводом.
+
+    Веса берутся из положительной базы очереди, а не из её прибыли: прибыль
+    несёт в себе тот самый налог, который мы сейчас и заменяем.
+    """
+    # Вес — сумма ПРИБЫЛЬНЫХ лет очереди, а не её итог за весь срок. Итог
+    # бывает нулевым или отрицательным у очереди, которая всё равно платила
+    # налог: убыточные годы не гасят прибыльные целиком — по ст. 283 не более
+    # чем наполовину. Вес по итогу давал ноль там, где налог был.
+    weights = []
+    for result in results:
+        years: dict[int, float] = {}
+        for row in result["finance"]["rows"]:
+            year = int(str(row["month"])[:4])
+            years[year] = years.get(year, 0.0) + (
+                float(row.get("taxable_margin", 0.0) or 0.0)
+                - float(row.get("financing_tax_deduction", 0.0) or 0.0))
+        weights.append(sum(value for value in years.values() if value > 0))
+    total = sum(weights)
+    for index, result in enumerate(results):
+        share = (weights[index] / total) if total else 0.0
+        was = float((result.get("summary") or {}).get("profit_tax", 0.0) or 0.0)
+        now = consolidated_tax * share
+        result["summary"]["profit_tax"] = now
+        result["summary"]["net_profit"] = (
+            float(result["summary"].get("net_profit", 0.0) or 0.0) + was - now)
+        if index < len(comparison):
+            row = comparison[index]
+            row["profit_tax"] = now
+            row["net_profit"] = float(row.get("net_profit", 0.0) or 0.0) + was - now
 
 
 def _consolidate_phase_results(
@@ -21691,6 +21856,16 @@ def _consolidate_phase_results(
     commercial_costs = finance["commercial_costs"]
     ebitda = total_revenue - total_capex - commercial_costs
     net_profit = sum(r["summary"]["net_profit"] for r in results)
+    # Налог пересчитан на своде как у одного налогоплательщика, а прибыль
+    # очередей посчитана с их собственным налогом. Не развести — и таблица
+    # очередей перестанет складываться в итог: два числа об одном и том же,
+    # оба достоверные на вид. Разница раздаётся очередям по их вкладу в базу.
+    phase_tax_delta = sum(
+        float((r.get("summary") or {}).get("profit_tax", 0.0) or 0.0)
+        for r in results) - finance["profit_tax"]
+    if abs(phase_tax_delta) > 0.5:
+        net_profit += phase_tax_delta
+        _reallocate_phase_tax(results, comparison, finance["profit_tax"])
 
     saleable = sum(r["summary"]["monetizable_saleable_sqm"] for r in results)
     apartment_saleable = sum(r["summary"]["apartment_saleable_sqm"] for r in results)
@@ -22532,6 +22707,11 @@ def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
             "cash_shared_cost":cash_shared,"allocated_shared_cost":allocated_shared,
             "peak_bridge":result["finance"]["peak_bridge"],"peak_pf":result["finance"]["peak_pf"],
             "llcr":result["summary"]["llcr"],"net_profit":result["summary"]["net_profit"],
+            # Налог очереди в таблице был не выведен вовсе, хотя в книге он в
+            # строке очереди стоит. Свод считает его как один налогоплательщик
+            # и раздаёт обратно — без этого поля проверить, что очереди
+            # складываются в итог, нечем.
+            "profit_tax":result["summary"]["profit_tax"],
             "allocated_net_profit":allocated_profit,"margin":result["summary"]["margin"],
             "cost_inflation_factor":cost_inflation_factor,
             "sales_price_inflation_factor":sales_price_inflation_factor,
