@@ -579,3 +579,26 @@ def test_a_certificate_failure_says_what_to_do(monkeypatch) -> None:
     assert mod.EXTRA_CA_DIR in result["hint"]
     assert "openssl" in result["hint"]
     assert result["extra_ca"] == mod.trust_report()
+
+
+def test_a_binary_certificate_is_accepted_too(tmp_path) -> None:
+    """Издатель по ссылке из сертификата приезжает в DER, а не в PEM.
+
+    `cafile` понимает только текстовый вид: годный корень отвергался бы как
+    битый, и причина была бы невнятной — «файл не сертификат» про настоящий
+    сертификат. Вид решает содержимое, а не расширение.
+    """
+    import ssl as ssl_module
+    from auction_search.adapters.torgi_gov import trust_report
+    pem = ssl_module.get_default_verify_paths().cafile
+    if not pem:
+        pytest.skip("в системе нет связки корней")
+    with open(pem, "r", encoding="ascii", errors="ignore") as handle:
+        text = handle.read()
+    one = text[text.index("-----BEGIN CERTIFICATE-----"):
+               text.index("-----END CERTIFICATE-----") + len("-----END CERTIFICATE-----")] + "\n"
+    (tmp_path / "pem_root.pem").write_text(one)
+    (tmp_path / "der_root.crt").write_bytes(ssl_module.PEM_cert_to_DER_cert(one))
+    report = trust_report(str(tmp_path))
+    assert report["rejected"] == []
+    assert len(report["accepted"]) == 2

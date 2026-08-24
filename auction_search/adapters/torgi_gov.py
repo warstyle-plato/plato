@@ -64,6 +64,7 @@ from __future__ import annotations
 
 import json
 import os
+import pathlib
 import re
 import ssl
 import urllib.parse
@@ -178,8 +179,20 @@ def load_extra_roots(context: ssl.SSLContext, directory: str = "") -> tuple[list
     rejected: list[str] = []
     for path in extra_ca_files(directory):
         try:
-            context.load_verify_locations(cafile=path)
-        except (OSError, ssl.SSLError, ValueError):
+            raw = pathlib.Path(path).read_bytes()
+        except OSError:
+            rejected.append(path)
+            continue
+        try:
+            # Двоичный или текстовый — решает содержимое, а не расширение.
+            # По ссылкам из самого сертификата (Authority Information Access)
+            # издатель приезжает в DER, а `cafile` понимает только PEM: годный
+            # корень отвергался бы как битый, и причина была бы невнятной.
+            if raw.lstrip().startswith(b"-----BEGIN"):
+                context.load_verify_locations(cadata=raw.decode("ascii", "strict"))
+            else:
+                context.load_verify_locations(cadata=raw)
+        except (OSError, ssl.SSLError, ValueError, UnicodeDecodeError):
             # Битый файл — не повод доверять всему подряд и не повод молчать.
             rejected.append(path)
         else:
