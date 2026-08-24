@@ -57,6 +57,54 @@ def test_a_bankruptcy_lot_is_marked_as_one() -> None:
     assert _lot().origin is LotOrigin.BANKRUPTCY
 
 
+def test_privatization_is_the_city_market_not_bankruptcy() -> None:
+    """178-ФЗ — приватизация государственного и муниципального имущества.
+
+    Продавец там город, и цена по публичному предложению у него тоже ползёт,
+    но рынок это городской. Отнести такой лот к банкротным значит поставить
+    его в сравнение не с теми соседями — там «дешевле» читается как «дошло до
+    последнего шага», а не как выгода.
+    """
+    lot = _lot(lotName="Нежилое здание", lotDescription="Приватизация",
+               biddType={"code": "178FZ", "name": "Приватизация имущества"})
+    assert lot.origin is LotOrigin.CITY
+
+
+def test_a_named_procedure_outweighs_a_guessed_code() -> None:
+    """Коды справочника не сверены живым ответом, слова процедуры — сверены.
+
+    Догадка не отменяет доказательства: карточка, называющая конкурсное
+    производство, банкротная при любом коде.
+    """
+    lot = _lot(biddType={"code": "178FZ", "name": "Приватизация"},
+               lotDescription="Конкурсное производство в отношении должника")
+    assert lot.origin is LotOrigin.BANKRUPTCY
+
+
+def test_a_tender_word_is_not_a_bankruptcy_word() -> None:
+    """«Конкурсная документация» — обычные городские торги, а не банкротство.
+
+    Голое «конкурсн» ловило и её, и «конкурсную комиссию»: слово, которое
+    означает две разные вещи, признаком быть не может.
+    """
+    lot = _lot(lotName="Земельный участок",
+               lotDescription="Конкурсная документация размещена на площадке",
+               biddType={"code": "AUCTION", "name": "Открытый конкурс"})
+    assert lot.origin is not LotOrigin.BANKRUPTCY
+
+
+def test_a_debtor_alone_is_not_proof_of_bankruptcy() -> None:
+    """Имущество должника продают и приставы вне дела о банкротстве.
+
+    Третьей метки у нас нет, поэтому неопознанное лучше оставить «другим»,
+    чем уверенно подписать неверно.
+    """
+    lot = _lot(lotName="Нежилое помещение",
+               lotDescription="Реализация имущества должника по решению суда",
+               biddType={"code": "FSSP", "name": "Реализация арестованного имущества"})
+    assert lot.origin is LotOrigin.OTHER
+
+
 def test_city_lots_stay_city_by_default() -> None:
     """У старых лотов поля не было — читаться они должны как прежде."""
     from auction_search.models import AuctionLot, AuctionSource, SourceKind
