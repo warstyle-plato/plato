@@ -142,3 +142,34 @@ def test_a_project_without_extra_products_gets_no_empty_columns():
     titles = [h for h in header if isinstance(h, str) and h.startswith("Выручка · ")]
     assert titles, "разбивка пропала совсем"
     assert not any("Офисы" in t or "ОСЗ" in t for t in titles), titles
+
+
+# --- промежуточные итоги ------------------------------------------------------
+
+def test_the_mkd_group_is_declared_in_the_engine():
+    """Состав МКД — жильё, коммерция, машино-места и кладовки (владелец,
+    23.08.2026). Копия на странице разошлась бы с этой молча."""
+    assert core.MKD_PRODUCTS == (
+        "apartments", "ground_commercial", "underground_parking", "storage")
+    assert core.STANDALONE_PRODUCTS == ("standalone_retail", "offices", "above_parking")
+    assert not set(core.MKD_PRODUCTS) & set(core.STANDALONE_PRODUCTS)
+    # На странице список подставляется, а не переписан руками.
+    assert "__DEVELOPAID_MKD_PRODUCTS__" not in core.PAGE, "плейсхолдер не подставлен"
+    assert "const MKD_PRODUCTS=" in core.PAGE
+
+
+def test_the_screen_subtotals_the_building_and_the_standalone():
+    body = re.search(r"\nfunction renderPhaseComparison\(.*?\n\}", core.PAGE, re.S).group(0)
+    assert "Итого МКД" in body and "Итого отдельные объекты" in body
+    # Итог под единственной строкой — та же строка дважды.
+    assert "mine.length>1" in body
+
+
+def test_the_subtotals_add_up(bundle):
+    """Проверка на числах: МКД плюс отдельные объекты — это выручка очереди."""
+    for item in bundle["comparison"]:
+        by_product = item["revenue_by_product"]
+        mkd = sum(float(by_product.get(k) or 0.0) for k in core.MKD_PRODUCTS)
+        standalone = sum(float(by_product.get(k) or 0.0) for k in core.STANDALONE_PRODUCTS)
+        assert mkd + standalone == pytest.approx(item["revenue"], rel=1e-9), item["name"]
+        assert mkd > 0, f"{item['name']}: МКД пустой — проверка ни о чём"

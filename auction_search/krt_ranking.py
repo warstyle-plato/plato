@@ -85,6 +85,11 @@ def _number(value: Any) -> float:
     return result if result == result and abs(result) != float("inf") else 0.0
 
 
+# Паспорт площадки приходит из каталога krt.mos.ru и к нашему счёту отношения
+# не имеет: он обновляется даже тогда, когда посчитать не удалось.
+_CATALOGUE_FIELDS = ("name", "okrug", "district", "status", "area_ha", "housing_gfa_sqm")
+
+
 def score_row(project: dict[str, Any], screening: dict[str, Any]) -> dict[str, Any]:
     """Одна строка рейтинга. Ничего не считает сверх того, что дал скрининг.
 
@@ -138,6 +143,37 @@ def score_row(project: dict[str, Any], screening: dict[str, Any]) -> dict[str, A
         row["entry_capacity_reason"] = str(
             capacity.get("reason") or "Потолок цены входа не подобран")
     return row
+
+
+def keep_computed(
+    previous: dict[str, Any] | None, fresh: dict[str, Any]
+) -> dict[str, Any]:
+    """Неудавшийся пересчёт не затирает удавшийся.
+
+    Правило «посчитанное не выбрасывают» было записано в одну сторону: отчёт
+    лёг файлом рядом с баллом, чтобы карточка не считала второй раз. Обратную
+    сторону оно не закрывало — строка с числами молча заменялась строкой
+    «модель не считалась». 23.08.2026 первый календарный прогон (воскресенье,
+    3 часа) прошёл по всему каталогу, и посчитанное руками исчезло разом: на
+    экране остались одни баллы по ТЭП, будто модель не запускали никогда.
+
+    Числа старше суток — это «посчитано тогда-то», и это несравнимо лучше
+    пустоты. Поэтому прежняя строка остаётся целиком, а неудача записывается
+    рядом своим полем: удавшийся пересчёт её стирает, потому что свежая строка
+    её не несёт.
+
+    Паспортные поля каталога при этом обновляются: статус площадки и её ТЭП
+    приходят от krt.mos.ru и к счёту отношения не имеют.
+    """
+    if fresh.get("available") or not (previous or {}).get("available"):
+        return fresh
+    kept = dict(previous or {})
+    for field in _CATALOGUE_FIELDS:
+        if field in fresh:
+            kept[field] = fresh[field]
+    kept["recompute_failed_at"] = int(time.time())
+    kept["recompute_reason"] = str(fresh.get("reason") or "Пересчёт не удался")
+    return kept
 
 
 class KrtRanking:
@@ -321,6 +357,34 @@ class KrtRanking:
             **payload,
         })
 
+    def save_failure_or_report(
+        self, slug: str, screening: dict[str, Any], payload: dict[str, Any]
+    ) -> None:
+        """Отчёт кладётся целиком; неудача — дописывается к прежнему.
+
+        Затирать посчитанный отчёт отказом нельзя по той же причине, по какой
+        нельзя затирать строку рейтинга: карточка показала бы «не посчитали»
+        там, где неделю назад всё было посчитано, и повторить счёт было бы
+        нечем — исходный ответ рынка уже стёрт.
+        """
+        if screening.get("available"):
+            self.save_report(slug, payload)
+            return
+        previous = self.report(slug)
+        if not ((previous or {}).get("screening") or {}).get("available"):
+            self.save_report(slug, payload)
+            return
+        kept = dict(previous or {})
+        kept["project"] = payload.get("project") or kept.get("project")
+        kept["recompute"] = {
+            "failed_at": int(time.time()),
+            "reason": str(screening.get("reason") or "Пересчёт не удался"),
+        }
+        self.save_report(slug, {
+            key: value for key, value in kept.items()
+            if key not in ("schema_version", "slug", "computed_at")
+        }, computed_at=int(_number(kept.get("computed_at")) or time.time()))
+
     def upsert_row(self, row: dict[str, Any]) -> None:
         """Обновить одну строку рейтинга, не трогая остальные.
 
@@ -332,7 +396,10 @@ class KrtRanking:
         if not slug:
             return
         rows = {str(item.get("slug") or ""): item for item in self.rows()}
-        rows[slug] = row
+        # Правило одно на все входы: неудача не встаёт на место счёта. Держать
+        # его здесь, а не у зовущего, — чтобы следующий вход не повторил
+        # ошибку молча.
+        rows[slug] = keep_computed(rows.get(slug), row)
         self._persist(rows)
 
     def progress(self) -> dict[str, Any]:
@@ -400,13 +467,16 @@ class KrtRanking:
                     screening = {"available": False, "reason": f"Расчёт не выполнен: {exc}"}
                     with self._lock:
                         self._progress["failed"] += 1
-                row = score_row(project, screening)
+                row = keep_computed(rows.get(str(project.get("slug") or "")),
+                                    score_row(project, screening))
                 if row["slug"]:
                     rows[row["slug"]] = row
                     # Отчёт кладётся целиком, даже когда посчитать не вышло:
                     # «не посчитали и вот почему» — тоже ответ, и карточка
-                    # должна показывать его, а не пустоту с кнопкой.
-                    self.save_report(row["slug"], {
+                    # должна показывать его, а не пустоту с кнопкой. Но если
+                    # прежний отчёт посчитан, он остаётся: неудача дописывается
+                    # к нему полем, а не встаёт на его место.
+                    self.save_failure_or_report(row["slug"], screening, {
                         "project": project,
                         "market": screening.pop("market_report", None),
                         "screening": screening,

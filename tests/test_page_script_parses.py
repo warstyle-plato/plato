@@ -68,6 +68,46 @@ def test_the_served_page_parses():
         _check(block, f"собранная страница, блок {index}")
 
 
+def _html_surfaces() -> list[str]:
+    """Адреса страниц берутся у самого приложения, а не списком.
+
+    Проверка парсером стояла на `PAGE` и на корне: торги и кабинет рынка несут
+    свой инлайн-скрипт, и незакрытая кавычка в нём убивала бы их так же тихо.
+    Набор маршрутов — тот же приём, что у проверки подвала: следующая
+    поверхность попадает под парсер тем, что она появилась.
+    """
+    import main_registry
+    from fastapi.routing import APIRoute
+
+    paths = []
+    for route in main_registry.app.routes:
+        if not isinstance(route, APIRoute) or "GET" not in (route.methods or set()):
+            continue
+        if route.param_convertors:
+            continue
+        if "HTML" not in getattr(route.response_class, "__name__", ""):
+            continue
+        paths.append(route.path)
+    return sorted(set(paths))
+
+
+def test_every_page_of_the_product_parses():
+    """Каждая страница продукта, а не только та, ради которой писали проверку."""
+    import main_registry
+
+    client = TestClient(main_registry.app)
+    checked = []
+    for path in _html_surfaces():
+        response = client.get(path)
+        if response.status_code != 200:
+            continue
+        for index, script in enumerate(_INLINE.findall(response.text)):
+            if script.strip():
+                _check(script, f"{path}, блок {index}")
+        checked.append(path)
+    assert len(checked) >= 4, f"страниц под парсером слишком мало: {checked}"
+
+
 def test_the_cabinet_does_not_depend_on_the_whole_script_finishing():
     """Кнопка кабинета скрыта в разметке и открывается кодом.
 
