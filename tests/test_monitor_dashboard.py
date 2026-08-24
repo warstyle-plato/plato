@@ -183,3 +183,52 @@ def test_missing_finance_book_is_a_reason_not_a_zero(tmp_path, monkeypatch):
 
     assert baseline["known"] is False
     assert "не загружен" in baseline["reason"]
+
+
+def test_reserve_reads_completion_by_limits_before_the_original_estimate(tmp_path, monkeypatch):
+    """Резерв ищется в «на завершение», а не в первоначальной смете.
+
+    На Кутузове бюджетная колонка резервов пуста, и запасной ход на
+    «Общую сметную стоимость первоначальную» терял 2.8 целиком: монитор
+    показывал 209,7 млн вместо 306,1 (152,9 + 153,3 по колонке «согласно
+    лимитам»).
+    """
+    import io
+    from openpyxl import Workbook
+
+    book = Workbook()
+    ws = book.active
+    ws.title = "Расчет стоимости строительства"
+    header9 = {1: "Код", 3: "Общая сметная стоимость первоначальная",
+               4: "Общая сметная стоимость\nУвеличенная",
+               7: "Утвержденная фин.модель проекта"}
+    header8 = {9: "Оплачено по состояни. На 17.07.2026",
+               10: "Средства на завершение согласно лимитам",
+               11: "Средства на завершение согласно бюджету",
+               13: "производстввенная программа"}
+    for c, v in header9.items():
+        ws.cell(row=9, column=c, value=v)
+    for c, v in header8.items():
+        ws.cell(row=8, column=c, value=v)
+    ws.cell(row=10, column=1, value="2.8")
+    ws.cell(row=10, column=3, value=0.0)
+    ws.cell(row=10, column=4, value=152.9e6)
+    ws.cell(row=10, column=10, value=152.9e6)
+    ws.cell(row=10, column=11, value=0.0)
+    ws.cell(row=11, column=1, value="2.9")
+    ws.cell(row=11, column=3, value=209.7e6)
+    ws.cell(row=11, column=4, value=153.3e6)
+    ws.cell(row=11, column=10, value=153.3e6)
+    ws.cell(row=11, column=11, value=0.0)
+    ws.cell(row=12, column=2, value="Всего инвестиционные расходы глава 2, 3")
+    ws.cell(row=12, column=7, value=1000.0)
+    ws.cell(row=12, column=11, value=900.0)
+
+    path = tmp_path / "finance.xlsx"
+    book.save(path)
+
+    baseline = dashboard._read_finance_baseline(path)
+    assert baseline["known"]
+    assert baseline["reserve"] == pytest.approx(306.2e6)
+    assert baseline["reserve_parts"]["2.8"] == pytest.approx(152.9e6)
+    assert baseline["reserve_parts"]["2.9"] == pytest.approx(153.3e6)

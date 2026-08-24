@@ -279,3 +279,88 @@ def test_a_row_without_id_or_percent_is_refused(tmp_path, monkeypatch):
     monkeypatch.setattr(monitor, "_SNAPSHOT_DIR", tmp_path)
     with pytest.raises(ValueError):
         monitor.store_work_fact("Кутузов", [{"progress": "не число"}], "2026-08-20")
+
+
+def test_expert_stage_close_shuts_the_monolith_cycle_but_not_floors(tmp_path, monkeypatch):
+    """«Закрыть монолитный цикл» закрывает то, без чего бетон не стоит.
+
+    Котлован, подготовка, гидроизоляция, фундамент — закрываются сотней;
+    поэтажный монолит («N-й этаж верт. констр.») не трогается: на Кутузове
+    корпус 3 в бетоне до 23-го этажа, наверху ещё пять — их темп настоящий.
+    Завершённые работы не переписываются.
+    """
+    import datetime
+    import developaid_monitor as monitor
+
+    monkeypatch.setattr(monitor, "_SNAPSHOT_DIR", tmp_path)
+    d1, d2 = datetime.date(2025, 8, 23), datetime.date(2025, 10, 28)
+    monitor.store_schedule("Кутузов", _gpr_book([
+        (1393, "Разработка котлована АС 1,2,4 захватка", 0.0, d1, d2, "Просрочено", "2.2.1.1"),
+        (1405, "Устройство бетонной подготовки", 0.0, d1, d2, "Просрочено", "2.2.1.4"),
+        (1077, "Тех этаж верт констр", 0.3, d1, d2, "В работе", "2.2.1.5"),
+        (900, "Разработка котлована", 1.0, d1, d2, "Завершено", "2.2.1.1"),
+    ]), None, "2026-07-23")
+
+    result = monitor.close_completed_stage("Кутузов", "", "2026-08-23")
+
+    assert result["works"] == 2
+    facts = monitor.work_facts("Кутузов")
+    assert facts["1393"]["progress"] == pytest.approx(1.0)
+    assert facts["1405"]["progress"] == pytest.approx(1.0)
+    assert "1077" not in facts
+    assert "900" not in facts
+
+
+def test_expert_stage_close_respects_the_object_filter(tmp_path, monkeypatch):
+    import datetime
+    import developaid_monitor as monitor
+
+    monkeypatch.setattr(monitor, "_SNAPSHOT_DIR", tmp_path)
+    d1, d2 = datetime.date(2025, 8, 23), datetime.date(2025, 10, 28)
+    import io
+    from openpyxl import Workbook
+    book = Workbook(); sheet = book.active; sheet.title = "ГПР"
+    header = ["ID", "WBS", "Раздел", "Объект", "Наименование работ", "Тип строки",
+              "% выполнения", "Начало", "Окончание", "Статус", "Длительность р.д.",
+              "Предшественники", "Связанный тендер", "Окончание тендера",
+              "Резерв до начала работ", "Увязка", "Код РСС", "Статья РСС", "Основание привязки"]
+    for c, value in enumerate(header, 1):
+        sheet.cell(row=4, column=c, value=value)
+    rows = [(1, "Паркинг / стилобат", "Разработка котлована"),
+            (2, "Корпус 3", "Разработка котлована")]
+    for i, (rid, obj, name) in enumerate(rows):
+        values = [rid, str(rid), "СМР", obj, name, "Работа", 0.0, d1, d2,
+                  "Просрочено", 10, "", "", "", "", "", "2.2.1.1", "", ""]
+        for c, value in enumerate(values, 1):
+            sheet.cell(row=5 + i, column=c, value=value)
+    blob = io.BytesIO(); book.save(blob)
+    monitor.store_schedule("Кутузов", blob.getvalue(), None, "2026-07-23")
+
+    result = monitor.close_completed_stage("Кутузов", "паркинг", "2026-08-23")
+
+    assert result["works"] == 1
+    assert "2" not in monitor.work_facts("Кутузов")
+
+
+def test_finance_baseline_can_be_replaced_and_history_kept(tmp_path, monkeypatch):
+    import io
+    import developaid_monitor as monitor
+    from openpyxl import Workbook
+
+    monkeypatch.setattr(monitor, "_SNAPSHOT_DIR", tmp_path)
+
+    def book(marker):
+        b = Workbook(); ws = b.active; ws.title = "Расчет стоимости строительства"
+        ws.cell(row=1, column=1, value=marker)
+        blob = io.BytesIO(); b.save(blob); return blob.getvalue()
+
+    monitor.replace_finance_baseline("Кутузов", book("первая"), "2026-07-08")
+    monitor.replace_finance_baseline("Кутузов", book("пересчёт"), "2026-08-23")
+
+    base = tmp_path / "Кутузов" / "baseline" / "finance.xlsx"
+    history = list((tmp_path / "Кутузов" / "finance_history").glob("*.xlsx"))
+    assert base.exists()
+    assert len(history) == 1
+
+    with pytest.raises(ValueError):
+        monitor.replace_finance_baseline("Кутузов", b"not a workbook", "2026-08-23")
