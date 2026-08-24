@@ -140,3 +140,96 @@ def test_scenario_route_is_registered_behind_monitor_access_gate():
     import main
     route = next(r for r in main.app.routes if getattr(r, "path", "") == "/monitor/scenario")
     assert "POST" in route.methods
+
+
+def test_doubts_list_unclosed_monolith_and_recompute_without_it(tmp_path, monkeypatch):
+    """Платон сомневается вслух: перечень с причиной и срок «если верны».
+
+    Котлован с прошедшим на месяцы сроком при статье, актированной на 80%, —
+    это незаполненная отметка, а не стройка; сеть без его seed даёт реальный
+    прогноз.
+    """
+    import datetime
+    import io
+    import developaid_monitor as monitor
+    import developaid_monitor_scenarios as scen
+    import developaid_monitor_schedule_graph as graph
+    from openpyxl import Workbook
+
+    monkeypatch.setattr(monitor, "_SNAPSHOT_DIR", tmp_path)
+
+    book = Workbook(); sheet = book.active; sheet.title = "ГПР"
+    header = ["ID", "WBS", "Раздел", "Объект", "Наименование работ", "Тип строки",
+              "% выполнения", "Начало", "Окончание", "Статус", "Длительность р.д.",
+              "Предшественники", "Связанный тендер", "Окончание тендера",
+              "Резерв до начала работ", "Увязка", "Код РСС", "Статья РСС", "Основание привязки"]
+    for c, value in enumerate(header, 1):
+        sheet.cell(row=4, column=c, value=value)
+    d = datetime.date
+    rows = [
+        (1, "Корпус 1", "Разработка котлована", 0.0,
+         d(2025, 8, 1), d(2025, 10, 28), "Просрочено", "2.2.1.1"),
+        (2, "Корпус 1", "Кровля", 0.1,
+         d(2026, 6, 1), d(2027, 3, 1), "В работе", "2.2.2.3"),
+    ]
+    for i, (rid, obj, name, pr, start, finish, status, code) in enumerate(rows):
+        values = [rid, str(rid), "СМР", obj, name, "Работа", pr, start, finish,
+                  status, 10, "", "", "", "", "", code, "", ""]
+        for c, value in enumerate(values, 1):
+            sheet.cell(row=5 + i, column=c, value=value)
+    blob = io.BytesIO(); book.save(blob)
+    monitor.store_schedule("Кутузов", blob.getvalue(), None, "2026-07-23")
+
+    def fake_estimate(_):
+        return {"rows": [
+            {"code": "2.2.1.1", "parent": "", "estimate": 100e6},
+            {"code": "2.2.2.3", "parent": "", "estimate": 100e6},
+        ], "by_code": {"2.2.1.1": {"estimate": 100e6},
+                       "2.2.2.3": {"estimate": 100e6}},
+            "total": {"estimate": 200e6}}
+
+    def fake_works(_):
+        return {"rows": [
+            {"code": "2.2.1.1", "amount": 80e6, "construction": True,
+             "date": datetime.date(2026, 8, 1)},
+        ], "total": 80e6}
+
+    monkeypatch.setattr(monitor.actuals, "read_estimate", fake_estimate)
+    monkeypatch.setattr(monitor.actuals, "read_completed_works", fake_works)
+    monkeypatch.setattr(monitor.actuals, "read_payments", lambda _: {"rows": [], "total": 0.0})
+    monkeypatch.setattr(monitor.actuals, "read_contracts", lambda _: {"rows": [], "total": 0.0})
+    (tmp_path / "Кутузов" / "estimate").mkdir(parents=True, exist_ok=True)
+    fake = Workbook(); fs = fake.active; fs.title = "Расчет стоимости строительства"
+    fs.cell(row=9, column=1, value="Код")
+    fs.cell(row=12, column=4, value="Всего инвестиционные расходы")
+    fs.cell(row=12, column=5, value=200e6)
+    fake.save(tmp_path / "Кутузов" / "estimate" / "2026-08-20.xlsx")
+
+    monkeypatch.setattr(graph, "_load_pm", lambda _: {
+        "known": True, "source": "pm.xlsx", "rnv_id": "9",
+        "tasks": {
+            "1": {"id": "1", "name": "Разработка котлована",
+                  "start": d(2025, 8, 1), "finish": d(2025, 10, 28),
+                  "duration_days": 60, "predecessors": [],
+                  "free_float_days": 0, "total_float_days": 0},
+            "2": {"id": "2", "name": "Кровля",
+                  "start": d(2026, 6, 1), "finish": d(2027, 3, 1),
+                  "duration_days": 200,
+                  "predecessors": [{"id": "1", "type": "FS", "lag_days": 0}],
+                  "free_float_days": 0, "total_float_days": 0},
+            "9": {"id": "9", "name": "РНВ",
+                  "start": d(2027, 9, 30), "finish": d(2027, 9, 30),
+                  "duration_days": 0,
+                  "predecessors": [{"id": "2", "type": "FS", "lag_days": 0}],
+                  "free_float_days": 0, "total_float_days": 0},
+        }})
+
+    result = scen.doubts("Кутузов", "2026-08-24")
+
+    ids = [row["id"] for row in result["rows"]]
+    assert "1" in ids
+    assert "2" not in ids
+    doubted = next(row for row in result["rows"] if row["id"] == "1")
+    assert "80%" in doubted["reason"]
+    assert result["doubt_rnv"] <= result["current_rnv"]
+    assert (result["recovered_days"] or 0) >= 0
