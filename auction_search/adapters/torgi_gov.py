@@ -73,6 +73,10 @@ from datetime import datetime, timezone
 from typing import Any, Iterable
 
 from auction_search.adapters.base import AuctionPlatformAdapter
+from auction_search.classifier import (
+    BANKRUPTCY_WORDS as _BANKRUPTCY_WORDS,
+    origin_from_evidence,
+)
 from auction_search.models import (
     AuctionLot, AuctionSource, LotKind, LotOrigin, SourceKind,
 )
@@ -111,15 +115,11 @@ REGION_PARAM_CANDIDATES = (
 PRIVATIZATION_CODES = ("178FZ",)
 BANKRUPTCY_CODES = ("127FZ", "BANKRUPTCY")
 
-# Слова, по которым происхождение опознаётся, когда код не опознан. Здесь
-# только ДОКАЗАТЕЛЬНЫЕ: «конкурсное производство» — процедура банкротства,
-# а голое «конкурсн» ловит «конкурсную документацию» и «конкурсную комиссию»
-# обычных городских торгов. «Должник» тоже убран: имущество должника продают
-# и приставы вне дела о банкротстве, а третьего значения у нас нет — лучше
-# OTHER, чем уверенно неверная метка.
-BANKRUPTCY_WORDS = (
-    "банкрот", "несостоятельн", "конкурсное производство", "конкурсный управляющий",
-)
+# Слова, по которым происхождение опознаётся, когда код не опознан, живут в
+# `classifier`: правило «это банкротный лот» одно на модуль. Разойдись копии —
+# один и тот же лот с ГИС Торгов и с РАД попал бы в разные рынки, и оба списка
+# выглядели бы верными. Имя здесь оставлено: по нему ходят проба и тесты.
+BANKRUPTCY_WORDS = _BANKRUPTCY_WORDS
 
 # Формы торгов — отдельное поле `biddForm`, не то же самое, что вид торгов.
 # Подтверждено живым ответом 24.08.2026: «PP» — публичное предложение (цена
@@ -264,14 +264,12 @@ def classify(card: dict[str, Any]) -> tuple[LotKind, LotOrigin]:
     # и наш «127FZ» остаётся догадкой. Поэтому догадка не отменяет
     # доказательства: карточка, прямо называющая конкурсное производство,
     # банкротная при любом коде.
-    origin = LotOrigin.OTHER
-    if any(word in name for word in BANKRUPTCY_WORDS) \
-            or any(word in blob for word in BANKRUPTCY_WORDS):
-        origin = LotOrigin.BANKRUPTCY
-    elif code in BANKRUPTCY_CODES:
-        origin = LotOrigin.BANKRUPTCY
-    elif code in PRIVATIZATION_CODES:
-        origin = LotOrigin.CITY
+    origin = origin_from_evidence(procedure_type=name, text=blob)
+    if origin is LotOrigin.OTHER:
+        if code in BANKRUPTCY_CODES:
+            origin = LotOrigin.BANKRUPTCY
+        elif code in PRIVATIZATION_CODES:
+            origin = LotOrigin.CITY
     # Вид: сперва рубрика самого сервиса, и только потом слова из прозы.
     # У ГИС Торгов есть `category` («Здания» в живом ответе) — это его
     # собственная классификация, а гонка слов в описании выигрывается кем
