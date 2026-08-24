@@ -501,3 +501,67 @@ def test_cards_without_a_region_are_counted_not_swallowed(monkeypatch) -> None:
     lots = list(adapter.discover_moscow())
     assert [lot.source.external_lot_id for lot in lots] == ["ours_1"]
     assert "без кода региона: 1" in adapter.last_report["reason"]
+
+
+# --- доверие к сертификатам -------------------------------------------------
+#
+# Проба с ядра 24.08.2026 упёрлась не в сеть, а в TLS: соединение с
+# torgi.gov.ru устанавливается, а цепочка не проверяется. Соблазн «отключить
+# проверку на один источник» здесь и ловится.
+
+def test_verification_is_never_switched_off() -> None:
+    """Выключенная проверка принимает любой сертификат.
+
+    Тогда «мы читаем ГИС Торги» перестаёт что-либо значить: читать могли и не
+    их. Недоступный источник, честно сказавший, что он недоступен, лучше.
+    """
+    from auction_search.adapters.torgi_gov import trust_context
+    import ssl as ssl_module
+    context = trust_context()
+    assert context.verify_mode is ssl_module.CERT_REQUIRED
+    assert context.check_hostname is True
+
+
+def test_the_module_has_no_way_to_disable_verification() -> None:
+    """Переключателя нет в исходнике — не только в умолчании."""
+    from pathlib import Path as _Path
+    source = (_Path(__file__).resolve().parent.parent
+              / "auction_search" / "adapters" / "torgi_gov.py").read_text(encoding="utf-8")
+    for forbidden in ("CERT_NONE", "check_hostname = False", "_create_unverified"):
+        assert forbidden not in source, forbidden
+
+
+def test_extra_roots_are_added_not_substituted(tmp_path) -> None:
+    """Наш корень добавляется к системным, а не заменяет их."""
+    from auction_search.adapters.torgi_gov import extra_ca_files
+    (tmp_path / "root.cer").write_text("x")
+    (tmp_path / "chain.pem").write_text("x")
+    (tmp_path / "notes.txt").write_text("x")
+    found = [one.rsplit("/", 1)[-1] for one in extra_ca_files(str(tmp_path))]
+    assert found == ["chain.pem", "root.cer"]
+
+
+def test_a_broken_root_does_not_open_the_door(tmp_path) -> None:
+    """Битый файл — не повод доверять всему подряд."""
+    from auction_search.adapters.torgi_gov import trust_context
+    import ssl as ssl_module
+    (tmp_path / "broken.pem").write_text("это не сертификат")
+    context = trust_context(str(tmp_path))
+    assert context.verify_mode is ssl_module.CERT_REQUIRED
+
+
+def test_a_certificate_failure_says_what_to_do(monkeypatch) -> None:
+    """Причина без выхода читается как тупик, а выход здесь есть."""
+    import auction_search.adapters.torgi_gov as mod
+
+    def boom(*a, **k):
+        raise mod.urllib.error.URLError(
+            "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: "
+            "unable to get local issuer certificate")
+
+    monkeypatch.setattr(mod.urllib.request, "urlopen", boom)
+    result = TorgiGovAdapter().probe()
+    assert result["ok"] is False
+    assert mod.EXTRA_CA_DIR in result["hint"]
+    assert "openssl" in result["hint"]
+    assert result["extra_ca"] == mod.extra_ca_files()

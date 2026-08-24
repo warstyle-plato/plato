@@ -65,6 +65,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import ssl
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
@@ -136,6 +137,44 @@ ATTR_APPRAISAL = "DA_appraisalReport"
 # у ГИС Торгов своей рубрики «под редевелопмент» нет и быть не может.
 LAND_WORDS = ("земельн", "участок", "зу ")
 BUILDING_WORDS = ("здани", "помещен", "комплекс", "незавершен", "незавершён", "сооружен")
+
+
+# Дополнительные корневые сертификаты. Живой ответ с ядра 24.08.2026:
+# соединение с torgi.gov.ru УСТАНАВЛИВАЕТСЯ, но цепочка не проверяется —
+# «unable to get local issuer certificate». Российские госсайты выпускают
+# сертификаты у национального удостоверяющего центра, и его корня в обычном
+# хранилище нет: иностранные центры им больше не выдают.
+#
+# Лечится это добавлением корня в доверенные, а НЕ отключением проверки.
+# Выключенная проверка молча принимает любой сертификат — и тогда «мы читаем
+# ГИС Торги» перестаёт что-либо значить, потому что читать могли и не их.
+# Такого переключателя здесь нет намеренно.
+EXTRA_CA_DIR = os.environ.get("DEVELOPAID_EXTRA_CA_DIR", "certs")
+_CA_SUFFIXES = (".crt", ".cer", ".pem")
+
+
+def extra_ca_files(directory: str = "") -> list[str]:
+    """Корни, которые мы добавляем к системным. Пусто — значит пусто."""
+    root = directory or EXTRA_CA_DIR
+    try:
+        names = sorted(os.listdir(root))
+    except OSError:
+        return []
+    return [os.path.join(root, name) for name in names
+            if name.lower().endswith(_CA_SUFFIXES)]
+
+
+def trust_context(directory: str = "") -> ssl.SSLContext:
+    """Системные корни плюс наши. Проверка остаётся включённой всегда."""
+    context = ssl.create_default_context()
+    for path in extra_ca_files(directory):
+        try:
+            context.load_verify_locations(cafile=path)
+        except (OSError, ssl.SSLError):
+            # Битый файл — не повод доверять всему подряд и не повод падать
+            # молча: сколько корней принято, печатает проба.
+            continue
+    return context
 
 
 def _text(value: Any) -> str:
@@ -453,7 +492,19 @@ class TorgiGovAdapter(AuctionPlatformAdapter):
         try:
             status, ctype, body = self._fetch_raw(url)
         except Exception as exc:  # noqa: BLE001
-            return {"ok": False, "url": url, "reason": str(exc)}
+            report = {"ok": False, "url": url, "reason": str(exc),
+                      "extra_ca": extra_ca_files()}
+            if "CERTIFICATE_VERIFY_FAILED" in str(exc):
+                # Причина без выхода читается как тупик, а выход здесь есть.
+                report["hint"] = (
+                    "цепочка сертификата не проверяется: нужного корня нет в "
+                    f"хранилище. Положите корневой сертификат в «{EXTRA_CA_DIR}» "
+                    "рядом с приложением — он будет добавлен к системным. "
+                    "Чей это корень, скажет: openssl s_client -connect "
+                    "torgi.gov.ru:443 -servername torgi.gov.ru | openssl x509 "
+                    "-noout -issuer. Проверку сертификата не отключаем: тогда "
+                    "«мы читаем ГИС Торги» перестанет что-либо значить.")
+            return report
         try:
             payload = json.loads(body)
         except ValueError as exc:
@@ -474,6 +525,7 @@ class TorgiGovAdapter(AuctionPlatformAdapter):
             "url": url,
             "http_status": status,
             "content_type": ctype,
+            "extra_ca": extra_ca_files(),
             "envelope_keys": sorted(payload),
             "array_key": array_key,
             "envelope_note": envelope_note,
@@ -507,7 +559,8 @@ class TorgiGovAdapter(AuctionPlatformAdapter):
     def _fetch_raw(self, url: str) -> tuple[int, str, str]:
         request = urllib.request.Request(url, headers={
             "User-Agent": USER_AGENT, "Accept": "application/json"})
-        with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
+        with urllib.request.urlopen(
+                request, timeout=TIMEOUT_SECONDS, context=trust_context()) as response:
             body = response.read().decode("utf-8", "replace")
             ctype = response.headers.get("Content-Type", "")
             return int(getattr(response, "status", 0) or 0), ctype, body
