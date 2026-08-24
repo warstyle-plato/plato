@@ -474,3 +474,30 @@ def test_an_attribute_is_found_despite_the_services_own_typos() -> None:
                  "DA_limitations_minpriced((178)"):
         card = {"attributes": [{"code": code, "value": "есть ограничения"}]}
         assert attribute(card, ATTR_LIMITATIONS) == "есть ограничения"
+
+
+def test_a_street_named_moscow_is_not_moscow() -> None:
+    """«улица Московская» есть в половине городов страны.
+
+    Запасной путь по словам прошёл бы ярославский лот за наш — та же ошибка,
+    на которой в модуле рынка кандидат забрал себе адрес объекта оценки.
+    """
+    from auction_search.adapters.torgi_gov import in_target_region
+    card = dict(_real_card(), lotDescription="Ярославская область, ул. Московская, д. 4")
+    card.pop("subjectRFCode")
+    assert in_target_region(card) is False
+
+
+def test_cards_without_a_region_are_counted_not_swallowed(monkeypatch) -> None:
+    """Пропущенное молча читается как отсутствующее."""
+    import auction_search.adapters.torgi_gov as mod
+    blind = dict(_real_card(), id="blind_1")
+    blind.pop("subjectRFCode")
+    ours = dict(_real_card(), subjectRFCode="77", id="ours_1")
+    monkeypatch.setenv(FLAG, "1")
+    monkeypatch.setattr(mod.urllib.request, "urlopen",
+                        lambda *a, **k: _Response(json.dumps({"content": [blind, ours]})))
+    adapter = TorgiGovAdapter()
+    lots = list(adapter.discover_moscow())
+    assert [lot.source.external_lot_id for lot in lots] == ["ours_1"]
+    assert "без кода региона: 1" in adapter.last_report["reason"]

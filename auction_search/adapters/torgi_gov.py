@@ -85,10 +85,11 @@ TIMEOUT_SECONDS = 8
 PAGE_SIZE = 50
 MAX_PAGES = 4
 
-# Субъекты, которые нас интересуют: Москва и область. Коды ОКАТО/справочника
-# ГИС Торги; регион приходит и текстом, поэтому проверяется и он.
+# Субъекты, которые нас интересуют: Москва и область. Код региона приходит в
+# карточке полем `subjectRFCode` (подтверждено живым ответом 24.08.2026), и
+# только по нему регион и определяется — списка слов рядом нет намеренно,
+# см. `in_target_region`.
 SUBJECT_CODES = ("77", "50")
-SUBJECT_WORDS = ("москва", "московская")
 
 # Виды торгов. Сами КОДЫ не сверены ответом сервиса — см. оговорку в шапке;
 # сверено другое, и это не про API, а про право: 178-ФЗ — приватизация
@@ -280,10 +281,15 @@ def in_target_region(card: dict[str, Any]) -> bool:
     значило бы завести в московский список лоты из Рыбинска.
     """
     code = _text(card.get("subjectRFCode"))
-    if code:
-        return code.lstrip("0") in {item.lstrip("0") for item in SUBJECT_CODES}
-    blob = " ".join(_text(card.get(key)).lower() for key in ("lotName", "lotDescription"))
-    return any(word in blob for word in SUBJECT_WORDS)
+    if not code:
+        # Запасного пути по словам здесь нет намеренно. «Москва» и
+        # «московская» встречаются в названии улицы: улица Московская есть в
+        # половине городов страны, и ярославский лот на ней прошёл бы за наш.
+        # Это ровно та ошибка, на которой в модуле рынка кандидат забрал себе
+        # адрес объекта оценки. Нет кода региона — не знаем, а не «наш»;
+        # сколько таких, сбор считает отдельно и говорит вслух.
+        return False
+    return code.lstrip("0") in {item.lstrip("0") for item in SUBJECT_CODES}
 
 
 def to_lot(card: dict[str, Any], fetched_at: str) -> AuctionLot | None:
@@ -384,7 +390,7 @@ class TorgiGovAdapter(AuctionPlatformAdapter):
             return []
         fetched_at = datetime.now(timezone.utc).isoformat()
         lots: list[AuctionLot] = []
-        cards = pages = 0
+        cards = pages = unknown_region = 0
         reason = ""
         for page in range(MAX_PAGES):
             try:
@@ -401,6 +407,9 @@ class TorgiGovAdapter(AuctionPlatformAdapter):
                 # `dynSubjRF=77,50` принёс Ярославскую и Ленинградскую области.
                 # Пока рабочее имя параметра не выяснено, лот из Рыбинска в
                 # московском списке был бы не шумом, а ложью.
+                if not _text(card.get("subjectRFCode")):
+                    unknown_region += 1
+                    continue
                 if not in_target_region(card):
                     continue
                 lot = to_lot(card, fetched_at)
@@ -408,6 +417,11 @@ class TorgiGovAdapter(AuctionPlatformAdapter):
                     lots.append(lot)
             if len(content) < PAGE_SIZE:
                 break
+        if unknown_region:
+            # Пропущенное молча читается как отсутствующее. Карточка без кода
+            # региона — «не знаем», и сказать это обязаны мы, а не читатель.
+            note = f"пропущено без кода региона: {unknown_region}"
+            reason = f"{reason}; {note}" if reason else note
         if not reason and cards and not lots:
             # Пустой список после полной страницы читался бы как «лотов нет».
             reason = (f"из {cards} карточек ни одна не в наших регионах — "
