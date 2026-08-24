@@ -16,6 +16,14 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import main as _wrapper  # noqa: E402
+import main_legacy as _engine  # noqa: E402
+
+# Обёртка грузит движок отдельным модулем (`developaid_core`), а тесты
+# импортируют `main_legacy` напрямую: это два разных объекта с двумя разными
+# наборами путей. Изолировать надо оба — иначе половина тестов пишет во
+# временный каталог, а половина в рабочий, и найти это можно только по
+# странному падению соседа.
+_MODULES = (_wrapper.core, _engine) if _wrapper.core is not _engine else (_engine,)
 
 
 @pytest.fixture(autouse=True)
@@ -42,8 +50,15 @@ def isolated_platon_state(tmp_path, monkeypatch):
     monkeypatch.setattr(_wrapper.core, "_PLATO_STAGE_DIR", tmp_path / "agent_state")
     # Журнал обращений тоже на диске: без изоляции тесты писали бы в рабочий
     # каталог, а свод одного теста считал бы события соседнего.
-    monkeypatch.setattr(_wrapper.core, "_USAGE_DIR", tmp_path / "usage")
-    _wrapper.core._USAGE_SWEPT.clear()
+    for module in _MODULES:
+        monkeypatch.setattr(module, "_USAGE_DIR", tmp_path / "usage")
+        # Анкеты и реестр людей лежат рядом с проектами и живут вечно — тем
+        # более им нужна изоляция: без неё свод читал анкеты, записанные
+        # соседним тестом и оставшиеся в рабочем каталоге (падение
+        # test_the_free_texts_are_not_folded, 23.08.2026 — вместо «адрес
+        # ищется, а ТЭП нет» приходило «ок» с диска).
+        monkeypatch.setattr(module, "_PROJECTS_DIR", tmp_path / "projects")
+        module._USAGE_SWEPT.clear()
     for name in ("_PLATON_CONTEXT_BY_SESSION", "_PLATON_LAST_SESSION",
                  "_PLATON_TEP_CONTEXT", "_PLATON_MODE", "_PLATON_HISTORY",
                  "_PLATON_PENDING", "_PLATON_LAST_URL"):

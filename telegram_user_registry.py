@@ -180,12 +180,64 @@ def _state_ids(path: Path) -> set[int]:
     return found
 
 
+def restore_from_core(base: Any, registry: "Registry") -> int:
+    """Наполнить таблицу бота реестром ядра. Возвращает, сколько восстановлено.
+
+    Реестр ядра — единственная копия, пережившая выкатку. Своё, что записано
+    после старта, не затирается: `touch` только дописывает, а первый визит
+    берётся самый ранний из двух.
+    """
+    core = getattr(base, "core", None)
+    if core is None:
+        return 0
+    try:
+        remote = core._projects_remote_url("/internal/users/list")
+    except Exception:
+        return 0
+    if not remote:
+        return 0
+    try:
+        answer = core._core_post(remote, {"sign": core._web_login_sign("users-list", 0)}, 30.0)
+    except Exception as exc:
+        core._PLATON_LOG.warning("Реестр с ядра не пришёл: %s: %s",
+                                 type(exc).__name__, exc)
+        return 0
+    restored = 0
+    for record in (answer or {}).get("users") or []:
+        if not isinstance(record, dict):
+            continue
+        chat = int(record.get("chat") or 0)
+        if not chat or registry.get(chat):
+            continue
+        name = str(record.get("name") or "")
+        first, _, last = name.partition(" ")
+        registry.touch({"id": chat, "first_name": first, "last_name": last},
+                       chat, "", source="core")
+        try:
+            with registry.connect() as db:
+                db.execute("UPDATE telegram_users SET first_seen=?, last_seen=? "
+                           "WHERE user_id=?",
+                           (int(float(record.get("first_seen") or 0)),
+                            int(float(record.get("last_seen") or 0)), chat))
+        except Exception:
+            pass
+        restored += 1
+    return restored
+
+
 def install(base: Any) -> Registry:
     if getattr(base, "_TELEGRAM_USER_REGISTRY_INSTALLED", False):
         return base._TELEGRAM_USER_REGISTRY
     root = Path(getattr(base, "_ROOT", Path(__file__).resolve().parent))
     registry = Registry(Path(os.getenv("TELEGRAM_USER_DB", "") or root/"data"/"telegram_users.sqlite3"))
+    # Одна роль — один владелец, но переменных исторически две: /users открывал
+    # TELEGRAM_ADMIN_IDS, а /stats, /survey и сводка — DEVELOPAID_ADMIN_IDS.
+    # Заполнишь одну — половина учёта останется запертой, и не поймёшь почему.
     admins = _ids(os.getenv("TELEGRAM_ADMIN_IDS", ""))
+    try:
+        admins |= set(base.core.usage_admin_ids())
+    except Exception:
+        pass
     original = base.core._telegram_handle_update
 
     def handle(update: dict[str, Any]) -> None:
@@ -234,6 +286,10 @@ def install(base: Any) -> Registry:
 
     @base.app.on_event("startup")
     def backfill() -> None:
+        # Сначала — история с ядра. Таблица живёт на диске Render и умирает с
+        # каждой выкаткой, а реестр ядра лежит в смонтированном томе: без этого
+        # «сколько у нас пользователей» отвечает «сколько пришло с четверга».
+        restore_from_core(base, registry)
         state = Path(os.getenv("PLATON_STATE_DIR", "") or root/"data"/"platon_state")
         for chat_id in _state_ids(state):
             if registry.get(chat_id):
