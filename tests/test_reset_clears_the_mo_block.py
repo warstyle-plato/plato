@@ -30,11 +30,64 @@ import main_legacy as core  # noqa: E402
 OVERLAY = (ROOT / "ia_preview" / "assets" / "overlay.js").read_text(encoding="utf-8")
 
 
-def test_reset_touches_the_mo_block() -> None:
-    """`resetAll` обязан звать сброс полей Подмосковья, а не забывать про них."""
+def test_reset_touches_the_tep_controls() -> None:
+    """`resetAll` обязан звать сброс экранных полей, а не забывать про них."""
     start = core.PAGE.index("function resetAll(){")
     body = core.PAGE[start:core.PAGE.index("\n}", start)]
-    assert "resetMoParams()" in body
+    assert "resetTepControls()" in body
+
+
+def test_reset_repaints_what_it_cleared() -> None:
+    """Сброс чистил данные и оставлял экран прежним.
+
+    `renderTep()` не перерисовывает ни панель участка, ни очередность: после
+    «Сбросить» площадь 22,423 га и посадка 18 000 оставались на месте, а любое
+    касание поля возвращало их в расчёт через onchange. Очередность показывала
+    прежние очереди при уже сброшенном `phasing`.
+    """
+    start = core.PAGE.index("function resetTepControls(){")
+    body = core.PAGE[start:core.PAGE.index("\n}", start)]
+    for call in ("resetMoParams()", "renderSitePanel()", "renderPhasing()",
+                 "renderPhaseFinancing()"):
+        assert call in body, call
+
+
+def test_every_screen_field_of_the_tep_tab_is_reset() -> None:
+    """Список полей берётся со страницы, а не из памяти.
+
+    Поля Подмосковья чинились отдельно, и ровно теми же граблями оказались
+    площадь участка, плотность и вся очередность — они просто не попали в
+    список, который вёлся руками. Поэтому набор берётся из самой вкладки:
+    следующее поле попадает в проверку тем, что оно появилось.
+
+    Поле годится, если оно либо объявлено во вводных (его рисует
+    `renderInputs`), либо упомянуто в том, что зовёт сброс.
+    """
+    page = core.PAGE
+    start = page.index('id="tep"')
+    tail = re.search(r'<div class="tab[^"]*" id="(?!tep)', page[start:])
+    block = page[start:start + (tail.start() if tail else 40000)]
+    ids = set(re.findall(r'<(?:input|select|textarea)[^>]*\sid="([^"]+)"', block))
+
+    reset_start = page.index("function resetTepControls(){")
+    reset_body = page[reset_start:page.index("\n}", reset_start)]
+    # Тела перерисовщиков, которые сброс зовёт: поле, которое они трогают,
+    # после сброса покажет актуальное состояние.
+    painted = reset_body
+    for name in ("resetMoParams", "renderSitePanel", "renderPhasing",
+                 "renderPhaseFinancing", "syncRateControlsFromInputs"):
+        where = page.index(f"function {name}(")
+        painted += page[where:page.index("\n}", where)]
+
+    known = set(core.DEFAULT_INPUTS)
+    forgotten = sorted(
+        one for one in ids
+        if one not in known and one not in painted
+        # Поля блока Подмосковья сбрасываются обходом по контейнеру, поимённо
+        # они там не названы — и не должны быть: список свой у разметки.
+        and not one.startswith("mo")
+    )
+    assert not forgotten, f"после сброса останутся: {forgotten}"
 
 
 def test_the_mo_defaults_are_declared_once_in_the_markup() -> None:

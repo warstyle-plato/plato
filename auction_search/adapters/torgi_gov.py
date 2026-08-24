@@ -64,7 +64,9 @@ from __future__ import annotations
 
 import json
 import os
+import pathlib
 import re
+import ssl
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
@@ -136,6 +138,79 @@ ATTR_APPRAISAL = "DA_appraisalReport"
 # у ГИС Торгов своей рубрики «под редевелопмент» нет и быть не может.
 LAND_WORDS = ("земельн", "участок", "зу ")
 BUILDING_WORDS = ("здани", "помещен", "комплекс", "незавершен", "незавершён", "сооружен")
+
+
+# Дополнительные корневые сертификаты. Живой ответ с ядра 24.08.2026:
+# соединение с torgi.gov.ru УСТАНАВЛИВАЕТСЯ, но цепочка не проверяется —
+# «unable to get local issuer certificate». Российские госсайты выпускают
+# сертификаты у национального удостоверяющего центра, и его корня в обычном
+# хранилище нет: иностранные центры им больше не выдают.
+#
+# Лечится это добавлением корня в доверенные, а НЕ отключением проверки.
+# Выключенная проверка молча принимает любой сертификат — и тогда «мы читаем
+# ГИС Торги» перестаёт что-либо значить, потому что читать могли и не их.
+# Такого переключателя здесь нет намеренно.
+EXTRA_CA_DIR = os.environ.get("DEVELOPAID_EXTRA_CA_DIR", "certs")
+_CA_SUFFIXES = (".crt", ".cer", ".pem")
+
+
+def extra_ca_files(directory: str = "") -> list[str]:
+    """Корни, которые мы добавляем к системным. Пусто — значит пусто."""
+    root = directory or EXTRA_CA_DIR
+    try:
+        names = sorted(os.listdir(root))
+    except OSError:
+        return []
+    return [os.path.join(root, name) for name in names
+            if name.lower().endswith(_CA_SUFFIXES)]
+
+
+def load_extra_roots(context: ssl.SSLContext, directory: str = "") -> tuple[list[str], list[str]]:
+    """Добавляет наши корни к контексту. Возвращает принятые и отвергнутые.
+
+    Различать «файл лежит» и «корень принят» обязаны мы, а не читатель.
+    24.08.2026 по неверному адресу скачалась HTML-страница портала и легла
+    в каталог с расширением `.cer`: файл на месте, доверия не прибавилось
+    ни на грамм. Отчёт «корень добавлен» на таком файле был бы враньём того
+    же рода, что «критических ограничений не обнаружено» там, где не
+    спрашивали.
+    """
+    accepted: list[str] = []
+    rejected: list[str] = []
+    for path in extra_ca_files(directory):
+        try:
+            raw = pathlib.Path(path).read_bytes()
+        except OSError:
+            rejected.append(path)
+            continue
+        try:
+            # Двоичный или текстовый — решает содержимое, а не расширение.
+            # По ссылкам из самого сертификата (Authority Information Access)
+            # издатель приезжает в DER, а `cafile` понимает только PEM: годный
+            # корень отвергался бы как битый, и причина была бы невнятной.
+            if raw.lstrip().startswith(b"-----BEGIN"):
+                context.load_verify_locations(cadata=raw.decode("ascii", "strict"))
+            else:
+                context.load_verify_locations(cadata=raw)
+        except (OSError, ssl.SSLError, ValueError, UnicodeDecodeError):
+            # Битый файл — не повод доверять всему подряд и не повод молчать.
+            rejected.append(path)
+        else:
+            accepted.append(path)
+    return accepted, rejected
+
+
+def trust_context(directory: str = "") -> ssl.SSLContext:
+    """Системные корни плюс наши. Проверка остаётся включённой всегда."""
+    context = ssl.create_default_context()
+    load_extra_roots(context, directory)
+    return context
+
+
+def trust_report(directory: str = "") -> dict[str, list[str]]:
+    """Что из каталога корней сервис принял, а что отверг."""
+    accepted, rejected = load_extra_roots(ssl.create_default_context(), directory)
+    return {"accepted": accepted, "rejected": rejected}
 
 
 def _text(value: Any) -> str:
@@ -453,7 +528,23 @@ class TorgiGovAdapter(AuctionPlatformAdapter):
         try:
             status, ctype, body = self._fetch_raw(url)
         except Exception as exc:  # noqa: BLE001
-            return {"ok": False, "url": url, "reason": str(exc)}
+            report = {"ok": False, "url": url, "reason": str(exc),
+                      "extra_ca": trust_report()}
+            if "CERTIFICATE_VERIFY_FAILED" in str(exc):
+                # Причина без выхода читается как тупик, а выход здесь есть.
+                broken = report["extra_ca"]["rejected"]
+                report["hint"] = (
+                    (f"файл «{broken[0]}» сертификатом не является — его "
+                     "содержимое не разобралось; проверьте, что скачался "
+                     "сертификат, а не страница. " if broken else "") +
+                    "цепочка сертификата не проверяется: нужного корня нет в "
+                    f"хранилище. Положите корневой сертификат в «{EXTRA_CA_DIR}» "
+                    "рядом с приложением — он будет добавлен к системным. "
+                    "Чей это корень, скажет: openssl s_client -connect "
+                    "torgi.gov.ru:443 -servername torgi.gov.ru | openssl x509 "
+                    "-noout -issuer. Проверку сертификата не отключаем: тогда "
+                    "«мы читаем ГИС Торги» перестанет что-либо значить.")
+            return report
         try:
             payload = json.loads(body)
         except ValueError as exc:
@@ -474,6 +565,7 @@ class TorgiGovAdapter(AuctionPlatformAdapter):
             "url": url,
             "http_status": status,
             "content_type": ctype,
+            "extra_ca": trust_report(),
             "envelope_keys": sorted(payload),
             "array_key": array_key,
             "envelope_note": envelope_note,
@@ -507,7 +599,8 @@ class TorgiGovAdapter(AuctionPlatformAdapter):
     def _fetch_raw(self, url: str) -> tuple[int, str, str]:
         request = urllib.request.Request(url, headers={
             "User-Agent": USER_AGENT, "Accept": "application/json"})
-        with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
+        with urllib.request.urlopen(
+                request, timeout=TIMEOUT_SECONDS, context=trust_context()) as response:
             body = response.read().decode("utf-8", "replace")
             ctype = response.headers.get("Content-Type", "")
             return int(getattr(response, "status", 0) or 0), ctype, body
