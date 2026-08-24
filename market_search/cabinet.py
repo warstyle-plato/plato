@@ -1560,6 +1560,85 @@ function planVerdict(cmp, market){
   return {tone, text: lines.join(' ')};
 }
 
+// Отчёт правлению: продано, оплачено и освоение бюджета по этапам.
+//
+// Разница между «продано» и «оплачено» здесь главное, а не подробность. На
+// книге владельца законтрактовано 1 728,6 млн ₽, а на эскроу пришло 943,5 —
+// 13% против 7%, дебиторка 785 млн. Банк смотрит на второе, и показывать их
+// надо рядом: выбрать одно значит потерять вопрос «где деньги».
+//
+// Ничего не пересчитываем: доли, цены и остатки берутся из книги как есть.
+// Второй счёт того же числа однажды разошёлся бы с первым, и оба выглядели бы
+// верными.
+function boardNum(value,digits){
+  if(value===null||value===undefined||!isFinite(value))return '—';
+  return new Intl.NumberFormat('ru-RU',{maximumFractionDigits:digits===undefined?1:digits}).format(value);
+}
+function boardShare(part,whole){
+  if(!whole||part===null||part===undefined)return '—';
+  return new Intl.NumberFormat('ru-RU',{maximumFractionDigits:0}).format(part/whole*100)+'%';
+}
+function boardCard(data){
+  if(!data)return '';
+  const sales=data.board_sales||null, status=data.board_status||null;
+  if(!sales&&!status)return '';
+  let html='<div class="card"><h2>Отчёт правлению</h2>';
+  const money=(sales&&sales.money)||{}, volume=(sales&&sales.volume)||{};
+  const products=money.products||{};
+  const keys=Object.keys(products);
+  if(keys.length){
+    const t=money.totals||{};
+    html+='<div class="wrap"><table class="peers">'
+      +'<tr><th>Продукт</th><th class="num">Продано, млн ₽</th><th class="num">Оплачено, млн ₽</th>'
+      +'<th class="num">Бюджет продаж</th><th class="num">Дебиторка</th><th class="num">Продано</th><th class="num">Оплачено</th></tr>';
+    keys.forEach(key=>{
+      const m=products[key]||{}, v=((volume.products||{})[key])||{};
+      const debt=(m.sold===null||m.paid===null)?null:m.sold-m.paid;
+      html+=`<tr><td>${esc(m.label||key)}${v.total?` <span class="muted">${boardNum(v.sold,0)} из ${boardNum(v.total,0)}</span>`:''}</td>`
+        +`<td class="num">${boardNum(m.sold)}</td><td class="num">${boardNum(m.paid)}</td>`
+        +`<td class="num">${boardNum(m.total)}</td><td class="num">${boardNum(debt)}</td>`
+        +`<td class="num">${boardShare(m.sold,m.total)}</td><td class="num">${boardShare(m.paid,m.total)}</td></tr>`;
+    });
+    if(t&&t.total)html+=`<tr><td><b>Всего</b></td><td class="num"><b>${boardNum(t.sold)}</b></td>`
+      +`<td class="num"><b>${boardNum(t.paid)}</b></td><td class="num"><b>${boardNum(t.total)}</b></td>`
+      +`<td class="num"><b>${boardNum(t.sold-t.paid)}</b></td><td class="num"><b>${boardShare(t.sold,t.total)}</b></td>`
+      +`<td class="num"><b>${boardShare(t.paid,t.total)}</b></td></tr>`;
+    html+='</table></div>';
+    html+='<div class="muted" style="font-size:12.5px;margin-top:8px">Продано — законтрактовано по ДДУ. '
+      +'Оплачено — пришло на эскроу. Разница между ними и есть дебиторка; банк смотрит на второе.</div>';
+  }
+  const brackets=(sales&&sales.brackets)||[];
+  if(brackets.length){
+    html+='<h3 style="margin-top:16px">Квартиры по площадям</h3><div class="wrap"><table class="peers">'
+      +'<tr><th>Площадь, м²</th><th class="num">Продано, шт</th><th class="num">Доля</th>'
+      +'<th class="num">Продано, м²</th><th class="num">Цена, тыс ₽/м²</th></tr>';
+    brackets.forEach(b=>{
+      html+=`<tr><td>${esc(b.range)}</td><td class="num">${boardNum(b.sold_units,0)}</td>`
+        +`<td class="num">${b.share===null||b.share===undefined?'—':boardNum(b.share*100,0)+'%'}</td>`
+        +`<td class="num">${boardNum(b.sold_area,0)}</td><td class="num">${boardNum(b.price,0)}</td></tr>`;
+    });
+    html+='</table></div><div class="muted" style="font-size:12.5px;margin-top:8px">'
+      +'По одной средней цене не видно, какой формат уходит, а какой стоит.</div>';
+  }
+  if(status&&(status.stages||[]).length){
+    html+=`<h3 style="margin-top:16px">Освоение бюджета${status.as_of?` <span class="muted">на ${esc(status.as_of)}</span>`:''}</h3>`
+      +'<div class="wrap"><table class="peers">'
+      +'<tr><th>Этап</th><th class="num">Бюджет, млн ₽</th><th class="num">Освоено</th><th class="num">Доля</th></tr>';
+    status.stages.forEach(x=>{
+      html+=`<tr><td>${esc(x.stage)}</td><td class="num">${boardNum(x.budget_mln)}</td>`
+        +`<td class="num">${x.done_mln===null?'—':boardNum(x.done_mln)}</td>`
+        +`<td class="num">${x.share===null||x.share===undefined?'—':boardNum(x.share*100,0)+'%'}</td></tr>`;
+    });
+    html+='</table></div>';
+  }
+  // Чего в книге не нашлось — говорится вслух: пустой раздел и отсутствующий
+  // выглядят одинаково, а значат разное.
+  (data.board_missing||[]).forEach(line=>{
+    html+=`<div class="muted" style="font-size:12.5px;margin-top:6px">Не прочитано — ${esc(line)}</div>`;
+  });
+  return html+'</div>';
+}
+
 async function loadPlan(file){
   $('#planstate').textContent='Читаю книгу…';
   try{
@@ -1936,6 +2015,7 @@ function render(d){
       +` на срок регистрации: книга считает по дате сделки, источник — по дате регистрации.</div></div>`;
   }
 
+  html+=boardCard(planData);
   html+=deepCard(d);
   html+=`<div class="card"><h2>Соседи в выборке</h2>
     <div class="wrap"><table class="peers">
