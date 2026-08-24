@@ -467,7 +467,7 @@ g.bub.on circle{fill-opacity:.75}
     <button class="go alt" id="hint">Ориентир цены</button>
     <button class="go alt" id="pdf" style="display:none">Сохранить PDF</button>
     <button class="go alt" id="reset" style="display:none">Сбросить отчёт</button>
-    <label class="upload">Загрузить финмодель ПЛАТО<input type="file" id="plan" accept=".xlsx,.xlsm"></label>
+    <label class="upload" title="Лист «План продаж_утв» из финмодели проекта: помесячно факт и план. Форматы .xlsx, .xlsm, .xlsb">Загрузить отчёт о продажах<input type="file" id="plan" accept=".xlsx,.xlsm,.xlsb"></label>
     <span id="planstate" class="muted"></span>
     <span id="state" class="muted" style="margin-left:12px"></span>
     <div id="pdfstate" class="err pdffail" style="display:none"></div>
@@ -1567,7 +1567,7 @@ async function loadPlan(file){
     const d=await r.json();
     if(!r.ok){$('#planstate').textContent=d.detail||'Книга не разобрана';planData=null;return}
     planData=d;
-    $('#planstate').textContent=`План загружен: ${d.project||'проект'} · факт по ${d.fact_until||'—'} · план с ${d.plan_from||'—'}`;
+    $('#planstate').textContent=`Отчёт загружен: факт по ${d.fact_until||'—'} · план с ${d.plan_from||'—'}`;
     if(lastReport) render(lastReport);
   }catch(e){$('#planstate').textContent=String(e.message||e);planData=null}
 }
