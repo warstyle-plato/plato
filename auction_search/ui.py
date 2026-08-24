@@ -96,7 +96,11 @@ AUCTIONS_PAGE = r'''<!doctype html>
 const state={lots:[],filtered:[],coverage:[],selected:null,ingested:null,krt:[],krtFiltered:[],krtOkrugs:new Set(),krtModels:{},krtReports:{},krtNew:0,krtNewDays:30,krtPolls:0,krtTimer:null,krtRank:{},krtRankProgress:null,krtRankTimer:null};
 const KRT_OKRUGS=['ЦАО','САО','СВАО','ВАО','ЮВАО','ЮАО','ЮЗАО','ЗАО','СЗАО','НАО','ТАО','ЗелАО'];
 const $=id=>document.getElementById(id);
-const fmtMoney=n=>Number.isFinite(Number(n))?new Intl.NumberFormat('ru-RU',{maximumFractionDigits:1}).format(Number(n)/1e6)+' млн ₽':'—';
+// Ноль и «цены нет» — разные вещи. Number(null) равен нулю, и лот без
+// опубликованной цены показывался бесплатным: у ГИС Торгов ценового поля
+// может не быть вовсе (9 карточек из 10 на живой выдаче 24.08.2026).
+const fmtMoney=n=>(n===null||n===undefined||n==='')?'—'
+ :Number.isFinite(Number(n))?new Intl.NumberFormat('ru-RU',{maximumFractionDigits:1}).format(Number(n)/1e6)+' млн ₽':'—';
 const fmtArea=n=>n!==null&&n!==undefined&&n!==''&&Number.isFinite(Number(n))?new Intl.NumberFormat('ru-RU',{maximumFractionDigits:0}).format(Number(n))+' м²':'—';
 const fmtMln=n=>n!==null&&n!==undefined&&Number.isFinite(Number(n))?new Intl.NumberFormat('ru-RU',{maximumFractionDigits:1}).format(Number(n))+' млн ₽':'—';
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
