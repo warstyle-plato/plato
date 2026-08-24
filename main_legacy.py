@@ -67,7 +67,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.19.87"
+VERSION = "0.19.89"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -1963,6 +1963,25 @@ def monitor_replace_finance(req: MonitorScheduleFactRequest) -> dict[str, Any]:
     try:
         return developaid_monitor.replace_finance_baseline(
             req.project, base64.b64decode(req.content_base64), req.taken_at)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+class MonitorDoubtsRequest(BaseModel):
+    project: str
+    cut: str
+    session: str = ""
+    key: str = ""
+
+
+@app.post("/monitor/doubts", include_in_schema=False)
+def monitor_doubts(req: MonitorDoubtsRequest) -> dict[str, Any]:
+    """Сомнения Платона: незакрытое, противоречащее фактуре, и сеть без него."""
+    _require_web_access(req.session, req.key, "Монитор проекта")
+    try:
+        return developaid_monitor_scenarios.doubts(req.project, req.cut)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc))
     except ValueError as exc:
         raise HTTPException(400, str(exc))
 

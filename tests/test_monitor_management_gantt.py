@@ -364,3 +364,46 @@ def test_finance_baseline_can_be_replaced_and_history_kept(tmp_path, monkeypatch
 
     with pytest.raises(ValueError):
         monitor.replace_finance_baseline("Кутузов", b"not a workbook", "2026-08-23")
+
+
+def test_floor_monolith_closes_only_with_an_explicit_object(tmp_path, monkeypatch):
+    """Поэтажный монолит закрывается только при названном объекте.
+
+    «Сотня на весь проект» закрыла бы и недолитые верхние этажи корпуса 3;
+    с объектом «паркинг» закрываются его «тех этаж» и «1-й этаж», а чужие
+    этажи не трогаются.
+    """
+    import io
+    import datetime
+    import developaid_monitor as monitor
+    from openpyxl import Workbook
+
+    monkeypatch.setattr(monitor, "_SNAPSHOT_DIR", tmp_path)
+    d1, d2 = datetime.date(2026, 1, 18), datetime.date(2026, 11, 24)
+    book = Workbook(); sheet = book.active; sheet.title = "ГПР"
+    header = ["ID", "WBS", "Раздел", "Объект", "Наименование работ", "Тип строки",
+              "% выполнения", "Начало", "Окончание", "Статус", "Длительность р.д.",
+              "Предшественники", "Связанный тендер", "Окончание тендера",
+              "Резерв до начала работ", "Увязка", "Код РСС", "Статья РСС", "Основание привязки"]
+    for c, value in enumerate(header, 1):
+        sheet.cell(row=4, column=c, value=value)
+    rows = [(1077, "Паркинг / стилобат", "Тех этаж верт констр"),
+            (1080, "Паркинг / стилобат", "1-ый этаж ПП"),
+            (2077, "Корпус 3", "26-й этаж верт констр")]
+    for i, (rid, obj, name) in enumerate(rows):
+        values = [rid, str(rid), "СМР", obj, name, "Работа", 0.3, d1, d2,
+                  "Просрочено", 10, "", "", "", "", "", "2.2.2.1", "", ""]
+        for c, value in enumerate(values, 1):
+            sheet.cell(row=5 + i, column=c, value=value)
+    blob = io.BytesIO(); book.save(blob)
+    monitor.store_schedule("Кутузов", blob.getvalue(), None, "2026-07-23")
+
+    empty = monitor.close_completed_stage("Кутузов", "", "2026-08-24")
+    assert empty["works"] == 0
+
+    scoped = monitor.close_completed_stage("Кутузов", "паркинг", "2026-08-24")
+    assert scoped["works"] == 2
+    facts = monitor.work_facts("Кутузов")
+    assert facts["1077"]["progress"] == pytest.approx(1.0)
+    assert facts["1080"]["progress"] == pytest.approx(1.0)
+    assert "2077" not in facts
