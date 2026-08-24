@@ -201,17 +201,14 @@ class TorgiGovAdapter(AuctionPlatformAdapter):
         return str(os.getenv(FLAG, "")).strip().lower() in ("1", "true", "yes", "on")
 
     def _fetch_page(self, page: int) -> dict[str, Any]:
-        query = urllib.parse.urlencode({
-            "dynSubjRF": ",".join(self.subject_codes),
-            "page": page,
-            "size": PAGE_SIZE,
-            "sort": "firstVersionPublicationDate,desc",
-        })
-        url = f"https://{HOST}{SEARCH_PATH}?{query}"
-        request = urllib.request.Request(url, headers={
-            "User-Agent": USER_AGENT, "Accept": "application/json"})
-        with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
-            return json.loads(response.read().decode("utf-8"))
+        """Разобранная страница. Адрес собирается там же, где для пробы.
+
+        Второй сборки адреса не заводим: проба и рабочий сбор обязаны ходить
+        по одному и тому же URL, иначе сверенное пробой относится не к тому
+        запросу, который потом пойдёт в дело.
+        """
+        _status, _ctype, body = self._fetch_raw(self._search_url(page))
+        return json.loads(body)
 
     def discover_moscow(self) -> Iterable[AuctionLot]:
         if not self.enabled():
@@ -249,21 +246,106 @@ class TorgiGovAdapter(AuctionPlatformAdapter):
     def probe(self, page: int = 0) -> dict[str, Any]:
         """Сырой ответ и разобранный лот рядом — для сверки с ядра.
 
-        Коды видов торгов и имена полей взяты из описания и не сверены. Пока их
-        не сверили глазами, любой лот отсюда — предположение.
+        Проба существует, чтобы ПОКАЗАТЬ ответ, поэтому она ничего не
+        обрезает по ключам: поле, которого мы не ждём, — как раз то, ради
+        чего сюда идут, и урезанный список выглядел бы полным. Обрезаются
+        только длинные значения, имена ключей остаются целиком.
+
+        И она не верит собственным догадкам. Адрес, код ответа и тип
+        содержимого печатаются; не-JSON показывается началом тела, а не
+        падает невнятной ошибкой разбора; массив лотов ищется по нашему
+        предполагаемому ключу, а не нашёлся — берётся первый список словарей,
+        и это говорится вслух. Иначе неверная догадка об оболочке читалась бы
+        как «лотов нет».
         """
+        url = self._search_url(page)
         try:
-            payload = self._fetch_page(page)
+            status, ctype, body = self._fetch_raw(url)
         except Exception as exc:  # noqa: BLE001
-            return {"ok": False, "reason": str(exc)}
-        content = payload.get("content") or []
-        first = content[0] if content else {}
+            return {"ok": False, "url": url, "reason": str(exc)}
+        try:
+            payload = json.loads(body)
+        except ValueError as exc:
+            return {"ok": False, "url": url, "http_status": status,
+                    "content_type": ctype,
+                    "reason": f"ответ не JSON: {exc}",
+                    "body_head": body[:600]}
+        if not isinstance(payload, dict):
+            return {"ok": False, "url": url, "http_status": status,
+                    "reason": f"ответ не объект, а {type(payload).__name__}",
+                    "body_head": body[:600]}
+
+        cards, array_key, envelope_note = _find_cards(payload)
+        first = cards[0] if cards else {}
         lot = to_lot(first, datetime.now(timezone.utc).isoformat()) if first else None
         return {
             "ok": True,
-            "total": payload.get("totalElements"),
-            "on_page": len(content),
-            "raw_keys": sorted(first)[:40],
-            "raw_first": {key: first.get(key) for key in list(sorted(first))[:20]},
+            "url": url,
+            "http_status": status,
+            "content_type": ctype,
+            "envelope_keys": sorted(payload),
+            "array_key": array_key,
+            "envelope_note": envelope_note,
+            "on_page": len(cards),
+            "field_counts": _field_counts(cards),
+            "raw_first": {key: _short(value) for key, value in sorted(first.items())},
             "parsed_first": lot.to_dict() if lot is not None else None,
+            "parsed_note": None if lot is not None else
+                "лот не собрался: обязательного поля нет или оно названо иначе",
         }
+
+    def _search_url(self, page: int) -> str:
+        query = urllib.parse.urlencode({
+            "dynSubjRF": ",".join(self.subject_codes),
+            "page": page,
+            "size": PAGE_SIZE,
+            "sort": "firstVersionPublicationDate,desc",
+        })
+        return f"https://{HOST}{SEARCH_PATH}?{query}"
+
+    def _fetch_raw(self, url: str) -> tuple[int, str, str]:
+        request = urllib.request.Request(url, headers={
+            "User-Agent": USER_AGENT, "Accept": "application/json"})
+        with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
+            body = response.read().decode("utf-8", "replace")
+            ctype = response.headers.get("Content-Type", "")
+            return int(getattr(response, "status", 0) or 0), ctype, body
+
+
+def _short(value: Any, limit: int = 300) -> Any:
+    """Длинное значение — обрезком, но с пометкой. Ключ не трогаем никогда."""
+    if isinstance(value, str) and len(value) > limit:
+        return value[:limit] + f"… (ещё {len(value) - limit} симв.)"
+    if isinstance(value, list) and len(value) > 5:
+        return value[:5] + [f"… (ещё {len(value) - 5} элем.)"]
+    return value
+
+
+def _find_cards(payload: dict[str, Any]) -> tuple[list[dict[str, Any]], str | None, str | None]:
+    """Массив лотов в ответе: по нашему ключу, а не нашёлся — по форме.
+
+    Возвращает и то, каким путём он найден. Догадка, сработавшая случайно,
+    и догадка, подтверждённая ответом, для читателя пробы — разные вещи.
+    """
+    guess = payload.get("content")
+    if isinstance(guess, list) and (not guess or isinstance(guess[0], dict)):
+        return [item for item in guess if isinstance(item, dict)], "content", None
+    for key, value in payload.items():
+        if isinstance(value, list) and value and isinstance(value[0], dict):
+            return ([item for item in value if isinstance(item, dict)], key,
+                    f"ключа «content» в ответе нет — массив взят из «{key}»")
+    return [], None, "массива словарей в ответе не нашлось: оболочка другая"
+
+
+def _field_counts(cards: list[dict[str, Any]]) -> dict[str, int]:
+    """Сколько карточек на странице несут каждый ключ.
+
+    По одной карточке необязательное поле неотличимо от отсутствующего:
+    ключ, стоящий у трёх лотов из пятидесяти, надо увидеть до того, как
+    разбор начнёт считать его обязательным.
+    """
+    counts: dict[str, int] = {}
+    for card in cards:
+        for key in card:
+            counts[key] = counts.get(key, 0) + 1
+    return dict(sorted(counts.items()))

@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -233,3 +234,104 @@ def test_the_battery_keeps_the_square_corners_of_this_page() -> None:
     style = page[page.index("<style>"):page.index("</style>")]
     assert ".pbatt{" in style
     assert "border-radius:5px" not in style
+
+
+# --- проба с ядра -----------------------------------------------------------
+#
+# Проба — единственный оставшийся путь сверки: ни из песочницы, ни из чужого
+# облачного браузера torgi.gov.ru не отвечает (24.08.2026, 502 от прокси).
+# Значит она обязана ответить с первого раза и не прятать ничего.
+
+class _Response:
+    def __init__(self, body, status=200, ctype="application/json"):
+        self._body = body.encode("utf-8")
+        self.status = status
+        self.headers = {"Content-Type": ctype}
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _probe_with(body, monkeypatch, status=200, ctype="application/json"):
+    import auction_search.adapters.torgi_gov as mod
+    monkeypatch.setattr(mod.urllib.request, "urlopen",
+                        lambda *a, **k: _Response(body, status, ctype))
+    return TorgiGovAdapter().probe()
+
+
+def test_the_probe_shows_every_field_name(monkeypatch) -> None:
+    """Обрезанный список ключей выглядит полным — и поле теряется молча.
+
+    Ровно так уже терялись глифы в отчёте о продажах: неизвестное
+    выбрасывалось, а выгрузка при этом казалась исправной.
+    """
+    card = {f"field{n}": n for n in range(60)}
+    card["lotName"] = "Лот"
+    result = _probe_with(json.dumps({"content": [card]}), monkeypatch)
+    assert result["ok"] is True
+    assert set(result["raw_first"]) == set(card)
+    assert set(result["field_counts"]) == set(card)
+
+
+def test_the_probe_says_which_key_held_the_array(monkeypatch) -> None:
+    """Догадка об оболочке не должна читаться как «лотов нет»."""
+    result = _probe_with(json.dumps({"lots": [{"lotName": "Лот"}]}), monkeypatch)
+    assert result["array_key"] == "lots"
+    assert "content" in (result["envelope_note"] or "")
+    assert result["on_page"] == 1
+
+
+def test_the_probe_confirms_the_guessed_envelope_without_a_note(monkeypatch) -> None:
+    result = _probe_with(json.dumps({"content": [{"lotName": "Лот"}],
+                                     "totalElements": 7}), monkeypatch)
+    assert result["array_key"] == "content"
+    assert result["envelope_note"] is None
+    assert "totalElements" in result["envelope_keys"]
+
+
+def test_a_page_of_html_is_shown_not_swallowed(monkeypatch) -> None:
+    """502 от прокси приходил и нам, и стороннему браузеру.
+
+    Невнятная ошибка разбора JSON на это не отвечает: видно должно быть, что
+    пришла страница ошибки, а не лоты.
+    """
+    result = _probe_with("<html><h1>502 Bad Gateway</h1></html>", monkeypatch,
+                         status=502, ctype="text/html")
+    assert result["ok"] is False
+    assert result["http_status"] == 502
+    assert "502" in result["body_head"]
+
+
+def test_the_probe_prints_the_address_it_asked(monkeypatch) -> None:
+    result = _probe_with(json.dumps({"content": []}), monkeypatch)
+    assert result["url"].startswith("https://torgi.gov.ru/new/api/public/")
+    assert "dynSubjRF" in result["url"]
+
+
+def test_the_probe_and_the_real_collector_ask_the_same_address() -> None:
+    """Сверенное пробой относится к тому запросу, который пойдёт в дело."""
+    import inspect
+    source = inspect.getsource(TorgiGovAdapter._fetch_page)
+    assert "_search_url" in source
+
+
+def test_an_optional_field_is_visible_as_optional(monkeypatch) -> None:
+    """По одной карточке необязательное поле неотличимо от отсутствующего."""
+    body = json.dumps({"content": [
+        {"lotName": "А", "priceMin": 1}, {"lotName": "Б"}, {"lotName": "В"}]})
+    result = _probe_with(body, monkeypatch)
+    assert result["field_counts"]["lotName"] == 3
+    assert result["field_counts"]["priceMin"] == 1
+
+
+def test_a_card_that_did_not_parse_says_so(monkeypatch) -> None:
+    """Пустой разбор рядом с сырым лотом читался бы как «лотов нет»."""
+    result = _probe_with(json.dumps({"content": [{"nothing": "useful"}]}), monkeypatch)
+    assert result["parsed_first"] is None
+    assert result["parsed_note"]
