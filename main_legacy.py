@@ -82,6 +82,12 @@ VERSION_PLACEHOLDER = "__DEVELOPAID_VERSION__"
 # а нарисовать было некому. Теперь копия одна, подставляется на импорте.
 FIELD_GROUPS_PLACEHOLDER = "__DEVELOPAID_FIELD_GROUPS__"
 INPUT_DEFAULT_PLACEHOLDER = "__DEVELOPAID_INPUT_DEFAULT__"
+# Состав ТЭП страница держала своей копией — и та отстала: продукта
+# «Прочие обязательные объекты» в ней не было вовсе. Движок его считал,
+# очередность подписывала, а сброс возвращал набор без него. Лечится тем
+# же способом, что поля и умолчания: копию негде обновлять, потому что
+# копии нет.
+TEP_DEFAULT_PLACEHOLDER = "__DEVELOPAID_TEP_DEFAULT__"
 # Формы исполнения соцнагрузки страница держала своей копией, и третий режим
 # в неё не попал: движок его считал, книга предлагала, а на странице выбрать
 # было нельзя. Та же болезнь, что с полями и умолчаниями, — лечится так же.
@@ -29750,7 +29756,7 @@ const PROJECT_CLASS_PRESETS={
  "elite":{"label":"Элитный","apartment_price_th":1500,"commercial_price_th":1500,"parking_price_th":20000,"main_above_th_per_sqm":300,"main_under_th_per_sqm":300}
 };
 const RATE_DEFAULT=[]
-const TEP_DEFAULT={"apartments": {"label": "Квартиры", "gns": 130716.66012842482, "total_area": 117647.0588235294, "useful": 80000, "saleable": 80000, "transfer": 0, "units": 1361.815754339119}, "ground_commercial": {"label": "Коммерция 1 эт.", "gns": 9664.049734985854, "total_area": 8695.652173913044, "useful": 7826.08695652174, "saleable": 7826.08695652174, "transfer": 0, "units": 0}, "standalone_retail": {"label": "Коммерция ОСЗ", "gns": 0, "total_area": 0, "useful": 0, "saleable": 0, "transfer": 0, "units": 0}, "offices": {"label": "Офисы", "gns": 0, "total_area": 0, "useful": 0, "saleable": 0, "transfer": 0, "units": 0}, "above_parking": {"label": "Наземный паркинг", "gns": 0, "total_area": 0, "useful": 0, "saleable": 0, "transfer": 0, "units": 0}, "underground_parking": {"label": "Подземный паркинг", "gns": 38763, "total_area": 38763, "useful": 0, "saleable": 0, "transfer": 0, "units": 1107.5142857142857}, "storage": {"label": "Кладовки", "gns": 0, "total_area": 0, "useful": 0, "saleable": 0, "transfer": 0, "units": 0}, "kindergarten": {"label": "ДОУ", "gns": 0, "total_area": 3000, "useful": 0, "saleable": 0, "transfer": 3000, "units": 250}, "school": {"label": "СОШ", "gns": 0, "total_area": 0, "useful": 0, "saleable": 0, "transfer": 0, "units": 0}, "clinic": {"label": "Поликлиника", "gns": 0, "total_area": 0, "useful": 0, "saleable": 0, "transfer": 0, "units": 0}};
+const TEP_DEFAULT=__DEVELOPAID_TEP_DEFAULT__;
 const FIELD_GROUPS=__DEVELOPAID_FIELD_GROUPS__;
 const INPUT_DEFAULT=__DEVELOPAID_INPUT_DEFAULT__;
 const FEEDBACK_FORM=__DEVELOPAID_FEEDBACK_FORM__;
@@ -35553,6 +35559,27 @@ async function deleteProject(id){
  catch(e){alert(String(e.message||e))}
 }
 
+function resetTepControls(){
+ // Сброс чистил данные и не перерисовывал экран. renderTep() не трогает ни
+ // панель участка, ни очередность: площадь 22,423 га и посадка 18 000 после
+ // «Сбросить» оставались на месте, а любое касание поля возвращало их в
+ // расчёт через onchange. Очередность при этом показывала прежние очереди
+ // при уже сброшенном phasing — экран и состояние расходились молча.
+ //
+ // Правило: сброс обязан перерисовать всё, что он обнулил. Список того, что
+ // рисуется не из inputs, проверяется тестом по самой странице, а не памятью.
+ resetMoParams();
+ if(typeof renderSitePanel==='function')renderSitePanel();
+ if(typeof renderPhasing==='function')renderPhasing();
+ if(typeof renderPhaseFinancing==='function')renderPhaseFinancing();
+ // Выбранный пресет и имя файла настроек — тоже след прошлого проекта:
+ // «Сбросить» с оставшимся «Румянцево» в списке читается как «не сработало».
+ ['serverPresetSelect','projectPresetSelect'].forEach(id=>{
+  const el=document.getElementById(id);if(el)el.selectedIndex=0;
+ });
+ const settingsFile=document.getElementById('settingsFileInput');
+ if(settingsFile)settingsFile.value='';
+}
 function resetMoParams(){
  // Поля Подмосковья живут в разметке, а не в inputs, и сброс их не видел:
  // после «Сбросить» плотность оставалась прежней — 18 000 у чужого участка,
@@ -35586,7 +35613,7 @@ function resetAll(){
  const landField=document.getElementById('landQuery');if(landField)landField.value='';
  const landPreview=document.getElementById('landPreview');if(landPreview)landPreview.style.display='none';
  const moQuery=document.getElementById('moQuery');if(moQuery)moQuery.value='';
- resetMoParams();
+ resetTepControls();
  // Сброс снимает и карточки импорта с их данными: прежде glavapuImport
  // переживал сброс, и «чистый» проект применял ТЭП удалённого участка.
  dropGlavapuPreview();
@@ -35891,6 +35918,8 @@ PAGE = PAGE.replace(FIELD_GROUPS_PLACEHOLDER,
                     json.dumps(FIELD_GROUPS, ensure_ascii=False))
 PAGE = PAGE.replace(INPUT_DEFAULT_PLACEHOLDER,
                     json.dumps(DEFAULT_INPUTS, ensure_ascii=False))
+PAGE = PAGE.replace(TEP_DEFAULT_PLACEHOLDER,
+                    json.dumps(TEP_DEFAULT, ensure_ascii=False))
 PAGE = PAGE.replace(TEP_RATIOS_PLACEHOLDER, json.dumps(TEP_RATIOS, ensure_ascii=False))
 # Состав МКД — из движка, копии на странице нет.
 PAGE = PAGE.replace("__DEVELOPAID_MKD_PRODUCTS__",
