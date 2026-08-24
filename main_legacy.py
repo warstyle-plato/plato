@@ -35373,6 +35373,22 @@ async function deleteProject(id){
  catch(e){alert(String(e.message||e))}
 }
 
+function resetMoParams(){
+ // Поля Подмосковья живут в разметке, а не в inputs, и сброс их не видел:
+ // после «Сбросить» плотность оставалась прежней — 18 000 у чужого участка,
+ // — а подпись рядом продолжала обещать умолчание. Значение по умолчанию у
+ // каждого поля объявлено один раз, атрибутом value, и восстанавливается
+ // оттуда же: вторая копия умолчаний в коде разошлась бы с разметкой.
+ const box=document.getElementById('moParamsBox');if(!box)return;
+ box.querySelectorAll('input').forEach(el=>{
+  if(el.type==='checkbox'){el.checked=el.defaultChecked;return}
+  el.value=el.getAttribute('value')||'';
+ });
+ box.querySelectorAll('select').forEach(el=>{el.selectedIndex=0});
+ if(typeof toggleMoPrice==='function')toggleMoPrice();
+ if(typeof toggleMoKd==='function')toggleMoKd();
+ box.open=false;
+}
 function resetAll(){
  localStorage.removeItem('plato_v04');
  inputs=cloneValue(INPUT_DEFAULT);
@@ -35390,6 +35406,7 @@ function resetAll(){
  const landField=document.getElementById('landQuery');if(landField)landField.value='';
  const landPreview=document.getElementById('landPreview');if(landPreview)landPreview.style.display='none';
  const moQuery=document.getElementById('moQuery');if(moQuery)moQuery.value='';
+ resetMoParams();
  // Сброс снимает и карточки импорта с их данными: прежде glavapuImport
  // переживал сброс, и «чистый» проект применял ТЭП удалённого участка.
  dropGlavapuPreview();

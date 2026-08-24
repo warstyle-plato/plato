@@ -15,6 +15,14 @@
  *    разошлась бы с первой в первый же день.
  */
 (function () {
+
+  // Умолчание посадки объявлено один раз — атрибутом value поля #moDensity.
+  // Копий этого числа было три, и они уже разошлись с тем, что на экране:
+  // подпись обещала 30 000, пока в поле стояло 18 000.
+  function moDensityDefault() {
+    var el = document.getElementById('moDensity');
+    return el ? Number(el.getAttribute('value') || 0) : 0;
+  }
   'use strict';
 
   var missing = [];
@@ -1218,7 +1226,7 @@
         + 'таблице ниже. Подземный паркинг производный: постоянные + гостевые места × 35 м².';
     } else if (mo) {
       var district = mo.territory && mo.territory.district ? ' (' + mo.territory.district + ')' : '';
-      var density = Number(mo.density_sqm_per_ha || 30000).toLocaleString('ru-RU');
+      var density = Number(mo.density_sqm_per_ha || moDensityDefault()).toLocaleString('ru-RU');
       intro.textContent = 'Участок в Московской области' + district + ': ТЭП посчитан по нормативам РНГП, '
         + 'посадка ' + density + ' м² на га. Поменять плотность или площадь можно в «Параметрах расчёта '
         + 'по Московской области» ниже — затем нажмите «Рассчитать ТЭП от площади и плотности».';
@@ -1249,8 +1257,21 @@
         moNote.textContent = '';
       } else if (mo) {
         var moDistrict = mo.territory && mo.territory.district ? mo.territory.district : 'округ не определён';
+        // Число берётся у поля, а не пишется рядом словами. Зашитые «30 000»
+        // стояли на экране вместе с реальными 18 000 из верхней подписи: два
+        // числа об одном и том же, и оба выглядели одинаково достоверно.
+        // Умолчание объявлено один раз — атрибутом value самого поля.
+        var moDensityInput = document.getElementById('moDensity');
+        var moDensityNow = moDensityInput ? Number(moDensityInput.value || 0) : 0;
+        var moDensityBase = moDensityDefault();
+        var moDensityText = moDensityNow
+          ? (moDensityNow === moDensityBase
+              ? 'посадка по умолчанию — ' + moDensityNow.toLocaleString('ru-RU') + ' м² на га'
+              : 'посадка сейчас — ' + moDensityNow.toLocaleString('ru-RU') + ' м² на га'
+                + (moDensityBase ? ' (умолчание ' + moDensityBase.toLocaleString('ru-RU') + ')' : ''))
+          : 'посадка пока не задана';
         moNote.textContent = 'Ваш участок — Московская область (' + moDistrict + '). Плотность и цены взяты '
-          + 'из справочников, посадка по умолчанию — 30 000 м² на га. Откройте блок, если хотите поменять '
+          + 'из справочников, ' + moDensityText + '. Откройте блок, если хотите поменять '
           + 'вручную: правка сразу пересчитает ТЭП участка.';
       } else {
         moNote.textContent = 'Этот блок нужен в двух случаях: участок в Московской области (плотность и цены '
@@ -1291,7 +1312,7 @@
           + 'РНГП: квартиры = площадь × плотность, социалка и паркинг — от населения.';
       } else {
         var densityInput = document.getElementById('moDensity');
-        var densityBase = Number((densityInput && densityInput.getAttribute('value')) || 30000)
+        var densityBase = Number((densityInput && densityInput.getAttribute('value')) || moDensityDefault())
           .toLocaleString('ru-RU');
         hint.textContent = 'Введите площадь и плотность выше и нажмите: квартиры = площадь × плотность '
           + '(по умолчанию ' + densityBase + ' м² на га — норматив РНГП), социалка и паркинг — от населения. '
