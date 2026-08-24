@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import datetime
 import io
 import re
 from typing import Any
@@ -36,9 +37,25 @@ def _norm(value: Any) -> str:
     return " ".join(str(value or "").split()).casefold()
 
 
+# Книга в формате .xlsb хранит дату числом дней от 30.12.1899, и вернуть его
+# как есть значит потерять весь помесячный ряд молча: строки просто не станут
+# месяцами, а разбор скажет «плана не нашлось» на книге, где план есть.
+_EXCEL_EPOCH = datetime.date(1899, 12, 30)
+# Ниже этого числа это уже не дата, а количество: 20 000 дней — это 1954 год,
+# раньше начала любого проекта, а «шт» в первой колонке встречается.
+_EXCEL_SERIAL_MIN = 20000
+_EXCEL_SERIAL_MAX = 80000
+
+
 def _month(value: Any) -> str | None:
     if hasattr(value, "year") and hasattr(value, "month"):
         return f"{value.year:04d}-{value.month:02d}"
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        serial = float(value)
+        if _EXCEL_SERIAL_MIN <= serial <= _EXCEL_SERIAL_MAX:
+            moment = _EXCEL_EPOCH + datetime.timedelta(days=int(serial))
+            return f"{moment.year:04d}-{moment.month:02d}"
+        return None
     text = str(value or "").strip()
     match = re.match(r"^(\d{4})-(\d{2})", text)
     if match:
@@ -61,14 +78,15 @@ def _number(value: Any) -> float | None:
         return None
 
 
-def _pick_sheet(book: Any) -> Any:
+def _pick_sheet_name(names: list[str]) -> str:
+    """Имя листа плана. Одинаково для обоих форматов — выбор один на разбор."""
     for hint in SHEET_HINTS:
-        for name in book.sheetnames:
+        for name in names:
             if _norm(name) == hint:
-                return book[name]
-    for name in book.sheetnames:
+                return name
+    for name in names:
         if "план" in _norm(name) and "прод" in _norm(name):
-            return book[name]
+            return name
     raise PlanNotFound("В книге нет листа с планом продаж")
 
 
@@ -92,24 +110,63 @@ def _columns(rows: list[tuple]) -> tuple[int, dict[str, int]]:
     raise PlanNotFound("В листе плана не найдены колонки «шт» и «кв.м.»")
 
 
-def parse_plan(data: bytes) -> dict[str, Any]:
-    """Помесячный план и факт из книги ПЛАТО."""
+def _is_xlsb(data: bytes) -> bool:
+    """Формат определяется содержимым, а не расширением.
+
+    Имя файла человек меняет как угодно, а внутри .xlsb лежит `workbook.bin`
+    вместо `workbook.xml`. Разбирать по расширению значит однажды сказать
+    «файл не читается» на исправной книге.
+    """
+    try:
+        import zipfile
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            return any(name.endswith("workbook.bin") for name in archive.namelist())
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _sheet_rows(data: bytes) -> tuple[list[tuple], str]:
+    """Строки листа плана — из .xlsx, .xlsm или .xlsb одинаковыми кортежами.
+
+    Двоичный .xlsb — не экзотика: рабочая финмодель на двадцать семь листов в
+    нём весит вдвое меньше и открывается быстрее, поэтому книги живут именно
+    так. Читать его openpyxl не умеет вовсе, и раньше такая книга получала
+    ответ «файл не читается как книга Excel» — верный по букве и бесполезный.
+    """
+    if _is_xlsb(data):
+        try:
+            from pyxlsb import open_workbook
+        except ImportError as exc:  # pragma: no cover
+            raise PlanNotFound(
+                "Книга в формате .xlsb, а библиотека pyxlsb не установлена") from exc
+        try:
+            with open_workbook(io.BytesIO(data)) as book:
+                name = _pick_sheet_name(list(book.sheets))
+                with book.get_sheet(name) as sheet:
+                    return [tuple(cell.v for cell in row) for row in sheet.rows()], name
+        except PlanNotFound:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise PlanNotFound(f"Книга .xlsb не читается: {exc}") from exc
+
     try:
         import openpyxl
     except ImportError as exc:  # pragma: no cover
         raise PlanNotFound("Не установлен openpyxl — книга не читается") from exc
-
     try:
         book = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
     except Exception as exc:
         raise PlanNotFound(f"Файл не читается как книга Excel: {exc}") from exc
+    name = _pick_sheet_name(list(book.sheetnames))
+    return [row for row in book[name].iter_rows(values_only=True)], name
 
-    sheet = _pick_sheet(book)
-    rows = [row for row in sheet.iter_rows(values_only=True)]
+
+def parse_plan(data: bytes) -> dict[str, Any]:
+    """Помесячный план и факт из книги ПЛАТО."""
+    rows, sheet_name = _sheet_rows(data)
     header, columns = _columns(rows)
 
     months: list[dict[str, Any]] = []
-    project = None
     for row in rows[header + 1:]:
         if not row:
             continue
@@ -136,22 +193,13 @@ def parse_plan(data: bytes) -> dict[str, Any]:
     if not months:
         raise PlanNotFound("В листе плана нет ни одной строки с датой и количеством")
 
-    for name in book.sheetnames:
-        if _norm(name) == "отчет":
-            for row in book[name].iter_rows(min_row=1, max_row=4, values_only=True):
-                for position, cell in enumerate(row or ()):
-                    if _norm(cell) == "проект:" and position + 1 < len(row):
-                        project = str(row[position + 1] or "").strip() or None
-            break
-
     facts = [m for m in months if m["kind"] == "fact"]
     plans = [m for m in months if m["kind"] == "plan"]
     return {
-        "project": project,
         "months": months,
         "fact_until": facts[-1]["month"] if facts else None,
         "plan_from": plans[0]["month"] if plans else None,
-        "sheet": sheet.title,
+        "sheet": sheet_name,
     }
 
 
