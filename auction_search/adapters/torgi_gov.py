@@ -164,17 +164,40 @@ def extra_ca_files(directory: str = "") -> list[str]:
             if name.lower().endswith(_CA_SUFFIXES)]
 
 
-def trust_context(directory: str = "") -> ssl.SSLContext:
-    """Системные корни плюс наши. Проверка остаётся включённой всегда."""
-    context = ssl.create_default_context()
+def load_extra_roots(context: ssl.SSLContext, directory: str = "") -> tuple[list[str], list[str]]:
+    """Добавляет наши корни к контексту. Возвращает принятые и отвергнутые.
+
+    Различать «файл лежит» и «корень принят» обязаны мы, а не читатель.
+    24.08.2026 по неверному адресу скачалась HTML-страница портала и легла
+    в каталог с расширением `.cer`: файл на месте, доверия не прибавилось
+    ни на грамм. Отчёт «корень добавлен» на таком файле был бы враньём того
+    же рода, что «критических ограничений не обнаружено» там, где не
+    спрашивали.
+    """
+    accepted: list[str] = []
+    rejected: list[str] = []
     for path in extra_ca_files(directory):
         try:
             context.load_verify_locations(cafile=path)
-        except (OSError, ssl.SSLError):
-            # Битый файл — не повод доверять всему подряд и не повод падать
-            # молча: сколько корней принято, печатает проба.
-            continue
+        except (OSError, ssl.SSLError, ValueError):
+            # Битый файл — не повод доверять всему подряд и не повод молчать.
+            rejected.append(path)
+        else:
+            accepted.append(path)
+    return accepted, rejected
+
+
+def trust_context(directory: str = "") -> ssl.SSLContext:
+    """Системные корни плюс наши. Проверка остаётся включённой всегда."""
+    context = ssl.create_default_context()
+    load_extra_roots(context, directory)
     return context
+
+
+def trust_report(directory: str = "") -> dict[str, list[str]]:
+    """Что из каталога корней сервис принял, а что отверг."""
+    accepted, rejected = load_extra_roots(ssl.create_default_context(), directory)
+    return {"accepted": accepted, "rejected": rejected}
 
 
 def _text(value: Any) -> str:
@@ -493,10 +516,14 @@ class TorgiGovAdapter(AuctionPlatformAdapter):
             status, ctype, body = self._fetch_raw(url)
         except Exception as exc:  # noqa: BLE001
             report = {"ok": False, "url": url, "reason": str(exc),
-                      "extra_ca": extra_ca_files()}
+                      "extra_ca": trust_report()}
             if "CERTIFICATE_VERIFY_FAILED" in str(exc):
                 # Причина без выхода читается как тупик, а выход здесь есть.
+                broken = report["extra_ca"]["rejected"]
                 report["hint"] = (
+                    (f"файл «{broken[0]}» сертификатом не является — его "
+                     "содержимое не разобралось; проверьте, что скачался "
+                     "сертификат, а не страница. " if broken else "") +
                     "цепочка сертификата не проверяется: нужного корня нет в "
                     f"хранилище. Положите корневой сертификат в «{EXTRA_CA_DIR}» "
                     "рядом с приложением — он будет добавлен к системным. "
@@ -525,7 +552,7 @@ class TorgiGovAdapter(AuctionPlatformAdapter):
             "url": url,
             "http_status": status,
             "content_type": ctype,
-            "extra_ca": extra_ca_files(),
+            "extra_ca": trust_report(),
             "envelope_keys": sorted(payload),
             "array_key": array_key,
             "envelope_note": envelope_note,

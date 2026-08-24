@@ -541,6 +541,20 @@ def test_extra_roots_are_added_not_substituted(tmp_path) -> None:
     assert found == ["chain.pem", "root.cer"]
 
 
+def test_a_page_pretending_to_be_a_root_is_named(tmp_path) -> None:
+    """«Файл лежит» и «корень принят» — разные вещи, и путать их нельзя.
+
+    По неверному адресу скачалась HTML-страница портала и легла в каталог с
+    расширением .cer. Отчёт «корень добавлен» на таком файле — враньё того же
+    рода, что «ограничений не обнаружено» там, где не спрашивали.
+    """
+    from auction_search.adapters.torgi_gov import trust_report
+    (tmp_path / "root.cer").write_text("<!doctype html><html>портал</html>")
+    report = trust_report(str(tmp_path))
+    assert report["accepted"] == []
+    assert report["rejected"] and report["rejected"][0].endswith("root.cer")
+
+
 def test_a_broken_root_does_not_open_the_door(tmp_path) -> None:
     """Битый файл — не повод доверять всему подряд."""
     from auction_search.adapters.torgi_gov import trust_context
@@ -564,4 +578,4 @@ def test_a_certificate_failure_says_what_to_do(monkeypatch) -> None:
     assert result["ok"] is False
     assert mod.EXTRA_CA_DIR in result["hint"]
     assert "openssl" in result["hint"]
-    assert result["extra_ca"] == mod.extra_ca_files()
+    assert result["extra_ca"] == mod.trust_report()
