@@ -8,7 +8,7 @@ from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
 from auction_search.adapters.base import AuctionPlatformAdapter
-from auction_search.classifier import classify_lot
+from auction_search.classifier import classify_lot, origin_from_evidence
 from auction_search.models import (
     AuctionDocument,
     AuctionLot,
@@ -295,6 +295,13 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
             seller=seller,
             organizer=organizer,
             procedure_type=procedure_method,
+            # Торговая секция — рубрика самой площадки, и она, а не наша
+            # посылка «Росэлторг = городские торги», говорит, с какого рынка
+            # лот. Не опознали — `OTHER`: неопознанное не выдаётся за городское.
+            origin=origin_from_evidence(
+                seller=seller, organizer=organizer,
+                procedure_type=procedure_method, text=section,
+            ),
             start_price_rub=start_price,
             current_price_rub=start_price,
             deposit_rub=deposit,

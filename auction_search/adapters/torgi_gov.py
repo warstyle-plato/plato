@@ -73,6 +73,10 @@ from datetime import datetime, timezone
 from typing import Any, Iterable
 
 from auction_search.adapters.base import AuctionPlatformAdapter
+from auction_search.classifier import (
+    BANKRUPTCY_WORDS as _BANKRUPTCY_WORDS,
+    origin_from_evidence,
+)
 from auction_search.models import (
     AuctionLot, AuctionSource, LotKind, LotOrigin, SourceKind,
 )
@@ -93,6 +97,16 @@ MAX_PAGES = 4
 # см. `in_target_region`.
 SUBJECT_CODES = ("77", "50")
 
+# Имя параметра региона в запросе. Живой ответ 24.08.2026 показал, что под
+# этим именем сервис НЕ фильтрует — он его молча игнорирует, — поэтому регион
+# отбирается нами по `subjectRFCode`. Имя оставлено рабочим кандидатом, а не
+# удалено: убрав параметр, мы потеряли бы возможность заметить, что он
+# заработал. Какое имя фильтрует на самом деле, измеряет `probe_regions`.
+REGION_PARAM = "dynSubjRF"
+REGION_PARAM_CANDIDATES = (
+    "dynSubjRF", "subjectRFCode", "subjectRF", "dynSubjRFCode", "subjectRFList",
+)
+
 # Виды торгов. Сами КОДЫ не сверены ответом сервиса — см. оговорку в шапке;
 # сверено другое, и это не про API, а про право: 178-ФЗ — приватизация
 # государственного и муниципального имущества, то есть ровно городской рынок,
@@ -101,15 +115,11 @@ SUBJECT_CODES = ("77", "50")
 PRIVATIZATION_CODES = ("178FZ",)
 BANKRUPTCY_CODES = ("127FZ", "BANKRUPTCY")
 
-# Слова, по которым происхождение опознаётся, когда код не опознан. Здесь
-# только ДОКАЗАТЕЛЬНЫЕ: «конкурсное производство» — процедура банкротства,
-# а голое «конкурсн» ловит «конкурсную документацию» и «конкурсную комиссию»
-# обычных городских торгов. «Должник» тоже убран: имущество должника продают
-# и приставы вне дела о банкротстве, а третьего значения у нас нет — лучше
-# OTHER, чем уверенно неверная метка.
-BANKRUPTCY_WORDS = (
-    "банкрот", "несостоятельн", "конкурсное производство", "конкурсный управляющий",
-)
+# Слова, по которым происхождение опознаётся, когда код не опознан, живут в
+# `classifier`: правило «это банкротный лот» одно на модуль. Разойдись копии —
+# один и тот же лот с ГИС Торгов и с РАД попал бы в разные рынки, и оба списка
+# выглядели бы верными. Имя здесь оставлено: по нему ходят проба и тесты.
+BANKRUPTCY_WORDS = _BANKRUPTCY_WORDS
 
 # Формы торгов — отдельное поле `biddForm`, не то же самое, что вид торгов.
 # Подтверждено живым ответом 24.08.2026: «PP» — публичное предложение (цена
@@ -254,14 +264,12 @@ def classify(card: dict[str, Any]) -> tuple[LotKind, LotOrigin]:
     # и наш «127FZ» остаётся догадкой. Поэтому догадка не отменяет
     # доказательства: карточка, прямо называющая конкурсное производство,
     # банкротная при любом коде.
-    origin = LotOrigin.OTHER
-    if any(word in name for word in BANKRUPTCY_WORDS) \
-            or any(word in blob for word in BANKRUPTCY_WORDS):
-        origin = LotOrigin.BANKRUPTCY
-    elif code in BANKRUPTCY_CODES:
-        origin = LotOrigin.BANKRUPTCY
-    elif code in PRIVATIZATION_CODES:
-        origin = LotOrigin.CITY
+    origin = origin_from_evidence(procedure_type=name, text=blob)
+    if origin is LotOrigin.OTHER:
+        if code in BANKRUPTCY_CODES:
+            origin = LotOrigin.BANKRUPTCY
+        elif code in PRIVATIZATION_CODES:
+            origin = LotOrigin.CITY
     # Вид: сперва рубрика самого сервиса, и только потом слова из прозы.
     # У ГИС Торгов есть `category` («Здания» в живом ответе) — это его
     # собственная классификация, а гонка слов в описании выигрывается кем
@@ -581,19 +589,71 @@ class TorgiGovAdapter(AuctionPlatformAdapter):
                 _text(card.get("subjectRFCode")) for card in cards
                 if _text(card.get("subjectRFCode"))}),
             "field_counts": _field_counts(cards),
+            # Справочники сервиса — списком встреченных значений. Код
+            # банкротства мы до сих пор не видели ни разу: три карточки первой
+            # выборки были приватизацией. Гадать его больше не надо — он
+            # появится здесь сам, как только попадётся в выдаче.
+            "codes_seen": _codes_seen(cards),
             "raw_first": {key: _short(value) for key, value in sorted(first.items())},
             "parsed_first": lot.to_dict() if lot is not None else None,
             "parsed_note": None if lot is not None else
                 "лот не собрался: обязательного поля нет или оно названо иначе",
         }
 
-    def _search_url(self, page: int) -> str:
-        query = urllib.parse.urlencode({
-            "dynSubjRF": ",".join(self.subject_codes),
+    def probe_regions(self, page: int = 0) -> dict[str, Any]:
+        """Какое имя параметра действительно фильтрует регион.
+
+        Живой ответ на `dynSubjRF=77,50` приносит Ярославскую и Ленинградскую
+        области: параметр под этим именем не фильтрует. Имена-кандидаты можно
+        перебирать вечно, а можно измерить — сервис молча игнорирует
+        неизвестный параметр, поэтому «сколько из присланного наше» и есть
+        ответ. Первым идёт запрос БЕЗ параметра: без него доля наших регионов
+        случайна, и сравнивать сработавший фильтр не с чем.
+        """
+        trials: list[dict[str, Any]] = []
+        for name in (None,) + REGION_PARAM_CANDIDATES:
+            url = self._search_url(page, region_param=name)
+            try:
+                _status, _ctype, body = self._fetch_raw(url)
+                payload = json.loads(body)
+            except Exception as exc:  # noqa: BLE001
+                trials.append({"param": name or "(без параметра)", "url": url,
+                               "reason": str(exc)})
+                continue
+            cards, _key, _note = _find_cards(payload if isinstance(payload, dict) else {})
+            ours = sum(1 for card in cards if in_target_region(card))
+            trials.append({
+                "param": name or "(без параметра)",
+                "on_page": len(cards),
+                "in_target_region": ours,
+                "subject_codes_seen": sorted({
+                    _text(card.get("subjectRFCode")) for card in cards
+                    if _text(card.get("subjectRFCode"))}),
+                # Фильтр либо отбирает всё, либо не фильтр. «Больше половины» —
+                # это совпадение, а не работающий параметр.
+                "filters": bool(cards) and ours == len(cards),
+            })
+        working = [one["param"] for one in trials if one.get("filters")]
+        return {
+            "ok": True,
+            "trials": trials,
+            "working": working,
+            "note": ("рабочее имя параметра: " + ", ".join(working)) if working else
+                    "ни один кандидат не отфильтровал регион — отбираем сами по "
+                    "subjectRFCode, как сейчас",
+        }
+
+    def _search_url(self, page: int, region_param: str | None = "") -> str:
+        fields: dict[str, Any] = {
             "page": page,
             "size": PAGE_SIZE,
             "sort": "firstVersionPublicationDate,desc",
-        })
+        }
+        # Пустая строка — «как в рабочем сборе», None — «без параметра вовсе».
+        name = REGION_PARAM if region_param == "" else region_param
+        if name:
+            fields[name] = ",".join(self.subject_codes)
+        query = urllib.parse.urlencode(fields)
         return f"https://{HOST}{SEARCH_PATH}?{query}"
 
     def _fetch_raw(self, url: str) -> tuple[int, str, str]:
@@ -629,6 +689,31 @@ def _find_cards(payload: dict[str, Any]) -> tuple[list[dict[str, Any]], str | No
             return ([item for item in value if isinstance(item, dict)], key,
                     f"ключа «content» в ответе нет — массив взят из «{key}»")
     return [], None, "массива словарей в ответе не нашлось: оболочка другая"
+
+
+def _codes_seen(cards: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
+    """Встреченные значения справочников с числом карточек у каждого.
+
+    Одно значение — не справочник: пока в выдаче одна приватизация, кажется,
+    что других видов торгов не бывает. Счётчик показывает и редкие.
+    """
+    seen: dict[str, dict[str, int]] = {}
+    for card in cards:
+        for field in ("biddType", "biddForm", "category", "lotVat"):
+            value = card.get(field)
+            code = _text(value.get("code") if isinstance(value, dict) else value)
+            if not code:
+                continue
+            bucket = seen.setdefault(field, {})
+            bucket[code] = bucket.get(code, 0) + 1
+    for field in ("lotStatus", "etpCode", "typeTransaction", "npaHintCode"):
+        for card in cards:
+            code = _text(card.get(field))
+            if not code:
+                continue
+            bucket = seen.setdefault(field, {})
+            bucket[code] = bucket.get(code, 0) + 1
+    return {field: dict(sorted(values.items())) for field, values in sorted(seen.items())}
 
 
 def _field_counts(cards: list[dict[str, Any]]) -> dict[str, int]:

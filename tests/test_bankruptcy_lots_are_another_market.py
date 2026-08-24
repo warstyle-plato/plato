@@ -106,15 +106,21 @@ def test_a_debtor_alone_is_not_proof_of_bankruptcy() -> None:
     assert lot.origin is LotOrigin.OTHER
 
 
-def test_city_lots_stay_city_by_default() -> None:
-    """У старых лотов поля не было — читаться они должны как прежде."""
+def test_an_unset_origin_is_not_city() -> None:
+    """Умолчание, которое утверждает, — не умолчание.
+
+    Прежде здесь стояли городские торги: три наших источника заводились под
+    городское имущество. Лот РАД по Коммунарке эту посылку опроверг — продавец
+    банк, а в списке он стоял городским. На экране опознанное и неопознанное
+    выглядели одинаково, и сравнить их было не с чем.
+    """
     from auction_search.models import AuctionLot, AuctionSource, SourceKind
     lot = AuctionLot(
         source=AuctionSource(platform=SourceKind.ROSELTORG, lot_url="x",
                              external_lot_id="1", fetched_at="now"),
         lot_kind=LotKind.KRT, title="Площадка КРТ")
-    assert lot.origin is LotOrigin.CITY
-    assert lot.to_dict()["origin"] == "city"
+    assert lot.origin is LotOrigin.OTHER
+    assert lot.to_dict()["origin"] == "other"
 
 
 def test_an_unrecognised_notice_is_not_forced_into_bankruptcy() -> None:
@@ -602,3 +608,193 @@ def test_a_binary_certificate_is_accepted_too(tmp_path) -> None:
     report = trust_report(str(tmp_path))
     assert report["rejected"] == []
     assert len(report["accepted"]) == 2
+
+
+# --- имя параметра региона измеряется, а не угадывается ---------------------
+
+def test_the_region_parameter_is_measured_not_guessed(monkeypatch) -> None:
+    """Сервис молча игнорирует неизвестный параметр.
+
+    Значит перебирать имена вслепую можно вечно, а измерить — один раз:
+    «сколько из присланного наше». Запрос без параметра идёт первым: без него
+    сработавший фильтр не с чем сравнить.
+    """
+    import auction_search.adapters.torgi_gov as mod
+    ours = dict(_real_card(), subjectRFCode="77")
+    alien = _real_card()
+
+    def answer(request, *a, **k):
+        url = getattr(request, "full_url", request)
+        cards = [ours] if "subjectRFCode=77" in str(url) else [ours, alien]
+        return _Response(json.dumps({"content": cards}))
+
+    monkeypatch.setattr(mod.urllib.request, "urlopen", answer)
+    result = TorgiGovAdapter().probe_regions()
+    assert result["working"] == ["subjectRFCode"]
+    control = result["trials"][0]
+    assert control["param"] == "(без параметра)"
+    assert control["filters"] is False
+
+
+def test_half_a_page_is_not_a_working_filter(monkeypatch) -> None:
+    """Фильтр либо отбирает всё, либо не фильтр.
+
+    «Больше половины наших» — совпадение выдачи, а не работающий параметр.
+    """
+    import auction_search.adapters.torgi_gov as mod
+    body = json.dumps({"content": [dict(_real_card(), subjectRFCode="77"), _real_card()]})
+    monkeypatch.setattr(mod.urllib.request, "urlopen", lambda *a, **k: _Response(body))
+    result = TorgiGovAdapter().probe_regions()
+    assert result["working"] == []
+    assert "subjectRFCode" in result["note"]
+
+
+def test_the_probe_lists_the_service_dictionaries(monkeypatch) -> None:
+    """Код банкротства мы не видели ни разу — пусть находится сам.
+
+    Одно значение справочника выглядит как единственное: пока в выдаче одна
+    приватизация, кажется, что других видов торгов не бывает.
+    """
+    body = json.dumps({"content": [
+        _real_card(),
+        dict(_real_card(), biddType={"code": "127FZ", "name": "Банкротство"}),
+    ]})
+    result = _probe_with(body, monkeypatch)
+    assert result["codes_seen"]["biddType"] == {"127FZ": 1, "178FZ": 1}
+    assert result["codes_seen"]["biddForm"] == {"PP": 2}
+
+
+# --- происхождение у трёх старых источников ---------------------------------
+#
+# Умолчание `CITY` жило на посылке «наши площадки продают городское имущество».
+# Лот РАД по Коммунарке (`50:21:0120316:1221`, экран владельца 24.08.2026) её
+# опроверг: продавец — банк, процедура — публичное предложение, а в списке лот
+# стоял городским. Форма процедуры при этом не улика: публичное предложение
+# бывает и у приватизации по 178-ФЗ. Улика — продавец.
+
+class _FakeResponse:
+    def __init__(self, html: str) -> None:
+        self._html = html
+
+    def read(self) -> bytes:
+        return self._html.encode("utf-8")
+
+    @property
+    def headers(self):
+        class _H:
+            @staticmethod
+            def get_content_charset():
+                return "utf-8"
+        return _H()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _rad_html(*, seller: str, direction: str, procedure: str = "Продажа посредством публичного предложения") -> str:
+    return (
+        "<html><body>"
+        "<p>Опубликовано: На lot-online.ru: 20.08.2026 10:00</p>"
+        "<h1>Земельный участок в г. Москва, поселение Сосенское</h1>"
+        "<p>Начальная цена</p><p>1 000 000 000 руб.</p>"
+        "<p>Минимальная цена</p><p>500 000 000 руб.</p>"
+        "<p>Регион</p><p>Москва</p>"
+        "<p>Адрес</p><p>г. Москва, поселение Сосенское</p>"
+        "<p>Категория земель</p><p>земли населенных пунктов</p>"
+        "<p>Кадастровый номер</p><p>50:21:0120316:1221</p>"
+        "<p>Доступность</p><p>Доступен</p>"
+        f"<p>Направление продаж</p><p>{direction}</p>"
+        f"<p>Вид процедуры</p><p>{procedure}</p>"
+        "<p>Код лота</p><p>123456</p>"
+        f"<p>Наименование ФО</p><p>{seller}</p>"
+        "<p>Является залогом</p><p>Нет</p>"
+        "</body></html>"
+    )
+
+
+def _rad_lot(monkeypatch, **kw):
+    from auction_search.adapters import lot_online as module
+    monkeypatch.setattr(module, "urlopen", lambda *a, **k: _FakeResponse(_rad_html(**kw)))
+    adapter = module.LotOnlineAdapter()
+    return adapter.fetch_lot("https://catalog.lot-online.ru/index.php?dispatch=products.view&product_id=123456")
+
+
+def test_a_bank_seller_on_rad_is_not_the_city_market(monkeypatch) -> None:
+    """Продавец — банк, площадка — РАД. Городским это не делает ничто.
+
+    Так выглядел лот по Коммунарке: в списке он стоял «городскими торгами»
+    только потому, что приехал с площадки, заведённой под городское имущество.
+    Сравнивать его цену с городскими соседями — сравнивать несравнимое, и на
+    экране об этом не было ни слова.
+    """
+    lot = _rad_lot(monkeypatch, seller="ПАО «Банк Икс»",
+                   direction="Имущество финансовых организаций")
+    assert lot.origin is not LotOrigin.CITY
+    assert lot.origin is LotOrigin.OTHER
+    assert lot.to_dict()["origin"] == "other"
+
+
+def test_the_city_seller_on_rad_is_recognised(monkeypatch) -> None:
+    """Городской лот опознаётся продавцом, а не площадкой."""
+    lot = _rad_lot(monkeypatch, seller="Департамент городского имущества города Москвы",
+                   direction="Приватизация государственного и муниципального имущества")
+    assert lot.origin is LotOrigin.CITY
+
+
+def test_the_platform_rubric_can_prove_bankruptcy(monkeypatch) -> None:
+    """«Направление продаж» — рубрика самой площадки, а не наша догадка."""
+    lot = _rad_lot(monkeypatch, seller="ООО «Ромашка»",
+                   direction="Имущество банкротов")
+    assert lot.origin is LotOrigin.BANKRUPTCY
+
+
+def test_the_public_offer_form_alone_decides_nothing() -> None:
+    """Публичное предложение бывает и у приватизации, и у банкротства.
+
+    Соблазн был: форма процедуры лежит в карточке и выглядит признаком рынка.
+    Она признак МЕХАНИКИ цены, а не продавца.
+    """
+    from auction_search.classifier import origin_from_evidence
+    assert origin_from_evidence(
+        procedure_type="Продажа посредством публичного предложения",
+    ) is LotOrigin.OTHER
+
+
+def test_the_organizer_never_decides_the_market() -> None:
+    """РАД проводит и городские торги, и продажу имущества финансовых
+    организаций. Организатор доказывает только, кто вёл процедуру."""
+    from auction_search.classifier import origin_from_evidence
+    assert origin_from_evidence(
+        organizer="Российский аукционный дом", seller="ООО «Ромашка»",
+    ) is LotOrigin.OTHER
+
+
+def test_roseltorg_reads_its_own_trading_section() -> None:
+    """У Росэлторга рынок называет торговая секция."""
+    from auction_search.classifier import origin_from_evidence
+    assert origin_from_evidence(
+        seller="ООО «Ромашка»", organizer="Росэлторг",
+        text="Продажа имущества банкротов",
+    ) is LotOrigin.BANKRUPTCY
+
+
+def test_one_dictionary_of_bankruptcy_words_for_every_source() -> None:
+    """Правило «это банкротный лот» одно на модуль.
+
+    Разойдись копии — один и тот же лот с ГИС Торгов и с РАД попал бы в разные
+    рынки, и оба списка выглядели бы верными.
+    """
+    from auction_search import classifier
+    from auction_search.adapters import torgi_gov
+    assert torgi_gov.BANKRUPTCY_WORDS is classifier.BANKRUPTCY_WORDS
+
+
+def test_the_page_shows_unrecognised_origin_as_its_own_group() -> None:
+    """Неопознанное обязано выглядеть неопознанным и на экране."""
+    from auction_search.ui import AUCTIONS_PAGE
+    page = AUCTIONS_PAGE if isinstance(AUCTIONS_PAGE, str) else str(AUCTIONS_PAGE)
+    assert 'value="other">Прочие' in page
+    assert "l.origin||'city'" not in page

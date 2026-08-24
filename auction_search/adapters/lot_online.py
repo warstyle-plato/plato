@@ -8,7 +8,7 @@ from urllib.parse import urljoin, urlparse, parse_qs, urlencode
 from zoneinfo import ZoneInfo
 
 from auction_search.adapters.base import AuctionPlatformAdapter
-from auction_search.classifier import classify_lot
+from auction_search.classifier import classify_lot, origin_from_evidence
 from auction_search.models import (
     AuctionDocument,
     AuctionLot,
@@ -306,6 +306,10 @@ class LotOnlineAdapter(AuctionPlatformAdapter):
         seller = self._short_value(text, "Наименование ФО", ("Является залогом", "Ограничения и обременения"))
         procedure = self._short_value(text, "Вид процедуры", ("Код лота", "Код процедуры"))
         status = self._short_value(text, "Доступность", ("Направление продаж", "Вид процедуры"))
+        # Собственная рубрика площадки. Она, а не наша посылка о том, «чем
+        # торгует РАД», говорит, с какого рынка лот: каталог ведёт и городские
+        # торги, и реализацию имущества финансовых организаций.
+        sales_direction = self._short_value(text, "Направление продаж", ("Вид процедуры", "Код лота"))
         cad = cadastral_numbers(text)
         schedule = self._price_schedule(text, lot_url=lot_url, fetched_at=fetched_at)
         current_period = self._current_actionable_period(schedule)
@@ -331,6 +335,10 @@ class LotOnlineAdapter(AuctionPlatformAdapter):
             seller=seller,
             organizer="Российский аукционный дом",
             procedure_type=procedure,
+            origin=origin_from_evidence(
+                seller=seller, organizer="Российский аукционный дом",
+                procedure_type=procedure, text=" ".join(x for x in (sales_direction, title) if x),
+            ),
             start_price_rub=start_price,
             current_price_rub=current_period.price_rub if current_period else None,
             min_price_rub=min_price,
@@ -353,6 +361,7 @@ class LotOnlineAdapter(AuctionPlatformAdapter):
             "permitted_use": permitted_use,
             "seller": seller,
             "procedure_type": procedure,
+            "sales_direction": sales_direction,
             "start_price_rub": str(start_price) if start_price is not None else None,
             "current_price_rub": str(lot.current_price_rub) if lot.current_price_rub is not None else None,
             "min_price_rub": str(min_price) if min_price is not None else None,
