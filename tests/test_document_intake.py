@@ -179,3 +179,45 @@ def test_the_field_catalogue_matches_the_engine() -> None:
         "cadastral_numbers", "site_area_ha", "apartments_gns_sqm"}
     for row in di.INTAKE_FIELDS:
         assert row["key"] in known, row["key"]
+
+
+# --- поверхности: окно на сайте и бот делят один разбор -----------------------
+
+def test_the_site_window_takes_a_document() -> None:
+    """Скрепка стоит в окне Платона, а не отдельной страницей."""
+    import main_legacy as core
+    assert 'id="aiFile"' in core.PAGE
+    assert "sendAgentDocument" in core.PAGE
+    assert "/agent/document" in core.PAGE
+
+
+def test_the_site_shows_the_quote_next_to_the_value() -> None:
+    """Значение без источника на экране неотличимо от посчитанного."""
+    import main_legacy as core
+    assert "Откуда взято" in core.PAGE
+    assert "Применить отмеченное" in core.PAGE
+
+
+def test_the_bot_accepts_a_pdf_now() -> None:
+    import main_legacy as core
+    assert ".pdf" in core._TELEGRAM_DOCUMENT_EXTENSIONS
+    assert hasattr(core, "_telegram_handle_intake_document")
+
+
+def test_both_surfaces_use_the_same_parser() -> None:
+    """Второй разбор на ту же задачу однажды разошёлся бы с первым."""
+    import inspect
+    import main_legacy as core
+    site = inspect.getsource(core.agent_document)
+    bot = inspect.getsource(core._telegram_handle_intake_document)
+    for source in (site, bot):
+        assert "document_intake.extract_text" in source
+        assert "document_intake.parse_intake" in source
+        assert "document_intake.intake_prompt" in source
+
+
+def test_a_scan_is_named_a_scan_on_both_surfaces() -> None:
+    import inspect
+    import main_legacy as core
+    assert "scanned" in inspect.getsource(core.agent_document)
+    assert "scanned" in inspect.getsource(core._telegram_handle_intake_document)
