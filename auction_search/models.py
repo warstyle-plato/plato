@@ -15,10 +15,46 @@ class LotKind(str, Enum):
     OTHER = "other"
 
 
+class LotOrigin(str, Enum):
+    """Кто продаёт. Не то же самое, что ЧТО продаётся.
+
+    Городские торги и банкротные — разные рынки с разной механикой. У города
+    цена не снижается; у банкротного лота публичное предложение идёт по
+    графику, и цена ползёт от начальной к минимальной. Смешать их в одном
+    списке значит сравнивать несравнимое: «дешевле» у банкротного лота часто
+    значит «дошло до последнего шага», а не «выгодно».
+    """
+    CITY = "city"
+    BANKRUPTCY = "bankruptcy"
+    OTHER = "other"
+
+
+# Что продаётся, крупными долями. Виды лотов подробнее (LotKind), но человеку с
+# порога нужен ответ «земля или уже построенное»: под редевелопмент это разные
+# сделки, разные сроки и разные риски.
+LAND_KINDS = (LotKind.LAND_SALE, LotKind.LAND_LEASE, LotKind.KRT)
+BUILDING_KINDS = (LotKind.PROPERTY_COMPLEX, LotKind.UNFINISHED)
+
+
+def lot_subject(kind: "LotKind | str") -> str:
+    """«land» / «building» / «other» по виду лота.
+
+    Отдельного поля не заводим: оно было бы вторым источником правды о том же
+    самом, и однажды разошлось бы с `lot_kind`.
+    """
+    value = kind.value if isinstance(kind, LotKind) else str(kind or "")
+    if value in {item.value for item in LAND_KINDS}:
+        return "land"
+    if value in {item.value for item in BUILDING_KINDS}:
+        return "building"
+    return "other"
+
+
 class SourceKind(str, Enum):
     ROSELTORG = "roseltorg"
     LOT_ONLINE = "lot_online"
     OTHER_ETP = "other_etp"
+    TORGI_GOV = "torgi_gov"
 
 
 @dataclass(frozen=True)
@@ -106,6 +142,11 @@ class AuctionLot:
     source: AuctionSource
     lot_kind: LotKind
     title: str
+    # Происхождение лота. Умолчание — городские торги: три наших источника
+    # продают городское имущество, и до появления банкротных лотов другого
+    # значения быть не могло. Умолчание, а не обязательное поле, чтобы уже
+    # сохранённые лоты читались как прежде, а не падали.
+    origin: LotOrigin = LotOrigin.CITY
     address: Optional[str] = None
     cadastral_numbers: list[str] = field(default_factory=list)
     land_area_sqm: Optional[float] = None
@@ -144,6 +185,8 @@ class AuctionLot:
     def to_dict(self) -> dict[str, Any]:
         value = asdict(self)
         value["lot_kind"] = self.lot_kind.value
+        value["origin"] = self.origin.value if isinstance(self.origin, LotOrigin) else str(self.origin)
+        value["subject"] = lot_subject(self.lot_kind)
         value["source"]["platform"] = self.source.platform.value
         return value
 
