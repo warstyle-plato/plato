@@ -58,6 +58,7 @@ from developaid_monitor_page import MONITOR_PAGE as _MONITOR_PAGE_RAW
 # Перевод документов проекта (ГПЗУ, ППТ, соглашения ВРИ и МПТ, справки по
 # техприсоединению) в продукты и деньги модели живёт отдельным модулем: он о
 # документах, движок — об экономике, и смешивать их незачем.
+import document_intake
 import parking_norms
 import project_preset
 
@@ -66,7 +67,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.19.76"
+VERSION = "0.19.80"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -263,6 +264,11 @@ PROJECT_CLASS_PRESETS = {
 # сделок похожа. Своя вписывается поверх, пустое поле возвращает одну ставку.
 # Ниже первой ступени действует обычная специальная ставка, поэтому на вводных,
 # где покрытие не доходит до 1×, умолчание ничего не меняет.
+# Предел присланного документа. Тизер весит мегабайт, решение ГЗК полтора;
+# двадцать мегабайт — это уже том проектной документации, и читать его
+# страницами дешевле, чем гонять целиком через модель.
+_DOCUMENT_INTAKE_MAX_BYTES = 20 * 1024 * 1024
+
 PF_SPECIAL_STEPS_DEFAULT = "100:3,47; 110:1,75; 120:0,03; 130:0,01"
 PF_SPECIAL_STEPS_SOURCE = "НКЛ Сбербанка 400F00BVX003 от 04.08.2026"
 
@@ -428,6 +434,24 @@ class SensitivityRequest(BaseModel):
     parameters: list[str] = []
     change_pct: float = 10.0
     duration_change_months: float = 6.0
+
+
+class AgentDocumentRequest(BaseModel):
+    """Присланный документ по участку: тизер, справка, решение ГЗК.
+
+    Файл приходит base64 в теле, а не формой: тем же путём, что и остальные
+    запросы страницы, и без второго способа авторизации.
+    """
+    filename: str = ""
+    content_b64: str = ""
+    inputs: dict[str, Any] = {}
+    tep: dict[str, dict[str, Any]] = {}
+    session: str = ""
+    access_key: str = ""
+    # Ключи, которые человек подтвердил в таблице разбора. Пусто — только
+    # показать: применение это отдельное действие, а не следствие загрузки.
+    accept: list[str] = []
+    extraction: dict[str, Any] = {}
 
 
 class AgentChatRequest(BaseModel):
@@ -9704,13 +9728,27 @@ def _telegram_send_template(chat_id: int) -> Any:
     )
 
 
-def _telegram_download_document(document: dict[str, Any]) -> tuple[bytes, str]:
+# Бот принимает не только шаблон ТЭП: тизер, справка по участку и решение ГЗК
+# приходят в чат тем же способом, и переписывать их в модель руками — та самая
+# работа, которую разбор снимает.
+_TELEGRAM_DOCUMENT_EXTENSIONS = (".xlsx", ".pdf")
+_TELEGRAM_DOCUMENT_MAX_BYTES = 20 * 1024 * 1024
+
+
+def _telegram_download_document(
+    document: dict[str, Any],
+    *,
+    extensions: tuple[str, ...] = _TELEGRAM_DOCUMENT_EXTENSIONS,
+    max_bytes: int = _TELEGRAM_DOCUMENT_MAX_BYTES,
+) -> tuple[bytes, str]:
     filename = str(document.get("file_name") or "ТЭП.xlsx").strip()[:180]
-    if not filename.lower().endswith(".xlsx"):
-        raise ValueError("Нужен заполненный файл .xlsx из шаблона DevelopAid")
+    if not filename.lower().endswith(tuple(extensions)):
+        raise ValueError("Бот принимает " + " и ".join(extensions)
+                         + ": шаблон ТЭП, выгрузку ГлавАПУ или документ по участку")
+    limit_mb = max_bytes // (1024 * 1024)
     declared_size = int(document.get("file_size") or 0)
-    if declared_size > 5 * 1024 * 1024:
-        raise ValueError("Файл слишком большой. Лимит — 5 МБ")
+    if declared_size > max_bytes:
+        raise ValueError(f"Файл слишком большой. Лимит — {limit_mb} МБ")
     file_id = str(document.get("file_id") or "")
     if not file_id:
         raise ValueError("Telegram не передал идентификатор файла")
@@ -9721,11 +9759,11 @@ def _telegram_download_document(document: dict[str, Any]) -> tuple[bytes, str]:
     url = f"https://api.telegram.org/file/bot{_telegram_token()}/{urllib.parse.quote(file_path, safe='/')}"
     try:
         with urllib.request.urlopen(url, timeout=20) as response:
-            data = response.read(5 * 1024 * 1024 + 1)
+            data = response.read(max_bytes + 1)
     except Exception as exc:
         raise RuntimeError(f"Не удалось скачать файл из Telegram: {exc}") from exc
-    if len(data) > 5 * 1024 * 1024:
-        raise ValueError("Файл слишком большой. Лимит — 5 МБ")
+    if len(data) > max_bytes:
+        raise ValueError(f"Файл слишком большой. Лимит — {limit_mb} МБ")
     return data, filename
 
 
@@ -10263,6 +10301,88 @@ def _telegram_handle_glavapu_document(chat_id: int, data: bytes, filename: str) 
     return True
 
 
+def _telegram_agent_request(chat_id: int) -> Request:
+    """Запрос без веб-запроса: боту его взять неоткуда, а Платону он нужен."""
+    return Request({
+        "type": "http", "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1", "method": "POST", "scheme": "https",
+        "path": "/telegram/intake", "raw_path": b"/telegram/intake",
+        "query_string": b"", "headers": [],
+        "client": ("telegram", int(chat_id)), "server": ("developaid", 443),
+    })
+
+
+def _telegram_handle_intake_document(chat_id: int, data: bytes, filename: str) -> None:
+    """Разбор присланного в чат документа: тизер, справка, решение ГЗК.
+
+    В чате не таблица с галочками, а разговор: сначала что прочитано и откуда,
+    потом чего не хватает. Числа человек проверяет глазами и открывает модель
+    кнопкой — тем же способом, что и распознанный шаблон ТЭП.
+
+    Применять молча тут тем более нельзя: на экране человек хотя бы видит
+    таблицу, а в чате подставленное значение вообще ничем не отличается от
+    посчитанного.
+    """
+    document = document_intake.extract_text(data, filename)
+    if document.get("scanned") or not document.get("text"):
+        # Скан — не пустой документ. Сказать «ничего не нашли» значит соврать
+        # про источник: там всё есть, просто картинкой.
+        _telegram_send_message(
+            chat_id,
+            "<b>Документ принят, но прочитать нечего.</b>\n"
+            + html.escape(str(document.get("reason") or "в документе нет текста"))
+            + "\n\nПришлите страницы картинками или введите числа вручную.")
+        return
+    _telegram_send_message(
+        chat_id, f"<b>Читаю «{html.escape(filename)}»…</b>\n"
+                 f"Страниц: {document.get('pages')}. Выпишу, что нашлось, и спрошу об остальном.")
+    payload = AgentChatRequest(
+        message=document_intake.intake_prompt(document),
+        inputs=dict(DEFAULT_INPUTS),
+        tep={key: dict(value) for key, value in TEP_DEFAULT.items()},
+        scenario="document_intake",
+    )
+    try:
+        answer = plato_answer(payload, _telegram_agent_request(chat_id))
+    except Exception as exc:  # noqa: BLE001
+        _telegram_send_message(
+            chat_id, "<b>Разбор не удался.</b>\n" + html.escape(str(exc)))
+        return
+    got = document_intake.parse_intake(str((answer or {}).get("answer") or ""))
+    if got.get("reason"):
+        _telegram_send_message(
+            chat_id, "<b>Разбор не удался.</b>\n" + html.escape(str(got["reason"])))
+        return
+
+    lines = [f"<b>Разбор «{html.escape(filename)}»</b>"]
+    if got["fields"]:
+        lines.append("\n<b>Что написано в документе</b>")
+        for item in got["fields"]:
+            unit = f" {html.escape(item['unit'])}" if item.get("unit") else ""
+            lines.append(f"• {html.escape(item['key'])}: <b>{html.escape(str(item['value']))}</b>{unit}"
+                         f"\n  <i>«{html.escape(item['quote'][:160])}»</i>")
+    else:
+        lines.append("\nПолей, которые понимает модель, в документе не нашлось.")
+    if got["questions"]:
+        lines.append("\n<b>Чего в документе нет — нужен ваш ответ</b>")
+        for item in got["questions"]:
+            options = " / ".join(html.escape(option) for option in item.get("options") or [])
+            lines.append(f"• {html.escape(item['question'])}" + (f"\n  {options}" if options else ""))
+    for note in got.get("notes") or []:
+        lines.append(f"\n<i>{html.escape(str(note)[:300])}</i>")
+    # Отброшенное называется вслух: молча пропущенное поле читается как
+    # «в документе такого нет».
+    for line in got.get("dropped") or []:
+        lines.append(f"\nНе взято — {html.escape(str(line)[:200])}")
+    lines.append("\nЧисла проверьте глазами: это то, что написано в документе, "
+                 "а не расчёт. Открыть модель — кнопкой ниже.")
+    button = {"inline_keyboard": [[{
+        "text": "Открыть модель в DevelopAid",
+        "web_app": {"url": _telegram_web_app_url(chat_id, [], None)},
+    }]]}
+    _telegram_send_message(chat_id, "\n".join(lines)[:3900], reply_markup=button)
+
+
 def _telegram_handle_manual_document(chat_id: int, document: dict[str, Any]) -> None:
     try:
         data, filename = _telegram_download_document(document)
@@ -10271,6 +10391,10 @@ def _telegram_handle_manual_document(chat_id: int, document: dict[str, Any]) -> 
             chat_id,
             "<b>Не удалось принять файл.</b>\n" + html.escape(str(exc)),
         )
+        return
+    # PDF шаблоном ТЭП не бывает: это тизер, справка или решение ГЗК.
+    if filename.lower().endswith(".pdf"):
+        _telegram_handle_intake_document(chat_id, data, filename)
         return
     try:
         parsed = parse_manual_tep_xlsx(data, filename)
@@ -28111,6 +28235,56 @@ def plato_answer(req: AgentChatRequest, request: Request) -> dict[str, Any]:
     return _plato_chat_result(trace_id, outcome)
 
 
+@app.post("/agent/document")
+def agent_document(req: AgentDocumentRequest, request: Request) -> dict[str, Any]:
+    """Разобрать документ по участку и показать, что из него можно взять.
+
+    Три хода: что написано (с цитатой), что из этого следует (считает движок),
+    чего в документе нет (спрашивается). Ничего не подставляется молча —
+    применение отдельным вызовом с уже подтверждёнными ключами.
+    """
+    _require_web_access(req.session, req.access_key, "Разбор документа")
+    # Применение уже разобранного: модель второй раз не зовём — она бы
+    # прочитала документ заново и могла ответить иначе на тех же страницах.
+    if req.accept:
+        got = document_intake.apply_intake(
+            req.extraction or {}, req.inputs or {}, req.tep or {}, accept=req.accept)
+        usage_track("document_apply", surface="site",
+                    text=str(req.filename or ""))
+        return {"applied": got["applied"], "refused": got["refused"],
+                "inputs": got["inputs"], "tep": got["tep"]}
+
+    try:
+        data = base64.b64decode(str(req.content_b64 or ""), validate=True)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"Файл не прочитался: {exc}") from exc
+    if not data:
+        raise HTTPException(status_code=400, detail="Пустой файл")
+    if len(data) > _DOCUMENT_INTAKE_MAX_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=(f"Файл больше {_DOCUMENT_INTAKE_MAX_BYTES // (1024 * 1024)} МБ. "
+                    "Пришлите нужные страницы отдельно."))
+    document = document_intake.extract_text(data, req.filename)
+    if document.get("scanned") or not document.get("text"):
+        # Скан — не пустой документ, и выдавать «ничего не нашли» за ответ
+        # нельзя: человек решит, что в файле пусто.
+        return {"document": document, "fields": [], "questions": [], "notes": [],
+                "reason": document.get("reason") or "в документе нет текста"}
+
+    usage_track("document", surface="site", text=str(req.filename or ""))
+    payload = AgentChatRequest(
+        message=document_intake.intake_prompt(document),
+        inputs=dict(req.inputs or DEFAULT_INPUTS),
+        tep={key: dict(value) for key, value in (req.tep or TEP_DEFAULT).items()},
+        scenario="document_intake",
+    )
+    answer = plato_answer(payload, request)
+    got = document_intake.parse_intake(str(answer.get("answer") or ""))
+    return {"document": {key: value for key, value in document.items() if key != "text"},
+            **got}
+
+
 @app.get("/agent/result/{trace_id}")
 def agent_result(trace_id: str) -> dict[str, Any]:
     """Готовый ответ по номеру запуска.
@@ -29264,7 +29438,7 @@ details.cadastral-box>summary::marker{color:#888}
   <div id="aiMessages" class="ai-messages"><div id="aiHero" class="ai-hero"><img src="/assets/platon-hero.webp" alt="" width="260" height="298" loading="lazy"><div class="ai-hero-say"><b>Привет! Я Платон.</b><span>Помогу настроить отчёт и отвечу на вопросы.</span></div></div><div class="ai-msg system">Платон Сергеевич анализирует проект через расчётные инструменты DevelopAid. Цифры и подбор параметров считает движок модели, а не языковая модель.</div></div>
   <div class="ai-compose">
     <textarea id="aiInput" placeholder="Например: за сколько максимум можно купить проект, чтобы LLCR слабейшей очереди был не ниже 1,20?"></textarea>
-    <div class="ai-compose-row"><small>Ориентир диагностики: LLCR 1,20x. Методика конкретного банка может отличаться.</small><button id="aiSendBtn" class="btn dark" onclick="sendAgentMessage()">Отправить</button></div>
+    <div class="ai-compose-row"><small>Ориентир диагностики: LLCR 1,20x. Методика конкретного банка может отличаться.</small><input type="file" id="aiFile" accept=".pdf,application/pdf" style="display:none" onchange="sendAgentDocument(this.files&&this.files[0])"><button id="aiFileBtn" class="btn" onclick="document.getElementById('aiFile').click()" title="Тизер, справка по участку, решение ГЗК — Платон прочитает и покажет, что можно взять в модель">Приложить документ</button><button id="aiSendBtn" class="btn dark" onclick="sendAgentMessage()">Отправить</button></div>
   </div>
 </aside>
 
@@ -29895,6 +30069,87 @@ async function applyAgentProposal(idx){
 function askAgentQuick(text,scenario){aiInput.value=text;sendAgentMessage(scenario)}
 async function refreshAgentStatus(){try{const r=await fetch('/agent/status'),s=await r.json();aiStatusDot.classList.toggle('ready',!!s.enabled);aiStatusDot.title=s.enabled?`AI готов · ${s.model} · думает через ${s.thinks_via||'этот сервер'}`:'AI не настроен: нет ни OPENAI_API_KEY, ни PLATO_AI_URL'}catch(e){aiStatusDot.classList.remove('ready')}}
 async function syncInputsForAgent(){document.querySelectorAll('[id^=f_]').forEach(el=>{const id=el.id.slice(2);inputs[id]=el.type==='checkbox'?el.checked:(el.type==='number'?Number(el.value):el.value)});if(document.getElementById('rateScenario'))inputs.rate_scenario=rateScenario.value||'base';generateRateCurve();repairParkingFromGlavapu();normalizeSocialObjectDates()}
+// Разбор присланного документа. Тизер, справка по участку, решение ГЗК — то,
+// что аналитик переписывает в модель руками, и ошибка переписывания на экране
+// неотличима от расчёта.
+//
+// Ничего не подставляется молча: загрузка ПОКАЗЫВАЕТ таблицу «поле — значение —
+// откуда взято», а применение — отдельная кнопка с галочками. Чего разбор не
+// понял, он спрашивает, а не додумывает.
+function aiEsc(value){const box=document.createElement('div');box.textContent=String(value==null?'':value);return box.innerHTML}
+let aiIntake=null;
+async function sendAgentDocument(file){
+ if(!file||aiBusy)return;
+ document.getElementById('aiFile').value='';
+ aiBusy=true;aiSendBtn.disabled=true;aiFileBtn.disabled=true;
+ appendAiMessage('user','Документ: '+file.name);
+ const thinking=document.createElement('div');thinking.className='ai-thinking';
+ thinking.textContent='Читаю документ…';aiMessages.appendChild(thinking);aiMessages.scrollTop=aiMessages.scrollHeight;
+ try{
+  const buffer=await file.arrayBuffer();
+  // Разбор base64 порциями: строка на два мегабайта через apply падает на
+  // пределе аргументов, и падение выглядит как «файл не читается».
+  const bytes=new Uint8Array(buffer);let binary='';
+  for(let i=0;i<bytes.length;i+=8192)binary+=String.fromCharCode.apply(null,bytes.subarray(i,i+8192));
+  await syncInputsForAgent();
+  const r=await fetch('/agent/document',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({filename:file.name,content_b64:btoa(binary),inputs,tep,
+    session:activeSession(),access_key:projectsAdminKey||''})});
+  const data=await r.json().catch(()=>({}));
+  thinking.remove();
+  if(!r.ok){appendAiMessage('system',data.detail||('Документ не разобрался: HTTP '+r.status));return}
+  aiIntake=data;renderAiIntake(data);
+ }catch(e){thinking.remove();appendAiMessage('system','Документ не разобрался: '+(e.message||e))}
+ finally{aiBusy=false;aiSendBtn.disabled=false;aiFileBtn.disabled=false}
+}
+function renderAiIntake(data){
+ const doc=data.document||{};
+ const box=document.createElement('div');box.className='ai-msg system';
+ let html='<b>'+aiEsc(doc.filename||'документ')+'</b>';
+ if(doc.pages)html+=' <span style="color:#888">· страниц '+aiEsc(doc.pages)+'</span>';
+ // Скан — не пустой документ. Выдать «ничего не нашли» за «там ничего нет»
+ // значит соврать про источник.
+ if(data.reason)html+='<div style="margin-top:6px;color:#8a4b08">'+aiEsc(data.reason)+'</div>';
+ const fields=data.fields||[];
+ if(fields.length){
+  html+='<div style="margin-top:8px"><table style="width:100%;border-collapse:collapse;font-size:12px">'
+   +'<tr><th></th><th style="text-align:left">Поле</th><th style="text-align:left">Значение</th><th style="text-align:left">Откуда взято</th></tr>';
+  fields.forEach((f,i)=>{html+='<tr>'
+   +'<td><input type="checkbox" class="ai-intake-pick" data-key="'+aiEsc(f.key)+'" checked></td>'
+   +'<td>'+aiEsc(f.key)+'</td>'
+   +'<td><b>'+aiEsc(f.value)+'</b> '+aiEsc(f.unit||'')+'</td>'
+   +'<td style="color:#666">«'+aiEsc(f.quote)+'»</td></tr>'});
+  html+='</table><button class="btn dark" style="margin-top:8px" onclick="applyAiIntake()">Применить отмеченное</button></div>';
+ }
+ (data.questions||[]).forEach(q=>{
+  html+='<div style="margin-top:8px"><b>Вопрос:</b> '+aiEsc(q.question)+'</div>';
+  if((q.options||[]).length)html+='<div style="color:#666;font-size:12px">'+q.options.map(aiEsc).join(' · ')+'</div>';
+ });
+ (data.notes||[]).forEach(note=>{html+='<div style="margin-top:6px;color:#666;font-size:12px">'+aiEsc(note)+'</div>'});
+ // Отброшенное называется вслух: молча пропущенное поле читается как
+ // «в документе такого нет».
+ (data.dropped||[]).forEach(line=>{html+='<div style="margin-top:4px;color:#8a4b08;font-size:12px">Не взято — '+aiEsc(line)+'</div>'});
+ if(!fields.length&&!(data.questions||[]).length&&!data.reason)html+='<div style="margin-top:6px">В документе не нашлось полей, которые понимает модель.</div>';
+ box.innerHTML=html;aiMessages.appendChild(box);aiMessages.scrollTop=aiMessages.scrollHeight;
+}
+async function applyAiIntake(){
+ if(!aiIntake)return;
+ const accept=Array.from(document.querySelectorAll('.ai-intake-pick:checked')).map(el=>el.dataset.key);
+ if(!accept.length){appendAiMessage('system','Ничего не отмечено — применять нечего.');return}
+ try{
+  const r=await fetch('/agent/document',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({filename:(aiIntake.document||{}).filename||'',accept,extraction:aiIntake,
+    inputs,tep,session:activeSession(),access_key:projectsAdminKey||''})});
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok){appendAiMessage('system',data.detail||'Не применилось');return}
+  Object.assign(inputs,data.inputs||{});
+  Object.keys(data.tep||{}).forEach(key=>{tep[key]=Object.assign(tep[key]||{},data.tep[key])});
+  syncTep(false);renderInputs();renderTep();calculate();
+  const lines=(data.applied||[]).map(a=>a.key+': '+(a.was===undefined?'—':a.was)+' → '+a.now);
+  (data.refused||[]).forEach(x=>lines.push('не применено — '+x.key+': '+x.reason));
+  appendAiMessage('system','Подставлено:\n'+lines.join('\n'));
+ }catch(e){appendAiMessage('system','Не применилось: '+(e.message||e))}
+}
 async function sendAgentMessage(scenario){
  if(aiBusy)return;const message=String(aiInput.value||'').trim();if(!message)return;
  aiBusy=true;aiSendBtn.disabled=true;aiInput.value='';appendAiMessage('user',message);aiHistory.push({role:'user',content:message});
