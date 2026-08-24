@@ -342,6 +342,13 @@ _MONOLITH_CYCLE = re.compile(
     r"|земляны|свай|обратн[а-я]* засыпк|распределительн[а-я]* балк",
     re.IGNORECASE)
 
+# Поэтажный монолит («5-й этаж верт констр», «тех этаж ПП») закрывается только
+# при явно названном объекте: по всему проекту разом его закрывать нельзя —
+# у корпуса 3 верхние этажи ещё в опалубке, и «сотня на всё» соврала бы.
+_FLOOR_MONOLITH = re.compile(
+    r"верт[\s.]*констр|\bпп\b|тех[\s.]*этаж|\d+\s*-?\s*[ыои]{0,2}й?\s*этаж",
+    re.IGNORECASE)
+
 
 def close_completed_stage(project: str, object_query: str,
                           taken_at: Any) -> dict[str, Any]:
@@ -360,7 +367,9 @@ def close_completed_stage(project: str, object_query: str,
         haystack = f"{work.get('object') or ''} {work.get('section') or ''}".lower()
         if query and query not in haystack:
             continue
-        if not _MONOLITH_CYCLE.search(str(work.get("name") or "")):
+        name = str(work.get("name") or "")
+        if not (_MONOLITH_CYCLE.search(name)
+                or (query and _FLOOR_MONOLITH.search(name))):
             continue
         rows.append({"id": str(work.get("id")), "progress": 1.0,
                      "status": "Завершено (экспертная разметка)"})

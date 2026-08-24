@@ -232,6 +232,92 @@ def _answer(kind: str, target: str, delta: int, rnv: datetime.date,
     return f"{label}. {timing} {money}{reserve_text}"
 
 
+def doubts(project: str, cut: Any) -> dict[str, Any]:
+    """Сомнения Платона: работы, чьё «не сделано» противоречит фактуре.
+
+    Стройка в бетоне не может не иметь котлована; статья, актированная на
+    три четверти, не оставляет свой ранний цикл нулём. Такие работы
+    перечисляются с причиной, а сеть пересчитывается без них — «если
+    сомнения верны, реальный прогноз такой».
+    """
+    cut_date = monitor._day(cut)
+    if cut_date is None:
+        raise ValueError("дата среза нужна в виде ГГГГ-ММ-ДД")
+    view = monitor.build(project, cut=cut_date)
+    pm = graph._load_pm(project)
+    if not pm.get("known"):
+        raise ValueError("для пересчёта сети нужен сырой PM с зависимостями")
+
+    rows = (view.get("schedule") or {}).get("rows") or []
+    seeded = forecast.current_seeds(rows, cut_date)
+    seeds = seeded["seeds"]
+    forecasts = seeded["forecasts"]
+
+    suspicious: list[dict[str, Any]] = []
+    for row in rows:
+        tid = str(row.get("id") or row.get("wbs") or "").strip()
+        if not tid or row.get("baseline_closed"):
+            continue
+        name = str(row.get("name") or "")
+        if not (monitor._MONOLITH_CYCLE.search(name)
+                or monitor._FLOOR_MONOLITH.search(name)):
+            continue
+        plan_finish = monitor._day(row.get("plan_finish"))
+        if plan_finish is None or plan_finish >= cut_date:
+            continue
+        predicted = forecasts.get(tid)
+        local_delay = (predicted - plan_finish).days if predicted else None
+        if tid not in seeds and (local_delay or 0) < 60:
+            continue
+
+        ratio = row.get("rss_accepted_ratio")
+        code = str(row.get("code") or "").strip()
+        reasons = []
+        if ratio and float(ratio) > 0.05:
+            reasons.append(
+                f"статья {code or 'РСС'} актирована на {float(ratio)*100:.0f}%, "
+                "но акт не именует работу — отметка о выполнении не проставлена")
+        else:
+            reasons.append("актов по статье почти нет — либо работы не "
+                           "актируются, либо привязка кода пуста")
+        overdue_months = max(0, (cut_date - plan_finish).days) // 30
+        reasons.append(
+            f"плановый финиш прошёл {overdue_months} мес назад, а в графике "
+            f"{float(row.get('progress') or 0)*100:.0f}% и статус "
+            f"«{str(row.get('baseline_status') or row.get('status') or '—')}»; "
+            "фактических дат в PM нет")
+        suspicious.append({
+            "id": tid,
+            "name": name,
+            "code": code,
+            "plan_finish": monitor._iso(plan_finish),
+            "local_delay_days": local_delay,
+            "reason": "; ".join(reasons),
+        })
+
+    suspicious.sort(key=lambda item: -(item.get("local_delay_days") or 0))
+    doubt_ids = {item["id"] for item in suspicious}
+    clean_seeds = {tid: day for tid, day in seeds.items() if tid not in doubt_ids}
+
+    approved_rnv = forecast.network_rnv(pm, graph._propagate(pm, {}))
+    current_rnv = forecast.network_rnv(pm, graph._propagate(pm, seeds))
+    doubt_rnv = forecast.network_rnv(pm, graph._propagate(pm, clean_seeds))
+
+    def _delta(day):
+        return (day - approved_rnv).days if day and approved_rnv else None
+
+    return {
+        "rows": suspicious,
+        "approved_rnv": monitor._iso(approved_rnv),
+        "current_rnv": monitor._iso(current_rnv),
+        "current_delay_days": _delta(current_rnv),
+        "doubt_rnv": monitor._iso(doubt_rnv),
+        "doubt_delay_days": _delta(doubt_rnv),
+        "recovered_days": ((current_rnv - doubt_rnv).days
+                           if current_rnv and doubt_rnv else None),
+    }
+
+
 def run(project: str, cut: Any, kind: str, wbs: str = "", days: int = 0,
         acceleration_pct: float = 20.0) -> dict[str, Any]:
     if kind not in KINDS:
