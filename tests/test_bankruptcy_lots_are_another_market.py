@@ -150,17 +150,39 @@ def test_a_land_lot_is_recognised() -> None:
 
 # --- цена, которая ползёт ---------------------------------------------------
 
-def test_the_price_ladder_survives_the_mapping() -> None:
-    """Начальная, текущая и минимальная — три разных числа, и все нужны."""
-    lot = _lot()
-    assert lot.start_price_rub == 3643151220
-    assert lot.current_price_rub == 1800000000
-    assert lot.min_price_rub == 182157561
+def test_one_price_field_does_not_become_three() -> None:
+    """У сервиса ценовое поле ОДНО — `priceMin`. Живой ответ 24.08.2026.
+
+    Полей `estimatedPrice` и `priceFin`, на которые мы рассчитывали, в ответе
+    нет вовсе. Разложить одно число по трём нашим полям значит выдумать два
+    из них, а выдуманная начальная цена делает батарейку хода правдоподобной
+    и неверной. Начальная и минимальная остаются пустыми.
+    """
+    lot = _lot(priceMin=460599.0, estimatedPrice=None, priceFin=None)
+    assert lot.current_price_rub == 460599.0
+    assert lot.start_price_rub is None
+    assert lot.min_price_rub is None
 
 
-def test_a_lot_without_a_current_price_falls_back_to_the_start() -> None:
-    lot = _lot(priceFin=None)
-    assert lot.current_price_rub == lot.start_price_rub
+def test_the_unknown_meaning_of_the_price_is_said_out_loud() -> None:
+    """Число без правового смысла — не «цена», а «какое-то число».
+
+    По ответу нельзя определить, начальная это цена, текущая или отсечка.
+    Молча подписать её «ценой сейчас» и не сказать больше ничего значит
+    выдать догадку за факт.
+    """
+    lot = _lot(priceMin=460599.0)
+    assert any("priceMin" in flag for flag in lot.relevance_flags)
+
+
+def test_a_public_offer_says_its_ladder_is_not_in_the_answer() -> None:
+    """Форма торгов лежит в `biddForm`, а не в `biddType`.
+
+    «PP» — публичное предложение: цена снижается по графику. Графика в ответе
+    поиска нет, и молчание об этом читалось бы как «снижения не будет».
+    """
+    lot = _lot(biddForm={"code": "PP", "name": "Публичное предложение"})
+    assert any("публичное предложение" in flag for flag in lot.relevance_flags)
 
 
 # --- осторожность -----------------------------------------------------------
@@ -335,3 +357,120 @@ def test_a_card_that_did_not_parse_says_so(monkeypatch) -> None:
     result = _probe_with(json.dumps({"content": [{"nothing": "useful"}]}), monkeypatch)
     assert result["parsed_first"] is None
     assert result["parsed_note"]
+
+
+# --- живой ответ ------------------------------------------------------------
+#
+# Всё выше проверяет наши предположения на наших же выдумках. Здесь — карточка
+# из настоящего ответа сервиса (24.08.2026), и она единственная доказывает, что
+# разбор относится к тому, что действительно приходит.
+
+def _real_card():
+    path = Path(__file__).resolve().parent / "fixtures" / "torgi_gov_lotcard.json"
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_the_real_card_parses() -> None:
+    from auction_search.adapters.torgi_gov import to_lot as parse
+    lot = parse(_real_card(), "now")
+    assert lot is not None
+    assert lot.title.startswith("Здание дома кордона")
+    assert lot.status == "PUBLISHED"
+    assert lot.application_deadline.startswith("2026-09-25")
+
+
+def test_the_cadastral_number_comes_out_of_characteristics() -> None:
+    """Кадастра отдельным полем в ответе нет — он строка `characteristics`."""
+    from auction_search.adapters.torgi_gov import to_lot as parse
+    assert parse(_real_card(), "now").cadastral_numbers == ["76:14:020110:400"]
+
+
+def test_building_area_is_not_land_area() -> None:
+    """«Общая площадь» карточки — метры здания. Участок стоит только в тексте.
+
+    Сложить их в одно поле значит подписать два разных числа одним именем.
+    """
+    from auction_search.adapters.torgi_gov import to_lot as parse
+    lot = parse(_real_card(), "now")
+    assert lot.building_area_sqm == 86.3
+    assert lot.land_area_sqm is None
+
+
+def test_the_service_rubric_decides_the_kind_not_word_order() -> None:
+    """«Здание … С ЗЕМЕЛЬНЫМ УЧАСТКОМ» — это здание.
+
+    Гонку слов выигрывал тот, кто выше в нашем списке: «земельн» стоял перед
+    «здание», и лот уходил в продажу земли. У сервиса есть своя рубрика.
+    """
+    from auction_search.adapters.torgi_gov import to_lot as parse
+    assert parse(_real_card(), "now").lot_kind is LotKind.PROPERTY_COMPLEX
+
+
+def test_privatization_in_the_real_card_is_the_city() -> None:
+    from auction_search.adapters.torgi_gov import to_lot as parse
+    assert parse(_real_card(), "now").origin is LotOrigin.CITY
+
+
+def test_both_the_type_and_the_form_reach_the_lot() -> None:
+    """Вид торгов и форма — разные поля, и человеку нужны оба."""
+    from auction_search.adapters.torgi_gov import to_lot as parse
+    procedure = parse(_real_card(), "now").procedure_type
+    assert "приватизация" in procedure
+    assert "Публичное предложение" in procedure
+
+
+def test_a_foreign_region_is_not_ours() -> None:
+    """Ответ на запросе с dynSubjRF=77,50 принёс Ярославскую область (76).
+
+    Серверный фильтр под этим именем не работает. Пока рабочее имя не
+    выяснено, лот из Рыбинска в московском списке был бы не шумом, а ложью.
+    """
+    from auction_search.adapters.torgi_gov import in_target_region
+    assert in_target_region(_real_card()) is False
+    assert in_target_region(dict(_real_card(), subjectRFCode="77")) is True
+    assert in_target_region(dict(_real_card(), subjectRFCode="50")) is True
+
+
+def test_the_collector_drops_foreign_regions(monkeypatch) -> None:
+    import auction_search.adapters.torgi_gov as mod
+    ours = dict(_real_card(), subjectRFCode="77", id="ours_1")
+    body = json.dumps({"content": [_real_card(), ours]})
+    monkeypatch.setenv(FLAG, "1")
+    monkeypatch.setattr(mod.urllib.request, "urlopen",
+                        lambda *a, **k: _Response(body))
+    adapter = TorgiGovAdapter()
+    lots = list(adapter.discover_moscow())
+    assert [lot.source.external_lot_id for lot in lots] == ["ours_1"]
+
+
+def test_a_page_of_foreign_regions_says_why_it_is_empty(monkeypatch) -> None:
+    """Пустой список после полной страницы читался бы как «лотов нет»."""
+    import auction_search.adapters.torgi_gov as mod
+    monkeypatch.setenv(FLAG, "1")
+    monkeypatch.setattr(mod.urllib.request, "urlopen",
+                        lambda *a, **k: _Response(json.dumps({"content": [_real_card()]})))
+    adapter = TorgiGovAdapter()
+    assert list(adapter.discover_moscow()) == []
+    assert "subjectRFCode" in adapter.last_report["reason"]
+
+
+def test_the_probe_counts_how_many_lots_were_actually_ours(monkeypatch) -> None:
+    """«Фильтр работает» и «не работает» не должны выглядеть одинаково."""
+    body = json.dumps({"content": [_real_card(),
+                                   dict(_real_card(), subjectRFCode="77")]})
+    result = _probe_with(body, monkeypatch)
+    assert result["on_page"] == 2
+    assert result["in_target_region"] == 1
+    assert result["subject_codes_seen"] == ["76", "77"]
+
+
+def test_an_attribute_is_found_despite_the_services_own_typos() -> None:
+    """В живом ответе встречаются `minpiced` без «r» и `minpriced((178)`.
+
+    Сверять код целиком значит терять поле на каждой чужой описке.
+    """
+    from auction_search.adapters.torgi_gov import attribute, ATTR_LIMITATIONS
+    for code in ("DA_limitations_PP(178)", "DA_limitations_minpiced(178)",
+                 "DA_limitations_minpriced((178)"):
+        card = {"attributes": [{"code": code, "value": "есть ограничения"}]}
+        assert attribute(card, ATTR_LIMITATIONS) == "есть ограничения"

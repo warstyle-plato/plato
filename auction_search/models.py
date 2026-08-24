@@ -150,6 +150,12 @@ class AuctionLot:
     address: Optional[str] = None
     cadastral_numbers: list[str] = field(default_factory=list)
     land_area_sqm: Optional[float] = None
+    # Площадь здания — отдельным полем, а не в площади участка. У ГИС Торгов
+    # структурирована площадь объекта («Общая площадь»), а метры участка часто
+    # стоят только в тексте описания. Сложить их в одно поле значит подписать
+    # два разных числа одним именем — потом никто не разберёт, что именно
+    # сравнивается с ценой.
+    building_area_sqm: Optional[float] = None
     permitted_use: Optional[str] = None
     seller: Optional[str] = None
     organizer: Optional[str] = None

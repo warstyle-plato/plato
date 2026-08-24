@@ -23,19 +23,48 @@
 сырой ответ и разобранный лот рядом, чтобы расхождение было видно глазами, а не
 вылезло числом в отчёте.
 
-Сверка по памяти модели уже пробована (24.08.2026) и не подтвердила НИ ОДНОГО
-имени поля: без спецификации или живого ответа контракт API не восстанавливается,
-и добросовестный ответ на такой вопрос — «не знаю». Один результат она всё же
-дала, и он из права, а не из API: 178-ФЗ — это приватизация государственного и
-муниципального имущества, то есть городской рынок; банкротство — 127-ФЗ. Отсюда
-общее правило: **чужая уверенность — не проба.** Пока `probe()` не сходил с ядра,
-имена полей остаются догадкой, как бы уверенно они ни выглядели.
+## Что сверено живым ответом, а что нет
+
+24.08.2026 пришёл настоящий ответ поиска — три карточки одной страницы. Он
+подтвердил оболочку (`content`, `totalElements`, нумерация страниц с нуля) и
+опроверг почти весь наш разбор:
+
+- **Ценовое поле ОДНО** — `priceMin` (плюс оно же строкой, `priceMinExact`).
+  `estimatedPrice` и `priceFin` не приходят вовсе, и какой у числа правовой
+  смысл — начальная цена, текущая или отсечка — из ответа не следует. Значит
+  батарейка хода по этому источнику не рисуется: ей нужны обе границы.
+- **Форма торгов живёт в `biddForm`**, отдельно от вида (`biddType`): «PP» —
+  публичное предложение, «SMP» — по минимально допустимой цене, «PK» — конкурс.
+  Именно здесь ответ на «ползёт ли цена», а не в законе: у приватизации по
+  178-ФЗ бывают обе формы. Графика снижения в ответе поиска нет.
+- **Кадастр, площадь, этажность и год — строки `characteristics`** с кодами
+  `cadastralNumberRealty`, `totalAreaRealty`, `numberFloors`,
+  `yearCommissioning`, а не поля карточки. Площадь там — метры ЗДАНИЯ; метры
+  участка стоят только в тексте описания.
+- **Адреса отдельным полем нет.** `estateAddress`, `estateArea`, `seller`,
+  `permittedUse`, `documents`, координаты — ничего этого в ответе не было.
+- **Дата публикации** называется `noticeFirstVersionPublicationDate`.
+- **Фильтр региона не сработал**: запрос с `dynSubjRF=77,50` принёс Ярославскую
+  (76) и Ленинградскую (47) области. Рабочее имя параметра неизвестно, поэтому
+  регион отбирается нами по `subjectRFCode`, а проба показывает числом, сколько
+  из присланного вообще наше.
+- **Кода банкротства в выборке не было.** Подтвердился только `178FZ` —
+  приватизация, то есть городской рынок; наш `127FZ` остаётся догадкой.
+
+Три карточки — не весь сервис, и это важнее списка выше: **поле, которого нет
+в трёх карточках, не доказано отсутствующим.** Поэтому проба считает ключи по
+всей странице, а разбор пропускает ненайденное, а не подставляет умолчание.
+
+Отсюда же правило, стоившее двух заходов: **чужая уверенность — не проба.**
+Сверка по памяти модели не подтвердила ни одного имени поля и была права, что
+не подтвердила; наши «уверенные» имена оказались выдумкой почти полностью.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
@@ -79,10 +108,33 @@ BANKRUPTCY_WORDS = (
     "банкрот", "несостоятельн", "конкурсное производство", "конкурсный управляющий",
 )
 
+# Формы торгов — отдельное поле `biddForm`, не то же самое, что вид торгов.
+# Подтверждено живым ответом 24.08.2026: «PP» — публичное предложение (цена
+# снижается по графику), «SMP» — продажа по минимально допустимой цене, «PK» —
+# конкурс. Именно здесь, а не в `biddType`, лежит ответ на вопрос «ползёт ли
+# цена»: у приватизации по 178-ФЗ бывают обе формы.
+FORM_PUBLIC_OFFER = "PP"
+FORM_MIN_PRICE = "SMP"
+FORM_CONTEST = "PK"
+
+# Коды характеристик. Кадастровый номер, площадь, этажность и год стоят не
+# полями карточки, а строками списка `characteristics`.
+CHAR_CADASTRE = "cadastralNumberRealty"
+CHAR_TOTAL_AREA = "totalAreaRealty"
+CHAR_FLOORS = "numberFloors"
+CHAR_YEAR = "yearCommissioning"
+
+# Начала кодов атрибутов. Целиком код несёт в себе форму торгов и закон
+# (`DA_limitations_PP(178)`, `DA_limitations_minpriced(178)`), да ещё и с
+# опечатками самого сервиса — поэтому сверяем начало.
+ATTR_LIMITATIONS = "DA_limitations"
+ATTR_PERMITTED_USE = "DA_permittedUse"
+ATTR_APPRAISAL = "DA_appraisalReport"
+
 # Что считаем интересным для девелопмента. Слова из названия и назначения лота:
 # у ГИС Торгов своей рубрики «под редевелопмент» нет и быть не может.
 LAND_WORDS = ("земельн", "участок", "зу ")
-BUILDING_WORDS = ("здание", "помещен", "комплекс", "незавершен", "незавершён", "сооружен")
+BUILDING_WORDS = ("здани", "помещен", "комплекс", "незавершен", "незавершён", "сооружен")
 
 
 def _text(value: Any) -> str:
@@ -114,14 +166,18 @@ def classify(card: dict[str, Any]) -> tuple[LotKind, LotOrigin]:
     списке как «другое», а не подогнан под ближайшую рубрику.
     """
     blob = " ".join(_text(card.get(key)).lower() for key in (
-        "lotName", "lotDescription", "category", "biddType", "characteristics"))
+        "lotName", "lotDescription")) + " " + _text(
+        (card.get("category") or {}).get("name")
+        if isinstance(card.get("category"), dict) else card.get("category")).lower()
     bidd = card.get("biddType") or {}
     code = _text(bidd.get("code") if isinstance(bidd, dict) else bidd).upper()
     name = _text(bidd.get("name") if isinstance(bidd, dict) else "").lower()
     # Порядок здесь не косметический. Слова процедуры — знание о праве и верны
-    # сами по себе; коды — наша догадка о справочнике сервиса, не сверенная
-    # живым ответом. Поэтому догадка не отменяет доказательства: карточка,
-    # прямо называющая конкурсное производство, банкротная при любом коде.
+    # сами по себе; коды — наша догадка о справочнике сервиса. Живой ответ
+    # 24.08.2026 подтвердил только «178FZ»; кода банкротства в нём не было,
+    # и наш «127FZ» остаётся догадкой. Поэтому догадка не отменяет
+    # доказательства: карточка, прямо называющая конкурсное производство,
+    # банкротная при любом коде.
     origin = LotOrigin.OTHER
     if any(word in name for word in BANKRUPTCY_WORDS) \
             or any(word in blob for word in BANKRUPTCY_WORDS):
@@ -130,16 +186,104 @@ def classify(card: dict[str, Any]) -> tuple[LotKind, LotOrigin]:
         origin = LotOrigin.BANKRUPTCY
     elif code in PRIVATIZATION_CODES:
         origin = LotOrigin.CITY
+    # Вид: сперва рубрика самого сервиса, и только потом слова из прозы.
+    # У ГИС Торгов есть `category` («Здания» в живом ответе) — это его
+    # собственная классификация, а гонка слов в описании выигрывается кем
+    # попало: «Здание дома кордона С ЗЕМЕЛЬНЫМ УЧАСТКОМ» уходило в продажу
+    # земли только потому, что «земельн» стоит в нашем списке выше «здание».
+    category = _text((card.get("category") or {}).get("name")
+                     if isinstance(card.get("category"), dict)
+                     else card.get("category")).lower()
     kind = LotKind.OTHER
     if any(word in blob for word in ("незавершен", "незавершён")):
         kind = LotKind.UNFINISHED
     elif "комплекс" in blob:
         kind = LotKind.PROPERTY_COMPLEX
-    elif any(word in blob for word in LAND_WORDS):
-        kind = LotKind.LAND_SALE
-    elif any(word in blob for word in BUILDING_WORDS):
-        kind = LotKind.PROPERTY_COMPLEX
+    elif category:
+        if any(word in category for word in LAND_WORDS):
+            kind = LotKind.LAND_SALE
+        elif any(word in category for word in BUILDING_WORDS):
+            kind = LotKind.PROPERTY_COMPLEX
+    if kind is LotKind.OTHER:
+        if any(word in blob for word in LAND_WORDS):
+            kind = LotKind.LAND_SALE
+        elif any(word in blob for word in BUILDING_WORDS):
+            kind = LotKind.PROPERTY_COMPLEX
     return kind, origin
+
+
+def characteristic(card: dict[str, Any], code: str) -> str | None:
+    """Значение характеристики по коду.
+
+    Кадастровый номер, площадь, этажность и год у ГИС Торгов лежат не полями
+    карточки, а строками списка `characteristics` — ищутся по `code`, а не по
+    человеческому названию: название приходит текстом и меняется вместе с
+    редакцией справочника.
+    """
+    for item in card.get("characteristics") or []:
+        if isinstance(item, dict) and _text(item.get("code")) == code:
+            value = _text(item.get("characteristicValue"))
+            return value or None
+    return None
+
+
+def attribute(card: dict[str, Any], prefix: str) -> str | None:
+    """Значение атрибута по НАЧАЛУ кода, а не по точному совпадению.
+
+    Код атрибута несёт в себе форму торгов и закон: обременения приезжают то
+    как `DA_limitations_PP(178)`, то как `DA_limitations_minpriced(178)`. Хуже
+    того, в живом ответе встречаются опечатки самого сервиса — `minpiced` без
+    «r» и лишняя скобка в `minpriced((178)`. Сверять такое целиком значит
+    терять поле на каждой новой форме торгов и на каждой чужой описке.
+    """
+    for source_key in ("attributes", "noticeAttributes"):
+        for item in card.get(source_key) or []:
+            if isinstance(item, dict) and _text(item.get("code")).startswith(prefix):
+                value = _text(item.get("value"))
+                if value:
+                    return value
+    return None
+
+
+_CADASTRE_PATTERN = re.compile(r"\b\d{2}:\d{2}:\d{6,7}:\d+\b")
+
+
+def cadastral_numbers(card: dict[str, Any]) -> list[str]:
+    """Кадастровые номера: сперва структурированный, затем найденные в тексте.
+
+    В живом ответе структурирован ровно один номер — здания. Номер участка, на
+    котором это здание стоит, приходит только внутри описания. Брать из прозы
+    страшно (в модуле рынка так уехал адрес объекта оценки), но здесь форма
+    номера жёсткая и ни с чем не совпадает, а потерять участок — значит
+    потерять то, ради чего лот вообще смотрят.
+    """
+    found: list[str] = []
+    structured = characteristic(card, CHAR_CADASTRE)
+    if structured:
+        found.extend(_CADASTRE_PATTERN.findall(structured) or [structured])
+    for key in ("lotName", "lotDescription"):
+        found.extend(_CADASTRE_PATTERN.findall(_text(card.get(key))))
+    seen: list[str] = []
+    for item in found:
+        if item not in seen:
+            seen.append(item)
+    return seen
+
+
+def in_target_region(card: dict[str, Any]) -> bool:
+    """Наш ли это регион — по полю карточки, а не по вере в параметр запроса.
+
+    Живой ответ 24.08.2026 на запросе с `dynSubjRF=77,50` принёс Ярославскую
+    (76) и Ленинградскую (47) области: серверный фильтр под этим именем не
+    работает, а как он называется на самом деле, из ответа не видно. Пока не
+    выяснено — отбираем сами по `subjectRFCode`. Молча положиться на параметр
+    значило бы завести в московский список лоты из Рыбинска.
+    """
+    code = _text(card.get("subjectRFCode"))
+    if code:
+        return code.lstrip("0") in {item.lstrip("0") for item in SUBJECT_CODES}
+    blob = " ".join(_text(card.get(key)).lower() for key in ("lotName", "lotDescription"))
+    return any(word in blob for word in SUBJECT_WORDS)
 
 
 def to_lot(card: dict[str, Any], fetched_at: str) -> AuctionLot | None:
@@ -149,9 +293,33 @@ def to_lot(card: dict[str, Any], fetched_at: str) -> AuctionLot | None:
     if not lot_id or not title:
         return None
     kind, origin = classify(card)
-    start = _number(card.get("estimatedPrice") or card.get("startPrice"))
-    now = _number(card.get("priceFin") or card.get("currentPrice"))
-    minimal = _number(card.get("priceMin"))
+    form = card.get("biddForm") or {}
+    form_code = _text(form.get("code") if isinstance(form, dict) else form).upper()
+    form_name = _text(form.get("name") if isinstance(form, dict) else "")
+    bidd = card.get("biddType") or {}
+    bidd_name = _text(bidd.get("name") if isinstance(bidd, dict) else bidd)
+
+    # Цена. В живом ответе ценовое поле ОДНО — `priceMin` (и его же строкой,
+    # `priceMinExact`), а `estimatedPrice` и `priceFin`, на которые мы
+    # рассчитывали, не приходят вовсе. Какой у этого числа правовой смысл —
+    # начальная цена, текущая или отсечка — по ответу не определить, и
+    # разложить его по трём нашим полям значит выдумать два из них. Кладём в
+    # «цену сейчас»: это то, что в карточке названо ценой сегодня. Начальная и
+    # минимальная остаются пустыми, поэтому батарейка хода не рисуется — ей
+    # нужны обе границы, а у нас их нет.
+    price = _number(card.get("priceMin"))
+    if price is None:
+        price = _number(card.get("priceMinExact"))
+    flags: list[str] = []
+    if price is not None:
+        flags.append(
+            "ГИС Торги отдают одно ценовое поле (priceMin); начальная это цена, "
+            "текущая или отсечка — из ответа сервиса не следует")
+    if form_code == FORM_PUBLIC_OFFER:
+        flags.append(
+            "публичное предложение: цена снижается по графику, но графика в "
+            "ответе поиска нет — шаг и сроки надо смотреть в извещении")
+
     source = AuctionSource(
         platform=SourceKind.TORGI_GOV,
         lot_url=LOT_URL.format(id=urllib.parse.quote(lot_id)),
@@ -164,19 +332,18 @@ def to_lot(card: dict[str, Any], fetched_at: str) -> AuctionLot | None:
         lot_kind=kind,
         title=title,
         origin=origin,
-        address=_text(card.get("estateAddress") or card.get("lotAddress")) or None,
-        cadastral_numbers=[
-            _text(item) for item in (card.get("cadastralNumbers") or []) if _text(item)],
-        land_area_sqm=_number(card.get("estateArea") or card.get("area")),
-        permitted_use=_text(card.get("permittedUse")) or None,
-        organizer=_text((card.get("seller") or {}).get("name")
-                        if isinstance(card.get("seller"), dict) else card.get("seller")) or None,
-        procedure_type=_text((card.get("biddType") or {}).get("name")
-                             if isinstance(card.get("biddType"), dict) else card.get("biddType")) or None,
-        start_price_rub=start,
-        current_price_rub=now if now is not None else start,
-        min_price_rub=minimal,
+        # Отдельного поля адреса в ответе нет: он живёт внутри названия и
+        # описания. Выдирать его оттуда не берёмся — в модуле рынка ровно так
+        # кандидат забрал себе адрес объекта оценки и встал в ноль километров.
+        address=None,
+        cadastral_numbers=cadastral_numbers(card),
+        building_area_sqm=_number(characteristic(card, CHAR_TOTAL_AREA)),
+        permitted_use=attribute(card, ATTR_PERMITTED_USE),
+        procedure_type=" · ".join(part for part in (bidd_name, form_name) if part) or None,
+        current_price_rub=price,
         application_deadline=_moment(card.get("biddEndTime")),
+        status=_text(card.get("lotStatus")) or None,
+        relevance_flags=flags,
     )
 
 
@@ -230,11 +397,21 @@ class TorgiGovAdapter(AuctionPlatformAdapter):
             content = payload.get("content") or []
             cards += len(content)
             for card in content:
+                # Отбор региона наш, а не серверный: живой ответ на запросе с
+                # `dynSubjRF=77,50` принёс Ярославскую и Ленинградскую области.
+                # Пока рабочее имя параметра не выяснено, лот из Рыбинска в
+                # московском списке был бы не шумом, а ложью.
+                if not in_target_region(card):
+                    continue
                 lot = to_lot(card, fetched_at)
                 if lot is not None:
                     lots.append(lot)
             if len(content) < PAGE_SIZE:
                 break
+        if not reason and cards and not lots:
+            # Пустой список после полной страницы читался бы как «лотов нет».
+            reason = (f"из {cards} карточек ни одна не в наших регионах — "
+                      "серверный фильтр не сработал, а отбор идёт по subjectRFCode")
         self.last_report = {"pages": pages, "cards": cards, "kept": len(lots), "reason": reason}
         return lots
 
@@ -287,6 +464,16 @@ class TorgiGovAdapter(AuctionPlatformAdapter):
             "array_key": array_key,
             "envelope_note": envelope_note,
             "on_page": len(cards),
+            # Сработал ли серверный фильтр региона — числом, а не верой.
+            # 24.08.2026 запрос с `dynSubjRF=77,50` вернул Ярославскую и
+            # Ленинградскую области: параметр под этим именем не фильтрует.
+            # Пока имя не выяснено, проба обязана показывать, сколько из
+            # присланного вообще наше, иначе «работает» и «не работает»
+            # выглядят одинаково.
+            "in_target_region": sum(1 for card in cards if in_target_region(card)),
+            "subject_codes_seen": sorted({
+                _text(card.get("subjectRFCode")) for card in cards
+                if _text(card.get("subjectRFCode"))}),
             "field_counts": _field_counts(cards),
             "raw_first": {key: _short(value) for key, value in sorted(first.items())},
             "parsed_first": lot.to_dict() if lot is not None else None,
