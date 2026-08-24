@@ -21847,6 +21847,44 @@ def _reallocate_phase_tax(
             row = comparison[index]
             row["profit_tax"] = now
             row["net_profit"] = float(row.get("net_profit", 0.0) or 0.0) + was - now
+        _restate_phase_tax_expense(result, now)
+
+
+def _restate_phase_tax_expense(result: dict[str, Any], profit_tax: float) -> None:
+    """Налог в структуре расходов очереди — тот же, что в её сводке.
+
+    Свод складывает структуры очередей построчно, и налог в них оставался
+    прежним, посчитанным очередью в одиночку. Итоговая строка при этом брала
+    сводный налог: таблица переставала сходиться сама с собой, а обе половины
+    выглядели достоверно. Ровно та беда, ради которой у этой таблицы и есть
+    проверка на сходимость.
+    """
+    report = result.get("report") or {}
+    rows = report.get("expense_structure") or []
+    summary = result.get("summary") or {}
+    gns = float(summary.get("project_gns_sqm") or 0.0)
+    saleable = float(summary.get("monetizable_saleable_sqm") or 0.0)
+    target = None
+    for row in rows:
+        if str(row.get("label")) == "Налог на прибыль":
+            target = row
+            break
+    if target is None:
+        # Строки может не быть вовсе: в одиночку очередь налога не платила, и
+        # нулевые строки в структуру не попадают. Сводный налог при этом есть —
+        # он и берётся из зачёта между очередями. Без этой строки итог учитывал
+        # налог, а таблица его не показывала: ровно на него и не сходилась.
+        if profit_tax <= 0:
+            return
+        target = {"label": "Налог на прибыль"}
+        rows.append(target)
+        report["expense_structure"] = rows
+    target["value"] = profit_tax
+    target["per_gns_th"] = profit_tax / gns / 1000 if gns else 0.0
+    target["per_saleable_th"] = profit_tax / saleable / 1000 if saleable else 0.0
+    base = sum(float(row.get("value") or 0.0) for row in rows)
+    for row in rows:
+        row["share"] = (float(row.get("value") or 0.0) / base) if base else 0.0
 
 
 def _consolidate_phase_results(
