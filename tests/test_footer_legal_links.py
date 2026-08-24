@@ -64,6 +64,104 @@ def test_the_pages_are_served():
         assert title in response.text, path
 
 
+def _html_surfaces() -> list[str]:
+    """Адреса всех страниц приложения — у самого приложения, а не списком.
+
+    Список поверхностей был перечислен руками, и новая в него не попадала: у
+    торгов и у кабинета рынка подвала не было вовсе, а проверка оставалась
+    зелёной — она сверяла ровно те четыре страницы, ради которых её писали.
+    Теперь набор берётся из маршрутов: следующая поверхность попадает в
+    проверку тем, что она появилась.
+    """
+    import main_registry
+    from fastapi.routing import APIRoute
+
+    paths = []
+    for route in main_registry.app.routes:
+        if not isinstance(route, APIRoute) or "GET" not in (route.methods or set()):
+            continue
+        if route.param_convertors:
+            continue  # адрес с параметром — это не страница продукта
+        if "HTML" not in getattr(route.response_class, "__name__", ""):
+            continue
+        paths.append(route.path)
+    return sorted(set(paths))
+
+
+def test_every_page_of_the_product_carries_the_documents():
+    """Подвал — на каждой странице, а не на тех, о которых вспомнили.
+
+    Из карточки лота и из кабинета рынка в политику попасть было нельзя:
+    подвала там не было ни одного. Правило записано давно — «документ ИП живёт
+    не только на главной», — но проверка до этих поверхностей не доходила.
+    """
+    from fastapi.testclient import TestClient
+    import main_registry
+
+    client = TestClient(main_registry.app)
+    checked, skipped = [], []
+    for path in _html_surfaces():
+        response = client.get(path)
+        if response.status_code != 200:
+            # Молча пропускать нельзя: непроверенная страница и страница без
+            # замечаний выглядят одинаково. Причина называется вслух.
+            skipped.append(f"{path} → {response.status_code}")
+            continue
+        text = response.text
+        checked.append(path)
+        for link in ('href="/consent"', 'href="/privacy"', 'href="/ads-consent"'):
+            assert link in text, f"{path}: нет ссылки {link}"
+        assert "© ИП" in text, f"{path}: подвал не называет владельца"
+    assert checked, f"ни одной страницы не проверено; пропущены: {skipped}"
+
+
+def test_every_page_wears_the_emblem():
+    """Эмблема одна на все поверхности и лежит в `PAGE`.
+
+    У торгов и у кабинета её не было: страницы начинались словом в заголовке.
+    Своё нарисованное «ПЛАТО» тут не годится — так уже было на руководстве.
+    """
+    from fastapi.testclient import TestClient
+    import main_registry
+
+    client = TestClient(main_registry.app)
+    for path in _html_surfaces():
+        response = client.get(path)
+        if response.status_code != 200:
+            continue
+        text = response.text
+        assert "/guide/assets/logo.webp" in text or 'class="brandbar"' in text, \
+            f"{path}: эмблемы нет"
+
+
+def test_the_shared_footer_is_taken_from_the_page():
+    """Состав подвала объявлен один раз — в `PAGE`; сборщик его оттуда читает."""
+    import guide
+
+    links = dict(guide.legal_links(core))
+    assert links, "подвал `PAGE` не разобрался — разметка изменилась"
+    for href in ("/consent", "/privacy", "/ads-consent", "/guide"):
+        assert href in links, href
+    assert guide.legal_owner(core).startswith("© ИП")
+    html = guide.legal_footer_html(core)
+    for href, label in links.items():
+        assert f'href="{href}"' in html and label in html
+    # «Оценить DevelopAid» зовёт функцию `PAGE`; на чужой поверхности её нет.
+    assert "openFeedback" not in html
+
+
+def test_a_changed_page_footer_is_said_out_loud():
+    """Пустой подвал и отсутствующий выглядят одинаково — значит, разошедшуюся
+    разметку `PAGE` надо назвать, а не отдать пустую строку."""
+    import guide
+
+    class Broken:
+        PAGE = "<html><body>без подвала</body></html>"
+
+    assert guide.legal_links(Broken) == []
+    assert "не собран" in guide.legal_footer_html(Broken)
+
+
 def _flat(text: str) -> str:
     """Текст документа без вёрстки: перенос строки в HTML — не разрыв фразы."""
     return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", text))

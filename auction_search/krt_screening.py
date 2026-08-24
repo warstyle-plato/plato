@@ -190,8 +190,18 @@ def build_krt_model_screening(
     project: dict[str, Any] | None,
     market_report: dict[str, Any],
     core: Any,
+    tep_ratios: str = "",
 ) -> dict[str, Any]:
-    """Run an on-demand, explicitly preliminary KRT scenario in DevelopAid."""
+    """Run an on-demand, explicitly preliminary KRT scenario in DevelopAid.
+
+    Пропорции ТЭП читались прямо из `core.TEP_RATIOS`, мимо разбора движка. На
+    обычной странице их правят полем `tep_ratios_custom` — у человека на руках
+    бывает ГПЗУ или АГР со своими долями, — и до площадки КРТ эта правка не
+    доезжала вовсе, а в предпосылках стояло «по действующей пропорции DevelopAid
+    65%», как будто выбор сделан. Теперь доли идут через `tep_ratios_applied`:
+    тот же разбор, те же отказы («общая больше ГНС не бывает»), то же умолчание
+    при пустой строке.
+    """
     if not project:
         return {"available": False, "reason": "Проект КРТ не найден в официальном каталоге"}
     housing_gfa = _number(project.get("housing_gfa_sqm"))
@@ -232,7 +242,9 @@ def build_krt_model_screening(
     })
 
     tep = _empty_tep(core)
-    apartment_ratios = core.TEP_RATIOS["apartments"]
+    applied_ratios, ratio_warnings = core.tep_ratios_applied(tep_ratios)
+    apartment_ratios = applied_ratios["apartments"]
+    own_ratios = not core.tep_ratios_changed(tep_ratios)
     saleable = housing_gfa * _number(apartment_ratios.get("saleable_of_gns"))
     total_area = housing_gfa * _number(apartment_ratios.get("total_of_gns"))
     verdict = _verdict(market_report)
@@ -314,7 +326,13 @@ def build_krt_model_screening(
     )
 
     assumptions = [
-        f"Жилой объём krt.mos.ru {_ru_number(housing_gfa)} м² принят за ГНС; продаваемая площадь — {_ru_number(saleable)} м² по действующей пропорции DevelopAid 65%.",
+        f"Жилой объём krt.mos.ru {_ru_number(housing_gfa)} м² принят за ГНС; "
+        f"общая площадь — {_ru_number(total_area)} м² "
+        f"({_number(apartment_ratios.get('total_of_gns')) * 100:.0f}% ГНС), "
+        f"продаваемая — {_ru_number(saleable)} м² "
+        f"({_number(apartment_ratios.get('saleable_of_gns')) * 100:.1f}% ГНС). "
+        + ("Доли — умолчание DevelopAid; правятся в карточке."
+           if own_ratios else "Доли заданы вручную, а не нашей методикой."),
         f"Стартовая цена {_ru_number(start_price)} ₽/м² взята из маркетинга: {price_basis}.",
         f"Себестоимость основного строительства взята из пресета «{class_label}»: "
         f"{_ru_number(preset.get('main_above_th_per_sqm'))} тыс. ₽/м² наземной и "
@@ -353,6 +371,27 @@ def build_krt_model_screening(
         "available": True,
         "preliminary": True,
         "traffic_light": traffic,
+        # Доли едут вместе с результатом: по ним видно, чем посчитано, и на них
+        # же держится решение не сохранять чужой расчёт в общий рейтинг.
+        "tep_ratios": {
+            "apartments": {
+                "total_of_gns": round(_number(apartment_ratios.get("total_of_gns")), 6),
+                "saleable_of_gns": round(_number(apartment_ratios.get("saleable_of_gns")), 6),
+                "source": apartment_ratios.get("source") or "",
+            },
+            "custom": not own_ratios,
+            "raw": str(tep_ratios or ""),
+            "warnings": ratio_warnings,
+        },
+        # Вводные, которыми это посчитано, едут вместе с результатом. Без них
+        # «передать в DevelopAid» пришлось бы собирать модель второй раз — а
+        # два сборщика на одну площадку однажды разойдутся, и обе страницы
+        # будут показывать разное про один и тот же проект.
+        "model_inputs": {
+            "inputs": copy.deepcopy(inputs),
+            "tep": copy.deepcopy(tep),
+            "phasing": copy.deepcopy(phasing),
+        },
         "headline": traffic["label"],
         "text": text,
         "market": {

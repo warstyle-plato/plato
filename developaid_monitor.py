@@ -233,6 +233,167 @@ def _baseline_file(project: str) -> Path | None:
     return items[0] if items else None
 
 
+def store_schedule_fact(project: str, data: bytes, taken_at: Any) -> dict[str, Any]:
+    """Положить еженедельный ГПР-факт снимком: проценты и статусы поверх baseline.
+
+    План проекта зафиксирован baseline и не меняется; меняется выполнение.
+    Прораб проставляет проценты в тот же файл ГПР и присылает его раз в
+    неделю — вместе с РСС. Каждый снимок хранится отдельно: переписанное
+    прошлое видно только парой снимков.
+    """
+    day = _iso(taken_at)
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+        raise ValueError("дата ГПР-факта нужна в виде ГГГГ-ММ-ДД")
+    parsed = _read_baseline_gpr_bytes(data)
+    folder = _project_dir(project) / "schedule_fact"
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"{day}.xlsx"
+    if path.exists():
+        raise FileExistsError(f"ГПР-факт на {day} уже загружен")
+    path.write_bytes(data)
+    works = parsed["works"]
+    return {
+        "taken_at": day,
+        "works": len(works),
+        "completed": sum(1 for row in works
+                         if "заверш" in str(row.get("status") or "").lower()
+                         or (row.get("progress") or 0) >= 0.999),
+    }
+
+
+def replace_finance_baseline(project: str, data: bytes,
+                             taken_at: Any) -> dict[str, Any]:
+    """Заменить финансовый baseline утверждённым пересчётом.
+
+    Финкнигу пересчитывают решением — например, когда потребность фасадов
+    переводят на согласованный график. Прежняя книга не выбрасывается, а
+    уходит снимком в историю: переписанное прошлое должно быть видно.
+    """
+    day = _iso(taken_at)
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+        raise ValueError("дата пересчёта нужна в виде ГГГГ-ММ-ДД")
+    from openpyxl import load_workbook
+    import io as _io
+    try:
+        wb = load_workbook(_io.BytesIO(data), read_only=True)
+    except Exception:
+        raise ValueError("файл не читается как книга Excel")
+    try:
+        if "Расчет стоимости строительства" not in wb.sheetnames:
+            raise ValueError("в книге нет листа «Расчет стоимости строительства»")
+    finally:
+        wb.close()
+    folder = _project_dir(project) / "baseline"
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / "finance.xlsx"
+    if path.exists():
+        history = _project_dir(project) / "finance_history"
+        history.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d%H%M%S")
+        (history / f"replaced-{stamp}.xlsx").write_bytes(path.read_bytes())
+    path.write_bytes(data)
+    return {"taken_at": day, "replaced": True}
+
+
+def store_work_fact(project: str, rows: list[dict[str, Any]],
+                    taken_at: Any) -> dict[str, Any]:
+    """Точечный факт по работам ГПР — процент и статус, введённые со страницы.
+
+    В акте РСС нет имени работы — только статья, поэтому автоматически акт
+    в работу не превращается. Точечный процент вводится в Ганте и хранится
+    снимком; поздний снимок перекрывает раннюю запись той же работы, а
+    незатронутые работы живут по актам и baseline.
+    """
+    day = _iso(taken_at)
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+        raise ValueError("дата факта нужна в виде ГГГГ-ММ-ДД")
+    cleaned = []
+    for row in rows or []:
+        tid = str(row.get("id") or "").strip()
+        if not tid:
+            continue
+        try:
+            progress = max(0.0, min(1.0, float(row.get("progress"))))
+        except (TypeError, ValueError):
+            continue
+        cleaned.append({"id": tid, "progress": progress,
+                        "status": str(row.get("status") or "")})
+    if not cleaned:
+        raise ValueError("ни в одной строке нет id и процента")
+    folder = _project_dir(project) / "work_fact"
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"{day}.json"
+    stored = []
+    if path.exists():
+        stored = json.loads(path.read_text(encoding="utf-8")).get("rows", [])
+    merged = {row["id"]: row for row in stored}
+    merged.update({row["id"]: row for row in cleaned})
+    path.write_text(json.dumps({"taken_at": day, "rows": list(merged.values())},
+                               ensure_ascii=False), encoding="utf-8")
+    return {"taken_at": day, "works": len(cleaned)}
+
+
+# Монолитный цикл: работы, которые физически не могут быть не сделаны, когда
+# объект стоит в бетоне до верха. Правило выведено на Кутузове: тендерный
+# график держал нули на котловане при статусе стройки «под фасад».
+_MONOLITH_CYCLE = re.compile(
+    r"котлован|бетонн[а-я]* подготов|гидроизоляц|стяжк|фундамент|монолит"
+    r"|несущ|перекрыт|колонн|каркас|армирован|арматур|балк|ростверк|шпунт"
+    r"|земляны|свай|обратн[а-я]* засыпк|распределительн[а-я]* балк",
+    re.IGNORECASE)
+
+
+def close_completed_stage(project: str, object_query: str,
+                          taken_at: Any) -> dict[str, Any]:
+    """Экспертная разметка: закрыть сотней монолитный цикл объекта.
+
+    Проценты пишутся точечными фактами поверх графика — сам baseline не
+    трогается, и разметку видно снимком: кто, когда и что закрыл.
+    """
+    baseline = _read_baseline_gpr(project)
+    query = str(object_query or "").strip().lower()
+    rows = []
+    for work in baseline["works"]:
+        status = str(work.get("status") or "").lower()
+        if "заверш" in status or (work.get("progress") or 0) >= 0.999:
+            continue
+        haystack = f"{work.get('object') or ''} {work.get('section') or ''}".lower()
+        if query and query not in haystack:
+            continue
+        if not _MONOLITH_CYCLE.search(str(work.get("name") or "")):
+            continue
+        rows.append({"id": str(work.get("id")), "progress": 1.0,
+                     "status": "Завершено (экспертная разметка)"})
+    if not rows:
+        return {"taken_at": _iso(taken_at), "works": 0}
+    return store_work_fact(project, rows, taken_at)
+
+
+def work_facts(project: str, upto: str = "") -> dict[str, dict[str, Any]]:
+    """Все точечные факты по работам, поздние поверх ранних."""
+    folder = _project_dir(project) / "work_fact"
+    if not folder.exists():
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    items = sorted(folder.glob("*.json"))
+    if upto:
+        items = [item for item in items if item.stem <= upto]
+    for path in items:
+        for row in json.loads(path.read_text(encoding="utf-8")).get("rows", []):
+            out[str(row.get("id"))] = row
+    return out
+
+
+def latest_schedule_fact(project: str, upto: str = "") -> dict[str, Any] | None:
+    """Свежайший снимок ГПР-факта, не позднее `upto`. Нет снимка — None."""
+    path = _latest(project, "schedule_fact", ".xlsx", upto)
+    if path is None:
+        return None
+    parsed = _read_baseline_gpr_bytes(path.read_bytes())
+    parsed["taken_at"] = path.stem
+    return parsed
+
+
 def _read_baseline_gpr(project: str) -> dict[str, Any]:
     path = _baseline_file(project)
     if path is None:
@@ -607,11 +768,33 @@ def moved_between_snapshots(project: str, first: str, second: str) -> dict[str, 
 # ---------------------------------------------------------------------------
 
 def store_sales(project: str, rows: list[dict[str, Any]], taken_at: Any) -> dict[str, Any]:
+    """Продажи строками — то, чего книга ещё не знает.
+
+    Книга обновляется раз в месяц и отстаёт; «в августе продано 4 лота»
+    приходит словами задолго до выгрузки. Месяц из строк перекрывает тот же
+    месяц книги в срезе.
+    """
     day = _iso(taken_at)
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+        raise ValueError("дата продаж нужна в виде ГГГГ-ММ-ДД")
+    cleaned = []
+    for row in rows or []:
+        month = actuals._as_month(row.get("month"))
+        if month is None:
+            continue
+        cleaned.append({
+            "month": _iso(month)[:7],
+            "units": float(row.get("units") or 0),
+            "area": float(row.get("area") or 0),
+            "revenue": float(row.get("revenue") or 0),
+        })
+    if not cleaned:
+        raise ValueError("ни в одной строке нет месяца")
     folder = _project_dir(project) / "sales"
     folder.mkdir(parents=True, exist_ok=True)
-    (folder / f"{day}.json").write_text(json.dumps({"taken_at": day, "rows": rows}, ensure_ascii=False), encoding="utf-8")
-    return {"taken_at": day, "months": len(rows or []), "ignored_by_monitor": True}
+    (folder / f"{day}.json").write_text(json.dumps(
+        {"taken_at": day, "rows": cleaned}, ensure_ascii=False), encoding="utf-8")
+    return {"taken_at": day, "months": len(cleaned)}
 
 
 def store_sales_file(project: str, data: bytes, taken_at: Any) -> dict[str, Any]:

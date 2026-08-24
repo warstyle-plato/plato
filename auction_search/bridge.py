@@ -16,10 +16,27 @@ BRIDGE_SCRIPT = r'''
   if(!raw)return;
   let pending;
   try{pending=JSON.parse(raw)}catch(e){try{sessionStorage.removeItem(KEY)}catch(_e){};return}
-  if(!pending||!pending.project_preset)return;
+  if(!pending||(!pending.project_preset&&!pending.krt_model))return;
   // Consume once. Reloading the model must not re-apply an auction over work the
   // analyst has already changed.
   try{sessionStorage.removeItem(KEY)}catch(e){}
+
+  // Площадка КРТ приходит не пресетом, а готовой моделью: теми самыми
+  // вводными, которыми её посчитала карточка торгов. Собирать модель здесь
+  // второй раз нельзя — два сборщика на одну площадку однажды разойдутся, и
+  // карточка с калькулятором покажут про неё разное, оба достоверно.
+  if(pending.krt_model){
+   if(typeof applyProjectSnapshot!=='function')return;
+   const model=pending.krt_model;
+   if(!confirm('Открыть площадку КРТ «'+String(pending.krt_name||'без названия')+'» в модели?\n\n'
+     +'Вводные посчитаны предварительным прогоном: цена входа принята нулём, '
+     +'обязательства КРТ сверх опубликованных не учтены.\n\n'
+     +'Текущий расчёт на экране будет заменён.'))return;
+   applyProjectSnapshot(model);
+   if(typeof inputs!=='undefined')inputs._manual_tep_import={project_name:String(pending.krt_name||'')};
+   if(typeof calculateAndOpen==='function')calculateAndOpen('report');
+   return;
+  }
   const preset=pending.project_preset;
   const filled=(preset.auction_import&&preset.auction_import.filled_inputs)||{};
   if(typeof inputs==='undefined'||typeof renderInputs!=='function')return;

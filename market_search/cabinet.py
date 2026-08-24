@@ -211,7 +211,7 @@ margin-top:12px;white-space:normal}
 /* Баннер — в подвале и во всю ширину: он широкий, ему нужна ширина. Реплика
    в нём нарисована, поэтому текстом её рядом нет: одна и та же фраза дважды
    на экране читается как недосмотр, каковым и была. */
-.plato-footer{margin:26px 0 8px;line-height:0}
+.brand{display:block;margin-bottom:10px;line-height:0}.brand img{height:26px;width:auto;display:block}.legal-footer{display:flex;gap:18px;flex-wrap:wrap;padding:14px 0 6px;font-size:11px;color:#8b8b8b}.legal-footer a{color:#8b8b8b}.plato-footer{margin:26px 0 8px;line-height:0}
 .plato-footer img{width:100%;height:auto;border-radius:14px;display:block}
 td.link{color:var(--blue);cursor:pointer;text-decoration:underline dotted}
 .cardwrap{position:fixed;inset:0;background:rgba(20,35,60,.45);display:flex;align-items:flex-start;
@@ -423,6 +423,7 @@ g.bub.on circle{fill-opacity:.75}
 @page{margin:14mm 12mm 20mm}
 </style>
 <header>
+  <a class="brand" href="/" title="DevelopAid"><img src="/guide/assets/logo.webp" alt="ПЛАТО" height="26"></a>
   <h1>Конструктор отчёта о рынке</h1>
   <div class="sub">Внутренний раздел. Числа лицензионные — наружу не публикуются.
     · версия __DEVELOPAID_VERSION__</div>
@@ -466,7 +467,7 @@ g.bub.on circle{fill-opacity:.75}
     <button class="go alt" id="hint">Ориентир цены</button>
     <button class="go alt" id="pdf" style="display:none">Сохранить PDF</button>
     <button class="go alt" id="reset" style="display:none">Сбросить отчёт</button>
-    <label class="upload">Загрузить финмодель ПЛАТО<input type="file" id="plan" accept=".xlsx,.xlsm"></label>
+    <label class="upload" title="Лист «План продаж_утв» из финмодели проекта: помесячно факт и план. Форматы .xlsx, .xlsm, .xlsb">Загрузить отчёт о продажах<input type="file" id="plan" accept=".xlsx,.xlsm,.xlsb"></label>
     <span id="planstate" class="muted"></span>
     <span id="state" class="muted" style="margin-left:12px"></span>
     <div id="pdfstate" class="err pdffail" style="display:none"></div>
@@ -493,6 +494,7 @@ g.bub.on circle{fill-opacity:.75}
   <footer class="plato-footer">
     <img src="/assets/platon-quote.webp" alt="Платон Сергеевич Федоскин: «Хорошие дома начинаются с правильных вопросов»" loading="lazy">
   </footer>
+  __DEVELOPAID_LEGAL_FOOTER__
 </main>
 <script>
 const $=s=>document.querySelector(s);
@@ -1558,6 +1560,151 @@ function planVerdict(cmp, market){
   return {tone, text: lines.join(' ')};
 }
 
+// Отчёт правлению: продано, оплачено и освоение бюджета по этапам.
+//
+// Разница между «продано» и «оплачено» здесь главное, а не подробность. На
+// книге владельца законтрактовано 1 728,6 млн ₽, а на эскроу пришло 943,5 —
+// 13% против 7%, дебиторка 785 млн. Банк смотрит на второе, и показывать их
+// надо рядом: выбрать одно значит потерять вопрос «где деньги».
+//
+// Ничего не пересчитываем: доли, цены и остатки берутся из книги как есть.
+// Второй счёт того же числа однажды разошёлся бы с первым, и оба выглядели бы
+// верными.
+function boardNum(value,digits){
+  if(value===null||value===undefined||!isFinite(value))return '—';
+  return new Intl.NumberFormat('ru-RU',{maximumFractionDigits:digits===undefined?1:digits}).format(value);
+}
+function boardShare(part,whole){
+  if(!whole||part===null||part===undefined)return '—';
+  return new Intl.NumberFormat('ru-RU',{maximumFractionDigits:0}).format(part/whole*100)+'%';
+}
+// Разбор сводки. Переписать числа из книги — не отчёт: человек видит их и у
+// себя в файле. Отчёт обязан СОПОСТАВИТЬ то, что в книге лежит по разным
+// листам и потому рядом никогда не оказывается.
+//
+// Считается здесь, а не языковой моделью: пороги названы, арифметика видна, и
+// один и тот же файл всегда даёт один и тот же вывод.
+function boardStage(stages, words){
+  return (stages||[]).find(x=>{
+    const name=String(x.stage||'').toLowerCase();
+    return words.every(w=>name.includes(w));
+  })||null;
+}
+function boardVerdict(sales, status){
+  const lines=[]; let tone='ok';
+  const money=(sales&&sales.money)||{}, totals=money.totals||{};
+  const sold=totals.sold, paid=totals.paid, budget=totals.total;
+  // 1. Стройка против денег. Самый банковский вопрос: разрыв закрывается ПФ,
+  //    и он же поднимает ставку через покрытие эскроу.
+  const smr=boardStage(status&&status.stages,['смр']);
+  if(smr&&smr.share!==null&&paid&&budget){
+    const paidShare=paid/budget, gap=(smr.share-paidShare)*100;
+    if(gap>=10){
+      tone='warn';
+      lines.push(`Стройка ушла вперёд денег: СМР освоено на ${Math.round(smr.share*100)}%, `
+        +`а продажи оплачены на ${Math.round(paidShare*100)}% — разрыв ${Math.round(gap)} п.п. `
+        +`закрывается проектным финансированием, и он же держит покрытие эскроу низким.`);
+    }else{
+      lines.push(`Стройка и деньги идут вровень: СМР ${Math.round(smr.share*100)}%, `
+        +`оплачено ${Math.round(paidShare*100)}%.`);
+    }
+  }
+  // 2. Оплачено против проданного. «Продано» — это обязательство покупателя,
+  //    «оплачено» — деньги на эскроу; между ними дебиторка и время.
+  if(sold&&paid!==null&&paid!==undefined){
+    const ratio=paid/sold, debt=sold-paid;
+    if(ratio<0.7){
+      tone=tone==='ok'?'warn':tone;
+      lines.push(`Из законтрактованного оплачено ${Math.round(ratio*100)}%: `
+        +`${boardNum(debt,0)} млн ₽ ещё не на эскроу. До раскрытия счетов это не деньги проекта.`);
+    }else{
+      lines.push(`Оплачено ${Math.round(ratio*100)}% законтрактованного — рассрочки почти не копятся.`);
+    }
+  }
+  // 3. Какой формат уходит. По средней цене этого не видно вовсе, а решение по
+  //    прайсу принимается именно по нему.
+  const brackets=(sales&&sales.brackets||[]).filter(b=>b.share!==null&&b.share!==undefined);
+  if(brackets.length>=2){
+    const best=brackets.reduce((a,b)=>b.share>a.share?b:a);
+    const worst=brackets.reduce((a,b)=>b.share<a.share?b:a);
+    if(best.share>=worst.share*1.5){
+      lines.push(`Формат расходится неравномерно: ${esc(best.range)} м² продан на `
+        +`${Math.round(best.share*100)}%, ${esc(worst.range)} м² — на ${Math.round(worst.share*100)}%. `
+        +`Остаток копится в том, что уходит медленнее.`);
+      if(best.price&&worst.price&&best.price<worst.price){
+        lines.push(`При этом быстрый формат дешевле медленного: `
+          +`${boardNum(best.price,0)} против ${boardNum(worst.price,0)} тыс ₽/м². `
+          +`Прайс догоняет спрос, а не ведёт его.`);
+      }
+    }
+  }
+  return {tone, lines};
+}
+function boardCard(data){
+  if(!data)return '';
+  const sales=data.board_sales||null, status=data.board_status||null;
+  if(!sales&&!status)return '';
+  let html='<div class="card"><h2>Отчёт правлению</h2>';
+  const pv=boardVerdict(sales,status);
+  if(pv.lines.length){
+    html+=`<div class="say ${pv.tone}"><b>${TONE[pv.tone]||'•'} Разбор</b> ${pv.lines.join(' ')}</div>`;
+  }
+  const money=(sales&&sales.money)||{}, volume=(sales&&sales.volume)||{};
+  const products=money.products||{};
+  const keys=Object.keys(products);
+  if(keys.length){
+    const t=money.totals||{};
+    html+='<div class="wrap"><table class="peers">'
+      +'<tr><th>Продукт</th><th class="num">Продано, млн ₽</th><th class="num">Оплачено, млн ₽</th>'
+      +'<th class="num">Бюджет продаж</th><th class="num">Дебиторка</th><th class="num">Продано</th><th class="num">Оплачено</th></tr>';
+    keys.forEach(key=>{
+      const m=products[key]||{}, v=((volume.products||{})[key])||{};
+      const debt=(m.sold===null||m.paid===null)?null:m.sold-m.paid;
+      html+=`<tr><td>${esc(m.label||key)}${v.total?` <span class="muted">${boardNum(v.sold,0)} из ${boardNum(v.total,0)}</span>`:''}</td>`
+        +`<td class="num">${boardNum(m.sold)}</td><td class="num">${boardNum(m.paid)}</td>`
+        +`<td class="num">${boardNum(m.total)}</td><td class="num">${boardNum(debt)}</td>`
+        +`<td class="num">${boardShare(m.sold,m.total)}</td><td class="num">${boardShare(m.paid,m.total)}</td></tr>`;
+    });
+    if(t&&t.total)html+=`<tr><td><b>Всего</b></td><td class="num"><b>${boardNum(t.sold)}</b></td>`
+      +`<td class="num"><b>${boardNum(t.paid)}</b></td><td class="num"><b>${boardNum(t.total)}</b></td>`
+      +`<td class="num"><b>${boardNum(t.sold-t.paid)}</b></td><td class="num"><b>${boardShare(t.sold,t.total)}</b></td>`
+      +`<td class="num"><b>${boardShare(t.paid,t.total)}</b></td></tr>`;
+    html+='</table></div>';
+    html+='<div class="muted" style="font-size:12.5px;margin-top:8px">Продано — законтрактовано по ДДУ. '
+      +'Оплачено — пришло на эскроу. Разница между ними и есть дебиторка; банк смотрит на второе.</div>';
+  }
+  const brackets=(sales&&sales.brackets)||[];
+  if(brackets.length){
+    html+='<h3 style="margin-top:16px">Квартиры по площадям</h3><div class="wrap"><table class="peers">'
+      +'<tr><th>Площадь, м²</th><th class="num">Продано, шт</th><th class="num">Доля</th>'
+      +'<th class="num">Продано, м²</th><th class="num">Цена, тыс ₽/м²</th></tr>';
+    brackets.forEach(b=>{
+      html+=`<tr><td>${esc(b.range)}</td><td class="num">${boardNum(b.sold_units,0)}</td>`
+        +`<td class="num">${b.share===null||b.share===undefined?'—':boardNum(b.share*100,0)+'%'}</td>`
+        +`<td class="num">${boardNum(b.sold_area,0)}</td><td class="num">${boardNum(b.price,0)}</td></tr>`;
+    });
+    html+='</table></div><div class="muted" style="font-size:12.5px;margin-top:8px">'
+      +'По одной средней цене не видно, какой формат уходит, а какой стоит.</div>';
+  }
+  if(status&&(status.stages||[]).length){
+    html+=`<h3 style="margin-top:16px">Освоение бюджета${status.as_of?` <span class="muted">на ${esc(status.as_of)}</span>`:''}</h3>`
+      +'<div class="wrap"><table class="peers">'
+      +'<tr><th>Этап</th><th class="num">Бюджет, млн ₽</th><th class="num">Освоено</th><th class="num">Доля</th></tr>';
+    status.stages.forEach(x=>{
+      html+=`<tr><td>${esc(x.stage)}</td><td class="num">${boardNum(x.budget_mln)}</td>`
+        +`<td class="num">${x.done_mln===null?'—':boardNum(x.done_mln)}</td>`
+        +`<td class="num">${x.share===null||x.share===undefined?'—':boardNum(x.share*100,0)+'%'}</td></tr>`;
+    });
+    html+='</table></div>';
+  }
+  // Чего в книге не нашлось — говорится вслух: пустой раздел и отсутствующий
+  // выглядят одинаково, а значат разное.
+  (data.board_missing||[]).forEach(line=>{
+    html+=`<div class="muted" style="font-size:12.5px;margin-top:6px">Не прочитано — ${esc(line)}</div>`;
+  });
+  return html+'</div>';
+}
+
 async function loadPlan(file){
   $('#planstate').textContent='Читаю книгу…';
   try{
@@ -1565,7 +1712,7 @@ async function loadPlan(file){
     const d=await r.json();
     if(!r.ok){$('#planstate').textContent=d.detail||'Книга не разобрана';planData=null;return}
     planData=d;
-    $('#planstate').textContent=`План загружен: ${d.project||'проект'} · факт по ${d.fact_until||'—'} · план с ${d.plan_from||'—'}`;
+    $('#planstate').textContent=`Отчёт загружен: факт по ${d.fact_until||'—'} · план с ${d.plan_from||'—'}`;
     if(lastReport) render(lastReport);
   }catch(e){$('#planstate').textContent=String(e.message||e);planData=null}
 }
@@ -1934,6 +2081,7 @@ function render(d){
       +` на срок регистрации: книга считает по дате сделки, источник — по дате регистрации.</div></div>`;
   }
 
+  html+=boardCard(planData);
   html+=deepCard(d);
   html+=`<div class="card"><h2>Соседи в выборке</h2>
     <div class="wrap"><table class="peers">
@@ -2248,10 +2396,25 @@ def cabinet_style() -> str:
     return page[start:page.index("</style>", start)]
 
 
+LEGAL_FOOTER_PLACEHOLDER = "__DEVELOPAID_LEGAL_FOOTER__"
+
+
+def legal_footer() -> str:
+    """Подвал документов ИП. Состав берётся из `PAGE`, копии здесь нет."""
+    try:
+        import guide
+        import main_legacy
+
+        return guide.legal_footer_html(main_legacy)
+    except Exception:
+        return ""
+
+
 def cabinet_page() -> str:
     return (
         CABINET_PAGE.replace("__SECTIONS__", _sections_markup())
         .replace(VERSION_PLACEHOLDER, app_version())
+        .replace(LEGAL_FOOTER_PLACEHOLDER, legal_footer())
     )
 
 

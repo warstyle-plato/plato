@@ -90,3 +90,277 @@ def test_closed_wbs_stays_closed_even_if_cost_ratio_is_below_one(monkeypatch):
     assert row["baseline_closed"] is True
     assert row["forecast_finish"] == "2025-06-09"
     assert row["status"] == "ЗАВЕРШЕНО ПО УТВЕРЖДЕННОМУ ГПР"
+
+
+def test_own_gpr_percent_is_the_floor_of_task_readiness(monkeypatch):
+    """КС статьи — готовность всей статьи, а не задачи.
+
+    «Разработка котлована», физически пройденная, наследовала статейные 67,8%
+    и давала +472 дня, из которых +83 доезжали до РНВ по FS-цепочке. Свой
+    процент задачи из утверждённого ГПР — нижняя граница: задача не может
+    быть менее готова, чем принято в baseline.
+    """
+    monkeypatch.setattr(manager, "_baseline_status", lambda _: {
+        "1393": {"closed": False, "status": "Просрочено", "progress": 0.9},
+    })
+    schedule = {"rows": [{
+        "id": "1393",
+        "wbs": "1.16.2.1",
+        "plan_finish": "2025-10-28",
+        "forecast_finish": "2027-02-12",
+        "actual_progress": 0.678,
+        "rate_3m": 0.02,
+        "delta_days": 472,
+    }]}
+
+    manager._sanitize_base_schedule("demo", schedule)
+    row = schedule["rows"][0]
+
+    assert row["rss_accepted_ratio"] == pytest.approx(0.9)
+    assert row["progress_kind"] == "accepted_cost_ratio_floor_gpr"
+
+
+def test_a_task_at_full_gpr_percent_is_closed_without_the_word(monkeypatch):
+    """100% в ГПР значит «сделано», даже если статус забыли перевести."""
+    import developaid_monitor as monitor
+
+    monkeypatch.setattr(monitor, "_read_baseline_gpr", lambda _: {"works": [
+        {"id": "7", "status": "Просрочено", "progress": 1.0},
+        {"id": "8", "status": "В работе", "progress": 0.55},
+        {"id": "9", "status": "Завершено", "progress": None},
+    ]})
+
+    out = manager._baseline_status("demo")
+
+    assert out["7"]["closed"] is True
+    assert out["8"]["closed"] is False
+    assert out["8"]["progress"] == pytest.approx(0.55)
+    assert out["9"]["closed"] is True
+
+
+def test_gpr_percent_written_as_hundred_scale_is_normalized(monkeypatch):
+    import developaid_monitor as monitor
+
+    monkeypatch.setattr(monitor, "_read_baseline_gpr", lambda _: {"works": [
+        {"id": "5", "status": "В работе", "progress": 86.0},
+    ]})
+
+    out = manager._baseline_status("demo")
+
+    assert out["5"]["progress"] == pytest.approx(0.86)
+    assert out["5"]["closed"] is False
+
+
+def _gpr_book(rows):
+    """Миниатюрный ГПР: лист, шапка в 4-й строке, работы с 5-й."""
+    import io
+    from openpyxl import Workbook
+
+    book = Workbook()
+    sheet = book.active
+    sheet.title = "ГПР"
+    header = ["ID", "WBS", "Раздел", "Объект", "Наименование работ", "Тип строки",
+              "% выполнения", "Начало", "Окончание", "Статус", "Длительность р.д.",
+              "Предшественники", "Связанный тендер", "Окончание тендера",
+              "Резерв до начала работ", "Увязка", "Код РСС", "Статья РСС",
+              "Основание привязки"]
+    for c, value in enumerate(header, 1):
+        sheet.cell(row=4, column=c, value=value)
+    for i, (rid, name, progress, start, finish, status, code) in enumerate(rows):
+        line = 5 + i
+        values = [rid, str(rid), "СМР", "Корпус 1", name, "Работа", progress,
+                  start, finish, status, 10, "", "", "", "", "", code, "", ""]
+        for c, value in enumerate(values, 1):
+            sheet.cell(row=line, column=c, value=value)
+    blob = io.BytesIO()
+    book.save(blob)
+    return blob.getvalue()
+
+
+def test_weekly_schedule_fact_overlays_percent_over_the_baseline(tmp_path, monkeypatch):
+    """План зафиксирован baseline; выполнение приезжает еженедельным ГПР-фактом.
+
+    На Кутузове котлован стоял в baseline нулём и десять месяцев тянул прогноз
+    на +463 дня; свежий ГПР со 100% снимает его без правки baseline.
+    """
+    import datetime
+    import developaid_monitor as monitor
+
+    monkeypatch.setattr(monitor, "_SNAPSHOT_DIR", tmp_path)
+    d1 = datetime.date(2025, 8, 23)
+    d2 = datetime.date(2025, 10, 28)
+    monitor.store_schedule("Кутузов", _gpr_book([
+        (1393, "Разработка котлована", 0.0, d1, d2, "Просрочено", "2.2.1.1"),
+        (1500, "Кровля", 0.0, d1, d2, "Просрочено", "2.2.2.3"),
+    ]), None, "2026-07-23")
+
+    before = manager._baseline_status("Кутузов")
+    assert before["1393"]["closed"] is False
+
+    stored = monitor.store_schedule_fact("Кутузов", _gpr_book([
+        (1393, "Разработка котлована", 1.0, d1, d2, "Завершено", "2.2.1.1"),
+        (1500, "Кровля", 0.4, d1, d2, "В работе", "2.2.2.3"),
+    ]), "2026-08-20")
+    assert stored["completed"] == 1
+
+    after = manager._baseline_status("Кутузов")
+    assert after["1393"]["closed"] is True
+    assert after["1500"]["closed"] is False
+    assert after["1500"]["progress"] == pytest.approx(0.4)
+
+
+def test_a_schedule_fact_snapshot_is_never_overwritten(tmp_path, monkeypatch):
+    import datetime
+    import developaid_monitor as monitor
+
+    monkeypatch.setattr(monitor, "_SNAPSHOT_DIR", tmp_path)
+    data = _gpr_book([(1, "Работа", 0.5,
+                       datetime.date(2026, 1, 1), datetime.date(2026, 6, 1),
+                       "В работе", "2.2.1.1")])
+    monitor.store_schedule_fact("Кутузов", data, "2026-08-20")
+
+    with pytest.raises(FileExistsError):
+        monitor.store_schedule_fact("Кутузов", data, "2026-08-20")
+
+
+def test_the_baseline_plan_dates_stay_even_with_a_fact_snapshot(tmp_path, monkeypatch):
+    """ГПР-факт двигает выполнение, но не план: план — это baseline."""
+    import datetime
+    import developaid_monitor as monitor
+
+    monkeypatch.setattr(monitor, "_SNAPSHOT_DIR", tmp_path)
+    d1, d2 = datetime.date(2025, 8, 23), datetime.date(2025, 10, 28)
+    monitor.store_schedule("Кутузов", _gpr_book([
+        (1393, "Разработка котлована", 0.0, d1, d2, "Просрочено", "2.2.1.1"),
+    ]), None, "2026-07-23")
+    monitor.store_schedule_fact("Кутузов", _gpr_book([
+        (1393, "Разработка котлована", 1.0,
+         datetime.date(2026, 1, 1), datetime.date(2026, 7, 1),
+         "Завершено", "2.2.1.1"),
+    ]), "2026-08-20")
+
+    baseline = monitor._read_baseline_gpr("Кутузов")
+    work = baseline["works"][0]
+    assert work["start"] == d1
+    assert work["finish"] == d2
+
+
+def test_a_work_percent_entered_on_the_page_wins_over_everything(tmp_path, monkeypatch):
+    """В акте РСС нет имени работы — последнее слово о работе за человеком.
+
+    Процент вводится в карточке работы на странице и живёт поверх baseline
+    и еженедельного ГПР-факта; поздний снимок перекрывает ранний.
+    """
+    import datetime
+    import developaid_monitor as monitor
+
+    monkeypatch.setattr(monitor, "_SNAPSHOT_DIR", tmp_path)
+    d1, d2 = datetime.date(2025, 8, 23), datetime.date(2025, 10, 28)
+    monitor.store_schedule("Кутузов", _gpr_book([
+        (1393, "Разработка котлована", 0.0, d1, d2, "Просрочено", "2.2.1.1"),
+    ]), None, "2026-07-23")
+
+    monitor.store_work_fact("Кутузов", [
+        {"id": "1393", "progress": 0.6}], "2026-08-10")
+    monitor.store_work_fact("Кутузов", [
+        {"id": "1393", "progress": 1.0, "status": "Завершено"}], "2026-08-20")
+
+    status = manager._baseline_status("Кутузов")
+    assert status["1393"]["closed"] is True
+    assert status["1393"]["progress"] == pytest.approx(1.0)
+
+    facts = monitor.work_facts("Кутузов", upto="2026-08-15")
+    assert facts["1393"]["progress"] == pytest.approx(0.6)
+
+
+def test_a_row_without_id_or_percent_is_refused(tmp_path, monkeypatch):
+    import developaid_monitor as monitor
+
+    monkeypatch.setattr(monitor, "_SNAPSHOT_DIR", tmp_path)
+    with pytest.raises(ValueError):
+        monitor.store_work_fact("Кутузов", [{"progress": "не число"}], "2026-08-20")
+
+
+def test_expert_stage_close_shuts_the_monolith_cycle_but_not_floors(tmp_path, monkeypatch):
+    """«Закрыть монолитный цикл» закрывает то, без чего бетон не стоит.
+
+    Котлован, подготовка, гидроизоляция, фундамент — закрываются сотней;
+    поэтажный монолит («N-й этаж верт. констр.») не трогается: на Кутузове
+    корпус 3 в бетоне до 23-го этажа, наверху ещё пять — их темп настоящий.
+    Завершённые работы не переписываются.
+    """
+    import datetime
+    import developaid_monitor as monitor
+
+    monkeypatch.setattr(monitor, "_SNAPSHOT_DIR", tmp_path)
+    d1, d2 = datetime.date(2025, 8, 23), datetime.date(2025, 10, 28)
+    monitor.store_schedule("Кутузов", _gpr_book([
+        (1393, "Разработка котлована АС 1,2,4 захватка", 0.0, d1, d2, "Просрочено", "2.2.1.1"),
+        (1405, "Устройство бетонной подготовки", 0.0, d1, d2, "Просрочено", "2.2.1.4"),
+        (1077, "Тех этаж верт констр", 0.3, d1, d2, "В работе", "2.2.1.5"),
+        (900, "Разработка котлована", 1.0, d1, d2, "Завершено", "2.2.1.1"),
+    ]), None, "2026-07-23")
+
+    result = monitor.close_completed_stage("Кутузов", "", "2026-08-23")
+
+    assert result["works"] == 2
+    facts = monitor.work_facts("Кутузов")
+    assert facts["1393"]["progress"] == pytest.approx(1.0)
+    assert facts["1405"]["progress"] == pytest.approx(1.0)
+    assert "1077" not in facts
+    assert "900" not in facts
+
+
+def test_expert_stage_close_respects_the_object_filter(tmp_path, monkeypatch):
+    import datetime
+    import developaid_monitor as monitor
+
+    monkeypatch.setattr(monitor, "_SNAPSHOT_DIR", tmp_path)
+    d1, d2 = datetime.date(2025, 8, 23), datetime.date(2025, 10, 28)
+    import io
+    from openpyxl import Workbook
+    book = Workbook(); sheet = book.active; sheet.title = "ГПР"
+    header = ["ID", "WBS", "Раздел", "Объект", "Наименование работ", "Тип строки",
+              "% выполнения", "Начало", "Окончание", "Статус", "Длительность р.д.",
+              "Предшественники", "Связанный тендер", "Окончание тендера",
+              "Резерв до начала работ", "Увязка", "Код РСС", "Статья РСС", "Основание привязки"]
+    for c, value in enumerate(header, 1):
+        sheet.cell(row=4, column=c, value=value)
+    rows = [(1, "Паркинг / стилобат", "Разработка котлована"),
+            (2, "Корпус 3", "Разработка котлована")]
+    for i, (rid, obj, name) in enumerate(rows):
+        values = [rid, str(rid), "СМР", obj, name, "Работа", 0.0, d1, d2,
+                  "Просрочено", 10, "", "", "", "", "", "2.2.1.1", "", ""]
+        for c, value in enumerate(values, 1):
+            sheet.cell(row=5 + i, column=c, value=value)
+    blob = io.BytesIO(); book.save(blob)
+    monitor.store_schedule("Кутузов", blob.getvalue(), None, "2026-07-23")
+
+    result = monitor.close_completed_stage("Кутузов", "паркинг", "2026-08-23")
+
+    assert result["works"] == 1
+    assert "2" not in monitor.work_facts("Кутузов")
+
+
+def test_finance_baseline_can_be_replaced_and_history_kept(tmp_path, monkeypatch):
+    import io
+    import developaid_monitor as monitor
+    from openpyxl import Workbook
+
+    monkeypatch.setattr(monitor, "_SNAPSHOT_DIR", tmp_path)
+
+    def book(marker):
+        b = Workbook(); ws = b.active; ws.title = "Расчет стоимости строительства"
+        ws.cell(row=1, column=1, value=marker)
+        blob = io.BytesIO(); b.save(blob); return blob.getvalue()
+
+    monitor.replace_finance_baseline("Кутузов", book("первая"), "2026-07-08")
+    monitor.replace_finance_baseline("Кутузов", book("пересчёт"), "2026-08-23")
+
+    base = tmp_path / "Кутузов" / "baseline" / "finance.xlsx"
+    history = list((tmp_path / "Кутузов" / "finance_history").glob("*.xlsx"))
+    assert base.exists()
+    assert len(history) == 1
+
+    with pytest.raises(ValueError):
+        monitor.replace_finance_baseline("Кутузов", b"not a workbook", "2026-08-23")

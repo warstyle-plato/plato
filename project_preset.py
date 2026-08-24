@@ -86,6 +86,33 @@ OFFICE_SQM_PER_SPACE = 100.0
 # остаётся мусором из шаблона». Дефолт — тот же лот, что зашит в TEP_DEFAULT.
 DEFAULT_LOT_AREA_SQM = 58.7
 
+# Деньги, молчание про которые меняет результат на миллиарды. Пресет вправе их
+# не задавать — цены и себестоимость документами КРТ не выдаются, — но обязан
+# сказать, что не задал.
+MONEY_INPUTS_ANNOUNCED = {
+    "apartment_price_th": "цену квартир",
+    "commercial_price_th": "цену коммерции 1 этажа",
+    "parking_price_th": "цену машино-места",
+    "main_above_th_per_sqm": "СМР наземной части",
+    "main_under_th_per_sqm": "СМР подземной части",
+    "project_start": "дату начала проекта",
+    "ird_months": "срок ИРД",
+    "construction_months": "срок строительства",
+}
+
+
+# Продукты, которые очередь вправе объявить своими метрами. Пресет пишет их
+# прямо на очереди (`"offices": {...}`), а движок читает вложенный `products` —
+# и всё, что стояло рядом с именем очереди, до расчёта не доезжало вовсе.
+# Так «Очередь 4 · ТЦ» получала имя от пресета, а сам ТЦ — умолчание движка
+# (вторая очередь): подпись и содержимое расходились молча, и заметить это
+# можно было только по тому, в какой очереди дорожает себестоимость.
+PHASE_PRODUCT_KEYS = (
+    "apartments", "ground_commercial", "offices", "standalone_retail",
+    "above_parking", "underground_parking", "storage",
+    "kindergarten", "school", "clinic", "other_mandatory",
+)
+
 
 class PresetError(ValueError):
     """Файл не пресет или пресет непригоден. Отличается от «поля не хватает»."""
@@ -573,6 +600,15 @@ def map_economics(data: dict[str, Any]) -> tuple[dict[str, Any], list[Field]]:
         "main_under_th_per_sqm": "СМР подземной части",
         "offices_cost_th_per_sqm": "себестоимость офисов",
         "retail_cost_th_per_sqm": "себестоимость ТЦ / коммерции ОСЗ",
+        # Себестоимость места соцобъекта — это миллиарды, а объявить её пресету
+        # было негде: ключей не было в карте, и заданное в файле молча
+        # пропадало. ДОО и СОШ считались по умолчаниям 2,75 и 3 млн ₽/место.
+        "kindergarten_cost_mln_per_place": "себестоимость места ДОО",
+        "school_cost_mln_per_place": "себестоимость места СОШ",
+        "clinic_cost_mln_per_unit": "себестоимость мощности поликлиники",
+        "demolition_area_sqm": "площадь сносимого",
+        "demolition_cost_th_per_sqm": "стоимость сноса",
+        "resettlement_cost_mln": "расселение",
         "ird_months": "срок ИРД",
         "construction_months": "срок строительства",
         "share_before_rve_pct": "доля продаж до РВЭ",
@@ -641,6 +677,25 @@ def cadastral_numbers(preset: dict[str, Any]) -> list[str]:
     return found
 
 
+def _phase_products(item: dict[str, Any]) -> dict[str, Any]:
+    """Метры очереди: и объявленные рядом с именем, и вложенные в `products`.
+
+    Вложенная форма сильнее: если пресет написал продукт обоими способами,
+    победит тот, который писали позже и осознанно.
+    """
+    products: dict[str, Any] = {}
+    for key in PHASE_PRODUCT_KEYS:
+        value = item.get(key)
+        if isinstance(value, dict):
+            products[key] = copy.deepcopy(value)
+    nested = item.get("products")
+    if isinstance(nested, dict):
+        for key, value in nested.items():
+            if key in PHASE_PRODUCT_KEYS and isinstance(value, dict):
+                products[key] = copy.deepcopy(value)
+    return products
+
+
 def map_phasing(data: dict[str, Any]) -> tuple[dict[str, Any], list[Field]]:
     """Очереди: сколько, чем и с каким шагом.
 
@@ -663,8 +718,7 @@ def map_phasing(data: dict[str, Any]) -> tuple[dict[str, Any], list[Field]]:
             "start_offset_months": int(_number(item.get("start_offset_months"))
                                        or index * gap),
             "construction_months": int(_number(item.get("construction_months")) or 24),
-            **({"products": copy.deepcopy(item["products"])}
-               if isinstance(item.get("products"), dict) else {}),
+            **({"products": _phase_products(item)} if _phase_products(item) else {}),
             **({"preparation_scope": copy.deepcopy(item["preparation_scope"])}
                if isinstance(item.get("preparation_scope"), dict) else {}),
         } for index, item in enumerate(phases[:4])],
@@ -703,6 +757,20 @@ def build_preview(data: dict[str, Any]) -> dict[str, Any]:
     # Предпосылки поверх документов, а не вместо: цена метра документом не
     # задаётся, но и площадь из ППТ ею не перебивается.
     inputs.update(economics)
+    # Незаявленная экономика — не «ноль» и не «как обычно», а умолчание движка,
+    # и на экране оно неотличимо от посчитанного. Пресет КРТ Нагатино объявлял
+    # площади и обязательства, но ни одной цены и ни одной ставки: квартиры
+    # уходили в расчёт по 350 тыс ₽/м², СМР по 110, место ДОО по 2,75 млн и
+    # место СОШ по 3 млн — соцобъекты стоили 3 962 млн вместо 8 189, и отчёт
+    # выглядел безупречно. Молчание про умолчание — та же потеря, что молчание
+    # про пропущенное поле, поэтому оно называется вслух.
+    silent = [label for key, label in MONEY_INPUTS_ANNOUNCED.items() if key not in inputs]
+    economics_notes = list(economics_notes)
+    if silent:
+        economics_notes.append(Field(
+            len(silent), "assumption",
+            "пресет не задаёт: " + ", ".join(silent)
+            + " — расчёт возьмёт умолчания движка, а не документы проекта"))
     phasing, phasing_notes = map_phasing(preset)
     project = preset.get("project") if isinstance(preset.get("project"), dict) else {}
     cadastres = cadastral_numbers(preset)

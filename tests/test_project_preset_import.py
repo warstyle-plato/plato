@@ -387,8 +387,8 @@ def test_the_screen_separates_documents_from_calculations():
 def test_applying_lays_over_the_defaults():
     body = core.PAGE[core.PAGE.index("async function applyPreset("):]
     body = body[:body.index("// --- хранилище проектов")]
-    assert "structuredClone(INPUT_DEFAULT)" in body
-    assert "structuredClone(TEP_DEFAULT)" in body
+    assert "cloneValue(INPUT_DEFAULT)" in body
+    assert "cloneValue(TEP_DEFAULT)" in body
 
 
 def test_applying_replaces_stale_phasing_with_the_preset_phasing():
@@ -399,7 +399,7 @@ def test_applying_replaces_stale_phasing_with_the_preset_phasing():
     """
     body = core.PAGE[core.PAGE.index("async function applyPreset("):]
     body = body[:body.index("// --- хранилище проектов")]
-    assert "const importedPhasing=structuredClone(data.phasing)" in body
+    assert "const importedPhasing=cloneValue(data.phasing)" in body
     assert "phasing.products=importedPhasing.products||phaseDefaults.products" in body
     assert "phasing.shared_cash=Object.assign" in body
     assert "renderPhasing()" in body
@@ -495,3 +495,61 @@ def test_the_nagatino_preset_declares_its_own_numbers():
     # не читал вовсе, и статья не попадала в модель ни рублём.
     assert preview["inputs"]["social_compensation_mln"] == pytest.approx(768.2, abs=0.1)
     assert preview["inputs"]["social_mode"] == project_preset.SOCIAL_MODE_BOTH
+
+
+def test_a_preset_says_out_loud_what_it_left_to_the_defaults():
+    """Незаявленная экономика — умолчание движка, и оно обязано быть названо.
+
+    Пресет КРТ Нагатино объявлял площади и обязательства, но ни одной цены и
+    ни одной ставки себестоимости. Квартиры уходили в расчёт по 350 тыс ₽/м²,
+    СМР по 110, место ДОО по 2,75 млн и место СОШ по 3 млн — соцобъекты
+    стоили 3 962 млн вместо 8 189, а отчёт выглядел безупречно.
+    """
+    bare = project_preset.build_preview({
+        "schema_version": "developaid.project_preset.v4",
+        "project": {"name": "Пустой"},
+        "planning": {"objects": [{
+            "id": "RES", "name": "Жильё", "gfa_m2": 10_000,
+            "residential_part_m2": 10_000, "building_type": "residential",
+        }]},
+    })
+    silent = [note["note"] for note in bare["notes"] if "умолчания движка" in note["note"]]
+    assert silent, "пресет без цен обязан сказать, что цен в нём нет"
+    assert "цену квартир" in silent[0]
+    assert "СМР наземной части" in silent[0]
+
+    path = Path(__file__).resolve().parent.parent / "presets" / "КРТ_Нагатино.json"
+    if not path.exists():
+        pytest.skip("пресет КРТ Нагатино не найден")
+    full = project_preset.build_preview(json.loads(path.read_text(encoding="utf-8")))
+    assert not [n for n in full["notes"] if "умолчания движка" in n["note"]]
+    # Себестоимость места соцобъекта объявить было негде: ключей не было в
+    # карте, и заданное в файле молча пропадало.
+    assert full["inputs"]["school_cost_mln_per_place"] == pytest.approx(6.29856)
+    assert full["inputs"]["kindergarten_cost_mln_per_place"] == pytest.approx(5.4)
+    social = (350 * full["inputs"]["kindergarten_cost_mln_per_place"]
+              + 1000 * full["inputs"]["school_cost_mln_per_place"])
+    assert social == pytest.approx(8188.56, abs=0.01)
+
+
+def test_the_school_is_built_when_people_move_in():
+    """Соцобъект размещают объектом со сроком, а не метрами в фазе.
+
+    Пресет раскладывал школу и садик полем `social_gba_m2` по фазам, а движок
+    для размещения читает `social_objects`. Его не было, раскладка шла
+    умолчанием «поздняя раскладка», и школа на 1 000 мест уезжала в четвёртую
+    очередь: ввод 2035 года при заселении с 2032-го, а вся её стоимость с
+    инфляцией ложилась на самую маленькую очередь.
+    """
+    path = Path(__file__).resolve().parent.parent / "presets" / "КРТ_Нагатино.json"
+    if not path.exists():
+        pytest.skip("пресет КРТ Нагатино не найден")
+    preview = project_preset.build_preview(json.loads(path.read_text(encoding="utf-8")))
+    objects = (preview["phasing"] or {}).get("social_objects") or []
+    assert objects, "пресет обязан объявить соцобъекты, а не только их метры"
+    by_type = {str(item.get("type")): item for item in objects}
+    assert by_type["kindergarten"]["not_later_than"] == 1
+    assert by_type["school"]["not_later_than"] == 2, (
+        "школа нужна к заселению первых очередей, а не к концу стройки")
+    for item in objects:
+        assert item.get("basis"), "срок обязан нести основание: в извещении его нет"

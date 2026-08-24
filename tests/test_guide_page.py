@@ -92,7 +92,7 @@ def test_class_and_scenario_numbers_come_from_the_engine(page: str):
 
 def test_navigation_anchors_lead_to_real_sections(page: str):
     anchors = re.findall(r'href="#([a-z-]+)"', page)
-    assert len(set(anchors)) == 8, "в навигации должно быть восемь разделов"
+    assert len(set(anchors)) == 9, "в навигации должно быть девять разделов"
     for anchor in anchors:
         assert f'id="{anchor}"' in page, f"якорь #{anchor} ведёт в никуда"
 
@@ -144,7 +144,7 @@ def test_the_model_page_links_the_consent():
 def test_platon_reads_the_same_guide():
     """У Платона нет своей копии руководства — ей негде устареть."""
     data = core._tool_get_user_guide("all")
-    assert data["available"] and len(data["sections"]) == 8
+    assert data["available"] and len(data["sections"]) == 9
     inputs_only = core._tool_get_user_guide("inputs")
     assert len(inputs_only["sections"]) == 1
     assert "СтроимПросто" in inputs_only["sections"][0]["text"]

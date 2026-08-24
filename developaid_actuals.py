@@ -58,6 +58,7 @@
 from __future__ import annotations
 
 import datetime
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -208,6 +209,35 @@ def _sheet(path: Any, name: str) -> Any:
             yield row
     finally:
         workbook.close()
+
+
+# Разобранный файл помнится по (путь, mtime, размер): один срез читает один
+# и тот же РСС двадцать раз (смета ×4, платежи ×3, акты ×5 — 29 секунд на
+# запрос), а тренд повторяет это на каждом снимке. Файлы снимков не
+# перезаписываются, поэтому ключ надёжен; поток из памяти не кэшируется.
+# Наружу уходит глубокая копия — чтобы правка результата не портила кэш.
+_READ_CACHE: dict[tuple, Any] = {}
+_READ_CACHE_LIMIT = 24
+
+
+def _cached_read(fn):
+    import copy as _copy
+    import functools
+
+    @functools.wraps(fn)
+    def wrapper(path, *args, **kwargs):
+        try:
+            stat = os.stat(path)
+        except (TypeError, OSError):
+            return fn(path, *args, **kwargs)
+        key = (fn.__name__, str(path), stat.st_mtime_ns, stat.st_size,
+               args, tuple(sorted(kwargs.items())))
+        if key not in _READ_CACHE:
+            if len(_READ_CACHE) >= _READ_CACHE_LIMIT:
+                _READ_CACHE.pop(next(iter(_READ_CACHE)))
+            _READ_CACHE[key] = fn(path, *args, **kwargs)
+        return _copy.deepcopy(_READ_CACHE[key])
+    return wrapper
 
 
 def read_estimate(path: str | Path) -> dict[str, Any]:
@@ -2327,3 +2357,12 @@ def apply_proposals(programme: dict[str, Any] | None,
         "last": months[-1] if months else None,
         "proposals": applied,
     }
+
+
+# Кэш навешивается после объявлений: читатели зовут друг друга по имени
+# модуля, поэтому обёртка одного не ломает других.
+for _name in ("read_estimate", "read_register", "read_completed_works",
+              "read_article_crosswalk", "read_payments", "read_contracts",
+              "read_sales", "read_programme", "read_credits", "read_schedule"):
+    globals()[_name] = _cached_read(globals()[_name])
+del _name

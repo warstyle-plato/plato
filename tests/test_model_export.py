@@ -181,8 +181,11 @@ def test_tep_total_row_is_a_formula():
     formulas = workbook(zip_file, "90_Детализация_Мытищи.xlsx")["ТЭП"]
     values = workbook(zip_file, "90_Детализация_Мытищи.xlsx", values=True)["ТЭП"]
     result = main.calculate(main.CalcRequest(inputs=main.DEFAULT_INPUTS, tep=main.TEP_DEFAULT, rates=[]))
-    last = formulas.max_row
-    assert formulas.cell(row=last, column=1).value == "Итого"
+    # Строку итога ищем по содержимому, а не берём последнюю: под ТЭП стоит
+    # блок нормативной потребности в машино-местах, и «итого построено» больше
+    # не последняя строка листа. Проверка тут про формулу, а не про место.
+    last = next(row for row in range(1, formulas.max_row + 1)
+                if formulas.cell(row=row, column=1).value == "Итого")
     assert str(formulas.cell(row=last, column=2).value).startswith("=SUM(")
     assert values.cell(row=last, column=2).value == pytest.approx(result["tep"]["total"]["gns"], rel=1e-6)
 
@@ -264,9 +267,9 @@ def test_phase_comparison_has_unit_metrics():
     first = formulas.max_row - len(bundle["comparison"])
     for label, key in [
         ("Цена реализации, тыс ₽/м² продаваемой", "revenue_per_saleable_th"),
-        ("Цена реализации, тыс ₽/м² ГНС", "revenue_per_gns_th"),
+        ("Цена реализации, тыс ₽/м² строит. объёма", "revenue_per_gns_th"),
         ("Полные расходы, тыс ₽/м² продаваемой", "expenses_per_saleable_th"),
-        ("Полные расходы, тыс ₽/м² ГНС", "expenses_per_gns_th"),
+        ("Полные расходы, тыс ₽/м² строит. объёма", "expenses_per_gns_th"),
     ]:
         column = column_of(formulas, label)
         for offset, item in enumerate(bundle["comparison"]):

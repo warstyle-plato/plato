@@ -245,5 +245,5 @@ def test_the_workbook_phase_sheet_pairs_the_columns():
     import inspect
     source = inspect.getsource(core._model_sheet_phase_comparison)
     assert 'header.index("CAPEX, тыс ₽/м² продаваемой")' in source
-    assert 'header.index("Чистая прибыль, тыс ₽/м² ГНС")' in source
+    assert 'header.index("Чистая прибыль, тыс ₽/м² строит. объёма")' in source
     assert "1: \"saleable_sqm\"" not in source, "номера колонок вернулись"

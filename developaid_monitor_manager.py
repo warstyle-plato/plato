@@ -216,15 +216,46 @@ def _baseline_status(project: str) -> dict[str, dict[str, Any]]:
         baseline = monitor._read_baseline_gpr(project)
     except Exception:
         return {}
+    # Еженедельный ГПР-факт несёт свежие проценты и статусы поверх baseline:
+    # план не меняется, меняется выполнение. Без снимка работает сам baseline.
+    rows = list(baseline.get("works") or [])
+    try:
+        fact = monitor.latest_schedule_fact(project)
+    except Exception:
+        fact = None
+    if fact:
+        fresh = {str(item.get("id") or item.get("wbs") or "").strip(): item
+                 for item in fact.get("works") or []}
+        rows = [fresh.get(str(item.get("id") or item.get("wbs") or "").strip(),
+                          item) for item in rows]
+    # Точечные проценты со страницы — поверх всего: в акте РСС нет имени
+    # работы, и последнее слово о конкретной работе остаётся за человеком.
+    try:
+        manual = monitor.work_facts(project)
+    except Exception:
+        manual = {}
+    if manual:
+        rows = [dict(item, progress=manual[tid]["progress"],
+                     status=manual[tid].get("status") or item.get("status"))
+                if (tid := str(item.get("id") or item.get("wbs") or "").strip())
+                in manual else item
+                for item in rows]
     out: dict[str, dict[str, Any]] = {}
-    for item in baseline.get("works") or []:
+    for item in rows:
         tid = str(item.get("id") or item.get("wbs") or "").strip()
         if not tid:
             continue
         status = _norm(item.get("status"))
+        try:
+            progress = float(item.get("progress"))
+        except (TypeError, ValueError):
+            progress = None
+        if progress is not None and progress > 1.0:
+            progress = progress / 100.0
         out[tid] = {
-            "closed": "заверш" in status,
+            "closed": "заверш" in status or (progress or 0.0) >= 0.999,
             "status": str(item.get("status") or ""),
+            "progress": progress,
         }
     return out
 
@@ -235,10 +266,23 @@ def _sanitize_base_schedule(project: str, schedule: dict[str, Any]) -> None:
     for row in schedule.get("rows") or []:
         tid = str(row.get("id") or row.get("wbs") or "").strip()
         meta = statuses.get(tid, {})
-        row["rss_accepted_ratio"] = row.get("actual_progress")
+        # КС статьи — готовность всей статьи по всем захваткам и корпусам, и
+        # приписывать её каждой задаче нельзя: «Разработка котлована», физически
+        # пройденная, наследовала статейные 67,8% и давала +472 дня, из которых
+        # +83 доезжали до РНВ по FS-цепочке. Собственный процент задачи из
+        # утверждённого ГПР — нижняя граница её готовности: задача не может
+        # быть менее готова, чем принято в baseline.
+        article_ratio = row.get("actual_progress")
+        own = meta.get("progress")
+        if own is not None and own > float(article_ratio or 0.0):
+            row["rss_accepted_ratio"] = own
+            row["progress_kind"] = "accepted_cost_ratio_floor_gpr"
+            row["progress_label"] = "КС / EAC, не ниже % ГПР"
+        else:
+            row["rss_accepted_ratio"] = article_ratio
+            row["progress_kind"] = "accepted_cost_ratio"
+            row["progress_label"] = "КС / EAC"
         row["rss_act_cost_rate_3m"] = row.get("rate_3m")
-        row["progress_kind"] = "accepted_cost_ratio"
-        row["progress_label"] = "КС / EAC"
         row["baseline_closed"] = bool(meta.get("closed"))
         row["baseline_status"] = meta.get("status", "")
         row["actual_progress"] = None

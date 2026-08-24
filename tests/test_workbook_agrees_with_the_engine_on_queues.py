@@ -102,7 +102,12 @@ def engine_queue_totals(inputs, tep, count) -> dict[str, float]:
         totals["apartments_saleable"] += float(rows.get("apartments", {}).get("saleable") or 0)
         totals["commercial_saleable"] += float(
             rows.get("ground_commercial", {}).get("saleable") or 0)
-        totals["parking_units"] += float(rows.get("underground_parking", {}).get("units") or 0)
+        # В книгу едут ПРОДАВАЕМЫЕ места: этой колонкой считается выручка, а
+        # гостевые места строятся, но не продаются. Сравнивать её с полным
+        # числом мест значило бы сверять разные величины и всегда падать на
+        # десятую часть паркинга.
+        totals["parking_units"] += core.underground_saleable_spaces(
+            rows.get("underground_parking", {}))
         totals["storage_units"] += float(rows.get("storage", {}).get("units") or 0)
     return totals
 
@@ -124,7 +129,8 @@ def test_both_keep_the_project_total(project):
     """И обе суммы равны исходному ТЭП — иначе они согласованно неверны."""
     inputs, tep = project
     book = workbook_queue_totals(inputs, tep, 3)
-    assert book["parking_units"] == pytest.approx(2723, abs=1.0)
+    assert book["parking_units"] == pytest.approx(
+        core.underground_saleable_spaces(tep["underground_parking"]), abs=1.0)
     assert book["underground_gns"] == pytest.approx(95305, rel=0.01)
     assert book["apartments_saleable"] == pytest.approx(
         tep["apartments"]["saleable"], rel=0.01)

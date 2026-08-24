@@ -47,6 +47,17 @@ def test_both_ways_of_sharing_are_offered():
     assert "Скачать настройки текущего" in page, (
         "выгрузка не должна требовать сначала сохранить проект на сервер")
 
+    # Кнопку мало иметь — её надо найти. Скачивание жило в шапке диалога, за
+    # экран выше списка проектов, а загрузка рядом со списком: владелец искал
+    # и не нашёл (23.08.2026). Две половины одного действия стоят вместе.
+    download = page.index("Скачать настройки текущего")
+    upload = page.index("Загрузить файл настроек")
+    assert abs(download - upload) < 200, (
+        "скачать и загрузить настройки должны стоять рядом, а не в разных "
+        "концах «Личного кабинета»")
+    # Подпись ссылалась на кнопку «Файл», которой на странице давно нет.
+    assert "из кнопки «Файл»" not in page
+
 
 def test_the_file_carries_the_snapshot_and_nothing_else():
     """Тот же набор, что уходит по ссылке: вводные, ТЭП, очерёдность, сценарий."""
@@ -81,8 +92,7 @@ def test_a_foreign_file_is_data_not_a_command():
     body = page_function("applySettingsFile")
     assert "data.kind!==SETTINGS_FILE_KIND" in body, "формат файла проверяется"
     assert "Это не файл настроек DevelopAid" in body
-    assert "structuredClone(INPUT_DEFAULT)" in body, "наложение, а не подмена"
-    assert "structuredClone(TEP_DEFAULT)" in body
+    assert "applyProjectSnapshot(data)" in body, "наложение живёт одной функцией"
     assert "confirm(" in body, "замена вводных на экране — с подтверждением"
 
 

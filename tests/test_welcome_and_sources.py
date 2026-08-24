@@ -37,8 +37,12 @@ def test_the_welcome_mentions_vri_and_the_live_model():
 
 def test_the_pdf_column_names_the_project_gns():
     source = open("main_legacy.py", encoding="utf-8").read()
-    assert "тыс ₽/м² ГНС проекта" in source, \
-        "без слова «проекта» удельные СМР читались как ставка на свой метр"
+    # База названа целиком: без неё 23 тыс ₽/м² подземной части читались как
+    # ставка на подземный метр (она — 190, во вводных). «ГНС» здесь неверно:
+    # база включает подземную часть, а та в наземную площадь не входит.
+    assert "тыс ₽/м² строительного объёма" in source, \
+        "без названия базы удельные СМР читаются как ставка на свой метр"
+    assert "тыс ₽/м² ГНС" not in source, "подземная часть в ГНС не входит"
 
 
 def test_the_sources_sheet_carries_the_project():

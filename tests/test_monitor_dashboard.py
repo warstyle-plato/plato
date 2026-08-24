@@ -114,4 +114,121 @@ def test_page_has_funding_and_correct_cost_evidence_language():
     assert "Cost control" in MONITOR_PAGE
     assert "КС / EAC proxy" in MONITOR_PAGE
     assert "Утверждённый РНВ" in MONITOR_PAGE
-    assert "Current Forecast РНВ" in MONITOR_PAGE
+    assert "Прогноз РНВ" in MONITOR_PAGE
+
+
+def test_sales_merge_book_fact_with_manual_rows(tmp_path, monkeypatch):
+    """Строка руками перекрывает тот же месяц книги, а не дублирует его.
+
+    Книга обновляется раз в месяц и отстаёт: «в августе продано 4 лота»
+    приходит словами раньше выгрузки. На Кутузове книга знала 41 лот по март,
+    август пришёл строкой.
+    """
+    import io
+    import json
+    from openpyxl import Workbook
+
+    monkeypatch.setattr(monitor, "_SNAPSHOT_DIR", tmp_path)
+
+    import developaid_actuals as actuals
+
+    book = Workbook()
+    sheet = book.active
+    sheet.title = "План продаж"
+    for offset, (month, mark, units, area, price) in enumerate([
+        (datetime.date(2026, 3, 1), "ФАКТ", 3, 300.0, 650_000.0),
+        (datetime.date(2026, 8, 1), "ФАКТ", 1, 50.0, 600_000.0),
+        (datetime.date(2026, 9, 1), "ПЛАН", 9, 500.0, 900_000.0),
+    ]):
+        line = actuals._SALES_FIRST_ROW + offset
+        sheet.cell(row=line, column=actuals._SALES_COLUMNS["period"] + 1, value=month)
+        sheet.cell(row=line, column=actuals._SALES_COLUMNS["mark"] + 1, value=mark)
+        sheet.cell(row=line, column=actuals._SALES_COLUMNS["units"] + 1, value=units)
+        sheet.cell(row=line, column=actuals._SALES_COLUMNS["area"] + 1, value=area)
+        sheet.cell(row=line, column=actuals._SALES_COLUMNS["price"] + 1, value=price)
+    blob = io.BytesIO()
+    book.save(blob)
+
+    monitor.store_sales_file("Гродненская", blob.getvalue(), "2026-07-31")
+    monitor.store_sales("Гродненская", [
+        {"month": "2026-08", "units": 4, "area": 240.0, "revenue": 160e6},
+    ], "2026-08-20")
+
+    snapshot = dashboard._sales_snapshot("Гродненская", datetime.date(2026, 8, 23))
+
+    assert snapshot["known"]
+    assert snapshot["last_fact"] == "2026-08"
+    # август из строк (4 лота), а не из книги (1 лот); план книги не факт
+    assert snapshot["total_units"] == pytest.approx(3 + 4)
+    assert snapshot["total_revenue"] == pytest.approx(300.0 * 650_000.0 + 160e6)
+
+
+def test_manual_sales_rows_are_not_ignored(tmp_path, monkeypatch):
+    monkeypatch.setattr(monitor, "_SNAPSHOT_DIR", tmp_path)
+    stored = monitor.store_sales("Гродненская", [
+        {"month": "2026-08", "units": 4, "area": 240.0, "revenue": 160e6},
+    ], "2026-08-20")
+
+    assert "ignored_by_monitor" not in stored
+    assert stored["months"] == 1
+
+    with pytest.raises(ValueError):
+        monitor.store_sales("Гродненская", [{"units": 4}], "2026-08-21")
+
+
+def test_missing_finance_book_is_a_reason_not_a_zero(tmp_path, monkeypatch):
+    """Ноль, показанный вместо «книги нет», неотличим от посчитанного нуля."""
+    monkeypatch.setattr(monitor, "_SNAPSHOT_DIR", tmp_path)
+    baseline = dashboard._finance_baseline("Гродненская")
+
+    assert baseline["known"] is False
+    assert "не загружен" in baseline["reason"]
+
+
+def test_reserve_reads_completion_by_limits_before_the_original_estimate(tmp_path, monkeypatch):
+    """Резерв ищется в «на завершение», а не в первоначальной смете.
+
+    На Кутузове бюджетная колонка резервов пуста, и запасной ход на
+    «Общую сметную стоимость первоначальную» терял 2.8 целиком: монитор
+    показывал 209,7 млн вместо 306,1 (152,9 + 153,3 по колонке «согласно
+    лимитам»).
+    """
+    import io
+    from openpyxl import Workbook
+
+    book = Workbook()
+    ws = book.active
+    ws.title = "Расчет стоимости строительства"
+    header9 = {1: "Код", 3: "Общая сметная стоимость первоначальная",
+               4: "Общая сметная стоимость\nУвеличенная",
+               7: "Утвержденная фин.модель проекта"}
+    header8 = {9: "Оплачено по состояни. На 17.07.2026",
+               10: "Средства на завершение согласно лимитам",
+               11: "Средства на завершение согласно бюджету",
+               13: "производстввенная программа"}
+    for c, v in header9.items():
+        ws.cell(row=9, column=c, value=v)
+    for c, v in header8.items():
+        ws.cell(row=8, column=c, value=v)
+    ws.cell(row=10, column=1, value="2.8")
+    ws.cell(row=10, column=3, value=0.0)
+    ws.cell(row=10, column=4, value=152.9e6)
+    ws.cell(row=10, column=10, value=152.9e6)
+    ws.cell(row=10, column=11, value=0.0)
+    ws.cell(row=11, column=1, value="2.9")
+    ws.cell(row=11, column=3, value=209.7e6)
+    ws.cell(row=11, column=4, value=153.3e6)
+    ws.cell(row=11, column=10, value=153.3e6)
+    ws.cell(row=11, column=11, value=0.0)
+    ws.cell(row=12, column=2, value="Всего инвестиционные расходы глава 2, 3")
+    ws.cell(row=12, column=7, value=1000.0)
+    ws.cell(row=12, column=11, value=900.0)
+
+    path = tmp_path / "finance.xlsx"
+    book.save(path)
+
+    baseline = dashboard._read_finance_baseline(path)
+    assert baseline["known"]
+    assert baseline["reserve"] == pytest.approx(306.2e6)
+    assert baseline["reserve_parts"]["2.8"] == pytest.approx(152.9e6)
+    assert baseline["reserve_parts"]["2.9"] == pytest.approx(153.3e6)
