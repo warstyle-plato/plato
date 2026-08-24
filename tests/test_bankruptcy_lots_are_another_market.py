@@ -602,3 +602,57 @@ def test_a_binary_certificate_is_accepted_too(tmp_path) -> None:
     report = trust_report(str(tmp_path))
     assert report["rejected"] == []
     assert len(report["accepted"]) == 2
+
+
+# --- имя параметра региона измеряется, а не угадывается ---------------------
+
+def test_the_region_parameter_is_measured_not_guessed(monkeypatch) -> None:
+    """Сервис молча игнорирует неизвестный параметр.
+
+    Значит перебирать имена вслепую можно вечно, а измерить — один раз:
+    «сколько из присланного наше». Запрос без параметра идёт первым: без него
+    сработавший фильтр не с чем сравнить.
+    """
+    import auction_search.adapters.torgi_gov as mod
+    ours = dict(_real_card(), subjectRFCode="77")
+    alien = _real_card()
+
+    def answer(request, *a, **k):
+        url = getattr(request, "full_url", request)
+        cards = [ours] if "subjectRFCode=77" in str(url) else [ours, alien]
+        return _Response(json.dumps({"content": cards}))
+
+    monkeypatch.setattr(mod.urllib.request, "urlopen", answer)
+    result = TorgiGovAdapter().probe_regions()
+    assert result["working"] == ["subjectRFCode"]
+    control = result["trials"][0]
+    assert control["param"] == "(без параметра)"
+    assert control["filters"] is False
+
+
+def test_half_a_page_is_not_a_working_filter(monkeypatch) -> None:
+    """Фильтр либо отбирает всё, либо не фильтр.
+
+    «Больше половины наших» — совпадение выдачи, а не работающий параметр.
+    """
+    import auction_search.adapters.torgi_gov as mod
+    body = json.dumps({"content": [dict(_real_card(), subjectRFCode="77"), _real_card()]})
+    monkeypatch.setattr(mod.urllib.request, "urlopen", lambda *a, **k: _Response(body))
+    result = TorgiGovAdapter().probe_regions()
+    assert result["working"] == []
+    assert "subjectRFCode" in result["note"]
+
+
+def test_the_probe_lists_the_service_dictionaries(monkeypatch) -> None:
+    """Код банкротства мы не видели ни разу — пусть находится сам.
+
+    Одно значение справочника выглядит как единственное: пока в выдаче одна
+    приватизация, кажется, что других видов торгов не бывает.
+    """
+    body = json.dumps({"content": [
+        _real_card(),
+        dict(_real_card(), biddType={"code": "127FZ", "name": "Банкротство"}),
+    ]})
+    result = _probe_with(body, monkeypatch)
+    assert result["codes_seen"]["biddType"] == {"127FZ": 1, "178FZ": 1}
+    assert result["codes_seen"]["biddForm"] == {"PP": 2}

@@ -656,6 +656,16 @@ def install(app: FastAPI) -> None:
         """
         return await run_in_threadpool(lambda: TorgiGovAdapter().probe(page))
 
+    @app.get("/auctions/torgi/regions")
+    async def auction_torgi_regions(page: int = Query(default=0)) -> dict[str, Any]:
+        """Какое имя параметра действительно фильтрует регион.
+
+        Запрос с `dynSubjRF=77,50` приносит чужие области: сервис молча
+        игнорирует неизвестный параметр. Перебирать имена вслепую можно
+        вечно — здесь они измеряются: «сколько из присланного наше».
+        """
+        return await run_in_threadpool(lambda: TorgiGovAdapter().probe_regions(page))
+
     @app.get("/auctions/discover")
     async def auction_discover(
         source: str = Query(default="all"),
