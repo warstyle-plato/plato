@@ -139,3 +139,12 @@ def test_pdf_still_builds_with_a_deviated_class():
         "tep": core.TEP_DEFAULT, "rates": [], "phasing": {},
         "scenario": "base", "project_name": "Проверка"})
     assert data[:4] == b"%PDF"
+
+
+def test_the_page_has_a_class_settings_window():
+    page = core.PAGE
+    assert 'id="classDialog"' in page
+    assert "Настройки классов" in page
+    assert "renderClassDialog" in page
+    # Список полей окно читает из пресета, а не держит копию.
+    assert "Object.keys(PROJECT_CLASS_PRESETS[classes[0]]).filter(k=>k!=='label')" in page

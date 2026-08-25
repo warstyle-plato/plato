@@ -29413,6 +29413,7 @@ details.cadastral-box>summary::marker{color:#888}
           <option value="custom">Пользовательский</option>
         </select>
         <div id="projectClassPreview" style="font-size:10px;color:#777;margin-top:4px;text-align:right"></div>
+        <div style="text-align:right;margin-top:2px"><a href="#" onclick="openClassDialog();return false" style="font-size:10px;color:#3b6db4">Настройки классов</a></div>
       </div>
       <div class="scenario">Сценарий&nbsp;
         <select id="scenarioSelect" onchange="applyScenario(this.value)">
@@ -30198,6 +30199,16 @@ details.cadastral-box>summary::marker{color:#888}
 <!-- Знакомство. Личность подтверждает Telegram, а имя, компанию и источник
      подтвердить нечем — они со слов человека, и делать вид, что проверены,
      нельзя. Спрашиваем один раз после входа (решение владельца, 18.08.2026). -->
+<div id="classDialog" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);
+     z-index:90;align-items:center;justify-content:center;padding:20px" onclick="if(event.target===this)closeClassDialog()">
+  <div style="background:#fff;max-width:780px;width:100%;max-height:86vh;overflow:auto;padding:22px 24px;border-radius:10px">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:4px"><h2 style="margin:0;font-size:17px">Настройки классов</h2><button onclick="closeClassDialog()" style="margin-left:auto;border:1px solid #ddd;background:#fff;border-radius:6px;padding:3px 10px;cursor:pointer">✕</button></div>
+    <div style="font-size:12px;color:#666;margin-bottom:10px">База классов одна и общая — её правит владелец, правка выходит выпуском. Ставки проекта, ушедшие от базы (руками или личным умолчанием), помечаются здесь, в PDF и в обеих книгах.</div>
+    <div id="classDialogBody"></div>
+    <div id="classDialogNote" style="font-size:12px;margin-top:10px;color:#444"></div>
+    <div style="margin-top:12px"><button onclick="applyProjectClassPreset(document.getElementById('projectClassSelect').value);renderClassDialog()" style="border:1px solid #3b6db4;background:#fff;color:#3b6db4;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:12px">Вернуть ставки базы выбранного класса</button></div>
+  </div>
+</div>
 <div id="profileDialog" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);
      z-index:95;align-items:center;justify-content:center;padding:20px">
   <div style="background:#fff;max-width:560px;width:100%;max-height:86vh;overflow:auto;padding:22px 24px">
@@ -33136,6 +33147,30 @@ function syncProjectClassSelector(){
  const key=inputs.project_class&&PROJECT_CLASS_PRESETS[inputs.project_class]?inputs.project_class:'custom';
  select.value=key;
  renderProjectClassPreview();
+}
+
+function classFieldLabel(k){for(const g of FIELD_GROUPS){for(const f of g[1]){if(f[0]===k)return f[1]}}return k}
+function openClassDialog(){renderClassDialog();document.getElementById('classDialog').style.display='flex'}
+function closeClassDialog(){document.getElementById('classDialog').style.display='none'}
+function renderClassDialog(){
+ const box=document.getElementById('classDialogBody');if(!box)return;
+ const classes=Object.keys(PROJECT_CLASS_PRESETS);
+ const keys=Object.keys(PROJECT_CLASS_PRESETS[classes[0]]).filter(k=>k!=='label');
+ const cur=inputs.project_class&&PROJECT_CLASS_PRESETS[inputs.project_class]?inputs.project_class:'custom';
+ let deviations=0;
+ let html='<table style="width:100%;border-collapse:collapse;font-size:12px"><tr><th style="text-align:left;padding:6px 8px;border-bottom:1px solid #ddd">Поле</th>'+classes.map(c=>`<th style="text-align:right;padding:6px 8px;border-bottom:1px solid #ddd;${c===cur?'background:#eef4fb':''}">${PROJECT_CLASS_PRESETS[c].label}</th>`).join('')+'<th style="text-align:right;padding:6px 8px;border-bottom:1px solid #ddd">В проекте</th></tr>';
+ for(const k of keys){
+  const actual=Number(inputs[k]);
+  const base=cur!=='custom'?Number(PROJECT_CLASS_PRESETS[cur][k]):null;
+  const dev=base!=null&&isFinite(actual)&&Math.abs(actual-base)>1e-9;
+  if(dev)deviations++;
+  html+=`<tr><td style="padding:5px 8px;border-bottom:1px solid #f0f0f0">${classFieldLabel(k)}</td>`+classes.map(c=>`<td style="text-align:right;padding:5px 8px;border-bottom:1px solid #f0f0f0;${c===cur?'background:#f6f9fd':''}">${Number(PROJECT_CLASS_PRESETS[c][k]).toLocaleString('ru-RU')}</td>`).join('')+`<td style="text-align:right;padding:5px 8px;border-bottom:1px solid #f0f0f0;${dev?'color:#b42318;font-weight:700':''}">${isFinite(actual)?actual.toLocaleString('ru-RU'):'—'}${dev?' ≠':''}</td></tr>`;
+ }
+ box.innerHTML=html+'</table>';
+ const note=document.getElementById('classDialogNote');
+ if(cur==='custom')note.textContent='Класс «Пользовательский»: базы для сверки нет — все ставки заданы проектом.';
+ else if(deviations)note.innerHTML=`<span style="color:#b42318;font-weight:600">Изменено против базы «${PROJECT_CLASS_PRESETS[cur].label}»: ${deviations} ${deviations===1?'ставка':'ставки'}.</span> Отклонения печатаются в PDF и помечаются в книгах v4 и ПЛАТО.`;
+ else note.textContent=`Все ставки соответствуют базе класса «${PROJECT_CLASS_PRESETS[cur].label}».`;
 }
 
 
