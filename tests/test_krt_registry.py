@@ -244,7 +244,11 @@ def test_auctions_exposes_krt_as_a_separate_tab_and_endpoint(monkeypatch) -> Non
     assert "const KRT_OKRUGS=['ЦАО','САО'" in page.text
     assert "'НАО','ТАО','ЗелАО'" in page.text
     assert "Оценка Платона" in page.text
-    assert "жильё и быстрый старт" in page.text
+    # Подпись фильтра каталога: «Платон:» из неё убрана намеренно — балл здесь
+    # арифметический, по каталожным ТЭП, и Платон в нём не участвует. Он
+    # появляется отдельной кнопкой, и обещать его выбором в списке нельзя.
+    assert "Ищем: жильё, готовое к старту" in page.text
+    assert "Платон: жильё" not in page.text
     assert "Короткий вывод Платона" in page.text
     assert "analysis.site||analysis.overall" in page.text
     # Карточка открывает посчитанное, а не запускает счёт заново: кнопка

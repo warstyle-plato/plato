@@ -1531,6 +1531,10 @@ def _usage_digest_loop() -> None:
             _deliver_profile_announcements()
         except Exception:
             pass
+        try:
+            _deliver_krt_announcements()
+        except Exception:
+            pass  # рассылка — удобство: молчание лучше падения фонового потока
         time.sleep(900)
 
 
@@ -1556,6 +1560,95 @@ def _deliver_profile_announcements() -> None:
         records = core._profile_take_announcements()
     for record in records:
         core._telegram_send_profile_card(record, admins)
+
+
+def _krt_take_announcements() -> tuple[list[dict], list[int]]:
+    """Новинки каталога КРТ и подписчики — с ядра или из своей очереди.
+
+    Каталог читается на ядре, а до api.telegram.org достаём только мы: тот же
+    приём, что у знакомств. Подписчики приезжают ТЕМ ЖЕ ответом — два запроса
+    ради одного сообщения дали бы два места, где список разъедется с рассылкой.
+    """
+    remote = core._projects_remote_url("/internal/krt/announcements")
+    if remote:
+        payload = {"code": "krt-announcements", "chat_id": 0,
+                   "sign": core._web_login_sign("krt-announcements", 0)}
+        data = core._core_post(remote, payload, 30.0)
+    else:
+        take = getattr(core.app.state, "krt_announcements_take", None)
+        if take is None:
+            return [], []
+        data = {"announcements": take(), "subscribers": core._krt_subscribers()}
+    return list(data.get("announcements") or []), [int(x) for x in (data.get("subscribers") or [])]
+
+
+def _deliver_krt_announcements() -> None:
+    """Новые площадки КРТ — в чат подписчикам.
+
+    Список отсортирован по баллу, и площадка, появившаяся на этой неделе,
+    стоит где придётся: глазами её не найти. Плашка «новое» отвечает тому, кто
+    и так открыл каталог; сообщение — тому, кто не открывал.
+
+    Владелец получает их всегда: подписка — для остальных, а он и есть тот,
+    ради кого каталог читается.
+    """
+    if not core._telegram_token() or not core._telegram_webhook_enabled():
+        return
+    records, subscribers = _krt_take_announcements()
+    if not records:
+        return
+    targets = sorted(set(subscribers) | set(core.usage_admin_ids()))
+    if not targets:
+        return
+    for chat_id in targets:
+        try:
+            core._telegram_send_message(chat_id, _krt_announcement_text(records))
+        except Exception:
+            # Один недоставленный адресат не отменяет рассылку остальным.
+            continue
+
+
+def _krt_announcement_text(records: list[dict]) -> str:
+    """Одно сообщение на всю пачку, а не письмо на площадку.
+
+    Каталог обновляется раз в неделю и приносит новинки скопом: двенадцать
+    сообщений подряд читаются как поломка бота, а не как новость.
+    """
+    import html as _html
+
+    names = [str(r.get("name") or r.get("slug") or "").strip() for r in records]
+    names = [name for name in names if name]
+    head = ("В каталоге КРТ новая площадка" if len(names) == 1
+            else f"В каталоге КРТ новых площадок: {len(names)}")
+    lines = [f"<b>{_html.escape(head)}</b>"]
+    for name in names[:12]:
+        lines.append("— " + _html.escape(name))
+    if len(names) > 12:
+        lines.append(f"…и ещё {len(names) - 12}")
+    lines.append("")
+    # Адрес берём у движка, а не пишем словами: команды «/torgi» в боте нет, и
+    # ссылка на несуществующее — та же ложь, что подпись под чужим числом.
+    base = str(getattr(core, "_TELEGRAM_WEB_APP_BASE_URL", "") or "").rstrip("/")
+    where = f'<a href="{base}/auctions">каталог площадок КРТ</a>' if base else "вкладку «Площадки КРТ»"
+    lines.append(f"Открыть {where} — новинки помечены плашкой «новое».")
+    lines.append("Отписаться — /krt выкл")
+    return "\n".join(lines)
+
+
+def _krt_subscription(chat_id: int, wanted: bool | None = None) -> bool:
+    """Состояние подписки. `wanted=None` — только прочитать, ничего не меняя.
+
+    Читать записью нельзя: переключатель, который сперва отписывает, чтобы
+    узнать состояние, оставит человека отписанным, если второй запрос не дойдёт.
+    """
+    remote = core._projects_remote_url("/internal/krt/subscribe")
+    payload = {"chat_id": int(chat_id), "on": wanted,
+               "sign": core._web_login_sign("krt-subscribe", int(chat_id))}
+    if remote:
+        return bool(core._core_post(remote, payload, 20.0).get("subscribed"))
+    if wanted is None:
+        return int(chat_id) in core._krt_subscribers()
+    return bool(core._krt_subscribe(int(chat_id), bool(wanted)))
 
 
 # --- анкета в боте -----------------------------------------------------------
@@ -1796,6 +1889,9 @@ def _handle_message(message: dict[str, Any]) -> None:
     if command == "/help":
         _send_help(chat_id)
         return
+    if command in {"/krt", "/крт"}:
+        _krt_command(chat_id, text)
+        return
     if command in {"/feedback", "/оценить"}:
         _feedback_start(chat_id, _sender_name(message))
         return
@@ -1926,3 +2022,32 @@ def _configure_platon_command() -> None:
         core._telegram_api("setMyCommands", {"commands": core.TELEGRAM_BOT_COMMANDS})
     except Exception as exc:
         core._TELEGRAM_RUNTIME["last_error"] = str(exc)
+
+
+def _krt_command(chat_id: int, text: str) -> None:
+    """Подписка на новые площадки КРТ.
+
+    Состояние называется всегда — и когда его меняли, и когда просто спросили:
+    «подписка включена» после повторного «подписаться» и после первого выглядят
+    одинаково намеренно. Иначе человек жмёт второй раз, чтобы убедиться, и
+    снимает подписку.
+    """
+    argument = text.split(maxsplit=1)[1].strip().lower() if " " in text.strip() else ""
+    try:
+        if argument in {"вкл", "on", "подписаться", "да"}:
+            state = _krt_subscription(chat_id, True)
+        elif argument in {"выкл", "off", "отписаться", "нет", "стоп"}:
+            state = _krt_subscription(chat_id, False)
+        else:
+            # Без аргумента — переключатель: одна команда вместо двух, которые
+            # надо помнить. Что получилось, сказано следующей строкой.
+            state = _krt_subscription(chat_id, not _krt_subscription(chat_id))
+    except Exception as exc:
+        _send_message(chat_id, f"Подписку изменить не удалось: {exc}")
+        return
+    if state:
+        _send_message(chat_id, "Подписка на новые площадки КРТ включена. "
+                       "Каталог обновляется раз в неделю; сообщу, когда появится новая. "
+                       "Выключить — /krt выкл")
+    else:
+        _send_message(chat_id, "Подписка на новые площадки КРТ выключена. Включить — /krt вкл")

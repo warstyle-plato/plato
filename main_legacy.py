@@ -27888,6 +27888,110 @@ def profile_announcements(req: WebLoginConfirmRequest) -> dict[str, Any]:
     return {"announcements": _profile_take_announcements()}
 
 
+# --- новые площадки КРТ: с ядра в бот ---------------------------------------
+# Каталог krt.mos.ru читается на ядре, и новизну решает `first_seen` там же.
+# До api.telegram.org с ядра не дойти, поэтому здесь ровно тот же приём, что у
+# знакомств: ядро копит, хост с вебхуком забирает по общей подписи и шлёт.
+# Второго пути не заводим — он разошёлся бы с первым на первой же правке.
+#
+# Подписчики живут ТОЖЕ на ядре, рядом с профилями: диск бота на Render
+# переживает только до следующей выкатки, и список подписок исчезал бы вместе
+# с контейнером — молча, как исчезал журнал.
+
+
+def _krt_subscribers_path() -> Path:
+    return _PROJECTS_DIR.parent / "krt_subscribers.json"
+
+
+def _krt_subscribers() -> list[int]:
+    try:
+        raw = json.loads(_krt_subscribers_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(raw, dict):
+        return []
+    found: list[int] = []
+    for value in raw.get("chat_ids") or []:
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            continue
+        if number and number not in found:
+            found.append(number)
+    return sorted(found)
+
+
+def _krt_subscribe(chat_id: int, wanted: bool) -> bool:
+    """Включает или выключает подписку. Возвращает состояние ПОСЛЕ правки.
+
+    Возвращаем состояние, а не «сделано»: повторное «подписаться» и настоящая
+    подписка на экране обязаны выглядеть одинаково, иначе человек жмёт кнопку
+    второй раз, чтобы убедиться, и снимает подписку.
+    """
+    chat_id = int(chat_id or 0)
+    if not chat_id:
+        return False
+    current = _krt_subscribers()
+    if wanted and chat_id not in current:
+        current.append(chat_id)
+    elif not wanted and chat_id in current:
+        current.remove(chat_id)
+    path = _krt_subscribers_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"chat_ids": sorted(set(current))},
+                                   ensure_ascii=False), encoding="utf-8")
+    except OSError as exc:
+        raise HTTPException(status_code=503, detail=f"Подписка не сохранена: {exc}")
+    return chat_id in current
+
+
+class KrtSubscribeRequest(BaseModel):
+    chat_id: int = 0
+    sign: str = ""
+    # None — «просто скажи, подписан ли». Узнавать состояние записью нельзя:
+    # переключатель, который сперва отписывает, чтобы прочитать, оставляет
+    # человека отписанным, если второй запрос не дошёл.
+    on: bool | None = None
+
+
+@app.post("/internal/krt/announcements")
+def krt_announcements(req: WebLoginConfirmRequest) -> dict[str, Any]:
+    """Новые площадки КРТ и кому их объявить. Только для своего хоста.
+
+    Отдаём подписчиков тем же ответом, что и новинки: два запроса ради одного
+    сообщения — это два места, где список может разъехаться со своей рассылкой.
+
+    Очередь считает тот же `KrtRanking`, что помечает площадки «новыми» на
+    экране: второй ответ на вопрос «это новое?» однажды разошёлся бы с первым,
+    и в чат приехало бы не то, что видно в каталоге.
+    """
+    expected = _web_login_sign("krt-announcements", int(req.chat_id or 0))
+    if not hmac.compare_digest(str(req.sign or "").encode("utf-8"),
+                               expected.encode("utf-8")):
+        raise HTTPException(status_code=403, detail="Подпись не сошлась.")
+    take = getattr(app.state, "krt_announcements_take", None)
+    if take is None:
+        # Модуль торгов не установлен — сказать это честно. Пустой список
+        # читался бы как «новых площадок нет».
+        raise HTTPException(status_code=503,
+                            detail="Каталог КРТ на этом хосте не установлен.")
+    return {"announcements": take(), "subscribers": _krt_subscribers()}
+
+
+@app.post("/internal/krt/subscribe")
+def krt_subscribe(req: KrtSubscribeRequest) -> dict[str, Any]:
+    """Подписка на новые площадки КРТ. Подпись — тем же общим токеном."""
+    expected = _web_login_sign("krt-subscribe", int(req.chat_id or 0))
+    if not hmac.compare_digest(str(req.sign or "").encode("utf-8"),
+                               expected.encode("utf-8")):
+        raise HTTPException(status_code=403, detail="Подпись не сошлась.")
+    chat_id = int(req.chat_id or 0)
+    if req.on is None:
+        return {"subscribed": chat_id in _krt_subscribers()}
+    return {"subscribed": _krt_subscribe(chat_id, bool(req.on))}
+
+
 def _profile_announce(record: dict[str, Any]) -> None:
     """Новое знакомство — в чат владельцу. Молча, если сообщить нечем."""
     admins = usage_admin_ids()

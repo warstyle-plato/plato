@@ -239,6 +239,31 @@ def install(app: FastAPI) -> None:
         os.path.join(os.getenv("DATA_DIR", "data"), "market")
     )
     krt_ranking = KrtRanking(os.path.join(os.getenv("DATA_DIR", "data"), "market"))
+    # Очередь новинок забирает движок (`/internal/krt/announcements`) — у него
+    # общая с ботом подпись, а до api.telegram.org с ядра не дойти. Отдаём ему
+    # ТОТ ЖЕ экземпляр каталога, который помечает площадки «новыми» на экране:
+    # второй ответ на вопрос «это новое?» однажды разошёлся бы с первым, и в
+    # чат приехало бы не то, что видно в списке.
+    def _take_krt_announcements() -> list[dict[str, Any]]:
+        """Новинки с именами площадок.
+
+        В очередь ложится слаг: имя знает каталог, а `first_seen` — состав.
+        Имя подставляется здесь, при выдаче, и если площадки в каталоге уже
+        нет — остаётся слаг. Выдумывать имя нельзя, а молча выбросить запись
+        значит потерять новость.
+        """
+        records = krt_ranking.take_announcements()
+        if not records:
+            return []
+        try:
+            names = {str(row.get("slug") or ""): str(row.get("name") or "")
+                     for row in krt_registry.catalogue()}
+        except Exception:  # noqa: BLE001
+            names = {}
+        return [{**record, "name": names.get(str(record.get("slug") or ""), "")}
+                for record in records]
+
+    app.state.krt_announcements_take = _take_krt_announcements
 
     def _weekly_ranking() -> None:
         """Раз в неделю каталог обновляется и считается сам.
