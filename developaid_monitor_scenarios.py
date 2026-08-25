@@ -156,8 +156,30 @@ def _forecast_drivers(
                 else str(row.get("forecast_source") or "утверждённый rebaseline")
             ),
         })
+    # Одиночное влияние честно даёт ноль, когда опаздывают несколько
+    # параллельных цепочек: убери любую одну — РНВ держат остальные. Поэтому
+    # рядом считается совместное влияние: задержки снимаются по очереди, от
+    # самой большой, и каждой достаётся тот кусок РНВ, который вернулся именно
+    # на её снятии при уже снятых предыдущих. Сумма по списку — сколько дней
+    # держат все перечисленные вместе.
+    peeled = dict(current_seeds)
+    peel_rnv = current_rnv
+    joint: dict[str, int] = {}
+    for tid in candidates:
+        if tid not in peeled:
+            continue
+        peeled.pop(tid)
+        without_rnv = _network_rnv(pm, graph._propagate(pm, peeled))
+        if without_rnv is None:
+            break
+        joint[tid] = max(0, (peel_rnv - without_rnv).days)
+        peel_rnv = without_rnv
+    for item in drivers:
+        item["rnv_joint_days"] = joint.get(item["id"], 0)
+
     drivers.sort(
-        key=lambda item: (item["rnv_impact_days"], item["local_delay_days"]),
+        key=lambda item: (item["rnv_impact_days"], item["rnv_joint_days"],
+                          item["local_delay_days"]),
         reverse=True,
     )
     return drivers[:limit]

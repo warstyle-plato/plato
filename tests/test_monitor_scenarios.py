@@ -86,6 +86,39 @@ def test_forecast_drivers_explain_marginal_rnv_impact():
     assert drivers[0]["rss_codes"] == ["2.2.1"]
 
 
+def test_parallel_late_chains_share_joint_rnv_impact():
+    """Две параллельные опаздывающие ветки: поодиночке РНВ держит соседняя
+    (одиночное влияние — ноль), а связка объясняет весь сдвиг."""
+    d = datetime.date
+    two_pm = {"known": True, "rnv_id": "9", "tasks": {
+        "a": {"id": "a", "name": "Монолит К2", "start": d(2026, 1, 1),
+              "finish": d(2026, 3, 1), "duration_days": 59,
+              "predecessors": [], "free_float_days": 0, "total_float_days": 0},
+        "b": {"id": "b", "name": "Монолит К3", "start": d(2026, 1, 1),
+              "finish": d(2026, 3, 1), "duration_days": 59,
+              "predecessors": [], "free_float_days": 0, "total_float_days": 0},
+        "9": {"id": "9", "name": "Получение РНВ", "start": d(2026, 3, 1),
+              "finish": d(2026, 3, 1), "duration_days": 0,
+              "predecessors": [{"id": "a", "type": "FS", "lag_days": 0},
+                               {"id": "b", "type": "FS", "lag_days": 0}],
+              "free_float_days": 0, "total_float_days": 0},
+    }}
+    view = {"cut": "2026-03-15", "schedule": {"rows": [
+        {"id": "a", "code": "2.2.2.1"}, {"id": "b", "code": "2.2.2.2"},
+    ]}}
+    seeds = {"a": d(2026, 5, 1), "b": d(2026, 5, 1)}
+    current_rnv = scenarios._network_rnv(
+        two_pm, scenarios.graph._propagate(two_pm, seeds))
+    drivers = scenarios._forecast_drivers(view, two_pm, seeds, current_rnv)
+    by_id = {item["id"]: item for item in drivers}
+
+    assert by_id["a"]["rnv_impact_days"] == 0
+    assert by_id["b"]["rnv_impact_days"] == 0
+    # Вся задержка 61 день распределена внутри связки без остатка.
+    assert sum(item["rnv_joint_days"] for item in drivers) == 61
+    assert all(item["rnv_joint_days"] >= 0 for item in drivers)
+
+
 def test_delayed_article_need_is_moved_without_changing_amount():
     articles = {"2.2.1.4": {"rss_limit": 10, "monthly_need": {
         "2026-08-01": 30, "2026-09-01": 40,
