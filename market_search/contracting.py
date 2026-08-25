@@ -333,6 +333,9 @@ def payment_variant(text: str) -> str:
         return "рассрочка"
     if value in ("1", "1.0", "100%", "100"):
         return "100% оплата"
+    share = re.fullmatch(r"(\d{1,3})\s*%\s*оплат\w*", low)
+    if share:
+        return f"{share.group(1)}% оплата"
     return value
 
 
@@ -370,6 +373,44 @@ def _totals(rows: Iterable[dict[str, Any]]) -> dict[str, float]:
     }
 
 
+# Варианты оплаты, которые мы понимаем. Всё остальное — не «прочие условия
+# сделки», а дефект заполнения CRM (решение владельца, 25.08.2026): «10ПВ +10%
+# через три месяца+1», «5 млн на эскроу», «0.1» и пустая ячейка описывают не
+# рынок, а то, как заполнили карточку. Восемь строк по одной сделке читаются
+# как разнообразие условий; одна строка с числом сделок и суммой читается как
+# то, чем является, — и примеры показываются подсказкой при наведении.
+KNOWN_VARIANTS = ("рассрочка", "ипотека")
+CRM_DEFECT = "дефект заполнения CRM"
+_CRM_EXAMPLES = 5
+
+
+def _payment_structure(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    buckets: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        name = payment_variant(row["payment_variant"])
+        recognised = name in KNOWN_VARIANTS or bool(re.fullmatch(r"\d{1,3}% оплата", name))
+        key = name if recognised else CRM_DEFECT
+        item = buckets.setdefault(key, {
+            "variant": key, "name": key, "count": 0, "area": 0.0, "amount": 0.0,
+            "escrow": 0.0, "recognised": recognised, "examples": []})
+        item["count"] += 1
+        item["area"] += row["area"]
+        item["amount"] += row["amount"]
+        item["escrow"] += row["escrow_paid"]
+        if not recognised:
+            # Пример — то, что вписали в карточку; сколько их всего, видно по
+            # count, поэтому список ограничен и это сказано числом.
+            shown = item["examples"]
+            text = row["payment_variant"] or "пусто"
+            if text not in [x["text"] for x in shown] and len(shown) < _CRM_EXAMPLES:
+                shown.append({"text": text, "contract": row["contract"],
+                              "amount": row["amount"]})
+    for item in buckets.values():
+        item["filled"] = item["escrow"] / item["amount"] if item["amount"] else None
+        item["examples_shown"] = len(item["examples"])
+    return sorted(buckets.values(), key=lambda x: (x["name"] == CRM_DEFECT, -x["amount"]))
+
+
 def summarise(contracts: dict[str, Any], ledger: dict[str, Any] | None = None) -> dict[str, Any]:
     """Свод: динамика, структура оплаты, каналы, вознаграждение, расторжения."""
     rows = contracts.get("rows") or []
@@ -398,11 +439,7 @@ def summarise(contracts: dict[str, Any], ledger: dict[str, Any] | None = None) -
     by_product = [{"product": key, **_totals(items)} for key, items in products.items()]
     by_product.sort(key=lambda item: -item["amount"])
 
-    variants: dict[str, list] = {}
-    for row in rows:
-        variants.setdefault(payment_variant(row["payment_variant"]), []).append(row)
-    by_payment = [{"variant": key, **_totals(items)} for key, items in variants.items()]
-    by_payment.sort(key=lambda item: -item["amount"])
+    by_payment = _payment_structure(rows)
 
     channels: dict[str, list] = {}
     for row in rows:
@@ -439,88 +476,4 @@ def summarise(contracts: dict[str, Any], ledger: dict[str, Any] | None = None) -
         "sales_bonus_paid": sum(r["sales_bonus_paid"] for r in rows),
         "company_buyers": sum(1 for r in rows if r["company_buyer"]),
         "terminated": ledger.get("terminated") or [],
-    }
-
-
-def summarise(contracts: dict[str, Any], ledger: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Четыре блока свода: динамика, структура, каналы, вознаграждение.
-
-    Считается один раз и уходит на экран, в PDF и в вопрос Платону готовыми
-    числами: второй счёт той же выручки однажды разошёлся бы с первым, и обе
-    поверхности выглядели бы верными.
-    """
-    rows = contracts.get("rows") or []
-    ledger = ledger or {}
-    money = lambda key: sum(float(row.get(key) or 0) for row in rows)  # noqa: E731
-    sold, escrow = money("amount"), money("escrow_paid")
-
-    dynamics: dict[str, dict[str, Any]] = {}
-    for row in rows:
-        month = dynamics.setdefault(row["month"], {
-            "month": row["month"], "units": 0.0, "area": 0.0, "amount": 0.0,
-            "escrow": 0.0, "by_product": {}})
-        month["units"] += row["units"]
-        month["area"] += row["area"]
-        month["amount"] += row["amount"]
-        month["by_product"][row["product"]] = month["by_product"].get(row["product"], 0.0) + row["units"]
-        for step in row.get("escrow_schedule") or []:
-            paid = dynamics.setdefault(step["month"], {
-                "month": step["month"], "units": 0.0, "area": 0.0, "amount": 0.0,
-                "escrow": 0.0, "by_product": {}})
-            paid["escrow"] += step["amount"]
-
-    def grouped(key: Any) -> list[dict[str, Any]]:
-        buckets: dict[str, dict[str, Any]] = {}
-        for row in rows:
-            name = key(row)
-            item = buckets.setdefault(name, {
-                "name": name, "count": 0, "area": 0.0, "amount": 0.0,
-                "escrow": 0.0, "fee": 0.0, "fee_unset": 0})
-            item["count"] += 1
-            item["area"] += row["area"]
-            item["amount"] += row["amount"]
-            item["escrow"] += row["escrow_paid"]
-            item["fee"] += row["broker_fee"]
-            # Ноль при названном брокере — «не заполнено», а не «даром».
-            if row["broker"] and row["broker_rate"] is None and not row["broker_fee"]:
-                item["fee_unset"] += 1
-        for item in buckets.values():
-            item["filled"] = item["escrow"] / item["amount"] if item["amount"] else None
-            item["price_per_sqm"] = item["amount"] / item["area"] if item["area"] else None
-        return sorted(buckets.values(), key=lambda x: -x["amount"])
-
-    channels = grouped(lambda row: row["broker"] or "— напрямую")
-    broker_rows = [row for row in rows if row["broker"]]
-    broker_sold = sum(row["amount"] for row in broker_rows)
-    broker_escrow = sum(row["escrow_paid"] for row in broker_rows)
-    broker_fee = sum(row["broker_fee"] for row in broker_rows)
-    own_sold = sold - broker_sold
-    bonus = money("sales_bonus_paid")
-
-    return {
-        "project": contracts.get("project") or "",
-        "contracts": len(rows),
-        "sold": sold,
-        "area": money("area"),
-        "escrow_paid": escrow,
-        "filled_share": escrow / sold if sold else None,
-        "dynamics": [dynamics[key] for key in sorted(dynamics)],
-        "by_product": grouped(lambda row: row["product"]),
-        "by_payment": grouped(lambda row: payment_variant(row["payment_variant"])),
-        "channels": channels,
-        # Обе базы — на СВОЕЙ выборке. Делить вознаграждение на эскроу всего
-        # проекта значит считать по одним сделкам, а делить на другие: там
-        # лежит эскроу прямых продаж, где комиссии нет вовсе.
-        "brokers": {
-            "sold": broker_sold, "escrow": broker_escrow, "fee": broker_fee,
-            "share_of_sales": broker_fee / broker_sold if broker_sold else None,
-            "share_of_escrow": broker_fee / broker_escrow if broker_escrow else None,
-            "share_of_portfolio": broker_sold / sold if sold else None,
-        },
-        "own_sales": {
-            "sold": own_sold, "bonus_paid": bonus,
-            "share_of_sales": bonus / own_sold if own_sold else None,
-        },
-        "terminated": ledger.get("terminated") or [],
-        "missing": contracts.get("missing") or [],
     }
