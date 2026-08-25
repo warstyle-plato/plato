@@ -140,6 +140,9 @@ def _forecast_drivers(
         drivers.append({
             "id": tid,
             "name": task["name"],
+            # «8-ый этаж» без корпуса нечитаем: у проекта три башни с
+            # одинаковыми названиями этажей, и объект — часть имени работы.
+            "object": str(row.get("object") or ""),
             "rss_codes": monitor._codes(row.get("code")),
             "plan_finish": monitor._iso(plan),
             "forecast_finish": monitor._iso(forecast),
