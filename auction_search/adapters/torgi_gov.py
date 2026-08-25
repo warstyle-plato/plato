@@ -93,12 +93,17 @@ SEARCH_PATH = "/new/api/public/lotcards/search"
 LOT_URL = "https://torgi.gov.ru/new/public/lots/lot/{id}"
 USER_AGENT = "DevelopAid-AuctionCollector/0.1 (+https://developaid.ru)"
 TIMEOUT_SECONDS = 8
+# Размер страницы мы ПРОСИМ, а не назначаем. На прод приехал сбор из ОДНОЙ
+# страницы: сервис прислал десять карточек на запрос с `size=50`, и сработала
+# остановка «пришло меньше запрошенного — значит последняя». Она верна только
+# там, где размер страницы соблюдают. Конец выборки объявляет сама оболочка
+# (`totalPages`, `last`), пустая страница — последний рубеж, а страница без
+# единого нового лота ловит сервис, игнорирующий и номер страницы тоже.
 PAGE_SIZE = 50
-# Наших в выдаче примерно каждая десятая: проба 25.08.2026 на десяти карточках
-# нашла одну московскую. Серверного фильтра у API нет, поэтому страниц берём
-# больше — иначе список из четырёх страниц принесёт лотов пять и будет выглядеть
-# как «в реестре пусто». Каждая страница — один запрос, и цена названа в отчёте.
-MAX_PAGES = 12
+# Наших примерно каждая десятая, и страница в пять раз меньше запрошенной:
+# чтобы список не выглядел пустым, страниц нужно много. Каждая — один запрос,
+# и сколько их было, стоит в отчёте.
+MAX_PAGES = 40
 
 # Субъекты, которые нас интересуют: Москва и область. Код региона приходит в
 # карточке полем `subjectRFCode` (подтверждено живым ответом 24.08.2026), и
@@ -494,6 +499,11 @@ class TorgiGovAdapter(AuctionPlatformAdapter):
         fetched_at = datetime.now(timezone.utc).isoformat()
         lots: list[AuctionLot] = []
         cards = pages = unknown_region = 0
+        total_elements: int | None = None
+        seen: set[str] = set()
+        previous_keys: list[str] = []
+        stalled = ""
+        widest_page = 0
         reason = ""
         for page in range(MAX_PAGES):
             try:
@@ -502,8 +512,22 @@ class TorgiGovAdapter(AuctionPlatformAdapter):
                 # Молчаливый пустой список читался бы как «лотов нет».
                 reason = f"страница {page}: {exc}"
                 break
-            pages += 1
             content = payload.get("content") or []
+            # Повтор ловится ДО разбора: страница, слово в слово равная
+            # предыдущей, означает стоящую нумерацию. Сервис, игнорирующий
+            # `page`, вернул бы свои десять карточек сорок раз — и счётчики
+            # карточек и пропусков выросли бы в сорок раз вместе с ними.
+            page_keys = [_text(card.get("id")) for card in content]
+            if content and page_keys == previous_keys:
+                # Заметка, а не причина: почему список пуст, объясняет строка
+                # ниже — она отвечает человеку, а эта отвечает нам.
+                stalled = f"нумерация страниц не двигается: страница {page} повторила предыдущую"
+                break
+            previous_keys = page_keys
+            pages += 1
+            widest_page = max(widest_page, len(content))
+            if total_elements is None and isinstance(payload.get("totalElements"), int):
+                total_elements = payload["totalElements"]
             cards += len(content)
             for card in content:
                 # Отбор региона наш, а не серверный: живой ответ на запросе с
@@ -516,10 +540,26 @@ class TorgiGovAdapter(AuctionPlatformAdapter):
                 if not in_target_region(card):
                     continue
                 lot = to_lot(card, fetched_at)
-                if lot is not None:
-                    lots.append(lot)
-            if len(content) < PAGE_SIZE:
+                if lot is None:
+                    continue
+                key = str(lot.source.external_lot_id)
+                if key in seen:
+                    continue
+                seen.add(key)
+                lots.append(lot)
+            if not content:
                 break
+            total_pages = payload.get("totalPages")
+            if isinstance(total_pages, int) and page + 1 >= total_pages:
+                break
+            if payload.get("last") is True:
+                break
+        if not reason and cards and not lots:
+            # Пустой список после полной страницы читался бы как «лотов нет».
+            reason = (f"из {cards} карточек ни одна не в наших регионах — "
+                      "серверный фильтр не сработал, а отбор идёт по subjectRFCode")
+        if stalled:
+            reason = f"{reason}; {stalled}" if reason else stalled
         if unknown_region:
             # Пропущенное молча читается как отсутствующее. Карточка без кода
             # региона — «не знаем», и сказать это обязаны мы, а не читатель.
@@ -532,6 +572,13 @@ class TorgiGovAdapter(AuctionPlatformAdapter):
         # Чем отобрано — часть ответа. Серверного фильтра у этого API нет, и
         # молчание об этом читалось бы как «сервис прислал только наше».
         self.last_report = {"pages": pages, "cards": cards, "kept": len(lots),
+                            # Просили 50, приходит 10 — по этому числу видно,
+                            # соблюдают ли наш размер, не заглядывая в лог.
+                            # Берётся САМАЯ полная страница, а не среднее:
+                            # пустая последняя утянула бы среднее вниз, и
+                            # соблюдённый размер стал бы неотличим от нет.
+                            "cards_per_page": widest_page,
+                            "total_elements": total_elements,
                             "region_filter": "свой отбор по subjectRFCode: "
                                              "серверного фильтра у API нет",
                             "reason": reason}
