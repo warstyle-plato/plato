@@ -67,7 +67,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.19.93"
+VERSION = "0.19.94"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -30464,7 +30464,7 @@ async function loginViaTelegram(statusEl){
 // --- Знакомство -------------------------------------------------------------
 // Спрашиваем один раз: после входа, а также при первом сохранении проекта —
 // сервер туда же и не пускает (428), потому что сохранённый проект уже чей-то.
-let profileState={complete:false,profile:{},sources:[]};
+let profileState={complete:false,profile:{},sources:[],known:false,reason:''};
 let profileAskedOnResult=false;
 
 function profileSources(){
@@ -30519,15 +30519,33 @@ async function saveProfile(){
  }catch(e){say(String(e.message||e))}
 }
 
+// Ответ сервера — единственный источник того, заполнено ли знакомство. Пока
+// его нет, мы не знаем ничего, и это ДРУГОЕ состояние, чем «не заполнено».
+//
+// Прежде разницы не было: отказ проверки сессии, пятисотка ядра, обрыв сети —
+// всё возвращало прежний profileState с complete:false, и вызывающий открывал
+// анкету. Человек, вошедший тем же аккаунтом с другого устройства, видел
+// «заполните знакомство» и читал это как «меня просят завести аккаунт заново»
+// (владелец, 25.08.2026). Анкета лежит на ядре по chat_id и переживает и
+// выкатку, и смену устройства — спрашивать её второй раз незачем.
 async function loadProfile(openIfEmpty){
  if(!activeSession())return profileState;
  try{
   const r=await fetch('/profile/get',{method:'POST',headers:{'Content-Type':'application/json'},
                                       body:JSON.stringify({session:activeSession()})});
-  if(!r.ok)return profileState;
+  if(!r.ok){
+   let detail='';
+   try{detail=((await r.json())||{}).detail||''}catch(e){}
+   profileState={...profileState,known:false,
+                 reason:'Знакомство не проверено: '+(detail||('сервер ответил '+r.status))};
+   return profileState;
+  }
   const d=await r.json();
-  profileState={complete:!!d.complete,profile:d.profile||{},sources:d.sources||[]};
- }catch(e){return profileState}
+  profileState={complete:!!d.complete,profile:d.profile||{},sources:d.sources||[],known:true,reason:''};
+ }catch(e){
+  profileState={...profileState,known:false,reason:'Знакомство не проверено: '+String(e.message||e)};
+  return profileState;
+ }
  if(openIfEmpty&&!profileState.complete)openProfile();
  return profileState;
 }
@@ -30576,7 +30594,8 @@ function askProfileOnResult(){
  if(profileAskedOnResult)return;           // один раз за сеанс, а не на каждый клик
  profileAskedOnResult=true;
  // Состояние могло не успеть приехать: сначала спрашиваем сервер, потом решаем.
- loadProfile(false).then(state=>{if(!state||!state.complete)openProfile()});
+ // Спрашиваем только когда знаем ответ: неотвеченная проверка — не «пусто».
+ loadProfile(false).then(state=>{if(state&&state.known&&!state.complete)openProfile()});
 }
 function calculateAndOpen(id){
  // В Telegram расчёт — это законченное действие: человек пришёл за цифрами в
@@ -35704,8 +35723,10 @@ function renderAccountBox(){
  box.innerHTML='<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">'+
   '<div><b>'+title+'</b>'+
   (details.length?'<div style="font-size:11px;color:#777;margin-top:2px">'+details.join(' · ')+'</div>':'')+
-  (web&&!(profileState&&profileState.complete)
-    ?'<div style="font-size:11px;color:#a05a00;margin-top:2px">Знакомство не заполнено — проекты не сохранятся.</div>':'')+
+  (web&&profileState&&profileState.known===false
+    ?'<div style="font-size:11px;color:#a05a00;margin-top:2px">'+escapeHtml(profileState.reason||'Знакомство не проверено')+'</div>'
+    :(web&&profileState&&profileState.known&&!profileState.complete
+      ?'<div style="font-size:11px;color:#a05a00;margin-top:2px">Знакомство не заполнено — проекты не сохранятся.</div>':''))+
   '</div>'+
   '<span style="margin-left:auto;display:flex;gap:10px">'+
   (web?'<button class="btn" onclick="openProfile()">Знакомство</button>':'')+
