@@ -207,6 +207,12 @@ def read_contracts(data: bytes) -> dict[str, Any]:
         if project:
             break
 
+    # Помесячный график поступлений на эскроу лежит колонками с датами в
+    # шапке. Их состав меняется от файла к файлу — растёт вправо по мере
+    # продаж, — поэтому берутся все, чья шапка разбирается как дата.
+    escrow_columns = [(i, _excel_date(name)) for i, name in enumerate(header)
+                      if _excel_date(name) is not None and i > (index.get("escrow_total") or 0)]
+
     out: list[dict[str, Any]] = []
     for row in rows[_HEADER_ROW:]:
         def cell(key: str) -> Any:
@@ -241,6 +247,11 @@ def read_contracts(data: bytes) -> dict[str, Any]:
             "escrow_paid": _number(cell("escrow_total")),
             # Имя покупателя наружу не идёт: остаётся только признак.
             "company_buyer": bool(_COMPANY.search(buyer)),
+            "escrow_schedule": [
+                {"month": when.strftime("%Y-%m"), "amount": _number(row[i])}
+                for i, when in escrow_columns
+                if i < len(row) and _number(row[i])
+            ],
         })
     return {"rows": out, "project": project, "missing": missing}
 
@@ -322,6 +333,9 @@ def payment_variant(text: str) -> str:
         return "рассрочка"
     if value in ("1", "1.0", "100%", "100"):
         return "100% оплата"
+    share = re.fullmatch(r"(\d{1,3})\s*%\s*оплат\w*", low)
+    if share:
+        return f"{share.group(1)}% оплата"
     return value
 
 
@@ -359,6 +373,44 @@ def _totals(rows: Iterable[dict[str, Any]]) -> dict[str, float]:
     }
 
 
+# Варианты оплаты, которые мы понимаем. Всё остальное — не «прочие условия
+# сделки», а дефект заполнения CRM (решение владельца, 25.08.2026): «10ПВ +10%
+# через три месяца+1», «5 млн на эскроу», «0.1» и пустая ячейка описывают не
+# рынок, а то, как заполнили карточку. Восемь строк по одной сделке читаются
+# как разнообразие условий; одна строка с числом сделок и суммой читается как
+# то, чем является, — и примеры показываются подсказкой при наведении.
+KNOWN_VARIANTS = ("рассрочка", "ипотека")
+CRM_DEFECT = "дефект заполнения CRM"
+_CRM_EXAMPLES = 5
+
+
+def _payment_structure(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    buckets: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        name = payment_variant(row["payment_variant"])
+        recognised = name in KNOWN_VARIANTS or bool(re.fullmatch(r"\d{1,3}% оплата", name))
+        key = name if recognised else CRM_DEFECT
+        item = buckets.setdefault(key, {
+            "variant": key, "name": key, "count": 0, "area": 0.0, "amount": 0.0,
+            "escrow": 0.0, "recognised": recognised, "examples": []})
+        item["count"] += 1
+        item["area"] += row["area"]
+        item["amount"] += row["amount"]
+        item["escrow"] += row["escrow_paid"]
+        if not recognised:
+            # Пример — то, что вписали в карточку; сколько их всего, видно по
+            # count, поэтому список ограничен и это сказано числом.
+            shown = item["examples"]
+            text = row["payment_variant"] or "пусто"
+            if text not in [x["text"] for x in shown] and len(shown) < _CRM_EXAMPLES:
+                shown.append({"text": text, "contract": row["contract"],
+                              "amount": row["amount"]})
+    for item in buckets.values():
+        item["filled"] = item["escrow"] / item["amount"] if item["amount"] else None
+        item["examples_shown"] = len(item["examples"])
+    return sorted(buckets.values(), key=lambda x: (x["name"] == CRM_DEFECT, -x["amount"]))
+
+
 def summarise(contracts: dict[str, Any], ledger: dict[str, Any] | None = None) -> dict[str, Any]:
     """Свод: динамика, структура оплаты, каналы, вознаграждение, расторжения."""
     rows = contracts.get("rows") or []
@@ -387,11 +439,7 @@ def summarise(contracts: dict[str, Any], ledger: dict[str, Any] | None = None) -
     by_product = [{"product": key, **_totals(items)} for key, items in products.items()]
     by_product.sort(key=lambda item: -item["amount"])
 
-    variants: dict[str, list] = {}
-    for row in rows:
-        variants.setdefault(payment_variant(row["payment_variant"]), []).append(row)
-    by_payment = [{"variant": key, **_totals(items)} for key, items in variants.items()]
-    by_payment.sort(key=lambda item: -item["amount"])
+    by_payment = _payment_structure(rows)
 
     channels: dict[str, list] = {}
     for row in rows:

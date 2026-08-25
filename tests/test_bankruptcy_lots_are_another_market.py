@@ -826,3 +826,67 @@ def test_the_page_shows_unrecognised_origin_as_its_own_group() -> None:
     page = AUCTIONS_PAGE if isinstance(AUCTIONS_PAGE, str) else str(AUCTIONS_PAGE)
     assert 'value="other">Прочие' in page
     assert "l.origin||'city'" not in page
+
+
+def test_a_short_page_is_not_the_last_page(monkeypatch) -> None:
+    """Размер страницы мы просим, а не назначаем.
+
+    На прод приехал сбор из ОДНОЙ страницы: сервис прислал десять карточек на
+    запрос с `size=50`, и сработала остановка «пришло меньше запрошенного —
+    значит последняя». Она верна только там, где размер соблюдают.
+    """
+    import auction_search.adapters.torgi_gov as mod
+    monkeypatch.setenv(FLAG, "1")
+    pages: list[list[dict]] = [
+        [dict(_real_card(), subjectRFCode="77", id=f"p{page}_{n}") for n in range(10)]
+        for page in range(3)
+    ] + [[]]
+    seen_pages: list[int] = []
+
+    def fake(self, page: int):
+        seen_pages.append(page)
+        return {"content": pages[page] if page < len(pages) else []}
+
+    monkeypatch.setattr(TorgiGovAdapter, "_fetch_page", fake)
+    adapter = TorgiGovAdapter()
+    lots = list(adapter.discover_moscow())
+    assert len(lots) == 30, adapter.last_report
+    assert seen_pages[:4] == [0, 1, 2, 3]
+    # Просили пятьдесят, приходит десять — это видно числом, а не по логу.
+    assert adapter.last_report["cards_per_page"] == 10
+
+
+def test_the_envelope_says_where_the_pages_end(monkeypatch) -> None:
+    """Конец выборки объявляет ответ, а не наша догадка о размере."""
+    import auction_search.adapters.torgi_gov as mod
+    monkeypatch.setenv(FLAG, "1")
+    asked: list[int] = []
+
+    def fake(self, page: int):
+        asked.append(page)
+        return {"content": [dict(_real_card(), subjectRFCode="77", id=f"x{page}")],
+                "totalPages": 2, "totalElements": 2}
+
+    monkeypatch.setattr(TorgiGovAdapter, "_fetch_page", fake)
+    adapter = TorgiGovAdapter()
+    lots = list(adapter.discover_moscow())
+    assert asked == [0, 1], asked
+    assert len(lots) == 2
+    assert adapter.last_report["total_elements"] == 2
+
+
+def test_a_standing_page_number_is_caught(monkeypatch) -> None:
+    """Сервис, игнорирующий `page`, вернул бы свои карточки сорок раз.
+
+    Список выглядел бы полным, а счётчики карточек выросли бы в сорок раз.
+    Повтор ловится до разбора, поэтому и числа остаются честными.
+    """
+    import auction_search.adapters.torgi_gov as mod
+    monkeypatch.setenv(FLAG, "1")
+    monkeypatch.setattr(TorgiGovAdapter, "_fetch_page",
+                        lambda self, page: {"content": [dict(_real_card(), subjectRFCode="77", id="same")]})
+    adapter = TorgiGovAdapter()
+    lots = list(adapter.discover_moscow())
+    assert [lot.source.external_lot_id for lot in lots] == ["same"]
+    assert adapter.last_report["pages"] == 1
+    assert "нумерация страниц не двигается" in adapter.last_report["reason"]

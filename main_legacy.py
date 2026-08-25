@@ -67,7 +67,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.19.96"
+VERSION = "0.19.97"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -19980,9 +19980,13 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
         # Body immediately before disclosure: what was repaid plus what stayed
         # outstanding. This is the comparison users expect at RVE; the peak
         # uncovered debt and the ending balance answer different questions.
-        rve_pf_before_repayment = (
-            rve_pf_shortfall
-            + max(0.0, float(rve_row.get("pf_repayment", 0.0) or 0.0)))
+        # Эскроу гасит СВОЙ ПФ, а излишек уходит в кассу проекта. Поэтому
+        # раскрытое и погашенное — разные величины, и без второй три числа
+        # рядом не вычитаются: у одной очереди эскроу больше её долга, у
+        # другой меньше, а в своде они складываются (владелец, 25.08.2026:
+        # «107,75 − 106,2 = 1,55, а показано 7,73»).
+        rve_pf_repayment = max(0.0, float(rve_row.get("pf_repayment", 0.0) or 0.0))
+        rve_pf_before_repayment = rve_pf_shortfall + rve_pf_repayment
 
         return {
             "rows": rows,
@@ -20041,6 +20045,7 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
             "rve_pf_before_repayment": rve_pf_before_repayment,
             "rve_escrow_release": rve_escrow_release,
             "rve_pf_shortfall": rve_pf_shortfall,
+            "rve_pf_repayment": rve_pf_repayment,
             "ending_interest_payable": pf_interest_payable,
             "pf_shortfall": pf_shortfall_total,
             # Датой, а не объектом: результат уезжает в JSON на страницу и в
@@ -21771,6 +21776,7 @@ def _aggregate_finance(results: list[dict[str, Any]]) -> dict[str, Any]:
             f.get("rve_pf_before_repayment", 0.0) for f in fs),
         "rve_escrow_release": sum(f.get("rve_escrow_release", 0.0) for f in fs),
         "rve_pf_shortfall": sum(f.get("rve_pf_shortfall", 0.0) for f in fs),
+        "rve_pf_repayment": sum(f.get("rve_pf_repayment", 0.0) for f in fs),
     }
 
 
@@ -34527,7 +34533,8 @@ function renderResult(){
   if(rveGap>500000){
    const scope=Number(r.summary.phase_count||0)>1?'В даты РВЭ очередей':'В момент РВЭ';
    rveWarning.style.display='block';
-   rveWarning.innerHTML=`<b>Эскроу не погашает ПФ полностью.</b> ${scope}: долг перед раскрытием ${money(rveDebt)}, раскрытый эскроу ${money(rveEscrow)}, остаток ПФ после раскрытия <b>${money(rveGap)}</b>. Этот остаток должен быть погашен последующими продажами или иным источником.`;
+   const rveRepaid=Number(rveFinance.rve_pf_repayment||0),rveEnding=Number(rveFinance.ending_pf||0);
+   rveWarning.innerHTML=`<b>Эскроу не погашает ПФ полностью.</b> ${scope}: долг перед раскрытием ${money(rveDebt)}, раскрыто эскроу ${money(rveEscrow)}, из них на погашение ПФ ${money(rveRepaid)}, остаток ПФ <b>${money(rveGap)}</b>. Остаток гасится продажами после ввода — они идут без эскроу. ${rveEnding>500000?`На конец горизонта непогашенным остаётся <b>${money(rveEnding)}</b> — модель считает это дефолтом.`:'К концу горизонта долг погашен.'}`;
   }else{
    rveWarning.style.display='none';rveWarning.textContent='';
   }
@@ -34678,7 +34685,15 @@ function renderResult(){
   row('Пиковая (непокрытая эскроу) задолженность ПФ',money(r.report.financing.pf_uncovered_peak))+
   row('Долг ПФ перед раскрытием в РВЭ',money(r.report.financing.rve_pf_before_repayment))+
   row('Раскрытый эскроу в РВЭ',money(r.report.financing.rve_escrow_release))+
+  // Раскрытое и погашенное — разные величины: эскроу гасит СВОЙ ПФ, излишек
+  // уходит в кассу. Без этой строки три числа рядом не вычитаются.
+  row('Из него на погашение ПФ',money(r.report.financing.rve_pf_repayment))+
   row('Остаток ПФ после раскрытия в РВЭ',money(r.report.financing.rve_pf_shortfall))+
+  // Плашка выше говорит «остаток гасится последующими продажами», а число,
+  // отвечающее «погасился ли», стояло только в PDF и в книге. На экране его
+  // не было вовсе, и проверить обещание было нечем (владелец, 25.08.2026).
+  row('Непогашенный долг ПФ на конец проекта'+(Number(r.report.financing.ending_pf||0)>0?' · дефолт':''),
+      money(r.report.financing.ending_pf))+
   (r.report.financing.peak_total_debt!=null?row('Максимальный совокупный долг',money(r.report.financing.peak_total_debt)):'')+
   row('Текущая ключевая ставка',pct(r.report.financing.current_key_rate))+
   row('Спред БРИДЖ',pct(r.report.financing.bridge_spread))+

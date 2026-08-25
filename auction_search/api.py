@@ -14,7 +14,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from auction_search.adapters import InvestMoscowDiscoveryAdapter, LotOnlineAdapter, RoseltorgAdapter
-from auction_search.adapters.torgi_gov import TorgiGovAdapter
+from auction_search.adapters.torgi_gov import TorgiGovAdapter, trust_report as torgi_trust_report
 from auction_search.bridge import auction_page_with_handoff, install_page_bridge
 from auction_search.developaid_mapper import build_developaid_seed
 from auction_search.documents import DocumentExtractionError
@@ -284,8 +284,15 @@ def install(app: FastAPI) -> None:
                     "discovery_access": "public_api",
                     "note": ("Банкротные и залоговые лоты: имущественные комплексы, "
                              "здания, незавершёнка. Городские площадки их не видят. "
-                             "Коды видов торгов не сверены живым ответом — источник "
-                             "включается переменной TORGI_GOV_DISCOVERY=1."),
+                             "Серверного фильтра региона у API нет — отбираем сами "
+                             "по subjectRFCode; выключается TORGI_GOV_DISCOVERY=0."),
+                    # Сертификат torgi.gov.ru выпущен Минцифры, и обычным
+                    # хранилищем корней он не проверяется. Корни лежат в
+                    # `certs` на машине, а не в репозитории. Пустой список
+                    # здесь — самая частая причина «источник включён, а лотов
+                    # нет»: соединение обрывается на проверке цепочки, и без
+                    # этой строки причину пришлось бы искать в логе.
+                    "trusted_roots": torgi_trust_report(),
                 },
                 {
                     "id": "roseltorg",
