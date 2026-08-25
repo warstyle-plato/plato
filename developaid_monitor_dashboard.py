@@ -366,10 +366,13 @@ def _article_waterfall(
     article_rows: list[dict[str, Any]] = []
 
     first_shortfall: dict[str, datetime.date] = {}
+    article_reserve_take: dict[str, float] = {}
+    article_unfunded: dict[str, float] = {}
     for month in months:
         month_key = month.isoformat()
         month_need_total = 0.0
         month_shortfall = 0.0
+        month_shortages: dict[str, float] = {}
         for code, item in articles.items():
             need = max(0.0, float((item.get("monthly_need") or {}).get(month_key, 0.0) or 0.0))
             month_need_total += need
@@ -378,8 +381,10 @@ def _article_waterfall(
             shortage = max(0.0, need - own_funding)
             state[code] = max(0.0, available - need)
             month_shortfall += shortage
-            if shortage > 0 and code not in first_shortfall:
-                first_shortfall[code] = month
+            if shortage > 0:
+                month_shortages[code] = shortage
+                if code not in first_shortfall:
+                    first_shortfall[code] = month
 
         monthly_need[month_key] = month_need_total
         before_need = cumulative_reserve_need
@@ -395,6 +400,15 @@ def _article_waterfall(
         monthly_unfunded[month_key] = uncovered
         monthly_reserve_balance[month_key] = reserve_balance
 
+        # В месяц, когда резерва на всех не хватает, покрытая доля у всех
+        # статей одна: резерв — общий, отдельной очереди статей внутри
+        # месяца в ДДС нет.
+        covered_share = draw / month_shortfall if month_shortfall > 0 else 0.0
+        for code, shortage in month_shortages.items():
+            covered = shortage * covered_share
+            article_reserve_take[code] = article_reserve_take.get(code, 0.0) + covered
+            article_unfunded[code] = article_unfunded.get(code, 0.0) + (shortage - covered)
+
         if reserve_exhaustion is None and month_shortfall > 0 and cumulative_reserve_need > reserve:
             reserve_exhaustion = _interpolated_crossing(
                 month, month_shortfall, before_need, reserve
@@ -404,6 +418,10 @@ def _article_waterfall(
         limit = float(item.get("rss_limit") or 0.0)
         need_total = sum(max(0.0, float(v or 0.0))
                          for v in (item.get("monthly_need") or {}).values())
+        first_month = first_shortfall.get(code)
+        reserve_left_after_first = None
+        if first_month is not None:
+            reserve_left_after_first = monthly_reserve_balance.get(first_month.isoformat())
         article_rows.append({
             "code": code,
             "name": item.get("name", ""),
@@ -413,6 +431,9 @@ def _article_waterfall(
             "opening_limit": max(0.0, opening_raw.get(code, 0.0)),
             "remaining_limit": state.get(code, 0.0),
             "first_reserve_month": monitor._iso(first_shortfall.get(code)),
+            "reserve_take": article_reserve_take.get(code, 0.0),
+            "unfunded_take": article_unfunded.get(code, 0.0),
+            "reserve_left_after_first": reserve_left_after_first,
         })
 
     return {
