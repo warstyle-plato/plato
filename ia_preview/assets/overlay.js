@@ -260,30 +260,11 @@
     }
   }
 
-  /* resetAll страницы забывает применённый файл ГлавАПУ: превью с
-     соцплатежом остаётся на экране, переменная импорта — в памяти, пересчёт
-     не запускается, и страница выглядит несброшенной (владелец нажал сброс и
-     спросил, почему всё осталось). Баг живёт и на проде — здесь закрыт
-     обёрткой, в main уйдёт отдельной правкой. */
-  function wrapReset() {
-    var original = window.resetAll;
-    if (typeof original !== 'function') { missing.push('функция resetAll не найдена'); return; }
-    window.resetAll = function () {
-      var out = original.apply(this, arguments);
-      try {
-        if (typeof glavapuImport !== 'undefined') glavapuImport = null;
-        var preview = document.getElementById('glavapuPreview');
-        if (preview) preview.style.display = 'none';
-        var status = document.getElementById('glavapuStatus');
-        if (status) status.textContent = 'Введите кадастровый номер выше — ТЭП посчитается сам.';
-        dirty = 0;
-        window.calculate();
-        annotateTep();
-        openSection('project', 'iaSite');
-      } catch (error) { /* сброс важнее косметики */ }
-      return out;
-    };
-  }
+  /* Сброс страницы был неполным, и слой закрывал это обёрткой: снимал
+     карточку ГлавАПУ и пересчитывал модель после resetAll. Правка ушла в
+     страницу целиком — «Сбросить» теперь поднимает окно заново, — и обёртка
+     стала второй реализацией того же: она успевала отправить запрос расчёта,
+     который перезагрузка тут же обрывала. */
 
   /* Сброс подтверждается: он стирает весь проект одним кликом.
      Обёртка ставится на onclick, чтобы не переписывать resetAll. */
@@ -417,6 +398,18 @@
   // ключ поиска на случай, когда нормализованная форма DaData не распознана.
   var lastTypedQuery = '';
 
+  /* Уровень «конкретный объект» против «улица или город»: по первому клик
+     запускает расчёт, по второму — только уточняет строку. Типы взяты из
+     ФИАС, и порядок в переборе не косметический — длинные стоят раньше
+     коротких, иначе «влд» съедается «вл», а «двлд» — «д».
+
+     Здесь и жила вторая половина «почему он не ищет владение»: в списке
+     стояло `вл`, а ФИАС пишет `влд`. «влд 12» не опознавалось объектом, клик
+     по нему дописывал запятую и ждал уточнения — как по клику на «Мытищи».
+     Проверять такое перечислением в регулярке нельзя без теста: строка
+     выглядит правдоподобно и молчит. */
+  var HOUSE_LEVEL_RE = /,\s*(двлд|влд|вл|дом|д|зд|уч|стр|корп|к)[\s.]/;
+
   function hideSuggest() { if (suggestBox) suggestBox.style.display = 'none'; }
 
   function renderSuggestItems(items) {
@@ -448,7 +441,7 @@
         // Город или улица — только уточняем запрос: клик по «Мытищи»
         // вставлял координаты центра, и точечный поиск собирал 20 случайных
         // участков вокруг.
-        var houseLevel = /,\s*(д|уч|вл|двлд)[\s.]/.test(item.label || '');
+        var houseLevel = HOUSE_LEVEL_RE.test(item.label || '');
         if (item.cadastral_number) {
           suggestField.value = item.cadastral_number;
           hideSuggest();
@@ -1471,7 +1464,6 @@
   function boot() {
     step('лента preview', ribbon);
     step('шапка', rebuildHeader);
-    step('сброс чистит импорт', wrapReset);
     step('подтверждение сброса', guardReset);
     step('панель участка', splitSite);
     step('подсказки адресов', wireSuggest);
