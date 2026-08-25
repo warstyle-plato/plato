@@ -55,11 +55,18 @@ def key_problem() -> str:
 
 
 def key_accepted(supplied: str) -> bool:
-    """Ключ верен? Пустой настроенный ключ не принимает ничего."""
+    """Ключ верен? Пустой настроенный ключ не принимает ничего.
+
+    Сравниваем БАЙТАМИ: `compare_digest` отказывается работать со строками, где
+    есть не-ASCII, и падает `TypeError`. Ключ с кириллицей — вещь негодная (в
+    заголовке HTTP он не проедет, и `key_problem` говорит это словами), но
+    `/cabinet/login` звал сравнение напрямую и отвечал пятисоткой там, где сам
+    кабинет объясняет причину. Отказ и поломка выглядели одинаково.
+    """
     expected = cabinet_key()
     if not expected or not supplied:
         return False
-    return hmac.compare_digest(str(supplied), expected)
+    return hmac.compare_digest(str(supplied).encode("utf-8"), expected.encode("utf-8"))
 
 
 def authorised(request: Request) -> bool:

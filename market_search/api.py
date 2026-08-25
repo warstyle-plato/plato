@@ -18,6 +18,7 @@ from .http import RemoteServiceError
 from .service_v6 import MarketDiscoveryService
 from . import board
 from .plan import PlanNotFound, parse_plan
+from . import contracting
 from . import report_pdf
 from .subject import SubjectNotFound
 
@@ -415,6 +416,46 @@ def install(app: FastAPI) -> MarketDiscoveryService:
                 got.setdefault("board_missing", []).append(str(exc))
             except Exception as exc:  # noqa: BLE001
                 got.setdefault("board_missing", []).append(f"{key}: {exc}")
+        return got
+
+    @app.post("/cabinet/contracting")
+    async def cabinet_contracting(request: Request) -> dict[str, Any]:
+        """Свод продаж действующего проекта из файла ЦФ.
+
+        Тело запроса — сам файл, как у `/cabinet/plan`: multipart тянет
+        python-multipart, а книга приходит одна и целиком.
+
+        Один файл — один разбор. ЦФ несёт и «Контрактацию», и «1С_Факт», и
+        сверка между ними идёт этим же вызовом: просить загрузить один файл
+        дважды значит однажды получить два разных файла и показать их как
+        один проект.
+
+        Проводки — не ошибка, если их нет: у выгрузки без листа «1С_Факт»
+        есть контрактация, и это законный свод. Поэтому неудача идёт причиной
+        рядом, а не пятисоткой поверх удавшегося разбора.
+        """
+        cabinet_module.require_cabinet(request)
+        data = await request.body()
+        if not data:
+            raise HTTPException(status_code=422, detail="Пустой файл")
+        if len(data) > 60 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="Файл больше 60 МБ — это не выгрузка ЦФ")
+        try:
+            contracts = await run_in_threadpool(contracting.read_contracts, data)
+        except KeyError as exc:
+            raise HTTPException(status_code=422, detail=str(exc).strip('"')) from exc
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(
+                status_code=422, detail=f"Файл не разобран: {type(exc).__name__}: {exc}") from exc
+        ledger: dict[str, Any] = {}
+        ledger_missing = ""
+        try:
+            ledger = await run_in_threadpool(contracting.read_ledger, data)
+        except Exception as exc:  # noqa: BLE001
+            ledger_missing = f"Проводки 1С не прочитаны: {exc}"
+        got = contracting.summarise(contracts, ledger)
+        if ledger_missing:
+            got.setdefault("missing", []).append(ledger_missing)
         return got
 
     @app.post("/market/report")
