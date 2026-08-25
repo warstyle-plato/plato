@@ -67,7 +67,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.19.89"
+VERSION = "0.19.90"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -29264,7 +29264,7 @@ details.cadastral-box>summary::marker{color:#888}
            вовсе (замечание владельца, 18.08.2026). Кнопка стоит в шапке, пока
            никто не вошёл, и прячется после входа. -->
       <button class="btn dark" id="loginButton" style="display:none" onclick="openLogin()">Войти через Telegram</button>
-      <button class="btn" onclick="resetAll()">Сбросить</button>
+      <button class="btn" onclick="resetProject()">Сбросить</button>
       <a class="btn" href="/guide">Руководство</a>
       <button class="btn dark" onclick="calculateAndOpen('report')">Пересчитать модель</button>
     </div>
@@ -30337,7 +30337,15 @@ function makeDefaultPhasing(count=1){
 // продукт мёртв (телефон владельца, 23.08.2026).
 function cloneValue(value){
  if(typeof structuredClone==='function'){
-  try{return cloneValue(value)}catch(e){}
+  // Здесь стояло `cloneValue(value)` — функция звала саму себя. Опечатка не
+  // падала и не молчала наполовину: рекурсия срывала стек, RangeError ловился
+  // пустым catch, следом на исчерпанном стеке падал и запасной путь через
+  // JSON — и последний catch возвращал ТОТ ЖЕ объект. Значит `inputs` был
+  // самим `INPUT_DEFAULT`, а `tep` — самим `TEP_DEFAULT`: любая правка
+  // вводных переписывала умолчания, и «Сбросить» восстанавливал уже
+  // переписанное. Отсюда «ТЭП остаются после сброса» — чинить список полей
+  // было бесполезно, восстанавливать было нечего.
+  try{return structuredClone(value)}catch(e){}
  }
  // Запасной путь честно ограничен: вводные, ТЭП и ставки — простые данные,
  // ровно те же, что уходят в файл настроек через JSON.
@@ -35913,6 +35921,79 @@ async function deleteProject(id){
  catch(e){alert(String(e.message||e))}
 }
 
+// Состояние страницы, которое НЕ принадлежит проекту, — и потому сбросу не
+// подлежит: сессия и вход, анкета, номера запусков и таймеры. Номер запуска
+// сбрасывать нельзя отдельно: на нём держится защита от опоздавшего ответа —
+// обнулив его, мы пустили бы ответ на прошлый запрос в чистый проект.
+// Справочник Подмосковья (цены округов, документ Кд) — тоже не проект: он
+// приезжает с сервера один раз, и вычистить его значит ослепить расчёт МО.
+//
+// Список объявлен здесь, рядом со сбросом, а не в тесте: тест берёт его
+// отсюда и требует, чтобы всякая ОСТАЛЬНАЯ переменная страницы сбросом
+// обнулялась. Следующая переменная попадёт в проверку тем, что появилась, —
+// а не тем, что о ней вспомнили. Список, ведомый памятью, уже подводил
+// трижды: после «Сбросить» оставались то поля Подмосковья, то очередность,
+// то посчитанный отчёт прошлого проекта, и человек видел одно — «не работает».
+const NON_PROJECT_STATE=['feedbackShown','feedbackCalcs','feedbackReportSeconds','feedbackReportTimer',
+ 'profileState','profileAskedOnResult','calcRequiresLogin','webLoginBusy',
+ 'projectsAdminKey','projectsStorageReady','projectsAcceptsKey','projectsAcceptsLogin',
+ 'telegramResultSent','telegramCalcOverrides','telegramEditSubmitting','telegramFinishing',
+ 'aiBusy','moAutoBusy','moRecalcTimer','sensitivityBusy','moDistrictPrices','moKdDocument',
+ 'landScreeningRun','tepRunSequence'];
+
+function resetProjectState(){
+ // Данные проекта, которые живут переменными страницы, а не полями формы.
+ // Их не видно на экране до тех пор, пока они не всплывут: подпись «Кладовые
+ // 3 200 м²» под строкой паркинга, жалоба на пропорции ТЭП, разговор Платона
+ // о прошлом проекте, отчёт чувствительности чужой площадки.
+ lastResult=null;
+ aiHistory=[];aiProposals=[];aiIntake=null;
+ territoryCleared=[];tepRatioComplaint='';phaseTepEditWarning='';storageInsideParking=0;
+ Object.keys(tepRefillNote).forEach(key=>{delete tepRefillNote[key]});
+ moLastQuery='';moAutoApartments=null;
+ presetPreview=null;sensitivityOptions=null;sensitivityReport=null;sensitivityPicked=null;
+}
+
+// Посчитанное остаётся на экране, пока его не сотрут: renderResult при пустом
+// результате выходит сразу и ничего не перерисовывает. Поэтому после сброса
+// вкладка «Отчёт» показывала ТЭП, выручку и LLCR прошлого проекта — и это
+// главное, что человек называл «сброс не работает».
+//
+// Стирается по строению, а не по списку имён: сгенерированное лежит в телах
+// таблиц с id, в плитках и в оглавлении. Статичная разметка не трогается, и
+// вставленное слоем перестройки — тоже: оно лежит выше, прямо в панели.
+function blankResultSurfaces(){
+ ['report','finance','calendar','sensitivity'].forEach(id=>{
+  const panel=document.getElementById(id);if(!panel)return;
+  panel.querySelectorAll('table').forEach(table=>{
+   const generated=table.querySelectorAll('tbody[id]');
+   if(generated.length)generated.forEach(body=>{body.innerHTML=''});
+   else if(table.id)table.innerHTML='';
+  });
+  panel.querySelectorAll('.kpis,.report-toc').forEach(node=>{node.innerHTML=''});
+ });
+ const meta=document.getElementById('pdfReportMeta');if(meta)meta.textContent='—';
+}
+
+// Кнопка «Сбросить» начинает проект заново, а не чистит его по списку.
+// Три захода подряд список чинили — и каждый раз оставалось что-то ещё:
+// поля Подмосковья, очередность, применённый файл ГлавАПУ, посчитанный отчёт.
+// Перезагрузка страницы не имеет списка вовсе, поэтому и обойти его нечем:
+// хранилище чистится, адрес приводится к чистому, окно поднимается заново.
+//
+// Мини-приложение перезагружать нельзя: бот открывает его ссылкой с сессией в
+// хеше, и поднявшаяся заново страница загрузит из этой сессии тот же проект —
+// сброс отменил бы сам себя. Там остаётся сброс на месте, а он полный.
+function resetProject(){
+ resetAll();
+ if(isTelegramWebApp())return;
+ try{localStorage.removeItem('plato_v04')}catch(e){}
+ // Груз из торгов и КРТ ждёт в sessionStorage и применяется при загрузке:
+ // не сняв его, мы перезагрузились бы в ту же площадку.
+ try{sessionStorage.removeItem('developaid.auction.pending.v1')}catch(e){}
+ try{location.replace(location.pathname)}catch(e){location.reload()}
+}
+
 function resetTepControls(){
  // Сброс чистил данные и не перерисовывал экран. renderTep() не трогает ни
  // панель участка, ни очередность: площадь 22,423 га и посадка 18 000 после
@@ -35968,6 +36049,8 @@ function resetAll(){
  const landPreview=document.getElementById('landPreview');if(landPreview)landPreview.style.display='none';
  const moQuery=document.getElementById('moQuery');if(moQuery)moQuery.value='';
  resetTepControls();
+ resetProjectState();
+ blankResultSurfaces();
  // Сброс снимает и карточки импорта с их данными: прежде glavapuImport
  // переживал сброс, и «чистый» проект применял ТЭП удалённого участка.
  dropGlavapuPreview();
