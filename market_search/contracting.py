@@ -207,6 +207,12 @@ def read_contracts(data: bytes) -> dict[str, Any]:
         if project:
             break
 
+    # Помесячный график поступлений на эскроу лежит колонками с датами в
+    # шапке. Их состав меняется от файла к файлу — растёт вправо по мере
+    # продаж, — поэтому берутся все, чья шапка разбирается как дата.
+    escrow_columns = [(i, _excel_date(name)) for i, name in enumerate(header)
+                      if _excel_date(name) is not None and i > (index.get("escrow_total") or 0)]
+
     out: list[dict[str, Any]] = []
     for row in rows[_HEADER_ROW:]:
         def cell(key: str) -> Any:
@@ -241,6 +247,11 @@ def read_contracts(data: bytes) -> dict[str, Any]:
             "escrow_paid": _number(cell("escrow_total")),
             # Имя покупателя наружу не идёт: остаётся только признак.
             "company_buyer": bool(_COMPANY.search(buyer)),
+            "escrow_schedule": [
+                {"month": when.strftime("%Y-%m"), "amount": _number(row[i])}
+                for i, when in escrow_columns
+                if i < len(row) and _number(row[i])
+            ],
         })
     return {"rows": out, "project": project, "missing": missing}
 
@@ -428,4 +439,88 @@ def summarise(contracts: dict[str, Any], ledger: dict[str, Any] | None = None) -
         "sales_bonus_paid": sum(r["sales_bonus_paid"] for r in rows),
         "company_buyers": sum(1 for r in rows if r["company_buyer"]),
         "terminated": ledger.get("terminated") or [],
+    }
+
+
+def summarise(contracts: dict[str, Any], ledger: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Четыре блока свода: динамика, структура, каналы, вознаграждение.
+
+    Считается один раз и уходит на экран, в PDF и в вопрос Платону готовыми
+    числами: второй счёт той же выручки однажды разошёлся бы с первым, и обе
+    поверхности выглядели бы верными.
+    """
+    rows = contracts.get("rows") or []
+    ledger = ledger or {}
+    money = lambda key: sum(float(row.get(key) or 0) for row in rows)  # noqa: E731
+    sold, escrow = money("amount"), money("escrow_paid")
+
+    dynamics: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        month = dynamics.setdefault(row["month"], {
+            "month": row["month"], "units": 0.0, "area": 0.0, "amount": 0.0,
+            "escrow": 0.0, "by_product": {}})
+        month["units"] += row["units"]
+        month["area"] += row["area"]
+        month["amount"] += row["amount"]
+        month["by_product"][row["product"]] = month["by_product"].get(row["product"], 0.0) + row["units"]
+        for step in row.get("escrow_schedule") or []:
+            paid = dynamics.setdefault(step["month"], {
+                "month": step["month"], "units": 0.0, "area": 0.0, "amount": 0.0,
+                "escrow": 0.0, "by_product": {}})
+            paid["escrow"] += step["amount"]
+
+    def grouped(key: Any) -> list[dict[str, Any]]:
+        buckets: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            name = key(row)
+            item = buckets.setdefault(name, {
+                "name": name, "count": 0, "area": 0.0, "amount": 0.0,
+                "escrow": 0.0, "fee": 0.0, "fee_unset": 0})
+            item["count"] += 1
+            item["area"] += row["area"]
+            item["amount"] += row["amount"]
+            item["escrow"] += row["escrow_paid"]
+            item["fee"] += row["broker_fee"]
+            # Ноль при названном брокере — «не заполнено», а не «даром».
+            if row["broker"] and row["broker_rate"] is None and not row["broker_fee"]:
+                item["fee_unset"] += 1
+        for item in buckets.values():
+            item["filled"] = item["escrow"] / item["amount"] if item["amount"] else None
+            item["price_per_sqm"] = item["amount"] / item["area"] if item["area"] else None
+        return sorted(buckets.values(), key=lambda x: -x["amount"])
+
+    channels = grouped(lambda row: row["broker"] or "— напрямую")
+    broker_rows = [row for row in rows if row["broker"]]
+    broker_sold = sum(row["amount"] for row in broker_rows)
+    broker_escrow = sum(row["escrow_paid"] for row in broker_rows)
+    broker_fee = sum(row["broker_fee"] for row in broker_rows)
+    own_sold = sold - broker_sold
+    bonus = money("sales_bonus_paid")
+
+    return {
+        "project": contracts.get("project") or "",
+        "contracts": len(rows),
+        "sold": sold,
+        "area": money("area"),
+        "escrow_paid": escrow,
+        "filled_share": escrow / sold if sold else None,
+        "dynamics": [dynamics[key] for key in sorted(dynamics)],
+        "by_product": grouped(lambda row: row["product"]),
+        "by_payment": grouped(lambda row: payment_variant(row["payment_variant"])),
+        "channels": channels,
+        # Обе базы — на СВОЕЙ выборке. Делить вознаграждение на эскроу всего
+        # проекта значит считать по одним сделкам, а делить на другие: там
+        # лежит эскроу прямых продаж, где комиссии нет вовсе.
+        "brokers": {
+            "sold": broker_sold, "escrow": broker_escrow, "fee": broker_fee,
+            "share_of_sales": broker_fee / broker_sold if broker_sold else None,
+            "share_of_escrow": broker_fee / broker_escrow if broker_escrow else None,
+            "share_of_portfolio": broker_sold / sold if sold else None,
+        },
+        "own_sales": {
+            "sold": own_sold, "bonus_paid": bonus,
+            "share_of_sales": bonus / own_sold if own_sold else None,
+        },
+        "terminated": ledger.get("terminated") or [],
+        "missing": contracts.get("missing") or [],
     }
