@@ -15,7 +15,7 @@ AUCTIONS_PAGE = r'''<!doctype html>
    кнопка, системный шрифт (замечание владельца, 23.08.2026). */
 :root{--bg:#f2f2ef;--panel:#fff;--text:#171717;--muted:#6b6b6b;--line:#dedede;--soft:#f7f7f5;--accent:#111;--ok:#1f6b3b;--warn:#8a5a00;--bad:#a33}
 
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}.shell{max-width:1540px;margin:0 auto;background:var(--panel);min-height:100vh}.brandbar{padding:22px 34px 0;background:var(--panel)}.brandbar img{display:block;width:min(360px,58vw);height:auto}.brandline{height:8px;background:#050505;margin-top:12px}.head{display:flex;justify-content:space-between;gap:18px;align-items:flex-end;flex-wrap:wrap;padding:18px 34px 12px;border-bottom:1px solid var(--line)}.head h1{font-size:22px;font-weight:620;letter-spacing:.01em;line-height:1.1;margin:0}.head p{margin:5px 0 0;color:var(--muted);font-size:13px}.content{padding:24px 34px 40px}.badge{display:inline-flex;align-items:center;border:1px solid var(--line);border-radius:0;padding:6px 10px;font-size:12px;background:var(--panel)}.filters{display:grid;grid-template-columns:1fr 1fr 1fr minmax(220px,1.5fr) auto;gap:9px;margin-bottom:14px}select,input,button{min-height:42px;border:1px solid var(--line);border-radius:0;background:var(--panel);color:var(--text);padding:0 11px;font:inherit}button{cursor:pointer;font-weight:700;border-color:#111}button.primary{background:var(--accent);color:#fff}button:disabled{opacity:.45;cursor:not-allowed}.filter-actions{grid-column:1/-1;display:flex;gap:9px;justify-content:flex-end;flex-wrap:wrap}.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:9px;margin-bottom:14px}.stat{border:1px solid var(--line);border-radius:0;background:var(--panel);padding:12px}.stat b{font-size:22px;display:block}.stat span{font-size:12px;color:var(--muted)}.coverage{display:none}.layout{display:grid;grid-template-columns:minmax(0,1.7fr) minmax(360px,.8fr);gap:12px}.tablewrap,.side{border:1px solid var(--line);background:var(--panel);border-radius:0;overflow:hidden}.tablewrap{overflow:auto;min-height:420px}table{border-collapse:collapse;width:100%;min-width:900px}th{position:sticky;top:0;background:var(--panel);z-index:1;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.045em;text-align:left;padding:11px 12px;border-bottom:1px solid var(--line)}td{padding:13px 12px;border-bottom:1px solid var(--line);vertical-align:top}tbody tr{cursor:pointer}tbody tr:hover{background:var(--soft)}.lotname{font-weight:700;margin-bottom:4px;max-width:360px}.cad{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted)}.tag{display:inline-flex;padding:4px 7px;border-radius:0;background:var(--soft);font-size:11px;font-weight:700}.tag.ok{color:var(--ok)}.tag.warn{color:var(--warn)}.tag.new{background:var(--accent);color:#fff;margin-left:7px;vertical-align:2px}.askcard{border:1px solid var(--line);background:var(--panel);padding:16px;margin-top:12px}.askcard h2{font-size:16px;margin:0 0 6px}.askhint{color:var(--muted);font-size:12px;margin-bottom:10px}.chips{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:10px}.chips button{min-height:34px;font-weight:500;font-size:12px;padding:0 10px;border-color:var(--line)}#askText{width:100%;min-height:74px;padding:9px 11px;resize:vertical;font:inherit}#askOut{margin-top:10px}.plato-answer{border-left:3px solid var(--accent);background:var(--soft);padding:11px 13px;font-size:13px;line-height:1.55;white-space:pre-wrap}details.fold{border:1px solid var(--line);margin-top:10px}details.fold>summary{cursor:pointer;padding:9px 11px;font-size:12px;font-weight:750;color:var(--muted);list-style:none;display:flex;justify-content:space-between;gap:10px}details.fold>summary::-webkit-details-marker{display:none}details.fold>summary:after{content:'развернуть';font-weight:500}details.fold[open]>summary:after{content:'свернуть'}details.fold>summary:hover{background:var(--soft)}.foldbody{padding:0 11px 11px}.ratio-row{display:grid;grid-template-columns:1fr auto;gap:7px;margin-bottom:7px}.brand{display:block;line-height:0}.legal-footer{display:flex;gap:18px;flex-wrap:wrap;margin:0 34px;padding:14px 0 22px;font-size:11px;color:var(--muted);border-top:1px solid var(--line)}.legal-footer a{color:var(--muted)}.plato-footer{margin:0;padding:0 34px;line-height:0}.plato-footer img{width:100%;height:auto;display:block}.money{font-weight:750;white-space:nowrap}.pbatt{position:relative;display:block;height:14px;margin-top:4px;border:1px solid var(--line);border-radius:0;background:var(--soft);overflow:hidden}.pbatt-fill{position:absolute;left:0;top:0;height:100%}.pbatt-pct{position:absolute;left:5px;top:0;font-size:10px;font-weight:750;color:#18202a;text-shadow:0 0 3px #fff,0 0 3px #fff}.side{padding:16px;min-height:420px}.side h2{font-size:18px;margin:0 0 4px}.side .sub{color:var(--muted);font-size:12px;margin-bottom:14px}.empty{display:grid;place-items:center;color:var(--muted);min-height:360px;text-align:center;padding:25px}.kv{display:grid;grid-template-columns:145px 1fr;gap:7px 10px;padding:10px 0;border-bottom:1px solid var(--line)}.kv div:nth-child(odd){color:var(--muted)}.actions{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0}.notice{border-radius:0;padding:10px 11px;background:var(--soft);font-size:12px;margin:10px 0}.notice.warn{color:var(--warn)}.section{margin-top:16px}.section h3{font-size:13px;margin:0 0 7px}.items{display:grid;gap:6px}.item{border:1px solid var(--line);border-radius:0;padding:8px 9px;font-size:12px}.item b{display:block;margin-bottom:2px}.source{font-size:11px;color:var(--muted);margin-top:4px}.status{font-size:12px;color:var(--muted);margin-left:auto}.spinner{display:inline-block;width:13px;height:13px;border:2px solid var(--line);border-top-color:var(--text);border-radius:50%;animation:spin .7s linear infinite;vertical-align:-2px;margin-right:5px}@keyframes spin{to{transform:rotate(360deg)}}@media(max-width:950px){.filters{grid-template-columns:1fr 1fr}.stats{grid-template-columns:1fr 1fr}.layout{grid-template-columns:1fr}.side{min-height:0}.brandbar{padding:14px 16px 0}.head{padding:14px 16px 10px}.tabs{padding:0 16px;gap:18px}.content{padding:16px 16px 28px}.plato-footer{padding:0 16px}.legal-footer{margin:0 16px}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif}.shell{max-width:1540px;margin:0 auto;background:var(--panel);min-height:100vh}.brandbar{padding:22px 34px 0;background:var(--panel)}.brandbar img{display:block;width:min(360px,58vw);height:auto}.brandline{height:8px;background:#050505;margin-top:12px}.head{display:flex;justify-content:space-between;gap:18px;align-items:flex-end;flex-wrap:wrap;padding:18px 34px 12px;border-bottom:1px solid var(--line)}.head h1{font-size:22px;font-weight:620;letter-spacing:.01em;line-height:1.1;margin:0}.head p{margin:5px 0 0;color:var(--muted);font-size:13px}.content{padding:24px 34px 40px}.badge{display:inline-flex;align-items:center;border:1px solid var(--line);border-radius:0;padding:6px 10px;font-size:12px;background:var(--panel)}.filters{display:grid;grid-template-columns:1fr 1fr 1fr minmax(220px,1.5fr) auto;gap:9px;margin-bottom:14px}select,input,button{min-height:42px;border:1px solid var(--line);border-radius:0;background:var(--panel);color:var(--text);padding:0 11px;font:inherit}button{cursor:pointer;font-weight:700;border-color:#111}button.primary{background:var(--accent);color:#fff}button:disabled{opacity:.45;cursor:not-allowed}.filter-actions{grid-column:1/-1;display:flex;gap:9px;justify-content:flex-end;flex-wrap:wrap}.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:9px;margin-bottom:14px}.stat{border:1px solid var(--line);border-radius:0;background:var(--panel);padding:12px}.stat b{font-size:22px;display:block}.stat span{font-size:12px;color:var(--muted)}.coverage{display:none}.layout{display:grid;grid-template-columns:minmax(0,1.7fr) minmax(360px,.8fr);gap:12px}.tablewrap,.side{border:1px solid var(--line);background:var(--panel);border-radius:0;overflow:hidden}.tablewrap{overflow:auto;min-height:420px}table{border-collapse:collapse;width:100%;min-width:900px}th{position:sticky;top:0;background:var(--panel);z-index:1;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.045em;text-align:left;padding:11px 12px;border-bottom:1px solid var(--line)}td{padding:13px 12px;border-bottom:1px solid var(--line);vertical-align:top}tbody tr{cursor:pointer}tbody tr:hover{background:var(--soft)}.lotname{font-weight:700;margin-bottom:4px;max-width:360px}.cad{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted)}.tag{display:inline-flex;padding:4px 7px;border-radius:0;background:var(--soft);font-size:11px;font-weight:700}.tag.ok{color:var(--ok)}.tag.warn{color:var(--warn)}.tag.new{background:var(--accent);color:#fff;margin-left:7px;vertical-align:2px}.askcard{border:1px solid var(--line);background:var(--panel);padding:16px;margin-top:12px}.askcard h2{font-size:16px;margin:0 0 6px}.askhint{color:var(--muted);font-size:12px;margin-bottom:10px}.chips{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:10px}.chips button{min-height:34px;font-weight:500;font-size:12px;padding:0 10px;border-color:var(--line)}#askText{width:100%;min-height:74px;padding:9px 11px;resize:vertical;font:inherit}#askOut{margin-top:10px}.plato-answer{border-left:3px solid var(--accent);background:var(--soft);padding:11px 13px;font-size:13px;line-height:1.55;white-space:pre-wrap}details.fold{border:1px solid var(--line);margin-top:10px}details.fold>summary{cursor:pointer;padding:9px 11px;font-size:12px;font-weight:750;color:var(--muted);list-style:none;display:flex;justify-content:space-between;gap:10px}details.fold>summary::-webkit-details-marker{display:none}details.fold>summary:after{content:'развернуть';font-weight:500}details.fold[open]>summary:after{content:'свернуть'}details.fold>summary:hover{background:var(--soft)}.foldbody{padding:0 11px 11px}.ratio-row{display:grid;grid-template-columns:1fr auto;gap:7px;margin-bottom:7px}.brand{display:block;line-height:0}.legal-footer{display:flex;gap:18px;flex-wrap:wrap;margin:0 34px;padding:14px 0 22px;font-size:11px;color:var(--muted);border-top:1px solid var(--line)}.legal-footer a{color:var(--muted)}.plato-footer{margin:0;padding:0 34px;line-height:0}.plato-footer img{width:100%;height:auto;display:block}tr.family>td:first-child{border-left:3px solid var(--accent)}tr.family>td{background:var(--panel)}tr.sub>td:first-child{padding-left:30px}tr.sub>td{background:var(--soft)}.famcount{display:inline-flex;padding:3px 6px;margin-left:7px;background:var(--accent);color:#fff;font-size:11px;font-weight:700;vertical-align:2px}.money{font-weight:750;white-space:nowrap}.pbatt{position:relative;display:block;height:14px;margin-top:4px;border:1px solid var(--line);border-radius:0;background:var(--soft);overflow:hidden}.pbatt-fill{position:absolute;left:0;top:0;height:100%}.pbatt-pct{position:absolute;left:5px;top:0;font-size:10px;font-weight:750;color:#18202a;text-shadow:0 0 3px #fff,0 0 3px #fff}.side{padding:16px;min-height:420px}.side h2{font-size:18px;margin:0 0 4px}.side .sub{color:var(--muted);font-size:12px;margin-bottom:14px}.empty{display:grid;place-items:center;color:var(--muted);min-height:360px;text-align:center;padding:25px}.kv{display:grid;grid-template-columns:145px 1fr;gap:7px 10px;padding:10px 0;border-bottom:1px solid var(--line)}.kv div:nth-child(odd){color:var(--muted)}.actions{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0}.notice{border-radius:0;padding:10px 11px;background:var(--soft);font-size:12px;margin:10px 0}.notice.warn{color:var(--warn)}.section{margin-top:16px}.section h3{font-size:13px;margin:0 0 7px}.items{display:grid;gap:6px}.item{border:1px solid var(--line);border-radius:0;padding:8px 9px;font-size:12px}.item b{display:block;margin-bottom:2px}.source{font-size:11px;color:var(--muted);margin-top:4px}.status{font-size:12px;color:var(--muted);margin-left:auto}.spinner{display:inline-block;width:13px;height:13px;border:2px solid var(--line);border-top-color:var(--text);border-radius:50%;animation:spin .7s linear infinite;vertical-align:-2px;margin-right:5px}@keyframes spin{to{transform:rotate(360deg)}}@media(max-width:950px){.filters{grid-template-columns:1fr 1fr}.stats{grid-template-columns:1fr 1fr}.layout{grid-template-columns:1fr}.side{min-height:0}.brandbar{padding:14px 16px 0}.head{padding:14px 16px 10px}.tabs{padding:0 16px;gap:18px}.content{padding:16px 16px 28px}.plato-footer{padding:0 16px}.legal-footer{margin:0 16px}}
 .tabs{display:flex;gap:28px;padding:0 34px;border-bottom:1px solid var(--line);overflow:auto;background:var(--panel)}.tabs .tab{border:0;background:none;min-height:0;padding:15px 0 12px;font-size:14px;font-weight:620;color:#777;white-space:nowrap;border-bottom:3px solid transparent}.tabs .tab.active{color:#000;border-color:#000}.hidden{display:none!important}.fit{display:inline-flex;align-items:center;gap:6px;font-weight:750;white-space:nowrap}.fit .light{width:10px;height:10px;border-radius:50%;background:var(--muted);}.fit.ok{color:var(--ok)}.fit.ok .light{background:var(--ok)}.fit.warn{color:var(--warn)}.fit.warn .light{background:var(--warn)}.fit.bad{color:var(--bad)}.fit.bad .light{background:var(--bad)}
 .multi{position:relative;min-width:0}.multi-toggle{width:100%;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding-right:30px;position:relative}.multi-toggle:after{content:'⌄';position:absolute;right:11px;font-size:16px;line-height:1}.multi-toggle[aria-expanded="true"]:after{content:'⌃'}.multi-menu{position:absolute;z-index:20;top:calc(100% + 6px);left:0;width:max-content;min-width:100%;max-width:min(320px,80vw);padding:8px;border:1px solid var(--line);border-radius:0;background:var(--panel);}.multi-head{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:2px 4px 7px;font-size:12px;font-weight:750;color:var(--muted)}.multi-clear{min-height:28px;padding:0 7px;border:0;background:transparent;color:var(--muted);font-size:12px}.multi-options{display:grid;gap:2px;max-height:310px;overflow:auto}.multi-option{display:flex;align-items:center;gap:9px;min-height:36px;padding:5px 7px;border-radius:0;cursor:pointer}.multi-option:hover{background:var(--soft)}.multi-option input{flex:0 0 auto;width:17px;height:17px;min-height:0;margin:0;padding:0;accent-color:var(--accent)}
 </style>
@@ -63,6 +63,7 @@ AUCTIONS_PAGE = r'''<!doctype html>
     <div class="stat"><b id="sDeadline">—</b><span>ближайший дедлайн</span></div>
   </div>
   <div id="coverage" class="notice coverage"></div>
+  <div id="foldNote" class="notice" style="display:none"></div>
   <div class="layout" id="auctionLayout">
     <div class="tablewrap"><table><thead><tr><th>Лот</th><th>Оценка Платона</th><th>Тип</th><th>Площадь</th><th>Текущая цена</th><th>Заявка до</th><th>Документы</th></tr></thead><tbody id="rows"></tbody></table><div id="tableEmpty" class="empty">Нажмите «Обновить», чтобы получить текущую выборку с официальных площадок.</div></div>
     <aside class="side" id="side"><div class="empty">Выберите лот.<br>Карточка справа показывает только данные ЭТП; аналитика DevelopAid появляется после разбора.</div></aside>
@@ -93,7 +94,7 @@ AUCTIONS_PAGE = r'''<!doctype html>
   __DEVELOPAID_LEGAL_FOOTER__
 </div>
 <script>
-const state={lots:[],filtered:[],coverage:[],selected:null,ingested:null,krt:[],krtFiltered:[],krtOkrugs:new Set(),krtModels:{},krtReports:{},krtNew:0,krtNewDays:30,krtPolls:0,krtTimer:null,krtRank:{},krtRankProgress:null,krtRankTimer:null};
+const state={lots:[],filtered:[],families:[],openFamilies:new Set(),coverage:[],selected:null,ingested:null,krt:[],krtFiltered:[],krtOkrugs:new Set(),krtModels:{},krtReports:{},krtNew:0,krtNewDays:30,krtPolls:0,krtTimer:null,krtRank:{},krtRankProgress:null,krtRankTimer:null};
 const KRT_OKRUGS=['ЦАО','САО','СВАО','ВАО','ЮВАО','ЮАО','ЮЗАО','ЗАО','СЗАО','НАО','ТАО','ЗелАО'];
 const $=id=>document.getElementById(id);
 // Ноль и «цены нет» — разные вещи. Number(null) равен нулю, и лот без
@@ -119,6 +120,7 @@ function filter(){const q=$('search').value.trim().toLowerCase(),k=$('kind').val
  state.filtered=state.lots.filter(l=>lotMatchesKind(l,k)
   &&(o==='all'||(l.origin||'other')===o)
   &&(!q||JSON.stringify([l.title,l.address,l.cadastral_numbers,l.source?.external_lot_id]).toLowerCase().includes(q)));
+ state.families=lotFamilies(state.filtered);
  renderRows();stats()}
 // Батарейка снижения цены. У банкротного лота публичное предложение идёт по
 // графику: цена ползёт от начальной к минимальной, и «дешевле» тут часто значит
@@ -146,6 +148,7 @@ function priceBattery(lot){
 // представляет, и названные снижения за то, чего у него нет. Поднимать балл
 // нечем: у лота нет своей экономики, пока его не разобрали в модель.
 const LOT_BASE_BY_KIND={krt:45,land_sale:40,land_lease:30,property_complex:25};
+const LOT_SMALL_SQM=500;
 function lotDeadlineDays(l){
  const raw=l.application_deadline;
  if(!raw)return null;
@@ -154,11 +157,18 @@ function lotDeadlineDays(l){
  return Math.round((at-Date.now())/86400000);
 }
 function lotScore(l){
+ // Масштаб у лота бывает двумя полями. У ЭТП городского имущества метры стоят
+ // в площади УЧАСТКА, а у ГИС Торгов структурирована площадь ЗДАНИЯ — метров
+ // участка там часто нет вовсе. Пока балл смотрел только на участок, гараж
+ // 26 м² и имущественный комплекс 190 000 м² получали одинаковую прибавку —
+ // ноль: поле, которого нет в карте, молча остаётся мусором.
  const s=l.screening||{}, area=Number(l.land_area_sqm)||0;
+ const build=Number(l.building_area_sqm)||0;
  const docs=(l.documents||[]).length, cads=(l.cadastral_numbers||[]).length;
  const price=l.current_price_rub??l.start_price_rub;
  let base=LOT_BASE_BY_KIND[l.lot_kind]??15;
  base+=area>=50000?25:area>=10000?20:area>=3000?14:area>0?8:0;
+ if(!area&&build)base+=build>=20000?20:build>=5000?14:build>=1000?8:0;
  if(s.ready_for_financial_model)base+=15;
  if(docs)base+=10;
  if(price!==null&&price!==undefined)base+=5;
@@ -172,6 +182,11 @@ function lotScore(l){
  if(price===null||price===undefined)cuts.push({label:'цена не опубликована',points:15});
  if(s.requires_krt_terms&&!docs)cuts.push({label:'нужны условия КРТ, а документов нет',points:20});
  if(s.ready_for_financial_model===false)cuts.push({label:'данных для модели не хватает',points:10});
+ // Гараж 26 м² и помещение 12 м² — не площадка под девелопмент ни при каком
+ // балле. Это СНИЖЕНИЕ, а не фильтр: лот остаётся в списке и называет причину,
+ // потому что молча убранный лот читается как его отсутствие.
+ const scale=area||build;
+ if(scale&&scale<LOT_SMALL_SQM)cuts.push({label:`объект ${new Intl.NumberFormat('ru-RU',{maximumFractionDigits:0}).format(scale)} м² — под девелопмент это не площадка`,points:45});
  const concerns=(s.concerns||[]).length;
  if(concerns)cuts.push({label:`замечаний скрининга: ${concerns}`,points:Math.min(15,concerns*5)});
 
@@ -185,7 +200,129 @@ function lotScoreNote(sc){
  if(!sc.cut)return 'Лот '+sc.base+' · ничего не снято';
  return 'Лот '+sc.base+' · снято '+sc.cut+'%: '+sc.cuts.map(c=>c.label).join(', ');
 }
-function renderRows(){const body=$('rows'),empty=$('tableEmpty');body.innerHTML='';empty.style.display=state.filtered.length?'none':'grid';state.filtered.forEach((l,i)=>{const tr=document.createElement('tr');const sc=lotScore(l);tr.innerHTML=`<td><div class="lotname">${esc(l.title||l.address||'Лот')}</div><div class="source">Почему здесь: ${esc(l.screening?.why_here||l.selection_reasons?.slice(0,4).join(' · ')||'требуется проверка')}</div><div class="cad">${esc((l.cadastral_numbers||[]).join(', ')||l.source?.external_lot_id||'')}</div></td><td><span class="fit ${sc.tone}" title="${esc('Потенциал лота '+sc.base+'; снято '+sc.cut+'%')}"><span class="light"></span>${sc.score} · ${esc(sc.label)}</span><div class="source">${esc(lotScoreNote(sc))}</div></td><td><span class="tag ${l.lot_kind==='krt'?'ok':''}">${esc(kindLabel(l.lot_kind))}</span>${(l.origin&&l.origin!=='city')?`<div class="source">${esc(ORIGIN_LABEL[l.origin]||l.origin)}</div>`:''}</td><td>${areaLine(l)}</td><td class="money">${fmtMoney(l.current_price_rub??l.start_price_rub)}${priceBattery(l)}</td><td>${esc(shortDate(l.application_deadline))}</td><td>${l.documents?.length||0}</td>`;tr.onclick=()=>selectLot(l);body.appendChild(tr)});renderAskContext()}
+// Повтор в списке — это одно извещение, разложенное на много лотов. Тридцать
+// гаражей одного ГСК приезжают тридцатью карточками: у каждой свой кадастровый
+// номер и свой номер бокса, а человеку это одна строка «гаражи, 30 лотов».
+// Пока их тридцать, полезный лот рядом не виден вовсе.
+//
+// Схлопывается ТОЛЬКО совпавшее по всем признакам сразу: площадка, вид,
+// происхождение, день окончания приёма заявок, название без чисел И порядок
+// величины площади и цены. Порядок величины в ключе не для красоты: без него
+// участок за 1,1 млрд встал бы в одну семью с участками за 0,1 млн — название
+// «Аукцион в отношении земельного участка с КН …» после чистки чисел у них
+// одинаковое.
+//
+// Ничто не пропадает молча: строка называет число лотов, раскрывается по
+// клику, а под таблицей стоит, сколько групп и сколько строк убрано. Балл
+// семьи — балл ЛУЧШЕГО её лота: иначе хороший лот спрятался бы за плохими
+// соседями, и схлопывание стало бы фильтром, которого никто не просил.
+const FAMILY_MIN=3;
+function lotFamilySignature(l){
+ return String(l.title||l.address||'').toLowerCase()
+  .replace(/\b\d{2}:\d{2}:\d{6,7}:\d+\b/g,' ')
+  .replace(/[0-9]+([.,][0-9]+)?/g,' ')
+  .replace(/[^a-zа-яё]+/g,' ')
+  .trim();
+}
+function lotMagnitude(v){
+ const n=Number(v);
+ return (Number.isFinite(n)&&n>0)?String(Math.floor(Math.log10(n))):'—';
+}
+function lotFamilyKey(l){
+ const day=String(l.application_deadline||'').slice(0,10);
+ const area=Number(l.land_area_sqm)||Number(l.building_area_sqm)||0;
+ return [l.source?.platform||'',l.lot_kind||'',l.origin||'other',day,
+  lotFamilySignature(l),lotMagnitude(l.current_price_rub??l.start_price_rub),
+  lotMagnitude(area)].join('|');
+}
+function lotFamilies(list){
+ const by=new Map(),order=[];
+ (list||[]).forEach((l,i)=>{
+  const sig=lotFamilySignature(l);
+  // Название не разобралось — семьи нет: складывать лоты по одному пустому
+  // ключу значит объявить их одинаковыми, ничего о них не зная.
+  const key=sig?lotFamilyKey(l):'one|'+i;
+  if(!by.has(key)){by.set(key,{key,lots:[]});order.push(key)}
+  by.get(key).lots.push(l);
+ });
+ return order.map(k=>by.get(k)).map(f=>{
+  const scores=f.lots.map(lotScore);
+  let best=0;
+  for(let i=1;i<scores.length;i++)if(scores[i].score>scores[best].score)best=i;
+  const prices=f.lots.map(l=>Number(l.current_price_rub??l.start_price_rub)).filter(v=>Number.isFinite(v));
+  const areas=f.lots.map(l=>Number(l.land_area_sqm)||Number(l.building_area_sqm)||0).filter(v=>v>0);
+  return {key:f.key,lots:f.lots,count:f.lots.length,collapsed:f.lots.length>=FAMILY_MIN,
+   lead:f.lots[best],score:scores[best],
+   priceMin:prices.length?Math.min.apply(null,prices):null,
+   priceMax:prices.length?Math.max.apply(null,prices):null,
+   areaMin:areas.length?Math.min.apply(null,areas):null,
+   areaMax:areas.length?Math.max.apply(null,areas):null,
+   docs:f.lots.reduce((sum,l)=>sum+((l.documents||[]).length),0)};
+ }).sort((a,b)=>b.score.score-a.score.score||b.count-a.count);
+}
+function lotRange(min,max,fmt){
+ if(min===null||min===undefined)return '—';
+ return min===max?fmt(min):fmt(min)+' … '+fmt(max);
+}
+function lotRowHtml(l){
+ const sc=lotScore(l);
+ return `<td><div class="lotname">${esc(l.title||l.address||'Лот')}</div><div class="source">Почему здесь: ${esc(l.screening?.why_here||l.selection_reasons?.slice(0,4).join(' · ')||'требуется проверка')}</div><div class="cad">${esc((l.cadastral_numbers||[]).join(', ')||l.source?.external_lot_id||'')}</div></td>`
+  +`<td><span class="fit ${sc.tone}" title="${esc('Потенциал лота '+sc.base+'; снято '+sc.cut+'%')}"><span class="light"></span>${sc.score} · ${esc(sc.label)}</span><div class="source">${esc(lotScoreNote(sc))}</div></td>`
+  +`<td><span class="tag ${l.lot_kind==='krt'?'ok':''}">${esc(kindLabel(l.lot_kind))}</span>${(l.origin&&l.origin!=='city')?`<div class="source">${esc(ORIGIN_LABEL[l.origin]||l.origin)}</div>`:''}</td>`
+  +`<td>${areaLine(l)}</td>`
+  +`<td class="money">${fmtMoney(l.current_price_rub??l.start_price_rub)}${priceBattery(l)}</td>`
+  +`<td>${esc(shortDate(l.application_deadline))}</td><td>${l.documents?.length||0}</td>`;
+}
+function familyRowHtml(f){
+ const l=f.lead,sc=f.score,open=state.openFamilies.has(f.key);
+ return `<td><div class="lotname">${esc(l.title||l.address||'Лот')}<span class="famcount">${f.count} лотов</span></div>`
+  +`<div class="source">Повторы одного извещения: ${f.count} лот(ов) одного вида, с одним днём подачи и одним порядком цены. Показан лучший по баллу.</div>`
+  +`<div class="source">${open?'Нажмите, чтобы свернуть':'Нажмите, чтобы раскрыть все '+f.count}</div>`
+  +`<div class="cad">${esc((l.cadastral_numbers||[]).join(', ')||l.source?.external_lot_id||'')}${f.count>1?' и ещё '+(f.count-1):''}</div></td>`
+  +`<td><span class="fit ${sc.tone}" title="${esc('Балл лучшего лота группы; остальные не выше')}"><span class="light"></span>${sc.score} · ${esc(sc.label)}</span><div class="source">${esc('Лучший из '+f.count+'. '+lotScoreNote(sc))}</div></td>`
+  +`<td><span class="tag ${l.lot_kind==='krt'?'ok':''}">${esc(kindLabel(l.lot_kind))}</span>${(l.origin&&l.origin!=='city')?`<div class="source">${esc(ORIGIN_LABEL[l.origin]||l.origin)}</div>`:''}</td>`
+  +`<td>${esc(lotRange(f.areaMin,f.areaMax,fmtArea))}</td>`
+  +`<td class="money">${esc(lotRange(f.priceMin,f.priceMax,fmtMoney))}</td>`
+  +`<td>${esc(shortDate(l.application_deadline))}</td><td>${f.docs}</td>`;
+}
+function toggleFamily(key){
+ if(state.openFamilies.has(key))state.openFamilies.delete(key);else state.openFamilies.add(key);
+ renderRows();
+}
+function renderFoldNote(){
+ // Схлопнутое называется вслух. Молча убранная с экрана строка читается как
+ // её отсутствие — то же правило, по которому пустой ответ НСПД не выдаётся
+ // за отрицательный.
+ const box=$('foldNote');if(!box)return;
+ const folded=(state.families||[]).filter(f=>f.collapsed);
+ if(!folded.length){box.style.display='none';box.textContent='';return}
+ const hidden=folded.reduce((sum,f)=>sum+f.count,0)-folded.length;
+ box.style.display='block';
+ box.textContent=`Повторы схлопнуты: ${folded.length} групп(ы), ${hidden} строк(и) убрано с экрана — `
+  +folded.slice(0,3).map(f=>{const t=String(f.lead.title||'лот');return `«${t.length>44?t.slice(0,44)+'…':t}» ${f.count}`}).join('; ')
+  +(folded.length>3?` и ещё ${folded.length-3}`:'')
+  +'. Ни один лот не потерян: нажмите на строку с числом лотов, чтобы раскрыть группу.';
+}
+function renderRows(){
+ const body=$('rows'),empty=$('tableEmpty'),fams=state.families||[];
+ body.innerHTML='';
+ empty.style.display=fams.length?'none':'grid';
+ fams.forEach(f=>{
+  if(!f.collapsed){
+   f.lots.forEach(l=>{const tr=document.createElement('tr');tr.innerHTML=lotRowHtml(l);tr.onclick=()=>selectLot(l);body.appendChild(tr)});
+   return;
+  }
+  const tr=document.createElement('tr');
+  tr.className='family';
+  tr.innerHTML=familyRowHtml(f);
+  tr.onclick=()=>toggleFamily(f.key);
+  body.appendChild(tr);
+  if(state.openFamilies.has(f.key))f.lots.forEach(l=>{
+   const sub=document.createElement('tr');sub.className='sub';sub.innerHTML=lotRowHtml(l);sub.onclick=()=>selectLot(l);body.appendChild(sub);
+  });
+ });
+ renderFoldNote();renderAskContext();
+}
 function stats(){const a=state.filtered;$('sCount').textContent=a.length;$('sKrt').textContent=a.filter(x=>x.lot_kind==='krt').length;$('sLand').textContent=a.filter(x=>['land_sale','land_lease'].includes(x.lot_kind)).length;const ds=a.map(x=>new Date(x.application_deadline)).filter(x=>!Number.isNaN(x.getTime())).sort((a,b)=>a-b);$('sDeadline').textContent=ds.length?new Intl.DateTimeFormat('ru-RU',{day:'2-digit',month:'2-digit'}).format(ds[0]):'—'}
 function renderCoverage(){const box=$('coverage'),r=(state.coverage||[])[0];if(!r){box.style.display='none';return}const unsupported=(r.unsupported_etp_hosts||[]).join(', ');box.style.display='block';box.className='notice coverage'+((r.errors||[]).length?' warn':'');box.textContent=`Торги Москвы: карточек ${r.city_cards||0} · ссылок на ЭТП ${r.official_etp_links||0} · подтверждено ${r.verified_lots||0} · без подтверждённой ЭТП ${r.unresolved_city_cards||0}${unsupported?' · нужны адаптеры: '+unsupported:''}${(r.errors||[]).length?' · часть каталога недоступна':''}`}
 function areaLine(l){
@@ -668,17 +805,23 @@ function askDigest(){
    (model?.exclusions||[]).slice(0,6).forEach(x=>lines.push('НЕ УЧТЕНО: '+x));
   }
  }else{
-  const list=state.filtered||[];
-  lines.push(`ОТОБРАНО ЛОТОВ: ${list.length} из ${(state.lots||[]).length} в выборке.`);
-  list.slice(0,12).forEach(l=>{
-   const sc=lotScore(l);
-   lines.push(`— ${l.title||l.address||'лот'} (${kindLabel(l.lot_kind)}): балл ${sc.score}`
+  // Платону список идёт в том же виде, в каком он на экране: тридцать
+  // одинаковых гаражей одной строкой. Отдай ему все тридцать — и половину
+  // вопроса займут повторы, а полезный лот в двенадцать строк не влезет.
+  const list=state.filtered||[], fams=state.families||[];
+  lines.push(`ОТОБРАНО ЛОТОВ: ${list.length} из ${(state.lots||[]).length} в выборке`
+   +`; строк на экране ${fams.length} — повторы одного извещения схлопнуты в группу.`);
+  fams.slice(0,12).forEach(f=>{
+   const l=f.lead, sc=f.score;
+   lines.push(`— ${l.title||l.address||'лот'} (${kindLabel(l.lot_kind)})`
+    +(f.collapsed?`, ГРУППА ПОВТОРОВ: ${f.count} лотов, цена ${lotRange(f.priceMin,f.priceMax,fmtMoney)}, площадь ${lotRange(f.areaMin,f.areaMax,fmtArea)}`:'')
+    +`: балл ${sc.score}`
     +` из потенциала ${sc.base}${sc.cut?`, снято ${sc.cut}%`:''}`
-    +`; площадь ${fmtArea(l.land_area_sqm)}, цена ${fmtMoney(l.current_price_rub??l.start_price_rub)}`
+    +(f.collapsed?` (балл лучшего в группе)`:`; площадь ${fmtArea(l.land_area_sqm)}, цена ${fmtMoney(l.current_price_rub??l.start_price_rub)}`)
     +`, заявка до ${shortDate(l.application_deadline)||'—'}, документов ${(l.documents||[]).length}`
     +(sc.cuts.length?`; снижено за: ${sc.cuts.map(c=>c.label).join(', ')}`:''));
   });
-  if(list.length>12)lines.push(`(показаны первые 12 из ${list.length})`);
+  if(fams.length>12)lines.push(`(показаны первые 12 строк из ${fams.length})`);
   if(state.selected){
    const sc=lotScore(state.selected), sr=state.selected.screening||{};
    lines.push('', `ВЫБРАН: ${state.selected.title||state.selected.address}. Балл ${sc.score} из потенциала ${sc.base}.`);
