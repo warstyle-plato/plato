@@ -12582,6 +12582,28 @@ _MODEL_FINANCE_SUMMABLE = {
     "limit_fee", "interest_payment", "taxable_margin", "financing_tax_deduction", "profit_tax",
 }
 
+# Короткие подписи тех же статей — для таблицы «Расходы» на странице, где на
+# имя есть одна строка. Это НЕ второй список статей: имена берутся по ключам
+# `_MODEL_CAPEX_LABELS` ниже, и статья без короткой подписи получает полную.
+# Прежде страница держала свой словарь `capNames`, и статьи, заведённые позже,
+# доезжали до экрана сырыми ключами: «resettlement» и «demolition» стояли
+# среди русских названий (владелец, 25.08.2026). Копию негде обновлять, потому
+# что копии больше нет.
+CAPEX_SHORT_NAMES: dict[str, str] = {
+    "land_rights": "Земля / смена ВРИ",
+    "ird": "ИРД",
+    "design_p": "Проект П",
+    "design_rd": "Проект РД",
+    "utilities": "Наружные сети",
+    "offices": "Офисы",
+    "standalone_retail": "Коммерция ОСЗ",
+    "social": "Социальный платеж / соцобъекты",
+    "gc_fee": "Генподрядчик",
+    "main_above": "Основное строительство — наземная часть",
+    "main_under": "Основное строительство — подземная часть",
+}
+CAPEX_NAMES_PLACEHOLDER = "__DEVELOPAID_CAPEX_NAMES__"
+
 _MODEL_CAPEX_LABELS: list[tuple[str, str]] = [
     ("land_rights", "Земельные правоотношения / смена ВРИ"),
     ("vri_security", "Обеспечение обязательства по ВРИ"),
@@ -35190,7 +35212,8 @@ function renderResult(){
    .map(([key,v])=>`<tr><td>${revNames[key]||key}</td><td>${money(v)}</td><td>${perTh(v,rGns)}</td><td>${perTh(v,rSaleable)}</td></tr>`).join('')
    +`<tr><th>Итого</th><th>${money(r.revenue.total)}</th><th>${perTh(r.revenue.total,rGns)}</th><th>${perTh(r.revenue.total,rSaleable)}</th></tr>`;
  }
- const capNames={land_rights:'Земля / смена ВРИ',vri_security:'Обеспечение обязательства по ВРИ',vri_interest:'Проценты по рассрочке ВРИ',ird:'ИРД',design_p:'Проект П',design_rd:'Проект РД',author_supervision:'Авторский надзор',technical_supervision:'Технический заказчик / стройконтроль',project_management:'Управление проектом',preparation:'Подготовительные работы',main_above:'Основное строительство — наземная часть',main_under:'Основное строительство — подземная часть',utilities:'Наружные сети',landscaping:'Благоустройство',commissioning:'Сдача и ввод',site_maintenance:'Содержание стройплощадки',social:'Социальный платеж / соцобъекты',offices:'Офисы',standalone_retail:'Коммерция ОСЗ',above_parking:'Наземный паркинг',gc_fee:'Генподрядчик',reserve:'Резерв'};
+ // Имена статей приходят из движка плейсхолдером, как VERSION и доли ТЭП.
+ const capNames=__DEVELOPAID_CAPEX_NAMES__;
  {
   const cGns=Number(r.summary.project_gns_sqm||0),cSaleable=Number(r.summary.monetizable_saleable_sqm||0);
   const perTh=(v,area)=>area>0?num2(Number(v||0)/area/1000):'—';
@@ -36694,6 +36717,11 @@ PAGE = PAGE.replace(INPUT_DEFAULT_PLACEHOLDER,
 PAGE = PAGE.replace(TEP_DEFAULT_PLACEHOLDER,
                     json.dumps(TEP_DEFAULT, ensure_ascii=False))
 PAGE = PAGE.replace(TEP_RATIOS_PLACEHOLDER, json.dumps(TEP_RATIOS, ensure_ascii=False))
+# Имена статей расходов — из движка. Статья без короткой подписи получает
+# полную: сырой ключ на экране невозможен по построению, а не по вниманию.
+PAGE = PAGE.replace(CAPEX_NAMES_PLACEHOLDER, json.dumps(
+    {key: CAPEX_SHORT_NAMES.get(key, name) for key, name in _MODEL_CAPEX_LABELS},
+    ensure_ascii=False))
 # Состав МКД — из движка, копии на странице нет.
 PAGE = PAGE.replace("__DEVELOPAID_MKD_PRODUCTS__",
                     json.dumps(list(MKD_PRODUCTS), ensure_ascii=False))
