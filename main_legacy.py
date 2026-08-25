@@ -4661,7 +4661,17 @@ def _geocode_yandex(address: str, limit: int) -> list[dict[str, Any]]:
     return results
 
 
-def _geocode_dadata(address: str, limit: int) -> list[dict[str, Any]]:
+def _dadata_suggest(address: str, limit: int) -> list[dict[str, Any]]:
+    """Подсказки адресов DaData как есть: с точкой, если она у объекта есть.
+
+    Точка — не признак существования адреса. У владения («влд 12») координат
+    в базе часто нет вовсе: DaData ставит точку дому, а владение остаётся
+    объектом ФИАС без неё. Пока подсказки собирал геокодер, такие адреса
+    выбрасывались молча — на «ул Маршала Воробьёва, влд 12» человек видел
+    список домов и ни одного владения, и выглядело это как «в базе такого
+    нет». Отсюда деление: подсказка отвечает за адрес, геокодер — за точку,
+    и запрос у них общий, чтобы реализация осталась одна.
+    """
     api_key = _env_str("DADATA_API_KEY")
     if not api_key:
         return []
@@ -4674,17 +4684,23 @@ def _geocode_dadata(address: str, limit: int) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     for suggestion in ((payload or {}).get("suggestions") or [])[:limit]:
         data = (suggestion or {}).get("data") or {}
-        lat, lng = _land_float(data.get("geo_lat")), _land_float(data.get("geo_lon"))
-        if lat is None or lng is None:
-            continue
         results.append({
-            "lat": lat,
-            "lng": lng,
+            "lat": _land_float(data.get("geo_lat")),
+            "lng": _land_float(data.get("geo_lon")),
             "label": _land_text(suggestion.get("value")),
             "cadastral_number": _land_text(data.get("cadastral_number") or data.get("house_cadnum")),
             "provider": "DaData",
         })
     return results
+
+
+def _geocode_dadata(address: str, limit: int) -> list[dict[str, Any]]:
+    """Геокодер: та же выдача, но только то, у чего есть координаты.
+
+    Здесь отсев по точке на месте — геокодеру без неё отвечать нечем.
+    """
+    return [item for item in _dadata_suggest(address, limit)
+            if item.get("lat") is not None and item.get("lng") is not None]
 
 
 def _geocode_nominatim(address: str, limit: int) -> list[dict[str, Any]]:
