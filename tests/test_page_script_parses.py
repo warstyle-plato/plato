@@ -145,10 +145,32 @@ def test_a_dead_page_says_so_instead_of_staying_silent():
 
 
 def test_cloning_never_kills_the_page():
-    """structuredClone есть не везде, а стоял он второй строкой состояния."""
+    """structuredClone есть не везде, а стоял он второй строкой состояния.
+
+    Прежняя формулировка этой проверки ошибку не поймала — она её ЗАКАЗАЛА.
+    Стояло `page.count("structuredClone(") == 0`: «прямых вызовов не осталось
+    нигде, кроме помощника», — но написано это было как «строки нет вовсе», а
+    единственное правильное употребление лежит внутри самого помощника и под
+    запрет попадало тоже. Позеленить такое можно было ровно одним способом:
+    убрать штатное клонирование и позвать `cloneValue` рекурсивно. Дальше
+    рекурсия срывала стек, оба `catch` молчали, и вводные оказывались тем же
+    объектом, что умолчания, — «Сбросить» перестал что-либо возвращать.
+
+    Отсюда форма: запрещено не слово, а МЕСТО. Внутри помощника вызов обязан
+    быть, снаружи — не должно быть ни одного.
+    """
     page = core.PAGE
     assert "function cloneValue(value)" in page
     assert "let inputs=cloneValue(INPUT_DEFAULT)" in page
-    # Прямых вызовов не осталось нигде, кроме проверки внутри самого помощника.
-    assert page.count("structuredClone(") == 0
     assert "typeof structuredClone==='function'" in page
+
+    start = page.index("function cloneValue(value)")
+    helper = page[start:page.index("\n}", start)]
+    # Комментарии не код: в них та самая опечатка названа по имени, чтобы
+    # следующий читатель не завёл её обратно.
+    code = "\n".join(line for line in helper.split("\n") if not line.strip().startswith("//"))
+    body = code[code.index("{"):]
+    assert "structuredClone(value)" in body, "штатное клонирование обязано звать себя, а не помощника"
+    assert "cloneValue(" not in body, "помощник не должен звать сам себя"
+    assert (page.count("structuredClone(") - body.count("structuredClone(")) == 0, \
+        "снаружи помощника прямых вызовов быть не должно"
