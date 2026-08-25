@@ -67,7 +67,34 @@ def _adapter_for(url: str):
         return RoseltorgAdapter()
     if host == "lot-online.ru" or host.endswith(".lot-online.ru"):
         return LotOnlineAdapter()
-    raise ValueError("Поддерживаются только официальные URL Росэлторг и РАД/Lot-online")
+    if host == TorgiGovAdapter.HOST or host.endswith("." + TorgiGovAdapter.HOST):
+        return TorgiGovAdapter()
+    raise ValueError(
+        "Разбирать умеем только официальные адреса Росэлторга, РАД/Lot-online и "
+        f"ГИС Торгов; «{host or url}» ни на один из них не похож")
+
+
+def _analysis_support(url: str) -> dict[str, Any]:
+    """Можно ли разобрать этот лот целиком — и если нет, то почему.
+
+    Отвечает тот же `_adapter_for`, который потом и разбирает. Второе правило о
+    том же самом однажды разошлось бы с первым, и кнопка обещала бы разбор там,
+    где его нет.
+
+    Спрашивается это ДО клика намеренно. Список показывал все лоты одинаково, а
+    половина из них на «Разобрать лот» отвечала «поддерживаются только Росэлторг
+    и РАД»: узнать, что карточку не открыть, можно было только нажав
+    (владелец, 25.08.2026 — «зачем они тогда в списке»). Отказ, о котором
+    сказано заранее, — это свойство лота; отказ после клика — поломка.
+    """
+    try:
+        adapter = _adapter_for(url)
+    except ValueError as exc:
+        return {"available": False, "reason": str(exc)}
+    note = getattr(adapter, "deep_parse_unavailable", "")
+    if note:
+        return {"available": False, "reason": str(note)}
+    return {"available": True, "reason": ""}
 
 
 def _discovery_adapters(source: str):
@@ -704,6 +731,7 @@ def install(app: FastAPI) -> None:
             "lots": [
                 {
                     **_public_lot_dict(lot),
+                    "analysis": _analysis_support(lot.source.lot_url),
                     "screening": {
                         **AuctionSearchService.screen_lot(lot),
                         "documents_count": len(lot.documents),

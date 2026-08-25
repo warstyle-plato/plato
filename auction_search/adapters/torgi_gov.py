@@ -83,7 +83,7 @@ from auction_search.classifier import (
     origin_from_evidence,
 )
 from auction_search.models import (
-    AuctionLot, AuctionSource, LotKind, LotOrigin, SourceKind,
+    AuctionDocument, AuctionLot, AuctionSource, LotKind, LotOrigin, SourceKind,
 )
 
 
@@ -91,6 +91,12 @@ FLAG = "TORGI_GOV_DISCOVERY"
 HOST = "torgi.gov.ru"
 SEARCH_PATH = "/new/api/public/lotcards/search"
 LOT_URL = "https://torgi.gov.ru/new/public/lots/lot/{id}"
+# Адрес одиночной карточки. Живым ответом НЕ сверен: из песочницы
+# torgi.gov.ru не спросить. Это соседний путь того же ресурса, что и
+# сверенный поиск (`/lotcards/search`), — догадка названа вслух, а разбор
+# ответа ничего не пропускает молча: не та форма — ошибка с адресом и
+# верхними ключами ответа, а не пустой лот.
+LOT_CARD_PATH = "/new/api/public/lotcards/{id}"
 USER_AGENT = "DevelopAid-AuctionCollector/0.1 (+https://developaid.ru)"
 TIMEOUT_SECONDS = 8
 # Размер страницы мы ПРОСИМ, а не назначаем. На прод приехал сбор из ОДНОЙ
@@ -378,6 +384,88 @@ def cadastral_numbers(card: dict[str, Any]) -> list[str]:
     return seen
 
 
+_LOT_ID_CHARS = re.compile(r"^[0-9a-zA-Z_-]{6,}$")
+# Слова самого маршрута. Они проходят проверку формы, но лотом не являются.
+_NOT_A_LOT_ID = {"public", "lots", "lotcards", "notice", "search", "new"}
+
+
+def lot_id_from_url(lot_url: str) -> str:
+    """Номер лота из адреса карточки — ПОСЛЕДНИЙ сегмент пути, и только он.
+
+    Перебирать сегменты вверх нельзя: у `/new/public/lots/` последним годным
+    оказывается «public», и мы спросили бы чужой адрес с уверенным видом. Не
+    разобрали — пусто, и вызвавший скажет это вслух.
+    """
+    parts = [part for part in urllib.parse.urlparse(lot_url).path.split("/") if part]
+    if not parts:
+        return ""
+    last = parts[-1]
+    return last if _LOT_ID_CHARS.match(last) and last.lower() not in _NOT_A_LOT_ID else ""
+
+
+_CARD_KEYS = ("lotName", "lotDescription")
+_CARD_WRAPPERS = ("lot", "lotCard", "content", "data", "result")
+
+
+def _looks_like_card(value: Any) -> bool:
+    return (isinstance(value, dict) and _text(value.get("id") or value.get("lotId"))
+            and any(_text(value.get(key)) for key in _CARD_KEYS))
+
+
+def lot_card(payload: Any) -> dict[str, Any] | None:
+    """Карточка внутри ответа: сама по себе, в обёртке или первой в списке.
+
+    Форму одиночного ответа мы не видели, поэтому она ищется по признакам, а не
+    назначается. Не нашлась — `None`, и вызвавший скажет, что именно пришло:
+    неверная догадка об оболочке иначе читалась бы как «лота нет».
+    """
+    if _looks_like_card(payload):
+        return payload
+    if not isinstance(payload, dict):
+        return None
+    for key in _CARD_WRAPPERS:
+        value = payload.get(key)
+        if _looks_like_card(value):
+            return value
+        if isinstance(value, list):
+            for item in value:
+                if _looks_like_card(item):
+                    return item
+    return None
+
+
+_DOC_URL_KEYS = ("url", "fileUrl", "link", "href", "downloadUrl")
+_DOC_NAME_KEYS = ("name", "fileName", "title", "documentName")
+_DOC_LIST_KEYS = ("documents", "attachments", "lotAttachments", "files", "noticeDocuments")
+
+
+def lot_documents(card: dict[str, Any]) -> list[AuctionDocument]:
+    """Приложения карточки — только те, у которых есть адрес и имя.
+
+    Состав этого списка живым ответом не сверен. Поэтому берётся не «что-нибудь
+    похожее», а строго запись с адресом: документ без ссылки в списке выглядел
+    бы полученным, хотя открыть его нечем.
+    """
+    found: list[AuctionDocument] = []
+    seen: set[str] = set()
+    for key in _DOC_LIST_KEYS:
+        items = card.get(key)
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            url = next((_text(item.get(name)) for name in _DOC_URL_KEYS
+                        if _text(item.get(name))), "")
+            if not url or url in seen:
+                continue
+            seen.add(url)
+            title = next((_text(item.get(name)) for name in _DOC_NAME_KEYS
+                          if _text(item.get(name))), "") or "документ лота"
+            found.append(AuctionDocument(title=title, url=url, access_status="public"))
+    return found
+
+
 def in_target_region(card: dict[str, Any]) -> bool:
     """Наш ли это регион — по полю карточки, а не по вере в параметр запроса.
 
@@ -462,6 +550,13 @@ def to_lot(card: dict[str, Any], fetched_at: str) -> AuctionLot | None:
 
 class TorgiGovAdapter(AuctionPlatformAdapter):
     """Банкротные и прочие лоты имущества должников из ГИС Торгов."""
+
+    # Хост объявлен здесь, чтобы маршрут `/auctions/ingest` спрашивал адаптер,
+    # а не хранил вторую копию имени. Копию негде обновлять — её нет.
+    HOST = HOST
+    # Пусто — «разбор одного лота есть». Строка — причина, по которой его нет;
+    # её показывают в списке ДО клика.
+    deep_parse_unavailable = ""
 
     def __init__(self, *, subject_codes: tuple[str, ...] = SUBJECT_CODES) -> None:
         self.subject_codes = subject_codes
@@ -595,9 +690,44 @@ class TorgiGovAdapter(AuctionPlatformAdapter):
         return lots
 
     def fetch_lot(self, lot_url: str) -> AuctionLot:
-        raise NotImplementedError(
-            "Разбор одного лота ГИС Торгов пока не сделан: сначала надо сверить "
-            "поля живым ответом с ядра")
+        """Одна карточка ГИС Торгов по её адресу.
+
+        Карточка разбирается тем же `to_lot`, что и выдача поиска: второй
+        разбор одного и того же ответа однажды разошёлся бы с первым, и список
+        с карточкой показали бы про один лот разное.
+
+        Чего этот метод НЕ знает: адрес одиночной карточки
+        (`/new/api/public/lotcards/{id}`) живым ответом не сверен — из
+        песочницы torgi.gov.ru не спросить. Поэтому здесь нет ни одного
+        молчаливого пропуска: не тот адрес, не тот вид ответа, не та форма
+        оболочки — каждая называет, что именно спросили и что пришло. Неверная
+        догадка так видна сразу, а не выглядит как «лот пустой».
+        """
+        lot_id = lot_id_from_url(lot_url)
+        if not lot_id:
+            raise ValueError(
+                f"В адресе «{lot_url}» не видно номера лота ГИС Торгов")
+        url = f"https://{HOST}" + LOT_CARD_PATH.format(id=urllib.parse.quote(lot_id))
+        status, ctype, body = self._fetch_raw(url)
+        try:
+            payload = json.loads(body)
+        except ValueError as exc:
+            raise ValueError(
+                f"ГИС Торги ответили на {url} не JSON (HTTP {status}, {ctype}): "
+                f"{body[:200]}") from exc
+        card = lot_card(payload)
+        if card is None:
+            top = (", ".join(sorted(payload)[:12]) if isinstance(payload, dict)
+                   else type(payload).__name__)
+            raise ValueError(
+                f"В ответе {url} карточки лота нет; верхние ключи: {top}")
+        lot = to_lot(card, datetime.now(timezone.utc).isoformat())
+        if lot is None:
+            raise ValueError(
+                f"Карточка {lot_id} пришла без номера или названия — разбирать нечего")
+        lot.documents = lot_documents(card)
+        lot.raw = dict(card)
+        return lot
 
     def probe(self, page: int = 0) -> dict[str, Any]:
         """Сырой ответ и разобранный лот рядом — для сверки с ядра.
