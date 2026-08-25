@@ -26,7 +26,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from auction_search.adapters.torgi_gov import (  # noqa: E402
-    FLAG, TorgiGovAdapter, classify, to_lot,
+    FLAG, REGION_PARAM_CANDIDATES, TorgiGovAdapter, classify, to_lot,
 )
 from auction_search.models import LotKind, LotOrigin, lot_subject  # noqa: E402
 
@@ -365,9 +365,16 @@ def test_a_page_of_html_is_shown_not_swallowed(monkeypatch) -> None:
 
 
 def test_the_probe_prints_the_address_it_asked(monkeypatch) -> None:
+    """Проба печатает тот адрес, по которому пойдёт рабочий сбор.
+
+    Раньше здесь требовался `dynSubjRF`: параметр стоял в рабочем запросе.
+    Проба показала, что он ухудшает выдачу, и из сбора он убран — значит и
+    печатать проба должна запрос без него, иначе она проверяет не то.
+    """
     result = _probe_with(json.dumps({"content": []}), monkeypatch)
     assert result["url"].startswith("https://torgi.gov.ru/new/api/public/")
-    assert "dynSubjRF" in result["url"]
+    assert "dynSubjRF" not in result["url"]
+    assert "size=" in result["url"] and "page=" in result["url"]
 
 
 def test_the_probe_and_the_real_collector_ask_the_same_address() -> None:
@@ -890,3 +897,32 @@ def test_a_standing_page_number_is_caught(monkeypatch) -> None:
     assert [lot.source.external_lot_id for lot in lots] == ["same"]
     assert adapter.last_report["pages"] == 1
     assert "нумерация страниц не двигается" in adapter.last_report["reason"]
+
+
+def test_the_working_request_carries_no_region_parameter() -> None:
+    """Параметр, ухудшающий выдачу, — не безобидный.
+
+    Проба с ядра 25.08.2026: контрольный запрос БЕЗ параметра дал одну
+    московскую карточку из десяти (регионы 50 и 69), а `dynSubjRF=77,50` — ни
+    одной, зато регионы 47 и 76. Сервис его не игнорирует: он понимает его как
+    что-то своё и отдаёт другой срез.
+
+    Я прочитал ту пробу как «ни один не фильтрует» и оставил параметр в сборе
+    «вдруг заработает». Итог на проде: сорок страниц, четыреста карточек, наших
+    ноль — прочитали честно, спросили не то.
+    """
+    adapter = TorgiGovAdapter()
+    working = adapter._search_url(0)
+    assert "dynSubjRF" not in working, working
+    for name in ("subjectRFCode", "subjectRF", "subjectRFList", "dynSubjRFCode"):
+        assert name not in working, name
+    # Контрольный запрос пробы и рабочий — один и тот же адрес: проба обязана
+    # проверять то, что потом пойдёт в дело.
+    assert adapter._search_url(0, None) == working
+
+
+def test_the_probe_still_tries_the_candidates() -> None:
+    """Убрать параметр из сбора — не то же самое, что перестать искать имя."""
+    adapter = TorgiGovAdapter()
+    assert "dynSubjRF=" in adapter._search_url(0, "dynSubjRF")
+    assert len(REGION_PARAM_CANDIDATES) >= 5
