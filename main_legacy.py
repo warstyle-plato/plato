@@ -67,7 +67,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.19.99"
+VERSION = "0.20.2"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -261,6 +261,52 @@ PROJECT_CLASS_PRESETS = {
         "main_under_th_per_sqm": 300,
     },
 }
+
+
+def _input_field_label(field: str) -> str:
+    """Подпись поля из FIELD_GROUPS — единственного объявления списка полей."""
+    for _group, fields in FIELD_GROUPS:
+        for item in fields:
+            if item[0] == field:
+                return str(item[1])
+    return field
+
+
+def project_class_deviations(inputs: dict[str, Any]) -> dict[str, Any]:
+    """Отклонения ставок проекта от базы выбранного класса.
+
+    База классов одна и общая (решение владельца, 24.08.2026): проект,
+    ушедший от неё — правкой руками или личной перекрышкой, — обязан об
+    этом говорить в каждой поверхности, иначе два отчёта на «одном классе»
+    разойдутся, и оба будут выглядеть достоверно. Список полей класса
+    читается из самого пресета: копию списка негде обновлять, потому что
+    копии нет — поле, добавленное в пресет, попадает в сверку само.
+    """
+    key = str((inputs or {}).get("project_class") or "")
+    preset = PROJECT_CLASS_PRESETS.get(key)
+    if not preset:
+        return {"class": key, "label": "Пользовательский", "rows": []}
+    rows: list[dict[str, Any]] = []
+    for field, base in preset.items():
+        if field == "label" or not isinstance(base, (int, float)):
+            continue
+        raw = (inputs or {}).get(field)
+        if raw in (None, ""):
+            continue
+        try:
+            actual = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if abs(actual - float(base)) > 1e-9:
+            rows.append({
+                "field": field,
+                "label": _input_field_label(field),
+                "base": float(base),
+                "actual": actual,
+            })
+    return {"class": key, "label": str(preset.get("label") or key), "rows": rows}
+
+
 # Лестница ставки ПФ по покрытию эскроу — умолчание, решение владельца
 # (20.08.2026: «ставим базово по умолчанию то, что у Сбера, а человек может
 # вручную вбить или оставить»). Числа из НКЛ 400F00BVX003, сверенного 04.08.2026:
@@ -12282,8 +12328,19 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
             story.append(P(str(line), small))
 
     story.append(_PdfSection("premises"));story.append(P("Цены и основные предпосылки",h2))
-    premise_rows=[["Параметр","Значение"],["Стартовая цена квартир",_pdf_num(inputs.get('apartment_price_th'),0)+" тыс. ₽/м²"],["Стартовая цена коммерции",_pdf_num(inputs.get('commercial_price_th'),0)+" тыс. ₽/м²"],["Цена подземного машино-места",_pdf_num(inputs.get('parking_price_th'),0)+" тыс. ₽/шт."],["СМР наземной части",_pdf_num(inputs.get('main_above_th_per_sqm'),0)+" тыс. ₽/м² наземной части"],["СМР подземной части",_pdf_num(inputs.get('main_under_th_per_sqm'),0)+" тыс. ₽/м² подземной части"],["Наружные инженерные сети",_pdf_num(inputs.get('utilities_th_per_sqm'),1)+" тыс. ₽/м² строит. объёма"],["Доля продаж до РВЭ",_pdf_num(inputs.get('share_before_rve_pct'),1)+"%"],["Налог на прибыль",_pdf_num(inputs.get('profit_tax_pct'),1)+"%"]]
+    _class_dev=project_class_deviations(inputs)
+    premise_rows=[["Параметр","Значение"],["Класс проекта",_class_dev["label"]],["Стартовая цена квартир",_pdf_num(inputs.get('apartment_price_th'),0)+" тыс. ₽/м²"],["Стартовая цена коммерции",_pdf_num(inputs.get('commercial_price_th'),0)+" тыс. ₽/м²"],["Цена подземного машино-места",_pdf_num(inputs.get('parking_price_th'),0)+" тыс. ₽/шт."],["СМР наземной части",_pdf_num(inputs.get('main_above_th_per_sqm'),0)+" тыс. ₽/м² наземной части"],["СМР подземной части",_pdf_num(inputs.get('main_under_th_per_sqm'),0)+" тыс. ₽/м² подземной части"],["Наружные инженерные сети",_pdf_num(inputs.get('utilities_th_per_sqm'),1)+" тыс. ₽/м² строит. объёма"],["Доля продаж до РВЭ",_pdf_num(inputs.get('share_before_rve_pct'),1)+"%"],["Налог на прибыль",_pdf_num(inputs.get('profit_tax_pct'),1)+"%"]]
     story.append(table(premise_rows,[105*mm,65*mm]))
+    if _class_dev["rows"]:
+        # Ушёл от базы — скажи об этом: молча два отчёта «одного класса»
+        # разойдутся, и оба будут выглядеть достоверно.
+        _dev_text="; ".join(
+            f"{item['label']} {_pdf_num(item['base'],1)} → {_pdf_num(item['actual'],1)}"
+            for item in _class_dev["rows"])
+        story.append(Spacer(1,1.5*mm))
+        story.append(P(f"Ставки отличаются от базы класса «{_class_dev['label']}»: {_dev_text}.",
+                       ParagraphStyle("class_dev",parent=small,fontSize=8.0,
+                                      textColor=colors.HexColor("#a02418"))))
     story.append(_PdfSection("expenses"));story.append(P("Структура расходов",h2))
     expense_chart=expense_bar_chart(expense_structure)
     if expense_chart:
@@ -13985,6 +14042,42 @@ def _v4_set_cell(
     return xml[:found.start()] + replacement + xml[found.end():], True
 
 
+def _v4_col_number(letters: str) -> int:
+    number = 0
+    for ch in letters:
+        number = number * 26 + (ord(ch) - 64)
+    return number
+
+
+def _v4_note_cell(xml: str, value_coord: str, text: str) -> tuple[str, bool]:
+    """Пишет примечание в колонку E строки ячейки ``value_coord``.
+
+    Пустых E-ячеек в XML шаблона нет, поэтому при отсутствии ячейка
+    вставляется в строку — на своё место по порядку колонок, иначе Excel
+    вправе отбросить лист как повреждённый.
+    """
+    row = re.sub(r"[A-Z]+", "", value_coord)
+    coord = f"E{row}"
+    updated, done = _v4_set_cell(xml, coord, text=text)
+    if done:
+        return updated, True
+    row_pattern = re.compile(r'(<x:row r="%s"[^>]*>)(.*?)(</x:row>)' % row, re.S)
+    found = row_pattern.search(xml)
+    if not found:
+        return xml, False
+    cell = (f'<x:c r="{coord}" t="inlineStr">'
+            f"<x:is><x:t>{xml_escape(text)}</x:t></x:is></x:c>")
+    body = found.group(2)
+    insert_at = len(body)
+    for existing in re.finditer(r'<x:c r="([A-Z]+)%s"' % row, body):
+        if _v4_col_number(existing.group(1)) > _v4_col_number("E"):
+            insert_at = existing.start()
+            break
+    new_body = body[:insert_at] + cell + body[insert_at:]
+    return (xml[:found.start()] + found.group(1) + new_body + found.group(3)
+            + xml[found.end():]), True
+
+
 def _v4_sheet_path(archive: zipfile.ZipFile, name: str) -> str:
     workbook = archive.read("xl/workbook.xml").decode("utf-8")
     sheet = re.search(r'<x:sheet name="%s"[^>]*r:id="([^"]+)"' % re.escape(name), workbook)
@@ -14372,6 +14465,18 @@ def build_project_workbook(
 
     for key, coord in _V4_BOOL_CELLS.items():
         put(coord, text="Да" if x.get(key) else "Нет", label=key)
+
+    # Ставка, ушедшая от базы класса, помечается рядом со значением: молча
+    # книга и отчёт «одного класса» разойдутся, и оба будут выглядеть верно.
+    class_deviations = project_class_deviations(x)
+    for item in class_deviations["rows"]:
+        coord = _V4_INPUT_CELLS.get(item["field"])
+        if not coord:
+            continue
+        note = f"≠ база класса «{class_deviations['label']}»: {item['base']:g}"
+        xml, done = _v4_note_cell(xml, coord, note)
+        if not done:
+            missing.append(f"примечание о классе: {item['field']}")
 
     # --- шапка, сценарий и ставка ----------------------------------------
     title = str(project_name or x.get("project_name") or "Проект DevelopAid")
@@ -15000,7 +15105,8 @@ def build_project_workbook(
 
     stem = _safe_file_stem(title, "project")
     filename = f"DevelopAid_модель_{stem}_{date.today().isoformat()}.xlsx"
-    return out.getvalue(), filename, {"missing": missing, "phased": count > 1}
+    return out.getvalue(), filename, {"missing": missing, "phased": count > 1,
+                                      "class_deviations": class_deviations}
 
 
 class WorkbookExportRequest(BaseModel):
@@ -15830,6 +15936,25 @@ def fill_plato_template(
             continue
         write_scenario_row(rows[0], value, label)
 
+    # Ставка, ушедшая от базы класса, помечается в свободной колонке H той же
+    # строки: сценарные D–F заняты значением, G — переключателем, и его не
+    # трогать никогда. Молча книга и отчёт «одного класса» разошлись бы, и
+    # оба выглядели бы верно.
+    class_deviations = project_class_deviations(merged)
+    deviated = {item["field"]: item for item in class_deviations["rows"]}
+    for label, key, _kind in _PLATO_INPUT_MAP:
+        item = deviated.get(key)
+        if not item:
+            continue
+        rows = rows_by_label.get(_plato_normalize(label)) or []
+        if not rows:
+            continue
+        sheet.cell(row=rows[0], column=8).value = (
+            f"≠ база класса «{class_deviations['label']}»: {item['base']:g}")
+        filled.append({"sheet": "Вводные", "row": rows[0],
+                       "label": f"{label} · отметка о базе класса",
+                       "value": item["base"]})
+
     for block, label, key, kind in _PLATO_BLOCK_MAP:
         block_key, label_key = _plato_normalize(block), _plato_normalize(label)
         rows = rows_by_block.get((block_key, label_key)) or []
@@ -16024,6 +16149,7 @@ def fill_plato_template(
         "missing": missing,
         "scenario": scenario,
         "template": path.name,
+        "class_deviations": class_deviations,
     }
 
 
@@ -29391,6 +29517,7 @@ details.cadastral-box>summary::marker{color:#888}
           <option value="custom">Пользовательский</option>
         </select>
         <div id="projectClassPreview" style="font-size:10px;color:#777;margin-top:4px;text-align:right"></div>
+        <div style="text-align:right;margin-top:2px"><a href="#" onclick="openClassDialog();return false" style="font-size:10px;color:#3b6db4">Настройки классов</a></div>
       </div>
       <div class="scenario">Сценарий&nbsp;
         <select id="scenarioSelect" onchange="applyScenario(this.value)">
@@ -30176,6 +30303,16 @@ details.cadastral-box>summary::marker{color:#888}
 <!-- Знакомство. Личность подтверждает Telegram, а имя, компанию и источник
      подтвердить нечем — они со слов человека, и делать вид, что проверены,
      нельзя. Спрашиваем один раз после входа (решение владельца, 18.08.2026). -->
+<div id="classDialog" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);
+     z-index:90;align-items:center;justify-content:center;padding:20px" onclick="if(event.target===this)closeClassDialog()">
+  <div style="background:#fff;max-width:780px;width:100%;max-height:86vh;overflow:auto;padding:22px 24px;border-radius:10px">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:4px"><h2 style="margin:0;font-size:17px">Настройки классов</h2><button onclick="closeClassDialog()" style="margin-left:auto;border:1px solid #ddd;background:#fff;border-radius:6px;padding:3px 10px;cursor:pointer">✕</button></div>
+    <div style="font-size:12px;color:#666;margin-bottom:10px">База классов одна и общая — её правит владелец, правка выходит выпуском. Ставки проекта, ушедшие от базы (руками или личным умолчанием), помечаются здесь, в PDF и в обеих книгах.</div>
+    <div id="classDialogBody"></div>
+    <div id="classDialogNote" style="font-size:12px;margin-top:10px;color:#444"></div>
+    <div style="margin-top:12px"><button onclick="applyProjectClassPreset(document.getElementById('projectClassSelect').value);renderClassDialog()" style="border:1px solid #3b6db4;background:#fff;color:#3b6db4;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:12px">Вернуть ставки базы выбранного класса</button></div>
+  </div>
+</div>
 <div id="profileDialog" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);
      z-index:95;align-items:center;justify-content:center;padding:20px">
   <div style="background:#fff;max-width:560px;width:100%;max-height:86vh;overflow:auto;padding:22px 24px">
@@ -33114,6 +33251,30 @@ function syncProjectClassSelector(){
  const key=inputs.project_class&&PROJECT_CLASS_PRESETS[inputs.project_class]?inputs.project_class:'custom';
  select.value=key;
  renderProjectClassPreview();
+}
+
+function classFieldLabel(k){for(const g of FIELD_GROUPS){for(const f of g[1]){if(f[0]===k)return f[1]}}return k}
+function openClassDialog(){renderClassDialog();document.getElementById('classDialog').style.display='flex'}
+function closeClassDialog(){document.getElementById('classDialog').style.display='none'}
+function renderClassDialog(){
+ const box=document.getElementById('classDialogBody');if(!box)return;
+ const classes=Object.keys(PROJECT_CLASS_PRESETS);
+ const keys=Object.keys(PROJECT_CLASS_PRESETS[classes[0]]).filter(k=>k!=='label');
+ const cur=inputs.project_class&&PROJECT_CLASS_PRESETS[inputs.project_class]?inputs.project_class:'custom';
+ let deviations=0;
+ let html='<table style="width:100%;border-collapse:collapse;font-size:12px"><tr><th style="text-align:left;padding:6px 8px;border-bottom:1px solid #ddd">Поле</th>'+classes.map(c=>`<th style="text-align:right;padding:6px 8px;border-bottom:1px solid #ddd;${c===cur?'background:#eef4fb':''}">${PROJECT_CLASS_PRESETS[c].label}</th>`).join('')+'<th style="text-align:right;padding:6px 8px;border-bottom:1px solid #ddd">В проекте</th></tr>';
+ for(const k of keys){
+  const actual=Number(inputs[k]);
+  const base=cur!=='custom'?Number(PROJECT_CLASS_PRESETS[cur][k]):null;
+  const dev=base!=null&&isFinite(actual)&&Math.abs(actual-base)>1e-9;
+  if(dev)deviations++;
+  html+=`<tr><td style="padding:5px 8px;border-bottom:1px solid #f0f0f0">${classFieldLabel(k)}</td>`+classes.map(c=>`<td style="text-align:right;padding:5px 8px;border-bottom:1px solid #f0f0f0;${c===cur?'background:#f6f9fd':''}">${Number(PROJECT_CLASS_PRESETS[c][k]).toLocaleString('ru-RU')}</td>`).join('')+`<td style="text-align:right;padding:5px 8px;border-bottom:1px solid #f0f0f0;${dev?'color:#b42318;font-weight:700':''}">${isFinite(actual)?actual.toLocaleString('ru-RU'):'—'}${dev?' ≠':''}</td></tr>`;
+ }
+ box.innerHTML=html+'</table>';
+ const note=document.getElementById('classDialogNote');
+ if(cur==='custom')note.textContent='Класс «Пользовательский»: базы для сверки нет — все ставки заданы проектом.';
+ else if(deviations)note.innerHTML=`<span style="color:#b42318;font-weight:600">Изменено против базы «${PROJECT_CLASS_PRESETS[cur].label}»: ${deviations} ${deviations===1?'ставка':'ставки'}.</span> Отклонения печатаются в PDF и помечаются в книгах v4 и ПЛАТО.`;
+ else note.textContent=`Все ставки соответствуют базе класса «${PROJECT_CLASS_PRESETS[cur].label}».`;
 }
 
 
