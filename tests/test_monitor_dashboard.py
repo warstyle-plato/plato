@@ -37,6 +37,55 @@ def test_article_surplus_does_not_cross_fund_another_article():
     assert result["additional_financing"] == pytest.approx(0.0)
 
 
+def test_each_article_knows_its_reserve_take_and_what_is_left_for_the_rest():
+    articles = {
+        # Своего лимита нет — вся потребность идёт в резерв первой, в августе.
+        "2.6": {
+            "rss_limit": 0.0, "paid_at_baseline": 0.0,
+            "monthly_need": {"2026-08-01": 40.0},
+        },
+        # Свой лимит кончается внутри сентября; в сентябре резерва на всех
+        # не хватает — недостающее делится пропорционально дефициту (60:30).
+        "2.2.2.6": {
+            "rss_limit": 10.0, "paid_at_baseline": 0.0,
+            "monthly_need": {"2026-09-01": 70.0},
+        },
+        "2.2.3.4": {
+            "rss_limit": 0.0, "paid_at_baseline": 0.0,
+            "monthly_need": {"2026-09-01": 30.0},
+        },
+        # Живая статья резерв не трогает.
+        "2.4.6": {
+            "rss_limit": 100.0, "paid_at_baseline": 0.0,
+            "monthly_need": {"2026-09-01": 20.0},
+        },
+    }
+    result = dashboard._article_waterfall(
+        articles, reserve=100.0, cut=datetime.date(2026, 8, 1)
+    )
+    rows = {row["code"]: row for row in result["articles"]}
+
+    assert rows["2.6"]["reserve_take"] == pytest.approx(40.0)
+    assert rows["2.6"]["unfunded_take"] == pytest.approx(0.0)
+    assert rows["2.6"]["reserve_left_after_first"] == pytest.approx(60.0)
+
+    # Сентябрьский дефицит 90 при остатке резерва 60: покрыто 2/3 каждому.
+    assert rows["2.2.2.6"]["reserve_take"] == pytest.approx(40.0)
+    assert rows["2.2.2.6"]["unfunded_take"] == pytest.approx(20.0)
+    assert rows["2.2.3.4"]["reserve_take"] == pytest.approx(20.0)
+    assert rows["2.2.3.4"]["unfunded_take"] == pytest.approx(10.0)
+    assert rows["2.2.2.6"]["reserve_left_after_first"] == pytest.approx(0.0)
+
+    assert rows["2.4.6"]["reserve_take"] == pytest.approx(0.0)
+    assert rows["2.4.6"]["reserve_left_after_first"] is None
+
+    # Атрибуция по статьям сходится с помесячным забором и с непокрытым.
+    assert sum(r["reserve_take"] for r in rows.values()) == pytest.approx(
+        sum(result["monthly_reserve_draw"].values()))
+    assert sum(r["unfunded_take"] for r in rows.values()) == pytest.approx(
+        result["additional_financing"])
+
+
 def test_grodnenskaya_reserve_control_benchmark_exhausts_in_november():
     articles = {
         "2.2.3.3": {
