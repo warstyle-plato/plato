@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 
 from auction_search.adapters import InvestMoscowDiscoveryAdapter, LotOnlineAdapter, RoseltorgAdapter
 from auction_search.adapters.torgi_gov import TorgiGovAdapter, trust_report as torgi_trust_report
+from auction_search.adapters.fedresurs import probe as fedresurs_probe
 from auction_search.bridge import auction_page_with_handoff, install_page_bridge
 from auction_search.developaid_mapper import build_developaid_seed
 from auction_search.documents import DocumentExtractionError
@@ -724,6 +725,20 @@ def install(app: FastAPI) -> None:
         вечно — здесь они измеряются: «сколько из присланного наше».
         """
         return await run_in_threadpool(lambda: TorgiGovAdapter().probe_regions(page))
+
+    @app.get("/auctions/fedresurs/probe")
+    async def auction_fedresurs_probe() -> dict[str, Any]:
+        """Что отвечает ЕФРСБ. Разбора нет — сначала ответ, потом код.
+
+        ГИС Торги оказались не тем рынком: живой ответ подтвердил один код вида
+        торгов — приватизацию госимущества, — а 44% выборки владельца это
+        банкротство, и лежит оно на площадках, которых мы не читаем.
+
+        Из песочницы bankrot.fedresurs.ru закрыт, как НСПД и torgi.gov.ru,
+        поэтому проба ходит только с ядра. Разбор по догадке здесь запрещён
+        намеренно: ровно так ГИС Торги приехали на прод с тридцатью гаражами.
+        """
+        return await run_in_threadpool(fedresurs_probe)
 
     @app.get("/auctions/discover")
     async def auction_discover(

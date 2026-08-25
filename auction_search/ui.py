@@ -328,7 +328,17 @@ function renderRows(){
  renderFoldNote();renderAskContext();
 }
 function stats(){const a=state.filtered;$('sCount').textContent=a.length;$('sKrt').textContent=a.filter(x=>x.lot_kind==='krt').length;$('sLand').textContent=a.filter(x=>['land_sale','land_lease'].includes(x.lot_kind)).length;const ds=a.map(x=>new Date(x.application_deadline)).filter(x=>!Number.isNaN(x.getTime())).sort((a,b)=>a-b);$('sDeadline').textContent=ds.length?new Intl.DateTimeFormat('ru-RU',{day:'2-digit',month:'2-digit'}).format(ds[0]):'—'}
-function renderCoverage(){const box=$('coverage'),r=(state.coverage||[])[0];if(!r){box.style.display='none';return}const unsupported=(r.unsupported_etp_hosts||[]).join(', ');box.style.display='block';box.className='notice coverage'+((r.errors||[]).length?' warn':'');box.textContent=`Торги Москвы: карточек ${r.city_cards||0} · ссылок на ЭТП ${r.official_etp_links||0} · подтверждено ${r.verified_lots||0} · без подтверждённой ЭТП ${r.unresolved_city_cards||0}${unsupported?' · нужны адаптеры: '+unsupported:''}${(r.errors||[]).length?' · часть каталога недоступна':''}`}
+function renderCoverage(){const box=$('coverage'),r=(state.coverage||[])[0];if(!r){box.style.display='none';return}const unsupported=(r.unsupported_etp_hosts||[]).join(', ');box.style.display='block';box.className='notice coverage'+((r.errors||[]).length?' warn':'');box.textContent=`Торги Москвы: карточек ${r.city_cards||0} · ссылок на ЭТП ${r.official_etp_links||0} · подтверждено ${r.verified_lots||0} · без подтверждённой ЭТП ${r.unresolved_city_cards||0}${unsupported?' · нужны адаптеры: '+unsupported:''}${(r.errors||[]).length?' · часть каталога недоступна':''}`;
+ // Что источник СОДЕРЖИТ — часть ответа. «Все официальные источники» в списке
+ // обещают охват, которого нет: банкротные лоты лежат на площадках, которых мы
+ // не читаем, и молчание об этом читается как их отсутствие на рынке.
+ const markets=(state.coverage||[]).map(x=>x&&x.market).filter(Boolean);
+ if(markets.length){
+  const note=document.createElement('div');
+  note.className='source';
+  note.textContent='Что в выдаче: '+markets.join('; ');
+  box.appendChild(note);
+ }}
 function areaLine(l){
  // Два разных числа под одним именем никто не заметит: у лота с торгов бывает
  // структурирована площадь ЗДАНИЯ, а метры участка стоят только в тексте.
