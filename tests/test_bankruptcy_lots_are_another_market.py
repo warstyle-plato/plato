@@ -193,21 +193,49 @@ def test_a_public_offer_says_its_ladder_is_not_in_the_answer() -> None:
 
 # --- осторожность -----------------------------------------------------------
 
-def test_the_source_is_off_until_its_fields_are_checked(monkeypatch) -> None:
-    """Включённый непроверенный источник хуже отсутствующего.
+def test_the_source_is_on_once_it_has_been_checked(monkeypatch) -> None:
+    """Источник ждал не флага, а проверки — и дождался.
 
-    Он приносит лоты, и они выглядят так же, как проверенные.
+    Разбор сверен живым ответом на десяти карточках, имя параметра региона
+    измерено пробой с ядра. Держать после этого выключенным значит держать
+    выключенным проверенное.
     """
     monkeypatch.delenv(FLAG, raising=False)
+    assert TorgiGovAdapter.enabled() is True
+
+
+def test_the_source_can_still_be_switched_off(monkeypatch) -> None:
+    """Выключатель остаётся: источник чужой, и он может испортиться."""
+    monkeypatch.setenv(FLAG, "0")
     assert TorgiGovAdapter.enabled() is False
     assert list(TorgiGovAdapter().discover_moscow()) == []
 
 
 def test_the_switch_off_says_why(monkeypatch) -> None:
-    monkeypatch.delenv(FLAG, raising=False)
+    monkeypatch.setenv(FLAG, "0")
     adapter = TorgiGovAdapter()
     list(adapter.discover_moscow())
     assert FLAG in adapter.last_report["reason"]
+
+
+def test_the_report_says_who_filtered_the_region(monkeypatch) -> None:
+    """Серверного фильтра у этого API нет — молчание об этом читалось бы
+    как «сервис прислал только наше».
+
+    Проба 25.08.2026 перебрала шесть имён параметра, включая контрольный
+    запрос без него: ни одно не отфильтровало, выдача одна и та же с чужими
+    регионами (47, 69, 76, 77).
+    """
+    monkeypatch.setenv(FLAG, "0")
+    adapter = TorgiGovAdapter()
+    list(adapter.discover_moscow())
+    assert "region_filter" in adapter.last_report
+    monkeypatch.setattr(TorgiGovAdapter, "_fetch_page",
+                        lambda self, page: {"content": []})
+    monkeypatch.setenv(FLAG, "1")
+    adapter = TorgiGovAdapter()
+    list(adapter.discover_moscow())
+    assert "subjectRFCode" in adapter.last_report["region_filter"]
 
 
 def test_a_card_without_a_name_is_skipped_not_invented() -> None:
