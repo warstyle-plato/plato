@@ -157,18 +157,32 @@ def _apply_pace(project: str, view: dict[str, Any], cut: datetime.date) -> dict[
         network = (propagated.get(tid) or {}).get("forecast_finish") if propagated else None
         plan = monitor._day(row.get("plan_finish"))
         effective = own
+        method = None
         if network and plan and network > plan:
             effective = max([d for d in (own, network) if d]) if own else network
+        if effective is None and network and plan and not row.get("baseline_closed"):
+            # Работа без собственного темпа КС — не «без прогноза»: её прогноз
+            # строится от плановой длительности, а старт сдвигается задержкой
+            # предшественников по PM-сети (сдвинутые ловятся веткой выше, здесь
+            # остаётся «сеть не двигает — идёт по плану»). Прогноз в прошлом
+            # прогнозом не считается: просроченная работа без актов — риск.
+            if plan >= cut:
+                effective = plan
+                method = "plan_duration_shifted_by_predecessors"
         if effective is None:
             continue
         row["pace_forecast_finish"] = monitor._iso(effective)
         row["pace_delta_days"] = (effective - plan).days if plan else None
-        row["pace_forecast_method"] = (
-            "acts_pace_plus_pm_dependencies"
-            if network and plan and network > plan
-            else local_methods.get(tid, row.get("pace_forecast_method", ""))
-        )
+        if method is None:
+            method = (
+                "acts_pace_plus_pm_dependencies"
+                if network and plan and network > plan
+                else local_methods.get(tid, row.get("pace_forecast_method", ""))
+            )
+        row["pace_forecast_method"] = method
         row["pace_forecast_known"] = True
+        if method == "plan_duration_shifted_by_predecessors":
+            row["pace_status"] = "ПО ПЛАНУ (ТЕМПА КС НЕТ)"
         if network and plan and network > plan:
             affected += 1
 

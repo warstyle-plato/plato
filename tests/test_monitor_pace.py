@@ -56,6 +56,60 @@ def test_mixed_lifecycle_rss_21_is_cost_evidence_not_a_calendar_forecast():
     assert method == "mixed_lifecycle_rss"
 
 
+def test_task_without_own_pace_inherits_plan_duration_shifted_by_predecessors(monkeypatch):
+    """Будущая работа без актов — не «без прогноза»: её прогноз строится от
+    плановой длительности со стартом, сдвинутым задержкой предшественников."""
+    d = datetime.date
+    cut = d(2026, 8, 22)
+    pm = {"known": True, "rnv_id": "", "tasks": {
+        "A": {"id": "A", "name": "Монолит", "start": d(2026, 7, 1),
+              "finish": d(2026, 12, 31), "duration_days": 183,
+              "predecessors": [], "free_float_days": 0, "total_float_days": 0},
+        "B": {"id": "B", "name": "Фасад", "start": d(2027, 1, 1),
+              "finish": d(2027, 3, 1), "duration_days": 59,
+              "predecessors": [{"id": "A", "type": "FS", "lag_days": 0}],
+              "free_float_days": 0, "total_float_days": 0},
+        "C": {"id": "C", "name": "Старый нулевой цикл", "start": d(2025, 1, 1),
+              "finish": d(2025, 6, 30), "duration_days": 180,
+              "predecessors": [], "free_float_days": 0, "total_float_days": 0},
+        "D": {"id": "D", "name": "Благоустройство", "start": d(2027, 6, 1),
+              "finish": d(2027, 9, 1), "duration_days": 92,
+              "predecessors": [], "free_float_days": 0, "total_float_days": 0},
+    }}
+    monkeypatch.setattr(pace.schedule_graph, "_load_pm", lambda _p: pm)
+    rows = [
+        {"id": "A", "plan_start": "2026-07-01", "plan_finish": "2026-12-31",
+         "rss_accepted_ratio": 0.25, "rss_act_cost_rate_3m": 0.05},
+        {"id": "B", "plan_start": "2027-01-01", "plan_finish": "2027-03-01",
+         "rss_accepted_ratio": None, "rss_act_cost_rate_3m": None},
+        {"id": "C", "plan_start": "2025-01-01", "plan_finish": "2025-06-30",
+         "rss_accepted_ratio": 0.0, "rss_act_cost_rate_3m": 0.0},
+        {"id": "D", "plan_start": "2027-06-01", "plan_finish": "2027-09-01",
+         "rss_accepted_ratio": None, "rss_act_cost_rate_3m": None},
+    ]
+    view = {"schedule": {"rows": rows, "management": []}, "dashboard": {"schedule": {}}}
+    pace._apply_pace("Проект", view, cut)
+    by_id = {row["id"]: row for row in rows}
+
+    # Сдвинутый предшественником наследует задержку по сети (было и раньше).
+    assert by_id["B"]["pace_forecast_known"] is True
+    assert by_id["B"]["pace_forecast_method"] == "acts_pace_plus_pm_dependencies"
+    assert by_id["B"]["pace_delta_days"] > 0
+    assert by_id["B"]["pace_forecast_finish"] > "2027-03-01"
+
+    # Будущая работа, чьи предшественники не сдвинуты, идёт по плану — и это
+    # прогноз, а не «forecast не рассчитан».
+    assert by_id["D"]["pace_forecast_known"] is True
+    assert by_id["D"]["pace_forecast_method"] == "plan_duration_shifted_by_predecessors"
+    assert by_id["D"]["pace_delta_days"] == 0
+    assert by_id["D"]["pace_forecast_finish"] == "2027-09-01"
+    assert by_id["D"]["pace_status"] == "ПО ПЛАНУ (ТЕМПА КС НЕТ)"
+
+    # Просроченная работа без актов прогноза не получает: «план» в прошлом —
+    # не прогноз, а немаркированный риск.
+    assert not by_id["C"].get("pace_forecast_known")
+
+
 def test_management_aggregate_exposes_pace_forecast_on_presentation_tree():
     nodes = [{
         "level": "corpus",
