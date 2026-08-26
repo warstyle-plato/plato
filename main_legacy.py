@@ -67,7 +67,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.20.16"
+VERSION = "0.20.19"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -236,29 +236,50 @@ SCENARIOS = {
 }
 
 PROJECT_CLASS_PRESETS = {
+    # Класс задаёт полный профиль себестоимости, а не только СМР (решение
+    # владельца, 26.08.2026): иначе свод модуля «Статистика» обосновывал две
+    # строки из десяти. База «Комфорта» по новым статьям равна умолчаниям
+    # движка — умолчания и есть комфорт, и расчёт на них не должен показывать
+    # отклонений; «Бизнес» и «Элитный» — умолчание × экспертный коэффициент
+    # класса из reference_data/statistics/class_adjustments.json (тот же слой,
+    # которым свод приводит источники между классами; копии коэффициентов
+    # здесь нет — есть зафиксированный результат, и правится он выпуском).
+    # «Содержание стройплощадки» в профиль не входит: свод по нему — один
+    # внутренний проект малого масштаба, статья зависит от размера площадки,
+    # а не от класса жилья. «Сдача и ввод» — свода нет, источники не
+    # раскрывают. Цены и ставки СМР проверку прошли и не менялись.
     "comfort": {
         "label": "Комфорт",
         "apartment_price_th": 350,
         "commercial_price_th": 350,
         "parking_price_th": 1500,
+        "preparation_th_per_sqm": 2.75,
         "main_above_th_per_sqm": 110,
         "main_under_th_per_sqm": 110,
+        "utilities_th_per_sqm": 10.25,
+        "landscaping_th_per_sqm": 11.5,
     },
     "business": {
         "label": "Бизнес",
         "apartment_price_th": 650,
         "commercial_price_th": 650,
         "parking_price_th": 5000,
+        "preparation_th_per_sqm": 2.9,
         "main_above_th_per_sqm": 190,
         "main_under_th_per_sqm": 190,
+        "utilities_th_per_sqm": 10.8,
+        "landscaping_th_per_sqm": 15.5,
     },
     "elite": {
         "label": "Элитный",
         "apartment_price_th": 1500,
         "commercial_price_th": 1500,
         "parking_price_th": 20000,
+        "preparation_th_per_sqm": 3.2,
         "main_above_th_per_sqm": 300,
         "main_under_th_per_sqm": 300,
+        "utilities_th_per_sqm": 11.8,
+        "landscaping_th_per_sqm": 25.3,
     },
 }
 
@@ -30517,11 +30538,7 @@ window.addEventListener('error', function(event){
 
 <script>
 const SCENARIOS={"conservative":{"scenario_revenue_multiplier":0.9,"scenario_cost_multiplier":1.1},"base":{"scenario_revenue_multiplier":1.0,"scenario_cost_multiplier":1.0},"optimistic":{"scenario_revenue_multiplier":1.1,"scenario_cost_multiplier":0.9}};
-const PROJECT_CLASS_PRESETS={
- "comfort":{"label":"Комфорт","apartment_price_th":350,"commercial_price_th":350,"parking_price_th":1500,"main_above_th_per_sqm":110,"main_under_th_per_sqm":110},
- "business":{"label":"Бизнес","apartment_price_th":650,"commercial_price_th":650,"parking_price_th":5000,"main_above_th_per_sqm":190,"main_under_th_per_sqm":190},
- "elite":{"label":"Элитный","apartment_price_th":1500,"commercial_price_th":1500,"parking_price_th":20000,"main_above_th_per_sqm":300,"main_under_th_per_sqm":300}
-};
+const PROJECT_CLASS_PRESETS=__DEVELOPAID_CLASS_PRESETS__;
 const RATE_DEFAULT=[]
 const TEP_DEFAULT=__DEVELOPAID_TEP_DEFAULT__;
 const FIELD_GROUPS=__DEVELOPAID_FIELD_GROUPS__;
@@ -33392,7 +33409,9 @@ function applyProjectClassPreset(selectedKey){
  inputs.project_class=key;
  // Личная перекрышка сильнее общей базы: применяется значение человека,
  // а отклонение от ОБЩЕЙ базы по-прежнему считает сервер и печатает в PDF.
- ['apartment_price_th','commercial_price_th','parking_price_th','main_above_th_per_sqm','main_under_th_per_sqm'].forEach(k=>inputs[k]=classValue(key,k));
+ // Список полей — сам пресет: поле, добавленное в профиль класса позже,
+ // применяется без правки здесь.
+ Object.keys(p).filter(k=>k!=='label').forEach(k=>inputs[k]=classValue(key,k));
  renderInputs();
  if(document.getElementById('projectClassSelect'))document.getElementById('projectClassSelect').value=key;
  renderProjectClassPreview();
@@ -33470,6 +33489,8 @@ function renderClassDialog(){
  const classes=Object.keys(PROJECT_CLASS_PRESETS);
  const keys=Object.keys(PROJECT_CLASS_PRESETS[classes[0]]).filter(k=>k!=='label');
  const cur=inputs.project_class&&PROJECT_CLASS_PRESETS[inputs.project_class]?inputs.project_class:'custom';
+ const confLabels={high:'высокое',medium:'среднее',limited:'ограниченное',pilot:'пилотное — источников мало',insufficient:'недостаточно данных'};
+ const thous=v=>v==null?'—':(v/1000).toLocaleString('ru-RU',{maximumFractionDigits:1});
  let deviations=0;
  let owned=0;
  let html='<table style="width:100%;border-collapse:collapse;font-size:12px"><tr><th style="text-align:left;padding:6px 8px;border-bottom:1px solid #ddd">Поле</th>'+classes.map(c=>`<th style="text-align:right;padding:6px 8px;border-bottom:1px solid #ddd;${c===cur?'background:#eef4fb':''}">${PROJECT_CLASS_PRESETS[c].label}</th>`).join('')+'<th style="text-align:right;padding:6px 8px;border-bottom:1px solid #ddd">В проекте</th></tr>';
@@ -33480,18 +33501,25 @@ function renderClassDialog(){
   const base=cur!=='custom'?classBase(cur,k):null;
   const dev=base!=null&&isFinite(actual)&&Math.abs(actual-base)>1e-9;
   if(dev)deviations++;
-  html+=`<tr><td style="padding:5px 8px;border-bottom:1px solid #f0f0f0">${classFieldLabel(k)}</td>`+classes.map(c=>{
+  // Статья со сводом раскрывается в обоснование: источники, диапазон и
+  // положение значения проекта. Экспертная ставка без ответа «почему такая»
+  // и была тем «невнятным», ради которого блок переделан (владелец, 26.08.2026).
+  const rowStats=classes.map(c=>classStatsRow(c,k));
+  const hasStats=rowStats.some(Boolean);
+  const labelCell=hasStats
+   ?`<a href="#" onclick="toggleClassDetail('${k}');return false" title="Обоснование: источники, диапазон и положение вашего значения" style="color:inherit;text-decoration:none;border-bottom:1px dashed #b6c4d6">${classFieldLabel(k)} <span style="color:#3b6db4">${CLASS_DETAIL_OPEN[k]?'▾':'▸'}</span></a>`
+   :classFieldLabel(k);
+  html+=`<tr><td style="padding:5px 8px;border-bottom:1px solid #f0f0f0">${labelCell}</td>`+classes.map(c=>{
    const own=Math.abs(classValue(c,k)-classBase(c,k))>1e-9;
    if(own)owned++;
    return `<td style="text-align:right;padding:3px 8px;border-bottom:1px solid #f0f0f0;${c===cur?'background:#f6f9fd':''}"><input type="number" value="${classValue(c,k)}" onchange="setClassBase('${c}','${k}',this.value)" title="${own?'Своё значение; общая база: '+classBase(c,k).toLocaleString('ru-RU'):'Общая база класса — своё значение можно вписать прямо сюда'}" style="width:84px;text-align:right;border:1px solid ${own?'#c98a1b':'#dfe4ea'};border-radius:5px;padding:3px 6px;font-size:12px;${own?'background:#fdf6e6;font-weight:600':''}"></td>`;
   }).join('')+`<td style="text-align:right;padding:3px 8px;border-bottom:1px solid #f0f0f0;white-space:nowrap"><input type="number" value="${isFinite(actual)?actual:''}" onchange="setClassRate('${k}',this.value)" style="width:92px;text-align:right;border:1px solid ${dev?'#b42318':'#d5dbe3'};border-radius:5px;padding:3px 6px;font-size:12px;${dev?'color:#b42318;font-weight:700':''}">${dev?' <span style="color:#b42318;font-weight:700">≠</span>':''}</td></tr>`;
   // Свод «Статистики» стоит строкой под той ставкой, к которой относится:
   // связь числа со ставкой видна на месте, а не выводится из соседней таблицы.
-  const statsCells=classes.map(c=>classStatsRow(c,k));
-  if(statsCells.some(Boolean)){
+  if(hasStats){
    html+='<tr><td style="padding:2px 8px 6px;border-bottom:1px solid #f0f0f0;font-size:11px;color:#3b6db4">свод „Статистики“, тыс ₽/м²</td>'
     +classes.map((c,i)=>{
-     const r=statsCells[i];
+     const r=rowStats[i];
      if(!r)return '<td style="text-align:right;padding:2px 8px 6px;border-bottom:1px solid #f0f0f0;font-size:11px;color:#999">—</td>';
      const v=Math.round(r.recommended_rub_m2/100)/10;
      const spread=(r.p25_rub_m2!=null&&r.p75_rub_m2!=null)?(r.p25_rub_m2/1000).toLocaleString('ru-RU',{maximumFractionDigits:1})+'–'+(r.p75_rub_m2/1000).toLocaleString('ru-RU',{maximumFractionDigits:1})+' тыс, ':'';
@@ -33501,6 +33529,23 @@ function renderClassDialog(){
       +'style="color:#3b6db4;text-decoration:none;border-bottom:1px dashed #9bb8dc">'+v.toLocaleString('ru-RU',{maximumFractionDigits:1})+'</a></td>';
     }).join('')
     +'<td style="border-bottom:1px solid #f0f0f0"></td></tr>';
+  }
+  if(hasStats&&CLASS_DETAIL_OPEN[k]){
+   // Обоснование считается для текущего класса; «Пользовательский» смотрит
+   // на первый класс списка — базы для него всё равно нет.
+   const detailCls=(cur!=='custom'&&classStatsRow(cur,k))?cur:classes[rowStats.findIndex(Boolean)];
+   const rec=classStatsRow(detailCls,k);
+   if(rec){
+    const srcRows=(rec.included_sources||[]).map(x=>`<div>· ${x.source} — ${x.grade_label||('грейд '+x.grade)}${x.reference_date?(', '+x.reference_date):''}: <b>${thous(x.value_rub_m2)}</b> тыс ₽/м² в приведении к нашей базе площади</div>`).join('');
+    const mine=Number(inputs[k]);
+    let pos='';
+    if(isFinite(mine)&&rec.p25_rub_m2!=null&&rec.p75_rub_m2!=null){
+     const lo=rec.p25_rub_m2/1000,hi=rec.p75_rub_m2/1000;
+     const verdict=mine<lo?`ниже p25 рынка (${thous(rec.p25_rub_m2)})`:(mine>hi?`выше p75 рынка (${thous(rec.p75_rub_m2)})`:'в границах p25–p75 рынка');
+     pos=`<div style="margin-top:3px">В проекте <b>${mine.toLocaleString('ru-RU')}</b> тыс ₽/м² — ${verdict}.</div>`;
+    }
+    html+=`<tr><td colspan="${classes.length+2}" style="padding:4px 10px 8px 22px;border-bottom:1px solid #f0f0f0;font-size:11px;color:#555;background:#fbfcfe">Обоснование для класса «${PROJECT_CLASS_PRESETS[detailCls].label}»: свод <b>${thous(rec.recommended_rub_m2)}</b> тыс ₽/м², разброс p25–p75 ${thous(rec.p25_rub_m2)}–${thous(rec.p75_rub_m2)}, источников ${rec.source_count}, доверие — ${confLabels[rec.confidence]||rec.confidence}.${srcRows?'<div style="margin-top:3px">'+srcRows+'</div>':''}${pos}</td></tr>`;
+   }
   }
  }
  box.innerHTML=html+'</table>';
@@ -33534,6 +33579,8 @@ function setClassRate(k,value){
 // связывается со ставками класса).
 let CLASS_STATS_BY=null;
 let CLASS_STATS_ERROR='';
+let CLASS_DETAIL_OPEN={};
+function toggleClassDetail(k){CLASS_DETAIL_OPEN[k]=!CLASS_DETAIL_OPEN[k];renderClassDialog();}
 function classStatsAreas(){
  // ТЭП проекта — чтобы ставки, опубликованные на продаваемый метр или общую
  // площадь здания, нормализовались на НАШИ площади, а не на условный пример.
@@ -33581,7 +33628,7 @@ function renderClassStats(){
   return;
  }
  if(!CLASS_STATS_BY){box.innerHTML='<div style="font-size:12px;color:#777">Загружаю свод модуля «Статистика»…</div>';return;}
- box.innerHTML='<div style="font-size:12px;color:#555">Строки «свод „Статистики“» — независимый ориентир себестоимости, посчитанный модулем «Статистика» из раскрытий источников рынка и наших данных на ТЭП этого проекта; клик по числу подставляет его классу. Как это считается — за кнопкой «Как считаются класс и сценарий»; таблица источников — на странице <a href="/statistics" target="_blank" style="color:#3b6db4">«Статистика»</a>.</div>';
+ box.innerHTML='<div style="font-size:12px;color:#555">Строки «свод „Статистики“» — независимый ориентир себестоимости, посчитанный модулем «Статистика» из раскрытий источников рынка и наших данных на ТЭП этого проекта. Клик по числу подставляет его классу; клик по названию статьи раскрывает обоснование — источники с грейдами, диапазон рынка и положение вашего значения в нём. Как это считается — за кнопкой «Как считаются класс и сценарий»; таблица источников — на странице <a href="/statistics" target="_blank" style="color:#3b6db4">«Статистика»</a>.</div>';
 }
 
 
@@ -36588,7 +36635,7 @@ const NON_PROJECT_STATE=['feedbackShown','feedbackCalcs','feedbackReportSeconds'
  'aiBusy','moAutoBusy','moRecalcTimer','sensitivityBusy','moDistrictPrices','moKdDocument',
  'landScreeningRun','tepRunSequence',
  'CLASS_OVERRIDES','CLASS_OVERRIDES_NOTE','CLASS_OVERRIDES_FROM_SERVER',
- 'CLASS_STATS_BY','CLASS_STATS_ERROR'];
+ 'CLASS_STATS_BY','CLASS_STATS_ERROR','CLASS_DETAIL_OPEN'];
 
 function resetProjectState(){
  // Данные проекта, которые живут переменными страницы, а не полями формы.
@@ -37002,6 +37049,11 @@ PAGE = PAGE.replace(VERSION_PLACEHOLDER, VERSION)
 MONITOR_PAGE_HTML = _MONITOR_PAGE_RAW.replace("__VERSION__", VERSION)
 PAGE = PAGE.replace(FIELD_GROUPS_PLACEHOLDER,
                     json.dumps(FIELD_GROUPS, ensure_ascii=False))
+# Базы классов — из движка. Копия жила на странице с рождения окна и отстала
+# от пресета в первый же раз, когда профиль класса расширили статьями:
+# полный профиль применялся бы на сервере и молча не существовал бы в браузере.
+PAGE = PAGE.replace("__DEVELOPAID_CLASS_PRESETS__",
+                    json.dumps(PROJECT_CLASS_PRESETS, ensure_ascii=False))
 PAGE = PAGE.replace(INPUT_DEFAULT_PLACEHOLDER,
                     json.dumps(DEFAULT_INPUTS, ensure_ascii=False))
 PAGE = PAGE.replace(TEP_DEFAULT_PLACEHOLDER,
