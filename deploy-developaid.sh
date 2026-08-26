@@ -7,6 +7,8 @@
 #   sh deploy-developaid.sh --log       — журнал выкаток
 #   sh deploy-developaid.sh --space     — сколько места и чем занято
 #   sh deploy-developaid.sh --check 8080 [коммит] — проверить, что отвечает порт
+#   sh deploy-developaid.sh --watch     — обновиться, ЕСЛИ в реестре новее
+#   sh deploy-developaid.sh --install-watch [минуты] — поставить --watch в cron
 #
 # Главное правило: прежний контейнер живёт, пока новый не доказал, что
 # работает. Раньше выкатка гасила его первой командой, и любая осечка —
@@ -283,7 +285,83 @@ start_container() {
 }
 
 # --- разбор команды ---------------------------------------------------------
+# --- сторож выпуска ---------------------------------------------------------
+# Выкатку запускали руками, и между сборкой и продом лежала ночь. Сторож
+# смотрит реестр по расписанию и обновляется, только если там появилось новое.
+#
+# Дёшево это ровно потому, что сравниваются ОБРАЗЫ, а не версии: `docker pull`
+# на неизменившемся образе тянет манифест в несколько килобайт и говорит «up to
+# date». Спрашивать версию у контейнера здесь нельзя — она известна лишь после
+# того, как образ уже скачан, а качать два гигабайта каждые десять минут значит
+# добить диск, об который мы уже спотыкались.
+#
+# Замок нужен, потому что выкатка идёт минутами: без него следующий тик встанет
+# поверх неоконченного и оба будут менять один контейнер.
+LOCK="$ROOT/data/deploy.lock"
+
+take_lock() {
+  if mkdir "$LOCK" 2>/dev/null; then
+    trap 'rmdir "$LOCK" 2>/dev/null || true' EXIT INT TERM
+    return 0
+  fi
+  # Замок брошенный (машина перезагрузилась посреди выкатки) не должен запирать
+  # навсегда: старше часа — снимаем и говорим об этом.
+  if [ -n "$(find "$LOCK" -maxdepth 0 -mmin +60 2>/dev/null)" ]; then
+    say "замок старше часа — снимаю, прошлая выкатка не закончилась"
+    rmdir "$LOCK" 2>/dev/null || true
+    mkdir "$LOCK" 2>/dev/null || return 1
+    trap 'rmdir "$LOCK" 2>/dev/null || true' EXIT INT TERM
+    return 0
+  fi
+  return 1
+}
+
+watch_once() {
+  take_lock || { echo "Уже идёт выкатка — пропускаю этот тик." >&2; exit 0; }
+  require_registry
+  registry_login
+  before=$(docker image inspect --format '{{.Id}}' "${REPO}:prod" 2>/dev/null || true)
+  docker pull -q "${REPO}:prod" >/dev/null 2>&1 || {
+    say "сторож: реестр не ответил, пробую в следующий раз"
+    exit 0
+  }
+  after=$(docker image inspect --format '{{.Id}}' "${REPO}:prod" 2>/dev/null || true)
+  live=$(docker inspect --format '{{.Image}}' "$NAME" 2>/dev/null || true)
+  if [ -n "${after:-}" ] && [ "$after" = "${live:-}" ]; then
+    # Молчим в терминал и оставляем строку в журнале: cron не должен слать
+    # письмо каждые десять минут, но «сторож ничего не делал» и «сторож не
+    # запускался» обязаны различаться.
+    printf '%s  сторож: новее нет\n' "$(date '+%Y-%m-%d %H:%M:%S')" >> "$LOG"
+    exit 0
+  fi
+  say "сторож: в реестре новый образ (было ${before:-—}, стало ${after:-—}) — выкатываю"
+  rmdir "$LOCK" 2>/dev/null || true
+  trap - EXIT INT TERM
+  exec sh "$0" prod
+}
+
+install_watch() {
+  every="${1:-10}"
+  case "$every" in ''|*[!0-9]*) echo "Минуты — числом: --install-watch 10" >&2; exit 1;; esac
+  line="*/${every} * * * * cd ${ROOT} && sh ${ROOT}/deploy-developaid.sh --watch >> ${ROOT}/data/deploy-watch.log 2>&1"
+  current=$(crontab -l 2>/dev/null || true)
+  cleaned=$(printf '%s\n' "$current" | grep -v 'deploy-developaid.sh --watch' || true)
+  printf '%s\n%s\n' "$cleaned" "$line" | grep -v '^$' | crontab -
+  echo "Сторож поставлен: каждые ${every} мин."
+  echo "  $line"
+  echo
+  echo "Проверить прямо сейчас: sh ${ROOT}/deploy-developaid.sh --watch"
+  echo "Снять: crontab -e и удалить строку."
+}
+
 case "${1:-}" in
+  --watch)
+    watch_once
+    ;;
+  --install-watch)
+    install_watch "${2:-10}"
+    exit 0
+    ;;
   --log)
     [ -f "$LOG" ] && exec tail -n 100 "$LOG"
     echo "Журнал пуст."
