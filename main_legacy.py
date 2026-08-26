@@ -67,7 +67,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.20.9"
+VERSION = "0.20.11"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -264,10 +264,9 @@ PROJECT_CLASS_PRESETS = {
 
 # Источники базовых ставок классов на страницу не зашиваются: адрес или имя
 # собственного проекта в подписи — раскрытие коммерческой информации, и один
-# раз это уже случилось. Свод нормированных данных по источникам готовит
-# модуль «Статистика» (/statistics); до его подключения таблица пуста, и
-# страница честно говорит «готовится», а не показывает рукодельные строки.
-PROJECT_CLASS_SOURCES: dict[str, list[dict[str, Any]]] = {}
+# раз это уже случилось. Свод нормированных данных по источникам отдаёт модуль
+# «Статистика»: окно настроек классов спрашивает /api/statistics/
+# cost-recommendation на открытии, внутренний источник там обезличен.
 
 
 def _input_field_label(field: str) -> str:
@@ -27838,6 +27837,73 @@ def projects_delete(req: ProjectRequest) -> dict[str, Any]:
     return project_delete(_project_owner(req.session, req.key), req.id)
 
 
+def _class_overrides_path(owner: int) -> Path:
+    directory = _PROJECTS_DIR.parent / "class_overrides"
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory / f"{int(owner)}.json"
+
+
+def class_overrides_read(owner: int) -> dict[str, dict[str, float]]:
+    try:
+        raw = json.loads(_class_overrides_path(owner).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def class_overrides_write(owner: int, payload: Any) -> dict[str, Any]:
+    """Личные значения ставок классов — умолчание для НОВЫХ применений класса.
+
+    Решение владельца (24.08.2026): база классов одна и общая, а человек может
+    держать личную перекрышку. Поля валидируются по самому пресету — списка-
+    копии нет; равное базе значение не хранится, чтобы файл не костенел, когда
+    база меняется выпуском.
+    """
+    overrides: dict[str, dict[str, float]] = {}
+    for class_key, fields in (payload or {}).items():
+        preset = PROJECT_CLASS_PRESETS.get(str(class_key))
+        if not preset or not isinstance(fields, dict):
+            continue
+        kept: dict[str, float] = {}
+        for field, value in fields.items():
+            if field == "label" or field not in preset:
+                continue
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(number) or number <= 0:
+                continue
+            if abs(number - float(preset[field])) > 1e-9:
+                kept[field] = number
+        if kept:
+            overrides[str(class_key)] = kept
+    path = _class_overrides_path(owner)
+    if overrides:
+        path.write_text(json.dumps(overrides, ensure_ascii=False), encoding="utf-8")
+    elif path.exists():
+        path.unlink()
+    return {"overrides": overrides}
+
+
+@app.post("/classes/overrides/get", include_in_schema=False)
+def classes_overrides_get(req: ProjectRequest) -> dict[str, Any]:
+    forwarded = _projects_forward("/classes/overrides/get", req)
+    if forwarded is not None:
+        return forwarded
+    owner = _project_owner(req.session, req.key)
+    return {"overrides": class_overrides_read(owner)}
+
+
+@app.post("/classes/overrides/save", include_in_schema=False)
+def classes_overrides_save(req: ProjectRequest) -> dict[str, Any]:
+    forwarded = _projects_forward("/classes/overrides/save", req)
+    if forwarded is not None:
+        return forwarded
+    owner = _project_owner(req.session, req.key)
+    return class_overrides_write(owner, req.payload)
+
+
 @app.post("/projects/share")
 def projects_share(req: ProjectRequest) -> dict[str, Any]:
     forwarded = _projects_forward("/projects/share", req)
@@ -30459,7 +30525,6 @@ const PROJECT_CLASS_PRESETS={
 const RATE_DEFAULT=[]
 const TEP_DEFAULT=__DEVELOPAID_TEP_DEFAULT__;
 const FIELD_GROUPS=__DEVELOPAID_FIELD_GROUPS__;
-const PROJECT_CLASS_SOURCES=__DEVELOPAID_CLASS_SOURCES__;
 const INPUT_DEFAULT=__DEVELOPAID_INPUT_DEFAULT__;
 const FEEDBACK_FORM=__DEVELOPAID_FEEDBACK_FORM__;
 
@@ -33316,7 +33381,7 @@ function renderProjectClassPreview(){
    box.textContent='Пользовательские значения';
    return;
  }
- box.textContent=`Кв/комм ${Number(p.apartment_price_th).toLocaleString('ru-RU')} · м/м ${Number(p.parking_price_th).toLocaleString('ru-RU')} · себес. ${Number(p.main_above_th_per_sqm).toLocaleString('ru-RU')}/${Number(p.main_under_th_per_sqm).toLocaleString('ru-RU')} тыс. ₽`;
+ box.textContent=`Кв/комм ${classValue(key,'apartment_price_th').toLocaleString('ru-RU')} · м/м ${classValue(key,'parking_price_th').toLocaleString('ru-RU')} · себес. ${classValue(key,'main_above_th_per_sqm').toLocaleString('ru-RU')}/${classValue(key,'main_under_th_per_sqm').toLocaleString('ru-RU')} тыс. ₽`;
 }
 
 function applyProjectClassPreset(selectedKey){
@@ -33325,7 +33390,9 @@ function applyProjectClassPreset(selectedKey){
  const p=PROJECT_CLASS_PRESETS[key];
  if(!p){inputs.project_class='custom';renderProjectClassPreview();return;}
  inputs.project_class=key;
- ['apartment_price_th','commercial_price_th','parking_price_th','main_above_th_per_sqm','main_under_th_per_sqm'].forEach(k=>inputs[k]=Number(p[k]));
+ // Личная перекрышка сильнее общей базы: применяется значение человека,
+ // а отклонение от ОБЩЕЙ базы по-прежнему считает сервер и печатает в PDF.
+ ['apartment_price_th','commercial_price_th','parking_price_th','main_above_th_per_sqm','main_under_th_per_sqm'].forEach(k=>inputs[k]=classValue(key,k));
  renderInputs();
  if(document.getElementById('projectClassSelect'))document.getElementById('projectClassSelect').value=key;
  renderProjectClassPreview();
@@ -33341,28 +33408,97 @@ function syncProjectClassSelector(){
 }
 
 function classFieldLabel(k){for(const g of FIELD_GROUPS){for(const f of g[1]){if(f[0]===k)return f[1]}}return k}
-function openClassDialog(){renderClassDialog();document.getElementById('classDialog').style.display='flex'}
+// Личные значения классов — перекрышка поверх общей базы (решение владельца,
+// 24.08.2026: база одна и общая, у человека может быть своя). Лежат на ядре
+// рядом с проектами и действуют при следующем применении класса; отклонения
+// проекта в PDF и книгах по-прежнему считаются от ОБЩЕЙ базы.
+let CLASS_OVERRIDES=null;
+let CLASS_OVERRIDES_NOTE='';
+function classBase(c,k){return Number(PROJECT_CLASS_PRESETS[c][k])}
+function classValue(c,k){
+ const own=CLASS_OVERRIDES&&CLASS_OVERRIDES[c]?Number(CLASS_OVERRIDES[c][k]):NaN;
+ return isFinite(own)&&own>0?own:classBase(c,k);
+}
+function openClassDialog(){
+ renderClassDialog();
+ document.getElementById('classDialog').style.display='flex';
+ loadClassOverrides();
+ loadClassStats();
+}
 function closeClassDialog(){document.getElementById('classDialog').style.display='none'}
+let CLASS_OVERRIDES_FROM_SERVER=false;
+async function loadClassOverrides(){
+ // Загружается не только из окна: применение класса из селектора обязано
+ // брать личные значения и без открытых настроек, поэтому нас зовёт и
+ // initProjects. Вошедший позже человек дозагружается при следующем вызове.
+ if(CLASS_OVERRIDES_FROM_SERVER)return;
+ if(!activeSession()&&!projectsAdminKey){
+  // «Не проверили» и «не заполнено» — разные ответы: без входа хранилище не
+  // спрашивается вовсе, и это называется вслух, а не выглядит как пустота.
+  if(CLASS_OVERRIDES===null)CLASS_OVERRIDES={};
+  CLASS_OVERRIDES_NOTE='Свои значения классов сохраняются после входа через бота; сейчас правка живёт до перезагрузки страницы.';
+  renderClassDialog();return;
+ }
+ try{
+  const data=await projectsCall('/classes/overrides/get',{});
+  CLASS_OVERRIDES=data.overrides||{};CLASS_OVERRIDES_NOTE='';
+  CLASS_OVERRIDES_FROM_SERVER=true;
+ }catch(e){
+  if(CLASS_OVERRIDES===null)CLASS_OVERRIDES={};
+  CLASS_OVERRIDES_NOTE='Хранилище не ответило ('+(e.message||e)+') — сохранённые свои значения не показаны.';
+ }
+ renderClassDialog();
+}
+async function setClassBase(c,k,value){
+ const num=Number(String(value).replace(/\s/g,'').replace(',','.'));
+ if(CLASS_OVERRIDES===null)CLASS_OVERRIDES={};
+ if(!isFinite(num)||num<=0||Math.abs(num-classBase(c,k))<1e-9){
+  // Пустое, мусор или ровно база — своего значения нет; выключатель
+  // перекрышки — вернуть базу, отдельной кнопки не нужно.
+  if(CLASS_OVERRIDES[c]){delete CLASS_OVERRIDES[c][k];if(!Object.keys(CLASS_OVERRIDES[c]).length)delete CLASS_OVERRIDES[c];}
+ }else{
+  (CLASS_OVERRIDES[c]=CLASS_OVERRIDES[c]||{})[k]=num;
+ }
+ renderProjectClassPreview();
+ renderClassDialog();
+ if(!activeSession()&&!projectsAdminKey)return;
+ try{await projectsCall('/classes/overrides/save',{payload:CLASS_OVERRIDES});}
+ catch(e){CLASS_OVERRIDES_NOTE='Не сохранилось: '+(e.message||e);renderClassDialog();}
+}
 function renderClassDialog(){
  const box=document.getElementById('classDialogBody');if(!box)return;
  const classes=Object.keys(PROJECT_CLASS_PRESETS);
  const keys=Object.keys(PROJECT_CLASS_PRESETS[classes[0]]).filter(k=>k!=='label');
  const cur=inputs.project_class&&PROJECT_CLASS_PRESETS[inputs.project_class]?inputs.project_class:'custom';
  let deviations=0;
+ let owned=0;
  let html='<table style="width:100%;border-collapse:collapse;font-size:12px"><tr><th style="text-align:left;padding:6px 8px;border-bottom:1px solid #ddd">Поле</th>'+classes.map(c=>`<th style="text-align:right;padding:6px 8px;border-bottom:1px solid #ddd;${c===cur?'background:#eef4fb':''}">${PROJECT_CLASS_PRESETS[c].label}</th>`).join('')+'<th style="text-align:right;padding:6px 8px;border-bottom:1px solid #ddd">В проекте</th></tr>';
  for(const k of keys){
   const actual=Number(inputs[k]);
-  const base=cur!=='custom'?Number(PROJECT_CLASS_PRESETS[cur][k]):null;
+  // Отклонение проекта меряется от ОБЩЕЙ базы — той же, что сервер печатает
+  // в PDF и книгах; личная перекрышка эту сверку не подменяет.
+  const base=cur!=='custom'?classBase(cur,k):null;
   const dev=base!=null&&isFinite(actual)&&Math.abs(actual-base)>1e-9;
   if(dev)deviations++;
-  html+=`<tr><td style="padding:5px 8px;border-bottom:1px solid #f0f0f0">${classFieldLabel(k)}</td>`+classes.map(c=>`<td style="text-align:right;padding:5px 8px;border-bottom:1px solid #f0f0f0;${c===cur?'background:#f6f9fd':''}">${Number(PROJECT_CLASS_PRESETS[c][k]).toLocaleString('ru-RU')}</td>`).join('')+`<td style="text-align:right;padding:3px 8px;border-bottom:1px solid #f0f0f0;white-space:nowrap"><input type="number" value="${isFinite(actual)?actual:''}" onchange="setClassRate('${k}',this.value)" style="width:92px;text-align:right;border:1px solid ${dev?'#b42318':'#d5dbe3'};border-radius:5px;padding:3px 6px;font-size:12px;${dev?'color:#b42318;font-weight:700':''}">${dev?' <span style="color:#b42318;font-weight:700">≠</span>':''}</td></tr>`;
+  html+=`<tr><td style="padding:5px 8px;border-bottom:1px solid #f0f0f0">${classFieldLabel(k)}</td>`+classes.map(c=>{
+   const own=Math.abs(classValue(c,k)-classBase(c,k))>1e-9;
+   if(own)owned++;
+   return `<td style="text-align:right;padding:3px 8px;border-bottom:1px solid #f0f0f0;${c===cur?'background:#f6f9fd':''}"><input type="number" value="${classValue(c,k)}" onchange="setClassBase('${c}','${k}',this.value)" title="${own?'Своё значение; общая база: '+classBase(c,k).toLocaleString('ru-RU'):'Общая база класса — своё значение можно вписать прямо сюда'}" style="width:84px;text-align:right;border:1px solid ${own?'#c98a1b':'#dfe4ea'};border-radius:5px;padding:3px 6px;font-size:12px;${own?'background:#fdf6e6;font-weight:600':''}"></td>`;
+  }).join('')+`<td style="text-align:right;padding:3px 8px;border-bottom:1px solid #f0f0f0;white-space:nowrap"><input type="number" value="${isFinite(actual)?actual:''}" onchange="setClassRate('${k}',this.value)" style="width:92px;text-align:right;border:1px solid ${dev?'#b42318':'#d5dbe3'};border-radius:5px;padding:3px 6px;font-size:12px;${dev?'color:#b42318;font-weight:700':''}">${dev?' <span style="color:#b42318;font-weight:700">≠</span>':''}</td></tr>`;
  }
  box.innerHTML=html+'</table>';
  const note=document.getElementById('classDialogNote');
- if(cur==='custom')note.textContent='Класс «Пользовательский»: базы для сверки нет — все ставки заданы проектом.';
- else if(deviations)note.innerHTML=`<span style="color:#b42318;font-weight:600">Изменено против базы «${PROJECT_CLASS_PRESETS[cur].label}»: ${deviations} ${deviations===1?'ставка':'ставки'}.</span> Отклонения печатаются в PDF и помечаются в книгах v4 и ПЛАТО.`;
- else note.textContent=`Все ставки соответствуют базе класса «${PROJECT_CLASS_PRESETS[cur].label}».`;
- renderClassSources(classes,keys);
+ const parts=[];
+ if(cur==='custom')parts.push('Класс «Пользовательский»: базы для сверки нет — все ставки заданы проектом.');
+ else if(deviations)parts.push(`<span style="color:#b42318;font-weight:600">Изменено против базы «${PROJECT_CLASS_PRESETS[cur].label}»: ${deviations} ${deviations===1?'ставка':'ставки'}.</span> Отклонения печатаются в PDF и помечаются в книгах v4 и ПЛАТО.`);
+ else parts.push(`Все ставки соответствуют базе класса «${PROJECT_CLASS_PRESETS[cur].label}».`);
+ if(owned)parts.push('<span style="color:#8a5a00">Янтарные ячейки — ваши значения классов:</span> они применяются при выборе класса вместо общей базы; вернуть базу — вписать её число (оно в подсказке ячейки).');
+ if(CLASS_OVERRIDES_NOTE)parts.push('<span style="color:#8a5a00">'+CLASS_OVERRIDES_NOTE+'</span>');
+ note.innerHTML=parts.join(' ');
+ renderClassStats();
+ // Класс сменили, не закрывая окна, — свод перезапрашивается под новый класс.
+ const dlg=document.getElementById('classDialog');
+ if(dlg&&dlg.style.display!=='none'&&CLASS_STATS_CLASS&&CLASS_STATS_CLASS!==cur)loadClassStats();
 }
 function setClassRate(k,value){
  const num=Number(value);
@@ -33373,17 +33509,78 @@ function setClassRate(k,value){
  renderClassDialog();
  calculate();
 }
-function renderClassSources(classes,keys){
- const box=document.getElementById('classSourcesBody');if(!box)return;
- let rows='';
- for(const c of classes){
-  for(const item of (PROJECT_CLASS_SOURCES[c]||[])){
-   rows+=`<tr><td style="padding:4px 8px;border-bottom:1px solid #f0f0f0">${PROJECT_CLASS_PRESETS[c].label}</td><td style="padding:4px 8px;border-bottom:1px solid #f0f0f0">${classFieldLabel(item.field)}</td><td style="text-align:right;padding:4px 8px;border-bottom:1px solid #f0f0f0">${Number(item.value).toLocaleString('ru-RU')}</td><td style="padding:4px 8px;border-bottom:1px solid #f0f0f0;color:#555">${item.source}${item.note?' — '+item.note:''}</td></tr>`;
-  }
+
+// --- свод строительной себестоимости из модуля «Статистика» -----------------
+// Числа берутся у /api/statistics/cost-recommendation — того же, что страница
+// /statistics: у свода не бывает двух жизней. Здесь только показ.
+let CLASS_STATS=null;
+let CLASS_STATS_CLASS='';
+let CLASS_STATS_ERROR='';
+function classStatsAreas(){
+ // ТЭП проекта — чтобы ставки, опубликованные на продаваемый метр или общую
+ // площадь здания, нормализовались на НАШИ площади, а не на условный пример.
+ let gba=0,sell=0,under=0;
+ for(const key in tep){
+  const row=tep[key]||{};
+  gba+=Number(row.gns)||0;
+  sell+=Number(row.saleable)||0;
+  if(key==='underground_parking')under+=Number(row.gns)||0;
  }
- box.innerHTML='<div style="font-weight:600;font-size:13px;margin-bottom:6px">Откуда взяты базовые ставки</div>'
-  +(rows?`<table style="width:100%;border-collapse:collapse;font-size:11.5px"><tr><th style="text-align:left;padding:4px 8px;border-bottom:1px solid #ddd">Класс</th><th style="text-align:left;padding:4px 8px;border-bottom:1px solid #ddd">Поле</th><th style="text-align:right;padding:4px 8px;border-bottom:1px solid #ddd">Нормированное значение</th><th style="text-align:left;padding:4px 8px;border-bottom:1px solid #ddd">Источник</th></tr>${rows}</table>`
-        :'<div style="font-size:12px;color:#777">Свод нормированных данных по источникам себестоимости готовится модулем «Статистика» и появится здесь.</div>');
+ const areas={};
+ if(gba>0)areas.gba_sqm=String(Math.round(gba));
+ if(sell>0)areas.sellable_sqm=String(Math.round(sell));
+ if(under>0)areas.underground_gns_sqm=String(Math.round(under));
+ if(gba>under)areas.above_ground_gns_sqm=String(Math.round(gba-under));
+ return areas;
+}
+async function loadClassStats(){
+ const cur=inputs.project_class&&PROJECT_CLASS_PRESETS[inputs.project_class]?inputs.project_class:'custom';
+ if(CLASS_STATS&&CLASS_STATS_CLASS===cur)return;
+ CLASS_STATS=null;CLASS_STATS_CLASS=cur;CLASS_STATS_ERROR='';
+ renderClassStats();
+ try{
+  const params=new URLSearchParams(Object.assign({class:cur,region:'Москва'},classStatsAreas()));
+  const response=await fetch('/api/statistics/cost-recommendation?'+params.toString());
+  if(!response.ok)throw new Error('HTTP '+response.status);
+  CLASS_STATS=await response.json();
+ }catch(e){CLASS_STATS_ERROR=String((e&&e.message)||e);}
+ renderClassStats();
+}
+function renderClassStats(){
+ const box=document.getElementById('classSourcesBody');if(!box)return;
+ let html='<div style="font-weight:600;font-size:13px;margin-bottom:6px">Строительная себестоимость — свод модуля «Статистика»</div>';
+ if(CLASS_STATS_ERROR){
+  // Неответ источника не показывается пустотой: пустой свод и отсутствующий
+  // выглядят одинаково.
+  box.innerHTML=html+`<div style="font-size:12px;color:#b42318">Свод не загрузился: ${CLASS_STATS_ERROR}</div>`;
+  return;
+ }
+ if(!CLASS_STATS){box.innerHTML=html+'<div style="font-size:12px;color:#777">Загружаю свод по источникам…</div>';return;}
+ const d=CLASS_STATS;
+ const confLabel={high:'высокое',medium:'среднее',limited:'ограниченное',pilot:'пилотное',insufficient:'мало данных'};
+ const ownTep=!(d.missing_area_inputs||[]).length;
+ html+=`<div style="font-size:12px;color:#444;margin-bottom:8px">Класс «${d.housing_class_label}», ${d.region}, на ${d.as_of}. `
+  +`Каждая статья нормализована к своей базе площади (наземное СМР — м² наземной ГНС, подземное — подземной, общепроектные — общей ГНС); ставки, опубликованные на продаваемый метр или общую площадь здания, переведены через ${ownTep?'ТЭП этого проекта':'условный ТЭП — заполните ТЭП, и свод пересчитается на ваши площади'}. `
+  +`Сводное значение — взвешенное среднее допущенных источников: вес = качество нормализации (A/B/C/D) × свежесть × тип источника × сопоставимость методики; выбросы отсекаются по межквартильному размаху. p25–p75 — разброс источников, а не точность ответа.</div>`;
+ const thL='text-align:left;padding:4px 8px;border-bottom:1px solid #ddd';
+ const thR='text-align:right;padding:4px 8px;border-bottom:1px solid #ddd';
+ const tdL='padding:4px 8px;border-bottom:1px solid #f0f0f0';
+ const tdR='text-align:right;padding:4px 8px;border-bottom:1px solid #f0f0f0';
+ const th=`<tr><th style="${thL}">Статья</th><th style="${thL}">База площади</th><th style="${thR}">Сводно, тыс ₽/м²</th><th style="${thR}">p25–p75</th><th style="${thR}">N</th><th style="${thL}">Доверие</th><th style="${thL}">Источники</th></tr>`;
+ const thous=v=>v==null?'—':(v/1000).toLocaleString('ru-RU',{maximumFractionDigits:1});
+ let rows='';
+ const silent=[];
+ for(const r of (d.recommendations||[])){
+  if(r.recommended_rub_m2==null){silent.push(r.label);continue;}
+  const srcs=(r.included_sources||[]).map(x=>`${x.source} (${x.grade})`).join('; ');
+  const modelField=r.model_key&&r.model_key in PROJECT_CLASS_PRESETS[Object.keys(PROJECT_CLASS_PRESETS)[0]]?` <span style="color:#8a5a00" title="Это поле есть в таблице классов выше — свод можно вписать в колонку класса">→ поле класса</span>`:'';
+  rows+=`<tr><td style="${tdL}">${r.label}${modelField}</td><td style="${tdL};color:#666">${r.unit_label||''}</td><td style="${tdR};font-weight:600">${thous(r.recommended_rub_m2)}</td><td style="${tdR};color:#666">${thous(r.p25_rub_m2)}–${thous(r.p75_rub_m2)}</td><td style="${tdR}">${r.source_count}</td><td style="${tdL}">${confLabel[r.confidence]||r.confidence}</td><td style="${tdL};color:#555;font-size:11px">${srcs}</td></tr>`;
+ }
+ html+=`<table style="width:100%;border-collapse:collapse;font-size:11.5px">${th}${rows}</table>`;
+ if(silent.length)html+=`<div style="font-size:11.5px;color:#777;margin-top:6px">Без сводного значения — источники не раскрывают: ${silent.join(', ')}.</div>`;
+ html+='<details style="margin-top:8px"><summary style="cursor:pointer;font-size:12px;color:#3b6db4">Правила методики — как объявлены в модуле</summary><ul style="font-size:11.5px;color:#444;margin:6px 0 0 16px;padding:0">'+(d.rules||[]).map(rule=>`<li style="margin-bottom:3px">${rule}</li>`).join('')+'</ul></details>';
+ html+='<div style="font-size:11.5px;color:#777;margin-top:6px">Полный свод — таблица источников, приведённые значения и веса — на странице <a href="/statistics" target="_blank" style="color:#3b6db4">/statistics</a>.</div>';
+ box.innerHTML=html;
 }
 
 
@@ -35974,6 +36171,9 @@ async function initProjects(){
  const actions=document.getElementById('projectsStorageActions');
  if(actions)actions.style.display=projectsStorageReady?'inline-flex':'none';
  renderLoginButton();
+ // Личные значения классов подгружаются сразу: класс выбирают из селектора и
+ // без открытых настроек, а перекрышка обязана примениться и там.
+ loadClassOverrides();
 }
 
 function renderLoginButton(){
@@ -36385,7 +36585,9 @@ const NON_PROJECT_STATE=['feedbackShown','feedbackCalcs','feedbackReportSeconds'
  'projectsAdminKey','projectsStorageReady','projectsAcceptsKey','projectsAcceptsLogin',
  'telegramResultSent','telegramCalcOverrides','telegramEditSubmitting','telegramFinishing',
  'aiBusy','moAutoBusy','moRecalcTimer','sensitivityBusy','moDistrictPrices','moKdDocument',
- 'landScreeningRun','tepRunSequence'];
+ 'landScreeningRun','tepRunSequence',
+ 'CLASS_OVERRIDES','CLASS_OVERRIDES_NOTE','CLASS_OVERRIDES_FROM_SERVER',
+ 'CLASS_STATS','CLASS_STATS_CLASS','CLASS_STATS_ERROR'];
 
 function resetProjectState(){
  // Данные проекта, которые живут переменными страницы, а не полями формы.
@@ -36818,9 +37020,6 @@ PAGE = PAGE.replace(VRI_USE_TYPES_PLACEHOLDER, json.dumps(VRI_USE_TYPES, ensure_
 PAGE = PAGE.replace(FEEDBACK_FORM_PLACEHOLDER, json.dumps(
     {"groups": FEEDBACK_GROUPS, "roles": FEEDBACK_ROLES, "regions": FEEDBACK_REGIONS},
     ensure_ascii=False))
-# Источники базовых ставок классов — из движка, копии на странице нет.
-PAGE = PAGE.replace("__DEVELOPAID_CLASS_SOURCES__",
-                    json.dumps(PROJECT_CLASS_SOURCES, ensure_ascii=False))
 PAGE = PAGE.replace(SOCIAL_MODES_PLACEHOLDER,
                     json.dumps([item[0] for item in _M2_EXTRA_OPTIONS["social_mode"]],
                                ensure_ascii=False))
