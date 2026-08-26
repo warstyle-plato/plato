@@ -231,10 +231,15 @@ def test_the_bank_plan_stays_quarterly() -> None:
 def test_a_missing_plan_is_a_reason_not_a_crash() -> None:
     """У выгрузки без листа планов есть контрактация, и это законный свод."""
     api = (Path(__file__).resolve().parent.parent / "market_search" / "api.py").read_text()
-    body = api[api.index("async def cabinet_contracting("):]
+    body = api[api.index("def _parse_sources("):]
     body = body[:body.index("\n    @app.post")]
     assert "read_fm_plan" in body and "read_bank_plan" in body
-    assert "missing" in body, "не прочиталось — причина рядом, а не пятисотка"
+    # Не прочитанный лист называется причиной и не роняет остальное: у выгрузки
+    # без планов есть контрактация, и это законный свод.
+    assert "except Exception" in body and "notes.append" in body
+    view = api[api.index("def _sales_view("):]
+    view = view[:view.index("\n    def ")]
+    assert "missing" in view, "чего нет — сказано вслух, а не пятисоткой"
 
 
 def test_the_thousands_are_converted_once() -> None:
@@ -248,9 +253,12 @@ def test_the_screen_says_the_plan_column_carries_fact() -> None:
     """Совпадение план-факт на прошедших месяцах — перенос, а не попадание."""
     from market_search.cabinet import cabinet_page
     page = cabinet_page()
-    assert "Факт против нашей финмодели" in page
-    assert "заполнена фактом" in page
-    assert "Факт против плана банка" in page
+    assert "Факт против планов" in page
+    # Один график на оба плана: общая шкала у трёх рядов ровно одна — квартал.
+    assert "план ФМ" in page and "план банка" in page
+    assert "раскладывать его по месяцам мы не станем" in page
+    # Незакрытый квартал против полного планового — разные отрезки времени.
+    assert "незакрытый квартал" in page
 
 
 def test_a_wide_table_scrolls_inside_its_own_frame() -> None:
@@ -302,18 +310,17 @@ def test_the_bank_revenue_is_summed_on_the_server_and_names_its_rows() -> None:
 def test_the_plan_is_drawn_not_tabulated() -> None:
     from market_search.cabinet import cabinet_page
     page = cabinet_page()
-    assert "function factVsPlanChart(" in page
-    assert "столбики — факт, линия —" in page
-    # Таблиц плана на экране больше нет: они есть в книге у владельца.
+    assert "function salesPlansBlock(" in page and "function barChart(" in page
+    # Таблиц плана на экране нет: они есть в книге у владельца.
     assert "['Месяц','Факт, млн ₽','План ФМ, млн ₽','Отклонение']" not in page
-    assert "Факт против плана банка" in page
+    assert "Факт против планов" in page
 
 
 def test_the_chart_does_no_economics() -> None:
     """На экране только геометрия: высота столбика и координата точки."""
     from market_search.cabinet import cabinet_page
     page = cabinet_page()
-    start = page.index("function factVsPlanChart(")
+    start = page.index("function barChart(")
     depth = 0
     for position in range(page.index("{", start), len(page)):
         if page[position] == "{":
@@ -323,8 +330,8 @@ def test_the_chart_does_no_economics() -> None:
             if depth == 0:
                 break
     body = page[start:position + 1]
-    assert "/1e6" in body, "перевод в миллионы — оформление"
-    for forbidden in ("*100", "/r.plan", "fact/plan"):
+    assert "opts.axis" in body, "подпись оси приходит с мерой, а не считается тут"
+    for forbidden in ("/r.plan", "fact/plan", "fact_amount/", "/q.bank_amount"):
         assert forbidden not in body, f"экран считает экономику: {forbidden}"
 
 
@@ -338,4 +345,5 @@ def test_the_chart_does_not_shadow_the_market_one() -> None:
     from market_search.cabinet import cabinet_page
     page = cabinet_page()
     assert page.count("function planChart(") == 1
-    assert page.count("function factVsPlanChart(") == 1
+    assert page.count("function barChart(") == 1
+    assert page.count("function salesPlansBlock(") == 1
