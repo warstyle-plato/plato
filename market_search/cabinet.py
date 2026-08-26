@@ -1775,7 +1775,8 @@ function showSales(d){
   salesData=d;
   const t=d.total||{};
   const parts=(d.sources||[]).map(s=>s.name).join(', ');
-  $('#cfstate').textContent=`${d.project||'Проект'}: ${num(t.contracts)} договор(ов), `
+  $('#cfstate').textContent=`${d.project||'Проект'}: ${num(t.contracts)} `
+    +`${plural(t.contracts,'договор','договора','договоров')}, `
     +`${num(t.amount/1e6,1)} млн ₽`+(parts?` · источники: ${parts}`:'');
   $('#sales').innerHTML='';
   renderSales(d);
@@ -2200,6 +2201,15 @@ function salesSection(id, title, body, note, tools){
 // «6 из 0» — не «пул пуст», а «пула не знаем», и на экране это разные вещи.
 // Ноль в знаменателе читается как посчитанный ноль, и таких ошибок у нас уже
 // было несколько: отсутствующий ключ не «снято», пустая проверка не «чисто».
+// Русское число словом: «76 договоров», а не «76 договор(ов)». Скобки читаются
+// как недоделка ровно там, где человек читает фразу о своём проекте.
+function plural(count, one, few, many){
+  const number=Math.abs(Math.trunc(Number(count)||0));
+  if(number%100>=11&&number%100<=14) return many;
+  const last=number%10;
+  return last===1?one:(last>=2&&last<=4?few:many);
+}
+
 function outOf(sold, pool){
   return num(sold||0)+(pool?' из '+num(pool):'');
 }

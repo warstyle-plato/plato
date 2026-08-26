@@ -451,7 +451,7 @@ def install(app: FastAPI) -> MarketDiscoveryService:
         got["bank_plan"] = bank
         got["pool"] = contracting.pool_progress(got, contracts.get("rows") or [], fm, pool)
         for kind, name in contracting_sources_missing(sources):
-            got.setdefault("missing", []).append(f"{name} не загружен(а)")
+            got.setdefault("missing", []).append(f"источник «{name}» не загружен")
         got["sources"] = [
             {"kind": kind, "name": sales_store.KINDS.get(kind, kind),
              "at": (value or {}).get("at"), "file": (value or {}).get("file")}
