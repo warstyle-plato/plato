@@ -27,12 +27,17 @@ def _market(price: int) -> dict:
 
 
 def test_krt_screening_uses_market_class_and_authoritative_phasing() -> None:
-    result = build_krt_model_screening(PROJECT, _market(650_000), core)
+    # 680 тыс ₽/м², а не 650: полный профиль себестоимости класса «бизнес»
+    # (26.08.2026 — благоустройство 15,5 и сети 10,8 вместо умолчаний) опустил
+    # LLCR слабейшей очереди на прежней цене ниже целевых 1,20x ещё до цены
+    # входа — потолок честно не подбирался. Тесту нужен проект, где потолок
+    # существует; отказ подбора проверяется отдельным тестом ниже.
+    result = build_krt_model_screening(PROJECT, _market(680_000), core)
 
     assert result["available"] is True
     assert result["market"]["recommended_segment"] == "бизнес"
     assert result["market"]["model_class"] == "business"
-    assert result["market"]["start_price_rub_sqm"] == 650_000
+    assert result["market"]["start_price_rub_sqm"] == 680_000
     assert result["phasing"]["count"] == 2
     assert result["phasing"]["saleable_sqm"] == round(161_680 * 0.65)
     assert len(result["phasing"]["phases"]) == 2
