@@ -98,6 +98,16 @@ def test_the_series_starts_where_the_money_starts() -> None:
     assert line[0]["month"] == "2026-06", "ряд начинается с нулей"
 
 
+def test_without_a_repayment_date_it_is_not_called_disclosure() -> None:
+    """Конец горизонта плана — не раскрытие эскроу, и подписать его так нельзя."""
+    got = contracting.escrow_sufficiency(
+        {}, _rows({"2026-06": 50e6, "2026-07": 50e6, "2026-08": 1e6}),
+        _queue({"2026-07": 200e6, "2027-01": 900e6}, {"2026-07": 500e6}, repay=""))
+    assert got["queues"][0]["disclosure_known"] is False
+    page = (Path(__file__).resolve().parent.parent / "market_search" / "cabinet.py").read_text()
+    assert "конец горизонта плана" in page
+
+
 def test_without_the_book_it_says_what_is_missing() -> None:
     """Отсутствие плана — «не загружено», а не «покрытия нет»."""
     got = contracting.escrow_sufficiency({}, [], None)

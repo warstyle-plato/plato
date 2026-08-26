@@ -1416,6 +1416,8 @@ def escrow_sufficiency(summary: dict[str, Any], rows: list[dict[str, Any]],
         # накопленное эскроу целиком, а со следующего оно уходит в погашение.
         before = sorted(m for m in plan_escrow if repay and m < repay)
         at = before[-1] if before else (max(plan_escrow) if plan_escrow else "")
+        # Без даты погашения это не раскрытие, а просто конец горизонта плана,
+        # и называть его раскрытием значит подписать чужое число своим именем.
         plan_at = plan_escrow.get(at)
         pf_at = plan_pf.get(at)
         ahead = _months_between(last_full, at)
@@ -1435,6 +1437,7 @@ def escrow_sufficiency(summary: dict[str, Any], rows: list[dict[str, Any]],
             "gap_share": (gap / plan_escrow[last_full]
                           if gap is not None and plan_escrow.get(last_full) else None),
             "disclosure": at,
+            "disclosure_known": bool(repay and before),
             "plan_escrow_at": plan_at,
             "plan_pf_at": pf_at,
             "plan_coverage_at": (plan_at / pf_at) if plan_at and pf_at else None,

@@ -1963,10 +1963,11 @@ function salesEscrowBlock(d){
            {key:'keeping',name:'при нынешнем темпе',color:'#5FA98A',dash:true},
            {key:'pf',name:'остаток ПФ',color:'#8E7CC3'}],
     axis:v=>num(v/1e6), show:v=>num(v/1e6,1)+' млн ₽', factName:'факт эскроу',
-    caption:'млн ₽ нарастающим итогом, до раскрытия эскроу'});
+    caption:'млн ₽ нарастающим итогом, до '
+      +(q.disclosure_known?'раскрытия эскроу':'конца горизонта плана')});
   html+='<div class="kv" style="margin-top:10px">'
     +tile('Покрытие по плану', q.plan_coverage_at===null||q.plan_coverage_at===undefined?'—':num(q.plan_coverage_at,2)+'×',
-          'на '+esc(String(q.disclosure||'—')))
+          (q.disclosure_known?'на раскрытие ':'на конец горизонта плана ')+String(q.disclosure||'—'))
     +tile('При нынешнем темпе', q.keeping_pace_coverage===null||q.keeping_pace_coverage===undefined?'—':num(q.keeping_pace_coverage,2)+'×',
           'продолжение темпа, не прогноз')
     +tile('Темп плана', num((q.plan_pace||0)/1e6,1)+' млн ₽/мес', 'до раскрытия')
@@ -1974,6 +1975,8 @@ function salesEscrowBlock(d){
           (q.pace_months||[]).length?'по месяцам '+esc(q.pace_months.join(', ')):'')
     +'</div>';
   const notes=[];
+  if(!q.disclosure_known) notes.push(
+    'Даты погашения ПФ в книге нет — показан конец горизонта плана, а не раскрытие эскроу.');
   if(money.partial_month) notes.push('Месяц '+money.partial_month
     +' в выгрузке неполный и в темп не взят: неполный месяц занижает темп молча.');
   (money.empty_queues||[]).forEach(name=>notes.push(
