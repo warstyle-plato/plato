@@ -251,3 +251,18 @@ def test_the_screen_says_the_plan_column_carries_fact() -> None:
     assert "Факт против нашей финмодели" in page
     assert "заполнена фактом" in page
     assert "План банка" in page
+
+
+def test_a_wide_table_scrolls_inside_its_own_frame() -> None:
+    """Семь колонок каналов и девять кварталов банка не должны рвать карточку.
+
+    У таблиц кабинета не было своей прокрутки: широкая таблица растягивала
+    страницу за край экрана (владелец, 26.08.2026).
+    """
+    from market_search.cabinet import cabinet_page
+    page = cabinet_page()
+    assert ".tablescroll{overflow-x:auto" in page
+    assert "'<div class=\"tablescroll\">'+html" in page, "таблица заворачивается в рамку"
+    # Первая колонка переносится: имена брокеров длинные и в одну строку
+    # выдавливают все числа за край.
+    assert ".tablescroll td:first-child" in page and "white-space:normal" in page

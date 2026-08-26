@@ -182,7 +182,7 @@ font-size:14px;color:var(--dim);cursor:pointer}
 #hintout b{font-size:19px;font-variant-numeric:tabular-nums}
 .scope{background:#fff8f0;border-left:3px solid var(--rust);padding:8px 12px;font-size:13px;
 border-radius:0 6px 6px 0;margin-top:10px;color:#5a3a1c}
-table{width:100%;border-collapse:collapse;font-size:14px}
+table{width:100%;border-collapse:collapse;font-size:14px}.tablescroll{overflow-x:auto;margin:0 -2px}.tablescroll table{min-width:max-content}.tablescroll th,.tablescroll td{white-space:nowrap}.tablescroll td:first-child,.tablescroll th:first-child{white-space:normal;min-width:180px}
 th,td{text-align:left;padding:7px 9px;border-bottom:1px solid var(--line);white-space:nowrap}
 th{color:var(--dim);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.03em}
 td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}tr.sumrow td{border-top:2px solid var(--line);background:#f7f9fb}
@@ -1806,7 +1806,10 @@ function salesTable(head, rows, totals){
   (totals||[]).forEach(cells=>{
     html+='<tr class="sumrow">'+cells.map((c,i)=>`<td${i?' class="num"':''}><b>${c}</b></td>`).join('')+'</tr>';
   });
-  return html+'</table>';
+  // Рамка со своей прокруткой: таблица шире карточки — прокручивается сама,
+  // а не растягивает страницу. Первая колонка переносится по словам: имена
+  // брокеров длинные, и в одну строку они выдавливают все числа за край.
+  return '<div class="tablescroll">'+html+'</table></div>';
 }
 
 // Свой канал против чужих — две полосы одной ширины: выручка и то, во что она
@@ -1887,8 +1890,8 @@ function salesBankPlan(d){
         return (v===null||v===undefined)?'—':num(v, Math.abs(v)<100?1:0);
       })]));
   html+='<div class="muted" style="font-size:12.5px;margin-top:6px">'
-    +'Лист «'+esc(bank.sheet)+'», кварталы как в книге. Единицы у строк разные — '
-    +'подписи оставлены как есть, чтобы не подписать чужое число своим именем.</div>';
+    +'Лист «'+esc(bank.sheet)+'»: показаны ближайшие '+quarters.length+' из '+bank.quarters.length+' кварталов книги. '
+    +'Единицы у строк разные — подписи оставлены как есть, чтобы не подписать чужое число своим именем.</div>';
   return html;
 }
 
