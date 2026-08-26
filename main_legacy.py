@@ -2047,6 +2047,42 @@ class MonitorDoubtsRequest(BaseModel):
     key: str = ""
 
 
+class MonitorAskRequest(BaseModel):
+    message: str
+    session: str = ""
+    key: str = ""
+
+
+@app.post("/monitor/ask", include_in_schema=False)
+def monitor_ask(req: MonitorAskRequest, request: Request) -> dict[str, Any]:
+    """Свободный вопрос Платону из монитора.
+
+    Тот же движковый `plato_answer`, что у кабинета рынка и торгов, — свой
+    маршрут только ради гейта монитора: ключ кабинета у руководителя проекта
+    не спрашивается. Числа экрана приезжают в тексте вопроса готовыми, и в
+    нём прямо стоит «не пересчитывай»; вводные подставляются умолчаниями
+    движка — без них `_run_authoritative_model` падает пятисоткой на пустоте.
+    Быстрый ответ приходит этим же запросом, долгий забирается опросом
+    `/agent/result/{trace_id}` — цепочка ядро → Render → OpenAI одним
+    соединением не держится.
+    """
+    _require_web_access(req.session, req.key, "Монитор проекта")
+    message = str(req.message or "").strip()
+    if not message:
+        raise HTTPException(422, "Пустой вопрос")
+    payload = AgentChatRequest(
+        message=message,
+        inputs=dict(DEFAULT_INPUTS),
+        tep={key: dict(value) for key, value in TEP_DEFAULT.items()},
+    )
+    try:
+        return plato_answer(payload, request)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(502, f"Платон не ответил: {type(exc).__name__}: {exc}")
+
+
 @app.post("/monitor/doubts", include_in_schema=False)
 def monitor_doubts(req: MonitorDoubtsRequest) -> dict[str, Any]:
     """Сомнения Платона: незакрытое, противоречащее фактуре, и сеть без него."""
