@@ -193,6 +193,7 @@ border-radius:0 6px 6px 0;margin-top:10px;color:#5a3a1c}
 .switch button{border:0;background:#fff;color:#5b6b7d;font:inherit;font-size:12px;padding:4px 10px;cursor:pointer}
 .switch button+button{border-left:1px solid #edf1f5}
 .switch button.on{background:#4E9BDE;color:#fff}
+.sumup.empty{border-left-color:#c9d4de;color:#6b7a88;background:#fbfcfd}
 .sumup{margin-top:8px;font-size:13px;line-height:1.45;color:#33424f;background:#f6f9fc;border-left:3px solid #4E9BDE;border-radius:0 4px 4px 0;padding:8px 10px}
 details>summary{cursor:pointer;font-size:12.5px;color:#5b6b7d;margin:4px 0}
 table{width:100%;border-collapse:collapse;font-size:14px}.tablescroll{overflow-x:auto;margin:0 -2px}.tablescroll table{min-width:max-content}.tablescroll th,.tablescroll td{white-space:nowrap}.tablescroll td:first-child,.tablescroll th:first-child{white-space:normal;min-width:180px}
@@ -2024,6 +2025,38 @@ function salesEscrowBlock(d){
   return html;
 }
 
+// Воронка обращений: верх, которого в своде не было вовсе — он начинался с
+// подписанного договора. Доли идут вместе с числом обращений: на пяти бронях
+// доля не значит ничего, и человек должен это видеть.
+function salesFunnelBlock(d){
+  const lead=((d.demand||{}).funnel)||{}, q=lead.quality||{};
+  if(!(lead.by_source||[]).length) return '';
+  const table=(rows,head)=>salesTable([head,'Обращений','Броней','Доля'],
+    rows.filter(r=>r.deals>=3).map(r=>[esc(r.name), num(r.deals), num(r.booked),
+      r.share===null||r.share===undefined?'—':num(r.share*100,1)+'%']));
+  let html='<div class="kv">'
+    +tile('Обращений', num(q.calls||0), 'источник «Звонок»')
+    +tile('Целевых', num(q.target||0), q.not_a_lead?num(q.not_a_lead)+' нецелевых (реклама, услуги)':'')
+    +tile('Доходит до брони', q.booked_target===null||q.booked_target===undefined?'—':num(q.booked_target*100,1)+'%')
+    +tile('Без следа в карточке', num(q.blank||0),
+          'ни потребности, ни следующего шага')
+    +'</div>';
+  html+='<h4 style="margin:14px 0 2px;font-size:13px">Источники</h4>'+table(lead.by_source,'Источник');
+  html+='<h4 style="margin:14px 0 2px;font-size:13px">Ответственные</h4>'+table(lead.by_manager,'Менеджер');
+  // Оговорки приходят с сервера: они про то, чего в данных нет.
+  const notes=lead.notes||[];
+  if(notes.length){
+    html+=`<div class="muted" style="font-size:12.5px;margin-top:10px">${esc(notes[0])}</div>`;
+    if(notes.length>1){
+      html+='<details style="margin-top:4px"><summary>Чего эта воронка не даёт</summary>'
+        +'<div class="muted" style="font-size:12.5px">'
+        +notes.slice(1).map(x=>'<div style="margin-top:4px">'+esc(x)+'</div>').join('')
+        +'</div></details>';
+    }
+  }
+  return html;
+}
+
 // Спрос против витрины: сколько просят полосу — против того, сколько её
 // осталось показывать. Прямого «почему не купил» в CRM нет: поля стадии и
 // причины в выгрузке не существует, а слово «отказ» в комментарии почти всегда
@@ -2220,6 +2253,7 @@ const SALES_BLOCKS=[
   {id:'sb-dyn',  name:'Динамика'},
   {id:'sb-mix',  name:'Квартирография'},
   {id:'sb-want', name:'Спрос'},
+  {id:'sb-lead', name:'Обращения'},
   {id:'sb-prod', name:'Продукты'},
   {id:'sb-pay',  name:'Оплата'},
   {id:'sb-plan', name:'Планы'},
@@ -2235,9 +2269,27 @@ function salesNav(have){
 
 // Вывод под блоком. Текст приходит с сервера — фраза, собранная на экране из
 // своей арифметики, была бы вторым счётом той же величины.
+// Чего не хватает разделу, чтобы вывод сложился. Пустое место под блоком и
+// отсутствующий вывод выглядят одинаково, а значат разное: первое — «не из
+// чего», второе — «сказать нечего».
+const NOTE_NEEDS={
+  pool:'плана финмодели — из него берётся ожидаемая выручка проекта',
+  dynamics:'хотя бы четырёх месяцев продаж',
+  bands:'квартирографии книги — листа «график продажи_1»',
+  demand:'выгрузки сделок CRM',
+  funnel:'выгрузки сделок CRM',
+  products:'договоров хотя бы по одному продукту',
+  payment:'условий оплаты в карточках CRM',
+  channels:'канала продаж в договорах',
+  fm:'плана нашей финмодели',
+  bank:'плана банка',
+  escrow:'листа «КРЕДИТЫ» книги финмодели',
+};
 function salesNote(d, key){
   const text=(d.conclusions||{})[key];
-  return text?`<div class="sumup">${esc(text)}</div>`:'';
+  if(text) return `<div class="sumup">${esc(text)}</div>`;
+  const need=NOTE_NEEDS[key];
+  return need?`<div class="sumup empty">Вывод не сложился: не хватает ${esc(need)}.</div>`:'';
 }
 
 function salesSection(id, title, body, note, tools){
@@ -2272,6 +2324,7 @@ function renderSales(d){
   if((d.dynamics||[]).length>1) have.push('sb-dyn');
   if((pool.bands||[]).length||(d.by_size||[]).length) have.push('sb-mix');
   if(((d.demand||{}).bands||[]).length) have.push('sb-want');
+  if((((d.demand||{}).funnel||{}).by_source||[]).length) have.push('sb-lead');
   if((d.by_product||[]).length) have.push('sb-prod');
   if((d.by_payment||[]).length) have.push('sb-pay');
   if(((d.plans||{}).quarters||[]).length>1) have.push('sb-plan');
@@ -2307,6 +2360,9 @@ function renderSales(d){
 
   html+=salesSection('sb-want','Спрос против витрины',
     salesDemandBlock(d), salesNote(d,'demand'));
+
+  html+=salesSection('sb-lead','Воронка обращений',
+    salesFunnelBlock(d), salesNote(d,'funnel'));
 
   if((d.by_product||[]).length){
     html+=salesSection('sb-prod','Продукты',
@@ -2445,7 +2501,25 @@ function salesDigest(d, limit){
       +`, осталось ${num(b.left_units)}`
       +`${b.left_share===null?'':' ('+num(b.left_share*100,1)+'% остатка витрины)'}`);
   });
-  add('пул и вымывание', poolLines);
+  add('пул и вымывание', poolLines, 6);
+  const lead=((d.demand||{}).funnel)||{}, lq=lead.quality||{};
+  const leadLines=[];
+  if(lq.target){
+    leadLines.push(`ВОРОНКА: звонков ${num(lq.calls)}, целевых ${num(lq.target)}, `
+      +`до брони ${lq.booked_target===null?'—':num(lq.booked_target*100,1)+'%'}; `
+      +`без следа в карточке ${num(lq.blank)}.`);
+  }
+  (lead.by_source||[]).filter(x=>x.deals>=10).slice(0,4).forEach(x=>{
+    leadLines.push(`ИСТОЧНИК ${x.name}: ${num(x.deals)} обращений, броней ${num(x.booked)}`
+      +`${x.share===null||x.share===undefined?'':' ('+num(x.share*100,1)+'%)'}`);
+  });
+  // Менеджеров берём троих самых нагруженных: разброс виден и на них, а
+  // двенадцать строк съедают место, которого у вопроса нет.
+  (lead.by_manager||[]).filter(x=>x.deals>=20).slice(0,3).forEach(x=>{
+    leadLines.push(`МЕНЕДЖЕР ${x.name}: ${num(x.deals)} обращений, броней ${num(x.booked)}`
+      +`${x.share===null||x.share===undefined?'':' ('+num(x.share*100,1)+'%)'}`);
+  });
+  add('воронка обращений', leadLines);
   add('каналы', (d.by_channel||[]).map(x=>`КАНАЛ ${x.channel}${x.own?' (свой отдел)':''}: ${num(x.contracts)} шт, `
     +`${num(x.amount/1e6,1)} млн ₽; комиссия ${x.fee_unknown?'не заполнена':num(x.broker_fee/1e6,2)+' млн'}, `
     +`премия ОП ${num(x.sales_bonus/1e6,2)} млн, вместе ${num(x.cost_of_sales*100,2)}% от продаж`

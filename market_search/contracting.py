@@ -1256,6 +1256,31 @@ def conclusions(summary: dict[str, Any]) -> dict[str, str]:
             f"Наоборот — {spare['band']} м²: {_pct(spare['asked_share'])} спроса при "
             f"{_pct(spare['left_share'])} витрины.")
 
+    lead = (summary.get("demand") or {}).get("funnel") or {}
+    quality = lead.get("quality") or {}
+    sources = [row for row in (lead.get("by_source") or []) if row.get("deals", 0) >= 10]
+    if quality.get("target") and sources:
+        main = sources[0]
+        best = max(sources, key=lambda row: row.get("share") or 0)
+        line = (
+            f"Звонков {int(quality['calls'])}, из них целевых "
+            f"{int(quality['target'])}; до брони доходит "
+            f"{_pct(quality.get('booked_target'))}. ")
+        if best is not main and best.get("share"):
+            line += (f"У «{main['name']}» это {_pct(main.get('share'))} при "
+                     f"{int(main['deals'])} обращениях, у «{best['name']}» — "
+                     f"{_pct(best.get('share'))} при {int(best['deals'])}. ")
+        if quality.get("blank") and quality.get("booked_when_blank") is not None:
+            line += (
+                f"В {int(quality['blank'])} звонках из "
+                f"{int(quality['target'])} целевых в карточке не осталось ни потребности, "
+                f"ни следующего шага; там бронь случается "
+                f"{_pct(quality['booked_when_blank'])} против "
+                f"{_pct(quality.get('booked_when_need_asked'))} там, где потребность "
+                f"выяснена. Это соседство, а не доказанная причина: менеджер мог "
+                f"расспрашивать тех, кто и так был готов.")
+        out["funnel"] = line.strip()
+
     bank = summary.get("bank_plan") or {}
     quarters = bank.get("revenue_by_quarter") or {}
     fact = {q["quarter"]: float(q["amount"]) for q in (summary.get("by_quarter") or [])}
@@ -1327,6 +1352,31 @@ def plan_comparison(summary: dict[str, Any]) -> dict[str, Any]:
             f"{_pct(short['asked_share'])} спроса против {_pct(short['left_share'])} витрины. "
             f"Наоборот — {spare['band']} м²: {_pct(spare['asked_share'])} спроса при "
             f"{_pct(spare['left_share'])} витрины.")
+
+    lead = (summary.get("demand") or {}).get("funnel") or {}
+    quality = lead.get("quality") or {}
+    sources = [row for row in (lead.get("by_source") or []) if row.get("deals", 0) >= 10]
+    if quality.get("target") and sources:
+        main = sources[0]
+        best = max(sources, key=lambda row: row.get("share") or 0)
+        line = (
+            f"Звонков {int(quality['calls'])}, из них целевых "
+            f"{int(quality['target'])}; до брони доходит "
+            f"{_pct(quality.get('booked_target'))}. ")
+        if best is not main and best.get("share"):
+            line += (f"У «{main['name']}» это {_pct(main.get('share'))} при "
+                     f"{int(main['deals'])} обращениях, у «{best['name']}» — "
+                     f"{_pct(best.get('share'))} при {int(best['deals'])}. ")
+        if quality.get("blank") and quality.get("booked_when_blank") is not None:
+            line += (
+                f"В {int(quality['blank'])} звонках из "
+                f"{int(quality['target'])} целевых в карточке не осталось ни потребности, "
+                f"ни следующего шага; там бронь случается "
+                f"{_pct(quality['booked_when_blank'])} против "
+                f"{_pct(quality.get('booked_when_need_asked'))} там, где потребность "
+                f"выяснена. Это соседство, а не доказанная причина: менеджер мог "
+                f"расспрашивать тех, кто и так был готов.")
+        out["funnel"] = line.strip()
 
     bank = summary.get("bank_plan") or {}
     plan = (fm.get("plan") or {}).get("Итого") or {}
