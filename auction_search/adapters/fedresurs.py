@@ -178,10 +178,18 @@ def probe_browser(url: str = SEARCH_PAGE, seconds: float = 45.0) -> dict[str, An
                 page.on("response", remember)
                 page.goto(url, wait_until="networkidle", timeout=int(seconds * 1000))
                 body = page.content()
+                # Отказ приходит и в виде страницы: заголовок «403 Forbidden»
+                # при `ok: true` — это не загрузившееся приложение, а страница
+                # ошибки. Живой ответ с ядра 26.08.2026: браузер получил именно
+                # её, без капчи и без единого запроса за данными. Считать это
+                # успехом значит выдать отказ за пустой источник.
+                title = page.title()
+                blocked = any(mark in title for mark in ("403", "401", "Forbidden", "Access denied"))
                 report.update({
                     "ok": True,
+                    "blocked": blocked,
                     "final_url": page.url,
-                    "title": page.title(),
+                    "title": title,
                     "captcha": any(mark in body for mark in QRATOR_MARKERS),
                     "text_head": " ".join(page.inner_text("body").split())[:800],
                 })

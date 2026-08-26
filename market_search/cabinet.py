@@ -182,7 +182,7 @@ font-size:14px;color:var(--dim);cursor:pointer}
 #hintout b{font-size:19px;font-variant-numeric:tabular-nums}
 .scope{background:#fff8f0;border-left:3px solid var(--rust);padding:8px 12px;font-size:13px;
 border-radius:0 6px 6px 0;margin-top:10px;color:#5a3a1c}
-table{width:100%;border-collapse:collapse;font-size:14px}
+table{width:100%;border-collapse:collapse;font-size:14px}.tablescroll{overflow-x:auto;margin:0 -2px}.tablescroll table{min-width:max-content}.tablescroll th,.tablescroll td{white-space:nowrap}.tablescroll td:first-child,.tablescroll th:first-child{white-space:normal;min-width:180px}
 th,td{text-align:left;padding:7px 9px;border-bottom:1px solid var(--line);white-space:nowrap}
 th{color:var(--dim);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.03em}
 td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}tr.sumrow td{border-top:2px solid var(--line);background:#f7f9fb}
@@ -1806,7 +1806,10 @@ function salesTable(head, rows, totals){
   (totals||[]).forEach(cells=>{
     html+='<tr class="sumrow">'+cells.map((c,i)=>`<td${i?' class="num"':''}><b>${c}</b></td>`).join('')+'</tr>';
   });
-  return html+'</table>';
+  // Рамка со своей прокруткой: таблица шире карточки — прокручивается сама,
+  // а не растягивает страницу. Первая колонка переносится по словам: имена
+  // брокеров длинные, и в одну строку они выдавливают все числа за край.
+  return '<div class="tablescroll">'+html+'</table></div>';
 }
 
 // Свой канал против чужих — две полосы одной ширины: выручка и то, во что она
@@ -1838,57 +1841,91 @@ function salesOwnVsBrokers(d){
     +`${brokers.broker_fee?', и ' + num(brokers.fee_of_escrow*100,2) + '% от фактического наполнения эскроу':''}.</div>`;
 }
 
-// Факт против плана. Числа сравниваются как есть: и факт, и план приходят с
-// сервера посчитанными, а экран только показывает разницу в процентах — своей
-// экономики здесь нет.
+// Факт против плана — графиком, а не таблицей. Таблицы с планом у владельца и
+// так есть в книге; на экране нужно одно: видно ли расхождение и куда оно
+// растёт (владелец, 26.08.2026).
 //
-// Важная оговорка, которую видно только в самом листе: колонка «план» у нашей
-// финмодели на прошедших месяцах заполнена фактом («Объем продаж план (с
-// учетом факта)»). Молчать об этом нельзя — совпадение план-факт там
-// означает не точное попадание, а перенос.
+// Числа приходят с сервера посчитанными. Здесь только геометрия: высота
+// столбика и координата точки. Своей экономики нет — второй счёт той же
+// выручки однажды разошёлся бы с первым.
+function factVsPlanChart(rows, opts){
+  const shown=rows.filter(r=>r.fact!==null||r.plan!==null);
+  if(shown.length<2) return '';
+  const values=shown.flatMap(r=>[r.fact,r.plan]).filter(v=>Number.isFinite(v));
+  const max=Math.max(...values,1);
+  const W=680,H=250,L=54,R=12,T=16,B=46;
+  const step=(W-L-R)/shown.length;
+  const bw=Math.max(6,Math.min(38,step-10));
+  const x=i=>L+i*step+step/2;
+  const y=v=>T+(H-T-B)*(1-(Number(v)||0)/max);
+  let svg=`<svg viewBox="0 0 ${W} ${H}" width="100%" role="img">`;
+  [0,0.5,1].forEach(f=>{const v=max*f;
+    svg+=`<line x1="${L}" y1="${y(v)}" x2="${W-R}" y2="${y(v)}" stroke="#e6ecf2"/>`
+       +`<text x="${L-6}" y="${y(v)+4}" text-anchor="end" font-size="10" fill="#8798a8">${num(v/1e6)}</text>`;});
+  // Факт — столбиками: он случился. План — линией: он обещан.
+  shown.forEach((r,i)=>{
+    if(!Number.isFinite(r.fact)) return;
+    const top=y(r.fact), h=Math.max(1,(H-T-B)-(top-T));
+    svg+=`<rect x="${(x(i)-bw/2).toFixed(1)}" y="${top.toFixed(1)}" width="${bw}" height="${h.toFixed(1)}" rx="2" fill="#4E9BDE"`
+       +` data-tip="${esc(r.label+': факт '+num(r.fact/1e6,1)+' млн ₽')}"></rect>`;
+  });
+  const line=shown.map((r,i)=>Number.isFinite(r.plan)?`${i?'L':'M'}${x(i).toFixed(1)} ${y(r.plan).toFixed(1)}`:null)
+    .filter(Boolean).join(' ');
+  if(line) svg+=`<path d="${line}" fill="none" stroke="#C4581B" stroke-width="2"/>`;
+  shown.forEach((r,i)=>{
+    if(!Number.isFinite(r.plan)) return;
+    svg+=`<circle cx="${x(i).toFixed(1)}" cy="${y(r.plan).toFixed(1)}" r="3" fill="#C4581B"`
+       +` data-tip="${esc(r.label+': план '+num(r.plan/1e6,1)+' млн ₽')}"></circle>`;
+  });
+  shown.forEach((r,i)=>{
+    if(shown.length>16&&i%2) return;
+    svg+=`<text x="${x(i).toFixed(1)}" y="${H-26}" text-anchor="middle" font-size="9" fill="#8798a8">${esc(r.label.slice(2))}</text>`;
+  });
+  svg+=`<text x="${L}" y="${H-8}" font-size="10" fill="#8798a8">млн ₽ · столбики — факт, линия — ${esc(opts.planName)}</text>`;
+  return '<div class="wrap">'+svg+'</svg></div>';
+}
+
+// Помесячно: факт контрактации против плана нашей финмодели.
 function salesVsPlan(d){
   const fm=d.fm_plan;
   if(!fm||!fm.plan) return '';
   const plan=fm.plan['Итого']||fm.plan['Квартира']||{};
-  const months=(d.dynamics||[]).map(m=>m.month);
-  const rows=months.map(month=>{
-    const fact=(d.dynamics||[]).find(m=>m.month===month)||{};
-    const want=plan[month]||{};
-    const planned=Number(want.amount);
-    const got=Number(fact.amount)||0;
-    const gap=Number.isFinite(planned)&&planned?((got/planned-1)*100):null;
-    return {month, planned:Number.isFinite(planned)?planned:null, got, gap};
-  });
-  if(!rows.some(r=>r.planned!==null)) return '';
+  const rows=(d.dynamics||[]).map(m=>({
+    label:m.month,
+    fact:Number(m.amount),
+    plan:Number((plan[m.month]||{}).amount),
+  }));
+  if(!rows.some(r=>Number.isFinite(r.plan))) return '';
+  const behind=rows.filter(r=>Number.isFinite(r.plan)&&r.plan>0&&r.fact<r.plan);
   let html='<h3 style="margin:18px 0 4px;font-size:15px">Факт против нашей финмодели</h3>';
-  html+=salesTable(['Месяц','Факт, млн ₽','План ФМ, млн ₽','Отклонение'],
-    rows.slice().reverse().slice(0,14).map(r=>[
-      esc(r.month), num(r.got/1e6,1),
-      r.planned===null?'—':num(r.planned/1e6,1),
-      r.gap===null?'—':`<span style="color:${r.gap<0?'#C4581B':'#5FA98A'}">${r.gap>0?'+':''}${num(r.gap,1)}%</span>`]));
+  html+=factVsPlanChart(rows,{planName:'план ФМ'});
   html+='<div class="muted" style="font-size:12.5px;margin-top:6px">'
     +'Лист «'+esc(fm.sheet)+'»: на прошедших месяцах колонка «план» заполнена фактом, '
-    +'поэтому совпадение там означает перенос, а не точное попадание. Расхождение видно на будущих месяцах.</div>';
+    +'поэтому совпадение там означает перенос, а не точное попадание — расхождение видно на свежих месяцах. '
+    +'Ниже плана: '+behind.length+' из '+rows.filter(r=>Number.isFinite(r.plan)).length+' месяцев.</div>';
   return html;
 }
 
-// План банка квартальный, и раскладывать его по месяцам мы не станем: сделать
-// это можно тремя способами, и любой будет нашей выдумкой, а не планом банка.
+// Поквартально: факт против плана банка. Квартал по месяцам не раскладываем —
+// сделать это можно тремя способами, и любой будет нашей выдумкой; вместо
+// этого свой факт сложен до кварталов, и сравниваются одинаковые величины.
 function salesBankPlan(d){
   const bank=d.bank_plan;
-  if(!bank||!(bank.lines||[]).length) return '';
-  const quarters=bank.quarters.slice(0,8);
-  let html='<h3 style="margin:18px 0 4px;font-size:15px">План банка</h3>';
-  html+=salesTable(['Показатель', ...quarters],
-    bank.lines.slice(0,14).map(line=>[
-      esc(line.label),
-      ...quarters.map(q=>{
-        const v=line.values[q];
-        return (v===null||v===undefined)?'—':num(v, Math.abs(v)<100?1:0);
-      })]));
+  if(!bank||!bank.revenue_by_quarter) return '';
+  const plan=bank.revenue_by_quarter;
+  const quarters=[];
+  (d.by_quarter||[]).forEach(q=>{if(!quarters.includes(q.quarter))quarters.push(q.quarter)});
+  Object.keys(plan).forEach(q=>{if(!quarters.includes(q))quarters.push(q)});
+  quarters.sort();
+  const fact={};
+  (d.by_quarter||[]).forEach(q=>{fact[q.quarter]=Number(q.amount)});
+  const rows=quarters.map(q=>({label:q.replace(' ',''),fact:fact[q],plan:Number(plan[q])}));
+  if(!rows.some(r=>Number.isFinite(r.plan))) return '';
+  let html='<h3 style="margin:18px 0 4px;font-size:15px">Факт против плана банка</h3>';
+  html+=factVsPlanChart(rows,{planName:'план банка'});
   html+='<div class="muted" style="font-size:12.5px;margin-top:6px">'
-    +'Лист «'+esc(bank.sheet)+'», кварталы как в книге. Единицы у строк разные — '
-    +'подписи оставлены как есть, чтобы не подписать чужое число своим именем.</div>';
+    +'Лист «'+esc(bank.sheet)+'»: сложены строки '+(bank.revenue_rows||[]).map(x=>'«'+esc(x)+'»').join(', ')
+    +'. Свой факт сложен до кварталов, чтобы сравнивались одинаковые величины: раскладывать квартал по месяцам мы не станем.</div>';
   return html;
 }
 
@@ -2000,55 +2037,89 @@ function tile(name, value){
 
 // Числа Платону подаются готовыми, и в вопросе прямо стоит «не пересчитывай».
 // Тот же приём, что в модуле торгов: он читает, а не считает.
-function salesDigest(d){
-  const t=d.total||{}, lines=[];
-  lines.push(`ПРОЕКТ: ${d.project||'—'}.`);
-  lines.push(`Всего: ${num(t.contracts)} договоров, ${num(t.area)} м², ${num(t.amount/1e6,1)} млн ₽, `
-    +`средняя ${num(t.price_per_sqm)} ₽/м²; на эскроу ${num(t.escrow/1e6,1)} млн (${num(t.escrow_share*100,1)}%).`);
-  (d.dynamics||[]).forEach(m=>lines.push(`— ${m.month}: ${num(m.units)} шт, ${num(m.area)} м², `
-    +`${num(m.amount/1e6,1)} млн ₽${m.price_per_sqm?', '+num(m.price_per_sqm)+' ₽/м²':''}`));
-  (d.by_payment||[]).forEach(x=>lines.push(`ОПЛАТА ${x.variant||'—'}: ${num(x.count)} шт, `
-    +`${num(x.amount/1e6,1)} млн ₽, на эскроу ${num(x.escrow/1e6,1)} млн`
-    +`${x.filled===null||x.filled===undefined?'':' ('+num(x.filled*100,1)+'% наполнения)'}`
-    +`${x.recognised===false?' — это дефект заполнения CRM, а не условие сделки':''}`));
-  (d.by_channel||[]).forEach(x=>lines.push(`КАНАЛ ${x.channel}${x.own?' (свой отдел)':''}: ${num(x.contracts)} шт, `
+//
+// У вопроса есть предел — 4000 знаков, и свод по живому проекту его
+// перекрывает: двенадцать месяцев, дюжина каналов, планы ФМ и банка. Резать
+// молча нельзя: Платон ответит по половине данных, а выглядеть это будет как
+// ответ по всем. Поэтому разделы складываются по важности, а то, что не
+// влезло, названо в самом вопросе.
+// Предел вопроса у Платона — 4000 знаков. Бюджет свода считается от настоящей
+// длины преамбулы, а не назначается на глазок: припишешь к вопросу строку —
+// и молча вылезешь за предел.
+const SALES_ASK_LIMIT=4000;
+
+function salesDigest(d, limit){
+  const t=d.total||{}, groups=[];
+  const head=[`ПРОЕКТ: ${d.project||'—'}.`,
+    `Всего: ${num(t.contracts)} договоров, ${num(t.area)} м², ${num(t.amount/1e6,1)} млн ₽, `
+     +`средняя ${num(t.price_per_sqm)} ₽/м²; на эскроу ${num(t.escrow/1e6,1)} млн (${num(t.escrow_share*100,1)}%).`];
+  // Длинный ряд обрезается по хвосту, а не выбрасывается целиком: свежие
+  // месяцы отвечают на вопрос, а прошлогодние — подробность. Сколько показано
+  // из скольких, стоит в самой строке: молчаливая обрезка читается как весь ряд.
+  const add=(name, lines, keepLast)=>{
+    if(!lines.length) return;
+    if(keepLast&&lines.length>keepLast){
+      const head=lines[0].startsWith('—')?[]:[lines.shift()];
+      lines=head.concat(
+        [`(показаны последние ${keepLast} из ${lines.length})`],
+        lines.slice(-keepLast));
+    }
+    groups.push({name, lines});
+  };
+
+  add('каналы', (d.by_channel||[]).map(x=>`КАНАЛ ${x.channel}${x.own?' (свой отдел)':''}: ${num(x.contracts)} шт, `
     +`${num(x.amount/1e6,1)} млн ₽; комиссия ${x.fee_unknown?'не заполнена':num(x.broker_fee/1e6,2)+' млн'}, `
     +`премия ОП ${num(x.sales_bonus/1e6,2)} млн, вместе ${num(x.cost_of_sales*100,2)}% от продаж`
     +`${x.broker_fee?'; комиссия = '+num(x.fee_of_escrow*100,2)+'% от фактического наполнения эскроу':''}`));
-  ['brokers','own_sales'].forEach(key=>{
-    const t=d[key]||{};
-    if(!t.contracts) return;
-    lines.push(`ИТОГО ${key==='brokers'?'БРОКЕРЫ':'СВОЙ ОТДЕЛ'}: ${num(t.contracts)} шт, `
-      +`${num(t.amount/1e6,1)} млн ₽, стоимость канала ${num(t.cost/1e6,2)} млн = ${num(t.cost_of_sales*100,2)}% от продаж`);
-  });
-  (d.by_size||[]).forEach(x=>lines.push(`РАЗМЕР ${x.band}: ${num(x.contracts)} шт, ${num(x.area)} м², ${num(x.amount/1e6,1)} млн ₽`));
-  (d.by_product||[]).forEach(x=>lines.push(`ПРОДУКТ ${x.product}: ${num(x.contracts)} шт, ${num(x.amount/1e6,1)} млн ₽`));
-  if((d.terminated||[]).length){
-    const back=d.terminated.reduce((sum,x)=>sum+(Number(x.escrow_returned)||0),0);
-    lines.push(`РАСТОРЖЕНИЙ: ${d.terminated.length}, возвращено с эскроу ${num(back/1e6,1)} млн ₽`);
-  }
+  add('оплата', (d.by_payment||[]).map(x=>`ОПЛАТА ${x.variant||'—'}: ${num(x.count)} шт, `
+    +`${num(x.amount/1e6,1)} млн ₽, на эскроу ${num(x.escrow/1e6,1)} млн`
+    +`${x.amount?' ('+num(x.escrow/x.amount*100,1)+'% наполнения)':''}`
+    +`${x.recognised===false?' — это дефект заполнения CRM, а не условие сделки':''}`));
+  add('динамика', (d.dynamics||[]).map(m=>`— ${m.month}: ${num(m.units)} шт, ${num(m.area)} м², `
+    +`${num(m.amount/1e6,1)} млн ₽${m.area?', '+num(m.amount/m.area)+' ₽/м²':''}`), 4);
+
   const fm=d.fm_plan;
   if(fm&&fm.plan){
     const plan=fm.plan['Итого']||fm.plan['Квартира']||{};
-    lines.push(`ПЛАН НАШЕЙ ФМ (лист «${fm.sheet}»; на прошедших месяцах колонка «план» заполнена фактом):`);
-    (d.dynamics||[]).forEach(m=>{
+    const lines=(d.dynamics||[]).map(m=>{
       const want=(plan[m.month]||{}).amount;
-      if(want) lines.push(`— ${m.month}: план ${num(want/1e6,1)} млн ₽, факт ${num(m.amount/1e6,1)} млн ₽`);
-    });
+      return want?`— ${m.month}: план ФМ ${num(want/1e6,1)} млн ₽, факт ${num(m.amount/1e6,1)} млн ₽`:null;
+    }).filter(Boolean);
+    if(lines.length) lines.unshift(`ПЛАН НАШЕЙ ФМ (лист «${fm.sheet}»; на прошедших месяцах колонка «план» заполнена фактом):`);
+    add('план ФМ', lines, 4);
   }
   const bank=d.bank_plan;
-  if(bank&&(bank.lines||[]).length){
-    lines.push(`ПЛАН БАНКА (лист «${bank.sheet}», кварталы):`);
-    bank.lines.slice(0,8).forEach(line=>{
-      const shown=bank.quarters.slice(0,6).map(q=>{
-        const v=line.values[q];
-        return (v===null||v===undefined)?null:`${q} ${num(v, Math.abs(v)<100?1:0)}`;
-      }).filter(Boolean).join('; ');
-      if(shown) lines.push(`— ${line.label}: ${shown}`);
-    });
+  if(bank&&bank.revenue_by_quarter){
+    const fact={};
+    (d.by_quarter||[]).forEach(q=>{fact[q.quarter]=q.amount});
+    const lines=Object.keys(bank.revenue_by_quarter).sort().map(q=>
+      `— ${q}: план банка ${num(bank.revenue_by_quarter[q]/1e6,1)} млн ₽`
+      +(fact[q]!==undefined?`, факт ${num(fact[q]/1e6,1)} млн ₽`:''));
+    if(lines.length) lines.unshift(`ПЛАН БАНКА (лист «${bank.sheet}», по кварталам):`);
+    add('план банка', lines, 4);
   }
-  (d.missing||[]).forEach(x=>lines.push('НЕ ПРОЧИТАНО: '+x));
-  return lines.join('\n');
+  add('размерность', (d.by_size||[]).map(x=>`РАЗМЕР ${x.band}: ${num(x.contracts)} шт, ${num(x.area)} м², ${num(x.amount/1e6,1)} млн ₽`));
+  add('продукты', (d.by_product||[]).map(x=>`ПРОДУКТ ${x.product}: ${num(x.contracts)} шт, ${num(x.amount/1e6,1)} млн ₽`));
+  const tail=[];
+  if((d.terminated||[]).length){
+    const back=d.terminated.reduce((sum,x)=>sum+(Number(x.escrow_returned)||0),0);
+    tail.push(`РАСТОРЖЕНИЙ: ${d.terminated.length}, возвращено с эскроу ${num(back/1e6,1)} млн ₽`);
+  }
+  (d.missing||[]).forEach(x=>tail.push('НЕ ПРОЧИТАНО: '+x));
+
+  // Складываем, пока влезает. Разделы идут по важности: каналы и оплата
+  // отвечают на вопрос, помесячная динамика — уже подробность.
+  const cap=Number(limit)||2800;
+  const kept=[...head], dropped=[];
+  let size=kept.join('\n').length+tail.join('\n').length;
+  groups.forEach(g=>{
+    const text=g.lines.join('\n');
+    if(size+text.length+1<=cap){ kept.push(text); size+=text.length+1 }
+    else dropped.push(g.name+' ('+g.lines.length+' строк)');
+  });
+  kept.push(...tail);
+  if(dropped.length) kept.push('НЕ ПОМЕСТИЛОСЬ В ВОПРОС (не считай это отсутствием данных): '+dropped.join(', ')+'.');
+  return kept.join('\n');
 }
 
 async function askPlatoSales(){
@@ -2056,13 +2127,14 @@ async function askPlatoSales(){
   const btn=$('#salesask');
   btn.disabled=true;
   $('#salesout').innerHTML='<div class="muted">Платон Сергеевич читает продажи…</div>';
-  const message='Ниже свод продаж проекта, посчитанный движком по выгрузке ЦФ. '
+  const tail='\n\nПиши по-русски, коротко, по каждой теме отдельным абзацем.';
+  const preamble='Ниже свод продаж проекта, посчитанный движком по выгрузке ЦФ. '
     +'Числа НЕ пересчитывай и не выдумывай того, чего в своде нет. Дай короткий разбор по четырём темам: '
     +'1) рассрочка — как она влияет на фактическое наполнение эскроу и чем это грозит; '
     +'2) вознаграждение брокерам — рыночное ли оно и что значит разрыв между «% от продаж» и «% от наполнения»; '
     +'3) эффективность собственного отдела продаж против брокерского канала; '
-    +'4) структура продаж — есть ли сдвиг в сторону мелких лотов и что это значит для выручки.\n\n'
-    +salesDigest(salesData)+'\n\nПиши по-русски, коротко, по каждой теме отдельным абзацем.';
+    +'4) структура продаж — есть ли сдвиг в сторону мелких лотов и что это значит для выручки.\n\n';
+  const message=preamble+salesDigest(salesData, SALES_ASK_LIMIT-preamble.length-tail.length-20)+tail;
   try{
     const answer=await platoAnswer(message);
     $('#salesout').innerHTML=`<div class="plato">${esc(answer).replace(/\n/g,'<br>')}</div>`;

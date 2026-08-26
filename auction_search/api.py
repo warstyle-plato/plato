@@ -15,7 +15,9 @@ from pydantic import BaseModel, Field
 
 from auction_search.adapters import InvestMoscowDiscoveryAdapter, LotOnlineAdapter, RoseltorgAdapter
 from auction_search.adapters.torgi_gov import TorgiGovAdapter, trust_report as torgi_trust_report
+from auction_search.adapters.etp_probe import probe as etp_probe
 from auction_search.adapters.fedresurs import (
+    SEARCH_PAGE as FEDRESURS_SEARCH_PAGE,
     probe as fedresurs_probe, probe_browser as fedresurs_browser)
 from auction_search.bridge import auction_page_with_handoff, install_page_bridge
 from auction_search.developaid_mapper import build_developaid_seed
@@ -742,7 +744,10 @@ def install(app: FastAPI) -> None:
         return await run_in_threadpool(fedresurs_probe)
 
     @app.get("/auctions/fedresurs/browser")
-    async def auction_fedresurs_browser(seconds: float = Query(default=45.0)) -> dict[str, Any]:
+    async def auction_fedresurs_browser(
+        seconds: float = Query(default=45.0),
+        url: str = Query(default=""),
+    ) -> dict[str, Any]:
         """Та же проба, но настоящим браузером — и список запросов страницы.
 
         Простой запрос упёрся в капчу Qrator: корень отдаёт 401 со скриптом
@@ -754,7 +759,22 @@ def install(app: FastAPI) -> None:
         данными: у SPA числа приезжают отдельными вызовами бэкенда. Гадать эти
         адреса мы уже пробовали — вышли гаражи.
         """
-        return await run_in_threadpool(lambda: fedresurs_browser(seconds=seconds))
+        # Адрес спрашивается, а не назначается: `/TradeList.aspx` — старый путь,
+        # а человек открывает корень, и отказ у них может быть разный. Пустой
+        # параметр оставляет страницу поиска торгов, как было.
+        return await run_in_threadpool(
+            lambda: fedresurs_browser(url=url.strip() or FEDRESURS_SEARCH_PAGE, seconds=seconds))
+
+    @app.get("/auctions/etp/probe")
+    async def auction_etp_probe() -> dict[str, Any]:
+        """Что отвечают площадки банкротства. Разбора нет — сначала ответ.
+
+        ЕФРСБ как агрегатор закрыт: капча простому запросу, 403 живому
+        браузеру. Читаем сами площадки — пять адресов из таблицы владельца
+        дают больше половины банкротных лотов. Но код пишется по ответу, а не
+        по догадке: ровно так ГИС Торги приехали на прод с гаражами.
+        """
+        return await run_in_threadpool(etp_probe)
 
     @app.get("/auctions/discover")
     async def auction_discover(

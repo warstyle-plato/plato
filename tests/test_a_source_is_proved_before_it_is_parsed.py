@@ -120,3 +120,25 @@ def test_the_browser_endpoint_is_wired() -> None:
     api = (ROOT / "auction_search" / "api.py").read_text()
     assert "/auctions/fedresurs/browser" in api
     assert "fedresurs_browser" in api
+
+
+def test_a_page_of_refusal_is_not_a_loaded_source() -> None:
+    """«403 Forbidden» в заголовке при ok:true — отказ, а не пустой источник.
+
+    Живой ответ с ядра 26.08.2026: браузер загрузил страницу, капчи не было, и
+    заголовок оказался «403 Forbidden» — никаких запросов за данными страница
+    не сделала. Путь через ЕФРСБ закрыт и браузером; обходить защиту мы не
+    станем, но и выдавать отказ за отсутствие лотов нельзя.
+    """
+    body = source()
+    assert '"blocked"' in body
+    assert "Forbidden" in body and "403" in body
+
+
+def test_the_probe_asks_the_address_it_is_given() -> None:
+    """`/TradeList.aspx` — старый путь; человек открывает корень."""
+    api = (ROOT / "auction_search" / "api.py").read_text()
+    block = api[api.index("async def auction_fedresurs_browser("):]
+    block = block[:block.index("\n    @app.get")]
+    assert "url: str = Query(default=\"\")" in block
+    assert "FEDRESURS_SEARCH_PAGE" in block, "пустой параметр оставляет прежнюю страницу"
