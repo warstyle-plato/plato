@@ -67,7 +67,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.20.5"
+VERSION = "0.20.6"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -31516,8 +31516,26 @@ async function obtainTep(){
  const raw=(field&&field.value||'').trim();
  if(!raw){status.innerHTML='<span class="import-error">Введите кадастровый номер или адрес.</span>';return}
  dropStaleLandPreview();
- const numbers=raw.split(/[\n,;]+/).map(x=>x.trim()).filter(Boolean);
- const looksCadastral=numbers.length>0&&numbers.every(x=>/^\d{2}:\d{2}:\d{6,8}:\d+$/.test(x));
+ const entered=raw.split(/[\n,;]+/).map(x=>x.trim()).filter(Boolean);
+ // Одна испорченная строка не отменяет разбор остальных. Прежде здесь стояло
+ // `every`: ввели два номера, в первом опечатка — и ОБА уезжали в геокодер как
+ // адрес, а ответ приходил «участок не найден, введите кадастровый номер»
+ // (экран владельца, 26.08.2026). Человек их ввёл; неверна была одна строка,
+ // и сказать об этом обязаны мы, а не он должен догадаться.
+ const cadastral=/^\d{2}:\d{2}:\d{6,8}:\d+$/;
+ const numbers=entered.filter(x=>cadastral.test(x));
+ const rejected=entered.filter(x=>!cadastral.test(x));
+ // Молча отброшенная строка читается как отсутствующая. Называем её и
+ // говорим, чем именно она не похожа на кадастровый номер.
+ // Текст пришёл от человека и уходит в innerHTML — экранируем. Своего `esc`
+ // на этой странице нет, а заводить его ради одной строки значит завести
+ // второй такой же в соседнем файле.
+ const safe=x=>String(x).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+ const rejectedNote=rejected.length
+  ? ' Пропущено, не похоже на кадастровый номер: '+rejected.map(x=>'«'+safe(x)+'»').join(', ')
+    +' (нужен вид 77:01:0004621:72 — в третьем блоке 6–8 цифр).'
+  : '';
+ const looksCadastral=numbers.length>0;
  const regionOnly=looksCadastral&&numbers.every(x=>x.startsWith('50:'));
 
  if(!looksCadastral){
@@ -31530,13 +31548,16 @@ async function obtainTep(){
   if(found===null)return;
   const resolved=found.map(x=>x.cadastral_number).filter(Boolean);
   if(!resolved.length){
-   status.innerHTML='<span class="import-error">По этому запросу участок не найден. Введите кадастровый номер.</span>';return;
+   // «Не найден» и «введите номер» — разные вещи, и путать их нельзя: номер
+   // человек уже ввёл, просто по нему ничего не нашлось.
+   status.innerHTML='<span class="import-error">По этому запросу участок не найден.'
+    +(rejected.length?rejectedNote:' Проверьте адрес или введите кадастровый номер.')+'</span>';return;
   }
   field.value=resolved.join(', ');
   return obtainTep();
  }
 
- status.textContent='Определяю территорию…';
+ status.textContent='Определяю территорию…'+rejectedNote;
  let analysis=null,failure='';
  try{
   const response=await fetch('/cadastral/analyze',{
