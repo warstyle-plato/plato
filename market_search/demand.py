@@ -24,7 +24,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from .contracting import _excel_date, _number, _rows_xlsx, _text
+from .contracting import _excel_date, _number, _plural, _rows_xlsx, _text
 
 # Лист называется по выгрузке («DEAL_20260826_…»), поэтому опознаётся по шапке,
 # а не по имени: имя меняется от выгрузки к выгрузке.
@@ -69,6 +69,11 @@ _RUB = re.compile(r"(\d[\d\s  ]{6,})\s*(?:руб|₽)", re.I)
 # а что-то другое: диапазон не заменяет разбор, но отсекает явную чушь.
 AREA_RANGE = (18.0, 400.0)
 BUDGET_RANGE = (5e6, 900e6)
+
+
+def _dec(value: float, digits: int = 1) -> str:
+    """Дробное число по-русски: запятая, а не точка."""
+    return f"{value:.{digits}f}".replace(".", ",")
 
 
 def _value(text: str) -> float:
@@ -292,12 +297,13 @@ def demand_summary(deals: list[dict[str, Any]], bands: list[dict[str, Any]] | No
         "которого никто не проверит.")
     if multi:
         notes.append(
-            f"{multi} запрос(ов) из {len(asked)} задевают больше одной полосы — "
+            f"{multi} {_plural(multi, 'запрос', 'запроса', 'запросов')} из {len(asked)} "
+            "задевают больше одной полосы — "
             "сумма по полосам поэтому больше числа сделок.")
     if over:
         notes.append(
-            f"{over} запрос(ов) крупнее самого большого лота проекта "
-            f"({top:.1f} м²) — в полосы они не попадают вовсе.")
+            f"{over} {_plural(over, 'запрос', 'запроса', 'запросов')} крупнее самого "
+            f"большого лота проекта ({_dec(top)} м²) — в полосы они не попадают вовсе.")
     return {
         "deals": float(len(deals)),
         "with_area": float(len(asked)),

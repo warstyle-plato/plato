@@ -1007,6 +1007,15 @@ def _pct(value: float | None, digits: int = 1) -> str:
     return "—" if value is None else f"{value * 100:.{digits}f}%".replace(".", ",")
 
 
+def _plural(count: float, one: str, few: str, many: str) -> str:
+    """Русское число словом: «101 запрос», а не «101 запросов»."""
+    number = int(abs(count))
+    if number % 100 in range(11, 15):
+        return many
+    last = number % 10
+    return one if last == 1 else few if last in (2, 3, 4) else many
+
+
 def _mln(value: float | None, digits: int = 1) -> str:
     return "—" if value is None else f"{value / 1e6:,.{digits}f}".replace(",", " ").replace(".", ",")
 
@@ -1100,8 +1109,10 @@ def conclusions(summary: dict[str, Any]) -> dict[str, str]:
         short = max(rows, key=lambda b: b["asked_share"] - b["left_share"])
         spare = min(rows, key=lambda b: b["asked_share"] - b["left_share"])
         out["demand"] = (
-            f"Разобрано {int(want.get('with_area') or 0)} запросов по площади и "
+            f"Разобрано {int(want.get('with_area') or 0)} "
+            f"{_plural(want.get('with_area') or 0, 'запрос', 'запроса', 'запросов')} по площади и "
             f"{int(want.get('with_budget') or 0)} по бюджету из "
+            # «из N сделок» — родительный падеж при любом N, помощник здесь не нужен.
             f"{int(want.get('deals') or 0)} сделок CRM; медиана запроса — "
             f"{(want.get('area_median') or 0):.0f} м² и "
             f"{_mln(want.get('budget_median'))} млн ₽. "
@@ -1147,8 +1158,10 @@ def plan_comparison(summary: dict[str, Any]) -> dict[str, Any]:
         short = max(rows, key=lambda b: b["asked_share"] - b["left_share"])
         spare = min(rows, key=lambda b: b["asked_share"] - b["left_share"])
         out["demand"] = (
-            f"Разобрано {int(want.get('with_area') or 0)} запросов по площади и "
+            f"Разобрано {int(want.get('with_area') or 0)} "
+            f"{_plural(want.get('with_area') or 0, 'запрос', 'запроса', 'запросов')} по площади и "
             f"{int(want.get('with_budget') or 0)} по бюджету из "
+            # «из N сделок» — родительный падеж при любом N, помощник здесь не нужен.
             f"{int(want.get('deals') or 0)} сделок CRM; медиана запроса — "
             f"{(want.get('area_median') or 0):.0f} м² и "
             f"{_mln(want.get('budget_median'))} млн ₽. "
