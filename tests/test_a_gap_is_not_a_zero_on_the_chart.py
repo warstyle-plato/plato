@@ -53,10 +53,21 @@ def test_the_helper_rejects_null_and_empty() -> None:
 
 def test_a_truncated_scale_says_where_it_starts() -> None:
     body = _chart()
-    assert "opts.zeroless" in body
-    assert "а не от нуля" in body, "урезанная шкала названа, а не подсунута молча"
+    # Урезается ТОЛЬКО цена, и живёт она на своей шкале справа: у денег, метров
+    # и лотов ноль — настоящее начало отсчёта, и обрезать его значит
+    # преувеличивать разницу.
+    assert "const base=0;" in body, "левая шкала должна начинаться с нуля"
+    assert "rightBase" in body
+    assert "цена от нуля не читается" in body, "урезанная шкала названа, а не подсунута молча"
+
+
+def test_the_price_is_always_a_line_never_a_tab() -> None:
+    """«Цена должна была присутствовать всегда только линией, а не отдельной
+    вкладкой и столбиками» (владелец, 26.08.2026)."""
     page = (Path(__file__).resolve().parent.parent / "market_search" / "cabinet.py").read_text()
-    # Урезается ТОЛЬКО цена: у денег и метров ноль — настоящее начало отсчёта,
-    # и обрезать его значит преувеличивать разницу.
-    assert "zeroless:salesMetric==='price'" in page
-    assert "zeroless:metric.key==='price'" in page
+    metrics = page[page.index("const SALES_METRICS="):page.index("let salesMetric=")]
+    plans = page[page.index("const PLAN_METRICS="):page.index("function salesPlansBlock(")]
+    for block, where in ((metrics, "динамики"), (plans, "планов")):
+        assert "'₽/м²'" not in block, f"цена осталась вкладкой у {where}"
+    # И присутствует на обоих графиках линией.
+    assert page.count("rightLines:") == 2

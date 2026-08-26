@@ -67,7 +67,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.20.16"
+VERSION = "0.20.17"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -29185,6 +29185,20 @@ def agent_chat(req: AgentChatRequest, request: Request) -> dict[str, Any]:
     usage_track("question", surface="site", text=str(req.message or ""),
                 chat_id=_web_identity_chat_id(str(getattr(req, "session", "") or "")),
                 scenario=str(req.scenario or ""))
+    return plato_answer_handoff(req, request)
+
+
+def plato_answer_handoff(req: AgentChatRequest, request: Request) -> dict[str, Any]:
+    """Вопрос Платону для окна: соединение держится до передачи работы опросу.
+
+    Тот, кто спрашивает из браузера, ДОЛЖЕН идти этим путём, а не `plato_answer`.
+    Цепочка ядро → Render → OpenAI одним соединением не держится: у nginx свои
+    шестьдесят секунд, у мобильного Safari свои, и вопрос с инструментами не
+    укладывается ни в один — работа доходит до конца и уносится в никуда.
+    Кабинет рынка ходил через `plato_answer` и получал в браузер страницу
+    ошибки вместо ответа: «комментарии Платона так и не подключились»
+    (владелец, 26.08.2026).
+    """
     trace_id, done, outcome = _plato_chat_launch(req, request)
     if not done.wait(_PLATO_CHAT_HANDOFF_SECONDS):
         _PLATON_LOG.info("Platon [%s] handed off to polling after %ds",
