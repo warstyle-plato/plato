@@ -250,7 +250,7 @@ def test_the_screen_says_the_plan_column_carries_fact() -> None:
     page = cabinet_page()
     assert "Факт против нашей финмодели" in page
     assert "заполнена фактом" in page
-    assert "План банка" in page
+    assert "Факт против плана банка" in page
 
 
 def test_a_wide_table_scrolls_inside_its_own_frame() -> None:
@@ -266,3 +266,76 @@ def test_a_wide_table_scrolls_inside_its_own_frame() -> None:
     # Первая колонка переносится: имена брокеров длинные и в одну строку
     # выдавливают все числа за край.
     assert ".tablescroll td:first-child" in page and "white-space:normal" in page
+
+
+# --- план показывается графиком, а не таблицей --------------------------------
+# Таблицы с планом у владельца и так есть в книге; на экране нужно одно —
+# видно ли расхождение и куда оно растёт (владелец, 26.08.2026).
+
+
+def test_the_fact_is_summed_to_quarters_by_the_server() -> None:
+    """План банка квартальный: сравнивать его с месяцами значит сравнивать разное."""
+    got = _summary()
+    assert got["by_quarter"], "факт по кварталам считает сервер, а не экран"
+    total = sum(q["amount"] for q in got["by_quarter"])
+    assert total == pytest.approx(got["total"]["amount"])
+
+
+def test_a_quarter_is_named_as_in_the_bank_book() -> None:
+    assert contracting.quarter_of("2026-07") == "2026 Q3"
+    assert contracting.quarter_of("2026-01") == "2026 Q1"
+    assert contracting.quarter_of("2026-12") == "2026 Q4"
+    # Неразобранный месяц не превращается в выдуманный квартал.
+    assert contracting.quarter_of("мусор") == "мусор"
+
+
+def test_the_bank_revenue_is_summed_on_the_server_and_names_its_rows() -> None:
+    data = _book()
+    try:
+        bank = contracting.read_bank_plan(data)
+    except KeyError:
+        pytest.skip("в тестовой книге нет листа банка")
+    assert "revenue_by_quarter" in bank
+    assert "revenue_rows" in bank, "какие строки сложены — часть ответа"
+
+
+def test_the_plan_is_drawn_not_tabulated() -> None:
+    from market_search.cabinet import cabinet_page
+    page = cabinet_page()
+    assert "function factVsPlanChart(" in page
+    assert "столбики — факт, линия —" in page
+    # Таблиц плана на экране больше нет: они есть в книге у владельца.
+    assert "['Месяц','Факт, млн ₽','План ФМ, млн ₽','Отклонение']" not in page
+    assert "Факт против плана банка" in page
+
+
+def test_the_chart_does_no_economics() -> None:
+    """На экране только геометрия: высота столбика и координата точки."""
+    from market_search.cabinet import cabinet_page
+    page = cabinet_page()
+    start = page.index("function factVsPlanChart(")
+    depth = 0
+    for position in range(page.index("{", start), len(page)):
+        if page[position] == "{":
+            depth += 1
+        elif page[position] == "}":
+            depth -= 1
+            if depth == 0:
+                break
+    body = page[start:position + 1]
+    assert "/1e6" in body, "перевод в миллионы — оформление"
+    for forbidden in ("*100", "/r.plan", "fact/plan"):
+        assert forbidden not in body, f"экран считает экономику: {forbidden}"
+
+
+def test_the_chart_does_not_shadow_the_market_one() -> None:
+    """В кабинете уже есть planChart для плана продаж рынка.
+
+    Вторая функция с тем же именем молча затирает первую: обе живут в одном
+    скрипте страницы, и последняя выигрывает. Свой график называется своим
+    именем.
+    """
+    from market_search.cabinet import cabinet_page
+    page = cabinet_page()
+    assert page.count("function planChart(") == 1
+    assert page.count("function factVsPlanChart(") == 1

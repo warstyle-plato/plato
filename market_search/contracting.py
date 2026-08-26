@@ -477,6 +477,15 @@ _FM_METRICS = (
 _FM_THOUSANDS = ("escrow", "amount")
 
 
+def quarter_of(month: str) -> str:
+    """«2026-07» → «2026 Q3». Вид тот же, что в книге банка."""
+    try:
+        year, number = str(month).split("-")[:2]
+        return f"{year} Q{(int(number) - 1) // 3 + 1}"
+    except (ValueError, IndexError):
+        return str(month)
+
+
 def _fm_metric(label: str) -> str | None:
     text = _text(label)
     for prefix, name in _FM_METRICS:
@@ -541,6 +550,9 @@ def read_fm_plan(data: bytes) -> dict[str, Any]:
 # квартал по трём месяцам можно тремя способами, и любой будет нашей выдумкой,
 # а не планом банка. Сравнение идёт по кварталам, и это сказано вслух.
 _BANK_PERIOD_ROW = 1
+# Строки выручки банка. Начало подписи, а не точное совпадение: у продуктов
+# хвосты разные («… квартиры», «… Машиноместа (м.м шт)»).
+BANK_REVENUE_PREFIX = "Продажи с учётом рассрочки"
 _BANK_QUARTER = re.compile(r"^(20\d{2})\s*Q([1-4])$", re.I)
 
 
@@ -570,7 +582,21 @@ def read_bank_plan(data: bytes) -> dict[str, Any]:
             values[quarter] = _number(raw)
         if values:
             lines.append({"label": label, "values": values})
-    return {"sheet": BANK_SHEET, "quarters": [q for _, q in quarters], "lines": lines}
+    # Выручка плана банка — сумма строк «Продажи с учётом рассрочки» по всем
+    # продуктам. Складываем ЗДЕСЬ, а не на экране: сложенная в браузере
+    # колонка была бы вторым счётом той же величины. Какие строки сложены,
+    # едет рядом — иначе число не проверить.
+    revenue: dict[str, float] = {}
+    summed: list[str] = []
+    for line in lines:
+        if not line["label"].startswith(BANK_REVENUE_PREFIX):
+            continue
+        summed.append(line["label"])
+        for quarter, value in line["values"].items():
+            # Лист банка в тысячах рублей, свод — в рублях.
+            revenue[quarter] = revenue.get(quarter, 0.0) + value * 1000.0
+    return {"sheet": BANK_SHEET, "quarters": [q for _, q in quarters], "lines": lines,
+            "revenue_by_quarter": revenue, "revenue_rows": summed}
 
 
 def summarise(contracts: dict[str, Any], ledger: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -607,6 +633,14 @@ def summarise(contracts: dict[str, Any], ledger: dict[str, Any] | None = None) -
     by_product = [{"product": key, **_totals(items)} for key, items in products.items()]
     by_product.sort(key=lambda item: -item["amount"])
 
+    # Факт по кварталам: план банка квартальный, и сравнивать его с месяцами
+    # значит сравнивать разные величины. Складываем на сервере — на экране это
+    # был бы второй счёт той же выручки.
+    quarters: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        quarters.setdefault(quarter_of(row["month"]), []).append(row)
+    by_quarter = [{"quarter": key, **_totals(items)} for key, items in sorted(quarters.items())]
+
     by_payment = _payment_structure(rows)
 
     channels: dict[str, list] = {}
@@ -635,6 +669,7 @@ def summarise(contracts: dict[str, Any], ledger: dict[str, Any] | None = None) -
         "missing": contracts.get("missing") or [],
         "total": _totals(rows),
         "dynamics": dynamics,
+        "by_quarter": by_quarter,
         "by_product": by_product,
         "by_payment": by_payment,
         "by_channel": by_channel,

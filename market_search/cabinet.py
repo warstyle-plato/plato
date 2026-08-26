@@ -1841,57 +1841,91 @@ function salesOwnVsBrokers(d){
     +`${brokers.broker_fee?', и ' + num(brokers.fee_of_escrow*100,2) + '% от фактического наполнения эскроу':''}.</div>`;
 }
 
-// Факт против плана. Числа сравниваются как есть: и факт, и план приходят с
-// сервера посчитанными, а экран только показывает разницу в процентах — своей
-// экономики здесь нет.
+// Факт против плана — графиком, а не таблицей. Таблицы с планом у владельца и
+// так есть в книге; на экране нужно одно: видно ли расхождение и куда оно
+// растёт (владелец, 26.08.2026).
 //
-// Важная оговорка, которую видно только в самом листе: колонка «план» у нашей
-// финмодели на прошедших месяцах заполнена фактом («Объем продаж план (с
-// учетом факта)»). Молчать об этом нельзя — совпадение план-факт там
-// означает не точное попадание, а перенос.
+// Числа приходят с сервера посчитанными. Здесь только геометрия: высота
+// столбика и координата точки. Своей экономики нет — второй счёт той же
+// выручки однажды разошёлся бы с первым.
+function factVsPlanChart(rows, opts){
+  const shown=rows.filter(r=>r.fact!==null||r.plan!==null);
+  if(shown.length<2) return '';
+  const values=shown.flatMap(r=>[r.fact,r.plan]).filter(v=>Number.isFinite(v));
+  const max=Math.max(...values,1);
+  const W=680,H=250,L=54,R=12,T=16,B=46;
+  const step=(W-L-R)/shown.length;
+  const bw=Math.max(6,Math.min(38,step-10));
+  const x=i=>L+i*step+step/2;
+  const y=v=>T+(H-T-B)*(1-(Number(v)||0)/max);
+  let svg=`<svg viewBox="0 0 ${W} ${H}" width="100%" role="img">`;
+  [0,0.5,1].forEach(f=>{const v=max*f;
+    svg+=`<line x1="${L}" y1="${y(v)}" x2="${W-R}" y2="${y(v)}" stroke="#e6ecf2"/>`
+       +`<text x="${L-6}" y="${y(v)+4}" text-anchor="end" font-size="10" fill="#8798a8">${num(v/1e6)}</text>`;});
+  // Факт — столбиками: он случился. План — линией: он обещан.
+  shown.forEach((r,i)=>{
+    if(!Number.isFinite(r.fact)) return;
+    const top=y(r.fact), h=Math.max(1,(H-T-B)-(top-T));
+    svg+=`<rect x="${(x(i)-bw/2).toFixed(1)}" y="${top.toFixed(1)}" width="${bw}" height="${h.toFixed(1)}" rx="2" fill="#4E9BDE"`
+       +` data-tip="${esc(r.label+': факт '+num(r.fact/1e6,1)+' млн ₽')}"></rect>`;
+  });
+  const line=shown.map((r,i)=>Number.isFinite(r.plan)?`${i?'L':'M'}${x(i).toFixed(1)} ${y(r.plan).toFixed(1)}`:null)
+    .filter(Boolean).join(' ');
+  if(line) svg+=`<path d="${line}" fill="none" stroke="#C4581B" stroke-width="2"/>`;
+  shown.forEach((r,i)=>{
+    if(!Number.isFinite(r.plan)) return;
+    svg+=`<circle cx="${x(i).toFixed(1)}" cy="${y(r.plan).toFixed(1)}" r="3" fill="#C4581B"`
+       +` data-tip="${esc(r.label+': план '+num(r.plan/1e6,1)+' млн ₽')}"></circle>`;
+  });
+  shown.forEach((r,i)=>{
+    if(shown.length>16&&i%2) return;
+    svg+=`<text x="${x(i).toFixed(1)}" y="${H-26}" text-anchor="middle" font-size="9" fill="#8798a8">${esc(r.label.slice(2))}</text>`;
+  });
+  svg+=`<text x="${L}" y="${H-8}" font-size="10" fill="#8798a8">млн ₽ · столбики — факт, линия — ${esc(opts.planName)}</text>`;
+  return '<div class="wrap">'+svg+'</svg></div>';
+}
+
+// Помесячно: факт контрактации против плана нашей финмодели.
 function salesVsPlan(d){
   const fm=d.fm_plan;
   if(!fm||!fm.plan) return '';
   const plan=fm.plan['Итого']||fm.plan['Квартира']||{};
-  const months=(d.dynamics||[]).map(m=>m.month);
-  const rows=months.map(month=>{
-    const fact=(d.dynamics||[]).find(m=>m.month===month)||{};
-    const want=plan[month]||{};
-    const planned=Number(want.amount);
-    const got=Number(fact.amount)||0;
-    const gap=Number.isFinite(planned)&&planned?((got/planned-1)*100):null;
-    return {month, planned:Number.isFinite(planned)?planned:null, got, gap};
-  });
-  if(!rows.some(r=>r.planned!==null)) return '';
+  const rows=(d.dynamics||[]).map(m=>({
+    label:m.month,
+    fact:Number(m.amount),
+    plan:Number((plan[m.month]||{}).amount),
+  }));
+  if(!rows.some(r=>Number.isFinite(r.plan))) return '';
+  const behind=rows.filter(r=>Number.isFinite(r.plan)&&r.plan>0&&r.fact<r.plan);
   let html='<h3 style="margin:18px 0 4px;font-size:15px">Факт против нашей финмодели</h3>';
-  html+=salesTable(['Месяц','Факт, млн ₽','План ФМ, млн ₽','Отклонение'],
-    rows.slice().reverse().slice(0,14).map(r=>[
-      esc(r.month), num(r.got/1e6,1),
-      r.planned===null?'—':num(r.planned/1e6,1),
-      r.gap===null?'—':`<span style="color:${r.gap<0?'#C4581B':'#5FA98A'}">${r.gap>0?'+':''}${num(r.gap,1)}%</span>`]));
+  html+=factVsPlanChart(rows,{planName:'план ФМ'});
   html+='<div class="muted" style="font-size:12.5px;margin-top:6px">'
     +'Лист «'+esc(fm.sheet)+'»: на прошедших месяцах колонка «план» заполнена фактом, '
-    +'поэтому совпадение там означает перенос, а не точное попадание. Расхождение видно на будущих месяцах.</div>';
+    +'поэтому совпадение там означает перенос, а не точное попадание — расхождение видно на свежих месяцах. '
+    +'Ниже плана: '+behind.length+' из '+rows.filter(r=>Number.isFinite(r.plan)).length+' месяцев.</div>';
   return html;
 }
 
-// План банка квартальный, и раскладывать его по месяцам мы не станем: сделать
-// это можно тремя способами, и любой будет нашей выдумкой, а не планом банка.
+// Поквартально: факт против плана банка. Квартал по месяцам не раскладываем —
+// сделать это можно тремя способами, и любой будет нашей выдумкой; вместо
+// этого свой факт сложен до кварталов, и сравниваются одинаковые величины.
 function salesBankPlan(d){
   const bank=d.bank_plan;
-  if(!bank||!(bank.lines||[]).length) return '';
-  const quarters=bank.quarters.slice(0,8);
-  let html='<h3 style="margin:18px 0 4px;font-size:15px">План банка</h3>';
-  html+=salesTable(['Показатель', ...quarters],
-    bank.lines.slice(0,14).map(line=>[
-      esc(line.label),
-      ...quarters.map(q=>{
-        const v=line.values[q];
-        return (v===null||v===undefined)?'—':num(v, Math.abs(v)<100?1:0);
-      })]));
+  if(!bank||!bank.revenue_by_quarter) return '';
+  const plan=bank.revenue_by_quarter;
+  const quarters=[];
+  (d.by_quarter||[]).forEach(q=>{if(!quarters.includes(q.quarter))quarters.push(q.quarter)});
+  Object.keys(plan).forEach(q=>{if(!quarters.includes(q))quarters.push(q)});
+  quarters.sort();
+  const fact={};
+  (d.by_quarter||[]).forEach(q=>{fact[q.quarter]=Number(q.amount)});
+  const rows=quarters.map(q=>({label:q.replace(' ',''),fact:fact[q],plan:Number(plan[q])}));
+  if(!rows.some(r=>Number.isFinite(r.plan))) return '';
+  let html='<h3 style="margin:18px 0 4px;font-size:15px">Факт против плана банка</h3>';
+  html+=factVsPlanChart(rows,{planName:'план банка'});
   html+='<div class="muted" style="font-size:12.5px;margin-top:6px">'
-    +'Лист «'+esc(bank.sheet)+'»: показаны ближайшие '+quarters.length+' из '+bank.quarters.length+' кварталов книги. '
-    +'Единицы у строк разные — подписи оставлены как есть, чтобы не подписать чужое число своим именем.</div>';
+    +'Лист «'+esc(bank.sheet)+'»: сложены строки '+(bank.revenue_rows||[]).map(x=>'«'+esc(x)+'»').join(', ')
+    +'. Свой факт сложен до кварталов, чтобы сравнивались одинаковые величины: раскладывать квартал по месяцам мы не станем.</div>';
   return html;
 }
 
