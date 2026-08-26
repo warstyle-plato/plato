@@ -356,6 +356,12 @@ def _totals(rows: Iterable[dict[str, Any]]) -> dict[str, float]:
     area = sum(r["area"] for r in rows)
     escrow = sum(r["escrow_paid"] for r in rows)
     fee = sum(r["broker_fee"] for r in rows)
+    # Премия своего отдела продаж лежит отдельным полем от брокерской комиссии,
+    # и без неё канал «напрямую» показывал ровно ноль — то есть «бесплатно».
+    # Это не бесплатно, это другая строка расходов, и считать её должен тот же
+    # `_totals`, что и остальное: посчитанная на экране, она была бы вторым
+    # счётом той же величины.
+    bonus = sum(r["sales_bonus_paid"] for r in rows)
     return {
         "contracts": float(len(rows)),
         "units": sum(r["units"] for r in rows),
@@ -370,6 +376,12 @@ def _totals(rows: Iterable[dict[str, Any]]) -> dict[str, float]:
         # выходит 4,50% вместо 7,32%, и показатель делится не на те сделки.
         "fee_of_sales": fee / amount if amount else 0.0,
         "fee_of_escrow": fee / escrow if escrow else 0.0,
+        "sales_bonus": bonus,
+        "bonus_of_sales": bonus / amount if amount else 0.0,
+        # Полная стоимость канала — комиссия и премия вместе: у брокера это
+        # почти всегда комиссия, у своего отдела — почти всегда премия, и
+        # сравнивать их по одному из двух полей значит сравнивать разное.
+        "cost_of_sales": (fee + bonus) / amount if amount else 0.0,
     }
 
 
@@ -426,10 +438,16 @@ def summarise(contracts: dict[str, Any], ledger: dict[str, Any] | None = None) -
     dynamics = []
     for month in sorted(months):
         item = months[month]
+        area = sum(p["area"] for p in item["by_product"].values())
+        amount = sum(p["amount"] for p in item["by_product"].values())
         item.update({
             "units": sum(p["units"] for p in item["by_product"].values()),
-            "area": sum(p["area"] for p in item["by_product"].values()),
-            "amount": sum(p["amount"] for p in item["by_product"].values()),
+            "area": area,
+            "amount": amount,
+            # Удельное считает тот, кто считает выручку. Посчитанное на экране
+            # было бы вторым счётом той же величины: разойдись они, обе строки
+            # выглядели бы верными.
+            "price_per_sqm": amount / area if area else 0.0,
         })
         dynamics.append(item)
 

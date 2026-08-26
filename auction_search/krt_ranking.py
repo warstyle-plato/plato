@@ -29,6 +29,7 @@ krt.mos.ru ценового поля нет вовсе (`KrtTerritory` несё�
 from __future__ import annotations
 
 import datetime
+import json
 import logging
 import os
 import re
@@ -188,6 +189,12 @@ class KrtRanking:
         # карточку и ждал те же минуты второй раз, хотя всё уже посчитано.
         self.reports_dir = Path(data_dir) / "krt" / "reports"
         self.first_seen_path = Path(data_dir) / "krt" / "first_seen.json"
+        # Очередь новинок лежит рядом с самим `first_seen`: новизну решает он,
+        # и решать её второй раз где-то ещё значит завести второй ответ на один
+        # вопрос. Здесь это ДАННЫЕ — «в каталоге появилось вот это», — а не
+        # сообщение: про Telegram модуль каталога знать не должен, до
+        # api.telegram.org с ядра всё равно не дойти.
+        self.announcements_path = Path(data_dir) / "krt" / "announcements.jsonl"
         self.ttl_seconds = ttl_seconds
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
@@ -306,7 +313,59 @@ class KrtRanking:
             "bootstrapped_at": (load_json(self.first_seen_path) or {}).get("bootstrapped_at", stamp),
             "slugs": updated,
         })
+        # Объявляем ровно тех, кого только что записали впервые. Состав уже
+        # сохранён, поэтому второй раз тот же слаг сюда не попадёт: очередь
+        # пишется ПОСЛЕ снимка намеренно — иначе сбой записи снимка объявил бы
+        # новинку, которую каталог не запомнил, и она пришла бы снова.
+        if not bootstrap:
+            self._queue_announcements(sorted(slug for slug in seen if slug not in known), stamp)
         return updated
+
+    def _queue_announcements(self, slugs: list[str], stamp: int) -> None:
+        """Кладёт появившиеся площадки в очередь доставки.
+
+        Очередь — доставка, а не каталог: сбой записи не должен ронять чтение
+        каталога, поэтому ошибки здесь глотаются. Потеря объявления — потеря
+        уведомления, площадка при этом уже помечена «новой» на экране.
+        """
+        if not slugs:
+            return
+        try:
+            self.announcements_path.parent.mkdir(parents=True, exist_ok=True)
+            with self.announcements_path.open("a", encoding="utf-8") as handle:
+                for slug in slugs:
+                    handle.write(json.dumps({"slug": slug, "seen_at": stamp},
+                                            ensure_ascii=False) + "\n")
+        except OSError:
+            pass
+
+    def take_announcements(self) -> list[dict[str, Any]]:
+        """Забирает накопленные новинки. Забрать может только один.
+
+        Файл переименовывается, и проигравший получает его отсутствие — как в
+        очереди знакомств: воркеров два, и оба доходят сюда одновременно.
+        """
+        path = self.announcements_path
+        taken = path.with_suffix(".taken")
+        try:
+            path.replace(taken)
+        except OSError:
+            return []
+        records: list[dict[str, Any]] = []
+        try:
+            for line in taken.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    records.append(json.loads(line))
+                except ValueError:
+                    continue
+        except OSError:
+            return []
+        finally:
+            taken.unlink(missing_ok=True)
+        return records
 
     @staticmethod
     def is_new(first_seen_at: Any, now: float | None = None) -> bool:

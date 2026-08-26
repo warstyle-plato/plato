@@ -67,7 +67,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.20.2"
+VERSION = "0.20.3"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -12581,6 +12581,28 @@ _MODEL_FINANCE_SUMMABLE = {
     "pf_draw", "pf_repayment", "escrow_release", "pf_interest", "pf_interest_capitalization",
     "limit_fee", "interest_payment", "taxable_margin", "financing_tax_deduction", "profit_tax",
 }
+
+# Короткие подписи тех же статей — для таблицы «Расходы» на странице, где на
+# имя есть одна строка. Это НЕ второй список статей: имена берутся по ключам
+# `_MODEL_CAPEX_LABELS` ниже, и статья без короткой подписи получает полную.
+# Прежде страница держала свой словарь `capNames`, и статьи, заведённые позже,
+# доезжали до экрана сырыми ключами: «resettlement» и «demolition» стояли
+# среди русских названий (владелец, 25.08.2026). Копию негде обновлять, потому
+# что копии больше нет.
+CAPEX_SHORT_NAMES: dict[str, str] = {
+    "land_rights": "Земля / смена ВРИ",
+    "ird": "ИРД",
+    "design_p": "Проект П",
+    "design_rd": "Проект РД",
+    "utilities": "Наружные сети",
+    "offices": "Офисы",
+    "standalone_retail": "Коммерция ОСЗ",
+    "social": "Социальный платеж / соцобъекты",
+    "gc_fee": "Генподрядчик",
+    "main_above": "Основное строительство — наземная часть",
+    "main_under": "Основное строительство — подземная часть",
+}
+CAPEX_NAMES_PLACEHOLDER = "__DEVELOPAID_CAPEX_NAMES__"
 
 _MODEL_CAPEX_LABELS: list[tuple[str, str]] = [
     ("land_rights", "Земельные правоотношения / смена ВРИ"),
@@ -28014,6 +28036,110 @@ def profile_announcements(req: WebLoginConfirmRequest) -> dict[str, Any]:
     return {"announcements": _profile_take_announcements()}
 
 
+# --- новые площадки КРТ: с ядра в бот ---------------------------------------
+# Каталог krt.mos.ru читается на ядре, и новизну решает `first_seen` там же.
+# До api.telegram.org с ядра не дойти, поэтому здесь ровно тот же приём, что у
+# знакомств: ядро копит, хост с вебхуком забирает по общей подписи и шлёт.
+# Второго пути не заводим — он разошёлся бы с первым на первой же правке.
+#
+# Подписчики живут ТОЖЕ на ядре, рядом с профилями: диск бота на Render
+# переживает только до следующей выкатки, и список подписок исчезал бы вместе
+# с контейнером — молча, как исчезал журнал.
+
+
+def _krt_subscribers_path() -> Path:
+    return _PROJECTS_DIR.parent / "krt_subscribers.json"
+
+
+def _krt_subscribers() -> list[int]:
+    try:
+        raw = json.loads(_krt_subscribers_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(raw, dict):
+        return []
+    found: list[int] = []
+    for value in raw.get("chat_ids") or []:
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            continue
+        if number and number not in found:
+            found.append(number)
+    return sorted(found)
+
+
+def _krt_subscribe(chat_id: int, wanted: bool) -> bool:
+    """Включает или выключает подписку. Возвращает состояние ПОСЛЕ правки.
+
+    Возвращаем состояние, а не «сделано»: повторное «подписаться» и настоящая
+    подписка на экране обязаны выглядеть одинаково, иначе человек жмёт кнопку
+    второй раз, чтобы убедиться, и снимает подписку.
+    """
+    chat_id = int(chat_id or 0)
+    if not chat_id:
+        return False
+    current = _krt_subscribers()
+    if wanted and chat_id not in current:
+        current.append(chat_id)
+    elif not wanted and chat_id in current:
+        current.remove(chat_id)
+    path = _krt_subscribers_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"chat_ids": sorted(set(current))},
+                                   ensure_ascii=False), encoding="utf-8")
+    except OSError as exc:
+        raise HTTPException(status_code=503, detail=f"Подписка не сохранена: {exc}")
+    return chat_id in current
+
+
+class KrtSubscribeRequest(BaseModel):
+    chat_id: int = 0
+    sign: str = ""
+    # None — «просто скажи, подписан ли». Узнавать состояние записью нельзя:
+    # переключатель, который сперва отписывает, чтобы прочитать, оставляет
+    # человека отписанным, если второй запрос не дошёл.
+    on: bool | None = None
+
+
+@app.post("/internal/krt/announcements")
+def krt_announcements(req: WebLoginConfirmRequest) -> dict[str, Any]:
+    """Новые площадки КРТ и кому их объявить. Только для своего хоста.
+
+    Отдаём подписчиков тем же ответом, что и новинки: два запроса ради одного
+    сообщения — это два места, где список может разъехаться со своей рассылкой.
+
+    Очередь считает тот же `KrtRanking`, что помечает площадки «новыми» на
+    экране: второй ответ на вопрос «это новое?» однажды разошёлся бы с первым,
+    и в чат приехало бы не то, что видно в каталоге.
+    """
+    expected = _web_login_sign("krt-announcements", int(req.chat_id or 0))
+    if not hmac.compare_digest(str(req.sign or "").encode("utf-8"),
+                               expected.encode("utf-8")):
+        raise HTTPException(status_code=403, detail="Подпись не сошлась.")
+    take = getattr(app.state, "krt_announcements_take", None)
+    if take is None:
+        # Модуль торгов не установлен — сказать это честно. Пустой список
+        # читался бы как «новых площадок нет».
+        raise HTTPException(status_code=503,
+                            detail="Каталог КРТ на этом хосте не установлен.")
+    return {"announcements": take(), "subscribers": _krt_subscribers()}
+
+
+@app.post("/internal/krt/subscribe")
+def krt_subscribe(req: KrtSubscribeRequest) -> dict[str, Any]:
+    """Подписка на новые площадки КРТ. Подпись — тем же общим токеном."""
+    expected = _web_login_sign("krt-subscribe", int(req.chat_id or 0))
+    if not hmac.compare_digest(str(req.sign or "").encode("utf-8"),
+                               expected.encode("utf-8")):
+        raise HTTPException(status_code=403, detail="Подпись не сошлась.")
+    chat_id = int(req.chat_id or 0)
+    if req.on is None:
+        return {"subscribed": chat_id in _krt_subscribers()}
+    return {"subscribed": _krt_subscribe(chat_id, bool(req.on))}
+
+
 def _profile_announce(record: dict[str, Any]) -> None:
     """Новое знакомство — в чат владельцу. Молча, если сообщить нечем."""
     admins = usage_admin_ids()
@@ -35086,7 +35212,8 @@ function renderResult(){
    .map(([key,v])=>`<tr><td>${revNames[key]||key}</td><td>${money(v)}</td><td>${perTh(v,rGns)}</td><td>${perTh(v,rSaleable)}</td></tr>`).join('')
    +`<tr><th>Итого</th><th>${money(r.revenue.total)}</th><th>${perTh(r.revenue.total,rGns)}</th><th>${perTh(r.revenue.total,rSaleable)}</th></tr>`;
  }
- const capNames={land_rights:'Земля / смена ВРИ',vri_security:'Обеспечение обязательства по ВРИ',vri_interest:'Проценты по рассрочке ВРИ',ird:'ИРД',design_p:'Проект П',design_rd:'Проект РД',author_supervision:'Авторский надзор',technical_supervision:'Технический заказчик / стройконтроль',project_management:'Управление проектом',preparation:'Подготовительные работы',main_above:'Основное строительство — наземная часть',main_under:'Основное строительство — подземная часть',utilities:'Наружные сети',landscaping:'Благоустройство',commissioning:'Сдача и ввод',site_maintenance:'Содержание стройплощадки',social:'Социальный платеж / соцобъекты',offices:'Офисы',standalone_retail:'Коммерция ОСЗ',above_parking:'Наземный паркинг',gc_fee:'Генподрядчик',reserve:'Резерв'};
+ // Имена статей приходят из движка плейсхолдером, как VERSION и доли ТЭП.
+ const capNames=__DEVELOPAID_CAPEX_NAMES__;
  {
   const cGns=Number(r.summary.project_gns_sqm||0),cSaleable=Number(r.summary.monetizable_saleable_sqm||0);
   const perTh=(v,area)=>area>0?num2(Number(v||0)/area/1000):'—';
@@ -36590,6 +36717,11 @@ PAGE = PAGE.replace(INPUT_DEFAULT_PLACEHOLDER,
 PAGE = PAGE.replace(TEP_DEFAULT_PLACEHOLDER,
                     json.dumps(TEP_DEFAULT, ensure_ascii=False))
 PAGE = PAGE.replace(TEP_RATIOS_PLACEHOLDER, json.dumps(TEP_RATIOS, ensure_ascii=False))
+# Имена статей расходов — из движка. Статья без короткой подписи получает
+# полную: сырой ключ на экране невозможен по построению, а не по вниманию.
+PAGE = PAGE.replace(CAPEX_NAMES_PLACEHOLDER, json.dumps(
+    {key: CAPEX_SHORT_NAMES.get(key, name) for key, name in _MODEL_CAPEX_LABELS},
+    ensure_ascii=False))
 # Состав МКД — из движка, копии на странице нет.
 PAGE = PAGE.replace("__DEVELOPAID_MKD_PRODUCTS__",
                     json.dumps(list(MKD_PRODUCTS), ensure_ascii=False))

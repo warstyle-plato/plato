@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 
 from auction_search.adapters import InvestMoscowDiscoveryAdapter, LotOnlineAdapter, RoseltorgAdapter
 from auction_search.adapters.torgi_gov import TorgiGovAdapter, trust_report as torgi_trust_report
+from auction_search.adapters.fedresurs import probe as fedresurs_probe
 from auction_search.bridge import auction_page_with_handoff, install_page_bridge
 from auction_search.developaid_mapper import build_developaid_seed
 from auction_search.documents import DocumentExtractionError
@@ -67,7 +68,34 @@ def _adapter_for(url: str):
         return RoseltorgAdapter()
     if host == "lot-online.ru" or host.endswith(".lot-online.ru"):
         return LotOnlineAdapter()
-    raise ValueError("Поддерживаются только официальные URL Росэлторг и РАД/Lot-online")
+    if host == TorgiGovAdapter.HOST or host.endswith("." + TorgiGovAdapter.HOST):
+        return TorgiGovAdapter()
+    raise ValueError(
+        "Разбирать умеем только официальные адреса Росэлторга, РАД/Lot-online и "
+        f"ГИС Торгов; «{host or url}» ни на один из них не похож")
+
+
+def _analysis_support(url: str) -> dict[str, Any]:
+    """Можно ли разобрать этот лот целиком — и если нет, то почему.
+
+    Отвечает тот же `_adapter_for`, который потом и разбирает. Второе правило о
+    том же самом однажды разошлось бы с первым, и кнопка обещала бы разбор там,
+    где его нет.
+
+    Спрашивается это ДО клика намеренно. Список показывал все лоты одинаково, а
+    половина из них на «Разобрать лот» отвечала «поддерживаются только Росэлторг
+    и РАД»: узнать, что карточку не открыть, можно было только нажав
+    (владелец, 25.08.2026 — «зачем они тогда в списке»). Отказ, о котором
+    сказано заранее, — это свойство лота; отказ после клика — поломка.
+    """
+    try:
+        adapter = _adapter_for(url)
+    except ValueError as exc:
+        return {"available": False, "reason": str(exc)}
+    note = getattr(adapter, "deep_parse_unavailable", "")
+    if note:
+        return {"available": False, "reason": str(note)}
+    return {"available": True, "reason": ""}
 
 
 def _discovery_adapters(source: str):
@@ -212,6 +240,31 @@ def install(app: FastAPI) -> None:
         os.path.join(os.getenv("DATA_DIR", "data"), "market")
     )
     krt_ranking = KrtRanking(os.path.join(os.getenv("DATA_DIR", "data"), "market"))
+    # Очередь новинок забирает движок (`/internal/krt/announcements`) — у него
+    # общая с ботом подпись, а до api.telegram.org с ядра не дойти. Отдаём ему
+    # ТОТ ЖЕ экземпляр каталога, который помечает площадки «новыми» на экране:
+    # второй ответ на вопрос «это новое?» однажды разошёлся бы с первым, и в
+    # чат приехало бы не то, что видно в списке.
+    def _take_krt_announcements() -> list[dict[str, Any]]:
+        """Новинки с именами площадок.
+
+        В очередь ложится слаг: имя знает каталог, а `first_seen` — состав.
+        Имя подставляется здесь, при выдаче, и если площадки в каталоге уже
+        нет — остаётся слаг. Выдумывать имя нельзя, а молча выбросить запись
+        значит потерять новость.
+        """
+        records = krt_ranking.take_announcements()
+        if not records:
+            return []
+        try:
+            names = {str(row.get("slug") or ""): str(row.get("name") or "")
+                     for row in krt_registry.catalogue()}
+        except Exception:  # noqa: BLE001
+            names = {}
+        return [{**record, "name": names.get(str(record.get("slug") or ""), "")}
+                for record in records]
+
+    app.state.krt_announcements_take = _take_krt_announcements
 
     def _weekly_ranking() -> None:
         """Раз в неделю каталог обновляется и считается сам.
@@ -673,6 +726,20 @@ def install(app: FastAPI) -> None:
         """
         return await run_in_threadpool(lambda: TorgiGovAdapter().probe_regions(page))
 
+    @app.get("/auctions/fedresurs/probe")
+    async def auction_fedresurs_probe() -> dict[str, Any]:
+        """Что отвечает ЕФРСБ. Разбора нет — сначала ответ, потом код.
+
+        ГИС Торги оказались не тем рынком: живой ответ подтвердил один код вида
+        торгов — приватизацию госимущества, — а 44% выборки владельца это
+        банкротство, и лежит оно на площадках, которых мы не читаем.
+
+        Из песочницы bankrot.fedresurs.ru закрыт, как НСПД и torgi.gov.ru,
+        поэтому проба ходит только с ядра. Разбор по догадке здесь запрещён
+        намеренно: ровно так ГИС Торги приехали на прод с тридцатью гаражами.
+        """
+        return await run_in_threadpool(fedresurs_probe)
+
     @app.get("/auctions/discover")
     async def auction_discover(
         source: str = Query(default="all"),
@@ -704,6 +771,7 @@ def install(app: FastAPI) -> None:
             "lots": [
                 {
                     **_public_lot_dict(lot),
+                    "analysis": _analysis_support(lot.source.lot_url),
                     "screening": {
                         **AuctionSearchService.screen_lot(lot),
                         "documents_count": len(lot.documents),

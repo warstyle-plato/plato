@@ -31,8 +31,12 @@ sys.path.insert(0, str(ROOT))
 from auction_search.ui import auctions_page  # noqa: E402
 
 
+# Площадка, в которую ещё можно войти. Прежде здесь стояла «В реализации» —
+# и это был неудачный пример: инвестор там уже определён, войти нельзя, и
+# площадка нужна только справочно (владелец, 25.08.2026). Проверять снижения
+# экономики на ней значило мерить их на том, чего мы не купим.
 SITE = {"slug": "site", "name": "Площадка", "okrug": "ЮАО", "district": "Нагатино",
-        "status": "В реализации", "area_ha": 14.6,
+        "status": "Планируемый", "area_ha": 14.6,
         "total_gfa_sqm": 500000, "housing_gfa_sqm": 300000,
         "business_gfa_sqm": 100000, "jobs": 1200}
 
@@ -60,7 +64,7 @@ def page_functions() -> str:
     return "\n".join(out)
 
 
-def score(model: dict | None, rank: dict | None = None) -> dict:
+def score(model: dict | None, rank: dict | None = None, site: dict | None = None) -> dict:
     node = shutil.which("node")
     if not node:
         pytest.skip("node недоступен")
@@ -73,7 +77,7 @@ def score(model: dict | None, rank: dict | None = None) -> dict:
         "function fmtArea(v){return String(v)}\n"
     )
     body = (stub + page_functions()
-            + f"\nconsole.log(JSON.stringify(krtScore({json.dumps(SITE)})));")
+            + f"\nconsole.log(JSON.stringify(krtScore({json.dumps(site or SITE)})));")
     done = subprocess.run([node, "-e", body], capture_output=True, text=True, timeout=60)
     assert done.returncode == 0, done.stderr[:600]
     return json.loads(done.stdout)
@@ -141,3 +145,23 @@ def test_every_deduction_says_what_it_is() -> None:
     assert got["cuts"], "снижение без объяснения — это просто другое число"
     for item in got["cuts"]:
         assert item["label"] and item["points"] > 0
+
+
+def test_a_site_already_under_way_is_reference_only() -> None:
+    """«В реализации» — инвестор определён: войти нельзя, и балл это говорит.
+
+    Прежде статус работал наоборот: «В реализации» давало САМУЮ большую
+    прибавку, и верх списка занимало то, что нам недоступно.
+    """
+    entered = score(None, site={**SITE, "status": "В реализации"})
+    planned = score(None)
+    assert entered["score"] < planned["score"]
+    assert any("войти нельзя" in cut["label"] for cut in entered["cuts"])
+    # Снижение, а не изгнание: число остаётся, справочная ценность есть.
+    assert entered["score"] > 0
+
+
+def test_the_status_is_not_potential() -> None:
+    """Потенциал считается по ТЭП; статус — про возможность войти, и он вычитает."""
+    entered = score(None, site={**SITE, "status": "В реализации"})
+    assert entered["base"] == score(None)["base"], "статус не должен раздувать потенциал"

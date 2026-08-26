@@ -53,8 +53,10 @@ def lot_score(lot: dict) -> dict:
     if not node:
         pytest.skip("node недоступен")
     body = script()
-    rules = body[body.index("const LOT_BASE_BY_KIND="):]
-    parts = [rules[:rules.index("\n")]]
+    parts = []
+    for name in ("const LOT_BASE_BY_KIND=", "const LOT_SMALL_SQM="):
+        start = body.index(name)
+        parts.append(body[start:body.index("\n", start)])
     parts += [function_source(name) for name in ("lotDeadlineDays", "lotScore", "lotScoreNote")]
     program = "\n".join(parts) + f"\nconsole.log(JSON.stringify(lotScore({json.dumps(lot)})));"
     done = subprocess.run([node, "-e", program], capture_output=True, text=True, timeout=60)
@@ -144,3 +146,32 @@ def test_the_lots_table_has_the_score_column() -> None:
     head = page[page.index("<th>Лот</th>"):]
     head = head[:head.index("</thead>")]
     assert "<th>Оценка Платона</th>" in head
+
+
+# Масштаб лота у двух источников лежит в РАЗНЫХ полях: у городских ЭТП это
+# площадь участка, у ГИС Торгов — площадь здания. Пока балл читал только
+# участок, гараж 26 м² и имущественный комплекс 190 000 м² получали одну и ту
+# же прибавку — ноль.
+
+BUILDING = {"lot_kind": "property_complex", "building_area_sqm": 26_000,
+            "current_price_rub": 480_000_000, "application_deadline": "2099-10-14T10:00:00",
+            "cadastral_numbers": ["77:01:0004023:1"], "documents": [1],
+            "screening": {"concerns": []}}
+
+
+def test_a_building_lot_is_measured_by_its_own_metres() -> None:
+    big = lot_score(BUILDING)
+    small = lot_score({**BUILDING, "building_area_sqm": 900})
+    assert big["base"] > small["base"], "190 000 м² и 900 м² не могут стоить одинаково"
+
+
+def test_a_garage_is_not_a_development_site() -> None:
+    got = lot_score({**BUILDING, "building_area_sqm": 26})
+    assert any("не площадка" in cut["label"] for cut in got["cuts"])
+    assert got["score"] < lot_score(BUILDING)["score"]
+
+
+def test_a_lot_without_metres_is_not_called_small() -> None:
+    """«Метров нет» — это не «метров мало»: снижать не за что."""
+    got = lot_score({**BUILDING, "building_area_sqm": None})
+    assert not any("не площадка" in cut["label"] for cut in got["cuts"])

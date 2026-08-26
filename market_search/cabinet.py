@@ -476,10 +476,13 @@ g.bub.on circle{fill-opacity:.75}
     <button class="go alt" id="reset" style="display:none">Сбросить отчёт</button>
     <label class="upload" title="Лист «План продаж_утв» из финмодели проекта: помесячно факт и план. Форматы .xlsx, .xlsm, .xlsb">Загрузить отчёт о продажах<input type="file" id="plan" accept=".xlsx,.xlsm,.xlsb"></label>
     <span id="planstate" class="muted"></span>
+    <label class="upload" title="Выгрузка ЦФ: листы «Контрактация» и «1С_Факт». Один файл — один разбор: просить загрузить его дважды значит однажды получить два разных файла и показать их как один проект. Форматы .xlsx, .xlsm, .xlsb">Загрузить контрактацию<input type="file" id="cf" accept=".xlsx,.xlsm,.xlsb"></label>
+    <span id="cfstate" class="muted"></span>
     <span id="state" class="muted" style="margin-left:12px"></span>
     <div id="pdfstate" class="err pdffail" style="display:none"></div>
     <div id="hintout"></div>
   </div>
+  <div id="sales"></div>
   <div id="out"></div>
 <script>document.body.dataset.version='__DEVELOPAID_VERSION__';</script>
 <div id="tip" role="status"></div>
@@ -1349,39 +1352,45 @@ function reportDigest(d){
 
 let lastReport=null;
 
+// Один путь к Платону на весь кабинет. Копия этого опроса была бы вторым
+// местом, где чинят обрыв длинного ответа: цепочка ядро → Render → OpenAI
+// одним соединением не держится, и за долгим ответом ходят по номеру запуска.
+async function platoAnswer(message){
+  const trace='cab'+Math.random().toString(36).slice(2,10);
+  const r=await fetch('/cabinet/ask',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({message})});
+  // Ответ бывает не JSON — например HTML страницы ошибки. Разбирать его
+  // вслепую значит показать «The string did not match the expected pattern»
+  // вместо причины.
+  const raw=await r.text();
+  let d;
+  try{ d=JSON.parse(raw) }
+  catch(_){ throw new Error(`Платон ответил не по-русски и не по-JSON (код ${r.status}): `+raw.slice(0,200)) }
+  if(!r.ok) throw new Error(d.detail||'Платон не ответил');
+  // Быстрый ответ приходит тем же запросом; за долгим ходим по номеру.
+  let text=d.reply||d.answer||d.text||'';
+  for(let i=0;!text&&d.trace_id&&i<120;i++){
+    await new Promise(done=>setTimeout(done,2500));
+    const p=await fetch('/agent/result/'+encodeURIComponent(d.trace_id||trace));
+    if(!p.ok) continue;
+    const pd=await p.json();
+    if(pd.status==='error'){ throw new Error(pd.detail||pd.error||'Платон вернул ошибку') }
+    text=pd.reply||pd.answer||pd.text||'';
+  }
+  if(!text) throw new Error(d.error||'Ответ пустой — Платон ничего не сказал.');
+  return text;
+}
+
 async function askPlato(){
   const q=$('#ask').value.trim();
   if(!q){$('#askout').innerHTML='<div class="muted">Напишите вопрос.</div>';return}
   if(!lastReport){$('#askout').innerHTML='<div class="muted">Сначала соберите отчёт — Платону нужны числа.</div>';return}
-  const trace='cab'+Math.random().toString(36).slice(2,10);
   $('#askbtn').disabled=true; $('#askout').innerHTML='<div class="muted">Платон Сергеевич думает…</div>';
   const message='Ниже готовый разбор рынка, посчитанный движком. Числа не пересчитывай — '
     +'объясни и ответь на вопрос по ним.\n\n'+reportDigest(lastReport)+'\n\nВопрос: '+q;
   try{
-    const r=await fetch('/cabinet/ask',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({message})});
-    // Ответ бывает не JSON — например HTML страницы ошибки. Разбирать его
-    // вслепую значит показать человеку «The string did not match the expected
-    // pattern» вместо причины.
-    const raw=await r.text();
-    let d;
-    try{ d=JSON.parse(raw) }
-    catch(_){ $('#askout').innerHTML=`<div class="err">Платон ответил не по-русски и не по-JSON`
-      +` (код ${r.status}): ${esc(raw.slice(0,200))}</div>`; return }
-    if(!r.ok){$('#askout').innerHTML=`<div class="err">${esc(d.detail||'Платон не ответил')}</div>`;return}
-    // Быстрый ответ приходит тем же запросом; за долгим ходим по номеру.
-    let text=d.reply||d.answer||d.text||'';
-    // Опрос по номеру нужен только если движок вернул билет вместо ответа.
-    for(let i=0;!text&&d.trace_id&&i<120;i++){
-      await new Promise(r=>setTimeout(r,2500));
-      const p=await fetch('/agent/result/'+encodeURIComponent(d.trace_id||trace));
-      if(!p.ok) continue;
-      const pd=await p.json();
-      if(pd.status==='error'){text='Ошибка: '+(pd.detail||pd.error||'неизвестно');break}
-      text=pd.reply||pd.answer||pd.text||'';
-    }
-    $('#askout').innerHTML=text?`<div class="plato">${esc(text).replace(/\n/g,'<br>')}</div>`
-      :`<div class="err">${esc(d.error||'Ответ пустой — Платон ничего не сказал.')}</div>`;
+    const text=await platoAnswer(message);
+    $('#askout').innerHTML=`<div class="plato">${esc(text).replace(/\n/g,'<br>')}</div>`;
   }catch(e){$('#askout').innerHTML=`<div class="err">${esc(e.message||e)}</div>`}
   finally{$('#askbtn').disabled=false}
 }
@@ -1710,6 +1719,225 @@ function boardCard(data){
     html+=`<div class="muted" style="font-size:12.5px;margin-top:6px">Не прочитано — ${esc(line)}</div>`;
   });
   return html+'</div>';
+}
+
+// --- свод продаж действующего проекта ---------------------------------------
+// Числа считает `/cabinet/contracting`: динамику, структуру оплаты, каналы,
+// вознаграждение и расторжения. Здесь не считается НИЧЕГО, кроме долей внутри
+// одной картинки, — второй счёт той же выручки однажды разошёлся бы с первым,
+// и обе строки выглядели бы верными. Ровно то правило, по которому разбивка
+// очередей берётся из `report.products`.
+let salesData=null;
+
+async function loadContracting(file){
+  $('#cfstate').textContent='Читаю выгрузку ЦФ…';
+  $('#sales').innerHTML='';
+  try{
+    const r=await fetch('/cabinet/contracting',{method:'POST',body:file});
+    const raw=await r.text();
+    let d;
+    try{ d=JSON.parse(raw) }
+    catch(_){ $('#cfstate').textContent=`Ответ не разобран (код ${r.status}): `+raw.slice(0,160); return }
+    if(!r.ok){ $('#cfstate').textContent=d.detail||'Файл не разобран'; salesData=null; return }
+    salesData=d;
+    const t=d.total||{};
+    $('#cfstate').textContent=`Контрактация: ${num(t.contracts)} договор(ов), ${num(t.amount/1e6,1)} млн ₽`;
+    renderSales(d);
+  }catch(e){ $('#cfstate').textContent=String(e.message||e); salesData=null }
+}
+
+const SALES_COLORS=['#4E9BDE','#C4581B','#5FA98A','#8E7CC3','#D0A24C','#8798a8'];
+
+// Столбики по месяцам: рубли высотой, число договоров подписью. Своим SVG —
+// страница отдаётся из движка, внешних библиотек тянуть неоткуда.
+function salesMonthChart(dynamics){
+  const rows=(dynamics||[]).filter(m=>m.amount>0);
+  if(rows.length<2) return '';
+  const max=Math.max(...rows.map(r=>r.amount));
+  const W=620,H=210,L=52,R=10,T=14,B=42;
+  const bw=Math.max(6,Math.floor((W-L-R)/rows.length)-6);
+  const x=i=>L+i*(W-L-R)/rows.length+3;
+  const y=v=>T+(H-T-B)*(1-v/max);
+  let svg=`<svg viewBox="0 0 ${W} ${H}" width="100%" role="img">`;
+  [0,0.5,1].forEach(f=>{const v=max*f;
+    svg+=`<line x1="${L}" y1="${y(v)}" x2="${W-R}" y2="${y(v)}" stroke="#e6ecf2"/>`
+       +`<text x="${L-6}" y="${y(v)+4}" text-anchor="end" font-size="10" fill="#8798a8">${num(v/1e6)}</text>`;});
+  rows.forEach((m,i)=>{
+    const h=Math.max(1,(H-T-B)-(y(m.amount)-T));
+    svg+=`<rect x="${x(i)}" y="${y(m.amount).toFixed(1)}" width="${bw}" height="${h.toFixed(1)}" rx="2" fill="#4E9BDE"`
+       +` data-tip="${esc(m.month+': '+num(m.amount/1e6,1)+' млн ₽, '+num(m.units)+' шт, '+num(m.area)+' м²')}"></rect>`
+       +`<text x="${(x(i)+bw/2).toFixed(1)}" y="${(y(m.amount)-4).toFixed(1)}" text-anchor="middle" font-size="9" fill="#5b6b7d">${num(m.units)}</text>`;
+    if(rows.length<=14||i%2===0)
+      svg+=`<text x="${(x(i)+bw/2).toFixed(1)}" y="${H-24}" text-anchor="middle" font-size="9" fill="#8798a8">${esc(String(m.month).slice(2))}</text>`;
+  });
+  svg+=`<text x="${L}" y="${H-6}" font-size="10" fill="#8798a8">млн ₽ по месяцам; цифра над столбиком — договоров</text>`;
+  return '<div class="wrap">'+svg+'</svg></div>';
+}
+
+// Доли одной величины полосой. Ширина — от суммы этой же выборки, и другой
+// базы у неё нет: доля, посчитанная от чужого итога, читается как та же самая.
+function salesShareBar(items, label){
+  const rows=(items||[]).filter(x=>x.amount>0);
+  if(!rows.length) return '';
+  const total=rows.reduce((sum,x)=>sum+x.amount,0);
+  let bar='<div style="display:flex;height:18px;border-radius:4px;overflow:hidden;margin:8px 0 6px">';
+  rows.forEach((x,i)=>{
+    const w=(x.amount/total*100).toFixed(2);
+    bar+=`<div style="width:${w}%;background:${SALES_COLORS[i%SALES_COLORS.length]}"`
+       +` title="${esc(label(x)+': '+num(x.amount/1e6,1)+' млн ₽ ('+num(x.amount/total*100,1)+'%)')}"></div>`;
+  });
+  bar+='</div><div class="muted" style="font-size:12px">';
+  rows.forEach((x,i)=>{
+    bar+=`<span style="margin-right:12px;white-space:nowrap">`
+       +`<span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${SALES_COLORS[i%SALES_COLORS.length]};margin-right:4px"></span>`
+       +`${esc(label(x))} — ${num(x.amount/total*100,1)}%</span>`;
+  });
+  return bar+'</div>';
+}
+
+function salesTable(head, rows){
+  let html='<table><tr>'+head.map((h,i)=>`<th${i?' class="num"':''}>${esc(h)}</th>`).join('')+'</tr>';
+  rows.forEach(cells=>{
+    html+='<tr>'+cells.map((c,i)=>`<td${i?' class="num"':''}>${c}</td>`).join('')+'</tr>';
+  });
+  return html+'</table>';
+}
+
+function renderSales(d){
+  const t=d.total||{}, box=$('#sales');
+  let html='<div class="card"><h2>Продажи проекта'+(d.project?' — '+esc(d.project):'')+'</h2>';
+  html+='<div class="kv">'
+    +tile('Договоров', num(t.contracts))
+    +tile('Продано', num(t.area)+' м²')
+    +tile('Выручка', num(t.amount/1e6,1)+' млн ₽')
+    +tile('Средняя цена', num(t.price_per_sqm)+' ₽/м²')
+    +tile('На эскроу', num(t.escrow/1e6,1)+' млн ₽ · '+num(t.escrow_share*100,1)+'%')
+    +'</div>';
+
+  html+='<h3 style="margin:18px 0 4px;font-size:15px">Динамика</h3>'+salesMonthChart(d.dynamics);
+  const dyn=(d.dynamics||[]).slice().reverse().slice(0,14).map(m=>[
+    esc(m.month), num(m.units), num(m.area), num(m.amount/1e6,1),
+    m.price_per_sqm?num(m.price_per_sqm):'—']);
+  html+=salesTable(['Месяц','Договоров','м²','млн ₽','₽/м²'], dyn);
+
+  if((d.by_product||[]).length){
+    html+='<h3 style="margin:18px 0 4px;font-size:15px">Продукты</h3>';
+    html+=salesShareBar(d.by_product, x=>x.product);
+    html+=salesTable(['Продукт','Договоров','м²','млн ₽','₽/м²'],
+      d.by_product.map(x=>[esc(x.product), num(x.contracts), num(x.area),
+        num(x.amount/1e6,1), x.area?num(x.price_per_sqm):'—']));
+  }
+
+  if((d.by_payment||[]).length){
+    html+='<h3 style="margin:18px 0 4px;font-size:15px">Структура оплаты</h3>';
+    html+=salesShareBar(d.by_payment, x=>x.variant||x.name||'—');
+    html+=salesTable(['Условие','Договоров','млн ₽','На эскроу, млн ₽','Наполнение'],
+      d.by_payment.map(x=>[
+        // Примеры строк CRM — подсказкой при наведении: восемь строк по одной
+        // сделке читаются как разнообразие условий, а это дефект заполнения.
+        // Примеры — то, что вписали в карточку CRM; подсказкой при наведении.
+        // Восемь строк по одной сделке читаются как разнообразие условий, а это
+        // дефект заполнения.
+        `<span${(x.examples||[]).length?` title="${esc(x.examples.map(e=>e.text).join(' · '))}"`:''}>${esc(x.variant||'—')}</span>`,
+        num(x.count), num(x.amount/1e6,1), num(x.escrow/1e6,1),
+        // Наполнение считает сервер (`filled`) — второй такой же счёт на экране
+        // однажды разошёлся бы с первым.
+        x.filled===null||x.filled===undefined?'—':num(x.filled*100,1)+'%']));
+  }
+
+  if((d.by_channel||[]).length){
+    html+='<h3 style="margin:18px 0 4px;font-size:15px">Каналы продаж</h3>';
+    html+=salesTable(['Канал','Договоров','млн ₽','Комиссия, млн ₽','Премия ОП, млн ₽','Всего, % от продаж','Комиссия, % от наполнения'],
+      d.by_channel.map(x=>[
+        esc(x.channel)+(x.own?' <span class="muted">(свой отдел)</span>':''),
+        num(x.contracts), num(x.amount/1e6,1),
+        // Ноль при непустой ставке — «не заполнено», а не «даром».
+        x.fee_unknown?'<span class="muted" title="ставка есть, сумма не заполнена">не заполнено</span>':num(x.broker_fee/1e6,2),
+        num(x.sales_bonus/1e6,2),
+        x.fee_unknown?'—':num(x.cost_of_sales*100,2)+'%',
+        x.fee_unknown||!x.broker_fee?'—':num(x.fee_of_escrow*100,2)+'%']));
+    html+='<div class="muted" style="font-size:12.5px;margin-top:6px">'
+      +'Премия отдела продаж — отдельная от брокерской комиссии строка: без неё свой канал показывал ровно ноль, то есть «бесплатно». '
+      +'«% от наполнения» считается от эскроу СВОЕЙ выборки: доля от эскроу всего проекта включала бы прямые продажи, где комиссии нет.</div>';
+  }
+
+  if((d.by_size||[]).length){
+    html+='<h3 style="margin:18px 0 4px;font-size:15px">Размерность квартир</h3>';
+    html+=salesShareBar(d.by_size, x=>x.band);
+    html+=salesTable(['Размер','Договоров','м²','млн ₽','₽/м²'],
+      d.by_size.map(x=>[esc(x.band), num(x.contracts), num(x.area),
+        num(x.amount/1e6,1), x.area?num(x.price_per_sqm):'—']));
+  }
+
+  if((d.terminated||[]).length){
+    html+='<h3 style="margin:18px 0 4px;font-size:15px">Расторжения</h3>';
+    html+=salesTable(['Договор','Объект','Дата','Возвращено с эскроу, млн ₽'],
+      d.terminated.map(x=>[esc(x.contract||'—'), esc(x.object||'—'), esc(x.on||'—'),
+        x.escrow_returned===null||x.escrow_returned===undefined?'—':num(x.escrow_returned/1e6,2)]));
+  }
+
+  // Чего в выгрузке не нашлось — вслух: пустой раздел и отсутствующий
+  // выглядят одинаково, а значат разное.
+  (d.missing||[]).forEach(line=>{
+    html+=`<div class="muted" style="font-size:12.5px;margin-top:6px">Не прочитано — ${esc(line)}</div>`;
+  });
+
+  html+='<div style="margin-top:14px"><button class="go alt" id="salesask">Комментарий Платона по продажам</button></div>'
+     +'<div id="salesout"></div>';
+  box.innerHTML=html+'</div>';
+  $('#salesask').onclick=askPlatoSales;
+}
+
+function tile(name, value){
+  return `<div><div class="muted" style="font-size:12px">${esc(name)}</div>`
+    +`<div style="font-size:18px;font-weight:600">${value}</div></div>`;
+}
+
+// Числа Платону подаются готовыми, и в вопросе прямо стоит «не пересчитывай».
+// Тот же приём, что в модуле торгов: он читает, а не считает.
+function salesDigest(d){
+  const t=d.total||{}, lines=[];
+  lines.push(`ПРОЕКТ: ${d.project||'—'}.`);
+  lines.push(`Всего: ${num(t.contracts)} договоров, ${num(t.area)} м², ${num(t.amount/1e6,1)} млн ₽, `
+    +`средняя ${num(t.price_per_sqm)} ₽/м²; на эскроу ${num(t.escrow/1e6,1)} млн (${num(t.escrow_share*100,1)}%).`);
+  (d.dynamics||[]).forEach(m=>lines.push(`— ${m.month}: ${num(m.units)} шт, ${num(m.area)} м², `
+    +`${num(m.amount/1e6,1)} млн ₽${m.price_per_sqm?', '+num(m.price_per_sqm)+' ₽/м²':''}`));
+  (d.by_payment||[]).forEach(x=>lines.push(`ОПЛАТА ${x.variant||'—'}: ${num(x.count)} шт, `
+    +`${num(x.amount/1e6,1)} млн ₽, на эскроу ${num(x.escrow/1e6,1)} млн`
+    +`${x.filled===null||x.filled===undefined?'':' ('+num(x.filled*100,1)+'% наполнения)'}`
+    +`${x.recognised===false?' — это дефект заполнения CRM, а не условие сделки':''}`));
+  (d.by_channel||[]).forEach(x=>lines.push(`КАНАЛ ${x.channel}${x.own?' (свой отдел)':''}: ${num(x.contracts)} шт, `
+    +`${num(x.amount/1e6,1)} млн ₽; комиссия ${x.fee_unknown?'не заполнена':num(x.broker_fee/1e6,2)+' млн'}, `
+    +`премия ОП ${num(x.sales_bonus/1e6,2)} млн, вместе ${num(x.cost_of_sales*100,2)}% от продаж`
+    +`${x.broker_fee?'; комиссия = '+num(x.fee_of_escrow*100,2)+'% от фактического наполнения эскроу':''}`));
+  (d.by_size||[]).forEach(x=>lines.push(`РАЗМЕР ${x.band}: ${num(x.contracts)} шт, ${num(x.area)} м², ${num(x.amount/1e6,1)} млн ₽`));
+  (d.by_product||[]).forEach(x=>lines.push(`ПРОДУКТ ${x.product}: ${num(x.contracts)} шт, ${num(x.amount/1e6,1)} млн ₽`));
+  if((d.terminated||[]).length){
+    const back=d.terminated.reduce((sum,x)=>sum+(Number(x.escrow_returned)||0),0);
+    lines.push(`РАСТОРЖЕНИЙ: ${d.terminated.length}, возвращено с эскроу ${num(back/1e6,1)} млн ₽`);
+  }
+  (d.missing||[]).forEach(x=>lines.push('НЕ ПРОЧИТАНО: '+x));
+  return lines.join('\n');
+}
+
+async function askPlatoSales(){
+  if(!salesData){$('#salesout').innerHTML='<div class="muted">Сначала загрузите выгрузку ЦФ.</div>';return}
+  const btn=$('#salesask');
+  btn.disabled=true;
+  $('#salesout').innerHTML='<div class="muted">Платон Сергеевич читает продажи…</div>';
+  const message='Ниже свод продаж проекта, посчитанный движком по выгрузке ЦФ. '
+    +'Числа НЕ пересчитывай и не выдумывай того, чего в своде нет. Дай короткий разбор по четырём темам: '
+    +'1) рассрочка — как она влияет на фактическое наполнение эскроу и чем это грозит; '
+    +'2) вознаграждение брокерам — рыночное ли оно и что значит разрыв между «% от продаж» и «% от наполнения»; '
+    +'3) эффективность собственного отдела продаж против брокерского канала; '
+    +'4) структура продаж — есть ли сдвиг в сторону мелких лотов и что это значит для выручки.\n\n'
+    +salesDigest(salesData)+'\n\nПиши по-русски, коротко, по каждой теме отдельным абзацем.';
+  try{
+    const answer=await platoAnswer(message);
+    $('#salesout').innerHTML=`<div class="plato">${esc(answer).replace(/\n/g,'<br>')}</div>`;
+  }catch(e){
+    $('#salesout').innerHTML=`<div class="err">${esc(String(e.message||e))}</div>`;
+  }finally{ btn.disabled=false }
 }
 
 async function loadPlan(file){
@@ -2221,6 +2449,7 @@ $('#reset').addEventListener('click',function(){
   $('#q').focus();
 });
 $('#plan').addEventListener('change',e=>{if(e.target.files[0])loadPlan(e.target.files[0])});
+$('#cf').addEventListener('change',e=>{if(e.target.files[0])loadContracting(e.target.files[0])});
 document.querySelectorAll('.chips button').forEach(b=>b.addEventListener('click',()=>{
   $('#ask').value=b.dataset.q; askPlato();
 }));
