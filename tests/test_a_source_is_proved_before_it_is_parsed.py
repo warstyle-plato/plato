@@ -73,3 +73,50 @@ def test_the_endpoint_is_wired() -> None:
     api = (ROOT / "auction_search" / "api.py").read_text()
     assert "/auctions/fedresurs/probe" in api
     assert "fedresurs_probe" in api
+
+
+# --- вторая проба: настоящим браузером ---------------------------------------
+# Простой запрос упёрся в капчу Qrator: корень отдаёт 401 со скриптом защиты
+# (живой ответ с ядра 26.08.2026). Обходить её мы не будем — от этого она и
+# поставлена. Браузер проходит вызов штатно, как браузер человека; покажет
+# капчу и ему — это тоже ответ, и он называется вслух.
+
+
+def test_the_browser_probe_reports_instead_of_bypassing() -> None:
+    body = source()
+    assert "def probe_browser(" in body
+    assert "QRATOR_MARKERS" in body, "капча опознаётся и называется, а не обходится"
+    # Ни решения капчи, ни подмены себя за другого: это ровно то, от чего защита.
+    for forbidden in ("anticaptcha", "2captcha", "rucaptcha", "solve_captcha",
+                      "qauth_token", "bypass"):
+        assert forbidden not in body.lower(), f"обход защиты: {forbidden}"
+
+
+def test_the_browser_is_launched_by_the_shared_launcher() -> None:
+    """Второго пути к Chromium не заводим: он уже есть у движка."""
+    body = source()
+    assert "import browser_launch" in body
+    assert "browser_launch.launch(" in body
+    assert "chromium.launch(" not in body
+
+
+def test_the_probe_collects_the_calls_the_page_makes() -> None:
+    """У SPA данные приезжают отдельными вызовами — их адреса и нужны."""
+    body = source()
+    assert '"xhr"' in body and '"fetch"' in body
+    assert "data_calls" in body
+
+
+def test_a_blocked_probe_says_why() -> None:
+    """Из песочницы хост закрыт: отказ обязан назвать причину, а не молчать."""
+    from auction_search.adapters import fedresurs as module
+    got = module.probe_browser(seconds=5)
+    assert got["ok"] is False
+    assert got.get("reason"), "молчаливый отказ читался бы как «лотов нет»"
+    assert got["url"].startswith("https://bankrot.fedresurs.ru")
+
+
+def test_the_browser_endpoint_is_wired() -> None:
+    api = (ROOT / "auction_search" / "api.py").read_text()
+    assert "/auctions/fedresurs/browser" in api
+    assert "fedresurs_browser" in api

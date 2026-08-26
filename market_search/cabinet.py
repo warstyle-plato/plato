@@ -185,7 +185,7 @@ border-radius:0 6px 6px 0;margin-top:10px;color:#5a3a1c}
 table{width:100%;border-collapse:collapse;font-size:14px}
 th,td{text-align:left;padding:7px 9px;border-bottom:1px solid var(--line);white-space:nowrap}
 th{color:var(--dim);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.03em}
-td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}tr.sumrow td{border-top:2px solid var(--line);background:#f7f9fb}
 .wrap{overflow-x:auto}
 .note{background:#fff8f0;border-left:3px solid var(--rust);padding:8px 12px;font-size:13px;margin:8px 0;
 color:#5a3a1c;border-radius:0 6px 6px 0}
@@ -1795,12 +1795,101 @@ function salesShareBar(items, label){
   return bar+'</div>';
 }
 
-function salesTable(head, rows){
+function salesTable(head, rows, totals){
   let html='<table><tr>'+head.map((h,i)=>`<th${i?' class="num"':''}>${esc(h)}</th>`).join('')+'</tr>';
   rows.forEach(cells=>{
     html+='<tr>'+cells.map((c,i)=>`<td${i?' class="num"':''}>${c}</td>`).join('')+'</tr>';
   });
+  // Итоговые строки считает сервер (`_totals` по своей выборке), а не экран:
+  // сложить колонку глазами значит посчитать ту же величину второй раз, и
+  // однажды две суммы разойдутся, обе выглядя верными.
+  (totals||[]).forEach(cells=>{
+    html+='<tr class="sumrow">'+cells.map((c,i)=>`<td${i?' class="num"':''}><b>${c}</b></td>`).join('')+'</tr>';
+  });
   return html+'</table>';
+}
+
+// Свой канал против чужих — две полосы одной ширины: выручка и то, во что она
+// обошлась. Доли берутся из сумм, которые посчитал сервер; своей арифметики
+// здесь нет, кроме ширины полоски в процентах.
+function salesOwnVsBrokers(d){
+  const own=d.own_sales||{}, brokers=d.brokers||{};
+  const line=(name, a, b, hint)=>{
+    const total=(Number(a)||0)+(Number(b)||0);
+    if(!total) return '';
+    const wa=(Number(a)||0)/total*100, wb=100-wa;
+    return `<div style="margin:10px 0 4px"><div class="muted" style="font-size:12px">${esc(name)}${hint?' · '+esc(hint):''}</div>`
+      +`<div style="display:flex;height:22px;border-radius:4px;overflow:hidden;margin-top:4px">`
+      +`<div style="width:${wa.toFixed(2)}%;background:#5FA98A"></div>`
+      +`<div style="width:${wb.toFixed(2)}%;background:#C4581B"></div></div>`
+      +`<div class="muted" style="font-size:12px;margin-top:3px">`
+      +`<span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:#5FA98A;margin-right:4px"></span>`
+      +`свой отдел ${num(wa,1)}% (${num(a/1e6,1)} млн ₽)`
+      +`<span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:#C4581B;margin:0 4px 0 14px"></span>`
+      +`брокеры ${num(wb,1)}% (${num(b/1e6,1)} млн ₽)</div></div>`;
+  };
+  const bars=line('Выручка', own.amount, brokers.amount)
+    +line('Стоимость канала', own.cost, brokers.cost, 'комиссия брокеров и премия своего отдела вместе');
+  if(!bars) return '';
+  return '<h3 style="margin:18px 0 4px;font-size:15px">Свой канал против чужих</h3>'+bars
+    +`<div class="muted" style="font-size:12.5px;margin-top:6px">`
+    +`Свой отдел: ${num(own.contracts)} договор(ов), ${num(own.cost_of_sales*100,2)}% от продаж. `
+    +`Брокеры: ${num(brokers.contracts)} договор(ов), ${num(brokers.cost_of_sales*100,2)}% от продаж`
+    +`${brokers.broker_fee?', и ' + num(brokers.fee_of_escrow*100,2) + '% от фактического наполнения эскроу':''}.</div>`;
+}
+
+// Факт против плана. Числа сравниваются как есть: и факт, и план приходят с
+// сервера посчитанными, а экран только показывает разницу в процентах — своей
+// экономики здесь нет.
+//
+// Важная оговорка, которую видно только в самом листе: колонка «план» у нашей
+// финмодели на прошедших месяцах заполнена фактом («Объем продаж план (с
+// учетом факта)»). Молчать об этом нельзя — совпадение план-факт там
+// означает не точное попадание, а перенос.
+function salesVsPlan(d){
+  const fm=d.fm_plan;
+  if(!fm||!fm.plan) return '';
+  const plan=fm.plan['Итого']||fm.plan['Квартира']||{};
+  const months=(d.dynamics||[]).map(m=>m.month);
+  const rows=months.map(month=>{
+    const fact=(d.dynamics||[]).find(m=>m.month===month)||{};
+    const want=plan[month]||{};
+    const planned=Number(want.amount);
+    const got=Number(fact.amount)||0;
+    const gap=Number.isFinite(planned)&&planned?((got/planned-1)*100):null;
+    return {month, planned:Number.isFinite(planned)?planned:null, got, gap};
+  });
+  if(!rows.some(r=>r.planned!==null)) return '';
+  let html='<h3 style="margin:18px 0 4px;font-size:15px">Факт против нашей финмодели</h3>';
+  html+=salesTable(['Месяц','Факт, млн ₽','План ФМ, млн ₽','Отклонение'],
+    rows.slice().reverse().slice(0,14).map(r=>[
+      esc(r.month), num(r.got/1e6,1),
+      r.planned===null?'—':num(r.planned/1e6,1),
+      r.gap===null?'—':`<span style="color:${r.gap<0?'#C4581B':'#5FA98A'}">${r.gap>0?'+':''}${num(r.gap,1)}%</span>`]));
+  html+='<div class="muted" style="font-size:12.5px;margin-top:6px">'
+    +'Лист «'+esc(fm.sheet)+'»: на прошедших месяцах колонка «план» заполнена фактом, '
+    +'поэтому совпадение там означает перенос, а не точное попадание. Расхождение видно на будущих месяцах.</div>';
+  return html;
+}
+
+// План банка квартальный, и раскладывать его по месяцам мы не станем: сделать
+// это можно тремя способами, и любой будет нашей выдумкой, а не планом банка.
+function salesBankPlan(d){
+  const bank=d.bank_plan;
+  if(!bank||!(bank.lines||[]).length) return '';
+  const quarters=bank.quarters.slice(0,8);
+  let html='<h3 style="margin:18px 0 4px;font-size:15px">План банка</h3>';
+  html+=salesTable(['Показатель', ...quarters],
+    bank.lines.slice(0,14).map(line=>[
+      esc(line.label),
+      ...quarters.map(q=>{
+        const v=line.values[q];
+        return (v===null||v===undefined)?'—':num(v, Math.abs(v)<100?1:0);
+      })]));
+  html+='<div class="muted" style="font-size:12.5px;margin-top:6px">'
+    +'Лист «'+esc(bank.sheet)+'», кварталы как в книге. Единицы у строк разные — '
+    +'подписи оставлены как есть, чтобы не подписать чужое число своим именем.</div>';
+  return html;
 }
 
 function renderSales(d){
@@ -1855,7 +1944,20 @@ function renderSales(d){
         x.fee_unknown?'<span class="muted" title="ставка есть, сумма не заполнена">не заполнено</span>':num(x.broker_fee/1e6,2),
         num(x.sales_bonus/1e6,2),
         x.fee_unknown?'—':num(x.cost_of_sales*100,2)+'%',
-        x.fee_unknown||!x.broker_fee?'—':num(x.fee_of_escrow*100,2)+'%']));
+        x.fee_unknown||!x.broker_fee?'—':num(x.fee_of_escrow*100,2)+'%']),
+      [['Итого брокеры', num(d.brokers.contracts), num(d.brokers.amount/1e6,1),
+        num(d.brokers.broker_fee/1e6,2), num(d.brokers.sales_bonus/1e6,2),
+        num(d.brokers.cost_of_sales*100,2)+'%',
+        d.brokers.broker_fee?num(d.brokers.fee_of_escrow*100,2)+'%':'—'],
+       ['Итого свой отдел', num(d.own_sales.contracts), num(d.own_sales.amount/1e6,1),
+        num(d.own_sales.broker_fee/1e6,2), num(d.own_sales.sales_bonus/1e6,2),
+        num(d.own_sales.cost_of_sales*100,2)+'%',
+        d.own_sales.broker_fee?num(d.own_sales.fee_of_escrow*100,2)+'%':'—'],
+       ['Всего по проекту', num(d.total.contracts), num(d.total.amount/1e6,1),
+        num(d.total.broker_fee/1e6,2), num(d.total.sales_bonus/1e6,2),
+        num(d.total.cost_of_sales*100,2)+'%',
+        d.total.broker_fee?num(d.total.fee_of_escrow*100,2)+'%':'—']]);
+    html+=salesOwnVsBrokers(d);
     html+='<div class="muted" style="font-size:12.5px;margin-top:6px">'
       +'Премия отдела продаж — отдельная от брокерской комиссии строка: без неё свой канал показывал ровно ноль, то есть «бесплатно». '
       +'«% от наполнения» считается от эскроу СВОЕЙ выборки: доля от эскроу всего проекта включала бы прямые продажи, где комиссии нет.</div>';
@@ -1881,6 +1983,9 @@ function renderSales(d){
   (d.missing||[]).forEach(line=>{
     html+=`<div class="muted" style="font-size:12.5px;margin-top:6px">Не прочитано — ${esc(line)}</div>`;
   });
+
+  html+=salesVsPlan(d);
+  html+=salesBankPlan(d);
 
   html+='<div style="margin-top:14px"><button class="go alt" id="salesask">Комментарий Платона по продажам</button></div>'
      +'<div id="salesout"></div>';
@@ -1910,11 +2015,37 @@ function salesDigest(d){
     +`${num(x.amount/1e6,1)} млн ₽; комиссия ${x.fee_unknown?'не заполнена':num(x.broker_fee/1e6,2)+' млн'}, `
     +`премия ОП ${num(x.sales_bonus/1e6,2)} млн, вместе ${num(x.cost_of_sales*100,2)}% от продаж`
     +`${x.broker_fee?'; комиссия = '+num(x.fee_of_escrow*100,2)+'% от фактического наполнения эскроу':''}`));
+  ['brokers','own_sales'].forEach(key=>{
+    const t=d[key]||{};
+    if(!t.contracts) return;
+    lines.push(`ИТОГО ${key==='brokers'?'БРОКЕРЫ':'СВОЙ ОТДЕЛ'}: ${num(t.contracts)} шт, `
+      +`${num(t.amount/1e6,1)} млн ₽, стоимость канала ${num(t.cost/1e6,2)} млн = ${num(t.cost_of_sales*100,2)}% от продаж`);
+  });
   (d.by_size||[]).forEach(x=>lines.push(`РАЗМЕР ${x.band}: ${num(x.contracts)} шт, ${num(x.area)} м², ${num(x.amount/1e6,1)} млн ₽`));
   (d.by_product||[]).forEach(x=>lines.push(`ПРОДУКТ ${x.product}: ${num(x.contracts)} шт, ${num(x.amount/1e6,1)} млн ₽`));
   if((d.terminated||[]).length){
     const back=d.terminated.reduce((sum,x)=>sum+(Number(x.escrow_returned)||0),0);
     lines.push(`РАСТОРЖЕНИЙ: ${d.terminated.length}, возвращено с эскроу ${num(back/1e6,1)} млн ₽`);
+  }
+  const fm=d.fm_plan;
+  if(fm&&fm.plan){
+    const plan=fm.plan['Итого']||fm.plan['Квартира']||{};
+    lines.push(`ПЛАН НАШЕЙ ФМ (лист «${fm.sheet}»; на прошедших месяцах колонка «план» заполнена фактом):`);
+    (d.dynamics||[]).forEach(m=>{
+      const want=(plan[m.month]||{}).amount;
+      if(want) lines.push(`— ${m.month}: план ${num(want/1e6,1)} млн ₽, факт ${num(m.amount/1e6,1)} млн ₽`);
+    });
+  }
+  const bank=d.bank_plan;
+  if(bank&&(bank.lines||[]).length){
+    lines.push(`ПЛАН БАНКА (лист «${bank.sheet}», кварталы):`);
+    bank.lines.slice(0,8).forEach(line=>{
+      const shown=bank.quarters.slice(0,6).map(q=>{
+        const v=line.values[q];
+        return (v===null||v===undefined)?null:`${q} ${num(v, Math.abs(v)<100?1:0)}`;
+      }).filter(Boolean).join('; ');
+      if(shown) lines.push(`— ${line.label}: ${shown}`);
+    });
   }
   (d.missing||[]).forEach(x=>lines.push('НЕ ПРОЧИТАНО: '+x));
   return lines.join('\n');

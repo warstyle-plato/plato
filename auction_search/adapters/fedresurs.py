@@ -121,6 +121,79 @@ def _fetch(url: str, context: ssl.SSLContext) -> dict[str, Any]:
     return answer
 
 
+# Страница поиска торгов. Данных в её HTML нет — это оболочка SPA; числа
+# подтягивает браузер отдельными запросами к бэкенду. Их-то и надо увидеть.
+SEARCH_PAGE = "https://bankrot.fedresurs.ru/TradeList.aspx"
+
+# Признаки капчи Qrator в теле ответа. Живой ответ с ядра 26.08.2026: корень
+# отдал 401 со скриптом `/__qrator/qauth_utm_v2d_v9118.js` и функцией
+# `qauth_show_captcha`. Это защита от роботов, и обходить её мы не будем —
+# ровно от этого она поставлена. Проба обязана СКАЗАТЬ, что упёрлась в капчу,
+# а не делать вид, что источник пуст.
+QRATOR_MARKERS = ("__qrator", "qauth_show_captcha", "qauth_utm")
+
+
+def probe_browser(url: str = SEARCH_PAGE, seconds: float = 45.0) -> dict[str, Any]:
+    """Открывает страницу настоящим браузером и показывает, что она загрузила.
+
+    Это не обход защиты: мы действительно открываем страницу браузером, тем же
+    Chromium, которым считается калькулятор ГлавАПУ. Капчу, если она появится,
+    проба назовёт вслух — решать её за человека мы не станем.
+
+    Главное здесь — не текст страницы, а СПИСОК ЗАПРОСОВ, которые она сделала:
+    у SPA данные приезжают отдельными вызовами бэкенда, и именно их адреса нам
+    и нужны. Гадать имена путей мы уже пробовали — вышли гаражи.
+    """
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "url": url, "reason": f"Playwright недоступен: {exc}"}
+    import browser_launch
+
+    calls: list[dict[str, Any]] = []
+    report: dict[str, Any] = {"ok": False, "url": url, "how": "", "calls": calls}
+
+    def remember(response: Any) -> None:
+        try:
+            request = response.request
+            if request.resource_type not in ("xhr", "fetch"):
+                return
+            calls.append({
+                "method": request.method,
+                "url": request.url[:400],
+                "status": response.status,
+                "content_type": (response.header_value("content-type") or "")[:80],
+            })
+        except Exception:  # noqa: BLE001
+            # Один непрочитанный ответ не отменяет пробу.
+            pass
+
+    try:
+        with sync_playwright() as playwright:
+            browser = browser_launch.launch(playwright)
+            report["how"] = str(browser_launch.LAST_LAUNCH.get("how") or "")
+            try:
+                page = browser.new_page()
+                page.set_default_timeout(int(seconds * 1000))
+                page.on("response", remember)
+                page.goto(url, wait_until="networkidle", timeout=int(seconds * 1000))
+                body = page.content()
+                report.update({
+                    "ok": True,
+                    "final_url": page.url,
+                    "title": page.title(),
+                    "captcha": any(mark in body for mark in QRATOR_MARKERS),
+                    "text_head": " ".join(page.inner_text("body").split())[:800],
+                })
+            finally:
+                browser.close()
+    except Exception as exc:  # noqa: BLE001
+        report["reason"] = f"{type(exc).__name__}: {exc}"
+    # Ответы, похожие на данные, — первыми: ради них проба и заводилась.
+    report["data_calls"] = [c for c in calls if "json" in c["content_type"].lower()]
+    return report
+
+
 def probe() -> dict[str, Any]:
     """Что отвечает ЕФРСБ по каждому кандидату. Разбора здесь нет намеренно.
 
@@ -136,4 +209,8 @@ def probe() -> dict[str, Any]:
         "why": ("ГИС Торги отдают приватизацию госимущества (178-ФЗ); "
                 "банкротные лоты — 44% рынка владельца — там не найдены"),
         "attempts": [{"name": name, **_fetch(url, context)} for name, url in CANDIDATES],
+        "captcha_note": ("корень отдаёт 401 с капчей Qrator: машинному клиенту "
+                         "закрыто. Обход капчи не делаем — от этого она и "
+                         "поставлена; смотрим браузером через "
+                         "/auctions/fedresurs/browser"),
     }

@@ -456,6 +456,16 @@ def install(app: FastAPI) -> MarketDiscoveryService:
         got = contracting.summarise(contracts, ledger)
         if ledger_missing:
             got.setdefault("missing", []).append(ledger_missing)
+        # Планы читаются тем же вызовом и из того же файла. Не прочитались —
+        # причина рядом, а не пятисотка поверх удавшегося свода: у выгрузки без
+        # листа планов есть контрактация, и это законный ответ.
+        for name, reader, key in (
+                ("Наша финмодель", contracting.read_fm_plan, "fm_plan"),
+                ("Модель банка", contracting.read_bank_plan, "bank_plan")):
+            try:
+                got[key] = await run_in_threadpool(reader, data)
+            except Exception as exc:  # noqa: BLE001
+                got.setdefault("missing", []).append(f"{name} не прочитана: {exc}")
         return got
 
     @app.post("/market/report")

@@ -20,6 +20,7 @@ import sys
 from pathlib import Path
 
 import openpyxl
+import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -166,3 +167,87 @@ def test_the_buyer_name_never_leaves_the_reader() -> None:
     assert all("buyer" not in row for row in rows)
     assert [row["company_buyer"] for row in rows] == [False, False, True]
     assert _summary()["company_buyers"] == 1
+
+
+# --- итог по каналам и структура «свой / чужие» ------------------------------
+# Таблица каналов перечисляла брокеров по одному, а сложить их было негде: сумма
+# комиссий и доля своего канала считались глазами (владелец, 26.08.2026).
+# Считает их тот же `_totals`, что и остальное: сложенная на экране колонка —
+# это второй счёт той же величины, и однажды две суммы разойдутся, обе выглядя
+# верными.
+
+
+def test_the_channel_cost_is_summed_by_the_server() -> None:
+    got = _summary()
+    for key in ("brokers", "own_sales", "total"):
+        block = got[key]
+        assert "cost" in block, f"{key}: полная стоимость канала считается сервером"
+        assert block["cost"] == pytest.approx(block["broker_fee"] + block["sales_bonus"])
+
+
+def test_brokers_and_own_desk_add_up_to_the_project() -> None:
+    got = _summary()
+    total, brokers, own = got["total"], got["brokers"], got["own_sales"]
+    assert brokers["contracts"] + own["contracts"] == total["contracts"]
+    assert brokers["amount"] + own["amount"] == pytest.approx(total["amount"])
+    assert brokers["cost"] + own["cost"] == pytest.approx(total["cost"])
+
+
+def test_the_screen_shows_the_totals_it_did_not_compute() -> None:
+    from market_search.cabinet import cabinet_page
+    page = cabinet_page()
+    assert "Итого брокеры" in page and "Итого свой отдел" in page and "Всего по проекту" in page
+    assert "d.brokers.cost_of_sales" in page, "доля берётся у сервера, а не считается тут"
+    assert "Свой канал против чужих" in page
+    assert "function salesOwnVsBrokers(" in page
+
+
+# --- планы: наша финмодель и модель банка ------------------------------------
+# Свод отвечал на «что продали». Без второй половины — «сколько собирались» —
+# он не говорит, идём мы по плану или отстаём (владелец, 26.08.2026). Оба плана
+# лежат в той же выгрузке ЦФ, поэтому читаются тем же вызовом: просить загрузить
+# один файл дважды значит однажды получить два разных файла.
+
+
+def test_the_fm_plan_reads_plan_and_fact_by_month() -> None:
+    data = _book()
+    try:
+        got = contracting.read_fm_plan(data)
+    except KeyError:
+        pytest.skip("в тестовой книге нет листа финмодели")
+    assert got["months"], "месяцы берутся из строки дат, а не из счёта колонок"
+    assert set(got) >= {"plan", "fact", "sheet"}
+
+
+def test_the_bank_plan_stays_quarterly() -> None:
+    """Раскладывать квартал по месяцам можно тремя способами — все наши."""
+    source = (Path(__file__).resolve().parent.parent / "market_search" / "contracting.py").read_text()
+    body = source[source.index("def read_bank_plan("):]
+    body = body[:body.index("\n\ndef ")]
+    assert "quarters" in body
+    assert "month" not in body.split('"""')[2], "квартал не приводится к месяцам"
+
+
+def test_a_missing_plan_is_a_reason_not_a_crash() -> None:
+    """У выгрузки без листа планов есть контрактация, и это законный свод."""
+    api = (Path(__file__).resolve().parent.parent / "market_search" / "api.py").read_text()
+    body = api[api.index("async def cabinet_contracting("):]
+    body = body[:body.index("\n    @app.post")]
+    assert "read_fm_plan" in body and "read_bank_plan" in body
+    assert "missing" in body, "не прочиталось — причина рядом, а не пятисотка"
+
+
+def test_the_thousands_are_converted_once() -> None:
+    """Лист считает в тысячах, свод — в рублях: две единицы под одним именем."""
+    source = (Path(__file__).resolve().parent.parent / "market_search" / "contracting.py").read_text()
+    assert "_FM_THOUSANDS" in source
+    assert "value *= 1000.0" in source
+
+
+def test_the_screen_says_the_plan_column_carries_fact() -> None:
+    """Совпадение план-факт на прошедших месяцах — перенос, а не попадание."""
+    from market_search.cabinet import cabinet_page
+    page = cabinet_page()
+    assert "Факт против нашей финмодели" in page
+    assert "заполнена фактом" in page
+    assert "План банка" in page
