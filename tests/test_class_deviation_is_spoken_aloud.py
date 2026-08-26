@@ -30,11 +30,15 @@ PLATO_TEMPLATE = Path(__file__).resolve().parent.parent / "templates" / "PLATO_t
 V4_TEMPLATE = Path(__file__).resolve().parent.parent / "templates" / "DevelopAid_model_v4.xlsx"
 
 
+BUSINESS_BASE = dict(apartment_price_th=650, commercial_price_th=650,
+                     parking_price_th=5000, preparation_th_per_sqm=2.9,
+                     main_above_th_per_sqm=190, main_under_th_per_sqm=190,
+                     utilities_th_per_sqm=10.8, landscaping_th_per_sqm=15.5)
+
+
 def test_deviation_rows_compare_inputs_to_the_class_base():
     inputs = dict(core.DEFAULT_INPUTS)
-    inputs.update(project_class="business", main_above_th_per_sqm=210,
-                  apartment_price_th=650, commercial_price_th=650,
-                  parking_price_th=5000, main_under_th_per_sqm=190)
+    inputs.update(BUSINESS_BASE, project_class="business", main_above_th_per_sqm=210)
     result = core.project_class_deviations(inputs)
     assert result["label"] == "Бизнес"
     assert [row["field"] for row in result["rows"]] == ["main_above_th_per_sqm"]
@@ -46,21 +50,34 @@ def test_deviation_rows_compare_inputs_to_the_class_base():
 
 def test_exact_base_and_custom_class_produce_no_rows():
     inputs = dict(core.DEFAULT_INPUTS)
-    inputs.update(project_class="business", apartment_price_th=650,
-                  commercial_price_th=650, parking_price_th=5000,
-                  main_above_th_per_sqm=190, main_under_th_per_sqm=190)
+    inputs.update(BUSINESS_BASE, project_class="business")
     assert core.project_class_deviations(inputs)["rows"] == []
     inputs["project_class"] = "custom"
     custom = core.project_class_deviations(inputs)
     assert custom["rows"] == [] and custom["label"] == "Пользовательский"
 
 
+def test_the_default_inputs_sit_exactly_on_the_comfort_base():
+    """Умолчания движка — база «Комфорта»: расчёт на них не показывает отклонений.
+
+    Класс задаёт полный профиль себестоимости (владелец, 26.08.2026), и
+    базы новых статей «Комфорта» обязаны совпадать с умолчаниями — иначе
+    каждый расчёт по умолчанию выглядел бы «ушедшим от класса».
+    """
+    assert core.DEFAULT_INPUTS["project_class"] == "comfort"
+    assert core.project_class_deviations(dict(core.DEFAULT_INPUTS))["rows"] == []
+    preset = core.PROJECT_CLASS_PRESETS["comfort"]
+    for field, base in preset.items():
+        if field == "label":
+            continue
+        assert float(core.DEFAULT_INPUTS[field]) == float(base), field
+
+
 @pytest.mark.skipif(not PLATO_TEMPLATE.is_file(), reason="шаблон ПЛАТО не поставляется")
 def test_plato_marks_deviated_rate_in_column_h():
     inputs = dict(core.DEFAULT_INPUTS)
-    inputs.update(project_class="business", apartment_price_th=700,
-                  commercial_price_th=650, parking_price_th=5000,
-                  main_above_th_per_sqm=210, main_under_th_per_sqm=190)
+    inputs.update(BUSINESS_BASE, project_class="business",
+                  apartment_price_th=700, main_above_th_per_sqm=210)
     data, report = core.fill_plato_template(inputs, core.TEP_DEFAULT, project_name="Проверка")
     sheet = openpyxl.load_workbook(io.BytesIO(data))["Вводные"]
     notes = {}
@@ -85,9 +102,7 @@ def test_plato_marks_deviated_rate_in_column_h():
 @pytest.mark.skipif(not V4_TEMPLATE.is_file(), reason="шаблон v4 не поставляется")
 def test_v4_marks_deviated_rate_next_to_the_value():
     inputs = dict(core.DEFAULT_INPUTS)
-    inputs.update(project_class="business", apartment_price_th=650,
-                  commercial_price_th=650, parking_price_th=5000,
-                  main_above_th_per_sqm=210, main_under_th_per_sqm=190)
+    inputs.update(BUSINESS_BASE, project_class="business", main_above_th_per_sqm=210)
     content, _name, meta = core.build_project_workbook(
         inputs, core.TEP_DEFAULT, [], {}, project_name="Проверка")
     assert [row["field"] for row in meta["class_deviations"]["rows"]] == [
@@ -148,3 +163,49 @@ def test_the_page_has_a_class_settings_window():
     assert "renderClassDialog" in page
     # Список полей окно читает из пресета, а не держит копию.
     assert "Object.keys(PROJECT_CLASS_PRESETS[classes[0]]).filter(k=>k!=='label')" in page
+
+
+def test_the_page_presets_are_the_engine_presets_not_a_copy():
+    """Базы классов приезжают на страницу подстановкой, копии нет.
+
+    Копия жила на странице с рождения окна и отстала в первый же раз, когда
+    профиль класса расширили статьями: сервер применял полный профиль, а
+    браузер — пять старых полей, и заметить это можно было только глазами.
+    """
+    import json
+    assert "__DEVELOPAID_CLASS_PRESETS__" not in core.PAGE, "плейсхолдер не подставлен"
+    assert json.dumps(core.PROJECT_CLASS_PRESETS, ensure_ascii=False) in core.PAGE
+    # Применение класса идёт по самому пресету — поле, добавленное позже,
+    # применяется без правки списка.
+    assert "Object.keys(p).filter(k=>k!=='label').forEach" in core.PAGE
+
+
+def test_the_class_profile_covers_the_cost_articles_with_a_consensus():
+    """Класс задаёт полный профиль себестоимости (владелец, 26.08.2026).
+
+    Свод «Статистики» обосновывал две строки из десяти — теперь профиль несёт
+    все статьи, по которым свод есть. «Содержание стройплощадки» исключено
+    осознанно: свод по нему — один внутренний проект малого масштаба, статья
+    зависит от размера площадки, а не от класса.
+    """
+    for key, preset in core.PROJECT_CLASS_PRESETS.items():
+        fields = set(preset) - {"label"}
+        assert {"preparation_th_per_sqm", "main_above_th_per_sqm",
+                "main_under_th_per_sqm", "utilities_th_per_sqm",
+                "landscaping_th_per_sqm"} <= fields, key
+        assert "site_maintenance_th_per_sqm" not in fields
+        assert "commissioning_th_per_sqm" not in fields
+    # Профили классов различимы: благоустройство растёт с классом.
+    assert (core.PROJECT_CLASS_PRESETS["comfort"]["landscaping_th_per_sqm"]
+            < core.PROJECT_CLASS_PRESETS["business"]["landscaping_th_per_sqm"]
+            < core.PROJECT_CLASS_PRESETS["elite"]["landscaping_th_per_sqm"])
+
+
+def test_the_dialog_explains_each_article_on_click():
+    """Клик по статье раскрывает обоснование: источники, диапазон, позиция."""
+    page = core.PAGE
+    assert "toggleClassDetail" in page
+    assert "Обоснование для класса" in page
+    assert "разброс p25–p75" in page
+    # Позиция значения проекта относительно рынка называется словами.
+    assert "выше p75 рынка" in page and "ниже p25 рынка" in page
