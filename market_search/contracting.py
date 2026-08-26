@@ -680,3 +680,505 @@ def summarise(contracts: dict[str, Any], ledger: dict[str, Any] | None = None) -
         "company_buyers": sum(1 for r in rows if r["company_buyer"]),
         "terminated": ledger.get("terminated") or [],
     }
+
+
+# ---------------------------------------------------------------------------
+# Пул проекта: сколько всего продаётся и сколько из этого продано
+# ---------------------------------------------------------------------------
+#
+# «Продано 3 594 м²» без второй половины — не показатель, а число: пятая часть
+# проекта и половина проекта выглядят одинаково (владелец, 26.08.2026). База
+# берётся из уже прочитанных источников, а не заводится третьим:
+#
+#   — метры, лоты и ожидаемая выручка по продуктам — из плана нашей финмодели:
+#     его горизонт покрывает весь проект, и сумма плана и есть пул;
+#   — квартирография в лотах — из книги финмодели, лист «график продажи_1»:
+#     у квартир в плане ФМ строки «шт» нет вовсе, они планируются метрами.
+#
+# Оба считаются здесь, а не на экране: доля, посчитанная в браузере, была бы
+# вторым счётом той же величины, и разойдись она с первым — обе выглядели бы
+# верными.
+
+POOL_SHEET = "график продажи_1"
+# Подписи блока физических объёмов книги. Слева направо: продано, оплачено,
+# всего. Имена продуктов — те, что стоят в книге.
+_POOL_VOLUME_TITLE = "Все объекты"
+_POOL_VOLUME_PRODUCTS = ("КВ", "ПСН", "М/М", "КЛД")
+# Один продукт зовётся в трёх источниках по-разному: CRM пишет «Машиноместа»,
+# план финмодели — «Машиноместо», книга — «М/М». Пока имена не сведены к одному,
+# пул машино-мест не находится вовсе, и доля показывается пустой при полном
+# наборе данных — то есть «не знаем» вместо посчитанного.
+_PRODUCT_ALIASES = {
+    "машиноместа": "Машиноместо",
+    "машиноместо": "Машиноместо",
+    "м/м": "Машиноместо",
+    "кладовые": "Кладовая",
+    "кладовая": "Кладовая",
+    "клд": "Кладовая",
+    "квартира": "Квартира",
+    "квартиры": "Квартира",
+    "кв": "Квартира",
+    "коммерческие площади": "Коммерческие площади",
+    "псн": "Коммерческие площади",
+}
+
+
+def product_name(label: str) -> str:
+    """Имя продукта, одинаковое во всех источниках."""
+    text = _text(label)
+    return _PRODUCT_ALIASES.get(text.lower(), text)
+
+
+_POOL_SOLD = "Продано, шт"
+_POOL_PAID = "Оплачено, шт"
+_POOL_PCT = "Продано, %"
+_POOL_AREA = "Продано, кв.м"
+_POOL_AMOUNT = "Продано, т.руб"
+_POOL_PRICE = "Цена"
+# Полоса вида «28,3 - 40» или «85 - 168,6»: границы с запятой в дробной части.
+_BAND_RANGE = re.compile(r"^\s*(\d+(?:[.,]\d+)?)\s*[-–—]\s*(\d+(?:[.,]\d+)?)\s*$")
+
+
+def _band_bounds(label: str) -> tuple[float, float] | None:
+    hit = _BAND_RANGE.match(_text(label))
+    if not hit:
+        return None
+    low = float(hit.group(1).replace(",", "."))
+    high = float(hit.group(2).replace(",", "."))
+    return (low, high) if high > low else None
+
+
+def read_pool(data: bytes) -> dict[str, Any]:
+    """Квартирография и физические объёмы проекта из книги финмодели.
+
+    Колонка «всего» в книге без заголовка: она стоит между «Оплачено, шт» и
+    «Продано, %». Угадывать её нельзя — она доказывается самой книгой: доля
+    «Продано, %» обязана сойтись с «Продано, шт» делённым на неё, и сходится
+    на каждой полосе. Не сошлась — это уходит в `missing`, а не считается по
+    похожей колонке.
+    """
+    rows = _rows(data, POOL_SHEET)
+    missing: list[str] = []
+
+    header_at = None
+    for number, row in enumerate(rows):
+        titles = [_text(x) for x in row]
+        if _POOL_SOLD in titles and _POOL_PCT in titles:
+            header_at = number
+            break
+    bands: list[dict[str, Any]] = []
+    book_sold = book_pool = 0.0
+    if header_at is None:
+        missing.append(f"в листе «{POOL_SHEET}» не нашлось шапки «{_POOL_SOLD}»")
+    else:
+        titles = [_text(x) for x in rows[header_at]]
+        at = {name: titles.index(name) for name in
+              (_POOL_SOLD, _POOL_PAID, _POOL_PCT, _POOL_AREA, _POOL_AMOUNT, _POOL_PRICE)
+              if name in titles}
+        pool_at = at[_POOL_PAID] + 1 if _POOL_PAID in at and _POOL_PCT in at else None
+        if pool_at is None or pool_at >= at[_POOL_PCT]:
+            missing.append(
+                f"в листе «{POOL_SHEET}» между «{_POOL_PAID}» и «{_POOL_PCT}» нет колонки пула")
+            pool_at = None
+        # Полосы стоят под шапкой: подпись-диапазон в любой из первых колонок.
+        for row in rows[header_at + 1:]:
+            label = next((_text(x) for x in row[:6] if _band_bounds(_text(x))), "")
+            bounds = _band_bounds(label)
+            if not bounds:
+                if bands:
+                    # Ряд полос кончился — дальше итог и служебные строки.
+                    break
+                continue
+
+            def value(name: str) -> float:
+                place = at.get(name)
+                return _number(row[place]) if place is not None and place < len(row) else 0.0
+
+            in_pool = (_number(row[pool_at]) if pool_at is not None and pool_at < len(row) else 0.0)
+            sold = value(_POOL_SOLD)
+            share = value(_POOL_PCT)
+            # Доказательство колонки: книга сама печатает долю проданного.
+            if in_pool and share and abs(sold / in_pool - share) > 0.01:
+                missing.append(
+                    f"полоса «{label}»: «{_POOL_PCT}» {share:.3f} не сходится с "
+                    f"{sold:.0f}/{in_pool:.0f} — колонка пула опознана неверно")
+                bands = []
+                break
+            bands.append({
+                "band": label,
+                "low": bounds[0],
+                "high": bounds[1],
+                "pool_units": in_pool,
+                "book_sold_units": sold,
+                "book_sold_area": value(_POOL_AREA),
+                # Лист считает в тысячах рублей — приводим здесь, а не на
+                # экране: две единицы под одним именем никто не заметит.
+                "book_sold_amount": value(_POOL_AMOUNT) * 1000.0,
+                "book_price_per_sqm": value(_POOL_PRICE) * 1000.0,
+            })
+        book_sold = sum(b["book_sold_units"] for b in bands)
+        book_pool = sum(b["pool_units"] for b in bands)
+
+    # Физические объёмы читаются КОЛОНКАМИ своего блока, а не поиском подписи
+    # по всему листу: подписи КВ/ПСН/М/М/КЛД встречаются в листе трижды — в
+    # этом блоке, во вспомогательной табличке слева и ниже в «Мониторинге
+    # денежных средств», где те же имена стоят над рублями. Рубли, принятые за
+    # метры, выглядят как метры.
+    volumes: list[dict[str, Any]] = []
+    head_at = None
+    for number, row in enumerate(rows):
+        if not any(_text(x).startswith(_POOL_VOLUME_TITLE) for x in row):
+            continue
+        for candidate in rows[number:number + 3]:
+            titles = [_text(x) for x in candidate]
+            if "Продано" in titles and "ВСЕГО" in titles:
+                head_at = rows.index(candidate, number)
+                columns = (titles.index("Продано"), titles.index("Оплачено")
+                           if "Оплачено" in titles else titles.index("Продано") + 1,
+                           titles.index("ВСЕГО"))
+                break
+        if head_at is not None:
+            break
+    if head_at is None:
+        missing.append(f"в листе «{POOL_SHEET}» не нашлось блока «{_POOL_VOLUME_TITLE}»")
+    else:
+        label_at = min(columns) - 1
+        for row in rows[head_at + 1:]:
+            label = _text(row[label_at]) if label_at < len(row) else ""
+            if label not in _POOL_VOLUME_PRODUCTS:
+                break
+            volumes.append({
+                "product": product_name(label),
+                "sold": _number(row[columns[0]]) if columns[0] < len(row) else 0.0,
+                "paid": _number(row[columns[1]]) if columns[1] < len(row) else 0.0,
+                "pool": _number(row[columns[2]]) if columns[2] < len(row) else 0.0,
+            })
+    return {"sheet": POOL_SHEET, "bands": bands, "volumes": volumes,
+            "book_sold_units": book_sold, "book_pool_units": book_pool,
+            "missing": missing}
+
+
+def plan_pool(fm: dict[str, Any]) -> dict[str, dict[str, float]]:
+    """Пул по продуктам из плана финмодели: весь горизонт — это весь проект."""
+    out: dict[str, dict[str, float]] = {}
+    for product, by_month in (fm.get("plan") or {}).items():
+        if product == "Итого":
+            continue
+        block = out.setdefault(product_name(product), {"amount": 0.0, "area": 0.0, "units": 0.0})
+        for values in by_month.values():
+            for key in ("amount", "area", "units"):
+                block[key] += float(values.get(key) or 0.0)
+    return out
+
+
+def pool_progress(summary: dict[str, Any], rows: list[dict[str, Any]],
+                  fm: dict[str, Any] | None, pool: dict[str, Any] | None) -> dict[str, Any]:
+    """Продано из скольких — по продуктам, по проекту и по квартирографии.
+
+    Считается один раз и здесь. Доля, посчитанная на экране, — второй счёт той
+    же величины; в этом модуле такое уже стоило нам показанного нуля вместо
+    премии своего отдела.
+    """
+    missing: list[str] = []
+    base = plan_pool(fm) if fm else {}
+    if not base:
+        missing.append("план финмодели не прочитан — доли от объёма проекта показать не из чего")
+
+    # Квартиры в плане ФМ живут метрами: строки «шт» у них в листе нет вовсе.
+    # Число лотов приносит квартирография книги, и другого источника у него нет.
+    flat_pool_units = float((pool or {}).get("book_pool_units") or 0.0)
+
+    products = []
+    for row in summary.get("by_product") or []:
+        name = product_name(row["product"])
+        have = base.get(name) or {}
+        units = float(have.get("units") or 0.0)
+        if not units and name == "Квартира":
+            units = flat_pool_units
+        products.append({
+            "product": name,
+            "sold_amount": row["amount"], "pool_amount": float(have.get("amount") or 0.0),
+            "sold_area": row["area"], "pool_area": float(have.get("area") or 0.0),
+            "sold_units": row["contracts"], "pool_units": units,
+            "amount_share": row["amount"] / have["amount"] if have.get("amount") else None,
+            "area_share": row["area"] / have["area"] if have.get("area") else None,
+            "units_share": row["contracts"] / units if units else None,
+        })
+    total = summary.get("total") or {}
+    pool_amount = sum(float((v or {}).get("amount") or 0.0) for v in base.values())
+    pool_area = sum(float((v or {}).get("area") or 0.0) for v in base.values())
+    whole = {
+        "sold_amount": total.get("amount") or 0.0, "pool_amount": pool_amount,
+        "sold_area": total.get("area") or 0.0, "pool_area": pool_area,
+        "sold_units": total.get("contracts") or 0.0,
+        "amount_share": (total.get("amount") or 0.0) / pool_amount if pool_amount else None,
+        "area_share": (total.get("area") or 0.0) / pool_area if pool_area else None,
+    }
+    # Два источника на один пул: план финмодели и книга. Совпадать они не
+    # обязаны — книга снята на свою дату, — но выбрать один и промолчать
+    # нельзя: доля, посчитанная от 75 мест, и доля от 73 выглядят одинаково.
+    # Считаем по плану, расхождение называем.
+    for volume in (pool or {}).get("volumes") or []:
+        name = product_name(volume["product"])
+        planned = base.get(name) or {}
+        for key, what in (("units", "лотов"), ("area", "м²")):
+            mine = float(planned.get(key) or 0.0)
+            theirs = float(volume.get("pool") or 0.0)
+            if not mine or not theirs or key == "area":
+                continue
+            if abs(mine - theirs) > 0.5:
+                missing.append(
+                    f"пул «{name}»: план финмодели {mine:.0f} {what}, книга {theirs:.0f} — "
+                    f"доли посчитаны по плану")
+    bands = _absorption(rows, pool, missing)
+    return {"products": products, "total": whole, "bands": bands,
+            "plan_sheet": (fm or {}).get("sheet") or "", "pool_sheet": (pool or {}).get("sheet") or "",
+            "missing": missing + list((pool or {}).get("missing") or [])}
+
+
+def _absorption(rows: list[dict[str, Any]], pool: dict[str, Any] | None,
+                missing: list[str]) -> list[dict[str, Any]]:
+    """Вымывание: доля полосы в пуле против её доли в продажах.
+
+    Полосы берутся из книги — они разбиты так, как разбит сам проект, и наши
+    «студия/1к/2к» рядом с ними были бы вторым делением одной величины.
+    Проданное считается по НАШИМ договорам: у них есть площадь каждой сделки,
+    а колонка книги — это её собственный срез на свою дату, и она стоит рядом
+    отдельной проверкой, а не подменяет наш счёт.
+    """
+    bands = list((pool or {}).get("bands") or [])
+    if not bands:
+        return []
+    flats = [r for r in (rows or []) if r.get("product") == "Квартира"]
+    if not flats:
+        missing.append("квартирография показана без наших договоров: строк по квартирам нет")
+    pool_units = sum(b["pool_units"] for b in bands)
+    out = []
+    unplaced = []
+    counted = 0
+    # Верхняя граница последней полосы — граница проекта, а не начало
+    # следующей: самая большая квартира в книге ровно 168,6 м², и полуоткрытая
+    # полоса теряла её вместе с её договором.
+    top = max(b["high"] for b in bands)
+    for band in bands:
+        mine = [r for r in flats
+                if band["low"] <= r["area"] < band["high"]
+                or (band["high"] >= top and r["area"] == top)]
+        counted += len(mine)
+        out.append({
+            **band,
+            "sold_units": float(len(mine)),
+            "sold_area": sum(r["area"] for r in mine),
+            "sold_amount": sum(r["amount"] for r in mine),
+            "left_units": band["pool_units"] - len(mine),
+            "pool_share": band["pool_units"] / pool_units if pool_units else None,
+        })
+    sold_units = sum(b["sold_units"] for b in out)
+    left = sum(b["left_units"] for b in out)
+    for band in out:
+        band["sold_share"] = band["sold_units"] / sold_units if sold_units else None
+        band["skew"] = (band["sold_share"] - band["pool_share"]
+                        if band["sold_share"] is not None and band["pool_share"] is not None
+                        else None)
+        # Остаток витрины: чем полоса представлена в том, что ещё не продано.
+        band["left_share"] = band["left_units"] / left if left else None
+    if flats and counted != len(flats):
+        unplaced = [r["area"] for r in flats
+                    if not any(b["low"] <= r["area"] < b["high"] or
+                               (b["high"] >= top and r["area"] == top) for b in bands)]
+        missing.append(
+            f"вне полос книги осталось {len(unplaced)} договор(ов) по квартирам "
+            f"(площади {', '.join(f'{a:.1f}' for a in sorted(unplaced)[:5])}"
+            f"{' и др.' if len(unplaced) > 5 else ''}) — в вымывании их нет")
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Выводы под блоками
+# ---------------------------------------------------------------------------
+#
+# «Нет выводов под блоками» (владелец, 26.08.2026). Управленцу нужна не ещё
+# одна таблица — у него они есть, — а сказанное словами: что показывает
+# картинка. Считаются выводы ЗДЕСЬ, рядом с числами, а не в браузере: фраза,
+# собранная на экране из своей арифметики, — это второй счёт той же величины.
+
+
+def _pct(value: float | None, digits: int = 1) -> str:
+    return "—" if value is None else f"{value * 100:.{digits}f}%".replace(".", ",")
+
+
+def _mln(value: float | None, digits: int = 1) -> str:
+    return "—" if value is None else f"{value / 1e6:,.{digits}f}".replace(",", " ").replace(".", ",")
+
+
+def conclusions(summary: dict[str, Any]) -> dict[str, str]:
+    """По фразе на блок. Блока без числа не бывает: нечего сказать — молчим."""
+    out: dict[str, str] = {}
+    total = summary.get("total") or {}
+    pool = summary.get("pool") or {}
+    whole = pool.get("total") or {}
+
+    if whole.get("amount_share") is not None:
+        left = float(whole.get("pool_amount") or 0.0) - float(whole.get("sold_amount") or 0.0)
+        out["pool"] = (
+            f"Продано {_pct(whole['amount_share'])} ожидаемой выручки проекта — "
+            f"{_mln(whole.get('sold_amount'))} из {_mln(whole.get('pool_amount'))} млн ₽; "
+            f"впереди ещё {_mln(left)} млн ₽.")
+
+    dynamics = [m for m in (summary.get("dynamics") or []) if m.get("amount")]
+    if len(dynamics) >= 4:
+        last3 = dynamics[-3:]
+        before = dynamics[:-3]
+        recent = sum(m["amount"] for m in last3) / len(last3)
+        earlier = sum(m["amount"] for m in before) / len(before) if before else 0.0
+        move = "выше" if recent > earlier else "ниже"
+        share = abs(recent - earlier) / earlier if earlier else None
+        out["dynamics"] = (
+            f"Последние три месяца — {_mln(recent)} млн ₽ в месяц, это {move} "
+            f"среднего по предыдущим {len(before)} ({_mln(earlier)} млн ₽)"
+            + (f", на {_pct(share, 0)}" if share is not None else "") + ".")
+
+    bands = pool.get("bands") or []
+    if bands:
+        hottest = max(bands, key=lambda b: b.get("skew") if b.get("skew") is not None else -9)
+        coldest = min(bands, key=lambda b: b.get("skew") if b.get("skew") is not None else 9)
+        if hottest.get("skew") is not None and coldest.get("skew") is not None:
+            out["bands"] = (
+                f"Вымывается полоса {hottest['band']} м²: {_pct(hottest['pool_share'])} пула и "
+                f"{_pct(hottest['sold_share'])} продаж. Медленнее всего уходит {coldest['band']} м² — "
+                f"{_pct(coldest['pool_share'])} пула против {_pct(coldest['sold_share'])} продаж. "
+                f"В остатке витрины она уже {_pct(coldest.get('left_share'))}: чем дальше, тем "
+                f"крупнее то, что остаётся показывать.")
+
+    products = [p for p in (summary.get("by_product") or []) if p.get("amount")]
+    if products:
+        first = products[0]
+        out["products"] = (
+            f"{first['product']} — {_pct(first['amount'] / total['amount'] if total.get('amount') else None)} "
+            f"выручки, всего продуктов в продажах {len(products)}.")
+
+    payment = summary.get("by_payment") or []
+    if payment:
+        defect = next((x for x in payment if x.get("variant") == CRM_DEFECT), None)
+        known = [x for x in payment if x.get("variant") != CRM_DEFECT]
+        parts = ", ".join(f"{x['variant']} — {_pct(x['amount'] / total['amount'] if total.get('amount') else None)}"
+                          for x in known)
+        line = f"Условия оплаты: {parts}." if parts else ""
+        if defect:
+            line += (f" У {int(defect.get('count') or 0)} договоров условие в CRM не разобрать "
+                     f"({_pct(defect['amount'] / total['amount'] if total.get('amount') else None)} выручки) — "
+                     f"это дефект заполнения, а не рыночное условие.")
+        out["payment"] = line.strip()
+
+    brokers = summary.get("brokers") or {}
+    own = summary.get("own_sales") or {}
+    if brokers.get("amount") or own.get("amount"):
+        out["channels"] = (
+            f"Чужие каналы принесли {_pct(brokers.get('amount', 0) / total['amount'] if total.get('amount') else None)} "
+            f"выручки и стоили {_pct(brokers.get('cost_of_sales'), 2)} от своих продаж; свой отдел — "
+            f"{_pct(own.get('amount', 0) / total['amount'] if total.get('amount') else None)} выручки при "
+            f"{_pct(own.get('cost_of_sales'), 2)}. Вознаграждения всего — "
+            f"{_mln((brokers.get('cost') or 0) + (own.get('cost') or 0))} млн ₽.")
+
+    fm = summary.get("fm_plan") or {}
+    plan = (fm.get("plan") or {}).get("Итого") or (fm.get("plan") or {}).get("Квартира") or {}
+    pairs = [(m["month"], float(m["amount"]), float((plan.get(m["month"]) or {}).get("amount") or 0.0))
+             for m in (summary.get("dynamics") or []) if (plan.get(m["month"]) or {}).get("amount")]
+    if pairs:
+        behind = [p for p in pairs if p[1] < p[2]]
+        gap = sum(p[1] - p[2] for p in pairs)
+        out["fm"] = (
+            f"Ниже плана финмодели {len(behind)} месяцев из {len(pairs)}; накопленное "
+            f"{'опережение' if gap >= 0 else 'отставание'} {_mln(abs(gap))} млн ₽.")
+
+    bank = summary.get("bank_plan") or {}
+    quarters = bank.get("revenue_by_quarter") or {}
+    fact = {q["quarter"]: float(q["amount"]) for q in (summary.get("by_quarter") or [])}
+    common = [q for q in quarters if q in fact]
+    if common:
+        gap = sum(fact[q] - float(quarters[q]) for q in common)
+        out["bank"] = (
+            f"По {len(common)} общим кварталам факт {'выше' if gap >= 0 else 'ниже'} плана банка на "
+            f"{_mln(abs(gap))} млн ₽.")
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Факт против двух планов — на одном графике
+# ---------------------------------------------------------------------------
+#
+# «Факт против ФМ и плана банка — на одном наглядном графике с ценами и
+# метрами» (владелец, 26.08.2026). Общая шкала у трёх рядов ровно одна —
+# квартал: план банка квартальный, и раскладывать его по месяцам мы не станем,
+# сделать это можно тремя способами, и любой будет нашей выдумкой.
+#
+# Складывается здесь: сумма месяцев плана до квартала, посчитанная в браузере,
+# была бы вторым счётом того же плана.
+
+
+def plan_comparison(summary: dict[str, Any]) -> dict[str, Any]:
+    """Ряд кварталов: факт, план финмодели, план банка — в ₽, м² и ₽/м²."""
+    fm = summary.get("fm_plan") or {}
+    bank = summary.get("bank_plan") or {}
+    plan = (fm.get("plan") or {}).get("Итого") or {}
+    # У «Итого» финмодели нет метров: строка «м2» есть у продуктов. Метры плана
+    # складываются по продуктам, деньги берутся из «Итого», если оно есть.
+    by_month: dict[str, dict[str, float]] = {}
+    for product, months in (fm.get("plan") or {}).items():
+        for month, values in months.items():
+            block = by_month.setdefault(month, {"amount": 0.0, "area": 0.0})
+            if product != "Итого":
+                block["area"] += float(values.get("area") or 0.0)
+                if not plan:
+                    block["amount"] += float(values.get("amount") or 0.0)
+    for month, values in plan.items():
+        by_month.setdefault(month, {"amount": 0.0, "area": 0.0})["amount"] = \
+            float(values.get("amount") or 0.0)
+
+    fact_quarter = {q["quarter"]: q for q in (summary.get("by_quarter") or [])}
+    plan_quarter: dict[str, dict[str, float]] = {}
+    for month, values in by_month.items():
+        block = plan_quarter.setdefault(quarter_of(month), {"amount": 0.0, "area": 0.0})
+        block["amount"] += values["amount"]
+        block["area"] += values["area"]
+    bank_quarter = {key: float(value) for key, value in
+                    (bank.get("revenue_by_quarter") or {}).items()}
+
+    names = sorted(set(fact_quarter) | set(plan_quarter) | set(bank_quarter))
+    # Горизонт плана — весь проект, факт — только прошедшее. Показывать пустой
+    # хвост из будущих кварталов незачем: он читается как провал продаж.
+    last = max([q for q in fact_quarter], default="")
+    # Незакрытый квартал против полного планового — это не провал продаж, а
+    # разные отрезки времени. Сколько месяцев факта в квартале, считается
+    # здесь и говорится на экране.
+    months_in: dict[str, int] = {}
+    for row in summary.get("dynamics") or []:
+        months_in[quarter_of(row["month"])] = months_in.get(quarter_of(row["month"]), 0) + 1
+    rows = []
+    for name in names:
+        if last and name > last:
+            break
+        fact = fact_quarter.get(name) or {}
+        if not any((fact.get("amount"), plan_quarter.get(name, {}).get("amount"),
+                    bank_quarter.get(name))):
+            continue
+        planned = plan_quarter.get(name) or {}
+        rows.append({
+            "label": name,
+            "fact_amount": fact.get("amount"),
+            "fact_area": fact.get("area"),
+            "fact_price": fact.get("price_per_sqm") or None,
+            "fm_amount": planned.get("amount") or None,
+            "fm_area": planned.get("area") or None,
+            "fm_price": (planned["amount"] / planned["area"]
+                         if planned.get("amount") and planned.get("area") else None),
+            "bank_amount": bank_quarter.get(name),
+            "months": months_in.get(name, 0),
+            "partial": bool(fact.get("amount")) and months_in.get(name, 0) < 3,
+        })
+    return {"quarters": rows, "fm_sheet": fm.get("sheet") or "",
+            "bank_sheet": bank.get("sheet") or "",
+            # У плана банка есть только деньги: метров и цены в его строках нет.
+            # Сказать это надо вслух — пропавшая линия читается как ноль.
+            "bank_metrics": ["amount"],
+            "bank_rows": bank.get("revenue_rows") or []}

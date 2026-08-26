@@ -47,7 +47,7 @@ def row(**kwargs) -> dict:
 def test_the_cabinet_has_a_place_to_drop_the_file() -> None:
     html = page()
     assert 'id="cf"' in html, "кнопки загрузки ЦФ не было вовсе"
-    assert "Загрузить контрактацию" in html
+    assert "Загрузить файл проекта" in html
     assert 'id="sales"' in html
     assert "/cabinet/contracting" in html
 
@@ -64,7 +64,9 @@ def test_every_block_the_summary_carries_is_drawn() -> None:
 def test_the_screen_does_no_arithmetic_of_its_own() -> None:
     """Доли внутри картинки — можно; выручка, площади и ставки — нет."""
     body = script()
-    start = body.index("function renderSales(")
+    # Область — весь блок продаж, а не одна функция: рисование разъехалось по
+    # разделам, и проверка, глядящая в одну функцию, проверяла бы половину.
+    start = body.index("const SALES_METRICS=")
     block = body[start:body.index("\nfunction tile(", start)]
     # Доли и удельные приходят с сервера, а не считаются здесь. Перевод в
     # миллионы — оформление, а не экономика, и он разрешён.

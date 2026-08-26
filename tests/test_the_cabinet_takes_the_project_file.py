@@ -28,8 +28,11 @@ KEY = "cabinet-probe-key"
 
 
 @pytest.fixture()
-def client(monkeypatch):
+def client(monkeypatch, tmp_path):
     monkeypatch.setenv("MARKET_CABINET_KEY", KEY)
+    # Склад источников — рантайм-состояние, и проверке он свой: без этого
+    # проверка пишет разобранные выгрузки в рабочее дерево репозитория.
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
     import main_registry
     api = TestClient(main_registry.app)
     api.post("/cabinet/login", content=f"key={KEY}")

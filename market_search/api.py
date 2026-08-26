@@ -13,6 +13,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel, Field, model_validator
 
 from . import cabinet as cabinet_module
+from . import sales_store
 from .geocoder import GeocodingError
 from .http import RemoteServiceError
 from .service_v6 import MarketDiscoveryService
@@ -418,54 +419,122 @@ def install(app: FastAPI) -> MarketDiscoveryService:
                 got.setdefault("board_missing", []).append(f"{key}: {exc}")
         return got
 
+    def _cabinet_dir() -> Path:
+        """Где лежит склад источников — спрашивается при обращении.
+
+        Замороженный на импорте путь означает, что проверка кабинета пишет в
+        рабочее дерево репозитория: приложение собирается один раз, а `DATA_DIR`
+        у проверки свой.
+        """
+        return Path(os.getenv("DATA_DIR", "data")) / "market"
+
+    def _sales_view(kept: dict[str, Any]) -> dict[str, Any]:
+        """Свод продаж из того, что лежит на складе.
+
+        Собирается ОДНОЙ функцией и для загрузки файла, и для открытия
+        кабинета: два сборщика на один проект однажды разойдутся, и обе
+        картинки будут выглядеть верными.
+        """
+        sources = kept.get("sources") or {}
+
+        def part(kind: str) -> Any:
+            return ((sources.get(kind) or {}).get("data")) or None
+
+        contracts = part("contracting")
+        if not contracts:
+            return {"project": kept.get("project") or "", "sources": [],
+                    "missing": ["контрактация не загружена"], "empty": True}
+        got = contracting.summarise(contracts, part("ledger") or {})
+        fm, bank, pool = part("fm_plan"), part("bank_plan"), part("pool")
+        got["fm_plan"] = fm
+        got["bank_plan"] = bank
+        got["pool"] = contracting.pool_progress(got, contracts.get("rows") or [], fm, pool)
+        for kind, name in contracting_sources_missing(sources):
+            got.setdefault("missing", []).append(f"{name} не загружен(а)")
+        got["sources"] = [
+            {"kind": kind, "name": sales_store.KINDS.get(kind, kind),
+             "at": (value or {}).get("at"), "file": (value or {}).get("file")}
+            for kind, value in sorted(sources.items())]
+        got["plans"] = contracting.plan_comparison(got)
+        got["conclusions"] = contracting.conclusions(got)
+        return got
+
+    def contracting_sources_missing(sources: dict[str, Any]) -> list[tuple[str, str]]:
+        return [(kind, name) for kind, name in sales_store.KINDS.items()
+                if kind not in sources]
+
+    def _parse_sources(data: bytes) -> tuple[dict[str, Any], list[str]]:
+        """Что в файле нашлось, то и разобрано.
+
+        Какой источник в каком файле лежит, спрашивать у человека незачем:
+        лист либо есть, либо нет. Не нашлось ничего — это отказ с перечнем
+        того, что искали, а не молчаливый пустой ответ.
+        """
+        parts: dict[str, Any] = {}
+        notes: list[str] = []
+        for kind, reader in (("contracting", contracting.read_contracts),
+                             ("ledger", contracting.read_ledger),
+                             ("fm_plan", contracting.read_fm_plan),
+                             ("bank_plan", contracting.read_bank_plan),
+                             ("pool", contracting.read_pool)):
+            try:
+                parts[kind] = reader(data)
+            except Exception as exc:  # noqa: BLE001
+                notes.append(f"{sales_store.KINDS[kind]}: {exc}")
+        return parts, notes
+
     @app.post("/cabinet/contracting")
     async def cabinet_contracting(request: Request) -> dict[str, Any]:
-        """Свод продаж действующего проекта из файла ЦФ.
+        """Принять файл проекта: что в нём нашлось, то и прочитано.
 
-        Тело запроса — сам файл, как у `/cabinet/plan`: multipart тянет
-        python-multipart, а книга приходит одна и целиком.
-
-        Один файл — один разбор. ЦФ несёт и «Контрактацию», и «1С_Факт», и
-        сверка между ними идёт этим же вызовом: просить загрузить один файл
-        дважды значит однажды получить два разных файла и показать их как
-        один проект.
-
-        Проводки — не ошибка, если их нет: у выгрузки без листа «1С_Факт»
-        есть контрактация, и это законный свод. Поэтому неудача идёт причиной
-        рядом, а не пятисоткой поверх удавшегося разбора.
+        Тело запроса — сам файл. Источников на один проект несколько, и
+        приходят они порознь: выгрузка ЦФ несёт контрактацию и оба плана,
+        книга финмодели — квартирографию. Загруженное ложится на склад ядра и
+        переживает закрытие вкладки: просить оба файла при каждом открытии
+        значит однажды получить два файла разных дат и показать их как один
+        проект.
         """
         cabinet_module.require_cabinet(request)
         data = await request.body()
         if not data:
             raise HTTPException(status_code=422, detail="Пустой файл")
         if len(data) > 60 * 1024 * 1024:
-            raise HTTPException(status_code=413, detail="Файл больше 60 МБ — это не выгрузка ЦФ")
-        try:
-            contracts = await run_in_threadpool(contracting.read_contracts, data)
-        except KeyError as exc:
-            raise HTTPException(status_code=422, detail=str(exc).strip('"')) from exc
-        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=413, detail="Файл больше 60 МБ — это не выгрузка проекта")
+        name = str(request.headers.get("x-file-name") or "").strip()[:120]
+        parts, notes = await run_in_threadpool(_parse_sources, data)
+        if not parts:
             raise HTTPException(
-                status_code=422, detail=f"Файл не разобран: {type(exc).__name__}: {exc}") from exc
-        ledger: dict[str, Any] = {}
-        ledger_missing = ""
-        try:
-            ledger = await run_in_threadpool(contracting.read_ledger, data)
-        except Exception as exc:  # noqa: BLE001
-            ledger_missing = f"Проводки 1С не прочитаны: {exc}"
-        got = contracting.summarise(contracts, ledger)
-        if ledger_missing:
-            got.setdefault("missing", []).append(ledger_missing)
-        # Планы читаются тем же вызовом и из того же файла. Не прочитались —
-        # причина рядом, а не пятисотка поверх удавшегося свода: у выгрузки без
-        # листа планов есть контрактация, и это законный ответ.
-        for name, reader, key in (
-                ("Наша финмодель", contracting.read_fm_plan, "fm_plan"),
-                ("Модель банка", contracting.read_bank_plan, "bank_plan")):
-            try:
-                got[key] = await run_in_threadpool(reader, data)
-            except Exception as exc:  # noqa: BLE001
-                got.setdefault("missing", []).append(f"{name} не прочитана: {exc}")
+                status_code=422,
+                detail="Ни одного знакомого листа: " + "; ".join(notes)[:600])
+        project = str(request.query_params.get("project") or "").strip()
+        if not project:
+            project = str(((parts.get("contracting") or {}).get("project")) or "").strip()
+        if not project:
+            # Имя проекта у книги финмодели своего нет: она ложится к тому
+            # проекту, который уже открыт. Иначе квартирография уедет в
+            # «без-имени» и не встретится со своей контрактацией никогда.
+            kept = sales_store.projects(_cabinet_dir())
+            project = kept[0]["project"] if len(kept) == 1 else ""
+        kept = await run_in_threadpool(
+            sales_store.save, _cabinet_dir(), project, parts, name)
+        got = _sales_view(kept)
+        for line in notes:
+            got.setdefault("read_notes", []).append(line)
+        return got
+
+    @app.get("/cabinet/sales")
+    async def cabinet_sales(request: Request, project: str = "") -> dict[str, Any]:
+        """Свод продаж по уже загруженным источникам — без файла."""
+        cabinet_module.require_cabinet(request)
+        known = await run_in_threadpool(sales_store.projects, _cabinet_dir())
+        if not project:
+            project = known[0]["project"] if known else ""
+        if not project:
+            return {"project": "", "sources": [], "known": known,
+                    "missing": ["источники не загружены"], "empty": True}
+        kept = await run_in_threadpool(sales_store.load, _cabinet_dir(), project)
+        got = _sales_view(kept)
+        got["known"] = known
         return got
 
     @app.post("/market/report")
