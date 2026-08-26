@@ -2037,55 +2037,89 @@ function tile(name, value){
 
 // Числа Платону подаются готовыми, и в вопросе прямо стоит «не пересчитывай».
 // Тот же приём, что в модуле торгов: он читает, а не считает.
-function salesDigest(d){
-  const t=d.total||{}, lines=[];
-  lines.push(`ПРОЕКТ: ${d.project||'—'}.`);
-  lines.push(`Всего: ${num(t.contracts)} договоров, ${num(t.area)} м², ${num(t.amount/1e6,1)} млн ₽, `
-    +`средняя ${num(t.price_per_sqm)} ₽/м²; на эскроу ${num(t.escrow/1e6,1)} млн (${num(t.escrow_share*100,1)}%).`);
-  (d.dynamics||[]).forEach(m=>lines.push(`— ${m.month}: ${num(m.units)} шт, ${num(m.area)} м², `
-    +`${num(m.amount/1e6,1)} млн ₽${m.price_per_sqm?', '+num(m.price_per_sqm)+' ₽/м²':''}`));
-  (d.by_payment||[]).forEach(x=>lines.push(`ОПЛАТА ${x.variant||'—'}: ${num(x.count)} шт, `
-    +`${num(x.amount/1e6,1)} млн ₽, на эскроу ${num(x.escrow/1e6,1)} млн`
-    +`${x.filled===null||x.filled===undefined?'':' ('+num(x.filled*100,1)+'% наполнения)'}`
-    +`${x.recognised===false?' — это дефект заполнения CRM, а не условие сделки':''}`));
-  (d.by_channel||[]).forEach(x=>lines.push(`КАНАЛ ${x.channel}${x.own?' (свой отдел)':''}: ${num(x.contracts)} шт, `
+//
+// У вопроса есть предел — 4000 знаков, и свод по живому проекту его
+// перекрывает: двенадцать месяцев, дюжина каналов, планы ФМ и банка. Резать
+// молча нельзя: Платон ответит по половине данных, а выглядеть это будет как
+// ответ по всем. Поэтому разделы складываются по важности, а то, что не
+// влезло, названо в самом вопросе.
+// Предел вопроса у Платона — 4000 знаков. Бюджет свода считается от настоящей
+// длины преамбулы, а не назначается на глазок: припишешь к вопросу строку —
+// и молча вылезешь за предел.
+const SALES_ASK_LIMIT=4000;
+
+function salesDigest(d, limit){
+  const t=d.total||{}, groups=[];
+  const head=[`ПРОЕКТ: ${d.project||'—'}.`,
+    `Всего: ${num(t.contracts)} договоров, ${num(t.area)} м², ${num(t.amount/1e6,1)} млн ₽, `
+     +`средняя ${num(t.price_per_sqm)} ₽/м²; на эскроу ${num(t.escrow/1e6,1)} млн (${num(t.escrow_share*100,1)}%).`];
+  // Длинный ряд обрезается по хвосту, а не выбрасывается целиком: свежие
+  // месяцы отвечают на вопрос, а прошлогодние — подробность. Сколько показано
+  // из скольких, стоит в самой строке: молчаливая обрезка читается как весь ряд.
+  const add=(name, lines, keepLast)=>{
+    if(!lines.length) return;
+    if(keepLast&&lines.length>keepLast){
+      const head=lines[0].startsWith('—')?[]:[lines.shift()];
+      lines=head.concat(
+        [`(показаны последние ${keepLast} из ${lines.length})`],
+        lines.slice(-keepLast));
+    }
+    groups.push({name, lines});
+  };
+
+  add('каналы', (d.by_channel||[]).map(x=>`КАНАЛ ${x.channel}${x.own?' (свой отдел)':''}: ${num(x.contracts)} шт, `
     +`${num(x.amount/1e6,1)} млн ₽; комиссия ${x.fee_unknown?'не заполнена':num(x.broker_fee/1e6,2)+' млн'}, `
     +`премия ОП ${num(x.sales_bonus/1e6,2)} млн, вместе ${num(x.cost_of_sales*100,2)}% от продаж`
     +`${x.broker_fee?'; комиссия = '+num(x.fee_of_escrow*100,2)+'% от фактического наполнения эскроу':''}`));
-  ['brokers','own_sales'].forEach(key=>{
-    const t=d[key]||{};
-    if(!t.contracts) return;
-    lines.push(`ИТОГО ${key==='brokers'?'БРОКЕРЫ':'СВОЙ ОТДЕЛ'}: ${num(t.contracts)} шт, `
-      +`${num(t.amount/1e6,1)} млн ₽, стоимость канала ${num(t.cost/1e6,2)} млн = ${num(t.cost_of_sales*100,2)}% от продаж`);
-  });
-  (d.by_size||[]).forEach(x=>lines.push(`РАЗМЕР ${x.band}: ${num(x.contracts)} шт, ${num(x.area)} м², ${num(x.amount/1e6,1)} млн ₽`));
-  (d.by_product||[]).forEach(x=>lines.push(`ПРОДУКТ ${x.product}: ${num(x.contracts)} шт, ${num(x.amount/1e6,1)} млн ₽`));
-  if((d.terminated||[]).length){
-    const back=d.terminated.reduce((sum,x)=>sum+(Number(x.escrow_returned)||0),0);
-    lines.push(`РАСТОРЖЕНИЙ: ${d.terminated.length}, возвращено с эскроу ${num(back/1e6,1)} млн ₽`);
-  }
+  add('оплата', (d.by_payment||[]).map(x=>`ОПЛАТА ${x.variant||'—'}: ${num(x.count)} шт, `
+    +`${num(x.amount/1e6,1)} млн ₽, на эскроу ${num(x.escrow/1e6,1)} млн`
+    +`${x.amount?' ('+num(x.escrow/x.amount*100,1)+'% наполнения)':''}`
+    +`${x.recognised===false?' — это дефект заполнения CRM, а не условие сделки':''}`));
+  add('динамика', (d.dynamics||[]).map(m=>`— ${m.month}: ${num(m.units)} шт, ${num(m.area)} м², `
+    +`${num(m.amount/1e6,1)} млн ₽${m.area?', '+num(m.amount/m.area)+' ₽/м²':''}`), 4);
+
   const fm=d.fm_plan;
   if(fm&&fm.plan){
     const plan=fm.plan['Итого']||fm.plan['Квартира']||{};
-    lines.push(`ПЛАН НАШЕЙ ФМ (лист «${fm.sheet}»; на прошедших месяцах колонка «план» заполнена фактом):`);
-    (d.dynamics||[]).forEach(m=>{
+    const lines=(d.dynamics||[]).map(m=>{
       const want=(plan[m.month]||{}).amount;
-      if(want) lines.push(`— ${m.month}: план ${num(want/1e6,1)} млн ₽, факт ${num(m.amount/1e6,1)} млн ₽`);
-    });
+      return want?`— ${m.month}: план ФМ ${num(want/1e6,1)} млн ₽, факт ${num(m.amount/1e6,1)} млн ₽`:null;
+    }).filter(Boolean);
+    if(lines.length) lines.unshift(`ПЛАН НАШЕЙ ФМ (лист «${fm.sheet}»; на прошедших месяцах колонка «план» заполнена фактом):`);
+    add('план ФМ', lines, 4);
   }
   const bank=d.bank_plan;
-  if(bank&&(bank.lines||[]).length){
-    lines.push(`ПЛАН БАНКА (лист «${bank.sheet}», кварталы):`);
-    bank.lines.slice(0,8).forEach(line=>{
-      const shown=bank.quarters.slice(0,6).map(q=>{
-        const v=line.values[q];
-        return (v===null||v===undefined)?null:`${q} ${num(v, Math.abs(v)<100?1:0)}`;
-      }).filter(Boolean).join('; ');
-      if(shown) lines.push(`— ${line.label}: ${shown}`);
-    });
+  if(bank&&bank.revenue_by_quarter){
+    const fact={};
+    (d.by_quarter||[]).forEach(q=>{fact[q.quarter]=q.amount});
+    const lines=Object.keys(bank.revenue_by_quarter).sort().map(q=>
+      `— ${q}: план банка ${num(bank.revenue_by_quarter[q]/1e6,1)} млн ₽`
+      +(fact[q]!==undefined?`, факт ${num(fact[q]/1e6,1)} млн ₽`:''));
+    if(lines.length) lines.unshift(`ПЛАН БАНКА (лист «${bank.sheet}», по кварталам):`);
+    add('план банка', lines, 4);
   }
-  (d.missing||[]).forEach(x=>lines.push('НЕ ПРОЧИТАНО: '+x));
-  return lines.join('\n');
+  add('размерность', (d.by_size||[]).map(x=>`РАЗМЕР ${x.band}: ${num(x.contracts)} шт, ${num(x.area)} м², ${num(x.amount/1e6,1)} млн ₽`));
+  add('продукты', (d.by_product||[]).map(x=>`ПРОДУКТ ${x.product}: ${num(x.contracts)} шт, ${num(x.amount/1e6,1)} млн ₽`));
+  const tail=[];
+  if((d.terminated||[]).length){
+    const back=d.terminated.reduce((sum,x)=>sum+(Number(x.escrow_returned)||0),0);
+    tail.push(`РАСТОРЖЕНИЙ: ${d.terminated.length}, возвращено с эскроу ${num(back/1e6,1)} млн ₽`);
+  }
+  (d.missing||[]).forEach(x=>tail.push('НЕ ПРОЧИТАНО: '+x));
+
+  // Складываем, пока влезает. Разделы идут по важности: каналы и оплата
+  // отвечают на вопрос, помесячная динамика — уже подробность.
+  const cap=Number(limit)||2800;
+  const kept=[...head], dropped=[];
+  let size=kept.join('\n').length+tail.join('\n').length;
+  groups.forEach(g=>{
+    const text=g.lines.join('\n');
+    if(size+text.length+1<=cap){ kept.push(text); size+=text.length+1 }
+    else dropped.push(g.name+' ('+g.lines.length+' строк)');
+  });
+  kept.push(...tail);
+  if(dropped.length) kept.push('НЕ ПОМЕСТИЛОСЬ В ВОПРОС (не считай это отсутствием данных): '+dropped.join(', ')+'.');
+  return kept.join('\n');
 }
 
 async function askPlatoSales(){
@@ -2093,13 +2127,14 @@ async function askPlatoSales(){
   const btn=$('#salesask');
   btn.disabled=true;
   $('#salesout').innerHTML='<div class="muted">Платон Сергеевич читает продажи…</div>';
-  const message='Ниже свод продаж проекта, посчитанный движком по выгрузке ЦФ. '
+  const tail='\n\nПиши по-русски, коротко, по каждой теме отдельным абзацем.';
+  const preamble='Ниже свод продаж проекта, посчитанный движком по выгрузке ЦФ. '
     +'Числа НЕ пересчитывай и не выдумывай того, чего в своде нет. Дай короткий разбор по четырём темам: '
     +'1) рассрочка — как она влияет на фактическое наполнение эскроу и чем это грозит; '
     +'2) вознаграждение брокерам — рыночное ли оно и что значит разрыв между «% от продаж» и «% от наполнения»; '
     +'3) эффективность собственного отдела продаж против брокерского канала; '
-    +'4) структура продаж — есть ли сдвиг в сторону мелких лотов и что это значит для выручки.\n\n'
-    +salesDigest(salesData)+'\n\nПиши по-русски, коротко, по каждой теме отдельным абзацем.';
+    +'4) структура продаж — есть ли сдвиг в сторону мелких лотов и что это значит для выручки.\n\n';
+  const message=preamble+salesDigest(salesData, SALES_ASK_LIMIT-preamble.length-tail.length-20)+tail;
   try{
     const answer=await platoAnswer(message);
     $('#salesout').innerHTML=`<div class="plato">${esc(answer).replace(/\n/g,'<br>')}</div>`;
