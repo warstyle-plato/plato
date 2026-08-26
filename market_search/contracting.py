@@ -94,6 +94,16 @@ _COLUMNS = {
 _COMPANY = re.compile(r"\b(ООО|АО|ПАО|ЗАО|ИП|НАО|ГК)\b|\bООО\b", re.I)
 
 
+def _text(value: Any) -> str:
+    """Значение ячейки строкой, без висячих пробелов и переносов.
+
+    У листов ЦФ подписи приезжают то с хвостовым пробелом («Эскроу, тыс. руб. »),
+    то с переносом внутри: сверять их целиком значит терять строку на чужой
+    описке.
+    """
+    return " ".join(str(value if value is not None else "").split())
+
+
 def _excel_date(value: Any) -> datetime.date | None:
     """Дата бывает и числом, и строкой — в одной колонке.
 
@@ -424,6 +434,143 @@ def _payment_structure(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         item["filled"] = item["escrow"] / item["amount"] if item["amount"] else None
         item["examples_shown"] = len(item["examples"])
     return sorted(buckets.values(), key=lambda x: (x["name"] == CRM_DEFECT, -x["amount"]))
+
+
+# ---------------------------------------------------------------------------
+# План продаж: наша финмодель и модель банка.
+#
+# Свод продаж отвечает на «что продали». Без второй половины — «сколько
+# собирались» — он не говорит ничего о том, идём мы по плану или отстаём
+# (владелец, 26.08.2026). Оба плана лежат в той же выгрузке ЦФ, что и
+# контрактация, поэтому и читаются тем же вызовом: просить загрузить один файл
+# дважды значит однажды получить два разных файла и показать их как один
+# проект.
+# ---------------------------------------------------------------------------
+
+FM_SHEET = "Продажи ФМ_new Банников"
+BANK_SHEET = "Модель банка_new"
+
+# Лист ФМ идёт парами колонок: строка дат общая, а строка ниже говорит, план
+# это или факт. Разбирать по чётности колонок нельзя — в листе есть пустые
+# столбцы-разделители, и счёт сбивается на первом же.
+_FM_DATE_ROW = 3
+_FM_KIND_ROW = 4
+_FM_PRODUCTS = {
+    "Квартира": "Квартира",
+    "Кладовые": "Кладовая",
+    "Машиноместа": "Машиноместо",
+    "Коммерческие площади": "Коммерческие площади",
+    "Итого": "Итого",
+}
+# Названия строк внутри продукта. Ключ — начало подписи: у листа встречаются
+# висячие пробелы («Эскроу, тыс. руб. »), и сверять целиком значит терять строку
+# на чужой описке.
+_FM_METRICS = (
+    ("Эскроу", "escrow"),
+    ("Заключенные договоры", "amount"),
+    ("Цена продажи", "price"),
+    ("м2", "area"),
+    ("шт", "units"),
+)
+# Лист считает в тысячах рублей, свод — в рублях. Приводим здесь, а не на
+# экране: две единицы под одним именем никто не заметит.
+_FM_THOUSANDS = ("escrow", "amount")
+
+
+def _fm_metric(label: str) -> str | None:
+    text = _text(label)
+    for prefix, name in _FM_METRICS:
+        if text.startswith(prefix):
+            return name
+    return None
+
+
+def read_fm_plan(data: bytes) -> dict[str, Any]:
+    """Помесячный план и факт нашей финмодели по продуктам.
+
+    Возвращает `{"months": [...], "plan": {...}, "fact": {...}}`, где внутри —
+    продукт → месяц → показатели. Чего в листе нет, того нет и здесь: пустая
+    ячейка не становится нулём, иначе «не заполнено» читалось бы как «ноль
+    продаж».
+    """
+    rows = _rows(data, FM_SHEET)
+    if len(rows) < _FM_KIND_ROW:
+        raise KeyError(f"лист «{FM_SHEET}» пуст")
+    dates = rows[_FM_DATE_ROW - 1]
+    kinds = rows[_FM_KIND_ROW - 1]
+    columns: list[tuple[int, str, str]] = []
+    for index, kind in enumerate(kinds):
+        name = _text(kind).lower()
+        if name not in ("план", "факт"):
+            continue
+        moment = _excel_date(dates[index] if index < len(dates) else None)
+        if moment is None:
+            continue
+        columns.append((index, name, moment.strftime("%Y-%m")))
+    if not columns:
+        raise KeyError(f"в листе «{FM_SHEET}» не нашлось колонок «план» и «факт»")
+
+    out: dict[str, dict[str, dict[str, dict[str, float]]]] = {"план": {}, "факт": {}}
+    product = ""
+    for row in rows[_FM_KIND_ROW:]:
+        label = _text(row[2] if len(row) > 2 else "")
+        if label in _FM_PRODUCTS:
+            product = _FM_PRODUCTS[label]
+            continue
+        if label.startswith("Продажи по годам"):
+            # Годовой блок ниже месячного: те же подписи, другой горизонт.
+            # Смешать их значит удвоить каждый показатель.
+            break
+        metric = _fm_metric(label) if product else None
+        if not metric:
+            continue
+        for index, kind, month in columns:
+            raw = row[index] if index < len(row) else None
+            if raw is None or _text(raw) == "":
+                continue
+            value = _number(raw)
+            if metric in _FM_THOUSANDS:
+                value *= 1000.0
+            out[kind].setdefault(product, {}).setdefault(month, {})[metric] = value
+    months = sorted({month for _, _, month in columns})
+    return {"sheet": FM_SHEET, "months": months,
+            "plan": out["план"], "fact": out["факт"]}
+
+
+# Модель банка — квартальная, и приводить её к месяцам мы не станем: разложить
+# квартал по трём месяцам можно тремя способами, и любой будет нашей выдумкой,
+# а не планом банка. Сравнение идёт по кварталам, и это сказано вслух.
+_BANK_PERIOD_ROW = 1
+_BANK_QUARTER = re.compile(r"^(20\d{2})\s*Q([1-4])$", re.I)
+
+
+def read_bank_plan(data: bytes) -> dict[str, Any]:
+    """Квартальный план банка: подписи строк как есть, значения по кварталам."""
+    rows = _rows(data, BANK_SHEET)
+    if not rows:
+        raise KeyError(f"лист «{BANK_SHEET}» пуст")
+    header = rows[_BANK_PERIOD_ROW - 1]
+    quarters: list[tuple[int, str]] = []
+    for index, cell in enumerate(header):
+        match = _BANK_QUARTER.match(_text(cell))
+        if match:
+            quarters.append((index, f"{match.group(1)} Q{match.group(2)}"))
+    if not quarters:
+        raise KeyError(f"в листе «{BANK_SHEET}» не нашлось кварталов вида «2026 Q1»")
+    lines: list[dict[str, Any]] = []
+    for row in rows[_BANK_PERIOD_ROW:]:
+        label = _text(row[1] if len(row) > 1 else "")
+        if not label:
+            continue
+        values = {}
+        for index, quarter in quarters:
+            raw = row[index] if index < len(row) else None
+            if raw is None or _text(raw) == "":
+                continue
+            values[quarter] = _number(raw)
+        if values:
+            lines.append({"label": label, "values": values})
+    return {"sheet": BANK_SHEET, "quarters": [q for _, q in quarters], "lines": lines}
 
 
 def summarise(contracts: dict[str, Any], ledger: dict[str, Any] | None = None) -> dict[str, Any]:

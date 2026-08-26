@@ -1838,6 +1838,60 @@ function salesOwnVsBrokers(d){
     +`${brokers.broker_fee?', и ' + num(brokers.fee_of_escrow*100,2) + '% от фактического наполнения эскроу':''}.</div>`;
 }
 
+// Факт против плана. Числа сравниваются как есть: и факт, и план приходят с
+// сервера посчитанными, а экран только показывает разницу в процентах — своей
+// экономики здесь нет.
+//
+// Важная оговорка, которую видно только в самом листе: колонка «план» у нашей
+// финмодели на прошедших месяцах заполнена фактом («Объем продаж план (с
+// учетом факта)»). Молчать об этом нельзя — совпадение план-факт там
+// означает не точное попадание, а перенос.
+function salesVsPlan(d){
+  const fm=d.fm_plan;
+  if(!fm||!fm.plan) return '';
+  const plan=fm.plan['Итого']||fm.plan['Квартира']||{};
+  const months=(d.dynamics||[]).map(m=>m.month);
+  const rows=months.map(month=>{
+    const fact=(d.dynamics||[]).find(m=>m.month===month)||{};
+    const want=plan[month]||{};
+    const planned=Number(want.amount);
+    const got=Number(fact.amount)||0;
+    const gap=Number.isFinite(planned)&&planned?((got/planned-1)*100):null;
+    return {month, planned:Number.isFinite(planned)?planned:null, got, gap};
+  });
+  if(!rows.some(r=>r.planned!==null)) return '';
+  let html='<h3 style="margin:18px 0 4px;font-size:15px">Факт против нашей финмодели</h3>';
+  html+=salesTable(['Месяц','Факт, млн ₽','План ФМ, млн ₽','Отклонение'],
+    rows.slice().reverse().slice(0,14).map(r=>[
+      esc(r.month), num(r.got/1e6,1),
+      r.planned===null?'—':num(r.planned/1e6,1),
+      r.gap===null?'—':`<span style="color:${r.gap<0?'#C4581B':'#5FA98A'}">${r.gap>0?'+':''}${num(r.gap,1)}%</span>`]));
+  html+='<div class="muted" style="font-size:12.5px;margin-top:6px">'
+    +'Лист «'+esc(fm.sheet)+'»: на прошедших месяцах колонка «план» заполнена фактом, '
+    +'поэтому совпадение там означает перенос, а не точное попадание. Расхождение видно на будущих месяцах.</div>';
+  return html;
+}
+
+// План банка квартальный, и раскладывать его по месяцам мы не станем: сделать
+// это можно тремя способами, и любой будет нашей выдумкой, а не планом банка.
+function salesBankPlan(d){
+  const bank=d.bank_plan;
+  if(!bank||!(bank.lines||[]).length) return '';
+  const quarters=bank.quarters.slice(0,8);
+  let html='<h3 style="margin:18px 0 4px;font-size:15px">План банка</h3>';
+  html+=salesTable(['Показатель', ...quarters],
+    bank.lines.slice(0,14).map(line=>[
+      esc(line.label),
+      ...quarters.map(q=>{
+        const v=line.values[q];
+        return (v===null||v===undefined)?'—':num(v, Math.abs(v)<100?1:0);
+      })]));
+  html+='<div class="muted" style="font-size:12.5px;margin-top:6px">'
+    +'Лист «'+esc(bank.sheet)+'», кварталы как в книге. Единицы у строк разные — '
+    +'подписи оставлены как есть, чтобы не подписать чужое число своим именем.</div>';
+  return html;
+}
+
 function renderSales(d){
   const t=d.total||{}, box=$('#sales');
   let html='<div class="card"><h2>Продажи проекта'+(d.project?' — '+esc(d.project):'')+'</h2>';
@@ -1930,6 +1984,9 @@ function renderSales(d){
     html+=`<div class="muted" style="font-size:12.5px;margin-top:6px">Не прочитано — ${esc(line)}</div>`;
   });
 
+  html+=salesVsPlan(d);
+  html+=salesBankPlan(d);
+
   html+='<div style="margin-top:14px"><button class="go alt" id="salesask">Комментарий Платона по продажам</button></div>'
      +'<div id="salesout"></div>';
   box.innerHTML=html+'</div>';
@@ -1969,6 +2026,26 @@ function salesDigest(d){
   if((d.terminated||[]).length){
     const back=d.terminated.reduce((sum,x)=>sum+(Number(x.escrow_returned)||0),0);
     lines.push(`РАСТОРЖЕНИЙ: ${d.terminated.length}, возвращено с эскроу ${num(back/1e6,1)} млн ₽`);
+  }
+  const fm=d.fm_plan;
+  if(fm&&fm.plan){
+    const plan=fm.plan['Итого']||fm.plan['Квартира']||{};
+    lines.push(`ПЛАН НАШЕЙ ФМ (лист «${fm.sheet}»; на прошедших месяцах колонка «план» заполнена фактом):`);
+    (d.dynamics||[]).forEach(m=>{
+      const want=(plan[m.month]||{}).amount;
+      if(want) lines.push(`— ${m.month}: план ${num(want/1e6,1)} млн ₽, факт ${num(m.amount/1e6,1)} млн ₽`);
+    });
+  }
+  const bank=d.bank_plan;
+  if(bank&&(bank.lines||[]).length){
+    lines.push(`ПЛАН БАНКА (лист «${bank.sheet}», кварталы):`);
+    bank.lines.slice(0,8).forEach(line=>{
+      const shown=bank.quarters.slice(0,6).map(q=>{
+        const v=line.values[q];
+        return (v===null||v===undefined)?null:`${q} ${num(v, Math.abs(v)<100?1:0)}`;
+      }).filter(Boolean).join('; ');
+      if(shown) lines.push(`— ${line.label}: ${shown}`);
+    });
   }
   (d.missing||[]).forEach(x=>lines.push('НЕ ПРОЧИТАНО: '+x));
   return lines.join('\n');
