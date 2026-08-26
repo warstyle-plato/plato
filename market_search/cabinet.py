@@ -1944,6 +1944,45 @@ function salesSizesOnly(d){
     +'поэтому пул и остаток витрины показать не из чего.</div>';
 }
 
+// Хватит ли эскроу к погашению ПФ. Три ряда на одной шкале: план накопления,
+// факт по договорам и продолжение нынешнего темпа. Продолжение — не прогноз,
+// и подпись говорит именно это: оно рисуется только вперёд от последнего
+// полного месяца, назад оно спорило бы с фактом.
+function salesEscrowBlock(d){
+  const money=d.escrow||{}, queues=money.queues||[];
+  if(!queues.length) return '';
+  const q=queues[0];
+  const rows=(q.line||[]).map(r=>({
+    label:r.month, short:String(r.month).slice(2),
+    value:r.fact, plan:r.plan, pf:r.pf, keeping:r.keeping,
+    tip:r.month+(r.fact===null||r.fact===undefined?'':': факт '+num(r.fact/1e6,1)+' млн ₽'),
+  }));
+  let html=barChart(rows,{
+    lines:[{key:'plan',name:'план эскроу',color:'#C4581B'},
+           {key:'keeping',name:'при нынешнем темпе',color:'#5FA98A',dash:true},
+           {key:'pf',name:'остаток ПФ',color:'#8E7CC3'}],
+    axis:v=>num(v/1e6), show:v=>num(v/1e6,1)+' млн ₽', factName:'факт эскроу',
+    caption:'млн ₽ нарастающим итогом, до раскрытия эскроу'});
+  html+='<div class="kv" style="margin-top:10px">'
+    +tile('Покрытие по плану', q.plan_coverage_at===null||q.plan_coverage_at===undefined?'—':num(q.plan_coverage_at,2)+'×',
+          'на '+esc(String(q.disclosure||'—')))
+    +tile('При нынешнем темпе', q.keeping_pace_coverage===null||q.keeping_pace_coverage===undefined?'—':num(q.keeping_pace_coverage,2)+'×',
+          'продолжение темпа, не прогноз')
+    +tile('Темп плана', num((q.plan_pace||0)/1e6,1)+' млн ₽/мес', 'до раскрытия')
+    +tile('Темп факта', num((q.pace||0)/1e6,1)+' млн ₽/мес',
+          (q.pace_months||[]).length?'по месяцам '+esc(q.pace_months.join(', ')):'')
+    +'</div>';
+  const notes=[];
+  if(money.partial_month) notes.push('Месяц '+money.partial_month
+    +' в выгрузке неполный и в темп не взят: неполный месяц занижает темп молча.');
+  (money.empty_queues||[]).forEach(name=>notes.push(
+    'Очередь «'+name+'» в книге без чисел — она не финансируется в этом файле, а не финансируется нулём.'));
+  notes.forEach(line=>{
+    html+=`<div class="muted" style="font-size:12.5px;margin-top:6px">${esc(line)}</div>`;
+  });
+  return html;
+}
+
 // Спрос против витрины: сколько просят полосу — против того, сколько её
 // осталось показывать. Прямого «почему не купил» в CRM нет: поля стадии и
 // причины в выгрузке не существует, а слово «отказ» в комментарии почти всегда
@@ -2135,6 +2174,7 @@ const SALES_BLOCKS=[
   {id:'sb-prod', name:'Продукты'},
   {id:'sb-pay',  name:'Оплата'},
   {id:'sb-plan', name:'Планы'},
+  {id:'sb-esc',  name:'Эскроу и ПФ'},
   {id:'sb-ch',   name:'Каналы'},
   {id:'sb-term', name:'Расторжения'},
 ];
@@ -2177,6 +2217,7 @@ function renderSales(d){
   if((d.by_product||[]).length) have.push('sb-prod');
   if((d.by_payment||[]).length) have.push('sb-pay');
   if(((d.plans||{}).quarters||[]).length>1) have.push('sb-plan');
+  if(((d.escrow||{}).queues||[]).length) have.push('sb-esc');
   if((d.by_channel||[]).length) have.push('sb-ch');
   if((d.terminated||[]).length) have.push('sb-term');
   html+=salesNav(have);
@@ -2240,6 +2281,9 @@ function renderSales(d){
     salesNote(d,'fm')+salesNote(d,'bank'),
     salesMetricButtons('planschart', plansMetric, PLAN_METRICS));
 
+  html+=salesSection('sb-esc','Эскроу против погашения ПФ',
+    salesEscrowBlock(d), salesNote(d,'escrow'));
+
   html+=salesSection('sb-ch','Каналы продаж', salesChannelsBlock(d), salesNote(d,'channels'));
 
   if((d.terminated||[]).length){
@@ -2259,7 +2303,7 @@ function renderSales(d){
 
   // Чего в выгрузке не нашлось — вслух: пустой раздел и отсутствующий
   // выглядят одинаково, а значат разное.
-  const notes=(d.missing||[]).concat((d.pool||{}).missing||[]);
+  const notes=(d.missing||[]).concat((d.pool||{}).missing||[], (d.escrow||{}).missing||[]);
   notes.forEach(line=>{
     html+=`<div class="muted" style="font-size:12.5px;margin-top:6px">Не прочитано — ${esc(line)}</div>`;
   });

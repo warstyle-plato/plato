@@ -460,6 +460,11 @@ def install(app: FastAPI) -> MarketDiscoveryService:
         # Спрос против витрины: чего просят покупатели — против того, что
         # осталось показывать. Прямого «почему не купил» в CRM нет, и выдумывать
         # его по слову «отказ» мы не станем: разрыв честнее заявленной причины.
+        # Хватит ли эскроу к погашению ПФ: план из листа «КРЕДИТЫ» книги,
+        # факт — из графика поступлений по договорам. Второго счёта эскроу
+        # здесь не заводится: он уже посчитан для свода.
+        got["escrow"] = contracting.escrow_sufficiency(
+            got, contracts.get("rows") or [], part("credit"))
         crm = part("demand")
         if crm:
             got["demand"] = demand_module.demand_summary(
@@ -485,6 +490,7 @@ def install(app: FastAPI) -> MarketDiscoveryService:
                              ("fm_plan", contracting.read_fm_plan),
                              ("bank_plan", contracting.read_bank_plan),
                              ("pool", contracting.read_pool),
+                             ("credit", contracting.read_credit_plan),
                              ("demand", demand_module.read_demand)):
             try:
                 parts[kind] = reader(data)

@@ -1007,6 +1007,11 @@ def _pct(value: float | None, digits: int = 1) -> str:
     return "—" if value is None else f"{value * 100:.{digits}f}%".replace(".", ",")
 
 
+def _dec(value: float | None, digits: int = 2) -> str:
+    """Дробное число по-русски: запятая, а не точка."""
+    return "—" if value is None else f"{value:.{digits}f}".replace(".", ",")
+
+
 def _plural(count: float, one: str, few: str, many: str) -> str:
     """Русское число словом: «101 запрос», а не «101 запросов»."""
     number = int(abs(count))
@@ -1100,6 +1105,29 @@ def conclusions(summary: dict[str, Any]) -> dict[str, str]:
             f"Ниже плана финмодели {len(behind)} месяцев из {len(pairs)}; накопленное "
             f"{'опережение' if gap >= 0 else 'отставание'} {_mln(abs(gap))} млн ₽.")
 
+    money = (summary.get("escrow") or {}).get("queues") or []
+    for queue in money[:1]:
+        if queue.get("plan_coverage_at") is None:
+            continue
+        line = (
+            f"К раскрытию эскроу ({queue['disclosure']}) план накапливает "
+            f"{_mln(queue['plan_escrow_at'])} млн ₽ против остатка ПФ "
+            f"{_mln(queue['plan_pf_at'])} млн — покрытие "
+            f"{_dec(queue['plan_coverage_at'])}×. "
+            f"На {queue['measured_at']} факт {_mln(queue['actual'])} млн против плановых "
+            f"{_mln(queue['plan'])} млн")
+        if queue.get("gap_share") is not None:
+            line += f" — на {_pct(abs(queue['gap_share']))} {'ниже' if queue['gap_share'] < 0 else 'выше'}"
+        if queue.get("pace_ratio"):
+            line += (f". План требует {_mln(queue['plan_pace'])} млн ₽ в месяц — это в "
+                     f"{_dec(queue['pace_ratio'], 1)} раза быстрее нынешних "
+                     f"{_mln(queue['pace'])} млн")
+        if queue.get("keeping_pace_coverage"):
+            line += (f"; при нынешнем темпе к раскрытию накопится "
+                     f"{_mln(queue['keeping_pace_escrow'])} млн, покрытие "
+                     f"{_dec(queue['keeping_pace_coverage'])}×")
+        out["escrow"] = line + "."
+
     want = summary.get("demand") or {}
     rows = [b for b in (want.get("bands") or [])
             if b.get("asked_share") is not None and b.get("left_share") is not None]
@@ -1149,6 +1177,29 @@ def conclusions(summary: dict[str, Any]) -> dict[str, str]:
 def plan_comparison(summary: dict[str, Any]) -> dict[str, Any]:
     """Ряд кварталов: факт, план финмодели, план банка — в ₽, м² и ₽/м²."""
     fm = summary.get("fm_plan") or {}
+    money = (summary.get("escrow") or {}).get("queues") or []
+    for queue in money[:1]:
+        if queue.get("plan_coverage_at") is None:
+            continue
+        line = (
+            f"К раскрытию эскроу ({queue['disclosure']}) план накапливает "
+            f"{_mln(queue['plan_escrow_at'])} млн ₽ против остатка ПФ "
+            f"{_mln(queue['plan_pf_at'])} млн — покрытие "
+            f"{_dec(queue['plan_coverage_at'])}×. "
+            f"На {queue['measured_at']} факт {_mln(queue['actual'])} млн против плановых "
+            f"{_mln(queue['plan'])} млн")
+        if queue.get("gap_share") is not None:
+            line += f" — на {_pct(abs(queue['gap_share']))} {'ниже' if queue['gap_share'] < 0 else 'выше'}"
+        if queue.get("pace_ratio"):
+            line += (f". План требует {_mln(queue['plan_pace'])} млн ₽ в месяц — это в "
+                     f"{_dec(queue['pace_ratio'], 1)} раза быстрее нынешних "
+                     f"{_mln(queue['pace'])} млн")
+        if queue.get("keeping_pace_coverage"):
+            line += (f"; при нынешнем темпе к раскрытию накопится "
+                     f"{_mln(queue['keeping_pace_escrow'])} млн, покрытие "
+                     f"{_dec(queue['keeping_pace_coverage'])}×")
+        out["escrow"] = line + "."
+
     want = summary.get("demand") or {}
     rows = [b for b in (want.get("bands") or [])
             if b.get("asked_share") is not None and b.get("left_share") is not None]
@@ -1233,3 +1284,208 @@ def plan_comparison(summary: dict[str, Any]) -> dict[str, Any]:
             # Сказать это надо вслух — пропавшая линия читается как ноль.
             "bank_metrics": ["amount"],
             "bank_rows": bank.get("revenue_rows") or []}
+
+
+# ---------------------------------------------------------------------------
+# Достаточность эскроу для погашения ПФ
+# ---------------------------------------------------------------------------
+#
+# «Прогноза по динамике продаж и достаточности эскроу для погашения ПФ нет»
+# (владелец, 26.08.2026). План того и другого лежит на листе «КРЕДИТЫ» книги
+# финмодели: помесячно накопленное эскроу, остаток ПФ, их отношение и ставка
+# — по каждой очереди отдельно, с датой погашения.
+#
+# Факт берётся из графика поступлений на эскроу по договорам: он уже читается
+# для свода, и второго счёта той же величины здесь не заводится.
+
+CREDIT_SHEET = "КРЕДИТЫ"
+_CREDIT_QUEUE = re.compile(r"^ПФ\s*[-–—]\s*(.+)$")
+_CREDIT_ROWS = {
+    "Счета эскроу (нараст)": "escrow",
+    "Проектное финансирование (нараст)": "pf",
+    "Отношение эскроу к кредиту ПФ": "coverage",
+    "Ставка кредита ПФ": "rate",
+}
+_CREDIT_REPAY = "Погашение кредита - ПФ"
+_CREDIT_DRAW = "Получение кредита - ПФ"
+
+
+def read_credit_plan(data: bytes) -> dict[str, Any]:
+    """План финансирования по очередям: эскроу, остаток ПФ, ставка, дата погашения."""
+    rows = _rows(data, CREDIT_SHEET)
+    dates: list[tuple[int, str]] = []
+    for row in rows[:8]:
+        found = [(place, _excel_date(value)) for place, value in enumerate(row)]
+        found = [(place, when) for place, when in found if when is not None]
+        if len(found) > 10:
+            dates = [(place, when.strftime("%Y-%m")) for place, when in found]
+            break
+    if not dates:
+        raise KeyError(f"в листе «{CREDIT_SHEET}» не нашлось строки с месяцами")
+
+    def label(row: list[Any]) -> str:
+        return next((_text(value) for value in row[:6] if _text(value)), "")
+
+    queues: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    for row in rows:
+        titles = [_text(value) for value in row[:6] if _text(value)]
+        name = next((_CREDIT_QUEUE.match(x).group(1).strip()
+                     for x in titles if _CREDIT_QUEUE.match(x)), None)
+        if name:
+            current = {"queue": name, "escrow": {}, "pf": {}, "coverage": {}, "rate": {},
+                       "drawn_from": "", "repay_from": ""}
+            queues.append(current)
+            continue
+        if current is None:
+            continue
+        for title in titles:
+            key = _CREDIT_ROWS.get(title)
+            if key:
+                current[key] = {month: float(row[place]) for place, month in dates
+                                if place < len(row) and isinstance(row[place], (int, float))}
+            # Даты выборки и погашения стоят в той же строке, что и подпись.
+            if title.startswith(_CREDIT_DRAW) or title.startswith(_CREDIT_REPAY):
+                when = next((_excel_date(value) for value in row[:8]
+                             if _excel_date(value) is not None), None)
+                if when:
+                    field = "drawn_from" if title.startswith(_CREDIT_DRAW) else "repay_from"
+                    current[field] = when.strftime("%Y-%m")
+    # Очередь без чисел — это «не финансируется в этом файле», а не «ноль».
+    # Ряд из девяноста семи нулей при этом ПРАВДА пуст: словарь нулей истинен,
+    # и проверка «есть ли ключи» пропустила бы его как живую очередь.
+    def has_money(queue: dict[str, Any]) -> bool:
+        return any(value for value in list(queue["escrow"].values()) + list(queue["pf"].values()))
+
+    live = [q for q in queues if has_money(q)]
+    return {"sheet": CREDIT_SHEET, "queues": live,
+            "empty_queues": [q["queue"] for q in queues if q not in live]}
+
+
+def escrow_actual(rows: list[dict[str, Any]]) -> dict[str, float]:
+    """Помесячные поступления на эскроу по договорам — то, что случилось."""
+    out: dict[str, float] = {}
+    for row in rows or []:
+        for step in row.get("escrow_schedule") or []:
+            out[step["month"]] = out.get(step["month"], 0.0) + float(step["amount"] or 0.0)
+    return out
+
+
+PACE_MONTHS = 3
+
+
+def escrow_sufficiency(summary: dict[str, Any], rows: list[dict[str, Any]],
+                       credit: dict[str, Any] | None) -> dict[str, Any]:
+    """Хватит ли эскроу к погашению ПФ — по плану и по нынешнему темпу.
+
+    Два ответа, и они разные. План отвечает сам за себя: на дату раскрытия у
+    него своё отношение эскроу к кредиту. Второй ответ — что будет, если темп
+    останется нынешним; это ПРОДОЛЖЕНИЕ ТЕМПА, а не прогноз, и названо так же.
+    Считать его нужно с оглядкой: последний месяц выгрузки почти всегда
+    неполный, и включённый в темп он занижает его молча.
+    """
+    queues = list((credit or {}).get("queues") or [])
+    if not queues:
+        return {"missing": ["план финансирования не загружен: нужен лист «КРЕДИТЫ» книги"]}
+    got = escrow_actual(rows)
+    if not got:
+        return {"missing": ["в договорах нет графика поступлений на эскроу"]}
+
+    months = sorted(got)
+    # Последний месяц данных неполон: выгрузка снята его серединой. Сравнивать
+    # его с полным плановым — то же, что сравнивать незакрытый квартал.
+    partial = months[-1]
+    full = [m for m in months if m != partial]
+    running = 0.0
+    actual: dict[str, float] = {}
+    for month in months:
+        running += got[month]
+        actual[month] = running
+    pace_window = full[-PACE_MONTHS:]
+    pace = (sum(got[m] for m in pace_window) / len(pace_window)) if pace_window else 0.0
+
+    out = []
+    for queue in queues:
+        plan_escrow = queue.get("escrow") or {}
+        plan_pf = queue.get("pf") or {}
+        repay = queue.get("repay_from") or ""
+        last_full = full[-1] if full else partial
+        gap = (actual.get(last_full, 0.0) - plan_escrow.get(last_full, 0.0)
+               if last_full in plan_escrow else None)
+        # Дата раскрытия — месяц перед погашением: на нём план ещё показывает
+        # накопленное эскроу целиком, а со следующего оно уходит в погашение.
+        before = sorted(m for m in plan_escrow if repay and m < repay)
+        at = before[-1] if before else (max(plan_escrow) if plan_escrow else "")
+        plan_at = plan_escrow.get(at)
+        pf_at = plan_pf.get(at)
+        ahead = _months_between(last_full, at)
+        keeping = actual.get(last_full, 0.0) + pace * ahead if ahead is not None else None
+        # Темп, который закладывает сам план на тот же отрезок. Без него «0,36×»
+        # выглядит как приговор продажам, а на деле это в первую очередь
+        # утверждение о плане: он требует ускорения в несколько раз.
+        plan_pace = ((plan_at - plan_escrow[last_full]) / ahead
+                     if ahead and plan_at is not None and last_full in plan_escrow else None)
+        out.append({
+            "queue": queue["queue"],
+            "repay_from": repay,
+            "measured_at": last_full,
+            "actual": actual.get(last_full),
+            "plan": plan_escrow.get(last_full),
+            "gap": gap,
+            "gap_share": (gap / plan_escrow[last_full]
+                          if gap is not None and plan_escrow.get(last_full) else None),
+            "disclosure": at,
+            "plan_escrow_at": plan_at,
+            "plan_pf_at": pf_at,
+            "plan_coverage_at": (plan_at / pf_at) if plan_at and pf_at else None,
+            "pace": pace,
+            "pace_months": pace_window,
+            "months_ahead": ahead,
+            "keeping_pace_escrow": keeping,
+            "keeping_pace_coverage": (keeping / pf_at) if keeping and pf_at else None,
+            "plan_pace": plan_pace,
+            "pace_ratio": (plan_pace / pace) if plan_pace and pace else None,
+        })
+    for queue, block in zip(queues, out):
+        plan_escrow = queue.get("escrow") or {}
+        plan_pf = queue.get("pf") or {}
+        line = []
+        keep = block["actual"] or 0.0
+        seen = block["measured_at"]
+        # Ряд начинается там, где появляются деньги: полтора года нулей до
+        # первой выборки занимают половину картинки и ничего не говорят.
+        starts = [m for m in sorted(set(plan_escrow) | set(plan_pf) | set(actual))
+                  if plan_escrow.get(m) or plan_pf.get(m) or actual.get(m)]
+        begin = starts[0] if starts else ""
+        for month in sorted(set(plan_escrow) | set(actual)):
+            if begin and month < begin:
+                continue
+            if block["disclosure"] and month > block["disclosure"]:
+                break
+            if month > seen and block["pace"]:
+                keep += block["pace"]
+            line.append({
+                "month": month,
+                "plan": plan_escrow.get(month),
+                "pf": plan_pf.get(month) or None,
+                # Факт кончается там, где кончились данные: продолженный нулём,
+                # он читался бы как остановка продаж.
+                "fact": actual.get(month),
+                # Продолжение темпа рисуется только вперёд от последнего
+                # полного месяца: назад оно спорило бы с фактом.
+                "keeping": keep if month > seen else None,
+            })
+        block["line"] = line
+    return {"sheet": (credit or {}).get("sheet") or "", "queues": out,
+            "partial_month": partial,
+            "empty_queues": (credit or {}).get("empty_queues") or [],
+            "missing": []}
+
+
+def _months_between(start: str, end: str) -> int | None:
+    try:
+        one = datetime.date(int(start[:4]), int(start[5:7]), 1)
+        two = datetime.date(int(end[:4]), int(end[5:7]), 1)
+    except (ValueError, IndexError):
+        return None
+    return (two.year - one.year) * 12 + (two.month - one.month)
