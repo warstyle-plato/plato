@@ -25,13 +25,22 @@ def test_platon_forecast_leads_with_drivers_and_model_confidence():
     assert 'class="model-warning"' in MONITOR_PAGE
 
 
-def test_platon_accepts_management_questions_but_only_runs_modelled_scenarios():
+def test_platon_answers_free_questions_and_still_runs_modelled_scenarios():
+    """Расчётные вопросы идут в сеть, свободные — Платону (решение владельца,
+    26.08.2026: «снять ограничение на формат вопроса»). Отказа «я распознаю
+    три вопроса» больше нет: нераспознанное не отвергается, а отвечается."""
     assert 'id="scenarioQuestion"' in MONITOR_PAGE
     assert 'id="scenarioAsk"' in MONITOR_PAGE
     assert "function askScenarioQuestion()" in MONITOR_PAGE
     assert "runScenario('delay_wbs')" in MONITOR_PAGE
     assert "runScenario('accelerate_wbs')" in MONITOR_PAGE
-    assert "три расчётных вопроса" in MONITOR_PAGE
+    assert "три расчётных вопроса" not in MONITOR_PAGE
+    assert "askMonitorPlato" in MONITOR_PAGE
+    assert "/monitor/ask" in MONITOR_PAGE
+    # Числа экрана уезжают в вопрос готовыми, пересчёт запрещён прямо в тексте.
+    assert "не пересчитывай" in MONITOR_PAGE
+    # За долгим ответом ходим по номеру запуска — соединение столько не живёт.
+    assert "/agent/result/" in MONITOR_PAGE
 
 
 def test_payments_are_removed_from_gantt_and_live_in_cost_control():

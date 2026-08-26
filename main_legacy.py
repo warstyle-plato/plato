@@ -67,7 +67,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.20.3"
+VERSION = "0.20.5"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -260,6 +260,33 @@ PROJECT_CLASS_PRESETS = {
         "main_above_th_per_sqm": 300,
         "main_under_th_per_sqm": 300,
     },
+}
+
+# Откуда взяты базовые ставки классов — только зафиксированные подтверждения.
+# Правило то же, что у скрининга НСПД: «источник не зафиксирован» — честный
+# ответ, а придуманный источник хуже отсутствующего. Полный свод нормированных
+# данных по источникам себестоимости — модуль /statistics (в работе).
+PROJECT_CLASS_SOURCES: dict[str, list[dict[str, Any]]] = {
+    "business": [
+        {"field": "apartment_price_th",
+         "source": "Банковский бюджет собственного проекта (Гродненская, 18; лимит Сбера по главам)",
+         "value": 644.94,
+         "note": "фактический старт квартир против базы 650 — расхождение 0,8%"},
+        {"field": "parking_price_th",
+         "source": "Банковский бюджет собственного проекта (Гродненская, 18)",
+         "value": 5000,
+         "note": "совпало с базой"},
+        {"field": "main_above_th_per_sqm",
+         "source": "Шаблон банковской модели v4, лист «Вводные»",
+         "value": 190,
+         "note": "ставка бизнес-класса банковской книги"},
+        {"field": "main_under_th_per_sqm",
+         "source": "Шаблон банковской модели v4, лист «Вводные»",
+         "value": 190,
+         "note": "ставка бизнес-класса банковской книги"},
+    ],
+    "comfort": [],
+    "elite": [],
 }
 
 
@@ -2018,6 +2045,42 @@ class MonitorDoubtsRequest(BaseModel):
     cut: str
     session: str = ""
     key: str = ""
+
+
+class MonitorAskRequest(BaseModel):
+    message: str
+    session: str = ""
+    key: str = ""
+
+
+@app.post("/monitor/ask", include_in_schema=False)
+def monitor_ask(req: MonitorAskRequest, request: Request) -> dict[str, Any]:
+    """Свободный вопрос Платону из монитора.
+
+    Тот же движковый `plato_answer`, что у кабинета рынка и торгов, — свой
+    маршрут только ради гейта монитора: ключ кабинета у руководителя проекта
+    не спрашивается. Числа экрана приезжают в тексте вопроса готовыми, и в
+    нём прямо стоит «не пересчитывай»; вводные подставляются умолчаниями
+    движка — без них `_run_authoritative_model` падает пятисоткой на пустоте.
+    Быстрый ответ приходит этим же запросом, долгий забирается опросом
+    `/agent/result/{trace_id}` — цепочка ядро → Render → OpenAI одним
+    соединением не держится.
+    """
+    _require_web_access(req.session, req.key, "Монитор проекта")
+    message = str(req.message or "").strip()
+    if not message:
+        raise HTTPException(422, "Пустой вопрос")
+    payload = AgentChatRequest(
+        message=message,
+        inputs=dict(DEFAULT_INPUTS),
+        tep={key: dict(value) for key, value in TEP_DEFAULT.items()},
+    )
+    try:
+        return plato_answer(payload, request)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(502, f"Платон не ответил: {type(exc).__name__}: {exc}")
 
 
 @app.post("/monitor/doubts", include_in_schema=False)
@@ -30328,11 +30391,11 @@ details.cadastral-box>summary::marker{color:#888}
 <div id="classDialog" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);
      z-index:90;align-items:center;justify-content:center;padding:20px" onclick="if(event.target===this)closeClassDialog()">
   <div style="background:#fff;max-width:780px;width:100%;max-height:86vh;overflow:auto;padding:22px 24px;border-radius:10px">
-    <div style="display:flex;align-items:center;gap:12px;margin-bottom:4px"><h2 style="margin:0;font-size:17px">Настройки классов</h2><button onclick="closeClassDialog()" style="margin-left:auto;border:1px solid #ddd;background:#fff;border-radius:6px;padding:3px 10px;cursor:pointer">✕</button></div>
-    <div style="font-size:12px;color:#666;margin-bottom:10px">База классов одна и общая — её правит владелец, правка выходит выпуском. Ставки проекта, ушедшие от базы (руками или личным умолчанием), помечаются здесь, в PDF и в обеих книгах.</div>
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px"><h2 style="margin:0;font-size:17px">Настройки классов</h2><button onclick="closeClassDialog()" style="margin-left:auto;border:1px solid #ddd;background:#fff;border-radius:6px;padding:3px 10px;cursor:pointer">✕</button></div>
     <div id="classDialogBody"></div>
     <div id="classDialogNote" style="font-size:12px;margin-top:10px;color:#444"></div>
     <div style="margin-top:12px"><button onclick="applyProjectClassPreset(document.getElementById('projectClassSelect').value);renderClassDialog()" style="border:1px solid #3b6db4;background:#fff;color:#3b6db4;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:12px">Вернуть ставки базы выбранного класса</button></div>
+    <div id="classSourcesBody" style="margin-top:16px"></div>
   </div>
 </div>
 <div id="profileDialog" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);
@@ -30416,6 +30479,7 @@ const PROJECT_CLASS_PRESETS={
 const RATE_DEFAULT=[]
 const TEP_DEFAULT=__DEVELOPAID_TEP_DEFAULT__;
 const FIELD_GROUPS=__DEVELOPAID_FIELD_GROUPS__;
+const PROJECT_CLASS_SOURCES=__DEVELOPAID_CLASS_SOURCES__;
 const INPUT_DEFAULT=__DEVELOPAID_INPUT_DEFAULT__;
 const FEEDBACK_FORM=__DEVELOPAID_FEEDBACK_FORM__;
 
@@ -33290,13 +33354,36 @@ function renderClassDialog(){
   const base=cur!=='custom'?Number(PROJECT_CLASS_PRESETS[cur][k]):null;
   const dev=base!=null&&isFinite(actual)&&Math.abs(actual-base)>1e-9;
   if(dev)deviations++;
-  html+=`<tr><td style="padding:5px 8px;border-bottom:1px solid #f0f0f0">${classFieldLabel(k)}</td>`+classes.map(c=>`<td style="text-align:right;padding:5px 8px;border-bottom:1px solid #f0f0f0;${c===cur?'background:#f6f9fd':''}">${Number(PROJECT_CLASS_PRESETS[c][k]).toLocaleString('ru-RU')}</td>`).join('')+`<td style="text-align:right;padding:5px 8px;border-bottom:1px solid #f0f0f0;${dev?'color:#b42318;font-weight:700':''}">${isFinite(actual)?actual.toLocaleString('ru-RU'):'—'}${dev?' ≠':''}</td></tr>`;
+  html+=`<tr><td style="padding:5px 8px;border-bottom:1px solid #f0f0f0">${classFieldLabel(k)}</td>`+classes.map(c=>`<td style="text-align:right;padding:5px 8px;border-bottom:1px solid #f0f0f0;${c===cur?'background:#f6f9fd':''}">${Number(PROJECT_CLASS_PRESETS[c][k]).toLocaleString('ru-RU')}</td>`).join('')+`<td style="text-align:right;padding:3px 8px;border-bottom:1px solid #f0f0f0;white-space:nowrap"><input type="number" value="${isFinite(actual)?actual:''}" onchange="setClassRate('${k}',this.value)" style="width:92px;text-align:right;border:1px solid ${dev?'#b42318':'#d5dbe3'};border-radius:5px;padding:3px 6px;font-size:12px;${dev?'color:#b42318;font-weight:700':''}">${dev?' <span style="color:#b42318;font-weight:700">≠</span>':''}</td></tr>`;
  }
  box.innerHTML=html+'</table>';
  const note=document.getElementById('classDialogNote');
  if(cur==='custom')note.textContent='Класс «Пользовательский»: базы для сверки нет — все ставки заданы проектом.';
  else if(deviations)note.innerHTML=`<span style="color:#b42318;font-weight:600">Изменено против базы «${PROJECT_CLASS_PRESETS[cur].label}»: ${deviations} ${deviations===1?'ставка':'ставки'}.</span> Отклонения печатаются в PDF и помечаются в книгах v4 и ПЛАТО.`;
  else note.textContent=`Все ставки соответствуют базе класса «${PROJECT_CLASS_PRESETS[cur].label}».`;
+ renderClassSources(classes,keys);
+}
+function setClassRate(k,value){
+ const num=Number(value);
+ if(!isFinite(num))return;
+ inputs[k]=num;
+ renderInputs();
+ renderProjectClassPreview();
+ renderClassDialog();
+ calculate();
+}
+function renderClassSources(classes,keys){
+ const box=document.getElementById('classSourcesBody');if(!box)return;
+ let rows='';
+ for(const c of classes){
+  for(const item of (PROJECT_CLASS_SOURCES[c]||[])){
+   rows+=`<tr><td style="padding:4px 8px;border-bottom:1px solid #f0f0f0">${PROJECT_CLASS_PRESETS[c].label}</td><td style="padding:4px 8px;border-bottom:1px solid #f0f0f0">${classFieldLabel(item.field)}</td><td style="text-align:right;padding:4px 8px;border-bottom:1px solid #f0f0f0">${Number(item.value).toLocaleString('ru-RU')}</td><td style="padding:4px 8px;border-bottom:1px solid #f0f0f0;color:#555">${item.source}${item.note?' — '+item.note:''}</td></tr>`;
+  }
+ }
+ const missing=classes.filter(c=>!(PROJECT_CLASS_SOURCES[c]||[]).length).map(c=>PROJECT_CLASS_PRESETS[c].label);
+ box.innerHTML='<div style="font-weight:600;font-size:13px;margin-bottom:6px">Откуда взяты базовые ставки</div>'
+  +(rows?`<table style="width:100%;border-collapse:collapse;font-size:11.5px"><tr><th style="text-align:left;padding:4px 8px;border-bottom:1px solid #ddd">Класс</th><th style="text-align:left;padding:4px 8px;border-bottom:1px solid #ddd">Поле</th><th style="text-align:right;padding:4px 8px;border-bottom:1px solid #ddd">Нормированное значение</th><th style="text-align:left;padding:4px 8px;border-bottom:1px solid #ddd">Источник</th></tr>${rows}</table>`:'')
+  +`<div style="font-size:11px;color:#777;margin-top:6px">${missing.length?`У классов ${missing.join(', ')} источник базовых ставок не зафиксирован — это честное «не знаем», а не подтверждение. `:''}Полный свод нормированных данных по источникам себестоимости готовится модулем «Статистика» и подключится сюда же.</div>`;
 }
 
 
@@ -36731,6 +36818,9 @@ PAGE = PAGE.replace(VRI_USE_TYPES_PLACEHOLDER, json.dumps(VRI_USE_TYPES, ensure_
 PAGE = PAGE.replace(FEEDBACK_FORM_PLACEHOLDER, json.dumps(
     {"groups": FEEDBACK_GROUPS, "roles": FEEDBACK_ROLES, "regions": FEEDBACK_REGIONS},
     ensure_ascii=False))
+# Источники базовых ставок классов — из движка, копии на странице нет.
+PAGE = PAGE.replace("__DEVELOPAID_CLASS_SOURCES__",
+                    json.dumps(PROJECT_CLASS_SOURCES, ensure_ascii=False))
 PAGE = PAGE.replace(SOCIAL_MODES_PLACEHOLDER,
                     json.dumps([item[0] for item in _M2_EXTRA_OPTIONS["social_mode"]],
                                ensure_ascii=False))
