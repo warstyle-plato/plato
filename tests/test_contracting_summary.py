@@ -20,6 +20,7 @@ import sys
 from pathlib import Path
 
 import openpyxl
+import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -166,3 +167,36 @@ def test_the_buyer_name_never_leaves_the_reader() -> None:
     assert all("buyer" not in row for row in rows)
     assert [row["company_buyer"] for row in rows] == [False, False, True]
     assert _summary()["company_buyers"] == 1
+
+
+# --- итог по каналам и структура «свой / чужие» ------------------------------
+# Таблица каналов перечисляла брокеров по одному, а сложить их было негде: сумма
+# комиссий и доля своего канала считались глазами (владелец, 26.08.2026).
+# Считает их тот же `_totals`, что и остальное: сложенная на экране колонка —
+# это второй счёт той же величины, и однажды две суммы разойдутся, обе выглядя
+# верными.
+
+
+def test_the_channel_cost_is_summed_by_the_server() -> None:
+    got = _summary()
+    for key in ("brokers", "own_sales", "total"):
+        block = got[key]
+        assert "cost" in block, f"{key}: полная стоимость канала считается сервером"
+        assert block["cost"] == pytest.approx(block["broker_fee"] + block["sales_bonus"])
+
+
+def test_brokers_and_own_desk_add_up_to_the_project() -> None:
+    got = _summary()
+    total, brokers, own = got["total"], got["brokers"], got["own_sales"]
+    assert brokers["contracts"] + own["contracts"] == total["contracts"]
+    assert brokers["amount"] + own["amount"] == pytest.approx(total["amount"])
+    assert brokers["cost"] + own["cost"] == pytest.approx(total["cost"])
+
+
+def test_the_screen_shows_the_totals_it_did_not_compute() -> None:
+    from market_search.cabinet import cabinet_page
+    page = cabinet_page()
+    assert "Итого брокеры" in page and "Итого свой отдел" in page and "Всего по проекту" in page
+    assert "d.brokers.cost_of_sales" in page, "доля берётся у сервера, а не считается тут"
+    assert "Свой канал против чужих" in page
+    assert "function salesOwnVsBrokers(" in page
