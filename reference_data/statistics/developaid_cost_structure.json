@@ -1,0 +1,643 @@
+{
+  "methodology_version": "3.1",
+  "canonical_unit": "gba",
+  "canonical_unit_label": "₽/м² общей ГНС",
+  "components": [
+    {
+      "key": "preparation",
+      "label": "Подготовка площадки"
+    },
+    {
+      "key": "design",
+      "label": "ПИР / РД / экспертиза"
+    },
+    {
+      "key": "main_above",
+      "label": "Основное строительство — наземная часть"
+    },
+    {
+      "key": "main_under",
+      "label": "Подземная часть / паркинг"
+    },
+    {
+      "key": "main_building_smr",
+      "label": "СМР здания — контрольный внешний блок"
+    },
+    {
+      "key": "internal_engineering",
+      "label": "Внутренние инженерные системы — контрольный внешний блок"
+    },
+    {
+      "key": "external_utilities",
+      "label": "Наружные инженерные сети"
+    },
+    {
+      "key": "landscaping",
+      "label": "Благоустройство"
+    },
+    {
+      "key": "technical_connection",
+      "label": "ТУ / технологическое присоединение"
+    },
+    {
+      "key": "commissioning",
+      "label": "Сдача и ввод"
+    },
+    {
+      "key": "site_maintenance",
+      "label": "Содержание стройплощадки"
+    },
+    {
+      "key": "tech_customer",
+      "label": "Техзаказчик / стройконтроль"
+    },
+    {
+      "key": "project_management",
+      "label": "Управление проектом"
+    },
+    {
+      "key": "reserve",
+      "label": "Резерв"
+    },
+    {
+      "key": "construction_capex",
+      "label": "Construction CAPEX"
+    },
+    {
+      "key": "land",
+      "label": "Земля / права на участок"
+    },
+    {
+      "key": "vri_infrastructure",
+      "label": "ВРИ / инфраструктурные обязательства"
+    },
+    {
+      "key": "marketing_sales",
+      "label": "Маркетинг / продажи"
+    },
+    {
+      "key": "financing",
+      "label": "Финансирование"
+    },
+    {
+      "key": "full_development_cost",
+      "label": "Full development cost"
+    }
+  ],
+  "sources": [
+    {
+      "source_id": "developaid-grodnenskaya-structure-2026-07",
+      "source_group": "developaid-grodnenskaya-2026-07",
+      "source": "DevelopAid / Гродненская, 18",
+      "source_kind": "internal_project",
+      "region": "Москва",
+      "housing_class": "business",
+      "base_class": "business",
+      "reference_date": "2026-07-17",
+      "source_url": null,
+      "published": {
+        "value_rub_m2": 265750.84,
+        "unit": "gba",
+        "label": "Стоимость строительства baseline",
+        "scope": "construction_capex",
+        "note": "5 855,262 млн ₽ / 22 032,9 м² общей ГНС DevelopAid."
+      },
+      "comparability": "exact_da",
+      "components": {
+        "preparation": {
+          "status": "value",
+          "value_rub_m2": 3189.9,
+          "unit": "gba"
+        },
+        "design": {
+          "status": "included_residual",
+          "note": "Входит в Construction CAPEX; отдельная ставка не раскрыта в справочнике статистики."
+        },
+        "main_above": {
+          "status": "value",
+          "value_rub_m2": 168816.78,
+          "unit": "above_ground",
+          "note": "Это штатный параметр main_above_th_per_sqm — ставка на м² наземной ГНС, а не на общую ГНС проекта."
+        },
+        "main_under": {
+          "status": "separate_denominator",
+          "value_rub_m2": 210000.0,
+          "unit": "underground",
+          "note": "Ставка подземной части на м² подземной ГНС: ~762 млн ₽ на 3 629 м² подземной ГНС. Прежние 592 526 ₽/м² пришли из промежуточной книги и стояли на другом знаменателе."
+        },
+        "external_utilities": {
+          "status": "value",
+          "value_rub_m2": 9500.19,
+          "unit": "gba"
+        },
+        "landscaping": {
+          "status": "value",
+          "value_rub_m2": 7806.51,
+          "unit": "gba"
+        },
+        "technical_connection": {
+          "status": "included_residual"
+        },
+        "commissioning": {
+          "status": "value",
+          "value_rub_m2": 0,
+          "unit": "gba",
+          "note": "Ноль во вводных конкретного проекта; не является рыночным benchmark."
+        },
+        "site_maintenance": {
+          "status": "value",
+          "value_rub_m2": 39240.91,
+          "unit": "gba"
+        },
+        "tech_customer": {
+          "status": "included_residual"
+        },
+        "project_management": {
+          "status": "included_residual"
+        },
+        "reserve": {
+          "status": "included_residual"
+        },
+        "construction_capex": {
+          "status": "value",
+          "value_rub_m2": 265750.84,
+          "unit": "gba",
+          "scope": "construction_capex",
+          "note": "Контрольный итог; нераскрытый остаток не распределяется экспертно."
+        },
+        "land": {
+          "status": "outside_scope"
+        },
+        "vri_infrastructure": {
+          "status": "outside_scope"
+        },
+        "marketing_sales": {
+          "status": "outside_scope"
+        },
+        "financing": {
+          "status": "outside_scope"
+        },
+        "full_development_cost": {
+          "status": "not_disclosed"
+        }
+      }
+    },
+    {
+      "source_id": "core-xp-moscow-comfort-2024-09",
+      "source_group": "core-xp-moscow-cost-stack-2024-09",
+      "source": "CORE.XP · Москва · комфорт",
+      "source_kind": "industry_benchmark",
+      "region": "Москва",
+      "housing_class": "comfort",
+      "base_class": "comfort",
+      "reference_date": "2024-09-30",
+      "price_basis_date": "2024-09-30",
+      "vat_included": true,
+      "source_url": "https://core-xp.ru/research/zhilaya-nedvizhimost-moskvy-stoimost-i-struktura-zatrat-na-stroitelstvo/",
+      "published": {
+        "value_rub_m2": 107500,
+        "value_low_rub_m2": 100000,
+        "value_high_rub_m2": 115000,
+        "unit": "sellable",
+        "label": "Строительные затраты CORE.XP",
+        "scope": "core_xp_construction_stack",
+        "note": "Более 60 проектов четырех крупных застройщиков; Москва и Новая Москва; цены сентября 2024; с НДС; комфорт с отделкой; база — полезная (продаваемая) площадь."
+      },
+      "comparability": "direct",
+      "components": {
+        "design": {
+          "status": "value",
+          "value_rub_m2": 4500,
+          "value_low_rub_m2": 4000,
+          "value_high_rub_m2": 5000,
+          "unit": "sellable"
+        },
+        "tech_customer": {
+          "status": "value",
+          "value_rub_m2": 3500,
+          "value_low_rub_m2": 3000,
+          "value_high_rub_m2": 4000,
+          "unit": "sellable"
+        },
+        "preparation": {
+          "status": "value",
+          "value_rub_m2": 7500,
+          "value_low_rub_m2": 7000,
+          "value_high_rub_m2": 8000,
+          "unit": "sellable"
+        },
+        "main_above": {
+          "status": "included_in_broader_total",
+          "note": "CORE.XP не делит опубликованное СМР на наземную и подземную части; автоматически в main_above не переносится."
+        },
+        "main_under": {
+          "status": "included_in_broader_total",
+          "note": "CORE.XP не выделяет подземную часть; автоматически в main_under не переносится."
+        },
+        "main_building_smr": {
+          "status": "value",
+          "value_rub_m2": 66000,
+          "value_low_rub_m2": 62000,
+          "value_high_rub_m2": 70000,
+          "unit": "sellable"
+        },
+        "internal_engineering": {
+          "status": "value",
+          "value_rub_m2": 18000,
+          "value_low_rub_m2": 17000,
+          "value_high_rub_m2": 19000,
+          "unit": "sellable",
+          "note": "В DevelopAid внутренние инженерные системы входят в СМР соответствующей части; без распределения надземка/подземка строка используется только как контроль."
+        },
+        "external_utilities": {
+          "status": "value",
+          "value_rub_m2": 3500,
+          "value_low_rub_m2": 3000,
+          "value_high_rub_m2": 4000,
+          "unit": "sellable",
+          "note": "Внутриплощадочные сети CORE.XP мэппятся на наружные сети DevelopAid после пересчета знаменателя."
+        },
+        "landscaping": {
+          "status": "value",
+          "value_rub_m2": 4500,
+          "value_low_rub_m2": 4000,
+          "value_high_rub_m2": 5000,
+          "unit": "sellable"
+        },
+        "construction_capex": {
+          "status": "source_aggregate",
+          "value_rub_m2": 107500,
+          "value_low_rub_m2": 100000,
+          "value_high_rub_m2": 115000,
+          "unit": "sellable",
+          "scope": "core_xp_construction_stack",
+          "note": "Контрольный итог CORE.XP; состав уже, чем Construction CAPEX DevelopAid, поэтому напрямую не агрегируется."
+        }
+      }
+    },
+    {
+      "source_id": "core-xp-moscow-business-2024-09",
+      "source_group": "core-xp-moscow-cost-stack-2024-09",
+      "source": "CORE.XP · Москва · бизнес",
+      "source_kind": "industry_benchmark",
+      "region": "Москва",
+      "housing_class": "business",
+      "base_class": "business",
+      "reference_date": "2024-09-30",
+      "price_basis_date": "2024-09-30",
+      "vat_included": true,
+      "source_url": "https://core-xp.ru/research/zhilaya-nedvizhimost-moskvy-stoimost-i-struktura-zatrat-na-stroitelstvo/",
+      "published": {
+        "value_rub_m2": 170000,
+        "value_low_rub_m2": 160000,
+        "value_high_rub_m2": 180000,
+        "unit": "sellable",
+        "label": "Строительные затраты CORE.XP",
+        "scope": "core_xp_construction_stack",
+        "note": "Более 60 проектов четырех крупных застройщиков; Москва и Новая Москва; цены сентября 2024; с НДС; бизнес без отделки; база — полезная (продаваемая) площадь."
+      },
+      "comparability": "direct",
+      "components": {
+        "design": {
+          "status": "value",
+          "value_rub_m2": 8500,
+          "value_low_rub_m2": 8000,
+          "value_high_rub_m2": 9000,
+          "unit": "sellable"
+        },
+        "tech_customer": {
+          "status": "value",
+          "value_rub_m2": 3500,
+          "value_low_rub_m2": 3000,
+          "value_high_rub_m2": 4000,
+          "unit": "sellable"
+        },
+        "preparation": {
+          "status": "value",
+          "value_rub_m2": 10500,
+          "value_low_rub_m2": 10000,
+          "value_high_rub_m2": 11000,
+          "unit": "sellable"
+        },
+        "main_above": {
+          "status": "included_in_broader_total",
+          "note": "CORE.XP не делит опубликованное СМР на наземную и подземную части; автоматически в main_above не переносится."
+        },
+        "main_under": {
+          "status": "included_in_broader_total",
+          "note": "CORE.XP не выделяет подземную часть; автоматически в main_under не переносится."
+        },
+        "main_building_smr": {
+          "status": "value",
+          "value_rub_m2": 110000,
+          "value_low_rub_m2": 104000,
+          "value_high_rub_m2": 116000,
+          "unit": "sellable"
+        },
+        "internal_engineering": {
+          "status": "value",
+          "value_rub_m2": 27500,
+          "value_low_rub_m2": 26000,
+          "value_high_rub_m2": 29000,
+          "unit": "sellable",
+          "note": "В DevelopAid внутренние инженерные системы входят в СМР соответствующей части; без распределения надземка/подземка строка используется только как контроль."
+        },
+        "external_utilities": {
+          "status": "value",
+          "value_rub_m2": 5500,
+          "value_low_rub_m2": 5000,
+          "value_high_rub_m2": 6000,
+          "unit": "sellable",
+          "note": "Внутриплощадочные сети CORE.XP мэппятся на наружные сети DevelopAid после пересчета знаменателя."
+        },
+        "landscaping": {
+          "status": "value",
+          "value_rub_m2": 4500,
+          "value_low_rub_m2": 4000,
+          "value_high_rub_m2": 5000,
+          "unit": "sellable"
+        },
+        "construction_capex": {
+          "status": "source_aggregate",
+          "value_rub_m2": 170000,
+          "value_low_rub_m2": 160000,
+          "value_high_rub_m2": 180000,
+          "unit": "sellable",
+          "scope": "core_xp_construction_stack",
+          "note": "Контрольный итог CORE.XP; состав уже, чем Construction CAPEX DevelopAid, поэтому напрямую не агрегируется."
+        }
+      }
+    },
+    {
+      "source_id": "core-xp-moscow-premium-2024-09",
+      "source_group": "core-xp-moscow-cost-stack-2024-09",
+      "source": "CORE.XP · Москва · премиум",
+      "source_kind": "industry_benchmark",
+      "region": "Москва",
+      "housing_class": "premium",
+      "base_class": "premium",
+      "reference_date": "2024-09-30",
+      "price_basis_date": "2024-09-30",
+      "vat_included": true,
+      "source_url": "https://core-xp.ru/research/zhilaya-nedvizhimost-moskvy-stoimost-i-struktura-zatrat-na-stroitelstvo/",
+      "published": {
+        "value_rub_m2": 650000,
+        "value_low_rub_m2": 600000,
+        "value_high_rub_m2": 700000,
+        "unit": "sellable",
+        "label": "Строительные затраты CORE.XP",
+        "scope": "core_xp_construction_stack",
+        "note": "Более 60 проектов четырех крупных застройщиков; Москва и Новая Москва; цены сентября 2024; с НДС; премиум без отделки; база — полезная (продаваемая) площадь."
+      },
+      "comparability": "direct",
+      "components": {
+        "design": {
+          "status": "value",
+          "value_rub_m2": 39000,
+          "value_low_rub_m2": 36000,
+          "value_high_rub_m2": 42000,
+          "unit": "sellable"
+        },
+        "tech_customer": {
+          "status": "value",
+          "value_rub_m2": 6500,
+          "value_low_rub_m2": 6000,
+          "value_high_rub_m2": 7000,
+          "unit": "sellable"
+        },
+        "preparation": {
+          "status": "value",
+          "value_rub_m2": 91000,
+          "value_low_rub_m2": 84000,
+          "value_high_rub_m2": 98000,
+          "unit": "sellable"
+        },
+        "main_above": {
+          "status": "included_in_broader_total",
+          "note": "CORE.XP не делит опубликованное СМР на наземную и подземную части; автоматически в main_above не переносится."
+        },
+        "main_under": {
+          "status": "included_in_broader_total",
+          "note": "CORE.XP не выделяет подземную часть; автоматически в main_under не переносится."
+        },
+        "main_building_smr": {
+          "status": "value",
+          "value_rub_m2": 357500,
+          "value_low_rub_m2": 329000,
+          "value_high_rub_m2": 386000,
+          "unit": "sellable"
+        },
+        "internal_engineering": {
+          "status": "value",
+          "value_rub_m2": 117000,
+          "value_low_rub_m2": 108000,
+          "value_high_rub_m2": 126000,
+          "unit": "sellable",
+          "note": "В DevelopAid внутренние инженерные системы входят в СМР соответствующей части; без распределения надземка/подземка строка используется только как контроль."
+        },
+        "external_utilities": {
+          "status": "value",
+          "value_rub_m2": 19000,
+          "value_low_rub_m2": 18000,
+          "value_high_rub_m2": 20000,
+          "unit": "sellable",
+          "note": "Внутриплощадочные сети CORE.XP мэппятся на наружные сети DevelopAid после пересчета знаменателя."
+        },
+        "landscaping": {
+          "status": "value",
+          "value_rub_m2": 20000,
+          "value_low_rub_m2": 19000,
+          "value_high_rub_m2": 21000,
+          "unit": "sellable"
+        },
+        "construction_capex": {
+          "status": "source_aggregate",
+          "value_rub_m2": 650000,
+          "value_low_rub_m2": 600000,
+          "value_high_rub_m2": 700000,
+          "unit": "sellable",
+          "scope": "core_xp_construction_stack",
+          "note": "Контрольный итог CORE.XP; состав уже, чем Construction CAPEX DevelopAid, поэтому напрямую не агрегируется."
+        }
+      }
+    },
+    {
+      "source_id": "mke-ncsm-apartments-2025-09",
+      "source_group": "mke-ncsm-2025-09",
+      "source": "Москомэкспертиза / НЦСМ · площадь квартир",
+      "source_kind": "official_normative",
+      "region": "Москва",
+      "housing_class": "unknown",
+      "base_class": "comfort",
+      "reference_date": "2025-09-01",
+      "source_url": "https://www.mos.ru/upload/documents/files/4072/MKE-OD-26-32ot20042026PrilojeniekprikazyNCSMtekyshieceni_.pdf",
+      "published": {
+        "value_rub_m2": 146190,
+        "value_low_rub_m2": 139450,
+        "value_high_rub_m2": 147310,
+        "unit": "apartments",
+        "label": "Норматив стоимости жилого здания",
+        "scope": "building_normative"
+      },
+      "comparability": "contextual",
+      "components": {
+        "design": {
+          "status": "included_in_aggregate",
+          "note": "ПИР и экспертиза учтены в показателе."
+        },
+        "main_above": {
+          "status": "included_in_aggregate"
+        },
+        "site_maintenance": {
+          "status": "included_in_aggregate"
+        },
+        "construction_capex": {
+          "status": "source_aggregate",
+          "value_rub_m2": 146190,
+          "unit": "apartments",
+          "scope": "building_normative",
+          "note": "Норматив здания, не Construction CAPEX DevelopAid."
+        },
+        "land": {
+          "status": "outside_scope"
+        },
+        "vri_infrastructure": {
+          "status": "outside_scope"
+        },
+        "marketing_sales": {
+          "status": "outside_scope"
+        },
+        "financing": {
+          "status": "outside_scope"
+        }
+      }
+    },
+    {
+      "source_id": "mke-ncsm-building-total-2025-09",
+      "source_group": "mke-ncsm-2025-09",
+      "source": "Москомэкспертиза / НЦСМ · площадь здания",
+      "source_kind": "official_normative",
+      "region": "Москва",
+      "housing_class": "unknown",
+      "base_class": "comfort",
+      "reference_date": "2025-09-01",
+      "source_url": "https://www.mos.ru/upload/documents/files/4072/MKE-OD-26-32ot20042026PrilojeniekprikazyNCSMtekyshieceni_.pdf",
+      "published": {
+        "value_rub_m2": 97805,
+        "value_low_rub_m2": 90620,
+        "value_high_rub_m2": 100790,
+        "unit": "building_total",
+        "label": "Норматив стоимости жилого здания",
+        "scope": "building_normative"
+      },
+      "comparability": "contextual",
+      "components": {
+        "design": {
+          "status": "included_in_aggregate",
+          "note": "ПИР и экспертиза учтены в показателе."
+        },
+        "main_above": {
+          "status": "included_in_aggregate"
+        },
+        "site_maintenance": {
+          "status": "included_in_aggregate"
+        },
+        "construction_capex": {
+          "status": "source_aggregate",
+          "value_rub_m2": 97805,
+          "unit": "building_total",
+          "scope": "building_normative",
+          "note": "Общая площадь здания не приравнивается к ГНС DevelopAid."
+        }
+      }
+    },
+    {
+      "source_id": "ac-moscow-declared-2025-06",
+      "source": "Аналитический центр Москвы / проектные декларации",
+      "source_kind": "industry_benchmark",
+      "region": "Москва",
+      "housing_class": "unknown",
+      "base_class": "comfort",
+      "reference_date": "2025-06-01",
+      "source_url": "https://ac.mos.ru/download/estate/2025_08_05_%D0%9E%D0%B1%D0%B7%D0%BE%D1%80_%D1%80%D1%8B%D0%BD%D0%BA%D0%B0_%D0%B6%D0%B8%D0%BB%D0%BE%D0%B9_%D0%BD%D0%B5%D0%B4%D0%B2%D0%B8%D0%B6%D0%B8%D0%BC%D0%BE%D1%81%D1%82%D0%B8_%D0%98%D1%8E%D0%BD%D1%8C_2025.pdf",
+      "published": {
+        "value_rub_m2": 148000,
+        "unit": "building_total",
+        "label": "Медианная заявленная стоимость строительства",
+        "scope": "declared_project_construction"
+      },
+      "comparability": "contextual",
+      "components": {
+        "main_above": {
+          "status": "included_in_aggregate"
+        },
+        "construction_capex": {
+          "status": "source_aggregate",
+          "value_rub_m2": 148000,
+          "unit": "building_total",
+          "scope": "declared_project_construction",
+          "note": "Состав проектной декларации не тождественен Construction CAPEX DevelopAid."
+        }
+      }
+    },
+    {
+      "source_id": "sis-erz-moscow-2026-04",
+      "source": "СИС / ЕРЗ.РФ",
+      "source_kind": "industry_benchmark",
+      "region": "Москва",
+      "housing_class": "mass_market",
+      "base_class": "comfort",
+      "reference_date": "2026-04-01",
+      "source_url": "https://erzrf.ru/publikacii/srednyaya-stoimost-stroitelstva-mkd-massovogo-sprosa-i-sredniye-tseny-na-rynke-nedvizhimosti-po-regionam-rf-na-aprel-2026-goda",
+      "published": {
+        "value_rub_m2": 191692,
+        "unit": "apartments",
+        "label": "Полная стоимость строительства застройщика",
+        "scope": "developer_full_cost"
+      },
+      "comparability": "partial",
+      "components": {
+        "main_above": {
+          "status": "unallocated_remainder",
+          "share_low_pct": 69.3,
+          "share_high_pct": 76.2,
+          "note": "Остаток после раскрытых долей; это НЕ основной СМР, в остатке есть прочие расходы."
+        },
+        "external_utilities": {
+          "status": "combined_share",
+          "share_low_pct": 8.0,
+          "share_high_pct": 12.0,
+          "group": "networks_landscaping",
+          "note": "Сети + благо раскрыты только совместно."
+        },
+        "landscaping": {
+          "status": "combined_share",
+          "share_low_pct": 8.0,
+          "share_high_pct": 12.0,
+          "group": "networks_landscaping",
+          "note": "Не суммировать эту долю повторно с сетями."
+        },
+        "technical_connection": {
+          "status": "share",
+          "share_pct": 4.7
+        },
+        "construction_capex": {
+          "status": "included_in_broader_total",
+          "note": "Показатель шире Construction CAPEX DevelopAid."
+        },
+        "land": {
+          "status": "share_range",
+          "share_low_pct": 11.1,
+          "share_high_pct": 14.0
+        },
+        "full_development_cost": {
+          "status": "source_aggregate",
+          "value_rub_m2": 191692,
+          "unit": "apartments",
+          "scope": "developer_full_cost",
+          "note": "Это внешний full-cost benchmark, а не СМР."
+        }
+      }
+    }
+  ]
+}
