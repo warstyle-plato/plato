@@ -15,7 +15,8 @@ from pydantic import BaseModel, Field
 
 from auction_search.adapters import InvestMoscowDiscoveryAdapter, LotOnlineAdapter, RoseltorgAdapter
 from auction_search.adapters.torgi_gov import TorgiGovAdapter, trust_report as torgi_trust_report
-from auction_search.adapters.fedresurs import probe as fedresurs_probe
+from auction_search.adapters.fedresurs import (
+    probe as fedresurs_probe, probe_browser as fedresurs_browser)
 from auction_search.bridge import auction_page_with_handoff, install_page_bridge
 from auction_search.developaid_mapper import build_developaid_seed
 from auction_search.documents import DocumentExtractionError
@@ -739,6 +740,21 @@ def install(app: FastAPI) -> None:
         намеренно: ровно так ГИС Торги приехали на прод с тридцатью гаражами.
         """
         return await run_in_threadpool(fedresurs_probe)
+
+    @app.get("/auctions/fedresurs/browser")
+    async def auction_fedresurs_browser(seconds: float = Query(default=45.0)) -> dict[str, Any]:
+        """Та же проба, но настоящим браузером — и список запросов страницы.
+
+        Простой запрос упёрся в капчу Qrator: корень отдаёт 401 со скриптом
+        защиты. Обходить её мы не будем — от этого она и поставлена. Браузер
+        проходит вызов штатно, как браузер человека; покажет капчу и ему —
+        проба скажет это вслух, а не выдаст пустой источник за отсутствие лотов.
+
+        Нужен не текст страницы, а адреса, по которым она сама ходит за
+        данными: у SPA числа приезжают отдельными вызовами бэкенда. Гадать эти
+        адреса мы уже пробовали — вышли гаражи.
+        """
+        return await run_in_threadpool(lambda: fedresurs_browser(seconds=seconds))
 
     @app.get("/auctions/discover")
     async def auction_discover(
