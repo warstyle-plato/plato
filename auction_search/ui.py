@@ -50,7 +50,7 @@ AUCTIONS_PAGE = r'''<!doctype html>
   </div>
   <div class="filters" id="auctionFilters">
     <select id="source"><option value="all">Все официальные источники</option><option value="investmoscow">Торги Москвы → ЭТП</option><option value="lot_online">РАД / Lot-online</option><option value="roseltorg">Росэлторг</option></select>
-    <select id="origin" title="Городские торги и банкротные — разные рынки: у города цена не снижается, у банкротного лота она ползёт от начальной к минимальной по графику"><option value="all">Все торги</option><option value="city">Городские</option><option value="bankruptcy">Банкротные</option><option value="other">Прочие</option></select>
+    <select id="origin" title="Городские торги и банкротные — разные рынки: у города цена не снижается, у банкротного лота она ползёт от начальной к минимальной по графику"><option value="all">Все торги</option><option value="city">Городские</option><option value="bankruptcy">Банкротные</option><option value="seized">Арест и ИП</option><option value="other">Прочие</option></select>
     <select id="kind"><option value="all">Все типы</option><option value="land">— Земля</option><option value="building">— Объекты</option><option value="krt">КРТ</option><option value="land_sale">Продажа земли</option><option value="land_lease">Аренда земли</option><option value="property_complex">ЗИК</option><option value="unfinished">Незавершёнка</option></select>
     <select id="noise"><option value="0">Девелоперские</option><option value="1">Показать всё</option></select>
     <input id="search" placeholder="Адрес / кадастр / лот">
@@ -110,7 +110,7 @@ function shortDate(v){if(!v)return '—';const d=new Date(v);return Number.isNaN
 // Предмет лота — «земля или уже построенное» — считает сервер полем subject.
 // Своей копии правила на странице нет: разойдись они, один и тот же лот попадал
 // бы в разные группы на экране и в выгрузке.
-const ORIGIN_LABEL={city:'Городские',bankruptcy:'Банкротные',other:'Прочие'};
+const ORIGIN_LABEL={city:'Городские',bankruptcy:'Банкротные',seized:'Арест и ИП',other:'Прочие'};
 function lotMatchesKind(lot,wanted){
  if(wanted==='all')return true;
  if(wanted==='land'||wanted==='building')return (lot.subject||'')===wanted;
@@ -192,6 +192,15 @@ function lotScore(l){
  if(scale&&scale<LOT_SMALL_SQM)cuts.push({label:`объект ${new Intl.NumberFormat('ru-RU',{maximumFractionDigits:0}).format(scale)} м² — под девелопмент это не площадка`,points:45});
  const concerns=(s.concerns||[]).length;
  if(concerns)cuts.push({label:`замечаний скрининга: ${concerns}`,points:Math.min(15,concerns*5)});
+ // Арест и исполнительное производство почти не доходят до сделки: в реестре
+ // владельца из пятнадцати таких лотов с прошедшими торгами продался один.
+ // Это единственное, что реестр показывает уверенно, — остальные доли считаны
+ // на знаменателе, где «нет цены победителя» значит и «не продалось», и «ещё
+ // идёт», а различить их в файле нечем. Поэтому одно названное снижение, а не
+ // веса по всем происхождениям.
+ if(l.origin==='seized')cuts.push({
+   label:'арест или исполнительное производство: в реестре продался 1 лот из 15',
+   points:35});
 
  const cut=Math.min(95,cuts.reduce((sum,c)=>sum+c.points,0));
  const score=Math.max(0,Math.min(100,Math.round(base*(1-cut/100))));

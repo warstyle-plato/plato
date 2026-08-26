@@ -77,6 +77,18 @@ CITY_SELLER_WORDS = (
 )
 
 
+# Арест и исполнительное производство. Доказательные слова, а не форма
+# процедуры: судебный пристав продаёт и по аресту, и по исполнительному
+# производству, и оба конвертируются почти в ноль.
+SEIZED_WORDS = (
+    # Основа, а не падеж: на карточках стоит и «судебных приставов», и
+    # «судебным приставом-исполнителем» — та же причина, по которой
+    # «конкурсный управляющий» ловится основой.
+    "арестованн", "пристав", "фссп", "исполнительн",
+    "росимущество", "реализация арестованного",
+)
+
+
 def origin_from_evidence(
     *,
     seller: str | None = None,
@@ -110,6 +122,10 @@ def origin_from_evidence(
     if _BANKRUPTCY_RE.search(everything) \
             or any(word.replace("ё", "е") in everything for word in BANKRUPTCY_WORDS):
         return LotOrigin.BANKRUPTCY
+    # Арест сильнее города: имущество, арестованное приставами, продаёт
+    # государственный орган, и по продавцу он неотличим от городского.
+    if any(word in everything for word in SEIZED_WORDS):
+        return LotOrigin.SEIZED
     seller_text = (seller or "").lower().replace("ё", "е")
     if seller_text and any(word in seller_text for word in CITY_SELLER_WORDS):
         return LotOrigin.CITY
