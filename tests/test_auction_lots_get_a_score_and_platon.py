@@ -49,12 +49,21 @@ def function_source(name: str) -> str:
 
 
 def lot_score(lot: dict) -> dict:
+    """Балл считается по тому же лоту, что уходит на экран, — вместе с `fit`.
+
+    Соответствие профилю считает сервер (`profile_fit`) по измеренному эталону
+    сделок владельца, и страница его только показывает. Подсунуть в проверку
+    лот без `fit` значит проверить не то, что увидит человек.
+    """
+    from auction_search.profile_fit import profile_fit
+
+    lot = {**lot, "fit": profile_fit(lot)}
     node = shutil.which("node")
     if not node:
         pytest.skip("node недоступен")
     body = script()
     parts = []
-    for name in ("const LOT_BASE_BY_KIND=", "const LOT_SMALL_SQM="):
+    for name in ("const LOT_BASE_BY_KIND=",):
         start = body.index(name)
         parts.append(body[start:body.index("\n", start)])
     parts += [function_source(name) for name in ("lotDeadlineDays", "lotScore", "lotScoreNote")]
@@ -166,12 +175,26 @@ def test_a_building_lot_is_measured_by_its_own_metres() -> None:
 
 
 def test_a_garage_is_not_a_development_site() -> None:
-    got = lot_score({**BUILDING, "building_area_sqm": 26})
-    assert any("не площадка" in cut["label"] for cut in got["cuts"])
+    """Порог здесь не наш: границу задаёт эталон сделок владельца.
+
+    Прежде стояло «меньше 500 м² — не площадка», придуманное на глаз. В его
+    реестре четверть сделок — участки до 1 109 м², то есть порог отсекал ровно
+    то, что он покупал.
+    """
+    got = lot_score({**BUILDING, "building_area_sqm": 26, "current_price_rub": 200_000})
+    assert any("профиля сделок" in cut["label"] for cut in got["cuts"])
     assert got["score"] < lot_score(BUILDING)["score"]
+
+
+def test_a_lot_bigger_than_past_deals_is_not_lowered() -> None:
+    """«Крупнее лучше! просто тогда таких сделок не было» (владелец, 26.08.2026)."""
+    huge = lot_score({**BUILDING, "land_area_sqm": 1_000_000,
+                      "building_area_sqm": 300_000,
+                      "current_price_rub": 20_000_000_000})
+    assert not any("профиля сделок" in cut["label"] for cut in huge["cuts"])
 
 
 def test_a_lot_without_metres_is_not_called_small() -> None:
     """«Метров нет» — это не «метров мало»: снижать не за что."""
     got = lot_score({**BUILDING, "building_area_sqm": None})
-    assert not any("не площадка" in cut["label"] for cut in got["cuts"])
+    assert not any("мельче" in cut["label"] for cut in got["cuts"])
