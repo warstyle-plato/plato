@@ -67,7 +67,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.20.6"
+VERSION = "0.20.8"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -262,32 +262,12 @@ PROJECT_CLASS_PRESETS = {
     },
 }
 
-# Откуда взяты базовые ставки классов — только зафиксированные подтверждения.
-# Правило то же, что у скрининга НСПД: «источник не зафиксирован» — честный
-# ответ, а придуманный источник хуже отсутствующего. Полный свод нормированных
-# данных по источникам себестоимости — модуль /statistics (в работе).
-PROJECT_CLASS_SOURCES: dict[str, list[dict[str, Any]]] = {
-    "business": [
-        {"field": "apartment_price_th",
-         "source": "Банковский бюджет собственного проекта (Гродненская, 18; лимит Сбера по главам)",
-         "value": 644.94,
-         "note": "фактический старт квартир против базы 650 — расхождение 0,8%"},
-        {"field": "parking_price_th",
-         "source": "Банковский бюджет собственного проекта (Гродненская, 18)",
-         "value": 5000,
-         "note": "совпало с базой"},
-        {"field": "main_above_th_per_sqm",
-         "source": "Шаблон банковской модели v4, лист «Вводные»",
-         "value": 190,
-         "note": "ставка бизнес-класса банковской книги"},
-        {"field": "main_under_th_per_sqm",
-         "source": "Шаблон банковской модели v4, лист «Вводные»",
-         "value": 190,
-         "note": "ставка бизнес-класса банковской книги"},
-    ],
-    "comfort": [],
-    "elite": [],
-}
+# Источники базовых ставок классов на страницу не зашиваются: адрес или имя
+# собственного проекта в подписи — раскрытие коммерческой информации, и один
+# раз это уже случилось. Свод нормированных данных по источникам готовит
+# модуль «Статистика» (/statistics); до его подключения таблица пуста, и
+# страница честно говорит «готовится», а не показывает рукодельные строки.
+PROJECT_CLASS_SOURCES: dict[str, list[dict[str, Any]]] = {}
 
 
 def _input_field_label(field: str) -> str:
@@ -33401,10 +33381,9 @@ function renderClassSources(classes,keys){
    rows+=`<tr><td style="padding:4px 8px;border-bottom:1px solid #f0f0f0">${PROJECT_CLASS_PRESETS[c].label}</td><td style="padding:4px 8px;border-bottom:1px solid #f0f0f0">${classFieldLabel(item.field)}</td><td style="text-align:right;padding:4px 8px;border-bottom:1px solid #f0f0f0">${Number(item.value).toLocaleString('ru-RU')}</td><td style="padding:4px 8px;border-bottom:1px solid #f0f0f0;color:#555">${item.source}${item.note?' — '+item.note:''}</td></tr>`;
   }
  }
- const missing=classes.filter(c=>!(PROJECT_CLASS_SOURCES[c]||[]).length).map(c=>PROJECT_CLASS_PRESETS[c].label);
  box.innerHTML='<div style="font-weight:600;font-size:13px;margin-bottom:6px">Откуда взяты базовые ставки</div>'
-  +(rows?`<table style="width:100%;border-collapse:collapse;font-size:11.5px"><tr><th style="text-align:left;padding:4px 8px;border-bottom:1px solid #ddd">Класс</th><th style="text-align:left;padding:4px 8px;border-bottom:1px solid #ddd">Поле</th><th style="text-align:right;padding:4px 8px;border-bottom:1px solid #ddd">Нормированное значение</th><th style="text-align:left;padding:4px 8px;border-bottom:1px solid #ddd">Источник</th></tr>${rows}</table>`:'')
-  +`<div style="font-size:11px;color:#777;margin-top:6px">${missing.length?`У классов ${missing.join(', ')} источник базовых ставок не зафиксирован — это честное «не знаем», а не подтверждение. `:''}Полный свод нормированных данных по источникам себестоимости готовится модулем «Статистика» и подключится сюда же.</div>`;
+  +(rows?`<table style="width:100%;border-collapse:collapse;font-size:11.5px"><tr><th style="text-align:left;padding:4px 8px;border-bottom:1px solid #ddd">Класс</th><th style="text-align:left;padding:4px 8px;border-bottom:1px solid #ddd">Поле</th><th style="text-align:right;padding:4px 8px;border-bottom:1px solid #ddd">Нормированное значение</th><th style="text-align:left;padding:4px 8px;border-bottom:1px solid #ddd">Источник</th></tr>${rows}</table>`
+        :'<div style="font-size:12px;color:#777">Свод нормированных данных по источникам себестоимости готовится модулем «Статистика» и появится здесь.</div>');
 }
 
 
