@@ -27,6 +27,7 @@ KINDS = {
     "fm_plan": "план нашей финмодели",
     "bank_plan": "план банка",
     "pool": "квартирография книги",
+    "demand": "сделки CRM",
 }
 
 _SLUG = re.compile(r"[^a-zа-яё0-9]+", re.I)

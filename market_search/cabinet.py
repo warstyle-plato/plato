@@ -1944,6 +1944,59 @@ function salesSizesOnly(d){
     +'поэтому пул и остаток витрины показать не из чего.</div>';
 }
 
+// Спрос против витрины: сколько просят полосу — против того, сколько её
+// осталось показывать. Прямого «почему не купил» в CRM нет: поля стадии и
+// причины в выгрузке не существует, а слово «отказ» в комментарии почти всегда
+// означает отказ дать контакты. Разрыв честнее заявленной причины.
+function salesDemandBlock(d){
+  const want=d.demand||{}, bands=(want.bands||[]).filter(b=>b.asked_share!==null&&b.asked_share!==undefined);
+  if(!bands.length) return '';
+  const strip=(title, pick, hint)=>{
+    const parts=bands.map((b,i)=>({w:pick(b),name:b.band,color:SALES_COLORS[i%SALES_COLORS.length]}))
+      .filter(x=>Number.isFinite(x.w)&&x.w>0);
+    if(!parts.length) return '';
+    let out=`<div style="margin:10px 0 2px"><div class="muted" style="font-size:12px">${esc(title)}${hint?' · '+esc(hint):''}</div>`
+      +'<div style="display:flex;height:22px;border-radius:4px;overflow:hidden;margin-top:4px">';
+    parts.forEach(x=>{ out+=`<div style="width:${(x.w*100).toFixed(2)}%;background:${x.color}"`
+      +` title="${esc(x.name+' м² — '+num(x.w*100,1)+'%')}"></div>`; });
+    return out+'</div></div>';
+  };
+  let html=strip('Просят', b=>b.asked_share, 'запросы из CRM')
+    +strip('Осталось показывать', b=>b.left_share, 'витрина на сегодня');
+  html+='<div class="muted" style="font-size:12px;margin:6px 0 0">';
+  bands.forEach((b,i)=>{ html+=`<span style="margin-right:12px;white-space:nowrap">`
+    +`<span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${SALES_COLORS[i%SALES_COLORS.length]};margin-right:4px"></span>`
+    +`${esc(b.band)} м²</span>`; });
+  html+='</div>';
+  if((want.wants||[]).length){
+    html+='<div class="muted" style="font-size:12.5px;margin-top:10px">О чём спрашивают: '
+      +want.wants.map(w=>esc(w.want)+' — '+num(w.deals)).join(', ')+'.</div>';
+  }
+  html+='<details style="margin-top:8px"><summary>Полосы числами</summary>'
+    +salesTable(['Полоса, м²','Просят','Доля спроса','Осталось','Доля витрины','₽/м² в книге'],
+      bands.map(b=>[esc(b.band), num(b.asked),
+        b.asked_share===null?'—':num(b.asked_share*100,1)+'%',
+        b.left_units===null||b.left_units===undefined?'—':num(b.left_units),
+        b.left_share===null||b.left_share===undefined?'—':num(b.left_share*100,1)+'%',
+        b.price_per_sqm?num(b.price_per_sqm):'—']))
+    +'</details>';
+  // Оговорки приходят с сервера: они про то, чего в данных нет, и придумывать
+  // их на экране значит обещать разбор, которого не было. Первая — на виду:
+  // она про то, чем являются сами числа. Остальные под раскрытием, иначе
+  // блок читается как список отговорок.
+  const notes=want.notes||[];
+  if(notes.length){
+    html+=`<div class="muted" style="font-size:12.5px;margin-top:10px">${esc(notes[0])}</div>`;
+    if(notes.length>1){
+      html+='<details style="margin-top:4px"><summary>Чего в выгрузке нет</summary>'
+        +'<div class="muted" style="font-size:12.5px">'
+        +notes.slice(1).map(x=>'<div style="margin-top:4px">'+esc(x)+'</div>').join('')
+        +'</div></details>';
+    }
+  }
+  return html;
+}
+
 function salesTable(head, rows, totals){
   let html='<table><tr>'+head.map((h,i)=>`<th${i?' class="num"':''}>${esc(h)}</th>`).join('')+'</tr>';
   rows.forEach(cells=>{
@@ -2078,6 +2131,7 @@ function salesPlansBlock(d){
 const SALES_BLOCKS=[
   {id:'sb-dyn',  name:'Динамика'},
   {id:'sb-mix',  name:'Квартирография'},
+  {id:'sb-want', name:'Спрос'},
   {id:'sb-prod', name:'Продукты'},
   {id:'sb-pay',  name:'Оплата'},
   {id:'sb-plan', name:'Планы'},
@@ -2119,6 +2173,7 @@ function renderSales(d){
   const have=[];
   if((d.dynamics||[]).length>1) have.push('sb-dyn');
   if((pool.bands||[]).length||(d.by_size||[]).length) have.push('sb-mix');
+  if(((d.demand||{}).bands||[]).length) have.push('sb-want');
   if((d.by_product||[]).length) have.push('sb-prod');
   if((d.by_payment||[]).length) have.push('sb-pay');
   if(((d.plans||{}).quarters||[]).length>1) have.push('sb-plan');
@@ -2150,6 +2205,9 @@ function renderSales(d){
   html+=salesSection('sb-mix',
     (pool.bands||[]).length?'Квартирография: пул, продажи, остаток':'Размерность проданного',
     salesMixBlock(d), salesNote(d,'bands'));
+
+  html+=salesSection('sb-want','Спрос против витрины',
+    salesDemandBlock(d), salesNote(d,'demand'));
 
   if((d.by_product||[]).length){
     html+=salesSection('sb-prod','Продукты',

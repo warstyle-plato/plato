@@ -20,6 +20,7 @@ from .service_v6 import MarketDiscoveryService
 from . import board
 from .plan import PlanNotFound, parse_plan
 from . import contracting
+from . import demand as demand_module
 from . import report_pdf
 from .subject import SubjectNotFound
 
@@ -456,6 +457,13 @@ def install(app: FastAPI) -> MarketDiscoveryService:
              "at": (value or {}).get("at"), "file": (value or {}).get("file")}
             for kind, value in sorted(sources.items())]
         got["plans"] = contracting.plan_comparison(got)
+        # Спрос против витрины: чего просят покупатели — против того, что
+        # осталось показывать. Прямого «почему не купил» в CRM нет, и выдумывать
+        # его по слову «отказ» мы не станем: разрыв честнее заявленной причины.
+        crm = part("demand")
+        if crm:
+            got["demand"] = demand_module.demand_summary(
+                crm.get("deals") or [], (got.get("pool") or {}).get("bands") or [], crm)
         got["conclusions"] = contracting.conclusions(got)
         return got
 
@@ -476,7 +484,8 @@ def install(app: FastAPI) -> MarketDiscoveryService:
                              ("ledger", contracting.read_ledger),
                              ("fm_plan", contracting.read_fm_plan),
                              ("bank_plan", contracting.read_bank_plan),
-                             ("pool", contracting.read_pool)):
+                             ("pool", contracting.read_pool),
+                             ("demand", demand_module.read_demand)):
             try:
                 parts[kind] = reader(data)
             except Exception as exc:  # noqa: BLE001

@@ -1091,6 +1091,25 @@ def conclusions(summary: dict[str, Any]) -> dict[str, str]:
             f"Ниже плана финмодели {len(behind)} месяцев из {len(pairs)}; накопленное "
             f"{'опережение' if gap >= 0 else 'отставание'} {_mln(abs(gap))} млн ₽.")
 
+    want = summary.get("demand") or {}
+    rows = [b for b in (want.get("bands") or [])
+            if b.get("asked_share") is not None and b.get("left_share") is not None]
+    if rows:
+        # Разрыв, а не заявленная причина: где спроса больше, чем витрины, там
+        # людям нечего показать, и это ответ на «почему не покупают».
+        short = max(rows, key=lambda b: b["asked_share"] - b["left_share"])
+        spare = min(rows, key=lambda b: b["asked_share"] - b["left_share"])
+        out["demand"] = (
+            f"Разобрано {int(want.get('with_area') or 0)} запросов по площади и "
+            f"{int(want.get('with_budget') or 0)} по бюджету из "
+            f"{int(want.get('deals') or 0)} сделок CRM; медиана запроса — "
+            f"{(want.get('area_median') or 0):.0f} м² и "
+            f"{_mln(want.get('budget_median'))} млн ₽. "
+            f"Больше всего не хватает полосы {short['band']} м²: "
+            f"{_pct(short['asked_share'])} спроса против {_pct(short['left_share'])} витрины. "
+            f"Наоборот — {spare['band']} м²: {_pct(spare['asked_share'])} спроса при "
+            f"{_pct(spare['left_share'])} витрины.")
+
     bank = summary.get("bank_plan") or {}
     quarters = bank.get("revenue_by_quarter") or {}
     fact = {q["quarter"]: float(q["amount"]) for q in (summary.get("by_quarter") or [])}
@@ -1119,6 +1138,25 @@ def conclusions(summary: dict[str, Any]) -> dict[str, str]:
 def plan_comparison(summary: dict[str, Any]) -> dict[str, Any]:
     """Ряд кварталов: факт, план финмодели, план банка — в ₽, м² и ₽/м²."""
     fm = summary.get("fm_plan") or {}
+    want = summary.get("demand") or {}
+    rows = [b for b in (want.get("bands") or [])
+            if b.get("asked_share") is not None and b.get("left_share") is not None]
+    if rows:
+        # Разрыв, а не заявленная причина: где спроса больше, чем витрины, там
+        # людям нечего показать, и это ответ на «почему не покупают».
+        short = max(rows, key=lambda b: b["asked_share"] - b["left_share"])
+        spare = min(rows, key=lambda b: b["asked_share"] - b["left_share"])
+        out["demand"] = (
+            f"Разобрано {int(want.get('with_area') or 0)} запросов по площади и "
+            f"{int(want.get('with_budget') or 0)} по бюджету из "
+            f"{int(want.get('deals') or 0)} сделок CRM; медиана запроса — "
+            f"{(want.get('area_median') or 0):.0f} м² и "
+            f"{_mln(want.get('budget_median'))} млн ₽. "
+            f"Больше всего не хватает полосы {short['band']} м²: "
+            f"{_pct(short['asked_share'])} спроса против {_pct(short['left_share'])} витрины. "
+            f"Наоборот — {spare['band']} м²: {_pct(spare['asked_share'])} спроса при "
+            f"{_pct(spare['left_share'])} витрины.")
+
     bank = summary.get("bank_plan") or {}
     plan = (fm.get("plan") or {}).get("Итого") or {}
     # У «Итого» финмодели нет метров: строка «м2» есть у продуктов. Метры плана
