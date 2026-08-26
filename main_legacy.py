@@ -67,7 +67,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.20.12"
+VERSION = "0.20.14"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -33485,6 +33485,23 @@ function renderClassDialog(){
    if(own)owned++;
    return `<td style="text-align:right;padding:3px 8px;border-bottom:1px solid #f0f0f0;${c===cur?'background:#f6f9fd':''}"><input type="number" value="${classValue(c,k)}" onchange="setClassBase('${c}','${k}',this.value)" title="${own?'Своё значение; общая база: '+classBase(c,k).toLocaleString('ru-RU'):'Общая база класса — своё значение можно вписать прямо сюда'}" style="width:84px;text-align:right;border:1px solid ${own?'#c98a1b':'#dfe4ea'};border-radius:5px;padding:3px 6px;font-size:12px;${own?'background:#fdf6e6;font-weight:600':''}"></td>`;
   }).join('')+`<td style="text-align:right;padding:3px 8px;border-bottom:1px solid #f0f0f0;white-space:nowrap"><input type="number" value="${isFinite(actual)?actual:''}" onchange="setClassRate('${k}',this.value)" style="width:92px;text-align:right;border:1px solid ${dev?'#b42318':'#d5dbe3'};border-radius:5px;padding:3px 6px;font-size:12px;${dev?'color:#b42318;font-weight:700':''}">${dev?' <span style="color:#b42318;font-weight:700">≠</span>':''}</td></tr>`;
+  // Свод «Статистики» стоит строкой под той ставкой, к которой относится:
+  // связь числа со ставкой видна на месте, а не выводится из соседней таблицы.
+  const statsCells=classes.map(c=>classStatsRow(c,k));
+  if(statsCells.some(Boolean)){
+   html+='<tr><td style="padding:2px 8px 6px;border-bottom:1px solid #f0f0f0;font-size:11px;color:#3b6db4">свод „Статистики“, тыс ₽/м²</td>'
+    +classes.map((c,i)=>{
+     const r=statsCells[i];
+     if(!r)return '<td style="text-align:right;padding:2px 8px 6px;border-bottom:1px solid #f0f0f0;font-size:11px;color:#999">—</td>';
+     const v=Math.round(r.recommended_rub_m2/100)/10;
+     const spread=(r.p25_rub_m2!=null&&r.p75_rub_m2!=null)?(r.p25_rub_m2/1000).toLocaleString('ru-RU',{maximumFractionDigits:1})+'–'+(r.p75_rub_m2/1000).toLocaleString('ru-RU',{maximumFractionDigits:1})+' тыс, ':'';
+     return '<td style="text-align:right;padding:2px 8px 6px;border-bottom:1px solid #f0f0f0;font-size:11px">'
+      +'<a href="#" onclick="setClassBase(\''+c+'\',\''+k+'\','+v+');return false" '
+      +'title="Свод модуля «Статистика» для класса «'+PROJECT_CLASS_PRESETS[c].label+'»: разброс источников '+spread+'источников '+r.source_count+'. Клик подставит это число классу." '
+      +'style="color:#3b6db4;text-decoration:none;border-bottom:1px dashed #9bb8dc">'+v.toLocaleString('ru-RU',{maximumFractionDigits:1})+'</a></td>';
+    }).join('')
+    +'<td style="border-bottom:1px solid #f0f0f0"></td></tr>';
+  }
  }
  box.innerHTML=html+'</table>';
  const note=document.getElementById('classDialogNote');
@@ -33496,9 +33513,6 @@ function renderClassDialog(){
  if(CLASS_OVERRIDES_NOTE)parts.push('<span style="color:#8a5a00">'+CLASS_OVERRIDES_NOTE+'</span>');
  note.innerHTML=parts.join(' ');
  renderClassStats();
- // Класс сменили, не закрывая окна, — свод перезапрашивается под новый класс.
- const dlg=document.getElementById('classDialog');
- if(dlg&&dlg.style.display!=='none'&&CLASS_STATS_CLASS&&CLASS_STATS_CLASS!==cur)loadClassStats();
 }
 function setClassRate(k,value){
  const num=Number(value);
@@ -33512,9 +33526,13 @@ function setClassRate(k,value){
 
 // --- свод строительной себестоимости из модуля «Статистика» -----------------
 // Числа берутся у /api/statistics/cost-recommendation — того же, что страница
-// /statistics: у свода не бывает двух жизней. Здесь только показ.
-let CLASS_STATS=null;
-let CLASS_STATS_CLASS='';
+// «Статистика»: у свода не бывает двух жизней. В окне свод стоит строкой прямо
+// под ставкой, к которой относится, — по числу на каждый класс; методика
+// словами живёт за кнопкой «Как считаются класс и сценарий», а таблица
+// источников — на своей странице (замечание владельца, 26.08.2026: внутренние
+// правила модуля читателю ничего не объясняют, а свод отдельной таблицей не
+// связывается со ставками класса).
+let CLASS_STATS_BY=null;
 let CLASS_STATS_ERROR='';
 function classStatsAreas(){
  // ТЭП проекта — чтобы ставки, опубликованные на продаваемый метр или общую
@@ -33534,53 +33552,36 @@ function classStatsAreas(){
  return areas;
 }
 async function loadClassStats(){
- const cur=inputs.project_class&&PROJECT_CLASS_PRESETS[inputs.project_class]?inputs.project_class:'custom';
- if(CLASS_STATS&&CLASS_STATS_CLASS===cur)return;
- CLASS_STATS=null;CLASS_STATS_CLASS=cur;CLASS_STATS_ERROR='';
- renderClassStats();
+ if(CLASS_STATS_BY)return;
+ CLASS_STATS_ERROR='';
+ const areas=classStatsAreas();
+ const classes=Object.keys(PROJECT_CLASS_PRESETS);
  try{
-  const params=new URLSearchParams(Object.assign({class:cur,region:'Москва'},classStatsAreas()));
-  const response=await fetch('/api/statistics/cost-recommendation?'+params.toString());
-  if(!response.ok)throw new Error('HTTP '+response.status);
-  CLASS_STATS=await response.json();
- }catch(e){CLASS_STATS_ERROR=String((e&&e.message)||e);}
- renderClassStats();
+  const answers=await Promise.all(classes.map(c=>{
+   const params=new URLSearchParams(Object.assign({class:c,region:'Москва'},areas));
+   return fetch('/api/statistics/cost-recommendation?'+params.toString())
+    .then(r=>{if(!r.ok)throw new Error('HTTP '+r.status);return r.json()});
+  }));
+  CLASS_STATS_BY={};
+  classes.forEach((c,i)=>CLASS_STATS_BY[c]=answers[i]);
+ }catch(e){CLASS_STATS_BY=null;CLASS_STATS_ERROR=String((e&&e.message)||e);}
+ renderClassDialog();
+}
+function classStatsRow(c,k){
+ const d=CLASS_STATS_BY&&CLASS_STATS_BY[c];if(!d)return null;
+ const row=(d.recommendations||[]).find(r=>r.model_key===k);
+ return row&&row.recommended_rub_m2!=null?row:null;
 }
 function renderClassStats(){
  const box=document.getElementById('classSourcesBody');if(!box)return;
- let html='<div style="font-weight:600;font-size:13px;margin-bottom:6px">Строительная себестоимость — свод модуля «Статистика»</div>';
  if(CLASS_STATS_ERROR){
-  // Неответ источника не показывается пустотой: пустой свод и отсутствующий
-  // выглядят одинаково.
-  box.innerHTML=html+`<div style="font-size:12px;color:#b42318">Свод не загрузился: ${CLASS_STATS_ERROR}</div>`;
+  // Неответ модуля не показывается пустотой: строка свода молча исчезла бы,
+  // и «не загрузилось» читалось бы как «свода нет».
+  box.innerHTML='<div style="font-size:12px;color:#b42318">Свод модуля «Статистика» не загрузился ('+CLASS_STATS_ERROR+') — строки «свод „Статистики“» под ставками СМР не показаны.</div>';
   return;
  }
- if(!CLASS_STATS){box.innerHTML=html+'<div style="font-size:12px;color:#777">Загружаю свод по источникам…</div>';return;}
- const d=CLASS_STATS;
- const confLabel={high:'высокое',medium:'среднее',limited:'ограниченное',pilot:'пилотное',insufficient:'мало данных'};
- const ownTep=!(d.missing_area_inputs||[]).length;
- html+=`<div style="font-size:12px;color:#444;margin-bottom:8px">Класс «${d.housing_class_label}», ${d.region}, на ${d.as_of}. `
-  +`Каждая статья нормализована к своей базе площади (наземное СМР — м² наземной ГНС, подземное — подземной, общепроектные — общей ГНС); ставки, опубликованные на продаваемый метр или общую площадь здания, переведены через ${ownTep?'ТЭП этого проекта':'условный ТЭП — заполните ТЭП, и свод пересчитается на ваши площади'}. `
-  +`Сводное значение — взвешенное среднее допущенных источников: вес = качество нормализации (A/B/C/D) × свежесть × тип источника × сопоставимость методики; выбросы отсекаются по межквартильному размаху. p25–p75 — разброс источников, а не точность ответа.</div>`;
- const thL='text-align:left;padding:4px 8px;border-bottom:1px solid #ddd';
- const thR='text-align:right;padding:4px 8px;border-bottom:1px solid #ddd';
- const tdL='padding:4px 8px;border-bottom:1px solid #f0f0f0';
- const tdR='text-align:right;padding:4px 8px;border-bottom:1px solid #f0f0f0';
- const th=`<tr><th style="${thL}">Статья</th><th style="${thL}">База площади</th><th style="${thR}">Сводно, тыс ₽/м²</th><th style="${thR}">p25–p75</th><th style="${thR}">N</th><th style="${thL}">Доверие</th><th style="${thL}">Источники</th></tr>`;
- const thous=v=>v==null?'—':(v/1000).toLocaleString('ru-RU',{maximumFractionDigits:1});
- let rows='';
- const silent=[];
- for(const r of (d.recommendations||[])){
-  if(r.recommended_rub_m2==null){silent.push(r.label);continue;}
-  const srcs=(r.included_sources||[]).map(x=>`${x.source} (${x.grade})`).join('; ');
-  const modelField=r.model_key&&r.model_key in PROJECT_CLASS_PRESETS[Object.keys(PROJECT_CLASS_PRESETS)[0]]?` <span style="color:#8a5a00" title="Это поле есть в таблице классов выше — свод можно вписать в колонку класса">→ поле класса</span>`:'';
-  rows+=`<tr><td style="${tdL}">${r.label}${modelField}</td><td style="${tdL};color:#666">${r.unit_label||''}</td><td style="${tdR};font-weight:600">${thous(r.recommended_rub_m2)}</td><td style="${tdR};color:#666">${thous(r.p25_rub_m2)}–${thous(r.p75_rub_m2)}</td><td style="${tdR}">${r.source_count}</td><td style="${tdL}">${confLabel[r.confidence]||r.confidence}</td><td style="${tdL};color:#555;font-size:11px">${srcs}</td></tr>`;
- }
- html+=`<table style="width:100%;border-collapse:collapse;font-size:11.5px">${th}${rows}</table>`;
- if(silent.length)html+=`<div style="font-size:11.5px;color:#777;margin-top:6px">Без сводного значения — источники не раскрывают: ${silent.join(', ')}.</div>`;
- html+='<details style="margin-top:8px"><summary style="cursor:pointer;font-size:12px;color:#3b6db4">Правила методики — как объявлены в модуле</summary><ul style="font-size:11.5px;color:#444;margin:6px 0 0 16px;padding:0">'+(d.rules||[]).map(rule=>`<li style="margin-bottom:3px">${rule}</li>`).join('')+'</ul></details>';
- html+='<div style="font-size:11.5px;color:#777;margin-top:6px">Полный свод — таблица источников, приведённые значения и веса — на странице <a href="/statistics" target="_blank" style="color:#3b6db4">/statistics</a>.</div>';
- box.innerHTML=html;
+ if(!CLASS_STATS_BY){box.innerHTML='<div style="font-size:12px;color:#777">Загружаю свод модуля «Статистика»…</div>';return;}
+ box.innerHTML='<div style="font-size:12px;color:#555">Строки «свод „Статистики“» — независимый ориентир себестоимости, посчитанный модулем «Статистика» из раскрытий источников рынка и наших данных на ТЭП этого проекта; клик по числу подставляет его классу. Как это считается — за кнопкой «Как считаются класс и сценарий»; таблица источников — на странице <a href="/statistics" target="_blank" style="color:#3b6db4">«Статистика»</a>.</div>';
 }
 
 
@@ -36587,7 +36588,7 @@ const NON_PROJECT_STATE=['feedbackShown','feedbackCalcs','feedbackReportSeconds'
  'aiBusy','moAutoBusy','moRecalcTimer','sensitivityBusy','moDistrictPrices','moKdDocument',
  'landScreeningRun','tepRunSequence',
  'CLASS_OVERRIDES','CLASS_OVERRIDES_NOTE','CLASS_OVERRIDES_FROM_SERVER',
- 'CLASS_STATS','CLASS_STATS_CLASS','CLASS_STATS_ERROR'];
+ 'CLASS_STATS_BY','CLASS_STATS_ERROR'];
 
 function resetProjectState(){
  // Данные проекта, которые живут переменными страницы, а не полями формы.
