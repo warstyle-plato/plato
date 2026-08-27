@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from urllib.parse import parse_qs, quote
+from urllib.parse import parse_qs, quote, unquote
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
@@ -92,6 +92,27 @@ class ReportRequest(BaseModel):
         if not str(self.query or "").strip():
             raise ValueError("Нужен кадастровый номер, адрес, координаты или название проекта")
         return self
+
+
+def _uploaded_file_name(raw: object) -> str:
+    """Имя загруженного файла из заголовка.
+
+    Заголовок HTTP обязан быть ASCII, поэтому страница шлёт имя процентно
+    закодированным. Раскодировать его обязан сервер: нераскодированное имя
+    печатается подписью источника на экране и уезжает Платону в вопрос —
+    русское «Продажи Кутузов Сити.xlsx» занимало там двести знаков нечитаемой
+    строки и съедало предел вопроса.
+
+    Битую кодировку не угадываем: не раскодировалось — берём как пришло.
+    """
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    try:
+        text = unquote(text, errors="strict")
+    except (UnicodeDecodeError, ValueError):
+        pass
+    return text[:120]
 
 
 def install(app: FastAPI) -> MarketDiscoveryService:
@@ -515,7 +536,7 @@ def install(app: FastAPI) -> MarketDiscoveryService:
             raise HTTPException(status_code=422, detail="Пустой файл")
         if len(data) > 60 * 1024 * 1024:
             raise HTTPException(status_code=413, detail="Файл больше 60 МБ — это не выгрузка проекта")
-        name = str(request.headers.get("x-file-name") or "").strip()[:120]
+        name = _uploaded_file_name(request.headers.get("x-file-name"))
         parts, notes = await run_in_threadpool(_parse_sources, data)
         if not parts:
             raise HTTPException(

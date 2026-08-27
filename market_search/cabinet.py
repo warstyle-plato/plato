@@ -1747,9 +1747,13 @@ async function loadContracting(file){
   $('#cfstate').textContent='Читаю файл проекта…';
   try{
     // Имя файла едет заголовком: в свод оно попадает подписью источника, а
-    // тело запроса — сам файл, разбирать multipart здесь незачем.
+    // тело запроса — сам файл, разбирать multipart здесь незачем. Заголовок
+    // обязан быть ASCII, поэтому имя процентно-кодируется — и РАСКОДИРУЕТСЯ на
+    // сервере. Прежде проценты заменялись на подчёркивание «чтобы не мешали», и
+    // раскодировать это было уже нечем: русское имя приезжало на экран как
+    // «_D0_9F_D1_80_D0_BE…» и в таком виде уходило Платону в вопрос.
     const r=await fetch('/cabinet/contracting',{method:'POST',body:file,
-      headers:{'x-file-name':encodeURIComponent(file.name).replace(/%/g,'_')}});
+      headers:{'x-file-name':encodeURIComponent(file.name)}});
     const raw=await r.text();
     let d;
     try{ d=JSON.parse(raw) }
@@ -2410,9 +2414,14 @@ function renderSales(d){
   // Что загружено и когда: два файла разных дат, показанные как один проект, —
   // худший исход, поэтому дата каждого источника стоит на экране.
   if((d.sources||[]).length){
+    // Имя файла — подпись, а не содержание: длинное оно занимает на телефоне
+    // по три строки на источник, и шесть источников закрывают экран. Дата и
+    // вид источника отвечают на вопрос «то ли это, что я грузил», имя лишь
+    // подтверждает.
+    const shortName=s=>{const f=String(s.file||''); return f.length>40?f.slice(0,39)+'…':f};
     html+='<div class="muted" style="font-size:12px;margin-top:14px">Источники: '
       +d.sources.map(s=>esc(s.name)+' — '+esc(String(s.at||'').slice(0,10))
-        +(s.file?' ('+esc(s.file)+')':'')).join('; ')+'.</div>';
+        +(s.file?' ('+esc(shortName(s))+')':'')).join('; ')+'.</div>';
   }
 
   // Чего в выгрузке не нашлось — вслух: пустой раздел и отсутствующий
@@ -2461,6 +2470,11 @@ const SALES_ASK_LIMIT=4000;
 
 function salesDigest(d, limit){
   const t=d.total||{}, groups=[];
+  // Обязательная часть — только это. Всё остальное, включая наши выводы и
+  // список непрочитанного, идёт разделами и укладывается в остаток бюджета:
+  // прежде выводы и «не прочитано» стояли вне счёта, и с одиннадцатью выводами
+  // вопрос перевалил четыре тысячи знаков ещё до первого раздела — Платон
+  // отвечал «вопрос слишком длинный» на полностью загруженном проекте.
   const head=[`ПРОЕКТ: ${d.project||'—'}.`,
     `Всего: ${num(t.contracts)} договоров, ${num(t.area)} м², ${num(t.amount/1e6,1)} млн ₽, `
      +`средняя ${num(t.price_per_sqm)} ₽/м²; на эскроу ${num(t.escrow/1e6,1)} млн (${num(t.escrow_share*100,1)}%).`];
@@ -2561,27 +2575,77 @@ function salesDigest(d, limit){
   }
   add('размерность', (d.by_size||[]).map(x=>`РАЗМЕР ${x.band}: ${num(x.contracts)} шт, ${num(x.area)} м², ${num(x.amount/1e6,1)} млн ₽`));
   add('продукты', (d.by_product||[]).map(x=>`ПРОДУКТ ${x.product}: ${num(x.contracts)} шт, ${num(x.amount/1e6,1)} млн ₽`));
-  const tail=[];
+  const term=[];
   if((d.terminated||[]).length){
     const back=d.terminated.reduce((sum,x)=>sum+(Number(x.escrow_returned)||0),0);
-    tail.push(`РАСТОРЖЕНИЙ: ${d.terminated.length}, возвращено с эскроу ${num(back/1e6,1)} млн ₽`);
+    term.push(`РАСТОРЖЕНИЙ: ${d.terminated.length}, возвращено с эскроу ${num(back/1e6,1)} млн ₽`);
   }
-  (d.missing||[]).forEach(x=>tail.push('НЕ ПРОЧИТАНО: '+x));
-  Object.values(d.conclusions||{}).forEach(line=>head.push('ВЫВОД: '+line));
+  add('расторжения', term);
+  // Непрочитанное — предупреждение, а не данные: Платон не должен читать
+  // отсутствие источника как ноль. Строки бывают длинными (в них имя файла),
+  // поэтому раздел стоит в общей очереди, а не поверх бюджета.
+  add('не прочитано', (d.missing||[]).map(x=>'НЕ ПРОЧИТАНО: '+x));
+  // Выводы посчитаны сервером и отвечают ровно на то, о чём спрашиваем, —
+  // поэтому они раздел с бюджетом, а не часть обязательной шапки.
+  add('выводы', Object.values(d.conclusions||{}).map(line=>'ВЫВОД: '+line));
 
-  // Складываем, пока влезает. Разделы идут по важности: каналы и оплата
-  // отвечают на вопрос, помесячная динамика — уже подробность.
+  // Порядок разделов задаётся ЗДЕСЬ, а не порядком вычислений: вопрос спрашивает
+  // про рассрочку, вознаграждение брокерам, свой отдел и структуру продаж —
+  // значит оплата и каналы идут раньше помесячной динамики. Пока порядок был
+  // порядком счёта, из полного проекта выпадали каналы, то есть две темы из
+  // четырёх, о которых мы же и спросили.
+  //
+  // «Не прочитано» стоит вторым намеренно: это предупреждение против чтения
+  // отсутствия как нуля, и выброшенное молча оно вредит сильнее любой
+  // пропущенной таблицы.
+  const ORDER=['выводы','не прочитано','оплата','каналы','пул и вымывание',
+    'размерность','продукты','воронка обращений','план ФМ','план банка',
+    'расторжения','динамика'];
+  const rank=name=>(ORDER.indexOf(name)+1)||99;
+  groups.sort((a,b)=>rank(a.name)-rank(b.name));
+
+  // Складываем, пока влезает.
   const cap=Number(limit)||2800;
+  // Место под строку «не поместилось» держится с самого начала. Приписанная
+  // сверх бюджета, она вылезала за предел и обрезалась первой — то есть
+  // пропадало ровно то предупреждение, ради которого она написана, а свод
+  // выглядел полным.
+  const NOTE_ROOM=200;
   const kept=[...head], dropped=[];
-  let size=kept.join('\n').length+tail.join('\n').length;
+  let size=kept.join('\n').length;
   groups.forEach(g=>{
-    const text=g.lines.join('\n');
-    if(size+text.length+1<=cap){ kept.push(text); size+=text.length+1 }
-    else dropped.push(g.name+' ('+g.lines.length+' строк)');
+    if(!g.lines.length) return;
+    // Раздел входит построчно, а не целиком. Всё-или-ничего давало обрыв:
+    // «каналы» из шести строк не влезали, а стоящая ниже «размерность» из пяти
+    // влезала — и из вопроса выпадали две темы из четырёх, о которых мы же и
+    // спросили. Сколько строк вошло из скольких, стоит в самой строке.
+    const room=cap-NOTE_ROOM-size;
+    const fit=[];
+    let used=0;
+    g.lines.forEach(line=>{
+      if(used+line.length+1<=room){ fit.push(line); used+=line.length+1 }
+    });
+    if(!fit.length){ dropped.push(g.name+' ('+g.lines.length+' строк)'); return }
+    if(fit.length<g.lines.length){
+      const note='(вошло '+fit.length+' строк из '+g.lines.length+')';
+      if(used+note.length+1<=room){ fit.push(note); used+=note.length+1 }
+      else { fit.pop(); fit.push(note) }
+      dropped.push(g.name+' — часть');
+    }
+    kept.push(fit.join('\n'));
+    size+=fit.join('\n').length+1;
   });
-  kept.push(...tail);
-  if(dropped.length) kept.push('НЕ ПОМЕСТИЛОСЬ В ВОПРОС (не считай это отсутствием данных): '+dropped.join(', ')+'.');
-  return kept.join('\n');
+  if(dropped.length){
+    let note='НЕ ПОМЕСТИЛОСЬ В ВОПРОС (не считай это отсутствием данных): '+dropped.join(', ')+'.';
+    if(note.length>NOTE_ROOM-1) note=note.slice(0,NOTE_ROOM-3)+'….';
+    kept.push(note);
+  }
+  // Последний рубеж: даже обязательная шапка теоретически может перерасти
+  // бюджет (длинное имя проекта). Обрезка называет себя — молча укороченный
+  // свод читается как полный.
+  let out=kept.join('\n');
+  if(out.length>cap) out=out.slice(0, Math.max(0, cap-40))+'\n(свод обрезан по длине вопроса)';
+  return out;
 }
 
 async function askPlatoSales(){
