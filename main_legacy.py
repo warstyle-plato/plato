@@ -68,7 +68,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.20.34"
+VERSION = "0.20.36"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -29593,7 +29593,11 @@ details.cadastral-box>summary::marker{color:#888}
 .land-contour small{display:block;margin-top:4px;color:#999;font-size:10px}
 .land-territory{margin:0 0 12px}
 .land-territory svg{max-height:240px}
-.land-territory path:hover{fill:#e8e8e4}
+.land-territory path{cursor:pointer}
+/* Подсветка заметная: прежний #e8e8e4 на белом фоне отличался от
+   обычной заливки настолько, что наведение читалось как отсутствие
+   реакции. */
+.land-territory path:hover{fill:#cfe0f5;stroke-width:3.5}
 .mo-box{border-left:4px solid #111;margin-top:12px}
 /* Запасной путь: виден, но не спорит за внимание с главным. */
 .import-fallback{margin-top:14px;border-top:1px solid #e2e2e0;padding-top:10px}
@@ -32363,16 +32367,42 @@ function landMapLost(img){
  try{
   const box=img.closest('.land-contour');
   img.remove();
+  // Правим ТОЛЬКО свой кусок подписи. Прежде переписывался textContent всей
+  // строки, а это стирает вложенные узлы: ссылку «развернуть карту» и место
+  // для номера участка сносило ровно тогда, когда НСПД молчит, — то есть в
+  // том самом случае, ради которого функция и написана.
+  const note=box&&box.querySelector('.land-map-note');
+  if(note){note.textContent='карта НСПД не ответила — чистый контур';return}
   const cap=box&&box.querySelector('small');
   if(cap)cap.textContent=cap.textContent.replace('подложка — публичная карта НСПД','карта НСПД не ответила — чистый контур');
  }catch(e){}
 }
 
+// Площадь контура по формуле шнурков — только чтобы разложить участки по
+// порядку отрисовки. Знак не важен: обход колец бывает любой.
+function landRingArea(rings){
+ return (rings||[]).reduce((sum,ring)=>{
+  const pts=(ring||[]).filter(p=>Array.isArray(p)&&p.length>=2);
+  let a=0;
+  for(let i=0;i<pts.length;i++){
+   const q=pts[(i+1)%pts.length];
+   a+=pts[i][0]*q[1]-q[0]*pts[i][1];
+  }
+  return sum+Math.abs(a)/2;
+ },0);
+}
+
 function landTerritorySvg(found){
  // Несколько участков — общая посадка: все контуры в одном масштабе, как они
  // стоят друг относительно друга. По одному участку хватает миниатюры в его
- // карточке. Наведение на контур показывает кадастровый номер.
- const items=(found||[]).filter(x=>Array.isArray(x.contour_merc)&&x.contour_merc.length);
+ // карточке.
+ const items=(found||[]).filter(x=>Array.isArray(x.contour_merc)&&x.contour_merc.length)
+  // Крупные вниз, мелкие наверх. Заполненный контур перехватывает указатель
+  // на всей своей площади, поэтому участок, нарисованный последним, отвечал
+  // за всех: на территории из двадцати наведение в любую точку показывало
+  // один и тот же номер — тот, что лежит поверх (экран владельца,
+  // 27.08.2026). Порядок по площади возвращает мелким шанс быть наведёнными.
+  .slice().sort((a,b)=>landRingArea(b.contour_merc)-landRingArea(a.contour_merc));
  if(items.length<2)return '';
  let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
  items.forEach(item=>item.contour_merc.forEach(ring=>(ring||[]).forEach(p=>{
@@ -32389,7 +32419,10 @@ function landTerritorySvg(found){
    .filter(p=>Array.isArray(p)&&p.length>=2)
    .map(p=>((p[0]-minX+pad)).toFixed(1)+' '+((maxY-p[1]+pad)).toFixed(1))
    .join(' L ')+' Z').join(' ');
-  return `<path d="${d}" fill="rgba(245,245,243,.35)" stroke="#111" stroke-width="2" fill-rule="evenodd" vector-effect="non-scaling-stroke"><title>${escapeHtml(item.cadastral_number||'')}</title></path>`;
+  const cad=escapeHtml(item.cadastral_number||'');
+  // Номер едет атрибутом, а не подстановкой в JS-строку обработчика: см.
+  // правило про &#39; в CLAUDE.md.
+  return `<path d="${d}" fill="rgba(245,245,243,.35)" stroke="#111" stroke-width="2" fill-rule="evenodd" vector-effect="non-scaling-stroke" data-cad="${cad}" onmouseenter="landTerritoryHover(this)" onmouseleave="landTerritoryHover(null)"><title>${cad}</title></path>`;
  }).join('');
  const mapSrc=`/land/map-image?bbox=${(minX-pad).toFixed(1)},${(minY-pad).toFixed(1)},${(maxX+pad).toFixed(1)},${(maxY+pad).toFixed(1)}`;
  // max-width держит высоту на истинном аспекте: при 100% ширины и max-height
@@ -32400,7 +32433,33 @@ function landTerritorySvg(found){
  return `<div class="land-contour land-territory"><div class="land-contour-stage" style="${stage}">`+
   `<img class="land-contour-map" src="${mapSrc}" alt="" loading="lazy" decoding="async" onerror="landMapLost(this)">`+
   `<svg viewBox="0 0 ${w.toFixed(1)} ${h.toFixed(1)}" preserveAspectRatio="none" role="img" aria-label="Взаимное расположение участков">${paths}</svg></div>`+
-  `<small>Территория из ${items.length} участков в одном масштабе · подложка — публичная карта НСПД · наведите на контур — увидите номер</small></div>`;
+  // Номер показывается подписью, а не одной лишь всплывающей подсказкой SVG:
+  // её ждать секунду, а на телефоне не бывает вовсе — «наведите, увидите
+  // номер» обещало то, чего человек не видел.
+  `<small>Территория из ${items.length} участков в одном масштабе · `+
+  `<span class="land-map-note">подложка — публичная карта НСПД</span> · `+
+  `<a href="#" onclick="landMapFromTerritory();return false">развернуть карту</a> · `+
+  `<b id="landTerritoryLabel" style="color:#111">наведите на контур — увидите номер</b></small></div>`;
+}
+
+function landTerritoryHover(path){
+ const label=document.getElementById('landTerritoryLabel');
+ if(!label)return;
+ label.textContent=(path&&path.dataset.cad)||'наведите на контур — увидите номер';
+}
+
+function landMapFromTerritory(){
+ // Вся территория разом: на общем виде спрашивают не про один участок, а про
+ // то, что вокруг них всех. Кольца берутся те же, что нарисованы, — второй
+ // сборки нет.
+ const items=((landLookup&&landLookup.results)||[])
+  .filter(x=>x&&x.found&&Array.isArray(x.contour_merc)&&x.contour_merc.length);
+ const rings=items.flatMap(x=>x.contour_merc);
+ if(!rings.length)return;
+ const zones=((landScreeningLast&&landScreeningLast.parcels)||[])
+  .flatMap(p=>(p&&p.findings)||[]);
+ openLandMap({rings:rings,zones:zones,
+  title:`Территория из ${items.length} участков и окружение`});
 }
 
 function landContourSvg(item){
@@ -32437,7 +32496,8 @@ function landContourSvg(item){
   `<img class="land-contour-map" src="${mapSrc}" alt="" loading="lazy" decoding="async" onerror="landMapLost(this)">`+
   `<svg viewBox="0 0 ${w.toFixed(1)} ${h.toFixed(1)}" preserveAspectRatio="none" role="img" aria-label="Границы участка по ЕГРН">`+
   `<path d="${paths}" fill="rgba(245,245,243,.35)" stroke="#111" stroke-width="2.5" fill-rule="evenodd" vector-effect="non-scaling-stroke"/></svg></div>`+
-  `<small>Границы по сведениям ЕГРН · подложка — публичная карта НСПД${scaleNote}`+
+  `<small>Границы по сведениям ЕГРН · `+
+  `<span class="land-map-note">подложка — публичная карта НСПД</span>${scaleNote}`+
   // Номер едет атрибутом, а не подстановкой в JS-строку обработчика:
   // escapeHtml превращает кавычку в &#39;, браузер раскодирует её обратно ДО
   // разбора скрипта — и экранированное значение снова становится кодом.

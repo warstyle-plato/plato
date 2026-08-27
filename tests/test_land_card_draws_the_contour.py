@@ -121,6 +121,12 @@ def test_a_lost_map_fixes_the_caption():
     assert "img.remove()" in body
     assert "карта НСПД не ответила" in body
     assert "подложка — публичная карта НСПД" in body, "замена ищет не ту подпись"
+    # Правится только свой кусок подписи: textContent всей строки сносит
+    # вложенные узлы — ссылку на карту и место для номера участка, — и сносит
+    # ровно тогда, когда НСПД молчит, то есть в единственном случае, ради
+    # которого функция и существует.
+    assert ".land-map-note" in body, "подпись правится целиком, а не своим куском"
+    assert '<span class="land-map-note">' in main.PAGE, "куску подписи негде жить"
 
 
 def test_the_card_includes_the_contour():
@@ -130,10 +136,17 @@ def test_the_card_includes_the_contour():
 
 
 def _territory_harness() -> str:
-    match = re.search(r"(function landTerritorySvg\(found\)\{.*?\n\})\n\nfunction landContourSvg",
-                      main.PAGE, re.S)
-    assert match, "landTerritorySvg не найдена на странице"
-    return "const escapeHtml=s=>String(s);\n" + match.group(1)
+    # Функция и то, чем она пользуется, — поимённо. Хвост ловился по соседней
+    # `landContourSvg` и держался ровно до тех пор, пока между ними ничего не
+    # появлялось: тогда в стенд уезжал чужой код, а нужной `landRingArea` там
+    # всё равно не было.
+    parts = []
+    for name in ("landRingArea", "landTerritorySvg"):
+        pattern = r"(function " + name + r"\(.*?\n\})\n"
+        match = re.search(pattern, main.PAGE, re.S)
+        assert match, f"{name} не найдена на странице"
+        parts.append(match.group(1))
+    return "const escapeHtml=s=>String(s);\n" + "\n".join(parts)
 
 
 def run_territory(found: list) -> str:
@@ -157,6 +170,58 @@ def test_several_parcels_share_one_scale():
     assert "<title>50:12:0080205:124</title>" in svg
     assert "Территория из 2 участков" in svg
     assert '<img class="land-contour-map"' in svg
+
+
+def test_the_big_parcel_does_not_swallow_the_small_ones():
+    """Крупный контур перехватывал наведение на всей своей площади.
+
+    Заполненный путь ловит указатель везде, где он залит, а рисуется поверх
+    тот, кто идёт последним. На территории из двадцати участков наведение в
+    любую точку показывало один и тот же номер — тот, что лежит сверху (экран
+    владельца, 27.08.2026). Порядок по площади: крупные вниз, мелкие наверх.
+    """
+    small = MERC_RING
+    big = [[[4199900.0, 7549900.0], [4200300.0, 7549900.0],
+            [4200300.0, 7550300.0], [4199900.0, 7550300.0], [4199900.0, 7549900.0]]]
+    # Крупный подан ПОСЛЕДНИМ — ровно тот порядок, при котором ломалось.
+    svg = run_territory([
+        {"cadastral_number": "мелкий", "contour_merc": small},
+        {"cadastral_number": "крупный", "contour_merc": big},
+    ])
+    assert svg.index('data-cad="крупный"') < svg.index('data-cad="мелкий"'), (
+        "крупный участок рисуется поверх мелкого и забирает наведение себе")
+
+
+def test_the_number_is_shown_by_a_caption_not_only_by_a_tooltip():
+    """Подсказку SVG ждать секунду, а на телефоне её нет вовсе."""
+    svg = run_territory([
+        {"cadastral_number": "50:12:0080205:123", "contour_merc": MERC_RING},
+        {"cadastral_number": "50:12:0080205:124",
+         "contour_merc": [[[p[0] + 120, p[1]] for p in MERC_RING]]},
+    ])
+    assert 'id="landTerritoryLabel"' in svg, "номер негде показать"
+    assert 'onmouseenter="landTerritoryHover(this)"' in svg
+    assert 'landTerritoryHover(null)' in svg, "подпись не возвращается в исходное"
+    assert 'landMapFromTerritory()' in svg, (
+        "с общего вида территории нельзя открыть карту окружения — "
+        "а именно там про окружение и спрашивают")
+    # Номер едет атрибутом: экранированное значение внутри JS-строки
+    # обработчика снова становится кодом (правило в CLAUDE.md).
+    assert "landTerritoryHover('" not in svg
+
+
+def test_the_area_helper_measures_the_ring():
+    """Порядок отрисовки держится на площади — считаем её, а не угадываем."""
+    if not NODE:
+        pytest.skip("node недоступен")
+    script = _territory_harness() + (
+        "console.log(JSON.stringify(landRingArea("
+        + json.dumps([[[0, 0], [10, 0], [10, 20], [0, 20], [0, 0]]]) + ")));")
+    out = subprocess.run([NODE, "-e", script], capture_output=True, text=True, check=True)
+    assert json.loads(out.stdout) == 200, "площадь прямоугольника 10x20"
+    assert json.loads(subprocess.run(
+        [NODE, "-e", _territory_harness() + "console.log(JSON.stringify(landRingArea(null)));"],
+        capture_output=True, text=True, check=True).stdout) == 0
 
 
 def test_a_single_parcel_needs_no_territory_view():
