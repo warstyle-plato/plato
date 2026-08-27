@@ -23,10 +23,24 @@ from typing import Any
 # Признаки того, что вместо данных пришла проверка на робота. Список общий:
 # площадки берут защиту у одних и тех же поставщиков, и каждый читатель со
 # своим списком однажды не узнал бы чужую.
+#
+# Только СИЛЬНЫЕ признаки — имена самих защит. Слово «captcha» в исходнике
+# страницы им не является: 27.08.2026 проба объявила капчу у Сбербанк-АСТ и
+# ЭТП ГПБ, которые при этом загрузились полностью и сходили за данными, —
+# слово лежало в скрипте формы входа. Ложная тревога здесь дороже пропуска:
+# по ней мы вычеркнули бы открытую площадку.
 CHALLENGE_MARKERS = (
     "__qrator", "qauth_show_captcha", "qauth_utm",
     "ddos-guard", "cf-browser-verification", "cf-challenge",
-    "captcha", "проверка браузера",
+    "проверка браузера, пожалуйста, подождите",
+)
+
+# Чужая аналитика в ответе — шум: ради неё страницу не открывают, а нужные
+# адреса тонут между Яндекс.Метрикой и Mindbox.
+THIRD_PARTY = (
+    "mc.yandex.ru", "yandex.ru/watch", "surveys.yandex.ru", "mindbox.ru",
+    "google-analytics.com", "googletagmanager.com", "vk.com", "top-mail.ru",
+    "criteo", "facebook.com", "doubleclick",
 )
 
 # Заголовок страницы отказа. 200 с такой страницей — это отказ, а не пустой
@@ -54,12 +68,19 @@ def probe_browser(url: str, seconds: float = 45.0) -> dict[str, Any]:
             request = response.request
             if request.resource_type not in ("xhr", "fetch"):
                 return
-            calls.append({
+            call = {
                 "method": request.method,
                 "url": request.url[:400],
                 "status": response.status,
                 "content_type": (response.header_value("content-type") or "")[:80],
-            })
+            }
+            # У POST адрес не говорит ничего: у Сбербанк-АСТ весь каталог
+            # ходит в один `/api/Processing/main`, и что именно спрошено —
+            # написано в теле запроса. Без него адрес есть, а читателя из него
+            # не напишешь.
+            if request.method != "GET":
+                call["post_data"] = (request.post_data or "")[:1200]
+            calls.append(call)
         except Exception:  # noqa: BLE001
             # Один непрочитанный ответ не отменяет пробу.
             pass
@@ -88,5 +109,17 @@ def probe_browser(url: str, seconds: float = 45.0) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         report["reason"] = f"{type(exc).__name__}: {exc}"
     # Ответы, похожие на данные, — первыми: ради них проба и заводилась.
-    report["data_calls"] = [c for c in calls if "json" in c["content_type"].lower()]
+    # Чужая аналитика отсеивается: её адреса ничего не говорят о лотах.
+    data = [c for c in calls
+            if "json" in c["content_type"].lower()
+            and not any(mark in c["url"] for mark in THIRD_PARTY)]
+    report["data_calls"] = data
+    report["third_party_calls"] = len(calls) - len(data)
+    # Капча, объявленная у страницы, которая сходила за данными, — ложная
+    # тревога: за данными сквозь проверку не ходят. Признак не выбрасываем,
+    # а поправляем и говорим, почему.
+    if report.get("captcha") and data:
+        report["captcha"] = False
+        report["captcha_note"] = ("слово защиты найдено в исходнике, но страница "
+                                  "сходила за данными — это не проверка на робота")
     return report

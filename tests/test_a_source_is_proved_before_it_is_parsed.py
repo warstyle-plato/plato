@@ -250,3 +250,34 @@ def test_the_summary_comes_first_and_fits_a_screen() -> None:
 
     body = etp_source()
     assert 'return {"summary": summary(report), **report}' in body, "сводка стоит первой"
+
+
+def test_a_word_in_the_source_is_not_a_captcha() -> None:
+    """27.08.2026 проба объявила капчу у Сбербанк-АСТ и ЭТП ГПБ, которые
+    загрузились полностью и сходили за данными: слово лежало в скрипте формы
+    входа. Ложная тревога здесь дороже пропуска — по ней вычеркнули бы
+    открытую площадку."""
+    from auction_search.adapters import browser_probe as module
+
+    assert "captcha" not in module.CHALLENGE_MARKERS, "голое слово — не признак защиты"
+    assert "__qrator" in module.CHALLENGE_MARKERS
+    body = shared()
+    assert 'report["captcha"] = False' in body, "сходила за данными — значит не капча"
+    assert "captcha_note" in body, "поправку объясняем, а не делаем молча"
+
+
+def test_a_post_carries_its_body() -> None:
+    """У Сбербанк-АСТ весь каталог ходит в один `/api/Processing/main`: адрес
+    есть, а читателя из него не напишешь."""
+    body = shared()
+    assert "post_data" in body
+    assert 'request.method != "GET"' in body
+
+
+def test_third_party_analytics_does_not_drown_the_addresses() -> None:
+    """Нужные адреса тонули между Яндекс.Метрикой и Mindbox."""
+    from auction_search.adapters import browser_probe as module
+
+    assert "mc.yandex.ru" in module.THIRD_PARTY and "mindbox.ru" in module.THIRD_PARTY
+    body = shared()
+    assert "third_party_calls" in body, "сколько отсеяли — говорим, а не прячем"
