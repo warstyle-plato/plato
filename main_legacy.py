@@ -68,7 +68,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.20.31"
+VERSION = "0.20.33"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -4691,6 +4691,49 @@ def land_basemap(bbox: str = "", width: int = 1024) -> Response:
     _BASEMAP_CACHE[cache_key] = (time.time(), raw)
     return Response(raw, media_type="image/png",
                     headers={"Cache-Control": "public, max-age=86400"})
+
+
+@app.get("/land/tiles/{zoom}/{x}/{y}.png", include_in_schema=False)
+def land_tile(zoom: int, x: int, y: int) -> Response:
+    """Один тайл подложки — для карты, которую крутят.
+
+    Склеенная картинка (/land/basemap) отвечает на вопрос «как это выглядит» и
+    уходит в печать целиком, но подвинуть её нельзя: сервер отдал ровно тот
+    bbox, о котором его попросили. Чтобы окружение можно было посмотреть, тайлы
+    нужны поштучно — этот маршрут их и отдаёт.
+
+    Три вещи держат нагрузку на источнике в рамках. Тайл кэшируется у нас на
+    неделю (`_osm_tile`), браузеру он отдаётся с тем же сроком — повторный
+    просмотр того же места до нас не доходит вовсе, — а сам источник задан
+    переменной `OSM_TILE_URL`: публичный сервер OSM годится, чтобы посмотреть,
+    но под поток живой карты полагается свой или платный, и подставляется он
+    одной строкой. Здесь это сказано вслух, потому что молчаливое выкачивание
+    чужого сервиса выглядит на нашей стороне точно так же, как своё.
+
+    На Render внешние карты не ходят — как /land/basemap, пересылаем на ядро.
+    """
+    if not (0 <= zoom <= 19):
+        raise HTTPException(status_code=400, detail="Масштаб вне диапазона 0–19.")
+    limit = 1 << zoom
+    if not (0 <= x < limit and 0 <= y < limit):
+        raise HTTPException(status_code=400, detail="Тайл вне карты мира.")
+    remote = _core_api_url(f"/land/tiles/{zoom}/{x}/{y}.png")
+    if remote:
+        try:
+            with urllib.request.urlopen(
+                    urllib.request.Request(remote, headers={"Accept": "image/png"}),
+                    timeout=_NSPD_TIMEOUT_SECONDS) as response:
+                raw = response.read(1024 * 1024)
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Тайл недоступен: {exc}")
+        return Response(raw, media_type="image/png",
+                        headers={"Cache-Control": "public, max-age=604800"})
+    try:
+        raw = _osm_tile(zoom, x, y)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Тайл недоступен: {exc}")
+    return Response(raw, media_type="image/png",
+                    headers={"Cache-Control": "public, max-age=604800"})
 
 
 @app.get("/land/overlay-probe", include_in_schema=False)
@@ -30541,6 +30584,26 @@ details.cadastral-box>summary::marker{color:#888}
     <div id="classSourcesBody" style="margin-top:16px"></div>
   </div>
 </div>
+<!-- Карта, которую крутят. Миниатюра остаётся на месте и остаётся тем, что
+     уходит в бота и в печать: развёрнутая карта живёт только на экране, и
+     подменять ею печатную картинку нельзя — иначе про один участок будет два
+     достоверных на вид изображения. -->
+<div id="landMapDialog" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);
+     z-index:96;align-items:center;justify-content:center;padding:16px" onclick="if(event.target===this)closeLandMap()">
+  <div style="background:#fff;max-width:1100px;width:100%;border-radius:10px;padding:14px 16px 12px">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+      <h2 id="landMapTitle" style="margin:0;font-size:16px">Участок и окружение</h2>
+      <button id="landMapRuler" onclick="landMapMeasureToggle()" style="margin-left:auto;border:1px solid #3b6db4;background:#fff;color:#3b6db4;border-radius:6px;padding:4px 10px;cursor:pointer;font-size:12px">Линейка</button>
+      <button onclick="landMapZoomBy(-1)" style="border:1px solid #ddd;background:#fff;border-radius:6px;padding:4px 11px;cursor:pointer">−</button>
+      <button onclick="landMapZoomBy(1)" style="border:1px solid #ddd;background:#fff;border-radius:6px;padding:4px 11px;cursor:pointer">+</button>
+      <button onclick="closeLandMap()" style="border:1px solid #ddd;background:#fff;border-radius:6px;padding:4px 10px;cursor:pointer">✕</button>
+    </div>
+    <div id="landMapStage" style="position:relative;width:100%;height:min(64vh,560px);overflow:hidden;border:1px solid #e3e3e0;border-radius:6px;background:#eeeee9;touch-action:none;cursor:grab"
+         onpointerdown="landMapDown(event)" onpointermove="landMapMove(event)" onpointerup="landMapUp()" onpointercancel="landMapUp()"
+         onclick="landMapClick(event)" onwheel="landMapWheel(event)"></div>
+    <div id="landMapNote" style="font-size:12px;color:#555;margin-top:8px"></div>
+  </div>
+</div>
 <div id="profileDialog" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);
      z-index:95;align-items:center;justify-content:center;padding:20px">
   <div style="background:#fff;max-width:560px;width:100%;max-height:86vh;overflow:auto;padding:22px 24px">
@@ -31914,6 +31977,12 @@ function renderCadastralPreview(data){
 
 let landLookup=null;
 let landScreeningRun=0;
+// Ответ скрининга рисуется и больше нигде не живёт, а развёрнутой карте нужны
+// очертания зон того же участка. Держим последний ответ целиком: собирать его
+// заново значило бы спросить НСПД второй раз и показать поверх карты не то,
+// что показано в списке ограничений.
+let landScreeningLast=null;
+let LAND_MAP=null;
 
 // Карточка участка с контуром и картой — при любом пути получения ТЭП, а не
 // только при поиске по адресу: кадастровый «Получить ТЭП» оставлял человека
@@ -32080,7 +32149,9 @@ function screeningSpotSvg(parcel){
   `fill-rule="evenodd" vector-effect="non-scaling-stroke"/></svg></div>`+
   `<div class="spot-legend">${legend}</div>`+
   `<small>Границы участка — ЕГРН, зоны — НСПД. Наложение приблизительное: `+
-  `оценка по сетке, точность порядка процента.</small></div>`;
+  `оценка по сетке, точность порядка процента.`+
+  ` · <a href="#" data-cad="${escapeHtml(parcel.cadastral_number||'')}"`+
+  ` onclick="landMapFromContour(this.dataset.cad);return false">развернуть карту</a></small></div>`;
 }
 
 function screeningFlagLabel(cls){
@@ -32090,6 +32161,7 @@ function screeningFlagLabel(cls){
 function renderLandScreening(data){
  const box=document.getElementById('landScreening');
  if(!box||!data||!data.parcels)return;
+ landScreeningLast=data;
  const v=data.verdict||{};
  const tone=v.status==='CRITICAL'?'critical':(v.status==='WARNING'?'warning':(v.status==='NOT_SCREENED'?'unknown':'clean'));
  const found=data.parcels.filter(p=>p.found);
@@ -32365,7 +32437,237 @@ function landContourSvg(item){
   `<img class="land-contour-map" src="${mapSrc}" alt="" loading="lazy" decoding="async" onerror="landMapLost(this)">`+
   `<svg viewBox="0 0 ${w.toFixed(1)} ${h.toFixed(1)}" preserveAspectRatio="none" role="img" aria-label="Границы участка по ЕГРН">`+
   `<path d="${paths}" fill="rgba(245,245,243,.35)" stroke="#111" stroke-width="2.5" fill-rule="evenodd" vector-effect="non-scaling-stroke"/></svg></div>`+
-  `<small>Границы по сведениям ЕГРН · подложка — публичная карта НСПД${scaleNote}</small></div>`;
+  `<small>Границы по сведениям ЕГРН · подложка — публичная карта НСПД${scaleNote}`+
+  // Номер едет атрибутом, а не подстановкой в JS-строку обработчика:
+  // escapeHtml превращает кавычку в &#39;, браузер раскодирует её обратно ДО
+  // разбора скрипта — и экранированное значение снова становится кодом.
+  ` · <a href="#" data-cad="${escapeHtml(item.cadastral_number||'')}"`+
+  ` onclick="landMapFromContour(this.dataset.cad);return false">развернуть карту</a></small></div>`;
+}
+
+// Карта, которую крутят. Миниатюра отвечает на «как выглядит участок», а на
+// «что вокруг» ответить не может: сервер отдал ровно тот bbox, о котором его
+// попросили, подвинуть картинку нечем (решение владельца, 27.08.2026).
+//
+// Считает тот же веб-меркатор, что миниатюра и пятно застройки, — и это не
+// стилистика. Контуры ЕГРН и очертания зон приезжают в метрах меркатора
+// (`contour_merc`, `outline_merc`); готовая библиотека карт работает в паре
+// «широта, долгота», и каждое кольцо пришлось бы переводить. Перепутанный
+// порядок пары молча зеркалит полигон — участок остаётся правдоподобным и
+// встаёт не туда. Здесь переводить нечего: те же числа, только с переносом
+// и увеличением.
+const LAND_MAP_WORLD=2*20037508.342789244;
+const LAND_MAP_ORIGIN=-20037508.342789244;
+function landMapScale(zoom){return LAND_MAP_WORLD/(256*Math.pow(2,zoom))}
+function landMapLat(y){return (2*Math.atan(Math.exp(y/6378137))-Math.PI/2)*180/Math.PI}
+// Пиксель карты мира — та же формула, что у серверной склейки (_basemap_png):
+// подложка и контур обязаны считать одно, иначе участок съезжает с карты, а
+// выглядит это как неточность источника, а не как наша ошибка. y растёт вниз,
+// поэтому север — минус.
+function landMapWorldPx(x,zoom){return (x-LAND_MAP_ORIGIN)/landMapScale(zoom)}
+function landMapWorldPy(y,zoom){return (-y-LAND_MAP_ORIGIN)/landMapScale(zoom)}
+// Экран: центр вида стоит в центре сцены. Одна функция на тайлы, контур, зоны
+// и линейку — разъехаться нечему.
+function landMapProject(point,view){
+ return [landMapWorldPx(point[0],view.zoom)-landMapWorldPx(view.cx,view.zoom)+view.width/2,
+         landMapWorldPy(point[1],view.zoom)-landMapWorldPy(view.cy,view.zoom)+view.height/2];
+}
+function landMapUnproject(sx,sy,view){
+ const scale=landMapScale(view.zoom);
+ return [view.cx+(sx-view.width/2)*scale,view.cy-(sy-view.height/2)*scale];
+}
+function landMapView(){
+ const stage=document.getElementById('landMapStage');
+ if(!stage||!LAND_MAP)return null;
+ const rect=stage.getBoundingClientRect();
+ return {zoom:LAND_MAP.zoom,cx:LAND_MAP.cx,cy:LAND_MAP.cy,
+         width:Math.max(200,Math.round(rect.width)),height:Math.max(160,Math.round(rect.height)),
+         left:rect.left,top:rect.top};
+}
+// Метр меркатора — не метр земли: он растянут на 1/cos(широты). Линейка и
+// подпись масштаба обязаны считать по земле, иначе на широте Москвы всё
+// показанное расстояние будет больше настоящего в полтора раза.
+function landMapGround(mercatorMetres,y){return mercatorMetres*Math.cos(landMapLat(y)*Math.PI/180)}
+function landMapMetres(pixels,zoom,y){return landMapGround(pixels*landMapScale(zoom),y)}
+
+function openLandMap(payload){
+ // payload: {rings, zones, title, note}
+ const box=document.getElementById('landMapDialog');
+ if(!box)return;
+ const rings=(payload&&payload.rings)||[];
+ const points=rings.flat().filter(p=>Array.isArray(p)&&p.length>=2);
+ if(!points.length)return;
+ const minX=Math.min(...points.map(p=>p[0])),maxX=Math.max(...points.map(p=>p[0]));
+ const minY=Math.min(...points.map(p=>p[1])),maxY=Math.max(...points.map(p=>p[1]));
+ // Окно раскрывается до замера: у скрытого блока ширина ноль, и масштаб
+ // считался бы по запасному числу, а не по тому, что человек увидит.
+ box.style.display='flex';
+ const stage=document.getElementById('landMapStage');
+ const width=Math.max(320,(stage&&stage.clientWidth)||900);
+ // Открываемся на участке целиком с запасом на окружение: показать участок
+ // впритык — это то же, что миниатюра, ради чего тогда открывать.
+ const span=Math.max(maxX-minX,maxY-minY,50)*2.4;
+ const zoom=Math.log2(LAND_MAP_WORLD/256/(span/width));
+ LAND_MAP={
+  rings:rings,zones:(payload&&payload.zones)||[],
+  title:(payload&&payload.title)||'Участок и окружение',
+  note:(payload&&payload.note)||'',
+  cx:(minX+maxX)/2,cy:(minY+maxY)/2,
+  // Вниз, а не к ближайшему: округление вверх обрезает участок ровно в тот
+ // момент, когда его открыли посмотреть целиком.
+ zoom:Math.max(3,Math.min(19,Math.floor(zoom))),
+  measure:[],measuring:false,drag:null,moved:0,
+ };
+ renderLandMap();
+}
+function closeLandMap(){
+ const box=document.getElementById('landMapDialog');
+ if(box)box.style.display='none';
+ LAND_MAP=null;
+}
+function landMapZoomBy(step){
+ if(!LAND_MAP)return;
+ LAND_MAP.zoom=Math.max(3,Math.min(19,LAND_MAP.zoom+step));
+ renderLandMap();
+}
+function landMapMeasureToggle(){
+ if(!LAND_MAP)return;
+ LAND_MAP.measuring=!LAND_MAP.measuring;
+ if(!LAND_MAP.measuring)LAND_MAP.measure=[];
+ renderLandMap();
+}
+function landMapPoint(event){
+ const view=landMapView();
+ if(!view)return null;
+ return landMapUnproject(event.clientX-view.left,event.clientY-view.top,view);
+}
+function landMapClick(event){
+ if(!LAND_MAP||!LAND_MAP.measuring)return;
+ // Линейка нужна не «вообще»: К1 приобъектной парковки задаётся расстоянием
+ // до входа на станцию (0,75 до 1200 м · 0,9 до 2200 м), и до сих пор его
+ // мерили где-то на стороне и вписывали числом.
+ // Щелчок приходит и после перетаскивания — точка ставилась бы там, где
+ // человек отпустил карту, а не там, куда целился.
+ if((LAND_MAP.moved||0)>4)return;
+ const point=landMapPoint(event);
+ if(!point)return;
+ if(LAND_MAP.measure.length>=2)LAND_MAP.measure=[];
+ LAND_MAP.measure.push(point);
+ renderLandMap();
+}
+function landMapDown(event){
+ // Двигать карту можно и с включённой линейкой: иначе, чтобы дотянуться до
+ // станции, её пришлось бы выключать, тянуть и включать заново — а меряют
+ // как раз то, что в один экран не помещается.
+ if(!LAND_MAP)return;
+ LAND_MAP.drag={x:event.clientX,y:event.clientY};
+ LAND_MAP.moved=0;
+ try{event.currentTarget.setPointerCapture(event.pointerId)}catch(e){}
+}
+function landMapMove(event){
+ if(!LAND_MAP||!LAND_MAP.drag)return;
+ const scale=landMapScale(LAND_MAP.zoom);
+ const dx=event.clientX-LAND_MAP.drag.x,dy=event.clientY-LAND_MAP.drag.y;
+ LAND_MAP.moved+=Math.abs(dx)+Math.abs(dy);
+ LAND_MAP.cx-=dx*scale;
+ LAND_MAP.cy+=dy*scale;
+ LAND_MAP.drag={x:event.clientX,y:event.clientY};
+ renderLandMap();
+}
+function landMapUp(){if(LAND_MAP)LAND_MAP.drag=null}
+function landMapWheel(event){
+ if(!LAND_MAP)return;
+ event.preventDefault();
+ // Колесо увеличивает к курсору, а не к центру: иначе разглядываемое место
+ // уезжает из кадра ровно тогда, когда его разглядывают.
+ const before=landMapPoint(event);
+ landMapZoomBy(event.deltaY<0?1:-1);
+ const after=landMapPoint(event);
+ if(before&&after){
+  LAND_MAP.cx+=before[0]-after[0];
+  LAND_MAP.cy+=before[1]-after[1];
+  renderLandMap();
+ }
+}
+
+function renderLandMap(){
+ const stage=document.getElementById('landMapStage');
+ const view=landMapView();
+ if(!stage||!view)return;
+ const W=view.width,H=view.height,zoom=view.zoom,scale=landMapScale(zoom);
+ const left=landMapWorldPx(view.cx,zoom)-W/2,top=landMapWorldPy(view.cy,zoom)-H/2;
+ const project=p=>landMapProject(p,view);
+ const limit=Math.pow(2,zoom);
+ let tiles='';
+ for(let tx=Math.floor(left/256);tx<=Math.floor((left+W)/256);tx++){
+  for(let ty=Math.floor(top/256);ty<=Math.floor((top+H)/256);ty++){
+   if(ty<0||ty>=limit)continue;
+   const wrapped=((tx%limit)+limit)%limit;
+   tiles+=`<img src="/land/tiles/${zoom}/${wrapped}/${ty}.png" alt="" draggable="false"`+
+    ` style="position:absolute;left:${Math.round(tx*256-left)}px;top:${Math.round(ty*256-top)}px;`+
+    `width:256px;height:256px;user-select:none" onerror="this.style.visibility='hidden'">`;
+  }
+ }
+ const toPath=list=>(list||[]).map(ring=>'M'+(ring||[])
+   .filter(p=>Array.isArray(p)&&p.length>=2)
+   .map(p=>project(p).map(v=>v.toFixed(1)).join(' '))
+   .join(' L ')+' Z').join(' ');
+ const paint={killer:'#b3261e',economic:'#a05a00',info:'#777'};
+ const zoneLayers=(LAND_MAP.zones||[]).filter(z=>Array.isArray(z.outline_merc)&&z.outline_merc.length)
+  .map(zone=>{
+   const colour=paint[zone.flag_class]||'#777';
+   return `<path d="${toPath(zone.outline_merc)}" fill="${colour}" fill-opacity="0.22" stroke="${colour}" stroke-width="1.5"/>`;
+  }).join('');
+ const contour=`<path d="${toPath(LAND_MAP.rings)}" fill="rgba(245,245,243,.18)" stroke="#111" stroke-width="2.5" fill-rule="evenodd"/>`;
+ let ruler='',rulerNote='';
+ if(LAND_MAP.measure.length){
+  const pts=LAND_MAP.measure.map(project);
+  ruler=pts.map(p=>`<circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="5" fill="#fff" stroke="#3b6db4" stroke-width="2.5"/>`).join('');
+  if(pts.length===2){
+   ruler=`<line x1="${pts[0][0].toFixed(1)}" y1="${pts[0][1].toFixed(1)}" x2="${pts[1][0].toFixed(1)}" y2="${pts[1][1].toFixed(1)}" stroke="#3b6db4" stroke-width="2.5" stroke-dasharray="6 4"/>`+ruler;
+   const a=LAND_MAP.measure[0],b=LAND_MAP.measure[1];
+   rulerNote=`${landNum(landMapGround(Math.hypot(a[0]-b[0],a[1]-b[1]),LAND_MAP.cy),0)} м по прямой`;
+  }
+ }
+ // Масштабная линейка круглым числом: 500 м «примерно вот столько» читается,
+ // а «463 м» — нет.
+ const nice=[50,100,200,500,1000,2000,5000];
+ const perPx=landMapMetres(1,zoom,LAND_MAP.cy);
+ const barM=nice.filter(v=>v/perPx<=W*0.35).pop()||nice[0];
+ const barPx=Math.round(barM/perPx);
+ stage.innerHTML=`<div style="position:absolute;inset:0;overflow:hidden">${tiles}</div>`+
+  `<svg width="${W}" height="${H}" style="position:absolute;inset:0;pointer-events:none">${zoneLayers}${contour}${ruler}</svg>`+
+  `<div style="position:absolute;left:12px;bottom:12px;background:rgba(255,255,255,.88);padding:4px 8px;border-radius:4px;font-size:11px;color:#333">`+
+  `<div style="border:2px solid #333;border-top:0;height:5px;width:${barPx}px;margin-bottom:2px"></div>${landNum(barM,0)} м · © OpenStreetMap</div>`+
+  (rulerNote?`<div style="position:absolute;right:12px;bottom:12px;background:#3b6db4;color:#fff;padding:4px 10px;border-radius:4px;font-size:12px">${escapeHtml(rulerNote)}</div>`:'');
+ const head=document.getElementById('landMapTitle');
+ if(head)head.textContent=LAND_MAP.title;
+ const note=document.getElementById('landMapNote');
+ if(note){
+  note.textContent=LAND_MAP.measuring
+   ?'Линейка включена: щёлкните две точки — покажу расстояние по прямой. Оно же нужно для К1 приобъектной парковки, только там меряют по пешеходным путям до входа на станцию.'
+   :(LAND_MAP.note||'Тяните карту мышью или пальцем, колесо — увеличение. Границы — ЕГРН, зоны — НСПД, подложка — OpenStreetMap.');
+ }
+ const button=document.getElementById('landMapRuler');
+ if(button)button.textContent=LAND_MAP.measuring?'Линейка включена':'Линейка';
+}
+
+function landMapFromContour(cad){
+ // Кнопка стоит у миниатюры и открывает ту же геометрию, что миниатюра
+ // нарисовала: второй раз её не собираем — разошлись бы две картинки одного
+ // участка, и обе выглядели бы верными. Участок ищется по кадастровому
+ // номеру, а не по месту в списке: список фильтруется и переставляется.
+ const results=((landLookup&&landLookup.results)||[])
+  .filter(x=>x&&x.found&&Array.isArray(x.contour_merc)&&x.contour_merc.length);
+ const item=(cad?results.find(x=>x.cadastral_number===cad):null)||results[0];
+ if(!item)return;
+ const screened=((landScreeningLast&&landScreeningLast.parcels)||[])
+  .find(p=>p&&p.cadastral_number&&p.cadastral_number===item.cadastral_number);
+ openLandMap({
+  rings:item.contour_merc,
+  zones:(screened&&screened.findings)||[],
+  title:item.cadastral_number?('Участок '+item.cadastral_number+' и окружение'):'Участок и окружение',
+ });
 }
 
 function landCardHtml(item,showContour){
@@ -36750,6 +37052,9 @@ function resetProjectState(){
  Object.keys(tepRefillNote).forEach(key=>{delete tepRefillNote[key]});
  moLastQuery='';moAutoApartments=null;
  presetPreview=null;sensitivityOptions=null;sensitivityReport=null;sensitivityPicked=null;
+ // Ограничения прошлой площадки на карте новой — это чужие зоны под своим
+ // контуром, и выглядят они так же убедительно, как свои.
+ landScreeningLast=null;LAND_MAP=null;
 }
 
 // Посчитанное остаётся на экране, пока его не сотрут: renderResult при пустом
