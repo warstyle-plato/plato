@@ -72,10 +72,14 @@ def test_the_lookup_result_carries_the_contour():
 
 
 def _svg_harness() -> str:
-    match = re.search(r"(function landContourSvg\(item\)\{.*?\n\})\n\nfunction landCardHtml",
-                      main.PAGE, re.S)
+    # Берём саму функцию и то, чем она пользуется. Прежде хвост ловился по
+    # соседней `landCardHtml`, и стоило вставить между ними что-нибудь ещё —
+    # в стенд уезжал чужой код, а не хватало всё равно того же escapeHtml.
+    match = re.search(r"(function landContourSvg\(item\)\{.*?\n\})\n", main.PAGE, re.S)
     assert match, "landContourSvg не найдена на странице"
-    return match.group(1)
+    helper = re.search(r"(function escapeHtml\(s\)\{.*?\n)", main.PAGE, re.S)
+    assert helper, "escapeHtml не найдена на странице"
+    return helper.group(1) + match.group(1)
 
 
 def run_svg(item: dict) -> str:
