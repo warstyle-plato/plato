@@ -205,3 +205,48 @@ def test_the_platform_browser_route_is_wired() -> None:
     block = api[api.index("async def auction_etp_probe_browser("):]
     block = block[:block.index("\n    # Срок на сбор каталога")]
     assert "platform" in block and "known" in block, "без параметра — список площадок"
+
+
+def test_the_probe_says_who_we_introduced_ourselves_as() -> None:
+    """Половина защит режет незнакомый User-Agent: 403 роботу и 403 всем
+    выглядят одинаково, пока имя клиента не названо рядом."""
+    body = etp_source()
+    assert '"user_agent": USER_AGENT' in body
+
+
+def test_a_refusal_carries_a_hint_that_tells_the_two_apart() -> None:
+    from auction_search.adapters import etp_probe as module
+
+    assert "робот" in module._refusal_hint(403)
+    assert "лимит" in module._refusal_hint(429)
+    assert module._refusal_hint(200) == "", "у удачи подсказки быть не должно"
+
+
+def test_a_broken_chain_points_at_the_roots_not_at_switching_the_check_off() -> None:
+    """Проверку не выключаем — от неё и толк; издателя спрашивают у самого
+    сертификата и кладут в каталог корней, как уже чинилась ГИС Торги."""
+    body = etp_source()
+    assert "CERTIFICATE_VERIFY_FAILED" in body
+    assert "Authority Information Access" in body
+    assert "Проверку не отключаем" in body
+    for forbidden in ("CERT_NONE", "check_hostname = False", "_create_unverified"):
+        assert forbidden not in body, f"выключение проверки: {forbidden}"
+
+
+def test_the_summary_comes_first_and_fits_a_screen() -> None:
+    """Вывод, обрезанный на второй площадке из пяти, — это ответ, которого нет."""
+    from auction_search.adapters import etp_probe as module
+
+    rows = module.summary({"platforms": [
+        {"name": "A", "attempts": [{"url": "u1", "http_status": 403, "reason": "no"},
+                                   {"url": "u2", "http_status": 200}]},
+        {"name": "B", "attempts": [{"url": "u3", "reason": "SSL"}]},
+    ]})
+    assert [row["platform"] for row in rows] == ["A", "B"]
+    # Удачная попытка вытесняет неудачную: площадка, ответившая хоть одним
+    # адресом, не должна выглядеть закрытой.
+    assert rows[0]["http_status"] == 200 and rows[0]["url"] == "u2"
+    assert rows[1]["reason"] == "SSL"
+
+    body = etp_source()
+    assert 'return {"summary": summary(report), **report}' in body, "сводка стоит первой"

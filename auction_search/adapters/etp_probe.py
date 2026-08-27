@@ -34,7 +34,7 @@ import urllib.request
 from typing import Any
 
 from auction_search.adapters.browser_probe import probe_browser
-from auction_search.adapters.torgi_gov import trust_context
+from auction_search.adapters.torgi_gov import EXTRA_CA_DIR, trust_context
 
 USER_AGENT = "DevelopAid-AuctionCollector/0.1 (+https://developaid.ru)"
 TIMEOUT_SECONDS = 12
@@ -85,11 +85,27 @@ def _fetch(url: str, context: ssl.SSLContext) -> dict[str, Any]:
             }
     except urllib.error.HTTPError as exc:
         # Код ответа — это ответ, а не отказ: 404 отличает «не тот адрес» от
-        # «сервис закрыт», и путать их нельзя.
+        # «сервис закрыт», и путать их нельзя. Чем мы представились — часть
+        # ответа: половина защит режет незнакомый User-Agent, и 403 роботу
+        # неотличим от 403 всем, пока имя клиента не названо рядом.
         return {"url": url, "http_status": exc.code, "reason": str(exc),
+                "user_agent": USER_AGENT,
+                "hint": _refusal_hint(exc.code),
                 "body_head": exc.read(2000).decode("utf-8", "replace")[:_BODY_SHOWN]}
     except Exception as exc:  # noqa: BLE001
-        return {"url": url, "reason": f"{type(exc).__name__}: {exc}"}
+        answer = {"url": url, "user_agent": USER_AGENT,
+                  "reason": f"{type(exc).__name__}: {exc}"}
+        if "CERTIFICATE_VERIFY_FAILED" in str(exc):
+            # Проверку не выключаем — от неё и толк. Издателя спрашивают у
+            # самого сертификата (поле Authority Information Access) и кладут
+            # в каталог корней; так уже чинилась ГИС Торги. Сервер часто
+            # присылает только свой лист, а промежуточный по ссылке AIA
+            # Python сам не забирает — в отличие от браузера.
+            answer["hint"] = (
+                "цепочка не проверилась: положите издателя в каталог корней "
+                f"({EXTRA_CA_DIR}) — адрес издателя стоит в самом сертификате, "
+                "поле Authority Information Access. Проверку не отключаем.")
+        return answer
     # Разбираем ровно настолько, чтобы стала видна форма ответа. Имена полей не
     # угадываем: их покажет сам ответ.
     text = answer["body_head"].lstrip()
@@ -116,10 +132,50 @@ def _fetch(url: str, context: ssl.SSLContext) -> dict[str, Any]:
     return answer
 
 
+def _refusal_hint(status: int) -> str:
+    """Отказ роботу и отказ вообще выглядят одинаково — пока не назвать разницу."""
+    if status == 403:
+        return ("отказ может быть нам как роботу: мы стучимся своим User-Agent. "
+                "Различит браузерная проба — она идёт настоящим Chromium.")
+    if status == 429:
+        return ("лимит запросов — на первом же обращении. Либо жёсткий лимит по "
+                "адресу, либо тот же отказ роботу, только другим кодом.")
+    if status == 404:
+        return "адрес не тот; сам сервис при этом отвечает"
+    return ""
+
+
+def summary(report: dict[str, Any]) -> list[dict[str, Any]]:
+    """Строка на площадку — чтобы ответ помещался на экран.
+
+    Подробности каждой попытки занимают по семьсот знаков каркаса, и вывод,
+    обрезанный на второй площадке из пяти, — это ответ, которого нет: так уже
+    вышло 27.08.2026.
+    """
+    out: list[dict[str, Any]] = []
+    for platform in report.get("platforms") or []:
+        best: dict[str, Any] = {}
+        for attempt in platform.get("attempts") or []:
+            if attempt.get("http_status") == 200:
+                best = attempt
+                break
+            best = best or attempt
+        out.append({
+            "platform": platform.get("name"),
+            "url": best.get("url"),
+            "http_status": best.get("http_status"),
+            "content_type": str(best.get("content_type") or "")[:40],
+            "challenge": best.get("challenge"),
+            "reason": str(best.get("reason") or "")[:120],
+            "hint": best.get("hint") or "",
+        })
+    return out
+
+
 def probe() -> dict[str, Any]:
     """Что отвечает каждая площадка. Разбора здесь нет намеренно."""
     context = trust_context()
-    return {
+    report: dict[str, Any] = {
         "parsing": "разбора нет: ни одно имя поля не сверено ответом площадки",
         "why": ("ЕФРСБ закрыт капчей и 403 даже браузером; пять площадок из "
                 "таблицы владельца дают больше половины банкротных лотов"),
@@ -128,6 +184,8 @@ def probe() -> dict[str, Any]:
             for name, urls in PLATFORMS
         ],
     }
+    # Сводка стоит ПЕРВОЙ: за ней и приходят, а подробности читают следом.
+    return {"summary": summary(report), **report}
 
 
 # Короткое имя площадки для адреса запроса. Проба браузером идёт по одной
