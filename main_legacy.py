@@ -23633,7 +23633,10 @@ _SENSITIVITY_PARAMETERS: list[dict[str, Any]] = [
     {"key": "main_above_th_per_sqm", "kind": "pct", "group": "Затраты"},
     {"key": "main_under_th_per_sqm", "kind": "pct", "group": "Затраты"},
     {"key": "utilities_th_per_sqm", "kind": "pct", "group": "Затраты"},
-    {"key": "landscaping_th_per_sqm", "kind": "pct", "group": "Затраты"},
+    {"key": "landscaping_th_per_sqm", "kind": "pct", "group": "Затраты",
+     "needs": "legacy_landscaping"},
+    {"key": "landscaping_site_th_per_sqm", "kind": "pct", "group": "Затраты",
+     "needs": "physical_landscaping"},
     {"key": "project_management_pct", "kind": "pct", "group": "Затраты"},
     {"key": "technical_supervision_pct", "kind": "pct", "group": "Затраты"},
     {"key": "gc_fee_pct", "kind": "pct", "group": "Затраты"},
@@ -23673,6 +23676,14 @@ def _sensitivity_applicable(
         return ""
     if needs == "social_payment" and str(inputs.get("social_mode") or "") == "Строительство":  # noqa: E501
         return "социальные объекты строятся, а не компенсируются деньгами"
+    physical_landscaping = (
+        float(n(inputs, "landscaping_site_th_per_sqm", 0.0)) > 0
+        and float(developaid_landscaping.basis(inputs).get("landscaping_area_sqm") or 0.0) > 0
+    )
+    if needs == "legacy_landscaping" and physical_landscaping:
+        return "включён физический расчёт благоустройства по территории"
+    if needs == "physical_landscaping" and not physical_landscaping:
+        return "физический расчёт благоустройства не включён"
     product = spec.get("product")
     if product:
         row = tep.get(product) or {}
