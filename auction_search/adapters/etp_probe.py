@@ -28,6 +28,7 @@
 from __future__ import annotations
 
 import json
+import os
 import ssl
 import urllib.error
 import urllib.request
@@ -210,7 +211,11 @@ def platform_urls(slug: str) -> tuple[str, ...]:
     return ()
 
 
-def probe_browser_platform(slug: str, seconds: float = 40.0) -> dict[str, Any]:
+PAGES_DIR = os.environ.get("DEVELOPAID_ETP_PAGES_DIR", "data/etp_pages")
+
+
+def probe_browser_platform(slug: str, seconds: float = 40.0, save: bool = False,
+                           url: str = "") -> dict[str, Any]:
     """Открыть каталог одной площадки браузером и показать, за чем она ходит.
 
     Простой запрос показывает только оболочку: у этих площадок каталог рисует
@@ -225,10 +230,22 @@ def probe_browser_platform(slug: str, seconds: float = 40.0) -> dict[str, Any]:
     if not name:
         return {"ok": False, "reason": f"неизвестная площадка: {slug!r}",
                 "known": sorted(SLUGS)}
-    urls = platform_urls(slug)
-    if not urls:
-        return {"ok": False, "platform": name, "reason": "адрес каталога не задан"}
-    got = probe_browser(urls[0], seconds=seconds)
+    # Адрес можно задать руками: наш сохранённый ведёт куда придётся, и это
+    # видно только по ответу. У Сбербанк-АСТ 27.08.2026 каталог банкротства
+    # увёл редиректом на главную, и все вызовы оказались вызовами главной.
+    target = str(url or "").strip()
+    if target and not target.lower().startswith("https://"):
+        return {"ok": False, "platform": name,
+                "reason": "адрес должен начинаться с https://"}
+    if not target:
+        urls = platform_urls(slug)
+        if not urls:
+            return {"ok": False, "platform": name, "reason": "адрес каталога не задан"}
+        target = urls[0]
+    got = probe_browser(
+        target, seconds=seconds,
+        save_to=os.path.join(PAGES_DIR, f"{slug}.html") if save else "")
     got["platform"] = name
+    got["asked"] = target
     got["parsing"] = "разбора нет: ни одно имя поля не сверено ответом площадки"
     return got

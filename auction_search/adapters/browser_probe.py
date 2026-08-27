@@ -48,11 +48,16 @@ THIRD_PARTY = (
 REFUSAL_TITLE_MARKS = ("403", "401", "Forbidden", "Access denied", "Доступ запрещ")
 
 
-def probe_browser(url: str, seconds: float = 45.0) -> dict[str, Any]:
+def probe_browser(url: str, seconds: float = 45.0, save_to: str = "") -> dict[str, Any]:
     """Открыть адрес браузером и показать, за чем страница ходила сама.
 
     Главное в ответе — не текст страницы, а `data_calls`: адреса, по которым
     она забирала данные. Ради них проба и заводилась.
+
+    `save_to` кладёт страницу файлом. Читатель пишется по НАСТОЯЩЕЙ странице и
+    ею же проверяется — как читатели книги и выгрузки CRM писались по файлам
+    владельца. Разбор, написанный по описанию страницы, — это разбор по
+    догадке, и он уже приезжал на прод тридцатью гаражами.
     """
     try:
         from playwright.sync_api import sync_playwright
@@ -104,6 +109,8 @@ def probe_browser(url: str, seconds: float = 45.0) -> dict[str, Any]:
                     "captcha": any(mark in body for mark in CHALLENGE_MARKERS),
                     "text_head": " ".join(page.inner_text("body").split())[:800],
                 })
+                if save_to:
+                    report["saved"] = _save_page(save_to, body)
             finally:
                 browser.close()
     except Exception as exc:  # noqa: BLE001
@@ -123,3 +130,22 @@ def probe_browser(url: str, seconds: float = 45.0) -> dict[str, Any]:
         report["captcha_note"] = ("слово защиты найдено в исходнике, но страница "
                                   "сходила за данными — это не проверка на робота")
     return report
+
+
+def _save_page(path: str, html: str) -> dict[str, Any]:
+    """Положить страницу файлом и сказать, что именно легло.
+
+    «Файл лежит» и «в файле страница» — разные вещи: 24.08.2026 в каталог
+    корней легла HTML-страница портала с расширением `.cer`. Поэтому рядом с
+    путём стоит размер и первые слова.
+    """
+    import pathlib
+
+    try:
+        place = pathlib.Path(path)
+        place.parent.mkdir(parents=True, exist_ok=True)
+        place.write_text(html, encoding="utf-8")
+    except OSError as exc:
+        return {"ok": False, "path": path, "reason": f"{type(exc).__name__}: {exc}"}
+    return {"ok": True, "path": str(place), "bytes": len(html.encode("utf-8")),
+            "head": html.lstrip()[:120]}

@@ -807,6 +807,8 @@ def install(app: FastAPI) -> None:
     async def auction_etp_probe_browser(
         platform: str = Query(default=""),
         seconds: float = Query(default=40.0, ge=5.0, le=90.0),
+        save: bool = Query(default=False),
+        url: str = Query(default=""),
     ) -> dict[str, Any]:
         """Каталог одной площадки, открытый настоящим браузером.
 
@@ -817,6 +819,11 @@ def install(app: FastAPI) -> None:
         По одной площадке за вызов намеренно: пять по сорок секунд не уложатся
         ни в один шлюз, а ответ, не дошедший до человека, — это ответ, которого
         нет. Без параметра маршрут перечисляет, что можно спросить.
+
+        `url=` спрашивает заданный адрес: наш сохранённый ведёт куда придётся,
+        и это видно только по ответу — у Сбербанк-АСТ каталог банкротства увёл
+        редиректом на главную. `save=1` кладёт страницу файлом: читатель
+        пишется по настоящей странице и ею же проверяется.
         """
         slug = str(platform or "").strip().lower()
         if not slug:
@@ -827,7 +834,8 @@ def install(app: FastAPI) -> None:
                 "parsing": "разбора нет: ни одно имя поля не сверено ответом площадки",
             }
         return await run_in_threadpool(
-            lambda: etp_probe_browser(slug, seconds=float(seconds)))
+            lambda: etp_probe_browser(slug, seconds=float(seconds),
+                                      save=bool(save), url=str(url or "")))
 
     # Срок на сбор каталога. Шлюз рвёт соединение на шестидесяти секундах и
     # отдаёт свою HTML-страницу; браузер разбирает её как JSON и показывает

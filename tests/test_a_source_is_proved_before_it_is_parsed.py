@@ -281,3 +281,41 @@ def test_third_party_analytics_does_not_drown_the_addresses() -> None:
     assert "mc.yandex.ru" in module.THIRD_PARTY and "mindbox.ru" in module.THIRD_PARTY
     body = shared()
     assert "third_party_calls" in body, "сколько отсеяли — говорим, а не прячем"
+
+
+def test_the_page_can_be_saved_for_the_reader_to_be_written_against() -> None:
+    """Читатель пишется по НАСТОЯЩЕЙ странице и ею же проверяется — как
+    читатели книги и выгрузки CRM писались по файлам владельца. Разбор по
+    описанию страницы уже приезжал на прод тридцатью гаражами."""
+    body = shared()
+    assert "save_to" in body and "_save_page(" in body
+    # «Файл лежит» и «в файле страница» — разные вещи.
+    assert '"bytes"' in body and '"head"' in body
+
+
+def test_the_saved_page_reports_what_actually_landed(tmp_path) -> None:
+    from auction_search.adapters import browser_probe as module
+
+    got = module._save_page(str(tmp_path / "deep" / "page.html"), "<html>привет</html>")
+    assert got["ok"] and got["bytes"] > 0
+    assert got["head"].startswith("<html>")
+
+    # Файл на месте каталога — запись не пройдёт, и это надо сказать, а не
+    # промолчать: молчаливый отказ читался бы как удавшаяся запись.
+    (tmp_path / "занято").write_text("не каталог", encoding="utf-8")
+    bad = module._save_page(str(tmp_path / "занято" / "page.html"), "x")
+    assert bad["ok"] is False and bad["reason"]
+
+
+def test_the_probe_can_be_pointed_at_a_given_address() -> None:
+    """Наш сохранённый адрес ведёт куда придётся, и это видно только по
+    ответу: у Сбербанк-АСТ каталог банкротства увёл редиректом на главную."""
+    from auction_search.adapters import etp_probe as module
+
+    refused = module.probe_browser_platform("etprf", url="http://example.com")
+    assert refused["ok"] is False and "https://" in refused["reason"]
+
+    api = (ROOT / "auction_search" / "api.py").read_text()
+    block = api[api.index("async def auction_etp_probe_browser("):]
+    block = block[:block.index("\n    # Срок на сбор каталога")]
+    assert "save: bool" in block and "url: str" in block
