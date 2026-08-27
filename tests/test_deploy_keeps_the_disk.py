@@ -24,6 +24,20 @@ SCRIPT = ROOT / "deploy-developaid.sh"
 TEXT = SCRIPT.read_text(encoding="utf-8")
 
 
+def deploy_body() -> str:
+    """Тело выкатки — от её заголовка до скачивания образа.
+
+    Срез начинался с первого `registry_login`, и появившийся выше сторож
+    обновления забрал якорь себе: проверки честно смотрели не туда и валились
+    на коде, к которому не относятся. Место называется своим именем — заголовком
+    выкатки, которого больше нигде нет.
+    """
+    start = TEXT.index('say "=== выкатка ${TAG} ==="')
+    body = TEXT[start:TEXT.index('say "скачивание ${IMAGE}"')]
+    assert "registry_login" in body, "вход в реестр стоит в выкатке, а не только у сторожа"
+    return body
+
+
 def test_the_script_is_valid_shell():
     done = subprocess.run(["sh", "-n", str(SCRIPT)], capture_output=True, text=True)
     assert done.returncode == 0, done.stderr
@@ -52,7 +66,7 @@ def test_old_images_are_trimmed_after_success_not_before():
 
 
 def test_the_space_is_checked_before_pulling():
-    body = TEXT[TEXT.index("registry_login\n"):TEXT.index('say "скачивание ${IMAGE}"')]
+    body = deploy_body()
     assert "free_mb" in body and "NEED_MB" in body, "мало места — прибираем до скачивания"
 
 
@@ -60,7 +74,7 @@ def test_the_disk_is_said_out_loud_even_when_there_is_room():
     """Проверка молчала, пока не считала нужным прибираться, и молчала же,
     когда прибирать было нечего: со стороны выкатка выглядела так, будто диск
     никто не смотрел, — а потом упиралась в него (владелец, 20.08.2026)."""
-    body = TEXT[TEXT.index("registry_login\n"):TEXT.index('say "скачивание ${IMAGE}"')]
+    body = deploy_body()
     announce = body[:body.index("if [")]
     assert "free_mb" in announce and "total_mb" in announce, announce
     assert "say" in announce, "остаток печатается всегда, а не только при уборке"
@@ -69,7 +83,7 @@ def test_the_disk_is_said_out_loud_even_when_there_is_room():
 def test_a_full_disk_is_refused_before_the_pull():
     """`docker pull` на забитом диске падает на середине распаковки: сообщение
     приходит от докера, звучит как сетевое, и оставляет мусор."""
-    body = TEXT[TEXT.index("registry_login\n"):TEXT.index('say "скачивание ${IMAGE}"')]
+    body = deploy_body()
     assert "FLOOR_MB" in body and "ОТКАЗ" in body, body
     assert "disk_report" in body, "отказ показывает, чем занят диск"
     assert "exit 1" in body

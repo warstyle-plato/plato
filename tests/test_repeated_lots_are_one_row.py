@@ -67,8 +67,7 @@ def families(lots: list[dict]) -> list[dict]:
     node = shutil.which("node")
     if not node:
         pytest.skip("node недоступен")
-    parts = [const_line("const LOT_BASE_BY_KIND="), const_line("const LOT_SMALL_SQM="),
-             const_line("const FAMILY_MIN=")]
+    parts = [const_line("const LOT_BASE_BY_KIND="), const_line("const FAMILY_MIN=")]
     parts += [function_source(name) for name in FUNCTIONS]
     program = "\n".join(parts) + (
         "\nconst out=lotFamilies(" + json.dumps(lots) + ")"

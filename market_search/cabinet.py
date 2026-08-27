@@ -193,6 +193,7 @@ border-radius:0 6px 6px 0;margin-top:10px;color:#5a3a1c}
 .switch button{border:0;background:#fff;color:#5b6b7d;font:inherit;font-size:12px;padding:4px 10px;cursor:pointer}
 .switch button+button{border-left:1px solid #edf1f5}
 .switch button.on{background:#4E9BDE;color:#fff}
+.sumup.empty{border-left-color:#c9d4de;color:#6b7a88;background:#fbfcfd}
 .sumup{margin-top:8px;font-size:13px;line-height:1.45;color:#33424f;background:#f6f9fc;border-left:3px solid #4E9BDE;border-radius:0 4px 4px 0;padding:8px 10px}
 details>summary{cursor:pointer;font-size:12.5px;color:#5b6b7d;margin:4px 0}
 table{width:100%;border-collapse:collapse;font-size:14px}.tablescroll{overflow-x:auto;margin:0 -2px}.tablescroll table{min-width:max-content}.tablescroll th,.tablescroll td{white-space:nowrap}.tablescroll td:first-child,.tablescroll th:first-child{white-space:normal;min-width:180px}
@@ -1788,11 +1789,14 @@ const SALES_COLORS=['#4E9BDE','#C4581B','#5FA98A','#8E7CC3','#D0A24C','#8798a8']
 // «один график с переключателем — в метрах, лотах, со средней ценой»
 // (владелец, 26.08.2026). Четыре графика подряд читаются как четыре разных
 // предмета, а это один предмет с четырьмя мерами.
+// Переключатель — только про ОБЪЁМ: рубли, метры, лоты. Цена вкладкой не
+// бывает: она про другое, чем объём, и живёт линией на своей шкале справа, на
+// каждом графике — «цена должна была присутствовать всегда только линией, а не
+// отдельной вкладкой и столбиками» (владелец, 26.08.2026).
 const SALES_METRICS=[
   {key:'amount', name:'млн ₽',  of:m=>m.amount,  show:v=>num(v/1e6,1), axis:v=>num(v/1e6)},
   {key:'area',   name:'м²',     of:m=>m.area,    show:v=>num(v),        axis:v=>num(v)},
   {key:'units',  name:'лоты',   of:m=>m.units,   show:v=>num(v),        axis:v=>num(v)},
-  {key:'price',  name:'₽/м²',   of:m=>m.price_per_sqm, show:v=>num(v),  axis:v=>num(v/1000)+' тыс'},
 ];
 let salesMetric='amount';
 let plansMetric='amount';
@@ -1822,12 +1826,20 @@ function barChart(rows, opts){
   const all=bars.concat(...lines.map(l=>rows.filter(r=>has(r[l.key])).map(r=>Number(r[l.key]))));
   if(!all.length) return '<div class="muted" style="font-size:12.5px">Показывать нечего.</div>';
   const max=Math.max(...all,1);
-  // Цена от нуля не читается: 500 и 800 тысяч на шкале от нуля — столбики
-  // почти одной высоты. Урезанная шкала при этом преувеличивает разницу,
-  // поэтому она не молчаливая: начало сказано прямо под графиком.
-  const low=Math.min(...all);
-  const base=opts.zeroless&&low>0?Math.floor(low*0.9/1000)*1000:0;
-  const W=700,H=250,L=58,R=12,T=16,B=46;
+  // Левая шкала всегда от нуля: на ней только объём — рубли, метры, лоты, — а
+  // у них ноль настоящее начало отсчёта, и урезать его значит преувеличивать
+  // разницу. Урезается только цена, и она живёт на своей шкале справа.
+  const base=0;
+  // Цена живёт на своей шкале справа и присутствует ВСЕГДА, а не отдельной
+  // вкладкой со столбиками (владелец, 26.08.2026): она про другое, чем объём,
+  // и на общей шкале с рублями продаж её просто не видно.
+  const right=(opts.rightLines||[]).filter(l=>rows.some(r=>has(r[l.key])));
+  const rightAll=right.flatMap(l=>rows.filter(r=>has(r[l.key])).map(r=>Number(r[l.key])));
+  const rightMax=rightAll.length?Math.max(...rightAll):0;
+  // Цена от нуля не читается — своя шкала начинается ниже минимума, и это
+  // сказано подписью оси.
+  const rightBase=rightAll.length?Math.floor(Math.min(...rightAll)*0.9/1000)*1000:0;
+  const W=700,H=250,L=58,R=right.length?58:12,T=16,B=46;
   const step=(W-L-R)/rows.length;
   const bw=Math.max(6,Math.min(40,step-10));
   const x=i=>L+i*step+step/2;
@@ -1836,6 +1848,11 @@ function barChart(rows, opts){
   [0,0.5,1].forEach(f=>{const v=base+(max-base)*f;
     svg+=`<line x1="${L}" y1="${y(v)}" x2="${W-R}" y2="${y(v)}" stroke="#e6ecf2"/>`
        +`<text x="${L-6}" y="${y(v)+4}" text-anchor="end" font-size="10" fill="#8798a8">${opts.axis(v)}</text>`;});
+  const ry=v=>T+(H-T-B)*(1-((Number(v)||0)-rightBase)/((rightMax-rightBase)||1));
+  if(right.length){
+    [0,0.5,1].forEach(f=>{const v=rightBase+(rightMax-rightBase)*f;
+      svg+=`<text x="${W-R+6}" y="${ry(v).toFixed(1)}" font-size="10" fill="#8798a8">${opts.rightAxis(v)}</text>`;});
+  }
   rows.forEach((r,i)=>{
     if(!has(r.value)) return;
     const top=y(r.value), h=Math.max(1,(H-T-B)-(top-T));
@@ -1860,13 +1877,32 @@ function barChart(rows, opts){
       svg+=`<circle cx="${x(i).toFixed(1)}" cy="${y(r[l.key]).toFixed(1)}" r="3" fill="${l.color}"`
          +` data-tip="${esc(r.label+': '+l.name+' '+opts.show(r[l.key]))}"></circle>`; });
   });
+  right.forEach(l=>{
+    let broken=true;
+    const path=rows.map((r,i)=>{
+      if(!has(r[l.key])){ broken=true; return null }
+      const point=`${broken?'M':'L'}${x(i).toFixed(1)} ${ry(r[l.key]).toFixed(1)}`;
+      broken=false;
+      return point;
+    }).filter(Boolean).join(' ');
+    // Линия цены тоньше и чуть бледнее линий объёма: их пять на одном поле, и
+    // без разницы в весе они читаются как один клубок.
+    if(path) svg+=`<path d="${path}" fill="none" stroke="${l.color}" stroke-width="1.4"`
+      +` opacity="0.85"${l.dash?' stroke-dasharray="4 3"':''}/>`;
+    rows.forEach((r,i)=>{ if(!has(r[l.key])) return;
+      svg+=`<circle cx="${x(i).toFixed(1)}" cy="${ry(r[l.key]).toFixed(1)}" r="2.5" fill="${l.color}"`
+         +` data-tip="${esc(r.label+': '+l.name+' '+opts.rightShow(r[l.key]))}"></circle>`; });
+  });
   rows.forEach((r,i)=>{
     if(rows.length>16&&i%2) return;
     svg+=`<text x="${x(i).toFixed(1)}" y="${H-26}" text-anchor="middle" font-size="9" fill="#8798a8">${esc(r.short||r.label)}</text>`;
   });
-  const legend=[{name:opts.factName||'факт',color:'#4E9BDE'}].concat(lines.map(l=>({name:l.name,color:l.color})));
+  const legend=[{name:opts.factName||'факт',color:'#4E9BDE'}]
+    .concat(lines.map(l=>({name:l.name,color:l.color})))
+    .concat(right.map(l=>({name:l.name,color:l.color})));
   svg+=`<text x="${L}" y="${H-8}" font-size="10" fill="#8798a8">${esc(opts.caption||'')}`
-     +`${base?esc('; шкала от '+opts.axis(base)+', а не от нуля — на нуле разница цен не видна'):''}</text>`;
+     +`${right.length?esc('; справа '+(opts.rightName||'цена')+', шкала от '+opts.rightAxis(rightBase)
+        +' — цена от нуля не читается'):''}</text>`;
   let out='<div class="wrap">'+svg+'</svg></div><div class="muted" style="font-size:12px">';
   legend.forEach(l=>{ out+=`<span style="margin-right:14px;white-space:nowrap">`
     +`<span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${l.color};margin-right:4px"></span>`
@@ -1882,11 +1918,13 @@ function salesChartBlock(d){
   const rows=(d.dynamics||[]).filter(m=>m.amount>0).map(m=>({
     label:m.month, short:String(m.month).slice(2),
     value:metric.of(m), over:salesMetric==='amount'?num(m.units):'',
+    price:m.price_flats,
     tip:m.month+': '+num(m.amount/1e6,1)+' млн ₽, '+num(m.units)+' лот(ов), '+num(m.area)+' м²'
        +(m.price_per_sqm?', '+num(m.price_per_sqm)+' ₽/м²':''),
   }));
   let html=barChart(rows,{axis:metric.axis,show:metric.show,factName:'факт, '+metric.name,
-    zeroless:salesMetric==='price',
+    rightLines:[{key:'price',name:'цена квартир, ₽/м²',color:'#C4581B'}],
+    rightAxis:v=>num(v/1000)+' тыс', rightShow:v=>num(v)+' ₽/м²', rightName:'цена квартир',
     caption:metric.name+' по месяцам'+(salesMetric==='amount'?'; цифра над столбиком — лотов':'')});
   html+='<details style="margin-top:8px"><summary>Помесячно числами</summary>';
   html+=salesTable(['Месяц','Лотов','м²','млн ₽','₽/м²'],
@@ -1984,6 +2022,38 @@ function salesEscrowBlock(d){
   notes.forEach(line=>{
     html+=`<div class="muted" style="font-size:12.5px;margin-top:6px">${esc(line)}</div>`;
   });
+  return html;
+}
+
+// Воронка обращений: верх, которого в своде не было вовсе — он начинался с
+// подписанного договора. Доли идут вместе с числом обращений: на пяти бронях
+// доля не значит ничего, и человек должен это видеть.
+function salesFunnelBlock(d){
+  const lead=((d.demand||{}).funnel)||{}, q=lead.quality||{};
+  if(!(lead.by_source||[]).length) return '';
+  const table=(rows,head)=>salesTable([head,'Обращений','Броней','Доля'],
+    rows.filter(r=>r.deals>=3).map(r=>[esc(r.name), num(r.deals), num(r.booked),
+      r.share===null||r.share===undefined?'—':num(r.share*100,1)+'%']));
+  let html='<div class="kv">'
+    +tile('Обращений', num(q.calls||0), 'источник «Звонок»')
+    +tile('Целевых', num(q.target||0), q.not_a_lead?num(q.not_a_lead)+' нецелевых (реклама, услуги)':'')
+    +tile('Доходит до брони', q.booked_target===null||q.booked_target===undefined?'—':num(q.booked_target*100,1)+'%')
+    +tile('Без следа в карточке', num(q.blank||0),
+          'ни потребности, ни следующего шага')
+    +'</div>';
+  html+='<h4 style="margin:14px 0 2px;font-size:13px">Источники</h4>'+table(lead.by_source,'Источник');
+  html+='<h4 style="margin:14px 0 2px;font-size:13px">Ответственные</h4>'+table(lead.by_manager,'Менеджер');
+  // Оговорки приходят с сервера: они про то, чего в данных нет.
+  const notes=lead.notes||[];
+  if(notes.length){
+    html+=`<div class="muted" style="font-size:12.5px;margin-top:10px">${esc(notes[0])}</div>`;
+    if(notes.length>1){
+      html+='<details style="margin-top:4px"><summary>Чего эта воронка не даёт</summary>'
+        +'<div class="muted" style="font-size:12.5px">'
+        +notes.slice(1).map(x=>'<div style="margin-top:4px">'+esc(x)+'</div>').join('')
+        +'</div></details>';
+    }
+  }
   return html;
 }
 
@@ -2139,7 +2209,6 @@ function salesChannelsBlock(d){
 const PLAN_METRICS=[
   {key:'amount', name:'млн ₽', axis:v=>num(v/1e6),      show:v=>num(v/1e6,1)+' млн ₽'},
   {key:'area',   name:'м²',    axis:v=>num(v),          show:v=>num(v)+' м²'},
-  {key:'price',  name:'₽/м²',  axis:v=>num(v/1000)+' тыс', show:v=>num(v)+' ₽/м²'},
 ];
 function salesPlansBlock(d){
   const plans=d.plans||{};
@@ -2149,21 +2218,30 @@ function salesPlansBlock(d){
   const rows=quarters.map(q=>({
     label:q.label, short:q.label.replace(' ',''),
     value:q['fact_'+metric.key], pale:q.partial,
-    fm:q['fm_'+metric.key], bank:metric.key==='amount'?q.bank_amount:null,
+    fm:q['fm_'+metric.key], bank:q['bank_'+metric.key],
+    factPrice:q.fact_price, fmPrice:q.fm_price, bankPrice:q.bank_price,
     over:q.partial?'часть':'',
     tip:q.label+': факт '+metric.show(q['fact_'+metric.key])+(q.partial?' (месяцев в квартале — '+q.months+')':''),
   }));
-  const lines=[{key:'fm',name:'план ФМ',color:'#C4581B'}];
-  if(metric.key==='amount') lines.push({key:'bank',name:'план банка',color:'#8E7CC3',dash:true});
+  const lines=[{key:'fm',name:'план ФМ',color:'#C4581B'},
+               {key:'bank',name:'план банка',color:'#8E7CC3',dash:true}];
   let html=barChart(rows,{lines,axis:metric.axis,show:metric.show,factName:'факт',
-    zeroless:metric.key==='price',
+    // Цвет линии цены не повторяет цвет столбиков: одинаковый синий читается
+    // как «та же величина другой формой», а это другая шкала и другой предмет.
+    rightLines:[{key:'factPrice',name:'цена факт',color:'#1B5E77'},
+                {key:'fmPrice',name:'цена ФМ',color:'#D0A24C'},
+                {key:'bankPrice',name:'цена банка',color:'#5FA98A',dash:true}],
+    rightAxis:v=>num(v/1000)+' тыс', rightShow:v=>num(v)+' ₽/м²',
+    rightName:'цена квартир, ₽/м²',
     caption:metric.name+' по кварталам'});
   html+='<div class="muted" style="font-size:12.5px;margin-top:6px">'
     +'Кварталы, а не месяцы: план банка квартальный, и раскладывать его по месяцам мы не станем — '
     +'сделать это можно тремя способами, и любой будет нашей выдумкой. '
-    +(metric.key==='amount'
-      ? 'Листы: «'+esc(plans.fm_sheet||'—')+'» и «'+esc(plans.bank_sheet||'—')+'».'
-      : 'Плана банка на этой мере нет: в его строках только деньги — линии не будет, и это не ноль.')
+    +'Листы: \u00ab'+esc(plans.fm_sheet||'\u2014')+'\u00bb и \u00ab'+esc(plans.bank_sheet||'\u2014')+'\u00bb. '
+    +'Линия банка — валовые продажи, цена × объём его же строк. Строка «Продажи с учётом '
+    +'рассрочки» — про другое: это деньги, доходящие до эскроу, и её место рядом с нашим '
+    +'фактическим наполнением, а не рядом с суммой договоров. '
+    +'Цена — по квартирам у всех троих: общая цена метра смешала бы паркинг с жильём.'
     +(rows.some(r=>r.pale)?' Бледный столбик — незакрытый квартал: в нём меньше трёх месяцев факта, и рядом с полным плановым он читался бы как провал.':'')
     +'</div>';
   return html;
@@ -2175,6 +2253,7 @@ const SALES_BLOCKS=[
   {id:'sb-dyn',  name:'Динамика'},
   {id:'sb-mix',  name:'Квартирография'},
   {id:'sb-want', name:'Спрос'},
+  {id:'sb-lead', name:'Обращения'},
   {id:'sb-prod', name:'Продукты'},
   {id:'sb-pay',  name:'Оплата'},
   {id:'sb-plan', name:'Планы'},
@@ -2190,9 +2269,27 @@ function salesNav(have){
 
 // Вывод под блоком. Текст приходит с сервера — фраза, собранная на экране из
 // своей арифметики, была бы вторым счётом той же величины.
+// Чего не хватает разделу, чтобы вывод сложился. Пустое место под блоком и
+// отсутствующий вывод выглядят одинаково, а значат разное: первое — «не из
+// чего», второе — «сказать нечего».
+const NOTE_NEEDS={
+  pool:'плана финмодели — из него берётся ожидаемая выручка проекта',
+  dynamics:'хотя бы четырёх месяцев продаж',
+  bands:'квартирографии книги — листа «график продажи_1»',
+  demand:'выгрузки сделок CRM',
+  funnel:'выгрузки сделок CRM',
+  products:'договоров хотя бы по одному продукту',
+  payment:'условий оплаты в карточках CRM',
+  channels:'канала продаж в договорах',
+  fm:'плана нашей финмодели',
+  bank:'плана банка',
+  escrow:'листа «КРЕДИТЫ» книги финмодели',
+};
 function salesNote(d, key){
   const text=(d.conclusions||{})[key];
-  return text?`<div class="sumup">${esc(text)}</div>`:'';
+  if(text) return `<div class="sumup">${esc(text)}</div>`;
+  const need=NOTE_NEEDS[key];
+  return need?`<div class="sumup empty">Вывод не сложился: не хватает ${esc(need)}.</div>`:'';
 }
 
 function salesSection(id, title, body, note, tools){
@@ -2227,6 +2324,7 @@ function renderSales(d){
   if((d.dynamics||[]).length>1) have.push('sb-dyn');
   if((pool.bands||[]).length||(d.by_size||[]).length) have.push('sb-mix');
   if(((d.demand||{}).bands||[]).length) have.push('sb-want');
+  if((((d.demand||{}).funnel||{}).by_source||[]).length) have.push('sb-lead');
   if((d.by_product||[]).length) have.push('sb-prod');
   if((d.by_payment||[]).length) have.push('sb-pay');
   if(((d.plans||{}).quarters||[]).length>1) have.push('sb-plan');
@@ -2262,6 +2360,9 @@ function renderSales(d){
 
   html+=salesSection('sb-want','Спрос против витрины',
     salesDemandBlock(d), salesNote(d,'demand'));
+
+  html+=salesSection('sb-lead','Воронка обращений',
+    salesFunnelBlock(d), salesNote(d,'funnel'));
 
   if((d.by_product||[]).length){
     html+=salesSection('sb-prod','Продукты',
@@ -2400,7 +2501,25 @@ function salesDigest(d, limit){
       +`, осталось ${num(b.left_units)}`
       +`${b.left_share===null?'':' ('+num(b.left_share*100,1)+'% остатка витрины)'}`);
   });
-  add('пул и вымывание', poolLines);
+  add('пул и вымывание', poolLines, 6);
+  const lead=((d.demand||{}).funnel)||{}, lq=lead.quality||{};
+  const leadLines=[];
+  if(lq.target){
+    leadLines.push(`ВОРОНКА: звонков ${num(lq.calls)}, целевых ${num(lq.target)}, `
+      +`до брони ${lq.booked_target===null?'—':num(lq.booked_target*100,1)+'%'}; `
+      +`без следа в карточке ${num(lq.blank)}.`);
+  }
+  (lead.by_source||[]).filter(x=>x.deals>=10).slice(0,4).forEach(x=>{
+    leadLines.push(`ИСТОЧНИК ${x.name}: ${num(x.deals)} обращений, броней ${num(x.booked)}`
+      +`${x.share===null||x.share===undefined?'':' ('+num(x.share*100,1)+'%)'}`);
+  });
+  // Менеджеров берём троих самых нагруженных: разброс виден и на них, а
+  // двенадцать строк съедают место, которого у вопроса нет.
+  (lead.by_manager||[]).filter(x=>x.deals>=20).slice(0,3).forEach(x=>{
+    leadLines.push(`МЕНЕДЖЕР ${x.name}: ${num(x.deals)} обращений, броней ${num(x.booked)}`
+      +`${x.share===null||x.share===undefined?'':' ('+num(x.share*100,1)+'%)'}`);
+  });
+  add('воронка обращений', leadLines);
   add('каналы', (d.by_channel||[]).map(x=>`КАНАЛ ${x.channel}${x.own?' (свой отдел)':''}: ${num(x.contracts)} шт, `
     +`${num(x.amount/1e6,1)} млн ₽; комиссия ${x.fee_unknown?'не заполнена':num(x.broker_fee/1e6,2)+' млн'}, `
     +`премия ОП ${num(x.sales_bonus/1e6,2)} млн, вместе ${num(x.cost_of_sales*100,2)}% от продаж`

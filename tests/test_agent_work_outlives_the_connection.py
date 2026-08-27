@@ -294,6 +294,12 @@ def test_no_step_of_the_chain_holds_a_long_connection():
 
 
 def test_the_handoff_is_written_to_the_log():
-    """«Платон молчит» разбирается по логу: видно, что работа принята."""
-    source = inspect.getsource(core.agent_chat)
+    """«Платон молчит» разбирается по логу: видно, что работа принята.
+
+    Строка живёт в самой передаче работы, а не в маршруте: тем же путём теперь
+    ходит кабинет рынка, и запись «принято» нужна ему ровно так же. Маршрут при
+    этом обязан звать её — иначе строка есть, а на пути вопроса её нет.
+    """
+    source = inspect.getsource(core.plato_answer_handoff)
     assert "handed off to polling" in source
+    assert "plato_answer_handoff(" in inspect.getsource(core.agent_chat)

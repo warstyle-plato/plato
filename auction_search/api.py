@@ -808,6 +808,10 @@ def install(app: FastAPI) -> None:
                 {
                     **_public_lot_dict(lot),
                     "analysis": _analysis_support(lot.source.lot_url),
+                    # Соответствие профилю считает сервер по измеренному
+                    # эталону сделок: балл, собранный в браузере, был бы
+                    # вторым счётом той же величины.
+                    "fit": profile_fit(_public_lot_dict(lot)),
                     "screening": {
                         **AuctionSearchService.screen_lot(lot),
                         "documents_count": len(lot.documents),

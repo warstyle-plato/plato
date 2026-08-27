@@ -50,7 +50,7 @@ AUCTIONS_PAGE = r'''<!doctype html>
   </div>
   <div class="filters" id="auctionFilters">
     <select id="source"><option value="all">Все официальные источники</option><option value="investmoscow">Торги Москвы → ЭТП</option><option value="lot_online">РАД / Lot-online</option><option value="roseltorg">Росэлторг</option></select>
-    <select id="origin" title="Городские торги и банкротные — разные рынки: у города цена не снижается, у банкротного лота она ползёт от начальной к минимальной по графику"><option value="all">Все торги</option><option value="city">Городские</option><option value="bankruptcy">Банкротные</option><option value="other">Прочие</option></select>
+    <select id="origin" title="Городские торги и банкротные — разные рынки: у города цена не снижается, у банкротного лота она ползёт от начальной к минимальной по графику"><option value="all">Все торги</option><option value="city">Городские</option><option value="bankruptcy">Банкротные</option><option value="seized">Арест и ИП</option><option value="other">Прочие</option></select>
     <select id="kind"><option value="all">Все типы</option><option value="land">— Земля</option><option value="building">— Объекты</option><option value="krt">КРТ</option><option value="land_sale">Продажа земли</option><option value="land_lease">Аренда земли</option><option value="property_complex">ЗИК</option><option value="unfinished">Незавершёнка</option></select>
     <select id="noise"><option value="0">Девелоперские</option><option value="1">Показать всё</option></select>
     <input id="search" placeholder="Адрес / кадастр / лот">
@@ -110,7 +110,7 @@ function shortDate(v){if(!v)return '—';const d=new Date(v);return Number.isNaN
 // Предмет лота — «земля или уже построенное» — считает сервер полем subject.
 // Своей копии правила на странице нет: разойдись они, один и тот же лот попадал
 // бы в разные группы на экране и в выгрузке.
-const ORIGIN_LABEL={city:'Городские',bankruptcy:'Банкротные',other:'Прочие'};
+const ORIGIN_LABEL={city:'Городские',bankruptcy:'Банкротные',seized:'Арест и ИП',other:'Прочие'};
 function lotMatchesKind(lot,wanted){
  if(wanted==='all')return true;
  if(wanted==='land'||wanted==='building')return (lot.subject||'')===wanted;
@@ -148,7 +148,6 @@ function priceBattery(lot){
 // представляет, и названные снижения за то, чего у него нет. Поднимать балл
 // нечем: у лота нет своей экономики, пока его не разобрали в модель.
 const LOT_BASE_BY_KIND={krt:45,land_sale:40,land_lease:30,property_complex:25};
-const LOT_SMALL_SQM=500;
 function lotDeadlineDays(l){
  const raw=l.application_deadline;
  if(!raw)return null;
@@ -185,13 +184,33 @@ function lotScore(l){
  // Лот, который нечем разобрать, до модели не доходит вовсе. Это снижение, а
  // не изгнание из списка: он остаётся видимым и называет причину.
  if(l.analysis&&l.analysis.available===false)cuts.push({label:'этот лот нечем разобрать: '+String(l.analysis.reason||'источник не поддержан'),points:30});
- // Гараж 26 м² и помещение 12 м² — не площадка под девелопмент ни при каком
- // балле. Это СНИЖЕНИЕ, а не фильтр: лот остаётся в списке и называет причину,
- // потому что молча убранный лот читается как его отсутствие.
- const scale=area||build;
- if(scale&&scale<LOT_SMALL_SQM)cuts.push({label:`объект ${new Intl.NumberFormat('ru-RU',{maximumFractionDigits:0}).format(scale)} м² — под девелопмент это не площадка`,points:45});
+ // Не площадка под девелопмент — это СНИЖЕНИЕ, а не фильтр: лот остаётся в
+ // списке и называет причину, потому что молча убранный лот читается как его
+ // отсутствие.
+ //
+ // Порог здесь больше не наш. Прежде стояло «меньше 500 м² — не площадка»,
+ // придуманное на глаз; в реестре сделок владельца четверть — участки до
+ // 1 109 м², то есть порог отсекал то, что он покупал. Теперь границу задаёт
+ // измеренный эталон сделок, и считает соответствие сервер (`fit`).
+ //
+ // Граница односторонняя: снизу. «Крупнее лучше! просто тогда таких сделок не
+ // было» (владелец, 26.08.2026) — за верхний край не снижаем вовсе.
+ const fit=l.fit||{};
+ if(fit.fit!==null&&fit.fit!==undefined&&fit.fit<1){
+   const why=(fit.misses||[]).join('; ')||'лот мельче профиля сделок';
+   cuts.push({label:'не дотягивает до профиля сделок: '+why, points:Math.round((1-fit.fit)*60)});
+ }
  const concerns=(s.concerns||[]).length;
  if(concerns)cuts.push({label:`замечаний скрининга: ${concerns}`,points:Math.min(15,concerns*5)});
+ // Арест и исполнительное производство почти не доходят до сделки: в реестре
+ // владельца из пятнадцати таких лотов с прошедшими торгами продался один.
+ // Это единственное, что реестр показывает уверенно, — остальные доли считаны
+ // на знаменателе, где «нет цены победителя» значит и «не продалось», и «ещё
+ // идёт», а различить их в файле нечем. Поэтому одно названное снижение, а не
+ // веса по всем происхождениям.
+ if(l.origin==='seized')cuts.push({
+   label:'арест или исполнительное производство: в реестре продался 1 лот из 15',
+   points:35});
 
  const cut=Math.min(95,cuts.reduce((sum,c)=>sum+c.points,0));
  const score=Math.max(0,Math.min(100,Math.round(base*(1-cut/100))));

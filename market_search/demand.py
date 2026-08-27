@@ -39,6 +39,7 @@ _COLUMNS = {
     "created": "Дата создания",
     "comment": "Комментарий",
     "source": "Источник",
+    "manager": "Ответственный",
     "source_detail": "Дополнительно об источнике",
     "amount": "Сумма",
     "project": "ЖК",
@@ -206,6 +207,13 @@ def read_demand(data: bytes) -> dict[str, Any]:
             "budget_min": budgets[0] if budgets else None,
             "budget_max": budgets[-1] if budgets else None,
             "wants": [name for name, pattern in _WANTS if pattern.search(comment)],
+            "manager": _text(cell("manager")),
+            # Что осталось в карточке после разговора. Признаки считаются здесь,
+            # рядом с текстом, и наружу уходят только они: сам комментарий полон
+            # имён и телефонов и за пределы читателя не выходит.
+            "need_asked": bool(NEED_ASKED.search(comment)),
+            "next_step": bool(NEXT_STEP.search(comment)),
+            "not_a_lead": bool(NOT_A_LEAD.search(comment)),
         })
     # Пустая колонка — находка, а не пустяк: «История касаний» и «Комментарий
     # по касанию» есть в шапке и не заполнены ни разу, и именно в них лежал бы
@@ -305,6 +313,7 @@ def demand_summary(deals: list[dict[str, Any]], bands: list[dict[str, Any]] | No
             f"{over} {_plural(over, 'запрос', 'запроса', 'запросов')} крупнее самого "
             f"большого лота проекта ({_dec(top)} м²) — в полосы они не попадают вовсе.")
     return {
+        "funnel": funnel(deals, read),
         "deals": float(len(deals)),
         "with_area": float(len(asked)),
         "with_budget": float(len(budgets)),
@@ -317,3 +326,92 @@ def demand_summary(deals: list[dict[str, Any]], bands: list[dict[str, Any]] | No
                   for name, count in sorted(wants.items(), key=lambda x: -x[1])],
         "notes": notes,
     }
+
+
+# ---------------------------------------------------------------------------
+# Воронка обращений
+# ---------------------------------------------------------------------------
+#
+# Свод продаж начинается с подписанного договора, то есть с конца. Верх воронки
+# — обращения — не показан вовсе, а он объясняет остальное: девять из десяти
+# обращений это звонки с конверсией в бронь около трёх процентов, тогда как
+# агентские каналы дают тридцать шесть.
+#
+# Чего эта воронка НЕ даёт, сказано вслух рядом с ней: денег у обращения нет
+# (сумма заполнена у трёх сделок из пятисот семидесяти трёх), и связи с
+# конкретным договором тоже — ни номера, ни объекта. Сшить обращение с ДДУ
+# нечем, поэтому рядом стоят только помесячные ряды, а не «этот звонок стал
+# этой сделкой».
+
+# Что осталось в карточке после разговора. Меряем КАРТОЧКУ, а не разговор:
+# комментарий — пересказ BitrixGPT, и отсутствие площади в нём может значить,
+# что её спрашивали, а пересказ не записал. Но и это результат: если в карточке
+# ничего не осталось, для компании звонка не было — перезвонить не с чем.
+NEED_ASKED = re.compile(r"кв\.?\s*м|м2|м²|бюджет|млн|комнат|студи|планировк", re.I)
+NEXT_STEP = re.compile(
+    r"перезвон|повторный звонок|встреч|запланирован|свяжется|отправ|направ|презентац", re.I)
+# Не целевое обращение: реклама, предложение услуг, чужая тема.
+NOT_A_LEAD = re.compile(
+    r"реклам|предлага(ет|л) (услуги|разместить)|яндекс еда|сотруднич|поставщик|"
+    r"вакансн|резюме|подключени[ею] к", re.I)
+CALL_SOURCE = "Звонок"
+
+
+def funnel(deals: list[dict[str, Any]], read: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Обращения → брони по источникам и по ответственным.
+
+    Бронь — не сделка, и «нет брони» у свежего обращения значит «ещё рано», а
+    не «не купили». Поэтому доли идут вместе с числом обращений: на пяти
+    бронях доля не значит ничего, и человек должен это видеть.
+    """
+    by_source: dict[str, dict[str, float]] = {}
+    by_manager: dict[str, dict[str, float]] = {}
+    for deal in deals or []:
+        booked = bool(deal.get("booked"))
+        for where, key in ((by_source, deal.get("source") or "—"),
+                           (by_manager, deal.get("manager") or "—")):
+            block = where.setdefault(str(key)[:40], {"deals": 0.0, "booked": 0.0})
+            block["deals"] += 1
+            block["booked"] += 1 if booked else 0
+
+    def rows(where: dict[str, dict[str, float]]) -> list[dict[str, Any]]:
+        out = [{"name": name, **value,
+                "share": value["booked"] / value["deals"] if value["deals"] else None}
+               for name, value in where.items()]
+        return sorted(out, key=lambda item: -item["deals"])
+
+    calls = [d for d in deals or [] if (d.get("source") or "") == CALL_SOURCE]
+    target = [d for d in calls if not d.get("not_a_lead")]
+    need = [d for d in target if d.get("need_asked")]
+    step = [d for d in target if d.get("next_step")]
+    blank = [d for d in target if not d.get("need_asked") and not d.get("next_step")]
+
+    def booked_share(rows_: list[dict[str, Any]]) -> float | None:
+        return (sum(1 for d in rows_ if d.get("booked")) / len(rows_)) if rows_ else None
+
+    quality = {
+        "calls": float(len(calls)),
+        "not_a_lead": float(len(calls) - len(target)),
+        "target": float(len(target)),
+        "need_asked": float(len(need)),
+        "next_step": float(len(step)),
+        "blank": float(len(blank)),
+        "booked_when_need_asked": booked_share(need),
+        "booked_when_blank": booked_share(blank),
+        "booked_target": booked_share(target),
+    }
+    notes = [
+        "Бронь — не сделка, а «нет брони» у свежего обращения значит «ещё рано»: "
+        "по недавним месяцам доля занижена.",
+        "Связать обращение с договором нечем: ни номера договора, ни объекта в "
+        "выгрузке нет. Ряды стоят рядом помесячно, а не сшиты.",
+        "Денег у обращения нет: сумма заполнена у единиц, поэтому «сколько выручки "
+        "принёс канал» отсюда не считается.",
+        "Меряется карточка, а не разговор: комментарий — пересказ BitrixGPT. "
+        "Но если в карточке не осталось ни потребности, ни следующего шага, "
+        "перезвонить не с чем.",
+    ]
+    for title in (read or {}).get("empty_columns") or []:
+        notes.append(f"Колонка «{title}» есть в шапке и не заполнена ни разу.")
+    return {"by_source": rows(by_source), "by_manager": rows(by_manager),
+            "quality": quality, "notes": notes}

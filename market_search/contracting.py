@@ -553,6 +553,26 @@ _BANK_PERIOD_ROW = 1
 # Строки выручки банка. Начало подписи, а не точное совпадение: у продуктов
 # хвосты разные («… квартиры», «… Машиноместа (м.м шт)»).
 BANK_REVENUE_PREFIX = "Продажи с учётом рассрочки"
+# Над строками рассрочки лист банка держит цену и объём по каждому продукту:
+# строка с именем продукта несёт цену, следующая за ней «Объем продаж» — метры
+# или штуки.
+_BANK_VOLUME_PREFIX = "Объем продаж"
+_BANK_PRODUCTS = (
+    ("Цена продажи (Квартиры)", "Квартира"),
+    ("Квартиры", "Квартира"),
+    ("Коммерческие площади", "Коммерческие площади"),
+    ("ПСН", "Коммерческие площади"),
+    ("Кладовые", "Кладовая"),
+    ("Машиноместа", "Машиноместо"),
+)
+
+
+def _bank_product(label: str) -> str | None:
+    text = _text(label)
+    for start, name in _BANK_PRODUCTS:
+        if text.startswith(start):
+            return name
+    return None
 _BANK_QUARTER = re.compile(r"^(20\d{2})\s*Q([1-4])$", re.I)
 
 
@@ -595,8 +615,84 @@ def read_bank_plan(data: bytes) -> dict[str, Any]:
         for quarter, value in line["values"].items():
             # Лист банка в тысячах рублей, свод — в рублях.
             revenue[quarter] = revenue.get(quarter, 0.0) + value * 1000.0
+    # У плана банка есть не только деньги: над строками рассрочки стоят цена и
+    # объём по каждому продукту, а ниже — пул проекта в метрах и штуках. Я
+    # однажды заявил, что их нет, не посмотрев весь лист (владелец, 26.08.2026:
+    # «почему из фин модели банка не взяли цену для сравнения? там же и цена и
+    # объём заданы»). Заявленное отсутствие проверяется так же, как заявленное
+    # наличие.
+    # Пары «цена / объём» берутся ПОЗИЦИОННО: строка продукта несёт цену, и
+    # следом за ней обязана идти строка «Объем продаж». Иначе под продукт
+    # попадает таблица пула ниже по листу — «Квартиры, м2» начинается тем же
+    # словом, лежит в тех же колонках, что первые кварталы, и молча затирает
+    # цену числом 13 425 600 ₽ за метр.
+    products: dict[str, dict[str, dict[str, float]]] = {}
+    for place, line in enumerate(lines[:-1]):
+        name = _bank_product(line["label"])
+        if not name:
+            continue
+        follows = lines[place + 1]
+        if not _text(follows["label"]).startswith(_BANK_VOLUME_PREFIX):
+            continue
+        # Первая пара, а не последняя: ниже по листу стоит блок «Факт» с теми же
+        # подписями и нулями, и «последняя выигрывает» подменяла план фактом —
+        # цена квартиры выходила нулём при заполненном плане.
+        if name in products:
+            continue
+        products[name] = {
+            # Лист банка в тысячах: цена — тыс ₽ за метр (у машино-мест за
+            # место), и приводится здесь, а не на экране.
+            "price": {key: value * 1000.0 for key, value in line["values"].items()},
+            "volume": dict(follows["values"]),
+        }
+
+    # Пул проекта стоит своей таблицей под строкой «Всего» с шапкой «м2 | шт».
+    # Ищется он по этой шапке, а не по именам продуктов: имена в листе
+    # повторяются, и первое совпадение пришлось бы на строку цены.
+    pool: dict[str, dict[str, float]] = {}
+    head_at = None
+    for number, row in enumerate(rows):
+        titles = [_text(value) for value in row[:6]]
+        if "м2" in titles and "шт" in titles:
+            head_at = number
+            break
+    if head_at is not None:
+        area_at = [_text(v) for v in rows[head_at][:6]].index("м2")
+        units_at = [_text(v) for v in rows[head_at][:6]].index("шт")
+        for row in rows[head_at + 1:]:
+            name = _bank_product(_text(row[1] if len(row) > 1 else ""))
+            if not name:
+                break
+            pool[name] = {
+                "area": _number(row[area_at]) if area_at < len(row) else 0.0,
+                "units": _number(row[units_at]) if units_at < len(row) else 0.0,
+            }
+
+    # Валовые продажи плана: цена × объём. Это НЕ то же самое, что «продажи с
+    # учётом рассрочки» — вторая строка про деньги, которые дойдут до эскроу, и
+    # сравнивать её надо с нашим фактическим наполнением, а не с суммой
+    # договоров. Две разные величины под одним словом «план» — как раз то, на
+    # чём мы уже обжигались.
+    gross: dict[str, float] = {}
+    area_plan: dict[str, float] = {}
+    for name, block in products.items():
+        price, volume = block.get("price") or {}, block.get("volume") or {}
+        for quarter, metres in volume.items():
+            rate = price.get(quarter)
+            if rate:
+                gross[quarter] = gross.get(quarter, 0.0) + metres * rate
+            if name != "Машиноместо":
+                area_plan[quarter] = area_plan.get(quarter, 0.0) + metres
+    # Цена сравнивается с ценой того же товара: у банка это строка «Цена
+    # продажи (Квартиры)», у нас — квартиры своей строкой. Валовое, делённое на
+    # все метры, смешало бы паркинг с жильём и дало бы третье число, не
+    # сравнимое ни с чем.
+    price_plan = dict((products.get("Квартира") or {}).get("price") or {})
     return {"sheet": BANK_SHEET, "quarters": [q for _, q in quarters], "lines": lines,
-            "revenue_by_quarter": revenue, "revenue_rows": summed}
+            "revenue_by_quarter": revenue, "revenue_rows": summed,
+            "products": products, "pool": pool,
+            "gross_by_quarter": gross, "area_by_quarter": area_plan,
+            "price_by_quarter": price_plan}
 
 
 def summarise(contracts: dict[str, Any], ledger: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -625,6 +721,12 @@ def summarise(contracts: dict[str, Any], ledger: dict[str, Any] | None = None) -
             # выглядели бы верными.
             "price_per_sqm": amount / area if area else 0.0,
         })
+        # Цена сравнивается с ценой того же товара: у банка и у финмодели это
+        # квартиры своей строкой. Общая цена метра мешает паркинг с жильём и
+        # даёт третье число, не сравнимое ни с чем.
+        flats = item["by_product"].get("Квартира") or {}
+        item["price_flats"] = (flats.get("amount", 0.0) / flats["area"]
+                               if flats.get("area") else None)
         dynamics.append(item)
 
     products = {}
@@ -640,6 +742,10 @@ def summarise(contracts: dict[str, Any], ledger: dict[str, Any] | None = None) -
     for row in rows:
         quarters.setdefault(quarter_of(row["month"]), []).append(row)
     by_quarter = [{"quarter": key, **_totals(items)} for key, items in sorted(quarters.items())]
+    # Квартиры отдельной строкой по кварталам: план банка и план финмодели
+    # называют цену именно квартир, и сравнивать её надо с ней же.
+    by_quarter_flats = {key: _totals([r for r in items if r["product"] == "Квартира"])
+                        for key, items in sorted(quarters.items())}
 
     by_payment = _payment_structure(rows)
 
@@ -670,6 +776,7 @@ def summarise(contracts: dict[str, Any], ledger: dict[str, Any] | None = None) -
         "total": _totals(rows),
         "dynamics": dynamics,
         "by_quarter": by_quarter,
+        "by_quarter_flats": by_quarter_flats,
         "by_product": by_product,
         "by_payment": by_payment,
         "by_channel": by_channel,
@@ -1149,6 +1256,31 @@ def conclusions(summary: dict[str, Any]) -> dict[str, str]:
             f"Наоборот — {spare['band']} м²: {_pct(spare['asked_share'])} спроса при "
             f"{_pct(spare['left_share'])} витрины.")
 
+    lead = (summary.get("demand") or {}).get("funnel") or {}
+    quality = lead.get("quality") or {}
+    sources = [row for row in (lead.get("by_source") or []) if row.get("deals", 0) >= 10]
+    if quality.get("target") and sources:
+        main = sources[0]
+        best = max(sources, key=lambda row: row.get("share") or 0)
+        line = (
+            f"Звонков {int(quality['calls'])}, из них целевых "
+            f"{int(quality['target'])}; до брони доходит "
+            f"{_pct(quality.get('booked_target'))}. ")
+        if best is not main and best.get("share"):
+            line += (f"У «{main['name']}» это {_pct(main.get('share'))} при "
+                     f"{int(main['deals'])} обращениях, у «{best['name']}» — "
+                     f"{_pct(best.get('share'))} при {int(best['deals'])}. ")
+        if quality.get("blank") and quality.get("booked_when_blank") is not None:
+            line += (
+                f"В {int(quality['blank'])} звонках из "
+                f"{int(quality['target'])} целевых в карточке не осталось ни потребности, "
+                f"ни следующего шага; там бронь случается "
+                f"{_pct(quality['booked_when_blank'])} против "
+                f"{_pct(quality.get('booked_when_need_asked'))} там, где потребность "
+                f"выяснена. Это соседство, а не доказанная причина: менеджер мог "
+                f"расспрашивать тех, кто и так был готов.")
+        out["funnel"] = line.strip()
+
     bank = summary.get("bank_plan") or {}
     quarters = bank.get("revenue_by_quarter") or {}
     fact = {q["quarter"]: float(q["amount"]) for q in (summary.get("by_quarter") or [])}
@@ -1221,6 +1353,31 @@ def plan_comparison(summary: dict[str, Any]) -> dict[str, Any]:
             f"Наоборот — {spare['band']} м²: {_pct(spare['asked_share'])} спроса при "
             f"{_pct(spare['left_share'])} витрины.")
 
+    lead = (summary.get("demand") or {}).get("funnel") or {}
+    quality = lead.get("quality") or {}
+    sources = [row for row in (lead.get("by_source") or []) if row.get("deals", 0) >= 10]
+    if quality.get("target") and sources:
+        main = sources[0]
+        best = max(sources, key=lambda row: row.get("share") or 0)
+        line = (
+            f"Звонков {int(quality['calls'])}, из них целевых "
+            f"{int(quality['target'])}; до брони доходит "
+            f"{_pct(quality.get('booked_target'))}. ")
+        if best is not main and best.get("share"):
+            line += (f"У «{main['name']}» это {_pct(main.get('share'))} при "
+                     f"{int(main['deals'])} обращениях, у «{best['name']}» — "
+                     f"{_pct(best.get('share'))} при {int(best['deals'])}. ")
+        if quality.get("blank") and quality.get("booked_when_blank") is not None:
+            line += (
+                f"В {int(quality['blank'])} звонках из "
+                f"{int(quality['target'])} целевых в карточке не осталось ни потребности, "
+                f"ни следующего шага; там бронь случается "
+                f"{_pct(quality['booked_when_blank'])} против "
+                f"{_pct(quality.get('booked_when_need_asked'))} там, где потребность "
+                f"выяснена. Это соседство, а не доказанная причина: менеджер мог "
+                f"расспрашивать тех, кто и так был готов.")
+        out["funnel"] = line.strip()
+
     bank = summary.get("bank_plan") or {}
     plan = (fm.get("plan") or {}).get("Итого") or {}
     # У «Итого» финмодели нет метров: строка «м2» есть у продуктов. Метры плана
@@ -1238,21 +1395,34 @@ def plan_comparison(summary: dict[str, Any]) -> dict[str, Any]:
             float(values.get("amount") or 0.0)
 
     fact_quarter = {q["quarter"]: q for q in (summary.get("by_quarter") or [])}
+    fact_flats = summary.get("by_quarter_flats") or {}
     plan_quarter: dict[str, dict[str, float]] = {}
     for month, values in by_month.items():
         block = plan_quarter.setdefault(quarter_of(month), {"amount": 0.0, "area": 0.0})
         block["amount"] += values["amount"]
         block["area"] += values["area"]
-    bank_quarter = {key: float(value) for key, value in
-                    (bank.get("revenue_by_quarter") or {}).items()}
+    # Цена финмодели — по квартирам, как у банка и как у нас.
+    fm_flats: dict[str, dict[str, float]] = {}
+    for month, values in ((fm.get("plan") or {}).get("Квартира") or {}).items():
+        block = fm_flats.setdefault(quarter_of(month), {"amount": 0.0, "area": 0.0})
+        block["amount"] += float(values.get("amount") or 0.0)
+        block["area"] += float(values.get("area") or 0.0)
+    # У банка сравнимы с нашей суммой договоров ВАЛОВЫЕ продажи (цена × объём),
+    # а не строка «Продажи с учётом рассрочки»: вторая про деньги, которые
+    # дойдут до эскроу, и её место рядом с нашим фактическим наполнением.
+    # Раньше здесь стояла именно она — сравнивались разные величины под одним
+    # словом «план».
+    bank_gross = {key: float(value) for key, value in
+                  (bank.get("gross_by_quarter") or {}).items()}
+    bank_cash = {key: float(value) for key, value in
+                 (bank.get("revenue_by_quarter") or {}).items()}
+    bank_area = {key: float(value) for key, value in
+                 (bank.get("area_by_quarter") or {}).items()}
+    bank_price = {key: float(value) for key, value in
+                  (bank.get("price_by_quarter") or {}).items()}
 
-    names = sorted(set(fact_quarter) | set(plan_quarter) | set(bank_quarter))
-    # Горизонт плана — весь проект, факт — только прошедшее. Показывать пустой
-    # хвост из будущих кварталов незачем: он читается как провал продаж.
+    names = sorted(set(fact_quarter) | set(plan_quarter) | set(bank_gross) | set(bank_cash))
     last = max([q for q in fact_quarter], default="")
-    # Незакрытый квартал против полного планового — это не провал продаж, а
-    # разные отрезки времени. Сколько месяцев факта в квартале, считается
-    # здесь и говорится на экране.
     months_in: dict[str, int] = {}
     for row in summary.get("dynamics") or []:
         months_in[quarter_of(row["month"])] = months_in.get(quarter_of(row["month"]), 0) + 1
@@ -1261,20 +1431,24 @@ def plan_comparison(summary: dict[str, Any]) -> dict[str, Any]:
         if last and name > last:
             break
         fact = fact_quarter.get(name) or {}
-        if not any((fact.get("amount"), plan_quarter.get(name, {}).get("amount"),
-                    bank_quarter.get(name))):
-            continue
         planned = plan_quarter.get(name) or {}
+        mine = fact_flats.get(name) or {}
+        theirs = fm_flats.get(name) or {}
+        if not any((fact.get("amount"), planned.get("amount"), bank_gross.get(name))):
+            continue
         rows.append({
             "label": name,
             "fact_amount": fact.get("amount"),
             "fact_area": fact.get("area"),
-            "fact_price": fact.get("price_per_sqm") or None,
+            "fact_price": mine.get("price_per_sqm") or None,
             "fm_amount": planned.get("amount") or None,
             "fm_area": planned.get("area") or None,
-            "fm_price": (planned["amount"] / planned["area"]
-                         if planned.get("amount") and planned.get("area") else None),
-            "bank_amount": bank_quarter.get(name),
+            "fm_price": (theirs["amount"] / theirs["area"]
+                         if theirs.get("amount") and theirs.get("area") else None),
+            "bank_amount": bank_gross.get(name),
+            "bank_area": bank_area.get(name) or None,
+            "bank_price": bank_price.get(name) or None,
+            "bank_cash": bank_cash.get(name),
             "months": months_in.get(name, 0),
             "partial": bool(fact.get("amount")) and months_in.get(name, 0) < 3,
         })
@@ -1282,7 +1456,9 @@ def plan_comparison(summary: dict[str, Any]) -> dict[str, Any]:
             "bank_sheet": bank.get("sheet") or "",
             # У плана банка есть только деньги: метров и цены в его строках нет.
             # Сказать это надо вслух — пропавшая линия читается как ноль.
-            "bank_metrics": ["amount"],
+            # У плана банка есть и цена, и объём — заявление, что их нет, было
+            # моей ошибкой: я его сделал, не посмотрев весь лист.
+            "bank_metrics": ["amount", "area", "price"],
             "bank_rows": bank.get("revenue_rows") or []}
 
 

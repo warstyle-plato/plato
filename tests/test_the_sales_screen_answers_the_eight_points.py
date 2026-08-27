@@ -92,8 +92,11 @@ def test_6_both_plans_share_one_chart() -> None:
     block = body[start:body.index("\n// ", start + 10)]
     assert "'план ФМ'" in block and "'план банка'" in block
     assert block.count("barChart(") == 1, "планов два, а график один"
-    # Пропущенной меры у плана банка нет — это сказано, а не показано нулём.
-    assert "не будет, и это не ноль" in block
+    # Цена всех троих — на том же графике линиями, а не отдельной вкладкой.
+    assert "'цена факт'" in block and "'цена ФМ'" in block and "'цена банка'" in block
+    # Сравниваются одинаковые величины: сумма договоров с валовыми продажами
+    # банка, а не со строкой «с учётом рассрочки» — та про деньги на эскроу.
+    assert "валовые продажи" in block
 
 
 def test_7_every_block_says_what_it_means() -> None:

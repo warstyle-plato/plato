@@ -64,7 +64,12 @@ def _plato_ask(message: str, request):
         inputs=dict(core.DEFAULT_INPUTS),
         tep={key: dict(value) for key, value in core.TEP_DEFAULT.items()},
     )
-    return core.plato_answer(payload, request)
+    # Спрашивает браузер, а не бот: соединение держится только до передачи
+    # работы опросу. `plato_answer` ждёт ответ целиком и годится тому, кому
+    # забирать результат неоткуда, — боту в своём потоке. Кабинету он давал
+    # страницу ошибки от nginx вместо ответа: цепочка ядро → Render → OpenAI
+    # одним соединением не держится.
+    return core.plato_answer_handoff(payload, request)
 
 
 market_search.cadastre_lookup = _cadastre_from_egrn
