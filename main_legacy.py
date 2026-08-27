@@ -67,7 +67,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.20.24"
+VERSION = "0.20.27"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -247,7 +247,10 @@ PROJECT_CLASS_PRESETS = {
     # «Содержание стройплощадки» в профиль не входит: свод по нему — один
     # внутренний проект малого масштаба, статья зависит от размера площадки,
     # а не от класса жилья. «Сдача и ввод» — свода нет, источники не
-    # раскрывают. Цены и ставки СМР проверку прошли и не менялись.
+    # раскрывают. Подготовительные работы от класса не зависят (решение
+    # владельца, 27.08.2026) — ставка одна на все классы, и коэффициент
+    # класса в class_adjustments для этой статьи единица. Цены и ставки СМР
+    # проверку прошли и не менялись.
     "comfort": {
         "label": "Комфорт",
         "apartment_price_th": 350,
@@ -264,7 +267,7 @@ PROJECT_CLASS_PRESETS = {
         "apartment_price_th": 650,
         "commercial_price_th": 650,
         "parking_price_th": 5000,
-        "preparation_th_per_sqm": 2.9,
+        "preparation_th_per_sqm": 2.75,
         "main_above_th_per_sqm": 190,
         "main_under_th_per_sqm": 190,
         "utilities_th_per_sqm": 10.8,
@@ -275,7 +278,7 @@ PROJECT_CLASS_PRESETS = {
         "apartment_price_th": 1500,
         "commercial_price_th": 1500,
         "parking_price_th": 20000,
-        "preparation_th_per_sqm": 3.2,
+        "preparation_th_per_sqm": 2.75,
         "main_above_th_per_sqm": 300,
         "main_under_th_per_sqm": 300,
         "utilities_th_per_sqm": 11.8,
@@ -30503,7 +30506,7 @@ details.cadastral-box>summary::marker{color:#888}
     <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px"><h2 style="margin:0;font-size:17px">Настройки классов</h2><button onclick="closeClassDialog()" style="margin-left:auto;border:1px solid #ddd;background:#fff;border-radius:6px;padding:3px 10px;cursor:pointer">✕</button></div>
     <div id="classDialogBody"></div>
     <div id="classDialogNote" style="font-size:12px;margin-top:10px;color:#444"></div>
-    <div style="margin-top:12px"><button onclick="applyProjectClassPreset(document.getElementById('projectClassSelect').value);renderClassDialog()" style="border:1px solid #3b6db4;background:#fff;color:#3b6db4;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:12px">Вернуть ставки базы выбранного класса</button></div>
+    <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap"><button onclick="applyProjectClassPreset(document.getElementById('projectClassSelect').value);renderClassDialog()" style="border:1px solid #3b6db4;background:#fff;color:#3b6db4;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:12px">Вернуть ставки базы выбранного класса</button><button onclick="fillClassesFromStats()" title="Подставляет свод модуля «Статистика» во все классы как ваши значения — по каждой статье, где свод есть" style="border:1px solid #3b6db4;background:#fff;color:#3b6db4;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:12px">Вставить данные из статистики</button></div>
     <div id="classSourcesBody" style="margin-top:16px"></div>
   </div>
 </div>
@@ -33670,7 +33673,33 @@ function renderClassStats(){
   return;
  }
  if(!CLASS_STATS_BY){box.innerHTML='<div style="font-size:12px;color:#777">Загружаю свод модуля «Статистика»…</div>';return;}
- box.innerHTML='<div style="font-size:12px;color:#555">Строки «свод „Статистики“» — независимый ориентир себестоимости, посчитанный модулем «Статистика» из раскрытий источников рынка и наших данных на ТЭП этого проекта. Клик по числу подставляет его классу; клик по названию статьи раскрывает обоснование — источники с грейдами, диапазон рынка и положение вашего значения в нём. Как это считается — за кнопкой «Как считаются класс и сценарий»; таблица источников — на странице <a href="/statistics" target="_blank" style="color:#3b6db4">«Статистика»</a>.</div>';
+ box.innerHTML='<div style="font-size:12px;color:#555">Строки «свод „Статистики“» — независимый ориентир себестоимости, посчитанный модулем «Статистика» из раскрытий источников рынка и наших данных на ТЭП этого проекта. <b>Данные — Москва и Московская область.</b> Клик по числу подставляет его классу; «Вставить данные из статистики» подставляет весь свод разом; клик по названию статьи раскрывает обоснование — источники с грейдами, диапазон рынка и положение вашего значения в нём. Как это считается — за кнопкой «Как считаются класс и сценарий»; таблица источников — на странице <a href="/statistics" target="_blank" style="color:#3b6db4">«Статистика»</a>.</div>';
+}
+async function fillClassesFromStats(){
+ // Кнопка «Вставить данные из статистики»: весь свод разом во все классы —
+ // клики по числу остаются для точечной правки (владелец, 27.08.2026).
+ if(!CLASS_STATS_BY){CLASS_OVERRIDES_NOTE='Свод ещё не загружен — попробуйте через пару секунд.';renderClassDialog();return;}
+ if(CLASS_OVERRIDES===null)CLASS_OVERRIDES={};
+ const classes=Object.keys(PROJECT_CLASS_PRESETS);
+ const keys=Object.keys(PROJECT_CLASS_PRESETS[classes[0]]).filter(k=>k!=='label');
+ for(const c of classes){
+  for(const k of keys){
+   const r=classStatsRow(c,k);
+   if(!r)continue;
+   const v=Math.round(r.recommended_rub_m2/100)/10;
+   if(!isFinite(v)||v<=0)continue;
+   if(Math.abs(v-classBase(c,k))<1e-9){
+    if(CLASS_OVERRIDES[c]){delete CLASS_OVERRIDES[c][k];if(!Object.keys(CLASS_OVERRIDES[c]).length)delete CLASS_OVERRIDES[c];}
+   }else{
+    (CLASS_OVERRIDES[c]=CLASS_OVERRIDES[c]||{})[k]=v;
+   }
+  }
+ }
+ renderProjectClassPreview();
+ renderClassDialog();
+ if(!activeSession()&&!projectsAdminKey)return;
+ try{await projectsCall('/classes/overrides/save',{payload:CLASS_OVERRIDES});}
+ catch(e){CLASS_OVERRIDES_NOTE='Не сохранилось: '+(e.message||e);renderClassDialog();}
 }
 
 
