@@ -60,6 +60,7 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
+from auction_search.adapters.browser_probe import probe_browser as browser_probe
 from auction_search.adapters.torgi_gov import trust_context, trust_report
 
 HOST = "bankrot.fedresurs.ru"
@@ -130,76 +131,17 @@ SEARCH_PAGE = "https://bankrot.fedresurs.ru/TradeList.aspx"
 # `qauth_show_captcha`. Это защита от роботов, и обходить её мы не будем —
 # ровно от этого она поставлена. Проба обязана СКАЗАТЬ, что упёрлась в капчу,
 # а не делать вид, что источник пуст.
-QRATOR_MARKERS = ("__qrator", "qauth_show_captcha", "qauth_utm")
 
 
 def probe_browser(url: str = SEARCH_PAGE, seconds: float = 45.0) -> dict[str, Any]:
-    """Открывает страницу настоящим браузером и показывает, что она загрузила.
+    """Открыть страницу ЕФРСБ настоящим браузером и показать, что она загрузила.
 
-    Это не обход защиты: мы действительно открываем страницу браузером, тем же
-    Chromium, которым считается калькулятор ГлавАПУ. Капчу, если она появится,
-    проба назовёт вслух — решать её за человека мы не станем.
-
-    Главное здесь — не текст страницы, а СПИСОК ЗАПРОСОВ, которые она сделала:
-    у SPA данные приезжают отдельными вызовами бэкенда, и именно их адреса нам
-    и нужны. Гадать имена путей мы уже пробовали — вышли гаражи.
+    Своей реализации здесь нет: проба заведена один раз в `browser_probe` и
+    служит всем источникам. Две копии разошлись бы на признаках отказа, и одна
+    из них считала бы страницу «403 Forbidden» удачей — а живой ответ с ядра
+    26.08.2026 был именно ею, без капчи и без единого запроса за данными.
     """
-    try:
-        from playwright.sync_api import sync_playwright
-    except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "url": url, "reason": f"Playwright недоступен: {exc}"}
-    import browser_launch
-
-    calls: list[dict[str, Any]] = []
-    report: dict[str, Any] = {"ok": False, "url": url, "how": "", "calls": calls}
-
-    def remember(response: Any) -> None:
-        try:
-            request = response.request
-            if request.resource_type not in ("xhr", "fetch"):
-                return
-            calls.append({
-                "method": request.method,
-                "url": request.url[:400],
-                "status": response.status,
-                "content_type": (response.header_value("content-type") or "")[:80],
-            })
-        except Exception:  # noqa: BLE001
-            # Один непрочитанный ответ не отменяет пробу.
-            pass
-
-    try:
-        with sync_playwright() as playwright:
-            browser = browser_launch.launch(playwright)
-            report["how"] = str(browser_launch.LAST_LAUNCH.get("how") or "")
-            try:
-                page = browser.new_page()
-                page.set_default_timeout(int(seconds * 1000))
-                page.on("response", remember)
-                page.goto(url, wait_until="networkidle", timeout=int(seconds * 1000))
-                body = page.content()
-                # Отказ приходит и в виде страницы: заголовок «403 Forbidden»
-                # при `ok: true` — это не загрузившееся приложение, а страница
-                # ошибки. Живой ответ с ядра 26.08.2026: браузер получил именно
-                # её, без капчи и без единого запроса за данными. Считать это
-                # успехом значит выдать отказ за пустой источник.
-                title = page.title()
-                blocked = any(mark in title for mark in ("403", "401", "Forbidden", "Access denied"))
-                report.update({
-                    "ok": True,
-                    "blocked": blocked,
-                    "final_url": page.url,
-                    "title": title,
-                    "captcha": any(mark in body for mark in QRATOR_MARKERS),
-                    "text_head": " ".join(page.inner_text("body").split())[:800],
-                })
-            finally:
-                browser.close()
-    except Exception as exc:  # noqa: BLE001
-        report["reason"] = f"{type(exc).__name__}: {exc}"
-    # Ответы, похожие на данные, — первыми: ради них проба и заводилась.
-    report["data_calls"] = [c for c in calls if "json" in c["content_type"].lower()]
-    return report
+    return browser_probe(url, seconds=seconds)
 
 
 def probe() -> dict[str, Any]:

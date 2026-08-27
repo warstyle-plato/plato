@@ -15,7 +15,11 @@ from pydantic import BaseModel, Field
 
 from auction_search.adapters import InvestMoscowDiscoveryAdapter, LotOnlineAdapter, RoseltorgAdapter
 from auction_search.adapters.torgi_gov import TorgiGovAdapter, trust_report as torgi_trust_report
-from auction_search.adapters.etp_probe import probe as etp_probe
+from auction_search.adapters.etp_probe import (
+    SLUGS as etp_slugs,
+    probe as etp_probe,
+    probe_browser_platform as etp_probe_browser,
+)
 from auction_search.adapters.fedresurs import (
     SEARCH_PAGE as FEDRESURS_SEARCH_PAGE,
     probe as fedresurs_probe, probe_browser as fedresurs_browser)
@@ -798,6 +802,32 @@ def install(app: FastAPI) -> None:
         по догадке: ровно так ГИС Торги приехали на прод с гаражами.
         """
         return await run_in_threadpool(etp_probe)
+
+    @app.get("/auctions/etp/probe/browser")
+    async def auction_etp_probe_browser(
+        platform: str = Query(default=""),
+        seconds: float = Query(default=40.0, ge=5.0, le=90.0),
+    ) -> dict[str, Any]:
+        """Каталог одной площадки, открытый настоящим браузером.
+
+        Простой запрос показывает оболочку: каталог рисует приложение, а числа
+        приезжают отдельными вызовами бэкенда. Их адреса и нужны, чтобы
+        написать читателя — не угаданные, а увиденные.
+
+        По одной площадке за вызов намеренно: пять по сорок секунд не уложатся
+        ни в один шлюз, а ответ, не дошедший до человека, — это ответ, которого
+        нет. Без параметра маршрут перечисляет, что можно спросить.
+        """
+        slug = str(platform or "").strip().lower()
+        if not slug:
+            return {
+                "ok": False,
+                "reason": "укажите площадку: ?platform=<имя>",
+                "known": {key: name for key, name in sorted(etp_slugs.items())},
+                "parsing": "разбора нет: ни одно имя поля не сверено ответом площадки",
+            }
+        return await run_in_threadpool(
+            lambda: etp_probe_browser(slug, seconds=float(seconds)))
 
     # Срок на сбор каталога. Шлюз рвёт соединение на шестидесяти секундах и
     # отдаёт свою HTML-страницу; браузер разбирает её как JSON и показывает
