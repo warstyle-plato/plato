@@ -118,3 +118,66 @@ def test_phase_allocation_weight_can_use_total_project_gns_without_double_counti
     a1 = 13_000 * landscaping.project_gns_sqm(phase_1) / total
     a2 = 13_000 * landscaping.project_gns_sqm(phase_2) / total
     assert a1 + a2 == pytest.approx(13_000)
+
+
+
+def test_authoritative_engine_keeps_legacy_default_and_switches_only_explicitly():
+    import main as wrapper
+
+    core = wrapper.core
+    tep = {key: dict(value) for key, value in core.TEP_DEFAULT.items()}
+
+    legacy_inputs = dict(core.DEFAULT_INPUTS)
+    legacy = core.calculate(core.CalcRequest(inputs=legacy_inputs, tep=tep, rates=[]))
+    core_gns = (
+        float(legacy["tep"]["core_above_gns"])
+        + float(legacy["tep"]["core_under_gns"])
+    )
+    assert legacy["landscaping"]["mode"] == "legacy_gns"
+    assert legacy["capex"]["landscaping"] == pytest.approx(
+        core_gns * legacy_inputs["landscaping_th_per_sqm"] * 1000
+    )
+
+    physical_inputs = dict(legacy_inputs)
+    physical_inputs.update(
+        site_area_ha=2.0,
+        building_footprint_sqm=7_000,
+        landscaping_site_th_per_sqm=18.0,
+    )
+    physical = core.calculate(
+        core.CalcRequest(
+            inputs=physical_inputs,
+            tep={key: dict(value) for key, value in core.TEP_DEFAULT.items()},
+            rates=[],
+        )
+    )
+    assert physical["landscaping"]["mode"] == "physical"
+    assert physical["landscaping"]["landscaping_area_sqm"] == pytest.approx(13_000)
+    assert physical["capex"]["landscaping"] == pytest.approx(234_000_000)
+
+
+def test_phased_engine_does_not_repeat_the_site_landscaping_area():
+    import main as wrapper
+
+    core = wrapper.core
+    inputs = dict(core.DEFAULT_INPUTS)
+    inputs.update(
+        site_area_ha=2.0,
+        building_footprint_sqm=7_000,
+        landscaping_site_th_per_sqm=18.0,
+    )
+    tep = {key: dict(value) for key, value in core.TEP_DEFAULT.items()}
+    bundle = core.calculate_phased(
+        core.PhasedCalcRequest(
+            inputs=inputs,
+            tep=tep,
+            rates=[],
+            phasing={"enabled": True, "phase_count": 2, "phase_gap_months": 12},
+        )
+    )
+    areas = [
+        float(item["result"]["landscaping"]["landscaping_area_sqm"])
+        for item in bundle["phases"]
+    ]
+    assert sum(areas) == pytest.approx(13_000)
+    assert all(area > 0 for area in areas)
