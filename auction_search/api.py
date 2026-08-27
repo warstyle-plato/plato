@@ -776,6 +776,16 @@ def install(app: FastAPI) -> None:
         """
         return await run_in_threadpool(etp_probe)
 
+    # Срок на сбор каталога. Шлюз рвёт соединение на шестидесяти секундах и
+    # отдаёт свою HTML-страницу; браузер разбирает её как JSON и показывает
+    # поломку разбора вместо причины. Сбор ограничивался только числом страниц,
+    # то есть объёмом: у ГИС Торгов это сорок страниц по восемь секунд, у
+    # Росэлторга и РАД — по запросу на каждый лот по двадцать пять. Сорок
+    # секунд оставляют шлюзу запас на ответ, а недособранное называется вслух
+    # в строке охвата: источник, до которого не дошли, — это «не знаем», а не
+    # «лотов там нет».
+    DISCOVERY_BUDGET_SECONDS = 40.0
+
     @app.get("/auctions/discover")
     async def auction_discover(
         source: str = Query(default="all"),
@@ -789,7 +799,10 @@ def install(app: FastAPI) -> None:
         try:
             adapters = _discovery_adapters(source)
             service = AuctionSearchService(adapters)
-            lots = await run_in_threadpool(lambda: service.discover_moscow(include_noise=include_noise))
+            lots = await run_in_threadpool(
+                lambda: service.discover_moscow(
+                    include_noise=include_noise,
+                    budget_seconds=DISCOVERY_BUDGET_SECONDS))
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except Exception as exc:

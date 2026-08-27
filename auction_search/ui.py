@@ -388,15 +388,48 @@ function lotCaveats(l){
  return `<div class="items">${flags.map(f=>`<div class="item"><b>Оговорка источника</b>${esc(f)}</div>`).join('')}</div>`;
 }
 function selectLot(l){state.selected=l;state.ingested=null;const sc=lotScore(l),side=$('side');side.innerHTML=`<h2>${esc(l.title||'Лот')}</h2><div class="sub">${esc(l.source?.source_name||l.source?.platform||'ЭТП')} · ${esc(l.source?.external_lot_id||'')}</div><div class="notice"><div class="fit ${sc.tone}"><span class="light"></span>Оценка Платона: ${sc.score}/100 · ${esc(sc.label)}</div><div class="source">Потенциал лота — ${sc.base}. ${sc.cut?`Снято ${sc.cut}%: `+esc(sc.cuts.map(c=>c.label+' −'+c.points+'%').join(', ')):'Снижать нечего.'}</div></div>${sc.cuts.length?`<div class="items">${sc.cuts.map(c=>`<div class="item"><b>Балл снижен на ${c.points}%</b>${esc(c.label)}</div>`).join('')}</div>`:''}<div class="kv"><div>Юр. конструкция</div><div>${esc(kindLabel(l.lot_kind))} · ${esc(ORIGIN_LABEL[l.origin||'other']||'—')}</div><div>Кадастр</div><div class="cad">${esc((l.cadastral_numbers||[]).join(', ')||'—')}</div><div>Площадь</div><div>${areaLine(l)}</div><div>Цена сейчас</div><div class="money">${fmtMoney(l.current_price_rub??l.start_price_rub)}</div><div>Минимальная цена</div><div>${fmtMoney(l.min_price_rub)}</div><div>Заявка до</div><div>${esc(shortDate(l.application_deadline))}</div><div>ВРИ площадки</div><div>${esc(l.permitted_use||'—')}</div></div>${lotCaveats(l)}<div class="actions"><button class="primary" id="ingestBtn"${lotAnalysis(l).available?'':' disabled'}>Разобрать лот</button><button id="sourceBtn">Открыть ЭТП</button></div><div id="detailStatus" class="notice${lotAnalysis(l).available?'':' warn'}">${esc(lotAnalysis(l).available?'Документы пока только перечислены. Полный разбор запускается по выбранному лоту, чтобы не нагружать ЭТП массовыми скачиваниями.':'Разобрать этот лот нечем: '+lotAnalysis(l).reason+' Карточку можно открыть на самой площадке — кнопка «Открыть ЭТП».')}</div><div id="analysis"></div>`;$('ingestBtn').onclick=ingest;$('sourceBtn').onclick=()=>window.open(l.source?.lot_url,'_blank','noopener');renderAskContext()}
-async function discover(){const btn=$('refresh');btn.disabled=true;btn.innerHTML='<span class="spinner"></span>Читаю ЭТП';$('tableEmpty').style.display='grid';$('tableEmpty').textContent='Получаю публичный каталог официальной площадки…';try{const qs=new URLSearchParams({source:$('source').value,include_noise:$('noise').value==='1'?'true':'false'});const r=await fetch('/auctions/discover?'+qs);const d=await r.json();if(!r.ok)throw new Error(d.detail||'Не удалось получить каталог');state.lots=d.lots||[];state.coverage=d.coverage||[];renderCoverage();filter();if(!state.lots.length){$('tableEmpty').textContent='Подтверждённых текущих лотов не найдено. Воронка источников показана выше.'}}catch(e){state.lots=[];state.coverage=[];renderCoverage();filter();$('tableEmpty').style.display='grid';$('tableEmpty').textContent=String(e.message||e)}finally{btn.disabled=false;btn.textContent='Обновить'}}
-async function ingest(){const l=state.selected;if(!l)return;const b=$('ingestBtn'),status=$('detailStatus');b.disabled=true;b.innerHTML='<span class="spinner"></span>Разбираю';status.textContent=l.lot_kind==='krt'?'Читаю карточку и официальные документы КРТ…':'Повторно сверяю официальную карточку…';try{const r=await fetch('/auctions/ingest',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:l.source.lot_url,enrich_krt_documents:true,include_raw:false})});const d=await r.json();if(!r.ok)throw new Error(d.detail||'Лот не разобран');state.ingested=d;renderAnalysis(d)}catch(e){status.className='notice warn';status.textContent=String(e.message||e)}finally{b.disabled=false;b.textContent='Разобрать заново'}}
+// Отказ по входу объясняется одинаково во всех шести местах, где он бывает:
+// шесть копий одной фразы разошлись бы, и человек получил бы разный ответ на
+// одну причину.
+const NEED_LOGIN='Нужен вход в кабинет рынка: откройте /cabinet в соседней вкладке и войдите по ключу.';
+function needLogin(e){
+ if(e && e.status===401){ const err=new Error(NEED_LOGIN); err.status=401; throw err }
+ throw e;
+}
+async function askJson(url, init){
+ // Ответ бывает не JSON: 502 и 504 приходят HTML-страницей шлюза, и слепой
+ // `r.json()` роняет разбор. Safari говорит на это «The string did not match
+ // the expected pattern» — ровно эту фразу владелец увидел вместо каталога
+ // торгов (27.08.2026). Разбирать вслепую значит показать поломку разбора
+ // вместо причины отказа.
+ const r=await fetch(url, init);
+ const raw=await r.text();
+ let d=null;
+ try{ d=JSON.parse(raw) }
+ catch(_){
+  const head=raw.replace(/<[^>]*>/g,' ').replace(/\s+/g,' ').trim().slice(0,180);
+  const why=r.status===504?'шлюз не дождался ответа'
+   :r.status===502?'сервер не ответил шлюзу'
+   :r.status>=500?'сервер ответил ошибкой'
+   :'ответ не разобран';
+  const err=new Error(`Каталог не получен: ${why} (код ${r.status}).`+(head?' '+head:''));
+  err.status=r.status; err.notJson=true; throw err;
+ }
+ if(!r.ok){
+  const err=new Error(d.detail||d.error||`Запрос отклонён (код ${r.status})`);
+  err.status=r.status; err.body=d; throw err;
+ }
+ return d;
+}
+async function discover(){const btn=$('refresh');btn.disabled=true;btn.innerHTML='<span class="spinner"></span>Читаю ЭТП';$('tableEmpty').style.display='grid';$('tableEmpty').textContent='Получаю публичный каталог официальной площадки…';try{const qs=new URLSearchParams({source:$('source').value,include_noise:$('noise').value==='1'?'true':'false'});const d=await askJson('/auctions/discover?'+qs);state.lots=d.lots||[];state.coverage=d.coverage||[];renderCoverage();filter();if(!state.lots.length){$('tableEmpty').textContent='Подтверждённых текущих лотов не найдено. Воронка источников показана выше.'}}catch(e){state.lots=[];state.coverage=[];renderCoverage();filter();$('tableEmpty').style.display='grid';$('tableEmpty').textContent=String(e.message||e)}finally{btn.disabled=false;btn.textContent='Обновить'}}
+async function ingest(){const l=state.selected;if(!l)return;const b=$('ingestBtn'),status=$('detailStatus');b.disabled=true;b.innerHTML='<span class="spinner"></span>Разбираю';status.textContent=l.lot_kind==='krt'?'Читаю карточку и официальные документы КРТ…':'Повторно сверяю официальную карточку…';try{const d=await askJson('/auctions/ingest',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:l.source.lot_url,enrich_krt_documents:true,include_raw:false})});state.ingested=d;renderAnalysis(d)}catch(e){status.className='notice warn';status.textContent=String(e.message||e)}finally{b.disabled=false;b.textContent='Разобрать заново'}}
 function renderAnalysis(d){const s=d.screening||{},l=d.lot||{},a=$('analysis'),status=$('detailStatus');if(s.krt_auth_required){status.className='notice warn';status.textContent='Часть документации требует входа на ЭТП. Лот сохранён, но DevelopAid не считает закрытые документы отсутствующими.'}else if(s.krt_documents_complete===true){status.className='notice';status.textContent='Официальные документы КРТ разобраны без пропусков, обнаруженных загрузчиком.'}else{status.className='notice';status.textContent='Карточка ЭТП сверена. Для обычной земли следующий слой — кадастр/градпроверка DevelopAid.'}
  const program=l.krt_program||[],obs=l.obligations||[],docs=l.documents||[],px=s.platon_explanation||{};
  a.innerHTML=`<div class="section"><h3>Оценка Платона: ${esc(px.rating||s.rating||'—')}</h3><div class="notice"><b>Почему здесь:</b> ${esc(px.why_here||s.why_here||'—')}</div><div class="items">${(px.concerns||[]).map(x=>`<div class="item"><b>Что настораживает</b>${esc(x)}</div>`).join('')}${(px.verify_before_calculation||[]).map(x=>`<div class="item"><b>Что проверить до расчёта</b>${esc(x)}</div>`).join('')}</div></div><div class="section"><h3>Готовность к DevelopAid</h3><div class="kv"><div>Структура сделки</div><div>${esc(kindLabel(s.legal_structure))}</div><div>Требует условий КРТ</div><div>${s.requires_krt_terms?'да':'нет'}</div><div>Документов</div><div>${docs.length}</div><div>Программа КРТ</div><div>${program.length}</div><div>Обязательств</div><div>${obs.length}</div></div></div>${program.length?`<div class="section"><h3>Программа застройки из документов</h3><div class="items">${program.slice(0,12).map(x=>`<div class="item"><b>${esc(x.category)} · ${esc(x.area_sqm?fmtArea(x.area_sqm):x.quantity?x.quantity+' '+(x.unit||''):'')}</b>${esc(x.title)}<div class="source">${esc(x.provenance?.source_document||'')}</div></div>`).join('')}</div></div>`:''}${obs.length?`<div class="section"><h3>Обязательства инвестора</h3><div class="items">${obs.slice(0,12).map(x=>`<div class="item"><b>${esc(x.category)}${x.quantity?' · '+x.quantity+' '+(x.unit||''):''}</b>${esc(x.title)}<div class="source">${esc(x.provenance?.source_document||'')}</div></div>`).join('')}</div></div>`:''}<div class="actions"><button id="copySeed">Скопировать seed</button><button id="modelBtn" ${s.ready_for_financial_model?'':'disabled'}>Подготовить в DevelopAid</button></div><div id="modelNote" class="notice">Handoff использует штатный project-preset import; отдельный расчётный движок для торгов не создаётся.</div>`;
  $('copySeed').onclick=async()=>{await navigator.clipboard.writeText(JSON.stringify(d.developaid_seed,null,2));$('copySeed').textContent='Скопировано'};$('modelBtn').onclick=()=>{const note=$('modelNote');note.textContent='Project-preset handoff подключается следующим слоем: цена лота → цена входа, КРТ-ТЭП → planning, обязательства → отдельные cost/constraint lines.'}
 }
 function switchTab(showKrt){['auctionFilters','auctionStats','auctionLayout','coverage'].forEach(id=>$(id).classList.toggle('hidden',showKrt));$('krtPanel').classList.toggle('hidden',!showKrt);$('tabAuctions').classList.toggle('active',!showKrt);$('tabKrt').classList.toggle('active',showKrt);renderAskContext();if(showKrt&&!state.krt.length)loadKrt()}
-async function loadKrt(){const b=$('krtRefresh');b.disabled=true;b.innerHTML='<span class="spinner"></span>Читаю krt.mos.ru';try{const r=await fetch('/auctions/krt',{cache:'no-store'}),d=await r.json();if(!r.ok)throw new Error(d.detail||'Каталог не получен');state.krt=d.projects||[];state.krtNew=Number(d.new_count||0);state.krtNewDays=Number(d.new_for_days||30);populateKrtOkrugs();$('krtEmpty').textContent=state.krt.length?'':'Официальный каталог обновляется в фоне. Первые проекты появятся автоматически.';filterKrt();renderKrtNewNote();if(!d.complete&&state.krtPolls<18){state.krtPolls++;clearTimeout(state.krtTimer);state.krtTimer=setTimeout(loadKrt,10000)}else state.krtPolls=0}catch(e){$('krtEmpty').style.display='grid';$('krtEmpty').textContent=String(e.message||e)}finally{b.disabled=false;b.textContent='Обновить каталог'}}
+async function loadKrt(){const b=$('krtRefresh');b.disabled=true;b.innerHTML='<span class="spinner"></span>Читаю krt.mos.ru';try{const d=await askJson('/auctions/krt',{cache:'no-store'});state.krt=d.projects||[];state.krtNew=Number(d.new_count||0);state.krtNewDays=Number(d.new_for_days||30);populateKrtOkrugs();$('krtEmpty').textContent=state.krt.length?'':'Официальный каталог обновляется в фоне. Первые проекты появятся автоматически.';filterKrt();renderKrtNewNote();if(!d.complete&&state.krtPolls<18){state.krtPolls++;clearTimeout(state.krtTimer);state.krtTimer=setTimeout(loadKrt,10000)}else state.krtPolls=0}catch(e){$('krtEmpty').style.display='grid';$('krtEmpty').textContent=String(e.message||e)}finally{b.disabled=false;b.textContent='Обновить каталог'}}
 function updateKrtOkrugLabel(){const values=KRT_OKRUGS.filter(x=>state.krtOkrugs.has(x)),button=$('krtOkrugToggle');button.textContent=!values.length?'Все округа':values.length<=3?values.join(', '):`${values.slice(0,2).join(', ')} +${values.length-2}`;button.title=values.length?values.join(', '):'Все округа';$('krtOkrugClear').disabled=!values.length}
 function populateKrtOkrugs(){const values=KRT_OKRUGS,options=$('krtOkrugOptions');options.innerHTML='';values.forEach(value=>{const label=document.createElement('label'),input=document.createElement('input'),text=document.createElement('span');label.className='multi-option';input.type='checkbox';input.value=value;input.checked=state.krtOkrugs.has(value);text.textContent=value;input.onchange=()=>{input.checked?state.krtOkrugs.add(value):state.krtOkrugs.delete(value);updateKrtOkrugLabel();filterKrt()};label.append(input,text);options.appendChild(label)});updateKrtOkrugLabel()}
 function closeKrtOkrugs(){const menu=$('krtOkrugMenu'),button=$('krtOkrugToggle');menu.classList.add('hidden');button.setAttribute('aria-expanded','false')}
@@ -516,9 +549,7 @@ async function loadKrtPoint(x){
  const box=document.getElementById('krtMapBox');
  if(!box)return;
  try{
-  const r=await fetch('/auctions/krt/'+encodeURIComponent(x.slug)+'/point',{cache:'no-store'});
-  const d=await r.json();
-  if(!r.ok)throw new Error(d.detail||'Точка не определена');
+  const d=await askJson('/auctions/krt/'+encodeURIComponent(x.slug)+'/point',{cache:'no-store'});
   box.innerHTML=krtSiteMap(d,d.area_ha!=null?d.area_ha:x.area_ha);
  }catch(e){
   // Не построилась — значит надо сказать, что именно не сработало, и оставить
@@ -617,8 +648,7 @@ function renderKrtRankStatus(){
 }
 async function loadKrtRanking(){
  try{
-  const r=await fetch('/auctions/krt/ranking',{cache:'no-store'}),d=await r.json();
-  if(!r.ok)throw new Error(d.detail||'Рейтинг не получен');
+  const d=await askJson('/auctions/krt/ranking',{cache:'no-store'});
   state.krtRank={};(d.rows||[]).forEach(row=>{state.krtRank[row.slug]=row;
    if(row.available&&row.traffic_light)state.krtModels[row.slug]={traffic_light:row.traffic_light}});
   state.krtRankProgress=d.progress||null;
@@ -633,13 +663,8 @@ async function startKrtRanking(){
   // Считаем то, что осталось после фильтра: смотрят перспективные округа и
   // нужный статус, а прогон по всему каталогу — это минуты чужой работы.
   const slugs=(state.krtFiltered||[]).map(v=>v.slug).filter(Boolean);
-  const r=await fetch('/auctions/krt/ranking/refresh',{method:'POST',
-   headers:{'Content-Type':'application/json'},body:JSON.stringify({slugs:slugs})});
-  const d=await r.json();
-  if(!r.ok){
-   if(r.status===401)throw new Error('Нужен вход в кабинет рынка: откройте /cabinet в соседней вкладке и войдите по ключу.');
-   throw new Error(d.detail||'Прогон не запущен');
-  }
+  const d=await askJson('/auctions/krt/ranking/refresh',{method:'POST',
+   headers:{'Content-Type':'application/json'},body:JSON.stringify({slugs:slugs})}).catch(needLogin);
   state.krtRankProgress=d.progress||null;renderKrtRankStatus();loadKrtRanking();
  }catch(e){const box=$('krtRankStatus');box.style.display='';box.className='notice warn';box.textContent=String(e.message||e)}
  finally{b.disabled=false;b.textContent='Оценить все КРТ моделью'}
@@ -704,12 +729,12 @@ async function loadKrtReport(x){
  if(state.krtReports[x.slug]){renderKrtReport(x,state.krtReports[x.slug],out);return}
  out.innerHTML='<div class="notice"><span class="spinner"></span>Открываю посчитанный отчёт…</div>';
  try{
-  const r=await fetch('/auctions/krt/'+encodeURIComponent(x.slug)+'/report',{cache:'no-store'});
-  const d=await r.json();
-  if(!r.ok){
-   if(r.status===401)throw new Error('Нужен вход в кабинет рынка: откройте /cabinet в соседней вкладке и войдите по ключу.');
-   if(r.status===404){out.innerHTML=`<div class="notice">${esc(d.detail||'Отчёт ещё не посчитан.')}</div>`;return}
-   throw new Error(d.detail||'Отчёт не получен');
+  let d;
+  try{ d=await askJson('/auctions/krt/'+encodeURIComponent(x.slug)+'/report',{cache:'no-store'}) }
+  catch(e){
+   // «Ещё не посчитан» — это состояние, а не отказ: оно объясняется спокойно.
+   if(e.status===404){out.innerHTML=`<div class="notice">${esc((e.body||{}).detail||'Отчёт ещё не посчитан.')}</div>`;return}
+   throw needLogin(e);
   }
   state.krtReports[x.slug]=d;
   if(d.screening&&d.screening.available){state.krtModels[x.slug]=d.screening;renderKrt()}
@@ -734,12 +759,7 @@ async function handoffKrt(x){
  const say=t=>{if(note){note.textContent=t;note.style.display=''}};
  b.disabled=true;b.innerHTML='<span class="spinner"></span>Передаю';
  try{
-  const r=await fetch('/auctions/krt/'+encodeURIComponent(x.slug)+'/handoff',{cache:'no-store'});
-  const d=await r.json();
-  if(!r.ok){
-   if(r.status===401)throw new Error('Нужен вход в кабинет рынка: откройте /cabinet в соседней вкладке и войдите по ключу.');
-   throw new Error(d.detail||'Передавать нечего');
-  }
+  const d=await askJson('/auctions/krt/'+encodeURIComponent(x.slug)+'/handoff',{cache:'no-store'}).catch(needLogin);
   sessionStorage.setItem('developaid.auction.pending.v1',JSON.stringify({
    krt_model:{inputs:d.inputs,tep:d.tep,phasing:d.phasing},
    krt_name:d.name||x.name||'',
@@ -754,12 +774,7 @@ async function askPlatoAboutKrt(x){
  const b=$('krtPlato'),out=$('krtMarketResult');
  b.disabled=true;b.innerHTML='<span class="spinner"></span>Спрашиваю';
  try{
-  const r=await fetch('/auctions/krt/'+encodeURIComponent(x.slug)+'/plato',{method:'POST'});
-  const d=await r.json();
-  if(!r.ok){
-   if(r.status===401)throw new Error('Нужен вход в кабинет рынка: откройте /cabinet в соседней вкладке и войдите по ключу.');
-   throw new Error(d.detail||'Платон не ответил');
-  }
+  const d=await askJson('/auctions/krt/'+encodeURIComponent(x.slug)+'/plato',{method:'POST'}).catch(needLogin);
   const stored=state.krtReports[x.slug];
   if(stored){stored.plato={text:d.text,asked_at:d.asked_at};renderKrtReport(x,stored,out)}
  }catch(e){
@@ -808,7 +823,7 @@ async function shareKrt(x){
   say('Скопировать не удалось: '+(e&&e.message?e.message:e));
  }
 }
-async function loadKrtMarket(x){const b=$('krtMarket'),out=$('krtMarketResult');b.disabled=true;b.innerHTML='<span class="spinner"></span>Рынок → модель';out.innerHTML='<div class="notice">Определяю продукт и цену, затем запускаю финансовый движок и автоматические очереди…</div>';try{const q=new URLSearchParams();const rr=krtRatios();if(rr)q.set('tep_ratios',rr);const r=await fetch('/auctions/krt/'+encodeURIComponent(x.slug)+'/market'+(q.toString()?'?'+q:''),{cache:'no-store'}),d=await r.json();if(!r.ok){if(r.status===401)throw new Error('Нужен вход в кабинет рынка: откройте /cabinet в соседней вкладке и войдите по ключу.');throw new Error(d.detail||'Маркетинг не получен')}if(d.model_screening?.available){state.krtModels[x.slug]=d.model_screening;renderKrt()}renderKrtRatios(x);delete state.krtReports[x.slug];loadKrtRanking();renderKrtMarket(d,out)}catch(e){out.innerHTML=`<div class="notice warn">${esc(e.message||e)}</div>`}finally{b.disabled=false;b.textContent='Обновить маркетинг и модель'}}
+async function loadKrtMarket(x){const b=$('krtMarket'),out=$('krtMarketResult');b.disabled=true;b.innerHTML='<span class="spinner"></span>Рынок → модель';out.innerHTML='<div class="notice">Определяю продукт и цену, затем запускаю финансовый движок и автоматические очереди…</div>';try{const q=new URLSearchParams();const rr=krtRatios();if(rr)q.set('tep_ratios',rr);const d=await askJson('/auctions/krt/'+encodeURIComponent(x.slug)+'/market'+(q.toString()?'?'+q:''),{cache:'no-store'}).catch(needLogin);if(d.model_screening?.available){state.krtModels[x.slug]=d.model_screening;renderKrt()}renderKrtRatios(x);delete state.krtReports[x.slug];loadKrtRanking();renderKrtMarket(d,out)}catch(e){out.innerHTML=`<div class="notice warn">${esc(e.message||e)}</div>`}finally{b.disabled=false;b.textContent='Обновить маркетинг и модель'}}
 function renderKrtModel(m){
  if(!m?.available)return `<div class="section"><h3>Предварительный прогон модели</h3><div class="notice warn">${esc(m?.reason||'Модель не рассчитана')}</div></div>`;
  const t=m.traffic_light||{},market=m.market||{},ph=m.phasing||{},abs=m.absorption||{},k=m.metrics||{},cap=m.entry_capacity,phases=ph.phases||[];
@@ -909,17 +924,12 @@ async function askPlato(){
   +'движком — не пересчитывай их, объясни и ответь по ним. Чего в списке нет, того не '
   +'выдумывай: скажи, что данных нет.\n\n'+askDigest()+'\n\nВопрос: '+question;
  try{
-  const r=await fetch('/cabinet/ask',{method:'POST',headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({message})});
-  // Ответ бывает не JSON — например HTML страницы отказа. Разбирать вслепую
-  // значит показать человеку невнятную ошибку разбора вместо причины.
-  const raw=await r.text();
   let d;
-  try{d=JSON.parse(raw)}
-  catch(_){out.innerHTML=`<div class="notice warn">Платон ответил не по-русски и не по-JSON (код ${r.status}): ${esc(raw.slice(0,200))}</div>`;return}
-  if(!r.ok){
-   const detail=r.status===401?'Нужен вход в кабинет рынка: откройте /cabinet в соседней вкладке и войдите по ключу.':(d.detail||'Платон не ответил');
-   out.innerHTML=`<div class="notice warn">${esc(detail)}</div>`;return;
+  try{
+   d=await askJson('/cabinet/ask',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({message})});
+  }catch(e){
+   out.innerHTML=`<div class="notice warn">${esc(e.status===401?NEED_LOGIN:(e.message||e))}</div>`;return;
   }
   // Быстрый ответ приходит тем же запросом; за долгим ходим по номеру запуска.
   let text=d.reply||d.answer||d.text||'';

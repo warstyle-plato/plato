@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import inspect
 import re
 from collections import OrderedDict
 from datetime import date
 from typing import Iterable
 
+from auction_search import deadline as clock
 from auction_search.adapters.base import AuctionPlatformAdapter
 from auction_search.models import AuctionLot, LotKind
 
@@ -19,16 +21,69 @@ class AuctionSearchService:
     def __init__(self, adapters: Iterable[AuctionPlatformAdapter]):
         self.adapters = list(adapters)
 
-    def discover_moscow(self, *, include_noise: bool = False) -> list[AuctionLot]:
+    def discover_moscow(
+        self,
+        *,
+        include_noise: bool = False,
+        budget_seconds: float | None = None,
+    ) -> list[AuctionLot]:
+        """Собрать каталог, уложившись в срок.
+
+        Срок нужен не ради скорости, а ради того, чтобы ответ вообще дошёл:
+        шлюз рвёт соединение раньше, чем кончается неограниченный сбор, и
+        человек получает страницу ошибки вместо каталога. Источник, до
+        которого не дошли, называется вслух — молча пропущенный читается как
+        «лотов там нет».
+        """
+        until = clock.start(budget_seconds)
         lots: list[AuctionLot] = []
         for adapter in self.adapters:
-            lots.extend(adapter.discover_moscow())
+            if clock.expired(until):
+                self._not_asked(adapter, budget_seconds)
+                continue
+            lots.extend(self._ask(adapter, until))
         lots = self._deduplicate(lots)
         for lot in lots:
             self.screen_lot(lot)
         if include_noise:
             return lots
         return [lot for lot in lots if self.is_development_relevant(lot)]
+
+
+    @staticmethod
+    def _ask(adapter: AuctionPlatformAdapter, until: float | None) -> Iterable[AuctionLot]:
+        """Позвать источник, отдав ему срок, если он умеет его читать.
+
+        Адаптер без срока зовётся как раньше: заставлять все источники разом
+        научиться сроку ради одного значило бы переписать четыре читателя
+        вместо того, что нужно сейчас.
+        """
+        discover = adapter.discover_moscow
+        try:
+            takes_deadline = "deadline" in inspect.signature(discover).parameters
+        except (TypeError, ValueError):  # noqa: BLE001 — встроенные и обёртки
+            takes_deadline = False
+        if takes_deadline:
+            return discover(deadline=until)
+        return discover()
+
+    @staticmethod
+    def _not_asked(adapter: AuctionPlatformAdapter, budget_seconds: float | None) -> None:
+        """Источник, до которого не дошли, обязан сказать это сам."""
+        said = (
+            f"источник не опрошен: на каталог отведено {budget_seconds:.0f} с, "
+            "и они кончились на предыдущих"
+            if budget_seconds is not None else
+            "источник не опрошен"
+        )
+        report = getattr(adapter, "last_report", None)
+        if isinstance(report, dict):
+            report.update({"pages": 0, "cards": 0, "kept": 0, "reason": said})
+        else:
+            adapter.last_report = {
+                "source": getattr(adapter, "platform_name", adapter.__class__.__name__),
+                "pages": 0, "cards": 0, "kept": 0, "reason": said,
+            }
 
     def discover_moscow_history(
         self,

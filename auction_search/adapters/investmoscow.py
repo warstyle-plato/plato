@@ -6,6 +6,7 @@ from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlunparse
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
+from auction_search import deadline as clock
 from auction_search.adapters.base import AuctionPlatformAdapter
 from auction_search.adapters.lot_online import LotOnlineAdapter
 from auction_search.adapters.roseltorg_public import RoseltorgAdapter
@@ -197,12 +198,15 @@ class InvestMoscowDiscoveryAdapter(AuctionPlatformAdapter):
             raise ValueError("Нужен адаптер ЭТП: " + ", ".join(sorted(unsupported)))
         raise ValueError("В карточке Торгов Москвы нет поддерживаемой фактической ЭТП")
 
-    def discover_moscow(self) -> list[AuctionLot]:
+    def discover_moscow(self, *, deadline: float | None = None) -> list[AuctionLot]:
         self.last_report = self._empty_report()
         city_cards: list[str] = []
         seen_cards: set[str] = set()
         catalogue_reachable = False
         for search_url in self._search_urls():
+            if clock.expired(deadline):
+                self.last_report["errors"].append("остановлено по времени: каталог")
+                break
             try:
                 html = self._read_html(search_url)
             except Exception as exc:
@@ -222,6 +226,10 @@ class InvestMoscowDiscoveryAdapter(AuctionPlatformAdapter):
         lots: list[AuctionLot] = []
         unsupported: set[str] = set()
         for city_card_url in city_cards:
+            if clock.expired(deadline):
+                self.last_report["errors"].append(
+                    f"остановлено по времени: разобрано карточек {len(lots)} из {len(city_cards)}")
+                break
             try:
                 html = self._read_html(city_card_url)
             except Exception as exc:

@@ -131,7 +131,7 @@ def test_the_page_can_ask_platon_without_leaving_it() -> None:
     assert "async function askPlato(" in body
     assert "'/cabinet/ask'" in body, "тот же маршрут, что у кабинета рынка — своего не заводим"
     assert "/agent/result/" in body, "за долгим ответом ходят по номеру запуска"
-    assert "r.status===401" in body, "закрытый кабинет называется своим именем"
+    assert "status===401" in body, "закрытый кабинет называется своим именем"
 
 
 def test_the_question_carries_the_numbers_and_forbids_inventing_them() -> None:

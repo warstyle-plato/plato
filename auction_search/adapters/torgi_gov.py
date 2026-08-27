@@ -77,6 +77,7 @@ import urllib.request
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
+from auction_search import deadline as clock
 from auction_search.adapters.base import AuctionPlatformAdapter
 from auction_search.classifier import (
     BANKRUPTCY_WORDS as _BANKRUPTCY_WORDS,
@@ -585,17 +586,17 @@ class TorgiGovAdapter(AuctionPlatformAdapter):
         """
         return str(os.getenv(FLAG, "1")).strip().lower() not in ("0", "false", "no", "off")
 
-    def _fetch_page(self, page: int) -> dict[str, Any]:
+    def _fetch_page(self, page: int, *, deadline: float | None = None) -> dict[str, Any]:
         """Разобранная страница. Адрес собирается там же, где для пробы.
 
         Второй сборки адреса не заводим: проба и рабочий сбор обязаны ходить
         по одному и тому же URL, иначе сверенное пробой относится не к тому
         запросу, который потом пойдёт в дело.
         """
-        _status, _ctype, body = self._fetch_raw(self._search_url(page))
+        _status, _ctype, body = self._fetch_raw(self._search_url(page), deadline=deadline)
         return json.loads(body)
 
-    def discover_moscow(self) -> Iterable[AuctionLot]:
+    def discover_moscow(self, *, deadline: float | None = None) -> Iterable[AuctionLot]:
         if not self.enabled():
             self.last_report = {"pages": 0, "cards": 0, "kept": 0,
                                 "region_filter": "",
@@ -611,8 +612,15 @@ class TorgiGovAdapter(AuctionPlatformAdapter):
         widest_page = 0
         reason = ""
         for page in range(MAX_PAGES):
+            # Сорок страниц — потолок объёма, а не времени. Восемь секунд на
+            # страницу дают до пяти минут, и шлюз рвёт соединение задолго до
+            # конца: ответа не получает никто. Остановка по сроку называется
+            # причиной, иначе неполная выборка читается как полная.
+            if clock.expired(deadline):
+                reason = f"остановлено по времени: прочитано страниц {pages} из {MAX_PAGES}"
+                break
             try:
-                payload = self._fetch_page(page)
+                payload = self._fetch_page(page, deadline=deadline)
             except Exception as exc:  # noqa: BLE001
                 # Молчаливый пустой список читался бы как «лотов нет».
                 reason = f"страница {page}: {exc}"
@@ -877,11 +885,12 @@ class TorgiGovAdapter(AuctionPlatformAdapter):
         query = urllib.parse.urlencode(fields)
         return f"https://{HOST}{SEARCH_PATH}?{query}"
 
-    def _fetch_raw(self, url: str) -> tuple[int, str, str]:
+    def _fetch_raw(self, url: str, *, deadline: float | None = None) -> tuple[int, str, str]:
         request = urllib.request.Request(url, headers={
             "User-Agent": USER_AGENT, "Accept": "application/json"})
         with urllib.request.urlopen(
-                request, timeout=TIMEOUT_SECONDS, context=trust_context()) as response:
+                request, timeout=clock.timeout(deadline, TIMEOUT_SECONDS),
+                context=trust_context()) as response:
             body = response.read().decode("utf-8", "replace")
             ctype = response.headers.get("Content-Type", "")
             return int(getattr(response, "status", 0) or 0), ctype, body

@@ -55,8 +55,8 @@ def test_a_missing_report_is_not_a_failure() -> None:
     script = page_script(auctions_page())
     body = script[script.index("async function loadKrtReport("):]
     body = body[:body.index("\nfunction renderKrtReport(")]
-    assert "r.status===404" in body
-    assert "r.status===401" in body, "закрытый кабинет называется своим именем"
+    assert "status===404" in body, "«ещё не считали» отличается от отказа"
+    assert "needLogin(" in body, "закрытый кабинет называется своим именем"
 
 
 def test_the_handoff_sends_the_counted_inputs_not_a_new_model() -> None:

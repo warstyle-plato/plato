@@ -7,6 +7,7 @@ from urllib.parse import urlencode, urljoin, urlparse
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
+from auction_search import deadline as clock
 from auction_search.adapters.base import AuctionPlatformAdapter
 from auction_search.classifier import classify_lot, origin_from_evidence
 from auction_search.models import (
@@ -156,14 +157,23 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
                 continue
         return False
 
-    def discover_moscow(self) -> list[AuctionLot]:
+    def discover_moscow(self, *, deadline: float | None = None) -> list[AuctionLot]:
+        # Список страниц ограничен тремя, а вот лотов на них бывает много, и за
+        # каждым идёт свой запрос по двадцать пять секунд. Потолок в страницах
+        # ограничивает объём, но не время; срок ограничивает время.
+        self.last_report = {"source": self.platform_name, "pages": 0,
+                            "cards": 0, "kept": 0, "reason": ""}
         candidate_urls: list[str] = []
         seen_urls: set[str] = set()
         for tag in self.DISCOVERY_TAGS:
             for page in range(1, self.DISCOVERY_MAX_PAGES + 1):
+                if clock.expired(deadline):
+                    self.last_report["reason"] = (
+                        f"остановлено по времени на странице {page}")
+                    break
                 search_url = self._discovery_url(tag, page)
                 req = Request(search_url, headers={"User-Agent": self.USER_AGENT})
-                with urlopen(req, timeout=25) as response:
+                with urlopen(req, timeout=clock.timeout(deadline, 25)) as response:
                     html = response.read().decode(response.headers.get_content_charset() or "utf-8", errors="replace")
                 parser = _RoseltorgHTML()
                 parser.feed(html)
@@ -176,9 +186,15 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
 
         lots: list[AuctionLot] = []
         seen_lots: set[str] = set()
+        self.last_report["cards"] = len(candidate_urls)
         for lot_url in candidate_urls:
+            if clock.expired(deadline):
+                self.last_report["reason"] = (
+                    f"остановлено по времени: разобрано лотов {len(lots)} "
+                    f"из {len(candidate_urls)} найденных")
+                break
             try:
-                lot = self.fetch_lot(lot_url)
+                lot = self.fetch_lot(lot_url, deadline=deadline)
             except Exception:
                 # One malformed/temporarily unavailable procedure must not drop the feed.
                 continue
@@ -197,6 +213,7 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
             seen_lots.add(lot.canonical_key)
             lot.raw["discovered_via"] = "Roseltorg public tags[] search"
             lots.append(lot)
+        self.last_report["kept"] = len(lots)
         return lots
 
     def discover_moscow_history(
@@ -241,7 +258,7 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
             lots.append(lot)
         return lots
 
-    def fetch_lot(self, lot_url: str) -> AuctionLot:
+    def fetch_lot(self, lot_url: str, *, deadline: float | None = None) -> AuctionLot:
         host = (urlparse(lot_url).hostname or "").lower()
         if not (host == "roseltorg.ru" or host.endswith(".roseltorg.ru")):
             raise ValueError("RoseltorgAdapter accepts only official Roseltorg URLs")
@@ -249,7 +266,7 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
             raise ValueError("Roseltorg URL must point to a public /procedure/ card")
 
         req = Request(lot_url, headers={"User-Agent": self.USER_AGENT})
-        with urlopen(req, timeout=20) as response:
+        with urlopen(req, timeout=clock.timeout(deadline, 20)) as response:
             html = response.read().decode(response.headers.get_content_charset() or "utf-8", errors="replace")
         parser = _RoseltorgHTML()
         parser.feed(html)

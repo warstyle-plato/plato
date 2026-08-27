@@ -236,7 +236,7 @@ def test_the_report_says_who_filtered_the_region(monkeypatch) -> None:
     list(adapter.discover_moscow())
     assert "region_filter" in adapter.last_report
     monkeypatch.setattr(TorgiGovAdapter, "_fetch_page",
-                        lambda self, page: {"content": []})
+                        lambda self, page, **_: {"content": []})
     monkeypatch.setenv(FLAG, "1")
     adapter = TorgiGovAdapter()
     list(adapter.discover_moscow())
@@ -855,7 +855,7 @@ def test_a_short_page_is_not_the_last_page(monkeypatch) -> None:
     ] + [[]]
     seen_pages: list[int] = []
 
-    def fake(self, page: int):
+    def fake(self, page: int, **_):
         seen_pages.append(page)
         return {"content": pages[page] if page < len(pages) else []}
 
@@ -874,7 +874,7 @@ def test_the_envelope_says_where_the_pages_end(monkeypatch) -> None:
     monkeypatch.setenv(FLAG, "1")
     asked: list[int] = []
 
-    def fake(self, page: int):
+    def fake(self, page: int, **_):
         asked.append(page)
         return {"content": [dict(_real_card(), subjectRFCode="77", id=f"x{page}")],
                 "totalPages": 2, "totalElements": 2}
@@ -896,7 +896,7 @@ def test_a_standing_page_number_is_caught(monkeypatch) -> None:
     import auction_search.adapters.torgi_gov as mod
     monkeypatch.setenv(FLAG, "1")
     monkeypatch.setattr(TorgiGovAdapter, "_fetch_page",
-                        lambda self, page: {"content": [dict(_real_card(), subjectRFCode="77", id="same")]})
+                        lambda self, page, **_: {"content": [dict(_real_card(), subjectRFCode="77", id="same")]})
     adapter = TorgiGovAdapter()
     lots = list(adapter.discover_moscow())
     assert [lot.source.external_lot_id for lot in lots] == ["same"]
