@@ -186,3 +186,37 @@ def test_sis_combined_networks_and_landscaping_are_not_fake_split():
     assert networks["group"] == landscaping["group"] == "networks_landscaping"
     assert networks["share_low_pct"] == landscaping["share_low_pct"] == 8.0
     assert networks["share_high_pct"] == landscaping["share_high_pct"] == 12.0
+
+
+def test_separate_denominator_gets_the_class_adjustment_too():
+    """Подземная часть уезжала всем классам одинаковой — 210 тыс ₽/м².
+
+    Статус «отдельная база площади» — то же раскрытое значение, только на
+    своём знаменателе, и коэффициент класса к нему применим ровно так же
+    (замечание владельца, 27.08.2026: «почему 210 у всех классов»).
+    """
+    for cls, expected in (("comfort", 175000.0), ("business", 210000.0), ("elite", 306250.0)):
+        matrix = build_cost_structure_matrix(region="Москва", housing_class=cls)
+        internal = next(s for s in matrix["sources"]
+                        if s.get("source_kind") == "internal_project")
+        cell = internal["cells"]["main_under"]
+        assert cell["adjusted_value_rub_m2"] == expected, cls
+
+
+def test_preparation_does_not_depend_on_housing_class():
+    """Подготовительный период от класса жилья не зависит (владелец, 27.08.2026).
+
+    Премиум-срез CORE.XP нёс «подготовку» 91 000 ₽/м² продаваемой против
+    7 500–10 500 у соседних срезов той же линейки — по составу это другая
+    статья, и она помечена несопоставимой, а не тянет свод элитки в 22 тыс.
+    """
+    cfg = class_adjustment_catalog()
+    assert set(cfg["components"]["preparation"].values()) == {1.0}
+    from datetime import date
+    from developaid_cost_aggregation import build_cost_recommendation
+    values = {}
+    for cls in ("comfort", "business", "elite"):
+        rec = build_cost_recommendation("Москва", cls, as_of=date(2026, 8, 27))
+        row = next(r for r in rec["recommendations"] if r["key"] == "preparation")
+        values[cls] = row["recommended_rub_m2"]
+    assert max(values.values()) < 6000, values

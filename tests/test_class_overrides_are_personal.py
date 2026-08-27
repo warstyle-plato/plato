@@ -111,3 +111,15 @@ def test_the_class_button_explains_where_the_rates_come_from():
     assert "Откуда себестоимость СМР" in overlay
     assert "к её базе площади" in overlay
     assert "/statistics" in overlay
+
+
+def test_the_dialog_has_a_fill_from_statistics_button():
+    """«Вставить данные из статистики» — весь свод разом во все классы.
+
+    Клик по числу остаётся для точечной правки; кнопка нужна, когда свод
+    принимается целиком (владелец, 27.08.2026). Регион данных назван вслух.
+    """
+    page = core.PAGE
+    assert "Вставить данные из статистики" in page
+    assert "fillClassesFromStats" in page
+    assert "Москва и Московская область" in page
