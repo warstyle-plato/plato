@@ -98,7 +98,11 @@ def _decorate_cell(component: str, cell: dict[str, Any], source_class: str, targ
         result["unit_label"] = UNIT_LABELS.get(unit, unit)
 
     value = result.get("value_rub_m2")
-    if value is not None and result.get("status") == "value":
+    # «Отдельная база площади» — то же раскрытое значение, только на своём
+    # знаменателе: коэффициент класса к нему применим ровно так же. Без этого
+    # ставка подземной части уезжала всем классам одинаковой (210 тыс ₽/м²
+    # и комфорту, и элитке — замечание владельца, 27.08.2026).
+    if value is not None and result.get("status") in ("value", "separate_denominator"):
         ratio = _component_ratio(component, source_class, target_class, cfg)
         if ratio is not None:
             result["source_value_rub_m2"] = _round_money(value)

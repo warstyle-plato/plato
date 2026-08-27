@@ -31,7 +31,7 @@ V4_TEMPLATE = Path(__file__).resolve().parent.parent / "templates" / "DevelopAid
 
 
 BUSINESS_BASE = dict(apartment_price_th=650, commercial_price_th=650,
-                     parking_price_th=5000, preparation_th_per_sqm=2.9,
+                     parking_price_th=5000, preparation_th_per_sqm=2.75,
                      main_above_th_per_sqm=190, main_under_th_per_sqm=190,
                      utilities_th_per_sqm=10.8, landscaping_th_per_sqm=15.5)
 

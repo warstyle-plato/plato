@@ -5,7 +5,7 @@
   "description": "Экспертная нормализация класса. Это не статистическая оценка и не норматив: коэффициенты нужны, чтобы приводить сопоставимый базовый benchmark комфорт-класса к продуктовому классу DevelopAid. Они применяются только после совпадения статьи затрат и знаменателя площади.",
   "classes": ["standard", "comfort", "business", "premium", "elite"],
   "components": {
-    "preparation": {"standard": 0.95, "comfort": 1.00, "business": 1.05, "premium": 1.10, "elite": 1.15},
+    "preparation": {"standard": 1.00, "comfort": 1.00, "business": 1.00, "premium": 1.00, "elite": 1.00},
     "design": {"standard": 0.90, "comfort": 1.00, "business": 1.25, "premium": 1.55, "elite": 1.90},
     "main_above": {"standard": 0.90, "comfort": 1.00, "business": 1.50, "premium": 1.90, "elite": 2.40},
     "main_under": {"standard": 0.95, "comfort": 1.00, "business": 1.20, "premium": 1.45, "elite": 1.75},
