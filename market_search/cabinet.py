@@ -2414,14 +2414,13 @@ function renderSales(d){
   // Что загружено и когда: два файла разных дат, показанные как один проект, —
   // худший исход, поэтому дата каждого источника стоит на экране.
   if((d.sources||[]).length){
-    // Имя файла — подпись, а не содержание: длинное оно занимает на телефоне
-    // по три строки на источник, и шесть источников закрывают экран. Дата и
-    // вид источника отвечают на вопрос «то ли это, что я грузил», имя лишь
-    // подтверждает.
-    const shortName=s=>{const f=String(s.file||''); return f.length>40?f.slice(0,39)+'…':f};
+    // Имени файла на экране нет. Вопрос, на который отвечает эта строка, —
+    // «те ли это данные, что я грузил, и не разной ли они давности»; отвечают
+    // на него вид источника и дата. Имя файла его не уточняет, а занимает по
+    // три строки на источник — шесть источников закрывали экран целиком
+    // (владелец, 27.08.2026: «зачем в комментариях упоминания файлов»).
     html+='<div class="muted" style="font-size:12px;margin-top:14px">Источники: '
-      +d.sources.map(s=>esc(s.name)+' — '+esc(String(s.at||'').slice(0,10))
-        +(s.file?' ('+esc(shortName(s))+')':'')).join('; ')+'.</div>';
+      +d.sources.map(s=>esc(s.name)+' — '+esc(String(s.at||'').slice(0,10))).join('; ')+'.</div>';
   }
 
   // Чего в выгрузке не нашлось — вслух: пустой раздел и отсутствующий
@@ -2431,10 +2430,26 @@ function renderSales(d){
     html+=`<div class="muted" style="font-size:12.5px;margin-top:6px">Не прочитано — ${esc(line)}</div>`;
   });
 
-  html+='<div style="margin-top:14px"><button class="go alt" id="salesask">Комментарий Платона по продажам</button></div>'
-     +'<div id="salesout"></div>';
+  // Разговор, а не одна кнопка. Кнопка задавала один вопрос и на этом
+  // кончалась: не понравился ответ — переспросить негде (владелец,
+  // 27.08.2026). Устройство то же, что у диалога о рынке выше: подсказки
+  // одним нажатием, поле для своего вопроса, ответ под ним. Вопрос о разборе
+  // стоит в поле сразу — печатать его каждый раз незачем.
+  html+='<div class="card" style="margin-top:16px;padding:14px">'
+     +'<h2 style="margin-top:0">Спросить Платона Сергеевича о продажах</h2>'
+     +'<div class="muted" style="font-size:13px;margin-bottom:8px">'
+     +'Он видит свод этого проекта и объясняет его. Считает движок — модель не пересчитывает.</div>'
+     +'<div class="chips" id="saleschips">'
+     +SALES_ASKS.map((q,i)=>`<button type="button" data-i="${i}">${esc(q.chip)}</button>`).join('')
+     +'</div>'
+     +`<textarea id="salesq" rows="3" placeholder="Например: чем объяснить разрыв между планом банка и фактом?">${esc(SALES_ASKS[0].text)}</textarea>`
+     +'<button class="go" id="salesask">Спросить</button>'
+     +'<div id="salesout"></div></div>';
   box.innerHTML=html+'</div>';
   $('#salesask').onclick=askPlatoSales;
+  box.querySelectorAll('#saleschips button').forEach(b=>{
+    b.onclick=()=>{ $('#salesq').value=SALES_ASKS[Number(b.dataset.i)].text; askPlatoSales() };
+  });
   box.querySelectorAll('.switch button').forEach(b=>{
     b.onclick=()=>{
       const target=b.dataset.for;
@@ -2467,6 +2482,28 @@ function tile(name, value, sub){
 // длины преамбулы, а не назначается на глазок: припишешь к вопросу строку —
 // и молча вылезешь за предел.
 const SALES_ASK_LIMIT=4000;
+
+// Подсказки — не украшение: первая стоит в поле сразу, потому что за ней сюда
+// и приходят. Остальные нажимаются и спрашиваются одним движением.
+const SALES_ASKS=[
+  {chip:'Разбор продаж',
+   text:'Дай короткий разбор по четырём темам: 1) рассрочка — как она влияет на '
+     +'фактическое наполнение эскроу и чем это грозит; 2) вознаграждение брокерам — '
+     +'рыночное ли оно и что значит разрыв между «% от продаж» и «% от наполнения»; '
+     +'3) эффективность собственного отдела продаж против брокерского канала; '
+     +'4) структура продаж — есть ли сдвиг в сторону мелких лотов и что это значит для выручки.'},
+  {chip:'Почему не покупают?',
+   text:'Что в этих числах говорит о том, почему люди не покупают: чего просят и чего '
+     +'нет в витрине? Отвечай только по своду, недостающее назови недостающим.'},
+  {chip:'Хватит ли эскроу на ПФ?',
+   text:'Хватит ли накопленного эскроу на погашение проектного финансирования и что '
+     +'должно измениться в темпе продаж, чтобы хватило?'},
+  {chip:'Мы идём по плану?',
+   text:'Сравни факт с планом нашей финмодели и с планом банка: где расхождение, '
+     +'насколько велико и чем оно объясняется по имеющимся числам.'},
+  {chip:'Что делать в этом месяце?',
+   text:'Назови три действия на ближайший месяц, каждое — со ссылкой на число из свода.'},
+];
 
 function salesDigest(d, limit){
   const t=d.total||{}, groups=[];
@@ -2628,8 +2665,11 @@ function salesDigest(d, limit){
     if(!fit.length){ dropped.push(g.name+' ('+g.lines.length+' строк)'); return }
     if(fit.length<g.lines.length){
       const note='(вошло '+fit.length+' строк из '+g.lines.length+')';
+      // Метка ставится, если для неё есть место, и НЕ вместо данных: подмена
+      // последней строки меткой оставляла раздел из одной строки «(вошло 1 из
+      // 8)» — то есть выбрасывала ровно то, ради чего раздел вошёл. Что раздел
+      // урезан, в любом случае сказано общей строкой ниже.
       if(used+note.length+1<=room){ fit.push(note); used+=note.length+1 }
-      else { fit.pop(); fit.push(note) }
       dropped.push(g.name+' — часть');
     }
     kept.push(fit.join('\n'));
@@ -2648,22 +2688,48 @@ function salesDigest(d, limit){
   return out;
 }
 
+// Сказанное Платоном о продажах. Живёт рядом со сводом: перерисовка карточки
+// (загрузили второй источник) не должна стирать разговор.
+let salesSaid=[];
+
 async function askPlatoSales(){
   if(!salesData){$('#salesout').innerHTML='<div class="muted">Сначала загрузите выгрузку ЦФ.</div>';return}
+  const ask=($('#salesq').value||'').trim()||SALES_ASKS[0].text;
   const btn=$('#salesask');
   btn.disabled=true;
   $('#salesout').innerHTML='<div class="muted">Платон Сергеевич читает продажи…</div>';
-  const tail='\n\nПиши по-русски, коротко, по каждой теме отдельным абзацем.';
+  const tail='\n\nВОПРОС: '+ask+'\n\nПиши по-русски, коротко, отдельным абзацем на каждую мысль.';
   const preamble='Ниже свод продаж проекта, посчитанный движком по выгрузке ЦФ. '
-    +'Числа НЕ пересчитывай и не выдумывай того, чего в своде нет. Дай короткий разбор по четырём темам: '
-    +'1) рассрочка — как она влияет на фактическое наполнение эскроу и чем это грозит; '
-    +'2) вознаграждение брокерам — рыночное ли оно и что значит разрыв между «% от продаж» и «% от наполнения»; '
-    +'3) эффективность собственного отдела продаж против брокерского канала; '
-    +'4) структура продаж — есть ли сдвиг в сторону мелких лотов и что это значит для выручки.\n\n';
+    +'Числа НЕ пересчитывай и не выдумывай того, чего в своде нет; чего в своде нет — '
+    +'так и скажи.\n\n';
+  // Бюджет свода считается от НАСТОЯЩЕЙ длины преамбулы и вопроса. Вопрос
+  // пишет человек, и длина его заранее не известна: назначенный на глазок
+  // бюджет вылезал бы за предел ровно на длинном вопросе.
   const message=preamble+salesDigest(salesData, SALES_ASK_LIMIT-preamble.length-tail.length-20)+tail;
   try{
     const answer=await platoAnswer(message);
-    $('#salesout').innerHTML=`<div class="plato">${esc(answer).replace(/\n/g,'<br>')}</div>`;
+    // Диалог: ответы копятся, а не затирают друг друга — иначе сравнить ответ
+    // на уточнение с исходным нечем. Новый встаёт сверху: на телефоне
+    // дописанный снизу ответ оказывается за краем экрана, и человек решает,
+    // что ничего не произошло. Вопрос стоит над ответом — через три реплики
+    // «он про что это» становится настоящим вопросом.
+    const said=document.createElement('div');
+    said.className='plato';
+    said.style.marginTop='10px';
+    said.innerHTML='<div class="muted" style="font-size:12px;margin-bottom:4px">'+esc(ask)+'</div>'
+      +esc(answer).replace(/\n/g,'<br>');
+    const out=$('#salesout');
+    out.innerHTML='';
+    out.insertBefore(said, out.firstChild);
+    salesSaid.unshift(said.innerHTML);
+    salesSaid.slice(1).forEach(html=>{
+      const older=document.createElement('div');
+      older.className='plato';
+      older.style.marginTop='10px';
+      older.style.opacity='0.75';
+      older.innerHTML=html;
+      out.appendChild(older);
+    });
   }catch(e){
     $('#salesout').innerHTML=`<div class="err">${esc(String(e.message||e))}</div>`;
   }finally{ btn.disabled=false }

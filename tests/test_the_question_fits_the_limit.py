@@ -84,15 +84,17 @@ def _fat_summary() -> dict:
     }
 
 
-def _question(summary: dict) -> str:
+def _question(summary: dict, ask: str | None = None) -> str:
     """Собираем вопрос настоящим кодом страницы, а не его пересказом."""
-    digest = PAGE[PAGE.index("function salesDigest("):PAGE.index("async function askPlatoSales(")]
-    ask = PAGE[PAGE.index("async function askPlatoSales("):]
-    ask = ask[:ask.index("\n}\n")]
-    preamble = ask[ask.index("const preamble='") + len("const preamble="):]
-    preamble = preamble[:preamble.index(";\n")]
-    tail = ask[ask.index("const tail='") + len("const tail="):]
+    digest = PAGE[PAGE.index("function salesDigest("):PAGE.index("// Сказанное Платоном")]
+    asks = PAGE[PAGE.index("const SALES_ASKS=["):]
+    asks = asks[:asks.index("\n];") + 3]
+    body = PAGE[PAGE.index("async function askPlatoSales(){"):]
+    body = body[:body.index("\n}\n")]
+    tail = body[body.index("const tail='") + len("const tail="):]
     tail = tail[:tail.index(";\n")]
+    preamble = body[body.index("const preamble='") + len("const preamble="):]
+    preamble = preamble[:preamble.index(";\n")]
     limit_line = PAGE[PAGE.index("const SALES_ASK_LIMIT="):]
     limit_line = limit_line[:limit_line.index(";") + 1]
 
@@ -100,8 +102,9 @@ def _question(summary: dict) -> str:
         "const num=(v,d=0)=>v===null||v===undefined?'—':"
         "Number(v).toLocaleString('ru-RU',"
         "{minimumFractionDigits:d,maximumFractionDigits:d});\n"
-        + limit_line + "\n" + digest + "\n"
+        + limit_line + "\n" + asks + "\n" + digest + "\n"
         + "const salesData=" + json.dumps(summary, ensure_ascii=False) + ";\n"
+        + "const ask=" + json.dumps(ask, ensure_ascii=False) + "||SALES_ASKS[0].text;\n"
         + "const tail=" + tail + ";\n"
         + "const preamble=" + preamble + ";\n"
         + "const message=preamble"
@@ -131,7 +134,7 @@ def test_the_head_is_only_the_project_and_the_totals():
     """Выводы и «не прочитано» стояли вне бюджета — с них и переполнялось."""
     message = _question(_fat_summary())
     assert message.count("ПРОЕКТ:") == 1
-    body = PAGE[PAGE.index("function salesDigest("):PAGE.index("async function askPlatoSales(")]
+    body = PAGE[PAGE.index("function salesDigest("):PAGE.index("// Сказанное Платоном")]
     head = body[body.index("const head=["):body.index("const add=")]
     assert "ВЫВОД" not in head, "вывод — раздел с бюджетом, а не обязательная шапка"
     assert "НЕ ПРОЧИТАНО" not in head
@@ -204,8 +207,46 @@ def test_the_unread_sources_are_never_the_first_to_go():
 
 def test_the_order_is_declared_not_inherited_from_the_maths():
     """Порядок разделов задаётся при сборке, а не порядком вычислений."""
-    body = PAGE[PAGE.index("function salesDigest("):PAGE.index("async function askPlatoSales(")]
+    body = PAGE[PAGE.index("function salesDigest("):PAGE.index("// Сказанное Платоном")]
     assert "const ORDER=[" in body
     order = body[body.index("const ORDER=["):body.index("groups.sort(")]
     for name in ("выводы", "не прочитано", "оплата", "каналы"):
         assert f"'{name}'" in order, name
+
+
+def test_a_long_question_of_your_own_still_fits():
+    """Вопрос пишет человек, и длина его заранее не известна. Бюджет свода
+    считается от настоящей длины вопроса, а не назначается на глазок."""
+    message = _question(_fat_summary(), "Почему " + "очень " * 120 + "медленно?")
+    assert len(message) <= LIMIT
+
+
+def test_the_dialogue_has_preset_questions_and_one_of_them_stands_in_the_field():
+    """Кнопка задавала один вопрос и на этом кончалась: не понравился ответ —
+    переспросить негде."""
+    assert "const SALES_ASKS=[" in PAGE
+    body = PAGE[PAGE.index("const SALES_ASKS=["):]
+    body = body[:body.index("\n];")]
+    assert body.count("chip:") >= 4, "подсказок меньше четырёх — это не диалог"
+
+    card = PAGE[PAGE.index("Спросить Платона Сергеевича о продажах"):]
+    card = card[:card.index("box.innerHTML=html")]
+    assert "id=\"salesq\"" in card, "поле для своего вопроса"
+    assert "SALES_ASKS[0].text" in card, "разбор стоит в поле сразу"
+    assert "saleschips" in card, "подсказки нажимаются"
+
+
+def test_the_answers_do_not_erase_each_other():
+    body = PAGE[PAGE.index("async function askPlatoSales(){"):]
+    body = body[:body.index("\n}\n")]
+    assert "salesSaid" in body, "сказанное копится, а не затирается"
+    assert "insertBefore" in body, "новый ответ встаёт сверху"
+
+
+def test_the_sources_line_carries_no_file_names():
+    """Вид источника и дата отвечают на «то ли это, что я грузил». Имя файла
+    занимало по три строки на источник."""
+    line = PAGE[PAGE.index("Источники: "):]
+    line = line[:line.index("</div>")]
+    assert "s.file" not in line, "имя файла со строки источников убрано"
+    assert "s.at" in line and "s.name" in line
