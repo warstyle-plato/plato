@@ -67,7 +67,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.20.20"
+VERSION = "0.20.23"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -11535,6 +11535,7 @@ def _purchase_feasibility(
     net_profit_mln: Any,
     llcr: Any,
     debt_amount: Any = 0.0,
+    ending_debt_mln: Any = 0.0,
 ) -> dict[str, str]:
     """Return a short preliminary purchase-feasibility conclusion.
 
@@ -11557,12 +11558,33 @@ def _purchase_feasibility(
         debt = float(debt_amount or 0.0)
     except (TypeError, ValueError):
         debt = 0.0
+    try:
+        ending_debt = float(ending_debt_mln or 0.0)
+    except (TypeError, ValueError):
+        ending_debt = 0.0
 
     if purchase_price <= 0:
         return {
             "status": "not_available",
             "title": "Вывод не сформирован",
             "text": "Цена покупки не указана, поэтому оценить целесообразность приобретения при текущих параметрах нельзя.",
+        }
+    # Непогашенный долг на конец проекта — дефолт, и он старше бумажной
+    # прибыли: для инвестора такой проект не «прибыльный с оговоркой», а
+    # дефолтный (решение владельца, 27.08.2026). Закрыть дыру «вкладом
+    # акционера» — значит показать благотворительность как инвестицию.
+    if ending_debt > 0.5:
+        return {
+            "status": "default",
+            "title": "Дефолтный: долг не погашается",
+            "text": (
+                "На конец проекта остаётся непогашенный долг "
+                f"{_telegram_number(ending_debt, 1)} млн ₽ — денежного потока "
+                "проекта не хватает вернуть кредит. Показанная чистая прибыль — "
+                "бумажная: чтобы рассчитаться с банком, инвестору пришлось бы "
+                "доплатить эту сумму своими деньгами. Для инвестора проект "
+                "дефолтный, а не прибыльный."
+            ),
         }
     if net_profit <= 0:
         return {
@@ -12129,9 +12151,13 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         story.append(P(verdict.get("disclaimer", ""), small))
         story.append(Spacer(1, 4*mm))
     story.append(_PdfSection("summary"));story.append(P("Ключевая экономика",h2))
+    # Прибыль при непогашенном долге — бумажная: для инвестора проект
+    # дефолтный, а не прибыльный (решение владельца, 27.08.2026), и строка
+    # прибыли обязана говорить это сама, а не полагаться на вывод ниже.
+    _default_note=" — бумажная: долг не погашен" if float(financing.get('ending_pf') or 0)>500_000 else ""
     kpis=[
         *_pdf_entry_cost_rows(result, expense_structure),
-        ["Выручка",_pdf_money(summary.get('revenue'))],["Расходы всего",_pdf_money(summary.get('total_expenses'))],["EBITDA",_pdf_money(summary.get('ebitda'))],["Чистая прибыль",_pdf_money(summary.get('net_profit'))],["Маржинальность",_pdf_pct(summary.get('margin'))],["LLCR",_pdf_num(summary.get('llcr'),2)+"x"],["Расчётный БРИДЖ",_pdf_money(financing.get('calculated_bridge'))],["Фактический пик БРИДЖ",_pdf_money(financing.get('actual_bridge'))],["Пиковая (непокрытая эскроу) задолженность ПФ",_pdf_money(financing.get('pf_uncovered_peak'))],["Проценты и комиссии",_pdf_money(financing.get('interest_and_fees'))],
+        ["Выручка",_pdf_money(summary.get('revenue'))],["Расходы всего",_pdf_money(summary.get('total_expenses'))],["EBITDA",_pdf_money(summary.get('ebitda'))],["Чистая прибыль",_pdf_money(summary.get('net_profit'))+_default_note],["Маржинальность",_pdf_pct(summary.get('margin'))],["LLCR",_pdf_num(summary.get('llcr'),2)+"x"],["Расчётный БРИДЖ",_pdf_money(financing.get('calculated_bridge'))],["Фактический пик БРИДЖ",_pdf_money(financing.get('actual_bridge'))],["Пиковая (непокрытая эскроу) задолженность ПФ",_pdf_money(financing.get('pf_uncovered_peak'))],["Проценты и комиссии",_pdf_money(financing.get('interest_and_fees'))],
     ]
     # Остаток ПФ на конец проекта — это несостоявшееся погашение, а не деталь
     # финансирования: без него отчёт выглядел безупречно при непогашенном долге.
@@ -12232,6 +12258,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
             float(financing.get("calculated_bridge") or 0),
             float(financing.get("pf_uncovered_peak") or 0),
         ),
+        float(financing.get("ending_pf") or 0) / 1_000_000,
     )
     story.append(KeepTogether([
         P("Оценка целесообразности покупки", h2),
@@ -18099,6 +18126,7 @@ def telegram_result(req: TelegramResultRequest,
             float(summary.get("calculated_bridge_mln") or 0),
             float(summary.get("pf_uncovered_peak_mln") or 0),
         ),
+        summary.get("ending_pf_mln"),
     )
     # Продукт с ГНС и без продаваемой площади делает вердикт бессмысленным:
     # расходы полные, выручки нет, и «нецелесообразна» относится к дырке
