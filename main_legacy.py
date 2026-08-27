@@ -52,6 +52,7 @@ from pydantic import BaseModel
 # причине: он о выгрузках и их разборе, движок — об экономике.
 import developaid_actuals
 import developaid_monitor
+import developaid_monitor_daily
 import developaid_monitor_scenarios
 from developaid_monitor_page import MONITOR_PAGE as _MONITOR_PAGE_RAW
 
@@ -67,7 +68,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.20.26"
+VERSION = "0.20.29"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -2094,6 +2095,36 @@ def monitor_doubts(req: MonitorDoubtsRequest) -> dict[str, Any]:
         return developaid_monitor_scenarios.doubts(req.project, req.cut)
     except FileNotFoundError as exc:
         raise HTTPException(404, str(exc))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+class MonitorDailyRequest(BaseModel):
+    project: str
+    text: str
+    taken_at: str
+    session: str = ""
+    key: str = ""
+
+
+@app.post("/monitor/daily", include_in_schema=False)
+def monitor_store_daily(req: MonitorDailyRequest) -> dict[str, Any]:
+    """Положить ежедневный отчёт с площадки — текст как пришёл в мессенджер."""
+    _require_web_access(req.session, req.key, "Монитор проекта")
+    try:
+        return developaid_monitor_daily.store_daily_report(
+            req.project, req.text, req.taken_at)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.get("/monitor/daily/summary", include_in_schema=False)
+def monitor_daily_summary(project: str, upto: str = "",
+                          session: str = "", key: str = "") -> dict[str, Any]:
+    """Люди на площадке по дням и последний отчёт словами."""
+    _require_web_access(session, key, "Монитор проекта")
+    try:
+        return developaid_monitor_daily.daily_summary(project, upto or None)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
 
