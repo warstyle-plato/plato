@@ -106,9 +106,13 @@ def test_one_path_to_platon_for_the_whole_cabinet() -> None:
 
 
 def test_platon_reads_the_numbers_and_does_not_recount_them() -> None:
+    """Числа считает движок; темы разбора живут в подсказках диалога."""
     body = script()
-    digest = body[body.index("async function askPlatoSales("):]
-    digest = digest[:digest.index("\n}")]
-    assert "НЕ пересчитывай" in digest
-    assert "рассрочка" in digest and "брокер" in digest.lower()
-    assert "собственного отдела" in digest or "отдела продаж" in digest
+    ask = body[body.index("async function askPlatoSales("):]
+    ask = ask[:ask.index("\n}")]
+    assert "НЕ пересчитывай" in ask
+
+    asks = body[body.index("const SALES_ASKS=["):]
+    asks = asks[:asks.index("\n];")]
+    assert "рассрочка" in asks and "брокер" in asks.lower()
+    assert "собственного отдела" in asks or "отдела продаж" in asks

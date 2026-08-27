@@ -46,10 +46,16 @@ ROWS = [
 
 
 def test_the_button_no_longer_names_a_project() -> None:
-    page = cabinet.CABINET_HTML if hasattr(cabinet, "CABINET_HTML") else ""
-    source = page or Path("market_search/cabinet.py").read_text(encoding="utf-8")
-    assert "Загрузить отчёт о продажах" in source
+    """Кнопка загрузки не называет ни проект, ни чью-то книгу.
+
+    Отдельной кнопки для плана продаж больше нет вовсе: план и отчёт правлению
+    читаются тем же файлом проекта. Две загрузки рядом означали два файла
+    разных дат, поданных как один проект.
+    """
+    source = Path("market_search/cabinet.py").read_text(encoding="utf-8")
+    assert "Загрузить файл проекта" in source
     assert "Загрузить финмодель ПЛАТО" not in source
+    assert "Загрузить отчёт о продажах" not in source, "второй загрузки быть не должно"
 
 
 def test_the_binary_format_is_accepted_by_the_form() -> None:
@@ -58,9 +64,10 @@ def test_the_binary_format_is_accepted_by_the_form() -> None:
 
 
 def test_the_status_line_does_not_print_a_project_name() -> None:
+    """Кто загрузил, тот и знает, чей это отчёт: имени проекта в строке нет."""
     source = Path("market_search/cabinet.py").read_text(encoding="utf-8")
     assert "План загружен:" not in source
-    assert "Отчёт загружен:" in source
+    assert "План продаж: факт по" in source
 
 
 def test_the_parser_no_longer_returns_a_project() -> None:

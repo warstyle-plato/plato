@@ -250,3 +250,50 @@ def test_the_sources_line_carries_no_file_names():
     line = line[:line.index("</div>")]
     assert "s.file" not in line, "имя файла со строки источников убрано"
     assert "s.at" in line and "s.name" in line
+
+
+def test_the_report_is_folded_under_its_own_name():
+    """Кабинет начинается с рынка, а свод продаж — отдельная работа на десять
+    экранов: развёрнутый, он занимал страницу целиком ещё до того, как человек
+    решил на него смотреть."""
+    body = PAGE[PAGE.index("function renderSales(d){"):]
+    body = body[:body.index("\nfunction tile(")]
+    assert "<details class=\"salesreport\">" in body
+    assert "Отчёт о продажах ПЛАТО" in body
+    assert "<details class=\"salesreport\" open" not in body, "вкладка открыта по умолчанию"
+    assert "</details>" in body
+
+
+def test_only_one_upload_button_is_left():
+    """Две загрузки рядом означали два файла разных дат, поданных как один
+    проект, — ровно то, ради чего заведён общий склад источников."""
+    assert PAGE.count("class=\"upload\"") == 1
+    assert "Загрузить файл проекта" in PAGE
+    assert "loadPlan(" not in PAGE, "своего маршрута загрузки у плана больше нет"
+    assert "takePlan(" in PAGE, "план приезжает вместе со сводом"
+
+
+def test_the_plan_is_read_by_one_parser_for_both_paths():
+    """Два разбора одной книги однажды разойдутся, и обе картинки будут
+    выглядеть верными."""
+    api = (ROOT / "market_search" / "api.py").read_text(encoding="utf-8")
+    assert "def _plan_payload(" in api
+    assert api.count("parse_plan(data)") == 1, "разбор книги объявлен один раз"
+    assert 'parts["plan"] = _plan_payload(data)' in api
+    from market_search import sales_store
+    assert "plan" in sales_store.KINDS
+
+
+def test_the_wait_shows_the_stage_and_the_timeout_names_it():
+    """Ожидание без признака работы читается как внезапность: пять минут
+    «Платон думает…», потом «ответ пустой» — а работа могла и не начинаться."""
+    body = PAGE[PAGE.index("async function platoAnswer(message"):]
+    body = body[:body.index("\n}\n")]
+    assert "/agent/trace/" in body, "стадию сервер пишет — её надо показать"
+    assert "не ответил за" in body
+    assert "работа не начиналась" in body, "«нет стадии» и «стадия застряла» — разные ответы"
+    # Комментарии из проверки исключены: в них прежний неверный диагноз назван
+    # по имени, чтобы следующий читатель не завёл его обратно. Запрещаем место,
+    # а не слово.
+    code = "\n".join(line for line in body.split("\n") if not line.strip().startswith("//"))
+    assert "Ответ пустой" not in code, "неверный диагноз: работа могла идти и не кончиться"

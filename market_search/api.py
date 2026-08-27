@@ -94,6 +94,29 @@ class ReportRequest(BaseModel):
         return self
 
 
+def _plan_payload(data: bytes) -> dict[str, Any]:
+    """План продаж книги вместе с отчётом правлению.
+
+    Отчёт правлению читается из той же книги и тем же вызовом: просить
+    человека загрузить один файл дважды — значит однажды получить два разных
+    файла и показать их как один проект.
+
+    Его отсутствие не ошибка: у книги без листов статуса есть план, и это
+    законный отчёт. Поэтому неудача идёт причиной рядом, а не пятисоткой
+    поверх удавшегося разбора.
+    """
+    got = parse_plan(data)
+    for key, reader in (("board_sales", board.parse_board_sales),
+                        ("board_status", board.parse_board_status)):
+        try:
+            got[key] = reader(data)
+        except PlanNotFound as exc:
+            got.setdefault("board_missing", []).append(str(exc))
+        except Exception as exc:  # noqa: BLE001
+            got.setdefault("board_missing", []).append(f"{key}: {exc}")
+    return got
+
+
 def _uploaded_file_name(raw: object) -> str:
     """Имя загруженного файла из заголовка.
 
@@ -421,25 +444,9 @@ def install(app: FastAPI) -> MarketDiscoveryService:
         if len(data) > 60 * 1024 * 1024:
             raise HTTPException(status_code=413, detail="Книга больше 60 МБ — это не финмодель")
         try:
-            got = parse_plan(data)
+            return _plan_payload(data)
         except PlanNotFound as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        # Отчёт правлению читается из той же книги и тем же вызовом: просить
-        # человека загрузить один файл дважды — значит однажды получить два
-        # разных файла и показать их как один проект.
-        #
-        # Его отсутствие не ошибка: у книги без листов статуса есть план, и
-        # это законный отчёт. Поэтому неудача идёт причиной рядом, а не
-        # пятисоткой поверх удавшегося разбора.
-        for key, reader in (("board_sales", board.parse_board_sales),
-                            ("board_status", board.parse_board_status)):
-            try:
-                got[key] = reader(data)
-            except PlanNotFound as exc:
-                got.setdefault("board_missing", []).append(str(exc))
-            except Exception as exc:  # noqa: BLE001
-                got.setdefault("board_missing", []).append(f"{key}: {exc}")
-        return got
 
     def _cabinet_dir() -> Path:
         """Где лежит склад источников — спрашивается при обращении.
@@ -491,6 +498,9 @@ def install(app: FastAPI) -> MarketDiscoveryService:
             got["demand"] = demand_module.demand_summary(
                 crm.get("deals") or [], (got.get("pool") or {}).get("bands") or [], crm)
         got["conclusions"] = contracting.conclusions(got)
+        # План продаж и отчёт правлению едут отсюда же: у них была своя кнопка
+        # загрузки, то есть свой файл и своя дата рядом с общим складом.
+        got["plan"] = part("plan")
         return got
 
     def contracting_sources_missing(sources: dict[str, Any]) -> list[tuple[str, str]]:
@@ -517,6 +527,15 @@ def install(app: FastAPI) -> MarketDiscoveryService:
                 parts[kind] = reader(data)
             except Exception as exc:  # noqa: BLE001
                 notes.append(f"{sales_store.KINDS[kind]}: {exc}")
+        # План продаж и отчёт правлению — из той же книги и тем же разбором,
+        # что и у отдельного маршрута. Второй загрузки для них больше нет:
+        # две кнопки «загрузить» рядом означали два файла разных дат, поданных
+        # как один проект, — ровно то, от чего заведён общий склад
+        # (владелец, 27.08.2026: «оставь только загрузка файлов проекта»).
+        try:
+            parts["plan"] = _plan_payload(data)
+        except Exception as exc:  # noqa: BLE001
+            notes.append(f"{sales_store.KINDS['plan']}: {exc}")
         return parts, notes
 
     @app.post("/cabinet/contracting")
