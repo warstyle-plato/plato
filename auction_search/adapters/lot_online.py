@@ -7,6 +7,7 @@ from urllib.request import Request, urlopen
 from urllib.parse import urljoin, urlparse, parse_qs, urlencode
 from zoneinfo import ZoneInfo
 
+from auction_search import deadline as clock
 from auction_search.adapters.base import AuctionPlatformAdapter
 from auction_search.classifier import classify_lot, origin_from_evidence
 from auction_search.models import (
@@ -127,18 +128,21 @@ class LotOnlineAdapter(AuctionPlatformAdapter):
         category_ids: tuple[str, ...],
         include_archive: bool,
         max_pages: int,
+        deadline: float | None = None,
     ) -> list[str]:
         candidate_urls: list[str] = []
         seen: set[str] = set()
         for category_id in category_ids:
             for page in range(1, max_pages + 1):
+                if clock.expired(deadline):
+                    break
                 url = self._discovery_url(
                     page,
                     category_id=category_id,
                     include_archive=include_archive,
                 )
                 req = Request(url, headers={"User-Agent": self.USER_AGENT})
-                with urlopen(req, timeout=25) as response:
+                with urlopen(req, timeout=clock.timeout(deadline, 25)) as response:
                     html = response.read().decode(response.headers.get_content_charset() or "utf-8", errors="replace")
                 parser = _TextLinksParser()
                 parser.feed(html)
@@ -201,7 +205,7 @@ class LotOnlineAdapter(AuctionPlatformAdapter):
             parsed = parsed.replace(tzinfo=_MOSCOW)
         return parsed.astimezone(_MOSCOW) >= datetime.now(_MOSCOW)
 
-    def discover_moscow(self) -> list[AuctionLot]:
+    def discover_moscow(self, *, deadline: float | None = None) -> list[AuctionLot]:
         """Enumerate active Moscow development lots from the public RAD catalogue.
 
         The catalogue query is only discovery. Every candidate is re-read from its
@@ -212,15 +216,35 @@ class LotOnlineAdapter(AuctionPlatformAdapter):
         category_ids = (self.LAND_CATEGORY_ID,)
         if self.include_project_shares:
             category_ids += (self.PROJECT_SHARES_CATEGORY_ID,)
+        self.last_report = {"source": self.platform_name, "pages": 0,
+                            "cards": 0, "kept": 0, "skipped": 0, "reason": ""}
         candidate_urls = self._discover_candidate_urls(
             category_ids=category_ids,
             include_archive=False,
             max_pages=self.DISCOVERY_MAX_PAGES,
+            deadline=deadline,
         )
+        self.last_report["cards"] = len(candidate_urls)
 
         lots: list[AuctionLot] = []
         for lot_url in candidate_urls:
-            lot = self.fetch_lot(lot_url)
+            # Каждая карточка — свой запрос. Их бывает много, и срок ограничивает
+            # именно это: потолок в три страницы ограничивает объём, но не время.
+            if clock.expired(deadline):
+                self.last_report["reason"] = (
+                    f"остановлено по времени: разобрано лотов {len(lots)} "
+                    f"из {len(candidate_urls)} найденных")
+                break
+            try:
+                lot = self.fetch_lot(lot_url)
+            except Exception:  # noqa: BLE001
+                # Одна недоступная или испорченная карточка не отменяет
+                # остальные. Прежде она роняла весь сбор: сервис отвечал 502,
+                # и каталог пропадал целиком — «торги перестали выдавать вообще
+                # какие либо результаты». Пропуск считается и называется, иначе
+                # он неотличим от отсутствия лота.
+                self.last_report["skipped"] += 1
+                continue
             if not self._confirmed_moscow(lot):
                 continue
             if self._is_test_lot(lot):
@@ -234,6 +258,10 @@ class LotOnlineAdapter(AuctionPlatformAdapter):
             lot.raw["discovery_category_ids"] = list(category_ids)
             lot.raw["discovered_via"] = "Lot-online public current catalogue"
             lots.append(lot)
+        self.last_report["kept"] = len(lots)
+        if self.last_report["skipped"] and not self.last_report["reason"]:
+            self.last_report["reason"] = (
+                f"не прочитано карточек: {self.last_report['skipped']}")
         return lots
 
     def discover_moscow_history(

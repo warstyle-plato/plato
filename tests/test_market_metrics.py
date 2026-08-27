@@ -956,8 +956,13 @@ def test_the_report_can_be_dropped_whole() -> None:
     reset = reset[: reset.index("});")]
     for state in ("lastReport=null", "planData=null", "added.clear()",
                   "$('#out').innerHTML=''", "$('#hintout').innerHTML=''",
-                  "$('#askout').innerHTML=''", "$('#plan').value=''"):
+                  "$('#askout').innerHTML=''"):
         assert state in reset, state
+    # Поле загрузки плана убрано вместе со своей кнопкой: план приезжает файлом
+    # проекта. Сброс не должен трогать поле, которого нет, — обращение к нему
+    # роняет весь обработчик, и не сбросится уже ничего.
+    assert "$('#plan')" not in reset, "сброс держится за поле, которого больше нет"
+    assert 'id="plan"' not in CABINET_PAGE
     # Кнопки отчёта прячутся вместе с ним, иначе «Сохранить PDF» печатала бы
     # пустую страницу.
     assert "$('#pdf').style.display='none'" in reset

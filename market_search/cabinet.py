@@ -220,6 +220,15 @@ margin:12px 0;font-size:14px}
 tr.ownrow td{background:#fff5ee;font-weight:600}
 textarea{width:100%;padding:10px 12px;border:1px solid #ccd6e0;border-radius:9px;font:15px/1.5 inherit;
 resize:vertical;margin-top:8px}
+.salesreport{border:1px solid var(--line,#e2e8ef);border-radius:12px;background:#fff;margin:14px 0}
+.salesreport>summary{cursor:pointer;list-style:none;padding:14px 16px;display:flex;
+  gap:10px;align-items:baseline;flex-wrap:wrap;font-size:16px}
+.salesreport>summary::-webkit-details-marker{display:none}
+.salesreport>summary::before{content:'▸';margin-right:4px;color:var(--blue,#2f6fab)}
+.salesreport[open]>summary::before{content:'▾'}
+.salesreport>summary .muted{font-size:13px}
+.salesreport>summary:hover{background:#f7fafd}
+.salesreport[open]>summary{border-bottom:1px solid var(--line,#e2e8ef)}
 .chips{display:flex;gap:8px;flex-wrap:wrap}
 .chips button{background:#f2f7fc;border:1px solid #cfe0f0;color:var(--blue);border-radius:16px;
 padding:5px 12px;font-size:13px;cursor:pointer}
@@ -488,10 +497,9 @@ g.bub.on circle{fill-opacity:.75}
     <button class="go alt" id="hint">Ориентир цены</button>
     <button class="go alt" id="pdf" style="display:none">Сохранить PDF</button>
     <button class="go alt" id="reset" style="display:none">Сбросить отчёт</button>
-    <label class="upload" title="Лист «План продаж_утв» из финмодели проекта: помесячно факт и план. Форматы .xlsx, .xlsm, .xlsb">Загрузить отчёт о продажах<input type="file" id="plan" accept=".xlsx,.xlsm,.xlsb"></label>
-    <span id="planstate" class="muted"></span>
-    <label class="upload" title="Что в файле нашлось, то и прочитано: выгрузка ЦФ несёт контрактацию, проводки 1С и оба плана, книга финмодели — квартирографию. Источники ложатся на склад ядра и переживают закрытие вкладки: файлы грузятся по одному и в любом порядке. Форматы .xlsx, .xlsm, .xlsb">Загрузить файл проекта<input type="file" id="cf" accept=".xlsx,.xlsm,.xlsb"></label>
+    <label class="upload" title="Что в файле нашлось, то и прочитано: выгрузка ЦФ несёт контрактацию, проводки 1С и оба плана, книга финмодели — квартирографию, план продаж и отчёт правлению. Источники ложатся на склад ядра и переживают закрытие вкладки: файлы грузятся по одному и в любом порядке. Форматы .xlsx, .xlsm, .xlsb">Загрузить файл проекта<input type="file" id="cf" accept=".xlsx,.xlsm,.xlsb"></label>
     <span id="cfstate" class="muted"></span>
+    <span id="planstate" class="muted"></span>
     <span id="state" class="muted" style="margin-left:12px"></span>
     <div id="pdfstate" class="err pdffail" style="display:none"></div>
     <div id="hintout"></div>
@@ -1369,7 +1377,7 @@ let lastReport=null;
 // Один путь к Платону на весь кабинет. Копия этого опроса была бы вторым
 // местом, где чинят обрыв длинного ответа: цепочка ядро → Render → OpenAI
 // одним соединением не держится, и за долгим ответом ходят по номеру запуска.
-async function platoAnswer(message){
+async function platoAnswer(message, onStage){
   const trace='cab'+Math.random().toString(36).slice(2,10);
   const r=await fetch('/cabinet/ask',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({message})});
@@ -1382,16 +1390,38 @@ async function platoAnswer(message){
   catch(_){ throw new Error(`Платон ответил не по-русски и не по-JSON (код ${r.status}): `+raw.slice(0,200)) }
   if(!r.ok) throw new Error(d.detail||'Платон не ответил');
   // Быстрый ответ приходит тем же запросом; за долгим ходим по номеру.
+  //
+  // Ожидание без признака работы читается как внезапность: пять минут «Платон
+  // Сергеевич думает…», а потом «ответ пустой». Стадию сервер и так пишет —
+  // `/agent/trace/{номер}`, — и её надо просто показать. Заодно она отвечает на
+  // вопрос, которого иначе не задать: работа не началась или не кончилась.
   let text=d.reply||d.answer||d.text||'';
+  const began=Date.now();
+  let stage='', label='';
   for(let i=0;!text&&d.trace_id&&i<120;i++){
     await new Promise(done=>setTimeout(done,2500));
+    try{
+      const s=await fetch('/agent/trace/'+encodeURIComponent(d.trace_id));
+      if(s.ok){ const sd=await s.json();
+        stage=sd.stage||stage; label=sd.label||label;
+        if(onStage) onStage(`${label||stage||'работа принята'} · ${Math.round((Date.now()-began)/1000)} с`);
+      }
+    }catch(_){ /* стадия — удобство; ронять из-за неё ожидание нельзя */ }
     const p=await fetch('/agent/result/'+encodeURIComponent(d.trace_id||trace));
     if(!p.ok) continue;
     const pd=await p.json();
     if(pd.status==='error'){ throw new Error(pd.detail||pd.error||'Платон вернул ошибку') }
     text=pd.reply||pd.answer||pd.text||'';
   }
-  if(!text) throw new Error(d.error||'Ответ пустой — Платон ничего не сказал.');
+  if(!text){
+    // «Ответ пустой» — неверный диагноз: работа могла идти и не кончиться.
+    // Различить это можно только стадией, и она называется вслух.
+    const waited=Math.round((Date.now()-began)/1000);
+    throw new Error(d.error||(stage
+      ? `Платон не ответил за ${waited} с. Последняя стадия: ${label||stage}.`
+      : `Платон не ответил за ${waited} с, и работа не начиналась: стадии нет. `
+        +`Маршрут модели виден в /agent/status.`));
+  }
   return text;
 }
 
@@ -1403,7 +1433,8 @@ async function askPlato(){
   const message='Ниже готовый разбор рынка, посчитанный движком. Числа не пересчитывай — '
     +'объясни и ответь на вопрос по ним.\n\n'+reportDigest(lastReport)+'\n\nВопрос: '+q;
   try{
-    const text=await platoAnswer(message);
+    const text=await platoAnswer(message,
+      note=>{$('#askout').innerHTML='<div class="muted">Платон Сергеевич: '+esc(note)+'</div>'});
     $('#askout').innerHTML=`<div class="plato">${esc(text).replace(/\n/g,'<br>')}</div>`;
   }catch(e){$('#askout').innerHTML=`<div class="err">${esc(e.message||e)}</div>`}
   finally{$('#askbtn').disabled=false}
@@ -1747,9 +1778,13 @@ async function loadContracting(file){
   $('#cfstate').textContent='Читаю файл проекта…';
   try{
     // Имя файла едет заголовком: в свод оно попадает подписью источника, а
-    // тело запроса — сам файл, разбирать multipart здесь незачем.
+    // тело запроса — сам файл, разбирать multipart здесь незачем. Заголовок
+    // обязан быть ASCII, поэтому имя процентно-кодируется — и РАСКОДИРУЕТСЯ на
+    // сервере. Прежде проценты заменялись на подчёркивание «чтобы не мешали», и
+    // раскодировать это было уже нечем: русское имя приезжало на экран как
+    // «_D0_9F_D1_80_D0_BE…» и в таком виде уходило Платону в вопрос.
     const r=await fetch('/cabinet/contracting',{method:'POST',body:file,
-      headers:{'x-file-name':encodeURIComponent(file.name).replace(/%/g,'_')}});
+      headers:{'x-file-name':encodeURIComponent(file.name)}});
     const raw=await r.text();
     let d;
     try{ d=JSON.parse(raw) }
@@ -1774,6 +1809,7 @@ async function loadStoredSales(){
 
 function showSales(d){
   salesData=d;
+  takePlan(d);
   const t=d.total||{};
   const parts=(d.sources||[]).map(s=>s.name).join(', ');
   $('#cfstate').textContent=`${d.project||'Проект'}: ${num(t.contracts)} `
@@ -2318,7 +2354,19 @@ function renderSales(d){
   const t=d.total||{}, box=$('#sales'), pool=d.pool||{}, whole=pool.total||{};
   const byProduct={}; (pool.products||[]).forEach(p=>{byProduct[p.product]=p});
   const share=v=>v===null||v===undefined?'':num(v*100,1)+'%';
-  let html='<div class="card"><h2>Продажи проекта'+(d.project?' — '+esc(d.project):'')+'</h2>';
+  // Отчёт закрыт при открытии страницы. Кабинет начинается с рынка, а свод
+  // продаж — это отдельная работа на десять экранов: развёрнутый, он занимал
+  // страницу целиком ещё до того, как человек решил на него смотреть
+  // (владелец, 27.08.2026: «чтобы его не было видно сразу приоткрытой
+  // страницы»). Данные при этом посчитаны и лежат готовыми — свёрнут показ, а
+  // не разбор.
+  const t0=d.total||{};
+  let html='<details class="salesreport"><summary>'
+    +'<b>Отчёт о продажах ПЛАТО</b>'
+    +'<span class="muted">'+(d.project?esc(d.project)+' · ':'')
+    +num(t0.contracts)+' '+plural(t0.contracts,'договор','договора','договоров')
+    +' · '+num(t0.amount/1e6,1)+' млн ₽</span></summary>'
+    +'<div class="card"><h2>Продажи проекта'+(d.project?' — '+esc(d.project):'')+'</h2>';
 
   const have=[];
   if((d.dynamics||[]).length>1) have.push('sb-dyn');
@@ -2410,9 +2458,13 @@ function renderSales(d){
   // Что загружено и когда: два файла разных дат, показанные как один проект, —
   // худший исход, поэтому дата каждого источника стоит на экране.
   if((d.sources||[]).length){
+    // Имени файла на экране нет. Вопрос, на который отвечает эта строка, —
+    // «те ли это данные, что я грузил, и не разной ли они давности»; отвечают
+    // на него вид источника и дата. Имя файла его не уточняет, а занимает по
+    // три строки на источник — шесть источников закрывали экран целиком
+    // (владелец, 27.08.2026: «зачем в комментариях упоминания файлов»).
     html+='<div class="muted" style="font-size:12px;margin-top:14px">Источники: '
-      +d.sources.map(s=>esc(s.name)+' — '+esc(String(s.at||'').slice(0,10))
-        +(s.file?' ('+esc(s.file)+')':'')).join('; ')+'.</div>';
+      +d.sources.map(s=>esc(s.name)+' — '+esc(String(s.at||'').slice(0,10))).join('; ')+'.</div>';
   }
 
   // Чего в выгрузке не нашлось — вслух: пустой раздел и отсутствующий
@@ -2422,10 +2474,26 @@ function renderSales(d){
     html+=`<div class="muted" style="font-size:12.5px;margin-top:6px">Не прочитано — ${esc(line)}</div>`;
   });
 
-  html+='<div style="margin-top:14px"><button class="go alt" id="salesask">Комментарий Платона по продажам</button></div>'
-     +'<div id="salesout"></div>';
-  box.innerHTML=html+'</div>';
+  // Разговор, а не одна кнопка. Кнопка задавала один вопрос и на этом
+  // кончалась: не понравился ответ — переспросить негде (владелец,
+  // 27.08.2026). Устройство то же, что у диалога о рынке выше: подсказки
+  // одним нажатием, поле для своего вопроса, ответ под ним. Вопрос о разборе
+  // стоит в поле сразу — печатать его каждый раз незачем.
+  html+='<div class="card" style="margin-top:16px;padding:14px">'
+     +'<h2 style="margin-top:0">Спросить Платона Сергеевича о продажах</h2>'
+     +'<div class="muted" style="font-size:13px;margin-bottom:8px">'
+     +'Он видит свод этого проекта и объясняет его. Считает движок — модель не пересчитывает.</div>'
+     +'<div class="chips" id="saleschips">'
+     +SALES_ASKS.map((q,i)=>`<button type="button" data-i="${i}">${esc(q.chip)}</button>`).join('')
+     +'</div>'
+     +`<textarea id="salesq" rows="3" placeholder="Например: чем объяснить разрыв между планом банка и фактом?">${esc(SALES_ASKS[0].text)}</textarea>`
+     +'<button class="go" id="salesask">Спросить</button>'
+     +'<div id="salesout"></div></div>';
+  box.innerHTML=html+'</div></details>';
   $('#salesask').onclick=askPlatoSales;
+  box.querySelectorAll('#saleschips button').forEach(b=>{
+    b.onclick=()=>{ $('#salesq').value=SALES_ASKS[Number(b.dataset.i)].text; askPlatoSales() };
+  });
   box.querySelectorAll('.switch button').forEach(b=>{
     b.onclick=()=>{
       const target=b.dataset.for;
@@ -2459,8 +2527,35 @@ function tile(name, value, sub){
 // и молча вылезешь за предел.
 const SALES_ASK_LIMIT=4000;
 
+// Подсказки — не украшение: первая стоит в поле сразу, потому что за ней сюда
+// и приходят. Остальные нажимаются и спрашиваются одним движением.
+const SALES_ASKS=[
+  {chip:'Разбор продаж',
+   text:'Дай короткий разбор по четырём темам: 1) рассрочка — как она влияет на '
+     +'фактическое наполнение эскроу и чем это грозит; 2) вознаграждение брокерам — '
+     +'рыночное ли оно и что значит разрыв между «% от продаж» и «% от наполнения»; '
+     +'3) эффективность собственного отдела продаж против брокерского канала; '
+     +'4) структура продаж — есть ли сдвиг в сторону мелких лотов и что это значит для выручки.'},
+  {chip:'Почему не покупают?',
+   text:'Что в этих числах говорит о том, почему люди не покупают: чего просят и чего '
+     +'нет в витрине? Отвечай только по своду, недостающее назови недостающим.'},
+  {chip:'Хватит ли эскроу на ПФ?',
+   text:'Хватит ли накопленного эскроу на погашение проектного финансирования и что '
+     +'должно измениться в темпе продаж, чтобы хватило?'},
+  {chip:'Мы идём по плану?',
+   text:'Сравни факт с планом нашей финмодели и с планом банка: где расхождение, '
+     +'насколько велико и чем оно объясняется по имеющимся числам.'},
+  {chip:'Что делать в этом месяце?',
+   text:'Назови три действия на ближайший месяц, каждое — со ссылкой на число из свода.'},
+];
+
 function salesDigest(d, limit){
   const t=d.total||{}, groups=[];
+  // Обязательная часть — только это. Всё остальное, включая наши выводы и
+  // список непрочитанного, идёт разделами и укладывается в остаток бюджета:
+  // прежде выводы и «не прочитано» стояли вне счёта, и с одиннадцатью выводами
+  // вопрос перевалил четыре тысячи знаков ещё до первого раздела — Платон
+  // отвечал «вопрос слишком длинный» на полностью загруженном проекте.
   const head=[`ПРОЕКТ: ${d.project||'—'}.`,
     `Всего: ${num(t.contracts)} договоров, ${num(t.area)} м², ${num(t.amount/1e6,1)} млн ₽, `
      +`средняя ${num(t.price_per_sqm)} ₽/м²; на эскроу ${num(t.escrow/1e6,1)} млн (${num(t.escrow_share*100,1)}%).`];
@@ -2561,60 +2656,140 @@ function salesDigest(d, limit){
   }
   add('размерность', (d.by_size||[]).map(x=>`РАЗМЕР ${x.band}: ${num(x.contracts)} шт, ${num(x.area)} м², ${num(x.amount/1e6,1)} млн ₽`));
   add('продукты', (d.by_product||[]).map(x=>`ПРОДУКТ ${x.product}: ${num(x.contracts)} шт, ${num(x.amount/1e6,1)} млн ₽`));
-  const tail=[];
+  const term=[];
   if((d.terminated||[]).length){
     const back=d.terminated.reduce((sum,x)=>sum+(Number(x.escrow_returned)||0),0);
-    tail.push(`РАСТОРЖЕНИЙ: ${d.terminated.length}, возвращено с эскроу ${num(back/1e6,1)} млн ₽`);
+    term.push(`РАСТОРЖЕНИЙ: ${d.terminated.length}, возвращено с эскроу ${num(back/1e6,1)} млн ₽`);
   }
-  (d.missing||[]).forEach(x=>tail.push('НЕ ПРОЧИТАНО: '+x));
-  Object.values(d.conclusions||{}).forEach(line=>head.push('ВЫВОД: '+line));
+  add('расторжения', term);
+  // Непрочитанное — предупреждение, а не данные: Платон не должен читать
+  // отсутствие источника как ноль. Строки бывают длинными (в них имя файла),
+  // поэтому раздел стоит в общей очереди, а не поверх бюджета.
+  add('не прочитано', (d.missing||[]).map(x=>'НЕ ПРОЧИТАНО: '+x));
+  // Выводы посчитаны сервером и отвечают ровно на то, о чём спрашиваем, —
+  // поэтому они раздел с бюджетом, а не часть обязательной шапки.
+  add('выводы', Object.values(d.conclusions||{}).map(line=>'ВЫВОД: '+line));
 
-  // Складываем, пока влезает. Разделы идут по важности: каналы и оплата
-  // отвечают на вопрос, помесячная динамика — уже подробность.
+  // Порядок разделов задаётся ЗДЕСЬ, а не порядком вычислений: вопрос спрашивает
+  // про рассрочку, вознаграждение брокерам, свой отдел и структуру продаж —
+  // значит оплата и каналы идут раньше помесячной динамики. Пока порядок был
+  // порядком счёта, из полного проекта выпадали каналы, то есть две темы из
+  // четырёх, о которых мы же и спросили.
+  //
+  // «Не прочитано» стоит вторым намеренно: это предупреждение против чтения
+  // отсутствия как нуля, и выброшенное молча оно вредит сильнее любой
+  // пропущенной таблицы.
+  const ORDER=['выводы','не прочитано','оплата','каналы','пул и вымывание',
+    'размерность','продукты','воронка обращений','план ФМ','план банка',
+    'расторжения','динамика'];
+  const rank=name=>(ORDER.indexOf(name)+1)||99;
+  groups.sort((a,b)=>rank(a.name)-rank(b.name));
+
+  // Складываем, пока влезает.
   const cap=Number(limit)||2800;
+  // Место под строку «не поместилось» держится с самого начала. Приписанная
+  // сверх бюджета, она вылезала за предел и обрезалась первой — то есть
+  // пропадало ровно то предупреждение, ради которого она написана, а свод
+  // выглядел полным.
+  const NOTE_ROOM=200;
   const kept=[...head], dropped=[];
-  let size=kept.join('\n').length+tail.join('\n').length;
+  let size=kept.join('\n').length;
   groups.forEach(g=>{
-    const text=g.lines.join('\n');
-    if(size+text.length+1<=cap){ kept.push(text); size+=text.length+1 }
-    else dropped.push(g.name+' ('+g.lines.length+' строк)');
+    if(!g.lines.length) return;
+    // Раздел входит построчно, а не целиком. Всё-или-ничего давало обрыв:
+    // «каналы» из шести строк не влезали, а стоящая ниже «размерность» из пяти
+    // влезала — и из вопроса выпадали две темы из четырёх, о которых мы же и
+    // спросили. Сколько строк вошло из скольких, стоит в самой строке.
+    const room=cap-NOTE_ROOM-size;
+    const fit=[];
+    let used=0;
+    g.lines.forEach(line=>{
+      if(used+line.length+1<=room){ fit.push(line); used+=line.length+1 }
+    });
+    if(!fit.length){ dropped.push(g.name+' ('+g.lines.length+' строк)'); return }
+    if(fit.length<g.lines.length){
+      const note='(вошло '+fit.length+' строк из '+g.lines.length+')';
+      // Метка ставится, если для неё есть место, и НЕ вместо данных: подмена
+      // последней строки меткой оставляла раздел из одной строки «(вошло 1 из
+      // 8)» — то есть выбрасывала ровно то, ради чего раздел вошёл. Что раздел
+      // урезан, в любом случае сказано общей строкой ниже.
+      if(used+note.length+1<=room){ fit.push(note); used+=note.length+1 }
+      dropped.push(g.name+' — часть');
+    }
+    kept.push(fit.join('\n'));
+    size+=fit.join('\n').length+1;
   });
-  kept.push(...tail);
-  if(dropped.length) kept.push('НЕ ПОМЕСТИЛОСЬ В ВОПРОС (не считай это отсутствием данных): '+dropped.join(', ')+'.');
-  return kept.join('\n');
+  if(dropped.length){
+    let note='НЕ ПОМЕСТИЛОСЬ В ВОПРОС (не считай это отсутствием данных): '+dropped.join(', ')+'.';
+    if(note.length>NOTE_ROOM-1) note=note.slice(0,NOTE_ROOM-3)+'….';
+    kept.push(note);
+  }
+  // Последний рубеж: даже обязательная шапка теоретически может перерасти
+  // бюджет (длинное имя проекта). Обрезка называет себя — молча укороченный
+  // свод читается как полный.
+  let out=kept.join('\n');
+  if(out.length>cap) out=out.slice(0, Math.max(0, cap-40))+'\n(свод обрезан по длине вопроса)';
+  return out;
 }
+
+// Сказанное Платоном о продажах. Живёт рядом со сводом: перерисовка карточки
+// (загрузили второй источник) не должна стирать разговор.
+let salesSaid=[];
 
 async function askPlatoSales(){
   if(!salesData){$('#salesout').innerHTML='<div class="muted">Сначала загрузите выгрузку ЦФ.</div>';return}
+  const ask=($('#salesq').value||'').trim()||SALES_ASKS[0].text;
   const btn=$('#salesask');
   btn.disabled=true;
   $('#salesout').innerHTML='<div class="muted">Платон Сергеевич читает продажи…</div>';
-  const tail='\n\nПиши по-русски, коротко, по каждой теме отдельным абзацем.';
+  const tail='\n\nВОПРОС: '+ask+'\n\nПиши по-русски, коротко, отдельным абзацем на каждую мысль.';
   const preamble='Ниже свод продаж проекта, посчитанный движком по выгрузке ЦФ. '
-    +'Числа НЕ пересчитывай и не выдумывай того, чего в своде нет. Дай короткий разбор по четырём темам: '
-    +'1) рассрочка — как она влияет на фактическое наполнение эскроу и чем это грозит; '
-    +'2) вознаграждение брокерам — рыночное ли оно и что значит разрыв между «% от продаж» и «% от наполнения»; '
-    +'3) эффективность собственного отдела продаж против брокерского канала; '
-    +'4) структура продаж — есть ли сдвиг в сторону мелких лотов и что это значит для выручки.\n\n';
+    +'Числа НЕ пересчитывай и не выдумывай того, чего в своде нет; чего в своде нет — '
+    +'так и скажи.\n\n';
+  // Бюджет свода считается от НАСТОЯЩЕЙ длины преамбулы и вопроса. Вопрос
+  // пишет человек, и длина его заранее не известна: назначенный на глазок
+  // бюджет вылезал бы за предел ровно на длинном вопросе.
   const message=preamble+salesDigest(salesData, SALES_ASK_LIMIT-preamble.length-tail.length-20)+tail;
   try{
-    const answer=await platoAnswer(message);
-    $('#salesout').innerHTML=`<div class="plato">${esc(answer).replace(/\n/g,'<br>')}</div>`;
+    const answer=await platoAnswer(message,
+      note=>{$('#salesout').innerHTML='<div class="muted">Платон Сергеевич: '+esc(note)+'</div>'});
+    // Диалог: ответы копятся, а не затирают друг друга — иначе сравнить ответ
+    // на уточнение с исходным нечем. Новый встаёт сверху: на телефоне
+    // дописанный снизу ответ оказывается за краем экрана, и человек решает,
+    // что ничего не произошло. Вопрос стоит над ответом — через три реплики
+    // «он про что это» становится настоящим вопросом.
+    const said=document.createElement('div');
+    said.className='plato';
+    said.style.marginTop='10px';
+    said.innerHTML='<div class="muted" style="font-size:12px;margin-bottom:4px">'+esc(ask)+'</div>'
+      +esc(answer).replace(/\n/g,'<br>');
+    const out=$('#salesout');
+    out.innerHTML='';
+    out.insertBefore(said, out.firstChild);
+    salesSaid.unshift(said.innerHTML);
+    salesSaid.slice(1).forEach(html=>{
+      const older=document.createElement('div');
+      older.className='plato';
+      older.style.marginTop='10px';
+      older.style.opacity='0.75';
+      older.innerHTML=html;
+      out.appendChild(older);
+    });
   }catch(e){
     $('#salesout').innerHTML=`<div class="err">${esc(String(e.message||e))}</div>`;
   }finally{ btn.disabled=false }
 }
 
-async function loadPlan(file){
-  $('#planstate').textContent='Читаю книгу…';
-  try{
-    const r=await fetch('/cabinet/plan',{method:'POST',body:file});
-    const d=await r.json();
-    if(!r.ok){$('#planstate').textContent=d.detail||'Книга не разобрана';planData=null;return}
-    planData=d;
-    $('#planstate').textContent=`Отчёт загружен: факт по ${d.fact_until||'—'} · план с ${d.plan_from||'—'}`;
-    if(lastReport) render(lastReport);
-  }catch(e){$('#planstate').textContent=String(e.message||e);planData=null}
+// План продаж и отчёт правлению приезжают тем же файлом проекта, что и всё
+// остальное: своей кнопки у них больше нет. Две загрузки рядом означали два
+// файла разных дат, поданных как один проект, — ровно то, ради чего заведён
+// общий склад источников.
+function takePlan(d){
+  const got=(d||{}).plan;
+  if(!got||!got.months){ $('#planstate').textContent=''; return }
+  planData=got;
+  $('#planstate').textContent=`План продаж: факт по ${got.fact_until||'—'} · план с ${got.plan_from||'—'}`;
+  if(lastReport) render(lastReport);
 }
 
 
@@ -3108,12 +3283,11 @@ $('#reset').addEventListener('click',function(){
   lastReport=null; planData=null; added.clear(); bubbleView='speed'; selectedSubjectQuery=null;
   $('#out').innerHTML=''; $('#hintout').innerHTML='';
   $('#planstate').textContent=''; $('#state').textContent='';
-  $('#plan').value=''; $('#ask').value=''; $('#askout').innerHTML='';
+  $('#ask').value=''; $('#askout').innerHTML='';
   $('#askcard').style.display='none';
   $('#pdf').style.display='none'; $('#reset').style.display='none';
   $('#q').focus();
 });
-$('#plan').addEventListener('change',e=>{if(e.target.files[0])loadPlan(e.target.files[0])});
 $('#cf').addEventListener('change',e=>{if(e.target.files[0])loadContracting(e.target.files[0])});
 loadStoredSales();
 document.querySelectorAll('.chips button').forEach(b=>b.addEventListener('click',()=>{
