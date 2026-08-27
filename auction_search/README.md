@@ -31,13 +31,20 @@ Future adapters may be added only when the platform itself is the official ETP f
    unsupported platforms remain source diagnostics, not lots.
 3. `adapter.fetch_lot()` normalizes one official ETP card into `AuctionLot`.
 4. `classify_lot()` determines the legal structure **before** financial modeling.
-5. Development-noise filter removes obvious IJS/small non-development land.
-6. Official attached documents are downloaded and typed only for a selected lot.
-7. For KRT, decision / notice / draft agreement / annexes are parsed into a separate development program and investor obligations with exact provenance.
-8. `build_project_preset()` converts the selected lot into the existing `developaid.project_preset.v4` envelope. Auction price is carried as the current acquisition-price input.
-9. `/auctions` hands that preset to the canonical DevelopAid model page through same-origin `sessionStorage`.
-10. Ordinary land continues through the existing cadastral → ГлавАПУ/MO TEP flow; KRT uses the standard preset preview/apply flow.
-11. Existing DevelopAid market/cost/financing layers calculate economics and ultimately max bid.
+5. Development-noise screening removes clearly irrelevant uses. A small site is
+   named, not rejected merely for its size: the benchmark contains real small
+   deals.
+6. `catalogue_quality()` admits a lot to the main list only when location,
+   area, published price and a current-procedure marker are present and at
+   least two benchmark dimensions can be measured. Incomplete and
+   below-profile cards remain available through `include_noise=true` with all
+   rejection reasons.
+7. Official attached documents are downloaded and typed only for a selected lot.
+8. For KRT, decision / notice / draft agreement / annexes are parsed into a separate development program and investor obligations with exact provenance.
+9. `build_project_preset()` converts the selected lot into the existing `developaid.project_preset.v4` envelope. Auction price is carried as the current acquisition-price input.
+10. `/auctions` hands that preset to the canonical DevelopAid model page through same-origin `sessionStorage`.
+11. Ordinary land continues through the existing cadastral → ГлавАПУ/MO TEP flow; KRT uses the standard preset preview/apply flow.
+12. Existing DevelopAid market/cost/financing layers calculate economics and ultimately max bid.
 
 Historical research is an explicit read-only path and is not exposed by the
 production API. Run, for example:
@@ -104,6 +111,11 @@ The UI displays auction facts separately from DevelopAid assumptions/calculation
 
 Canonical identity is primarily cadastral-number based. Do **not** assume Moscow parcels have a `77:*` cadastral prefix: New Moscow contains legacy `50:*` cadastral numbers.
 
+The auction-region filter is different: `subjectRFCode=50` means Moscow Oblast,
+not New Moscow, and must not enter a Moscow-only catalogue. The default filter
+accepts subject code `77`; legacy cadastral identity is resolved later by the
+existing land/geospatial pipeline.
+
 ## Financial treatment
 
 - Ordinary land sale: published/use-ready VRI is the base case; no VRI-change payment is inserted automatically.
@@ -115,6 +127,11 @@ Canonical identity is primarily cadastral-number based. Do **not** assume Moscow
 
 Implemented:
 - `/auctions` screening UI;
+- a measured main-list quality gate based on the owner's 121-deal benchmark;
+- a separate raw/debug view for GISTorg. It is not included in the default
+  source set and is not labelled bankruptcy: the observed live contract
+  yielded 178-FZ privatization records rather than the required bankruptcy
+  market;
 - public Moscow land discovery from the official RAD/Lot-online catalogue, with every candidate re-verified from its official lot card;
 - guarded current discovery of development project-company shares from the
   official Lot-online category. It is off by default and is enabled only by
@@ -127,5 +144,11 @@ Implemented:
 
 Pending:
 - automatic Roseltorg **archive** enumeration. Current public tag discovery is enabled; archive research stays on explicit public-card replay until the archive filter request contract is pinned and covered by fixtures.
+- direct bankruptcy-platform adapters. The public Sberbank-AST page has been
+  observed calling `POST /api/Processing/main`; the browser probe exposes a
+  redacted request/response shape without headers, cookies, storage or session
+  secrets. An adapter is added only after that live contract is captured in a
+  fixture. CAPTCHA and anti-bot protections on Alfalot/Fabrikant are not
+  bypassed.
 
 Discovery must use public ETP catalogues, not participant cabinets.

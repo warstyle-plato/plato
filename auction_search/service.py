@@ -8,6 +8,7 @@ from typing import Iterable
 
 from auction_search import deadline as clock
 from auction_search.adapters.base import AuctionPlatformAdapter
+from auction_search.catalogue_quality import catalogue_quality
 from auction_search.models import AuctionLot, LotKind
 
 
@@ -20,6 +21,13 @@ class AuctionSearchService:
 
     def __init__(self, adapters: Iterable[AuctionPlatformAdapter]):
         self.adapters = list(adapters)
+        self.last_quality_report: dict[str, int] = {
+            "seen": 0,
+            "accepted": 0,
+            "incomplete": 0,
+            "outside_profile": 0,
+            "noise": 0,
+        }
 
     def discover_moscow(
         self,
@@ -51,11 +59,28 @@ class AuctionSearchService:
                 # источник читается как «лотов там нет».
                 self._failed(adapter, exc)
         lots = self._deduplicate(lots)
+        assessed: list[tuple[AuctionLot, dict, dict]] = []
         for lot in lots:
-            self.screen_lot(lot)
+            screening = self.screen_lot(lot)
+            quality = catalogue_quality(lot)
+            assessed.append((lot, screening, quality))
+        self.last_quality_report = {
+            "seen": len(assessed),
+            "accepted": sum(1 for _, screen, quality in assessed
+                            if screen["development_relevant"] and quality["accepted"]),
+            "incomplete": sum(1 for _, screen, quality in assessed
+                              if screen["development_relevant"]
+                              and quality["state"] == "incomplete"),
+            "outside_profile": sum(1 for _, screen, quality in assessed
+                                   if screen["development_relevant"]
+                                   and quality["state"] == "outside_profile"),
+            "noise": sum(1 for _, screen, _ in assessed
+                         if not screen["development_relevant"]),
+        }
         if include_noise:
             return lots
-        return [lot for lot in lots if self.is_development_relevant(lot)]
+        return [lot for lot, screen, quality in assessed
+                if screen["development_relevant"] and quality["accepted"]]
 
 
     @staticmethod
@@ -196,7 +221,9 @@ class AuctionSearchService:
         if residential_house:
             flags.append("existing_residential_house")
         if small:
-            excluded.append("участок меньше 5 000 м²")
+            # Сам по себе размер не исключает лот: в эталоне владельца есть
+            # реальные сделки существенно меньше 5 000 м². Масштаб сравнивает
+            # измеренный профиль, а здесь маленький участок лишь называется.
             flags.append("small_site")
         if residential_house and small:
             excluded.append("малый участок с жилым домом")
