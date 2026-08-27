@@ -320,6 +320,33 @@ def doubts(project: str, cut: Any) -> dict[str, Any]:
             "reason": "; ".join(reasons),
         })
 
+    # Ежедневник отвечает на вопрос, который КС задать нельзя: идёт ли работа
+    # СЕЙЧАС. Упоминание за последние две недели — «идёт, просто не закрыта»;
+    # молчание при живых отчётах — «правда стоит». Сверка по словам, решает
+    # человек: строка ежедневника показывается целиком.
+    import developaid_monitor_daily as daily
+    for item in suspicious:
+        live = daily.work_liveness(project, item["name"], cut=cut_date)
+        if not live.get("checked"):
+            continue
+        mention = live.get("mention")
+        if mention:
+            item["daily"] = {
+                "seen": mention["date"],
+                "line": mention.get("line"),
+                "contractor": mention.get("contractor"),
+                "note": (f"в ежедневнике {mention['date']}: "
+                         f"«{mention.get('line')}» — похоже, работа идёт "
+                         "(совпадение по словам, проверьте глазами)"),
+            }
+        else:
+            item["daily"] = {
+                "seen": None,
+                "note": (f"в ежедневниках за {live.get('days')} дн "
+                         f"({live.get('reports_in_window')} отчётов) работа "
+                         "не упоминалась"),
+            }
+
     suspicious.sort(key=lambda item: -(item.get("local_delay_days") or 0))
     doubt_ids = {item["id"] for item in suspicious}
     clean_seeds = {tid: day for tid, day in seeds.items() if tid not in doubt_ids}
