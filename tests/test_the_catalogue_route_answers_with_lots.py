@@ -106,3 +106,26 @@ def test_the_failure_is_named_not_swallowed():
     AuctionSearchService([broken]).discover_moscow(budget_seconds=5)
     assert "не ответил" in broken.last_report["reason"]
     assert "OSError" in broken.last_report["reason"]
+
+
+def test_every_source_gets_its_own_row_in_the_coverage(client, monkeypatch):
+    """Экран читал только первый отчёт списка и печатал его ключами: про
+    четыре источника из пяти на нём не было ничего, включая их отказы."""
+    monkeypatch.setattr(
+        auction_api, "_discovery_adapters", lambda source="all": [_Broken(), _One()])
+    body = client.get("/auctions/discover?source=all").json()
+    names = [row.get("source") for row in body["coverage"]]
+    assert "Недоступная площадка" in names
+    assert "Тестовая площадка" in names, "живой источник тоже обязан назваться"
+
+
+def test_the_screen_prints_all_the_rows_not_the_first():
+    from auction_search import ui
+
+    body = ui.AUCTIONS_PAGE[ui.AUCTIONS_PAGE.index("function renderCoverage(){"):]
+    body = body[:body.index("\nfunction areaLine(")]
+    assert "state.coverage||[]" in body
+    assert "coverage)[0]" not in body and "coverage||[])[0]" not in body, \
+        "читается первый отчёт, остальные источники молчат"
+    assert "forEach" in body, "строка на каждый источник"
+    assert "x.why" in body, "причина отказа доезжает до экрана"

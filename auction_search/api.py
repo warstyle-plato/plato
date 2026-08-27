@@ -125,6 +125,28 @@ def _discovery_adapters(source: str):
     raise ValueError("source: all, lot_online, roseltorg, investmoscow или torgi")
 
 
+def _coverage_row(adapter: Any) -> dict[str, Any]:
+    """Строка охвата одного источника — с его именем.
+
+    Отчёты у читателей разной формы: у ИнвестМосквы свои ключи про карточки
+    города, у остальных «страницы / карточки / оставлено». Раньше экран читал
+    ТОЛЬКО первый отчёт списка и печатал его ключами — то есть про четыре
+    источника из пяти на экране не было ничего, включая их отказы. Имя
+    источника проставляется здесь, а не в каждом читателе: иначе следующий
+    читатель забудет его так же, как забыли эти.
+    """
+    name = getattr(adapter, "platform_name", adapter.__class__.__name__)
+    report = getattr(adapter, "last_report", None)
+    if not isinstance(report, dict):
+        # Источник, который отвечал, но отчёта не прислал, из охвата исчезал —
+        # и на экране становился неотличим от неопрошенного. Строка есть
+        # всегда; то, чего мы про него не знаем, названо, а не показано нулём.
+        return {"source": name, "reason": "отчёта об охвате не прислал"}
+    row = dict(report)
+    row.setdefault("source", name)
+    return row
+
+
 def _public_lot_dict(lot) -> dict[str, Any]:
     data = lot.to_dict()
     data.pop("raw", None)
@@ -813,11 +835,7 @@ def install(app: FastAPI) -> None:
             "source_policy": "official_etp_only",
             "source": source,
             "count": len(lots),
-            "coverage": [
-                report
-                for adapter in adapters
-                if (report := getattr(adapter, "last_report", None)) is not None
-            ],
+            "coverage": [_coverage_row(adapter) for adapter in adapters],
             "lots": [
                 {
                     **_public_lot_dict(lot),
