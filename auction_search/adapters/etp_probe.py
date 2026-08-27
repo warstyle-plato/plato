@@ -45,8 +45,13 @@ _BODY_SHOWN = 700
 # спрашивает, а не то, что мы знаем. Каждый печатается вместе с кодом ответа —
 # «спросили вот это, пришло вот такое».
 PLATFORMS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    # Адреса каталога присланы владельцем 27.08.2026. Прежний
+    # `/Bankruptcy/List/PurchaseList` уводил редиректом на главную — браузер
+    # открывал меню сайта, и разбирать мы стали бы его. Что за раздел под
+    # каждым адресом, скажет сама проба: подписывать их со слов мы не будем.
     ("Сбербанк-АСТ", (
-        "https://utp.sberbank-ast.ru/Bankruptcy/List/PurchaseList",
+        "https://utp.sberbank-ast.ru/Bankruptcy/List/BidListProperty",
+        "https://utp.sberbank-ast.ru/AP/List/BidList/309",
         "https://utp.sberbank-ast.ru/",
     )),
     ("ЭТП ГПБ", (

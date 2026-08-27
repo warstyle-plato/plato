@@ -319,3 +319,16 @@ def test_the_probe_can_be_pointed_at_a_given_address() -> None:
     block = api[api.index("async def auction_etp_probe_browser("):]
     block = block[:block.index("\n    # Срок на сбор каталога")]
     assert "save: bool" in block and "url: str" in block
+
+
+def test_the_sberbank_addresses_are_the_ones_that_do_not_redirect() -> None:
+    """Прежний адрес уводил на главную, и браузер открывал меню сайта."""
+    from auction_search.adapters import etp_probe as module
+
+    urls = module.platform_urls("sberbank-ast")
+    assert "PurchaseList" not in " ".join(urls), "адрес с редиректом убран"
+    assert any("BidListProperty" in url for url in urls)
+    # Обёртка поисковика — не адрес источника: она недолговечна и ведёт не
+    # туда, куда написано.
+    assert not any("google.com" in url for url in urls)
+    assert all(url.startswith("https://") for url in urls)
