@@ -33,6 +33,7 @@ import urllib.error
 import urllib.request
 from typing import Any
 
+from auction_search.adapters.browser_probe import probe_browser
 from auction_search.adapters.torgi_gov import trust_context
 
 USER_AGENT = "DevelopAid-AuctionCollector/0.1 (+https://developaid.ru)"
@@ -127,3 +128,49 @@ def probe() -> dict[str, Any]:
             for name, urls in PLATFORMS
         ],
     }
+
+
+# Короткое имя площадки для адреса запроса. Проба браузером идёт по одной
+# площадке за вызов: пять по сорок пять секунд не уложатся ни в один шлюз, а
+# ответ, не дошедший до человека, — это ответ, которого нет.
+SLUGS: dict[str, str] = {
+    "sberbank-ast": "Сбербанк-АСТ",
+    "etpgpb": "ЭТП ГПБ",
+    "fabrikant": "Фабрикант",
+    "alfalot": "Альфалот",
+    "etprf": "ЭТП РФ",
+}
+
+
+def platform_urls(slug: str) -> tuple[str, ...]:
+    name = SLUGS.get(str(slug or "").strip().lower())
+    if not name:
+        return ()
+    for known, urls in PLATFORMS:
+        if known == name:
+            return urls
+    return ()
+
+
+def probe_browser_platform(slug: str, seconds: float = 40.0) -> dict[str, Any]:
+    """Открыть каталог одной площадки браузером и показать, за чем она ходит.
+
+    Простой запрос показывает только оболочку: у этих площадок каталог рисует
+    приложение, а числа приезжают отдельными вызовами бэкенда. Их адреса и
+    нужны, чтобы написать читателя — не угаданные, а увиденные.
+
+    Разбора здесь по-прежнему нет и не будет, пока ответ не увиден: у ГИС
+    Торгов он был написан по догадке, и это кончилось тридцатью гаражами на
+    экране владельца.
+    """
+    name = SLUGS.get(str(slug or "").strip().lower())
+    if not name:
+        return {"ok": False, "reason": f"неизвестная площадка: {slug!r}",
+                "known": sorted(SLUGS)}
+    urls = platform_urls(slug)
+    if not urls:
+        return {"ok": False, "platform": name, "reason": "адрес каталога не задан"}
+    got = probe_browser(urls[0], seconds=seconds)
+    got["platform"] = name
+    got["parsing"] = "разбора нет: ни одно имя поля не сверено ответом площадки"
+    return got

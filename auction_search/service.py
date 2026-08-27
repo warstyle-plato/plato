@@ -41,7 +41,15 @@ class AuctionSearchService:
             if clock.expired(until):
                 self._not_asked(adapter, budget_seconds)
                 continue
-            lots.extend(self._ask(adapter, until))
+            try:
+                lots.extend(self._ask(adapter, until))
+            except Exception as exc:  # noqa: BLE001
+                # Один недоступный источник не отменяет остальные. Прежде любое
+                # его исключение доходило до маршрута, тот отвечал 502, и
+                # каталог пропадал целиком — из-за одной площадки, у которой
+                # сеть моргнула. Причина называется вслух: молча выброшенный
+                # источник читается как «лотов там нет».
+                self._failed(adapter, exc)
         lots = self._deduplicate(lots)
         for lot in lots:
             self.screen_lot(lot)
@@ -66,6 +74,22 @@ class AuctionSearchService:
         if takes_deadline:
             return discover(deadline=until)
         return discover()
+
+    @staticmethod
+    def _failed(adapter: AuctionPlatformAdapter, exc: Exception) -> None:
+        """Источник ответил ошибкой — это его строка охвата, а не отказ всем."""
+        said = f"источник не ответил: {type(exc).__name__}: {exc}"[:300]
+        report = getattr(adapter, "last_report", None)
+        if isinstance(report, dict):
+            report.setdefault("pages", 0)
+            report.setdefault("cards", 0)
+            report.setdefault("kept", 0)
+            report["reason"] = said
+        else:
+            adapter.last_report = {
+                "source": getattr(adapter, "platform_name", adapter.__class__.__name__),
+                "pages": 0, "cards": 0, "kept": 0, "reason": said,
+            }
 
     @staticmethod
     def _not_asked(adapter: AuctionPlatformAdapter, budget_seconds: float | None) -> None:

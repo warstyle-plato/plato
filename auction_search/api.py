@@ -15,7 +15,11 @@ from pydantic import BaseModel, Field
 
 from auction_search.adapters import InvestMoscowDiscoveryAdapter, LotOnlineAdapter, RoseltorgAdapter
 from auction_search.adapters.torgi_gov import TorgiGovAdapter, trust_report as torgi_trust_report
-from auction_search.adapters.etp_probe import probe as etp_probe
+from auction_search.adapters.etp_probe import (
+    SLUGS as etp_slugs,
+    probe as etp_probe,
+    probe_browser_platform as etp_probe_browser,
+)
 from auction_search.adapters.fedresurs import (
     SEARCH_PAGE as FEDRESURS_SEARCH_PAGE,
     probe as fedresurs_probe, probe_browser as fedresurs_browser)
@@ -28,6 +32,7 @@ from auction_search.krt_ranking import (
 from auction_search.krt_screening import build_krt_model_screening
 from auction_search.models import LotKind
 from auction_search.preset_mapper import build_project_preset
+from auction_search.profile_fit import profile_fit
 from auction_search.service import AuctionSearchService
 from auction_search.ui import auctions_page
 from market_search.krt_registry import CATALOGUE_URL, KrtRegistry
@@ -122,6 +127,28 @@ def _discovery_adapters(source: str):
             adapters.append(TorgiGovAdapter())
         return adapters
     raise ValueError("source: all, lot_online, roseltorg, investmoscow или torgi")
+
+
+def _coverage_row(adapter: Any) -> dict[str, Any]:
+    """Строка охвата одного источника — с его именем.
+
+    Отчёты у читателей разной формы: у ИнвестМосквы свои ключи про карточки
+    города, у остальных «страницы / карточки / оставлено». Раньше экран читал
+    ТОЛЬКО первый отчёт списка и печатал его ключами — то есть про четыре
+    источника из пяти на экране не было ничего, включая их отказы. Имя
+    источника проставляется здесь, а не в каждом читателе: иначе следующий
+    читатель забудет его так же, как забыли эти.
+    """
+    name = getattr(adapter, "platform_name", adapter.__class__.__name__)
+    report = getattr(adapter, "last_report", None)
+    if not isinstance(report, dict):
+        # Источник, который отвечал, но отчёта не прислал, из охвата исчезал —
+        # и на экране становился неотличим от неопрошенного. Строка есть
+        # всегда; то, чего мы про него не знаем, названо, а не показано нулём.
+        return {"source": name, "reason": "отчёта об охвате не прислал"}
+    row = dict(report)
+    row.setdefault("source", name)
+    return row
 
 
 def _public_lot_dict(lot) -> dict[str, Any]:
@@ -776,6 +803,32 @@ def install(app: FastAPI) -> None:
         """
         return await run_in_threadpool(etp_probe)
 
+    @app.get("/auctions/etp/probe/browser")
+    async def auction_etp_probe_browser(
+        platform: str = Query(default=""),
+        seconds: float = Query(default=40.0, ge=5.0, le=90.0),
+    ) -> dict[str, Any]:
+        """Каталог одной площадки, открытый настоящим браузером.
+
+        Простой запрос показывает оболочку: каталог рисует приложение, а числа
+        приезжают отдельными вызовами бэкенда. Их адреса и нужны, чтобы
+        написать читателя — не угаданные, а увиденные.
+
+        По одной площадке за вызов намеренно: пять по сорок секунд не уложатся
+        ни в один шлюз, а ответ, не дошедший до человека, — это ответ, которого
+        нет. Без параметра маршрут перечисляет, что можно спросить.
+        """
+        slug = str(platform or "").strip().lower()
+        if not slug:
+            return {
+                "ok": False,
+                "reason": "укажите площадку: ?platform=<имя>",
+                "known": {key: name for key, name in sorted(etp_slugs.items())},
+                "parsing": "разбора нет: ни одно имя поля не сверено ответом площадки",
+            }
+        return await run_in_threadpool(
+            lambda: etp_probe_browser(slug, seconds=float(seconds)))
+
     # Срок на сбор каталога. Шлюз рвёт соединение на шестидесяти секундах и
     # отдаёт свою HTML-страницу; браузер разбирает её как JSON и показывает
     # поломку разбора вместо причины. Сбор ограничивался только числом страниц,
@@ -812,11 +865,7 @@ def install(app: FastAPI) -> None:
             "source_policy": "official_etp_only",
             "source": source,
             "count": len(lots),
-            "coverage": [
-                report
-                for adapter in adapters
-                if (report := getattr(adapter, "last_report", None)) is not None
-            ],
+            "coverage": [_coverage_row(adapter) for adapter in adapters],
             "lots": [
                 {
                     **_public_lot_dict(lot),

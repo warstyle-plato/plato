@@ -347,17 +347,55 @@ function renderRows(){
  renderFoldNote();renderAskContext();
 }
 function stats(){const a=state.filtered;$('sCount').textContent=a.length;$('sKrt').textContent=a.filter(x=>x.lot_kind==='krt').length;$('sLand').textContent=a.filter(x=>['land_sale','land_lease'].includes(x.lot_kind)).length;const ds=a.map(x=>new Date(x.application_deadline)).filter(x=>!Number.isNaN(x.getTime())).sort((a,b)=>a-b);$('sDeadline').textContent=ds.length?new Intl.DateTimeFormat('ru-RU',{day:'2-digit',month:'2-digit'}).format(ds[0]):'—'}
-function renderCoverage(){const box=$('coverage'),r=(state.coverage||[])[0];if(!r){box.style.display='none';return}const unsupported=(r.unsupported_etp_hosts||[]).join(', ');box.style.display='block';box.className='notice coverage'+((r.errors||[]).length?' warn':'');box.textContent=`Торги Москвы: карточек ${r.city_cards||0} · ссылок на ЭТП ${r.official_etp_links||0} · подтверждено ${r.verified_lots||0} · без подтверждённой ЭТП ${r.unresolved_city_cards||0}${unsupported?' · нужны адаптеры: '+unsupported:''}${(r.errors||[]).length?' · часть каталога недоступна':''}`;
+function coverageLine(r){
+ // Каждый источник говорит за себя. Числа у читателей разной формы: у
+ // ИнвестМосквы карточки города и подтверждённые лоты, у остальных страницы,
+ // карточки и оставленные. Печатаем то, что источник прислал, и не выдумываем
+ // недостающее: пропуск и ноль — разные ответы.
+ const name=String(r.source||r.catalogue||'источник');
+ const bits=[];
+ if(r.verified_lots!==undefined){
+  bits.push(`подтверждено ${r.verified_lots||0} из ${r.city_cards||0} карточек города`);
+  if(r.unresolved_city_cards) bits.push(`без подтверждённой ЭТП ${r.unresolved_city_cards}`);
+  const unsupported=(r.unsupported_etp_hosts||[]).join(', ');
+  if(unsupported) bits.push('нужны адаптеры: '+unsupported);
+ }else{
+  if(r.kept!==undefined) bits.push(`лотов ${r.kept||0}`);
+  if(r.cards) bits.push(`из ${r.cards} карточек`);
+  if(r.pages) bits.push(`страниц ${r.pages}`);
+  if(r.total_elements) bits.push(`всего в выдаче ${r.total_elements}`);
+  if(r.skipped) bits.push(`не прочитано карточек ${r.skipped}`);
+ }
+ const why=String(r.reason||'').trim();
+ const errors=(r.errors||[]).join('; ');
+ return {name, said:bits.join(' · '), why:why||errors};
+}
+function renderCoverage(){
+ const box=$('coverage');
+ const rows=(state.coverage||[]);
+ if(!rows.length){box.style.display='none';return}
+ box.style.display='block';
+ const lines=rows.map(coverageLine);
+ // Отказ хотя бы одного источника красит весь блок: выдача при этом
+ // неполная, и показывать её как полную нельзя.
+ box.className='notice coverage'+(lines.some(x=>x.why)?' warn':'');
+ box.textContent='';
+ lines.forEach(x=>{
+  const line=document.createElement('div');
+  line.textContent=x.name+(x.said?' — '+x.said:'')+(x.why?' · '+x.why:'');
+  box.appendChild(line);
+ });
  // Что источник СОДЕРЖИТ — часть ответа. «Все официальные источники» в списке
  // обещают охват, которого нет: банкротные лоты лежат на площадках, которых мы
  // не читаем, и молчание об этом читается как их отсутствие на рынке.
- const markets=(state.coverage||[]).map(x=>x&&x.market).filter(Boolean);
+ const markets=rows.map(x=>x&&x.market).filter(Boolean);
  if(markets.length){
   const note=document.createElement('div');
   note.className='source';
   note.textContent='Что в выдаче: '+markets.join('; ');
   box.appendChild(note);
- }}
+ }
+}
 function areaLine(l){
  // Два разных числа под одним именем никто не заметит: у лота с торгов бывает
  // структурирована площадь ЗДАНИЯ, а метры участка стоят только в тексте.

@@ -82,19 +82,32 @@ def test_the_endpoint_is_wired() -> None:
 # капчу и ему — это тоже ответ, и он называется вслух.
 
 
+def shared() -> str:
+    return (ROOT / "auction_search" / "adapters" / "browser_probe.py").read_text()
+
+
 def test_the_browser_probe_reports_instead_of_bypassing() -> None:
-    body = source()
+    """Капча опознаётся и называется, а не обходится — от этого она и стоит."""
+    body = shared()
     assert "def probe_browser(" in body
-    assert "QRATOR_MARKERS" in body, "капча опознаётся и называется, а не обходится"
+    assert "CHALLENGE_MARKERS" in body and "qauth_show_captcha" in body
     # Ни решения капчи, ни подмены себя за другого: это ровно то, от чего защита.
     for forbidden in ("anticaptcha", "2captcha", "rucaptcha", "solve_captcha",
                       "qauth_token", "bypass"):
-        assert forbidden not in body.lower(), f"обход защиты: {forbidden}"
+        assert forbidden not in (body + source()).lower(), f"обход защиты: {forbidden}"
+
+
+def test_the_probe_is_declared_once_for_all_sources() -> None:
+    """Две копии разошлись бы на признаках отказа, и одна считала бы страницу
+    «403 Forbidden» удачей."""
+    body = source()
+    assert "browser_probe" in body, "ЕФРСБ зовёт общую пробу"
+    assert "sync_playwright" not in body, "своей реализации у читателя быть не должно"
 
 
 def test_the_browser_is_launched_by_the_shared_launcher() -> None:
     """Второго пути к Chromium не заводим: он уже есть у движка."""
-    body = source()
+    body = shared()
     assert "import browser_launch" in body
     assert "browser_launch.launch(" in body
     assert "chromium.launch(" not in body
@@ -102,7 +115,7 @@ def test_the_browser_is_launched_by_the_shared_launcher() -> None:
 
 def test_the_probe_collects_the_calls_the_page_makes() -> None:
     """У SPA данные приезжают отдельными вызовами — их адреса и нужны."""
-    body = source()
+    body = shared()
     assert '"xhr"' in body and '"fetch"' in body
     assert "data_calls" in body
 
@@ -130,8 +143,9 @@ def test_a_page_of_refusal_is_not_a_loaded_source() -> None:
     не сделала. Путь через ЕФРСБ закрыт и браузером; обходить защиту мы не
     станем, но и выдавать отказ за отсутствие лотов нельзя.
     """
-    body = source()
+    body = shared()
     assert '"blocked"' in body
+    assert "REFUSAL_TITLE_MARKS" in body
     assert "Forbidden" in body and "403" in body
 
 
@@ -142,3 +156,52 @@ def test_the_probe_asks_the_address_it_is_given() -> None:
     block = block[:block.index("\n    @app.get")]
     assert "url: str = Query(default=\"\")" in block
     assert "FEDRESURS_SEARCH_PAGE" in block, "пустой параметр оставляет прежнюю страницу"
+
+
+# --- Площадки банкротства: та же проба, тот же запрет разбора по догадке ---
+
+def etp_source() -> str:
+    return (ROOT / "auction_search" / "adapters" / "etp_probe.py").read_text()
+
+
+def test_the_platform_probe_uses_the_shared_browser_probe() -> None:
+    """Своей реализации у площадок нет: она уже заведена один раз."""
+    body = etp_source()
+    assert "from auction_search.adapters.browser_probe import probe_browser" in body
+    assert "sync_playwright" not in body
+
+
+def test_one_platform_per_call() -> None:
+    """Пять по сорок секунд не уложатся ни в один шлюз, а ответ, не дошедший
+    до человека, — это ответ, которого нет."""
+    from auction_search.adapters import etp_probe as module
+
+    assert set(module.SLUGS) == {
+        "sberbank-ast", "etpgpb", "fabrikant", "alfalot", "etprf"}
+    for slug in module.SLUGS:
+        assert module.platform_urls(slug), slug
+
+
+def test_an_unknown_platform_is_named_not_guessed() -> None:
+    from auction_search.adapters import etp_probe as module
+
+    got = module.probe_browser_platform("чужая площадка")
+    assert got["ok"] is False
+    assert "неизвестная площадка" in got["reason"]
+    assert got["known"], "перечисляем, что можно спросить"
+
+
+def test_the_platform_probe_still_parses_nothing() -> None:
+    """Разбор по догадке кончился гаражами на экране владельца."""
+    body = etp_source()
+    assert "разбора нет" in body
+    for invented in ("lot_id", "external_lot_id", "start_price", "AuctionLot"):
+        assert invented not in body, f"в пробе появился разбор: {invented}"
+
+
+def test_the_platform_browser_route_is_wired() -> None:
+    api = (ROOT / "auction_search" / "api.py").read_text()
+    assert '"/auctions/etp/probe/browser"' in api
+    block = api[api.index("async def auction_etp_probe_browser("):]
+    block = block[:block.index("\n    # Срок на сбор каталога")]
+    assert "platform" in block and "known" in block, "без параметра — список площадок"
