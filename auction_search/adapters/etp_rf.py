@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 
 from auction_search import deadline as clock
 from auction_search.adapters.base import AuctionPlatformAdapter
+from auction_search.adapters.torgi_gov import trust_context
 from auction_search.classifier import classify_lot, origin_from_evidence
 from auction_search.models import AuctionLot, AuctionSource, LotKind, Provenance, SourceKind, utc_now_iso
 from auction_search.parsing import cadastral_numbers, normalize_space, parse_area_sqm, parse_money
@@ -89,7 +90,14 @@ class ETPRFAdapter(AuctionPlatformAdapter):
             "Accept-Language": "ru-RU,ru;q=0.9",
             "X-Requested-With": "XMLHttpRequest",
         })
-        with urlopen(req, timeout=clock.timeout(deadline, 12)) as response:
+        # ЭТП РФ, как и ГИС Торги, может отдавать цепочку российского УЦ,
+        # которой нет в минимальном системном хранилище контейнера. Добавляем
+        # смонтированные доверенные корни, не отключая проверку сертификата.
+        with urlopen(
+            req,
+            timeout=clock.timeout(deadline, 12),
+            context=trust_context(),
+        ) as response:
             encoding = response.headers.get_content_charset() or "utf-8"
             return response.read().decode(encoding, errors="replace")
 

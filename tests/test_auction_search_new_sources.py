@@ -98,6 +98,17 @@ def test_etp_gpb_rejects_moscow_region_and_procurement() -> None:
     assert ETPGPBAdapter._to_lot(procurement, "now") is None
 
 
+def test_etp_gpb_reads_region_objects_from_the_current_api() -> None:
+    attrs = {
+        "title": "Продажа земельного участка площадью 10 000 кв. м",
+        "lot_regions": [{"id": 77, "name": "г. Москва"}],
+    }
+    assert ETPGPBAdapter._is_moscow(attrs) is True
+    assert ETPGPBAdapter._is_moscow({
+        **attrs, "lot_regions": [{"name": "Московская область"}],
+    }) is False
+
+
 def test_etp_rf_reads_the_public_registry_table(monkeypatch) -> None:
     html = """
     <table><thead><tr>
@@ -118,7 +129,7 @@ def test_etp_rf_reads_the_public_registry_table(monkeypatch) -> None:
     """
     monkeypatch.setattr(
         "auction_search.adapters.etp_rf.urlopen",
-        lambda request, timeout: _Response(html),
+        lambda request, timeout, context: _Response(html),
     )
 
     adapter = ETPRFAdapter()

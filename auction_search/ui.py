@@ -365,7 +365,13 @@ function coverageLine(r){
   if(r.cards) bits.push(`из ${r.cards} карточек`);
   if(r.pages) bits.push(`страниц ${r.pages}`);
   if(r.total_elements) bits.push(`всего в выдаче ${r.total_elements}`);
-  if(r.skipped) bits.push(`не прочитано карточек ${r.skipped}`);
+  if(r.outside_region) bits.push(`вне Москвы ${r.outside_region}`);
+  if(r.outside_profile) bits.push(`не девелоперские ${r.outside_profile}`);
+  if(r.inactive) bits.push(`неактуальные ${r.inactive}`);
+  if(r.invalid) bits.push(`неполные ${r.invalid}`);
+  if(r.duplicates) bits.push(`повторы ${r.duplicates}`);
+  if(r.skipped&&!r.outside_region&&!r.outside_profile&&!r.inactive&&!r.invalid)
+   bits.push(`отсеяно после проверки ${r.skipped}`);
  }
  const why=String(r.reason||'').trim();
  const errors=(r.errors||[]).join('; ');
