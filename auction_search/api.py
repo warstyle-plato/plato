@@ -5,12 +5,15 @@ import os
 import sys
 import threading
 import time
+import io
+import zipfile
+from xml.sax.saxutils import escape as xml_escape
 from typing import Any
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel, Field
 
 from auction_search.adapters import (
@@ -64,6 +67,30 @@ class AuctionIngestRequest(BaseModel):
     url: str = Field(min_length=12, max_length=2000)
     enrich_krt_documents: bool = True
     include_raw: bool = False
+
+class AuctionExportRequest(BaseModel):
+    rows: list[dict[str, Any]] = Field(default_factory=list, max_length=2000)
+    kind: str = Field(default="auctions", max_length=40)
+
+def _xlsx(rows: list[dict[str, Any]]) -> bytes:
+    cols = ["Раздел","Название","Округ / район","Адрес","Кадастр","Тип","Площадь, м²","Объём, м²","Цена, ₽","Оценка Платона","Статус","Источник"]
+    def cell(v):
+        s = "" if v is None else str(v)
+        return f'<c t="inlineStr"><is><t>{xml_escape(s)}</t></is></c>'
+    body = '<row>' + ''.join(cell(c) for c in cols) + '</row>'
+    for r in rows[:2000]:
+        vals = [r.get(k, '') for k in ("section","name","district","address","cadastre","type","area","volume","price","score","status","url")]
+        body += '<row>' + ''.join(cell(v) for v in vals) + '</row>'
+    files = {
+      '[Content_Types].xml':'<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>',
+      '_rels/.rels':'<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>',
+      'xl/workbook.xml':'<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Выборка" sheetId="1" r:id="rId1"/></sheets></workbook>',
+      'xl/_rels/workbook.xml.rels':'<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>',
+      'xl/worksheets/sheet1.xml':f'<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>{body}</sheetData></worksheet>'}
+    out=io.BytesIO()
+    with zipfile.ZipFile(out,'w',zipfile.ZIP_DEFLATED) as z:
+        for name,data in files.items(): z.writestr(name,data)
+    return out.getvalue()
 
 
 _LOTONLINE_PROJECT_SHARES_FLAG = "AUCTION_LOTONLINE_PROJECT_SHARES_DISCOVERY"
@@ -943,6 +970,13 @@ def install(app: FastAPI) -> None:
                 for lot in lots
             ],
         }
+
+    @app.post("/auctions/export.xlsx")
+    async def auction_export(req: AuctionExportRequest) -> Response:
+        data = _xlsx(req.rows)
+        filename = "developaid-krt.xlsx" if req.kind == "krt" else "developaid-auctions.xlsx"
+        return Response(content=data, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
     @app.post("/auctions/ingest")
     async def auction_ingest(req: AuctionIngestRequest) -> dict[str, Any]:
