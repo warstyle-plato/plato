@@ -11,9 +11,16 @@ sources. They can nominate a city card and the linked conducting ETP, but they
 cannot populate `AuctionLot`. The ETP adapter re-reads the official platform
 card before the lot enters screening.
 
-Initial adapters:
+Direct official-platform adapters:
 - Roseltorg — city / public-property procedures conducted there.
 - RAD / Lot-online — distressed, ASV and other procedures conducted there.
+- ETP GPB — active Moscow development-property procedures from the platform's
+  official public JSON API.
+- ETP RF — active bankruptcy-property discovery from the platform's official
+  public registry. Deep document parsing remains unavailable and is named as
+  such before the user clicks the lot.
+- GIS Torgi — active official property procedures; the legal origin is derived
+  from the procedure rather than assumed from the platform.
 
 Discovery-only catalogues:
 - the official Moscow investment portal (`investmoscow.ru`) — active land,
@@ -128,23 +135,24 @@ existing land/geospatial pipeline.
 Implemented:
 - `/auctions` screening UI;
 - a measured main-list quality gate based on the owner's 121-deal benchmark;
-- a separate raw/debug view for GISTorg. It is not included in the default
-  source set and is not labelled bankruptcy: the observed live contract
-  yielded 178-FZ privatization records rather than the required bankruptcy
-  market;
+- GISTorg in the default official-source search. It is not labelled bankruptcy:
+  the observed live contract yielded 178-FZ privatization records, so origin is
+  determined from the procedure instead of the platform;
 - public Moscow land discovery from the official RAD/Lot-online catalogue, with every candidate re-verified from its official lot card;
 - guarded current discovery of development project-company shares from the
   official Lot-online category. It is off by default and is enabled only by
   `AUCTION_LOTONLINE_PROJECT_SHARES_DISCOVERY=true`; merging or deploying the
   code does not widen the production catalogue on its own;
 - direct official RAD/Lot-online and Roseltorg lot ingestion;
+- direct ЭТП ГПБ catalogue discovery and ingestion through its public JSON API;
+- ЭТП РФ public-registry discovery, with deep parsing explicitly unavailable;
 - public-offer reduction schedule parsing on RAD;
 - public-first document download plus optional service-account session boundary;
 - KRT document parsing and standard DevelopAid project-preset handoff.
 
 Pending:
 - automatic Roseltorg **archive** enumeration. Current public tag discovery is enabled; archive research stays on explicit public-card replay until the archive filter request contract is pinned and covered by fixtures.
-- direct bankruptcy-platform adapters. The public Sberbank-AST page has been
+- further bankruptcy-platform adapters. The public Sberbank-AST page has been
   observed calling `POST /api/Processing/main`; the browser probe exposes a
   redacted request/response shape without headers, cookies, storage or session
   secrets. An adapter is added only after that live contract is captured in a

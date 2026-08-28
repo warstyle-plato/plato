@@ -53,7 +53,9 @@ class AuctionSearchService:
             # читателей один общий дедлайн, поэтому они безопасно работают
             # одновременно и весь каталог по-прежнему укладывается в срок.
             batches: list[list[AuctionLot] | None] = [None] * len(self.adapters)
-            with ThreadPoolExecutor(max_workers=min(4, len(self.adapters))) as pool:
+            # Источников уже больше четырёх; искусственная очередь снова дала
+            # бы первым медленным площадкам съесть общий срок до опроса новых.
+            with ThreadPoolExecutor(max_workers=min(8, len(self.adapters))) as pool:
                 pending = {
                     pool.submit(self._ask, adapter, until): (index, adapter)
                     for index, adapter in enumerate(self.adapters)

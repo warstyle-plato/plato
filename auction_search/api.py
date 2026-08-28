@@ -13,7 +13,13 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
-from auction_search.adapters import InvestMoscowDiscoveryAdapter, LotOnlineAdapter, RoseltorgAdapter
+from auction_search.adapters import (
+    ETPGPBAdapter,
+    ETPRFAdapter,
+    InvestMoscowDiscoveryAdapter,
+    LotOnlineAdapter,
+    RoseltorgAdapter,
+)
 from auction_search.adapters.torgi_gov import TorgiGovAdapter, trust_report as torgi_trust_report
 from auction_search.adapters.etp_probe import (
     SLUGS as etp_slugs,
@@ -77,11 +83,15 @@ def _adapter_for(url: str):
         return RoseltorgAdapter()
     if host == "lot-online.ru" or host.endswith(".lot-online.ru"):
         return LotOnlineAdapter()
+    if host == ETPGPBAdapter.HOST or host.endswith("." + ETPGPBAdapter.HOST) or host.endswith(".gpb.ru"):
+        return ETPGPBAdapter()
+    if host == ETPRFAdapter.HOST or host.endswith("." + ETPRFAdapter.HOST):
+        return ETPRFAdapter()
     if host == TorgiGovAdapter.HOST or host.endswith("." + TorgiGovAdapter.HOST):
         return TorgiGovAdapter()
     raise ValueError(
-        "Разбирать умеем только официальные адреса Росэлторга, РАД/Lot-online и "
-        f"ГИС Торгов; «{host or url}» ни на один из них не похож")
+        "Разбирать умеем только официальные адреса Росэлторга, РАД/Lot-online, "
+        f"ЭТП ГПБ, ЭТП РФ и ГИС Торгов; «{host or url}» ни на один из них не похож")
 
 
 def _analysis_support(url: str) -> dict[str, Any]:
@@ -117,14 +127,21 @@ def _discovery_adapters(source: str):
         return [InvestMoscowDiscoveryAdapter()]
     if value in {"torgi", "torgi_gov"}:
         return [TorgiGovAdapter()]
+    if value in {"etp_gpb", "etpgpb", "gpb"}:
+        return [ETPGPBAdapter()]
+    if value in {"etp_rf", "etprf"}:
+        return [ETPRFAdapter()]
     if value == "all":
         # ГИС Торги — официальный источник имущественных торгов, а не
         # банкротный рынок. Это честно подписано в его отчёте, но исключать его
         # из кнопки «все источники» нельзя: именно там сейчас есть актуальные
         # московские лоты, когда две узкие ЭТП возвращают пустую выдачу.
-        return [TorgiGovAdapter(), _lot_online_discovery_adapter(), RoseltorgAdapter(),
-                InvestMoscowDiscoveryAdapter()]
-    raise ValueError("source: all, lot_online, roseltorg, investmoscow или torgi")
+        return [
+            TorgiGovAdapter(), _lot_online_discovery_adapter(), RoseltorgAdapter(),
+            InvestMoscowDiscoveryAdapter(), ETPGPBAdapter(), ETPRFAdapter(),
+        ]
+    raise ValueError(
+        "source: all, lot_online, roseltorg, investmoscow, torgi, etp_gpb или etp_rf")
 
 
 def _coverage_row(adapter: Any) -> dict[str, Any]:
@@ -380,6 +397,21 @@ def install(app: FastAPI) -> None:
                     "direct_lot_ingest": True,
                     "moscow_discovery": True,
                     "discovery_access": "public_tags_search",
+                },
+                {
+                    "id": "etp_gpb",
+                    "name": "ЭТП ГПБ",
+                    "direct_lot_ingest": True,
+                    "moscow_discovery": True,
+                    "discovery_access": "official_public_json_api",
+                },
+                {
+                    "id": "etp_rf",
+                    "name": "ЭТП РФ",
+                    "direct_lot_ingest": False,
+                    "moscow_discovery": True,
+                    "discovery_access": "official_public_registry",
+                    "note": "Поиск подключён; детальный разбор документов площадки пока недоступен.",
                 },
                 {
                     "id": "investmoscow",
