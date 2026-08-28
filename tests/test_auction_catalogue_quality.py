@@ -84,9 +84,11 @@ def test_a_small_real_deal_is_not_cut_by_an_invented_area_threshold() -> None:
     assert quality["accepted"] is True
 
 
-def test_default_sources_do_not_mislabel_torgi_gov_as_bankruptcy() -> None:
-    assert not any(isinstance(adapter, TorgiGovAdapter)
-                   for adapter in _discovery_adapters("all"))
+def test_default_sources_include_official_gis_torgi() -> None:
+    # Это рынок приватизации 178-ФЗ, а не банкротство; тип рынка подписывает
+    # сам адаптер. Но официальный источник обязан участвовать в «поиске везде».
+    assert any(isinstance(adapter, TorgiGovAdapter)
+               for adapter in _discovery_adapters("all"))
     assert isinstance(_discovery_adapters("torgi_gov")[0], TorgiGovAdapter)
 
 
@@ -94,8 +96,8 @@ def test_the_screen_names_the_main_and_raw_catalogues_honestly() -> None:
     from auction_search.ui import auctions_page
 
     page = auctions_page()
-    assert "Основные проверенные источники" in page
-    assert "ГИС Торги — отдельно, сырые данные" in page
+    assert "Все официальные источники" in page
+    assert '<option value="torgi_gov">ГИС Торги</option>' in page
     assert "Интересные · данные заполнены" in page
     assert "Показать неполные и шум" in page
 

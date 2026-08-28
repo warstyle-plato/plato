@@ -3,6 +3,7 @@ from __future__ import annotations
 import inspect
 import re
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
 from typing import Iterable
 
@@ -45,19 +46,40 @@ class AuctionSearchService:
         """
         until = clock.start(budget_seconds)
         lots: list[AuctionLot] = []
-        for adapter in self.adapters:
-            if clock.expired(until):
-                self._not_asked(adapter, budget_seconds)
-                continue
-            try:
-                lots.extend(self._ask(adapter, until))
-            except Exception as exc:  # noqa: BLE001
-                # Один недоступный источник не отменяет остальные. Прежде любое
-                # его исключение доходило до маршрута, тот отвечал 502, и
-                # каталог пропадал целиком — из-за одной площадки, у которой
-                # сеть моргнула. Причина называется вслух: молча выброшенный
-                # источник читается как «лотов там нет».
-                self._failed(adapter, exc)
+        if budget_seconds is not None and len(self.adapters) > 1:
+            # Площадки независимы. Последовательный обход позволял первой
+            # медленной ЭТП съесть все сорок секунд: следующие источники даже
+            # не опрашивались, и общий поиск показывал ноль. У всех боевых
+            # читателей один общий дедлайн, поэтому они безопасно работают
+            # одновременно и весь каталог по-прежнему укладывается в срок.
+            batches: list[list[AuctionLot] | None] = [None] * len(self.adapters)
+            with ThreadPoolExecutor(max_workers=min(4, len(self.adapters))) as pool:
+                pending = {
+                    pool.submit(self._ask, adapter, until): (index, adapter)
+                    for index, adapter in enumerate(self.adapters)
+                }
+                for future in as_completed(pending):
+                    index, adapter = pending[future]
+                    try:
+                        batches[index] = list(future.result())
+                    except Exception as exc:  # noqa: BLE001
+                        self._failed(adapter, exc)
+                        batches[index] = []
+            for batch in batches:
+                lots.extend(batch or [])
+        else:
+            for adapter in self.adapters:
+                if clock.expired(until):
+                    self._not_asked(adapter, budget_seconds)
+                    continue
+                try:
+                    lots.extend(self._ask(adapter, until))
+                except Exception as exc:  # noqa: BLE001
+                    # Один недоступный источник не отменяет остальные. Прежде
+                    # любое его исключение доходило до маршрута, тот отвечал
+                    # 502, и каталог пропадал целиком — из-за одной площадки,
+                    # у которой сеть моргнула.
+                    self._failed(adapter, exc)
         lots = self._deduplicate(lots)
         assessed: list[tuple[AuctionLot, dict, dict]] = []
         for lot in lots:

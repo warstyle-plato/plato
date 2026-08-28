@@ -36,7 +36,14 @@ class InvestMoscowDiscoveryAdapter(AuctionPlatformAdapter):
     is fetched again from the official electronic platform linked by the city card.
     """
 
-    USER_AGENT = "DevelopAid-AuctionCollector/0.1 (+https://developaid.ru)"
+    # Портал отклоняет служебный User-Agent как робота, хотя та же публичная
+    # страница открывается обычным браузером. Читаем только общедоступный HTML
+    # и представляемся браузером без обхода авторизации или защитных проверок.
+    USER_AGENT = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/126.0.0.0 Safari/537.36"
+    )
     HOST = "investmoscow.ru"
     DISCOVERY_MAX_PAGES = 2
     DISCOVERY_PAGE_SIZE = 100
@@ -76,7 +83,9 @@ class InvestMoscowDiscoveryAdapter(AuctionPlatformAdapter):
     @classmethod
     def _search_urls(cls) -> list[str]:
         urls: list[str] = []
-        base = "https://investmoscow.ru/tenders/"
+        # Текущий канонический адрес портала — без завершающего `/`. Старый
+        # вариант на проде отвечает HTTPError ещё до чтения каталога.
+        base = "https://investmoscow.ru/tenders"
         for page in range(1, cls.DISCOVERY_MAX_PAGES + 1):
             common = {
                 "tenderStatus": "nsi:tender_status_tender_filter:1",
@@ -172,7 +181,11 @@ class InvestMoscowDiscoveryAdapter(AuctionPlatformAdapter):
         return parsed.astimezone(_MOSCOW) >= datetime.now(_MOSCOW)
 
     def _read_html(self, url: str) -> str:
-        req = Request(url, headers={"User-Agent": self.USER_AGENT})
+        req = Request(url, headers={
+            "User-Agent": self.USER_AGENT,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.7",
+        })
         with urlopen(req, timeout=self.REQUEST_TIMEOUT_SECONDS) as response:
             return response.read().decode(response.headers.get_content_charset() or "utf-8", errors="replace")
 

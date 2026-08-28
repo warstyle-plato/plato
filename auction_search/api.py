@@ -118,11 +118,11 @@ def _discovery_adapters(source: str):
     if value in {"torgi", "torgi_gov"}:
         return [TorgiGovAdapter()]
     if value == "all":
-        # ГИС Торги не входит в основную подборку. Живой ответ подтвердил в
-        # нём 178-ФЗ (приватизация), но не нужный банкротный рынок, а неполные
-        # карточки вытесняли реальные лоты. Источник остаётся доступен отдельно
-        # для диагностики и не выдаётся за банкротство.
-        return [_lot_online_discovery_adapter(), RoseltorgAdapter(),
+        # ГИС Торги — официальный источник имущественных торгов, а не
+        # банкротный рынок. Это честно подписано в его отчёте, но исключать его
+        # из кнопки «все источники» нельзя: именно там сейчас есть актуальные
+        # московские лоты, когда две узкие ЭТП возвращают пустую выдачу.
+        return [TorgiGovAdapter(), _lot_online_discovery_adapter(), RoseltorgAdapter(),
                 InvestMoscowDiscoveryAdapter()]
     raise ValueError("source: all, lot_online, roseltorg, investmoscow или torgi")
 
