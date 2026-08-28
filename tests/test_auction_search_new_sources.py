@@ -5,7 +5,6 @@ import json
 from auction_search.adapters.nistp import NistpAdapter
 from auction_search.adapters.etp_gpb import ETPGPBAdapter
 from auction_search.adapters.etp_rf import ETPRFAdapter
-from auction_search.adapters.fedresurs_api import FedresursApiAdapter
 from auction_search.adapters.sberbank_ast import SberbankASTAdapter
 from auction_search.api import _analysis_support, _discovery_adapters
 from auction_search.models import LotKind, LotOrigin, SourceKind
@@ -241,68 +240,16 @@ def test_nistp_does_not_confuse_moscow_region_with_moscow() -> None:
     assert NistpAdapter._to_lot(row, "now") is None
 
 
-def test_fedresurs_official_api_authenticates_and_reads_trade_xml(monkeypatch) -> None:
-    xml = """<Envelope><Body><SetBiddingInvitation><BiddingInvitation>
-      <TradeOrganizer><TradeOrganizerCompany FullName="Организатор" /></TradeOrganizer>
-      <TradeInfo AuctionType="PublicOffer"><Application TimeEnd="2099-09-05T10:00:00+03:00" />
-        <LotList><Lot LotNumber="2"><StartPrice>650000000</StartPrice>
-          <TradeObjectHtml>Земельный участок, г. Москва, площадь 12 500 кв. м,
-          кадастровый номер 77:01:0001001:77</TradeObjectHtml>
-        </Lot></LotList>
-      </TradeInfo></BiddingInvitation></SetBiddingInvitation></Body></Envelope>"""
-    responses = [
-        _Response(json.dumps({"jwt": "token"})),
-        _Response(json.dumps({"total": 1, "pageData": [{
-            "guid": "118311e8-bcdb-4fd6-b156-104b90709dc3", "number": "1670420",
-            "type": "BiddingInvitation", "content": xml,
-            "trade": {"number": "ПП-1", "guid": "trade-guid"},
-        }]})),
-    ]
-    calls = []
-
-    def fake_open(request, timeout):
-        calls.append(request)
-        return responses.pop(0)
-
-    monkeypatch.setenv("FEDRESURS_API_LOGIN", "contract-login")
-    monkeypatch.setenv("FEDRESURS_API_PASSWORD", "contract-password")
-    monkeypatch.setattr("auction_search.adapters.fedresurs_api.urlopen", fake_open)
-    adapter = FedresursApiAdapter()
-    lots = adapter.discover_moscow()
-
-    assert len(lots) == 1
-    lot = lots[0]
-    assert lot.source.platform is SourceKind.FEDRESURS
-    assert lot.source.external_lot_id.endswith(":2")
-    assert lot.land_area_sqm == 12_500
-    assert lot.current_price_rub == 650_000_000
-    assert lot.cadastral_numbers == ["77:01:0001001:77"]
-    assert calls[0].full_url.endswith("/v1/auth")
-    assert "/v1/trade-messages?" in calls[1].full_url
-    assert calls[1].headers["Authorization"] == "Bearer token"
-    assert b"contract-password" in calls[0].data
-
-
-def test_fedresurs_without_contract_credentials_reports_configuration(monkeypatch) -> None:
-    monkeypatch.delenv("FEDRESURS_API_LOGIN", raising=False)
-    monkeypatch.delenv("FEDRESURS_API_PASSWORD", raising=False)
-    adapter = FedresursApiAdapter()
-    assert adapter.discover_moscow() == []
-    assert "FEDRESURS_API_LOGIN" in adapter.last_report["reason"]
-
-
 def test_new_sources_are_part_of_all_and_can_be_selected() -> None:
     all_adapters = _discovery_adapters("all")
     assert any(isinstance(item, ETPGPBAdapter) for item in all_adapters)
     assert any(isinstance(item, ETPRFAdapter) for item in all_adapters)
     assert any(isinstance(item, SberbankASTAdapter) for item in all_adapters)
     assert any(isinstance(item, NistpAdapter) for item in all_adapters)
-    assert any(isinstance(item, FedresursApiAdapter) for item in all_adapters)
     assert isinstance(_discovery_adapters("etp_gpb")[0], ETPGPBAdapter)
     assert isinstance(_discovery_adapters("etp_rf")[0], ETPRFAdapter)
     assert isinstance(_discovery_adapters("sberbank_ast")[0], SberbankASTAdapter)
     assert isinstance(_discovery_adapters("nistp")[0], NistpAdapter)
-    assert isinstance(_discovery_adapters("fedresurs")[0], FedresursApiAdapter)
     assert _analysis_support("https://etpgpb.ru/procedures/auction/2037204")["available"] is True
     support = _analysis_support("https://sale.etprf.ru/Notification/id/20019")
     assert support["available"] is False
@@ -317,4 +264,3 @@ def test_the_screen_names_both_new_sources() -> None:
     assert '<option value="etp_rf">ЭТП РФ</option>' in page
     assert '<option value="sberbank_ast">Сбербанк-АСТ</option>' in page
     assert '<option value="nistp">НИС</option>' in page
-    assert '<option value="fedresurs">Федресурс / ЕФРСБ</option>' in page
