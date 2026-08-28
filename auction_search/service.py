@@ -53,7 +53,9 @@ class AuctionSearchService:
             # читателей один общий дедлайн, поэтому они безопасно работают
             # одновременно и весь каталог по-прежнему укладывается в срок.
             batches: list[list[AuctionLot] | None] = [None] * len(self.adapters)
-            with ThreadPoolExecutor(max_workers=min(4, len(self.adapters))) as pool:
+            # Источников уже больше четырёх; искусственная очередь снова дала
+            # бы первым медленным площадкам съесть общий срок до опроса новых.
+            with ThreadPoolExecutor(max_workers=min(8, len(self.adapters))) as pool:
                 pending = {
                     pool.submit(self._ask, adapter, until): (index, adapter)
                     for index, adapter in enumerate(self.adapters)
@@ -239,6 +241,13 @@ class AuctionSearchService:
             excluded.append("ИЖС или индивидуальное использование")
             flags.append("individual_housing")
         residential_house = any(m in use for m in ("жилой дом", "жилого дома", "жилым домом", "домовладение"))
+        residential_unit = (
+            "квартир" in use
+            or (
+                any(marker in use for marker in ("жилое помещение", "жилого помещения"))
+                and not any(marker in use for marker in ("нежилое помещение", "нежилого помещения"))
+            )
+        )
         small = lot.land_area_sqm is not None and lot.land_area_sqm < 5_000
         if residential_house:
             flags.append("existing_residential_house")
@@ -249,13 +258,16 @@ class AuctionSearchService:
             flags.append("small_site")
         if residential_house and small:
             excluded.append("малый участок с жилым домом")
+        if residential_unit and lot.lot_kind == LotKind.PROPERTY_COMPLEX:
+            excluded.append("отдельная квартира, не объект девелопмента")
+            flags.append("residential_unit")
 
         if explicit_test_lot:
             relevant = False
         elif lot.lot_kind == LotKind.KRT:
             relevant = True
         elif lot.lot_kind in {LotKind.PROPERTY_COMPLEX, LotKind.UNFINISHED}:
-            relevant = not (residential_house and small)
+            relevant = not (residential_house and small) and not residential_unit
         else:
             relevant = lot.lot_kind in {LotKind.LAND_SALE, LotKind.LAND_LEASE} and not excluded
         lot.selection_reasons = selected

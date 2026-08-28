@@ -9,6 +9,8 @@ from zoneinfo import ZoneInfo
 from auction_search import deadline as clock
 from auction_search.adapters.base import AuctionPlatformAdapter
 from auction_search.adapters.lot_online import LotOnlineAdapter
+from auction_search.adapters.etp_gpb import ETPGPBAdapter
+from auction_search.adapters.etp_rf import ETPRFAdapter
 from auction_search.adapters.roseltorg_public import RoseltorgAdapter
 from auction_search.models import AuctionLot
 
@@ -57,6 +59,8 @@ class InvestMoscowDiscoveryAdapter(AuctionPlatformAdapter):
         "sberbank-ast.ru",
         "rts-tender.ru",
         "etpgpb.ru",
+        "etp.gpb.ru",
+        "etprf.ru",
         "fabrikant.ru",
     )
 
@@ -152,6 +156,10 @@ class InvestMoscowDiscoveryAdapter(AuctionPlatformAdapter):
             return RoseltorgAdapter()
         if host == "lot-online.ru" or host.endswith(".lot-online.ru"):
             return LotOnlineAdapter()
+        if host == "etpgpb.ru" or host.endswith(".etpgpb.ru") or host.endswith(".gpb.ru"):
+            return ETPGPBAdapter()
+        if host == "etprf.ru" or host.endswith(".etprf.ru"):
+            return ETPRFAdapter()
         return None
 
     @staticmethod
