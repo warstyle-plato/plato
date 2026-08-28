@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 
+from auction_search.adapters.nistp import NistpAdapter
 from auction_search.adapters.etp_gpb import ETPGPBAdapter
 from auction_search.adapters.etp_rf import ETPRFAdapter
 from auction_search.adapters.sberbank_ast import SberbankASTAdapter
@@ -194,14 +195,61 @@ def test_sberbank_ast_form_contains_page_and_public_filter() -> None:
     assert "xmlFilter=" in body
 
 
+def test_nistp_reads_the_public_bankruptcy_table(monkeypatch) -> None:
+    html = """
+    <table><tr>
+      <th>Код торгов</th><th>Организатор</th><th>Должник, предмет торгов</th>
+      <th>Начальная цена, руб.</th><th>Начало приема заявок</th>
+      <th>Конец приема заявок</th><th>Состояние</th>
+    </tr><tr>
+      <td>69553-ОАОФ</td><td>Конкурсный управляющий</td>
+      <td><a href="https://nistp.ru/bankrot/trade_view.php?trade_nid=490360#lot1">
+        Земельный участок, г. Москва, площадь 12 500 кв. м,
+        кадастровый номер 77:01:0001001:77
+      </a></td>
+      <td>650 000 000.00</td><td>03.09.2099 10:00</td>
+      <td>05.09.2099 10:00</td><td>Прием заявок</td>
+    </tr></table>
+    """
+    monkeypatch.setattr("auction_search.adapters.nistp.urlopen", lambda request, timeout: _Response(html))
+
+    adapter = NistpAdapter()
+    lots = adapter.discover_moscow()
+
+    assert len(lots) == 1
+    lot = lots[0]
+    assert lot.source.platform is SourceKind.NISTP
+    assert lot.source.external_lot_id == "490360-1"
+    assert lot.source.lot_url == "https://nistp.ru/bankrot/trade_view.php?trade_nid=490360#lot1"
+    assert lot.lot_kind is LotKind.LAND_SALE
+    assert lot.origin is LotOrigin.BANKRUPTCY
+    assert lot.land_area_sqm == 12_500
+    assert lot.current_price_rub == 650_000_000
+    assert lot.cadastral_numbers == ["77:01:0001001:77"]
+    assert lot.application_deadline.startswith("2099-09-05T10:00")
+    assert adapter.last_report["cards"] == adapter.last_report["kept"] == 1
+
+
+def test_nistp_does_not_confuse_moscow_region_with_moscow() -> None:
+    row = {
+        "url": "https://nistp.ru/bankrot/trade_view.php?trade_nid=1#lot1",
+        "lot_text": "Земельный участок, Московская область",
+        "cells": ["1", "Организатор", "Земельный участок, Московская область",
+                  "10 000 000.00", "01.09.2099 10:00", "03.09.2099 10:00", "Прием заявок"],
+    }
+    assert NistpAdapter._to_lot(row, "now") is None
+
+
 def test_new_sources_are_part_of_all_and_can_be_selected() -> None:
     all_adapters = _discovery_adapters("all")
     assert any(isinstance(item, ETPGPBAdapter) for item in all_adapters)
     assert any(isinstance(item, ETPRFAdapter) for item in all_adapters)
     assert any(isinstance(item, SberbankASTAdapter) for item in all_adapters)
+    assert any(isinstance(item, NistpAdapter) for item in all_adapters)
     assert isinstance(_discovery_adapters("etp_gpb")[0], ETPGPBAdapter)
     assert isinstance(_discovery_adapters("etp_rf")[0], ETPRFAdapter)
     assert isinstance(_discovery_adapters("sberbank_ast")[0], SberbankASTAdapter)
+    assert isinstance(_discovery_adapters("nistp")[0], NistpAdapter)
     assert _analysis_support("https://etpgpb.ru/procedures/auction/2037204")["available"] is True
     support = _analysis_support("https://sale.etprf.ru/Notification/id/20019")
     assert support["available"] is False
@@ -215,3 +263,4 @@ def test_the_screen_names_both_new_sources() -> None:
     assert '<option value="etp_gpb">ЭТП ГПБ</option>' in page
     assert '<option value="etp_rf">ЭТП РФ</option>' in page
     assert '<option value="sberbank_ast">Сбербанк-АСТ</option>' in page
+    assert '<option value="nistp">НИС</option>' in page

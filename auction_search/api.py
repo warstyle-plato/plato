@@ -14,6 +14,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from auction_search.adapters import (
+    NistpAdapter,
     ETPGPBAdapter,
     ETPRFAdapter,
     InvestMoscowDiscoveryAdapter,
@@ -90,6 +91,8 @@ def _adapter_for(url: str):
         return ETPRFAdapter()
     if host == SberbankASTAdapter.HOST or host.endswith("." + SberbankASTAdapter.HOST):
         return SberbankASTAdapter()
+    if host == NistpAdapter.HOST or host.endswith("." + NistpAdapter.HOST):
+        return NistpAdapter()
     if host == TorgiGovAdapter.HOST or host.endswith("." + TorgiGovAdapter.HOST):
         return TorgiGovAdapter()
     raise ValueError(
@@ -136,6 +139,8 @@ def _discovery_adapters(source: str):
         return [ETPRFAdapter()]
     if value in {"sberbank_ast", "sberbank", "sber", "sberbank-ast"}:
         return [SberbankASTAdapter()]
+    if value in {"nistp", "nis"}:
+        return [NistpAdapter()]
     if value == "all":
         # ГИС Торги — официальный источник имущественных торгов, а не
         # банкротный рынок. Это честно подписано в его отчёте, но исключать его
@@ -144,10 +149,10 @@ def _discovery_adapters(source: str):
         return [
             TorgiGovAdapter(), _lot_online_discovery_adapter(), RoseltorgAdapter(),
             InvestMoscowDiscoveryAdapter(), ETPGPBAdapter(), ETPRFAdapter(),
-            SberbankASTAdapter(),
+            SberbankASTAdapter(), NistpAdapter(),
         ]
     raise ValueError(
-        "source: all, lot_online, roseltorg, investmoscow, torgi, etp_gpb, etp_rf или sberbank_ast")
+        "source: all, lot_online, roseltorg, investmoscow, torgi, etp_gpb, etp_rf, sberbank_ast или nistp")
 
 
 def _coverage_row(adapter: Any) -> dict[str, Any]:
@@ -428,6 +433,14 @@ def install(app: FastAPI) -> None:
                     "note": ("Официальный реестр банкротных торгов: общий список, "
                              "имущество и раздел АП. Если площадка вернула антибот-страницу, "
                              "это отражается в охвате источника; обход защиты не используется."),
+                },
+                {
+                    "id": "nistp",
+                    "name": "НИС (nistp.ru)",
+                    "direct_lot_ingest": False,
+                    "moscow_discovery": True,
+                    "discovery_access": "official_public_registry",
+                    "note": "Публичный поиск банкротных лотов по Москве; подключён без обхода защиты.",
                 },
                 {
                     "id": "investmoscow",

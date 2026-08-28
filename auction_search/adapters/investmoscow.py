@@ -13,6 +13,7 @@ from auction_search.adapters.etp_gpb import ETPGPBAdapter
 from auction_search.adapters.etp_rf import ETPRFAdapter
 from auction_search.adapters.roseltorg_public import RoseltorgAdapter
 from auction_search.adapters.sberbank_ast import SberbankASTAdapter
+from auction_search.adapters.nistp import NistpAdapter
 from auction_search.models import AuctionLot
 
 
@@ -63,6 +64,7 @@ class InvestMoscowDiscoveryAdapter(AuctionPlatformAdapter):
         "etp.gpb.ru",
         "etprf.ru",
         "fabrikant.ru",
+        "nistp.ru",
     )
 
     def __init__(self):
@@ -163,6 +165,8 @@ class InvestMoscowDiscoveryAdapter(AuctionPlatformAdapter):
             return ETPRFAdapter()
         if host == SberbankASTAdapter.HOST or host.endswith("." + SberbankASTAdapter.HOST):
             return SberbankASTAdapter()
+        if host == NistpAdapter.HOST or host.endswith("." + NistpAdapter.HOST):
+            return NistpAdapter()
         return None
 
     @staticmethod
