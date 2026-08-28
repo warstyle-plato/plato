@@ -1019,7 +1019,7 @@ def install(app: FastAPI) -> None:
         # принять площадь здания за площадь территории и сложить их. Для
         # имущественного комплекса/незавершёнки оставляем в handoff только
         # земельные КН, подтверждённые НСПД.
-        if lot.lot_kind in {LotKind.PROPERTY_COMPLEX, LotKind.UNFINISHED} and lot.cadastral_numbers and core is not None:
+        if lot.lot_kind != LotKind.KRT and lot.cadastral_numbers and core is not None:
             try:
                 context = await run_in_threadpool(core._land_lot_context, lot.cadastral_numbers)
                 land_numbers = [str(item.get("cadastral_number")) for item in (context.get("land_parcels") or []) if item.get("cadastral_number")]
