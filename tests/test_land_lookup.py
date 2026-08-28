@@ -159,6 +159,93 @@ def test_lookup_by_cadastral_number(monkeypatch):
     assert result["results"][0]["area_ha"] == 1.25
 
 
+def test_lot_context_gives_the_land_area_from_its_number(monkeypatch):
+    monkeypatch.setattr(main, "_nspd_search_features", lambda query: [MYTISHCHI_FEATURE])
+
+    result = main._land_lot_context(["50:12:0080205:123"])
+
+    assert result["buildings"] == []
+    assert result["land_parcels"][0]["area_sqm"] == 12_500
+    assert result["land_parcels"][0]["lookup_methods"] == ["requested"]
+
+
+def test_lot_context_separates_building_and_the_land_under_it(monkeypatch):
+    building_number = "77:01:0001001:9999"
+    land_number = "77:01:0001001:12"
+    building = {
+        **BUILDING_FEATURE,
+        "properties": {
+            **BUILDING_FEATURE["properties"],
+            "options": {
+                **BUILDING_FEATURE["properties"]["options"],
+                "land_cad_number": land_number,
+            },
+        },
+    }
+    land = {
+        **MYTISHCHI_FEATURE,
+        "properties": {
+            **MYTISHCHI_FEATURE["properties"],
+            "options": {
+                **MYTISHCHI_FEATURE["properties"]["options"],
+                "cad_num": land_number,
+                "land_record_area": 1850.0,
+            },
+        },
+    }
+
+    def search(query: str):
+        return [building] if query == building_number else [land]
+
+    monkeypatch.setattr(main, "_nspd_search_features", search)
+    result = main._land_lot_context([building_number])
+
+    assert result["buildings"][0]["area_sqm"] == 3200
+    assert result["buildings"][0]["site_lookup_method"] == "egrn_relation"
+    assert result["land_parcels"][0]["cadastral_number"] == land_number
+    assert result["land_parcels"][0]["area_sqm"] == 1850
+    assert result["land_parcels"][0]["related_buildings"] == [building_number]
+
+
+def test_lot_context_finds_land_at_the_building_center(monkeypatch):
+    monkeypatch.setattr(main, "_nspd_search_features", lambda query: [BUILDING_FEATURE])
+    monkeypatch.setattr(main, "_nspd_point_features", lambda lat, lng: [MYTISHCHI_FEATURE])
+
+    result = main._land_lot_context(["77:01:0001001:9999"])
+
+    assert result["buildings"][0]["site_lookup_method"] == "building_center"
+    assert result["land_parcels"][0]["area_sqm"] == 12_500
+    assert result["land_parcels"][0]["lookup_methods"] == ["building_center"]
+    assert any("центральной точке" in warning for warning in result["warnings"])
+
+
+def test_lot_context_does_not_call_a_premise_an_independent_building(monkeypatch):
+    premise = {
+        "type": "Feature",
+        "geometry": {"type": "Point", "coordinates": [37.61, 55.75]},
+        "properties": {
+            "categoryName": "Помещения",
+            "options": {
+                "cad_num": "77:01:0001001:5001",
+                "readable_address": "г. Москва, помещение 1",
+                "area_value": 91.4,
+            },
+        },
+    }
+    monkeypatch.setattr(main, "_nspd_search_features", lambda query: [premise])
+
+    result = main._land_lot_context(["77:01:0001001:5001"])
+
+    assert result["buildings"] == []
+    assert result["land_parcels"] == []
+    assert result["other_objects"][0]["kind"] == "premise"
+    assert any("помещение, а не ОСЗ" in warning for warning in result["warnings"])
+
+
+def test_lot_context_route_is_registered():
+    assert any(route.path == "/land/lot-context" for route in main.app.routes)
+
+
 def test_several_numbers_in_one_query(monkeypatch):
     monkeypatch.setattr(main, "_nspd_search_features", lambda query: [MYTISHCHI_FEATURE])
     result = main.land_lookup(

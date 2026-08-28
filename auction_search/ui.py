@@ -432,7 +432,65 @@ function lotCaveats(l){
  if(!flags.length) return '';
  return `<div class="items">${flags.map(f=>`<div class="item"><b>Оговорка источника</b>${esc(f)}</div>`).join('')}</div>`;
 }
-function selectLot(l){state.selected=l;state.ingested=null;const sc=lotScore(l),side=$('side');side.innerHTML=`<h2>${esc(l.title||'Лот')}</h2><div class="sub">${esc(l.source?.source_name||l.source?.platform||'ЭТП')} · ${esc(l.source?.external_lot_id||'')}</div><div class="notice"><div class="fit ${sc.tone}"><span class="light"></span>Оценка Платона: ${sc.score}/100 · ${esc(sc.label)}</div><div class="source">Потенциал лота — ${sc.base}. ${sc.cut?`Снято ${sc.cut}%: `+esc(sc.cuts.map(c=>c.label+' −'+c.points+'%').join(', ')):'Снижать нечего.'}</div></div>${sc.cuts.length?`<div class="items">${sc.cuts.map(c=>`<div class="item"><b>Балл снижен на ${c.points}%</b>${esc(c.label)}</div>`).join('')}</div>`:''}<div class="kv"><div>Юр. конструкция</div><div>${esc(kindLabel(l.lot_kind))} · ${esc(ORIGIN_LABEL[l.origin||'other']||'—')}</div><div>Кадастр</div><div class="cad">${esc((l.cadastral_numbers||[]).join(', ')||'—')}</div><div>Площадь</div><div>${areaLine(l)}</div><div>Цена сейчас</div><div class="money">${fmtMoney(l.current_price_rub??l.start_price_rub)}</div><div>Минимальная цена</div><div>${fmtMoney(l.min_price_rub)}</div><div>Заявка до</div><div>${esc(shortDate(l.application_deadline))}</div><div>ВРИ площадки</div><div>${esc(l.permitted_use||'—')}</div></div>${lotCaveats(l)}<div class="actions"><button class="primary" id="ingestBtn"${lotAnalysis(l).available?'':' disabled'}>Разобрать лот</button><button id="sourceBtn">Открыть ЭТП</button></div><div id="detailStatus" class="notice${lotAnalysis(l).available?'':' warn'}">${esc(lotAnalysis(l).available?'Документы пока только перечислены. Полный разбор запускается по выбранному лоту, чтобы не нагружать ЭТП массовыми скачиваниями.':'Разобрать этот лот нечем: '+lotAnalysis(l).reason+' Карточку можно открыть на самой площадке — кнопка «Открыть ЭТП».')}</div><div id="analysis"></div>`;$('ingestBtn').onclick=ingest;$('sourceBtn').onclick=()=>window.open(l.source?.lot_url,'_blank','noopener');renderAskContext()}
+function cadastralMapLink(item){
+ const url=String(item?.map_url||'');
+ return url?` <a href="${esc(url)}" target="_blank" rel="noopener">карта НСПД</a>`:'';
+}
+function renderLotCadastre(l){
+ const box=$('lotCadastre');
+ if(!box||state.selected!==l)return;
+ const numbers=(l.cadastral_numbers||[]).filter(Boolean);
+ if(!numbers.length){
+  box.innerHTML='<div class="section"><h3>Проверка НСПД</h3><div class="notice warn">В карточке торгов нет кадастрового номера — автоматически проверить площадь участка нельзя.</div></div>';
+  return;
+ }
+ if(l._cadLoading){
+  box.innerHTML='<div class="section"><h3>Проверка НСПД</h3><div class="notice"><span class="spinner"></span>Проверяю КН и площадь участка…</div></div>';
+  return;
+ }
+ if(l._cadError){
+  box.innerHTML=`<div class="section"><h3>Проверка НСПД</h3><div class="notice warn">${esc(l._cadError)}</div><button id="cadRetry">Проверить ещё раз</button></div>`;
+  $('cadRetry').onclick=()=>loadLotCadastre(l,true);
+  return;
+ }
+ const c=l._cadContext;
+ if(!c)return;
+ const buildings=c.buildings||[],parcels=c.land_parcels||[],other=c.other_objects||[];
+ const buildingRows=buildings.map(x=>{
+  const method=x.site_lookup_method==='egrn_relation'?'участок связан с ОКС в ЕГРН'
+   :x.site_lookup_method==='building_center'?'участок найден по точке здания'
+   :'участок под объектом не найден';
+  return `<div class="item"><b>Здание / ОКС · ${fmtArea(x.area_sqm)}</b><span class="cad">${esc(x.cadastral_number||'')}</span>${cadastralMapLink(x)}<div class="source">${esc(method)}${x.address?' · '+esc(x.address):''}</div></div>`;
+ }).join('');
+ const parcelRows=parcels.map(x=>{
+  const under=(x.related_buildings||[]).length>0;
+  const byPoint=(x.lookup_methods||[]).includes('building_center');
+  const method=under?(byPoint?'под ОКС, найден по точке здания':'под ОКС, связь из ЕГРН'):'КН участка из карточки торгов';
+  return `<div class="item"><b>${under?'Участок под ОКС':'Земельный участок'} · ${fmtArea(x.area_sqm)}${x.area_ha?' · '+esc(x.area_ha)+' га':''}</b><span class="cad">${esc(x.cadastral_number||'')}</span>${cadastralMapLink(x)}<div class="source">${esc(method)}${x.permitted_use?' · ВРИ: '+esc(x.permitted_use):''}</div></div>`;
+ }).join('');
+ const otherRows=other.filter(x=>x.found).map(x=>`<div class="item"><b>${esc(x.kind_label||'Объект ЕГРН')} · ${fmtArea(x.area_sqm)}</b><span class="cad">${esc(x.cadastral_number||'')}</span>${cadastralMapLink(x)}</div>`).join('');
+ const warnings=(c.warnings||[]).map(x=>`<div class="source warn">${esc(x)}</div>`).join('');
+ const empty=!buildingRows&&!parcelRows&&!otherRows?'<div class="notice warn">По указанным КН НСПД не вернула объект с площадью.</div>':'';
+ box.innerHTML=`<div class="section"><h3>Площадь по НСПД / ЕГРН</h3><div class="items">${buildingRows}${parcelRows}${otherRows}</div>${empty}${warnings}</div>`;
+}
+async function loadLotCadastre(l,force=false){
+ const numbers=(l.cadastral_numbers||[]).filter(Boolean);
+ if(!numbers.length){renderLotCadastre(l);return}
+ if(l._cadLoading||(!force&&l._cadContext)){renderLotCadastre(l);return}
+ l._cadLoading=true;l._cadError='';renderLotCadastre(l);
+ try{
+  l._cadContext=await askJson('/land/lot-context',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cadastral_numbers:numbers})});
+ }catch(e){l._cadError=String(e.message||e)}
+ finally{l._cadLoading=false;renderLotCadastre(l)}
+}
+function selectLot(l){
+ state.selected=l;state.ingested=null;
+ const sc=lotScore(l),side=$('side');
+ side.innerHTML=`<h2>${esc(l.title||'Лот')}</h2><div class="sub">${esc(l.source?.source_name||l.source?.platform||'ЭТП')} · ${esc(l.source?.external_lot_id||'')}</div><div class="notice"><div class="fit ${sc.tone}"><span class="light"></span>Оценка Платона: ${sc.score}/100 · ${esc(sc.label)}</div><div class="source">Потенциал лота — ${sc.base}. ${sc.cut?`Снято ${sc.cut}%: `+esc(sc.cuts.map(c=>c.label+' −'+c.points+'%').join(', ')):'Снижать нечего.'}</div></div>${sc.cuts.length?`<div class="items">${sc.cuts.map(c=>`<div class="item"><b>Балл снижен на ${c.points}%</b>${esc(c.label)}</div>`).join('')}</div>`:''}<div class="kv"><div>Юр. конструкция</div><div>${esc(kindLabel(l.lot_kind))} · ${esc(ORIGIN_LABEL[l.origin||'other']||'—')}</div><div>Кадастр</div><div class="cad">${esc((l.cadastral_numbers||[]).join(', ')||'—')}</div><div>Площадь по ЭТП</div><div>${areaLine(l)}</div><div>Цена сейчас</div><div class="money">${fmtMoney(l.current_price_rub??l.start_price_rub)}</div><div>Минимальная цена</div><div>${fmtMoney(l.min_price_rub)}</div><div>Заявка до</div><div>${esc(shortDate(l.application_deadline))}</div><div>ВРИ площадки</div><div>${esc(l.permitted_use||'—')}</div></div>${lotCaveats(l)}<div id="lotCadastre"></div><div class="actions"><button class="primary" id="ingestBtn"${lotAnalysis(l).available?'':' disabled'}>Разобрать лот</button><button id="sourceBtn">Открыть ЭТП</button></div><div id="detailStatus" class="notice${lotAnalysis(l).available?'':' warn'}">${esc(lotAnalysis(l).available?'Документы пока только перечислены. Полный разбор запускается по выбранному лоту, чтобы не нагружать ЭТП массовыми скачиваниями.':'Разобрать этот лот нечем: '+lotAnalysis(l).reason+' Карточку можно открыть на самой площадке — кнопка «Открыть ЭТП».')}</div><div id="analysis"></div>`;
+ $('ingestBtn').onclick=ingest;
+ $('sourceBtn').onclick=()=>window.open(l.source?.lot_url,'_blank','noopener');
+ renderLotCadastre(l);loadLotCadastre(l);renderAskContext();
+}
 // Отказ по входу объясняется одинаково во всех шести местах, где он бывает:
 // шесть копий одной фразы разошлись бы, и человек получил бы разный ответ на
 // одну причину.
