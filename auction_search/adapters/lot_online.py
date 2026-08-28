@@ -358,11 +358,7 @@ class LotOnlineAdapter(AuctionPlatformAdapter):
             title=title,
             address=address,
             cadastral_numbers=cad,
-            # Площадь в карточке РАД относится к земельному участку только
-            # для земельных лотов. У ОКС/имущественного комплекса это площадь
-            # объекта и не должна уезжать в поле территории DevelopAid.
-            land_area_sqm=area if lot_kind in {LotKind.LAND_SALE, LotKind.LAND_LEASE, LotKind.KRT} else None,
-            building_area_sqm=area if lot_kind in {LotKind.PROPERTY_COMPLEX, LotKind.UNFINISHED} else None,
+            land_area_sqm=area,
             permitted_use=permitted_use,
             seller=seller,
             organizer="Российский аукционный дом",
@@ -389,8 +385,7 @@ class LotOnlineAdapter(AuctionPlatformAdapter):
             "title": title,
             "address": address,
             "cadastral_numbers": ", ".join(cad),
-            "land_area_sqm": area_raw if lot_kind in {LotKind.LAND_SALE, LotKind.LAND_LEASE, LotKind.KRT} else None,
-            "building_area_sqm": area_raw if lot_kind in {LotKind.PROPERTY_COMPLEX, LotKind.UNFINISHED} else None,
+            "land_area_sqm": area_raw,
             "permitted_use": permitted_use,
             "seller": seller,
             "procedure_type": procedure,
