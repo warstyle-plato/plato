@@ -68,7 +68,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.20.37"
+VERSION = "0.20.38"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -5033,6 +5033,13 @@ class LandLookupRequest(BaseModel):
     session: str = ""
 
 
+class LandLotContextRequest(BaseModel):
+    """Кадастровый контекст лота: объект торгов и земля под ним."""
+    cadastral_numbers: list[str] = []
+    # Только для учёта: кто открыл карточку лота. На поиск не влияет.
+    session: str = ""
+
+
 class VriManualRequest(BaseModel):
     """Свой расчёт платы за ВРИ: метры и основания задаёт человек."""
     rows: list[dict[str, Any]] = []
@@ -5280,6 +5287,156 @@ def land_lookup(req: LandLookupRequest) -> dict[str, Any]:
             "requested_at": date.today().isoformat(),
         },
     }
+
+
+def _land_lot_context(numbers: list[str], session: str = "") -> dict[str, Any]:
+    """Разделяет КН объекта торгов и участок под ОКС.
+
+    Это не второй поиск Росреестра: все сведения берутся через `land_lookup`.
+    Поэтому край приложения автоматически пользуется тем же удалённым ядром,
+    кэшем и нормализацией НСПД, что кабинет и расчёт территории.
+    """
+    requested = _parse_cadastral_numbers(numbers)
+
+    def lookup(query: str, *, include_premises: bool) -> list[dict[str, Any]]:
+        payload = land_lookup(LandLookupRequest(
+            query=query,
+            limit=30,
+            include_premises=include_premises,
+            session=session,
+        ))
+        return [dict(item) for item in payload.get("results", []) if isinstance(item, dict)]
+
+    objects = lookup("\n".join(requested), include_premises=True)
+    buildings = [dict(item) for item in objects if item.get("found") and item.get("kind") == "building"]
+    other_objects = [
+        dict(item) for item in objects
+        if item.get("kind") not in ("land", "building") or not item.get("found")
+    ]
+    parcels: dict[str, dict[str, Any]] = {}
+
+    def add_parcel(item: dict[str, Any], method: str, building_number: str = "") -> None:
+        if not item.get("found") or item.get("kind") != "land":
+            return
+        number = _land_text(item.get("cadastral_number"))
+        if not number:
+            return
+        current = parcels.get(number)
+        if current is None:
+            current = dict(item)
+            current["lookup_methods"] = []
+            current["related_buildings"] = []
+            parcels[number] = current
+        if method not in current["lookup_methods"]:
+            current["lookup_methods"].append(method)
+        if building_number and building_number not in current["related_buildings"]:
+            current["related_buildings"].append(building_number)
+
+    # Если КН лота уже является участком, его площадь подтверждается напрямую.
+    for item in objects:
+        add_parcel(item, "requested")
+
+    relation_numbers: list[str] = []
+    relations_by_building: dict[str, list[str]] = {}
+    for building in buildings:
+        building_number = _land_text(building.get("cadastral_number"))
+        relation = _land_text(building.get("land_parcel"))
+        found_numbers = [] if not relation else _CADASTRAL_NUMBER_RE.findall(relation.replace("：", ":"))
+        found_numbers = list(dict.fromkeys(found_numbers))
+        relations_by_building[building_number] = found_numbers
+        for number in found_numbers:
+            if number not in relation_numbers:
+                relation_numbers.append(number)
+
+    relation_results: dict[str, dict[str, Any]] = {}
+    if relation_numbers:
+        for item in lookup("\n".join(relation_numbers), include_premises=False):
+            number = _land_text(item.get("cadastral_number"))
+            if number:
+                relation_results[number] = item
+
+    warnings: list[str] = []
+    for building in buildings:
+        building_number = _land_text(building.get("cadastral_number"))
+        site_numbers: list[str] = []
+        for number in relations_by_building.get(building_number, []):
+            parcel = relation_results.get(number)
+            if parcel and parcel.get("kind") == "land" and parcel.get("found"):
+                add_parcel(parcel, "egrn_relation", building_number)
+                site_numbers.append(number)
+
+        method = "egrn_relation" if site_numbers else ""
+        # Не у каждого ОКС в публичной карточке есть ссылка на землю. Тогда
+        # проверяем земельный слой в центре контура здания. Это полезная
+        # пространственная проверка, но не замена выписке и межевому плану.
+        if not site_numbers:
+            center = building.get("center") or {}
+            lat, lng = _land_float(center.get("lat")), _land_float(center.get("lng"))
+            if lat is not None and lng is not None:
+                try:
+                    under = lookup(f"{lat}, {lng}", include_premises=False)
+                except HTTPException as exc:
+                    under = []
+                    warnings.append(
+                        f"Участок под ОКС {building_number} не проверен: {exc.detail}"
+                    )
+                for parcel in under:
+                    if parcel.get("found") and parcel.get("kind") == "land":
+                        add_parcel(parcel, "building_center", building_number)
+                        number = _land_text(parcel.get("cadastral_number"))
+                        if number and number not in site_numbers:
+                            site_numbers.append(number)
+                if site_numbers:
+                    method = "building_center"
+            if not site_numbers:
+                warnings.append(
+                    f"НСПД не определила земельный участок под ОКС {building_number}."
+                )
+        building["site_lookup_method"] = method or "not_found"
+        building["site_cadastral_numbers"] = site_numbers
+
+    for item in other_objects:
+        number = _land_text(item.get("cadastral_number"))
+        if not item.get("found"):
+            warnings.append(
+                f"Кадастровый номер {number or 'из карточки'} не найден в открытых сведениях ЕГРН."
+            )
+        elif item.get("kind") == "premise":
+            warnings.append(
+                f"{number} — помещение, а не ОСЗ; по одному КН помещения участок под домом не определяется."
+            )
+
+    if any("building_center" in item.get("lookup_methods", []) for item in parcels.values()):
+        warnings.append(
+            "Участок под ОКС найден по центральной точке здания. Для сделки проверьте связь объектов по выпискам ЕГРН."
+        )
+    warnings.append(
+        "Площади справочные, из открытых данных ЕГРН; для сделки нужна актуальная выписка Росреестра."
+    )
+    return {
+        "requested": requested,
+        "objects": objects,
+        "buildings": buildings,
+        "land_parcels": list(parcels.values()),
+        "other_objects": other_objects,
+        "warnings": list(dict.fromkeys(warnings)),
+        "source": {
+            "service": "nspd.gov.ru (НСПД, ППК «Роскадастр»)",
+            "requested_at": date.today().isoformat(),
+        },
+    }
+
+
+@app.post("/land/lot-context")
+def land_lot_context(req: LandLotContextRequest) -> dict[str, Any]:
+    """Площадь участка лота и, для ОКС, участка под зданием."""
+    usage_track(
+        "land_lot_context",
+        surface="auctions",
+        text=" ".join(str(item) for item in req.cadastral_numbers)[:120],
+        chat_id=_web_identity_chat_id(str(getattr(req, "session", "") or "")),
+    )
+    return _land_lot_context(req.cadastral_numbers, req.session)
 
 
 @app.get("/land/providers")

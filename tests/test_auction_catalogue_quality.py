@@ -98,3 +98,15 @@ def test_the_screen_names_the_main_and_raw_catalogues_honestly() -> None:
     assert "ГИС Торги — отдельно, сырые данные" in page
     assert "Интересные · данные заполнены" in page
     assert "Показать неполные и шум" in page
+
+
+def test_selected_lot_checks_nspd_and_keeps_building_and_land_areas_separate() -> None:
+    from auction_search.ui import auctions_page
+
+    page = auctions_page()
+    assert "'/land/lot-context'" in page
+    assert "Площадь по ЭТП" in page
+    assert "Площадь по НСПД / ЕГРН" in page
+    assert "Здание / ОКС" in page
+    assert "Участок под ОКС" in page
+    assert "if(!numbers.length){renderLotCadastre(l);return}" in page
