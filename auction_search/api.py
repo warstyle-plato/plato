@@ -72,6 +72,9 @@ class AuctionExportRequest(BaseModel):
     rows: list[dict[str, Any]] = Field(default_factory=list, max_length=2000)
     kind: str = Field(default="auctions", max_length=40)
 
+class AuctionLotPointRequest(BaseModel):
+    query: str = Field(min_length=3, max_length=500)
+
 def _xlsx(rows: list[dict[str, Any]]) -> bytes:
     cols = ["Раздел","Название","Округ / район","Адрес","Кадастр","Тип","Площадь, м²","Объём, м²","Цена, ₽","Оценка Платона","Статус","Источник"]
     def cell(v):
@@ -977,6 +980,19 @@ def install(app: FastAPI) -> None:
         filename = "developaid-krt.xlsx" if req.kind == "krt" else "developaid-auctions.xlsx"
         return Response(content=data, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+    @app.post("/auctions/lot-point")
+    async def auction_lot_point(req: AuctionLotPointRequest) -> dict[str, Any]:
+        if market is None:
+            raise HTTPException(status_code=503, detail="Маркетинговый движок не подключён")
+        try:
+            subject = await run_in_threadpool(market.resolve_subject, req.query)
+        except (GeocodingError, RemoteServiceError, RuntimeError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        data = subject.to_dict() if hasattr(subject, "to_dict") else {}
+        return {"latitude": data.get("latitude"), "longitude": data.get("longitude"),
+                "address": data.get("address") or req.query, "precision": data.get("precision"),
+                "nspd_url": data.get("nspd_url") or ""}
 
     @app.post("/auctions/ingest")
     async def auction_ingest(req: AuctionIngestRequest) -> dict[str, Any]:
