@@ -178,6 +178,34 @@ def test_explicit_platform_test_lot_is_screened_as_noise():
     assert "platform_test_lot" in screening["relevance_flags"]
 
 
+def test_an_apartment_is_not_presented_as_a_development_complex():
+    lot = AuctionLot(
+        source=source(),
+        lot_kind=LotKind.PROPERTY_COMPLEX,
+        title="Продажа квартиры площадью 97,4 кв. м",
+        address="Москва, ул. Примерная, д. 1, кв. 31",
+    )
+
+    screening = AuctionSearchService.screen_lot(lot)
+
+    assert screening["development_relevant"] is False
+    assert "residential_unit" in screening["relevance_flags"]
+    assert "квартира" in " ".join(screening["exclusion_reasons"])
+
+
+def test_a_non_residential_building_is_not_mistaken_for_a_flat():
+    lot = AuctionLot(
+        source=source(),
+        lot_kind=LotKind.PROPERTY_COMPLEX,
+        title="Нежилое помещение и земельный участок",
+    )
+
+    screening = AuctionSearchService.screen_lot(lot)
+
+    assert screening["development_relevant"] is True
+    assert "residential_unit" not in screening["relevance_flags"]
+
+
 def test_api_runtime_flag_controls_project_share_discovery(monkeypatch):
     monkeypatch.delenv("AUCTION_LOTONLINE_PROJECT_SHARES_DISCOVERY", raising=False)
     default_adapter = _discovery_adapters("lot_online")[0]

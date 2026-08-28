@@ -26,7 +26,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from auction_search.adapters.torgi_gov import (  # noqa: E402
-    FLAG, REGION_PARAM_CANDIDATES, TorgiGovAdapter, classify, to_lot,
+    DISCOVERY_FILTERS, FLAG, REGION_PARAM_CANDIDATES, TorgiGovAdapter,
+    classify, to_lot,
 )
 from auction_search.models import LotKind, LotOrigin, lot_subject  # noqa: E402
 
@@ -224,13 +225,7 @@ def test_the_switch_off_says_why(monkeypatch) -> None:
 
 
 def test_the_report_says_who_filtered_the_region(monkeypatch) -> None:
-    """Серверного фильтра у этого API нет — молчание об этом читалось бы
-    как «сервис прислал только наше».
-
-    Проба 25.08.2026 перебрала шесть имён параметра, включая контрольный
-    запрос без него: ни одно не отфильтровало, выдача одна и та же с чужими
-    регионами (47, 69, 76, 77).
-    """
+    """Отчёт называет и серверный id, и независимую проверку кода Москвы."""
     monkeypatch.setenv(FLAG, "0")
     adapter = TorgiGovAdapter()
     list(adapter.discover_moscow())
@@ -372,13 +367,14 @@ def test_a_page_of_html_is_shown_not_swallowed(monkeypatch) -> None:
 def test_the_probe_prints_the_address_it_asked(monkeypatch) -> None:
     """Проба печатает тот адрес, по которому пойдёт рабочий сбор.
 
-    Раньше здесь требовался `dynSubjRF`: параметр стоял в рабочем запросе.
-    Проба показала, что он ухудшает выдачу, и из сбора он убран — значит и
-    печатать проба должна запрос без него, иначе она проверяет не то.
+    Старое значение `dynSubjRF=77,50` было неверным: это внутренний id
+    справочника, а не код субъекта. Для Москвы проверено значение 78.
     """
     result = _probe_with(json.dumps({"content": []}), monkeypatch)
     assert result["url"].startswith("https://torgi.gov.ru/new/api/public/")
-    assert "dynSubjRF" not in result["url"]
+    assert "dynSubjRF=78" in result["url"]
+    assert "catCode=2" in result["url"]
+    assert result["url"].count("lotStatus=") == 2
     assert "size=" in result["url"] and "page=" in result["url"]
 
 
@@ -468,8 +464,8 @@ def test_both_the_type_and_the_form_reach_the_lot() -> None:
 def test_a_foreign_region_is_not_ours() -> None:
     """Ответ на запросе с dynSubjRF=77,50 принёс Ярославскую область (76).
 
-    Серверный фильтр под этим именем не работает. Пока рабочее имя не
-    выяснено, лот из Рыбинска в московском списке был бы не шумом, а ложью.
+    Это подтвердило, что `dynSubjRF` использует внутренний справочник, а не
+    `subjectRFCode`. Поэтому после серверного фильтра код всё равно проверяется.
     """
     from auction_search.adapters.torgi_gov import in_target_region
     assert in_target_region(_real_card()) is False
@@ -486,7 +482,7 @@ def test_the_collector_drops_foreign_regions(monkeypatch) -> None:
     monkeypatch.setenv(FLAG, "1")
     monkeypatch.setattr(mod.urllib.request, "urlopen",
                         lambda *a, **k: _Response(body))
-    adapter = TorgiGovAdapter()
+    adapter = TorgiGovAdapter(discovery_filters=(DISCOVERY_FILTERS[0],))
     lots = list(adapter.discover_moscow())
     assert [lot.source.external_lot_id for lot in lots] == ["ours_1"]
 
@@ -497,7 +493,7 @@ def test_a_page_of_foreign_regions_says_why_it_is_empty(monkeypatch) -> None:
     monkeypatch.setenv(FLAG, "1")
     monkeypatch.setattr(mod.urllib.request, "urlopen",
                         lambda *a, **k: _Response(json.dumps({"content": [_real_card()]})))
-    adapter = TorgiGovAdapter()
+    adapter = TorgiGovAdapter(discovery_filters=(DISCOVERY_FILTERS[0],))
     assert list(adapter.discover_moscow()) == []
     assert "subjectRFCode" in adapter.last_report["reason"]
 
@@ -545,7 +541,7 @@ def test_cards_without_a_region_are_counted_not_swallowed(monkeypatch) -> None:
     monkeypatch.setenv(FLAG, "1")
     monkeypatch.setattr(mod.urllib.request, "urlopen",
                         lambda *a, **k: _Response(json.dumps({"content": [blind, ours]})))
-    adapter = TorgiGovAdapter()
+    adapter = TorgiGovAdapter(discovery_filters=(DISCOVERY_FILTERS[0],))
     lots = list(adapter.discover_moscow())
     assert [lot.source.external_lot_id for lot in lots] == ["ours_1"]
     assert "без кода региона: 1" in adapter.last_report["reason"]
@@ -862,7 +858,7 @@ def test_a_short_page_is_not_the_last_page(monkeypatch) -> None:
         return {"content": pages[page] if page < len(pages) else []}
 
     monkeypatch.setattr(TorgiGovAdapter, "_fetch_page", fake)
-    adapter = TorgiGovAdapter()
+    adapter = TorgiGovAdapter(discovery_filters=(DISCOVERY_FILTERS[0],))
     lots = list(adapter.discover_moscow())
     assert len(lots) == 30, adapter.last_report
     assert seen_pages[:4] == [0, 1, 2, 3]
@@ -882,7 +878,7 @@ def test_the_envelope_says_where_the_pages_end(monkeypatch) -> None:
                 "totalPages": 2, "totalElements": 2}
 
     monkeypatch.setattr(TorgiGovAdapter, "_fetch_page", fake)
-    adapter = TorgiGovAdapter()
+    adapter = TorgiGovAdapter(discovery_filters=(DISCOVERY_FILTERS[0],))
     lots = list(adapter.discover_moscow())
     assert asked == [0, 1], asked
     assert len(lots) == 2
@@ -899,33 +895,41 @@ def test_a_standing_page_number_is_caught(monkeypatch) -> None:
     monkeypatch.setenv(FLAG, "1")
     monkeypatch.setattr(TorgiGovAdapter, "_fetch_page",
                         lambda self, page, **_: {"content": [dict(_real_card(), subjectRFCode="77", id="same")]})
-    adapter = TorgiGovAdapter()
+    adapter = TorgiGovAdapter(discovery_filters=(DISCOVERY_FILTERS[0],))
     lots = list(adapter.discover_moscow())
     assert [lot.source.external_lot_id for lot in lots] == ["same"]
     assert adapter.last_report["pages"] == 1
     assert "нумерация страниц не двигается" in adapter.last_report["reason"]
 
 
-def test_the_working_request_carries_no_region_parameter() -> None:
-    """Параметр, ухудшающий выдачу, — не безобидный.
-
-    Проба с ядра 25.08.2026: контрольный запрос БЕЗ параметра дал одну
-    московскую карточку из десяти (регионы 50 и 69), а `dynSubjRF=77,50` — ни
-    одной, зато регионы 47 и 76. Сервис его не игнорирует: он понимает его как
-    что-то своё и отдаёт другой срез.
-
-    Я прочитал ту пробу как «ни один не фильтрует» и оставил параметр в сборе
-    «вдруг заработает». Итог на проде: сорок страниц, четыреста карточек, наших
-    ноль — прочитали честно, спросили не то.
-    """
+def test_the_working_request_targets_current_moscow_land() -> None:
+    """Общий поток забивали квартиры; запрос обязан быть серверной выборкой."""
     adapter = TorgiGovAdapter()
     working = adapter._search_url(0)
-    assert "dynSubjRF" not in working, working
+    assert "dynSubjRF=78" in working, working
+    assert "catCode=2" in working, working
+    assert working.count("lotStatus=") == 2
     for name in ("subjectRFCode", "subjectRF", "subjectRFList", "dynSubjRFCode"):
         assert name not in working, name
-    # Контрольный запрос пробы и рабочий — один и тот же адрес: проба обязана
-    # проверять то, что потом пойдёт в дело.
-    assert adapter._search_url(0, None) == working
+    assert "dynSubjRF" not in adapter._search_url(0, None)
+
+
+def test_discovery_asks_each_development_category(monkeypatch) -> None:
+    """Поток новых карточек забивают квартиры; каждый нужный класс спрашиваем сам."""
+    asked: list[str] = []
+
+    def empty(self, url: str, **_):
+        asked.append(url)
+        return 200, "application/json", json.dumps({"content": []})
+
+    monkeypatch.setattr(TorgiGovAdapter, "_fetch_raw", empty)
+    list(TorgiGovAdapter().discover_moscow())
+
+    assert len(asked) == len(DISCOVERY_FILTERS)
+    assert sum("catCode=2" in url for url in asked) == 1
+    assert sum("catCode=7" in url for url in asked) == 3
+    assert any("text=" in url and "%D0%BD%D0%B5%D0%B7%D0%B0%D0%B2%D0%B5%D1%80%D1%88" in url
+               for url in asked)
 
 
 def test_the_probe_still_tries_the_candidates() -> None:
