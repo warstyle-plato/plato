@@ -112,11 +112,11 @@ PAGE_SIZE = 50
 # и сколько их было, стоит в отчёте.
 MAX_PAGES = 40
 
-# Субъекты, которые нас интересуют: Москва и область. Код региона приходит в
-# карточке полем `subjectRFCode` (подтверждено живым ответом 24.08.2026), и
-# только по нему регион и определяется — списка слов рядом нет намеренно,
-# см. `in_target_region`.
-SUBJECT_CODES = ("77", "50")
+# Страница называется «Торги Москвы», поэтому субъект здесь только Москва.
+# Код 50 в `subjectRFCode` означает Московскую область. Это не то же самое,
+# что исторический кадастровый префикс 50 у отдельных участков Новой Москвы:
+# кадастровый номер может начинаться с 50, но субъект такой карточки остаётся 77.
+SUBJECT_CODES = ("77",)
 
 # Параметра региона в рабочем запросе НЕТ, и это измеренное решение, а не
 # отказ от поиска имени.
@@ -467,7 +467,9 @@ def lot_documents(card: dict[str, Any]) -> list[AuctionDocument]:
     return found
 
 
-def in_target_region(card: dict[str, Any]) -> bool:
+def in_target_region(
+    card: dict[str, Any], subject_codes: tuple[str, ...] = SUBJECT_CODES
+) -> bool:
     """Наш ли это регион — по полю карточки, а не по вере в параметр запроса.
 
     Живой ответ 24.08.2026 на запросе с `dynSubjRF=77,50` принёс Ярославскую
@@ -485,7 +487,7 @@ def in_target_region(card: dict[str, Any]) -> bool:
         # адрес объекта оценки. Нет кода региона — не знаем, а не «наш»;
         # сколько таких, сбор считает отдельно и говорит вслух.
         return False
-    return code.lstrip("0") in {item.lstrip("0") for item in SUBJECT_CODES}
+    return code.lstrip("0") in {item.lstrip("0") for item in subject_codes}
 
 
 def to_lot(card: dict[str, Any], fetched_at: str) -> AuctionLot | None:
@@ -650,7 +652,7 @@ class TorgiGovAdapter(AuctionPlatformAdapter):
                 if not _text(card.get("subjectRFCode")):
                     unknown_region += 1
                     continue
-                if not in_target_region(card):
+                if not in_target_region(card, self.subject_codes):
                     continue
                 lot = to_lot(card, fetched_at)
                 if lot is None:

@@ -24,6 +24,7 @@ from auction_search.adapters.fedresurs import (
     SEARCH_PAGE as FEDRESURS_SEARCH_PAGE,
     probe as fedresurs_probe, probe_browser as fedresurs_browser)
 from auction_search.bridge import auction_page_with_handoff, install_page_bridge
+from auction_search.catalogue_quality import catalogue_quality
 from auction_search.developaid_mapper import build_developaid_seed
 from auction_search.documents import DocumentExtractionError
 from auction_search.krt_pipeline import enrich_krt_from_official_documents
@@ -114,18 +115,15 @@ def _discovery_adapters(source: str):
         return [RoseltorgAdapter()]
     if value in {"investmoscow", "moscow", "city"}:
         return [InvestMoscowDiscoveryAdapter()]
-    if value in {"torgi", "torgi_gov", "bankruptcy"}:
+    if value in {"torgi", "torgi_gov"}:
         return [TorgiGovAdapter()]
     if value == "all":
-        adapters = [_lot_online_discovery_adapter(), RoseltorgAdapter(),
-                    InvestMoscowDiscoveryAdapter()]
-        # Банкротные лоты идут в общую выдачу, только когда источник включён:
-        # его коды видов торгов ещё не сверены живым ответом, а включённый
-        # непроверенный источник хуже отсутствующего — он приносит лоты, и
-        # они выглядят так же, как проверенные.
-        if TorgiGovAdapter.enabled():
-            adapters.append(TorgiGovAdapter())
-        return adapters
+        # ГИС Торги не входит в основную подборку. Живой ответ подтвердил в
+        # нём 178-ФЗ (приватизация), но не нужный банкротный рынок, а неполные
+        # карточки вытесняли реальные лоты. Источник остаётся доступен отдельно
+        # для диагностики и не выдаётся за банкротство.
+        return [_lot_online_discovery_adapter(), RoseltorgAdapter(),
+                InvestMoscowDiscoveryAdapter()]
     raise ValueError("source: all, lot_online, roseltorg, investmoscow или torgi")
 
 
@@ -361,14 +359,13 @@ def install(app: FastAPI) -> None:
                 },
                 {
                     "id": "torgi_gov",
-                    "name": "ГИС Торги (torgi.gov.ru) — имущество должников",
+                    "name": "ГИС Торги (torgi.gov.ru) — приватизация и прочие торги",
                     "direct_lot_ingest": False,
                     "moscow_discovery": TorgiGovAdapter.enabled(),
                     "discovery_access": "public_api",
-                    "note": ("Банкротные и залоговые лоты: имущественные комплексы, "
-                             "здания, незавершёнка. Городские площадки их не видят. "
-                             "Серверного фильтра региона у API нет — отбираем сами "
-                             "по subjectRFCode; выключается TORGI_GOV_DISCOVERY=0."),
+                    "note": ("Не входит в основную подборку: живой ответ подтвердил "
+                             "178-ФЗ, а не банкротство. Доступен отдельным источником; "
+                             "Москву отбираем по subjectRFCode=77."),
                     # Сертификат torgi.gov.ru выпущен Минцифры, и обычным
                     # хранилищем корней он не проверяется. Корни лежат в
                     # `certs` на машине, а не в репозитории. Пустой список
@@ -865,6 +862,7 @@ def install(app: FastAPI) -> None:
             "source_policy": "official_etp_only",
             "source": source,
             "count": len(lots),
+            "quality": service.last_quality_report,
             "coverage": [_coverage_row(adapter) for adapter in adapters],
             "lots": [
                 {
@@ -874,6 +872,7 @@ def install(app: FastAPI) -> None:
                     # эталону сделок: балл, собранный в браузере, был бы
                     # вторым счётом той же величины.
                     "fit": profile_fit(_public_lot_dict(lot)),
+                    "quality": catalogue_quality(lot),
                     "screening": {
                         **AuctionSearchService.screen_lot(lot),
                         "documents_count": len(lot.documents),

@@ -474,7 +474,9 @@ def test_a_foreign_region_is_not_ours() -> None:
     from auction_search.adapters.torgi_gov import in_target_region
     assert in_target_region(_real_card()) is False
     assert in_target_region(dict(_real_card(), subjectRFCode="77")) is True
-    assert in_target_region(dict(_real_card(), subjectRFCode="50")) is True
+    # subjectRFCode=50 — Московская область, а страница называется Москвой.
+    # Это не то же самое, что старый кадастровый префикс 50 у Новой Москвы.
+    assert in_target_region(dict(_real_card(), subjectRFCode="50")) is False
 
 
 def test_the_collector_drops_foreign_regions(monkeypatch) -> None:

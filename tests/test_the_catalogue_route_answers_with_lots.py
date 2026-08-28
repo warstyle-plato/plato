@@ -82,10 +82,18 @@ def test_a_catalogue_with_a_lot_answers_two_hundred(client, monkeypatch):
     assert got.status_code == 200, got.text
     body = got.json()
     assert body["count"] == 1
+    assert body["quality"] == {
+        "seen": 1,
+        "accepted": 1,
+        "incomplete": 0,
+        "outside_profile": 0,
+        "noise": 0,
+    }
     row = body["lots"][0]
-    for key in ("fit", "screening", "analysis"):
+    for key in ("fit", "quality", "screening", "analysis"):
         assert key in row, key
     assert isinstance(row["fit"], dict) and "fit" in row["fit"], row["fit"]
+    assert row["quality"]["accepted"] is True
 
 
 def test_a_broken_source_does_not_take_the_others_with_it(client, monkeypatch):
