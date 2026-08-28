@@ -188,7 +188,10 @@ def test_api_runtime_flag_controls_project_share_discovery(monkeypatch):
     assert enabled_adapter.include_project_shares is True
 
     monkeypatch.setenv("AUCTION_LOTONLINE_PROJECT_SHARES_DISCOVERY", "false")
-    disabled_adapter = _discovery_adapters("all")[0]
+    disabled_adapter = next(
+        adapter for adapter in _discovery_adapters("all")
+        if isinstance(adapter, LotOnlineAdapter)
+    )
     assert disabled_adapter.include_project_shares is False
 
 

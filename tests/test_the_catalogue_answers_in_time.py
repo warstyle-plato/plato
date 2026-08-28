@@ -76,13 +76,13 @@ def test_the_collection_stops_at_the_deadline():
     assert slow.asked == 1
 
 
-def test_a_source_that_was_never_asked_says_so():
-    """Молча пропущенный источник читается как «лотов там нет»."""
+def test_slow_sources_share_the_same_deadline_and_are_all_asked():
+    """Одна медленная площадка не должна лишать выдачу всех следующих."""
     slow, second = _Slow(), _Slow()
+    started = time.monotonic()
     AuctionSearchService([slow, second]).discover_moscow(budget_seconds=0.2)
-    assert second.asked == 0, "до второго источника дойти не должны были"
-    assert "не опрошен" in second.last_report["reason"]
-    assert "40" not in second.last_report["reason"] or True
+    assert slow.asked == second.asked == 1
+    assert time.monotonic() - started < 1, "площадки снова обходятся последовательно"
 
 
 def test_a_source_without_a_deadline_is_still_asked():
