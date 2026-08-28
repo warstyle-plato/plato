@@ -49,7 +49,7 @@ AUCTIONS_PAGE = r'''<!doctype html>
     <div class="layout"><div class="tablewrap"><table><thead><tr><th>Проект КРТ</th><th>Оценка Платона</th><th title="Предельная цена входа при LLCR 1,20x, на метр продаваемой площади">Потолок входа, ₽/м²</th><th>Статус</th><th>Площадь</th><th>Общий объём</th><th>Жильё</th><th>Рабочие места</th></tr></thead><tbody id="krtRows"></tbody></table><div id="krtEmpty" class="empty">Открываю официальный каталог krt.mos.ru…</div></div><aside class="side" id="krtSide"><div class="empty">Выберите проект КРТ.<br>ТЭП берутся из krt.mos.ru, рынок считает существующий движок DevelopAid.</div></aside></div>
   </div>
   <div class="filters" id="auctionFilters">
-    <select id="source"><option value="all">Все официальные источники</option><option value="investmoscow">Торги Москвы → ЭТП</option><option value="lot_online">РАД / Lot-online</option><option value="roseltorg">Росэлторг</option><option value="torgi_gov">ГИС Торги</option><option value="etp_gpb">ЭТП ГПБ</option><option value="etp_rf">ЭТП РФ</option></select>
+    <select id="source"><option value="all">Все официальные источники</option><option value="investmoscow">Торги Москвы → ЭТП</option><option value="lot_online">РАД / Lot-online</option><option value="roseltorg">Росэлторг</option><option value="torgi_gov">ГИС Торги</option><option value="etp_gpb">ЭТП ГПБ</option><option value="etp_rf">ЭТП РФ</option><option value="sberbank_ast">Сбербанк-АСТ</option></select>
     <select id="origin" title="Городские торги и банкротные — разные рынки: у города цена не снижается, у банкротного лота она ползёт от начальной к минимальной по графику"><option value="all">Все торги</option><option value="city">Городские</option><option value="bankruptcy">Банкротные</option><option value="seized">Арест и ИП</option><option value="other">Прочие</option></select>
     <select id="kind"><option value="all">Все типы</option><option value="land">— Земля</option><option value="building">— Объекты</option><option value="krt">КРТ</option><option value="land_sale">Продажа земли</option><option value="land_lease">Аренда земли</option><option value="property_complex">ЗИК</option><option value="unfinished">Незавершёнка</option></select>
     <select id="noise"><option value="0">Интересные · данные заполнены</option><option value="1">Показать неполные и шум</option></select>
@@ -365,7 +365,13 @@ function coverageLine(r){
   if(r.cards) bits.push(`из ${r.cards} карточек`);
   if(r.pages) bits.push(`страниц ${r.pages}`);
   if(r.total_elements) bits.push(`всего в выдаче ${r.total_elements}`);
-  if(r.skipped) bits.push(`не прочитано карточек ${r.skipped}`);
+  if(r.outside_region) bits.push(`вне Москвы ${r.outside_region}`);
+  if(r.outside_profile) bits.push(`не девелоперские ${r.outside_profile}`);
+  if(r.inactive) bits.push(`неактуальные ${r.inactive}`);
+  if(r.invalid) bits.push(`неполные ${r.invalid}`);
+  if(r.duplicates) bits.push(`повторы ${r.duplicates}`);
+  if(r.skipped&&!r.outside_region&&!r.outside_profile&&!r.inactive&&!r.invalid)
+   bits.push(`отсеяно после проверки ${r.skipped}`);
  }
  const why=String(r.reason||'').trim();
  const errors=(r.errors||[]).join('; ');

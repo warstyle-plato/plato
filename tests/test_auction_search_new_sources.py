@@ -4,6 +4,7 @@ import json
 
 from auction_search.adapters.etp_gpb import ETPGPBAdapter
 from auction_search.adapters.etp_rf import ETPRFAdapter
+from auction_search.adapters.sberbank_ast import SberbankASTAdapter
 from auction_search.api import _analysis_support, _discovery_adapters
 from auction_search.models import LotKind, LotOrigin, SourceKind
 
@@ -97,6 +98,17 @@ def test_etp_gpb_rejects_moscow_region_and_procurement() -> None:
     assert ETPGPBAdapter._to_lot(procurement, "now") is None
 
 
+def test_etp_gpb_reads_region_objects_from_the_current_api() -> None:
+    attrs = {
+        "title": "Продажа земельного участка площадью 10 000 кв. м",
+        "lot_regions": [{"id": 77, "name": "г. Москва"}],
+    }
+    assert ETPGPBAdapter._is_moscow(attrs) is True
+    assert ETPGPBAdapter._is_moscow({
+        **attrs, "lot_regions": [{"name": "Московская область"}],
+    }) is False
+
+
 def test_etp_rf_reads_the_public_registry_table(monkeypatch) -> None:
     html = """
     <table><thead><tr>
@@ -117,7 +129,7 @@ def test_etp_rf_reads_the_public_registry_table(monkeypatch) -> None:
     """
     monkeypatch.setattr(
         "auction_search.adapters.etp_rf.urlopen",
-        lambda request, timeout: _Response(html),
+        lambda request, timeout, context: _Response(html),
     )
 
     adapter = ETPRFAdapter()
@@ -134,12 +146,62 @@ def test_etp_rf_reads_the_public_registry_table(monkeypatch) -> None:
     assert adapter.last_report["cards"] == adapter.last_report["kept"] == 1
 
 
+def test_sberbank_ast_reads_all_public_list_views(monkeypatch) -> None:
+    html = """
+    <table><tr>
+      <th>Номер</th><th>Предмет</th><th>Цена</th><th>Регион</th>
+      <th>Срок подачи</th><th>Статус</th>
+    </tr><tr>
+      <td>SBR00012345</td>
+      <td><a href="/Bankruptcy/NBT/PurchaseView/4/0/0/12345">
+        Продажа земельного участка, г. Москва, площадь 57 367 кв. м,
+        кадастровый номер 77:02:0002002:19
+      </a></td>
+      <td>277 000 000 руб.</td><td>Москва</td>
+      <td>01.09.2099 12:00</td><td>Приём заявок</td>
+    </tr></table>
+    """
+    calls = []
+
+    def fake_open(request, timeout):
+        calls.append((request.full_url, request.data, request.headers.get("Referer")))
+        return _Response(html)
+
+    monkeypatch.setattr("auction_search.adapters.sberbank_ast.urlopen", fake_open)
+    adapter = SberbankASTAdapter()
+    lots = adapter.discover_moscow()
+
+    assert len(lots) == 1
+    lot = lots[0]
+    assert lot.source.platform is SourceKind.SBERBANK_AST
+    assert lot.source.external_lot_id == "SBR00012345"
+    assert lot.source.lot_url == (
+        "https://utp.sberbank-ast.ru/Bankruptcy/NBT/PurchaseView/4/0/0/12345"
+    )
+    assert lot.lot_kind is LotKind.LAND_SALE
+    assert lot.origin is LotOrigin.BANKRUPTCY
+    assert lot.land_area_sqm == 57_367
+    assert lot.current_price_rub == 277_000_000
+    assert lot.cadastral_numbers == ["77:02:0002002:19"]
+    assert len(calls) == len(SberbankASTAdapter.LIST_URLS) * SberbankASTAdapter.MAX_PAGES
+    assert all(item[1] and b"xmlFilter" in item[1] for item in calls)
+    assert {item[2] for item in calls} == set(SberbankASTAdapter.LIST_URLS)
+
+
+def test_sberbank_ast_form_contains_page_and_public_filter() -> None:
+    body = SberbankASTAdapter._form_body(2).decode("cp1251")
+    assert "hdnPageNum=2" in body
+    assert "xmlFilter=" in body
+
+
 def test_new_sources_are_part_of_all_and_can_be_selected() -> None:
     all_adapters = _discovery_adapters("all")
     assert any(isinstance(item, ETPGPBAdapter) for item in all_adapters)
     assert any(isinstance(item, ETPRFAdapter) for item in all_adapters)
+    assert any(isinstance(item, SberbankASTAdapter) for item in all_adapters)
     assert isinstance(_discovery_adapters("etp_gpb")[0], ETPGPBAdapter)
     assert isinstance(_discovery_adapters("etp_rf")[0], ETPRFAdapter)
+    assert isinstance(_discovery_adapters("sberbank_ast")[0], SberbankASTAdapter)
     assert _analysis_support("https://etpgpb.ru/procedures/auction/2037204")["available"] is True
     support = _analysis_support("https://sale.etprf.ru/Notification/id/20019")
     assert support["available"] is False
@@ -152,3 +214,4 @@ def test_the_screen_names_both_new_sources() -> None:
     page = auctions_page()
     assert '<option value="etp_gpb">ЭТП ГПБ</option>' in page
     assert '<option value="etp_rf">ЭТП РФ</option>' in page
+    assert '<option value="sberbank_ast">Сбербанк-АСТ</option>' in page

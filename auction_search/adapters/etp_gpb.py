@@ -74,6 +74,11 @@ class ETPGPBAdapter(AuctionPlatformAdapter):
             "cards": 0,
             "kept": 0,
             "skipped": 0,
+            "outside_region": 0,
+            "outside_profile": 0,
+            "inactive": 0,
+            "invalid": 0,
+            "duplicates": 0,
             "reason": "",
         }
 
@@ -105,17 +110,42 @@ class ETPGPBAdapter(AuctionPlatformAdapter):
         attrs = item.get("attributes")
         return attrs if isinstance(attrs, dict) else {}
 
-    @staticmethod
-    def _is_moscow(attrs: dict[str, Any]) -> bool:
-        regions = attrs.get("lot_regions") or []
-        if isinstance(regions, str):
-            regions = [regions]
-        for region in regions:
-            value = normalize_space(str(region)).lower().replace("ё", "е")
-            if _MOSCOW_REGION_RE.search(value):
-                continue
-            if value in {"москва", "г. москва", "г москва", "город москва"} or _MOSCOW_CITY_RE.search(value):
-                return True
+    @classmethod
+    def _region_strings(cls, value: Any) -> list[str]:
+        """Видимые названия регионов из строки, списка или объекта API.
+
+        В старой выдаче `lot_regions` приходил списком строк, в текущей часть
+        секций возвращает объекты с `name`/`title`. `str(dict)` оставляет перед
+        словом «Москва» кавычку, поэтому прежняя регулярка отбрасывала даже
+        явно московскую карточку.
+        """
+        if isinstance(value, str):
+            return [normalize_space(value)] if normalize_space(value) else []
+        if isinstance(value, dict):
+            preferred = [value.get(key) for key in (
+                "name", "title", "label", "value", "region_name", "regionName",
+            )]
+            out = [item for item in preferred if item is not None]
+            if not out:
+                out = list(value.values())
+            return [text for item in out for text in cls._region_strings(item)]
+        if isinstance(value, (list, tuple, set)):
+            return [text for item in value for text in cls._region_strings(item)]
+        return []
+
+    @classmethod
+    def _is_moscow(cls, attrs: dict[str, Any]) -> bool:
+        region_fields = (
+            attrs.get("lot_regions"), attrs.get("regions"), attrs.get("region"),
+            attrs.get("region_names"), attrs.get("delivery_regions"),
+        )
+        for raw in region_fields:
+            for region in cls._region_strings(raw):
+                value = normalize_space(region).lower().replace("ё", "е")
+                without_region = _MOSCOW_REGION_RE.sub("", value)
+                if (without_region in {"москва", "г. москва", "г москва", "город москва"}
+                        or _MOSCOW_CITY_RE.search(without_region)):
+                    return True
         text = normalize_space(str(attrs.get("title") or ""))
         without_region = _MOSCOW_REGION_RE.sub("", text)
         return bool(_MOSCOW_CITY_RE.search(without_region))
@@ -229,6 +259,25 @@ class ETPGPBAdapter(AuctionPlatformAdapter):
                     source_url=lot_url, fetched_at=fetched_at, raw_value=value)
         return lot
 
+    @classmethod
+    def _rejection_reason(cls, item: dict[str, Any]) -> str:
+        attrs = cls._attrs(item)
+        title = normalize_space(str(attrs.get("title") or ""))
+        if not title:
+            return "invalid"
+        if not cls._is_moscow(attrs):
+            return "outside_region"
+        if not cls._is_development(attrs):
+            return "outside_profile"
+        deadline = cls._moment(attrs.get("end_registration"))
+        if str(attrs.get("stage") or "").lower() != "accepting" or not cls._future(deadline):
+            return "inactive"
+        procedure = normalize_space(str(
+            attrs.get("procedure_type_name") or attrs.get("kind") or ""))
+        if classify_lot(title, procedure) is LotKind.OTHER:
+            return "outside_profile"
+        return "invalid"
+
     def discover_moscow(self, *, deadline: float | None = None) -> list[AuctionLot]:
         self.last_report = self._empty_report()
         found: list[AuctionLot] = []
@@ -256,8 +305,11 @@ class ETPGPBAdapter(AuctionPlatformAdapter):
                 lot = self._to_lot(item, fetched_at)
                 if lot is None:
                     self.last_report["skipped"] += 1
+                    reason = self._rejection_reason(item)
+                    self.last_report[reason] += 1
                     continue
                 if lot.source.external_lot_id in seen:
+                    self.last_report["duplicates"] += 1
                     continue
                 seen.add(lot.source.external_lot_id)
                 found.append(lot)
