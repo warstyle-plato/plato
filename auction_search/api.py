@@ -1014,6 +1014,24 @@ def install(app: FastAPI) -> None:
         if not req.include_raw:
             normalized.pop("raw", None)
         project_preset = build_project_preset(lot)
+        # ОКС и участок — разные объекты ЕГРН. В карточках торгов часто
+        # публикуют оба КН; передача обоих в ГлавАПУ заставляет калькулятор
+        # принять площадь здания за площадь территории и сложить их. Для
+        # имущественного комплекса/незавершёнки оставляем в handoff только
+        # земельные КН, подтверждённые НСПД.
+        if lot.lot_kind in {LotKind.PROPERTY_COMPLEX, LotKind.UNFINISHED} and lot.cadastral_numbers and core is not None:
+            try:
+                context = await run_in_threadpool(core._land_lot_context, lot.cadastral_numbers)
+                land_numbers = [str(item.get("cadastral_number")) for item in (context.get("land_parcels") or []) if item.get("cadastral_number")]
+                if land_numbers:
+                    project_preset["project"]["cadastral_numbers"] = land_numbers
+                    project_preset["project"]["cadastral_numbers_input"] = ", ".join(land_numbers)
+                    project_preset["land"]["cadastral_numbers"] = land_numbers
+                    project_preset["land"]["cadastral_numbers_csv"] = ", ".join(land_numbers)
+                    project_preset["project"]["cadastral_import"]["mode"] = "bulk" if len(land_numbers) > 1 else "single"
+                    project_preset["project"]["cadastral_import"]["note"] += " КН зданий/ОКС исключены из площади территории; переданы только земельные участки НСПД."
+            except Exception:
+                logger.warning("Не удалось отделить КН здания от участка для handoff", exc_info=True)
         return {
             "lot": normalized,
             "developaid_seed": build_developaid_seed(lot),
