@@ -61,6 +61,7 @@ class SourceKind(str, Enum):
     LOT_ONLINE = "lot_online"
     SBERBANK_AST = "sberbank_ast"
     NISTP = "nistp"
+    FEDRESURS = "fedresurs"
     ETP_GPB = "etp_gpb"
     ETP_RF = "etp_rf"
     OTHER_ETP = "other_etp"

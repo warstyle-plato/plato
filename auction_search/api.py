@@ -17,6 +17,7 @@ from auction_search.adapters import (
     NistpAdapter,
     ETPGPBAdapter,
     ETPRFAdapter,
+    FedresursApiAdapter,
     InvestMoscowDiscoveryAdapter,
     LotOnlineAdapter,
     RoseltorgAdapter,
@@ -93,6 +94,8 @@ def _adapter_for(url: str):
         return SberbankASTAdapter()
     if host == NistpAdapter.HOST or host.endswith("." + NistpAdapter.HOST):
         return NistpAdapter()
+    if host == FedresursApiAdapter.HOST or host.endswith("." + FedresursApiAdapter.HOST):
+        return FedresursApiAdapter()
     if host == TorgiGovAdapter.HOST or host.endswith("." + TorgiGovAdapter.HOST):
         return TorgiGovAdapter()
     raise ValueError(
@@ -141,6 +144,8 @@ def _discovery_adapters(source: str):
         return [SberbankASTAdapter()]
     if value in {"nistp", "nis"}:
         return [NistpAdapter()]
+    if value in {"fedresurs", "efrsb", "bankrot_fedresurs"}:
+        return [FedresursApiAdapter()]
     if value == "all":
         # ГИС Торги — официальный источник имущественных торгов, а не
         # банкротный рынок. Это честно подписано в его отчёте, но исключать его
@@ -149,10 +154,10 @@ def _discovery_adapters(source: str):
         return [
             TorgiGovAdapter(), _lot_online_discovery_adapter(), RoseltorgAdapter(),
             InvestMoscowDiscoveryAdapter(), ETPGPBAdapter(), ETPRFAdapter(),
-            SberbankASTAdapter(), NistpAdapter(),
+            SberbankASTAdapter(), NistpAdapter(), FedresursApiAdapter(),
         ]
     raise ValueError(
-        "source: all, lot_online, roseltorg, investmoscow, torgi, etp_gpb, etp_rf, sberbank_ast или nistp")
+        "source: all, lot_online, roseltorg, investmoscow, torgi, etp_gpb, etp_rf, sberbank_ast, nistp или fedresurs")
 
 
 def _coverage_row(adapter: Any) -> dict[str, Any]:
@@ -441,6 +446,15 @@ def install(app: FastAPI) -> None:
                     "moscow_discovery": True,
                     "discovery_access": "official_public_registry",
                     "note": "Публичный поиск банкротных лотов по Москве; подключён без обхода защиты.",
+                },
+                {
+                    "id": "fedresurs",
+                    "name": "Федресурс / ЕФРСБ",
+                    "direct_lot_ingest": False,
+                    "moscow_discovery": FedresursApiAdapter.configured(),
+                    "discovery_access": "official_contract_api",
+                    "note": ("Основной агрегатор банкротных торгов. Для продуктивной выдачи нужны "
+                             "FEDRESURS_API_LOGIN и FEDRESURS_API_PASSWORD, выдаваемые оператором по договору."),
                 },
                 {
                     "id": "investmoscow",

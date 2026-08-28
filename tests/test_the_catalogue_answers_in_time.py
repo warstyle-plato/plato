@@ -107,7 +107,7 @@ def test_one_request_never_outlives_the_whole_collection():
 
 
 @pytest.mark.parametrize("module", [
-    "torgi_gov", "roseltorg", "lot_online", "investmoscow", "etp_gpb", "etp_rf", "sberbank_ast", "nistp",
+    "torgi_gov", "roseltorg", "lot_online", "investmoscow", "etp_gpb", "etp_rf", "sberbank_ast", "nistp", "fedresurs_api",
 ])
 def test_every_reader_takes_a_deadline(module: str):
     """Потолок в страницах ограничивает объём, но не время."""
