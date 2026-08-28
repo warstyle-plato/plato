@@ -12,6 +12,7 @@ from auction_search.adapters.lot_online import LotOnlineAdapter
 from auction_search.adapters.etp_gpb import ETPGPBAdapter
 from auction_search.adapters.etp_rf import ETPRFAdapter
 from auction_search.adapters.roseltorg_public import RoseltorgAdapter
+from auction_search.adapters.sberbank_ast import SberbankASTAdapter
 from auction_search.models import AuctionLot
 
 
@@ -160,6 +161,8 @@ class InvestMoscowDiscoveryAdapter(AuctionPlatformAdapter):
             return ETPGPBAdapter()
         if host == "etprf.ru" or host.endswith(".etprf.ru"):
             return ETPRFAdapter()
+        if host == SberbankASTAdapter.HOST or host.endswith("." + SberbankASTAdapter.HOST):
+            return SberbankASTAdapter()
         return None
 
     @staticmethod

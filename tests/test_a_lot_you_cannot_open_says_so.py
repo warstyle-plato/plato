@@ -47,9 +47,9 @@ def test_the_list_says_a_torgi_lot_can_be_opened() -> None:
 
 
 def test_an_unknown_platform_names_itself_in_the_refusal() -> None:
-    got = auction_api._analysis_support("https://sberbank-ast.ru/lot/1")
+    got = auction_api._analysis_support("https://unknown-etp.example/lot/1")
     assert got["available"] is False
-    assert "sberbank-ast.ru" in got["reason"], "отказ обязан назвать, что именно не опознано"
+    assert "unknown-etp.example" in got["reason"], "отказ обязан назвать, что именно не опознано"
 
 
 def test_the_answer_comes_from_the_same_router_that_parses() -> None:

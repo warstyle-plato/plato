@@ -116,11 +116,11 @@ def test_city_discovery_reports_unsupported_etp_instead_of_inventing_facts(monke
     pages = {
         "https://investmoscow.ru/tenders/": '<a href="/tenders/tender/1">Лот</a>',
         "https://investmoscow.ru/tenders/tender/1": (
-            '<a href="https://utp.sberbank-ast.ru/AP/NBT/PurchaseView/1/0/0/0">ЭТП</a>'
+                '<a href="https://fabrikant.ru/AP/NBT/PurchaseView/1/0/0/0">ЭТП</a>'
         ),
     }
     monkeypatch.setattr(adapter, "_read_html", pages.__getitem__)
 
     assert adapter.discover_moscow() == []
-    assert adapter.last_report["unsupported_etp_hosts"] == ["utp.sberbank-ast.ru"]
+    assert adapter.last_report["unsupported_etp_hosts"] == ["fabrikant.ru"]
     assert adapter.last_report["unresolved_city_cards"] == 1

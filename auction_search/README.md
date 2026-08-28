@@ -19,6 +19,10 @@ Direct official-platform adapters:
 - ETP RF — active bankruptcy-property discovery from the platform's official
   public registry. Deep document parsing remains unavailable and is named as
   such before the user clicks the lot.
+- Sberbank-AST — active Moscow development-property discovery from the
+  platform's official public registry. The adapter checks the general
+  bankruptcy list, `BidListProperty` and AP list `309`; an anti-bot response is
+  reported as unavailable coverage and is never replaced by an aggregator.
 - GIS Torgi — active official property procedures; the legal origin is derived
   from the procedure rather than assumed from the platform.
 
@@ -146,17 +150,15 @@ Implemented:
 - direct official RAD/Lot-online and Roseltorg lot ingestion;
 - direct ЭТП ГПБ catalogue discovery and ingestion through its public JSON API;
 - ЭТП РФ public-registry discovery, with deep parsing explicitly unavailable;
+- direct Сбербанк-АСТ public-registry discovery and ingestion across its three
+  public list views;
 - public-offer reduction schedule parsing on RAD;
 - public-first document download plus optional service-account session boundary;
 - KRT document parsing and standard DevelopAid project-preset handoff.
 
 Pending:
 - automatic Roseltorg **archive** enumeration. Current public tag discovery is enabled; archive research stays on explicit public-card replay until the archive filter request contract is pinned and covered by fixtures.
-- further bankruptcy-platform adapters. The public Sberbank-AST page has been
-  observed calling `POST /api/Processing/main`; the browser probe exposes a
-  redacted request/response shape without headers, cookies, storage or session
-  secrets. An adapter is added only after that live contract is captured in a
-  fixture. CAPTCHA and anti-bot protections on Alfalot/Fabrikant are not
-  bypassed.
+- further bankruptcy-platform adapters. CAPTCHA and anti-bot protections on
+  Alfalot/Fabrikant are not bypassed.
 
 Discovery must use public ETP catalogues, not participant cabinets.

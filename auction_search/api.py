@@ -19,6 +19,7 @@ from auction_search.adapters import (
     InvestMoscowDiscoveryAdapter,
     LotOnlineAdapter,
     RoseltorgAdapter,
+    SberbankASTAdapter,
 )
 from auction_search.adapters.torgi_gov import TorgiGovAdapter, trust_report as torgi_trust_report
 from auction_search.adapters.etp_probe import (
@@ -87,11 +88,13 @@ def _adapter_for(url: str):
         return ETPGPBAdapter()
     if host == ETPRFAdapter.HOST or host.endswith("." + ETPRFAdapter.HOST):
         return ETPRFAdapter()
+    if host == SberbankASTAdapter.HOST or host.endswith("." + SberbankASTAdapter.HOST):
+        return SberbankASTAdapter()
     if host == TorgiGovAdapter.HOST or host.endswith("." + TorgiGovAdapter.HOST):
         return TorgiGovAdapter()
     raise ValueError(
         "Разбирать умеем только официальные адреса Росэлторга, РАД/Lot-online, "
-        f"ЭТП ГПБ, ЭТП РФ и ГИС Торгов; «{host or url}» ни на один из них не похож")
+        f"ЭТП ГПБ, ЭТП РФ, Сбербанк-АСТ и ГИС Торгов; «{host or url}» ни на один из них не похож")
 
 
 def _analysis_support(url: str) -> dict[str, Any]:
@@ -131,6 +134,8 @@ def _discovery_adapters(source: str):
         return [ETPGPBAdapter()]
     if value in {"etp_rf", "etprf"}:
         return [ETPRFAdapter()]
+    if value in {"sberbank_ast", "sberbank", "sber", "sberbank-ast"}:
+        return [SberbankASTAdapter()]
     if value == "all":
         # ГИС Торги — официальный источник имущественных торгов, а не
         # банкротный рынок. Это честно подписано в его отчёте, но исключать его
@@ -139,9 +144,10 @@ def _discovery_adapters(source: str):
         return [
             TorgiGovAdapter(), _lot_online_discovery_adapter(), RoseltorgAdapter(),
             InvestMoscowDiscoveryAdapter(), ETPGPBAdapter(), ETPRFAdapter(),
+            SberbankASTAdapter(),
         ]
     raise ValueError(
-        "source: all, lot_online, roseltorg, investmoscow, torgi, etp_gpb или etp_rf")
+        "source: all, lot_online, roseltorg, investmoscow, torgi, etp_gpb, etp_rf или sberbank_ast")
 
 
 def _coverage_row(adapter: Any) -> dict[str, Any]:
@@ -412,6 +418,16 @@ def install(app: FastAPI) -> None:
                     "moscow_discovery": True,
                     "discovery_access": "official_public_registry",
                     "note": "Поиск подключён; детальный разбор документов площадки пока недоступен.",
+                },
+                {
+                    "id": "sberbank_ast",
+                    "name": "Сбербанк-АСТ",
+                    "direct_lot_ingest": True,
+                    "moscow_discovery": True,
+                    "discovery_access": "official_public_html_post",
+                    "note": ("Официальный реестр банкротных торгов: общий список, "
+                             "имущество и раздел АП. Если площадка вернула антибот-страницу, "
+                             "это отражается в охвате источника; обход защиты не используется."),
                 },
                 {
                     "id": "investmoscow",
