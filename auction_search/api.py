@@ -96,6 +96,28 @@ def _xlsx(rows: list[dict[str, Any]]) -> bytes:
     return out.getvalue()
 
 
+def _handoff_land_cadastres(preset: dict[str, Any], context: dict[str, Any]) -> list[str]:
+    """Keep source lot data intact; narrow only the DevelopAid handoff."""
+    land_numbers = [
+        str(item.get("cadastral_number"))
+        for item in (context.get("land_parcels") or [])
+        if item.get("cadastral_number")
+    ]
+    if not land_numbers:
+        return []
+    preset["project"]["cadastral_numbers"] = land_numbers
+    preset["project"]["cadastral_numbers_input"] = ", ".join(land_numbers)
+    preset["land"]["cadastral_numbers"] = land_numbers
+    preset["land"]["cadastral_numbers_csv"] = ", ".join(land_numbers)
+    cadastral_import = preset["project"]["cadastral_import"]
+    cadastral_import["mode"] = "bulk" if len(land_numbers) > 1 else "single"
+    cadastral_import["note"] += (
+        " КН зданий/ОКС исключены из площади территории; "
+        "переданы только земельные участки НСПД."
+    )
+    return land_numbers
+
+
 _LOTONLINE_PROJECT_SHARES_FLAG = "AUCTION_LOTONLINE_PROJECT_SHARES_DISCOVERY"
 
 
@@ -1022,14 +1044,7 @@ def install(app: FastAPI) -> None:
         if lot.lot_kind != LotKind.KRT and lot.cadastral_numbers and core is not None:
             try:
                 context = await run_in_threadpool(core._land_lot_context, lot.cadastral_numbers)
-                land_numbers = [str(item.get("cadastral_number")) for item in (context.get("land_parcels") or []) if item.get("cadastral_number")]
-                if land_numbers:
-                    project_preset["project"]["cadastral_numbers"] = land_numbers
-                    project_preset["project"]["cadastral_numbers_input"] = ", ".join(land_numbers)
-                    project_preset["land"]["cadastral_numbers"] = land_numbers
-                    project_preset["land"]["cadastral_numbers_csv"] = ", ".join(land_numbers)
-                    project_preset["project"]["cadastral_import"]["mode"] = "bulk" if len(land_numbers) > 1 else "single"
-                    project_preset["project"]["cadastral_import"]["note"] += " КН зданий/ОКС исключены из площади территории; переданы только земельные участки НСПД."
+                _handoff_land_cadastres(project_preset, context)
             except Exception:
                 logger.warning("Не удалось отделить КН здания от участка для handoff", exc_info=True)
         return {

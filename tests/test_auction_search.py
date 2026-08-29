@@ -3,7 +3,7 @@ from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo
 
 from auction_search.adapters.lot_online import LotOnlineAdapter
-from auction_search.api import _discovery_adapters
+from auction_search.api import _discovery_adapters, _handoff_land_cadastres
 from auction_search.bridge import auction_page_with_handoff, install_page_bridge
 from auction_search.classifier import classify_lot
 from auction_search.developaid_mapper import build_developaid_seed
@@ -470,6 +470,24 @@ def test_ordinary_auction_preset_prefills_purchase_price_and_cadastre():
     assert preset["project"]["cadastral_numbers"] == ["50:21:0120316:1221"]
     assert preset["planning"]["objects"] == []
     assert preset["open_items"]
+
+
+def test_handoff_excludes_building_cadastre_without_changing_lot_data():
+    lot = AuctionLot(
+        source=source(), lot_kind=LotKind.PROPERTY_COMPLEX, title="ОСЗ с участком",
+        cadastral_numbers=["77:02:0019005:1000", "77:02:0019005:4"],
+        current_price_rub=100_000_000,
+    )
+    preset = build_project_preset(lot)
+    context = {
+        "buildings": [{"cadastral_number": "77:02:0019005:1000"}],
+        "land_parcels": [{"cadastral_number": "77:02:0019005:4"}],
+    }
+    selected = _handoff_land_cadastres(preset, context)
+    assert selected == ["77:02:0019005:4"]
+    assert preset["project"]["cadastral_numbers"] == ["77:02:0019005:4"]
+    assert preset["land"]["cadastral_numbers"] == ["77:02:0019005:4"]
+    assert lot.cadastral_numbers == ["77:02:0019005:1000", "77:02:0019005:4"]
 
 
 def test_krt_preset_maps_only_unambiguous_program_products():
