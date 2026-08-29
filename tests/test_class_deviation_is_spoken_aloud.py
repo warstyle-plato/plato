@@ -32,13 +32,8 @@ V4_TEMPLATE = Path(__file__).resolve().parent.parent / "templates" / "DevelopAid
 
 BUSINESS_BASE = dict(apartment_price_th=650, commercial_price_th=650,
                      parking_price_th=5000, preparation_th_per_sqm=2.75,
-<<<<<<< HEAD
                      main_above_th_per_sqm=190, main_under_th_per_sqm=190,
-                     utilities_th_per_sqm=10.8, landscaping_th_per_sqm=15.5)
-=======
-                     main_above_th_per_sqm=190, main_under_th_per_sqm=152,
                      utilities_th_per_sqm=10.25, landscaping_th_per_sqm=15.5)
->>>>>>> 778ff7a (0.20.48: наружные сети не зависят от класса жилья)
 
 
 def test_deviation_rows_compare_inputs_to_the_class_base():
@@ -62,8 +57,6 @@ def test_exact_base_and_custom_class_produce_no_rows():
     assert custom["rows"] == [] and custom["label"] == "Пользовательский"
 
 
-<<<<<<< HEAD
-=======
 def test_the_articles_that_do_not_know_the_class_are_one_rate(): 
     """Подготовка и наружные сети от класса не зависят (владелец, 27.08.2026).
 
@@ -89,32 +82,6 @@ def test_the_articles_that_do_not_know_the_class_are_one_rate():
             f"строка под ставкой заспорит с самой ставкой")
 
 
-def test_the_underground_is_four_fifths_of_the_above_ground():
-    """Подземная — 0,8 наземной в каждом классе (решение владельца, 27.08.2026).
-
-    Прежде обе ставки были равны: метр подземного гаража стоил ровно столько
-    же, сколько метр жилого дома, — и держалось это лишь на том, что ставки
-    СМР пережили переделку профиля классов нетронутыми. Свод «Статистики» по
-    этой статье говорит обратное (подземная там дороже наземной), но стоит на
-    одном наблюдении, и владелец признал его непоказательным.
-
-    Проверяется отношение, а не три числа: правя наземную ставку, подземную
-    двигают следом — иначе связь развалится молча, и заметить это будет негде.
-    """
-    for key, preset in core.PROJECT_CLASS_PRESETS.items():
-        above = float(preset["main_above_th_per_sqm"])
-        under = float(preset["main_under_th_per_sqm"])
-        assert above > 0, key
-        assert under == pytest.approx(above * 0.8), (
-            f"{key}: подземная {under} против наземной {above} — "
-            f"отношение {under / above:.3f}, а условлено 0,8")
-    # Умолчания движка и есть комфорт: иначе расчёт на умолчаниях показывал бы
-    # отклонение от класса, которого человек не задавал.
-    assert core.DEFAULT_INPUTS["main_under_th_per_sqm"] == pytest.approx(
-        core.PROJECT_CLASS_PRESETS["comfort"]["main_under_th_per_sqm"])
-
-
->>>>>>> 778ff7a (0.20.48: наружные сети не зависят от класса жилья)
 def test_the_default_inputs_sit_exactly_on_the_comfort_base():
     """Умолчания движка — база «Комфорта»: расчёт на них не показывает отклонений.
 

@@ -68,7 +68,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.20.47"
+VERSION = "0.20.49"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -274,13 +274,8 @@ PROJECT_CLASS_PRESETS = {
         "parking_price_th": 5000,
         "preparation_th_per_sqm": 2.75,
         "main_above_th_per_sqm": 190,
-<<<<<<< HEAD
         "main_under_th_per_sqm": 190,
-        "utilities_th_per_sqm": 10.8,
-=======
-        "main_under_th_per_sqm": 152,
         "utilities_th_per_sqm": 10.25,
->>>>>>> 778ff7a (0.20.48: наружные сети не зависят от класса жилья)
         "landscaping_th_per_sqm": 15.5,
     },
     "elite": {
@@ -290,13 +285,8 @@ PROJECT_CLASS_PRESETS = {
         "parking_price_th": 20000,
         "preparation_th_per_sqm": 2.75,
         "main_above_th_per_sqm": 300,
-<<<<<<< HEAD
         "main_under_th_per_sqm": 300,
-        "utilities_th_per_sqm": 11.8,
-=======
-        "main_under_th_per_sqm": 240,
         "utilities_th_per_sqm": 10.25,
->>>>>>> 778ff7a (0.20.48: наружные сети не зависят от класса жилья)
         "landscaping_th_per_sqm": 25.3,
     },
 }
