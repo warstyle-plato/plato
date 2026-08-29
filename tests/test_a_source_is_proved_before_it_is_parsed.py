@@ -205,3 +205,135 @@ def test_the_platform_browser_route_is_wired() -> None:
     block = api[api.index("async def auction_etp_probe_browser("):]
     block = block[:block.index("\n    # Срок на сбор каталога")]
     assert "platform" in block and "known" in block, "без параметра — список площадок"
+
+
+def test_the_probe_says_who_we_introduced_ourselves_as() -> None:
+    """Половина защит режет незнакомый User-Agent: 403 роботу и 403 всем
+    выглядят одинаково, пока имя клиента не названо рядом."""
+    body = etp_source()
+    assert '"user_agent": USER_AGENT' in body
+
+
+def test_a_refusal_carries_a_hint_that_tells_the_two_apart() -> None:
+    from auction_search.adapters import etp_probe as module
+
+    assert "робот" in module._refusal_hint(403)
+    assert "лимит" in module._refusal_hint(429)
+    assert module._refusal_hint(200) == "", "у удачи подсказки быть не должно"
+
+
+def test_a_broken_chain_points_at_the_roots_not_at_switching_the_check_off() -> None:
+    """Проверку не выключаем — от неё и толк; издателя спрашивают у самого
+    сертификата и кладут в каталог корней, как уже чинилась ГИС Торги."""
+    body = etp_source()
+    assert "CERTIFICATE_VERIFY_FAILED" in body
+    assert "Authority Information Access" in body
+    assert "Проверку не отключаем" in body
+    for forbidden in ("CERT_NONE", "check_hostname = False", "_create_unverified"):
+        assert forbidden not in body, f"выключение проверки: {forbidden}"
+
+
+def test_the_summary_comes_first_and_fits_a_screen() -> None:
+    """Вывод, обрезанный на второй площадке из пяти, — это ответ, которого нет."""
+    from auction_search.adapters import etp_probe as module
+
+    rows = module.summary({"platforms": [
+        {"name": "A", "attempts": [{"url": "u1", "http_status": 403, "reason": "no"},
+                                   {"url": "u2", "http_status": 200}]},
+        {"name": "B", "attempts": [{"url": "u3", "reason": "SSL"}]},
+    ]})
+    assert [row["platform"] for row in rows] == ["A", "B"]
+    # Удачная попытка вытесняет неудачную: площадка, ответившая хоть одним
+    # адресом, не должна выглядеть закрытой.
+    assert rows[0]["http_status"] == 200 and rows[0]["url"] == "u2"
+    assert rows[1]["reason"] == "SSL"
+
+    body = etp_source()
+    assert 'return {"summary": summary(report), **report}' in body, "сводка стоит первой"
+
+
+def test_a_word_in_the_source_is_not_a_captcha() -> None:
+    """27.08.2026 проба объявила капчу у Сбербанк-АСТ и ЭТП ГПБ, которые
+    загрузились полностью и сходили за данными: слово лежало в скрипте формы
+    входа. Ложная тревога здесь дороже пропуска — по ней вычеркнули бы
+    открытую площадку."""
+    from auction_search.adapters import browser_probe as module
+
+    assert "captcha" not in module.CHALLENGE_MARKERS, "голое слово — не признак защиты"
+    assert "__qrator" in module.CHALLENGE_MARKERS
+    body = shared()
+    assert 'report["captcha"] = False' in body, "сходила за данными — значит не капча"
+    assert "captcha_note" in body, "поправку объясняем, а не делаем молча"
+
+
+def test_a_post_carries_its_body() -> None:
+    """У Сбербанк-АСТ весь каталог ходит в один `/api/Processing/main`: адрес
+    есть, а читателя из него не напишешь.
+
+    Тело записывается вместе с формой ответа, а сеансовые значения прячутся:
+    диагностический маршрут публичный, и токен, попавший в него, — это утечка,
+    а не подробность.
+    """
+    body = shared()
+    assert "post_data" in body and "request_body_head" in body
+    assert "_redact_json" in body and "[redacted]" in body
+
+
+def test_third_party_analytics_does_not_drown_the_addresses() -> None:
+    """Нужные адреса тонули между Яндекс.Метрикой и Mindbox."""
+    from auction_search.adapters import browser_probe as module
+
+    assert "mc.yandex.ru" in module.THIRD_PARTY and "mindbox.ru" in module.THIRD_PARTY
+    body = shared()
+    assert "third_party_calls" in body, "сколько отсеяли — говорим, а не прячем"
+
+
+def test_the_page_can_be_saved_for_the_reader_to_be_written_against() -> None:
+    """Читатель пишется по НАСТОЯЩЕЙ странице и ею же проверяется — как
+    читатели книги и выгрузки CRM писались по файлам владельца. Разбор по
+    описанию страницы уже приезжал на прод тридцатью гаражами."""
+    body = shared()
+    assert "save_to" in body and "_save_page(" in body
+    # «Файл лежит» и «в файле страница» — разные вещи.
+    assert '"bytes"' in body and '"head"' in body
+
+
+def test_the_saved_page_reports_what_actually_landed(tmp_path) -> None:
+    from auction_search.adapters import browser_probe as module
+
+    got = module._save_page(str(tmp_path / "deep" / "page.html"), "<html>привет</html>")
+    assert got["ok"] and got["bytes"] > 0
+    assert got["head"].startswith("<html>")
+
+    # Файл на месте каталога — запись не пройдёт, и это надо сказать, а не
+    # промолчать: молчаливый отказ читался бы как удавшаяся запись.
+    (tmp_path / "занято").write_text("не каталог", encoding="utf-8")
+    bad = module._save_page(str(tmp_path / "занято" / "page.html"), "x")
+    assert bad["ok"] is False and bad["reason"]
+
+
+def test_the_probe_can_be_pointed_at_a_given_address() -> None:
+    """Наш сохранённый адрес ведёт куда придётся, и это видно только по
+    ответу: у Сбербанк-АСТ каталог банкротства увёл редиректом на главную."""
+    from auction_search.adapters import etp_probe as module
+
+    refused = module.probe_browser_platform("etprf", url="http://example.com")
+    assert refused["ok"] is False and "https://" in refused["reason"]
+
+    api = (ROOT / "auction_search" / "api.py").read_text()
+    block = api[api.index("async def auction_etp_probe_browser("):]
+    block = block[:block.index("\n    # Срок на сбор каталога")]
+    assert "save: bool" in block and "url: str" in block
+
+
+def test_the_sberbank_addresses_are_the_ones_that_do_not_redirect() -> None:
+    """Прежний адрес уводил на главную, и браузер открывал меню сайта."""
+    from auction_search.adapters import etp_probe as module
+
+    urls = module.platform_urls("sberbank-ast")
+    assert "PurchaseList" not in " ".join(urls), "адрес с редиректом убран"
+    assert any("BidListProperty" in url for url in urls)
+    # Обёртка поисковика — не адрес источника: она недолговечна и ведёт не
+    # туда, куда написано.
+    assert not any("google.com" in url for url in urls)
+    assert all(url.startswith("https://") for url in urls)

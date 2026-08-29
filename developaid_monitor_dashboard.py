@@ -436,9 +436,17 @@ def _article_waterfall(
             "reserve_left_after_first": reserve_left_after_first,
         })
 
+    # Когда дофинансирование понадобится. Потребность без срока — половина
+    # ответа: «нужно 3,6 млрд» и «нужно 3,6 млрд с марта» — разные новости
+    # (владелец, 29.08.2026: «потребность в доп финансировании нужно выделить
+    # по сумме и сроку»). Месяц выбирается, а не считается: это первый месяц с
+    # непокрытой потребностью.
+    unfunded_from = next((month for month in sorted(monthly_unfunded)
+                          if monthly_unfunded[month] > 0), None)
     return {
         "opening_bank_remaining": sum(max(0.0, value) for value in opening_raw.values()),
         "opening_article_deficit": sum(max(0.0, -value) for value in opening_raw.values()),
+        "additional_financing_from": unfunded_from,
         "remaining_article_limits": sum(state.values()),
         "reserve_start": reserve_start,
         "reserve_exhaustion": reserve_exhaustion,
@@ -451,6 +459,28 @@ def _article_waterfall(
         "monthly_reserve_balance": monthly_reserve_balance,
         "articles": article_rows,
     }
+
+
+def _retention(project: str, horizon: Any) -> dict[str, Any] | None:
+    """Гарантийные удержания против горизонта стройки.
+
+    «В РСС банка сумма по договору берётся общая, но ГУ до момента погашения ПФ
+    не заплатятся — по сути это скрытый резерв» (владелец, 29.08.2026). Горизонт
+    — прогнозный ввод: за ним выплата ГУ стройку уже не касается.
+
+    Реестра нет — это `None`, а не нулевой резерв: «не загружали» и «удержаний
+    нет» на экране значат разное.
+    """
+    import developaid_monitor_retention as retention
+
+    register = monitor.latest_retention(project)
+    if not register:
+        return None
+    if register.get("known") is False:
+        return register
+    got = retention.summary(register, horizon=horizon)
+    got["taken_at"] = register.get("taken_at", "")
+    return got
 
 
 def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, Any]) -> dict[str, Any]:
@@ -502,6 +532,8 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
         "reserve_balance": waterfall["reserve_balance"],
         "reserve_need": waterfall["reserve_need"],
         "additional_financing": waterfall["additional_financing"],
+        "additional_financing_from": waterfall["additional_financing_from"],
+        "retention": _retention(project, rnv),
         "forecast_to": monitor._iso(rnv),
         "monthly_need": waterfall["monthly_need"],
         "monthly_reserve_draw": waterfall["monthly_reserve_draw"],

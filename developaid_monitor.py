@@ -79,6 +79,56 @@ def _day(value: Any) -> datetime.date | None:
         return None
 
 
+def store_retention(project: str, data: bytes, taken_at: Any,
+                    filename: str = "") -> dict[str, Any]:
+    """Положить реестр гарантийных удержаний снимком на его дату.
+
+    ГУ в лимите РСС стоят полной стоимостью договора, а выплачиваются после
+    погашения ПФ — то есть в стройке потрачены не будут. Это скрытый резерв, и
+    чтобы его показать, реестр надо где-то держать.
+
+    Файл проверяется до записи: разобранный ноль строк и неразобранный файл на
+    диске выглядят одинаково.
+    """
+    import developaid_monitor_retention as retention
+
+    day = _iso(taken_at)
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+        raise ValueError("дата реестра ГУ нужна в виде ГГГГ-ММ-ДД")
+    parsed = retention.read_retention(data)
+    folder = _project_dir(project) / "retention"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / f"{day}.xlsx").write_bytes(data)
+    (folder / f"{day}.json").write_text(json.dumps({
+        "taken_at": day,
+        "filename": filename,
+        "rows": len(parsed.get("rows") or []),
+        "loaded_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    }, ensure_ascii=False), encoding="utf-8")
+    return {"taken_at": day, "contracts": len(parsed.get("rows") or [])}
+
+
+def latest_retention(project: str) -> dict[str, Any] | None:
+    """Последний загруженный реестр ГУ. Нет — это `None`, а не пустой реестр."""
+    import developaid_monitor_retention as retention
+
+    folder = _project_dir(project) / "retention"
+    if not folder.exists():
+        return None
+    files = sorted(folder.glob("*.xlsx"))
+    if not files:
+        return None
+    try:
+        parsed = retention.read_retention(files[-1].read_bytes())
+    except retention.RetentionUnreadable:
+        # Лежащий и нечитаемый файл — не «реестра нет»: причина называется там,
+        # где реестр показывают.
+        return {"known": False, "taken_at": files[-1].stem,
+                "reason": "реестр ГУ не разобрался"}
+    parsed["taken_at"] = files[-1].stem
+    return parsed
+
+
 def store_estimate(project: str, data: bytes, taken_at: Any,
                    filename: str = "") -> dict[str, Any]:
     """Store one immutable weekly RSS 6.1.2 snapshot."""

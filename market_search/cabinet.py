@@ -189,6 +189,8 @@ border-radius:0 6px 6px 0;margin-top:10px;color:#5a3a1c}
 .salesblock:first-of-type{border-top:0}
 .blockhead{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
 .blockhead h3{margin:0 0 4px;font-size:15px}
+.pdfbtn{border:1px solid var(--blue);background:#fff;color:var(--blue);font:inherit;font-size:12.5px;padding:5px 12px;border-radius:7px;cursor:pointer}
+.pdfbtn[disabled]{opacity:.55;cursor:default}
 .switch{display:flex;gap:0;border:1px solid #d7e2ec;border-radius:6px;overflow:hidden}
 .switch button{border:0;background:#fff;color:#5b6b7d;font:inherit;font-size:12px;padding:4px 10px;cursor:pointer}
 .switch button+button{border-left:1px solid #edf1f5}
@@ -348,6 +350,7 @@ g.bub.on circle{fill-opacity:.75}
    что стоит ниже, побеждает. Пока блок стоял выше, `.printviews{display:none}`
    гасил карты рынка обратно, а `#bubble{display:none}` (id — сильнее) убирал
    и открытую. В PDF не попадала ни одна: разом сработали обе половины. */
+__DEVELOPAID_CONTOUR_STYLE__
 @media print{
   /* В печать уходит отчёт, а не орудия его сборки: форма, кнопки и поле
      вопроса на бумаге бесполезны. Разделы не разрываются между страницами —
@@ -445,6 +448,27 @@ g.bub.on circle{fill-opacity:.75}
   table{font-size:11px}
   th,td{padding:4px 6px}
   .say,.note,.scope{break-inside:avoid}
+  /* Кнопки и поля ввода в документ не идут: на бумаге они не текст. Сервер
+     печатает разметку уже без них, но браузерная печать остаётся откатом —
+     правило одно на обе. Стоит здесь, а не выше: печать объявляется
+     последней, иначе правило экрана, стоящее ниже, тихо её перебьёт. */
+  .noprint{display:none !important}
+  /* Свод продаж читается разделами: у каждого свой график, своя таблица под
+     ним и вывод под ней. Раздел, начатый на дне листа, разрывает эту тройку —
+     таблица на следующей странице читается как чужая. Поэтому раздел
+     начинается со своей страницы, и страница документа отвечает разделу
+     экрана один в один. Первый не начинается — перед ним шапка со сводными
+     числами, и пустой лист под ней был бы пустым листом. */
+  .salesblock{break-before:page;page-break-before:always}
+  .salesblock:first-of-type{break-before:auto;page-break-before:auto}
+  .sumup{break-inside:avoid}
+  /* Навигация по якорям — орудие экрана: на бумаге ссылка никуда не ведёт. */
+  .salesnav{display:none !important}
+  /* Раскрытие на бумаге не раскрывается: содержимое печатается, а слово
+     «Помесячно числами» над ним читается как заголовок таблицы — им и
+     становится. */
+  .salesreport>summary{display:none !important}
+  details>summary{list-style:none;font-weight:600;font-size:10.5pt;margin:8px 0 2px}
   a[href]:after{content:''}
 }
 /* Поля страницы объявлены один раз. Их было два, и побеждал последний:
@@ -459,6 +483,7 @@ g.bub.on circle{fill-opacity:.75}
     · версия __DEVELOPAID_VERSION__</div>
 </header>
 <main>
+__DEVELOPAID_CONTOUR__
   <div class="card" id="form">
     <div class="row">
       <div style="flex:2 1 380px;position:relative">
@@ -2361,12 +2386,17 @@ function renderSales(d){
   // страницы»). Данные при этом посчитаны и лежат готовыми — свёрнут показ, а
   // не разбор.
   const t0=d.total||{};
-  let html='<details class="salesreport"><summary>'
+  let html='<details class="salesreport" id="sales"><summary>'
     +'<b>Отчёт о продажах ПЛАТО</b>'
     +'<span class="muted">'+(d.project?esc(d.project)+' · ':'')
     +num(t0.contracts)+' '+plural(t0.contracts,'договор','договора','договоров')
     +' · '+num(t0.amount/1e6,1)+' млн ₽</span></summary>'
-    +'<div class="card"><h2>Продажи проекта'+(d.project?' — '+esc(d.project):'')+'</h2>';
+    +'<div class="card"><div class="blockhead"><h2 style="margin:0">Продажи проекта'
+    +(d.project?' — '+esc(d.project):'')+'</h2>'
+    +'<div class="noprint"><button type="button" class="pdfbtn" id="salespdf">Скачать PDF</button>'
+    +' <button type="button" class="pdfbtn" id="salesppt">Презентация</button></div>'
+    +'</div><div class="noprint" id="salespdfstate" style="display:none;font-size:12.5px;'
+    +'margin:8px 0;padding:8px 10px;border-radius:8px;background:#fff4e5"></div>';
 
   const have=[];
   if((d.dynamics||[]).length>1) have.push('sb-dyn');
@@ -2479,7 +2509,7 @@ function renderSales(d){
   // 27.08.2026). Устройство то же, что у диалога о рынке выше: подсказки
   // одним нажатием, поле для своего вопроса, ответ под ним. Вопрос о разборе
   // стоит в поле сразу — печатать его каждый раз незачем.
-  html+='<div class="card" style="margin-top:16px;padding:14px">'
+  html+='<div class="card noprint" style="margin-top:16px;padding:14px">'
      +'<h2 style="margin-top:0">Спросить Платона Сергеевича о продажах</h2>'
      +'<div class="muted" style="font-size:13px;margin-bottom:8px">'
      +'Он видит свод этого проекта и объясняет его. Считает движок — модель не пересчитывает.</div>'
@@ -2490,7 +2520,64 @@ function renderSales(d){
      +'<button class="go" id="salesask">Спросить</button>'
      +'<div id="salesout"></div></div>';
   box.innerHTML=html+'</div></details>';
+  // Пришли по ссылке контура «Отчёт о продажах» — отчёт открыт. Свёрнутый
+  // отчёт под такой ссылкой читается как переход, который не произошёл.
+  if(location.hash==='#sales'){
+    const card=document.getElementById('sales');
+    if(card){card.open=true; card.scrollIntoView({block:'start'})}
+  }
   $('#salesask').onclick=askPlatoSales;
+  // Дата среза — самая свежая из источников: два файла разных дат, поданных
+  // как один проект, — худший исход, и в документе это должно быть видно.
+  const salesDay=()=>String((salesData&&salesData.sources||[])
+    .map(x=>String(x.at||'').slice(0,10)).filter(Boolean).sort().pop()||'');
+  const salesName=()=>'Продажи'+(salesData&&salesData.project?' — '+salesData.project:'');
+  $('#salespdf').onclick=()=>{
+    const day=salesDay(), name=salesName();
+    return printPdf({html:salesPrintHtml(),
+      title:name+(day?' — срез '+day:''),
+      footer:name+' · свод продаж DevelopAid'+(day?' · срез '+day:''),
+      file:name+(day?' — '+day:'')+'.pdf',
+      button:$('#salespdf'), state:$('#salespdfstate')});
+  };
+  // Презентация собирается из ТОЙ ЖЕ разметки, что и PDF: слайд — раздел
+  // отчёта, снятый с этой разметки. Второй сборки колоды «по тем же данным»
+  // не заводим — она разошлась бы с экраном молча.
+  $('#salesppt').onclick=async ()=>{
+    const day=salesDay(), name=salesName(), btn=$('#salesppt'), was=btn.textContent;
+    const state=$('#salespdfstate');
+    const html=salesPrintHtml();
+    if(!html.trim()){state.textContent='Собирать нечего: свод пуст.';state.style.display='block';return}
+    btn.disabled=true; btn.textContent='Собираю…'; state.style.display='none';
+    try{
+      const r=await fetch('/cabinet/sales.pptx',{method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({html,
+          title:name,
+          subtitle:'Свод продаж DevelopAid'+(day?' · срез '+day:''),
+          footer:'DevelopAid · слайд отвечает разделу отчёта о продажах'})});
+      if(!r.ok){
+        // Ответ разбираем, зная, что он может быть не ответом: на отказе шлюза
+        // приезжает его HTML-страница, и `r.json()` дал бы поломку разбора
+        // вместо причины.
+        const raw=await r.text().catch(()=>'');
+        let why=''; try{ why=(JSON.parse(raw)||{}).detail||'' }
+        catch(_){ why=raw.replace(/<[^>]*>/g,' ').trim().slice(0,120) }
+        throw new Error(why||('код '+r.status));
+      }
+      const url=URL.createObjectURL(await r.blob());
+      const a=document.createElement('a');
+      a.href=url; a.download=name+(day?' — '+day:'')+'.pptx';
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(()=>URL.revokeObjectURL(url),10000);
+    }catch(e){
+      // Отката у презентации нет: браузер её не соберёт. Значит остаётся
+      // сказать причину и не делать вид, что файл где-то есть.
+      state.innerHTML=`<b>Презентация не собралась</b> (${esc(e.message||e)}).`
+        +` PDF того же свода печатается отдельной кнопкой.`;
+      state.style.display='block';
+    }finally{ btn.disabled=false; btn.textContent=was }
+  };
   box.querySelectorAll('#saleschips button').forEach(b=>{
     b.onclick=()=>{ $('#salesq').value=SALES_ASKS[Number(b.dataset.i)].text; askPlatoSales() };
   });
@@ -2505,6 +2592,27 @@ function renderSales(d){
       b.parentNode.querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===b));
     };
   });
+}
+
+// Что из свода уходит в документ. Второй вёрстки не заводим — печатается та
+// же разметка, что на экране: собранная заново, она разошлась бы с экранной, и
+// мы получили бы два достоверных на вид отчёта о продажах с разными числами.
+// Разница ровно в трёх вещах, и каждая — про бумагу, а не про числа.
+function salesPrintHtml(){
+  const card=document.querySelector('#sales .card');
+  if(!card) return '';
+  const copy=card.cloneNode(true);
+  // Кнопки и поле ввода на бумаге не текст: разговор с Платоном в документ не
+  // идёт, кнопка печати — тем более.
+  copy.querySelectorAll('.noprint').forEach(n=>n.remove());
+  // Переключатель меры — это кнопки, а не число. Какая мера показана, сказано
+  // подписью под графиком, и она печатается.
+  copy.querySelectorAll('.switch').forEach(n=>n.remove());
+  // Свёрнутая таблица в документе — отсутствующая таблица. На экране раскрытие
+  // бережёт место, читатель раскроет сам; в PDF раскрывать нечем, и молча
+  // спрятанные числа читались бы как непосчитанные.
+  copy.querySelectorAll('details').forEach(n=>n.setAttribute('open',''));
+  return copy.innerHTML;
 }
 
 function tile(name, value, sub){
@@ -3231,6 +3339,48 @@ function hideTip(){tip.style.display='none'}
 document.addEventListener('pointerleave',hideTip);
 window.addEventListener('scroll',hideTip,{passive:true});
 
+// Печать объявлена один раз на обе поверхности кабинета: рынок и продажи
+// печатают разное содержимое, но одним путём. Две копии разошлись бы на том,
+// что чинят по одной, — на сроке, на откате к печати браузера и на тексте
+// отказа; так уже расходились фразы про закрытый кабинет.
+async function printPdf({html, title, footer, file, button, state}){
+  if(!html||!html.trim()){window.print();return}
+  const was=button?button.textContent:'';
+  if(button){button.disabled=true; button.textContent='Печатаю…'}
+  if(state) state.style.display='none';
+  try{
+    const r=await fetch('/cabinet/report.pdf',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({html, title, footer})});
+    if(!r.ok){
+      // Ответ разбираем, зная, что он может быть не ответом: на отказе шлюза
+      // приезжает его HTML-страница, и `r.json()` дал бы поломку разбора
+      // вместо причины.
+      const raw=await r.text().catch(()=>'');
+      let why='';
+      try{ why=(JSON.parse(raw)||{}).detail||'' }catch(_){ why=raw.replace(/<[^>]*>/g,' ').trim().slice(0,120) }
+      throw new Error(why||('код '+r.status));
+    }
+    const url=URL.createObjectURL(await r.blob());
+    const a=document.createElement('a');
+    a.href=url; a.download=file; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),10000);
+  }catch(e){
+    // Откат к печати браузера — не тишина. Человек получает похожий на вид
+    // файл без номеров страниц и колонтитула и вправе счесть, что выкатки не
+    // было вовсе. Причина остаётся на экране до следующего отчёта, а не гаснет
+    // через секунду: сообщение, которое надо успеть прочитать, — это не
+    // сообщение.
+    if(state){
+      state.innerHTML=`<b>Сервер не напечатал PDF</b> (${esc(e.message||e)}).`
+        +` Открываю печать браузера — файл будет прежнего вида, без номеров страниц.`
+        +` Версия страницы: ${esc(document.body.dataset.version||'—')}.`;
+      state.style.display='block';
+    }
+    setTimeout(()=>window.print(),1500);
+  }finally{ if(button){button.disabled=false; button.textContent=was} }
+}
+
 $('#go').addEventListener('click',build);
 $('#askbtn').addEventListener('click',askPlato);
 // PDF — печатью самой страницы. Второй вёрстки не заводим: она разошлась бы с
@@ -3240,39 +3390,16 @@ $('#askbtn').addEventListener('click',askPlato);
 // половину нельзя. Уходит та же разметка, что на экране, — считать заново
 // нечего. Не получилось — остаётся диалог печати: отчёт на бумаге важнее
 // номеров на нём.
-$('#pdf').addEventListener('click',async ()=>{
+$('#pdf').addEventListener('click',()=>{
   const out=$('#out');
-  if(!out||!out.innerHTML.trim()){window.print();return}
   const s=(lastReport||{}).subject||{};
   const name=s.project_name||s.address||s.query||'Отчёт о рынке';
   const day=String((lastReport||{}).retrieved_at||'').slice(0,10);
-  const btn=$('#pdf'), was=btn.textContent;
-  btn.disabled=true; btn.textContent='Печатаю…';
-  $('#pdfstate').style.display='none';
-  try{
-    const r=await fetch('/cabinet/report.pdf',{method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({html:out.innerHTML, title:name+' — рынок '+day,
-        footer:name+' · конкурентное окружение · срез '+day+' · источник: Пульс Продаж Новостроек'})});
-    if(!r.ok) throw new Error((await r.json().catch(()=>({}))).detail||('код '+r.status));
-    const url=URL.createObjectURL(await r.blob());
-    const a=document.createElement('a');
-    a.href=url; a.download=name+' — рынок '+day+'.pdf';
-    document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(()=>URL.revokeObjectURL(url),10000);
-  }catch(e){
-    // Откат к печати браузера — не тишина. Человек получает похожий на вид
-    // файл без номеров страниц и колонтитула и вправе счесть, что выкатки не
-    // было вовсе. Причина остаётся на экране до следующего отчёта, а не гаснет
-    // через секунду: сообщение, которое надо успеть прочитать, — это не
-    // сообщение.
-    const why=$('#pdfstate');
-    why.innerHTML=`<b>Сервер не напечатал PDF</b> (${esc(e.message||e)}).`
-      +` Открываю печать браузера — файл будет прежнего вида, без номеров страниц.`
-      +` Версия страницы: ${esc(document.body.dataset.version||'—')}.`;
-    why.style.display='block';
-    setTimeout(()=>window.print(),1500);
-  }finally{btn.disabled=false; btn.textContent=was}
+  return printPdf({html:out?out.innerHTML:'',
+    title:name+' — рынок '+day,
+    footer:name+' · конкурентное окружение · срез '+day+' · источник: Пульс Продаж Новостроек',
+    file:name+' — рынок '+day+'.pdf',
+    button:$('#pdf'), state:$('#pdfstate')});
 });
 
 // Сброс. Отчёт держит не только разметку: вручную добавленные проекты, книгу
@@ -3487,9 +3614,15 @@ def legal_footer() -> str:
 
 
 def cabinet_page() -> str:
+    # Контур объявлен один раз и подставляется, как подвал и версия: копии
+    # негде обновлять, а поверхность без входа в контур не найти.
+    import management_contour
+
     return (
         CABINET_PAGE.replace("__SECTIONS__", _sections_markup())
         .replace(VERSION_PLACEHOLDER, app_version())
+        .replace("__DEVELOPAID_CONTOUR_STYLE__", management_contour.STYLE)
+        .replace(management_contour.PLACEHOLDER, management_contour.markup("/cabinet"))
         .replace(LEGAL_FOOTER_PLACEHOLDER, legal_footer())
     )
 

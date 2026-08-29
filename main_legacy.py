@@ -60,6 +60,7 @@ from developaid_monitor_page import MONITOR_PAGE as _MONITOR_PAGE_RAW
 # техприсоединению) в продукты и деньги модели живёт отдельным модулем: он о
 # документах, движок — об экономике, и смешивать их незачем.
 import document_intake
+import management_contour
 import parking_norms
 import project_preset
 
@@ -68,7 +69,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.20.56"
+VERSION = "0.20.57"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -1936,6 +1937,23 @@ def monitor_store_estimate(req: MonitorEstimateRequest) -> dict[str, Any]:
         raise HTTPException(400, str(exc))
 
 
+@app.post("/monitor/retention", include_in_schema=False)
+def monitor_store_retention(req: MonitorEstimateRequest) -> dict[str, Any]:
+    """Положить реестр гарантийных удержаний.
+
+    ГУ стоят в лимите РСС полной стоимостью договора, а платятся после
+    погашения ПФ: в стройке эти деньги потрачены не будут. Без реестра этот
+    скрытый резерв не виден никому.
+    """
+    _require_web_access(req.session, req.key, "Монитор проекта")
+    try:
+        return developaid_monitor.store_retention(
+            req.project, base64.b64decode(req.content_base64),
+            req.taken_at, req.filename)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
 @app.post("/monitor/sales", include_in_schema=False)
 def monitor_store_sales(req: MonitorSalesRequest) -> dict[str, Any]:
     """Положить продажи. Они приходят отдельно: книга обновляется реже РСС."""
@@ -2120,6 +2138,46 @@ def monitor_store_daily(req: MonitorDailyRequest) -> dict[str, Any]:
             req.project, req.text, req.taken_at)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
+
+
+@app.get("/monitor/crew", include_in_schema=False)
+def monitor_crew(project: str, date: str = "", session: str = "",
+                 key: str = "") -> dict[str, Any]:
+    """Работы дня: кто должен был работать по ГПР и договорам и кто вышел.
+
+    План — из ГПР (какие работы идут в этот день) и РСС (какой подрядчик стоит
+    за статьёй); факт — из ежедневного отчёта с площадки. Своего справочника
+    договоров не заводим: он стал бы вторым мнением о том, кто за статью
+    отвечает.
+    """
+    _require_web_access(session, key, "Монитор проекта")
+    import developaid_monitor_crew as crew
+
+    day = (date or "").strip()
+    try:
+        view = developaid_monitor.build(project, day or None)
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(400, str(exc))
+    rows = ((view.get("schedule") or {}).get("rows")) or []
+    by_code: dict[str, list[str]] = {}
+    rss = developaid_monitor._latest(project, "estimate", ".xlsx", "")
+    if rss is not None:
+        try:
+            by_code = crew.contractors_by_code(
+                developaid_actuals.read_completed_works(rss),
+                developaid_actuals.read_payments(rss))
+        except (KeyError, ValueError):
+            # Реестр не той структуры — это «привязать нечем», и так и будет
+            # написано, а не пустой список подрядчиков молча.
+            by_code = {}
+    report = None
+    path = developaid_monitor._project_dir(project) / "daily" / f"{day}.json"
+    if day and path.exists():
+        try:
+            report = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            report = None
+    return crew.crew_day(rows, by_code, report, day or view.get("cut"))
 
 
 @app.get("/monitor/daily/summary", include_in_schema=False)
@@ -9736,16 +9794,31 @@ _TELEGRAM_DIALOG_LOCK = threading.Lock()
 _TELEGRAM_DIALOG_TTL_SECONDS = 6 * 60 * 60
 
 
+def _telegram_dialog_path(chat_id: int) -> Path:
+    return _PLATO_STAGE_DIR / f"dialog_{int(chat_id)}.json"
+
+
 def _telegram_dialog_get(chat_id: int) -> dict[str, Any] | None:
     now = int(time.time())
     with _TELEGRAM_DIALOG_LOCK:
         current = _TELEGRAM_DIALOGS.get(int(chat_id))
-        if not current:
+    if not current:
+        # Воркеров два, и память у них раздельная: следующее сообщение того же
+        # человека попадает в другой процесс, где разговора не было. Пока шаг
+        # был один, это выглядело как случайная забывчивость; на очереди из
+        # десяти вопросов оно ломает разговор посередине.
+        try:
+            current = json.loads(_telegram_dialog_path(chat_id).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
             return None
-        if now - int(current.get("updated_at") or 0) > _TELEGRAM_DIALOG_TTL_SECONDS:
-            _TELEGRAM_DIALOGS.pop(int(chat_id), None)
+        if not isinstance(current, dict):
             return None
-        return copy.deepcopy(current)
+    if now - int(current.get("updated_at") or 0) > _TELEGRAM_DIALOG_TTL_SECONDS:
+        _telegram_dialog_clear(chat_id)
+        return None
+    with _TELEGRAM_DIALOG_LOCK:
+        _TELEGRAM_DIALOGS[int(chat_id)] = copy.deepcopy(current)
+    return copy.deepcopy(current)
 
 
 def _telegram_dialog_save(chat_id: int, dialog: dict[str, Any]) -> None:
@@ -9753,11 +9826,23 @@ def _telegram_dialog_save(chat_id: int, dialog: dict[str, Any]) -> None:
     saved["updated_at"] = int(time.time())
     with _TELEGRAM_DIALOG_LOCK:
         _TELEGRAM_DIALOGS[int(chat_id)] = saved
+    try:
+        _PLATO_STAGE_DIR.mkdir(parents=True, exist_ok=True)
+        _telegram_dialog_path(chat_id).write_text(
+            json.dumps(saved, ensure_ascii=False), encoding="utf-8")
+    except (OSError, TypeError, ValueError):
+        # Диск — подстраховка от второго воркера, а не условие разговора:
+        # ронять ответ человеку из-за неё нельзя.
+        pass
 
 
 def _telegram_dialog_clear(chat_id: int) -> None:
     with _TELEGRAM_DIALOG_LOCK:
         _TELEGRAM_DIALOGS.pop(int(chat_id), None)
+    try:
+        _telegram_dialog_path(chat_id).unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def _telegram_dialog_number(text: str, *, site_area: bool = False) -> float:
@@ -10351,12 +10436,12 @@ def _telegram_dialog_callback(chat_id: int, user_id: int, action: str) -> None:
         data["apartment_price_th"] = float(preset["apartment_price_th"])
         data["commercial_price_th"] = float(preset["commercial_price_th"])
         data["parking_price_th"] = float(preset["parking_price_th"])
-        data["smr_th_per_sqm"] = float(_TELEGRAM_CLASS_SMR_PRESETS[key])
+        data["smr_th_per_sqm"] = _telegram_class_smr(key)
         _telegram_send_cad_calculate_button(chat_id, dialog)
         return
     if action == "flow_cad_class_custom":
         data = dialog.setdefault("data", {})
-        if str(data.get("project_class") or "") not in _TELEGRAM_CLASS_SMR_PRESETS:
+        if str(data.get("project_class") or "") not in PROJECT_CLASS_PRESETS:
             _telegram_cad_class_menu(chat_id, dialog)
             return
         dialog["step"] = "await_cad_apartment_price"
@@ -10505,6 +10590,36 @@ def _telegram_handle_dialog_text(chat_id: int, text: str) -> bool:
         if step == "await_cad_parking_price":
             data["parking_price_th"] = _telegram_econ_value_th(text)
             _telegram_send_cad_calculate_button(chat_id, dialog)
+            return True
+        if step == "await_intake_answer":
+            intake = dialog.get("intake") or {}
+            questions = list(intake.get("questions") or [])
+            index = int(intake.get("index") or 0)
+            if index >= len(questions):
+                dialog.pop("intake", None)
+                dialog.pop("step", None)
+                _telegram_dialog_save(chat_id, dialog)
+                return False
+            said = str(text or "").strip()
+            if said.lower() in {"стоп", "хватит", "отмена", "/cancel"}:
+                # Прекратить разговор — законный ответ, а не сбой. Отвеченное
+                # до этого не выбрасывается: человек уже потратил на него время.
+                intake["index"] = len(questions)
+                dialog["intake"] = intake
+                _telegram_dialog_save(chat_id, dialog)
+                _telegram_intake_ask_next(chat_id, dialog)
+                return True
+            skipped = said in {"-", "—", "?"} or said.lower() in {"пропустить", "не знаю"}
+            answers = list(intake.get("answers") or [])
+            answers.append({
+                "question": str(questions[index].get("question") or ""),
+                "answer": "" if skipped else said[:300],
+            })
+            intake["answers"] = answers
+            intake["index"] = index + 1
+            dialog["intake"] = intake
+            _telegram_dialog_save(chat_id, dialog)
+            _telegram_intake_ask_next(chat_id, dialog)
             return True
         if step == "await_value":
             key = str(dialog.get("pending_key") or "")
@@ -10778,16 +10893,27 @@ def _telegram_handle_intake_document(chat_id: int, data: bytes, filename: str) -
     if got["fields"]:
         lines.append("\n<b>Что написано в документе</b>")
         for item in got["fields"]:
+            # Имя поля, а не ключ. Ключ латиницей среди русских строк читается
+            # как недоделка — ровно то, что уже ловилось во вкладке расходов.
+            name = document_intake.INTAKE_LABELS.get(item["key"], item["key"])
             unit = f" {html.escape(item['unit'])}" if item.get("unit") else ""
-            lines.append(f"• {html.escape(item['key'])}: <b>{html.escape(str(item['value']))}</b>{unit}"
+            lines.append(f"• {html.escape(name)}: <b>{html.escape(str(item['value']))}</b>{unit}"
                          f"\n  <i>«{html.escape(item['quote'][:160])}»</i>")
     else:
         lines.append("\nПолей, которые понимает модель, в документе не нашлось.")
-    if got["questions"]:
-        lines.append("\n<b>Чего в документе нет — нужен ваш ответ</b>")
-        for item in got["questions"]:
-            options = " / ".join(html.escape(option) for option in item.get("options") or [])
-            lines.append(f"• {html.escape(item['question'])}" + (f"\n  {options}" if options else ""))
+    # Что мы считаем сами. Спрашивать об этом значит просить догадку там, где
+    # есть источник, — и получить два ответа на один вопрос (владелец,
+    # 29.08.2026: «это он должен спрашивать или считать?»).
+    not_asked = got.get("not_asked") or []
+    if not_asked:
+        lines.append("\n<b>Об этом не спрашиваю — посчитаю сам</b>")
+        seen: set[str] = set()
+        for item in not_asked:
+            why = str(item.get("why") or "")
+            if why in seen:
+                continue
+            seen.add(why)
+            lines.append(f"• {html.escape(why)}")
     for note in got.get("notes") or []:
         lines.append(f"\n<i>{html.escape(str(note)[:300])}</i>")
     # Отброшенное называется вслух: молча пропущенное поле читается как
@@ -10795,12 +10921,118 @@ def _telegram_handle_intake_document(chat_id: int, data: bytes, filename: str) -
     for line in got.get("dropped") or []:
         lines.append(f"\nНе взято — {html.escape(str(line)[:200])}")
     lines.append("\nЧисла проверьте глазами: это то, что написано в документе, "
-                 "а не расчёт. Открыть модель — кнопкой ниже.")
-    button = {"inline_keyboard": [[{
+                 "а не расчёт.")
+    # Кадастровый номер из документа — это участок, а участок мы считаем.
+    # Своего пути для этого не заводим: номер уходит туда же, куда ушёл бы
+    # присланный сообщением, — иначе на один участок появилось бы два расчёта.
+    numbers = _intake_cadastral_numbers(got)
+    questions = [item for item in (got.get("questions") or []) if item.get("question")]
+    if numbers:
+        lines.append(f"Участок: <b>{html.escape(', '.join(numbers))}</b> — считаю "
+                     + ("после вопросов." if questions else "сейчас."))
+    if not questions:
+        if not numbers:
+            lines.append("Открыть модель — кнопкой ниже.")
+        _telegram_send_message(
+            chat_id, "\n".join(lines)[:3900],
+            reply_markup=None if numbers else _telegram_open_model_button(chat_id))
+        if numbers:
+            _telegram_handle_cadastral_numbers(chat_id, numbers)
+        return
+    lines.append(f"\nОстальное спрошу по одному — вопросов {len(questions)}.")
+    _telegram_send_message(chat_id, "\n".join(lines)[:3900])
+    # В чате разговор, а не анкета: десять вопросов одним сообщением
+    # (владелец, 27.08.2026) не читаются и не отвечаются — человек не знает, на
+    # какой из них отвечает, и бот не знает тоже. Очередь живёт в том же
+    # диалоге, что и остальные пошаговые вопросы бота: второго механизма для
+    # этого не заводим.
+    dialog = _telegram_dialog_get(chat_id) or {}
+    dialog["step"] = "await_intake_answer"
+    dialog["intake"] = {
+        "filename": filename,
+        "questions": questions,
+        "answers": [],
+        "index": 0,
+        "cadastral_numbers": numbers,
+    }
+    _telegram_dialog_save(chat_id, dialog)
+    _telegram_intake_ask_next(chat_id, dialog)
+
+
+def _intake_cadastral_numbers(extraction: dict[str, Any]) -> list[str]:
+    """Кадастровые номера из разбора — тем же разбором, что и везде.
+
+    Модель выписывает их то списком, то строкой через запятую, то с подписью
+    «КН». Опознаёт номер одно выражение на всё приложение: второе разошлось бы
+    с первым ровно на том номере, ради которого его писали.
+    """
+    for item in extraction.get("fields") or []:
+        if item.get("key") != "cadastral_numbers":
+            continue
+        raw = item.get("value")
+        text = ", ".join(str(part) for part in raw) if isinstance(raw, (list, tuple)) else str(raw or "")
+        found = _CADASTRAL_NUMBER_RE.findall(text.replace("：", ":"))
+        # Порядок сохраняем, повторы убираем: один участок дважды — это
+        # территория из двух участков, которой нет.
+        seen, numbers = set(), []
+        for number in found:
+            if number not in seen:
+                seen.add(number)
+                numbers.append(number)
+        return numbers
+    return []
+
+
+def _telegram_open_model_button(chat_id: int) -> dict[str, Any] | None:
+    """Кнопка «открыть модель» — удобство, а не условие ответа.
+
+    Ссылка мини-приложения собирается по токену бота, и без него не собирается
+    вовсе. Ронять из-за неё разбор документа нельзя: человек потерял бы и свои
+    ответы, и прочитанное из файла ради кнопки.
+    """
+    try:
+        url = _telegram_web_app_url(chat_id, [], None)
+    except Exception:  # noqa: BLE001
+        return None
+    return {"inline_keyboard": [[{
         "text": "Открыть модель в DevelopAid",
-        "web_app": {"url": _telegram_web_app_url(chat_id, [], None)},
+        "web_app": {"url": url},
     }]]}
-    _telegram_send_message(chat_id, "\n".join(lines)[:3900], reply_markup=button)
+
+
+def _telegram_intake_ask_next(chat_id: int, dialog: dict[str, Any]) -> None:
+    """Следующий вопрос по документу — или итог, если вопросы кончились."""
+    intake = dialog.get("intake") or {}
+    questions = list(intake.get("questions") or [])
+    index = int(intake.get("index") or 0)
+    if index >= len(questions):
+        answers = list(intake.get("answers") or [])
+        lines = [f"<b>Ответы по «{html.escape(str(intake.get('filename') or 'документу'))}»</b>"]
+        for item in answers:
+            said = str(item.get("answer") or "")
+            lines.append(f"• {html.escape(str(item.get('question')))}\n  <b>"
+                         + (html.escape(said) if said else "<i>пропущено</i>") + "</b>")
+        lines.append("\nЭто ваши ответы, а не расчёт: подставьте их в модель и проверьте.")
+        numbers = [str(number) for number in (intake.get("cadastral_numbers") or [])]
+        if numbers:
+            lines.append(f"Теперь считаю участок: <b>{html.escape(', '.join(numbers))}</b>.")
+        dialog.pop("intake", None)
+        dialog.pop("step", None)
+        _telegram_dialog_save(chat_id, dialog)
+        _telegram_send_message(
+            chat_id, "\n".join(lines)[:3900],
+            reply_markup=None if numbers else _telegram_open_model_button(chat_id))
+        if numbers:
+            _telegram_handle_cadastral_numbers(chat_id, numbers)
+        return
+    item = questions[index]
+    options = [str(option) for option in (item.get("options") or []) if str(option).strip()]
+    text = (f"<b>Вопрос {index + 1} из {len(questions)}</b>\n"
+            + html.escape(str(item.get("question"))))
+    if options:
+        text += "\n\n" + " / ".join(html.escape(option) for option in options)
+    text += "\n\n<i>Ответьте сообщением. «-» — пропустить вопрос, «стоп» — закончить.</i>"
+    _telegram_send_message(chat_id, text[:3900])
 
 
 def _telegram_handle_manual_document(chat_id: int, document: dict[str, Any]) -> None:
@@ -10958,11 +11190,14 @@ def _telegram_econ_value_th(text: str) -> float:
     return value
 
 
-_TELEGRAM_CLASS_SMR_PRESETS = {
-    "comfort": 110.0,
-    "business": 190.0,
-    "elite": 300.0,
-}
+# Ставка СМР класса жила здесь второй копией — 110 / 190 / 300, теми же
+# числами, что в `PROJECT_CLASS_PRESETS`. Совпадение и было опасно: поправят
+# профиль класса, а бот останется на прежнем, и экспресс-расчёт разойдётся с
+# сайтом молча — та же болезнь, что была у `VERSION` и у списка полей страницы.
+# Копии больше нет; ставка берётся у профиля, как и цены.
+def _telegram_class_smr(key: str) -> float:
+    """Ставка основного строительства класса — из профиля класса."""
+    return float(PROJECT_CLASS_PRESETS[key]["main_above_th_per_sqm"])
 
 
 def _telegram_cad_class_menu(chat_id: int, dialog: dict[str, Any]) -> None:
@@ -11005,7 +11240,7 @@ def _telegram_send_cad_calculate_button(chat_id: int, dialog: dict[str, Any]) ->
         overrides["apartment_price_th"], overrides["commercial_price_th"],
         overrides["parking_price_th"], overrides["smr_th_per_sqm"],
     ]
-    if overrides["project_class"] not in _TELEGRAM_CLASS_SMR_PRESETS or min(values) <= 0:
+    if overrides["project_class"] not in PROJECT_CLASS_PRESETS or min(values) <= 0:
         raise ValueError("Не заполнены параметры выбранного класса")
     class_label = PROJECT_CLASS_PRESETS.get(overrides["project_class"], {}).get("label") or "—"
     prices_note = " · цены изменены вручную" if bool(data.get("prices_custom")) else ""
@@ -32069,8 +32304,12 @@ async function applyAiIntake(){
   Object.assign(inputs,data.inputs||{});
   Object.keys(data.tep||{}).forEach(key=>{tep[key]=Object.assign(tep[key]||{},data.tep[key])});
   syncTep(false);renderInputs();renderTep();calculate();
-  const lines=(data.applied||[]).map(a=>a.key+': '+(a.was===undefined?'—':a.was)+' → '+a.now);
-  (data.refused||[]).forEach(x=>lines.push('не применено — '+x.key+': '+x.reason));
+  // Имя поля, а не ключ, и рядом — как значение было написано в документе:
+  // молчаливый перевод единиц («1 650 000 000 ₽» → 1650 млн ₽) неотличим от
+  // ошибки переписывания, а неприменённое без причины — от непрочитанного.
+  const lines=(data.applied||[]).map(a=>(a.label||a.key)+': '+(a.was===undefined?'—':a.was)
+   +' → '+a.now+(a.unit?' '+a.unit:'')+(a.as_written?' (в документе: '+a.as_written+')':''));
+  (data.refused||[]).forEach(x=>lines.push('не применено — '+(x.label||x.key)+': '+x.reason));
   appendAiMessage('system','Подставлено:\n'+lines.join('\n'));
  }catch(e){appendAiMessage('system','Не применилось: '+(e.message||e))}
 }
@@ -36159,6 +36398,11 @@ async function calculate(){
  // 18.08.2026). Спрашиваем здесь, а не ловим 401 на каждом изменении поля:
  // расчёт зовётся при правке любой вводной.
  if(calcNeedsLogin()){renderCalcLocked();return null}
+ // Номер сброса на момент запуска. Сброс перерисовывает поля, их onchange
+ // зовёт расчёт, а расчёт асинхронный — он возвращается уже после обнуления и
+ // заполняет отчёт заново. Тот же приём, что у опоздавшего ответа Платона:
+ // результат прошлого состояния в новое не пускается.
+ const startedAtReset=resetRun;
  if(phasing&&phasing.enabled&&Number(phasing.phase_count||1)>1){
    const response=await fetch('/calculate-phased',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({inputs,tep,rates,phasing,session:activeSession(),access_key:projectsAdminKey})});
    if(!response.ok){renderCalcLocked(await calcRefusal(response));return null}
@@ -36170,6 +36414,10 @@ async function calculate(){
    if(lastResult&&lastResult.tep&&Array.isArray(lastResult.tep.rows)){
     lastResult.tep.rows.forEach(r=>{if(!tep[r.key])return;['gns','total_area','useful','saleable','transfer','units'].forEach(k=>{if(r[k]!=null)tep[r.key][k]=Number(r[k])})})
    }
+ }
+ if(startedAtReset!==resetRun){
+  // Между стартом расчёта и его ответом человек нажал «Сбросить».
+  lastResult=null;phaseBundle=null;blankResultSurfaces();return null;
  }
  repairParkingFromGlavapu();renderResult();renderPhaseReportControls();renderPhaseFinancing();
  if(document.getElementById('tep')&&document.getElementById('tep').classList.contains('active'))renderTep();
@@ -37924,6 +38172,40 @@ function resetProjectState(){
 // Стирается по строению, а не по списку имён: сгенерированное лежит в телах
 // таблиц с id, в плитках и в оглавлении. Статичная разметка не трогается, и
 // вставленное слоем перестройки — тоже: оно лежит выше, прямо в панели.
+let resetRun=0;
+// Каким обязан стать набор вводных после сброса. Объявлено один раз: проверка
+// «что уцелело» сверяется с тем же выражением, которым сброс и присваивает.
+// Пока их было два, проверка честно жаловалась на поля, которые сброс сам же
+// и ставит.
+// Каким обязано стать состояние после сброса. Объявлено один раз — и сбросом,
+// и его самопроверкой: пока умолчаний было два, проверка жаловалась на поля,
+// которые сброс сам же и ставит.
+//
+// Предпосылки аналитика возвращаются к умолчаниям, ДАННЫЕ УЧАСТКА обнуляются.
+// Прежде сброс ставил и то и другое умолчанием, а умолчание ТЭП — это пример:
+// 130 716,7 м² ГНС, 80 000 продаваемой, 1 361 квартира. На экране после
+// «Сбросить» стояли те же числа, что до него, и читалось это ровно так —
+// «ничего не сбросилось» (владелец, 29.08.2026, снимок экрана). Разделение то
+// же, что при импорте участка: цена входа, площади объектов и соцнагрузка
+// принадлежат площадке, а ставки, сроки и налоги — аналитику.
+function resetInputsWanted(){
+ const want=Object.assign(cloneValue(INPUT_DEFAULT),{
+  project_class:'comfort', rate_scenario:'base',
+  scenario_revenue_multiplier:1, scenario_cost_multiplier:1});
+ TERRITORY_INPUT_KEYS.forEach(key=>{if(key in want)want[key]=0});
+ return want;
+}
+// ТЭП после сброса — нули, а не пример. Строки и подписи остаются: таблица без
+// строк читается как поломка, а не как пустой проект.
+function resetTepWanted(){
+ const want=cloneValue(TEP_DEFAULT);
+ Object.keys(want).forEach(row=>{
+  ['gns','total_area','useful','saleable','transfer','units'].forEach(field=>{
+   if(field in want[row])want[row][field]=0;
+  });
+ });
+ return want;
+}
 function blankResultSurfaces(){
  ['report','finance','calendar','sensitivity'].forEach(id=>{
   const panel=document.getElementById(id);if(!panel)return;
@@ -37947,8 +38229,16 @@ function blankResultSurfaces(){
 // хеше, и поднявшаяся заново страница загрузит из этой сессии тот же проект —
 // сброс отменил бы сам себя. Там остаётся сброс на месте, а он полный.
 function resetProject(){
- resetAll();
- if(isTelegramWebApp())return;
+ const left=resetAll();
+ // Уцелевшее называется вслух. «Не всё обнуляется» — спор, который нельзя
+ // выиграть памятью: обе стороны правы про разные поля. Молчание здесь и есть
+ // причина спора.
+ if(left&&left.length){
+  try{alert('Сброс оставил: '+left.slice(0,12).join(', ')
+    +(left.length>12?' и ещё '+(left.length-12):'')
+    +'.\nЭто ошибка — пришлите этот список.')}catch(e){}
+ }
+ if(isTelegramWebApp())return left;
  try{localStorage.removeItem('plato_v04')}catch(e){}
  // Груз из торгов и КРТ ждёт в sessionStorage и применяется при загрузке:
  // не сняв его, мы перезагрузились бы в ту же площадку.
@@ -37995,15 +38285,11 @@ function resetMoParams(){
 }
 function resetAll(){
  localStorage.removeItem('plato_v04');
- inputs=cloneValue(INPUT_DEFAULT);
- tep=cloneValue(TEP_DEFAULT);
+ inputs=resetInputsWanted();
+ tep=resetTepWanted();
  phasing=makeDefaultPhasing(1);phaseBundle=null;reportView='all';cadastralAnalysis=null;landLookup=null;moResult=null;
  rates=[];
  scenarioSelect.value='base';
- inputs.project_class='comfort';
- inputs.rate_scenario='base';
- inputs.scenario_revenue_multiplier=1;
- inputs.scenario_cost_multiplier=1;
  renderInputs();renderTep();renderStoredGlavapu();renderScenarioNote();syncProjectClassSelector();
  const cadField=document.getElementById('cadastralNumbers');if(cadField)cadField.value='';
  const cadStatus=document.getElementById('cadastralStatus');if(cadStatus)cadStatus.textContent='На внешний сервер передаются только кадастровые номера; финансовая модель не передаётся.';
@@ -38020,6 +38306,39 @@ function resetAll(){
  const landStatus=document.getElementById('landStatus');if(landStatus)landStatus.textContent='На внешний сервис передаётся только строка поиска; финансовая модель не передаётся.';
  syncRateControlsFromInputs();generateRateCurve();renderRates();
  refreshCurrentKeyRate(true);
+ // Перерисовка полей выше поднимает onchange, а он зовёт calculate(). Расчёт
+ // асинхронный: он возвращается уже ПОСЛЕ того, как сброс обнулил lastResult,
+ // и заполняет отчёт заново. На сайте это скрыто перезагрузкой, в
+ // мини-приложении её нет — и «Сбросить» оставлял на экране посчитанный отчёт.
+ // Номер прогона отсекает опоздавший ответ тем же способом, что и везде.
+ resetRun=(resetRun||0)+1;
+ const stamp=resetRun;
+ setTimeout(()=>{if(stamp!==resetRun)return;lastResult=null;blankResultSurfaces()},0);
+ return resetLeftovers();
+}
+
+// Сброс, который проверяет сам себя. «Не всё обнуляется» — спор, который
+// нельзя выиграть памятью: обе стороны правы про разные поля. Поэтому после
+// сброса состояние сверяется с умолчаниями, и уцелевшее НАЗЫВАЕТСЯ. Пусто —
+// значит пусто, а не «кажется, сработало».
+function resetLeftovers(){
+ const left=[];
+ const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
+ const want=resetInputsWanted();
+ Object.keys(want).forEach(key=>{
+  if(!same(inputs[key],want[key]))left.push('вводная «'+key+'»');
+ });
+ Object.keys(inputs).forEach(key=>{
+  if(!(key in want))left.push('лишняя вводная «'+key+'»');
+ });
+ const wantTep=resetTepWanted();
+ Object.keys(wantTep).forEach(row=>{
+  const was=wantTep[row]||{},now=tep[row]||{};
+  Object.keys(was).forEach(field=>{
+   if(!same(now[field],was[field]))left.push('ТЭП «'+row+'.'+field+'»');
+  });
+ });
+ return left;
 }
 
 // Кабинет показывается до всего остального. Прежде его открывал initProjects()
@@ -38312,7 +38631,14 @@ initializeApp();
 # Подстановка разовая, на импорте: страница отдаётся на каждый запрос, а версия
 # за время работы процесса не меняется.
 PAGE = PAGE.replace(VERSION_PLACEHOLDER, VERSION)
-MONITOR_PAGE_HTML = _MONITOR_PAGE_RAW.replace("__VERSION__", VERSION)
+# Контур подставляется, как версия и подвал: копию негде обновлять, а
+# поверхность без входа в контур не найти (владелец, 29.08.2026 — «кабинет
+# надо объединить и сделать внутренним управленческим контуром»).
+MONITOR_PAGE_HTML = (
+    _MONITOR_PAGE_RAW.replace("__VERSION__", VERSION)
+    .replace("__DEVELOPAID_CONTOUR_STYLE__", management_contour.STYLE)
+    .replace(management_contour.PLACEHOLDER, management_contour.markup("/monitor"))
+)
 PAGE = PAGE.replace(FIELD_GROUPS_PLACEHOLDER,
                     json.dumps(FIELD_GROUPS, ensure_ascii=False))
 # Базы классов — из движка. Копия жила на странице с рождения окна и отстала
