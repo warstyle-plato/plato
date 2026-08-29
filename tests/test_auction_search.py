@@ -549,6 +549,61 @@ def test_excel_export_separates_land_and_building_as_numbers():
     assert sheet.freeze_panes == "A2"
 
 
+def test_torgi_excel_export_recovers_explicit_land_and_does_not_sum_it_into_building():
+    from openpyxl import load_workbook
+
+    raw = _xlsx([{
+        "section": "Торги",
+        "name": (
+            "Комплекс им-ва: 1. ЗУ Пл.: 621 +/- 9 кв.м. КН 77:01:0003036:4449; "
+            "2. Здание Ярославского ПЖДП Пл. 1259.3 кв.м. КН 77:01:0003036:1085"
+        ),
+        "land_area_sqm": "",
+        "building_area_sqm": 1880.3,
+        "url": "https://torgi.gov.ru/new/public/lots/lot/21000003370000000395_1",
+    }])
+    sheet = load_workbook(io.BytesIO(raw)).active
+    headers = [cell.value for cell in sheet[1]]
+    assert sheet.cell(2, headers.index("Площадь участка, м²") + 1).value == 621
+    assert sheet.cell(2, headers.index("Площадь здания/ОКС, м²") + 1).value == 1259.3
+
+
+def test_torgi_excel_export_sums_buildings_but_not_hidden_land():
+    from openpyxl import load_workbook
+
+    raw = _xlsx([{
+        "section": "Торги",
+        "name": (
+            "Объекты недвижимого имущества в составе: нежилое здание площадью 145 кв.м "
+            "и нежилое здание площадью 178 кв.м"
+        ),
+        "building_area_sqm": 623,
+        "url": "https://torgi.gov.ru/new/public/lots/lot/22000036140000000714_1",
+    }])
+    sheet = load_workbook(io.BytesIO(raw)).active
+    headers = [cell.value for cell in sheet[1]]
+    assert sheet.cell(2, headers.index("Площадь участка, м²") + 1).value is None
+    assert sheet.cell(2, headers.index("Площадь здания/ОКС, м²") + 1).value == 323
+
+
+def test_torgi_excel_export_reads_full_form_land_and_building_phrases():
+    from openpyxl import load_workbook
+
+    raw = _xlsx([{
+        "section": "Торги",
+        "name": (
+            "объекта недвижимого имущества площадью 6 046,2 кв. метра, "
+            "одновременно с земельным участком площадью 2 891 кв. метр"
+        ),
+        "building_area_sqm": 6046.2,
+        "url": "https://torgi.gov.ru/new/public/lots/lot/22000034760000001834_1",
+    }])
+    sheet = load_workbook(io.BytesIO(raw)).active
+    headers = [cell.value for cell in sheet[1]]
+    assert sheet.cell(2, headers.index("Площадь участка, м²") + 1).value == 2891
+    assert sheet.cell(2, headers.index("Площадь здания/ОКС, м²") + 1).value == 6046.2
+
+
 def test_krt_excel_export_keeps_territory_and_program_areas_separate():
     from openpyxl import load_workbook
 

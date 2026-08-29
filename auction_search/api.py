@@ -39,6 +39,7 @@ from auction_search.bridge import auction_page_with_handoff, install_page_bridge
 from auction_search.catalogue_quality import catalogue_quality
 from auction_search.developaid_mapper import build_developaid_seed
 from auction_search.documents import DocumentExtractionError
+from auction_search.export_areas import export_areas
 from auction_search.krt_pipeline import enrich_krt_from_official_documents
 from auction_search.krt_ranking import (
     HEARTBEAT_SECONDS, NEW_FOR_SECONDS, KrtRanking, score_row)
@@ -106,7 +107,12 @@ def _xlsx(rows: list[dict[str, Any]]) -> bytes:
         "land_area_sqm", "building_area_sqm", "krt_area_ha", "total_gfa_sqm",
         "housing_gfa_sqm", "price", "score",
     }
-    for row in rows[:2000]:
+    for source_row in rows[:2000]:
+        row = dict(source_row)
+        if row.get("section") == "Торги":
+            areas = export_areas(row)
+            row["land_area_sqm"] = areas.land_area_sqm
+            row["building_area_sqm"] = areas.building_area_sqm
         values = [number(row.get(key)) if key in numeric_keys else (row.get(key) or "") for key in keys]
         ws.append(values)
 
@@ -344,6 +350,7 @@ def _plato_krt_prompt(stored: dict[str, Any]) -> str:
     market_block = screening.get("market") or {}
     phasing = screening.get("phasing") or {}
     capacity = screening.get("entry_capacity") or {}
+    duties = screening.get("requirements") or {}
     verdict = report.get("verdict") or {}
     peers = report.get("peers") or []
 
@@ -388,6 +395,16 @@ def _plato_krt_prompt(stored: dict[str, Any]) -> str:
             f"Потолок цены входа при LLCR 1,20x: {_plato_number(capacity.get('amount_mln'), 1)} млн ₽.")
     else:
         lines.append(f"Потолок цены входа не подобран: {capacity.get('reason') or 'причина не названа'}.")
+    if duties:
+        lines += [
+            "",
+            "ОПУБЛИКОВАННЫЕ ОБЯЗАТЕЛЬСТВА",
+            f"Безусловный снос: {_plato_number(duties.get('demolition_area_sqm'))} м² "
+            f"({duties.get('demolition_objects') or 0} объектов); "
+            f"снос/реконструкция: {duties.get('conditional_objects') or 0} объектов.",
+            f"Расселение/изъятие: {'найдено' if duties.get('resettlement') else 'не найдено в опубликованном решении'}; "
+            f"дополнительные объекты: {len(duties.get('unmodelled_construction') or [])}.",
+        ]
     for item in (screening.get("exclusions") or [])[:6]:
         lines.append(f"НЕ УЧТЕНО: {item}")
     lines += [
@@ -605,7 +622,16 @@ def install(app: FastAPI) -> None:
             f"krt:{project.get('slug')}", radius_km=3.0, peers_limit=12,
             city_reference=False, include_project_totals=True,
         )
-        screening = build_krt_model_screening(project, report, core)
+        try:
+            requirements = krt_registry.requirements(str(project.get("slug") or ""))
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("KRT requirements failed slug=%s", project.get("slug"))
+            requirements = {
+                "available": False,
+                "warning": f"Документы обязательств временно не прочитаны: {type(exc).__name__}",
+            }
+        screening = build_krt_model_screening(
+            project, report, core, requirements=requirements)
         # Маркетинг едет вместе со скринингом и оседает в отчёте площадки.
         # Считать его второй раз при открытии карточки незачем: прогон уже
         # сходил к рынку, к соседям и к движку — минуты чужого ожидания на
@@ -614,6 +640,24 @@ def install(app: FastAPI) -> None:
         # нас уже кончался, а карточка рисует ровно эти блоки.
         screening["market_report"] = _market_digest(report)
         return screening
+
+    @app.get("/auctions/krt/{slug}/requirements")
+    async def auction_krt_requirements(slug: str) -> dict[str, Any]:
+        """Requirements from the official decision for one planned KRT.
+
+        This endpoint deliberately distinguishes an unpublished fact from a
+        negative fact.  If the project decision says nothing about resettlement,
+        the UI shows "not published", never "no resettlement".  The signed KRT
+        agreement remains the final source of the developer's duties.
+        """
+        reader = getattr(krt_registry, "requirements", None)
+        if not callable(reader):
+            raise HTTPException(
+                status_code=503, detail="Чтение требований КРТ не подключено")
+        result = await run_in_threadpool(reader, slug)
+        if result is None:
+            raise HTTPException(status_code=404, detail="Территория КРТ не найдена")
+        return result
 
     @app.get("/auctions/krt/{slug}/point")
     async def auction_krt_point(slug: str) -> dict[str, Any]:
@@ -787,6 +831,7 @@ def install(app: FastAPI) -> None:
             "inputs": model.get("inputs") or {},
             "tep": model.get("tep") or {},
             "phasing": model.get("phasing") or {},
+            "requirements": screening.get("requirements") or {},
             "assumptions": screening.get("assumptions") or [],
             "exclusions": screening.get("exclusions") or [],
         }
@@ -870,8 +915,9 @@ def install(app: FastAPI) -> None:
                     }
                 else:
                     try:
+                        requirements = krt_registry.requirements(slug)
                         screening = build_krt_model_screening(
-                            project, report, core, tep_ratios)
+                            project, report, core, tep_ratios, requirements)
                     except Exception:
                         # Marketing remains useful if a preliminary model cannot
                         # be assembled.  Do not turn an optional screen into a

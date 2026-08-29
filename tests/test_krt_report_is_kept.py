@@ -43,6 +43,9 @@ def _screening() -> dict:
         "market": {"recommended_segment": "комфорт", "start_price_rub_sqm": 442_050,
                    "market_price_rub_sqm": 455_000, "price_basis": "медиана соседей"},
         "entry_capacity": {"available": True, "amount_mln": 4_180.0},
+        "requirements": {"demolition_area_sqm": 1250, "demolition_objects": 2,
+                         "conditional_objects": 1, "resettlement": ["Переселение"],
+                         "unmodelled_construction": ["Школа"]},
         "exclusions": ["Цена приобретения / входа принята равной нулю."],
         "model_inputs": {"inputs": {"apartment_price_th": 442.05},
                          "tep": {"apartments": {"gns": 215720.6}},
@@ -116,6 +119,8 @@ def test_the_question_to_platon_carries_both_sides(ranking) -> None:
     assert "комфорт" in prompt
     assert "1,31x" in prompt, "LLCR подаётся готовым числом, модель его не считает"
     assert "НЕ УЧТЕНО: Цена приобретения" in prompt
+    assert "ОПУБЛИКОВАННЫЕ ОБЯЗАТЕЛЬСТВА" in prompt
+    assert "1 250 м²" in prompt
     assert "Не выдумывай чисел" in prompt
 
 
