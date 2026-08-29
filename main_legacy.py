@@ -68,7 +68,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.20.45"
+VERSION = "0.20.46"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -35674,6 +35674,11 @@ async function calculate(){
  // 18.08.2026). Спрашиваем здесь, а не ловим 401 на каждом изменении поля:
  // расчёт зовётся при правке любой вводной.
  if(calcNeedsLogin()){renderCalcLocked();return null}
+ // Номер сброса на момент запуска. Сброс перерисовывает поля, их onchange
+ // зовёт расчёт, а расчёт асинхронный — он возвращается уже после обнуления и
+ // заполняет отчёт заново. Тот же приём, что у опоздавшего ответа Платона:
+ // результат прошлого состояния в новое не пускается.
+ const startedAtReset=resetRun;
  if(phasing&&phasing.enabled&&Number(phasing.phase_count||1)>1){
    const response=await fetch('/calculate-phased',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({inputs,tep,rates,phasing,session:activeSession(),access_key:projectsAdminKey})});
    if(!response.ok){renderCalcLocked(await calcRefusal(response));return null}
@@ -35685,6 +35690,10 @@ async function calculate(){
    if(lastResult&&lastResult.tep&&Array.isArray(lastResult.tep.rows)){
     lastResult.tep.rows.forEach(r=>{if(!tep[r.key])return;['gns','total_area','useful','saleable','transfer','units'].forEach(k=>{if(r[k]!=null)tep[r.key][k]=Number(r[k])})})
    }
+ }
+ if(startedAtReset!==resetRun){
+  // Между стартом расчёта и его ответом человек нажал «Сбросить».
+  lastResult=null;phaseBundle=null;blankResultSurfaces();return null;
  }
  repairParkingFromGlavapu();renderResult();renderPhaseReportControls();renderPhaseFinancing();
  if(document.getElementById('tep')&&document.getElementById('tep').classList.contains('active'))renderTep();
@@ -37398,6 +37407,16 @@ function resetProjectState(){
 // Стирается по строению, а не по списку имён: сгенерированное лежит в телах
 // таблиц с id, в плитках и в оглавлении. Статичная разметка не трогается, и
 // вставленное слоем перестройки — тоже: оно лежит выше, прямо в панели.
+let resetRun=0;
+// Каким обязан стать набор вводных после сброса. Объявлено один раз: проверка
+// «что уцелело» сверяется с тем же выражением, которым сброс и присваивает.
+// Пока их было два, проверка честно жаловалась на поля, которые сброс сам же
+// и ставит.
+function resetInputsWanted(){
+ return Object.assign(cloneValue(INPUT_DEFAULT),{
+  project_class:'comfort', rate_scenario:'base',
+  scenario_revenue_multiplier:1, scenario_cost_multiplier:1});
+}
 function blankResultSurfaces(){
  ['report','finance','calendar','sensitivity'].forEach(id=>{
   const panel=document.getElementById(id);if(!panel)return;
@@ -37421,8 +37440,16 @@ function blankResultSurfaces(){
 // хеше, и поднявшаяся заново страница загрузит из этой сессии тот же проект —
 // сброс отменил бы сам себя. Там остаётся сброс на месте, а он полный.
 function resetProject(){
- resetAll();
- if(isTelegramWebApp())return;
+ const left=resetAll();
+ // Уцелевшее называется вслух. «Не всё обнуляется» — спор, который нельзя
+ // выиграть памятью: обе стороны правы про разные поля. Молчание здесь и есть
+ // причина спора.
+ if(left&&left.length){
+  try{alert('Сброс оставил: '+left.slice(0,12).join(', ')
+    +(left.length>12?' и ещё '+(left.length-12):'')
+    +'.\nЭто ошибка — пришлите этот список.')}catch(e){}
+ }
+ if(isTelegramWebApp())return left;
  try{localStorage.removeItem('plato_v04')}catch(e){}
  // Груз из торгов и КРТ ждёт в sessionStorage и применяется при загрузке:
  // не сняв его, мы перезагрузились бы в ту же площадку.
@@ -37469,15 +37496,11 @@ function resetMoParams(){
 }
 function resetAll(){
  localStorage.removeItem('plato_v04');
- inputs=cloneValue(INPUT_DEFAULT);
+ inputs=resetInputsWanted();
  tep=cloneValue(TEP_DEFAULT);
  phasing=makeDefaultPhasing(1);phaseBundle=null;reportView='all';cadastralAnalysis=null;landLookup=null;moResult=null;
  rates=[];
  scenarioSelect.value='base';
- inputs.project_class='comfort';
- inputs.rate_scenario='base';
- inputs.scenario_revenue_multiplier=1;
- inputs.scenario_cost_multiplier=1;
  renderInputs();renderTep();renderStoredGlavapu();renderScenarioNote();syncProjectClassSelector();
  const cadField=document.getElementById('cadastralNumbers');if(cadField)cadField.value='';
  const cadStatus=document.getElementById('cadastralStatus');if(cadStatus)cadStatus.textContent='На внешний сервер передаются только кадастровые номера; финансовая модель не передаётся.';
@@ -37494,6 +37517,38 @@ function resetAll(){
  const landStatus=document.getElementById('landStatus');if(landStatus)landStatus.textContent='На внешний сервис передаётся только строка поиска; финансовая модель не передаётся.';
  syncRateControlsFromInputs();generateRateCurve();renderRates();
  refreshCurrentKeyRate(true);
+ // Перерисовка полей выше поднимает onchange, а он зовёт calculate(). Расчёт
+ // асинхронный: он возвращается уже ПОСЛЕ того, как сброс обнулил lastResult,
+ // и заполняет отчёт заново. На сайте это скрыто перезагрузкой, в
+ // мини-приложении её нет — и «Сбросить» оставлял на экране посчитанный отчёт.
+ // Номер прогона отсекает опоздавший ответ тем же способом, что и везде.
+ resetRun=(resetRun||0)+1;
+ const stamp=resetRun;
+ setTimeout(()=>{if(stamp!==resetRun)return;lastResult=null;blankResultSurfaces()},0);
+ return resetLeftovers();
+}
+
+// Сброс, который проверяет сам себя. «Не всё обнуляется» — спор, который
+// нельзя выиграть памятью: обе стороны правы про разные поля. Поэтому после
+// сброса состояние сверяется с умолчаниями, и уцелевшее НАЗЫВАЕТСЯ. Пусто —
+// значит пусто, а не «кажется, сработало».
+function resetLeftovers(){
+ const left=[];
+ const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
+ const want=resetInputsWanted();
+ Object.keys(want).forEach(key=>{
+  if(!same(inputs[key],want[key]))left.push('вводная «'+key+'»');
+ });
+ Object.keys(inputs).forEach(key=>{
+  if(!(key in want))left.push('лишняя вводная «'+key+'»');
+ });
+ Object.keys(TEP_DEFAULT).forEach(row=>{
+  const was=TEP_DEFAULT[row]||{},now=tep[row]||{};
+  Object.keys(was).forEach(field=>{
+   if(!same(now[field],was[field]))left.push('ТЭП «'+row+'.'+field+'»');
+  });
+ });
+ return left;
 }
 
 // Кабинет показывается до всего остального. Прежде его открывал initProjects()

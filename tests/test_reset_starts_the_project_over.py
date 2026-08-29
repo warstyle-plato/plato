@@ -134,7 +134,9 @@ def test_the_mini_app_is_not_reloaded() -> None:
     сброс отменил бы сам себя. В мини-приложении остаётся сброс на месте.
     """
     body = _function_body("resetProject")
-    assert "if(isTelegramWebApp())return;" in body
+    # Сброс возвращает список уцелевшего — им пользуется и человек, и проверка;
+    # выход из мини-приложения возвращает его тоже.
+    assert "if(isTelegramWebApp())return left;" in body
     assert body.index("isTelegramWebApp") < body.index("location.replace")
 
 
