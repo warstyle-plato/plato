@@ -350,6 +350,7 @@ g.bub.on circle{fill-opacity:.75}
    что стоит ниже, побеждает. Пока блок стоял выше, `.printviews{display:none}`
    гасил карты рынка обратно, а `#bubble{display:none}` (id — сильнее) убирал
    и открытую. В PDF не попадала ни одна: разом сработали обе половины. */
+__DEVELOPAID_CONTOUR_STYLE__
 @media print{
   /* В печать уходит отчёт, а не орудия его сборки: форма, кнопки и поле
      вопроса на бумаге бесполезны. Разделы не разрываются между страницами —
@@ -474,7 +475,6 @@ g.bub.on circle{fill-opacity:.75}
    нижнее поле оставалось 12 мм, а колонтитул стоял в этом же поле — то есть
    на тексте. Нижнее шире прочих ровно под него. */
 @page{margin:14mm 12mm 20mm}
-__DEVELOPAID_CONTOUR_STYLE__
 </style>
 <header>
   <a class="brand" href="/" title="DevelopAid"><img src="/guide/assets/logo.webp" alt="ПЛАТО" height="26"></a>

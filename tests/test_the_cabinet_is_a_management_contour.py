@@ -120,6 +120,24 @@ def test_the_sales_link_lands_on_the_sales_report() -> None:
     assert "card.open=true" in body
 
 
+def test_the_contour_wears_the_house_style() -> None:
+    """Сервис один: у страницы торгов прямые углы и нет теней, и контур,
+    приехавший на неё со своими скруглениями, выглядел чужим — это поймал
+    её собственный тест оформления."""
+    assert "border-radius:0" in contour.STYLE
+    assert "box-shadow" not in contour.STYLE
+    for radius in ("border-radius:12px", "border-radius:7px", "border-radius:14px"):
+        assert radius not in contour.STYLE
+
+
+def test_the_print_stays_declared_last() -> None:
+    """Стиль контура встал перед блоком печати, а не после него: правило экрана,
+    объявленное ниже печати, тихо её перебивает — на этом уже пропадали карты."""
+    from market_search.cabinet import CABINET_PAGE
+
+    assert CABINET_PAGE.index("__DEVELOPAID_CONTOUR_STYLE__") < CABINET_PAGE.index("@media print{")
+
+
 def test_the_public_calculator_stays_outside() -> None:
     """На главной стоят посторонние люди: внутреннее оглавление им не показывают."""
     from fastapi.testclient import TestClient

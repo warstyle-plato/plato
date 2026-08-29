@@ -56,7 +56,7 @@ ROLES: tuple[dict[str, object], ...] = (
 )
 
 STYLE = """
-.contour{background:#fff;border:1px solid #dde5ed;border-radius:12px;padding:12px 14px;
+.contour{background:#fff;border:1px solid #dde5ed;border-radius:0;padding:12px 14px;
 margin:0 0 16px;display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}
 .contour .role{border-left:3px solid #1367AE;padding-left:10px}
 .contour .role b{display:block;font-size:13px;color:#16202b}
