@@ -549,6 +549,21 @@ def test_excel_export_separates_land_and_building_as_numbers():
     assert sheet.freeze_panes == "A2"
 
 
+def test_krt_excel_export_keeps_territory_and_program_areas_separate():
+    from openpyxl import load_workbook
+
+    raw = _xlsx([{
+        "section": "КРТ", "name": "Тестовая территория", "okrug": "ЗАО",
+        "district": "Кунцево", "krt_area_ha": 23.5, "total_gfa_sqm": 74470,
+        "housing_gfa_sqm": 61000, "score": 87, "status": "Планируемый",
+    }])
+    sheet = load_workbook(io.BytesIO(raw)).active
+    headers = [cell.value for cell in sheet[1]]
+    assert sheet.cell(2, headers.index("Площадь КРТ, га") + 1).value == 23.5
+    assert sheet.cell(2, headers.index("Общий объём, м²") + 1).value == 74470
+    assert sheet.cell(2, headers.index("Жильё, м²") + 1).value == 61000
+
+
 def test_auction_ui_names_city_discovery_and_shows_source_funnel():
     from auction_search.ui import auctions_page
 
