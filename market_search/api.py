@@ -450,17 +450,12 @@ def install(app: FastAPI) -> MarketDiscoveryService:
         subtitle = str((payload or {}).get("subtitle") or "").strip()
         footer = str((payload or {}).get("footer") or title).strip()
 
-        def local(url: str) -> tuple[bytes, str] | None:
-            fetch = getattr(service, "local_asset", None)
-            if fetch is None:
-                return None
-            found = fetch(url)
-            return (found, report_pdf.local_mime(url)) if found else None
-
         def collect() -> bytes:
-            pages = sales_deck.shots(report_pdf.inline_assets(body, local),
-                                     style=cabinet_module.cabinet_style())
-            return sales_deck.build(pages, title=title, subtitle=subtitle, footer=footer)
+            # Разделы берутся из той же разметки, что печатается в PDF: каждое
+            # число слайда буквально взято со строки экрана. Собирать колоду
+            # «по тем же данным» значило бы завести вторую реализацию отчёта.
+            return sales_deck.build(sales_deck.sections(body),
+                                    title=title, subtitle=subtitle, footer=footer)
 
         try:
             raw = await run_in_threadpool(collect)
