@@ -2519,14 +2519,21 @@ def test_the_pdf_button_falls_back_to_the_browser_dialog() -> None:
     """
     from market_search.cabinet import CABINET_PAGE
 
-    handler = CABINET_PAGE[CABINET_PAGE.index("$('#pdf').addEventListener"):]
-    handler = handler[: handler.index("\n});") + 4]
-    assert "'/cabinet/report.pdf'" in handler
-    assert "window.print()" in handler
+    # Печать объявлена один раз на обе поверхности кабинета — рынок и продажи, —
+    # поэтому и проверяется в одном месте: две копии разошлись бы на откате и на
+    # тексте отказа. Кнопка отвечает за своё: что печатать и как назвать файл.
+    button = CABINET_PAGE[CABINET_PAGE.index("$('#pdf').addEventListener"):]
+    button = button[: button.index("\n});") + 4]
+    assert "printPdf({" in button
     # Разметка уходит та же, что на экране: считать заново нечего.
-    assert "html:out.innerHTML" in handler
-    # Пустой отчёт печатать нечего — и сервер об этом не просят.
-    assert "if(!out||!out.innerHTML.trim()){window.print();return}" in handler
+    assert "html:out?out.innerHTML:''" in button
+
+    printer = CABINET_PAGE[CABINET_PAGE.index("async function printPdf("):]
+    printer = printer[: printer.index("\n}\n")]
+    assert "'/cabinet/report.pdf'" in printer
+    assert "window.print()" in printer
+    # Печатать нечего — и сервер об этом не просят.
+    assert "if(!html||!html.trim()){window.print();return}" in printer
 
 
 def test_the_asset_hook_is_actually_attached_to_the_engine() -> None:
@@ -2918,13 +2925,16 @@ def test_a_failed_print_says_so_and_keeps_saying_it() -> None:
     """
     from market_search.cabinet import CABINET_PAGE, cabinet_page
 
-    handler = CABINET_PAGE[CABINET_PAGE.index("$('#pdf').addEventListener"):]
-    handler = handler[: handler.index("\n});") + 4]
-    assert "$('#pdfstate')" in handler
-    assert "why.style.display='block'" in handler
-    # Гаснуть само сообщение не должно: скрывается оно только новым отчётом.
-    assert "why.style.display='none'" not in handler
-    assert "document.body.dataset.version" in handler
+    button = CABINET_PAGE[CABINET_PAGE.index("$('#pdf').addEventListener"):]
+    button = button[: button.index("\n});") + 4]
+    assert "state:$('#pdfstate')" in button, "докладывать отказ печати некуда"
+
+    printer = CABINET_PAGE[CABINET_PAGE.index("async function printPdf("):]
+    printer = printer[: printer.index("\n}\n")]
+    assert "state.style.display='block'" in printer
+    # Гаснуть само сообщение не должно: скрывается оно только новой печатью.
+    assert "setTimeout(()=>state.style.display='none'" not in printer
+    assert "document.body.dataset.version" in printer
     assert 'id="pdfstate"' in CABINET_PAGE
 
     # Версия попадает в разметку подставновкой, а не строкой в скрипте.
