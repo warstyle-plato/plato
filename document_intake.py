@@ -88,33 +88,95 @@ def extract_text(data: bytes, filename: str = "") -> dict[str, Any]:
 # аналитика, и брать их из рекламного листа нельзя.
 INTAKE_FIELDS: tuple[dict[str, Any], ...] = (
     {"key": "cadastral_numbers", "label": "Кадастровые номера участков",
-     "unit": "список", "target": "land"},
-    {"key": "site_area_ha", "label": "Площадь участка", "unit": "га", "target": "land"},
+     "unit": "список", "target": "land", "origin": "document"},
+    {"key": "site_area_ha", "label": "Площадь участка", "unit": "га",
+     "target": "land", "origin": "egrn"},
     {"key": "purchase_price_mln", "label": "Цена сделки / цена входа",
-     "unit": "млн ₽", "target": "inputs"},
+     "unit": "млн ₽", "target": "inputs", "origin": "document"},
     {"key": "social_compensation_mln", "label": "Денежная соцкомпенсация",
-     "unit": "млн ₽", "target": "inputs"},
+     "unit": "млн ₽", "target": "inputs", "origin": "glavapu"},
     {"key": "land_rights_cost_mln", "label": "Плата за смену ВРИ",
-     "unit": "млн ₽", "target": "inputs"},
+     "unit": "млн ₽", "target": "inputs", "origin": "glavapu"},
     {"key": "resettlement_cost_mln", "label": "Расселение", "unit": "млн ₽",
-     "target": "inputs"},
+     "target": "inputs", "origin": "document"},
     {"key": "demolition_area_sqm", "label": "Площадь сносимого", "unit": "м²",
-     "target": "inputs"},
+     "target": "inputs", "origin": "document"},
     {"key": "apartments_gns_sqm", "label": "СПП / ГНС жилой части", "unit": "м²",
-     "target": "tep"},
+     "target": "tep", "origin": "glavapu"},
     {"key": "offices_gba_sqm", "label": "Офисы — общая площадь", "unit": "м²",
-     "target": "inputs"},
+     "target": "inputs", "origin": "project"},
     {"key": "retail_gba_sqm", "label": "ТЦ / ОСЗ — общая площадь", "unit": "м²",
-     "target": "inputs"},
+     "target": "inputs", "origin": "project"},
     {"key": "underground_manual_spaces", "label": "Машино-места подземные",
-     "unit": "шт.", "target": "inputs"},
+     "unit": "шт.", "target": "inputs", "origin": "glavapu"},
     {"key": "kindergarten_places", "label": "ДОО — мест", "unit": "мест",
-     "target": "inputs"},
-    {"key": "school_places", "label": "СОШ — мест", "unit": "мест", "target": "inputs"},
+     "target": "inputs", "origin": "glavapu"},
+    {"key": "school_places", "label": "СОШ — мест", "unit": "мест",
+     "target": "inputs", "origin": "glavapu"},
     {"key": "clinic_capacity", "label": "Поликлиника — мощность",
-     "unit": "пос./смену", "target": "inputs"},
+     "unit": "пос./смену", "target": "inputs", "origin": "glavapu"},
 )
 INTAKE_KEYS = {row["key"] for row in INTAKE_FIELDS}
+INTAKE_LABELS = {row["key"]: row["label"] for row in INTAKE_FIELDS}
+INTAKE_UNITS = {row["key"]: row["unit"] for row in INTAKE_FIELDS}
+
+# Почему поля нет в вопросах. Спрашивать о том, что мы считаем сами, — значит
+# просить у человека догадку там, где есть источник, и заводить второй ответ на
+# один вопрос: его число и число калькулятора разошлись бы, и оба выглядели бы
+# верными (владелец, 29.08.2026 — по разбору тизера на Тимирязевской бот задал
+# десять вопросов, из которых семь считает город).
+NOT_ASKED = {
+    "glavapu": ("считает штатный калькулятор ГлавАПУ по кадастровому номеру — "
+                "нормативный ТЭП, плату за ВРИ, соцнагрузку и машино-места"),
+    "egrn": "берётся из ЕГРН по кадастровому номеру",
+    "project": ("решение проекта: в документе не упомянуто, значит принимаем нулём — "
+                "поправьте во вкладке «Вводные», если это не так"),
+}
+ASKABLE_KEYS = {row["key"] for row in INTAKE_FIELDS if row["origin"] == "document"}
+
+# Вопрос без ключа тоже надо узнать: модель нередко ставит `key` пустым, а
+# спрашивает ровно о том, что считает город. Слова подобраны узкие — ловить
+# «сад» внутри «садовое товарищество» дороже, чем пропустить один вопрос.
+QUESTION_MARKS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("land_rights_cost_mln", ("смена ври", "смену ври", "платы за ври", "плата за ври",
+                              "изменение ври", "вида разрешённого использования")),
+    ("social_compensation_mln", ("соцкомпенсац", "размер социальной нагрузк")),
+    ("kindergarten_places", ("доо", "детского сада", "детский сад", "детском саду")),
+    ("school_places", ("сош", "школ",)),
+    ("clinic_capacity", ("поликлиник",)),
+    ("underground_manual_spaces", ("машино-мест", "машиномест", "парковочных мест")),
+    ("offices_gba_sqm", ("офис",)),
+    ("retail_gba_sqm", ("тц ", "тц/", "тц,", "осз", "торгового центра", "торговый центр")),
+    ("apartments_gns_sqm", ("спп", "гнс")),
+    ("site_area_ha", ("площадь участка",)),
+)
+
+
+def question_origin(item: dict[str, Any]) -> str:
+    """Кто отвечает на этот вопрос: документ, город или проект.
+
+    Ключ надёжнее слов, но слова — единственное, что есть у вопроса без ключа.
+    """
+    text = str(item.get("question") or "").lower()
+    said = " ".join([text] + [str(option).lower() for option in (item.get("options") or [])])
+    # Куда отнести обязательство — вопрос по построению, и снимать его нельзя.
+    # Он ГОВОРИТ про соцнагрузку, потому что она один из двух его ответов:
+    # первая версия отбора сняла именно тот вопрос, ради которого написана.
+    if "цен" in said and ("нагрузк" in said or "соцкомпенсац" in said):
+        return "document"
+    key = str(item.get("key") or "").strip()
+    row = next((field for field in INTAKE_FIELDS if field["key"] == key), None)
+    if row:
+        return str(row["origin"])
+    for candidate, marks in QUESTION_MARKS:
+        if any(mark in text for mark in marks):
+            return str(next(field["origin"] for field in INTAKE_FIELDS
+                            if field["key"] == candidate))
+    # Обязательство, у которого два законных места в модели, ключа не имеет и
+    # иметь не может — это и есть настоящий вопрос.
+    return "document"
+
+
 
 # Обязательство, у которого в модели два законных места. Своего поля не
 # заводим — решение владельца; выбор делает человек, потому что из документа он
@@ -131,6 +193,8 @@ def intake_prompt(document: dict[str, Any]) -> str:
     """Задание модели: прочитать и процитировать, а не посчитать."""
     catalogue = "\n".join(
         f"- {row['key']} — {row['label']} ({row['unit']})" for row in INTAKE_FIELDS)
+    ours = "\n".join(
+        f"- {row['label']}" for row in INTAKE_FIELDS if row["origin"] != "document")
     return f"""Ты разбираешь документ по земельному участку: тизер, справку, решение ГЗК
 или выписку. Твоя задача — ВЫПИСАТЬ то, что в нём написано, и назвать то, чего
 в нём нет. Считать нельзя.
@@ -140,10 +204,18 @@ def intake_prompt(document: dict[str, Any]) -> str:
    Не нашёл цитаты — не выписывай значение вовсе.
 2. Не переводи единицы, не складывай, не делай долей и процентов. Пиши число
    ровно так, как оно стоит в документе, и укажи его единицу в поле unit.
-3. Чего в документе нет — не угадывай. Ставь вопрос в questions.
+3. Чего в документе нет — не угадывай. Значение без цитаты не выписывай.
 4. Обязательства (инфраструктурный договор, плата за подключение, платёж
-   городу) в модели могут лечь в цену сделки ИЛИ в социальную нагрузку. Из
-   документа это не следует — задавай вопрос с этими двумя вариантами.
+   городу, передача метров) в модели могут лечь в цену сделки ИЛИ
+   в социальную нагрузку — из документа это не следует. Задавай вопрос
+   с этими двумя вариантами.
+5. НЕ ЗАДАВАЙ вопросов о том, что мы считаем сами. Вот это мы считаем по
+   кадастровому номеру участка и спрашивать об этом нельзя:
+{ours}
+   Спросить о них значит просить догадку там, где есть источник: ответ
+   человека и расчёт города разошлись бы, и оба выглядели бы верными.
+   Вопрос уместен только о том, чего не знает ни документ, ни город: цена
+   сделки, расселение, снос и то, куда отнести обязательство.
 
 Поля, которые модель понимает:
 {catalogue}
@@ -165,19 +237,19 @@ def parse_intake(answer: str) -> dict[str, Any]:
     """Разбор ответа модели. Не разобралось — это отказ, а не пустой результат."""
     text = str(answer or "").strip()
     if not text:
-        return {"fields": [], "questions": [], "notes": [],
+        return {"fields": [], "questions": [], "not_asked": [], "notes": [],
                 "reason": "модель не ответила"}
     match = re.search(r"\{.*\}", text, re.S)
     if not match:
-        return {"fields": [], "questions": [], "notes": [],
+        return {"fields": [], "questions": [], "not_asked": [], "notes": [],
                 "reason": "в ответе модели нет JSON"}
     try:
         data = json.loads(match.group(0))
     except json.JSONDecodeError as exc:
-        return {"fields": [], "questions": [], "notes": [],
+        return {"fields": [], "questions": [], "not_asked": [], "notes": [],
                 "reason": f"ответ модели не разобрался: {exc}"}
     if not isinstance(data, dict):
-        return {"fields": [], "questions": [], "notes": [],
+        return {"fields": [], "questions": [], "not_asked": [], "notes": [],
                 "reason": "ответ модели не объект"}
     fields, dropped = [], []
     for item in data.get("fields") or []:
@@ -194,15 +266,27 @@ def parse_intake(answer: str) -> dict[str, Any]:
             continue
         fields.append({"key": key, "value": item.get("value"),
                        "unit": str(item.get("unit") or ""), "quote": quote})
-    questions = [
-        {"key": str(row.get("key") or ""), "question": str(row.get("question") or ""),
-         "options": [str(option) for option in (row.get("options") or [])]}
-        for row in (data.get("questions") or []) if isinstance(row, dict)
-        and str(row.get("question") or "").strip()
-    ]
+    # Вопрос задаётся только о том, чего нельзя ни прочитать, ни посчитать.
+    # Остальное не выбрасывается молча: молча снятый вопрос читается как
+    # «об этом не подумали», а тут наоборот — об этом есть кому ответить.
+    questions, not_asked = [], []
+    for row in (data.get("questions") or []):
+        if not isinstance(row, dict):
+            continue
+        text = str(row.get("question") or "").strip()
+        if not text:
+            continue
+        item = {"key": str(row.get("key") or ""), "question": text,
+                "options": [str(option) for option in (row.get("options") or [])]}
+        origin = question_origin(item)
+        if origin == "document":
+            questions.append(item)
+        else:
+            not_asked.append({**item, "origin": origin, "why": NOT_ASKED[origin]})
     return {
         "fields": fields,
         "questions": questions,
+        "not_asked": not_asked,
         "notes": [str(note) for note in (data.get("notes") or [])],
         "dropped": dropped,
         "reason": "",
@@ -224,6 +308,59 @@ def to_number(value: Any) -> float | None:
         return float(text)
     except ValueError:
         return None
+
+
+# Единица — часть числа, и принятое без неё значение это другое число.
+# «Стоимость 1 650 000 000 ₽» выписывается моделью как есть — так и велено, —
+# а поле модели меряет МИЛЛИОНАМИ рублей: подставленное как было, оно давало
+# 1,65 квадриллиона ₽ и выглядело на экране обычным числом. Поэтому единица
+# читается и приводится, а неназванная единица у денег и площадей — это отказ,
+# а не догадка: у «1650» без слова «млн» два прочтения, различающиеся в
+# миллион раз.
+_MONEY_SCALE = (("млрд", 1_000.0), ("миллиард", 1_000.0),
+                ("млн", 1.0), ("миллион", 1.0),
+                ("тыс", 0.001), ("тысяч", 0.001))
+_AREA_SCALE = (("га", 10_000.0), ("гект", 10_000.0), ("м2", 1.0), ("м²", 1.0),
+               ("кв.м", 1.0), ("кв. м", 1.0), ("кв м", 1.0))
+_MONEY_FIELDS = {"purchase_price_mln", "social_compensation_mln",
+                 "land_rights_cost_mln", "resettlement_cost_mln"}
+_AREA_SQM_FIELDS = {"demolition_area_sqm", "apartments_gns_sqm",
+                    "offices_gba_sqm", "retail_gba_sqm"}
+
+
+def to_field_number(key: str, value: Any, unit: str = "") -> tuple[float | None, str]:
+    """Число в единицах поля модели и причина отказа, если привести нечем."""
+    number = to_number(value)
+    if number is None:
+        return None, "значение не читается числом"
+    said = f"{value} {unit}".lower().replace("\u00a0", " ")
+    if key in _MONEY_FIELDS:
+        for mark, scale in _MONEY_SCALE:
+            if mark in said:
+                return number * scale, ""
+        if "руб" in said or "₽" in said:
+            # Рубли без порядка — это рубли: миллионы называются словом.
+            return number / 1_000_000.0, ""
+        return None, ("единица не названа — «млн ₽», «₽» или «тыс ₽»? "
+                      "Разница в миллион раз, поэтому не подставляем")
+    if key == "site_area_ha":
+        if "га" in said or "гект" in said:
+            return number, ""
+        if "м2" in said or "м²" in said or "кв" in said:
+            return number / 10_000.0, ""
+        return None, "единица площади не названа — «га» или «м²»?"
+    if key in _AREA_SQM_FIELDS:
+        for mark, scale in _AREA_SCALE:
+            if mark in said:
+                return number * scale, ""
+        # Метры без подписи — метры. Отказ здесь был бы отказом на ровном
+        # месте: площадь участка документы пишут и в гектарах, и в метрах, а
+        # СПП, ГНС и площадь сносимого — только в метрах. Требование единицы
+        # стоит там, где два прочтения одинаково обычны, а не везде.
+        return number, ""
+    # Мест, машино-мест, посещений за смену: у счётных величин второй единицы
+    # не бывает, и требовать её значило бы отказывать на ровном месте.
+    return number, ""
 
 
 def apply_intake(
@@ -252,23 +389,31 @@ def apply_intake(
             applied.append({"key": key, "value": item.get("value"),
                             "note": "участок применяется отдельным запросом ЕГРН"})
             continue
-        number = to_number(item.get("value"))
+        number, why = to_field_number(key, item.get("value"), item.get("unit") or "")
         if number is None:
-            refused.append({"key": key, "reason": "значение не читается числом"})
+            refused.append({"key": key, "label": INTAKE_LABELS.get(key, key),
+                            "value": item.get("value"), "reason": why})
             continue
+        as_written = f"{item.get('value')} {item.get('unit') or ''}".strip()
         if key == "apartments_gns_sqm":
             row = new_tep.setdefault("apartments", {})
             was = row.get("gns")
             row["gns"] = number
-            applied.append({"key": key, "was": was, "now": number, "target": "tep"})
+            applied.append({"key": key, "label": INTAKE_LABELS.get(key, key),
+                            "was": was, "now": number, "target": "tep",
+                            "unit": INTAKE_UNITS.get(key, ""), "as_written": as_written})
             continue
         if key == "site_area_ha":
             was = new_inputs.get("site_area_ha")
             new_inputs["site_area_ha"] = number
-            applied.append({"key": key, "was": was, "now": number, "target": "inputs"})
+            applied.append({"key": key, "label": INTAKE_LABELS.get(key, key),
+                            "was": was, "now": number, "target": "inputs",
+                            "unit": INTAKE_UNITS.get(key, ""), "as_written": as_written})
             continue
         was = new_inputs.get(key)
         new_inputs[key] = number
-        applied.append({"key": key, "was": was, "now": number, "target": "inputs"})
+        applied.append({"key": key, "label": INTAKE_LABELS.get(key, key),
+                        "was": was, "now": number, "target": "inputs",
+                        "unit": INTAKE_UNITS.get(key, ""), "as_written": as_written})
     return {"inputs": new_inputs, "tep": new_tep,
             "applied": applied, "refused": refused}

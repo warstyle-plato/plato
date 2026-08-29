@@ -68,7 +68,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.20.47"
+VERSION = "0.20.49"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -10831,11 +10831,27 @@ def _telegram_handle_intake_document(chat_id: int, data: bytes, filename: str) -
     if got["fields"]:
         lines.append("\n<b>Что написано в документе</b>")
         for item in got["fields"]:
+            # Имя поля, а не ключ. Ключ латиницей среди русских строк читается
+            # как недоделка — ровно то, что уже ловилось во вкладке расходов.
+            name = document_intake.INTAKE_LABELS.get(item["key"], item["key"])
             unit = f" {html.escape(item['unit'])}" if item.get("unit") else ""
-            lines.append(f"• {html.escape(item['key'])}: <b>{html.escape(str(item['value']))}</b>{unit}"
+            lines.append(f"• {html.escape(name)}: <b>{html.escape(str(item['value']))}</b>{unit}"
                          f"\n  <i>«{html.escape(item['quote'][:160])}»</i>")
     else:
         lines.append("\nПолей, которые понимает модель, в документе не нашлось.")
+    # Что мы считаем сами. Спрашивать об этом значит просить догадку там, где
+    # есть источник, — и получить два ответа на один вопрос (владелец,
+    # 29.08.2026: «это он должен спрашивать или считать?»).
+    not_asked = got.get("not_asked") or []
+    if not_asked:
+        lines.append("\n<b>Об этом не спрашиваю — посчитаю сам</b>")
+        seen: set[str] = set()
+        for item in not_asked:
+            why = str(item.get("why") or "")
+            if why in seen:
+                continue
+            seen.add(why)
+            lines.append(f"• {html.escape(why)}")
     for note in got.get("notes") or []:
         lines.append(f"\n<i>{html.escape(str(note)[:300])}</i>")
     # Отброшенное называется вслух: молча пропущенное поле читается как
@@ -10844,11 +10860,22 @@ def _telegram_handle_intake_document(chat_id: int, data: bytes, filename: str) -
         lines.append(f"\nНе взято — {html.escape(str(line)[:200])}")
     lines.append("\nЧисла проверьте глазами: это то, что написано в документе, "
                  "а не расчёт.")
+    # Кадастровый номер из документа — это участок, а участок мы считаем.
+    # Своего пути для этого не заводим: номер уходит туда же, куда ушёл бы
+    # присланный сообщением, — иначе на один участок появилось бы два расчёта.
+    numbers = _intake_cadastral_numbers(got)
     questions = [item for item in (got.get("questions") or []) if item.get("question")]
+    if numbers:
+        lines.append(f"Участок: <b>{html.escape(', '.join(numbers))}</b> — считаю "
+                     + ("после вопросов." if questions else "сейчас."))
     if not questions:
-        lines.append("Открыть модель — кнопкой ниже.")
-        _telegram_send_message(chat_id, "\n".join(lines)[:3900],
-                               reply_markup=_telegram_open_model_button(chat_id))
+        if not numbers:
+            lines.append("Открыть модель — кнопкой ниже.")
+        _telegram_send_message(
+            chat_id, "\n".join(lines)[:3900],
+            reply_markup=None if numbers else _telegram_open_model_button(chat_id))
+        if numbers:
+            _telegram_handle_cadastral_numbers(chat_id, numbers)
         return
     lines.append(f"\nОстальное спрошу по одному — вопросов {len(questions)}.")
     _telegram_send_message(chat_id, "\n".join(lines)[:3900])
@@ -10864,9 +10891,34 @@ def _telegram_handle_intake_document(chat_id: int, data: bytes, filename: str) -
         "questions": questions,
         "answers": [],
         "index": 0,
+        "cadastral_numbers": numbers,
     }
     _telegram_dialog_save(chat_id, dialog)
     _telegram_intake_ask_next(chat_id, dialog)
+
+
+def _intake_cadastral_numbers(extraction: dict[str, Any]) -> list[str]:
+    """Кадастровые номера из разбора — тем же разбором, что и везде.
+
+    Модель выписывает их то списком, то строкой через запятую, то с подписью
+    «КН». Опознаёт номер одно выражение на всё приложение: второе разошлось бы
+    с первым ровно на том номере, ради которого его писали.
+    """
+    for item in extraction.get("fields") or []:
+        if item.get("key") != "cadastral_numbers":
+            continue
+        raw = item.get("value")
+        text = ", ".join(str(part) for part in raw) if isinstance(raw, (list, tuple)) else str(raw or "")
+        found = _CADASTRAL_NUMBER_RE.findall(text.replace("：", ":"))
+        # Порядок сохраняем, повторы убираем: один участок дважды — это
+        # территория из двух участков, которой нет.
+        seen, numbers = set(), []
+        for number in found:
+            if number not in seen:
+                seen.add(number)
+                numbers.append(number)
+        return numbers
+    return []
 
 
 def _telegram_open_model_button(chat_id: int) -> dict[str, Any] | None:
@@ -10899,11 +10951,17 @@ def _telegram_intake_ask_next(chat_id: int, dialog: dict[str, Any]) -> None:
             lines.append(f"• {html.escape(str(item.get('question')))}\n  <b>"
                          + (html.escape(said) if said else "<i>пропущено</i>") + "</b>")
         lines.append("\nЭто ваши ответы, а не расчёт: подставьте их в модель и проверьте.")
+        numbers = [str(number) for number in (intake.get("cadastral_numbers") or [])]
+        if numbers:
+            lines.append(f"Теперь считаю участок: <b>{html.escape(', '.join(numbers))}</b>.")
         dialog.pop("intake", None)
         dialog.pop("step", None)
         _telegram_dialog_save(chat_id, dialog)
-        _telegram_send_message(chat_id, "\n".join(lines)[:3900],
-                               reply_markup=_telegram_open_model_button(chat_id))
+        _telegram_send_message(
+            chat_id, "\n".join(lines)[:3900],
+            reply_markup=None if numbers else _telegram_open_model_button(chat_id))
+        if numbers:
+            _telegram_handle_cadastral_numbers(chat_id, numbers)
         return
     item = questions[index]
     options = [str(option) for option in (item.get("options") or []) if str(option).strip()]
@@ -31590,8 +31648,12 @@ async function applyAiIntake(){
   Object.assign(inputs,data.inputs||{});
   Object.keys(data.tep||{}).forEach(key=>{tep[key]=Object.assign(tep[key]||{},data.tep[key])});
   syncTep(false);renderInputs();renderTep();calculate();
-  const lines=(data.applied||[]).map(a=>a.key+': '+(a.was===undefined?'—':a.was)+' → '+a.now);
-  (data.refused||[]).forEach(x=>lines.push('не применено — '+x.key+': '+x.reason));
+  // Имя поля, а не ключ, и рядом — как значение было написано в документе:
+  // молчаливый перевод единиц («1 650 000 000 ₽» → 1650 млн ₽) неотличим от
+  // ошибки переписывания, а неприменённое без причины — от непрочитанного.
+  const lines=(data.applied||[]).map(a=>(a.label||a.key)+': '+(a.was===undefined?'—':a.was)
+   +' → '+a.now+(a.unit?' '+a.unit:'')+(a.as_written?' (в документе: '+a.as_written+')':''));
+  (data.refused||[]).forEach(x=>lines.push('не применено — '+(x.label||x.key)+': '+x.reason));
   appendAiMessage('system','Подставлено:\n'+lines.join('\n'));
  }catch(e){appendAiMessage('system','Не применилось: '+(e.message||e))}
 }
