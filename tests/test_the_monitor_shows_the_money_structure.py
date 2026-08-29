@@ -183,8 +183,10 @@ def test_the_hidden_reserve_reaches_the_screen_and_the_store() -> None:
 def test_a_stored_register_is_read_back(tmp_path, monkeypatch) -> None:
     import developaid_monitor as monitor
 
-    monkeypatch.setenv("DATA_DIR", str(tmp_path))
-    monkeypatch.setattr(monitor, "_DATA", None, raising=False)
+    # Каталог снимков читается один раз при импорте: `DATA_DIR` в окружении
+    # теста уже опоздал, и проверка писала в рабочие данные репозитория — они
+    # и уехали в коммит. Подменяется сам каталог.
+    monkeypatch.setattr(monitor, "_SNAPSHOT_DIR", tmp_path / "monitor")
     data = _register([
         {"counterparty": "НУР ООО", "contract": "386", "contract_amount": 40.0,
          "share": 5, "amount": 2.0, "paid": 0.0, "left": 2.0, "due": "30.09.2032"},
@@ -194,3 +196,17 @@ def test_a_stored_register_is_read_back(tmp_path, monkeypatch) -> None:
     back = monitor.latest_retention("Проверочный")
     assert back and back["taken_at"] == "2026-08-29"
     assert retention.summary(back, horizon=datetime.date(2027, 12, 31))["left"] == 2.0
+
+
+def test_the_tests_do_not_write_into_the_repository() -> None:
+    """Проверка, оставляющая файлы в `data/`, уезжает с ними в коммит.
+
+    Так и вышло: снимок реестра ГУ проверочного проекта дважды попал в
+    репозиторий. Каталог снимков читается при импорте, и `DATA_DIR`,
+    выставленный в тесте, до него уже не доходит.
+    """
+    import developaid_monitor as monitor
+
+    left = sorted(path.name for path in (ROOT / "data" / "monitor").glob("*"))
+    assert "Проверочный" not in left, "проверка снова пишет в рабочие данные"
+    assert monitor._SNAPSHOT_DIR.name == "monitor"

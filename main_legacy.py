@@ -69,7 +69,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.20.54"
+VERSION = "0.20.56"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -251,7 +251,11 @@ PROJECT_CLASS_PRESETS = {
     # а не от класса жилья. «Сдача и ввод» — свода нет, источники не
     # раскрывают. Подготовительные работы от класса не зависят (решение
     # владельца, 27.08.2026) — ставка одна на все классы, и коэффициент
-    # класса в class_adjustments для этой статьи единица. Цены и ставки СМР
+    # класса в class_adjustments для этой статьи единица. Наружные инженерные
+    # сети — туда же (решение владельца, 27.08.2026): труба и кабель до точки
+    # подключения не знают, комфорт над ними или элитка; цену задают мощность,
+    # расстояние до городских сетей и условия техприсоединения, а не класс
+    # жилья. Прежде стояло 10,25 / 10,8 / 11,8. Цены и ставки СМР
     # проверку прошли и не менялись.
     "comfort": {
         "label": "Комфорт",
@@ -272,7 +276,7 @@ PROJECT_CLASS_PRESETS = {
         "preparation_th_per_sqm": 2.75,
         "main_above_th_per_sqm": 190,
         "main_under_th_per_sqm": 190,
-        "utilities_th_per_sqm": 10.8,
+        "utilities_th_per_sqm": 10.25,
         "landscaping_th_per_sqm": 15.5,
     },
     "elite": {
@@ -283,7 +287,7 @@ PROJECT_CLASS_PRESETS = {
         "preparation_th_per_sqm": 2.75,
         "main_above_th_per_sqm": 300,
         "main_under_th_per_sqm": 300,
-        "utilities_th_per_sqm": 11.8,
+        "utilities_th_per_sqm": 10.25,
         "landscaping_th_per_sqm": 25.3,
     },
 }
@@ -20471,6 +20475,14 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
 
         pf_draw_total = pf_repayment_total = 0.0
         pf_interest_total = pf_cap_total = pf_limit_fee_total = 0.0
+        # Долг предыдущей очереди, принятый в ПФ этой по генеральному
+        # соглашению (решение владельца, 27.08.2026). Это НЕ выборка: деньги
+        # не приходят и расходов не финансируют, меняется только должник.
+        # Поэтому счётчик свой: в pf_draw_total ему нельзя — оттуда он попал
+        # бы в ЧИСЛИТЕЛЬ LLCR, ничем не уравновешенный (выборка уравновешена
+        # CAPEX, который на неё куплен, а перенос не покупает ничего).
+        carried_debt_in = 0.0
+        carried_debt = max(n(x, "_phase_carried_debt_mln") * 1_000_000, 0.0)
         pf_reservation_fee = (pf_limit or 0.0) * n(x, "reservation_fee_pct") / 100 if pf_limit else 0.0
         transferred_bridge_interest = 0.0
 
@@ -20590,6 +20602,14 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
                         pf_draw = room
                 pf_balance += pf_draw
                 pf_draw_total += pf_draw
+                # Принятый долг ложится на баланс после проверки потолка:
+                # лимит этой очереди он не выбирает (решение владельца,
+                # 27.08.2026) — банк переносит обязательство, а не выдаёт
+                # новые деньги. Но проценты на него идут как на тело ПФ, и
+                # покрытие эскроу он разбавляет: покрывать приходится больше.
+                if month == permit and carried_debt > 0:
+                    pf_balance += carried_debt
+                    carried_debt_in += carried_debt
 
                 coverage = escrow / pf_balance if pf_balance > 0 else 0.0
 
@@ -20723,6 +20743,7 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
             ),
 
             "pf_draw_total": pf_draw_total,
+            "carried_debt_in": carried_debt_in,
             "pf_repayment_total": pf_repayment_total,
             "pf_reservation_fee": pf_reservation_fee,
             "pf_interest": pf_interest_total,
@@ -20964,8 +20985,17 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
     # To reproduce Excel's correction concept, create a "reported" total where transferred bridge interest
     # appears in both bridge and PF buckets, then subtract it once.
     reported_interest_and_fees = financing_cost + result["transferred_bridge_interest"]
+    # Принятый от предыдущей очереди долг входит в ЗНАМЕНАТЕЛЬ и не входит в
+    # числитель (решение владельца, 27.08.2026: «долг должен появиться»).
+    # Иначе очередь, которой перенесли обязательство, показала бы покрытие,
+    # которого у неё нет: первая перестала быть дефолтной, а во второй долг
+    # не появился — два достоверных на вид отчёта на одних вводных.
+    # На своде этот же долг вычитается один раз (он не новые деньги, а часть
+    # выборки предыдущей очереди) — тем же приёмом, что и перенесённые
+    # проценты БРИДЖа строкой выше.
     llcr_denominator = (
-        result["pf_draw_total"] + reported_interest_and_fees - result["transferred_bridge_interest"]
+        result["pf_draw_total"] + result["carried_debt_in"]
+        + reported_interest_and_fees - result["transferred_bridge_interest"]
     )
     llcr = llcr_numerator / llcr_denominator if llcr_denominator else 0.0
 
@@ -22392,7 +22422,13 @@ def _aggregate_finance(results: list[dict[str, Any]]) -> dict[str, Any]:
     peak_total_debt = max((r["bridge_balance"] + r["pf_balance"] for r in rows), default=0.0)
     peak_escrow = max((r["escrow"] for r in rows), default=0.0)
     llcr_num = sum(f["llcr_numerator"] for f in fs)
-    llcr_den = sum(f["llcr_denominator"] for f in fs)
+    # Долг, принятый одной очередью от другой, стоит в знаменателе принявшей —
+    # там он и должен стоять. Но на своде это те же деньги, что уже посчитаны
+    # выборкой передавшей очереди, и без вычета они удваиваются: свод показал
+    # бы покрытие хуже действительного ровно на сумму переноса. Тот же приём,
+    # что и с перенесёнными процентами БРИДЖа.
+    carried_total = sum(float(f.get("carried_debt_in") or 0.0) for f in fs)
+    llcr_den = sum(f["llcr_denominator"] for f in fs) - carried_total
 
     financing_cost = sum(f["financing_cost"] for f in fs)
     return {
@@ -22474,6 +22510,7 @@ def _aggregate_finance(results: list[dict[str, Any]]) -> dict[str, Any]:
         "profit_before_tax": sum(f["profit_before_tax"] for f in fs),
         "llcr_numerator": llcr_num,
         "llcr_denominator": llcr_den,
+        "carried_debt_in": carried_total,
         "llcr": llcr_num / llcr_den if llcr_den else 0.0,
         "peak_total_debt": peak_total_debt,
         "peak_escrow": peak_escrow,
@@ -23140,7 +23177,7 @@ def _consolidate_vri(phase_items: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
+def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
     x_master = copy.deepcopy(req.inputs)
     t_master = copy.deepcopy(req.tep)
     rates = copy.deepcopy(req.rates)
@@ -23459,6 +23496,13 @@ def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
         # is authoritative once a user edits it; consolidation remains bottom-up.
         explicit_products = _apply_explicit_phase_products(p_tep, p_inputs, cfg)
 
+        # Долг предыдущей очереди, принятый этой по генеральному соглашению.
+        # Список кладёт обёртка calculate_phased после первого прохода: пока
+        # очереди не посчитаны, переносить нечего.
+        carried_list = phasing.get("_carried_debt_mln") or []
+        if idx < len(carried_list):
+            p_inputs["_phase_carried_debt_mln"] = float(carried_list[idx] or 0.0)
+
         if financing_strategy == "unified_project_cash" and idx > 0:
             p_inputs["_phase_project_cash_schedule"] = (
                 _available_project_cash_schedule(project_cash_sources))
@@ -23580,6 +23624,130 @@ def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
     return {"mode":"phased","consolidated":consolidated,"phases":phase_items,"comparison":comparison,
             "phasing":phasing,"social_allocation":social_allocation,"vri":vri_summary,
             "phase_financing":phase_financing}
+
+
+# Порог, ниже которого банк долг не переносит. Перенос — не подарок: если
+# проект в целом не обслуживает долг, перенос просто оттягивает дефолт, и
+# банку это не нужно (решение владельца, 27.08.2026). Единица — минимальное
+# осмысленное значение: дисконтированный поток покрывает долг ровно в ноль.
+_PHASE_DEBT_CARRY_MIN_LLCR = 1.0
+# Мельче этого «непогашенный долг» — след округления, а не обязательство.
+_PHASE_DEBT_CARRY_MIN_RUB = 500_000.0
+
+
+def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
+    """Очереди с переносом непогашенного долга вперёд.
+
+    По генеральному соглашению долг, который очередь не погасила, переходит в
+    ПФ следующей — лимита её он не выбирает, но проценты несёт и в знаменателе
+    её LLCR стоит (ответы владельца, 27.08.2026). Условие одно и жёсткое:
+    **общий LLCR проекта должен выдерживаться**. Не выдерживается — переноса
+    нет, дефолт остаётся на своей очереди и называется вслух: банк не станет
+    переносить обязательство ради того, чтобы отодвинуть тот же дефолт на год.
+
+    Проходов несколько по необходимости: приняв долг, очередь может сама не
+    погасить его до конца, и тогда остаток идёт дальше. Цепочка считается от
+    первой очереди к последней, по проходу на стык.
+    """
+    bundle = _calculate_phased_once(req)
+    if bundle.get("mode") != "phased":
+        return bundle
+    # Признак, а не умолчание: книга о переносе пока не знает, и включённый по
+    # умолчанию перенос развёл бы движок с выгрузкой молча — оба документа
+    # выглядели бы достоверными на одних вводных. Включается явно, и до тех
+    # пор, пока лист CF книги не научится принимать долг предыдущей очереди,
+    # включать его стоит только для расчёта на экране.
+    if not bool((req.phasing or {}).get("carry_debt_forward")):
+        return bundle
+    phases = bundle.get("phases") or []
+    if len(phases) < 2:
+        return bundle
+
+    def unpaid(item: dict[str, Any]) -> float:
+        return float(((item.get("result") or {}).get("finance") or {}).get("ending_pf") or 0.0)
+
+    # Переносить нечего, если долг остаётся только у последней очереди: дальше
+    # него нет никого, и «перенос» был бы фикцией.
+    if not any(unpaid(item) > _PHASE_DEBT_CARRY_MIN_RUB for item in phases[:-1]):
+        return bundle
+
+    consolidated_llcr = float(
+        ((bundle.get("consolidated") or {}).get("summary") or {}).get("llcr") or 0.0)
+    if consolidated_llcr < _PHASE_DEBT_CARRY_MIN_LLCR:
+        # Молчать нельзя: без этой строки читатель увидит дефолтную очередь и
+        # не поймёт, почему перенос, о котором сказано в методике, не сработал.
+        bundle["debt_carry"] = {
+            "applied": False,
+            "project_llcr": round(consolidated_llcr, 4),
+            "min_llcr": _PHASE_DEBT_CARRY_MIN_LLCR,
+            "note": (
+                f"Перенос долга между очередями не применён: общий LLCR проекта "
+                f"{consolidated_llcr:.2f}x ниже {_PHASE_DEBT_CARRY_MIN_LLCR:.2f}x. "
+                "Банк переносит обязательство только если проект в целом его "
+                "обслуживает; иначе перенос лишь отодвигает дефолт."),
+        }
+        return bundle
+
+    carried = [0.0] * len(phases)
+    applied: list[dict[str, Any]] = []
+    current = bundle
+    for idx in range(len(phases) - 1):
+        left = unpaid((current.get("phases") or [])[idx])
+        if left <= _PHASE_DEBT_CARRY_MIN_RUB:
+            continue
+        carried[idx + 1] = carried[idx + 1] + left
+        request = PhasedCalcRequest(
+            inputs=copy.deepcopy(req.inputs), tep=copy.deepcopy(req.tep),
+            rates=copy.deepcopy(req.rates),
+            phasing={**copy.deepcopy(req.phasing or {}),
+                     "_carried_debt_mln": [value / 1_000_000 for value in carried]})
+        current = _calculate_phased_once(request)
+        # Обязательство сменило должника — у передавшей очереди его больше нет.
+        # Без этого долг стоял бы в обеих: первая осталась бы дефолтной, хотя
+        # платит уже вторая, и свод сложил бы его дважды.
+        source = (current.get("phases") or [])[idx]
+        source_fin = (source.get("result") or {}).get("finance") or {}
+        source_sum = (source.get("result") or {}).get("summary") or {}
+        source_fin["debt_carried_out"] = left
+        source_fin["ending_pf"] = 0.0
+        if "ending_pf" in source_sum:
+            source_sum["ending_pf"] = 0.0
+        if "ending_pf_mln" in source_sum:
+            source_sum["ending_pf_mln"] = 0.0
+        applied.append({
+            "from": idx + 1, "to": idx + 2,
+            "amount": round(left, 2),
+            "amount_mln": round(left / 1_000_000, 3),
+        })
+
+    if not applied:
+        return bundle
+    # Свод собран внутри прохода — до того, как передавшей очереди списали
+    # долг. Приводим его к очередям, иначе итог покажет непогашенным то, что
+    # уже платит следующая, и вердикт снова назовёт проект дефолтным.
+    ending_total = sum(
+        float(((item.get("result") or {}).get("finance") or {}).get("ending_pf") or 0.0)
+        for item in (current.get("phases") or []))
+    consolidated = current.get("consolidated") or {}
+    for section in ("finance", "summary"):
+        block = consolidated.get(section)
+        if isinstance(block, dict) and "ending_pf" in block:
+            block["ending_pf"] = ending_total
+    summary_block = consolidated.get("summary")
+    if isinstance(summary_block, dict) and "ending_pf_mln" in summary_block:
+        summary_block["ending_pf_mln"] = ending_total / 1_000_000
+    current["debt_carry"] = {
+        "applied": True,
+        "project_llcr": round(consolidated_llcr, 4),
+        "min_llcr": _PHASE_DEBT_CARRY_MIN_LLCR,
+        "transfers": applied,
+        "note": (
+            "Долг, не погашенный очередью, принят ПФ следующей по генеральному "
+            "соглашению: лимита он не выбирает, но проценты несёт и стоит в "
+            f"знаменателе её LLCR. Общий LLCR проекта {consolidated_llcr:.2f}x — "
+            "перенос допустим."),
+    }
+    return current
 
 
 @app.post("/calculate-phased")

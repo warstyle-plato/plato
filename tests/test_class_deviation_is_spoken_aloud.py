@@ -33,7 +33,7 @@ V4_TEMPLATE = Path(__file__).resolve().parent.parent / "templates" / "DevelopAid
 BUSINESS_BASE = dict(apartment_price_th=650, commercial_price_th=650,
                      parking_price_th=5000, preparation_th_per_sqm=2.75,
                      main_above_th_per_sqm=190, main_under_th_per_sqm=190,
-                     utilities_th_per_sqm=10.8, landscaping_th_per_sqm=15.5)
+                     utilities_th_per_sqm=10.25, landscaping_th_per_sqm=15.5)
 
 
 def test_deviation_rows_compare_inputs_to_the_class_base():
@@ -55,6 +55,31 @@ def test_exact_base_and_custom_class_produce_no_rows():
     inputs["project_class"] = "custom"
     custom = core.project_class_deviations(inputs)
     assert custom["rows"] == [] and custom["label"] == "Пользовательский"
+
+
+def test_the_articles_that_do_not_know_the_class_are_one_rate(): 
+    """Подготовка и наружные сети от класса не зависят (владелец, 27.08.2026).
+
+    Труба и кабель до точки подключения не знают, комфорт над ними или элитка:
+    цену задают мощность, расстояние до городских сетей и условия
+    техприсоединения. То же у подготовительных работ. Ставка одна на все
+    классы, и коэффициент класса в справочнике для этих статей — единица.
+    """
+    import json
+    from pathlib import Path
+    for field in ("preparation_th_per_sqm", "utilities_th_per_sqm"):
+        values = {key: preset[field] for key, preset in core.PROJECT_CLASS_PRESETS.items()}
+        assert len(set(values.values())) == 1, f"{field} различается по классам: {values}"
+        assert core.DEFAULT_INPUTS[field] == pytest.approx(
+            core.PROJECT_CLASS_PRESETS["comfort"][field])
+    adjustments = json.loads(
+        (Path(__file__).resolve().parent.parent
+         / "reference_data" / "statistics" / "class_adjustments.json").read_text("utf-8"))
+    for component in ("preparation", "external_utilities"):
+        coefficients = adjustments["components"][component]
+        assert set(coefficients.values()) == {1.0}, (
+            f"{component}: свод всё ещё разводит статью по классам — "
+            f"строка под ставкой заспорит с самой ставкой")
 
 
 def test_the_default_inputs_sit_exactly_on_the_comfort_base():

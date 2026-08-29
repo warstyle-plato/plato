@@ -137,7 +137,9 @@ def test_the_screen_shows_the_run_and_names_the_measure():
     from auction_search.ui import auctions_page
 
     page = auctions_page()
-    assert "Потолок входа, ₽/м²" in page, "колонка называет, что в ней"
+    assert "Потолок цены входа" in page, "колонка называет, что в ней"
+    assert "format(per)} ₽/м²" in page, "единица подписана у каждой цифры"
+    assert "всего ${esc(fmtMln" in page, "общая сумма отделена от цены за метр"
     assert "Оценить все КРТ моделью" in page
     assert "/auctions/krt/ranking" in page and "/auctions/krt/ranking/refresh" in page
     assert "из ${p.total}" in page and "p.elapsed_seconds" in page and "p.current" in page

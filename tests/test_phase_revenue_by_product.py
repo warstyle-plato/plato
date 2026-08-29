@@ -66,7 +66,9 @@ def test_the_split_is_not_counted_a_second_time():
     """Числа берутся из отчёта очереди, а не считаются здесь заново."""
     import inspect
 
-    source = inspect.getsource(core.calculate_phased)
+    # Цикл очередей живёт в однопроходной `_calculate_phased_once`:
+    # `calculate_phased` стала обёрткой с переносом долга между очередями.
+    source = inspect.getsource(core._calculate_phased_once)
     block = source[source.index('"revenue_by_product"'):]
     block = block[:block.index('"cash_shared_cost"')]
     assert 'report' in block and 'products' in block

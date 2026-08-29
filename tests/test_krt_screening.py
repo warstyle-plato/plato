@@ -85,6 +85,10 @@ def test_published_krt_duties_reach_developaid_without_an_invented_cost() -> Non
             {"category": "demolition", "area_sqm": 1250, "cadastral_number": "77:01:1:1"},
             {"category": "demolition_or_reconstruction", "area_sqm": 800,
              "cadastral_number": "77:01:1:2"},
+            {"category": "reconstruction", "area_sqm": 600,
+             "cadastral_number": "77:01:1:3"},
+            {"category": "preservation", "area_sqm": 400,
+             "cadastral_number": "77:01:1:4"},
         ],
         "construction": ["Предусмотреть строительство объекта образования"],
         "resettlement": ["Переселение жителей выполняется в установленном порядке"],
@@ -98,6 +102,9 @@ def test_published_krt_duties_reach_developaid_without_an_invented_cost() -> Non
     assert inputs["demolition_area_sqm"] == 1250
     assert inputs["demolition_cost_th_per_sqm"] == 0
     assert result["requirements"]["conditional_area_sqm"] == 800
+    assert result["requirements"]["reconstruction_area_sqm"] == 600
+    assert result["requirements"]["preservation_area_sqm"] == 400
+    assert result["requirements"]["resettlement_mentions"] == 1
     assert result["requirements"]["permitted_uses"] == ["4.2 · Объекты торговли"]
     assert result["requirements"]["unmodelled_construction"]
     assert result["traffic_light"]["tone"] != "ok"

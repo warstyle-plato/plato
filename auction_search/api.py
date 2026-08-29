@@ -15,6 +15,7 @@ from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel, Field
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.table import Table, TableStyleInfo
 
 from auction_search.adapters import (
@@ -77,14 +78,78 @@ class AuctionExportRequest(BaseModel):
 class AuctionLotPointRequest(BaseModel):
     query: str = Field(min_length=3, max_length=500)
 
-def _xlsx(rows: list[dict[str, Any]]) -> bytes:
-    headers = [
-        "Раздел", "Название", "Округ", "Район", "Адрес", "Кадастровые номера",
-        "Тип", "Площадь участка, м²", "Площадь здания/ОКС, м²",
-        "Площадь КРТ, га", "Общий объём, м²", "Жильё, м²", "Цена, ₽",
-        "Оценка Платона", "Статус", "Источник",
-    ]
-
+def _xlsx(rows: list[dict[str, Any]], kind: str = "auctions") -> bytes:
+    if kind == "krt":
+        columns = [
+            ("name", "Проект КРТ", 48),
+            ("okrug", "Округ", 10),
+            ("district", "Район", 20),
+            ("status", "Статус", 18),
+            ("krt_area_ha", "Площадь территории, га", 20),
+            ("total_gfa_sqm", "Общий объём строительства, м²", 24),
+            ("housing_gfa_sqm", "Жильё, м²", 18),
+            ("nonresidential_gfa_sqm", "Нежилое, м²", 18),
+            ("business_gfa_sqm", "Общественно-деловое, м²", 22),
+            ("jobs", "Рабочие места", 17),
+            ("score", "Оценка Платона, балл", 19),
+            ("traffic_light", "Светофор модели", 25),
+            ("saleable_sqm", "Продаваемая площадь, м²", 22),
+            ("entry_capacity_rub_per_sqm", "Потолок цены входа, ₽/м² продаваемой", 27),
+            ("entry_capacity_mln", "Потолок цены входа всего, млн ₽", 25),
+            ("project_llcr_x", "LLCR проекта, x", 17),
+            ("weakest_phase_llcr_x", "LLCR слабейшей очереди, x", 22),
+            ("margin_pct", "Маржа до неизвестных обязательств, %", 25),
+            ("url", "Источник", 42),
+        ]
+        obligation_columns = [
+            ("name", "Проект КРТ", 48),
+            ("okrug", "Округ", 10),
+            ("district", "Район", 20),
+            ("status", "Статус", 18),
+            ("demolition_objects", "Снос, объектов", 16),
+            ("demolition_area_sqm", "Снос, известная площадь, м²", 23),
+            ("conditional_objects", "Снос/реконструкция, объектов", 23),
+            ("conditional_area_sqm", "Снос/реконструкция, известная площадь, м²", 30),
+            ("reconstruction_objects", "Реконструкция, объектов", 21),
+            ("reconstruction_area_sqm", "Реконструкция, известная площадь, м²", 28),
+            ("preservation_objects", "Сохранение, объектов", 20),
+            ("preservation_area_sqm", "Сохранение, известная площадь, м²", 27),
+            ("resettlement_mentions", "Расселение/изъятие, упоминаний", 25),
+            ("url", "Источник", 42),
+        ]
+        numeric_keys = {
+            "krt_area_ha", "total_gfa_sqm", "housing_gfa_sqm",
+            "nonresidential_gfa_sqm", "business_gfa_sqm", "jobs", "score",
+            "saleable_sqm", "entry_capacity_rub_per_sqm", "entry_capacity_mln",
+            "project_llcr_x", "weakest_phase_llcr_x", "margin_pct",
+            "demolition_objects", "demolition_area_sqm", "conditional_objects",
+            "conditional_area_sqm", "reconstruction_objects", "reconstruction_area_sqm",
+            "preservation_objects", "preservation_area_sqm", "resettlement_mentions",
+        }
+    else:
+        columns = [
+            ("section", "Раздел", 11),
+            ("name", "Название", 48),
+            ("okrug", "Округ", 10),
+            ("district", "Район", 18),
+            ("address", "Адрес", 34),
+            ("cadastre", "Кадастровые номера", 28),
+            ("type", "Тип", 18),
+            ("land_area_sqm", "Площадь участка, м²", 20),
+            ("building_area_sqm", "Площадь здания/ОКС, м²", 23),
+            ("krt_area_ha", "Площадь КРТ, га", 18),
+            ("total_gfa_sqm", "Общий объём, м²", 18),
+            ("housing_gfa_sqm", "Жильё, м²", 16),
+            ("price", "Цена, ₽", 18),
+            ("score", "Оценка Платона", 17),
+            ("status", "Статус", 22),
+            ("url", "Источник", 42),
+        ]
+        obligation_columns = []
+        numeric_keys = {
+            "land_area_sqm", "building_area_sqm", "krt_area_ha", "total_gfa_sqm",
+            "housing_gfa_sqm", "price", "score",
+        }
     def number(value: Any) -> float | int | None:
         if value in (None, ""):
             return None
@@ -94,71 +159,94 @@ def _xlsx(rows: list[dict[str, Any]]) -> bytes:
         except (TypeError, ValueError):
             return None
 
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Выборка"
-    ws.append(headers)
-    keys = (
-        "section", "name", "okrug", "district", "address", "cadastre", "type",
-        "land_area_sqm", "building_area_sqm", "krt_area_ha", "total_gfa_sqm",
-        "housing_gfa_sqm", "price", "score", "status", "url",
-    )
-    numeric_keys = {
-        "land_area_sqm", "building_area_sqm", "krt_area_ha", "total_gfa_sqm",
-        "housing_gfa_sqm", "price", "score",
+    formats = {
+        "land_area_sqm": '#,##0.00', "building_area_sqm": '#,##0.00',
+        "krt_area_ha": '0.00', "total_gfa_sqm": '#,##0', "housing_gfa_sqm": '#,##0',
+        "nonresidential_gfa_sqm": '#,##0', "business_gfa_sqm": '#,##0',
+        "jobs": '#,##0', "price": '#,##0" ₽"', "score": '0',
+        "saleable_sqm": '#,##0', "entry_capacity_rub_per_sqm": '#,##0" ₽/м²"',
+        "entry_capacity_mln": '#,##0.0" млн ₽"', "project_llcr_x": '0.00"x"',
+        "weakest_phase_llcr_x": '0.00"x"', "margin_pct": '0.0"%"',
+        "demolition_objects": '0', "demolition_area_sqm": '#,##0.0',
+        "conditional_objects": '0', "conditional_area_sqm": '#,##0.0',
+        "reconstruction_objects": '0', "reconstruction_area_sqm": '#,##0.0',
+        "preservation_objects": '0', "preservation_area_sqm": '#,##0.0',
+        "resettlement_mentions": '0',
     }
-    for source_row in rows[:2000]:
-        row = dict(source_row)
-        if row.get("section") == "Торги":
-            areas = export_areas(row)
-            row["land_area_sqm"] = areas.land_area_sqm
-            row["building_area_sqm"] = areas.building_area_sqm
-        values = [number(row.get(key)) if key in numeric_keys else (row.get(key) or "") for key in keys]
-        ws.append(values)
+    wb = Workbook()
 
-    ws.freeze_panes = "A2"
-    ws.auto_filter.ref = f"A1:P{max(1, ws.max_row)}"
-    ws.sheet_view.showGridLines = False
-    header_fill = PatternFill("solid", fgColor="171717")
-    for cell in ws[1]:
-        cell.fill = header_fill
-        cell.font = Font(color="FFFFFF", bold=True)
-        cell.alignment = Alignment(vertical="center", wrap_text=True)
-    ws.row_dimensions[1].height = 34
-    widths = [11, 48, 10, 18, 34, 28, 18, 20, 23, 18, 18, 16, 18, 17, 22, 42]
-    for index, width in enumerate(widths, start=1):
-        ws.column_dimensions[chr(64 + index)].width = width
-    for row in ws.iter_rows(min_row=2):
-        for cell in row:
-            cell.alignment = Alignment(vertical="top", wrap_text=cell.column in {2, 5, 6, 15, 16})
-    for row in ws.iter_rows(min_row=2, min_col=8, max_col=14):
-        for cell in row:
-            cell.alignment = Alignment(horizontal="right", vertical="top")
-    for column in (8, 9, 11, 12):
-        for cell in ws.iter_cols(min_col=column, max_col=column, min_row=2):
-            for item in cell:
-                item.number_format = '#,##0.00'
-    for cell in ws["J"][1:]:
-        cell.number_format = '0.0000'
-    for cell in ws["M"][1:]:
-        cell.number_format = '#,##0" ₽"'
-    for cell in ws["N"][1:]:
-        cell.number_format = '0'
-    for cell in ws["P"][1:]:
-        if cell.value:
-            cell.hyperlink = str(cell.value)
-            cell.style = "Hyperlink"
-    if ws.max_row >= 2:
-        table = Table(displayName="DevelopAidSelection", ref=f"A1:P{ws.max_row}")
-        table.tableStyleInfo = TableStyleInfo(
-            name="TableStyleMedium2", showFirstColumn=False, showLastColumn=False,
-            showRowStripes=True, showColumnStripes=False,
+    def fill_sheet(ws, sheet_columns, title: str, table_name: str) -> None:
+        ws.title = title
+        keys = tuple(column[0] for column in sheet_columns)
+        ws.append([column[1] for column in sheet_columns])
+        for source_row in rows[:2000]:
+            row = dict(source_row)
+            if row.get("section") == "Торги":
+                areas = export_areas(row)
+                row["land_area_sqm"] = areas.land_area_sqm
+                row["building_area_sqm"] = areas.building_area_sqm
+            values = [
+                number(row.get(key)) if key in numeric_keys else (row.get(key) or "")
+                for key in keys
+            ]
+            ws.append(values)
+
+        ws.freeze_panes = "A2"
+        last_column = get_column_letter(len(sheet_columns))
+        ws.auto_filter.ref = f"A1:{last_column}{max(1, ws.max_row)}"
+        ws.sheet_view.showGridLines = False
+        header_fill = PatternFill("solid", fgColor="171717")
+        for cell in ws[1]:
+            cell.fill = header_fill
+            cell.font = Font(color="FFFFFF", bold=True)
+            cell.alignment = Alignment(vertical="center", wrap_text=True)
+        ws.row_dimensions[1].height = 38
+        for index, (_, _, width) in enumerate(sheet_columns, start=1):
+            ws.column_dimensions[get_column_letter(index)].width = width
+        wrap_columns = {
+            index for index, (key, _, _) in enumerate(sheet_columns, start=1)
+            if key in {"name", "address", "cadastre", "status", "traffic_light", "url"}
+        }
+        numeric_columns = {
+            index for index, (key, _, _) in enumerate(sheet_columns, start=1)
+            if key in numeric_keys
+        }
+        for row in ws.iter_rows(min_row=2):
+            for cell in row:
+                cell.alignment = Alignment(
+                    horizontal="right" if cell.column in numeric_columns else "left",
+                    vertical="top", wrap_text=cell.column in wrap_columns)
+        for index, (key, _, _) in enumerate(sheet_columns, start=1):
+            if key in formats:
+                for cells in ws.iter_cols(min_col=index, max_col=index, min_row=2):
+                    for item in cells:
+                        item.number_format = formats[key]
+        url_column = keys.index("url") + 1
+        for row_number in range(2, ws.max_row + 1):
+            cell = ws.cell(row_number, url_column)
+            if cell.value:
+                cell.hyperlink = str(cell.value)
+                cell.style = "Hyperlink"
+        if ws.max_row >= 2:
+            table = Table(displayName=table_name, ref=f"A1:{last_column}{ws.max_row}")
+            table.tableStyleInfo = TableStyleInfo(
+                name="TableStyleMedium2", showFirstColumn=False, showLastColumn=False,
+                showRowStripes=True, showColumnStripes=False,
+            )
+            ws.add_table(table)
+        ws.page_setup.orientation = "landscape"
+        ws.page_setup.fitToWidth = 1
+        ws.sheet_properties.pageSetUpPr.fitToPage = True
+
+    fill_sheet(
+        wb.active, columns, "КРТ" if kind == "krt" else "Выборка",
+        "DevelopAidKrtSelection" if kind == "krt" else "DevelopAidSelection",
+    )
+    if obligation_columns:
+        fill_sheet(
+            wb.create_sheet("Обязательства"), obligation_columns,
+            "Обязательства", "DevelopAidKrtDuties",
         )
-        ws.add_table(table)
-    ws.auto_filter.ref = f"A1:P{max(1, ws.max_row)}"
-    ws.page_setup.orientation = "landscape"
-    ws.page_setup.fitToWidth = 1
-    ws.sheet_properties.pageSetUpPr.fitToPage = True
     out = io.BytesIO()
     wb.save(out)
     return out.getvalue()
@@ -1114,7 +1202,7 @@ def install(app: FastAPI) -> None:
 
     @app.post("/auctions/export.xlsx")
     async def auction_export(req: AuctionExportRequest) -> Response:
-        data = _xlsx(req.rows)
+        data = _xlsx(req.rows, req.kind)
         filename = "developaid-krt.xlsx" if req.kind == "krt" else "developaid-auctions.xlsx"
         return Response(content=data, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         headers={"Content-Disposition": f'attachment; filename="{filename}"'})
