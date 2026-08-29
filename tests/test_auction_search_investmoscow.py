@@ -41,6 +41,35 @@ def test_city_discovery_is_available_separately_and_in_all_sources():
     assert any(isinstance(adapter, InvestMoscowDiscoveryAdapter) for adapter in all_sources)
 
 
+def test_city_catalogue_uses_current_canonical_url_and_browser_headers(monkeypatch):
+    first = InvestMoscowDiscoveryAdapter._search_urls()[0]
+    assert first.startswith("https://investmoscow.ru/tenders?")
+    assert "/tenders/?" not in first
+
+    seen = {}
+
+    class _Response:
+        headers = type("Headers", (), {"get_content_charset": lambda self: "utf-8"})()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self):
+            return b"ok"
+
+    def fake_open(request, timeout):
+        seen.update({key.lower(): value for key, value in request.header_items()})
+        return _Response()
+
+    monkeypatch.setattr("auction_search.adapters.investmoscow.urlopen", fake_open)
+    assert InvestMoscowDiscoveryAdapter()._read_html(first) == "ok"
+    assert "mozilla/5.0" in seen["user-agent"].lower()
+    assert seen["accept-language"].startswith("ru-RU")
+
+
 def test_city_card_extracts_whitelisted_official_etp_links_only():
     html = """
     <a href="https://www.roseltorg.ru/procedure/2400000000001">Участвовать</a>
@@ -87,11 +116,11 @@ def test_city_discovery_reports_unsupported_etp_instead_of_inventing_facts(monke
     pages = {
         "https://investmoscow.ru/tenders/": '<a href="/tenders/tender/1">Лот</a>',
         "https://investmoscow.ru/tenders/tender/1": (
-            '<a href="https://utp.sberbank-ast.ru/AP/NBT/PurchaseView/1/0/0/0">ЭТП</a>'
+                '<a href="https://fabrikant.ru/AP/NBT/PurchaseView/1/0/0/0">ЭТП</a>'
         ),
     }
     monkeypatch.setattr(adapter, "_read_html", pages.__getitem__)
 
     assert adapter.discover_moscow() == []
-    assert adapter.last_report["unsupported_etp_hosts"] == ["utp.sberbank-ast.ru"]
+    assert adapter.last_report["unsupported_etp_hosts"] == ["fabrikant.ru"]
     assert adapter.last_report["unresolved_city_cards"] == 1

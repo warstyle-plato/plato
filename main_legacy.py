@@ -68,7 +68,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.20.35"
+VERSION = "0.20.44"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -5033,6 +5033,13 @@ class LandLookupRequest(BaseModel):
     session: str = ""
 
 
+class LandLotContextRequest(BaseModel):
+    """Кадастровый контекст лота: объект торгов и земля под ним."""
+    cadastral_numbers: list[str] = []
+    # Только для учёта: кто открыл карточку лота. На поиск не влияет.
+    session: str = ""
+
+
 class VriManualRequest(BaseModel):
     """Свой расчёт платы за ВРИ: метры и основания задаёт человек."""
     rows: list[dict[str, Any]] = []
@@ -5280,6 +5287,156 @@ def land_lookup(req: LandLookupRequest) -> dict[str, Any]:
             "requested_at": date.today().isoformat(),
         },
     }
+
+
+def _land_lot_context(numbers: list[str], session: str = "") -> dict[str, Any]:
+    """Разделяет КН объекта торгов и участок под ОКС.
+
+    Это не второй поиск Росреестра: все сведения берутся через `land_lookup`.
+    Поэтому край приложения автоматически пользуется тем же удалённым ядром,
+    кэшем и нормализацией НСПД, что кабинет и расчёт территории.
+    """
+    requested = _parse_cadastral_numbers(numbers)
+
+    def lookup(query: str, *, include_premises: bool) -> list[dict[str, Any]]:
+        payload = land_lookup(LandLookupRequest(
+            query=query,
+            limit=30,
+            include_premises=include_premises,
+            session=session,
+        ))
+        return [dict(item) for item in payload.get("results", []) if isinstance(item, dict)]
+
+    objects = lookup("\n".join(requested), include_premises=True)
+    buildings = [dict(item) for item in objects if item.get("found") and item.get("kind") == "building"]
+    other_objects = [
+        dict(item) for item in objects
+        if item.get("kind") not in ("land", "building") or not item.get("found")
+    ]
+    parcels: dict[str, dict[str, Any]] = {}
+
+    def add_parcel(item: dict[str, Any], method: str, building_number: str = "") -> None:
+        if not item.get("found") or item.get("kind") != "land":
+            return
+        number = _land_text(item.get("cadastral_number"))
+        if not number:
+            return
+        current = parcels.get(number)
+        if current is None:
+            current = dict(item)
+            current["lookup_methods"] = []
+            current["related_buildings"] = []
+            parcels[number] = current
+        if method not in current["lookup_methods"]:
+            current["lookup_methods"].append(method)
+        if building_number and building_number not in current["related_buildings"]:
+            current["related_buildings"].append(building_number)
+
+    # Если КН лота уже является участком, его площадь подтверждается напрямую.
+    for item in objects:
+        add_parcel(item, "requested")
+
+    relation_numbers: list[str] = []
+    relations_by_building: dict[str, list[str]] = {}
+    for building in buildings:
+        building_number = _land_text(building.get("cadastral_number"))
+        relation = _land_text(building.get("land_parcel"))
+        found_numbers = [] if not relation else _CADASTRAL_NUMBER_RE.findall(relation.replace("：", ":"))
+        found_numbers = list(dict.fromkeys(found_numbers))
+        relations_by_building[building_number] = found_numbers
+        for number in found_numbers:
+            if number not in relation_numbers:
+                relation_numbers.append(number)
+
+    relation_results: dict[str, dict[str, Any]] = {}
+    if relation_numbers:
+        for item in lookup("\n".join(relation_numbers), include_premises=False):
+            number = _land_text(item.get("cadastral_number"))
+            if number:
+                relation_results[number] = item
+
+    warnings: list[str] = []
+    for building in buildings:
+        building_number = _land_text(building.get("cadastral_number"))
+        site_numbers: list[str] = []
+        for number in relations_by_building.get(building_number, []):
+            parcel = relation_results.get(number)
+            if parcel and parcel.get("kind") == "land" and parcel.get("found"):
+                add_parcel(parcel, "egrn_relation", building_number)
+                site_numbers.append(number)
+
+        method = "egrn_relation" if site_numbers else ""
+        # Не у каждого ОКС в публичной карточке есть ссылка на землю. Тогда
+        # проверяем земельный слой в центре контура здания. Это полезная
+        # пространственная проверка, но не замена выписке и межевому плану.
+        if not site_numbers:
+            center = building.get("center") or {}
+            lat, lng = _land_float(center.get("lat")), _land_float(center.get("lng"))
+            if lat is not None and lng is not None:
+                try:
+                    under = lookup(f"{lat}, {lng}", include_premises=False)
+                except HTTPException as exc:
+                    under = []
+                    warnings.append(
+                        f"Участок под ОКС {building_number} не проверен: {exc.detail}"
+                    )
+                for parcel in under:
+                    if parcel.get("found") and parcel.get("kind") == "land":
+                        add_parcel(parcel, "building_center", building_number)
+                        number = _land_text(parcel.get("cadastral_number"))
+                        if number and number not in site_numbers:
+                            site_numbers.append(number)
+                if site_numbers:
+                    method = "building_center"
+            if not site_numbers:
+                warnings.append(
+                    f"НСПД не определила земельный участок под ОКС {building_number}."
+                )
+        building["site_lookup_method"] = method or "not_found"
+        building["site_cadastral_numbers"] = site_numbers
+
+    for item in other_objects:
+        number = _land_text(item.get("cadastral_number"))
+        if not item.get("found"):
+            warnings.append(
+                f"Кадастровый номер {number or 'из карточки'} не найден в открытых сведениях ЕГРН."
+            )
+        elif item.get("kind") == "premise":
+            warnings.append(
+                f"{number} — помещение, а не ОСЗ; по одному КН помещения участок под домом не определяется."
+            )
+
+    if any("building_center" in item.get("lookup_methods", []) for item in parcels.values()):
+        warnings.append(
+            "Участок под ОКС найден по центральной точке здания. Для сделки проверьте связь объектов по выпискам ЕГРН."
+        )
+    warnings.append(
+        "Площади справочные, из открытых данных ЕГРН; для сделки нужна актуальная выписка Росреестра."
+    )
+    return {
+        "requested": requested,
+        "objects": objects,
+        "buildings": buildings,
+        "land_parcels": list(parcels.values()),
+        "other_objects": other_objects,
+        "warnings": list(dict.fromkeys(warnings)),
+        "source": {
+            "service": "nspd.gov.ru (НСПД, ППК «Роскадастр»)",
+            "requested_at": date.today().isoformat(),
+        },
+    }
+
+
+@app.post("/land/lot-context")
+def land_lot_context(req: LandLotContextRequest) -> dict[str, Any]:
+    """Площадь участка лота и, для ОКС, участка под зданием."""
+    usage_track(
+        "land_lot_context",
+        surface="auctions",
+        text=" ".join(str(item) for item in req.cadastral_numbers)[:120],
+        chat_id=_web_identity_chat_id(str(getattr(req, "session", "") or "")),
+    )
+    return _land_lot_context(req.cadastral_numbers, req.session)
 
 
 @app.get("/land/providers")
@@ -29593,7 +29750,11 @@ details.cadastral-box>summary::marker{color:#888}
 .land-contour small{display:block;margin-top:4px;color:#999;font-size:10px}
 .land-territory{margin:0 0 12px}
 .land-territory svg{max-height:240px}
-.land-territory path:hover{fill:#e8e8e4}
+.land-territory path{cursor:pointer}
+/* Подсветка заметная: прежний #e8e8e4 на белом фоне отличался от
+   обычной заливки настолько, что наведение читалось как отсутствие
+   реакции. */
+.land-territory path:hover{fill:#cfe0f5;stroke-width:3.5}
 .mo-box{border-left:4px solid #111;margin-top:12px}
 /* Запасной путь: виден, но не спорит за внимание с главным. */
 .import-fallback{margin-top:14px;border-top:1px solid #e2e2e0;padding-top:10px}
@@ -32363,16 +32524,42 @@ function landMapLost(img){
  try{
   const box=img.closest('.land-contour');
   img.remove();
+  // Правим ТОЛЬКО свой кусок подписи. Прежде переписывался textContent всей
+  // строки, а это стирает вложенные узлы: ссылку «развернуть карту» и место
+  // для номера участка сносило ровно тогда, когда НСПД молчит, — то есть в
+  // том самом случае, ради которого функция и написана.
+  const note=box&&box.querySelector('.land-map-note');
+  if(note){note.textContent='карта НСПД не ответила — чистый контур';return}
   const cap=box&&box.querySelector('small');
   if(cap)cap.textContent=cap.textContent.replace('подложка — публичная карта НСПД','карта НСПД не ответила — чистый контур');
  }catch(e){}
 }
 
+// Площадь контура по формуле шнурков — только чтобы разложить участки по
+// порядку отрисовки. Знак не важен: обход колец бывает любой.
+function landRingArea(rings){
+ return (rings||[]).reduce((sum,ring)=>{
+  const pts=(ring||[]).filter(p=>Array.isArray(p)&&p.length>=2);
+  let a=0;
+  for(let i=0;i<pts.length;i++){
+   const q=pts[(i+1)%pts.length];
+   a+=pts[i][0]*q[1]-q[0]*pts[i][1];
+  }
+  return sum+Math.abs(a)/2;
+ },0);
+}
+
 function landTerritorySvg(found){
  // Несколько участков — общая посадка: все контуры в одном масштабе, как они
  // стоят друг относительно друга. По одному участку хватает миниатюры в его
- // карточке. Наведение на контур показывает кадастровый номер.
- const items=(found||[]).filter(x=>Array.isArray(x.contour_merc)&&x.contour_merc.length);
+ // карточке.
+ const items=(found||[]).filter(x=>Array.isArray(x.contour_merc)&&x.contour_merc.length)
+  // Крупные вниз, мелкие наверх. Заполненный контур перехватывает указатель
+  // на всей своей площади, поэтому участок, нарисованный последним, отвечал
+  // за всех: на территории из двадцати наведение в любую точку показывало
+  // один и тот же номер — тот, что лежит поверх (экран владельца,
+  // 27.08.2026). Порядок по площади возвращает мелким шанс быть наведёнными.
+  .slice().sort((a,b)=>landRingArea(b.contour_merc)-landRingArea(a.contour_merc));
  if(items.length<2)return '';
  let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
  items.forEach(item=>item.contour_merc.forEach(ring=>(ring||[]).forEach(p=>{
@@ -32389,7 +32576,10 @@ function landTerritorySvg(found){
    .filter(p=>Array.isArray(p)&&p.length>=2)
    .map(p=>((p[0]-minX+pad)).toFixed(1)+' '+((maxY-p[1]+pad)).toFixed(1))
    .join(' L ')+' Z').join(' ');
-  return `<path d="${d}" fill="rgba(245,245,243,.35)" stroke="#111" stroke-width="2" fill-rule="evenodd" vector-effect="non-scaling-stroke"><title>${escapeHtml(item.cadastral_number||'')}</title></path>`;
+  const cad=escapeHtml(item.cadastral_number||'');
+  // Номер едет атрибутом, а не подстановкой в JS-строку обработчика: см.
+  // правило про &#39; в CLAUDE.md.
+  return `<path d="${d}" fill="rgba(245,245,243,.35)" stroke="#111" stroke-width="2" fill-rule="evenodd" vector-effect="non-scaling-stroke" data-cad="${cad}" onmouseenter="landTerritoryHover(this)" onmouseleave="landTerritoryHover(null)"><title>${cad}</title></path>`;
  }).join('');
  const mapSrc=`/land/map-image?bbox=${(minX-pad).toFixed(1)},${(minY-pad).toFixed(1)},${(maxX+pad).toFixed(1)},${(maxY+pad).toFixed(1)}`;
  // max-width держит высоту на истинном аспекте: при 100% ширины и max-height
@@ -32400,7 +32590,33 @@ function landTerritorySvg(found){
  return `<div class="land-contour land-territory"><div class="land-contour-stage" style="${stage}">`+
   `<img class="land-contour-map" src="${mapSrc}" alt="" loading="lazy" decoding="async" onerror="landMapLost(this)">`+
   `<svg viewBox="0 0 ${w.toFixed(1)} ${h.toFixed(1)}" preserveAspectRatio="none" role="img" aria-label="Взаимное расположение участков">${paths}</svg></div>`+
-  `<small>Территория из ${items.length} участков в одном масштабе · подложка — публичная карта НСПД · наведите на контур — увидите номер</small></div>`;
+  // Номер показывается подписью, а не одной лишь всплывающей подсказкой SVG:
+  // её ждать секунду, а на телефоне не бывает вовсе — «наведите, увидите
+  // номер» обещало то, чего человек не видел.
+  `<small>Территория из ${items.length} участков в одном масштабе · `+
+  `<span class="land-map-note">подложка — публичная карта НСПД</span> · `+
+  `<a href="#" onclick="landMapFromTerritory();return false">развернуть карту</a> · `+
+  `<b id="landTerritoryLabel" style="color:#111">наведите на контур — увидите номер</b></small></div>`;
+}
+
+function landTerritoryHover(path){
+ const label=document.getElementById('landTerritoryLabel');
+ if(!label)return;
+ label.textContent=(path&&path.dataset.cad)||'наведите на контур — увидите номер';
+}
+
+function landMapFromTerritory(){
+ // Вся территория разом: на общем виде спрашивают не про один участок, а про
+ // то, что вокруг них всех. Кольца берутся те же, что нарисованы, — второй
+ // сборки нет.
+ const items=((landLookup&&landLookup.results)||[])
+  .filter(x=>x&&x.found&&Array.isArray(x.contour_merc)&&x.contour_merc.length);
+ const rings=items.flatMap(x=>x.contour_merc);
+ if(!rings.length)return;
+ const zones=((landScreeningLast&&landScreeningLast.parcels)||[])
+  .flatMap(p=>(p&&p.findings)||[]);
+ openLandMap({rings:rings,zones:zones,
+  title:`Территория из ${items.length} участков и окружение`});
 }
 
 function landContourSvg(item){
@@ -32437,7 +32653,8 @@ function landContourSvg(item){
   `<img class="land-contour-map" src="${mapSrc}" alt="" loading="lazy" decoding="async" onerror="landMapLost(this)">`+
   `<svg viewBox="0 0 ${w.toFixed(1)} ${h.toFixed(1)}" preserveAspectRatio="none" role="img" aria-label="Границы участка по ЕГРН">`+
   `<path d="${paths}" fill="rgba(245,245,243,.35)" stroke="#111" stroke-width="2.5" fill-rule="evenodd" vector-effect="non-scaling-stroke"/></svg></div>`+
-  `<small>Границы по сведениям ЕГРН · подложка — публичная карта НСПД${scaleNote}`+
+  `<small>Границы по сведениям ЕГРН · `+
+  `<span class="land-map-note">подложка — публичная карта НСПД</span>${scaleNote}`+
   // Номер едет атрибутом, а не подстановкой в JS-строку обработчика:
   // escapeHtml превращает кавычку в &#39;, браузер раскодирует её обратно ДО
   // разбора скрипта — и экранированное значение снова становится кодом.

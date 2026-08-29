@@ -42,19 +42,19 @@ AUCTIONS_PAGE = r'''<!doctype html>
       <select id="krtStatus"><option value="">Все статусы</option><option>Планируемый</option><option>В реализации</option></select>
       <select id="krtPurpose"><option value="">Любое назначение</option><option value="housing_gfa_sqm">Жильё</option><option value="business_gfa_sqm">Общественно-деловое</option><option value="nonresidential_gfa_sqm">Нежилое</option></select>
       <select id="krtProfile" title="Под какую задачу считать балл: балл собирается арифметикой по каталожным ТЭП krt.mos.ru, без модели и без экономики. Платон появляется отдельной кнопкой в карточке."><option value="housing_ready">Ищем: жильё, готовое к старту</option><option value="housing_pipeline">Ищем: жилищный потенциал</option><option value="business">Ищем: деловую застройку</option></select>
-      <div class="filter-actions"><button id="krtRefresh" class="primary">Обновить каталог</button><button id="krtRankBtn">Оценить отобранные моделью</button></div>
+      <div class="filter-actions"><button id="krtRefresh" class="primary">Обновить каталог</button><button id="krtRankBtn">Оценить отобранные моделью</button><button id="krtExport">Выгрузить Excel</button></div>
     </div>
     <div class="stats"><div class="stat"><b id="krtCount">—</b><span>проектов</span></div><div class="stat"><b id="krtArea">—</b><span>га территории</span></div><div class="stat"><b id="krtHousing">—</b><span>м² жилья</span></div><div class="stat"><b id="krtGfa">—</b><span>м² всего</span></div></div>
     <div id="krtRankStatus" class="notice" style="display:none"></div>
     <div class="layout"><div class="tablewrap"><table><thead><tr><th>Проект КРТ</th><th>Оценка Платона</th><th title="Предельная цена входа при LLCR 1,20x, на метр продаваемой площади">Потолок входа, ₽/м²</th><th>Статус</th><th>Площадь</th><th>Общий объём</th><th>Жильё</th><th>Рабочие места</th></tr></thead><tbody id="krtRows"></tbody></table><div id="krtEmpty" class="empty">Открываю официальный каталог krt.mos.ru…</div></div><aside class="side" id="krtSide"><div class="empty">Выберите проект КРТ.<br>ТЭП берутся из krt.mos.ru, рынок считает существующий движок DevelopAid.</div></aside></div>
   </div>
   <div class="filters" id="auctionFilters">
-    <select id="source"><option value="all">Все официальные источники</option><option value="investmoscow">Торги Москвы → ЭТП</option><option value="lot_online">РАД / Lot-online</option><option value="roseltorg">Росэлторг</option></select>
+    <select id="source"><option value="all">Все официальные источники</option><option value="investmoscow">Торги Москвы → ЭТП</option><option value="lot_online">РАД / Lot-online</option><option value="roseltorg">Росэлторг</option><option value="torgi_gov">ГИС Торги</option><option value="etp_gpb">ЭТП ГПБ</option><option value="etp_rf">ЭТП РФ</option><option value="sberbank_ast">Сбербанк-АСТ</option><option value="nistp">НИС</option></select>
     <select id="origin" title="Городские торги и банкротные — разные рынки: у города цена не снижается, у банкротного лота она ползёт от начальной к минимальной по графику"><option value="all">Все торги</option><option value="city">Городские</option><option value="bankruptcy">Банкротные</option><option value="seized">Арест и ИП</option><option value="other">Прочие</option></select>
     <select id="kind"><option value="all">Все типы</option><option value="land">— Земля</option><option value="building">— Объекты</option><option value="krt">КРТ</option><option value="land_sale">Продажа земли</option><option value="land_lease">Аренда земли</option><option value="property_complex">ЗИК</option><option value="unfinished">Незавершёнка</option></select>
-    <select id="noise"><option value="0">Девелоперские</option><option value="1">Показать всё</option></select>
+    <select id="noise"><option value="0">Интересные · данные заполнены</option><option value="1">Показать неполные и шум</option></select>
     <input id="search" placeholder="Адрес / кадастр / лот">
-    <button id="refresh" class="primary">Обновить</button>
+    <button id="refresh" class="primary">Обновить</button><button id="auctionExport">Выгрузить Excel</button>
   </div>
   <div class="stats" id="auctionStats">
     <div class="stat"><b id="sCount">—</b><span>лотов в выборке</span></div>
@@ -94,7 +94,7 @@ AUCTIONS_PAGE = r'''<!doctype html>
   __DEVELOPAID_LEGAL_FOOTER__
 </div>
 <script>
-const state={lots:[],filtered:[],families:[],openFamilies:new Set(),coverage:[],selected:null,ingested:null,krt:[],krtFiltered:[],krtOkrugs:new Set(),krtModels:{},krtReports:{},krtNew:0,krtNewDays:30,krtPolls:0,krtTimer:null,krtRank:{},krtRankProgress:null,krtRankTimer:null};
+const state={lots:[],filtered:[],families:[],openFamilies:new Set(),coverage:[],quality:{},selected:null,ingested:null,krt:[],krtFiltered:[],krtOkrugs:new Set(),krtModels:{},krtReports:{},krtRequirements:{},krtNew:0,krtNewDays:30,krtPolls:0,krtTimer:null,krtRank:{},krtRankProgress:null,krtRankTimer:null};
 const KRT_OKRUGS=['ЦАО','САО','СВАО','ВАО','ЮВАО','ЮАО','ЮЗАО','ЗАО','СЗАО','НАО','ТАО','ЗелАО'];
 const $=id=>document.getElementById(id);
 // Ноль и «цены нет» — разные вещи. Number(null) равен нулю, и лот без
@@ -289,7 +289,8 @@ function lotRange(min,max,fmt){
 function lotRowHtml(l){
  const sc=lotScore(l);
  const parse=lotAnalysis(l);
- return `<td><div class="lotname">${esc(l.title||l.address||'Лот')}</div><div class="source">Почему здесь: ${esc(l.screening?.why_here||l.selection_reasons?.slice(0,4).join(' · ')||'требуется проверка')}</div>${parse.available?'':`<div class="source warn">Разбор недоступен: ${esc(parse.reason)}</div>`}<div class="cad">${esc((l.cadastral_numbers||[]).join(', ')||l.source?.external_lot_id||'')}</div></td>`
+ const quality=l.quality||{}, qualityNote=(quality.reasons||[]).join(' · ');
+ return `<td><div class="lotname">${esc(l.title||l.address||'Лот')}</div><div class="source">Почему здесь: ${esc(l.screening?.why_here||l.selection_reasons?.slice(0,4).join(' · ')||'требуется проверка')}</div>${quality.accepted===false?`<div class="source warn">${esc(quality.label||'Не входит в основную подборку')}: ${esc(qualityNote)}</div>`:''}${parse.available?'':`<div class="source warn">Разбор недоступен: ${esc(parse.reason)}</div>`}<div class="cad">${esc((l.cadastral_numbers||[]).join(', ')||l.source?.external_lot_id||'')}</div></td>`
   +`<td><span class="fit ${sc.tone}" title="${esc('Потенциал лота '+sc.base+'; снято '+sc.cut+'%')}"><span class="light"></span>${sc.score} · ${esc(sc.label)}</span><div class="source">${esc(lotScoreNote(sc))}</div></td>`
   +`<td><span class="tag ${l.lot_kind==='krt'?'ok':''}">${esc(kindLabel(l.lot_kind))}</span>${(l.origin&&l.origin!=='city')?`<div class="source">${esc(ORIGIN_LABEL[l.origin]||l.origin)}</div>`:''}</td>`
   +`<td>${areaLine(l)}</td>`
@@ -347,6 +348,7 @@ function renderRows(){
  renderFoldNote();renderAskContext();
 }
 function stats(){const a=state.filtered;$('sCount').textContent=a.length;$('sKrt').textContent=a.filter(x=>x.lot_kind==='krt').length;$('sLand').textContent=a.filter(x=>['land_sale','land_lease'].includes(x.lot_kind)).length;const ds=a.map(x=>new Date(x.application_deadline)).filter(x=>!Number.isNaN(x.getTime())).sort((a,b)=>a-b);$('sDeadline').textContent=ds.length?new Intl.DateTimeFormat('ru-RU',{day:'2-digit',month:'2-digit'}).format(ds[0]):'—'}
+async function exportRows(rows,kind){if(!rows.length){alert('В текущей выборке нет строк для выгрузки.');return}const payload=rows.map(r=>({section:kind==='krt'?'КРТ':'Торги',name:r.name||r.title||'',okrug:r.okrug||'',district:r.district||'',address:r.address||'',cadastre:(r.cadastral_numbers||[]).join(', '),type:kind==='krt'?'КРТ':kindLabel(r.lot_kind),land_area_sqm:r.land_area_sqm??'',building_area_sqm:r.building_area_sqm??'',krt_area_ha:kind==='krt'?(r.area_ha??''):'',total_gfa_sqm:r.total_gfa_sqm??'',housing_gfa_sqm:r.housing_gfa_sqm??'',price:r.current_price_rub??r.start_price_rub??'',score:kind==='krt'?krtScore(r).score:lotScore(r).score,status:r.status||'',url:r.source?.lot_url||r.url||''}));const res=await fetch('/auctions/export.xlsx',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rows:payload,kind})});if(!res.ok)throw new Error('Не удалось подготовить Excel');const blob=await res.blob(),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=kind==='krt'?'developaid-krt.xlsx':'developaid-auctions.xlsx';a.click();URL.revokeObjectURL(a.href)}
 function coverageLine(r){
  // Каждый источник говорит за себя. Числа у читателей разной формы: у
  // ИнвестМосквы карточки города и подтверждённые лоты, у остальных страницы,
@@ -364,7 +366,13 @@ function coverageLine(r){
   if(r.cards) bits.push(`из ${r.cards} карточек`);
   if(r.pages) bits.push(`страниц ${r.pages}`);
   if(r.total_elements) bits.push(`всего в выдаче ${r.total_elements}`);
-  if(r.skipped) bits.push(`не прочитано карточек ${r.skipped}`);
+  if(r.outside_region) bits.push(`вне Москвы ${r.outside_region}`);
+  if(r.outside_profile) bits.push(`не девелоперские ${r.outside_profile}`);
+  if(r.inactive) bits.push(`неактуальные ${r.inactive}`);
+  if(r.invalid) bits.push(`неполные ${r.invalid}`);
+  if(r.duplicates) bits.push(`повторы ${r.duplicates}`);
+  if(r.skipped&&!r.outside_region&&!r.outside_profile&&!r.inactive&&!r.invalid)
+   bits.push(`отсеяно после проверки ${r.skipped}`);
  }
  const why=String(r.reason||'').trim();
  const errors=(r.errors||[]).join('; ');
@@ -380,6 +388,12 @@ function renderCoverage(){
  // неполная, и показывать её как полную нельзя.
  box.className='notice coverage'+(lines.some(x=>x.why)?' warn':'');
  box.textContent='';
+ const q=state.quality||{};
+ if(q.seen!==undefined){
+  const line=document.createElement('div');
+  line.textContent=`Допуск качества — в основной подборке ${q.accepted||0} из ${q.seen||0}; неполных ${q.incomplete||0}; ниже профиля сделок ${q.outside_profile||0}; шум ${q.noise||0}`;
+  box.appendChild(line);
+ }
  lines.forEach(x=>{
   const line=document.createElement('div');
   line.textContent=x.name+(x.said?' — '+x.said:'')+(x.why?' · '+x.why:'');
@@ -425,7 +439,69 @@ function lotCaveats(l){
  if(!flags.length) return '';
  return `<div class="items">${flags.map(f=>`<div class="item"><b>Оговорка источника</b>${esc(f)}</div>`).join('')}</div>`;
 }
-function selectLot(l){state.selected=l;state.ingested=null;const sc=lotScore(l),side=$('side');side.innerHTML=`<h2>${esc(l.title||'Лот')}</h2><div class="sub">${esc(l.source?.source_name||l.source?.platform||'ЭТП')} · ${esc(l.source?.external_lot_id||'')}</div><div class="notice"><div class="fit ${sc.tone}"><span class="light"></span>Оценка Платона: ${sc.score}/100 · ${esc(sc.label)}</div><div class="source">Потенциал лота — ${sc.base}. ${sc.cut?`Снято ${sc.cut}%: `+esc(sc.cuts.map(c=>c.label+' −'+c.points+'%').join(', ')):'Снижать нечего.'}</div></div>${sc.cuts.length?`<div class="items">${sc.cuts.map(c=>`<div class="item"><b>Балл снижен на ${c.points}%</b>${esc(c.label)}</div>`).join('')}</div>`:''}<div class="kv"><div>Юр. конструкция</div><div>${esc(kindLabel(l.lot_kind))} · ${esc(ORIGIN_LABEL[l.origin||'other']||'—')}</div><div>Кадастр</div><div class="cad">${esc((l.cadastral_numbers||[]).join(', ')||'—')}</div><div>Площадь</div><div>${areaLine(l)}</div><div>Цена сейчас</div><div class="money">${fmtMoney(l.current_price_rub??l.start_price_rub)}</div><div>Минимальная цена</div><div>${fmtMoney(l.min_price_rub)}</div><div>Заявка до</div><div>${esc(shortDate(l.application_deadline))}</div><div>ВРИ площадки</div><div>${esc(l.permitted_use||'—')}</div></div>${lotCaveats(l)}<div class="actions"><button class="primary" id="ingestBtn"${lotAnalysis(l).available?'':' disabled'}>Разобрать лот</button><button id="sourceBtn">Открыть ЭТП</button></div><div id="detailStatus" class="notice${lotAnalysis(l).available?'':' warn'}">${esc(lotAnalysis(l).available?'Документы пока только перечислены. Полный разбор запускается по выбранному лоту, чтобы не нагружать ЭТП массовыми скачиваниями.':'Разобрать этот лот нечем: '+lotAnalysis(l).reason+' Карточку можно открыть на самой площадке — кнопка «Открыть ЭТП».')}</div><div id="analysis"></div>`;$('ingestBtn').onclick=ingest;$('sourceBtn').onclick=()=>window.open(l.source?.lot_url,'_blank','noopener');renderAskContext()}
+function cadastralMapLink(item){
+ const url=String(item?.map_url||'');
+ return url?` <a href="${esc(url)}" target="_blank" rel="noopener">карта НСПД</a>`:'';
+}
+function renderLotCadastre(l){
+ const box=$('lotCadastre');
+ if(!box||state.selected!==l)return;
+ const numbers=(l.cadastral_numbers||[]).filter(Boolean);
+ if(!numbers.length){
+  box.innerHTML='<div class="section"><h3>Проверка НСПД</h3><div class="notice warn">В карточке торгов нет кадастрового номера — автоматически проверить площадь участка нельзя.</div></div>';
+  return;
+ }
+ if(l._cadLoading){
+  box.innerHTML='<div class="section"><h3>Проверка НСПД</h3><div class="notice"><span class="spinner"></span>Проверяю КН и площадь участка…</div></div>';
+  return;
+ }
+ if(l._cadError){
+  box.innerHTML=`<div class="section"><h3>Проверка НСПД</h3><div class="notice warn">${esc(l._cadError)}</div><button id="cadRetry">Проверить ещё раз</button></div>`;
+  $('cadRetry').onclick=()=>loadLotCadastre(l,true);
+  return;
+ }
+ const c=l._cadContext;
+ if(!c)return;
+ const buildings=c.buildings||[],parcels=c.land_parcels||[],other=c.other_objects||[];
+ const buildingRows=buildings.map(x=>{
+  const method=x.site_lookup_method==='egrn_relation'?'участок связан с ОКС в ЕГРН'
+   :x.site_lookup_method==='building_center'?'участок найден по точке здания'
+   :'участок под объектом не найден';
+  return `<div class="item"><b>Здание / ОКС · ${fmtArea(x.area_sqm)}</b><span class="cad">${esc(x.cadastral_number||'')}</span>${cadastralMapLink(x)}<div class="source">${esc(method)}${x.address?' · '+esc(x.address):''}</div></div>`;
+ }).join('');
+ const parcelRows=parcels.map(x=>{
+  const under=(x.related_buildings||[]).length>0;
+  const byPoint=(x.lookup_methods||[]).includes('building_center');
+  const method=under?(byPoint?'под ОКС, найден по точке здания':'под ОКС, связь из ЕГРН'):'КН участка из карточки торгов';
+  return `<div class="item"><b>${under?'Участок под ОКС':'Земельный участок'} · ${fmtArea(x.area_sqm)}${x.area_ha?' · '+esc(x.area_ha)+' га':''}</b><span class="cad">${esc(x.cadastral_number||'')}</span>${cadastralMapLink(x)}<div class="source">${esc(method)}${x.permitted_use?' · ВРИ: '+esc(x.permitted_use):''}</div></div>`;
+ }).join('');
+ const otherRows=other.filter(x=>x.found).map(x=>`<div class="item"><b>${esc(x.kind_label||'Объект ЕГРН')} · ${fmtArea(x.area_sqm)}</b><span class="cad">${esc(x.cadastral_number||'')}</span>${cadastralMapLink(x)}</div>`).join('');
+ const warnings=(c.warnings||[]).map(x=>`<div class="source warn">${esc(x)}</div>`).join('');
+ const empty=!buildingRows&&!parcelRows&&!otherRows?'<div class="notice warn">По указанным КН НСПД не вернула объект с площадью.</div>':'';
+ box.innerHTML=`<div class="section"><h3>Площадь по НСПД / ЕГРН</h3><div class="items">${buildingRows}${parcelRows}${otherRows}</div>${empty}${warnings}</div>`;
+}
+async function loadLotCadastre(l,force=false){
+ const numbers=(l.cadastral_numbers||[]).filter(Boolean);
+ if(!numbers.length){renderLotCadastre(l);return}
+ if(l._cadLoading||(!force&&l._cadContext)){renderLotCadastre(l);return}
+ l._cadLoading=true;l._cadError='';renderLotCadastre(l);
+ try{
+  l._cadContext=await askJson('/land/lot-context',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cadastral_numbers:numbers})});
+ }catch(e){l._cadError=String(e.message||e)}
+ finally{l._cadLoading=false;renderLotCadastre(l)}
+}
+function selectLot(l){
+ state.selected=l;state.ingested=null;
+ const sc=lotScore(l),side=$('side');
+ side.innerHTML=`<h2>${esc(l.title||'Лот')}</h2><div class="sub">${esc(l.source?.source_name||l.source?.platform||'ЭТП')} · ${esc(l.source?.external_lot_id||'')}</div><div class="notice"><div class="fit ${sc.tone}"><span class="light"></span>Оценка Платона: ${sc.score}/100 · ${esc(sc.label)}</div><div class="source">Потенциал лота — ${sc.base}. ${sc.cut?`Снято ${sc.cut}%: `+esc(sc.cuts.map(c=>c.label+' −'+c.points+'%').join(', ')):'Снижать нечего.'}</div></div>${sc.cuts.length?`<div class="items">${sc.cuts.map(c=>`<div class="item"><b>Балл снижен на ${c.points}%</b>${esc(c.label)}</div>`).join('')}</div>`:''}<div class="kv"><div>Юр. конструкция</div><div>${esc(kindLabel(l.lot_kind))} · ${esc(ORIGIN_LABEL[l.origin||'other']||'—')}</div><div>Кадастр</div><div class="cad">${esc((l.cadastral_numbers||[]).join(', ')||'—')}</div><div>Площадь по ЭТП</div><div>${areaLine(l)}</div><div>Цена сейчас</div><div class="money">${fmtMoney(l.current_price_rub??l.start_price_rub)}</div><div>Минимальная цена</div><div>${fmtMoney(l.min_price_rub)}</div><div>Заявка до</div><div>${esc(shortDate(l.application_deadline))}</div><div>ВРИ площадки</div><div>${esc(l.permitted_use||'—')}</div></div>${lotCaveats(l)}<div id="lotCadastre"></div><div class="actions"><button class="primary" id="ingestBtn"${lotAnalysis(l).available?'':' disabled'}>Разобрать лот</button><button id="sourceBtn">Открыть ЭТП</button></div><div id="detailStatus" class="notice${lotAnalysis(l).available?'':' warn'}">${esc(lotAnalysis(l).available?'Документы пока только перечислены. Полный разбор запускается по выбранному лоту, чтобы не нагружать ЭТП массовыми скачиваниями.':'Разобрать этот лот нечем: '+lotAnalysis(l).reason+' Карточку можно открыть на самой площадке — кнопка «Открыть ЭТП».')}</div><div id="analysis"></div>`;
+ $('ingestBtn').onclick=ingest;
+ $('sourceBtn').onclick=()=>window.open(l.source?.lot_url,'_blank','noopener');
+ const osm=document.createElement('button');osm.textContent='Открыть карту OSM';osm.onclick=()=>window.open('https://www.openstreetmap.org/search?query='+encodeURIComponent(l.address||((l.cadastral_numbers||[]).join(' '))||l.title||''),'_blank','noopener');$('side').querySelector('.actions').appendChild(osm);
+ const mapBtn=document.createElement('button');mapBtn.textContent='Показать интерактивную карту';mapBtn.onclick=()=>loadLotInteractiveMap(l);$('side').querySelector('.actions').appendChild(mapBtn);
+ const mapBox=document.createElement('div');mapBox.id='lotInteractiveMap';$('side').appendChild(mapBox);
+ renderLotCadastre(l);loadLotCadastre(l);renderAskContext();
+}
+async function loadLotInteractiveMap(l){const box=$('lotInteractiveMap');if(!box)return;box.innerHTML='<div class="notice"><span class="spinner"></span>Определяю точку…</div>';const query=l.address||((l.cadastral_numbers||[]).join(' '))||l.title||'';try{const d=await askJson('/auctions/lot-point',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query})});const lat=Number(d.latitude),lon=Number(d.longitude);if(!Number.isFinite(lat)||!Number.isFinite(lon))throw new Error('Координаты не найдены');const delta=.006,bbox=[lon-delta,lat-delta,lon+delta,lat+delta].join(',');const src='https://www.openstreetmap.org/export/embed.html?'+new URLSearchParams({bbox,layer:'mapnik',marker:lat+','+lon});box.innerHTML='<details open><summary style="cursor:pointer;font-weight:700;padding:8px 0">Карта участка · можно двигать и масштабировать</summary><iframe src="'+src+'" title="Интерактивная карта лота" style="width:100%;height:330px;border:1px solid #e3e3e0" loading="lazy"></iframe><div class="source">Точка определена по адресу: '+esc(d.address||query)+'</div></details>'}catch(e){box.innerHTML='<div class="notice warn">Карту не удалось построить: '+esc(e.message||e)+'</div>'}}
 // Отказ по входу объясняется одинаково во всех шести местах, где он бывает:
 // шесть копий одной фразы разошлись бы, и человек получил бы разный ответ на
 // одну причину.
@@ -459,8 +535,14 @@ async function askJson(url, init){
  }
  return d;
 }
-async function discover(){const btn=$('refresh');btn.disabled=true;btn.innerHTML='<span class="spinner"></span>Читаю ЭТП';$('tableEmpty').style.display='grid';$('tableEmpty').textContent='Получаю публичный каталог официальной площадки…';try{const qs=new URLSearchParams({source:$('source').value,include_noise:$('noise').value==='1'?'true':'false'});const d=await askJson('/auctions/discover?'+qs);state.lots=d.lots||[];state.coverage=d.coverage||[];renderCoverage();filter();if(!state.lots.length){$('tableEmpty').textContent='Подтверждённых текущих лотов не найдено. Воронка источников показана выше.'}}catch(e){state.lots=[];state.coverage=[];renderCoverage();filter();$('tableEmpty').style.display='grid';$('tableEmpty').textContent=String(e.message||e)}finally{btn.disabled=false;btn.textContent='Обновить'}}
-async function ingest(){const l=state.selected;if(!l)return;const b=$('ingestBtn'),status=$('detailStatus');b.disabled=true;b.innerHTML='<span class="spinner"></span>Разбираю';status.textContent=l.lot_kind==='krt'?'Читаю карточку и официальные документы КРТ…':'Повторно сверяю официальную карточку…';try{const d=await askJson('/auctions/ingest',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:l.source.lot_url,enrich_krt_documents:true,include_raw:false})});state.ingested=d;renderAnalysis(d)}catch(e){status.className='notice warn';status.textContent=String(e.message||e)}finally{b.disabled=false;b.textContent='Разобрать заново'}}
+async function discover(){const btn=$('refresh');btn.disabled=true;btn.innerHTML='<span class="spinner"></span>Читаю ЭТП';$('tableEmpty').style.display='grid';$('tableEmpty').textContent='Получаю публичный каталог официальной площадки…';try{const qs=new URLSearchParams({source:$('source').value,include_noise:$('noise').value==='1'?'true':'false'});const d=await askJson('/auctions/discover?'+qs);state.lots=d.lots||[];state.coverage=d.coverage||[];state.quality=d.quality||{};renderCoverage();filter();if(!state.lots.length){$('tableEmpty').textContent='Подтверждённых текущих лотов не найдено. Воронка источников показана выше.'}}catch(e){state.lots=[];state.coverage=[];state.quality={};renderCoverage();filter();$('tableEmpty').style.display='grid';$('tableEmpty').textContent=String(e.message||e)}finally{btn.disabled=false;btn.textContent='Обновить'}}
+async function ingest(){const l=state.selected;if(!l)return;const b=$('ingestBtn'),status=$('detailStatus');b.disabled=true;b.innerHTML='<span class="spinner"></span>Разбираю';status.textContent=l.lot_kind==='krt'?'Читаю карточку и официальные документы КРТ…':'Повторно сверяю официальную карточку…';try{const d=await askJson('/auctions/ingest',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:l.source.lot_url,enrich_krt_documents:true,include_raw:false})});
+ // Перед handoff в ГлавАПУ оставляем только земельные КН. КН здания —
+ // отдельный объект ЕГРН, его площадь никогда не является площадью участка.
+ // Проверяем связь через тот же НСПД-контур, который уже показан в карточке.
+ const cads=(d.lot&&d.lot.cadastral_numbers)||l.cadastral_numbers||[];
+ if(cads.length&&l.lot_kind!=='krt'){try{const ctx=await askJson('/land/lot-context',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cadastral_numbers:cads})});const land=(ctx.land_parcels||[]).map(x=>x.cadastral_number).filter(Boolean);if(land.length){d.project_preset.project.cadastral_numbers=land;d.project_preset.project.cadastral_numbers_input=land.join(', ');d.project_preset.land.cadastral_numbers=land;d.project_preset.land.cadastral_numbers_csv=land.join(', ');d.project_preset.project.cadastral_import.mode=land.length>1?'bulk':'single';d.project_preset.project.cadastral_import.note+=' В КН для расчёта включены только земельные участки; здания/ОКС исключены.';d.developaid_seed.site.cadastral_numbers=land;l._landCadastralNumbers=land}}catch(_){/* карточка остаётся доступной; ручная проверка НСПД не блокирует разбор */}}
+ state.ingested=d;renderAnalysis(d)}catch(e){status.className='notice warn';status.textContent=String(e.message||e)}finally{b.disabled=false;b.textContent='Разобрать заново'}}
 function renderAnalysis(d){const s=d.screening||{},l=d.lot||{},a=$('analysis'),status=$('detailStatus');if(s.krt_auth_required){status.className='notice warn';status.textContent='Часть документации требует входа на ЭТП. Лот сохранён, но DevelopAid не считает закрытые документы отсутствующими.'}else if(s.krt_documents_complete===true){status.className='notice';status.textContent='Официальные документы КРТ разобраны без пропусков, обнаруженных загрузчиком.'}else{status.className='notice';status.textContent='Карточка ЭТП сверена. Для обычной земли следующий слой — кадастр/градпроверка DevelopAid.'}
  const program=l.krt_program||[],obs=l.obligations||[],docs=l.documents||[],px=s.platon_explanation||{};
  a.innerHTML=`<div class="section"><h3>Оценка Платона: ${esc(px.rating||s.rating||'—')}</h3><div class="notice"><b>Почему здесь:</b> ${esc(px.why_here||s.why_here||'—')}</div><div class="items">${(px.concerns||[]).map(x=>`<div class="item"><b>Что настораживает</b>${esc(x)}</div>`).join('')}${(px.verify_before_calculation||[]).map(x=>`<div class="item"><b>Что проверить до расчёта</b>${esc(x)}</div>`).join('')}</div></div><div class="section"><h3>Готовность к DevelopAid</h3><div class="kv"><div>Структура сделки</div><div>${esc(kindLabel(s.legal_structure))}</div><div>Требует условий КРТ</div><div>${s.requires_krt_terms?'да':'нет'}</div><div>Документов</div><div>${docs.length}</div><div>Программа КРТ</div><div>${program.length}</div><div>Обязательств</div><div>${obs.length}</div></div></div>${program.length?`<div class="section"><h3>Программа застройки из документов</h3><div class="items">${program.slice(0,12).map(x=>`<div class="item"><b>${esc(x.category)} · ${esc(x.area_sqm?fmtArea(x.area_sqm):x.quantity?x.quantity+' '+(x.unit||''):'')}</b>${esc(x.title)}<div class="source">${esc(x.provenance?.source_document||'')}</div></div>`).join('')}</div></div>`:''}${obs.length?`<div class="section"><h3>Обязательства инвестора</h3><div class="items">${obs.slice(0,12).map(x=>`<div class="item"><b>${esc(x.category)}${x.quantity?' · '+x.quantity+' '+(x.unit||''):''}</b>${esc(x.title)}<div class="source">${esc(x.provenance?.source_document||'')}</div></div>`).join('')}</div></div>`:''}<div class="actions"><button id="copySeed">Скопировать seed</button><button id="modelBtn" ${s.ready_for_financial_model?'':'disabled'}>Подготовить в DevelopAid</button></div><div id="modelNote" class="notice">Handoff использует штатный project-preset import; отдельный расчётный движок для торгов не создаётся.</div>`;
@@ -629,7 +711,12 @@ function krtSiteMap(subject,areaHa){
  // геокодера — а точка теперь берётся тем же путём, что и точка отчёта, и
  // объяснение приезжает вместе с ней.
  const notes=Array.isArray(subject&&subject.notes)?subject.notes:[];
+ const delta=Math.max(0.003,side/111000), bboxGeo=[lon-delta,lat-delta,lon+delta,lat+delta].join(',');
+ const interactive='https://www.openstreetmap.org/export/embed.html?'+new URLSearchParams({bbox:bboxGeo,layer:'mapnik',marker:lat+','+lon});
  return `<div class="section"><h3>Участок на карте</h3>
+  <details open><summary style="cursor:pointer;font-weight:700;padding:8px 0">Раскрыть интерактивную карту</summary>
+   <iframe src="${interactive}" title="Интерактивная карта территории КРТ" style="width:100%;height:330px;border:1px solid #e3e3e0" loading="lazy"></iframe>
+  </details>
   <div style="position:relative;border:1px solid #e3e3e0;overflow:hidden">
    <img src="${src}" alt="Карта окрестностей участка" style="display:block;width:100%"
         onerror="this.parentNode.innerHTML='<div class=\'empty\' style=\'padding:26px\'>Подложка карты не ответила. Участок виден на НСПД — ссылка ниже.</div>'">
@@ -742,7 +829,42 @@ function renderKrtRatios(x){
  const b=document.getElementById('krtRatioApply');
  if(b)b.onclick=()=>loadKrtMarket(x);
 }
-function selectKrt(x){state.selectedKrt=x;const sc=krtScore(x),fit=sc.fit,cached=state.krtModels[x.slug];$('krtSide').innerHTML=`<h2>${esc(x.name)}${x.is_new?'<span class="tag new">новое</span>':''}</h2><div class="sub">krt.mos.ru · ${esc([x.okrug,x.district].filter(Boolean).join(' · '))}</div><div class="notice"><div class="fit ${sc.tone}"><span class="light"></span>Оценка Платона: ${sc.score}/100 · ${sc.label}</div><div class="source">Потенциал по официальным ТЭП — ${sc.base}. ${sc.counted?(sc.cut?`Расчёт снял ${sc.cut}%: `+esc(sc.cuts.map(c=>c.label+' −'+c.points+'%').join(', ')):'Расчёт балл не снизил.'):'Модель ещё не считалась — снижать нечем.'}</div></div><div class="kv"><div>Статус</div><div>${esc(x.status||'—')}</div><div>Площадь</div><div>${esc(x.area_ha?x.area_ha+' га':'—')}</div><div>Жильё</div><div>${fmtArea(x.housing_gfa_sqm)}</div><div>Всего построить</div><div>${fmtArea(x.total_gfa_sqm)}</div></div><details class="fold"><summary>Почему такой балл — ${fit.reasons.length+fit.checks.length+sc.cuts.length} пункт(ов)</summary><div class="foldbody"><div class="items">${fit.reasons.map(x=>`<div class="item"><b>Соответствует запросу</b>${esc(x)}</div>`).join('')}${fit.checks.map(x=>`<div class="item"><b>Нужно проверить</b>${esc(x)}</div>`).join('')}${sc.cuts.map(c=>`<div class="item"><b>Балл снижен на ${c.points}%</b>${esc(c.label)}</div>`).join('')}</div></div></details><details class="fold"><summary>Остальные ТЭП каталога</summary><div class="foldbody"><div class="kv" style="border:0"><div>Нежилое</div><div>${fmtArea(x.nonresidential_gfa_sqm)}</div><div>Общественно-деловое</div><div>${fmtArea(x.business_gfa_sqm)}</div><div>Рабочие места</div><div>${esc(x.jobs??'—')}</div></div><div class="notice warn">Официальный полигон границ пока не получен. Анализ использует геокодированную точку и помечает это приближение.</div></div></details>${krtRatioBlock(x)}<div class="actions"><button class="primary" id="krtHandoff">Передать в DevelopAid</button><button id="krtPlato">Рекомендация Платона</button><button id="krtMarket">Пересчитать сейчас</button><button id="krtShare">Поделиться</button><button id="krtSource">Открыть krt.mos.ru</button></div><div id="krtShareNote" class="notice" style="display:none"></div><div id="krtMapBox"><div class="notice">Строю карту участка…</div></div><div id="krtMarketResult">${cached?renderKrtModel(cached):''}</div>`;$('krtMarket').onclick=()=>loadKrtMarket(x);$('krtSource').onclick=()=>window.open(x.url,'_blank','noopener');const ra=$('krtRatioApply');if(ra)ra.onclick=()=>loadKrtMarket(x);
+function krtRequirementList(title,items,missing){
+ const rows=(items||[]).map(v=>`<div class="item">${esc(v)}</div>`).join('');
+ return `<div class="section"><h3>${esc(title)}</h3>${rows?`<div class="items">${rows}</div>`:`<div class="notice warn">${esc(missing)}</div>`}</div>`;
+}
+function renderKrtRequirements(d){
+ if(!d.available)return `<div class="section"><h3>Требования КРТ</h3><div class="notice warn">${esc(d.warning||'Официальная карточка временно не ответила.')}</div></div>`;
+ const nonHousing=(d.programme||[]).filter(v=>v.category!=='housing_gfa_sqm');
+ const programme=nonHousing.length
+  ? `<div class="kv">${nonHousing.map(v=>`<div>${esc(v.label)}</div><div>${fmtArea(v.area_sqm)}</div>`).join('')}</div>`
+  : '<div class="notice warn">Отдельный объём нежилых объектов в каталоге не опубликован.</div>';
+ const cardSource=d.source_url?`<a href="${esc(d.source_url)}" target="_blank" rel="noopener">карточка krt.mos.ru</a>`:'карточка krt.mos.ru';
+ const decision=d.decision||{};
+ const decisionSource=decision.page_url?` · <a href="${esc(decision.page_url)}" target="_blank" rel="noopener">проект решения mos.ru</a>${decision.pdf_url?` · <a href="${esc(decision.pdf_url)}" target="_blank" rel="noopener">PDF</a>`:''}`:'';
+ return `<div class="section"><h3>Что требуется по КРТ</h3>${programme}</div>
+  ${krtRequirementList('Что построить кроме жилья',d.construction,'Состав объектов в краткой карточке не раскрыт — нужен проект решения о КРТ.')}
+  ${krtRequirementList('Что разрешено разместить',d.permitted_uses,'Виды разрешённого использования в PDF не распознаны.')}
+  ${krtRequirementList('Срок реализации',d.deadlines,'Срок реализации в опубликованных материалах не распознан.')}
+  ${krtRequirementList('Что находится на территории сейчас',d.existing,'Существующая застройка в карточке не описана.')}
+  ${krtRequirementList('Что снести',d.demolition,'Безусловный снос в опубликованных материалах не найден — это не означает, что сноса нет.')}
+  ${krtRequirementList('Что снести или реконструировать',d.demolition_or_reconstruction,'Объекты с альтернативой «снос/реконструкция» не опубликованы.')}
+  ${krtRequirementList('Что реконструировать или сохранить',[...(d.reconstruction||[]),...(d.preservation||[])],'Реконструкция и сохраняемые объекты в карточке не опубликованы.')}
+  ${krtRequirementList('Расселение и изъятие',d.resettlement,'Расселение/изъятие в опубликованных материалах не найдено — проверить договор.')}
+  <div class="notice warn">${esc(d.warning||'')}</div><div class="source">Источники: ${cardSource}${decisionSource}${d.transport==='read_only_renderer'?' · карточка получена через read-only транспорт':''}</div>`;
+}
+async function loadKrtRequirements(x){
+ const box=document.getElementById('krtRequirementsBox');if(!box)return;
+ if(!String(x.status||'').toLowerCase().includes('планируем')){box.innerHTML='';return}
+ if(state.krtRequirements[x.slug]){box.innerHTML=renderKrtRequirements(state.krtRequirements[x.slug]);return}
+ box.innerHTML='<div class="notice"><span class="spinner"></span>Читаю требования официальной карточки КРТ…</div>';
+ try{
+  const d=await askJson('/auctions/krt/'+encodeURIComponent(x.slug)+'/requirements',{cache:'no-store'});
+  state.krtRequirements[x.slug]=d;
+  if(state.selectedKrt&&state.selectedKrt.slug===x.slug)box.innerHTML=renderKrtRequirements(d);
+ }catch(e){box.innerHTML=`<div class="notice warn">${esc(e.message||e)}</div>`}
+}
+function selectKrt(x){state.selectedKrt=x;const sc=krtScore(x),fit=sc.fit,cached=state.krtModels[x.slug],planned=String(x.status||'').toLowerCase().includes('планируем');$('krtSide').innerHTML=`<h2>${esc(x.name)}${x.is_new?'<span class="tag new">новое</span>':''}</h2><div class="sub">krt.mos.ru · ${esc([x.okrug,x.district].filter(Boolean).join(' · '))}</div><div class="notice"><div class="fit ${sc.tone}"><span class="light"></span>Оценка Платона: ${sc.score}/100 · ${sc.label}</div><div class="source">Потенциал по официальным ТЭП — ${sc.base}. ${sc.counted?(sc.cut?`Расчёт снял ${sc.cut}%: `+esc(sc.cuts.map(c=>c.label+' −'+c.points+'%').join(', ')):'Расчёт балл не снизил.'):'Модель ещё не считалась — снижать нечем.'}</div></div><div class="kv"><div>Статус</div><div>${esc(x.status||'—')}</div><div>Площадь</div><div>${esc(x.area_ha?x.area_ha+' га':'—')}</div><div>Жильё</div><div>${fmtArea(x.housing_gfa_sqm)}</div><div>Всего построить</div><div>${fmtArea(x.total_gfa_sqm)}</div></div><details class="fold"><summary>Почему такой балл — ${fit.reasons.length+fit.checks.length+sc.cuts.length} пункт(ов)</summary><div class="foldbody"><div class="items">${fit.reasons.map(x=>`<div class="item"><b>Соответствует запросу</b>${esc(x)}</div>`).join('')}${fit.checks.map(x=>`<div class="item"><b>Нужно проверить</b>${esc(x)}</div>`).join('')}${sc.cuts.map(c=>`<div class="item"><b>Балл снижен на ${c.points}%</b>${esc(c.label)}</div>`).join('')}</div></div></details><details class="fold"><summary>Остальные ТЭП каталога</summary><div class="foldbody"><div class="kv" style="border:0"><div>Нежилое</div><div>${fmtArea(x.nonresidential_gfa_sqm)}</div><div>Общественно-деловое</div><div>${fmtArea(x.business_gfa_sqm)}</div><div>Рабочие места</div><div>${esc(x.jobs??'—')}</div></div><div class="notice warn">Официальный полигон границ пока не получен. Анализ использует геокодированную точку и помечает это приближение.</div></div></details>${krtRatioBlock(x)}<div class="actions"><button class="primary" id="krtHandoff">Передать в DevelopAid</button><button id="krtPlato">Рекомендация Платона</button><button id="krtMarket">Пересчитать сейчас</button><button id="krtShare">Поделиться</button><button id="krtSource">Открыть krt.mos.ru</button></div><div id="krtShareNote" class="notice" style="display:none"></div>${planned?'<div id="krtRequirementsBox"><div class="notice">Ищу проект решения и читаю требования…</div></div>':''}<div id="krtMapBox"><div class="notice">Строю карту участка…</div></div><div id="krtMarketResult">${cached?renderKrtModel(cached):''}</div>`;$('krtMarket').onclick=()=>loadKrtMarket(x);$('krtSource').onclick=()=>window.open(x.url,'_blank','noopener');const ra=$('krtRatioApply');if(ra)ra.onclick=()=>loadKrtMarket(x);
  $('krtShare').onclick=()=>shareKrt(x);
  $('krtHandoff').onclick=()=>handoffKrt(x);
  $('krtPlato').onclick=()=>askPlatoAboutKrt(x);
@@ -753,6 +875,7 @@ function selectKrt(x){state.selectedKrt=x;const sc=krtScore(x),fit=sc.fit,cached
   try{$('krtSide').scrollIntoView({behavior:'smooth',block:'start'})}catch(e){$('krtSide').scrollIntoView()}
  }
  renderAskContext();
+ if(planned)loadKrtRequirements(x);
  loadKrtPoint(x);
  // Отчёт уже посчитан — его показывают, а не считают заново. Прогон по
  // каталогу сходил и к рынку, и к движку; заставлять человека ждать те же
@@ -1005,6 +1128,7 @@ loadKrtRanking();
  },delay));
 })();
 $('refresh').onclick=discover;$('search').oninput=filter;$('kind').onchange=filter;$('origin').onchange=filter;$('source').onchange=discover;$('noise').onchange=discover;
+$('auctionExport').onclick=()=>exportRows(state.filtered||[],'auctions');$('krtExport').onclick=()=>exportRows(state.krtFiltered||[],'krt');
 </script>
 </body></html>'''
 

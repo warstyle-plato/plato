@@ -186,11 +186,59 @@ def _traffic_light(weakest_llcr: float, net_profit_mln: float) -> dict[str, Any]
     return {"tone": "ok", "label": "Операционный сценарий проходит", "score": 85}
 
 
+def _requirements_for_model(requirements: dict[str, Any] | None) -> dict[str, Any]:
+    """Translate published duties into model inputs without inventing prices."""
+    source = requirements if isinstance(requirements, dict) else {}
+    actions = source.get("object_actions") or []
+    definite_demolition = [
+        item for item in actions
+        if isinstance(item, dict) and item.get("category") == "demolition"
+    ]
+    conditional = [
+        item for item in actions
+        if isinstance(item, dict) and item.get("category") == "demolition_or_reconstruction"
+    ]
+
+    def area(items: list[dict[str, Any]]) -> float:
+        return sum(_number(item.get("area_sqm")) for item in items)
+
+    demolition_area = area(definite_demolition)
+    conditional_area = area(conditional)
+    construction = list(source.get("construction") or [])[:10]
+    unmodelled_construction = [
+        item for item in construction
+        if any(marker in str(item).casefold() for marker in (
+            "образован", "школ", "детск", "поликлиник", "медицин",
+            "инженер", "дорог", "паркинг", "офис", "торгов", "рынок",
+            "спорт", "производствен", "общественно-делов",
+        ))
+    ]
+    return {
+        "available": bool(source.get("available")),
+        "decision_available": bool(source.get("decision_available")),
+        "source_level": source.get("source_level"),
+        "decision": copy.deepcopy(source.get("decision")),
+        "demolition_area_sqm": demolition_area,
+        "demolition_objects": len(definite_demolition),
+        "conditional_area_sqm": conditional_area,
+        "conditional_objects": len(conditional),
+        "reconstruction_objects": len(source.get("reconstruction") or []),
+        "preservation_objects": len(source.get("preservation") or []),
+        "resettlement": list(source.get("resettlement") or [])[:10],
+        "construction": construction,
+        "unmodelled_construction": unmodelled_construction,
+        "permitted_uses": list(source.get("permitted_uses") or [])[:20],
+        "deadlines": list(source.get("deadlines") or [])[:5],
+        "warning": source.get("warning"),
+    }
+
+
 def build_krt_model_screening(
     project: dict[str, Any] | None,
     market_report: dict[str, Any],
     core: Any,
     tep_ratios: str = "",
+    requirements: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run an on-demand, explicitly preliminary KRT scenario in DevelopAid.
 
@@ -240,6 +288,16 @@ def build_krt_model_screening(
         "retail_enabled": False,
         "above_parking_enabled": False,
     })
+    duties = _requirements_for_model(requirements)
+    duties["nonhousing_gfa_sqm"] = (
+        _number(project.get("nonresidential_gfa_sqm"))
+        + _number(project.get("business_gfa_sqm"))
+    )
+    if duties["demolition_area_sqm"] > 0:
+        # Проект решения даёт площадь сносимых объектов, но не цену работ.
+        # Площадь доезжает в штатное поле DevelopAid; нулевая стоимость не
+        # маскируется допущением — ниже такой прогон лишается зелёного статуса.
+        inputs["demolition_area_sqm"] = duties["demolition_area_sqm"]
 
     tep = _empty_tep(core)
     applied_ratios, ratio_warnings = core.tep_ratios_applied(tep_ratios)
@@ -306,6 +364,19 @@ def build_krt_model_screening(
     # Она обслуживается кассой соседних очередей, и по ней одной хорошая
     # площадка выглядит пограничной (решение владельца, 23.08.2026).
     traffic = _traffic_light(project_llcr, _number(metrics.get("net_profit_mln")))
+    known_unpriced = bool(
+        duties["demolition_area_sqm"] > 0
+        or duties["conditional_objects"]
+        or duties["resettlement"]
+        or duties["unmodelled_construction"]
+        or duties["nonhousing_gfa_sqm"] > 0
+    )
+    if known_unpriced and traffic["tone"] == "ok":
+        traffic = {
+            "tone": "warn",
+            "label": "Проходит до неоценённых обязательств",
+            "score": 55,
+        }
     entry_capacity = _goal_seek_entry_capacity(core, inputs, tep, phasing, bundle)
     capped_at_five = (
         phasing["phase_count"] == MAX_PHASES
@@ -320,7 +391,7 @@ def build_krt_model_screening(
     text = (
         f"Маркетинг рекомендует класс «{segment}»; в модель поставлена стартовая цена "
         f"{_ru_number(start_price)} ₽/м². {queue_text.capitalize()}. "
-        f"До цены входа и неизвестных обязательств модель даёт LLCR проекта "
+        f"До цены входа и неоценённых обязательств модель даёт LLCR проекта "
         f"{project_llcr:.2f}x и маржу {metrics.get('margin_pct', 0):.1f}%"
         + (f"; слабейшая очередь — {weakest_llcr:.2f}x." if len(phases) > 1 else ".")
     )
@@ -361,9 +432,39 @@ def build_krt_model_screening(
     exclusions = [
         "Цена приобретения / входа принята равной нулю.",
         "Плата за ВРИ и оформление земельных правоотношений не включены.",
-        "Социальные объекты, переселение, специальные внеплощадочные сети и иные обязательства КРТ не включены, пока их нет в исходных документах.",
-        "Нежилой и общественно-деловой объём не включён в жилую модель: для него нужно подтвердить продукт и отдельные цены/затраты.",
     ]
+    if duties["nonhousing_gfa_sqm"] > 0:
+        exclusions.append(
+            f"Нежилой и общественно-деловой объём {_ru_number(duties['nonhousing_gfa_sqm'])} м² "
+            "не включён в жилую модель: нужно подтвердить продукт и отдельные цены/затраты."
+        )
+    if duties["demolition_area_sqm"] > 0:
+        exclusions.append(
+            f"Проект решения требует безусловный снос {_ru_number(duties['demolition_area_sqm'], 1)} м²: "
+            "площадь передана в DevelopAid, но стоимость сноса не опубликована и пока не включена в CAPEX."
+        )
+    if duties["conditional_objects"]:
+        detail = (
+            f" общей площадью {_ru_number(duties['conditional_area_sqm'], 1)} м²"
+            if duties["conditional_area_sqm"] > 0 else ""
+        )
+        exclusions.append(
+            f"По {duties['conditional_objects']} объектам{detail} решение допускает выбор «снос/реконструкция»; "
+            "сценарий и его стоимость не определены."
+        )
+    if duties["resettlement"]:
+        exclusions.append(
+            "В проекте решения найдено расселение/изъятие, но стоимость обязательства не опубликована."
+        )
+    if duties["unmodelled_construction"]:
+        exclusions.append(
+            "Опубликованные дополнительные обязательства по строительству прочитаны и переданы в отчёт, "
+            "но не включены в CAPEX без подтверждённых площадей/мощностей и продукта."
+        )
+    if not duties["available"]:
+        exclusions.append(
+            "Проект решения с обязательствами не прочитан; до углублённой оценки зелёный вывод считать предварительным."
+        )
     if class_note:
         assumptions.append(class_note + ".")
 
@@ -392,6 +493,7 @@ def build_krt_model_screening(
             "tep": copy.deepcopy(tep),
             "phasing": copy.deepcopy(phasing),
         },
+        "requirements": duties,
         "headline": traffic["label"],
         "text": text,
         "market": {

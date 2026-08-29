@@ -18,6 +18,8 @@ Chromium, которым считается калькулятор ГлавАП�
 
 from __future__ import annotations
 
+import json
+import re
 from typing import Any
 
 # Признаки того, что вместо данных пришла проверка на робота. Список общий:
@@ -47,6 +49,83 @@ THIRD_PARTY = (
 # источник, и считать его успехом значит выдать одно за другое.
 REFUSAL_TITLE_MARKS = ("403", "401", "Forbidden", "Access denied", "Доступ запрещ")
 
+_BODY_SHOWN = 4_000
+_SECRET_KEY = re.compile(
+    r"token|cookie|authorization|password|secret|session|jwt|csrf|xsrf|signature",
+    re.IGNORECASE,
+)
+_SECRET_VALUE = re.compile(
+    r"(?i)((?:token|cookie|authorization|password|secret|session|jwt|csrf|xsrf|signature)"
+    r"[^=:&,]{0,30}[=:]\s*[\"']?)([^&,\"'\s}]+)"
+)
+
+
+def _redact_json(value: Any, key: str = "", secret_context: bool = False) -> Any:
+    """Сохранить форму публичного ответа, не публикуя сеансовые значения."""
+    secret_context = secret_context or bool(key and _SECRET_KEY.search(key))
+    if isinstance(value, dict):
+        return {str(k): _redact_json(v, str(k), secret_context)
+                for k, v in value.items()}
+    if isinstance(value, list):
+        return [_redact_json(item, secret_context=secret_context) for item in value]
+    if secret_context:
+        return "[redacted]"
+    return value
+
+
+def _safe_body_head(body: str) -> tuple[str, Any | None]:
+    """Безопасное начало тела и JSON, если оно действительно JSON."""
+    try:
+        payload = json.loads(body)
+    except ValueError:
+        # Некоторые SPA шлют form data или собственную строку. Форма всё ещё
+        # нужна для читателя, но значения с именами секретов в публичный
+        # диагностический маршрут не выходят.
+        return _SECRET_VALUE.sub(r"\1[redacted]", body)[:_BODY_SHOWN], None
+    safe = _redact_json(payload)
+    return json.dumps(safe, ensure_ascii=False, separators=(",", ":"))[:_BODY_SHOWN], safe
+
+
+def _network_call(response: Any) -> dict[str, Any] | None:
+    """Публичный XHR/fetch без cookies и заголовков авторизации.
+
+    Для написания читателя нужен не только адрес SPA-запроса. У Сбербанк-АСТ
+    весь каталог ходит одним POST на ``/api/Processing/main``; без тела запроса
+    и формы JSON-ответа этот адрес ничего не объясняет. Показываем только
+    публичное тело запроса и ограниченное начало ответа, никогда не заголовки,
+    cookies или содержимое браузерного хранилища.
+    """
+
+    request = response.request
+    if request.resource_type not in ("xhr", "fetch"):
+        return None
+    content_type = (response.header_value("content-type") or "")[:80]
+    item: dict[str, Any] = {
+        "method": request.method,
+        "url": request.url[:400],
+        "status": response.status,
+        "content_type": content_type,
+    }
+    post_data = request.post_data
+    if post_data:
+        item["request_body_head"] = _safe_body_head(str(post_data))[0]
+    if "json" in content_type.lower():
+        try:
+            body = response.text()
+        except Exception as exc:  # noqa: BLE001
+            item["response_reason"] = f"{type(exc).__name__}: {exc}"
+        else:
+            item["response_body_head"], payload = _safe_body_head(body)
+            if payload is not None:
+                item["response_type"] = type(payload).__name__
+                if isinstance(payload, dict):
+                    item["response_keys"] = sorted(payload)[:40]
+                elif isinstance(payload, list):
+                    item["response_items"] = len(payload)
+                    if payload and isinstance(payload[0], dict):
+                        item["first_item_keys"] = sorted(payload[0])[:40]
+    return item
+
 
 def probe_browser(url: str, seconds: float = 45.0, save_to: str = "") -> dict[str, Any]:
     """Открыть адрес браузером и показать, за чем страница ходила сама.
@@ -70,22 +149,9 @@ def probe_browser(url: str, seconds: float = 45.0, save_to: str = "") -> dict[st
 
     def remember(response: Any) -> None:
         try:
-            request = response.request
-            if request.resource_type not in ("xhr", "fetch"):
-                return
-            call = {
-                "method": request.method,
-                "url": request.url[:400],
-                "status": response.status,
-                "content_type": (response.header_value("content-type") or "")[:80],
-            }
-            # У POST адрес не говорит ничего: у Сбербанк-АСТ весь каталог
-            # ходит в один `/api/Processing/main`, и что именно спрошено —
-            # написано в теле запроса. Без него адрес есть, а читателя из него
-            # не напишешь.
-            if request.method != "GET":
-                call["post_data"] = (request.post_data or "")[:1200]
-            calls.append(call)
+            item = _network_call(response)
+            if item is not None:
+                calls.append(item)
         except Exception:  # noqa: BLE001
             # Один непрочитанный ответ не отменяет пробу.
             pass

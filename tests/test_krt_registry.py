@@ -5,6 +5,11 @@ from types import SimpleNamespace
 
 from market_search.geocoder import GeocodingError
 from market_search.krt_registry import KrtRegistry, parse_catalogue, parse_catalogue_markdown
+from market_search.krt_requirements import (
+    decision_search_queries,
+    parse_decision_requirements,
+    select_project_decision,
+)
 from market_search.subject import SOURCE_KRT, resolve_subject
 
 
@@ -15,6 +20,18 @@ PAGE = """
 <p>Общий объем застройки: 184930</p><p>Жилое назначение: 161680</p>
 <p>Общественно-деловое назначение: 12700</p><p>Прирост рабочих мест: 1490</p>
 <button class="button show_more" data-url="/projects/?PAGEN_1=2">Загрузить еще</button>
+"""
+
+
+DECISION_TEXT = """
+Предельный срок реализации решения о КРТ составляет 6 лет со дня заключения договора.
+4.1 – деловое управление. Размещение объектов капитального строительства.
+Предельная нежилая наземная площадь составляет 8 160 кв. м.
+Перечень земельных участков и объектов капитального строительства
+77:02:0023012:1041 Российская Федерация, г. Москва, проспект Мира, д. 122
+727,8 Снос/ Реконструкция
+77:02:0023012:1031 Российская Федерация, г. Москва, проспект Мира, д. 122, стр. 2
+66,8 Сохранение
 """
 
 
@@ -92,6 +109,110 @@ def test_rendered_catalogue_does_not_assign_the_next_card_to_previous_krt() -> N
     assert rows[0].housing_gfa_sqm is None
     assert rows[1].housing_gfa_sqm == 300440
     assert rows[2].housing_gfa_sqm == 79010
+
+
+def test_document_search_normalizes_the_catalogue_address() -> None:
+    queries = decision_search_queries({"name": "Мира пр-кт, вл. 122"})
+    assert queries[0] == "проект решения Мира влд 122"
+
+
+def test_document_search_rejects_a_project_decision_for_another_address() -> None:
+    project = {"name": "Мира пр-кт, вл. 122"}
+    payload = {"results": [
+        {
+            "id": "wrong", "category": "ДГП",
+            "title": "Проект решения о комплексном развитии территории по адресу Мира, 120",
+        },
+        {
+            "id": "right", "category": "ДГП",
+            "title": (
+                "Проект решения о комплексном развитии территории нежилой застройки "
+                "по адресу: пр-кт Мира, влд. 122"
+            ),
+        },
+    ]}
+    assert select_project_decision(payload, project)["id"] == "right"
+
+
+def test_project_decision_keeps_alternative_action_and_preservation_separate() -> None:
+    facts = parse_decision_requirements(DECISION_TEXT)
+    assert facts["demolition"] == []
+    assert facts["reconstruction"] == []
+    assert facts["demolition_or_reconstruction"] == [
+        "КН 77:02:0023012:1041 · 727.8 м² · Снос/реконструкция"
+    ]
+    assert facts["preservation"] == [
+        "КН 77:02:0023012:1031 · 66.8 м² · Сохранение"
+    ]
+    assert "6 лет" in facts["deadlines"][0]
+    assert facts["permitted_uses"] == ["4.1 · деловое управление"]
+
+
+def test_registry_reads_mos_decision_only_for_a_planned_project(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project = {
+        "slug": "mira", "name": "Мира пр-кт, вл. 122", "status": "Планируемый",
+        "url": "https://api.krt.mos.ru/projects/mira", "housing_gfa_sqm": 10_000,
+    }
+    registry = KrtRegistry(tmp_path)
+    registry.path.parent.mkdir(parents=True)
+    registry.path.write_text(json.dumps({
+        "schema_version": 2, "complete": True, "projects": [project],
+    }), encoding="utf-8")
+    calls = []
+
+    def fetch(url: str) -> bytes:
+        calls.append(url)
+        if "r.jina.ai" in url:
+            return b"# Description of the object\n# What will be built\nBusiness centre"
+        if "/aisearch/" in url:
+            return json.dumps({"results": [{
+                "id": "337386220", "category": "ДГП",
+                "url": "https://www.mos.ru/dgp/documents/view/337386220/",
+                "title": (
+                    "Проект решения о комплексном развитии территории нежилой застройки "
+                    "по адресу: пр-кт Мира, влд. 122"
+                ),
+            }]}).encode()
+        if url.endswith("/documents/337386220"):
+            return json.dumps({
+                "institution_id": 19180090, "date_published": "2026-02-06 00:00:00",
+            }).encode()
+        if "expand=attachments" in url:
+            return json.dumps({"items": [{"attachments": [{
+                "url": "/upload/documents/project.pdf",
+            }]}]}).encode()
+        if url.endswith("project.pdf"):
+            return b"%PDF test fixture"
+        raise AssertionError(url)
+
+    registry.fetch = fetch
+    monkeypatch.setattr("market_search.krt_registry.pdf_text", lambda data: DECISION_TEXT)
+    result = registry.requirements("mira", refresh=True)
+
+    assert result["decision_available"] is True
+    assert result["source_level"] == "official_project_decision"
+    assert result["decision"]["pdf_url"].endswith("project.pdf")
+    assert result["preservation"][0].startswith("КН 77:02:0023012:1031")
+    assert any("/aisearch/" in url for url in calls)
+
+
+def test_registry_does_not_search_documents_for_non_planned_krt(tmp_path: Path) -> None:
+    project = {
+        "slug": "active", "name": "КРТ в реализации", "status": "В реализации",
+        "url": "https://api.krt.mos.ru/projects/active",
+    }
+    registry = KrtRegistry(tmp_path, fetch=lambda url: (_ for _ in ()).throw(
+        AssertionError("document search must not run")
+    ))
+    registry.path.parent.mkdir(parents=True)
+    registry.path.write_text(json.dumps({
+        "schema_version": 2, "complete": True, "projects": [project],
+    }), encoding="utf-8")
+    result = registry.requirements("active")
+    assert result["skipped"] is True
+    assert result["available"] is False
 
 
 def test_cold_catalogue_never_waits_for_the_city_portal(tmp_path: Path) -> None:
@@ -218,7 +339,11 @@ def test_auctions_exposes_krt_as_a_separate_tab_and_endpoint(monkeypatch) -> Non
     app = FastAPI()
     app.state.market_discovery_service = SimpleNamespace(
         krt=SimpleNamespace(
-            catalogue=lambda: [project], status=lambda: {"complete": True, "refreshing": False}
+            catalogue=lambda: [project], status=lambda: {"complete": True, "refreshing": False},
+            requirements=lambda slug: {
+                "slug": slug, "available": True, "decision_available": True,
+                "preservation": ["КН 77:02:0023012:1031 · Сохранение"],
+            },
         ),
         build_report=lambda query, **kwargs: calls.append((query, kwargs)) or {
             "subject": {"project_name": "КРТ Тест"},
@@ -256,6 +381,8 @@ def test_auctions_exposes_krt_as_a_separate_tab_and_endpoint(monkeypatch) -> Non
     assert "Пересчитать сейчас" in page.text
     assert "Передать в DevelopAid" in page.text
     assert "Предварительный прогон модели" in page.text
+    assert "if(planned)loadKrtRequirements(x)" in page.text
+    assert "Что снести или реконструировать" in page.text
     answer = client.get("/auctions/krt")
     assert answer.status_code == 200
     # Каталог дописывает к площадке, когда её впервые увидели: «новое» — это
@@ -267,6 +394,9 @@ def test_auctions_exposes_krt_as_a_separate_tab_and_endpoint(monkeypatch) -> Non
     assert returned[0]["is_new"] is False, "первый снимок новым никого не делает"
     assert "new_count" in answer.json()
     assert answer.json()["complete"] is True
+    requirements = client.get("/auctions/krt/test/requirements")
+    assert requirements.status_code == 200
+    assert requirements.json()["decision_available"] is True
     assert client.get("/auctions/krt/test/market").status_code == 401
     market = client.get("/auctions/krt/test/market", headers={"X-Market-Key": "test-key"})
     assert market.status_code == 200

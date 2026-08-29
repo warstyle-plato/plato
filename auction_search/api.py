@@ -5,15 +5,27 @@ import os
 import sys
 import threading
 import time
+import io
 from typing import Any
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel, Field
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.worksheet.table import Table, TableStyleInfo
 
-from auction_search.adapters import InvestMoscowDiscoveryAdapter, LotOnlineAdapter, RoseltorgAdapter
+from auction_search.adapters import (
+    NistpAdapter,
+    ETPGPBAdapter,
+    ETPRFAdapter,
+    InvestMoscowDiscoveryAdapter,
+    LotOnlineAdapter,
+    RoseltorgAdapter,
+    SberbankASTAdapter,
+)
 from auction_search.adapters.torgi_gov import TorgiGovAdapter, trust_report as torgi_trust_report
 from auction_search.adapters.etp_probe import (
     SLUGS as etp_slugs,
@@ -24,8 +36,10 @@ from auction_search.adapters.fedresurs import (
     SEARCH_PAGE as FEDRESURS_SEARCH_PAGE,
     probe as fedresurs_probe, probe_browser as fedresurs_browser)
 from auction_search.bridge import auction_page_with_handoff, install_page_bridge
+from auction_search.catalogue_quality import catalogue_quality
 from auction_search.developaid_mapper import build_developaid_seed
 from auction_search.documents import DocumentExtractionError
+from auction_search.export_areas import export_areas
 from auction_search.krt_pipeline import enrich_krt_from_official_documents
 from auction_search.krt_ranking import (
     HEARTBEAT_SECONDS, NEW_FOR_SECONDS, KrtRanking, score_row)
@@ -56,6 +70,121 @@ class AuctionIngestRequest(BaseModel):
     enrich_krt_documents: bool = True
     include_raw: bool = False
 
+class AuctionExportRequest(BaseModel):
+    rows: list[dict[str, Any]] = Field(default_factory=list, max_length=2000)
+    kind: str = Field(default="auctions", max_length=40)
+
+class AuctionLotPointRequest(BaseModel):
+    query: str = Field(min_length=3, max_length=500)
+
+def _xlsx(rows: list[dict[str, Any]]) -> bytes:
+    headers = [
+        "Раздел", "Название", "Округ", "Район", "Адрес", "Кадастровые номера",
+        "Тип", "Площадь участка, м²", "Площадь здания/ОКС, м²",
+        "Площадь КРТ, га", "Общий объём, м²", "Жильё, м²", "Цена, ₽",
+        "Оценка Платона", "Статус", "Источник",
+    ]
+
+    def number(value: Any) -> float | int | None:
+        if value in (None, ""):
+            return None
+        try:
+            parsed = float(value)
+            return int(parsed) if parsed.is_integer() else parsed
+        except (TypeError, ValueError):
+            return None
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Выборка"
+    ws.append(headers)
+    keys = (
+        "section", "name", "okrug", "district", "address", "cadastre", "type",
+        "land_area_sqm", "building_area_sqm", "krt_area_ha", "total_gfa_sqm",
+        "housing_gfa_sqm", "price", "score", "status", "url",
+    )
+    numeric_keys = {
+        "land_area_sqm", "building_area_sqm", "krt_area_ha", "total_gfa_sqm",
+        "housing_gfa_sqm", "price", "score",
+    }
+    for source_row in rows[:2000]:
+        row = dict(source_row)
+        if row.get("section") == "Торги":
+            areas = export_areas(row)
+            row["land_area_sqm"] = areas.land_area_sqm
+            row["building_area_sqm"] = areas.building_area_sqm
+        values = [number(row.get(key)) if key in numeric_keys else (row.get(key) or "") for key in keys]
+        ws.append(values)
+
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = f"A1:P{max(1, ws.max_row)}"
+    ws.sheet_view.showGridLines = False
+    header_fill = PatternFill("solid", fgColor="171717")
+    for cell in ws[1]:
+        cell.fill = header_fill
+        cell.font = Font(color="FFFFFF", bold=True)
+        cell.alignment = Alignment(vertical="center", wrap_text=True)
+    ws.row_dimensions[1].height = 34
+    widths = [11, 48, 10, 18, 34, 28, 18, 20, 23, 18, 18, 16, 18, 17, 22, 42]
+    for index, width in enumerate(widths, start=1):
+        ws.column_dimensions[chr(64 + index)].width = width
+    for row in ws.iter_rows(min_row=2):
+        for cell in row:
+            cell.alignment = Alignment(vertical="top", wrap_text=cell.column in {2, 5, 6, 15, 16})
+    for row in ws.iter_rows(min_row=2, min_col=8, max_col=14):
+        for cell in row:
+            cell.alignment = Alignment(horizontal="right", vertical="top")
+    for column in (8, 9, 11, 12):
+        for cell in ws.iter_cols(min_col=column, max_col=column, min_row=2):
+            for item in cell:
+                item.number_format = '#,##0.00'
+    for cell in ws["J"][1:]:
+        cell.number_format = '0.0000'
+    for cell in ws["M"][1:]:
+        cell.number_format = '#,##0" ₽"'
+    for cell in ws["N"][1:]:
+        cell.number_format = '0'
+    for cell in ws["P"][1:]:
+        if cell.value:
+            cell.hyperlink = str(cell.value)
+            cell.style = "Hyperlink"
+    if ws.max_row >= 2:
+        table = Table(displayName="DevelopAidSelection", ref=f"A1:P{ws.max_row}")
+        table.tableStyleInfo = TableStyleInfo(
+            name="TableStyleMedium2", showFirstColumn=False, showLastColumn=False,
+            showRowStripes=True, showColumnStripes=False,
+        )
+        ws.add_table(table)
+    ws.auto_filter.ref = f"A1:P{max(1, ws.max_row)}"
+    ws.page_setup.orientation = "landscape"
+    ws.page_setup.fitToWidth = 1
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+    out = io.BytesIO()
+    wb.save(out)
+    return out.getvalue()
+
+
+def _handoff_land_cadastres(preset: dict[str, Any], context: dict[str, Any]) -> list[str]:
+    """Keep source lot data intact; narrow only the DevelopAid handoff."""
+    land_numbers = [
+        str(item.get("cadastral_number"))
+        for item in (context.get("land_parcels") or [])
+        if item.get("cadastral_number")
+    ]
+    if not land_numbers:
+        return []
+    preset["project"]["cadastral_numbers"] = land_numbers
+    preset["project"]["cadastral_numbers_input"] = ", ".join(land_numbers)
+    preset["land"]["cadastral_numbers"] = land_numbers
+    preset["land"]["cadastral_numbers_csv"] = ", ".join(land_numbers)
+    cadastral_import = preset["project"]["cadastral_import"]
+    cadastral_import["mode"] = "bulk" if len(land_numbers) > 1 else "single"
+    cadastral_import["note"] += (
+        " КН зданий/ОКС исключены из площади территории; "
+        "переданы только земельные участки НСПД."
+    )
+    return land_numbers
+
 
 _LOTONLINE_PROJECT_SHARES_FLAG = "AUCTION_LOTONLINE_PROJECT_SHARES_DISCOVERY"
 
@@ -76,11 +205,19 @@ def _adapter_for(url: str):
         return RoseltorgAdapter()
     if host == "lot-online.ru" or host.endswith(".lot-online.ru"):
         return LotOnlineAdapter()
+    if host == ETPGPBAdapter.HOST or host.endswith("." + ETPGPBAdapter.HOST) or host.endswith(".gpb.ru"):
+        return ETPGPBAdapter()
+    if host == ETPRFAdapter.HOST or host.endswith("." + ETPRFAdapter.HOST):
+        return ETPRFAdapter()
+    if host == SberbankASTAdapter.HOST or host.endswith("." + SberbankASTAdapter.HOST):
+        return SberbankASTAdapter()
+    if host == NistpAdapter.HOST or host.endswith("." + NistpAdapter.HOST):
+        return NistpAdapter()
     if host == TorgiGovAdapter.HOST or host.endswith("." + TorgiGovAdapter.HOST):
         return TorgiGovAdapter()
     raise ValueError(
-        "Разбирать умеем только официальные адреса Росэлторга, РАД/Lot-online и "
-        f"ГИС Торгов; «{host or url}» ни на один из них не похож")
+        "Разбирать умеем только официальные адреса Росэлторга, РАД/Lot-online, "
+        f"ЭТП ГПБ, ЭТП РФ, Сбербанк-АСТ и ГИС Торгов; «{host or url}» ни на один из них не похож")
 
 
 def _analysis_support(url: str) -> dict[str, Any]:
@@ -114,19 +251,28 @@ def _discovery_adapters(source: str):
         return [RoseltorgAdapter()]
     if value in {"investmoscow", "moscow", "city"}:
         return [InvestMoscowDiscoveryAdapter()]
-    if value in {"torgi", "torgi_gov", "bankruptcy"}:
+    if value in {"torgi", "torgi_gov"}:
         return [TorgiGovAdapter()]
+    if value in {"etp_gpb", "etpgpb", "gpb"}:
+        return [ETPGPBAdapter()]
+    if value in {"etp_rf", "etprf"}:
+        return [ETPRFAdapter()]
+    if value in {"sberbank_ast", "sberbank", "sber", "sberbank-ast"}:
+        return [SberbankASTAdapter()]
+    if value in {"nistp", "nis"}:
+        return [NistpAdapter()]
     if value == "all":
-        adapters = [_lot_online_discovery_adapter(), RoseltorgAdapter(),
-                    InvestMoscowDiscoveryAdapter()]
-        # Банкротные лоты идут в общую выдачу, только когда источник включён:
-        # его коды видов торгов ещё не сверены живым ответом, а включённый
-        # непроверенный источник хуже отсутствующего — он приносит лоты, и
-        # они выглядят так же, как проверенные.
-        if TorgiGovAdapter.enabled():
-            adapters.append(TorgiGovAdapter())
-        return adapters
-    raise ValueError("source: all, lot_online, roseltorg, investmoscow или torgi")
+        # ГИС Торги — официальный источник имущественных торгов, а не
+        # банкротный рынок. Это честно подписано в его отчёте, но исключать его
+        # из кнопки «все источники» нельзя: именно там сейчас есть актуальные
+        # московские лоты, когда две узкие ЭТП возвращают пустую выдачу.
+        return [
+            TorgiGovAdapter(), _lot_online_discovery_adapter(), RoseltorgAdapter(),
+            InvestMoscowDiscoveryAdapter(), ETPGPBAdapter(), ETPRFAdapter(),
+            SberbankASTAdapter(), NistpAdapter(),
+        ]
+    raise ValueError(
+        "source: all, lot_online, roseltorg, investmoscow, torgi, etp_gpb, etp_rf, sberbank_ast или nistp")
 
 
 def _coverage_row(adapter: Any) -> dict[str, Any]:
@@ -204,6 +350,7 @@ def _plato_krt_prompt(stored: dict[str, Any]) -> str:
     market_block = screening.get("market") or {}
     phasing = screening.get("phasing") or {}
     capacity = screening.get("entry_capacity") or {}
+    duties = screening.get("requirements") or {}
     verdict = report.get("verdict") or {}
     peers = report.get("peers") or []
 
@@ -248,6 +395,16 @@ def _plato_krt_prompt(stored: dict[str, Any]) -> str:
             f"Потолок цены входа при LLCR 1,20x: {_plato_number(capacity.get('amount_mln'), 1)} млн ₽.")
     else:
         lines.append(f"Потолок цены входа не подобран: {capacity.get('reason') or 'причина не названа'}.")
+    if duties:
+        lines += [
+            "",
+            "ОПУБЛИКОВАННЫЕ ОБЯЗАТЕЛЬСТВА",
+            f"Безусловный снос: {_plato_number(duties.get('demolition_area_sqm'))} м² "
+            f"({duties.get('demolition_objects') or 0} объектов); "
+            f"снос/реконструкция: {duties.get('conditional_objects') or 0} объектов.",
+            f"Расселение/изъятие: {'найдено' if duties.get('resettlement') else 'не найдено в опубликованном решении'}; "
+            f"дополнительные объекты: {len(duties.get('unmodelled_construction') or [])}.",
+        ]
     for item in (screening.get("exclusions") or [])[:6]:
         lines.append(f"НЕ УЧТЕНО: {item}")
     lines += [
@@ -361,14 +518,13 @@ def install(app: FastAPI) -> None:
                 },
                 {
                     "id": "torgi_gov",
-                    "name": "ГИС Торги (torgi.gov.ru) — имущество должников",
+                    "name": "ГИС Торги (torgi.gov.ru) — приватизация и прочие торги",
                     "direct_lot_ingest": False,
                     "moscow_discovery": TorgiGovAdapter.enabled(),
                     "discovery_access": "public_api",
-                    "note": ("Банкротные и залоговые лоты: имущественные комплексы, "
-                             "здания, незавершёнка. Городские площадки их не видят. "
-                             "Серверного фильтра региона у API нет — отбираем сами "
-                             "по subjectRFCode; выключается TORGI_GOV_DISCOVERY=0."),
+                    "note": ("Не входит в основную подборку: живой ответ подтвердил "
+                             "178-ФЗ, а не банкротство. Доступен отдельным источником; "
+                             "Москву отбираем по subjectRFCode=77."),
                     # Сертификат torgi.gov.ru выпущен Минцифры, и обычным
                     # хранилищем корней он не проверяется. Корни лежат в
                     # `certs` на машине, а не в репозитории. Пустой список
@@ -383,6 +539,39 @@ def install(app: FastAPI) -> None:
                     "direct_lot_ingest": True,
                     "moscow_discovery": True,
                     "discovery_access": "public_tags_search",
+                },
+                {
+                    "id": "etp_gpb",
+                    "name": "ЭТП ГПБ",
+                    "direct_lot_ingest": True,
+                    "moscow_discovery": True,
+                    "discovery_access": "official_public_json_api",
+                },
+                {
+                    "id": "etp_rf",
+                    "name": "ЭТП РФ",
+                    "direct_lot_ingest": False,
+                    "moscow_discovery": True,
+                    "discovery_access": "official_public_registry",
+                    "note": "Поиск подключён; детальный разбор документов площадки пока недоступен.",
+                },
+                {
+                    "id": "sberbank_ast",
+                    "name": "Сбербанк-АСТ",
+                    "direct_lot_ingest": True,
+                    "moscow_discovery": True,
+                    "discovery_access": "official_public_html_post",
+                    "note": ("Официальный реестр банкротных торгов: общий список, "
+                             "имущество и раздел АП. Если площадка вернула антибот-страницу, "
+                             "это отражается в охвате источника; обход защиты не используется."),
+                },
+                {
+                    "id": "nistp",
+                    "name": "НИС (nistp.ru)",
+                    "direct_lot_ingest": False,
+                    "moscow_discovery": True,
+                    "discovery_access": "official_public_registry",
+                    "note": "Публичный поиск банкротных лотов по Москве; подключён без обхода защиты.",
                 },
                 {
                     "id": "investmoscow",
@@ -433,7 +622,16 @@ def install(app: FastAPI) -> None:
             f"krt:{project.get('slug')}", radius_km=3.0, peers_limit=12,
             city_reference=False, include_project_totals=True,
         )
-        screening = build_krt_model_screening(project, report, core)
+        try:
+            requirements = krt_registry.requirements(str(project.get("slug") or ""))
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("KRT requirements failed slug=%s", project.get("slug"))
+            requirements = {
+                "available": False,
+                "warning": f"Документы обязательств временно не прочитаны: {type(exc).__name__}",
+            }
+        screening = build_krt_model_screening(
+            project, report, core, requirements=requirements)
         # Маркетинг едет вместе со скринингом и оседает в отчёте площадки.
         # Считать его второй раз при открытии карточки незачем: прогон уже
         # сходил к рынку, к соседям и к движку — минуты чужого ожидания на
@@ -442,6 +640,24 @@ def install(app: FastAPI) -> None:
         # нас уже кончался, а карточка рисует ровно эти блоки.
         screening["market_report"] = _market_digest(report)
         return screening
+
+    @app.get("/auctions/krt/{slug}/requirements")
+    async def auction_krt_requirements(slug: str) -> dict[str, Any]:
+        """Requirements from the official decision for one planned KRT.
+
+        This endpoint deliberately distinguishes an unpublished fact from a
+        negative fact.  If the project decision says nothing about resettlement,
+        the UI shows "not published", never "no resettlement".  The signed KRT
+        agreement remains the final source of the developer's duties.
+        """
+        reader = getattr(krt_registry, "requirements", None)
+        if not callable(reader):
+            raise HTTPException(
+                status_code=503, detail="Чтение требований КРТ не подключено")
+        result = await run_in_threadpool(reader, slug)
+        if result is None:
+            raise HTTPException(status_code=404, detail="Территория КРТ не найдена")
+        return result
 
     @app.get("/auctions/krt/{slug}/point")
     async def auction_krt_point(slug: str) -> dict[str, Any]:
@@ -615,6 +831,7 @@ def install(app: FastAPI) -> None:
             "inputs": model.get("inputs") or {},
             "tep": model.get("tep") or {},
             "phasing": model.get("phasing") or {},
+            "requirements": screening.get("requirements") or {},
             "assumptions": screening.get("assumptions") or [],
             "exclusions": screening.get("exclusions") or [],
         }
@@ -698,8 +915,9 @@ def install(app: FastAPI) -> None:
                     }
                 else:
                     try:
+                        requirements = krt_registry.requirements(slug)
                         screening = build_krt_model_screening(
-                            project, report, core, tep_ratios)
+                            project, report, core, tep_ratios, requirements)
                     except Exception:
                         # Marketing remains useful if a preliminary model cannot
                         # be assembled.  Do not turn an optional screen into a
@@ -873,6 +1091,7 @@ def install(app: FastAPI) -> None:
             "source_policy": "official_etp_only",
             "source": source,
             "count": len(lots),
+            "quality": service.last_quality_report,
             "coverage": [_coverage_row(adapter) for adapter in adapters],
             "lots": [
                 {
@@ -882,6 +1101,7 @@ def install(app: FastAPI) -> None:
                     # эталону сделок: балл, собранный в браузере, был бы
                     # вторым счётом той же величины.
                     "fit": profile_fit(_public_lot_dict(lot)),
+                    "quality": catalogue_quality(lot),
                     "screening": {
                         **AuctionSearchService.screen_lot(lot),
                         "documents_count": len(lot.documents),
@@ -891,6 +1111,26 @@ def install(app: FastAPI) -> None:
                 for lot in lots
             ],
         }
+
+    @app.post("/auctions/export.xlsx")
+    async def auction_export(req: AuctionExportRequest) -> Response:
+        data = _xlsx(req.rows)
+        filename = "developaid-krt.xlsx" if req.kind == "krt" else "developaid-auctions.xlsx"
+        return Response(content=data, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+    @app.post("/auctions/lot-point")
+    async def auction_lot_point(req: AuctionLotPointRequest) -> dict[str, Any]:
+        if market is None:
+            raise HTTPException(status_code=503, detail="Маркетинговый движок не подключён")
+        try:
+            subject = await run_in_threadpool(market.resolve_subject, req.query)
+        except (GeocodingError, RemoteServiceError, RuntimeError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        data = subject.to_dict() if hasattr(subject, "to_dict") else {}
+        return {"latitude": data.get("latitude"), "longitude": data.get("longitude"),
+                "address": data.get("address") or req.query, "precision": data.get("precision"),
+                "nspd_url": data.get("nspd_url") or ""}
 
     @app.post("/auctions/ingest")
     async def auction_ingest(req: AuctionIngestRequest) -> dict[str, Any]:
@@ -912,6 +1152,17 @@ def install(app: FastAPI) -> None:
         if not req.include_raw:
             normalized.pop("raw", None)
         project_preset = build_project_preset(lot)
+        # ОКС и участок — разные объекты ЕГРН. В карточках торгов часто
+        # публикуют оба КН; передача обоих в ГлавАПУ заставляет калькулятор
+        # принять площадь здания за площадь территории и сложить их. Для
+        # имущественного комплекса/незавершёнки оставляем в handoff только
+        # земельные КН, подтверждённые НСПД.
+        if lot.lot_kind != LotKind.KRT and lot.cadastral_numbers and core is not None:
+            try:
+                context = await run_in_threadpool(core._land_lot_context, lot.cadastral_numbers)
+                _handoff_land_cadastres(project_preset, context)
+            except Exception:
+                logger.warning("Не удалось отделить КН здания от участка для handoff", exc_info=True)
         return {
             "lot": normalized,
             "developaid_seed": build_developaid_seed(lot),

@@ -74,3 +74,33 @@ def test_krt_screening_does_not_invent_market_class_or_price() -> None:
 
     assert no_class == {"available": False, "reason": "Маркетинг пока не определил класс продукта"}
     assert no_price == {"available": False, "reason": "Маркетинг пока не дал ценового ориентира"}
+
+
+def test_published_krt_duties_reach_developaid_without_an_invented_cost() -> None:
+    requirements = {
+        "available": True,
+        "decision_available": True,
+        "source_level": "official_project_decision",
+        "object_actions": [
+            {"category": "demolition", "area_sqm": 1250, "cadastral_number": "77:01:1:1"},
+            {"category": "demolition_or_reconstruction", "area_sqm": 800,
+             "cadastral_number": "77:01:1:2"},
+        ],
+        "construction": ["Предусмотреть строительство объекта образования"],
+        "resettlement": ["Переселение жителей выполняется в установленном порядке"],
+        "permitted_uses": ["4.2 · Объекты торговли"],
+        "deadlines": ["Предельный срок реализации — 6 лет"],
+    }
+    result = build_krt_model_screening(
+        PROJECT, _market(680_000), core, requirements=requirements)
+
+    inputs = result["model_inputs"]["inputs"]
+    assert inputs["demolition_area_sqm"] == 1250
+    assert inputs["demolition_cost_th_per_sqm"] == 0
+    assert result["requirements"]["conditional_area_sqm"] == 800
+    assert result["requirements"]["permitted_uses"] == ["4.2 · Объекты торговли"]
+    assert result["requirements"]["unmodelled_construction"]
+    assert result["traffic_light"]["tone"] != "ok"
+    assert any("стоимость сноса" in item for item in result["exclusions"])
+    assert any("снос/реконструкция" in item for item in result["exclusions"])
+    assert any("расселение/изъятие" in item for item in result["exclusions"])

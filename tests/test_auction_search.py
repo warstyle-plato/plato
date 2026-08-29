@@ -1,9 +1,10 @@
 from datetime import date, datetime, timedelta
+import io
 from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo
 
 from auction_search.adapters.lot_online import LotOnlineAdapter
-from auction_search.api import _discovery_adapters
+from auction_search.api import _discovery_adapters, _handoff_land_cadastres, _xlsx
 from auction_search.bridge import auction_page_with_handoff, install_page_bridge
 from auction_search.classifier import classify_lot
 from auction_search.developaid_mapper import build_developaid_seed
@@ -178,6 +179,34 @@ def test_explicit_platform_test_lot_is_screened_as_noise():
     assert "platform_test_lot" in screening["relevance_flags"]
 
 
+def test_an_apartment_is_not_presented_as_a_development_complex():
+    lot = AuctionLot(
+        source=source(),
+        lot_kind=LotKind.PROPERTY_COMPLEX,
+        title="Продажа квартиры площадью 97,4 кв. м",
+        address="Москва, ул. Примерная, д. 1, кв. 31",
+    )
+
+    screening = AuctionSearchService.screen_lot(lot)
+
+    assert screening["development_relevant"] is False
+    assert "residential_unit" in screening["relevance_flags"]
+    assert "квартира" in " ".join(screening["exclusion_reasons"])
+
+
+def test_a_non_residential_building_is_not_mistaken_for_a_flat():
+    lot = AuctionLot(
+        source=source(),
+        lot_kind=LotKind.PROPERTY_COMPLEX,
+        title="Нежилое помещение и земельный участок",
+    )
+
+    screening = AuctionSearchService.screen_lot(lot)
+
+    assert screening["development_relevant"] is True
+    assert "residential_unit" not in screening["relevance_flags"]
+
+
 def test_api_runtime_flag_controls_project_share_discovery(monkeypatch):
     monkeypatch.delenv("AUCTION_LOTONLINE_PROJECT_SHARES_DISCOVERY", raising=False)
     default_adapter = _discovery_adapters("lot_online")[0]
@@ -188,7 +217,10 @@ def test_api_runtime_flag_controls_project_share_discovery(monkeypatch):
     assert enabled_adapter.include_project_shares is True
 
     monkeypatch.setenv("AUCTION_LOTONLINE_PROJECT_SHARES_DISCOVERY", "false")
-    disabled_adapter = _discovery_adapters("all")[0]
+    disabled_adapter = next(
+        adapter for adapter in _discovery_adapters("all")
+        if isinstance(adapter, LotOnlineAdapter)
+    )
     assert disabled_adapter.include_project_shares is False
 
 
@@ -441,6 +473,24 @@ def test_ordinary_auction_preset_prefills_purchase_price_and_cadastre():
     assert preset["open_items"]
 
 
+def test_handoff_excludes_building_cadastre_without_changing_lot_data():
+    lot = AuctionLot(
+        source=source(), lot_kind=LotKind.PROPERTY_COMPLEX, title="ОСЗ с участком",
+        cadastral_numbers=["77:02:0019005:1000", "77:02:0019005:4"],
+        current_price_rub=100_000_000,
+    )
+    preset = build_project_preset(lot)
+    context = {
+        "buildings": [{"cadastral_number": "77:02:0019005:1000"}],
+        "land_parcels": [{"cadastral_number": "77:02:0019005:4"}],
+    }
+    selected = _handoff_land_cadastres(preset, context)
+    assert selected == ["77:02:0019005:4"]
+    assert preset["project"]["cadastral_numbers"] == ["77:02:0019005:4"]
+    assert preset["land"]["cadastral_numbers"] == ["77:02:0019005:4"]
+    assert lot.cadastral_numbers == ["77:02:0019005:1000", "77:02:0019005:4"]
+
+
 def test_krt_preset_maps_only_unambiguous_program_products():
     prov = Provenance(
         source_url="https://catalog.lot-online.ru/doc.pdf",
@@ -479,6 +529,94 @@ def test_auction_ui_does_not_render_missing_area_as_zero():
 
     page = auctions_page()
     assert "n!==null&&n!==undefined&&n!==''" in page
+
+
+def test_excel_export_separates_land_and_building_as_numbers():
+    from openpyxl import load_workbook
+
+    raw = _xlsx([{
+        "section": "Торги", "name": "ОСЗ с участком", "cadastre": "77:1, 77:2",
+        "type": "ЗИК", "land_area_sqm": 3650, "building_area_sqm": 785,
+        "price": 158_636_700, "score": 24, "url": "https://example.test/lot/1",
+    }])
+    sheet = load_workbook(io.BytesIO(raw)).active
+    headers = [cell.value for cell in sheet[1]]
+    assert "Площадь участка, м²" in headers
+    assert "Площадь здания/ОКС, м²" in headers
+    assert sheet.cell(2, headers.index("Площадь участка, м²") + 1).value == 3650
+    assert sheet.cell(2, headers.index("Площадь здания/ОКС, м²") + 1).value == 785
+    assert sheet.cell(2, headers.index("Цена, ₽") + 1).data_type == "n"
+    assert sheet.freeze_panes == "A2"
+
+
+def test_torgi_excel_export_recovers_explicit_land_and_does_not_sum_it_into_building():
+    from openpyxl import load_workbook
+
+    raw = _xlsx([{
+        "section": "Торги",
+        "name": (
+            "Комплекс им-ва: 1. ЗУ Пл.: 621 +/- 9 кв.м. КН 77:01:0003036:4449; "
+            "2. Здание Ярославского ПЖДП Пл. 1259.3 кв.м. КН 77:01:0003036:1085"
+        ),
+        "land_area_sqm": "",
+        "building_area_sqm": 1880.3,
+        "url": "https://torgi.gov.ru/new/public/lots/lot/21000003370000000395_1",
+    }])
+    sheet = load_workbook(io.BytesIO(raw)).active
+    headers = [cell.value for cell in sheet[1]]
+    assert sheet.cell(2, headers.index("Площадь участка, м²") + 1).value == 621
+    assert sheet.cell(2, headers.index("Площадь здания/ОКС, м²") + 1).value == 1259.3
+
+
+def test_torgi_excel_export_sums_buildings_but_not_hidden_land():
+    from openpyxl import load_workbook
+
+    raw = _xlsx([{
+        "section": "Торги",
+        "name": (
+            "Объекты недвижимого имущества в составе: нежилое здание площадью 145 кв.м "
+            "и нежилое здание площадью 178 кв.м"
+        ),
+        "building_area_sqm": 623,
+        "url": "https://torgi.gov.ru/new/public/lots/lot/22000036140000000714_1",
+    }])
+    sheet = load_workbook(io.BytesIO(raw)).active
+    headers = [cell.value for cell in sheet[1]]
+    assert sheet.cell(2, headers.index("Площадь участка, м²") + 1).value is None
+    assert sheet.cell(2, headers.index("Площадь здания/ОКС, м²") + 1).value == 323
+
+
+def test_torgi_excel_export_reads_full_form_land_and_building_phrases():
+    from openpyxl import load_workbook
+
+    raw = _xlsx([{
+        "section": "Торги",
+        "name": (
+            "объекта недвижимого имущества площадью 6 046,2 кв. метра, "
+            "одновременно с земельным участком площадью 2 891 кв. метр"
+        ),
+        "building_area_sqm": 6046.2,
+        "url": "https://torgi.gov.ru/new/public/lots/lot/22000034760000001834_1",
+    }])
+    sheet = load_workbook(io.BytesIO(raw)).active
+    headers = [cell.value for cell in sheet[1]]
+    assert sheet.cell(2, headers.index("Площадь участка, м²") + 1).value == 2891
+    assert sheet.cell(2, headers.index("Площадь здания/ОКС, м²") + 1).value == 6046.2
+
+
+def test_krt_excel_export_keeps_territory_and_program_areas_separate():
+    from openpyxl import load_workbook
+
+    raw = _xlsx([{
+        "section": "КРТ", "name": "Тестовая территория", "okrug": "ЗАО",
+        "district": "Кунцево", "krt_area_ha": 23.5, "total_gfa_sqm": 74470,
+        "housing_gfa_sqm": 61000, "score": 87, "status": "Планируемый",
+    }])
+    sheet = load_workbook(io.BytesIO(raw)).active
+    headers = [cell.value for cell in sheet[1]]
+    assert sheet.cell(2, headers.index("Площадь КРТ, га") + 1).value == 23.5
+    assert sheet.cell(2, headers.index("Общий объём, м²") + 1).value == 74470
+    assert sheet.cell(2, headers.index("Жильё, м²") + 1).value == 61000
 
 
 def test_auction_ui_names_city_discovery_and_shows_source_funnel():

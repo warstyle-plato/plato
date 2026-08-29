@@ -7,6 +7,7 @@ official decision geometry can be attached later without changing callers.
 
 from __future__ import annotations
 
+import json
 import re
 import threading
 import time
@@ -17,12 +18,25 @@ from typing import Any, Callable
 from urllib.parse import urljoin
 
 from .http import RemoteServiceError, fresh, load_json, request_bytes, save_json
+from .krt_requirements import (
+    decision_search_urls,
+    document_attachments_url,
+    document_detail_url,
+    is_planned_project,
+    merge_decision_requirements,
+    parse_decision_requirements,
+    parse_project_requirements,
+    pdf_text,
+    select_pdf_attachment,
+    select_project_decision,
+)
 
 
 BASE_URL = "https://api.krt.mos.ru"
 CATALOGUE_URL = BASE_URL + "/projects/"
 JINA_PREFIX = "https://r.jina.ai/"
 CACHE_SCHEMA_VERSION = 2
+REQUIREMENTS_CACHE_SCHEMA_VERSION = 2
 _SPACE = re.compile(r"\s+")
 _NUMBER = re.compile(r"[-+]?\d+(?:[.,]\d+)?")
 
@@ -162,6 +176,7 @@ def parse_catalogue_markdown(markdown: str) -> list[KrtTerritory]:
 class KrtRegistry:
     def __init__(self, data_dir: Path, *, fetch: Callable[[str], bytes] | None = None) -> None:
         self.path = Path(data_dir) / "krt" / "catalogue.json"
+        self.requirements_dir = Path(data_dir) / "krt" / "requirements"
         self.fetch = fetch or (lambda url: request_bytes(url, timeout=15, retries=1))
         self.ttl_seconds = 24 * 60 * 60
         self._refreshing = False
@@ -285,6 +300,119 @@ class KrtRegistry:
                 or not cached.get("complete", True)):
             self.refresh_in_background()
         return [row.to_dict() for row in rows]
+
+    def requirements(self, slug: str, *, refresh: bool = False) -> dict[str, Any] | None:
+        """Read one planned KRT card and its official project-decision PDF."""
+        clean_slug = str(slug or "").strip()
+        if not re.fullmatch(r"[a-zA-Z0-9_-]{2,180}", clean_slug):
+            return None
+        project = next(
+            (item for item in self.catalogue() if item.get("slug") == clean_slug), None)
+        if not project:
+            return None
+        if not is_planned_project(project):
+            return {
+                "schema_version": REQUIREMENTS_CACHE_SCHEMA_VERSION,
+                "slug": clean_slug,
+                "name": project.get("name"),
+                "status": project.get("status"),
+                "available": False,
+                "skipped": True,
+                "warning": "Документы читаются только для планируемых КРТ.",
+            }
+        cache_path = self.requirements_dir / f"{clean_slug}.json"
+        cached = load_json(cache_path)
+        if (not refresh and fresh(cache_path, self.ttl_seconds)
+                and isinstance(cached, dict)
+                and cached.get("schema_version") == REQUIREMENTS_CACHE_SCHEMA_VERSION):
+            return cached
+
+        source_url = str(project.get("url") or f"{BASE_URL}/projects/{clean_slug}")
+        document = ""
+        transport = "official_host"
+        errors: list[str] = []
+        # The KRT host currently presents a certificate chain that standard
+        # server trust stores reject.  The renderer transports the same public
+        # page and returns in seconds; the official host remains a fallback.
+        # The legally relevant PDF below is always downloaded directly from
+        # mos.ru and never through the renderer.
+        for url, label in ((JINA_PREFIX + source_url, "read_only_renderer"),
+                           (source_url, "official_host")):
+            try:
+                document = self.fetch(url).decode("utf-8", errors="replace")
+            except (RemoteServiceError, OSError, UnicodeError) as exc:
+                errors.append(f"{label}: {type(exc).__name__}: {exc}")
+                continue
+            if document.strip():
+                transport = label
+                break
+        result = parse_project_requirements(document, project)
+        result["status"] = project.get("status")
+
+        def remote_json(url: str, label: str) -> Any | None:
+            try:
+                return json.loads(self.fetch(url).decode("utf-8"))
+            except (RemoteServiceError, OSError, UnicodeError, json.JSONDecodeError) as exc:
+                errors.append(f"{label}: {type(exc).__name__}: {exc}")
+                return None
+
+        decision = None
+        for index, search_url in enumerate(decision_search_urls(project), start=1):
+            payload = remote_json(search_url, f"mos_search_{index}")
+            decision = select_project_decision(payload, project)
+            if decision:
+                break
+
+        decision_meta: dict[str, Any] | None = None
+        if decision:
+            document_id = str(decision.get("id") or "").strip()
+            detail = remote_json(document_detail_url(document_id), "mos_document_detail")
+            institution_id = (detail or {}).get("institution_id")
+            if institution_id is not None:
+                attachments = remote_json(
+                    document_attachments_url(document_id, institution_id),
+                    "mos_document_attachments",
+                )
+                pdf_url = select_pdf_attachment(attachments)
+                if pdf_url:
+                    try:
+                        pdf_data = self.fetch(pdf_url)
+                        if len(pdf_data) > 35 * 1024 * 1024:
+                            raise RuntimeError("PDF проекта решения превышает 35 МБ")
+                        facts = parse_decision_requirements(pdf_text(pdf_data))
+                        decision_meta = {
+                            "id": document_id,
+                            "title": decision.get("title"),
+                            "page_url": decision.get("url"),
+                            "pdf_url": pdf_url,
+                            "published_at": (detail or {}).get("date_published"),
+                        }
+                        result = merge_decision_requirements(result, facts, decision_meta)
+                    except (RemoteServiceError, OSError, RuntimeError) as exc:
+                        errors.append(f"mos_decision_pdf: {type(exc).__name__}: {exc}")
+                else:
+                    errors.append("mos_document_attachments: PDF не опубликован")
+            else:
+                errors.append("mos_document_detail: не указан орган публикации")
+
+        if decision_meta is None:
+            result["decision_available"] = False
+            result["warning"] = (
+                "В официальном поиске mos.ru не найден читаемый проект решения для этой "
+                "карточки. Показаны только ТЭП и текст krt.mos.ru; отсутствие сведений "
+                "о сносе или расселении не означает, что их нет."
+            )
+        else:
+            result["decision_available"] = True
+        result.update({
+            "schema_version": REQUIREMENTS_CACHE_SCHEMA_VERSION,
+            "available": True,
+            "retrieved_at": int(time.time()),
+            "transport": transport,
+            "errors": errors[:3],
+        })
+        save_json(cache_path, result)
+        return result
 
     def status(self) -> dict[str, bool]:
         cached = load_json(self.path)

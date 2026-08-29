@@ -59,6 +59,10 @@ def lot_subject(kind: "LotKind | str") -> str:
 class SourceKind(str, Enum):
     ROSELTORG = "roseltorg"
     LOT_ONLINE = "lot_online"
+    SBERBANK_AST = "sberbank_ast"
+    NISTP = "nistp"
+    ETP_GPB = "etp_gpb"
+    ETP_RF = "etp_rf"
     OTHER_ETP = "other_etp"
     TORGI_GOV = "torgi_gov"
 

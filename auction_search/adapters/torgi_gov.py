@@ -13,11 +13,12 @@
 
 ## Чего этот файл НЕ знает
 
-Живой пробы отсюда сделать нельзя: torgi.gov.ru закрыт сетевой политикой
-песочницы, как НСПД. Поэтому коды видов торгов и имена полей взяты из открытого
-описания и НЕ сверены ответом сервиса. Разбор поля, которого нет в ответе,
-даёт пропуск с причиной, а не выдуманное значение. Адаптер включён с
-25.08.2026 и выключается переменной `TORGI_GOV_DISCOVERY=0`.
+Из локальной среды torgi.gov.ru нестабилен, поэтому окончательная проба
+идёт с ядра. Форма ответа и поля карточки сверены живыми ответами.
+Внутренний `dynSubjRF=78` для Москвы и категории `catCode=2/7` берутся из
+публичных примеров запросов ГИС Торги; чужой регион всё равно не пройдёт
+независимую проверку `subjectRFCode=77`. Адаптер выключается переменной
+`TORGI_GOV_DISCOVERY=0`.
 
 Проверять это надо с ядра — тем же способом, что и слои НСПД: `probe()` печатает
 сырой ответ и разобранный лот рядом, чтобы расхождение было видно глазами, а не
@@ -44,15 +45,10 @@
 - **Адреса отдельным полем нет.** `estateAddress`, `estateArea`, `seller`,
   `permittedUse`, `documents`, координаты — ничего этого в ответе не было.
 - **Дата публикации** называется `noticeFirstVersionPublicationDate`.
-- **Серверного фильтра региона у этого API нет.** Запрос с `dynSubjRF=77,50`
-  принёс Ярославскую (76) и Ленинградскую (47) области, и это оказалось не
-  ошибкой имени: проба с ядра 25.08.2026 перебрала шесть кандидатов —
-  `dynSubjRF`, `subjectRFCode`, `subjectRF`, `dynSubjRFCode`, `subjectRFList`
-  и контрольный запрос без параметра — и **ни один не отфильтровал**. Выдача
-  одна и та же, с чужими регионами. Сервис молча игнорирует неизвестный
-  параметр, поэтому «правильное имя» искать больше негде: его нет.
-  Регион отбираем сами по `subjectRFCode`, и отчёт источника говорит это
-  вслух — иначе читатель решит, что отобрал сервис.
+- **`dynSubjRF` — не код субъекта.** Старый запрос ошибочно посылал
+  `dynSubjRF=77` и получал Ярославскую область. Это внутренний id справочника;
+  для Москвы используется 78. После серверного фильтра каждая карточка
+  всё равно проверяется по официальному `subjectRFCode=77`.
 - **Кода банкротства в выборке не было.** Подтвердился только `178FZ` —
   приватизация, то есть городской рынок; наш `127FZ` остаётся догадкой.
 
@@ -107,33 +103,38 @@ TIMEOUT_SECONDS = 8
 # (`totalPages`, `last`), пустая страница — последний рубеж, а страница без
 # единого нового лота ловит сервис, игнорирующий и номер страницы тоже.
 PAGE_SIZE = 50
-# Наших примерно каждая десятая, и страница в пять раз меньше запрошенной:
-# чтобы список не выглядел пустым, страниц нужно много. Каждая — один запрос,
-# и сколько их было, стоит в отчёте.
-MAX_PAGES = 40
+# Четыре целевых выборки по десять страниц сохраняют прежний общий
+# потолок в сорок запросов, но не тратят его на поток квартир.
+MAX_PAGES_PER_FILTER = 10
 
-# Субъекты, которые нас интересуют: Москва и область. Код региона приходит в
-# карточке полем `subjectRFCode` (подтверждено живым ответом 24.08.2026), и
-# только по нему регион и определяется — списка слов рядом нет намеренно,
-# см. `in_target_region`.
-SUBJECT_CODES = ("77", "50")
+# Страница называется «Торги Москвы», поэтому субъект здесь только Москва.
+# Код 50 в `subjectRFCode` означает Московскую область. Это не то же самое,
+# что исторический кадастровый префикс 50 у отдельных участков Новой Москвы:
+# кадастровый номер может начинаться с 50, но субъект такой карточки остаётся 77.
+SUBJECT_CODES = ("77",)
 
-# Параметра региона в рабочем запросе НЕТ, и это измеренное решение, а не
-# отказ от поиска имени.
-#
-# Проба с ядра 25.08.2026 перебрала шесть кандидатов вместе с контрольным
-# запросом без параметра. Ни один не отфильтровал — но `dynSubjRF` при этом
-# сделал выдачу ХУЖЕ: контроль дал одну московскую карточку из десяти и
-# регионы 50 и 69, а с `dynSubjRF=77,50` наших не было ни одной, зато пришли
-# 47 и 76. Сервис его не игнорирует — он понимает его как что-то своё и
-# отдаёт другой срез.
-#
-# Я прочитал ту пробу как «ни один не фильтрует» и оставил параметр в сборе
-# «вдруг заработает». Итог: сорок страниц, четыреста карточек, наших ноль —
-# прочитали честно, спросили не то. Отсюда правило: параметр, ухудшающий
-# выдачу, — не безобидный. Пустое имя значит «не посылаем ничего», и это
-# ровно тот контрольный запрос, который единственный принёс наши лоты.
-REGION_PARAM = ""
+# `dynSubjRF` is not the legal `subjectRFCode`: it is the portal's internal
+# dictionary id.  Live public examples use 63 for Rostov (subject 61), 80 for
+# Sevastopol (subject 92), and 78 for Moscow.  We still verify every returned
+# card by the authoritative `subjectRFCode=77` below.
+MOSCOW_DYN_SUBJECT_IDS = ("78",)
+ACTIVE_LOT_STATUSES = ("PUBLISHED", "APPLICATIONS_SUBMISSION")
+
+# One broad newest-first stream brought 300 mostly residential cards before a
+# development lot.  These public API filters target the asset classes the user
+# actually asked for while keeping the same forty-page ceiling overall.
+DISCOVERY_FILTERS = (
+    ("земельные участки", "2", ""),
+    ("здания", "7", "здание"),
+    ("незавершённые объекты", "7", "незаверш"),
+    ("имущественные комплексы", "7", "имущественный комплекс"),
+)
+
+# `dynSubjRF` — внутренний id справочника портала. Его нельзя заменять
+# официальным кодом субъекта: `dynSubjRF=77` отдавал карточки с
+# `subjectRFCode=76`. Для Москвы в запросе идёт id 78, а на выходе остаётся
+# жёсткая проверка каждой карточки по `subjectRFCode=77`.
+REGION_PARAM = "dynSubjRF"
 REGION_PARAM_CANDIDATES = (
     "dynSubjRF", "subjectRFCode", "subjectRF", "dynSubjRFCode", "subjectRFList",
 )
@@ -467,14 +468,14 @@ def lot_documents(card: dict[str, Any]) -> list[AuctionDocument]:
     return found
 
 
-def in_target_region(card: dict[str, Any]) -> bool:
+def in_target_region(
+    card: dict[str, Any], subject_codes: tuple[str, ...] = SUBJECT_CODES
+) -> bool:
     """Наш ли это регион — по полю карточки, а не по вере в параметр запроса.
 
-    Живой ответ 24.08.2026 на запросе с `dynSubjRF=77,50` принёс Ярославскую
-    (76) и Ленинградскую (47) области: серверный фильтр под этим именем не
-    работает, а как он называется на самом деле, из ответа не видно. Пока не
-    выяснено — отбираем сами по `subjectRFCode`. Молча положиться на параметр
-    значило бы завести в московский список лоты из Рыбинска.
+    Серверная выборка сокращает поток, но не заменяет проверку. Внутренний
+    id региона может измениться или быть передан ошибочно; в московский список
+    попадают только карточки с официальным `subjectRFCode=77`.
     """
     code = _text(card.get("subjectRFCode"))
     if not code:
@@ -485,7 +486,7 @@ def in_target_region(card: dict[str, Any]) -> bool:
         # адрес объекта оценки. Нет кода региона — не знаем, а не «наш»;
         # сколько таких, сбор считает отдельно и говорит вслух.
         return False
-    return code.lstrip("0") in {item.lstrip("0") for item in SUBJECT_CODES}
+    return code.lstrip("0") in {item.lstrip("0") for item in subject_codes}
 
 
 def to_lot(card: dict[str, Any], fetched_at: str) -> AuctionLot | None:
@@ -559,8 +560,16 @@ class TorgiGovAdapter(AuctionPlatformAdapter):
     # её показывают в списке ДО клика.
     deep_parse_unavailable = ""
 
-    def __init__(self, *, subject_codes: tuple[str, ...] = SUBJECT_CODES) -> None:
+    def __init__(
+        self,
+        *,
+        subject_codes: tuple[str, ...] = SUBJECT_CODES,
+        dyn_subject_ids: tuple[str, ...] = MOSCOW_DYN_SUBJECT_IDS,
+        discovery_filters: tuple[tuple[str, str, str], ...] = DISCOVERY_FILTERS,
+    ) -> None:
         self.subject_codes = subject_codes
+        self.dyn_subject_ids = dyn_subject_ids
+        self.discovery_filters = discovery_filters
         self.last_report: dict[str, Any] = {"pages": 0, "cards": 0, "kept": 0, "reason": ""}
 
     @property
@@ -571,29 +580,31 @@ class TorgiGovAdapter(AuctionPlatformAdapter):
     def enabled() -> bool:
         """Включён. Выключается `TORGI_GOV_DISCOVERY=0`.
 
-        Источник ждал не флага, а проверки: включённый непроверенный приносит
-        лоты, и они выглядят так же, как проверенные. Проверка сделана —
-        разбор сверен живым ответом на десяти карточках, а имя параметра
-        региона измерено пробой `/auctions/torgi/regions` с ядра (25.08.2026).
-
-        Ответ пробы и снял ожидание: **ни один кандидат не фильтрует**. Шесть
-        имён — `dynSubjRF`, `subjectRFCode`, `subjectRF`, `dynSubjRFCode`,
-        `subjectRFList` и контрольный запрос без параметра — дали одну и ту же
-        выдачу с чужими регионами (47, 69, 76, 77). Сервис молча игнорирует
-        неизвестный параметр, поэтому ждать «правильного имени» бессмысленно:
-        его нет в этом API. Отбор региона наш, и это сказано вслух в отчёте
-        источника — иначе читатель решит, что отфильтровал сервис.
+        Форма ответа и поля карточки сверены живым ответом. Рабочий запрос
+        передаёт внутренний id Москвы `dynSubjRF=78`, только активные статусы
+        и целевые категории земли/недвижимости. На выходе каждая карточка
+        дополнительно проверяется по `subjectRFCode=77`.
         """
         return str(os.getenv(FLAG, "1")).strip().lower() not in ("0", "false", "no", "off")
 
-    def _fetch_page(self, page: int, *, deadline: float | None = None) -> dict[str, Any]:
+    def _fetch_page(
+        self,
+        page: int,
+        *,
+        filter_spec: tuple[str, str, str] | None = None,
+        deadline: float | None = None,
+    ) -> dict[str, Any]:
         """Разобранная страница. Адрес собирается там же, где для пробы.
 
         Второй сборки адреса не заводим: проба и рабочий сбор обязаны ходить
         по одному и тому же URL, иначе сверенное пробой относится не к тому
         запросу, который потом пойдёт в дело.
         """
-        _status, _ctype, body = self._fetch_raw(self._search_url(page), deadline=deadline)
+        _label, cat_code, text = filter_spec or self.discovery_filters[0]
+        _status, _ctype, body = self._fetch_raw(
+            self._search_url(page, cat_code=cat_code, text=text),
+            deadline=deadline,
+        )
         return json.loads(body)
 
     def discover_moscow(self, *, deadline: float | None = None) -> Iterable[AuctionLot]:
@@ -605,85 +616,87 @@ class TorgiGovAdapter(AuctionPlatformAdapter):
         fetched_at = datetime.now(timezone.utc).isoformat()
         lots: list[AuctionLot] = []
         cards = pages = unknown_region = 0
-        total_elements: int | None = None
         seen: set[str] = set()
-        previous_keys: list[str] = []
-        stalled = ""
         widest_page = 0
-        reason = ""
-        for page in range(MAX_PAGES):
-            # Сорок страниц — потолок объёма, а не времени. Восемь секунд на
-            # страницу дают до пяти минут, и шлюз рвёт соединение задолго до
-            # конца: ответа не получает никто. Остановка по сроку называется
-            # причиной, иначе неполная выборка читается как полная.
+        reasons: list[str] = []
+        filter_reports: list[dict[str, Any]] = []
+        for filter_spec in self.discovery_filters:
+            label, _cat_code, _search_text = filter_spec
+            previous_keys: list[str] = []
+            filter_pages = filter_cards = 0
+            filter_total: int | None = None
+            filter_reason = ""
+            for page in range(MAX_PAGES_PER_FILTER):
+                if clock.expired(deadline):
+                    filter_reason = "остановлено по времени"
+                    break
+                try:
+                    payload = self._fetch_page(
+                        page, filter_spec=filter_spec, deadline=deadline)
+                except Exception as exc:  # noqa: BLE001
+                    filter_reason = f"страница {page}: {exc}"
+                    break
+                content = payload.get("content") or []
+                page_keys = [_text(card.get("id")) for card in content]
+                if content and page_keys == previous_keys:
+                    filter_reason = (
+                        f"нумерация страниц не двигается: страница {page} "
+                        "повторила предыдущую"
+                    )
+                    break
+                previous_keys = page_keys
+                pages += 1
+                filter_pages += 1
+                filter_cards += len(content)
+                cards += len(content)
+                widest_page = max(widest_page, len(content))
+                if filter_total is None and isinstance(payload.get("totalElements"), int):
+                    filter_total = payload["totalElements"]
+                for card in content:
+                    if not _text(card.get("subjectRFCode")):
+                        unknown_region += 1
+                        continue
+                    if not in_target_region(card, self.subject_codes):
+                        continue
+                    lot = to_lot(card, fetched_at)
+                    if lot is None:
+                        continue
+                    key = str(lot.source.external_lot_id)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    lots.append(lot)
+                if not content:
+                    break
+                total_pages = payload.get("totalPages")
+                if isinstance(total_pages, int) and page + 1 >= total_pages:
+                    break
+                if payload.get("last") is True:
+                    break
+            filter_reports.append({
+                "filter": label,
+                "pages": filter_pages,
+                "cards": filter_cards,
+                "total_elements": filter_total,
+                "reason": filter_reason,
+            })
+            if filter_reason:
+                reasons.append(f"{label}: {filter_reason}")
             if clock.expired(deadline):
-                reason = f"остановлено по времени: прочитано страниц {pages} из {MAX_PAGES}"
                 break
-            try:
-                payload = self._fetch_page(page, deadline=deadline)
-            except Exception as exc:  # noqa: BLE001
-                # Молчаливый пустой список читался бы как «лотов нет».
-                reason = f"страница {page}: {exc}"
-                break
-            content = payload.get("content") or []
-            # Повтор ловится ДО разбора: страница, слово в слово равная
-            # предыдущей, означает стоящую нумерацию. Сервис, игнорирующий
-            # `page`, вернул бы свои десять карточек сорок раз — и счётчики
-            # карточек и пропусков выросли бы в сорок раз вместе с ними.
-            page_keys = [_text(card.get("id")) for card in content]
-            if content and page_keys == previous_keys:
-                # Заметка, а не причина: почему список пуст, объясняет строка
-                # ниже — она отвечает человеку, а эта отвечает нам.
-                stalled = f"нумерация страниц не двигается: страница {page} повторила предыдущую"
-                break
-            previous_keys = page_keys
-            pages += 1
-            widest_page = max(widest_page, len(content))
-            if total_elements is None and isinstance(payload.get("totalElements"), int):
-                total_elements = payload["totalElements"]
-            cards += len(content)
-            for card in content:
-                # Отбор региона наш, а не серверный: живой ответ на запросе с
-                # `dynSubjRF=77,50` принёс Ярославскую и Ленинградскую области.
-                # Пока рабочее имя параметра не выяснено, лот из Рыбинска в
-                # московском списке был бы не шумом, а ложью.
-                if not _text(card.get("subjectRFCode")):
-                    unknown_region += 1
-                    continue
-                if not in_target_region(card):
-                    continue
-                lot = to_lot(card, fetched_at)
-                if lot is None:
-                    continue
-                key = str(lot.source.external_lot_id)
-                if key in seen:
-                    continue
-                seen.add(key)
-                lots.append(lot)
-            if not content:
-                break
-            total_pages = payload.get("totalPages")
-            if isinstance(total_pages, int) and page + 1 >= total_pages:
-                break
-            if payload.get("last") is True:
-                break
-        if not reason and cards and not lots:
-            # Пустой список после полной страницы читался бы как «лотов нет».
-            reason = (f"из {cards} карточек ни одна не в наших регионах — "
-                      "серверный фильтр не сработал, а отбор идёт по subjectRFCode")
-        if stalled:
-            reason = f"{reason}; {stalled}" if reason else stalled
+        reason = "; ".join(reasons)
+        totals = [item["total_elements"] for item in filter_reports
+                  if isinstance(item.get("total_elements"), int)]
         if unknown_region:
             # Пропущенное молча читается как отсутствующее. Карточка без кода
             # региона — «не знаем», и сказать это обязаны мы, а не читатель.
             note = f"пропущено без кода региона: {unknown_region}"
             reason = f"{reason}; {note}" if reason else note
-        if not reason and cards and not lots:
+        if cards and not lots:
             # Пустой список после полной страницы читался бы как «лотов нет».
-            reason = (f"из {cards} карточек ни одна не в наших регионах — "
-                      "серверный фильтр не сработал, а отбор идёт по subjectRFCode")
-        # Чем отобрано — часть ответа. Серверного фильтра у этого API нет, и
-        # молчание об этом читалось бы как «сервис прислал только наше».
+            note = (f"из {cards} карточек ни одна не прошла проверку Москвы "
+                    "по subjectRFCode=77")
+            reason = f"{reason}; {note}" if reason else note
         self.last_report = {"pages": pages, "cards": cards, "kept": len(lots),
                             # Просили 50, приходит 10 — по этому числу видно,
                             # соблюдают ли наш размер, не заглядывая в лог.
@@ -691,9 +704,12 @@ class TorgiGovAdapter(AuctionPlatformAdapter):
                             # пустая последняя утянула бы среднее вниз, и
                             # соблюдённый размер стал бы неотличим от нет.
                             "cards_per_page": widest_page,
-                            "total_elements": total_elements,
-                            "region_filter": "свой отбор по subjectRFCode: "
-                                             "серверного фильтра у API нет",
+                            # Сохраняем общий счётчик для диагностики и
+                            # старых клиентов. Деталь по каждой выборке — в `filters`.
+                            "total_elements": sum(totals) if totals else None,
+                            "filters": filter_reports,
+                            "region_filter": "dynSubjRF=78 (Москва) + проверка "
+                                             "официального subjectRFCode=77",
                             # Что источник СОДЕРЖИТ — часть ответа. Живой ответ
                             # подтвердил один код вида торгов, `178FZ`: это
                             # приватизация государственного и муниципального
@@ -807,12 +823,8 @@ class TorgiGovAdapter(AuctionPlatformAdapter):
             "array_key": array_key,
             "envelope_note": envelope_note,
             "on_page": len(cards),
-            # Сработал ли серверный фильтр региона — числом, а не верой.
-            # 24.08.2026 запрос с `dynSubjRF=77,50` вернул Ярославскую и
-            # Ленинградскую области: параметр под этим именем не фильтрует.
-            # Пока имя не выяснено, проба обязана показывать, сколько из
-            # присланного вообще наше, иначе «работает» и «не работает»
-            # выглядят одинаково.
+            # Даже при серверном `dynSubjRF` проба показывает фактические
+            # `subjectRFCode`: ошибка внутреннего id не должна выглядеть успехом.
             "in_target_region": sum(1 for card in cards if in_target_region(card)),
             "subject_codes_seen": sorted({
                 _text(card.get("subjectRFCode")) for card in cards
@@ -832,12 +844,9 @@ class TorgiGovAdapter(AuctionPlatformAdapter):
     def probe_regions(self, page: int = 0) -> dict[str, Any]:
         """Какое имя параметра действительно фильтрует регион.
 
-        Живой ответ на `dynSubjRF=77,50` приносит Ярославскую и Ленинградскую
-        области: параметр под этим именем не фильтрует. Имена-кандидаты можно
-        перебирать вечно, а можно измерить — сервис молча игнорирует
-        неизвестный параметр, поэтому «сколько из присланного наше» и есть
-        ответ. Первым идёт запрос БЕЗ параметра: без него доля наших регионов
-        случайна, и сравнивать сработавший фильтр не с чем.
+        `dynSubjRF` имеет собственные id, не совпадающие с `subjectRFCode`.
+        Проба показывает фактические коды в ответе и сравнивает их с контрольным
+        запросом без параметра.
         """
         trials: list[dict[str, Any]] = []
         for name in (None,) + REGION_PARAM_CANDIDATES:
@@ -872,16 +881,28 @@ class TorgiGovAdapter(AuctionPlatformAdapter):
                     "subjectRFCode, как сейчас",
         }
 
-    def _search_url(self, page: int, region_param: str | None = "") -> str:
-        fields: dict[str, Any] = {
-            "page": page,
-            "size": PAGE_SIZE,
-            "sort": "firstVersionPublicationDate,desc",
-        }
+    def _search_url(
+        self,
+        page: int,
+        region_param: str | None = "",
+        *,
+        cat_code: str = "2",
+        text: str = "",
+    ) -> str:
+        fields: list[tuple[str, Any]] = [
+            *(("lotStatus", status) for status in ACTIVE_LOT_STATUSES),
+            ("page", page),
+            ("size", PAGE_SIZE),
+            ("sort", "firstVersionPublicationDate,desc"),
+            ("catCode", cat_code),
+        ]
+        if text:
+            fields.append(("text", text))
         # Пустая строка — «как в рабочем сборе», None — «без параметра вовсе».
         name = REGION_PARAM if region_param == "" else region_param
         if name:
-            fields[name] = ",".join(self.subject_codes)
+            values = self.dyn_subject_ids if name == "dynSubjRF" else self.subject_codes
+            fields.extend((name, value) for value in values)
         query = urllib.parse.urlencode(fields)
         return f"https://{HOST}{SEARCH_PATH}?{query}"
 
