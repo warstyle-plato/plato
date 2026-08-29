@@ -268,10 +268,15 @@ def test_a_word_in_the_source_is_not_a_captcha() -> None:
 
 def test_a_post_carries_its_body() -> None:
     """У Сбербанк-АСТ весь каталог ходит в один `/api/Processing/main`: адрес
-    есть, а читателя из него не напишешь."""
+    есть, а читателя из него не напишешь.
+
+    Тело записывается вместе с формой ответа, а сеансовые значения прячутся:
+    диагностический маршрут публичный, и токен, попавший в него, — это утечка,
+    а не подробность.
+    """
     body = shared()
-    assert "post_data" in body
-    assert 'request.method != "GET"' in body
+    assert "post_data" in body and "request_body_head" in body
+    assert "_redact_json" in body and "[redacted]" in body
 
 
 def test_third_party_analytics_does_not_drown_the_addresses() -> None:
