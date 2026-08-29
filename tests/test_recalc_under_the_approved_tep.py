@@ -547,8 +547,15 @@ def test_the_automatic_pass_does_not_ask_and_does_not_hide():
     body = body[:body.index("\nfunction syncTep(")]
     assert "if(!silent&&!confirm(" in body, "автоматический ход не спрашивает"
     assert "Пересчитано под новый ТЭП" in body, "и не молчит о том, что заменил"
+    # Отказа «нет расчёта ГлавАПУ» больше нет: без выгрузки пересчёт уходит в
+    # расчёт по нормативам, и он тоже не спрашивает и не молчит.
+    assert "recalcFromTepByNorms(options)" in body
+    norms = page[page.index("async function recalcFromTepByNorms("):]
+    norms = norms[:norms.index("\nasync function recalcFromTep(options){")]
+    assert "if(!silent&&!confirm(" in norms, "автоматический ход не спрашивает"
+    assert "Пересчитано под новый ТЭП" in norms, "и не молчит о том, что заменил"
     # Пересчитывать не от чего — тишина, а не плашка на каждой правке.
-    assert "if(!silent)say('Нет исходного расчёта ГлавАПУ" in body
+    assert "if(!silent)say('Пересчитывать не от чего" in norms
 
 
 def test_the_parking_requirement_follows_the_tep():
