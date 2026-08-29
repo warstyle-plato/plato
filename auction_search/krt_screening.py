@@ -198,6 +198,14 @@ def _requirements_for_model(requirements: dict[str, Any] | None) -> dict[str, An
         item for item in actions
         if isinstance(item, dict) and item.get("category") == "demolition_or_reconstruction"
     ]
+    reconstruction = [
+        item for item in actions
+        if isinstance(item, dict) and item.get("category") == "reconstruction"
+    ]
+    preservation = [
+        item for item in actions
+        if isinstance(item, dict) and item.get("category") == "preservation"
+    ]
 
     def area(items: list[dict[str, Any]]) -> float:
         return sum(_number(item.get("area_sqm")) for item in items)
@@ -220,11 +228,22 @@ def _requirements_for_model(requirements: dict[str, Any] | None) -> dict[str, An
         "decision": copy.deepcopy(source.get("decision")),
         "demolition_area_sqm": demolition_area,
         "demolition_objects": len(definite_demolition),
+        "demolition_known_area_objects": sum(
+            1 for item in definite_demolition if _number(item.get("area_sqm")) > 0),
         "conditional_area_sqm": conditional_area,
         "conditional_objects": len(conditional),
-        "reconstruction_objects": len(source.get("reconstruction") or []),
-        "preservation_objects": len(source.get("preservation") or []),
+        "conditional_known_area_objects": sum(
+            1 for item in conditional if _number(item.get("area_sqm")) > 0),
+        "reconstruction_area_sqm": area(reconstruction),
+        "reconstruction_objects": len(reconstruction) or len(source.get("reconstruction") or []),
+        "reconstruction_known_area_objects": sum(
+            1 for item in reconstruction if _number(item.get("area_sqm")) > 0),
+        "preservation_area_sqm": area(preservation),
+        "preservation_objects": len(preservation) or len(source.get("preservation") or []),
+        "preservation_known_area_objects": sum(
+            1 for item in preservation if _number(item.get("area_sqm")) > 0),
         "resettlement": list(source.get("resettlement") or [])[:10],
+        "resettlement_mentions": len(source.get("resettlement") or []),
         "construction": construction,
         "unmodelled_construction": unmodelled_construction,
         "permitted_uses": list(source.get("permitted_uses") or [])[:20],

@@ -383,6 +383,9 @@ def test_auctions_exposes_krt_as_a_separate_tab_and_endpoint(monkeypatch) -> Non
     assert "Предварительный прогон модели" in page.text
     assert "if(planned)loadKrtRequirements(x)" in page.text
     assert "Что снести или реконструировать" in page.text
+    assert "Сводка обязательств" in page.text
+    assert "Площадь суммируется только там" in page.text
+    assert "число квартир и жителей отдельно не опубликовано" in page.text
     answer = client.get("/auctions/krt")
     assert answer.status_code == 200
     # Каталог дописывает к площадке, когда её впервые увидели: «новое» — это
