@@ -20286,6 +20286,29 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
         # CAPEX, который на неё куплен, а перенос не покупает ничего).
         carried_debt_in = 0.0
         carried_debt = max(n(x, "_phase_carried_debt_mln") * 1_000_000, 0.0)
+        # Месяц приёма долга. Владелец (29.08.2026): обязательство переходит
+        # тогда, когда эскроу предыдущей очереди раскрылось и его не хватило,
+        # — то есть в её РВЭ, а не в дату открытия нашей линии. Раньше своего
+        # РнС принять его в ПФ всё равно нельзя: линии ещё нет, поэтому пол —
+        # `permit`. Прежняя версия клала сюда итоговый непогашенный остаток
+        # предыдущей очереди в дату НАШЕГО открытия ПФ: число из будущего в
+        # прошлом, и очередь платила проценты за долг, которого ещё нет.
+        carried_debt_month = permit
+        _carried_at = str(x.get("_phase_carried_debt_month") or "").strip()
+        if _carried_at:
+            try:
+                carried_debt_month = max(permit, d(_carried_at))
+            except Exception:
+                carried_debt_month = permit
+        # Долг уходит из этой очереди в её же РВЭ: период доступности кончился,
+        # эскроу раскрыто, и то, чего не хватило, банк переоформляет на
+        # следующую линию. Без этого признака остаток висел на закрытой линии
+        # до конца горизонта — на контрольном проекте год по полной базовой
+        # ставке 13,5% (покрытие после раскрытия нулевое), 691,3 млн ₽
+        # процентов, — а остаточные продажи уходили в погашение вместо кассы
+        # застройщика.
+        debt_leaves_at_rve = bool(x.get("_phase_debt_leaves_at_rve"))
+        debt_left_at_rve = 0.0
         pf_reservation_fee = (pf_limit or 0.0) * n(x, "reservation_fee_pct") / 100 if pf_limit else 0.0
         transferred_bridge_interest = 0.0
 
@@ -20390,7 +20413,15 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
 
             if month >= permit:
                 # PF finances all project costs; escrow is not available before RVE.
-                pf_draw += max(project_costs, 0.0)
+                # Но после того как долг ушёл с этой линии в РВЭ, линии больше
+                # нет: период доступности кончился, НКЛ закрыт. Выбирать из
+                # него расходы остаточного периода нельзя — они платятся
+                # кассой. Прежде очередь после передачи долга продолжала
+                # выбирать по 57 млн в месяц и тут же гасить их продажами, с
+                # процентами по полной базовой ставке: та же фикция закрытой
+                # линии, только мельче.
+                if not (debt_leaves_at_rve and month > rve):
+                    pf_draw += max(project_costs, 0.0)
                 if cap is not None:
                     # Потолок считается от остатка на начало месяца: погашения
                     # в этом месяце идут ниже по циклу и свободного лимита
@@ -20410,7 +20441,7 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
                 # 27.08.2026) — банк переносит обязательство, а не выдаёт
                 # новые деньги. Но проценты на него идут как на тело ПФ, и
                 # покрытие эскроу он разбавляет: покрывать приходится больше.
-                if month == permit and carried_debt > 0:
+                if month == carried_debt_month and carried_debt > 0:
                     pf_balance += carried_debt
                     carried_debt_in += carried_debt
 
@@ -20461,6 +20492,14 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
                     pf_repayment = min(available_for_repayment, pf_balance)
                     pf_balance -= pf_repayment
                     pf_repayment_total += pf_repayment
+
+                # Раскрытого эскроу не хватило — остаток уходит на линию
+                # следующей очереди этим же месяцем. Дальше он здесь не живёт:
+                # ни процентов, ни погашения остаточными продажами. Деньги от
+                # продаж после РВЭ остаются застройщику (владелец, 29.08.2026).
+                if debt_leaves_at_rve and month == rve and pf_balance > 0:
+                    debt_left_at_rve = pf_balance
+                    pf_balance = 0.0
 
                 # Current Excel pays accumulated interest at RVE and current interest thereafter.
                 if month >= rve and pf_interest_payable > 0:
@@ -20547,6 +20586,10 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
 
             "pf_draw_total": pf_draw_total,
             "carried_debt_in": carried_debt_in,
+            # Сколько ушло отсюда на линию следующей очереди в РВЭ. Обнулённый
+            # остаток без этой величины читается как «рассчиталась сама».
+            "debt_left_at_rve": debt_left_at_rve,
+            "debt_carried_out": debt_left_at_rve,
             "pf_repayment_total": pf_repayment_total,
             "pf_reservation_fee": pf_reservation_fee,
             "pf_interest": pf_interest_total,
@@ -21508,7 +21551,7 @@ def calculate(req: CalcRequest) -> dict:
                 # Без своей строки он растворяется в остатке ПФ, и очередь
                 # выглядит взявшей больше, чем брала.
                 "carried_debt_in": fin.get("carried_debt_in", 0.0),
-                "debt_carried_out": 0.0,
+                "debt_carried_out": fin.get("debt_carried_out", 0.0),
                 # Пик тела и пик с капитализированными процентами — разные
                 # показатели: книга ведёт остаток сразу с капитализацией, и
                 # одинаковое слово «пик» читалось как расхождение моделей.
@@ -23312,6 +23355,14 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
         carried_list = phasing.get("_carried_debt_mln") or []
         if idx < len(carried_list):
             p_inputs["_phase_carried_debt_mln"] = float(carried_list[idx] or 0.0)
+        # Месяц приёма — РВЭ передавшей очереди, а не открытие ПФ этой.
+        carried_at = phasing.get("_carried_debt_month") or []
+        if idx < len(carried_at) and carried_at[idx]:
+            p_inputs["_phase_carried_debt_month"] = str(carried_at[idx])
+        # Признак «долг уходит отсюда в РВЭ»: ставится передавшей очереди.
+        leaves = phasing.get("_debt_leaves_at_rve") or []
+        if idx < len(leaves) and leaves[idx]:
+            p_inputs["_phase_debt_leaves_at_rve"] = True
 
         if financing_strategy == "unified_project_cash" and idx > 0:
             p_inputs["_phase_project_cash_schedule"] = (
@@ -23404,7 +23455,7 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
             # увидел бы ноль и не понял, платит его теперь кто-то другой или
             # очередь рассчиталась сама.
             "carried_debt_in":result["finance"].get("carried_debt_in", 0.0),
-            "debt_carried_out":0.0,
+            "debt_carried_out":result["finance"].get("debt_carried_out", 0.0),
             "llcr":result["summary"]["llcr"],"net_profit":result["summary"]["net_profit"],
             # Налог очереди в таблице был не выведен вовсе, хотя в книге он в
             # строке очереди стоит. Свод считает его как один налогоплательщик
@@ -23487,7 +23538,20 @@ def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
         return bundle
 
     def unpaid(item: dict[str, Any]) -> float:
-        return float(((item.get("result") or {}).get("finance") or {}).get("ending_pf") or 0.0)
+        """Чего не хватило раскрытого эскроу — вот что переезжает.
+
+        Владелец (29.08.2026): «долг переходит в тот момент, когда средства с
+        эскроу после РВЭ предыдущей очереди раскрылись и их не хватило на
+        погашение. При этом деньги от последующих продаж остаются у
+        застройщика». Прежде бралось `ending_pf` — остаток на КОНЕЦ горизонта,
+        то есть уже после того, как остаточные продажи год гасили долг на
+        закрытой линии. На контрольном проекте это 4 229 млн вместо 7 816.
+        """
+        return float(((item.get("result") or {}).get("finance") or {}).get(
+            "rve_pf_shortfall") or 0.0)
+
+    def rve_month(item: dict[str, Any]) -> str:
+        return str(((item.get("result") or {}).get("dates") or {}).get("rve") or "")
 
     # Переносить нечего, если долг остаётся только у последней очереди: дальше
     # него нет никого, и «перенос» был бы фикцией.
@@ -23515,6 +23579,8 @@ def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
         return bundle
 
     carried = [0.0] * len(phases)
+    at: list[str] = [""] * len(phases)
+    leaves: list[bool] = [False] * len(phases)
     applied: list[dict[str, Any]] = []
     current = bundle
     for idx in range(len(phases) - 1):
@@ -23522,45 +23588,26 @@ def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
         if left <= _PHASE_DEBT_CARRY_MIN_RUB:
             continue
         carried[idx + 1] = carried[idx + 1] + left
+        at[idx + 1] = rve_month((current.get("phases") or [])[idx])
+        leaves[idx] = True
         request = PhasedCalcRequest(
             inputs=copy.deepcopy(req.inputs), tep=copy.deepcopy(req.tep),
             rates=copy.deepcopy(req.rates),
             phasing={**copy.deepcopy(req.phasing or {}),
-                     "_carried_debt_mln": [value / 1_000_000 for value in carried]})
+                     "_carried_debt_mln": [value / 1_000_000 for value in carried],
+                     "_carried_debt_month": list(at),
+                     "_debt_leaves_at_rve": list(leaves)})
         current = _calculate_phased_once(request)
-        # Обязательство сменило должника — у передавшей очереди его больше нет.
-        # Без этого долг стоял бы в обеих: первая осталась бы дефолтной, хотя
-        # платит уже вторая, и свод сложил бы его дважды.
-        source = (current.get("phases") or [])[idx]
-        source_fin = (source.get("result") or {}).get("finance") or {}
-        source_sum = (source.get("result") or {}).get("summary") or {}
-        source_fin["debt_carried_out"] = left
-        source_fin["ending_pf"] = 0.0
-        if "ending_pf" in source_sum:
-            source_sum["ending_pf"] = 0.0
-        if "ending_pf_mln" in source_sum:
-            source_sum["ending_pf_mln"] = 0.0
-        # Таблица сравнения очередей строится внутри прохода, до списания, и
-        # без этой правки показала бы долг у той очереди, которая его уже
-        # передала: два достоверных на вид числа об одном обязательстве.
-        source_row = (current.get("comparison") or [])[idx] if idx < len(
-            current.get("comparison") or []) else None
-        if isinstance(source_row, dict):
-            source_row["ending_pf"] = 0.0
-            source_row["debt_carried_out"] = left
-        # У отчёта очереди свой экземпляр финансирования — не тот же объект,
-        # что `finance`. Без этой правки карточка одной очереди печатала бы
-        # «Непогашенный долг ПФ · дефолт» на полную сумму, пока таблица
-        # сравнения показывает по ней ноль: два достоверных на вид числа об
-        # одном обязательстве, ровно то, чего мы избегаем везде.
-        source_report_fin = ((source.get("result") or {}).get("report") or {}).get("financing")
-        if isinstance(source_report_fin, dict):
-            source_report_fin["ending_pf"] = 0.0
-            source_report_fin["debt_carried_out"] = left
+        # Дописывать сверху здесь больше нечего: движок сам снимает долг с
+        # передавшей очереди в её РВЭ и сам называет переданную сумму, а все
+        # поверхности читают её у него. Пока это делалось правкой результата,
+        # экземпляров было три — `finance`, строка сравнения и `report.
+        # financing`, — и любой забытый показывал долг там, где его уже нет.
         applied.append({
             "from": idx + 1, "to": idx + 2,
             "amount": round(left, 2),
             "amount_mln": round(left / 1_000_000, 3),
+            "at": at[idx + 1],
         })
 
     if not applied:
