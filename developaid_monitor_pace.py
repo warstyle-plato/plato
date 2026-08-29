@@ -13,6 +13,7 @@ from typing import Any
 
 import developaid_monitor as monitor
 import developaid_monitor_forecast as forecast
+import developaid_monitor_reason as reason
 import developaid_monitor_schedule_graph as schedule_graph
 
 _INSTALLED = False
@@ -242,7 +243,13 @@ def _build(project: str, cut: Any, programme: dict[str, Any] | None = None, upto
         raise RuntimeError("pace layer is not installed")
     view = _ORIGINAL_BUILD(project, cut, programme=programme, upto=upto)
     effective_cut = monitor._day(cut) or monitor._day(view.get("cut"))
-    return _apply_pace(project, view, effective_cut) if effective_cut else view
+    if effective_cut:
+        view = _apply_pace(project, view, effective_cut)
+    # Причина сдвига проставляется последней: она читает уже посчитанные
+    # числа — свой сдвиг, унаследованный, запас — и ничего не считает сама.
+    # Красный хвост без объяснения читается как сдвиг ниоткуда, особенно у
+    # работы, по которой фактов нет вовсе (владелец, 29.08.2026).
+    return reason.annotate(view)
 
 
 def install() -> None:

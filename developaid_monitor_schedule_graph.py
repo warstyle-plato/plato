@@ -483,10 +483,18 @@ def apply(project: str, view: dict[str, Any]) -> dict[str, Any]:
         aggregate(root)
 
     source = ", ".join(sorted(seed_sources)) if seed_sources else ""
+    # Сколько работ вообще имеет связи. «Нет данных» под работой значит
+    # разное: сеть не загружена, сеть загружена без связей, или у этой работы
+    # связей нет. Первые два — про источник, третье — про работу, и путать их
+    # нельзя: блок «на что влияет» становится непоказательным ровно тогда,
+    # когда связей нет почти нигде, а на экране это выглядит одинаково.
+    linked = sum(1 for task in tasks.values()
+                 if task.get("predecessors") or task.get("successors"))
     schedule["dependency_graph"] = {
         "known": True,
         "source": pm["source"],
         "tasks": len(tasks),
+        "linked_tasks": linked,
         "forecast_known": forecast_known,
         "forecast_source": source,
         "rnv_baseline": monitor._iso(baseline_rnv),

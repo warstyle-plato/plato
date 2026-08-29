@@ -41,6 +41,8 @@ from developaid_statistics import (
     source_catalog,
 )
 
+import management_contour as _contour
+
 LEGAL_FOOTER_PLACEHOLDER = "__DEVELOPAID_LEGAL_FOOTER__"
 
 # Условный пример: страница без ТЭП показала бы пустую таблицу — привести
@@ -525,9 +527,11 @@ def _page(core, region: str, housing_class: str, areas: dict[str, float],
 
     return f'''<!doctype html><html lang="ru"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>DevelopAid — Свод источников себестоимости</title><style>{_CSS}</style></head>
+<title>DevelopAid — Свод источников себестоимости</title>
+<style>{_CSS}{_contour.STYLE}</style></head>
 <body><div class="wrap">
 <div class="brandbar"><a href="/" title="DevelopAid"><img src="/guide/assets/logo.webp" alt="ПЛАТО"></a><div class="brandline"></div></div>
+{_contour.markup("/statistics")}
 <h1>Себестоимость: свод источников</h1>
 <div class="sub">Строки — параметры DevelopAid, столбцы — источники. У источника берётся только то,
 что содержит его методика: чего в ней нет, то остаётся пустой ячейкой, а не подставляется оценкой.

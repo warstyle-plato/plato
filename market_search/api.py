@@ -22,6 +22,7 @@ from .plan import PlanNotFound, parse_plan
 from . import contracting
 from . import demand as demand_module
 from . import report_pdf
+from . import sales_deck
 from .subject import SubjectNotFound
 
 
@@ -427,6 +428,46 @@ def install(app: FastAPI) -> MarketDiscoveryService:
             media_type="application/pdf",
             headers={"Content-Disposition":
                      f"attachment; filename*=UTF-8''{quote(name)}.pdf"},
+        )
+
+    @app.post("/cabinet/sales.pptx")
+    async def cabinet_sales_deck(request: Request) -> Response:
+        """Свод продаж презентацией: слайд — раздел того же отчёта.
+
+        Разметка приходит с экрана та же, что уходит в PDF, и здесь ничего не
+        пересчитывается. Собрать колоду «по тем же данным» значило бы завести
+        вторую реализацию отчёта о продажах: она разошлась бы с экраном молча,
+        и обе выглядели бы верными.
+        """
+        cabinet_module.require_cabinet(request)
+        payload = await request.json()
+        body = str((payload or {}).get("html") or "")
+        if not body.strip():
+            raise HTTPException(status_code=422, detail="Показывать нечего: свод пуст")
+        if len(body) > 8 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="Свод больше восьми мегабайт разметки")
+        title = str((payload or {}).get("title") or "Продажи проекта").strip()
+        subtitle = str((payload or {}).get("subtitle") or "").strip()
+        footer = str((payload or {}).get("footer") or title).strip()
+
+        def collect() -> bytes:
+            # Разделы берутся из той же разметки, что печатается в PDF: каждое
+            # число слайда буквально взято со строки экрана. Собирать колоду
+            # «по тем же данным» значило бы завести вторую реализацию отчёта.
+            return sales_deck.build(sales_deck.sections(body),
+                                    title=title, subtitle=subtitle, footer=footer)
+
+        try:
+            raw = await run_in_threadpool(collect)
+        except sales_deck.DeckUnavailable as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        name = sales_deck.file_name(title)
+        return Response(
+            raw,
+            media_type=("application/vnd.openxmlformats-officedocument"
+                        ".presentationml.presentation"),
+            headers={"Content-Disposition":
+                     f"attachment; filename*=UTF-8''{quote(name)}.pptx"},
         )
 
     @app.post("/cabinet/plan")

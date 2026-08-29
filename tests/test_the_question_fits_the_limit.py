@@ -258,7 +258,10 @@ def test_the_report_is_folded_under_its_own_name():
     решил на него смотреть."""
     body = PAGE[PAGE.index("function renderSales(d){"):]
     body = body[:body.index("\nfunction tile(")]
-    assert "<details class=\"salesreport\">" in body
+    # У отчёта появился якорь: ссылка контура «Отчёт о продажах» ведёт на него
+    # и раскрывает — свёрнутый под такой ссылкой читается как переход, которого
+    # не было. Свёрнутым он при этом остаётся.
+    assert '<details class="salesreport" id="sales">' in body
     assert "Отчёт о продажах ПЛАТО" in body
     assert "<details class=\"salesreport\" open" not in body, "вкладка открыта по умолчанию"
     assert "</details>" in body
