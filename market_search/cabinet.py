@@ -474,6 +474,7 @@ g.bub.on circle{fill-opacity:.75}
    нижнее поле оставалось 12 мм, а колонтитул стоял в этом же поле — то есть
    на тексте. Нижнее шире прочих ровно под него. */
 @page{margin:14mm 12mm 20mm}
+__DEVELOPAID_CONTOUR_STYLE__
 </style>
 <header>
   <a class="brand" href="/" title="DevelopAid"><img src="/guide/assets/logo.webp" alt="ПЛАТО" height="26"></a>
@@ -482,6 +483,7 @@ g.bub.on circle{fill-opacity:.75}
     · версия __DEVELOPAID_VERSION__</div>
 </header>
 <main>
+__DEVELOPAID_CONTOUR__
   <div class="card" id="form">
     <div class="row">
       <div style="flex:2 1 380px;position:relative">
@@ -2384,7 +2386,7 @@ function renderSales(d){
   // страницы»). Данные при этом посчитаны и лежат готовыми — свёрнут показ, а
   // не разбор.
   const t0=d.total||{};
-  let html='<details class="salesreport"><summary>'
+  let html='<details class="salesreport" id="sales"><summary>'
     +'<b>Отчёт о продажах ПЛАТО</b>'
     +'<span class="muted">'+(d.project?esc(d.project)+' · ':'')
     +num(t0.contracts)+' '+plural(t0.contracts,'договор','договора','договоров')
@@ -2518,6 +2520,12 @@ function renderSales(d){
      +'<button class="go" id="salesask">Спросить</button>'
      +'<div id="salesout"></div></div>';
   box.innerHTML=html+'</div></details>';
+  // Пришли по ссылке контура «Отчёт о продажах» — отчёт открыт. Свёрнутый
+  // отчёт под такой ссылкой читается как переход, который не произошёл.
+  if(location.hash==='#sales'){
+    const card=document.getElementById('sales');
+    if(card){card.open=true; card.scrollIntoView({block:'start'})}
+  }
   $('#salesask').onclick=askPlatoSales;
   // Дата среза — самая свежая из источников: два файла разных дат, поданных
   // как один проект, — худший исход, и в документе это должно быть видно.
@@ -3606,9 +3614,15 @@ def legal_footer() -> str:
 
 
 def cabinet_page() -> str:
+    # Контур объявлен один раз и подставляется, как подвал и версия: копии
+    # негде обновлять, а поверхность без входа в контур не найти.
+    import management_contour
+
     return (
         CABINET_PAGE.replace("__SECTIONS__", _sections_markup())
         .replace(VERSION_PLACEHOLDER, app_version())
+        .replace("__DEVELOPAID_CONTOUR_STYLE__", management_contour.STYLE)
+        .replace(management_contour.PLACEHOLDER, management_contour.markup("/cabinet"))
         .replace(LEGAL_FOOTER_PLACEHOLDER, legal_footer())
     )
 

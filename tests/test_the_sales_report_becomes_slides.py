@@ -109,15 +109,20 @@ def test_a_cell_is_a_number_whole_or_not_at_all() -> None:
         assert sales_deck.cell_number(text) is None, text
 
 
-def test_a_column_with_a_gap_is_not_charted() -> None:
-    """Прочерк посередине нарисовал бы ноль там, где значения нет."""
+def test_every_numeric_column_gets_its_own_chart() -> None:
+    """«Не проще для каждого графика свой слайд сделать?» — проще (владелец,
+    29.08.2026): каждая мера показана, ни одна не спорит с соседней на общей
+    оси, а лишний слайд в PowerPoint удаляют одним нажатием.
+
+    И колонка с прочерком в графики не идёт вовсе: пропуск — не ноль."""
     table = parsed()[1]["tables"][0]
-    drawn = sales_deck.chart_data(table)
-    assert drawn is not None
-    assert drawn["name"] == "Лотов", "взята первая числовая колонка"
-    assert [name for name, _ in drawn["series"]] == ["Лотов"]
-    # Колонка «₽/м²» с прочерком в ряд не попала вовсе.
-    assert all(name != "₽/м²" for name, _ in drawn["series"])
+    drawn = sales_deck.charts(table)
+    assert [item["name"] for item in drawn] == ["Лотов", "млн ₽"], \
+        "колонка «₽/м²» с прочерком должна выпасть, остальные — остаться"
+    assert drawn[0]["values"] == [5.0, 3.0]
+    assert drawn[0]["categories"] == ["2026-07", "2026-06"]
+    # Один ряд на график: рубли и штуки на одной оси дают столбик в пиксель.
+    assert all(len(item["values"]) == len(item["categories"]) for item in drawn)
 
 
 def test_the_slides_carry_real_objects_and_not_a_single_picture() -> None:
@@ -140,7 +145,7 @@ def test_the_slides_carry_real_objects_and_not_a_single_picture() -> None:
             elif shape.has_text_frame:
                 texts.append(shape.text_frame.text)
     assert pictures == 0, "картинка вместо объектов — её нельзя править"
-    assert tables >= 2 and charts >= 1
+    assert tables >= 2 and charts >= 2, "график на каждую меру"
     assert any("Продажи — Тестовый ЖК" in text for text in texts)
     assert any("Темп последних месяцев" in text for text in texts), "вывод раздела"
 

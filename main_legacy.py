@@ -60,6 +60,7 @@ from developaid_monitor_page import MONITOR_PAGE as _MONITOR_PAGE_RAW
 # техприсоединению) в продукты и деньги модели живёт отдельным модулем: он о
 # документах, движок — об экономике, и смешивать их незачем.
 import document_intake
+import management_contour
 import parking_norms
 import project_preset
 
@@ -68,7 +69,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.20.51"
+VERSION = "0.20.52"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -37906,7 +37907,14 @@ initializeApp();
 # Подстановка разовая, на импорте: страница отдаётся на каждый запрос, а версия
 # за время работы процесса не меняется.
 PAGE = PAGE.replace(VERSION_PLACEHOLDER, VERSION)
-MONITOR_PAGE_HTML = _MONITOR_PAGE_RAW.replace("__VERSION__", VERSION)
+# Контур подставляется, как версия и подвал: копию негде обновлять, а
+# поверхность без входа в контур не найти (владелец, 29.08.2026 — «кабинет
+# надо объединить и сделать внутренним управленческим контуром»).
+MONITOR_PAGE_HTML = (
+    _MONITOR_PAGE_RAW.replace("__VERSION__", VERSION)
+    .replace("__DEVELOPAID_CONTOUR_STYLE__", management_contour.STYLE)
+    .replace(management_contour.PLACEHOLDER, management_contour.markup("/monitor"))
+)
 PAGE = PAGE.replace(FIELD_GROUPS_PLACEHOLDER,
                     json.dumps(FIELD_GROUPS, ensure_ascii=False))
 # Базы классов — из движка. Копия жила на странице с рождения окна и отстала

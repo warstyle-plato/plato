@@ -243,15 +243,15 @@ def cell_number(text: str) -> float | None:
         return None
 
 
-def chart_data(table: dict[str, Any]) -> dict[str, Any] | None:
-    """Категории и один ряд для графика — из той же таблицы, что на слайде.
+def charts(table: dict[str, Any]) -> list[dict[str, Any]]:
+    """Графики таблицы: по одному на числовую колонку.
 
-    Ряд один и берётся первой числовой колонкой. Класть на одну ось рубли,
-    метры и цену метра нельзя: столбик в пиксель рядом со столбиком во весь
-    слайд читается как «этого нет», а не как «этого мало». Какая колонка
-    нарисована — сказано подписью под графиком; остальные стоят числами в
-    таблице на следующем слайде, и график в PowerPoint перестраивается по ним
-    руками: он настоящий, а не картинка.
+    Класть рубли, метры и цену метра на одну ось нельзя — столбик в пиксель
+    рядом со столбиком во весь слайд читается как «этого нет». Первая версия
+    решала это выбором одной колонки и подписью, какая нарисована; владелец
+    (29.08.2026): «не проще для каждого графика свой слайд сделать?» — проще, и
+    ничего не теряется: каждая мера показана, ни одна не спорит с соседней, а
+    лишний слайд в PowerPoint удаляют одним нажатием.
 
     Колонка берётся, только если КАЖДАЯ её ячейка — число: прочерк посередине
     нарисовал бы ноль там, где значения нет, а «пропуск — не ноль» мы уже
@@ -259,15 +259,16 @@ def chart_data(table: dict[str, Any]) -> dict[str, Any] | None:
     """
     head, rows = table.get("head") or [], table.get("rows") or []
     if len(head) < 2 or len(rows) < 2:
-        return None
+        return []
     categories = [str(row[0]) for row in rows if row]
+    out: list[dict[str, Any]] = []
     for index in range(1, len(head)):
         values = [cell_number(row[index]) if index < len(row) else None for row in rows]
         if len(values) != len(categories) or any(value is None for value in values):
             continue
-        return {"categories": categories, "name": str(head[index]),
-                "series": [(str(head[index]), [float(value) for value in values])]}
-    return None
+        out.append({"name": str(head[index]), "categories": categories,
+                    "values": [float(value) for value in values]})
+    return out
 
 
 def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str) -> bytes:
@@ -276,7 +277,7 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
         from pptx import Presentation
         from pptx.chart.data import CategoryChartData
         from pptx.dml.color import RGBColor
-        from pptx.enum.chart import XL_CHART_TYPE, XL_LEGEND_POSITION
+        from pptx.enum.chart import XL_CHART_TYPE
         from pptx.util import Inches, Pt
     except ImportError as exc:  # noqa: BLE001
         raise DeckUnavailable(
@@ -336,16 +337,12 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
     def put_chart(slide, data: dict[str, Any], *, top: float, height: float) -> None:
         payload = CategoryChartData()
         payload.categories = data["categories"]
-        for name, values in data["series"]:
-            payload.add_series(name, values)
+        payload.add_series(data["name"], data["values"])
         frame = slide.shapes.add_chart(
             XL_CHART_TYPE.COLUMN_CLUSTERED, Inches(0.6), Inches(top),
             Inches(SLIDE_W_IN - 1.2), Inches(height), payload)
-        chart = frame.chart
-        chart.has_legend = len(data["series"]) > 1
-        if chart.has_legend:
-            chart.legend.position = XL_LEGEND_POSITION.BOTTOM
-            chart.legend.include_in_layout = False
+        # Ряд один — легенда из одной строки повторяет заголовок слайда.
+        frame.chart.has_legend = False
 
     # Титул: чей отчёт и на какую дату. Слайд, отделившийся от колоды, обязан
     # сам говорить, чей он, — как лист на бумаге.
@@ -359,25 +356,33 @@ def build(pages: list[dict[str, Any]], *, title: str, subtitle: str, footer: str
         tables = list(page.get("tables") or [])
         note = str(page.get("note") or "").strip()
         lines = [line for line in (page.get("lines") or []) if line][:LINES_PER_SLIDE]
-        drawn = chart_data(tables[0]) if tables else None
+        drawn = charts(tables[0]) if tables else []
 
+        # Первый слайд раздела — о чём он: заголовок, вывод и подписи, которые
+        # на экране стоят рядом с картинкой (доли полос — это и есть числа
+        # такого раздела).
         slide = new_slide(heading)
         top = 1.25
         if note:
             textbox(slide, note, top=top, size=14, colour=dim, height=0.8)
             top += 0.9
-        if drawn:
-            put_chart(slide, drawn, top=top, height=SLIDE_H_IN - top - 1.05)
-            textbox(slide, f"На графике колонка «{drawn['name']}»; остальные числа —"
-                           " таблицей на следующем слайде. График настоящий: данные"
-                           " правятся в PowerPoint.",
-                    top=SLIDE_H_IN - 0.95, size=11, colour=dim, height=0.4)
-        elif lines:
+        if lines:
             for index, line in enumerate(lines):
                 textbox(slide, line, top=top + index * 0.42, size=13, colour=ink)
-        elif tables:
-            put_table(slide, tables[0], top=top, height=min(4.8, 0.34 * (len(tables[0]["rows"]) + 1)))
+        elif not drawn and tables:
+            put_table(slide, tables[0], top=top,
+                      height=min(4.8, 0.34 * (len(tables[0]["rows"]) + 1)))
             tables = tables[1:]
+
+        # По слайду на график: каждая мера показана и ни одна не спорит с
+        # соседней. Ряд один, поэтому легенда не нужна — мера стоит в
+        # заголовке слайда.
+        for chart in drawn:
+            part = new_slide(f"{heading} · {chart['name']}")
+            put_chart(part, chart, top=1.25, height=SLIDE_H_IN - 1.95)
+            textbox(part, "График настоящий: данные правятся в PowerPoint,"
+                          " числа — таблицей на следующих слайдах.",
+                    top=SLIDE_H_IN - 0.95, size=11, colour=dim, height=0.4)
 
         # Таблицы — целиком и ячейками: их и правят. Длинная продолжается
         # следующим слайдом, а не ужимается до нечитаемого.
