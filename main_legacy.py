@@ -68,7 +68,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.20.44"
+VERSION = "0.20.45"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -9732,16 +9732,31 @@ _TELEGRAM_DIALOG_LOCK = threading.Lock()
 _TELEGRAM_DIALOG_TTL_SECONDS = 6 * 60 * 60
 
 
+def _telegram_dialog_path(chat_id: int) -> Path:
+    return _PLATO_STAGE_DIR / f"dialog_{int(chat_id)}.json"
+
+
 def _telegram_dialog_get(chat_id: int) -> dict[str, Any] | None:
     now = int(time.time())
     with _TELEGRAM_DIALOG_LOCK:
         current = _TELEGRAM_DIALOGS.get(int(chat_id))
-        if not current:
+    if not current:
+        # Воркеров два, и память у них раздельная: следующее сообщение того же
+        # человека попадает в другой процесс, где разговора не было. Пока шаг
+        # был один, это выглядело как случайная забывчивость; на очереди из
+        # десяти вопросов оно ломает разговор посередине.
+        try:
+            current = json.loads(_telegram_dialog_path(chat_id).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
             return None
-        if now - int(current.get("updated_at") or 0) > _TELEGRAM_DIALOG_TTL_SECONDS:
-            _TELEGRAM_DIALOGS.pop(int(chat_id), None)
+        if not isinstance(current, dict):
             return None
-        return copy.deepcopy(current)
+    if now - int(current.get("updated_at") or 0) > _TELEGRAM_DIALOG_TTL_SECONDS:
+        _telegram_dialog_clear(chat_id)
+        return None
+    with _TELEGRAM_DIALOG_LOCK:
+        _TELEGRAM_DIALOGS[int(chat_id)] = copy.deepcopy(current)
+    return copy.deepcopy(current)
 
 
 def _telegram_dialog_save(chat_id: int, dialog: dict[str, Any]) -> None:
@@ -9749,11 +9764,23 @@ def _telegram_dialog_save(chat_id: int, dialog: dict[str, Any]) -> None:
     saved["updated_at"] = int(time.time())
     with _TELEGRAM_DIALOG_LOCK:
         _TELEGRAM_DIALOGS[int(chat_id)] = saved
+    try:
+        _PLATO_STAGE_DIR.mkdir(parents=True, exist_ok=True)
+        _telegram_dialog_path(chat_id).write_text(
+            json.dumps(saved, ensure_ascii=False), encoding="utf-8")
+    except (OSError, TypeError, ValueError):
+        # Диск — подстраховка от второго воркера, а не условие разговора:
+        # ронять ответ человеку из-за неё нельзя.
+        pass
 
 
 def _telegram_dialog_clear(chat_id: int) -> None:
     with _TELEGRAM_DIALOG_LOCK:
         _TELEGRAM_DIALOGS.pop(int(chat_id), None)
+    try:
+        _telegram_dialog_path(chat_id).unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def _telegram_dialog_number(text: str, *, site_area: bool = False) -> float:
@@ -10502,6 +10529,36 @@ def _telegram_handle_dialog_text(chat_id: int, text: str) -> bool:
             data["parking_price_th"] = _telegram_econ_value_th(text)
             _telegram_send_cad_calculate_button(chat_id, dialog)
             return True
+        if step == "await_intake_answer":
+            intake = dialog.get("intake") or {}
+            questions = list(intake.get("questions") or [])
+            index = int(intake.get("index") or 0)
+            if index >= len(questions):
+                dialog.pop("intake", None)
+                dialog.pop("step", None)
+                _telegram_dialog_save(chat_id, dialog)
+                return False
+            said = str(text or "").strip()
+            if said.lower() in {"стоп", "хватит", "отмена", "/cancel"}:
+                # Прекратить разговор — законный ответ, а не сбой. Отвеченное
+                # до этого не выбрасывается: человек уже потратил на него время.
+                intake["index"] = len(questions)
+                dialog["intake"] = intake
+                _telegram_dialog_save(chat_id, dialog)
+                _telegram_intake_ask_next(chat_id, dialog)
+                return True
+            skipped = said in {"-", "—", "?"} or said.lower() in {"пропустить", "не знаю"}
+            answers = list(intake.get("answers") or [])
+            answers.append({
+                "question": str(questions[index].get("question") or ""),
+                "answer": "" if skipped else said[:300],
+            })
+            intake["answers"] = answers
+            intake["index"] = index + 1
+            dialog["intake"] = intake
+            _telegram_dialog_save(chat_id, dialog)
+            _telegram_intake_ask_next(chat_id, dialog)
+            return True
         if step == "await_value":
             key = str(dialog.get("pending_key") or "")
             if not key:
@@ -10779,11 +10836,6 @@ def _telegram_handle_intake_document(chat_id: int, data: bytes, filename: str) -
                          f"\n  <i>«{html.escape(item['quote'][:160])}»</i>")
     else:
         lines.append("\nПолей, которые понимает модель, в документе не нашлось.")
-    if got["questions"]:
-        lines.append("\n<b>Чего в документе нет — нужен ваш ответ</b>")
-        for item in got["questions"]:
-            options = " / ".join(html.escape(option) for option in item.get("options") or [])
-            lines.append(f"• {html.escape(item['question'])}" + (f"\n  {options}" if options else ""))
     for note in got.get("notes") or []:
         lines.append(f"\n<i>{html.escape(str(note)[:300])}</i>")
     # Отброшенное называется вслух: молча пропущенное поле читается как
@@ -10791,12 +10843,76 @@ def _telegram_handle_intake_document(chat_id: int, data: bytes, filename: str) -
     for line in got.get("dropped") or []:
         lines.append(f"\nНе взято — {html.escape(str(line)[:200])}")
     lines.append("\nЧисла проверьте глазами: это то, что написано в документе, "
-                 "а не расчёт. Открыть модель — кнопкой ниже.")
-    button = {"inline_keyboard": [[{
+                 "а не расчёт.")
+    questions = [item for item in (got.get("questions") or []) if item.get("question")]
+    if not questions:
+        lines.append("Открыть модель — кнопкой ниже.")
+        _telegram_send_message(chat_id, "\n".join(lines)[:3900],
+                               reply_markup=_telegram_open_model_button(chat_id))
+        return
+    lines.append(f"\nОстальное спрошу по одному — вопросов {len(questions)}.")
+    _telegram_send_message(chat_id, "\n".join(lines)[:3900])
+    # В чате разговор, а не анкета: десять вопросов одним сообщением
+    # (владелец, 27.08.2026) не читаются и не отвечаются — человек не знает, на
+    # какой из них отвечает, и бот не знает тоже. Очередь живёт в том же
+    # диалоге, что и остальные пошаговые вопросы бота: второго механизма для
+    # этого не заводим.
+    dialog = _telegram_dialog_get(chat_id) or {}
+    dialog["step"] = "await_intake_answer"
+    dialog["intake"] = {
+        "filename": filename,
+        "questions": questions,
+        "answers": [],
+        "index": 0,
+    }
+    _telegram_dialog_save(chat_id, dialog)
+    _telegram_intake_ask_next(chat_id, dialog)
+
+
+def _telegram_open_model_button(chat_id: int) -> dict[str, Any] | None:
+    """Кнопка «открыть модель» — удобство, а не условие ответа.
+
+    Ссылка мини-приложения собирается по токену бота, и без него не собирается
+    вовсе. Ронять из-за неё разбор документа нельзя: человек потерял бы и свои
+    ответы, и прочитанное из файла ради кнопки.
+    """
+    try:
+        url = _telegram_web_app_url(chat_id, [], None)
+    except Exception:  # noqa: BLE001
+        return None
+    return {"inline_keyboard": [[{
         "text": "Открыть модель в DevelopAid",
-        "web_app": {"url": _telegram_web_app_url(chat_id, [], None)},
+        "web_app": {"url": url},
     }]]}
-    _telegram_send_message(chat_id, "\n".join(lines)[:3900], reply_markup=button)
+
+
+def _telegram_intake_ask_next(chat_id: int, dialog: dict[str, Any]) -> None:
+    """Следующий вопрос по документу — или итог, если вопросы кончились."""
+    intake = dialog.get("intake") or {}
+    questions = list(intake.get("questions") or [])
+    index = int(intake.get("index") or 0)
+    if index >= len(questions):
+        answers = list(intake.get("answers") or [])
+        lines = [f"<b>Ответы по «{html.escape(str(intake.get('filename') or 'документу'))}»</b>"]
+        for item in answers:
+            said = str(item.get("answer") or "")
+            lines.append(f"• {html.escape(str(item.get('question')))}\n  <b>"
+                         + (html.escape(said) if said else "<i>пропущено</i>") + "</b>")
+        lines.append("\nЭто ваши ответы, а не расчёт: подставьте их в модель и проверьте.")
+        dialog.pop("intake", None)
+        dialog.pop("step", None)
+        _telegram_dialog_save(chat_id, dialog)
+        _telegram_send_message(chat_id, "\n".join(lines)[:3900],
+                               reply_markup=_telegram_open_model_button(chat_id))
+        return
+    item = questions[index]
+    options = [str(option) for option in (item.get("options") or []) if str(option).strip()]
+    text = (f"<b>Вопрос {index + 1} из {len(questions)}</b>\n"
+            + html.escape(str(item.get("question"))))
+    if options:
+        text += "\n\n" + " / ".join(html.escape(option) for option in options)
+    text += "\n\n<i>Ответьте сообщением. «-» — пропустить вопрос, «стоп» — закончить.</i>"
+    _telegram_send_message(chat_id, text[:3900])
 
 
 def _telegram_handle_manual_document(chat_id: int, document: dict[str, Any]) -> None:
