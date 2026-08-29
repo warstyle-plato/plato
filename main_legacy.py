@@ -68,7 +68,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.20.49"
+VERSION = "0.20.50"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -10374,12 +10374,12 @@ def _telegram_dialog_callback(chat_id: int, user_id: int, action: str) -> None:
         data["apartment_price_th"] = float(preset["apartment_price_th"])
         data["commercial_price_th"] = float(preset["commercial_price_th"])
         data["parking_price_th"] = float(preset["parking_price_th"])
-        data["smr_th_per_sqm"] = float(_TELEGRAM_CLASS_SMR_PRESETS[key])
+        data["smr_th_per_sqm"] = _telegram_class_smr(key)
         _telegram_send_cad_calculate_button(chat_id, dialog)
         return
     if action == "flow_cad_class_custom":
         data = dialog.setdefault("data", {})
-        if str(data.get("project_class") or "") not in _TELEGRAM_CLASS_SMR_PRESETS:
+        if str(data.get("project_class") or "") not in PROJECT_CLASS_PRESETS:
             _telegram_cad_class_menu(chat_id, dialog)
             return
         dialog["step"] = "await_cad_apartment_price"
@@ -11128,11 +11128,14 @@ def _telegram_econ_value_th(text: str) -> float:
     return value
 
 
-_TELEGRAM_CLASS_SMR_PRESETS = {
-    "comfort": 110.0,
-    "business": 190.0,
-    "elite": 300.0,
-}
+# Ставка СМР класса жила здесь второй копией — 110 / 190 / 300, теми же
+# числами, что в `PROJECT_CLASS_PRESETS`. Совпадение и было опасно: поправят
+# профиль класса, а бот останется на прежнем, и экспресс-расчёт разойдётся с
+# сайтом молча — та же болезнь, что была у `VERSION` и у списка полей страницы.
+# Копии больше нет; ставка берётся у профиля, как и цены.
+def _telegram_class_smr(key: str) -> float:
+    """Ставка основного строительства класса — из профиля класса."""
+    return float(PROJECT_CLASS_PRESETS[key]["main_above_th_per_sqm"])
 
 
 def _telegram_cad_class_menu(chat_id: int, dialog: dict[str, Any]) -> None:
@@ -11175,7 +11178,7 @@ def _telegram_send_cad_calculate_button(chat_id: int, dialog: dict[str, Any]) ->
         overrides["apartment_price_th"], overrides["commercial_price_th"],
         overrides["parking_price_th"], overrides["smr_th_per_sqm"],
     ]
-    if overrides["project_class"] not in _TELEGRAM_CLASS_SMR_PRESETS or min(values) <= 0:
+    if overrides["project_class"] not in PROJECT_CLASS_PRESETS or min(values) <= 0:
         raise ValueError("Не заполнены параметры выбранного класса")
     class_label = PROJECT_CLASS_PRESETS.get(overrides["project_class"], {}).get("label") or "—"
     prices_note = " · цены изменены вручную" if bool(data.get("prices_custom")) else ""
