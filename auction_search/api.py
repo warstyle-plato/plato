@@ -6,8 +6,6 @@ import sys
 import threading
 import time
 import io
-import zipfile
-from xml.sax.saxutils import escape as xml_escape
 from typing import Any
 from urllib.parse import urlparse
 
@@ -15,6 +13,9 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel, Field
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.worksheet.table import Table, TableStyleInfo
 
 from auction_search.adapters import (
     NistpAdapter,
@@ -76,23 +77,84 @@ class AuctionLotPointRequest(BaseModel):
     query: str = Field(min_length=3, max_length=500)
 
 def _xlsx(rows: list[dict[str, Any]]) -> bytes:
-    cols = ["Раздел","Название","Округ / район","Адрес","Кадастр","Тип","Площадь, м²","Объём, м²","Цена, ₽","Оценка Платона","Статус","Источник"]
-    def cell(v):
-        s = "" if v is None else str(v)
-        return f'<c t="inlineStr"><is><t>{xml_escape(s)}</t></is></c>'
-    body = '<row>' + ''.join(cell(c) for c in cols) + '</row>'
-    for r in rows[:2000]:
-        vals = [r.get(k, '') for k in ("section","name","district","address","cadastre","type","area","volume","price","score","status","url")]
-        body += '<row>' + ''.join(cell(v) for v in vals) + '</row>'
-    files = {
-      '[Content_Types].xml':'<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>',
-      '_rels/.rels':'<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>',
-      'xl/workbook.xml':'<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Выборка" sheetId="1" r:id="rId1"/></sheets></workbook>',
-      'xl/_rels/workbook.xml.rels':'<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>',
-      'xl/worksheets/sheet1.xml':f'<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>{body}</sheetData></worksheet>'}
-    out=io.BytesIO()
-    with zipfile.ZipFile(out,'w',zipfile.ZIP_DEFLATED) as z:
-        for name,data in files.items(): z.writestr(name,data)
+    headers = [
+        "Раздел", "Название", "Округ", "Район", "Адрес", "Кадастровые номера",
+        "Тип", "Площадь участка, м²", "Площадь здания/ОКС, м²",
+        "Площадь КРТ, га", "Общий объём, м²", "Жильё, м²", "Цена, ₽",
+        "Оценка Платона", "Статус", "Источник",
+    ]
+
+    def number(value: Any) -> float | int | None:
+        if value in (None, ""):
+            return None
+        try:
+            parsed = float(value)
+            return int(parsed) if parsed.is_integer() else parsed
+        except (TypeError, ValueError):
+            return None
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Выборка"
+    ws.append(headers)
+    keys = (
+        "section", "name", "okrug", "district", "address", "cadastre", "type",
+        "land_area_sqm", "building_area_sqm", "krt_area_ha", "total_gfa_sqm",
+        "housing_gfa_sqm", "price", "score", "status", "url",
+    )
+    numeric_keys = {
+        "land_area_sqm", "building_area_sqm", "krt_area_ha", "total_gfa_sqm",
+        "housing_gfa_sqm", "price", "score",
+    }
+    for row in rows[:2000]:
+        values = [number(row.get(key)) if key in numeric_keys else (row.get(key) or "") for key in keys]
+        ws.append(values)
+
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = f"A1:P{max(1, ws.max_row)}"
+    ws.sheet_view.showGridLines = False
+    header_fill = PatternFill("solid", fgColor="171717")
+    for cell in ws[1]:
+        cell.fill = header_fill
+        cell.font = Font(color="FFFFFF", bold=True)
+        cell.alignment = Alignment(vertical="center", wrap_text=True)
+    ws.row_dimensions[1].height = 34
+    widths = [11, 48, 10, 18, 34, 28, 18, 20, 23, 18, 18, 16, 18, 17, 22, 42]
+    for index, width in enumerate(widths, start=1):
+        ws.column_dimensions[chr(64 + index)].width = width
+    for row in ws.iter_rows(min_row=2):
+        for cell in row:
+            cell.alignment = Alignment(vertical="top", wrap_text=cell.column in {2, 5, 6, 15, 16})
+    for row in ws.iter_rows(min_row=2, min_col=8, max_col=14):
+        for cell in row:
+            cell.alignment = Alignment(horizontal="right", vertical="top")
+    for column in (8, 9, 11, 12):
+        for cell in ws.iter_cols(min_col=column, max_col=column, min_row=2):
+            for item in cell:
+                item.number_format = '#,##0.00'
+    for cell in ws["J"][1:]:
+        cell.number_format = '0.0000'
+    for cell in ws["M"][1:]:
+        cell.number_format = '#,##0" ₽"'
+    for cell in ws["N"][1:]:
+        cell.number_format = '0'
+    for cell in ws["P"][1:]:
+        if cell.value:
+            cell.hyperlink = str(cell.value)
+            cell.style = "Hyperlink"
+    if ws.max_row >= 2:
+        table = Table(displayName="DevelopAidSelection", ref=f"A1:P{ws.max_row}")
+        table.tableStyleInfo = TableStyleInfo(
+            name="TableStyleMedium2", showFirstColumn=False, showLastColumn=False,
+            showRowStripes=True, showColumnStripes=False,
+        )
+        ws.add_table(table)
+    ws.auto_filter.ref = f"A1:P{max(1, ws.max_row)}"
+    ws.page_setup.orientation = "landscape"
+    ws.page_setup.fitToWidth = 1
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+    out = io.BytesIO()
+    wb.save(out)
     return out.getvalue()
 
 

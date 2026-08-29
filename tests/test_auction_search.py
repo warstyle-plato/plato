@@ -1,9 +1,10 @@
 from datetime import date, datetime, timedelta
+import io
 from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo
 
 from auction_search.adapters.lot_online import LotOnlineAdapter
-from auction_search.api import _discovery_adapters, _handoff_land_cadastres
+from auction_search.api import _discovery_adapters, _handoff_land_cadastres, _xlsx
 from auction_search.bridge import auction_page_with_handoff, install_page_bridge
 from auction_search.classifier import classify_lot
 from auction_search.developaid_mapper import build_developaid_seed
@@ -528,6 +529,24 @@ def test_auction_ui_does_not_render_missing_area_as_zero():
 
     page = auctions_page()
     assert "n!==null&&n!==undefined&&n!==''" in page
+
+
+def test_excel_export_separates_land_and_building_as_numbers():
+    from openpyxl import load_workbook
+
+    raw = _xlsx([{
+        "section": "Торги", "name": "ОСЗ с участком", "cadastre": "77:1, 77:2",
+        "type": "ЗИК", "land_area_sqm": 3650, "building_area_sqm": 785,
+        "price": 158_636_700, "score": 24, "url": "https://example.test/lot/1",
+    }])
+    sheet = load_workbook(io.BytesIO(raw)).active
+    headers = [cell.value for cell in sheet[1]]
+    assert "Площадь участка, м²" in headers
+    assert "Площадь здания/ОКС, м²" in headers
+    assert sheet.cell(2, headers.index("Площадь участка, м²") + 1).value == 3650
+    assert sheet.cell(2, headers.index("Площадь здания/ОКС, м²") + 1).value == 785
+    assert sheet.cell(2, headers.index("Цена, ₽") + 1).data_type == "n"
+    assert sheet.freeze_panes == "A2"
 
 
 def test_auction_ui_names_city_discovery_and_shows_source_funnel():
