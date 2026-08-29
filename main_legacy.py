@@ -20236,6 +20236,14 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
 
         pf_draw_total = pf_repayment_total = 0.0
         pf_interest_total = pf_cap_total = pf_limit_fee_total = 0.0
+        # Долг предыдущей очереди, принятый в ПФ этой по генеральному
+        # соглашению (решение владельца, 27.08.2026). Это НЕ выборка: деньги
+        # не приходят и расходов не финансируют, меняется только должник.
+        # Поэтому счётчик свой: в pf_draw_total ему нельзя — оттуда он попал
+        # бы в ЧИСЛИТЕЛЬ LLCR, ничем не уравновешенный (выборка уравновешена
+        # CAPEX, который на неё куплен, а перенос не покупает ничего).
+        carried_debt_in = 0.0
+        carried_debt = max(n(x, "_phase_carried_debt_mln") * 1_000_000, 0.0)
         pf_reservation_fee = (pf_limit or 0.0) * n(x, "reservation_fee_pct") / 100 if pf_limit else 0.0
         transferred_bridge_interest = 0.0
 
@@ -20355,6 +20363,14 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
                         pf_draw = room
                 pf_balance += pf_draw
                 pf_draw_total += pf_draw
+                # Принятый долг ложится на баланс после проверки потолка:
+                # лимит этой очереди он не выбирает (решение владельца,
+                # 27.08.2026) — банк переносит обязательство, а не выдаёт
+                # новые деньги. Но проценты на него идут как на тело ПФ, и
+                # покрытие эскроу он разбавляет: покрывать приходится больше.
+                if month == permit and carried_debt > 0:
+                    pf_balance += carried_debt
+                    carried_debt_in += carried_debt
 
                 coverage = escrow / pf_balance if pf_balance > 0 else 0.0
 
@@ -20488,6 +20504,7 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
             ),
 
             "pf_draw_total": pf_draw_total,
+            "carried_debt_in": carried_debt_in,
             "pf_repayment_total": pf_repayment_total,
             "pf_reservation_fee": pf_reservation_fee,
             "pf_interest": pf_interest_total,
@@ -20729,8 +20746,17 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
     # To reproduce Excel's correction concept, create a "reported" total where transferred bridge interest
     # appears in both bridge and PF buckets, then subtract it once.
     reported_interest_and_fees = financing_cost + result["transferred_bridge_interest"]
+    # Принятый от предыдущей очереди долг входит в ЗНАМЕНАТЕЛЬ и не входит в
+    # числитель (решение владельца, 27.08.2026: «долг должен появиться»).
+    # Иначе очередь, которой перенесли обязательство, показала бы покрытие,
+    # которого у неё нет: первая перестала быть дефолтной, а во второй долг
+    # не появился — два достоверных на вид отчёта на одних вводных.
+    # На своде этот же долг вычитается один раз (он не новые деньги, а часть
+    # выборки предыдущей очереди) — тем же приёмом, что и перенесённые
+    # проценты БРИДЖа строкой выше.
     llcr_denominator = (
-        result["pf_draw_total"] + reported_interest_and_fees - result["transferred_bridge_interest"]
+        result["pf_draw_total"] + result["carried_debt_in"]
+        + reported_interest_and_fees - result["transferred_bridge_interest"]
     )
     llcr = llcr_numerator / llcr_denominator if llcr_denominator else 0.0
 
