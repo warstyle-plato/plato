@@ -69,7 +69,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.20.53"
+VERSION = "0.20.54"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -2134,6 +2134,46 @@ def monitor_store_daily(req: MonitorDailyRequest) -> dict[str, Any]:
             req.project, req.text, req.taken_at)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
+
+
+@app.get("/monitor/crew", include_in_schema=False)
+def monitor_crew(project: str, date: str = "", session: str = "",
+                 key: str = "") -> dict[str, Any]:
+    """Работы дня: кто должен был работать по ГПР и договорам и кто вышел.
+
+    План — из ГПР (какие работы идут в этот день) и РСС (какой подрядчик стоит
+    за статьёй); факт — из ежедневного отчёта с площадки. Своего справочника
+    договоров не заводим: он стал бы вторым мнением о том, кто за статью
+    отвечает.
+    """
+    _require_web_access(session, key, "Монитор проекта")
+    import developaid_monitor_crew as crew
+
+    day = (date or "").strip()
+    try:
+        view = developaid_monitor.build(project, day or None)
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(400, str(exc))
+    rows = ((view.get("schedule") or {}).get("rows")) or []
+    by_code: dict[str, list[str]] = {}
+    rss = developaid_monitor._latest(project, "estimate", ".xlsx", "")
+    if rss is not None:
+        try:
+            by_code = crew.contractors_by_code(
+                developaid_actuals.read_completed_works(rss),
+                developaid_actuals.read_payments(rss))
+        except (KeyError, ValueError):
+            # Реестр не той структуры — это «привязать нечем», и так и будет
+            # написано, а не пустой список подрядчиков молча.
+            by_code = {}
+    report = None
+    path = developaid_monitor._project_dir(project) / "daily" / f"{day}.json"
+    if day and path.exists():
+        try:
+            report = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            report = None
+    return crew.crew_day(rows, by_code, report, day or view.get("cut"))
 
 
 @app.get("/monitor/daily/summary", include_in_schema=False)
