@@ -37703,10 +37703,34 @@ let resetRun=0;
 // «что уцелело» сверяется с тем же выражением, которым сброс и присваивает.
 // Пока их было два, проверка честно жаловалась на поля, которые сброс сам же
 // и ставит.
+// Каким обязано стать состояние после сброса. Объявлено один раз — и сбросом,
+// и его самопроверкой: пока умолчаний было два, проверка жаловалась на поля,
+// которые сброс сам же и ставит.
+//
+// Предпосылки аналитика возвращаются к умолчаниям, ДАННЫЕ УЧАСТКА обнуляются.
+// Прежде сброс ставил и то и другое умолчанием, а умолчание ТЭП — это пример:
+// 130 716,7 м² ГНС, 80 000 продаваемой, 1 361 квартира. На экране после
+// «Сбросить» стояли те же числа, что до него, и читалось это ровно так —
+// «ничего не сбросилось» (владелец, 29.08.2026, снимок экрана). Разделение то
+// же, что при импорте участка: цена входа, площади объектов и соцнагрузка
+// принадлежат площадке, а ставки, сроки и налоги — аналитику.
 function resetInputsWanted(){
- return Object.assign(cloneValue(INPUT_DEFAULT),{
+ const want=Object.assign(cloneValue(INPUT_DEFAULT),{
   project_class:'comfort', rate_scenario:'base',
   scenario_revenue_multiplier:1, scenario_cost_multiplier:1});
+ TERRITORY_INPUT_KEYS.forEach(key=>{if(key in want)want[key]=0});
+ return want;
+}
+// ТЭП после сброса — нули, а не пример. Строки и подписи остаются: таблица без
+// строк читается как поломка, а не как пустой проект.
+function resetTepWanted(){
+ const want=cloneValue(TEP_DEFAULT);
+ Object.keys(want).forEach(row=>{
+  ['gns','total_area','useful','saleable','transfer','units'].forEach(field=>{
+   if(field in want[row])want[row][field]=0;
+  });
+ });
+ return want;
 }
 function blankResultSurfaces(){
  ['report','finance','calendar','sensitivity'].forEach(id=>{
@@ -37788,7 +37812,7 @@ function resetMoParams(){
 function resetAll(){
  localStorage.removeItem('plato_v04');
  inputs=resetInputsWanted();
- tep=cloneValue(TEP_DEFAULT);
+ tep=resetTepWanted();
  phasing=makeDefaultPhasing(1);phaseBundle=null;reportView='all';cadastralAnalysis=null;landLookup=null;moResult=null;
  rates=[];
  scenarioSelect.value='base';
@@ -37833,8 +37857,9 @@ function resetLeftovers(){
  Object.keys(inputs).forEach(key=>{
   if(!(key in want))left.push('лишняя вводная «'+key+'»');
  });
- Object.keys(TEP_DEFAULT).forEach(row=>{
-  const was=TEP_DEFAULT[row]||{},now=tep[row]||{};
+ const wantTep=resetTepWanted();
+ Object.keys(wantTep).forEach(row=>{
+  const was=wantTep[row]||{},now=tep[row]||{};
   Object.keys(was).forEach(field=>{
    if(!same(now[field],was[field]))left.push('ТЭП «'+row+'.'+field+'»');
   });
