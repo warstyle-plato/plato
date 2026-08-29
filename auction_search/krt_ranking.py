@@ -123,6 +123,7 @@ def score_row(project: dict[str, Any], screening: dict[str, Any]) -> dict[str, A
     row.update({
         "available": True,
         "traffic_light": screening.get("traffic_light") or {},
+        "requirements": screening.get("requirements") or {},
         "saleable_sqm": round(saleable) if saleable else 0,
         "segment": market.get("recommended_segment"),
         "start_price_rub_sqm": market.get("start_price_rub_sqm"),

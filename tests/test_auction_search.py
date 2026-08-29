@@ -610,13 +610,34 @@ def test_krt_excel_export_keeps_territory_and_program_areas_separate():
     raw = _xlsx([{
         "section": "КРТ", "name": "Тестовая территория", "okrug": "ЗАО",
         "district": "Кунцево", "krt_area_ha": 23.5, "total_gfa_sqm": 74470,
-        "housing_gfa_sqm": 61000, "score": 87, "status": "Планируемый",
-    }])
-    sheet = load_workbook(io.BytesIO(raw)).active
+        "housing_gfa_sqm": 61000, "nonresidential_gfa_sqm": 13470,
+        "business_gfa_sqm": 9000, "jobs": 1200, "score": 87,
+        "traffic_light": "Операционный сценарий проходит", "saleable_sqm": 52129,
+        "entry_capacity_rub_per_sqm": 579, "entry_capacity_mln": 110.7,
+        "project_llcr_x": 1.22, "weakest_phase_llcr_x": 1.08,
+        "margin_pct": 12.4, "demolition_objects": 2, "demolition_area_sqm": 1250,
+        "conditional_objects": 3, "conditional_area_sqm": 800,
+        "reconstruction_objects": 1, "reconstruction_area_sqm": 600,
+        "preservation_objects": 1, "preservation_area_sqm": 400,
+        "resettlement_mentions": 2, "status": "Планируемый",
+    }], "krt")
+    workbook = load_workbook(io.BytesIO(raw))
+    assert workbook.sheetnames == ["КРТ", "Обязательства"]
+    sheet = workbook["КРТ"]
     headers = [cell.value for cell in sheet[1]]
-    assert sheet.cell(2, headers.index("Площадь КРТ, га") + 1).value == 23.5
-    assert sheet.cell(2, headers.index("Общий объём, м²") + 1).value == 74470
+    assert "Кадастровые номера" not in headers and "Цена, ₽" not in headers
+    assert sheet.cell(2, headers.index("Площадь территории, га") + 1).value == 23.5
+    assert sheet.cell(2, headers.index("Общий объём строительства, м²") + 1).value == 74470
     assert sheet.cell(2, headers.index("Жильё, м²") + 1).value == 61000
+    assert sheet.cell(2, headers.index("Потолок цены входа, ₽/м² продаваемой") + 1).value == 579
+    assert sheet.cell(2, headers.index("Потолок цены входа всего, млн ₽") + 1).value == 110.7
+    assert sheet.cell(2, headers.index("Потолок цены входа, ₽/м² продаваемой") + 1).number_format == '#,##0" ₽/м²"'
+    assert sheet.cell(2, headers.index("Потолок цены входа всего, млн ₽") + 1).number_format == '#,##0.0" млн ₽"'
+    duties = workbook["Обязательства"]
+    duty_headers = [cell.value for cell in duties[1]]
+    assert duties.cell(2, duty_headers.index("Снос, объектов") + 1).value == 2
+    assert duties.cell(2, duty_headers.index("Снос/реконструкция, известная площадь, м²") + 1).value == 800
+    assert duties.cell(2, duty_headers.index("Расселение/изъятие, упоминаний") + 1).value == 2
 
 
 def test_auction_ui_names_city_discovery_and_shows_source_funnel():
