@@ -14583,6 +14583,225 @@ def _v4_apply_management_profile(xml: str, missing: list[str]) -> str:
     return xml
 
 
+# Перенос непогашенного долга между очередями в книге.
+#
+# Строки 64 и 65 листов CF в шаблоне пусты — значит ряд заводится, не сдвигая
+# ни одной ссылки. Вставлять строку в занятое место нельзя: поедет всё, что
+# на неё ссылается (тем же правилом зачёт переданных метров лёг в ячейку
+# льготы, а не в свою).
+_V4_CARRY_ACCEPTED_ROW = 64          # ПФ — принятый долг предыдущей очереди
+_V4_CARRY_PASSED_ROW = 65            # ПФ — долг передан следующей очереди
+_V4_CARRY_FLAG_CELL = "B92"          # признак на «Вводных»
+_V4_CF_FIRST_COL = 4                 # D
+_V4_CF_LAST_COL = 123                # DS
+_V4_CF_QUEUE_ENABLED_ROW = 88        # 'Вводные'!B88 — очередь 1 включена
+
+
+def _v4_insert_row(xml: str, row: int, body: str, before: int | None) -> tuple[str, bool]:
+    """Вставляет целую строку в пустое место листа.
+
+    Пустая строка в XML не существует вовсе, а `_v4_set_cell` умеет только
+    заменять существующую ячейку. Вставлять в ЗАНЯТОЕ место нельзя — поедут
+    все ссылки; поэтому вызывающий обязан выбрать строку, которой в шаблоне
+    нет, и это проверяется здесь.
+    """
+    if f'<x:row r="{row}"' in xml:
+        return xml, False
+    # Строка последняя на листе — вставлять не перед чем, дописываем в конец
+    # данных. Порядок строк в sheetData обязан расти, поэтому только в конец.
+    marker = f'<x:row r="{before}"' if before else "</x:sheetData>"
+    at = xml.find(marker)
+    if at < 0:
+        return xml, False
+    return xml[:at] + f'<x:row r="{row}">' + body + "</x:row>" + xml[at:], True
+
+
+def _v4_write_carry_flag(xml: str, enabled: bool, missing: list[str]) -> str:
+    """Признак переноса долга на «Вводных» — своей строкой, как остальные Да/Нет."""
+    row = int(_V4_CARRY_FLAG_CELL[1:])
+    body = (
+        f'<x:c r="A{row}" t="str"><x:v>Непогашенный долг очереди переходит в ПФ '
+        f'следующей</x:v></x:c>'
+        f'<x:c r="B{row}" s="12" t="str"><x:v>{"Да" if enabled else "Нет"}</x:v></x:c>'
+        f'<x:c r="C{row}" t="str"><x:v>Да / Нет</x:v></x:c>'
+        f'<x:c r="D{row}" t="str"><x:v>carry_debt_forward</x:v></x:c>')
+    updated, done = _v4_insert_row(xml, row, body, row + 1)
+    if not done:
+        missing.append(f"признак переноса долга: строка {row} «Вводных» занята")
+        return xml
+    return updated
+
+
+def _v4_cf_columns() -> list[str]:
+    from openpyxl.utils import get_column_letter
+    return [get_column_letter(c) for c in range(_V4_CF_FIRST_COL, _V4_CF_LAST_COL + 1)]
+
+
+def _v4_carry_row_xml(row: int, label: str, formulas: dict[str, str]) -> str:
+    """Строка листа CF целиком: подпись, итог, единица и месяцы.
+
+    Стили берутся у строки 47 («ПФ — долг на конец») — той же природы величина,
+    и Excel не должен увидеть чужой формат в середине блока.
+    """
+    cells = [
+        f'<x:c r="A{row}" s="113" t="str"><x:v>{xml_escape(label)}</x:v></x:c>',
+        f'<x:c r="B{row}" s="113" t="n"><x:f>SUM(D{row}:DS{row})</x:f></x:c>',
+        f'<x:c r="C{row}" s="113" t="str"><x:v>млн ₽</x:v></x:c>',
+    ]
+    for column in _v4_cf_columns():
+        cells.append(
+            f'<x:c r="{column}{row}" s="120">'
+            f"<x:f>{xml_escape(formulas[column])}</x:f></x:c>")
+    return f'<x:row r="{row}">' + "".join(cells) + "</x:row>"
+
+
+def _v4_apply_debt_carry(xml: str, phase: int, queues: int, missing: list[str]) -> str:
+    """Учит лист CF очереди принимать долг предыдущей и отдавать свой следующей.
+
+    Методика — движковая (владелец, 27–29.08.2026): долг переезжает в месяц
+    раскрытия эскроу передавшей очереди, в сумме, которой раскрытому эскроу не
+    хватило; лимита он не выбирает, но проценты несёт и разбавляет покрытие;
+    после этого линия передавшей закрыта — ни выборки, ни погашения.
+
+    Формулы шаблона не переписываются вслепую: не опознали — в `missing`, а не
+    молча посчитали по-своему. Признак выключен — ряды дают ноль, и все
+    правленые формулы сходятся к прежним: книга без переноса обязана считать
+    ровно как раньше, иначе паритет поедет на проектах, где его никто не
+    включал.
+    """
+    columns = _v4_cf_columns()
+    sheet = f"CF_{phase}"
+    previous = f"CF_{phase - 1}"
+    flag = f"'Вводные'!${_V4_CARRY_FLAG_CELL[0]}${_V4_CARRY_FLAG_CELL[1:]}=\"Да\""
+    next_enabled = f"'Вводные'!$B${_V4_CF_QUEUE_ENABLED_ROW + phase}=\"Да\""
+
+    accepted: dict[str, str] = {}
+    passed: dict[str, str] = {}
+    for column in columns:
+        if phase <= 1:
+            accepted[column] = "0"
+        else:
+            # Дата приёма — максимум из РВЭ передавшей и РнС этой: раньше
+            # своей линии принять долг в ПФ нельзя, её ещё нет.
+            at = f"MAX('{previous}'!$B$8,$B$7)"
+            accepted[column] = (
+                f"IF(AND($B$5=1,YEAR({column}$3)=YEAR({at}),"
+                f"MONTH({column}$3)=MONTH({at})),'{previous}'!$B${_V4_CARRY_PASSED_ROW},0)")
+        if phase >= queues or phase >= 4:
+            # Последней очереди передавать некому: «перенос» был бы фикцией.
+            passed[column] = "0"
+        else:
+            passed[column] = (
+                f"IF(AND({flag},$B$5=1,{next_enabled},"
+                f"YEAR({column}$3)=YEAR($B$8),MONTH({column}$3)=MONTH($B$8)),"
+                f"MAX(0,{column}38+{column}45+{column}{_V4_CARRY_ACCEPTED_ROW}"
+                f"-{column}46),0)")
+
+    rows_xml = (_v4_carry_row_xml(_V4_CARRY_ACCEPTED_ROW,
+                                  "ПФ — принятый долг предыдущей очереди", accepted)
+                + _v4_carry_row_xml(_V4_CARRY_PASSED_ROW,
+                                    "ПФ — долг передан следующей очереди", passed))
+    marker = '<x:row r="66"'
+    if marker not in xml:
+        missing.append(f"{sheet}: не найдена строка 66 — ряд переноса вставить некуда")
+        return xml
+    if f'<x:row r="{_V4_CARRY_ACCEPTED_ROW}"' in xml:
+        missing.append(f"{sheet}: строка {_V4_CARRY_ACCEPTED_ROW} уже занята")
+        return xml
+    at = xml.index(marker)
+    xml = xml[:at] + rows_xml + xml[at:]
+
+    # Правки формул. Каждая — точной строкой, а не по всему листу: `L38+L45`
+    # встречается и там, где принятый долг не при чём.
+    a = _V4_CARRY_ACCEPTED_ROW
+    b = _V4_CARRY_PASSED_ROW
+    # Правки по строкам, а не по всему листу: `L38+L45` встречается и там, где
+    # принятый долг ни при чём. Сравнения в XML хранятся сущностями (`&gt;`),
+    # и искать надо именно их — иначе формула «не опознана» на ровном месте.
+    edits: dict[int, list[tuple[str, str]]] = {row: [] for row in (40, 42, 43, 45, 46, 47, 61)}
+    for index, column in enumerate(columns):
+        # Долг на конец и его же проверка roll-forward.
+        edits[47].append((f"MAX(0,{column}38+{column}45-{column}46)",
+                          f"MAX(0,{column}38+{column}45+{column}{a}-{column}46-{column}{b})"))
+        edits[61].append((f"{column}47-({column}38+{column}45-{column}46)",
+                          f"{column}47-({column}38+{column}45+{column}{a}-{column}46-{column}{b})"))
+        # Проценты, плата за лимит и покрытие эскроу — принятый долг входит в
+        # базу: он несёт проценты как тело и покрывать его тоже надо.
+        edits[42].append((f"({column}38+{column}45)&gt;0",
+                          f"({column}38+{column}45+{column}{a})&gt;0"))
+        edits[42].append((f"({column}38+{column}45)*{column}41/12",
+                          f"({column}38+{column}45+{column}{a})*{column}41/12"))
+        edits[43].append((f"-({column}38+{column}45))",
+                          f"-({column}38+{column}45+{column}{a}))"))
+        edits[40].append((f"MAX(1,{column}38+{column}45)",
+                          f"MAX(1,{column}38+{column}45+{column}{a})"))
+        edits[46].append((f"MIN({column}38+{column}45,",
+                          f"MIN({column}38+{column}45+{column}{a},"))
+        # Линия закрыта после того, как долг с неё ушёл: выборки больше нет.
+        # Признак «перенос уже случился» — накопленная строка 65 по ПРЕДЫДУЩИЕ
+        # месяцы, а не её итог B65: итог суммирует в том числе этот месяц, а
+        # строка 65 читает строку 45 — вышла бы круговая ссылка, и Excel сказал
+        # бы то же, что сказал вычислитель формул. В месяц РВЭ выборка ещё
+        # идёт: движок в этот месяц выбирает, гасит раскрытым эскроу и только
+        # потом отдаёт остаток. В первом месяце модели переносить нечему —
+        # формула остаётся прежней.
+        if index == 0:
+            continue
+        seen = f"SUM($D${b}:{columns[index - 1]}{b})"
+        edits[45].append((f"<x:f>{column}44</x:f>",
+                          f"<x:f>IF(AND({seen}&gt;0,{column}$3&gt;$B$8),0,{column}44)</x:f>"))
+    for row in sorted(edits):
+        pattern = re.compile(r'(<x:row r="%d">)(.*?)(</x:row>)' % row, re.S)
+        found = pattern.search(xml)
+        if not found:
+            missing.append(f"{sheet}: строка {row} не найдена")
+            return xml
+        body = found.group(2)
+        for old, new in edits[row]:
+            if old not in body:
+                missing.append(f"{sheet}: формула строки {row} не опознана ({old})")
+                return xml
+            body = body.replace(old, new, 1)
+        xml = (xml[:found.start()] + found.group(1) + body + found.group(3)
+               + xml[found.end():])
+    return xml
+
+
+_V4_CARRY_PARITY_ROW = 85
+
+
+def _v4_add_carry_parity_row(xml: str, target_mln: float, missing: list[str]) -> str:
+    """Строка паритета «долг, переданный между очередями» на листе ПРОВЕРКИ.
+
+    Без неё книга могла бы переносить не то и не тогда, а вердикт листа остался
+    бы «ПРОЙДЕНО»: остальные строки паритета смотрят на итоги, а перенос между
+    очередями итоги проекта почти не двигает — он меняет, КТО платит.
+    """
+    row = _V4_CARRY_PARITY_ROW
+    total = "+".join(f"'CF_{phase}'!$B${_V4_CARRY_PASSED_ROW}" for phase in range(1, 5))
+    tolerance = max(1.0, abs(target_mln) * 0.005)
+    body = (
+        f'<x:c r="A{row}" t="inlineStr"><x:is><x:t>Паритет: долг, переданный '
+        f'между очередями, млн</x:t></x:is></x:c>'
+        f'<x:c r="B{row}"><x:f>{total}</x:f></x:c>'
+        f'<x:c r="C{row}"><x:v>{_v4_number(round(target_mln, 4))}</x:v></x:c>'
+        f'<x:c r="D{row}"><x:f>IF(C{row}="","",B{row}-C{row})</x:f></x:c>'
+        f'<x:c r="E{row}"><x:v>{_v4_number(round(tolerance, 4))}</x:v></x:c>'
+        f'<x:c r="F{row}"><x:f>IF(C{row}="","",IF(ABS(D{row})&lt;=E{row},'
+        f'"OK","FAIL"))</x:f></x:c>')
+    updated, done = _v4_insert_row(xml, row, body, None)
+    if not done:
+        missing.append(f"паритет переноса долга: строка {row} ПРОВЕРОК занята")
+        return xml
+    # Вердикт листа считает по диапазону — новая строка обязана в него войти,
+    # иначе она красная, а лист «ПРОЙДЕНО».
+    before = updated
+    updated = updated.replace("COUNTIF(F6:F84,", f"COUNTIF(F6:F{row},")
+    if updated == before:
+        missing.append("паритет переноса долга: вердикт B3 не расширен на новую строку")
+    return updated
+
+
 def _v4_parity_targets(consolidated: dict[str, Any]) -> dict[str, float]:
     """Контрольные числа движка для parity-блока листа ПРОВЕРКИ."""
     summary = consolidated.get("summary") or {}
@@ -14791,6 +15010,13 @@ def build_project_workbook(
                     "bridge_peak_by_phase": [float(_hint_fin.get("peak_bridge", 0.0)) / 1e6],
                 }
             finance_hints["parity"] = _v4_parity_targets(_hint_bundle["consolidated"])
+            # Сколько движок переносит между очередями — контрольное число для
+            # своей строки ПРОВЕРОК. Итоги проекта перенос почти не двигает: он
+            # меняет, КТО платит, поэтому прежние строки паритета его не ловят.
+            finance_hints["carried_debt_mln"] = sum(
+                float((p_item.get("result") or {}).get("finance", {}).get(
+                    "debt_carried_out") or 0.0)
+                for p_item in _hint_phases) / 1e6
         except Exception:
             finance_hints = {}
     p = phasing or {}
@@ -14853,6 +15079,14 @@ def build_project_workbook(
 
     for key, coord in _V4_BOOL_CELLS.items():
         put(coord, text="Да" if x.get(key) else "Нет", label=key)
+
+    # Признак переноса долга между очередями. Стоит рядом с остальными Да/Нет,
+    # но живёт в phasing, а не во вводных проекта: это условие сделки с банком,
+    # а не свойство площадки.
+    xml = _v4_write_carry_flag(
+        xml,
+        bool((phasing or {}).get("carry_debt_forward")) and bool((phasing or {}).get("enabled")),
+        missing)
 
     # Ставка, ушедшая от базы класса, помечается рядом со значением: молча
     # книга и отчёт «одного класса» разойдутся, и оба будут выглядеть верно.
@@ -15177,6 +15411,24 @@ def build_project_workbook(
     # Parity-блок ПРОВЕРОК: контрольные числа движка — значениями в C, допуск
     # в E; формулы книги в B посчитает Excel, и вердикт листа скажет FAIL,
     # если поверхности разойдутся. Без движковых чисел строки молчат.
+    # Перенос непогашенного долга между очередями: строки 64 и 65 листов CF.
+    # Признак живёт на «Вводных» и по умолчанию выключен — с выключенным ряды
+    # дают ноль, и все правленые формулы сходятся к прежним.
+    _carry_on = bool(p.get("carry_debt_forward")) and bool(p.get("enabled"))
+    _queue_count = max(1, min(4, int(p.get("phase_count") or 1) if p.get("enabled") else 1))
+    cf_sheet_paths: dict[str, str] = {}
+    cf_sheet_xml: dict[str, str] = {}
+    for _phase in range(1, 5):
+        _name = f"CF_{_phase}"
+        try:
+            _path = _v4_sheet_path(source, _name)
+        except Exception:
+            missing.append(f"{_name}: лист не найден")
+            continue
+        cf_sheet_paths[_name] = _path
+        cf_sheet_xml[_name] = _v4_apply_debt_carry(
+            source.read(_path).decode("utf-8"), _phase, _queue_count, missing)
+
     checks_sheet_path = _v4_sheet_path(source, "ПРОВЕРКИ")
     checks_xml = source.read(checks_sheet_path).decode("utf-8")
     _parity = (finance_hints or {}).get("parity") or {}
@@ -15197,6 +15449,8 @@ def build_project_workbook(
             if not done:
                 missing.append(f"паритет ПРОВЕРКИ: строка {_row}")
                 break
+    checks_xml = _v4_add_carry_parity_row(
+        checks_xml, float((finance_hints or {}).get("carried_debt_mln") or 0.0), missing)
 
     def _put_extra(sheet_xml: str, coord: str, *, number=None, text=None) -> str:
         updated, done = _v4_set_cell(sheet_xml, coord, number=number, text=text)
@@ -15476,6 +15730,10 @@ def build_project_workbook(
                 payload = sources_xml.encode("utf-8")
             elif item.filename == checks_sheet_path:
                 payload = checks_xml.encode("utf-8")
+            elif item.filename in cf_sheet_paths.values():
+                payload = cf_sheet_xml[
+                    next(k for k, v in cf_sheet_paths.items() if v == item.filename)
+                ].encode("utf-8")
             if item.filename.startswith("xl/worksheets/") and item.filename.endswith(".xml"):
                 text = payload.decode("utf-8")
                 text = re.sub(r"(<x:f(?:\s[^>]*)?>[^<]*</x:f>)<x:v>[^<]*</x:v>", r"\1", text)
