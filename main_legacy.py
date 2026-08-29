@@ -14877,6 +14877,35 @@ def _v4_fold_tep_rows(
     return rows[:book - 1] + [merged]
 
 
+def phase_cash_default_weights(count: int) -> dict[str, list[float]]:
+    """Кассовые доли общепроектных статей по умолчанию — один раз на движок и книгу.
+
+    Копия этих умолчаний жила в книге и говорила другое: `_v4_shared_weights`
+    при пустом `shared_cash` валила ВСЕ статьи на первую очередь, а движок
+    раскладывал ИРД, проектирование, подготовку и сети по весам очередей.
+    Страница долю всегда присылает, поэтому в жизни расхождение не всплывало,
+    а через API — на двухочередном проекте это 686 млн ₽ разницы в пике
+    БРИДЖа между отчётом и книгой, оба достоверные на вид. Тот же класс
+    ошибки, что копия `FIELD_GROUPS` на странице: умолчание, объявленное
+    дважды, однажды разойдётся.
+    """
+    count = max(1, int(count))
+    weights = _default_phase_weights(count)
+    first_only = [100.0] + [0.0] * (count - 1)
+    return {
+        "purchase": list(first_only),
+        "land_rights": list(first_only),
+        "ird": list(weights),
+        "design": list(weights),
+        "preparation": list(weights),
+        "utilities": list(weights),
+        "social_compensation": list(first_only),
+        # Свои деньги вкладывают на входе, поэтому по умолчанию они целиком в
+        # первой очереди. Иное распределение задаётся shared_cash.own_funds.
+        "own_funds": list(first_only),
+    }
+
+
 def _v4_shared_weights(
     phasing: dict[str, Any], key: str, count: int, enabled: int | None = None
 ) -> list[float]:
@@ -14888,7 +14917,13 @@ def _v4_shared_weights(
     weights = [float(w or 0) for w in ((phasing.get("shared_cash") or {}).get(key) or [])]
     weights = _v4_fold_tail(weights, enabled or count, count)
     if len(weights) < count or sum(weights[:count]) <= 0:
-        return [1.0 if index == 0 else 0.0 for index in range(count)]
+        # Умолчание берётся у движка, а не пишется здесь второй раз: своя
+        # копия говорила «всё в первую очередь» там, где движок раскладывал
+        # по весам очередей.
+        fallback = phase_cash_default_weights(count).get(key)
+        if not fallback:
+            return [1.0 if index == 0 else 0.0 for index in range(count)]
+        return _v4_normalized(fallback, count)
     return _v4_normalized(weights, count)
 
 
@@ -23316,18 +23351,7 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
 
     shared_cash = phasing.get("shared_cash") or {}
     shared_alloc = phasing.get("shared_allocation") or {}
-    cash_defaults = {
-        "purchase": [100.0] + [0.0]*(count-1),
-        "land_rights": [100.0] + [0.0]*(count-1),
-        "ird": default_weights,
-        "design": default_weights,
-        "preparation": default_weights,
-        "utilities": default_weights,
-        "social_compensation": [100.0] + [0.0]*(count-1),
-        # Свои деньги вкладывают на входе, поэтому по умолчанию они целиком в
-        # первой очереди. Иное распределение задаётся shared_cash.own_funds.
-        "own_funds": [100.0] + [0.0]*(count-1),
-    }
+    cash_defaults = phase_cash_default_weights(count)
     cash_weights = {
         key: _normalized_phase_weights(shared_cash.get(key), count, cash_defaults[key])
         for key in cash_defaults
