@@ -198,6 +198,27 @@ def test_a_stored_register_is_read_back(tmp_path, monkeypatch) -> None:
     assert retention.summary(back, horizon=datetime.date(2027, 12, 31))["left"] == 2.0
 
 
+def test_the_upload_stands_with_the_other_uploads() -> None:
+    """Реестр ГУ — такой же источник проекта, как РСС и продажи.
+
+    Поле уехало в верхнюю панель, к «Проекту» и «Срезу»: вставка искала
+    ближайший `<div class="field">` перед кнопкой продаж, а в блоке загрузок
+    таких нет вовсе — разметка там своя. «Почему загрузку ГУ вынесли за пределы
+    всех загрузок?» (владелец, 30.08.2026) — верный вопрос: источник, стоящий
+    в стороне от источников, читается как отдельная кнопка неизвестно чего.
+    """
+    page = PAGE
+    weekly = page[page.index("<b>Еженедельно</b>"):]
+    weekly = weekly[: weekly.index('<div class="msg"')]
+    assert 'id="retention"' in weekly, "загрузка ГУ стоит не с остальными загрузками"
+    assert 'id="retentionBtn"' in weekly
+    assert "Реестр гарантийных удержаний" in weekly, "и блок называет этот источник"
+    # А в верхней панели её нет: там управление срезом, а не файлы.
+    controls = page[page.index('<div class="controls">'):]
+    controls = controls[: controls.index("</div></div>")]
+    assert "retention" not in controls
+
+
 def test_the_tests_do_not_write_into_the_repository() -> None:
     """Проверка, оставляющая файлы в `data/`, уезжает с ними в коммит.
 
