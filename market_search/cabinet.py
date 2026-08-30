@@ -352,10 +352,10 @@ g.bub.on circle{fill-opacity:.75}
    и открытую. В PDF не попадала ни одна: разом сработали обе половины. */
 .hello{margin:4px 0 18px}.hello h2{margin:0 0 4px;font-size:26px}
 .rooms{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:18px;margin-bottom:22px}
-.room{background:#fff;border:1px solid #dde5ed;padding:22px 20px 20px;text-align:center;
+.room{background:#fff;border:1px solid #dde5ed;padding:18px 20px 20px;text-align:center;
 display:flex;flex-direction:column;align-items:center}
-.room img{width:172px;height:172px;border-radius:50%;object-fit:cover;margin-bottom:14px}
-.room .noface{width:172px;height:172px;border-radius:50%;margin-bottom:14px;background:#eef3f8;
+.room img{width:190px;height:190px;object-fit:contain;object-position:bottom;margin-bottom:10px}
+.room .noface{width:190px;height:190px;margin-bottom:10px;background:#eef3f8;
 display:flex;align-items:center;justify-content:center;color:#8ba0b5;font-size:12px;padding:0 18px}
 .room b{font-size:17px;color:#16202b}
 .room .what{font-size:13px;color:#5b6b7d;margin:6px 0 14px;min-height:36px}
