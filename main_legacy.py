@@ -69,7 +69,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.20.84"
+VERSION = "0.20.85"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -32815,9 +32815,10 @@ function calculateAndOpen(id){
 
 // Строка состояния поверх страницы: «Считаю…» → «Готов». Без неё непонятно,
 // идёт ли работа, — расчёт занимает секунды, а окно выглядит замершим.
-let telegramProgressTimer=null;
 function telegramProgress(text){
- if(telegramProgressTimer){clearTimeout(telegramProgressTimer);telegramProgressTimer=null}
+ // Таймер живёт на самой функции: вынесенный наружу, он делает её незапускаемой
+ // в отрыве от страницы — а проверка гоняет её именно так.
+ if(telegramProgress.timer){clearTimeout(telegramProgress.timer);telegramProgress.timer=null}
  let bar=document.getElementById('telegramProgress');
  if(!text){if(bar)bar.remove();return}
  if(!bar){
@@ -32831,7 +32832,7 @@ function telegramProgress(text){
  // Полоса без признака жизни неотличима от зависшей: окно замирало на
  // «Считаю…» и не говорило ничего (владелец, 31.08.2026). Полминуты — это
  // уже не «идёт расчёт», и об этом надо сказать.
- telegramProgressTimer=setTimeout(()=>{
+ telegramProgress.timer=setTimeout(()=>{
   if(bar&&bar.isConnected)bar.textContent=text+' Дольше обычного — можно закрыть окно и повторить из чата.';
  },30000);
 }

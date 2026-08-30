@@ -38,7 +38,7 @@ def test_a_banner_that_hangs_says_so() -> None:
     assert "setTimeout" in banner and "Дольше обычного" in banner
     # Таймер снимается при каждой смене текста, иначе прошлый допишет своё
     # поверх нового состояния.
-    assert "clearTimeout(telegramProgressTimer)" in banner
+    assert "clearTimeout(telegramProgress.timer)" in banner
 
 
 def test_every_working_banner_belongs_to_a_path_that_clears_it() -> None:
